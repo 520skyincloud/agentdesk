@@ -341,8 +341,8 @@ flowchart LR
 | OSS Bucket | `skychucun` | 测试桶 |
 | OSS 目录前缀 | `desk` | 所有 AgentDesk 文件写入该目录 |
 | OSS Base URL | `https://skychucun.oss-cn-beijing.aliyuncs.com` | 公网读取地址；如果后续使用 CNAME，可改为 CNAME 域名 |
-| AgentDesk 公网地址 | `http://kefuceshi.omnireva.com` | 协议云存储从这里拉取本地资产，例如 `/api/asset/file/{assetId}` |
-| wecdn_web 地址 | 由部署填写 | 调 `/cloud/c2c_upload` 前必须配置，否则富媒体 outbox 失败 |
+| AgentDesk 公网地址 | `http://112.124.109.106:2332` | 协议云存储从这里拉取本地资产，例如 `/api/asset/file/{assetId}` |
+| wecdn_web 地址 | `http://112.124.109.106:34789` | 调 `/cloud/c2c_upload` 前必须配置，否则富媒体 outbox 失败 |
 
 AccessKey ID 和 AccessKey Secret 只能保存在运行时配置中，文档和 Git 仓库不得记录明文。后台返回设置时只返回 `ossAccessKeySecretSet=true/false`，不回显 Secret。更新时 Secret 留空或填 `********` 表示沿用原值。
 
@@ -351,7 +351,14 @@ AccessKey ID 和 AccessKey Secret 只能保存在运行时配置中，文档和 
 - 网页端上传文件时，`AssetService` 使用运行时存储设置，不再只读静态 `config.yaml`。
 - OSS 存储 key 会自动拼接全局目录前缀，例如 `desk/conversation/...`。
 - `/api/asset/file/{assetId}` 用于让 wecdn_web 或外部协议服务拉取 AgentDesk 资产；本地资产走流式输出，外部 URL 资产走重定向。
-- 协议渠道 JSON 仍可单独配置 `wecdnBaseUrl/publicAssetBaseUrl`，但为空时自动兜底使用“存储设置”的全局值。
+- 协议发送时优先读取“存储设置”的全局 `wecdnBaseUrl/publicAssetBaseUrl`；只有全局为空时才兜底使用协议渠道 JSON 里的历史值。这样可以避免旧渠道残留地址覆盖后台新配置。
+
+WECDN 部署规则：
+
+- 当前测试包来自 `/Users/openclaw/Downloads/wecdn_dist_v2.8.3.zip`，服务器解压运行目录为 `/home/wecdn_dist_v2.8.3`。
+- `wecdn_service` 监听 `127.0.0.1:50056`，`wecdn_web` 监听公网 `112.124.109.106:34789`。
+- `wecdn_service_config.ini` 中 `cloud_storage=aliyun`，OSS endpoint/bucket/access key 只写入服务器运行配置，不写入 Git。
+- `wecdn_web` swagger 可用于连通性检查：`http://112.124.109.106:34789/swagger/index.html`。
 
 ### 13.3 多媒体和富媒体边界
 
@@ -383,6 +390,14 @@ flowchart TD
 ```
 
 真实发送测试前置条件：员工号必须扫码登录成功，当前会话必须有可发送目标，OSS AccessKey 已在“存储设置”中保存，`publicAssetBaseUrl` 必须能被协议服务公网访问，`wecdnBaseUrl` 必须指向可用的私有化云存储服务。缺任一条件时，不允许 mock 成功，只能让 outbox 标记 failed 并写明原因。
+
+2026-06-27 真实测试结论：
+
+- 客户发图片已真实入站，`Message(id=193)` 保存为 image 消息，payload 带协议侧 `file_id/aes_key/md5/size/image_width/image_height`，本地 asset 可展示。
+- 网页端/AI 出站图片已真实跑通，`Message(id=199/200)` 经 OSS `desk/...`、公网 `/api/asset/file/{assetId}`、WECDN `/cloud/c2c_upload` 后取得 `file_id/aes_key/md5`，最终 `/msg/send_image` outbox 为 `sent`。
+- 网页端/AI 出站文件已真实跑通，`Message(id=201)` 经同一链路换取 `file_id/aes_key/md5/file_size` 后调用 `/msg/send_file`，outbox 为 `sent`。
+- 曾出现 `broken data stream when reading image file` 的失败样本来自 70 字节损坏 PNG 测试素材；正常 PNG 可发送。后续测试必须使用能被图片解码器校验通过的真实文件。
+- 语音、视频、GIF 的代码路径已按协议分派到 `/msg/send_voice`、`/msg/send_video`、`/msg/send_gif`，但仍需准备真实语音/视频/GIF 素材逐项验证；未验证前不能在交付说明中宣称全部生产可用。
 
 ### 13.4 上下文压缩策略
 

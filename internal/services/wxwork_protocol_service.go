@@ -976,21 +976,23 @@ func (s *wxWorkProtocolService) publicAssetURL(cfg *dto.WxWorkProtocolChannelCon
 }
 
 func wxProtocolWECDNBaseURL(cfg *dto.WxWorkProtocolChannelConfig) string {
-	if cfg != nil {
-		if baseURL := strings.TrimRight(strings.TrimSpace(cfg.WECDNBaseURL), "/"); baseURL != "" {
-			return baseURL
-		}
+	if baseURL := strings.TrimRight(strings.TrimSpace(GetStorageSetting().WECDNBaseURL), "/"); baseURL != "" {
+		return baseURL
 	}
-	return strings.TrimRight(strings.TrimSpace(GetStorageSetting().WECDNBaseURL), "/")
+	if cfg != nil {
+		return strings.TrimRight(strings.TrimSpace(cfg.WECDNBaseURL), "/")
+	}
+	return ""
 }
 
 func wxProtocolPublicAssetBaseURL(cfg *dto.WxWorkProtocolChannelConfig) string {
-	if cfg != nil {
-		if baseURL := strings.TrimRight(strings.TrimSpace(cfg.PublicAssetBaseURL), "/"); baseURL != "" {
-			return baseURL
-		}
+	if baseURL := strings.TrimRight(strings.TrimSpace(GetStorageSetting().PublicAssetBaseURL), "/"); baseURL != "" {
+		return baseURL
 	}
-	return strings.TrimRight(strings.TrimSpace(GetStorageSetting().PublicAssetBaseURL), "/")
+	if cfg != nil {
+		return strings.TrimRight(strings.TrimSpace(cfg.PublicAssetBaseURL), "/")
+	}
+	return ""
 }
 
 func (s *wxWorkProtocolService) getCDNInfo(cfg *dto.WxWorkProtocolChannelConfig, instance *models.WxWorkProtocolInstance) (map[string]any, error) {
