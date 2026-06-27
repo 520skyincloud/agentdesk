@@ -60,11 +60,14 @@ var wxProtocolURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
 var WxWorkProtocolService = newWxWorkProtocolService()
 
 func newWxWorkProtocolService() *wxWorkProtocolService {
-	return &wxWorkProtocolService{httpClient: &http.Client{Timeout: 45 * time.Second}}
+	svc := &wxWorkProtocolService{httpClient: &http.Client{Timeout: 45 * time.Second}}
+	svc.adapter = newDefaultWxWorkProtocolAdapter(svc)
+	return svc
 }
 
 type wxWorkProtocolService struct {
 	httpClient *http.Client
+	adapter    WxWorkProtocolAdapter
 }
 
 func (s *wxWorkProtocolService) HandleCallback(req request.WxWorkProtocolCallbackRequest, raw string) error {
@@ -747,7 +750,7 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	if err := s.prepareOutboundMessageMedia(cfg, instance, message); err != nil {
 		return s.markOutboxFailed(outbox, err.Error())
 	}
-	resp, err := s.sendOutboxMessage(cfg, instance, protocolConversationID, message)
+	resp, err := s.adapter.SendMessage(cfg, instance, protocolConversationID, message)
 	if err != nil {
 		return s.markOutboxFailed(outbox, err.Error())
 	}

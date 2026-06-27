@@ -42,7 +42,9 @@ function getModelTypeOptions(t: TFunction) {
     { value: String(AIModelType.LLM), label: t("aiConfig.modelTypeLlm") },
     { value: String(AIModelType.Embedding), label: t("aiConfig.modelTypeEmbedding") },
     { value: String(AIModelType.Rerank), label: t("aiConfig.modelTypeRerank") },
-    { value: String(AIModelType.Vision), label: "视觉模型" },
+    { value: String(AIModelType.Vision), label: "视觉/多模态模型" },
+    { value: String(AIModelType.ASR), label: "语音识别模型" },
+    { value: String(AIModelType.TTS), label: "语音合成模型" },
   ]
 }
 

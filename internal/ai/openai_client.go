@@ -28,6 +28,10 @@ func newOpenAIClient(config models.AIConfig) openai.Client {
 	return openai.NewClient(opts...)
 }
 
+func NewOpenAIClientForService(config models.AIConfig) openai.Client {
+	return newOpenAIClient(config)
+}
+
 func GetEnabledAIConfig(modelType enums.AIModelType) (*models.AIConfig, error) {
 	item := repositories.AIConfigRepository.GetEnabled(sqls.DB(), modelType)
 	if item == nil {

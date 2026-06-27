@@ -405,11 +405,33 @@ flowchart TD
 
 富媒体理解边界：
 
-- 当前已完成的是“真实收发、资产保存、后台展示、协议字段回填、outbox 状态确认”。
-- 图片理解需要把视觉模型（例如测试配置里的 `qwen3-vl-plus`）接入 `MediaUnderstandingWorker`：下载 asset -> 调视觉模型生成 `mediaText/mediaSummary` -> 写回 message payload -> 再允许 AI 基于图片内容回答。
-- 语音理解优先使用协议 `/msg/apply_voice_id` 和 `/msg/query_voice_text`；如果协议转写失败，再走独立 ASR 模型。没有转写结果时，AI 只能知道“收到语音”，不能猜语音内容。
-- 文件理解需要文档解析链路：PDF/Word/TXT/Excel 分别抽文本或表格摘要，再写入 `mediaText/mediaSummary`；二进制压缩包、未知格式只展示和审计，不触发 AI 内容判断。
+- 当前已完成的是“真实收发、资产保存、后台展示、协议字段回填、outbox 状态确认”，并新增 `MediaUnderstandingService` 作为媒体理解入口。
+- 图片理解链路已经接入模型配置类型 `vision`：读取 asset 或下载 URL -> 调 OpenAI-compatible `/chat/completions` 多模态接口 -> 生成 `mediaText/mediaSummary` -> 写回 message payload -> 再允许 AI 基于图片内容回答。
+- 2026-06-27 代码验证：`Message(id=215)` 通过真实 `/api/third/wxwork-protocol/callback` 重放入站图片后进入 `MediaUnderstandingService`，但协议原始 `file_id` 是微信临时下载地址，直接 HTTP GET 返回 400。因此当前还缺“协议私有化下载/WECDN 入站下载”闭环，不能宣称入站图片已经能稳定视觉理解；必须补齐 `/cloud/*download*` 或文档指定下载接口后再做生产验收。
+- 视觉/多模态配置：后台 `AI 配置` 已新增模型类型 `vision/asr/tts`。测试环境新增 `GPT-5.5 多模态模型`，Base URL 为 `http://43.128.146.66:8085/v1`，模型名 `gpt-5.5`，密钥只保存在运行数据库，不写入代码和文档。
+- 语音理解优先使用协议 `/msg/apply_voice_id` 和 `/msg/query_voice_text`；如果协议转写失败，再走独立 ASR 模型。后台已新增 `asr` 类型，测试模型为 `TeleAI/TeleSpeechASR`，Base URL 为 `https://api.siliconflow.cn/v1`。未配置 API Key 或没有转写结果时，AI 只能知道“收到语音”，不能猜语音内容。
+- TTS 已作为独立 `tts` 类型进入模型配置，测试模型为 `fnlp/MOSS-TTSD-v0.5`。当前用于配置管理和后续语音生成文件，出站客服语音发送仍以已有音频文件上传后 `/msg/send_voice` 为准，不自动把文本转语音。
+- 文件理解当前支持 `txt/md/csv/json` 等文本类文件抽取内容；PDF/Word/Excel 需要继续接文档解析器，解析后写入 `mediaText/mediaSummary`；二进制压缩包、未知格式只展示和审计，不触发 AI 内容判断。
 - 视频/GIF 默认只展示和审计；如果要 AI 理解视频，需要额外做抽帧、封面识别或视频理解模型，不应把文件名当作视频内容。
+
+媒体理解和 AI 回复触发规则：
+
+- 文本消息继续直接触发 AI。
+- 图片、语音、附件先落库和展示，再异步进入 `MediaUnderstandingService`；只有当 payload 写入可信 `mediaText/mediaSummary` 后才触发 AI。
+- AI 上下文构建已经读取 payload 中的 `mediaText/mediaSummary`，并把它作为“媒体理解”文本带入当前 session。
+- 媒体理解失败时写 `mediaUnderstandingStatus=failed` 和 `mediaUnderstandingError`；AI 不得根据文件名或占位符编造内容。
+
+模型与话术配置规则：
+
+- `AIModelType` 已扩展为 `llm/embedding/rerank/vision/asr/tts`，前端 AI 配置页同步展示这些类型。
+- 客服 Agent 组装 instruction 时强制加入“酒店前台同事”基础服务风格：短句、自然、不固定使用 emoji、不说“根据知识库”、不自称 AI；维修、漏水、卫生、投诉、安全、退款等问题先安抚并说明会帮忙记录/反馈/安排。
+- 门店可继续在后台维护自己的 Agent 系统提示词，但不得覆盖“不能猜测未理解媒体内容”和“不固定 emoji”的底线规则。
+
+企微员工号渠道适配器边界：
+
+- 新增 `WxWorkProtocolAdapter` 接口，当前默认实现封装在 `defaultWxWorkProtocolAdapter`，用于承接员工号协议发送能力。
+- 业务层仍通过 AgentDesk 的会话、消息、outbox、路由状态工作；协议细节集中在 `wxwork_protocol_service` 和 adapter 内，不再把 CLI/KF 字段混入新链路。
+- 后续如果协议供应商接口变更，优先替换 adapter 的上传、下载、发送、操作型接口实现，避免大面积改会话和 AI 业务层。
 
 ### 13.4 上下文压缩策略
 
@@ -438,10 +460,10 @@ flowchart TD
 9. 总部接管后 AI 停答，总部回复回到原门店员工号会话。
 10. 10 分钟无客户新消息后恢复 AI。
 11. 已关闭会话再次来消息，新开 session，旧维修问题不污染新问题。
-12. 客户发图片/语音/视频/文件，后台展示并审计；未转写语音不触发 AI。
+12. 客户发图片/语音/视频/文件，后台展示并审计；图片/语音/文件只有理解成功并写回 `mediaText/mediaSummary` 后才触发 AI。
 13. 客服网页端发送图片/文件/语音/GIF/普通视频/位置/链接/视频号直播/合并转发/引用消息，协议 body 符合文档；业务错误码不误标 sent。
 14. 群@必须使用真实 `R:` 群聊会话测试，不能用单聊会话冒充。
 15. 大视频必须补齐 big cdn 上传和预览图上传后再测试 `/msg/send_big_video`。
 16. 微信小店商品必须使用真实小店商品数据测试，假 `content` 不允许标记为成功。
-17. 图片、语音、文件只有在 `mediaText/mediaSummary` 写回后才可触发 AI 基于内容回答；未理解前 AI 不能编造多媒体内容。
+17. 入站图片必须补齐协议下载闭环后验收视觉理解；当前真实重放证明直接 GET 微信临时 `file_id` 会 HTTP 400，不能算生产可用图片理解。
 18. 知识候选按门店导出 Markdown/JSONL，人工审核后再导入门店知识库。

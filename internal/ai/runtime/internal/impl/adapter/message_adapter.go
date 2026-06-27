@@ -1,6 +1,9 @@
 package adapter
 
 import (
+	"encoding/json"
+	"strings"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
@@ -86,7 +89,7 @@ func BuildSchemaMessage(item *models.Message) *schema.Message {
 	if item == nil {
 		return nil
 	}
-	content := utils.BuildRuntimeMessageText(item.MessageType, item.Content)
+	content := buildRuntimeMessageText(item)
 	if content == "" {
 		return nil
 	}
@@ -97,5 +100,47 @@ func BuildSchemaMessage(item *models.Message) *schema.Message {
 		return schema.AssistantMessage(content, nil)
 	default:
 		return nil
+	}
+}
+
+func buildRuntimeMessageText(item *models.Message) string {
+	if item == nil {
+		return ""
+	}
+	base := utils.BuildRuntimeMessageText(item.MessageType, item.Content)
+	mediaText, mediaSummary, mediaStatus := mediaUnderstandingFromPayload(item.Payload)
+	if mediaText != "" {
+		return strings.TrimSpace(base + "\n媒体理解：" + mediaText)
+	}
+	if mediaSummary != "" {
+		return strings.TrimSpace(base + "\n媒体摘要：" + mediaSummary)
+	}
+	if isMediaMessageType(item.MessageType) && mediaStatus != "" && mediaStatus != "understood" {
+		return strings.TrimSpace(base + "\n媒体理解状态：" + mediaStatus)
+	}
+	return base
+}
+
+func mediaUnderstandingFromPayload(raw string) (mediaText string, mediaSummary string, status string) {
+	if strings.TrimSpace(raw) == "" {
+		return "", "", ""
+	}
+	var payload struct {
+		MediaText    string `json:"mediaText"`
+		MediaSummary string `json:"mediaSummary"`
+		MediaStatus  string `json:"mediaUnderstandingStatus"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", "", ""
+	}
+	return strings.TrimSpace(payload.MediaText), strings.TrimSpace(payload.MediaSummary), strings.TrimSpace(payload.MediaStatus)
+}
+
+func isMediaMessageType(messageType enums.IMMessageType) bool {
+	switch messageType {
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment, enums.IMMessageTypeGIF:
+		return true
+	default:
+		return false
 	}
 }

@@ -25,12 +25,16 @@ export enum AIModelType {
   Embedding = "embedding",
   Rerank = "rerank",
   Vision = "vision",
+  ASR = "asr",
+  TTS = "tts",
 }
 export const AIModelTypeLabels: Record<AIModelType, string> = {
   [AIModelType.LLM]: "大语言模型",
   [AIModelType.Embedding]: "向量模型",
   [AIModelType.Rerank]: "重排序模型",
-  [AIModelType.Vision]: "视觉模型",
+  [AIModelType.Vision]: "视觉/多模态模型",
+  [AIModelType.ASR]: "语音识别模型",
+  [AIModelType.TTS]: "语音合成模型",
 }
 
 export enum AIProvider {

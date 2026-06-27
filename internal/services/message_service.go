@@ -576,6 +576,10 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 				}
 			}
 		}
+		if isMediaUnderstandingMessage(message.MessageType) {
+			MediaUnderstandingService.UnderstandInboundMessageAsync(message.ID)
+			return message, err
+		}
 		if !shouldTriggerAIReply(message.MessageType) {
 			return message, err
 		}
@@ -588,6 +592,15 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 
 func shouldTriggerAIReply(messageType enums.IMMessageType) bool {
 	return messageType == enums.IMMessageTypeText || messageType == enums.IMMessageTypeHTML
+}
+
+func isMediaUnderstandingMessage(messageType enums.IMMessageType) bool {
+	switch messageType {
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeAttachment:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *messageService) CreateExternalAgentMessageWithoutOutbox(conversationID int64, clientMsgID string, content, payload, requestID string) (*models.Message, error) {

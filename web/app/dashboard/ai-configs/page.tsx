@@ -51,7 +51,9 @@ function getModelTypeOptions(t: TFunction, includeAll = true) {
       label: t("aiConfig.modelTypeEmbedding"),
     },
     { value: String(AIModelType.Rerank), label: t("aiConfig.modelTypeRerank") },
-    { value: String(AIModelType.Vision), label: "视觉模型" },
+    { value: String(AIModelType.Vision), label: "视觉/多模态模型" },
+    { value: String(AIModelType.ASR), label: "语音识别模型" },
+    { value: String(AIModelType.TTS), label: "语音合成模型" },
   ];
   return includeAll
     ? [{ value: "all", label: t("aiConfig.allTypes") }, ...options]
