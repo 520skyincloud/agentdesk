@@ -6,6 +6,11 @@ type CreateWxWorkProtocolInstanceRequest struct {
 	EmployeeUserID                 string `json:"employeeUserId"`
 	EmployeeName                   string `json:"employeeName"`
 	StoreID                        int64  `json:"storeId"`
+	StoreAddress                   string `json:"storeAddress"`
+	StoreNavigationName            string `json:"storeNavigationName"`
+	StoreLongitude                 string `json:"storeLongitude"`
+	StoreLatitude                  string `json:"storeLatitude"`
+	StoreMapProvider               string `json:"storeMapProvider"`
 	KnowledgeBaseID                int64  `json:"knowledgeBaseId"`
 	AIAgentID                      int64  `json:"aiAgentId"`
 	NotifyURL                      string `json:"notifyUrl"`
@@ -58,6 +63,11 @@ type UpdateWxWorkProtocolAISettingsRequest struct {
 	StaffUserIDs                   string `json:"staffUserIds"`
 	FallbackToHQ                   bool   `json:"fallbackToHQ"`
 	StoreID                        int64  `json:"storeId"`
+	StoreAddress                   string `json:"storeAddress"`
+	StoreNavigationName            string `json:"storeNavigationName"`
+	StoreLongitude                 string `json:"storeLongitude"`
+	StoreLatitude                  string `json:"storeLatitude"`
+	StoreMapProvider               string `json:"storeMapProvider"`
 	KnowledgeBaseID                int64  `json:"knowledgeBaseId"`
 	AIAgentID                      int64  `json:"aiAgentId"`
 	ContextMaxMessages             int    `json:"contextMaxMessages"`

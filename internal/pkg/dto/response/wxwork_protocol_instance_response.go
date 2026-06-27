@@ -17,6 +17,11 @@ type WxWorkProtocolInstanceResponse struct {
 	StoreID                        int64        `json:"storeId"`
 	StoreCode                      string       `json:"storeCode"`
 	StoreName                      string       `json:"storeName"`
+	StoreAddress                   string       `json:"storeAddress"`
+	StoreNavigationName            string       `json:"storeNavigationName"`
+	StoreLongitude                 string       `json:"storeLongitude"`
+	StoreLatitude                  string       `json:"storeLatitude"`
+	StoreMapProvider               string       `json:"storeMapProvider"`
 	KnowledgeBaseID                int64        `json:"knowledgeBaseId"`
 	KnowledgeBaseName              string       `json:"knowledgeBaseName"`
 	AIAgentID                      int64        `json:"aiAgentId"`
@@ -62,6 +67,11 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		EmployeeUserID:                 item.EmployeeUserID,
 		EmployeeName:                   item.EmployeeName,
 		StoreID:                        item.StoreID,
+		StoreAddress:                   item.StoreAddress,
+		StoreNavigationName:            item.StoreNavigationName,
+		StoreLongitude:                 item.StoreLongitude,
+		StoreLatitude:                  item.StoreLatitude,
+		StoreMapProvider:               item.StoreMapProvider,
 		KnowledgeBaseID:                item.KnowledgeBaseID,
 		AIAgentID:                      item.AIAgentID,
 		NotifyURL:                      item.NotifyURL,

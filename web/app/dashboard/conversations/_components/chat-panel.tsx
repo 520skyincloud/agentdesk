@@ -35,6 +35,7 @@ import {
 } from "@/lib/api/admin";
 import { readSession } from "@/lib/auth";
 import { renderIMMessageHTML } from "@/lib/im-message";
+import { IMMessageStatusLabels } from "@/lib/generated/enums";
 import {
   agentConversationSelectors,
   useAgentConversationsStore,
@@ -718,6 +719,7 @@ const MessageItem = memo(
         ? "AI"
         : message.senderName || t("conversation.agentSender");
     const senderBadge = isAi ? "AI回复" : isAgentSide ? "人工" : "客户";
+    const sendStatusLabel = isAgentSide && !isRecalled ? IMMessageStatusLabels[message.sendStatus as keyof typeof IMMessageStatusLabels] : "";
     const senderBadgeClassName = isAi
       ? "border-primary/20 bg-primary/10 text-primary"
       : isAgentSide
@@ -786,13 +788,7 @@ const MessageItem = memo(
               <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                 <span>{formatDateTime(message.sentAt || "")}</span>
                 {isRecalled ? <span>{t("conversation.messageRecalled")}</span> : null}
-                {message.sendStatus === 2 && !isRecalled && (
-                  <span>
-                    {message.customerRead
-                      ? t("conversation.customerRead")
-                      : t("conversation.customerUnread")}
-                  </span>
-                )}
+                {sendStatusLabel ? <span>{sendStatusLabel}</span> : null}
                 {showRecallAction ? (
                   <Button
                     type="button"

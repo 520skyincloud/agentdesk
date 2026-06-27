@@ -60,16 +60,6 @@ import { ConversationList } from "./_components/conversation-list";
 const workbenchIconButtonClassName =
   "size-8 text-muted-foreground hover:bg-muted hover:text-foreground";
 
-function getCustomerOnlineClassName(online?: boolean) {
-  return online
-    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300"
-    : "border-border bg-muted text-muted-foreground";
-}
-
-function getCustomerOnlineDotClassName(online?: boolean) {
-  return online ? "bg-emerald-500" : "bg-muted-foreground/70";
-}
-
 export default function ConversationsPage() {
   const t = useI18n();
   const conversation = useAgentConversationsStore(
@@ -376,28 +366,12 @@ export default function ConversationsPage() {
                 </AvatarFallback>
               </Avatar>
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <p className="min-w-0 truncate text-sm font-medium leading-tight">
-                    {conversation.customerName ||
-                      t("conversation.customerFallback", {
-                        id: conversation.customerId || conversation.id,
-                      })}
-                  </p>
-                  <span
-                    className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] leading-none ${getCustomerOnlineClassName(
-                      conversation.customerOnline,
-                    )}`}
-                  >
-                    <span
-                      className={`size-1.5 rounded-full ${getCustomerOnlineDotClassName(
-                        conversation.customerOnline,
-                      )}`}
-                    />
-                    {conversation.customerOnline
-                      ? t("conversation.customerOnline")
-                      : t("conversation.customerOffline")}
-                  </span>
-                </div>
+                <p className="min-w-0 truncate text-sm font-medium leading-tight">
+                  {conversation.customerName ||
+                    t("conversation.customerFallback", {
+                      id: conversation.customerId || conversation.id,
+                    })}
+                </p>
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">
                   <span>{t("conversation.channelNumber", { id: conversation.channelId || "-" })}</span>
                   {conversation.customerId ? (

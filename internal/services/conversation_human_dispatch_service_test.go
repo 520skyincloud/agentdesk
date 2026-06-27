@@ -42,7 +42,7 @@ func TestConversationHumanDispatchAIHandoffOffHoursKeepsAIServingAndSendsNotice(
 	if message == nil {
 		t.Fatalf("expected off-hours notice message")
 	}
-	if message.SenderType != enums.IMSenderTypeAI || !strings.Contains(message.Content, "当前暂不在人工客服服务时间内") {
+	if message.SenderType != enums.IMSenderTypeAI || !strings.Contains(message.Content, services.HandoffOffHoursMessage) {
 		t.Fatalf("unexpected off-hours message: %+v", message)
 	}
 }

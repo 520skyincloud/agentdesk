@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { BellRingIcon, CopyIcon, LogOutIcon, QrCodeIcon, RotateCwIcon, SquareIcon, UserRoundCogIcon, UsersRoundIcon } from "lucide-react"
+import { BellRingIcon, CopyIcon, LocateFixedIcon, LogOutIcon, QrCodeIcon, RotateCwIcon, SquareIcon, UserRoundCogIcon, UsersRoundIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -9,6 +9,7 @@ import {
   DashboardCrudPage,
 } from "@/components/dashboard/crud"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   createWxWorkProtocolInstance,
   deleteWxWorkProtocolInstance,
@@ -115,6 +116,46 @@ export function WxWorkProtocolInstanceManager({
     onChanged?.()
   }
 
+  function renderGeoPicker(context: {
+    setValue: (name: string, value: string) => void
+  }) {
+    return (
+      <div className="rounded-md border bg-muted/30 p-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-muted-foreground">
+            门店在现场打开后台时，可用浏览器定位自动填入经纬度。地址名称仍建议人工核对。
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              if (!navigator.geolocation) {
+                toast.error("当前浏览器不支持定位")
+                return
+              }
+              navigator.geolocation.getCurrentPosition(
+                (position) => {
+                  context.setValue("storeLatitude", String(position.coords.latitude))
+                  context.setValue("storeLongitude", String(position.coords.longitude))
+                  context.setValue("storeMapProvider", "browser_geolocation")
+                  toast.success("已填入当前坐标，请确认是否为门店位置")
+                },
+                (error) => {
+                  toast.error(error.message || "获取坐标失败，请检查浏览器定位授权")
+                },
+                { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 }
+              )
+            }}
+          >
+            <LocateFixedIcon className="size-4" />
+            一键获取当前坐标
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <DashboardCrudPage<WxWorkProtocolInstance, CreateWxWorkProtocolInstancePayload>
       layout={layout}
@@ -182,6 +223,11 @@ export function WxWorkProtocolInstanceManager({
               <div className="text-xs text-muted-foreground">
                 门店 {item.storeName || item.storeId} / {item.knowledgeBaseName || `知识库 ${item.knowledgeBaseId}`}
               </div>
+              {item.storeAddress || item.storeLatitude || item.storeLongitude ? (
+                <div className="text-xs text-muted-foreground">
+                  {item.storeAddress || "未填地址"} {item.storeLatitude && item.storeLongitude ? `(${item.storeLatitude}, ${item.storeLongitude})` : ""}
+                </div>
+              ) : null}
             </div>
           ),
         },
@@ -311,6 +357,12 @@ export function WxWorkProtocolInstanceManager({
           { name: "employeeUserId", label: "员工 UserID", type: "text" },
           { name: "employeeName", label: "员工名称", type: "text" },
           { name: "storeId", label: "门店ID", type: "number", required: true, min: 1 },
+          { name: "storeAddress", label: "门店地址", type: "text", placeholder: "例如：上海市..." },
+          { name: "storeNavigationName", label: "导航名称", type: "text", placeholder: "例如：丽斯未来酒店某某店" },
+          { name: "storeLatitude", label: "门店纬度", type: "text", placeholder: "例如：31.230416" },
+          { name: "storeLongitude", label: "门店经度", type: "text", placeholder: "例如：121.473701" },
+          { name: "storeMapProvider", label: "坐标来源", type: "text", placeholder: "browser_geolocation / amap / tencent" },
+          { name: "storeGeoPicker", label: "门店坐标", type: "custom", render: renderGeoPicker },
           {
             name: "knowledgeBaseId",
             label: "门店知识库",
@@ -350,6 +402,11 @@ export function WxWorkProtocolInstanceManager({
           employeeUserId: String(values.employeeUserId || ""),
           employeeName: String(values.employeeName || ""),
           storeId: Number(values.storeId || 0),
+          storeAddress: String(values.storeAddress || ""),
+          storeNavigationName: String(values.storeNavigationName || ""),
+          storeLatitude: String(values.storeLatitude || ""),
+          storeLongitude: String(values.storeLongitude || ""),
+          storeMapProvider: String(values.storeMapProvider || ""),
           knowledgeBaseId: Number(values.knowledgeBaseId || 0),
           aiAgentId: Number(values.aiAgentId || 0),
           notifyUrl: String(values.notifyUrl || CALLBACK_URL),

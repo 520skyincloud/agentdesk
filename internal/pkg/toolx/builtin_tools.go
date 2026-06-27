@@ -69,6 +69,8 @@ var (
 3. 如果 recommendedAction=prepare_ticket，则优先使用 ticketDraft 或继续补充缺失字段，再调用 create_ticket_with_confirmation。
 4. 如果 recommendedAction=handoff_to_human，则确认理由充分后再调用 handoff_to_human。
 5. 当升级路径不明确时，优先使用该工具，而不是直接凭主 prompt 做复杂分流判断。
+6. 对送水、拖鞋、毛巾、加被、打扫、维修、行李、叫醒等需要真实员工动作的 SERVICE_TASK，禁止口头承诺已经安排；必须先补齐房号、具体事项、数量/位置、期望时间，随后建单或转人工。
+7. 退款、赔偿、严重投诉、安全风险、订单异常、隐私授权、价格争议等 HUMAN_DECISION 一律转人工，不得自行下结论。
 `),
 	}
 	GraphAnalyzeConversation = ToolSpec{
@@ -101,6 +103,8 @@ var (
 2. 如果工具返回 ready=false，优先根据 missingFields 和 followUpQuestions 继续追问，不要直接创建工单。
 3. 如果工具返回 ready=true，再结合结果考虑调用 create_ticket_with_confirmation。
 4. 该工具用于“整理草稿”，不代表已经创建工单。
+5. SERVICE_TASK 调用时应尽量传入 taskCategory、roomNumber、serviceItem、quantity、preferredTime、urgency；缺房号时工具会返回 ready=false，必须先追问房号。
+6. 只有 create_ticket_with_confirmation 真正成功后，才能对客人说工单已创建或已记录。
 `),
 	}
 	GraphCreateTicketConfirm = ToolSpec{

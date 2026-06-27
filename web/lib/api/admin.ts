@@ -238,6 +238,11 @@ export type WxWorkProtocolInstance = {
   storeId: number
   storeCode: string
   storeName: string
+  storeAddress: string
+  storeNavigationName: string
+  storeLongitude: string
+  storeLatitude: string
+  storeMapProvider: string
   knowledgeBaseId: number
   knowledgeBaseName: string
   aiAgentId: number
@@ -278,6 +283,11 @@ export type CreateWxWorkProtocolInstancePayload = {
   employeeUserId: string
   employeeName: string
   storeId: number
+  storeAddress: string
+  storeNavigationName: string
+  storeLongitude: string
+  storeLatitude: string
+  storeMapProvider: string
   knowledgeBaseId: number
   aiAgentId: number
   notifyUrl: string
@@ -307,6 +317,11 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   staffUserIds: string
   fallbackToHQ: boolean
   storeId: number
+  storeAddress: string
+  storeNavigationName: string
+  storeLongitude: string
+  storeLatitude: string
+  storeMapProvider: string
   knowledgeBaseId: number
   aiAgentId: number
   contextMaxMessages: number

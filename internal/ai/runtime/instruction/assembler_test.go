@@ -25,12 +25,12 @@ func TestAssemblerRespectsProvidedSources(t *testing.T) {
 	}
 }
 
-func TestAssemblerReturnsEmptyTextWhenInputIsEmpty(t *testing.T) {
+func TestAssemblerInjectsBaseInstructionWhenInputIsEmpty(t *testing.T) {
 	result := NewAssembler().Assemble(AssemblerInput{})
-	if result.Text != "" {
-		t.Fatalf("expected empty assembled text, got: %s", result.Text)
+	if !strings.Contains(result.Text, "基础服务风格") || !strings.Contains(result.Text, "SERVICE_TASK") {
+		t.Fatalf("expected base instruction with intent rules, got: %s", result.Text)
 	}
-	if len(result.Summary.SectionTitles) != 0 || result.Summary.HasAgentRule || result.Summary.HasSkillRule || result.Summary.HasToolRule {
-		t.Fatalf("expected empty summary, got %#v", result.Summary)
+	if len(result.Summary.SectionTitles) != 1 || result.Summary.SectionTitles[0] != "基础服务风格" || result.Summary.HasAgentRule || result.Summary.HasSkillRule || result.Summary.HasToolRule {
+		t.Fatalf("unexpected summary, got %#v", result.Summary)
 	}
 }

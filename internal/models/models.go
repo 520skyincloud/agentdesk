@@ -384,6 +384,11 @@ type WxWorkProtocolInstance struct {
 	EmployeeUserID                 string       `gorm:"type:varchar(128);not null;default:'';index"`
 	EmployeeName                   string       `gorm:"type:varchar(120);not null;default:''"`
 	StoreID                        int64        `gorm:"type:bigint;not null;default:0;index"`
+	StoreAddress                   string       `gorm:"type:varchar(500);not null;default:''"`
+	StoreNavigationName            string       `gorm:"type:varchar(200);not null;default:''"`
+	StoreLongitude                 string       `gorm:"type:varchar(50);not null;default:''"`
+	StoreLatitude                  string       `gorm:"type:varchar(50);not null;default:''"`
+	StoreMapProvider               string       `gorm:"type:varchar(50);not null;default:''"`
 	KnowledgeBaseID                int64        `gorm:"type:bigint;not null;default:0;index"`
 	AIAgentID                      int64        `gorm:"type:bigint;not null;default:0;index"`
 	NotifyURL                      string       `gorm:"type:varchar(500);not null;default:''"`
