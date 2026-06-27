@@ -67,6 +67,8 @@ type WxWorkProtocolChannelConfig = {
   appSecret?: string
   baseUrl?: string
   callbackToken?: string
+  wecdnBaseUrl?: string
+  publicAssetBaseUrl?: string
 }
 
 function getDefaultWebChannelConfig(t: Translate): Required<WebChannelConfig> {
@@ -91,6 +93,8 @@ function createSchema(t: Translate) {
       protocolAppSecret: z.string().trim(),
       protocolBaseUrl: z.string().trim(),
       protocolCallbackToken: z.string().trim(),
+      protocolWecdnBaseUrl: z.string().trim(),
+      protocolPublicAssetBaseUrl: z.string().trim(),
       bridgeToken: z.string().trim(),
       defaultChatType: z.enum(["1", "2"]),
       widgetTitle: z.string().trim(),
@@ -130,6 +134,8 @@ type EditForm = {
   protocolAppSecret: string
   protocolBaseUrl: string
   protocolCallbackToken: string
+  protocolWecdnBaseUrl: string
+  protocolPublicAssetBaseUrl: string
   bridgeToken: string
   defaultChatType: "1" | "2"
   widgetTitle: string
@@ -152,6 +158,8 @@ function createEmptyForm(t: Translate): EditForm {
     protocolAppSecret: "",
     protocolBaseUrl: "https://chat-api.juhebot.com/open/GuidRequest",
     protocolCallbackToken: "",
+    protocolWecdnBaseUrl: "",
+    protocolPublicAssetBaseUrl: "",
     bridgeToken: "",
     defaultChatType: "1",
     widgetTitle: defaultWebChannelConfig.title,
@@ -182,6 +190,8 @@ function parseWxWorkProtocolChannelConfig(configJson: string): Required<WxWorkPr
     appSecret: "",
     baseUrl: "https://chat-api.juhebot.com/open/GuidRequest",
     callbackToken: "",
+    wecdnBaseUrl: "",
+    publicAssetBaseUrl: "",
   }
   if (!configJson.trim()) {
     return fallback
@@ -193,6 +203,8 @@ function parseWxWorkProtocolChannelConfig(configJson: string): Required<WxWorkPr
       appSecret: parsed.appSecret?.trim() || "",
       baseUrl: parsed.baseUrl?.trim() || fallback.baseUrl,
       callbackToken: parsed.callbackToken?.trim() || "",
+      wecdnBaseUrl: parsed.wecdnBaseUrl?.trim() || "",
+      publicAssetBaseUrl: parsed.publicAssetBaseUrl?.trim() || "",
     }
   } catch {
     return fallback
@@ -288,6 +300,8 @@ function buildForm(item: AdminChannel | null, t: Translate): EditForm {
     protocolAppSecret: wxWorkProtocolConfig?.appSecret ?? "",
     protocolBaseUrl: wxWorkProtocolConfig?.baseUrl ?? "https://chat-api.juhebot.com/open/GuidRequest",
     protocolCallbackToken: wxWorkProtocolConfig?.callbackToken ?? "",
+    protocolWecdnBaseUrl: wxWorkProtocolConfig?.wecdnBaseUrl ?? "",
+    protocolPublicAssetBaseUrl: wxWorkProtocolConfig?.publicAssetBaseUrl ?? "",
     bridgeToken: "",
     defaultChatType: "1",
     widgetTitle: wechatConfig?.title ?? webConfig.title,
@@ -319,6 +333,8 @@ function buildPayload(form: EditForm, status: number, t: Translate): CreateAdmin
             appSecret: form.protocolAppSecret.trim(),
             baseUrl: form.protocolBaseUrl.trim() || "https://chat-api.juhebot.com/open/GuidRequest",
             callbackToken: form.protocolCallbackToken.trim(),
+            wecdnBaseUrl: form.protocolWecdnBaseUrl.trim(),
+            publicAssetBaseUrl: form.protocolPublicAssetBaseUrl.trim(),
           })
       : channelType === "wechat_mp"
         ? JSON.stringify(webLikeConfig)
@@ -615,6 +631,35 @@ function ChannelFormBody({
                     <FieldError errors={[errors.protocolBaseUrl]} />
                   </FieldContent>
                 </Field>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <Field data-invalid={!!errors.protocolWecdnBaseUrl}>
+                    <FieldLabel htmlFor="channel-protocol-wecdn-base-url">私有化云存储地址</FieldLabel>
+                    <FieldContent>
+                      <Input
+                        id="channel-protocol-wecdn-base-url"
+                        className="font-mono text-xs"
+                        placeholder="http://公网IP:34789"
+                        {...register("protocolWecdnBaseUrl")}
+                      />
+                      <FieldError errors={[errors.protocolWecdnBaseUrl]} />
+                    </FieldContent>
+                  </Field>
+                  <Field data-invalid={!!errors.protocolPublicAssetBaseUrl}>
+                    <FieldLabel htmlFor="channel-protocol-public-asset-base-url">AgentDesk 公网地址</FieldLabel>
+                    <FieldContent>
+                      <Input
+                        id="channel-protocol-public-asset-base-url"
+                        className="font-mono text-xs"
+                        placeholder="https://kefuceshi.example.com"
+                        {...register("protocolPublicAssetBaseUrl")}
+                      />
+                      <FieldError errors={[errors.protocolPublicAssetBaseUrl]} />
+                    </FieldContent>
+                  </Field>
+                </div>
+                <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                  发送图片、语音、文件、视频、GIF 时，系统会先让私有化云存储从 AgentDesk 公网地址拉取资产，换取 file_id/aes_key/md5 后再调用企微发送接口。
+                </div>
                 {itemId ? (
                   <Field data-invalid={!!errors.protocolCallbackToken}>
                     <FieldLabel htmlFor="channel-protocol-callback-token">Callback Token</FieldLabel>

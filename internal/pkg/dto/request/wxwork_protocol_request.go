@@ -62,7 +62,7 @@ func (m *WxProtocolChatMsg) Normalize() {
 
 func (m *WxProtocolChatMsg) shouldPreferInferredMsgType(inferredMsgType int) bool {
 	switch inferredMsgType {
-	case 2, 3, 34, 43, 48, 50:
+	case 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16:
 		return true
 	default:
 		return false
@@ -82,19 +82,19 @@ func (m *WxProtocolChatMsg) InferMsgType() int {
 		return 2
 	}
 	if m.VoiceTime > 0 {
-		return 34
+		return 6
 	}
 	if m.ContentType == 43 || strings.HasPrefix(strings.ToLower(strings.TrimSpace(m.CDN.MimeType)), "video/") {
-		return 43
+		return 7
 	}
 	if m.ContentType == 48 {
-		return 48
-	}
-	if m.CDN.ImageWidth > 0 || m.CDN.ImageHeight > 0 || m.ContentType == 101 {
 		return 3
 	}
+	if m.CDN.ImageWidth > 0 || m.CDN.ImageHeight > 0 || m.ContentType == 101 {
+		return 5
+	}
 	if m.CDN.FileID != "" || m.CDN.Size > 0 || m.CDN.FileSize > 0 || m.FileName != "" {
-		return 50
+		return 8
 	}
 	return m.ContentType
 }

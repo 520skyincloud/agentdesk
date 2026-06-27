@@ -26,6 +26,10 @@ func registerApiChannelRoutes(group *gin.RouterGroup) {
 	group.Any("/config", api.ChannelAnyConfig)
 }
 
+func registerApiAssetRoutes(group *gin.RouterGroup) {
+	group.GET("/file/:assetId", api.AssetGetFile)
+}
+
 func registerThirdWxWorkCLIRoutes(group *gin.RouterGroup) {
 	group.POST("/inbound", third.WxWorkCLIPostInbound)
 	group.POST("/outbox/poll", third.WxWorkCLIPostOutboxPoll)

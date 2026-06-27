@@ -155,6 +155,7 @@ func addRouter(app *gin.Engine) {
 
 	apiGroup := app.Group("/api")
 	registerApiAuthRoutes(apiGroup.Group("/auth"))
+	registerApiAssetRoutes(apiGroup.Group("/asset"))
 	registerApiChannelRoutes(apiGroup.Group("/channel"))
 	registerApiCustomerRoutes(apiGroup.Group("/customer"))
 	registerApiConversationRoutes(apiGroup.Group("/conversation", middleware.ExternalUserMiddleware))

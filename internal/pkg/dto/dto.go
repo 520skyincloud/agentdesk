@@ -22,10 +22,12 @@ type WxWorkCLIChannelConfig struct {
 }
 
 type WxWorkProtocolChannelConfig struct {
-	AppKey        string `json:"appKey,omitempty"`
-	AppSecret     string `json:"appSecret,omitempty"`
-	BaseURL       string `json:"baseUrl,omitempty"`
-	CallbackToken string `json:"callbackToken,omitempty"`
+	AppKey             string `json:"appKey,omitempty"`
+	AppSecret          string `json:"appSecret,omitempty"`
+	BaseURL            string `json:"baseUrl,omitempty"`
+	CallbackToken      string `json:"callbackToken,omitempty"`
+	WECDNBaseURL       string `json:"wecdnBaseUrl,omitempty"`
+	PublicAssetBaseURL string `json:"publicAssetBaseUrl,omitempty"`
 }
 
 type WebChannelConfig struct {

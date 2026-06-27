@@ -35,14 +35,23 @@ const (
 	wxProtocolNotifyBatchNewMsg    = 1011
 	wxProtocolNotifyNewMsgAlt      = 11010
 	wxProtocolNotifyBatchNewMsgAlt = 11011
-	wxProtocolMsgText              = 1
-	wxProtocolMsgImage             = 3
-	wxProtocolMsgVoice             = 34
-	wxProtocolMsgVideo             = 43
-	wxProtocolMsgAttachment        = 49
-	wxProtocolMsgFile              = 50
-	wxProtocolMsgLocation          = 48
+	wxProtocolMsgRevoke            = 1
+	wxProtocolMsgText              = 2
+	wxProtocolMsgLocation          = 3
+	wxProtocolMsgLink              = 4
+	wxProtocolMsgImage             = 5
+	wxProtocolMsgVoice             = 6
+	wxProtocolMsgVideo             = 7
+	wxProtocolMsgFile              = 8
+	wxProtocolMsgGIF               = 10
+	wxProtocolMsgPersonalCard      = 11
+	wxProtocolMsgWeApp             = 12
+	wxProtocolMsgMixed             = 13
+	wxProtocolMsgSphFeed           = 14
+	wxProtocolMsgMergeMsg          = 16
 	wxProtocolMsgSystem            = 10000
+	wxProtocolMsgSystemAlt         = 1011
+	wxProtocolMsgReadReport        = 1012
 	wxProtocolConfigErrorNotice    = "当前门店配置异常，已通知人工处理。"
 )
 
@@ -423,7 +432,7 @@ func (s *wxWorkProtocolService) isEmployeeOutgoing(instance *models.WxWorkProtoc
 
 func (s *wxWorkProtocolService) resolveMessageType(msgType int) enums.IMMessageType {
 	switch msgType {
-	case wxProtocolMsgText, 2:
+	case wxProtocolMsgText:
 		return enums.IMMessageTypeText
 	case wxProtocolMsgImage:
 		return enums.IMMessageTypeImage
@@ -431,10 +440,34 @@ func (s *wxWorkProtocolService) resolveMessageType(msgType int) enums.IMMessageT
 		return enums.IMMessageTypeVoice
 	case wxProtocolMsgVideo:
 		return enums.IMMessageTypeVideo
-	case wxProtocolMsgAttachment, wxProtocolMsgFile:
+	case wxProtocolMsgFile:
 		return s.resolveAttachmentMessageType(msgType)
 	case wxProtocolMsgLocation:
 		return enums.IMMessageTypeLocation
+	case wxProtocolMsgLink:
+		return enums.IMMessageTypeLink
+	case wxProtocolMsgGIF:
+		return enums.IMMessageTypeGIF
+	case wxProtocolMsgPersonalCard:
+		return enums.IMMessageTypeContactCard
+	case wxProtocolMsgWeApp:
+		return enums.IMMessageTypeMiniProgram
+	case wxProtocolMsgMixed:
+		return enums.IMMessageTypeQuote
+	case wxProtocolMsgSphFeed:
+		return enums.IMMessageTypeFeed
+	case wxProtocolMsgMergeMsg:
+		return enums.IMMessageTypeMergedForward
+	case 34:
+		return enums.IMMessageTypeVoice
+	case 43:
+		return enums.IMMessageTypeVideo
+	case 48:
+		return enums.IMMessageTypeLocation
+	case 49, 50:
+		return enums.IMMessageTypeAttachment
+	case wxProtocolMsgSystem, wxProtocolMsgSystemAlt, wxProtocolMsgReadReport, wxProtocolMsgRevoke:
+		return ""
 	default:
 		return ""
 	}
@@ -446,14 +479,30 @@ func (s *wxWorkProtocolService) resolveAttachmentMessageType(msgType int) enums.
 
 func (s *wxWorkProtocolService) isSupportedMediaMessage(msgType int) bool {
 	messageType := s.resolveMessageType(msgType)
-	return messageType == enums.IMMessageTypeImage || messageType == enums.IMMessageTypeVoice || messageType == enums.IMMessageTypeVideo || messageType == enums.IMMessageTypeAttachment || messageType == enums.IMMessageTypeLocation
+	return messageType == enums.IMMessageTypeImage || messageType == enums.IMMessageTypeVoice || messageType == enums.IMMessageTypeVideo || messageType == enums.IMMessageTypeAttachment || messageType == enums.IMMessageTypeGIF || messageType == enums.IMMessageTypeLocation || messageType == enums.IMMessageTypeContactCard || messageType == enums.IMMessageTypeLink || messageType == enums.IMMessageTypeMiniProgram || messageType == enums.IMMessageTypeFeed || messageType == enums.IMMessageTypeFeedLive || messageType == enums.IMMessageTypeQuote || messageType == enums.IMMessageTypeMergedForward || messageType == enums.IMMessageTypeShopProduct
 }
 
 func (s *wxWorkProtocolService) buildInboundMessageContent(messageType enums.IMMessageType, msg request.WxProtocolChatMsg) (string, string, error) {
 	if messageType == enums.IMMessageTypeText {
 		return s.messageContent(msg), strings.TrimSpace(s.rawMessagePayload(msg)), nil
 	}
+	if !isAssetBackedMessageType(messageType) {
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			content = strings.TrimSpace(msg.Desc)
+		}
+		if content == "" {
+			content = "[" + enums.GetIMMessageTypeLabel(messageType) + "]"
+		}
+		return content, strings.TrimSpace(s.rawMessagePayload(msg)), nil
+	}
 	media := s.parseMediaPayload(msg)
+	if media.FileSize <= 0 && media.Size > 0 {
+		media.FileSize = media.Size
+	}
+	if media.Size <= 0 && media.FileSize > 0 {
+		media.Size = media.FileSize
+	}
 	filename := strings.TrimSpace(media.Filename)
 	if filename == "" {
 		filename = s.defaultMediaFilename(messageType, msg)
@@ -484,6 +533,15 @@ func (s *wxWorkProtocolService) buildInboundMessageContent(messageType enums.IMM
 		}
 	}
 	return content, string(payloadBytes), nil
+}
+
+func isAssetBackedMessageType(messageType enums.IMMessageType) bool {
+	switch messageType {
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment, enums.IMMessageTypeGIF:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *wxWorkProtocolService) rawMessagePayload(msg request.WxProtocolChatMsg) string {
@@ -661,6 +719,9 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	}); err != nil {
 		return err
 	}
+	if err := s.prepareOutboundMessageMedia(cfg, instance, message); err != nil {
+		return s.markOutboxFailed(outbox, err.Error())
+	}
 	resp, err := s.sendOutboxMessage(cfg, instance, protocolConversationID, message)
 	if err != nil {
 		return s.markOutboxFailed(outbox, err.Error())
@@ -732,19 +793,19 @@ func (s *wxWorkProtocolService) sendOutboxMessage(cfg *dto.WxWorkProtocolChannel
 	case enums.IMMessageTypeLocation:
 		return s.sendRichPayload(cfg, "/msg/send_location", base, message.Payload, []string{"longitude", "latitude", "address", "title", "zoom"})
 	case enums.IMMessageTypeContactCard:
-		return s.sendRichPayload(cfg, "/msg/send_card", base, message.Payload, nil)
+		return s.sendRichPayload(cfg, "/msg/send_personal_card", base, message.Payload, nil)
 	case enums.IMMessageTypeLink:
 		return s.sendRichPayload(cfg, "/msg/send_link", base, message.Payload, nil)
 	case enums.IMMessageTypeMiniProgram:
-		return s.sendRichPayload(cfg, "/msg/send_mini_program", base, message.Payload, nil)
+		return s.sendRichPayload(cfg, "/msg/send_weapp", base, message.Payload, nil)
 	case enums.IMMessageTypeFeed:
-		return s.sendRichPayload(cfg, "/msg/send_feed", base, message.Payload, nil)
+		return s.sendRichPayload(cfg, "/msg/send_feed_video", base, message.Payload, nil)
 	case enums.IMMessageTypeFeedLive:
 		return s.sendRichPayload(cfg, "/msg/send_feed_live", base, message.Payload, []string{"feed_type", "cover_url", "thumb_url", "avatar", "nickname", "desc", "url", "extras", "object_id", "object_nonce_id"})
 	case enums.IMMessageTypeQuote:
 		return s.sendRichPayload(cfg, "/msg/send_quote_msg", base, message.Payload, []string{"quote", "content", "appinfo", "content_type", "sender", "sender_name", "message"})
 	case enums.IMMessageTypeMergedForward:
-		return s.sendRichPayload(cfg, "/msg/send_merged_msg", base, message.Payload, []string{"message_list"})
+		return s.sendRichPayload(cfg, "/msg/send_forward_msg", base, message.Payload, []string{"message_list"})
 	case enums.IMMessageTypeShopProduct:
 		return s.sendRichPayload(cfg, "/msg/send_finder_product", base, message.Payload, []string{"content"})
 	default:
@@ -787,7 +848,7 @@ func (s *wxWorkProtocolService) protocolConversationID(mapping *models.WxWorkKFC
 
 func (s *wxWorkProtocolService) ValidateOutboundMediaReady(conversationID int64, messageType enums.IMMessageType, payload string) error {
 	switch messageType {
-	case enums.IMMessageTypeImage, enums.IMMessageTypeAttachment, enums.IMMessageTypeVideo:
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeAttachment, enums.IMMessageTypeVideo, enums.IMMessageTypeGIF:
 	default:
 		return nil
 	}
@@ -800,13 +861,138 @@ func (s *wxWorkProtocolService) ValidateOutboundMediaReady(conversationID int64,
 		return nil
 	}
 	media, err := wxProtocolMediaFromPayload(payload)
+	if err == nil && strings.TrimSpace(media.FileID) != "" {
+		return nil
+	}
+	if assetPayload, parseErr := parseIMMessageAssetPayload(payload); parseErr == nil && assetPayload.AssetID != "" {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(media.FileID) == "" || strings.TrimSpace(media.AesKey) == "" {
-		return errorsx.InvalidParam("图片/文件缺少微信协议 SAAS 上传凭证 file_id/aes_key，请先接入协议私有化 CDN 文件上传接口")
+	return errorsx.InvalidParam("富媒体缺少 assetId 或微信协议 file_id")
+}
+
+func (s *wxWorkProtocolService) prepareOutboundMessageMedia(cfg *dto.WxWorkProtocolChannelConfig, instance *models.WxWorkProtocolInstance, message *models.Message) error {
+	if message == nil {
+		return errorsx.InvalidParam("消息不存在")
 	}
+	switch message.MessageType {
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeAttachment, enums.IMMessageTypeVideo, enums.IMMessageTypeGIF:
+	default:
+		return nil
+	}
+	assetPayload, err := parseIMMessageAssetPayload(message.Payload)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(assetPayload.WxMedia.FileID) != "" {
+		return nil
+	}
+	asset := AssetService.GetByAssetID(assetPayload.AssetID)
+	if asset == nil || asset.Status != enums.AssetStatusSuccess {
+		return errorsx.InvalidParam("富媒体资产不存在或不可访问")
+	}
+	media, err := s.uploadAssetToWECDN(cfg, instance, message.MessageType, asset)
+	if err != nil {
+		return err
+	}
+	payload, err := buildIMMessageAssetPayloadWithMedia(asset, media)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	if err := repositories.MessageRepository.Updates(sqls.DB(), message.ID, map[string]any{
+		"payload":    payload,
+		"updated_at": now,
+	}); err != nil {
+		return err
+	}
+	message.Payload = payload
 	return nil
+}
+
+func (s *wxWorkProtocolService) uploadAssetToWECDN(cfg *dto.WxWorkProtocolChannelConfig, instance *models.WxWorkProtocolInstance, messageType enums.IMMessageType, asset *models.Asset) (request.WxProtocolMediaPayload, error) {
+	media := request.WxProtocolMediaPayload{}
+	if cfg == nil || strings.TrimSpace(cfg.WECDNBaseURL) == "" {
+		return media, errorsx.InvalidParam("企微协议私有化云存储 wecdnBaseUrl 未配置，无法真实发送图片/语音/文件/视频")
+	}
+	publicURL, err := s.publicAssetURL(cfg, asset)
+	if err != nil {
+		return media, err
+	}
+	fileType := wxProtocolC2CFileType(messageType, asset)
+	cfgBase, err := s.getCDNInfo(cfg, instance)
+	if err != nil {
+		return media, err
+	}
+	body := map[string]any{
+		"base_request": cfgBase,
+		"file_type":    fileType,
+		"url":          publicURL,
+	}
+	raw, err := s.postWECDNJSON(cfg, "/cloud/c2c_upload", body)
+	if err != nil {
+		return media, err
+	}
+	media, err = parseWECDNMediaResponse(raw)
+	if err != nil {
+		return media, err
+	}
+	if media.FileName == "" {
+		media.FileName = asset.Filename
+	}
+	if media.Filename == "" {
+		media.Filename = asset.Filename
+	}
+	if media.FileSize <= 0 {
+		media.FileSize = asset.FileSize
+	}
+	if media.Size <= 0 {
+		media.Size = asset.FileSize
+	}
+	if media.MimeType == "" {
+		media.MimeType = asset.MimeType
+	}
+	if media.URL == "" {
+		media.URL = publicURL
+	}
+	return media, nil
+}
+
+func (s *wxWorkProtocolService) publicAssetURL(cfg *dto.WxWorkProtocolChannelConfig, asset *models.Asset) (string, error) {
+	if asset == nil {
+		return "", errorsx.InvalidParam("富媒体资产不存在")
+	}
+	base := strings.TrimRight(strings.TrimSpace(cfg.PublicAssetBaseURL), "/")
+	if base == "" {
+		return "", errorsx.InvalidParam("企微协议 publicAssetBaseUrl 未配置，私有化 CDN 无法从公网拉取本地资产")
+	}
+	if strings.HasPrefix(asset.StorageKey, "http://") || strings.HasPrefix(asset.StorageKey, "https://") {
+		return asset.StorageKey, nil
+	}
+	return base + "/api/asset/file/" + url.PathEscape(asset.AssetID), nil
+}
+
+func (s *wxWorkProtocolService) getCDNInfo(cfg *dto.WxWorkProtocolChannelConfig, instance *models.WxWorkProtocolInstance) (map[string]any, error) {
+	raw, err := s.postJSON(cfg, "/cdn/get_cdn_info", map[string]any{"guid": strings.TrimSpace(instance.Guid)})
+	if err != nil {
+		return nil, err
+	}
+	resp := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return nil, errorsx.InvalidParam("获取CDN信息响应不是 JSON")
+	}
+	data, _ := resp["data"].(map[string]any)
+	if data == nil {
+		return nil, errorsx.InvalidParam("获取CDN信息响应缺少 data")
+	}
+	return map[string]any{
+		"cdn_dns":        strings.TrimSpace(fmt.Sprint(data["cdn_dns"])),
+		"client_version": strings.TrimSpace(fmt.Sprint(data["client_version"])),
+		"corp_id":        strings.TrimSpace(fmt.Sprint(data["corp_id"])),
+		"vid":            strings.TrimSpace(fmt.Sprint(data["vid"])),
+	}, nil
 }
 
 func (s *wxWorkProtocolService) outboundMediaPayload(message *models.Message) (request.WxProtocolMediaPayload, error) {
@@ -1120,6 +1306,35 @@ func (s *wxWorkProtocolService) postJSON(cfg *dto.WxWorkProtocolChannelConfig, p
 	return string(respBody), nil
 }
 
+func (s *wxWorkProtocolService) postWECDNJSON(cfg *dto.WxWorkProtocolChannelConfig, path string, body any) (string, error) {
+	if cfg == nil || strings.TrimSpace(cfg.WECDNBaseURL) == "" {
+		return "", errorsx.InvalidParam("企微协议私有化云存储 wecdnBaseUrl 未配置")
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(cfg.WECDNBaseURL), "/") + path
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return string(respBody), fmt.Errorf("企微私有化云存储接口返回HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	if err := checkGenericBusinessResponse(respBody); err != nil {
+		return string(respBody), fmt.Errorf("%w; raw=%s", err, strings.TrimSpace(string(respBody)))
+	}
+	return string(respBody), nil
+}
+
 func (s *wxWorkProtocolService) callInstanceAPI(instanceID int64, path string, extra map[string]any, after func(instance *models.WxWorkProtocolInstance, response string) error) (string, error) {
 	instance := WxWorkProtocolInstanceService.Get(instanceID)
 	if instance == nil || instance.Status == enums.StatusDeleted {
@@ -1182,6 +1397,10 @@ func (s *wxWorkProtocolService) profileUpdatesFromResponse(response string) map[
 }
 
 func (s *wxWorkProtocolService) checkProtocolResponse(respBody []byte) error {
+	return checkGenericBusinessResponse(respBody)
+}
+
+func checkGenericBusinessResponse(respBody []byte) error {
 	body := strings.TrimSpace(string(respBody))
 	if body == "" || !strings.HasPrefix(body, "{") {
 		return nil
@@ -1225,6 +1444,52 @@ func (s *wxWorkProtocolService) checkProtocolResponse(respBody []byte) error {
 		return fmt.Errorf("企微协议接口返回失败: %s", msg)
 	}
 	return nil
+}
+
+func parseWECDNMediaResponse(raw string) (request.WxProtocolMediaPayload, error) {
+	media := request.WxProtocolMediaPayload{}
+	root := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &root); err != nil {
+		return media, errorsx.InvalidParam("企微私有化云存储响应不是 JSON")
+	}
+	fillMediaPayloadFromMap(&media, root)
+	if data, ok := root["data"].(map[string]any); ok {
+		fillMediaPayloadFromMap(&media, data)
+		for _, key := range []string{"file", "media", "result", "upload", "file_info", "fileInfo"} {
+			if nested, ok := data[key].(map[string]any); ok {
+				fillMediaPayloadFromMap(&media, nested)
+			}
+		}
+	}
+	if strings.TrimSpace(media.FileID) == "" {
+		return media, errorsx.InvalidParam("企微私有化云存储上传响应缺少 file_id")
+	}
+	return media, nil
+}
+
+func wxProtocolC2CFileType(messageType enums.IMMessageType, asset *models.Asset) int {
+	switch messageType {
+	case enums.IMMessageTypeImage, enums.IMMessageTypeGIF:
+		return 2
+	case enums.IMMessageTypeVoice:
+		return 3
+	case enums.IMMessageTypeVideo:
+		return 4
+	default:
+		if asset != nil {
+			mimeType := strings.ToLower(strings.TrimSpace(asset.MimeType))
+			if strings.HasPrefix(mimeType, "image/") {
+				return 2
+			}
+			if strings.HasPrefix(mimeType, "audio/") {
+				return 3
+			}
+			if strings.HasPrefix(mimeType, "video/") {
+				return 4
+			}
+		}
+		return 5
+	}
 }
 
 func (s *wxWorkProtocolService) createEchoMessageRef(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, rawPayload string, clientMsgID string) error {

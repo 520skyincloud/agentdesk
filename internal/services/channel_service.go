@@ -201,6 +201,8 @@ func (s *channelService) ParseWxWorkProtocolChannelConfig(raw string) (*dto.WxWo
 		cfg.BaseURL = "https://chat-api.juhebot.com/open/GuidRequest"
 	}
 	cfg.CallbackToken = strings.TrimSpace(cfg.CallbackToken)
+	cfg.WECDNBaseURL = strings.TrimRight(strings.TrimSpace(cfg.WECDNBaseURL), "/")
+	cfg.PublicAssetBaseURL = strings.TrimRight(strings.TrimSpace(cfg.PublicAssetBaseURL), "/")
 	return cfg, nil
 }
 
