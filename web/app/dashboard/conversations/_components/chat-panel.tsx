@@ -730,6 +730,12 @@ const MessageItem = memo(
       : isAi
         ? "AI"
         : message.senderName || t("conversation.agentSender");
+    const senderBadge = isAi ? "AI回复" : isAgentSide ? "人工" : "客户";
+    const senderBadgeClassName = isAi
+      ? "border-primary/20 bg-primary/10 text-primary"
+      : isAgentSide
+        ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/15 dark:text-emerald-300"
+        : "border-border bg-muted text-muted-foreground";
     const agentAvatarSrc =
       isAgentSide && !isAi && message.senderAvatar?.trim()
         ? message.senderAvatar.trim()
@@ -770,7 +776,12 @@ const MessageItem = memo(
         {isAgentSide ? (
           <>
             <div className="flex max-w-[70%] flex-col items-end">
-              <div className="mb-1 text-xs text-muted-foreground">
+              <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+                <span
+                  className={`rounded border px-1.5 py-0.5 text-[10px] leading-none ${senderBadgeClassName}`}
+                >
+                  {senderBadge}
+                </span>
                 {senderName}
               </div>
               <div
@@ -829,8 +840,13 @@ const MessageItem = memo(
               </AvatarFallback>
             </Avatar>
             <div className="max-w-[70%]">
-              <div className="mb-1 text-xs text-muted-foreground">
+              <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
                 {senderName}
+                <span
+                  className={`rounded border px-1.5 py-0.5 text-[10px] leading-none ${senderBadgeClassName}`}
+                >
+                  {senderBadge}
+                </span>
               </div>
               <div
                 className={`w-fit rounded-2xl px-3 py-2 ${

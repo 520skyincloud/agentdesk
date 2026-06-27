@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"encoding/json"
 	"strings"
 
 	"agent-desk/internal/models"
@@ -108,7 +107,7 @@ func buildRuntimeMessageText(item *models.Message) string {
 		return ""
 	}
 	base := utils.BuildRuntimeMessageText(item.MessageType, item.Content)
-	mediaText, mediaSummary, mediaStatus := mediaUnderstandingFromPayload(item.Payload)
+	mediaText, mediaSummary, mediaStatus := utils.RuntimeMediaUnderstandingFromPayload(item.Payload)
 	if mediaText != "" {
 		return strings.TrimSpace(base + "\n媒体理解：" + mediaText)
 	}
@@ -119,21 +118,6 @@ func buildRuntimeMessageText(item *models.Message) string {
 		return strings.TrimSpace(base + "\n媒体理解状态：" + mediaStatus)
 	}
 	return base
-}
-
-func mediaUnderstandingFromPayload(raw string) (mediaText string, mediaSummary string, status string) {
-	if strings.TrimSpace(raw) == "" {
-		return "", "", ""
-	}
-	var payload struct {
-		MediaText    string `json:"mediaText"`
-		MediaSummary string `json:"mediaSummary"`
-		MediaStatus  string `json:"mediaUnderstandingStatus"`
-	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", "", ""
-	}
-	return strings.TrimSpace(payload.MediaText), strings.TrimSpace(payload.MediaSummary), strings.TrimSpace(payload.MediaStatus)
 }
 
 func isMediaMessageType(messageType enums.IMMessageType) bool {

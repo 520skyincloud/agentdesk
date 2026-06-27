@@ -16,13 +16,16 @@ import (
 )
 
 type imMessageAssetPayload struct {
-	AssetID    string              `json:"assetId"`
-	Provider   enums.AssetProvider `json:"provider,omitempty"`
-	StorageKey string              `json:"storageKey,omitempty"`
-	Filename   string              `json:"filename,omitempty"`
-	FileSize   int64               `json:"fileSize,omitempty"`
-	MimeType   string              `json:"mimeType,omitempty"`
-	URL        string              `json:"url,omitempty"`
+	AssetID      string              `json:"assetId"`
+	Provider     enums.AssetProvider `json:"provider,omitempty"`
+	StorageKey   string              `json:"storageKey,omitempty"`
+	Filename     string              `json:"filename,omitempty"`
+	FileSize     int64               `json:"fileSize,omitempty"`
+	MimeType     string              `json:"mimeType,omitempty"`
+	URL          string              `json:"url,omitempty"`
+	MediaText    string              `json:"mediaText,omitempty"`
+	MediaSummary string              `json:"mediaSummary,omitempty"`
+	MediaStatus  string              `json:"mediaUnderstandingStatus,omitempty"`
 }
 
 func SanitizeMessageHTML(content string) string {
@@ -132,6 +135,45 @@ func BuildRuntimeMessageText(messageType enums.IMMessageType, content string) st
 		return "[附件]"
 	default:
 		return content
+	}
+}
+
+func BuildRuntimeMessageTextWithPayload(messageType enums.IMMessageType, content string, payload string) string {
+	base := BuildRuntimeMessageText(messageType, content)
+	mediaText, mediaSummary, mediaStatus := RuntimeMediaUnderstandingFromPayload(payload)
+	if mediaText != "" {
+		return strings.TrimSpace(base + "\n媒体理解：" + mediaText)
+	}
+	if mediaSummary != "" {
+		return strings.TrimSpace(base + "\n媒体摘要：" + mediaSummary)
+	}
+	if isRuntimeMediaMessageType(messageType) && mediaStatus != "" && mediaStatus != "understood" {
+		return strings.TrimSpace(base + "\n媒体理解状态：" + mediaStatus)
+	}
+	return base
+}
+
+func RuntimeMediaUnderstandingFromPayload(raw string) (mediaText string, mediaSummary string, status string) {
+	if strings.TrimSpace(raw) == "" {
+		return "", "", ""
+	}
+	var payload struct {
+		MediaText    string `json:"mediaText"`
+		MediaSummary string `json:"mediaSummary"`
+		MediaStatus  string `json:"mediaUnderstandingStatus"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", "", ""
+	}
+	return strings.TrimSpace(payload.MediaText), strings.TrimSpace(payload.MediaSummary), strings.TrimSpace(payload.MediaStatus)
+}
+
+func isRuntimeMediaMessageType(messageType enums.IMMessageType) bool {
+	switch messageType {
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment, enums.IMMessageTypeGIF:
+		return true
+	default:
+		return false
 	}
 }
 

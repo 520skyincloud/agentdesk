@@ -23,7 +23,7 @@ func NewService() *Service {
 }
 
 func (s *Service) Run(ctx context.Context, req Request) (*Summary, error) {
-	req.UserMessage.Content = utils.BuildRuntimeMessageText(req.UserMessage.MessageType, req.UserMessage.Content)
+	req.UserMessage.Content = utils.BuildRuntimeMessageTextWithPayload(req.UserMessage.MessageType, req.UserMessage.Content, req.UserMessage.Payload)
 	toolSet, err := s.prepare.prepareToolsForRun(req)
 	if err != nil {
 		return nil, err

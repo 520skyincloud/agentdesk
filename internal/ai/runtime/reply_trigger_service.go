@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"time"
@@ -11,7 +12,12 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/tracex"
 	svc "agent-desk/internal/services"
+	"github.com/mlogclub/simple/sqls"
 )
+
+const aiReplyDebounceWindow = 1500 * time.Millisecond
+const aiReplyMediaSettleWindow = 8 * time.Second
+const aiReplyMediaContextWindow = 8 * time.Second
 
 func (s *aiReplyService) resolveReplyTimeout(aiAgent models.AIAgent) time.Duration {
 	if aiAgent.ReplyTimeoutSeconds <= 0 {
@@ -58,6 +64,9 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if !s.waitForConversationToSettle(ctx, conversation.ID, message.ID) {
+		return nil
+	}
 	if s.eligibility != nil && !s.eligibility.CanReply(conversation, message, aiAgent) {
 		return nil
 	}
@@ -78,6 +87,87 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 		return s.resumePendingInterrupt(ctx, replyCtx)
 	}
 	return s.executeReply(ctx, replyCtx)
+}
+
+func (s *aiReplyService) waitForConversationToSettle(ctx context.Context, conversationID int64, messageID int64) bool {
+	if conversationID <= 0 || messageID <= 0 {
+		return true
+	}
+	if !sleepWithContext(ctx, aiReplyDebounceWindow) {
+		return false
+	}
+	if !s.isStillLatestCustomerMessage(conversationID, messageID) {
+		slog.Info("skip ai reply because newer customer message arrived during debounce", "conversation_id", conversationID, "message_id", messageID)
+		return false
+	}
+	deadline := time.Now().Add(aiReplyMediaSettleWindow)
+	for time.Now().Before(deadline) {
+		if !hasRecentPendingMediaUnderstanding(conversationID, messageID, aiReplyMediaContextWindow) {
+			return true
+		}
+		if !sleepWithContext(ctx, 500*time.Millisecond) {
+			return false
+		}
+		if !s.isStillLatestCustomerMessage(conversationID, messageID) {
+			slog.Info("skip ai reply because newer customer message arrived while waiting media", "conversation_id", conversationID, "message_id", messageID)
+			return false
+		}
+	}
+	return true
+}
+
+func sleepWithContext(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func hasRecentPendingMediaUnderstanding(conversationID int64, currentMessageID int64, window time.Duration) bool {
+	if conversationID <= 0 || currentMessageID <= 0 {
+		return false
+	}
+	current := svc.MessageService.Get(currentMessageID)
+	if current == nil || current.SentAt == nil {
+		return false
+	}
+	items := svc.MessageService.Find(sqls.NewCnd().
+		Eq("conversation_id", conversationID).
+		Eq("sender_type", enums.IMSenderTypeCustomer).
+		In("message_type", []string{string(enums.IMMessageTypeImage), string(enums.IMMessageTypeVoice), string(enums.IMMessageTypeAttachment)}).
+		Lt("id", currentMessageID).
+		Gte("sent_at", current.SentAt.Add(-window)).
+		Desc("id").
+		Limit(10))
+	for i := range items {
+		if mediaUnderstandingPending(items[i].Payload) {
+			return true
+		}
+	}
+	return false
+}
+
+func mediaUnderstandingPending(payload string) bool {
+	payload = strings.TrimSpace(payload)
+	if payload == "" || !strings.HasPrefix(payload, "{") {
+		return false
+	}
+	var parsed struct {
+		MediaStatus string `json:"mediaUnderstandingStatus"`
+	}
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return false
+	}
+	switch strings.TrimSpace(parsed.MediaStatus) {
+	case "understood", "failed", "empty":
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *aiReplyService) resumePendingInterrupt(ctx context.Context, replyCtx aiReplyContext) error {
