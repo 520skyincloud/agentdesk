@@ -31,6 +31,7 @@ import { summarizeIMMessage } from "@/lib/im-message"
 import { generateUUID } from "@/lib/utils"
 
 export const agentConversationFilterOptions = [
+  { value: "all_open", labelKey: "conversation.filterAllOpen" },
   { value: "active", labelKey: "conversation.filterActive" },
   { value: "pending", labelKey: "conversation.filterPending" },
   { value: "ai_serving", labelKey: "conversation.filterAiServing" },
@@ -113,7 +114,7 @@ let messagesRequestSeq = 0
 
 export const useAgentConversationsStore = create<AgentConversationsStore>((set, get) => ({
   searchKeyword: "",
-  conversationFilter: "active",
+  conversationFilter: "all_open",
   selectedWxWorkInstanceId: null,
   conversations: [],
   conversationsLoading: false,

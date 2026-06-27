@@ -2,7 +2,6 @@
 
 import {
   ArrowRightLeftIcon,
-  ChevronsUpDown,
   CircleUserRoundIcon,
   CircleXIcon,
   FilePlus2Icon,
@@ -35,11 +34,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { WxWorkProtocolInstanceManager } from "@/components/wxwork-protocol/wxwork-protocol-instance-manager";
 import { useAgentConversationRealtime } from "@/hooks/use-agent-conversation-realtime";
@@ -53,9 +49,7 @@ import {
   type WxWorkProtocolInstance,
 } from "@/lib/api/admin";
 import {
-  agentConversationFilterOptions,
   agentConversationSelectors,
-  type AgentConversationFilterKey,
   useAgentConversationsStore,
 } from "@/lib/stores/agent-conversations";
 import { CreateTicketFromConversationDialog } from "../tickets/_components/create-ticket-from-conversation-dialog";
@@ -81,18 +75,12 @@ export default function ConversationsPage() {
   const conversation = useAgentConversationsStore(
     agentConversationSelectors.selectedConversation,
   );
-  const conversationFilter = useAgentConversationsStore(
-    (state) => state.conversationFilter,
-  );
   const conversations = useAgentConversationsStore((state) => state.conversations);
   const selectedWxWorkInstanceId = useAgentConversationsStore(
     (state) => state.selectedWxWorkInstanceId,
   );
   const setSelectedWxWorkInstanceId = useAgentConversationsStore(
     (state) => state.setSelectedWxWorkInstanceId,
-  );
-  const setConversationFilter = useAgentConversationsStore(
-    (state) => state.setConversationFilter,
   );
   const loadConversations = useAgentConversationsStore(
     (state) => state.loadConversations,
@@ -118,39 +106,6 @@ export default function ConversationsPage() {
   const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([]);
   const [accountKeyword, setAccountKeyword] = useState("");
   const [handoffToastDismissedId, setHandoffToastDismissedId] = useState<number | null>(null);
-  const filterContainerRef = useRef<HTMLDivElement | null>(null);
-  const filterMeasureRef = useRef<HTMLDivElement | null>(null);
-  const [showFilterDropdown, setShowFilterDropdown] = useState(false);
-
-  useEffect(() => {
-    const container = filterContainerRef.current;
-    const measure = filterMeasureRef.current;
-    if (!container || !measure) {
-      return;
-    }
-
-    const updateFilterMode = () => {
-      setShowFilterDropdown(measure.scrollWidth > container.clientWidth);
-    };
-
-    updateFilterMode();
-
-    const observer = new ResizeObserver(() => {
-      updateFilterMode();
-    });
-
-    observer.observe(container);
-    observer.observe(measure);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, []);
-
-  const currentFilterOption =
-    agentConversationFilterOptions.find((opt) => opt.value === conversationFilter) ??
-    agentConversationFilterOptions[0];
-  const getFilterLabel = (labelKey: string) => t(labelKey);
   const selectedInstance = instances.find((item) => item.id === selectedWxWorkInstanceId) ?? null;
   const conversationInstance =
     instances.find((item) => item.id === conversation?.wxWorkInstanceId) ?? selectedInstance;
@@ -229,7 +184,7 @@ export default function ConversationsPage() {
     void loadConversations().catch((error) => {
       toast.error(error instanceof Error ? error.message : t("conversation.loadListFailed"));
     });
-  }, [loadConversations, conversationFilter, selectedWxWorkInstanceId, t]);
+  }, [loadConversations, selectedWxWorkInstanceId, t]);
 
   const loadWxWorkInstances = async () => {
     await fetchWxWorkProtocolInstances({ status: 0, limit: 200 })
@@ -370,86 +325,18 @@ export default function ConversationsPage() {
         </div>
       </div>
       <div className="flex min-w-0 flex-1 flex-col bg-inherit">
-        <div className="flex h-12.5 shrink-0 items-start justify-between gap-2 border-b border-border/80 bg-card px-2 py-2">
-          <div ref={filterContainerRef} className="relative min-w-0 flex-1">
-            <div className="mb-1 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
-              <span className="truncate">
-                {selectedInstance
-                  ? selectedInstance.storeName || selectedInstance.employeeName || selectedInstance.guid
-                  : "全部员工号"}
-              </span>
+        <div className="flex h-12.5 shrink-0 items-center justify-between gap-2 border-b border-border/80 bg-card px-3 py-2">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium">
+              {selectedInstance
+                ? selectedInstance.storeName || selectedInstance.employeeName || selectedInstance.guid
+                : "全部员工号"}
+            </div>
+            <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+              <span>全部未关闭会话</span>
               {pendingHandoffCount > 0 ? (
                 <span className="text-destructive">{pendingHandoffCount} 个待处理</span>
               ) : null}
-            </div>
-            {showFilterDropdown ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      variant="outline"
-                      className="h-8.5 w-full min-w-0 justify-between gap-2 px-3 text-xs sm:text-sm"
-                    />
-                  }
-                >
-                  <span className="truncate">
-                    {currentFilterOption
-                      ? getFilterLabel(currentFilterOption.labelKey)
-                      : t("conversation.filterPlaceholder")}
-                  </span>
-                  <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-44 min-w-44">
-                  <DropdownMenuRadioGroup
-                    value={conversationFilter}
-                    onValueChange={(value) =>
-                      setConversationFilter(value as AgentConversationFilterKey)
-                    }
-                  >
-                    {agentConversationFilterOptions.map((opt) => (
-                      <DropdownMenuRadioItem key={opt.value} value={opt.value}>
-                        {getFilterLabel(opt.labelKey)}
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : (
-              <Tabs
-                value={conversationFilter}
-                onValueChange={(value) =>
-                  setConversationFilter(value as AgentConversationFilterKey)
-                }
-                className="min-w-0 flex-1 gap-0"
-              >
-                <TabsList className="w-full min-w-0 justify-start">
-                  {agentConversationFilterOptions.map((opt) => (
-                    <TabsTrigger
-                      key={opt.value}
-                      value={opt.value}
-                      className="shrink-0 px-2.5 text-xs sm:text-sm"
-                    >
-                      {getFilterLabel(opt.labelKey)}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-            )}
-            <div
-              ref={filterMeasureRef}
-              className="pointer-events-none absolute whitespace-nowrap opacity-0"
-              aria-hidden="true"
-            >
-              <div className="inline-flex">
-                {agentConversationFilterOptions.map((opt) => (
-                  <span
-                    key={opt.value}
-                    className="shrink-0 px-2.5 text-xs sm:text-sm"
-                  >
-                    {getFilterLabel(opt.labelKey)}
-                  </span>
-                ))}
-              </div>
             </div>
           </div>
           <Button

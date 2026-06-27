@@ -38,7 +38,6 @@ import { renderIMMessageHTML } from "@/lib/im-message";
 import {
   agentConversationSelectors,
   useAgentConversationsStore,
-  type AgentConversationFilterKey,
 } from "@/lib/stores/agent-conversations";
 import { formatDateTime } from "@/lib/utils";
 import { AgentMessageEditor } from "./agent-message-editor";
@@ -85,10 +84,6 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   const messagesLoadingMore = useAgentConversationsStore(
     (state) => state.messagesLoadingMore,
   );
-  const conversationFilter = useAgentConversationsStore((state) => state.conversationFilter);
-  const setConversationFilter = useAgentConversationsStore(
-    (state) => state.setConversationFilter,
-  );
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
   const scrollBottomRafRef = useRef<number | null>(null);
@@ -122,13 +117,6 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   const showBottomEditor = !isClosedConversation && !isPendingConversation;
   const currentUserId = readSession()?.user?.id ?? 0;
   const protocolRoomID = getProtocolRoomID(conversation?.wxWorkExternalUserId);
-
-  const switchToMyActiveIfNeeded = () => {
-    if (conversationFilter !== "pending") {
-      return;
-    }
-    setConversationFilter("active" satisfies AgentConversationFilterKey);
-  };
 
   const getViewport = useCallback(
     () => messagesContainerRef.current,
@@ -347,7 +335,6 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
           : t("conversation.claimReason"),
       );
 
-      switchToMyActiveIfNeeded();
       setClaimDialogOpen(false);
       toast.success(t("conversation.claimSuccess"));
       await reloadConversationData(conversation.id);

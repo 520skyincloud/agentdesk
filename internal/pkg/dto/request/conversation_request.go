@@ -3,6 +3,7 @@ package request
 type AgentConversationFilter string
 
 const (
+	AgentConversationFilterAllOpen   AgentConversationFilter = "all_open"
 	AgentConversationFilterAIServing AgentConversationFilter = "ai_serving"
 	AgentConversationFilterMine      AgentConversationFilter = "mine"
 	AgentConversationFilterActive    AgentConversationFilter = "active"

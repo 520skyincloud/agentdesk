@@ -8,7 +8,10 @@ export type MessageAssetPayload = {
   fileSize?: number
   mimeType?: string
   url?: string
+  wxMedia?: Record<string, unknown>
 }
+
+type RichPayload = Record<string, unknown>
 
 const messageMarkdown = new MarkdownIt({
   html: false,
@@ -35,6 +38,18 @@ export function parseMessageAssetPayload(payload?: string): MessageAssetPayload 
   }
 }
 
+function parseRichPayload(payload?: string): RichPayload | null {
+  if (!payload?.trim()) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(payload) as RichPayload
+    return parsed && typeof parsed === "object" ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 export function renderIMMessageHTML(message: {
   messageType: string
   content: string
@@ -45,34 +60,78 @@ export function renderIMMessageHTML(message: {
   }
 
   const asset = parseMessageAssetPayload(message.payload)
+  const richPayload = parseRichPayload(message.payload)
   if (message.messageType === "image") {
-    if (asset?.url) {
-      return `<p><img src="${escapeHTMLAttr(asset.url)}" alt="${escapeHTMLAttr(
-        asset.filename || "image"
+    const url = resolveAssetURL(asset)
+    if (url) {
+      return `<p><img src="${escapeHTMLAttr(url)}" alt="${escapeHTMLAttr(
+        asset?.filename || "image"
       )}"></p>`
     }
     return `<p>${escapeHTML(t("supportChat.imageSummary"))}</p>`
   }
 
   if (message.messageType === "attachment") {
-    if (asset?.url) {
+    if (asset && resolveAssetURL(asset)) {
       return renderAttachmentHTML(asset, message.content, t("supportChat.attachmentSummary"))
     }
     return `<p>${escapeHTML(message.content || t("supportChat.attachmentSummary"))}</p>`
   }
 
   if (message.messageType === "voice") {
-    if (asset?.url) {
-      return `<div class="im-media"><audio controls preload="metadata" src="${escapeHTMLAttr(asset.url)}"></audio><div class="im-attachment-meta">${escapeHTML(asset.filename || "语音消息")}</div></div>`
+    const url = resolveAssetURL(asset)
+    if (url) {
+      return `<div class="im-media"><audio controls preload="metadata" src="${escapeHTMLAttr(url)}"></audio><div class="im-attachment-meta">${escapeHTML(asset?.filename || "语音消息")}</div></div>`
     }
     return `<p>收到一条语音消息</p>`
   }
 
   if (message.messageType === "video") {
-    if (asset?.url) {
-      return `<div class="im-media"><video controls preload="metadata" src="${escapeHTMLAttr(asset.url)}"></video><div class="im-attachment-meta">${escapeHTML(asset.filename || "视频消息")}</div></div>`
+    const url = resolveAssetURL(asset)
+    if (url) {
+      return `<div class="im-media"><video controls preload="metadata" src="${escapeHTMLAttr(url)}"></video><div class="im-attachment-meta">${escapeHTML(asset?.filename || "视频消息")}</div></div>`
     }
     return `<p>收到一条视频消息</p>`
+  }
+
+  if (message.messageType === "gif") {
+    const url = resolveAssetURL(asset)
+    if (url) {
+      return `<p><img src="${escapeHTMLAttr(url)}" alt="${escapeHTMLAttr(asset?.filename || "GIF")}"></p>`
+    }
+    return renderInfoCardHTML("GIF 动图", message.content || "收到一条动图消息")
+  }
+
+  if (message.messageType === "location") {
+    return renderLocationHTML(richPayload, message.content)
+  }
+
+  if (message.messageType === "link") {
+    return renderLinkHTML(richPayload, message.content)
+  }
+
+  if (message.messageType === "feed" || message.messageType === "feed_live") {
+    return renderFeedHTML(richPayload, message.content)
+  }
+
+  if (message.messageType === "mini_program") {
+    return renderMiniProgramHTML(richPayload, message.content)
+  }
+
+  if (message.messageType === "contact_card") {
+    return renderContactCardHTML(richPayload, message.content)
+  }
+
+  if (message.messageType === "quote") {
+    return renderQuoteHTML(richPayload, message.content)
+  }
+
+  if (message.messageType === "merged_forward") {
+    return renderMergedForwardHTML(richPayload, message.content)
+  }
+
+  if (message.messageType === "shop_product") {
+    return renderShopProductHTML(richPayload, message.content)
   }
 
   return renderTextMessageHTML(message.content || "")
@@ -98,6 +157,32 @@ export function summarizeIMMessage(message: {
   if (message.messageType === "video") {
     return "[视频]"
   }
+  if (message.messageType === "gif") {
+    return "[动图]"
+  }
+  if (message.messageType === "location") {
+    const payload = parseRichPayload(message.payload)
+    return `[位置] ${stringField(payload, "title") || stringField(payload, "address") || message.content || "位置消息"}`
+  }
+  if (message.messageType === "link") {
+    const payload = parseRichPayload(message.payload)
+    return `[链接] ${stringField(payload, "title") || message.content || "链接消息"}`
+  }
+  if (message.messageType === "feed" || message.messageType === "feed_live") {
+    const payload = parseRichPayload(message.payload)
+    return `[视频号] ${stringField(payload, "nickname") || stringField(payload, "desc") || message.content || "视频号消息"}`
+  }
+  if (message.messageType === "mini_program") {
+    const payload = parseRichPayload(message.payload)
+    return `[小程序] ${stringField(payload, "title") || message.content || "小程序消息"}`
+  }
+  if (message.messageType === "contact_card") {
+    const payload = parseRichPayload(message.payload)
+    return `[名片] ${stringField(payload, "nickname") || stringField(payload, "name") || message.content || "名片消息"}`
+  }
+  if (message.messageType === "merged_forward") {
+    return `[聊天记录] ${message.content || "合并转发"}`
+  }
   if (message.messageType === "html") {
     const text = extractTextFromHTML(message.content)
     if (text.trim()) {
@@ -109,6 +194,126 @@ export function summarizeIMMessage(message: {
     return t("supportChat.messageSummary")
   }
   return message.content?.substring(0, 100) || t("supportChat.messageSummary")
+}
+
+function resolveAssetURL(asset: MessageAssetPayload | null) {
+  if (!asset) {
+    return ""
+  }
+  if (asset.url?.trim()) {
+    return asset.url.trim()
+  }
+  const wxURL = stringField(asset.wxMedia, "url")
+  if (wxURL) {
+    return wxURL
+  }
+  if (asset.assetId?.trim()) {
+    return `/api/asset/file/${encodeURIComponent(asset.assetId.trim())}`
+  }
+  return ""
+}
+
+function stringField(payload: RichPayload | null | undefined, key: string) {
+  const value = payload?.[key]
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function numberField(payload: RichPayload | null | undefined, key: string) {
+  const value = payload?.[key]
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function renderInfoCardHTML(title: string, description?: string, imageURL?: string, href?: string) {
+  const safeTitle = escapeHTML(title || "消息")
+  const safeDescription = description?.trim()
+    ? `<div class="im-card-desc">${escapeHTML(description.trim())}</div>`
+    : ""
+  const image = imageURL?.trim()
+    ? `<img class="im-card-thumb" src="${escapeHTMLAttr(imageURL.trim())}" alt="${safeTitle}">`
+    : ""
+  const body = `<div class="im-card">${image}<div class="im-card-main"><div class="im-card-title">${safeTitle}</div>${safeDescription}</div></div>`
+  if (!href?.trim()) {
+    return body
+  }
+  return `<a class="im-card-link" href="${escapeHTMLAttr(href.trim())}" target="_blank" rel="noreferrer">${body}</a>`
+}
+
+function renderLocationHTML(payload: RichPayload | null, content: string) {
+  const title = stringField(payload, "title") || content || "位置"
+  const address = stringField(payload, "address")
+  const latitude = numberField(payload, "latitude")
+  const longitude = numberField(payload, "longitude")
+  const coord = latitude !== null && longitude !== null ? `${latitude}, ${longitude}` : ""
+  const mapHref = latitude !== null && longitude !== null
+    ? `https://uri.amap.com/marker?position=${longitude},${latitude}&name=${encodeURIComponent(title)}`
+    : ""
+  const meta = [address, coord].filter(Boolean).join("\n")
+  return renderInfoCardHTML(`位置：${title}`, meta, "", mapHref)
+}
+
+function renderLinkHTML(payload: RichPayload | null, content: string) {
+  return renderInfoCardHTML(
+    stringField(payload, "title") || content || "链接消息",
+    stringField(payload, "description") || stringField(payload, "desc"),
+    stringField(payload, "image_url") || stringField(payload, "thumb_url") || stringField(payload, "cover_url"),
+    stringField(payload, "url")
+  )
+}
+
+function renderFeedHTML(payload: RichPayload | null, content: string) {
+  return renderInfoCardHTML(
+    stringField(payload, "nickname") || content || "视频号消息",
+    stringField(payload, "desc") || stringField(payload, "description"),
+    stringField(payload, "cover_url") || stringField(payload, "thumb_url") || stringField(payload, "avatar"),
+    stringField(payload, "url")
+  )
+}
+
+function renderMiniProgramHTML(payload: RichPayload | null, content: string) {
+  return renderInfoCardHTML(
+    `小程序：${stringField(payload, "title") || content || "小程序"}`,
+    stringField(payload, "description") || stringField(payload, "app_name") || stringField(payload, "username"),
+    stringField(payload, "thumb_url") || stringField(payload, "image_url"),
+    stringField(payload, "url") || stringField(payload, "page_path")
+  )
+}
+
+function renderContactCardHTML(payload: RichPayload | null, content: string) {
+  return renderInfoCardHTML(
+    `名片：${stringField(payload, "nickname") || stringField(payload, "name") || content || "联系人"}`,
+    stringField(payload, "corp_name") || stringField(payload, "user_id") || stringField(payload, "username"),
+    stringField(payload, "avatar") || stringField(payload, "avatar_url")
+  )
+}
+
+function renderQuoteHTML(payload: RichPayload | null, content: string) {
+  const quoted = stringField(payload, "quote_content") || stringField(payload, "refer_content") || stringField(payload, "content")
+  return `<div class="im-quote"><div>${escapeHTML(content || "引用消息")}</div>${quoted ? `<blockquote>${escapeHTML(quoted)}</blockquote>` : ""}</div>`
+}
+
+function renderMergedForwardHTML(payload: RichPayload | null, content: string) {
+  const list = Array.isArray(payload?.message_list) ? payload?.message_list.slice(0, 4) : []
+  const items = list
+    .map((item) => {
+      if (!item || typeof item !== "object") return ""
+      const row = item as RichPayload
+      return `<li>${escapeHTML(stringField(row, "content") || stringField(row, "title") || stringField(row, "address") || "消息")}</li>`
+    })
+    .filter(Boolean)
+    .join("")
+  const more = Array.isArray(payload?.message_list) && payload.message_list.length > 4
+    ? `<div class="im-card-desc">还有 ${payload.message_list.length - 4} 条</div>`
+    : ""
+  return `<div class="im-card"><div class="im-card-main"><div class="im-card-title">${escapeHTML(content || "聊天记录")}</div>${items ? `<ul class="im-forward-list">${items}</ul>` : ""}${more}</div></div>`
+}
+
+function renderShopProductHTML(payload: RichPayload | null, content: string) {
+  return renderInfoCardHTML(
+    stringField(payload, "title") || stringField(payload, "product_name") || content || "微信小店商品",
+    stringField(payload, "description") || stringField(payload, "price"),
+    stringField(payload, "thumb_url") || stringField(payload, "image_url"),
+    stringField(payload, "url")
+  )
 }
 
 export function formatFileSize(size: number) {

@@ -67,6 +67,8 @@ func (s *conversationService) ListConversations(userID int64, filter request.Age
 	}
 
 	switch filter {
+	case request.AgentConversationFilterAllOpen:
+		cnd.NotEq("status", enums.IMConversationStatusClosed).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterAIServing:
 		cnd.Eq("current_assignee_id", 0).Eq("status", enums.IMConversationStatusAIServing).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterMine:
