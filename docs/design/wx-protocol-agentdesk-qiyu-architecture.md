@@ -1,6 +1,6 @@
 # 企微员工号 + 总部网页客服 + 门店知识库技术架构设计
 
-版本：2026-06-26  
+版本：2026-06-27  
 适用系统：AgentDesk 二开版本  
 当前入口：企业微信员工号/企微协议 SAAS 接入，后台统一显示为“企微员工号”
 
@@ -302,7 +302,16 @@ flowchart LR
 
 ### 13.2 账号新增和真实协议动作
 
-会话页左侧的“新增账号/账号设置”合并原企微员工号页面能力。账号动作全部通过后端 service 调用 `wework.apifox.cn` 文档里的接口：
+会话页左侧的“新增账号/账号设置”合并原企微员工号页面能力。新增账号必须是扫码优先流程，不能要求运营先手填 GUID：
+
+1. 客服在会话页左侧点击“新增账号”。
+2. AgentDesk 后端创建一条待登录的 `WxWorkProtocolInstance`，生成本地唯一 `guid`，默认 `aiReplyEnabled=true`、`healthStatus=login_qrcode`，代理字段为空。
+3. 后端立即调用协议 `/login/get_login_qrcode`，把真实二维码返回给前端弹窗展示。
+4. 前端按 3 秒间隔调用 `/login/check_login_qrcode` 轮询扫码结果。
+5. 登录成功后调用 `/user/get_profile` 同步员工号资料。
+6. 运营再进入“账号设置”绑定门店、知识库、客服组、AI 托管和自动通过好友申请策略。
+
+账号动作全部通过后端 service 调用 `wework.apifox.cn` 文档里的接口：
 
 | UI 动作 | 协议接口 | 关键 body |
 | --- | --- | --- |
@@ -321,6 +330,29 @@ flowchart LR
 
 自动通过好友申请由 `autoAcceptFriendRequest` 控制。关闭时只展示/审计申请，不自动同意；开启时才调用 `/contact/agree_contact`。`autoAcceptFriendRemarkTemplate` 先作为业务备注策略保存，具体备注/标签动作必须等协议文档提供对应字段后再实现，不能自行猜字段。
 
+### 13.2.1 存储设置和 OSS/WECDN 配置
+
+系统新增“存储设置”页面，作为运行时文件存储和企微富媒体公网链路的唯一配置入口。配置保存到 `t_system_config.config_key = storage.asset`，不写入代码仓库。当前测试环境默认参数为：
+
+| 配置项 | 当前测试值 | 说明 |
+| --- | --- | --- |
+| 默认存储类型 | `oss` | 富媒体上传默认进 OSS |
+| OSS Endpoint | `oss-cn-beijing.aliyuncs.com` | 阿里云华北 2 北京 |
+| OSS Bucket | `skychucun` | 测试桶 |
+| OSS 目录前缀 | `desk` | 所有 AgentDesk 文件写入该目录 |
+| OSS Base URL | `https://skychucun.oss-cn-beijing.aliyuncs.com` | 公网读取地址；如果后续使用 CNAME，可改为 CNAME 域名 |
+| AgentDesk 公网地址 | `http://kefuceshi.omnireva.com` | 协议云存储从这里拉取本地资产，例如 `/api/asset/file/{assetId}` |
+| wecdn_web 地址 | 由部署填写 | 调 `/cloud/c2c_upload` 前必须配置，否则富媒体 outbox 失败 |
+
+AccessKey ID 和 AccessKey Secret 只能保存在运行时配置中，文档和 Git 仓库不得记录明文。后台返回设置时只返回 `ossAccessKeySecretSet=true/false`，不回显 Secret。更新时 Secret 留空或填 `********` 表示沿用原值。
+
+资产读写规则：
+
+- 网页端上传文件时，`AssetService` 使用运行时存储设置，不再只读静态 `config.yaml`。
+- OSS 存储 key 会自动拼接全局目录前缀，例如 `desk/conversation/...`。
+- `/api/asset/file/{assetId}` 用于让 wecdn_web 或外部协议服务拉取 AgentDesk 资产；本地资产走流式输出，外部 URL 资产走重定向。
+- 协议渠道 JSON 仍可单独配置 `wecdnBaseUrl/publicAssetBaseUrl`，但为空时自动兜底使用“存储设置”的全局值。
+
 ### 13.3 多媒体和富媒体边界
 
 入站消息必须全部写 `MessageSyncLog`。文本直接入库并可触发 AI；图片、语音、视频、文件、位置等先入库展示，不在未完成理解前让 AI 编造。后续图片 OCR/视觉理解、语音转文字、文件解析完成后，可以把可信 `mediaText/mediaSummary` 写入 payload，再按文本问题触发 AI。
@@ -337,6 +369,21 @@ flowchart LR
 
 如果 payload 缺协议侧必要字段，outbox 必须标记 failed 并记录真实错误，不能把消息误标 sent，也不能降级成普通文本冒充发送成功。
 
+网页端发送图片、语音、文件、视频、GIF 等本地资产时，完整链路为：
+
+```mermaid
+flowchart TD
+  A[网页客服选择文件] --> B[AgentDesk 创建 Asset]
+  B --> C[上传到 OSS: desk/...]
+  C --> D[生成公网资产 URL /api/asset/file/{assetId}]
+  D --> E[调用 wecdn_web /cloud/c2c_upload]
+  E --> F[获得 file_id/aes_key/md5/size 等协议媒体字段]
+  F --> G[调用 /msg/send_image 或 send_file 等真实发送接口]
+  G --> H[平台 echo 回调只确认发送状态 不创建重复消息]
+```
+
+真实发送测试前置条件：员工号必须扫码登录成功，当前会话必须有可发送目标，OSS AccessKey 已在“存储设置”中保存，`publicAssetBaseUrl` 必须能被协议服务公网访问，`wecdnBaseUrl` 必须指向可用的私有化云存储服务。缺任一条件时，不允许 mock 成功，只能让 outbox 标记 failed 并写明原因。
+
 ### 13.4 上下文压缩策略
 
 原始企微消息、媒体、人工回复永久保存，不删除、不覆盖。AI 只使用“当前 session 最近消息 + 稳定事实摘要”：
@@ -349,7 +396,7 @@ flowchart LR
 
 ### 13.5 GitHub 绑定原则
 
-当前目录若还不是 Git 仓库，绑定 `520skyincloud/agentdesk` 时必须先 `git init`、添加远端、`git fetch origin` 查看远端默认分支。远端非空时新建本地工作分支并合并远端历史，必要时使用 `--allow-unrelated-histories` 手动解决冲突。默认推送新分支并开 PR，不强推覆盖默认分支。
+当前目录若还不是 Git 仓库，绑定 `520skyincloud/agentdesk` 时必须先 `git init`、添加远端、`git fetch origin` 查看远端默认分支。远端非空时新建本地工作分支并合并远端历史，必要时使用 `--allow-unrelated-histories` 手动解决冲突。用户未特别说明“分支/PR”时，后续默认把确认完成的代码合并/推送到主分支；如果用户明确要求分支，则推工作分支或开 PR。
 
 ## 14. 测试清单
 
