@@ -407,7 +407,9 @@ flowchart TD
 
 - 当前已完成的是“真实收发、资产保存、后台展示、协议字段回填、outbox 状态确认”，并新增 `MediaUnderstandingService` 作为媒体理解入口。
 - 图片理解链路已经接入模型配置类型 `vision`：读取 asset 或下载 URL -> 调 OpenAI-compatible `/chat/completions` 多模态接口 -> 生成 `mediaText/mediaSummary` -> 写回 message payload -> 再允许 AI 基于图片内容回答。
-- 2026-06-27 代码验证：`Message(id=215)` 通过真实 `/api/third/wxwork-protocol/callback` 重放入站图片后进入 `MediaUnderstandingService`，但协议原始 `file_id` 是微信临时下载地址，直接 HTTP GET 返回 400。因此当前还缺“协议私有化下载/WECDN 入站下载”闭环，不能宣称入站图片已经能稳定视觉理解；必须补齐 `/cloud/*download*` 或文档指定下载接口后再做生产验收。
+- 2026-06-27 第一轮代码验证：`Message(id=215)` 通过真实 `/api/third/wxwork-protocol/callback` 重放入站图片后进入 `MediaUnderstandingService`，但协议原始 `file_id` 是微信临时下载地址，直接 HTTP GET 返回 400。该问题不是模型问题，而是缺少协议下载闭环。
+- 2026-06-27 第二轮修复：按 `wework.apifox.cn` 文档接入 `/cloud/wx_download` 和 `/cloud/c2c_download` 两类私有化云存储下载。若入站 `file_id` 是 `http/https` 微信临时 URL，优先走 `/cloud/wx_download`；若是普通协议 `file_id`，走 `/cloud/c2c_download`。下载成功后上传到本系统 OSS，再由 `MediaUnderstandingService` 读取 OSS asset 调视觉模型。
+- 2026-06-27 真实闭环结果：`Message(id=233)` 通过真实回调入站图片，asset 已保存到 OSS `desk/wx_protocol/inbound/...jpg`，`mediaUnderstandingStatus=understood`，视觉模型写回 `mediaText=图片显示Steam登录确认页面...`，随后触发 AI 回复 `Message(id=234)`。因此入站图片“接收 -> 私有化下载 -> OSS 保存 -> 视觉理解 -> 写回 payload -> 触发 AI”已经跑通。
 - 视觉/多模态配置：后台 `AI 配置` 已新增模型类型 `vision/asr/tts`。测试环境新增 `GPT-5.5 多模态模型`，Base URL 为 `http://43.128.146.66:8085/v1`，模型名 `gpt-5.5`，密钥只保存在运行数据库，不写入代码和文档。
 - 语音理解优先使用协议 `/msg/apply_voice_id` 和 `/msg/query_voice_text`；如果协议转写失败，再走独立 ASR 模型。后台已新增 `asr` 类型，测试模型为 `TeleAI/TeleSpeechASR`，Base URL 为 `https://api.siliconflow.cn/v1`。未配置 API Key 或没有转写结果时，AI 只能知道“收到语音”，不能猜语音内容。
 - TTS 已作为独立 `tts` 类型进入模型配置，测试模型为 `fnlp/MOSS-TTSD-v0.5`。当前用于配置管理和后续语音生成文件，出站客服语音发送仍以已有音频文件上传后 `/msg/send_voice` 为准，不自动把文本转语音。
@@ -465,5 +467,5 @@ flowchart TD
 14. 群@必须使用真实 `R:` 群聊会话测试，不能用单聊会话冒充。
 15. 大视频必须补齐 big cdn 上传和预览图上传后再测试 `/msg/send_big_video`。
 16. 微信小店商品必须使用真实小店商品数据测试，假 `content` 不允许标记为成功。
-17. 入站图片必须补齐协议下载闭环后验收视觉理解；当前真实重放证明直接 GET 微信临时 `file_id` 会 HTTP 400，不能算生产可用图片理解。
+17. 入站图片必须通过 `/cloud/wx_download` 或 `/cloud/c2c_download` 下载后再视觉理解；真实验收样本 `Message(id=233)` 已完成 OSS 保存、`mediaText/mediaSummary` 写回和 AI 触发。
 18. 知识候选按门店导出 Markdown/JSONL，人工审核后再导入门店知识库。
