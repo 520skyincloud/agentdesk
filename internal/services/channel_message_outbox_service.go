@@ -84,10 +84,14 @@ func (s *channelMessageOutboxService) EnqueueWxWorkCLIMessage(conversation *mode
 }
 
 func (s *channelMessageOutboxService) EnqueueWxWorkProtocolMessage(conversation *models.Conversation, message *models.Message) error {
-	return s.enqueueExternalTextMessage(enums.ChannelTypeWxWorkProtocol, conversation, message)
+	return s.enqueueExternalMessage(enums.ChannelTypeWxWorkProtocol, conversation, message, true)
 }
 
 func (s *channelMessageOutboxService) enqueueExternalTextMessage(channelType string, conversation *models.Conversation, message *models.Message) error {
+	return s.enqueueExternalMessage(channelType, conversation, message, false)
+}
+
+func (s *channelMessageOutboxService) enqueueExternalMessage(channelType string, conversation *models.Conversation, message *models.Message, richMedia bool) error {
 	if conversation == nil || message == nil {
 		return nil
 	}
@@ -104,6 +108,20 @@ func (s *channelMessageOutboxService) enqueueExternalTextMessage(channelType str
 		enums.IMMessageTypeImage,
 		enums.IMMessageTypeAttachment,
 		enums.IMMessageTypeVideo:
+	case enums.IMMessageTypeVoice,
+		enums.IMMessageTypeGIF,
+		enums.IMMessageTypeLocation,
+		enums.IMMessageTypeContactCard,
+		enums.IMMessageTypeLink,
+		enums.IMMessageTypeMiniProgram,
+		enums.IMMessageTypeFeed,
+		enums.IMMessageTypeFeedLive,
+		enums.IMMessageTypeQuote,
+		enums.IMMessageTypeMergedForward,
+		enums.IMMessageTypeShopProduct:
+		if !richMedia {
+			return nil
+		}
 	default:
 		return nil
 	}

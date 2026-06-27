@@ -397,7 +397,19 @@ flowchart TD
 - 网页端/AI 出站图片已真实跑通，`Message(id=199/200)` 经 OSS `desk/...`、公网 `/api/asset/file/{assetId}`、WECDN `/cloud/c2c_upload` 后取得 `file_id/aes_key/md5`，最终 `/msg/send_image` outbox 为 `sent`。
 - 网页端/AI 出站文件已真实跑通，`Message(id=201)` 经同一链路换取 `file_id/aes_key/md5/file_size` 后调用 `/msg/send_file`，outbox 为 `sent`。
 - 曾出现 `broken data stream when reading image file` 的失败样本来自 70 字节损坏 PNG 测试素材；正常 PNG 可发送。后续测试必须使用能被图片解码器校验通过的真实文件。
-- 语音、视频、GIF 的代码路径已按协议分派到 `/msg/send_voice`、`/msg/send_video`、`/msg/send_gif`，但仍需准备真实语音/视频/GIF 素材逐项验证；未验证前不能在交付说明中宣称全部生产可用。
+- 2026-06-27 第二轮补测后，普通富媒体 outbox 白名单已扩展到 `voice/gif/location/link/feed_live/merged_forward/quote/shop_product` 等类型。此前这些消息能入库但不进 outbox，是“看起来有按钮但实际不发送”的根因。
+- 已真实发送成功：位置 `Message(id=208)`、链接 `id=209`、视频号直播 `id=210`、合并转发 `id=211`、语音 `id=212`、GIF `id=213`、普通视频 `id=214`，对应 outbox `97-103` 均为 `sent`。
+- 操作型接口已真实成功：`/msg/report_unread` 标记会话已读、`/msg/apply_voice_id` 获取语音翻译 ID、`/msg/confirm_msg` 确认企微内部消息已读、`/msg/send_quote_msg` 发送引用消息。
+- 操作型接口真实失败但原因明确：`/msg/send_room_at` 需要真实群聊 `R:` 会话；`/msg/query_voice_text` 需要真实语音消息的 `msgid + voiceid` 组合；`/msg/revoke_msg` 需要可撤回窗口内且匹配的协议 `msgid`；`/msg/send_finder_product` 需要真实微信小店 `shop_id/product` 数据，假数据会返回缺 `shop_id`。
+- 大视频不是普通 `/cloud/c2c_upload`，协议文档要求先走 `/cloud/cdn_big_upload` 上传视频，再走 `/cloud/upload_video_preview` 上传预览图，最后调用 `/msg/send_big_video`。这条 big cdn 闭环尚未实现，不能宣称支持大视频生产发送。
+
+富媒体理解边界：
+
+- 当前已完成的是“真实收发、资产保存、后台展示、协议字段回填、outbox 状态确认”。
+- 图片理解需要把视觉模型（例如测试配置里的 `qwen3-vl-plus`）接入 `MediaUnderstandingWorker`：下载 asset -> 调视觉模型生成 `mediaText/mediaSummary` -> 写回 message payload -> 再允许 AI 基于图片内容回答。
+- 语音理解优先使用协议 `/msg/apply_voice_id` 和 `/msg/query_voice_text`；如果协议转写失败，再走独立 ASR 模型。没有转写结果时，AI 只能知道“收到语音”，不能猜语音内容。
+- 文件理解需要文档解析链路：PDF/Word/TXT/Excel 分别抽文本或表格摘要，再写入 `mediaText/mediaSummary`；二进制压缩包、未知格式只展示和审计，不触发 AI 内容判断。
+- 视频/GIF 默认只展示和审计；如果要 AI 理解视频，需要额外做抽帧、封面识别或视频理解模型，不应把文件名当作视频内容。
 
 ### 13.4 上下文压缩策略
 
@@ -427,5 +439,9 @@ flowchart TD
 10. 10 分钟无客户新消息后恢复 AI。
 11. 已关闭会话再次来消息，新开 session，旧维修问题不污染新问题。
 12. 客户发图片/语音/视频/文件，后台展示并审计；未转写语音不触发 AI。
-13. 客服网页端发送图片/文件，协议 body 符合文档；业务错误码不误标 sent。
-14. 知识候选按门店导出 Markdown/JSONL，人工审核后再导入门店知识库。
+13. 客服网页端发送图片/文件/语音/GIF/普通视频/位置/链接/视频号直播/合并转发/引用消息，协议 body 符合文档；业务错误码不误标 sent。
+14. 群@必须使用真实 `R:` 群聊会话测试，不能用单聊会话冒充。
+15. 大视频必须补齐 big cdn 上传和预览图上传后再测试 `/msg/send_big_video`。
+16. 微信小店商品必须使用真实小店商品数据测试，假 `content` 不允许标记为成功。
+17. 图片、语音、文件只有在 `mediaText/mediaSummary` 写回后才可触发 AI 基于内容回答；未理解前 AI 不能编造多媒体内容。
+18. 知识候选按门店导出 Markdown/JSONL，人工审核后再导入门店知识库。

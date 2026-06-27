@@ -234,6 +234,31 @@ func (s *wxWorkProtocolService) SyncFriendRequests(instanceID int64) (string, er
 	return s.callInstanceAPI(instanceID, "/contact/sync_apply_list", map[string]any{"seq": "", "limit": 50}, nil)
 }
 
+func (s *wxWorkProtocolService) CallDocumentedAPI(instanceID int64, path string, body map[string]any) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" || !strings.HasPrefix(path, "/") {
+		return "", errorsx.InvalidParam("企微协议接口路径必须以 / 开头")
+	}
+	allowed := map[string]bool{
+		"/msg/send_room_at":        true,
+		"/msg/send_big_video":      true,
+		"/msg/send_gif_url":        true,
+		"/msg/apply_voice_id":      true,
+		"/msg/query_voice_text":    true,
+		"/msg/confirm_msg":         true,
+		"/msg/revoke_msg":          true,
+		"/msg/report_unread":       true,
+		"/msg/send_forward_msg":    true,
+		"/msg/send_feed_live":      true,
+		"/msg/send_quote_msg":      true,
+		"/msg/send_finder_product": true,
+	}
+	if !allowed[path] {
+		return "", errorsx.InvalidParam("企微协议接口未加入白名单，禁止猜测调用")
+	}
+	return s.callInstanceAPI(instanceID, path, body, nil)
+}
+
 func (s *wxWorkProtocolService) AgreeContact(instanceID int64, userID string, corpID string) (string, error) {
 	userID = strings.TrimSpace(userID)
 	corpID = strings.TrimSpace(corpID)
