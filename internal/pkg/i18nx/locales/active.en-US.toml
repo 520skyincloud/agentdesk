@@ -1,0 +1,8 @@
+["error.auth.expired"]
+other = "Your session has expired. Please sign in again."
+
+["error.notFound"]
+other = "Not found"
+
+["error.path.invalid"]
+other = "Invalid path parameter."

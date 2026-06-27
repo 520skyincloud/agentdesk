@@ -1,0 +1,8 @@
+["error.auth.expired"]
+other = "未登录或登录已过期"
+
+["error.notFound"]
+other = "Not found"
+
+["error.path.invalid"]
+other = "路径参数错误"
