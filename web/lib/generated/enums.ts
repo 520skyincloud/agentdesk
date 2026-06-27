@@ -24,11 +24,13 @@ export enum AIModelType {
   LLM = "llm",
   Embedding = "embedding",
   Rerank = "rerank",
+  Vision = "vision",
 }
 export const AIModelTypeLabels: Record<AIModelType, string> = {
   [AIModelType.LLM]: "大语言模型",
   [AIModelType.Embedding]: "向量模型",
   [AIModelType.Rerank]: "重排序模型",
+  [AIModelType.Vision]: "视觉模型",
 }
 
 export enum AIProvider {

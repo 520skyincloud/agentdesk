@@ -1,6 +1,9 @@
 package request
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type WxWorkProtocolCallbackRequest struct {
 	Guid       string          `json:"guid"`
@@ -9,23 +12,26 @@ type WxWorkProtocolCallbackRequest struct {
 }
 
 type WxProtocolChatMsg struct {
-	FromUsername   string `json:"from_username"`
-	ToUsername     string `json:"to_username"`
-	ChatroomSender string `json:"chatroom_sender"`
-	CreateTime     int64  `json:"create_time"`
-	Desc           string `json:"desc"`
-	MsgID          string `json:"msg_id"`
-	MsgType        int    `json:"msg_type"`
-	ContentType    int    `json:"content_type"`
-	Chatroom       string `json:"chatroom"`
-	Source         string `json:"source"`
-	Content        string `json:"content"`
-	Sender         string `json:"sender"`
-	Receiver       string `json:"receiver"`
-	RoomID         string `json:"roomid"`
-	SendTime       int64  `json:"sendtime"`
-	ID             string `json:"id"`
-	SenderName     string `json:"sender_name"`
+	FromUsername   string                 `json:"from_username"`
+	ToUsername     string                 `json:"to_username"`
+	ChatroomSender string                 `json:"chatroom_sender"`
+	CreateTime     int64                  `json:"create_time"`
+	Desc           string                 `json:"desc"`
+	MsgID          string                 `json:"msg_id"`
+	MsgType        int                    `json:"msg_type"`
+	ContentType    int                    `json:"content_type"`
+	Chatroom       string                 `json:"chatroom"`
+	Source         string                 `json:"source"`
+	Content        string                 `json:"content"`
+	Sender         string                 `json:"sender"`
+	Receiver       string                 `json:"receiver"`
+	RoomID         string                 `json:"roomid"`
+	SendTime       int64                  `json:"sendtime"`
+	ID             string                 `json:"id"`
+	SenderName     string                 `json:"sender_name"`
+	FileName       string                 `json:"file_name"`
+	VoiceTime      int64                  `json:"voice_time"`
+	CDN            WxProtocolMediaPayload `json:"cdn"`
 }
 
 func (m *WxProtocolChatMsg) Normalize() {
@@ -47,6 +53,50 @@ func (m *WxProtocolChatMsg) Normalize() {
 	if m.Desc == "" {
 		m.Desc = m.SenderName
 	}
+	m.normalizeMediaSize()
+	inferredMsgType := m.InferMsgType()
+	if inferredMsgType != 0 && (m.MsgType == 0 || m.shouldPreferInferredMsgType(inferredMsgType)) {
+		m.MsgType = inferredMsgType
+	}
+}
+
+func (m *WxProtocolChatMsg) shouldPreferInferredMsgType(inferredMsgType int) bool {
+	switch inferredMsgType {
+	case 2, 3, 34, 43, 48, 50:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *WxProtocolChatMsg) normalizeMediaSize() {
+	if m.CDN.FileSize <= 0 && m.CDN.Size > 0 {
+		m.CDN.FileSize = m.CDN.Size
+	}
+	if m.CDN.Size <= 0 && m.CDN.FileSize > 0 {
+		m.CDN.Size = m.CDN.FileSize
+	}
+}
+func (m *WxProtocolChatMsg) InferMsgType() int {
+	if m.ContentType == 2 && m.Content != "" {
+		return 2
+	}
+	if m.VoiceTime > 0 {
+		return 34
+	}
+	if m.ContentType == 43 || strings.HasPrefix(strings.ToLower(strings.TrimSpace(m.CDN.MimeType)), "video/") {
+		return 43
+	}
+	if m.ContentType == 48 {
+		return 48
+	}
+	if m.CDN.ImageWidth > 0 || m.CDN.ImageHeight > 0 || m.ContentType == 101 {
+		return 3
+	}
+	if m.CDN.FileID != "" || m.CDN.Size > 0 || m.CDN.FileSize > 0 || m.FileName != "" {
+		return 50
+	}
+	return m.ContentType
 }
 
 type WxWorkProtocolSendTextResponse struct {
@@ -80,4 +130,5 @@ type WxProtocolMediaPayload struct {
 	Filename    string `json:"filename,omitempty"`
 	FileName    string `json:"file_name,omitempty"`
 	MimeType    string `json:"mime_type,omitempty"`
+	AuthKey     string `json:"auth_key,omitempty"`
 }

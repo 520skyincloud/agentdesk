@@ -493,7 +493,16 @@ func (s *wxWorkProtocolService) rawMessagePayload(msg request.WxProtocolChatMsg)
 
 func (s *wxWorkProtocolService) parseMediaPayload(msg request.WxProtocolChatMsg) request.WxProtocolMediaPayload {
 	joined := strings.TrimSpace(msg.Content + "\n" + msg.Source)
-	mediaPayload := request.WxProtocolMediaPayload{}
+	mediaPayload := msg.CDN
+	if mediaPayload.FileName == "" {
+		mediaPayload.FileName = strings.TrimSpace(msg.FileName)
+	}
+	if mediaPayload.Filename == "" {
+		mediaPayload.Filename = strings.TrimSpace(msg.FileName)
+	}
+	if mediaPayload.Length <= 0 && msg.VoiceTime > 0 {
+		mediaPayload.Length = msg.VoiceTime
+	}
 	_ = json.Unmarshal([]byte(strings.TrimSpace(msg.Content)), &mediaPayload)
 	if mediaPayload.URL == "" || mediaPayload.FileID == "" {
 		var generic map[string]any

@@ -20,12 +20,14 @@ const (
 	AIModelTypeLLM       AIModelType = "llm"
 	AIModelTypeEmbedding AIModelType = "embedding"
 	AIModelTypeRerank    AIModelType = "rerank"
+	AIModelTypeVision    AIModelType = "vision"
 )
 
 var aiModelTypeLabelMap = map[AIModelType]string{
 	AIModelTypeLLM:       "大语言模型",
 	AIModelTypeEmbedding: "向量模型",
 	AIModelTypeRerank:    "重排序模型",
+	AIModelTypeVision:    "视觉模型",
 }
 
 func GetAIModelTypeLabel(modelType AIModelType) string {
