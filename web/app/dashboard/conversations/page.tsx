@@ -9,7 +9,7 @@ import {
   MessageCircleWarningIcon,
   Menu,
   MoreHorizontalIcon,
-  PlusIcon,
+  QrCodeIcon,
   SearchIcon,
   SettingsIcon,
   X,
@@ -22,6 +22,14 @@ import { ConversationTransferDialog } from "@/components/conversation-actions/tr
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
@@ -36,7 +44,14 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { WxWorkProtocolInstanceManager } from "@/components/wxwork-protocol/wxwork-protocol-instance-manager";
 import { useAgentConversationRealtime } from "@/hooks/use-agent-conversation-realtime";
 import { useI18n } from "@/i18n/provider";
-import { fetchWxWorkProtocolInstances, type WxWorkProtocolInstance } from "@/lib/api/admin";
+import {
+  checkWxWorkProtocolLoginQrcode,
+  fetchWxWorkProtocolInstances,
+  startWxWorkProtocolLogin,
+  syncWxWorkProtocolProfile,
+  type StartWxWorkProtocolLoginResult,
+  type WxWorkProtocolInstance,
+} from "@/lib/api/admin";
 import {
   agentConversationFilterOptions,
   agentConversationSelectors,
@@ -95,6 +110,11 @@ export default function ConversationsPage() {
   const [closeOpen, setCloseOpen] = useState(false);
   const [createTicketOpen, setCreateTicketOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
+  const [scanLoginOpen, setScanLoginOpen] = useState(false);
+  const [scanLoginLoading, setScanLoginLoading] = useState(false);
+  const [scanLoginResult, setScanLoginResult] = useState<StartWxWorkProtocolLoginResult | null>(null);
+  const [scanLoginStatus, setScanLoginStatus] = useState("等待生成登录二维码");
+  const scanLoginCheckingRef = useRef(false);
   const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([]);
   const [accountKeyword, setAccountKeyword] = useState("");
   const [handoffToastDismissedId, setHandoffToastDismissedId] = useState<number | null>(null);
@@ -153,6 +173,58 @@ export default function ConversationsPage() {
     );
   };
 
+  const startScanLogin = async () => {
+    setScanLoginOpen(true);
+    setScanLoginLoading(true);
+    setScanLoginResult(null);
+    setScanLoginStatus("正在向协议服务请求登录二维码...");
+    try {
+      const result = await startWxWorkProtocolLogin();
+      setScanLoginResult(result);
+      setScanLoginStatus("请用企业微信员工号扫码确认登录");
+      await loadWxWorkInstances();
+    } catch (error) {
+      setScanLoginStatus(error instanceof Error ? error.message : "获取登录二维码失败");
+      toast.error(error instanceof Error ? error.message : "获取登录二维码失败");
+    } finally {
+      setScanLoginLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!scanLoginOpen || !scanLoginResult?.instance.id) {
+      return;
+    }
+    let disposed = false;
+    const timer = window.setInterval(async () => {
+      if (disposed || scanLoginCheckingRef.current) {
+        return;
+      }
+      scanLoginCheckingRef.current = true;
+      try {
+        const raw = await checkWxWorkProtocolLoginQrcode(scanLoginResult.instance.id);
+        const lower = raw.toLowerCase();
+        if (lower.includes("success") || lower.includes("login") || lower.includes("已登录") || lower.includes("登录成功")) {
+          setScanLoginStatus("登录成功，正在同步员工号资料...");
+          await syncWxWorkProtocolProfile(scanLoginResult.instance.id).catch(() => "");
+          await loadWxWorkInstances();
+          toast.success("员工号登录成功，请继续绑定门店和知识库");
+          setScanLoginOpen(false);
+        } else {
+          setScanLoginStatus("等待扫码确认，系统会自动轮询登录状态");
+        }
+      } catch (error) {
+        setScanLoginStatus(error instanceof Error ? error.message : "检查扫码状态失败");
+      } finally {
+        scanLoginCheckingRef.current = false;
+      }
+    }, 3000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [scanLoginOpen, scanLoginResult?.instance.id]);
+
   useEffect(() => {
     void loadConversations().catch((error) => {
       toast.error(error instanceof Error ? error.message : t("conversation.loadListFailed"));
@@ -206,9 +278,9 @@ export default function ConversationsPage() {
               variant="default"
               size="sm"
               className="justify-center gap-2"
-              onClick={() => setAccountManagerOpen(true)}
+              onClick={() => void startScanLogin()}
             >
-              <PlusIcon className="size-4" />
+              <QrCodeIcon className="size-4" />
               新增账号
             </Button>
             <Button
@@ -654,6 +726,51 @@ export default function ConversationsPage() {
           </div>
         </SheetContent>
       </Sheet>
+      <Dialog open={scanLoginOpen} onOpenChange={setScanLoginOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>扫码新增企微员工号</DialogTitle>
+            <DialogDescription>
+              系统会先向 wework 协议服务创建真实登录二维码；扫码成功后，再到账号设置里绑定门店、知识库和客服组。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="flex min-h-64 items-center justify-center rounded-lg border bg-muted/30 p-4">
+              {scanLoginResult?.qrcode ? (
+                <img
+                  src={scanLoginResult.qrcode.startsWith("data:") ? scanLoginResult.qrcode : `data:image/png;base64,${scanLoginResult.qrcode}`}
+                  alt="企微员工号登录二维码"
+                  className="size-56 rounded-md bg-white object-contain p-2 shadow-sm"
+                />
+              ) : scanLoginLoading ? (
+                <div className="text-sm text-muted-foreground">正在生成二维码...</div>
+              ) : (
+                <div className="text-center text-sm text-muted-foreground">
+                  <QrCodeIcon className="mx-auto mb-2 size-10" />
+                  暂无二维码，请重新生成
+                </div>
+              )}
+            </div>
+            <div className="rounded-md border bg-card p-3 text-xs text-muted-foreground">
+              <div className="font-medium text-foreground">{scanLoginStatus}</div>
+              {scanLoginResult?.instance.guid ? (
+                <div className="mt-1 break-all">实例 GUID：{scanLoginResult.instance.guid}</div>
+              ) : null}
+              {scanLoginResult?.qrcodeContent ? (
+                <div className="mt-1 break-all">二维码内容：{scanLoginResult.qrcodeContent}</div>
+              ) : null}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAccountManagerOpen(true)}>
+              账号设置
+            </Button>
+            <Button onClick={() => void startScanLogin()} disabled={scanLoginLoading}>
+              {scanLoginLoading ? "生成中..." : "重新生成"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {handoffConversation && handoffToastDismissedId !== handoffConversation.id ? (
         <div className="fixed right-4 bottom-4 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-md border bg-card p-4 text-card-foreground shadow-lg">
           <div className="flex items-start gap-3">

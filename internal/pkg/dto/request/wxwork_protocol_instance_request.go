@@ -30,6 +30,10 @@ type UpdateWxWorkProtocolInstanceRequest struct {
 	CreateWxWorkProtocolInstanceRequest
 }
 
+type StartWxWorkProtocolLoginRequest struct {
+	ChannelID int64 `json:"channelId"`
+}
+
 type DeleteWxWorkProtocolInstanceRequest struct {
 	ID int64 `json:"id"`
 }

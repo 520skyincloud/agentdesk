@@ -37,7 +37,10 @@ func GetProvider(providerType enums.AssetProvider) (FileStorageProvider, error) 
 }
 
 func NewProvider(provider enums.AssetProvider) (FileStorageProvider, error) {
-	cfg := config.Current().Storage
+	return NewProviderWithConfig(provider, config.Current().Storage)
+}
+
+func NewProviderWithConfig(provider enums.AssetProvider, cfg config.StorageConfig) (FileStorageProvider, error) {
 
 	switch provider {
 	case "", enums.AssetProviderLocal:

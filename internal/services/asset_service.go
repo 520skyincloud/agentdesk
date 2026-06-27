@@ -2,7 +2,6 @@ package services
 
 import (
 	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -46,15 +45,15 @@ func (s *assetService) FindPageByCnd(cnd *sqls.Cnd) (list []models.Asset, paging
 }
 
 func (s *assetService) OpenReader(asset *models.Asset) (io.ReadCloser, error) {
-	cfg := config.Current()
 	if asset == nil {
 		return nil, errorsx.InvalidParam("图片资源不存在")
 	}
+	storageCfg := StorageSettingToConfig()
 	switch asset.Provider {
 	case "", enums.AssetProviderLocal:
-		return storage.NewLocalStorage(cfg.Storage.Local).Read(asset.StorageKey)
+		return storage.NewLocalStorage(storageCfg.Local).Read(asset.StorageKey)
 	case enums.AssetProviderOSS:
-		return storage.NewOSSStorage(cfg.Storage.OSS).Read(asset.StorageKey)
+		return storage.NewOSSStorage(storageCfg.OSS).Read(asset.StorageKey)
 	default:
 		return nil, errorsx.InvalidParam("当前暂不支持该存储类型的文件读取")
 	}
@@ -76,8 +75,8 @@ func (s *assetService) UploadFile(file *multipart.FileHeader, prefix string, pri
 		return nil, errorsx.InvalidParam("请选择上传文件")
 	}
 
-	cfg := config.Current()
-	if file.Size > cfg.Storage.MaxUploadSizeBytes() {
+	storageCfg := StorageSettingToConfig()
+	if file.Size > storageCfg.MaxUploadSizeBytes() {
 		return nil, errorsx.InvalidParam("上传文件超过大小限制")
 	}
 
@@ -97,10 +96,12 @@ func (s *assetService) UploadFile(file *multipart.FileHeader, prefix string, pri
 }
 
 func (s *assetService) Upload(reader io.Reader, info storage.UploadInfo) (*models.Asset, error) {
-	provider, err := storage.GetDefault()
+	storageCfg := StorageSettingToConfig()
+	provider, err := storage.NewProviderWithConfig(storageCfg.Default, storageCfg)
 	if err != nil {
 		return nil, err
 	}
+	info.Prefix = applyStorageObjectPrefix(info.Prefix)
 
 	assetID, key := storage.GenerateStorageKey(info)
 	item := &models.Asset{
@@ -132,6 +133,19 @@ func (s *assetService) Upload(reader io.Reader, info storage.UploadInfo) (*model
 	_ = repositories.AssetRepository.UpdateColumn(sqls.DB(), item.ID, "status", enums.AssetStatusSuccess)
 
 	return item, nil
+}
+
+func applyStorageObjectPrefix(prefix string) string {
+	setting := GetStorageSetting()
+	globalPrefix := strings.Trim(strings.TrimSpace(setting.OSSObjectPrefix), "/")
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+	if globalPrefix == "" {
+		return prefix
+	}
+	if prefix == "" {
+		return globalPrefix
+	}
+	return globalPrefix + "/" + prefix
 }
 
 func (s *assetService) RegisterExternal(prefix string, filename string, fileSize int64, mimeType string, externalURL string, principal *dto.AuthPrincipal) (*models.Asset, error) {
@@ -174,7 +188,7 @@ func (s *assetService) GetSignedURL(id int64) (string, error) {
 		return "", errorsx.InvalidParam("文件不可访问")
 	}
 
-	provider, err := storage.NewProvider(item.Provider)
+	provider, err := storage.NewProviderWithConfig(item.Provider, StorageSettingToConfig())
 	if err != nil {
 		return "", err
 	}

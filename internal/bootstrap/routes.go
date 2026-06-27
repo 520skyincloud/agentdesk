@@ -224,6 +224,7 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 	group.POST("/set_ai_reply_enabled", dashboard.WxWorkProtocolInstancePostSet_ai_reply_enabled)
 	group.POST("/set_notify_url", dashboard.WxWorkProtocolInstancePostSet_notify_url)
 	group.POST("/set_proxy", dashboard.WxWorkProtocolInstancePostSet_proxy)
+	group.POST("/start_login", dashboard.WxWorkProtocolInstancePostStart_login)
 	group.POST("/stop", dashboard.WxWorkProtocolInstancePostStop)
 	group.POST("/sync_friend_requests", dashboard.WxWorkProtocolInstancePostSync_friend_requests)
 	group.POST("/sync_profile", dashboard.WxWorkProtocolInstancePostSync_profile)
@@ -288,6 +289,11 @@ func registerDashboardAssetRoutes(group *gin.RouterGroup) {
 	group.POST("/create", dashboard.AssetPostCreate)
 	group.POST("/delete", dashboard.AssetPostDelete)
 	group.Any("/list", dashboard.AssetAnyList)
+}
+
+func registerDashboardStorageSettingRoutes(group *gin.RouterGroup) {
+	group.GET("/get", dashboard.StorageSettingGet)
+	group.POST("/update", dashboard.StorageSettingPostUpdate)
 }
 
 func registerDashboardKnowledgeBaseRoutes(group *gin.RouterGroup) {

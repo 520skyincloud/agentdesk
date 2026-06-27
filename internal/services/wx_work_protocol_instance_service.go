@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
+	"github.com/google/uuid"
 	"github.com/mlogclub/simple/sqls"
 )
 
@@ -149,6 +151,46 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		Status:                         status,
 		Remark:                         strings.TrimSpace(req.Remark),
 		AuditFields:                    utils.BuildAuditFields(operator),
+	}
+	item.CreatedAt = now
+	item.UpdatedAt = now
+	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxWorkProtocolLoginRequest, operator *dto.AuthPrincipal) (*models.WxWorkProtocolInstance, error) {
+	if operator == nil {
+		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	channelID := req.ChannelID
+	if channelID <= 0 {
+		channel := ChannelService.Take("channel_type = ? AND status = ?", enums.ChannelTypeWxWorkProtocol, enums.StatusOk)
+		if channel == nil {
+			return nil, errorsx.InvalidParam("请先创建并启用企微员工号协议渠道")
+		}
+		channelID = channel.ID
+	} else {
+		channel := ChannelService.Get(channelID)
+		if channel == nil || channel.Status != enums.StatusOk || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
+			return nil, errorsx.InvalidParam("请选择已启用的企微员工号协议渠道")
+		}
+	}
+	now := time.Now()
+	guid := fmt.Sprintf("ad_%s", strings.ReplaceAll(uuid.NewString(), "-", ""))
+	item := &models.WxWorkProtocolInstance{
+		Guid:                      guid,
+		ChannelID:                 channelID,
+		AIReplyEnabled:            true,
+		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
+		ContextMaxMessages:        DefaultConversationContextMaxMessages,
+		ContextMaxTokens:          DefaultConversationContextMaxTokens,
+		ContextCompressionEnabled: true,
+		HealthStatus:              "login_qrcode",
+		Status:                    enums.StatusOk,
+		Remark:                    "扫码登录创建，登录成功后请绑定门店和知识库",
+		AuditFields:               utils.BuildAuditFields(operator),
 	}
 	item.CreatedAt = now
 	item.UpdatedAt = now

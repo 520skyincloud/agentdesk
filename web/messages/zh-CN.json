@@ -2313,6 +2313,7 @@
     "users": "用户管理",
     "roles": "角色管理",
     "permissions": "权限管理",
+    "storageSettings": "存储设置",
     "dashboardHome": "后台总览",
     "notifications": "通知中心",
     "changePassword": "修改密码",

@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"encoding/json"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
@@ -67,6 +69,37 @@ func WxWorkProtocolInstancePostCreate(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, buildWxWorkProtocolInstanceResponse(item))
+}
+
+func WxWorkProtocolInstancePostStart_login(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelCreate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.StartWxWorkProtocolLoginRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item, err := services.WxWorkProtocolInstanceService.CreateLoginInstance(req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	raw, err := services.WxWorkProtocolService.GetLoginQRCode(item.ID)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	qrcode, qrcodeContent, key := parseWxWorkProtocolLoginQRCode(raw)
+	httpx.WriteJSON(ctx, response.StartWxWorkProtocolLoginResponse{
+		Instance:      buildWxWorkProtocolInstanceResponse(item),
+		RawResponse:   raw,
+		QRCode:        qrcode,
+		QRCodeContent: qrcodeContent,
+		Key:           key,
+	})
 }
 
 func WxWorkProtocolInstancePostUpdate(ctx *gin.Context) {
@@ -322,4 +355,32 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) re
 		ret.KnowledgeBaseName = knowledgeBase.Name
 	}
 	return ret
+}
+
+func parseWxWorkProtocolLoginQRCode(raw string) (string, string, string) {
+	root := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &root); err != nil {
+		return "", "", ""
+	}
+	data := root
+	if nested, ok := root["data"].(map[string]any); ok {
+		data = nested
+	}
+	return firstString(data, "qrcode", "qr_code", "qrCode"), firstString(data, "qrcode_content", "qrcodeContent", "qr_code_content", "qrCodeContent"), firstString(data, "key")
+}
+
+func stringFromAny(value any) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func firstString(data map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s := stringFromAny(data[key]); s != "" {
+			return s
+		}
+	}
+	return ""
 }

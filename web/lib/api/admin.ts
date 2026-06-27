@@ -210,6 +210,24 @@ export type ResetChannelUserTokenSecretResult = {
   userTokenSecret: string
 }
 
+export type StorageSetting = {
+  defaultProvider: string
+  maxUploadSizeMb: number
+  localRoot: string
+  localBaseUrl: string
+  ossEndpoint: string
+  ossBucket: string
+  ossAccessKeyId: string
+  ossAccessKeySecret?: string
+  ossAccessKeySecretSet?: boolean
+  ossBaseUrl: string
+  ossObjectPrefix: string
+  ossPrivate: boolean
+  ossSignedUrlExpireSeconds: number
+  wecdnBaseUrl: string
+  publicAssetBaseUrl: string
+}
+
 export type WxWorkProtocolInstance = {
   id: number
   guid: string
@@ -244,6 +262,14 @@ export type WxWorkProtocolInstance = {
   updatedAt: string
   createUserName: string
   updateUserName: string
+}
+
+export type StartWxWorkProtocolLoginResult = {
+  instance: WxWorkProtocolInstance
+  rawResponse: string
+  qrcode: string
+  qrcodeContent: string
+  key: string
 }
 
 export type CreateWxWorkProtocolInstancePayload = {
@@ -749,6 +775,13 @@ export function createWxWorkProtocolInstance(payload: CreateWxWorkProtocolInstan
   })
 }
 
+export function startWxWorkProtocolLogin(channelId?: number) {
+  return request<StartWxWorkProtocolLoginResult>("/api/dashboard/wxwork-protocol-instance/start_login", {
+    method: "POST",
+    body: JSON.stringify({ channelId: channelId ?? 0 }),
+  })
+}
+
 export function updateWxWorkProtocolInstance(payload: UpdateWxWorkProtocolInstancePayload) {
   return request<void>("/api/dashboard/wxwork-protocol-instance/update", {
     method: "POST",
@@ -906,6 +939,17 @@ export function resetChannelUserTokenSecret(id: number) {
       body: JSON.stringify({ id }),
     }
   )
+}
+
+export function fetchStorageSetting() {
+  return request<StorageSetting>("/api/dashboard/storage-setting/get")
+}
+
+export function updateStorageSetting(payload: StorageSetting) {
+  return request<StorageSetting>("/api/dashboard/storage-setting/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
 }
 
 export function deleteChannel(id: number) {

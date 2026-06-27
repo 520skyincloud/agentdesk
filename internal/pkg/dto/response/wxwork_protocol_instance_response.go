@@ -43,6 +43,14 @@ type WxWorkProtocolInstanceResponse struct {
 	UpdateUserName                 string       `json:"updateUserName"`
 }
 
+type StartWxWorkProtocolLoginResponse struct {
+	Instance      WxWorkProtocolInstanceResponse `json:"instance"`
+	RawResponse   string                         `json:"rawResponse"`
+	QRCode        string                         `json:"qrcode"`
+	QRCodeContent string                         `json:"qrcodeContent"`
+	Key           string                         `json:"key"`
+}
+
 func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) WxWorkProtocolInstanceResponse {
 	if item == nil {
 		return WxWorkProtocolInstanceResponse{}

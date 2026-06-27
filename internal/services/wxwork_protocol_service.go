@@ -914,7 +914,8 @@ func (s *wxWorkProtocolService) prepareOutboundMessageMedia(cfg *dto.WxWorkProto
 
 func (s *wxWorkProtocolService) uploadAssetToWECDN(cfg *dto.WxWorkProtocolChannelConfig, instance *models.WxWorkProtocolInstance, messageType enums.IMMessageType, asset *models.Asset) (request.WxProtocolMediaPayload, error) {
 	media := request.WxProtocolMediaPayload{}
-	if cfg == nil || strings.TrimSpace(cfg.WECDNBaseURL) == "" {
+	wecdnBaseURL := wxProtocolWECDNBaseURL(cfg)
+	if wecdnBaseURL == "" {
 		return media, errorsx.InvalidParam("企微协议私有化云存储 wecdnBaseUrl 未配置，无法真实发送图片/语音/文件/视频")
 	}
 	publicURL, err := s.publicAssetURL(cfg, asset)
@@ -964,7 +965,7 @@ func (s *wxWorkProtocolService) publicAssetURL(cfg *dto.WxWorkProtocolChannelCon
 	if asset == nil {
 		return "", errorsx.InvalidParam("富媒体资产不存在")
 	}
-	base := strings.TrimRight(strings.TrimSpace(cfg.PublicAssetBaseURL), "/")
+	base := wxProtocolPublicAssetBaseURL(cfg)
 	if base == "" {
 		return "", errorsx.InvalidParam("企微协议 publicAssetBaseUrl 未配置，私有化 CDN 无法从公网拉取本地资产")
 	}
@@ -972,6 +973,24 @@ func (s *wxWorkProtocolService) publicAssetURL(cfg *dto.WxWorkProtocolChannelCon
 		return asset.StorageKey, nil
 	}
 	return base + "/api/asset/file/" + url.PathEscape(asset.AssetID), nil
+}
+
+func wxProtocolWECDNBaseURL(cfg *dto.WxWorkProtocolChannelConfig) string {
+	if cfg != nil {
+		if baseURL := strings.TrimRight(strings.TrimSpace(cfg.WECDNBaseURL), "/"); baseURL != "" {
+			return baseURL
+		}
+	}
+	return strings.TrimRight(strings.TrimSpace(GetStorageSetting().WECDNBaseURL), "/")
+}
+
+func wxProtocolPublicAssetBaseURL(cfg *dto.WxWorkProtocolChannelConfig) string {
+	if cfg != nil {
+		if baseURL := strings.TrimRight(strings.TrimSpace(cfg.PublicAssetBaseURL), "/"); baseURL != "" {
+			return baseURL
+		}
+	}
+	return strings.TrimRight(strings.TrimSpace(GetStorageSetting().PublicAssetBaseURL), "/")
 }
 
 func (s *wxWorkProtocolService) getCDNInfo(cfg *dto.WxWorkProtocolChannelConfig, instance *models.WxWorkProtocolInstance) (map[string]any, error) {
@@ -1307,14 +1326,15 @@ func (s *wxWorkProtocolService) postJSON(cfg *dto.WxWorkProtocolChannelConfig, p
 }
 
 func (s *wxWorkProtocolService) postWECDNJSON(cfg *dto.WxWorkProtocolChannelConfig, path string, body any) (string, error) {
-	if cfg == nil || strings.TrimSpace(cfg.WECDNBaseURL) == "" {
+	baseURL := wxProtocolWECDNBaseURL(cfg)
+	if baseURL == "" {
 		return "", errorsx.InvalidParam("企微协议私有化云存储 wecdnBaseUrl 未配置")
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return "", err
 	}
-	endpoint := strings.TrimRight(strings.TrimSpace(cfg.WECDNBaseURL), "/") + path
+	endpoint := baseURL + path
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
 		return "", err

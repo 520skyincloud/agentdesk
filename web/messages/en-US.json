@@ -2313,6 +2313,7 @@
     "users": "Users",
     "roles": "Roles",
     "permissions": "Permissions",
+    "storageSettings": "Storage Settings",
     "dashboardHome": "Dashboard",
     "notifications": "Notifications",
     "changePassword": "Change Password",

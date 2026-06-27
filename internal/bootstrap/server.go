@@ -189,6 +189,7 @@ func addRouter(app *gin.Engine) {
 	registerDashboardAIAgentRoutes(dashboardGroup.Group("/ai-agent"))
 	registerDashboardAIConfigRoutes(dashboardGroup.Group("/ai-config"))
 	registerDashboardAssetRoutes(dashboardGroup.Group("/asset"))
+	registerDashboardStorageSettingRoutes(dashboardGroup.Group("/storage-setting"))
 	registerDashboardKnowledgeBaseRoutes(dashboardGroup.Group("/knowledge-base"))
 	registerDashboardKnowledgeDocumentRoutes(dashboardGroup.Group("/knowledge-document"))
 	registerDashboardKnowledgeFAQRoutes(dashboardGroup.Group("/knowledge-faq"))
