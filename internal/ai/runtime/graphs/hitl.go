@@ -24,16 +24,22 @@ func ParseConfirmationDecision(value string) ConfirmationDecision {
 	if value == "" {
 		return ""
 	}
-	confirmWords := []string{"确认", "是", "好的", "可以", "ok", "yes", "继续", "同意"}
-	for _, item := range confirmWords {
+	negativeWords := []string{"不确认", "先不", "别建", "不要创建", "不要下单", "不要派", "别派", "不用创建", "不需要创建"}
+	for _, item := range negativeWords {
 		if strings.Contains(value, item) {
-			return ConfirmationDecisionConfirm
+			return ConfirmationDecisionCancel
 		}
 	}
-	cancelWords := []string{"取消", "不用", "不需要", "算了", "no"}
+	cancelWords := []string{"取消", "不用", "不用了", "不需要", "不要", "不要了", "别", "算了", "no"}
 	for _, item := range cancelWords {
 		if strings.Contains(value, item) {
 			return ConfirmationDecisionCancel
+		}
+	}
+	confirmWords := []string{"确认", "确定", "对", "对的", "是", "好的", "好", "可以", "可以的", "行", "没问题", "嗯", "嗯嗯", "ok", "okay", "yes", "继续", "同意"}
+	for _, item := range confirmWords {
+		if strings.Contains(value, item) {
+			return ConfirmationDecisionConfirm
 		}
 	}
 	return ""

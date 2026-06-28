@@ -10,6 +10,7 @@ import (
 	applicationruntime "agent-desk/internal/ai/application/runtime"
 	"agent-desk/internal/ai/runtime/graphs"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/utils"
 	svc "agent-desk/internal/services"
 )
 
@@ -73,7 +74,7 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 		AIConfig:     *aiConfig,
 		CheckPointID: strings.TrimSpace(input.PendingInterrupt.CheckPointID),
 		ResumeData: map[string]string{
-			strings.TrimSpace(input.PendingInterrupt.InterruptID): strings.TrimSpace(input.Message.Content),
+			strings.TrimSpace(input.PendingInterrupt.InterruptID): e.resumeMessageText(input.Message),
 		},
 	})
 	if input.Trace != nil {
@@ -100,6 +101,10 @@ func (e *runtimeReplyExecutor) fillTraceFromSummary(trace *aiReplyTraceData, sum
 	if summary != nil && strings.TrimSpace(summary.TraceData) != "" {
 		trace.Runtime = json.RawMessage(summary.TraceData)
 	}
+}
+
+func (e *runtimeReplyExecutor) resumeMessageText(message models.Message) string {
+	return strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
 }
 
 func (e *runtimeReplyExecutor) applyWxWorkPersonaPrompt(conversationID int64, aiAgent models.AIAgent) models.AIAgent {
