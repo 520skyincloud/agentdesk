@@ -36,6 +36,11 @@ type WxProtocolChatMsg struct {
 	SourceType     int                    `json:"source_type"`
 	Width          int                    `json:"width"`
 	Height         int                    `json:"height"`
+	Longitude      float64                `json:"longitude"`
+	Latitude       float64                `json:"latitude"`
+	Title          string                 `json:"title"`
+	Address        string                 `json:"address"`
+	Zoom           float64                `json:"zoom"`
 	CDN            WxProtocolMediaPayload `json:"cdn"`
 }
 
@@ -85,6 +90,9 @@ func (m *WxProtocolChatMsg) normalizeMediaSize() {
 func (m *WxProtocolChatMsg) InferMsgType() int {
 	if m.ContentType == 2 && m.Content != "" {
 		return 2
+	}
+	if m.ContentType == 6 || m.Longitude != 0 || m.Latitude != 0 {
+		return 3
 	}
 	if m.VoiceTime > 0 {
 		return 6

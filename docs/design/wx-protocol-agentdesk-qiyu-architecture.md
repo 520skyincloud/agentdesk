@@ -472,6 +472,7 @@ flowchart TD
 - 视频/GIF 默认只展示和审计；如果要 AI 理解视频，需要额外做抽帧、封面识别或视频理解模型，不应把文件名当作视频内容。
 - 表情包/GIF 不是普通图片问答，不进入视觉识别。入站真实样本为 `msg_type=10, content_type=104, desc=动画表情, url=https://wework.qpic.cn/...`，系统入库为 `Message(gif)`，content 写“动画表情”，payload 保留真实 URL、宽高和协议字段。GIF 可触发 AI，但上下文只表达“客户发了动画表情”，AI 只能短句接住，例如“哈哈”“收到”“好嘞”，不要分析表情内容。
 - 入站外部媒体 URL 必须支持幂等复用：同一个表情包、同一张图片或同一个文件 URL 多次回调时，`Asset` 先按 `storageKey` 查已有记录，存在则复用原 `assetId`，不能重复插入导致 `uk_storage_key` 唯一索引报错。2026-06-28 用同一真实表情包 URL 重放验证，第二次消息复用 `assetId=c52995874c22494dbc073e9fa6a8978f`，新消息正常入库为 `Message(id=283, type=gif)`。
+- 入站定位必须按真实协议字段优先识别：真实回调样本为 `content_type=6, msg_type=3, longitude=117.281937, latitude=31.716152, title=丽斯未来酒店..., address=安徽省合肥市...`。这类消息必须入库为 `Message(location)`，payload 保留 `longitude/latitude/title/address/zoom/content_type/msg_type`，网页端展示定位卡片并可打开地图。不能按旧映射把 `msg_type=3` 当语音，否则会错误进入语音翻译和语音卡片。2026-06-28 已用真实定位回调重放验证，`Message(id=292)` 正常入库为 `location`，并修正历史错入库消息 `id=289`。
 
 媒体理解和 AI 回复触发规则：
 

@@ -502,6 +502,9 @@ func (s *wxWorkProtocolService) resolveMessageType(msgType int) enums.IMMessageT
 }
 
 func (s *wxWorkProtocolService) resolveInboundMessageType(msg request.WxProtocolChatMsg) enums.IMMessageType {
+	if msg.ContentType == 6 || msg.Longitude != 0 || msg.Latitude != 0 {
+		return enums.IMMessageTypeLocation
+	}
 	if msg.MsgType == wxProtocolMsgGIF || msg.ContentType == 104 || msg.SourceType == 101 {
 		return enums.IMMessageTypeGIF
 	}
@@ -522,6 +525,9 @@ func (s *wxWorkProtocolService) buildInboundMessageContent(instance *models.WxWo
 		return s.messageContent(msg), strings.TrimSpace(s.rawMessagePayload(msg)), nil
 	}
 	if !isAssetBackedMessageType(messageType) {
+		if messageType == enums.IMMessageTypeLocation {
+			return s.locationMessageContent(msg), s.locationMessagePayload(msg), nil
+		}
 		content := strings.TrimSpace(msg.Content)
 		if content == "" {
 			content = strings.TrimSpace(msg.Desc)
@@ -771,6 +777,41 @@ func isAssetBackedMessageType(messageType enums.IMMessageType) bool {
 func (s *wxWorkProtocolService) rawMessagePayload(msg request.WxProtocolChatMsg) string {
 	raw, _ := json.Marshal(msg)
 	return string(raw)
+}
+
+func (s *wxWorkProtocolService) locationMessageContent(msg request.WxProtocolChatMsg) string {
+	title := strings.TrimSpace(msg.Title)
+	if title == "" {
+		title = strings.TrimSpace(msg.Content)
+	}
+	if title == "" {
+		title = strings.TrimSpace(msg.Address)
+	}
+	if title == "" {
+		title = "位置"
+	}
+	return title
+}
+
+func (s *wxWorkProtocolService) locationMessagePayload(msg request.WxProtocolChatMsg) string {
+	payload := map[string]any{
+		"longitude":    msg.Longitude,
+		"latitude":     msg.Latitude,
+		"title":        strings.TrimSpace(msg.Title),
+		"address":      strings.TrimSpace(msg.Address),
+		"zoom":         msg.Zoom,
+		"content_type": msg.ContentType,
+		"msg_type":     msg.MsgType,
+		"msg_id":       firstNonBlank(msg.MsgID, msg.ID),
+	}
+	if payload["title"] == "" {
+		payload["title"] = s.locationMessageContent(msg)
+	}
+	if payload["zoom"] == float64(0) {
+		delete(payload, "zoom")
+	}
+	bytes, _ := json.Marshal(payload)
+	return string(bytes)
 }
 
 func (s *wxWorkProtocolService) parseMediaPayload(msg request.WxProtocolChatMsg) request.WxProtocolMediaPayload {
