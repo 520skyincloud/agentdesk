@@ -402,11 +402,11 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "duplicate message")
 		return nil
 	}
-	if strings.TrimSpace(msg.Content) == "" && !s.isSupportedMediaMessage(msg.MsgType) {
+	messageType := s.resolveInboundMessageType(msg)
+	if strings.TrimSpace(msg.Content) == "" && messageType == "" {
 		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "empty content")
 		return nil
 	}
-	messageType := s.resolveMessageType(msg.MsgType)
 	if messageType == "" {
 		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, fmt.Sprintf("unsupported msg_type=%d", msg.MsgType))
 		return nil
@@ -501,6 +501,13 @@ func (s *wxWorkProtocolService) resolveMessageType(msgType int) enums.IMMessageT
 	}
 }
 
+func (s *wxWorkProtocolService) resolveInboundMessageType(msg request.WxProtocolChatMsg) enums.IMMessageType {
+	if msg.MsgType == wxProtocolMsgGIF || msg.ContentType == 104 || msg.SourceType == 101 {
+		return enums.IMMessageTypeGIF
+	}
+	return s.resolveMessageType(msg.MsgType)
+}
+
 func (s *wxWorkProtocolService) resolveAttachmentMessageType(msgType int) enums.IMMessageType {
 	return enums.IMMessageTypeAttachment
 }
@@ -525,6 +532,15 @@ func (s *wxWorkProtocolService) buildInboundMessageContent(instance *models.WxWo
 		return content, strings.TrimSpace(s.rawMessagePayload(msg)), nil
 	}
 	media := s.parseMediaPayload(msg)
+	if messageType == enums.IMMessageTypeGIF {
+		media.URL = firstNonBlank(media.URL, msg.URL)
+		if media.ImageWidth <= 0 {
+			media.ImageWidth = msg.Width
+		}
+		if media.ImageHeight <= 0 {
+			media.ImageHeight = msg.Height
+		}
+	}
 	if media.FileSize <= 0 && media.Size > 0 {
 		media.FileSize = media.Size
 	}
@@ -566,6 +582,9 @@ func (s *wxWorkProtocolService) buildInboundMessageContent(instance *models.WxWo
 	}
 	payloadBytes, _ := json.Marshal(payloadMap)
 	content := filename
+	if messageType == enums.IMMessageTypeGIF {
+		content = firstNonBlank(msg.Desc, "动画表情")
+	}
 	if messageType == enums.IMMessageTypeVoice {
 		if text := strings.TrimSpace(msg.Desc); text != "" && text != filename {
 			content = text

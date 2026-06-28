@@ -150,6 +150,12 @@ func applyStorageObjectPrefix(prefix string) string {
 
 func (s *assetService) RegisterExternal(prefix string, filename string, fileSize int64, mimeType string, externalURL string, principal *dto.AuthPrincipal) (*models.Asset, error) {
 	provider := enums.AssetProviderLocal
+	externalURL = strings.TrimSpace(externalURL)
+	if externalURL != "" {
+		if existing := repositories.AssetRepository.Take(sqls.DB(), "storage_key = ?", externalURL); existing != nil {
+			return existing, nil
+		}
+	}
 	assetID, key := storage.GenerateStorageKey(storage.UploadInfo{
 		Prefix:    prefix,
 		Filename:  filename,
@@ -157,8 +163,8 @@ func (s *assetService) RegisterExternal(prefix string, filename string, fileSize
 		MimeType:  mimeType,
 		Principal: principal,
 	})
-	if strings.TrimSpace(externalURL) != "" {
-		key = strings.TrimSpace(externalURL)
+	if externalURL != "" {
+		key = externalURL
 	}
 	item := &models.Asset{
 		AssetID:     assetID,

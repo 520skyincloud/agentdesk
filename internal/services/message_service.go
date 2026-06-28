@@ -591,7 +591,7 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 }
 
 func shouldTriggerAIReply(messageType enums.IMMessageType) bool {
-	return messageType == enums.IMMessageTypeText || messageType == enums.IMMessageTypeHTML
+	return messageType == enums.IMMessageTypeText || messageType == enums.IMMessageTypeHTML || messageType == enums.IMMessageTypeGIF
 }
 
 func isMediaUnderstandingMessage(messageType enums.IMMessageType) bool {

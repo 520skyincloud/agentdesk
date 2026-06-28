@@ -31,6 +31,11 @@ type WxProtocolChatMsg struct {
 	SenderName     string                 `json:"sender_name"`
 	FileName       string                 `json:"file_name"`
 	VoiceTime      int64                  `json:"voice_time"`
+	URL            string                 `json:"url"`
+	Type           int                    `json:"type"`
+	SourceType     int                    `json:"source_type"`
+	Width          int                    `json:"width"`
+	Height         int                    `json:"height"`
 	CDN            WxProtocolMediaPayload `json:"cdn"`
 }
 
@@ -89,6 +94,9 @@ func (m *WxProtocolChatMsg) InferMsgType() int {
 	}
 	if m.ContentType == 48 {
 		return 3
+	}
+	if m.ContentType == 104 || m.SourceType == 101 {
+		return 10
 	}
 	if m.CDN.ImageWidth > 0 || m.CDN.ImageHeight > 0 || m.ContentType == 101 {
 		return 5

@@ -133,6 +133,11 @@ func BuildRuntimeMessageText(messageType enums.IMMessageType, content string) st
 			return "[附件] " + content
 		}
 		return "[附件]"
+	case enums.IMMessageTypeGIF:
+		if content != "" {
+			return "[动画表情] " + content
+		}
+		return "[动画表情]"
 	default:
 		return content
 	}
