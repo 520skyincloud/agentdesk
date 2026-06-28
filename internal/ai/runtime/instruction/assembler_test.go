@@ -34,3 +34,21 @@ func TestAssemblerInjectsBaseInstructionWhenInputIsEmpty(t *testing.T) {
 		t.Fatalf("unexpected summary, got %#v", result.Summary)
 	}
 }
+
+func TestAssemblerBaseInstructionKeepsHumanToneGuardrails(t *testing.T) {
+	result := NewAssembler().Assemble(AssemblerInput{})
+	checks := []string{
+		"默认 1 句，最多 2 句",
+		"少用“您”，优先说“你”",
+		"不要说“亲”“为您”“这边”",
+		"不要超过 6 个字",
+		"在工具成功前，不要说“马上安排”",
+		"不能说已经派人、已经登记、已经派单",
+		"现在只能文字回你，打字发我就行",
+	}
+	for _, check := range checks {
+		if !strings.Contains(result.Text, check) {
+			t.Fatalf("missing human tone guardrail %q in: %s", check, result.Text)
+		}
+	}
+}
