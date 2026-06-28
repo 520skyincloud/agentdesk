@@ -556,6 +556,8 @@ flowchart LR
 
 小程序消息必须按真实协议字段结构化展示，不能落到附件兜底。真实回调样本为 `content_type=78, msg_type=12, username=gh_7370f8f46fc0@app, appid=wx37bef9195b47f085, appname=自由家安心宿, title=e秒安心住, page_path=pages/home/home.html, appicon=...`。后端入库 `Message(mini_program)`，payload 保留 `appid/appname/appicon/title/page_path/username/thumb_width/thumb_height/wxMedia`；网页端使用 `appname/appicon/title/page_path` 渲染小程序卡片。2026-06-28 已修正历史消息 `Message(id=317)`，并将“丽斯未来酒店通用小程序”写入知识候选：小程序名“自由家安心宿”，卡片标题“e秒安心住”，appid `wx37bef9195b47f085`，page_path `pages/home/home.html`。
 
+发送小程序时不能复用客户入站卡片里的 `file_id/aes_key/md5/size`。这组 CDN 参数属于入站消息资源，直接复用会出现协议返回 `error_code=0` 但客户点击卡片无法打开的情况。正确流程是：读取 payload 中的 `appicon/thumb_url/image_url` -> 调 `/cdn/get_cdn_info` -> 调私有化 WECDN `/cloud/c2c_upload` 重新上传封面，得到发送端自己的 `file_id/aes_key/md5/size` -> 再调用 `/msg/send_weapp`。2026-06-28 真实测试中，`1001567/1001569` 为错误复用入站 CDN 的发送样本，`1001571` 为重新上传封面后的发送样本；后续代码已在 `prepareOutboundMiniProgramMedia` 中固化该流程。
+
 企微员工号渠道适配器边界：
 
 - 新增 `WxWorkProtocolAdapter` 接口，当前默认实现封装在 `defaultWxWorkProtocolAdapter`，用于承接员工号协议发送能力。

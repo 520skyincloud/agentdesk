@@ -1242,6 +1242,8 @@ func (s *wxWorkProtocolService) prepareOutboundMessageMedia(cfg *dto.WxWorkProto
 	}
 	switch message.MessageType {
 	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeAttachment, enums.IMMessageTypeVideo, enums.IMMessageTypeGIF:
+	case enums.IMMessageTypeMiniProgram:
+		return s.prepareOutboundMiniProgramMedia(cfg, instance, message)
 	default:
 		return nil
 	}
@@ -1272,6 +1274,62 @@ func (s *wxWorkProtocolService) prepareOutboundMessageMedia(cfg *dto.WxWorkProto
 		return err
 	}
 	message.Payload = payload
+	return nil
+}
+
+func (s *wxWorkProtocolService) prepareOutboundMiniProgramMedia(cfg *dto.WxWorkProtocolChannelConfig, instance *models.WxWorkProtocolInstance, message *models.Message) error {
+	body, err := wxProtocolRichPayload(message.Payload)
+	if err != nil {
+		return err
+	}
+	coverURL := firstNonBlank(
+		strings.TrimSpace(fmt.Sprint(body["appicon"])),
+		strings.TrimSpace(fmt.Sprint(body["thumb_url"])),
+		strings.TrimSpace(fmt.Sprint(body["image_url"])),
+		strings.TrimSpace(fmt.Sprint(body["cover_url"])),
+	)
+	if coverURL == "" || coverURL == "<nil>" {
+		if !isEmptyProtocolValue(body["file_id"]) && !isEmptyProtocolValue(body["aes_key"]) && !isEmptyProtocolValue(body["md5"]) && !isEmptyProtocolValue(body["size"]) {
+			return nil
+		}
+		return errorsx.InvalidParam("小程序消息缺少可上传封面 appicon/thumb_url/image_url")
+	}
+	if strings.TrimSpace(fmt.Sprint(body["wecdn_uploaded_by_guid"])) == strings.TrimSpace(instance.Guid) &&
+		!isEmptyProtocolValue(body["file_id"]) && !isEmptyProtocolValue(body["aes_key"]) && !isEmptyProtocolValue(body["md5"]) && !isEmptyProtocolValue(body["size"]) {
+		return nil
+	}
+	cfgBase, err := s.getCDNInfo(cfg, instance)
+	if err != nil {
+		return err
+	}
+	raw, err := s.postWECDNJSON(cfg, "/cloud/c2c_upload", map[string]any{
+		"base_request": cfgBase,
+		"file_type":    2,
+		"url":          coverURL,
+	})
+	if err != nil {
+		return err
+	}
+	media, err := parseWECDNMediaResponse(raw)
+	if err != nil {
+		return err
+	}
+	body["file_id"] = strings.TrimSpace(media.FileID)
+	body["aes_key"] = strings.TrimSpace(media.AesKey)
+	body["size"] = mediaSize(media)
+	body["md5"] = mediaMD5(media)
+	body["wecdn_uploaded"] = true
+	body["wecdn_uploaded_by_guid"] = strings.TrimSpace(instance.Guid)
+	body["wxMedia"] = wxProtocolMediaPayloadMap(media)
+	payloadBytes, _ := json.Marshal(body)
+	now := time.Now()
+	if err := repositories.MessageRepository.Updates(sqls.DB(), message.ID, map[string]any{
+		"payload":    string(payloadBytes),
+		"updated_at": now,
+	}); err != nil {
+		return err
+	}
+	message.Payload = string(payloadBytes)
 	return nil
 }
 
