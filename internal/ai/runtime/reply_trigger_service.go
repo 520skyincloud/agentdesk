@@ -16,8 +16,8 @@ import (
 )
 
 const aiReplyDebounceWindow = 1500 * time.Millisecond
-const aiReplyMediaSettleWindow = 8 * time.Second
-const aiReplyMediaContextWindow = 8 * time.Second
+const aiReplyMediaSettleWindow = 15 * time.Second
+const aiReplyMediaContextWindow = 15 * time.Second
 
 func (s *aiReplyService) resolveReplyTimeout(aiAgent models.AIAgent) time.Duration {
 	if aiAgent.ReplyTimeoutSeconds <= 0 {

@@ -234,25 +234,126 @@ func (s *knowledgeCandidateService) ExtractFromResolvedConversation(conversation
 	if state == nil {
 		return nil, nil
 	}
-	messages := MessageService.Find(sqls.NewCnd().Eq("conversation_id", conversationID).Desc("seq_no").Limit(20))
-	var question, answer string
-	var messageIDs []int64
-	var evidence strings.Builder
-	for _, item := range messages {
-		messageIDs = append(messageIDs, item.ID)
-		line := fmt.Sprintf("%s: %s\n", item.SenderType, strings.TrimSpace(item.Content))
-		evidence.WriteString(line)
-		if question == "" && item.SenderType == enums.IMSenderTypeCustomer {
-			question = item.Content
-		}
-		if answer == "" && item.SenderType == enums.IMSenderTypeAgent {
-			answer = item.Content
-		}
-	}
-	if strings.TrimSpace(question) == "" || strings.TrimSpace(answer) == "" {
+	messages := MessageService.Find(sqls.NewCnd().Eq("conversation_id", conversationID).Asc("seq_no").Limit(60))
+	extraction := buildKnowledgeCandidateExtraction(messages)
+	if !extraction.Eligible {
 		return nil, nil
 	}
-	return s.UpsertCandidate(state.StoreID, state.KnowledgeBaseID, conversationID, messageIDs, source, question, answer, "人工会话自动沉淀", evidence.String(), 0.6, string(source))
+	return s.UpsertCandidate(state.StoreID, state.KnowledgeBaseID, conversationID, extraction.MessageIDs, source, extraction.Question, extraction.Answer, extraction.Summary, extraction.Evidence, extraction.Confidence, string(source))
+}
+
+type knowledgeCandidateExtraction struct {
+	Eligible   bool
+	Question   string
+	Answer     string
+	Summary    string
+	Evidence   string
+	MessageIDs []int64
+	Confidence float64
+}
+
+func buildKnowledgeCandidateExtraction(messages []models.Message) knowledgeCandidateExtraction {
+	ret := knowledgeCandidateExtraction{MessageIDs: make([]int64, 0, len(messages)), Confidence: 0.72}
+	var lastCustomerQuestion models.Message
+	var answerLines []string
+	var evidence strings.Builder
+	for _, item := range messages {
+		content := strings.TrimSpace(stripHTMLForKnowledgeCandidate(item.Content))
+		if content == "" || !knowledgeCandidateMessageTypeAllowed(item.MessageType) {
+			continue
+		}
+		ret.MessageIDs = append(ret.MessageIDs, item.ID)
+		evidence.WriteString(fmt.Sprintf("%s: %s\n", item.SenderType, content))
+		switch item.SenderType {
+		case enums.IMSenderTypeCustomer:
+			if isKnowledgeCandidateQuestion(content) {
+				lastCustomerQuestion = item
+			}
+		case enums.IMSenderTypeAgent:
+			if lastCustomerQuestion.ID > 0 && isKnowledgeCandidateAnswer(content) {
+				answerLines = append(answerLines, content)
+			}
+		}
+	}
+	question := strings.TrimSpace(stripHTMLForKnowledgeCandidate(lastCustomerQuestion.Content))
+	answer := strings.TrimSpace(strings.Join(answerLines, "\n"))
+	if question == "" || answer == "" {
+		return ret
+	}
+	combined := strings.TrimSpace(question + "\n" + answer)
+	if isActionOnlyKnowledgeCandidate(combined) || isHumanDecisionKnowledgeCandidate(combined) || isLowValueKnowledgeCandidate(question, answer) {
+		return ret
+	}
+	ret.Eligible = true
+	ret.Question = limitText(question, 300)
+	ret.Answer = limitText(answer, 1200)
+	ret.Summary = "人工语言回答解决了当前门店知识库未覆盖的问题，待审核后可沉淀为门店 FAQ。"
+	ret.Evidence = strings.TrimSpace(evidence.String())
+	return ret
+}
+
+func knowledgeCandidateMessageTypeAllowed(messageType enums.IMMessageType) bool {
+	switch messageType {
+	case enums.IMMessageTypeText, enums.IMMessageTypeHTML:
+		return true
+	default:
+		return false
+	}
+}
+
+func stripHTMLForKnowledgeCandidate(value string) string {
+	value = strings.ReplaceAll(value, "<br>", "\n")
+	value = strings.ReplaceAll(value, "<br/>", "\n")
+	value = strings.ReplaceAll(value, "<br />", "\n")
+	re := regexp.MustCompile(`<[^>]+>`)
+	return strings.TrimSpace(re.ReplaceAllString(value, ""))
+}
+
+func isKnowledgeCandidateQuestion(value string) bool {
+	value = strings.TrimSpace(value)
+	if len([]rune(value)) < 4 {
+		return false
+	}
+	if containsKnowledgeCandidateAny(value, []string{"吗", "么", "什么", "怎么", "几点", "多久", "哪里", "在哪", "能不能", "可以", "有没有", "多少钱", "收费", "停车", "早餐", "发票", "押金", "退房", "入住", "路线", "地址"}) {
+		return true
+	}
+	return strings.Contains(value, "？") || strings.Contains(value, "?")
+}
+
+func isKnowledgeCandidateAnswer(value string) bool {
+	value = strings.TrimSpace(value)
+	if len([]rune(value)) < 8 {
+		return false
+	}
+	if containsKnowledgeCandidateAny(value, []string{"我帮您", "马上", "已经", "安排", "派单", "工单", "同事过去", "稍等", "收到", "好的", "嗯", "哦"}) && len([]rune(value)) < 40 {
+		return false
+	}
+	return !containsKnowledgeCandidateAny(value, []string{"请转人工", "联系人工", "我不知道", "不清楚", "看不清", "无法查看"})
+}
+
+func isActionOnlyKnowledgeCandidate(value string) bool {
+	return containsKnowledgeCandidateAny(value, []string{"送水", "拖鞋", "毛巾", "浴巾", "牙刷", "纸巾", "加被", "打扫", "保洁", "维修", "报修", "马桶", "空调", "漏水", "行李", "叫醒", "派单", "工单", "安排同事", "同事过去", "马上送", "给您送"})
+}
+
+func isHumanDecisionKnowledgeCandidate(value string) bool {
+	return containsKnowledgeCandidateAny(value, []string{"退款", "赔偿", "免单", "投诉", "差评", "安全", "报警", "隐私", "身份证", "订单异常", "价格争议", "升级处理"})
+}
+
+func isLowValueKnowledgeCandidate(question string, answer string) bool {
+	combined := strings.TrimSpace(question + answer)
+	if len([]rune(combined)) < 20 {
+		return true
+	}
+	return containsKnowledgeCandidateAny(combined, []string{"你好", "在吗", "谢谢", "不用了", "没事了", "好的", "嗯嗯"}) && len([]rune(combined)) < 50
+}
+
+func containsKnowledgeCandidateAny(value string, keywords []string) bool {
+	for _, keyword := range keywords {
+		if strings.Contains(value, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildKnowledgeCandidateSimilarityKey(storeID, knowledgeBaseID int64, question string) string {

@@ -531,6 +531,17 @@ func (s *wxWorkProtocolService) buildInboundMessageContent(instance *models.WxWo
 	if media.Size <= 0 && media.FileSize > 0 {
 		media.Size = media.FileSize
 	}
+	if strings.TrimSpace(media.FileName) == "" {
+		media.FileName = strings.TrimSpace(msg.FileName)
+	}
+	mediaMap := wxProtocolMediaPayloadMap(media)
+	mediaMap["msg_id"] = firstNonBlank(msg.MsgID, msg.ID)
+	mediaMap["conversation_id"] = s.protocolConversationIDFromMessage(instance, msg)
+	mediaMap["content_type"] = msg.ContentType
+	mediaMap["msg_type"] = msg.MsgType
+	if msg.VoiceTime > 0 {
+		mediaMap["voice_time"] = msg.VoiceTime
+	}
 	filename := strings.TrimSpace(media.Filename)
 	if filename == "" {
 		filename = s.defaultMediaFilename(messageType, msg)
@@ -551,7 +562,7 @@ func (s *wxWorkProtocolService) buildInboundMessageContent(instance *models.WxWo
 		"fileSize":   asset.FileSize,
 		"mimeType":   asset.MimeType,
 		"url":        strings.TrimSpace(media.URL),
-		"wxMedia":    media,
+		"wxMedia":    mediaMap,
 	}
 	payloadBytes, _ := json.Marshal(payloadMap)
 	content := filename
@@ -820,6 +831,7 @@ func fillMediaPayloadFromMap(payload *request.WxProtocolMediaPayload, values map
 	setString(&payload.URL, "url", "cdn_url", "download_url", "file_url", "thumb_url")
 	setString(&payload.FileID, "file_id", "fileid", "fileId", "id")
 	setString(&payload.AesKey, "aes_key", "aeskey", "aesKey")
+	setString(&payload.AuthKey, "auth_key", "authkey", "authKey")
 	setString(&payload.MD5, "md5", "file_md5", "fileMd5")
 	setString(&payload.Filename, "filename", "file_name", "name")
 	setString(&payload.FileName, "file_name", "filename", "name")
@@ -1038,6 +1050,67 @@ func (s *wxWorkProtocolService) protocolConversationID(mapping *models.WxWorkKFC
 		return "R:" + externalID
 	}
 	return "S:" + externalID
+}
+
+func (s *wxWorkProtocolService) protocolConversationIDFromMessage(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg) string {
+	if strings.TrimSpace(msg.Chatroom) != "" {
+		return "R:" + strings.TrimSpace(msg.Chatroom)
+	}
+	externalID := s.externalConversationID(instance, msg)
+	if strings.TrimSpace(externalID) == "" {
+		return ""
+	}
+	return "S:" + strings.TrimSpace(externalID)
+}
+
+func wxProtocolMediaPayloadMap(media request.WxProtocolMediaPayload) map[string]any {
+	ret := map[string]any{}
+	if media.URL != "" {
+		ret["url"] = media.URL
+	}
+	if media.FileID != "" {
+		ret["file_id"] = media.FileID
+	}
+	if media.AesKey != "" {
+		ret["aes_key"] = media.AesKey
+	}
+	if media.AuthKey != "" {
+		ret["auth_key"] = media.AuthKey
+	}
+	if media.Size > 0 {
+		ret["size"] = media.Size
+	}
+	if media.FileSize > 0 {
+		ret["file_size"] = media.FileSize
+	}
+	if media.ImageWidth > 0 {
+		ret["image_width"] = media.ImageWidth
+	}
+	if media.ImageHeight > 0 {
+		ret["image_height"] = media.ImageHeight
+	}
+	if media.MD5 != "" {
+		ret["md5"] = media.MD5
+	}
+	if media.FileMD5 != "" {
+		ret["file_md5"] = media.FileMD5
+	}
+	if media.IsHD {
+		ret["is_hd"] = media.IsHD
+	}
+	if media.Length > 0 {
+		ret["length"] = media.Length
+	}
+	if media.Filename != "" {
+		ret["filename"] = media.Filename
+	}
+	if media.FileName != "" {
+		ret["file_name"] = media.FileName
+	}
+	if media.MimeType != "" {
+		ret["mime_type"] = media.MimeType
+	}
+	return ret
 }
 
 func (s *wxWorkProtocolService) ValidateOutboundMediaReady(conversationID int64, messageType enums.IMMessageType, payload string) error {

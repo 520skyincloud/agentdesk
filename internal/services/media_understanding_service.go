@@ -17,6 +17,7 @@ import (
 
 	"agent-desk/internal/ai"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 
@@ -75,11 +76,11 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 	var text string
 	switch message.MessageType {
 	case enums.IMMessageTypeImage:
-		text, err = s.understandImage(ctx, payload)
+		text, err = s.understandImage(ctx, message, payload)
 	case enums.IMMessageTypeVoice:
-		text, err = s.transcribeVoice(ctx, payload)
+		text, err = s.transcribeVoice(ctx, message, payload)
 	case enums.IMMessageTypeAttachment:
-		text, err = s.extractFileText(ctx, payload)
+		text, err = s.extractFileText(ctx, message, payload)
 	default:
 		return nil
 	}
@@ -122,12 +123,12 @@ func parseMessageMediaPayload(raw string) (*messageMediaPayload, error) {
 	return payload, nil
 }
 
-func (s *mediaUnderstandingService) understandImage(ctx context.Context, payload *messageMediaPayload) (string, error) {
+func (s *mediaUnderstandingService) understandImage(ctx context.Context, message *models.Message, payload *messageMediaPayload) (string, error) {
 	if payload == nil {
 		return "", fmt.Errorf("图片 payload 为空")
 	}
 	asset := AssetService.GetByAssetID(payload.AssetID)
-	data, mimeType, err := s.readAssetBytes(asset, payload)
+	data, mimeType, err := s.readAssetBytes(message, asset, payload)
 	if err != nil {
 		return "", err
 	}
@@ -139,28 +140,123 @@ func (s *mediaUnderstandingService) understandImage(ctx context.Context, payload
 	return s.callOpenAICompatibleVision(ctx, *config, imageURL)
 }
 
-func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, payload *messageMediaPayload) (string, error) {
+func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message *models.Message, payload *messageMediaPayload) (string, error) {
 	if payload == nil {
 		return "", fmt.Errorf("语音 payload 为空")
 	}
+	var protocolErr error
+	if text, err := s.transcribeWxWorkVoice(ctx, message, payload); err == nil && strings.TrimSpace(text) != "" {
+		return text, nil
+	} else if err != nil {
+		protocolErr = err
+	}
 	asset := AssetService.GetByAssetID(payload.AssetID)
-	data, _, err := s.readAssetBytes(asset, payload)
+	data, _, err := s.readAssetBytes(message, asset, payload)
 	if err != nil {
+		if protocolErr != nil {
+			return "", fmt.Errorf("企微语音翻译失败: %v；语音文件下载失败: %w", protocolErr, err)
+		}
 		return "", err
 	}
 	config, err := ai.GetEnabledAIConfig(enums.AIModelTypeASR)
 	if err != nil {
+		if protocolErr != nil {
+			return "", fmt.Errorf("企微语音翻译失败: %v；ASR 模型配置失败: %w", protocolErr, err)
+		}
 		return "", err
 	}
-	return s.callOpenAICompatibleASR(ctx, *config, payload.Filename, data)
+	text, err := s.callOpenAICompatibleASR(ctx, *config, payload.Filename, data)
+	if err != nil && protocolErr != nil {
+		return "", fmt.Errorf("企微语音翻译失败: %v；ASR 调用失败: %w", protocolErr, err)
+	}
+	return text, err
 }
 
-func (s *mediaUnderstandingService) extractFileText(ctx context.Context, payload *messageMediaPayload) (string, error) {
+func (s *mediaUnderstandingService) transcribeWxWorkVoice(ctx context.Context, message *models.Message, payload *messageMediaPayload) (string, error) {
+	if message == nil || payload == nil {
+		return "", fmt.Errorf("语音消息为空")
+	}
+	state := ConversationRouteService.GetByConversationID(message.ConversationID)
+	if state == nil || state.WxWorkInstanceID <= 0 {
+		return "", fmt.Errorf("会话缺少企微员工号实例绑定")
+	}
+	instance := WxWorkProtocolInstanceService.Get(state.WxWorkInstanceID)
+	if instance == nil {
+		return "", fmt.Errorf("企微员工号实例不存在")
+	}
+	channel := ChannelService.Get(instance.ChannelID)
+	if channel == nil || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
+		return "", fmt.Errorf("企微协议渠道不存在")
+	}
+	cfg, err := ChannelService.ParseWxWorkProtocolChannelConfig(channel.ConfigJSON)
+	if err != nil {
+		return "", err
+	}
+	conversationID := strings.TrimSpace(wxWorkProtocolVoiceConversationID(message.Payload, message.ConversationID))
+	msgID := strings.TrimSpace(wxWorkProtocolVoiceMsgID(message.Payload))
+	if msgID == "" && len(payload.WxMedia) > 0 {
+		msgID = strings.TrimSpace(fmt.Sprint(payload.WxMedia["msg_id"]))
+	}
+	if conversationID == "" || msgID == "" {
+		if refConversationID, refMsgID := wxWorkProtocolVoiceRefIDs(message.ID); conversationID == "" || msgID == "" {
+			if conversationID == "" {
+				conversationID = refConversationID
+			}
+			if msgID == "" {
+				msgID = refMsgID
+			}
+		}
+	}
+	if conversationID == "" || msgID == "" {
+		return "", fmt.Errorf("语音消息缺少企微 conversation_id 或 msgid")
+	}
+	applyResp, err := WxWorkProtocolService.postJSON(cfg, "/msg/apply_voice_id", map[string]any{
+		"guid":            strings.TrimSpace(instance.Guid),
+		"conversation_id": conversationID,
+		"msgid":           msgID,
+	})
+	if err != nil {
+		return "", err
+	}
+	voiceID := extractNestedString(applyResp, "voiceid", "voice_id", "id")
+	if voiceID == "" {
+		return "", fmt.Errorf("企微语音翻译申请未返回 voiceid")
+	}
+	deadline := time.Now().Add(12 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+		queryResp, queryErr := WxWorkProtocolService.postJSON(cfg, "/msg/query_voice_text", map[string]any{
+			"guid":    strings.TrimSpace(instance.Guid),
+			"voiceid": voiceID,
+		})
+		if queryErr != nil {
+			lastErr = queryErr
+		} else if text := extractNestedString(queryResp, "text", "content"); text != "" {
+			return text, nil
+		} else {
+			lastErr = fmt.Errorf("企微语音翻译结果为空")
+		}
+		if !sleepContext(ctx, 1500*time.Millisecond) {
+			return "", ctx.Err()
+		}
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("企微语音翻译超时")
+}
+
+func (s *mediaUnderstandingService) extractFileText(ctx context.Context, message *models.Message, payload *messageMediaPayload) (string, error) {
 	if payload == nil {
 		return "", fmt.Errorf("文件 payload 为空")
 	}
 	asset := AssetService.GetByAssetID(payload.AssetID)
-	data, mimeType, err := s.readAssetBytes(asset, payload)
+	data, mimeType, err := s.readAssetBytes(message, asset, payload)
 	if err != nil {
 		return "", err
 	}
@@ -171,7 +267,8 @@ func (s *mediaUnderstandingService) extractFileText(ctx context.Context, payload
 	return "", fmt.Errorf("当前文件类型 %s 只做展示和审计，尚未启用解析器", mimeType)
 }
 
-func (s *mediaUnderstandingService) readAssetBytes(asset *models.Asset, payload *messageMediaPayload) ([]byte, string, error) {
+func (s *mediaUnderstandingService) readAssetBytes(message *models.Message, asset *models.Asset, payload *messageMediaPayload) ([]byte, string, error) {
+	var recoverErr error
 	if asset != nil && strings.TrimSpace(asset.StorageKey) != "" {
 		reader, err := AssetService.OpenReader(asset)
 		if err == nil {
@@ -186,9 +283,22 @@ func (s *mediaUnderstandingService) readAssetBytes(asset *models.Asset, payload 
 			}
 			return data, mimeType, nil
 		}
+		var recovered *models.Asset
+		recovered, recoverErr = s.recoverWxWorkMediaAsset(message, payload)
+		if recoverErr == nil && recovered != nil {
+			return s.readAssetBytes(nil, recovered, payload)
+		}
+	}
+	var recovered *models.Asset
+	recovered, recoverErr = s.recoverWxWorkMediaAsset(message, payload)
+	if recoverErr == nil && recovered != nil {
+		return s.readAssetBytes(nil, recovered, payload)
 	}
 	downloadURL := mediaDownloadURL(payload)
 	if payload == nil || downloadURL == "" {
+		if recoverErr != nil && len(payload.WxMedia) > 0 {
+			return nil, "", fmt.Errorf("企微媒体二次下载失败: %w", recoverErr)
+		}
 		return nil, "", fmt.Errorf("媒体文件没有可读取的 asset 或 URL")
 	}
 	req, err := http.NewRequest(http.MethodGet, downloadURL, nil)
@@ -214,6 +324,39 @@ func (s *mediaUnderstandingService) readAssetBytes(asset *models.Asset, payload 
 	return data, strings.Split(mimeType, ";")[0], nil
 }
 
+func (s *mediaUnderstandingService) recoverWxWorkMediaAsset(message *models.Message, payload *messageMediaPayload) (*models.Asset, error) {
+	if message == nil || payload == nil || len(payload.WxMedia) == 0 {
+		return nil, fmt.Errorf("没有可用于二次下载的企微媒体参数")
+	}
+	state := ConversationRouteService.GetByConversationID(message.ConversationID)
+	if state == nil || state.WxWorkInstanceID <= 0 {
+		return nil, fmt.Errorf("会话缺少企微员工号实例绑定")
+	}
+	instance := WxWorkProtocolInstanceService.Get(state.WxWorkInstanceID)
+	if instance == nil {
+		return nil, fmt.Errorf("企微员工号实例不存在")
+	}
+	media := request.WxProtocolMediaPayload{}
+	fillMediaPayloadFromMap(&media, payload.WxMedia)
+	if strings.TrimSpace(media.FileID) == "" {
+		return nil, fmt.Errorf("企微媒体参数缺少 file_id")
+	}
+	asset, err := WxWorkProtocolService.downloadInboundMediaToAsset(instance, message.MessageType, request.WxProtocolChatMsg{}, media, payload.Filename, payload.MimeType)
+	if err != nil {
+		return nil, err
+	}
+	payload.AssetID = asset.AssetID
+	payload.Filename = asset.Filename
+	payload.MimeType = asset.MimeType
+	payload.MediaError = ""
+	if message.ID > 0 {
+		if err := s.updateMessagePayload(message.ID, payload); err != nil {
+			slog.Warn("update recovered wxwork media asset payload failed", "message_id", message.ID, "error", err)
+		}
+	}
+	return asset, nil
+}
+
 func mediaDownloadURL(payload *messageMediaPayload) string {
 	if payload == nil {
 		return ""
@@ -227,6 +370,116 @@ func mediaDownloadURL(payload *messageMediaPayload) string {
 		}
 	}
 	return ""
+}
+
+func wxWorkProtocolVoiceMsgID(rawPayload string) string {
+	root := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(rawPayload)), &root); err != nil {
+		return ""
+	}
+	for _, key := range []string{"msg_id", "msgid", "id"} {
+		if value := strings.TrimSpace(fmt.Sprint(root[key])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return ""
+}
+
+func wxWorkProtocolVoiceConversationID(rawPayload string, conversationID int64) string {
+	root := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(rawPayload)), &root); err == nil {
+		if value := strings.TrimSpace(fmt.Sprint(root["conversation_id"])); value != "" && value != "<nil>" {
+			return value
+		}
+		chatroom := strings.TrimSpace(fmt.Sprint(root["chatroom"]))
+		if chatroom != "" && chatroom != "<nil>" {
+			return "R:" + chatroom
+		}
+		fromUsername := strings.TrimSpace(fmt.Sprint(root["from_username"]))
+		toUsername := strings.TrimSpace(fmt.Sprint(root["to_username"]))
+		state := ConversationRouteService.GetByConversationID(conversationID)
+		if state != nil && state.WxWorkInstanceID > 0 {
+			if instance := WxWorkProtocolInstanceService.Get(state.WxWorkInstanceID); instance != nil {
+				employeeID := strings.TrimSpace(instance.EmployeeUserID)
+				switch {
+				case employeeID != "" && fromUsername == employeeID && toUsername != "":
+					return "S:" + toUsername
+				case employeeID != "" && toUsername == employeeID && fromUsername != "":
+					return "S:" + fromUsername
+				}
+			}
+		}
+		if fromUsername != "" && fromUsername != "<nil>" {
+			return "S:" + fromUsername
+		}
+	}
+	return ""
+}
+
+func wxWorkProtocolVoiceRefIDs(messageID int64) (conversationID string, msgID string) {
+	if messageID <= 0 {
+		return "", ""
+	}
+	ref := WxWorkKFMessageRefService.Take("message_id = ? AND direction = ?", messageID, string(enums.WxWorkKFMessageDirectionIn))
+	if ref == nil {
+		return "", ""
+	}
+	msgID = strings.TrimPrefix(strings.TrimSpace(ref.WxMsgID), "wx_protocol:")
+	if idx := strings.LastIndex(msgID, ":"); idx >= 0 {
+		msgID = strings.TrimSpace(msgID[idx+1:])
+	}
+	raw := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(ref.RawPayload)), &raw); err == nil {
+		data := raw
+		if nested, ok := raw["data"].(map[string]any); ok {
+			data = nested
+		}
+		if value := strings.TrimSpace(fmt.Sprint(data["conversation_id"])); value != "" && value != "<nil>" {
+			conversationID = value
+		}
+		chatroom := strings.TrimSpace(fmt.Sprint(data["chatroom"]))
+		roomID := strings.TrimSpace(fmt.Sprint(data["roomid"]))
+		if conversationID == "" && chatroom != "" && chatroom != "<nil>" {
+			conversationID = "R:" + chatroom
+		}
+		if conversationID == "" && roomID != "" && roomID != "0" && roomID != "<nil>" {
+			conversationID = "R:" + roomID
+		}
+	}
+	if conversationID == "" && strings.TrimSpace(ref.ExternalUserID) != "" {
+		conversationID = "S:" + strings.TrimSpace(ref.ExternalUserID)
+	}
+	return conversationID, msgID
+}
+
+func extractNestedString(raw string, keys ...string) string {
+	root := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &root); err != nil {
+		return ""
+	}
+	scopes := []map[string]any{root}
+	if data, ok := root["data"].(map[string]any); ok {
+		scopes = append(scopes, data)
+	}
+	for _, scope := range scopes {
+		for _, key := range keys {
+			if value := strings.TrimSpace(fmt.Sprint(scope[key])); value != "" && value != "<nil>" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func sleepContext(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func detectMimeType(filename string, data []byte) string {
