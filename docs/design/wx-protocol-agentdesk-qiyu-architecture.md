@@ -556,7 +556,7 @@ flowchart LR
 
 小程序消息必须按真实协议字段结构化展示，不能落到附件兜底。真实回调样本为 `content_type=78, msg_type=12, username=gh_7370f8f46fc0@app, appid=wx37bef9195b47f085, appname=自由家安心宿, title=e秒安心住, page_path=pages/home/home.html, appicon=...`。后端入库 `Message(mini_program)`，payload 保留 `appid/appname/appicon/title/page_path/username/thumb_width/thumb_height/wxMedia`；网页端使用 `appname/appicon/title/page_path` 渲染小程序卡片。2026-06-28 已修正历史消息 `Message(id=317)`，并将“丽斯未来酒店通用小程序”写入知识候选：小程序名“自由家安心宿”，卡片标题“e秒安心住”，appid `wx37bef9195b47f085`，page_path `pages/home/home.html`。
 
-发送小程序时不能复用客户入站卡片里的 `file_id/aes_key/md5/size`。这组 CDN 参数属于入站消息资源，直接复用会出现协议返回 `error_code=0` 但客户点击卡片无法打开的情况。正确流程是：读取 payload 中的 `appicon/thumb_url/image_url` -> 调 `/cdn/get_cdn_info` -> 调私有化 WECDN `/cloud/c2c_upload` 重新上传封面，得到发送端自己的 `file_id/aes_key/md5/size` -> 再调用 `/msg/send_weapp`。2026-06-28 真实测试中，`1001567/1001569` 为错误复用入站 CDN 的发送样本，`1001571` 为重新上传封面后的发送样本；后续代码已在 `prepareOutboundMiniProgramMedia` 中固化该流程。
+发送小程序的最终实测规则如下：`conversation_id` 决定发给哪个客户或群，`username` 必须是小程序原始 ID，例如 `gh_7370f8f46fc0@app`，不能写成客户 `external_user_id`；封面优先沿用真实卡片里的大封面 CDN 四件套 `file_id/aes_key/md5/size`，只有这些字段缺失时，才读取 `thumb_url/image_url/cover_url/appicon` 并通过 `/cdn/get_cdn_info` + 私有化 WECDN `/cloud/c2c_upload` 补齐发送端封面参数。`appicon` 是小程序图标，不应优先当封面上传，否则可能出现卡片能打开但封面消失或变成小图的问题。2026-06-28 真实测试确认：同时带 `conversation_id=S:7881302995969629`、`username=gh_7370f8f46fc0@app`、原始大封面 `file_id/aes_key/md5/size` 后，客户可正常收到“自由家安心宿 / e秒安心住”小程序卡片，封面正常且可点击打开。代码已在 `prepareOutboundMiniProgramMedia` 中固化：缺 `username` 直接失败；已有封面 CDN 四件套时绝不重新上传覆盖。
 
 企微员工号渠道适配器边界：
 

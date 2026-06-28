@@ -1282,21 +1282,23 @@ func (s *wxWorkProtocolService) prepareOutboundMiniProgramMedia(cfg *dto.WxWorkP
 	if err != nil {
 		return err
 	}
+	// /msg/send_weapp has two identities: conversation_id decides who receives it,
+	// while username is the mini program original ID, for example gh_xxx@app.
+	// Using the customer username here can produce a card that renders but cannot open.
+	if isEmptyProtocolValue(body["username"]) {
+		return errorsx.InvalidParam("小程序消息缺少 username（小程序原始ID，如 gh_xxx@app）")
+	}
+	if !isEmptyProtocolValue(body["file_id"]) && !isEmptyProtocolValue(body["aes_key"]) && !isEmptyProtocolValue(body["md5"]) && !isEmptyProtocolValue(body["size"]) {
+		return nil
+	}
 	coverURL := firstNonBlank(
-		strings.TrimSpace(fmt.Sprint(body["appicon"])),
 		strings.TrimSpace(fmt.Sprint(body["thumb_url"])),
 		strings.TrimSpace(fmt.Sprint(body["image_url"])),
 		strings.TrimSpace(fmt.Sprint(body["cover_url"])),
+		strings.TrimSpace(fmt.Sprint(body["appicon"])),
 	)
 	if coverURL == "" || coverURL == "<nil>" {
-		if !isEmptyProtocolValue(body["file_id"]) && !isEmptyProtocolValue(body["aes_key"]) && !isEmptyProtocolValue(body["md5"]) && !isEmptyProtocolValue(body["size"]) {
-			return nil
-		}
-		return errorsx.InvalidParam("小程序消息缺少可上传封面 appicon/thumb_url/image_url")
-	}
-	if strings.TrimSpace(fmt.Sprint(body["wecdn_uploaded_by_guid"])) == strings.TrimSpace(instance.Guid) &&
-		!isEmptyProtocolValue(body["file_id"]) && !isEmptyProtocolValue(body["aes_key"]) && !isEmptyProtocolValue(body["md5"]) && !isEmptyProtocolValue(body["size"]) {
-		return nil
+		return errorsx.InvalidParam("小程序消息缺少可上传封面 thumb_url/image_url/cover_url/appicon")
 	}
 	cfgBase, err := s.getCDNInfo(cfg, instance)
 	if err != nil {

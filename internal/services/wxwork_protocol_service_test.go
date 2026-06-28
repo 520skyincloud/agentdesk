@@ -2,8 +2,10 @@ package services
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 )
@@ -42,6 +44,26 @@ func TestWxWorkProtocolLocationMessageIsNotVoice(t *testing.T) {
 	}
 	if body["longitude"] != msg.Longitude || body["latitude"] != msg.Latitude || body["title"] != msg.Title || body["address"] != msg.Address {
 		t.Fatalf("unexpected location payload: %#v", body)
+	}
+}
+
+func TestPrepareOutboundMiniProgramMediaKeepsExistingCoverCredentials(t *testing.T) {
+	svc := &wxWorkProtocolService{}
+	message := &models.Message{Payload: `{"username":"gh_7370f8f46fc0@app","file_id":"cover-file-id","aes_key":"cover-aes-key","md5":"cover-md5","size":20810,"appicon":"http://example.com/icon.png"}`}
+	if err := svc.prepareOutboundMiniProgramMedia(nil, &models.WxWorkProtocolInstance{Guid: "guid-1"}, message); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(message.Payload, "cover-file-id") {
+		t.Fatalf("expected payload to keep original cover credentials, got %s", message.Payload)
+	}
+}
+
+func TestPrepareOutboundMiniProgramMediaRequiresMiniProgramUsername(t *testing.T) {
+	svc := &wxWorkProtocolService{}
+	message := &models.Message{Payload: `{"conversation_id":"S:7881302995969629","file_id":"cover-file-id","aes_key":"cover-aes-key","md5":"cover-md5","size":20810}`}
+	err := svc.prepareOutboundMiniProgramMedia(nil, &models.WxWorkProtocolInstance{Guid: "guid-1"}, message)
+	if err == nil || !strings.Contains(err.Error(), "username") {
+		t.Fatalf("expected username validation error, got %v", err)
 	}
 }
 
