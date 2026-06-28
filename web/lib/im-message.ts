@@ -297,8 +297,8 @@ function renderFeedHTML(payload: RichPayload | null, content: string) {
 function renderMiniProgramHTML(payload: RichPayload | null, content: string) {
   return renderInfoCardHTML(
     `小程序：${stringField(payload, "title") || content || "小程序"}`,
-    stringField(payload, "description") || stringField(payload, "app_name") || stringField(payload, "username"),
-    stringField(payload, "thumb_url") || stringField(payload, "image_url"),
+    stringField(payload, "description") || stringField(payload, "appname") || stringField(payload, "app_name") || stringField(payload, "username"),
+    stringField(payload, "thumb_url") || stringField(payload, "appicon") || stringField(payload, "image_url"),
     stringField(payload, "url") || stringField(payload, "page_path")
   )
 }

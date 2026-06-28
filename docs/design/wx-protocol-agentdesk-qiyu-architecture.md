@@ -554,6 +554,8 @@ flowchart LR
 | 引用消息 | 引用卡片 | 是，若引用文本明确 | 结合被引用内容和客户新问题回复；引用缺内容时追问 |
 | 合并转发 | 聊天记录摘要卡片 | 默认否 | 不自动总结全部聊天；客户要求分析时再基于结构化摘要处理 |
 
+小程序消息必须按真实协议字段结构化展示，不能落到附件兜底。真实回调样本为 `content_type=78, msg_type=12, username=gh_7370f8f46fc0@app, appid=wx37bef9195b47f085, appname=自由家安心宿, title=e秒安心住, page_path=pages/home/home.html, appicon=...`。后端入库 `Message(mini_program)`，payload 保留 `appid/appname/appicon/title/page_path/username/thumb_width/thumb_height/wxMedia`；网页端使用 `appname/appicon/title/page_path` 渲染小程序卡片。2026-06-28 已修正历史消息 `Message(id=317)`，并将“丽斯未来酒店通用小程序”写入知识候选：小程序名“自由家安心宿”，卡片标题“e秒安心住”，appid `wx37bef9195b47f085`，page_path `pages/home/home.html`。
+
 企微员工号渠道适配器边界：
 
 - 新增 `WxWorkProtocolAdapter` 接口，当前默认实现封装在 `defaultWxWorkProtocolAdapter`，用于承接员工号协议发送能力。

@@ -524,6 +524,9 @@ func (s *wxWorkProtocolService) buildInboundMessageContent(instance *models.WxWo
 	if messageType == enums.IMMessageTypeText {
 		return s.messageContent(msg), strings.TrimSpace(s.rawMessagePayload(msg)), nil
 	}
+	if messageType == enums.IMMessageTypeMiniProgram {
+		return s.miniProgramMessageContent(msg), s.miniProgramMessagePayload(msg), nil
+	}
 	if !isAssetBackedMessageType(messageType) {
 		if messageType == enums.IMMessageTypeLocation {
 			return s.locationMessageContent(msg), s.locationMessagePayload(msg), nil
@@ -777,6 +780,39 @@ func isAssetBackedMessageType(messageType enums.IMMessageType) bool {
 func (s *wxWorkProtocolService) rawMessagePayload(msg request.WxProtocolChatMsg) string {
 	raw, _ := json.Marshal(msg)
 	return string(raw)
+}
+
+func (s *wxWorkProtocolService) miniProgramMessageContent(msg request.WxProtocolChatMsg) string {
+	return firstNonBlank(msg.Title, msg.Content, msg.Desc, "小程序")
+}
+
+func (s *wxWorkProtocolService) miniProgramMessagePayload(msg request.WxProtocolChatMsg) string {
+	payload := map[string]any{
+		"appid":         strings.TrimSpace(msg.AppID),
+		"appname":       strings.TrimSpace(msg.AppName),
+		"appicon":       strings.TrimSpace(msg.AppIcon),
+		"title":         strings.TrimSpace(msg.Title),
+		"page_path":     strings.TrimSpace(msg.PagePath),
+		"username":      strings.TrimSpace(msg.Username),
+		"thumb_url":     strings.TrimSpace(msg.ThumbURL),
+		"thumb_width":   msg.ThumbWidth,
+		"thumb_height":  msg.ThumbHeight,
+		"content_type":  msg.ContentType,
+		"msg_type":      msg.MsgType,
+		"msg_id":        firstNonBlank(msg.MsgID, msg.ID),
+		"appinfo":       strings.TrimSpace(msg.AppInfo),
+		"extra_content": strings.TrimSpace(msg.ExtraContent),
+	}
+	media := wxProtocolMediaPayloadMap(msg.CDN)
+	if len(media) > 0 {
+		payload["wxMedia"] = media
+		payload["file_id"] = media["file_id"]
+		payload["aes_key"] = media["aes_key"]
+		payload["md5"] = media["md5"]
+		payload["size"] = media["size"]
+	}
+	bytes, _ := json.Marshal(payload)
+	return string(bytes)
 }
 
 func (s *wxWorkProtocolService) locationMessageContent(msg request.WxProtocolChatMsg) string {

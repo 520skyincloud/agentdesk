@@ -41,6 +41,16 @@ type WxProtocolChatMsg struct {
 	Title          string                 `json:"title"`
 	Address        string                 `json:"address"`
 	Zoom           float64                `json:"zoom"`
+	Username       string                 `json:"username"`
+	AppID          string                 `json:"appid"`
+	AppName        string                 `json:"appname"`
+	AppIcon        string                 `json:"appicon"`
+	PagePath       string                 `json:"page_path"`
+	ThumbWidth     int                    `json:"thumb_width"`
+	ThumbHeight    int                    `json:"thumb_height"`
+	ThumbURL       string                 `json:"thumb_url"`
+	ExtraContent   string                 `json:"extra_content"`
+	AppInfo        string                 `json:"appinfo"`
 	CDN            WxProtocolMediaPayload `json:"cdn"`
 }
 
@@ -105,6 +115,9 @@ func (m *WxProtocolChatMsg) InferMsgType() int {
 	}
 	if m.ContentType == 104 || m.SourceType == 101 {
 		return 10
+	}
+	if m.ContentType == 78 || m.AppID != "" || m.PagePath != "" || strings.HasSuffix(strings.TrimSpace(m.Username), "@app") {
+		return 12
 	}
 	if m.CDN.ImageWidth > 0 || m.CDN.ImageHeight > 0 || m.ContentType == 101 {
 		return 5
