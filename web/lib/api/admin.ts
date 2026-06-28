@@ -254,6 +254,7 @@ export type WxWorkProtocolInstance = {
   fallbackToHQ: boolean
   manualTimeoutMinutes: number
   aiReplyEnabled: boolean
+  personaPrompt: string
   autoAcceptFriendRequest: boolean
   autoAcceptFriendRemarkTemplate: string
   contextMaxMessages: number
@@ -298,6 +299,7 @@ export type CreateWxWorkProtocolInstancePayload = {
   fallbackToHQ: boolean
   manualTimeoutMinutes: number
   aiReplyEnabled: boolean
+  personaPrompt: string
   autoAcceptFriendRequest: boolean
   autoAcceptFriendRemarkTemplate: string
   contextMaxMessages: number
@@ -316,6 +318,7 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   manualTimeoutMinutes: number
   staffUserIds: string
   fallbackToHQ: boolean
+  personaPrompt: string
   storeId: number
   storeAddress: string
   storeNavigationName: string

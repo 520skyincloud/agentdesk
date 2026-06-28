@@ -21,6 +21,7 @@ type CreateWxWorkProtocolInstanceRequest struct {
 	FallbackToHQ                   bool   `json:"fallbackToHQ"`
 	ManualTimeoutMinutes           int    `json:"manualTimeoutMinutes"`
 	AIReplyEnabled                 bool   `json:"aiReplyEnabled"`
+	PersonaPrompt                  string `json:"personaPrompt"`
 	AutoAcceptFriendRequest        bool   `json:"autoAcceptFriendRequest"`
 	AutoAcceptFriendRemarkTemplate string `json:"autoAcceptFriendRemarkTemplate"`
 	ContextMaxMessages             int    `json:"contextMaxMessages"`
@@ -62,6 +63,7 @@ type UpdateWxWorkProtocolAISettingsRequest struct {
 	ManualTimeoutMinutes           int    `json:"manualTimeoutMinutes"`
 	StaffUserIDs                   string `json:"staffUserIds"`
 	FallbackToHQ                   bool   `json:"fallbackToHQ"`
+	PersonaPrompt                  string `json:"personaPrompt"`
 	StoreID                        int64  `json:"storeId"`
 	StoreAddress                   string `json:"storeAddress"`
 	StoreNavigationName            string `json:"storeNavigationName"`

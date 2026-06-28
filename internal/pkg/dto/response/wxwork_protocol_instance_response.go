@@ -33,6 +33,7 @@ type WxWorkProtocolInstanceResponse struct {
 	FallbackToHQ                   bool         `json:"fallbackToHQ"`
 	ManualTimeoutMinutes           int          `json:"manualTimeoutMinutes"`
 	AIReplyEnabled                 bool         `json:"aiReplyEnabled"`
+	PersonaPrompt                  string       `json:"personaPrompt"`
 	AutoAcceptFriendRequest        bool         `json:"autoAcceptFriendRequest"`
 	AutoAcceptFriendRemarkTemplate string       `json:"autoAcceptFriendRemarkTemplate"`
 	ContextMaxMessages             int          `json:"contextMaxMessages"`
@@ -82,6 +83,7 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		FallbackToHQ:                   item.FallbackToHQ,
 		ManualTimeoutMinutes:           item.ManualTimeoutMinutes,
 		AIReplyEnabled:                 item.AIReplyEnabled,
+		PersonaPrompt:                  item.PersonaPrompt,
 		AutoAcceptFriendRequest:        item.AutoAcceptFriendRequest,
 		AutoAcceptFriendRemarkTemplate: item.AutoAcceptFriendRemarkTemplate,
 		ContextMaxMessages:             item.ContextMaxMessages,

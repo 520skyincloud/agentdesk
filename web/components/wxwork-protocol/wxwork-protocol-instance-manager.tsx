@@ -35,6 +35,11 @@ import { Status, StatusLabels } from "@/lib/generated/enums"
 import { formatDateTime } from "@/lib/utils"
 
 const CALLBACK_URL = "http://112.124.109.106:2332/api/third/wxwork-protocol/callback"
+const DEFAULT_PERSONA_PROMPT = `你是酒店门店前台同事，在微信里自然回复客人。
+说话短一点，像真人：默认一句话，别写客服模板。
+少用“您”，优先说“你”；不要说“亲”“为您”“这边”“感谢理解”。
+客人只发表情包、哈哈、OK，就回“哈哈”“收到”“好嘞”这种短句。
+送水、送拖鞋、维修、叫醒、打扫等需要员工动作的事，工具或人工没成功前不能说已经安排，只能追问房号/数量/时间或转同事。`
 
 type WxWorkProtocolInstanceManagerProps = {
   layout?: "page" | "fragment"
@@ -379,6 +384,7 @@ export function WxWorkProtocolInstanceManager({
 	          { name: "fallbackToHQ", label: "总部兜底接管", type: "switch" },
 	          { name: "manualTimeoutMinutes", label: "人工超时分钟", type: "number", min: 1, max: 120 },
 	          { name: "aiReplyEnabled", label: "AI 托管回复", type: "switch" },
+	          { name: "personaPrompt", label: "人格提示词", type: "textarea", placeholder: DEFAULT_PERSONA_PROMPT },
 	          { name: "autoAcceptFriendRequest", label: "自动通过好友申请", type: "switch" },
 	          { name: "autoAcceptFriendRemarkTemplate", label: "好友通过备注模板", type: "text" },
 	          { name: "contextMaxMessages", label: "AI 上下文消息数", type: "number", min: 5, max: 200 },
@@ -417,6 +423,7 @@ export function WxWorkProtocolInstanceManager({
 	          fallbackToHQ: values.fallbackToHQ !== false,
 	          manualTimeoutMinutes: Number(values.manualTimeoutMinutes || 10),
 	          aiReplyEnabled: values.aiReplyEnabled !== false,
+	          personaPrompt: String(values.personaPrompt || DEFAULT_PERSONA_PROMPT),
 	          autoAcceptFriendRequest: values.autoAcceptFriendRequest === true,
 	          autoAcceptFriendRemarkTemplate: String(values.autoAcceptFriendRemarkTemplate || ""),
 	          contextMaxMessages: Number(values.contextMaxMessages || 30),

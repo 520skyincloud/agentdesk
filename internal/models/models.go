@@ -399,6 +399,7 @@ type WxWorkProtocolInstance struct {
 	FallbackToHQ                   bool         `gorm:"not null;default:true"`
 	ManualTimeoutMinutes           int          `gorm:"type:int;not null;default:10"`
 	AIReplyEnabled                 bool         `gorm:"not null;default:true"`
+	PersonaPrompt                  string       `gorm:"type:text"`
 	AutoAcceptFriendRequest        bool         `gorm:"not null;default:false"`
 	AutoAcceptFriendRemarkTemplate string       `gorm:"type:varchar(500);not null;default:''"`
 	ContextMaxMessages             int          `gorm:"type:int;not null;default:30"`

@@ -27,6 +27,12 @@ func newWxWorkProtocolInstanceService() *wxWorkProtocolInstanceService {
 
 type wxWorkProtocolInstanceService struct{}
 
+const DefaultWxWorkProtocolPersonaPrompt = `你是酒店门店前台同事，在微信里自然回复客人。
+说话短一点，像真人：默认一句话，别写客服模板。
+少用“您”，优先说“你”；不要说“亲”“为您”“这边”“感谢理解”。
+客人只发表情包、哈哈、OK，就回“哈哈”“收到”“好嘞”这种短句。
+送水、送拖鞋、维修、叫醒、打扫等需要员工动作的事，工具或人工没成功前不能说已经安排，只能追问房号/数量/时间或转同事。`
+
 func (s *wxWorkProtocolInstanceService) Get(id int64) *models.WxWorkProtocolInstance {
 	if id <= 0 {
 		return nil
@@ -80,6 +86,7 @@ func (s *wxWorkProtocolInstanceService) CreatePendingFromLogin(guid string, raw 
 		EmployeeName:              employeeName,
 		AIReplyEnabled:            true,
 		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
+		PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
 		ContextMaxMessages:        DefaultConversationContextMaxMessages,
 		ContextMaxTokens:          DefaultConversationContextMaxTokens,
 		ContextCompressionEnabled: true,
@@ -147,6 +154,7 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		FallbackToHQ:                   req.FallbackToHQ,
 		ManualTimeoutMinutes:           normalizeManualTimeoutMinutes(req.ManualTimeoutMinutes),
 		AIReplyEnabled:                 req.AIReplyEnabled,
+		PersonaPrompt:                  normalizeWxWorkPersonaPrompt(req.PersonaPrompt),
 		AutoAcceptFriendRequest:        req.AutoAcceptFriendRequest,
 		AutoAcceptFriendRemarkTemplate: strings.TrimSpace(req.AutoAcceptFriendRemarkTemplate),
 		ContextMaxMessages:             normalizeContextMaxMessages(req.ContextMaxMessages),
@@ -188,6 +196,7 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 		Guid:                      guid,
 		ChannelID:                 channelID,
 		AIReplyEnabled:            true,
+		PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
 		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
 		ContextMaxMessages:        DefaultConversationContextMaxMessages,
 		ContextMaxTokens:          DefaultConversationContextMaxTokens,
@@ -248,6 +257,7 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		"fallback_to_hq":                     req.FallbackToHQ,
 		"manual_timeout_minutes":             normalizeManualTimeoutMinutes(req.ManualTimeoutMinutes),
 		"ai_reply_enabled":                   req.AIReplyEnabled,
+		"persona_prompt":                     normalizeWxWorkPersonaPrompt(req.PersonaPrompt),
 		"auto_accept_friend_request":         req.AutoAcceptFriendRequest,
 		"auto_accept_friend_remark_template": strings.TrimSpace(req.AutoAcceptFriendRemarkTemplate),
 		"context_max_messages":               normalizeContextMaxMessages(req.ContextMaxMessages),
@@ -314,6 +324,7 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 		"fallback_to_hq":                     req.FallbackToHQ,
 		"manual_timeout_minutes":             normalizeManualTimeoutMinutes(req.ManualTimeoutMinutes),
 		"ai_reply_enabled":                   req.AIReplyEnabled,
+		"persona_prompt":                     normalizeWxWorkPersonaPrompt(req.PersonaPrompt),
 		"auto_accept_friend_request":         req.AutoAcceptFriendRequest,
 		"auto_accept_friend_remark_template": strings.TrimSpace(req.AutoAcceptFriendRemarkTemplate),
 		"context_max_messages":               normalizeContextMaxMessages(req.ContextMaxMessages),
@@ -331,6 +342,14 @@ func normalizeManualTimeoutMinutes(value int) int {
 	}
 	if value > 120 {
 		return 120
+	}
+	return value
+}
+
+func normalizeWxWorkPersonaPrompt(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return DefaultWxWorkProtocolPersonaPrompt
 	}
 	return value
 }

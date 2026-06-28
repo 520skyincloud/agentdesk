@@ -40,10 +40,11 @@ func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInp
 		return nil, fmt.Errorf("ai config is nil")
 	}
 	runtimeStartedAt := time.Now()
+	aiAgent := e.applyWxWorkPersonaPrompt(input.Conversation.ID, input.AIAgent)
 	summary, err := Service.Run(ctx, applicationruntime.Request{
 		Conversation: input.Conversation,
 		UserMessage:  input.Message,
-		AIAgent:      input.AIAgent,
+		AIAgent:      aiAgent,
 		AIConfig:     *aiConfig,
 	})
 	if input.Trace != nil {
@@ -65,9 +66,10 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	if input.Trace != nil {
 		input.Trace.ResumeSource = "pending_interrupt"
 	}
+	aiAgent := e.applyWxWorkPersonaPrompt(input.Conversation.ID, input.AIAgent)
 	summary, err := Service.Resume(ctx, applicationruntime.ResumeRequest{
 		Conversation: input.Conversation,
-		AIAgent:      input.AIAgent,
+		AIAgent:      aiAgent,
 		AIConfig:     *aiConfig,
 		CheckPointID: strings.TrimSpace(input.PendingInterrupt.CheckPointID),
 		ResumeData: map[string]string{
@@ -98,6 +100,28 @@ func (e *runtimeReplyExecutor) fillTraceFromSummary(trace *aiReplyTraceData, sum
 	if summary != nil && strings.TrimSpace(summary.TraceData) != "" {
 		trace.Runtime = json.RawMessage(summary.TraceData)
 	}
+}
+
+func (e *runtimeReplyExecutor) applyWxWorkPersonaPrompt(conversationID int64, aiAgent models.AIAgent) models.AIAgent {
+	if conversationID <= 0 {
+		return aiAgent
+	}
+	route := svc.ConversationRouteService.GetByConversationID(conversationID)
+	if route == nil || route.WxWorkInstanceID <= 0 {
+		return aiAgent
+	}
+	instance := svc.WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
+	if instance == nil || strings.TrimSpace(instance.PersonaPrompt) == "" {
+		return aiAgent
+	}
+	persona := strings.TrimSpace(instance.PersonaPrompt)
+	base := strings.TrimSpace(aiAgent.SystemPrompt)
+	if base == "" {
+		aiAgent.SystemPrompt = persona
+		return aiAgent
+	}
+	aiAgent.SystemPrompt = base + "\n\n员工号专属人格提示词：\n" + persona
+	return aiAgent
 }
 
 func expiredInterruptSummary() *applicationruntime.Summary {
