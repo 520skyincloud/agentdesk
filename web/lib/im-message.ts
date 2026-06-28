@@ -8,6 +8,10 @@ export type MessageAssetPayload = {
   fileSize?: number
   mimeType?: string
   url?: string
+  mediaText?: string
+  mediaSummary?: string
+  mediaUnderstandingStatus?: string
+  mediaUnderstandingError?: string
   wxMedia?: Record<string, unknown>
 }
 
@@ -79,11 +83,7 @@ export function renderIMMessageHTML(message: {
   }
 
   if (message.messageType === "voice") {
-    const url = resolveAssetURL(asset)
-    if (url) {
-      return `<div class="im-media"><audio controls preload="metadata" src="${escapeHTMLAttr(url)}"></audio><div class="im-attachment-meta">${escapeHTML(asset?.filename || "语音消息")}</div></div>`
-    }
-    return `<p>收到一条语音消息</p>`
+    return renderVoiceHTML(asset)
   }
 
   if (message.messageType === "video") {
@@ -249,6 +249,31 @@ function renderLocationHTML(payload: RichPayload | null, content: string) {
     : ""
   const meta = [address, coord].filter(Boolean).join("\n")
   return renderInfoCardHTML(`位置：${title}`, meta, "", mapHref)
+}
+
+function renderVoiceHTML(asset: MessageAssetPayload | null) {
+  const duration = numberField(asset?.wxMedia, "length") ?? numberField(asset?.wxMedia, "voice_time")
+  const durationText = duration && duration > 0 ? `${duration} 秒` : "语音消息"
+  const mediaText = asset?.mediaText?.trim() || asset?.mediaSummary?.trim() || ""
+  const status = asset?.mediaUnderstandingStatus?.trim() || ""
+  const statusLabel = voiceStatusLabel(status, mediaText)
+  const transcript = mediaText
+    ? `<div class="im-card-desc">${escapeHTML(mediaText)}</div>`
+    : `<div class="im-card-desc">${escapeHTML(statusLabel)}</div>`
+  return `<div class="im-card im-card-voice"><div class="im-card-main"><div class="im-card-title">${escapeHTML(durationText)}</div>${transcript}</div></div>`
+}
+
+function voiceStatusLabel(status: string, mediaText: string) {
+  if (mediaText) {
+    return "已转文字"
+  }
+  if (status === "failed" || status === "empty") {
+    return "语音暂未转成文字"
+  }
+  if (status === "retrying") {
+    return "正在重新转文字"
+  }
+  return "正在转文字"
 }
 
 function renderLinkHTML(payload: RichPayload | null, content: string) {
