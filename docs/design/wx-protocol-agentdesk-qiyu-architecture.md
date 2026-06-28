@@ -452,7 +452,7 @@ flowchart TD
 富媒体理解边界：
 
 - 图片：保存 asset 后调用 vision 模型写入 `mediaText/mediaSummary`，理解成功才进入 AI 上下文。视觉接口偶发失败时保留失败原因，不编造；AI 回复触发会等待最近媒体理解完成，等待窗口为 15 秒，降低图片刚发出就回复“无法查看”的概率。
-- 语音：保存 asset 后调用 ASR 模型写入转写文本，转写成功后自动触发 AI 回复。若本地 asset 读不到，但 payload 里有企微 `file_id/aes_key/auth_key`，系统会二次调用 WECDN 下载后再转写，修复“收到语音但没人回复”的链路。
+- 语音：主链路不是先下载音频再 ASR，而是严格按企微协议 SAAS 文档先调用 `/msg/apply_voice_id` 获取 `voiceid`，再调用 `/msg/query_voice_text` 获取协议侧语音翻译文本；翻译成功后写入 `mediaText/mediaSummary` 并触发 AI。只有协议翻译失败、且本地/WECDN 能拿到真实音频文件时，才进入独立 ASR 模型兜底。AI 不能在没有协议翻译或 ASR 结果时猜测语音内容。
 - 文件：文本类文件可抽取内容；PDF/Word/Excel 等未接解析器前只展示和转人工/提示，不让 AI 假装读过。
 - 视频/GIF：先展示和审计，不作为已理解事实，除非后续接入视频理解。
 - 位置：展示定位卡片；客户要求“发定位”时走门店坐标配置和 `/msg/send_location`，不是由模型自由生成坐标。
@@ -463,7 +463,9 @@ flowchart TD
 - 2026-06-27 第二轮修复：按 `wework.apifox.cn` 文档接入 `/cloud/wx_download` 和 `/cloud/c2c_download` 两类私有化云存储下载。若入站 `file_id` 是 `http/https` 微信临时 URL，优先走 `/cloud/wx_download`；若是普通协议 `file_id`，走 `/cloud/c2c_download`。下载成功后上传到本系统 OSS，再由 `MediaUnderstandingService` 读取 OSS asset 调视觉模型。
 - 2026-06-27 真实闭环结果：`Message(id=233)` 通过真实回调入站图片，asset 已保存到 OSS `desk/wx_protocol/inbound/...jpg`，`mediaUnderstandingStatus=understood`，视觉模型写回 `mediaText=图片显示Steam登录确认页面...`，随后触发 AI 回复 `Message(id=234)`。因此入站图片“接收 -> 私有化下载 -> OSS 保存 -> 视觉理解 -> 写回 payload -> 触发 AI”已经跑通。
 - 视觉/多模态配置：后台 `AI 配置` 已新增模型类型 `vision/asr/tts`。2026-06-28 已按测试要求把启用视觉模型切到 SiliconFlow OpenAI-compatible `https://api.siliconflow.cn/v1`，模型名 `gpt-5.5`；密钥只保存在运行数据库，不写入代码和文档。
-- 语音理解优先使用协议 `/msg/apply_voice_id` 和 `/msg/query_voice_text`；如果协议转写失败，再走私有化云存储下载 + 独立 ASR 模型。后台已新增 `asr` 类型，测试模型为 `TeleAI/TeleSpeechASR`，Base URL 为 `https://api.siliconflow.cn/v1`。新入站媒体 payload 会保存 `wxMedia.msg_id/conversation_id/file_id/aes_key/auth_key`，旧消息可从 `t_wx_work_kf_message_ref.raw_payload` 反查 `msgid`。未配置 API Key 或没有转写结果时，AI 只能知道“收到语音”，不能猜语音内容。
+- 语音理解优先使用协议 `/msg/apply_voice_id` 和 `/msg/query_voice_text`；如果协议转写失败，再走私有化云存储下载 + 独立 ASR 模型。后台已新增 `asr` 类型，测试模型为 `TeleAI/TeleSpeechASR`，Base URL 为 `https://api.siliconflow.cn/v1`。新入站媒体 payload 会保存 `wxMedia.msg_id/conversation_id/file_id/aes_key/auth_key`，旧消息可从 `t_wx_work_kf_message_ref.raw_payload` 反查 `msgid`。未配置 API Key 或没有转写结果时，AI 只能知道“收到语音”，不能猜语音内容。实现时必须过滤 `fmt.Sprint(nil)` 产生的 `"<nil>"` 字符串，不能把 `"<nil>"` 当作 `msgid/conversation_id` 传给协议接口，否则会触发 `-2003 head rsp code error`。
+- 2026-06-28 真实闭环结果：客户语音 `Message(id=271)` 的原始协议回调中 `msgid=1001449`，应用从 `t_wx_work_kf_message_ref.raw_payload` 反查 `msgid` 和 `S:externalUserId`，调用 `/msg/apply_voice_id` 得到 `voiceid=178262045610216689923745887247881302995969629`，再调用 `/msg/query_voice_text` 得到文本“你现在听得清楚我说话吗？”，最终写回 `mediaUnderstandingStatus=understood`、`mediaText=你现在听得清楚我说话吗？`。该验证确认：客户语音优先走协议翻译结果，而不是 ASR。
+- 语音延迟需要分两段记录：第一段是协议平台消息时间 `sendtime` 到 AgentDesk 入库 `created_at` 的回调到达延迟；第二段是 AgentDesk 收到后调用协议翻译、写入 `mediaText`、触发 AI 的处理延迟。`Message(id=271)` 样本中平台 `sendtime` 到入库约 19 秒，这部分发生在协议平台回调到系统之前；系统侧可通过日志监控和告警，但不能用 ASR 优化这段外部延迟。
 - TTS 已作为独立 `tts` 类型进入模型配置，测试模型为 `fnlp/MOSS-TTSD-v0.5`。当前用于配置管理和后续语音生成文件，出站客服语音发送仍以已有音频文件上传后 `/msg/send_voice` 为准，不自动把文本转语音。
 - 文件理解当前支持 `txt/md/csv/json` 等文本类文件抽取内容；PDF/Word/Excel 需要继续接文档解析器，解析后写入 `mediaText/mediaSummary`；二进制压缩包、未知格式只展示和审计，不触发 AI 内容判断。
 - 视频/GIF 默认只展示和审计；如果要 AI 理解视频，需要额外做抽帧、封面识别或视频理解模型，不应把文件名当作视频内容。

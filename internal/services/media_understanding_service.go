@@ -17,6 +17,7 @@ import (
 
 	"agent-desk/internal/ai"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
@@ -71,6 +72,13 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 	}
 	if strings.TrimSpace(payload.MediaText) != "" || payload.MediaStatus == "understood" {
 		return nil
+	}
+	if payload.MediaStatus == "failed" || payload.MediaStatus == "empty" {
+		payload.MediaStatus = "retrying"
+		payload.MediaError = ""
+		if err := s.updateMessagePayload(message.ID, payload); err != nil {
+			return err
+		}
 	}
 
 	var text string
@@ -195,10 +203,11 @@ func (s *mediaUnderstandingService) transcribeWxWorkVoice(ctx context.Context, m
 	conversationID := strings.TrimSpace(wxWorkProtocolVoiceConversationID(message.Payload, message.ConversationID))
 	msgID := strings.TrimSpace(wxWorkProtocolVoiceMsgID(message.Payload))
 	if msgID == "" && len(payload.WxMedia) > 0 {
-		msgID = strings.TrimSpace(fmt.Sprint(payload.WxMedia["msg_id"]))
+		msgID = nonNilString(payload.WxMedia["msg_id"])
 	}
 	if conversationID == "" || msgID == "" {
-		if refConversationID, refMsgID := wxWorkProtocolVoiceRefIDs(message.ID); conversationID == "" || msgID == "" {
+		refConversationID, refMsgID := waitWxWorkProtocolVoiceRefIDs(ctx, message.ID, 3*time.Second)
+		if conversationID == "" || msgID == "" {
 			if conversationID == "" {
 				conversationID = refConversationID
 			}
@@ -210,38 +219,40 @@ func (s *mediaUnderstandingService) transcribeWxWorkVoice(ctx context.Context, m
 	if conversationID == "" || msgID == "" {
 		return "", fmt.Errorf("语音消息缺少企微 conversation_id 或 msgid")
 	}
+	guid := strings.TrimSpace(instance.Guid)
 	applyResp, err := WxWorkProtocolService.postJSON(cfg, "/msg/apply_voice_id", map[string]any{
-		"guid":            strings.TrimSpace(instance.Guid),
+		"guid":            guid,
 		"conversation_id": conversationID,
 		"msgid":           msgID,
 	})
 	if err != nil {
 		return "", err
 	}
-	voiceID := extractNestedString(applyResp, "voiceid", "voice_id", "id")
+	voiceID := extractProtocolDataString(applyResp, "voiceid", "voice_id", "id")
 	if voiceID == "" {
 		return "", fmt.Errorf("企微语音翻译申请未返回 voiceid")
 	}
-	deadline := time.Now().Add(12 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	var lastErr error
+	seqID := "0"
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		default:
 		}
-		queryResp, queryErr := WxWorkProtocolService.postJSON(cfg, "/msg/query_voice_text", map[string]any{
-			"guid":    strings.TrimSpace(instance.Guid),
-			"voiceid": voiceID,
-		})
+		queryResp, queryErr := s.queryWxWorkVoiceText(cfg, guid, conversationID, msgID, voiceID, seqID)
 		if queryErr != nil {
 			lastErr = queryErr
-		} else if text := extractNestedString(queryResp, "text", "content"); text != "" {
+		} else if text := extractProtocolDataString(queryResp, "text", "content"); text != "" {
 			return text, nil
 		} else {
+			if nextSeqID := extractProtocolDataString(queryResp, "seqid", "seq_id"); nextSeqID != "" {
+				seqID = nextSeqID
+			}
 			lastErr = fmt.Errorf("企微语音翻译结果为空")
 		}
-		if !sleepContext(ctx, 1500*time.Millisecond) {
+		if !sleepContext(ctx, time.Second) {
 			return "", ctx.Err()
 		}
 	}
@@ -249,6 +260,54 @@ func (s *mediaUnderstandingService) transcribeWxWorkVoice(ctx context.Context, m
 		return "", lastErr
 	}
 	return "", fmt.Errorf("企微语音翻译超时")
+}
+
+func (s *mediaUnderstandingService) queryWxWorkVoiceText(cfg *dto.WxWorkProtocolChannelConfig, guid string, conversationID string, msgID string, voiceID string, seqID string) (string, error) {
+	base := map[string]any{
+		"guid":    guid,
+		"voiceid": voiceID,
+		"seqid":   seqID,
+	}
+	candidates := wxWorkVoiceTextQueryCandidates(conversationID, msgID)
+	var lastErr error
+	for _, candidate := range candidates {
+		body := map[string]any{}
+		for key, value := range base {
+			body[key] = value
+		}
+		for key, value := range candidate {
+			body[key] = value
+		}
+		resp, err := WxWorkProtocolService.postJSON(cfg, "/msg/query_voice_text", body)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+func wxWorkVoiceTextQueryCandidates(conversationID string, msgID string) []map[string]any {
+	conversationID = strings.TrimSpace(conversationID)
+	msgID = strings.TrimSpace(msgID)
+	seen := map[string]bool{}
+	candidates := make([]map[string]any, 0, 4)
+	appendCandidate := func(cid string, mid string) {
+		cid = strings.TrimSpace(cid)
+		mid = strings.TrimSpace(mid)
+		key := cid + "\x00" + mid
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		candidates = append(candidates, map[string]any{"conversation_id": cid, "msgid": mid})
+	}
+	appendCandidate(conversationID, msgID)
+	if strings.HasPrefix(conversationID, "S:") || strings.HasPrefix(conversationID, "R:") {
+		appendCandidate(strings.TrimPrefix(strings.TrimPrefix(conversationID, "S:"), "R:"), msgID)
+	}
+	appendCandidate("", msgID)
+	return candidates
 }
 
 func (s *mediaUnderstandingService) extractFileText(ctx context.Context, message *models.Message, payload *messageMediaPayload) (string, error) {
@@ -416,6 +475,19 @@ func wxWorkProtocolVoiceConversationID(rawPayload string, conversationID int64) 
 	return ""
 }
 
+func waitWxWorkProtocolVoiceRefIDs(ctx context.Context, messageID int64, timeout time.Duration) (conversationID string, msgID string) {
+	deadline := time.Now().Add(timeout)
+	for {
+		conversationID, msgID = wxWorkProtocolVoiceRefIDs(messageID)
+		if conversationID != "" && msgID != "" {
+			return conversationID, msgID
+		}
+		if time.Now().After(deadline) || !sleepContext(ctx, 100*time.Millisecond) {
+			return conversationID, msgID
+		}
+	}
+}
+
 func wxWorkProtocolVoiceRefIDs(messageID int64) (conversationID string, msgID string) {
 	if messageID <= 0 {
 		return "", ""
@@ -458,7 +530,7 @@ func extractNestedString(raw string, keys ...string) string {
 		return ""
 	}
 	scopes := []map[string]any{root}
-	if data, ok := root["data"].(map[string]any); ok {
+	if data, ok := nestedStringMap(root["data"]); ok {
 		scopes = append(scopes, data)
 	}
 	for _, scope := range scopes {
@@ -469,6 +541,49 @@ func extractNestedString(raw string, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func extractProtocolDataString(raw string, keys ...string) string {
+	root := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &root); err != nil {
+		return ""
+	}
+	if data, ok := root["data"].(map[string]any); ok {
+		for _, key := range keys {
+			if value := strings.TrimSpace(fmt.Sprint(data[key])); value != "" && value != "<nil>" {
+				return value
+			}
+		}
+	}
+	for _, key := range keys {
+		if value := strings.TrimSpace(fmt.Sprint(root[key])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return ""
+}
+
+func nonNilString(value any) string {
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "" || text == "<nil>" {
+		return ""
+	}
+	return text
+}
+
+func nestedStringMap(value any) (map[string]any, bool) {
+	if item, ok := value.(map[string]any); ok {
+		return item, true
+	}
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "" || text == "<nil>" || !strings.HasPrefix(text, "{") {
+		return nil, false
+	}
+	item := map[string]any{}
+	if err := json.Unmarshal([]byte(text), &item); err != nil {
+		return nil, false
+	}
+	return item, true
 }
 
 func sleepContext(ctx context.Context, duration time.Duration) bool {
