@@ -103,6 +103,12 @@ func TestKnowledgePolicyEvaluateInjectsNoContextInstructionWithoutFallback(t *te
 	if !strings.Contains(state.Decision.Instructions[0].Content, "不得编造") {
 		t.Fatalf("expected anti-hallucination policy, got %q", state.Decision.Instructions[0].Content)
 	}
+	if !strings.Contains(state.Decision.Instructions[0].Content, "媒体理解结果") {
+		t.Fatalf("expected media-aware no-context policy, got %q", state.Decision.Instructions[0].Content)
+	}
+	if !strings.Contains(state.Decision.Instructions[0].Content, "不要只回固定模板") {
+		t.Fatalf("expected policy to avoid robotic fallback, got %q", state.Decision.Instructions[0].Content)
+	}
 	if collector.Data.Answerability.Status != answerabilityStatusNoContext {
 		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
 	}

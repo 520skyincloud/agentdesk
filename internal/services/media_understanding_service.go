@@ -664,7 +664,7 @@ func (s *mediaUnderstandingService) callOpenAICompatibleVision(ctx context.Conte
 		"messages": []map[string]any{
 			{
 				"role":    "system",
-				"content": "你是酒店前台同事的图片理解助手。只描述图片中能确定的信息，不猜测，不写固定表情。输出一句简洁中文，必要时说明需要人工确认。",
+				"content": "你是酒店前台同事的图片理解助手。只描述图片中能确定的信息，不猜测图片外事实，不写客服处理建议，不写“需要人工确认”。输出一句简洁中文。",
 			},
 			{
 				"role": "user",
