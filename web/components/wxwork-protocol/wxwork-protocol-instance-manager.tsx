@@ -8,8 +8,10 @@ import {
   createDashboardStatusColumn,
   DashboardCrudPage,
 } from "@/components/dashboard/crud"
+import { OptionCombobox } from "@/components/option-combobox"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import {
 	createWxWorkProtocolRemoteSetup,
@@ -19,6 +21,8 @@ import {
   fetchKnowledgeBasesAll,
   fetchWxWorkProtocolInstance,
   fetchWxWorkProtocolInstances,
+  fetchWxWorkProtocolRoomList,
+  fetchWxWorkProtocolRoomMembers,
   getWxWorkProtocolLoginQrcode,
   logoutWxWorkProtocolInstance,
   recoverWxWorkProtocolInstance,
@@ -34,6 +38,8 @@ import {
   type CreateWxWorkProtocolInstancePayload,
   type KnowledgeBase,
   type WxWorkProtocolInstance,
+  type WxWorkProtocolRoomMemberOption,
+  type WxWorkProtocolRoomOption,
 } from "@/lib/api/admin"
 import { EditDialog as AIAgentEditDialog } from "@/app/dashboard/ai-agents/_components/edit"
 import { getEnumOptions } from "@/lib/enums"
@@ -59,6 +65,145 @@ function healthBadgeVariant(healthStatus: string) {
   if (healthStatus === "online") return "default" as const
   if (healthStatus === "offline") return "secondary" as const
   return "outline" as const
+}
+
+function StoreRoomPicker({
+  context,
+}: {
+  context: {
+    values: Record<string, string | boolean | string[]>
+    setValue: (name: string, value: string | boolean | string[]) => void
+  }
+}) {
+  const instanceId = Number(context.values.instanceId || 0)
+  const selectedRoomConversationId = String(context.values.storeRoomConversationId || "")
+  const selectedAtList = String(context.values.storeRoomAtList || "")
+  const [rooms, setRooms] = useState<WxWorkProtocolRoomOption[]>([])
+  const [members, setMembers] = useState<WxWorkProtocolRoomMemberOption[]>([])
+  const [loadingRooms, setLoadingRooms] = useState(false)
+  const [loadingMembers, setLoadingMembers] = useState(false)
+
+  const roomOptions = rooms.map((room) => ({
+    value: room.conversationId || `R:${room.roomId}`,
+    label: `${repairMojibakeText(room.name)}${room.memberCount > 0 ? ` · ${room.memberCount}人` : ""}`,
+  }))
+  const selectedMemberIds = selectedAtList
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+  const selectedRoom = rooms.find((room) => (room.conversationId || `R:${room.roomId}`) === selectedRoomConversationId)
+
+  async function loadRooms() {
+    if (!instanceId) {
+      toast.error("请先保存账号，再读取门店群")
+      return
+    }
+    setLoadingRooms(true)
+    try {
+      const list = await fetchWxWorkProtocolRoomList({ id: instanceId, limit: 200 })
+      setRooms(list)
+      if (list.length === 0) {
+        toast.info("协议接口没有返回可选群。请确认该员工号是群主或已同步客户群。")
+      } else {
+        toast.success(`已读取 ${list.length} 个群`)
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "读取门店群失败")
+    } finally {
+      setLoadingRooms(false)
+    }
+  }
+
+  async function loadMembers() {
+    if (!instanceId || !selectedRoomConversationId) {
+      toast.error("请先选择门店群")
+      return
+    }
+    setLoadingMembers(true)
+    try {
+      const list = await fetchWxWorkProtocolRoomMembers({
+        id: instanceId,
+        roomId: selectedRoomConversationId,
+        userList: [],
+      })
+      setMembers(list)
+      if (list.length === 0) {
+        toast.info("协议接口没有返回群成员列表。当前文档接口是批量获取成员详情，若上游不支持空列表返回全部成员，需要先通过群详情拿成员 ID。")
+      } else {
+        toast.success(`已读取 ${list.length} 个群成员`)
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "读取群成员失败")
+    } finally {
+      setLoadingMembers(false)
+    }
+  }
+
+  function toggleMember(userId: string) {
+    const next = selectedMemberIds.includes(userId)
+      ? selectedMemberIds.filter((item) => item !== userId)
+      : [...selectedMemberIds, userId]
+    context.setValue("storeRoomAtList", next.join(","))
+  }
+
+  return (
+    <div className="rounded-2xl border border-[#dbe7f6] bg-white p-4 shadow-[0_8px_24px_rgba(35,74,122,0.05)]">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end">
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="text-xs font-medium text-foreground/85">门店通知群</div>
+          <OptionCombobox
+            value={selectedRoomConversationId}
+            options={roomOptions}
+            placeholder={rooms.length > 0 ? "选择门店群" : "先刷新群列表"}
+            triggerClassName="h-10 rounded-xl border-[#dbe7f6] bg-white"
+            onChange={(value) => {
+              context.setValue("storeRoomConversationId", value)
+              context.setValue("storeRoomAtList", "")
+              setMembers([])
+            }}
+          />
+        </div>
+        <Button type="button" variant="outline" className="rounded-xl" disabled={loadingRooms} onClick={() => void loadRooms()}>
+          <RotateCwIcon className={loadingRooms ? "size-4 animate-spin" : "size-4"} />
+          刷新群列表
+        </Button>
+        <Button type="button" variant="outline" className="rounded-xl" disabled={loadingMembers || !selectedRoomConversationId} onClick={() => void loadMembers()}>
+          <UsersRoundIcon className={loadingMembers ? "size-4 animate-spin" : "size-4"} />
+          读取群成员
+        </Button>
+      </div>
+      <div className="mt-3 text-xs leading-5 text-muted-foreground">
+        {selectedRoom ? `已选择：${repairMojibakeText(selectedRoom.name)}（${selectedRoom.conversationId}）` : "转人工命中门店值班时间时，会把提醒发到这里选中的群。"}
+      </div>
+      <div className="mt-4 rounded-xl bg-[#f6f9ff] p-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="text-xs font-medium text-foreground/85">需要 @ 的群成员</div>
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+            <Checkbox checked={selectedMemberIds.includes("0")} onCheckedChange={() => toggleMember("0")} />
+            @全员
+          </label>
+        </div>
+        {members.length > 0 ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {members.map((member) => {
+              const checked = selectedMemberIds.includes(member.userId)
+              return (
+                <label key={member.userId} className="flex cursor-pointer items-center gap-2 rounded-lg border border-[#dbe7f6] bg-white px-3 py-2 text-sm">
+                  <Checkbox checked={checked} onCheckedChange={() => toggleMember(member.userId)} />
+                  <span className="min-w-0 flex-1 truncate">{repairMojibakeText(member.name)}</span>
+                  <span className="max-w-24 truncate font-mono text-[10px] text-muted-foreground">{member.userId}</span>
+                </label>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="text-xs leading-5 text-muted-foreground">
+            选择群后点击“读取群成员”。如果协议没有返回成员，系统不会要求门店员工手输 ID；后续会通过群详情接口补齐成员来源。
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export function WxWorkProtocolInstanceManager({
@@ -240,6 +385,13 @@ export function WxWorkProtocolInstanceManager({
     )
   }
 
+  function renderStoreRoomPicker(context: {
+    values: Record<string, string | boolean | string[]>
+    setValue: (name: string, value: string | boolean | string[]) => void
+  }) {
+    return <StoreRoomPicker context={context} />
+  }
+
   return (
     <>
     <DashboardCrudPage<WxWorkProtocolInstance, CreateWxWorkProtocolInstancePayload>
@@ -306,7 +458,7 @@ export function WxWorkProtocolInstanceManager({
               </div>
               <div className="min-w-0">
                 <div className="truncate font-semibold text-foreground">{repairMojibakeText(item.employeeName) || item.guid}</div>
-                <div className="truncate font-mono text-xs text-muted-foreground">{item.guid}</div>
+                <div className="truncate text-xs text-muted-foreground">{item.storeName ? `门店：${repairMojibakeText(item.storeName)}` : "未绑定门店"}</div>
               </div>
             </div>
           ),
@@ -316,9 +468,9 @@ export function WxWorkProtocolInstanceManager({
           label: "绑定",
           render: (item) => (
             <div className="space-y-1 text-sm">
-              <div className="font-medium text-foreground">{item.channelName || `渠道 ${item.channelId}`}</div>
+              <div className="font-medium text-foreground">{repairMojibakeText(item.storeName) || `门店 ${item.storeId || "未绑定"}`}</div>
               <div className="text-xs text-muted-foreground">
-                门店 {repairMojibakeText(item.storeName) || item.storeId} / {repairMojibakeText(item.knowledgeBaseName) || `知识库 ${item.knowledgeBaseId}`}
+                {repairMojibakeText(item.knowledgeBaseName) || `知识库 ${item.knowledgeBaseId || "未配置"}`}
               </div>
               {item.storeAddress || item.storeLatitude || item.storeLongitude ? (
                 <div className="text-xs text-muted-foreground">
@@ -479,50 +631,50 @@ export function WxWorkProtocolInstanceManager({
       form={{
         fetchDetail: fetchWxWorkProtocolInstance,
         fields: [
-          { name: "guid", label: "GUID", type: "text", required: true },
+          { name: "instanceId", label: "实例ID", type: "custom", valueFromItem: (item) => item.id, render: () => null },
           {
-            name: "channelId",
-            label: "协议渠道",
-            type: "select",
-            required: true,
-            options: channelOptions,
+            name: "accountIdentitySection",
+            label: "员工号资料",
+            type: "section",
+            description: "这里显示的是通过协议扫码登录的门店企业微信员工号。账号头像、UserID、GUID、回调、代理和 Bridge 等技术信息由系统同步和维护，不再开放手动填写。",
           },
-          { name: "employeeUserId", label: "员工 UserID", type: "text" },
-          { name: "employeeName", label: "员工名称", type: "text" },
-          { name: "employeeAvatar", label: "员工头像 URL", type: "text" },
-          { name: "storeId", label: "门店ID", type: "number", required: true, min: 1 },
+          { name: "employeeName", label: "员工号名称", type: "text", placeholder: "扫码同步后会自动带出，可手动改展示名" },
+          { name: "storeId", label: "绑定门店", type: "number", required: true, min: 1, description: "当前仍按门店 ID 保存；后续门店员工自助页会改成搜索门店后选择绑定。" },
           { name: "storeLocationGuide", label: "门店定位说明", type: "custom", render: renderLocationGuide },
           { name: "storeAddress", label: "门店地址", type: "text", placeholder: "例如：上海市..." },
           { name: "storeNavigationName", label: "导航名称", type: "text", placeholder: "例如：丽斯未来酒店某某店" },
           { name: "storeLatitude", label: "门店纬度", type: "text", placeholder: "例如：31.230416" },
-	          { name: "storeLongitude", label: "门店经度", type: "text", placeholder: "例如：121.473701" },
-	          { name: "storeMapProvider", label: "坐标来源", type: "text", placeholder: "browser_geolocation / amap / tencent" },
-	          { name: "storeGeoPicker", label: "门店坐标", type: "custom", render: renderGeoPicker },
-		          {
-		            name: "resourceBindingSection",
-		            label: "资源绑定已迁移",
-		            type: "section",
-		            description: "小程序与企业绑定；门店知识库、提示词、模型和技能在本账号的“智能客服配置”里维护。这里仅保留员工号和门店运营资料，避免多入口配置互相覆盖。",
-		          },
-	          { name: "notifyUrl", label: "全局回调地址", type: "text" },
-	          { name: "proxy", label: "代理配置", type: "text" },
-	          { name: "bridgeId", label: "Bridge ID", type: "text" },
-	          { name: "staffUserIds", label: "门店员工后台账号ID", type: "text" },
-	          {
-	            name: "manualRouteSection",
-	            label: "人工接待路由",
-	            type: "section",
-	            description: "按时间段自动选择：命中客服组排班且已绑定门店群时，转人工提醒发到门店群；非值班、未绑定群或关闭门店群提醒时，进入总部网页端待接管。",
-	          },
-	          { name: "serviceHours", label: "服务时间", type: "text" },
-	          { name: "storeRoomNotifyEnabled", label: "值班时间优先提醒门店群", type: "switch" },
-	          { name: "storeRoomConversationId", label: "门店群 conversation_id", type: "text", placeholder: "R: 开头的群 conversation_id" },
-	          { name: "storeRoomAtList", label: "门店群 @ 成员ID", type: "text", placeholder: "多个用英文逗号分隔，0 表示 @ 全员" },
-	          { name: "fallbackToHQ", label: "非值班/无群时进入总部网页端", type: "switch" },
-	          { name: "manualTimeoutMinutes", label: "人工超时分钟", type: "number", min: 1, max: 120 },
-		          { name: "aiReplyEnabled", label: "AI 托管回复", type: "switch" },
-		          { name: "autoAcceptFriendRequest", label: "自动通过好友申请", type: "switch" },
-		          { name: "autoAcceptFriendRemarkTemplate", label: "好友通过备注模板", type: "text" },
+          { name: "storeLongitude", label: "门店经度", type: "text", placeholder: "例如：121.473701" },
+          { name: "storeMapProvider", label: "坐标来源", type: "text", placeholder: "browser_geolocation / amap / tencent" },
+          { name: "storeGeoPicker", label: "门店坐标", type: "custom", render: renderGeoPicker },
+          {
+            name: "resourceBindingSection",
+            label: "资源绑定",
+            type: "section",
+            description: "小程序跟随企业/品牌统一绑定；门店知识库、模型、提示词和技能统一在本账号的“智能客服配置”里维护。",
+          },
+          {
+            name: "manualRouteSection",
+            label: "人工接待路由",
+            type: "section",
+            description: "转人工时按服务时间判断：命中门店值班时间且已绑定门店群，就发群提醒；不命中、未绑定群或关闭群提醒，则进入总部网页端待接管。",
+          },
+          { name: "serviceHours", label: "门店服务时间", type: "text", placeholder: "例如：09:00-22:00；多个时段后续由排班页维护" },
+          { name: "storeRoomNotifyEnabled", label: "值班时间优先提醒门店群", type: "switch" },
+          { name: "storeRoomConversationId", label: "门店群", type: "custom", render: () => null },
+          { name: "storeRoomAtList", label: "@ 成员", type: "custom", render: () => null },
+          { name: "storeRoomPicker", label: "门店群和 @ 成员", type: "custom", render: renderStoreRoomPicker },
+          { name: "fallbackToHQ", label: "非值班/无群时进入总部网页端", type: "switch" },
+          { name: "manualTimeoutMinutes", label: "人工超时分钟", type: "number", min: 1, max: 120 },
+          {
+            name: "automationSection",
+            label: "自动化开关",
+            type: "section",
+            description: "AI 回复开关只控制当前员工号是否由智能客服托管；智能客服本身的模型、知识库和提示词请点列表里的“智能客服配置”。",
+          },
+          { name: "aiReplyEnabled", label: "AI 托管回复", type: "switch" },
+          { name: "autoAcceptFriendRequest", label: "自动通过好友申请", type: "switch" },
+          { name: "autoAcceptFriendRemarkTemplate", label: "好友通过备注模板", type: "text" },
           {
             name: "status",
             label: "启用状态",
@@ -535,42 +687,42 @@ export function WxWorkProtocolInstanceManager({
           },
           { name: "remark", label: "备注", type: "textarea" },
         ],
-	        transformSubmitValues: (values, context) => ({
-          guid: String(values.guid || ""),
-          channelId: Number(values.channelId || 0),
-          employeeUserId: String(values.employeeUserId || ""),
+        transformSubmitValues: (values, context) => ({
+          guid: context.item?.guid || "",
+          channelId: context.item?.channelId || channels[0]?.id || 0,
+          employeeUserId: context.item?.employeeUserId || "",
           employeeName: String(values.employeeName || ""),
-          employeeAvatar: String(values.employeeAvatar || ""),
+          employeeAvatar: context.item?.employeeAvatar || "",
           storeId: Number(values.storeId || 0),
           storeAddress: String(values.storeAddress || ""),
           storeNavigationName: String(values.storeNavigationName || ""),
           storeLatitude: String(values.storeLatitude || ""),
-	          storeLongitude: String(values.storeLongitude || ""),
-	          storeMapProvider: String(values.storeMapProvider || ""),
-		          defaultMiniProgramPayload: context.item?.defaultMiniProgramPayload || "",
-		          welcomeMessage: context.item?.welcomeMessage || DEFAULT_WELCOME_MESSAGE,
-		          welcomeSendMiniProgram: context.item?.welcomeSendMiniProgram ?? true,
-		          welcomeAskLocation: context.item?.welcomeAskLocation ?? true,
-		          knowledgeBaseId: context.item?.knowledgeBaseId || 0,
+          storeLongitude: String(values.storeLongitude || ""),
+          storeMapProvider: String(values.storeMapProvider || ""),
+          defaultMiniProgramPayload: context.item?.defaultMiniProgramPayload || "",
+          welcomeMessage: context.item?.welcomeMessage || DEFAULT_WELCOME_MESSAGE,
+          welcomeSendMiniProgram: context.item?.welcomeSendMiniProgram ?? true,
+          welcomeAskLocation: context.item?.welcomeAskLocation ?? true,
+          knowledgeBaseId: context.item?.knowledgeBaseId || 0,
           aiAgentId: context.item?.aiAgentId || 0,
-          notifyUrl: String(values.notifyUrl || CALLBACK_URL),
-          proxy: String(values.proxy || ""),
-          bridgeId: String(values.bridgeId || ""),
-	          staffUserIds: String(values.staffUserIds || ""),
-	          serviceHours: String(values.serviceHours || ""),
-	          storeRoomConversationId: String(values.storeRoomConversationId || ""),
-	          storeRoomNotifyEnabled: values.storeRoomNotifyEnabled === true,
-	          storeRoomAtList: String(values.storeRoomAtList || ""),
-	          fallbackToHQ: values.fallbackToHQ !== false,
-	          manualTimeoutMinutes: Number(values.manualTimeoutMinutes || 10),
-	          aiReplyEnabled: values.aiReplyEnabled !== false,
-		          personaPrompt: context.item?.personaPrompt || "",
-	          autoAcceptFriendRequest: values.autoAcceptFriendRequest === true,
-	          autoAcceptFriendRemarkTemplate: String(values.autoAcceptFriendRemarkTemplate || ""),
-		          contextMaxMessages: context.item?.contextMaxMessages || 30,
-		          contextMaxTokens: context.item?.contextMaxTokens || 8000,
-		          contextCompressionEnabled: context.item?.contextCompressionEnabled ?? true,
-	          status: Number(values.status || Status.Ok),
+          notifyUrl: context.item?.notifyUrl || CALLBACK_URL,
+          proxy: context.item?.proxy || "",
+          bridgeId: context.item?.bridgeId || "",
+          staffUserIds: context.item?.staffUserIds || "",
+          serviceHours: String(values.serviceHours || ""),
+          storeRoomConversationId: String(values.storeRoomConversationId || ""),
+          storeRoomNotifyEnabled: values.storeRoomNotifyEnabled === true,
+          storeRoomAtList: String(values.storeRoomAtList || ""),
+          fallbackToHQ: values.fallbackToHQ !== false,
+          manualTimeoutMinutes: Number(values.manualTimeoutMinutes || 10),
+          aiReplyEnabled: values.aiReplyEnabled !== false,
+          personaPrompt: context.item?.personaPrompt || "",
+          autoAcceptFriendRequest: values.autoAcceptFriendRequest === true,
+          autoAcceptFriendRemarkTemplate: String(values.autoAcceptFriendRemarkTemplate || ""),
+          contextMaxMessages: context.item?.contextMaxMessages || 30,
+          contextMaxTokens: context.item?.contextMaxTokens || 8000,
+          contextCompressionEnabled: context.item?.contextCompressionEnabled ?? true,
+          status: Number(values.status || Status.Ok),
           remark: String(values.remark || ""),
         }),
         labels: {

@@ -285,6 +285,22 @@ export type WxWorkProtocolInstance = {
   updateUserName: string
 }
 
+export type WxWorkProtocolRoomOption = {
+  roomId: string
+  conversationId: string
+  name: string
+  owner: string
+  memberCount: number
+  raw?: unknown
+}
+
+export type WxWorkProtocolRoomMemberOption = {
+  userId: string
+  name: string
+  avatar: string
+  raw?: unknown
+}
+
 export type WxWorkProtocolDevicePoolSettings = {
   adminBaseUrl: string
   username: string
@@ -930,6 +946,28 @@ export function inviteWxWorkProtocolRoomMember(payload: {
   return request<void>("/api/dashboard/wxwork-protocol-instance/invite_room_member", {
     method: "POST",
     body: JSON.stringify(payload),
+  })
+}
+
+export function fetchWxWorkProtocolRoomList(payload: {
+  id: number
+  startIndex?: number
+  limit?: number
+}) {
+  return request<WxWorkProtocolRoomOption[]>("/api/dashboard/wxwork-protocol-instance/room_list", {
+    method: "POST",
+    body: JSON.stringify({ id: payload.id, startIndex: payload.startIndex ?? 0, limit: payload.limit ?? 100 }),
+  })
+}
+
+export function fetchWxWorkProtocolRoomMembers(payload: {
+  id: number
+  roomId: string
+  userList?: string[]
+}) {
+  return request<WxWorkProtocolRoomMemberOption[]>("/api/dashboard/wxwork-protocol-instance/room_member_detail", {
+    method: "POST",
+    body: JSON.stringify({ id: payload.id, roomId: payload.roomId, userList: payload.userList ?? [] }),
   })
 }
 

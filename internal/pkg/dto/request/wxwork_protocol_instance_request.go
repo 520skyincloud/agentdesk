@@ -128,6 +128,18 @@ type WxWorkProtocolInstanceActionRequest struct {
 	ID int64 `json:"id"`
 }
 
+type WxWorkProtocolRoomListRequest struct {
+	ID         int64 `json:"id"`
+	StartIndex int   `json:"startIndex"`
+	Limit      int   `json:"limit"`
+}
+
+type WxWorkProtocolRoomMemberDetailRequest struct {
+	ID       int64    `json:"id"`
+	RoomID   string   `json:"roomId"`
+	UserList []string `json:"userList"`
+}
+
 type UpdateWxWorkProtocolAIAgentRequest struct {
 	ID int64 `json:"id"`
 	CreateAIAgentRequest

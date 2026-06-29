@@ -291,6 +291,46 @@ func (s *wxWorkProtocolService) AgreeContact(instanceID int64, userID string, co
 	return s.callInstanceAPI(instanceID, "/contact/agree_contact", map[string]any{"user_id": userID, "corp_id": corpID}, nil)
 }
 
+func (s *wxWorkProtocolService) GetRoomList(instanceID int64, startIndex int, limit int) (string, error) {
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	return s.callInstanceAPI(instanceID, "/room/get_room_list", map[string]any{
+		"start_index": startIndex,
+		"limit":       limit,
+	}, nil)
+}
+
+func (s *wxWorkProtocolService) BatchGetRoomMemberDetail(instanceID int64, roomID string, userList []string) (string, error) {
+	roomID = strings.TrimSpace(strings.TrimPrefix(roomID, "R:"))
+	if roomID == "" {
+		return "", errorsx.InvalidParam("群ID不能为空")
+	}
+	cleanUsers := make([]string, 0, len(userList))
+	seen := map[string]struct{}{}
+	for _, item := range userList {
+		userID := strings.TrimSpace(item)
+		if userID == "" {
+			continue
+		}
+		if _, ok := seen[userID]; ok {
+			continue
+		}
+		seen[userID] = struct{}{}
+		cleanUsers = append(cleanUsers, userID)
+	}
+	return s.callInstanceAPI(instanceID, "/room/batch_get_member_detail", map[string]any{
+		"room_id":   roomID,
+		"user_list": cleanUsers,
+	}, nil)
+}
+
 func (s *wxWorkProtocolService) InviteRoomMember(instanceID int64, roomID string, userList []string) error {
 	instance := WxWorkProtocolInstanceService.Get(instanceID)
 	if instance == nil || instance.Status != enums.StatusOk {

@@ -73,6 +73,22 @@ type StartWxWorkProtocolLoginResponse struct {
 	Key           string                         `json:"key"`
 }
 
+type WxWorkProtocolRoomOptionResponse struct {
+	RoomID         string `json:"roomId"`
+	ConversationID string `json:"conversationId"`
+	Name           string `json:"name"`
+	Owner          string `json:"owner"`
+	MemberCount    int    `json:"memberCount"`
+	Raw            any    `json:"raw,omitempty"`
+}
+
+type WxWorkProtocolRoomMemberOptionResponse struct {
+	UserID string `json:"userId"`
+	Name   string `json:"name"`
+	Avatar string `json:"avatar"`
+	Raw    any    `json:"raw,omitempty"`
+}
+
 func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) WxWorkProtocolInstanceResponse {
 	if item == nil {
 		return WxWorkProtocolInstanceResponse{}
