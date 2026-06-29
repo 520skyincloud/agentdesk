@@ -430,7 +430,7 @@ type WxWorkProtocolInstance struct {
 	ContextMaxMessages             int          `gorm:"type:int;not null;default:30"`
 	ContextMaxTokens               int          `gorm:"type:int;not null;default:8000"`
 	ContextCompressionEnabled      bool         `gorm:"not null;default:true"`
-	RemoteSetupToken               string       `gorm:"type:varchar(80);not null;default:'';uniqueIndex"`
+	RemoteSetupToken               string       `gorm:"type:varchar(80);not null;default:'';index"`
 	RemoteSetupExpiresAt           *time.Time   `gorm:"type:datetime;index"`
 	RemoteSetupSubmittedAt         *time.Time   `gorm:"type:datetime;index"`
 	HealthStatus                   string       `gorm:"type:varchar(30);not null;default:'unknown';index"`
