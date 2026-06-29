@@ -66,6 +66,7 @@ type WxWorkProtocolChannelConfig = {
   appKey?: string
   appSecret?: string
   baseUrl?: string
+  devicePoolUrl?: string
   callbackToken?: string
   wecdnBaseUrl?: string
   publicAssetBaseUrl?: string
@@ -92,6 +93,7 @@ function createSchema(t: Translate) {
       protocolAppKey: z.string().trim(),
       protocolAppSecret: z.string().trim(),
       protocolBaseUrl: z.string().trim(),
+      protocolDevicePoolUrl: z.string().trim(),
       protocolCallbackToken: z.string().trim(),
       protocolWecdnBaseUrl: z.string().trim(),
       protocolPublicAssetBaseUrl: z.string().trim(),
@@ -133,6 +135,7 @@ type EditForm = {
   protocolAppKey: string
   protocolAppSecret: string
   protocolBaseUrl: string
+  protocolDevicePoolUrl: string
   protocolCallbackToken: string
   protocolWecdnBaseUrl: string
   protocolPublicAssetBaseUrl: string
@@ -157,6 +160,7 @@ function createEmptyForm(t: Translate): EditForm {
     protocolAppKey: "",
     protocolAppSecret: "",
     protocolBaseUrl: "https://chat-api.juhebot.com/open/GuidRequest",
+    protocolDevicePoolUrl: "",
     protocolCallbackToken: "",
     protocolWecdnBaseUrl: "",
     protocolPublicAssetBaseUrl: "",
@@ -189,6 +193,7 @@ function parseWxWorkProtocolChannelConfig(configJson: string): Required<WxWorkPr
     appKey: "",
     appSecret: "",
     baseUrl: "https://chat-api.juhebot.com/open/GuidRequest",
+    devicePoolUrl: "",
     callbackToken: "",
     wecdnBaseUrl: "",
     publicAssetBaseUrl: "",
@@ -202,6 +207,7 @@ function parseWxWorkProtocolChannelConfig(configJson: string): Required<WxWorkPr
       appKey: parsed.appKey?.trim() || "",
       appSecret: parsed.appSecret?.trim() || "",
       baseUrl: parsed.baseUrl?.trim() || fallback.baseUrl,
+      devicePoolUrl: parsed.devicePoolUrl?.trim() || "",
       callbackToken: parsed.callbackToken?.trim() || "",
       wecdnBaseUrl: parsed.wecdnBaseUrl?.trim() || "",
       publicAssetBaseUrl: parsed.publicAssetBaseUrl?.trim() || "",
@@ -299,6 +305,7 @@ function buildForm(item: AdminChannel | null, t: Translate): EditForm {
     protocolAppKey: wxWorkProtocolConfig?.appKey ?? "",
     protocolAppSecret: wxWorkProtocolConfig?.appSecret ?? "",
     protocolBaseUrl: wxWorkProtocolConfig?.baseUrl ?? "https://chat-api.juhebot.com/open/GuidRequest",
+    protocolDevicePoolUrl: wxWorkProtocolConfig?.devicePoolUrl ?? "",
     protocolCallbackToken: wxWorkProtocolConfig?.callbackToken ?? "",
     protocolWecdnBaseUrl: wxWorkProtocolConfig?.wecdnBaseUrl ?? "",
     protocolPublicAssetBaseUrl: wxWorkProtocolConfig?.publicAssetBaseUrl ?? "",
@@ -332,6 +339,7 @@ function buildPayload(form: EditForm, status: number, t: Translate): CreateAdmin
             appKey: form.protocolAppKey.trim(),
             appSecret: form.protocolAppSecret.trim(),
             baseUrl: form.protocolBaseUrl.trim() || "https://chat-api.juhebot.com/open/GuidRequest",
+            devicePoolUrl: form.protocolDevicePoolUrl.trim(),
             callbackToken: form.protocolCallbackToken.trim(),
             wecdnBaseUrl: form.protocolWecdnBaseUrl.trim(),
             publicAssetBaseUrl: form.protocolPublicAssetBaseUrl.trim(),
@@ -590,7 +598,7 @@ function ChannelFormBody({
             </Field>
           </div>
 
-          <div className="space-y-4 rounded-md border p-4">
+          <div className="agentdesk-subtle-surface space-y-4 rounded-2xl p-4">
             <div>
               <div className="text-sm font-medium">{t("channel.configTitle")}</div>
               <div className="text-xs text-muted-foreground">
@@ -631,6 +639,21 @@ function ChannelFormBody({
                     <FieldError errors={[errors.protocolBaseUrl]} />
                   </FieldContent>
                 </Field>
+                <Field data-invalid={!!errors.protocolDevicePoolUrl}>
+                  <FieldLabel htmlFor="channel-protocol-device-pool-url">实例列表接口</FieldLabel>
+                  <FieldContent>
+                    <Input
+                      id="channel-protocol-device-pool-url"
+                      className="font-mono text-xs"
+                      placeholder="协议平台用于返回可用 guid 的设备池接口"
+                      {...register("protocolDevicePoolUrl")}
+                    />
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      新增账号会先调用这个接口选择未绑定的空闲 guid，再按 Apifox 业务接口生成登录二维码；不配置时不会创建占位账号。
+                    </p>
+                    <FieldError errors={[errors.protocolDevicePoolUrl]} />
+                  </FieldContent>
+                </Field>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <Field data-invalid={!!errors.protocolWecdnBaseUrl}>
                     <FieldLabel htmlFor="channel-protocol-wecdn-base-url">私有化云存储地址</FieldLabel>
@@ -657,7 +680,7 @@ function ChannelFormBody({
                     </FieldContent>
                   </Field>
                 </div>
-                <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 text-xs leading-5 text-muted-foreground shadow-inner shadow-blue-100/30">
                   发送图片、语音、文件、视频、GIF 时，系统会先让私有化云存储从 AgentDesk 公网地址拉取资产，换取 file_id/aes_key/md5 后再调用企微发送接口。
                 </div>
                 {itemId ? (
@@ -685,7 +708,7 @@ function ChannelFormBody({
                     </FieldContent>
                   </Field>
                 ) : (
-                  <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+                  <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 text-sm text-muted-foreground shadow-inner shadow-blue-100/30">
                     保存后系统会自动生成 Callback Token。
                   </div>
                 )}
@@ -764,7 +787,7 @@ function ChannelFormBody({
                     </>
                   ) : null}
                 </div>
-                <div className="space-y-3 rounded-md border p-3">
+                <div className="agentdesk-subtle-surface space-y-3 rounded-xl p-3">
                   <div>
                     <div className="text-sm font-medium">{t("channel.userJwtSecret")}</div>
                     <div className="text-xs text-muted-foreground">
@@ -772,7 +795,7 @@ function ChannelFormBody({
                     </div>
                   </div>
                   {!itemId ? (
-                    <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+                    <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 text-sm text-muted-foreground shadow-inner shadow-blue-100/30">
                       {t("channel.secretAfterSave")}
                     </div>
                   ) : (
@@ -894,7 +917,7 @@ function WebAccessGuide({ channelId }: { channelId: string }) {
       </div>
 
       {!channelId ? (
-        <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+        <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 text-sm text-muted-foreground shadow-inner shadow-blue-100/30">
           {t("channel.newChannelPending")}
         </div>
       ) : (
@@ -941,12 +964,12 @@ function WebAccessGuide({ channelId }: { channelId: string }) {
                 {t("channel.copyCode")}
               </Button>
             </div>
-            <pre className="max-h-48 overflow-auto rounded-md bg-muted p-3 text-xs leading-5">
+            <pre className="max-h-48 overflow-auto rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs leading-5 text-slate-100 shadow-[0_10px_24px_rgba(15,23,42,0.12)]">
               <code>{snippet}</code>
             </pre>
           </div>
 
-          <div className="flex flex-col gap-2 rounded-md bg-muted px-3 py-3 text-xs text-muted-foreground">
+          <div className="flex flex-col gap-2 rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-3 text-xs text-muted-foreground shadow-inner shadow-blue-100/30">
             <div className="font-medium text-foreground">{t("channel.accessGuide")}</div>
             <div>{t("channel.webGuide1")}</div>
             <div>{t("channel.webGuide2")}</div>
@@ -1011,7 +1034,7 @@ function WechatMPAccessGuide({ channelId }: { channelId: string }) {
       </div>
 
       {!channelId ? (
-        <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+        <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 text-sm text-muted-foreground shadow-inner shadow-blue-100/30">
           {t("channel.newChannelPending")}
         </div>
       ) : (
@@ -1045,7 +1068,7 @@ function WechatMPAccessGuide({ channelId }: { channelId: string }) {
             </div>
           </div>
 
-          <div className="flex flex-col gap-2 rounded-md bg-muted px-3 py-3 text-xs text-muted-foreground">
+          <div className="flex flex-col gap-2 rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-3 text-xs text-muted-foreground shadow-inner shadow-blue-100/30">
             <div className="font-medium text-foreground">{t("channel.accessGuide")}</div>
             <div>{t("channel.webGuide1")}</div>
             <div>{t("channel.wechatGuide2")}</div>
@@ -1101,7 +1124,7 @@ function WxWorkProtocolAccessGuide() {
           </Button>
         </div>
       </div>
-      <div className="rounded-md bg-muted px-3 py-3 text-xs leading-5 text-muted-foreground">
+      <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-3 text-xs leading-5 text-muted-foreground shadow-inner shadow-blue-100/30">
         平台 API 统一请求地址为 <span className="font-mono">/open/GuidRequest</span>，AgentDesk 会自动包装
         <span className="font-mono"> app_key/app_secret/path/data </span>
         后调用，例如 <span className="font-mono">/msg/send_text</span>、<span className="font-mono">/client/set_notify_url</span>。
@@ -1172,7 +1195,7 @@ POST ${outboxPollUrl}`
       </div>
 
       {!channelId ? (
-        <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+        <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 text-sm text-muted-foreground shadow-inner shadow-blue-100/30">
           {t("channel.newChannelPending")}
         </div>
       ) : (
@@ -1186,10 +1209,10 @@ POST ${outboxPollUrl}`
               {t("channel.copyCode")}
             </Button>
           </div>
-          <pre className="max-h-48 overflow-auto rounded-md bg-muted p-3 text-xs leading-5">
+          <pre className="max-h-48 overflow-auto rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs leading-5 text-slate-100 shadow-[0_10px_24px_rgba(15,23,42,0.12)]">
             <code>{snippet}</code>
           </pre>
-          <div className="flex flex-col gap-2 rounded-md bg-muted px-3 py-3 text-xs text-muted-foreground">
+          <div className="flex flex-col gap-2 rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-3 text-xs text-muted-foreground shadow-inner shadow-blue-100/30">
             <div className="font-medium text-foreground">{t("channel.accessGuide")}</div>
             <div>{t("channel.wxworkCliGuide1")}</div>
             <div>{t("channel.wxworkCliGuide2")}</div>

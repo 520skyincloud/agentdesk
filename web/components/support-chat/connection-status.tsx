@@ -15,12 +15,12 @@ export function SupportChatConnectionStatus({ status }: SupportChatConnectionSta
       ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-950/50 dark:text-emerald-300"
       : status === "connecting"
         ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/70 dark:bg-amber-950/50 dark:text-amber-300"
-        : "border-border bg-muted text-muted-foreground"
+        : "border-[#dbe7f6] bg-[#f6f9ff] text-muted-foreground"
 
   return (
     <Badge
       variant="outline"
-      className={cn("h-6 gap-2 px-2.5 text-[11px] font-medium shadow-sm", toneClass)}
+      className={cn("h-6 gap-2 px-2.5 text-[11px] font-medium shadow-[0_8px_18px_rgba(37,99,235,0.08)]", toneClass)}
     >
       <span
         className={cn(

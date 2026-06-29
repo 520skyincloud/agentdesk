@@ -128,9 +128,9 @@ function SortableKnowledgeBaseCard({
         ref={setNodeRef}
         style={style}
         className={cn(
-          "group flex items-center gap-1 rounded mx-2 px-2 py-1.5 text-sm transition-colors hover:bg-accent cursor-pointer",
-          isSelected && "bg-accent text-accent-foreground",
-          isDragging && "bg-muted/60 shadow-sm opacity-80",
+          "group mx-2 flex cursor-pointer items-center gap-1 rounded-xl px-2 py-1.5 text-sm transition-colors hover:bg-[#f2f7ff]",
+          isSelected && "bg-[#eef5ff] text-primary shadow-sm shadow-blue-100/60",
+          isDragging && "bg-[#eef5ff] shadow-[0_12px_28px_rgba(37,99,235,0.12)] opacity-90",
         )}
         onClick={onSelect}
         onKeyDown={(e) => {
@@ -429,8 +429,8 @@ export function KnowledgeBaseList({
 
   return (
     <>
-      <div className="flex h-full flex-col border-r bg-muted/30">
-        <div className="flex flex-col gap-2 border-b bg-background p-4">
+      <div className="flex h-full flex-col border-r border-[#dbe7f6] bg-[#f8fbff]">
+        <div className="flex flex-col gap-2 border-b border-[#dbe7f6] bg-white/70 p-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold">{t("knowledge.title")}</h2>
             <div className="flex items-center gap-1">

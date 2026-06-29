@@ -211,7 +211,7 @@ function AssignPermissionsDrawerBody({
                                 return (
                                   <label
                                     key={permission.id}
-                                    className="flex cursor-pointer items-start gap-3 rounded-lg border border-transparent px-3 py-2 hover:bg-muted/50"
+                                    className="flex cursor-pointer items-start gap-3 rounded-xl border border-transparent px-3 py-2 transition hover:border-primary/15 hover:bg-[#f7faff]"
                                   >
                                     <Checkbox
                                       checked={checked}

@@ -39,7 +39,7 @@ export function AlertList({ alerts }: AlertListProps) {
       </CardHeader>
       <CardContent className="space-y-3">
         {alerts.length === 0 ? (
-          <div className="rounded-2xl border border-dashed px-4 py-10 text-center">
+          <div className="rounded-2xl border border-dashed border-[#dbe7f6] bg-[#f6f9ff] px-4 py-10 text-center shadow-inner shadow-blue-100/30">
             <ShieldAlertIcon className="mx-auto mb-3 size-8 text-muted-foreground" />
             <div className="text-sm font-medium">{t("dashboardHome.noRiskTitle")}</div>
             <div className="mt-1 text-sm text-muted-foreground">

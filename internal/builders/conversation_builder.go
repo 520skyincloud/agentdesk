@@ -24,7 +24,7 @@ func BuildConversationWithLocale(item *models.Conversation, locale string) respo
 		AIAgentID:                 item.AIAgentID,
 		ChannelID:                 item.ChannelID,
 		CustomerID:                item.CustomerID,
-		CustomerName:              item.CustomerName,
+		CustomerName:              utils.RepairMojibakeText(item.CustomerName),
 		Status:                    item.Status,
 		ServiceMode:               item.ServiceMode,
 		Priority:                  item.Priority,
@@ -33,7 +33,7 @@ func BuildConversationWithLocale(item *models.Conversation, locale string) respo
 		LastMessageID:             item.LastMessageID,
 		LastMessageAt:             utils.FormatTime(item.LastMessageAt),
 		LastActiveAt:              utils.FormatTime(item.LastActiveAt),
-		LastMessageSummary:        localizeConversationSummary(locale, item.LastMessageSummary),
+		LastMessageSummary:        utils.RepairMojibakeText(localizeConversationSummary(locale, item.LastMessageSummary)),
 		CustomerUnreadCount:       item.CustomerUnreadCount,
 		AgentUnreadCount:          item.AgentUnreadCount,
 		CustomerLastReadMessageID: readStateMessageID(customerReadState),
@@ -51,23 +51,28 @@ func BuildConversationWithLocale(item *models.Conversation, locale string) respo
 	}
 	if item.CurrentAssigneeID > 0 {
 		if user := services.UserService.Get(item.CurrentAssigneeID); user != nil {
-			ret.CurrentAssigneeName = user.Nickname
+			ret.CurrentAssigneeName = utils.RepairMojibakeText(user.Nickname)
 			if ret.CurrentAssigneeName == "" {
-				ret.CurrentAssigneeName = user.Username
+				ret.CurrentAssigneeName = utils.RepairMojibakeText(user.Username)
 			}
 		}
 	}
 	if item.CurrentTeamID > 0 {
 		if team := services.AgentTeamService.Get(item.CurrentTeamID); team != nil {
-			ret.CurrentTeamName = team.Name
+			ret.CurrentTeamName = utils.RepairMojibakeText(team.Name)
 		}
 	}
 	if item.ClosedBy > 0 {
 		if user := services.UserService.Get(item.ClosedBy); user != nil {
-			ret.ClosedByName = user.Nickname
+			ret.ClosedByName = utils.RepairMojibakeText(user.Nickname)
 			if ret.ClosedByName == "" {
-				ret.ClosedByName = user.Username
+				ret.ClosedByName = utils.RepairMojibakeText(user.Username)
 			}
+		}
+	}
+	if item.CustomerID > 0 {
+		if customer := services.CustomerService.Get(item.CustomerID); customer != nil {
+			ret.CustomerAvatar = strings.TrimSpace(customer.Avatar)
 		}
 	}
 	buildConversationRouteFields(&ret, item)
@@ -85,7 +90,7 @@ func buildConversationRouteFields(ret *response.ConversationResponse, item *mode
 	ret.RouteStatus = route.RouteStatus
 	ret.RouteStatusLabel = enums.GetConversationRouteStatusLabel(route.RouteStatus)
 	ret.RouteTarget = route.RouteTarget
-	ret.HandoffReason = route.HandoffReason
+	ret.HandoffReason = utils.RepairMojibakeText(route.HandoffReason)
 	ret.NeedHumanFollowUp = route.NeedHumanFollowUp
 	ret.ManualExpireAt = utils.FormatTimePtr(route.ManualExpireAt)
 	ret.StoreID = route.StoreID
@@ -97,19 +102,19 @@ func buildConversationRouteFields(ret *response.ConversationResponse, item *mode
 	}
 	if route.StoreID > 0 {
 		if store := services.StoreService.Get(route.StoreID); store != nil {
-			ret.StoreName = store.Name
+			ret.StoreName = utils.RepairMojibakeText(store.Name)
 		}
 	}
 	if route.WxWorkInstanceID > 0 {
 		if instance := services.WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID); instance != nil {
-			ret.WxWorkEmployeeName = instance.EmployeeName
+			ret.WxWorkEmployeeName = utils.RepairMojibakeText(instance.EmployeeName)
 			ret.WxWorkEmployeeUserID = instance.EmployeeUserID
 			if ret.StoreID == 0 {
 				ret.StoreID = instance.StoreID
 			}
 			if ret.StoreName == "" && instance.StoreID > 0 {
 				if store := services.StoreService.Get(instance.StoreID); store != nil {
-					ret.StoreName = store.Name
+					ret.StoreName = utils.RepairMojibakeText(store.Name)
 				}
 			}
 		}

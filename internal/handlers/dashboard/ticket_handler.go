@@ -29,6 +29,7 @@ func TicketAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "conversationId"},
 		params.QueryFilter{ParamName: "source"},
 		params.QueryFilter{ParamName: "channel"},
+		params.QueryFilter{ParamName: "category"},
 	).Desc("updated_at").Desc("id")
 	if keyword, _ := params.Get(ctx, "keyword"); strings.TrimSpace(keyword) != "" {
 		keyword = "%" + strings.TrimSpace(keyword) + "%"

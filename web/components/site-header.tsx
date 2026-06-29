@@ -54,10 +54,10 @@ export function SiteHeader() {
   }, [isMobile, open])
 
   return (
-    <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b border-border/70 bg-background/82 backdrop-blur supports-[backdrop-filter]:bg-background/72 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-(--header-height)">
+    <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b border-[#dce7f4] bg-card transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-(--header-height)">
       <div className="flex w-full items-center justify-between gap-3 px-4 lg:px-6">
         <div className="flex min-w-0 items-center gap-2">
-          <SidebarTrigger className="-ml-1" />
+          <SidebarTrigger className="-ml-1 rounded-lg text-muted-foreground hover:bg-[#f2f7ff] hover:text-primary" />
           <Separator
             orientation="vertical"
             className="mx-2 h-4 data-vertical:self-auto"
@@ -67,7 +67,7 @@ export function SiteHeader() {
               <BreadcrumbList>
                 <BreadcrumbItem>
                   <div className="flex items-center gap-2">
-                    <BreadcrumbPage>{pageTitle}</BreadcrumbPage>
+                    <BreadcrumbPage className="font-semibold tracking-tight text-foreground">{pageTitle}</BreadcrumbPage>
                     {showConversationRealtime ? (
                       <RealtimeConnectionStatus status={realtimeStatus} compact />
                     ) : null}

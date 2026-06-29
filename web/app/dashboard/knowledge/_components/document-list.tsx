@@ -323,7 +323,7 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
   return (
     <>
       <div className="flex h-full min-h-0 flex-col">
-        <div className="flex flex-col gap-2 border-b bg-background px-6 py-2">
+        <div className="flex flex-col gap-2 border-b border-[#dbe7f6] bg-[#f8fbff] px-6 py-2">
           <div className="flex gap-2">
             <div className="relative flex-1">
               <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -361,7 +361,7 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
                 <ContextMenu key={item.id}>
                   <ContextMenuTrigger className="w-full">
                     <div
-                      className="bg-background p-3 transition-colors hover:bg-accent w-full"
+                      className="w-full rounded-xl border border-transparent bg-white p-3 transition-colors hover:border-primary/15 hover:bg-[#f7faff]"
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex min-w-0 flex-1 items-start gap-2">
@@ -439,7 +439,7 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
                 <ContextMenu key={item.id}>
                   <ContextMenuTrigger className="w-full">
                     <div
-                      className="flex items-center gap-3 bg-background p-2 transition-colors hover:bg-accent w-full"
+                      className="flex w-full items-center gap-3 rounded-xl border border-transparent bg-white p-2 transition-colors hover:border-primary/15 hover:bg-[#f7faff]"
                     >
                       {/* <FileTextIcon className="size-4 shrink-0 text-muted-foreground" /> */}
                       <div className="min-w-0 flex-1">

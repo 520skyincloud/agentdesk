@@ -169,8 +169,8 @@ export function AgentTeamSidebar({
 
   return (
     <>
-      <div className="flex h-full flex-col border-r bg-muted/10">
-        <div className="border-b px-3 py-3">
+      <div className="flex h-full flex-col border-r border-[#dbe7f6] bg-[#f8fbff]">
+        <div className="border-b border-[#dbe7f6] bg-white/70 px-3 py-3">
           <div className="flex items-center justify-between gap-2">
             <div>
               <div className="text-sm font-medium">{t("agentProfile.teamTitle")}</div>
@@ -218,9 +218,9 @@ export function AgentTeamSidebar({
               <div
                 key={item.id}
                 className={cn(
-                  "group mt-1 flex items-center gap-2 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-accent",
+                  "group mt-1 flex items-center gap-2 rounded-xl px-2 py-2 text-sm transition-colors hover:bg-[#f2f7ff]",
                   selectedTeamId === item.id &&
-                    "bg-accent text-accent-foreground",
+                    "bg-[#eef5ff] text-primary shadow-sm shadow-blue-100/60",
                 )}
               >
                 <button

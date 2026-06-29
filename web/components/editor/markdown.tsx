@@ -154,7 +154,7 @@ export function MarkdownEditor({
   ] as const
 
   return (
-    <div className="rounded-lg border bg-background">
+    <div className="agentdesk-subtle-surface rounded-2xl">
       <EditorToolbar actions={toolbarActions} />
       <div className="p-2">
         <Textarea

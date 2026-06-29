@@ -83,7 +83,7 @@ function ResultBlock({
       </CardHeader>
       <CardContent>
         {value ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 text-xs leading-5">
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 text-xs leading-5 shadow-inner shadow-blue-100/30">
             {value}
           </pre>
         ) : (
@@ -372,30 +372,30 @@ function DebugDialogBody({
                   <Badge variant="outline">{t("skillDefinition.notInterrupted")}</Badge>
                 )}
               </div>
-              <div className="rounded-lg bg-muted/50 p-3">
+              <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                 <div className="text-xs text-muted-foreground">{t("skillDefinition.skillName")}</div>
                 <div className="mt-1 font-medium">{result?.skillName || skillName}</div>
               </div>
-              <div className="rounded-lg bg-muted/50 p-3">
+              <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                 <div className="text-xs text-muted-foreground">Plan Reason</div>
                 <div className="mt-1 whitespace-pre-wrap break-words">
                   {result?.planReason || t("skillDefinition.none")}
                 </div>
               </div>
-              <div className="rounded-lg bg-muted/50 p-3">
+              <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                 <div className="text-xs text-muted-foreground">Reply</div>
                 <div className="mt-1 whitespace-pre-wrap break-words">
                   {result?.replyText || t("skillDefinition.none")}
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="rounded-lg bg-muted/50 p-3">
+                <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                   <div className="text-xs text-muted-foreground">Checkpoint</div>
                   <div className="mt-1 break-all">
                     {result?.checkPointId || t("skillDefinition.none")}
                   </div>
                 </div>
-                <div className="rounded-lg bg-muted/50 p-3">
+                <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                   <div className="text-xs text-muted-foreground">{t("skillDefinition.errorMessage")}</div>
                   <div className="mt-1 whitespace-pre-wrap break-words">
                     {result?.errorMessage || t("skillDefinition.none")}
@@ -410,7 +410,7 @@ function DebugDialogBody({
               <CardTitle className="text-sm">{t("skillDefinition.toolView")}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
-              <div className="rounded-lg bg-muted/50 p-3">
+              <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                 <div className="text-xs text-muted-foreground">{t("skillDefinition.skillToolWhitelist")}</div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {(result?.toolWhitelist ?? []).length > 0 ? (
@@ -424,7 +424,7 @@ function DebugDialogBody({
                   )}
                 </div>
               </div>
-              <div className="rounded-lg bg-muted/50 p-3">
+              <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                 <div className="text-xs text-muted-foreground">{t("skillDefinition.exposedTools")}</div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {(result?.exposedToolCodes ?? []).length > 0 ? (
@@ -438,7 +438,7 @@ function DebugDialogBody({
                   )}
                 </div>
               </div>
-              <div className="rounded-lg bg-muted/50 p-3">
+              <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                 <div className="text-xs text-muted-foreground">{t("skillDefinition.invokedTools")}</div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {(result?.invokedToolCodes ?? []).length > 0 ? (
@@ -469,7 +469,7 @@ function DebugDialogBody({
               <CardTitle className="text-sm">{t("skillDefinition.resumeDebug")}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="rounded-lg bg-muted/50 p-3 text-sm">
+              <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 text-sm shadow-inner shadow-blue-100/30">
                 <div className="text-xs text-muted-foreground">{t("skillDefinition.currentCheckpoint")}</div>
                 <div className="mt-1 break-all">{result.checkPointId}</div>
               </div>
@@ -535,19 +535,19 @@ function DebugDialogBody({
                     <Badge variant="outline">{t("skillDefinition.resumeCompleted")}</Badge>
                   )}
                 </div>
-                <div className="rounded-lg bg-muted/50 p-3">
+                <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                   <div className="text-xs text-muted-foreground">{t("skillDefinition.resumeMessage")}</div>
                   <div className="mt-1 whitespace-pre-wrap break-words">
                     {resumeMessage || t("skillDefinition.none")}
                   </div>
                 </div>
-                <div className="rounded-lg bg-muted/50 p-3">
+                <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                   <div className="text-xs text-muted-foreground">{t("skillDefinition.resumeReply")}</div>
                   <div className="mt-1 whitespace-pre-wrap break-words">
                     {resumeResult.replyText || t("skillDefinition.none")}
                   </div>
                 </div>
-                <div className="rounded-lg bg-muted/50 p-3">
+                <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                   <div className="text-xs text-muted-foreground">Resume Plan Reason</div>
                   <div className="mt-1 whitespace-pre-wrap break-words">
                     {resumeResult.planReason || t("skillDefinition.none")}

@@ -1,6 +1,6 @@
 "use client";
 
-import { BanIcon, CheckCircle2Icon } from "lucide-react";
+import { BanIcon, CheckCircle2Icon, EyeIcon, MessageCircleIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { type CustomerFormSavePayload } from "@/components/customer-form";
@@ -12,6 +12,14 @@ import {
   type DashboardCrudFilter,
 } from "@/components/dashboard/crud";
 import { type ComboboxOption } from "@/components/option-combobox";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { fetchCompanies, type AdminCompany } from "@/lib/api/company";
 import {
   deleteCustomer,
@@ -40,6 +48,7 @@ export default function DashboardCustomersPage() {
   const [companyNameMap, setCompanyNameMap] = useState<Record<number, string>>(
     {},
   );
+  const [detailCustomer, setDetailCustomer] = useState<AdminCustomer | null>(null);
 
   const listStatusOptions = useMemo(
     () => [
@@ -161,6 +170,34 @@ export default function DashboardCustomersPage() {
         ),
       },
       {
+        key: "storeRelations",
+        label: "门店关系",
+        render: (item) => {
+          const relations = item.storeRelations ?? [];
+          if (relations.length === 0) {
+            return <span className="text-muted-foreground">-</span>;
+          }
+          return (
+            <div className="flex max-w-[260px] flex-wrap gap-1.5">
+              {relations.slice(0, 2).map((relation) => (
+                <span
+                  key={relation.id}
+                  className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-600"
+                  title={`员工号：${relation.wxWorkInstanceName || relation.wxWorkInstanceId || "-"}`}
+                >
+                  {relation.storeName || `门店 ${relation.storeId}`} · {relation.visitCount}次
+                </span>
+              ))}
+              {relations.length > 2 ? (
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">
+                  +{relations.length - 2}
+                </span>
+              ) : null}
+            </div>
+          );
+        },
+      },
+      {
         key: "mobile",
         label: t("customer.columnMobile"),
         render: (item) => (
@@ -192,7 +229,8 @@ export default function DashboardCustomersPage() {
   );
 
   return (
-    <DashboardCrudPage<AdminCustomer, CustomerFormSavePayload>
+    <>
+      <DashboardCrudPage<AdminCustomer, CustomerFormSavePayload>
       filters={filters}
       columns={columns}
       fetchList={(query) =>
@@ -215,6 +253,12 @@ export default function DashboardCustomersPage() {
       deleteItem={(item) => deleteCustomer(item.id)}
       canDelete={(item) => item.status !== Status.Deleted}
       rowActions={[
+        {
+          key: "detail",
+          label: "详情",
+          icon: <EyeIcon />,
+          run: ({ item }) => setDetailCustomer(item),
+        },
         createDashboardStatusToggleAction<AdminCustomer, number>({
           icon: (item) =>
             item.status === Status.Ok ? <BanIcon /> : <CheckCircle2Icon />,
@@ -261,6 +305,66 @@ export default function DashboardCustomersPage() {
         updated: (item) => t("customer.updated", { name: item.name }),
         deleted: (item) => t("customer.deleted", { name: item.name }),
       }}
-    />
+      />
+      <Dialog open={!!detailCustomer} onOpenChange={(open) => !open && setDetailCustomer(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{detailCustomer?.name || "客户详情"}</DialogTitle>
+            <DialogDescription>同一自然客户在不同门店下保留独立关系和上下文。</DialogDescription>
+          </DialogHeader>
+          {detailCustomer ? (
+            <div className="space-y-5">
+              <div className="rounded-2xl border bg-slate-50/70 p-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex size-12 items-center justify-center overflow-hidden rounded-full bg-white text-sm font-semibold text-slate-600 ring-1 ring-slate-200">
+                    {detailCustomer.avatar ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={detailCustomer.avatar} alt="" className="size-full object-cover" />
+                    ) : (
+                      detailCustomer.name.slice(0, 1)
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-medium">{detailCustomer.name}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {detailCustomer.primaryMobile || "无手机号"} · {detailCustomer.primaryEmail || "无邮箱"}
+                    </div>
+                  </div>
+                </div>
+                {detailCustomer.remark ? <div className="mt-3 text-sm text-slate-600">{detailCustomer.remark}</div> : null}
+              </div>
+              <div>
+                <div className="mb-2 text-sm font-medium">门店关系</div>
+                <div className="space-y-2">
+                  {(detailCustomer.storeRelations ?? []).length === 0 ? (
+                    <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">暂无门店关系</div>
+                  ) : (
+                    detailCustomer.storeRelations?.map((relation) => (
+                      <div key={relation.id} className="flex items-center justify-between gap-3 rounded-xl border bg-white p-3 shadow-sm">
+                        <div className="min-w-0">
+                          <div className="font-medium">{relation.storeName || `门店 ${relation.storeId}`}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            员工号：{relation.wxWorkInstanceName || relation.wxWorkInstanceId || "-"} · 到访 {relation.visitCount} 次 · 最近 {relation.lastActiveAt || "-"}
+                          </div>
+                          {relation.stableNotes ? <div className="mt-2 text-sm text-slate-600">{relation.stableNotes}</div> : null}
+                        </div>
+                        {relation.lastConversationId > 0 ? (
+                          <Button variant="outline" size="sm" className="rounded-xl">
+                            <a href={`/dashboard/conversations?conversationId=${relation.lastConversationId}`} className="inline-flex items-center gap-1.5">
+                              <MessageCircleIcon className="size-4" />
+                              会话
+                            </a>
+                          </Button>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

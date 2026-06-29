@@ -108,6 +108,9 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 	}
 	updated := repositories.MessageRepository.Get(sqls.DB(), message.ID)
 	conversation := ConversationService.Get(message.ConversationID)
+	if updated != nil && conversation != nil && WxWorkProtocolDefaultResourceService.HandleCustomerIntent(conversation, updated) {
+		return nil
+	}
 	if updated != nil && conversation != nil && TriggerAIReplyAsyncHook != nil && s.canTriggerAIForMedia(conversation.ID) {
 		TriggerAIReplyAsyncHook(*conversation, *updated)
 	}

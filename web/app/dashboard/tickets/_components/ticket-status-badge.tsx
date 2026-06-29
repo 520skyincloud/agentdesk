@@ -23,7 +23,7 @@ export function TicketStatusBadge({ status }: { status: string }) {
   const option = getTicketStatusMeta(status)
 
   return (
-    <Badge variant="outline" className={option?.className ?? "border-border bg-muted text-muted-foreground"}>
+    <Badge variant="outline" className={option?.className ?? "border-[#dbe7f6] bg-[#f6f9ff] text-muted-foreground"}>
       {option ? t(option.labelKey) : status}
     </Badge>
   )

@@ -310,18 +310,9 @@ func (s *agentTeamScheduleService) buildBatchScheduleCandidates(req request.Agen
 	if startDate.Before(startOfLocalDay(time.Now())) {
 		return nil, errorsx.InvalidParam("不能添加或修改历史日期的排班")
 	}
-	startClock, err := parseRequiredClock(req.StartTime, "开始时间格式错误")
+	timeRanges, err := normalizeScheduleBatchTimeRanges(req)
 	if err != nil {
 		return nil, err
-	}
-	endClock, err := parseRequiredClock(req.EndTime, "结束时间格式错误")
-	if err != nil {
-		return nil, err
-	}
-	firstStartAt := combineDateAndClock(startDate, startClock)
-	firstEndAt := combineDateAndClock(startDate, endClock)
-	if !firstEndAt.After(firstStartAt) {
-		return nil, errorsx.InvalidParam("结束时间必须晚于开始时间")
 	}
 
 	teams := AgentTeamService.FindByIds(teamIDs)
@@ -351,23 +342,64 @@ func (s *agentTeamScheduleService) buildBatchScheduleCandidates(req request.Agen
 			if _, ok := weekdaySet[weekdayForBatchRequest(date)]; !ok {
 				continue
 			}
-			if len(candidates) >= maxAgentTeamScheduleBatchItems {
-				return nil, errorsx.InvalidParam(fmt.Sprintf("单次最多生成 %d 条排班", maxAgentTeamScheduleBatchItems))
+			for _, tr := range timeRanges {
+				if len(candidates) >= maxAgentTeamScheduleBatchItems {
+					return nil, errorsx.InvalidParam(fmt.Sprintf("单次最多生成 %d 条排班", maxAgentTeamScheduleBatchItems))
+				}
+				candidates = append(candidates, batchScheduleCandidate{
+					TeamID:   teamID,
+					TeamName: team.Name,
+					Date:     date,
+					StartAt:  combineDateAndClock(date, tr.startClock),
+					EndAt:    combineDateAndClock(date, tr.endClock),
+					Remark:   remark,
+				})
 			}
-			candidates = append(candidates, batchScheduleCandidate{
-				TeamID:   teamID,
-				TeamName: team.Name,
-				Date:     date,
-				StartAt:  combineDateAndClock(date, startClock),
-				EndAt:    combineDateAndClock(date, endClock),
-				Remark:   remark,
-			})
 		}
 	}
 	if len(candidates) == 0 {
 		return nil, errorsx.InvalidParam("未生成任何排班")
 	}
 	return candidates, nil
+}
+
+type scheduleBatchClockRange struct {
+	startClock time.Time
+	endClock   time.Time
+}
+
+func normalizeScheduleBatchTimeRanges(req request.AgentTeamScheduleBatchRequest) ([]scheduleBatchClockRange, error) {
+	raw := req.TimeRanges
+	if len(raw) == 0 {
+		raw = []request.AgentTeamScheduleTimeRange{{StartTime: req.StartTime, EndTime: req.EndTime}}
+	}
+	ret := make([]scheduleBatchClockRange, 0, len(raw))
+	seen := map[string]struct{}{}
+	for _, item := range raw {
+		startClock, err := parseRequiredClock(item.StartTime, "开始时间格式错误")
+		if err != nil {
+			return nil, err
+		}
+		endClock, err := parseRequiredClock(item.EndTime, "结束时间格式错误")
+		if err != nil {
+			return nil, err
+		}
+		firstStartAt := combineDateAndClock(time.Now(), startClock)
+		firstEndAt := combineDateAndClock(time.Now(), endClock)
+		if !firstEndAt.After(firstStartAt) {
+			return nil, errorsx.InvalidParam("结束时间必须晚于开始时间")
+		}
+		key := item.StartTime + "-" + item.EndTime
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		ret = append(ret, scheduleBatchClockRange{startClock: startClock, endClock: endClock})
+	}
+	if len(ret) == 0 {
+		return nil, errorsx.InvalidParam("请至少填写一个排班时间段")
+	}
+	return ret, nil
 }
 
 func parseRequiredDate(value, message string) (time.Time, error) {

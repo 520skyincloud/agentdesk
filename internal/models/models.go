@@ -13,6 +13,7 @@ var Models = []any{
 	&Company{},
 	&Customer{},
 	&CustomerIdentity{},
+	&StoreCustomerRelation{},
 	&CustomerContact{},
 	&Role{},
 	&Permission{},
@@ -190,6 +191,7 @@ type Company struct {
 type Customer struct {
 	ID            int64        `gorm:"primaryKey;autoIncrement"`                    // ID 为客户主键。
 	Name          string       `gorm:"type:varchar(100);not null;default:'';index"` // Name 为客户姓名或展示名称。
+	Avatar        string       `gorm:"type:varchar(1024);not null;default:''"`      // Avatar 为客户头像 URL，可由企微协议联系人资料同步。
 	Gender        enums.Gender `gorm:"type:int;not null;default:0;"`                // Gender 为性别：0未知 1男 2女。
 	CompanyID     int64        `gorm:"type:bigint;not null;default:0;index"`        // CompanyID 为所属公司ID；0表示无所属公司（个人客户）。
 	LastActiveAt  *time.Time   `gorm:"type:datetime;"`                              // LastActiveAt 为最近活跃时间。
@@ -208,6 +210,21 @@ type CustomerIdentity struct {
 	ExternalID     string               `gorm:"type:varchar(128);index:idx_external_id;uniqueIndex:uk_customer_external"` // 为平台侧用户唯一ID，与访客 ExternalID 对齐。
 	RawProfile     string               `gorm:"type:text"`                                                                // 为第三方原始资料JSON。
 	Status         enums.Status         `gorm:"type:int;not null;default:0;index"`                                        // 为映射状态。
+	AuditFields
+}
+
+// StoreCustomerRelation 记录同一自然客户在不同门店下的独立业务关系。
+type StoreCustomerRelation struct {
+	ID                 int64        `gorm:"primaryKey;autoIncrement"`
+	CustomerID         int64        `gorm:"type:bigint;not null;index;uniqueIndex:uk_store_customer_relation"`
+	StoreID            int64        `gorm:"type:bigint;not null;index;uniqueIndex:uk_store_customer_relation"`
+	WxWorkInstanceID   int64        `gorm:"type:bigint;not null;default:0;index"`
+	LastConversationID int64        `gorm:"type:bigint;not null;default:0;index"`
+	LastActiveAt       *time.Time   `gorm:"type:datetime;index"`
+	VisitCount         int          `gorm:"type:int;not null;default:0"`
+	Tags               string       `gorm:"type:varchar(500);not null;default:''"`
+	StableNotes        string       `gorm:"type:text"`
+	Status             enums.Status `gorm:"type:int;not null;default:0;index"`
 	AuditFields
 }
 
@@ -383,12 +400,17 @@ type WxWorkProtocolInstance struct {
 	ChannelID                      int64        `gorm:"type:bigint;not null;default:0;index"`
 	EmployeeUserID                 string       `gorm:"type:varchar(128);not null;default:'';index"`
 	EmployeeName                   string       `gorm:"type:varchar(120);not null;default:''"`
+	EmployeeAvatar                 string       `gorm:"type:varchar(1024);not null;default:''"`
 	StoreID                        int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreAddress                   string       `gorm:"type:varchar(500);not null;default:''"`
 	StoreNavigationName            string       `gorm:"type:varchar(200);not null;default:''"`
 	StoreLongitude                 string       `gorm:"type:varchar(50);not null;default:''"`
 	StoreLatitude                  string       `gorm:"type:varchar(50);not null;default:''"`
 	StoreMapProvider               string       `gorm:"type:varchar(50);not null;default:''"`
+	DefaultMiniProgramPayload      string       `gorm:"type:text"`
+	WelcomeMessage                 string       `gorm:"type:varchar(500);not null;default:''"`
+	WelcomeSendMiniProgram         bool         `gorm:"not null;default:true"`
+	WelcomeAskLocation             bool         `gorm:"not null;default:true"`
 	KnowledgeBaseID                int64        `gorm:"type:bigint;not null;default:0;index"`
 	AIAgentID                      int64        `gorm:"type:bigint;not null;default:0;index"`
 	NotifyURL                      string       `gorm:"type:varchar(500);not null;default:''"`
@@ -396,6 +418,9 @@ type WxWorkProtocolInstance struct {
 	BridgeID                       string       `gorm:"type:varchar(128);not null;default:'';index"`
 	StaffUserIDs                   string       `gorm:"type:varchar(500);not null;default:''"`
 	ServiceHours                   string       `gorm:"type:varchar(200);not null;default:''"`
+	StoreRoomConversationID        string       `gorm:"type:varchar(128);not null;default:'';index"`
+	StoreRoomNotifyEnabled         bool         `gorm:"not null;default:false"`
+	StoreRoomAtList                string       `gorm:"type:varchar(500);not null;default:''"`
 	FallbackToHQ                   bool         `gorm:"not null;default:true"`
 	ManualTimeoutMinutes           int          `gorm:"type:int;not null;default:10"`
 	AIReplyEnabled                 bool         `gorm:"not null;default:true"`
@@ -405,6 +430,9 @@ type WxWorkProtocolInstance struct {
 	ContextMaxMessages             int          `gorm:"type:int;not null;default:30"`
 	ContextMaxTokens               int          `gorm:"type:int;not null;default:8000"`
 	ContextCompressionEnabled      bool         `gorm:"not null;default:true"`
+	RemoteSetupToken               string       `gorm:"type:varchar(80);not null;default:'';uniqueIndex"`
+	RemoteSetupExpiresAt           *time.Time   `gorm:"type:datetime;index"`
+	RemoteSetupSubmittedAt         *time.Time   `gorm:"type:datetime;index"`
 	HealthStatus                   string       `gorm:"type:varchar(30);not null;default:'unknown';index"`
 	LastHeartbeatAt                *time.Time   `gorm:"type:datetime;index"`
 	Status                         enums.Status `gorm:"type:int;not null;default:0;index"`
@@ -426,6 +454,9 @@ type ConversationRouteState struct {
 	LastManualHandoffAt   *time.Time                    `gorm:"type:datetime;index"`
 	ManualExpireAt        *time.Time                    `gorm:"type:datetime;index"`
 	LastCustomerMessageAt *time.Time                    `gorm:"type:datetime;index"`
+	PendingAction         string                        `gorm:"type:varchar(60);not null;default:'';index"`
+	PendingActionPayload  string                        `gorm:"type:text"`
+	PendingActionExpireAt *time.Time                    `gorm:"type:datetime;index"`
 	NeedHumanFollowUp     bool                          `gorm:"not null;default:false;index"`
 	HandoffReason         string                        `gorm:"type:varchar(500);not null;default:''"`
 	Remark                string                        `gorm:"type:text"`
@@ -711,6 +742,9 @@ type Ticket struct {
 	TicketNo          string             `gorm:"type:varchar(64);not null;default:'';uniqueIndex"`
 	Title             string             `gorm:"type:varchar(255);not null;default:'';index"`
 	Description       string             `gorm:"type:text"`
+	Category          string             `gorm:"type:varchar(50);not null;default:'';index"`
+	Priority          string             `gorm:"type:varchar(30);not null;default:'normal';index"`
+	RoomNo            string             `gorm:"type:varchar(50);not null;default:'';index"`
 	Source            enums.TicketSource `gorm:"type:varchar(50);not null;default:'';index"`
 	Channel           string             `gorm:"type:varchar(50);not null;default:'';index"`
 	CustomerID        int64              `gorm:"type:bigint;not null;default:0;index"`
@@ -740,32 +774,36 @@ type TicketProgress struct {
 
 // AgentProfile 客服档案。
 type AgentProfile struct {
-	ID                    int64               `gorm:"primaryKey;autoIncrement"`                         // ID 为客服档案主键。
-	UserID                int64               `gorm:"type:bigint;not null;uniqueIndex"`                 // UserID 关联后台用户，一名用户只允许一份客服档案。
-	TeamID                int64               `gorm:"type:bigint;not null;default:0;index"`             // TeamID 为客服所属客服组。
-	AgentCode             string              `gorm:"type:varchar(64);not null;default:'';uniqueIndex"` // AgentCode 为客服工号，用于业务侧识别客服。
-	DisplayName           string              `gorm:"type:varchar(100);not null;default:'';index"`      // DisplayName 为客服展示名，可区别于后台昵称。
-	Avatar                string              `gorm:"type:varchar(1024);not null;default:''"`           // Avatar 为客服头像 URL。
-	ServiceStatus         enums.ServiceStatus `gorm:"type:int;not null;default:0;index"`                // ServiceStatus 表示客服服务状态：0空闲 1忙碌。
-	MaxConcurrentCount    int                 `gorm:"type:int;not null;default:0"`                      // MaxConcurrentCount 表示客服最大并发接待数。
-	PriorityLevel         int                 `gorm:"type:int;not null;default:0;index"`                // PriorityLevel 表示自动分配优先级，值越大越优先。
-	AutoAssignEnabled     bool                `gorm:"not null;default:true;index"`                      // AutoAssignEnabled 表示是否参与自动分配。
-	ReceiveOfflineMessage bool                `gorm:"not null;default:false"`                           // ReceiveOfflineMessage 表示离线时是否仍接收离线消息或转接消息。
-	LastOnlineAt          *time.Time          `gorm:"type:datetime;index"`                              // LastOnlineAt 记录最近一次在线时间。
-	LastStatusAt          *time.Time          `gorm:"type:datetime;index"`                              // LastStatusAt 记录最近一次状态变更时间。
-	Status                enums.Status        `gorm:"type:int;not null;default:0;index"`                // Status 表示客服档案状态
-	Remark                string              `gorm:"type:text"`                                        // Remark 记录客服备注信息。
+	ID                     int64               `gorm:"primaryKey;autoIncrement"`                         // ID 为客服档案主键。
+	UserID                 int64               `gorm:"type:bigint;not null;uniqueIndex"`                 // UserID 关联后台用户，一名用户只允许一份客服档案。
+	TeamID                 int64               `gorm:"type:bigint;not null;default:0;index"`             // TeamID 为客服所属客服组。
+	StoreScopeIDs          string              `gorm:"type:varchar(500);not null;default:''"`            // StoreScopeIDs 为客服可服务的门店ID，逗号分隔；为空时继承客服组范围。
+	WxWorkInstanceScopeIDs string              `gorm:"type:varchar(500);not null;default:''"`            // WxWorkInstanceScopeIDs 为客服可服务的企微员工号实例ID，逗号分隔；为空时继承客服组范围。
+	AgentCode              string              `gorm:"type:varchar(64);not null;default:'';uniqueIndex"` // AgentCode 为客服工号，用于业务侧识别客服。
+	DisplayName            string              `gorm:"type:varchar(100);not null;default:'';index"`      // DisplayName 为客服展示名，可区别于后台昵称。
+	Avatar                 string              `gorm:"type:varchar(1024);not null;default:''"`           // Avatar 为客服头像 URL。
+	ServiceStatus          enums.ServiceStatus `gorm:"type:int;not null;default:0;index"`                // ServiceStatus 表示客服服务状态：0空闲 1忙碌。
+	MaxConcurrentCount     int                 `gorm:"type:int;not null;default:0"`                      // MaxConcurrentCount 表示客服最大并发接待数。
+	PriorityLevel          int                 `gorm:"type:int;not null;default:0;index"`                // PriorityLevel 表示自动分配优先级，值越大越优先。
+	AutoAssignEnabled      bool                `gorm:"not null;default:true;index"`                      // AutoAssignEnabled 表示是否参与自动分配。
+	ReceiveOfflineMessage  bool                `gorm:"not null;default:false"`                           // ReceiveOfflineMessage 表示离线时是否仍接收离线消息或转接消息。
+	LastOnlineAt           *time.Time          `gorm:"type:datetime;index"`                              // LastOnlineAt 记录最近一次在线时间。
+	LastStatusAt           *time.Time          `gorm:"type:datetime;index"`                              // LastStatusAt 记录最近一次状态变更时间。
+	Status                 enums.Status        `gorm:"type:int;not null;default:0;index"`                // Status 表示客服档案状态
+	Remark                 string              `gorm:"type:text"`                                        // Remark 记录客服备注信息。
 	AuditFields
 }
 
 // AgentTeam 客服组。
 type AgentTeam struct {
-	ID           int64        `gorm:"primaryKey;autoIncrement"`                    // ID 为客服组主键。
-	Name         string       `gorm:"type:varchar(100);not null;default:'';index"` // Name 为客服组名称。
-	LeaderUserID int64        `gorm:"type:bigint;not null;default:0;index"`        // LeaderUserID 为组长用户ID，0 表示暂未设置。
-	Status       enums.Status `gorm:"type:int;not null;default:0;index"`           // Status 表示客服组状态
-	Description  string       `gorm:"type:varchar(255);not null;default:''"`       // Description 为客服组简介，用于说明职责边界。
-	Remark       string       `gorm:"type:text"`                                   // Remark 记录客服组内部备注。
+	ID                     int64        `gorm:"primaryKey;autoIncrement"`                    // ID 为客服组主键。
+	Name                   string       `gorm:"type:varchar(100);not null;default:'';index"` // Name 为客服组名称。
+	LeaderUserID           int64        `gorm:"type:bigint;not null;default:0;index"`        // LeaderUserID 为组长用户ID，0 表示暂未设置。
+	StoreScopeIDs          string       `gorm:"type:varchar(500);not null;default:''"`       // StoreScopeIDs 为客服组可服务的门店ID，逗号分隔；为空表示不限制。
+	WxWorkInstanceScopeIDs string       `gorm:"type:varchar(500);not null;default:''"`       // WxWorkInstanceScopeIDs 为客服组可服务的企微员工号实例ID，逗号分隔；为空表示不限制。
+	Status                 enums.Status `gorm:"type:int;not null;default:0;index"`           // Status 表示客服组状态
+	Description            string       `gorm:"type:varchar(255);not null;default:''"`       // Description 为客服组简介，用于说明职责边界。
+	Remark                 string       `gorm:"type:text"`                                   // Remark 记录客服组内部备注。
 	AuditFields
 }
 
@@ -902,34 +940,35 @@ type KnowledgeChunk struct {
 
 // KnowledgeRetrieveLog 检索日志表。
 type KnowledgeRetrieveLog struct {
-	ID                 int64     `gorm:"primaryKey;autoIncrement"`                   // ID 为日志主键。
-	KnowledgeBaseID    int64     `gorm:"type:bigint;not null;index"`                 // KnowledgeBaseID 为知识库ID。
-	Channel            string    `gorm:"type:varchar(30);not null;default:'';index"` // Channel 为渠道：im会话, agent_assist坐席辅助, api开放接口, debug调试。
-	Scene              string    `gorm:"type:varchar(50);not null;default:'';index"` // Scene 为场景：first_response首响, assist辅助, qa问答。
-	SessionID          string    `gorm:"type:varchar(64);not null;default:'';index"` // SessionID 为会话ID。
-	ConversationID     int64     `gorm:"type:bigint;not null;default:0;index"`       // ConversationID 为会话ID。
-	RequestID          string    `gorm:"type:varchar(64);not null;default:'';index"` // RequestID 为请求ID。
-	Question           string    `gorm:"type:text"`                                  // Question 为原始问题。
-	RewriteQuestion    string    `gorm:"type:text"`                                  // RewriteQuestion 为改写后问题。
-	Answer             string    `gorm:"type:text"`                                  // Answer 为生成的答案。
-	AnswerStatus       int       `gorm:"type:int;not null;default:1;index"`          // AnswerStatus 为答案状态：1正常 2无答案 3兜底 4风控拦截。
-	HitCount           int       `gorm:"type:int;not null;default:0"`                // HitCount 为命中数量。
-	TopScore           float64   `gorm:"type:decimal(5,4);not null;default:0"`       // TopScore 为最高相似度分数。
-	ChunkProvider      string    `gorm:"type:varchar(30);not null;default:'';index"` // ChunkProvider 为分块 provider。
-	ChunkTargetTokens  int       `gorm:"type:int;not null;default:0"`                // ChunkTargetTokens 为目标 token 数。
-	ChunkMaxTokens     int       `gorm:"type:int;not null;default:0"`                // ChunkMaxTokens 为最大 token 数。
-	ChunkOverlapTokens int       `gorm:"type:int;not null;default:0"`                // ChunkOverlapTokens 为重叠 token 数。
-	RerankEnabled      bool      `gorm:"not null;default:false;index"`               // RerankEnabled 是否启用 rerank。
-	RerankLimit        int       `gorm:"type:int;not null;default:0"`                // RerankLimit 为 rerank 条数。
-	CitationCount      int       `gorm:"type:int;not null;default:0"`                // CitationCount 为最终引用条数。
-	UsedChunkCount     int       `gorm:"type:int;not null;default:0"`                // UsedChunkCount 为进入上下文的 chunk 数。
-	LatencyMs          int64     `gorm:"type:bigint;not null;default:0"`             // LatencyMs 为总耗时毫秒。
-	RetrieveMs         int64     `gorm:"type:bigint;not null;default:0"`             // RetrieveMs 为检索耗时毫秒。
-	GenerateMs         int64     `gorm:"type:bigint;not null;default:0"`             // GenerateMs 为生成耗时毫秒。
-	PromptTokens       int       `gorm:"type:int;not null;default:0"`                // PromptTokens 为prompt token数。
-	CompletionTokens   int       `gorm:"type:int;not null;default:0"`                // CompletionTokens 为completion token数。
-	ModelName          string    `gorm:"type:varchar(100);not null;default:''"`      // ModelName 为使用的模型名称。
-	TraceData          string    `gorm:"type:text"`                                  // TraceData 为链路追踪数据JSON。
+	ID                 int64     `gorm:"primaryKey;autoIncrement"`                               // ID 为日志主键。
+	KnowledgeBaseID    int64     `gorm:"type:bigint;not null;index"`                             // KnowledgeBaseID 为知识库ID。
+	SourceType         string    `gorm:"type:varchar(30);not null;default:'local_vector';index"` // SourceType 为检索来源：local_vector/cloud_knowledge/faq/hybrid。
+	Channel            string    `gorm:"type:varchar(30);not null;default:'';index"`             // Channel 为渠道：im会话, agent_assist坐席辅助, api开放接口, debug调试。
+	Scene              string    `gorm:"type:varchar(50);not null;default:'';index"`             // Scene 为场景：first_response首响, assist辅助, qa问答。
+	SessionID          string    `gorm:"type:varchar(64);not null;default:'';index"`             // SessionID 为会话ID。
+	ConversationID     int64     `gorm:"type:bigint;not null;default:0;index"`                   // ConversationID 为会话ID。
+	RequestID          string    `gorm:"type:varchar(64);not null;default:'';index"`             // RequestID 为请求ID。
+	Question           string    `gorm:"type:text"`                                              // Question 为原始问题。
+	RewriteQuestion    string    `gorm:"type:text"`                                              // RewriteQuestion 为改写后问题。
+	Answer             string    `gorm:"type:text"`                                              // Answer 为生成的答案。
+	AnswerStatus       int       `gorm:"type:int;not null;default:1;index"`                      // AnswerStatus 为答案状态：1正常 2无答案 3兜底 4风控拦截。
+	HitCount           int       `gorm:"type:int;not null;default:0"`                            // HitCount 为命中数量。
+	TopScore           float64   `gorm:"type:decimal(5,4);not null;default:0"`                   // TopScore 为最高相似度分数。
+	ChunkProvider      string    `gorm:"type:varchar(30);not null;default:'';index"`             // ChunkProvider 为分块 provider。
+	ChunkTargetTokens  int       `gorm:"type:int;not null;default:0"`                            // ChunkTargetTokens 为目标 token 数。
+	ChunkMaxTokens     int       `gorm:"type:int;not null;default:0"`                            // ChunkMaxTokens 为最大 token 数。
+	ChunkOverlapTokens int       `gorm:"type:int;not null;default:0"`                            // ChunkOverlapTokens 为重叠 token 数。
+	RerankEnabled      bool      `gorm:"not null;default:false;index"`                           // RerankEnabled 是否启用 rerank。
+	RerankLimit        int       `gorm:"type:int;not null;default:0"`                            // RerankLimit 为 rerank 条数。
+	CitationCount      int       `gorm:"type:int;not null;default:0"`                            // CitationCount 为最终引用条数。
+	UsedChunkCount     int       `gorm:"type:int;not null;default:0"`                            // UsedChunkCount 为进入上下文的 chunk 数。
+	LatencyMs          int64     `gorm:"type:bigint;not null;default:0"`                         // LatencyMs 为总耗时毫秒。
+	RetrieveMs         int64     `gorm:"type:bigint;not null;default:0"`                         // RetrieveMs 为检索耗时毫秒。
+	GenerateMs         int64     `gorm:"type:bigint;not null;default:0"`                         // GenerateMs 为生成耗时毫秒。
+	PromptTokens       int       `gorm:"type:int;not null;default:0"`                            // PromptTokens 为prompt token数。
+	CompletionTokens   int       `gorm:"type:int;not null;default:0"`                            // CompletionTokens 为completion token数。
+	ModelName          string    `gorm:"type:varchar(100);not null;default:''"`                  // ModelName 为使用的模型名称。
+	TraceData          string    `gorm:"type:text"`                                              // TraceData 为链路追踪数据JSON。
 	CreatedAt          time.Time `gorm:"type:datetime;not null;index"`
 }
 

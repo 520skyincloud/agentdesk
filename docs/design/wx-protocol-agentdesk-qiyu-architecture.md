@@ -350,14 +350,23 @@ flowchart LR
 
 ### 13.2 账号新增和真实协议动作
 
-会话页左侧的“新增账号/账号设置”合并原企微员工号页面能力。新增账号必须是扫码优先流程，不能要求运营先手填 GUID：
+会话页左侧的“新增账号/账号设置”合并原企微员工号页面能力。新增账号必须是扫码优先流程，但 **`guid` 不能由 AgentDesk 本地生成**。
 
-1. 客服在会话页左侧点击“新增账号”。
-2. AgentDesk 后端创建一条待登录的 `WxWorkProtocolInstance`，生成本地唯一 `guid`，默认 `aiReplyEnabled=true`、`healthStatus=login_qrcode`，代理字段为空。
-3. 后端立即调用协议 `/login/get_login_qrcode`，把真实二维码返回给前端弹窗展示。
-4. 前端按 3 秒间隔调用 `/login/check_login_qrcode` 轮询扫码结果。
-5. 登录成功后调用 `/user/get_profile` 同步员工号资料。
-6. 运营再进入“账号设置”绑定门店、知识库、客服组、AI 托管和自动通过好友申请策略。
+`wework.apifox.cn` 文档统一请求格式为 `{app_key, app_secret, path, data}`，其中 `data.guid` 是“实例列表里的设备 ID”。因此 AgentDesk 的职责是保存绑定关系和业务配置，不能伪造 `pending guid` 或本地 UUID 冒充协议实例。
+
+真实新增流程：
+
+1. 协议平台先完成设备初始化，设备进入协议平台实例列表。
+2. 企微员工号渠道配置 `devicePoolUrl`，用于调用上游协议平台的实例列表/设备池接口，返回真实 `guid` 和可用状态。
+3. 客服在会话页左侧点击“自动绑定空闲实例”或“生成远程开户链接”。
+4. AgentDesk 后端调用 `devicePoolUrl`，过滤本地已绑定 `guid`，选择一个空闲设备 ID；若未配置设备池接口或没有空闲设备，直接报错，不创建占位账号。
+5. 后端创建 `WxWorkProtocolInstance` 本地绑定记录，默认 `aiReplyEnabled=true`、`healthStatus=login_qrcode`，代理字段为空。
+6. 后端立即按 Apifox 业务接口调用 `/login/get_login_qrcode`，body 的业务参数为 `{guid, verify_login:false}`，把真实二维码返回给前端。
+7. 前端按 3 秒间隔调用 `/login/check_login_qrcode` 轮询扫码结果。
+8. 登录成功后调用 `/user/get_profile` 同步员工号资料。
+9. 运营再进入“账号设置/智能客服配置”绑定门店、知识库、客服组、AI 托管和自动通过好友申请策略。
+
+远程开户注册同样先占用一个真实空闲 `guid`，再生成 `remoteSetupToken`。门店打开 `/wxwork-remote-setup?token=...` 后只负责扫码和补充门店资料，不需要也不允许手填截图里的实例 ID。若以后协议平台提供官方“创建/初始化设备”接口，可以把第 1 步也纳入自动化；在接口未明确前，系统只绑定已存在且可用的设备。
 
 账号动作全部通过后端 service 调用 `wework.apifox.cn` 文档里的接口：
 
@@ -373,7 +382,7 @@ flowchart LR
 | 恢复实例 | `/client/restore_client` | `{guid,proxy:'',bridge:'',sync_history_msg:true,force_online:false,auto_start:true}` |
 | 停止实例 | `/client/stop_client` | `{guid}` |
 | 退出登录 | `/user/logout` | `{guid}` |
-| 同步好友申请 | `/contact/sync_apply_list` | `{guid,seq:'',limit:50}` |
+| 同步好友申请 | `/contact/sync_apply_contact` | `{guid,seq:'',limit:50}` |
 | 同意联系人申请 | `/contact/agree_contact` | `{guid,user_id,corp_id}` |
 
 自动通过好友申请由 `autoAcceptFriendRequest` 控制。关闭时只展示/审计申请，不自动同意；开启时才调用 `/contact/agree_contact`。`autoAcceptFriendRemarkTemplate` 先作为业务备注策略保存，具体备注/标签动作必须等协议文档提供对应字段后再实现，不能自行猜字段。
@@ -506,57 +515,64 @@ flowchart TD
 - `storeLongitude/storeLatitude`：经纬度，统一使用协议文档要求的坐标系和字段格式。
 - `storeMapProvider`：坐标来源，例如 `browser_geolocation`、高德、腾讯、百度，用于后续坐标转换审计。
 
-账号设置页已加入“门店地址、导航名称、纬度、经度、坐标来源、一键获取当前坐标”。一键获取坐标调用浏览器 `navigator.geolocation`，适合门店员工在门店现场自行填入；它只获取当前设备坐标，不做地址转坐标。若要通过地址自动解析经纬度，需要后续接入腾讯/高德地图 key，并在 UI 中明确坐标系。
+账号设置页已加入“门店定位绑定”测试区，包含门店地址、导航名称、纬度、经度、坐标来源、一键获取当前坐标和当前绑定状态。列表里也用“已绑定位/未绑定位”标签提醒配置是否完整。一键获取坐标调用浏览器 `navigator.geolocation`，适合门店员工在门店现场自行填入；它只获取当前设备坐标，不做地址转坐标。若要通过地址自动解析经纬度，需要后续接入腾讯/高德地图 key，并在 UI 中明确坐标系。
 
 微信定位卡片的发送原理：AgentDesk 创建 `location` 类型消息，payload 里放 `longitude/latitude/address/title/zoom`，outbox 调用协议 `/msg/send_location`。微信/企业微信客户端收到后会自动渲染成定位卡片。腾讯地图或高德地图不是发送定位的必需依赖，它们只用于“根据地址查坐标”“坐标系转换”“门店批量校准”。之前天安门测试就是直接发送经纬度和标题地址，微信端渲染为定位。
 
-员工号实例绑定 `storeId` 后，客户在该员工号会话里说“发定位”“怎么走”“导航一下”“地址在哪”时，AI 只负责识别位置意图；真正发送由工具层读取当前 `storeId` 的门店坐标，然后通过员工号协议的定位发送接口进入 outbox。典型流程：
+2026-06-29 修正规则：客户问“你们酒店在哪里 / 怎么去 / 到店路线 / 酒店地址 / 导航发我”等明确位置意图时，不再固定回复“要我把定位发您吗？”这种二段式话术，而是直接创建 `location` 类型消息并进入 outbox。`/msg/send_location` 必须严格按 `wework.apifox.cn` 的 `SendLocationModel` 发送：`guid`、`conversation_id`、`longitude(number)`、`latitude(number)`、`address`、`title`、`zoom(number)`。经纬度不得作为普通文本发送，也不得用文本“丽斯未来酒店门店位置”冒充定位卡片。只有“离我多远 / 附近有什么”等需要客户当前位置或更多语义判断的问题，才回到 AI 自然对话或追问，不使用固定确认模板。
+
+位置意图由规则只做“确定动作路由”，不能替代 AI 思考。也就是说，规则层可以决定“发送门店定位卡片”这一真实动作，但不能把所有位置相关问题都改写成统一话术；AI 仍负责自然表达、上下文判断、缺字段追问和异常转人工。若员工号实例没有坐标，系统不得编造地址或坐标，应转人工/提示配置缺失。
+
+### 13.3.2 员工号独立智能客服配置
+
+2026-06-29 起，企微员工号 AI 配置收敛为单一来源：每个 `WxWorkProtocolInstance` 必须绑定自己的独立 `AIAgent`。原“AI 能力 / 智能客服”页面保留历史兼容，但不再作为新业务入口；会话页账号管理中的“智能客服配置”按钮是员工号智能客服的唯一产品入口。
+
+生效规则：
+
+| 配置项 | 数据来源 | 生效范围 | 说明 |
+| --- | --- | --- | --- |
+| 智能客服配置 | `WxWorkProtocolInstance.aiAgentId -> AIAgent` | 当前员工号所有会话 | 包含模型、系统提示词、欢迎语、知识库、技能、工具、转人工/兜底策略 |
+| AI 回复开关 | `WxWorkProtocolInstance.aiReplyEnabled` | 当前员工号所有会话 | 只控制是否托管，不承载提示词/知识库/技能配置 |
+| 门店知识库绑定 | `WxWorkProtocolInstance.knowledgeBaseId` | 当前员工号 | 智能客服编辑时锁定为该知识库，避免误配成多知识库 |
+
+运行时不再执行“全局 Agent + `personaPrompt` 追加”的提示词叠加逻辑。新企微会话创建和旧企微会话复用时，都优先使用当前 `WxWorkProtocolInstance.aiAgentId` 指向的启用 Agent；如果员工号没有绑定独立智能客服，或该 Agent 被禁用/删除，系统不得调用模型编答案，应记录配置异常并等待人工/后台修复。
+
+迁移规则：系统启动迁移 `000008_migrate_wxwork_protocol_ai_agents` 会幂等扫描 `status=启用`、`knowledgeBaseId>0`、`aiAgentId=0` 的员工号，为每个账号复制一个启用的基础 Agent，合并原账号 `personaPrompt` 到新 Agent 的 `SystemPrompt`，并把当前 `knowledgeBaseId` 写入新 Agent 的 `knowledgeIds`。迁移后该账号拥有自己的 Agent，修改 A 门店不会影响 B 门店。迁移只处理已绑定知识库的账号；未绑定知识库的账号仍保持未配置状态，必须先完成门店/知识库绑定后，再在账号管理中点击“智能客服配置”初始化。
+
+前端规则：账号编辑表单不再展示 `AI Agent ID`、`personaPrompt`、上下文消息数/Token 等碎片字段；这些内容统一在“智能客服配置”弹窗里编辑。原 `/dashboard/ai-agents` 页面和接口保留，但导航入口、Dashboard 快捷入口和告警跳转都收敛到会话页，防止运营继续从两个入口配置导致生效规则混乱。
+
+接口规则：账号侧新增 `POST /api/dashboard/wxwork-protocol-instance/init_ai_agent` 和 `POST /api/dashboard/wxwork-protocol-instance/update_ai_agent`。前者用于未配置账号按当前门店知识库复制独立 Agent；后者用于保存该账号绑定 Agent 的模型、系统提示词、欢迎语、技能、工具、转人工、兜底策略等完整配置。前端必须通过 `web/lib/api/admin.ts` service 调用，不允许页面或业务组件裸 `fetch`。
+
+2026-06-29 文本模型配置：当前 LLM 从 DeepSeek 切换为 OpenAI-compatible `qwen3.6-flash`，base URL 为阿里云兼容接口；DeepSeek 文本配置已禁用，当前启用员工号智能客服 Agent 应绑定新的 LLM 配置。视觉/ASR/TTS 仍按各自 `modelType` 独立选择，禁止把文本模型、视觉模型、ASR/TTS 混用。
+
+员工号实例绑定 `storeId` 后，客户在该员工号会话里的定位相关表达由账号默认资源意图层处理：明确指令如“把酒店定位发我”“发个定位”“你们酒店在哪里”“怎么去”“到店路线怎么走”会直接发送 `location` 卡片；依赖客户当前位置或更多上下文的问题，如“离我多远”“附近有什么”，交给 AI 自然对话或追问。定位动作不能用固定话术冒充，必须读取当前 `WxWorkInstanceID` 绑定的门店坐标，创建 `location` 类型 `Message`，再通过 `/msg/send_location` 进入 outbox。典型流程：
 
 ```mermaid
 flowchart LR
-  A[客户: 发个定位] --> B[AI 识别位置意图]
-  B --> C[AgentDesk 根据 guid 找 storeId]
-  C --> D[读取门店 address/navigationName/lng/lat]
-  D --> E[创建 location 类型 Message 和 Outbox]
-  E --> F[协议 /msg/send_location 发回原员工号会话]
+  A[客户位置表达] --> B{是否可直接发送门店定位}
+  B -->|是| C[读取当前 WxWorkInstanceID 的 address/navigationName/lng/lat]
+  C --> D[创建 location 类型 Message 和 Outbox]
+  D --> E[协议 /msg/send_location 发回原员工号会话]
+  B -->|否，需要更多上下文| F[交给账号独立智能客服自然回复/追问]
 ```
 
-一百多家门店时，短期可以由每个门店员工号在账号设置里填坐标，便于快速落地和测试；中长期建议把坐标上移到门店表，再让多个员工号绑定同一门店共享坐标。若同一客户联系不同门店员工号，定位按当前 `guid` 对应门店发送。门店没有坐标时，系统不能让 AI 编坐标，只能回复“我这边暂时没有定位信息，先把门店地址发您，并通知同事补充定位”。
+入站定位也会反向维护账号配置：客户或门店通过当前会话发来 `location` 消息时，payload 中的 `longitude/latitude/title/address` 会被 `BindInboundLocation` 写回当前 `WxWorkProtocolInstance` 的 `storeLongitude/storeLatitude/storeNavigationName/storeAddress/storeMapProvider=wxwork_inbound_location`。这适合门店首次上线时让员工直接从微信发一次门店定位完成绑定。
+
+一百多家门店时，短期可以由每个门店员工号在账号设置里填坐标，或让门店发送一次定位自动绑定，便于快速落地和测试；中长期建议把坐标上移到门店表，再让多个员工号绑定同一门店共享坐标。若同一客户联系不同门店员工号，定位按当前 `guid` 对应门店发送。门店没有坐标时，系统不能让 AI 编坐标，只能提示配置缺失并转人工。
+
+出站乱码防线：历史回调或人工录入里可能出现 UTF-8 被错误当作 Windows-1252/Latin-1 展示后的乱码，例如微信端显示 `ã¸½æ–...`。系统在三个层面修复：账号设置保存 `storeAddress/storeNavigationName/defaultMiniProgramPayload/welcomeMessage` 时修复；入站定位自动绑定时修复 `title/address`；最终调用 `/msg/send_location`、`/msg/send_weapp` 等富媒体发送接口前，对 payload 中所有字符串递归执行 `RepairMojibakeText`。这样即使历史 payload 里有脏中文，也不会继续把乱码发给客户。
 
 模型与话术配置规则：
 
 - `AIModelType` 已扩展为 `llm/embedding/rerank/vision/asr/tts`，前端 AI 配置页同步展示这些类型。
 - 客服 Agent 组装 instruction 时强制加入“酒店前台同事”基础服务风格：短句、自然、不固定使用 emoji、不说“根据知识库”、不自称 AI；维修、漏水、卫生、投诉、安全、退款等问题先接住，再收集必要信息或转同事。执行型任务在工单/转人工工具成功前，不能说已经安排、已经登记、已经通知。
-- 门店可继续在后台维护自己的 Agent 系统提示词，但不得覆盖“不能猜测未理解媒体内容”和“不固定 emoji”的底线规则。
-- 每个企微员工号实例新增 `personaPrompt` 人格提示词。账号设置页提供“人格提示词”多行输入框，默认使用 30 场景 × 10 轮压测后的酒店前台同事口吻。AI 运行时会根据当前会话绑定的 `WxWorkInstanceID` 读取该实例的 `personaPrompt`，并作为“员工号专属人格提示词”叠加到 Agent 系统提示词后面。这样一百多家门店可以共用基础安全规则，同时每个账号设置自己的口吻、称呼、品牌语气。
-- `personaPrompt` 只控制话术风格，不能覆盖业务底线：不能猜未理解媒体、不能空口承诺送物/维修已安排、退款赔偿等人工决策必须转人工、门店未配置坐标不能编定位。
-- 2026-06-28 默认 `personaPrompt` 已压短为 4 行，避免提示词过长带来机器人味：
+- 每个门店员工号的品牌语气、门店差异、知识库、技能和转人工策略，都写入该账号独立 `AIAgent.SystemPrompt/knowledgeIds/skillIds/tools`，不再通过 `personaPrompt` 做运行时叠加。
 
-```text
-你是酒店前台同事，像微信真人一样回。
-只说短句，不写客服模板，不加固定尾巴。
-能答就直接答；要员工处理就先问房号/数量/时间，没成功前别说已安排。
-表情包、哈哈、OK 就回“哈哈”“收到”“好嘞”。
-```
+加好友/首次会话欢迎链路：员工号实例新增 `welcomeMessage/welcomeSendMiniProgram/welcomeAskLocation`。当 `guid + externalUserId/chatroom` 第一次创建长期会话时，系统不走普通 Agent 欢迎语，而是使用当前员工号实例配置：先发送 `welcomeMessage`，再按开关发送默认小程序，最后按开关询问“要我把某某门店定位发您吗？”。欢迎里的小程序和定位都来自当前员工号绑定的变量，不是全局固定值；一百多家门店每个账号可以有自己的定位、欢迎语和小程序 payload。
 
-富媒体入站后的 AI 应答策略：
+GIF/表情包收发规则：入站根据协议回调里的 `msg_type/content_type/source_type` 识别为 `gif`，优先下载并保存为 asset，网页端渲染为动图卡片；没有可访问资产时保留协议 payload 并显示“表情消息”卡片。AI 只能把表情视为轻互动，不能臆测表情背后的业务含义。出站时，网页客服上传 `.gif` 或 MIME 为 `image/gif` 的文件会创建 `Message(gif)`，outbox 按员工号协议走 WECDN 上传并调用 `/msg/send_gif`，不能降级成普通附件或文本。普通 emoji 字符仍按文本发送，不走 GIF 接口。
 
-| 类型 | 网页端展示 | AI 是否自动回复 | 正确回复方式 |
-| --- | --- | --- | --- |
-| 文本 | 文本气泡 | 是 | 直接按当前门店知识库、上下文和意图分类回复 |
-| 图片 | 图片预览 | 理解成功后才可回复 | 有 `mediaText/mediaSummary` 才基于图片回答；失败就请客户文字补充或转人工 |
-| 语音 | 时长 + 转文字状态/结果卡片 | 协议翻译成功后才可回复 | 按转文字内容自然回复，不说“语音识别不准”；失败时让客户打字补充 |
-| 文件 | 文件卡片 | 仅文本/PDF/Word 等解析成功后可回复 | 可解析文件基于摘要回答；未知文件只展示和审计，不猜内容 |
-| 视频/大视频 | 视频播放器或文件卡片 | 默认否 | 不把文件名当视频内容；需要视频理解时另接抽帧/视频模型 |
-| GIF/表情包 | 动图预览或动图卡片 | 是，轻互动 | 只回“哈哈”“收到”“好嘞”等极短句，不分析表情含义 |
-| 位置 | 定位卡片，可打开地图 | 默认否 | 作为客户提供的位置上下文；若客户问路线/门店定位，按门店坐标和知识库回答 |
-| 名片/链接/小程序/视频号/直播/小店 | 结构化卡片 | 默认否 | 只展示和审计；客户明确追问时，基于 payload 里的标题/描述回答，不打开外部内容乱猜 |
-| 引用消息 | 引用卡片 | 是，若引用文本明确 | 结合被引用内容和客户新问题回复；引用缺内容时追问 |
-| 合并转发 | 聊天记录摘要卡片 | 默认否 | 不自动总结全部聊天；客户要求分析时再基于结构化摘要处理 |
-
-小程序消息必须按真实协议字段结构化展示，不能落到附件兜底。真实回调样本为 `content_type=78, msg_type=12, username=gh_7370f8f46fc0@app, appid=wx37bef9195b47f085, appname=自由家安心宿, title=e秒安心住, page_path=pages/home/home.html, appicon=...`。后端入库 `Message(mini_program)`，payload 保留 `appid/appname/appicon/title/page_path/username/thumb_width/thumb_height/wxMedia`；网页端使用 `appname/appicon/title/page_path` 渲染小程序卡片。2026-06-28 已修正历史消息 `Message(id=317)`，并将“丽斯未来酒店通用小程序”写入知识候选：小程序名“自由家安心宿”，卡片标题“e秒安心住”，appid `wx37bef9195b47f085`，page_path `pages/home/home.html`。
-
-发送小程序的最终实测规则如下：`conversation_id` 决定发给哪个客户或群，`username` 必须是小程序原始 ID，例如 `gh_7370f8f46fc0@app`，不能写成客户 `external_user_id`；封面优先沿用真实卡片里的大封面 CDN 四件套 `file_id/aes_key/md5/size`，只有这些字段缺失时，才读取 `thumb_url/image_url/cover_url/appicon` 并通过 `/cdn/get_cdn_info` + 私有化 WECDN `/cloud/c2c_upload` 补齐发送端封面参数。`appicon` 是小程序图标，不应优先当封面上传，否则可能出现卡片能打开但封面消失或变成小图的问题。2026-06-28 真实测试确认：同时带 `conversation_id=S:7881302995969629`、`username=gh_7370f8f46fc0@app`、原始大封面 `file_id/aes_key/md5/size` 后，客户可正常收到“自由家安心宿 / e秒安心住”小程序卡片，封面正常且可点击打开。代码已在 `prepareOutboundMiniProgramMedia` 中固化：缺 `username` 直接失败；已有封面 CDN 四件套时绝不重新上传覆盖。
+客户身份隔离规则：同一个微信客户可能住过多个门店、同时联系多个员工号。AgentDesk 可以在客户主数据层识别同一自然人，但会话、AI 记忆、session 摘要、门店知识库和默认资源必须按 `guid + externalUserId/chatroom` 隔离；再结合 `storeId/knowledgeBaseId` 选择当前门店。A 门店员工号收到的早餐、定位、小程序、投诉和工单上下文，不能被 B 门店员工号直接复用为当前事实。跨门店只允许沉淀“稳定客户事实”（例如称呼偏好）并且要显式标注来源，不得把旧门店已解决故障带入新门店会话。
 
 企微员工号渠道适配器边界：
 
@@ -691,3 +707,22 @@ flowchart TD
 16. 微信小店商品必须使用真实小店商品数据测试，假 `content` 不允许标记为成功。
 17. 入站图片必须通过 `/cloud/wx_download` 或 `/cloud/c2c_download` 下载后再视觉理解；真实验收样本 `Message(id=233)` 已完成 OSS 保存、`mediaText/mediaSummary` 写回和 AI 触发。
 18. 知识候选按门店导出 Markdown/JSONL，人工审核后再导入门店知识库。
+
+### 13.8 账号配置入口重构与远程开户注册
+
+企微员工号后台配置拆成三层：
+
+| 层级 | 配置内容 | 入口 |
+| --- | --- | --- |
+| 企业资源 | 企业绑定小程序、统一品牌资源、全局协议资源 | 企业/系统资源设置，不放在单个账号编辑 |
+| 员工号实例 | guid、员工资料、门店资料、坐标、服务时间、门店群通知、AI 开关、好友申请开关 | 会话页左侧账号管理的账号编辑 |
+| 员工号智能客服 | 模型、提示词、欢迎语、知识库、技能、工具、转人工策略 | 账号行操作“智能客服配置” |
+
+实现规则：
+
+- `WxWorkProtocolInstance` 新增 `remoteSetupToken / remoteSetupExpiresAt / remoteSetupSubmittedAt`，用于远程门店开户页面定位单个待配置实例。
+- 后台接口 `POST /api/dashboard/wxwork-protocol-instance/create_remote_setup` 创建待配置实例并返回 `/wxwork-remote-setup/{token}` 链接。
+- 公开接口 `/api/wxwork-protocol-remote-setup/*` 不走 dashboard 鉴权，仅通过 token 操作当前实例。
+- 远程页可调用真实协议登录二维码接口、检查扫码状态、保存门店名称/地址/经纬度/服务时间/门店群通知配置。
+- 远程页不允许修改知识库、模型、提示词、小程序 payload；这些由总部在员工号智能客服和企业资源设置中维护。
+- 智能客服配置保存时，`UpdateBoundAIAgent` 以提交的 `knowledgeIds` 为准，并把第一个知识库同步到员工号 `knowledgeBaseId`，确保运行时仍能快速按员工号找到唯一门店知识库。

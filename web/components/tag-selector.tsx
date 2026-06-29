@@ -255,7 +255,7 @@ export function TagSelector(props: TagSelectorProps) {
                         className={cn(
                           props.mode === "single" &&
                             checked &&
-                            "bg-muted text-foreground"
+                            "bg-[#eef5ff] text-primary"
                         )}
                       >
                         <div

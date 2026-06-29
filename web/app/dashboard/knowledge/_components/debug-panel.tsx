@@ -148,7 +148,7 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
                     {answerResult.latencyMs}ms · {answerResult.modelName || "fallback"}
                   </span>
                 </div>
-                <div className="rounded-md border bg-background p-3 whitespace-pre-wrap">
+                <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30 whitespace-pre-wrap">
                   {answerResult.answer}
                 </div>
                 {answerResult.citations.length > 0 ? (
@@ -157,7 +157,7 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
                     {answerResult.citations.map((citation) => (
                       <div
                         key={`${citation.documentId}-${citation.chunkNo}-${citation.sectionPath}`}
-                        className="rounded-md border bg-muted/30 p-3"
+                        className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="truncate text-xs font-medium">
@@ -189,7 +189,7 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
                   {t("knowledge.hitsSummary", { count: searchResult.hitCount, latency: searchResult.latencyMs })}
                 </div>
                 {searchResult.results.map((item) => (
-                  <div key={`${item.chunkId}-${item.documentId}`} className="rounded-md border bg-background p-3">
+                  <div key={`${item.chunkId}-${item.documentId}`} className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                     <div className="flex items-center justify-between gap-2">
                       <div className="truncate text-sm font-medium">
                         {getSearchResultLabel(item)}

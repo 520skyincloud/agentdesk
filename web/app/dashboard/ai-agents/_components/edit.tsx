@@ -83,6 +83,8 @@ type EditDialogProps = {
   open: boolean;
   saving: boolean;
   itemId: number | null;
+  title?: string;
+  lockedKnowledgeBaseId?: number;
   onOpenChange: (open: boolean) => void;
   onSubmit: (payload: CreateAIAgentPayload) => Promise<void>;
 };
@@ -185,6 +187,8 @@ export function EditDialog({
   open,
   saving,
   itemId,
+  title,
+  lockedKnowledgeBaseId,
   onOpenChange,
   onSubmit,
 }: EditDialogProps) {
@@ -197,6 +201,8 @@ export function EditDialog({
       open={open}
       saving={saving}
       itemId={itemId}
+      title={title}
+      lockedKnowledgeBaseId={lockedKnowledgeBaseId}
       onOpenChange={onOpenChange}
       onSubmit={onSubmit}
     />
@@ -207,6 +213,8 @@ function EditDialogBody({
   open,
   saving,
   itemId,
+  title,
+  lockedKnowledgeBaseId,
   onOpenChange,
   onSubmit,
 }: EditDialogProps) {
@@ -279,7 +287,7 @@ function EditDialogBody({
     async function loadDetail() {
       if (!itemId) {
         reset(buildForm(null));
-        setSelectedKnowledgeIds([]);
+        setSelectedKnowledgeIds(lockedKnowledgeBaseId ? [lockedKnowledgeBaseId] : []);
         setSelectedTeamIds([]);
         setSelectedSkillIds([]);
         setDirectTools([]);
@@ -296,7 +304,7 @@ function EditDialogBody({
       try {
         const data = await fetchAIAgent(itemId);
         reset(buildForm(data));
-        setSelectedKnowledgeIds(data.knowledgeIds ?? []);
+        setSelectedKnowledgeIds(lockedKnowledgeBaseId ? [lockedKnowledgeBaseId] : data.knowledgeIds ?? []);
         setSelectedTeamIds((data.teams ?? []).map((team) => team.id));
         setSelectedSkillIds(data.skillIds ?? []);
         setDirectTools(data.directTools ?? []);
@@ -316,7 +324,7 @@ function EditDialogBody({
       }
     }
     void loadDetail();
-  }, [itemId, reset, t]);
+  }, [itemId, lockedKnowledgeBaseId, reset, t]);
 
   useEffect(() => {
     async function loadAIConfigs() {
@@ -561,10 +569,11 @@ function EditDialogBody({
     t("aiAgent.notSelected");
 
   async function onFormSubmit(values: EditForm) {
+    const effectiveKnowledgeIds = lockedKnowledgeBaseId ? [lockedKnowledgeBaseId] : selectedKnowledgeIds;
     await onSubmit(
       buildPayload(
         values,
-        selectedKnowledgeIds,
+        effectiveKnowledgeIds,
         selectedTeamIds,
         selectedSkillIds,
         directTools,
@@ -666,7 +675,7 @@ function EditDialogBody({
     <ProjectDialog
       open={open}
       onOpenChange={onOpenChange}
-      title={itemId ? t("aiAgent.editTitle") : t("aiAgent.createTitle")}
+      title={title ?? (itemId ? t("aiAgent.editTitle") : t("aiAgent.createTitle"))}
       size="xl"
       defaultFullscreen
       footer={
@@ -846,7 +855,7 @@ function EditDialogBody({
                 </Field>
               </div>
 
-              <div className="rounded-lg border bg-muted/10 p-4">
+              <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-4 shadow-inner shadow-blue-100/30">
                 <div className="mb-1 text-sm font-medium">{t("aiAgent.teams")}</div>
                 <div className="mb-4 text-xs text-muted-foreground">
                   {t("aiAgent.currentHandoffMode", { mode: selectedHandoffModeLabel })}
@@ -917,33 +926,39 @@ function EditDialogBody({
                 </div>
                 <Field data-invalid={selectedKnowledgeIds.length === 0}>
                   <FieldContent className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1">
-                        <OptionCombobox
-                          value={knowledgeToAdd}
-                          options={addableKnowledgeOptions}
-                          placeholder={t("aiAgent.selectKnowledge")}
-                          searchPlaceholder={t("aiAgent.searchKnowledge")}
-                          emptyText={t("aiAgent.emptyKnowledge")}
-                          onChange={handleAddKnowledge}
-                        />
+                    {lockedKnowledgeBaseId ? (
+                      <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                        当前智能客服已锁定使用该员工号绑定的门店知识库。
                       </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={!knowledgeToAdd}
-                        onClick={() => handleAddKnowledge(knowledgeToAdd)}
-                      >
-                        <PlusIcon />
-                        {t("aiAgent.add")}
-                      </Button>
-                    </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1">
+                          <OptionCombobox
+                            value={knowledgeToAdd}
+                            options={addableKnowledgeOptions}
+                            placeholder={t("aiAgent.selectKnowledge")}
+                            searchPlaceholder={t("aiAgent.searchKnowledge")}
+                            emptyText={t("aiAgent.emptyKnowledge")}
+                            onChange={handleAddKnowledge}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={!knowledgeToAdd}
+                          onClick={() => handleAddKnowledge(knowledgeToAdd)}
+                        >
+                          <PlusIcon />
+                          {t("aiAgent.add")}
+                        </Button>
+                      </div>
+                    )}
                     {selectedKnowledgeIds.length === 0 ? (
-                      <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                      <div className="rounded-2xl border border-dashed border-[#dbe7f6] bg-[#f6f9ff] px-3 py-4 text-sm text-muted-foreground shadow-inner shadow-blue-100/30">
                         {t("aiAgent.knowledgeRequired")}
                       </div>
                     ) : (
-                      <div className="space-y-2 rounded-md border p-3">
+                      <div className="agentdesk-subtle-surface space-y-2 rounded-xl p-3">
                         {selectedKnowledgeOptions.map((option, index) => (
                           <div key={option.value} className="flex items-center gap-2">
                             <Badge
@@ -953,36 +968,40 @@ function EditDialogBody({
                               {index + 1}
                             </Badge>
                             <div className="flex-1 text-sm">{option.label}</div>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="icon-sm"
-                              disabled={index === 0}
-                              onClick={() => handleMoveKnowledge(index, -1)}
-                            >
-                              <ArrowUpIcon />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="icon-sm"
-                              disabled={
-                                index === selectedKnowledgeOptions.length - 1
-                              }
-                              onClick={() => handleMoveKnowledge(index, 1)}
-                            >
-                              <ArrowDownIcon />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="icon-sm"
-                              onClick={() =>
-                                handleRemoveKnowledge(Number(option.value))
-                              }
-                            >
-                              <Trash2Icon />
-                            </Button>
+                            {lockedKnowledgeBaseId ? null : (
+                              <>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="icon-sm"
+                                  disabled={index === 0}
+                                  onClick={() => handleMoveKnowledge(index, -1)}
+                                >
+                                  <ArrowUpIcon />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="icon-sm"
+                                  disabled={
+                                    index === selectedKnowledgeOptions.length - 1
+                                  }
+                                  onClick={() => handleMoveKnowledge(index, 1)}
+                                >
+                                  <ArrowDownIcon />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="icon-sm"
+                                  onClick={() =>
+                                    handleRemoveKnowledge(Number(option.value))
+                                  }
+                                >
+                                  <Trash2Icon />
+                                </Button>
+                              </>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -1141,7 +1160,7 @@ function EditDialogBody({
                         </span>
                       ) : (
                         directToolsGrouped.map(([groupLabel, tools]) => (
-                          <div key={groupLabel} className="rounded-md border p-3">
+                          <div key={groupLabel} className="agentdesk-subtle-surface rounded-xl p-3">
                             <div className="mb-2 text-xs font-medium text-muted-foreground">
                               {groupLabel}
                             </div>
@@ -1272,7 +1291,7 @@ function SectionCard({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <section className="rounded-lg border bg-card p-5">
+    <section className="agentdesk-surface rounded-2xl p-5">
       <button
         type="button"
         className="flex w-full items-start justify-between gap-4 text-left"
@@ -1287,7 +1306,7 @@ function SectionCard({
             </div>
           ) : null}
         </div>
-        <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full border bg-muted/30 text-muted-foreground transition-colors hover:bg-muted/50">
+        <span className="agentdesk-soft-button mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-primary">
           <ChevronDownIcon
             className={`size-4 transition-transform duration-200 ${
               open ? "rotate-180" : "rotate-0"

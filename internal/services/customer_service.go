@@ -187,6 +187,45 @@ func hashUUID(uuid string) string {
 	return hex.EncodeToString(h[:])[:8]
 }
 
+func (s *customerService) TouchStoreRelation(customerID, storeID, wxWorkInstanceID, conversationID int64, at time.Time) error {
+	if customerID <= 0 || storeID <= 0 {
+		return nil
+	}
+	existing := repositories.StoreCustomerRelationRepository.Take(sqls.DB(), "customer_id = ? AND store_id = ?", customerID, storeID)
+	if existing == nil {
+		return repositories.StoreCustomerRelationRepository.Create(sqls.DB(), &models.StoreCustomerRelation{
+			CustomerID:         customerID,
+			StoreID:            storeID,
+			WxWorkInstanceID:   wxWorkInstanceID,
+			LastConversationID: conversationID,
+			LastActiveAt:       &at,
+			VisitCount:         1,
+			Status:             enums.StatusOk,
+			AuditFields:        utils.BuildAuditFields(nil),
+		})
+	}
+	return repositories.StoreCustomerRelationRepository.Updates(sqls.DB(), existing.ID, map[string]any{
+		"wx_work_instance_id":  wxWorkInstanceID,
+		"last_conversation_id": conversationID,
+		"last_active_at":       at,
+		"visit_count":          existing.VisitCount + 1,
+		"updated_at":           at,
+		"update_user_id":       int64(0),
+		"update_user_name":     "system",
+	})
+}
+
+func (s *customerService) ListStoreRelations(customerID int64) []models.StoreCustomerRelation {
+	if customerID <= 0 {
+		return nil
+	}
+	return repositories.StoreCustomerRelationRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("customer_id", customerID).
+		NotEq("status", enums.StatusDeleted).
+		Desc("last_active_at").
+		Desc("id"))
+}
+
 func (s *customerService) CreateCustomer(req request.CreateCustomerRequest, operator *dto.AuthPrincipal) (*models.Customer, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")

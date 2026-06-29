@@ -8,7 +8,7 @@ export default function Page() {
   const t = useI18n()
 
   return (
-    <main className="flex min-h-svh items-center justify-center bg-muted px-6 text-foreground">
+    <main className="flex min-h-svh items-center justify-center bg-[#f4f8fd] px-6 text-foreground">
       <section className="grid max-w-sm justify-items-center gap-4 text-center">
         <div className="flex size-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 ring-1 ring-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:ring-emerald-900">
           <CheckCircle2Icon className="size-7" />

@@ -94,7 +94,7 @@ export default function DashboardAIAgentsPage() {
         label: "Agent",
         render: (item) => (
           <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-md bg-muted text-muted-foreground">
+            <div className="agentdesk-icon-tile">
               <BotMessageSquareIcon className="size-4" />
             </div>
             <div className="font-medium">{item.name}</div>

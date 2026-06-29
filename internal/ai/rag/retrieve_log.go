@@ -20,6 +20,7 @@ type retrieveLog struct {
 
 type CreateRetrieveLogRequest struct {
 	KnowledgeBaseID    int64
+	SourceType         string
 	Channel            string
 	Scene              string
 	SessionID          string
@@ -103,6 +104,7 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, _ *dto.Au
 
 	log := &models.KnowledgeRetrieveLog{
 		KnowledgeBaseID:    req.KnowledgeBaseID,
+		SourceType:         defaultRetrieveSourceType(req),
 		Channel:            req.Channel,
 		Scene:              req.Scene,
 		SessionID:          req.SessionID,
@@ -209,6 +211,19 @@ func buildRetrieveTraceData(req *CreateRetrieveLogRequest) string {
 		return ""
 	}
 	return string(data)
+}
+
+func defaultRetrieveSourceType(req *CreateRetrieveLogRequest) string {
+	if req == nil {
+		return "local_vector"
+	}
+	if req.SourceType != "" {
+		return req.SourceType
+	}
+	if req.ChunkProvider == "fastgpt_cloud" {
+		return "cloud_knowledge"
+	}
+	return "local_vector"
 }
 
 func buildTraceCitations(citations []response.KnowledgeCitation) []retrieveTraceCitation {

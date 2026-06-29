@@ -93,8 +93,8 @@ export function ImageInput({
       <div
         onClick={handleClick}
         className={cn(
-          "group relative flex size-24 cursor-pointer items-center justify-center overflow-hidden rounded-lg border-2 border-dashed border-input bg-muted transition-colors",
-          "hover:border-primary hover:bg-muted/50",
+          "group relative flex size-24 cursor-pointer items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-[#dbe7f6] bg-[#f6f9ff] shadow-inner shadow-blue-100/30 transition-colors",
+          "hover:border-primary/45 hover:bg-[#eef5ff]",
           "focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
           isDisabled && "cursor-not-allowed opacity-50"
         )}
@@ -131,7 +131,7 @@ export function ImageInput({
         <button
           type="button"
           onClick={handleClear}
-          className="absolute -right-2 -top-2 flex size-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow-sm transition-colors hover:bg-destructive/80"
+          className="absolute -right-2 -top-2 flex size-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow-[0_6px_14px_rgba(220,38,38,0.2)] transition-colors hover:bg-destructive/80"
           aria-label={t("upload.deleteImage")}
         >
           <XIcon className="size-3" />

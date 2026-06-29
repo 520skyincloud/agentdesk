@@ -213,11 +213,11 @@ export function CustomerLinkOrCreateDialog({
         </div>
 
         {results.length > 0 ? (
-          <ul className="max-h-48 space-y-1.5 overflow-y-auto rounded-md border border-border p-2 text-sm">
+          <ul className="max-h-48 space-y-1.5 overflow-y-auto rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-2 text-sm shadow-inner shadow-blue-100/30">
             {results.map((row) => (
               <li
                 key={row.id}
-                className="flex items-center justify-between gap-2 rounded border border-transparent px-2 py-1.5 hover:bg-muted/40"
+                className="flex items-center justify-between gap-2 rounded-xl border border-transparent px-2.5 py-2 transition hover:border-primary/15 hover:bg-[#f7faff]"
               >
                 <div className="min-w-0">
                   <div className="truncate font-medium flex items-center gap-2">
@@ -270,7 +270,7 @@ export function CustomerLinkOrCreateDialog({
             onSave={onCreateSave}
             fieldIdPrefix="link-or-create"
             remarkRows={2}
-            className="flex flex-col gap-3 rounded-lg border border-border bg-muted/10 p-3"
+            className="agentdesk-subtle-surface flex flex-col gap-3 rounded-xl p-3"
           />
         ) : null}
       </div>

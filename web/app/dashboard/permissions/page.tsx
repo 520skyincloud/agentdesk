@@ -58,7 +58,7 @@ export default function DashboardPermissionsPage() {
           label: t("permission.columnPermission"),
           render: (item) => (
             <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+              <div className="flex size-10 items-center justify-center rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] text-primary shadow-inner shadow-blue-100/30">
                 <KeyRoundIcon className="size-4" />
               </div>
               <div>

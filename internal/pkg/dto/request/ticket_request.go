@@ -3,6 +3,9 @@ package request
 type CreateTicketRequest struct {
 	Title             string  `json:"title"`
 	Description       string  `json:"description"`
+	Category          string  `json:"category"`
+	Priority          string  `json:"priority"`
+	RoomNo            string  `json:"roomNo"`
 	Source            string  `json:"source"`
 	Channel           string  `json:"channel"`
 	CustomerID        int64   `json:"customerId"`
@@ -15,6 +18,9 @@ type CreateTicketFromConversationRequest struct {
 	ConversationID    int64   `json:"conversationId"`
 	Title             string  `json:"title"`
 	Description       string  `json:"description"`
+	Category          string  `json:"category"`
+	Priority          string  `json:"priority"`
+	RoomNo            string  `json:"roomNo"`
 	TagIDs            []int64 `json:"tagIds"`
 	CurrentAssigneeID int64   `json:"currentAssigneeId"`
 }
@@ -23,6 +29,9 @@ type UpdateTicketRequest struct {
 	TicketID          int64   `json:"ticketId"`
 	Title             string  `json:"title"`
 	Description       string  `json:"description"`
+	Category          string  `json:"category"`
+	Priority          string  `json:"priority"`
+	RoomNo            string  `json:"roomNo"`
 	TagIDs            []int64 `json:"tagIds"`
 	CurrentAssigneeID int64   `json:"currentAssigneeId"`
 }

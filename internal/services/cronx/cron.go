@@ -22,10 +22,9 @@ func Init() {
 	})
 
 	addFunc(c, "@every 1s", func() {
-		count := services.WxWorkKFOutboundService.DispatchPendingOutbox()
-		count += services.WxWorkProtocolService.DispatchPendingOutbox(50)
+		count := services.WxWorkProtocolService.DispatchPendingOutbox(50)
 		if count > 0 {
-			slog.Info("wxwork kf outbox dispatched", "count", count)
+			slog.Info("wxwork protocol outbox dispatched", "count", count)
 		}
 	})
 

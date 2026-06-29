@@ -302,7 +302,7 @@ function CreateUserDrawerBody({
                   const value = field.value || []
                   const selectedSet = new Set(value)
                   return (
-                    <div className="mt-2 max-h-[240px] space-y-1 overflow-y-auto rounded-lg border p-2">
+                    <div className="mt-2 max-h-[240px] space-y-1.5 overflow-y-auto rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-2 shadow-inner shadow-blue-100/30">
                       {rolesLoading ? (
                         <div className="py-6 text-center text-sm text-muted-foreground">
                           {t("user.loadingRoles")}
@@ -315,11 +315,11 @@ function CreateUserDrawerBody({
                             <label
                               key={role.id}
                               className={cn(
-                                "flex items-center gap-2 rounded-md border px-2.5 py-2 text-sm transition-colors",
+                                "flex items-center gap-2 rounded-xl border px-2.5 py-2 text-sm transition",
                                 disabled
-                                  ? "cursor-not-allowed border-dashed bg-muted/20 opacity-70"
-                                  : "cursor-pointer hover:bg-muted/50",
-                                checked && "border-primary/40 bg-primary/5"
+                                  ? "cursor-not-allowed border-dashed bg-[#f4f7fb] opacity-70"
+                                  : "cursor-pointer hover:border-primary/20 hover:bg-[#f7faff]",
+                                checked && "border-primary/30 bg-primary/10 shadow-[0_6px_16px_rgba(37,99,235,0.06)]"
                               )}
                             >
                               <Checkbox

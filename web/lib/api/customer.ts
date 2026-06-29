@@ -6,6 +6,7 @@ import { AdminCompany } from "./company"
 export type AdminCustomer = {
   id: number
   name: string
+  avatar: string
   gender: number
   companyId: number
   company?: AdminCompany
@@ -14,6 +15,24 @@ export type AdminCustomer = {
   primaryEmail: string
   status: number
   remark: string
+  storeRelations?: StoreCustomerRelation[]
+  createdAt: string
+  updatedAt: string
+}
+
+export type StoreCustomerRelation = {
+  id: number
+  customerId: number
+  storeId: number
+  storeName: string
+  wxWorkInstanceId: number
+  wxWorkInstanceName: string
+  lastConversationId: number
+  lastActiveAt?: string
+  visitCount: number
+  tags: string
+  stableNotes: string
+  status: number
   createdAt: string
   updatedAt: string
 }
@@ -69,6 +88,10 @@ export function fetchCustomers(body: CustomerListRequest) {
 
 export function fetchCustomer(id: number) {
   return request<AdminCustomer | null>(`/api/dashboard/customer/${id}`)
+}
+
+export function fetchCustomerStoreRelations(id: number) {
+  return request<StoreCustomerRelation[]>(`/api/dashboard/customer/${id}/store_relations`)
 }
 
 export function createCustomer(payload: CreateAdminCustomerPayload) {

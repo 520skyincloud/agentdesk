@@ -80,7 +80,7 @@ export default function DashboardNotificationsPage() {
       )}
       renderContent={({ result, loading }) =>
         result.results.length > 0 ? (
-          <div className="divide-y">
+          <div className="space-y-2 p-2">
             {result.results.map((item) => {
               const unread = !item.readAt
               return (
@@ -88,7 +88,7 @@ export default function DashboardNotificationsPage() {
                   key={item.id}
                   type="button"
                   onClick={() => void openNotification(item)}
-                  className="grid w-full gap-2 px-4 py-3 text-left transition-colors hover:bg-muted/60"
+                  className="grid w-full gap-2 rounded-xl border border-transparent bg-white px-4 py-3 text-left transition hover:border-primary/15 hover:bg-[#f7faff] hover:shadow-[0_8px_18px_rgba(37,99,235,0.08)]"
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <BellIcon className="size-4 text-muted-foreground" />

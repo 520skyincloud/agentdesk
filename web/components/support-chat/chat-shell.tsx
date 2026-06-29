@@ -53,7 +53,7 @@ import { cn } from "@/lib/utils"
 import { useI18n } from "@/i18n/provider"
 
 const windowActionButtonClass =
-  "size-8 rounded-md border-0 bg-transparent text-muted-foreground shadow-none hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-primary/20 dark:hover:bg-white/10"
+  "size-8 rounded-lg border-0 bg-transparent text-muted-foreground shadow-none hover:bg-[#f2f7ff] hover:text-primary focus-visible:ring-primary/20 dark:hover:bg-white/10"
 
 function WindowActionButton({
   className,
@@ -294,14 +294,14 @@ export function SupportChatShell() {
 
   return (
     <main
-      className="relative flex h-[100dvh] min-h-[100dvh] overflow-hidden bg-muted text-foreground supports-not-[height:100dvh]:h-screen supports-not-[height:100dvh]:min-h-screen"
+      className="relative flex h-[100dvh] min-h-[100dvh] overflow-hidden bg-[#eef4fb] text-foreground supports-not-[height:100dvh]:h-screen supports-not-[height:100dvh]:min-h-screen"
       style={{ "--primary": themeColor } as CSSProperties}
     >
-      <section className="flex h-full w-full flex-col overflow-hidden bg-card text-card-foreground">
-        <header className="shrink-0 border-b border-border/80 bg-card px-3 py-2 shadow-none dark:border-border/70 sm:border-primary/[0.10] sm:bg-primary/[0.06] sm:px-4 sm:py-3 sm:shadow-[0_10px_26px_rgba(15,23,42,0.06)] sm:dark:border-primary/20 sm:dark:bg-primary/10 sm:dark:shadow-none">
+      <section className="flex h-full w-full flex-col overflow-hidden bg-white text-card-foreground">
+        <header className="shrink-0 border-b border-[#dbe7f6] bg-[#f8fbff] px-3 py-2 shadow-none dark:border-border/70 sm:border-primary/[0.10] sm:bg-primary/[0.06] sm:px-4 sm:py-3 sm:shadow-[0_10px_26px_rgba(15,23,42,0.06)] sm:dark:border-primary/20 sm:dark:bg-primary/10 sm:dark:shadow-none">
           <div className="flex min-w-0 items-center justify-between gap-2 sm:gap-3">
             <div className="flex min-w-0 items-center gap-2.5">
-              <div className="hidden size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-[0_8px_18px_rgba(37,99,235,0.18)] sm:flex">
+              <div className="hidden size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-[0_8px_18px_rgba(37,99,235,0.18)] sm:flex">
                 <HeadphonesIcon className="size-[18px]" />
               </div>
               <div className="min-w-0">
@@ -380,7 +380,7 @@ export function SupportChatShell() {
               {status !== "connected" ? (
                 <SupportChatConnectionStatus status={status} />
               ) : null}
-              <div className="flex items-center gap-0.5 rounded-lg bg-background/55 p-0.5 shadow-sm ring-1 ring-border/70 dark:bg-background/25 dark:ring-white/10">
+              <div className="flex items-center gap-0.5 rounded-xl bg-white/75 p-0.5 shadow-[0_8px_18px_rgba(37,99,235,0.08)] ring-1 ring-[#dbe7f6] dark:bg-background/25 dark:ring-white/10">
                 <WindowActionButton
                   onClick={retry}
                   aria-label={t("supportChat.retry")}
@@ -423,7 +423,7 @@ export function SupportChatShell() {
           </div>
         </header>
 
-        <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-muted/60 dark:bg-muted/30">
+        <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-[#f6f9ff] dark:bg-muted/30">
           <SupportChatMessageList
             ref={messageListRef}
             messages={safeMessages}
@@ -432,7 +432,7 @@ export function SupportChatShell() {
             loadingOlder={messagesLoadingMore}
             onLoadOlder={loadOlderMessages}
           />
-          <div className="shrink-0 border-t border-border/80 bg-card/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-10px_24px_rgba(15,23,42,0.05)] dark:bg-card/90 dark:shadow-none">
+          <div className="shrink-0 border-t border-[#dbe7f6] bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-10px_24px_rgba(37,99,235,0.06)] dark:bg-card/90 dark:shadow-none">
             <CustomerMessageEditor
               disabled={!conversation}
               onSend={handleSend}

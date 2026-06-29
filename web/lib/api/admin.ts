@@ -235,6 +235,7 @@ export type WxWorkProtocolInstance = {
   channelName: string
   employeeUserId: string
   employeeName: string
+  employeeAvatar: string
   storeId: number
   storeCode: string
   storeName: string
@@ -243,14 +244,24 @@ export type WxWorkProtocolInstance = {
   storeLongitude: string
   storeLatitude: string
   storeMapProvider: string
+  defaultMiniProgramPayload: string
+  welcomeMessage: string
+  welcomeSendMiniProgram: boolean
+  welcomeAskLocation: boolean
   knowledgeBaseId: number
   knowledgeBaseName: string
   aiAgentId: number
+  aiAgentName: string
+  aiConfigName: string
+  aiAgentConfigured: boolean
   notifyUrl: string
   proxy: string
   bridgeId: string
   staffUserIds: string
   serviceHours: string
+  storeRoomConversationId: string
+  storeRoomNotifyEnabled: boolean
+  storeRoomAtList: string
   fallbackToHQ: boolean
   manualTimeoutMinutes: number
   aiReplyEnabled: boolean
@@ -260,6 +271,10 @@ export type WxWorkProtocolInstance = {
   contextMaxMessages: number
   contextMaxTokens: number
   contextCompressionEnabled: boolean
+  remoteSetupToken: string
+  remoteSetupUrl: string
+  remoteSetupExpiresAt?: string | null
+  remoteSetupSubmittedAt?: string | null
   healthStatus: string
   lastHeartbeatAt?: string | null
   status: number
@@ -278,17 +293,29 @@ export type StartWxWorkProtocolLoginResult = {
   key: string
 }
 
+export type WxWorkProtocolRemoteLoginQRCodeResult = {
+  instanceId: number
+  rawResponse: string
+  qrcode?: string
+  qrcodeContent?: string
+}
+
 export type CreateWxWorkProtocolInstancePayload = {
   guid: string
   channelId: number
   employeeUserId: string
   employeeName: string
+  employeeAvatar: string
   storeId: number
   storeAddress: string
   storeNavigationName: string
   storeLongitude: string
   storeLatitude: string
   storeMapProvider: string
+  defaultMiniProgramPayload: string
+  welcomeMessage: string
+  welcomeSendMiniProgram: boolean
+  welcomeAskLocation: boolean
   knowledgeBaseId: number
   aiAgentId: number
   notifyUrl: string
@@ -296,6 +323,9 @@ export type CreateWxWorkProtocolInstancePayload = {
   bridgeId: string
   staffUserIds: string
   serviceHours: string
+  storeRoomConversationId: string
+  storeRoomNotifyEnabled: boolean
+  storeRoomAtList: string
   fallbackToHQ: boolean
   manualTimeoutMinutes: number
   aiReplyEnabled: boolean
@@ -318,6 +348,9 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   manualTimeoutMinutes: number
   staffUserIds: string
   fallbackToHQ: boolean
+  storeRoomConversationId: string
+  storeRoomNotifyEnabled: boolean
+  storeRoomAtList: string
   personaPrompt: string
   storeId: number
   storeAddress: string
@@ -325,6 +358,10 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   storeLongitude: string
   storeLatitude: string
   storeMapProvider: string
+  defaultMiniProgramPayload: string
+  welcomeMessage: string
+  welcomeSendMiniProgram: boolean
+  welcomeAskLocation: boolean
   knowledgeBaseId: number
   aiAgentId: number
   contextMaxMessages: number
@@ -333,6 +370,10 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
 }
 
 export type UpdateWxWorkProtocolInstancePayload = CreateWxWorkProtocolInstancePayload & {
+  id: number
+}
+
+export type UpdateWxWorkProtocolAIAgentPayload = CreateAIAgentPayload & {
   id: number
 }
 
@@ -571,6 +612,8 @@ export type AdminAgentProfile = {
   id: number
   userId: number
   teamId: number
+  storeScopeIds: number[]
+  wxWorkInstanceScopeIds: number[]
   teamName?: string
   username?: string
   nickname?: string
@@ -590,6 +633,8 @@ export type AdminAgentProfile = {
 export type CreateAdminAgentProfilePayload = {
   userId: number
   teamId: number
+  storeScopeIds: number[]
+  wxWorkInstanceScopeIds: number[]
   agentCode: string
   displayName: string
   avatar: string
@@ -612,6 +657,8 @@ export type AdminAgentTeam = {
   id: number
   name: string
   leaderUserId: number
+  storeScopeIds: number[]
+  wxWorkInstanceScopeIds: number[]
   leaderUsername?: string
   leaderNickname?: string
   status: number
@@ -622,6 +669,8 @@ export type AdminAgentTeam = {
 export type CreateAdminAgentTeamPayload = {
   name: string
   leaderUserId: number
+  storeScopeIds: number[]
+  wxWorkInstanceScopeIds: number[]
   status: number
   description: string
   remark: string
@@ -659,6 +708,7 @@ export type BatchAdminAgentTeamSchedulePayload = {
   weekdays: number[]
   startTime: string
   endTime: string
+  timeRanges?: Array<{ startTime: string; endTime: string }>
   remark: string
 }
 
@@ -800,6 +850,13 @@ export function startWxWorkProtocolLogin(channelId?: number) {
   })
 }
 
+export function createWxWorkProtocolRemoteSetup(payload: { channelId?: number; remark?: string }) {
+  return request<WxWorkProtocolInstance>("/api/dashboard/wxwork-protocol-instance/create_remote_setup", {
+    method: "POST",
+    body: JSON.stringify({ channelId: payload.channelId ?? 0, remark: payload.remark ?? "" }),
+  })
+}
+
 export function updateWxWorkProtocolInstance(payload: UpdateWxWorkProtocolInstancePayload) {
   return request<void>("/api/dashboard/wxwork-protocol-instance/update", {
     method: "POST",
@@ -846,10 +903,71 @@ export function updateWxWorkProtocolAISettings(payload: UpdateWxWorkProtocolAISe
   })
 }
 
+export function initWxWorkProtocolAIAgent(id: number) {
+  return request<AIAgent>("/api/dashboard/wxwork-protocol-instance/init_ai_agent", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  })
+}
+
+export function updateWxWorkProtocolAIAgent(payload: UpdateWxWorkProtocolAIAgentPayload) {
+  return request<AIAgent>("/api/dashboard/wxwork-protocol-instance/update_ai_agent", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getWxWorkProtocolLoginQrcode(id: number) {
   return request<string>("/api/dashboard/wxwork-protocol-instance/login_qrcode", {
     method: "POST",
     body: JSON.stringify({ id }),
+  })
+}
+
+export function fetchWxWorkProtocolRemoteSetup(token: string) {
+  return request<WxWorkProtocolInstance>(`/api/wxwork-protocol-remote-setup/${encodeURIComponent(token)}`, {
+    skipAuth: true,
+  })
+}
+
+export function updateWxWorkProtocolRemoteSetup(payload: {
+  token: string
+  employeeName?: string
+  storeId?: number
+  storeName?: string
+  storeAddress?: string
+  storeNavigationName?: string
+  storeLongitude?: string
+  storeLatitude?: string
+  storeMapProvider?: string
+  serviceHours?: string
+  storeRoomConversationId?: string
+  storeRoomNotifyEnabled?: boolean
+  storeRoomAtList?: string
+  fallbackToHQ?: boolean
+  manualTimeoutMinutes?: number
+  autoAcceptFriendRequest?: boolean
+}) {
+  return request<void>("/api/wxwork-protocol-remote-setup/update", {
+    method: "POST",
+    skipAuth: true,
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getWxWorkProtocolRemoteSetupLoginQrcode(token: string) {
+  return request<WxWorkProtocolRemoteLoginQRCodeResult>("/api/wxwork-protocol-remote-setup/login_qrcode", {
+    method: "POST",
+    skipAuth: true,
+    body: JSON.stringify({ token }),
+  })
+}
+
+export function checkWxWorkProtocolRemoteSetupLogin(token: string) {
+  return request<string>("/api/wxwork-protocol-remote-setup/check_login", {
+    method: "POST",
+    skipAuth: true,
+    body: JSON.stringify({ token }),
   })
 }
 
@@ -1252,11 +1370,71 @@ export function approveKnowledgeCandidate(id: number) {
   })
 }
 
+export function batchApproveKnowledgeCandidates(ids: number[]) {
+  return request<void>("/api/dashboard/knowledge-candidate/batch_approve", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  })
+}
+
 export function rejectKnowledgeCandidate(id: number) {
   return request<void>("/api/dashboard/knowledge-candidate/reject", {
     method: "POST",
     body: JSON.stringify({ id }),
   })
+}
+
+export function batchRejectKnowledgeCandidates(ids: number[]) {
+  return request<void>("/api/dashboard/knowledge-candidate/batch_reject", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  })
+}
+
+export type KnowledgeCandidateQualityReport = {
+  id: number
+  decision: "approve" | "review" | "reject"
+  decisionName: string
+  reasons: string[]
+  question: string
+  answer: string
+  frequency: number
+  storeId: number
+  knowledgeBaseId: number
+}
+
+export type KnowledgeCandidateQualityCheckResult = {
+  reports: KnowledgeCandidateQualityReport[]
+  approveIds: number[]
+  reviewIds: number[]
+  rejectIds: number[]
+}
+
+export function qualityCheckKnowledgeCandidates(ids: number[]) {
+  return request<KnowledgeCandidateQualityCheckResult>(
+    "/api/dashboard/knowledge-candidate/quality_check",
+    {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }
+  )
+}
+
+export type KnowledgeCandidateAnalyzeResult = {
+  created: boolean
+  skipped: boolean
+  reason: string
+  candidate: KnowledgeCandidate
+}
+
+export function analyzeKnowledgeCandidateConversation(conversationId: number) {
+  return request<KnowledgeCandidateAnalyzeResult>(
+    "/api/dashboard/knowledge-candidate/analyze_conversation",
+    {
+      method: "POST",
+      body: JSON.stringify({ conversationId }),
+    }
+  )
 }
 
 export function markKnowledgeCandidateImported(id: number) {
@@ -1803,6 +1981,8 @@ export type KnowledgeRetrieveLog = {
   id: number
   knowledgeBaseId: number
   knowledgeBaseName?: string
+  sourceType: string
+  sourceTypeName: string
   channel: string
   channelName: string
   scene: string

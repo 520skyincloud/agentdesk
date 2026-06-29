@@ -139,6 +139,11 @@ func (s *wsService) upgradeConnection(ctx *gin.Context, principal *dto.AuthPrinc
 		"topicCount", len(session.Topics),
 		"sessionCount", sessionCount,
 	)
+	if principal != nil && (role == realtimeRoleAdmin || role == realtimeRoleNotification) {
+		if err := AgentProfileService.MarkUserOnline(principal.UserID, principal.Username, time.Now()); err != nil {
+			slog.Warn("mark realtime agent online failed", "error", err, "userId", principal.UserID, "role", role)
+		}
+	}
 
 	go s.writePump(session)
 	go s.readPump(session)
@@ -433,7 +438,7 @@ func (s *wsService) PublishConversationChanged(conversation *models.Conversation
 			LastMessageID:             conversation.LastMessageID,
 			LastMessageAt:             formatWsTime(&conversation.LastMessageAt),
 			LastActiveAt:              formatWsTime(&conversation.LastActiveAt),
-			LastMessageSummary:        conversation.LastMessageSummary,
+			LastMessageSummary:        utils.RepairMojibakeText(conversation.LastMessageSummary),
 			CustomerUnreadCount:       conversation.CustomerUnreadCount,
 			AgentUnreadCount:          conversation.AgentUnreadCount,
 			CustomerLastReadMessageID: readStateMessageID(customerReadState),
@@ -467,7 +472,7 @@ func (s *wsService) buildConversationRouteRealtimePayload(conversationID int64) 
 		RouteStatus:       route.RouteStatus,
 		RouteStatusLabel:  enums.GetConversationRouteStatusLabel(route.RouteStatus),
 		RouteTarget:       route.RouteTarget,
-		HandoffReason:     route.HandoffReason,
+		HandoffReason:     utils.RepairMojibakeText(route.HandoffReason),
 		NeedHumanFollowUp: route.NeedHumanFollowUp,
 		ManualExpireAt:    utils.FormatTimePtr(route.ManualExpireAt),
 		StoreID:           route.StoreID,
@@ -475,19 +480,19 @@ func (s *wsService) buildConversationRouteRealtimePayload(conversationID int64) 
 	}
 	if route.StoreID > 0 {
 		if store := StoreService.Get(route.StoreID); store != nil {
-			payload.StoreName = store.Name
+			payload.StoreName = utils.RepairMojibakeText(store.Name)
 		}
 	}
 	if route.WxWorkInstanceID > 0 {
 		if instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID); instance != nil {
-			payload.WxWorkEmployeeName = instance.EmployeeName
+			payload.WxWorkEmployeeName = utils.RepairMojibakeText(instance.EmployeeName)
 			payload.WxWorkEmployeeUserID = instance.EmployeeUserID
 			if payload.StoreID == 0 {
 				payload.StoreID = instance.StoreID
 			}
 			if payload.StoreName == "" && instance.StoreID > 0 {
 				if store := StoreService.Get(instance.StoreID); store != nil {
-					payload.StoreName = store.Name
+					payload.StoreName = utils.RepairMojibakeText(store.Name)
 				}
 			}
 		}

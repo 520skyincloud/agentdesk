@@ -57,6 +57,8 @@ type AgentEditDialogProps = {
 const emptyForm: EditForm = {
   userId: "",
   teamId: "",
+  storeScopeIds: "",
+  wxWorkInstanceScopeIds: "",
   agentCode: "",
   displayName: "",
   avatar: "",
@@ -71,6 +73,8 @@ const emptyForm: EditForm = {
 type EditForm = {
   userId: string;
   teamId: string;
+  storeScopeIds: string;
+  wxWorkInstanceScopeIds: string;
   agentCode: string;
   displayName: string;
   avatar: string;
@@ -86,6 +90,8 @@ function createEditFormSchema(t: TFunction) {
   return z.object({
   userId: z.string().trim().min(1, t("agentProfile.userRequired")),
   teamId: z.string().trim().min(1, t("agentProfile.teamRequired")),
+  storeScopeIds: z.string().trim(),
+  wxWorkInstanceScopeIds: z.string().trim(),
   agentCode: z.string().trim().min(1, t("agentProfile.agentCodeRequired")),
   displayName: z.string().trim().min(1, t("agentProfile.displayNameRequired")),
   avatar: z.string().trim(),
@@ -120,6 +126,8 @@ function buildForm(item: AdminAgentProfile | null): EditForm {
   return {
     userId: String(item.userId),
     teamId: String(item.teamId),
+    storeScopeIds: (item.storeScopeIds || []).join(","),
+    wxWorkInstanceScopeIds: (item.wxWorkInstanceScopeIds || []).join(","),
     agentCode: item.agentCode,
     displayName: item.displayName,
     avatar: item.avatar || "",
@@ -150,6 +158,8 @@ function buildPayload(form: EditForm): CreateAdminAgentProfilePayload {
   return {
     userId: Number(form.userId),
     teamId: Number(form.teamId),
+    storeScopeIds: parseIdList(form.storeScopeIds),
+    wxWorkInstanceScopeIds: parseIdList(form.wxWorkInstanceScopeIds),
     agentCode: form.agentCode.trim(),
     displayName: form.displayName.trim(),
     avatar: form.avatar.trim(),
@@ -160,6 +170,13 @@ function buildPayload(form: EditForm): CreateAdminAgentProfilePayload {
     receiveOfflineMessage: form.receiveOfflineMessage,
     remark: form.remark.trim(),
   };
+}
+
+function parseIdList(value: string) {
+  return value
+    .split(/[,，\s]+/)
+    .map((part) => Number(part.trim()))
+    .filter((id, index, ids) => Number.isFinite(id) && id > 0 && ids.indexOf(id) === index)
 }
 
 export function EditDialog({
@@ -379,6 +396,26 @@ function AgentEditDialogBody({
                   {...register("displayName")}
                 />
                 <FieldError errors={[errors.displayName]} />
+              </FieldContent>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="agent-store-scope-ids">可服务门店ID</FieldLabel>
+              <FieldContent>
+                <Input
+                  id="agent-store-scope-ids"
+                  placeholder="多个用逗号分隔；留空继承客服组"
+                  {...register("storeScopeIds")}
+                />
+              </FieldContent>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="agent-wxwork-scope-ids">可服务员工号ID</FieldLabel>
+              <FieldContent>
+                <Input
+                  id="agent-wxwork-scope-ids"
+                  placeholder="多个用逗号分隔；留空继承客服组"
+                  {...register("wxWorkInstanceScopeIds")}
+                />
               </FieldContent>
             </Field>
           </div>

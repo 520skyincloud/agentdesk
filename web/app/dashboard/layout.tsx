@@ -63,9 +63,9 @@ export default function DashboardLayout({
     >
       <NotificationProvider>
         <AppSidebar variant="inset" />
-        <SidebarInset className="overflow-hidden border border-border/65 shadow-[0_18px_50px_rgba(20,83,69,0.09)] dark:shadow-none">
+        <SidebarInset className="overflow-hidden border border-[#dce7f4] bg-background shadow-[0_18px_48px_rgba(35,74,122,0.08)] dark:border-border/60 dark:shadow-none">
           <SiteHeader />
-          <div className="@container/main flex min-h-0 flex-1 flex-col gap-2 overflow-auto">
+          <div className="@container/main flex min-h-0 flex-1 flex-col gap-2 overflow-auto bg-background">
             {children}
           </div>
         </SidebarInset>

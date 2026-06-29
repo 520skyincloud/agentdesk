@@ -36,7 +36,7 @@ func (t *CreateTicketGraphTool) Code() string {
 }
 
 func (t *CreateTicketGraphTool) Enabled(ctx registry.Context) bool {
-	return true
+	return false
 }
 
 func (t *CreateTicketGraphTool) Build(ctx registry.Context) (einotool.BaseTool, error) {

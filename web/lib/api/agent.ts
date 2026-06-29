@@ -38,6 +38,7 @@ export type AgentConversation = {
   channelId?: number
   customerId?: number
   customerName: string
+  customerAvatar?: string
   status: number
   serviceMode: number
   priority: number

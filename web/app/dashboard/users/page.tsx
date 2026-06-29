@@ -337,7 +337,7 @@ export default function DashboardUsersPage() {
           }
         >
             <Table>
-              <TableHeader className="bg-muted/40">
+              <TableHeader className="bg-[#f6f9ff]">
                 <TableRow>
                   <TableHead>{t("user.columnUser")}</TableHead>
                   <TableHead>{t("user.columnRoles")}</TableHead>
@@ -352,7 +352,7 @@ export default function DashboardUsersPage() {
                   <TableRow key={item.id}>
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        <div className="flex size-10 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+                        <div className="flex size-10 items-center justify-center rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] text-primary shadow-inner shadow-blue-100/30">
                           <UserRoundIcon className="size-4" />
                         </div>
                         <div>

@@ -93,6 +93,15 @@ type ReviewKnowledgeCandidateRequest struct {
 	Remark string `json:"remark"`
 }
 
+type BatchReviewKnowledgeCandidateRequest struct {
+	IDs    []int64 `json:"ids"`
+	Remark string  `json:"remark"`
+}
+
+type AnalyzeKnowledgeCandidateConversationRequest struct {
+	ConversationID int64 `json:"conversationId"`
+}
+
 type ExportKnowledgeCandidateWeeklyRequest struct {
 	StoreID int64  `json:"storeId"`
 	Year    int    `json:"year"`

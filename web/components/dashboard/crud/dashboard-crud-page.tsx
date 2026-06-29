@@ -511,7 +511,7 @@ export function DashboardCrudPage<TItem, TPayload>({
 
   const tableElement = (
     <Table>
-      <TableHeader className="bg-muted/40">
+      <TableHeader className="bg-[#f7faff] text-xs text-muted-foreground">
         <TableRow>
           {sortable ? <TableHead className="w-10" /> : null}
           {columns.map((column) => (
@@ -567,11 +567,11 @@ export function DashboardCrudPage<TItem, TPayload>({
           actions={
             showToolbarActions ? (
               <>
-                <Button variant="outline" onClick={() => void loadData()} disabled={loading}>
+                <Button variant="outline" className="rounded-lg border-[#dce7f4] bg-card" onClick={() => void loadData()} disabled={loading}>
                   <RefreshCwIcon className={loading ? "animate-spin" : undefined} />
                   {labels.refresh}
                 </Button>
-                <Button onClick={openCreateDialog}>
+                <Button className="rounded-lg" onClick={openCreateDialog}>
                   <PlusIcon />
                   {labels.create}
                 </Button>
@@ -603,11 +603,12 @@ export function DashboardCrudPage<TItem, TPayload>({
                   }
                   onKeyDown={handleFilterKeyDown}
                   placeholder={filter.placeholder ?? filter.label}
+                  className="rounded-lg border-[#dce7f4] bg-card"
                 />
               </div>
             )
           })}
-          <Button variant="outline" onClick={handleApplyFilters} disabled={loading}>
+          <Button variant="outline" className="rounded-lg border-[#dce7f4] bg-card" onClick={handleApplyFilters} disabled={loading}>
             <SearchIcon />
             {labels.query}
           </Button>
@@ -700,7 +701,7 @@ function DashboardCrudSortableRow({
         transform: CSS.Transform.toString(transform),
         transition,
       }}
-      className={isDragging ? "relative z-10 bg-muted/60" : undefined}
+      className={isDragging ? "relative z-10 bg-[#eef5ff] shadow-[0_12px_28px_rgba(37,99,235,0.12)]" : "hover:bg-[#f7faff]"}
     >
       <TableCell className="w-10">
         <Button

@@ -126,41 +126,41 @@ func GetIMAssignmentStatusLabel(status IMAssignmentStatus) string {
 type IMMessageType string
 
 const (
-	IMMessageTypeText       IMMessageType = "text"
-	IMMessageTypeImage      IMMessageType = "image"
-	IMMessageTypeVoice      IMMessageType = "voice"
-	IMMessageTypeVideo      IMMessageType = "video"
-	IMMessageTypeAttachment IMMessageType = "attachment"
-	IMMessageTypeHTML       IMMessageType = "html"
-	IMMessageTypeGIF        IMMessageType = "gif"
-	IMMessageTypeLocation   IMMessageType = "location"
-	IMMessageTypeContactCard IMMessageType = "contact_card"
-	IMMessageTypeLink       IMMessageType = "link"
-	IMMessageTypeMiniProgram IMMessageType = "mini_program"
-	IMMessageTypeFeed       IMMessageType = "feed"
-	IMMessageTypeFeedLive   IMMessageType = "feed_live"
-	IMMessageTypeQuote      IMMessageType = "quote"
+	IMMessageTypeText          IMMessageType = "text"
+	IMMessageTypeImage         IMMessageType = "image"
+	IMMessageTypeVoice         IMMessageType = "voice"
+	IMMessageTypeVideo         IMMessageType = "video"
+	IMMessageTypeAttachment    IMMessageType = "attachment"
+	IMMessageTypeHTML          IMMessageType = "html"
+	IMMessageTypeGIF           IMMessageType = "gif"
+	IMMessageTypeLocation      IMMessageType = "location"
+	IMMessageTypeContactCard   IMMessageType = "contact_card"
+	IMMessageTypeLink          IMMessageType = "link"
+	IMMessageTypeMiniProgram   IMMessageType = "mini_program"
+	IMMessageTypeFeed          IMMessageType = "feed"
+	IMMessageTypeFeedLive      IMMessageType = "feed_live"
+	IMMessageTypeQuote         IMMessageType = "quote"
 	IMMessageTypeMergedForward IMMessageType = "merged_forward"
-	IMMessageTypeShopProduct IMMessageType = "shop_product"
+	IMMessageTypeShopProduct   IMMessageType = "shop_product"
 )
 
 var imMessageTypeLabelMap = map[IMMessageType]string{
-	IMMessageTypeText:       "文本",
-	IMMessageTypeImage:      "图片",
-	IMMessageTypeVoice:      "语音",
-	IMMessageTypeVideo:      "视频",
-	IMMessageTypeAttachment: "附件",
-	IMMessageTypeHTML:       "富文本",
-	IMMessageTypeGIF:        "动图",
-	IMMessageTypeLocation:   "位置",
-	IMMessageTypeContactCard: "名片",
-	IMMessageTypeLink:       "链接",
-	IMMessageTypeMiniProgram: "小程序",
-	IMMessageTypeFeed:       "视频号",
-	IMMessageTypeFeedLive:   "视频号直播",
-	IMMessageTypeQuote:      "引用消息",
+	IMMessageTypeText:          "文本",
+	IMMessageTypeImage:         "图片",
+	IMMessageTypeVoice:         "语音",
+	IMMessageTypeVideo:         "视频",
+	IMMessageTypeAttachment:    "附件",
+	IMMessageTypeHTML:          "富文本",
+	IMMessageTypeGIF:           "动图",
+	IMMessageTypeLocation:      "位置",
+	IMMessageTypeContactCard:   "名片",
+	IMMessageTypeLink:          "链接",
+	IMMessageTypeMiniProgram:   "小程序",
+	IMMessageTypeFeed:          "视频号",
+	IMMessageTypeFeedLive:      "视频号直播",
+	IMMessageTypeQuote:         "引用消息",
 	IMMessageTypeMergedForward: "合并转发",
-	IMMessageTypeShopProduct: "微信小店商品",
+	IMMessageTypeShopProduct:   "微信小店商品",
 }
 
 func GetIMMessageTypeLabel(messageType IMMessageType) string {
@@ -316,6 +316,13 @@ var conversationRouteStatusLabelMap = map[ConversationRouteStatus]string{
 	ConversationRouteStatusAIFallback:         "AI兜底中",
 	ConversationRouteStatusClosed:             "已关闭",
 }
+
+type ConversationPendingAction string
+
+const (
+	ConversationPendingActionSendLocation ConversationPendingAction = "send_location"
+	ConversationPendingActionServiceTask  ConversationPendingAction = "service_task"
+)
 
 func GetConversationRouteStatusLabel(status ConversationRouteStatus) string {
 	return conversationRouteStatusLabelMap[status]

@@ -65,6 +65,24 @@ func normalizeTicketStaleHours(staleHours int) int {
 	}
 }
 
+func normalizeTicketCategory(category string) string {
+	switch strings.TrimSpace(category) {
+	case "delivery", "cleaning", "maintenance", "wake_up", "luggage", "human_decision":
+		return strings.TrimSpace(category)
+	default:
+		return "general"
+	}
+}
+
+func normalizeTicketPriority(priority string) string {
+	switch strings.TrimSpace(priority) {
+	case "low", "normal", "high", "urgent":
+		return strings.TrimSpace(priority)
+	default:
+		return "normal"
+	}
+}
+
 func buildTicketAssignmentProgressContent(fromUser *models.User, toUser *models.User, reason string) string {
 	fromName := ticketAssignmentUserDisplayName(fromUser)
 	if fromName == "" {
@@ -213,6 +231,9 @@ func (s *ticketService) CreateTicket(req request.CreateTicketRequest, operator *
 	ticket := &models.Ticket{
 		Title:             title,
 		Description:       description,
+		Category:          normalizeTicketCategory(req.Category),
+		Priority:          normalizeTicketPriority(req.Priority),
+		RoomNo:            strings.TrimSpace(req.RoomNo),
 		Source:            source,
 		Channel:           strings.TrimSpace(req.Channel),
 		CustomerID:        req.CustomerID,
@@ -277,6 +298,9 @@ func (s *ticketService) CreateFromConversation(req request.CreateTicketFromConve
 	return s.CreateTicket(request.CreateTicketRequest{
 		Title:             title,
 		Description:       description,
+		Category:          req.Category,
+		Priority:          req.Priority,
+		RoomNo:            req.RoomNo,
 		Source:            string(enums.TicketSourceConversation),
 		Channel:           s.resolveConversationChannel(conversation),
 		CustomerID:        conversation.CustomerID,
@@ -314,6 +338,9 @@ func (s *ticketService) UpdateTicket(req request.UpdateTicketRequest, operator *
 		if err := repositories.TicketRepository.Updates(ctx.Tx, ticket.ID, map[string]any{
 			"title":               title,
 			"description":         description,
+			"category":            normalizeTicketCategory(req.Category),
+			"priority":            normalizeTicketPriority(req.Priority),
+			"room_no":             strings.TrimSpace(req.RoomNo),
 			"current_assignee_id": req.CurrentAssigneeID,
 			"updated_at":          now,
 			"update_user_id":      operator.UserID,

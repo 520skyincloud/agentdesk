@@ -2,11 +2,14 @@ package retrievers
 
 import (
 	"context"
+	"log/slog"
 	"strings"
+	"time"
 
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
@@ -116,7 +119,9 @@ func (r *KnowledgeRetriever) RetrieveContextByOptions(ctx context.Context, opts 
 	if query == "" || len(knowledgeBaseIDs) == 0 {
 		return ret, nil
 	}
+	retrieveStartedAt := time.Now()
 	results, trace, err := r.RetrieveByOptions(ctx, opts, query)
+	retrieveMs := time.Since(retrieveStartedAt).Milliseconds()
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +134,89 @@ func (r *KnowledgeRetriever) RetrieveContextByOptions(ctx context.Context, opts 
 	ret.AnswerMode = resolveRuntimeAnswerMode(knowledgeBaseIDs, results)
 	ret.TraceItems = buildRetrieverTraceItems(queryPreview, results, trace)
 	ret.TraceSummary = buildRetrieverTraceSummary(ret.Options, ret.Policies, ret.ContextResults, results, trace)
+	r.writeRuntimeRetrieveLog(query, retrieveMs, ret)
 	return ret, nil
+}
+
+func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(query string, retrieveMs int64, result *KnowledgeRetrieveResult) {
+	if result == nil || len(result.KnowledgeBaseIDs) == 0 {
+		return
+	}
+	hits := buildKnowledgeSearchResults(result.Hits)
+	usedHits := buildKnowledgeSearchResults(result.ContextResults)
+	answerStatus := int(enums.KnowledgeAnswerStatusNormal)
+	if len(hits) == 0 {
+		answerStatus = int(enums.KnowledgeAnswerStatusNoAnswer)
+	}
+	if _, err := rag.RetrieveLog.CreateRetrieveLog(&rag.CreateRetrieveLogRequest{
+		KnowledgeBaseID: result.KnowledgeBaseIDs[0],
+		SourceType:      inferRuntimeRetrieveSourceType(hits),
+		Channel:         string(enums.KnowledgeRetrieveChannelIM),
+		Scene:           string(enums.KnowledgeRetrieveSceneFirstResponse),
+		Question:        query,
+		AnswerStatus:    answerStatus,
+		ChunkProvider:   runtimeRetrieveChunkProvider(result),
+		RerankEnabled:   false,
+		Hits:            hits,
+		UsedHits:        usedHits,
+		RetrieveMs:      retrieveMs,
+		LatencyMs:       retrieveMs,
+		ModelName:       "runtime-retriever",
+	}, nil); err != nil {
+		slog.Warn("runtime knowledge retrieve log failed", "error", err)
+	}
+}
+
+func buildKnowledgeSearchResults(items []rag.RetrieveResult) []response.KnowledgeSearchResult {
+	ret := make([]response.KnowledgeSearchResult, 0, len(items))
+	for _, item := range items {
+		ret = append(ret, response.KnowledgeSearchResult{
+			KnowledgeBaseID: item.KnowledgeBaseID,
+			ChunkID:         item.ChunkID,
+			DocumentID:      item.DocumentID,
+			DocumentTitle:   item.DocumentTitle,
+			FaqID:           item.FaqID,
+			FaqQuestion:     item.FaqQuestion,
+			ChunkNo:         item.ChunkNo,
+			Title:           item.Title,
+			SectionPath:     item.SectionPath,
+			Content:         item.Content,
+			Score:           float64(item.Score),
+		})
+	}
+	return ret
+}
+
+func inferRuntimeRetrieveSourceType(hits []response.KnowledgeSearchResult) string {
+	if len(hits) == 0 {
+		return "local_vector"
+	}
+	cloud := false
+	local := false
+	for _, hit := range hits {
+		if strings.Contains(hit.SectionPath, "FastGPT云端知识库") || strings.Contains(hit.DocumentTitle, "FastGPT云端知识库") {
+			cloud = true
+		} else {
+			local = true
+		}
+	}
+	if cloud && local {
+		return "hybrid"
+	}
+	if cloud {
+		return "cloud_knowledge"
+	}
+	return "local_vector"
+}
+
+func runtimeRetrieveChunkProvider(result *KnowledgeRetrieveResult) string {
+	if result == nil {
+		return "runtime"
+	}
+	if len(result.Hits) == 0 {
+		return "runtime_empty"
+	}
+	return inferRuntimeRetrieveSourceType(buildKnowledgeSearchResults(result.Hits))
 }
 
 func limitContextResults(results []rag.RetrieveResult, maxItems int) []rag.RetrieveResult {

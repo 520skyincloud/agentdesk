@@ -1,6 +1,7 @@
 import { expireSession, readSession } from "@/lib/auth"
 import { readStoredLocale } from "@/i18n/config"
 import { translateCurrentMessage } from "@/i18n/messages"
+import { repairMojibakeDeep } from "@/lib/utils"
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || ""
@@ -28,7 +29,7 @@ async function parseResult<T>(response: Response) {
     ;(error as Error & { errorCode?: number }).errorCode = payload.errorCode
     throw error
   }
-  return payload.data
+  return repairMojibakeDeep(payload.data)
 }
 
 export async function request<T>(

@@ -33,8 +33,8 @@ try {
 `
 
 export const metadata: Metadata = {
-  title: "AI Customer Service Admin",
-  description: "AI Customer Service Admin",
+  title: "知悉微宝",
+  description: "知悉微宝智能客服工作台",
 }
 
 export default function RootLayout({

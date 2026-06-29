@@ -60,6 +60,8 @@ type TeamEditDialogProps = {
 const emptyForm: EditForm = {
   name: "",
   leaderUserId: "0",
+  storeScopeIds: "",
+  wxWorkInstanceScopeIds: "",
   status: String(Status.Ok),
   description: "",
   remark: "",
@@ -68,6 +70,8 @@ const emptyForm: EditForm = {
 type EditForm = {
   name: string;
   leaderUserId: string;
+  storeScopeIds: string;
+  wxWorkInstanceScopeIds: string;
   status: string;
   description: string;
   remark: string;
@@ -77,6 +81,8 @@ function createEditFormSchema(t: TFunction) {
   return z.object({
   name: z.string().trim().min(1, t("agentProfile.teamNameRequired")),
   leaderUserId: z.string().trim().regex(/^\d+$/, t("agentProfile.leaderInvalid")),
+  storeScopeIds: z.string().trim(),
+  wxWorkInstanceScopeIds: z.string().trim(),
   status: z.enum([String(Status.Ok), String(Status.Disabled)], {
     message: t("agentProfile.teamStatusRequired"),
   }),
@@ -99,6 +105,8 @@ function buildForm(item: AdminAgentTeam | null): EditForm {
   return {
     name: item.name,
     leaderUserId: String(item.leaderUserId),
+    storeScopeIds: (item.storeScopeIds || []).join(","),
+    wxWorkInstanceScopeIds: (item.wxWorkInstanceScopeIds || []).join(","),
     status: String(item.status),
     description: item.description || "",
     remark: item.remark || "",
@@ -109,10 +117,19 @@ function buildPayload(form: EditForm): CreateAdminAgentTeamPayload {
   return {
     name: form.name.trim(),
     leaderUserId: Number(form.leaderUserId),
+    storeScopeIds: parseIdList(form.storeScopeIds),
+    wxWorkInstanceScopeIds: parseIdList(form.wxWorkInstanceScopeIds),
     status: Number(form.status),
     description: form.description.trim(),
     remark: form.remark.trim(),
   };
+}
+
+function parseIdList(value: string) {
+  return value
+    .split(/[,，\s]+/)
+    .map((part) => Number(part.trim()))
+    .filter((id, index, ids) => Number.isFinite(id) && id > 0 && ids.indexOf(id) === index)
 }
 
 export function EditDialog({
@@ -317,6 +334,26 @@ function TeamEditDialogBody({
                   )}
                 />
                 <FieldError errors={[errors.status]} />
+              </FieldContent>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="agent-team-store-scope-ids">可服务门店ID</FieldLabel>
+              <FieldContent>
+                <Input
+                  id="agent-team-store-scope-ids"
+                  placeholder="多个用逗号分隔；留空表示不限制"
+                  {...register("storeScopeIds")}
+                />
+              </FieldContent>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="agent-team-wxwork-scope-ids">可服务员工号ID</FieldLabel>
+              <FieldContent>
+                <Input
+                  id="agent-team-wxwork-scope-ids"
+                  placeholder="多个用逗号分隔；留空表示不限制"
+                  {...register("wxWorkInstanceScopeIds")}
+                />
               </FieldContent>
             </Field>
             <Field>

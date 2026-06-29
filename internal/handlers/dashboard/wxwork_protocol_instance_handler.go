@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"strings"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
@@ -10,6 +11,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/pkg/httpx/params"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -27,7 +29,7 @@ func WxWorkProtocolInstanceAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "channelId"},
 		params.QueryFilter{ParamName: "storeId"},
 		params.QueryFilter{ParamName: "knowledgeBaseId"},
-	).Where("status <> ?", enums.StatusDeleted).Desc("id"))
+	).Where("status <> ?", enums.StatusDeleted).Where("health_status <> ?", "login_qrcode").Desc("id"))
 	results := make([]response.WxWorkProtocolInstanceResponse, 0, len(list))
 	for _, item := range list {
 		results = append(results, buildWxWorkProtocolInstanceResponse(&item))
@@ -190,6 +192,44 @@ func WxWorkProtocolInstancePostUpdate_ai_settings(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
+func WxWorkProtocolInstancePostInit_ai_agent(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.WxWorkProtocolInstanceActionRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item, err := services.WxWorkProtocolInstanceService.InitAIAgent(req.ID, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, buildAIAgentResponse(item))
+}
+
+func WxWorkProtocolInstancePostUpdate_ai_agent(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.UpdateWxWorkProtocolAIAgentRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item, err := services.WxWorkProtocolInstanceService.UpdateBoundAIAgent(req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, buildAIAgentResponse(item))
+}
+
 func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
 	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -205,6 +245,27 @@ func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	httpx.WriteJSON(ctx, resp)
+}
+
+func WxWorkProtocolInstancePostCreate_remote_setup(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelCreate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.CreateWxWorkProtocolRemoteSetupRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item, err := services.WxWorkProtocolInstanceService.CreateRemoteSetupInstance(req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	resp := buildWxWorkProtocolInstanceResponse(item)
+	resp.RemoteSetupURL = buildRemoteSetupURL(ctx, item.RemoteSetupToken)
 	httpx.WriteJSON(ctx, resp)
 }
 
@@ -345,16 +406,39 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) re
 		return ret
 	}
 	if channel := services.ChannelService.Get(item.ChannelID); channel != nil {
-		ret.ChannelName = channel.Name
+		ret.ChannelName = utils.RepairMojibakeText(channel.Name)
 	}
 	if store := services.StoreService.Get(item.StoreID); store != nil {
 		ret.StoreCode = store.StoreCode
-		ret.StoreName = store.Name
+		ret.StoreName = utils.RepairMojibakeText(store.Name)
 	}
 	if knowledgeBase := services.KnowledgeBaseService.Get(item.KnowledgeBaseID); knowledgeBase != nil {
-		ret.KnowledgeBaseName = knowledgeBase.Name
+		ret.KnowledgeBaseName = utils.RepairMojibakeText(knowledgeBase.Name)
+	}
+	if aiAgent := services.AIAgentService.Get(item.AIAgentID); aiAgent != nil && aiAgent.Status != enums.StatusDeleted {
+		ret.AIAgentName = utils.RepairMojibakeText(aiAgent.Name)
+		ret.AIAgentConfigured = true
+		if aiConfig := services.AIConfigService.Get(aiAgent.AIConfigID); aiConfig != nil {
+			ret.AIConfigName = utils.RepairMojibakeText(aiConfig.Name)
+		}
 	}
 	return ret
+}
+
+func buildRemoteSetupURL(ctx *gin.Context, token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	scheme := "http"
+	if ctx.Request.TLS != nil || strings.EqualFold(ctx.GetHeader("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	host := ctx.Request.Host
+	if forwarded := strings.TrimSpace(ctx.GetHeader("X-Forwarded-Host")); forwarded != "" {
+		host = forwarded
+	}
+	return scheme + "://" + host + "/wxwork-remote-setup?token=" + token
 }
 
 func parseWxWorkProtocolLoginQRCode(raw string) (string, string, string) {

@@ -103,7 +103,7 @@ function SortableRoleRow({
       ref={setNodeRef}
       style={style}
       className={cn(
-        isDragging && "relative z-10 bg-muted/60 shadow-sm",
+        isDragging && "relative z-10 bg-[#eef5ff] shadow-[0_12px_28px_rgba(37,99,235,0.12)]",
         !disabled && "cursor-move"
       )}
     >
@@ -123,7 +123,7 @@ function SortableRoleRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-3">
-          <div className="flex size-10 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+          <div className="flex size-10 items-center justify-center rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] text-primary shadow-inner shadow-blue-100/30">
             <ShieldCheckIcon className="size-4" />
           </div>
           <div className="font-medium">{displayName}</div>
@@ -367,7 +367,7 @@ export default function DashboardRolesPage() {
             onDragEnd={(event) => void handleDragEnd(event)}
           >
             <Table>
-              <TableHeader className="bg-muted/40">
+              <TableHeader className="bg-[#f6f9ff]">
                 <TableRow>
                   <TableHead className="w-14"></TableHead>
                   <TableHead>{t("role.columnRole")}</TableHead>

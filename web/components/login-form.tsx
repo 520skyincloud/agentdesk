@@ -218,7 +218,7 @@ export function LoginForm({
               </FieldDescription> */}
             </FieldGroup>
           </form>
-          <div className="relative hidden bg-muted md:block">
+          <div className="relative hidden bg-[#eef4fb] md:block">
             {/* shadcn login-04 uses a plain img for the decorative side panel. */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img

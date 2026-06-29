@@ -376,7 +376,7 @@ export function ScheduleCalendar({
 
   if (teams.length === 0 && !loading) {
     return (
-      <div className="flex min-h-64 items-center justify-center rounded-lg border bg-background text-sm text-muted-foreground">
+      <div className="agentdesk-subtle-surface flex min-h-64 items-center justify-center rounded-2xl text-sm text-muted-foreground">
         {t("agentTeamSchedule.noTeamsCalendar")}
       </div>
     )
@@ -399,10 +399,10 @@ export function ScheduleCalendar({
         role="button"
         tabIndex={0}
         className={cn(
-          "border-l border-t bg-background p-2 text-left outline-none transition-colors first:border-l-0 hover:bg-muted/20 focus-visible:ring-2 focus-visible:ring-ring",
+          "border-l border-t border-[#e3ebf6] bg-white p-2 text-left outline-none transition-colors first:border-l-0 hover:bg-[#f7faff] focus-visible:ring-2 focus-visible:ring-primary/25",
           dayIndex % 7 === 0 && "border-l-0",
-          !inMonth && "bg-muted/20 text-muted-foreground",
-          historical && "cursor-not-allowed bg-muted/30 hover:bg-muted/30",
+          !inMonth && "bg-[#f7f9fd] text-muted-foreground",
+          historical && "cursor-not-allowed bg-[#f4f7fb] hover:bg-[#f4f7fb]",
           interactionPreview?.date === date &&
             (interactionPreview.invalid ? "bg-destructive/5 ring-2 ring-destructive/30" : "bg-primary/5 ring-2 ring-primary/35"),
           options?.className
@@ -437,7 +437,7 @@ export function ScheduleCalendar({
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {today ? (
-              <span className="rounded-sm bg-primary px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-foreground">
+              <span className="rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-foreground shadow-sm shadow-blue-200/60">
                 {t("agentTeamSchedule.today")}
               </span>
             ) : null}
@@ -452,7 +452,7 @@ export function ScheduleCalendar({
             const timeLayout = dayTimeLayout.items.get(item.id)
             const readonly = historical || isHistoricalDay(parseLocalDateTime(item.startAt))
             return (
-              <div key={`${item.id}-${date}`} className="relative h-10 rounded-sm bg-muted/25">
+              <div key={`${item.id}-${date}`} className="relative h-10 rounded-lg bg-[#f4f7fb]">
                 <div
                   data-schedule-block
                   data-time-left={timeLayout?.leftPercent ?? 0}
@@ -460,7 +460,7 @@ export function ScheduleCalendar({
                   role="button"
                   tabIndex={0}
                   className={cn(
-                    "absolute inset-y-0 cursor-grab overflow-hidden rounded-md border border-primary/20 bg-primary/10 px-2 py-1.5 pl-4 pr-4 text-primary shadow-sm outline-none transition active:cursor-grabbing",
+                    "absolute inset-y-0 cursor-grab overflow-hidden rounded-lg border border-primary/15 bg-[#eef5ff] px-2 py-1.5 pl-4 pr-4 text-primary shadow-[0_8px_18px_rgba(37,99,235,0.10)] outline-none transition active:cursor-grabbing",
                     active && "scale-[0.98] border-primary/50 bg-primary/15 opacity-80 ring-2 ring-primary/30",
                     readonly && "cursor-not-allowed opacity-60",
                     busy && "pointer-events-none opacity-60"
@@ -533,13 +533,13 @@ export function ScheduleCalendar({
 
   if (variant === "week") {
     return (
-      <div className="min-w-[760px] overflow-hidden rounded-lg border bg-background">
+    <div className="agentdesk-surface min-w-[760px] overflow-hidden rounded-2xl">
         <div className={cn("divide-y", loading && "opacity-60")}>
           {days.map((day, dayIndex) => {
             const date = formatDate(day)
             return (
               <div key={date} className="grid grid-cols-[112px_minmax(0,1fr)]">
-                <div className="border-r bg-muted/40 px-3 py-3 text-sm font-medium">
+                <div className="border-r border-[#dbe7f6] bg-[#f6f9ff] px-3 py-3 text-sm font-medium">
                   <div>{t(`agentTeamSchedule.${weekDayKeys[dayIndex] ?? "weekdayShortMon"}`)}</div>
                   <div className="mt-1 text-xs font-normal text-muted-foreground">{date.slice(5)}</div>
                 </div>
@@ -556,7 +556,7 @@ export function ScheduleCalendar({
           <div
             data-schedule-preview
             className={cn(
-              "pointer-events-none fixed z-50 rounded-md border bg-popover px-3 py-2 text-xs font-medium text-popover-foreground shadow-md",
+              "pointer-events-none fixed z-50 rounded-xl border border-[#dbe7f6] bg-white px-3 py-2 text-xs font-medium text-foreground shadow-[0_14px_32px_rgba(37,99,235,0.14)]",
               interactionPreview.invalid && "border-destructive/40 bg-destructive text-destructive-foreground"
             )}
             style={{
@@ -572,8 +572,8 @@ export function ScheduleCalendar({
   }
 
   return (
-    <div className="min-w-[960px] overflow-hidden rounded-lg border bg-background">
-      <div className="grid grid-cols-7 border-b bg-muted/40">
+    <div className="agentdesk-surface min-w-[960px] overflow-hidden rounded-2xl">
+      <div className="grid grid-cols-7 border-b border-[#dbe7f6] bg-[#f6f9ff]">
         {weekDayKeys.map((key) => (
           <div key={key} className="flex h-10 items-center justify-center border-l first:border-l-0 text-sm font-medium">
             {t(`agentTeamSchedule.${key}`)}
@@ -587,7 +587,7 @@ export function ScheduleCalendar({
         <div
           data-schedule-preview
           className={cn(
-            "pointer-events-none fixed z-50 rounded-md border bg-popover px-3 py-2 text-xs font-medium text-popover-foreground shadow-md",
+            "pointer-events-none fixed z-50 rounded-xl border border-[#dbe7f6] bg-white px-3 py-2 text-xs font-medium text-foreground shadow-[0_14px_32px_rgba(37,99,235,0.14)]",
             interactionPreview.invalid && "border-destructive/40 bg-destructive text-destructive-foreground"
           )}
           style={{

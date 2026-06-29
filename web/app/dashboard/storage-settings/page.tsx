@@ -89,12 +89,12 @@ export default function StorageSettingsPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <section className="rounded-lg border bg-background p-4">
+        <section className="agentdesk-surface rounded-2xl p-4">
           <h2 className="text-base font-medium">OSS 存储桶</h2>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <Field label="默认存储类型">
               <select
-                className="h-9 rounded-md border bg-background px-3 text-sm"
+                className="h-10 rounded-xl border border-[#dbe7f6] bg-white px-3 text-sm shadow-[0_4px_12px_rgba(37,99,235,0.06)]"
                 value={form.defaultProvider}
                 onChange={(event) => patch({ defaultProvider: event.target.value })}
               >
@@ -140,7 +140,7 @@ export default function StorageSettingsPage() {
           </div>
         </section>
 
-        <section className="rounded-lg border bg-background p-4">
+        <section className="agentdesk-surface rounded-2xl p-4">
           <h2 className="text-base font-medium">企微富媒体链路</h2>
           <div className="mt-4 grid gap-4">
             <Field label="AgentDesk 公网地址">
@@ -156,7 +156,7 @@ export default function StorageSettingsPage() {
               <Input value={form.localBaseUrl} onChange={(event) => patch({ localBaseUrl: event.target.value })} />
             </Field>
           </div>
-          <p className="mt-4 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+          <p className="mt-4 rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 text-xs leading-5 text-muted-foreground shadow-inner shadow-blue-100/30">
             网页客服发送图片、语音、文件、视频、GIF 时，系统会先把文件上传到 OSS 的 desk 目录，再让 wecdn_web 拉取公网文件并换取企微协议 file_id/aes_key/md5 后发送。
           </p>
         </section>

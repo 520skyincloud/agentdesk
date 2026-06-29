@@ -552,7 +552,7 @@ export function SharedMessageEditor({
   if (isCustomer) {
     return (
       <div className="px-3 pt-2 pb-3">
-        <div className="rounded-xl border border-border bg-background p-2 shadow-[0_8px_24px_rgba(15,23,42,0.05)] dark:shadow-none">
+        <div className="agentdesk-subtle-surface rounded-xl p-2 dark:shadow-none">
           {editorContent}
         </div>
       </div>
@@ -560,8 +560,8 @@ export function SharedMessageEditor({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-muted/25 p-4">
-      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-sm">
+    <div className="flex h-full min-h-0 flex-col bg-white p-0">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
         {editorContent}
       </div>
     </div>
@@ -572,28 +572,28 @@ function getEditorClassName(variant: SharedMessageEditorVariant) {
   if (variant === "customer") {
     return "agent-desk-scrollbar min-h-12 max-h-40 overflow-y-auto px-1.5 py-1 text-sm leading-6 text-foreground outline-none [&_p]:m-0 [&_p+*]:mt-2 [&_.agent-desk-editor-image-wrap]:my-2 [&_.agent-desk-editor-image]:max-h-64 [&_.agent-desk-editor-image]:max-w-full [&_.agent-desk-editor-image]:rounded-lg [&_.agent-desk-editor-image]:object-contain [&_.agent-desk-editor-image-wrap-uploading_.agent-desk-editor-image]:opacity-55"
   }
-  return "h-full min-h-20 max-h-[20vh] overflow-y-auto px-2 py-2 text-sm leading-6 text-foreground outline-none sm:max-h-none [&_.ProseMirror-focused]:outline-none [&_p]:m-0 [&_p+.agent-desk-editor-image-wrap]:mt-2 [&_.agent-desk-editor-image-wrap]:my-2 [&_.agent-desk-editor-image]:max-h-64 [&_.agent-desk-editor-image]:max-w-full [&_.agent-desk-editor-image]:rounded-md [&_.agent-desk-editor-image]:object-contain [&_.agent-desk-editor-image-wrap-uploading_.agent-desk-editor-image]:opacity-55 [&_p.is-editor-empty:first-child]:before:text-muted-foreground"
+  return "h-full min-h-20 max-h-[20vh] overflow-y-auto px-5 py-4 text-sm leading-6 text-foreground outline-none sm:max-h-none [&_.ProseMirror-focused]:outline-none [&_p]:m-0 [&_p+.agent-desk-editor-image-wrap]:mt-2 [&_.agent-desk-editor-image-wrap]:my-2 [&_.agent-desk-editor-image]:max-h-64 [&_.agent-desk-editor-image]:max-w-full [&_.agent-desk-editor-image]:rounded-md [&_.agent-desk-editor-image]:object-contain [&_.agent-desk-editor-image-wrap-uploading_.agent-desk-editor-image]:opacity-55 [&_p.is-editor-empty:first-child]:before:text-muted-foreground"
 }
 
 function getToolbarClassName(variant: SharedMessageEditorVariant) {
   if (variant === "customer") {
     return "mt-2 flex items-center justify-between"
   }
-  return "flex items-center justify-between border-t border-border bg-background px-3 py-3"
+  return "flex items-center justify-between border-t border-[#edf1f6] bg-[#fbfcfe] px-5 py-3"
 }
 
 function getIconButtonClassName(variant: SharedMessageEditorVariant) {
   if (variant === "customer") {
-    return "text-muted-foreground hover:bg-muted hover:text-foreground"
+    return "rounded-xl text-muted-foreground transition hover:bg-[#f2f7ff] hover:text-primary"
   }
-  return "size-8"
+  return "size-8 rounded-lg border border-transparent bg-[#f3f6fa] text-[#637083] shadow-none hover:border-[#d9e2f2] hover:bg-white hover:text-[#2563eb]"
 }
 
 function getToolButtonClassName(variant: SharedMessageEditorVariant) {
   if (variant === "customer") {
-    return "text-muted-foreground hover:bg-muted hover:text-foreground"
+    return "rounded-xl text-muted-foreground transition hover:bg-[#f2f7ff] hover:text-primary"
   }
-  return "h-9 gap-1.5 rounded-md bg-muted px-3 text-sm font-medium text-foreground hover:bg-muted/80 disabled:opacity-45"
+  return "h-8 gap-1.5 rounded-lg border border-[#edf1f7] bg-[#f3f6fa] px-3 text-xs font-medium text-[#344054] shadow-none hover:border-[#d9e2f2] hover:bg-white hover:text-[#2563eb] disabled:opacity-45"
 }
 
 function isMeaningfulHTML(html: string) {

@@ -35,7 +35,7 @@ export function RealtimeConnectionStatus({
       ? "border-emerald-200/80 bg-emerald-50 text-emerald-700"
       : status === "connecting"
         ? "border-amber-200/80 bg-amber-50 text-amber-700"
-        : "border-slate-200/80 bg-slate-100 text-slate-600";
+        : "border-[#dbe7f6] bg-[#f6f9ff] text-muted-foreground";
 
   return (
     <div
@@ -53,7 +53,7 @@ export function RealtimeConnectionStatus({
             ? "bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.14)]"
             : status === "connecting"
               ? "bg-amber-500 shadow-[0_0_0_4px_rgba(245,158,11,0.16)]"
-              : "bg-slate-400 shadow-[0_0_0_4px_rgba(148,163,184,0.14)]",
+              : "bg-muted-foreground shadow-[0_0_0_4px_rgba(100,116,139,0.12)]",
         )}
       />
       <span>

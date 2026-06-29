@@ -139,6 +139,8 @@ func BuildKnowledgeRetrieveLog(item *models.KnowledgeRetrieveLog) response.Knowl
 	return response.KnowledgeRetrieveLogResponse{
 		ID:                 item.ID,
 		KnowledgeBaseID:    item.KnowledgeBaseID,
+		SourceType:         item.SourceType,
+		SourceTypeName:     knowledgeRetrieveSourceTypeName(item.SourceType),
 		Channel:            item.Channel,
 		ChannelName:        enums.GetKnowledgeRetrieveChannelLabel(enums.KnowledgeRetrieveChannel(item.Channel)),
 		Scene:              item.Scene,
@@ -169,6 +171,19 @@ func BuildKnowledgeRetrieveLog(item *models.KnowledgeRetrieveLog) response.Knowl
 		ModelName:          item.ModelName,
 		TraceData:          item.TraceData,
 		CreatedAt:          item.CreatedAt,
+	}
+}
+
+func knowledgeRetrieveSourceTypeName(sourceType string) string {
+	switch sourceType {
+	case "cloud_knowledge":
+		return "云端知识库"
+	case "hybrid":
+		return "本地+云端"
+	case "faq":
+		return "FAQ"
+	default:
+		return "本地向量"
 	}
 }
 

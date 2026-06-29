@@ -150,7 +150,24 @@ func (s *wxWorkProtocolService) GetLoginQRCode(instanceID int64) (string, error)
 }
 
 func (s *wxWorkProtocolService) CheckLoginQRCode(instanceID int64) (string, error) {
-	return s.callInstanceAPI(instanceID, "/login/check_login_qrcode", nil, nil)
+	return s.callInstanceAPI(instanceID, "/login/check_login_qrcode", nil, func(instance *models.WxWorkProtocolInstance, response string) error {
+		updates := s.profileUpdatesFromResponse(response)
+		success := s.loginQRCodeResponseLooksSuccessful(response)
+		if success {
+			updates["status"] = enums.StatusOk
+			if _, ok := updates["health_status"]; !ok {
+				updates["health_status"] = "online"
+			}
+		} else {
+			delete(updates, "health_status")
+		}
+		if len(updates) == 0 {
+			return nil
+		}
+		updates["updated_at"] = time.Now()
+		updates["update_user_name"] = wxWorkProtocolSystemOperatorName
+		return repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), instance.ID, updates)
+	})
 }
 
 func (s *wxWorkProtocolService) VerifyLoginQRCode(instanceID int64, code string) (string, error) {
@@ -234,7 +251,7 @@ func (s *wxWorkProtocolService) SetProxy(instanceID int64, proxy string) (string
 }
 
 func (s *wxWorkProtocolService) SyncFriendRequests(instanceID int64) (string, error) {
-	return s.callInstanceAPI(instanceID, "/contact/sync_apply_list", map[string]any{"seq": "", "limit": 50}, nil)
+	return s.callInstanceAPI(instanceID, "/contact/sync_apply_contact", map[string]any{"seq": "", "limit": 50}, nil)
 }
 
 func (s *wxWorkProtocolService) CallDocumentedAPI(instanceID int64, path string, body map[string]any) (string, error) {
@@ -420,7 +437,7 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 	if externalID == "" {
 		return nil
 	}
-	conversation, err := s.ensureConversation(instance, msg, externalID, rawPayload)
+	conversation, created, err := s.ensureConversation(instance, msg, externalID, rawPayload)
 	if err != nil {
 		return err
 	}
@@ -434,6 +451,7 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 		if sendErr != nil {
 			return sendErr
 		}
+		s.scheduleWxWorkContactProfileSync(instance, conversation, externalID)
 		_ = s.createMessageRef(conversation.ID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
 		_ = MessageSyncLogService.Create(conversation.ID, message.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
 		return s.replyConfigError(conversation.ID, conversation.AIAgentID, clientMsgID)
@@ -449,7 +467,149 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 	if err != nil {
 		return err
 	}
+	s.scheduleWxWorkContactProfileSync(instance, conversation, externalID)
+	if created {
+		WxWorkProtocolDefaultResourceService.SendNewFriendWelcome(conversation, instance, "wx_welcome_"+strings.TrimPrefix(clientMsgID, "wx_protocol:"))
+	}
 	return s.createMessageRef(conversation.ID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
+}
+
+func (s *wxWorkProtocolService) scheduleWxWorkContactProfileSync(instance *models.WxWorkProtocolInstance, conversation *models.Conversation, externalID string) {
+	if instance == nil || conversation == nil || conversation.CustomerID <= 0 || strings.TrimSpace(externalID) == "" {
+		return
+	}
+	if customer := CustomerService.Get(conversation.CustomerID); customer != nil && strings.TrimSpace(customer.Avatar) != "" {
+		return
+	}
+	go func(instanceID, conversationID, customerID int64, userID string) {
+		if err := s.syncWxWorkContactProfile(instanceID, conversationID, customerID, userID); err != nil {
+			slog.Warn("sync wxwork protocol contact profile failed", "instanceId", instanceID, "conversationId", conversationID, "customerId", customerID, "userId", userID, "error", err)
+		}
+	}(instance.ID, conversation.ID, conversation.CustomerID, strings.TrimSpace(externalID))
+}
+
+func (s *wxWorkProtocolService) syncWxWorkContactProfile(instanceID, conversationID, customerID int64, userID string) error {
+	resp, err := s.callInstanceAPI(instanceID, "/contact/batch_get_userinfo", map[string]any{"user_list": []string{strings.TrimSpace(userID)}}, nil)
+	if err != nil {
+		return err
+	}
+	name, avatar := parseWxWorkContactProfile(resp, userID)
+	updates := map[string]any{}
+	if strings.TrimSpace(name) != "" {
+		updates["name"] = strings.TrimSpace(name)
+	}
+	if strings.TrimSpace(avatar) != "" {
+		updates["avatar"] = strings.TrimSpace(avatar)
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	now := time.Now()
+	updates["updated_at"] = now
+	updates["update_user_name"] = wxWorkProtocolSystemOperatorName
+	if err := repositories.CustomerRepository.Updates(sqls.DB(), customerID, updates); err != nil {
+		return err
+	}
+	if strings.TrimSpace(name) != "" {
+		if err := CustomerService.syncConversationCustomerName(sqls.DB(), customerID, strings.TrimSpace(name), nil, now); err != nil {
+			return err
+		}
+	}
+	if conversation := ConversationService.Get(conversationID); conversation != nil {
+		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
+	}
+	return nil
+}
+
+func parseWxWorkContactProfile(raw string, targetUserID string) (string, string) {
+	root := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &root); err != nil {
+		return "", ""
+	}
+	candidates := make([]map[string]any, 0, 4)
+	collect := func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			candidates = append(candidates, typed)
+		case []any:
+			for _, item := range typed {
+				if m, ok := item.(map[string]any); ok {
+					candidates = append(candidates, m)
+				}
+			}
+		}
+	}
+	collect(root)
+	if data, ok := root["data"]; ok {
+		collect(data)
+		if dataMap, ok := data.(map[string]any); ok {
+			for _, key := range []string{"list", "users", "user_list", "userList", "contacts", "items", "result", "persons"} {
+				collect(dataMap[key])
+			}
+		}
+	}
+	targetUserID = strings.TrimSpace(targetUserID)
+	for _, item := range candidates {
+		if targetUserID != "" && !wxWorkProfileCandidateMatches(item, targetUserID) {
+			continue
+		}
+		profile := item
+		if nested, ok := item["info"].(map[string]any); ok {
+			profile = nested
+		}
+		name := firstStringFromMap(profile, "remark", "display_name", "displayName", "name", "nickname", "nickName", "alias", "real_name", "realName")
+		avatar := firstStringFromMap(profile, "avatar", "avatar_url", "avatarUrl", "head_img", "headImg", "headimgurl", "head_url", "headUrl", "portrait", "icon", "iconurl", "iconUrl")
+		if name != "" || avatar != "" {
+			return name, avatar
+		}
+	}
+	if targetUserID != "" {
+		for _, item := range candidates {
+			profile := item
+			if nested, ok := item["info"].(map[string]any); ok {
+				profile = nested
+			}
+			name := firstStringFromMap(profile, "remark", "display_name", "displayName", "name", "nickname", "nickName", "alias", "real_name", "realName", "realname")
+			avatar := firstStringFromMap(profile, "avatar", "avatar_url", "avatarUrl", "head_img", "headImg", "headimgurl", "head_url", "headUrl", "portrait", "icon", "iconurl", "iconUrl")
+			if name != "" || avatar != "" {
+				return name, avatar
+			}
+		}
+	}
+	return "", ""
+}
+
+func wxWorkProfileCandidateMatches(item map[string]any, targetUserID string) bool {
+	if targetUserID == "" {
+		return true
+	}
+	for _, data := range []map[string]any{item} {
+		for _, key := range []string{"vid", "user_id", "userId", "username", "uin", "acctid"} {
+			if strings.TrimSpace(fmt.Sprint(data[key])) == targetUserID {
+				return true
+			}
+		}
+	}
+	if nested, ok := item["info"].(map[string]any); ok {
+		for _, key := range []string{"vid", "user_id", "userId", "username", "uin", "acctid"} {
+			if strings.TrimSpace(fmt.Sprint(nested[key])) == targetUserID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func firstStringFromMap(data map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := data[key]; ok {
+			text := strings.TrimSpace(fmt.Sprint(value))
+			if text != "" && text != "<nil>" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func (s *wxWorkProtocolService) isEmployeeOutgoing(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg) bool {
@@ -983,6 +1143,9 @@ func (s *wxWorkProtocolService) defaultMediaFilename(messageType enums.IMMessage
 }
 
 func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbox) error {
+	if s.isStoreRoomNoticeOutbox(outbox) {
+		return s.dispatchStoreRoomNoticeOutbox(outbox)
+	}
 	conversation := ConversationService.Get(outbox.ConversationID)
 	if conversation == nil {
 		return s.markOutboxFailed(outbox, "会话不存在")
@@ -1039,6 +1202,86 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	}
 	wxMsgID := s.sentMessageID(instance.Guid, resp, outbox.ID)
 	_ = s.createMessageRef(conversation.ID, message.ID, instance, strings.TrimSpace(mapping.ExternalUserID), wxMsgID, resp, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent)
+	return nil
+}
+
+func (s *wxWorkProtocolService) isStoreRoomNoticeOutbox(outbox models.ChannelMessageOutbox) bool {
+	if outbox.ChannelType != enums.ChannelTypeWxWorkProtocol || strings.TrimSpace(outbox.Payload) == "" {
+		return false
+	}
+	var payload struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal([]byte(outbox.Payload), &payload); err != nil {
+		return false
+	}
+	return strings.TrimSpace(payload.Kind) == "store_room_handoff_notice"
+}
+
+func (s *wxWorkProtocolService) dispatchStoreRoomNoticeOutbox(outbox models.ChannelMessageOutbox) error {
+	var payload struct {
+		ConversationID     int64    `json:"conversationId"`
+		WxWorkInstanceID   int64    `json:"wxWorkInstanceId"`
+		RoomConversationID string   `json:"roomConversationId"`
+		Content            string   `json:"content"`
+		AtList             []string `json:"atList"`
+	}
+	if err := json.Unmarshal([]byte(outbox.Payload), &payload); err != nil {
+		return s.markOutboxFailed(outbox, "门店群提醒 payload 不合法")
+	}
+	instance := WxWorkProtocolInstanceService.Get(payload.WxWorkInstanceID)
+	if instance == nil || instance.Status != enums.StatusOk {
+		return s.markOutboxFailed(outbox, "企微协议实例不存在或未启用")
+	}
+	channel := ChannelService.Get(instance.ChannelID)
+	if channel == nil || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
+		return s.markOutboxFailed(outbox, "企微协议渠道不存在")
+	}
+	cfg, err := ChannelService.ParseWxWorkProtocolChannelConfig(channel.ConfigJSON)
+	if err != nil {
+		return s.markOutboxFailed(outbox, "企微协议渠道配置不合法")
+	}
+	roomConversationID := strings.TrimSpace(payload.RoomConversationID)
+	if roomConversationID == "" {
+		return s.markOutboxFailed(outbox, "门店群 conversation_id 为空")
+	}
+	if !strings.HasPrefix(roomConversationID, "R:") {
+		roomConversationID = "R:" + roomConversationID
+	}
+	content := strings.TrimSpace(payload.Content)
+	if content == "" {
+		return s.markOutboxFailed(outbox, "门店群提醒内容为空")
+	}
+	if err := ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
+		"send_status": string(enums.ChannelMessageOutboxStatusSending),
+		"updated_at":  time.Now(),
+	}); err != nil {
+		return err
+	}
+	body := map[string]any{
+		"guid":            strings.TrimSpace(instance.Guid),
+		"conversation_id": roomConversationID,
+		"content":         content,
+	}
+	path := "/msg/send_text"
+	if len(payload.AtList) > 0 {
+		body["at_list"] = payload.AtList
+		path = "/msg/send_room_at"
+	}
+	resp, err := s.postJSON(cfg, path, body)
+	if err != nil {
+		return s.markOutboxFailed(outbox, err.Error())
+	}
+	now := time.Now()
+	if err := ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
+		"send_status": string(enums.ChannelMessageOutboxStatusSent),
+		"sent_at":     now,
+		"last_error":  "",
+		"updated_at":  now,
+	}); err != nil {
+		return err
+	}
+	_ = MessageSyncLogService.Create(payload.ConversationID, 0, enums.MessageSyncDirectionAgentDeskToWecom, "agentdesk", "wxwork_protocol_store_room", fmt.Sprintf("store_room_outbox_%d", outbox.ID), enums.MessageSyncStatusSuccess, resp, "")
 	return nil
 }
 
@@ -1123,12 +1366,36 @@ func (s *wxWorkProtocolService) sendRichPayload(cfg *dto.WxWorkProtocolChannelCo
 	for key, value := range base {
 		body[key] = value
 	}
+	body = sanitizeWxWorkProtocolBody(body)
 	for _, key := range required {
 		if isEmptyProtocolValue(body[key]) {
 			return "", errorsx.InvalidParam(fmt.Sprintf("%s 缺少企微协议字段 %s", path, key))
 		}
 	}
 	return s.postJSON(cfg, path, body)
+}
+
+func sanitizeWxWorkProtocolBody(body map[string]any) map[string]any {
+	for key, value := range body {
+		body[key] = sanitizeWxWorkProtocolValue(value)
+	}
+	return body
+}
+
+func sanitizeWxWorkProtocolValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return utils.RepairMojibakeText(strings.TrimSpace(typed))
+	case map[string]any:
+		return sanitizeWxWorkProtocolBody(typed)
+	case []any:
+		for i := range typed {
+			typed[i] = sanitizeWxWorkProtocolValue(typed[i])
+		}
+		return typed
+	default:
+		return value
+	}
 }
 
 func (s *wxWorkProtocolService) protocolConversationID(mapping *models.WxWorkKFConversation) string {
@@ -1591,22 +1858,33 @@ func (s *wxWorkProtocolService) sentMessageID(guid string, raw string, outboxID 
 	return fmt.Sprintf("wx_protocol_out:%d", outboxID)
 }
 
-func (s *wxWorkProtocolService) ensureConversation(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, externalID string, rawPayload string) (*models.Conversation, error) {
+func (s *wxWorkProtocolService) ensureConversation(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, externalID string, rawPayload string) (*models.Conversation, bool, error) {
 	openKfID := s.mappingOpenKfID(instance, msg)
 	if mapping := WxWorkKFConversationService.Take("channel_id = ? AND open_kf_id = ? AND external_user_id = ? AND status = ?", instance.ChannelID, openKfID, externalID, enums.StatusOk); mapping != nil {
 		if conversation := ConversationService.Get(mapping.ConversationID); conversation != nil {
-			return conversation, nil
+			if aiAgentID := s.instanceAIAgentID(instance); aiAgentID > 0 && conversation.AIAgentID != aiAgentID {
+				_ = ConversationService.Updates(conversation.ID, map[string]any{
+					"ai_agent_id": aiAgentID,
+					"updated_at":  time.Now(),
+				})
+				conversation.AIAgentID = aiAgentID
+			}
+			return conversation, false, nil
 		}
 	}
 	external := s.externalUser(instance, msg, externalID)
-	conversation, err := ConversationService.CreateWithoutWelcome(external, instance.ChannelID, s.channelAIAgentID(instance.ChannelID))
+	aiAgentID := s.instanceAIAgentID(instance)
+	if aiAgentID <= 0 {
+		return nil, false, errorsx.InvalidParam("企微员工号未绑定独立智能客服")
+	}
+	conversation, err := ConversationService.CreateWithoutWelcome(external, instance.ChannelID, aiAgentID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := s.upsertConversationMapping(instance, conversation.ID, msg, externalID, rawPayload); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return conversation, nil
+	return conversation, true, nil
 }
 
 func (s *wxWorkProtocolService) ensureRouteState(conversationID int64, instance *models.WxWorkProtocolInstance) error {
@@ -1831,6 +2109,7 @@ func (s *wxWorkProtocolService) profileUpdatesFromResponse(response string) map[
 	}
 	employeeUserID := getString("username", "user_name", "userName", "user_id", "userId", "wxid")
 	employeeName := getString("real_name", "realName", "name", "nickname", "nickName", "alias")
+	employeeAvatar := getString("avatar", "avatar_url", "avatarUrl", "head_img", "headImg", "headimgurl", "head_url", "headUrl")
 	updates := map[string]any{"health_status": "online"}
 	if employeeUserID != "" {
 		updates["employee_user_id"] = employeeUserID
@@ -1838,7 +2117,38 @@ func (s *wxWorkProtocolService) profileUpdatesFromResponse(response string) map[
 	if employeeName != "" {
 		updates["employee_name"] = employeeName
 	}
+	if employeeAvatar != "" {
+		updates["employee_avatar"] = employeeAvatar
+	}
 	return updates
+}
+
+func (s *wxWorkProtocolService) loginQRCodeResponseLooksSuccessful(response string) bool {
+	root := map[string]any{}
+	if err := json.Unmarshal([]byte(response), &root); err != nil {
+		return false
+	}
+	data := root
+	if nested, ok := root["data"].(map[string]any); ok {
+		data = nested
+	}
+	if s := strings.ToLower(strings.TrimSpace(fmt.Sprint(data["status"]))); s != "" {
+		successWords := []string{"success", "confirmed", "login_success", "qrcode_success", "logged_in", "ok"}
+		for _, word := range successWords {
+			if s == word || strings.Contains(s, word) {
+				return true
+			}
+		}
+		if s == "2" || s == "3" || s == "200" {
+			return true
+		}
+	}
+	for _, key := range []string{"username", "user_name", "userName", "user_id", "userId", "wxid"} {
+		if strings.TrimSpace(fmt.Sprint(data[key])) != "" && strings.TrimSpace(fmt.Sprint(data[key])) != "<nil>" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *wxWorkProtocolService) checkProtocolResponse(respBody []byte) error {
@@ -1996,10 +2306,13 @@ func (s *wxWorkProtocolService) mappingOpenKfID(instance *models.WxWorkProtocolI
 	return "wx_protocol:" + strings.TrimSpace(instance.Guid) + ":" + kind
 }
 
-func (s *wxWorkProtocolService) channelAIAgentID(channelID int64) int64 {
-	channel := ChannelService.Get(channelID)
-	if channel == nil {
+func (s *wxWorkProtocolService) instanceAIAgentID(instance *models.WxWorkProtocolInstance) int64 {
+	if instance == nil || instance.AIAgentID <= 0 {
 		return 0
 	}
-	return channel.AIAgentID
+	aiAgent := AIAgentService.Get(instance.AIAgentID)
+	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
+		return 0
+	}
+	return aiAgent.ID
 }

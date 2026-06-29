@@ -7,6 +7,7 @@ import (
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 
 	"agent-desk/internal/pkg/httpx/params"
@@ -124,12 +125,14 @@ func AgentTeamPostDelete(ctx *gin.Context) {
 
 func buildAgentTeamResponse(item *models.AgentTeam) response.AgentTeamResponse {
 	ret := response.AgentTeamResponse{
-		ID:           item.ID,
-		Name:         item.Name,
-		LeaderUserID: item.LeaderUserID,
-		Status:       item.Status,
-		Description:  item.Description,
-		Remark:       item.Remark,
+		ID:                     item.ID,
+		Name:                   item.Name,
+		LeaderUserID:           item.LeaderUserID,
+		StoreScopeIDs:          utils.SplitInt64s(item.StoreScopeIDs),
+		WxWorkInstanceScopeIDs: utils.SplitInt64s(item.WxWorkInstanceScopeIDs),
+		Status:                 item.Status,
+		Description:            item.Description,
+		Remark:                 item.Remark,
 	}
 	if user := services.UserService.Get(item.LeaderUserID); user != nil {
 		ret.LeaderUsername = user.Username

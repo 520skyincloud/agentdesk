@@ -205,7 +205,7 @@ export default function DashboardAgentRunLogsPage() {
             </div>
           ) : (
             <div>
-              <div className="hidden grid-cols-[160px_minmax(0,1.8fr)_110px_minmax(0,1.2fr)_130px_90px_76px] gap-3 border-b bg-muted/40 px-4 py-3 text-sm text-muted-foreground lg:grid">
+              <div className="hidden grid-cols-[160px_minmax(0,1.8fr)_110px_minmax(0,1.2fr)_130px_90px_76px] gap-3 border-b border-[#dbe7f6] bg-[#f6f9ff] px-4 py-3 text-sm text-muted-foreground lg:grid">
                 <div>{t("agentRunLog.time")}</div>
                 <div>{t("agentRunLog.userMessage")}</div>
                 <div>{t("agentRunLog.plannedAction")}</div>

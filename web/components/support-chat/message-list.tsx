@@ -230,7 +230,7 @@ export const SupportChatMessageList = forwardRef<SupportChatMessageListHandle, S
                 size="sm"
                 disabled={loadingOlder}
                 onClick={() => void handleLoadOlder()}
-                className="h-7 rounded-full bg-background/90 text-xs text-muted-foreground shadow-sm hover:bg-background hover:text-sky-700 dark:hover:text-sky-400"
+                className="h-7 rounded-full border-[#dbe7f6] bg-white text-xs text-muted-foreground shadow-[0_8px_18px_rgba(37,99,235,0.08)] hover:bg-[#f6f9ff] hover:text-sky-700 dark:hover:text-sky-400"
               >
                 {loadingOlder ? t("supportChat.loadingOlder") : t("supportChat.loadOlder")}
               </Button>
@@ -289,7 +289,7 @@ const MessageItem = memo(
           <div className="mb-3 flex items-center justify-center">
             <Badge
               variant="outline"
-              className="border-border bg-background/85 text-[11px] font-medium text-muted-foreground shadow-sm"
+              className="border-[#dbe7f6] bg-white text-[11px] font-medium text-muted-foreground shadow-[0_8px_18px_rgba(37,99,235,0.08)]"
             >
               {timelineLabel}
             </Badge>
@@ -300,7 +300,7 @@ const MessageItem = memo(
           {!isCustomer ? (
             <Avatar className="mt-5">
               {avatarSrc ? <AvatarImage src={avatarSrc} alt="" /> : null}
-              <AvatarFallback className="bg-muted text-muted-foreground">
+              <AvatarFallback className="border border-[#dbe7f6] bg-[#f6f9ff] text-primary">
                 {fallbackName || t("supportChat.customerFallback")}
               </AvatarFallback>
             </Avatar>
@@ -321,10 +321,10 @@ const MessageItem = memo(
             </div>
             <div
               className={cn(
-                "rounded-lg px-3 py-2 text-sm leading-normal shadow-[0_10px_22px_rgba(15,23,42,0.06)]",
+                "rounded-xl px-3 py-2 text-sm leading-normal shadow-[0_10px_22px_rgba(37,99,235,0.08)]",
                 isCustomer
                   ? "bg-[#a9ea7a] text-[#161616] dark:bg-emerald-500 dark:text-emerald-950"
-                  : "border border-border bg-card text-card-foreground dark:bg-background"
+                  : "border border-[#dbe7f6] bg-white text-card-foreground dark:bg-background"
               )}
             >
               <ImMessageHTML

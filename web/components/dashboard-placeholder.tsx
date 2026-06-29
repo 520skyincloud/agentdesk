@@ -29,7 +29,7 @@ export function DashboardPlaceholder({
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-4 pt-4 lg:p-6 lg:pt-6">
-      <Card className="border-dashed">
+      <Card className="agentdesk-surface rounded-2xl border-dashed">
         <CardHeader className="gap-3">
           <span className="text-xs font-medium tracking-[0.24em] uppercase text-muted-foreground">
             {eyebrow}
@@ -40,13 +40,13 @@ export function DashboardPlaceholder({
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">
-          <div className="rounded-2xl border bg-muted/40 p-5">
+          <div className="agentdesk-subtle-surface rounded-2xl p-5">
             <p className="text-sm font-medium">{t("placeholder.nextSteps")}</p>
             <div className="mt-4 grid gap-3">
               {nextSteps.map((item) => (
                 <div
                   key={item}
-                  className="flex items-start gap-3 rounded-xl bg-background p-3"
+                  className="flex items-start gap-3 rounded-xl border border-[#dbe7f6] bg-white p-3 shadow-[0_8px_18px_rgba(37,99,235,0.06)]"
                 >
                   <Clock3Icon className="mt-0.5 size-4 text-muted-foreground" />
                   <p className="text-sm">{item}</p>
@@ -54,14 +54,14 @@ export function DashboardPlaceholder({
               ))}
             </div>
           </div>
-          <div className="flex flex-col justify-between rounded-2xl border bg-background p-5">
+          <div className="agentdesk-subtle-surface flex flex-col justify-between rounded-2xl p-5">
             <div>
               <p className="text-sm font-medium">{t("placeholder.status")}</p>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
                 {t("placeholder.statusDescription")}
               </p>
             </div>
-            <Button variant="outline" className="mt-6 justify-between">
+            <Button variant="outline" className="agentdesk-soft-button mt-6 justify-between rounded-lg">
               {t("placeholder.nextPhase")}
               <ArrowUpRightIcon />
             </Button>

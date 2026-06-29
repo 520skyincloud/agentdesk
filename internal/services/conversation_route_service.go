@@ -90,6 +90,9 @@ func (s *conversationRouteService) EnsureActiveSessionForCustomerMessage(convers
 		"route_status":       enums.ConversationRouteStatusAIServing,
 		"route_target":       "ai",
 		"manual_expire_at":   nil,
+		"pending_action":           "",
+		"pending_action_payload":   "",
+		"pending_action_expire_at": nil,
 		"handoff_reason":     "",
 		"updated_at":         now,
 		"update_user_name":   "system",
@@ -131,6 +134,53 @@ func (s *conversationRouteService) MarkCustomerMessage(conversationID int64, at 
 	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, updates)
 }
 
+func (s *conversationRouteService) SetPendingAction(conversationID int64, action enums.ConversationPendingAction, payload string, expireAt time.Time) error {
+	state, err := s.Ensure(conversationID)
+	if err != nil {
+		return err
+	}
+	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+		"pending_action":           string(action),
+		"pending_action_payload":   payload,
+		"pending_action_expire_at": expireAt,
+		"updated_at":                time.Now(),
+		"update_user_name":          "system",
+	})
+}
+
+func (s *conversationRouteService) ClearPendingAction(conversationID int64) error {
+	state, err := s.Ensure(conversationID)
+	if err != nil {
+		return err
+	}
+	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+		"pending_action":           "",
+		"pending_action_payload":   "",
+		"pending_action_expire_at": nil,
+		"updated_at":                time.Now(),
+		"update_user_name":          "system",
+	})
+}
+
+func (s *conversationRouteService) ConsumePendingAction(conversationID int64, action enums.ConversationPendingAction, now time.Time) (string, bool, error) {
+	state, err := s.Ensure(conversationID)
+	if err != nil {
+		return "", false, err
+	}
+	if state.PendingAction == "" || state.PendingAction != string(action) {
+		return "", false, nil
+	}
+	if state.PendingActionExpireAt != nil && now.After(*state.PendingActionExpireAt) {
+		_ = s.ClearPendingAction(conversationID)
+		return "", false, nil
+	}
+	payload := state.PendingActionPayload
+	if err := s.ClearPendingAction(conversationID); err != nil {
+		return "", false, err
+	}
+	return payload, true, nil
+}
+
 func (s *conversationRouteService) EnterHQAgentDeskPending(conversationID int64, reason string, now time.Time) (*models.ConversationRouteState, error) {
 	state, err := s.Ensure(conversationID)
 	if err != nil {
@@ -140,6 +190,9 @@ func (s *conversationRouteService) EnterHQAgentDeskPending(conversationID int64,
 		"route_status":         enums.ConversationRouteStatusHQAgentDeskPending,
 		"route_target":         "agentdesk_hq",
 		"manual_expire_at":     nil,
+		"pending_action":       "",
+		"pending_action_payload": "",
+		"pending_action_expire_at": nil,
 		"need_human_follow_up": true,
 		"handoff_reason":       reason,
 		"updated_at":           now,
@@ -159,6 +212,9 @@ func (s *conversationRouteService) EnterStoreWecomManual(conversationID int64, r
 		"route_status":         enums.ConversationRouteStatusStoreWecomManual,
 		"route_target":         "store_wecom",
 		"manual_expire_at":     nil,
+		"pending_action":       "",
+		"pending_action_payload": "",
+		"pending_action_expire_at": nil,
 		"need_human_follow_up": true,
 		"handoff_reason":       reason,
 		"updated_at":           now,
@@ -194,6 +250,9 @@ func (s *conversationRouteService) EnterHQAgentDeskServing(conversationID int64,
 		"route_status":         enums.ConversationRouteStatusHQAgentDeskServing,
 		"route_target":         "agentdesk_hq",
 		"manual_expire_at":     expireAt,
+		"pending_action":       "",
+		"pending_action_payload": "",
+		"pending_action_expire_at": nil,
 		"need_human_follow_up": false,
 		"handoff_reason":       reason,
 		"updated_at":           now,
@@ -219,6 +278,9 @@ func (s *conversationRouteService) EnterHQQiyuServing(conversationID int64, reas
 		"route_status":         enums.ConversationRouteStatusHQQiyuServing,
 		"route_target":         "qiyu_hq",
 		"manual_expire_at":     expireAt,
+		"pending_action":       "",
+		"pending_action_payload": "",
+		"pending_action_expire_at": nil,
 		"need_human_follow_up": false,
 		"handoff_reason":       reason,
 		"updated_at":           now,
@@ -238,6 +300,9 @@ func (s *conversationRouteService) RestoreAI(conversationID int64, reason string
 		"route_status":         enums.ConversationRouteStatusAIServing,
 		"route_target":         "ai",
 		"manual_expire_at":     nil,
+		"pending_action":       "",
+		"pending_action_payload": "",
+		"pending_action_expire_at": nil,
 		"need_human_follow_up": false,
 		"handoff_reason":       reason,
 		"updated_at":           now,

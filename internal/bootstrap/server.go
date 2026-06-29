@@ -161,6 +161,7 @@ func addRouter(app *gin.Engine) {
 	registerApiConversationRoutes(apiGroup.Group("/conversation", middleware.ExternalUserMiddleware))
 	registerApiMessageRoutes(apiGroup.Group("/message", middleware.ExternalUserMiddleware))
 	registerApiMiniprogramRoutes(apiGroup.Group("/miniprogram"))
+	registerApiWxWorkProtocolRemoteSetupRoutes(apiGroup.Group("/wxwork-protocol-remote-setup"))
 
 	wsGroup := app.Group("/api/ws")
 	wsGroup.GET("/dashboard", middleware.AuthMiddleware, services.WsService.HandleDashboardWS)

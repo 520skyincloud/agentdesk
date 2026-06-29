@@ -79,6 +79,13 @@ function sourceLabel(source: string, t: TFunction) {
   }
 }
 
+function getTicketPriorityVariant(priority: string): "default" | "secondary" | "outline" | "destructive" {
+  if (priority === "urgent") return "destructive"
+  if (priority === "high") return "default"
+  if (priority === "low") return "outline"
+  return "secondary"
+}
+
 function assigneeLabel(ticket: TicketItem, t: TFunction) {
   if (ticket.currentAssigneeName) {
     return ticket.currentAssigneeName
@@ -261,17 +268,19 @@ export default function TicketsPage() {
                     : t("ticket.noCustomer"))}
               </span>
               <span>{sourceLabel(ticket.source, t)}</span>
+              {ticket.category ? <span>{ticket.categoryName || ticket.category}</span> : null}
+              {ticket.roomNo ? <span>房间 {ticket.roomNo}</span> : null}
               {ticket.channel ? <span>{ticket.channel}</span> : null}
             </div>
             {ticket.tags && ticket.tags.length > 0 ? (
               <div className="flex flex-wrap gap-1">
                 {ticket.tags.slice(0, 3).map((tag) => (
-                  <Badge key={tag.id} variant="outline" className="px-1.5 py-0 text-[11px]">
+                  <Badge key={tag.id} variant="outline" className="rounded-full border-primary/15 bg-primary/8 px-1.5 py-0 text-[11px] text-primary">
                     {tag.name}
                   </Badge>
                 ))}
                 {ticket.tags.length > 3 ? (
-                  <Badge variant="outline" className="px-1.5 py-0 text-[11px]">
+                  <Badge variant="outline" className="rounded-full border-primary/15 bg-primary/8 px-1.5 py-0 text-[11px] text-primary">
                     +{ticket.tags.length - 3}
                   </Badge>
                 ) : null}
@@ -284,7 +293,14 @@ export default function TicketsPage() {
         key: "status",
         label: t("ticket.columnStatus"),
         className: "w-28",
-        render: (ticket) => <TicketStatusBadge status={ticket.status} />,
+        render: (ticket) => (
+          <div className="space-y-1">
+            <TicketStatusBadge status={ticket.status} />
+            <Badge variant={getTicketPriorityVariant(ticket.priority)} className="rounded-full text-[11px]">
+              {ticket.priorityName || ticket.priority || "普通"}
+            </Badge>
+          </div>
+        ),
       },
       {
         key: "assignee",
@@ -308,6 +324,7 @@ export default function TicketsPage() {
             type="button"
             variant="outline"
             size="sm"
+            className="rounded-xl border-[#dce7f4] bg-white px-4 text-foreground shadow-[0_4px_12px_rgba(37,99,235,0.06)] hover:border-primary/30 hover:text-primary"
             onClick={() => {
               setSelectedTicketId(ticket.id)
               setDetailOpen(true)
@@ -383,11 +400,11 @@ export default function TicketsPage() {
           listReloadRef.current = context.reload
           return (
             <>
-              <Button type="button" variant="outline" onClick={context.resetFilters}>
+              <Button type="button" variant="outline" className="rounded-lg border-[#dce7f4] bg-card" onClick={context.resetFilters}>
                 <SearchXIcon className="size-4" />
                 {t("ticket.reset")}
               </Button>
-              <Button type="button" onClick={() => setCreateOpen(true)}>
+              <Button type="button" className="rounded-lg shadow-[0_8px_18px_rgba(47,107,255,0.18)]" onClick={() => setCreateOpen(true)}>
                 <PlusIcon className="size-4" />
                 {t("ticket.newTicket")}
               </Button>

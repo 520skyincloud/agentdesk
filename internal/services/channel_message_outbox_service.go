@@ -87,6 +87,39 @@ func (s *channelMessageOutboxService) EnqueueWxWorkProtocolMessage(conversation 
 	return s.enqueueExternalMessage(enums.ChannelTypeWxWorkProtocol, conversation, message, true)
 }
 
+func (s *channelMessageOutboxService) EnqueueWxWorkProtocolStoreRoomNotice(conversationID int64, wxWorkInstanceID int64, roomConversationID string, content string, atList []string) error {
+	roomConversationID = strings.TrimSpace(roomConversationID)
+	content = strings.TrimSpace(content)
+	if conversationID <= 0 || wxWorkInstanceID <= 0 || roomConversationID == "" || content == "" {
+		return nil
+	}
+	payload, err := json.Marshal(map[string]any{
+		"kind":               "store_room_handoff_notice",
+		"conversationId":     conversationID,
+		"wxWorkInstanceId":   wxWorkInstanceID,
+		"roomConversationId": roomConversationID,
+		"content":            content,
+		"atList":             atList,
+	})
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	return s.Create(&models.ChannelMessageOutbox{
+		ChannelType:    enums.ChannelTypeWxWorkProtocol,
+		ConversationID: conversationID,
+		MessageID:      -now.UnixNano(),
+		Payload:        string(payload),
+		SendStatus:     string(enums.ChannelMessageOutboxStatusPending),
+		AuditFields: models.AuditFields{
+			CreatedAt:      now,
+			CreateUserName: "store_room_handoff",
+			UpdatedAt:      now,
+			UpdateUserName: "store_room_handoff",
+		},
+	})
+}
+
 func (s *channelMessageOutboxService) enqueueExternalTextMessage(channelType string, conversation *models.Conversation, message *models.Message) error {
 	return s.enqueueExternalMessage(channelType, conversation, message, false)
 }

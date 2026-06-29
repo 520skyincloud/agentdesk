@@ -15,6 +15,7 @@ import { toast } from "sonner"
 import { DashboardListPage } from "@/components/dashboard/list"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -28,12 +29,16 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
   approveKnowledgeCandidate,
+  batchApproveKnowledgeCandidates,
+  batchRejectKnowledgeCandidates,
   exportKnowledgeCandidatesWeekly,
   fetchKnowledgeCandidates,
   markKnowledgeCandidateImported,
+  qualityCheckKnowledgeCandidates,
   rejectKnowledgeCandidate,
   updateKnowledgeCandidate,
   type KnowledgeCandidate,
+  type KnowledgeCandidateQualityReport,
 } from "@/lib/api/admin"
 import { formatDateTime } from "@/lib/utils"
 
@@ -79,6 +84,8 @@ export default function KnowledgeCandidatesPage() {
   const [confidence, setConfidence] = useState("0.6")
   const [saving, setSaving] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [qualityReports, setQualityReports] = useState<KnowledgeCandidateQualityReport[]>([])
 
   function openEdit(item: KnowledgeCandidate) {
     setEditing(item)
@@ -134,6 +141,52 @@ export default function KnowledgeCandidatesPage() {
     }
   }
 
+  async function runBatchAction(action: (ids: number[]) => Promise<void>, success: string) {
+    if (selectedIds.length === 0) {
+      toast.error("请先选择待归档问答")
+      return
+    }
+    try {
+      await action(selectedIds)
+      toast.success(`${success} ${selectedIds.length} 条`)
+      setSelectedIds([])
+      setReloadKey((value) => value + 1)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "批量操作失败")
+    }
+  }
+
+  async function runQualityCheck() {
+    if (selectedIds.length === 0) {
+      toast.error("请先选择待归档问答")
+      return
+    }
+    try {
+      const ret = await qualityCheckKnowledgeCandidates(selectedIds)
+      setQualityReports(ret.reports)
+      toast.success(`质检完成：建议通过 ${ret.approveIds.length}，复核 ${ret.reviewIds.length}，驳回 ${ret.rejectIds.length}`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "质检失败")
+    }
+  }
+
+  function toggleSelected(id: number) {
+    setSelectedIds((values) =>
+      values.includes(id) ? values.filter((value) => value !== id) : [...values, id],
+    )
+  }
+
+  function toggleSelectedPage(ids: number[]) {
+    if (ids.length === 0) return
+    setSelectedIds((values) => {
+      const allSelected = ids.every((id) => values.includes(id))
+      if (allSelected) {
+        return values.filter((id) => !ids.includes(id))
+      }
+      return Array.from(new Set([...values, ...ids]))
+    })
+  }
+
   return (
     <>
       <DashboardListPage<KnowledgeCandidate>
@@ -168,13 +221,62 @@ export default function KnowledgeCandidatesPage() {
         ]}
         fetchList={fetchKnowledgeCandidates}
         getItemId={(item) => item.id}
-        renderToolbarActions={() => (
-          <Button variant="outline" onClick={() => void exportWeekly()}>
-            <DownloadIcon />
-            周导出
-          </Button>
-        )}
+        renderToolbarActions={({ result }) => {
+          const pageIds = result.results.map((item) => item.id)
+          const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id))
+          return (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                disabled={pageIds.length === 0}
+                onClick={() => toggleSelectedPage(pageIds)}
+              >
+                {allPageSelected ? "取消当前页" : "全选当前页"}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={selectedIds.length === 0}
+                onClick={() => void runQualityCheck()}
+              >
+                <FileCheckIcon />
+                先质检{selectedIds.length ? ` ${selectedIds.length}` : ""}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={selectedIds.length === 0}
+                onClick={() => void runBatchAction(batchApproveKnowledgeCandidates, "已批量通过")}
+              >
+                <CheckIcon />
+                批量通过{selectedIds.length ? ` ${selectedIds.length}` : ""}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={selectedIds.length === 0}
+                onClick={() => void runBatchAction(batchRejectKnowledgeCandidates, "已批量驳回")}
+              >
+                <XIcon />
+                批量驳回{selectedIds.length ? ` ${selectedIds.length}` : ""}
+              </Button>
+              <Button variant="outline" onClick={() => void exportWeekly()}>
+                <DownloadIcon />
+                周导出
+              </Button>
+            </div>
+          )
+        }}
         columns={[
+          {
+            key: "select",
+            label: "",
+            className: "w-10",
+            render: (item) => (
+              <Checkbox
+                checked={selectedIds.includes(item.id)}
+                onCheckedChange={() => toggleSelected(item.id)}
+                aria-label={`选择候选 ${item.id}`}
+              />
+            ),
+          },
           {
             key: "store",
             label: "门店/知识库",
@@ -343,6 +445,37 @@ export default function KnowledgeCandidatesPage() {
             <Button onClick={() => void saveEdit()} disabled={saving}>
               保存
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={qualityReports.length > 0} onOpenChange={(open) => !open && setQualityReports([])}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>知识候选质检报告</DialogTitle>
+            <DialogDescription>
+              只把人工回答出来的语言问答沉淀为知识；行动安排、隐私、安全、赔付类先复核。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+            {qualityReports.map((report) => (
+              <div key={report.id} className="rounded-xl border bg-white p-3 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 font-medium">#{report.id} {report.question || "未填写问题"}</div>
+                  <Badge variant={report.decision === "approve" ? "default" : report.decision === "reject" ? "destructive" : "secondary"}>
+                    {report.decisionName}
+                  </Badge>
+                </div>
+                <div className="mt-2 text-sm text-muted-foreground line-clamp-2">{report.answer || "未填写答案"}</div>
+                <ul className="mt-2 space-y-1 text-xs text-slate-500">
+                  {report.reasons.map((reason) => (
+                    <li key={reason}>· {reason}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setQualityReports([])}>知道了</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

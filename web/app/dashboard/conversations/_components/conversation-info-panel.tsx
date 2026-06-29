@@ -46,7 +46,7 @@ import {
   Gender,
 } from "@/lib/generated/enums";
 import { useAgentConversationsStore } from "@/lib/stores/agent-conversations";
-import { cn, formatDateTime } from "@/lib/utils";
+import { cn, formatDateTime, repairMojibakeText } from "@/lib/utils";
 import { useI18n } from "@/i18n/provider";
 import {
   ConversationTagBadges,
@@ -130,8 +130,8 @@ function UnlinkedCustomerEmpty({ conversation }: { conversation: AgentConversati
 
   return (
     <div className="space-y-6 pt-2">
-      <div className="flex flex-col items-center justify-center rounded-xl bg-muted/35 px-4 py-8 text-center">
-        <UserRoundIcon className="mb-2 size-10 text-muted-foreground" aria-hidden />
+      <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#dbe7f6] bg-[#f6f9ff] px-4 py-8 text-center shadow-inner shadow-blue-100/30">
+        <UserRoundIcon className="mb-2 size-10 text-primary" aria-hidden />
         <p className="text-sm font-medium text-foreground">
           {t("conversation.unlinkedCustomerTitle")}
         </p>
@@ -164,8 +164,8 @@ function MissingCustomerEmpty({ conversation }: { conversation: AgentConversatio
 
   return (
     <div className="space-y-6 pt-2">
-      <div className="flex flex-col items-center justify-center rounded-xl bg-muted/35 px-4 py-8 text-center">
-        <UserRoundIcon className="mb-2 size-10 text-muted-foreground" aria-hidden />
+      <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#dbe7f6] bg-[#f6f9ff] px-4 py-8 text-center shadow-inner shadow-blue-100/30">
+        <UserRoundIcon className="mb-2 size-10 text-primary" aria-hidden />
         <p className="text-sm font-medium text-foreground">
           {t("conversation.missingCustomerTitle")}
         </p>
@@ -218,11 +218,11 @@ export function ConversationInfoPanel({
         "flex h-full min-h-0 flex-col overflow-hidden",
         embedded
           ? "bg-card text-card-foreground"
-          : "border-border/80 bg-card text-card-foreground",
+          : "border-[#dbe7f6] bg-white text-card-foreground",
         className,
       )}
     >
-      <div className="flex h-12.5 shrink-0 items-center border-b border-border/80 bg-card px-3">
+      <div className="flex h-12.5 shrink-0 items-center border-b border-[#dbe7f6] bg-[#f8fbff] px-3">
         <h2 className="text-sm font-medium text-foreground">
           {t("conversation.conversationInfo")}
         </h2>
@@ -409,7 +409,7 @@ function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProp
     <div className="space-y-4">
       <SmartReplySection conversation={conversation} />
       {isProfileEmpty ? (
-        <div className="rounded-lg bg-amber-500/10 px-3 py-2.5 text-xs leading-relaxed text-amber-950 dark:text-amber-100">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-950 shadow-[0_8px_18px_rgba(245,158,11,0.08)] dark:text-amber-100">
           {t("conversation.customerProfileEmpty")}
         </div>
       ) : null}
@@ -614,12 +614,12 @@ function SmartReplySection({ conversation }: { conversation: AgentConversation }
   const humanPending = Boolean(conversation.needHumanFollowUp);
 
   return (
-    <section className="space-y-2 rounded-md border bg-muted/20 p-3">
+    <section className="agentdesk-subtle-surface space-y-2 rounded-xl p-3">
       <SectionHeading>智能回复设置</SectionHeading>
       <div className="space-y-2">
         <DetailRow label="当前状态" value={conversation.routeStatusLabel || conversation.routeStatus || "AI接待中"} />
-        <DetailRow label="员工号" value={conversation.wxWorkEmployeeName || conversation.wxWorkEmployeeUserId || ""} />
-        <DetailRow label="门店" value={conversation.storeName || (conversation.storeId ? `${conversation.storeId}` : "")} />
+        <DetailRow label="员工号" value={repairMojibakeText(conversation.wxWorkEmployeeName) || conversation.wxWorkEmployeeUserId || ""} />
+        <DetailRow label="门店" value={repairMojibakeText(conversation.storeName) || (conversation.storeId ? `${conversation.storeId}` : "")} />
         <DetailRow label="AI托管" value={aiServing ? "已开启" : "人工接待中，AI停答"} />
         <DetailRow label="转人工" value={humanPending ? "待处理，列表已标记" : "无待处理请求"} />
         <DetailRow label="人工超时" value={conversation.manualExpireAt ? formatDateTime(conversation.manualExpireAt) : "默认10分钟无新客户消息恢复AI"} />
@@ -672,7 +672,7 @@ function RelatedTicketsSection({ conversation }: { conversation: AgentConversati
           {tickets.map((ticket) => (
             <div
               key={ticket.id}
-              className="rounded-lg border border-border bg-background px-3 py-2"
+              className="rounded-xl border border-[#dbe7f6] bg-white px-3 py-2 shadow-[0_8px_18px_rgba(37,99,235,0.06)]"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">

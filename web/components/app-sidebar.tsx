@@ -41,22 +41,22 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
   }
 
   return (
-    <Sidebar collapsible="icon" {...props}>
-      <SidebarHeader>
+    <Sidebar collapsible="icon" className="border-r border-sidebar-border bg-sidebar" {...props}>
+      <SidebarHeader className="px-3 pt-3">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
-              className="data-[slot=sidebar-menu-button]:p-1.5!"
+              className="h-12 rounded-xl data-[slot=sidebar-menu-button]:p-2!"
               render={<Link href="/dashboard" />}
             >
               <img
-                src="/images/logo.svg"
+                src="/images/zhixi-weibao-logo.png"
                 alt={t("app.brand")}
                 width="32"
                 height="32"
                 className="size-7 shrink-0 object-contain"
               />
-              <span className="text-base font-semibold">{t("app.brand")}</span>
+              <span className="text-base font-semibold tracking-tight text-sidebar-foreground">{t("app.brand")}</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

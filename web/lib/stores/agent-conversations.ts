@@ -65,6 +65,10 @@ function ensureArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : []
 }
 
+function isGifFile(file: File) {
+  return file.type.toLowerCase() === "image/gif" || file.name.toLowerCase().endsWith(".gif")
+}
+
 type AgentConversationsStore = {
   searchKeyword: string
   conversationFilter: AgentConversationFilterKey
@@ -554,12 +558,13 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     set({ uploadingAsset: true })
     try {
       const asset = await uploadAgentConversationImage(selectedConversationId, file)
+      const messageType = isGifFile(file) ? "gif" : "image"
       const message = await sendAgentMessage({
         conversationId: selectedConversationId,
-        messageType: "image",
+        messageType,
         content: asset.filename,
         payload: JSON.stringify({ assetId: asset.assetId }),
-        clientMsgId: `agent_image_${generateUUID()}`,
+        clientMsgId: `agent_${messageType}_${generateUUID()}`,
       })
 
       if (get().selectedConversationId === selectedConversationId) {
@@ -597,12 +602,13 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     set({ uploadingAsset: true })
     try {
       const asset = await uploadAgentConversationAttachment(selectedConversationId, file)
+      const messageType = isGifFile(file) ? "gif" : "attachment"
       const message = await sendAgentMessage({
         conversationId: selectedConversationId,
-        messageType: "attachment",
+        messageType,
         content: asset.filename,
         payload: JSON.stringify({ assetId: asset.assetId }),
-        clientMsgId: `agent_attachment_${generateUUID()}`,
+        clientMsgId: `agent_${messageType}_${generateUUID()}`,
       })
 
       if (get().selectedConversationId === selectedConversationId) {

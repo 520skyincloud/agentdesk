@@ -22,6 +22,7 @@ func KnowledgeRetrieveLogAnyList(ctx *gin.Context) {
 	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "knowledgeBaseId"},
 		params.QueryFilter{ParamName: "question", Op: params.Like},
+		params.QueryFilter{ParamName: "sourceType"},
 		params.QueryFilter{ParamName: "channel"},
 		params.QueryFilter{ParamName: "scene"},
 		params.QueryFilter{ParamName: "chunkProvider"},

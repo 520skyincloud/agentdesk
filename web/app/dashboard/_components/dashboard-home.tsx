@@ -22,7 +22,7 @@ function LoadingCards() {
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
       {Array.from({ length: 6 }).map((_, index) => (
-        <Card key={index}>
+        <Card key={index} className="agentdesk-surface rounded-2xl">
           <CardContent className="space-y-3 p-6">
             <Skeleton className="h-4 w-24" />
             <Skeleton className="h-8 w-20" />
@@ -73,7 +73,7 @@ export function DashboardHome() {
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-4 lg:p-6">
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+      <div className="agentdesk-surface flex flex-col gap-3 rounded-2xl p-5 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{t("dashboardHome.title")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -82,7 +82,7 @@ export function DashboardHome() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="rounded-xl border bg-muted/30 p-1">
+          <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-1 shadow-inner shadow-blue-100/40">
             {rangeOptions.map((item) => (
               <Button
                 key={item.value}
@@ -97,6 +97,7 @@ export function DashboardHome() {
           <Button
             variant="outline"
             size="sm"
+            className="agentdesk-soft-button rounded-xl"
             onClick={() => void loadData(range, true)}
             disabled={loading || refreshing}
           >
@@ -122,35 +123,35 @@ export function DashboardHome() {
           <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
             <TeamLoadPanel agentStats={data.agentStats} />
 
-            <Card>
+            <Card className="agentdesk-surface rounded-2xl">
               <CardContent className="grid gap-4 p-6 sm:grid-cols-2">
-                <div className="rounded-2xl border bg-muted/30 p-4">
+                <div className="rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] p-4 shadow-inner shadow-blue-100/30">
                   <div className="text-sm text-muted-foreground">{t("dashboardHome.enabledAiAgents")}</div>
                   <div className="mt-2 text-3xl font-semibold">{data.aiStats.enabledAiAgents}</div>
                 </div>
-                <div className="rounded-2xl border bg-muted/30 p-4">
+                <div className="rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] p-4 shadow-inner shadow-blue-100/30">
                   <div className="text-sm text-muted-foreground">{t("dashboardHome.enabledChannels")}</div>
                   <div className="mt-2 text-3xl font-semibold">{data.aiStats.enabledChannels}</div>
                 </div>
-                <div className="rounded-2xl border bg-muted/30 p-4">
+                <div className="rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] p-4 shadow-inner shadow-blue-100/30">
                   <div className="text-sm text-muted-foreground">{t("dashboardHome.todayKnowledgeRetrieves")}</div>
                   <div className="mt-2 text-3xl font-semibold">
                     {data.aiStats.todayKnowledgeRetrieves}
                   </div>
                 </div>
-                <div className="rounded-2xl border bg-muted/30 p-4">
+                <div className="rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] p-4 shadow-inner shadow-blue-100/30">
                   <div className="text-sm text-muted-foreground">{t("dashboardHome.todayKnowledgeRetrieveFailRate")}</div>
                   <div className="mt-2 text-3xl font-semibold">
                     {data.aiStats.todayKnowledgeRetrieveFailRate.toFixed(1)}%
                   </div>
                 </div>
-                <div className="rounded-2xl border bg-muted/30 p-4">
+                <div className="rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] p-4 shadow-inner shadow-blue-100/30">
                   <div className="text-sm text-muted-foreground">{t("dashboardHome.todaySkillRunFailCount")}</div>
                   <div className="mt-2 text-3xl font-semibold">
                     {data.aiStats.todaySkillRunFailCount}
                   </div>
                 </div>
-                <div className="rounded-2xl border bg-muted/30 p-4">
+                <div className="rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] p-4 shadow-inner shadow-blue-100/30">
                   <div className="text-sm text-muted-foreground">{t("dashboardHome.todayAiHandoffCount")}</div>
                   <div className="mt-2 text-3xl font-semibold">
                     {data.aiStats.todayAiHandoffCount}

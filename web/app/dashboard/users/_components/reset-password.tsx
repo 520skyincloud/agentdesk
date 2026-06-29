@@ -86,7 +86,7 @@ export function ResetPasswordDialogs({
               {t("user.resetSuccessDescription", { username: item?.username || "-" })}
             </DialogDescription>
           </DialogHeader>
-          <div className="rounded-xl border bg-muted/40 p-4">
+          <div className="agentdesk-subtle-surface rounded-xl p-4">
             <div className="text-xs text-muted-foreground">{t("user.newPassword")}</div>
             <div className="mt-2 break-all font-mono text-base">{password}</div>
           </div>

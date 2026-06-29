@@ -30,11 +30,12 @@ const (
 type HandoffDecisionType string
 
 const (
-	HandoffDecisionAssigned   HandoffDecisionType = "assigned"
-	HandoffDecisionStoreWecom HandoffDecisionType = "store_wecom"
-	HandoffDecisionTeamPool   HandoffDecisionType = "team_pool"
-	HandoffDecisionGlobalPool HandoffDecisionType = "global_pool"
-	HandoffDecisionOffHours   HandoffDecisionType = "off_hours"
+	HandoffDecisionAssigned    HandoffDecisionType = "assigned"
+	HandoffDecisionStoreWecom  HandoffDecisionType = "store_wecom"
+	HandoffDecisionHQAgentDesk HandoffDecisionType = "hq_agentdesk"
+	HandoffDecisionTeamPool    HandoffDecisionType = "team_pool"
+	HandoffDecisionGlobalPool  HandoffDecisionType = "global_pool"
+	HandoffDecisionOffHours    HandoffDecisionType = "off_hours"
 )
 
 type HandoffDecisionResult struct {
@@ -91,18 +92,25 @@ func (s *conversationHumanDispatchService) HandoffByAIWithRequestID(conversation
 	}
 	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
 	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, time.Now())
-	if len(activeTeamIDs) == 0 {
+	if len(activeTeamIDs) > 0 && s.canUseStoreRoomHandoff(conversationID) {
+		if err := s.markStoreRoomHandoff(conversationID, aiAgent, reason, requestID); err != nil {
+			return nil, err
+		}
+		_ = s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffStoreManualMessage, requestID)
+		return &HandoffDecisionResult{Decision: HandoffDecisionStoreWecom, Message: HandoffStoreManualMessage}, nil
+	}
+	if !s.canFallbackToHQ(conversationID) {
 		if _, err := s.TryOffHoursHandoffByAIWithRequestID(conversationID, aiAgent, reason, requestID); err != nil {
 			return nil, err
 		}
 		return &HandoffDecisionResult{Decision: HandoffDecisionOffHours, Message: HandoffOffHoursMessage}, nil
 	}
 
-	if err := s.markHandoff(conversationID, aiAgent, reason, requestID); err != nil {
+	if err := s.markHQAgentDeskHandoff(conversationID, aiAgent, reason, requestID); err != nil {
 		return nil, err
 	}
-	_ = s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffStoreManualMessage, requestID)
-	return &HandoffDecisionResult{Decision: HandoffDecisionStoreWecom, Message: HandoffStoreManualMessage}, nil
+	_ = s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffWaitingMessage, requestID)
+	return &HandoffDecisionResult{Decision: HandoffDecisionHQAgentDesk, Message: HandoffWaitingMessage}, nil
 }
 
 func (s *conversationHumanDispatchService) recentHandoffResult(conversationID int64) *HandoffDecisionResult {
@@ -136,6 +144,24 @@ func (s *conversationHumanDispatchService) markManualHandoffRequested(conversati
 	})
 }
 
+func (s *conversationHumanDispatchService) canUseStoreRoomHandoff(conversationID int64) bool {
+	route := ConversationRouteService.GetByConversationID(conversationID)
+	if route == nil || route.WxWorkInstanceID <= 0 {
+		return false
+	}
+	instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
+	return instance != nil && instance.StoreRoomNotifyEnabled && strings.TrimSpace(instance.StoreRoomConversationID) != ""
+}
+
+func (s *conversationHumanDispatchService) canFallbackToHQ(conversationID int64) bool {
+	route := ConversationRouteService.GetByConversationID(conversationID)
+	if route == nil || route.WxWorkInstanceID <= 0 {
+		return true
+	}
+	instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
+	return instance == nil || instance.FallbackToHQ
+}
+
 func (s *conversationHumanDispatchService) ApplyHumanOnlyCreate(conversationID int64, aiAgent models.AIAgent) (*HandoffDecisionResult, error) {
 	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
 	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, time.Now())
@@ -163,7 +189,8 @@ func (s *conversationHumanDispatchService) DispatchPendingConversation(conversat
 	if len(activeTeamIDs) == 0 {
 		return &HandoffDecisionResult{Decision: HandoffDecisionOffHours}, nil
 	}
-	candidates, _, err := ConversationDispatchService.pickDispatchCandidates(activeTeamIDs, time.Now())
+	route := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversationID)
+	candidates, _, err := ConversationDispatchService.pickDispatchCandidates(activeTeamIDs, route, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +224,8 @@ func (s *conversationHumanDispatchService) dispatchAfterHandoff(conversationID, 
 }
 
 func (s *conversationHumanDispatchService) dispatchAfterHandoffWithRequestID(conversationID, aiAgentID int64, activeTeamIDs []int64, reason string, publishAssignEvent bool, requestID string) (*HandoffDecisionResult, error) {
-	candidates, _, err := ConversationDispatchService.pickDispatchCandidates(activeTeamIDs, time.Now())
+	route := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversationID)
+	candidates, _, err := ConversationDispatchService.pickDispatchCandidates(activeTeamIDs, route, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -237,13 +265,39 @@ func (s *conversationHumanDispatchService) dispatchAfterHandoffWithRequestID(con
 	return &HandoffDecisionResult{Decision: HandoffDecisionTeamPool, TeamID: teamID, Message: HandoffWaitingMessage}, nil
 }
 
-func (s *conversationHumanDispatchService) markHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) error {
+func (s *conversationHumanDispatchService) markStoreRoomHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) error {
 	now := time.Now()
 	trimmedReason := strings.TrimSpace(reason)
-	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	if err := s.recordHandoff(conversationID, aiAgent, trimmedReason, requestID, now); err != nil {
+		return err
+	}
+	if _, err := ConversationRouteService.EnterStoreWecomManual(conversationID, trimmedReason, now); err != nil {
+		return err
+	}
+	_ = s.markManualHandoffRequested(conversationID, now)
+	s.notifyStoreRoomHandoff(conversationID, trimmedReason)
+	return nil
+}
+
+func (s *conversationHumanDispatchService) markHQAgentDeskHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) error {
+	now := time.Now()
+	trimmedReason := strings.TrimSpace(reason)
+	if err := s.recordHandoff(conversationID, aiAgent, trimmedReason, requestID, now); err != nil {
+		return err
+	}
+	if _, err := ConversationRouteService.EnterHQAgentDeskPending(conversationID, trimmedReason, now); err != nil {
+		return err
+	}
+	_ = s.markManualHandoffRequested(conversationID, now)
+	s.notifyAgentDeskHandoff(conversationID, trimmedReason)
+	return nil
+}
+
+func (s *conversationHumanDispatchService) recordHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, now time.Time) error {
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
 			"handoff_at":          now,
-			"handoff_reason":      trimmedReason,
+			"handoff_reason":      strings.TrimSpace(reason),
 			"status":              enums.IMConversationStatusPending,
 			"current_team_id":     0,
 			"current_assignee_id": 0,
@@ -253,16 +307,8 @@ func (s *conversationHumanDispatchService) markHandoff(conversationID int64, aiA
 		}); err != nil {
 			return err
 		}
-		return ConversationEventLogService.CreateEventWithRequestID(ctx, conversationID, requestID, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, aiAgent.ID, "AI转人工", trimmedReason)
-	}); err != nil {
-		return err
-	}
-	if _, err := ConversationRouteService.EnterStoreWecomManual(conversationID, trimmedReason, now); err != nil {
-		return err
-	}
-	_ = s.markManualHandoffRequested(conversationID, now)
-	s.notifyAgentDeskHandoff(conversationID, trimmedReason)
-	return nil
+		return ConversationEventLogService.CreateEventWithRequestID(ctx, conversationID, requestID, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, aiAgent.ID, "AI转人工", strings.TrimSpace(reason))
+	})
 }
 
 func (s *conversationHumanDispatchService) moveToTeamPool(conversationID, teamID int64, reason string) (*models.Conversation, error) {
@@ -384,6 +430,44 @@ func (s *conversationHumanDispatchService) notifyAgentDeskHandoff(conversationID
 	}
 }
 
+func (s *conversationHumanDispatchService) notifyStoreRoomHandoff(conversationID int64, reason string) {
+	conversation := ConversationService.Get(conversationID)
+	if conversation == nil {
+		return
+	}
+	route := ConversationRouteService.GetByConversationID(conversationID)
+	if route == nil || route.WxWorkInstanceID <= 0 {
+		return
+	}
+	instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
+	if instance == nil || !instance.StoreRoomNotifyEnabled || strings.TrimSpace(instance.StoreRoomConversationID) == "" {
+		return
+	}
+	content := s.buildStoreRoomHandoffNotice(conversation, instance, reason)
+	atList := uniqueNonBlankStrings(strings.Split(instance.StoreRoomAtList, ","))
+	if err := ChannelMessageOutboxService.EnqueueWxWorkProtocolStoreRoomNotice(conversationID, instance.ID, instance.StoreRoomConversationID, content, atList); err != nil {
+		slog.Warn("enqueue store room handoff notice failed", "conversation_id", conversationID, "wx_work_instance_id", instance.ID, "error", err)
+	}
+}
+
+func (s *conversationHumanDispatchService) buildStoreRoomHandoffNotice(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, reason string) string {
+	lines := []string{"有客人需要人工接待"}
+	if name := strings.TrimSpace(conversation.CustomerName); name != "" {
+		lines = append(lines, "客户："+name)
+	}
+	if storeName := strings.TrimSpace(instance.StoreNavigationName); storeName != "" {
+		lines = append(lines, "门店："+storeName)
+	}
+	if summary := strings.TrimSpace(ConversationService.BuildConversationSummary(conversation)); summary != "" {
+		lines = append(lines, "摘要："+summary)
+	}
+	if trimmedReason := strings.TrimSpace(reason); trimmedReason != "" {
+		lines = append(lines, "原因："+trimmedReason)
+	}
+	lines = append(lines, fmt.Sprintf("会话ID：%d", conversation.ID))
+	return strings.Join(lines, "\n")
+}
+
 func (s *conversationHumanDispatchService) createEvent(conversationID int64, eventType enums.IMEventType, senderType enums.IMSenderType, senderID int64, content, payload string) error {
 	return s.createEventWithRequestID(conversationID, "", eventType, senderType, senderID, content, payload)
 }
@@ -405,6 +489,23 @@ func (s *conversationHumanDispatchService) sendAITextWithRequestID(conversationI
 
 func orderedPositiveIDs(value string) []int64 {
 	return uniquePositiveInt64sFromStrings(strings.Split(value, ","))
+}
+
+func uniqueNonBlankStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	ret := make([]string, 0, len(values))
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		ret = append(ret, item)
+	}
+	return ret
 }
 
 func uniquePositiveInt64sFromStrings(values []string) []int64 {

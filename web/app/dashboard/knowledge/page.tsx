@@ -40,7 +40,7 @@ export default function DashboardKnowledgeDocumentsPage() {
   const isFastGPTCloudKnowledgeBase = selectedKnowledgeBase?.knowledgeType === KnowledgeBaseType.FastGPTCloud
 
   return (
-    <div className="flex h-[calc(100vh-4rem)]">
+    <div className="agentdesk-surface flex h-[calc(100vh-4rem)] overflow-hidden rounded-2xl">
       <div
         className={`shrink-0 overflow-hidden transition-[width] duration-200 ${
           sidebarCollapsed ? "w-0" : "w-80"
@@ -51,11 +51,11 @@ export default function DashboardKnowledgeDocumentsPage() {
           onSelectKnowledgeBase={setSelectedKnowledgeBase}
         />
       </div>
-      <div className="relative shrink-0 bg-background">
+      <div className="relative shrink-0 bg-[#f8fbff]">
         <Button
           variant="outline"
           size="icon"
-          className="absolute top-4 left-1/2 z-10 size-7 -translate-x-1/2 rounded-full shadow-sm"
+          className="agentdesk-soft-button absolute top-4 left-1/2 z-10 size-8 -translate-x-1/2 rounded-full"
           onClick={() => setSidebarCollapsed((value) => !value)}
           aria-label={sidebarCollapsed ? t("knowledge.expandList") : t("knowledge.collapseList")}
         >
@@ -66,11 +66,11 @@ export default function DashboardKnowledgeDocumentsPage() {
           )}
         </Button>
       </div>
-      <div className="min-w-0 min-h-0 flex-1">
+      <div className="min-w-0 min-h-0 flex-1 bg-card">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full min-h-0 gap-0">
-          <div className="border-b px-6 py-4">
+          <div className="border-b border-[#dbe7f6] bg-[#f8fbff] px-6 py-4">
             <div className="flex items-center gap-2">
-              <TabsList>
+              <TabsList className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-1 shadow-inner shadow-blue-100/40">
                 <TabsTrigger value="documents">
                   {isFastGPTCloudKnowledgeBase ? t("knowledge.cloudKnowledge") : isFAQKnowledgeBase ? t("knowledge.faq") : t("knowledge.document")}
                 </TabsTrigger>
@@ -81,7 +81,7 @@ export default function DashboardKnowledgeDocumentsPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-7"
+                    className="agentdesk-soft-button size-8 rounded-lg"
                     onClick={documentActionState.onRefresh}
                     disabled={documentActionState.loading}
                     aria-label={t("knowledge.refreshDocuments")}
@@ -91,7 +91,7 @@ export default function DashboardKnowledgeDocumentsPage() {
                   <Button
                     variant={documentActionState.viewMode === "list" ? "secondary" : "ghost"}
                     size="icon"
-                    className="size-7"
+                    className="agentdesk-soft-button size-8 rounded-lg"
                     onClick={() => documentActionState.onChangeViewMode("list")}
                     aria-label={t("knowledge.listLayout")}
                   >
@@ -100,7 +100,7 @@ export default function DashboardKnowledgeDocumentsPage() {
                   <Button
                     variant={documentActionState.viewMode === "grid" ? "secondary" : "ghost"}
                     size="icon"
-                    className="size-7"
+                    className="agentdesk-soft-button size-8 rounded-lg"
                     onClick={() => documentActionState.onChangeViewMode("grid")}
                     aria-label={t("knowledge.gridLayout")}
                   >
@@ -109,7 +109,7 @@ export default function DashboardKnowledgeDocumentsPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-7"
+                    className="agentdesk-soft-button size-8 rounded-lg"
                     onClick={() => setDebugPanelOpen(true)}
                     aria-label={t("knowledge.openDebugPanel")}
                   >
@@ -118,7 +118,7 @@ export default function DashboardKnowledgeDocumentsPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-7"
+                    className="agentdesk-soft-button size-8 rounded-lg"
                     onClick={documentActionState.onCreate}
                     aria-label={t("knowledge.newDocument")}
                   >
@@ -131,7 +131,7 @@ export default function DashboardKnowledgeDocumentsPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-7"
+                    className="agentdesk-soft-button size-8 rounded-lg"
                     onClick={faqActionState.onRefresh}
                     disabled={faqActionState.loading}
                     aria-label={t("knowledge.refreshFAQ")}
@@ -141,7 +141,7 @@ export default function DashboardKnowledgeDocumentsPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-7"
+                    className="agentdesk-soft-button size-8 rounded-lg"
                     onClick={faqActionState.onImport}
                     disabled={faqActionState.importing}
                     aria-label={t("knowledge.importFAQ")}
@@ -151,7 +151,7 @@ export default function DashboardKnowledgeDocumentsPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-7"
+                    className="agentdesk-soft-button size-8 rounded-lg"
                     onClick={() => setDebugPanelOpen(true)}
                     aria-label={t("knowledge.openDebugPanel")}
                   >
@@ -160,7 +160,7 @@ export default function DashboardKnowledgeDocumentsPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-7"
+                    className="agentdesk-soft-button size-8 rounded-lg"
                     onClick={faqActionState.onCreate}
                     aria-label={t("knowledge.newFAQ")}
                   >

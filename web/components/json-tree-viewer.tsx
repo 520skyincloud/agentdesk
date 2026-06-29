@@ -45,7 +45,7 @@ export function JsonTreeViewer({
     return (
       <div
         className={cn(
-          "rounded-md border bg-muted/20 px-4 py-3 font-mono text-xs text-muted-foreground",
+          "rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-4 py-3 font-mono text-xs text-muted-foreground shadow-inner shadow-blue-100/30",
           className
         )}
       >
@@ -55,7 +55,7 @@ export function JsonTreeViewer({
   }
 
   return (
-    <div className={cn("rounded-md border bg-muted/20 p-3", className)}>
+    <div className={cn("rounded-xl border border-[#dbe7f6] bg-white p-3 shadow-[0_8px_18px_rgba(37,99,235,0.06)]", className)}>
       <JsonView
         value={value as Record<string, unknown>}
         collapsed={collapsed}

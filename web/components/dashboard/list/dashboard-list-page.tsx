@@ -128,6 +128,7 @@ export function DashboardListPage<TItem>({
             {labels.refresh ? (
               <Button
                 variant="outline"
+                className="rounded-lg border-[#dce7f4] bg-card"
                 onClick={() => void list.loadData()}
                 disabled={list.loading}
               >
@@ -151,6 +152,7 @@ export function DashboardListPage<TItem>({
                   <Button
                     key={option.value}
                     variant={String(value) === option.value ? "default" : "outline"}
+                    className="rounded-lg"
                     onClick={() => list.applyFilter(filter.name, option.value)}
                   >
                     {option.label}
@@ -210,14 +212,14 @@ export function DashboardListPage<TItem>({
                   }
                   onKeyDown={handleFilterKeyDown}
                   placeholder={filter.placeholder ?? filter.label}
-                  className={filter.inputClassName}
+                  className={filter.inputClassName ?? "rounded-lg border-[#dce7f4] bg-card"}
                 />
               </div>
             </div>
           )
         })}
         {filters.some((filter) => filter.type !== "segment") ? (
-          <Button variant="outline" onClick={list.applyFilters} disabled={list.loading}>
+          <Button variant="outline" className="rounded-lg border-[#dce7f4] bg-card" onClick={list.applyFilters} disabled={list.loading}>
             <SearchIcon />
             {labels.query}
           </Button>
@@ -241,7 +243,7 @@ export function DashboardListPage<TItem>({
           renderContent(renderContext)
         ) : columns ? (
           <Table>
-            <TableHeader className="bg-muted/40">
+            <TableHeader className="bg-[#f7faff] text-xs text-muted-foreground">
               <TableRow>
                 {columns.map((column) => (
                   <TableHead key={column.key} className={column.className}>
@@ -256,7 +258,7 @@ export function DashboardListPage<TItem>({
                 return (
                   <TableRow
                     key={key}
-                    className={getRowClassName?.(item)}
+                    className={`${onRowClick ? "cursor-pointer" : ""} ${getRowClassName?.(item) ?? ""} hover:bg-[#f7faff]`}
                     onClick={onRowClick ? () => onRowClick(item) : undefined}
                   >
                     {columns.map((column) => (

@@ -78,6 +78,16 @@ function getRerankOptions(t: TFunction) {
   ]
 }
 
+function getSourceTypeOptions() {
+  return [
+    { value: "all", label: "全部来源" },
+    { value: "local_vector", label: "本地向量" },
+    { value: "cloud_knowledge", label: "云端知识库" },
+    { value: "hybrid", label: "本地+云端" },
+    { value: "faq", label: "FAQ" },
+  ]
+}
+
 function channelLabel(value: string, fallback: string, t: TFunction) {
   return getKnowledgeRetrieveChannelLabel(value, fallback, t)
 }
@@ -121,6 +131,7 @@ export function RetrieveLogList({
   const answerStatusOptions = useMemo(() => getAnswerStatusOptions(t), [t])
   const providerOptions = useMemo(() => getProviderOptions(t), [t])
   const rerankOptions = useMemo(() => getRerankOptions(t), [t])
+  const sourceTypeOptions = useMemo(() => getSourceTypeOptions(), [])
 
   function handleOpenDetail(logId: number) {
     setSelectedLogId(logId)
@@ -160,6 +171,15 @@ export function RetrieveLogList({
               allValue: "all",
               options: channelOptions,
               placeholder: t("knowledge.selectChannel"),
+            },
+            {
+              name: "sourceType",
+              label: "检索来源",
+              type: "select",
+              defaultValue: "all",
+              allValue: "all",
+              options: sourceTypeOptions,
+              placeholder: "检索来源",
             },
             {
               name: "scene",
@@ -220,6 +240,7 @@ export function RetrieveLogList({
                           <div className="line-clamp-2 font-medium">{item.question || "-"}</div>
                           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                             <span>{channelLabel(item.channel, item.channelName, t)}</span>
+                            <span>{item.sourceTypeName || item.sourceType || "本地向量"}</span>
                             <span>{sceneLabel(item.scene, item.sceneName, t)}</span>
                             {item.knowledgeBaseName ? <span>{item.knowledgeBaseName}</span> : null}
                           </div>

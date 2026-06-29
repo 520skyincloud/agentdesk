@@ -384,11 +384,11 @@ export function TicketDetailDialog({
             {t("ticket.loading")}
           </div>
         ) : ticket ? (
-          <div className="grid w-full h-full grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_380px] border-t">
-            <div className="min-h-0 space-y-5 overflow-y-auto border-b p-6 lg:border-r lg:border-b-0">
+          <div className="grid h-full w-full grid-cols-1 overflow-hidden border-t border-[#dbe7f6] lg:grid-cols-[minmax(0,1fr)_380px]">
+            <div className="min-h-0 space-y-5 overflow-y-auto border-b bg-[#fbfdff] p-6 lg:border-r lg:border-b-0">
               <section className="space-y-2">
                 <div className="text-sm font-medium text-muted-foreground">{t("ticket.description")}</div>
-                <div className="rounded-md border bg-muted/30 px-3 py-2">
+                <div className="agentdesk-subtle-surface rounded-xl px-3 py-2">
                   <SafeRichHTML html={ticket.description} fallback={t("ticket.noDescription")} />
                 </div>
               </section>
@@ -435,7 +435,7 @@ export function TicketDetailDialog({
                 </div>
                 <div className="space-y-2">
                   <div className="text-sm font-medium text-muted-foreground">{t("ticket.columnAssignee")}</div>
-                  <div className="flex items-center justify-between gap-2 rounded-md border px-3 py-2">
+                  <div className="agentdesk-subtle-surface flex items-center justify-between gap-2 rounded-xl px-3 py-2">
                     <div className="flex min-w-0 items-center gap-2 text-sm">
                       <UserRoundIcon className="size-4 shrink-0 text-muted-foreground" />
                       <span className="truncate">{ticket.currentAssigneeName || t("ticket.unassigned")}</span>
@@ -467,7 +467,7 @@ export function TicketDetailDialog({
                 )}
               </section>
 
-              <section className="space-y-3 rounded-md border p-3 text-sm">
+              <section className="agentdesk-subtle-surface space-y-3 rounded-xl p-3 text-sm">
                 <div className="flex items-center justify-between gap-2">
                   <div className="font-medium text-muted-foreground">{t("ticket.customerInfo")}</div>
                   <Button
@@ -493,7 +493,7 @@ export function TicketDetailDialog({
                 </div>
               </section>
 
-              <section className="space-y-3 rounded-md border p-3 text-sm">
+              <section className="agentdesk-subtle-surface space-y-3 rounded-xl p-3 text-sm">
                 <div className="font-medium text-muted-foreground">{t("ticket.ticketInfo")}</div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <MetadataItem label={t("ticket.source")} value={sourceLabel(ticket.source, t)} />
@@ -504,7 +504,7 @@ export function TicketDetailDialog({
               </section>
             </div>
 
-            <aside className="flex min-h-0 flex-col">
+            <aside className="flex min-h-0 flex-col bg-card">
               <div className="flex items-center justify-between gap-2 px-4 py-2">
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <MessageSquareTextIcon className="size-4 text-muted-foreground" />
@@ -541,7 +541,7 @@ export function TicketDetailDialog({
                     ))}
                   </div>
                 ) : (
-                  <div className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
+                  <div className="rounded-2xl border border-dashed border-[#dbe7f6] bg-[#f6f9ff] px-3 py-6 text-center text-sm text-muted-foreground shadow-inner shadow-blue-100/30">
                     {t("ticket.noProgress")}
                   </div>
                 )}

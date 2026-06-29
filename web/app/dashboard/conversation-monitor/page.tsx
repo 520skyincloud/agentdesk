@@ -703,7 +703,7 @@ export default function DashboardConversationsPage() {
           }
         >
             <Table>
-              <TableHeader className="bg-muted/40">
+              <TableHeader className="bg-[#f6f9ff]">
                 <TableRow>
                   <TableHead>{t("conversationMonitor.columnConversation")}</TableHead>
                   <TableHead>{t("conversationMonitor.columnStatus")}</TableHead>

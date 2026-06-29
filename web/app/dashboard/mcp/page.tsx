@@ -216,7 +216,7 @@ export default function MCPDashboardPage() {
             </div>
           </div>
           {connection ? (
-            <div className="w-full rounded-lg border bg-muted/30 p-4 text-sm">
+            <div className="agentdesk-subtle-surface w-full rounded-2xl p-4 text-sm">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge>{t("mcp.connected")}</Badge>
                 <span className="font-medium">
@@ -236,13 +236,13 @@ export default function MCPDashboardPage() {
         </DashboardToolbar>
 
         {tools.length === 0 ? (
-          <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
+          <div className="rounded-2xl border border-dashed border-[#dbe7f6] bg-[#f6f9ff] p-6 text-sm text-muted-foreground shadow-inner shadow-blue-100/30">
             {t("mcp.emptyToolsHint")}
           </div>
         ) : (
           <DashboardTableShell>
             <div>
-              <div className="grid grid-cols-[minmax(0,220px)_minmax(0,1fr)_88px] gap-4 border-b bg-muted/40 px-4 py-3 text-sm font-medium text-muted-foreground">
+              <div className="grid grid-cols-[minmax(0,220px)_minmax(0,1fr)_88px] gap-4 border-b border-[#dbe7f6] bg-[#f6f9ff] px-4 py-3 text-sm font-medium text-muted-foreground">
                 <div>{t("mcp.toolName")}</div>
                 <div>{t("mcp.description")}</div>
                 <div className="text-right">{t("mcp.actions")}</div>
@@ -284,7 +284,7 @@ export default function MCPDashboardPage() {
           <div className="flex-1 space-y-4 overflow-y-auto px-4 pb-4">
             {activeTool ? (
               <>
-                <div className="rounded-lg border p-4">
+                <div className="agentdesk-subtle-surface rounded-2xl p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="secondary">{activeTool.name}</Badge>
                     {activeTool.title ? (
@@ -298,7 +298,7 @@ export default function MCPDashboardPage() {
                   </p>
                 </div>
 
-                <div className="space-y-4 rounded-lg border p-4">
+                <div className="agentdesk-subtle-surface space-y-4 rounded-2xl p-4">
                   <div>
                     <p className="mb-2 text-xs font-medium text-muted-foreground">
                       Input Schema
@@ -313,7 +313,7 @@ export default function MCPDashboardPage() {
                   </div>
                 </div>
 
-                <div className="space-y-4 rounded-lg border p-4">
+                <div className="agentdesk-subtle-surface space-y-4 rounded-2xl p-4">
                   <div className="grid gap-2">
                     <Label htmlFor="tool-arguments">Arguments JSON</Label>
                     <JsonCodeEditor
@@ -339,7 +339,7 @@ export default function MCPDashboardPage() {
                     {t("mcp.testTool")}
                   </Button>
                   {toolResult ? (
-                    <div className="space-y-4 rounded-lg border p-4">
+                    <div className="agentdesk-subtle-surface space-y-4 rounded-2xl p-4">
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge
                           variant={

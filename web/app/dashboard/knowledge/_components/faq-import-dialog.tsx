@@ -355,13 +355,13 @@ export function FAQImportDialog({
         </Field>
 
         {fileName ? (
-          <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
+          <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 text-sm shadow-inner shadow-blue-100/30">
             {t("knowledge.currentFile", { name: fileName })}
           </div>
         ) : null}
 
         {warnings.length > 0 ? (
-          <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-[0_10px_22px_rgba(245,158,11,0.08)]">
             <div className="mb-2 flex items-center gap-2 font-medium">
               <InfoIcon className="size-4" />
               {t("knowledge.importHint")}
@@ -374,7 +374,7 @@ export function FAQImportDialog({
           </div>
         ) : null}
 
-        <div className="rounded-md border">
+        <div className="overflow-hidden rounded-2xl border border-[#dbe7f6] bg-white shadow-[0_10px_24px_rgba(37,99,235,0.08)]">
           <div className="border-b px-4 py-3 text-sm font-medium">
             {t("knowledge.importPreview")}
           </div>

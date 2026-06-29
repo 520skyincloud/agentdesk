@@ -361,10 +361,13 @@ func (s *conversationService) EnsureAgentCanReply(conversationID int64, reason s
 	if conversation.Status == enums.IMConversationStatusClosed {
 		return errorsx.InvalidParam("会话已关闭")
 	}
+	if !s.isAdmin(operator) && !AgentProfileService.CanServeConversation(operator.UserID, conversationID) {
+		return errorsx.Forbidden("当前客服未绑定该门店或员工号，无法处理此会话")
+	}
 	if conversation.Status == enums.IMConversationStatusActive && conversation.CurrentAssigneeID == operator.UserID {
 		return nil
 	}
-	if conversation.Status == enums.IMConversationStatusAIServing && conversation.CurrentAssigneeID == 0 {
+	if (conversation.Status == enums.IMConversationStatusAIServing || conversation.Status == enums.IMConversationStatusPending) && conversation.CurrentAssigneeID == 0 {
 		return s.TakeoverAIServingConversation(conversationID, reason, operator)
 	}
 	_, err := MessageService.ValidateConversationSender(conversationID, enums.IMSenderTypeAgent, operator, nil)

@@ -56,20 +56,22 @@ func doBuildAgentProfileResponse(item *models.AgentProfile, user *models.User, t
 		return nil
 	}
 	ret := &response.AgentProfileResponse{
-		ID:                    item.ID,
-		UserID:                item.UserID,
-		TeamID:                item.TeamID,
-		AgentCode:             item.AgentCode,
-		DisplayName:           item.DisplayName,
-		Avatar:                item.Avatar,
-		ServiceStatus:         item.ServiceStatus,
-		MaxConcurrentCount:    item.MaxConcurrentCount,
-		PriorityLevel:         item.PriorityLevel,
-		AutoAssignEnabled:     item.AutoAssignEnabled,
-		ReceiveOfflineMessage: item.ReceiveOfflineMessage,
-		LastOnlineAt:          utils.FormatTimePtr(item.LastOnlineAt),
-		LastStatusAt:          utils.FormatTimePtr(item.LastStatusAt),
-		Remark:                item.Remark,
+		ID:                     item.ID,
+		UserID:                 item.UserID,
+		TeamID:                 item.TeamID,
+		StoreScopeIDs:          utils.SplitInt64s(item.StoreScopeIDs),
+		WxWorkInstanceScopeIDs: utils.SplitInt64s(item.WxWorkInstanceScopeIDs),
+		AgentCode:              item.AgentCode,
+		DisplayName:            item.DisplayName,
+		Avatar:                 item.Avatar,
+		ServiceStatus:          item.ServiceStatus,
+		MaxConcurrentCount:     item.MaxConcurrentCount,
+		PriorityLevel:          item.PriorityLevel,
+		AutoAssignEnabled:      item.AutoAssignEnabled,
+		ReceiveOfflineMessage:  item.ReceiveOfflineMessage,
+		LastOnlineAt:           utils.FormatTimePtr(item.LastOnlineAt),
+		LastStatusAt:           utils.FormatTimePtr(item.LastStatusAt),
+		Remark:                 item.Remark,
 	}
 	if user != nil {
 		ret.Username = user.Username

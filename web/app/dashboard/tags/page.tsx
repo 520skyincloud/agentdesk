@@ -198,7 +198,7 @@ function SortableRow({
       ref={setNodeRef}
       style={style}
       className={cn(
-        isDragging && "relative z-10 bg-muted/60 shadow-sm",
+        isDragging && "relative z-10 bg-[#eef5ff] shadow-[0_12px_28px_rgba(37,99,235,0.12)]",
         !disabled && "cursor-move"
       )}
     >
@@ -225,7 +225,7 @@ function SortableRow({
             <button
               type="button"
               onClick={onToggleExpand}
-              className="flex size-6 items-center justify-center rounded hover:bg-muted"
+              className="flex size-6 items-center justify-center rounded-lg transition hover:bg-[#f2f7ff] hover:text-primary"
             >
               <ChevronRightIcon
                 className={`size-4 transition-transform ${
@@ -236,7 +236,7 @@ function SortableRow({
           ) : (
             <span className="w-6" />
           )}
-          <div className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+          <div className="flex size-8 items-center justify-center rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] text-primary shadow-inner shadow-blue-100/30">
             <TagIcon className="size-4" />
           </div>
           <span className="font-medium">{item.name}</span>
@@ -602,7 +602,7 @@ export default function DashboardTagsPage() {
               onDragEnd={handleDragEnd}
             >
               <Table>
-                <TableHeader className="bg-muted/40">
+                <TableHeader className="bg-[#f6f9ff]">
                   <TableRow>
                     <TableHead className="w-14" />
                     <TableHead className="min-w-[260px]">{t("tag.columnName")}</TableHead>

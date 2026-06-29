@@ -37,7 +37,7 @@ export function LegalDocumentPage({ type }: { type: LegalPageType }) {
   const relatedHref = type === "terms" ? "/legal/privacy" : "/legal/terms"
 
   return (
-    <main className="min-h-svh bg-muted px-6 py-8 md:px-10">
+    <main className="min-h-svh bg-[#f4f8fd] px-6 py-8 md:px-10">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
         <header className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2 font-medium">

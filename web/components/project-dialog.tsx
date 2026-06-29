@@ -112,21 +112,22 @@ function ProjectDialog({
       `}</style>
       <DialogContent
         className={cn(
-          "flex max-h-[calc(100vh-2rem)] flex-col gap-0 overflow-hidden p-0",
+          "agentdesk-surface flex max-h-[calc(100vh-2rem)] flex-col gap-0 overflow-hidden rounded-2xl p-0",
           fullscreen
-            ? "top-5 left-5 h-[calc(100vh-40px)] max-h-[calc(100vh-40px)] w-[calc(100vw-40px)] max-w-[calc(100vw-40px)] translate-x-0 translate-y-0 rounded-xl sm:max-w-[calc(100vw-40px)]"
+            ? "top-5 left-5 h-[calc(100vh-40px)] max-h-[calc(100vh-40px)] w-[calc(100vw-40px)] max-w-[calc(100vw-40px)] translate-x-0 translate-y-0 sm:max-w-[calc(100vw-40px)]"
             : dialogSizeClassName[size],
           contentClassName,
         )}
         showCloseButton={false}
       >
         {(allowFullscreen || showCloseButton) && (
-          <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+          <div className="absolute top-3 right-3 z-10 flex items-center gap-1">
             {allowFullscreen ? (
               <Button
                 type="button"
                 variant="ghost"
                 size="icon-sm"
+                className="agentdesk-soft-button size-8 rounded-lg"
                 onClick={() => setFullscreen((value) => !value)}
               >
                 {fullscreen ? <Minimize2Icon /> : <Maximize2Icon />}
@@ -137,7 +138,7 @@ function ProjectDialog({
             ) : null}
             {showCloseButton ? (
               <DialogClose
-                render={<Button type="button" variant="ghost" size="icon-sm" />}
+                render={<Button type="button" variant="ghost" size="icon-sm" className="agentdesk-soft-button size-8 rounded-lg" />}
               >
                 <XIcon />
                 <span className="sr-only">{t("common.close")}</span>
@@ -145,10 +146,10 @@ function ProjectDialog({
             ) : null}
           </div>
         )}
-        <DialogHeader className={cn("shrink-0 px-6 py-3", headerClassName)}>
-          <DialogTitle>{title}</DialogTitle>
+        <DialogHeader className={cn("shrink-0 border-b border-[#dbe7f6] bg-[#f8fbff] px-6 py-4 pr-20", headerClassName)}>
+          <DialogTitle className="text-base font-semibold tracking-normal text-foreground">{title}</DialogTitle>
           {description ? (
-            <DialogDescription>{description}</DialogDescription>
+            <DialogDescription className="text-xs leading-5 text-muted-foreground">{description}</DialogDescription>
           ) : null}
         </DialogHeader>
         {bodyScrollable ? (
@@ -158,14 +159,14 @@ function ProjectDialog({
               bodyClassName,
             )}
           >
-            <div className="space-y-4 p-6 w-full">{children}</div>
+            <div className="w-full space-y-4 p-6">{children}</div>
           </div>
         ) : (
           <div className={cn("min-h-0 flex-1", bodyClassName)}>{children}</div>
         )}
         {footer ? (
           <DialogFooter
-            className={cn("mx-0 mb-0 shrink-0 px-6 py-4", footerClassName)}
+            className={cn("mx-0 mb-0 shrink-0 border-t border-[#dbe7f6] bg-[#f6f9ff] px-6 py-4", footerClassName)}
           >
             {footer}
           </DialogFooter>

@@ -147,6 +147,8 @@ type KnowledgeRetrieveLogResponse struct {
 	ID                 int64     `json:"id"`
 	KnowledgeBaseID    int64     `json:"knowledgeBaseId"`
 	KnowledgeBaseName  string    `json:"knowledgeBaseName,omitempty"`
+	SourceType         string    `json:"sourceType"`
+	SourceTypeName     string    `json:"sourceTypeName"`
 	Channel            string    `json:"channel"`
 	ChannelName        string    `json:"channelName"`
 	Scene              string    `json:"scene"`
@@ -254,4 +256,30 @@ type KnowledgeCandidateExportResponse struct {
 	MarkdownPath string `json:"markdownPath"`
 	JSONLPath    string `json:"jsonlPath"`
 	Count        int    `json:"count"`
+}
+
+type KnowledgeCandidateQualityReport struct {
+	ID              int64    `json:"id"`
+	Decision        string   `json:"decision"`
+	DecisionName    string   `json:"decisionName"`
+	Reasons         []string `json:"reasons"`
+	Question        string   `json:"question"`
+	Answer          string   `json:"answer"`
+	Frequency       int      `json:"frequency"`
+	StoreID         int64    `json:"storeId"`
+	KnowledgeBaseID int64    `json:"knowledgeBaseId"`
+}
+
+type KnowledgeCandidateQualityCheckResponse struct {
+	Reports    []KnowledgeCandidateQualityReport `json:"reports"`
+	ApproveIDs []int64                           `json:"approveIds"`
+	ReviewIDs  []int64                           `json:"reviewIds"`
+	RejectIDs  []int64                           `json:"rejectIds"`
+}
+
+type KnowledgeCandidateAnalyzeResponse struct {
+	Created   bool                       `json:"created"`
+	Skipped   bool                       `json:"skipped"`
+	Reason    string                     `json:"reason"`
+	Candidate KnowledgeCandidateResponse `json:"candidate"`
 }

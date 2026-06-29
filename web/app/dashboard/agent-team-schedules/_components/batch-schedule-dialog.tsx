@@ -448,10 +448,10 @@ export function BatchScheduleDialog({
                   <Badge variant="secondary">{t("agentTeamSchedule.noConflict")}</Badge>
                 )}
               </div>
-              <div className="overflow-x-auto rounded-lg border">
+              <div className="overflow-x-auto rounded-2xl border border-[#dbe7f6] bg-white shadow-[0_10px_24px_rgba(37,99,235,0.08)]">
                 <div className="min-w-[760px]">
                   <Table>
-                    <TableHeader className="bg-muted/40">
+                    <TableHeader className="bg-[#f6f9ff]">
                       <TableRow>
                         <TableHead>{t("agentTeamSchedule.team")}</TableHead>
                         <TableHead>{t("agentTeamSchedule.date")}</TableHead>

@@ -268,11 +268,11 @@ ${configLines.join(",\n")}
   }
 
   return (
-    <main className="min-h-svh bg-slate-50 px-6 py-8 text-slate-950">
+    <main className="min-h-svh bg-[#f4f8fd] px-6 py-8 text-foreground">
       <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
-        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="agentdesk-surface rounded-2xl p-5">
           <div className="text-base font-semibold">{t("widgetDemo.title")}</div>
-          <div className="mt-1 text-sm text-slate-500">{status}</div>
+          <div className="mt-1 text-sm text-muted-foreground">{status}</div>
 
           <div className="mt-5 grid gap-3">
             <TextField
@@ -290,7 +290,7 @@ ${configLines.join(",\n")}
               ]}
             />
             {config.authMode === "jwt" ? (
-              <div className="grid gap-3 rounded-md border border-slate-200 p-3">
+              <div className="agentdesk-subtle-surface grid gap-3 rounded-xl p-3">
                 <TextField
                   label="userId"
                   value={config.jwtUserId}
@@ -321,7 +321,7 @@ ${configLines.join(",\n")}
             <button
               type="button"
               onClick={() => void handleMount()}
-              className="rounded-md bg-slate-950 px-4 py-2 text-sm font-medium text-white"
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-[0_9px_18px_rgba(37,99,235,0.18)]"
             >
               {t("widgetDemo.mount")}
             </button>
@@ -331,17 +331,17 @@ ${configLines.join(",\n")}
                 removeMountedWidget()
                 setStatus(t("widgetDemo.unmounted"))
               }}
-              className="rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-medium"
+              className="agentdesk-soft-button rounded-lg px-4 py-2 text-sm font-medium"
             >
               {t("widgetDemo.unmount")}
             </button>
           </div>
         </section>
 
-        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="agentdesk-surface rounded-2xl p-5">
           <div className="text-base font-semibold">{t("widgetDemo.snippetTitle")}</div>
           {config.authMode === "jwt" ? (
-            <div className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 shadow-[0_8px_18px_rgba(245,158,11,0.08)]">
               {t("widgetDemo.jwtNotice")}
             </div>
           ) : null}
@@ -349,7 +349,7 @@ ${configLines.join(",\n")}
             <button
               type="button"
               onClick={() => void handleCopySnippet()}
-              className="absolute right-2 top-2 inline-flex size-8 items-center justify-center rounded-md border border-white/10 bg-white/10 text-slate-200 transition hover:bg-white/20 hover:text-white"
+              className="absolute right-2 top-2 inline-flex size-8 items-center justify-center rounded-lg border border-white/10 bg-white/10 text-blue-100 transition hover:bg-white/20 hover:text-white"
               aria-label={snippetCopied ? t("widgetDemo.copiedSnippet") : t("widgetDemo.copySnippet")}
               title={snippetCopied ? t("widgetDemo.copied") : t("widgetDemo.copyCode")}
             >
@@ -359,24 +359,24 @@ ${configLines.join(",\n")}
                 <CopyIcon className="size-4" />
               )}
             </button>
-            <pre className="overflow-x-auto rounded-md bg-slate-950 p-4 pr-12 text-xs leading-5 text-slate-100">
+            <pre className="overflow-x-auto rounded-2xl border border-[#dbe7f6] bg-[#0f1f3d] p-4 pr-12 text-xs leading-5 text-blue-50 shadow-[0_16px_34px_rgba(37,99,235,0.12)]">
               <code>{snippet}</code>
             </pre>
           </div>
           <div className="mt-5">
-            <div className="text-sm font-medium text-slate-700">{t("widgetDemo.directChat")}</div>
+            <div className="text-sm font-medium text-foreground">{t("widgetDemo.directChat")}</div>
             <div className="mt-2 flex flex-col gap-2 sm:flex-row">
               <input
                 readOnly
                 value={latestDirectChatUrl || t("widgetDemo.directChatPlaceholder")}
-                className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 px-3 font-mono text-xs outline-none"
+                className="h-9 min-w-0 flex-1 rounded-xl border border-[#dbe7f6] bg-white px-3 font-mono text-xs outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/10"
               />
               <div className="flex gap-2">
                 <button
                   type="button"
                   disabled={!config.channelId}
                   onClick={() => void handleCopyDirectUrl()}
-                  className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                  className="agentdesk-soft-button rounded-lg px-3 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {copied ? t("widgetDemo.copied") : t("widgetDemo.copy")}
                 </button>
@@ -384,7 +384,7 @@ ${configLines.join(",\n")}
                   type="button"
                   disabled={!config.channelId}
                   onClick={() => void handleOpenDirectChat()}
-                  className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {t("widgetDemo.openNewWindow")}
                 </button>
@@ -393,11 +393,11 @@ ${configLines.join(",\n")}
           </div>
           {generatedToken ? (
             <div className="mt-4">
-              <div className="text-sm font-medium text-slate-700">{t("widgetDemo.currentToken")}</div>
+              <div className="text-sm font-medium text-foreground">{t("widgetDemo.currentToken")}</div>
               <textarea
                 readOnly
                 value={generatedToken}
-                className="mt-2 h-28 w-full resize-none rounded-md border border-slate-200 p-3 font-mono text-xs outline-none"
+                className="mt-2 h-28 w-full resize-none rounded-xl border border-[#dbe7f6] bg-white p-3 font-mono text-xs outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/10"
               />
             </div>
           ) : null}
@@ -420,12 +420,12 @@ function TextField({
 }) {
   return (
     <label className="grid gap-1.5 text-sm">
-      <span className="font-medium text-slate-700">{label}</span>
+      <span className="font-medium text-foreground">{label}</span>
       <input
         type={type}
         value={value || ""}
         onChange={(event) => onChange(event.target.value)}
-        className="h-9 rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-slate-400"
+        className="h-9 rounded-xl border border-[#dbe7f6] bg-white px-3 text-sm outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/10"
       />
     </label>
   )
@@ -444,8 +444,8 @@ function SegmentedControl<T extends string>({
 }) {
   return (
     <div className="grid gap-1.5 text-sm">
-      <div className="font-medium text-slate-700">{label}</div>
-      <div className="grid grid-cols-2 rounded-md border border-slate-200 bg-slate-100 p-1">
+      <div className="font-medium text-foreground">{label}</div>
+      <div className="grid grid-cols-2 rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-1 shadow-inner shadow-blue-100/40">
         {options.map((option) => (
           <button
             key={option.value}
@@ -453,8 +453,8 @@ function SegmentedControl<T extends string>({
             onClick={() => onChange(option.value)}
             className={
               option.value === value
-                ? "rounded bg-white px-3 py-1.5 text-sm font-medium shadow-sm"
-                : "rounded px-3 py-1.5 text-sm text-slate-600"
+                ? "rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-primary shadow-[0_4px_12px_rgba(37,99,235,0.10)]"
+                : "rounded-lg px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-white/70 hover:text-primary"
             }
           >
             {option.label}

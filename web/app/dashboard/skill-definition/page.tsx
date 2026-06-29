@@ -102,7 +102,7 @@ export default function DashboardSkillsPage() {
         label: "Skill",
         render: (item) => (
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex size-10 items-center justify-center rounded-md bg-muted text-muted-foreground">
+            <div className="agentdesk-icon-tile mt-0.5">
               <BrainCircuitIcon className="size-4" />
             </div>
             <div className="min-w-0">

@@ -25,6 +25,7 @@ type WxWorkProtocolChannelConfig struct {
 	AppKey             string `json:"appKey,omitempty"`
 	AppSecret          string `json:"appSecret,omitempty"`
 	BaseURL            string `json:"baseUrl,omitempty"`
+	DevicePoolURL      string `json:"devicePoolUrl,omitempty"`
 	CallbackToken      string `json:"callbackToken,omitempty"`
 	WECDNBaseURL       string `json:"wecdnBaseUrl,omitempty"`
 	PublicAssetBaseURL string `json:"publicAssetBaseUrl,omitempty"`

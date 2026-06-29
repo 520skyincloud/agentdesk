@@ -64,10 +64,10 @@ export function DashboardCrudFieldControl<TItem>({
   if (field.type === "section" || field.type === "group") {
     return (
       <div className="md:col-span-2">
-        <div className="border-t pt-4">
-          <div className="text-sm font-medium">{field.label}</div>
+        <div className="rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] px-4 py-3 shadow-inner shadow-blue-100/30">
+          <div className="text-sm font-semibold text-foreground">{field.label}</div>
           {field.description ? (
-            <div className="mt-1 text-sm text-muted-foreground">
+            <div className="mt-1 text-xs leading-5 text-muted-foreground">
               {field.description}
             </div>
           ) : null}
@@ -86,6 +86,7 @@ export function DashboardCrudFieldControl<TItem>({
       )}
     >
       <FieldLabel
+        className="text-xs font-medium text-foreground/85"
         htmlFor={
           ["select", "multiSelect", "switch", "checkbox", "custom"].includes(
             field.type ?? ""
@@ -106,6 +107,7 @@ export function DashboardCrudFieldControl<TItem>({
                 value={String(controllerField.value ?? "")}
                 options={[...(field.options ?? [])]}
                 placeholder={field.placeholder ?? field.label}
+                triggerClassName="h-10 rounded-xl border-[#dbe7f6] bg-white shadow-[0_4px_12px_rgba(37,99,235,0.06)]"
                 onChange={controllerField.onChange}
               />
             )}
@@ -180,6 +182,7 @@ export function DashboardCrudFieldControl<TItem>({
             rows={field.rows ?? 4}
             placeholder={field.placeholder}
             aria-invalid={!!error}
+            className="min-h-28 rounded-xl border-[#dbe7f6] bg-white shadow-[0_4px_12px_rgba(37,99,235,0.06)]"
             {...register(field.name)}
           />
         ) : field.type === "json" || field.type === "code" ? (
@@ -189,7 +192,7 @@ export function DashboardCrudFieldControl<TItem>({
             placeholder={field.placeholder}
             aria-invalid={!!error}
             spellCheck={false}
-            className="font-mono text-xs leading-5"
+            className="min-h-36 rounded-xl border-[#dbe7f6] bg-white font-mono text-xs leading-5 shadow-[0_4px_12px_rgba(37,99,235,0.06)]"
             {...register(field.name)}
           />
         ) : (
@@ -207,11 +210,12 @@ export function DashboardCrudFieldControl<TItem>({
             step={field.type === "number" ? field.step : undefined}
             placeholder={field.placeholder}
             aria-invalid={!!error}
+            className="h-10 rounded-xl border-[#dbe7f6] bg-white shadow-[0_4px_12px_rgba(37,99,235,0.06)]"
             {...register(field.name)}
           />
         )}
         {field.description && field.type !== "checkbox" ? (
-          <div className="text-sm text-muted-foreground">{field.description}</div>
+          <div className="text-xs leading-5 text-muted-foreground">{field.description}</div>
         ) : null}
         <FieldError errors={error ? [error] : []} />
       </FieldContent>
@@ -254,7 +258,7 @@ function DashboardCrudMultiSelect({
             type="button"
             variant="outline"
             role="combobox"
-            className="w-full justify-between font-normal"
+            className="h-10 w-full justify-between rounded-xl border-[#dbe7f6] bg-white font-normal shadow-[0_4px_12px_rgba(37,99,235,0.06)]"
           />
         }
       >

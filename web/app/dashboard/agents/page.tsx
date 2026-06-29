@@ -102,7 +102,7 @@ export default function DashboardAgentsPage() {
         label: t("agentProfile.columnAgent"),
         render: (item) => (
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex size-10 items-center justify-center overflow-hidden rounded-md bg-muted">
+            <div className="agentdesk-icon-tile mt-0.5 overflow-hidden">
               {item.avatar ? (
                 <img
                   src={item.avatar}
@@ -199,11 +199,11 @@ export default function DashboardAgentsPage() {
           onTeamsChange={handleTeamsChange}
         />
       </div>
-      <div className="relative shrink-0 bg-background">
+      <div className="relative shrink-0 bg-white">
         <Button
           variant="outline"
           size="icon"
-          className="absolute top-4 left-1/2 z-10 size-7 -translate-x-1/2 rounded-full shadow-sm"
+          className="absolute top-4 left-1/2 z-10 size-7 -translate-x-1/2 rounded-full border-[#dbe7f6] bg-white shadow-[0_8px_18px_rgba(37,99,235,0.10)]"
           onClick={() => setSidebarCollapsed((value) => !value)}
           aria-label={
             sidebarCollapsed

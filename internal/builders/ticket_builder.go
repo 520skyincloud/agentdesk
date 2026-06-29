@@ -33,6 +33,11 @@ func BuildTicketWithContext(item *models.Ticket, ctx *TicketBuildContext) *respo
 		TicketNo:          item.TicketNo,
 		Title:             item.Title,
 		Description:       item.Description,
+		Category:          item.Category,
+		CategoryName:      ticketCategoryName(item.Category),
+		Priority:          item.Priority,
+		PriorityName:      ticketPriorityName(item.Priority),
+		RoomNo:            item.RoomNo,
 		Source:            item.Source,
 		Channel:           item.Channel,
 		CustomerID:        item.CustomerID,
@@ -59,6 +64,38 @@ func BuildTicketWithContext(item *models.Ticket, ctx *TicketBuildContext) *respo
 		}
 	}
 	return ret
+}
+
+func ticketCategoryName(category string) string {
+	switch strings.TrimSpace(category) {
+	case "delivery":
+		return "物品配送"
+	case "cleaning":
+		return "保洁服务"
+	case "maintenance":
+		return "维修处理"
+	case "wake_up":
+		return "叫醒服务"
+	case "luggage":
+		return "行李协助"
+	case "human_decision":
+		return "人工决策"
+	default:
+		return "普通工单"
+	}
+}
+
+func ticketPriorityName(priority string) string {
+	switch strings.TrimSpace(priority) {
+	case "urgent":
+		return "紧急"
+	case "high":
+		return "高"
+	case "low":
+		return "低"
+	default:
+		return "普通"
+	}
 }
 
 func BuildTicketList(list []models.Ticket) []response.TicketResponse {

@@ -81,6 +81,26 @@ func (s *aIAgentService) CreateAIAgent(req request.CreateAIAgentRequest, operato
 	return item, nil
 }
 
+func (s *aIAgentService) CreateAIAgentWithTx(ctx *sqls.TxContext, req request.CreateAIAgentRequest, operator *dto.AuthPrincipal) (*models.AIAgent, error) {
+	if ctx == nil {
+		return nil, errorsx.InvalidParam("事务上下文不能为空")
+	}
+	if operator == nil {
+		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	item, err := s.buildAIAgentModel(0, req)
+	if err != nil {
+		return nil, err
+	}
+	item.Status = enums.StatusOk
+	item.SortNo = 0
+	item.AuditFields = utils.BuildAuditFields(operator)
+	if err := repositories.AIAgentRepository.Create(ctx.Tx, item); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
 func (s *aIAgentService) UpdateAIAgent(req request.UpdateAIAgentRequest, operator *dto.AuthPrincipal) error {
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
@@ -112,6 +132,73 @@ func (s *aIAgentService) UpdateAIAgent(req request.UpdateAIAgentRequest, operato
 		"update_user_name":      operator.Username,
 		"updated_at":            time.Now(),
 	})
+}
+
+func (s *aIAgentService) UpdateAIAgentWithTx(ctx *sqls.TxContext, req request.UpdateAIAgentRequest, operator *dto.AuthPrincipal) error {
+	if ctx == nil {
+		return errorsx.InvalidParam("事务上下文不能为空")
+	}
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if repositories.AIAgentRepository.Get(ctx.Tx, req.ID) == nil {
+		return errorsx.InvalidParam("AI Agent 不存在")
+	}
+	item, err := s.buildAIAgentModel(req.ID, req.CreateAIAgentRequest)
+	if err != nil {
+		return err
+	}
+	return repositories.AIAgentRepository.Updates(ctx.Tx, req.ID, map[string]any{
+		"name":                  item.Name,
+		"description":           item.Description,
+		"ai_config_id":          item.AIConfigID,
+		"service_mode":          item.ServiceMode,
+		"system_prompt":         item.SystemPrompt,
+		"welcome_message":       item.WelcomeMessage,
+		"reply_timeout_seconds": item.ReplyTimeoutSeconds,
+		"team_ids":              item.TeamIDs,
+		"handoff_mode":          item.HandoffMode,
+		"fallback_mode":         item.FallbackMode,
+		"fallback_message":      item.FallbackMessage,
+		"knowledge_ids":         item.KnowledgeIDs,
+		"skill_ids":             item.SkillIDs,
+		"allowed_mcp_tools":     item.AllowedMCPTools,
+		"allowed_graph_tools":   item.AllowedGraphTools,
+		"update_user_id":        operator.UserID,
+		"update_user_name":      operator.Username,
+		"updated_at":            time.Now(),
+	})
+}
+
+func (s *aIAgentService) BuildCreateRequestFromModel(item *models.AIAgent) request.CreateAIAgentRequest {
+	if item == nil {
+		return request.CreateAIAgentRequest{}
+	}
+	directTools := make([]request.AIAgentMCPToolRequest, 0)
+	if raw := strings.TrimSpace(item.AllowedMCPTools); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &directTools)
+	}
+	graphTools := make([]string, 0)
+	if raw := strings.TrimSpace(item.AllowedGraphTools); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &graphTools)
+	}
+	return request.CreateAIAgentRequest{
+		Name:                item.Name,
+		Description:         item.Description,
+		AIConfigID:          item.AIConfigID,
+		ServiceMode:         item.ServiceMode,
+		SystemPrompt:        item.SystemPrompt,
+		WelcomeMessage:      item.WelcomeMessage,
+		ReplyTimeoutSeconds: item.ReplyTimeoutSeconds,
+		TeamIDs:             utils.SplitInt64s(item.TeamIDs),
+		HandoffMode:         item.HandoffMode,
+		FallbackMode:        item.FallbackMode,
+		FallbackMessage:     item.FallbackMessage,
+		KnowledgeIDs:        utils.SplitInt64s(item.KnowledgeIDs),
+		SkillIDs:            utils.SplitInt64s(item.SkillIDs),
+		DirectTools:         directTools,
+		GraphTools:          graphTools,
+	}
 }
 
 func (s *aIAgentService) DeleteAIAgent(id int64, operator *dto.AuthPrincipal) error {

@@ -117,7 +117,7 @@ function getMessageLayout(message: AdminMessage) {
   if (message.senderType === "customer") {
     return {
       rowClassName: "justify-start",
-      bubbleClassName: "bg-muted text-foreground border-border",
+      bubbleClassName: "border-[#dbe7f6] bg-white text-foreground shadow-[0_8px_18px_rgba(37,99,235,0.06)]",
       metaClassName: "text-left",
     };
   }
@@ -125,7 +125,7 @@ function getMessageLayout(message: AdminMessage) {
     return {
       rowClassName: "justify-center",
       bubbleClassName:
-        "bg-muted/60 text-muted-foreground border-dashed border-border",
+        "border-dashed border-[#dbe7f6] bg-[#f6f9ff] text-muted-foreground",
       metaClassName: "text-center",
     };
   }
@@ -339,8 +339,8 @@ export function ConversationDetailDialog({
           {t("conversationMonitor.loadingDetail")}
         </div>
       ) : currentConversation ? (
-        <div className="flex min-h-0 flex-1 flex-row overflow-hidden border-t">
-          <aside className="flex w-90 h-full shrink-0 flex-col overflow-hidden bg-muted/20 border-r border-b-0">
+        <div className="flex min-h-0 flex-1 flex-row overflow-hidden border-t border-[#dbe7f6]">
+          <aside className="flex h-full w-90 shrink-0 flex-col overflow-hidden border-r border-b-0 border-[#dbe7f6] bg-[#f8fbff]">
             <div className="space-y-4 p-6">
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <InfoItem
@@ -396,7 +396,7 @@ export function ConversationDetailDialog({
                       {detail.participants.map((participant) => (
                         <div
                           key={participant.id}
-                          className="rounded-lg border bg-background p-3"
+                          className="agentdesk-subtle-surface rounded-xl p-3"
                         >
                           <div className="flex items-center justify-between gap-3">
                             <span className="text-sm font-medium">
@@ -417,7 +417,7 @@ export function ConversationDetailDialog({
                       ))}
                     </div>
                   ) : (
-                    <div className="rounded-lg border border-dashed bg-background p-4 text-sm text-muted-foreground">
+                    <div className="rounded-2xl border border-dashed border-[#dbe7f6] bg-[#f6f9ff] p-4 text-sm text-muted-foreground shadow-inner shadow-blue-100/30">
                       {t("conversationMonitor.emptyParticipants")}
                     </div>
                   )}
@@ -426,9 +426,9 @@ export function ConversationDetailDialog({
             </ScrollArea>
           </aside>
 
-          <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+          <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white">
             <div ref={messagesScrollRootRef} className="min-h-0 flex-1">
-              <ScrollArea className="h-full min-h-0 bg-muted/10">
+              <ScrollArea className="h-full min-h-0 bg-[#f6f9ff]">
                 <div className="space-y-4 px-6 py-5">
                   {messagesHasMore ? (
                     <div
@@ -512,7 +512,7 @@ export function ConversationDetailDialog({
                       );
                     })
                   ) : (
-                    <div className="flex h-full min-h-80 items-center justify-center rounded-xl border border-dashed bg-background text-sm text-muted-foreground">
+                    <div className="flex h-full min-h-80 items-center justify-center rounded-2xl border border-dashed border-[#dbe7f6] bg-white text-sm text-muted-foreground shadow-inner shadow-blue-100/30">
                       {t("conversationMonitor.emptyMessages")}
                     </div>
                   )}

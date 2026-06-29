@@ -159,6 +159,7 @@ func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerReq
 
 	logItem, err := RetrieveLog.CreateRetrieveLog(&CreateRetrieveLogRequest{
 		KnowledgeBaseID:    firstKnowledgeBaseID(req.KnowledgeBaseIDs),
+		SourceType:         inferRetrieveSourceType(hits),
 		Channel:            defaultRetrieveChannel(req.Channel),
 		Scene:              defaultRetrieveScene(req.Scene),
 		SessionID:          req.SessionID,
@@ -354,6 +355,28 @@ func firstKnowledgeBaseID(ids []int64) int64 {
 		return 0
 	}
 	return normalized[0]
+}
+
+func inferRetrieveSourceType(hits []response.KnowledgeSearchResult) string {
+	if len(hits) == 0 {
+		return "local_vector"
+	}
+	hasCloud := false
+	hasLocal := false
+	for _, hit := range hits {
+		if strings.Contains(hit.SectionPath, "FastGPT云端知识库") {
+			hasCloud = true
+		} else {
+			hasLocal = true
+		}
+	}
+	if hasCloud && hasLocal {
+		return "hybrid"
+	}
+	if hasCloud {
+		return "cloud_knowledge"
+	}
+	return "local_vector"
 }
 
 func resolveRerankLimit(requestLimit int, defaultLimit int) int {

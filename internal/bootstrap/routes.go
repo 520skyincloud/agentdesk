@@ -69,6 +69,13 @@ func registerApiMiniprogramRoutes(group *gin.RouterGroup) {
 	group.GET("/message/list", api.MiniprogramGetMessageList)
 }
 
+func registerApiWxWorkProtocolRemoteSetupRoutes(group *gin.RouterGroup) {
+	group.GET("/:token", api.WxWorkProtocolRemoteSetupGetByToken)
+	group.POST("/update", api.WxWorkProtocolRemoteSetupPostUpdate)
+	group.POST("/login_qrcode", api.WxWorkProtocolRemoteSetupPostLoginQrcode)
+	group.POST("/check_login", api.WxWorkProtocolRemoteSetupPostCheckLogin)
+}
+
 func registerDashboardDashboardRoutes(group *gin.RouterGroup) {
 	group.GET("/overview", dashboard.DashboardGetOverview)
 }
@@ -97,6 +104,7 @@ func registerDashboardCompanyRoutes(group *gin.RouterGroup) {
 
 func registerDashboardCustomerRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.CustomerGetBy)
+	group.GET("/:id/store_relations", dashboard.CustomerGetStore_relations)
 	group.POST("/create", dashboard.CustomerPostCreate)
 	group.POST("/delete", dashboard.CustomerPostDelete)
 	group.POST("/list", dashboard.CustomerPostList)
@@ -214,6 +222,7 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 	group.POST("/accept_friend_request", dashboard.WxWorkProtocolInstancePostAccept_friend_request)
 	group.POST("/check_login_qrcode", dashboard.WxWorkProtocolInstancePostCheck_login_qrcode)
 	group.POST("/create", dashboard.WxWorkProtocolInstancePostCreate)
+	group.POST("/create_remote_setup", dashboard.WxWorkProtocolInstancePostCreate_remote_setup)
 	group.POST("/delete", dashboard.WxWorkProtocolInstancePostDelete)
 	group.POST("/get_corp_info", dashboard.WxWorkProtocolInstancePostGet_corp_info)
 	group.POST("/invite_room_member", dashboard.WxWorkProtocolInstancePostInvite_room_member)
@@ -229,6 +238,8 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 	group.POST("/sync_friend_requests", dashboard.WxWorkProtocolInstancePostSync_friend_requests)
 	group.POST("/sync_profile", dashboard.WxWorkProtocolInstancePostSync_profile)
 	group.POST("/update", dashboard.WxWorkProtocolInstancePostUpdate)
+	group.POST("/init_ai_agent", dashboard.WxWorkProtocolInstancePostInit_ai_agent)
+	group.POST("/update_ai_agent", dashboard.WxWorkProtocolInstancePostUpdate_ai_agent)
 	group.POST("/update_ai_settings", dashboard.WxWorkProtocolInstancePostUpdate_ai_settings)
 	group.POST("/verify_login", dashboard.WxWorkProtocolInstancePostVerify_login)
 }
@@ -339,6 +350,10 @@ func registerDashboardKnowledgeCandidateRoutes(group *gin.RouterGroup) {
 	group.POST("/update", dashboard.KnowledgeCandidatePostUpdate)
 	group.POST("/approve", dashboard.KnowledgeCandidatePostApprove)
 	group.POST("/reject", dashboard.KnowledgeCandidatePostReject)
+	group.POST("/batch_approve", dashboard.KnowledgeCandidatePostBatch_approve)
+	group.POST("/batch_reject", dashboard.KnowledgeCandidatePostBatch_reject)
+	group.POST("/quality_check", dashboard.KnowledgeCandidatePostQuality_check)
+	group.POST("/analyze_conversation", dashboard.KnowledgeCandidatePostAnalyze_conversation)
 	group.POST("/mark_imported", dashboard.KnowledgeCandidatePostMark_imported)
 	group.POST("/export-weekly", dashboard.KnowledgeCandidatePostExport_weekly)
 }

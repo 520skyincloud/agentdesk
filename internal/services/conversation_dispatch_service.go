@@ -90,7 +90,8 @@ func (s *conversationDispatchService) DispatchPendingConversation(conversation *
 		return nil, nil
 	}
 
-	candidates, report, err := s.pickDispatchCandidates(teamIDs, time.Now())
+	route := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversation.ID)
+	candidates, report, err := s.pickDispatchCandidates(teamIDs, route, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +208,7 @@ func (s *conversationDispatchService) RunPendingDispatchLoop(interval time.Durat
 }
 
 // pickDispatchCandidates returns the eligible dispatch candidates for the given teamIDs at the given time, along with a report for debugging and analysis.
-func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, now time.Time) ([]dispatchCandidate, dispatchPoolReport, error) {
+func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, route *models.ConversationRouteState, now time.Time) ([]dispatchCandidate, dispatchPoolReport, error) {
 	report := dispatchPoolReport{
 		RequestedTeamIDs: append([]int64(nil), teamIDs...),
 	}
@@ -234,6 +235,22 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, no
 		return nil, report, nil
 	}
 	report.EligibleProfiles = len(enabledProfiles)
+	if route != nil {
+		scopedProfiles := make([]models.AgentProfile, 0, len(enabledProfiles))
+		scopedUserIDs := make([]int64, 0, len(enabledUserIDs))
+		for _, profile := range enabledProfiles {
+			if AgentProfileService.ProfileCanServeRoute(&profile, route) {
+				scopedProfiles = append(scopedProfiles, profile)
+				scopedUserIDs = append(scopedUserIDs, profile.UserID)
+			}
+		}
+		enabledProfiles = scopedProfiles
+		enabledUserIDs = scopedUserIDs
+		if len(enabledProfiles) == 0 {
+			report.Reason = "no_profile_in_store_scope"
+			return nil, report, nil
+		}
+	}
 
 	activeCounts, err := s.findActiveConversationCountMap(enabledUserIDs)
 	if err != nil {

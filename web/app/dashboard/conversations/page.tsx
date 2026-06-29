@@ -2,9 +2,11 @@
 
 import {
   ArrowRightLeftIcon,
+  BotIcon,
   CircleUserRoundIcon,
   CircleXIcon,
   FilePlus2Icon,
+  FilterIcon,
   MessageCircleWarningIcon,
   Menu,
   MoreHorizontalIcon,
@@ -42,6 +44,7 @@ import { useAgentConversationRealtime } from "@/hooks/use-agent-conversation-rea
 import { useI18n } from "@/i18n/provider";
 import {
   checkWxWorkProtocolLoginQrcode,
+  deleteWxWorkProtocolInstance,
   fetchWxWorkProtocolInstances,
   startWxWorkProtocolLogin,
   syncWxWorkProtocolProfile,
@@ -52,13 +55,14 @@ import {
   agentConversationSelectors,
   useAgentConversationsStore,
 } from "@/lib/stores/agent-conversations";
+import { repairMojibakeText } from "@/lib/utils";
 import { CreateTicketFromConversationDialog } from "../tickets/_components/create-ticket-from-conversation-dialog";
 import { ChatPanel } from "./_components/chat-panel";
 import { ConversationInfoPanel } from "./_components/conversation-info-panel";
 import { ConversationList } from "./_components/conversation-list";
 
 const workbenchIconButtonClassName =
-  "size-8 text-muted-foreground hover:bg-muted hover:text-foreground";
+  "size-8 rounded-lg border border-transparent bg-white/80 text-muted-foreground shadow-none hover:border-[#d9e2f2] hover:bg-white hover:text-[#2563eb]";
 
 export default function ConversationsPage() {
   const t = useI18n();
@@ -72,6 +76,8 @@ export default function ConversationsPage() {
   const setSelectedWxWorkInstanceId = useAgentConversationsStore(
     (state) => state.setSelectedWxWorkInstanceId,
   );
+  const searchKeyword = useAgentConversationsStore((state) => state.searchKeyword);
+  const setSearchKeyword = useAgentConversationsStore((state) => state.setSearchKeyword);
   const loadConversations = useAgentConversationsStore(
     (state) => state.loadConversations,
   );
@@ -92,6 +98,7 @@ export default function ConversationsPage() {
   const [scanLoginLoading, setScanLoginLoading] = useState(false);
   const [scanLoginResult, setScanLoginResult] = useState<StartWxWorkProtocolLoginResult | null>(null);
   const [scanLoginStatus, setScanLoginStatus] = useState("等待生成登录二维码");
+  const scanLoginSucceededRef = useRef(false);
   const scanLoginCheckingRef = useRef(false);
   const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([]);
   const [accountKeyword, setAccountKeyword] = useState("");
@@ -118,8 +125,29 @@ export default function ConversationsPage() {
     );
   };
 
+  const cleanupPendingScanLogin = async () => {
+    const instance = scanLoginResult?.instance;
+    if (!instance?.id || scanLoginSucceededRef.current || instance.healthStatus !== "login_qrcode") {
+      return;
+    }
+    try {
+      await deleteWxWorkProtocolInstance(instance.id);
+      await loadWxWorkInstances();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "清理未完成扫码账号失败");
+    }
+  };
+
+  const handleScanLoginOpenChange = (open: boolean) => {
+    if (!open) {
+      void cleanupPendingScanLogin();
+    }
+    setScanLoginOpen(open);
+  };
+
   const startScanLogin = async () => {
     setScanLoginOpen(true);
+    scanLoginSucceededRef.current = false;
     setScanLoginLoading(true);
     setScanLoginResult(null);
     setScanLoginStatus("正在向协议服务请求登录二维码...");
@@ -153,6 +181,7 @@ export default function ConversationsPage() {
           setScanLoginStatus("登录成功，正在同步员工号资料...");
           await syncWxWorkProtocolProfile(scanLoginResult.instance.id).catch(() => "");
           await loadWxWorkInstances();
+          scanLoginSucceededRef.current = true;
           toast.success("员工号登录成功，请继续绑定门店和知识库");
           setScanLoginOpen(false);
         } else {
@@ -200,17 +229,22 @@ export default function ConversationsPage() {
 
   const renderConversationSidebar = (opts?: { onListAfterSelect?: () => void }) => (
     <div className="flex h-full min-h-0 flex-1 bg-inherit">
-      <div className="flex w-72 shrink-0 flex-col border-r border-border/80 bg-muted/20 xl:w-80">
-        <div className="border-b border-border/80 px-3 py-3">
+      <div className="flex w-72 shrink-0 flex-col border-r border-[#e9edf5] bg-white/95 xl:w-80">
+        <div className="border-b border-[#eef2f7] bg-white/95 px-4 py-4">
           <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold">企微员工号</div>
-              <div className="mt-0.5 text-xs text-muted-foreground">账号添加、回调、AI 托管都在这里管理</div>
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[#eef4ff] text-[#2563eb]">
+                <CircleUserRoundIcon className="size-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-[#1f2937]">企微员工号</div>
+                <div className="mt-0.5 text-[11px] text-[#6b7280]">账号 / 回调 / AI 托管</div>
+              </div>
             </div>
             <Button
               variant="ghost"
               size="icon"
-              className="size-8 shrink-0 text-muted-foreground"
+              className={`${workbenchIconButtonClassName} shrink-0`}
               onClick={() => setAccountManagerOpen(true)}
               aria-label="管理企微员工号"
               title="管理企微员工号"
@@ -220,9 +254,9 @@ export default function ConversationsPage() {
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <Button
-              variant="default"
+              variant="outline"
               size="sm"
-              className="justify-center gap-2"
+              className="h-9 justify-center gap-1.5 rounded-lg border-[#4f75ff] bg-white text-xs font-medium text-[#2855d9] shadow-none hover:bg-[#f4f7ff] hover:text-[#2855d9]"
               onClick={() => void startScanLogin()}
             >
               <QrCodeIcon className="size-4" />
@@ -231,7 +265,7 @@ export default function ConversationsPage() {
             <Button
               variant="outline"
               size="sm"
-              className="justify-center gap-2"
+              className="h-9 justify-center gap-1.5 rounded-lg border-[#d9e2f2] bg-white text-xs font-medium text-[#344054] shadow-none hover:bg-[#f6f8fc]"
               onClick={() => setAccountManagerOpen(true)}
             >
               <SettingsIcon className="size-4" />
@@ -239,90 +273,129 @@ export default function ConversationsPage() {
             </Button>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded-md border bg-card px-2 py-2">
-              <div className="text-muted-foreground">当前会话</div>
-              <div className="mt-1 text-lg font-semibold leading-none">{conversations.length}</div>
+            <div className="rounded-xl border border-[#edf1f7] bg-[#f8fbff] px-3 py-2">
+              <div className="text-[#7a8599]">当前会话</div>
+              <div className="mt-1 text-lg font-semibold leading-none text-[#1f2937]">{conversations.length}</div>
             </div>
-            <div className="rounded-md border bg-card px-2 py-2">
-              <div className="text-muted-foreground">待人工</div>
+            <div className="rounded-xl border border-[#edf1f7] bg-[#f8fbff] px-3 py-2">
+              <div className="text-[#7a8599]">待人工</div>
               <div className="mt-1 text-lg font-semibold leading-none text-destructive">{pendingHandoffCount}</div>
             </div>
           </div>
           <div className="relative mt-3">
-            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#9aa4b2]" />
             <Input
               value={accountKeyword}
               onChange={(event) => setAccountKeyword(event.target.value)}
               placeholder="搜索员工号/门店"
-              className="h-8 pl-8 text-xs"
+              className="h-9 rounded-lg border-[#d9e2f2] bg-[#f5f7fb] pl-8 pr-8 text-xs shadow-none placeholder:text-[#9aa4b2] focus-visible:bg-white"
             />
+            <FilterIcon className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#9aa4b2]" />
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        <div className="min-h-0 flex-1 overflow-y-auto p-3.5">
           <button
             type="button"
-            className={`mb-2 flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm transition-colors ${
-              selectedWxWorkInstanceId === null ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-muted"
+            className={`mb-2 flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-sm transition ${
+              selectedWxWorkInstanceId === null
+                ? "bg-[#eef3ff] text-[#2855d9] shadow-[inset_0_0_0_1px_rgba(79,117,255,0.12)]"
+                : "text-[#344054] hover:bg-[#f7f9fd]"
             }`}
             onClick={() => {
               setSelectedWxWorkInstanceId(null);
               void loadConversations();
             }}
           >
-            <span className="truncate">全部账号</span>
-            <span className="text-xs opacity-70">{conversations.length}</span>
+            <span className="flex min-w-0 items-center gap-2 truncate">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-white text-[11px] shadow-sm">全</span>
+              <span className="truncate font-medium">全部账号</span>
+            </span>
+            <span className="rounded-full bg-white px-1.5 text-[11px] text-[#7a8599] shadow-sm">{conversations.length}</span>
           </button>
           {filteredInstances.map((item) => (
             <button
               key={item.id}
               type="button"
-              className={`mb-2 w-full rounded-md border px-3 py-2 text-left text-sm transition-colors ${
-                selectedWxWorkInstanceId === item.id ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-muted"
+            className={`group mb-2 w-full rounded-xl px-2.5 py-2 text-left text-sm transition ${
+                selectedWxWorkInstanceId === item.id
+                  ? "bg-[#eef3ff] text-[#2855d9] shadow-[inset_0_0_0_1px_rgba(79,117,255,0.12)]"
+                  : "text-[#344054] hover:bg-[#f7f9fd]"
               }`}
               onClick={() => {
                 setSelectedWxWorkInstanceId(item.id);
                 void loadConversations();
               }}
             >
-              <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Avatar className="relative size-9 shrink-0 rounded-lg">
+                  <AvatarImage src={item.employeeAvatar || ""} />
+                  <AvatarFallback className="rounded-lg bg-[#f0f4fb] text-xs font-semibold text-[#526072]">
+                  {(repairMojibakeText(item.employeeName) || item.guid || "企").slice(0, 1)}
+                  </AvatarFallback>
+                  <span
+                    className={`absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border border-white ${
+                      item.healthStatus === "online" ? "bg-emerald-500" : item.healthStatus === "offline" ? "bg-[#aab4c3]" : "bg-amber-500"
+                    }`}
+                  />
+                </Avatar>
                 <div className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">{item.employeeName || item.guid}</span>
-                  <span className="mt-0.5 block truncate text-xs opacity-75">
-                    {item.storeName || item.employeeUserId || "未绑定门店"}
+                  <span className="block truncate font-medium leading-4">{repairMojibakeText(item.employeeName) || item.guid}</span>
+                  <span className="mt-0.5 block truncate text-[11px] text-[#7a8599]">
+                    {repairMojibakeText(item.storeName) || item.employeeUserId || "未绑定门店"}
                   </span>
                 </div>
-                <span
-                  className={`mt-1 size-2 shrink-0 rounded-full ${
-                    item.healthStatus === "online" ? "bg-emerald-500" : item.healthStatus === "offline" ? "bg-muted-foreground/50" : "bg-amber-500"
-                  }`}
-                />
+                <MoreHorizontalIcon className="size-4 shrink-0 text-[#a0a8b7] opacity-0 transition group-hover:opacity-100" />
               </div>
-              <div className="mt-2 flex items-center gap-1">
-                <Badge variant={item.aiReplyEnabled === false ? "outline" : "secondary"} className="h-5 px-1.5 text-[10px]">
+              <div className="mt-2 flex items-center gap-1 pl-11">
+                <Badge variant={item.aiReplyEnabled === false ? "outline" : "secondary"} className="h-5 rounded-md border-[#d9e2f2] px-1.5 text-[10px] font-normal">
                   {item.aiReplyEnabled === false ? "AI停用" : "AI托管"}
                 </Badge>
-                <Badge variant={item.fallbackToHQ === false ? "outline" : "secondary"} className="h-5 px-1.5 text-[10px]">
+                <Badge variant={item.fallbackToHQ === false ? "outline" : "secondary"} className="h-5 rounded-md border-[#d9e2f2] px-1.5 text-[10px] font-normal">
                   {item.fallbackToHQ === false ? "门店处理" : "总部兜底"}
                 </Badge>
               </div>
             </button>
           ))}
           {filteredInstances.length === 0 ? (
-            <div className="rounded-md border border-dashed bg-card px-3 py-6 text-center text-xs text-muted-foreground">
+            <div className="rounded-lg border border-dashed border-[#d9e2f2] bg-[#f7f9fd] px-3 py-6 text-center text-xs text-[#7a8599]">
               没有匹配的员工号
             </div>
           ) : null}
         </div>
       </div>
-      <div className="flex min-w-0 flex-1 flex-col bg-inherit">
-        <div className="flex h-12.5 shrink-0 items-center justify-between gap-2 border-b border-border/80 bg-card px-3 py-2">
+      <div className="flex min-w-0 flex-1 flex-col bg-white/95">
+        <div className="border-b border-[#eef2f7] bg-white/95 px-4 py-4">
+          <Button
+            variant="outline"
+            size="sm"
+            className="mb-3 h-9 w-full justify-center gap-1.5 rounded-lg border-[#4f75ff] bg-white text-xs font-medium text-[#2855d9] shadow-none hover:bg-[#f4f7ff] hover:text-[#2855d9]"
+            onClick={() => setAccountManagerOpen(true)}
+          >
+            <FilePlus2Icon className="size-4" />
+            管理会话入口
+          </Button>
+          <div className="relative">
+            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#9aa4b2]" />
+            <Input
+              value={searchKeyword}
+              onChange={(event) => {
+                setSearchKeyword(event.target.value);
+                void loadConversations();
+              }}
+              placeholder="搜索"
+              className="h-9 rounded-lg border-[#d9e2f2] bg-[#f5f7fb] pl-8 pr-8 text-xs shadow-none placeholder:text-[#9aa4b2] focus-visible:bg-white"
+            />
+            <FilterIcon className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#9aa4b2]" />
+          </div>
+        </div>
+        <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-[#eef2f7] bg-white/95 px-4 py-2">
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium">
+            <div className="truncate text-sm font-semibold text-[#1f2937]">
               {selectedInstance
-                ? selectedInstance.storeName || selectedInstance.employeeName || selectedInstance.guid
+                ? repairMojibakeText(selectedInstance.storeName) || repairMojibakeText(selectedInstance.employeeName) || selectedInstance.guid
                 : "全部员工号"}
             </div>
-            <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="mt-0.5 flex items-center gap-2 text-xs text-[#7a8599]">
               <span>全部未关闭会话</span>
               {pendingHandoffCount > 0 ? (
                 <span className="text-destructive">{pendingHandoffCount} 个待处理</span>
@@ -346,8 +419,8 @@ export default function ConversationsPage() {
   const handoffConversation = conversations.find((item) => item.needHumanFollowUp);
 
   const workspaceContent = (
-    <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-card text-card-foreground">
-      <div className="flex h-12.5 shrink-0 items-center justify-between gap-3 border-b border-border/80 bg-card px-3 py-1">
+    <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-[#f0f3f8] text-card-foreground">
+      <div className="mx-3 mt-3 flex h-16 shrink-0 items-center justify-between gap-3 rounded-2xl border border-white bg-white/95 px-4 py-2 shadow-[0_10px_28px_rgba(31,41,55,0.05)]">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <Button
             variant="ghost"
@@ -359,20 +432,20 @@ export default function ConversationsPage() {
           </Button>
           {conversation ? (
             <>
-              <Avatar className="size-8 shrink-0 lg:size-9">
-                <AvatarImage src="" />
-                <AvatarFallback className="bg-primary/10 text-sm text-primary">
+              <Avatar className="size-10 shrink-0 rounded-xl lg:size-11">
+                <AvatarImage src={conversation.customerAvatar || ""} />
+                <AvatarFallback className="rounded-xl bg-[#f0f4fb] text-sm font-semibold text-[#526072]">
                   {t("conversation.customerAvatar")}
                 </AvatarFallback>
               </Avatar>
               <div className="min-w-0">
-                <p className="min-w-0 truncate text-sm font-medium leading-tight">
-                  {conversation.customerName ||
+                <p className="min-w-0 truncate text-sm font-semibold leading-tight text-[#1f2937]">
+                  {repairMojibakeText(conversation.customerName) ||
                     t("conversation.customerFallback", {
                       id: conversation.customerId || conversation.id,
                     })}
                 </p>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                <p className="mt-0.5 truncate text-xs text-[#7a8599]">
                   <span>{t("conversation.channelNumber", { id: conversation.channelId || "-" })}</span>
                   {conversation.customerId ? (
                     <>
@@ -385,19 +458,29 @@ export default function ConversationsPage() {
             </>
           ) : (
             <div className="min-w-0">
-              <p className="truncate font-medium text-[14px] leading-tight">
+              <p className="truncate font-semibold text-[14px] leading-tight text-[#1f2937]">
                 {t("conversation.workbenchTitle")}
               </p>
-              <p className="mt-0.5 truncate text-[14px] text-muted-foreground sm:text-[14px] lg:hidden">
+              <p className="mt-0.5 truncate text-[14px] text-[#7a8599] sm:text-[14px] lg:hidden">
                 {t("conversation.openMenuSelectConversation")}
               </p>
-              <p className="mt-0.5 hidden truncate text-[12px] text-muted-foreground lg:block">
+              <p className="mt-0.5 hidden truncate text-[12px] text-[#7a8599] lg:block">
                 {t("conversation.selectConversationFromSidebar")}
               </p>
             </div>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
+        <div className="flex shrink-0 items-center gap-1 sm:gap-1.5">
+          {conversation && conversation.needHumanFollowUp ? (
+            <Badge className="hidden rounded-md bg-[#fff1f2] px-2 text-xs font-normal text-destructive shadow-none sm:inline-flex">
+              待人工
+            </Badge>
+          ) : conversation ? (
+            <Badge className="hidden rounded-md bg-[#eef4ff] px-2 text-xs font-normal text-[#2855d9] shadow-none sm:inline-flex">
+              <BotIcon className="mr-1 size-3" />
+              AI/人工协同
+            </Badge>
+          ) : null}
           <Button
             variant="ghost"
             size="icon"
@@ -457,17 +540,19 @@ export default function ConversationsPage() {
           </Button>
         </div>
       </div>
-      <div className="flex min-h-0 w-full flex-1 overflow-hidden">
+      <div className="min-h-0 w-full flex-1 overflow-hidden px-3 pb-3 pt-3">
+        <div className="flex h-full min-h-0 overflow-hidden rounded-2xl bg-[#edf1f6] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.78)]">
         <ChatPanel
           wxWorkInstance={conversationInstance}
           onWxWorkInstanceUpdated={handleInstanceUpdated}
         />
+        </div>
       </div>
     </div>
   );
 
   return (
-    <div className="flex h-[calc(100dvh-var(--header-height))] min-h-0 w-full min-w-0 flex-col overflow-hidden lg:h-full">
+    <div className="flex h-[calc(100dvh-var(--header-height))] min-h-0 w-full min-w-0 flex-col overflow-hidden bg-[#f6f8fb] p-0 lg:h-full lg:p-3">
       {mobileMenuOpen && (
         <button
           type="button"
@@ -477,7 +562,7 @@ export default function ConversationsPage() {
         />
       )}
       <div
-        className={`fixed top-12 bottom-0 left-0 z-40 flex w-[min(22rem,calc(100vw-0.75rem))] max-w-[min(22rem,calc(100vw-0.75rem))] flex-col overflow-hidden border-r border-border/80 bg-card text-card-foreground shadow-xl transition-transform duration-300 ease-out will-change-transform touch-manipulation overscroll-contain supports-[padding:max(0px)]:pb-[env(safe-area-inset-bottom)] lg:hidden ${
+        className={`fixed top-12 bottom-0 left-0 z-40 flex w-[min(22rem,calc(100vw-0.75rem))] max-w-[min(22rem,calc(100vw-0.75rem))] flex-col overflow-hidden border-r border-[#dbe7f6] bg-white text-card-foreground shadow-xl transition-transform duration-300 ease-out will-change-transform touch-manipulation overscroll-contain supports-[padding:max(0px)]:pb-[env(safe-area-inset-bottom)] lg:hidden ${
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"
         }`}
         aria-hidden={!mobileMenuOpen}
@@ -490,11 +575,11 @@ export default function ConversationsPage() {
       <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden lg:hidden">
         {workspaceContent}
       </div>
-      <div className="hidden min-h-0 w-full flex-1 grid-cols-[288px_360px_minmax(0,1fr)] overflow-hidden lg:grid xl:grid-cols-[320px_390px_minmax(0,1fr)]">
-        <div className="col-span-2 min-h-0 border-r border-border/80 bg-card">
+      <div className="hidden min-h-0 w-full flex-1 grid-cols-[288px_360px_minmax(0,1fr)] overflow-hidden rounded-[22px] border border-[#e3e9f2] bg-white shadow-[0_18px_48px_rgba(31,41,55,0.08)] lg:grid xl:grid-cols-[320px_390px_minmax(0,1fr)]">
+        <div className="col-span-2 min-h-0 border-r border-[#e5e9f2] bg-white">
           {renderConversationSidebar()}
         </div>
-        <div className="min-h-0 bg-card">
+        <div className="min-h-0 bg-[#eef2f7]">
           {workspaceContent}
         </div>
       </div>
@@ -528,9 +613,9 @@ export default function ConversationsPage() {
           conversation
             ? {
                 id: conversation.id,
-                customerName: conversation.customerName,
+                customerName: repairMojibakeText(conversation.customerName),
                 customerId: conversation.customerId ?? 0,
-                lastMessageSummary: conversation.lastMessageSummary,
+                lastMessageSummary: repairMojibakeText(conversation.lastMessageSummary),
                 currentAssigneeId: conversation.currentAssigneeId,
               }
             : null
@@ -587,8 +672,8 @@ export default function ConversationsPage() {
           </div>
         </SheetContent>
       </Sheet>
-      <Dialog open={scanLoginOpen} onOpenChange={setScanLoginOpen}>
-        <DialogContent className="sm:max-w-md">
+      <Dialog open={scanLoginOpen} onOpenChange={handleScanLoginOpenChange}>
+        <DialogContent className="agentdesk-surface rounded-2xl sm:max-w-md">
           <DialogHeader>
             <DialogTitle>扫码新增企微员工号</DialogTitle>
             <DialogDescription>
@@ -596,12 +681,12 @@ export default function ConversationsPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4">
-            <div className="flex min-h-64 items-center justify-center rounded-lg border bg-muted/30 p-4">
+            <div className="agentdesk-subtle-surface flex min-h-64 items-center justify-center rounded-2xl bg-[#f8fbff] p-4">
               {scanLoginResult?.qrcode ? (
                 <img
                   src={scanLoginResult.qrcode.startsWith("data:") ? scanLoginResult.qrcode : `data:image/png;base64,${scanLoginResult.qrcode}`}
                   alt="企微员工号登录二维码"
-                  className="size-56 rounded-md bg-white object-contain p-2 shadow-sm"
+                  className="size-56 rounded-xl bg-white object-contain p-2 shadow-[0_12px_30px_rgba(30,64,175,0.12)]"
                 />
               ) : scanLoginLoading ? (
                 <div className="text-sm text-muted-foreground">正在生成二维码...</div>
@@ -612,7 +697,7 @@ export default function ConversationsPage() {
                 </div>
               )}
             </div>
-            <div className="rounded-md border bg-card p-3 text-xs text-muted-foreground">
+            <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 text-xs text-muted-foreground shadow-inner shadow-blue-100/30">
               <div className="font-medium text-foreground">{scanLoginStatus}</div>
               {scanLoginResult?.instance.guid ? (
                 <div className="mt-1 break-all">实例 GUID：{scanLoginResult.instance.guid}</div>
@@ -633,21 +718,21 @@ export default function ConversationsPage() {
         </DialogContent>
       </Dialog>
       {handoffConversation && handoffToastDismissedId !== handoffConversation.id ? (
-        <div className="fixed right-4 bottom-4 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-md border bg-card p-4 text-card-foreground shadow-lg">
+        <div className="agentdesk-surface fixed right-4 bottom-4 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-2xl p-4 text-card-foreground">
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md bg-destructive/10 text-destructive">
+            <div className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl border border-destructive/15 bg-destructive/10 text-destructive">
               <MessageCircleWarningIcon className="size-5" />
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium">新的转人工请求</div>
               <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-                {handoffConversation.customerName || `会话 #${handoffConversation.id}`}：
-                {handoffConversation.handoffReason || handoffConversation.lastMessageSummary || "等待同事处理"}
+                {repairMojibakeText(handoffConversation.customerName) || `会话 #${handoffConversation.id}`}：
+                {repairMojibakeText(handoffConversation.handoffReason) || repairMojibakeText(handoffConversation.lastMessageSummary) || "等待同事处理"}
               </div>
               <div className="mt-3 flex items-center gap-2">
                 <Button
                   size="sm"
-                  className="h-8"
+                  className="h-8 rounded-lg"
                   onClick={() => {
                     setSelectedWxWorkInstanceId(handoffConversation.wxWorkInstanceId || null);
                     void selectConversation(handoffConversation.id);
@@ -658,7 +743,7 @@ export default function ConversationsPage() {
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="h-8"
+                  className="h-8 rounded-lg"
                   onClick={() => setHandoffToastDismissedId(handoffConversation.id)}
                 >
                   稍后

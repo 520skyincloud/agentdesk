@@ -38,6 +38,7 @@ export function NavSecondary({
                 render={<Link href={item.url} />}
                 isActive={isActive(item.url)}
                 tooltip={item.title}
+                className="rounded-xl data-[active=true]:bg-sidebar-accent data-[active=true]:font-semibold data-[active=true]:text-sidebar-accent-foreground"
               >
                 {item.icon}
                 <span title={item.title}>{item.title}</span>

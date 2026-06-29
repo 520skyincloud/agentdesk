@@ -72,7 +72,7 @@ export function NavMain({
             <DropdownMenu>
               <DropdownMenuTrigger
                 openOnHover
-                render={<SidebarMenuButton />}
+                render={<SidebarMenuButton className="rounded-xl" />}
               >
                 {icon}
                 <span title={title}>{title}</span>
@@ -116,20 +116,24 @@ export function NavMain({
           className="group/collapsible"
           render={<SidebarMenuItem />}
         >
-          <CollapsibleTrigger render={<SidebarMenuButton tooltip={title} />}>
+          <CollapsibleTrigger render={<SidebarMenuButton tooltip={title} className="rounded-xl font-semibold text-sidebar-foreground/90" />}>
             {icon}
             <span title={title}>{title}</span>
             <ChevronRightIcon className="ml-auto transition-transform duration-200 group-data-open/collapsible:rotate-90" />
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <SidebarMenuSub>
+            <SidebarMenuSub className="mx-0 border-l-0 px-1.5">
               {items.map((item) => (
                 <SidebarMenuSubItem key={item.title}>
                   <SidebarMenuSubButton
                     render={<Link href={item.url} />}
                     isActive={isDashboardNavItemActive(pathname, item.url)}
                     tooltip={item.title}
+                    className="h-9 rounded-lg px-3 text-sidebar-foreground/80 data-[active=true]:bg-sidebar-accent data-[active=true]:font-semibold data-[active=true]:text-sidebar-accent-foreground"
                   >
+                    <span className="flex size-4 shrink-0 items-center justify-center [&_svg]:size-4">
+                      {item.icon}
+                    </span>
                     <span title={item.title}>{item.title}</span>
                   </SidebarMenuSubButton>
                 </SidebarMenuSubItem>

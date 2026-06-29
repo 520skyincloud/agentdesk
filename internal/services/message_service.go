@@ -557,6 +557,16 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 
 	// 客户发送消息，触发AI回复
 	if senderType == enums.IMSenderTypeCustomer {
+		if routeState := ConversationRouteService.GetByConversationID(conversation.ID); routeState != nil && routeState.StoreID > 0 {
+			if err := CustomerService.TouchStoreRelation(conversation.CustomerID, routeState.StoreID, routeState.WxWorkInstanceID, conversation.ID, now); err != nil {
+				slog.Warn("touch customer store relation failed", "conversation_id", conversation.ID, "customer_id", conversation.CustomerID, "store_id", routeState.StoreID, "error", err)
+			}
+		}
+		if message.MessageType == enums.IMMessageTypeLocation {
+			if routeState := ConversationRouteService.GetByConversationID(conversation.ID); routeState != nil && routeState.WxWorkInstanceID > 0 {
+				WxWorkProtocolDefaultResourceService.BindInboundLocation(routeState.WxWorkInstanceID, message)
+			}
+		}
 		if markErr := ConversationRouteService.MarkCustomerMessage(conversation.ID, now); markErr != nil {
 			slog.Warn("mark customer route message failed", "conversation_id", conversation.ID, "error", markErr)
 		}
@@ -578,6 +588,9 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 		}
 		if isMediaUnderstandingMessage(message.MessageType) {
 			MediaUnderstandingService.UnderstandInboundMessageAsync(message.ID)
+			return message, err
+		}
+		if WxWorkProtocolDefaultResourceService.HandleCustomerIntent(conversation, message) {
 			return message, err
 		}
 		if !shouldTriggerAIReply(message.MessageType) {

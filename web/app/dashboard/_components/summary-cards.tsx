@@ -65,7 +65,7 @@ const cards: SummaryCardItem[] = [
     key: "aiServiceRate",
     titleKey: "dashboardHome.summaryAiServiceRate",
     descriptionKey: "dashboardHome.summaryAiServiceRateDescription",
-    link: "/dashboard/ai-agents",
+    link: "/dashboard/conversations",
     icon: SparklesIcon,
     format: (value: number) => `${value.toFixed(1)}%`,
   },
@@ -86,13 +86,13 @@ export function SummaryCards({ summary }: SummaryCardsProps) {
 
         return (
           <Link key={item.key} href={item.link}>
-            <Card className="h-full transition-colors hover:border-primary/40">
+            <Card className="h-full border-[#dce7f4] bg-card shadow-[0_10px_28px_rgba(35,74,122,0.06)] transition-all hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-[0_14px_34px_rgba(35,74,122,0.09)] dark:border-border/60 dark:shadow-none">
               <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
                 <div className="space-y-1">
                   <CardTitle className="text-sm font-medium">{t(item.titleKey)}</CardTitle>
                   <CardDescription>{t(item.descriptionKey)}</CardDescription>
                 </div>
-                <div className="rounded-full bg-primary/10 p-2 text-primary">
+                <div className="rounded-xl bg-primary/10 p-2 text-primary">
                   <Icon className="size-4" />
                 </div>
               </CardHeader>

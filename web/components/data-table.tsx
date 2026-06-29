@@ -80,7 +80,7 @@ export function DataTable({ data }: { data: DashboardTask[] }) {
           <CardContent>
             <div className="overflow-hidden rounded-xl border">
               <Table>
-                <TableHeader className="bg-muted/50">
+                <TableHeader className="bg-[#f6f9ff]">
                   <TableRow>
                     <TableHead>{t("scaffold.module")}</TableHead>
                     <TableHead>{t("scaffold.owner")}</TableHead>

@@ -56,7 +56,7 @@ export function InitialPasswordDialog({
             {t("user.initialPasswordDescription", { username: username || "-" })}
           </DialogDescription>
         </DialogHeader>
-        <div className="rounded-xl border bg-muted/40 p-4">
+        <div className="agentdesk-subtle-surface rounded-xl p-4">
           <div className="text-xs text-muted-foreground">{t("user.initialPassword")}</div>
           <div className="mt-2 break-all font-mono text-base">{password}</div>
         </div>

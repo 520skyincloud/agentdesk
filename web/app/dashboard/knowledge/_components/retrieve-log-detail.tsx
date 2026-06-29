@@ -54,7 +54,7 @@ function CitationList({ hits, t }: { hits: KnowledgeRetrieveHit[]; t: TFunction 
   return (
     <div className="space-y-3">
       {citations.map((item) => (
-        <div key={item.id} className="rounded-lg border p-3">
+        <div key={item.id} className="agentdesk-subtle-surface rounded-xl p-3">
           <div className="flex items-center gap-2">
             <span className="font-medium">{getHitSourceLabel(item, t)}</span>
             <Badge variant="outline">Chunk #{item.chunkNo}</Badge>
@@ -110,7 +110,7 @@ export function RetrieveLogDetailDrawer({
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange} direction="right">
-      <DrawerContent className="max-w-3xl">
+      <DrawerContent className="max-w-3xl bg-[#fbfdff]">
         <DrawerHeader>
           <DrawerTitle>{t("knowledge.retrieveLogDetail")}</DrawerTitle>
           <DrawerDescription>
@@ -126,7 +126,7 @@ export function RetrieveLogDetailDrawer({
             <div className="space-y-6 pb-6">
               <section className="space-y-3">
                 <h3 className="text-sm font-semibold">{t("knowledge.requestInfo")}</h3>
-                <div className="grid gap-3 rounded-lg border p-4 md:grid-cols-2">
+                <div className="agentdesk-subtle-surface grid gap-3 rounded-2xl p-4 md:grid-cols-2">
                   <div>
                     <div className="text-xs text-muted-foreground">{t("knowledge.title")}</div>
                     <div className="mt-1 text-sm">{detail.log.knowledgeBaseName || `#${detail.log.knowledgeBaseId}`}</div>
@@ -163,7 +163,7 @@ export function RetrieveLogDetailDrawer({
 
               <section className="space-y-3">
                 <h3 className="text-sm font-semibold">{t("knowledge.retrieveStrategy")}</h3>
-                <div className="grid gap-3 rounded-lg border p-4 md:grid-cols-3">
+                <div className="agentdesk-subtle-surface grid gap-3 rounded-2xl p-4 md:grid-cols-3">
                   <Metric
                     label="Chunk Provider"
                     value={detail.log.chunkProvider ? getKnowledgeChunkProviderLabel(detail.log.chunkProvider, t) : "-"}
@@ -179,7 +179,7 @@ export function RetrieveLogDetailDrawer({
 
               <section className="space-y-3">
                 <h3 className="text-sm font-semibold">{t("knowledge.resultSummary")}</h3>
-                <div className="grid gap-3 rounded-lg border p-4 md:grid-cols-4">
+                <div className="agentdesk-subtle-surface grid gap-3 rounded-2xl p-4 md:grid-cols-4">
                   <Metric
                     label={t("knowledge.answerStatus")}
                     value={getKnowledgeAnswerStatusLabel(detail.log.answerStatus, detail.log.answerStatusName, t)}
@@ -210,7 +210,7 @@ export function RetrieveLogDetailDrawer({
                 </div>
                 <div className="space-y-3">
                   {detail.hits.map((item) => (
-                    <div key={item.id} className="rounded-lg border p-3">
+                    <div key={item.id} className="agentdesk-subtle-surface rounded-xl p-3">
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant="outline">#{item.rankNo}</Badge>
                         <span className="font-medium">{getHitSourceLabel(item, t)}</span>
@@ -237,8 +237,8 @@ export function RetrieveLogDetailDrawer({
 
               <section className="space-y-3">
                 <h3 className="text-sm font-semibold">TraceData</h3>
-                <div className="rounded-lg border bg-muted/20 p-4">
-                  <pre className="overflow-x-auto text-xs leading-6 text-muted-foreground">
+                <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.12)]">
+                  <pre className="overflow-x-auto text-xs leading-6 text-slate-100">
                     {traceData ? JSON.stringify(traceData, null, 2) : detail.log.traceData || "-"}
                   </pre>
                 </div>
@@ -274,7 +274,7 @@ function Metric({
   mono?: boolean
 }) {
   return (
-    <div>
+    <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 shadow-inner shadow-blue-100/30">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={`mt-1 text-sm ${mono ? "font-mono" : ""}`}>{String(value || value === 0 ? value : "-")}</div>
     </div>

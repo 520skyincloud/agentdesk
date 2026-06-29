@@ -47,6 +47,22 @@ func CustomerGetBy(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, &ret)
 }
 
+func CustomerGetStore_relations(ctx *gin.Context) {
+	id, ok := httpx.GetPathInt64(ctx, "id")
+	if !ok {
+		return
+	}
+	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerView); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if item := services.CustomerService.Get(id); item == nil || item.Status == enums.StatusDeleted {
+		httpx.WriteJSON(ctx, nil)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildStoreCustomerRelationList(services.CustomerService.ListStoreRelations(id)))
+}
+
 // PostSave_profile POST /save_profile — 客户主信息与联系方式在同一事务中保存。
 func CustomerPostSave_profile(ctx *gin.Context) {
 	req := request.SaveCustomerProfileRequest{}

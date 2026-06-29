@@ -16,6 +16,11 @@ type TicketResponse struct {
 	TicketNo            string             `json:"ticketNo"`
 	Title               string             `json:"title"`
 	Description         string             `json:"description"`
+	Category            string             `json:"category"`
+	CategoryName        string             `json:"categoryName"`
+	Priority            string             `json:"priority"`
+	PriorityName        string             `json:"priorityName"`
+	RoomNo              string             `json:"roomNo"`
 	Source              enums.TicketSource `json:"source"`
 	Channel             string             `json:"channel"`
 	CustomerID          int64              `json:"customerId"`

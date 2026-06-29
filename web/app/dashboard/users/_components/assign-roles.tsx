@@ -175,7 +175,7 @@ function AssignRolesDrawerBody({
                   <Field>
                     <FieldLabel>{t("user.assignedRoles")}</FieldLabel>
                     <FieldContent>
-                      <div className="rounded-lg border p-3">
+                      <div className="agentdesk-subtle-surface rounded-xl p-3">
                         {selectedRoles.length > 0 ? (
                           <div className="flex flex-wrap gap-2">
                             {selectedRoles.map((role) => (
@@ -216,7 +216,7 @@ function AssignRolesDrawerBody({
                           disabled={loading}
                         />
                       </div>
-                      <div className="mt-2 max-h-[360px] space-y-1 overflow-y-auto rounded-lg border p-2">
+                      <div className="mt-2 max-h-[360px] space-y-1.5 overflow-y-auto rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-2 shadow-inner shadow-blue-100/30">
                         {loading ? (
                           <div className="py-8 text-center text-sm text-muted-foreground">
                             {t("user.loadingRoleList")}
@@ -230,11 +230,11 @@ function AssignRolesDrawerBody({
                               <label
                                 key={role.id}
                                 className={cn(
-                                  "flex items-center gap-2 rounded-md border px-2.5 py-2 text-sm transition-colors",
+                                  "flex items-center gap-2 rounded-xl border px-2.5 py-2 text-sm transition",
                                   disabled
-                                    ? "cursor-not-allowed border-dashed bg-muted/20 opacity-70"
-                                    : "cursor-pointer hover:bg-muted/50",
-                                  checked && "border-primary/40 bg-primary/5"
+                                    ? "cursor-not-allowed border-dashed bg-[#f4f7fb] opacity-70"
+                                    : "cursor-pointer hover:border-primary/20 hover:bg-[#f7faff]",
+                                  checked && "border-primary/30 bg-primary/10 shadow-[0_6px_16px_rgba(37,99,235,0.06)]"
                                 )}
                               >
                                 <Checkbox
@@ -287,7 +287,7 @@ function AssignRolesDrawerBody({
                   <Field>
                     <FieldLabel>{t("user.changes")}</FieldLabel>
                     <FieldContent>
-                      <div className="space-y-3 rounded-lg border p-3">
+                      <div className="agentdesk-subtle-surface space-y-3 rounded-xl p-3">
                         <div>
                           <div className="mb-2 text-sm font-medium">{t("user.addedRoles")}</div>
                           {addedRoles.length > 0 ? (

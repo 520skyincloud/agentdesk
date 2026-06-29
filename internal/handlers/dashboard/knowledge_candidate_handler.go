@@ -81,6 +81,71 @@ func KnowledgeCandidatePostReject(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, services.KnowledgeCandidateService.Reject(req.ID, operator))
 }
 
+func KnowledgeCandidatePostBatch_approve(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.BatchReviewKnowledgeCandidateRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, services.KnowledgeCandidateService.BatchApprove(req.IDs, operator))
+}
+
+func KnowledgeCandidatePostBatch_reject(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.BatchReviewKnowledgeCandidateRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, services.KnowledgeCandidateService.BatchReject(req.IDs, operator))
+}
+
+func KnowledgeCandidatePostQuality_check(ctx *gin.Context) {
+	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.BatchReviewKnowledgeCandidateRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	ret, err := services.KnowledgeCandidateService.QualityCheck(req.IDs)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, ret)
+}
+
+func KnowledgeCandidatePostAnalyze_conversation(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.AnalyzeKnowledgeCandidateConversationRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	ret, err := services.KnowledgeCandidateService.AnalyzeConversation(req.ConversationID, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, ret)
+}
+
 func KnowledgeCandidatePostMark_imported(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
 	if err != nil {

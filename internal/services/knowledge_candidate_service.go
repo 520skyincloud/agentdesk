@@ -122,6 +122,199 @@ func (s *knowledgeCandidateService) Reject(id int64, operator *dto.AuthPrincipal
 	return s.review(id, enums.KnowledgeCandidateStatusRejected, operator)
 }
 
+func (s *knowledgeCandidateService) BatchApprove(ids []int64, operator *dto.AuthPrincipal) error {
+	return s.batchReview(ids, enums.KnowledgeCandidateStatusApproved, operator)
+}
+
+func (s *knowledgeCandidateService) BatchReject(ids []int64, operator *dto.AuthPrincipal) error {
+	return s.batchReview(ids, enums.KnowledgeCandidateStatusRejected, operator)
+}
+
+func (s *knowledgeCandidateService) QualityCheck(ids []int64) (*response.KnowledgeCandidateQualityCheckResponse, error) {
+	ids = uniquePositiveInt64s(ids)
+	if len(ids) == 0 {
+		return nil, errorsx.InvalidParam("请选择待归档问答")
+	}
+	ret := &response.KnowledgeCandidateQualityCheckResponse{
+		Reports: make([]response.KnowledgeCandidateQualityReport, 0, len(ids)),
+	}
+	for _, id := range ids {
+		item := s.Get(id)
+		if item == nil {
+			return nil, errorsx.InvalidParam("待归档问答不存在")
+		}
+		report := s.qualityCheckOne(item)
+		ret.Reports = append(ret.Reports, report)
+		switch report.Decision {
+		case "approve":
+			ret.ApproveIDs = append(ret.ApproveIDs, item.ID)
+		case "reject":
+			ret.RejectIDs = append(ret.RejectIDs, item.ID)
+		default:
+			ret.ReviewIDs = append(ret.ReviewIDs, item.ID)
+		}
+	}
+	return ret, nil
+}
+
+func (s *knowledgeCandidateService) AnalyzeConversation(conversationID int64, operator *dto.AuthPrincipal) (*response.KnowledgeCandidateAnalyzeResponse, error) {
+	if operator == nil {
+		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	conversation := ConversationService.Get(conversationID)
+	if conversation == nil {
+		return nil, errorsx.InvalidParam("会话不存在")
+	}
+	route := ConversationRouteService.GetByConversationID(conversationID)
+	if route == nil || route.StoreID <= 0 || route.KnowledgeBaseID <= 0 {
+		return &response.KnowledgeCandidateAnalyzeResponse{Skipped: true, Reason: "会话未绑定门店或知识库，不能归档"}, nil
+	}
+	messages := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("conversation_id", conversationID).
+		In("message_type", []string{string(enums.IMMessageTypeText), string(enums.IMMessageTypeHTML), string(enums.IMMessageTypeVoice)}).
+		Desc("id").Limit(40))
+	if len(messages) == 0 {
+		return &response.KnowledgeCandidateAnalyzeResponse{Skipped: true, Reason: "没有可分析的文本消息"}, nil
+	}
+	var answerMsg *models.Message
+	for i := range messages {
+		msg := &messages[i]
+		if msg.SenderType == enums.IMSenderTypeAgent && strings.TrimSpace(msg.Content) != "" {
+			answerMsg = msg
+			break
+		}
+	}
+	if answerMsg == nil {
+		return &response.KnowledgeCandidateAnalyzeResponse{Skipped: true, Reason: "没有人工客服的语言回答"}, nil
+	}
+	var questionMsg *models.Message
+	for i := range messages {
+		msg := &messages[i]
+		if msg.ID >= answerMsg.ID || msg.SenderType != enums.IMSenderTypeCustomer || strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
+		questionMsg = msg
+		break
+	}
+	if questionMsg == nil {
+		return &response.KnowledgeCandidateAnalyzeResponse{Skipped: true, Reason: "没有找到对应客户问题"}, nil
+	}
+	joined := strings.ToLower(questionMsg.Content + "\n" + answerMsg.Content)
+	if containsAny(joined, []string{"送水", "拖鞋", "维修", "打扫", "赔偿", "退款", "投诉", "报警", "身份证", "手机号"}) {
+		return &response.KnowledgeCandidateAnalyzeResponse{Skipped: true, Reason: "该对话更像行动/人工决策，不自动进入知识库"}, nil
+	}
+	candidate, err := s.UpsertCandidate(route.StoreID, route.KnowledgeBaseID, conversationID, []int64{questionMsg.ID, answerMsg.ID}, enums.KnowledgeCandidateSourceStoreWecom, questionMsg.Content, answerMsg.Content, "人工会话分析生成", answerMsg.Content, 0.72, operator.Username)
+	if err != nil {
+		return nil, err
+	}
+	return &response.KnowledgeCandidateAnalyzeResponse{Created: true, Candidate: buildAnalyzeKnowledgeCandidateResponse(candidate)}, nil
+}
+
+func buildAnalyzeKnowledgeCandidateResponse(item *models.KnowledgeCandidate) response.KnowledgeCandidateResponse {
+	if item == nil {
+		return response.KnowledgeCandidateResponse{}
+	}
+	return response.KnowledgeCandidateResponse{
+		ID:              item.ID,
+		StoreID:         item.StoreID,
+		KnowledgeBaseID: item.KnowledgeBaseID,
+		ConversationID:  item.ConversationID,
+		MessageIDs:      item.MessageIDs,
+		Source:          string(item.Source),
+		SourceName:      enums.GetKnowledgeCandidateSourceLabel(item.Source),
+		Question:        item.Question,
+		Answer:          item.Answer,
+		Summary:         item.Summary,
+		EvidenceText:    item.EvidenceText,
+		Frequency:       item.Frequency,
+		SimilarityKey:   item.SimilarityKey,
+		Status:          string(item.Status),
+		StatusName:      enums.GetKnowledgeCandidateStatusLabel(item.Status),
+		Confidence:      item.Confidence,
+		CreatedBy:       item.CreatedBy,
+		ReviewUserID:    item.ReviewUserID,
+		ReviewUserName:  item.ReviewUserName,
+		ReviewedAt:      item.ReviewedAt,
+		ExportedAt:      item.ExportedAt,
+		ImportedAt:      item.ImportedAt,
+		CreatedAt:       item.CreatedAt,
+		UpdatedAt:       item.UpdatedAt,
+	}
+}
+
+func (s *knowledgeCandidateService) qualityCheckOne(item *models.KnowledgeCandidate) response.KnowledgeCandidateQualityReport {
+	reasons := make([]string, 0, 4)
+	decision := "approve"
+	question := strings.TrimSpace(item.Question)
+	answer := strings.TrimSpace(item.Answer)
+	joined := strings.ToLower(question + "\n" + answer + "\n" + item.Summary + "\n" + item.EvidenceText)
+	if question == "" || answer == "" {
+		decision = "reject"
+		reasons = append(reasons, "缺少问题或答案，不能形成问答对")
+	}
+	if item.StoreID <= 0 || item.KnowledgeBaseID <= 0 {
+		decision = worseKnowledgeDecision(decision, "review")
+		reasons = append(reasons, "缺少门店或知识库归属，需要先绑定")
+	}
+	if containsAny(joined, []string{"送水", "拖鞋", "打扫", "维修", "叫醒", "行李", "已经安排", "已安排", "登记好了", "工单"}) {
+		decision = worseKnowledgeDecision(decision, "review")
+		reasons = append(reasons, "更像行动/工单类问题，不应直接沉淀成知识库 FAQ")
+	}
+	if containsAny(joined, []string{"退款", "赔偿", "赔付", "投诉", "报警", "身份证", "手机号", "隐私", "房卡丢", "安全"}) {
+		decision = worseKnowledgeDecision(decision, "review")
+		reasons = append(reasons, "涉及人工决策、隐私或安全，必须人工复核")
+	}
+	if item.Confidence > 0 && item.Confidence < 0.55 {
+		decision = worseKnowledgeDecision(decision, "review")
+		reasons = append(reasons, "置信度偏低，需要人工确认")
+	}
+	if item.Frequency >= 3 {
+		reasons = append(reasons, "出现频次较高，建议优先审核")
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "符合语言问答归档条件")
+	}
+	return response.KnowledgeCandidateQualityReport{
+		ID:              item.ID,
+		Decision:        decision,
+		DecisionName:    knowledgeDecisionName(decision),
+		Reasons:         reasons,
+		Question:        item.Question,
+		Answer:          item.Answer,
+		Frequency:       item.Frequency,
+		StoreID:         item.StoreID,
+		KnowledgeBaseID: item.KnowledgeBaseID,
+	}
+}
+
+func containsAny(text string, keywords []string) bool {
+	for _, keyword := range keywords {
+		if strings.Contains(text, strings.ToLower(keyword)) {
+			return true
+		}
+	}
+	return false
+}
+
+func worseKnowledgeDecision(current, next string) string {
+	rank := map[string]int{"approve": 0, "review": 1, "reject": 2}
+	if rank[next] > rank[current] {
+		return next
+	}
+	return current
+}
+
+func knowledgeDecisionName(decision string) string {
+	switch decision {
+	case "approve":
+		return "建议通过"
+	case "reject":
+		return "建议驳回"
+	default:
+		return "建议复核"
+	}
+}
+
 func (s *knowledgeCandidateService) MarkImported(id int64, operator *dto.AuthPrincipal) error {
 	item := s.Get(id)
 	if item == nil {
@@ -159,6 +352,37 @@ func (s *knowledgeCandidateService) review(id int64, status enums.KnowledgeCandi
 		"updated_at":       now,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
+	})
+}
+
+func (s *knowledgeCandidateService) batchReview(ids []int64, status enums.KnowledgeCandidateStatus, operator *dto.AuthPrincipal) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	ids = uniquePositiveInt64s(ids)
+	if len(ids) == 0 {
+		return errorsx.InvalidParam("请选择待归档问答")
+	}
+	now := time.Now()
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		for _, id := range ids {
+			item := repositories.KnowledgeCandidateRepository.Get(ctx.Tx, id)
+			if item == nil {
+				return errorsx.InvalidParam("待归档问答不存在")
+			}
+			if err := repositories.KnowledgeCandidateRepository.Updates(ctx.Tx, item.ID, map[string]any{
+				"status":           status,
+				"review_user_id":   operator.UserID,
+				"review_user_name": operator.Username,
+				"reviewed_at":      now,
+				"updated_at":       now,
+				"update_user_id":   operator.UserID,
+				"update_user_name": operator.Username,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

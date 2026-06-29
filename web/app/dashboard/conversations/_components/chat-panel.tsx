@@ -40,7 +40,7 @@ import {
   agentConversationSelectors,
   useAgentConversationsStore,
 } from "@/lib/stores/agent-conversations";
-import { formatDateTime } from "@/lib/utils";
+import { formatDateTime, repairMojibakeText } from "@/lib/utils";
 import { AgentMessageEditor } from "./agent-message-editor";
 
 const EMPTY_AGENT_MESSAGES: AgentMessage[] = [];
@@ -406,9 +406,9 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
 
   if (!conversation) {
     return (
-      <div className="mt-10 flex flex-1 items-center justify-center px-4">
-        <div className="text-center text-muted-foreground">
-          <p className="text-lg">{t("conversation.empty")}</p>
+      <div className="flex flex-1 items-center justify-center bg-[#edf1f6] px-4">
+        <div className="max-w-sm rounded-2xl border border-white bg-white px-8 py-10 text-center text-[#7a8599] shadow-[0_12px_32px_rgba(31,41,55,0.08)]">
+          <p className="text-base font-semibold text-foreground">{t("conversation.empty")}</p>
           <p className="mt-1 text-sm lg:hidden">
             {t("conversation.noConversationMobile")}
           </p>
@@ -423,10 +423,10 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   const messagesScroll = (
     <div
       ref={messagesContainerRef}
-      className="h-full min-h-0 flex-1 overflow-y-auto p-4 agent-desk-scrollbar"
+      className="agent-desk-scrollbar h-full min-h-0 flex-1 overflow-y-auto bg-[#edf1f6] px-5 py-6"
     >
       {isHandoffPending || isHandoffServing ? (
-        <div className={`mb-3 rounded-md border px-3 py-2 text-xs ${
+        <div className={`mx-auto mb-4 max-w-2xl rounded-lg border px-3 py-2 text-xs shadow-none ${
           isHandoffPending
             ? "border-destructive/25 bg-destructive/5 text-destructive"
             : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300"
@@ -443,6 +443,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
               type="button"
               variant="outline"
               size="sm"
+              className="rounded-md border-[#d9e2f2] bg-white shadow-none"
               disabled={messagesLoadingMore}
               onClick={() => void handleLoadOlder()}
             >
@@ -459,6 +460,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
             <MessageItem
               key={message.id}
               message={message}
+              customerAvatar={conversation.customerAvatar}
               onImageSettled={handleImageSettled}
               canRecall={message.senderType === "agent" && message.senderId === currentUserId}
               recalling={recallingMessageId === message.id}
@@ -477,14 +479,14 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   );
 
   const bottomPanel = (
-    <div className="h-full overflow-auto border-t border-border/80 bg-card">
+    <div className="h-full overflow-auto border-t border-[#e1e7f0] bg-white">
       {isClosedConversation ? (
-        <div className="h-full flex justify-center items-center">
+        <div className="flex h-full items-center justify-center bg-white text-sm text-muted-foreground">
           {t("conversation.closedNotice")}
         </div>
       ) : isPendingConversation ? (
-        <div className="h-full flex justify-center items-center">
-          <div className="flex items-center gap-2 h-full">
+        <div className="flex h-full items-center justify-center bg-white">
+          <div className="flex items-center gap-2 rounded-xl border border-[#edf1f7] bg-[#f7f9fd] px-5 py-4">
             <Button
               onClick={() => setClaimDialogOpen(true)}
               disabled={claiming}
@@ -596,7 +598,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
             <DialogDescription>
               {conversation
                 ? `${t("conversation.claimConfirmPrefix")}${
-                    conversation.customerName ||
+                    repairMojibakeText(conversation.customerName) ||
                     `${t("conversation.customerFallbackPrefix")}${conversation.customerId || conversation.id}`
                   }${t("conversation.claimConfirmSuffix")}`
                 : t("conversation.claimCurrent")}
@@ -643,7 +645,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 text-xs text-muted-foreground shadow-inner shadow-blue-100/30">
               群ID：{protocolRoomID || "当前不是群聊会话"}
             </div>
             <Textarea
@@ -693,6 +695,7 @@ function getProtocolRoomID(externalUserId?: string) {
 
 type MessageItemProps = {
   message: AgentMessage;
+  customerAvatar?: string;
   onImageSettled: () => void;
   canRecall: boolean;
   recalling: boolean;
@@ -702,6 +705,7 @@ type MessageItemProps = {
 const MessageItem = memo(
   function MessageItem({
     message,
+    customerAvatar,
     onImageSettled,
     canRecall,
     recalling,
@@ -714,17 +718,17 @@ const MessageItem = memo(
     const isAgentSide = message.senderType === "agent" || isAi;
     const isRecalled = Boolean(message.recalledAt) || message.sendStatus === 6;
     const senderName = isCustomer
-      ? message.senderName || t("conversation.customerSender")
+      ? repairMojibakeText(message.senderName) || t("conversation.customerSender")
       : isAi
         ? "AI"
-        : message.senderName || t("conversation.agentSender");
+        : repairMojibakeText(message.senderName) || t("conversation.agentSender");
     const senderBadge = isAi ? "AI回复" : isAgentSide ? "人工" : "客户";
     const sendStatusLabel = isAgentSide && !isRecalled ? IMMessageStatusLabels[message.sendStatus as keyof typeof IMMessageStatusLabels] : "";
     const senderBadgeClassName = isAi
       ? "border-primary/20 bg-primary/10 text-primary"
       : isAgentSide
         ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/15 dark:text-emerald-300"
-        : "border-border bg-muted text-muted-foreground";
+        : "border-[#dbe7f6] bg-[#f6f9ff] text-muted-foreground";
     const agentAvatarSrc =
       isAgentSide && !isAi && message.senderAvatar?.trim()
         ? message.senderAvatar.trim()
@@ -734,23 +738,23 @@ const MessageItem = memo(
       ? `<p>${t("conversation.messageRecalledHtml")}</p>`
       : buildMessageHTML(message);
     const bubbleClassName = isAi
-      ? "border border-primary/15 bg-primary/5 text-foreground shadow-sm"
+        ? "border border-[#dce6f5] bg-white text-foreground shadow-[0_6px_14px_rgba(31,41,55,0.05)]"
       : isAgentSide
-        ? "bg-emerald-600 text-white shadow-sm"
-        : "border border-border/70 bg-muted/60 text-foreground shadow-sm";
+        ? "bg-[#d9e7ff] text-[#263142] shadow-[0_4px_10px_rgba(31,41,55,0.035)]"
+        : "bg-white text-foreground shadow-[0_4px_10px_rgba(31,41,55,0.035)]";
     const htmlClassName = isAi
       ? "[&_a]:text-foreground [&_a]:underline [&_img]:rounded-md"
       : isAgentSide
-        ? "[&_p]:text-white [&_a]:text-white [&_a]:underline [&_img]:rounded-md"
+        ? "[&_p]:text-[#263142] [&_a]:text-[#263142] [&_a]:underline [&_img]:rounded-md"
         : "[&_a]:text-foreground [&_a]:underline [&_img]:rounded-md";
     const avatarClassName = isAi
       ? "border border-primary/20 bg-primary/10 text-xs text-foreground"
       : isAgentSide
-        ? "bg-emerald-600 text-xs text-white"
-        : "border border-border/70 bg-muted/60 text-xs text-foreground";
+        ? "bg-[#dfe8fb] text-xs text-[#526072]"
+        : "bg-white text-xs text-[#526072]";
     const recalledBubbleClassName = isAgentSide
       ? "border border-dashed border-emerald-200 bg-emerald-50 text-emerald-800"
-      : "border border-dashed border-border/70 bg-muted/40 text-muted-foreground";
+      : "border border-dashed border-[#dbe7f6] bg-[#f6f9ff] text-muted-foreground";
     const recalledHtmlClassName = isAgentSide
       ? "[&_p]:text-emerald-800"
       : "[&_p]:text-muted-foreground";
@@ -758,23 +762,23 @@ const MessageItem = memo(
 
     return (
       <div
-        className={`mb-4 flex items-start gap-2 ${
+        className={`mb-5 flex items-start gap-2 ${
           isAgentSide ? "justify-end" : "justify-start"
         }`}
       >
         {isAgentSide ? (
           <>
-            <div className="flex max-w-[70%] flex-col items-end">
-              <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex max-w-[72%] flex-col items-end">
+              <div className="mb-1 flex items-center gap-2 text-[11px] text-[#8b95a5]">
                 <span
-                  className={`rounded border px-1.5 py-0.5 text-[10px] leading-none ${senderBadgeClassName}`}
+                  className={`rounded-md border px-1.5 py-0.5 text-[10px] leading-none ${senderBadgeClassName}`}
                 >
                   {senderBadge}
                 </span>
                 {senderName}
               </div>
               <div
-                className={`w-fit rounded-2xl px-3 py-2 text-left ${
+                className={`w-fit rounded-[18px] rounded-tr-md px-3.5 py-2 text-left text-sm leading-6 ${
                   isRecalled ? recalledBubbleClassName : bubbleClassName
                 }`}
               >
@@ -785,7 +789,7 @@ const MessageItem = memo(
                   onImageClick={isRecalled ? undefined : openImageLightbox}
                 />
               </div>
-              <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="mt-1 flex items-center gap-2 text-[11px] text-[#8b95a5]">
                 <span>{formatDateTime(message.sentAt || "")}</span>
                 {isRecalled ? <span>{t("conversation.messageRecalled")}</span> : null}
                 {sendStatusLabel ? <span>{sendStatusLabel}</span> : null}
@@ -807,32 +811,32 @@ const MessageItem = memo(
                 ) : null}
               </div>
             </div>
-            <Avatar className="size-8 shrink-0">
+            <Avatar className="size-8 shrink-0 rounded-xl">
               <AvatarImage src={agentAvatarSrc ?? ""} />
-              <AvatarFallback className={avatarClassName}>
+              <AvatarFallback className={`${avatarClassName} rounded-xl`}>
                 {avatarFallback}
               </AvatarFallback>
             </Avatar>
           </>
         ) : (
           <>
-            <Avatar className="size-8 shrink-0">
-              <AvatarImage src="" />
-              <AvatarFallback className={avatarClassName}>
+            <Avatar className="size-8 shrink-0 rounded-xl">
+              <AvatarImage src={customerAvatar || ""} />
+              <AvatarFallback className={`${avatarClassName} rounded-xl`}>
                 {t("conversation.customerAvatar")}
               </AvatarFallback>
             </Avatar>
-            <div className="max-w-[70%]">
-              <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="max-w-[72%]">
+              <div className="mb-1 flex items-center gap-2 text-[11px] text-[#8b95a5]">
                 {senderName}
                 <span
-                  className={`rounded border px-1.5 py-0.5 text-[10px] leading-none ${senderBadgeClassName}`}
+                  className={`rounded-md border px-1.5 py-0.5 text-[10px] leading-none ${senderBadgeClassName}`}
                 >
                   {senderBadge}
                 </span>
               </div>
               <div
-                className={`w-fit rounded-2xl px-3 py-2 ${
+                className={`w-fit rounded-[18px] rounded-tl-md px-3.5 py-2 text-sm leading-6 ${
                   isRecalled ? recalledBubbleClassName : bubbleClassName
                 }`}
               >
@@ -843,7 +847,7 @@ const MessageItem = memo(
                   onImageClick={isRecalled ? undefined : openImageLightbox}
                 />
               </div>
-              <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="mt-1 flex items-center gap-2 text-[11px] text-[#8b95a5]">
                 <span>{formatDateTime(message.sentAt || "")}</span>
                 {isRecalled ? <span>{t("conversation.messageRecalled")}</span> : null}
               </div>

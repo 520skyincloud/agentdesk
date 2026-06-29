@@ -240,7 +240,7 @@ function MetaStrip({
   items: Array<{ label: string; value: string }>
 }) {
   return (
-    <div className="rounded-lg border bg-muted/20 px-4 py-3">
+    <div className="agentdesk-subtle-surface rounded-2xl px-4 py-3">
       <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
         {items.map((item) => (
           <div key={item.label} className="flex min-w-0 items-center gap-2">
@@ -255,7 +255,7 @@ function MetaStrip({
 
 function InfoBlock({ title, lines }: { title: string; lines: string[] }) {
   return (
-    <div className="rounded-lg border p-4">
+    <div className="agentdesk-subtle-surface rounded-2xl p-4">
       <div className="text-sm font-medium">{title}</div>
       <div className="mt-3 space-y-2 text-sm text-muted-foreground">
         {lines.map((line) => (
@@ -288,7 +288,7 @@ function TextBlock({
   }, [normalizedValue, renderAsHtml])
 
   return (
-    <div className="rounded-lg border p-4">
+    <div className="agentdesk-subtle-surface rounded-2xl p-4">
       <div className="flex items-center gap-2 text-sm font-medium">
         {icon}
         {title}
@@ -325,7 +325,7 @@ function JsonBlock({
   const normalizedFallback = fallbackValue?.trim() || ""
 
   return (
-    <div className="rounded-lg border p-4">
+    <div className="agentdesk-subtle-surface rounded-2xl p-4">
       <div className="text-sm font-medium">{title}</div>
       {jsonValue ? (
         <JsonTreeViewer value={jsonValue} className="mt-3" />

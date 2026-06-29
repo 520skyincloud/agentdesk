@@ -14,6 +14,8 @@ export type PageResult<T> = {
 
 export type TicketStatus = "pending" | "in_progress" | "done"
 export type TicketSource = "manual" | "conversation"
+export type TicketCategory = "general" | "delivery" | "cleaning" | "maintenance" | "wake_up" | "luggage" | "human_decision"
+export type TicketPriority = "low" | "normal" | "high" | "urgent"
 
 export type TicketCustomer = {
   id: number
@@ -45,6 +47,11 @@ export type TicketItem = {
   ticketNo: string
   title: string
   description: string
+  category: TicketCategory | string
+  categoryName: string
+  priority: TicketPriority | string
+  priorityName: string
+  roomNo: string
   source: TicketSource
   channel: string
   customerId: number
@@ -102,6 +109,9 @@ export type TicketListQuery = {
 export type CreateTicketPayload = {
   title: string
   description: string
+  category?: TicketCategory | string
+  priority?: TicketPriority | string
+  roomNo?: string
   source?: TicketSource
   channel?: string
   customerId?: number
@@ -114,6 +124,9 @@ export type CreateTicketFromConversationPayload = {
   conversationId: number
   title: string
   description: string
+  category?: TicketCategory | string
+  priority?: TicketPriority | string
+  roomNo?: string
   tagIds?: number[]
   currentAssigneeId?: number
 }
@@ -122,6 +135,9 @@ export type UpdateTicketPayload = {
   ticketId: number
   title: string
   description: string
+  category?: TicketCategory | string
+  priority?: TicketPriority | string
+  roomNo?: string
   tagIds?: number[]
   currentAssigneeId?: number
 }

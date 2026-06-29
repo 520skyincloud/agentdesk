@@ -287,7 +287,7 @@ func (s *dashboardService) buildAlerts(now time.Time, db *gorm.DB, aiAgents []mo
 			Title:       dashboardText(locale, "alert.aiNoKnowledge.title"),
 			Description: dashboardText(locale, "alert.aiNoKnowledge.description"),
 			Count:       aiAgentWithoutKnowledgeCount,
-			Link:        "/dashboard/ai-agents",
+			Link:        "/dashboard/conversations",
 		})
 	}
 
@@ -371,7 +371,7 @@ func buildDashboardQuickLinks(locale string) []response.DashboardQuickLinkRespon
 		{Title: dashboardText(locale, "quick.conversations.title"), Description: dashboardText(locale, "quick.conversations.description"), Link: "/dashboard/conversations"},
 		{Title: dashboardText(locale, "quick.agents.title"), Description: dashboardText(locale, "quick.agents.description"), Link: "/dashboard/agents"},
 		{Title: dashboardText(locale, "quick.knowledge.title"), Description: dashboardText(locale, "quick.knowledge.description"), Link: "/dashboard/knowledge"},
-		{Title: dashboardText(locale, "quick.aiAgents.title"), Description: dashboardText(locale, "quick.aiAgents.description"), Link: "/dashboard/ai-agents"},
+		{Title: dashboardText(locale, "quick.aiAgents.title"), Description: dashboardText(locale, "quick.aiAgents.description"), Link: "/dashboard/conversations"},
 		{Title: dashboardText(locale, "quick.channels.title"), Description: dashboardText(locale, "quick.channels.description"), Link: "/dashboard/channels"},
 	}
 }
@@ -463,8 +463,8 @@ var dashboardZhCN = map[string]string{
 	"quick.agents.description":          "查看客服状态与分组配置",
 	"quick.knowledge.title":             "知识库",
 	"quick.knowledge.description":       "维护文档与查看检索日志",
-	"quick.aiAgents.title":              "AI Agent",
-	"quick.aiAgents.description":        "配置 AI 接待策略与知识绑定",
+	"quick.aiAgents.title":              "员工号智能客服",
+	"quick.aiAgents.description":        "在会话页按员工号配置模型、提示词与门店知识库",
 	"quick.channels.title":              "接入渠道",
 	"quick.channels.description":        "管理接入渠道与默认 Agent",
 }
@@ -484,8 +484,8 @@ var dashboardEnUS = map[string]string{
 	"quick.agents.description":          "Check agent status and team setup",
 	"quick.knowledge.title":             "Knowledge base",
 	"quick.knowledge.description":       "Manage documents and review retrieval logs",
-	"quick.aiAgents.title":              "AI Agents",
-	"quick.aiAgents.description":        "Configure AI service policies and knowledge bindings",
+	"quick.aiAgents.title":              "Employee AI Service",
+	"quick.aiAgents.description":        "Configure models, prompts, and store knowledge per employee account",
 	"quick.channels.title":              "Channels",
 	"quick.channels.description":        "Manage channels and default agents",
 }

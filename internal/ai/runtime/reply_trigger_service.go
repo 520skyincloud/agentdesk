@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/tracex"
+	"agent-desk/internal/pkg/utils"
 	svc "agent-desk/internal/services"
 	"github.com/mlogclub/simple/sqls"
 )
@@ -18,6 +19,7 @@ import (
 const aiReplyDebounceWindow = 700 * time.Millisecond
 const aiReplyMediaSettleWindow = 4 * time.Second
 const aiReplyMediaContextWindow = 8 * time.Second
+const aiReplyBurstTextWindow = 8 * time.Second
 
 func (s *aiReplyService) resolveReplyTimeout(aiAgent models.AIAgent) time.Duration {
 	if aiAgent.ReplyTimeoutSeconds <= 0 {
@@ -86,6 +88,7 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 		replyCtx.PendingInterrupt = pendingInterrupt
 		return s.resumePendingInterrupt(ctx, replyCtx)
 	}
+	replyCtx.Message = s.mergeRecentCustomerBurstMessage(conversation.ID, message)
 	return s.executeReply(ctx, replyCtx)
 }
 
@@ -168,6 +171,37 @@ func mediaUnderstandingPending(payload string) bool {
 	default:
 		return true
 	}
+}
+
+func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, message models.Message) models.Message {
+	if conversationID <= 0 || message.ID <= 0 || message.SenderType != enums.IMSenderTypeCustomer || message.SentAt == nil {
+		return message
+	}
+	items := svc.MessageService.Find(sqls.NewCnd().
+		Eq("conversation_id", conversationID).
+		Eq("sender_type", enums.IMSenderTypeCustomer).
+		In("message_type", []string{string(enums.IMMessageTypeText), string(enums.IMMessageTypeVoice), string(enums.IMMessageTypeImage), string(enums.IMMessageTypeLocation), string(enums.IMMessageTypeMiniProgram), string(enums.IMMessageTypeAttachment)}).
+		Lte("id", message.ID).
+		Gte("sent_at", message.SentAt.Add(-aiReplyBurstTextWindow)).
+		Asc("id").
+		Limit(12))
+	if len(items) <= 1 {
+		return message
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		text := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(item.MessageType, item.Content, item.Payload))
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	if len(parts) <= 1 {
+		return message
+	}
+	merged := message
+	merged.Content = "客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\n" + strings.Join(parts, "\n")
+	return merged
 }
 
 func (s *aiReplyService) resumePendingInterrupt(ctx context.Context, replyCtx aiReplyContext) error {

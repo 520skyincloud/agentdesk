@@ -58,7 +58,7 @@ export function JsonViewer({
     return (
       <div
         className={cn(
-          "rounded-md border bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-400",
+          "rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-400 shadow-[0_10px_24px_rgba(15,23,42,0.12)]",
           className
         )}
       >
@@ -70,7 +70,7 @@ export function JsonViewer({
   return (
     <pre
       className={cn(
-        "overflow-x-auto rounded-md border bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-100",
+        "overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-100 shadow-[0_10px_24px_rgba(15,23,42,0.12)]",
         className
       )}
       dangerouslySetInnerHTML={{ __html: highlightJson(formatted) }}
