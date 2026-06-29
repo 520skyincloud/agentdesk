@@ -44,7 +44,6 @@ import { useAgentConversationRealtime } from "@/hooks/use-agent-conversation-rea
 import { useI18n } from "@/i18n/provider";
 import {
   checkWxWorkProtocolLoginQrcode,
-  deleteWxWorkProtocolInstance,
   fetchWxWorkProtocolInstances,
   startWxWorkProtocolLogin,
   syncWxWorkProtocolProfile,
@@ -126,16 +125,7 @@ export default function ConversationsPage() {
   };
 
   const cleanupPendingScanLogin = async () => {
-    const instance = scanLoginResult?.instance;
-    if (!instance?.id || scanLoginSucceededRef.current || instance.healthStatus !== "login_qrcode") {
-      return;
-    }
-    try {
-      await deleteWxWorkProtocolInstance(instance.id);
-      await loadWxWorkInstances();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "清理未完成扫码账号失败");
-    }
+    scanLoginSucceededRef.current = false;
   };
 
   const handleScanLoginOpenChange = (open: boolean) => {
@@ -150,11 +140,11 @@ export default function ConversationsPage() {
     scanLoginSucceededRef.current = false;
     setScanLoginLoading(true);
     setScanLoginResult(null);
-    setScanLoginStatus("正在向协议服务请求登录二维码...");
+    setScanLoginStatus("正在从协议平台空闲实例池绑定真实 guid，并生成登录二维码...");
     try {
       const result = await startWxWorkProtocolLogin();
       setScanLoginResult(result);
-      setScanLoginStatus("请用企业微信员工号扫码确认登录");
+      setScanLoginStatus("已绑定空闲实例，请用企业微信员工号扫码确认登录");
       await loadWxWorkInstances();
     } catch (error) {
       setScanLoginStatus(error instanceof Error ? error.message : "获取登录二维码失败");
@@ -677,7 +667,7 @@ export default function ConversationsPage() {
           <DialogHeader>
             <DialogTitle>扫码新增企微员工号</DialogTitle>
             <DialogDescription>
-              系统会先向 wework 协议服务创建真实登录二维码；扫码成功后，再到账号设置里绑定门店、知识库和客服组。
+              系统会先从协议平台实例列表绑定一个未占用的真实 guid，再按 wework.apifox.cn 的登录接口生成二维码。没有空闲实例时不会创建占位账号。
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4">
