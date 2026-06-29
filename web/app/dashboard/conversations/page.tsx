@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertTriangleIcon,
   ArrowRightLeftIcon,
   BotIcon,
   CircleUserRoundIcon,
@@ -47,6 +48,7 @@ import {
   checkWxWorkProtocolLoginQrcode,
   createWxWorkProtocolRemoteSetup,
   fetchWxWorkProtocolInstances,
+  resolveWxWorkProtocolLoginBinding,
   startWxWorkProtocolLogin,
   syncWxWorkProtocolProfile,
   type StartWxWorkProtocolLoginResult,
@@ -100,6 +102,8 @@ export default function ConversationsPage() {
   const [remoteSetupLoading, setRemoteSetupLoading] = useState(false);
   const [scanLoginResult, setScanLoginResult] = useState<StartWxWorkProtocolLoginResult | null>(null);
   const [scanLoginStatus, setScanLoginStatus] = useState("等待生成登录二维码");
+  const [scanLoginError, setScanLoginError] = useState("");
+  const [scanLoginResolving, setScanLoginResolving] = useState(false);
   const scanLoginSucceededRef = useRef(false);
   const scanLoginCheckingRef = useRef(false);
   const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([]);
@@ -143,6 +147,7 @@ export default function ConversationsPage() {
     scanLoginSucceededRef.current = false;
     setScanLoginLoading(true);
     setScanLoginResult(null);
+    setScanLoginError("");
     setScanLoginStatus("正在从协议平台空闲实例池绑定真实 guid，并生成登录二维码...");
     try {
       const result = await startWxWorkProtocolLogin();
@@ -150,10 +155,28 @@ export default function ConversationsPage() {
       setScanLoginStatus("已绑定空闲实例，请用企业微信员工号扫码确认登录");
       await loadWxWorkInstances();
     } catch (error) {
-      setScanLoginStatus(error instanceof Error ? error.message : "获取登录二维码失败");
-      toast.error(error instanceof Error ? error.message : "获取登录二维码失败");
+      const message = error instanceof Error ? error.message : "获取登录二维码失败";
+      setScanLoginError(message);
+      setScanLoginStatus(message);
+      toast.error(message);
     } finally {
       setScanLoginLoading(false);
+    }
+  };
+
+  const resolveScanLoginBinding = async () => {
+    setScanLoginResolving(true);
+    try {
+      await resolveWxWorkProtocolLoginBinding(0);
+      toast.success("已处理未登录的临时占用，正在重新生成二维码");
+      await startScanLogin();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "处理绑定占用失败";
+      setScanLoginError(message);
+      setScanLoginStatus(message);
+      toast.error(message);
+    } finally {
+      setScanLoginResolving(false);
     }
   };
 
@@ -723,7 +746,27 @@ export default function ConversationsPage() {
                 <div className="font-medium text-foreground">{scanLoginStatus}</div>
                 {scanLoginResult?.qrcodeContent ? <div className="mt-1 break-all">二维码内容：{scanLoginResult.qrcodeContent}</div> : null}
               </div>
-              <Button className="mt-4 w-full rounded-xl" onClick={() => void startScanLogin()} disabled={scanLoginLoading || remoteSetupLoading}>
+              {scanLoginError ? (
+                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium">实例绑定需要处理</div>
+                      <div className="mt-1 leading-5">
+                        系统只会清理未登录、未接过客户消息的临时占用；已经登录的员工号不会被自动解绑。
+                      </div>
+                      <Button
+                        className="mt-3 h-8 rounded-lg bg-amber-600 px-3 text-xs text-white hover:bg-amber-700"
+                        onClick={() => void resolveScanLoginBinding()}
+                        disabled={scanLoginResolving || scanLoginLoading || remoteSetupLoading}
+                      >
+                        {scanLoginResolving ? "处理中..." : "处理占用并重新生成"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              <Button className="mt-4 w-full rounded-xl" onClick={() => void startScanLogin()} disabled={scanLoginLoading || remoteSetupLoading || scanLoginResolving}>
                 <QrCodeIcon className="size-4" />
                 {scanLoginLoading ? "生成中..." : scanLoginResult ? "重新生成现场扫码" : "生成现场扫码"}
               </Button>

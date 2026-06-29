@@ -230,6 +230,7 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 	group.POST("/login_qrcode", dashboard.WxWorkProtocolInstancePostLogin_qrcode)
 	group.POST("/logout", dashboard.WxWorkProtocolInstancePostLogout)
 	group.POST("/recover", dashboard.WxWorkProtocolInstancePostRecover)
+	group.POST("/resolve_login_binding", dashboard.WxWorkProtocolInstancePostResolve_login_binding)
 	group.POST("/room_list", dashboard.WxWorkProtocolInstancePostRoom_list)
 	group.POST("/room_detail", dashboard.WxWorkProtocolInstancePostRoom_detail)
 	group.POST("/room_member_detail", dashboard.WxWorkProtocolInstancePostRoom_member_detail)

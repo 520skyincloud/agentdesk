@@ -235,6 +235,20 @@ func (s *wxWorkProtocolDevicePoolService) BindGUIDToInstance(guid string, instan
 	})
 }
 
+func (s *wxWorkProtocolDevicePoolService) ReleaseGUIDBinding(guid string) error {
+	guid = normalizeProtocolDeviceGUID(guid)
+	if guid == "" {
+		return nil
+	}
+	return repositories.WxWorkProtocolDevicePoolRepository.UpdateByGUID(sqls.DB(), guid, map[string]any{
+		"bound_wx_work_protocol_instance_id": 0,
+		"sync_status":                        "idle",
+		"remark":                             "已清理未登录临时占用，可重新扫码绑定",
+		"updated_at":                         time.Now(),
+		"update_user_name":                   wxWorkProtocolSystemOperatorName,
+	})
+}
+
 func (s *wxWorkProtocolDevicePoolService) fetchAdminInstances(operator *dto.AuthPrincipal) ([]wxWorkAdminListInstanceItem, error) {
 	token, settings, err := s.ensureAdminToken(operator)
 	if err != nil {

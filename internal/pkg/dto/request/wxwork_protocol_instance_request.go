@@ -50,6 +50,11 @@ type StartWxWorkProtocolLoginRequest struct {
 	Guid      string `json:"guid"`
 }
 
+type ResolveWxWorkProtocolLoginBindingRequest struct {
+	ChannelID int64  `json:"channelId"`
+	Guid      string `json:"guid"`
+}
+
 type CreateWxWorkProtocolRemoteSetupRequest struct {
 	ChannelID int64  `json:"channelId"`
 	Guid      string `json:"guid"`

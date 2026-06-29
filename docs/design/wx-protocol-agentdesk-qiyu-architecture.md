@@ -368,6 +368,16 @@ flowchart LR
 
 远程开户注册同样先占用一个真实空闲 `guid`，再生成 `remoteSetupToken`。门店打开 `/wxwork-remote-setup?token=...` 后只负责扫码和补充门店资料，不需要也不允许手填截图里的实例 ID。若以后协议平台提供官方“创建/初始化设备”接口，可以把第 1 步也纳入自动化；在接口未明确前，系统只绑定已存在且可用的设备。
 
+#### 13.2.1 未登录临时占用的处理
+
+新增账号弹窗必须给运营一个明确的“处理占用并重新生成”入口，不能只弹出“该协议设备 GUID 已绑定到其他员工号”后让流程卡死。后端处理规则如下：
+
+- 只允许清理未登录临时占用：`healthStatus` 为 `login_qrcode`、`remote_setup`、`pending_binding` 或 `unknown`，且没有 `employeeUserId`、没有员工名、远程配置未提交、没有该 `guid` 对应的真实客户会话映射。
+- `login_qrcode` 和 `remote_setup` 类型占用需超过最短保护时间后才允许自动释放，避免用户刚打开二维码还没来得及扫码就被清掉。
+- 已经登录、已经同步员工资料、已经接收过客户消息、已经提交远程门店配置的实例，绝不能被“处理占用”自动解绑。系统应返回具体账号名称，并提示去账号设置里执行退出登录/停用后再重新绑定。
+- 前端点击“处理占用并重新生成”时调用 `/api/dashboard/wxwork-protocol-instance/resolve_login_binding`；成功后重新调用 `/start_login` 出码。失败时保留错误提示，不显示假成功。
+- 实例池表的 `boundWxWorkProtocolInstanceId` 只是本地绑定索引，不是协议登录态本身。释放本地临时占用只把实例池标回 `idle` 并软删除未登录占位员工号，不调用协议侧退出登录接口，避免误伤真实在线账号。
+
 账号动作全部通过后端 service 调用 `wework.apifox.cn` 文档里的接口：
 
 | UI 动作 | 协议接口 | 关键 body |

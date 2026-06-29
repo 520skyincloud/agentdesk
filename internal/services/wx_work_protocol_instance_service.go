@@ -262,6 +262,9 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 		}
 	}
 	if existing := s.Take("guid = ? AND status <> ?", guid, enums.StatusDeleted); existing != nil {
+		if s.canReuseForLogin(existing, now) {
+			return existing, nil
+		}
 		return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他员工号")
 	}
 	item := &models.WxWorkProtocolInstance{
@@ -288,6 +291,53 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 	}
 	_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(guid, item.ID)
 	return item, nil
+}
+
+func (s *wxWorkProtocolInstanceService) ResolveLoginBinding(req request.ResolveWxWorkProtocolLoginBindingRequest, operator *dto.AuthPrincipal) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	channel, err := s.resolveEnabledProtocolChannel(req.ChannelID)
+	if err != nil {
+		return err
+	}
+	guid := normalizeProtocolDeviceGUID(req.Guid)
+	if guid == "" {
+		guid, err = s.claimStaleProtocolDeviceGUID(channel)
+		if err != nil {
+			return err
+		}
+	}
+	existing := s.Take("guid = ? AND status <> ?", guid, enums.StatusDeleted)
+	if existing == nil {
+		return WxWorkProtocolDevicePoolService.ReleaseGUIDBinding(guid)
+	}
+	if !s.canReleaseLoginBinding(existing, time.Now()) {
+		name := strings.TrimSpace(existing.EmployeeName)
+		if name == "" {
+			name = fmt.Sprintf("员工号 #%d", existing.ID)
+		}
+		return errorsx.InvalidParam("该实例已绑定到已登录账号「" + name + "」，不能自动解绑；请在账号设置中执行退出登录或手动停用后再重新扫码")
+	}
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := repositories.WxWorkProtocolInstanceRepository.Updates(ctx.Tx, existing.ID, map[string]any{
+			"status":           enums.StatusDeleted,
+			"remark":           strings.TrimSpace(existing.Remark + "\n已清理未登录临时占用，允许重新扫码绑定"),
+			"updated_at":       time.Now(),
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+		}); err != nil {
+			return err
+		}
+		return repositories.WxWorkProtocolDevicePoolRepository.UpdateByGUID(ctx.Tx, guid, map[string]any{
+			"bound_wx_work_protocol_instance_id": 0,
+			"sync_status":                        "idle",
+			"remark":                             "已清理未登录临时占用，可重新扫码绑定",
+			"updated_at":                         time.Now(),
+			"update_user_id":                     operator.UserID,
+			"update_user_name":                   operator.Username,
+		})
+	})
 }
 
 func (s *wxWorkProtocolInstanceService) GetRemoteSetupByToken(token string) (*models.WxWorkProtocolInstance, error) {
@@ -804,6 +854,76 @@ func (s *wxWorkProtocolInstanceService) claimAvailableProtocolDeviceGUID(channel
 		return guid, nil
 	}
 	return "", errorsx.InvalidParam("协议平台暂无可绑定的空闲实例，请先在协议平台初始化新设备")
+}
+
+func (s *wxWorkProtocolInstanceService) claimStaleProtocolDeviceGUID(channel *models.Channel) (string, error) {
+	if channel == nil {
+		return "", errorsx.InvalidParam("企微协议渠道不存在")
+	}
+	now := time.Now()
+	candidates := repositories.WxWorkProtocolDevicePoolRepository.Find(sqls.DB(), sqls.NewCnd().Eq("status", enums.StatusOk).Asc("id"))
+	for _, candidate := range candidates {
+		guid := normalizeProtocolDeviceGUID(candidate.Guid)
+		if guid == "" || devicePoolExpired(candidate.ExpiredAt, now) || candidate.BoundWxWorkProtocolInstanceID <= 0 {
+			continue
+		}
+		instance := s.Get(candidate.BoundWxWorkProtocolInstanceID)
+		if instance != nil && s.canReleaseLoginBinding(instance, now) {
+			return guid, nil
+		}
+	}
+	items := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().NotEq("status", enums.StatusDeleted).Asc("id"))
+	for _, item := range items {
+		if s.canReleaseLoginBinding(&item, now) {
+			guid := normalizeProtocolDeviceGUID(item.Guid)
+			if guid != "" {
+				return guid, nil
+			}
+		}
+	}
+	return "", errorsx.InvalidParam("没有找到可自动清理的未登录临时占用实例")
+}
+
+func (s *wxWorkProtocolInstanceService) canReuseForLogin(instance *models.WxWorkProtocolInstance, now time.Time) bool {
+	if instance == nil || instance.Status == enums.StatusDeleted {
+		return false
+	}
+	health := strings.TrimSpace(instance.HealthStatus)
+	if health != "login_qrcode" && health != "remote_setup" && health != "pending_binding" {
+		return false
+	}
+	return strings.TrimSpace(instance.EmployeeUserID) == "" && strings.TrimSpace(instance.EmployeeName) == ""
+}
+
+func (s *wxWorkProtocolInstanceService) canReleaseLoginBinding(instance *models.WxWorkProtocolInstance, now time.Time) bool {
+	if instance == nil || instance.Status == enums.StatusDeleted {
+		return false
+	}
+	health := strings.TrimSpace(instance.HealthStatus)
+	if health != "login_qrcode" && health != "remote_setup" && health != "pending_binding" && health != "unknown" {
+		return false
+	}
+	if strings.TrimSpace(instance.EmployeeUserID) != "" || strings.TrimSpace(instance.EmployeeName) != "" {
+		return false
+	}
+	if instance.RemoteSetupSubmittedAt != nil {
+		return false
+	}
+	if s.hasProtocolConversation(instance) {
+		return false
+	}
+	if health == "login_qrcode" || health == "remote_setup" {
+		return now.Sub(instance.CreatedAt) > 2*time.Minute
+	}
+	return true
+}
+
+func (s *wxWorkProtocolInstanceService) hasProtocolConversation(instance *models.WxWorkProtocolInstance) bool {
+	if instance == nil {
+		return false
+	}
+	prefix := "wx_protocol:" + strings.TrimSpace(instance.Guid) + ":"
+	return repositories.WxWorkKFConversationRepository.Count(sqls.DB(), sqls.NewCnd().Eq("channel_id", instance.ChannelID).Like("open_kf_id", prefix+"%")) > 0
 }
 
 type wxWorkProtocolDeviceCandidate struct {

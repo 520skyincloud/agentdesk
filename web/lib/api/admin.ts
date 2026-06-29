@@ -908,6 +908,13 @@ export function startWxWorkProtocolLogin(channelId?: number) {
   })
 }
 
+export function resolveWxWorkProtocolLoginBinding(channelId?: number, guid?: string) {
+  return request<void>("/api/dashboard/wxwork-protocol-instance/resolve_login_binding", {
+    method: "POST",
+    body: JSON.stringify({ channelId: channelId ?? 0, guid: guid ?? "" }),
+  })
+}
+
 export function createWxWorkProtocolRemoteSetup(payload: { channelId?: number; remark?: string }) {
   return request<WxWorkProtocolInstance>("/api/dashboard/wxwork-protocol-instance/create_remote_setup", {
     method: "POST",

@@ -108,6 +108,24 @@ func WxWorkProtocolInstancePostStart_login(ctx *gin.Context) {
 	})
 }
 
+func WxWorkProtocolInstancePostResolve_login_binding(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelCreate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.ResolveWxWorkProtocolLoginBindingRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.WxWorkProtocolInstanceService.ResolveLoginBinding(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
 func WxWorkProtocolInstancePostUpdate(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
 	if err != nil {
