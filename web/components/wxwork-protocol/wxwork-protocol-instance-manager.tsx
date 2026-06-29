@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { BellRingIcon, BotIcon, CopyIcon, LinkIcon, LocateFixedIcon, LogOutIcon, MapPinIcon, QrCodeIcon, RotateCwIcon, SquareIcon, UserRoundCogIcon, UsersRoundIcon } from "lucide-react"
+import { BellRingIcon, BotIcon, CopyIcon, LinkIcon, LocateFixedIcon, LogOutIcon, MapPinIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SquareIcon, UserRoundCogIcon, UsersRoundIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -10,6 +10,7 @@ import {
 } from "@/components/dashboard/crud"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import {
 	createWxWorkProtocolRemoteSetup,
 	createWxWorkProtocolInstance,
@@ -70,6 +71,9 @@ export function WxWorkProtocolInstanceManager({
   const [reloadKey, setReloadKey] = useState(0)
   const [aiAgentInstance, setAIAgentInstance] = useState<WxWorkProtocolInstance | null>(null)
   const [aiAgentSaving, setAIAgentSaving] = useState(false)
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [creatingLocal, setCreatingLocal] = useState(false)
+  const [creatingRemote, setCreatingRemote] = useState(false)
 
   useEffect(() => {
     async function loadOptions() {
@@ -125,6 +129,7 @@ export function WxWorkProtocolInstanceManager({
   }
 
   async function createLocalLoginInstance() {
+    setCreatingLocal(true)
     try {
       const item = await startWxWorkProtocolLogin(channels[0]?.id ?? 0)
       if (item.rawResponse?.trim()) {
@@ -134,10 +139,13 @@ export function WxWorkProtocolInstanceManager({
       notifyChanged()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "自动绑定空闲实例失败")
+    } finally {
+      setCreatingLocal(false)
     }
   }
 
   async function createRemoteSetupLink() {
+    setCreatingRemote(true)
     try {
       const item = await createWxWorkProtocolRemoteSetup({
         channelId: channels[0]?.id ?? 0,
@@ -149,6 +157,8 @@ export function WxWorkProtocolInstanceManager({
       notifyChanged()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "生成远程链接失败")
+    } finally {
+      setCreatingRemote(false)
     }
   }
 
@@ -232,40 +242,22 @@ export function WxWorkProtocolInstanceManager({
 
   return (
     <>
-    <div className="mb-4 grid gap-3 lg:grid-cols-2">
-      <div className="rounded-2xl border border-[#dbe7f6] bg-white p-4 shadow-[0_12px_32px_rgba(35,74,122,0.06)]">
-        <div className="flex items-start gap-3">
-          <div className="agentdesk-icon-tile"><QrCodeIcon className="size-4" /></div>
-          <div className="min-w-0 flex-1">
-            <div className="font-semibold text-foreground">新增方式一：总部现场扫码</div>
-            <p className="mt-1 text-sm leading-6 text-muted-foreground">适合账号负责人就在你旁边。系统先从协议平台空闲设备池绑定一个真实 guid，再在行操作里获取登录二维码。</p>
-          </div>
-        </div>
-        <Button type="button" variant="outline" className="mt-4 rounded-xl" onClick={() => void createLocalLoginInstance()}>
-          <QrCodeIcon className="size-4" />
-          自动绑定空闲实例
-        </Button>
-      </div>
-      <div className="rounded-2xl border border-[#dbe7f6] bg-white p-4 shadow-[0_12px_32px_rgba(35,74,122,0.06)]">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex items-start gap-3">
-            <div className="agentdesk-icon-tile"><LinkIcon className="size-4" /></div>
-            <div className="min-w-0">
-              <div className="font-semibold text-foreground">新增方式二：远程门店自助开户</div>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">生成链接发给外地门店，对方打开后扫码登录、填写门店名称/坐标/服务时间/通知群。</p>
-            </div>
-          </div>
-          <Button type="button" className="rounded-xl" onClick={() => void createRemoteSetupLink()}>
-            <LinkIcon className="size-4" />
-            生成并复制链接
-          </Button>
-        </div>
-      </div>
-    </div>
     <DashboardCrudPage<WxWorkProtocolInstance, CreateWxWorkProtocolInstancePayload>
       layout={layout}
       reloadKey={reloadKey}
       tableShellClassName={tableShellClassName}
+      renderToolbarActions={(state) => (
+        <>
+          <Button variant="outline" className="rounded-lg border-[#dce7f4] bg-card" onClick={state.onRefresh} disabled={state.loading}>
+            <RotateCwIcon className={state.loading ? "size-4 animate-spin" : "size-4"} />
+            刷新
+          </Button>
+          <Button className="rounded-lg" onClick={() => setCreateDialogOpen(true)}>
+            <PlusIcon className="size-4" />
+            新增账号
+          </Button>
+        </>
+      )}
       filters={[
         {
           name: "guid",
@@ -624,6 +616,48 @@ export function WxWorkProtocolInstanceManager({
       }}
       onSubmit={saveAIAgentConfig}
     />
+    <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+      <DialogContent className="max-w-3xl rounded-3xl p-5">
+        <DialogHeader>
+          <DialogTitle>新增企微员工号</DialogTitle>
+          <DialogDescription>
+            先从系统管理的实例池认领一个真实空闲 GUID，再走扫码登录。现场负责人在旁边用左侧；外地门店用右侧链接自助完成。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border border-[#dbe7f6] bg-white p-5 shadow-[0_12px_32px_rgba(35,74,122,0.06)]">
+            <div className="flex items-start gap-3">
+              <div className="agentdesk-icon-tile"><QrCodeIcon className="size-4" /></div>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-foreground">总部现场扫码</div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  适合账号负责人就在你旁边。点击后系统自动认领一个空闲实例，并生成登录二维码原文。
+                </p>
+              </div>
+            </div>
+            <Button type="button" variant="outline" className="mt-5 w-full rounded-xl" disabled={creatingLocal || creatingRemote} onClick={() => void createLocalLoginInstance()}>
+              <QrCodeIcon className="size-4" />
+              {creatingLocal ? "生成中" : "生成现场扫码"}
+            </Button>
+          </div>
+          <div className="rounded-2xl border border-[#dbe7f6] bg-white p-5 shadow-[0_12px_32px_rgba(35,74,122,0.06)]">
+            <div className="flex items-start gap-3">
+              <div className="agentdesk-icon-tile"><LinkIcon className="size-4" /></div>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-foreground">远程门店自助开户</div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  生成链接发给外地门店。对方打开后扫码登录，并填写门店名称、坐标、服务时间和通知群。
+                </p>
+              </div>
+            </div>
+            <Button type="button" className="mt-5 w-full rounded-xl" disabled={creatingLocal || creatingRemote} onClick={() => void createRemoteSetupLink()}>
+              <LinkIcon className="size-4" />
+              {creatingRemote ? "生成中" : "生成并复制链接"}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
     </>
   )
 }

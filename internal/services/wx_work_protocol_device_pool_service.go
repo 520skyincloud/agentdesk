@@ -34,6 +34,7 @@ const (
 	wxWorkDevicePoolConfigToken         = "wxwork_protocol_device_pool.token"
 	wxWorkDevicePoolConfigTokenExpire   = "wxwork_protocol_device_pool.token_expire_at"
 	defaultWxWorkDevicePoolAdminBaseURL = "https://chat-api.juhebot.com"
+	wxWorkDevicePoolTemporaryHoldTTL    = 30 * time.Minute
 )
 
 func newWxWorkProtocolDevicePoolService() *wxWorkProtocolDevicePoolService {
@@ -324,10 +325,18 @@ func (s *wxWorkProtocolDevicePoolService) postAdminJSON(baseURL, path, token str
 }
 
 func (s *wxWorkProtocolDevicePoolService) refreshLocalBindings(db *gorm.DB, now time.Time, operator *dto.AuthPrincipal) error {
+	if err := db.Model(&models.WxWorkProtocolDevicePoolInstance{}).Where("status <> ?", enums.StatusDeleted).Updates(map[string]any{
+		"bound_wx_work_protocol_instance_id": 0,
+		"updated_at":                         now,
+		"update_user_id":                     operator.UserID,
+		"update_user_name":                   operator.Username,
+	}).Error; err != nil {
+		return err
+	}
 	instances := repositories.WxWorkProtocolInstanceRepository.Find(db, sqls.NewCnd().NotEq("status", enums.StatusDeleted))
 	for _, instance := range instances {
 		guid := normalizeProtocolDeviceGUID(instance.Guid)
-		if guid == "" {
+		if guid == "" || !wxWorkProtocolInstanceBlocksDevicePool(instance, now) {
 			continue
 		}
 		_ = repositories.WxWorkProtocolDevicePoolRepository.UpdateByGUID(db, guid, map[string]any{
@@ -486,6 +495,20 @@ func devicePoolBoundStatus(healthStatus string) string {
 		return "bound"
 	}
 	return healthStatus
+}
+
+func wxWorkProtocolInstanceBlocksDevicePool(instance models.WxWorkProtocolInstance, now time.Time) bool {
+	if instance.Status == enums.StatusDeleted {
+		return false
+	}
+	healthStatus := strings.TrimSpace(instance.HealthStatus)
+	if healthStatus == "login_qrcode" && now.Sub(instance.CreatedAt) > wxWorkDevicePoolTemporaryHoldTTL {
+		return false
+	}
+	if healthStatus == "remote_setup" && instance.RemoteSetupSubmittedAt == nil && now.Sub(instance.CreatedAt) > wxWorkDevicePoolTemporaryHoldTTL {
+		return false
+	}
+	return true
 }
 
 func devicePoolExpired(expiredAt *time.Time, now time.Time) bool {

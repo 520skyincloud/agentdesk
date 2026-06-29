@@ -167,6 +167,7 @@ export type DashboardCrudPageProps<TItem, TPayload> = {
   layout?: "page" | "fragment"
   showToolbar?: boolean
   showToolbarActions?: boolean
+  renderToolbarActions?: (state: DashboardCrudActionState) => ReactNode
   tableShellClassName?: string
   onActionStateChange?: (state: DashboardCrudActionState) => void
   labels: {
@@ -210,6 +211,7 @@ export function DashboardCrudPage<TItem, TPayload>({
   layout = "page",
   showToolbar = true,
   showToolbarActions = true,
+  renderToolbarActions,
   tableShellClassName,
   onActionStateChange,
   labels,
@@ -566,6 +568,13 @@ export function DashboardCrudPage<TItem, TPayload>({
         <DashboardToolbar
           actions={
             showToolbarActions ? (
+              renderToolbarActions ? (
+                renderToolbarActions({
+                  onRefresh: () => void loadData(),
+                  onCreate: openCreateDialog,
+                  loading,
+                })
+              ) : (
               <>
                 <Button variant="outline" className="rounded-lg border-[#dce7f4] bg-card" onClick={() => void loadData()} disabled={loading}>
                   <RefreshCwIcon className={loading ? "animate-spin" : undefined} />
@@ -576,6 +585,7 @@ export function DashboardCrudPage<TItem, TPayload>({
                   {labels.create}
                 </Button>
               </>
+              )
             ) : null
           }
         >

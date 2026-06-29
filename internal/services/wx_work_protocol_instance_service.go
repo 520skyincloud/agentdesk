@@ -769,7 +769,11 @@ func (s *wxWorkProtocolInstanceService) fetchProtocolDevicePool(cfg *dto.WxWorkP
 func (s *wxWorkProtocolInstanceService) boundProtocolGUIDs() map[string]bool {
 	items := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().NotEq("status", enums.StatusDeleted))
 	ret := make(map[string]bool, len(items))
+	now := time.Now()
 	for i := range items {
+		if !wxWorkProtocolInstanceBlocksDevicePool(items[i], now) {
+			continue
+		}
 		guid := normalizeProtocolDeviceGUID(items[i].Guid)
 		if guid != "" {
 			ret[guid] = true
