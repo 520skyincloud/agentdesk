@@ -140,6 +140,17 @@ type WxWorkProtocolRoomMemberDetailRequest struct {
 	UserList []string `json:"userList"`
 }
 
+type WxWorkProtocolRoomDetailRequest struct {
+	ID       int64    `json:"id"`
+	RoomList []string `json:"roomList"`
+}
+
+type WxWorkProtocolSyncRoomInfoRequest struct {
+	ID      int64  `json:"id"`
+	RoomID  string `json:"roomId"`
+	Version int    `json:"version"`
+}
+
 type UpdateWxWorkProtocolAIAgentRequest struct {
 	ID int64 `json:"id"`
 	CreateAIAgentRequest

@@ -20,17 +20,20 @@ import (
 )
 
 func WxWorkProtocolInstanceAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	list, paging := services.WxWorkProtocolInstanceService.FindPageByCnd(params.NewPagedSqlCnd(ctx,
+	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "guid", Op: params.Like},
 		params.QueryFilter{ParamName: "channelId"},
 		params.QueryFilter{ParamName: "storeId"},
 		params.QueryFilter{ParamName: "knowledgeBaseId"},
-	).Where("status <> ?", enums.StatusDeleted).Where("health_status <> ?", "login_qrcode").Desc("id"))
+	).Where("status <> ?", enums.StatusDeleted).Where("health_status <> ?", "login_qrcode").Desc("id")
+	cnd = services.AgentTeamScopeService.ApplyWxWorkInstanceFilter(cnd, operator)
+	list, paging := services.WxWorkProtocolInstanceService.FindPageByCnd(cnd)
 	results := make([]response.WxWorkProtocolInstanceResponse, 0, len(list))
 	for _, item := range list {
 		results = append(results, buildWxWorkProtocolInstanceResponse(&item))
@@ -402,6 +405,42 @@ func WxWorkProtocolInstancePostRoom_member_detail(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, parseWxWorkProtocolRoomMemberOptions(resp))
 }
 
+func WxWorkProtocolInstancePostRoom_detail(ctx *gin.Context) {
+	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.WxWorkProtocolRoomDetailRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	resp, err := services.WxWorkProtocolService.BatchGetRoomDetail(req.ID, req.RoomList)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, parseWxWorkProtocolRoomOptions(resp))
+}
+
+func WxWorkProtocolInstancePostSync_room_info(ctx *gin.Context) {
+	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.WxWorkProtocolSyncRoomInfoRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	resp, err := services.WxWorkProtocolService.SyncRoomInfo(req.ID, req.RoomID, req.Version)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, resp)
+}
+
 func writeWxWorkProtocolActionResponse(ctx *gin.Context, action func(int64) (string, error)) {
 	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -448,6 +487,12 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) re
 	if store := services.StoreService.Get(item.StoreID); store != nil {
 		ret.StoreCode = store.StoreCode
 		ret.StoreName = utils.RepairMojibakeText(store.Name)
+	}
+	if runtime := services.StoreStaffBindingService.ResolveForInstance(item); runtime.ManagedMode != "" {
+		ret.ManagedMode = runtime.ManagedMode
+		if runtime.BindingID > 0 {
+			ret.StoreStaffBindingID = runtime.BindingID
+		}
 	}
 	if knowledgeBase := services.KnowledgeBaseService.Get(item.KnowledgeBaseID); knowledgeBase != nil {
 		ret.KnowledgeBaseName = utils.RepairMojibakeText(knowledgeBase.Name)

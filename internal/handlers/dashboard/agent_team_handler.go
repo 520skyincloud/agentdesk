@@ -128,6 +128,7 @@ func buildAgentTeamResponse(item *models.AgentTeam) response.AgentTeamResponse {
 		ID:                     item.ID,
 		Name:                   item.Name,
 		LeaderUserID:           item.LeaderUserID,
+		CompanyScopeIDs:        utils.SplitInt64s(item.CompanyScopeIDs),
 		StoreScopeIDs:          utils.SplitInt64s(item.StoreScopeIDs),
 		WxWorkInstanceScopeIDs: utils.SplitInt64s(item.WxWorkInstanceScopeIDs),
 		Status:                 item.Status,

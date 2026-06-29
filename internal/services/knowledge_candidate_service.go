@@ -97,6 +97,9 @@ func (s *knowledgeCandidateService) Update(req request.UpdateKnowledgeCandidateR
 	if item == nil {
 		return errorsx.InvalidParam("待归档问答不存在")
 	}
+	if !s.canReviewCandidate(item, operator) {
+		return errorsx.Forbidden("无权限维护该门店知识进化候选")
+	}
 	status := item.Status
 	if strings.TrimSpace(req.Status) != "" {
 		status = enums.KnowledgeCandidateStatus(strings.TrimSpace(req.Status))
@@ -320,6 +323,9 @@ func (s *knowledgeCandidateService) MarkImported(id int64, operator *dto.AuthPri
 	if item == nil {
 		return errorsx.InvalidParam("待归档问答不存在")
 	}
+	if !s.canReviewCandidate(item, operator) {
+		return errorsx.Forbidden("无权限维护该门店知识进化候选")
+	}
 	now := time.Now()
 	updates := map[string]any{
 		"status":           enums.KnowledgeCandidateStatusImported,
@@ -370,6 +376,9 @@ func (s *knowledgeCandidateService) batchReview(ids []int64, status enums.Knowle
 			if item == nil {
 				return errorsx.InvalidParam("待归档问答不存在")
 			}
+			if !s.canReviewCandidate(item, operator) {
+				return errorsx.Forbidden("无权限维护该门店知识进化候选")
+			}
 			if err := repositories.KnowledgeCandidateRepository.Updates(ctx.Tx, item.ID, map[string]any{
 				"status":           status,
 				"review_user_id":   operator.UserID,
@@ -384,6 +393,22 @@ func (s *knowledgeCandidateService) batchReview(ids []int64, status enums.Knowle
 		}
 		return nil
 	})
+}
+
+func (s *knowledgeCandidateService) canReviewCandidate(item *models.KnowledgeCandidate, operator *dto.AuthPrincipal) bool {
+	if item == nil || operator == nil {
+		return false
+	}
+	scope := AgentTeamScopeService.Resolve(operator)
+	if scope.Unrestricted {
+		return true
+	}
+	for _, id := range scope.KnowledgeBaseIDs {
+		if id == item.KnowledgeBaseID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *knowledgeCandidateService) ExportWeekly(req request.ExportKnowledgeCandidateWeeklyRequest, operator *dto.AuthPrincipal) (*response.KnowledgeCandidateExportResponse, error) {

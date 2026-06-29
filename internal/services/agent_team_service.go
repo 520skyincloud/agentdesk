@@ -81,7 +81,7 @@ func (s *agentTeamService) CreateAgentTeam(req request.CreateAgentTeamRequest, o
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item, err := s.buildTeamModel(0, req.Name, req.LeaderUserID, req.StoreScopeIDs, req.WxWorkInstanceScopeIDs, req.Status, req.Description, req.Remark)
+	item, err := s.buildTeamModel(0, req.Name, req.LeaderUserID, req.CompanyScopeIDs, req.StoreScopeIDs, req.WxWorkInstanceScopeIDs, req.Status, req.Description, req.Remark)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (s *agentTeamService) UpdateAgentTeam(req request.UpdateAgentTeamRequest, o
 	if current == nil || current.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("客服组不存在")
 	}
-	item, err := s.buildTeamModel(req.ID, req.Name, req.LeaderUserID, req.StoreScopeIDs, req.WxWorkInstanceScopeIDs, req.Status, req.Description, req.Remark)
+	item, err := s.buildTeamModel(req.ID, req.Name, req.LeaderUserID, req.CompanyScopeIDs, req.StoreScopeIDs, req.WxWorkInstanceScopeIDs, req.Status, req.Description, req.Remark)
 	if err != nil {
 		return err
 	}
@@ -108,6 +108,7 @@ func (s *agentTeamService) UpdateAgentTeam(req request.UpdateAgentTeamRequest, o
 	return repositories.AgentTeamRepository.Updates(sqls.DB(), req.ID, map[string]any{
 		"name":                       item.Name,
 		"leader_user_id":             item.LeaderUserID,
+		"company_scope_ids":          item.CompanyScopeIDs,
 		"store_scope_ids":            item.StoreScopeIDs,
 		"wx_work_instance_scope_ids": item.WxWorkInstanceScopeIDs,
 		"status":                     item.Status,
@@ -151,7 +152,7 @@ func (s *agentTeamService) DeleteAgentTeam(id int64, operator *dto.AuthPrincipal
 	})
 }
 
-func (s *agentTeamService) buildTeamModel(id int64, name string, leaderUserID int64, storeScopeIDs, wxWorkInstanceScopeIDs []int64, status int, description, remark string) (*models.AgentTeam, error) {
+func (s *agentTeamService) buildTeamModel(id int64, name string, leaderUserID int64, companyScopeIDs, storeScopeIDs, wxWorkInstanceScopeIDs []int64, status int, description, remark string) (*models.AgentTeam, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errorsx.InvalidParam("客服组名称不能为空")
@@ -168,6 +169,7 @@ func (s *agentTeamService) buildTeamModel(id int64, name string, leaderUserID in
 	return &models.AgentTeam{
 		Name:                   name,
 		LeaderUserID:           leaderUserID,
+		CompanyScopeIDs:        utils.JoinInt64s(companyScopeIDs),
 		StoreScopeIDs:          utils.JoinInt64s(storeScopeIDs),
 		WxWorkInstanceScopeIDs: utils.JoinInt64s(wxWorkInstanceScopeIDs),
 		Status:                 enums.Status(status),

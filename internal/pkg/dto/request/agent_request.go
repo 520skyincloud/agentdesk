@@ -30,6 +30,7 @@ type DeleteAgentProfileRequest struct {
 type CreateAgentTeamRequest struct {
 	Name                   string  `json:"name"`
 	LeaderUserID           int64   `json:"leaderUserId"`
+	CompanyScopeIDs        []int64 `json:"companyScopeIds"`
 	StoreScopeIDs          []int64 `json:"storeScopeIds"`
 	WxWorkInstanceScopeIDs []int64 `json:"wxWorkInstanceScopeIds"`
 	Status                 int     `json:"status"`
@@ -41,6 +42,7 @@ type UpdateAgentTeamRequest struct {
 	ID                     int64   `json:"id"`
 	Name                   string  `json:"name"`
 	LeaderUserID           int64   `json:"leaderUserId"`
+	CompanyScopeIDs        []int64 `json:"companyScopeIds"`
 	StoreScopeIDs          []int64 `json:"storeScopeIds"`
 	WxWorkInstanceScopeIDs []int64 `json:"wxWorkInstanceScopeIds"`
 	Status                 int     `json:"status"`

@@ -9,6 +9,7 @@ import (
 
 	"agent-desk/internal/events"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -92,14 +93,23 @@ func (s *conversationHumanDispatchService) HandoffByAIWithRequestID(conversation
 	}
 	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
 	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, time.Now())
-	if len(activeTeamIDs) > 0 && s.canUseStoreRoomHandoff(conversationID) {
+	runtime := s.resolveStoreStaffRuntime(conversationID)
+	now := time.Now()
+	if runtime.NoWxWorkInstance && len(activeTeamIDs) > 0 {
 		if err := s.markStoreRoomHandoff(conversationID, aiAgent, reason, requestID); err != nil {
 			return nil, err
 		}
 		_ = s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffStoreManualMessage, requestID)
 		return &HandoffDecisionResult{Decision: HandoffDecisionStoreWecom, Message: HandoffStoreManualMessage}, nil
 	}
-	if !s.canFallbackToHQ(conversationID) {
+	if s.shouldRouteToStoreRoom(runtime, now, len(activeTeamIDs) > 0) {
+		if err := s.markStoreRoomHandoff(conversationID, aiAgent, reason, requestID); err != nil {
+			return nil, err
+		}
+		_ = s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffStoreManualMessage, requestID)
+		return &HandoffDecisionResult{Decision: HandoffDecisionStoreWecom, Message: HandoffStoreManualMessage}, nil
+	}
+	if runtime.ManagedMode == constants.StoreManagedModeNone || !runtime.FallbackToHQ {
 		if _, err := s.TryOffHoursHandoffByAIWithRequestID(conversationID, aiAgent, reason, requestID); err != nil {
 			return nil, err
 		}
@@ -145,21 +155,41 @@ func (s *conversationHumanDispatchService) markManualHandoffRequested(conversati
 }
 
 func (s *conversationHumanDispatchService) canUseStoreRoomHandoff(conversationID int64) bool {
-	route := ConversationRouteService.GetByConversationID(conversationID)
-	if route == nil || route.WxWorkInstanceID <= 0 {
-		return false
-	}
-	instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
-	return instance != nil && instance.StoreRoomNotifyEnabled && strings.TrimSpace(instance.StoreRoomConversationID) != ""
+	return s.storeRoomConfigured(s.resolveStoreStaffRuntime(conversationID))
 }
 
 func (s *conversationHumanDispatchService) canFallbackToHQ(conversationID int64) bool {
+	runtime := s.resolveStoreStaffRuntime(conversationID)
+	return runtime.ManagedMode != constants.StoreManagedModeNone && runtime.FallbackToHQ
+}
+
+func (s *conversationHumanDispatchService) resolveStoreStaffRuntime(conversationID int64) StoreStaffRuntimeConfig {
 	route := ConversationRouteService.GetByConversationID(conversationID)
 	if route == nil || route.WxWorkInstanceID <= 0 {
-		return true
+		return StoreStaffRuntimeConfig{ManagedMode: constants.StoreManagedModeSemi, FallbackToHQ: true, ManualTimeoutMinutes: 10, NoWxWorkInstance: true}
 	}
-	instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
-	return instance == nil || instance.FallbackToHQ
+	return StoreStaffBindingService.ResolveForInstance(WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID))
+}
+
+func (s *conversationHumanDispatchService) shouldRouteToStoreRoom(runtime StoreStaffRuntimeConfig, now time.Time, hasActiveTeamSchedule bool) bool {
+	if !s.storeRoomConfigured(runtime) {
+		return false
+	}
+	switch runtime.ManagedMode {
+	case constants.StoreManagedModeFull:
+		return false
+	case constants.StoreManagedModeNone:
+		return true
+	default:
+		if strings.TrimSpace(runtime.ServiceHours) == "" {
+			return hasActiveTeamSchedule
+		}
+		return isWithinStoreServiceHours(runtime.ServiceHours, now)
+	}
+}
+
+func (s *conversationHumanDispatchService) storeRoomConfigured(runtime StoreStaffRuntimeConfig) bool {
+	return runtime.StoreRoomNotifyEnabled && strings.TrimSpace(runtime.StoreRoomConversationID) != ""
 }
 
 func (s *conversationHumanDispatchService) ApplyHumanOnlyCreate(conversationID int64, aiAgent models.AIAgent) (*HandoffDecisionResult, error) {
@@ -440,12 +470,16 @@ func (s *conversationHumanDispatchService) notifyStoreRoomHandoff(conversationID
 		return
 	}
 	instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
-	if instance == nil || !instance.StoreRoomNotifyEnabled || strings.TrimSpace(instance.StoreRoomConversationID) == "" {
+	if instance == nil {
+		return
+	}
+	runtime := StoreStaffBindingService.ResolveForInstance(instance)
+	if !s.storeRoomConfigured(runtime) {
 		return
 	}
 	content := s.buildStoreRoomHandoffNotice(conversation, instance, reason)
-	atList := uniqueNonBlankStrings(strings.Split(instance.StoreRoomAtList, ","))
-	if err := ChannelMessageOutboxService.EnqueueWxWorkProtocolStoreRoomNotice(conversationID, instance.ID, instance.StoreRoomConversationID, content, atList); err != nil {
+	atList := uniqueNonBlankStrings(strings.Split(runtime.StoreRoomAtList, ","))
+	if err := ChannelMessageOutboxService.EnqueueWxWorkProtocolStoreRoomNotice(conversationID, instance.ID, runtime.StoreRoomConversationID, content, atList); err != nil {
 		slog.Warn("enqueue store room handoff notice failed", "conversation_id", conversationID, "wx_work_instance_id", instance.ID, "error", err)
 	}
 }
@@ -506,6 +540,70 @@ func uniqueNonBlankStrings(values []string) []string {
 		ret = append(ret, item)
 	}
 	return ret
+}
+
+func isWithinStoreServiceHours(serviceHours string, now time.Time) bool {
+	serviceHours = strings.TrimSpace(serviceHours)
+	if serviceHours == "" {
+		return false
+	}
+	normalized := strings.NewReplacer("；", ";", "，", ",", "、", ",", " ", "").Replace(serviceHours)
+	parts := strings.FieldsFunc(normalized, func(r rune) bool { return r == ',' || r == ';' || r == '|' || r == '\n' })
+	current := now.Hour()*60 + now.Minute()
+	for _, part := range parts {
+		if isWithinStoreServiceHourRange(part, current) {
+			return true
+		}
+	}
+	return false
+}
+
+func isWithinStoreServiceHourRange(value string, currentMinute int) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	value = strings.NewReplacer("~", "-", "至", "-", "到", "-").Replace(value)
+	pieces := strings.Split(value, "-")
+	if len(pieces) != 2 {
+		return false
+	}
+	start, ok := parseStoreServiceClock(pieces[0])
+	if !ok {
+		return false
+	}
+	end, ok := parseStoreServiceClock(pieces[1])
+	if !ok {
+		return false
+	}
+	if start == end {
+		return true
+	}
+	if start < end {
+		return currentMinute >= start && currentMinute <= end
+	}
+	return currentMinute >= start || currentMinute <= end
+}
+
+func parseStoreServiceClock(value string) (int, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	var hour, minute int
+	if strings.Contains(value, ":") {
+		if _, err := fmt.Sscanf(value, "%d:%d", &hour, &minute); err != nil {
+			return 0, false
+		}
+	} else {
+		if _, err := fmt.Sscanf(value, "%d", &hour); err != nil {
+			return 0, false
+		}
+	}
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, false
+	}
+	return hour*60 + minute, true
 }
 
 func uniquePositiveInt64sFromStrings(values []string) []int64 {

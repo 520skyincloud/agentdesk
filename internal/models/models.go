@@ -26,6 +26,7 @@ var Models = []any{
 	&Tag{},
 	&Conversation{},
 	&Store{},
+	&StoreStaffBinding{},
 	&WxWorkProtocolDevicePoolInstance{},
 	&WxWorkProtocolInstance{},
 	&ConversationParticipant{},
@@ -415,6 +416,24 @@ type Store struct {
 	AuditFields
 }
 
+// StoreStaffBinding 表示门店员工登录 AgentDesk 后和公司/门店的唯一绑定。
+type StoreStaffBinding struct {
+	ID                      int64        `gorm:"primaryKey;autoIncrement"`
+	UserID                  int64        `gorm:"type:bigint;not null;default:0;index"`
+	CompanyID               int64        `gorm:"type:bigint;not null;default:0;index"`
+	StoreID                 int64        `gorm:"type:bigint;not null;default:0;uniqueIndex"`
+	ManagedMode             string       `gorm:"type:varchar(20);not null;default:'semi';index"`
+	ServiceHours            string       `gorm:"type:varchar(200);not null;default:''"`
+	StoreRoomConversationID string       `gorm:"type:varchar(128);not null;default:'';index"`
+	StoreRoomNotifyEnabled  bool         `gorm:"not null;default:false"`
+	StoreRoomAtList         string       `gorm:"type:varchar(500);not null;default:''"`
+	FallbackToHQ            bool         `gorm:"not null;default:true"`
+	ManualTimeoutMinutes    int          `gorm:"type:int;not null;default:10"`
+	Status                  enums.Status `gorm:"type:int;not null;default:0;index"`
+	Remark                  string       `gorm:"type:text"`
+	AuditFields
+}
+
 // WxWorkProtocolInstance 记录一个门店企微员工号实例及其唯一门店/知识库绑定。
 type WxWorkProtocolInstance struct {
 	ID                             int64        `gorm:"primaryKey;autoIncrement"`
@@ -424,6 +443,7 @@ type WxWorkProtocolInstance struct {
 	EmployeeName                   string       `gorm:"type:varchar(120);not null;default:''"`
 	EmployeeAvatar                 string       `gorm:"type:varchar(1024);not null;default:''"`
 	StoreID                        int64        `gorm:"type:bigint;not null;default:0;index"`
+	StoreStaffBindingID            int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreAddress                   string       `gorm:"type:varchar(500);not null;default:''"`
 	StoreNavigationName            string       `gorm:"type:varchar(200);not null;default:''"`
 	StoreLongitude                 string       `gorm:"type:varchar(50);not null;default:''"`
@@ -821,6 +841,7 @@ type AgentTeam struct {
 	ID                     int64        `gorm:"primaryKey;autoIncrement"`                    // ID 为客服组主键。
 	Name                   string       `gorm:"type:varchar(100);not null;default:'';index"` // Name 为客服组名称。
 	LeaderUserID           int64        `gorm:"type:bigint;not null;default:0;index"`        // LeaderUserID 为组长用户ID，0 表示暂未设置。
+	CompanyScopeIDs        string       `gorm:"type:varchar(500);not null;default:''"`       // CompanyScopeIDs 为客服组可管理的公司ID，逗号分隔；为空则由门店范围反推。
 	StoreScopeIDs          string       `gorm:"type:varchar(500);not null;default:''"`       // StoreScopeIDs 为客服组可服务的门店ID，逗号分隔；为空表示不限制。
 	WxWorkInstanceScopeIDs string       `gorm:"type:varchar(500);not null;default:''"`       // WxWorkInstanceScopeIDs 为客服组可服务的企微员工号实例ID，逗号分隔；为空表示不限制。
 	Status                 enums.Status `gorm:"type:int;not null;default:0;index"`           // Status 表示客服组状态

@@ -21,7 +21,8 @@ import (
 )
 
 func KnowledgeBaseAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -30,6 +31,7 @@ func KnowledgeBaseAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "name", Op: params.Like},
 	).Asc("sort_no").Desc("id")
+	cnd = services.AgentTeamScopeService.ApplyKnowledgeBaseFilter(cnd, operator)
 	list, paging := services.KnowledgeBaseService.FindPageByCnd(cnd)
 	results := make([]response.KnowledgeBaseResponse, 0, len(list))
 	for _, item := range list {
@@ -44,14 +46,17 @@ func KnowledgeBaseAnyList(ctx *gin.Context) {
 }
 
 func KnowledgeBaseAnyList_all(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 
-	list := services.KnowledgeBaseService.Find(params.NewSqlCnd(ctx,
+	cnd := params.NewSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
-	).Asc("sort_no").Desc("id"))
+	).Asc("sort_no").Desc("id")
+	cnd = services.AgentTeamScopeService.ApplyKnowledgeBaseFilter(cnd, operator)
+	list := services.KnowledgeBaseService.Find(cnd)
 	results := make([]response.KnowledgeBaseResponse, 0, len(list))
 	for _, item := range list {
 		resp := builders.BuildKnowledgeBase(&item)
@@ -65,7 +70,8 @@ func KnowledgeBaseGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -73,6 +79,10 @@ func KnowledgeBaseGetBy(ctx *gin.Context) {
 	item := services.KnowledgeBaseService.Get(id)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("知识库不存在"))
+		return
+	}
+	if !services.KnowledgeBaseService.CanAccessKnowledgeBase(item.ID, operator) {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权限查看该知识库"))
 		return
 	}
 	resp := builders.BuildKnowledgeBase(item)
@@ -121,7 +131,8 @@ func KnowledgeBasePostUpdate(ctx *gin.Context) {
 }
 
 func KnowledgeBasePostDelete(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseDelete); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseDelete)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -133,7 +144,7 @@ func KnowledgeBasePostDelete(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.KnowledgeBaseService.DeleteKnowledgeBase(req.ID); err != nil {
+	if err := services.KnowledgeBaseService.DeleteKnowledgeBase(req.ID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

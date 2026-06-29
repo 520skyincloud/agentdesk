@@ -60,6 +60,7 @@ type TeamEditDialogProps = {
 const emptyForm: EditForm = {
   name: "",
   leaderUserId: "0",
+  companyScopeIds: "",
   storeScopeIds: "",
   wxWorkInstanceScopeIds: "",
   status: String(Status.Ok),
@@ -70,6 +71,7 @@ const emptyForm: EditForm = {
 type EditForm = {
   name: string;
   leaderUserId: string;
+  companyScopeIds: string;
   storeScopeIds: string;
   wxWorkInstanceScopeIds: string;
   status: string;
@@ -81,6 +83,7 @@ function createEditFormSchema(t: TFunction) {
   return z.object({
   name: z.string().trim().min(1, t("agentProfile.teamNameRequired")),
   leaderUserId: z.string().trim().regex(/^\d+$/, t("agentProfile.leaderInvalid")),
+  companyScopeIds: z.string().trim(),
   storeScopeIds: z.string().trim(),
   wxWorkInstanceScopeIds: z.string().trim(),
   status: z.enum([String(Status.Ok), String(Status.Disabled)], {
@@ -105,6 +108,7 @@ function buildForm(item: AdminAgentTeam | null): EditForm {
   return {
     name: item.name,
     leaderUserId: String(item.leaderUserId),
+    companyScopeIds: (item.companyScopeIds || []).join(","),
     storeScopeIds: (item.storeScopeIds || []).join(","),
     wxWorkInstanceScopeIds: (item.wxWorkInstanceScopeIds || []).join(","),
     status: String(item.status),
@@ -117,6 +121,7 @@ function buildPayload(form: EditForm): CreateAdminAgentTeamPayload {
   return {
     name: form.name.trim(),
     leaderUserId: Number(form.leaderUserId),
+    companyScopeIds: parseIdList(form.companyScopeIds),
     storeScopeIds: parseIdList(form.storeScopeIds),
     wxWorkInstanceScopeIds: parseIdList(form.wxWorkInstanceScopeIds),
     status: Number(form.status),
@@ -334,6 +339,16 @@ function TeamEditDialogBody({
                   )}
                 />
                 <FieldError errors={[errors.status]} />
+              </FieldContent>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="agent-team-company-scope-ids">可管理公司ID</FieldLabel>
+              <FieldContent>
+                <Input
+                  id="agent-team-company-scope-ids"
+                  placeholder="多个用逗号分隔；组长可管理这些公司下的门店知识库"
+                  {...register("companyScopeIds")}
+                />
               </FieldContent>
             </Field>
             <Field>

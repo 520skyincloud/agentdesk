@@ -14,7 +14,8 @@ import (
 )
 
 func KnowledgeCandidateAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -25,6 +26,7 @@ func KnowledgeCandidateAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "question", Op: params.Like},
 	).Desc("frequency").Desc("id")
+	cnd = services.AgentTeamScopeService.ApplyKnowledgeCandidateFilter(cnd, operator)
 	list, paging := services.KnowledgeCandidateService.FindPageByCnd(cnd)
 	results := builders.BuildKnowledgeCandidateList(list)
 	for i := range results {

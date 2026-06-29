@@ -9,6 +9,12 @@ const (
 )
 
 const (
+	StoreManagedModeFull = "full"
+	StoreManagedModeSemi = "semi"
+	StoreManagedModeNone = "none"
+)
+
+const (
 	AuthTokenPrefix = "ak_"
 )
 

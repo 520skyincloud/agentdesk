@@ -710,6 +710,7 @@ export type AdminAgentTeam = {
   id: number
   name: string
   leaderUserId: number
+  companyScopeIds: number[]
   storeScopeIds: number[]
   wxWorkInstanceScopeIds: number[]
   leaderUsername?: string
@@ -722,6 +723,7 @@ export type AdminAgentTeam = {
 export type CreateAdminAgentTeamPayload = {
   name: string
   leaderUserId: number
+  companyScopeIds: number[]
   storeScopeIds: number[]
   wxWorkInstanceScopeIds: number[]
   status: number
@@ -968,6 +970,27 @@ export function fetchWxWorkProtocolRoomMembers(payload: {
   return request<WxWorkProtocolRoomMemberOption[]>("/api/dashboard/wxwork-protocol-instance/room_member_detail", {
     method: "POST",
     body: JSON.stringify({ id: payload.id, roomId: payload.roomId, userList: payload.userList ?? [] }),
+  })
+}
+
+export function fetchWxWorkProtocolRoomDetails(payload: {
+  id: number
+  roomList: string[]
+}) {
+  return request<WxWorkProtocolRoomOption[]>('/api/dashboard/wxwork-protocol-instance/room_detail', {
+    method: 'POST',
+    body: JSON.stringify({ id: payload.id, roomList: payload.roomList }),
+  })
+}
+
+export function syncWxWorkProtocolRoomInfo(payload: {
+  id: number
+  roomId: string
+  version?: number
+}) {
+  return request<string>('/api/dashboard/wxwork-protocol-instance/sync_room_info', {
+    method: 'POST',
+    body: JSON.stringify({ id: payload.id, roomId: payload.roomId, version: payload.version ?? 0 }),
   })
 }
 

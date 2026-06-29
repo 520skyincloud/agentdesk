@@ -260,23 +260,30 @@ func (s *wxWorkProtocolService) CallDocumentedAPI(instanceID int64, path string,
 		return "", errorsx.InvalidParam("企微协议接口路径必须以 / 开头")
 	}
 	allowed := map[string]bool{
-		"/msg/send_room_at":        true,
-		"/msg/send_big_video":      true,
-		"/msg/send_gif_url":        true,
-		"/msg/apply_voice_id":      true,
-		"/msg/query_voice_text":    true,
-		"/msg/confirm_msg":         true,
-		"/msg/revoke_msg":          true,
-		"/msg/report_unread":       true,
-		"/msg/send_forward_msg":    true,
-		"/msg/send_feed_live":      true,
-		"/msg/send_quote_msg":      true,
-		"/msg/send_finder_product": true,
+		"/msg/send_room_at":           true,
+		"/msg/send_big_video":         true,
+		"/msg/send_gif_url":           true,
+		"/msg/apply_voice_id":         true,
+		"/msg/query_voice_text":       true,
+		"/msg/confirm_msg":            true,
+		"/msg/revoke_msg":             true,
+		"/msg/report_unread":          true,
+		"/msg/send_forward_msg":       true,
+		"/msg/send_feed_live":         true,
+		"/msg/send_quote_msg":         true,
+		"/msg/send_finder_product":    true,
+		"/room/batch_get_room_detail": true,
+		"/room/sync_room_info":        true,
 	}
 	if !allowed[path] {
 		return "", errorsx.InvalidParam("企微协议接口未加入白名单，禁止猜测调用")
 	}
 	return s.callInstanceAPI(instanceID, path, body, nil)
+}
+
+func (s *wxWorkProtocolService) ReportConversationRead(instanceID int64, conversationID string) (string, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	return s.callInstanceAPI(instanceID, "/msg/report_unread", map[string]any{"conversation_id": conversationID}, nil)
 }
 
 func (s *wxWorkProtocolService) AgreeContact(instanceID int64, userID string, corpID string) (string, error) {
@@ -329,6 +336,34 @@ func (s *wxWorkProtocolService) BatchGetRoomMemberDetail(instanceID int64, roomI
 		"room_id":   roomID,
 		"user_list": cleanUsers,
 	}, nil)
+}
+
+func (s *wxWorkProtocolService) BatchGetRoomDetail(instanceID int64, roomList []string) (string, error) {
+	cleanRooms := make([]string, 0, len(roomList))
+	seen := map[string]struct{}{}
+	for _, item := range roomList {
+		roomID := strings.TrimSpace(strings.TrimPrefix(item, "R:"))
+		if roomID == "" {
+			continue
+		}
+		if _, ok := seen[roomID]; ok {
+			continue
+		}
+		seen[roomID] = struct{}{}
+		cleanRooms = append(cleanRooms, roomID)
+	}
+	return s.callInstanceAPI(instanceID, "/room/batch_get_room_detail", map[string]any{"room_list": cleanRooms}, nil)
+}
+
+func (s *wxWorkProtocolService) SyncRoomInfo(instanceID int64, roomID string, version int) (string, error) {
+	roomID = strings.TrimSpace(strings.TrimPrefix(roomID, "R:"))
+	if roomID == "" {
+		return "", errorsx.InvalidParam("群ID不能为空")
+	}
+	if version < 0 {
+		version = 0
+	}
+	return s.callInstanceAPI(instanceID, "/room/sync_room_info", map[string]any{"room_id": roomID, "version": version}, nil)
 }
 
 func (s *wxWorkProtocolService) InviteRoomMember(instanceID int64, roomID string, userList []string) error {
@@ -1242,7 +1277,19 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	}
 	wxMsgID := s.sentMessageID(instance.Guid, resp, outbox.ID)
 	_ = s.createMessageRef(conversation.ID, message.ID, instance, strings.TrimSpace(mapping.ExternalUserID), wxMsgID, resp, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent)
+	if message.SenderType == enums.IMSenderTypeAI {
+		go s.reportConversationReadAfterAIReply(instance.ID, protocolConversationID, conversation.ID, message.ID)
+	}
 	return nil
+}
+
+func (s *wxWorkProtocolService) reportConversationReadAfterAIReply(instanceID int64, protocolConversationID string, conversationID int64, messageID int64) {
+	if strings.TrimSpace(protocolConversationID) == "" {
+		return
+	}
+	if _, err := s.ReportConversationRead(instanceID, protocolConversationID); err != nil {
+		slog.Warn("report wxwork conversation read after ai reply failed", "instance_id", instanceID, "conversation_id", conversationID, "message_id", messageID, "error", err)
+	}
 }
 
 func (s *wxWorkProtocolService) isStoreRoomNoticeOutbox(outbox models.ChannelMessageOutbox) bool {

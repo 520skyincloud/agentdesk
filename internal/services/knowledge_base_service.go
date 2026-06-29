@@ -97,6 +97,9 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(req request.UpdateKnowledgeBa
 	if current == nil {
 		return errorsx.InvalidParam("知识库不存在")
 	}
+	if !s.CanAccessKnowledgeBase(current.ID, operator) {
+		return errorsx.Forbidden("无权限维护该知识库")
+	}
 	item, err := s.buildKnowledgeBaseModel(req.CreateKnowledgeBaseRequest)
 	if err != nil {
 		return err
@@ -120,10 +123,13 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(req request.UpdateKnowledgeBa
 	})
 }
 
-func (s *knowledgeBaseService) DeleteKnowledgeBase(id int64) error {
+func (s *knowledgeBaseService) DeleteKnowledgeBase(id int64, operator *dto.AuthPrincipal) error {
 	current := s.Get(id)
 	if current == nil {
 		return errorsx.InvalidParam("知识库不存在")
+	}
+	if !s.CanAccessKnowledgeBase(current.ID, operator) {
+		return errorsx.Forbidden("无权限删除该知识库")
 	}
 	docCount := repositories.KnowledgeDocumentRepository.CountByKnowledgeBaseID(sqls.DB(), id)
 	if docCount > 0 {
@@ -135,6 +141,22 @@ func (s *knowledgeBaseService) DeleteKnowledgeBase(id int64) error {
 	}
 	repositories.KnowledgeBaseRepository.Delete(sqls.DB(), id)
 	return nil
+}
+
+func (s *knowledgeBaseService) CanAccessKnowledgeBase(id int64, operator *dto.AuthPrincipal) bool {
+	if id <= 0 || operator == nil {
+		return false
+	}
+	scope := AgentTeamScopeService.Resolve(operator)
+	if scope.Unrestricted {
+		return true
+	}
+	for _, allowedID := range scope.KnowledgeBaseIDs {
+		if allowedID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *knowledgeBaseService) UpdateSort(ids []int64) error {

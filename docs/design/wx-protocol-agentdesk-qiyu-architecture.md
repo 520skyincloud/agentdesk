@@ -787,28 +787,37 @@ flowchart TD
 
 后续门店员工自助页应只出现门店资料、服务时间、群通知、坐标、客服排班等业务配置，不出现协议 GUID、回调、代理、Bridge 等字段。总部账号管理可以看实例池和健康状态，门店页面不承担协议运维职责。
 
-### 13.11 门店群选择器与按时间段人工路由
+### 13.11 门店群选择器、托管模式与人工路由
 
-转人工有两条出口，但不是靠客服手工选择，而是按时间段和门店配置自动决策：
+转人工有总部网页端和门店群两条出口，但不是靠客服临时手工选择，而是由门店员工系统账号上的托管模式自动决策。门店员工通过企业微信 OAuth/扫码登录 AgentDesk 后创建的是系统账号，不是协议实例账号；该系统账号通过 `StoreStaffBinding` 绑定公司和门店，每个门店只允许一个绑定，协议实例再通过 `storeStaffBindingId` 绑定到这个门店员工系统账号。托管模式、服务时间、通知群和 @ 成员最终以 `StoreStaffBinding` 为准，实例旧字段只做迁移兼容。
 
-1. 当前时间命中门店服务时间，并且员工号已开启“值班时间优先提醒门店群”，且绑定了门店群：系统创建门店群提醒 outbox，通过当前员工号向该群发送转人工提醒，内容包含客户名称、当前问题摘要和会话入口。门店员工在原企业微信群或后续门店工作台处理。
-2. 当前时间不命中门店服务时间、未开启群提醒、未绑定群、群发送失败或策略要求总部兜底：会话进入总部网页端待接管队列，显示感叹号和弹窗，由总部客服组分配/接管。
+三类托管模式：
+
+1. 全托管 `full`：客户转人工始终进入总部网页端待接管，显示弹窗和感叹号，不向门店群发提醒。
+2. 半托管 `semi`：命中门店服务时间且已绑定门店群时，创建门店群提醒 outbox；否则进入总部网页端待接管。服务时间支持 `HH:mm-HH:mm`、`HH-HH` 以及逗号/分号分隔的多时间段，解析失败按未命中服务时间处理。
+3. 非托管 `none`：客户转人工始终向门店群发提醒，绝不进入总部网页端；未配置群时只记录配置告警和客户侧提示，避免违背非托管设定。
 
 门店群不允许手写 `conversation_id`。账号编辑里新增“门店群和 @ 成员”选择器：
 
 - 点击“刷新群列表”调用 wework 文档接口 `/room/get_room_list`，body 由后端注入 `guid`，前端只传当前账号 `id/startIndex/limit`。
 - 返回结果按宽松结构解析为 `roomId/conversationId/name/owner/memberCount`。保存时仍落库为 `storeRoomConversationId=R:<room_id>`，符合消息发送 `conversation_id` 规则。
+- 已知群 ID 或回调中新发现群 ID 时，调用 `/room/batch_get_room_detail`，body 为 `guid/room_list`，先校验群仍可用并补全群名、群主、成员数等详情。
+- 需要刷新群信息时，调用 `/room/sync_room_info`，body 为 `guid/room_id/version`，`version` 默认 `0`；如果协议响应返回版本号，后续持久化后用于增量同步。
 - 选择群后点击“读取群成员”调用 `/room/batch_get_member_detail`，body 为 `guid/room_id/user_list`。如果上游支持 `user_list=[]` 返回全部成员，则前端展示成员复选框；如果上游只支持按指定用户批量取详情而不返回全部成员，界面提示“当前接口未返回成员列表”，不要求门店员工猜填 ID。
 - @ 成员保存为 `storeRoomAtList`，多个成员用逗号分隔；`0` 表示 @ 全员，对应 wework 文档中群 @ 接口 `at_list` 的约定。
 
-当前后端新增两个 dashboard 包装接口：
+当前后端新增四个 dashboard 包装接口：
 
 | AgentDesk 接口 | 协议接口 | 说明 |
 | --- | --- | --- |
 | `POST /api/dashboard/wxwork-protocol-instance/room_list` | `/room/get_room_list` | 获取当前员工号可选客户群，严格使用文档字段 `guid/start_index/limit` |
+| `POST /api/dashboard/wxwork-protocol-instance/room_detail` | `/room/batch_get_room_detail` | 对已知群 ID 批量取详情，严格使用文档字段 `guid/room_list` |
+| `POST /api/dashboard/wxwork-protocol-instance/sync_room_info` | `/room/sync_room_info` | 增量同步群信息，严格使用文档字段 `guid/room_id/version` |
 | `POST /api/dashboard/wxwork-protocol-instance/room_member_detail` | `/room/batch_get_member_detail` | 获取群成员详情，严格使用文档字段 `guid/room_id/user_list` |
 
-实现注意：wework 文档这两个接口响应 schema 均为 string，所以上游真实结构需要通过运行时原文宽松解析。解析器只识别已出现的 `room_id/roomId/conversation_id/name/member_count/user_id/vid/username/avatar` 等展示字段，并保留原始项用于审计；不得凭空补造成员 ID 或群 ID。
+实现注意：wework 文档这些接口响应 schema 均为 string，所以上游真实结构需要通过运行时原文宽松解析。解析器只识别已出现的 `room_id/roomId/conversation_id/name/member_count/user_id/vid/username/avatar` 等展示字段，并保留原始项用于审计；不得凭空补造成员 ID 或群 ID。
+
+AI 文本或富媒体回复通过 `wxwork_protocol` outbox 成功发送后，如果消息发送者是 `ai`，后端异步调用 `/msg/report_unread` 标记企微会话已读。请求体只使用文档字段 `guid/conversation_id`；`guid` 由当前协议实例注入，`conversation_id` 取当前会话映射中的协议会话 ID。已读接口失败只写结构化日志，不改变 outbox `sent` 状态，也不重发客户消息。
 
 ### 13.12 新增账号弹窗与远程门店开户边界
 
