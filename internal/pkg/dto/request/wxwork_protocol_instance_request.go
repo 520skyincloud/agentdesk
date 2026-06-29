@@ -22,6 +22,7 @@ type CreateWxWorkProtocolInstanceRequest struct {
 	Proxy                          string `json:"proxy"`
 	BridgeID                       string `json:"bridgeId"`
 	StaffUserIDs                   string `json:"staffUserIds"`
+	ManagedMode                    string `json:"managedMode"`
 	ServiceHours                   string `json:"serviceHours"`
 	StoreRoomConversationID        string `json:"storeRoomConversationId"`
 	StoreRoomNotifyEnabled         bool   `json:"storeRoomNotifyEnabled"`
@@ -71,6 +72,7 @@ type UpdateWxWorkProtocolRemoteSetupRequest struct {
 	StoreLatitude           string `json:"storeLatitude"`
 	StoreMapProvider        string `json:"storeMapProvider"`
 	KnowledgeBaseID         int64  `json:"knowledgeBaseId"`
+	ManagedMode             string `json:"managedMode"`
 	ServiceHours            string `json:"serviceHours"`
 	StoreRoomConversationID string `json:"storeRoomConversationId"`
 	StoreRoomNotifyEnabled  bool   `json:"storeRoomNotifyEnabled"`
@@ -102,6 +104,7 @@ type UpdateWxWorkProtocolAISettingsRequest struct {
 	ServiceHours                   string `json:"serviceHours"`
 	ManualTimeoutMinutes           int    `json:"manualTimeoutMinutes"`
 	StaffUserIDs                   string `json:"staffUserIds"`
+	ManagedMode                    string `json:"managedMode"`
 	FallbackToHQ                   bool   `json:"fallbackToHQ"`
 	StoreRoomConversationID        string `json:"storeRoomConversationId"`
 	StoreRoomNotifyEnabled         bool   `json:"storeRoomNotifyEnabled"`

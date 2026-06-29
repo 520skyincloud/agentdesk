@@ -258,6 +258,7 @@ export type WxWorkProtocolInstance = {
   proxy: string
   bridgeId: string
   staffUserIds: string
+  managedMode: string
   serviceHours: string
   storeRoomConversationId: string
   storeRoomNotifyEnabled: boolean
@@ -375,6 +376,7 @@ export type CreateWxWorkProtocolInstancePayload = {
   proxy: string
   bridgeId: string
   staffUserIds: string
+  managedMode: string
   serviceHours: string
   storeRoomConversationId: string
   storeRoomNotifyEnabled: boolean
@@ -400,6 +402,7 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   serviceHours: string
   manualTimeoutMinutes: number
   staffUserIds: string
+  managedMode: string
   fallbackToHQ: boolean
   storeRoomConversationId: string
   storeRoomNotifyEnabled: boolean

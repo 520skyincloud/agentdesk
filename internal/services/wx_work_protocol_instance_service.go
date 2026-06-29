@@ -194,6 +194,9 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
 		return nil, err
 	}
+	if err := s.syncStoreStaffBindingFromInstanceRequest(item, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator); err != nil {
+		return nil, err
+	}
 	_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(guid, item.ID)
 	return item, nil
 }
@@ -335,7 +338,14 @@ func (s *wxWorkProtocolInstanceService) UpdateRemoteSetup(req request.UpdateWxWo
 		}
 		updates["guid"] = guid
 	}
-	return repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), item.ID, updates)
+	if err := repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), item.ID, updates); err != nil {
+		return err
+	}
+	updated := s.Get(item.ID)
+	if updated == nil {
+		return nil
+	}
+	return s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, nil)
 }
 
 func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkProtocolInstanceRequest, operator *dto.AuthPrincipal) error {
@@ -365,7 +375,7 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	if status != enums.StatusOk && status != enums.StatusDisabled {
 		status = current.Status
 	}
-	return repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	if err := repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), req.ID, map[string]any{
 		"guid":                               guid,
 		"channel_id":                         req.ChannelID,
 		"employee_user_id":                   strings.TrimSpace(req.EmployeeUserID),
@@ -405,7 +415,14 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		"updated_at":                         time.Now(),
 		"update_user_id":                     operator.UserID,
 		"update_user_name":                   operator.Username,
-	})
+	}); err != nil {
+		return err
+	}
+	updated := s.Get(req.ID)
+	if updated == nil {
+		return nil
+	}
+	return s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator)
 }
 
 func (s *wxWorkProtocolInstanceService) SetAIReplyEnabled(instanceID int64, enabled bool, operator *dto.AuthPrincipal) error {
@@ -447,7 +464,7 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 	if err := s.validateBinding(instance.ChannelID, req.StoreID, req.KnowledgeBaseID); err != nil {
 		return err
 	}
-	return repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	if err := repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), req.ID, map[string]any{
 		"store_id":                           req.StoreID,
 		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
 		"store_navigation_name":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
@@ -477,7 +494,63 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 		"updated_at":                         time.Now(),
 		"update_user_id":                     operator.UserID,
 		"update_user_name":                   operator.Username,
+	}); err != nil {
+		return err
+	}
+	updated := s.Get(req.ID)
+	if updated == nil {
+		return nil
+	}
+	return s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator)
+}
+
+func (s *wxWorkProtocolInstanceService) syncStoreStaffBindingFromInstanceRequest(instance *models.WxWorkProtocolInstance, managedMode string, serviceHours string, roomConversationID string, roomNotifyEnabled bool, roomAtList string, fallbackToHQ bool, manualTimeoutMinutes int, operator *dto.AuthPrincipal) error {
+	if instance == nil || instance.StoreID <= 0 {
+		return nil
+	}
+	binding, err := StoreStaffBindingService.EnsureForInstance(instance, operator)
+	if err != nil {
+		return err
+	}
+	mode := normalizeStoreManagedMode(managedMode)
+	now := time.Now()
+	return repositories.StoreStaffBindingRepository.Updates(sqls.DB(), binding.ID, map[string]any{
+		"managed_mode":               mode,
+		"service_hours":              strings.TrimSpace(serviceHours),
+		"store_room_conversation_id": normalizeWxWorkRoomConversationID(roomConversationID),
+		"store_room_notify_enabled":  roomNotifyEnabled,
+		"store_room_at_list":         normalizeWxWorkAtList(roomAtList),
+		"fallback_to_hq":             fallbackToHQ,
+		"manual_timeout_minutes":     normalizeManualTimeoutMinutes(manualTimeoutMinutes),
+		"updated_at":                 now,
+		"update_user_id":             auditUserID(operator),
+		"update_user_name":           auditUsername(operator),
 	})
+}
+
+func normalizeStoreManagedMode(value string) string {
+	switch strings.TrimSpace(value) {
+	case constants.StoreManagedModeFull:
+		return constants.StoreManagedModeFull
+	case constants.StoreManagedModeNone:
+		return constants.StoreManagedModeNone
+	default:
+		return constants.StoreManagedModeSemi
+	}
+}
+
+func auditUserID(operator *dto.AuthPrincipal) int64 {
+	if operator == nil {
+		return constants.SystemAuditUserID
+	}
+	return operator.UserID
+}
+
+func auditUsername(operator *dto.AuthPrincipal) string {
+	if operator == nil {
+		return constants.SystemAuditUserName
+	}
+	return operator.Username
 }
 
 func (s *wxWorkProtocolInstanceService) InitAIAgent(instanceID int64, operator *dto.AuthPrincipal) (*models.AIAgent, error) {

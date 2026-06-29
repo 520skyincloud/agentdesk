@@ -7,6 +7,7 @@ import {
   CircleXIcon,
   FilePlus2Icon,
   FilterIcon,
+  LinkIcon,
   MessageCircleWarningIcon,
   Menu,
   MoreHorizontalIcon,
@@ -44,6 +45,7 @@ import { useAgentConversationRealtime } from "@/hooks/use-agent-conversation-rea
 import { useI18n } from "@/i18n/provider";
 import {
   checkWxWorkProtocolLoginQrcode,
+  createWxWorkProtocolRemoteSetup,
   fetchWxWorkProtocolInstances,
   startWxWorkProtocolLogin,
   syncWxWorkProtocolProfile,
@@ -95,6 +97,7 @@ export default function ConversationsPage() {
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [scanLoginOpen, setScanLoginOpen] = useState(false);
   const [scanLoginLoading, setScanLoginLoading] = useState(false);
+  const [remoteSetupLoading, setRemoteSetupLoading] = useState(false);
   const [scanLoginResult, setScanLoginResult] = useState<StartWxWorkProtocolLoginResult | null>(null);
   const [scanLoginStatus, setScanLoginStatus] = useState("等待生成登录二维码");
   const scanLoginSucceededRef = useRef(false);
@@ -151,6 +154,22 @@ export default function ConversationsPage() {
       toast.error(error instanceof Error ? error.message : "获取登录二维码失败");
     } finally {
       setScanLoginLoading(false);
+    }
+  };
+
+  const createRemoteSetupLink = async () => {
+    setScanLoginOpen(true);
+    setRemoteSetupLoading(true);
+    try {
+      const item = await createWxWorkProtocolRemoteSetup({ channelId: 0, remark: "远程门店开户链接" });
+      const url = item.remoteSetupUrl || `${window.location.origin}/wxwork-remote-setup?token=${encodeURIComponent(item.remoteSetupToken || "")}`;
+      await navigator.clipboard.writeText(url);
+      toast.success("远程开户链接已复制，可以发给门店负责人");
+      await loadWxWorkInstances();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "生成远程链接失败");
+    } finally {
+      setRemoteSetupLoading(false);
     }
   };
 
@@ -656,6 +675,7 @@ export default function ConversationsPage() {
             </SheetHeader>
             <WxWorkProtocolInstanceManager
               layout="fragment"
+              hideCreateActions
               tableShellClassName="max-h-[70vh] overflow-auto"
               onChanged={() => void loadWxWorkInstances()}
             />
@@ -663,47 +683,78 @@ export default function ConversationsPage() {
         </SheetContent>
       </Sheet>
       <Dialog open={scanLoginOpen} onOpenChange={handleScanLoginOpenChange}>
-        <DialogContent className="agentdesk-surface rounded-2xl sm:max-w-md">
+        <DialogContent className="agentdesk-surface rounded-2xl sm:max-w-4xl">
           <DialogHeader>
-            <DialogTitle>扫码新增企微员工号</DialogTitle>
+            <DialogTitle>新增企微员工号</DialogTitle>
             <DialogDescription>
-              系统会先从协议平台实例列表绑定一个未占用的真实 guid，再按 wework.apifox.cn 的登录接口生成二维码。没有空闲实例时不会创建占位账号。
+              新增账号只从这里进入。现场门店用左侧扫码；异地门店用右侧链接自助完成扫码、门店资料、坐标、服务时间和群通知配置。
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4">
-            <div className="agentdesk-subtle-surface flex min-h-64 items-center justify-center rounded-2xl bg-[#f8fbff] p-4">
-              {scanLoginResult?.qrcode ? (
-                <img
-                  src={scanLoginResult.qrcode.startsWith("data:") ? scanLoginResult.qrcode : `data:image/png;base64,${scanLoginResult.qrcode}`}
-                  alt="企微员工号登录二维码"
-                  className="size-56 rounded-xl bg-white object-contain p-2 shadow-[0_12px_30px_rgba(30,64,175,0.12)]"
-                />
-              ) : scanLoginLoading ? (
-                <div className="text-sm text-muted-foreground">正在生成二维码...</div>
-              ) : (
-                <div className="text-center text-sm text-muted-foreground">
-                  <QrCodeIcon className="mx-auto mb-2 size-10" />
-                  暂无二维码，请重新生成
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-2xl border border-[#dbe7f6] bg-white p-5 shadow-[0_12px_32px_rgba(35,74,122,0.06)]">
+              <div className="flex items-start gap-3">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[#eef4ff] text-[#2563eb]">
+                  <QrCodeIcon className="size-4" />
                 </div>
-              )}
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-foreground">总部现场扫码</div>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    系统先从实例池认领真实空闲 GUID，再生成协议登录二维码。没空闲实例时不会创建占位账号。
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 flex min-h-64 items-center justify-center rounded-2xl border border-[#e6edf7] bg-[#f8fbff] p-4">
+                {scanLoginResult?.qrcode ? (
+                  <img
+                    src={scanLoginResult.qrcode.startsWith("data:") ? scanLoginResult.qrcode : `data:image/png;base64,${scanLoginResult.qrcode}`}
+                    alt="企微员工号登录二维码"
+                    className="size-56 rounded-xl bg-white object-contain p-2 shadow-[0_12px_30px_rgba(30,64,175,0.12)]"
+                  />
+                ) : scanLoginLoading ? (
+                  <div className="text-sm text-muted-foreground">正在生成二维码...</div>
+                ) : (
+                  <div className="text-center text-sm text-muted-foreground">
+                    <QrCodeIcon className="mx-auto mb-2 size-10" />
+                    点击下方按钮生成二维码
+                  </div>
+                )}
+              </div>
+              <div className="mt-3 rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 text-xs text-muted-foreground shadow-inner shadow-blue-100/30">
+                <div className="font-medium text-foreground">{scanLoginStatus}</div>
+                {scanLoginResult?.qrcodeContent ? <div className="mt-1 break-all">二维码内容：{scanLoginResult.qrcodeContent}</div> : null}
+              </div>
+              <Button className="mt-4 w-full rounded-xl" onClick={() => void startScanLogin()} disabled={scanLoginLoading || remoteSetupLoading}>
+                <QrCodeIcon className="size-4" />
+                {scanLoginLoading ? "生成中..." : scanLoginResult ? "重新生成现场扫码" : "生成现场扫码"}
+              </Button>
             </div>
-            <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 text-xs text-muted-foreground shadow-inner shadow-blue-100/30">
-              <div className="font-medium text-foreground">{scanLoginStatus}</div>
-              {scanLoginResult?.instance.guid ? (
-                <div className="mt-1 break-all">实例 GUID：{scanLoginResult.instance.guid}</div>
-              ) : null}
-              {scanLoginResult?.qrcodeContent ? (
-                <div className="mt-1 break-all">二维码内容：{scanLoginResult.qrcodeContent}</div>
-              ) : null}
+            <div className="rounded-2xl border border-[#dbe7f6] bg-white p-5 shadow-[0_12px_32px_rgba(35,74,122,0.06)]">
+              <div className="flex items-start gap-3">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[#eef4ff] text-[#2563eb]">
+                  <LinkIcon className="size-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-foreground">远程门店自助开户</div>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    生成链接发给外地门店。对方打开后完成协议扫码，并填写门店名称、坐标、服务时间、托管模式和群通知。
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 rounded-2xl border border-[#e6edf7] bg-[#f8fbff] p-4 text-sm leading-6 text-muted-foreground">
+                <div className="font-medium text-foreground">门店负责人会在独立页面完成：</div>
+                <div className="mt-2">1. 企微员工号扫码登录协议实例</div>
+                <div>2. 一键获取门店坐标并填写门店资料</div>
+                <div>3. 选择服务时间、托管模式、门店群和 @ 成员</div>
+                <div>4. 绑定门店知识库与智能客服配置</div>
+              </div>
+              <Button className="mt-4 w-full rounded-xl" variant="outline" onClick={() => void createRemoteSetupLink()} disabled={scanLoginLoading || remoteSetupLoading}>
+                <LinkIcon className="size-4" />
+                {remoteSetupLoading ? "生成中..." : "生成并复制链接"}
+              </Button>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAccountManagerOpen(true)}>
-              账号设置
-            </Button>
-            <Button onClick={() => void startScanLogin()} disabled={scanLoginLoading}>
-              {scanLoginLoading ? "生成中..." : "重新生成"}
-            </Button>
+            <Button variant="outline" onClick={() => setScanLoginOpen(false)}>关闭</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

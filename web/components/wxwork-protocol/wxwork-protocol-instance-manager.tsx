@@ -48,6 +48,7 @@ type WxWorkProtocolInstanceManagerProps = {
   layout?: "page" | "fragment"
   onChanged?: () => void
   tableShellClassName?: string
+  hideCreateActions?: boolean
 }
 
 function getStatusLabel(status: Status) {
@@ -205,6 +206,7 @@ export function WxWorkProtocolInstanceManager({
   layout = "page",
   onChanged,
   tableShellClassName,
+  hideCreateActions = false,
 }: WxWorkProtocolInstanceManagerProps) {
   const [channels, setChannels] = useState<AdminChannel[]>([])
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
@@ -239,6 +241,12 @@ export function WxWorkProtocolInstanceManager({
         value: String(option.value),
         label: getStatusLabel(option.value as Status),
       })),
+  ]
+
+  const managedModeOptions = [
+    { value: "full", label: "全托管：只走总部网页端客服" },
+    { value: "semi", label: "半托管：按时间段走门店群或总部网页端" },
+    { value: "none", label: "非托管：只通知门店群" },
   ]
 
   const channelOptions = useMemo(
@@ -398,10 +406,12 @@ export function WxWorkProtocolInstanceManager({
             <RotateCwIcon className={state.loading ? "size-4 animate-spin" : "size-4"} />
             刷新
           </Button>
-          <Button className="rounded-lg" onClick={() => setCreateDialogOpen(true)}>
-            <PlusIcon className="size-4" />
-            新增账号
-          </Button>
+          {!hideCreateActions ? (
+            <Button className="rounded-lg" onClick={() => setCreateDialogOpen(true)}>
+              <PlusIcon className="size-4" />
+              新增账号
+            </Button>
+          ) : null}
         </>
       )}
       filters={[
@@ -590,14 +600,22 @@ export function WxWorkProtocolInstanceManager({
             name: "manualRouteSection",
             label: "人工接待路由",
             type: "section",
-            description: "转人工时按服务时间判断：命中门店值班时间且已绑定门店群，就发群提醒；不命中、未绑定群或关闭群提醒，则进入总部网页端待接管。",
+            description: "托管模式决定转人工提醒去哪：全托管只进总部网页端；半托管按服务时间在门店群和总部网页端之间切换；非托管只通知门店群。",
+          },
+          {
+            name: "managedMode",
+            label: "门店托管模式",
+            type: "select",
+            required: true,
+            defaultValue: "semi",
+            options: managedModeOptions,
+            description: "这个策略绑定到门店员工登录 AgentDesk 后的系统账号上，每个门店只允许一个；协议实例再绑定这个门店员工账号。",
           },
           { name: "serviceHours", label: "门店服务时间", type: "text", placeholder: "例如：09:00-22:00；多个时段后续由排班页维护" },
-          { name: "storeRoomNotifyEnabled", label: "值班时间优先提醒门店群", type: "switch" },
+          { name: "storeRoomNotifyEnabled", label: "启用门店群通知", type: "switch" },
           { name: "storeRoomConversationId", label: "门店群", type: "custom", render: () => null },
           { name: "storeRoomAtList", label: "@ 成员", type: "custom", render: () => null },
           { name: "storeRoomPicker", label: "门店群和 @ 成员", type: "custom", render: renderStoreRoomPicker },
-          { name: "fallbackToHQ", label: "非值班/无群时进入总部网页端", type: "switch" },
           { name: "manualTimeoutMinutes", label: "人工超时分钟", type: "number", min: 1, max: 120 },
           {
             name: "automationSection",
@@ -642,11 +660,12 @@ export function WxWorkProtocolInstanceManager({
           proxy: context.item?.proxy || "",
           bridgeId: context.item?.bridgeId || "",
           staffUserIds: context.item?.staffUserIds || "",
+          managedMode: String(values.managedMode || context.item?.managedMode || "semi"),
           serviceHours: String(values.serviceHours || ""),
           storeRoomConversationId: String(values.storeRoomConversationId || ""),
           storeRoomNotifyEnabled: values.storeRoomNotifyEnabled === true,
           storeRoomAtList: String(values.storeRoomAtList || ""),
-          fallbackToHQ: values.fallbackToHQ !== false,
+          fallbackToHQ: String(values.managedMode || context.item?.managedMode || "semi") !== "none",
           manualTimeoutMinutes: Number(values.manualTimeoutMinutes || 10),
           aiReplyEnabled: values.aiReplyEnabled !== false,
           personaPrompt: context.item?.personaPrompt || "",
