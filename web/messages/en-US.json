@@ -2318,7 +2318,8 @@
     "dashboardHome": "Dashboard",
     "notifications": "Notifications",
     "changePassword": "Change Password",
-    "signOut": "Sign Out"
+    "signOut": "Sign Out",
+    "storeWorkbench": "Store Workbench"
   },
   "theme": {
     "toggle": "Change theme",

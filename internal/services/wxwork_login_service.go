@@ -3,6 +3,7 @@ package services
 import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -189,7 +190,37 @@ func (s *wxWorkLoginService) createWxWorkUser(ctx *sqls.TxContext, profile *wxwo
 	if err := repositories.UserIdentityRepository.Create(ctx.Tx, identity); err != nil {
 		return nil, nil, err
 	}
+	if err := s.assignDefaultStoreStaffRole(ctx.Tx, user); err != nil {
+		return nil, nil, err
+	}
 	return user, identity, nil
+}
+
+func (s *wxWorkLoginService) assignDefaultStoreStaffRole(tx *gorm.DB, user *models.User) error {
+	if user == nil || user.ID <= 0 {
+		return nil
+	}
+	role := repositories.RoleRepository.GetByCode(tx, constants.RoleCodeStoreStaff)
+	if role == nil || role.Status != enums.StatusOk {
+		return nil
+	}
+	existing := repositories.UserRoleRepository.FindOne(tx, sqls.NewCnd().Eq("user_id", user.ID).Eq("role_id", role.ID))
+	if existing != nil {
+		return nil
+	}
+	now := time.Now()
+	return repositories.UserRoleRepository.Create(tx, &models.UserRole{
+		UserID: user.ID,
+		RoleID: role.ID,
+		AuditFields: models.AuditFields{
+			CreatedAt:      now,
+			CreateUserID:   user.ID,
+			CreateUserName: user.Username,
+			UpdatedAt:      now,
+			UpdateUserID:   user.ID,
+			UpdateUserName: user.Username,
+		},
+	})
 }
 
 func (s *wxWorkLoginService) resolveWxWorkNickname(current string, profile *wxwork.LoginUser) string {

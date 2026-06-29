@@ -5,6 +5,7 @@ const (
 	RoleCodeAdmin        = "admin"          // 管理员
 	RoleCodeCsTeamLeader = "cs_team_leader" // 客服组长
 	RoleCodeCsUser       = "cs_user"        // 客服
+	RoleCodeStoreStaff   = "store_staff"    // 门店员工
 )
 
 const (
@@ -294,6 +295,7 @@ var Roles = []RoleSpec{
 	{Name: "管理员", Code: RoleCodeAdmin, SortNo: 2},
 	{Name: "客服组长", Code: RoleCodeCsTeamLeader, SortNo: 3},
 	{Name: "客服", Code: RoleCodeCsUser, SortNo: 4},
+	{Name: "门店员工", Code: RoleCodeStoreStaff, SortNo: 5},
 }
 
 var RolePermissions = map[string][]Permission{
@@ -359,6 +361,17 @@ var RolePermissions = map[string][]Permission{
 		PermissionAIAgentView,
 		PermissionAIConfigView,
 		PermissionSkillDefinitionView,
+	},
+	RoleCodeStoreStaff: {
+		PermissionConversationView, PermissionConversationSend, PermissionConversationHandover,
+		PermissionNotificationView, PermissionNotificationUpdate,
+		PermissionQuickReplyView,
+		PermissionTagView,
+		PermissionChannelView, PermissionChannelUpdate,
+		PermissionCustomerView,
+		PermissionAssetView, PermissionAssetCreate,
+		PermissionAIAgentView,
+		PermissionKnowledgeBaseView,
 	},
 }
 

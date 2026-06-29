@@ -1933,8 +1933,8 @@
     "questionPlaceholder": "请输入标准问题",
     "answer": "答案",
     "answerPlaceholder": "请输入FAQ答案",
-    "similarQuestionsPlaceholder": "一行一个相似问题"
-    ,"fileEmpty": "文件内容为空",
+    "similarQuestionsPlaceholder": "一行一个相似问题",
+    "fileEmpty": "文件内容为空",
     "missingFAQColumns": "导入模板缺少 question/answer 列",
     "skipRowMissingFAQ": "第 {row} 行缺少问题或答案，已跳过",
     "importNoRows": "没有可导入的FAQ记录",
@@ -2318,7 +2318,8 @@
     "dashboardHome": "后台总览",
     "notifications": "通知中心",
     "changePassword": "修改密码",
-    "signOut": "退出登录"
+    "signOut": "退出登录",
+    "storeWorkbench": "门店工作台"
   },
   "theme": {
     "toggle": "切换主题",

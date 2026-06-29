@@ -8,6 +8,7 @@ import {
   FileTextIcon,
   GlobeIcon,
   HardDriveIcon,
+  HomeIcon,
   ServerCogIcon,
   KeyRoundIcon,
   LayoutDashboardIcon,
@@ -24,6 +25,10 @@ import type { ReactNode } from "react";
 export const DASHBOARD_ROLE_SUPER_ADMIN = "super_admin";
 const DASHBOARD_ROLE_CS_USER = "cs_user";
 const DASHBOARD_ROLE_CS_TEAM_LEADER = "cs_team_leader";
+const DASHBOARD_ROLE_STORE_STAFF = "store_staff";
+const STORE_STAFF_ALLOWED_URLS = new Set([
+  "/dashboard/store-workbench",
+]);
 const CS_USER_ALLOWED_URLS = new Set([
   "/dashboard",
   "/dashboard/conversations",
@@ -112,6 +117,7 @@ export function filterDashboardSecondaryNavForSession(
 function dashboardRoleAllowedUrls(roles: readonly string[] | undefined) {
   if (!roles?.length) return undefined;
   if (roles.includes(DASHBOARD_ROLE_SUPER_ADMIN)) return undefined;
+  if (roles.includes(DASHBOARD_ROLE_STORE_STAFF)) return STORE_STAFF_ALLOWED_URLS;
   if (roles.includes(DASHBOARD_ROLE_CS_TEAM_LEADER)) return CS_LEADER_ALLOWED_URLS;
   if (roles.includes(DASHBOARD_ROLE_CS_USER)) return CS_USER_ALLOWED_URLS;
   return undefined;
@@ -132,6 +138,12 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
     titleKey: "nav.receptionCenter",
     icon: <BotMessageSquareIcon />,
     items: [
+      {
+        titleKey: "nav.storeWorkbench",
+        url: "/dashboard/store-workbench",
+        icon: <HomeIcon />,
+        requiredPermission: "channel.view",
+      },
       {
         titleKey: "nav.overview",
         url: "/dashboard",

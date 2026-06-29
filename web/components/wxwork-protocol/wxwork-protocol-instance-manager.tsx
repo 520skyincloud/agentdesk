@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { BellRingIcon, BotIcon, CopyIcon, LinkIcon, LocateFixedIcon, LogOutIcon, MapPinIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SquareIcon, UserRoundCogIcon, UsersRoundIcon } from "lucide-react"
+import { BotIcon, LinkIcon, LocateFixedIcon, MapPinIcon, PlusIcon, QrCodeIcon, RotateCwIcon, UserRoundCogIcon, UsersRoundIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -25,12 +25,7 @@ import {
   fetchWxWorkProtocolRoomMembers,
   getWxWorkProtocolLoginQrcode,
   logoutWxWorkProtocolInstance,
-  recoverWxWorkProtocolInstance,
-  setWxWorkProtocolNotifyUrl,
   startWxWorkProtocolLogin,
-  stopWxWorkProtocolInstance,
-  syncWxWorkProtocolFriendRequests,
-  syncWxWorkProtocolProfile,
   updateWxWorkProtocolAIAgent,
   updateWxWorkProtocolInstance,
   type CreateAIAgentPayload,
@@ -256,18 +251,6 @@ export function WxWorkProtocolInstanceManager({
     [knowledgeBases],
   )
 
-  async function copyCallbackUrl() {
-    await navigator.clipboard.writeText(CALLBACK_URL)
-    toast.success("已复制公网回调地址")
-  }
-
-  async function copyProtocolResponse(title: string, response: string) {
-    if (response?.trim()) {
-      await navigator.clipboard.writeText(response)
-    }
-    toast.success(response?.trim() ? `${title}完成，协议原文已复制` : `${title}完成`)
-  }
-
   function notifyChanged() {
     setReloadKey((value) => value + 1)
     onChanged?.()
@@ -309,6 +292,17 @@ export function WxWorkProtocolInstanceManager({
 
   async function openAIAgentConfig(item: WxWorkProtocolInstance) {
     setAIAgentInstance(item)
+  }
+
+  async function replaceLoggedInAccount(item: WxWorkProtocolInstance) {
+    const logoutResp = await logoutWxWorkProtocolInstance(item.id)
+    const qrcodeResp = await getWxWorkProtocolLoginQrcode(item.id)
+    const copiedText = [logoutResp, qrcodeResp].filter((text) => text?.trim()).join("\n\n")
+    if (copiedText) {
+      await navigator.clipboard.writeText(copiedText)
+    }
+    toast.success(copiedText ? "已下掉当前账号，重新登录二维码原文已复制" : "已下掉当前账号，请重新扫码登录")
+    notifyChanged()
   }
 
   async function saveAIAgentConfig(payload: CreateAIAgentPayload) {
@@ -555,77 +549,16 @@ export function WxWorkProtocolInstanceManager({
           run: async ({ item }) => openAIAgentConfig(item),
         },
         {
-          key: "setNotifyUrl",
-          label: "设置回调",
-          icon: <BellRingIcon className="size-4" />,
-          run: async ({ item }) => {
-            await setWxWorkProtocolNotifyUrl(item.id, CALLBACK_URL)
-            toast.success("已向协议平台设置回调地址")
-          },
-        },
-        {
-          key: "loginQrcode",
-          label: "获取登录二维码",
+          key: "replaceLogin",
+          label: "更换登录员工号",
           icon: <QrCodeIcon className="size-4" />,
-          run: async ({ item }) => {
-            const resp = await getWxWorkProtocolLoginQrcode(item.id)
-            await copyProtocolResponse("登录二维码", resp)
-          },
-        },
-        {
-          key: "syncProfile",
-          label: "同步账号资料",
-          icon: <RotateCwIcon className="size-4" />,
-          run: async ({ item }) => {
-            const resp = await syncWxWorkProtocolProfile(item.id)
-            await copyProtocolResponse("同步账号资料", resp)
-            notifyChanged()
-          },
-        },
-        {
-          key: "syncFriendRequests",
-          label: "同步好友申请",
-          icon: <UsersRoundIcon className="size-4" />,
-          run: async ({ item }) => {
-            const resp = await syncWxWorkProtocolFriendRequests(item.id)
-            await copyProtocolResponse("同步好友申请", resp)
-          },
-        },
-        {
-          key: "recover",
-          label: "恢复实例",
-          icon: <RotateCwIcon className="size-4" />,
-          run: async ({ item }) => {
-            const resp = await recoverWxWorkProtocolInstance(item.id)
-            await copyProtocolResponse("恢复实例", resp)
-            notifyChanged()
-          },
-        },
-        {
-          key: "stop",
-          label: "停止实例",
-          icon: <SquareIcon className="size-4" />,
-          run: async ({ item }) => {
-            const resp = await stopWxWorkProtocolInstance(item.id)
-            await copyProtocolResponse("停止实例", resp)
-            notifyChanged()
-          },
-        },
-        {
-          key: "logout",
-          label: "退出登录",
-          icon: <LogOutIcon className="size-4" />,
-          run: async ({ item }) => {
-            const resp = await logoutWxWorkProtocolInstance(item.id)
-            await copyProtocolResponse("退出登录", resp)
-            notifyChanged()
-          },
-        },
-        {
-          key: "copyCallbackUrl",
-          label: "复制回调地址",
-          icon: <CopyIcon className="size-4" />,
-          run: async () => copyCallbackUrl(),
+          confirm: (item) => ({
+            title: "更换登录员工号",
+            description: `会先让 ${repairMojibakeText(item.employeeName) || "当前员工号"} 退出协议登录，然后生成新的扫码登录二维码。确认继续？`,
+            confirmText: "退出并重新扫码",
+            cancelText: "取消",
+          }),
+          run: async ({ item }) => replaceLoggedInAccount(item),
         },
       ]}
       form={{
