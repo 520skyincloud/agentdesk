@@ -26,6 +26,7 @@ var Models = []any{
 	&Tag{},
 	&Conversation{},
 	&Store{},
+	&WxWorkProtocolDevicePoolInstance{},
 	&WxWorkProtocolInstance{},
 	&ConversationParticipant{},
 	&ConversationReadState{},
@@ -79,6 +80,27 @@ type Migration struct {
 	RetryCount int       `gorm:"type:int;not null;default:0"`
 	CreatedAt  time.Time `gorm:"type:datetime"`
 	UpdatedAt  time.Time `gorm:"type:datetime"`
+}
+
+// WxWorkProtocolDevicePoolInstance 记录聚合智能后台同步到本地的真实 XBot 实例池。
+type WxWorkProtocolDevicePoolInstance struct {
+	ID                            int64        `gorm:"primaryKey;autoIncrement"`
+	ProviderInstanceID            int64        `gorm:"type:bigint;not null;default:0;index"`
+	Guid                          string       `gorm:"type:varchar(128);not null;default:'';uniqueIndex"`
+	Uin                           string       `gorm:"type:varchar(128);not null;default:'';index"`
+	ProviderUserID                int64        `gorm:"type:bigint;not null;default:0;index"`
+	ClientType                    int          `gorm:"type:int;not null;default:0;index"`
+	SeatName                      string       `gorm:"type:varchar(120);not null;default:''"`
+	BridgeID                      string       `gorm:"type:varchar(128);not null;default:'';index"`
+	State                         string       `gorm:"type:varchar(80);not null;default:'';index"`
+	ExpiredAt                     *time.Time   `gorm:"type:datetime;index"`
+	SyncStatus                    string       `gorm:"type:varchar(40);not null;default:'unknown';index"`
+	LastSyncedAt                  *time.Time   `gorm:"type:datetime;index"`
+	BoundWxWorkProtocolInstanceID int64        `gorm:"type:bigint;not null;default:0;index"`
+	RawJSON                       string       `gorm:"type:text"`
+	Status                        enums.Status `gorm:"type:int;not null;default:0;index"`
+	Remark                        string       `gorm:"type:text"`
+	AuditFields
 }
 
 // SystemConfig 运营侧系统配置项；具体有哪些 config_key 由业务代码约定，表内一行一项。

@@ -726,3 +726,34 @@ flowchart TD
 - 远程页可调用真实协议登录二维码接口、检查扫码状态、保存门店名称/地址/经纬度/服务时间/门店群通知配置。
 - 远程页不允许修改知识库、模型、提示词、小程序 payload；这些由总部在员工号智能客服和企业资源设置中维护。
 - 智能客服配置保存时，`UpdateBoundAIAgent` 以提交的 `knowledgeIds` 为准，并把第一个知识库同步到员工号 `knowledgeBaseId`，确保运行时仍能快速按员工号找到唯一门店知识库。
+
+### 13.9 聚合智能实例池与自动认领 GUID
+
+2026-06-29 起，企微员工号新增扫码不再允许创建 `ad_...` 这类占位 GUID，也不再依赖手工粘贴候选 GUID。系统管理新增“实例池”页面，负责登录聚合智能后台、同步真实 XBot 实例，再由新增员工号流程自动认领空闲实例。
+
+接口边界必须区分两条链路：
+
+| 链路 | 用途 | 接口 | 说明 |
+| --- | --- | --- | --- |
+| 聚合智能后台管理 | 同步实例池 | `POST https://chat-api.juhebot.com/admin/login`、`POST /admin/ListInstance` | 只用于拿真实实例列表和状态，凭据保存在运行时数据库，不写入代码或文档 |
+| 企微员工号协议业务 | 登录二维码、消息收发、资料同步 | `POST https://chat-api.juhebot.com/open/GuidRequest`，body 中包含 `app_key/app_secret/path/data` | 仍严格按 `wework.apifox.cn` 的具体接口页传字段 |
+
+实例池本地表 `WxWorkProtocolDevicePoolInstance` 保存：`guid / providerInstanceId / uin / providerUserId / clientType / seatName / bridgeId / state / expiredAt / syncStatus / lastSyncedAt / boundWxWorkProtocolInstanceId / rawJSON`。`rawJSON` 用于审计上游原文，页面展示只用结构化字段。
+
+空闲判断规则：
+
+1. 聚合智能 `/admin/ListInstance` 返回真实 `guid`。
+2. `uin` 为空，表示该实例当前未登录企微账号。
+3. `expiredAt` 未过期。
+4. 本地不存在非删除状态的 `WxWorkProtocolInstance.guid = guid`；如果已存在，则实例池显示“已绑定”。
+5. 认领前用企微协议业务链路探测 `/login/get_login_qrcode`，且 `error_code=0` 才允许创建本地员工号扫码记录。
+
+新增账号流程：会话页或企微员工号管理点击“新增扫码”时，如果请求没有显式传入 `guid`，后端调用 `WxWorkProtocolDevicePoolService.ClaimAvailableGUID`。没有配置实例池、没有同步、没有空闲实例或探测二维码失败时，直接返回可读错误：“请先在系统管理 > 实例池配置聚合智能账号并同步设备列表”或“实例池暂无空闲实例”。系统不得创建假的本地账号记录。
+
+绑定回写规则：
+
+- `CreateLoginInstance`、远程开户链接、手动创建员工号只要成功创建本地 `WxWorkProtocolInstance`，就调用 `BindGUIDToInstance` 把实例池行标记为 `bound`。
+- 实例池同步后会重新扫描本地所有未删除员工号，修正 `boundWxWorkProtocolInstanceId`，因此旧数据也能在页面里显示绑定关系。
+- 已登录实例例如 `uin` 非空但本地未绑定时，页面显示“已登录”，不会被自动认领；需要人工确认是否补录绑定。
+
+当前真实验证结果：聚合智能账号同步返回 2 个实例，其中 `44406fbf-4fd2-3b9c-a389-71546fa52e0d` 已登录并绑定本地员工号 `吴朝伟`；`7828cf99-9376-30f7-a9ac-01ac6ca87076` 在聚合智能侧 `uin` 为空，但本地已有待扫码绑定记录，因此显示为已绑定，不再被当作空闲实例重复使用。若未来给出 100 个实例 ID，系统按上述规则自动筛选空闲项，不使用截图里的 ID 猜测。

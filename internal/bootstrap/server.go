@@ -184,6 +184,7 @@ func addRouter(app *gin.Engine) {
 	registerDashboardQuickReplyRoutes(dashboardGroup.Group("/quick-reply"))
 	registerDashboardChannelRoutes(dashboardGroup.Group("/channel"))
 	registerDashboardWxWorkProtocolInstanceRoutes(dashboardGroup.Group("/wxwork-protocol-instance"))
+	registerDashboardWxWorkProtocolDevicePoolRoutes(dashboardGroup.Group("/wxwork-protocol-device-pool"))
 	registerDashboardAgentRoutes(dashboardGroup.Group("/agent"))
 	registerDashboardAgentTeamRoutes(dashboardGroup.Group("/agent-team"))
 	registerDashboardAgentTeamScheduleRoutes(dashboardGroup.Group("/agent-team-schedule"))

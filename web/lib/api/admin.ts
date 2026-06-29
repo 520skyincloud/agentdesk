@@ -285,6 +285,43 @@ export type WxWorkProtocolInstance = {
   updateUserName: string
 }
 
+export type WxWorkProtocolDevicePoolSettings = {
+  adminBaseUrl: string
+  username: string
+  passwordSet: boolean
+  tokenSet: boolean
+  tokenExpireAt?: string | null
+}
+
+export type WxWorkProtocolDevicePoolInstance = {
+  id: number
+  providerInstanceId: number
+  guid: string
+  uin: string
+  providerUserId: number
+  clientType: number
+  seatName: string
+  bridgeId: string
+  state: string
+  expiredAt?: string | null
+  syncStatus: string
+  lastSyncedAt?: string | null
+  boundWxWorkProtocolInstanceId: number
+  boundEmployeeName: string
+  boundStoreName: string
+  available: boolean
+  status: number
+  remark: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type WxWorkProtocolDevicePoolSyncResult = {
+  syncedCount: number
+  idleCount: number
+  boundCount: number
+}
+
 export type StartWxWorkProtocolLoginResult = {
   instance: WxWorkProtocolInstance
   rawResponse: string
@@ -1043,6 +1080,33 @@ export function acceptWxWorkProtocolFriendRequest(payload: {
   return request<string>("/api/dashboard/wxwork-protocol-instance/accept_friend_request", {
     method: "POST",
     body: JSON.stringify(payload),
+  })
+}
+
+export function fetchWxWorkProtocolDevicePool(query?: Record<string, string | number | undefined>) {
+  return request<PageResult<WxWorkProtocolDevicePoolInstance>>(
+    `/api/dashboard/wxwork-protocol-device-pool/list${toQueryString(query)}`
+  )
+}
+
+export function fetchWxWorkProtocolDevicePoolSettings() {
+  return request<WxWorkProtocolDevicePoolSettings>("/api/dashboard/wxwork-protocol-device-pool/settings")
+}
+
+export function updateWxWorkProtocolDevicePoolSettings(payload: {
+  adminBaseUrl: string
+  username: string
+  password?: string
+}) {
+  return request<WxWorkProtocolDevicePoolSettings>("/api/dashboard/wxwork-protocol-device-pool/update_settings", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function syncWxWorkProtocolDevicePool() {
+  return request<WxWorkProtocolDevicePoolSyncResult>("/api/dashboard/wxwork-protocol-device-pool/sync", {
+    method: "POST",
   })
 }
 

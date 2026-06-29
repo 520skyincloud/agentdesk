@@ -244,6 +244,13 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 	group.POST("/verify_login", dashboard.WxWorkProtocolInstancePostVerify_login)
 }
 
+func registerDashboardWxWorkProtocolDevicePoolRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.WxWorkProtocolDevicePoolAnyList)
+	group.GET("/settings", dashboard.WxWorkProtocolDevicePoolGetSettings)
+	group.POST("/update_settings", dashboard.WxWorkProtocolDevicePoolPostUpdate_settings)
+	group.POST("/sync", dashboard.WxWorkProtocolDevicePoolPostSync)
+}
+
 func registerDashboardAgentRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.AgentGetBy)
 	group.POST("/create", dashboard.AgentPostCreate)

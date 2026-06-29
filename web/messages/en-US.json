@@ -2314,6 +2314,7 @@
     "roles": "Roles",
     "permissions": "Permissions",
     "storageSettings": "Storage Settings",
+    "wxworkDevicePool": "Instance Pool",
     "dashboardHome": "Dashboard",
     "notifications": "Notifications",
     "changePassword": "Change Password",

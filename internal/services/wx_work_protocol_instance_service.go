@@ -113,6 +113,7 @@ func (s *wxWorkProtocolInstanceService) CreatePendingFromLogin(guid string, raw 
 	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
 		return nil, err
 	}
+	_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(guid, item.ID)
 	return item, nil
 }
 
@@ -193,6 +194,7 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
 		return nil, err
 	}
+	_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(guid, item.ID)
 	return item, nil
 }
 
@@ -235,6 +237,7 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
 		return nil, err
 	}
+	_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(guid, item.ID)
 	return item, nil
 }
 
@@ -280,6 +283,7 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
 		return nil, err
 	}
+	_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(guid, item.ID)
 	return item, nil
 }
 
@@ -697,12 +701,19 @@ func (s *wxWorkProtocolInstanceService) claimAvailableProtocolDeviceGUID(channel
 	if channel == nil {
 		return "", errorsx.InvalidParam("企微协议渠道不存在")
 	}
+	guid, poolErr := WxWorkProtocolDevicePoolService.ClaimAvailableGUID(channel)
+	if poolErr == nil && guid != "" {
+		return guid, nil
+	}
 	cfg, err := ChannelService.ParseWxWorkProtocolChannelConfig(channel.ConfigJSON)
 	if err != nil {
 		return "", errorsx.InvalidParam("企微协议渠道配置不合法")
 	}
 	if cfg.DevicePoolURL == "" {
-		return "", errorsx.InvalidParam("企微协议渠道未配置设备池列表接口，无法自动绑定空闲实例")
+		if poolErr != nil {
+			return "", poolErr
+		}
+		return "", errorsx.InvalidParam("请先在系统管理 > 实例池配置聚合智能账号并同步设备列表")
 	}
 	devices, err := s.fetchProtocolDevicePool(cfg)
 	if err != nil {
