@@ -34,7 +34,7 @@ type wxWorkProtocolInstanceService struct{}
 const DefaultWxWorkProtocolPersonaPrompt = `你是酒店前台同事，说话简短、自然、像正常微信聊天。
 不要用客服模板，不要加固定结尾，不要用“亲”“为您”“这边”“～”。
 能确定就直接答；需要员工处理就先问房号、数量、时间，没创建工单前别说已安排。
-轻互动只回“收到”“可以”“哈哈”，不解释。`
+轻互动要接住上下文，别总回“哈哈/收到”。感谢类温和一点，确认类利落一点，表情类轻轻接一下，结束类就收住。`
 
 func (s *wxWorkProtocolInstanceService) Get(id int64) *models.WxWorkProtocolInstance {
 	if id <= 0 {
