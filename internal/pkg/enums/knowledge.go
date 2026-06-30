@@ -229,7 +229,7 @@ const (
 )
 
 var knowledgeCandidateSourceLabelMap = map[KnowledgeCandidateSource]string{
-	KnowledgeCandidateSourceQiyuHQ:      "总部七鱼人工",
+	KnowledgeCandidateSourceQiyuHQ:      "总部网页人工",
 	KnowledgeCandidateSourceAgentDeskHQ: "总部网页端人工",
 	KnowledgeCandidateSourceStoreWecom:  "门店企微人工",
 	KnowledgeCandidateSourceAINoAnswer:  "AI未解答",

@@ -44,7 +44,7 @@ import { formatDateTime } from "@/lib/utils"
 
 const SOURCE_OPTIONS = [
   { value: "all", label: "全部来源" },
-  { value: "qiyu_hq", label: "总部七鱼人工" },
+  { value: "qiyu_hq", label: "总部网页人工" },
   { value: "store_wecom", label: "门店企微人工" },
   { value: "ai_no_answer", label: "AI未解答" },
 ]
