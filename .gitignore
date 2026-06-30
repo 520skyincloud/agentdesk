@@ -13,6 +13,7 @@ node_modules/
 *.tsbuildinfo
 
 .superpowers
+.codex-session-restore/
 .wecom-hook-bridge.env
 .wecom-hook-bridge-state.json
 .wecom-cli-bridge-state.json
