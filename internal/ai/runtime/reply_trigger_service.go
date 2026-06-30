@@ -16,8 +16,8 @@ import (
 	"github.com/mlogclub/simple/sqls"
 )
 
-const aiReplyDebounceWindow = 250 * time.Millisecond
-const aiReplyMediaSettleWindow = 1500 * time.Millisecond
+const aiReplyDebounceWindow = 120 * time.Millisecond
+const aiReplyMediaSettleWindow = 900 * time.Millisecond
 const aiReplyMediaContextWindow = 6 * time.Second
 const aiReplyBurstTextWindow = 8 * time.Second
 
@@ -106,6 +106,10 @@ func (s *aiReplyService) waitForConversationToSettle(ctx context.Context, conver
 		slog.Info("skip ai reply because newer customer message arrived during debounce", "conversation_id", conversationID, "message_id", messageID)
 		return false
 	}
+	current := svc.MessageService.Get(messageID)
+	if current == nil || !shouldWaitForRecentMediaUnderstanding(*current) {
+		return true
+	}
 	deadline := time.Now().Add(aiReplyMediaSettleWindow)
 	for time.Now().Before(deadline) {
 		if !hasRecentPendingMediaUnderstanding(conversationID, messageID, aiReplyMediaContextWindow) {
@@ -120,6 +124,29 @@ func (s *aiReplyService) waitForConversationToSettle(ctx context.Context, conver
 		}
 	}
 	return true
+}
+
+func shouldWaitForRecentMediaUnderstanding(message models.Message) bool {
+	if message.MessageType != enums.IMMessageTypeText && message.MessageType != enums.IMMessageTypeHTML {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(message.Content))
+	if text == "" {
+		return false
+	}
+	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "，", "", "。", "", "！", "", "!", "", "？", "", "?", "").Replace(text)
+	mediaNeedles := []string{"图片", "照片", "图里", "图上", "这图", "截图", "语音", "听下", "文件", "附件", "表格", "pdf", "word", "这个", "这是啥", "这是什么", "看下", "帮我看", "识别"}
+	questionNeedles := []string{"什么", "啥", "哪", "怎么", "是不是", "能不能", "可以吗", "对吗", "什么意思", "帮", "看", "听", "识别"}
+	return containsAnyText(compact, mediaNeedles) && containsAnyText(compact, questionNeedles)
+}
+
+func containsAnyText(text string, values []string) bool {
+	for _, value := range values {
+		if value != "" && strings.Contains(text, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func sleepWithContext(ctx context.Context, duration time.Duration) bool {

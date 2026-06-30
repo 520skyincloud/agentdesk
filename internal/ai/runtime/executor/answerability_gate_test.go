@@ -133,8 +133,11 @@ func TestKnowledgePolicyEvaluateInjectsNoContextInstructionForKnowledgeQuestion(
 	if !strings.Contains(state.Decision.Instructions[0].Content, "图片/语音/文件等媒体理解结果") {
 		t.Fatalf("expected media-aware no-context policy, got %q", state.Decision.Instructions[0].Content)
 	}
-	if !strings.Contains(state.Decision.Instructions[0].Content, "不要因为知识库未命中就直接输出固定兜底话术") {
+	if !strings.Contains(state.Decision.Instructions[0].Content, "不要因为知识库未命中就输出固定兜底话术") {
 		t.Fatalf("expected policy to avoid robotic fallback, got %q", state.Decision.Instructions[0].Content)
+	}
+	if !strings.Contains(state.Decision.Instructions[0].Content, "不要死抄") {
+		t.Fatalf("expected policy to avoid copying fallback literally, got %q", state.Decision.Instructions[0].Content)
 	}
 	if collector.Data.Answerability.Status != answerabilityStatusNoContext {
 		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
