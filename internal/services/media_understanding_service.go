@@ -108,6 +108,10 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 	}
 	updated := repositories.MessageRepository.Get(sqls.DB(), message.ID)
 	conversation := ConversationService.Get(message.ConversationID)
+	if updated != nil && conversation != nil {
+		WsService.PublishMessageUpdated(conversation, updated)
+		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
+	}
 	if updated != nil && conversation != nil && WxWorkProtocolDefaultResourceService.HandleCustomerIntent(conversation, updated) {
 		return nil
 	}

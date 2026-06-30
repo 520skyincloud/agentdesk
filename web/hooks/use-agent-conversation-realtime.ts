@@ -133,12 +133,16 @@ export function useAgentConversationRealtime() {
             return
           }
 
-          if (eventType === "message.created") {
+          if (eventType === "message.created" || eventType === "message.updated") {
             const message = normalizeRealtimeMessage<AgentMessage>(payload)
             if (!message) {
               void store.resyncRealtimeData(conversationId).catch((error) => {
                 toast.error(error instanceof Error ? error.message : t("conversation.syncMessagesFailed"))
               })
+              return
+            }
+            if (eventType === "message.updated") {
+              store.applyRealtimeMessageUpdated(message)
               return
             }
             store.applyRealtimeMessageCreated(message)

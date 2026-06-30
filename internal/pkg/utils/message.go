@@ -147,15 +147,49 @@ func BuildRuntimeMessageTextWithPayload(messageType enums.IMMessageType, content
 	base := BuildRuntimeMessageText(messageType, content)
 	mediaText, mediaSummary, mediaStatus := RuntimeMediaUnderstandingFromPayload(payload)
 	if mediaText != "" {
-		return strings.TrimSpace(base + "\n媒体理解：" + mediaText)
+		return strings.TrimSpace(base + "\n" + runtimeMediaUnderstandingLabel(messageType) + "：" + mediaText)
 	}
 	if mediaSummary != "" {
-		return strings.TrimSpace(base + "\n媒体摘要：" + mediaSummary)
+		return strings.TrimSpace(base + "\n" + runtimeMediaSummaryLabel(messageType) + "：" + mediaSummary)
 	}
 	if isRuntimeMediaMessageType(messageType) && mediaStatus != "" && mediaStatus != "understood" {
 		return strings.TrimSpace(base + "\n媒体理解状态：" + mediaStatus)
 	}
 	return base
+}
+
+func runtimeMediaUnderstandingLabel(messageType enums.IMMessageType) string {
+	switch messageType {
+	case enums.IMMessageTypeImage:
+		return "图片内容是"
+	case enums.IMMessageTypeVoice:
+		return "语音内容是"
+	case enums.IMMessageTypeAttachment:
+		return "文件内容是"
+	case enums.IMMessageTypeVideo:
+		return "视频理解结果是"
+	case enums.IMMessageTypeGIF:
+		return "动画表情理解结果是"
+	default:
+		return "媒体内容是"
+	}
+}
+
+func runtimeMediaSummaryLabel(messageType enums.IMMessageType) string {
+	switch messageType {
+	case enums.IMMessageTypeImage:
+		return "图片摘要是"
+	case enums.IMMessageTypeVoice:
+		return "语音摘要是"
+	case enums.IMMessageTypeAttachment:
+		return "文件摘要是"
+	case enums.IMMessageTypeVideo:
+		return "视频摘要是"
+	case enums.IMMessageTypeGIF:
+		return "动画表情摘要是"
+	default:
+		return "媒体摘要是"
+	}
 }
 
 func RuntimeMediaUnderstandingFromPayload(raw string) (mediaText string, mediaSummary string, status string) {

@@ -106,18 +106,12 @@ func buildRuntimeMessageText(item *models.Message) string {
 	if item == nil {
 		return ""
 	}
-	base := utils.BuildRuntimeMessageText(item.MessageType, item.Content)
-	mediaText, mediaSummary, mediaStatus := utils.RuntimeMediaUnderstandingFromPayload(item.Payload)
-	if mediaText != "" {
-		return strings.TrimSpace(base + "\n媒体理解：" + mediaText)
-	}
-	if mediaSummary != "" {
-		return strings.TrimSpace(base + "\n媒体摘要：" + mediaSummary)
-	}
+	text := utils.BuildRuntimeMessageTextWithPayload(item.MessageType, item.Content, item.Payload)
+	_, _, mediaStatus := utils.RuntimeMediaUnderstandingFromPayload(item.Payload)
 	if isMediaMessageType(item.MessageType) && mediaStatus != "" && mediaStatus != "understood" {
-		return strings.TrimSpace(base + "\n媒体理解状态：" + mediaStatus)
+		return strings.TrimSpace(text)
 	}
-	return base
+	return strings.TrimSpace(text)
 }
 
 func isMediaMessageType(messageType enums.IMMessageType) bool {

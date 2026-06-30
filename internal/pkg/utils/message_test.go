@@ -87,6 +87,26 @@ func TestBuildRuntimeMessageTextForAssetMessages(t *testing.T) {
 	}
 }
 
+func TestBuildRuntimeMessageTextWithPayloadKeepsMediaUnderstandingInContext(t *testing.T) {
+	payload := `{"filename":"room.jpg","mediaText":"图片里是一间酒店客房，床边有一瓶矿泉水。","mediaSummary":"客房照片","mediaUnderstandingStatus":"understood"}`
+	got := BuildRuntimeMessageTextWithPayload(enums.IMMessageTypeImage, "room.jpg", payload)
+	if got != "[图片] room.jpg\n图片内容是：图片里是一间酒店客房，床边有一瓶矿泉水。" {
+		t.Fatalf("unexpected image runtime context: %q", got)
+	}
+
+	voicePayload := `{"mediaText":"确认，麻烦帮我送两瓶水。","mediaUnderstandingStatus":"understood"}`
+	voiceGot := BuildRuntimeMessageTextWithPayload(enums.IMMessageTypeVoice, "", voicePayload)
+	if voiceGot != "[语音]\n语音内容是：确认，麻烦帮我送两瓶水。" {
+		t.Fatalf("unexpected voice runtime context: %q", voiceGot)
+	}
+
+	summaryPayload := `{"mediaSummary":"账单截图，包含房费金额。","mediaUnderstandingStatus":"understood"}`
+	summaryGot := BuildRuntimeMessageTextWithPayload(enums.IMMessageTypeImage, "bill.png", summaryPayload)
+	if summaryGot != "[图片] bill.png\n图片摘要是：账单截图，包含房费金额。" {
+		t.Fatalf("unexpected summary runtime context: %q", summaryGot)
+	}
+}
+
 func TestBuildRenderableMessageTransformsPayloadAndHTML(t *testing.T) {
 	config.SetCurrent(&config.Config{
 		Storage: config.StorageConfig{

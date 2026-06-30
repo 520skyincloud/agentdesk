@@ -108,6 +108,7 @@ type AgentConversationsStore = {
   sendAttachment: (file: File) => Promise<AgentMessage | null>
   recallMessage: (messageId: number) => Promise<AgentMessage | null>
   applyRealtimeMessageCreated: (message: AgentMessage) => void
+  applyRealtimeMessageUpdated: (message: AgentMessage) => void
   applyRealtimeConversationChanged: (patch: RealtimeConversationPatch) => void
   applyRealtimeMessageRecalled: (messageId: number, patch: Partial<AgentMessage>) => void
   resyncRealtimeData: (conversationId?: number) => Promise<void>
@@ -436,6 +437,15 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
         ),
       }
     })
+  },
+
+  applyRealtimeMessageUpdated: (message) => {
+    set((state) => ({
+      messages: state.messages.map((item) =>
+        item.id === message.id ? { ...item, ...message, id: item.id } : item
+      ),
+      conversations: patchConversationListWithMessage(state.conversations, message),
+    }))
   },
 
   applyRealtimeConversationChanged: (patch) => {
