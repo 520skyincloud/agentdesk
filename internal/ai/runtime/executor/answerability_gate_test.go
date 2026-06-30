@@ -106,7 +106,7 @@ func TestKnowledgePolicyEvaluateInjectsNoContextInstructionWithoutFallback(t *te
 	if !strings.Contains(state.Decision.Instructions[0].Content, "媒体理解结果") {
 		t.Fatalf("expected media-aware no-context policy, got %q", state.Decision.Instructions[0].Content)
 	}
-	if !strings.Contains(state.Decision.Instructions[0].Content, "不要只回固定模板") {
+	if !strings.Contains(state.Decision.Instructions[0].Content, "不要因为知识库未命中就直接输出固定兜底话术") {
 		t.Fatalf("expected policy to avoid robotic fallback, got %q", state.Decision.Instructions[0].Content)
 	}
 	if collector.Data.Answerability.Status != answerabilityStatusNoContext {
@@ -133,6 +133,37 @@ func TestBuildRunMessagesContinuesAgentFlowWhenNoContext(t *testing.T) {
 	}
 	if !messagesContainContent(messages, "你好") {
 		t.Fatalf("expected current user message to remain in messages: %#v", messages)
+	}
+}
+
+func TestKnowledgePolicyEvaluateDoesNotFallbackWhenHitsHaveNoContextText(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	gate := newTestKnowledgePolicyGate(&fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		result: &retrievers.KnowledgeRetrieveResult{
+			KnowledgeBaseIDs: []int64{1},
+			Hits: []rag.RetrieveResult{
+				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "入住办理在小程序里。", Score: 0.2},
+			},
+		},
+	})
+
+	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("你能干啥啊", "1"),
+		Summary:   &RunResult{},
+		Collector: collector,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.FallbackReply != "" {
+		t.Fatalf("expected no direct fallback for weak hit, got %q", state.FallbackReply)
+	}
+	if len(state.Decision.Instructions) != 1 {
+		t.Fatalf("expected one no-context instruction, got %d", len(state.Decision.Instructions))
+	}
+	if !strings.Contains(state.Decision.Instructions[0].Content, "先判断用户意图") {
+		t.Fatalf("expected intent-first no-context policy, got %q", state.Decision.Instructions[0].Content)
 	}
 }
 
