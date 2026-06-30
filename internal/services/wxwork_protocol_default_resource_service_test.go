@@ -1,6 +1,11 @@
 package services
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"agent-desk/internal/models"
+)
 
 func TestWxWorkDefaultResourceLocationIntentBuckets(t *testing.T) {
 	directCases := []string{
@@ -57,5 +62,30 @@ func TestWxWorkDefaultResourceMiniProgramIntent(t *testing.T) {
 	}
 	if wantsCheckInMiniProgram("小程序发我一下") {
 		t.Fatal("expected plain mini program request not to be check-in specific")
+	}
+}
+
+func TestAppendMiniProgramQueryKeepsExistingParams(t *testing.T) {
+	got := appendMiniProgramQuery("pages/order/index?scene=abc", map[string]string{
+		"storeId":   "123",
+		"storeCode": "HFNQ",
+		"storeName": "丽斯未来酒店（合肥南七店）",
+	})
+	if !strings.HasPrefix(got, "pages/order/index?") {
+		t.Fatalf("unexpected path prefix: %s", got)
+	}
+	for _, want := range []string{"scene=abc", "storeId=123", "storeCode=HFNQ", "storeName="} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %s", want, got)
+		}
+	}
+}
+
+func TestInjectMiniProgramStoreParamsUsesInstanceStoreInfo(t *testing.T) {
+	body := map[string]any{"page_path": "pages/index/index", "title": "安心宿"}
+	injectMiniProgramStoreParams(body, &models.WxWorkProtocolInstance{StoreID: 88})
+	pagePath := body["page_path"].(string)
+	if !strings.Contains(pagePath, "storeId=88") {
+		t.Fatalf("expected store params in page_path, got %s", pagePath)
 	}
 }

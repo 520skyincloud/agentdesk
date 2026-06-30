@@ -611,6 +611,10 @@ flowchart LR
 
 加好友/首次会话欢迎链路：员工号实例新增 `welcomeMessage/welcomeSendMiniProgram/welcomeAskLocation`。当 `guid + externalUserId/chatroom` 第一次创建长期会话时，系统不走普通 Agent 欢迎语，而是使用当前员工号实例配置：先发送 `welcomeMessage`，再按开关发送默认小程序，最后按开关询问“要我把某某门店定位发您吗？”。欢迎里的小程序和定位都来自当前员工号绑定的变量，不是全局固定值；一百多家门店每个账号可以有自己的定位、欢迎语和小程序 payload。
 
+老好友再次扫码链路：如果协议 SAAS 回调提供“扫码/渠道二维码进入/活码进入”事件，系统可以按 `guid + externalUserId + qrScene/storeId` 识别老好友再次扫码，并在冷却周期内发送一次二次欢迎语、小程序和定位；如果协议只提供好友申请事件和普通消息事件，则老好友再次扫码但没有发消息时，AgentDesk 无法自动感知，不能凭空主动发送。此时只能在客户下一条消息到达时触发“二次欢迎/资源补发”，或把二维码改成先到 AgentDesk/小程序中转页，由中转页记录扫码事件后再引导打开企微会话。
+
+安心宿小程序门店参数链路：直接发送小程序时，不能只发固定首页。后端在发送默认小程序前，会把当前员工号绑定的门店参数注入 `page_path`：至少带 `storeId`，如果门店表有 `storeCode/name`，同时带 `storeCode/storeName`。例如 `pages/index/index` 会变成 `pages/index/index?storeId=88&storeCode=...&storeName=...`。小程序端需要读取这些 query 参数并预填“预定酒店”，这样主动发送的小程序和扫码打开一样能带门店信息。
+
 GIF/表情包收发规则：入站根据协议回调里的 `msg_type/content_type/source_type` 识别为 `gif`，优先下载并保存为 asset，网页端渲染为动图卡片；没有可访问资产时保留协议 payload 并显示“表情消息”卡片。AI 只能把表情视为轻互动，不能臆测表情背后的业务含义。出站时，网页客服上传 `.gif` 或 MIME 为 `image/gif` 的文件会创建 `Message(gif)`，outbox 按员工号协议走 WECDN 上传并调用 `/msg/send_gif`，不能降级成普通附件或文本。普通 emoji 字符仍按文本发送，不走 GIF 接口。
 
 客户身份隔离规则：同一个微信客户可能住过多个门店、同时联系多个员工号。AgentDesk 可以在客户主数据层识别同一自然人，但会话、AI 记忆、session 摘要、门店知识库和默认资源必须按 `guid + externalUserId/chatroom` 隔离；再结合 `storeId/knowledgeBaseId` 选择当前门店。A 门店员工号收到的早餐、定位、小程序、投诉和工单上下文，不能被 B 门店员工号直接复用为当前事实。跨门店只允许沉淀“稳定客户事实”（例如称呼偏好）并且要显式标注来源，不得把旧门店已解决故障带入新门店会话。

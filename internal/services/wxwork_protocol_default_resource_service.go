@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -210,10 +211,85 @@ func (s *wxWorkProtocolDefaultResourceService) sendDefaultMiniProgram(conversati
 	delete(body, "send_result")
 	delete(body, "conversation_id")
 	body = repairMapStringValues(body)
+	injectMiniProgramStoreParams(body, instance)
 	payloadBytes, _ := json.Marshal(body)
 	content := firstNonBlank(strings.TrimSpace(fmt.Sprint(body["title"])), strings.TrimSpace(fmt.Sprint(body["appname"])), "小程序")
 	_, err := MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_default_weapp_"+strs.UUID(), enums.IMMessageTypeMiniProgram, content, string(payloadBytes), systemOperator(), requestID)
 	return err
+}
+
+func injectMiniProgramStoreParams(body map[string]any, instance *models.WxWorkProtocolInstance) {
+	if body == nil || instance == nil {
+		return
+	}
+	storeID := instance.StoreID
+	storeName := ""
+	storeCode := ""
+	if storeID > 0 && sqls.DB() != nil {
+		if store := StoreService.Get(storeID); store != nil {
+			storeCode = strings.TrimSpace(store.StoreCode)
+			if storeName == "" {
+				storeName = utils.RepairMojibakeText(strings.TrimSpace(store.Name))
+			}
+		}
+	}
+	params := map[string]string{}
+	if storeID > 0 {
+		params["storeId"] = strconv.FormatInt(storeID, 10)
+	}
+	if storeCode != "" {
+		params["storeCode"] = storeCode
+	}
+	if storeName != "" {
+		params["storeName"] = storeName
+	}
+	if len(params) == 0 {
+		return
+	}
+	pathKey, pagePath := miniProgramPagePath(body)
+	if pagePath == "" {
+		pagePath = "pages/index/index"
+		pathKey = "page_path"
+	}
+	body[pathKey] = appendMiniProgramQuery(pagePath, params)
+	if pathKey != "page_path" {
+		body["page_path"] = body[pathKey]
+	}
+}
+
+func miniProgramPagePath(body map[string]any) (string, string) {
+	for _, key := range []string{"page_path", "pagePath", "path"} {
+		value := strings.TrimSpace(fmt.Sprint(body[key]))
+		if value != "" && value != "<nil>" {
+			return key, value
+		}
+	}
+	return "", ""
+}
+
+func appendMiniProgramQuery(pagePath string, params map[string]string) string {
+	pagePath = strings.TrimSpace(pagePath)
+	if pagePath == "" {
+		pagePath = "pages/index/index"
+	}
+	base := pagePath
+	rawQuery := ""
+	if idx := strings.Index(pagePath, "?"); idx >= 0 {
+		base = pagePath[:idx]
+		rawQuery = pagePath[idx+1:]
+	}
+	values, _ := url.ParseQuery(rawQuery)
+	for key, value := range params {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			values.Set(key, value)
+		}
+	}
+	encoded := values.Encode()
+	if encoded == "" {
+		return base
+	}
+	return base + "?" + encoded
 }
 
 type serviceTaskDraft struct {
