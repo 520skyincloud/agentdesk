@@ -70,7 +70,34 @@ func messagesContainContent(messages []*schema.Message, needle string) bool {
 	return false
 }
 
-func TestKnowledgePolicyEvaluateInjectsNoContextInstructionWithoutFallback(t *testing.T) {
+func TestKnowledgePolicyEvaluateSkipsConversationalIntent(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	gate := newTestKnowledgePolicyGate(retriever)
+
+	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("你好", "1"),
+		Summary:   &RunResult{},
+		Collector: collector,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if !state.SkipGate {
+		t.Fatal("expected conversational intent to skip knowledge gate")
+	}
+	if retriever.called {
+		t.Fatal("expected retriever not to run for conversational intent")
+	}
+	if collector.Data.Answerability.Status != answerabilityStatusSkipped {
+		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
+	}
+	if collector.Data.Answerability.Reason != "conversational intent" {
+		t.Fatalf("unexpected policy reason: %q", collector.Data.Answerability.Reason)
+	}
+}
+
+func TestKnowledgePolicyEvaluateInjectsNoContextInstructionForKnowledgeQuestion(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	gate := newTestKnowledgePolicyGate(&fakeKnowledgeContextRetriever{
 		knowledgeBaseIDs: []int64{1},
@@ -80,7 +107,7 @@ func TestKnowledgePolicyEvaluateInjectsNoContextInstructionWithoutFallback(t *te
 	})
 
 	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
-		Request:   newKnowledgePolicyRunInput("你好", "1"),
+		Request:   newKnowledgePolicyRunInput("早餐几点", "1"),
 		Summary:   &RunResult{},
 		Collector: collector,
 	})
@@ -123,7 +150,7 @@ func TestBuildRunMessagesContinuesAgentFlowWhenNoContext(t *testing.T) {
 		},
 	})
 
-	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("你好", "1"), summary, nil, gate)
+	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("早餐几点", "1"), summary, nil, gate)
 
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
@@ -131,8 +158,29 @@ func TestBuildRunMessagesContinuesAgentFlowWhenNoContext(t *testing.T) {
 	if !messagesContainContent(messages, "当前没有从知识库检索到可用资料") {
 		t.Fatalf("expected no-context instruction in messages: %#v", messages)
 	}
-	if !messagesContainContent(messages, "你好") {
+	if !messagesContainContent(messages, "早餐几点") {
 		t.Fatalf("expected current user message to remain in messages: %#v", messages)
+	}
+}
+
+func TestBuildRunMessagesSkipsNoContextForConversationalIntent(t *testing.T) {
+	summary := &RunResult{}
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	gate := newTestKnowledgePolicyGate(retriever)
+
+	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("确认确认", "1"), summary, nil, gate)
+
+	if summary.ReplyText != "" {
+		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
+	}
+	if messagesContainContent(messages, "当前没有从知识库检索到可用资料") {
+		t.Fatalf("did not expect no-context instruction for conversational intent: %#v", messages)
+	}
+	if !messagesContainContent(messages, "确认确认") {
+		t.Fatalf("expected current user message to remain in messages: %#v", messages)
+	}
+	if retriever.called {
+		t.Fatal("expected retriever not to run")
 	}
 }
 
@@ -324,7 +372,7 @@ func TestBuildRunMessagesContinuesAgentFlowWhenRetrievalFails(t *testing.T) {
 		err:              errors.New("vector store unavailable"),
 	})
 
-	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("你好", "1"), summary, nil, gate)
+	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("早餐几点", "1"), summary, nil, gate)
 
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
@@ -332,7 +380,7 @@ func TestBuildRunMessagesContinuesAgentFlowWhenRetrievalFails(t *testing.T) {
 	if !messagesContainContent(messages, "知识库检索暂时不可用") {
 		t.Fatalf("expected retrieval-error instruction in messages: %#v", messages)
 	}
-	if !messagesContainContent(messages, "你好") {
+	if !messagesContainContent(messages, "早餐几点") {
 		t.Fatalf("expected current user message to remain in messages: %#v", messages)
 	}
 }
