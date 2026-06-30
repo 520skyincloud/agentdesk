@@ -4,6 +4,7 @@ import "encoding/json"
 
 type aiReplyTraceData struct {
 	Status           string          `json:"status"`
+	SettleMs         int64           `json:"settleMs,omitempty"`
 	RuntimeLatencyMs int64           `json:"runtimeLatencyMs,omitempty"`
 	RecheckMs        int64           `json:"recheckMs,omitempty"`
 	CommitMs         int64           `json:"commitMs,omitempty"`

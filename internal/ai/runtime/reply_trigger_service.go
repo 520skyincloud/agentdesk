@@ -16,9 +16,9 @@ import (
 	"github.com/mlogclub/simple/sqls"
 )
 
-const aiReplyDebounceWindow = 700 * time.Millisecond
-const aiReplyMediaSettleWindow = 4 * time.Second
-const aiReplyMediaContextWindow = 8 * time.Second
+const aiReplyDebounceWindow = 250 * time.Millisecond
+const aiReplyMediaSettleWindow = 1500 * time.Millisecond
+const aiReplyMediaContextWindow = 6 * time.Second
 const aiReplyBurstTextWindow = 8 * time.Second
 
 func (s *aiReplyService) resolveReplyTimeout(aiAgent models.AIAgent) time.Duration {
@@ -66,9 +66,12 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	settleStartedAt := time.Now()
 	if !s.waitForConversationToSettle(ctx, conversation.ID, message.ID) {
+		trace.SettleMs = time.Since(settleStartedAt).Milliseconds()
 		return nil
 	}
+	trace.SettleMs = time.Since(settleStartedAt).Milliseconds()
 	if s.eligibility != nil && !s.eligibility.CanReply(conversation, message, aiAgent) {
 		return nil
 	}
@@ -108,7 +111,7 @@ func (s *aiReplyService) waitForConversationToSettle(ctx context.Context, conver
 		if !hasRecentPendingMediaUnderstanding(conversationID, messageID, aiReplyMediaContextWindow) {
 			return true
 		}
-		if !sleepWithContext(ctx, 500*time.Millisecond) {
+		if !sleepWithContext(ctx, 250*time.Millisecond) {
 			return false
 		}
 		if !s.isStillLatestCustomerMessage(conversationID, messageID) {
