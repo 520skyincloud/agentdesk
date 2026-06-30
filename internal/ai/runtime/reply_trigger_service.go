@@ -135,9 +135,47 @@ func shouldWaitForRecentMediaUnderstanding(message models.Message) bool {
 		return false
 	}
 	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "，", "", "。", "", "！", "", "!", "", "？", "", "?", "").Replace(text)
-	mediaNeedles := []string{"图片", "照片", "图里", "图上", "这图", "截图", "语音", "听下", "文件", "附件", "表格", "pdf", "word", "这个", "这是啥", "这是什么", "看下", "帮我看", "识别"}
-	questionNeedles := []string{"什么", "啥", "哪", "怎么", "是不是", "能不能", "可以吗", "对吗", "什么意思", "帮", "看", "听", "识别"}
-	return containsAnyText(compact, mediaNeedles) && containsAnyText(compact, questionNeedles)
+	if isClearlyIndependentText(compact) {
+		return false
+	}
+	mediaNeedles := []string{"图片", "照片", "图里", "图上", "这图", "截图", "语音", "听下", "文件", "附件", "表格", "pdf", "word", "这个", "这个东西", "这是什么", "这是啥", "看下", "帮我看", "识别"}
+	questionNeedles := []string{"什么", "啥", "哪", "怎么", "多少", "多少钱", "贵吗", "是不是", "能不能", "能用吗", "能买吗", "可以吗", "对吗", "什么意思", "帮", "看", "听", "识别"}
+	if containsAnyText(compact, mediaNeedles) && containsAnyText(compact, questionNeedles) {
+		return true
+	}
+	return isLikelyImplicitMediaFollowUp(compact)
+}
+
+func isLikelyImplicitMediaFollowUp(compact string) bool {
+	if compact == "" || len([]rune(compact)) > 24 {
+		return false
+	}
+	if containsAnyText(compact, []string{"这个", "这个东西", "这是什么", "这是啥", "这能", "能用吗", "能买吗", "多少钱", "多少", "贵吗", "对吗", "行吗", "可以吗", "咋弄", "怎么弄", "什么意思"}) {
+		return true
+	}
+	return false
+}
+
+func isClearlyIndependentText(compact string) bool {
+	if compact == "" {
+		return false
+	}
+	if containsAnyText(compact, []string{"早餐", "停车", "发票", "押金", "退房", "入住时间", "会员", "wifi", "无线网", "洗衣", "健身房", "餐厅"}) {
+		return true
+	}
+	if containsAnyText(compact, []string{"发定位", "酒店定位", "门店定位", "导航", "怎么去", "酒店地址", "我要办入住", "办理入住", "办入住", "小程序", "安心宿"}) {
+		return true
+	}
+	if containsAnyText(compact, []string{"送水", "拖鞋", "牙刷", "纸巾", "维修", "打扫", "保洁", "投诉", "转人工", "人工客服"}) {
+		return true
+	}
+	shortExact := []string{"你好", "您好", "在吗", "谢谢", "好的", "好", "嗯", "嗯嗯", "确认", "确认确认", "收到", "可以", "行"}
+	for _, value := range shortExact {
+		if compact == value {
+			return true
+		}
+	}
+	return false
 }
 
 func containsAnyText(text string, values []string) bool {

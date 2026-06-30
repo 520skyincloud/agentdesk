@@ -83,6 +83,15 @@ func TestShouldWaitForRecentMediaUnderstanding(t *testing.T) {
 	if !shouldWaitForRecentMediaUnderstanding(models.Message{MessageType: enums.IMMessageTypeHTML, Content: "这个文件什么意思"}) {
 		t.Fatal("file follow-up should wait for recent media understanding")
 	}
+	if !shouldWaitForRecentMediaUnderstanding(models.Message{MessageType: enums.IMMessageTypeText, Content: "这个多少钱"}) {
+		t.Fatal("implicit image follow-up should wait for recent media understanding")
+	}
+	if !shouldWaitForRecentMediaUnderstanding(models.Message{MessageType: enums.IMMessageTypeText, Content: "能用吗"}) {
+		t.Fatal("short implicit media question should wait for recent media understanding")
+	}
+	if shouldWaitForRecentMediaUnderstanding(models.Message{MessageType: enums.IMMessageTypeText, Content: "发一下酒店定位"}) {
+		t.Fatal("location intent should not wait for media understanding")
+	}
 	if shouldWaitForRecentMediaUnderstanding(models.Message{MessageType: enums.IMMessageTypeImage}) {
 		t.Fatal("media message itself is handled by media understanding worker")
 	}
