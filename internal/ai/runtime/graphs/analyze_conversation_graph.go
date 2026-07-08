@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/models"
 	"agent-desk/internal/services"
 )
@@ -127,7 +128,7 @@ func collectRiskSignals(joined string, input AnalyzeConversationInput) []string 
 	if containsAny(joined, "生气", "愤怒", "垃圾", "太差", "一直没人", "再不处理") {
 		add("negative_sentiment")
 	}
-	if containsAny(joined, "人工", "转人工", "真人", "客服") || input.NeedHumanHandoff {
+	if containsHandoffRequest(joined) || input.NeedHumanHandoff {
 		add("handoff_requested")
 	}
 	if containsAny(joined, "工单", "报障", "售后", "登记", "记录问题") || input.NeedTicket {
@@ -141,7 +142,7 @@ func collectRiskSignals(joined string, input AnalyzeConversationInput) []string 
 
 func detectUserIntent(joined string, input AnalyzeConversationInput) string {
 	switch {
-	case input.NeedHumanHandoff || containsAny(joined, "人工", "转人工", "真人"):
+	case input.NeedHumanHandoff || containsHandoffRequest(joined):
 		return "handoff_request"
 	case input.NeedTicket || containsAny(joined, "工单", "报障", "售后", "登记问题"):
 		return "ticket_request"
@@ -167,17 +168,25 @@ func deriveRiskLevel(signals []string) string {
 
 func recommendNextAction(intent string, signals []string, input AnalyzeConversationInput) string {
 	switch {
-	case input.NeedQualityCheck:
+	case input.NeedQualityCheck && hasSeriousHumanRisk(signals):
 		return "quality_review"
 	case containsSignal(signals, "handoff_requested") || intent == "handoff_request":
 		return "handoff_to_human"
 	case containsSignal(signals, "ticket_expected") || intent == "ticket_request":
 		return "prepare_ticket"
-	case containsSignal(signals, "complaint_escalation"):
+	case containsSignal(signals, "complaint_escalation") || containsSignal(signals, "financial_risk"):
 		return "handoff_to_human"
 	default:
 		return "continue_answering"
 	}
+}
+
+func containsHandoffRequest(joined string) bool {
+	return replyengine.IsExplicitHandoffRequest(joined)
+}
+
+func hasSeriousHumanRisk(signals []string) bool {
+	return containsSignal(signals, "complaint_escalation") || containsSignal(signals, "financial_risk") || containsSignal(signals, "handoff_requested")
 }
 
 func recommendQuestions(intent string, signals []string, input AnalyzeConversationInput) []string {

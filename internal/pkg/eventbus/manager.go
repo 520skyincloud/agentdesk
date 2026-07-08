@@ -78,3 +78,7 @@ func Publish[T any](ctx context.Context, event T) error {
 func PublishAsync[T any](ctx context.Context, event T) {
 	Get[T]().PublishAsync(ctx, event)
 }
+
+func WaitAsync[T any]() {
+	Get[T]().WaitAsync()
+}

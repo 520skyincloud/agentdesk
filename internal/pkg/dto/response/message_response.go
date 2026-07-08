@@ -12,6 +12,8 @@ type MessageResponse struct {
 	SenderID        int64                 `json:"senderId"`
 	SenderName      string                `json:"senderName,omitempty"`
 	SenderAvatar    string                `json:"senderAvatar,omitempty"`
+	SendSource      string                `json:"sendSource,omitempty"`
+	SendSourceLabel string                `json:"sendSourceLabel,omitempty"`
 	MessageType     enums.IMMessageType   `json:"messageType"`
 	Content         string                `json:"content"`
 	Payload         string                `json:"payload,omitempty"`

@@ -114,12 +114,22 @@ func (s *conversationService) CreateWithoutWelcome(externalUser openidentity.Ext
 	return s.create(externalUser, channelID, aiAgentID, false)
 }
 
+func (s *conversationService) CreateWithRuntimeProfileWithoutWelcome(externalUser openidentity.ExternalUser, channelID int64, aiAgent models.AIAgent) (*models.Conversation, error) {
+	return s.createWithProfile(externalUser, channelID, aiAgent, false)
+}
+
 func (s *conversationService) create(externalUser openidentity.ExternalUser, channelID, aiAgentID int64, createWelcome bool) (*models.Conversation, error) {
 	aiAgent := AIAgentService.Get(aiAgentID)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("AI Agent not found")
 	}
+	return s.createWithProfile(externalUser, channelID, *aiAgent, createWelcome)
+}
 
+func (s *conversationService) createWithProfile(externalUser openidentity.ExternalUser, channelID int64, aiAgent models.AIAgent, createWelcome bool) (*models.Conversation, error) {
+	if aiAgent.Status != enums.StatusOk {
+		return nil, errorsx.InvalidParam("AI Agent not found")
+	}
 	var conversation *models.Conversation
 	var welcomeMessage *models.Message
 	created := false
@@ -145,7 +155,7 @@ func (s *conversationService) create(externalUser openidentity.ExternalUser, cha
 		created = true
 		now := time.Now()
 		conversation = &models.Conversation{
-			AIAgentID:         aiAgentID,
+			AIAgentID:         aiAgent.ID,
 			ChannelID:         channelID,
 			CustomerID:        customerID,
 			CustomerName:      customerName,
@@ -168,7 +178,7 @@ func (s *conversationService) create(externalUser openidentity.ExternalUser, cha
 			return err
 		}
 		if createWelcome {
-			welcomeMessage, err = MessageService.createAIWelcomeMessage(ctx, conversation, aiAgent, now)
+			welcomeMessage, err = MessageService.createAIWelcomeMessage(ctx, conversation, &aiAgent, now)
 		}
 		return err
 	}); err != nil {
@@ -191,7 +201,7 @@ func (s *conversationService) create(externalUser openidentity.ExternalUser, cha
 	}
 
 	if aiAgent.ServiceMode == enums.IMConversationServiceModeHumanOnly {
-		if _, err := ConversationHumanDispatchService.ApplyHumanOnlyCreate(conversation.ID, *aiAgent); err != nil {
+		if _, err := ConversationHumanDispatchService.ApplyHumanOnlyCreate(conversation.ID, aiAgent); err != nil {
 			return nil, err
 		}
 	}
@@ -363,6 +373,9 @@ func (s *conversationService) EnsureAgentCanReply(conversationID int64, reason s
 	}
 	if !s.isAdmin(operator) && !AgentProfileService.CanServeConversation(operator.UserID, conversationID) {
 		return errorsx.Forbidden("当前客服未绑定该门店或员工号，无法处理此会话")
+	}
+	if route := ConversationRouteService.GetByConversationID(conversationID); route != nil && route.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
+		return nil
 	}
 	if conversation.Status == enums.IMConversationStatusActive && conversation.CurrentAssigneeID == operator.UserID {
 		return nil

@@ -13,6 +13,7 @@ func TestNewRuntimeStaticTool(t *testing.T) {
 		toolx.GraphPrepareTicketDraft.Code,
 		toolx.GraphCreateTicketConfirm.Code,
 		toolx.GraphHandoffConversation.Code,
+		toolx.BuiltinWeather.Code,
 	}
 	for _, item := range items {
 		tool := NewRuntimeStaticTool(item)

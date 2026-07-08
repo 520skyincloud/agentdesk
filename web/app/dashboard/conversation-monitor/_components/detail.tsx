@@ -99,6 +99,13 @@ function getSenderLabel(
   }
 }
 
+function getSendSourceLabel(message: AdminMessage) {
+  if (message.senderType !== "agent") {
+    return "";
+  }
+  return message.sendSourceLabel?.trim() || "";
+}
+
 function getMessageContent(message: AdminMessage) {
   return message.content || message.payload || "-";
 }
@@ -445,11 +452,11 @@ export function ConversationDetailDialog({
                       const layout = getMessageLayout(message);
                       const isRecalled =
                         Boolean(message.recalledAt) || message.sendStatus === 6;
+                      const sendSourceLabel = getSendSourceLabel(message);
                       const isHtmlMessage =
-                        !isRecalled &&
-                        (message.messageType === "html" ||
-                          message.messageType === "attachment");
-                      const isImageMessage = !isRecalled && message.messageType === "image";
+                        message.messageType === "html" ||
+                        message.messageType === "attachment";
+                      const isImageMessage = message.messageType === "image";
 
                       return (
                         <div
@@ -461,6 +468,12 @@ export function ConversationDetailDialog({
                               className={`text-xs text-muted-foreground ${layout.metaClassName}`}
                             >
                               <span>{getSenderLabel(message, t)}</span>
+                              {sendSourceLabel ? (
+                                <>
+                                  <span className="mx-2">·</span>
+                                  <span>{sendSourceLabel}</span>
+                                </>
+                              ) : null}
                               <span className="mx-2">·</span>
                               <span>{formatDateTime(message.sentAt)}</span>
                               {isRecalled ? (
@@ -473,11 +486,7 @@ export function ConversationDetailDialog({
                             <div
                               className={`rounded-2xl border px-4 py-3 text-sm leading-6 ${layout.bubbleClassName}`}
                             >
-                              {isRecalled ? (
-                                <div className="text-muted-foreground">
-                                  {t("conversationMonitor.messageRecalledBody")}
-                                </div>
-                              ) : isHtmlMessage ? (
+                              {isHtmlMessage ? (
                                 <ImMessageHTML
                                   html={renderIMMessageHTML(message)}
                                   className="[&_a]:underline [&_img]:max-w-full [&_img]:cursor-zoom-in"

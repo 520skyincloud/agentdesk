@@ -2,6 +2,9 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -10,9 +13,11 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
+	"agent-desk/internal/repositories"
 
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"github.com/mlogclub/simple/sqls"
 )
 
 const (
@@ -42,6 +47,7 @@ type answerabilityGateInput struct {
 	Summary   *RunResult
 	Collector *callbacks.RuntimeTraceCollector
 	Messages  []*schema.Message
+	Intent    callbacks.IntentTraceData
 }
 
 type answerabilityGateState struct {
@@ -50,7 +56,6 @@ type answerabilityGateState struct {
 	RetrieveResult *retrievers.KnowledgeRetrieveResult
 	Decision       knowledgeGuardDecision
 	SkipGate       bool
-	FallbackReply  string
 	ErrorMessage   string
 }
 
@@ -112,10 +117,7 @@ func routeAnswerabilityGate(ctx context.Context, state *answerabilityGateState) 
 	if state == nil {
 		return answerabilityNodeFallback, nil
 	}
-	if state.SkipGate || strings.TrimSpace(state.FallbackReply) == "" {
-		return answerabilityNodeAllow, nil
-	}
-	return answerabilityNodeFallback, nil
+	return answerabilityNodeAllow, nil
 }
 
 func allowAnswerabilityPassThrough(ctx context.Context, state *answerabilityGateState) (*answerabilityGateState, error) {
@@ -140,53 +142,68 @@ func fallbackAnswerabilityPassThrough(ctx context.Context, state *answerabilityG
 	return state, nil
 }
 
+func retrieveContextForRuntimeQuestions(ctx context.Context, retriever knowledgeContextRetriever, opts retrievers.KnowledgeRetrieveOptions, query string) (*retrievers.KnowledgeRetrieveResult, error) {
+	return retriever.RetrieveContextByOptions(ctx, opts, query)
+}
+
 func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, state *answerabilityGateState) (*answerabilityGateState, error) {
 	if state == nil {
 		state = &answerabilityGateState{}
 	}
 	gate := g.withDefaults()
 	req := state.Input.Request
-	if isRuntimeActionIntent(req.UserMessage.Content) {
+	intent := state.Input.Intent
+	knowledgeActionInstruction := buildKnowledgePathActionInstruction(req, intent)
+	if instruction := buildMissingMediaContextInstruction(req, state.Input.Messages, intent); strings.TrimSpace(instruction) != "" {
+		state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(instruction))
 		state.SkipGate = true
-		state.recordAnswerability(answerabilityStatusSkipped, "runtime action intent", nil)
+		state.recordAnswerability(answerabilityStatusSkipped, "missing media context instruction", nil)
 		return state, nil
 	}
-	if skip, reason := shouldSkipKnowledgeGate(req); skip {
+	if !intent.NeedsKnowledge {
+		if instruction := buildIntentActionInstruction(req, intent); strings.TrimSpace(instruction) != "" {
+			state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(instruction))
+		}
 		state.SkipGate = true
-		state.recordAnswerability(answerabilityStatusSkipped, reason, nil)
+		state.recordAnswerability(answerabilityStatusSkipped, "intent does not require knowledge", nil)
 		return state, nil
 	}
 	configuredKnowledgeIDs := utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
 	if len(configuredKnowledgeIDs) == 0 {
-		state.SkipGate = true
-		state.recordAnswerability(answerabilityStatusSkipped, "no knowledge configured", nil)
+		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, configuredKnowledgeIDs)
+		state.prependDecisionInstruction(knowledgeActionInstruction)
+		state.recordAnswerability(answerabilityStatusNoContext, "intent requires knowledge but no knowledge configured", nil)
 		return state, nil
 	}
 	retriever := gate.newRetriever(req.AIAgent)
 	state.KnowledgeIDs = append([]int64(nil), configuredKnowledgeIDs...)
 	if retriever == nil {
-		state.FallbackReply = resolveKnowledgeHumanSupportFallback(req.AIAgent)
+		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, configuredKnowledgeIDs)
+		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retriever unavailable", nil)
 		return state, nil
 	}
 	knowledgeIDs := retriever.KnowledgeBaseIDs()
 	state.KnowledgeIDs = append([]int64(nil), knowledgeIDs...)
 	if len(knowledgeIDs) == 0 {
-		state.SkipGate = true
-		state.recordAnswerability(answerabilityStatusSkipped, "no knowledge configured", nil)
+		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, configuredKnowledgeIDs)
+		state.prependDecisionInstruction(knowledgeActionInstruction)
+		state.recordAnswerability(answerabilityStatusNoContext, "intent requires knowledge but retriever has no knowledge", nil)
 		return state, nil
 	}
 	query := strings.TrimSpace(req.UserMessage.Content)
 	if query == "" {
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
+		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusNoContext, "empty user question", nil)
 		return state, nil
 	}
 	retrieveOptions := retrievers.DefaultKnowledgeRetrieveOptions()
 	retrieveOptions.QueryPreview = preview(req.UserMessage.Content, 120)
-	result, err := retriever.RetrieveContextByOptions(ctx, retrieveOptions, query)
+	result, err := retrieveContextForRuntimeQuestions(ctx, retriever, retrieveOptions, query)
 	if err != nil {
 		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, knowledgeIDs)
+		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.ErrorMessage = err.Error()
 		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retrieval failed", err)
 		return state, nil
@@ -201,159 +218,304 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	if result == nil || len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
+		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusNoContext, "no retrieved context", nil)
 		return state, nil
 	}
 	state.Decision = buildKnowledgeGuardDecision(req.AIAgent, result)
+	state.prependDecisionInstruction(knowledgeActionInstruction)
 	state.recordAnswerability(answerabilityStatusHasContext, "retrieved context injected", nil)
 	return state, nil
 }
 
-func shouldSkipKnowledgeGate(req RunInput) (bool, string) {
-	content := strings.TrimSpace(req.UserMessage.Content)
-	messageType := req.UserMessage.MessageType
-	if isMediaOnlyMessage(messageType, content) {
-		return true, "media-only message"
+func buildKnowledgePathActionInstruction(req RunInput, intent callbacks.IntentTraceData) string {
+	if intent.PrimaryIntent != "hotel_variable" && !intent.NeedsResource {
+		return ""
 	}
-	text := normalizeIntentText(content)
-	if text == "" {
-		return false, ""
-	}
-	if isConversationalIntent(text) {
-		return true, "conversational intent"
-	}
-	if isOperationalResourceIntent(text) {
-		return true, "operational resource intent"
-	}
-	if isServiceActionIntent(text) {
-		return true, "service action intent"
-	}
-	if isMediaFollowUpIntent(text) && !isExplicitHotelKnowledgeQuestion(text) {
-		return true, "media follow-up intent"
-	}
-	return false, ""
+	return buildIntentActionInstruction(req, intent)
 }
 
-func normalizeIntentText(content string) string {
-	text := strings.ToLower(strings.TrimSpace(content))
-	return strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "，", "", "。", "", "！", "", "!", "", "？", "", "?", "", "～", "", "~", "").Replace(text)
+func buildIntentActionInstruction(req RunInput, intent callbacks.IntentTraceData) string {
+	parts := []string{"运行时动作约束：本轮必须由模型生成自然回复，禁止使用固定短答；只允许使用统一意图识别阶段给出的分类、子意图、资源动作和上下文，不得重新发明业务流程。"}
+	switch intent.PrimaryIntent {
+	case "hotel_variable":
+		parts = append(parts, buildHotelVariableInstruction(req, intent))
+	case "human_complaint_risk":
+		if intent.SubIntent == "emergency_safety" {
+			parts = append(parts, "人工/投诉/风险-突发安全：这是受伤/摔倒/流血/报警等高风险场景，必须进入接待路由；先安抚并提醒用户不要移动，必要时拨打 120/报警。缺房号/位置时只追问当前位置，同时不得等待知识库。")
+		} else {
+			parts = append(parts, "人工/投诉/风险：按当前门店托管模式和排班处理；没有工具或路由结果时，不得说已经转人工、已通知、已安排或已有处理结果。普通设施/设备问题若知识库命中，知识库优先于人工。")
+		}
+	case "service_request":
+		parts = append(parts, "服务请求：按当前分类提示词处理；普通设施/设备/用品问题先使用知识库。没有知识库或工具结果时，不得承诺派人、送物、维修、叫醒或记录完成。")
+	case "social_confirm":
+		if strings.TrimSpace(intent.SubIntent) == "media_context_follow_up" {
+			parts = append(parts, "图片/文件上下文：围绕当前问题使用最近图片/文件解析文本，不机械复述 OCR，不说系统识别。语音仍按既有语转文文本链路处理。")
+		} else {
+			parts = append(parts, "轻互动/确认：自然短句回应，结合最近上下文，不使用固定话术表。")
+		}
+	case "unknown_clarify":
+		parts = append(parts, "未知/澄清：只追问一个关键点或给安全短答，不调用知识、变量或人工路由。")
+	}
+	return strings.Join(nonEmptyStrings(parts), "\n")
 }
 
-func isMediaOnlyMessage(messageType enums.IMMessageType, content string) bool {
-	if strings.TrimSpace(content) != "" {
-		return false
+func buildHotelVariableInstruction(req RunInput, intent callbacks.IntentTraceData) string {
+	return buildHotelVariableInstructionFromInstance(findRuntimeWxWorkInstance(req), req.UserMessage.Content, intent)
+}
+
+func buildHotelVariableInstructionFromInstance(instance *models.WxWorkProtocolInstance, currentText string, intent callbacks.IntentTraceData) string {
+	resourceTypes := requestedHotelVariableResourceTypes(currentText, intent)
+	if len(resourceTypes) == 0 {
+		return "酒店变量：当前请求需要门店账号变量，但未识别到具体变量动作。模型只能追问一个关键点，不能编造电话、定位或小程序入口。"
 	}
-	switch messageType {
-	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment, enums.IMMessageTypeGIF, enums.IMMessageTypeLocation, enums.IMMessageTypeMiniProgram:
-		return true
+	parts := make([]string, 0, len(resourceTypes))
+	for _, resourceType := range resourceTypes {
+		switch resourceType {
+		case "location":
+			parts = append(parts, "酒店变量-定位/地址："+buildLocationResourceContext(instance))
+		case "mini_program":
+			parts = append(parts, "酒店变量-入住小程序："+buildMiniProgramResourceContext(instance))
+		case "phone":
+			parts = append(parts, "酒店变量-门店电话："+buildPhoneResourceContext(instance))
+		default:
+			parts = append(parts, "酒店变量："+resourceType+" 未识别到可用变量动作，不能编造具体值。")
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func requestedHotelVariableResourceTypes(currentText string, intent callbacks.IntentTraceData) []string {
+	ret := make([]string, 0, 3)
+	add := func(resourceType string) {
+		resourceType = strings.TrimSpace(resourceType)
+		if resourceType == "" || resourceType == "store_variable" || resourceType == "store_group" {
+			return
+		}
+		for _, existing := range ret {
+			if existing == resourceType {
+				return
+			}
+		}
+		ret = append(ret, resourceType)
+	}
+	text := normalizeConfiguredIntentText(currentText)
+	if text != "" {
+		if containsAnyNormalized(text, []string{"定位", "地址", "导航", "在哪", "哪里", "怎么去"}) {
+			add("location")
+		}
+		if containsAnyNormalized(text, []string{"小程序", "安心宿", "入住码", "办理入住", "自助入住"}) {
+			add("mini_program")
+		}
+		if containsAnyNormalized(text, []string{"电话", "号码", "联系", "客服"}) {
+			add("phone")
+		}
+	}
+	switch strings.TrimSpace(intent.ResourceAction) {
+	case "provide_location":
+		add("location")
+	case "send_miniprogram":
+		add("mini_program")
+	case "provide_phone":
+		add("phone")
 	default:
-		return false
+		resourceType := strings.TrimSpace(intent.ResourceType)
+		add(resourceType)
+	}
+	return ret
+}
+
+func buildMissingMediaContextInstruction(req RunInput, messages []*schema.Message, intent callbacks.IntentTraceData) string {
+	if strings.TrimSpace(intent.SubIntent) != "media_context_follow_up" {
+		return ""
+	}
+	text := normalizeGateText(req.UserMessage.Content)
+	if text == "" || !isMediaFollowUpIntent(text) || hasUsableMediaUnderstanding(messages) || hasRecentUsableMediaUnderstanding(req) {
+		return ""
+	}
+	if isMediaCorrectionOrComplaint(text) {
+		return ""
+	}
+	switch {
+	case containsAny(text, []string{"语音", "听下", "听懂"}):
+		return "媒体上下文状态：统一意图识别判定为媒体追问，但当前没有可用语音理解内容。由模型自然说明需要用户用文字补充一句；不要使用固定短答，不要假装听到了。"
+	case containsAny(text, []string{"图片", "照片", "图里", "图上", "截图", "看图"}):
+		return "媒体上下文状态：统一意图识别判定为媒体追问，但当前没有可用图片理解内容。由模型自然说明需要补发或说明要看的点；不要使用固定短答，不要假装看到了。"
+	case containsAny(text, []string{"文件", "附件"}):
+		return "媒体上下文状态：统一意图识别判定为媒体追问，但当前没有可用文件理解内容。由模型自然说明需要关键页或具体问题；不要使用固定短答，不要假装读到了。"
+	default:
+		return "媒体上下文状态：统一意图识别判定为媒体追问，但当前没有可用媒体理解内容。由模型自然说明需要补充具体内容；不要使用固定短答，不要假装看懂。"
 	}
 }
 
-func isConversationalIntent(text string) bool {
-	if text == "" {
-		return false
+func hasRecentUsableMediaUnderstanding(req RunInput) bool {
+	return findRecentUsableMediaUnderstanding(req) != nil
+}
+
+type recentMediaUnderstanding struct {
+	MessageType  enums.IMMessageType
+	MediaText    string
+	MediaSummary string
+}
+
+func findRecentUsableMediaUnderstanding(req RunInput) *recentMediaUnderstanding {
+	if req.Conversation.ID <= 0 || req.UserMessage.ID <= 0 {
+		return nil
 	}
-	shortExact := []string{
-		"你好", "您好", "在吗", "在不在", "有人吗", "哈喽", "hello", "hi", "谢谢", "多谢", "感谢", "不客气", "好的", "好", "嗯", "嗯嗯", "可以", "行", "收到", "明白", "知道了", "确认", "确认确认", "对", "是的", "不是", "不用了", "没事了", "算了", "拜拜", "再见",
+	db := sqls.DB()
+	if db == nil {
+		return nil
 	}
-	for _, value := range shortExact {
-		if text == value {
+	createdAfter := req.UserMessage.CreatedAt.Add(-2 * time.Minute)
+	messages := repositories.MessageRepository.Find(db, sqls.NewCnd().
+		Eq("conversation_id", req.Conversation.ID).
+		Eq("sender_type", string(enums.IMSenderTypeCustomer)).
+		In("message_type", []string{string(enums.IMMessageTypeImage), string(enums.IMMessageTypeVoice), string(enums.IMMessageTypeAttachment), string(enums.IMMessageTypeGIF)}).
+		Where("id < ? AND created_at >= ?", req.UserMessage.ID, createdAfter).
+		Desc("id").
+		Limit(8))
+	for i := range messages {
+		mediaText, mediaSummary, mediaStatus := utils.RuntimeMediaUnderstandingFromPayload(messages[i].Payload)
+		if strings.TrimSpace(mediaStatus) == "understood" && (strings.TrimSpace(mediaText) != "" || strings.TrimSpace(mediaSummary) != "") {
+			return &recentMediaUnderstanding{
+				MessageType:  messages[i].MessageType,
+				MediaText:    strings.TrimSpace(mediaText),
+				MediaSummary: strings.TrimSpace(mediaSummary),
+			}
+		}
+	}
+	return nil
+}
+
+func isMediaCorrectionOrComplaint(text string) bool {
+	return containsAny(text, []string{"没发语音", "不是语音", "胡乱回", "乱回", "看不到", "看不见", "神经病", "有病", "你在说什么", "什么鬼"})
+}
+
+func hasUsableMediaUnderstanding(messages []*schema.Message) bool {
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		if strings.Contains(content, "图片内容是") || strings.Contains(content, "图片摘要是") || strings.Contains(content, "语音内容是") || strings.Contains(content, "语音摘要是") || strings.Contains(content, "文件内容是") || strings.Contains(content, "文件摘要是") || strings.Contains(content, "视频理解结果是") || strings.Contains(content, "动画表情理解结果是") || strings.Contains(content, "媒体理解：") {
 			return true
 		}
 	}
-	if len([]rune(text)) <= 8 && containsAny(text, []string{"谢谢", "感谢", "好的", "收到", "确认", "可以", "行", "嗯"}) {
-		return true
-	}
 	return false
 }
 
-func isOperationalResourceIntent(text string) bool {
-	if containsAny(text, []string{"小程序", "安心宿", "自助入住", "自助办理", "办理入住", "办入住", "入住办理", "入住小程序", "扫码入住"}) {
-		return true
+func buildLocationResourceContext(instance *models.WxWorkProtocolInstance) string {
+	if instance == nil {
+		return "当前门店没有绑定定位/地址变量。请直接说明当前账号暂未配置定位，不能编造地址或坐标，不能说让同事发送或稍后处理。"
 	}
-	if containsAny(text, []string{"发定位", "发个定位", "定位发", "酒店定位", "门店定位", "导航", "怎么去", "怎么过去", "到酒店", "去酒店", "酒店地址", "地址发", "位置发", "在哪里", "在哪儿"}) &&
-		containsAny(text, []string{"酒店", "门店", "你们", "这家", "位置", "地址", "定位", "导航", "过去", "到"}) {
-		return true
+	name := firstNonEmpty(instance.StoreNavigationName, instance.EmployeeName, "当前门店")
+	address := strings.TrimSpace(instance.StoreAddress)
+	lng := strings.TrimSpace(instance.StoreLongitude)
+	lat := strings.TrimSpace(instance.StoreLatitude)
+	if lng == "" || lat == "" {
+		if address != "" {
+			return "可用地址变量：" + name + "，地址：" + address + "。必须直接用这个地址回答，不能说让同事发送或稍后处理。"
+		}
+		return "当前门店没有绑定定位/地址变量。请直接说明当前账号暂未配置定位，不能编造地址或坐标，不能说让同事发送或稍后处理。"
 	}
-	return false
+	if address != "" {
+		return "可用定位变量：" + name + "，地址：" + address + "，坐标：" + lat + ", " + lng + "，地图URI：" + buildAmapMarkerURI(name, lng, lat) + "。必须直接使用这个定位变量回答，不能说发不了链接、让同事发送或稍后处理。"
+	}
+	return "可用定位变量：" + name + "，坐标：" + lat + ", " + lng + "，地图URI：" + buildAmapMarkerURI(name, lng, lat) + "。必须直接使用这个定位变量回答，不能说发不了链接、让同事发送或稍后处理。"
 }
 
-func isServiceActionIntent(text string) bool {
-	servicePhrases := []string{
-		"送水", "拿水", "矿泉水", "送拖鞋", "拖鞋", "牙刷", "牙膏", "纸巾", "浴巾", "毛巾", "被子", "枕头", "充电器", "打扫", "保洁", "清理房间", "维修", "修一下", "漏水", "堵了", "马桶", "空调不冷", "空调坏", "电视坏", "门锁", "房卡", "叫醒", "退房", "续住", "换房", "投诉", "赔偿", "发票", "开发票",
+func buildMiniProgramResourceContext(instance *models.WxWorkProtocolInstance) string {
+	if instance == nil || strings.TrimSpace(instance.DefaultMiniProgramPayload) == "" {
+		return "当前门店没有绑定入住小程序变量。请直接说明当前账号暂未配置入住小程序，不能编造入口，不能说让同事发送或稍后处理。"
 	}
-	if containsAny(text, servicePhrases) && containsAny(text, []string{"帮", "要", "送", "拿", "来", "处理", "修", "开", "换", "安排", "麻烦", "需要", "可以"}) {
-		return true
+	return "当前门店已绑定入住小程序变量" + miniProgramPayloadSummary(instance.DefaultMiniProgramPayload) + "。必须围绕这个变量回复，不能说小程序未配置；没有工具发送结果时不能说已经发给你、点开就能用、到前台扫码、微信搜门店名，也不能说让同事发送或稍后处理。"
+}
+
+func buildPhoneResourceContext(instance *models.WxWorkProtocolInstance) string {
+	phone := extractRuntimeStorePhone(instance)
+	if phone == "" {
+		return "当前门店没有配置联系电话变量。请直接说明当前账号暂未配置联系电话，不能编造号码，不能说让同事发送或稍后处理。"
 	}
-	return false
+	return "可用联系电话变量：" + phone + "。必须直接回复这个电话，不能说让同事发送或稍后处理。"
+}
+
+func findRuntimeWxWorkInstance(req RunInput) *models.WxWorkProtocolInstance {
+	if req.Conversation.ID <= 0 {
+		return nil
+	}
+	db := sqls.DB()
+	if db == nil {
+		return nil
+	}
+	route := repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ?", req.Conversation.ID)
+	if route == nil || route.WxWorkInstanceID <= 0 {
+		return nil
+	}
+	return repositories.WxWorkProtocolInstanceRepository.Get(db, route.WxWorkInstanceID)
+}
+
+func extractRuntimeStorePhone(instance *models.WxWorkProtocolInstance) string {
+	if instance == nil {
+		return ""
+	}
+	text := strings.Join([]string{instance.Remark, instance.StoreAddress}, " ")
+	re := regexp.MustCompile(`1[3-9]\d{9}|0\d{2,3}-?\d{7,8}|400-?\d{3}-?\d{4}`)
+	return re.FindString(text)
+}
+
+func buildAmapMarkerURI(name string, lng string, lat string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "当前门店"
+	}
+	return "https://uri.amap.com/marker?position=" + strings.TrimSpace(lng) + "," + strings.TrimSpace(lat) + "&name=" + url.QueryEscape(name)
+}
+
+func miniProgramPayloadSummary(payload string) string {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return ""
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	for _, key := range []string{"title", "appname", "appid", "page_path", "username"} {
+		if value, ok := data[key].(string); ok && strings.TrimSpace(value) != "" {
+			parts = append(parts, key+"="+strings.TrimSpace(value))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "（" + strings.Join(parts, "，") + "）"
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func nonEmptyStrings(values []string) []string {
+	ret := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			ret = append(ret, value)
+		}
+	}
+	return ret
 }
 
 func isMediaFollowUpIntent(text string) bool {
 	return containsAny(text, []string{"图片", "照片", "图里", "图上", "这个", "这是啥", "这是什么", "看下", "帮我看", "识别", "语音", "听下", "文件", "附件", "截图", "表情"})
-}
-
-func isExplicitHotelKnowledgeQuestion(text string) bool {
-	if isOperationalResourceIntent(text) || isServiceActionIntent(text) {
-		return false
-	}
-	knowledgeWords := []string{"早餐", "停车", "发票", "押金", "退房", "入住时间", "价格", "多少钱", "费用", "收费", "规则", "政策", "会员", "权益", "取消", "退款", "报销", "洗衣", "健身房", "餐厅", "wifi", "无线网", "宠物", "加床", "延迟退房"}
-	questionWords := []string{"几点", "多久", "多少", "怎么", "如何", "能不能", "可不可以", "可以吗", "有没有", "是否", "什么", "哪", "哪里", "收费吗"}
-	return containsAny(text, knowledgeWords) && (containsAny(text, questionWords) || len([]rune(text)) <= 18)
-}
-
-func isRuntimeActionIntent(content string) bool {
-	text := strings.ToLower(strings.TrimSpace(content))
-	if text == "" {
-		return false
-	}
-	compact := normalizeIntentText(text)
-	handoffPhrases := []string{
-		"我要转人工",
-		"帮我转人工",
-		"转人工",
-		"接人工",
-		"找人工",
-		"真人客服",
-		"humanagent",
-		"liveagent",
-	}
-	for _, phrase := range handoffPhrases {
-		if strings.Contains(compact, phrase) {
-			return true
-		}
-	}
-	if containsAny(compact, []string{"人工客服", "人工服务", "人工处理"}) &&
-		!containsAny(compact, []string{"是什么", "怎么", "如何", "多少", "几", "吗", "?"}) &&
-		(isShortActionPhrase(compact) || containsAny(compact, []string{"我要", "帮我", "请", "联系", "需要"})) {
-		return true
-	}
-	ticketPhrases := []string{
-		"创建工单",
-		"新建工单",
-		"提交工单",
-		"发起工单",
-		"建工单",
-		"开工单",
-		"我要建单",
-		"帮我建单",
-		"创建ticket",
-		"createticket",
-	}
-	for _, phrase := range ticketPhrases {
-		if strings.Contains(compact, phrase) {
-			return true
-		}
-	}
-	if strings.Contains(compact, "工单") {
-		for _, action := range []string{"创建", "新建", "提交", "发起", "建", "开", "帮我", "我要", "请"} {
-			if strings.Contains(compact, action) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func containsAny(text string, values []string) bool {
@@ -365,12 +527,24 @@ func containsAny(text string, values []string) bool {
 	return false
 }
 
-func isShortActionPhrase(text string) bool {
-	return len([]rune(text)) <= 8
+func normalizeGateText(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "，", "", "。", "", "！", "", "!", "", "？", "", "?", "", "：", "", ":", "").Replace(text)
 }
 
 func (s *answerabilityGateState) recordAnswerability(status string, reason string, err error) {
 	s.recordAnswerabilityWithLatency(status, reason, err, time.Time{})
+}
+
+func (s *answerabilityGateState) prependDecisionInstruction(instruction string) {
+	if s == nil {
+		return
+	}
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" {
+		return
+	}
+	s.Decision.Instructions = append([]*schema.Message{schema.SystemMessage(instruction)}, s.Decision.Instructions...)
 }
 
 func (s *answerabilityGateState) recordAnswerabilityWithLatency(status string, reason string, err error, started time.Time) {

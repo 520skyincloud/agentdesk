@@ -29,6 +29,7 @@ func WxWorkProtocolInstanceAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "guid", Op: params.Like},
 		params.QueryFilter{ParamName: "channelId"},
+		params.QueryFilter{ParamName: "companyId"},
 		params.QueryFilter{ParamName: "storeId"},
 		params.QueryFilter{ParamName: "knowledgeBaseId"},
 	).Where("status <> ?", enums.StatusDeleted).Where("health_status <> ?", "login_qrcode").Desc("id")
@@ -214,42 +215,35 @@ func WxWorkProtocolInstancePostUpdate_ai_settings(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
-func WxWorkProtocolInstancePostInit_ai_agent(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
-	if err != nil {
+func WxWorkProtocolInstancePostStore_ai_model_settings(ctx *gin.Context) {
+	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	req := request.WxWorkProtocolInstanceActionRequest{}
+	req := request.UpdateStoreAIModelSettingsRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	item, err := services.WxWorkProtocolInstanceService.InitAIAgent(req.ID, operator)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, buildAIAgentResponse(item))
+	httpx.WriteJSON(ctx, services.StoreAIModelSettingService.ListResponses(req.CompanyID, req.StoreID, req.WxWorkInstanceID))
 }
 
-func WxWorkProtocolInstancePostUpdate_ai_agent(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+func WxWorkProtocolInstancePostUpdate_store_ai_model_settings(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	req := request.UpdateWxWorkProtocolAIAgentRequest{}
+	req := request.UpdateStoreAIModelSettingsRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	item, err := services.WxWorkProtocolInstanceService.UpdateBoundAIAgent(req, operator)
-	if err != nil {
+	if err := services.StoreAIModelSettingService.UpdateStoreSettings(req, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, buildAIAgentResponse(item))
+	httpx.WriteJSON(ctx, services.StoreAIModelSettingService.ListResponses(req.CompanyID, req.StoreID, req.WxWorkInstanceID))
 }
 
 func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
@@ -402,7 +396,17 @@ func WxWorkProtocolInstancePostRoom_list(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, parseWxWorkProtocolRoomOptions(resp))
+	rooms := parseWxWorkProtocolRoomOptions(resp)
+	if len(rooms) > 0 {
+		roomIDs := make([]string, 0, len(rooms))
+		for _, room := range rooms {
+			roomIDs = append(roomIDs, room.RoomID)
+		}
+		if detailResp, detailErr := services.WxWorkProtocolService.BatchGetRoomDetail(req.ID, roomIDs); detailErr == nil {
+			rooms = mergeWxWorkProtocolRoomDetails(rooms, detailResp)
+		}
+	}
+	httpx.WriteJSON(ctx, rooms)
 }
 
 func WxWorkProtocolInstancePostRoom_member_detail(ctx *gin.Context) {
@@ -414,6 +418,18 @@ func WxWorkProtocolInstancePostRoom_member_detail(ctx *gin.Context) {
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
+	}
+	if len(req.UserList) == 0 {
+		if detailResp, err := services.WxWorkProtocolService.BatchGetRoomDetail(req.ID, []string{req.RoomID}); err == nil {
+			req.UserList = extractWxWorkProtocolRoomMemberIDs(detailResp)
+			if len(req.UserList) == 0 {
+				members := parseWxWorkProtocolRoomMemberOptions(detailResp)
+				if len(members) > 0 {
+					httpx.WriteJSON(ctx, members)
+					return
+				}
+			}
+		}
 	}
 	resp, err := services.WxWorkProtocolService.BatchGetRoomMemberDetail(req.ID, req.RoomID, req.UserList)
 	if err != nil {
@@ -505,6 +521,12 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) re
 	if store := services.StoreService.Get(item.StoreID); store != nil {
 		ret.StoreCode = store.StoreCode
 		ret.StoreName = utils.RepairMojibakeText(store.Name)
+		if ret.CompanyID == 0 {
+			ret.CompanyID = store.CompanyID
+		}
+	}
+	if company := services.CompanyService.Get(ret.CompanyID); company != nil {
+		ret.CompanyName = utils.RepairMojibakeText(company.Name)
 	}
 	if runtime := services.StoreStaffBindingService.ResolveForInstance(item); runtime.ManagedMode != "" {
 		ret.ManagedMode = runtime.ManagedMode
@@ -515,13 +537,10 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) re
 	if knowledgeBase := services.KnowledgeBaseService.Get(item.KnowledgeBaseID); knowledgeBase != nil {
 		ret.KnowledgeBaseName = utils.RepairMojibakeText(knowledgeBase.Name)
 	}
-	if aiAgent := services.AIAgentService.Get(item.AIAgentID); aiAgent != nil && aiAgent.Status != enums.StatusDeleted {
-		ret.AIAgentName = utils.RepairMojibakeText(aiAgent.Name)
-		ret.AIAgentConfigured = true
-		if aiConfig := services.AIConfigService.Get(aiAgent.AIConfigID); aiConfig != nil {
-			ret.AIConfigName = utils.RepairMojibakeText(aiConfig.Name)
-		}
-	}
+	stats := services.WxWorkProtocolInstanceService.CountStats(item.ID)
+	ret.CustomerCount = stats.CustomerCount
+	ret.ManualAttentionCount = stats.ManualAttentionCount
+	ret.UrgentManualAttentionCount = stats.UrgentManualAttentionCount
 	return ret
 }
 
@@ -558,8 +577,7 @@ func parseWxWorkProtocolRoomOptions(raw string) []response.WxWorkProtocolRoomOpt
 	ret := make([]response.WxWorkProtocolRoomOptionResponse, 0, len(items))
 	seen := map[string]struct{}{}
 	for _, item := range items {
-		roomID := firstString(item, "room_id", "roomId", "roomid", "id", "chatroom", "conversation_id", "conversationId")
-		roomID = strings.TrimSpace(strings.TrimPrefix(roomID, "R:"))
+		roomID := normalizeWxWorkProtocolRoomID(firstString(item, "room_id", "roomId", "roomid", "roomID", "id", "chatroom", "chatroom_id", "chatroomId", "chat_id", "chatId", "conversation_id", "conversationId", "conversationID"))
 		if roomID == "" {
 			continue
 		}
@@ -567,47 +585,248 @@ func parseWxWorkProtocolRoomOptions(raw string) []response.WxWorkProtocolRoomOpt
 			continue
 		}
 		seen[roomID] = struct{}{}
-		name := utils.RepairMojibakeText(firstString(item, "name", "room_name", "roomName", "nickname", "display_name", "title"))
+		name := utils.RepairMojibakeText(firstString(item, "name", "room_name", "roomName", "roomname", "room_title", "roomTitle", "nickname", "display_name", "displayName", "title", "remark", "roomname_remark"))
 		if name == "" {
-			name = "群聊 " + roomID
+			name = "群聊 " + roomID + "（未命名）"
 		}
 		ret = append(ret, response.WxWorkProtocolRoomOptionResponse{
 			RoomID:         roomID,
 			ConversationID: "R:" + roomID,
 			Name:           name,
-			Owner:          firstString(item, "owner", "owner_id", "ownerId", "admin", "create_user"),
-			MemberCount:    intFromMap(item, "member_count", "memberCount", "member_num", "memberNum", "total"),
+			Owner:          firstString(item, "owner", "owner_id", "ownerId", "owner_vid", "ownerVid", "createuin", "admin", "create_user", "createUser", "creator"),
+			MemberCount:    intFromMap(item, "member_count", "memberCount", "member_num", "memberNum", "member_cnt", "memberCnt", "total"),
 			Raw:            item,
 		})
 	}
 	return ret
 }
 
+func mergeWxWorkProtocolRoomDetails(rooms []response.WxWorkProtocolRoomOptionResponse, detailRaw string) []response.WxWorkProtocolRoomOptionResponse {
+	if len(rooms) == 0 || strings.TrimSpace(detailRaw) == "" {
+		return rooms
+	}
+	details := parseWxWorkProtocolRoomOptions(detailRaw)
+	byID := make(map[string]response.WxWorkProtocolRoomOptionResponse, len(details))
+	for _, item := range details {
+		if item.RoomID != "" {
+			byID[item.RoomID] = item
+		}
+	}
+	for _, item := range parseWxWorkProtocolRoomDetailOverrides(detailRaw) {
+		if item.RoomID != "" {
+			byID[item.RoomID] = item
+		}
+	}
+	ret := append([]response.WxWorkProtocolRoomOptionResponse(nil), rooms...)
+	for i := range ret {
+		detail, ok := byID[ret[i].RoomID]
+		if !ok {
+			continue
+		}
+		if strings.Contains(ret[i].Name, "（未命名）") && strings.TrimSpace(detail.Name) != "" && !strings.Contains(detail.Name, "（未命名）") {
+			ret[i].Name = detail.Name
+		}
+		if strings.TrimSpace(ret[i].Owner) == "" {
+			ret[i].Owner = detail.Owner
+		}
+		if ret[i].MemberCount == 0 && detail.MemberCount > 0 {
+			ret[i].MemberCount = detail.MemberCount
+		}
+	}
+	return ret
+}
+
+func parseWxWorkProtocolRoomDetailOverrides(raw string) []response.WxWorkProtocolRoomOptionResponse {
+	root := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &root); err != nil {
+		return nil
+	}
+	roomInfos, ok := nestedSlice(root, "data", "roominfos")
+	if !ok {
+		roomInfos, ok = nestedSlice(root, "data", "roomInfos")
+	}
+	if !ok {
+		return nil
+	}
+	ret := make([]response.WxWorkProtocolRoomOptionResponse, 0, len(roomInfos))
+	for _, item := range roomInfos {
+		roomInfo, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		info, _ := roomInfo["info"].(map[string]any)
+		roomID := normalizeWxWorkProtocolRoomID(firstString(info, "room_id", "roomId", "roomid", "roomID"))
+		if roomID == "" {
+			continue
+		}
+		name := utils.RepairMojibakeText(firstString(info, "room_name", "roomName", "roomname", "name"))
+		members, _ := roomInfo["members"].([]any)
+		if name == "" {
+			for _, member := range members {
+				memberMap, ok := member.(map[string]any)
+				if !ok {
+					continue
+				}
+				if candidate := utils.RepairMojibakeText(firstString(memberMap, "roomname_remark", "remark", "nickname", "name")); candidate != "" {
+					name = candidate
+					break
+				}
+			}
+		}
+		ret = append(ret, response.WxWorkProtocolRoomOptionResponse{
+			RoomID:         roomID,
+			ConversationID: "R:" + roomID,
+			Name:           name,
+			Owner:          firstString(info, "createuin", "owner", "owner_id", "ownerId", "owner_vid", "ownerVid"),
+			MemberCount:    len(members),
+		})
+	}
+	return ret
+}
+
+func nestedSlice(root map[string]any, keys ...string) ([]any, bool) {
+	var cur any = root
+	for _, key := range keys {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[key]
+		if !ok {
+			return nil, false
+		}
+	}
+	items, ok := cur.([]any)
+	return items, ok
+}
+
 func parseWxWorkProtocolRoomMemberOptions(raw string) []response.WxWorkProtocolRoomMemberOptionResponse {
 	items := collectWxWorkProtocolMaps(raw)
 	ret := make([]response.WxWorkProtocolRoomMemberOptionResponse, 0, len(items))
-	seen := map[string]struct{}{}
+	seen := map[string]int{}
 	for _, item := range items {
-		userID := firstString(item, "user_id", "userId", "userid", "vid", "username", "id", "acctid")
+		if info, ok := item["info"].(map[string]any); ok {
+			merged := make(map[string]any, len(info)+len(item))
+			for key, value := range item {
+				merged[key] = value
+			}
+			for key, value := range info {
+				merged[key] = value
+			}
+			item = merged
+		}
+		userID := firstString(item, "user_id", "userId", "userid", "vid", "uin", "username", "id", "acctid")
 		userID = strings.TrimSpace(userID)
 		if userID == "" {
 			continue
 		}
-		if _, ok := seen[userID]; ok {
-			continue
-		}
-		seen[userID] = struct{}{}
-		name := utils.RepairMojibakeText(firstString(item, "name", "display_name", "displayName", "nickname", "nickName", "remark", "real_name", "realName"))
+		realName := utils.RepairMojibakeText(firstString(item, "realname", "real_name", "realName", "name"))
+		displayName := utils.RepairMojibakeText(firstString(item, "display_name", "displayName", "nickname", "nickName"))
+		roomRemark := utils.RepairMojibakeText(firstString(item, "roomname_remark", "roomNameRemark", "remark"))
+		accountID := strings.TrimSpace(firstString(item, "acctid", "acct_id", "account_id", "accountId"))
+		name := firstNonEmptyWxWorkProtocolMemberString(realName, displayName, roomRemark, accountID)
 		if name == "" {
 			name = userID
 		}
-		ret = append(ret, response.WxWorkProtocolRoomMemberOptionResponse{
-			UserID: userID,
-			Name:   name,
-			Avatar: firstString(item, "avatar", "avatar_url", "avatarUrl", "head_img", "headImg", "head_url", "headUrl", "portrait"),
-			Raw:    item,
-		})
+		member := response.WxWorkProtocolRoomMemberOptionResponse{
+			UserID:      userID,
+			Name:        name,
+			DisplayName: displayName,
+			RealName:    realName,
+			RoomRemark:  roomRemark,
+			AccountID:   accountID,
+			Avatar:      firstString(item, "avatar", "avatar_url", "avatarUrl", "iconurl", "head_img", "headImg", "head_url", "headUrl", "portrait"),
+			Raw:         item,
+		}
+		if index, ok := seen[userID]; ok {
+			ret[index] = mergeWxWorkProtocolRoomMemberOption(ret[index], member)
+			continue
+		}
+		seen[userID] = len(ret)
+		ret = append(ret, member)
 	}
+	return ret
+}
+
+func mergeWxWorkProtocolRoomMemberOption(current, next response.WxWorkProtocolRoomMemberOptionResponse) response.WxWorkProtocolRoomMemberOptionResponse {
+	if next.RealName != "" {
+		current.RealName = next.RealName
+	}
+	if next.DisplayName != "" {
+		current.DisplayName = next.DisplayName
+	}
+	if next.RoomRemark != "" {
+		current.RoomRemark = next.RoomRemark
+	}
+	if next.AccountID != "" {
+		current.AccountID = next.AccountID
+	}
+	if next.Avatar != "" {
+		current.Avatar = next.Avatar
+	}
+	if name := firstNonEmptyWxWorkProtocolMemberString(current.RealName, current.DisplayName, current.RoomRemark, current.AccountID); name != "" {
+		current.Name = name
+	}
+	if next.Raw != nil {
+		current.Raw = next.Raw
+	}
+	return current
+}
+
+func firstNonEmptyWxWorkProtocolMemberString(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func extractWxWorkProtocolRoomMemberIDs(raw string) []string {
+	items := collectWxWorkProtocolMaps(raw)
+	ret := make([]string, 0, len(items))
+	seen := map[string]struct{}{}
+	appendID := func(userID string) {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
+			return
+		}
+		if _, ok := seen[userID]; ok {
+			return
+		}
+		seen[userID] = struct{}{}
+		ret = append(ret, userID)
+	}
+	for _, item := range items {
+		if info, ok := item["info"].(map[string]any); ok {
+			appendID(firstString(info, "user_id", "userId", "userid", "vid", "uin", "username", "acctid", "member_id", "memberId"))
+		}
+		appendID(firstString(item, "user_id", "userId", "userid", "vid", "uin", "username", "acctid", "member_id", "memberId"))
+	}
+	var root any
+	if err := json.Unmarshal([]byte(raw), &root); err != nil {
+		return ret
+	}
+	var walk func(value any, parentKey string)
+	walk = func(value any, parentKey string) {
+		switch typed := value.(type) {
+		case []any:
+			for _, item := range typed {
+				walk(item, parentKey)
+			}
+		case map[string]any:
+			for key, item := range typed {
+				walk(item, key)
+			}
+		case string:
+			key := strings.ToLower(parentKey)
+			if strings.Contains(key, "member") || strings.Contains(key, "user") {
+				appendID(typed)
+			}
+		}
+	}
+	walk(root, "")
 	return ret
 }
 
@@ -628,7 +847,7 @@ func collectWxWorkProtocolMaps(raw string) []map[string]any {
 			if looksLikeWxWorkRoomOrMember(typed) {
 				ret = append(ret, typed)
 			}
-			for _, key := range []string{"data", "list", "items", "result", "room_list", "roomList", "member_list", "memberList", "user_list", "userList", "members", "rooms"} {
+			for _, key := range []string{"data", "list", "items", "result", "roomdata", "roomData", "datas", "roominfos", "roomInfos", "persons", "person", "info", "room", "room_info", "roomInfo", "room_list", "roomList", "member_list", "memberList", "user_list", "userList", "members", "member_ids", "memberIds", "memberIDList", "member_id_list", "rooms", "chatrooms", "chat_rooms", "chatRooms"} {
 				if nested, ok := typed[key]; ok {
 					walk(nested)
 				}
@@ -640,12 +859,19 @@ func collectWxWorkProtocolMaps(raw string) []map[string]any {
 }
 
 func looksLikeWxWorkRoomOrMember(item map[string]any) bool {
-	for _, key := range []string{"room_id", "roomId", "roomid", "chatroom", "conversation_id", "conversationId", "user_id", "userId", "userid", "vid", "username", "acctid"} {
+	for _, key := range []string{"room_id", "roomId", "roomid", "roomID", "chatroom", "chatroom_id", "chatroomId", "chat_id", "chatId", "conversation_id", "conversationId", "conversationID", "user_id", "userId", "userid", "vid", "uin", "username", "acctid"} {
 		if strings.TrimSpace(fmt.Sprint(item[key])) != "" && strings.TrimSpace(fmt.Sprint(item[key])) != "<nil>" {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeWxWorkProtocolRoomID(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "R:")
+	value = strings.TrimPrefix(value, "r:")
+	return strings.TrimSpace(value)
 }
 
 func intFromMap(data map[string]any, keys ...string) int {

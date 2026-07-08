@@ -54,6 +54,22 @@ var (
 		SourceType:   enums.ToolSourceTypeBuiltin,
 		AutoInjected: true,
 	}
+	BuiltinWeather = ToolSpec{
+		Code:          "builtin/get_weather",
+		ServerCode:    "builtin",
+		Name:          "get_weather",
+		Title:         "查询天气",
+		Description:   "根据用户描述中的城市、地点和日期查询天气。适合回答今天、明天、未来几天的天气、温度、降雨、风力等问题。",
+		SourceType:    enums.ToolSourceTypeBuiltin,
+		DirectAccess:  true,
+		RuntimeStatic: true,
+		Appendix: strings.TrimSpace(`
+当用户询问天气、温度、下雨、冷不冷、热不热、适不适合出门等实时天气问题时，优先调用 get_weather 工具。
+1. 从用户描述中提取 location；缺城市时优先结合门店/对话上下文，否则追问城市。
+2. date 可填 today、tomorrow 或 YYYY-MM-DD；不确定就填 today。
+3. 工具返回结果后，用自然短句回答，不要说“我没法实时看”。
+`),
+	}
 	GraphTriageServiceRequest = ToolSpec{
 		Code:          "graph/triage_service_request",
 		ServerCode:    "graph",
@@ -148,6 +164,7 @@ var (
 	RegisteredToolSpecs = []ToolSpec{
 		BuiltinToolSearch,
 		BuiltinSkill,
+		BuiltinWeather,
 		GraphTriageServiceRequest,
 		GraphAnalyzeConversation,
 		GraphPrepareTicketDraft,
@@ -265,6 +282,8 @@ func registeredToolEnglishTitle(toolCode string) string {
 		return "Search and Run Dynamic Tools"
 	case BuiltinSkill.Code:
 		return "Load Skill Instructions"
+	case BuiltinWeather.Code:
+		return "Get Weather"
 	case GraphTriageServiceRequest.Code:
 		return "Route Service Request"
 	case GraphAnalyzeConversation.Code:
@@ -286,6 +305,8 @@ func registeredToolEnglishDescription(toolCode string) string {
 		return "Searches the MCP tools currently available to the agent and runs the selected tool after its toolCode is confirmed. Best for long-tail tools; it should not replace fixed built-in workflow tools."
 	case BuiltinSkill.Code:
 		return "Loads specialized skill instructions for the current agent when extra task-specific guidance is needed."
+	case BuiltinWeather.Code:
+		return "Looks up weather by location and date, including temperature, condition, wind, and rain details."
 	case GraphTriageServiceRequest.Code:
 		return "Analyzes the current conversation to decide whether to keep answering, prepare a ticket draft, or hand off to a human, including a ticket draft when ticket creation is appropriate."
 	case GraphAnalyzeConversation.Code:
@@ -422,7 +443,7 @@ func ResolveToolMetadata(toolCode string, fallbackName string) ToolMetadata {
 }
 
 func IsAlwaysAllowedToolCode(toolCode string) bool {
-	return NormalizeToolCodeAlias(strings.TrimSpace(toolCode)) == GraphHandoffConversation.Code
+	return false
 }
 
 func IsImpliedAllowedToolCode(toolCode string, allowedToolCodes map[string]struct{}) bool {

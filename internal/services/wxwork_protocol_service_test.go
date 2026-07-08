@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto/request"
@@ -44,6 +45,236 @@ func TestWxWorkProtocolLocationMessageIsNotVoice(t *testing.T) {
 	}
 	if body["longitude"] != msg.Longitude || body["latitude"] != msg.Latitude || body["title"] != msg.Title || body["address"] != msg.Address {
 		t.Fatalf("unexpected location payload: %#v", body)
+	}
+}
+
+func TestWxWorkProtocolSkipsReferencedMutationMessage(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	instance := &models.WxWorkProtocolInstance{
+		Guid:           "guid-refer",
+		EmployeeUserID: "employee-1",
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{}
+	err := svc.handleChatMessage(instance, request.WxProtocolChatMsg{
+		ID:          "1003228",
+		Sender:      "external-user-1",
+		Receiver:    "employee-1",
+		ContentType: 16,
+		MsgType:     wxProtocolMsgVoice,
+		VoiceTime:   2,
+		ReferID:     json.RawMessage(`"1002966"`),
+		SendTime:    now.Unix(),
+	}, `{"id":"1003228","referid":"1002966","msg_type":6,"content_type":16,"voice_time":2}`)
+	if err != nil {
+		t.Fatalf("handleChatMessage() error = %v", err)
+	}
+
+	var messageCount int64
+	if err := db.Model(&models.Message{}).Count(&messageCount).Error; err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if messageCount != 0 {
+		t.Fatalf("expected referenced mutation callback not to create a message, got %d", messageCount)
+	}
+	var log models.MessageSyncLog
+	if err := db.Where("external_msg_id = ?", "wx_protocol:guid-refer:1003228").First(&log).Error; err != nil {
+		t.Fatalf("expected sync log for skipped referenced mutation: %v", err)
+	}
+	if log.SyncStatus != enums.MessageSyncStatusSkipped || !strings.Contains(log.ErrorMessage, "referid=1002966") {
+		t.Fatalf("unexpected sync log: %+v", log)
+	}
+}
+
+func TestWxWorkProtocolReferencedRecallMarksOriginalMessageRecalled(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	channel := &models.Channel{
+		ID:          32,
+		Name:        "企微员工号",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-protocol-recall-test",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	external := welcomeTestExternalUser("external-recall-user")
+	conversation, err := ConversationService.Create(external, channel.ID, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		Guid:           "guid-recall",
+		ChannelID:      channel.ID,
+		EmployeeUserID: "employee-1",
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	previousHook := TriggerAIReplyAsyncHook
+	TriggerAIReplyAsyncHook = nil
+	t.Cleanup(func() {
+		TriggerAIReplyAsyncHook = previousHook
+	})
+
+	originalWxMsgID := "wx_protocol:guid-recall:1003262"
+	message, err := MessageService.SendCustomerMessageWithRequestID(conversation.ID, originalWxMsgID, enums.IMMessageTypeText, "你好", "", external, "incoming-1003262")
+	if err != nil {
+		t.Fatalf("send original customer message: %v", err)
+	}
+	if err := db.Create(&models.WxWorkKFMessageRef{
+		ConversationID: conversation.ID,
+		MessageID:      message.ID,
+		WxMsgID:        originalWxMsgID,
+		Direction:      string(enums.WxWorkKFMessageDirectionIn),
+		OpenKfID:       "wx_protocol:guid-recall:single",
+		ExternalUserID: external.ExternalID,
+		SendStatus:     string(enums.WxWorkKFMessageSendStatusReceived),
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create original message ref: %v", err)
+	}
+	var beforeCount int64
+	if err := db.Model(&models.Message{}).Count(&beforeCount).Error; err != nil {
+		t.Fatalf("count messages before recall: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{}
+	err = svc.handleChatMessage(instance, request.WxProtocolChatMsg{
+		ID:          "1003267",
+		Sender:      "external-recall-user",
+		Receiver:    "employee-1",
+		ContentType: wxProtocolMsgSystemAlt,
+		MsgType:     wxProtocolMsgSystemAlt,
+		Content:     "该消息已被撤回",
+		ReferID:     json.RawMessage(`"1003262"`),
+		SendTime:    now.Add(time.Second).Unix(),
+	}, `{"id":"1003267","referid":"1003262","msg_type":1011,"content_type":1011,"content":"该消息已被撤回"}`)
+	if err != nil {
+		t.Fatalf("handle recall callback: %v", err)
+	}
+
+	updated := MessageService.Get(message.ID)
+	if updated == nil || updated.SendStatus != enums.IMMessageStatusRecalled || updated.RecalledAt == nil {
+		t.Fatalf("expected original message recalled, got %+v", updated)
+	}
+	ref := WxWorkKFMessageRefService.GetByWxMsgID(originalWxMsgID)
+	if ref == nil || ref.SendStatus != string(enums.WxWorkKFMessageSendStatusRecalled) {
+		t.Fatalf("expected original ref status recalled, got %+v", ref)
+	}
+	var afterCount int64
+	if err := db.Model(&models.Message{}).Count(&afterCount).Error; err != nil {
+		t.Fatalf("count messages after recall: %v", err)
+	}
+	if afterCount != beforeCount {
+		t.Fatalf("expected recall callback not to create message, before=%d after=%d", beforeCount, afterCount)
+	}
+	var syncLog models.MessageSyncLog
+	if err := db.Where("external_msg_id = ?", "wx_protocol:guid-recall:1003267").First(&syncLog).Error; err != nil {
+		t.Fatalf("expected recall sync log: %v", err)
+	}
+	if syncLog.SyncStatus != enums.MessageSyncStatusSuccess || !strings.Contains(syncLog.ErrorMessage, "recall applied") {
+		t.Fatalf("unexpected recall sync log: %+v", syncLog)
+	}
+}
+
+func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	channel := &models.Channel{
+		ID:          31,
+		Name:        "企微员工号",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-protocol-test",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	external := welcomeTestExternalUser("external-user-1")
+	conversation, err := ConversationService.Create(external, channel.ID, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		Guid:           "guid-1",
+		ChannelID:      channel.ID,
+		EmployeeUserID: "employee-1",
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	if err := db.Create(&models.WxWorkKFConversation{
+		ConversationID: conversation.ID,
+		ChannelID:      channel.ID,
+		OpenKfID:       "wx_protocol:guid-1:single",
+		ExternalUserID: "external-user-1",
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create conversation mapping: %v", err)
+	}
+	wxMsgID := "wx_protocol:guid-1:wx-msg-1"
+	if err := db.Create(&models.WxWorkKFMessageRef{
+		ConversationID: conversation.ID,
+		MessageID:      0,
+		WxMsgID:        wxMsgID,
+		Direction:      string(enums.WxWorkKFMessageDirectionOut),
+		OpenKfID:       "wx_protocol:guid-1:single",
+		ExternalUserID: "external-user-1",
+		SendStatus:     string(enums.WxWorkKFMessageSendStatusSent),
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create legacy ref: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{}
+	err = svc.handleChatMessage(instance, request.WxProtocolChatMsg{
+		ID:          "wx-msg-1",
+		Sender:      "employee-1",
+		Receiver:    "external-user-1",
+		RoomID:      "0",
+		ContentType: 0,
+		MsgType:     wxProtocolMsgText,
+		Content:     "我在企微回复",
+		SendTime:    now.Unix(),
+	}, `{"id":"wx-msg-1","content":"我在企微回复"}`)
+	if err != nil {
+		t.Fatalf("handleChatMessage() error = %v", err)
+	}
+
+	ref := WxWorkKFMessageRefService.GetByWxMsgID(wxMsgID)
+	if ref == nil || ref.MessageID <= 0 || ref.ConversationID != conversation.ID {
+		t.Fatalf("expected legacy ref to be repaired with local message id, got %+v", ref)
+	}
+	message := MessageService.Get(ref.MessageID)
+	if message == nil || message.SenderType != enums.IMSenderTypeAgent || message.Content != "我在企微回复" {
+		t.Fatalf("expected repaired local agent message, got %+v", message)
+	}
+	var outboxCount int64
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("message_id = ?", ref.MessageID).Count(&outboxCount).Error; err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if outboxCount != 0 {
+		t.Fatalf("expected repaired echo to avoid outbound outbox, got %d", outboxCount)
 	}
 }
 

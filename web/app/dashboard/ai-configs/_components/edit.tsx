@@ -14,6 +14,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { type AIConfig, type CreateAIConfigPayload, fetchAIConfig } from "@/lib/api/admin"
 import {
@@ -33,6 +34,9 @@ type AIConfigEditDialogProps = {
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string
 
+const AI_CONFIG_API_MODE_CHAT = "chat_completions"
+const AI_CONFIG_API_MODE_RESPONSES = "responses"
+
 function getProviderOptions(t: TFunction) {
   return [{ value: String(AIProvider.OpenAI), label: t("aiConfig.providerOpenAI") }]
 }
@@ -48,11 +52,19 @@ function getModelTypeOptions(t: TFunction) {
   ]
 }
 
+function getAPIModeOptions() {
+  return [
+    { value: AI_CONFIG_API_MODE_CHAT, label: "Chat Completions（通用兼容）" },
+    { value: AI_CONFIG_API_MODE_RESPONSES, label: "Responses API（需后端适配）" },
+  ]
+}
+
 const emptyForm: EditForm = {
   name: "",
   provider: AIProvider.OpenAI,
   baseUrl: "",
   apiKey: "",
+  apiMode: AI_CONFIG_API_MODE_CHAT,
   modelType: AIModelType.LLM,
   modelName: "",
   dimension: "0",
@@ -62,6 +74,7 @@ const emptyForm: EditForm = {
   maxRetryCount: "0",
   rpmLimit: "0",
   tpmLimit: "0",
+  intentDetectEnabled: false,
   remark: "",
 }
 
@@ -70,6 +83,7 @@ type EditForm = {
   provider: string
   baseUrl: string
   apiKey: string
+  apiMode: string
   modelType: string
   modelName: string
   dimension: string
@@ -79,6 +93,7 @@ type EditForm = {
   maxRetryCount: string
   rpmLimit: string
   tpmLimit: string
+  intentDetectEnabled: boolean
   remark: string
 }
 
@@ -92,6 +107,7 @@ function buildForm(item: AIConfig | null): EditForm {
     provider: item.provider,
     baseUrl: item.baseUrl,
     apiKey: "",
+    apiMode: item.apiMode || AI_CONFIG_API_MODE_CHAT,
     modelType: item.modelType,
     modelName: item.modelName,
     dimension: String(item.dimension),
@@ -101,6 +117,7 @@ function buildForm(item: AIConfig | null): EditForm {
     maxRetryCount: String(item.maxRetryCount),
     rpmLimit: String(item.rpmLimit),
     tpmLimit: String(item.tpmLimit),
+    intentDetectEnabled: item.intentDetectEnabled,
     remark: item.remark ?? "",
   }
 }
@@ -111,6 +128,7 @@ function buildPayload(form: EditForm): CreateAIConfigPayload {
     provider: form.provider,
     baseUrl: form.baseUrl.trim(),
     apiKey: form.apiKey.trim(),
+    apiMode: form.apiMode || AI_CONFIG_API_MODE_CHAT,
     modelType: form.modelType,
     modelName: form.modelName.trim(),
     dimension: Number(form.dimension),
@@ -120,6 +138,7 @@ function buildPayload(form: EditForm): CreateAIConfigPayload {
     maxRetryCount: Number(form.maxRetryCount),
     rpmLimit: Number(form.rpmLimit),
     tpmLimit: Number(form.tpmLimit),
+    intentDetectEnabled: form.modelType === AIModelType.LLM && form.intentDetectEnabled,
     remark: form.remark.trim(),
   }
 }
@@ -161,6 +180,7 @@ function AIConfigEditDialogBody({
   const [loading, setLoading] = useState(false)
   const providerOptions = useMemo(() => getProviderOptions(t), [t])
   const modelTypeOptions = useMemo(() => getModelTypeOptions(t), [t])
+  const apiModeOptions = useMemo(() => getAPIModeOptions(), [])
   const aiConfigFormSchema = useMemo(
     () =>
       z.object({
@@ -168,6 +188,7 @@ function AIConfigEditDialogBody({
         provider: z.string().trim().min(1, t("aiConfig.providerRequired")),
         baseUrl: z.string().trim().min(1, t("aiConfig.baseUrlRequired")),
         apiKey: z.string().trim(),
+        apiMode: z.string().trim().min(1, "请选择接口模式"),
         modelType: z.string().trim().min(1, t("aiConfig.modelTypeRequired")),
         modelName: z.string().trim().min(1, t("aiConfig.modelNameRequired")),
         dimension: z.string().trim().regex(/^\d+$/, t("aiConfig.dimensionInvalid")),
@@ -177,6 +198,7 @@ function AIConfigEditDialogBody({
         maxRetryCount: z.string().trim().regex(/^\d+$/, t("aiConfig.retryInvalid")),
         rpmLimit: z.string().trim().regex(/^\d+$/, t("aiConfig.rpmInvalid")),
         tpmLimit: z.string().trim().regex(/^\d+$/, t("aiConfig.tpmInvalid")),
+        intentDetectEnabled: z.boolean(),
         remark: z.string().trim(),
       }),
     [t],
@@ -194,11 +216,18 @@ function AIConfigEditDialogBody({
     handleSubmit,
     reset,
     register,
+    setValue,
     watch,
     formState: { errors },
   } = form
 
   const modelType = watch("modelType")
+
+  useEffect(() => {
+    if (modelType !== AIModelType.LLM) {
+      setValue("intentDetectEnabled", false)
+    }
+  }, [modelType, setValue])
 
   useEffect(() => {
     async function loadDetail() {
@@ -332,6 +361,51 @@ function AIConfigEditDialogBody({
                 {...register("apiKey")}
               />
               <FieldError errors={[errors.apiKey]} />
+            </FieldContent>
+          </Field>
+
+          <Field data-invalid={!!errors.apiMode}>
+            <FieldLabel>接口模式</FieldLabel>
+            <FieldContent>
+              <Controller
+                control={control}
+                name="apiMode"
+                render={({ field }) => (
+                  <OptionCombobox
+                    value={field.value}
+                    options={apiModeOptions}
+                    placeholder="选择接口模式"
+                    searchPlaceholder="搜索接口模式"
+                    emptyText="暂无接口模式"
+                    onChange={field.onChange}
+                  />
+                )}
+              />
+              <div className="text-xs text-muted-foreground">
+                千问兼容模式用 Chat Completions；豆包/火山方舟可配置 Responses，需后端 Responses adapter 完成后启用。
+              </div>
+              <FieldError errors={[errors.apiMode]} />
+            </FieldContent>
+          </Field>
+
+          <Field orientation="horizontal">
+            <FieldLabel htmlFor="ai-config-intent-detect-enabled">可作为意图识别模型</FieldLabel>
+            <FieldContent>
+              <Controller
+                control={control}
+                name="intentDetectEnabled"
+                render={({ field }) => (
+                  <Switch
+                    id="ai-config-intent-detect-enabled"
+                    checked={field.value}
+                    disabled={modelType !== AIModelType.LLM}
+                    onCheckedChange={field.onChange}
+                  />
+                )}
+              />
+              <div className="text-xs text-muted-foreground">
+                开启后回复引擎会优先用该 LLM 做 IntentDetect JSON 分类；未配置时回退到当前回复模型。
+              </div>
             </FieldContent>
           </Field>
 

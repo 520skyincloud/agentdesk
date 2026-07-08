@@ -28,6 +28,7 @@ type Bus[T any] struct {
 
 	// 用于限制 PublishAsync 的 goroutine 并发数；nil 表示不限制
 	asyncSem chan struct{}
+	asyncWG  sync.WaitGroup
 }
 
 func New[T any](opts ...Option[T]) *Bus[T] {
@@ -130,8 +131,13 @@ func (b *Bus[T]) Publish(ctx context.Context, event T) error {
 func (b *Bus[T]) PublishAsync(ctx context.Context, event T) {
 	handlers := b.snapshotHandlers()
 	for _, h := range handlers {
+		b.asyncWG.Add(1)
 		go b.callHandlerAsync(ctx, h, event)
 	}
+}
+
+func (b *Bus[T]) WaitAsync() {
+	b.asyncWG.Wait()
 }
 
 func (b *Bus[T]) HandlerCount() int {
@@ -152,6 +158,7 @@ func (b *Bus[T]) snapshotHandlers() []Handler[T] {
 }
 
 func (b *Bus[T]) callHandlerAsync(ctx context.Context, h Handler[T], event T) {
+	defer b.asyncWG.Done()
 	if b.asyncSem != nil {
 		select {
 		case b.asyncSem <- struct{}{}:

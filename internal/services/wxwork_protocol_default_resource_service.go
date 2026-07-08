@@ -15,7 +15,6 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/pkg/utils"
-	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/common/strs"
 	"github.com/mlogclub/simple/sqls"
@@ -24,43 +23,6 @@ import (
 var WxWorkProtocolDefaultResourceService = &wxWorkProtocolDefaultResourceService{}
 
 type wxWorkProtocolDefaultResourceService struct{}
-
-func (s *wxWorkProtocolDefaultResourceService) BindInboundLocation(instanceID int64, message *models.Message) {
-	if instanceID <= 0 || message == nil || message.MessageType != enums.IMMessageTypeLocation {
-		return
-	}
-	payload := map[string]any{}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(message.Payload)), &payload); err != nil {
-		return
-	}
-	longitude := strings.TrimSpace(fmt.Sprint(payload["longitude"]))
-	latitude := strings.TrimSpace(fmt.Sprint(payload["latitude"]))
-	if longitude == "" || longitude == "0" || latitude == "" || latitude == "0" {
-		return
-	}
-	title := utils.RepairMojibakeText(firstNonBlank(
-		strings.TrimSpace(fmt.Sprint(payload["title"])),
-		strings.TrimSpace(message.Content),
-	))
-	address := utils.RepairMojibakeText(strings.TrimSpace(fmt.Sprint(payload["address"])))
-	updates := map[string]any{
-		"store_longitude":    longitude,
-		"store_latitude":     latitude,
-		"store_map_provider": "wxwork_inbound_location",
-		"updated_at":         time.Now(),
-		"update_user_id":     int64(0),
-		"update_user_name":   "wxwork_location_bind",
-	}
-	if address != "" && address != "<nil>" {
-		updates["store_address"] = address
-	}
-	if title != "" && title != "<nil>" {
-		updates["store_navigation_name"] = title
-	}
-	if err := repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), instanceID, updates); err != nil {
-		slog.Warn("bind wxwork protocol inbound location failed", "instance_id", instanceID, "message_id", message.ID, "error", err)
-	}
-}
 
 func (s *wxWorkProtocolDefaultResourceService) HandleCustomerIntent(conversation *models.Conversation, customerMessage *models.Message) bool {
 	if conversation == nil || customerMessage == nil || customerMessage.SenderType != enums.IMSenderTypeCustomer {
@@ -106,16 +68,6 @@ func (s *wxWorkProtocolDefaultResourceService) HandleCustomerIntent(conversation
 	if wantsDefaultMiniProgram(text) {
 		if err := s.sendDefaultMiniProgram(conversation, instance, requestID); err != nil {
 			slog.Warn("send default mini program failed", "conversation_id", conversation.ID, "instance_id", instance.ID, "error", err)
-			return false
-		}
-		if wantsCheckInMiniProgram(text) {
-			_, _ = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_checkin_tip_"+strs.UUID(), enums.IMMessageTypeText, "我发你小程序，进去选自助入住。", "", systemOperator(), requestID)
-		}
-		return true
-	}
-	if wantsServiceTask(text) {
-		if err := s.handleServiceTask(conversation, text, requestID); err != nil {
-			slog.Warn("handle service task intent failed", "conversation_id", conversation.ID, "error", err)
 			return false
 		}
 		return true
@@ -212,6 +164,7 @@ func (s *wxWorkProtocolDefaultResourceService) sendDefaultMiniProgram(conversati
 	delete(body, "conversation_id")
 	body = repairMapStringValues(body)
 	injectMiniProgramStoreParams(body, instance)
+	deleteMiniProgramInternalStoreKeys(body)
 	payloadBytes, _ := json.Marshal(body)
 	content := firstNonBlank(strings.TrimSpace(fmt.Sprint(body["title"])), strings.TrimSpace(fmt.Sprint(body["appname"])), "小程序")
 	_, err := MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_default_weapp_"+strs.UUID(), enums.IMMessageTypeMiniProgram, content, string(payloadBytes), systemOperator(), requestID)
@@ -233,15 +186,17 @@ func injectMiniProgramStoreParams(body map[string]any, instance *models.WxWorkPr
 			}
 		}
 	}
-	params := map[string]string{}
-	if storeID > 0 {
-		params["storeId"] = strconv.FormatInt(storeID, 10)
-	}
-	if storeCode != "" {
-		params["storeCode"] = storeCode
-	}
-	if storeName != "" {
-		params["storeName"] = storeName
+	params := configuredMiniProgramStoreParams(body)
+	if len(params) == 0 {
+		if storeID > 0 {
+			params["storeId"] = strconv.FormatInt(storeID, 10)
+		}
+		if storeCode != "" {
+			params["storeCode"] = storeCode
+		}
+		if storeName != "" {
+			params["storeName"] = storeName
+		}
 	}
 	if len(params) == 0 {
 		return
@@ -255,6 +210,64 @@ func injectMiniProgramStoreParams(body map[string]any, instance *models.WxWorkPr
 	if pathKey != "page_path" {
 		body["page_path"] = body[pathKey]
 	}
+}
+
+func configuredMiniProgramStoreParams(body map[string]any) map[string]string {
+	params := map[string]string{}
+	if body == nil {
+		return params
+	}
+	if scene := strings.TrimSpace(fmt.Sprint(firstExistingMapValue(body, "store_scene", "storeScene", "wxacode_scene", "wxacodeScene"))); scene != "" && scene != "<nil>" {
+		params["scene"] = scene
+	}
+	for key, value := range anyMapFromMiniProgramPayload(body, "store_query_params", "storeQueryParams", "store_params", "storeParams") {
+		key = strings.TrimSpace(key)
+		text := strings.TrimSpace(fmt.Sprint(value))
+		if key != "" && text != "" && text != "<nil>" {
+			params[key] = text
+		}
+	}
+	return params
+}
+
+func deleteMiniProgramInternalStoreKeys(body map[string]any) {
+	for _, key := range []string{"store_scene", "storeScene", "wxacode_scene", "wxacodeScene", "store_query_params", "storeQueryParams", "store_params", "storeParams"} {
+		delete(body, key)
+	}
+}
+
+func firstExistingMapValue(body map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := body[key]; ok {
+			return value
+		}
+	}
+	return ""
+}
+
+func anyMapFromMiniProgramPayload(body map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		value, ok := body[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case map[string]any:
+			return typed
+		case map[string]string:
+			result := map[string]any{}
+			for k, v := range typed {
+				result[k] = v
+			}
+			return result
+		case string:
+			result := map[string]any{}
+			if err := json.Unmarshal([]byte(strings.TrimSpace(typed)), &result); err == nil {
+				return result
+			}
+		}
+	}
+	return map[string]any{}
 }
 
 func miniProgramPagePath(body map[string]any) (string, string) {
@@ -326,6 +339,8 @@ func (s *wxWorkProtocolDefaultResourceService) consumePendingServiceTask(convers
 	_ = json.Unmarshal([]byte(payload), &draft)
 	if room := extractRoomNo(text); room != "" {
 		draft.RoomNo = room
+	} else if !isLikelyServiceTaskContinuation(text, draft) {
+		return false, nil
 	}
 	if draft.RoomNo == "" {
 		if err := ConversationRouteService.SetPendingAction(conversation.ID, enums.ConversationPendingActionServiceTask, payload, time.Now().Add(10*time.Minute)); err != nil {
@@ -456,13 +471,67 @@ func wantsServiceTask(text string) bool {
 	if text == "" {
 		return false
 	}
-	keywords := []string{"送水", "矿泉水", "拖鞋", "牙刷", "纸巾", "浴巾", "毛巾", "打扫", "保洁", "维修", "漏水", "马桶", "空调坏", "电视坏", "叫醒", "行李"}
+	if shouldLetReplyRuntimeHandle(text) {
+		return false
+	}
+	if looksLikeQuestionNotServiceAction(text) && !hasExplicitServiceAction(text) {
+		return false
+	}
+	keywords := []string{"送水", "送瓶水", "送两瓶水", "拿水", "补水", "要水", "需要水", "缺水", "送拖鞋", "拿拖鞋", "补拖鞋", "要拖鞋", "需要拖鞋", "缺拖鞋", "送牙刷", "拿牙刷", "补牙刷", "要牙刷", "需要牙刷", "送纸巾", "补纸巾", "要纸巾", "送浴巾", "补浴巾", "要浴巾", "送毛巾", "补毛巾", "要毛巾", "打扫", "保洁", "维修", "漏水", "马桶坏", "空调坏", "电视坏", "叫醒", "拿行李", "搬行李"}
 	for _, keyword := range keywords {
 		if strings.Contains(text, strings.ToLower(keyword)) {
 			return true
 		}
 	}
+	if hasExplicitServiceAction(text) && containsAny(text, []string{"水", "拖鞋", "牙刷", "纸巾", "浴巾", "毛巾", "行李"}) {
+		return true
+	}
 	return false
+}
+
+func hasExplicitServiceAction(text string) bool {
+	return containsAny(text, []string{"送", "拿", "补", "要", "需要", "缺", "没有", "没给", "坏", "漏水", "打不开", "打扫", "保洁", "维修", "叫醒", "搬"})
+}
+
+func shouldLetReplyRuntimeHandle(text string) bool {
+	return containsAny(text, []string{"在哪里拿", "在哪拿", "哪里拿", "去哪拿", "去哪里拿", "在哪里领", "在哪领", "哪里领", "怎么领", "怎么拿", "自取", "领取"})
+}
+
+func isLikelyServiceTaskContinuation(text string, draft serviceTaskDraft) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" || shouldLetReplyRuntimeHandle(text) || looksLikeQuestionNotServiceAction(text) {
+		return false
+	}
+	if wantsServiceTask(text) {
+		return true
+	}
+	kind := strings.ToLower(strings.TrimSpace(draft.Kind + " " + draft.RawText))
+	if kind == "" {
+		return false
+	}
+	return containsAny(text, []string{"送", "拿", "补", "要", "需要", "缺", "没有", "没给", "再来", "再拿"}) && containsAny(text, serviceTaskItemKeywords(kind))
+}
+
+func serviceTaskItemKeywords(kind string) []string {
+	items := []string{"水", "拖鞋", "牙刷", "纸巾", "浴巾", "毛巾", "打扫", "保洁", "维修", "马桶", "空调", "电视", "叫醒", "行李"}
+	ret := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.Contains(kind, item) {
+			ret = append(ret, item)
+		}
+	}
+	return ret
+}
+
+func looksLikeQuestionNotServiceAction(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return false
+	}
+	return containsAny(text, []string{
+		"有几", "几双", "几个", "多少", "多少钱", "要钱", "收费", "免费", "有没有", "有吗", "在哪", "哪里", "怎么", "能不能", "可以不", "可以吗",
+		"停车", "停车场", "充电", "充电枪", "充电桩", "wifi", "发票", "早餐", "退房", "洗衣", "投屏",
+	})
 }
 
 func wantsDirectStoreLocation(text string) bool {
@@ -567,20 +636,6 @@ func wantsDefaultMiniProgram(text string) bool {
 		return false
 	}
 	keywords := []string{"小程序", "安心宿", "自由家", "开发票", "发票入口", "订单", "续住", "退房", "入住码", "电子房卡", "办入住", "办理入住", "自助入住", "入住办理", "怎么入住", "入住入口", "查订单"}
-	for _, keyword := range keywords {
-		if strings.Contains(text, strings.ToLower(keyword)) {
-			return true
-		}
-	}
-	return false
-}
-
-func wantsCheckInMiniProgram(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" {
-		return false
-	}
-	keywords := []string{"办入住", "办理入住", "自助入住", "入住办理", "怎么入住", "入住入口", "入住码"}
 	for _, keyword := range keywords {
 		if strings.Contains(text, strings.ToLower(keyword)) {
 			return true

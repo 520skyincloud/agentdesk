@@ -190,6 +190,7 @@ func addRouter(app *gin.Engine) {
 	registerDashboardAgentTeamScheduleRoutes(dashboardGroup.Group("/agent-team-schedule"))
 	registerDashboardAIAgentRoutes(dashboardGroup.Group("/ai-agent"))
 	registerDashboardAIConfigRoutes(dashboardGroup.Group("/ai-config"))
+	registerDashboardReplyIntentConfigRoutes(dashboardGroup.Group("/reply-intent-config"))
 	registerDashboardAssetRoutes(dashboardGroup.Group("/asset"))
 	registerDashboardStorageSettingRoutes(dashboardGroup.Group("/storage-setting"))
 	registerDashboardKnowledgeBaseRoutes(dashboardGroup.Group("/knowledge-base"))
@@ -198,7 +199,6 @@ func addRouter(app *gin.Engine) {
 	registerDashboardKnowledgeRetrieveRoutes(dashboardGroup.Group("/knowledge-retrieve"))
 	registerDashboardKnowledgeRetrieveLogRoutes(dashboardGroup.Group("/knowledge-retrieve-log"))
 	registerDashboardKnowledgeCandidateRoutes(dashboardGroup.Group("/knowledge-candidate"))
-	registerDashboardHQQiyuRouteRoutes(dashboardGroup.Group("/hq-qiyu-route"))
 	registerDashboardAgentRunLogRoutes(dashboardGroup.Group("/agent-run-log"))
 	registerDashboardSkillDefinitionRoutes(dashboardGroup.Group("/skill-definition"))
 	registerDashboardMCPRoutes(dashboardGroup.Group("/mcp"))
@@ -207,5 +207,4 @@ func addRouter(app *gin.Engine) {
 	registerThirdWechatRoutes(thirdGroup.Group("/wechat"))
 	registerThirdWxWorkCLIRoutes(thirdGroup.Group("/wecom-cli"))
 	registerThirdWxWorkProtocolRoutes(thirdGroup.Group("/wxwork-protocol"))
-	registerThirdQiyuRoutes(thirdGroup.Group("/qiyu"))
 }

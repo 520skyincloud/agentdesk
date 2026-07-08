@@ -20,6 +20,7 @@ func newAIReplyService() *aiReplyService {
 		interrupts:  newReplyInterruptService(),
 		commit:      newReplyCommitService(),
 		runlog:      newReplyRunLogService(),
+		memory:      newConversationMemoryService(),
 	}
 }
 
@@ -29,6 +30,7 @@ type aiReplyService struct {
 	interrupts  *replyInterruptService
 	commit      *replyCommitService
 	runlog      *replyRunLogService
+	memory      *conversationMemoryService
 }
 
 func firstInvokedToolCode(summary *applicationruntime.Summary) string {

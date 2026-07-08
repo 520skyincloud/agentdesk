@@ -6,6 +6,7 @@ const listMembershipFields = new Set<string>([
   "currentTeamId",
   "routeStatus",
   "needHumanFollowUp",
+  "manualAttention",
 ])
 
 export function shouldReloadConversationListForRealtimePatch(

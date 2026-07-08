@@ -46,6 +46,8 @@ func NewRuntimeStaticTool(toolCode string) registry.Tool {
 		return NewCreateTicketGraphTool()
 	case toolx.GraphHandoffConversation.Code:
 		return NewHandoffGraphTool()
+	case toolx.BuiltinWeather.Code:
+		return NewWeatherTool()
 	default:
 		return nil
 	}

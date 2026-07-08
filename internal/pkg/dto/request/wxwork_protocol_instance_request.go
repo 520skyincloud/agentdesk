@@ -6,7 +6,9 @@ type CreateWxWorkProtocolInstanceRequest struct {
 	EmployeeUserID                 string `json:"employeeUserId"`
 	EmployeeName                   string `json:"employeeName"`
 	EmployeeAvatar                 string `json:"employeeAvatar"`
+	CompanyID                      int64  `json:"companyId"`
 	StoreID                        int64  `json:"storeId"`
+	StoreName                      string `json:"storeName"`
 	StoreAddress                   string `json:"storeAddress"`
 	StoreNavigationName            string `json:"storeNavigationName"`
 	StoreLongitude                 string `json:"storeLongitude"`
@@ -17,7 +19,6 @@ type CreateWxWorkProtocolInstanceRequest struct {
 	WelcomeSendMiniProgram         bool   `json:"welcomeSendMiniProgram"`
 	WelcomeAskLocation             bool   `json:"welcomeAskLocation"`
 	KnowledgeBaseID                int64  `json:"knowledgeBaseId"`
-	AIAgentID                      int64  `json:"aiAgentId"`
 	NotifyURL                      string `json:"notifyUrl"`
 	Proxy                          string `json:"proxy"`
 	BridgeID                       string `json:"bridgeId"`
@@ -48,6 +49,7 @@ type UpdateWxWorkProtocolInstanceRequest struct {
 type StartWxWorkProtocolLoginRequest struct {
 	ChannelID int64  `json:"channelId"`
 	Guid      string `json:"guid"`
+	CompanyID int64  `json:"companyId"`
 }
 
 type ResolveWxWorkProtocolLoginBindingRequest struct {
@@ -58,6 +60,7 @@ type ResolveWxWorkProtocolLoginBindingRequest struct {
 type CreateWxWorkProtocolRemoteSetupRequest struct {
 	ChannelID int64  `json:"channelId"`
 	Guid      string `json:"guid"`
+	CompanyID int64  `json:"companyId"`
 	Remark    string `json:"remark"`
 }
 
@@ -69,6 +72,7 @@ type UpdateWxWorkProtocolRemoteSetupRequest struct {
 	Token                   string `json:"token"`
 	Guid                    string `json:"guid"`
 	EmployeeName            string `json:"employeeName"`
+	CompanyID               int64  `json:"companyId"`
 	StoreID                 int64  `json:"storeId"`
 	StoreName               string `json:"storeName"`
 	StoreAddress            string `json:"storeAddress"`
@@ -115,7 +119,9 @@ type UpdateWxWorkProtocolAISettingsRequest struct {
 	StoreRoomNotifyEnabled         bool   `json:"storeRoomNotifyEnabled"`
 	StoreRoomAtList                string `json:"storeRoomAtList"`
 	PersonaPrompt                  string `json:"personaPrompt"`
+	CompanyID                      int64  `json:"companyId"`
 	StoreID                        int64  `json:"storeId"`
+	StoreName                      string `json:"storeName"`
 	StoreAddress                   string `json:"storeAddress"`
 	StoreNavigationName            string `json:"storeNavigationName"`
 	StoreLongitude                 string `json:"storeLongitude"`
@@ -126,7 +132,6 @@ type UpdateWxWorkProtocolAISettingsRequest struct {
 	WelcomeSendMiniProgram         bool   `json:"welcomeSendMiniProgram"`
 	WelcomeAskLocation             bool   `json:"welcomeAskLocation"`
 	KnowledgeBaseID                int64  `json:"knowledgeBaseId"`
-	AIAgentID                      int64  `json:"aiAgentId"`
 	ContextMaxMessages             int    `json:"contextMaxMessages"`
 	ContextMaxTokens               int    `json:"contextMaxTokens"`
 	ContextCompressionEnabled      bool   `json:"contextCompressionEnabled"`
@@ -157,11 +162,6 @@ type WxWorkProtocolSyncRoomInfoRequest struct {
 	ID      int64  `json:"id"`
 	RoomID  string `json:"roomId"`
 	Version int    `json:"version"`
-}
-
-type UpdateWxWorkProtocolAIAgentRequest struct {
-	ID int64 `json:"id"`
-	CreateAIAgentRequest
 }
 
 type WxWorkProtocolSetProxyRequest struct {

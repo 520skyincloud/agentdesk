@@ -62,6 +62,25 @@ func (s *channelMessageOutboxService) Updates(id int64, columns map[string]inter
 	return repositories.ChannelMessageOutboxRepository.Updates(sqls.DB(), id, columns)
 }
 
+func (s *channelMessageOutboxService) TryMarkSending(id int64) (bool, error) {
+	if id <= 0 {
+		return false, nil
+	}
+	result := sqls.DB().Model(&models.ChannelMessageOutbox{}).
+		Where("id = ? AND send_status IN ?", id, []string{
+			string(enums.ChannelMessageOutboxStatusPending),
+			string(enums.ChannelMessageOutboxStatusFailed),
+		}).
+		Updates(map[string]any{
+			"send_status": string(enums.ChannelMessageOutboxStatusSending),
+			"updated_at":  time.Now(),
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
 func (s *channelMessageOutboxService) UpdateColumn(id int64, name string, value interface{}) error {
 	return repositories.ChannelMessageOutboxRepository.UpdateColumn(sqls.DB(), id, name, value)
 }

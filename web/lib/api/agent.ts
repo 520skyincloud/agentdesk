@@ -32,6 +32,13 @@ export type AgentConversationParticipant = {
   status: number
 }
 
+export type AgentConversationManualAttention = {
+  dot: boolean
+  level: "none" | "normal" | "urgent" | "serving" | "timeout_restored" | string
+  label: string
+  expiresAt?: string
+}
+
 export type AgentConversation = {
   id: number
   aiAgentId?: number
@@ -66,6 +73,7 @@ export type AgentConversation = {
   handoffReason?: string
   needHumanFollowUp?: boolean
   manualExpireAt?: string
+  manualAttention?: AgentConversationManualAttention
   storeId?: number
   storeName?: string
   wxWorkInstanceId?: number
@@ -88,6 +96,8 @@ export type AgentMessage = {
   senderId: number
   senderName?: string
   senderAvatar?: string
+  sendSource?: string
+  sendSourceLabel?: string
   messageType: string
   content: string
   payload?: string

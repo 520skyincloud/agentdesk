@@ -12,20 +12,22 @@ type AIAgentMCPToolRequest struct {
 }
 
 type CreateAIConfigRequest struct {
-	Name             string            `json:"name"`
-	Provider         enums.AIProvider  `json:"provider"`
-	BaseURL          string            `json:"baseUrl"`
-	APIKey           string            `json:"apiKey"`
-	ModelType        enums.AIModelType `json:"modelType"`
-	ModelName        string            `json:"modelName"`
-	Dimension        int               `json:"dimension"`
-	MaxContextTokens int               `json:"maxContextTokens"`
-	MaxOutputTokens  int               `json:"maxOutputTokens"`
-	TimeoutMS        int               `json:"timeoutMs"`
-	MaxRetryCount    int               `json:"maxRetryCount"`
-	RPMLimit         int               `json:"rpmLimit"`
-	TPMLimit         int               `json:"tpmLimit"`
-	Remark           string            `json:"remark"`
+	Name                string            `json:"name"`
+	Provider            enums.AIProvider  `json:"provider"`
+	BaseURL             string            `json:"baseUrl"`
+	APIKey              string            `json:"apiKey"`
+	APIMode             string            `json:"apiMode"`
+	ModelType           enums.AIModelType `json:"modelType"`
+	ModelName           string            `json:"modelName"`
+	Dimension           int               `json:"dimension"`
+	MaxContextTokens    int               `json:"maxContextTokens"`
+	MaxOutputTokens     int               `json:"maxOutputTokens"`
+	TimeoutMS           int               `json:"timeoutMs"`
+	MaxRetryCount       int               `json:"maxRetryCount"`
+	RPMLimit            int               `json:"rpmLimit"`
+	TPMLimit            int               `json:"tpmLimit"`
+	IntentDetectEnabled bool              `json:"intentDetectEnabled"`
+	Remark              string            `json:"remark"`
 }
 
 type UpdateAIConfigRequest struct {

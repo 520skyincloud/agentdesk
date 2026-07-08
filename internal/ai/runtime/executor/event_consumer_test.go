@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/tooling"
 	"agent-desk/internal/pkg/toolx"
 
@@ -90,6 +91,62 @@ func TestConsumeAgentEventsUsesGraphToolResultReplyText(t *testing.T) {
 	}
 	if summary.Status != "completed" {
 		t.Fatalf("unexpected summary status: %q", summary.Status)
+	}
+}
+
+func TestConsumeAgentEventsCollectsTokenUsage(t *testing.T) {
+	summary := &RunResult{
+		Status:           "started",
+		InvokedToolCodes: make([]string, 0),
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	events, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	gen.Send(&adk.AgentEvent{
+		Output: &adk.AgentOutput{
+			MessageOutput: &adk.MessageVariant{
+				Role: schema.Assistant,
+				Message: &schema.Message{
+					Content: "好的",
+					ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{
+						PromptTokens:     120,
+						CompletionTokens: 8,
+						TotalTokens:      128,
+						PromptTokenDetails: schema.PromptTokenDetails{
+							CachedTokens: 80,
+						},
+						CompletionTokensDetails: schema.CompletionTokensDetails{
+							ReasoningTokens: 3,
+						},
+					}},
+				},
+			},
+		},
+	})
+	gen.Close()
+
+	consumeAgentEvents(events, summary, collector, nil)
+
+	if summary.PromptTokens != 120 || summary.CompletionTokens != 8 || summary.TotalTokens != 128 || summary.CachedPromptTokens != 80 || summary.ReasoningTokens != 3 {
+		t.Fatalf("unexpected usage summary: %+v", summary)
+	}
+	if collector.Data.Model.Usage.CachedPromptTokens != 80 {
+		t.Fatalf("expected cached tokens in trace, got %d", collector.Data.Model.Usage.CachedPromptTokens)
+	}
+}
+
+func TestConsumeAgentEventsSuppressesBareHandoffToolCallText(t *testing.T) {
+	summary := &RunResult{Status: "started", InvokedToolCodes: make([]string, 0)}
+	events, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	gen.Send(&adk.AgentEvent{Output: &adk.AgentOutput{MessageOutput: &adk.MessageVariant{Role: schema.Assistant, Message: &schema.Message{Content: `handoff_to_human(reason: "客人在109摔倒")`}}}})
+	gen.Close()
+
+	consumeAgentEvents(events, summary, nil, nil)
+
+	if summary.ReplyText != "" {
+		t.Fatalf("expected bare tool text to be suppressed, got %q", summary.ReplyText)
+	}
+	if summary.Status != "fallback" {
+		t.Fatalf("expected fallback status after suppressing bare tool text, got %q", summary.Status)
 	}
 }
 

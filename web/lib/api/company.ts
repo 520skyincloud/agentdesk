@@ -1,5 +1,5 @@
 import { request } from "@/lib/api/client"
-import type { PageResult } from "@/lib/api/admin"
+import type { PageResult, StoreAIModelSetting, UpdateStoreAIModelSettingsPayload } from "@/lib/api/admin"
 
 export type AdminCompany = {
   id: number
@@ -75,3 +75,16 @@ export function deleteCompany(id: number) {
   })
 }
 
+export function fetchCompanyAIModelSettings(companyId: number) {
+  return request<StoreAIModelSetting[]>("/api/dashboard/company/model_settings", {
+    method: "POST",
+    body: JSON.stringify({ companyId }),
+  })
+}
+
+export function updateCompanyAIModelSettings(payload: UpdateStoreAIModelSettingsPayload) {
+  return request<StoreAIModelSetting[]>("/api/dashboard/company/update_model_settings", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}

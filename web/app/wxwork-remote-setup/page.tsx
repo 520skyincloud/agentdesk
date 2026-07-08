@@ -170,7 +170,7 @@ function WxWorkRemoteSetupContent() {
     if (!token) return
     setSaving(true)
     try {
-      await updateWxWorkProtocolRemoteSetup({ token, ...form })
+      await updateWxWorkProtocolRemoteSetup({ token, companyId: instance?.companyId || 0, ...form })
       toast.success("已提交门店配置")
       await loadRemoteSetup(token)
     } catch (error) {
@@ -240,8 +240,13 @@ function WxWorkRemoteSetupContent() {
 
           <section className="rounded-3xl border border-[#dbe7f6] bg-white p-5 shadow-[0_16px_42px_rgba(35,74,122,0.06)]">
             <h2 className="font-semibold">2. 填写门店资料</h2>
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
-              <Field label="员工号显示名"><Input value={form.employeeName} onChange={(event) => setValue("employeeName", event.target.value)} placeholder="例如：吴朝伟" /></Field>
+	            <div className="mt-4 grid gap-4 md:grid-cols-2">
+	              {instance?.companyId ? (
+	                <div className="md:col-span-2 rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] px-4 py-3 text-sm text-muted-foreground">
+	                  当前开户链接已绑定公司：<span className="font-medium text-foreground">{repairMojibakeText(instance.companyName) || `公司 #${instance.companyId}`}</span>。门店端不可修改公司，填好店名后系统会自动生成内部兼容门店记录。
+	                </div>
+	              ) : null}
+	              <Field label="员工号显示名"><Input value={form.employeeName} onChange={(event) => setValue("employeeName", event.target.value)} placeholder="例如：吴朝伟" /></Field>
               <Field label="门店名称"><Input value={form.storeName} onChange={(event) => setValue("storeName", event.target.value)} placeholder="例如：丽斯未来酒店杭州某某店" /></Field>
               <Field label="门店地址"><Input value={form.storeAddress} onChange={(event) => setValue("storeAddress", event.target.value)} placeholder="填写可导航地址" /></Field>
               <Field label="定位卡片标题"><Input value={form.storeNavigationName} onChange={(event) => setValue("storeNavigationName", event.target.value)} placeholder="默认可用门店名称" /></Field>

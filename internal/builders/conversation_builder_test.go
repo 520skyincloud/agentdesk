@@ -3,6 +3,8 @@ package builders
 import (
 	"testing"
 
+	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/i18nx"
 )
 
@@ -93,6 +95,54 @@ func TestLocalizeRenderableMessageContent(t *testing.T) {
 			t.Parallel()
 			if got := localizeRenderableMessageContent(tt.locale, tt.content); got != tt.want {
 				t.Fatalf("localizeRenderableMessageContent() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildMessageSendSourceLabel(t *testing.T) {
+	tests := []struct {
+		name      string
+		message   models.Message
+		wantType  string
+		wantLabel string
+	}{
+		{
+			name: "wxwork app agent echo",
+			message: models.Message{
+				SenderType:  enums.IMSenderTypeAgent,
+				RequestID:   "wx_protocol_self_echo",
+				ClientMsgID: "wx_protocol:guid:msg",
+			},
+			wantType:  "local",
+			wantLabel: "本地",
+		},
+		{
+			name: "dashboard agent reply",
+			message: models.Message{
+				SenderType:  enums.IMSenderTypeAgent,
+				ClientMsgID: "agent_123",
+			},
+			wantType:  "web",
+			wantLabel: "网页",
+		},
+		{
+			name: "ai reply has no manual send source",
+			message: models.Message{
+				SenderType:  enums.IMSenderTypeAI,
+				ClientMsgID: "ai_reply_1",
+			},
+			wantType:  "",
+			wantLabel: "",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildMessageWithReadStatesAndLocale(&tt.message, nil, nil, nil, nil, nil, i18nx.LocaleZhCN)
+			if got.SendSource != tt.wantType || got.SendSourceLabel != tt.wantLabel {
+				t.Fatalf("BuildMessageWithReadStatesAndLocale() source = %q/%q, want %q/%q", got.SendSource, got.SendSourceLabel, tt.wantType, tt.wantLabel)
 			}
 		})
 	}

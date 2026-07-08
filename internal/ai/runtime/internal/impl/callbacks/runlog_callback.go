@@ -128,6 +128,19 @@ func (c *RuntimeTraceCollector) SetAnswerability(data AnswerabilityTraceData) {
 	}
 }
 
+func (c *RuntimeTraceCollector) SetPipeline(normalize NormalizeTraceData, intent IntentTraceData, prompt IntentPromptTraceData, contextBuild ContextBuildTraceData, toolKnowledge ToolKnowledgeTraceData, replyPlan ReplyPlanTraceData, generate GenerateTraceData, validate ValidateTraceData) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Data.Pipeline.Normalize = normalize
+	c.Data.Pipeline.Intent = intent
+	c.Data.Pipeline.PromptSelect = prompt
+	c.Data.Pipeline.ContextBuild = contextBuild
+	c.Data.Pipeline.ToolKnowledge = toolKnowledge
+	c.Data.Pipeline.ReplyPlan = replyPlan
+	c.Data.Pipeline.Generate = generate
+	c.Data.Pipeline.Validate = validate
+}
+
 func (c *RuntimeTraceCollector) AddToolItem(item ToolTraceItem) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

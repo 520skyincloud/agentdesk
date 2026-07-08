@@ -99,6 +99,13 @@ type RuntimeTraceData struct {
 	Model struct {
 		Provider string `json:"provider,omitempty"`
 		Name     string `json:"name,omitempty"`
+		Usage    struct {
+			PromptTokens       int `json:"promptTokens,omitempty"`
+			CompletionTokens   int `json:"completionTokens,omitempty"`
+			TotalTokens        int `json:"totalTokens,omitempty"`
+			CachedPromptTokens int `json:"cachedPromptTokens,omitempty"`
+			ReasoningTokens    int `json:"reasoningTokens,omitempty"`
+		} `json:"usage,omitempty"`
 	} `json:"model"`
 	Instruction struct {
 		SectionTitles []string `json:"sectionTitles,omitempty"`
@@ -108,6 +115,8 @@ type RuntimeTraceData struct {
 	} `json:"instruction"`
 	Input struct {
 		HistoryMessageCount       int      `json:"historyMessageCount,omitempty"`
+		ContextMemorySource       string   `json:"contextMemorySource,omitempty"`
+		ContextMemoryMessageCount int      `json:"contextMemoryMessageCount,omitempty"`
 		KnowledgeBaseIDs          []int64  `json:"knowledgeBaseIds,omitempty"`
 		ToolCodes                 []string `json:"toolCodes,omitempty"`
 		StaticToolCodes           []string `json:"staticToolCodes,omitempty"`
@@ -115,6 +124,16 @@ type RuntimeTraceData struct {
 		ToolSearchEnabled         bool     `json:"toolSearchEnabled,omitempty"`
 		CurrentUserMessagePreview string   `json:"currentUserMessagePreview,omitempty"`
 	} `json:"input"`
+	Pipeline struct {
+		Normalize     NormalizeTraceData     `json:"normalize,omitempty"`
+		Intent        IntentTraceData        `json:"intent,omitempty"`
+		PromptSelect  IntentPromptTraceData  `json:"promptSelect,omitempty"`
+		ContextBuild  ContextBuildTraceData  `json:"contextBuild,omitempty"`
+		ToolKnowledge ToolKnowledgeTraceData `json:"toolKnowledge,omitempty"`
+		ReplyPlan     ReplyPlanTraceData     `json:"replyPlan,omitempty"`
+		Generate      GenerateTraceData      `json:"generate,omitempty"`
+		Validate      ValidateTraceData      `json:"validate,omitempty"`
+	} `json:"pipeline,omitempty"`
 	Retriever struct {
 		Count            int                        `json:"count,omitempty"`
 		TopK             int                        `json:"topK,omitempty"`
@@ -149,6 +168,80 @@ type RuntimeTraceData struct {
 		Message string `json:"message,omitempty"`
 		Stage   string `json:"stage,omitempty"`
 	} `json:"error"`
+}
+
+type NormalizeTraceData struct {
+	CurrentUserText      string `json:"currentUserText,omitempty"`
+	CurrentMessageType   string `json:"currentMessageType,omitempty"`
+	RecentMessageCount   int    `json:"recentMessageCount,omitempty"`
+	CompressedMemory     string `json:"compressedMemory,omitempty"`
+	MediaContextDetected bool   `json:"mediaContextDetected,omitempty"`
+}
+
+type IntentTraceData struct {
+	DetectedIntent       string   `json:"detectedIntent,omitempty"`
+	MatchedIntentCode    string   `json:"matchedIntentCode,omitempty"`
+	PrimaryIntent        string   `json:"primaryIntent,omitempty"`
+	SubIntent            string   `json:"subIntent,omitempty"`
+	SecondaryIntents     []string `json:"secondaryIntents,omitempty"`
+	SecondaryIntentCodes []string `json:"secondaryIntentCodes,omitempty"`
+	IntentConfidence     float64  `json:"intentConfidence,omitempty"`
+	ShouldReply          bool     `json:"shouldReply,omitempty"`
+	NeedsClarification   bool     `json:"needsClarification,omitempty"`
+	NeedsKnowledge       bool     `json:"needsKnowledge,omitempty"`
+	NeedsTool            bool     `json:"needsTool,omitempty"`
+	NeedsResource        bool     `json:"needsResource,omitempty"`
+	NeedsHumanRoute      bool     `json:"needsHumanRoute,omitempty"`
+	ResourceType         string   `json:"resourceType,omitempty"`
+	ResourceAction       string   `json:"resourceAction,omitempty"`
+	ToolCodes            []string `json:"toolCodes,omitempty"`
+	HumanRoutePolicy     string   `json:"humanRoutePolicy,omitempty"`
+	MatchedConfigID      int64    `json:"matchedConfigId,omitempty"`
+	MatchedConfig        string   `json:"matchedConfig,omitempty"`
+	MatchMode            string   `json:"matchMode,omitempty"`
+	Reason               string   `json:"reason,omitempty"`
+}
+
+type IntentPromptTraceData struct {
+	PackName     string   `json:"packName,omitempty"`
+	Instructions []string `json:"instructions,omitempty"`
+}
+
+type ContextBuildTraceData struct {
+	CurrentTurn             string   `json:"currentTurn,omitempty"`
+	RecentRawMessageCount   int      `json:"recentRawMessageCount,omitempty"`
+	CompressedMemorySource  string   `json:"compressedMemorySource,omitempty"`
+	CompressedMemoryCount   int      `json:"compressedMemoryCount,omitempty"`
+	MediaContextCount       int      `json:"mediaContextCount,omitempty"`
+	Priority                []string `json:"priority,omitempty"`
+	IntentResourcesExpected []string `json:"intentResourcesExpected,omitempty"`
+}
+
+type ReplyPlanTraceData struct {
+	Intent     string   `json:"intent,omitempty"`
+	AnswerGoal string   `json:"answerGoal,omitempty"`
+	UseContext []string `json:"useContext,omitempty"`
+	DoNot      []string `json:"doNot,omitempty"`
+	Style      string   `json:"style,omitempty"`
+}
+
+type ToolKnowledgeTraceData struct {
+	Policy             string   `json:"policy,omitempty"`
+	ExpectedResources  []string `json:"expectedResources,omitempty"`
+	KnowledgeTriggered bool     `json:"knowledgeTriggered,omitempty"`
+	ToolTriggered      bool     `json:"toolTriggered,omitempty"`
+}
+
+type GenerateTraceData struct {
+	Policy string `json:"policy,omitempty"`
+	Status string `json:"status,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type ValidateTraceData struct {
+	Rules  []string `json:"rules,omitempty"`
+	Status string   `json:"status,omitempty"`
+	Reason string   `json:"reason,omitempty"`
 }
 
 type SkillTraceData struct {

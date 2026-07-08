@@ -128,3 +128,34 @@ func CompanyPostUpdate_status(ctx *gin.Context) {
 	}
 	httpx.WriteJSON(ctx, nil)
 }
+
+func CompanyPostModel_settings(ctx *gin.Context) {
+	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.UpdateStoreAIModelSettingsRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, services.StoreAIModelSettingService.ListResponses(req.CompanyID, 0, 0))
+}
+
+func CompanyPostUpdate_model_settings(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.UpdateStoreAIModelSettingsRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.StoreAIModelSettingService.UpdateStoreSettings(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, services.StoreAIModelSettingService.ListResponses(req.CompanyID, 0, 0))
+}

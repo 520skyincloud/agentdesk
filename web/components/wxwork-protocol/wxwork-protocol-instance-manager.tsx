@@ -1,24 +1,29 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { BotIcon, LinkIcon, LocateFixedIcon, MapPinIcon, PlusIcon, QrCodeIcon, RotateCwIcon, UserRoundCogIcon, UsersRoundIcon } from "lucide-react"
+import { CopyIcon, LinkIcon, LocateFixedIcon, MapPinIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SlidersHorizontalIcon, UserRoundCogIcon, UsersRoundIcon } from "lucide-react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import {
   createDashboardStatusColumn,
   DashboardCrudPage,
+  type DashboardCrudRowAction,
 } from "@/components/dashboard/crud"
 import { OptionCombobox } from "@/components/option-combobox"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import {
-	createWxWorkProtocolRemoteSetup,
-	createWxWorkProtocolInstance,
+  createWxWorkProtocolRemoteSetup,
+  createWxWorkProtocolInstance,
   deleteWxWorkProtocolInstance,
+  fetchAIConfigsAll,
   fetchChannels,
   fetchKnowledgeBasesAll,
+  fetchStoreAIModelSettings,
   fetchWxWorkProtocolInstance,
   fetchWxWorkProtocolInstances,
   fetchWxWorkProtocolRoomList,
@@ -26,17 +31,18 @@ import {
   getWxWorkProtocolLoginQrcode,
   logoutWxWorkProtocolInstance,
   startWxWorkProtocolLogin,
-  updateWxWorkProtocolAIAgent,
+  updateStoreAIModelSettings,
   updateWxWorkProtocolInstance,
-  type CreateAIAgentPayload,
+  type AIConfig,
   type AdminChannel,
   type CreateWxWorkProtocolInstancePayload,
   type KnowledgeBase,
+  type StoreAIModelSetting,
   type WxWorkProtocolInstance,
   type WxWorkProtocolRoomMemberOption,
   type WxWorkProtocolRoomOption,
 } from "@/lib/api/admin"
-import { EditDialog as AIAgentEditDialog } from "@/app/dashboard/ai-agents/_components/edit"
+import { fetchCompanies, type AdminCompany } from "@/lib/api/company"
 import { getEnumOptions } from "@/lib/enums"
 import { Status, StatusLabels } from "@/lib/generated/enums"
 import { formatDateTime, repairMojibakeText } from "@/lib/utils"
@@ -49,6 +55,9 @@ type WxWorkProtocolInstanceManagerProps = {
   onChanged?: () => void
   tableShellClassName?: string
   hideCreateActions?: boolean
+  companyId?: number
+  companyName?: string
+  lockCompany?: boolean
 }
 
 function getStatusLabel(status: Status) {
@@ -142,6 +151,15 @@ function StoreRoomPicker({
     context.setValue("storeRoomAtList", next.join(","))
   }
 
+  async function copyMemberId(userId: string) {
+    try {
+      await navigator.clipboard.writeText(userId)
+      toast.success("已复制成员 ID")
+    } catch {
+      toast.error("复制成员 ID 失败")
+    }
+  }
+
   return (
     <div className="rounded-2xl border border-[#dbe7f6] bg-white p-4 shadow-[0_8px_24px_rgba(35,74,122,0.05)]">
       <div className="flex flex-col gap-3 md:flex-row md:items-end">
@@ -180,14 +198,39 @@ function StoreRoomPicker({
           </label>
         </div>
         {members.length > 0 ? (
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-2">
             {members.map((member) => {
               const checked = selectedMemberIds.includes(member.userId)
+              const realName = repairMojibakeText(member.realName || member.displayName || member.name)
+              const roomRemark = repairMojibakeText(member.roomRemark || "")
+              const accountId = member.accountId || ""
               return (
-                <label key={member.userId} className="flex cursor-pointer items-center gap-2 rounded-lg border border-[#dbe7f6] bg-white px-3 py-2 text-sm">
+                <label key={member.userId} className="flex cursor-pointer items-center gap-3 rounded-lg border border-[#dbe7f6] bg-white px-3 py-2 text-sm">
                   <Checkbox checked={checked} onCheckedChange={() => toggleMember(member.userId)} />
-                  <span className="min-w-0 flex-1 truncate">{repairMojibakeText(member.name)}</span>
-                  <span className="max-w-24 truncate font-mono text-[10px] text-muted-foreground">{member.userId}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium text-foreground">{realName || member.userId}</span>
+                    {roomRemark && roomRemark !== realName ? (
+                      <span className="mt-0.5 block truncate text-xs text-muted-foreground">群内备注：{roomRemark}</span>
+                    ) : null}
+                    {accountId ? (
+                      <span className="mt-0.5 block truncate text-xs text-muted-foreground">账号：{accountId}</span>
+                    ) : null}
+                    <span className="mt-0.5 block break-all font-mono text-[11px] leading-4 text-muted-foreground" title={member.userId}>{member.userId}</span>
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0 rounded-lg"
+                    title="复制成员 ID"
+                    onClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      void copyMemberId(member.userId)
+                    }}
+                  >
+                    <CopyIcon className="size-4" />
+                  </Button>
                 </label>
               )
             })}
@@ -202,36 +245,318 @@ function StoreRoomPicker({
   )
 }
 
+function StoreAIModelSettingsDialog({
+  open,
+  instance,
+  settings,
+  aiConfigs,
+  loading,
+  saving,
+  canSave,
+  onOpenChange,
+  onChange,
+  onSubmit,
+}: {
+  open: boolean
+  instance: WxWorkProtocolInstance | null
+  settings: StoreAIModelSetting[]
+  aiConfigs: AIConfig[]
+  loading: boolean
+  saving: boolean
+  canSave: boolean
+  onOpenChange: (open: boolean) => void
+  onChange: (settings: StoreAIModelSetting[]) => void
+  onSubmit: () => void
+}) {
+  function updateSetting(usageCode: string, patch: Partial<StoreAIModelSetting>) {
+    onChange(settings.map((item) => (item.usageCode === usageCode ? { ...item, ...patch } : item)))
+  }
+
+  function pickGlobalDefault(setting: StoreAIModelSetting) {
+    const list = aiConfigs.filter((config) => config.status === Status.Ok && config.modelType === setting.expectedModelType)
+    if (setting.usageCode === "intent_detect_llm") {
+      return list.find((config) => config.intentDetectEnabled) || list[0]
+    }
+    return list[0]
+  }
+
+  function copyGlobalDefault(setting: StoreAIModelSetting) {
+    const config = pickGlobalDefault(setting)
+    if (!config) {
+      toast.error("没有可复制的全局默认模型配置")
+      return
+    }
+    updateSetting(setting.usageCode, {
+      enabled: true,
+      provider: config.provider || "openai",
+      baseUrl: config.baseUrl || "",
+      apiKey: "",
+      apiMode: config.apiMode || "chat_completions",
+      modelType: setting.expectedModelType,
+      modelName: config.modelName || "",
+      dimension: config.dimension || 0,
+      maxContextTokens: config.maxContextTokens || 0,
+      maxOutputTokens: config.maxOutputTokens || 0,
+      timeoutMs: config.timeoutMs || 30000,
+      maxRetryCount: config.maxRetryCount || 0,
+      rpmLimit: config.rpmLimit || 0,
+      tpmLimit: config.tpmLimit || 0,
+      remark: setting.remark || "",
+    })
+    toast.success(config.hasApiKey ? "已复制全局非密钥参数，请在此处填写本覆盖的 API Key" : "已复制全局参数，请补齐 API Key")
+  }
+
+  function updateNumberSetting(usageCode: string, key: keyof StoreAIModelSetting, value: string) {
+    updateSetting(usageCode, { [key]: Number(value || 0) } as Partial<StoreAIModelSetting>)
+  }
+
+  function sourceLabel(source: string) {
+    if (source === "account_override") return "当前员工号设置"
+    if (source === "company_override") return "公司默认"
+    if (source === "agent_legacy") return "历史 Agent"
+    return "系统全局默认"
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[88vh] max-w-5xl overflow-y-auto rounded-3xl p-5">
+        <DialogHeader>
+          <DialogTitle>模型设置</DialogTitle>
+          <DialogDescription>
+            {instance
+              ? `${repairMojibakeText(instance.employeeName) || instance.guid} 的模型设置。优先级：当前员工号设置 > 公司默认 > 系统全局默认。`
+              : "按当前企微员工号设置回复链路模型；企微员工号就是门店账号。"}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] p-3 text-sm leading-6 text-muted-foreground">
+          当前设置只影响这个企微员工号；未启用时继续使用公司默认，再没有就使用系统全局默认。
+        </div>
+        {loading ? (
+          <div className="mt-3 rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] p-6 text-sm text-muted-foreground">正在读取模型设置...</div>
+        ) : (
+          <div className="mt-3 grid gap-3">
+            {settings.map((setting) => {
+              return (
+                <div key={setting.usageCode} className="rounded-2xl border border-[#dbe7f6] bg-white p-4 shadow-[0_8px_24px_rgba(35,74,122,0.05)]">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-foreground">{setting.usageName}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        用途：{setting.usageCode} · 类型：{setting.expectedModelType}
+                      </div>
+                      <div className="mt-2 text-xs leading-5 text-muted-foreground">
+                        当前生效：{setting.effectiveModelName || setting.effectiveAiConfigName || "-"}（{sourceLabel(setting.effectiveModelSource)}）
+                        {setting.effectiveBaseUrl ? ` · ${setting.effectiveBaseUrl}` : ""}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button type="button" variant="outline" size="sm" className="rounded-xl" disabled={!canSave} onClick={() => copyGlobalDefault(setting)}>
+                        复制全局默认参数
+                      </Button>
+                      <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+                        <Checkbox
+                          checked={setting.enabled}
+                          disabled={!canSave}
+                          onCheckedChange={(checked) => updateSetting(setting.usageCode, { enabled: checked === true })}
+                        />
+                        启用覆盖
+                      </label>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-muted-foreground">供应商</div>
+                      <Input
+                        value={setting.provider || "openai"}
+                        disabled={!canSave || !setting.enabled}
+                        onChange={(event) => updateSetting(setting.usageCode, { provider: event.target.value })}
+                        className="rounded-xl border-[#dbe7f6]"
+                        placeholder="openai"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-muted-foreground">API 模式</div>
+                      <OptionCombobox
+                        value={setting.apiMode || "chat_completions"}
+                        options={[
+                          { value: "chat_completions", label: "Chat Completions" },
+                          { value: "responses", label: "Responses API" },
+                        ]}
+                        placeholder="选择 API 模式"
+                        triggerClassName="h-10 rounded-xl border-[#dbe7f6] bg-white"
+                        disabled={!canSave || !setting.enabled}
+                        onChange={(value) => updateSetting(setting.usageCode, { apiMode: value })}
+                      />
+                    </div>
+                    <div className="space-y-1 md:col-span-2">
+                      <div className="text-xs font-medium text-muted-foreground">Base URL</div>
+                      <Input
+                        value={setting.baseUrl || ""}
+                        disabled={!canSave || !setting.enabled}
+                        onChange={(event) => updateSetting(setting.usageCode, { baseUrl: event.target.value })}
+                        className="rounded-xl border-[#dbe7f6]"
+                        placeholder="https://api.openai.com/v1"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-muted-foreground">模型名</div>
+                      <Input
+                        value={setting.modelName || ""}
+                        disabled={!canSave || !setting.enabled}
+                        onChange={(event) => updateSetting(setting.usageCode, { modelName: event.target.value, modelType: setting.expectedModelType })}
+                        className="rounded-xl border-[#dbe7f6]"
+                        placeholder="gpt-4.1-mini / qwen-vl-plus"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-muted-foreground">API Key</div>
+                      <Input
+                        type="password"
+                        value={setting.apiKey || ""}
+                        disabled={!canSave || !setting.enabled}
+                        onChange={(event) => updateSetting(setting.usageCode, { apiKey: event.target.value })}
+                        className="rounded-xl border-[#dbe7f6]"
+                        placeholder={setting.hasApiKey ? "已设置，留空不修改" : "请输入 API Key"}
+                      />
+                    </div>
+                    <div className="grid gap-3 md:col-span-2 md:grid-cols-4">
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">上下文 Token</div>
+                        <Input
+                          type="number"
+                          value={setting.maxContextTokens || 0}
+                          disabled={!canSave || !setting.enabled}
+                          onChange={(event) => updateNumberSetting(setting.usageCode, "maxContextTokens", event.target.value)}
+                          className="rounded-xl border-[#dbe7f6]"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">输出 Token</div>
+                        <Input
+                          type="number"
+                          value={setting.maxOutputTokens || 0}
+                          disabled={!canSave || !setting.enabled}
+                          onChange={(event) => updateNumberSetting(setting.usageCode, "maxOutputTokens", event.target.value)}
+                          className="rounded-xl border-[#dbe7f6]"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">超时 ms</div>
+                        <Input
+                          type="number"
+                          value={setting.timeoutMs || 30000}
+                          disabled={!canSave || !setting.enabled}
+                          onChange={(event) => updateNumberSetting(setting.usageCode, "timeoutMs", event.target.value)}
+                          className="rounded-xl border-[#dbe7f6]"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">重试次数</div>
+                        <Input
+                          type="number"
+                          value={setting.maxRetryCount || 0}
+                          disabled={!canSave || !setting.enabled}
+                          onChange={(event) => updateNumberSetting(setting.usageCode, "maxRetryCount", event.target.value)}
+                          className="rounded-xl border-[#dbe7f6]"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:col-span-2 md:grid-cols-3">
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">向量维度</div>
+                        <Input
+                          type="number"
+                          value={setting.dimension || 0}
+                          disabled={!canSave || !setting.enabled || setting.expectedModelType !== "embedding"}
+                          onChange={(event) => updateNumberSetting(setting.usageCode, "dimension", event.target.value)}
+                          className="rounded-xl border-[#dbe7f6]"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">RPM 限制</div>
+                        <Input
+                          type="number"
+                          value={setting.rpmLimit || 0}
+                          disabled={!canSave || !setting.enabled}
+                          onChange={(event) => updateNumberSetting(setting.usageCode, "rpmLimit", event.target.value)}
+                          className="rounded-xl border-[#dbe7f6]"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">TPM 限制</div>
+                        <Input
+                          type="number"
+                          value={setting.tpmLimit || 0}
+                          disabled={!canSave || !setting.enabled}
+                          onChange={(event) => updateNumberSetting(setting.usageCode, "tpmLimit", event.target.value)}
+                          className="rounded-xl border-[#dbe7f6]"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+        <DialogFooter>
+          <Button type="button" variant="outline" className="rounded-xl" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button type="button" className="rounded-xl" disabled={!canSave || saving || loading || !instance} onClick={onSubmit}>
+            {saving ? "保存中..." : "保存设置"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function WxWorkProtocolInstanceManager({
   layout = "page",
   onChanged,
   tableShellClassName,
   hideCreateActions = false,
+  companyId,
+  companyName,
+  lockCompany = false,
 }: WxWorkProtocolInstanceManagerProps) {
+  const { session } = useAuth()
   const [channels, setChannels] = useState<AdminChannel[]>([])
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
+  const [companies, setCompanies] = useState<AdminCompany[]>([])
   const [reloadKey, setReloadKey] = useState(0)
-  const [aiAgentInstance, setAIAgentInstance] = useState<WxWorkProtocolInstance | null>(null)
-  const [aiAgentSaving, setAIAgentSaving] = useState(false)
+  const [modelSettingsInstance, setModelSettingsInstance] = useState<WxWorkProtocolInstance | null>(null)
+  const [modelSettings, setModelSettings] = useState<StoreAIModelSetting[]>([])
+  const [modelSettingsLoading, setModelSettingsLoading] = useState(false)
+  const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
+  const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([])
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [creatingLocal, setCreatingLocal] = useState(false)
   const [creatingRemote, setCreatingRemote] = useState(false)
+  const permissionSet = useMemo(() => new Set(session?.permissions ?? []), [session?.permissions])
+  const canViewStoreModelSettings = permissionSet.has("aiConfig.view")
+  const canUpdateStoreModelSettings = permissionSet.has("aiConfig.update")
+  const lockedCompanyId = lockCompany ? Number(companyId || 0) : 0
+  const lockedCompanyName = repairMojibakeText(companyName || "")
 
   useEffect(() => {
     async function loadOptions() {
       try {
-        const [channelPage, kbList] = await Promise.all([
+        const [channelPage, kbList, companyPage] = await Promise.all([
           fetchChannels({ channelType: "wxwork_protocol", status: Status.Ok, limit: 200 }),
           fetchKnowledgeBasesAll({ status: Status.Ok }),
+          lockCompany ? Promise.resolve({ results: [] }) : fetchCompanies({ status: Status.Ok, limit: 500 }),
         ])
         setChannels(channelPage.results)
         setKnowledgeBases(kbList)
+        setCompanies(companyPage.results)
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "加载选项失败")
       }
     }
     void loadOptions()
-  }, [])
+  }, [lockCompany])
 
   const statusOptions = [
     { value: "all", label: "全部状态" },
@@ -259,6 +584,11 @@ export function WxWorkProtocolInstanceManager({
     [knowledgeBases],
   )
 
+  const companyOptions = useMemo(
+    () => companies.map((item) => ({ value: String(item.id), label: repairMojibakeText(item.name) || `公司 #${item.id}` })),
+    [companies],
+  )
+
   function notifyChanged() {
     setReloadKey((value) => value + 1)
     onChanged?.()
@@ -267,7 +597,7 @@ export function WxWorkProtocolInstanceManager({
   async function createLocalLoginInstance() {
     setCreatingLocal(true)
     try {
-      const item = await startWxWorkProtocolLogin(channels[0]?.id ?? 0)
+      const item = await startWxWorkProtocolLogin(channels[0]?.id ?? 0, lockedCompanyId)
       if (item.rawResponse?.trim()) {
         await navigator.clipboard.writeText(item.rawResponse)
       }
@@ -285,7 +615,8 @@ export function WxWorkProtocolInstanceManager({
     try {
       const item = await createWxWorkProtocolRemoteSetup({
         channelId: channels[0]?.id ?? 0,
-        remark: "远程门店开户链接",
+        companyId: lockedCompanyId,
+        remark: lockedCompanyId > 0 ? `${lockedCompanyName || `公司 #${lockedCompanyId}`} 远程门店开户链接` : "远程门店开户链接",
       })
       const url = item.remoteSetupUrl || `${window.location.origin}/wxwork-remote-setup?token=${encodeURIComponent(item.remoteSetupToken || "")}`
       await navigator.clipboard.writeText(url)
@@ -296,10 +627,6 @@ export function WxWorkProtocolInstanceManager({
     } finally {
       setCreatingRemote(false)
     }
-  }
-
-  async function openAIAgentConfig(item: WxWorkProtocolInstance) {
-    setAIAgentInstance(item)
   }
 
   async function replaceLoggedInAccount(item: WxWorkProtocolInstance) {
@@ -313,19 +640,64 @@ export function WxWorkProtocolInstanceManager({
     notifyChanged()
   }
 
-  async function saveAIAgentConfig(payload: CreateAIAgentPayload) {
-    if (!aiAgentInstance) return
-    setAIAgentSaving(true)
+  async function loadStoreModelSettings(item: WxWorkProtocolInstance) {
+    const [settings, configs] = await Promise.all([
+      fetchStoreAIModelSettings(item.storeId || 0, item.id),
+      fetchAIConfigsAll({ status: Status.Ok }),
+    ])
+    setModelSettings(settings)
+    setAIConfigs(configs)
+  }
+
+  async function openStoreModelSettings(item: WxWorkProtocolInstance) {
+    setModelSettingsInstance(item)
+    setModelSettingsLoading(true)
     try {
-      await updateWxWorkProtocolAIAgent({ id: aiAgentInstance.id, ...payload })
-      toast.success("智能客服配置已保存")
-      setAIAgentInstance(null)
+      await loadStoreModelSettings(item)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "读取模型设置失败")
+      setModelSettingsInstance(null)
+    } finally {
+      setModelSettingsLoading(false)
+    }
+  }
+
+  async function saveStoreModelSettings() {
+    if (!modelSettingsInstance) return
+    setModelSettingsSaving(true)
+    try {
+      const next = await updateStoreAIModelSettings({
+        companyId: modelSettingsInstance.companyId || 0,
+        storeId: modelSettingsInstance.storeId || 0,
+        wxWorkInstanceId: modelSettingsInstance.id,
+        settings: modelSettings.map((item) => ({
+          usageCode: item.usageCode,
+          aiConfigId: Number(item.aiConfigId || 0),
+          enabled: item.enabled,
+          provider: item.provider || "openai",
+          baseUrl: item.baseUrl || "",
+          apiKey: item.apiKey || "",
+          apiMode: item.apiMode || "chat_completions",
+          modelType: item.modelType || item.expectedModelType,
+          modelName: item.modelName || "",
+          dimension: Number(item.dimension || 0),
+          maxContextTokens: Number(item.maxContextTokens || 0),
+          maxOutputTokens: Number(item.maxOutputTokens || 0),
+          timeoutMs: Number(item.timeoutMs || 30000),
+          maxRetryCount: Number(item.maxRetryCount || 0),
+          rpmLimit: Number(item.rpmLimit || 0),
+          tpmLimit: Number(item.tpmLimit || 0),
+          remark: item.remark || "",
+        })),
+      })
+      setModelSettings(next)
+      toast.success("模型设置已保存")
+      setModelSettingsInstance(null)
       notifyChanged()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "保存智能客服配置失败")
-      throw error
+      toast.error(error instanceof Error ? error.message : "保存模型设置失败")
     } finally {
-      setAIAgentSaving(false)
+      setModelSettingsSaving(false)
     }
   }
 
@@ -394,6 +766,28 @@ export function WxWorkProtocolInstanceManager({
     return <StoreRoomPicker context={context} />
   }
 
+  const rowActions: DashboardCrudRowAction<WxWorkProtocolInstance>[] = []
+  if (canViewStoreModelSettings) {
+    rowActions.push({
+      key: "storeModelSettings",
+      label: "模型设置",
+      icon: <SlidersHorizontalIcon className="size-4" />,
+      run: async ({ item }) => openStoreModelSettings(item),
+    })
+  }
+  rowActions.push({
+    key: "replaceLogin",
+    label: "更换登录员工号",
+    icon: <QrCodeIcon className="size-4" />,
+    confirm: (item) => ({
+      title: "更换登录员工号",
+      description: `会先让 ${repairMojibakeText(item.employeeName) || "当前员工号"} 退出协议登录，然后生成新的扫码登录二维码。确认继续？`,
+      confirmText: "退出并重新扫码",
+      cancelText: "取消",
+    }),
+    run: async ({ item }) => replaceLoggedInAccount(item),
+  })
+
   return (
     <>
     <DashboardCrudPage<WxWorkProtocolInstance, CreateWxWorkProtocolInstancePayload>
@@ -414,10 +808,10 @@ export function WxWorkProtocolInstanceManager({
           ) : null}
         </>
       )}
-      filters={[
-        {
-          name: "guid",
-          label: "GUID",
+	      filters={[
+	        {
+	          name: "guid",
+	          label: "GUID",
           placeholder: "搜索 GUID",
           defaultValue: "",
           trim: true,
@@ -438,12 +832,23 @@ export function WxWorkProtocolInstanceManager({
           type: "select",
           defaultValue: "all",
           allValue: "all",
-          options: [{ value: "all", label: "全部知识库" }, ...knowledgeBaseOptions],
-          className: "w-full sm:w-48",
-        },
-        {
-          name: "status",
-          label: "状态",
+	          options: [{ value: "all", label: "全部知识库" }, ...knowledgeBaseOptions],
+	          className: "w-full sm:w-48",
+	        },
+	        ...(!lockCompany ? [
+	          {
+	            name: "companyId",
+	            label: "公司",
+	            type: "select" as const,
+	            defaultValue: "all",
+	            allValue: "all",
+	            options: [{ value: "all", label: "全部公司" }, { value: "0", label: "未绑定公司" }, ...companyOptions],
+	            className: "w-full sm:w-48",
+	          },
+	        ] : []),
+	        {
+	          name: "status",
+	          label: "状态",
           type: "select",
           defaultValue: String(Status.Ok),
           allValue: "all",
@@ -462,7 +867,7 @@ export function WxWorkProtocolInstanceManager({
               </div>
               <div className="min-w-0">
                 <div className="truncate font-semibold text-foreground">{repairMojibakeText(item.employeeName) || item.guid}</div>
-                <div className="truncate text-xs text-muted-foreground">{item.storeName ? `门店：${repairMojibakeText(item.storeName)}` : "未绑定门店"}</div>
+	                <div className="truncate text-xs text-muted-foreground">{item.storeName ? `店名：${repairMojibakeText(item.storeName)}` : "未填写店名"}</div>
               </div>
             </div>
           ),
@@ -472,10 +877,13 @@ export function WxWorkProtocolInstanceManager({
           label: "绑定",
           render: (item) => (
             <div className="space-y-1 text-sm">
-              <div className="font-medium text-foreground">{repairMojibakeText(item.storeName) || `门店 ${item.storeId || "未绑定"}`}</div>
-              <div className="text-xs text-muted-foreground">
-                {repairMojibakeText(item.knowledgeBaseName) || `知识库 ${item.knowledgeBaseId || "未配置"}`}
-              </div>
+	              <div className="font-medium text-foreground">{repairMojibakeText(item.storeName) || repairMojibakeText(item.employeeName) || `账号 ${item.id}`}</div>
+	              <div className="text-xs text-muted-foreground">
+	                {item.companyName ? `公司：${repairMojibakeText(item.companyName)}` : "未绑定公司"}
+	              </div>
+	              <div className="text-xs text-muted-foreground">
+	                {repairMojibakeText(item.knowledgeBaseName) || `知识库 ${item.knowledgeBaseId || "未配置"}`}
+	              </div>
               {item.storeAddress || item.storeLatitude || item.storeLongitude ? (
                 <div className="text-xs text-muted-foreground">
                   {item.storeAddress || "未填地址"} {item.storeLatitude && item.storeLongitude ? `(${item.storeLatitude}, ${item.storeLongitude})` : ""}
@@ -505,24 +913,27 @@ export function WxWorkProtocolInstanceManager({
           ),
         },
         {
-          key: "aiAgent",
-          label: "智能客服",
+          key: "aiRuntime",
+          label: "AI 托管",
           render: (item) => (
             <div className="space-y-1 text-sm">
               <div className="flex flex-wrap gap-1">
-                <Badge variant={item.aiAgentConfigured ? "default" : "outline"} className="rounded-md text-[10px]">
-                  {item.aiAgentConfigured ? "已配置" : "未配置"}
-                </Badge>
                 <Badge variant={item.aiReplyEnabled ? "default" : "secondary"} className="rounded-md text-[10px]">
                   {item.aiReplyEnabled ? "AI开启" : "AI关闭"}
                 </Badge>
+                <Badge variant="outline" className="rounded-md text-[10px]">
+                  客户 {item.customerCount || 0}
+                </Badge>
+                {item.manualAttentionCount > 0 ? (
+                  <Badge variant="destructive" className="rounded-md text-[10px]">
+                    待人工 {item.manualAttentionCount}
+                  </Badge>
+                ) : null}
               </div>
               <div className="max-w-48 truncate text-xs text-muted-foreground">
-                {repairMojibakeText(item.aiAgentName) || "点击操作配置"}
+                知识库：{repairMojibakeText(item.knowledgeBaseName) || `#${item.knowledgeBaseId || "未配置"}`}
               </div>
-              {item.aiConfigName ? (
-                <div className="max-w-48 truncate text-xs text-muted-foreground">模型：{repairMojibakeText(item.aiConfigName)}</div>
-              ) : null}
+              <div className="max-w-48 truncate text-xs text-muted-foreground">模型按员工号设置、公司默认、系统全局默认解析</div>
             </div>
           ),
         },
@@ -534,7 +945,10 @@ export function WxWorkProtocolInstanceManager({
           isEnabled: (status) => status === Status.Ok,
         }),
       ]}
-      fetchList={fetchWxWorkProtocolInstances}
+	      fetchList={(query) => fetchWxWorkProtocolInstances({
+	        ...query,
+	        ...(lockedCompanyId > 0 ? { companyId: lockedCompanyId } : {}),
+	      })}
       getItemId={(item) => item.id}
       createItem={async (payload) => {
         const ret = await createWxWorkProtocolInstance(payload)
@@ -551,26 +965,7 @@ export function WxWorkProtocolInstanceManager({
         notifyChanged()
         return ret
       }}
-      rowActions={[
-        {
-          key: "aiAgentConfig",
-          label: "智能客服配置",
-          icon: <BotIcon className="size-4" />,
-          run: async ({ item }) => openAIAgentConfig(item),
-        },
-        {
-          key: "replaceLogin",
-          label: "更换登录员工号",
-          icon: <QrCodeIcon className="size-4" />,
-          confirm: (item) => ({
-            title: "更换登录员工号",
-            description: `会先让 ${repairMojibakeText(item.employeeName) || "当前员工号"} 退出协议登录，然后生成新的扫码登录二维码。确认继续？`,
-            confirmText: "退出并重新扫码",
-            cancelText: "取消",
-          }),
-          run: async ({ item }) => replaceLoggedInAccount(item),
-        },
-      ]}
+      rowActions={rowActions}
       form={{
         fetchDetail: fetchWxWorkProtocolInstance,
         fields: [
@@ -580,9 +975,31 @@ export function WxWorkProtocolInstanceManager({
             label: "员工号资料",
             type: "section",
             description: "这里显示的是通过协议扫码登录的门店企业微信员工号。账号头像、UserID、GUID、回调、代理和 Bridge 等技术信息由系统同步和维护，不再开放手动填写。",
-          },
-          { name: "employeeName", label: "员工号名称", type: "text", placeholder: "扫码同步后会自动带出，可手动改展示名" },
-          { name: "storeId", label: "绑定门店", type: "number", required: true, min: 1, description: "当前仍按门店 ID 保存；后续门店员工自助页会改成搜索门店后选择绑定。" },
+	          },
+	          { name: "employeeName", label: "员工号名称", type: "text", placeholder: "扫码同步后会自动带出，可手动改展示名" },
+	          ...(lockCompany ? [
+	            {
+	              name: "companyLock",
+	              label: "绑定公司",
+	              type: "custom" as const,
+	              render: () => (
+	                <div className="rounded-xl border border-[#dbe7f6] bg-[#f8fbff] px-4 py-3 text-sm text-muted-foreground">
+	                  该入口生成的员工号会自动绑定到 <span className="font-medium text-foreground">{lockedCompanyName || `公司 #${lockedCompanyId || "-"}`}</span>，远程开户页不可改公司。
+	                </div>
+	              ),
+	            },
+	          ] : [
+	            {
+	              name: "companyId",
+	              label: "绑定公司",
+	              type: "select" as const,
+	              defaultValue: "0",
+	              options: [{ value: "0", label: "不绑定公司" }, ...companyOptions],
+	              description: "账号可以不绑定公司；绑定后模型会按员工号设置 > 公司默认 > 系统全局默认解析。",
+	            },
+	          ]),
+	          { name: "storeName", label: "店名/账号名称", type: "text", placeholder: "例如：丽斯未来酒店杭州某某店", description: "企微员工号就是门店账号。这里填店名即可，系统会维护内部兼容门店记录。" },
+	          { name: "storeId", label: "内部门店 ID（可选兼容）", type: "number", min: 0, description: "一般不用填；老数据或需要绑定已有内部门店时再填写。" },
           { name: "storeLocationGuide", label: "门店定位说明", type: "custom", render: renderLocationGuide },
           { name: "storeAddress", label: "门店地址", type: "text", placeholder: "例如：上海市..." },
           { name: "storeNavigationName", label: "导航名称", type: "text", placeholder: "例如：丽斯未来酒店某某店" },
@@ -594,7 +1011,7 @@ export function WxWorkProtocolInstanceManager({
             name: "resourceBindingSection",
             label: "资源绑定",
             type: "section",
-            description: "小程序跟随企业/品牌统一绑定；门店知识库、模型、提示词和技能统一在本账号的“智能客服配置”里维护。",
+	            description: "门店知识库决定酒店信息类回复；电话、定位、小程序等变量来自当前员工号绑定。管理员可在“模型设置”里配置当前员工号覆盖模型。",
           },
           {
             name: "manualRouteSection",
@@ -621,7 +1038,7 @@ export function WxWorkProtocolInstanceManager({
             name: "automationSection",
             label: "自动化开关",
             type: "section",
-            description: "AI 回复开关只控制当前员工号是否由智能客服托管；智能客服本身的模型、知识库和提示词请点列表里的“智能客服配置”。",
+            description: "AI 回复开关只控制当前员工号是否由回复引擎托管；模型按员工号设置、公司默认、系统全局默认依次解析。",
           },
           { name: "aiReplyEnabled", label: "AI 托管回复", type: "switch" },
           { name: "autoAcceptFriendRequest", label: "自动通过好友申请", type: "switch" },
@@ -642,10 +1059,12 @@ export function WxWorkProtocolInstanceManager({
           guid: context.item?.guid || "",
           channelId: context.item?.channelId || channels[0]?.id || 0,
           employeeUserId: context.item?.employeeUserId || "",
-          employeeName: String(values.employeeName || ""),
-          employeeAvatar: context.item?.employeeAvatar || "",
-          storeId: Number(values.storeId || 0),
-          storeAddress: String(values.storeAddress || ""),
+	          employeeName: String(values.employeeName || ""),
+	          employeeAvatar: context.item?.employeeAvatar || "",
+	          companyId: lockedCompanyId > 0 ? lockedCompanyId : Number(values.companyId || context.item?.companyId || 0),
+	          storeId: Number(values.storeId || 0),
+	          storeName: String(values.storeName || context.item?.storeName || values.employeeName || ""),
+	          storeAddress: String(values.storeAddress || ""),
           storeNavigationName: String(values.storeNavigationName || ""),
           storeLatitude: String(values.storeLatitude || ""),
           storeLongitude: String(values.storeLongitude || ""),
@@ -655,7 +1074,6 @@ export function WxWorkProtocolInstanceManager({
           welcomeSendMiniProgram: context.item?.welcomeSendMiniProgram ?? true,
           welcomeAskLocation: context.item?.welcomeAskLocation ?? true,
           knowledgeBaseId: context.item?.knowledgeBaseId || 0,
-          aiAgentId: context.item?.aiAgentId || 0,
           notifyUrl: context.item?.notifyUrl || CALLBACK_URL,
           proxy: context.item?.proxy || "",
           bridgeId: context.item?.bridgeId || "",
@@ -671,7 +1089,7 @@ export function WxWorkProtocolInstanceManager({
           personaPrompt: context.item?.personaPrompt || "",
           autoAcceptFriendRequest: values.autoAcceptFriendRequest === true,
           autoAcceptFriendRemarkTemplate: String(values.autoAcceptFriendRemarkTemplate || ""),
-          contextMaxMessages: context.item?.contextMaxMessages || 30,
+          contextMaxMessages: context.item?.contextMaxMessages || 15,
           contextMaxTokens: context.item?.contextMaxTokens || 8000,
           contextCompressionEnabled: context.item?.contextCompressionEnabled ?? true,
           status: Number(values.status || Status.Ok),
@@ -710,15 +1128,22 @@ export function WxWorkProtocolInstanceManager({
         deleted: () => "实例已删除",
       }}
     />
-    <AIAgentEditDialog
-      open={Boolean(aiAgentInstance)}
-      saving={aiAgentSaving}
-      itemId={aiAgentInstance?.aiAgentId || null}
-      title={aiAgentInstance ? `智能客服配置：${repairMojibakeText(aiAgentInstance.employeeName) || aiAgentInstance.guid}` : undefined}
+    <StoreAIModelSettingsDialog
+      open={Boolean(modelSettingsInstance)}
+      instance={modelSettingsInstance}
+      settings={modelSettings}
+      aiConfigs={aiConfigs}
+      loading={modelSettingsLoading}
+      saving={modelSettingsSaving}
+      canSave={canUpdateStoreModelSettings}
       onOpenChange={(open) => {
-        if (!open) setAIAgentInstance(null)
+        if (!open) {
+          setModelSettingsInstance(null)
+          setModelSettings([])
+        }
       }}
-      onSubmit={saveAIAgentConfig}
+      onChange={setModelSettings}
+      onSubmit={() => void saveStoreModelSettings()}
     />
     <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
       <DialogContent className="max-w-3xl rounded-3xl p-5">

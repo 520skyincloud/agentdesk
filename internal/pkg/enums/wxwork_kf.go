@@ -30,6 +30,7 @@ const (
 	WxWorkKFMessageSendStatusReceived WxWorkKFMessageSendStatus = "received"
 	WxWorkKFMessageSendStatusSent     WxWorkKFMessageSendStatus = "sent"
 	WxWorkKFMessageSendStatusFailed   WxWorkKFMessageSendStatus = "failed"
+	WxWorkKFMessageSendStatusRecalled WxWorkKFMessageSendStatus = "recalled"
 )
 
 type WxWorkKFSessionStatus string

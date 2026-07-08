@@ -148,6 +148,8 @@ export type AdminMessage = {
   senderId: number
   senderName?: string
   senderAvatar?: string
+  sendSource?: string
+  sendSourceLabel?: string
   messageType: string
   content: string
   payload?: string
@@ -172,6 +174,41 @@ export type AdminQuickReply = {
   status: number
   sortNo: number
   createdBy: number
+}
+
+export type ReplyIntentConfig = {
+  id: number
+  code: string
+  name: string
+  description: string
+  scopeType: string
+  companyId: number
+  storeId: number
+  wxWorkInstanceId: number
+  priority: number
+  matchMode: string
+  keywords: string
+  positiveExamples: string
+  negativeExamples: string
+  requiredContext: string
+  needsKnowledge: boolean
+  needsResource: boolean
+  resourceType: string
+  needsTool: boolean
+  toolCodes: string
+  needsHumanRoute: boolean
+  humanRoutePolicy: string
+  promptPack: string
+  replyPlanTemplate: string
+  validationRules: string
+  noReplyWhenMatched: boolean
+  status: number
+  sortNo: number
+  remark: string
+  createdAt: string
+  updatedAt: string
+  createUserName: string
+  updateUserName: string
 }
 
 export type AdminChannel = {
@@ -236,6 +273,8 @@ export type WxWorkProtocolInstance = {
   employeeUserId: string
   employeeName: string
   employeeAvatar: string
+  companyId: number
+  companyName: string
   storeId: number
   storeCode: string
   storeName: string
@@ -250,10 +289,9 @@ export type WxWorkProtocolInstance = {
   welcomeAskLocation: boolean
   knowledgeBaseId: number
   knowledgeBaseName: string
-  aiAgentId: number
-  aiAgentName: string
-  aiConfigName: string
-  aiAgentConfigured: boolean
+  customerCount: number
+  manualAttentionCount: number
+  urgentManualAttentionCount: number
   notifyUrl: string
   proxy: string
   bridgeId: string
@@ -298,6 +336,10 @@ export type WxWorkProtocolRoomOption = {
 export type WxWorkProtocolRoomMemberOption = {
   userId: string
   name: string
+  displayName?: string
+  realName?: string
+  roomRemark?: string
+  accountId?: string
   avatar: string
   raw?: unknown
 }
@@ -360,7 +402,9 @@ export type CreateWxWorkProtocolInstancePayload = {
   employeeUserId: string
   employeeName: string
   employeeAvatar: string
+  companyId: number
   storeId: number
+  storeName?: string
   storeAddress: string
   storeNavigationName: string
   storeLongitude: string
@@ -371,7 +415,6 @@ export type CreateWxWorkProtocolInstancePayload = {
   welcomeSendMiniProgram: boolean
   welcomeAskLocation: boolean
   knowledgeBaseId: number
-  aiAgentId: number
   notifyUrl: string
   proxy: string
   bridgeId: string
@@ -408,7 +451,9 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   storeRoomNotifyEnabled: boolean
   storeRoomAtList: string
   personaPrompt: string
+  companyId: number
   storeId: number
+  storeName?: string
   storeAddress: string
   storeNavigationName: string
   storeLongitude: string
@@ -419,17 +464,12 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   welcomeSendMiniProgram: boolean
   welcomeAskLocation: boolean
   knowledgeBaseId: number
-  aiAgentId: number
   contextMaxMessages: number
   contextMaxTokens: number
   contextCompressionEnabled: boolean
 }
 
 export type UpdateWxWorkProtocolInstancePayload = CreateWxWorkProtocolInstancePayload & {
-  id: number
-}
-
-export type UpdateWxWorkProtocolAIAgentPayload = CreateAIAgentPayload & {
   id: number
 }
 
@@ -472,6 +512,65 @@ export type AIAgent = {
   updateUserName: string
 }
 
+export type StoreAIModelSetting = {
+  companyId: number
+  storeId: number
+  wxWorkInstanceId: number
+  usageCode: string
+  usageName: string
+  expectedModelType: string
+  aiConfigId: number
+  aiConfigName: string
+  enabled: boolean
+  provider: string
+  baseUrl: string
+  hasApiKey: boolean
+  apiKey?: string
+  apiMode: string
+  modelType: string
+  modelName: string
+  dimension: number
+  maxContextTokens: number
+  maxOutputTokens: number
+  timeoutMs: number
+  maxRetryCount: number
+  rpmLimit: number
+  tpmLimit: number
+  remark: string
+  effectiveAiConfigId: number
+  effectiveModelSettingId: number
+  effectiveAiConfigName: string
+  effectiveModelName: string
+  effectiveProvider: string
+  effectiveBaseUrl: string
+  effectiveModelSource: string
+}
+
+export type UpdateStoreAIModelSettingsPayload = {
+  companyId?: number
+  storeId: number
+  wxWorkInstanceId: number
+  settings: Array<{
+    usageCode: string
+    aiConfigId: number
+    enabled: boolean
+    provider: string
+    baseUrl: string
+    apiKey?: string
+    apiMode: string
+    modelType: string
+    modelName: string
+    dimension: number
+    maxContextTokens: number
+    maxOutputTokens: number
+    timeoutMs: number
+    maxRetryCount: number
+    rpmLimit: number
+    tpmLimit: number
+    remark: string
+  }>
+}
+
 export type CreateAIAgentPayload = {
   name: string
   description: string
@@ -510,6 +609,15 @@ export type CreateAdminQuickReplyPayload = {
 }
 
 export type UpdateAdminQuickReplyPayload = CreateAdminQuickReplyPayload & {
+  id: number
+}
+
+export type CreateReplyIntentConfigPayload = Omit<
+  ReplyIntentConfig,
+  "id" | "createdAt" | "updatedAt" | "createUserName" | "updateUserName"
+>
+
+export type UpdateReplyIntentConfigPayload = CreateReplyIntentConfigPayload & {
   id: number
 }
 
@@ -901,10 +1009,10 @@ export function createWxWorkProtocolInstance(payload: CreateWxWorkProtocolInstan
   })
 }
 
-export function startWxWorkProtocolLogin(channelId?: number) {
+export function startWxWorkProtocolLogin(channelId?: number, companyId?: number) {
   return request<StartWxWorkProtocolLoginResult>("/api/dashboard/wxwork-protocol-instance/start_login", {
     method: "POST",
-    body: JSON.stringify({ channelId: channelId ?? 0 }),
+    body: JSON.stringify({ channelId: channelId ?? 0, companyId: companyId ?? 0 }),
   })
 }
 
@@ -915,10 +1023,10 @@ export function resolveWxWorkProtocolLoginBinding(channelId?: number, guid?: str
   })
 }
 
-export function createWxWorkProtocolRemoteSetup(payload: { channelId?: number; remark?: string }) {
+export function createWxWorkProtocolRemoteSetup(payload: { channelId?: number; companyId?: number; remark?: string }) {
   return request<WxWorkProtocolInstance>("/api/dashboard/wxwork-protocol-instance/create_remote_setup", {
     method: "POST",
-    body: JSON.stringify({ channelId: payload.channelId ?? 0, remark: payload.remark ?? "" }),
+    body: JSON.stringify({ channelId: payload.channelId ?? 0, companyId: payload.companyId ?? 0, remark: payload.remark ?? "" }),
   })
 }
 
@@ -1011,15 +1119,15 @@ export function updateWxWorkProtocolAISettings(payload: UpdateWxWorkProtocolAISe
   })
 }
 
-export function initWxWorkProtocolAIAgent(id: number) {
-  return request<AIAgent>("/api/dashboard/wxwork-protocol-instance/init_ai_agent", {
+export function fetchStoreAIModelSettings(storeId: number, wxWorkInstanceId = 0) {
+  return request<StoreAIModelSetting[]>("/api/dashboard/wxwork-protocol-instance/store_ai_model_settings", {
     method: "POST",
-    body: JSON.stringify({ id }),
+    body: JSON.stringify({ storeId, wxWorkInstanceId }),
   })
 }
 
-export function updateWxWorkProtocolAIAgent(payload: UpdateWxWorkProtocolAIAgentPayload) {
-  return request<AIAgent>("/api/dashboard/wxwork-protocol-instance/update_ai_agent", {
+export function updateStoreAIModelSettings(payload: UpdateStoreAIModelSettingsPayload) {
+  return request<StoreAIModelSetting[]>("/api/dashboard/wxwork-protocol-instance/update_store_ai_model_settings", {
     method: "POST",
     body: JSON.stringify(payload),
   })
@@ -1041,6 +1149,7 @@ export function fetchWxWorkProtocolRemoteSetup(token: string) {
 export function updateWxWorkProtocolRemoteSetup(payload: {
   token: string
   employeeName?: string
+  companyId?: number
   storeId?: number
   storeName?: string
   storeAddress?: string
@@ -1623,6 +1732,37 @@ export function deleteQuickReply(id: number) {
   })
 }
 
+export function fetchReplyIntentConfigs(query?: Record<string, string | number | undefined>) {
+  return request<PageResult<ReplyIntentConfig>>(
+    `/api/dashboard/reply-intent-config/list${toQueryString(query)}`
+  )
+}
+
+export function fetchReplyIntentConfig(id: number) {
+  return request<ReplyIntentConfig>(`/api/dashboard/reply-intent-config/${id}`)
+}
+
+export function createReplyIntentConfig(payload: CreateReplyIntentConfigPayload) {
+  return request<ReplyIntentConfig>("/api/dashboard/reply-intent-config/create", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateReplyIntentConfig(payload: UpdateReplyIntentConfigPayload) {
+  return request<void>("/api/dashboard/reply-intent-config/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteReplyIntentConfig(id: number) {
+  return request<void>("/api/dashboard/reply-intent-config/delete", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  })
+}
+
 export function fetchSkillDefinitions(
   query?: Record<string, string | number | undefined>
 ) {
@@ -1882,6 +2022,7 @@ export type AIConfig = {
   provider: string
   baseUrl: string
   hasApiKey: boolean
+  apiMode: string
   modelType: string
   modelName: string
   dimension: number
@@ -1891,6 +2032,7 @@ export type AIConfig = {
   maxRetryCount: number
   rpmLimit: number
   tpmLimit: number
+  intentDetectEnabled: boolean
   status: number
   sortNo: number
   remark: string
@@ -1901,6 +2043,7 @@ export type CreateAIConfigPayload = {
   provider: string
   baseUrl: string
   apiKey: string
+  apiMode: string
   modelType: string
   modelName: string
   dimension: number
@@ -1910,6 +2053,7 @@ export type CreateAIConfigPayload = {
   maxRetryCount: number
   rpmLimit: number
   tpmLimit: number
+  intentDetectEnabled: boolean
   remark: string
 }
 

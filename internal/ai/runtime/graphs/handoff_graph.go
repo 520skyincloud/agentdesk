@@ -52,20 +52,6 @@ func (g *HandoffGraph) Run(ctx context.Context, argumentsInJSON string) (string,
 		if err != nil {
 			return "", err
 		}
-		requestID := tracex.RequestIDFromContext(ctx)
-		handled, err := services.ConversationService.TryOffHoursHandoffByAIWithRequestID(g.conversation.ID, g.aiAgent, reason, requestID)
-		if err != nil || handled {
-			if handled && err == nil {
-				return tooling.MarshalToolResult(tooling.ToolResult{
-					Handled:     true,
-					Terminal:    true,
-					Action:      "off_hours_handoff",
-					ReplySent:   true,
-					ShouldRetry: false,
-				}), nil
-			}
-			return "", err
-		}
 		info := HandoffGraphInterruptInfo{
 			Type:    InterruptTypeHandoffConfirmation,
 			Message: g.buildConfirmationPrompt(reason),
@@ -136,6 +122,19 @@ func (g *HandoffGraph) buildReason(argumentsInJSON string) (string, error) {
 
 func (g *HandoffGraph) buildConfirmationPrompt(reason string) string {
 	return fmt.Sprintf("我准备为你转接人工客服。\n原因：%s\n请直接回复“确认”或“取消”。", strings.TrimSpace(reason))
+}
+
+func isEmergencySafetyHandoffReason(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return false
+	}
+	for _, keyword := range []string{"emergency_safety", "摔倒", "摔跤", "滑倒", "受伤", "流血", "出血", "骨折", "晕倒", "昏倒", "报警", "120", "安全事故"} {
+		if strings.Contains(reason, strings.ToLower(keyword)) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseHandoffDecision(value string) ConfirmationDecision {

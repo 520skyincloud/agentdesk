@@ -18,8 +18,10 @@ import (
 type fakeKnowledgeContextRetriever struct {
 	knowledgeBaseIDs []int64
 	result           *retrievers.KnowledgeRetrieveResult
+	resultsByQuery   map[string]*retrievers.KnowledgeRetrieveResult
 	err              error
 	called           bool
+	queries          []string
 }
 
 func (r *fakeKnowledgeContextRetriever) KnowledgeBaseIDs() []int64 {
@@ -28,8 +30,14 @@ func (r *fakeKnowledgeContextRetriever) KnowledgeBaseIDs() []int64 {
 
 func (r *fakeKnowledgeContextRetriever) RetrieveContextByOptions(ctx context.Context, opts retrievers.KnowledgeRetrieveOptions, query string) (*retrievers.KnowledgeRetrieveResult, error) {
 	r.called = true
+	r.queries = append(r.queries, query)
 	if r.err != nil {
 		return nil, r.err
+	}
+	if r.resultsByQuery != nil {
+		if result, ok := r.resultsByQuery[query]; ok {
+			return result, nil
+		}
 	}
 	if r.result != nil {
 		return r.result, nil
@@ -38,6 +46,173 @@ func (r *fakeKnowledgeContextRetriever) RetrieveContextByOptions(ctx context.Con
 		KnowledgeBaseIDs: append([]int64(nil), r.knowledgeBaseIDs...),
 		Query:            query,
 	}, nil
+}
+
+func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		resultsByQuery: map[string]*retrievers.KnowledgeRetrieveResult{
+			"能开专票不": {
+				KnowledgeBaseIDs: []int64{1},
+				Hits: []rag.RetrieveResult{
+					{KnowledgeBaseID: 1, ChunkID: 101, Title: "发票", Content: "可以开电子专票，退房后在小程序申请。", Score: 0.95},
+				},
+				ContextResults: []rag.RetrieveResult{
+					{KnowledgeBaseID: 1, ChunkID: 101, Title: "发票", Content: "可以开电子专票，退房后在小程序申请。", Score: 0.95},
+				},
+				ContextText: "可以开电子专票，退房后在小程序申请。",
+				AnswerMode:  enums.KnowledgeAnswerModeStrict,
+			},
+			"WiFi是哪个": {
+				KnowledgeBaseIDs: []int64{1},
+				Hits: []rag.RetrieveResult{
+					{KnowledgeBaseID: 1, ChunkID: 102, Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.93},
+				},
+				ContextResults: []rag.RetrieveResult{
+					{KnowledgeBaseID: 1, ChunkID: 102, Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.93},
+				},
+				ContextText: "WiFi 名称是 LISI，密码看房间桌牌。",
+				AnswerMode:  enums.KnowledgeAnswerModeStrict,
+			},
+		},
+	}
+	gate := newTestKnowledgePolicyGate(retriever)
+	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request: newKnowledgePolicyRunInput("客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\n能开专票不\nWiFi是哪个", "1"),
+		Summary: &RunResult{},
+		Intent:  hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if strings.Join(retriever.queries, "|") != "客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\n能开专票不\nWiFi是哪个" {
+		t.Fatalf("expected one retrieval driven by unified intent, got %#v", retriever.queries)
+	}
+	if state.RetrieveResult == nil {
+		t.Fatalf("expected retrieval result, got nil")
+	}
+}
+
+func TestKnowledgePolicyDoesNotUseHardcodedSupplyFallback(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	gate := newTestKnowledgePolicyGate(retriever)
+	_, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request: newKnowledgePolicyRunInput("能不能送两瓶水到房间", "1"),
+		Summary: &RunResult{},
+		Intent:  hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if !retriever.called {
+		t.Fatal("expected supply request to go through knowledge/runtime path")
+	}
+}
+
+func TestKnowledgePolicyDoesNotLetSupplyFastPathHideMixedKnowledgeQuestions(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		resultsByQuery: map[string]*retrievers.KnowledgeRetrieveResult{
+			"wifi和停车都发我一下": {
+				KnowledgeBaseIDs: []int64{1},
+				Hits: []rag.RetrieveResult{
+					{KnowledgeBaseID: 1, ChunkID: 199, Title: "错域", Content: "在公司介绍模式里，如果用户问早餐、停车这类门店服务，可以先说明这里主要回答公司、品牌、展厅、加盟和AI方案；具体门店服务再由现场工作人员确认。", Score: 0.98},
+					{KnowledgeBaseID: 1, ChunkID: 200, Title: "停车异常", Content: "车辆出场或闸口问题需要门店工作人员协助处理，请联系门店管家或前台。", Score: 0.96},
+					{KnowledgeBaseID: 1, ChunkID: 201, Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.94},
+					{KnowledgeBaseID: 1, ChunkID: 202, Title: "停车", Content: "门店有免费地上停车场。", Score: 0.91},
+				},
+				ContextResults: []rag.RetrieveResult{
+					{KnowledgeBaseID: 1, ChunkID: 199, Title: "错域", Content: "在公司介绍模式里，如果用户问早餐、停车这类门店服务，可以先说明这里主要回答公司、品牌、展厅、加盟和AI方案；具体门店服务再由现场工作人员确认。", Score: 0.98},
+					{KnowledgeBaseID: 1, ChunkID: 200, Title: "停车异常", Content: "车辆出场或闸口问题需要门店工作人员协助处理，请联系门店管家或前台。", Score: 0.96},
+					{KnowledgeBaseID: 1, ChunkID: 201, Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.94},
+					{KnowledgeBaseID: 1, ChunkID: 202, Title: "停车", Content: "门店有免费地上停车场。", Score: 0.91},
+				},
+				ContextText: "WiFi 名称是 LISI，密码看房间桌牌。\n门店有免费地上停车场。",
+				AnswerMode:  enums.KnowledgeAnswerModeStrict,
+			},
+			"房间没纸巾": {
+				KnowledgeBaseIDs: []int64{1},
+				Hits: []rag.RetrieveResult{
+					{KnowledgeBaseID: 1, ChunkID: 203, Title: "用品", Content: "纸巾在1020对面的洗衣房，可以自取。", Score: 0.95},
+				},
+				ContextResults: []rag.RetrieveResult{
+					{KnowledgeBaseID: 1, ChunkID: 203, Title: "用品", Content: "纸巾在1020对面的洗衣房，可以自取。", Score: 0.95},
+				},
+				ContextText: "纸巾在1020对面的洗衣房，可以自取。",
+				AnswerMode:  enums.KnowledgeAnswerModeStrict,
+			},
+		},
+	}
+	gate := newTestKnowledgePolicyGate(retriever)
+	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request: newKnowledgePolicyRunInput("客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\nwifi和停车都发我一下\n房间没纸巾", "1"),
+		Summary: &RunResult{},
+		Intent:  hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if strings.Join(retriever.queries, "|") != "客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\nwifi和停车都发我一下\n房间没纸巾" {
+		t.Fatalf("expected one retrieval driven by unified intent, got %#v", retriever.queries)
+	}
+	if state.RetrieveResult == nil {
+		t.Fatalf("expected retrieval result, got nil")
+	}
+}
+
+func TestKnowledgePolicyUsesFastPathWhenMediaFollowUpHasNoUnderstanding(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	gate := newTestKnowledgePolicyGate(retriever)
+	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request: newKnowledgePolicyRunInput("刚才发的语音你听懂了吗", "1"),
+		Summary: &RunResult{},
+		Intent:  mediaUnderstandingIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if !state.SkipGate {
+		t.Fatal("missing media context should skip knowledge and let the model respond from instruction")
+	}
+	if len(state.Decision.Instructions) == 0 || !strings.Contains(state.Decision.Instructions[0].Content, "媒体上下文状态") {
+		t.Fatalf("expected missing media instruction, got %#v", state.Decision.Instructions)
+	}
+	if retriever.called {
+		t.Fatal("missing media context should not call knowledge retriever")
+	}
+}
+
+func TestKnowledgePolicyKeepsModelPathWhenMediaUnderstandingExists(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	gate := newTestKnowledgePolicyGate(retriever)
+	_, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request: newKnowledgePolicyRunInput("刚才发的语音你听懂了吗", "1"),
+		Summary: &RunResult{},
+		Intent:  mediaUnderstandingIntent(),
+		Messages: []*schema.Message{
+			schema.UserMessage("[语音]\n语音内容是：确认确认"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+}
+
+func TestKnowledgePolicyKeepsModelPathWhenImageUnderstandingExists(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	gate := newTestKnowledgePolicyGate(retriever)
+	req := newKnowledgePolicyRunInput("你看不到我的照片吗", "1")
+	_, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request: req,
+		Summary: &RunResult{},
+		Intent:  mediaUnderstandingIntent(),
+		Messages: []*schema.Message{
+			schema.UserMessage("[图片]\n图片内容是：图片中可见一桌菜、果粒橙和保温桶。"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
 }
 
 func newTestKnowledgePolicyGate(retriever knowledgeContextRetriever) *KnowledgeAnswerabilityGate {
@@ -61,6 +236,22 @@ func newKnowledgePolicyRunInput(content string, knowledgeIDs string) RunInput {
 	}
 }
 
+func hotelInfoIntent() callbacks.IntentTraceData {
+	return callbacks.IntentTraceData{PrimaryIntent: "hotel_info", MatchedIntentCode: "hotel_info", NeedsKnowledge: true, ShouldReply: true}
+}
+
+func socialConfirmIntent() callbacks.IntentTraceData {
+	return callbacks.IntentTraceData{PrimaryIntent: "social_confirm", MatchedIntentCode: "social_confirm", ShouldReply: true}
+}
+
+func mediaUnderstandingIntent() callbacks.IntentTraceData {
+	return callbacks.IntentTraceData{PrimaryIntent: "social_confirm", MatchedIntentCode: "social_confirm", SubIntent: "media_context_follow_up", ShouldReply: true}
+}
+
+func humanRiskIntent() callbacks.IntentTraceData {
+	return callbacks.IntentTraceData{PrimaryIntent: "human_complaint_risk", MatchedIntentCode: "human_complaint_risk", NeedsHumanRoute: true, ShouldReply: true}
+}
+
 func messagesContainContent(messages []*schema.Message, needle string) bool {
 	for _, message := range messages {
 		if message != nil && strings.Contains(message.Content, needle) {
@@ -70,7 +261,7 @@ func messagesContainContent(messages []*schema.Message, needle string) bool {
 	return false
 }
 
-func TestKnowledgePolicyEvaluateSkipsConversationalIntent(t *testing.T) {
+func TestKnowledgePolicyEvaluateUsesDeterministicConversationalReply(t *testing.T) {
 	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
 	collector := callbacks.NewRuntimeTraceCollector()
 	gate := newTestKnowledgePolicyGate(retriever)
@@ -79,12 +270,13 @@ func TestKnowledgePolicyEvaluateSkipsConversationalIntent(t *testing.T) {
 		Request:   newKnowledgePolicyRunInput("你好", "1"),
 		Summary:   &RunResult{},
 		Collector: collector,
+		Intent:    socialConfirmIntent(),
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
 	if !state.SkipGate {
-		t.Fatal("expected conversational intent to skip knowledge gate")
+		t.Fatal("expected conversational intent to skip knowledge and continue to model")
 	}
 	if retriever.called {
 		t.Fatal("expected retriever not to run for conversational intent")
@@ -92,7 +284,7 @@ func TestKnowledgePolicyEvaluateSkipsConversationalIntent(t *testing.T) {
 	if collector.Data.Answerability.Status != answerabilityStatusSkipped {
 		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
 	}
-	if collector.Data.Answerability.Reason != "conversational intent" {
+	if collector.Data.Answerability.Reason != "intent does not require knowledge" {
 		t.Fatalf("unexpected policy reason: %q", collector.Data.Answerability.Reason)
 	}
 }
@@ -109,15 +301,13 @@ func TestKnowledgePolicyEvaluateInjectsNoContextInstructionForKnowledgeQuestion(
 	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
 		Request:   newKnowledgePolicyRunInput("早餐几点", "1"),
 		Summary:   &RunResult{},
+		Intent:    hotelInfoIntent(),
 		Collector: collector,
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
 
-	if state.FallbackReply != "" {
-		t.Fatalf("expected no direct fallback, got %q", state.FallbackReply)
-	}
 	if state.SkipGate {
 		t.Fatal("expected configured knowledge to inject policy, not skip")
 	}
@@ -136,15 +326,85 @@ func TestKnowledgePolicyEvaluateInjectsNoContextInstructionForKnowledgeQuestion(
 	if !strings.Contains(state.Decision.Instructions[0].Content, "不要因为知识库未命中就输出固定兜底话术") {
 		t.Fatalf("expected policy to avoid robotic fallback, got %q", state.Decision.Instructions[0].Content)
 	}
-	if !strings.Contains(state.Decision.Instructions[0].Content, "不要死抄") {
-		t.Fatalf("expected policy to avoid copying fallback literally, got %q", state.Decision.Instructions[0].Content)
+	assertNoFixedFallbackSource(t, state.Decision.Instructions[0].Content)
+	if !strings.Contains(state.Decision.Instructions[0].Content, "WiFi 缺房号就问房号") {
+		t.Fatalf("expected actionable no-context policy, got %q", state.Decision.Instructions[0].Content)
 	}
 	if collector.Data.Answerability.Status != answerabilityStatusNoContext {
 		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
 	}
 }
 
+func TestKnowledgePolicyRetrievesWifiInsteadOfSkippingAsAction(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		result: &retrievers.KnowledgeRetrieveResult{
+			KnowledgeBaseIDs: []int64{1},
+		},
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	gate := newTestKnowledgePolicyGate(retriever)
+
+	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("房间网连不上", "1"),
+		Summary:   &RunResult{},
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.SkipGate {
+		t.Fatal("wifi/network question should retrieve configured knowledge, not skip as an action")
+	}
+	if !retriever.called {
+		t.Fatal("expected wifi/network question to call knowledge retriever")
+	}
+	if got := strings.Join(retriever.queries, "|"); !strings.Contains(got, "房间网连不上") {
+		t.Fatalf("expected original wifi query to be retrieved, got %q", got)
+	}
+	if collector.Data.Answerability.Status != answerabilityStatusNoContext {
+		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
+	}
+	if len(state.Decision.Instructions) != 1 || !strings.Contains(state.Decision.Instructions[0].Content, "WiFi") {
+		t.Fatalf("expected wifi-aware no-context instruction, got %#v", state.Decision.Instructions)
+	}
+}
+
+func assertNoFixedFallbackSource(t *testing.T, content string) {
+	t.Helper()
+	badFragments := []string{
+		"我先记下",
+		"帮你确认下",
+		"帮您确认下",
+		"让同事确认",
+		"稍后让同事跟进",
+		"可参考但不要死抄",
+		"确实无法确认时才短句回复",
+	}
+	for _, bad := range badFragments {
+		if strings.Contains(content, bad) {
+			t.Fatalf("knowledge instruction leaks fixed fallback source %q: %q", bad, content)
+		}
+	}
+}
+
+func TestKnowledgeGuardInstructionsDoNotLeakFixedFallbackSources(t *testing.T) {
+	for name, instruction := range map[string]string{
+		"no_context":      buildKnowledgeNoContextInstruction(),
+		"retrieval_error": buildKnowledgeRetrievalErrorInstruction(),
+		"strict":          buildKnowledgeRuntimeInstruction(enums.KnowledgeAnswerModeStrict),
+		"assist":          buildKnowledgeRuntimeInstruction(enums.KnowledgeAnswerModeAssist),
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertNoFixedFallbackSource(t, instruction)
+		})
+	}
+}
+
 func TestBuildRunMessagesContinuesAgentFlowWhenNoContext(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 200, MatchMode: "keyword", Keywords: "早餐", NeedsKnowledge: true, Status: enums.StatusOk})
 	summary := &RunResult{}
 	gate := newTestKnowledgePolicyGate(&fakeKnowledgeContextRetriever{
 		knowledgeBaseIDs: []int64{1},
@@ -166,21 +426,84 @@ func TestBuildRunMessagesContinuesAgentFlowWhenNoContext(t *testing.T) {
 	}
 }
 
-func TestBuildRunMessagesSkipsNoContextForConversationalIntent(t *testing.T) {
+func TestAppendRetrievedContextKeepsSkippedRuntimeActionInstruction(t *testing.T) {
+	messages := []*schema.Message{schema.SystemMessage("base instruction")}
+	gate := newTestKnowledgePolicyGate(&fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}})
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:     "hotel_variable",
+		MatchedIntentCode: "hotel_variable",
+		SubIntent:         "location",
+		ResourceAction:    "provide_location",
+		NeedsResource:     true,
+		ShouldReply:       true,
+	}
+
+	appendRetrievedContext(context.Background(), newKnowledgePolicyRunInput("发一下酒店定位", ""), intent, &RunResult{}, nil, gate, &messages)
+
+	if !messagesContainContent(messages, "酒店变量-定位/地址") {
+		t.Fatalf("expected hotel variable instruction in messages: %#v", messages)
+	}
+	if !messagesContainContent(messages, "不能说让同事发送") {
+		t.Fatalf("expected anti fake coworker fallback instruction in messages: %#v", messages)
+	}
+}
+
+func TestKnowledgePolicyKeepsHotelVariableInstructionWhenMixedKnowledgeRetrieves(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	gate := newTestKnowledgePolicyGate(&fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		result: &retrievers.KnowledgeRetrieveResult{
+			KnowledgeBaseIDs: []int64{1},
+			Hits: []rag.RetrieveResult{
+				{KnowledgeBaseID: 1, ChunkID: 101, Title: "停车", Content: "停车免费，地上停车场从繁华大道辅路进。", Score: 0.91},
+			},
+			ContextResults: []rag.RetrieveResult{
+				{KnowledgeBaseID: 1, ChunkID: 101, Title: "停车", Content: "停车免费，地上停车场从繁华大道辅路进。", Score: 0.91},
+			},
+			ContextText: "停车免费，地上停车场从繁华大道辅路进。",
+			AnswerMode:  enums.KnowledgeAnswerModeStrict,
+		},
+	})
+	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("定位和入住小程序都发我，顺便问下停车", "1"),
+		Summary:   &RunResult{},
+		Collector: collector,
+		Intent: callbacks.IntentTraceData{
+			PrimaryIntent:     "hotel_variable",
+			MatchedIntentCode: "hotel_variable",
+			SubIntent:         "location",
+			ResourceAction:    "provide_location",
+			NeedsResource:     true,
+			NeedsKnowledge:    true,
+			ShouldReply:       true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.SkipGate {
+		t.Fatalf("expected mixed variable+knowledge to retrieve, got skip")
+	}
+	if len(state.Decision.Instructions) < 2 {
+		t.Fatalf("expected variable and knowledge instructions, got %#v", state.Decision.Instructions)
+	}
+	if !strings.Contains(state.Decision.Instructions[0].Content, "酒店变量-定位/地址") || !strings.Contains(state.Decision.Instructions[0].Content, "酒店变量-入住小程序") {
+		t.Fatalf("expected mixed variable instruction first, got %#v", state.Decision.Instructions)
+	}
+	if !strings.Contains(state.Decision.Instructions[1].Content, "知识库回答约束") {
+		t.Fatalf("expected knowledge instruction after variable instruction, got %#v", state.Decision.Instructions)
+	}
+}
+
+func TestBuildRunMessagesUsesDeterministicReplyForAmbiguousConfirm(t *testing.T) {
 	summary := &RunResult{}
 	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
 	gate := newTestKnowledgePolicyGate(retriever)
 
-	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("确认确认", "1"), summary, nil, gate)
+	_ = buildRunMessages(context.Background(), newKnowledgePolicyRunInput("确认确认", "1"), summary, nil, gate)
 
 	if summary.ReplyText != "" {
-		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
-	}
-	if messagesContainContent(messages, "当前没有从知识库检索到可用资料") {
-		t.Fatalf("did not expect no-context instruction for conversational intent: %#v", messages)
-	}
-	if !messagesContainContent(messages, "确认确认") {
-		t.Fatalf("expected current user message to remain in messages: %#v", messages)
+		t.Fatalf("expected model-generated confirm reply, got fixed reply %q", summary.ReplyText)
 	}
 	if retriever.called {
 		t.Fatal("expected retriever not to run")
@@ -203,18 +526,17 @@ func TestKnowledgePolicyEvaluateDoesNotFallbackWhenHitsHaveNoContextText(t *test
 		Request:   newKnowledgePolicyRunInput("你能干啥啊", "1"),
 		Summary:   &RunResult{},
 		Collector: collector,
+		Intent:    hotelInfoIntent(),
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
-	if state.FallbackReply != "" {
-		t.Fatalf("expected no direct fallback for weak hit, got %q", state.FallbackReply)
-	}
 	if len(state.Decision.Instructions) != 1 {
 		t.Fatalf("expected one no-context instruction, got %d", len(state.Decision.Instructions))
 	}
-	if !strings.Contains(state.Decision.Instructions[0].Content, "先判断用户意图") {
-		t.Fatalf("expected intent-first no-context policy, got %q", state.Decision.Instructions[0].Content)
+	assertNoFixedFallbackSource(t, state.Decision.Instructions[0].Content)
+	if !strings.Contains(state.Decision.Instructions[0].Content, "回复运行时决策") {
+		t.Fatalf("expected runtime-engine no-context policy, got %q", state.Decision.Instructions[0].Content)
 	}
 }
 
@@ -225,28 +547,26 @@ func TestKnowledgePolicyEvaluateInjectsGroundedInstructionAndContext(t *testing.
 		result: &retrievers.KnowledgeRetrieveResult{
 			KnowledgeBaseIDs: []int64{1},
 			Hits: []rag.RetrieveResult{
-				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "退款规则：订单发货前可以申请退款。", Score: 0.91},
+				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "早餐时间是 7:00-9:30。", Score: 0.91},
 			},
 			ContextResults: []rag.RetrieveResult{
-				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "退款规则：订单发货前可以申请退款。", Score: 0.91},
+				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "早餐时间是 7:00-9:30。", Score: 0.91},
 			},
-			ContextText: "知识库片段：退款规则：订单发货前可以申请退款。",
+			ContextText: "知识库片段：早餐时间是 7:00-9:30。",
 			AnswerMode:  enums.KnowledgeAnswerModeStrict,
 		},
 	})
 
 	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
-		Request:   newKnowledgePolicyRunInput("怎么退款", "1"),
+		Request:   newKnowledgePolicyRunInput("早餐几点", "1"),
 		Summary:   &RunResult{},
+		Intent:    hotelInfoIntent(),
 		Collector: collector,
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
 
-	if state.FallbackReply != "" {
-		t.Fatalf("expected no direct fallback, got %q", state.FallbackReply)
-	}
 	if len(state.Decision.Instructions) != 1 {
 		t.Fatalf("expected one grounded instruction, got %d", len(state.Decision.Instructions))
 	}
@@ -259,20 +579,22 @@ func TestKnowledgePolicyEvaluateInjectsGroundedInstructionAndContext(t *testing.
 }
 
 func TestBuildRunMessagesInjectsRetrievedContextWhenHasContext(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 200, MatchMode: "keyword", Keywords: "早餐", NeedsKnowledge: true, Status: enums.StatusOk})
 	summary := &RunResult{}
 	gate := newTestKnowledgePolicyGate(&fakeKnowledgeContextRetriever{
 		knowledgeBaseIDs: []int64{1},
 		result: &retrievers.KnowledgeRetrieveResult{
 			KnowledgeBaseIDs: []int64{1},
 			Hits: []rag.RetrieveResult{
-				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "退款规则：订单发货前可以申请退款。", Score: 0.91},
+				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "早餐时间是 7:00-9:30。", Score: 0.91},
 			},
-			ContextText: "知识库片段：退款规则：订单发货前可以申请退款。",
+			ContextText: "知识库片段：早餐时间是 7:00-9:30。",
 			AnswerMode:  enums.KnowledgeAnswerModeStrict,
 		},
 	})
 
-	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("怎么退款", "1"), summary, nil, gate)
+	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("早餐几点", "1"), summary, nil, gate)
 
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no fallback, got %q", summary.ReplyText)
@@ -280,11 +602,38 @@ func TestBuildRunMessagesInjectsRetrievedContextWhenHasContext(t *testing.T) {
 	if !messagesContainContent(messages, "知识库回答约束") {
 		t.Fatalf("expected knowledge instruction in messages: %#v", messages)
 	}
-	if !messagesContainContent(messages, "退款规则") {
+	if !messagesContainContent(messages, "早餐时间") {
 		t.Fatalf("expected retrieved context in messages: %#v", messages)
 	}
-	if !messagesContainContent(messages, "怎么退款") {
+	if !messagesContainContent(messages, "早餐几点") {
 		t.Fatalf("expected current user message in messages: %#v", messages)
+	}
+}
+
+func TestKnowledgePolicyUsesRuntimeFallbackForHumanDecision(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	gate := newTestKnowledgePolicyGate(retriever)
+
+	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("怎么退款", "1"),
+		Collector: collector,
+		Intent:    humanRiskIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if !state.SkipGate {
+		t.Fatal("refund should skip knowledge and let the model respond from action instruction")
+	}
+	if len(state.Decision.Instructions) == 0 || !strings.Contains(state.Decision.Instructions[0].Content, "人工/投诉/风险") {
+		t.Fatalf("expected human decision instruction, got %#v", state.Decision.Instructions)
+	}
+	if retriever.called {
+		t.Fatal("refund should not let the model answer from knowledge directly")
+	}
+	if collector.Data.Answerability.Reason != "intent does not require knowledge" {
+		t.Fatalf("unexpected reason: %q", collector.Data.Answerability.Reason)
 	}
 }
 
@@ -296,13 +645,14 @@ func TestKnowledgePolicyEvaluateSkipsWhenNoKnowledgeConfigured(t *testing.T) {
 	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
 		Request:   newKnowledgePolicyRunInput("你好", ""),
 		Collector: collector,
+		Intent:    socialConfirmIntent(),
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
 
 	if !state.SkipGate {
-		t.Fatal("expected skip without knowledge")
+		t.Fatal("expected conversational intent to skip knowledge and continue to model")
 	}
 	if retriever.called {
 		t.Fatal("expected retriever not to run without configured knowledge")
@@ -312,7 +662,7 @@ func TestKnowledgePolicyEvaluateSkipsWhenNoKnowledgeConfigured(t *testing.T) {
 	}
 }
 
-func TestKnowledgePolicyEvaluateSkipsRuntimeActionIntent(t *testing.T) {
+func TestKnowledgePolicyEvaluateUsesRuntimeActionFallback(t *testing.T) {
 	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
 	collector := callbacks.NewRuntimeTraceCollector()
 	gate := newTestKnowledgePolicyGate(retriever)
@@ -320,13 +670,17 @@ func TestKnowledgePolicyEvaluateSkipsRuntimeActionIntent(t *testing.T) {
 	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
 		Request:   newKnowledgePolicyRunInput("帮我转人工", "1"),
 		Collector: collector,
+		Intent:    humanRiskIntent(),
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
 
 	if !state.SkipGate {
-		t.Fatal("expected runtime action to skip knowledge policy")
+		t.Fatal("expected runtime action to skip knowledge and continue to model")
+	}
+	if len(state.Decision.Instructions) == 0 || !strings.Contains(state.Decision.Instructions[0].Content, "人工/投诉/风险") {
+		t.Fatalf("expected handoff instruction, got %#v", state.Decision.Instructions)
 	}
 	if retriever.called {
 		t.Fatal("expected retriever not to run for runtime action")
@@ -344,16 +698,14 @@ func TestKnowledgePolicyEvaluateInjectsRetrievalErrorInstructionWithoutFallback(
 	})
 
 	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
-		Request:   newKnowledgePolicyRunInput("怎么退款", "1"),
+		Request:   newKnowledgePolicyRunInput("早餐几点", "1"),
 		Collector: collector,
+		Intent:    hotelInfoIntent(),
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
 
-	if state.FallbackReply != "" {
-		t.Fatalf("expected no direct fallback on retrieval error, got %q", state.FallbackReply)
-	}
 	if len(state.Decision.Instructions) != 1 {
 		t.Fatalf("expected one retrieval-error instruction, got %d", len(state.Decision.Instructions))
 	}
@@ -369,6 +721,8 @@ func TestKnowledgePolicyEvaluateInjectsRetrievalErrorInstructionWithoutFallback(
 }
 
 func TestBuildRunMessagesContinuesAgentFlowWhenRetrievalFails(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 200, MatchMode: "keyword", Keywords: "早餐", NeedsKnowledge: true, Status: enums.StatusOk})
 	summary := &RunResult{}
 	gate := newTestKnowledgePolicyGate(&fakeKnowledgeContextRetriever{
 		knowledgeBaseIDs: []int64{1},

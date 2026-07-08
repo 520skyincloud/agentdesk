@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-desk/internal/ai"
 	"agent-desk/internal/events"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
@@ -14,6 +15,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/eventbus"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -182,7 +184,7 @@ func (s *conversationHumanDispatchService) shouldRouteToStoreRoom(runtime StoreS
 		return true
 	default:
 		if strings.TrimSpace(runtime.ServiceHours) == "" {
-			return hasActiveTeamSchedule
+			return true
 		}
 		return isWithinStoreServiceHours(runtime.ServiceHours, now)
 	}
@@ -298,7 +300,7 @@ func (s *conversationHumanDispatchService) dispatchAfterHandoffWithRequestID(con
 func (s *conversationHumanDispatchService) markStoreRoomHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) error {
 	now := time.Now()
 	trimmedReason := strings.TrimSpace(reason)
-	if err := s.recordHandoff(conversationID, aiAgent, trimmedReason, requestID, now); err != nil {
+	if err := s.recordStoreRoomHandoff(conversationID, aiAgent, trimmedReason, requestID, now); err != nil {
 		return err
 	}
 	if _, err := ConversationRouteService.EnterStoreWecomManual(conversationID, trimmedReason, now); err != nil {
@@ -307,6 +309,29 @@ func (s *conversationHumanDispatchService) markStoreRoomHandoff(conversationID i
 	_ = s.markManualHandoffRequested(conversationID, now)
 	s.notifyStoreRoomHandoff(conversationID, trimmedReason)
 	return nil
+}
+
+func (s *conversationHumanDispatchService) recordStoreRoomHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, now time.Time) error {
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		conversation := repositories.ConversationRepository.Get(ctx.Tx, conversationID)
+		if conversation == nil {
+			return errorsx.InvalidParam("会话不存在")
+		}
+		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
+			"handoff_at":       now,
+			"handoff_reason":   strings.TrimSpace(reason),
+			"update_user_id":   0,
+			"update_user_name": aiAgent.Name,
+			"updated_at":       now,
+		}); err != nil {
+			return err
+		}
+		return ConversationEventLogService.CreateEventWithRequestID(ctx, conversationID, requestID, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, aiAgent.ID, "AI通知门店群跟进", ConversationService.buildEventPayload(map[string]any{
+			"status":   conversation.Status,
+			"decision": string(HandoffDecisionStoreWecom),
+			"reason":   strings.TrimSpace(reason),
+		}))
+	})
 }
 
 func (s *conversationHumanDispatchService) markHQAgentDeskHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) error {
@@ -477,29 +502,210 @@ func (s *conversationHumanDispatchService) notifyStoreRoomHandoff(conversationID
 	if !s.storeRoomConfigured(runtime) {
 		return
 	}
-	content := s.buildStoreRoomHandoffNotice(conversation, instance, reason)
+	content := s.buildStoreRoomHandoffNotice(conversation, reason)
 	atList := uniqueNonBlankStrings(strings.Split(runtime.StoreRoomAtList, ","))
 	if err := ChannelMessageOutboxService.EnqueueWxWorkProtocolStoreRoomNotice(conversationID, instance.ID, runtime.StoreRoomConversationID, content, atList); err != nil {
 		slog.Warn("enqueue store room handoff notice failed", "conversation_id", conversationID, "wx_work_instance_id", instance.ID, "error", err)
 	}
 }
 
-func (s *conversationHumanDispatchService) buildStoreRoomHandoffNotice(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, reason string) string {
+func (s *conversationHumanDispatchService) buildStoreRoomHandoffNotice(conversation *models.Conversation, reason string) string {
 	lines := []string{"有客人需要人工接待"}
 	if name := strings.TrimSpace(conversation.CustomerName); name != "" {
 		lines = append(lines, "客户："+name)
 	}
-	if storeName := strings.TrimSpace(instance.StoreNavigationName); storeName != "" {
-		lines = append(lines, "门店："+storeName)
-	}
-	if summary := strings.TrimSpace(ConversationService.BuildConversationSummary(conversation)); summary != "" {
+	if summary := strings.TrimSpace(s.buildHandoffConversationSummary(conversation, reason)); summary != "" {
 		lines = append(lines, "摘要："+summary)
 	}
-	if trimmedReason := strings.TrimSpace(reason); trimmedReason != "" {
+	if trimmedReason := strings.TrimSpace(cleanHandoffNoticeReason(reason)); trimmedReason != "" {
 		lines = append(lines, "原因："+trimmedReason)
 	}
-	lines = append(lines, fmt.Sprintf("会话ID：%d", conversation.ID))
+	lines = append(lines, fmt.Sprintf("后台：/dashboard/conversations?conversationId=%d", conversation.ID))
 	return strings.Join(lines, "\n")
+}
+
+type handoffSummaryItem struct {
+	Speaker string
+	Text    string
+}
+
+func (s *conversationHumanDispatchService) buildHandoffConversationSummary(conversation *models.Conversation, reason string) string {
+	if conversation == nil || conversation.ID <= 0 {
+		return ""
+	}
+	items := s.collectHandoffSummaryItems(conversation.ID)
+	if summary := s.buildAIHandoffConversationSummary(conversation, reason, items); summary != "" {
+		return summary
+	}
+	if summary := buildFallbackHandoffConversationSummary(reason, items); summary != "" {
+		return summary
+	}
+	return limitText(ConversationService.BuildConversationSummary(conversation), 180)
+}
+
+func (s *conversationHumanDispatchService) collectHandoffSummaryItems(conversationID int64) []handoffSummaryItem {
+	messages, _, _ := MessageService.FindByConversationIDCursor(conversationID, 0, 12, "", "")
+	parts := make([]handoffSummaryItem, 0, len(messages))
+	seen := make(map[string]bool)
+	for _, message := range messages {
+		if message.SenderType == enums.IMSenderTypeAI {
+			continue
+		}
+		text := handoffMessageSummary(message)
+		if text == "" || shouldSkipHandoffSummaryText(text) || isConsumedHandoffConfirmationMessage(message) || isLegacyHandoffConfirmationSummaryText(text) {
+			continue
+		}
+		key := fmt.Sprintf("%s:%s", message.SenderType, text)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		switch message.SenderType {
+		case enums.IMSenderTypeCustomer:
+			parts = append(parts, handoffSummaryItem{Speaker: "客人", Text: text})
+		case enums.IMSenderTypeAgent:
+			parts = append(parts, handoffSummaryItem{Speaker: "人工", Text: text})
+		}
+	}
+	return parts
+}
+
+func (s *conversationHumanDispatchService) buildAIHandoffConversationSummary(conversation *models.Conversation, reason string, items []handoffSummaryItem) string {
+	if conversation == nil || (strings.TrimSpace(reason) == "" && len(items) == 0) {
+		return ""
+	}
+	config, ok := s.resolveHandoffSummaryAIConfig(conversation)
+	if !ok {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	result, err := ai.LLM.ChatWithConfig(ctx, config,
+		"你是酒店门店值班群通知摘要助手。只输出一句中文摘要，给门店同事快速判断要处理什么。不要输出内部意图code、JSON、工具名、门店名称、会话ID；不要逐条复述聊天记录；不要说“AI”。",
+		buildHandoffSummaryPrompt(reason, items),
+	)
+	if err != nil {
+		slog.Warn("build ai handoff summary failed", "conversation_id", conversation.ID, "error", err)
+		return ""
+	}
+	return cleanHandoffAISummary(result.Content)
+}
+
+func (s *conversationHumanDispatchService) resolveHandoffSummaryAIConfig(conversation *models.Conversation) (models.AIConfig, bool) {
+	if conversation != nil {
+		if resolved, err := StoreAIModelSettingService.ResolveForConversation(conversation.ID, StoreAIModelUsageReplyLLM, 0); err == nil && resolved != nil {
+			return resolved.Config, true
+		}
+	}
+	if config, err := ai.GetEnabledAIConfig(enums.AIModelTypeLLM); err == nil && config != nil {
+		return *config, true
+	}
+	return models.AIConfig{}, false
+}
+
+func buildHandoffSummaryPrompt(reason string, items []handoffSummaryItem) string {
+	lines := make([]string, 0, len(items)+2)
+	if cleaned := cleanHandoffNoticeReason(reason); cleaned != "" {
+		lines = append(lines, "转人工原因："+cleaned)
+	}
+	if len(items) > 0 {
+		lines = append(lines, "近期有效对话：")
+		for _, item := range items {
+			lines = append(lines, item.Speaker+"："+item.Text)
+		}
+	}
+	lines = append(lines, "请输出一句 40 字以内摘要，必须是自然中文。")
+	return strings.Join(lines, "\n")
+}
+
+func buildFallbackHandoffConversationSummary(reason string, items []handoffSummaryItem) string {
+	if len(items) > 0 {
+		lastCustomer := ""
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].Speaker == "客人" && strings.TrimSpace(items[i].Text) != "" {
+				lastCustomer = items[i].Text
+				break
+			}
+		}
+		if lastCustomer != "" {
+			if isSafetyHandoffReason(reason + " " + lastCustomer) {
+				return limitText("客人表示遇到安全或突发情况，需要门店同事确认位置和具体情况。", 120)
+			}
+			return limitText("客人需要人工跟进："+lastCustomer, 120)
+		}
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			parts = append(parts, item.Speaker+"："+item.Text)
+		}
+		return limitText(strings.Join(parts, "；"), 160)
+	}
+	return ""
+}
+
+func cleanHandoffAISummary(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "\"“”'` \n\t")
+	value = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(value)
+	value = cleanHumanHandoffReason(value)
+	return limitText(value, 120)
+}
+
+func cleanHandoffNoticeReason(value string) string {
+	value = cleanHumanHandoffReason(value)
+	if value == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(value, "客户消息："); idx >= 0 {
+		message := strings.TrimSpace(value[idx+len("客户消息："):])
+		if message != "" {
+			if isSafetyHandoffReason(value) {
+				return limitText("安全/突发情况："+message, 120)
+			}
+			return limitText(message, 120)
+		}
+	}
+	if isSafetyHandoffReason(value) {
+		return limitText("安全/突发情况："+strings.TrimPrefix(value, "客人遇到安全或突发情况，需要门店同事尽快关注；"), 120)
+	}
+	return limitText(value, 120)
+}
+
+func shouldSkipHandoffSummaryText(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return true
+	}
+	for _, value := range []string{
+		HandoffWaitingMessage,
+		HandoffOffHoursMessage,
+		HandoffStoreManualMessage,
+		"请直接回复“确认”或“取消”",
+		"请回复“确认”或“取消”",
+		"我准备为你转接人工客服",
+		"要我帮您转人工吗",
+		"要我现在通知门店同事吗",
+	} {
+		if strings.Contains(text, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func handoffMessageSummary(message models.Message) string {
+	text := strings.TrimSpace(message.Content)
+	if message.MessageType == enums.IMMessageTypeHTML {
+		text = strings.TrimSpace(utils.BuildHTMLSummary(text))
+	}
+	if text == "" && strings.TrimSpace(message.Payload) != "" {
+		mediaText, mediaSummary, _ := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
+		text = strings.TrimSpace(strings.Join([]string{mediaText, mediaSummary}, " "))
+	}
+	if text == "" {
+		text = buildMessageSummary(message.MessageType, message.Content)
+	}
+	text = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(text)
+	return limitText(strings.Join(strings.Fields(text), " "), 80)
 }
 
 func (s *conversationHumanDispatchService) createEvent(conversationID int64, eventType enums.IMEventType, senderType enums.IMSenderType, senderID int64, content, payload string) error {

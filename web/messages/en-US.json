@@ -365,8 +365,10 @@
     "claimHandoff": "Take over",
     "manualHandoffPending": "Needs HQ takeover",
     "manualHandoffServing": "HQ handling",
+    "storeWecomManual": "Store group follow-up",
     "manualHandoffPendingNotice": "This conversation has requested human support and is waiting for HQ takeover.",
     "manualHandoffServingNotice": "HQ is handling this conversation. Replies are sent through the original store WeCom employee account.",
+    "storeWecomManualNotice": "The store group has been notified. AI will keep replying when the employee account AI switch is on, and the web console can also follow up directly.",
     "manualHandoffToastTitle": "New human handoff request",
     "openConversation": "Open conversation",
     "storeUnknown": "Unknown store"
@@ -2315,6 +2317,7 @@
     "permissions": "Permissions",
     "storageSettings": "Storage Settings",
     "wxworkDevicePool": "Instance Pool",
+    "replyIntentConfigs": "Intent Classes",
     "dashboardHome": "Dashboard",
     "notifications": "Notifications",
     "changePassword": "Change Password",

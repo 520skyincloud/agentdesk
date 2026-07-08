@@ -107,6 +107,14 @@ func TestBuildRuntimeMessageTextWithPayloadKeepsMediaUnderstandingInContext(t *t
 	}
 }
 
+func TestBuildRuntimeMessageTextWithPayloadDropsUntranscribedVoice(t *testing.T) {
+	payload := `{"filename":"wx_protocol_1003228.mp3","mediaUnderstandingStatus":"failed"}`
+	got := BuildRuntimeMessageTextWithPayload(enums.IMMessageTypeVoice, "wx_protocol_1003228.mp3", payload)
+	if got != "" {
+		t.Fatalf("expected failed voice to be hidden from runtime context, got: %q", got)
+	}
+}
+
 func TestBuildRenderableMessageTransformsPayloadAndHTML(t *testing.T) {
 	config.SetCurrent(&config.Config{
 		Storage: config.StorageConfig{

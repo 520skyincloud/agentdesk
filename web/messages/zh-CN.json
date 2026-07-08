@@ -365,8 +365,10 @@
     "claimHandoff": "接管",
     "manualHandoffPending": "待总部接管",
     "manualHandoffServing": "总部接待中",
+    "storeWecomManual": "门店群跟进",
     "manualHandoffPendingNotice": "该会话已触发转人工，等待总部网页端客服接管。",
     "manualHandoffServingNotice": "该会话正由总部网页端客服接待，消息会从原门店企微员工号发出。",
+    "storeWecomManualNotice": "该会话已通知门店群跟进；员工号 AI 回复开启时会继续自动回复，网页端也可直接跟进。",
     "manualHandoffToastTitle": "新的转人工请求",
     "openConversation": "打开会话",
     "storeUnknown": "未知门店"
@@ -2315,6 +2317,7 @@
     "permissions": "权限管理",
     "storageSettings": "存储设置",
     "wxworkDevicePool": "实例池",
+    "replyIntentConfigs": "意图分类",
     "dashboardHome": "后台总览",
     "notifications": "通知中心",
     "changePassword": "修改密码",

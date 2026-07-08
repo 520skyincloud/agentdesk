@@ -1,5 +1,4 @@
 import type { Metadata } from "next"
-import { Geist, Geist_Mono } from "next/font/google"
 
 import { AuthProvider } from "@/components/auth-provider"
 import { ConfirmProvider } from "@/components/confirm-provider"
@@ -12,16 +11,6 @@ import { AppI18nProvider } from "@/i18n/provider"
 import "@/app/globals.css"
 import "md-editor-rt/lib/style.css"
 import "@/styles/main.scss"
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-})
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-})
 
 const paletteScript = `
 try {
@@ -44,9 +33,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" suppressHydrationWarning>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className="antialiased">
         <script dangerouslySetInnerHTML={{ __html: paletteScript }} />
         <AppI18nProvider>
           <ThemeProvider>

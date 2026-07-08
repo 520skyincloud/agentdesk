@@ -611,7 +611,20 @@ function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProp
 
 function SmartReplySection({ conversation }: { conversation: AgentConversation }) {
   const aiServing = !conversation.routeStatus || conversation.routeStatus === "AI_SERVING";
-  const humanPending = Boolean(conversation.needHumanFollowUp);
+  const manualAttention = conversation.manualAttention;
+  const manualStatus =
+    manualAttention && manualAttention.level !== "none"
+      ? manualAttention.label
+      : conversation.needHumanFollowUp
+        ? "待人工跟进"
+        : "无待处理请求";
+  const manualExpireAt = manualAttention?.expiresAt || conversation.manualExpireAt || "";
+  const manualExpireText =
+    manualExpireAt
+      ? `${formatDateTime(manualExpireAt)} 前无新人工动作将恢复AI`
+      : manualAttention?.level === "serving"
+        ? "默认10分钟无新客户消息恢复AI"
+        : "-";
 
   return (
     <section className="agentdesk-subtle-surface space-y-2 rounded-xl p-3">
@@ -621,8 +634,8 @@ function SmartReplySection({ conversation }: { conversation: AgentConversation }
         <DetailRow label="员工号" value={repairMojibakeText(conversation.wxWorkEmployeeName) || conversation.wxWorkEmployeeUserId || ""} />
         <DetailRow label="门店" value={repairMojibakeText(conversation.storeName) || (conversation.storeId ? `${conversation.storeId}` : "")} />
         <DetailRow label="AI托管" value={aiServing ? "已开启" : "人工接待中，AI停答"} />
-        <DetailRow label="转人工" value={humanPending ? "待处理，列表已标记" : "无待处理请求"} />
-        <DetailRow label="人工超时" value={conversation.manualExpireAt ? formatDateTime(conversation.manualExpireAt) : "默认10分钟无新客户消息恢复AI"} />
+        <DetailRow label="转人工" value={manualStatus} />
+        <DetailRow label="人工超时" value={manualExpireText} />
       </div>
     </section>
   );

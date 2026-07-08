@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -33,15 +34,19 @@ func (s *aiReplyService) resolveReplyTimeout(aiAgent models.AIAgent) time.Durati
 
 func (s *aiReplyService) TriggerReplyAsync(conversation models.Conversation, message models.Message) {
 	go func() {
-		aiAgent := svc.AIAgentService.Get(conversation.AIAgentID)
-		if aiAgent == nil || aiAgent.Status != enums.StatusOk {
+		if sqls.DB() == nil {
+			slog.Warn("skip async ai reply because database is not initialized", "conversation_id", conversation.ID, "message_id", message.ID)
+			return
+		}
+		aiAgent, ok := s.resolveRuntimeAIAgent(conversation)
+		if !ok || aiAgent.Status != enums.StatusOk {
 			return
 		}
 		startedAt := time.Now()
-		timeout := s.resolveReplyTimeout(*aiAgent)
+		timeout := s.resolveReplyTimeout(aiAgent)
 		ctx, cancel := context.WithTimeout(tracex.ContextWithRequestID(context.Background(), message.RequestID), timeout)
 		defer cancel()
-		if err := s.TriggerReply(ctx, conversation, message, *aiAgent); err != nil {
+		if err := s.TriggerReply(ctx, conversation, message, aiAgent); err != nil {
 			slog.Error("failed to trigger ai reply",
 				"requestId", message.RequestID,
 				"message_id", message.ID,
@@ -50,6 +55,17 @@ func (s *aiReplyService) TriggerReplyAsync(conversation models.Conversation, mes
 				"error", err)
 		}
 	}()
+}
+
+func (s *aiReplyService) resolveRuntimeAIAgent(conversation models.Conversation) (models.AIAgent, bool) {
+	if aiAgent, ok := svc.WxWorkProtocolInstanceService.BuildRuntimeAIAgentForConversation(conversation.ID); ok {
+		return aiAgent, true
+	}
+	aiAgent := svc.AIAgentService.Get(conversation.AIAgentID)
+	if aiAgent == nil {
+		return models.AIAgent{}, false
+	}
+	return *aiAgent, true
 }
 
 func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.Conversation, message models.Message, aiAgent models.AIAgent) (retErr error) {
@@ -67,8 +83,10 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 		return err
 	}
 	settleStartedAt := time.Now()
-	if !s.waitForConversationToSettle(ctx, conversation.ID, message.ID) {
+	settled, waitReason := s.waitForConversationToSettle(ctx, conversation.ID, message.ID)
+	if !settled {
 		trace.SettleMs = time.Since(settleStartedAt).Milliseconds()
+		trace.Status = waitReason
 		return nil
 	}
 	trace.SettleMs = time.Since(settleStartedAt).Milliseconds()
@@ -95,35 +113,36 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 	return s.executeReply(ctx, replyCtx)
 }
 
-func (s *aiReplyService) waitForConversationToSettle(ctx context.Context, conversationID int64, messageID int64) bool {
+func (s *aiReplyService) waitForConversationToSettle(ctx context.Context, conversationID int64, messageID int64) (bool, string) {
 	if conversationID <= 0 || messageID <= 0 {
-		return true
+		return true, ""
 	}
 	if !sleepWithContext(ctx, aiReplyDebounceWindow) {
-		return false
+		return false, "context_cancelled"
 	}
 	if !s.isStillLatestCustomerMessage(conversationID, messageID) {
 		slog.Info("skip ai reply because newer customer message arrived during debounce", "conversation_id", conversationID, "message_id", messageID)
-		return false
+		return false, "newer_customer_message"
 	}
 	current := svc.MessageService.Get(messageID)
 	if current == nil || !shouldWaitForRecentMediaUnderstanding(*current) {
-		return true
+		return true, ""
 	}
 	deadline := time.Now().Add(aiReplyMediaSettleWindow)
 	for time.Now().Before(deadline) {
 		if !hasRecentPendingMediaUnderstanding(conversationID, messageID, aiReplyMediaContextWindow) {
-			return true
+			return true, ""
 		}
 		if !sleepWithContext(ctx, 250*time.Millisecond) {
-			return false
+			return false, "context_cancelled"
 		}
 		if !s.isStillLatestCustomerMessage(conversationID, messageID) {
 			slog.Info("skip ai reply because newer customer message arrived while waiting media", "conversation_id", conversationID, "message_id", messageID)
-			return false
+			return false, "newer_customer_message"
 		}
 	}
-	return true
+	slog.Info("defer ai reply because recent media understanding is still pending", "conversation_id", conversationID, "message_id", messageID)
+	return false, "waiting_media_understanding"
 }
 
 func shouldWaitForRecentMediaUnderstanding(message models.Message) bool {
@@ -138,8 +157,8 @@ func shouldWaitForRecentMediaUnderstanding(message models.Message) bool {
 	if isClearlyIndependentText(compact) {
 		return false
 	}
-	mediaNeedles := []string{"图片", "照片", "图里", "图上", "这图", "截图", "语音", "听下", "文件", "附件", "表格", "pdf", "word", "这个", "这个东西", "这是什么", "这是啥", "看下", "帮我看", "识别"}
-	questionNeedles := []string{"什么", "啥", "哪", "怎么", "多少", "多少钱", "贵吗", "是不是", "能不能", "能用吗", "能买吗", "可以吗", "对吗", "什么意思", "帮", "看", "听", "识别"}
+	mediaNeedles := []string{"图片", "照片", "图里", "图上", "这图", "截图", "语音", "听下", "文件", "附件", "表格", "pdf", "word", "这个", "这个东西", "这是什么", "这是啥", "这是干嘛", "这是干啥", "看下", "帮我看", "识别"}
+	questionNeedles := []string{"什么", "啥", "哪", "怎么", "干嘛", "干啥", "多少", "多少钱", "贵吗", "是不是", "能不能", "能用吗", "能买吗", "可以吗", "对吗", "什么意思", "帮", "看", "听", "识别"}
 	if containsAnyText(compact, mediaNeedles) && containsAnyText(compact, questionNeedles) {
 		return true
 	}
@@ -150,7 +169,7 @@ func isLikelyImplicitMediaFollowUp(compact string) bool {
 	if compact == "" || len([]rune(compact)) > 24 {
 		return false
 	}
-	if containsAnyText(compact, []string{"这个", "这个东西", "这是什么", "这是啥", "这能", "能用吗", "能买吗", "多少钱", "多少", "贵吗", "对吗", "行吗", "可以吗", "咋弄", "怎么弄", "什么意思"}) {
+	if containsAnyText(compact, []string{"这个", "这个东西", "这是什么", "这是啥", "这是干嘛", "这是干啥", "这能", "能用吗", "能买吗", "多少钱", "多少", "贵吗", "对吗", "行吗", "可以吗", "咋弄", "怎么弄", "什么意思"}) {
 		return true
 	}
 	return false
@@ -257,19 +276,38 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 		return message
 	}
 	parts := make([]string, 0, len(items))
-	for _, item := range items {
+	for idx, item := range items {
 		text := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(item.MessageType, item.Content, item.Payload))
 		if text == "" {
 			continue
 		}
-		parts = append(parts, text)
+		parts = append(parts, strings.TrimSpace(timePrefixForBurst(item, idx+1)+text))
 	}
 	if len(parts) <= 1 {
 		return message
 	}
 	merged := message
-	merged.Content = "客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\n" + strings.Join(parts, "\n")
+	merged.Content = "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题；如果前面是图片、语音、文件，后面的短句通常是在追问它：\n" + strings.Join(parts, "\n")
 	return merged
+}
+
+func timePrefixForBurst(item models.Message, index int) string {
+	label := "消息"
+	switch item.MessageType {
+	case enums.IMMessageTypeImage:
+		label = "图片"
+	case enums.IMMessageTypeVoice:
+		label = "语音"
+	case enums.IMMessageTypeAttachment:
+		label = "文件"
+	case enums.IMMessageTypeLocation:
+		label = "定位"
+	case enums.IMMessageTypeMiniProgram:
+		label = "小程序"
+	case enums.IMMessageTypeGIF:
+		label = "表情"
+	}
+	return fmt.Sprintf("%d. [%s] ", index, label)
 }
 
 func (s *aiReplyService) resumePendingInterrupt(ctx context.Context, replyCtx aiReplyContext) error {
@@ -291,7 +329,7 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 		return s.interrupts.HandleInterruptedSummary(s, replyCtx, summary)
 	}
 	if summary != nil && strings.TrimSpace(summary.ReplyText) != "" {
-		if !s.isStillLatestCustomerMessage(replyCtx.Conversation.ID, replyCtx.Message.ID) {
+		if !s.canCommitReplyForMessage(replyCtx.Conversation.ID, replyCtx.Message.ID) {
 			slog.Info("skip stale ai reply because newer customer message arrived",
 				"conversation_id", replyCtx.Conversation.ID,
 				"message_id", replyCtx.Message.ID,
@@ -311,8 +349,67 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			return err
 		}
 		replyCtx.Trace.ReplySent = replyMessage != nil
+		if replyMessage != nil && s.memory != nil {
+			s.memory.ScheduleUpdate(replyCtx.Conversation, *replyMessage)
+		}
 	}
 	return nil
+}
+
+func (s *aiReplyService) canCommitReplyForMessage(conversationID int64, messageID int64) bool {
+	latest, err := svc.MessageService.FindLatestByConversationID(conversationID)
+	if err != nil || latest == nil {
+		return true
+	}
+	if latest.SenderType != enums.IMSenderTypeCustomer {
+		return latest.ID <= messageID
+	}
+	if latest.ID == messageID {
+		return true
+	}
+	current := svc.MessageService.Get(messageID)
+	if current != nil && isMediaFollowUpTextMessage(*current) && isRuntimeReplyMediaMessage(latest.MessageType) {
+		return false
+	}
+	return isNonActionableMediaMessage(*latest)
+}
+
+func isMediaFollowUpTextMessage(message models.Message) bool {
+	if message.MessageType != enums.IMMessageTypeText && message.MessageType != enums.IMMessageTypeHTML {
+		return false
+	}
+	if isClearlyIndependentText(strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "，", "", "。", "", "！", "", "!", "", "？", "", "?", "").Replace(strings.ToLower(strings.TrimSpace(message.Content)))) {
+		return false
+	}
+	return shouldWaitForRecentMediaUnderstanding(message)
+}
+
+func isNonActionableMediaMessage(message models.Message) bool {
+	if !isRuntimeReplyMediaMessage(message.MessageType) {
+		return false
+	}
+	if message.MessageType == enums.IMMessageTypeVoice {
+		mediaText, mediaSummary, mediaStatus := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
+		if strings.TrimSpace(mediaText) != "" || strings.TrimSpace(mediaSummary) != "" {
+			return false
+		}
+		return strings.TrimSpace(mediaStatus) != "understood"
+	}
+	text := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
+	if text == "" {
+		return true
+	}
+	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "").Replace(strings.ToLower(text))
+	return !containsAnyText(compact, []string{"?", "？", "怎么", "什么", "啥", "报错", "打不开", "失败", "异常", "不能", "不行", "处理", "求助"})
+}
+
+func isRuntimeReplyMediaMessage(messageType enums.IMMessageType) bool {
+	switch messageType {
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeAttachment, enums.IMMessageTypeVideo, enums.IMMessageTypeGIF:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *aiReplyService) isStillLatestCustomerMessage(conversationID int64, messageID int64) bool {

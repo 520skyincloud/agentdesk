@@ -101,23 +101,47 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   const [invitingGroupMembers, setInvitingGroupMembers] = useState(false);
   const isLgUp = useIsLgUp();
   const isClosedConversation = conversation?.status === 4;
-  const isPendingConversation = conversation?.status === 2;
-  const isHandoffPending =
-    conversation?.routeStatus === "HQ_AGENTDESK_PENDING" ||
-    conversation?.needHumanFollowUp;
-  const isHandoffServing = conversation?.routeStatus === "HQ_AGENTDESK_SERVING";
   const routeStatus = conversation?.routeStatus;
+  const isStoreWecomManual = routeStatus === "STORE_WECOM_MANUAL";
+  const isPendingConversation = conversation?.status === 2 && !isStoreWecomManual;
+  const isHandoffPending = routeStatus === "HQ_AGENTDESK_PENDING";
   const isAIServing = !routeStatus || routeStatus === "AI_SERVING" || routeStatus === "AI_FALLBACK";
+  const manualAttention = conversation?.manualAttention;
+  const hasManualStatus = Boolean(manualAttention && manualAttention.level !== "none");
   const aiReplyEnabled = wxWorkInstance?.aiReplyEnabled !== false;
   const canAgentReply =
     !isClosedConversation &&
-    !isPendingConversation &&
-    (routeStatus === "STORE_WECOM_MANUAL" ||
+    (isStoreWecomManual ||
       routeStatus === "HQ_AGENTDESK_SERVING" ||
       (isAIServing && !aiReplyEnabled));
   const showBottomEditor = !isClosedConversation && !isPendingConversation;
   const currentUserId = readSession()?.user?.id ?? 0;
   const protocolRoomID = getProtocolRoomID(conversation?.wxWorkExternalUserId);
+  const manualStatusNotice =
+    manualAttention?.level === "timeout_restored"
+      ? "同事接待已结束，AI已继续接待。"
+      : manualAttention?.dot
+        ? `${manualAttention.label || "待人工"}，AI 暂停回复。`
+        : manualAttention?.level === "serving"
+          ? `${manualAttention.label || "人工处理中"}，AI 暂停回复。`
+          : "";
+  const manualStatusTone =
+    manualAttention?.level === "urgent"
+      ? "border-destructive/25 bg-destructive/5 text-destructive"
+      : manualAttention?.dot
+        ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300"
+        : manualAttention?.level === "serving"
+          ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300"
+          : "border-[#d9e2f2] bg-white text-[#64748b]";
+  const editorDisabledReason = !conversation
+    ? "请选择一个会话"
+    : manualAttention?.dot
+      ? `${manualAttention.label || "待人工"}，AI 暂停回复。`
+      : manualAttention?.level === "serving"
+        ? `${manualAttention.label || "人工处理中"}，AI 暂停回复。`
+        : isAIServing && aiReplyEnabled
+          ? "AI 回复已开启。关闭后可由网页端直接回复。"
+          : "当前会话暂不可回复";
 
   const getViewport = useCallback(
     () => messagesContainerRef.current,
@@ -425,15 +449,9 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
       ref={messagesContainerRef}
       className="agent-desk-scrollbar h-full min-h-0 flex-1 overflow-y-auto bg-[#edf1f6] px-5 py-6"
     >
-      {isHandoffPending || isHandoffServing ? (
-        <div className={`mx-auto mb-4 max-w-2xl rounded-lg border px-3 py-2 text-xs shadow-none ${
-          isHandoffPending
-            ? "border-destructive/25 bg-destructive/5 text-destructive"
-            : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300"
-        }`}>
-          {isHandoffPending
-            ? t("conversation.manualHandoffPendingNotice")
-            : t("conversation.manualHandoffServingNotice")}
+      {hasManualStatus && manualStatusNotice ? (
+        <div className={`mx-auto mb-4 max-w-2xl rounded-lg border px-3 py-2 text-xs shadow-none ${manualStatusTone}`}>
+          {manualStatusNotice}
         </div>
       ) : null}
       <div ref={messagesContentRef} className="flex flex-col">
@@ -508,13 +526,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
               uploadingAsset={uploadingAsset}
               aiReplyEnabled={aiReplyEnabled}
               canAgentReply={canAgentReply}
-              disabledReason={
-                !conversation
-                  ? "请选择一个会话"
-                  : isAIServing && aiReplyEnabled
-                    ? "AI 回复已开启。关闭后可由网页端直接回复。"
-                    : "当前会话暂不可回复"
-              }
+              disabledReason={editorDisabledReason}
               aiReplyToggleDisabled={!wxWorkInstance || savingAIReply}
               onToggleAIReply={handleToggleAIReply}
               onSend={handleSend}
@@ -724,19 +736,22 @@ const MessageItem = memo(
         : repairMojibakeText(message.senderName) || t("conversation.agentSender");
     const senderBadge = isAi ? "AI回复" : isAgentSide ? "人工" : "客户";
     const sendStatusLabel = isAgentSide && !isRecalled ? IMMessageStatusLabels[message.sendStatus as keyof typeof IMMessageStatusLabels] : "";
+    const sendSourceLabel = !isAi && isAgentSide ? message.sendSourceLabel?.trim() : "";
     const senderBadgeClassName = isAi
       ? "border-primary/20 bg-primary/10 text-primary"
       : isAgentSide
         ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/15 dark:text-emerald-300"
         : "border-[#dbe7f6] bg-[#f6f9ff] text-muted-foreground";
+    const sendSourceBadgeClassName =
+      message.sendSource === "local"
+        ? "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/25 dark:bg-sky-500/15 dark:text-sky-300"
+        : "border-[#dbe7f6] bg-white/70 text-[#64748b] dark:border-white/10 dark:bg-white/5 dark:text-slate-300";
     const agentAvatarSrc =
       isAgentSide && !isAi && message.senderAvatar?.trim()
         ? message.senderAvatar.trim()
         : undefined;
     const avatarFallback = isAi ? "AI" : senderName.charAt(0);
-    const htmlContent = isRecalled
-      ? `<p>${t("conversation.messageRecalledHtml")}</p>`
-      : buildMessageHTML(message);
+    const htmlContent = buildMessageHTML(message);
     const bubbleClassName = isAi
         ? "border border-[#dce6f5] bg-white text-foreground shadow-[0_6px_14px_rgba(31,41,55,0.05)]"
       : isAgentSide
@@ -752,12 +767,6 @@ const MessageItem = memo(
       : isAgentSide
         ? "bg-[#dfe8fb] text-xs text-[#526072]"
         : "bg-white text-xs text-[#526072]";
-    const recalledBubbleClassName = isAgentSide
-      ? "border border-dashed border-emerald-200 bg-emerald-50 text-emerald-800"
-      : "border border-dashed border-[#dbe7f6] bg-[#f6f9ff] text-muted-foreground";
-    const recalledHtmlClassName = isAgentSide
-      ? "[&_p]:text-emerald-800"
-      : "[&_p]:text-muted-foreground";
     const showRecallAction = canRecall && !isRecalled;
 
     return (
@@ -779,18 +788,25 @@ const MessageItem = memo(
               </div>
               <div
                 className={`w-fit rounded-[18px] rounded-tr-md px-3.5 py-2 text-left text-sm leading-6 ${
-                  isRecalled ? recalledBubbleClassName : bubbleClassName
+                  bubbleClassName
                 }`}
               >
                 <ImMessageHTML
                   html={htmlContent}
-                  className={isRecalled ? recalledHtmlClassName : htmlClassName}
+                  className={htmlClassName}
                   onImageSettled={onImageSettled}
-                  onImageClick={isRecalled ? undefined : openImageLightbox}
+                  onImageClick={openImageLightbox}
                 />
               </div>
               <div className="mt-1 flex items-center gap-2 text-[11px] text-[#8b95a5]">
                 <span>{formatDateTime(message.sentAt || "")}</span>
+                {sendSourceLabel ? (
+                  <span
+                    className={`rounded-md border px-1.5 py-0.5 text-[10px] leading-none ${sendSourceBadgeClassName}`}
+                  >
+                    {sendSourceLabel}
+                  </span>
+                ) : null}
                 {isRecalled ? <span>{t("conversation.messageRecalled")}</span> : null}
                 {sendStatusLabel ? <span>{sendStatusLabel}</span> : null}
                 {showRecallAction ? (
@@ -837,14 +853,14 @@ const MessageItem = memo(
               </div>
               <div
                 className={`w-fit rounded-[18px] rounded-tl-md px-3.5 py-2 text-sm leading-6 ${
-                  isRecalled ? recalledBubbleClassName : bubbleClassName
+                  bubbleClassName
                 }`}
               >
                 <ImMessageHTML
                   html={htmlContent}
-                  className={isRecalled ? recalledHtmlClassName : htmlClassName}
+                  className={htmlClassName}
                   onImageSettled={onImageSettled}
-                  onImageClick={isRecalled ? undefined : openImageLightbox}
+                  onImageClick={openImageLightbox}
                 />
               </div>
               <div className="mt-1 flex items-center gap-2 text-[11px] text-[#8b95a5]">

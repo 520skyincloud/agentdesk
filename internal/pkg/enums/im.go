@@ -299,8 +299,6 @@ type ConversationRouteStatus string
 const (
 	ConversationRouteStatusAIServing          ConversationRouteStatus = "AI_SERVING"
 	ConversationRouteStatusStoreWecomManual   ConversationRouteStatus = "STORE_WECOM_MANUAL"
-	ConversationRouteStatusHQQiyuPending      ConversationRouteStatus = "HQ_QIYU_PENDING"
-	ConversationRouteStatusHQQiyuServing      ConversationRouteStatus = "HQ_QIYU_SERVING"
 	ConversationRouteStatusHQAgentDeskPending ConversationRouteStatus = "HQ_AGENTDESK_PENDING"
 	ConversationRouteStatusHQAgentDeskServing ConversationRouteStatus = "HQ_AGENTDESK_SERVING"
 	ConversationRouteStatusAIFallback         ConversationRouteStatus = "AI_FALLBACK"
@@ -310,8 +308,6 @@ const (
 var conversationRouteStatusLabelMap = map[ConversationRouteStatus]string{
 	ConversationRouteStatusAIServing:          "AI接待中",
 	ConversationRouteStatusStoreWecomManual:   "门店企微人工接待",
-	ConversationRouteStatusHQQiyuPending:      "总部七鱼排队中",
-	ConversationRouteStatusHQQiyuServing:      "总部七鱼人工接待",
 	ConversationRouteStatusHQAgentDeskPending: "总部网页端待接管",
 	ConversationRouteStatusHQAgentDeskServing: "总部网页端人工接待",
 	ConversationRouteStatusAIFallback:         "AI兜底中",
@@ -323,6 +319,7 @@ type ConversationPendingAction string
 const (
 	ConversationPendingActionSendLocation ConversationPendingAction = "send_location"
 	ConversationPendingActionServiceTask  ConversationPendingAction = "service_task"
+	ConversationPendingActionHumanHandoff ConversationPendingAction = "human_handoff"
 )
 
 func GetConversationRouteStatusLabel(status ConversationRouteStatus) string {
@@ -334,8 +331,6 @@ type MessageSyncDirection string
 const (
 	MessageSyncDirectionWecomToAgentDesk MessageSyncDirection = "wecom_to_agentdesk"
 	MessageSyncDirectionAgentDeskToWecom MessageSyncDirection = "agentdesk_to_wecom"
-	MessageSyncDirectionAgentDeskToQiyu  MessageSyncDirection = "agentdesk_to_qiyu"
-	MessageSyncDirectionQiyuToAgentDesk  MessageSyncDirection = "qiyu_to_agentdesk"
 )
 
 type MessageSyncStatus string

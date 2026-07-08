@@ -7,6 +7,7 @@ import (
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/pkg/httpx/params"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -19,7 +20,18 @@ func WxWorkProtocolRemoteSetupGetByToken(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, response.BuildWxWorkProtocolInstanceResponse(item))
+	ret := response.BuildWxWorkProtocolInstanceResponse(item)
+	if store := services.StoreService.Get(ret.StoreID); store != nil {
+		ret.StoreCode = store.StoreCode
+		ret.StoreName = utils.RepairMojibakeText(store.Name)
+		if ret.CompanyID == 0 {
+			ret.CompanyID = store.CompanyID
+		}
+	}
+	if company := services.CompanyService.Get(ret.CompanyID); company != nil {
+		ret.CompanyName = utils.RepairMojibakeText(company.Name)
+	}
+	httpx.WriteJSON(ctx, ret)
 }
 
 func WxWorkProtocolRemoteSetupPostUpdate(ctx *gin.Context) {

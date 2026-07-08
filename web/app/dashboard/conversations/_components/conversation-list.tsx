@@ -1,6 +1,6 @@
 "use client"
 
-import { CircleAlert, UserIcon } from "lucide-react";
+import { UserIcon } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -29,11 +29,8 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
       ) : conversations.length > 0 ? (
         conversations.map((conversation) => {
           const isSelected = selectedId === conversation.id
-          const isHandoffPending =
-            conversation.routeStatus === "HQ_AGENTDESK_PENDING" ||
-            conversation.needHumanFollowUp
-          const isHandoffServing =
-            conversation.routeStatus === "HQ_AGENTDESK_SERVING"
+          const manualAttention = conversation.manualAttention
+          const showManualDot = Boolean(manualAttention?.dot)
           return (
             <div
               key={conversation.id}
@@ -53,17 +50,25 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
             >
               <div className="overflow-hidden">
                 <div className="flex items-start gap-2.5">
-                  <Avatar className="size-10 shrink-0 rounded-xl">
-                    <AvatarImage src={conversation.customerAvatar || ""} />
-                    <AvatarFallback className="rounded-xl bg-[#f0f4fb] text-[#526072]">
-                      <UserIcon className="size-3.5 text-[#526072]" />
-                    </AvatarFallback>
-                  </Avatar>
+                  <div className="relative size-10 shrink-0">
+                    <Avatar className="size-10 rounded-xl">
+                      <AvatarImage src={conversation.customerAvatar || ""} />
+                      <AvatarFallback className="rounded-xl bg-[#f0f4fb] text-[#526072]">
+                        <UserIcon className="size-3.5 text-[#526072]" />
+                      </AvatarFallback>
+                    </Avatar>
+                    {showManualDot ? (
+                      <span
+                        className={`absolute -right-0.5 -top-0.5 size-3 rounded-full border-2 border-white ${
+                          manualAttention?.level === "urgent"
+                            ? "bg-destructive shadow-[0_0_0_3px_rgba(239,68,68,0.16)]"
+                            : "bg-rose-500"
+                        }`}
+                      />
+                    ) : null}
+                  </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      {isHandoffPending ? (
-                        <CircleAlert className="size-3.5 shrink-0 text-destructive" />
-                      ) : null}
                       <span className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-4 text-[#1f2937]">
                         {repairMojibakeText(conversation.customerName) ||
                           t("conversation.customerFallback", {
@@ -98,7 +103,7 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
                     </span>
                   </div>
                 ) : null}
-                {(conversation.storeName || conversation.wxWorkEmployeeName || isHandoffPending || isHandoffServing) ? (
+                {(conversation.storeName || conversation.wxWorkEmployeeName || (manualAttention && manualAttention.level !== "none")) ? (
                   <div className="mt-1 flex flex-wrap items-center gap-1 pl-11 text-[10px]">
                     {conversation.storeName || conversation.wxWorkEmployeeName ? (
                       <span className="rounded-md border border-[#d9e2f2] bg-[#f7f9fd] px-1.5 py-0.5 text-[#7a8599]">
@@ -108,14 +113,17 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
                           : ""}
                       </span>
                     ) : null}
-                    {isHandoffPending ? (
-                      <span className="rounded-md border border-destructive/15 bg-destructive/10 px-1.5 py-0.5 text-destructive">
-                        {t("conversation.manualHandoffPending")}
-                      </span>
-                    ) : null}
-                    {isHandoffServing ? (
-                      <span className="rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
-                        {t("conversation.manualHandoffServing")}
+                    {manualAttention && manualAttention.level !== "none" ? (
+                      <span
+                        className={`rounded-md border px-1.5 py-0.5 ${
+                          manualAttention.level === "urgent"
+                            ? "border-destructive/15 bg-destructive/10 text-destructive"
+                            : manualAttention.dot
+                              ? "border-amber-200 bg-amber-50 text-amber-700"
+                              : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        }`}
+                      >
+                        {manualAttention.label}
                       </span>
                     ) : null}
                   </div>

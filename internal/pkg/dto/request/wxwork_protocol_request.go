@@ -2,6 +2,7 @@ package request
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -51,6 +52,7 @@ type WxProtocolChatMsg struct {
 	ThumbURL       string                 `json:"thumb_url"`
 	ExtraContent   string                 `json:"extra_content"`
 	AppInfo        string                 `json:"appinfo"`
+	ReferID        json.RawMessage        `json:"referid,omitempty"`
 	CDN            WxProtocolMediaPayload `json:"cdn"`
 }
 
@@ -126,6 +128,30 @@ func (m *WxProtocolChatMsg) InferMsgType() int {
 		return 8
 	}
 	return m.ContentType
+}
+
+func (m *WxProtocolChatMsg) ReferIDText() string {
+	raw := strings.TrimSpace(string(m.ReferID))
+	if raw == "" || raw == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(m.ReferID, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	var number float64
+	if err := json.Unmarshal(m.ReferID, &number); err == nil {
+		if number == float64(int64(number)) {
+			return strconv.FormatInt(int64(number), 10)
+		}
+		return strconv.FormatFloat(number, 'f', -1, 64)
+	}
+	return strings.Trim(strings.TrimSpace(raw), `"`)
+}
+
+func (m *WxProtocolChatMsg) IsReferencedMessageMutation() bool {
+	referID := strings.TrimSpace(m.ReferIDText())
+	return referID != "" && referID != "0"
 }
 
 type WxWorkProtocolSendTextResponse struct {

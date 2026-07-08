@@ -12,11 +12,14 @@ import (
 	"github.com/mlogclub/simple/sqls"
 )
 
-const defaultHistoryLimit = 30
+const defaultHistoryLimit = 15
 
 type HistoryBuildResult struct {
-	Messages []*schema.Message
-	RawItems []models.Message
+	Messages        []*schema.Message
+	RawItems        []models.Message
+	MemoryMessage   *schema.Message
+	MemorySource    string
+	MemoryItemCount int
 }
 
 func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit int) HistoryBuildResult {
@@ -26,11 +29,16 @@ func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit in
 	if limit <= 0 {
 		limit = configuredHistoryLimit(conversationID)
 	}
+	sessionNo := currentSessionNo(currentMessageID)
 	items := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
 		Eq("conversation_id", conversationID).
-		Eq("session_no", currentSessionNo(currentMessageID)).
+		Eq("session_no", sessionNo).
 		Desc("id").
 		Limit(limit+1))
+	oldestKeptMessageID := int64(0)
+	if len(items) > 0 {
+		oldestKeptMessageID = items[len(items)-1].ID
+	}
 	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
 		items[i], items[j] = items[j], items[i]
 	}
@@ -49,6 +57,7 @@ func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit in
 		ret.RawItems = append(ret.RawItems, item)
 		ret.Messages = append(ret.Messages, msg)
 	}
+	ret.MemoryMessage, ret.MemorySource, ret.MemoryItemCount = buildConversationMemoryMessage(conversationID, sessionNo, oldestKeptMessageID)
 	return ret
 }
 
@@ -73,6 +82,58 @@ func configuredHistoryLimit(conversationID int64) int {
 	return instance.ContextMaxMessages
 }
 
+func buildConversationMemoryMessage(conversationID int64, sessionNo int, beforeMessageID int64) (*schema.Message, string, int) {
+	if conversationID <= 0 || sessionNo <= 0 || beforeMessageID <= 0 {
+		return nil, "", 0
+	}
+	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
+	storeID, instanceID := resolveConversationStoreScope(conversationID)
+	cnd := sqls.NewCnd().
+		Eq("conversation_id", conversationID).
+		Eq("session_no", sessionNo).
+		Eq("status", 0).
+		Desc("last_message_id").
+		Desc("id")
+	if conversation != nil && conversation.CustomerID > 0 {
+		cnd.Eq("customer_id", conversation.CustomerID)
+	}
+	if storeID > 0 {
+		cnd.Eq("store_id", storeID)
+	}
+	if instanceID > 0 {
+		cnd.Eq("wx_work_instance_id", instanceID)
+	}
+	if summary := repositories.ConversationSessionSummaryRepository.FindOne(sqls.DB(), cnd); summary != nil {
+		if text := buildSummaryMemoryText(summary); text != "" {
+			return schema.SystemMessage(text), "conversation_session_summary", summary.MessageCount
+		}
+	}
+	return nil, "", 0
+}
+
+func buildSummaryMemoryText(summary *models.ConversationSessionSummary) string {
+	if summary == nil {
+		return ""
+	}
+	parts := make([]string, 0, 5)
+	if text := strings.TrimSpace(summary.StableFacts); text != "" {
+		parts = append(parts, "稳定事实："+text)
+	}
+	if text := strings.TrimSpace(summary.OpenIssues); text != "" {
+		parts = append(parts, "未解决事项："+text)
+	}
+	if text := strings.TrimSpace(summary.CustomerPreferences); text != "" {
+		parts = append(parts, "客人偏好："+text)
+	}
+	if text := strings.TrimSpace(summary.MediaSummary); text != "" {
+		parts = append(parts, "媒体理解："+text)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "以下是本会话更早消息的压缩记忆，只用于承接上下文；原始消息仍以数据库为准，不能把未完成动作说成已完成：\n" + strings.Join(parts, "\n")
+}
+
 func currentSessionNo(currentMessageID int64) int {
 	if currentMessageID <= 0 {
 		return 1
@@ -82,6 +143,18 @@ func currentSessionNo(currentMessageID int64) int {
 		return 1
 	}
 	return message.SessionNo
+}
+
+func resolveConversationStoreScope(conversationID int64) (int64, int64) {
+	db := sqls.DB()
+	if db == nil {
+		return 0, 0
+	}
+	state := repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ?", conversationID)
+	if state == nil {
+		return 0, 0
+	}
+	return state.StoreID, state.WxWorkInstanceID
 }
 
 func BuildSchemaMessage(item *models.Message) *schema.Message {

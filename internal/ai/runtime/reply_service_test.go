@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,10 @@ import (
 	"agent-desk/internal/pkg/toolx"
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
+	"github.com/glebarez/sqlite"
+	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 func TestReplyEligibilityCanReply(t *testing.T) {
@@ -95,6 +100,129 @@ func TestShouldWaitForRecentMediaUnderstanding(t *testing.T) {
 	if shouldWaitForRecentMediaUnderstanding(models.Message{MessageType: enums.IMMessageTypeImage}) {
 		t.Fatal("media message itself is handled by media understanding worker")
 	}
+}
+
+func TestMergeRecentCustomerBurstMessageKeepsMediaContext(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	now := time.Now()
+	conversationID := int64(1001)
+	image := models.Message{
+		ID:             1,
+		ConversationID: conversationID,
+		ClientMsgID:    "img-1",
+		SeqNo:          1,
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeImage,
+		Content:        "room.jpg",
+		Payload:        `{"mediaText":"图片里是一间客房，桌上有两瓶水。","mediaUnderstandingStatus":"understood"}`,
+		SentAt:         &now,
+	}
+	questionTime := now.Add(2 * time.Second)
+	question := models.Message{
+		ID:             2,
+		ConversationID: conversationID,
+		ClientMsgID:    "text-2",
+		SeqNo:          2,
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "这个多少钱",
+		SentAt:         &questionTime,
+	}
+	if err := sqls.DB().Create(&image).Error; err != nil {
+		t.Fatalf("create image message: %v", err)
+	}
+	if err := sqls.DB().Create(&question).Error; err != nil {
+		t.Fatalf("create question message: %v", err)
+	}
+
+	merged := service.mergeRecentCustomerBurstMessage(conversationID, question)
+	if !strings.Contains(merged.Content, "图片里是一间客房") || !strings.Contains(merged.Content, "这个多少钱") {
+		t.Fatalf("expected merged burst to keep media understanding and follow-up, got: %s", merged.Content)
+	}
+	if !strings.Contains(merged.Content, "按顺序合并理解") {
+		t.Fatalf("expected explicit burst instruction, got: %s", merged.Content)
+	}
+}
+
+func TestCanCommitReplySkipsMediaFollowUpWhenTrailingMediaArrives(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	now := time.Now()
+	conversationID := int64(1002)
+	question := models.Message{ID: 1, ConversationID: conversationID, ClientMsgID: "q-1", SeqNo: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "这是干嘛的", SentAt: &now}
+	imageTime := now.Add(time.Second)
+	image := models.Message{ID: 2, ConversationID: conversationID, ClientMsgID: "img-2", SeqNo: 2, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeImage, Content: "funny.jpg", Payload: `{"mediaText":"图片是一只幽默摆拍的小动物，无实际酒店服务相关信息。","mediaUnderstandingStatus":"understood"}`, SentAt: &imageTime}
+	if err := sqls.DB().Create(&question).Error; err != nil {
+		t.Fatalf("create question: %v", err)
+	}
+	if err := sqls.DB().Create(&image).Error; err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+	if service.canCommitReplyForMessage(conversationID, question.ID) {
+		t.Fatal("expected media follow-up text reply to wait for trailing media understanding")
+	}
+}
+
+func TestCanCommitReplyAllowsTrailingPlainMediaForIndependentText(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	now := time.Now()
+	conversationID := int64(1003)
+	question := models.Message{ID: 1, ConversationID: conversationID, ClientMsgID: "q-1", SeqNo: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "早餐几点", SentAt: &now}
+	imageTime := now.Add(time.Second)
+	image := models.Message{ID: 2, ConversationID: conversationID, ClientMsgID: "img-2", SeqNo: 2, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeImage, Content: "funny.jpg", Payload: `{"mediaText":"图片是一只幽默摆拍的小动物，无实际酒店服务相关信息。","mediaUnderstandingStatus":"understood"}`, SentAt: &imageTime}
+	if err := sqls.DB().Create(&question).Error; err != nil {
+		t.Fatalf("create question: %v", err)
+	}
+	if err := sqls.DB().Create(&image).Error; err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+	if !service.canCommitReplyForMessage(conversationID, question.ID) {
+		t.Fatal("expected trailing plain media not to cancel independent text reply")
+	}
+}
+
+func TestCanCommitReplySkipsWhenTrailingUnderstoodVoiceArrives(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	now := time.Now()
+	conversationID := int64(1004)
+	question := models.Message{ID: 1, ConversationID: conversationID, ClientMsgID: "q-1", SeqNo: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "你现在呢", SentAt: &now}
+	voiceTime := now.Add(time.Second)
+	voice := models.Message{ID: 2, ConversationID: conversationID, ClientMsgID: "voice-2", SeqNo: 2, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeVoice, Content: "wx_protocol_1003259.mp3", Payload: `{"mediaText":"我没给你发语音大哥。","mediaUnderstandingStatus":"understood"}`, SentAt: &voiceTime}
+	if err := sqls.DB().Create(&question).Error; err != nil {
+		t.Fatalf("create question: %v", err)
+	}
+	if err := sqls.DB().Create(&voice).Error; err != nil {
+		t.Fatalf("create voice: %v", err)
+	}
+	if service.canCommitReplyForMessage(conversationID, question.ID) {
+		t.Fatal("expected understood trailing voice to cancel stale text reply")
+	}
+}
+
+func setupRuntimeReplyMessageTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	dbName := "runtime_reply_test_" + strings.NewReplacer("/", "_").Replace(t.Name())
+	db, err := gorm.Open(sqlite.Open("file:"+dbName+"?mode=memory&cache=shared"), &gorm.Config{
+		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+	})
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get sqlite db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = sqlDB.Close()
+	})
+	if err := db.AutoMigrate(&models.Message{}); err != nil {
+		t.Fatalf("migrate message: %v", err)
+	}
+	sqls.SetDB(db)
+	return db
 }
 
 func TestBuildRunLogPlan(t *testing.T) {

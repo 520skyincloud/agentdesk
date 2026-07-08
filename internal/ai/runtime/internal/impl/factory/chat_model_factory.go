@@ -19,6 +19,9 @@ func NewChatModelFactory() *ChatModelFactory {
 }
 
 func (f *ChatModelFactory) Build(ctx context.Context, aiConfig models.AIConfig) (model.ToolCallingChatModel, error) {
+	if strings.EqualFold(strings.TrimSpace(aiConfig.APIMode), "responses") {
+		return newResponsesChatModel(aiConfig), nil
+	}
 	conf := &openai.ChatModelConfig{
 		APIKey:  strings.TrimSpace(aiConfig.APIKey),
 		BaseURL: strings.TrimSpace(aiConfig.BaseURL),

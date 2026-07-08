@@ -2,12 +2,10 @@ package graphs
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
-	"agent-desk/internal/ai/runtime/tooling"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/services"
@@ -18,35 +16,25 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-func TestHandoffGraphOffHoursSendsNoticeWithoutConfirmation(t *testing.T) {
+func TestHandoffGraphOffHoursRequestsConfirmation(t *testing.T) {
 	db := setupHandoffGraphTestDB(t)
 	aiAgent := createHandoffGraphAIAgent(t, db, "1")
 	conversation := createHandoffGraphConversation(t, db, aiAgent.ID)
 
 	reply, err := NewHandoffGraph(conversation, aiAgent).Run(context.Background(), `{"reason":"用户要求转人工"}`)
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
+	if err == nil {
+		t.Fatalf("expected confirmation interrupt")
 	}
-	var result tooling.ToolResult
-	if err := json.Unmarshal([]byte(reply), &result); err != nil {
-		t.Fatalf("expected graph tool result JSON, got %q: %v", reply, err)
+	if !strings.Contains(err.Error(), InterruptTypeHandoffConfirmation) {
+		t.Fatalf("expected handoff confirmation interrupt, got %v", err)
 	}
-	if !result.Handled || !result.Terminal || result.ShouldRetry {
-		t.Fatalf("unexpected graph result flags: %+v", result)
-	}
-	if !result.ReplySent {
-		t.Fatalf("expected graph result to mark replySent, got %+v", result)
-	}
-	if result.Action != "off_hours_handoff" || result.ReplyText != "" {
-		t.Fatalf("unexpected off-hours graph result: %+v", result)
+	if reply != "" {
+		t.Fatalf("expected no reply before confirmation, got %q", reply)
 	}
 
 	message := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
-	if message == nil {
-		t.Fatalf("expected off-hours notice message")
-	}
-	if message.Content != services.HandoffOffHoursMessage {
-		t.Fatalf("expected off-hours notice, got %q", message.Content)
+	if message != nil {
+		t.Fatalf("expected no off-hours notice before confirmation, got %+v", message)
 	}
 
 	current := services.ConversationService.Get(conversation.ID)
@@ -85,6 +73,29 @@ func TestHandoffGraphWithActiveScheduleStillRequestsConfirmation(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected no notice before confirmation, got %d messages", count)
+	}
+}
+
+func TestHandoffGraphEmergencySafetyRequestsConfirmation(t *testing.T) {
+	db := setupHandoffGraphTestDB(t)
+	aiAgent := createHandoffGraphAIAgent(t, db, "1")
+	createHandoffGraphTeam(t, db, 1)
+	createHandoffGraphActiveSchedule(t, db, 1)
+	conversation := createHandoffGraphConversation(t, db, aiAgent.ID)
+
+	reply, err := NewHandoffGraph(conversation, aiAgent).Run(context.Background(), `{"reason":"emergency_safety: 客人在109摔倒流血"}`)
+	if err == nil {
+		t.Fatalf("expected confirmation interrupt")
+	}
+	if !strings.Contains(err.Error(), InterruptTypeHandoffConfirmation) {
+		t.Fatalf("expected handoff confirmation interrupt, got %v", err)
+	}
+	if reply != "" {
+		t.Fatalf("expected no reply before confirmation, got %q", reply)
+	}
+	current := services.ConversationService.Get(conversation.ID)
+	if current == nil || current.HandoffAt != nil {
+		t.Fatalf("expected conversation not to enter handoff before confirmation, got %+v", current)
 	}
 }
 

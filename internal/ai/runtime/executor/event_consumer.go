@@ -44,12 +44,16 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 			continue
 		}
 		messageOutput := event.Output.MessageOutput
+		collectTokenUsage(messageOutput.Message, summary, collector)
 		switch messageOutput.Role {
 		case schema.Assistant:
 			if suppressAssistantReply {
 				continue
 			}
 			replyText := strings.TrimSpace(messageOutput.Message.Content)
+			if looksLikeBareToolCallText(replyText) {
+				continue
+			}
 			if replyText != "" {
 				summary.ReplyText = replyText
 			}
@@ -93,11 +97,45 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 	summary.ToolCallCount = len(summary.InvokedToolCodes)
 }
 
+func collectTokenUsage(message *schema.Message, summary *RunResult, collector *callbacks.RuntimeTraceCollector) {
+	if message == nil || message.ResponseMeta == nil || message.ResponseMeta.Usage == nil || summary == nil {
+		return
+	}
+	usage := message.ResponseMeta.Usage
+	summary.PromptTokens += usage.PromptTokens
+	summary.CompletionTokens += usage.CompletionTokens
+	summary.TotalTokens += usage.TotalTokens
+	summary.CachedPromptTokens += usage.PromptTokenDetails.CachedTokens
+	summary.ReasoningTokens += usage.CompletionTokensDetails.ReasoningTokens
+	if collector != nil {
+		collector.Data.Model.Usage.PromptTokens += usage.PromptTokens
+		collector.Data.Model.Usage.CompletionTokens += usage.CompletionTokens
+		collector.Data.Model.Usage.TotalTokens += usage.TotalTokens
+		collector.Data.Model.Usage.CachedPromptTokens += usage.PromptTokenDetails.CachedTokens
+		collector.Data.Model.Usage.ReasoningTokens += usage.CompletionTokensDetails.ReasoningTokens
+	}
+}
+
 func hasInvokedGraphTool(toolCodes []string) bool {
 	for _, toolCode := range toolCodes {
 		if toolx.ResolveToolSourceType(toolCode) == enums.ToolSourceTypeGraph {
 			return true
 		}
+	}
+	return false
+}
+
+func looksLikeBareToolCallText(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "handoff_to_human(") || strings.Contains(lower, "graph/handoff_to_human") {
+		return true
+	}
+	if strings.HasPrefix(lower, "handoff_to_human") || strings.HasPrefix(lower, "tool_call") || strings.HasPrefix(lower, "function_call") {
+		return true
 	}
 	return false
 }

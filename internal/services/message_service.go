@@ -29,6 +29,12 @@ func newMessageService() *messageService {
 type messageService struct {
 }
 
+type sendMessageOptions struct {
+	skipOutbound                bool
+	skipOutboundMediaValidation bool
+	eventContent                string
+}
+
 func (s *messageService) Get(id int64) *models.Message {
 	return repositories.MessageRepository.Get(sqls.DB(), id)
 }
@@ -157,6 +163,25 @@ func (s *messageService) SendAgentMessageWithRequestID(conversationID int64, req
 	return s.sendMessage(conversationID, enums.IMSenderTypeAgent, reqSenderID, clientMsgID, messageType, content, payload, operator, nil, requestID)
 }
 
+func (s *messageService) CreateExternalAgentMessageWithoutOutbox(conversationID int64, clientMsgID string, messageType enums.IMMessageType, content, payload string, requestID string) (*models.Message, error) {
+	conversation := ConversationService.Get(conversationID)
+	if conversation == nil {
+		return nil, errorsx.InvalidParam("会话不存在")
+	}
+	if conversation.Status == enums.IMConversationStatusClosed {
+		return nil, errorsx.InvalidParam("会话已关闭")
+	}
+	return s.sendValidatedMessageWithOptions(conversation, enums.IMSenderTypeAgent, 0, clientMsgID, messageType, content, payload, &dto.AuthPrincipal{
+		UserID:   0,
+		Username: wxWorkProtocolSystemOperatorName,
+		Nickname: "企微员工号",
+	}, nil, requestID, sendMessageOptions{
+		skipOutbound:                true,
+		skipOutboundMediaValidation: true,
+		eventContent:                "企微员工号人工回复",
+	})
+}
+
 func (s *messageService) RecallAgentMessage(messageID int64, operator *dto.AuthPrincipal) (*models.Message, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
@@ -175,23 +200,48 @@ func (s *messageService) RecallAgentMessage(messageID int64, operator *dto.AuthP
 	if message.SenderID != operator.UserID {
 		return nil, errorsx.Forbidden("仅允许撤回自己发送的消息")
 	}
-	if message.RecalledAt != nil || message.SendStatus == enums.IMMessageStatusRecalled {
-		return nil, errorsx.InvalidParam("消息已撤回")
-	}
-
 	conversation, err := s.ValidateConversationSender(message.ConversationID, enums.IMSenderTypeAgent, operator, nil)
 	if err != nil {
 		return nil, err
 	}
+	if message.RecalledAt != nil || message.SendStatus == enums.IMMessageStatusRecalled {
+		return nil, errorsx.InvalidParam("消息已撤回")
+	}
 
+	return s.applyMessageRecall(message, conversation, operator.UserID, operator.Username, enums.IMSenderTypeAgent, "客服撤回消息", "")
+}
+
+func (s *messageService) ApplyExternalMessageRecall(messageID int64, source string, requestID string) (*models.Message, error) {
+	if messageID <= 0 {
+		return nil, errorsx.InvalidParam("消息不存在")
+	}
+	message := s.Get(messageID)
+	if message == nil {
+		return nil, errorsx.InvalidParam("消息不存在")
+	}
+	conversation := ConversationService.Get(message.ConversationID)
+	if conversation == nil {
+		return nil, errorsx.InvalidParam("会话不存在")
+	}
+	if message.RecalledAt != nil || message.SendStatus == enums.IMMessageStatusRecalled {
+		return message, nil
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "外部渠道"
+	}
+	return s.applyMessageRecall(message, conversation, 0, wxWorkProtocolSystemOperatorName, message.SenderType, source+"撤回消息", requestID)
+}
+
+func (s *messageService) applyMessageRecall(message *models.Message, conversation *models.Conversation, operatorID int64, operatorName string, operatorType enums.IMSenderType, eventContent string, requestID string) (*models.Message, error) {
 	now := time.Now()
-	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		updates := map[string]any{
 			"send_status":      int(enums.IMMessageStatusRecalled),
 			"recalled_at":      now,
 			"updated_at":       now,
-			"update_user_id":   operator.UserID,
-			"update_user_name": operator.Username,
+			"update_user_id":   operatorID,
+			"update_user_name": operatorName,
 		}
 		if err := repositories.MessageRepository.Updates(ctx.Tx, message.ID, updates); err != nil {
 			return err
@@ -200,8 +250,8 @@ func (s *messageService) RecallAgentMessage(messageID int64, operator *dto.AuthP
 		message.SendStatus = enums.IMMessageStatusRecalled
 		message.RecalledAt = &now
 		message.UpdatedAt = now
-		message.UpdateUserID = operator.UserID
-		message.UpdateUserName = operator.Username
+		message.UpdateUserID = operatorID
+		message.UpdateUserName = operatorName
 
 		agentReadState, customerReadState := ConversationReadStateService.getConversationReadStates(ctx.Tx, conversation.ID)
 		agentUnreadCount, err := ConversationReadStateService.CountUnreadMessages(ctx, conversation.ID, s.readSeqNo(agentReadState), enums.IMSenderTypeCustomer)
@@ -217,8 +267,8 @@ func (s *messageService) RecallAgentMessage(messageID int64, operator *dto.AuthP
 			"agent_unread_count":    agentUnreadCount,
 			"customer_unread_count": customerUnreadCount,
 			"updated_at":            now,
-			"update_user_id":        operator.UserID,
-			"update_user_name":      operator.Username,
+			"update_user_id":        operatorID,
+			"update_user_name":      operatorName,
 		}
 		if conversation.LastMessageID == message.ID {
 			lastMessage := repositories.MessageRepository.FindLastUnrecalledByConversationID(ctx.Tx, conversation.ID)
@@ -236,7 +286,7 @@ func (s *messageService) RecallAgentMessage(messageID int64, operator *dto.AuthP
 			return err
 		}
 
-		if err := ConversationEventLogService.CreateEvent(ctx, conversation.ID, enums.IMEventTypeMessageRecall, enums.IMSenderTypeAgent, operator.UserID, "客服撤回消息", ""); err != nil {
+		if err := ConversationEventLogService.CreateEventWithRequestID(ctx, conversation.ID, requestID, enums.IMEventTypeMessageRecall, operatorType, operatorID, eventContent, ""); err != nil {
 			return err
 		}
 		return nil
@@ -403,14 +453,18 @@ func (s *messageService) sendMessage(conversationID int64, senderType enums.IMSe
 
 func (s *messageService) sendValidatedMessage(conversation *models.Conversation, senderType enums.IMSenderType, reqSenderID int64, clientMsgID string,
 	messageType enums.IMMessageType, content, payload string, operator *dto.AuthPrincipal, external *openidentity.ExternalUser, requestID string) (*models.Message, error) {
+	return s.sendValidatedMessageWithOptions(conversation, senderType, reqSenderID, clientMsgID, messageType, content, payload, operator, external, requestID, sendMessageOptions{})
+}
 
+func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Conversation, senderType enums.IMSenderType, reqSenderID int64, clientMsgID string,
+	messageType enums.IMMessageType, content, payload string, operator *dto.AuthPrincipal, external *openidentity.ExternalUser, requestID string, options sendMessageOptions) (*models.Message, error) {
 	var err error
 	var summary string
 	content, payload, summary, err = s.normalizeMessageContent(conversation.ID, messageType, content, payload)
 	if err != nil {
 		return nil, err
 	}
-	if senderType == enums.IMSenderTypeAgent || senderType == enums.IMSenderTypeAI {
+	if !options.skipOutboundMediaValidation && (senderType == enums.IMSenderTypeAgent || senderType == enums.IMSenderTypeAI) {
 		if err := WxWorkProtocolService.ValidateOutboundMediaReady(conversation.ID, messageType, payload); err != nil {
 			return nil, err
 		}
@@ -527,7 +581,10 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 			return err
 		}
 
-		// 记录事件日志
+		eventContent := options.eventContent
+		if eventContent == "" {
+			eventContent = enums.GetIMSenderTypeLabel(senderType) + "发送消息"
+		}
 		if err := ConversationEventLogService.CreateEventWithRequestID(ctx, conversation.ID, traceID, enums.IMEventTypeMessageSend, senderType,
 			func() int64 {
 				if operator != nil {
@@ -535,7 +592,7 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 				}
 				return 0
 			}(),
-			enums.GetIMSenderTypeLabel(senderType)+"发送消息",
+			eventContent,
 			"",
 		); err != nil {
 			return err
@@ -551,8 +608,14 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 	WsService.PublishMessageCreated(conversation, message)
 	WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
 
-	if s.enqueueOutboundChannelMessage(conversation, message) && conversation.ChannelID > 0 && (message.SenderType == enums.IMSenderTypeAgent || message.SenderType == enums.IMSenderTypeAI) {
+	if !options.skipOutbound && s.enqueueOutboundChannelMessage(conversation, message) && conversation.ChannelID > 0 && (message.SenderType == enums.IMSenderTypeAgent || message.SenderType == enums.IMSenderTypeAI) {
 		go WxWorkProtocolService.DispatchPendingOutbox(10)
+	}
+
+	if senderType == enums.IMSenderTypeAgent {
+		if markErr := ConversationRouteService.MarkAgentMessage(conversation.ID, now); markErr != nil {
+			slog.Warn("mark agent route message failed", "conversation_id", conversation.ID, "error", markErr)
+		}
 	}
 
 	// 客户发送消息，触发AI回复
@@ -562,21 +625,17 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 				slog.Warn("touch customer store relation failed", "conversation_id", conversation.ID, "customer_id", conversation.CustomerID, "store_id", routeState.StoreID, "error", err)
 			}
 		}
-		if message.MessageType == enums.IMMessageTypeLocation {
-			if routeState := ConversationRouteService.GetByConversationID(conversation.ID); routeState != nil && routeState.WxWorkInstanceID > 0 {
-				WxWorkProtocolDefaultResourceService.BindInboundLocation(routeState.WxWorkInstanceID, message)
-			}
-		}
 		if markErr := ConversationRouteService.MarkCustomerMessage(conversation.ID, now); markErr != nil {
 			slog.Warn("mark customer route message failed", "conversation_id", conversation.ID, "error", markErr)
 		}
 		if routeState := ConversationRouteService.GetByConversationID(conversation.ID); routeState != nil {
-			switch routeState.RouteStatus {
-			case enums.ConversationRouteStatusStoreWecomManual,
-				enums.ConversationRouteStatusHQQiyuPending,
-				enums.ConversationRouteStatusHQQiyuServing,
-				enums.ConversationRouteStatusHQAgentDeskPending,
-				enums.ConversationRouteStatusHQAgentDeskServing:
+			if routeStatusBlocksAIReply(routeState.RouteStatus) {
+				return message, err
+			}
+			if handled, handleErr := ConversationHandoffConfirmationService.HandleCustomerMessage(conversation, message); handleErr != nil {
+				slog.Warn("consume pending human handoff confirmation failed", "conversation_id", conversation.ID, "message_id", message.ID, "error", handleErr)
+				return message, err
+			} else if handled {
 				return message, err
 			}
 			if routeState.WxWorkInstanceID > 0 {
@@ -590,9 +649,6 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 			MediaUnderstandingService.UnderstandInboundMessageAsync(message.ID)
 			return message, err
 		}
-		if WxWorkProtocolDefaultResourceService.HandleCustomerIntent(conversation, message) {
-			return message, err
-		}
 		if !shouldTriggerAIReply(message.MessageType) {
 			return message, err
 		}
@@ -604,7 +660,18 @@ func (s *messageService) sendValidatedMessage(conversation *models.Conversation,
 }
 
 func shouldTriggerAIReply(messageType enums.IMMessageType) bool {
-	return messageType == enums.IMMessageTypeText || messageType == enums.IMMessageTypeHTML || messageType == enums.IMMessageTypeGIF
+	return messageType == enums.IMMessageTypeText || messageType == enums.IMMessageTypeHTML
+}
+
+func routeStatusBlocksAIReply(routeStatus enums.ConversationRouteStatus) bool {
+	switch routeStatus {
+	case enums.ConversationRouteStatusStoreWecomManual,
+		enums.ConversationRouteStatusHQAgentDeskPending,
+		enums.ConversationRouteStatusHQAgentDeskServing:
+		return true
+	default:
+		return false
+	}
 }
 
 func isMediaUnderstandingMessage(messageType enums.IMMessageType) bool {
@@ -614,61 +681,6 @@ func isMediaUnderstandingMessage(messageType enums.IMMessageType) bool {
 	default:
 		return false
 	}
-}
-
-func (s *messageService) CreateExternalAgentMessageWithoutOutbox(conversationID int64, clientMsgID string, content, payload, requestID string) (*models.Message, error) {
-	return s.createExternalAgentMessage(conversationID, clientMsgID, content, payload, requestID, false)
-}
-
-func (s *messageService) CreateExternalAgentMessage(conversationID int64, clientMsgID string, content, payload, requestID string) (*models.Message, error) {
-	return s.createExternalAgentMessage(conversationID, clientMsgID, content, payload, requestID, true)
-}
-
-func (s *messageService) createExternalAgentMessage(conversationID int64, clientMsgID string, content, payload, requestID string, enqueueOutbox bool) (*models.Message, error) {
-	conversation := ConversationService.Get(conversationID)
-	if conversation == nil {
-		return nil, errorsx.InvalidParam("会话不存在")
-	}
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return nil, errorsx.InvalidParam("消息内容不能为空")
-	}
-	if strs.IsNotBlank(clientMsgID) {
-		if existing := repositories.MessageRepository.GetByClientMsgID(sqls.DB(), conversation.ID, clientMsgID); existing != nil {
-			return existing, nil
-		}
-	}
-	now := time.Now()
-	message := &models.Message{
-		ConversationID: conversation.ID,
-		SessionNo:      ConversationRouteService.CurrentSessionNo(conversation.ID),
-		RequestID:      tracex.NormalizeRequestID(requestID),
-		ClientMsgID:    clientMsgID,
-		SenderType:     enums.IMSenderTypeAgent,
-		SenderID:       0,
-		MessageType:    enums.IMMessageTypeText,
-		Content:        content,
-		Payload:        strings.TrimSpace(payload),
-		SeqNo:          repositories.MessageRepository.NextSeqNo(sqls.DB(), conversation.ID),
-		SendStatus:     enums.IMMessageStatusSent,
-		SentAt:         &now,
-		AuditFields: models.AuditFields{
-			CreatedAt:      now,
-			CreateUserID:   0,
-			CreateUserName: "qiyu_hq_late",
-			UpdatedAt:      now,
-			UpdateUserID:   0,
-			UpdateUserName: "qiyu_hq_late",
-		},
-	}
-	if err := repositories.MessageRepository.Create(sqls.DB(), message); err != nil {
-		return nil, err
-	}
-	WsService.PublishMessageCreated(conversation, message)
-	if enqueueOutbox {
-		s.enqueueOutboundChannelMessage(conversation, message)
-	}
-	return message, nil
 }
 
 func (s *messageService) enqueueOutboundChannelMessage(conversation *models.Conversation, message *models.Message) bool {
@@ -820,6 +832,9 @@ func (s *messageService) ValidateConversationSender(conversationID int64, sender
 		if operator == nil {
 			return nil, errorsx.Unauthorized("未登录或登录已过期")
 		}
+		if s.canSendStoreManualAgentMessage(conversation, operator) {
+			return conversation, nil
+		}
 		if conversation.Status != enums.IMConversationStatusActive || conversation.CurrentAssigneeID == 0 {
 			return nil, errorsx.InvalidParam("会话未分配客服，暂不允许发送消息")
 		}
@@ -844,6 +859,20 @@ func (s *messageService) ValidateConversationSender(conversationID int64, sender
 		return nil, errorsx.InvalidParam("不支持的发送人类型")
 	}
 	return conversation, nil
+}
+
+func (s *messageService) canSendStoreManualAgentMessage(conversation *models.Conversation, operator *dto.AuthPrincipal) bool {
+	if conversation == nil || operator == nil || operator.UserID <= 0 {
+		return false
+	}
+	if conversation.Status == enums.IMConversationStatusClosed || conversation.CurrentAssigneeID != 0 {
+		return false
+	}
+	route := ConversationRouteService.GetByConversationID(conversation.ID)
+	if route == nil || route.RouteStatus != enums.ConversationRouteStatusStoreWecomManual {
+		return false
+	}
+	return ConversationService.isAdmin(operator) || AgentProfileService.CanServeConversation(operator.UserID, conversation.ID)
 }
 
 func (s *messageService) allowAIMessageOnPendingHandoff(conversation *models.Conversation) bool {

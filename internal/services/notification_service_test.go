@@ -1,6 +1,7 @@
 package services_test
 
 import (
+	"strings"
 	"testing"
 
 	"agent-desk/internal/models"
@@ -103,7 +104,8 @@ func TestNotificationServiceMarkAllReadOnlyCurrentUser(t *testing.T) {
 func setupNotificationTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
+	dbName := strings.NewReplacer("/", "_", " ", "_", "-", "_").Replace(t.Name())
+	db, err := gorm.Open(sqlite.Open("file:"+dbName+"?mode=memory&cache=shared"), &gorm.Config{
 		NamingStrategy: schema.NamingStrategy{
 			TablePrefix:   "t_",
 			SingularTable: true,

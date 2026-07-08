@@ -38,8 +38,6 @@ var Models = []any{
 	&ChannelMessageOutbox{},
 	&ConversationRouteState{},
 	&ConversationSessionSummary{},
-	&QiyuConversation{},
-	&HQQiyuRoute{},
 	&MessageSyncLog{},
 	&ConversationAssignment{},
 	&ConversationTag{},
@@ -57,6 +55,7 @@ var Models = []any{
 	&AgentTeam{},
 	&AgentTeamSchedule{},
 	&AIConfig{},
+	&StoreAIModelSetting{},
 	&KnowledgeBase{},
 	&KnowledgeDocument{},
 	&KnowledgeFAQ{},
@@ -68,6 +67,7 @@ var Models = []any{
 	&SkillDefinition{},
 	&SkillRunLog{},
 	&AgentRunLog{},
+	&ReplyIntentConfig{},
 	&ConversationInterrupt{},
 	&SystemConfig{},
 }
@@ -442,6 +442,7 @@ type WxWorkProtocolInstance struct {
 	EmployeeUserID                 string       `gorm:"type:varchar(128);not null;default:'';index"`
 	EmployeeName                   string       `gorm:"type:varchar(120);not null;default:''"`
 	EmployeeAvatar                 string       `gorm:"type:varchar(1024);not null;default:''"`
+	CompanyID                      int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreID                        int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreStaffBindingID            int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreAddress                   string       `gorm:"type:varchar(500);not null;default:''"`
@@ -454,7 +455,6 @@ type WxWorkProtocolInstance struct {
 	WelcomeSendMiniProgram         bool         `gorm:"not null;default:true"`
 	WelcomeAskLocation             bool         `gorm:"not null;default:true"`
 	KnowledgeBaseID                int64        `gorm:"type:bigint;not null;default:0;index"`
-	AIAgentID                      int64        `gorm:"type:bigint;not null;default:0;index"`
 	NotifyURL                      string       `gorm:"type:varchar(500);not null;default:''"`
 	Proxy                          string       `gorm:"type:varchar(500);not null;default:''"`
 	BridgeID                       string       `gorm:"type:varchar(128);not null;default:'';index"`
@@ -513,6 +513,8 @@ type ConversationSessionSummary struct {
 	ConversationID      int64        `gorm:"type:bigint;not null;default:0;index:idx_conversation_session_summary,unique"`
 	SessionNo           int          `gorm:"type:int;not null;default:1;index:idx_conversation_session_summary,unique"`
 	WxWorkInstanceID    int64        `gorm:"type:bigint;not null;default:0;index"`
+	StoreID             int64        `gorm:"type:bigint;not null;default:0;index"`
+	CustomerID          int64        `gorm:"type:bigint;not null;default:0;index"`
 	StableFacts         string       `gorm:"type:text"`
 	OpenIssues          string       `gorm:"type:text"`
 	CustomerPreferences string       `gorm:"type:text"`
@@ -524,37 +526,7 @@ type ConversationSessionSummary struct {
 	AuditFields
 }
 
-// QiyuConversation 记录总部七鱼会话与平台会话的映射及生命周期。
-type QiyuConversation struct {
-	ID             int64      `gorm:"primaryKey;autoIncrement"`
-	ConversationID int64      `gorm:"type:bigint;not null;uniqueIndex"`
-	QiyuUID        string     `gorm:"type:varchar(128);not null;default:'';index"`
-	SessionID      string     `gorm:"type:varchar(128);not null;default:'';index"`
-	StaffID        string     `gorm:"type:varchar(128);not null;default:'';index"`
-	StaffName      string     `gorm:"type:varchar(120);not null;default:''"`
-	GroupID        string     `gorm:"type:varchar(128);not null;default:'';index"`
-	Status         string     `gorm:"type:varchar(40);not null;default:'pending';index"`
-	ManualExpireAt *time.Time `gorm:"type:datetime;index"`
-	CloseReason    string     `gorm:"type:varchar(500);not null;default:''"`
-	EndedAt        *time.Time `gorm:"type:datetime;index"`
-	RawPayload     string     `gorm:"type:text"`
-	AuditFields
-}
-
-// HQQiyuRoute 保存总部七鱼接入配置。门店不配置七鱼组。
-type HQQiyuRoute struct {
-	ID              int64        `gorm:"primaryKey;autoIncrement"`
-	DefaultGroupID  string       `gorm:"type:varchar(128);not null;default:''"`
-	HighRiskGroupID string       `gorm:"type:varchar(128);not null;default:''"`
-	ServiceTime     string       `gorm:"type:varchar(255);not null;default:''"`
-	FallbackMode    string       `gorm:"type:varchar(60);not null;default:'ai_after_timeout'"`
-	TimeoutMinutes  int          `gorm:"type:int;not null;default:10"`
-	Status          enums.Status `gorm:"type:int;not null;default:0;index"`
-	Remark          string       `gorm:"type:text"`
-	AuditFields
-}
-
-// MessageSyncLog 记录企微、七鱼、AgentDesk 之间消息同步是否成功及跳过原因。
+// MessageSyncLog 记录外部渠道与 AgentDesk 之间消息同步是否成功及跳过原因。
 type MessageSyncLog struct {
 	ID             int64                      `gorm:"primaryKey;autoIncrement"`
 	ConversationID int64                      `gorm:"type:bigint;not null;default:0;index"`
@@ -865,23 +837,54 @@ type AgentTeamSchedule struct {
 // 一条记录表示一个可直接调用的 AI 配置实例，
 // 同时包含厂商接入信息、模型信息和调用参数，不再拆分 endpoint/model 两层概念。
 type AIConfig struct {
-	ID               int64             `gorm:"primaryKey;autoIncrement"`                    // ID 为配置主键。
-	Name             string            `gorm:"type:varchar(100);not null;default:'';index"` // Name 为配置名称，用于后台识别和展示。
-	Provider         enums.AIProvider  `gorm:"type:varchar(50);not null;default:'';index"`  // Provider 为供应商标识，例如 openai、azure_openai、dashscope。
-	BaseURL          string            `gorm:"type:varchar(255);not null;default:''"`       // BaseURL 为模型服务基础地址，例如 https://api.openai.com/v1。
-	APIKey           string            `gorm:"type:varchar(255);not null;default:''"`       // APIKey 为服务端请求模型接口所需密钥。
-	ModelType        enums.AIModelType `gorm:"type:varchar(30);not null;default:'';index"`  // ModelType 为模型类型，例如 llm、embedding、rerank。
-	ModelName        string            `gorm:"type:varchar(100);not null;default:'';index"` // ModelName 为实际请求时传给上游的模型名。
-	Dimension        int               `gorm:"type:int;not null;default:0"`                 // Dimension 为向量维度，仅 embedding 模型通常需要填写。
-	MaxContextTokens int               `gorm:"type:int;not null;default:0"`                 // MaxContextTokens 为模型支持的最大上下文 token 数。
-	MaxOutputTokens  int               `gorm:"type:int;not null;default:0"`                 // MaxOutputTokens 为模型建议的最大输出 token 数。
-	TimeoutMS        int               `gorm:"type:int;not null;default:30000"`             // TimeoutMS 为调用该配置的默认超时时间，单位毫秒。
-	MaxRetryCount    int               `gorm:"type:int;not null;default:0"`                 // MaxRetryCount 为默认最大重试次数。
-	RPMLimit         int               `gorm:"type:int;not null;default:0"`                 // RPMLimit 为每分钟请求数限制，0 表示未显式配置。
-	TPMLimit         int               `gorm:"type:int;not null;default:0"`                 // TPMLimit 为每分钟 token 数限制，0 表示未显式配置。
-	Status           enums.Status      `gorm:"type:int;not null;index"`                     // Status 状态；同一 modelType 仅允许一条启用记录。
-	SortNo           int               `gorm:"type:int;not null;index"`                     // SortNo 为排序号，用于后台展示和人工调整顺序。
-	Remark           string            `gorm:"type:text"`                                   // Remark 为备注，用于记录用途、成本、限制和切换说明等补充信息。
+	ID                  int64             `gorm:"primaryKey;autoIncrement"`                                   // ID 为配置主键。
+	Name                string            `gorm:"type:varchar(100);not null;default:'';index"`                // Name 为配置名称，用于后台识别和展示。
+	Provider            enums.AIProvider  `gorm:"type:varchar(50);not null;default:'';index"`                 // Provider 为供应商标识，例如 openai、azure_openai、dashscope。
+	BaseURL             string            `gorm:"type:varchar(255);not null;default:''"`                      // BaseURL 为模型服务基础地址，例如 https://api.openai.com/v1。
+	APIKey              string            `gorm:"type:varchar(255);not null;default:''"`                      // APIKey 为服务端请求模型接口所需密钥。
+	APIMode             string            `gorm:"type:varchar(40);not null;default:'chat_completions';index"` // APIMode 为上游接口模式：chat_completions 或 responses。
+	ModelType           enums.AIModelType `gorm:"type:varchar(30);not null;default:'';index"`                 // ModelType 为模型类型，例如 llm、embedding、rerank。
+	ModelName           string            `gorm:"type:varchar(100);not null;default:'';index"`                // ModelName 为实际请求时传给上游的模型名。
+	Dimension           int               `gorm:"type:int;not null;default:0"`                                // Dimension 为向量维度，仅 embedding 模型通常需要填写。
+	MaxContextTokens    int               `gorm:"type:int;not null;default:0"`                                // MaxContextTokens 为模型支持的最大上下文 token 数。
+	MaxOutputTokens     int               `gorm:"type:int;not null;default:0"`                                // MaxOutputTokens 为模型建议的最大输出 token 数。
+	TimeoutMS           int               `gorm:"type:int;not null;default:30000"`                            // TimeoutMS 为调用该配置的默认超时时间，单位毫秒。
+	MaxRetryCount       int               `gorm:"type:int;not null;default:0"`                                // MaxRetryCount 为默认最大重试次数。
+	RPMLimit            int               `gorm:"type:int;not null;default:0"`                                // RPMLimit 为每分钟请求数限制，0 表示未显式配置。
+	TPMLimit            int               `gorm:"type:int;not null;default:0"`                                // TPMLimit 为每分钟 token 数限制，0 表示未显式配置。
+	IntentDetectEnabled bool              `gorm:"not null;default:false;index"`                               // IntentDetectEnabled 表示该 LLM 配置可作为回复引擎意图识别模型。
+	Status              enums.Status      `gorm:"type:int;not null;index"`                                    // Status 状态；同一 modelType 仅允许一条启用记录。
+	SortNo              int               `gorm:"type:int;not null;index"`                                    // SortNo 为排序号，用于后台展示和人工调整顺序。
+	Remark              string            `gorm:"type:text"`                                                  // Remark 为备注，用于记录用途、成本、限制和切换说明等补充信息。
+	AuditFields
+}
+
+// StoreAIModelSetting stores optional model overrides for enterprise WeCom runtime usages.
+// Scope rules: wx_work_instance_id > 0 means the employee/store-account override;
+// otherwise company_id > 0 means the company default. There is no separate store
+// override layer because a WeCom employee account is the store account in this product.
+type StoreAIModelSetting struct {
+	ID               int64             `gorm:"primaryKey;autoIncrement"`
+	CompanyID        int64             `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_store_ai_model_scope_usage;index"`
+	StoreID          int64             `gorm:"type:bigint;not null;default:0;index"` // StoreID is kept only for display/audit of the employee account binding.
+	WxWorkInstanceID int64             `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_store_ai_model_scope_usage;index"`
+	UsageCode        string            `gorm:"type:varchar(80);not null;default:'';uniqueIndex:uk_store_ai_model_scope_usage;index"`
+	AIConfigID       int64             `gorm:"type:bigint;not null;default:0;index"` // AIConfigID is legacy data from the first override version; runtime no longer requires it.
+	Provider         enums.AIProvider  `gorm:"type:varchar(50);not null;default:'';index"`
+	BaseURL          string            `gorm:"type:varchar(255);not null;default:''"`
+	APIKey           string            `gorm:"type:varchar(255);not null;default:''"`
+	APIMode          string            `gorm:"type:varchar(40);not null;default:'chat_completions';index"`
+	ModelType        enums.AIModelType `gorm:"type:varchar(30);not null;default:'';index"`
+	ModelName        string            `gorm:"type:varchar(100);not null;default:'';index"`
+	Dimension        int               `gorm:"type:int;not null;default:0"`
+	MaxContextTokens int               `gorm:"type:int;not null;default:0"`
+	MaxOutputTokens  int               `gorm:"type:int;not null;default:0"`
+	TimeoutMS        int               `gorm:"type:int;not null;default:30000"`
+	MaxRetryCount    int               `gorm:"type:int;not null;default:0"`
+	RPMLimit         int               `gorm:"type:int;not null;default:0"`
+	TPMLimit         int               `gorm:"type:int;not null;default:0"`
+	Status           enums.Status      `gorm:"type:int;not null;default:0;index"`
+	Remark           string            `gorm:"type:text"`
 	AuditFields
 }
 
@@ -1114,6 +1117,39 @@ type AgentRunLog struct {
 	LatencyMs        int64     `gorm:"type:bigint;not null;default:0"`
 	TraceData        string    `gorm:"type:text"`
 	CreatedAt        time.Time `gorm:"type:datetime;not null;index"`
+}
+
+// ReplyIntentConfig stores editable intent detection and prompt-pack rules for the reply runtime.
+type ReplyIntentConfig struct {
+	ID                 int64        `gorm:"primaryKey;autoIncrement"`
+	Code               string       `gorm:"type:varchar(100);not null;uniqueIndex:uk_reply_intent_scope"`
+	Name               string       `gorm:"type:varchar(120);not null;default:''"`
+	Description        string       `gorm:"type:text"`
+	ScopeType          string       `gorm:"type:varchar(30);not null;default:'global';uniqueIndex:uk_reply_intent_scope;index"`
+	CompanyID          int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
+	StoreID            int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
+	WxWorkInstanceID   int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
+	Priority           int          `gorm:"type:int;not null;default:100;index"`
+	MatchMode          string       `gorm:"type:varchar(30);not null;default:'hybrid';index"`
+	Keywords           string       `gorm:"type:text"`
+	PositiveExamples   string       `gorm:"type:text"`
+	NegativeExamples   string       `gorm:"type:text"`
+	RequiredContext    string       `gorm:"type:text"`
+	NeedsKnowledge     bool         `gorm:"type:bool;not null;default:false;index"`
+	NeedsResource      bool         `gorm:"type:bool;not null;default:false;index"`
+	ResourceType       string       `gorm:"type:varchar(50);not null;default:'';index"`
+	NeedsTool          bool         `gorm:"type:bool;not null;default:false;index"`
+	ToolCodes          string       `gorm:"type:text"`
+	NeedsHumanRoute    bool         `gorm:"type:bool;not null;default:false;index"`
+	HumanRoutePolicy   string       `gorm:"type:varchar(50);not null;default:'';index"`
+	PromptPack         string       `gorm:"type:text"`
+	ReplyPlanTemplate  string       `gorm:"type:text"`
+	ValidationRules    string       `gorm:"type:text"`
+	NoReplyWhenMatched bool         `gorm:"type:bool;not null;default:false;index"`
+	Status             enums.Status `gorm:"type:int;not null;default:0;index"`
+	SortNo             int          `gorm:"type:int;not null;default:0;index"`
+	Remark             string       `gorm:"type:text"`
+	AuditFields
 }
 
 // ConversationInterrupt 表示会话级待恢复中断记录。

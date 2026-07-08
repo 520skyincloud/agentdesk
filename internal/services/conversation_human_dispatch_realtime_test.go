@@ -37,8 +37,8 @@ func TestAIHandoffPublishesStoreManualConversationEvent(t *testing.T) {
 	if event.Data["conversationId"] != float64(conversation.ID) {
 		t.Fatalf("unexpected conversation id in event: %+v", event.Data)
 	}
-	if event.Data["status"] != float64(enums.IMConversationStatusPending) {
-		t.Fatalf("expected pending status in updated event, got %+v", event.Data["status"])
+	if event.Data["status"] != float64(enums.IMConversationStatusAIServing) {
+		t.Fatalf("expected ai-serving status in store manual updated event, got %+v", event.Data["status"])
 	}
 	if event.Data["routeStatus"] != string(enums.ConversationRouteStatusStoreWecomManual) {
 		t.Fatalf("expected store manual route status, got %+v", event.Data["routeStatus"])
@@ -66,8 +66,8 @@ func TestAIHandoffPublishesFinalTeamPoolConversationEvent(t *testing.T) {
 	if event.Data["conversationId"] != float64(conversation.ID) {
 		t.Fatalf("unexpected conversation id in event: %+v", event.Data)
 	}
-	if event.Data["status"] != float64(enums.IMConversationStatusPending) {
-		t.Fatalf("expected pending status in updated event, got %+v", event.Data["status"])
+	if event.Data["status"] != float64(enums.IMConversationStatusAIServing) {
+		t.Fatalf("expected ai-serving status in store manual updated event, got %+v", event.Data["status"])
 	}
 	if event.Data["routeStatus"] != string(enums.ConversationRouteStatusStoreWecomManual) {
 		t.Fatalf("expected store manual route status, got %+v", event.Data["routeStatus"])

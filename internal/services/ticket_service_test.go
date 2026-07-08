@@ -603,6 +603,9 @@ func setupTicketTestDBWithMaxOpenConns(t *testing.T, maxOpenConns int) {
 		t.Fatalf("InitDB() error = %v", err)
 	}
 	t.Cleanup(func() {
+		eventbus.WaitAsync[events.TicketCreatedEvent]()
+		eventbus.WaitAsync[events.TicketAssignedEvent]()
+		eventbus.WaitAsync[events.ConversationAssignedEvent]()
 		sqlDB, err := db.DB()
 		if err == nil {
 			_ = sqlDB.Close()

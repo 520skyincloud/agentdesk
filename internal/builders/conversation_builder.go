@@ -7,6 +7,7 @@ import (
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/i18nx"
+	"agent-desk/internal/pkg/imsource"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 
@@ -90,9 +91,10 @@ func buildConversationRouteFields(ret *response.ConversationResponse, item *mode
 	ret.RouteStatus = route.RouteStatus
 	ret.RouteStatusLabel = enums.GetConversationRouteStatusLabel(route.RouteStatus)
 	ret.RouteTarget = route.RouteTarget
-	ret.HandoffReason = utils.RepairMojibakeText(route.HandoffReason)
+	ret.HandoffReason = sanitizeVisibleHandoffReason(utils.RepairMojibakeText(route.HandoffReason))
 	ret.NeedHumanFollowUp = route.NeedHumanFollowUp
 	ret.ManualExpireAt = utils.FormatTimePtr(route.ManualExpireAt)
+	ret.ManualAttention = buildConversationManualAttention(route, ret.ManualExpireAt)
 	ret.StoreID = route.StoreID
 	ret.WxWorkInstanceID = route.WxWorkInstanceID
 	if route.WxWorkInstanceID > 0 {
@@ -119,6 +121,84 @@ func buildConversationRouteFields(ret *response.ConversationResponse, item *mode
 			}
 		}
 	}
+}
+
+func buildConversationManualAttention(route *models.ConversationRouteState, manualExpireAt string) response.ConversationManualAttentionResponse {
+	ret := response.ConversationManualAttentionResponse{
+		Level: "none",
+		Label: "AI接待中",
+	}
+	if route == nil {
+		return ret
+	}
+	isSafety := isVisibleSafetyHandoffReason(route.HandoffReason)
+	switch route.RouteStatus {
+	case enums.ConversationRouteStatusHQAgentDeskPending:
+		ret.Dot = true
+		ret.Level = "normal"
+		ret.Label = "待总部接入"
+		ret.ExpiresAt = manualExpireAt
+		if isSafety {
+			ret.Level = "urgent"
+		}
+	case enums.ConversationRouteStatusStoreWecomManual:
+		ret.Level = "serving"
+		ret.Label = "门店处理中"
+		ret.ExpiresAt = manualExpireAt
+		if route.NeedHumanFollowUp {
+			ret.Dot = true
+			ret.Level = "normal"
+			ret.Label = "门店待跟进"
+			if isSafety {
+				ret.Level = "urgent"
+				ret.Label = "安全风险待跟进"
+			}
+		}
+	case enums.ConversationRouteStatusHQAgentDeskServing:
+		ret.Level = "serving"
+		ret.Label = "人工处理中"
+		ret.ExpiresAt = manualExpireAt
+	case enums.ConversationRouteStatusAIServing, enums.ConversationRouteStatusAIFallback:
+		if strings.Contains(route.HandoffReason, "恢复AI") {
+			ret.Level = "timeout_restored"
+			ret.Label = "已恢复AI接待"
+		}
+	}
+	return ret
+}
+
+func sanitizeVisibleHandoffReason(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.TrimPrefix(value, "model IntentDetect JSON:")
+	for _, token := range []string{
+		"human_complaint_risk",
+		"service_request",
+		"hotel_info",
+		"hotel_variable",
+		"social_confirm",
+		"unknown_clarify",
+		"emergency_safety",
+		"needsHumanRoute",
+		"NeedsHumanRoute",
+		"handoff_to_human",
+	} {
+		value = strings.ReplaceAll(value, token, "")
+	}
+	value = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(value)
+	return strings.TrimSpace(strings.Join(strings.Fields(value), " "))
+}
+
+func isVisibleSafetyHandoffReason(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, token := range []string{"摔倒", "受伤", "流血", "报警", "安全", "突发", "事故", "emergency", "safety"} {
+		if strings.Contains(value, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func localizeConversationSummary(locale string, summary string) string {
@@ -217,6 +297,8 @@ func BuildMessageWithReadStatesAndLocale(item *models.Message, agentReadState, c
 		RecalledAt:      utils.FormatTimePtr(item.RecalledAt),
 		QuotedMessageID: item.QuotedMessageID,
 	}
+	ret.SendSource = imsource.DetectSendSource(item.SenderType, item.RequestID, item.ClientMsgID)
+	ret.SendSourceLabel = imsource.SendSourceLabel(ret.SendSource, locale)
 	if item.SenderID > 0 {
 		if item.SenderType == enums.IMSenderTypeAI {
 			if aiSenderNames != nil {

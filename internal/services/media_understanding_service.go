@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"agent-desk/internal/ai"
+	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
@@ -112,13 +113,52 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 		WsService.PublishMessageUpdated(conversation, updated)
 		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
 	}
-	if updated != nil && conversation != nil && WxWorkProtocolDefaultResourceService.HandleCustomerIntent(conversation, updated) {
-		return nil
-	}
 	if updated != nil && conversation != nil && TriggerAIReplyAsyncHook != nil && s.canTriggerAIForMedia(conversation.ID) {
-		TriggerAIReplyAsyncHook(*conversation, *updated)
+		if followUp := s.latestCustomerFollowUp(*updated); followUp != nil {
+			TriggerAIReplyAsyncHook(*conversation, *followUp)
+		} else if s.mediaUnderstandingShouldTriggerAI(*updated) {
+			TriggerAIReplyAsyncHook(*conversation, *updated)
+		}
 	}
 	return nil
+}
+
+func (s *mediaUnderstandingService) latestCustomerFollowUp(mediaMessage models.Message) *models.Message {
+	if mediaMessage.ConversationID <= 0 || mediaMessage.ID <= 0 || mediaMessage.SentAt == nil {
+		return nil
+	}
+	latest, err := MessageService.FindLatestByConversationID(mediaMessage.ConversationID)
+	if err != nil || latest == nil || latest.ID <= mediaMessage.ID || latest.SenderType != enums.IMSenderTypeCustomer {
+		return nil
+	}
+	if latest.SentAt == nil || latest.SentAt.Sub(*mediaMessage.SentAt) > 8*time.Second {
+		return nil
+	}
+	switch latest.MessageType {
+	case enums.IMMessageTypeText, enums.IMMessageTypeHTML:
+		return latest
+	default:
+		return nil
+	}
+}
+
+func (s *mediaUnderstandingService) mediaUnderstandingLooksActionable(message models.Message) bool {
+	mediaText, mediaSummary, mediaStatus := replyengine.MediaUnderstandingFromPayload(message.Payload)
+	if strings.TrimSpace(mediaStatus) != "understood" {
+		return false
+	}
+	return replyengine.MediaUnderstandingHasActionableIntent(strings.Join([]string{mediaText, mediaSummary}, " "))
+}
+
+func (s *mediaUnderstandingService) mediaUnderstandingShouldTriggerAI(message models.Message) bool {
+	mediaText, mediaSummary, mediaStatus := replyengine.MediaUnderstandingFromPayload(message.Payload)
+	if strings.TrimSpace(mediaStatus) != "understood" {
+		return false
+	}
+	if message.MessageType == enums.IMMessageTypeVoice {
+		return strings.TrimSpace(mediaText) != "" || strings.TrimSpace(mediaSummary) != ""
+	}
+	return replyengine.MediaUnderstandingHasActionableIntent(strings.Join([]string{mediaText, mediaSummary}, " "))
 }
 
 func isUnderstandableMessageType(messageType enums.IMMessageType) bool {
@@ -147,12 +187,12 @@ func (s *mediaUnderstandingService) understandImage(ctx context.Context, message
 	if err != nil {
 		return "", err
 	}
-	config, err := ai.GetEnabledAIConfig(enums.AIModelTypeVision)
+	resolved, err := StoreAIModelSettingService.ResolveForMessage(message, StoreAIModelUsageMediaUnderstanding)
 	if err != nil {
 		return "", err
 	}
 	imageURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
-	return s.callOpenAICompatibleVision(ctx, *config, imageURL)
+	return s.callOpenAICompatibleVision(ctx, resolved.Config, imageURL)
 }
 
 func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message *models.Message, payload *messageMediaPayload) (string, error) {
@@ -671,7 +711,7 @@ func (s *mediaUnderstandingService) callOpenAICompatibleVision(ctx context.Conte
 		"messages": []map[string]any{
 			{
 				"role":    "system",
-				"content": "你是酒店前台同事的图片理解助手。只描述图片中能确定的信息，不猜测图片外事实，不写客服处理建议，不写“需要人工确认”。输出一句简洁中文。",
+				"content": "你是酒店前台同事的图片理解助手。只提取图片中能确定的信息，不猜测图片外事实，不写客服处理建议，不写“需要人工确认”。如果图片里有清晰文字、报错、问题、求助或操作诉求，要把这些内容保留下来；如果只是普通物品/餐食/环境照片，只描述画面。输出一句简洁中文。",
 			},
 			{
 				"role": "user",
@@ -758,12 +798,7 @@ func (s *mediaUnderstandingService) canTriggerAIForMedia(conversationID int64) b
 	if state == nil {
 		return true
 	}
-	switch state.RouteStatus {
-	case enums.ConversationRouteStatusStoreWecomManual,
-		enums.ConversationRouteStatusHQQiyuPending,
-		enums.ConversationRouteStatusHQQiyuServing,
-		enums.ConversationRouteStatusHQAgentDeskPending,
-		enums.ConversationRouteStatusHQAgentDeskServing:
+	if routeStatusBlocksAIReply(state.RouteStatus) {
 		return false
 	}
 	if state.WxWorkInstanceID > 0 {

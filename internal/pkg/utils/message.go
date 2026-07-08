@@ -146,6 +146,9 @@ func BuildRuntimeMessageText(messageType enums.IMMessageType, content string) st
 func BuildRuntimeMessageTextWithPayload(messageType enums.IMMessageType, content string, payload string) string {
 	base := BuildRuntimeMessageText(messageType, content)
 	mediaText, mediaSummary, mediaStatus := RuntimeMediaUnderstandingFromPayload(payload)
+	if messageType == enums.IMMessageTypeVoice && mediaText == "" && mediaSummary == "" {
+		return ""
+	}
 	if mediaText != "" {
 		return strings.TrimSpace(base + "\n" + runtimeMediaUnderstandingLabel(messageType) + "：" + mediaText)
 	}

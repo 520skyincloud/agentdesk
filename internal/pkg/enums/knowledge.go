@@ -222,14 +222,12 @@ func GetKnowledgeAnswerModeLabel(mode KnowledgeAnswerMode) string {
 type KnowledgeCandidateSource string
 
 const (
-	KnowledgeCandidateSourceQiyuHQ      KnowledgeCandidateSource = "qiyu_hq"
 	KnowledgeCandidateSourceAgentDeskHQ KnowledgeCandidateSource = "agentdesk_hq"
 	KnowledgeCandidateSourceStoreWecom  KnowledgeCandidateSource = "store_wecom"
 	KnowledgeCandidateSourceAINoAnswer  KnowledgeCandidateSource = "ai_no_answer"
 )
 
 var knowledgeCandidateSourceLabelMap = map[KnowledgeCandidateSource]string{
-	KnowledgeCandidateSourceQiyuHQ:      "总部网页人工",
 	KnowledgeCandidateSourceAgentDeskHQ: "总部网页端人工",
 	KnowledgeCandidateSourceStoreWecom:  "门店企微人工",
 	KnowledgeCandidateSourceAINoAnswer:  "AI未解答",

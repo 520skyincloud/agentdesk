@@ -42,12 +42,49 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	checkPointID := resolveCheckPointID(req.CheckPointID, summary.RunID)
 	summary.CheckPointID = checkPointID
 	messages := buildRunMessages(ctx, req, summary, collector, s.answerabilityGate)
+	if summary.SkipReply {
+		summary.Status = "completed"
+		summary.ModelName = req.AIConfig.ModelName
+		collector.Data.Status = summary.Status
+		collector.Data.Output.FinishReason = "no_reply"
+		collector.Data.Pipeline.Generate.Status = "skipped"
+		collector.Data.Pipeline.Generate.Reason = "intent selected no reply"
+		collector.Data.Pipeline.Validate.Status = "passed"
+		collector.Data.Pipeline.Validate.Reason = "intent policy selected no reply"
+		summary.TraceData = collector.Marshal()
+		return summary, nil
+	}
+	if handled, err := executeIntentHumanRoute(ctx, req, summary, collector); handled || err != nil {
+		if err != nil {
+			summary.Status = "error"
+			summary.ErrorMessage = err.Error()
+			collector.Data.Status = summary.Status
+			collector.Data.Error.Message = err.Error()
+			collector.Data.Error.Stage = "tool_knowledge"
+			summary.TraceData = collector.Marshal()
+			return summary, err
+		}
+		summary.Status = "completed"
+		summary.ModelName = req.AIConfig.ModelName
+		collector.Data.Status = summary.Status
+		collector.Data.Output.FinishReason = "intent_human_route_confirmation_requested"
+		collector.Data.Pipeline.Generate.Status = "skipped"
+		collector.Data.Pipeline.Generate.Reason = "intent stage requested customer confirmation before human route"
+		collector.Data.Pipeline.Validate.Status = "passed"
+		collector.Data.Pipeline.Validate.Reason = "human route waits for explicit customer confirmation"
+		summary.TraceData = collector.Marshal()
+		return summary, nil
+	}
 	if strings.TrimSpace(summary.ReplyText) != "" {
 		summary.Status = "completed"
 		summary.ModelName = req.AIConfig.ModelName
 		collector.Data.Status = summary.Status
 		collector.Data.Output.ReplyText = summary.ReplyText
 		collector.Data.Output.FinishReason = summary.Status
+		collector.Data.Pipeline.Generate.Status = "skipped"
+		collector.Data.Pipeline.Generate.Reason = "runtime fallback produced approved reply"
+		collector.Data.Pipeline.Validate.Status = "passed"
+		collector.Data.Pipeline.Validate.Reason = "fallback reply accepted"
 		summary.TraceData = collector.Marshal()
 		return summary, nil
 	}
@@ -104,6 +141,16 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
 	collector.Data.Output.FinishReason = summary.Status
+	collector.Data.Pipeline.Generate.Status = summary.Status
+	if strings.TrimSpace(summary.ReplyText) != "" {
+		collector.Data.Pipeline.Generate.Reason = "model generated reply from staged prompt and layered context"
+		collector.Data.Pipeline.Validate.Status = "passed"
+		collector.Data.Pipeline.Validate.Reason = "runtime completed"
+	} else if summary.Status == "error" {
+		collector.Data.Pipeline.Generate.Reason = summary.ErrorMessage
+		collector.Data.Pipeline.Validate.Status = "failed"
+		collector.Data.Pipeline.Validate.Reason = summary.ErrorMessage
+	}
 	syncSkillSummaryFromCollector(summary, collector)
 	summary.TraceData = collector.Marshal()
 	return summary, nil

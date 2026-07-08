@@ -2,17 +2,24 @@ package executor
 
 import "strings"
 
-func appendIfMissing(items []string, item string) []string {
-	item = strings.TrimSpace(item)
-	if item == "" {
-		return items
-	}
-	for _, existing := range items {
-		if strings.TrimSpace(existing) == item {
-			return items
+func appendIfMissing(items []string, values ...string) []string {
+	for _, item := range values {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		exists := false
+		for _, existing := range items {
+			if strings.TrimSpace(existing) == item {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			items = append(items, item)
 		}
 	}
-	return append(items, item)
+	return items
 }
 
 func preview(text string, limit int) string {

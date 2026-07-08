@@ -67,6 +67,14 @@ import { ConversationList } from "./_components/conversation-list";
 const workbenchIconButtonClassName =
   "size-8 rounded-lg border border-transparent bg-white/80 text-muted-foreground shadow-none hover:border-[#d9e2f2] hover:bg-white hover:text-[#2563eb]";
 
+function hasManualAttention(conversation?: { manualAttention?: { dot?: boolean } } | null) {
+  return Boolean(conversation?.manualAttention?.dot);
+}
+
+function isUrgentManualAttention(conversation?: { manualAttention?: { level?: string } } | null) {
+  return conversation?.manualAttention?.level === "urgent";
+}
+
 export default function ConversationsPage() {
   const t = useI18n();
   const conversation = useAgentConversationsStore(
@@ -112,7 +120,21 @@ export default function ConversationsPage() {
   const selectedInstance = instances.find((item) => item.id === selectedWxWorkInstanceId) ?? null;
   const conversationInstance =
     instances.find((item) => item.id === conversation?.wxWorkInstanceId) ?? selectedInstance;
-  const pendingHandoffCount = conversations.filter((item) => item.needHumanFollowUp).length;
+  const aggregateAccountStats = useMemo(
+    () =>
+      instances.reduce(
+        (acc, item) => ({
+          customerCount: acc.customerCount + Number(item.customerCount || 0),
+          manualAttentionCount: acc.manualAttentionCount + Number(item.manualAttentionCount || 0),
+          urgentManualAttentionCount: acc.urgentManualAttentionCount + Number(item.urgentManualAttentionCount || 0),
+        }),
+        { customerCount: 0, manualAttentionCount: 0, urgentManualAttentionCount: 0 },
+      ),
+    [instances],
+  );
+  const accountCustomerCount = selectedInstance ? Number(selectedInstance.customerCount || 0) : aggregateAccountStats.customerCount;
+  const manualAttentionCount = selectedInstance ? Number(selectedInstance.manualAttentionCount || 0) : aggregateAccountStats.manualAttentionCount;
+  const urgentManualAttentionCount = selectedInstance ? Number(selectedInstance.urgentManualAttentionCount || 0) : aggregateAccountStats.urgentManualAttentionCount;
   const filteredInstances = useMemo(() => {
     const keyword = accountKeyword.trim().toLowerCase();
     if (!keyword) {
@@ -306,12 +328,12 @@ export default function ConversationsPage() {
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
             <div className="rounded-xl border border-[#edf1f7] bg-[#f8fbff] px-3 py-2">
-              <div className="text-[#7a8599]">当前会话</div>
-              <div className="mt-1 text-lg font-semibold leading-none text-[#1f2937]">{conversations.length}</div>
+              <div className="text-[#7a8599]">客户</div>
+              <div className="mt-1 text-lg font-semibold leading-none text-[#1f2937]">{accountCustomerCount}</div>
             </div>
             <div className="rounded-xl border border-[#edf1f7] bg-[#f8fbff] px-3 py-2">
               <div className="text-[#7a8599]">待人工</div>
-              <div className="mt-1 text-lg font-semibold leading-none text-destructive">{pendingHandoffCount}</div>
+              <div className="mt-1 text-lg font-semibold leading-none text-destructive">{manualAttentionCount}</div>
             </div>
           </div>
           <div className="relative mt-3">
@@ -342,7 +364,7 @@ export default function ConversationsPage() {
               <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-white text-[11px] shadow-sm">全</span>
               <span className="truncate font-medium">全部账号</span>
             </span>
-            <span className="rounded-full bg-white px-1.5 text-[11px] text-[#7a8599] shadow-sm">{conversations.length}</span>
+            <span className="rounded-full bg-white px-1.5 text-[11px] text-[#7a8599] shadow-sm">{aggregateAccountStats.customerCount}</span>
           </button>
           {filteredInstances.map((item) => (
             <button
@@ -364,6 +386,13 @@ export default function ConversationsPage() {
                   <AvatarFallback className="rounded-lg bg-[#f0f4fb] text-xs font-semibold text-[#526072]">
                   {(repairMojibakeText(item.employeeName) || item.guid || "企").slice(0, 1)}
                   </AvatarFallback>
+                  {item.manualAttentionCount > 0 ? (
+                    <span
+                      className={`absolute -right-1 -top-1 size-3 rounded-full border-2 border-white ${
+                        item.urgentManualAttentionCount > 0 ? "bg-rose-600" : "bg-red-500"
+                      }`}
+                    />
+                  ) : null}
                   <span
                     className={`absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border border-white ${
                       item.healthStatus === "online" ? "bg-emerald-500" : item.healthStatus === "offline" ? "bg-[#aab4c3]" : "bg-amber-500"
@@ -376,7 +405,11 @@ export default function ConversationsPage() {
                     {repairMojibakeText(item.storeName) || item.employeeUserId || "未绑定门店"}
                   </span>
                 </div>
-                <MoreHorizontalIcon className="size-4 shrink-0 text-[#a0a8b7] opacity-0 transition group-hover:opacity-100" />
+                {item.manualAttentionCount > 0 ? (
+                  <span className="rounded-full bg-red-50 px-1.5 text-[11px] font-medium text-red-600">{item.manualAttentionCount}</span>
+                ) : (
+                  <span className="rounded-full bg-white px-1.5 text-[11px] text-[#7a8599] shadow-sm">{item.customerCount || 0}</span>
+                )}
               </div>
               <div className="mt-2 flex items-center gap-1 pl-11">
                 <Badge variant={item.aiReplyEnabled === false ? "outline" : "secondary"} className="h-5 rounded-md border-[#d9e2f2] px-1.5 text-[10px] font-normal">
@@ -428,9 +461,13 @@ export default function ConversationsPage() {
                 : "全部员工号"}
             </div>
             <div className="mt-0.5 flex items-center gap-2 text-xs text-[#7a8599]">
-              <span>全部未关闭会话</span>
-              {pendingHandoffCount > 0 ? (
-                <span className="text-destructive">{pendingHandoffCount} 个待处理</span>
+              <span>客户</span>
+              <span>{accountCustomerCount} 个</span>
+              {manualAttentionCount > 0 ? (
+                <span className="text-destructive">{manualAttentionCount} 个待人工</span>
+              ) : null}
+              {urgentManualAttentionCount > 0 ? (
+                <span className="text-rose-700">{urgentManualAttentionCount} 个紧急</span>
               ) : null}
             </div>
           </div>
@@ -448,7 +485,7 @@ export default function ConversationsPage() {
     </div>
   );
 
-  const handoffConversation = conversations.find((item) => item.needHumanFollowUp);
+  const handoffConversation = conversations.find((item) => hasManualAttention(item));
 
   const workspaceContent = (
     <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-[#f0f3f8] text-card-foreground">
@@ -503,9 +540,13 @@ export default function ConversationsPage() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1 sm:gap-1.5">
-          {conversation && conversation.needHumanFollowUp ? (
-            <Badge className="hidden rounded-md bg-[#fff1f2] px-2 text-xs font-normal text-destructive shadow-none sm:inline-flex">
-              待人工
+          {conversation && conversation.manualAttention?.dot ? (
+            <Badge className={`hidden rounded-md px-2 text-xs font-normal shadow-none sm:inline-flex ${
+              conversation.manualAttention.level === "urgent"
+                ? "bg-[#fff1f2] text-destructive"
+                : "bg-amber-50 text-amber-700"
+            }`}>
+              {conversation.manualAttention.label || "待人工"}
             </Badge>
           ) : conversation ? (
             <Badge className="hidden rounded-md bg-[#eef4ff] px-2 text-xs font-normal text-[#2855d9] shadow-none sm:inline-flex">
@@ -788,7 +829,7 @@ export default function ConversationsPage() {
                 <div className="mt-2">1. 企微员工号扫码登录协议实例</div>
                 <div>2. 一键获取门店坐标并填写门店资料</div>
                 <div>3. 选择服务时间、托管模式、门店群和 @ 成员</div>
-                <div>4. 绑定门店知识库与智能客服配置</div>
+                <div>4. 绑定门店知识库，模型未覆盖时走全局配置</div>
               </div>
               <Button className="mt-4 w-full rounded-xl" variant="outline" onClick={() => void createRemoteSetupLink()} disabled={scanLoginLoading || remoteSetupLoading}>
                 <LinkIcon className="size-4" />
@@ -808,7 +849,7 @@ export default function ConversationsPage() {
               <MessageCircleWarningIcon className="size-5" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">新的转人工请求</div>
+              <div className="text-sm font-medium">{handoffConversation.manualAttention?.label || "新的转人工请求"}</div>
               <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
                 {repairMojibakeText(handoffConversation.customerName) || `会话 #${handoffConversation.id}`}：
                 {repairMojibakeText(handoffConversation.handoffReason) || repairMojibakeText(handoffConversation.lastMessageSummary) || "等待同事处理"}

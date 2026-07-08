@@ -31,7 +31,7 @@ func Init() {
 	addFunc(c, "@every 1m", func() {
 		count := services.ManualSessionTimeoutService.ScanAndRestoreExpired(50)
 		if count > 0 {
-			slog.Info("manual sessions restored to ai", "count", count)
+			slog.Info("manual timeout tasks handled", "count", count)
 		}
 	})
 

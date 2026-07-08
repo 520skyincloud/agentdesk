@@ -36,16 +36,23 @@ func newRuntimeReplyExecutor() *runtimeReplyExecutor {
 }
 
 func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInput) (*applicationruntime.Summary, error) {
-	aiConfig := svc.AIConfigService.Get(input.AIAgent.AIConfigID)
-	if aiConfig == nil {
-		return nil, fmt.Errorf("ai config is nil")
+	resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(input.Conversation.ID, svc.StoreAIModelUsageReplyLLM, input.AIAgent.AIConfigID)
+	if err != nil {
+		return nil, err
 	}
+	aiConfig := resolved.Config
+	if input.Trace != nil {
+		input.Trace.AIConfigID = aiConfig.ID
+		input.Trace.ModelSource = resolved.Source
+		input.Trace.ModelSettingID = resolved.ModelSettingID
+	}
+	input.AIAgent.AIConfigID = aiConfig.ID
 	runtimeStartedAt := time.Now()
 	summary, err := Service.Run(ctx, applicationruntime.Request{
 		Conversation: input.Conversation,
 		UserMessage:  input.Message,
 		AIAgent:      input.AIAgent,
-		AIConfig:     *aiConfig,
+		AIConfig:     aiConfig,
 	})
 	if input.Trace != nil {
 		input.Trace.RuntimeLatencyMs = time.Since(runtimeStartedAt).Milliseconds()
@@ -58,10 +65,17 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	if input.PendingInterrupt == nil {
 		return nil, fmt.Errorf("pending interrupt is required")
 	}
-	aiConfig := svc.AIConfigService.Get(input.AIAgent.AIConfigID)
-	if aiConfig == nil {
-		return nil, fmt.Errorf("ai config is nil")
+	resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(input.Conversation.ID, svc.StoreAIModelUsageReplyLLM, input.AIAgent.AIConfigID)
+	if err != nil {
+		return nil, err
 	}
+	aiConfig := resolved.Config
+	if input.Trace != nil {
+		input.Trace.AIConfigID = aiConfig.ID
+		input.Trace.ModelSource = resolved.Source
+		input.Trace.ModelSettingID = resolved.ModelSettingID
+	}
+	input.AIAgent.AIConfigID = aiConfig.ID
 	runtimeStartedAt := time.Now()
 	if input.Trace != nil {
 		input.Trace.ResumeSource = "pending_interrupt"
@@ -69,7 +83,7 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	summary, err := Service.Resume(ctx, applicationruntime.ResumeRequest{
 		Conversation: input.Conversation,
 		AIAgent:      input.AIAgent,
-		AIConfig:     *aiConfig,
+		AIConfig:     aiConfig,
 		CheckPointID: strings.TrimSpace(input.PendingInterrupt.CheckPointID),
 		ResumeData: map[string]string{
 			strings.TrimSpace(input.PendingInterrupt.InterruptID): e.resumeMessageText(input.Message),

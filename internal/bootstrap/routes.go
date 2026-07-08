@@ -41,10 +41,6 @@ func registerThirdWxWorkProtocolRoutes(group *gin.RouterGroup) {
 	group.Any("/callback", third.WxWorkProtocolAnyCallback)
 }
 
-func registerThirdQiyuRoutes(group *gin.RouterGroup) {
-	group.POST("/callback", third.QiyuPostCallback)
-}
-
 func registerApiCustomerRoutes(group *gin.RouterGroup) {
 	group.POST("/session_exchange", api.CustomerPostSession_exchange)
 }
@@ -98,7 +94,9 @@ func registerDashboardCompanyRoutes(group *gin.RouterGroup) {
 	group.POST("/create", dashboard.CompanyPostCreate)
 	group.POST("/delete", dashboard.CompanyPostDelete)
 	group.Any("/list", dashboard.CompanyAnyList)
+	group.POST("/model_settings", dashboard.CompanyPostModel_settings)
 	group.POST("/update", dashboard.CompanyPostUpdate)
+	group.POST("/update_model_settings", dashboard.CompanyPostUpdate_model_settings)
 	group.POST("/update_status", dashboard.CompanyPostUpdate_status)
 }
 
@@ -243,8 +241,8 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 	group.POST("/sync_friend_requests", dashboard.WxWorkProtocolInstancePostSync_friend_requests)
 	group.POST("/sync_profile", dashboard.WxWorkProtocolInstancePostSync_profile)
 	group.POST("/update", dashboard.WxWorkProtocolInstancePostUpdate)
-	group.POST("/init_ai_agent", dashboard.WxWorkProtocolInstancePostInit_ai_agent)
-	group.POST("/update_ai_agent", dashboard.WxWorkProtocolInstancePostUpdate_ai_agent)
+	group.POST("/store_ai_model_settings", dashboard.WxWorkProtocolInstancePostStore_ai_model_settings)
+	group.POST("/update_store_ai_model_settings", dashboard.WxWorkProtocolInstancePostUpdate_store_ai_model_settings)
 	group.POST("/update_ai_settings", dashboard.WxWorkProtocolInstancePostUpdate_ai_settings)
 	group.POST("/verify_login", dashboard.WxWorkProtocolInstancePostVerify_login)
 }
@@ -305,6 +303,14 @@ func registerDashboardAIConfigRoutes(group *gin.RouterGroup) {
 	group.POST("/update", dashboard.AIConfigPostUpdate)
 	group.POST("/update_sort", dashboard.AIConfigPostUpdateSort)
 	group.POST("/update_status", dashboard.AIConfigPostUpdate_status)
+}
+
+func registerDashboardReplyIntentConfigRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.ReplyIntentConfigAnyList)
+	group.GET("/:id", dashboard.ReplyIntentConfigGetBy)
+	group.POST("/create", dashboard.ReplyIntentConfigPostCreate)
+	group.POST("/update", dashboard.ReplyIntentConfigPostUpdate)
+	group.POST("/delete", dashboard.ReplyIntentConfigPostDelete)
 }
 
 func registerDashboardAssetRoutes(group *gin.RouterGroup) {
@@ -368,11 +374,6 @@ func registerDashboardKnowledgeCandidateRoutes(group *gin.RouterGroup) {
 	group.POST("/analyze_conversation", dashboard.KnowledgeCandidatePostAnalyze_conversation)
 	group.POST("/mark_imported", dashboard.KnowledgeCandidatePostMark_imported)
 	group.POST("/export-weekly", dashboard.KnowledgeCandidatePostExport_weekly)
-}
-
-func registerDashboardHQQiyuRouteRoutes(group *gin.RouterGroup) {
-	group.GET("/config", dashboard.HQQiyuRouteGetConfig)
-	group.POST("/update", dashboard.HQQiyuRoutePostUpdate)
 }
 
 func registerDashboardAgentRunLogRoutes(group *gin.RouterGroup) {

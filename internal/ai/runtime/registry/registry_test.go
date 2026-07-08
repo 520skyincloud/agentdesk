@@ -78,3 +78,24 @@ func TestResolveBuildsStaticToolMetadata(t *testing.T) {
 		t.Fatalf("unexpected source type: %s", item.SourceType)
 	}
 }
+
+func TestResolveDoesNotAlwaysAllowHandoffGraphTool(t *testing.T) {
+	r := registry.NewRegistry(
+		stubTool{name: toolx.BuiltinWeather.Name, code: toolx.BuiltinWeather.Code},
+		stubTool{name: toolx.GraphHandoffConversation.Name, code: toolx.GraphHandoffConversation.Code},
+	)
+	toolSet, err := r.Resolve(registry.Context{
+		Conversation:     models.Conversation{ID: 1},
+		AIAgent:          models.AIAgent{ID: 1},
+		AllowedToolCodes: []string{toolx.BuiltinWeather.Code},
+	})
+	if err != nil {
+		t.Fatalf("resolve returned error: %v", err)
+	}
+	if _, ok := toolSet.StaticToolCodes[toolx.GraphHandoffConversation.Name]; ok {
+		t.Fatalf("handoff graph tool must not be exposed when only weather is allowed")
+	}
+	if _, ok := toolSet.StaticToolCodes[toolx.BuiltinWeather.Name]; !ok {
+		t.Fatalf("expected weather tool to remain exposed")
+	}
+}

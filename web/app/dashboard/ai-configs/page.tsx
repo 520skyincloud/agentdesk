@@ -81,6 +81,10 @@ function getModelTypeLabel(value: AIModelType, t: TFunction) {
   );
 }
 
+function getAPIModeLabel(value?: string) {
+  return value === "responses" ? "Responses" : "Chat"
+}
+
 function getNextStatus(item: AIConfig) {
   return item.status === Status.Ok ? Status.Disabled : Status.Ok;
 }
@@ -158,6 +162,11 @@ export default function DashboardAIConfigsPage() {
             <Badge variant="secondary">
               {getModelTypeLabel(item.modelType as AIModelType, t)}
             </Badge>
+            {item.intentDetectEnabled ? (
+              <Badge variant="outline" className="ml-1 text-[11px]">
+                意图识别
+              </Badge>
+            ) : null}
             <div className="text-sm">{item.modelName}</div>
             {item.dimension > 0 ? (
               <div className="text-xs text-muted-foreground">
@@ -176,6 +185,9 @@ export default function DashboardAIConfigsPage() {
             <div className="text-xs text-muted-foreground">
               {t("aiConfig.apiKey", { key: item.hasApiKey ? "****" : "-" })}
             </div>
+            <Badge variant="outline" className="text-[11px]">
+              {getAPIModeLabel(item.apiMode)}
+            </Badge>
           </div>
         ),
       },

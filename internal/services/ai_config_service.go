@@ -20,6 +20,11 @@ import (
 
 var AIConfigService = newAIConfigService()
 
+const (
+	AIConfigAPIModeChatCompletions = "chat_completions"
+	AIConfigAPIModeResponses       = "responses"
+)
+
 func newAIConfigService() *aIConfigService {
 	return &aIConfigService{}
 }
@@ -112,22 +117,24 @@ func (s *aIConfigService) UpdateAIConfig(req request.UpdateAIConfigRequest, oper
 	}
 
 	columns := map[string]any{
-		"name":               item.Name,
-		"provider":           item.Provider,
-		"base_url":           item.BaseURL,
-		"model_type":         item.ModelType,
-		"model_name":         item.ModelName,
-		"dimension":          item.Dimension,
-		"max_context_tokens": item.MaxContextTokens,
-		"max_output_tokens":  item.MaxOutputTokens,
-		"timeout_ms":         item.TimeoutMS,
-		"max_retry_count":    item.MaxRetryCount,
-		"rpm_limit":          item.RPMLimit,
-		"tpm_limit":          item.TPMLimit,
-		"remark":             item.Remark,
-		"update_user_id":     operator.UserID,
-		"update_user_name":   operator.Username,
-		"updated_at":         time.Now(),
+		"name":                  item.Name,
+		"provider":              item.Provider,
+		"base_url":              item.BaseURL,
+		"api_mode":              item.APIMode,
+		"model_type":            item.ModelType,
+		"model_name":            item.ModelName,
+		"dimension":             item.Dimension,
+		"max_context_tokens":    item.MaxContextTokens,
+		"max_output_tokens":     item.MaxOutputTokens,
+		"timeout_ms":            item.TimeoutMS,
+		"max_retry_count":       item.MaxRetryCount,
+		"rpm_limit":             item.RPMLimit,
+		"tpm_limit":             item.TPMLimit,
+		"intent_detect_enabled": item.IntentDetectEnabled,
+		"remark":                item.Remark,
+		"update_user_id":        operator.UserID,
+		"update_user_name":      operator.Username,
+		"updated_at":            time.Now(),
 	}
 	if item.APIKey != "" {
 		columns["api_key"] = item.APIKey
@@ -204,6 +211,7 @@ func (s *aIConfigService) buildAIConfigModel(req request.CreateAIConfigRequest) 
 	name := strings.TrimSpace(req.Name)
 	baseURL := strings.TrimSpace(req.BaseURL)
 	modelName := strings.TrimSpace(req.ModelName)
+	apiMode := normalizeAIConfigAPIMode(req.APIMode)
 
 	if name == "" {
 		return nil, errorsx.InvalidParam("配置名称不能为空")
@@ -243,21 +251,45 @@ func (s *aIConfigService) buildAIConfigModel(req request.CreateAIConfigRequest) 
 	}
 
 	return &models.AIConfig{
-		Name:             name,
-		Provider:         req.Provider,
-		BaseURL:          baseURL,
-		APIKey:           strings.TrimSpace(req.APIKey),
-		ModelType:        req.ModelType,
-		ModelName:        modelName,
-		Dimension:        req.Dimension,
-		MaxContextTokens: req.MaxContextTokens,
-		MaxOutputTokens:  req.MaxOutputTokens,
-		TimeoutMS:        req.TimeoutMS,
-		MaxRetryCount:    req.MaxRetryCount,
-		RPMLimit:         req.RPMLimit,
-		TPMLimit:         req.TPMLimit,
-		Remark:           strings.TrimSpace(req.Remark),
+		Name:                name,
+		Provider:            req.Provider,
+		BaseURL:             baseURL,
+		APIKey:              strings.TrimSpace(req.APIKey),
+		APIMode:             apiMode,
+		ModelType:           req.ModelType,
+		ModelName:           modelName,
+		Dimension:           req.Dimension,
+		MaxContextTokens:    req.MaxContextTokens,
+		MaxOutputTokens:     req.MaxOutputTokens,
+		TimeoutMS:           req.TimeoutMS,
+		MaxRetryCount:       req.MaxRetryCount,
+		RPMLimit:            req.RPMLimit,
+		TPMLimit:            req.TPMLimit,
+		IntentDetectEnabled: req.IntentDetectEnabled && req.ModelType == enums.AIModelTypeLLM,
+		Remark:              strings.TrimSpace(req.Remark),
 	}, nil
+}
+
+func (s *aIConfigService) GetIntentDetectConfig(fallback models.AIConfig) models.AIConfig {
+	if item := repositories.AIConfigRepository.FindOne(sqls.DB(), sqls.NewCnd().
+		Eq("status", enums.StatusOk).
+		Eq("model_type", enums.AIModelTypeLLM).
+		Eq("intent_detect_enabled", true).
+		Asc("sort_no").Asc("id")); item != nil {
+		return *item
+	}
+	return fallback
+}
+
+func normalizeAIConfigAPIMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", AIConfigAPIModeChatCompletions, "chat":
+		return AIConfigAPIModeChatCompletions
+	case AIConfigAPIModeResponses, "response", "responses_api":
+		return AIConfigAPIModeResponses
+	default:
+		return AIConfigAPIModeChatCompletions
+	}
 }
 
 func (s *aIConfigService) nextSortNo() int {

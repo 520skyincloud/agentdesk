@@ -16,6 +16,8 @@ type WxWorkProtocolInstanceResponse struct {
 	EmployeeUserID                 string       `json:"employeeUserId"`
 	EmployeeName                   string       `json:"employeeName"`
 	EmployeeAvatar                 string       `json:"employeeAvatar"`
+	CompanyID                      int64        `json:"companyId"`
+	CompanyName                    string       `json:"companyName"`
 	StoreID                        int64        `json:"storeId"`
 	StoreStaffBindingID            int64        `json:"storeStaffBindingId"`
 	ManagedMode                    string       `json:"managedMode"`
@@ -32,10 +34,9 @@ type WxWorkProtocolInstanceResponse struct {
 	WelcomeAskLocation             bool         `json:"welcomeAskLocation"`
 	KnowledgeBaseID                int64        `json:"knowledgeBaseId"`
 	KnowledgeBaseName              string       `json:"knowledgeBaseName"`
-	AIAgentID                      int64        `json:"aiAgentId"`
-	AIAgentName                    string       `json:"aiAgentName"`
-	AIConfigName                   string       `json:"aiConfigName"`
-	AIAgentConfigured              bool         `json:"aiAgentConfigured"`
+	CustomerCount                  int64        `json:"customerCount"`
+	ManualAttentionCount           int64        `json:"manualAttentionCount"`
+	UrgentManualAttentionCount     int64        `json:"urgentManualAttentionCount"`
 	NotifyURL                      string       `json:"notifyUrl"`
 	Proxy                          string       `json:"proxy"`
 	BridgeID                       string       `json:"bridgeId"`
@@ -85,10 +86,14 @@ type WxWorkProtocolRoomOptionResponse struct {
 }
 
 type WxWorkProtocolRoomMemberOptionResponse struct {
-	UserID string `json:"userId"`
-	Name   string `json:"name"`
-	Avatar string `json:"avatar"`
-	Raw    any    `json:"raw,omitempty"`
+	UserID      string `json:"userId"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	RealName    string `json:"realName"`
+	RoomRemark  string `json:"roomRemark"`
+	AccountID   string `json:"accountId"`
+	Avatar      string `json:"avatar"`
+	Raw         any    `json:"raw,omitempty"`
 }
 
 func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) WxWorkProtocolInstanceResponse {
@@ -102,6 +107,7 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		EmployeeUserID:                 item.EmployeeUserID,
 		EmployeeName:                   utils.RepairMojibakeText(item.EmployeeName),
 		EmployeeAvatar:                 item.EmployeeAvatar,
+		CompanyID:                      item.CompanyID,
 		StoreID:                        item.StoreID,
 		StoreStaffBindingID:            item.StoreStaffBindingID,
 		ManagedMode:                    "semi",
@@ -115,8 +121,6 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		WelcomeSendMiniProgram:         item.WelcomeSendMiniProgram,
 		WelcomeAskLocation:             item.WelcomeAskLocation,
 		KnowledgeBaseID:                item.KnowledgeBaseID,
-		AIAgentID:                      item.AIAgentID,
-		AIAgentConfigured:              item.AIAgentID > 0,
 		NotifyURL:                      item.NotifyURL,
 		Proxy:                          item.Proxy,
 		BridgeID:                       item.BridgeID,

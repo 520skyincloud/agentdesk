@@ -6,6 +6,7 @@ import (
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/imsource"
 	"agent-desk/internal/pkg/openidentity"
 	"agent-desk/internal/pkg/utils"
 	"encoding/json"
@@ -256,8 +257,12 @@ func (s *wsService) closeSession(session *ClientSession) {
 		session.Closed.Store(true)
 		remaining := s.manager.Unregister(session)
 
-		close(session.Send)
-		_ = session.Conn.Close()
+		if session.Send != nil {
+			close(session.Send)
+		}
+		if session.Conn != nil {
+			_ = session.Conn.Close()
+		}
 
 		var discUserID int64
 		var discExternalID string
@@ -375,6 +380,8 @@ func (s *wsService) buildRealtimeMessage(item *models.Message) response.MessageR
 		RecalledAt:      utils.FormatTimePtr(item.RecalledAt),
 		QuotedMessageID: item.QuotedMessageID,
 	}
+	ret.SendSource = imsource.DetectSendSource(item.SenderType, item.RequestID, item.ClientMsgID)
+	ret.SendSourceLabel = imsource.SendSourceLabel(ret.SendSource, "")
 	s.fillRealtimeMessageSender(&ret, item)
 	return ret
 }
@@ -479,6 +486,7 @@ func (s *wsService) PublishConversationChanged(conversation *models.Conversation
 			HandoffReason:             routePayload.HandoffReason,
 			NeedHumanFollowUp:         routePayload.NeedHumanFollowUp,
 			ManualExpireAt:            routePayload.ManualExpireAt,
+			ManualAttention:           routePayload.ManualAttention,
 			StoreID:                   routePayload.StoreID,
 			StoreName:                 routePayload.StoreName,
 			WxWorkInstanceID:          routePayload.WxWorkInstanceID,
@@ -504,6 +512,7 @@ func (s *wsService) buildConversationRouteRealtimePayload(conversationID int64) 
 		StoreID:           route.StoreID,
 		WxWorkInstanceID:  route.WxWorkInstanceID,
 	}
+	payload.ManualAttention = buildRealtimeManualAttention(route, payload.ManualExpireAt)
 	if route.StoreID > 0 {
 		if store := StoreService.Get(route.StoreID); store != nil {
 			payload.StoreName = utils.RepairMojibakeText(store.Name)
@@ -524,6 +533,50 @@ func (s *wsService) buildConversationRouteRealtimePayload(conversationID int64) 
 		}
 	}
 	return payload
+}
+
+func buildRealtimeManualAttention(route *models.ConversationRouteState, manualExpireAt string) response.ConversationManualAttentionResponse {
+	ret := response.ConversationManualAttentionResponse{
+		Level: "none",
+		Label: "AI接待中",
+	}
+	if route == nil {
+		return ret
+	}
+	isSafety := isSafetyHandoffReason(route.HandoffReason)
+	switch route.RouteStatus {
+	case enums.ConversationRouteStatusHQAgentDeskPending:
+		ret.Dot = true
+		ret.Level = "normal"
+		ret.Label = "待总部接入"
+		ret.ExpiresAt = manualExpireAt
+		if isSafety {
+			ret.Level = "urgent"
+		}
+	case enums.ConversationRouteStatusStoreWecomManual:
+		ret.Level = "serving"
+		ret.Label = "门店处理中"
+		ret.ExpiresAt = manualExpireAt
+		if route.NeedHumanFollowUp {
+			ret.Dot = true
+			ret.Level = "normal"
+			ret.Label = "门店待跟进"
+			if isSafety {
+				ret.Level = "urgent"
+				ret.Label = "安全风险待跟进"
+			}
+		}
+	case enums.ConversationRouteStatusHQAgentDeskServing:
+		ret.Level = "serving"
+		ret.Label = "人工处理中"
+		ret.ExpiresAt = manualExpireAt
+	case enums.ConversationRouteStatusAIServing, enums.ConversationRouteStatusAIFallback:
+		if strings.Contains(route.HandoffReason, "恢复AI") {
+			ret.Level = "timeout_restored"
+			ret.Label = "已恢复AI接待"
+		}
+	}
+	return ret
 }
 
 func (s *wsService) PublishNotificationCreated(userID int64, notification response.NotificationResponse) {
