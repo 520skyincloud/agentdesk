@@ -169,6 +169,9 @@ func seed(db *gorm.DB, batch, password string) error {
 		if err := ctx.upsertStoreBindingsAndInstances(); err != nil {
 			return err
 		}
+		if err := ctx.syncTeamWxWorkInstanceScopes(); err != nil {
+			return err
+		}
 		if err := ctx.upsertCustomers(); err != nil {
 			return err
 		}
@@ -764,6 +767,33 @@ func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, bin
 		return nil, err
 	}
 	return item, nil
+}
+
+func (ctx *seedContext) syncTeamWxWorkInstanceScopes() error {
+	if len(ctx.teams) < 3 || len(ctx.wxInstances) < 100 {
+		return nil
+	}
+	ranges := [][2]int{{1, 34}, {35, 67}, {68, 100}}
+	for i, team := range ctx.teams {
+		if i >= len(ranges) {
+			break
+		}
+		instanceIDs := make([]int64, 0, ranges[i][1]-ranges[i][0]+1)
+		for instanceIndex := ranges[i][0]; instanceIndex <= ranges[i][1]; instanceIndex++ {
+			instanceIDs = append(instanceIDs, ctx.wxInstances[instanceIndex-1].ID)
+		}
+		joined := joinInt64s(instanceIDs)
+		if err := ctx.db.Model(team).Updates(map[string]any{
+			"wx_work_instance_scope_ids": joined,
+			"updated_at":                 ctx.now,
+			"update_user_id":             constants.SystemAuditUserID,
+			"update_user_name":           constants.SystemAuditUserName,
+		}).Error; err != nil {
+			return err
+		}
+		team.WxWorkInstanceScopeIDs = joined
+	}
+	return nil
 }
 
 func (ctx *seedContext) upsertCustomers() error {

@@ -233,6 +233,12 @@ export function AgentTeamSidebar({
                     <span className="block truncate font-medium">
                       {item.name}
                     </span>
+                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                      {t("agentProfile.teamScopeSummary", {
+                        wxwork: item.wxWorkInstanceScopeIds.length,
+                        stores: item.storeScopeIds.length,
+                      })}
+                    </span>
                   </span>
                   <Badge
                     variant={

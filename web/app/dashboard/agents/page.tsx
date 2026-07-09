@@ -5,7 +5,7 @@ import {
   PanelLeftOpenIcon,
   UserCogIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import {
   DashboardCrudPage,
@@ -52,7 +52,7 @@ export default function DashboardAgentsPage() {
   const [selectedTeam, setSelectedTeam] = useState<AdminAgentTeam | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  function handleTeamsChange(nextTeams: AdminAgentTeam[]) {
+  const handleTeamsChange = useCallback((nextTeams: AdminAgentTeam[]) => {
     setSelectedTeam((current) => {
       if (nextTeams.length === 0) {
         return null;
@@ -62,7 +62,7 @@ export default function DashboardAgentsPage() {
       }
       return nextTeams.find((item) => item.id === current.id) ?? nextTeams[0];
     });
-  }
+  }, []);
 
   const filters = useMemo<DashboardCrudFilter[]>(
     () => [

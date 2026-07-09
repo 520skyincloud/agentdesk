@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { CheckIcon, ChevronsUpDownIcon } from "lucide-react";
+import { CheckIcon, ChevronsUpDownIcon, SearchIcon } from "lucide-react";
 import { Controller, type Resolver, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod/v4";
@@ -10,12 +10,16 @@ import { z } from "zod/v4";
 import {
   type AdminAgentTeam,
   type CreateAdminAgentTeamPayload,
+  type WxWorkProtocolInstance,
   fetchAgentTeam,
+  fetchWxWorkProtocolInstances,
   fetchUsersAll,
   type AdminUser,
 } from "@/lib/api/admin";
 import { OptionCombobox } from "@/components/option-combobox";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Command,
   CommandEmpty,
@@ -43,6 +47,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/i18n/provider";
 import { Status } from "@/lib/generated/enums";
@@ -137,6 +142,26 @@ function parseIdList(value: string) {
     .filter((id, index, ids) => Number.isFinite(id) && id > 0 && ids.indexOf(id) === index)
 }
 
+function wxWorkInstanceName(item: WxWorkProtocolInstance) {
+  return item.employeeName || item.employeeUserId || item.guid || `#${item.id}`;
+}
+
+function wxWorkInstanceStoreLabel(item: WxWorkProtocolInstance) {
+  return item.storeName || item.storeCode || (item.storeId > 0 ? `#${item.storeId}` : "");
+}
+
+function wxWorkInstanceSearchText(item: WxWorkProtocolInstance) {
+  return [
+    item.employeeName,
+    item.employeeUserId,
+    item.guid,
+    item.storeName,
+    item.storeCode,
+    item.companyName,
+    item.healthStatus,
+  ].join(" ").toLowerCase();
+}
+
 export function EditDialog({
   open,
   saving,
@@ -169,8 +194,12 @@ function TeamEditDialogBody({
 }: TeamEditDialogBodyProps) {
   const t = useI18n();
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [wxWorkInstances, setWxWorkInstances] = useState<WxWorkProtocolInstance[]>([]);
   const [userSelectOpen, setUserSelectOpen] = useState(false);
+  const [wxWorkDialogOpen, setWxWorkDialogOpen] = useState(false);
+  const [wxWorkKeyword, setWxWorkKeyword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [wxWorkLoading, setWxWorkLoading] = useState(false);
   const userOptions = users.map((user) => ({
     value: String(user.id),
     label: `${user.nickname || user.username} (${user.username})`,
@@ -182,6 +211,17 @@ function TeamEditDialogBody({
       setUsers(data);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("agentProfile.loadUsersFailed"));
+    }
+  }, [t]);
+  const loadWxWorkInstances = useCallback(async () => {
+    setWxWorkLoading(true);
+    try {
+      const data = await fetchWxWorkProtocolInstances({ page: 1, limit: 500 });
+      setWxWorkInstances(data.results);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("agentProfile.loadWxWorkInstancesFailed"));
+    } finally {
+      setWxWorkLoading(false);
     }
   }, [t]);
   const editFormSchema = useMemo(() => createEditFormSchema(t), [t]);
@@ -198,8 +238,41 @@ function TeamEditDialogBody({
     handleSubmit,
     reset,
     register,
+    setValue,
+    watch,
     formState: { errors },
   } = form;
+  const wxWorkScopeValue = watch("wxWorkInstanceScopeIds");
+  const selectedWxWorkIds = useMemo(() => parseIdList(wxWorkScopeValue || ""), [wxWorkScopeValue]);
+  const selectedWxWorkIdSet = useMemo(() => new Set(selectedWxWorkIds), [selectedWxWorkIds]);
+  const selectedWxWorkInstances = useMemo(
+    () =>
+      selectedWxWorkIds
+        .map((id) => wxWorkInstances.find((item) => item.id === id))
+        .filter((item): item is WxWorkProtocolInstance => Boolean(item)),
+    [selectedWxWorkIds, wxWorkInstances],
+  );
+  const selectedStoreCount = useMemo(() => {
+    const storeIds = new Set<number>();
+    selectedWxWorkInstances.forEach((item) => {
+      if (item.storeId > 0) {
+        storeIds.add(item.storeId);
+      }
+    });
+    return storeIds.size;
+  }, [selectedWxWorkInstances]);
+  const filteredWxWorkInstances = useMemo(() => {
+    const keyword = wxWorkKeyword.trim().toLowerCase();
+    const items = [...wxWorkInstances].sort((a, b) => {
+      const storeA = wxWorkInstanceStoreLabel(a);
+      const storeB = wxWorkInstanceStoreLabel(b);
+      return storeA.localeCompare(storeB) || a.id - b.id;
+    });
+    if (!keyword) {
+      return items;
+    }
+    return items.filter((item) => wxWorkInstanceSearchText(item).includes(keyword));
+  }, [wxWorkInstances, wxWorkKeyword]);
 
   useEffect(() => {
     async function loadDetail() {
@@ -224,11 +297,41 @@ function TeamEditDialogBody({
     void loadUsers();
   }, [loadUsers]);
 
+  useEffect(() => {
+    void loadWxWorkInstances();
+  }, [loadWxWorkInstances]);
+
+  function updateWxWorkScope(ids: number[]) {
+    const nextValue = [...new Set(ids)].sort((a, b) => a - b).join(",");
+    setValue("wxWorkInstanceScopeIds", nextValue, {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
+  }
+
+  function toggleWxWorkInstance(id: number) {
+    const nextIds = new Set(selectedWxWorkIds);
+    if (nextIds.has(id)) {
+      nextIds.delete(id);
+    } else {
+      nextIds.add(id);
+    }
+    updateWxWorkScope([...nextIds]);
+  }
+
+  function selectFilteredWxWorkInstances() {
+    updateWxWorkScope([
+      ...selectedWxWorkIds,
+      ...filteredWxWorkInstances.map((item) => item.id),
+    ]);
+  }
+
   async function onFormSubmit(values: EditForm) {
     await onSubmit(buildPayload(values));
   }
 
   return (
+    <>
     <DialogContent className="max-w-xl gap-0 p-0 sm:max-w-xl">
       <DialogHeader className="px-6 pt-6">
         <DialogTitle>{itemId ? t("agentProfile.teamEditTitle") : t("agentProfile.teamCreateTitle")}</DialogTitle>
@@ -351,24 +454,48 @@ function TeamEditDialogBody({
                 />
               </FieldContent>
             </Field>
+            <input type="hidden" {...register("storeScopeIds")} />
+            <input type="hidden" {...register("wxWorkInstanceScopeIds")} />
             <Field>
-              <FieldLabel htmlFor="agent-team-store-scope-ids">可服务门店ID</FieldLabel>
+              <FieldLabel>{t("agentProfile.serviceWxWorkInstances")}</FieldLabel>
               <FieldContent>
-                <Input
-                  id="agent-team-store-scope-ids"
-                  placeholder="多个用逗号分隔；留空表示不限制"
-                  {...register("storeScopeIds")}
-                />
-              </FieldContent>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="agent-team-wxwork-scope-ids">可服务员工号ID</FieldLabel>
-              <FieldContent>
-                <Input
-                  id="agent-team-wxwork-scope-ids"
-                  placeholder="多个用逗号分隔；留空表示不限制"
-                  {...register("wxWorkInstanceScopeIds")}
-                />
+                <div className="rounded-xl border border-[#dbe7f6] bg-[#f8fbff] p-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium">
+                        {selectedWxWorkIds.length > 0
+                          ? t("agentProfile.selectedWxWorkSummary", {
+                              count: selectedWxWorkIds.length,
+                              stores: selectedStoreCount,
+                            })
+                          : t("agentProfile.noWxWorkSelected")}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {t("agentProfile.wxWorkScopeHint")}
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setWxWorkDialogOpen(true)}
+                    >
+                      {t("agentProfile.manageWxWorkInstances")}
+                    </Button>
+                  </div>
+                  {selectedWxWorkInstances.length > 0 ? (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {selectedWxWorkInstances.slice(0, 5).map((item) => (
+                        <Badge key={item.id} variant="secondary">
+                          {wxWorkInstanceName(item)}
+                          {wxWorkInstanceStoreLabel(item) ? ` · ${wxWorkInstanceStoreLabel(item)}` : ""}
+                        </Badge>
+                      ))}
+                      {selectedWxWorkIds.length > 5 ? (
+                        <Badge variant="outline">+{selectedWxWorkIds.length - 5}</Badge>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
               </FieldContent>
             </Field>
             <Field>
@@ -409,5 +536,104 @@ function TeamEditDialogBody({
         </form>
       )}
     </DialogContent>
+    <Dialog open={wxWorkDialogOpen} onOpenChange={setWxWorkDialogOpen}>
+      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <DialogHeader className="px-6 pt-6">
+          <DialogTitle>{t("agentProfile.manageWxWorkInstances")}</DialogTitle>
+        </DialogHeader>
+        <div className="border-b px-6 py-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="relative min-w-0 flex-1">
+              <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={wxWorkKeyword}
+                onChange={(event) => setWxWorkKeyword(event.target.value)}
+                placeholder={t("agentProfile.searchWxWorkInstances")}
+                className="pl-9"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={selectFilteredWxWorkInstances}
+                disabled={filteredWxWorkInstances.length === 0}
+              >
+                {t("agentProfile.selectFilteredWxWork")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => updateWxWorkScope([])}
+                disabled={selectedWxWorkIds.length === 0}
+              >
+                {t("agentProfile.clearWxWorkSelection")}
+              </Button>
+            </div>
+          </div>
+          <div className="mt-2 text-xs text-muted-foreground">
+            {t("agentProfile.wxWorkSelectionMeta", {
+              selected: selectedWxWorkIds.length,
+              total: wxWorkInstances.length,
+            })}
+          </div>
+        </div>
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="space-y-2 p-4">
+            {wxWorkLoading ? (
+              <div className="py-12 text-center text-sm text-muted-foreground">
+                {t("agentProfile.loading")}
+              </div>
+            ) : filteredWxWorkInstances.length === 0 ? (
+              <div className="py-12 text-center text-sm text-muted-foreground">
+                {t("agentProfile.emptyWxWorkInstances")}
+              </div>
+            ) : (
+              filteredWxWorkInstances.map((item) => {
+                const checked = selectedWxWorkIdSet.has(item.id);
+                return (
+                  <div
+                    key={item.id}
+                    className="flex items-start gap-3 rounded-xl border border-[#dbe7f6] bg-white p-3"
+                  >
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={() => toggleWxWorkInstance(item.id)}
+                      className="mt-1"
+                    />
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      onClick={() => toggleWxWorkInstance(item.id)}
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{wxWorkInstanceName(item)}</span>
+                        <Badge variant="outline">ID {item.id}</Badge>
+                        <Badge variant={item.status === Status.Ok ? "secondary" : "outline"}>
+                          {item.healthStatus || t("agentProfile.unknownWxWorkHealth")}
+                        </Badge>
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {[
+                          item.employeeUserId,
+                          wxWorkInstanceStoreLabel(item),
+                          item.companyName,
+                        ].filter(Boolean).join(" · ") || "-"}
+                      </div>
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </ScrollArea>
+        <DialogFooter className="mx-0 mb-0 px-6 py-4">
+          <Button type="button" onClick={() => setWxWorkDialogOpen(false)}>
+            {t("agentProfile.confirmWxWorkSelection")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
