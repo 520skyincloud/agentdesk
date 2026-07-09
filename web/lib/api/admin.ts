@@ -140,6 +140,71 @@ export type AdminConversationDetail = AdminConversation & {
   participants?: ConversationParticipant[]
 }
 
+export type ConversationDispatchTask = {
+  conversationId: number
+  customerId: number
+  customerName: string
+  status: string
+  statusLabel: string
+  conversationStatus: number
+  routeStatus?: string
+  routeStatusLabel?: string
+  serviceMode: number
+  teamId: number
+  teamName?: string
+  manageable: boolean
+  currentAssigneeId: number
+  currentAssigneeName?: string
+  storeId?: number
+  storeName?: string
+  wxWorkInstanceId?: number
+  wxWorkEmployeeName?: string
+  wxWorkEmployeeUserId?: string
+  handoffReason?: string
+  lastMessageSummary?: string
+  lastMessageAt?: string
+  waitingSeconds: number
+  manualExpireAt?: string
+  assignedAt?: string
+  firstAgentReplyAt?: string
+  recommendedAssigneeId?: number
+  recommendedAssigneeName?: string
+  recommendationReason?: string
+}
+
+export type ConversationDispatchStats = {
+  total: number
+  pending: number
+  assigned: number
+  processing: number
+  warning: number
+  timeout: number
+  closed: number
+  manageablePending: number
+  manageableAssigned: number
+  availableAgents: number
+}
+
+export type ConversationDispatchAgentLoad = {
+  userId: number
+  profileId: number
+  teamId: number
+  teamName?: string
+  username?: string
+  nickname?: string
+  displayName: string
+  serviceStatus: number
+  maxConcurrentCount: number
+  activeCount: number
+  pendingFirstReply: number
+  processingCount: number
+  autoAssignEnabled: boolean
+  available: boolean
+  priorityLevel: number
+  lastOnlineAt?: string
+  lastStatusAt?: string
+}
+
 export type AdminMessage = {
   id: number
   conversationId: number
@@ -1536,6 +1601,58 @@ export function dispatchConversation(conversationId: number) {
   return request<void>("/api/dashboard/conversation/dispatch", {
     method: "POST",
     body: JSON.stringify({ conversationId }),
+  })
+}
+
+export function fetchConversationDispatchTasks(
+  query?: Record<string, string | number | undefined>
+) {
+  return request<PageResult<ConversationDispatchTask>>(
+    `/api/dashboard/conversation-dispatch/list${toQueryString(query)}`
+  )
+}
+
+export function fetchConversationDispatchStats(
+  query?: Record<string, string | number | undefined>
+) {
+  return request<ConversationDispatchStats>(
+    `/api/dashboard/conversation-dispatch/stats${toQueryString(query)}`
+  )
+}
+
+export function fetchConversationDispatchAgentLoads(
+  query?: Record<string, string | number | undefined>
+) {
+  return request<ConversationDispatchAgentLoad[]>(
+    `/api/dashboard/conversation-dispatch/agent_loads${toQueryString(query)}`
+  )
+}
+
+export function autoAssignConversationDispatch(conversationId: number, teamId?: number) {
+  return request<void>("/api/dashboard/conversation-dispatch/auto_assign", {
+    method: "POST",
+    body: JSON.stringify({ conversationId, teamId }),
+  })
+}
+
+export function assignConversationDispatch(conversationId: number, assigneeId: number, reason: string) {
+  return request<void>("/api/dashboard/conversation-dispatch/assign", {
+    method: "POST",
+    body: JSON.stringify({ conversationId, assigneeId, reason }),
+  })
+}
+
+export function transferConversationDispatch(conversationId: number, assigneeId: number, reason: string) {
+  return request<void>("/api/dashboard/conversation-dispatch/transfer", {
+    method: "POST",
+    body: JSON.stringify({ conversationId, assigneeId, reason }),
+  })
+}
+
+export function releaseConversationDispatch(conversationId: number, reason: string) {
+  return request<void>("/api/dashboard/conversation-dispatch/release", {
+    method: "POST",
+    body: JSON.stringify({ conversationId, reason }),
   })
 }
 

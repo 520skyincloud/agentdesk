@@ -171,6 +171,16 @@ func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.POST("/upload_image", dashboard.ConversationPostUpload_image)
 }
 
+func registerDashboardConversationDispatchRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.ConversationDispatchAnyList)
+	group.Any("/stats", dashboard.ConversationDispatchAnyStats)
+	group.Any("/agent_loads", dashboard.ConversationDispatchAnyAgent_loads)
+	group.POST("/auto_assign", dashboard.ConversationDispatchPostAuto_assign)
+	group.POST("/assign", dashboard.ConversationDispatchPostAssign)
+	group.POST("/transfer", dashboard.ConversationDispatchPostTransfer)
+	group.POST("/release", dashboard.ConversationDispatchPostRelease)
+}
+
 func registerDashboardTicketRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.TicketGetBy)
 	group.POST("/assign", dashboard.TicketPostAssign)

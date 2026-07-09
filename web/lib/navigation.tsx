@@ -13,6 +13,7 @@ import {
   KeyRoundIcon,
   LayoutDashboardIcon,
   MessageSquareCodeIcon,
+  MessageSquareShareIcon,
   MessageSquareMoreIcon,
   SlidersHorizontalIcon,
   ShieldCheckIcon,
@@ -41,6 +42,7 @@ const CS_LEADER_ALLOWED_URLS = new Set([
   ...CS_USER_ALLOWED_URLS,
   "/dashboard/tags",
   "/dashboard/conversation-monitor",
+  "/dashboard/conversation-dispatch",
   "/dashboard/agents",
   "/dashboard/agent-team-schedules",
   "/dashboard/knowledge-candidates",
@@ -166,6 +168,12 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         titleKey: "nav.conversationMonitor",
         url: "/dashboard/conversation-monitor",
         icon: <BotMessageSquareIcon />,
+        requiredPermission: "conversation.view",
+      },
+      {
+        titleKey: "nav.conversationDispatch",
+        url: "/dashboard/conversation-dispatch",
+        icon: <MessageSquareShareIcon />,
         requiredPermission: "conversation.view",
       },
       {
