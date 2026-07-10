@@ -3,6 +3,8 @@
 import {
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
+  PlusIcon,
+  RefreshCwIcon,
   UserCogIcon,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
@@ -26,6 +28,7 @@ import {
 import { useI18n } from "@/i18n/provider";
 import { ServiceStatus } from "@/lib/generated/enums";
 import { formatDateTime } from "@/lib/utils";
+import { readSession } from "@/lib/auth";
 import { EditDialog } from "./_components/edit";
 import { AgentTeamSidebar } from "./_components/team-sidebar";
 
@@ -51,6 +54,17 @@ export default function DashboardAgentsPage() {
   const serviceStatusOptions = useMemo(() => getServiceStatusOptions(t), [t]);
   const [selectedTeam, setSelectedTeam] = useState<AdminAgentTeam | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const session = readSession();
+  const permissions = new Set(session?.permissions ?? []);
+  const canCreateAgent = Boolean(
+    selectedTeam?.manageable && permissions.has("agent.create"),
+  );
+  const canUpdateAgent = Boolean(
+    selectedTeam?.manageable && permissions.has("agent.update"),
+  );
+  const canDeleteAgent = Boolean(
+    selectedTeam?.manageable && permissions.has("agent.delete"),
+  );
 
   const handleTeamsChange = useCallback((nextTeams: AdminAgentTeam[]) => {
     setSelectedTeam((current) => {
@@ -251,6 +265,22 @@ export default function DashboardAgentsPage() {
               updateAgentProfile({ id: item.id, ...payload })
             }
             deleteItem={(item) => deleteAgentProfile(item.id)}
+            canEdit={() => canUpdateAgent}
+            canDelete={() => canDeleteAgent}
+            renderToolbarActions={({ onRefresh, onCreate, loading }) => (
+              <>
+                <Button variant="outline" onClick={onRefresh} disabled={loading}>
+                  <RefreshCwIcon className={loading ? "animate-spin" : undefined} />
+                  {t("agentProfile.refresh")}
+                </Button>
+                {canCreateAgent ? (
+                  <Button onClick={onCreate}>
+                    <PlusIcon />
+                    {t("agentProfile.new")}
+                  </Button>
+                ) : null}
+              </>
+            )}
             renderEditDialog={({
               open,
               saving,

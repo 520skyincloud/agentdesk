@@ -99,7 +99,8 @@ func AgentPostUpdate(ctx *gin.Context) {
 }
 
 func AgentPostDelete(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentDelete); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentDelete)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -108,7 +109,7 @@ func AgentPostDelete(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.AgentProfileService.DeleteAgentProfile(req.ID); err != nil {
+	if err := services.AgentProfileService.DeleteAgentProfile(req.ID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

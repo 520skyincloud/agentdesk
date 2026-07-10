@@ -148,7 +148,8 @@ func AgentTeamSchedulePostUpdate(ctx *gin.Context) {
 }
 
 func AgentTeamSchedulePostDelete(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamScheduleDelete); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamScheduleDelete)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -157,7 +158,7 @@ func AgentTeamSchedulePostDelete(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.AgentTeamScheduleService.DeleteAgentTeamSchedule(req.ID); err != nil {
+	if err := services.AgentTeamScheduleService.DeleteAgentTeamSchedule(req.ID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

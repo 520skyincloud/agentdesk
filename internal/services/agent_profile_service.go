@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
@@ -158,7 +159,7 @@ func teamCanServeRoute(team *models.AgentTeam, route *models.ConversationRouteSt
 	teamStoreIDs := utils.SplitInt64s(team.StoreScopeIDs)
 	teamInstanceIDs := utils.SplitInt64s(team.WxWorkInstanceScopeIDs)
 	if len(teamStoreIDs) == 0 && len(teamInstanceIDs) == 0 {
-		return true
+		return false
 	}
 	if route.StoreID > 0 && containsInt64(teamStoreIDs, route.StoreID) {
 		return true
@@ -172,6 +173,9 @@ func teamCanServeRoute(team *models.AgentTeam, route *models.ConversationRouteSt
 func (s *agentProfileService) CreateAgentProfile(req request.CreateAgentProfileRequest, operator *dto.AuthPrincipal) (*models.AgentProfile, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if !AgentTeamScopeService.CanManageTeam(operator, req.TeamID) {
+		return nil, errorsx.Forbidden("只能在自己管理的客服组中新增客服")
 	}
 	item, err := s.buildProfileModel(0, req)
 	if err != nil {
@@ -202,6 +206,12 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 	if current == nil {
 		return errorsx.InvalidParam("客服档案不存在")
 	}
+	if !AgentTeamScopeService.CanManageTeam(operator, current.TeamID) || !AgentTeamScopeService.CanManageTeam(operator, req.TeamID) {
+		return errorsx.Forbidden("客服原所属组和目标组都必须在你的管理范围内")
+	}
+	if !AgentTeamScopeService.IsAdmin(operator) && req.UserID != current.UserID {
+		return errorsx.Forbidden("客服组长不能更换客服档案关联账号")
+	}
 	item, err := s.buildProfileModel(req.ID, req.CreateAgentProfileRequest)
 	if err != nil {
 		return err
@@ -230,10 +240,16 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 	return nil
 }
 
-func (s *agentProfileService) DeleteAgentProfile(id int64) error {
+func (s *agentProfileService) DeleteAgentProfile(id int64, operator *dto.AuthPrincipal) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
 	current := s.Get(id)
 	if current == nil {
 		return errorsx.InvalidParam("客服档案不存在")
+	}
+	if !AgentTeamScopeService.CanManageTeam(operator, current.TeamID) {
+		return errorsx.Forbidden("只能删除自己管理的客服组成员")
 	}
 	repositories.AgentProfileRepository.Delete(sqls.DB(), id)
 	return nil
@@ -245,6 +261,9 @@ func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgen
 	}
 	if UserService.Get(req.UserID) == nil {
 		return nil, errorsx.InvalidParam("关联用户不存在")
+	}
+	if !UserService.HasRole(req.UserID, constants.RoleCodeCsUser) {
+		return nil, errorsx.InvalidParam("所选用户不是客服账号")
 	}
 	if req.TeamID <= 0 {
 		return nil, errorsx.InvalidParam("请选择所属客服组")

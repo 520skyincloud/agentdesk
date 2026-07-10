@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
@@ -587,5 +588,5 @@ func parseTestDateTime(t *testing.T, value string) time.Time {
 }
 
 func testOperator() *dto.AuthPrincipal {
-	return &dto.AuthPrincipal{UserID: 1, Username: "tester", Status: enums.StatusOk}
+	return &dto.AuthPrincipal{UserID: 1, Username: "tester", Status: enums.StatusOk, Roles: []string{constants.RoleCodeAdmin}}
 }

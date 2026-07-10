@@ -42,6 +42,15 @@ func (s *agentTeamScopeService) Resolve(operator *dto.AuthPrincipal) ManagedData
 			scope.WxWorkInstanceIDs = append(scope.WxWorkInstanceIDs, utils.SplitInt64s(teams[i].WxWorkInstanceScopeIDs)...)
 		}
 	}
+	if slices.Contains(operator.Roles, constants.RoleCodeCsUser) {
+		if profile := repositories.AgentProfileRepository.Take(sqls.DB(), "user_id = ?", operator.UserID); profile != nil && profile.Status != enums.StatusDeleted {
+			if team := repositories.AgentTeamRepository.Get(sqls.DB(), profile.TeamID); team != nil && team.Status == enums.StatusOk {
+				scope.CompanyIDs = append(scope.CompanyIDs, utils.SplitInt64s(team.CompanyScopeIDs)...)
+				scope.StoreIDs = append(scope.StoreIDs, utils.SplitInt64s(team.StoreScopeIDs)...)
+				scope.WxWorkInstanceIDs = append(scope.WxWorkInstanceIDs, utils.SplitInt64s(team.WxWorkInstanceScopeIDs)...)
+			}
+		}
+	}
 	if slices.Contains(operator.Roles, constants.RoleCodeStoreStaff) {
 		bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().Eq("user_id", operator.UserID).Where("status <> ?", enums.StatusDeleted))
 		for i := range bindings {
@@ -51,6 +60,24 @@ func (s *agentTeamScopeService) Resolve(operator *dto.AuthPrincipal) ManagedData
 	}
 	scope.expand()
 	return scope
+}
+
+func (s *agentTeamScopeService) IsAdmin(operator *dto.AuthPrincipal) bool {
+	return operator != nil && (slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) || slices.Contains(operator.Roles, constants.RoleCodeAdmin))
+}
+
+func (s *agentTeamScopeService) CanManageTeam(operator *dto.AuthPrincipal, teamID int64) bool {
+	if operator == nil || teamID <= 0 {
+		return false
+	}
+	if s.IsAdmin(operator) {
+		return true
+	}
+	if !slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) {
+		return false
+	}
+	team := repositories.AgentTeamRepository.Get(sqls.DB(), teamID)
+	return team != nil && team.Status != enums.StatusDeleted && team.LeaderUserID == operator.UserID
 }
 
 func (s *agentTeamScopeService) ApplyKnowledgeBaseFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {

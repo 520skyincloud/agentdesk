@@ -34,6 +34,7 @@ import {
 import { Status } from "@/lib/generated/enums";
 import { useI18n } from "@/i18n/provider";
 import { cn } from "@/lib/utils";
+import { readSession } from "@/lib/auth";
 
 type AgentTeamSidebarProps = {
   selectedTeamId: number | null;
@@ -55,6 +56,15 @@ export function AgentTeamSidebar({
   onTeamsChange,
 }: AgentTeamSidebarProps) {
   const t = useI18n();
+  const session = readSession();
+  const permissions = new Set(session?.permissions ?? []);
+  const roles = new Set(session?.roles ?? []);
+  const canCreateTeam =
+    (roles.has("super_admin") || roles.has("admin")) &&
+    permissions.has("agentTeam.create");
+  const canUpdateTeam = permissions.has("agentTeam.update");
+  const canDeleteTeam = permissions.has("agentTeam.delete");
+  const canChangeLeader = roles.has("super_admin") || roles.has("admin");
   const statusTabs = getStatusTabs(t);
   const [keyword, setKeyword] = useState("");
   const [statusFilter, setStatusFilter] =
@@ -207,9 +217,15 @@ export function AgentTeamSidebar({
               />
             </Button>
 
-            <Button size="icon-sm" onClick={openCreateDialog}>
-              <PlusIcon />
-            </Button>
+            {canCreateTeam ? (
+              <Button
+                size="icon-sm"
+                onClick={openCreateDialog}
+                aria-label={t("agentProfile.new")}
+              >
+                <PlusIcon />
+              </Button>
+            ) : null}
           </div>
         </div>
         <ScrollArea className="min-h-0 flex-1">
@@ -248,6 +264,7 @@ export function AgentTeamSidebar({
                     {item.status === Status.Ok ? t("agentProfile.enabled") : t("agentProfile.disabled")}
                   </Badge>
                 </button>
+                {item.manageable && (canUpdateTeam || canDeleteTeam) ? (
                 <DropdownMenu>
                   <DropdownMenuTrigger
                     render={
@@ -262,12 +279,16 @@ export function AgentTeamSidebar({
                     <MoreHorizontalIcon />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-40 min-w-40">
-                    <DropdownMenuItem onClick={() => openEditDialog(item)}>
+                    <DropdownMenuItem
+                      onClick={() => openEditDialog(item)}
+                      disabled={!canUpdateTeam}
+                    >
                       <Pencil />
                       {t("agentProfile.edit")}
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onClick={() => void handleDelete(item)}
+                      disabled={!canDeleteTeam}
                       className="text-destructive focus:text-destructive"
                     >
                       <Trash2Icon />
@@ -275,6 +296,7 @@ export function AgentTeamSidebar({
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
+                ) : null}
               </div>
             ))}
             {!loading && filteredTeams.length === 0 ? (
@@ -289,6 +311,7 @@ export function AgentTeamSidebar({
         open={dialogOpen}
         saving={saving}
         itemId={editingItem?.id ?? null}
+        canChangeLeader={canChangeLeader}
         onOpenChange={handleDialogOpenChange}
         onSubmit={handleSubmit}
       />

@@ -191,7 +191,7 @@ function ScheduleEditDialogBody({
   const loadOptions = useCallback(async () => {
     try {
       const teamsData = await fetchAgentTeamsAll()
-      setTeams(teamsData)
+      setTeams(teamsData.filter((team) => team.manageable))
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("agentTeamSchedule.loadOptionsFailed"))
     }

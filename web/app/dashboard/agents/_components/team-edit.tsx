@@ -58,6 +58,7 @@ type TeamEditDialogProps = {
   open: boolean;
   saving: boolean;
   itemId: number | null;
+  canChangeLeader: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (payload: CreateAdminAgentTeamPayload) => Promise<void>;
 };
@@ -65,8 +66,6 @@ type TeamEditDialogProps = {
 const emptyForm: EditForm = {
   name: "",
   leaderUserId: "0",
-  companyScopeIds: "",
-  storeScopeIds: "",
   wxWorkInstanceScopeIds: "",
   status: String(Status.Ok),
   description: "",
@@ -76,8 +75,6 @@ const emptyForm: EditForm = {
 type EditForm = {
   name: string;
   leaderUserId: string;
-  companyScopeIds: string;
-  storeScopeIds: string;
   wxWorkInstanceScopeIds: string;
   status: string;
   description: string;
@@ -88,8 +85,6 @@ function createEditFormSchema(t: TFunction) {
   return z.object({
   name: z.string().trim().min(1, t("agentProfile.teamNameRequired")),
   leaderUserId: z.string().trim().regex(/^\d+$/, t("agentProfile.leaderInvalid")),
-  companyScopeIds: z.string().trim(),
-  storeScopeIds: z.string().trim(),
   wxWorkInstanceScopeIds: z.string().trim(),
   status: z.enum([String(Status.Ok), String(Status.Disabled)], {
     message: t("agentProfile.teamStatusRequired"),
@@ -113,8 +108,6 @@ function buildForm(item: AdminAgentTeam | null): EditForm {
   return {
     name: item.name,
     leaderUserId: String(item.leaderUserId),
-    companyScopeIds: (item.companyScopeIds || []).join(","),
-    storeScopeIds: (item.storeScopeIds || []).join(","),
     wxWorkInstanceScopeIds: (item.wxWorkInstanceScopeIds || []).join(","),
     status: String(item.status),
     description: item.description || "",
@@ -126,8 +119,8 @@ function buildPayload(form: EditForm): CreateAdminAgentTeamPayload {
   return {
     name: form.name.trim(),
     leaderUserId: Number(form.leaderUserId),
-    companyScopeIds: parseIdList(form.companyScopeIds),
-    storeScopeIds: parseIdList(form.storeScopeIds),
+    companyScopeIds: [],
+    storeScopeIds: [],
     wxWorkInstanceScopeIds: parseIdList(form.wxWorkInstanceScopeIds),
     status: Number(form.status),
     description: form.description.trim(),
@@ -166,6 +159,7 @@ export function EditDialog({
   open,
   saving,
   itemId,
+  canChangeLeader,
   onOpenChange,
   onSubmit,
 }: TeamEditDialogProps) {
@@ -176,6 +170,7 @@ export function EditDialog({
           key={itemId ? `edit-${itemId}` : "create"}
           itemId={itemId}
           saving={saving}
+          canChangeLeader={canChangeLeader}
           onOpenChange={onOpenChange}
           onSubmit={onSubmit}
         />
@@ -189,6 +184,7 @@ type TeamEditDialogBodyProps = Omit<TeamEditDialogProps, "open">;
 function TeamEditDialogBody({
   saving,
   itemId,
+  canChangeLeader,
   onOpenChange,
   onSubmit,
 }: TeamEditDialogBodyProps) {
@@ -207,7 +203,7 @@ function TeamEditDialogBody({
   const statusOptions = useMemo(() => getStatusOptions(t), [t]);
   const loadUsers = useCallback(async () => {
     try {
-      const data = await fetchUsersAll();
+      const data = await fetchUsersAll({ roleCode: "cs_team_leader" });
       setUsers(data);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("agentProfile.loadUsersFailed"));
@@ -368,6 +364,7 @@ function TeamEditDialogBody({
                             variant="outline"
                             role="combobox"
                             aria-expanded={userSelectOpen}
+                            disabled={!canChangeLeader}
                             className="w-full justify-between font-normal"
                           />
                         }
@@ -444,17 +441,6 @@ function TeamEditDialogBody({
                 <FieldError errors={[errors.status]} />
               </FieldContent>
             </Field>
-            <Field>
-              <FieldLabel htmlFor="agent-team-company-scope-ids">可管理公司ID</FieldLabel>
-              <FieldContent>
-                <Input
-                  id="agent-team-company-scope-ids"
-                  placeholder="多个用逗号分隔；组长可管理这些公司下的门店知识库"
-                  {...register("companyScopeIds")}
-                />
-              </FieldContent>
-            </Field>
-            <input type="hidden" {...register("storeScopeIds")} />
             <input type="hidden" {...register("wxWorkInstanceScopeIds")} />
             <Field>
               <FieldLabel>{t("agentProfile.serviceWxWorkInstances")}</FieldLabel>

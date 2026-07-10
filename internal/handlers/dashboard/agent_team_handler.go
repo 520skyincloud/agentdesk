@@ -3,6 +3,7 @@ package dashboard
 import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
@@ -18,7 +19,8 @@ import (
 )
 
 func AgentTeamAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -33,20 +35,21 @@ func AgentTeamAnyList(ctx *gin.Context) {
 	list := services.AgentTeamService.Find(cnd)
 	results := make([]response.AgentTeamResponse, 0, len(list))
 	for _, item := range list {
-		results = append(results, buildAgentTeamResponse(&item))
+		results = append(results, buildAgentTeamResponse(&item, operator))
 	}
 	httpx.WriteJSON(ctx, results)
 }
 
 func AgentTeamGetList_all(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	list := services.AgentTeamService.Find(sqls.NewCnd().Eq("status", enums.StatusOk))
 	results := make([]response.AgentTeamResponse, 0, len(list))
 	for _, item := range list {
-		results = append(results, buildAgentTeamResponse(&item))
+		results = append(results, buildAgentTeamResponse(&item, operator))
 	}
 	httpx.WriteJSON(ctx, results)
 }
@@ -56,7 +59,8 @@ func AgentTeamGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -65,7 +69,7 @@ func AgentTeamGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("客服组不存在"))
 		return
 	}
-	httpx.WriteJSON(ctx, buildAgentTeamResponse(item))
+	httpx.WriteJSON(ctx, buildAgentTeamResponse(item, operator))
 }
 
 func AgentTeamPostCreate(ctx *gin.Context) {
@@ -84,7 +88,7 @@ func AgentTeamPostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, buildAgentTeamResponse(item))
+	httpx.WriteJSON(ctx, buildAgentTeamResponse(item, operator))
 }
 
 func AgentTeamPostUpdate(ctx *gin.Context) {
@@ -123,7 +127,7 @@ func AgentTeamPostDelete(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
-func buildAgentTeamResponse(item *models.AgentTeam) response.AgentTeamResponse {
+func buildAgentTeamResponse(item *models.AgentTeam, operator *dto.AuthPrincipal) response.AgentTeamResponse {
 	ret := response.AgentTeamResponse{
 		ID:                     item.ID,
 		Name:                   item.Name,
@@ -134,6 +138,7 @@ func buildAgentTeamResponse(item *models.AgentTeam) response.AgentTeamResponse {
 		Status:                 item.Status,
 		Description:            item.Description,
 		Remark:                 item.Remark,
+		Manageable:             services.AgentTeamScopeService.CanManageTeam(operator, item.ID),
 	}
 	if user := services.UserService.Get(item.LeaderUserID); user != nil {
 		ret.LeaderUsername = user.Username

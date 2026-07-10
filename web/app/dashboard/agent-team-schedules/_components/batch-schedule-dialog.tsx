@@ -190,7 +190,7 @@ export function BatchScheduleDialog({
       try {
         const data = await fetchAgentTeamsAll()
         if (!ignore) {
-          setTeams(data)
+        setTeams(data.filter((team) => team.manageable))
         }
       } catch (error) {
         if (!ignore) {

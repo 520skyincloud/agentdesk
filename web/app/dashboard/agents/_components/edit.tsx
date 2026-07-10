@@ -217,7 +217,7 @@ function AgentEditDialogBody({
     value: String(user.id),
     label: `${user.nickname || user.username} (${user.username})`,
   }));
-  const teamOptions = teams.map((team) => ({
+  const teamOptions = teams.filter((team) => team.manageable).map((team) => ({
     value: String(team.id),
     label: team.name,
   }));
@@ -225,7 +225,7 @@ function AgentEditDialogBody({
   const loadOptions = useCallback(async () => {
     try {
       const [usersData, teamsData] = await Promise.all([
-        fetchUsersAll(),
+        fetchUsersAll({ roleCode: "cs_user" }),
         fetchAgentTeamsAll(),
       ]);
       setUsers(usersData);

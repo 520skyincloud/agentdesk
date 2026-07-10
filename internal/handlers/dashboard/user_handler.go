@@ -8,10 +8,12 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/services"
+	"strings"
 
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mlogclub/simple/sqls"
 	"github.com/mlogclub/simple/web"
 )
 
@@ -27,6 +29,7 @@ func UserAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "nickname", Op: params.Like},
 	).Desc("id")
 	cnd.Where("status <> ?", enums.StatusDeleted)
+	applyUserRoleFilter(ctx, cnd)
 	list, paging := services.UserService.FindPageByCnd(cnd)
 	results := builders.BuildUserList(list, builders.UserBuildOptions{
 		Roles:       true,
@@ -47,6 +50,7 @@ func UserAnyList_all(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "nickname", Op: params.Like},
 	).Desc("id")
 	cnd.Where("status <> ?", enums.StatusDeleted)
+	applyUserRoleFilter(ctx, cnd)
 
 	list := services.UserService.Find(cnd)
 	results := builders.BuildUserList(list, builders.UserBuildOptions{
@@ -54,6 +58,14 @@ func UserAnyList_all(ctx *gin.Context) {
 		Permissions: false,
 	})
 	httpx.WriteJSON(ctx, results)
+}
+
+func applyUserRoleFilter(ctx *gin.Context, cnd *sqls.Cnd) {
+	roleCode := strings.TrimSpace(ctx.Query("roleCode"))
+	if roleCode == "" {
+		return
+	}
+	cnd.Where("id IN (SELECT ur.user_id FROM t_user_role ur JOIN t_role r ON r.id = ur.role_id WHERE r.code = ? AND r.status = ?)", roleCode, enums.StatusOk)
 }
 
 func UserGetBy(ctx *gin.Context) {

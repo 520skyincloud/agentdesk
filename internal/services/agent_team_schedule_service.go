@@ -130,6 +130,9 @@ func (s *agentTeamScheduleService) CreateAgentTeamSchedule(req request.CreateAge
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
+	if !AgentTeamScopeService.CanManageTeam(operator, req.TeamID) {
+		return nil, errorsx.Forbidden("只能调整自己管理的客服组排班")
+	}
 	s.writeMu.Lock()
 	item, err := s.buildScheduleModel(0, req.TeamID, req.StartAt, req.EndAt, req.Remark)
 	if err != nil {
@@ -151,9 +154,14 @@ func (s *agentTeamScheduleService) UpdateAgentTeamSchedule(req request.UpdateAge
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
 	s.writeMu.Lock()
-	if s.Get(req.ID) == nil {
+	current := s.Get(req.ID)
+	if current == nil {
 		s.writeMu.Unlock()
 		return errorsx.InvalidParam("客服组排班不存在")
+	}
+	if !AgentTeamScopeService.CanManageTeam(operator, current.TeamID) || !AgentTeamScopeService.CanManageTeam(operator, req.TeamID) {
+		s.writeMu.Unlock()
+		return errorsx.Forbidden("排班原客服组和目标组都必须在你的管理范围内")
 	}
 	item, err := s.buildScheduleModel(req.ID, req.TeamID, req.StartAt, req.EndAt, req.Remark)
 	if err != nil {
@@ -177,9 +185,16 @@ func (s *agentTeamScheduleService) UpdateAgentTeamSchedule(req request.UpdateAge
 	return nil
 }
 
-func (s *agentTeamScheduleService) DeleteAgentTeamSchedule(id int64) error {
-	if s.Get(id) == nil {
+func (s *agentTeamScheduleService) DeleteAgentTeamSchedule(id int64, operator *dto.AuthPrincipal) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	current := s.Get(id)
+	if current == nil {
 		return errorsx.InvalidParam("客服组排班不存在")
+	}
+	if !AgentTeamScopeService.CanManageTeam(operator, current.TeamID) {
+		return errorsx.Forbidden("只能删除自己管理的客服组排班")
 	}
 	repositories.AgentTeamScheduleRepository.Delete(sqls.DB(), id)
 	return nil
@@ -193,6 +208,9 @@ func (s *agentTeamScheduleService) BatchPreview(req request.AgentTeamScheduleBat
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireManageableBatchTeams(candidates, operator); err != nil {
+		return nil, err
+	}
 	conflicts := s.findBatchConflict(candidates)
 	return buildBatchPreviewResult(candidates, conflicts), nil
 }
@@ -204,6 +222,10 @@ func (s *agentTeamScheduleService) BatchGenerate(req request.AgentTeamScheduleBa
 	s.writeMu.Lock()
 	candidates, err := s.buildBatchScheduleCandidates(req)
 	if err != nil {
+		s.writeMu.Unlock()
+		return nil, err
+	}
+	if err := s.requireManageableBatchTeams(candidates, operator); err != nil {
 		s.writeMu.Unlock()
 		return nil, err
 	}
@@ -243,6 +265,20 @@ func (s *agentTeamScheduleService) BatchGenerate(req request.AgentTeamScheduleBa
 		s.dispatchPendingConversationsIfActive(&schedules[i])
 	}
 	return &AgentTeamScheduleBatchGenerateResult{Created: len(schedules)}, nil
+}
+
+func (s *agentTeamScheduleService) requireManageableBatchTeams(candidates []batchScheduleCandidate, operator *dto.AuthPrincipal) error {
+	seen := make(map[int64]struct{})
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate.TeamID]; ok {
+			continue
+		}
+		seen[candidate.TeamID] = struct{}{}
+		if !AgentTeamScopeService.CanManageTeam(operator, candidate.TeamID) {
+			return errorsx.Forbidden("批量排班只能包含自己管理的客服组")
+		}
+	}
+	return nil
 }
 
 func (s *agentTeamScheduleService) buildScheduleModel(id, teamID int64, startAt, endAt, remark string) (*models.AgentTeamSchedule, error) {

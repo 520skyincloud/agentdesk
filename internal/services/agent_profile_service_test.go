@@ -41,9 +41,9 @@ func TestTeamCanServeRouteRequiresEnabledTeam(t *testing.T) {
 	}
 }
 
-func TestTeamCanServeRouteAllowsUnrestrictedEnabledTeam(t *testing.T) {
-	team := &models.AgentTeam{ID: 1, Name: "未限制客服组", Status: enums.StatusOk}
-	if !teamCanServeRoute(team, &models.ConversationRouteState{StoreID: 99, WxWorkInstanceID: 88}) {
-		t.Fatal("enabled team without a configured scope should remain unrestricted")
+func TestTeamCanServeRouteRejectsEmptyTeamScope(t *testing.T) {
+	team := &models.AgentTeam{ID: 1, Name: "未配置范围客服组", Status: enums.StatusOk}
+	if teamCanServeRoute(team, &models.ConversationRouteState{StoreID: 99, WxWorkInstanceID: 88}) {
+		t.Fatal("team without configured accounts must not grant unrestricted conversation scope")
 	}
 }

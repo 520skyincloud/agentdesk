@@ -36,6 +36,7 @@ type AgentTeamResponse struct {
 	Status                 enums.Status `json:"status"`
 	Description            string       `json:"description"`
 	Remark                 string       `json:"remark"`
+	Manageable             bool         `json:"manageable"`
 }
 
 type AgentTeamScheduleResponse struct {

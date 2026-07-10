@@ -88,6 +88,17 @@ func (s *userService) GetByEmail(email string) *models.User {
 	return repositories.UserRepository.GetByEmail(sqls.DB(), email)
 }
 
+func (s *userService) HasRole(userID int64, roleCode string) bool {
+	if userID <= 0 || strings.TrimSpace(roleCode) == "" {
+		return false
+	}
+	role := repositories.RoleRepository.GetByCode(sqls.DB(), strings.TrimSpace(roleCode))
+	if role == nil || role.Status != enums.StatusOk {
+		return false
+	}
+	return repositories.UserRoleRepository.FindOne(sqls.DB(), sqls.NewCnd().Eq("user_id", userID).Eq("role_id", role.ID)) != nil
+}
+
 func (s *userService) CreateUser(req request.CreateUserRequest, operator *dto.AuthPrincipal) (*models.User, string, error) {
 	username := strings.TrimSpace(req.Username)
 	if username == "" {

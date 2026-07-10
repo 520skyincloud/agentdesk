@@ -894,6 +894,7 @@ export type AdminAgentTeam = {
   status: number
   description: string
   remark: string
+  manageable: boolean
 }
 
 export type CreateAdminAgentTeamPayload = {
