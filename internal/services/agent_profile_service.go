@@ -145,22 +145,25 @@ func (s *agentProfileService) ProfileCanServeRoute(profile *models.AgentProfile,
 	if profile == nil || route == nil {
 		return false
 	}
-	team := AgentTeamService.Get(profile.TeamID)
-	profileStoreIDs := utils.SplitInt64s(profile.StoreScopeIDs)
-	profileInstanceIDs := utils.SplitInt64s(profile.WxWorkInstanceScopeIDs)
-	teamStoreIDs := []int64{}
-	teamInstanceIDs := []int64{}
-	if team != nil {
-		teamStoreIDs = utils.SplitInt64s(team.StoreScopeIDs)
-		teamInstanceIDs = utils.SplitInt64s(team.WxWorkInstanceScopeIDs)
+	return teamCanServeRoute(AgentTeamService.Get(profile.TeamID), route)
+}
+
+func teamCanServeRoute(team *models.AgentTeam, route *models.ConversationRouteState) bool {
+	if route == nil {
+		return false
 	}
-	if len(profileStoreIDs) == 0 && len(profileInstanceIDs) == 0 && len(teamStoreIDs) == 0 && len(teamInstanceIDs) == 0 {
+	if team == nil || team.Status != enums.StatusOk {
+		return false
+	}
+	teamStoreIDs := utils.SplitInt64s(team.StoreScopeIDs)
+	teamInstanceIDs := utils.SplitInt64s(team.WxWorkInstanceScopeIDs)
+	if len(teamStoreIDs) == 0 && len(teamInstanceIDs) == 0 {
 		return true
 	}
-	if route.StoreID > 0 && (containsInt64(profileStoreIDs, route.StoreID) || containsInt64(teamStoreIDs, route.StoreID)) {
+	if route.StoreID > 0 && containsInt64(teamStoreIDs, route.StoreID) {
 		return true
 	}
-	if route.WxWorkInstanceID > 0 && (containsInt64(profileInstanceIDs, route.WxWorkInstanceID) || containsInt64(teamInstanceIDs, route.WxWorkInstanceID)) {
+	if route.WxWorkInstanceID > 0 && containsInt64(teamInstanceIDs, route.WxWorkInstanceID) {
 		return true
 	}
 	return false
@@ -269,8 +272,8 @@ func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgen
 	return &models.AgentProfile{
 		UserID:                 req.UserID,
 		TeamID:                 req.TeamID,
-		StoreScopeIDs:          utils.JoinInt64s(req.StoreScopeIDs),
-		WxWorkInstanceScopeIDs: utils.JoinInt64s(req.WxWorkInstanceScopeIDs),
+		StoreScopeIDs:          "",
+		WxWorkInstanceScopeIDs: "",
 		AgentCode:              req.AgentCode,
 		DisplayName:            req.DisplayName,
 		Avatar:                 strings.TrimSpace(req.Avatar),
