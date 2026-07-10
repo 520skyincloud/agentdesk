@@ -61,6 +61,7 @@ type dispatchWorkbenchAgentLoad struct {
 	nickname          string
 	activeCount       int
 	pendingFirstReply int
+	pendingReplyCount int
 	processingCount   int
 	available         bool
 }
@@ -160,6 +161,59 @@ func (s *conversationDispatchWorkbenchService) ListAgentLoads(teamID int64, oper
 		ret = append(ret, s.buildAgentLoadResponse(load))
 	}
 	return ret, nil
+}
+
+func (s *conversationDispatchWorkbenchService) PendingReplyCountsByTeam() map[int64]int {
+	ret := make(map[int64]int)
+	routes := repositories.ConversationRouteStateRepository.Find(sqls.DB(), sqls.NewCnd().Eq("need_human_follow_up", true))
+	if len(routes) == 0 {
+		return ret
+	}
+	conversationIDs := make([]int64, 0, len(routes))
+	for i := range routes {
+		conversationIDs = append(conversationIDs, routes[i].ConversationID)
+	}
+	conversations := ConversationService.Find(sqls.NewCnd().In("id", conversationIDs).In("status", []enums.IMConversationStatus{
+		enums.IMConversationStatusPending,
+		enums.IMConversationStatusActive,
+	}))
+	conversationByID := make(map[int64]*models.Conversation, len(conversations))
+	assigneeIDs := make([]int64, 0, len(conversations))
+	for i := range conversations {
+		conversationByID[conversations[i].ID] = &conversations[i]
+		if conversations[i].CurrentAssigneeID > 0 {
+			assigneeIDs = append(assigneeIDs, conversations[i].CurrentAssigneeID)
+		}
+	}
+	profiles := AgentProfileService.Find(sqls.NewCnd().In("user_id", uniquePositive(assigneeIDs)))
+	teamByAssigneeID := make(map[int64]int64, len(profiles))
+	for i := range profiles {
+		teamByAssigneeID[profiles[i].UserID] = profiles[i].TeamID
+	}
+	teams := AgentTeamService.Find(sqls.NewCnd().Eq("status", enums.StatusOk))
+	for i := range routes {
+		route := routes[i]
+		conversation := conversationByID[route.ConversationID]
+		if conversation == nil {
+			continue
+		}
+		teamID := conversation.CurrentTeamID
+		if teamID <= 0 && conversation.CurrentAssigneeID > 0 {
+			teamID = teamByAssigneeID[conversation.CurrentAssigneeID]
+		}
+		if teamID <= 0 {
+			for j := range teams {
+				if teamCanServeRoute(&teams[j], &route) {
+					teamID = teams[j].ID
+					break
+				}
+			}
+		}
+		if teamID > 0 {
+			ret[teamID]++
+		}
+	}
+	return ret
 }
 
 func (s *conversationDispatchWorkbenchService) AutoAssign(req request.ConversationDispatchAutoAssignRequest, operator *dto.AuthPrincipal) error {
@@ -635,10 +689,27 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoads(profiles []models
 			load.nickname = user.Nickname
 		}
 		load.pendingFirstReply, load.processingCount = s.countAgentTaskPhases(profile.UserID)
+		load.pendingReplyCount = s.countAgentPendingReplies(profile.UserID)
 		load.available = s.profileAvailable(profile, load.activeCount)
 		ret = append(ret, load)
 	}
 	return ret, nil
+}
+
+func (s *conversationDispatchWorkbenchService) countAgentPendingReplies(userID int64) int {
+	if userID <= 0 {
+		return 0
+	}
+	conversations := ConversationService.Find(sqls.NewCnd().
+		Eq("status", enums.IMConversationStatusActive).
+		Eq("current_assignee_id", userID))
+	count := 0
+	for i := range conversations {
+		if route := ConversationRouteService.GetByConversationID(conversations[i].ID); route != nil && route.NeedHumanFollowUp {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *conversationDispatchWorkbenchService) countAgentTaskPhases(userID int64) (int, int) {
@@ -678,6 +749,7 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoadResponse(load dispa
 		MaxConcurrentCount: load.profile.MaxConcurrentCount,
 		ActiveCount:        load.activeCount,
 		PendingFirstReply:  load.pendingFirstReply,
+		PendingReplyCount:  load.pendingReplyCount,
 		ProcessingCount:    load.processingCount,
 		AutoAssignEnabled:  load.profile.AutoAssignEnabled,
 		Available:          load.available,

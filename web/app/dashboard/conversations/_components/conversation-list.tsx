@@ -21,9 +21,9 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
   const selectConversation = useAgentConversationsStore((state) => state.selectConversation)
 
   return (
-    <ScrollArea className="overflow-auto bg-white/95">
+    <ScrollArea className="overflow-auto bg-background/95">
       {loading ? (
-        <div className="m-3 rounded-lg border border-dashed border-[#d9e2f2] bg-[#f7f9fd] p-6 text-center text-sm text-[#7a8599]">
+        <div className="m-3 rounded-lg border border-dashed border-border bg-muted/40 p-6 text-center text-sm text-muted-foreground">
           {t("conversation.loading")}
         </div>
       ) : conversations.length > 0 ? (
@@ -34,10 +34,12 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
           return (
             <div
               key={conversation.id}
-              className={`mx-3 mb-1.5 cursor-pointer rounded-xl px-3 py-2.5 transition ${
+              className={`mx-3 mb-1.5 cursor-pointer rounded-lg border px-3 py-2.5 transition-colors ${
                 isSelected
-                  ? "bg-[#eef3ff] shadow-[inset_0_0_0_1px_rgba(79,117,255,0.12)]"
-                  : "hover:bg-[#f7f9fd]"
+                  ? "border-primary/20 bg-primary/10"
+                  : showManualDot
+                    ? "border-amber-200/80 bg-amber-50/80 hover:bg-amber-100/70 dark:border-amber-800/50 dark:bg-amber-950/25 dark:hover:bg-amber-950/35"
+                    : "border-transparent hover:bg-muted/70"
               }`}
               onClick={() => {
                 void selectConversation(conversation.id).then(
@@ -53,13 +55,13 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
                   <div className="relative size-10 shrink-0">
                     <Avatar className="size-10 rounded-xl">
                       <AvatarImage src={conversation.customerAvatar || ""} />
-                      <AvatarFallback className="rounded-xl bg-[#f0f4fb] text-[#526072]">
-                        <UserIcon className="size-3.5 text-[#526072]" />
+                      <AvatarFallback className="rounded-xl bg-muted text-muted-foreground">
+                        <UserIcon className="size-3.5 text-muted-foreground" />
                       </AvatarFallback>
                     </Avatar>
                     {showManualDot ? (
                       <span
-                        className={`absolute -right-0.5 -top-0.5 size-3 rounded-full border-2 border-white ${
+                        className={`absolute -right-0.5 -top-0.5 size-3 rounded-full border-2 border-background ${
                           manualAttention?.level === "urgent"
                             ? "bg-destructive shadow-[0_0_0_3px_rgba(239,68,68,0.16)]"
                             : "bg-rose-500"
@@ -69,13 +71,13 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-4 text-[#1f2937]">
+                      <span className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-4 text-foreground">
                         {repairMojibakeText(conversation.customerName) ||
                           t("conversation.customerFallback", {
                             id: conversation.customerId || conversation.id,
                           })}
                       </span>
-                      <span className="shrink-0 text-[11px] text-[#9aa4b2]">
+                      <span className="shrink-0 text-[11px] text-muted-foreground">
                         {conversation.lastMessageAt
                           ? formatDateTime(conversation.lastMessageAt).slice(5, 16)
                           : ""}
@@ -88,15 +90,15 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
                         </div>
                       ) : null}
                     </div>
-                    <div className="mt-1 truncate text-[12px] leading-4 text-[#7a8599]">
+                    <div className="mt-1 truncate text-[12px] leading-4 text-muted-foreground">
                       {repairMojibakeText(conversation.lastMessageSummary) || t("conversation.noLatestMessage")}
                     </div>
                   </div>
                 </div>
                 {conversation.status === IMConversationStatus.Pending &&
                 conversation.currentTeamName ? (
-                  <div className="mt-1 flex items-center gap-1 pl-11 text-[10px] text-[#7a8599]">
-                    <span className="rounded-md border border-[#d9e2f2] bg-[#f7f9fd] px-1.5 py-0.5">
+                  <div className="mt-1 flex items-center gap-1 pl-11 text-[10px] text-muted-foreground">
+                    <span className="rounded border border-border bg-muted px-1.5 py-0.5">
                       {t("conversation.teamOnDuty", {
                         name: repairMojibakeText(conversation.currentTeamName),
                       })}
@@ -106,7 +108,7 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
                 {(conversation.storeName || conversation.wxWorkEmployeeName || (manualAttention && manualAttention.level !== "none")) ? (
                   <div className="mt-1 flex flex-wrap items-center gap-1 pl-11 text-[10px]">
                     {conversation.storeName || conversation.wxWorkEmployeeName ? (
-                      <span className="rounded-md border border-[#d9e2f2] bg-[#f7f9fd] px-1.5 py-0.5 text-[#7a8599]">
+                      <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-muted-foreground">
                         {repairMojibakeText(conversation.storeName) || t("conversation.storeUnknown")}
                         {conversation.wxWorkEmployeeName
                           ? ` / ${repairMojibakeText(conversation.wxWorkEmployeeName)}`
@@ -133,7 +135,7 @@ export function ConversationList({ onAfterSelect }: ConversationListProps) {
           )
         })
       ) : (
-        <div className="m-3 rounded-lg border border-dashed border-[#d9e2f2] bg-[#f7f9fd] p-6 text-center text-sm text-[#7a8599]">
+        <div className="m-3 rounded-lg border border-dashed border-border bg-muted/40 p-6 text-center text-sm text-muted-foreground">
           {t("conversation.empty")}
         </div>
       )}

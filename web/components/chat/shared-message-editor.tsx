@@ -560,8 +560,8 @@ export function SharedMessageEditor({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white p-0">
-      <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
+    <div className="flex h-full min-h-0 flex-col bg-background p-0">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
         {editorContent}
       </div>
     </div>
@@ -579,21 +579,21 @@ function getToolbarClassName(variant: SharedMessageEditorVariant) {
   if (variant === "customer") {
     return "mt-2 flex items-center justify-between"
   }
-  return "flex items-center justify-between border-t border-[#edf1f6] bg-[#fbfcfe] px-5 py-3"
+  return "flex items-center justify-between border-t border-border bg-muted/30 px-5 py-3"
 }
 
 function getIconButtonClassName(variant: SharedMessageEditorVariant) {
   if (variant === "customer") {
     return "rounded-xl text-muted-foreground transition hover:bg-[#f2f7ff] hover:text-primary"
   }
-  return "size-8 rounded-lg border border-transparent bg-[#f3f6fa] text-[#637083] shadow-none hover:border-[#d9e2f2] hover:bg-white hover:text-[#2563eb]"
+  return "size-8 rounded-lg border border-transparent bg-muted text-muted-foreground shadow-none hover:border-border hover:bg-background hover:text-primary"
 }
 
 function getToolButtonClassName(variant: SharedMessageEditorVariant) {
   if (variant === "customer") {
     return "rounded-xl text-muted-foreground transition hover:bg-[#f2f7ff] hover:text-primary"
   }
-  return "h-8 gap-1.5 rounded-lg border border-[#edf1f7] bg-[#f3f6fa] px-3 text-xs font-medium text-[#344054] shadow-none hover:border-[#d9e2f2] hover:bg-white hover:text-[#2563eb] disabled:opacity-45"
+  return "h-8 gap-1.5 rounded-lg border border-border bg-muted px-3 text-xs font-medium text-foreground shadow-none hover:bg-background hover:text-primary disabled:opacity-45"
 }
 
 function isMeaningfulHTML(html: string) {

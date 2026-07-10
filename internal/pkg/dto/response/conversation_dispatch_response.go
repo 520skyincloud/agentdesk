@@ -59,6 +59,7 @@ type ConversationDispatchAgentLoadResponse struct {
 	MaxConcurrentCount int                 `json:"maxConcurrentCount"`
 	ActiveCount        int                 `json:"activeCount"`
 	PendingFirstReply  int                 `json:"pendingFirstReply"`
+	PendingReplyCount  int                 `json:"pendingReplyCount"`
 	ProcessingCount    int                 `json:"processingCount"`
 	AutoAssignEnabled  bool                `json:"autoAssignEnabled"`
 	Available          bool                `json:"available"`

@@ -4,6 +4,7 @@ import (
 	"agent-desk/internal/builders"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
+	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/services"
 
@@ -14,7 +15,8 @@ import (
 )
 
 func AgentAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -26,6 +28,22 @@ func AgentAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "displayName", Op: params.Like},
 	).Desc("id"))
 	results := builders.BuildAgentProfileList(list)
+	teamID, _ := params.GetInt64(ctx, "teamId")
+	loads, err := services.ConversationDispatchWorkbenchService.ListAgentLoads(teamID, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	loadByUserID := make(map[int64]response.ConversationDispatchAgentLoadResponse, len(loads))
+	for _, load := range loads {
+		loadByUserID[load.UserID] = load
+	}
+	for i := range results {
+		load := loadByUserID[results[i].UserID]
+		results[i].ActiveTaskCount = load.ActiveCount
+		results[i].PendingReplyCount = load.PendingReplyCount
+		results[i].ProcessingTaskCount = load.ProcessingCount
+	}
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
 

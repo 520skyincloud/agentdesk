@@ -197,6 +197,7 @@ export type ConversationDispatchAgentLoad = {
   maxConcurrentCount: number
   activeCount: number
   pendingFirstReply: number
+  pendingReplyCount: number
   processingCount: number
   autoAssignEnabled: boolean
   available: boolean
@@ -857,6 +858,9 @@ export type AdminAgentProfile = {
   lastOnlineAt?: string
   lastStatusAt?: string
   remark: string
+  activeTaskCount: number
+  pendingReplyCount: number
+  processingTaskCount: number
 }
 
 export type CreateAdminAgentProfilePayload = {
@@ -895,6 +899,7 @@ export type AdminAgentTeam = {
   description: string
   remark: string
   manageable: boolean
+  pendingReplyCount: number
 }
 
 export type CreateAdminAgentTeamPayload = {

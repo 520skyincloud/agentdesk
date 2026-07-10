@@ -47,13 +47,18 @@ func WxWorkProtocolInstanceGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	item := services.WxWorkProtocolInstanceService.Get(id)
 	if item == nil || item.Status == enums.StatusDeleted {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号实例不存在"))
+		return
+	}
+	if !services.AgentTeamScopeService.CanViewWxWorkInstance(operator, id) {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该企微员工号实例"))
 		return
 	}
 	httpx.WriteJSON(ctx, buildWxWorkProtocolInstanceResponse(item))

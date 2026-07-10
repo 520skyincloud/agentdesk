@@ -130,7 +130,7 @@ function UnlinkedCustomerEmpty({ conversation }: { conversation: AgentConversati
 
   return (
     <div className="space-y-6 pt-2">
-      <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#dbe7f6] bg-[#f6f9ff] px-4 py-8 text-center shadow-inner shadow-blue-100/30">
+      <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/40 px-4 py-8 text-center">
         <UserRoundIcon className="mb-2 size-10 text-primary" aria-hidden />
         <p className="text-sm font-medium text-foreground">
           {t("conversation.unlinkedCustomerTitle")}
@@ -164,7 +164,7 @@ function MissingCustomerEmpty({ conversation }: { conversation: AgentConversatio
 
   return (
     <div className="space-y-6 pt-2">
-      <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#dbe7f6] bg-[#f6f9ff] px-4 py-8 text-center shadow-inner shadow-blue-100/30">
+      <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/40 px-4 py-8 text-center">
         <UserRoundIcon className="mb-2 size-10 text-primary" aria-hidden />
         <p className="text-sm font-medium text-foreground">
           {t("conversation.missingCustomerTitle")}
@@ -218,11 +218,11 @@ export function ConversationInfoPanel({
         "flex h-full min-h-0 flex-col overflow-hidden",
         embedded
           ? "bg-card text-card-foreground"
-          : "border-[#dbe7f6] bg-white text-card-foreground",
+          : "border-border bg-card text-card-foreground",
         className,
       )}
     >
-      <div className="flex h-12.5 shrink-0 items-center border-b border-[#dbe7f6] bg-[#f8fbff] px-3">
+      <div className="flex h-12.5 shrink-0 items-center border-b border-border bg-muted/40 px-3">
         <h2 className="text-sm font-medium text-foreground">
           {t("conversation.conversationInfo")}
         </h2>
@@ -685,7 +685,7 @@ function RelatedTicketsSection({ conversation }: { conversation: AgentConversati
           {tickets.map((ticket) => (
             <div
               key={ticket.id}
-              className="rounded-xl border border-[#dbe7f6] bg-white px-3 py-2 shadow-[0_8px_18px_rgba(37,99,235,0.06)]"
+              className="rounded-lg border border-border bg-card px-3 py-2 shadow-sm"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">

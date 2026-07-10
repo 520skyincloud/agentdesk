@@ -132,7 +132,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
         ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300"
         : manualAttention?.level === "serving"
           ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300"
-          : "border-[#d9e2f2] bg-white text-[#64748b]";
+          : "border-border bg-background text-muted-foreground";
   const editorDisabledReason = !conversation
     ? "请选择一个会话"
     : manualAttention?.dot
@@ -430,8 +430,8 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
 
   if (!conversation) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-[#edf1f6] px-4">
-        <div className="max-w-sm rounded-2xl border border-white bg-white px-8 py-10 text-center text-[#7a8599] shadow-[0_12px_32px_rgba(31,41,55,0.08)]">
+      <div className="flex flex-1 items-center justify-center bg-muted/40 px-4">
+        <div className="max-w-sm rounded-lg border border-border bg-card px-8 py-10 text-center text-muted-foreground shadow-sm">
           <p className="text-base font-semibold text-foreground">{t("conversation.empty")}</p>
           <p className="mt-1 text-sm lg:hidden">
             {t("conversation.noConversationMobile")}
@@ -447,7 +447,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   const messagesScroll = (
     <div
       ref={messagesContainerRef}
-      className="agent-desk-scrollbar h-full min-h-0 flex-1 overflow-y-auto bg-[#edf1f6] px-5 py-6"
+      className="agent-desk-scrollbar h-full min-h-0 flex-1 overflow-y-auto bg-muted/40 px-5 py-6"
     >
       {hasManualStatus && manualStatusNotice ? (
         <div className={`mx-auto mb-4 max-w-2xl rounded-lg border px-3 py-2 text-xs shadow-none ${manualStatusTone}`}>
@@ -461,7 +461,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
               type="button"
               variant="outline"
               size="sm"
-              className="rounded-md border-[#d9e2f2] bg-white shadow-none"
+              className="rounded-md border-border bg-background shadow-none"
               disabled={messagesLoadingMore}
               onClick={() => void handleLoadOlder()}
             >
@@ -497,14 +497,14 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   );
 
   const bottomPanel = (
-    <div className="h-full overflow-auto border-t border-[#e1e7f0] bg-white">
+    <div className="h-full overflow-auto border-t border-border bg-background">
       {isClosedConversation ? (
-        <div className="flex h-full items-center justify-center bg-white text-sm text-muted-foreground">
+        <div className="flex h-full items-center justify-center bg-background text-sm text-muted-foreground">
           {t("conversation.closedNotice")}
         </div>
       ) : isPendingConversation ? (
-        <div className="flex h-full items-center justify-center bg-white">
-          <div className="flex items-center gap-2 rounded-xl border border-[#edf1f7] bg-[#f7f9fd] px-5 py-4">
+        <div className="flex h-full items-center justify-center bg-background">
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-5 py-4">
             <Button
               onClick={() => setClaimDialogOpen(true)}
               disabled={claiming}
@@ -741,11 +741,11 @@ const MessageItem = memo(
       ? "border-primary/20 bg-primary/10 text-primary"
       : isAgentSide
         ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/15 dark:text-emerald-300"
-        : "border-[#dbe7f6] bg-[#f6f9ff] text-muted-foreground";
+        : "border-border bg-muted/40 text-muted-foreground";
     const sendSourceBadgeClassName =
       message.sendSource === "local"
         ? "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/25 dark:bg-sky-500/15 dark:text-sky-300"
-        : "border-[#dbe7f6] bg-white/70 text-[#64748b] dark:border-white/10 dark:bg-white/5 dark:text-slate-300";
+        : "border-border bg-background/70 text-muted-foreground";
     const agentAvatarSrc =
       isAgentSide && !isAi && message.senderAvatar?.trim()
         ? message.senderAvatar.trim()
@@ -753,20 +753,20 @@ const MessageItem = memo(
     const avatarFallback = isAi ? "AI" : senderName.charAt(0);
     const htmlContent = buildMessageHTML(message);
     const bubbleClassName = isAi
-        ? "border border-[#dce6f5] bg-white text-foreground shadow-[0_6px_14px_rgba(31,41,55,0.05)]"
+        ? "border border-border bg-card text-foreground shadow-sm"
       : isAgentSide
-        ? "bg-[#d9e7ff] text-[#263142] shadow-[0_4px_10px_rgba(31,41,55,0.035)]"
-        : "bg-white text-foreground shadow-[0_4px_10px_rgba(31,41,55,0.035)]";
+        ? "bg-primary/15 text-foreground shadow-sm"
+        : "bg-card text-foreground shadow-sm";
     const htmlClassName = isAi
       ? "[&_a]:text-foreground [&_a]:underline [&_img]:rounded-md"
       : isAgentSide
-        ? "[&_p]:text-[#263142] [&_a]:text-[#263142] [&_a]:underline [&_img]:rounded-md"
+        ? "[&_p]:text-foreground [&_a]:text-foreground [&_a]:underline [&_img]:rounded-md"
         : "[&_a]:text-foreground [&_a]:underline [&_img]:rounded-md";
     const avatarClassName = isAi
       ? "border border-primary/20 bg-primary/10 text-xs text-foreground"
       : isAgentSide
-        ? "bg-[#dfe8fb] text-xs text-[#526072]"
-        : "bg-white text-xs text-[#526072]";
+        ? "bg-primary/10 text-xs text-muted-foreground"
+        : "bg-card text-xs text-muted-foreground";
     const showRecallAction = canRecall && !isRecalled;
 
     return (

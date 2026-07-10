@@ -33,9 +33,10 @@ func AgentTeamAnyList(ctx *gin.Context) {
 		cnd.Where("status <> ?", enums.StatusDeleted)
 	}
 	list := services.AgentTeamService.Find(cnd)
+	pendingReplyCounts := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()
 	results := make([]response.AgentTeamResponse, 0, len(list))
 	for _, item := range list {
-		results = append(results, buildAgentTeamResponse(&item, operator))
+		results = append(results, buildAgentTeamResponse(&item, operator, pendingReplyCounts[item.ID]))
 	}
 	httpx.WriteJSON(ctx, results)
 }
@@ -47,9 +48,10 @@ func AgentTeamGetList_all(ctx *gin.Context) {
 		return
 	}
 	list := services.AgentTeamService.Find(sqls.NewCnd().Eq("status", enums.StatusOk))
+	pendingReplyCounts := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()
 	results := make([]response.AgentTeamResponse, 0, len(list))
 	for _, item := range list {
-		results = append(results, buildAgentTeamResponse(&item, operator))
+		results = append(results, buildAgentTeamResponse(&item, operator, pendingReplyCounts[item.ID]))
 	}
 	httpx.WriteJSON(ctx, results)
 }
@@ -69,7 +71,8 @@ func AgentTeamGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("客服组不存在"))
 		return
 	}
-	httpx.WriteJSON(ctx, buildAgentTeamResponse(item, operator))
+	pendingReplyCount := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()[item.ID]
+	httpx.WriteJSON(ctx, buildAgentTeamResponse(item, operator, pendingReplyCount))
 }
 
 func AgentTeamPostCreate(ctx *gin.Context) {
@@ -88,7 +91,8 @@ func AgentTeamPostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, buildAgentTeamResponse(item, operator))
+	pendingReplyCount := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()[item.ID]
+	httpx.WriteJSON(ctx, buildAgentTeamResponse(item, operator, pendingReplyCount))
 }
 
 func AgentTeamPostUpdate(ctx *gin.Context) {
@@ -127,7 +131,7 @@ func AgentTeamPostDelete(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
-func buildAgentTeamResponse(item *models.AgentTeam, operator *dto.AuthPrincipal) response.AgentTeamResponse {
+func buildAgentTeamResponse(item *models.AgentTeam, operator *dto.AuthPrincipal, pendingReplyCount int) response.AgentTeamResponse {
 	ret := response.AgentTeamResponse{
 		ID:                     item.ID,
 		Name:                   item.Name,
@@ -139,6 +143,7 @@ func buildAgentTeamResponse(item *models.AgentTeam, operator *dto.AuthPrincipal)
 		Description:            item.Description,
 		Remark:                 item.Remark,
 		Manageable:             services.AgentTeamScopeService.CanManageTeam(operator, item.ID),
+		PendingReplyCount:      pendingReplyCount,
 	}
 	if user := services.UserService.Get(item.LeaderUserID); user != nil {
 		ret.LeaderUsername = user.Username

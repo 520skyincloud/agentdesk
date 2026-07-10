@@ -22,6 +22,7 @@ import { toast } from "sonner";
 
 import { ConversationCloseDialog } from "@/components/conversation-actions/close-dialog";
 import { ConversationTransferDialog } from "@/components/conversation-actions/transfer-dialog";
+import { useAuth } from "@/components/auth-provider";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -65,18 +66,15 @@ import { ConversationInfoPanel } from "./_components/conversation-info-panel";
 import { ConversationList } from "./_components/conversation-list";
 
 const workbenchIconButtonClassName =
-  "size-8 rounded-lg border border-transparent bg-white/80 text-muted-foreground shadow-none hover:border-[#d9e2f2] hover:bg-white hover:text-[#2563eb]";
+  "size-8 rounded-lg border border-transparent bg-background/80 text-muted-foreground shadow-none hover:border-border hover:bg-background hover:text-primary";
 
 function hasManualAttention(conversation?: { manualAttention?: { dot?: boolean } } | null) {
   return Boolean(conversation?.manualAttention?.dot);
 }
 
-function isUrgentManualAttention(conversation?: { manualAttention?: { level?: string } } | null) {
-  return conversation?.manualAttention?.level === "urgent";
-}
-
 export default function ConversationsPage() {
   const t = useI18n();
+  const { session } = useAuth();
   const conversation = useAgentConversationsStore(
     agentConversationSelectors.selectedConversation,
   );
@@ -89,6 +87,8 @@ export default function ConversationsPage() {
   );
   const searchKeyword = useAgentConversationsStore((state) => state.searchKeyword);
   const setSearchKeyword = useAgentConversationsStore((state) => state.setSearchKeyword);
+  const conversationFilter = useAgentConversationsStore((state) => state.conversationFilter);
+  const setConversationFilter = useAgentConversationsStore((state) => state.setConversationFilter);
   const loadConversations = useAgentConversationsStore(
     (state) => state.loadConversations,
   );
@@ -117,6 +117,8 @@ export default function ConversationsPage() {
   const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([]);
   const [accountKeyword, setAccountKeyword] = useState("");
   const [handoffToastDismissedId, setHandoffToastDismissedId] = useState<number | null>(null);
+  const isSupportAgent = session?.roles?.includes("cs_user") ?? false;
+  const showingMyAttention = conversationFilter === "my_attention";
   const selectedInstance = instances.find((item) => item.id === selectedWxWorkInstanceId) ?? null;
   const conversationInstance =
     instances.find((item) => item.id === conversation?.wxWorkInstanceId) ?? selectedInstance;
@@ -281,18 +283,31 @@ export default function ConversationsPage() {
 
   useAgentConversationRealtime();
 
+  const selectConversationMode = (mode: "all_open" | "my_attention") => {
+    setConversationFilter(mode);
+    void loadConversations();
+  };
+
+  const selectWxWorkAccount = (instanceId: number | null) => {
+    setSelectedWxWorkInstanceId(instanceId);
+    if (showingMyAttention) {
+      setConversationFilter("all_open");
+    }
+    void loadConversations();
+  };
+
   const renderConversationSidebar = (opts?: { onListAfterSelect?: () => void }) => (
     <div className="flex h-full min-h-0 flex-1 bg-inherit">
-      <div className="flex w-72 shrink-0 flex-col border-r border-[#e9edf5] bg-white/95 xl:w-80">
-        <div className="border-b border-[#eef2f7] bg-white/95 px-4 py-4">
+      <div className="flex w-72 shrink-0 flex-col border-r border-border bg-background/95 xl:w-80">
+        <div className="border-b border-border bg-background/95 px-4 py-4">
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[#eef4ff] text-[#2563eb]">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <CircleUserRoundIcon className="size-4" />
               </div>
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold text-[#1f2937]">企微员工号</div>
-                <div className="mt-0.5 text-[11px] text-[#6b7280]">账号 / 回调 / AI 托管</div>
+                <div className="truncate text-sm font-semibold text-foreground">企微员工号</div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">账号 / 回调 / AI 托管</div>
               </div>
             </div>
             <Button
@@ -310,7 +325,7 @@ export default function ConversationsPage() {
             <Button
               variant="outline"
               size="sm"
-              className="h-9 justify-center gap-1.5 rounded-lg border-[#4f75ff] bg-white text-xs font-medium text-[#2855d9] shadow-none hover:bg-[#f4f7ff] hover:text-[#2855d9]"
+              className="h-9 justify-center gap-1.5 rounded-lg border-primary/40 bg-background text-xs font-medium text-primary shadow-none hover:bg-primary/5 hover:text-primary"
               onClick={() => void startScanLogin()}
             >
               <QrCodeIcon className="size-4" />
@@ -319,7 +334,7 @@ export default function ConversationsPage() {
             <Button
               variant="outline"
               size="sm"
-              className="h-9 justify-center gap-1.5 rounded-lg border-[#d9e2f2] bg-white text-xs font-medium text-[#344054] shadow-none hover:bg-[#f6f8fc]"
+              className="h-9 justify-center gap-1.5 rounded-lg border-border bg-background text-xs font-medium text-foreground shadow-none hover:bg-muted"
               onClick={() => setAccountManagerOpen(true)}
             >
               <SettingsIcon className="size-4" />
@@ -327,24 +342,24 @@ export default function ConversationsPage() {
             </Button>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded-xl border border-[#edf1f7] bg-[#f8fbff] px-3 py-2">
-              <div className="text-[#7a8599]">客户</div>
-              <div className="mt-1 text-lg font-semibold leading-none text-[#1f2937]">{accountCustomerCount}</div>
+            <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
+              <div className="text-muted-foreground">客户</div>
+              <div className="mt-1 text-lg font-semibold leading-none text-foreground">{accountCustomerCount}</div>
             </div>
-            <div className="rounded-xl border border-[#edf1f7] bg-[#f8fbff] px-3 py-2">
-              <div className="text-[#7a8599]">待人工</div>
+            <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
+              <div className="text-muted-foreground">待人工</div>
               <div className="mt-1 text-lg font-semibold leading-none text-destructive">{manualAttentionCount}</div>
             </div>
           </div>
           <div className="relative mt-3">
-            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#9aa4b2]" />
+            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={accountKeyword}
               onChange={(event) => setAccountKeyword(event.target.value)}
               placeholder="搜索员工号/门店"
-              className="h-9 rounded-lg border-[#d9e2f2] bg-[#f5f7fb] pl-8 pr-8 text-xs shadow-none placeholder:text-[#9aa4b2] focus-visible:bg-white"
+              className="h-9 rounded-lg border-border bg-muted/50 pl-8 pr-8 text-xs shadow-none placeholder:text-muted-foreground focus-visible:bg-background"
             />
-            <FilterIcon className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#9aa4b2]" />
+            <FilterIcon className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-3.5">
@@ -352,19 +367,18 @@ export default function ConversationsPage() {
             type="button"
             className={`mb-2 flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-sm transition ${
               selectedWxWorkInstanceId === null
-                ? "bg-[#eef3ff] text-[#2855d9] shadow-[inset_0_0_0_1px_rgba(79,117,255,0.12)]"
-                : "text-[#344054] hover:bg-[#f7f9fd]"
+                ? "bg-primary/10 text-primary ring-1 ring-inset ring-primary/15"
+                : "text-foreground hover:bg-muted"
             }`}
             onClick={() => {
-              setSelectedWxWorkInstanceId(null);
-              void loadConversations();
+              selectWxWorkAccount(null);
             }}
           >
             <span className="flex min-w-0 items-center gap-2 truncate">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-white text-[11px] shadow-sm">全</span>
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-background text-[11px] shadow-sm">全</span>
               <span className="truncate font-medium">全部账号</span>
             </span>
-            <span className="rounded-full bg-white px-1.5 text-[11px] text-[#7a8599] shadow-sm">{aggregateAccountStats.customerCount}</span>
+            <span className="rounded-full bg-background px-1.5 text-[11px] text-muted-foreground shadow-sm">{aggregateAccountStats.customerCount}</span>
           </button>
           {filteredInstances.map((item) => (
             <button
@@ -372,18 +386,17 @@ export default function ConversationsPage() {
               type="button"
             className={`group mb-2 w-full rounded-xl px-2.5 py-2 text-left text-sm transition ${
                 selectedWxWorkInstanceId === item.id
-                  ? "bg-[#eef3ff] text-[#2855d9] shadow-[inset_0_0_0_1px_rgba(79,117,255,0.12)]"
-                  : "text-[#344054] hover:bg-[#f7f9fd]"
+                  ? "bg-primary/10 text-primary ring-1 ring-inset ring-primary/15"
+                  : "text-foreground hover:bg-muted"
               }`}
               onClick={() => {
-                setSelectedWxWorkInstanceId(item.id);
-                void loadConversations();
+                selectWxWorkAccount(item.id);
               }}
             >
               <div className="flex items-center gap-2">
                 <Avatar className="relative size-9 shrink-0 rounded-lg">
                   <AvatarImage src={item.employeeAvatar || ""} />
-                  <AvatarFallback className="rounded-lg bg-[#f0f4fb] text-xs font-semibold text-[#526072]">
+                  <AvatarFallback className="rounded-lg bg-muted text-xs font-semibold text-muted-foreground">
                   {(repairMojibakeText(item.employeeName) || item.guid || "企").slice(0, 1)}
                   </AvatarFallback>
                   {item.manualAttentionCount > 0 ? (
@@ -401,46 +414,74 @@ export default function ConversationsPage() {
                 </Avatar>
                 <div className="min-w-0 flex-1">
                   <span className="block truncate font-medium leading-4">{repairMojibakeText(item.employeeName) || item.guid}</span>
-                  <span className="mt-0.5 block truncate text-[11px] text-[#7a8599]">
+                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
                     {repairMojibakeText(item.storeName) || item.employeeUserId || "未绑定门店"}
                   </span>
                 </div>
                 {item.manualAttentionCount > 0 ? (
                   <span className="rounded-full bg-red-50 px-1.5 text-[11px] font-medium text-red-600">{item.manualAttentionCount}</span>
                 ) : (
-                  <span className="rounded-full bg-white px-1.5 text-[11px] text-[#7a8599] shadow-sm">{item.customerCount || 0}</span>
+                  <span className="rounded-full bg-background px-1.5 text-[11px] text-muted-foreground shadow-sm">{item.customerCount || 0}</span>
                 )}
               </div>
               <div className="mt-2 flex items-center gap-1 pl-11">
-                <Badge variant={item.aiReplyEnabled === false ? "outline" : "secondary"} className="h-5 rounded-md border-[#d9e2f2] px-1.5 text-[10px] font-normal">
+                <Badge variant={item.aiReplyEnabled === false ? "outline" : "secondary"} className="h-5 rounded-md border-border px-1.5 text-[10px] font-normal">
                   {item.aiReplyEnabled === false ? "AI停用" : "AI托管"}
                 </Badge>
-                <Badge variant={item.fallbackToHQ === false ? "outline" : "secondary"} className="h-5 rounded-md border-[#d9e2f2] px-1.5 text-[10px] font-normal">
+                <Badge variant={item.fallbackToHQ === false ? "outline" : "secondary"} className="h-5 rounded-md border-border px-1.5 text-[10px] font-normal">
                   {item.fallbackToHQ === false ? "门店处理" : "总部兜底"}
                 </Badge>
               </div>
             </button>
           ))}
           {filteredInstances.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-[#d9e2f2] bg-[#f7f9fd] px-3 py-6 text-center text-xs text-[#7a8599]">
+            <div className="rounded-lg border border-dashed border-border bg-muted/40 px-3 py-6 text-center text-xs text-muted-foreground">
               没有匹配的员工号
             </div>
           ) : null}
         </div>
       </div>
-      <div className="flex min-w-0 flex-1 flex-col bg-white/95">
-        <div className="border-b border-[#eef2f7] bg-white/95 px-4 py-4">
+      <div className="flex min-w-0 flex-1 flex-col bg-background/95">
+        <div className="border-b border-border bg-background/95 px-4 py-4">
           <Button
             variant="outline"
             size="sm"
-            className="mb-3 h-9 w-full justify-center gap-1.5 rounded-lg border-[#4f75ff] bg-white text-xs font-medium text-[#2855d9] shadow-none hover:bg-[#f4f7ff] hover:text-[#2855d9]"
+            className="mb-3 h-9 w-full justify-center gap-1.5 rounded-lg border-primary/40 bg-background text-xs font-medium text-primary shadow-none hover:bg-primary/5 hover:text-primary"
             onClick={() => setAccountManagerOpen(true)}
           >
             <FilePlus2Icon className="size-4" />
             管理会话入口
           </Button>
+          {isSupportAgent ? (
+            <div className="mb-3 grid grid-cols-2 rounded-md bg-muted p-1" role="group" aria-label={t("conversation.viewMode")}>
+              <button
+                type="button"
+                className={`h-8 rounded-sm px-2 text-xs font-medium transition-colors ${
+                  !showingMyAttention
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                aria-pressed={!showingMyAttention}
+                onClick={() => selectConversationMode("all_open")}
+              >
+                {t("conversation.currentAccount")}
+              </button>
+              <button
+                type="button"
+                className={`h-8 rounded-sm px-2 text-xs font-medium transition-colors ${
+                  showingMyAttention
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                aria-pressed={showingMyAttention}
+                onClick={() => selectConversationMode("my_attention")}
+              >
+                {t("conversation.myPendingReplies")}
+              </button>
+            </div>
+          ) : null}
           <div className="relative">
-            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#9aa4b2]" />
+            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={searchKeyword}
               onChange={(event) => {
@@ -448,19 +489,21 @@ export default function ConversationsPage() {
                 void loadConversations();
               }}
               placeholder="搜索"
-              className="h-9 rounded-lg border-[#d9e2f2] bg-[#f5f7fb] pl-8 pr-8 text-xs shadow-none placeholder:text-[#9aa4b2] focus-visible:bg-white"
+              className="h-9 rounded-lg border-border bg-muted/50 pl-8 pr-8 text-xs shadow-none placeholder:text-muted-foreground focus-visible:bg-background"
             />
-            <FilterIcon className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#9aa4b2]" />
+            <FilterIcon className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           </div>
         </div>
-        <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-[#eef2f7] bg-white/95 px-4 py-2">
+        <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/95 px-4 py-2">
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold text-[#1f2937]">
-              {selectedInstance
+            <div className="truncate text-sm font-semibold text-foreground">
+              {showingMyAttention
+                ? t("conversation.myPendingReplies")
+                : selectedInstance
                 ? repairMojibakeText(selectedInstance.storeName) || repairMojibakeText(selectedInstance.employeeName) || selectedInstance.guid
                 : "全部员工号"}
             </div>
-            <div className="mt-0.5 flex items-center gap-2 text-xs text-[#7a8599]">
+            <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
               <span>客户</span>
               <span>{accountCustomerCount} 个</span>
               {manualAttentionCount > 0 ? (
@@ -488,8 +531,8 @@ export default function ConversationsPage() {
   const handoffConversation = conversations.find((item) => hasManualAttention(item));
 
   const workspaceContent = (
-    <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-[#f0f3f8] text-card-foreground">
-      <div className="mx-3 mt-3 flex h-16 shrink-0 items-center justify-between gap-3 rounded-2xl border border-white bg-white/95 px-4 py-2 shadow-[0_10px_28px_rgba(31,41,55,0.05)]">
+    <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-muted/40 text-card-foreground">
+      <div className="mx-3 mt-3 flex h-16 shrink-0 items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-2 shadow-sm">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <Button
             variant="ghost"
@@ -503,18 +546,18 @@ export default function ConversationsPage() {
             <>
               <Avatar className="size-10 shrink-0 rounded-xl lg:size-11">
                 <AvatarImage src={conversation.customerAvatar || ""} />
-                <AvatarFallback className="rounded-xl bg-[#f0f4fb] text-sm font-semibold text-[#526072]">
+                <AvatarFallback className="rounded-xl bg-muted text-sm font-semibold text-muted-foreground">
                   {t("conversation.customerAvatar")}
                 </AvatarFallback>
               </Avatar>
               <div className="min-w-0">
-                <p className="min-w-0 truncate text-sm font-semibold leading-tight text-[#1f2937]">
+                <p className="min-w-0 truncate text-sm font-semibold leading-tight text-foreground">
                   {repairMojibakeText(conversation.customerName) ||
                     t("conversation.customerFallback", {
                       id: conversation.customerId || conversation.id,
                     })}
                 </p>
-                <p className="mt-0.5 truncate text-xs text-[#7a8599]">
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
                   <span>{t("conversation.channelNumber", { id: conversation.channelId || "-" })}</span>
                   {conversation.customerId ? (
                     <>
@@ -527,13 +570,13 @@ export default function ConversationsPage() {
             </>
           ) : (
             <div className="min-w-0">
-              <p className="truncate font-semibold text-[14px] leading-tight text-[#1f2937]">
+              <p className="truncate font-semibold text-[14px] leading-tight text-foreground">
                 {t("conversation.workbenchTitle")}
               </p>
-              <p className="mt-0.5 truncate text-[14px] text-[#7a8599] sm:text-[14px] lg:hidden">
+              <p className="mt-0.5 truncate text-[14px] text-muted-foreground sm:text-[14px] lg:hidden">
                 {t("conversation.openMenuSelectConversation")}
               </p>
-              <p className="mt-0.5 hidden truncate text-[12px] text-[#7a8599] lg:block">
+              <p className="mt-0.5 hidden truncate text-[12px] text-muted-foreground lg:block">
                 {t("conversation.selectConversationFromSidebar")}
               </p>
             </div>
@@ -549,7 +592,7 @@ export default function ConversationsPage() {
               {conversation.manualAttention.label || "待人工"}
             </Badge>
           ) : conversation ? (
-            <Badge className="hidden rounded-md bg-[#eef4ff] px-2 text-xs font-normal text-[#2855d9] shadow-none sm:inline-flex">
+            <Badge className="hidden rounded-md bg-primary/10 px-2 text-xs font-normal text-primary shadow-none sm:inline-flex">
               <BotIcon className="mr-1 size-3" />
               AI/人工协同
             </Badge>
@@ -614,7 +657,7 @@ export default function ConversationsPage() {
         </div>
       </div>
       <div className="min-h-0 w-full flex-1 overflow-hidden px-3 pb-3 pt-3">
-        <div className="flex h-full min-h-0 overflow-hidden rounded-2xl bg-[#edf1f6] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.78)]">
+        <div className="flex h-full min-h-0 overflow-hidden rounded-lg bg-muted/40 ring-1 ring-inset ring-border">
         <ChatPanel
           wxWorkInstance={conversationInstance}
           onWxWorkInstanceUpdated={handleInstanceUpdated}
@@ -625,7 +668,7 @@ export default function ConversationsPage() {
   );
 
   return (
-    <div className="flex h-[calc(100dvh-var(--header-height))] min-h-0 w-full min-w-0 flex-col overflow-hidden bg-[#f6f8fb] p-0 lg:h-full lg:p-3">
+    <div className="flex h-[calc(100dvh-var(--header-height))] min-h-0 w-full min-w-0 flex-col overflow-hidden bg-muted/30 p-0 lg:h-full lg:p-3">
       {mobileMenuOpen && (
         <button
           type="button"
@@ -635,7 +678,7 @@ export default function ConversationsPage() {
         />
       )}
       <div
-        className={`fixed top-12 bottom-0 left-0 z-40 flex w-[min(22rem,calc(100vw-0.75rem))] max-w-[min(22rem,calc(100vw-0.75rem))] flex-col overflow-hidden border-r border-[#dbe7f6] bg-white text-card-foreground shadow-xl transition-transform duration-300 ease-out will-change-transform touch-manipulation overscroll-contain supports-[padding:max(0px)]:pb-[env(safe-area-inset-bottom)] lg:hidden ${
+        className={`fixed top-12 bottom-0 left-0 z-40 flex w-[min(22rem,calc(100vw-0.75rem))] max-w-[min(22rem,calc(100vw-0.75rem))] flex-col overflow-hidden border-r border-border bg-background text-card-foreground shadow-xl transition-transform duration-300 ease-out will-change-transform touch-manipulation overscroll-contain supports-[padding:max(0px)]:pb-[env(safe-area-inset-bottom)] lg:hidden ${
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"
         }`}
         aria-hidden={!mobileMenuOpen}
@@ -648,11 +691,11 @@ export default function ConversationsPage() {
       <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden lg:hidden">
         {workspaceContent}
       </div>
-      <div className="hidden min-h-0 w-full flex-1 grid-cols-[288px_360px_minmax(0,1fr)] overflow-hidden rounded-[22px] border border-[#e3e9f2] bg-white shadow-[0_18px_48px_rgba(31,41,55,0.08)] lg:grid xl:grid-cols-[320px_390px_minmax(0,1fr)]">
-        <div className="col-span-2 min-h-0 border-r border-[#e5e9f2] bg-white">
+      <div className="hidden min-h-0 w-full flex-1 grid-cols-[288px_360px_minmax(0,1fr)] overflow-hidden rounded-lg border border-border bg-background shadow-sm lg:grid xl:grid-cols-[320px_390px_minmax(0,1fr)]">
+        <div className="col-span-2 min-h-0 border-r border-border bg-background">
           {renderConversationSidebar()}
         </div>
-        <div className="min-h-0 bg-[#eef2f7]">
+        <div className="min-h-0 bg-muted/40">
           {workspaceContent}
         </div>
       </div>

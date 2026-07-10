@@ -132,9 +132,11 @@ func (s *conversationRouteService) MarkCustomerMessage(conversationID int64, at 
 		"update_user_name":         "system",
 	}
 	if state.RouteStatus == enums.ConversationRouteStatusHQAgentDeskServing {
+		updates["need_human_follow_up"] = true
 		updates["manual_expire_at"] = at.Add(DefaultManualTimeoutMinutes * time.Minute)
 	}
-	if state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual && !state.NeedHumanFollowUp {
+	if state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
+		updates["need_human_follow_up"] = true
 		updates["manual_expire_at"] = at.Add(DefaultManualTimeoutMinutes * time.Minute)
 	}
 	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, updates)
@@ -151,6 +153,7 @@ func (s *conversationRouteService) MarkAgentMessage(conversationID int64, at tim
 	}
 	switch state.RouteStatus {
 	case enums.ConversationRouteStatusHQAgentDeskServing:
+		updates["need_human_follow_up"] = false
 		updates["manual_expire_at"] = at.Add(DefaultManualTimeoutMinutes * time.Minute)
 	case enums.ConversationRouteStatusStoreWecomManual:
 		updates["need_human_follow_up"] = false
@@ -301,7 +304,7 @@ func (s *conversationRouteService) EnterHQAgentDeskServing(conversationID int64,
 		"pending_action":           "",
 		"pending_action_payload":   "",
 		"pending_action_expire_at": nil,
-		"need_human_follow_up":     false,
+		"need_human_follow_up":     true,
 		"handoff_reason":           reason,
 		"updated_at":               now,
 		"update_user_name":         "system",

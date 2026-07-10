@@ -20,7 +20,8 @@ import (
 )
 
 func ConversationAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -30,6 +31,7 @@ func ConversationAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "serviceMode"},
 		params.QueryFilter{ParamName: "currentAssigneeId"},
 	).Desc("last_message_at").Desc("id")
+	cnd = services.AgentTeamScopeService.ApplyConversationFilter(cnd, operator)
 
 	paging := params.GetPaging(ctx)
 
@@ -83,7 +85,7 @@ func ConversationAnyConversations(ctx *gin.Context) {
 	paging := params.GetPaging(ctx)
 
 	list, paging, err := services.ConversationService.ListConversations(
-		operator.UserID,
+		operator,
 		request.AgentConversationFilter(strings.TrimSpace(filterValue)),
 		keyword,
 		wxWorkInstanceID,
@@ -106,7 +108,8 @@ func ConversationGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -114,6 +117,10 @@ func ConversationGetBy(ctx *gin.Context) {
 	item := services.ConversationService.Get(id)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("会话不存在"))
+		return
+	}
+	if !services.AgentTeamScopeService.CanViewConversation(operator, id) {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该会话"))
 		return
 	}
 
@@ -125,7 +132,8 @@ func ConversationGetBy(ctx *gin.Context) {
 }
 
 func ConversationAnyMessage_list(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -139,6 +147,10 @@ func ConversationAnyMessage_list(ctx *gin.Context) {
 	)
 	if conversation := services.ConversationService.Get(conversationID); conversation == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("会话不存在"))
+		return
+	}
+	if !services.AgentTeamScopeService.CanViewConversation(operator, conversationID) {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该会话"))
 		return
 	}
 
@@ -394,6 +406,10 @@ func ConversationPostAdd_tag(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if !services.AgentTeamScopeService.CanViewConversation(operator, req.ConversationID) {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该会话"))
+		return
+	}
 	if err := services.ConversationTagService.AddTag(req, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -402,7 +418,8 @@ func ConversationPostAdd_tag(ctx *gin.Context) {
 }
 
 func ConversationPostRemove_tag(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -410,6 +427,10 @@ func ConversationPostRemove_tag(ctx *gin.Context) {
 	req := request.RemoveConversationTagRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !services.AgentTeamScopeService.CanViewConversation(operator, req.ConversationID) {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该会话"))
 		return
 	}
 	if err := services.ConversationTagService.RemoveTag(req); err != nil {

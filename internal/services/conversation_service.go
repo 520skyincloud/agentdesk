@@ -53,7 +53,10 @@ func (s *conversationService) FindPageByCnd(cnd *sqls.Cnd) (list []models.Conver
 	return repositories.ConversationRepository.FindPageByCnd(sqls.DB(), cnd)
 }
 
-func (s *conversationService) ListConversations(userID int64, filter request.AgentConversationFilter, keyword string, wxWorkInstanceID int64, paging *sqls.Paging) ([]models.Conversation, *sqls.Paging, error) {
+func (s *conversationService) ListConversations(operator *dto.AuthPrincipal, filter request.AgentConversationFilter, keyword string, wxWorkInstanceID int64, paging *sqls.Paging) ([]models.Conversation, *sqls.Paging, error) {
+	if operator == nil || operator.UserID <= 0 {
+		return nil, nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
 	cnd := sqls.NewCnd().Page(paging.Page, paging.Limit)
 
 	if strs.IsNotBlank(keyword) {
@@ -62,9 +65,10 @@ func (s *conversationService) ListConversations(userID int64, filter request.Age
 		cnd.Where("customer_name LIKE ? OR last_message_summary LIKE ?", keywordLike, keywordLike)
 	}
 
-	if wxWorkInstanceID > 0 {
+	if wxWorkInstanceID > 0 && filter != request.AgentConversationFilterMyAttention {
 		cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE wx_work_instance_id = ?)", wxWorkInstanceID)
 	}
+	cnd = AgentTeamScopeService.ApplyConversationFilter(cnd, operator)
 
 	switch filter {
 	case request.AgentConversationFilterAllOpen:
@@ -72,18 +76,26 @@ func (s *conversationService) ListConversations(userID int64, filter request.Age
 	case request.AgentConversationFilterAIServing:
 		cnd.Eq("current_assignee_id", 0).Eq("status", enums.IMConversationStatusAIServing).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterMine:
-		cnd.Eq("current_assignee_id", userID).Desc("last_active_at").Desc("id")
+		cnd.Eq("current_assignee_id", operator.UserID).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterActive:
-		cnd.Eq("current_assignee_id", userID).Eq("status", enums.IMConversationStatusActive).Desc("last_active_at").Desc("id")
+		cnd.Eq("current_assignee_id", operator.UserID).Eq("status", enums.IMConversationStatusActive).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterPending:
 		cnd.Eq("current_assignee_id", 0).Eq("status", enums.IMConversationStatusPending).Asc("last_active_at").Desc("id")
 	case request.AgentConversationFilterClosed:
-		cnd.Eq("current_assignee_id", userID).Eq("status", enums.IMConversationStatusClosed).Desc("last_active_at").Desc("id")
+		cnd.Eq("current_assignee_id", operator.UserID).Eq("status", enums.IMConversationStatusClosed).Desc("last_active_at").Desc("id")
+	case request.AgentConversationFilterMyAttention:
+		if !slices.Contains(operator.Roles, constants.RoleCodeCsUser) {
+			return nil, nil, errorsx.Forbidden("只有客服账号可以查看我的待回复")
+		}
+		cnd.Eq("current_assignee_id", operator.UserID).
+			Eq("status", enums.IMConversationStatusActive).
+			Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE need_human_follow_up = ?)", true).
+			Asc("last_active_at").Desc("id")
 	default:
 		return nil, nil, errorsx.InvalidParam("会话筛选项不合法")
 	}
 
-	list, paging := repositories.ConversationRepository.FindPageByCnd(sqls.DB(), cnd)
+	list, paging := repositories.ConversationRepository.FindPageByCndWithManualAttentionFirst(sqls.DB(), cnd)
 	return list, paging, nil
 }
 
@@ -371,7 +383,7 @@ func (s *conversationService) EnsureAgentCanReply(conversationID int64, reason s
 	if conversation.Status == enums.IMConversationStatusClosed {
 		return errorsx.InvalidParam("会话已关闭")
 	}
-	if !s.isAdmin(operator) && !AgentProfileService.CanServeConversation(operator.UserID, conversationID) {
+	if !AgentTeamScopeService.CanViewConversation(operator, conversationID) {
 		return errorsx.Forbidden("当前客服未绑定该门店或员工号，无法处理此会话")
 	}
 	if route := ConversationRouteService.GetByConversationID(conversationID); route != nil && route.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
@@ -637,6 +649,9 @@ func (s *conversationService) MarkAgentConversationReadToMessage(conversationID,
 	conversation := s.Get(conversationID)
 	if conversation == nil {
 		return errorsx.InvalidParam("会话不存在")
+	}
+	if !AgentTeamScopeService.CanViewConversation(operator, conversationID) {
+		return errorsx.Forbidden("无权访问该会话")
 	}
 	changed, err := s.markConversationReadWithActor(conversation, messageID, agentConversationReadActor{operator: operator})
 	if err != nil {

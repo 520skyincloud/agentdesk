@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { EditDialog } from "./team-edit";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/components/auth-provider";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,7 +35,6 @@ import {
 import { Status } from "@/lib/generated/enums";
 import { useI18n } from "@/i18n/provider";
 import { cn } from "@/lib/utils";
-import { readSession } from "@/lib/auth";
 
 type AgentTeamSidebarProps = {
   selectedTeamId: number | null;
@@ -56,7 +56,7 @@ export function AgentTeamSidebar({
   onTeamsChange,
 }: AgentTeamSidebarProps) {
   const t = useI18n();
-  const session = readSession();
+  const { session } = useAuth();
   const permissions = new Set(session?.permissions ?? []);
   const roles = new Set(session?.roles ?? []);
   const canCreateTeam =
@@ -76,8 +76,10 @@ export function AgentTeamSidebar({
   const [editingItem, setEditingItem] = useState<AdminAgentTeam | null>(null);
   const [teams, setTeams] = useState<AdminAgentTeam[]>([]);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+    }
     try {
       const data = await fetchAgentTeams({ page: 1, limit: 200 });
       setTeams(data);
@@ -85,12 +87,18 @@ export function AgentTeamSidebar({
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("agentProfile.loadTeamsFailed"));
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, [onTeamsChange, t]);
 
   useEffect(() => {
     void loadData();
+    const timer = window.setInterval(() => {
+      void loadData(true);
+    }, 20_000);
+    return () => window.clearInterval(timer);
   }, [loadData]);
 
   useEffect(() => {
@@ -179,8 +187,8 @@ export function AgentTeamSidebar({
 
   return (
     <>
-      <div className="flex h-full flex-col border-r border-[#dbe7f6] bg-[#f8fbff]">
-        <div className="border-b border-[#dbe7f6] bg-white/70 px-3 py-3">
+      <div className="flex h-full flex-col border-b border-border bg-muted/30 lg:border-r lg:border-b-0">
+        <div className="border-b border-border bg-background/80 px-3 py-3">
           <div className="flex items-center justify-between gap-2">
             <div>
               <div className="text-sm font-medium">{t("agentProfile.teamTitle")}</div>
@@ -234,9 +242,9 @@ export function AgentTeamSidebar({
               <div
                 key={item.id}
                 className={cn(
-                  "group mt-1 flex items-center gap-2 rounded-xl px-2 py-2 text-sm transition-colors hover:bg-[#f2f7ff]",
+                  "group mt-1 flex items-center gap-2 rounded-md px-2 py-2 text-sm transition-colors hover:bg-muted",
                   selectedTeamId === item.id &&
-                    "bg-[#eef5ff] text-primary shadow-sm shadow-blue-100/60",
+                    "bg-primary/10 text-primary",
                 )}
               >
                 <button
@@ -255,6 +263,13 @@ export function AgentTeamSidebar({
                         stores: item.storeScopeIds.length,
                       })}
                     </span>
+                    {item.pendingReplyCount > 0 ? (
+                      <span className="mt-0.5 block text-xs font-medium text-destructive tabular-nums">
+                        {t("agentProfile.teamPendingReplies", {
+                          count: item.pendingReplyCount,
+                        })}
+                      </span>
+                    ) : null}
                   </span>
                   <Badge
                     variant={

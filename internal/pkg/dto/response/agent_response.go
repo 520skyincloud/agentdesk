@@ -22,6 +22,9 @@ type AgentProfileResponse struct {
 	LastOnlineAt           string              `json:"lastOnlineAt,omitempty"`
 	LastStatusAt           string              `json:"lastStatusAt,omitempty"`
 	Remark                 string              `json:"remark"`
+	ActiveTaskCount        int                 `json:"activeTaskCount"`
+	PendingReplyCount      int                 `json:"pendingReplyCount"`
+	ProcessingTaskCount    int                 `json:"processingTaskCount"`
 }
 
 type AgentTeamResponse struct {
@@ -37,6 +40,7 @@ type AgentTeamResponse struct {
 	Description            string       `json:"description"`
 	Remark                 string       `json:"remark"`
 	Manageable             bool         `json:"manageable"`
+	PendingReplyCount      int          `json:"pendingReplyCount"`
 }
 
 type AgentTeamScheduleResponse struct {

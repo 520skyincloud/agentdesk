@@ -32,6 +32,7 @@ import { generateUUID } from "@/lib/utils"
 
 export const agentConversationFilterOptions = [
   { value: "all_open", labelKey: "conversation.filterAllOpen" },
+  { value: "my_attention", labelKey: "conversation.filterMyAttention" },
   { value: "active", labelKey: "conversation.filterActive" },
   { value: "pending", labelKey: "conversation.filterPending" },
   { value: "ai_serving", labelKey: "conversation.filterAiServing" },
@@ -49,7 +50,10 @@ function buildConversationQuery(
   const query: Record<string, string | number | undefined> = {
     filter,
     keyword: keyword.trim() || undefined,
-    wxWorkInstanceId: wxWorkInstanceId && wxWorkInstanceId > 0 ? wxWorkInstanceId : undefined,
+    wxWorkInstanceId:
+      filter !== "my_attention" && wxWorkInstanceId && wxWorkInstanceId > 0
+        ? wxWorkInstanceId
+        : undefined,
     limit: 100,
   }
 
@@ -63,6 +67,22 @@ type LoadMessagesOptions = {
 
 function ensureArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : []
+}
+
+function sortConversations(conversations: AgentConversation[]) {
+  return [...conversations].sort((left, right) => {
+    const leftNeedsReply = left.manualAttention?.dot ? 1 : 0
+    const rightNeedsReply = right.manualAttention?.dot ? 1 : 0
+    if (leftNeedsReply !== rightNeedsReply) {
+      return rightNeedsReply - leftNeedsReply
+    }
+    const leftAt = Date.parse(left.lastActiveAt || left.lastMessageAt || "") || 0
+    const rightAt = Date.parse(right.lastActiveAt || right.lastMessageAt || "") || 0
+    if (leftAt !== rightAt) {
+      return rightAt - leftAt
+    }
+    return right.id - left.id
+  })
 }
 
 function isGifFile(file: File) {
@@ -182,7 +202,7 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
           store.selectedWxWorkInstanceId
         )
       )
-      const conversations = ensureArray(data.results)
+      const conversations = sortConversations(ensureArray(data.results))
 
       if (requestSeq !== conversationsRequestSeq) {
         return
@@ -193,12 +213,17 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
         currentSelectedId !== null && conversations.some((item) => item.id === currentSelectedId)
       const nextSelectedId = hasCurrentSelection ? currentSelectedId : (conversations[0]?.id ?? null)
       const selectionChanged = nextSelectedId !== currentSelectedId
+      const nextSelectedConversation = conversations.find((item) => item.id === nextSelectedId)
 
       set({
         conversations,
         conversationsLoaded: true,
         conversationsLoading: false,
         selectedConversationId: nextSelectedId,
+        ...(store.conversationFilter === "my_attention" &&
+        nextSelectedConversation?.wxWorkInstanceId
+          ? { selectedWxWorkInstanceId: nextSelectedConversation.wxWorkInstanceId }
+          : {}),
       })
 
       if (nextSelectedId === null) {
@@ -228,12 +253,23 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
   },
 
   selectConversation: async (conversationId) => {
+    const selectedConversation = get().conversations.find((item) => item.id === conversationId)
     if (get().selectedConversationId === conversationId) {
+      if (
+        get().conversationFilter === "my_attention" &&
+        selectedConversation?.wxWorkInstanceId &&
+        get().selectedWxWorkInstanceId !== selectedConversation.wxWorkInstanceId
+      ) {
+        set({ selectedWxWorkInstanceId: selectedConversation.wxWorkInstanceId })
+      }
       return
     }
 
     set({
       selectedConversationId: conversationId,
+      ...(get().conversationFilter === "my_attention" && selectedConversation?.wxWorkInstanceId
+        ? { selectedWxWorkInstanceId: selectedConversation.wxWorkInstanceId }
+        : {}),
       messages: [],
       messagesLoading: true,
       messagesLoadingMore: false,
@@ -431,9 +467,8 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
         : state.messages
       return {
         messages: nextMessages,
-        conversations: patchConversationListWithMessage(
-          state.conversations,
-          message
+        conversations: sortConversations(
+          patchConversationListWithMessage(state.conversations, message)
         ),
       }
     })
@@ -444,7 +479,9 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
       messages: state.messages.map((item) =>
         item.id === message.id ? { ...item, ...message, id: item.id } : item
       ),
-      conversations: patchConversationListWithMessage(state.conversations, message),
+      conversations: sortConversations(
+        patchConversationListWithMessage(state.conversations, message)
+      ),
     }))
   },
 
@@ -475,7 +512,9 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
       }
       return {
         messages: nextMessages,
-        conversations: patchConversationList(state.conversations, patch),
+        conversations: sortConversations(
+          patchConversationList(state.conversations, patch)
+        ),
       }
     })
   },

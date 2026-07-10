@@ -116,11 +116,51 @@ func (s *agentTeamScopeService) ApplyWxWorkInstanceFilter(cnd *sqls.Cnd, operato
 	return cnd.Eq("id", -1)
 }
 
+func (s *agentTeamScopeService) ApplyConversationFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {
+	scope := s.Resolve(operator)
+	if scope.Unrestricted {
+		return cnd
+	}
+	if len(scope.WxWorkInstanceIDs) > 0 {
+		return cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE wx_work_instance_id IN (?))", scope.WxWorkInstanceIDs)
+	}
+	if len(scope.StoreIDs) > 0 {
+		return cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE store_id IN (?))", scope.StoreIDs)
+	}
+	return cnd.Eq("id", -1)
+}
+
+func (s *agentTeamScopeService) CanViewConversation(operator *dto.AuthPrincipal, conversationID int64) bool {
+	if operator == nil || conversationID <= 0 {
+		return false
+	}
+	if s.IsAdmin(operator) {
+		return true
+	}
+	route := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversationID)
+	if route == nil {
+		return false
+	}
+	scope := s.Resolve(operator)
+	if len(scope.WxWorkInstanceIDs) > 0 {
+		return containsInt64(scope.WxWorkInstanceIDs, route.WxWorkInstanceID)
+	}
+	return containsInt64(scope.StoreIDs, route.StoreID)
+}
+
+func (s *agentTeamScopeService) CanViewWxWorkInstance(operator *dto.AuthPrincipal, instanceID int64) bool {
+	if operator == nil || instanceID <= 0 {
+		return false
+	}
+	scope := s.Resolve(operator)
+	return scope.Unrestricted || containsInt64(scope.WxWorkInstanceIDs, instanceID)
+}
+
 func (scope *ManagedDataScope) expand() {
 	scope.CompanyIDs = uniquePositive(scope.CompanyIDs)
 	scope.StoreIDs = uniquePositive(scope.StoreIDs)
 	scope.WxWorkInstanceIDs = uniquePositive(scope.WxWorkInstanceIDs)
-	if len(scope.CompanyIDs) > 0 {
+	if len(scope.CompanyIDs) > 0 && len(scope.StoreIDs) == 0 && len(scope.WxWorkInstanceIDs) == 0 {
 		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().In("company_id", scope.CompanyIDs).Where("status <> ?", enums.StatusDeleted))
 		for i := range stores {
 			scope.StoreIDs = appendPositive(scope.StoreIDs, stores[i].ID)
@@ -133,10 +173,12 @@ func (scope *ManagedDataScope) expand() {
 			scope.CompanyIDs = appendPositive(scope.CompanyIDs, stores[i].CompanyID)
 			scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, stores[i].KnowledgeBaseID)
 		}
-		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().In("store_id", scope.StoreIDs).Where("status <> ?", enums.StatusDeleted))
-		for i := range instances {
-			scope.WxWorkInstanceIDs = appendPositive(scope.WxWorkInstanceIDs, instances[i].ID)
-			scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, instances[i].KnowledgeBaseID)
+		if len(scope.WxWorkInstanceIDs) == 0 {
+			instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().In("store_id", scope.StoreIDs).Where("status <> ?", enums.StatusDeleted))
+			for i := range instances {
+				scope.WxWorkInstanceIDs = appendPositive(scope.WxWorkInstanceIDs, instances[i].ID)
+				scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, instances[i].KnowledgeBaseID)
+			}
 		}
 	}
 	if len(scope.WxWorkInstanceIDs) > 0 {

@@ -63,6 +63,21 @@ func (r *conversationRepository) FindPageByCnd(db *gorm.DB, cnd *sqls.Cnd) (list
 	return
 }
 
+func (r *conversationRepository) FindPageByCndWithManualAttentionFirst(db *gorm.DB, cnd *sqls.Cnd) (list []models.Conversation, paging *sqls.Paging) {
+	query := db.Order(`CASE WHEN EXISTS (
+		SELECT 1 FROM t_conversation_route_state
+		WHERE t_conversation_route_state.conversation_id = t_conversation.id
+		AND t_conversation_route_state.need_human_follow_up = 1
+	) THEN 0 ELSE 1 END ASC`)
+	cnd.Find(query, &list)
+	paging = &sqls.Paging{
+		Page:  cnd.Paging.Page,
+		Limit: cnd.Paging.Limit,
+		Total: cnd.Count(db, &models.Conversation{}),
+	}
+	return
+}
+
 func (r *conversationRepository) FindBySql(db *gorm.DB, sqlStr string, paramArr ...interface{}) (list []models.Conversation) {
 	db.Raw(sqlStr, paramArr...).Scan(&list)
 	return

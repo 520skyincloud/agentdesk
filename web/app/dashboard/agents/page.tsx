@@ -7,13 +7,14 @@ import {
   RefreshCwIcon,
   UserCogIcon,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   DashboardCrudPage,
   type DashboardCrudColumn,
   type DashboardCrudFilter,
 } from "@/components/dashboard/crud";
+import { useAuth } from "@/components/auth-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,7 +29,6 @@ import {
 import { useI18n } from "@/i18n/provider";
 import { ServiceStatus } from "@/lib/generated/enums";
 import { formatDateTime } from "@/lib/utils";
-import { readSession } from "@/lib/auth";
 import { EditDialog } from "./_components/edit";
 import { AgentTeamSidebar } from "./_components/team-sidebar";
 
@@ -51,10 +51,11 @@ function getStatusLabel(value: number, t: TFunction) {
 
 export default function DashboardAgentsPage() {
   const t = useI18n();
+  const { session } = useAuth();
   const serviceStatusOptions = useMemo(() => getServiceStatusOptions(t), [t]);
   const [selectedTeam, setSelectedTeam] = useState<AdminAgentTeam | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const session = readSession();
+  const [loadRefreshKey, setLoadRefreshKey] = useState(0);
   const permissions = new Set(session?.permissions ?? []);
   const canCreateAgent = Boolean(
     selectedTeam?.manageable && permissions.has("agent.create"),
@@ -76,6 +77,13 @@ export default function DashboardAgentsPage() {
       }
       return nextTeams.find((item) => item.id === current.id) ?? nextTeams[0];
     });
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setLoadRefreshKey((value) => value + 1);
+    }, 20_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const filters = useMemo<DashboardCrudFilter[]>(
@@ -114,6 +122,7 @@ export default function DashboardAgentsPage() {
       {
         key: "agent",
         label: t("agentProfile.columnAgent"),
+        className: "min-w-[170px]",
         render: (item) => (
           <div className="flex items-start gap-3">
             <div className="agentdesk-icon-tile mt-0.5 overflow-hidden">
@@ -137,6 +146,16 @@ export default function DashboardAgentsPage() {
               <div className="mt-1 text-xs text-muted-foreground">
                 {t("agentProfile.agentCode", { code: item.agentCode })}
               </div>
+              <div className="mt-2 flex flex-wrap items-center gap-1 md:hidden">
+                <Badge variant="outline">
+                  {getStatusLabel(item.serviceStatus, t)}
+                </Badge>
+                <span className="text-[11px] text-muted-foreground">
+                  {t("agentProfile.mobileCapacity", {
+                    count: item.maxConcurrentCount,
+                  })}
+                </span>
+              </div>
             </div>
           </div>
         ),
@@ -144,6 +163,7 @@ export default function DashboardAgentsPage() {
       {
         key: "rules",
         label: t("agentProfile.columnRules"),
+        className: "hidden md:table-cell",
         render: (item) => (
           <>
             <Badge variant="outline">
@@ -161,6 +181,7 @@ export default function DashboardAgentsPage() {
       {
         key: "dispatch",
         label: t("agentProfile.columnDispatch"),
+        className: "hidden lg:table-cell",
         render: (item) => (
           <div className="flex flex-wrap gap-1.5">
             <Badge variant={item.autoAssignEnabled ? "secondary" : "outline"}>
@@ -179,8 +200,49 @@ export default function DashboardAgentsPage() {
         ),
       },
       {
+        key: "load",
+        label: t("agentProfile.columnLoad"),
+        className: "min-w-[105px]",
+        render: (item) =>
+          item.activeTaskCount > 0 ? (
+            <div className="space-y-1 text-xs tabular-nums">
+              <div className="font-medium text-foreground">
+                {t("agentProfile.activeTasks", {
+                  count: item.activeTaskCount,
+                })}
+                <span className="text-muted-foreground">
+                  {" "}/ {item.maxConcurrentCount}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-x-2 gap-y-1">
+                <span
+                  className={
+                    item.pendingReplyCount > 0
+                      ? "font-medium text-destructive"
+                      : "text-muted-foreground"
+                  }
+                >
+                  {t("agentProfile.pendingReplies", {
+                    count: item.pendingReplyCount,
+                  })}
+                </span>
+                <span className="text-muted-foreground">
+                  {t("agentProfile.processingTasks", {
+                    count: item.processingTaskCount,
+                  })}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              {t("agentProfile.noActiveTasks")}
+            </span>
+          ),
+      },
+      {
         key: "recent",
         label: t("agentProfile.columnRecent"),
+        className: "hidden xl:table-cell",
         render: (item) => (
           <>
             <div className="text-sm">
@@ -201,10 +263,12 @@ export default function DashboardAgentsPage() {
   );
 
   return (
-    <div className="flex h-[calc(100vh-4rem)]">
+    <div className="flex h-[calc(100vh-4rem)] min-h-0 flex-col overflow-hidden lg:flex-row">
       <div
-        className={`shrink-0 overflow-hidden transition-[width] duration-200 ${
-          sidebarCollapsed ? "w-0" : "w-80"
+        className={`shrink-0 overflow-hidden transition-[width,height] duration-200 ${
+          sidebarCollapsed
+            ? "h-0 w-full lg:h-full lg:w-0"
+            : "h-64 w-full lg:h-full lg:w-80"
         }`}
       >
         <AgentTeamSidebar
@@ -213,11 +277,11 @@ export default function DashboardAgentsPage() {
           onTeamsChange={handleTeamsChange}
         />
       </div>
-      <div className="relative shrink-0 bg-white">
+      <div className="relative hidden shrink-0 bg-background lg:block">
         <Button
           variant="outline"
           size="icon"
-          className="absolute top-4 left-1/2 z-10 size-7 -translate-x-1/2 rounded-full border-[#dbe7f6] bg-white shadow-[0_8px_18px_rgba(37,99,235,0.10)]"
+          className="absolute top-4 left-1/2 z-10 size-7 -translate-x-1/2 rounded-full border-border bg-background shadow-sm"
           onClick={() => setSidebarCollapsed((value) => !value)}
           aria-label={
             sidebarCollapsed
@@ -232,12 +296,13 @@ export default function DashboardAgentsPage() {
           )}
         </Button>
       </div>
-      <div className="min-w-0 flex-1 p-4 lg:p-6">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3 sm:p-4 lg:p-6">
         <div className="flex h-full flex-col gap-6">
           <DashboardCrudPage<AdminAgentProfile, CreateAdminAgentProfilePayload>
             key={selectedTeam?.id ?? "all"}
             layout="fragment"
             tableShellClassName="min-h-0"
+            reloadKey={`${selectedTeam?.id ?? 0}:${loadRefreshKey}`}
             filters={filters}
             columns={columns}
             fetchList={(query) =>
