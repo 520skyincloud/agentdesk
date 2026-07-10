@@ -646,7 +646,11 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 			}
 		}
 		if isMediaUnderstandingMessage(message.MessageType) {
-			MediaUnderstandingService.UnderstandInboundMessageAsync(message.ID)
+			if mediaMessageAlreadyUnderstood(*message) {
+				MediaUnderstandingService.triggerAIForUnderstoodMedia(message)
+			} else {
+				MediaUnderstandingService.UnderstandInboundMessageAsync(message.ID)
+			}
 			return message, err
 		}
 		if !shouldTriggerAIReply(message.MessageType) {
@@ -661,6 +665,14 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 
 func shouldTriggerAIReply(messageType enums.IMMessageType) bool {
 	return messageType == enums.IMMessageTypeText || messageType == enums.IMMessageTypeHTML
+}
+
+func mediaMessageAlreadyUnderstood(message models.Message) bool {
+	if !isMediaUnderstandingMessage(message.MessageType) {
+		return false
+	}
+	mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
+	return strings.TrimSpace(status) == "understood" && (strings.TrimSpace(mediaText) != "" || strings.TrimSpace(mediaSummary) != "")
 }
 
 func routeStatusBlocksAIReply(routeStatus enums.ConversationRouteStatus) bool {
@@ -797,6 +809,10 @@ func (s *messageService) normalizeMessageContent(conversationID int64, messageTy
 			return "", "", "", err
 		}
 		canonicalPayload, err := buildIMMessageAssetPayloadWithMedia(asset, assetPayload.WxMedia)
+		if err != nil {
+			return "", "", "", err
+		}
+		canonicalPayload, err = mergeIMMessageAssetUnderstandingPayload(canonicalPayload, assetPayload)
 		if err != nil {
 			return "", "", "", err
 		}

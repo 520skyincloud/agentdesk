@@ -23,6 +23,7 @@ import {
   fetchAIConfigsAll,
   fetchChannels,
   fetchKnowledgeBasesAll,
+  fetchReplyIntentProfiles,
   fetchStoreAIModelSettings,
   fetchWxWorkProtocolInstance,
   fetchWxWorkProtocolInstances,
@@ -37,6 +38,7 @@ import {
   type AdminChannel,
   type CreateWxWorkProtocolInstancePayload,
   type KnowledgeBase,
+  type ReplyIntentProfile,
   type StoreAIModelSetting,
   type WxWorkProtocolInstance,
   type WxWorkProtocolRoomMemberOption,
@@ -525,6 +527,7 @@ export function WxWorkProtocolInstanceManager({
   const [channels, setChannels] = useState<AdminChannel[]>([])
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
   const [companies, setCompanies] = useState<AdminCompany[]>([])
+  const [intentProfiles, setIntentProfiles] = useState<ReplyIntentProfile[]>([])
   const [reloadKey, setReloadKey] = useState(0)
   const [modelSettingsInstance, setModelSettingsInstance] = useState<WxWorkProtocolInstance | null>(null)
   const [modelSettings, setModelSettings] = useState<StoreAIModelSetting[]>([])
@@ -543,14 +546,16 @@ export function WxWorkProtocolInstanceManager({
   useEffect(() => {
     async function loadOptions() {
       try {
-        const [channelPage, kbList, companyPage] = await Promise.all([
+        const [channelPage, kbList, companyPage, intentProfilePage] = await Promise.all([
           fetchChannels({ channelType: "wxwork_protocol", status: Status.Ok, limit: 200 }),
           fetchKnowledgeBasesAll({ status: Status.Ok }),
           lockCompany ? Promise.resolve({ results: [] }) : fetchCompanies({ status: Status.Ok, limit: 500 }),
+          fetchReplyIntentProfiles({ status: Status.Ok, limit: 200 }),
         ])
         setChannels(channelPage.results)
         setKnowledgeBases(kbList)
         setCompanies(companyPage.results)
+        setIntentProfiles(intentProfilePage.results)
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "加载选项失败")
       }
@@ -587,6 +592,17 @@ export function WxWorkProtocolInstanceManager({
   const companyOptions = useMemo(
     () => companies.map((item) => ({ value: String(item.id), label: repairMojibakeText(item.name) || `公司 #${item.id}` })),
     [companies],
+  )
+
+  const intentProfileOptions = useMemo(
+    () => [
+      { value: "0", label: "继承公司或系统默认" },
+      ...intentProfiles.map((item) => ({
+        value: String(item.id),
+        label: `${item.name}${item.industryCode ? ` · ${item.industryCode}` : ""}`,
+      })),
+    ],
+    [intentProfiles],
   )
 
   function notifyChanged() {
@@ -881,9 +897,12 @@ export function WxWorkProtocolInstanceManager({
 	              <div className="text-xs text-muted-foreground">
 	                {item.companyName ? `公司：${repairMojibakeText(item.companyName)}` : "未绑定公司"}
 	              </div>
-	              <div className="text-xs text-muted-foreground">
-	                {repairMojibakeText(item.knowledgeBaseName) || `知识库 ${item.knowledgeBaseId || "未配置"}`}
-	              </div>
+              <div className="text-xs text-muted-foreground">
+                {repairMojibakeText(item.knowledgeBaseName) || `知识库 ${item.knowledgeBaseId || "未配置"}`}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || "继承默认"}
+              </div>
               {item.storeAddress || item.storeLatitude || item.storeLongitude ? (
                 <div className="text-xs text-muted-foreground">
                   {item.storeAddress || "未填地址"} {item.storeLatitude && item.storeLongitude ? `(${item.storeLatitude}, ${item.storeLongitude})` : ""}
@@ -932,6 +951,9 @@ export function WxWorkProtocolInstanceManager({
               </div>
               <div className="max-w-48 truncate text-xs text-muted-foreground">
                 知识库：{repairMojibakeText(item.knowledgeBaseName) || `#${item.knowledgeBaseId || "未配置"}`}
+              </div>
+              <div className="max-w-48 truncate text-xs text-muted-foreground">
+                意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || "继承默认"}
               </div>
               <div className="max-w-48 truncate text-xs text-muted-foreground">模型按员工号设置、公司默认、系统全局默认解析</div>
             </div>
@@ -999,9 +1021,19 @@ export function WxWorkProtocolInstanceManager({
 	            },
 	          ]),
 	          { name: "storeName", label: "店名/账号名称", type: "text", placeholder: "例如：丽斯未来酒店杭州某某店", description: "企微员工号就是门店账号。这里填店名即可，系统会维护内部兼容门店记录。" },
+          {
+            name: "intentProfileId",
+            label: "意图行业",
+            type: "select",
+            defaultValue: "0",
+            valueFromItem: (item) => String(item.intentProfileId || 0),
+            options: intentProfileOptions,
+            description: "决定这个员工号走哪套 IntentDetect 提示词和意图分类；未设置时继承公司或系统默认。",
+          },
 	          { name: "storeId", label: "内部门店 ID（可选兼容）", type: "number", min: 0, description: "一般不用填；老数据或需要绑定已有内部门店时再填写。" },
           { name: "storeLocationGuide", label: "门店定位说明", type: "custom", render: renderLocationGuide },
           { name: "storeAddress", label: "门店地址", type: "text", placeholder: "例如：上海市..." },
+          { name: "storeContactPhone", label: "联系电话", type: "text", placeholder: "例如：0551-88888888 / 13800000000", description: "客户询问酒店电话时发送这个账号配置的电话变量，不从地址或备注里猜。" },
           { name: "storeNavigationName", label: "导航名称", type: "text", placeholder: "例如：丽斯未来酒店某某店" },
           { name: "storeLatitude", label: "门店纬度", type: "text", placeholder: "例如：31.230416" },
           { name: "storeLongitude", label: "门店经度", type: "text", placeholder: "例如：121.473701" },
@@ -1062,9 +1094,11 @@ export function WxWorkProtocolInstanceManager({
 	          employeeName: String(values.employeeName || ""),
 	          employeeAvatar: context.item?.employeeAvatar || "",
 	          companyId: lockedCompanyId > 0 ? lockedCompanyId : Number(values.companyId || context.item?.companyId || 0),
+          intentProfileId: Number(values.intentProfileId || 0),
 	          storeId: Number(values.storeId || 0),
 	          storeName: String(values.storeName || context.item?.storeName || values.employeeName || ""),
 	          storeAddress: String(values.storeAddress || ""),
+          storeContactPhone: String(values.storeContactPhone || ""),
           storeNavigationName: String(values.storeNavigationName || ""),
           storeLatitude: String(values.storeLatitude || ""),
           storeLongitude: String(values.storeLongitude || ""),

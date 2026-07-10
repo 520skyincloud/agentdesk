@@ -131,7 +131,10 @@ func (s *retrieve) retrieveFastGPTCloudKnowledge(ctx context.Context, req Retrie
 
 func fetchFastGPTCloudKnowledge(ctx context.Context, knowledgeBase models.KnowledgeBase, query string) (fastGPTCloudResult, error) {
 	cfg := resolveFastGPTCloudKnowledgeConfig(knowledgeBase)
-	requestURL := strings.TrimRight(cfg.BaseURL, "/") + cfg.Endpoint + "?q=" + url.QueryEscape(query)
+	requestURL, err := buildFastGPTCloudRequestURL(cfg, query)
+	if err != nil {
+		return fastGPTCloudResult{}, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return fastGPTCloudResult{}, err
@@ -151,6 +154,16 @@ func fetchFastGPTCloudKnowledge(ctx context.Context, knowledgeBase models.Knowle
 	if !payload.OK {
 		return fastGPTCloudResult{}, fmt.Errorf("fastgpt cloud response not ok")
 	}
+	if hasFastGPTCloudDatasetMismatch(cfg, payload.Result) {
+		slog.Warn("FastGPT cloud knowledge dataset mismatch",
+			"knowledge_base_id", knowledgeBase.ID,
+			"knowledge_base_name", knowledgeBase.Name,
+			"expected_dataset_id", cfg.DatasetID,
+			"actual_dataset_id", payload.Result.DatasetID,
+			"actual_dataset_name", payload.Result.DatasetName,
+		)
+		return fastGPTCloudResult{Hit: false}, nil
+	}
 	if payload.Result.DatasetID == "" {
 		payload.Result.DatasetID = cfg.DatasetID
 	}
@@ -158,6 +171,43 @@ func fetchFastGPTCloudKnowledge(ctx context.Context, knowledgeBase models.Knowle
 		payload.Result.DatasetName = cfg.DatasetName
 	}
 	return payload.Result, nil
+}
+
+func buildFastGPTCloudRequestURL(cfg fastGPTCloudKnowledgeConfig, query string) (string, error) {
+	baseURL := strings.TrimRight(cfg.BaseURL, "/") + cfg.Endpoint
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+	values := parsed.Query()
+	values.Set("q", query)
+	if datasetID := strings.TrimSpace(cfg.DatasetID); datasetID != "" {
+		values.Set("datasetId", datasetID)
+		values.Set("dataset_id", datasetID)
+	}
+	if datasetName := strings.TrimSpace(cfg.DatasetName); datasetName != "" {
+		values.Set("datasetName", datasetName)
+	}
+	parsed.RawQuery = values.Encode()
+	return parsed.String(), nil
+}
+
+func hasFastGPTCloudDatasetMismatch(cfg fastGPTCloudKnowledgeConfig, result fastGPTCloudResult) bool {
+	expected := strings.TrimSpace(cfg.DatasetID)
+	if expected == "" {
+		return false
+	}
+	actual := strings.TrimSpace(result.DatasetID)
+	if actual != "" && actual != expected {
+		return true
+	}
+	for _, quote := range result.Quotes {
+		quoteDatasetID := strings.TrimSpace(quote.DatasetID)
+		if quoteDatasetID != "" && quoteDatasetID != expected {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveFastGPTCloudKnowledgeConfig(knowledgeBase models.KnowledgeBase) fastGPTCloudKnowledgeConfig {

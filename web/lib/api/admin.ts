@@ -181,6 +181,7 @@ export type ReplyIntentConfig = {
   code: string
   name: string
   description: string
+  intentProfileId: number
   scopeType: string
   companyId: number
   storeId: number
@@ -202,6 +203,23 @@ export type ReplyIntentConfig = {
   replyPlanTemplate: string
   validationRules: string
   noReplyWhenMatched: boolean
+  status: number
+  sortNo: number
+  remark: string
+  createdAt: string
+  updatedAt: string
+  createUserName: string
+  updateUserName: string
+}
+
+export type ReplyIntentProfile = {
+  id: number
+  code: string
+  name: string
+  industryCode: string
+  description: string
+  intentDetectPrompt: string
+  intentJsonSchema: string
   status: number
   sortNo: number
   remark: string
@@ -275,10 +293,13 @@ export type WxWorkProtocolInstance = {
   employeeAvatar: string
   companyId: number
   companyName: string
+  intentProfileId: number
+  intentProfileName: string
   storeId: number
   storeCode: string
   storeName: string
   storeAddress: string
+  storeContactPhone: string
   storeNavigationName: string
   storeLongitude: string
   storeLatitude: string
@@ -403,9 +424,11 @@ export type CreateWxWorkProtocolInstancePayload = {
   employeeName: string
   employeeAvatar: string
   companyId: number
+  intentProfileId: number
   storeId: number
   storeName?: string
   storeAddress: string
+  storeContactPhone: string
   storeNavigationName: string
   storeLongitude: string
   storeLatitude: string
@@ -451,10 +474,12 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   storeRoomNotifyEnabled: boolean
   storeRoomAtList: string
   personaPrompt: string
+  intentProfileId: number
   companyId: number
   storeId: number
   storeName?: string
   storeAddress: string
+  storeContactPhone: string
   storeNavigationName: string
   storeLongitude: string
   storeLatitude: string
@@ -618,6 +643,15 @@ export type CreateReplyIntentConfigPayload = Omit<
 >
 
 export type UpdateReplyIntentConfigPayload = CreateReplyIntentConfigPayload & {
+  id: number
+}
+
+export type CreateReplyIntentProfilePayload = Omit<
+  ReplyIntentProfile,
+  "id" | "createdAt" | "updatedAt" | "createUserName" | "updateUserName"
+>
+
+export type UpdateReplyIntentProfilePayload = CreateReplyIntentProfilePayload & {
   id: number
 }
 
@@ -1153,6 +1187,7 @@ export function updateWxWorkProtocolRemoteSetup(payload: {
   storeId?: number
   storeName?: string
   storeAddress?: string
+  storeContactPhone?: string
   storeNavigationName?: string
   storeLongitude?: string
   storeLatitude?: string
@@ -1727,6 +1762,37 @@ export function updateQuickReply(payload: UpdateAdminQuickReplyPayload) {
 
 export function deleteQuickReply(id: number) {
   return request<void>("/api/dashboard/quick-reply/delete", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  })
+}
+
+export function fetchReplyIntentProfiles(query?: Record<string, string | number | undefined>) {
+  return request<PageResult<ReplyIntentProfile>>(
+    `/api/dashboard/reply-intent-profile/list${toQueryString(query)}`
+  )
+}
+
+export function fetchReplyIntentProfile(id: number) {
+  return request<ReplyIntentProfile>(`/api/dashboard/reply-intent-profile/${id}`)
+}
+
+export function createReplyIntentProfile(payload: CreateReplyIntentProfilePayload) {
+  return request<ReplyIntentProfile>("/api/dashboard/reply-intent-profile/create", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateReplyIntentProfile(payload: UpdateReplyIntentProfilePayload) {
+  return request<void>("/api/dashboard/reply-intent-profile/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteReplyIntentProfile(id: number) {
+  return request<void>("/api/dashboard/reply-intent-profile/delete", {
     method: "POST",
     body: JSON.stringify({ id }),
   })

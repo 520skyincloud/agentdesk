@@ -7,6 +7,7 @@ type ReplyIntentConfigResponse struct {
 	Code               string       `json:"code"`
 	Name               string       `json:"name"`
 	Description        string       `json:"description"`
+	IntentProfileID    int64        `json:"intentProfileId"`
 	ScopeType          string       `json:"scopeType"`
 	CompanyID          int64        `json:"companyId"`
 	StoreID            int64        `json:"storeId"`

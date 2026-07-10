@@ -1,6 +1,8 @@
 "use client"
 
+import { useEffect, useMemo, useState } from "react"
 import { BrainCircuitIcon, RefreshCwIcon } from "lucide-react"
+import { toast } from "sonner"
 
 import {
   createDashboardStatusColumn,
@@ -13,9 +15,11 @@ import {
   deleteReplyIntentConfig,
   fetchReplyIntentConfig,
   fetchReplyIntentConfigs,
+  fetchReplyIntentProfiles,
   updateReplyIntentConfig,
   type CreateReplyIntentConfigPayload,
   type ReplyIntentConfig,
+  type ReplyIntentProfile,
 } from "@/lib/api/admin"
 import { getEnumOptions } from "@/lib/enums"
 import { Status, StatusLabels } from "@/lib/generated/enums"
@@ -62,9 +66,31 @@ function trimPreview(value: string, max = 56) {
 }
 
 export default function ReplyIntentConfigsPage() {
+  const [profiles, setProfiles] = useState<ReplyIntentProfile[]>([])
+
+  useEffect(() => {
+    async function loadProfiles() {
+      try {
+        const page = await fetchReplyIntentProfiles({ status: Status.Ok, limit: 200 })
+        setProfiles(page.results)
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "加载意图行业失败")
+      }
+    }
+    void loadProfiles()
+  }, [])
+
+  const profileOptions = useMemo(
+    () => profiles.map((item) => ({ value: String(item.id), label: `${item.name}（${item.code}）` })),
+    [profiles],
+  )
+  const profileOptionsWithAll = [{ value: "all", label: "全部行业" }, ...profileOptions]
+  const profileOptionsForForm = [{ value: "0", label: "默认酒店行业" }, ...profileOptions]
+
   return (
     <DashboardCrudPage<ReplyIntentConfig, CreateReplyIntentConfigPayload>
       filters={[
+        { name: "intentProfileId", label: "意图行业", placeholder: "全部", defaultValue: "all", allValue: "all", type: "select", options: profileOptionsWithAll, className: "w-full sm:w-48" },
         { name: "code", label: "意图编码", placeholder: "如 hotel_info", defaultValue: "", trim: true, className: "w-full sm:w-56" },
         { name: "name", label: "意图名称", placeholder: "搜索名称", defaultValue: "", trim: true, className: "w-full sm:w-56" },
         { name: "status", label: "状态", placeholder: "全部", defaultValue: "all", type: "select", options: statusOptions, className: "w-full sm:w-40" },
@@ -88,6 +114,14 @@ export default function ReplyIntentConfigsPage() {
             const label = scopeTypeOptions.find((option) => option.value === item.scopeType)?.label ?? (item.scopeType || "全局默认")
             const id = item.scopeType === "company" ? item.companyId : item.scopeType === "store" ? item.storeId : item.scopeType === "instance" ? item.wxWorkInstanceId : 0
             return <Badge variant="outline">{id > 0 ? `${label}:${id}` : label}</Badge>
+          },
+        },
+        {
+          key: "intentProfileId",
+          label: "意图行业",
+          render: (item) => {
+            const profile = profiles.find((option) => option.id === item.intentProfileId)
+            return <Badge variant="outline">{profile ? profile.name : item.intentProfileId > 0 ? `行业 #${item.intentProfileId}` : "默认酒店行业"}</Badge>
           },
         },
         { key: "priority", label: "优先级", render: (item) => item.priority },
@@ -135,6 +169,7 @@ export default function ReplyIntentConfigsPage() {
           { name: "code", label: "意图编码", placeholder: "hotel_info", required: true, trim: true, description: "同一适用范围内唯一，运行日志和规则引用都看它。" },
           { name: "name", label: "意图名称", placeholder: "酒店信息", required: true, trim: true },
           { name: "description", label: "意图说明", type: "textarea", rows: 3, placeholder: "这个意图负责哪些用户问题，不负责哪些问题。", trim: true },
+          { name: "intentProfileId", label: "所属意图行业", type: "select", defaultValue: "0", options: profileOptionsForForm, valueType: "number", description: "当前酒店回复链路使用“酒店行业”；其他行业后续各自绑定自己的分类和 IntentDetect 提示词。" },
           { name: "scopeType", label: "适用范围", type: "select", defaultValue: "global", options: scopeTypeOptions, required: true, valueFromItem: (item) => item.scopeType || "global" },
           { name: "companyId", label: "公司ID", type: "number", defaultValue: "0", min: 0, step: 1, valueType: "number", description: "公司级必填；其他范围填 0。" },
           { name: "storeId", label: "门店ID", type: "number", defaultValue: "0", min: 0, step: 1, valueType: "number", description: "门店级必填；其他范围填 0。" },
@@ -164,6 +199,7 @@ export default function ReplyIntentConfigsPage() {
           code: String(values.code ?? ""),
           name: String(values.name ?? ""),
           description: String(values.description ?? ""),
+          intentProfileId: Number(values.intentProfileId ?? 0),
           scopeType: String(values.scopeType ?? "global"),
           companyId: Number(values.companyId ?? 0),
           storeId: Number(values.storeId ?? 0),

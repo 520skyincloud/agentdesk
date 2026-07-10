@@ -3,11 +3,13 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
-	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
@@ -142,8 +144,177 @@ func fallbackAnswerabilityPassThrough(ctx context.Context, state *answerabilityG
 	return state, nil
 }
 
-func retrieveContextForRuntimeQuestions(ctx context.Context, retriever knowledgeContextRetriever, opts retrievers.KnowledgeRetrieveOptions, query string) (*retrievers.KnowledgeRetrieveResult, error) {
+func retrieveContextForRuntimeQuestions(ctx context.Context, retriever knowledgeContextRetriever, opts retrievers.KnowledgeRetrieveOptions, query string, intent callbacks.IntentTraceData) (*retrievers.KnowledgeRetrieveResult, error) {
+	queries := knowledgeQueriesFromIntentTasks(intent)
+	if len(queries) == 0 {
+		queries = splitRuntimeKnowledgeQueries(query)
+	}
+	if len(queries) > 1 {
+		return retrieveContextForRuntimeQuestionList(ctx, retriever, opts, query, queries)
+	}
+	if len(queries) == 1 && strings.TrimSpace(queries[0]) != "" {
+		return retriever.RetrieveContextByOptions(ctx, opts, queries[0])
+	}
 	return retriever.RetrieveContextByOptions(ctx, opts, query)
+}
+
+func knowledgeQueriesFromIntentTasks(intent callbacks.IntentTraceData) []string {
+	ret := make([]string, 0, len(intent.IntentTasks))
+	seen := map[string]bool{}
+	for _, task := range intent.IntentTasks {
+		if task.Intent != "hotel_info" && !task.NeedsKnowledge {
+			continue
+		}
+		query := strings.TrimSpace(task.Text)
+		if query == "" {
+			query = strings.TrimSpace(task.SubIntent)
+		}
+		if query == "" || seen[query] {
+			continue
+		}
+		seen[query] = true
+		ret = append(ret, query)
+	}
+	return ret
+}
+
+func splitRuntimeKnowledgeQueries(query string) []string {
+	display := strings.TrimSpace(currentTurnDisplayText(query))
+	if display == "" || !isMultiQuestionCurrentTurn(display) {
+		if query = strings.TrimSpace(query); query != "" {
+			return []string{query}
+		}
+		return nil
+	}
+	lines := strings.Split(display, "\n")
+	ret := make([]string, 0, len(lines))
+	seen := map[string]bool{}
+	for _, line := range lines {
+		line = cleanRuntimeQuestionLine(line)
+		if line == "" || isRuntimeBurstStructureLine(line) || seen[line] {
+			continue
+		}
+		seen[line] = true
+		ret = append(ret, line)
+	}
+	if len(ret) <= 1 {
+		if query = strings.TrimSpace(query); query != "" {
+			return []string{query}
+		}
+	}
+	return ret
+}
+
+func cleanRuntimeQuestionLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	for strings.HasPrefix(line, "[") {
+		end := strings.Index(line, "]")
+		if end <= 0 || end >= len(line)-1 {
+			break
+		}
+		line = strings.TrimSpace(line[end+1:])
+	}
+	line = strings.TrimPrefix(line, "-")
+	line = strings.TrimPrefix(line, "•")
+	return strings.TrimSpace(line)
+}
+
+func isRuntimeBurstStructureLine(line string) bool {
+	return strings.Contains(line, "本轮客户连续消息") || strings.Contains(line, "按时间顺序")
+}
+
+func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowledgeContextRetriever, opts retrievers.KnowledgeRetrieveOptions, originalQuery string, queries []string) (*retrievers.KnowledgeRetrieveResult, error) {
+	merged := &retrievers.KnowledgeRetrieveResult{
+		KnowledgeBaseIDs: append([]int64(nil), retriever.KnowledgeBaseIDs()...),
+		Query:            strings.TrimSpace(originalQuery),
+		Options:          opts,
+	}
+	results := make([]*retrievers.KnowledgeRetrieveResult, len(queries))
+	errs := make(chan error, len(queries))
+	var wg sync.WaitGroup
+	for i, question := range queries {
+		wg.Add(1)
+		go func(index int, query string) {
+			defer wg.Done()
+			questionOpts := opts
+			questionOpts.QueryPreview = preview(query, 120)
+			if questionOpts.MaxContextItems <= 0 || questionOpts.MaxContextItems > 2 {
+				questionOpts.MaxContextItems = 2
+			}
+			if questionOpts.TopK <= 0 || questionOpts.TopK > 4 {
+				questionOpts.TopK = 4
+			}
+			result, err := retriever.RetrieveContextByOptions(ctx, questionOpts, query)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results[index] = result
+		}(i, question)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	seenHits := map[string]bool{}
+	seenContext := map[string]bool{}
+	contextSections := make([]string, 0, len(queries))
+	for i, question := range queries {
+		result := results[i]
+		if result == nil {
+			continue
+		}
+		if len(merged.KnowledgeBaseIDs) == 0 {
+			merged.KnowledgeBaseIDs = append([]int64(nil), result.KnowledgeBaseIDs...)
+		}
+		if len(merged.Policies) == 0 {
+			merged.Policies = append([]retrievers.KnowledgeBaseRetrievePolicy(nil), result.Policies...)
+		}
+		if result.AnswerMode != 0 {
+			merged.AnswerMode = result.AnswerMode
+		}
+		if result.TopScore > merged.TopScore {
+			merged.TopScore = result.TopScore
+		}
+		merged.Hits = appendUniqueRuntimeRetrieveResults(merged.Hits, result.Hits, seenHits)
+		merged.ContextResults = appendUniqueRuntimeRetrieveResults(merged.ContextResults, result.ContextResults, seenContext)
+		merged.TraceItems = append(merged.TraceItems, result.TraceItems...)
+		if strings.TrimSpace(result.ContextText) != "" {
+			contextSections = append(contextSections, "【问题："+question+"】\n"+strings.TrimSpace(result.ContextText))
+		}
+		if merged.TraceSummary.TopK == 0 && merged.TraceSummary.ContextMaxTokens == 0 {
+			merged.TraceSummary = result.TraceSummary
+		}
+	}
+	merged.ContextText = strings.TrimSpace(strings.Join(contextSections, "\n\n"))
+	if merged.ContextText == "" && len(merged.ContextResults) > 0 {
+		merged.ContextText = strings.TrimSpace(rag.Retrieve.BuildContext(ctx, merged.ContextResults, 1<<30))
+	}
+	merged.TraceSummary.HitCount = len(merged.Hits)
+	merged.TraceSummary.ContextCount = len(merged.ContextResults)
+	return merged, nil
+}
+
+func appendUniqueRuntimeRetrieveResults(dst []rag.RetrieveResult, src []rag.RetrieveResult, seen map[string]bool) []rag.RetrieveResult {
+	for _, item := range src {
+		key := runtimeRetrieveResultKey(item)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		dst = append(dst, item)
+	}
+	return dst
+}
+
+func runtimeRetrieveResultKey(item rag.RetrieveResult) string {
+	return fmt.Sprintf("%d:%d:%d:%d:%s", item.KnowledgeBaseID, item.DocumentID, item.ChunkID, item.FaqID, strings.TrimSpace(item.Content))
 }
 
 func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, state *answerabilityGateState) (*answerabilityGateState, error) {
@@ -200,7 +371,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	retrieveOptions := retrievers.DefaultKnowledgeRetrieveOptions()
 	retrieveOptions.QueryPreview = preview(req.UserMessage.Content, 120)
-	result, err := retrieveContextForRuntimeQuestions(ctx, retriever, retrieveOptions, query)
+	result, err := retrieveContextForRuntimeQuestions(ctx, retriever, retrieveOptions, query, intent)
 	if err != nil {
 		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, knowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
@@ -237,6 +408,9 @@ func buildKnowledgePathActionInstruction(req RunInput, intent callbacks.IntentTr
 
 func buildIntentActionInstruction(req RunInput, intent callbacks.IntentTraceData) string {
 	parts := []string{"运行时动作约束：本轮必须由模型生成自然回复，禁止使用固定短答；只允许使用统一意图识别阶段给出的分类、子意图、资源动作和上下文，不得重新发明业务流程。"}
+	if intent.PrimaryIntent != "hotel_variable" && (intent.NeedsResource || len(intent.ResourceActions) > 0) {
+		parts = append(parts, buildHotelVariableInstruction(req, intent))
+	}
 	switch intent.PrimaryIntent {
 	case "hotel_variable":
 		parts = append(parts, buildHotelVariableInstruction(req, intent))
@@ -244,18 +418,18 @@ func buildIntentActionInstruction(req RunInput, intent callbacks.IntentTraceData
 		if intent.SubIntent == "emergency_safety" {
 			parts = append(parts, "人工/投诉/风险-突发安全：这是受伤/摔倒/流血/报警等高风险场景，必须进入接待路由；先安抚并提醒用户不要移动，必要时拨打 120/报警。缺房号/位置时只追问当前位置，同时不得等待知识库。")
 		} else {
-			parts = append(parts, "人工/投诉/风险：按当前门店托管模式和排班处理；没有工具或路由结果时，不得说已经转人工、已通知、已安排或已有处理结果。普通设施/设备问题若知识库命中，知识库优先于人工。")
+			parts = append(parts, "人工/投诉/风险：按当前门店托管模式和排班处理；没有工具或路由结果时，不得表达人工动作、通知安排或处理结果已经发生。普通设施/设备问题若知识库命中，知识库优先于人工。")
 		}
 	case "service_request":
 		parts = append(parts, "服务请求：按当前分类提示词处理；普通设施/设备/用品问题先使用知识库。没有知识库或工具结果时，不得承诺派人、送物、维修、叫醒或记录完成。")
-	case "social_confirm":
+	case "interaction":
 		if strings.TrimSpace(intent.SubIntent) == "media_context_follow_up" {
 			parts = append(parts, "图片/文件上下文：围绕当前问题使用最近图片/文件解析文本，不机械复述 OCR，不说系统识别。语音仍按既有语转文文本链路处理。")
+		} else if strings.TrimSpace(intent.SubIntent) == "clarify" || intent.NeedsClarification {
+			parts = append(parts, "互动/澄清：只追问一个关键点或给安全短答，不调用知识、变量或人工路由。")
 		} else {
-			parts = append(parts, "轻互动/确认：自然短句回应，结合最近上下文，不使用固定话术表。")
+			parts = append(parts, "互动：所有闲聊、感谢、确认、表情和非业务互动都自然短句回应，结合最近上下文，不使用固定话术表。")
 		}
-	case "unknown_clarify":
-		parts = append(parts, "未知/澄清：只追问一个关键点或给安全短答，不调用知识、变量或人工路由。")
 	}
 	return strings.Join(nonEmptyStrings(parts), "\n")
 }
@@ -268,6 +442,9 @@ func buildHotelVariableInstructionFromInstance(instance *models.WxWorkProtocolIn
 	resourceTypes := requestedHotelVariableResourceTypes(currentText, intent)
 	if len(resourceTypes) == 0 {
 		return "酒店变量：当前请求需要门店账号变量，但未识别到具体变量动作。模型只能追问一个关键点，不能编造电话、定位或小程序入口。"
+	}
+	if intent.NeedsKnowledge {
+		return "酒店变量：本轮同时有酒店信息问题和变量请求。电话、定位、小程序等变量由 Commit 阶段按 resourceActions 单独发送真实消息；本阶段只回答停车、早餐、发票、入住流程等知识问题。不要写“定位发你/小程序发你/我这边发你/已经发了/点开就能”，也不要复述变量详情。"
 	}
 	parts := make([]string, 0, len(resourceTypes))
 	for _, resourceType := range resourceTypes {
@@ -299,28 +476,22 @@ func requestedHotelVariableResourceTypes(currentText string, intent callbacks.In
 		}
 		ret = append(ret, resourceType)
 	}
-	text := normalizeConfiguredIntentText(currentText)
-	if text != "" {
-		if containsAnyNormalized(text, []string{"定位", "地址", "导航", "在哪", "哪里", "怎么去"}) {
-			add("location")
-		}
-		if containsAnyNormalized(text, []string{"小程序", "安心宿", "入住码", "办理入住", "自助入住"}) {
-			add("mini_program")
-		}
-		if containsAnyNormalized(text, []string{"电话", "号码", "联系", "客服"}) {
-			add("phone")
-		}
+	_ = currentText
+	for _, action := range intent.ResourceActions {
+		add(hotelVariableResourceTypeFromAction(action))
 	}
-	switch strings.TrimSpace(intent.ResourceAction) {
-	case "provide_location":
-		add("location")
-	case "send_miniprogram":
-		add("mini_program")
-	case "provide_phone":
-		add("phone")
-	default:
-		resourceType := strings.TrimSpace(intent.ResourceType)
-		add(resourceType)
+	if len(ret) == 0 {
+		switch strings.TrimSpace(intent.ResourceAction) {
+		case "provide_location":
+			add("location")
+		case "send_miniprogram", "provide_mini_program":
+			add("mini_program")
+		case "provide_phone":
+			add("phone")
+		default:
+			resourceType := strings.TrimSpace(intent.ResourceType)
+			add(resourceType)
+		}
 	}
 	return ret
 }
@@ -427,11 +598,104 @@ func buildLocationResourceContext(instance *models.WxWorkProtocolInstance) strin
 	return "可用定位变量：" + name + "，坐标：" + lat + ", " + lng + "，地图URI：" + buildAmapMarkerURI(name, lng, lat) + "。必须直接使用这个定位变量回答，不能说发不了链接、让同事发送或稍后处理。"
 }
 
+func buildHotelVariableDirectReply(instance *models.WxWorkProtocolInstance, intent callbacks.IntentTraceData, currentText string) string {
+	resourceTypes := requestedHotelVariableResourceTypes(currentText, intent)
+	if len(resourceTypes) == 0 {
+		if fallback := hotelVariableResourceTypeFromIntent(intent); fallback != "" {
+			resourceTypes = []string{fallback}
+		}
+	}
+	parts := make([]string, 0, len(resourceTypes))
+	for _, resourceType := range resourceTypes {
+		switch resourceType {
+		case "location":
+			parts = append(parts, buildLocationDirectReply(instance))
+		case "mini_program":
+			parts = append(parts, buildMiniProgramDirectReply(instance))
+		case "phone":
+			parts = append(parts, buildPhoneDirectReply(instance))
+		}
+	}
+	return strings.Join(nonEmptyStrings(parts), "\n")
+}
+
+func hotelVariableResourceTypeFromIntent(intent callbacks.IntentTraceData) string {
+	for _, action := range intent.ResourceActions {
+		if resourceType := hotelVariableResourceTypeFromAction(action); resourceType != "" {
+			return resourceType
+		}
+	}
+	switch strings.TrimSpace(intent.ResourceAction) {
+	case "provide_location":
+		return "location"
+	case "send_miniprogram", "provide_mini_program":
+		return "mini_program"
+	case "provide_phone":
+		return "phone"
+	}
+	for _, value := range []string{intent.ResourceType, intent.SubIntent} {
+		switch strings.TrimSpace(value) {
+		case "location":
+			return "location"
+		case "mini_program":
+			return "mini_program"
+		case "phone":
+			return "phone"
+		}
+	}
+	return ""
+}
+
+func hotelVariableResourceTypeFromAction(action string) string {
+	switch strings.TrimSpace(action) {
+	case "provide_location":
+		return "location"
+	case "send_miniprogram", "provide_mini_program":
+		return "mini_program"
+	case "provide_phone":
+		return "phone"
+	default:
+		return ""
+	}
+}
+
+func buildLocationDirectReply(instance *models.WxWorkProtocolInstance) string {
+	if instance == nil {
+		return "当前账号暂未配置酒店定位。"
+	}
+	name := firstNonEmpty(instance.StoreNavigationName, instance.EmployeeName, "酒店")
+	address := strings.TrimSpace(instance.StoreAddress)
+	lng := strings.TrimSpace(instance.StoreLongitude)
+	lat := strings.TrimSpace(instance.StoreLatitude)
+	parts := make([]string, 0, 3)
+	if address != "" {
+		parts = append(parts, name+"地址："+address)
+	}
+	if lng != "" && lat != "" {
+		parts = append(parts, "酒店定位："+buildAmapMarkerURI(name, lng, lat))
+	}
+	if len(parts) == 0 {
+		return "当前账号暂未配置酒店定位。"
+	}
+	return strings.Join(parts, "。") + "。"
+}
+
 func buildMiniProgramResourceContext(instance *models.WxWorkProtocolInstance) string {
 	if instance == nil || strings.TrimSpace(instance.DefaultMiniProgramPayload) == "" {
 		return "当前门店没有绑定入住小程序变量。请直接说明当前账号暂未配置入住小程序，不能编造入口，不能说让同事发送或稍后处理。"
 	}
 	return "当前门店已绑定入住小程序变量" + miniProgramPayloadSummary(instance.DefaultMiniProgramPayload) + "。必须围绕这个变量回复，不能说小程序未配置；没有工具发送结果时不能说已经发给你、点开就能用、到前台扫码、微信搜门店名，也不能说让同事发送或稍后处理。"
+}
+
+func buildMiniProgramDirectReply(instance *models.WxWorkProtocolInstance) string {
+	if instance == nil || strings.TrimSpace(instance.DefaultMiniProgramPayload) == "" {
+		return "当前账号暂未配置入住小程序。"
+	}
+	title := miniProgramPayloadDisplayName(instance.DefaultMiniProgramPayload)
+	if title == "" {
+		title = "入住小程序"
+	}
+	return "入住小程序入口：" + title + "。"
 }
 
 func buildPhoneResourceContext(instance *models.WxWorkProtocolInstance) string {
@@ -440,6 +704,14 @@ func buildPhoneResourceContext(instance *models.WxWorkProtocolInstance) string {
 		return "当前门店没有配置联系电话变量。请直接说明当前账号暂未配置联系电话，不能编造号码，不能说让同事发送或稍后处理。"
 	}
 	return "可用联系电话变量：" + phone + "。必须直接回复这个电话，不能说让同事发送或稍后处理。"
+}
+
+func buildPhoneDirectReply(instance *models.WxWorkProtocolInstance) string {
+	phone := extractRuntimeStorePhone(instance)
+	if phone == "" {
+		return "当前账号暂未配置联系电话。"
+	}
+	return "酒店电话：" + phone + "。"
 }
 
 func findRuntimeWxWorkInstance(req RunInput) *models.WxWorkProtocolInstance {
@@ -461,9 +733,7 @@ func extractRuntimeStorePhone(instance *models.WxWorkProtocolInstance) string {
 	if instance == nil {
 		return ""
 	}
-	text := strings.Join([]string{instance.Remark, instance.StoreAddress}, " ")
-	re := regexp.MustCompile(`1[3-9]\d{9}|0\d{2,3}-?\d{7,8}|400-?\d{3}-?\d{4}`)
-	return re.FindString(text)
+	return utils.RepairMojibakeText(strings.TrimSpace(instance.StoreContactPhone))
 }
 
 func buildAmapMarkerURI(name string, lng string, lat string) string {
@@ -493,6 +763,23 @@ func miniProgramPayloadSummary(payload string) string {
 		return ""
 	}
 	return "（" + strings.Join(parts, "，") + "）"
+}
+
+func miniProgramPayloadDisplayName(payload string) string {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return ""
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return ""
+	}
+	for _, key := range []string{"title", "appname", "username", "appid"} {
+		if value, ok := data[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {

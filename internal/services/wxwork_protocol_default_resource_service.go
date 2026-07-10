@@ -24,57 +24,6 @@ var WxWorkProtocolDefaultResourceService = &wxWorkProtocolDefaultResourceService
 
 type wxWorkProtocolDefaultResourceService struct{}
 
-func (s *wxWorkProtocolDefaultResourceService) HandleCustomerIntent(conversation *models.Conversation, customerMessage *models.Message) bool {
-	if conversation == nil || customerMessage == nil || customerMessage.SenderType != enums.IMSenderTypeCustomer {
-		return false
-	}
-	if customerMessage.MessageType != enums.IMMessageTypeText && customerMessage.MessageType != enums.IMMessageTypeHTML && customerMessage.MessageType != enums.IMMessageTypeVoice {
-		return false
-	}
-	text := defaultResourceIntentText(customerMessage)
-	if text == "" {
-		return false
-	}
-	route := ConversationRouteService.GetByConversationID(conversation.ID)
-	if route == nil || route.WxWorkInstanceID <= 0 {
-		return false
-	}
-	instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
-	if instance == nil || instance.Status != enums.StatusOk {
-		return false
-	}
-	requestID := tracex.NormalizeRequestID(customerMessage.RequestID)
-	if handled, err := s.consumePendingServiceTask(conversation, text, requestID); err != nil {
-		slog.Warn("consume pending service task failed", "conversation_id", conversation.ID, "error", err)
-		return false
-	} else if handled {
-		return true
-	}
-	if isPositiveConfirmation(text) {
-		if handled, err := s.consumePendingLocation(conversation, instance, requestID); err != nil {
-			slog.Warn("consume pending location failed", "conversation_id", conversation.ID, "instance_id", instance.ID, "error", err)
-			return false
-		} else if handled {
-			return true
-		}
-	}
-	if wantsDirectStoreLocation(text) {
-		if err := s.sendDefaultLocation(conversation, instance, requestID); err != nil {
-			slog.Warn("send default store location failed", "conversation_id", conversation.ID, "instance_id", instance.ID, "error", err)
-			return false
-		}
-		return true
-	}
-	if wantsDefaultMiniProgram(text) {
-		if err := s.sendDefaultMiniProgram(conversation, instance, requestID); err != nil {
-			slog.Warn("send default mini program failed", "conversation_id", conversation.ID, "instance_id", instance.ID, "error", err)
-			return false
-		}
-		return true
-	}
-	return false
-}
-
 func (s *wxWorkProtocolDefaultResourceService) SendNewFriendWelcome(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) {
 	if conversation == nil || instance == nil || instance.Status != enums.StatusOk {
 		return
@@ -98,44 +47,31 @@ func (s *wxWorkProtocolDefaultResourceService) SendNewFriendWelcome(conversation
 	}
 }
 
-func (s *wxWorkProtocolDefaultResourceService) askBeforeSendingLocation(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) error {
-	storeName := firstNonBlank(
-		utils.RepairMojibakeText(strings.TrimSpace(instance.StoreNavigationName)),
-		utils.RepairMojibakeText(strings.TrimSpace(instance.StoreAddress)),
-		"酒店",
-	)
-	if err := ConversationRouteService.SetPendingAction(conversation.ID, enums.ConversationPendingActionSendLocation, "", time.Now().Add(5*time.Minute)); err != nil {
+func (s *wxWorkProtocolDefaultResourceService) sendDefaultLocation(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) error {
+	title, payload, err := s.BuildDefaultLocationMessage(instance)
+	if err != nil {
 		return err
 	}
-	content := fmt.Sprintf("要我把%s定位发您吗？", storeName)
-	_, err := MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_location_confirm_"+strs.UUID(), enums.IMMessageTypeText, content, "", systemOperator(), requestID)
+	_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_default_location_"+strs.UUID(), enums.IMMessageTypeLocation, title, payload, systemOperator(), requestID)
 	return err
 }
 
-func (s *wxWorkProtocolDefaultResourceService) consumePendingLocation(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) (bool, error) {
-	_, ok, err := ConversationRouteService.ConsumePendingAction(conversation.ID, enums.ConversationPendingActionSendLocation, time.Now())
-	if err != nil || !ok {
-		return false, err
+func (s *wxWorkProtocolDefaultResourceService) BuildDefaultLocationMessage(instance *models.WxWorkProtocolInstance) (string, string, error) {
+	if instance == nil {
+		return "", "", fmt.Errorf("员工号不存在")
 	}
-	if err := s.sendDefaultLocation(conversation, instance, requestID); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func (s *wxWorkProtocolDefaultResourceService) sendDefaultLocation(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) error {
 	longitude := strings.TrimSpace(instance.StoreLongitude)
 	latitude := strings.TrimSpace(instance.StoreLatitude)
 	if longitude == "" || latitude == "" {
-		return fmt.Errorf("员工号未绑定门店坐标")
+		return "", "", fmt.Errorf("员工号未绑定门店坐标")
 	}
 	lng, err := strconv.ParseFloat(longitude, 64)
 	if err != nil || lng == 0 {
-		return fmt.Errorf("员工号门店经度无效")
+		return "", "", fmt.Errorf("员工号门店经度无效")
 	}
 	lat, err := strconv.ParseFloat(latitude, 64)
 	if err != nil || lat == 0 {
-		return fmt.Errorf("员工号门店纬度无效")
+		return "", "", fmt.Errorf("员工号门店纬度无效")
 	}
 	title := firstNonBlank(utils.RepairMojibakeText(strings.TrimSpace(instance.StoreNavigationName)), utils.RepairMojibakeText(strings.TrimSpace(instance.StoreAddress)), "门店位置")
 	address := firstNonBlank(utils.RepairMojibakeText(strings.TrimSpace(instance.StoreAddress)), title)
@@ -146,18 +82,29 @@ func (s *wxWorkProtocolDefaultResourceService) sendDefaultLocation(conversation 
 		"title":     title,
 		"zoom":      15,
 	})
-	_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_default_location_"+strs.UUID(), enums.IMMessageTypeLocation, title, string(payload), systemOperator(), requestID)
-	return err
+	return title, string(payload), nil
 }
 
 func (s *wxWorkProtocolDefaultResourceService) sendDefaultMiniProgram(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) error {
+	content, payload, err := s.BuildDefaultMiniProgramMessage(instance)
+	if err != nil {
+		return err
+	}
+	_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_default_weapp_"+strs.UUID(), enums.IMMessageTypeMiniProgram, content, payload, systemOperator(), requestID)
+	return err
+}
+
+func (s *wxWorkProtocolDefaultResourceService) BuildDefaultMiniProgramMessage(instance *models.WxWorkProtocolInstance) (string, string, error) {
+	if instance == nil {
+		return "", "", fmt.Errorf("员工号不存在")
+	}
 	payload := strings.TrimSpace(instance.DefaultMiniProgramPayload)
 	if payload == "" {
-		return fmt.Errorf("员工号未绑定默认小程序")
+		return "", "", fmt.Errorf("员工号未绑定默认小程序")
 	}
 	body := map[string]any{}
 	if err := json.Unmarshal([]byte(payload), &body); err != nil {
-		return fmt.Errorf("默认小程序 payload 不是有效 JSON: %w", err)
+		return "", "", fmt.Errorf("默认小程序 payload 不是有效 JSON: %w", err)
 	}
 	delete(body, "protocol_msg_id")
 	delete(body, "send_result")
@@ -167,8 +114,18 @@ func (s *wxWorkProtocolDefaultResourceService) sendDefaultMiniProgram(conversati
 	deleteMiniProgramInternalStoreKeys(body)
 	payloadBytes, _ := json.Marshal(body)
 	content := firstNonBlank(strings.TrimSpace(fmt.Sprint(body["title"])), strings.TrimSpace(fmt.Sprint(body["appname"])), "小程序")
-	_, err := MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_default_weapp_"+strs.UUID(), enums.IMMessageTypeMiniProgram, content, string(payloadBytes), systemOperator(), requestID)
-	return err
+	return content, string(payloadBytes), nil
+}
+
+func (s *wxWorkProtocolDefaultResourceService) BuildDefaultPhoneMessage(instance *models.WxWorkProtocolInstance) (string, string, error) {
+	if instance == nil {
+		return "", "", fmt.Errorf("员工号不存在")
+	}
+	phone := utils.RepairMojibakeText(strings.TrimSpace(instance.StoreContactPhone))
+	if phone == "" {
+		return "", "", fmt.Errorf("员工号未配置联系电话")
+	}
+	return "酒店电话：" + phone, "", nil
 }
 
 func injectMiniProgramStoreParams(body map[string]any, instance *models.WxWorkProtocolInstance) {
@@ -534,62 +491,6 @@ func looksLikeQuestionNotServiceAction(text string) bool {
 	})
 }
 
-func wantsDirectStoreLocation(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" {
-		return false
-	}
-	keywords := []string{
-		"发定位", "发个定位", "定位发我", "定位发一下", "把定位发", "把位置发", "发个位置", "位置发我", "导航发我", "给我定位", "给我发定位",
-		"酒店定位发我", "门店位置", "酒店定位", "酒店位置发", "店位置发", "酒店在哪里", "酒店在哪", "门店在哪里", "门店在哪", "你们在哪", "你们在哪里",
-		"怎么去", "怎么走", "到店路线", "导航路线", "酒店地址", "门店地址", "地址发我", "位置在哪", "在哪儿", "在哪里啊", "在哪里呀",
-	}
-	for _, keyword := range keywords {
-		if strings.Contains(text, strings.ToLower(keyword)) {
-			return true
-		}
-	}
-	return false
-}
-
-func isPositiveConfirmation(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" {
-		return false
-	}
-	trimmed := strings.Trim(text, " ，。,.!！?？~～\n\t")
-	if trimmed == "" {
-		return false
-	}
-	if len([]rune(trimmed)) > 12 {
-		return false
-	}
-	phrases := []string{"可以", "行", "好", "好的", "好啊", "好呀", "好呢", "发", "发啊", "发吧", "发我", "给我发", "要", "要的", "嗯", "嗯嗯", "对", "对的", "是", "是的", "ok", "okay", "yes"}
-	for _, phrase := range phrases {
-		if trimmed == phrase {
-			return true
-		}
-	}
-	return false
-}
-
-func wantsLocationDiscussion(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" {
-		return false
-	}
-	if wantsDirectStoreLocation(text) {
-		return false
-	}
-	keywords := []string{"定位", "地址", "位置", "导航", "路线", "离我多远"}
-	for _, keyword := range keywords {
-		if strings.Contains(text, keyword) {
-			return true
-		}
-	}
-	return false
-}
-
 func repairMapStringValues(values map[string]any) map[string]any {
 	for key, value := range values {
 		switch typed := value.(type) {
@@ -609,39 +510,6 @@ func repairMapStringValues(values map[string]any) map[string]any {
 		}
 	}
 	return values
-}
-
-func defaultResourceIntentText(message *models.Message) string {
-	if message == nil {
-		return ""
-	}
-	parts := []string{strings.TrimSpace(message.Content)}
-	if raw := strings.TrimSpace(message.Payload); raw != "" {
-		payload := map[string]any{}
-		if err := json.Unmarshal([]byte(raw), &payload); err == nil {
-			for _, key := range []string{"mediaText", "mediaSummary", "text", "summary"} {
-				value := strings.TrimSpace(fmt.Sprint(payload[key]))
-				if value != "" && value != "<nil>" {
-					parts = append(parts, value)
-				}
-			}
-		}
-	}
-	return strings.TrimSpace(strings.Join(parts, "\n"))
-}
-
-func wantsDefaultMiniProgram(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" {
-		return false
-	}
-	keywords := []string{"小程序", "安心宿", "自由家", "开发票", "发票入口", "订单", "续住", "退房", "入住码", "电子房卡", "办入住", "办理入住", "自助入住", "入住办理", "怎么入住", "入住入口", "查订单"}
-	for _, keyword := range keywords {
-		if strings.Contains(text, strings.ToLower(keyword)) {
-			return true
-		}
-	}
-	return false
 }
 
 func systemOperator() *dto.AuthPrincipal {

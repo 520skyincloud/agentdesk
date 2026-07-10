@@ -753,6 +753,7 @@ function CompanyEditDialog({
         id: company.id,
         name: trimmedName,
         code: code.trim(),
+        intentProfileId: company.intentProfileId || 0,
         remark: remark.trim(),
       });
       toast.success(t("conversation.saved"));

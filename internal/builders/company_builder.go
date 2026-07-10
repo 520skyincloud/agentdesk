@@ -11,13 +11,14 @@ func BuildCompany(item *models.Company) *response.CompanyResponse {
 		return nil
 	}
 	return &response.CompanyResponse{
-		ID:        item.ID,
-		Name:      item.Name,
-		Code:      item.Code,
-		Status:    item.Status,
-		Remark:    item.Remark,
-		CreatedAt: item.CreatedAt.Format(time.DateTime),
-		UpdatedAt: item.UpdatedAt.Format(time.DateTime),
+		ID:              item.ID,
+		Name:            item.Name,
+		Code:            item.Code,
+		IntentProfileID: item.IntentProfileID,
+		Status:          item.Status,
+		Remark:          item.Remark,
+		CreatedAt:       item.CreatedAt.Format(time.DateTime),
+		UpdatedAt:       item.UpdatedAt.Format(time.DateTime),
 	}
 }
 

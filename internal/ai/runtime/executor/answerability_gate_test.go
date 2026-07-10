@@ -85,11 +85,14 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
-	if strings.Join(retriever.queries, "|") != "客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\n能开专票不\nWiFi是哪个" {
-		t.Fatalf("expected one retrieval driven by unified intent, got %#v", retriever.queries)
+	if !stringSliceSetEqual(retriever.queries, []string{"能开专票不", "WiFi是哪个"}) {
+		t.Fatalf("expected retrieval for each current burst question, got %#v", retriever.queries)
 	}
 	if state.RetrieveResult == nil {
 		t.Fatalf("expected retrieval result, got nil")
+	}
+	if !strings.Contains(state.RetrieveResult.ContextText, "能开专票不") || !strings.Contains(state.RetrieveResult.ContextText, "WiFi是哪个") {
+		t.Fatalf("expected merged context to label each question, got %q", state.RetrieveResult.ContextText)
 	}
 }
 
@@ -152,11 +155,14 @@ func TestKnowledgePolicyDoesNotLetSupplyFastPathHideMixedKnowledgeQuestions(t *t
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
-	if strings.Join(retriever.queries, "|") != "客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\nwifi和停车都发我一下\n房间没纸巾" {
-		t.Fatalf("expected one retrieval driven by unified intent, got %#v", retriever.queries)
+	if !stringSliceSetEqual(retriever.queries, []string{"wifi和停车都发我一下", "房间没纸巾"}) {
+		t.Fatalf("expected retrieval for each current burst question, got %#v", retriever.queries)
 	}
 	if state.RetrieveResult == nil {
 		t.Fatalf("expected retrieval result, got nil")
+	}
+	if !strings.Contains(state.RetrieveResult.ContextText, "WiFi 名称是 LISI") || !strings.Contains(state.RetrieveResult.ContextText, "纸巾在1020") {
+		t.Fatalf("expected merged context from each burst question, got %q", state.RetrieveResult.ContextText)
 	}
 }
 
@@ -223,6 +229,23 @@ func newTestKnowledgePolicyGate(retriever knowledgeContextRetriever) *KnowledgeA
 	}
 }
 
+func stringSliceSetEqual(got []string, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	counts := make(map[string]int, len(want))
+	for _, item := range want {
+		counts[item]++
+	}
+	for _, item := range got {
+		if counts[item] == 0 {
+			return false
+		}
+		counts[item]--
+	}
+	return true
+}
+
 func newKnowledgePolicyRunInput(content string, knowledgeIDs string) RunInput {
 	return RunInput{
 		UserMessage: models.Message{Content: content},
@@ -241,11 +264,11 @@ func hotelInfoIntent() callbacks.IntentTraceData {
 }
 
 func socialConfirmIntent() callbacks.IntentTraceData {
-	return callbacks.IntentTraceData{PrimaryIntent: "social_confirm", MatchedIntentCode: "social_confirm", ShouldReply: true}
+	return callbacks.IntentTraceData{PrimaryIntent: "interaction", MatchedIntentCode: "interaction", ShouldReply: true}
 }
 
 func mediaUnderstandingIntent() callbacks.IntentTraceData {
-	return callbacks.IntentTraceData{PrimaryIntent: "social_confirm", MatchedIntentCode: "social_confirm", SubIntent: "media_context_follow_up", ShouldReply: true}
+	return callbacks.IntentTraceData{PrimaryIntent: "interaction", MatchedIntentCode: "interaction", SubIntent: "media_context_follow_up", ShouldReply: true}
 }
 
 func humanRiskIntent() callbacks.IntentTraceData {
@@ -413,7 +436,10 @@ func TestBuildRunMessagesContinuesAgentFlowWhenNoContext(t *testing.T) {
 		},
 	})
 
-	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("早餐几点", "1"), summary, nil, gate)
+	messages := make([]*schema.Message, 0)
+	req := newKnowledgePolicyRunInput("早餐几点", "1")
+	appendRetrievedContext(context.Background(), req, hotelInfoIntent(), summary, nil, gate, &messages)
+	messages = append(messages, schema.UserMessage(req.UserMessage.Content))
 
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
@@ -445,6 +471,59 @@ func TestAppendRetrievedContextKeepsSkippedRuntimeActionInstruction(t *testing.T
 	}
 	if !messagesContainContent(messages, "不能说让同事发送") {
 		t.Fatalf("expected anti fake coworker fallback instruction in messages: %#v", messages)
+	}
+}
+
+func TestBuildLocationDirectReplyUsesCurrentAccountVariable(t *testing.T) {
+	reply := buildLocationDirectReply(&models.WxWorkProtocolInstance{
+		StoreNavigationName: "丽斯未来酒店合肥包河店",
+		StoreAddress:        "安徽省合肥市包河大道100号",
+		StoreLongitude:      "117.263908",
+		StoreLatitude:       "31.824097",
+	})
+	if !strings.Contains(reply, "酒店") || !strings.Contains(reply, "地址") || !strings.Contains(reply, "安徽省合肥市包河大道100号") || !strings.Contains(reply, "uri.amap.com") {
+		t.Fatalf("expected address and map uri in direct location reply, got %q", reply)
+	}
+	if strings.Contains(reply, "发你了") || strings.Contains(reply, "点开就能") {
+		t.Fatalf("direct location reply must not pretend a resource was sent, got %q", reply)
+	}
+}
+
+func TestBuildHotelVariableDirectReplyRoutesLocationIntent(t *testing.T) {
+	reply := buildHotelVariableDirectReply(&models.WxWorkProtocolInstance{
+		EmployeeName:   "丽斯未来酒店",
+		StoreAddress:   "安徽省合肥市包河大道100号",
+		StoreLongitude: "117.263908",
+		StoreLatitude:  "31.824097",
+	}, callbacks.IntentTraceData{
+		PrimaryIntent:  "hotel_variable",
+		SubIntent:      "location",
+		ResourceType:   "location",
+		ResourceAction: "provide_location",
+	}, "发一下酒店定位")
+	if !strings.Contains(reply, "安徽省合肥市包河大道100号") || !strings.Contains(reply, "酒店定位") {
+		t.Fatalf("expected location direct reply for location intent, got %q", reply)
+	}
+}
+
+func TestBuildHotelVariableDirectReplyDoesNotInferResourcesFromMergedText(t *testing.T) {
+	reply := buildHotelVariableDirectReply(&models.WxWorkProtocolInstance{
+		EmployeeName:              "丽斯未来酒店",
+		StoreAddress:              "安徽省合肥市包河大道100号",
+		StoreLongitude:            "117.263908",
+		StoreLatitude:             "31.824097",
+		DefaultMiniProgramPayload: `{"title":"安心宿入住小程序"}`,
+	}, callbacks.IntentTraceData{
+		PrimaryIntent:  "hotel_variable",
+		SubIntent:      "location",
+		ResourceType:   "location",
+		ResourceAction: "provide_location",
+	}, "定位发我一个\n我要办理入住")
+	if !strings.Contains(reply, "酒店定位") {
+		t.Fatalf("expected location direct reply, got %q", reply)
+	}
+	if strings.Contains(reply, "入住小程序入口") {
+		t.Fatalf("must not infer mini program from merged text when intent action is location only, got %q", reply)
 	}
 }
 
@@ -484,14 +563,15 @@ func TestKnowledgePolicyKeepsHotelVariableInstructionWhenMixedKnowledgeRetrieves
 	if state.SkipGate {
 		t.Fatalf("expected mixed variable+knowledge to retrieve, got skip")
 	}
-	if len(state.Decision.Instructions) < 2 {
-		t.Fatalf("expected variable and knowledge instructions, got %#v", state.Decision.Instructions)
+	if len(state.Decision.Instructions) == 0 {
+		t.Fatalf("expected mixed variable+knowledge instruction, got %#v", state.Decision.Instructions)
 	}
-	if !strings.Contains(state.Decision.Instructions[0].Content, "酒店变量-定位/地址") || !strings.Contains(state.Decision.Instructions[0].Content, "酒店变量-入住小程序") {
-		t.Fatalf("expected mixed variable instruction first, got %#v", state.Decision.Instructions)
+	first := state.Decision.Instructions[0].Content
+	if !strings.Contains(first, "Commit 阶段") || !strings.Contains(first, "本阶段只回答停车") {
+		t.Fatalf("expected mixed variable+knowledge instruction to leave variables for commit, got %#v", state.Decision.Instructions)
 	}
-	if !strings.Contains(state.Decision.Instructions[1].Content, "知识库回答约束") {
-		t.Fatalf("expected knowledge instruction after variable instruction, got %#v", state.Decision.Instructions)
+	if strings.Contains(first, "酒店变量-定位/地址") || strings.Contains(first, "酒店变量-入住小程序") {
+		t.Fatalf("mixed knowledge generation must not expose variable details to Generate, got %#v", state.Decision.Instructions)
 	}
 }
 
@@ -594,7 +674,10 @@ func TestBuildRunMessagesInjectsRetrievedContextWhenHasContext(t *testing.T) {
 		},
 	})
 
-	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("早餐几点", "1"), summary, nil, gate)
+	messages := make([]*schema.Message, 0)
+	req := newKnowledgePolicyRunInput("早餐几点", "1")
+	appendRetrievedContext(context.Background(), req, hotelInfoIntent(), summary, nil, gate, &messages)
+	messages = append(messages, schema.UserMessage(req.UserMessage.Content))
 
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no fallback, got %q", summary.ReplyText)
@@ -729,7 +812,10 @@ func TestBuildRunMessagesContinuesAgentFlowWhenRetrievalFails(t *testing.T) {
 		err:              errors.New("vector store unavailable"),
 	})
 
-	messages := buildRunMessages(context.Background(), newKnowledgePolicyRunInput("早餐几点", "1"), summary, nil, gate)
+	messages := make([]*schema.Message, 0)
+	req := newKnowledgePolicyRunInput("早餐几点", "1")
+	appendRetrievedContext(context.Background(), req, hotelInfoIntent(), summary, nil, gate, &messages)
+	messages = append(messages, schema.UserMessage(req.UserMessage.Content))
 
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)

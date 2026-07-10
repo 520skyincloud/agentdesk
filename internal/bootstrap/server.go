@@ -190,6 +190,7 @@ func addRouter(app *gin.Engine) {
 	registerDashboardAgentTeamScheduleRoutes(dashboardGroup.Group("/agent-team-schedule"))
 	registerDashboardAIAgentRoutes(dashboardGroup.Group("/ai-agent"))
 	registerDashboardAIConfigRoutes(dashboardGroup.Group("/ai-config"))
+	registerDashboardReplyIntentProfileRoutes(dashboardGroup.Group("/reply-intent-profile"))
 	registerDashboardReplyIntentConfigRoutes(dashboardGroup.Group("/reply-intent-config"))
 	registerDashboardAssetRoutes(dashboardGroup.Group("/asset"))
 	registerDashboardStorageSettingRoutes(dashboardGroup.Group("/storage-setting"))

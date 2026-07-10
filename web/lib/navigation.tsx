@@ -295,6 +295,12 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         requiredPermission: "channel.view",
       },
       {
+        titleKey: "nav.replyIntentProfiles",
+        url: "/dashboard/reply-intent-profiles",
+        icon: <BrainCircuitIcon />,
+        requiredPermission: "aiConfig.view",
+      },
+      {
         titleKey: "nav.replyIntentConfigs",
         url: "/dashboard/reply-intent-configs",
         icon: <SlidersHorizontalIcon />,

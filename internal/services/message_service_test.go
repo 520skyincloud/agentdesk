@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,7 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		&models.ConversationReadState{},
 		&models.ConversationEventLog{},
 		&models.Message{},
+		&models.Asset{},
 		&models.WxWorkKFConversation{},
 		&models.WxWorkKFMessageRef{},
 		&models.MessageSyncLog{},
@@ -607,6 +609,102 @@ func TestMediaUnderstandingVoiceTranscriptTriggersWithoutActionKeywords(t *testi
 	}
 	if !MediaUnderstandingService.mediaUnderstandingShouldTriggerAI(message) {
 		t.Fatal("expected understood voice transcript to trigger ai reply")
+	}
+}
+
+func TestMediaMessageAlreadyUnderstoodSkipsDuplicateUnderstanding(t *testing.T) {
+	message := models.Message{
+		MessageType: enums.IMMessageTypeVoice,
+		Payload:     `{"mediaText":"早餐几点开始，停车免费吗？","mediaSummary":"客户语音询问早餐时间和停车是否免费。","mediaUnderstandingStatus":"understood"}`,
+	}
+	if !mediaMessageAlreadyUnderstood(message) {
+		t.Fatal("expected understood voice payload to skip duplicate media understanding")
+	}
+	pending := models.Message{
+		MessageType: enums.IMMessageTypeVoice,
+		Payload:     `{"filename":"voice.amr","mediaUnderstandingStatus":"pending"}`,
+	}
+	if mediaMessageAlreadyUnderstood(pending) {
+		t.Fatal("pending media must still run media understanding")
+	}
+}
+
+func TestNormalizeMediaMessagePreservesPreUnderstoodPayload(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	asset := &models.Asset{
+		AssetID:    "asset-voice-understood",
+		Provider:   enums.AssetProviderLocal,
+		StorageKey: "voice/understood.amr",
+		Filename:   "understood.amr",
+		FileSize:   123,
+		MimeType:   "audio/amr",
+		Status:     enums.AssetStatusSuccess,
+		AuditFields: models.AuditFields{
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	if err := db.Create(asset).Error; err != nil {
+		t.Fatalf("create asset: %v", err)
+	}
+	_, payload, _, err := MessageService.normalizeMessageContent(
+		99,
+		enums.IMMessageTypeVoice,
+		"",
+		`{"assetId":"asset-voice-understood","mediaText":"早餐几点开始，停车免费吗？","mediaSummary":"客户语音询问早餐时间和停车是否免费。","mediaUnderstandingStatus":"understood","mediaUnderstandingError":"上一轮失败残留"}`,
+	)
+	if err != nil {
+		t.Fatalf("normalizeMessageContent() error = %v", err)
+	}
+	message := models.Message{MessageType: enums.IMMessageTypeVoice, Payload: payload}
+	if !mediaMessageAlreadyUnderstood(message) {
+		t.Fatalf("expected normalized voice payload to keep understood media text, got %s", payload)
+	}
+	if strings.Contains(payload, "上一轮失败残留") {
+		t.Fatalf("expected understood media payload to clear stale error, got %s", payload)
+	}
+}
+
+func TestPreUnderstoodVoiceMessageTriggersAIHook(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("voice-ready"), 11, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	now := time.Now()
+	message := &models.Message{
+		ConversationID: conversation.ID,
+		ClientMsgID:    "voice-ready-1",
+		SeqNo:          1,
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeVoice,
+		Content:        "voice-ready.amr",
+		Payload:        `{"mediaText":"早餐几点开始，停车免费吗？","mediaUnderstandingStatus":"understood"}`,
+		RequestID:      "voice-ready-request",
+		SentAt:         &now,
+		AuditFields: models.AuditFields{
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	if err := db.Create(message).Error; err != nil {
+		t.Fatalf("create voice message: %v", err)
+	}
+	previousHook := TriggerAIReplyAsyncHook
+	var triggeredMessageID int64
+	TriggerAIReplyAsyncHook = func(conversation models.Conversation, message models.Message) {
+		triggeredMessageID = message.ID
+	}
+	t.Cleanup(func() {
+		TriggerAIReplyAsyncHook = previousHook
+	})
+	if err := MediaUnderstandingService.UnderstandInboundMessage(context.Background(), message.ID); err != nil {
+		t.Fatalf("UnderstandInboundMessage() error = %v", err)
+	}
+	if triggeredMessageID != message.ID {
+		t.Fatalf("expected pre-understood voice to trigger ai hook for message %d, got %d", message.ID, triggeredMessageID)
 	}
 }
 

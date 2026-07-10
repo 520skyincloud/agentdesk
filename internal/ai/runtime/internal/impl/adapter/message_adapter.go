@@ -30,11 +30,15 @@ func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit in
 		limit = configuredHistoryLimit(conversationID)
 	}
 	sessionNo := currentSessionNo(currentMessageID)
-	items := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
+	cnd := sqls.NewCnd().
 		Eq("conversation_id", conversationID).
 		Eq("session_no", sessionNo).
 		Desc("id").
-		Limit(limit+1))
+		Limit(limit + 1)
+	if currentMessageID > 0 {
+		cnd.Lt("id", currentMessageID)
+	}
+	items := repositories.MessageRepository.Find(sqls.DB(), cnd)
 	oldestKeptMessageID := int64(0)
 	if len(items) > 0 {
 		oldestKeptMessageID = items[len(items)-1].ID
@@ -47,9 +51,6 @@ func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit in
 		RawItems: make([]models.Message, 0, len(items)),
 	}
 	for _, item := range items {
-		if item.ID == currentMessageID {
-			continue
-		}
 		msg := BuildSchemaMessage(&item)
 		if msg == nil {
 			continue
@@ -161,7 +162,7 @@ func BuildSchemaMessage(item *models.Message) *schema.Message {
 	if item == nil {
 		return nil
 	}
-	content := buildRuntimeMessageText(item)
+	content := RuntimeHistoryMessageContent(item)
 	if content == "" {
 		return nil
 	}
@@ -173,6 +174,49 @@ func BuildSchemaMessage(item *models.Message) *schema.Message {
 	default:
 		return nil
 	}
+}
+
+func RuntimeHistoryMessageContent(item *models.Message) string {
+	if item == nil {
+		return ""
+	}
+	content := buildRuntimeMessageText(item)
+	if content == "" {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	parts = append(parts, "历史消息", RuntimeSpeakerLabel(item.SenderType))
+	if timeLabel := RuntimeMessageTimeLabel(item); timeLabel != "" {
+		parts = append(parts, timeLabel)
+	}
+	return "[" + strings.Join(parts, "][") + "] " + content
+}
+
+func RuntimeSpeakerLabel(sender enums.IMSenderType) string {
+	switch sender {
+	case enums.IMSenderTypeCustomer:
+		return "客户"
+	case enums.IMSenderTypeAI:
+		return "AI客服"
+	case enums.IMSenderTypeAgent:
+		return "人工客服"
+	default:
+		return "未知发送方"
+	}
+}
+
+func RuntimeMessageTimeLabel(item *models.Message) string {
+	if item == nil {
+		return ""
+	}
+	at := item.CreatedAt
+	if item.SentAt != nil && !item.SentAt.IsZero() {
+		at = *item.SentAt
+	}
+	if at.IsZero() {
+		return ""
+	}
+	return at.Local().Format("2006-01-02 15:04:05")
 }
 
 func buildRuntimeMessageText(item *models.Message) string {

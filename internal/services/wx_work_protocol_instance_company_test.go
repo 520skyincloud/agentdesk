@@ -81,6 +81,65 @@ func TestWxWorkProtocolInstanceBackfillCompanyIDFromStore(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing.T) {
+	setupWxWorkProtocolInstanceCompanyTestDB(t)
+	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin"}
+	if err := sqls.DB().Create(&models.Channel{ID: 22, ChannelType: enums.ChannelTypeWxWorkProtocol, Name: "协议渠道", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if err := sqls.DB().Create(&models.Store{ID: 31, StoreCode: "store-sync", Name: "合肥南七店", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	if err := sqls.DB().Create(&models.KnowledgeBase{ID: 101, Name: "旧知识库", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create old knowledge base: %v", err)
+	}
+	if err := sqls.DB().Create(&models.KnowledgeBase{ID: 202, Name: "合肥南七店", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create new knowledge base: %v", err)
+	}
+	if err := sqls.DB().Create(&models.WxWorkProtocolInstance{
+		ID:              7,
+		Guid:            "guid-route-sync",
+		ChannelID:       22,
+		EmployeeName:    "吴朝伟",
+		StoreID:         31,
+		KnowledgeBaseID: 101,
+		Status:          enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	if err := sqls.DB().Create(&models.ConversationRouteState{
+		ConversationID:   9001,
+		StoreID:          31,
+		KnowledgeBaseID:  101,
+		WxWorkInstanceID: 7,
+		RouteStatus:      enums.ConversationRouteStatusAIServing,
+		RouteTarget:      "ai",
+		SessionNo:        1,
+	}).Error; err != nil {
+		t.Fatalf("create route state: %v", err)
+	}
+
+	if err := WxWorkProtocolInstanceService.UpdateAISettings(request.UpdateWxWorkProtocolAISettingsRequest{
+		ID:              7,
+		AIReplyEnabled:  true,
+		StoreID:         31,
+		KnowledgeBaseID: 202,
+	}, operator); err != nil {
+		t.Fatalf("UpdateAISettings() error = %v", err)
+	}
+
+	var state models.ConversationRouteState
+	if err := sqls.DB().Where("conversation_id = ?", int64(9001)).First(&state).Error; err != nil {
+		t.Fatalf("load route state: %v", err)
+	}
+	if state.KnowledgeBaseID != 202 || state.StoreID != 31 {
+		t.Fatalf("expected route state to sync binding, got store=%d knowledge=%d", state.StoreID, state.KnowledgeBaseID)
+	}
+	if state.UpdateUserName != "admin" {
+		t.Fatalf("expected route state audit user admin, got %q", state.UpdateUserName)
+	}
+}
+
 func setupWxWorkProtocolInstanceCompanyTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
@@ -95,6 +154,8 @@ func setupWxWorkProtocolInstanceCompanyTestDB(t *testing.T) *gorm.DB {
 		&models.Channel{},
 		&models.WxWorkProtocolInstance{},
 		&models.StoreStaffBinding{},
+		&models.KnowledgeBase{},
+		&models.ConversationRouteState{},
 		&models.WxWorkProtocolDevicePoolInstance{},
 	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)

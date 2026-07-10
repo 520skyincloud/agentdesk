@@ -103,6 +103,9 @@ func (m *WxProtocolChatMsg) InferMsgType() int {
 	if m.ContentType == 2 && m.Content != "" {
 		return 2
 	}
+	if strings.TrimSpace(m.Content) != "" && m.VoiceTime > 0 && !m.hasVoiceMediaHint() {
+		return 2
+	}
 	if m.ContentType == 6 || m.Longitude != 0 || m.Latitude != 0 {
 		return 3
 	}
@@ -128,6 +131,36 @@ func (m *WxProtocolChatMsg) InferMsgType() int {
 		return 8
 	}
 	return m.ContentType
+}
+
+func (m *WxProtocolChatMsg) hasVoiceMediaHint() bool {
+	mimeType := strings.ToLower(strings.TrimSpace(m.CDN.MimeType))
+	filename := strings.ToLower(strings.TrimSpace(firstNonEmptyString(m.FileName, m.CDN.Filename, m.CDN.FileName)))
+	if strings.HasPrefix(mimeType, "audio/") {
+		return true
+	}
+	for _, suffix := range []string{".amr", ".silk", ".mp3", ".m4a", ".wav", ".ogg", ".opus"} {
+		if strings.HasSuffix(filename, suffix) {
+			return true
+		}
+	}
+	return strings.TrimSpace(m.CDN.FileID) != "" ||
+		strings.TrimSpace(m.CDN.AesKey) != "" ||
+		strings.TrimSpace(m.CDN.MD5) != "" ||
+		strings.TrimSpace(m.CDN.FileMD5) != "" ||
+		strings.TrimSpace(m.CDN.AuthKey) != "" ||
+		m.CDN.Length > 0 ||
+		m.CDN.Size > 0 ||
+		m.CDN.FileSize > 0
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (m *WxProtocolChatMsg) ReferIDText() string {

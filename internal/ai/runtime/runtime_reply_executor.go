@@ -31,6 +31,8 @@ type runtimeReplyResumeInput struct {
 	Trace            *aiReplyTraceData
 }
 
+const runtimeReplyMaxOutputTokens = 512
+
 func newRuntimeReplyExecutor() *runtimeReplyExecutor {
 	return &runtimeReplyExecutor{}
 }
@@ -40,11 +42,13 @@ func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInp
 	if err != nil {
 		return nil, err
 	}
-	aiConfig := resolved.Config
+	aiConfig := normalizeRuntimeReplyAIConfig(resolved.Config)
 	if input.Trace != nil {
 		input.Trace.AIConfigID = aiConfig.ID
 		input.Trace.ModelSource = resolved.Source
 		input.Trace.ModelSettingID = resolved.ModelSettingID
+		input.Trace.ConfiguredMaxOutputTokens = resolved.Config.MaxOutputTokens
+		input.Trace.EffectiveMaxOutputTokens = aiConfig.MaxOutputTokens
 	}
 	input.AIAgent.AIConfigID = aiConfig.ID
 	runtimeStartedAt := time.Now()
@@ -69,11 +73,13 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	if err != nil {
 		return nil, err
 	}
-	aiConfig := resolved.Config
+	aiConfig := normalizeRuntimeReplyAIConfig(resolved.Config)
 	if input.Trace != nil {
 		input.Trace.AIConfigID = aiConfig.ID
 		input.Trace.ModelSource = resolved.Source
 		input.Trace.ModelSettingID = resolved.ModelSettingID
+		input.Trace.ConfiguredMaxOutputTokens = resolved.Config.MaxOutputTokens
+		input.Trace.EffectiveMaxOutputTokens = aiConfig.MaxOutputTokens
 	}
 	input.AIAgent.AIConfigID = aiConfig.ID
 	runtimeStartedAt := time.Now()
@@ -94,6 +100,13 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 		e.fillTraceFromSummary(input.Trace, summary, err)
 	}
 	return summary, err
+}
+
+func normalizeRuntimeReplyAIConfig(config models.AIConfig) models.AIConfig {
+	if config.MaxOutputTokens <= 0 || config.MaxOutputTokens > runtimeReplyMaxOutputTokens {
+		config.MaxOutputTokens = runtimeReplyMaxOutputTokens
+	}
+	return config
 }
 
 func (e *runtimeReplyExecutor) fillTraceFromSummary(trace *aiReplyTraceData, summary *applicationruntime.Summary, runErr error) {

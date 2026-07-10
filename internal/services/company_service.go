@@ -69,13 +69,18 @@ func (s *companyService) CreateCompany(req request.CreateCompanyRequest, operato
 	if existing != nil && existing.Status != enums.StatusDeleted {
 		return nil, errorsx.InvalidParam("公司名称已存在")
 	}
+	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	if err != nil {
+		return nil, err
+	}
 
 	item := &models.Company{
-		Name:        name,
-		Code:        strings.TrimSpace(req.Code),
-		Status:      enums.StatusOk,
-		Remark:      strings.TrimSpace(req.Remark),
-		AuditFields: utils.BuildAuditFields(operator),
+		Name:            name,
+		Code:            strings.TrimSpace(req.Code),
+		IntentProfileID: intentProfileID,
+		Status:          enums.StatusOk,
+		Remark:          strings.TrimSpace(req.Remark),
+		AuditFields:     utils.BuildAuditFields(operator),
 	}
 	if err := repositories.CompanyRepository.Create(sqls.DB(), item); err != nil {
 		return nil, err
@@ -100,19 +105,35 @@ func (s *companyService) UpdateCompany(req request.UpdateCompanyRequest, operato
 	if existing != nil && existing.ID != req.ID {
 		return errorsx.InvalidParam("公司名称已存在")
 	}
+	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	if err != nil {
+		return err
+	}
 
 	now := time.Now()
 	if err := repositories.CompanyRepository.Updates(sqls.DB(), req.ID, map[string]any{
-		"name":             name,
-		"code":             strings.TrimSpace(req.Code),
-		"remark":           strings.TrimSpace(req.Remark),
-		"update_user_id":   operator.UserID,
-		"update_user_name": operator.Username,
-		"updated_at":       now,
+		"name":              name,
+		"code":              strings.TrimSpace(req.Code),
+		"intent_profile_id": intentProfileID,
+		"remark":            strings.TrimSpace(req.Remark),
+		"update_user_id":    operator.UserID,
+		"update_user_name":  operator.Username,
+		"updated_at":        now,
 	}); err != nil {
 		return err
 	}
 	return nil
+}
+
+func validateOptionalReplyIntentProfileID(id int64) (int64, error) {
+	if id <= 0 {
+		return 0, nil
+	}
+	item := ReplyIntentProfileService.Get(id)
+	if item == nil || item.Status == enums.StatusDeleted {
+		return 0, errorsx.InvalidParam("意图行业配置不存在")
+	}
+	return id, nil
 }
 
 func (s *companyService) DeleteCompany(id int64, operator dto.AuthPrincipal) error {

@@ -41,6 +41,9 @@ type Summary struct {
 	ModelName             string
 	PromptTokens          int
 	CompletionTokens      int
+	TotalTokens           int
+	CachedPromptTokens    int
+	ReasoningTokens       int
 	HistoryMessageCount   int
 	RetrieverCount        int
 	ToolCallCount         int

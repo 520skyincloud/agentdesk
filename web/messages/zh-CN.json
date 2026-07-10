@@ -2317,6 +2317,7 @@
     "permissions": "权限管理",
     "storageSettings": "存储设置",
     "wxworkDevicePool": "实例池",
+    "replyIntentProfiles": "意图行业",
     "replyIntentConfigs": "意图分类",
     "dashboardHome": "后台总览",
     "notifications": "通知中心",

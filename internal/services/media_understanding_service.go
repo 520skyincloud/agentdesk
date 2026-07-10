@@ -23,6 +23,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 
+	"github.com/mlogclub/simple/common/strs"
 	"github.com/mlogclub/simple/sqls"
 )
 
@@ -72,6 +73,7 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 		return s.markMediaUnderstanding(message, nil, "failed", "媒体 payload 解析失败: "+err.Error())
 	}
 	if strings.TrimSpace(payload.MediaText) != "" || payload.MediaStatus == "understood" {
+		s.triggerAIForUnderstoodMedia(message)
 		return nil
 	}
 	if payload.MediaStatus == "failed" || payload.MediaStatus == "empty" {
@@ -121,6 +123,27 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 		}
 	}
 	return nil
+}
+
+func (s *mediaUnderstandingService) triggerAIForUnderstoodMedia(message *models.Message) {
+	if message == nil || TriggerAIReplyAsyncHook == nil {
+		return
+	}
+	updated := repositories.MessageRepository.Get(sqls.DB(), message.ID)
+	if updated == nil {
+		updated = message
+	}
+	conversation := ConversationService.Get(updated.ConversationID)
+	if conversation == nil || !s.canTriggerAIForMedia(conversation.ID) {
+		return
+	}
+	if followUp := s.latestCustomerFollowUp(*updated); followUp != nil {
+		TriggerAIReplyAsyncHook(*conversation, *followUp)
+		return
+	}
+	if s.mediaUnderstandingShouldTriggerAI(*updated) {
+		TriggerAIReplyAsyncHook(*conversation, *updated)
+	}
 }
 
 func (s *mediaUnderstandingService) latestCustomerFollowUp(mediaMessage models.Message) *models.Message {
@@ -778,7 +801,36 @@ func (s *mediaUnderstandingService) markMediaUnderstanding(message *models.Messa
 	}
 	payload.MediaStatus = strings.TrimSpace(status)
 	payload.MediaError = limitText(errText, 500)
-	return s.updateMessagePayload(message.ID, payload)
+	if err := s.updateMessagePayload(message.ID, payload); err != nil {
+		return err
+	}
+	if message.MessageType == enums.IMMessageTypeVoice && (payload.MediaStatus == "failed" || payload.MediaStatus == "empty") {
+		s.sendVoiceTranscriptionFailedReply(message)
+	}
+	return nil
+}
+
+func (s *mediaUnderstandingService) sendVoiceTranscriptionFailedReply(message *models.Message) {
+	if message == nil || !s.canTriggerAIForMedia(message.ConversationID) {
+		return
+	}
+	conversation := ConversationService.Get(message.ConversationID)
+	if conversation == nil {
+		return
+	}
+	_, err := MessageService.SendAIMessageWithRequestID(
+		conversation.ID,
+		conversation.AIAgentID,
+		"voice_transcription_failed_"+strs.UUID(),
+		enums.IMMessageTypeText,
+		"这条语音我没听清，方便打字发我一下吗？",
+		"",
+		systemOperator(),
+		message.RequestID,
+	)
+	if err != nil {
+		slog.Warn("send voice transcription failed reply failed", "message_id", message.ID, "error", err)
+	}
 }
 
 func (s *mediaUnderstandingService) updateMessagePayload(messageID int64, payload *messageMediaPayload) error {

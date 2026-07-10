@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
+	"agent-desk/internal/models"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/google/uuid"
@@ -75,16 +77,16 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.TraceData = collector.Marshal()
 		return summary, nil
 	}
-	if strings.TrimSpace(summary.ReplyText) != "" {
+	if prepareHotelVariableDirectCommit(req, summary, collector) {
 		summary.Status = "completed"
 		summary.ModelName = req.AIConfig.ModelName
 		collector.Data.Status = summary.Status
 		collector.Data.Output.ReplyText = summary.ReplyText
-		collector.Data.Output.FinishReason = summary.Status
+		collector.Data.Output.FinishReason = "hotel_variable_direct_commit"
 		collector.Data.Pipeline.Generate.Status = "skipped"
-		collector.Data.Pipeline.Generate.Reason = "runtime fallback produced approved reply"
+		collector.Data.Pipeline.Generate.Reason = "resource-only hotel variable request is committed by structured resource sender"
 		collector.Data.Pipeline.Validate.Status = "passed"
-		collector.Data.Pipeline.Validate.Reason = "fallback reply accepted"
+		collector.Data.Pipeline.Validate.Reason = "direct hotel variable commit prepared"
 		summary.TraceData = collector.Marshal()
 		return summary, nil
 	}
@@ -136,16 +138,25 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		return summary, fmt.Errorf("%s", summary.ErrorMessage)
 	}
 	collector.Data.Interrupt.CheckPointID = checkPointID
+	generateStartedAt := time.Now()
 	consumeAgentEvents(runner.Run(ctx, messages, buildRunOptions(checkPointID)...), summary, collector, tooling.toolDefsByModelName)
+	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
 	summary.ModelName = req.AIConfig.ModelName
+	enforceGeneratedReplyActionLedger(summary, collector)
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
-	collector.Data.Output.FinishReason = summary.Status
+	if strings.TrimSpace(collector.Data.Output.FinishReason) == "" {
+		collector.Data.Output.FinishReason = summary.Status
+	}
 	collector.Data.Pipeline.Generate.Status = summary.Status
 	if strings.TrimSpace(summary.ReplyText) != "" {
-		collector.Data.Pipeline.Generate.Reason = "model generated reply from staged prompt and layered context"
-		collector.Data.Pipeline.Validate.Status = "passed"
-		collector.Data.Pipeline.Validate.Reason = "runtime completed"
+		if strings.TrimSpace(collector.Data.Pipeline.Generate.Reason) == "" {
+			collector.Data.Pipeline.Generate.Reason = "model generated reply from staged prompt and layered context"
+		}
+		if collector.Data.Pipeline.Validate.Status != "failed" && strings.TrimSpace(collector.Data.Pipeline.Validate.Status) == "" {
+			collector.Data.Pipeline.Validate.Status = "passed"
+			collector.Data.Pipeline.Validate.Reason = "runtime completed"
+		}
 	} else if summary.Status == "error" {
 		collector.Data.Pipeline.Generate.Reason = summary.ErrorMessage
 		collector.Data.Pipeline.Validate.Status = "failed"
@@ -154,6 +165,98 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	syncSkillSummaryFromCollector(summary, collector)
 	summary.TraceData = collector.Marshal()
 	return summary, nil
+}
+
+func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {
+	if summary == nil || collector == nil {
+		return false
+	}
+	intent := collector.Data.Pipeline.Intent
+	if !intent.NeedsResource && len(intent.ResourceActions) == 0 {
+		return false
+	}
+	if intent.NeedsKnowledge || intent.NeedsTool || intent.NeedsHumanRoute {
+		return false
+	}
+	resourceTypes := requestedHotelVariableResourceTypes(req.UserMessage.Content, intent)
+	if len(resourceTypes) == 0 {
+		return false
+	}
+	instance := findRuntimeWxWorkInstance(req)
+	textParts := make([]string, 0, len(resourceTypes))
+	hasStructuredCommit := false
+	for _, resourceType := range resourceTypes {
+		switch resourceType {
+		case "location":
+			if canCommitStructuredLocation(instance) {
+				hasStructuredCommit = true
+			} else {
+				textParts = append(textParts, buildLocationDirectReply(instance))
+			}
+		case "mini_program":
+			if canCommitStructuredMiniProgram(instance) {
+				hasStructuredCommit = true
+			} else {
+				textParts = append(textParts, buildMiniProgramDirectReply(instance))
+			}
+		case "phone":
+			if canCommitStructuredPhone(instance) {
+				hasStructuredCommit = true
+			} else {
+				textParts = append(textParts, buildPhoneDirectReply(instance))
+			}
+		}
+	}
+	summary.ReplyText = strings.TrimSpace(strings.Join(nonEmptyStrings(textParts), "\n"))
+	return hasStructuredCommit || strings.TrimSpace(summary.ReplyText) != ""
+}
+
+func canCommitStructuredLocation(instance *models.WxWorkProtocolInstance) bool {
+	if instance == nil {
+		return false
+	}
+	return strings.TrimSpace(instance.StoreLongitude) != "" && strings.TrimSpace(instance.StoreLatitude) != ""
+}
+
+func canCommitStructuredMiniProgram(instance *models.WxWorkProtocolInstance) bool {
+	if instance == nil {
+		return false
+	}
+	return strings.TrimSpace(instance.DefaultMiniProgramPayload) != ""
+}
+
+func canCommitStructuredPhone(instance *models.WxWorkProtocolInstance) bool {
+	if instance == nil {
+		return false
+	}
+	return strings.TrimSpace(instance.StoreContactPhone) != ""
+}
+
+func recoverMissingMiniProgramToolResult(req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector) {
+	if summary == nil || collector == nil {
+		return
+	}
+	if summary.Status != "error" || !strings.Contains(summary.ErrorMessage, "tool send_miniprogram not found") {
+		return
+	}
+	intent := collector.Data.Pipeline.Intent
+	if intent.PrimaryIntent != "hotel_variable" || intent.SubIntent != "mini_program" {
+		return
+	}
+	reply := buildMiniProgramDirectReply(findRuntimeWxWorkInstance(req))
+	if strings.TrimSpace(reply) == "" {
+		return
+	}
+	summary.Status = "completed"
+	summary.ErrorMessage = ""
+	summary.ReplyText = reply
+	collector.Data.Status = summary.Status
+	collector.Data.Output.ReplyText = reply
+	collector.Data.Output.FinishReason = "recovered_missing_miniprogram_tool"
+	collector.Data.Error.Message = ""
+	collector.Data.Error.Stage = ""
+	collector.Data.Pipeline.Generate.Status = "completed"
+	collector.Data.Pipeline.Generate.Reason = "recovered missing send_miniprogram tool with current account mini program variable"
 }
 
 func (s *Service) ExecuteResume(ctx context.Context, req ResumeInput) (*RunResult, error) {
@@ -245,7 +348,9 @@ func (s *Service) ExecuteResume(ctx context.Context, req ResumeInput) (*RunResul
 		summary.TraceData = collector.Marshal()
 		return summary, err
 	}
+	generateStartedAt := time.Now()
 	consumeAgentEvents(iter, summary, collector, tooling.toolDefsByModelName)
+	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
 	summary.ModelName = req.AIConfig.ModelName
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText

@@ -39,8 +39,8 @@ type WxWorkProtocolInstanceStats struct {
 
 const DefaultWxWorkProtocolPersonaPrompt = `你是酒店前台同事，说话简短、自然、像正常微信聊天。
 不要用客服模板，不要加固定结尾，不要用“亲”“为您”“这边”“～”。
-能确定就直接答；需要员工处理就先问房号、数量、时间，没创建工单前别说已安排。
-轻互动要接住上下文，别总回“哈哈/收到”。感谢类温和一点，确认类利落一点，表情类轻轻接一下，结束类就收住。`
+能确定就直接答；需要真实动作时先收集一个最关键字段或进入接待路由，没工具或路由结果前别表达动作已执行或后续有人处理。
+互动要接住上下文，别总回“哈哈/收到”。闲聊、感谢、确认、表情和纠错都要顺着当前话题自然回应，结束类就收住。`
 
 func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgent(instance *models.WxWorkProtocolInstance) models.AIAgent {
 	name := "企微员工号AI"
@@ -237,6 +237,10 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 	if err := s.validateBinding(req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
 		return nil, err
 	}
+	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	status := enums.Status(req.Status)
 	if status != enums.StatusOk && status != enums.StatusDisabled {
@@ -249,12 +253,14 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		EmployeeName:                   utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
 		EmployeeAvatar:                 strings.TrimSpace(req.EmployeeAvatar),
 		CompanyID:                      companyID,
+		IntentProfileID:                intentProfileID,
 		StoreID:                        storeID,
 		StoreAddress:                   utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
 		StoreNavigationName:            utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
 		StoreLongitude:                 strings.TrimSpace(req.StoreLongitude),
 		StoreLatitude:                  strings.TrimSpace(req.StoreLatitude),
 		StoreMapProvider:               strings.TrimSpace(req.StoreMapProvider),
+		StoreContactPhone:              utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
 		DefaultMiniProgramPayload:      normalizeWxWorkJSONText(req.DefaultMiniProgramPayload),
 		WelcomeMessage:                 normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
 		WelcomeSendMiniProgram:         req.WelcomeSendMiniProgram,
@@ -508,6 +514,7 @@ func (s *wxWorkProtocolInstanceService) UpdateRemoteSetup(req request.UpdateWxWo
 		"store_longitude":            strings.TrimSpace(req.StoreLongitude),
 		"store_latitude":             strings.TrimSpace(req.StoreLatitude),
 		"store_map_provider":         strings.TrimSpace(req.StoreMapProvider),
+		"store_contact_phone":        utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
 		"knowledge_base_id":          req.KnowledgeBaseID,
 		"service_hours":              strings.TrimSpace(req.ServiceHours),
 		"store_room_conversation_id": normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
@@ -532,6 +539,9 @@ func (s *wxWorkProtocolInstanceService) UpdateRemoteSetup(req request.UpdateWxWo
 	updated := s.Get(item.ID)
 	if updated == nil {
 		return nil
+	}
+	if err := s.syncRouteStateBindingFromInstance(updated, "remote_store_setup"); err != nil {
+		return err
 	}
 	return s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, nil)
 }
@@ -561,6 +571,10 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	if err := s.validateBinding(req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
 		return err
 	}
+	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	if err != nil {
+		return err
+	}
 	status := enums.Status(req.Status)
 	if status != enums.StatusOk && status != enums.StatusDisabled {
 		status = current.Status
@@ -572,12 +586,14 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		"employee_name":                      utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
 		"employee_avatar":                    strings.TrimSpace(req.EmployeeAvatar),
 		"company_id":                         companyID,
+		"intent_profile_id":                  intentProfileID,
 		"store_id":                           storeID,
 		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
 		"store_navigation_name":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
 		"store_longitude":                    strings.TrimSpace(req.StoreLongitude),
 		"store_latitude":                     strings.TrimSpace(req.StoreLatitude),
 		"store_map_provider":                 strings.TrimSpace(req.StoreMapProvider),
+		"store_contact_phone":                utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
 		"default_mini_program_payload":       normalizeWxWorkJSONText(req.DefaultMiniProgramPayload),
 		"welcome_message":                    normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
 		"welcome_send_mini_program":          req.WelcomeSendMiniProgram,
@@ -611,6 +627,9 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	updated := s.Get(req.ID)
 	if updated == nil {
 		return nil
+	}
+	if err := s.syncRouteStateBindingFromInstance(updated, operator.Username); err != nil {
+		return err
 	}
 	return s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator)
 }
@@ -658,14 +677,20 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 	if err := s.validateBinding(instance.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
 		return err
 	}
+	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	if err != nil {
+		return err
+	}
 	if err := repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), req.ID, map[string]any{
 		"company_id":                         companyID,
+		"intent_profile_id":                  intentProfileID,
 		"store_id":                           storeID,
 		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
 		"store_navigation_name":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
 		"store_longitude":                    strings.TrimSpace(req.StoreLongitude),
 		"store_latitude":                     strings.TrimSpace(req.StoreLatitude),
 		"store_map_provider":                 strings.TrimSpace(req.StoreMapProvider),
+		"store_contact_phone":                utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
 		"default_mini_program_payload":       normalizeWxWorkJSONText(req.DefaultMiniProgramPayload),
 		"welcome_message":                    normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
 		"welcome_send_mini_program":          req.WelcomeSendMiniProgram,
@@ -695,7 +720,20 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 	if updated == nil {
 		return nil
 	}
+	if err := s.syncRouteStateBindingFromInstance(updated, operator.Username); err != nil {
+		return err
+	}
 	return s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator)
+}
+
+func (s *wxWorkProtocolInstanceService) syncRouteStateBindingFromInstance(instance *models.WxWorkProtocolInstance, operatorName string) error {
+	if instance == nil || instance.ID <= 0 {
+		return nil
+	}
+	if strings.TrimSpace(operatorName) == "" {
+		operatorName = "system"
+	}
+	return repositories.ConversationRouteStateRepository.UpdateBindingByWxWorkInstance(sqls.DB(), instance.ID, instance.StoreID, instance.KnowledgeBaseID, time.Now(), operatorName)
 }
 
 func (s *wxWorkProtocolInstanceService) syncStoreStaffBindingFromInstanceRequest(instance *models.WxWorkProtocolInstance, managedMode string, serviceHours string, roomConversationID string, roomNotifyEnabled bool, roomAtList string, fallbackToHQ bool, manualTimeoutMinutes int, operator *dto.AuthPrincipal) error {

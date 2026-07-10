@@ -67,6 +67,7 @@ var Models = []any{
 	&SkillDefinition{},
 	&SkillRunLog{},
 	&AgentRunLog{},
+	&ReplyIntentProfile{},
 	&ReplyIntentConfig{},
 	&ConversationInterrupt{},
 	&SystemConfig{},
@@ -200,11 +201,12 @@ type UserIdentity struct {
 //
 //	用于存储公司主体信息；Customer（人）可通过 CompanyID 关联到所属公司。
 type Company struct {
-	ID     int64        `gorm:"primaryKey;autoIncrement"`                               // ID 为公司主键。
-	Name   string       `gorm:"type:varchar(200);not null;uniqueIndex:uk_company_name"` // Name 为公司名称（唯一）。
-	Code   string       `gorm:"type:varchar(64);not null;index"`                        // Code 为公司编码/统一社会信用代码（可空语义用空串表示）。
-	Status enums.Status `gorm:"type:int;not null;default:0"`                            // Status 为公司状态。
-	Remark string       `gorm:"type:text"`                                              // Remark 为备注。
+	ID              int64        `gorm:"primaryKey;autoIncrement"`                               // ID 为公司主键。
+	Name            string       `gorm:"type:varchar(200);not null;uniqueIndex:uk_company_name"` // Name 为公司名称（唯一）。
+	Code            string       `gorm:"type:varchar(64);not null;index"`                        // Code 为公司编码/统一社会信用代码（可空语义用空串表示）。
+	IntentProfileID int64        `gorm:"type:bigint;not null;default:0;index"`                   // IntentProfileID 为公司默认意图行业配置。
+	Status          enums.Status `gorm:"type:int;not null;default:0"`                            // Status 为公司状态。
+	Remark          string       `gorm:"type:text"`                                              // Remark 为备注。
 	AuditFields
 }
 
@@ -443,6 +445,7 @@ type WxWorkProtocolInstance struct {
 	EmployeeName                   string       `gorm:"type:varchar(120);not null;default:''"`
 	EmployeeAvatar                 string       `gorm:"type:varchar(1024);not null;default:''"`
 	CompanyID                      int64        `gorm:"type:bigint;not null;default:0;index"`
+	IntentProfileID                int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreID                        int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreStaffBindingID            int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreAddress                   string       `gorm:"type:varchar(500);not null;default:''"`
@@ -450,6 +453,7 @@ type WxWorkProtocolInstance struct {
 	StoreLongitude                 string       `gorm:"type:varchar(50);not null;default:''"`
 	StoreLatitude                  string       `gorm:"type:varchar(50);not null;default:''"`
 	StoreMapProvider               string       `gorm:"type:varchar(50);not null;default:''"`
+	StoreContactPhone              string       `gorm:"type:varchar(120);not null;default:''"`
 	DefaultMiniProgramPayload      string       `gorm:"type:text"`
 	WelcomeMessage                 string       `gorm:"type:varchar(500);not null;default:''"`
 	WelcomeSendMiniProgram         bool         `gorm:"not null;default:true"`
@@ -1119,12 +1123,28 @@ type AgentRunLog struct {
 	CreatedAt        time.Time `gorm:"type:datetime;not null;index"`
 }
 
+// ReplyIntentProfile stores industry-level intent detection prompt and output schema.
+type ReplyIntentProfile struct {
+	ID                 int64        `gorm:"primaryKey;autoIncrement"`
+	Code               string       `gorm:"type:varchar(100);not null;uniqueIndex"`
+	Name               string       `gorm:"type:varchar(120);not null;default:''"`
+	IndustryCode       string       `gorm:"type:varchar(100);not null;default:'';index"`
+	Description        string       `gorm:"type:text"`
+	IntentDetectPrompt string       `gorm:"type:text"`
+	IntentJSONSchema   string       `gorm:"type:text"`
+	Status             enums.Status `gorm:"type:int;not null;default:0;index"`
+	SortNo             int          `gorm:"type:int;not null;default:0;index"`
+	Remark             string       `gorm:"type:text"`
+	AuditFields
+}
+
 // ReplyIntentConfig stores editable intent detection and prompt-pack rules for the reply runtime.
 type ReplyIntentConfig struct {
 	ID                 int64        `gorm:"primaryKey;autoIncrement"`
 	Code               string       `gorm:"type:varchar(100);not null;uniqueIndex:uk_reply_intent_scope"`
 	Name               string       `gorm:"type:varchar(120);not null;default:''"`
 	Description        string       `gorm:"type:text"`
+	IntentProfileID    int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
 	ScopeType          string       `gorm:"type:varchar(30);not null;default:'global';uniqueIndex:uk_reply_intent_scope;index"`
 	CompanyID          int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
 	StoreID            int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`

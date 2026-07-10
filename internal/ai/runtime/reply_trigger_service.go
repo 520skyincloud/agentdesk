@@ -227,6 +227,7 @@ func hasRecentPendingMediaUnderstanding(conversationID int64, currentMessageID i
 	}
 	items := svc.MessageService.Find(sqls.NewCnd().
 		Eq("conversation_id", conversationID).
+		Eq("session_no", current.SessionNo).
 		Eq("sender_type", enums.IMSenderTypeCustomer).
 		In("message_type", []string{string(enums.IMMessageTypeImage), string(enums.IMMessageTypeVoice), string(enums.IMMessageTypeAttachment)}).
 		Lt("id", currentMessageID).
@@ -264,14 +265,19 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 	if conversationID <= 0 || message.ID <= 0 || message.SenderType != enums.IMSenderTypeCustomer || message.SentAt == nil {
 		return message
 	}
-	items := svc.MessageService.Find(sqls.NewCnd().
+	cnd := sqls.NewCnd().
 		Eq("conversation_id", conversationID).
+		Eq("session_no", message.SessionNo).
 		Eq("sender_type", enums.IMSenderTypeCustomer).
 		In("message_type", []string{string(enums.IMMessageTypeText), string(enums.IMMessageTypeVoice), string(enums.IMMessageTypeImage), string(enums.IMMessageTypeLocation), string(enums.IMMessageTypeMiniProgram), string(enums.IMMessageTypeAttachment)}).
 		Lte("id", message.ID).
 		Gte("sent_at", message.SentAt.Add(-aiReplyBurstTextWindow)).
 		Asc("id").
-		Limit(12))
+		Limit(12)
+	if latestOutbound := s.latestOutboundMessageBefore(conversationID, message.SessionNo, message.ID); latestOutbound != nil {
+		cnd.Gt("id", latestOutbound.ID)
+	}
+	items := svc.MessageService.Find(cnd)
 	if len(items) <= 1 {
 		return message
 	}
@@ -289,6 +295,18 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 	merged := message
 	merged.Content = "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题；如果前面是图片、语音、文件，后面的短句通常是在追问它：\n" + strings.Join(parts, "\n")
 	return merged
+}
+
+func (s *aiReplyService) latestOutboundMessageBefore(conversationID int64, sessionNo int, messageID int64) *models.Message {
+	if conversationID <= 0 || messageID <= 0 {
+		return nil
+	}
+	return svc.MessageService.FindOne(sqls.NewCnd().
+		Eq("conversation_id", conversationID).
+		Eq("session_no", sessionNo).
+		In("sender_type", []string{string(enums.IMSenderTypeAI), string(enums.IMSenderTypeAgent)}).
+		Lt("id", messageID).
+		Desc("id"))
 }
 
 func timePrefixForBurst(item models.Message, index int) string {
@@ -328,7 +346,7 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 	if summary != nil && summary.Interrupted {
 		return s.interrupts.HandleInterruptedSummary(s, replyCtx, summary)
 	}
-	if summary != nil && strings.TrimSpace(summary.ReplyText) != "" {
+	if summary != nil && (strings.TrimSpace(summary.ReplyText) != "" || s.commit.HasStructuredVariableReply(replyCtx.Trace)) {
 		if !s.canCommitReplyForMessage(replyCtx.Conversation.ID, replyCtx.Message.ID) {
 			slog.Info("skip stale ai reply because newer customer message arrived",
 				"conversation_id", replyCtx.Conversation.ID,
@@ -348,12 +366,33 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 		if err != nil {
 			return err
 		}
+		if replyMessage != nil && strings.TrimSpace(summary.ReplyText) == "" {
+			summary.ReplyText = committedReplyText(*replyMessage)
+		}
 		replyCtx.Trace.ReplySent = replyMessage != nil
 		if replyMessage != nil && s.memory != nil {
 			s.memory.ScheduleUpdate(replyCtx.Conversation, *replyMessage)
 		}
 	}
 	return nil
+}
+
+func committedReplyText(message models.Message) string {
+	content := strings.TrimSpace(message.Content)
+	switch message.MessageType {
+	case enums.IMMessageTypeLocation:
+		if content == "" {
+			content = "位置"
+		}
+		return "[位置] " + content
+	case enums.IMMessageTypeMiniProgram:
+		if content == "" {
+			content = "小程序"
+		}
+		return "[小程序] " + content
+	default:
+		return content
+	}
 }
 
 func (s *aiReplyService) canCommitReplyForMessage(conversationID int64, messageID int64) bool {

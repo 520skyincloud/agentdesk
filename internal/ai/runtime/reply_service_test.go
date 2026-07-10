@@ -77,7 +77,7 @@ func TestResolveReplyTimeout(t *testing.T) {
 
 func TestShouldWaitForRecentMediaUnderstanding(t *testing.T) {
 	if shouldWaitForRecentMediaUnderstanding(models.Message{MessageType: enums.IMMessageTypeText, Content: "早餐几点"}) {
-		t.Fatal("ordinary FAQ text should not wait for media understanding")
+		t.Fatal("ordinary hotel-info text should not wait for media understanding")
 	}
 	if shouldWaitForRecentMediaUnderstanding(models.Message{MessageType: enums.IMMessageTypeText, Content: "你好"}) {
 		t.Fatal("greeting should not wait for media understanding")
@@ -142,6 +142,105 @@ func TestMergeRecentCustomerBurstMessageKeepsMediaContext(t *testing.T) {
 	}
 	if !strings.Contains(merged.Content, "按顺序合并理解") {
 		t.Fatalf("expected explicit burst instruction, got: %s", merged.Content)
+	}
+}
+
+func TestMergeRecentCustomerBurstMessageSkipsPreviousSession(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	now := time.Now()
+	conversationID := int64(10012)
+	oldRoom := models.Message{
+		ID:             1,
+		ConversationID: conversationID,
+		SessionNo:      1,
+		ClientMsgID:    "old-room",
+		SeqNo:          1,
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "我住1201",
+		SentAt:         &now,
+	}
+	currentTime := now.Add(2 * time.Second)
+	current := models.Message{
+		ID:             2,
+		ConversationID: conversationID,
+		SessionNo:      2,
+		ClientMsgID:    "current-aircon",
+		SeqNo:          2,
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "空调不制冷",
+		SentAt:         &currentTime,
+	}
+	if err := sqls.DB().Create(&oldRoom).Error; err != nil {
+		t.Fatalf("create old message: %v", err)
+	}
+	if err := sqls.DB().Create(&current).Error; err != nil {
+		t.Fatalf("create current message: %v", err)
+	}
+
+	merged := service.mergeRecentCustomerBurstMessage(conversationID, current)
+	if strings.Contains(merged.Content, "1201") || strings.Contains(merged.Content, "连续发") {
+		t.Fatalf("expected previous session message excluded from burst, got: %s", merged.Content)
+	}
+	if merged.Content != "空调不制冷" {
+		t.Fatalf("expected current message unchanged, got: %s", merged.Content)
+	}
+}
+
+func TestMergeRecentCustomerBurstMessageStartsAfterLastOutbound(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	now := time.Now()
+	conversationID := int64(10013)
+	locationQuestion := models.Message{
+		ID:             1,
+		ConversationID: conversationID,
+		SessionNo:      1,
+		ClientMsgID:    "location-question",
+		SeqNo:          1,
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "定位发我一个",
+		SentAt:         &now,
+	}
+	aiReplyAt := now.Add(2 * time.Second)
+	aiReply := models.Message{
+		ID:             2,
+		ConversationID: conversationID,
+		SessionNo:      1,
+		ClientMsgID:    "ai-location",
+		SeqNo:          2,
+		SenderType:     enums.IMSenderTypeAI,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "酒店定位：https://uri.amap.com/marker?position=117.263908,31.824097&name=丽斯未来酒店。",
+		SentAt:         &aiReplyAt,
+	}
+	currentAt := now.Add(4 * time.Second)
+	current := models.Message{
+		ID:             3,
+		ConversationID: conversationID,
+		SessionNo:      1,
+		ClientMsgID:    "checkin-question",
+		SeqNo:          3,
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "我要办理入住",
+		SentAt:         &currentAt,
+	}
+	for _, item := range []models.Message{locationQuestion, aiReply, current} {
+		if err := sqls.DB().Create(&item).Error; err != nil {
+			t.Fatalf("create message %s: %v", item.ClientMsgID, err)
+		}
+	}
+
+	merged := service.mergeRecentCustomerBurstMessage(conversationID, current)
+	if merged.Content != current.Content {
+		t.Fatalf("expected current message unchanged after outbound boundary, got: %s", merged.Content)
+	}
+	if strings.Contains(merged.Content, "定位发我一个") || strings.Contains(merged.Content, "连续发") {
+		t.Fatalf("expected previous answered location question excluded, got: %s", merged.Content)
 	}
 }
 
@@ -227,7 +326,7 @@ func setupRuntimeReplyMessageTestDB(t *testing.T) *gorm.DB {
 
 func TestBuildRunLogPlan(t *testing.T) {
 	summary := &applicationruntime.Summary{
-		PlannedSkillCode: "faq_router",
+		PlannedSkillCode: "knowledge_router",
 		PlanReason:       "manual",
 	}
 	action, toolCode, reason := buildRunLogPlan(summary)

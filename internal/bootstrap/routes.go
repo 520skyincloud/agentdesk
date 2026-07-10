@@ -313,6 +313,14 @@ func registerDashboardReplyIntentConfigRoutes(group *gin.RouterGroup) {
 	group.POST("/delete", dashboard.ReplyIntentConfigPostDelete)
 }
 
+func registerDashboardReplyIntentProfileRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.ReplyIntentProfileAnyList)
+	group.GET("/:id", dashboard.ReplyIntentProfileGetBy)
+	group.POST("/create", dashboard.ReplyIntentProfilePostCreate)
+	group.POST("/update", dashboard.ReplyIntentProfilePostUpdate)
+	group.POST("/delete", dashboard.ReplyIntentProfilePostDelete)
+}
+
 func registerDashboardAssetRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.AssetGetBy)
 	group.POST("/create", dashboard.AssetPostCreate)

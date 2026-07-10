@@ -11,14 +11,18 @@ import (
 )
 
 type imMessageAssetPayload struct {
-	AssetID    string                         `json:"assetId"`
-	Provider   enums.AssetProvider            `json:"provider,omitempty"`
-	StorageKey string                         `json:"storageKey,omitempty"`
-	Filename   string                         `json:"filename,omitempty"`
-	FileSize   int64                          `json:"fileSize,omitempty"`
-	MimeType   string                         `json:"mimeType,omitempty"`
-	URL        string                         `json:"url,omitempty"`
-	WxMedia    request.WxProtocolMediaPayload `json:"wxMedia,omitempty"`
+	AssetID                  string                         `json:"assetId"`
+	Provider                 enums.AssetProvider            `json:"provider,omitempty"`
+	StorageKey               string                         `json:"storageKey,omitempty"`
+	Filename                 string                         `json:"filename,omitempty"`
+	FileSize                 int64                          `json:"fileSize,omitempty"`
+	MimeType                 string                         `json:"mimeType,omitempty"`
+	URL                      string                         `json:"url,omitempty"`
+	MediaText                string                         `json:"mediaText,omitempty"`
+	MediaSummary             string                         `json:"mediaSummary,omitempty"`
+	MediaUnderstandingStatus string                         `json:"mediaUnderstandingStatus,omitempty"`
+	MediaUnderstandingError  string                         `json:"mediaUnderstandingError,omitempty"`
+	WxMedia                  request.WxProtocolMediaPayload `json:"wxMedia,omitempty"`
 }
 
 func parseIMMessageAssetPayload(payload string) (*imMessageAssetPayload, error) {
@@ -33,6 +37,10 @@ func parseIMMessageAssetPayload(payload string) (*imMessageAssetPayload, error) 
 	ret.AssetID = strings.TrimSpace(ret.AssetID)
 	ret.Provider = enums.AssetProvider(strings.TrimSpace(string(ret.Provider)))
 	ret.StorageKey = strings.TrimSpace(ret.StorageKey)
+	ret.MediaText = strings.TrimSpace(ret.MediaText)
+	ret.MediaSummary = strings.TrimSpace(ret.MediaSummary)
+	ret.MediaUnderstandingStatus = strings.TrimSpace(ret.MediaUnderstandingStatus)
+	ret.MediaUnderstandingError = strings.TrimSpace(ret.MediaUnderstandingError)
 	if ret.AssetID == "" {
 		return nil, errorsx.InvalidParam("附件消息缺少 assetId")
 	}
@@ -60,6 +68,31 @@ func buildIMMessageAssetPayloadWithMedia(asset *models.Asset, wxMedia request.Wx
 		return "", err
 	}
 	return string(payload), nil
+}
+
+func mergeIMMessageAssetUnderstandingPayload(canonicalPayload string, source *imMessageAssetPayload) (string, error) {
+	if source == nil {
+		return canonicalPayload, nil
+	}
+	if source.MediaText == "" && source.MediaSummary == "" && source.MediaUnderstandingStatus == "" && source.MediaUnderstandingError == "" {
+		return canonicalPayload, nil
+	}
+	ret := &imMessageAssetPayload{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(canonicalPayload)), ret); err != nil {
+		return "", err
+	}
+	ret.MediaText = strings.TrimSpace(source.MediaText)
+	ret.MediaSummary = strings.TrimSpace(source.MediaSummary)
+	ret.MediaUnderstandingStatus = strings.TrimSpace(source.MediaUnderstandingStatus)
+	ret.MediaUnderstandingError = strings.TrimSpace(source.MediaUnderstandingError)
+	if ret.MediaUnderstandingStatus == "understood" && (ret.MediaText != "" || ret.MediaSummary != "") {
+		ret.MediaUnderstandingError = ""
+	}
+	data, err := json.Marshal(ret)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func buildIMMessageAssetPayloadForResponse(payload string) string {

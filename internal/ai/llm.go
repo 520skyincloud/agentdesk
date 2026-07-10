@@ -67,7 +67,7 @@ func (s *llm) ChatWithConfig(ctx context.Context, config models.AIConfig, system
 	if config.MaxOutputTokens > 0 {
 		params.MaxCompletionTokens = openai.Int(int64(config.MaxOutputTokens))
 	}
-	applyProviderSpecificChatParams(params, config)
+	applyProviderSpecificChatParams(&params, config)
 
 	client := newOpenAIClient(config)
 	chatResp, err := client.Chat.Completions.New(ctx, params)
@@ -202,11 +202,19 @@ func compactLLMResponseError(raw []byte) string {
 	return string(runes[:500]) + "..."
 }
 
-func applyProviderSpecificChatParams(params openai.ChatCompletionNewParams, config models.AIConfig) {
+func applyProviderSpecificChatParams(params *openai.ChatCompletionNewParams, config models.AIConfig) {
+	if params == nil {
+		return
+	}
+	extraFields := map[string]any{}
 	if isDashScopeQwenThinkingModel(config) {
-		params.SetExtraFields(map[string]any{
-			"enable_thinking": false,
-		})
+		extraFields["enable_thinking"] = false
+	}
+	if isDeepSeekV4ThinkingModel(config) {
+		extraFields["thinking"] = map[string]any{"type": "disabled"}
+	}
+	if len(extraFields) > 0 {
+		params.SetExtraFields(extraFields)
 	}
 }
 
@@ -214,4 +222,10 @@ func isDashScopeQwenThinkingModel(config models.AIConfig) bool {
 	baseURL := strings.ToLower(strings.TrimSpace(config.BaseURL))
 	modelName := strings.ToLower(strings.TrimSpace(config.ModelName))
 	return strings.Contains(baseURL, "dashscope.aliyuncs.com") && strings.HasPrefix(modelName, "qwen3")
+}
+
+func isDeepSeekV4ThinkingModel(config models.AIConfig) bool {
+	baseURL := strings.ToLower(strings.TrimSpace(config.BaseURL))
+	modelName := strings.ToLower(strings.TrimSpace(config.ModelName))
+	return strings.Contains(baseURL, "api.deepseek.com") && strings.HasPrefix(modelName, "deepseek-v4")
 }

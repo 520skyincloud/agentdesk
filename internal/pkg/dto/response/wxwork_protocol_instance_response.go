@@ -18,6 +18,8 @@ type WxWorkProtocolInstanceResponse struct {
 	EmployeeAvatar                 string       `json:"employeeAvatar"`
 	CompanyID                      int64        `json:"companyId"`
 	CompanyName                    string       `json:"companyName"`
+	IntentProfileID                int64        `json:"intentProfileId"`
+	IntentProfileName              string       `json:"intentProfileName"`
 	StoreID                        int64        `json:"storeId"`
 	StoreStaffBindingID            int64        `json:"storeStaffBindingId"`
 	ManagedMode                    string       `json:"managedMode"`
@@ -28,6 +30,7 @@ type WxWorkProtocolInstanceResponse struct {
 	StoreLongitude                 string       `json:"storeLongitude"`
 	StoreLatitude                  string       `json:"storeLatitude"`
 	StoreMapProvider               string       `json:"storeMapProvider"`
+	StoreContactPhone              string       `json:"storeContactPhone"`
 	DefaultMiniProgramPayload      string       `json:"defaultMiniProgramPayload"`
 	WelcomeMessage                 string       `json:"welcomeMessage"`
 	WelcomeSendMiniProgram         bool         `json:"welcomeSendMiniProgram"`
@@ -108,6 +111,7 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		EmployeeName:                   utils.RepairMojibakeText(item.EmployeeName),
 		EmployeeAvatar:                 item.EmployeeAvatar,
 		CompanyID:                      item.CompanyID,
+		IntentProfileID:                item.IntentProfileID,
 		StoreID:                        item.StoreID,
 		StoreStaffBindingID:            item.StoreStaffBindingID,
 		ManagedMode:                    "semi",
@@ -116,6 +120,7 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		StoreLongitude:                 item.StoreLongitude,
 		StoreLatitude:                  item.StoreLatitude,
 		StoreMapProvider:               item.StoreMapProvider,
+		StoreContactPhone:              utils.RepairMojibakeText(item.StoreContactPhone),
 		DefaultMiniProgramPayload:      utils.RepairMojibakeText(item.DefaultMiniProgramPayload),
 		WelcomeMessage:                 utils.RepairMojibakeText(item.WelcomeMessage),
 		WelcomeSendMiniProgram:         item.WelcomeSendMiniProgram,

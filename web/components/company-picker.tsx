@@ -266,6 +266,7 @@ export function CompanyPicker({
         transformSubmitValues={(values) => ({
           name: String(values.name ?? ""),
           code: String(values.code ?? ""),
+          intentProfileId: 0,
           remark: String(values.remark ?? ""),
         })}
         labels={{

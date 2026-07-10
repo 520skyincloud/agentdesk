@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { BanIcon, CheckCircle2Icon, SlidersHorizontalIcon, UsersRoundIcon } from "lucide-react"
 import { toast } from "sonner"
@@ -29,7 +29,13 @@ import {
   type AdminCompany,
   type CreateAdminCompanyPayload,
 } from "@/lib/api/company"
-import { fetchAIConfigsAll, type AIConfig, type StoreAIModelSetting } from "@/lib/api/admin"
+import {
+  fetchAIConfigsAll,
+  fetchReplyIntentProfiles,
+  type AIConfig,
+  type ReplyIntentProfile,
+  type StoreAIModelSetting,
+} from "@/lib/api/admin"
 import { getEnumOptions } from "@/lib/enums"
 import { Status, StatusLabels } from "@/lib/generated/enums"
 import { useI18n } from "@/i18n/provider"
@@ -242,6 +248,7 @@ export default function DashboardCompaniesPage() {
   const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([])
   const [modelSettingsLoading, setModelSettingsLoading] = useState(false)
   const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
+  const [intentProfiles, setIntentProfiles] = useState<ReplyIntentProfile[]>([])
   const permissionSet = new Set(session?.permissions ?? [])
   const canViewModelSettings = permissionSet.has("aiConfig.view")
   const canUpdateModelSettings = permissionSet.has("aiConfig.update")
@@ -254,6 +261,28 @@ export default function DashboardCompaniesPage() {
         label: getStatusLabel(item.value as Status, t),
       })),
   ]
+  const intentProfileOptions = useMemo(
+    () => [
+      { value: "0", label: "使用系统默认" },
+      ...intentProfiles.map((item) => ({
+        value: String(item.id),
+        label: `${item.name}${item.industryCode ? ` · ${item.industryCode}` : ""}`,
+      })),
+    ],
+    [intentProfiles],
+  )
+
+  useEffect(() => {
+    async function loadIntentProfiles() {
+      try {
+        const page = await fetchReplyIntentProfiles({ status: Status.Ok, limit: 200 })
+        setIntentProfiles(page.results)
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "读取意图行业失败")
+      }
+    }
+    void loadIntentProfiles()
+  }, [])
 
   async function openCompanyModelSettings(company: AdminCompany) {
     setModelSettingsCompany(company)
@@ -394,6 +423,15 @@ export default function DashboardCompaniesPage() {
           ),
         },
         {
+          key: "intentProfile",
+          label: "意图行业",
+          render: (item) => (
+            <span className="text-muted-foreground">
+              {intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || "系统默认"}
+            </span>
+          ),
+        },
+        {
           key: "customerCount",
           label: t("company.columnCustomerCount"),
           className: "w-28",
@@ -446,6 +484,15 @@ export default function DashboardCompaniesPage() {
             trim: true,
           },
           {
+            name: "intentProfileId",
+            label: "意图行业",
+            type: "select",
+            defaultValue: "0",
+            valueFromItem: (item) => String(item.intentProfileId || 0),
+            options: intentProfileOptions,
+            description: "公司默认的 IntentDetect 提示词和意图分类体系；员工号未单独设置时继承这里。",
+          },
+          {
             name: "remark",
             label: t("company.columnRemark"),
             placeholder: t("company.remarkPlaceholder"),
@@ -457,6 +504,7 @@ export default function DashboardCompaniesPage() {
         transformSubmitValues: (values) => ({
           name: String(values.name ?? ""),
           code: String(values.code ?? ""),
+          intentProfileId: Number(values.intentProfileId ?? 0),
           remark: String(values.remark ?? ""),
         }),
         labels: {

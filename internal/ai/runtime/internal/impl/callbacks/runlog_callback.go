@@ -141,6 +141,12 @@ func (c *RuntimeTraceCollector) SetPipeline(normalize NormalizeTraceData, intent
 	c.Data.Pipeline.Validate = validate
 }
 
+func (c *RuntimeTraceCollector) SetActionLedger(data ActionLedgerTraceData) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Data.ActionLedger = data
+}
+
 func (c *RuntimeTraceCollector) AddToolItem(item ToolTraceItem) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -22,6 +22,7 @@ func ReplyIntentConfigAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "code", Op: params.Like},
 		params.QueryFilter{ParamName: "name", Op: params.Like},
 		params.QueryFilter{ParamName: "resourceType"},
+		params.QueryFilter{ParamName: "intentProfileId", ColumnName: "intent_profile_id"},
 	).Asc("sort_no").Asc("priority").Desc("id")
 	list, paging := services.ReplyIntentConfigService.FindPageByCnd(cnd)
 	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildReplyIntentConfigs(list), Page: paging})

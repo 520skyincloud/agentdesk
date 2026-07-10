@@ -23,6 +23,7 @@ type FormState = {
   employeeName: string
   storeName: string
   storeAddress: string
+  storeContactPhone: string
   storeNavigationName: string
   storeLongitude: string
   storeLatitude: string
@@ -40,6 +41,7 @@ const defaultForm: FormState = {
   employeeName: "",
   storeName: "",
   storeAddress: "",
+  storeContactPhone: "",
   storeNavigationName: "",
   storeLongitude: "",
   storeLatitude: "",
@@ -89,6 +91,7 @@ function WxWorkRemoteSetupContent() {
         employeeName: repairMojibakeText(data.employeeName || ""),
         storeName: repairMojibakeText(data.storeName || ""),
         storeAddress: repairMojibakeText(data.storeAddress || ""),
+        storeContactPhone: repairMojibakeText(data.storeContactPhone || ""),
         storeNavigationName: repairMojibakeText(data.storeNavigationName || data.storeName || ""),
         storeLongitude: data.storeLongitude || "",
         storeLatitude: data.storeLatitude || "",
@@ -249,6 +252,7 @@ function WxWorkRemoteSetupContent() {
 	              <Field label="员工号显示名"><Input value={form.employeeName} onChange={(event) => setValue("employeeName", event.target.value)} placeholder="例如：吴朝伟" /></Field>
               <Field label="门店名称"><Input value={form.storeName} onChange={(event) => setValue("storeName", event.target.value)} placeholder="例如：丽斯未来酒店杭州某某店" /></Field>
               <Field label="门店地址"><Input value={form.storeAddress} onChange={(event) => setValue("storeAddress", event.target.value)} placeholder="填写可导航地址" /></Field>
+              <Field label="联系电话"><Input value={form.storeContactPhone} onChange={(event) => setValue("storeContactPhone", event.target.value)} placeholder="例如：0551-88888888 / 13800000000" /></Field>
               <Field label="定位卡片标题"><Input value={form.storeNavigationName} onChange={(event) => setValue("storeNavigationName", event.target.value)} placeholder="默认可用门店名称" /></Field>
               <Field label="纬度"><Input value={form.storeLatitude} onChange={(event) => setValue("storeLatitude", event.target.value)} placeholder="例如：30.27415" /></Field>
               <Field label="经度"><Input value={form.storeLongitude} onChange={(event) => setValue("storeLongitude", event.target.value)} placeholder="例如：120.15515" /></Field>

@@ -8,8 +8,11 @@ import (
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/toolx"
 	svc "agent-desk/internal/services"
+
+	"github.com/mlogclub/simple/sqls"
 )
 
 func newReplyRunLogService() *replyRunLogService {
@@ -61,9 +64,9 @@ func (s *replyRunLogService) Write(input replyRunLogInput) {
 		PlanReason:       planReason,
 		InterruptType:    firstInterruptType(input.Summary),
 		ResumeSource:     runLogResumeSource(input.Trace),
-		FinalAction:      toRunLogFinalAction(input.Summary),
+		FinalAction:      runLogFinalAction(input.Summary, input.Trace),
 		FinalStatus:      runLogFinalStatus(input.Summary),
-		ReplyText:        buildRunLogReplyText(input.Summary),
+		ReplyText:        buildRunLogReplyText(input),
 		ErrorMessage:     errorMessage,
 		LatencyMs:        time.Since(input.StartedAt).Milliseconds(),
 		TraceData:        traceData,
@@ -145,7 +148,7 @@ func toRunLogFinalAction(summary *applicationruntime.Summary) string {
 	if skillCode := strings.TrimSpace(summaryPlannedSkillCode(summary)); skillCode != "" && strings.TrimSpace(summary.ReplyText) != "" {
 		return "skill"
 	}
-	if graphToolCode := firstGraphToolCode(summary); graphToolCode != "" && strings.TrimSpace(summary.ReplyText) != "" {
+	if graphToolCode := firstGraphToolCode(summary); graphToolCode != "" {
 		return "graph"
 	}
 	switch strings.TrimSpace(summary.Status) {
@@ -164,11 +167,38 @@ func toRunLogFinalAction(summary *applicationruntime.Summary) string {
 	}
 }
 
-func buildRunLogReplyText(summary *applicationruntime.Summary) string {
-	if summary == nil {
+func runLogFinalAction(summary *applicationruntime.Summary, trace *aiReplyTraceData) string {
+	if trace != nil && strings.TrimSpace(trace.FinalAction) == "resource" {
+		return "resource"
+	}
+	return toRunLogFinalAction(summary)
+}
+
+func buildRunLogReplyText(input replyRunLogInput) string {
+	if input.Summary == nil {
 		return ""
 	}
-	return strings.TrimSpace(summary.ReplyText)
+	if reply := strings.TrimSpace(input.Summary.ReplyText); reply != "" {
+		return reply
+	}
+	if firstGraphToolCode(input.Summary) == toolx.GraphHandoffConversation.Code {
+		if message := findCommittedAIMessageForRun(input); message != nil {
+			return strings.TrimSpace(message.Content)
+		}
+	}
+	return ""
+}
+
+func findCommittedAIMessageForRun(input replyRunLogInput) *models.Message {
+	if input.Conversation.ID <= 0 || strings.TrimSpace(input.Message.RequestID) == "" {
+		return nil
+	}
+	return svc.MessageService.FindOne(sqls.NewCnd().
+		Eq("conversation_id", input.Conversation.ID).
+		Eq("request_id", strings.TrimSpace(input.Message.RequestID)).
+		Eq("sender_type", enums.IMSenderTypeAI).
+		Gt("id", input.Message.ID).
+		Desc("id"))
 }
 
 func summaryPlannedSkillCode(summary *applicationruntime.Summary) string {

@@ -50,12 +50,27 @@ func isAzureOpenAIBaseURL(baseURL string) bool {
 }
 
 func providerExtraFields(aiConfig models.AIConfig) map[string]any {
+	extraFields := map[string]any{}
+	if isDashScopeQwenThinkingModel(aiConfig) {
+		extraFields["enable_thinking"] = false
+	}
+	if isDeepSeekV4ThinkingModel(aiConfig) {
+		extraFields["thinking"] = map[string]any{"type": "disabled"}
+	}
+	if len(extraFields) == 0 {
+		return nil
+	}
+	return extraFields
+}
+
+func isDashScopeQwenThinkingModel(aiConfig models.AIConfig) bool {
 	baseURL := strings.ToLower(strings.TrimSpace(aiConfig.BaseURL))
 	modelName := strings.ToLower(strings.TrimSpace(aiConfig.ModelName))
-	if strings.Contains(baseURL, "dashscope.aliyuncs.com") && strings.HasPrefix(modelName, "qwen3") {
-		return map[string]any{
-			"enable_thinking": false,
-		}
-	}
-	return nil
+	return strings.Contains(baseURL, "dashscope.aliyuncs.com") && strings.HasPrefix(modelName, "qwen3")
+}
+
+func isDeepSeekV4ThinkingModel(aiConfig models.AIConfig) bool {
+	baseURL := strings.ToLower(strings.TrimSpace(aiConfig.BaseURL))
+	modelName := strings.ToLower(strings.TrimSpace(aiConfig.ModelName))
+	return strings.Contains(baseURL, "api.deepseek.com") && strings.HasPrefix(modelName, "deepseek-v4")
 }

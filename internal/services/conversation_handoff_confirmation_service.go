@@ -416,6 +416,7 @@ func cleanHumanHandoffReason(value string) string {
 		"service_request",
 		"hotel_info",
 		"hotel_variable",
+		"interaction",
 		"social_confirm",
 		"unknown_clarify",
 		"emergency_safety",

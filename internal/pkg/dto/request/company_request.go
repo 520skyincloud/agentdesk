@@ -1,9 +1,10 @@
 package request
 
 type CreateCompanyRequest struct {
-	Name   string `json:"name"`
-	Code   string `json:"code"`
-	Remark string `json:"remark"`
+	Name            string `json:"name"`
+	Code            string `json:"code"`
+	IntentProfileID int64  `json:"intentProfileId"`
+	Remark          string `json:"remark"`
 }
 
 type UpdateCompanyRequest struct {
