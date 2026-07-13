@@ -778,6 +778,15 @@ func (s *conversationDispatchWorkbenchService) requireManageableTargetProfile(us
 	if profile == nil || profile.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("目标客服不存在")
 	}
+	ownerTeamID := conversation.CurrentTeamID
+	if ownerTeamID <= 0 && conversation.CurrentAssigneeID > 0 {
+		if currentProfile := AgentProfileService.GetByUserID(conversation.CurrentAssigneeID); currentProfile != nil {
+			ownerTeamID = currentProfile.TeamID
+		}
+	}
+	if ownerTeamID > 0 && profile.TeamID != ownerTeamID {
+		return nil, errorsx.Forbidden("目标客服不属于当前会话综合客服组")
+	}
 	if !s.canManageTeam(operator, profile.TeamID) {
 		return nil, errorsx.Forbidden("无权派发到该客服组")
 	}

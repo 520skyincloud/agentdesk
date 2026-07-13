@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 
@@ -64,6 +65,24 @@ func TestConversationDispatchCandidatesDoNotBroadenEmptyScheduledSquad(t *testin
 	}
 }
 
+func TestConversationDispatchCandidatesDoNotUseDisabledScheduledSquad(t *testing.T) {
+	db := setupConversationDispatchSquadTestDB(t)
+	createDispatchSquadTeamAndAgents(t, db)
+	squadID := createDispatchSquad(t, db, []int64{1, 2})
+	createDispatchSquadSchedule(t, db, squadID)
+	if err := db.Model(&models.AgentTeamSquad{}).Where("id = ?", squadID).Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable scheduled squad error = %v", err)
+	}
+
+	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, nil, time.Now())
+	if err != nil {
+		t.Fatalf("pickDispatchCandidates() error = %v", err)
+	}
+	if len(candidates) != 0 || report.Reason != "no_matched_profile" {
+		t.Fatalf("expected disabled scheduled squad to remain unassigned, got candidates=%+v report=%+v", candidates, report)
+	}
+}
+
 func TestConversationAssignmentStoresSquadSnapshot(t *testing.T) {
 	setupConversationDispatchSquadTestDB(t)
 	operator := &dto.AuthPrincipal{UserID: 9, Username: "leader"}
@@ -77,6 +96,29 @@ func TestConversationAssignmentStoresSquadSnapshot(t *testing.T) {
 	assignment := ConversationAssignmentService.Take("conversation_id = ?", 10)
 	if assignment == nil || assignment.SquadID != 23 {
 		t.Fatalf("expected assignment squad snapshot 23, got %+v", assignment)
+	}
+}
+
+func TestConversationDispatchManualAssignmentStaysInOwningTeam(t *testing.T) {
+	db := setupConversationDispatchSquadTestDB(t)
+	createDispatchSquadTeamAndAgents(t, db)
+	if err := db.Create(&models.AgentTeam{ID: 2, Name: "其他综合客服组", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create other team error = %v", err)
+	}
+	if err := db.Create(&models.User{ID: 103, Username: "agent-c", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create other team user error = %v", err)
+	}
+	if err := db.Create(&models.AgentProfile{ID: 3, UserID: 103, TeamID: 2, AgentCode: "agent-c", DisplayName: "客服 C", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create other team profile error = %v", err)
+	}
+
+	conversation := &models.Conversation{CurrentTeamID: 1, Status: enums.IMConversationStatusPending}
+	operator := &dto.AuthPrincipal{UserID: 9, Username: "admin", Roles: []string{constants.RoleCodeAdmin}}
+	if _, err := ConversationDispatchWorkbenchService.requireManageableTargetProfile(103, conversation, operator); err == nil || !strings.Contains(err.Error(), "不属于当前会话综合客服组") {
+		t.Fatalf("expected cross-team manual assignment rejection, got %v", err)
+	}
+	if profile, err := ConversationDispatchWorkbenchService.requireManageableTargetProfile(102, conversation, operator); err != nil || profile == nil || profile.TeamID != 1 {
+		t.Fatalf("expected same-team manual assignment to remain allowed, profile=%+v err=%v", profile, err)
 	}
 }
 
@@ -102,6 +144,7 @@ func setupConversationDispatchSquadTestDB(t *testing.T) *gorm.DB {
 		&models.AgentTeamSquadMember{},
 		&models.AgentTeamSchedule{},
 		&models.Conversation{},
+		&models.ConversationRouteState{},
 		&models.ConversationAssignment{},
 	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)

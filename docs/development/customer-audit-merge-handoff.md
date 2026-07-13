@@ -168,6 +168,8 @@ pnpm --dir web typecheck
 
 验收期间发现空小组响应把 `memberProfileIds` 序列化为 `null`，前端会在映射成员时崩溃。当前 builder 已固定返回空数组，前端保留防御性兼容，并新增 `TestBuildAgentTeamSquadListUsesEmptyMemberArray`。临时验收小组及成员关系已从测试库清理。
 
+本功能相关 service、builder、handler、bootstrap 定向测试与编译均通过。全仓 `go test ./internal/...` 仍存在既有测试隔离失败：`TestBuildLightweightTicket` 未初始化全局 DB，异步 AI 回复测试会在其他测试关闭全局 DB 后继续访问；该问题不属于客服小组改动，且本分支不得越界修改 AI runtime。
+
 ## 9. 当前未完成能力
 
 - 综合客服组下客服小组与排班联动已按 `docs/design/agent-team-squad-scheduling.md` 实现并完成桌面、移动端定向验收。
@@ -197,7 +199,8 @@ pnpm --dir web typecheck
 - 当前班次为全组值班时保持原派单候选逻辑。
 - 当前班次指定小组时，只允许该小组有效成员进入自动派单候选。
 - 指定小组无候选人时任务留在综合组待派发池，不回退全组。
-- 主管手动派发可覆盖值班小组，但不能跨综合客服组。
+- 停用小组不参与派单；有当前或未来排班的小组不能停用、删除或迁移综合客服组。
+- 主管手动派发可覆盖值班小组；会话已有综合组归属或已有客服可反推归属时，不能跨综合客服组。
 - 已派发会话不随换班迁移；新任务和待派发任务使用新班次。
 
 ### 页面

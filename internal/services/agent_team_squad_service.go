@@ -133,12 +133,18 @@ func (s *agentTeamSquadService) Update(req request.UpdateAgentTeamSquadRequest, 
 	if current == nil || current.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("客服小组不存在")
 	}
+	if req.TeamID != current.TeamID {
+		return errorsx.InvalidParam("客服小组不支持变更所属综合客服组")
+	}
 	if !AgentTeamScopeService.CanManageTeam(operator, current.TeamID) || !AgentTeamScopeService.CanManageTeam(operator, req.TeamID) {
 		return errorsx.Forbidden("无权编辑该客服小组")
 	}
 	item, memberIDs, err := s.buildModel(sqls.DB(), req.ID, req.TeamID, req.Name, req.LeaderUserID, req.MemberIDs, req.Status, req.Remark)
 	if err != nil {
 		return err
+	}
+	if current.Status != enums.StatusDisabled && item.Status == enums.StatusDisabled && s.hasCurrentOrFutureSchedule(item.ID) {
+		return errorsx.Forbidden("客服小组仍有当前或未来排班，无法停用")
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		if err := repositories.AgentTeamSquadRepository.Updates(ctx.Tx, req.ID, map[string]any{
@@ -182,7 +188,7 @@ func (s *agentTeamSquadService) Delete(id int64, operator *dto.AuthPrincipal) er
 	if !AgentTeamScopeService.CanManageTeam(operator, item.TeamID) {
 		return errorsx.Forbidden("无权删除该客服小组")
 	}
-	if AgentTeamScheduleService.FindOne(sqls.NewCnd().Eq("squad_id", id).Eq("status", enums.StatusOk).Gt("end_at", time.Now())) != nil {
+	if s.hasCurrentOrFutureSchedule(id) {
 		return errorsx.Forbidden("客服小组仍有当前或未来排班，无法删除")
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -207,14 +213,24 @@ func (s *agentTeamSquadService) ActiveMemberProfileSet(squadIDs []int64) map[int
 	if len(squadIDs) == 0 {
 		return ret
 	}
-	members := repositories.AgentTeamSquadMemberRepository.Find(sqls.DB(), sqls.NewCnd().In("squad_id", squadIDs).Eq("status", enums.StatusOk))
+	activeSquads := repositories.AgentTeamSquadRepository.Find(sqls.DB(), sqls.NewCnd().In("id", squadIDs).Eq("status", enums.StatusOk))
+	activeSquadIDs := make([]int64, 0, len(activeSquads))
+	for i := range activeSquads {
+		activeSquadIDs = append(activeSquadIDs, activeSquads[i].ID)
+		ret[activeSquads[i].ID] = make(map[int64]struct{})
+	}
+	if len(activeSquadIDs) == 0 {
+		return ret
+	}
+	members := repositories.AgentTeamSquadMemberRepository.Find(sqls.DB(), sqls.NewCnd().In("squad_id", activeSquadIDs).Eq("status", enums.StatusOk))
 	for i := range members {
-		if ret[members[i].SquadID] == nil {
-			ret[members[i].SquadID] = make(map[int64]struct{})
-		}
 		ret[members[i].SquadID][members[i].AgentProfileID] = struct{}{}
 	}
 	return ret
+}
+
+func (s *agentTeamSquadService) hasCurrentOrFutureSchedule(squadID int64) bool {
+	return AgentTeamScheduleService.FindOne(sqls.NewCnd().Eq("squad_id", squadID).Eq("status", enums.StatusOk).Gt("end_at", time.Now())) != nil
 }
 
 func (s *agentTeamSquadService) canViewTeam(teamID int64, operator *dto.AuthPrincipal) bool {

@@ -60,7 +60,7 @@ func setupAgentTeamSquadTest(t *testing.T) (*gorm.DB, *dto.AuthPrincipal, *model
 }
 
 func TestAgentTeamSquadMembershipAndValidation(t *testing.T) {
-	db, admin, teamA, _, profiles := setupAgentTeamSquadTest(t)
+	db, admin, teamA, teamB, profiles := setupAgentTeamSquadTest(t)
 	squad, err := AgentTeamSquadService.Create(request.CreateAgentTeamSquadRequest{
 		TeamID:       teamA.ID,
 		Name:         "客服一组",
@@ -83,12 +83,33 @@ func TestAgentTeamSquadMembershipAndValidation(t *testing.T) {
 	if len(members) != 2 {
 		t.Fatalf("idempotent member count = %d, want leader + member", len(members))
 	}
+	secondSquad, err := AgentTeamSquadService.Create(request.CreateAgentTeamSquadRequest{
+		TeamID:    teamA.ID,
+		Name:      "客服二组",
+		MemberIDs: []int64{profiles[1].ID},
+		Status:    int(enums.StatusOk),
+	}, admin)
+	if err != nil {
+		t.Fatalf("create second squad with shared member: %v", err)
+	}
+	sharedMemberships := repositories.AgentTeamSquadMemberRepository.Find(db, sqls.NewCnd().Eq("agent_profile_id", profiles[1].ID).Eq("status", enums.StatusOk))
+	if len(sharedMemberships) != 2 || sharedMemberships[0].SquadID == sharedMemberships[1].SquadID || secondSquad.ID == squad.ID {
+		t.Fatalf("expected one agent in two squads, got %+v", sharedMemberships)
+	}
 
 	if err := AgentTeamSquadService.ReplaceMembers(request.ReplaceAgentTeamSquadMembersRequest{SquadID: squad.ID, AgentProfileIDs: []int64{profiles[2].ID}}, admin); err == nil {
 		t.Fatal("expected cross-team member validation error")
 	}
 	if _, err := AgentTeamSquadService.Create(request.CreateAgentTeamSquadRequest{TeamID: teamA.ID, Name: "客服一组", Status: int(enums.StatusOk)}, admin); err == nil {
 		t.Fatal("expected duplicate squad name error")
+	}
+	if err := AgentTeamSquadService.Update(request.UpdateAgentTeamSquadRequest{
+		ID: squad.ID,
+		CreateAgentTeamSquadRequest: request.CreateAgentTeamSquadRequest{
+			TeamID: teamB.ID, Name: squad.Name, Status: int(enums.StatusOk),
+		},
+	}, admin); err == nil {
+		t.Fatal("expected squad team change rejection")
 	}
 }
 
@@ -104,6 +125,14 @@ func TestAgentTeamSquadDeleteRequiresScheduleCleanup(t *testing.T) {
 	}
 	if err := AgentTeamSquadService.Delete(squad.ID, admin); err == nil {
 		t.Fatal("expected future schedule delete guard")
+	}
+	if err := AgentTeamSquadService.Update(request.UpdateAgentTeamSquadRequest{
+		ID: squad.ID,
+		CreateAgentTeamSquadRequest: request.CreateAgentTeamSquadRequest{
+			TeamID: teamA.ID, Name: squad.Name, Status: int(enums.StatusDisabled),
+		},
+	}, admin); err == nil {
+		t.Fatal("expected future schedule disable guard")
 	}
 	if err := db.Model(schedule).Update("status", enums.StatusDeleted).Error; err != nil {
 		t.Fatalf("disable schedule: %v", err)
