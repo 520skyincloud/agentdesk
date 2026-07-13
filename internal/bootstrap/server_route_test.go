@@ -42,6 +42,11 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 		http.MethodGet + " /api/dashboard/user/list",
 		http.MethodGet + " /api/dashboard/user/:id",
 		http.MethodPost + " /api/dashboard/user/create",
+		http.MethodGet + " /api/dashboard/tenant/list",
+		http.MethodGet + " /api/dashboard/tenant/:id",
+		http.MethodPost + " /api/dashboard/tenant/create",
+		http.MethodGet + " /api/dashboard/tenant-invitation/current",
+		http.MethodPost + " /api/dashboard/tenant-invitation/rotate",
 		http.MethodPost + " /api/dashboard/conversation/send_message",
 		http.MethodGet + " /api/ws/dashboard",
 		http.MethodGet + " /api/ws/open",
@@ -177,6 +182,11 @@ func TestNewServerAllowsConfiguredCORSOrigin(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodPost) {
 		t.Fatalf("Access-Control-Allow-Methods=%q should contain %q", got, http.MethodPost)
+	}
+	for _, header := range []string{"X-Request-Id", "X-Tenant-ID"} {
+		if got := rec.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, header) {
+			t.Fatalf("Access-Control-Allow-Headers=%q should contain %q", got, header)
+		}
 	}
 	if got := rec.Header().Get("Vary"); got != "Origin" {
 		t.Fatalf("Vary=%q want %q", got, "Origin")

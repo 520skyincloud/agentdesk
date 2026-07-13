@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
@@ -15,6 +16,24 @@ func newTenantInvitationRepository() *tenantInvitationRepository {
 }
 
 type tenantInvitationRepository struct {
+}
+
+func (r *tenantInvitationRepository) FindCurrent(db *gorm.DB, tenantID int64) *models.TenantInvitation {
+	return r.FindOne(db, sqls.NewCnd().Eq("tenant_id", tenantID).Eq("status", enums.StatusOk).Desc("version").Desc("id"))
+}
+
+func (r *tenantInvitationRepository) FindLatest(db *gorm.DB, tenantID int64) *models.TenantInvitation {
+	return r.FindOne(db, sqls.NewCnd().Eq("tenant_id", tenantID).Desc("version").Desc("id"))
+}
+
+func (r *tenantInvitationRepository) GetByCodeHash(db *gorm.DB, codeHash string) *models.TenantInvitation {
+	return r.FindOne(db, sqls.NewCnd().Eq("code_hash", codeHash))
+}
+
+func (r *tenantInvitationRepository) DisableActiveByTenant(db *gorm.DB, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.TenantInvitation{}).
+		Where("tenant_id = ? AND status = ?", tenantID, enums.StatusOk).
+		Updates(columns).Error
 }
 
 func (r *tenantInvitationRepository) Get(db *gorm.DB, id int64) *models.TenantInvitation {

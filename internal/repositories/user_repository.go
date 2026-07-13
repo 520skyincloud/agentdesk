@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"strings"
 
 	"agent-desk/internal/pkg/httpx/params"
@@ -133,4 +134,28 @@ func (r *userRepository) GetByEmail(db *gorm.DB, email string) *models.User {
 		return nil
 	}
 	return r.Take(db, "email = ?", email)
+}
+
+func (r *userRepository) FindTenantSupervisors(db *gorm.DB, tenantIDs []int64, roleCode string) (map[int64]*models.User, error) {
+	ret := make(map[int64]*models.User, len(tenantIDs))
+	if len(tenantIDs) == 0 {
+		return ret, nil
+	}
+	var users []models.User
+	if err := db.Table("t_user AS u").
+		Select("u.*").
+		Joins("JOIN t_user_role AS ur ON ur.user_id = u.id").
+		Joins("JOIN t_role AS r ON r.id = ur.role_id").
+		Where("u.tenant_id IN ? AND u.status <> ? AND r.code = ? AND r.status = ?", tenantIDs, enums.StatusDeleted, roleCode, enums.StatusOk).
+		Order("u.id ASC").
+		Scan(&users).Error; err != nil {
+		return nil, err
+	}
+	for i := range users {
+		if _, exists := ret[users[i].TenantID]; !exists {
+			user := users[i]
+			ret[user.TenantID] = &user
+		}
+	}
+	return ret, nil
 }

@@ -35,3 +35,22 @@ func TestLoadReadsCORSAllowedOrigins(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadOverridesInvitationEncryptionKeyFromEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte(`auth:
+  invitationEncryptionKey: yaml-key
+`)
+	if err := os.WriteFile(path, content, 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	t.Setenv("AGENT_DESK_INVITATION_ENCRYPTION_KEY", "environment-key")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Auth.InvitationEncryptionKey != "environment-key" {
+		t.Fatalf("InvitationEncryptionKey=%q want environment override", cfg.Auth.InvitationEncryptionKey)
+	}
+}

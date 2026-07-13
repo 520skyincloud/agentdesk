@@ -1,0 +1,74 @@
+package builders
+
+import (
+	"net/url"
+
+	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto/response"
+	"agent-desk/internal/pkg/utils"
+)
+
+type TenantBuildOptions struct {
+	Supervisor *models.User
+}
+
+func BuildTenant(item *models.Tenant, options TenantBuildOptions) *response.TenantResponse {
+	if item == nil {
+		return nil
+	}
+	ret := &response.TenantResponse{
+		ID:                 item.ID,
+		TenantCode:         item.TenantCode,
+		LegalName:          item.LegalName,
+		ShortName:          item.ShortName,
+		RegistrationType:   item.RegistrationType,
+		RegistrationNo:     item.RegistrationNo,
+		ContactName:        item.ContactName,
+		ContactMobile:      item.ContactMobile,
+		ContactEmail:       item.ContactEmail,
+		Address:            item.Address,
+		VerificationStatus: item.VerificationStatus,
+		VerifiedAt:         utils.FormatTimePtr(item.VerifiedAt),
+		Status:             item.Status,
+		Remark:             item.Remark,
+		CreatedAt:          utils.FormatTime(item.CreatedAt),
+		UpdatedAt:          utils.FormatTime(item.UpdatedAt),
+		CreateUserName:     item.CreateUserName,
+		UpdateUserName:     item.UpdateUserName,
+	}
+	if options.Supervisor != nil {
+		ret.SupervisorUserID = options.Supervisor.ID
+		ret.SupervisorUsername = options.Supervisor.Username
+		ret.SupervisorNickname = options.Supervisor.Nickname
+	}
+	return ret
+}
+
+func BuildTenantList(list []models.Tenant, supervisors map[int64]*models.User) []response.TenantResponse {
+	ret := make([]response.TenantResponse, 0, len(list))
+	for i := range list {
+		item := BuildTenant(&list[i], TenantBuildOptions{Supervisor: supervisors[list[i].ID]})
+		if item != nil {
+			ret = append(ret, *item)
+		}
+	}
+	return ret
+}
+
+func BuildTenantInvitation(item *models.TenantInvitation, tenant *models.Tenant, code string) *response.TenantInvitationResponse {
+	if item == nil || tenant == nil {
+		return nil
+	}
+	return &response.TenantInvitationResponse{
+		TenantID:   tenant.ID,
+		TenantName: tenant.ShortName,
+		Code:       code,
+		CodeLast4:  item.CodeLast4,
+		InviteLink: "/register?invite=" + url.QueryEscape(code),
+		Version:    item.Version,
+		UsedCount:  item.UsedCount,
+		LastUsedAt: utils.FormatTimePtr(item.LastUsedAt),
+		CreatedAt:  utils.FormatTime(item.CreatedAt),
+		RotatedAt:  utils.FormatTimePtr(item.RotatedAt),
+	}
+}

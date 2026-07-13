@@ -35,6 +35,56 @@ func TestUserCreateWithRolesRequiresAssignRolePermission(t *testing.T) {
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
+func TestTenantCreateRequiresTenantCreatePermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, `{}`, &dto.AuthPrincipal{
+		UserID:      13,
+		Username:    "tenant_viewer",
+		Permissions: []string{constants.PermissionTenantView.Code},
+	})
+
+	TenantPostCreate(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
+func TestTenantManagementActionsRequireMatchingPermissions(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		permission string
+		handler    func(*gin.Context)
+	}{
+		{name: "update", body: `{}`, permission: constants.PermissionTenantView.Code, handler: TenantPostUpdate},
+		{name: "update status", body: `{}`, permission: constants.PermissionTenantView.Code, handler: TenantPostUpdateStatus},
+		{name: "view invitation", permission: constants.PermissionTenantView.Code, handler: TenantInvitationGetCurrent},
+		{name: "rotate invitation", permission: constants.PermissionTenantInviteView.Code, handler: TenantInvitationPostRotate},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, tt.body, &dto.AuthPrincipal{
+				UserID:      14,
+				Username:    "tenant_limited_user",
+				Permissions: []string{tt.permission},
+			})
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
+func TestTenantListRejectsTenantAccountEvenWithPlatformPermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+		UserID:            15,
+		Username:          "misconfigured_tenant_user",
+		Permissions:       []string{constants.PermissionTenantView.Code},
+		IsPlatformAccount: false,
+		TenantID:          9,
+		ActiveTenantID:    9,
+	})
+
+	TenantAnyList(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
 func newAuthzHandlerTestContext(t *testing.T, body string, principal *dto.AuthPrincipal) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

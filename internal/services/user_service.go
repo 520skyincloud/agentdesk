@@ -113,20 +113,37 @@ func (s *userService) CreateUser(req request.CreateUserRequest, operator *dto.Au
 	if err != nil {
 		return nil, "", err
 	}
+	var user *models.User
+	var plain string
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		user, plain, err = s.createManagedUserDB(ctx.Tx, req, tenantID, registrationSource, req.RoleIDs, operator)
+		return err
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return user, plain, nil
+}
+
+func (s *userService) createManagedUserDB(db *gorm.DB, req request.CreateUserRequest, tenantID int64, registrationSource enums.UserRegistrationSource, roleIDs []int64, operator *dto.AuthPrincipal) (*models.User, string, error) {
 	username := strings.TrimSpace(req.Username)
 	if username == "" {
 		return nil, "", errorsx.InvalidParam("用户名不能为空")
 	}
-	if s.GetByUsername(username) != nil {
+	if repositories.UserRepository.GetByUsername(db, username) != nil {
 		return nil, "", errorsx.InvalidParam("用户名已存在")
 	}
 
 	mobile := utils.NormalizeNullableString(req.Mobile)
 	email := utils.NormalizeNullableString(req.Email)
-	if mobile != nil && s.GetByMobile(*mobile) != nil {
+	if email != nil {
+		normalizedEmail := strings.ToLower(*email)
+		email = &normalizedEmail
+	}
+	if mobile != nil && repositories.UserRepository.GetByMobile(db, *mobile) != nil {
 		return nil, "", errorsx.InvalidParam("手机号已存在")
 	}
-	if email != nil && s.GetByEmail(*email) != nil {
+	if email != nil && repositories.UserRepository.GetByEmail(db, *email) != nil {
 		return nil, "", errorsx.InvalidParam("邮箱已存在")
 	}
 
@@ -162,13 +179,10 @@ func (s *userService) CreateUser(req request.CreateUserRequest, operator *dto.Au
 		user.Nickname = username
 	}
 
-	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.UserRepository.Create(ctx.Tx, user); err != nil {
-			return err
-		}
-		return s.replaceUserRolesDB(ctx.Tx, user.ID, req.RoleIDs, operator)
-	})
-	if err != nil {
+	if err = repositories.UserRepository.Create(db, user); err != nil {
+		return nil, "", err
+	}
+	if err = s.replaceUserRolesDB(db, user.ID, roleIDs, operator); err != nil {
 		return nil, "", err
 	}
 	return user, plain, nil

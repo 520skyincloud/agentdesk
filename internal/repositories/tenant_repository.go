@@ -21,6 +21,10 @@ func (r *tenantRepository) GetByTenantCode(db *gorm.DB, tenantCode string) *mode
 	return r.FindOne(db, sqls.NewCnd().Eq("tenant_code", tenantCode))
 }
 
+func (r *tenantRepository) GetByRegistration(db *gorm.DB, registrationType, registrationNo string) *models.Tenant {
+	return r.FindOne(db, sqls.NewCnd().Eq("registration_type", registrationType).Eq("registration_no", registrationNo))
+}
+
 func (r *tenantRepository) Get(db *gorm.DB, id int64) *models.Tenant {
 	ret := &models.Tenant{}
 	if err := db.First(ret, "id = ?", id).Error; err != nil {

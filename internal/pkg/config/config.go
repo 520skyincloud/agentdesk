@@ -4,6 +4,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -63,9 +64,10 @@ type LoggerConfig struct {
 }
 
 type AuthConfig struct {
-	TokenTTLHours        int `yaml:"tokenTTLHours"`
-	MaxFailedAttempts    int `yaml:"maxFailedAttempts"`
-	CredentialLockMinute int `yaml:"credentialLockMinute"`
+	TokenTTLHours           int    `yaml:"tokenTTLHours"`
+	MaxFailedAttempts       int    `yaml:"maxFailedAttempts"`
+	CredentialLockMinute    int    `yaml:"credentialLockMinute"`
+	InvitationEncryptionKey string `yaml:"invitationEncryptionKey"`
 }
 
 type CustomerSessionConfig struct {
@@ -199,6 +201,9 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{}
 	if err := yaml.Unmarshal(b, cfg); err != nil {
 		return nil, err
+	}
+	if invitationKey := strings.TrimSpace(os.Getenv("AGENT_DESK_INVITATION_ENCRYPTION_KEY")); invitationKey != "" {
+		cfg.Auth.InvitationEncryptionKey = invitationKey
 	}
 	return cfg, nil
 }

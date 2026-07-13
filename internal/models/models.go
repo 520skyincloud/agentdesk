@@ -182,6 +182,7 @@ type User struct {
 	ApprovalStatus     enums.UserApprovalStatus     `gorm:"type:varchar(20);not null;default:'approved';index"`
 	ApprovedAt         *time.Time                   `gorm:"type:datetime;index"`
 	ApprovedBy         int64                        `gorm:"type:bigint;not null;default:0;index"`
+	ApprovalRemark     string                       `gorm:"type:varchar(500);not null;default:''"`
 	MustChangePassword bool                         `gorm:"not null;default:false;index"`
 	Status             enums.Status                 `gorm:"type:int;not null;default:0;index"`
 	LastLoginAt        *time.Time                   `gorm:"type:datetime"`
@@ -230,8 +231,10 @@ type TenantInvitation struct {
 type TenantRegistrationLog struct {
 	ID           int64     `gorm:"primaryKey;autoIncrement"`
 	RequestID    string    `gorm:"type:varchar(128);not null;default:'';uniqueIndex"`
+	Action       string    `gorm:"type:varchar(30);not null;default:'';index"`
 	TenantID     int64     `gorm:"type:bigint;not null;default:0;index"`
 	InvitationID int64     `gorm:"type:bigint;not null;default:0;index"`
+	InviteHash   string    `gorm:"type:varchar(64);not null;default:'';index"`
 	UserID       int64     `gorm:"type:bigint;not null;default:0;index"`
 	Principal    string    `gorm:"type:varchar(150);not null;default:'';index"`
 	Success      bool      `gorm:"not null;default:false;index"`
@@ -864,7 +867,9 @@ type AgentProfile struct {
 // AgentTeam 客服组。
 type AgentTeam struct {
 	ID                     int64        `gorm:"primaryKey;autoIncrement"`                    // ID 为客服组主键。
+	TenantID               int64        `gorm:"type:bigint;not null;default:0;index"`        // TenantID 为客服组所属接入公司。
 	Name                   string       `gorm:"type:varchar(100);not null;default:'';index"` // Name 为客服组名称。
+	IsDefault              bool         `gorm:"not null;default:false;index"`                // IsDefault 表示该组是否为租户创建时生成的默认综合客服组。
 	LeaderUserID           int64        `gorm:"type:bigint;not null;default:0;index"`        // LeaderUserID 为组长用户ID，0 表示暂未设置。
 	CompanyScopeIDs        string       `gorm:"type:varchar(500);not null;default:''"`       // CompanyScopeIDs 为客服组可管理的公司ID，逗号分隔；为空则由门店范围反推。
 	StoreScopeIDs          string       `gorm:"type:varchar(500);not null;default:''"`       // StoreScopeIDs 为客服组可服务的门店ID，逗号分隔；为空表示不限制。

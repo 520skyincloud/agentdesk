@@ -396,3 +396,86 @@ git diff --check
 - 本阶段不修改模型调用、AI 回复链路、模型供应商、token 统计、FastGPT 或计费口径。
 - 由于阶段 2 同时承担阶段 1 migration 重编号，不应单独 cherry-pick `12d77b9`；应合并阶段 1 与阶段 2 的最终树，再让并行分支 rebase。
 - 回滚阶段 2 时可移除 Tenant 认证上下文代码，但已生成的 Tenant/User 新列由 AutoMigrate 保留；不得通过破坏性 DDL 回滚。
+
+## 15. 多租户阶段 3A：接入公司与邀请码管理后端（2026-07-13）
+
+### 本步骤目标与结果
+
+- 新增接入公司列表、详情、创建、更新和启停接口；接口分别使用 `tenant.view/create/update/updateStatus`。
+- 接入公司列表和详情除 `tenant.view` 外还硬性要求平台账号，防止权限误配或历史脏关系让租户账号读取平台公司目录。
+- 创建接入公司在单个事务内创建 Tenant、已审核公司主管账号、`tenant_admin` 角色关系、默认“综合客服组”和首个邀请码，任一步失败全部回滚。
+- 公司主管初始密码只在创建成功响应返回一次并要求首次改密；创建和邀请码查看/重置响应设置 `Cache-Control: no-store`。
+- 邀请码使用密码学安全随机数生成，SHA-256 哈希用于后续匹配，AES-256-GCM 密文用于受权查看；密文只接受唯一规范的 URL-safe Base64 表示。
+- 邀请密钥支持 YAML 配置和 `AGENT_DESK_INVITATION_ENCRYPTION_KEY` 环境变量覆盖，生产环境不得复用登录或客服会话密钥。
+- 当前公司邀请码使用 `tenantInvite.view/rotate`；重置时一次禁用该租户全部旧有效邀请码并按历史最高版本递增，旧记录保留审计字段，不提供物理删除。
+- 统一社会信用代码执行 18 位合法字符格式校验，`registration_type + registration_no` 由数据库组合唯一索引兜底；这里只证明格式和系统内唯一，不声称完成第三方工商核验。
+
+### 数据、接口与迁移
+
+- `AgentTeam` 新增 `TenantID` 和 `IsDefault`；新公司默认综合客服组写入明确 TenantID。
+- `User` 增加 `ApprovalRemark`；`TenantRegistrationLog` 增加 `Action` 和 `InviteHash`，供阶段 3B 记录注册安全动作。
+- migration 36 只把 `tenant_id=0` 的历史客服组回填到 `legacy-default`，保留已有显式租户，重复执行幂等；缺少历史默认租户时中止。
+- 新增路由：
+  - `GET /api/dashboard/tenant/list`
+  - `GET /api/dashboard/tenant/:id`
+  - `POST /api/dashboard/tenant/create`
+  - `POST /api/dashboard/tenant/update`
+  - `POST /api/dashboard/tenant/update_status`
+  - `GET /api/dashboard/tenant-invitation/current`
+  - `POST /api/dashboard/tenant-invitation/rotate`
+- CORS 允许并暴露 `X-Request-Id` 和 `X-Tenant-ID`，供后续公开注册幂等和平台公司上下文使用。
+
+### 主要文件
+
+```text
+config/config.example.yaml
+internal/models/models.go
+internal/pkg/config/config.go
+internal/pkg/dto/request/tenant_request.go
+internal/pkg/dto/response/tenant_response.go
+internal/repositories/tenant_repository.go
+internal/repositories/tenant_invitation_repository.go
+internal/repositories/user_repository.go
+internal/services/user_service.go
+internal/services/tenant_management_service.go
+internal/services/tenant_invitation_business_service.go
+internal/services/tenant_invitation_crypto.go
+internal/builders/tenant_builder.go
+internal/handlers/dashboard/tenant_handler.go
+internal/handlers/dashboard/tenant_invitation_handler.go
+internal/bootstrap/routes.go
+internal/bootstrap/server.go
+internal/migration/000036_backfill_agent_team_tenants.go
+```
+
+### 验证证据
+
+```text
+go test ./internal/pkg/config -count=1
+go test ./internal/services -run 'TestTenant(Service|Invitation|Management)' -count=1
+go test -race ./internal/services -run 'TestTenant(Service|Invitation|Management)' -count=1
+go test ./internal/migration -run 'Test(BackfillAgentTeamTenants|BackfillTenantAuthContext|SyncTenantAuthFoundation)' -count=1
+go test ./internal/handlers/dashboard -run 'Test(Tenant|RoleUpdateSort|UserCreateWithRoles)' -count=1
+go test ./internal/bootstrap ./internal/handlers/dashboard -count=1
+go test ./cmd/server ./cmd/migration -count=1
+git diff --check
+```
+
+- 上述阶段测试、竞态检测和编译检查通过。
+- 全量 `go test ./internal/... -count=1` 仍在既有 `TestBuildLightweightTicket` 失败：测试未初始化全局 DB，`BuildCustomer -> ListStoreRelations` 发生 nil pointer。
+- 单独执行 `go test ./internal/services -count=1` 还会稳定失败于 `TestStoreManualAgentReplyStartsIdleTimeout`、`TestManualSessionTimeoutRestoresStoreManualAfterAgentReplyWithCustomerNotice` 和 `TestConversationHumanDispatchStoreManualAllowsWebReplyWithoutClaim`；现象是共享测试 DB/会话 fixture 未形成预期人工分配或门店范围。本步骤未修改 Ticket、Customer builder、人工会话回复或 AI runtime，不能把这些失败算作阶段 3A 通过，也不越界夹带修复。
+
+### 未完成边界
+
+- 阶段 3A 没有开放 `/register`、邀请码公开校验、注册提交、待审核列表或审核接口；限流、请求幂等和注册安全日志写入属于阶段 3B。
+- `AgentTeam.TenantID` 只是默认资源和后续隔离契约。客服组列表/详情/写操作，以及小组、排班、门店员工、派单等完整租户隔离必须在独立步骤逐链路完成，不能以 migration 36 代替运行时隔离。
+- 正式启用公司切换和公开注册前，仍需完成客户、门店、企微、会话、消息、工单、知识库、文件、WebSocket、回调、Outbox 与向量检索隔离验收。
+
+### 并行分支影响与合并顺序
+
+- 本步骤开始时已 `git fetch origin`；`origin/codex/ai-billing@a936a18` 的 migration 最高为 33，本步骤使用 36，不重复。
+- 同文件为 `config/config.example.yaml`、`internal/pkg/config/config.go`、`internal/models/models.go`、`internal/bootstrap/routes.go`、`internal/bootstrap/server.go` 和 `internal/bootstrap/server_route_test.go`。
+- AI 分支在配置中新增 Email/FastGPT/NewAPIUsage，在模型和路由中新增邮箱验证、FastGPT 和回复运行时能力；最终合并必须逐段保留双方字段与路由，不得整文件选边。
+- 本步骤不修改 AI runtime、模型供应商、FastGPT 运行语义、token 统计、计费、会话消息状态或 WebSocket payload。
+- 建议先合并阶段 1-3A 的租户共享契约，再让并行分支 rebase；阶段 3B 继续依赖当前 Tenant/User/Invitation 契约。
+- 回滚边界：可回滚阶段 3A 路由、service 和 DTO；AutoMigrate 新列及已创建 Tenant 数据不得用破坏性 DDL 删除，migration 36 已回填的历史客服组需按备份和明确映射处理。

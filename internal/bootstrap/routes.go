@@ -90,6 +90,19 @@ func registerDashboardUserRoutes(group *gin.RouterGroup) {
 	group.POST("/update_status", dashboard.UserPostUpdate_status)
 }
 
+func registerDashboardTenantRoutes(group *gin.RouterGroup) {
+	group.GET("/:id", dashboard.TenantGetBy)
+	group.POST("/create", dashboard.TenantPostCreate)
+	group.Any("/list", dashboard.TenantAnyList)
+	group.POST("/update", dashboard.TenantPostUpdate)
+	group.POST("/update_status", dashboard.TenantPostUpdateStatus)
+}
+
+func registerDashboardTenantInvitationRoutes(group *gin.RouterGroup) {
+	group.GET("/current", dashboard.TenantInvitationGetCurrent)
+	group.POST("/rotate", dashboard.TenantInvitationPostRotate)
+}
+
 func registerDashboardCompanyRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.CompanyGetBy)
 	group.POST("/create", dashboard.CompanyPostCreate)
