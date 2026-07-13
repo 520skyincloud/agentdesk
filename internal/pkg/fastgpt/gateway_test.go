@@ -51,6 +51,24 @@ func TestGatewaySearchDatasetMapsAndFiltersOfficialResults(t *testing.T) {
 	}
 }
 
+func TestGatewaySearchDatasetPreservesFastGPTMixedRecallOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"code":200,"data":{"list":[{"id":"data-first","datasetId":"dataset-1","collectionId":"c1","q":"最终排序第一","a":"第一条","score":0.72},{"id":"data-second","datasetId":"dataset-1","collectionId":"c1","q":"单项分数更高","a":"第二条","score":0.95},{"id":"data-filtered","datasetId":"dataset-1","collectionId":"c1","q":"低于阈值","a":"忽略","score":0.1}]}}`)
+	}))
+	defer server.Close()
+
+	gateway, _ := NewGateway(Config{BaseURL: server.URL, APIKey: "secret", Timeout: time.Second})
+	result, err := gateway.SearchDataset(context.Background(), SearchDatasetRequest{
+		DatasetID: "dataset-1", Query: "餐饮", Similarity: 0.2, TopK: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Hits) != 2 || result.Hits[0].DataID != "data-first" || result.Hits[1].DataID != "data-second" {
+		t.Fatalf("FastGPT order was not preserved: %#v", result.Hits)
+	}
+}
+
 func TestGatewaySearchDatasetMapsFastGPTScoreStages(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"code":200,"data":{"list":[{"id":"data-1","datasetId":"dataset-1","collectionId":"c1","sourceName":"hotel.xlsx","q":"有剃须刀吗","a":"有","score":[{"type":"embedding","value":0.92},{"type":"rrf","value":0.016},{"type":"reRank","value":0.87}]}]}}`)

@@ -69,6 +69,32 @@ func TestNormalizeContextResultsMergesAndDedupes(t *testing.T) {
 	}
 }
 
+func TestSelectContextResultsUsesFastGPTSourceRecordIdentity(t *testing.T) {
+	results := []RetrieveResult{
+		{DocumentID: 0, SectionPath: "FastGPT知识库/3/collection-1", SourceRecordID: "data-1", Content: "第一条", Score: 0.9},
+		{DocumentID: 0, SectionPath: "FastGPT知识库/3/collection-1", SourceRecordID: "data-2", Content: "第二条", Score: 0.8},
+		{DocumentID: 0, SectionPath: "FastGPT知识库/3/collection-1", SourceRecordID: "data-3", Content: "第三条", Score: 0.7},
+		{DocumentID: 0, SectionPath: "FastGPT知识库/3/collection-1", SourceRecordID: "data-4", Content: "第四条", Score: 0.6},
+		{DocumentID: 0, SectionPath: "FastGPT知识库/3/collection-1", SourceRecordID: "data-5", Content: "第五条", Score: 0.5},
+	}
+	selected := Retrieve.SelectContextResults(results, 1000)
+	if len(selected) != 5 {
+		t.Fatalf("expected all FastGPT records to remain, got %d: %#v", len(selected), selected)
+	}
+}
+
+func TestSelectContextResultsDedupesSameFastGPTSourceRecord(t *testing.T) {
+	results := []RetrieveResult{
+		{SectionPath: "FastGPT知识库/3/collection-1", SourceRecordID: "data-1", Content: "第一条", Score: 0.9},
+		{SectionPath: "FastGPT知识库/3/collection-1", SourceRecordID: "data-1", Content: "重复条", Score: 0.8},
+		{SectionPath: "FastGPT知识库/3/collection-1", SourceRecordID: "data-2", Content: "第二条", Score: 0.7},
+	}
+	selected := Retrieve.SelectContextResults(results, 1000)
+	if len(selected) != 2 || selected[0].Content != "第一条" || selected[1].Content != "第二条" {
+		t.Fatalf("unexpected FastGPT dedupe result: %#v", selected)
+	}
+}
+
 func TestBuildContextChunkText(t *testing.T) {
 	faqText := buildContextChunkText(RetrieveResult{
 		FaqID:       1,

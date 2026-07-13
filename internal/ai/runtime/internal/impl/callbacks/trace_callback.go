@@ -48,6 +48,11 @@ type RetrieverTraceItem struct {
 	KnowledgeBaseID int64   `json:"knowledgeBaseId,omitempty"`
 	DocumentID      int64   `json:"documentId,omitempty"`
 	DocumentTitle   string  `json:"documentTitle,omitempty"`
+	SourceRecordID  string  `json:"sourceRecordId,omitempty"`
+	RawRankNo       int     `json:"rawRankNo,omitempty"`
+	ContextRankNo   int     `json:"contextRankNo,omitempty"`
+	UsedInContext   bool    `json:"usedInContext,omitempty"`
+	DiscardReason   string  `json:"discardReason,omitempty"`
 	Score           float64 `json:"score,omitempty"`
 	LatencyMs       int64   `json:"latencyMs,omitempty"`
 }

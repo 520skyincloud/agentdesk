@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -138,9 +139,9 @@ func (r *KnowledgeRetriever) RetrieveContextByOptions(ctx context.Context, opts 
 	ret.ContextText = strings.TrimSpace(buildContextText(ret.ContextResults))
 	ret.TopScore = resolveTopScore(results)
 	ret.AnswerMode = resolveRuntimeAnswerMode(knowledgeBaseIDs, results)
-	ret.TraceItems = buildRetrieverTraceItems(queryPreview, results, trace)
+	ret.TraceItems = buildRetrieverTraceItems(queryPreview, results, ret.ContextResults, trace)
 	ret.TraceSummary = buildRetrieverTraceSummary(ret.Options, ret.Policies, ret.ContextResults, results, trace)
-	r.writeRuntimeRetrieveLog(query, retrieveMs, ret)
+	r.writeRuntimeRetrieveLog(ctx, query, retrieveMs, ret)
 	r.writeKnowledgeUsageEvent(ctx, retrieveMs, ret)
 	return ret, nil
 }
@@ -195,7 +196,7 @@ func estimateKnowledgeContextTokens(text string) int {
 	return (runeCount + 1) / 2
 }
 
-func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(query string, retrieveMs int64, result *KnowledgeRetrieveResult) {
+func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, query string, retrieveMs int64, result *KnowledgeRetrieveResult) {
 	if result == nil || len(result.KnowledgeBaseIDs) == 0 {
 		return
 	}
@@ -205,20 +206,30 @@ func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(query string, retrieveMs in
 	if len(hits) == 0 {
 		answerStatus = int(enums.KnowledgeAnswerStatusNoAnswer)
 	}
+	scope := usagex.ScopeFromContext(ctx)
+	requestID := strings.TrimSpace(tracex.RequestIDFromContext(ctx))
+	if requestID == "" {
+		requestID = strings.TrimSpace(scope.RequestID)
+	}
 	if _, err := rag.RetrieveLog.CreateRetrieveLog(&rag.CreateRetrieveLogRequest{
-		KnowledgeBaseID: result.KnowledgeBaseIDs[0],
-		SourceType:      inferRuntimeRetrieveSourceType(hits),
-		Channel:         string(enums.KnowledgeRetrieveChannelIM),
-		Scene:           string(enums.KnowledgeRetrieveSceneFirstResponse),
-		Question:        query,
-		AnswerStatus:    answerStatus,
-		ChunkProvider:   runtimeRetrieveChunkProvider(result),
-		RerankEnabled:   false,
-		Hits:            hits,
-		UsedHits:        usedHits,
-		RetrieveMs:      retrieveMs,
-		LatencyMs:       retrieveMs,
-		ModelName:       "runtime-retriever",
+		KnowledgeBaseID:    result.KnowledgeBaseIDs[0],
+		SourceType:         inferRuntimeRetrieveSourceType(hits),
+		Channel:            string(enums.KnowledgeRetrieveChannelIM),
+		Scene:              string(enums.KnowledgeRetrieveSceneFirstResponse),
+		ConversationID:     scope.ConversationID,
+		MessageID:          scope.MessageID,
+		RequestID:          requestID,
+		Question:           query,
+		AnswerStatus:       answerStatus,
+		ChunkProvider:      runtimeRetrieveChunkProvider(result),
+		RerankEnabled:      false,
+		Hits:               hits,
+		UsedHits:           usedHits,
+		HitSourceRecordIDs: retrieveSourceRecordIDs(result.Hits),
+		UsedHitRankNos:     resolveUsedHitRankNos(result.Hits, result.ContextResults),
+		RetrieveMs:         retrieveMs,
+		LatencyMs:          retrieveMs,
+		ModelName:          "runtime-retriever",
 	}, nil); err != nil {
 		slog.Warn("runtime knowledge retrieve log failed", "error", err)
 	}
@@ -381,7 +392,7 @@ func loadRuntimeKnowledgeBases(ids []int64) map[int64]models.KnowledgeBase {
 	return ret
 }
 
-func buildRetrieverTraceItems(queryPreview string, results []rag.RetrieveResult, trace *rag.RetrieveTrace) []callbacks.RetrieverTraceItem {
+func buildRetrieverTraceItems(queryPreview string, results, contextResults []rag.RetrieveResult, trace *rag.RetrieveTrace) []callbacks.RetrieverTraceItem {
 	if len(results) == 0 {
 		return nil
 	}
@@ -389,18 +400,67 @@ func buildRetrieverTraceItems(queryPreview string, results []rag.RetrieveResult,
 	if trace != nil {
 		latencyMs = trace.EmbeddingMs + trace.VectorSearchMs + trace.HydrateMs
 	}
+	contextRanks := make(map[string]int, len(contextResults))
+	for index, item := range contextResults {
+		contextRanks[retrieveResultIdentity(item)] = index + 1
+	}
 	ret := make([]callbacks.RetrieverTraceItem, 0, len(results))
-	for _, item := range results {
+	for index, item := range results {
+		contextRank := contextRanks[retrieveResultIdentity(item)]
+		discardReason := ""
+		if contextRank == 0 {
+			discardReason = "context_limit_or_duplicate"
+		}
 		ret = append(ret, callbacks.RetrieverTraceItem{
 			Query:           queryPreview,
 			KnowledgeBaseID: item.KnowledgeBaseID,
 			DocumentID:      item.DocumentID,
 			DocumentTitle:   item.DocumentTitle,
+			SourceRecordID:  item.SourceRecordID,
+			RawRankNo:       index + 1,
+			ContextRankNo:   contextRank,
+			UsedInContext:   contextRank > 0,
+			DiscardReason:   discardReason,
 			Score:           float64(item.Score),
 			LatencyMs:       latencyMs,
 		})
 	}
 	return ret
+}
+
+func retrieveResultIdentity(item rag.RetrieveResult) string {
+	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
+		return "source:" + sourceRecordID
+	}
+	return strings.Join([]string{
+		"local",
+		fmt.Sprintf("%d", item.KnowledgeBaseID),
+		fmt.Sprintf("%d", item.DocumentID),
+		strings.TrimSpace(item.SectionPath),
+		fmt.Sprintf("%d", item.ChunkNo),
+	}, "|")
+}
+
+func retrieveSourceRecordIDs(items []rag.RetrieveResult) []string {
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		result = append(result, strings.TrimSpace(item.SourceRecordID))
+	}
+	return result
+}
+
+func resolveUsedHitRankNos(hits, usedHits []rag.RetrieveResult) []int {
+	used := make(map[string]struct{}, len(usedHits))
+	for _, item := range usedHits {
+		used[retrieveResultIdentity(item)] = struct{}{}
+	}
+	ranks := make([]int, 0, len(usedHits))
+	for index, item := range hits {
+		if _, ok := used[retrieveResultIdentity(item)]; ok {
+			ranks = append(ranks, index+1)
+		}
+	}
+	return ranks
 }
 
 func buildRetrieverTraceSummary(opts KnowledgeRetrieveOptions, policies []KnowledgeBaseRetrievePolicy, contextResults []rag.RetrieveResult, results []rag.RetrieveResult, trace *rag.RetrieveTrace) callbacks.RetrieverTraceSummary {

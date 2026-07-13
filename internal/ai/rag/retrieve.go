@@ -73,7 +73,12 @@ func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) (
 			}
 		}
 	}
-	sortRetrieveResults(results)
+	// FastGPT searchTest already returns the final mixed-recall order. Keep that
+	// order when it is the only provider; local or mixed-provider retrieval
+	// retains the existing score ordering.
+	if len(fastGPTKnowledgeBases) == 0 || len(localKnowledgeBases) > 0 {
+		sortRetrieveResults(results)
+	}
 
 	return results, trace, nil
 }

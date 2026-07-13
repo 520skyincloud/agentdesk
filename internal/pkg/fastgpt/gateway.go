@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"sort"
 	"strings"
 	"time"
 )
@@ -276,7 +275,6 @@ func (g *Gateway) SearchDataset(ctx context.Context, input SearchDatasetRequest)
 		}
 		filtered = append(filtered, hit)
 	}
-	sort.SliceStable(filtered, func(i, j int) bool { return filtered[i].Score > filtered[j].Score })
 	if input.TopK > 0 && len(filtered) > input.TopK {
 		filtered = filtered[:input.TopK]
 	}

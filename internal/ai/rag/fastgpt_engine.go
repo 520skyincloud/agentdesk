@@ -89,10 +89,11 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 	var (
 		mu       sync.Mutex
 		wg       sync.WaitGroup
-		results  []RetrieveResult
+		batches  = make([][]RetrieveResult, len(knowledgeBases))
 		errCount int
 	)
-	for _, knowledgeBase := range knowledgeBases {
+	for index, knowledgeBase := range knowledgeBases {
+		index := index
 		knowledgeBase := knowledgeBase
 		wg.Add(1)
 		go func() {
@@ -121,13 +122,14 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 			for _, hit := range searchResult.Hits {
 				mapped = append(mapped, buildFastGPTRetrieveResult(knowledgeBase, hit))
 			}
-			mu.Lock()
-			results = append(results, mapped...)
-			mu.Unlock()
+			batches[index] = mapped
 		}()
 	}
 	wg.Wait()
-	sortRetrieveResults(results)
+	results := make([]RetrieveResult, 0)
+	for _, batch := range batches {
+		results = append(results, batch...)
+	}
 	if len(results) == 0 && errCount > 0 {
 		return nil, time.Since(startedAt).Milliseconds(), fmt.Errorf("FastGPT knowledge lookup failed")
 	}

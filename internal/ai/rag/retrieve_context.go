@@ -14,10 +14,11 @@ func (s *retrieve) SelectContextResults(results []RetrieveResult, maxTokens int)
 	normalizedResults := normalizeContextResults(results)
 	selected := make([]RetrieveResult, 0, len(normalizedResults))
 	totalTokens := 0
-	documentUsage := make(map[int64]int)
+	documentUsage := make(map[string]int)
 
 	for _, item := range normalizedResults {
-		if documentUsage[item.DocumentID] >= 2 {
+		usageKey := buildContextUsageKey(item)
+		if documentUsage[usageKey] >= 2 {
 			continue
 		}
 		chunkText := buildContextChunkText(item)
@@ -27,7 +28,7 @@ func (s *retrieve) SelectContextResults(results []RetrieveResult, maxTokens int)
 		}
 		selected = append(selected, item)
 		totalTokens += estimatedTokens
-		documentUsage[item.DocumentID]++
+		documentUsage[usageKey]++
 	}
 	return selected
 }
@@ -95,6 +96,9 @@ func mergeAdjacentResults(results []RetrieveResult) []RetrieveResult {
 }
 
 func canMergeContextResult(left, right RetrieveResult) bool {
+	if strings.TrimSpace(left.SourceRecordID) != "" || strings.TrimSpace(right.SourceRecordID) != "" {
+		return false
+	}
 	if left.FaqID > 0 || right.FaqID > 0 {
 		return false
 	}
@@ -111,6 +115,9 @@ func canMergeContextResult(left, right RetrieveResult) bool {
 }
 
 func buildSectionKey(item RetrieveResult) string {
+	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
+		return "source:" + sourceRecordID
+	}
 	if item.FaqID > 0 {
 		return fmt.Sprintf("faq:%d", item.FaqID)
 	}
@@ -123,6 +130,13 @@ func buildSectionKey(item RetrieveResult) string {
 		return fmt.Sprintf("%d|%s", item.DocumentID, title)
 	}
 	return fmt.Sprintf("%d|chunk:%d", item.DocumentID, item.ChunkNo)
+}
+
+func buildContextUsageKey(item RetrieveResult) string {
+	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
+		return "source:" + sourceRecordID
+	}
+	return fmt.Sprintf("document:%d", item.DocumentID)
 }
 
 func buildContextChunkText(item RetrieveResult) string {
