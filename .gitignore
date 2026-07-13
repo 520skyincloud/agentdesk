@@ -16,5 +16,7 @@ node_modules/
 .codex-session-restore/
 .wecom-hook-bridge.env
 .wecom-hook-bridge-state.json
+docs/generated/*
+!docs/generated/README.md
 .wecom-cli-bridge-state.json
 web/out/
