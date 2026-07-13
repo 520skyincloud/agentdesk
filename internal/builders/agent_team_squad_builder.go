@@ -10,13 +10,15 @@ func BuildAgentTeamSquadList(items []services.AgentTeamSquadOverview) []response
 	ret := make([]response.AgentTeamSquadResponse, 0, len(items))
 	for i := range items {
 		item := items[i]
+		memberProfileIDs := make([]int64, len(item.MemberProfileIDs))
+		copy(memberProfileIDs, item.MemberProfileIDs)
 		result := response.AgentTeamSquadResponse{
 			ID:               item.Squad.ID,
 			TeamID:           item.Squad.TeamID,
 			Name:             item.Squad.Name,
 			LeaderUserID:     item.Squad.LeaderUserID,
 			LeaderName:       item.LeaderName,
-			MemberProfileIDs: item.MemberProfileIDs,
+			MemberProfileIDs: memberProfileIDs,
 			Status:           item.Squad.Status,
 			Remark:           item.Squad.Remark,
 			Manageable:       item.Manageable,

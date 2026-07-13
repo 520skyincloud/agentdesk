@@ -1481,6 +1481,8 @@
     "squadLeader": "Squad Lead",
     "noSquadLeader": "No squad lead",
     "searchAgent": "Search agent name or code",
+    "dragAgentToSquad": "Drag agent {name} into a squad",
+    "selectAgentForSquad": "Select agent {name}",
     "loadSquadsFailed": "Could not load squads.",
     "teamAgentPool": "Team Agents",
     "teamAgentPoolCount": "{count} agents; each may join multiple squads",

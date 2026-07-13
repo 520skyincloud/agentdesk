@@ -1524,6 +1524,8 @@
     "squadLeader": "小组负责人",
     "noSquadLeader": "暂不设置负责人",
     "searchAgent": "搜索客服姓名或工号",
+    "dragAgentToSquad": "拖动客服 {name} 加入小组",
+    "selectAgentForSquad": "选择客服 {name}",
     "loadSquadsFailed": "加载客服小组失败",
     "teamAgentPool": "综合组客服",
     "teamAgentPoolCount": "共 {count} 名，可加入多个小组",

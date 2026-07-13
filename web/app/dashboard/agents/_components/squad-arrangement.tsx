@@ -57,6 +57,7 @@ function DraggableAgent({ profile, selected, disabled = false, onSelectedChange 
   disabled?: boolean
   onSelectedChange: (checked: boolean) => void
 }) {
+  const t = useI18n()
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `profile-${profile.id}`,
     data: { profileId: profile.id },
@@ -68,10 +69,10 @@ function DraggableAgent({ profile, selected, disabled = false, onSelectedChange 
       style={transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : undefined}
       className={cn("flex items-center gap-2 border-b px-3 py-2.5 last:border-b-0", isDragging && "z-20 bg-background opacity-70 shadow-lg")}
     >
-      <button type="button" disabled={disabled} className="cursor-grab touch-none text-muted-foreground active:cursor-grabbing disabled:cursor-default disabled:opacity-40" {...listeners} {...attributes}>
+      <button type="button" disabled={disabled} aria-label={t("agentProfile.dragAgentToSquad", { name: profile.displayName })} className="cursor-grab touch-none text-muted-foreground active:cursor-grabbing disabled:cursor-default disabled:opacity-40" {...listeners} {...attributes}>
         <GripVerticalIcon className="size-4" />
       </button>
-      <Checkbox disabled={disabled} checked={selected} onCheckedChange={(value) => onSelectedChange(value === true)} />
+      <Checkbox aria-label={t("agentProfile.selectAgentForSquad", { name: profile.displayName })} disabled={disabled} checked={selected} onCheckedChange={(value) => onSelectedChange(value === true)} />
       <div className="min-w-0 flex-1">
         <div className="truncate font-medium">{profile.displayName}</div>
         <div className="truncate text-xs text-muted-foreground">{profile.agentCode}</div>
@@ -148,7 +149,10 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
         fetchAgentTeamSquads(team.id),
       ])
       setProfiles(profileData)
-      setSquads(squadData)
+      setSquads(squadData.map((squad) => ({
+        ...squad,
+        memberProfileIds: squad.memberProfileIds ?? [],
+      })))
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("agentProfile.loadSquadsFailed"))
     } finally {
@@ -223,14 +227,16 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
 
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-      <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(280px,0.8fr)_minmax(420px,1.4fr)]">
-        <section className="flex min-h-0 flex-col border bg-background">
+      <div className="grid min-h-0 gap-4 xl:h-full xl:grid-cols-[minmax(280px,0.8fr)_minmax(420px,1.4fr)]">
+        <section className="flex max-h-[520px] min-h-0 flex-col border bg-background xl:max-h-none">
           <header className="border-b p-3">
             <div className="flex items-center justify-between"><div><h2 className="font-medium">{t("agentProfile.teamAgentPool")}</h2><p className="text-xs text-muted-foreground">{t("agentProfile.teamAgentPoolCount", { count: profiles.length })}</p></div></div>
             <div className="relative mt-3"><SearchIcon className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={keyword} onChange={(event) => setKeyword(event.target.value)} className="pl-9" placeholder={t("agentProfile.searchAgent")} /></div>
-            <div className="mt-3 flex gap-2">
-              <OptionCombobox disabled={!canUpdate} value={bulkSquadId} options={squads.map((squad) => ({ value: String(squad.id), label: squad.name }))} placeholder={t("agentProfile.selectSquad")} onChange={setBulkSquadId} />
-              <Button disabled={!canUpdate || !bulkSquadId || selectedIds.length === 0} onClick={() => {
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+              <div className="min-w-0 flex-1">
+                <OptionCombobox disabled={!canUpdate} value={bulkSquadId} options={squads.map((squad) => ({ value: String(squad.id), label: squad.name }))} placeholder={t("agentProfile.selectSquad")} onChange={setBulkSquadId} />
+              </div>
+              <Button className="w-full shrink-0 sm:w-auto" disabled={!canUpdate || !bulkSquadId || selectedIds.length === 0} onClick={() => {
                 const squad = squads.find((item) => String(item.id) === bulkSquadId)
                 if (squad) void saveMembers(squad, [...squad.memberProfileIds, ...selectedIds], squad.memberProfileIds)
               }}>{t("agentProfile.addSelectedToSquad", { count: selectedIds.length })}</Button>
@@ -240,7 +246,7 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
             {filteredProfiles.map((profile) => <DraggableAgent key={profile.id} profile={profile} disabled={!canUpdate} selected={selectedIds.includes(profile.id)} onSelectedChange={(checked) => setSelectedIds((ids) => checked ? [...ids, profile.id] : ids.filter((id) => id !== profile.id))} />)}
           </div>
         </section>
-        <section className="min-h-0 space-y-3 overflow-y-auto pr-1">
+        <section className="min-h-0 space-y-3 pr-1 xl:overflow-y-auto">
           <div className="flex items-center justify-between gap-3"><div><h2 className="font-medium">{t("agentProfile.squadArrangement")}</h2><p className="text-xs text-muted-foreground">{t("agentProfile.squadArrangementSummary", { count: squads.length })}</p></div>{canCreate ? <Button className="shrink-0 whitespace-nowrap" onClick={() => { setEditingSquad(null); setDialogOpen(true) }}><PlusIcon />{t("agentProfile.newSquad")}</Button> : null}</div>
           {squads.length ? squads.map((squad) => <SquadContainer key={squad.id} squad={squad} profiles={squad.memberProfileIds.map((id) => profileMap.get(id)).filter(Boolean) as AdminAgentProfile[]} canUpdate={canUpdate} canDelete={canDelete} onRemove={(profileId) => void saveMembers(squad, squad.memberProfileIds.filter((id) => id !== profileId), squad.memberProfileIds)} onEdit={() => { setEditingSquad(squad); setDialogOpen(true) }} onDelete={() => void handleDelete(squad)} onSchedule={() => openSchedule(squad)} />) : <div className="border border-dashed py-16 text-center text-muted-foreground">{t("agentProfile.noSquads")}</div>}
         </section>

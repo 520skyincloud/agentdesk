@@ -411,7 +411,7 @@ export default function DashboardAgentsPage() {
           />
         </div>
           </TabsContent>
-          <TabsContent value="squads" className="min-h-0 overflow-hidden">
+          <TabsContent value="squads" className="min-h-0 overflow-y-auto xl:overflow-hidden">
             {selectedTeam ? (
               <SquadArrangement
                 team={selectedTeam}
