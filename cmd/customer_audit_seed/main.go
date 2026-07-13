@@ -51,27 +51,40 @@ type seedContext struct {
 	storeStaff   []*models.User
 	teams        []*models.AgentTeam
 	wxInstances  []*models.WxWorkProtocolInstance
+	customers    []*models.Customer
 }
 
 type report struct {
-	Batch                string `json:"batch"`
-	Marker               string `json:"marker"`
-	CompanyMarked        int64  `json:"companyMarked"`
-	CompanyNameExists    bool   `json:"companyNameExists"`
-	Channel              int64  `json:"channel"`
-	Stores               int64  `json:"stores"`
-	CSLeaders            int64  `json:"csLeaders"`
-	CSUsers              int64  `json:"csUsers"`
-	StoreStaffUsers      int64  `json:"storeStaffUsers"`
-	AgentTeams           int64  `json:"agentTeams"`
-	AgentProfiles        int64  `json:"agentProfiles"`
-	StoreStaffBindings   int64  `json:"storeStaffBindings"`
-	WxWorkInstances      int64  `json:"wxWorkInstances"`
-	Customers            int64  `json:"customers"`
-	CustomerContacts     int64  `json:"customerContacts"`
-	CustomerIdentities   int64  `json:"customerIdentities"`
-	StoreCustomerRels    int64  `json:"storeCustomerRelations"`
-	ExpectedCoreComplete bool   `json:"expectedCoreComplete"`
+	Batch                      string `json:"batch"`
+	Marker                     string `json:"marker"`
+	CompanyMarked              int64  `json:"companyMarked"`
+	CompanyNameExists          bool   `json:"companyNameExists"`
+	Channel                    int64  `json:"channel"`
+	Stores                     int64  `json:"stores"`
+	CSLeaders                  int64  `json:"csLeaders"`
+	CSUsers                    int64  `json:"csUsers"`
+	StoreStaffUsers            int64  `json:"storeStaffUsers"`
+	AgentTeams                 int64  `json:"agentTeams"`
+	AgentProfiles              int64  `json:"agentProfiles"`
+	StoreStaffBindings         int64  `json:"storeStaffBindings"`
+	WxWorkInstances            int64  `json:"wxWorkInstances"`
+	Customers                  int64  `json:"customers"`
+	CustomerContacts           int64  `json:"customerContacts"`
+	CustomerIdentities         int64  `json:"customerIdentities"`
+	StoreCustomerRels          int64  `json:"storeCustomerRelations"`
+	SimulatedConversations     int64  `json:"simulatedConversations"`
+	SimulatedMessages          int64  `json:"simulatedMessages"`
+	SimulatedAssignments       int64  `json:"simulatedAssignments"`
+	SimulatedCurrentlyAssigned int64  `json:"simulatedCurrentlyAssigned"`
+	SimulatedAssignedAgents    int64  `json:"simulatedAssignedAgents"`
+	SimulatedNeedReply         int64  `json:"simulatedNeedReply"`
+	SimulatedAIServing         int64  `json:"simulatedAiServing"`
+	SimulatedPending           int64  `json:"simulatedPending"`
+	SimulatedActive            int64  `json:"simulatedActive"`
+	SimulatedClosed            int64  `json:"simulatedClosed"`
+	ExpectedCoreComplete       bool   `json:"expectedCoreComplete"`
+	ExpectedSimulationComplete bool   `json:"expectedSimulationComplete"`
+	SimulationBaselineIntact   bool   `json:"simulationBaselineIntact"`
 }
 
 func main() {
@@ -175,6 +188,9 @@ func seed(db *gorm.DB, batch, password string) error {
 		if err := ctx.upsertCustomers(); err != nil {
 			return err
 		}
+		if err := ctx.upsertSimulationConversations(); err != nil {
+			return err
+		}
 		return nil
 	})
 }
@@ -194,6 +210,9 @@ func cleanup(db *gorm.DB, batch string) error {
 			name string
 			fn   func() error
 		}{
+			{"simulation conversations", func() error {
+				return deleteSimulationConversations(db, m)
+			}},
 			{"login credential logs", func() error {
 				return db.Where("principal LIKE ?", userPattern).Delete(&models.LoginCredentialLog{}).Error
 			}},
@@ -283,6 +302,22 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.CustomerContacts = count(db, &models.CustomerContact{}, "remark LIKE ?", remarkPattern)
 	r.CustomerIdentities = count(db, &models.CustomerIdentity{}, "raw_profile LIKE ?", remarkPattern)
 	r.StoreCustomerRels = count(db, &models.StoreCustomerRelation{}, "stable_notes LIKE ?", remarkPattern)
+	simulationConversationSubquery := db.Model(&models.ConversationRouteState{}).
+		Select("conversation_id").
+		Where("remark LIKE ?", remarkPattern)
+	r.SimulatedConversations = count(db, &models.Conversation{}, "id IN (?)", simulationConversationSubquery)
+	r.SimulatedMessages = count(db, &models.Message{}, "conversation_id IN (?)", simulationConversationSubquery)
+	r.SimulatedAssignments = count(db, &models.ConversationAssignment{}, "conversation_id IN (?)", simulationConversationSubquery)
+	r.SimulatedCurrentlyAssigned = count(db, &models.Conversation{}, "id IN (?) AND status = ? AND current_assignee_id > 0", simulationConversationSubquery, enums.IMConversationStatusActive)
+	db.Model(&models.Conversation{}).
+		Where("id IN (?) AND status = ? AND current_assignee_id > 0", simulationConversationSubquery, enums.IMConversationStatusActive).
+		Distinct("current_assignee_id").
+		Count(&r.SimulatedAssignedAgents)
+	r.SimulatedNeedReply = count(db, &models.ConversationRouteState{}, "remark LIKE ? AND need_human_follow_up = ?", remarkPattern, true)
+	r.SimulatedAIServing = count(db, &models.Conversation{}, "id IN (?) AND status = ?", simulationConversationSubquery, enums.IMConversationStatusAIServing)
+	r.SimulatedPending = count(db, &models.Conversation{}, "id IN (?) AND status = ?", simulationConversationSubquery, enums.IMConversationStatusPending)
+	r.SimulatedActive = count(db, &models.Conversation{}, "id IN (?) AND status = ?", simulationConversationSubquery, enums.IMConversationStatusActive)
+	r.SimulatedClosed = count(db, &models.Conversation{}, "id IN (?) AND status = ?", simulationConversationSubquery, enums.IMConversationStatusClosed)
 	r.ExpectedCoreComplete = r.CompanyNameExists &&
 		r.Channel == 1 &&
 		r.Stores == 100 &&
@@ -294,6 +329,19 @@ func buildReport(db *gorm.DB, batch string) report {
 		r.StoreStaffBindings == 100 &&
 		r.WxWorkInstances == 100 &&
 		r.Customers == 500
+	r.ExpectedSimulationComplete = r.SimulatedConversations == expectedSimulationConversationCount &&
+		r.SimulatedMessages >= expectedSimulationMessageCount &&
+		r.SimulatedAssignments >= expectedSimulationAssignmentCount
+	r.SimulationBaselineIntact = r.SimulatedConversations == expectedSimulationConversationCount &&
+		r.SimulatedMessages == expectedSimulationMessageCount &&
+		r.SimulatedAssignments == expectedSimulationAssignmentCount &&
+		r.SimulatedCurrentlyAssigned == 18 &&
+		r.SimulatedAssignedAgents == 12 &&
+		r.SimulatedNeedReply == expectedSimulationNeedReplyCount &&
+		r.SimulatedAIServing == 6 &&
+		r.SimulatedPending == 9 &&
+		r.SimulatedActive == 18 &&
+		r.SimulatedClosed == 3
 	return r
 }
 
@@ -656,10 +704,12 @@ func (ctx *seedContext) upsertStoreBindingsAndInstances() error {
 }
 
 func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, staff *models.User) (*models.StoreStaffBinding, error) {
+	agentTeamID := ctx.seedAgentTeamID(index)
 	item := &models.StoreStaffBinding{}
 	err := ctx.db.Where("store_id = ?", store.ID).Take(item).Error
 	updates := map[string]any{
 		"user_id":                staff.ID,
+		"agent_team_id":          agentTeamID,
 		"company_id":             ctx.company.ID,
 		"managed_mode":           constants.StoreManagedModeSemi,
 		"fallback_to_hq":         true,
@@ -674,6 +724,7 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 		if err := ctx.db.Model(item).Updates(updates).Error; err != nil {
 			return nil, err
 		}
+		item.AgentTeamID = agentTeamID
 		return item, nil
 	}
 	if err != nil && err != gorm.ErrRecordNotFound {
@@ -681,6 +732,7 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 	}
 	item = &models.StoreStaffBinding{
 		UserID:               staff.ID,
+		AgentTeamID:          agentTeamID,
 		CompanyID:            ctx.company.ID,
 		StoreID:              store.ID,
 		ManagedMode:          constants.StoreManagedModeSemi,
@@ -699,9 +751,11 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, binding *models.StoreStaffBinding) (*models.WxWorkProtocolInstance, error) {
 	guid := fmt.Sprintf("%s%03d", wxWorkGUIDPrefix, index)
 	employeeUserID := fmt.Sprintf("test_customer_audit_employee_%03d", index)
+	agentTeamID := binding.AgentTeamID
 	item := &models.WxWorkProtocolInstance{}
 	err := ctx.db.Where("guid = ?", guid).Take(item).Error
 	updates := map[string]any{
+		"agent_team_id":                      agentTeamID,
 		"channel_id":                         ctx.channel.ID,
 		"employee_user_id":                   employeeUserID,
 		"employee_name":                      "客服",
@@ -739,6 +793,7 @@ func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, bin
 		return nil, err
 	}
 	item = &models.WxWorkProtocolInstance{
+		AgentTeamID:               agentTeamID,
 		Guid:                      guid,
 		ChannelID:                 ctx.channel.ID,
 		EmployeeUserID:            employeeUserID,
@@ -769,6 +824,16 @@ func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, bin
 	return item, nil
 }
 
+func (ctx *seedContext) seedAgentTeamID(index int) int64 {
+	teamIndex := 0
+	if index > 67 {
+		teamIndex = 2
+	} else if index > 34 {
+		teamIndex = 1
+	}
+	return ctx.teams[teamIndex].ID
+}
+
 func (ctx *seedContext) syncTeamWxWorkInstanceScopes() error {
 	if len(ctx.teams) < 3 || len(ctx.wxInstances) < 100 {
 		return nil
@@ -797,6 +862,7 @@ func (ctx *seedContext) syncTeamWxWorkInstanceScopes() error {
 }
 
 func (ctx *seedContext) upsertCustomers() error {
+	ctx.customers = make([]*models.Customer, 0, 500)
 	for i := 1; i <= 500; i++ {
 		customer, err := ctx.upsertCustomer(i)
 		if err != nil {
@@ -808,6 +874,7 @@ func (ctx *seedContext) upsertCustomers() error {
 		if err := ctx.upsertCustomerIdentity(i, customer); err != nil {
 			return err
 		}
+		ctx.customers = append(ctx.customers, customer)
 		for _, storeIndex := range customerStoreIndexes(i) {
 			if err := ctx.upsertStoreCustomerRelation(i, storeIndex, customer); err != nil {
 				return err
