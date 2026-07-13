@@ -132,6 +132,61 @@ func TestAgentTeamScheduleServiceCreateAllowsTodayEarlierThanCurrentTime(t *test
 	}
 }
 
+func TestAgentTeamScheduleServiceCreateSupportsSquadAndRejectsCrossTeam(t *testing.T) {
+	db := setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, db)
+	squad := &models.AgentTeamSquad{TeamID: 1, Name: "白班一组", Status: enums.StatusOk}
+	otherSquad := &models.AgentTeamSquad{TeamID: 2, Name: "晚班二组", Status: enums.StatusOk}
+	if err := db.Create(squad).Error; err != nil {
+		t.Fatalf("create squad: %v", err)
+	}
+	if err := db.Create(otherSquad).Error; err != nil {
+		t.Fatalf("create other squad: %v", err)
+	}
+	tomorrow := time.Now().AddDate(0, 0, 1)
+	item, err := services.AgentTeamScheduleService.CreateAgentTeamSchedule(request.CreateAgentTeamScheduleRequest{
+		TeamID: 1, SquadID: squad.ID, StartAt: formatTestDateTime(tomorrow, "09:00:00"), EndAt: formatTestDateTime(tomorrow, "18:00:00"),
+	}, testOperator())
+	if err != nil {
+		t.Fatalf("create squad schedule: %v", err)
+	}
+	if item.SquadID != squad.ID {
+		t.Fatalf("schedule squad = %d, want %d", item.SquadID, squad.ID)
+	}
+	_, err = services.AgentTeamScheduleService.CreateAgentTeamSchedule(request.CreateAgentTeamScheduleRequest{
+		TeamID: 1, SquadID: otherSquad.ID, StartAt: formatTestDateTime(tomorrow, "19:00:00"), EndAt: formatTestDateTime(tomorrow, "20:00:00"),
+	}, testOperator())
+	if err == nil || !strings.Contains(err.Error(), "不属于") {
+		t.Fatalf("expected cross-team squad error, got %v", err)
+	}
+}
+
+func TestAgentTeamScheduleServiceBatchSquadRequiresSingleTeam(t *testing.T) {
+	db := setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, db)
+	squad := &models.AgentTeamSquad{TeamID: 1, Name: "批量排班小组", Status: enums.StatusOk}
+	if err := db.Create(squad).Error; err != nil {
+		t.Fatalf("create squad: %v", err)
+	}
+	tomorrow := time.Now().AddDate(0, 0, 1)
+	req := request.AgentTeamScheduleBatchRequest{
+		TeamIDs: []int64{1, 2}, SquadID: squad.ID,
+		StartDate: tomorrow.Format(time.DateOnly), EndDate: tomorrow.Format(time.DateOnly),
+		Weekdays: []int{weekdayForRequest(tomorrow)}, StartTime: "09:00", EndTime: "18:00",
+	}
+	if _, err := services.AgentTeamScheduleService.BatchPreview(req, testOperator()); err == nil {
+		t.Fatal("expected multi-team squad batch error")
+	}
+	req.TeamIDs = []int64{1}
+	preview, err := services.AgentTeamScheduleService.BatchPreview(req, testOperator())
+	if err != nil {
+		t.Fatalf("preview squad batch: %v", err)
+	}
+	if len(preview.Items) != 1 || preview.Items[0].SquadID != squad.ID || preview.Items[0].SquadName != squad.Name {
+		t.Fatalf("squad preview = %+v", preview.Items)
+	}
+}
+
 func TestAgentTeamScheduleServiceUpdateRejectsCrossDaySchedule(t *testing.T) {
 	db := setupAgentTeamScheduleTestDB(t)
 	createAgentTeamScheduleTestTeams(t, db)
@@ -496,7 +551,7 @@ func setupAgentTeamScheduleTestDB(t *testing.T) *gorm.DB {
 			_ = sqlDB.Close()
 		}
 	})
-	if err := db.AutoMigrate(&models.AgentTeam{}, &models.AgentTeamSchedule{}); err != nil {
+	if err := db.AutoMigrate(&models.AgentTeam{}, &models.AgentTeamSquad{}, &models.AgentTeamSchedule{}); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}
 	sqls.SetDB(db)

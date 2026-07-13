@@ -15,6 +15,8 @@ func BuildAgentTeamScheduleBatchPreviewResponse(result *services.AgentTeamSchedu
 		items = append(items, response.AgentTeamScheduleBatchPreviewItem{
 			TeamID:         item.TeamID,
 			TeamName:       item.TeamName,
+			SquadID:        item.SquadID,
+			SquadName:      item.SquadName,
 			Date:           item.Date.Format(time.DateOnly),
 			Weekday:        item.Weekday,
 			StartAt:        item.StartAt.Format(time.DateTime),

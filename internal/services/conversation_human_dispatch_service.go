@@ -227,7 +227,7 @@ func (s *conversationHumanDispatchService) DispatchPendingConversation(conversat
 		return nil, err
 	}
 	if len(candidates) > 0 {
-		dispatched, err := ConversationDispatchService.tryAssignConversation(conversationID, candidates[0].profile, "自动分配")
+		dispatched, err := ConversationDispatchService.tryAssignConversation(conversationID, candidates[0], "自动分配")
 		if err != nil {
 			return nil, err
 		}
@@ -262,7 +262,7 @@ func (s *conversationHumanDispatchService) dispatchAfterHandoffWithRequestID(con
 		return nil, err
 	}
 	if len(candidates) > 0 {
-		dispatched, err := ConversationDispatchService.tryAssignConversation(conversationID, candidates[0].profile, "自动分配")
+		dispatched, err := ConversationDispatchService.tryAssignConversation(conversationID, candidates[0], "自动分配")
 		if err != nil {
 			return nil, err
 		}

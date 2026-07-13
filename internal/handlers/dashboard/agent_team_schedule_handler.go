@@ -22,6 +22,7 @@ func AgentTeamScheduleAnyList(ctx *gin.Context) {
 	}
 	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "teamId"},
+		params.QueryFilter{ParamName: "squadId"},
 	).Desc("start_at").Desc("id")
 	list, paging := services.AgentTeamScheduleService.FindPageByCnd(cnd)
 	results := make([]response.AgentTeamScheduleResponse, 0, len(list))
@@ -39,10 +40,12 @@ func AgentTeamScheduleAnyCalendar(ctx *gin.Context) {
 	startAt, _ := params.Get(ctx, "startAt")
 	endAt, _ := params.Get(ctx, "endAt")
 	teamID, _ := params.GetInt64(ctx, "teamId")
+	squadID, _ := params.GetInt64(ctx, "squadId")
 	list, err := services.AgentTeamScheduleService.FindCalendarSchedules(request.AgentTeamScheduleCalendarRequest{
 		StartAt: startAt,
 		EndAt:   endAt,
 		TeamID:  teamID,
+		SquadID: squadID,
 	})
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -169,12 +172,18 @@ func buildAgentTeamScheduleResponse(item *models.AgentTeamSchedule) response.Age
 	ret := response.AgentTeamScheduleResponse{
 		ID:      item.ID,
 		TeamID:  item.TeamID,
+		SquadID: item.SquadID,
 		StartAt: item.StartAt.Format("2006-01-02 15:04:05"),
 		EndAt:   item.EndAt.Format("2006-01-02 15:04:05"),
 		Remark:  item.Remark,
 	}
 	if team := services.AgentTeamService.Get(item.TeamID); team != nil {
 		ret.TeamName = team.Name
+	}
+	if item.SquadID > 0 {
+		if squad := services.AgentTeamSquadService.Get(item.SquadID); squad != nil {
+			ret.SquadName = squad.Name
+		}
 	}
 	return ret
 }

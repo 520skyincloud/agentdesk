@@ -56,8 +56,32 @@ type DeleteAgentTeamRequest struct {
 	ID int64 `json:"id"`
 }
 
+type CreateAgentTeamSquadRequest struct {
+	TeamID       int64   `json:"teamId"`
+	Name         string  `json:"name"`
+	LeaderUserID int64   `json:"leaderUserId"`
+	MemberIDs    []int64 `json:"memberIds"`
+	Status       int     `json:"status"`
+	Remark       string  `json:"remark"`
+}
+
+type UpdateAgentTeamSquadRequest struct {
+	ID int64 `json:"id"`
+	CreateAgentTeamSquadRequest
+}
+
+type DeleteAgentTeamSquadRequest struct {
+	ID int64 `json:"id"`
+}
+
+type ReplaceAgentTeamSquadMembersRequest struct {
+	SquadID         int64   `json:"squadId"`
+	AgentProfileIDs []int64 `json:"agentProfileIds"`
+}
+
 type CreateAgentTeamScheduleRequest struct {
 	TeamID  int64  `json:"teamId"`
+	SquadID int64  `json:"squadId"`
 	StartAt string `json:"startAt"`
 	EndAt   string `json:"endAt"`
 	Remark  string `json:"remark"`
@@ -76,10 +100,12 @@ type AgentTeamScheduleCalendarRequest struct {
 	StartAt string `json:"startAt"`
 	EndAt   string `json:"endAt"`
 	TeamID  int64  `json:"teamId"`
+	SquadID int64  `json:"squadId"`
 }
 
 type AgentTeamScheduleBatchRequest struct {
 	TeamIDs    []int64                      `json:"teamIds"`
+	SquadID    int64                        `json:"squadId"`
 	StartDate  string                       `json:"startDate"`
 	EndDate    string                       `json:"endDate"`
 	Weekdays   []int                        `json:"weekdays"`

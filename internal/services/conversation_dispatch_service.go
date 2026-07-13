@@ -31,6 +31,7 @@ type conversationDispatchService struct{}
 
 type dispatchCandidate struct {
 	profile     models.AgentProfile
+	squadID     int64
 	activeCount int
 	loadRate    float64
 }
@@ -109,7 +110,7 @@ func (s *conversationDispatchService) DispatchPendingConversation(conversation *
 	}
 
 	for _, candidate := range candidates {
-		dispatched, err := s.tryAssignConversation(conversation.ID, candidate.profile, "自动分配")
+		dispatched, err := s.tryAssignConversation(conversation.ID, candidate, "自动分配")
 		if err != nil {
 			if errors.Is(err, errConversationDispatchConflict) {
 				return nil, nil
@@ -214,7 +215,13 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, ro
 	}
 
 	// 1. filter teams with active schedule
-	activeTeamIDs := s.findActiveScheduleTeamIDs(teamIDs, now)
+	activeSchedules := s.findActiveScheduleSelections(teamIDs, now)
+	activeTeamIDs := make([]int64, 0, len(activeSchedules))
+	for _, teamID := range teamIDs {
+		if _, ok := activeSchedules[teamID]; ok {
+			activeTeamIDs = append(activeTeamIDs, teamID)
+		}
+	}
 	report.ActiveScheduleTeams = activeTeamIDs
 	if len(activeTeamIDs) == 0 {
 		report.Reason = "no_active_schedule_team"
@@ -223,6 +230,7 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, ro
 
 	// 2. find agent profiles for the active teams
 	profiles := AgentProfileService.GetDispatchAgents(activeTeamIDs)
+	profiles = s.filterProfilesByActiveSquads(profiles, activeSchedules)
 	report.MatchedProfiles = len(profiles)
 	if len(profiles) == 0 {
 		report.Reason = "no_matched_profile"
@@ -266,6 +274,7 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, ro
 		loadRate := float64(activeCount) / math.Max(float64(profile.MaxConcurrentCount), 1)
 		candidates = append(candidates, dispatchCandidate{
 			profile:     profile,
+			squadID:     activeSchedules[profile.TeamID],
 			activeCount: activeCount,
 			loadRate:    loadRate,
 		})
@@ -355,16 +364,16 @@ func (s *conversationDispatchService) filterEnabledDispatchProfiles(profiles []m
 }
 
 // findActiveScheduleTeamIDs returns the subset of teamIDs that have active schedule at the given time.
-func (s *conversationDispatchService) findActiveScheduleTeamIDs(teamIDs []int64, now time.Time) []int64 {
+func (s *conversationDispatchService) findActiveScheduleSelections(teamIDs []int64, now time.Time) map[int64]int64 {
 	if len(teamIDs) == 0 {
-		return nil
+		return map[int64]int64{}
 	}
 
 	teams := AgentTeamService.Find(sqls.NewCnd().
 		In("id", teamIDs).
 		Eq("status", enums.StatusOk))
 	if len(teams) == 0 {
-		return nil
+		return map[int64]int64{}
 	}
 
 	enabledTeamIDs := make([]int64, 0, len(teams))
@@ -378,22 +387,46 @@ func (s *conversationDispatchService) findActiveScheduleTeamIDs(teamIDs []int64,
 		Lte("start_at", now).
 		Gt("end_at", now))
 
-	activeSet := make(map[int64]struct{}, len(schedules))
+	activeSet := make(map[int64]int64, len(schedules))
 	for _, schedule := range schedules {
-		activeSet[schedule.TeamID] = struct{}{}
+		if _, exists := activeSet[schedule.TeamID]; !exists {
+			activeSet[schedule.TeamID] = schedule.SquadID
+		}
 	}
+	return activeSet
+}
 
-	ret := make([]int64, 0, len(teamIDs))
-	seen := make(map[int64]struct{})
+func (s *conversationDispatchService) findActiveScheduleTeamIDs(teamIDs []int64, now time.Time) []int64 {
+	activeSchedules := s.findActiveScheduleSelections(teamIDs, now)
+	ret := make([]int64, 0, len(activeSchedules))
 	for _, teamID := range teamIDs {
-		if _, active := activeSet[teamID]; !active {
+		if _, ok := activeSchedules[teamID]; ok && !slices.Contains(ret, teamID) {
+			ret = append(ret, teamID)
+		}
+	}
+	return ret
+}
+
+func (s *conversationDispatchService) filterProfilesByActiveSquads(profiles []models.AgentProfile, activeSchedules map[int64]int64) []models.AgentProfile {
+	squadIDs := make([]int64, 0, len(activeSchedules))
+	for _, squadID := range activeSchedules {
+		if squadID > 0 {
+			squadIDs = append(squadIDs, squadID)
+		}
+	}
+	membersBySquad := AgentTeamSquadService.ActiveMemberProfileSet(squadIDs)
+	ret := make([]models.AgentProfile, 0, len(profiles))
+	for i := range profiles {
+		squadID, scheduled := activeSchedules[profiles[i].TeamID]
+		if !scheduled {
 			continue
 		}
-		if _, exists := seen[teamID]; exists {
-			continue
+		if squadID > 0 {
+			if _, member := membersBySquad[squadID][profiles[i].ID]; !member {
+				continue
+			}
 		}
-		seen[teamID] = struct{}{}
-		ret = append(ret, teamID)
+		ret = append(ret, profiles[i])
 	}
 	return ret
 }
@@ -422,7 +455,7 @@ func (s *conversationDispatchService) findActiveConversationCountMap(userIDs []i
 	return ret, nil
 }
 
-func (s *conversationDispatchService) tryAssignConversation(conversationID int64, candidate models.AgentProfile, reason string) (*models.Conversation, error) {
+func (s *conversationDispatchService) tryAssignConversation(conversationID int64, candidate dispatchCandidate, reason string) (*models.Conversation, error) {
 	now := time.Now()
 	operator := systemDispatchPrincipal()
 
@@ -438,15 +471,15 @@ func (s *conversationDispatchService) tryAssignConversation(conversationID int64
 		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, conversationID, now); err != nil {
 			return err
 		}
-		if err := ConversationAssignmentService.CreateAssignment(ctx, conversationID, conversation.CurrentAssigneeID, candidate.UserID, enums.IMAssignmentTypeAssign, reason, operator, now); err != nil {
+		if err := ConversationAssignmentService.CreateAssignmentWithSquad(ctx, conversationID, candidate.squadID, conversation.CurrentAssigneeID, candidate.profile.UserID, enums.IMAssignmentTypeAssign, reason, operator, now); err != nil {
 			return err
 		}
 
 		result := ctx.Tx.Model(&models.Conversation{}).
 			Where("id = ? AND status = ? AND current_assignee_id = ?", conversationID, enums.IMConversationStatusPending, 0).
 			Updates(map[string]any{
-				"current_assignee_id": candidate.UserID,
-				"current_team_id":     candidate.TeamID,
+				"current_assignee_id": candidate.profile.UserID,
+				"current_team_id":     candidate.profile.TeamID,
 				"status":              enums.IMConversationStatusActive,
 				"update_user_id":      operator.UserID,
 				"update_user_name":    operator.Username,
@@ -459,7 +492,7 @@ func (s *conversationDispatchService) tryAssignConversation(conversationID int64
 			return errConversationDispatchConflict
 		}
 
-		return ConversationEventLogService.CreateEvent(ctx, conversationID, enums.IMEventTypeAssign, enums.IMSenderTypeSystem, operator.UserID, "会话已自动分配", buildDispatchEventPayload(conversation.CurrentAssigneeID, candidate.UserID, candidate.TeamID, reason))
+		return ConversationEventLogService.CreateEvent(ctx, conversationID, enums.IMEventTypeAssign, enums.IMSenderTypeSystem, operator.UserID, "会话已自动分配", buildDispatchEventPayload(conversation.CurrentAssigneeID, candidate.profile.UserID, candidate.profile.TeamID, reason))
 	})
 	if err != nil {
 		return nil, err

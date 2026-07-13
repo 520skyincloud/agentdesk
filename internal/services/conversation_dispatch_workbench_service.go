@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"errors"
-	"math"
 	"slices"
 	"strings"
 	"time"
@@ -245,7 +244,7 @@ func (s *conversationDispatchWorkbenchService) AutoAssign(req request.Conversati
 	if len(candidates) == 0 {
 		return errorsx.InvalidParam("当前客服组暂无可自动派发客服")
 	}
-	return s.assignToProfile(conversation, candidates[0].profile, "规则自动派发", operator, enums.IMAssignmentTypeAssign, true)
+	return s.assignToProfile(conversation, candidates[0].profile, candidates[0].squadID, "规则自动派发", operator, enums.IMAssignmentTypeAssign, true)
 }
 
 func (s *conversationDispatchWorkbenchService) Assign(req request.ConversationDispatchActionRequest, operator *dto.AuthPrincipal) error {
@@ -267,7 +266,7 @@ func (s *conversationDispatchWorkbenchService) Assign(req request.ConversationDi
 	if reason == "" {
 		reason = "组长手动派发"
 	}
-	return s.assignToProfile(conversation, *profile, reason, operator, enums.IMAssignmentTypeAssign, true)
+	return s.assignToProfile(conversation, *profile, 0, reason, operator, enums.IMAssignmentTypeAssign, true)
 }
 
 func (s *conversationDispatchWorkbenchService) Transfer(req request.ConversationDispatchActionRequest, operator *dto.AuthPrincipal) error {
@@ -296,7 +295,7 @@ func (s *conversationDispatchWorkbenchService) Transfer(req request.Conversation
 	if reason == "" {
 		reason = "组长转派"
 	}
-	return s.assignToProfile(conversation, *profile, reason, operator, enums.IMAssignmentTypeTransfer, true)
+	return s.assignToProfile(conversation, *profile, 0, reason, operator, enums.IMAssignmentTypeTransfer, true)
 }
 
 func (s *conversationDispatchWorkbenchService) Release(req request.ConversationDispatchActionRequest, operator *dto.AuthPrincipal) error {
@@ -760,62 +759,8 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoadResponse(load dispa
 }
 
 func (s *conversationDispatchWorkbenchService) pickRuleCandidates(teamID int64, route *models.ConversationRouteState) ([]dispatchCandidate, error) {
-	profiles := AgentProfileService.GetDispatchAgents([]int64{teamID})
-	enabledProfiles, enabledUserIDs, reason := ConversationDispatchService.filterEnabledDispatchProfiles(profiles)
-	if reason != "" {
-		return nil, nil
-	}
-	if route != nil {
-		scopedProfiles := make([]models.AgentProfile, 0, len(enabledProfiles))
-		scopedUserIDs := make([]int64, 0, len(enabledUserIDs))
-		for _, profile := range enabledProfiles {
-			if AgentProfileService.ProfileCanServeRoute(&profile, route) {
-				scopedProfiles = append(scopedProfiles, profile)
-				scopedUserIDs = append(scopedUserIDs, profile.UserID)
-			}
-		}
-		enabledProfiles = scopedProfiles
-		enabledUserIDs = scopedUserIDs
-	}
-	activeCounts, err := ConversationDispatchService.findActiveConversationCountMap(enabledUserIDs)
-	if err != nil {
-		return nil, err
-	}
-	candidates := make([]dispatchCandidate, 0, len(enabledProfiles))
-	for _, profile := range enabledProfiles {
-		activeCount := activeCounts[profile.UserID]
-		if profile.MaxConcurrentCount > 0 && activeCount >= profile.MaxConcurrentCount {
-			continue
-		}
-		candidates = append(candidates, dispatchCandidate{
-			profile:     profile,
-			activeCount: activeCount,
-			loadRate:    float64(activeCount) / math.Max(float64(profile.MaxConcurrentCount), 1),
-		})
-	}
-	slices.SortFunc(candidates, func(a, b dispatchCandidate) int {
-		switch {
-		case a.loadRate < b.loadRate:
-			return -1
-		case a.loadRate > b.loadRate:
-			return 1
-		case a.activeCount < b.activeCount:
-			return -1
-		case a.activeCount > b.activeCount:
-			return 1
-		case a.profile.PriorityLevel > b.profile.PriorityLevel:
-			return -1
-		case a.profile.PriorityLevel < b.profile.PriorityLevel:
-			return 1
-		case a.profile.UserID < b.profile.UserID:
-			return -1
-		case a.profile.UserID > b.profile.UserID:
-			return 1
-		default:
-			return 0
-		}
-	})
-	return candidates, nil
+	candidates, _, err := ConversationDispatchService.pickDispatchCandidates([]int64{teamID}, route, time.Now())
+	return candidates, err
 }
 
 func (s *conversationDispatchWorkbenchService) profileAvailable(profile models.AgentProfile, activeCount int) bool {
@@ -843,7 +788,7 @@ func (s *conversationDispatchWorkbenchService) requireManageableTargetProfile(us
 	return profile, nil
 }
 
-func (s *conversationDispatchWorkbenchService) assignToProfile(conversation *models.Conversation, profile models.AgentProfile, reason string, operator *dto.AuthPrincipal, assignType enums.IMAssignmentType, publish bool) error {
+func (s *conversationDispatchWorkbenchService) assignToProfile(conversation *models.Conversation, profile models.AgentProfile, squadID int64, reason string, operator *dto.AuthPrincipal, assignType enums.IMAssignmentType, publish bool) error {
 	if conversation == nil {
 		return errorsx.InvalidParam("会话不存在")
 	}
@@ -867,7 +812,7 @@ func (s *conversationDispatchWorkbenchService) assignToProfile(conversation *mod
 		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, current.ID, now); err != nil {
 			return err
 		}
-		if err := ConversationAssignmentService.CreateAssignment(ctx, current.ID, current.CurrentAssigneeID, profile.UserID, assignType, reason, operator, now); err != nil {
+		if err := ConversationAssignmentService.CreateAssignmentWithSquad(ctx, current.ID, squadID, current.CurrentAssigneeID, profile.UserID, assignType, reason, operator, now); err != nil {
 			return err
 		}
 		if err := repositories.ConversationRepository.Updates(ctx.Tx, current.ID, map[string]any{

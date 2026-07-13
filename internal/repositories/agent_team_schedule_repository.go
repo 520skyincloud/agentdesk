@@ -41,11 +41,14 @@ func (r *agentTeamScheduleRepository) Find(db *gorm.DB, cnd *sqls.Cnd) (list []m
 	return
 }
 
-func (r *agentTeamScheduleRepository) FindByTimeRange(db *gorm.DB, startAt, endAt time.Time, teamID int64) (list []models.AgentTeamSchedule) {
+func (r *agentTeamScheduleRepository) FindByTimeRange(db *gorm.DB, startAt, endAt time.Time, teamID, squadID int64) (list []models.AgentTeamSchedule) {
 	query := db.Model(&models.AgentTeamSchedule{}).
 		Where("start_at < ? AND end_at > ?", endAt, startAt)
 	if teamID > 0 {
 		query = query.Where("team_id = ?", teamID)
+	}
+	if squadID > 0 {
+		query = query.Where("squad_id = ?", squadID)
 	}
 	query.Order("team_id ASC").Order("start_at ASC").Order("id ASC").Find(&list)
 	return

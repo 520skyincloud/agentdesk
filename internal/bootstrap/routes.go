@@ -280,6 +280,11 @@ func registerDashboardAgentTeamRoutes(group *gin.RouterGroup) {
 	group.POST("/delete", dashboard.AgentTeamPostDelete)
 	group.Any("/list", dashboard.AgentTeamAnyList)
 	group.GET("/list_all", dashboard.AgentTeamGetList_all)
+	group.POST("/squad/create", dashboard.AgentTeamSquadPostCreate)
+	group.POST("/squad/delete", dashboard.AgentTeamSquadPostDelete)
+	group.Any("/squad/list", dashboard.AgentTeamSquadAnyList)
+	group.POST("/squad/replace_members", dashboard.AgentTeamSquadPostReplace_members)
+	group.POST("/squad/update", dashboard.AgentTeamSquadPostUpdate)
 	group.POST("/update", dashboard.AgentTeamPostUpdate)
 }
 

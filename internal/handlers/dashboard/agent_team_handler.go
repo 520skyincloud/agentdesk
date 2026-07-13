@@ -145,6 +145,7 @@ func buildAgentTeamResponse(item *models.AgentTeam, operator *dto.AuthPrincipal,
 		Remark:                 item.Remark,
 		Manageable:             services.AgentTeamScopeService.CanManageTeam(operator, item.ID),
 		PendingReplyCount:      pendingReplyCount,
+		SquadCount:             services.AgentTeamSquadService.CountByTeamID(item.ID),
 	}
 	if user := services.UserService.Get(item.LeaderUserID); user != nil {
 		ret.LeaderUsername = user.Username

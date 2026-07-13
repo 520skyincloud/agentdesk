@@ -53,6 +53,8 @@ var Models = []any{
 	&Channel{},
 	&AgentProfile{},
 	&AgentTeam{},
+	&AgentTeamSquad{},
+	&AgentTeamSquadMember{},
 	&AgentTeamSchedule{},
 	&AIConfig{},
 	&StoreAIModelSetting{},
@@ -664,6 +666,7 @@ type ChannelMessageOutbox struct {
 type ConversationAssignment struct {
 	ID             int64                    `gorm:"primaryKey;autoIncrement"`
 	ConversationID int64                    `gorm:"type:bigint;not null;index"`
+	SquadID        int64                    `gorm:"type:bigint;not null;default:0;index"` // SquadID 记录派发时采用的客服小组快照，0 表示全组或未指定。
 	FromUserID     int64                    `gorm:"type:bigint;not null;default:0;index"`
 	ToUserID       int64                    `gorm:"type:bigint;not null;default:0;index"`
 	AssignType     string                   `gorm:"type:varchar(30);not null;default:'';index"`
@@ -824,10 +827,31 @@ type AgentTeam struct {
 	AuditFields
 }
 
+// AgentTeamSquad 是综合客服组内用于排班和调度的客服小组，不独立承接会话。
+type AgentTeamSquad struct {
+	ID           int64        `gorm:"primaryKey;autoIncrement"`
+	TeamID       int64        `gorm:"type:bigint;not null;index"`
+	Name         string       `gorm:"type:varchar(100);not null;default:'';index"`
+	LeaderUserID int64        `gorm:"type:bigint;not null;default:0;index"`
+	Status       enums.Status `gorm:"type:int;not null;default:0;index"`
+	Remark       string       `gorm:"type:text"`
+	AuditFields
+}
+
+// AgentTeamSquadMember 记录客服档案与客服小组的多对多关系。
+type AgentTeamSquadMember struct {
+	ID             int64        `gorm:"primaryKey;autoIncrement"`
+	SquadID        int64        `gorm:"type:bigint;not null;index;uniqueIndex:uk_agent_team_squad_member"`
+	AgentProfileID int64        `gorm:"type:bigint;not null;index;uniqueIndex:uk_agent_team_squad_member"`
+	Status         enums.Status `gorm:"type:int;not null;default:0;index"`
+	AuditFields
+}
+
 // AgentTeamSchedule 客服组排班。
 type AgentTeamSchedule struct {
 	ID      int64        `gorm:"primaryKey;autoIncrement"`              // ID 为组排班主键。
 	TeamID  int64        `gorm:"type:bigint;not null;index"`            // TeamID 为被排班的客服组ID。
+	SquadID int64        `gorm:"type:bigint;not null;default:0;index"`  // SquadID 为值班客服小组ID，0 表示全组值班。
 	StartAt time.Time    `gorm:"type:datetime;not null;index"`          // StartAt 为班次开始时间。
 	EndAt   time.Time    `gorm:"type:datetime;not null;index"`          // EndAt 为班次结束时间。
 	Remark  string       `gorm:"type:varchar(255);not null;default:''"` // Remark 记录排班备注。

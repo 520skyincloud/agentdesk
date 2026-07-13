@@ -41,6 +41,8 @@ type AgentTeamScheduleBatchPreviewResult struct {
 type AgentTeamScheduleBatchPreviewItem struct {
 	TeamID         int64
 	TeamName       string
+	SquadID        int64
+	SquadName      string
 	Date           time.Time
 	Weekday        int
 	StartAt        time.Time
@@ -55,12 +57,14 @@ type AgentTeamScheduleBatchGenerateResult struct {
 }
 
 type batchScheduleCandidate struct {
-	TeamID   int64
-	TeamName string
-	Date     time.Time
-	StartAt  time.Time
-	EndAt    time.Time
-	Remark   string
+	TeamID    int64
+	TeamName  string
+	SquadID   int64
+	SquadName string
+	Date      time.Time
+	StartAt   time.Time
+	EndAt     time.Time
+	Remark    string
 }
 
 func (s *agentTeamScheduleService) Get(id int64) *models.AgentTeamSchedule {
@@ -103,7 +107,7 @@ func (s *agentTeamScheduleService) FindCalendarSchedules(req request.AgentTeamSc
 	if !endAtValue.After(startAtValue) {
 		return nil, errorsx.InvalidParam("结束时间必须晚于开始时间")
 	}
-	return repositories.AgentTeamScheduleRepository.FindByTimeRange(sqls.DB(), startAtValue, endAtValue, req.TeamID), nil
+	return repositories.AgentTeamScheduleRepository.FindByTimeRange(sqls.DB(), startAtValue, endAtValue, req.TeamID, req.SquadID), nil
 }
 
 func (s *agentTeamScheduleService) Create(t *models.AgentTeamSchedule) error {
@@ -134,7 +138,7 @@ func (s *agentTeamScheduleService) CreateAgentTeamSchedule(req request.CreateAge
 		return nil, errorsx.Forbidden("只能调整自己管理的客服组排班")
 	}
 	s.writeMu.Lock()
-	item, err := s.buildScheduleModel(0, req.TeamID, req.StartAt, req.EndAt, req.Remark)
+	item, err := s.buildScheduleModel(0, req.TeamID, req.SquadID, req.StartAt, req.EndAt, req.Remark)
 	if err != nil {
 		s.writeMu.Unlock()
 		return nil, err
@@ -163,13 +167,14 @@ func (s *agentTeamScheduleService) UpdateAgentTeamSchedule(req request.UpdateAge
 		s.writeMu.Unlock()
 		return errorsx.Forbidden("排班原客服组和目标组都必须在你的管理范围内")
 	}
-	item, err := s.buildScheduleModel(req.ID, req.TeamID, req.StartAt, req.EndAt, req.Remark)
+	item, err := s.buildScheduleModel(req.ID, req.TeamID, req.SquadID, req.StartAt, req.EndAt, req.Remark)
 	if err != nil {
 		s.writeMu.Unlock()
 		return err
 	}
 	if err := repositories.AgentTeamScheduleRepository.Updates(sqls.DB(), req.ID, map[string]any{
 		"team_id":          item.TeamID,
+		"squad_id":         item.SquadID,
 		"start_at":         item.StartAt,
 		"end_at":           item.EndAt,
 		"remark":           item.Remark,
@@ -241,6 +246,7 @@ func (s *agentTeamScheduleService) BatchGenerate(req request.AgentTeamScheduleBa
 	for _, candidate := range candidates {
 		schedules = append(schedules, models.AgentTeamSchedule{
 			TeamID:      candidate.TeamID,
+			SquadID:     candidate.SquadID,
 			StartAt:     candidate.StartAt,
 			EndAt:       candidate.EndAt,
 			Remark:      candidate.Remark,
@@ -281,7 +287,7 @@ func (s *agentTeamScheduleService) requireManageableBatchTeams(candidates []batc
 	return nil
 }
 
-func (s *agentTeamScheduleService) buildScheduleModel(id, teamID int64, startAt, endAt, remark string) (*models.AgentTeamSchedule, error) {
+func (s *agentTeamScheduleService) buildScheduleModel(id, teamID, squadID int64, startAt, endAt, remark string) (*models.AgentTeamSchedule, error) {
 	if teamID <= 0 {
 		return nil, errorsx.InvalidParam("请选择客服组")
 	}
@@ -291,6 +297,9 @@ func (s *agentTeamScheduleService) buildScheduleModel(id, teamID int64, startAt,
 	}
 	if !slices.Contains(enums.StatusValues, team.Status) {
 		return nil, errorsx.InvalidParam("客服组状态不合法")
+	}
+	if err := s.validateScheduleSquadDB(sqls.DB(), teamID, squadID); err != nil {
+		return nil, err
 	}
 	startAtValue, err := parseRequiredDateTime(startAt, "开始时间格式错误")
 	if err != nil {
@@ -317,6 +326,7 @@ func (s *agentTeamScheduleService) buildScheduleModel(id, teamID int64, startAt,
 	}
 	return &models.AgentTeamSchedule{
 		TeamID:  teamID,
+		SquadID: squadID,
 		StartAt: startAtValue,
 		EndAt:   endAtValue,
 		Remark:  strings.TrimSpace(remark),
@@ -327,6 +337,9 @@ func (s *agentTeamScheduleService) buildBatchScheduleCandidates(req request.Agen
 	teamIDs := uniquePositiveInt64s(req.TeamIDs)
 	if len(teamIDs) == 0 {
 		return nil, errorsx.InvalidParam("请选择客服组")
+	}
+	if req.SquadID > 0 && len(teamIDs) != 1 {
+		return nil, errorsx.InvalidParam("按客服小组批量排班时只能选择一个综合客服组")
 	}
 	weekdays, err := normalizeBatchWeekdays(req.Weekdays)
 	if err != nil {
@@ -365,6 +378,15 @@ func (s *agentTeamScheduleService) buildBatchScheduleCandidates(req request.Agen
 			return nil, errorsx.InvalidParam("客服组状态不合法")
 		}
 	}
+	squadName := ""
+	if req.SquadID > 0 {
+		if err := s.validateScheduleSquadDB(sqls.DB(), teamIDs[0], req.SquadID); err != nil {
+			return nil, err
+		}
+		if squad := AgentTeamSquadService.Get(req.SquadID); squad != nil {
+			squadName = squad.Name
+		}
+	}
 
 	weekdaySet := make(map[int]struct{}, len(weekdays))
 	for _, weekday := range weekdays {
@@ -383,12 +405,14 @@ func (s *agentTeamScheduleService) buildBatchScheduleCandidates(req request.Agen
 					return nil, errorsx.InvalidParam(fmt.Sprintf("单次最多生成 %d 条排班", maxAgentTeamScheduleBatchItems))
 				}
 				candidates = append(candidates, batchScheduleCandidate{
-					TeamID:   teamID,
-					TeamName: team.Name,
-					Date:     date,
-					StartAt:  combineDateAndClock(date, tr.startClock),
-					EndAt:    combineDateAndClock(date, tr.endClock),
-					Remark:   remark,
+					TeamID:    teamID,
+					TeamName:  team.Name,
+					SquadID:   req.SquadID,
+					SquadName: squadName,
+					Date:      date,
+					StartAt:   combineDateAndClock(date, tr.startClock),
+					EndAt:     combineDateAndClock(date, tr.endClock),
+					Remark:    remark,
 				})
 			}
 		}
@@ -482,6 +506,8 @@ func buildBatchPreviewResult(candidates []batchScheduleCandidate, conflicts map[
 		items = append(items, AgentTeamScheduleBatchPreviewItem{
 			TeamID:         candidate.TeamID,
 			TeamName:       candidate.TeamName,
+			SquadID:        candidate.SquadID,
+			SquadName:      candidate.SquadName,
 			Date:           candidate.Date,
 			Weekday:        weekdayForBatchRequest(candidate.Date),
 			StartAt:        candidate.StartAt,
@@ -496,6 +522,20 @@ func buildBatchPreviewResult(candidates []batchScheduleCandidate, conflicts map[
 		Conflict: hasConflict,
 		Items:    items,
 	}
+}
+
+func (s *agentTeamScheduleService) validateScheduleSquadDB(db *gorm.DB, teamID, squadID int64) error {
+	if squadID <= 0 {
+		return nil
+	}
+	squad := repositories.AgentTeamSquadRepository.Get(db, squadID)
+	if squad == nil || squad.Status != enums.StatusOk {
+		return errorsx.InvalidParam("客服小组不存在或已停用")
+	}
+	if squad.TeamID != teamID {
+		return errorsx.InvalidParam("客服小组不属于所选综合客服组")
+	}
+	return nil
 }
 
 func (s *agentTeamScheduleService) findBatchConflict(candidates []batchScheduleCandidate) map[int]string {

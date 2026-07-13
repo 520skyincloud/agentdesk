@@ -167,6 +167,9 @@ func (s *agentTeamService) DeleteAgentTeam(id int64, operator *dto.AuthPrincipal
 	if AgentProfileService.Take("team_id = ?", id) != nil {
 		return errorsx.Forbidden("客服组下仍有关联客服档案，无法删除")
 	}
+	if repositories.AgentTeamSquadRepository.Take(sqls.DB(), "team_id = ? AND status <> ?", id, enums.StatusDeleted) != nil {
+		return errorsx.Forbidden("客服组下仍有关联客服小组，无法删除")
+	}
 	if WxWorkProtocolInstanceService.Take("agent_team_id = ? AND status <> ?", id, enums.StatusDeleted) != nil {
 		return errorsx.Forbidden("客服组下仍有关联企微员工号，无法删除")
 	}

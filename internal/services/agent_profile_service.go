@@ -212,6 +212,9 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 	if !AgentTeamScopeService.IsAdmin(operator) && req.UserID != current.UserID {
 		return errorsx.Forbidden("客服组长不能更换客服档案关联账号")
 	}
+	if req.TeamID != current.TeamID && repositories.AgentTeamSquadMemberRepository.Take(sqls.DB(), "agent_profile_id = ? AND status = ?", current.ID, enums.StatusOk) != nil {
+		return errorsx.Forbidden("客服仍属于客服小组，请先从所有小组移除后再更换综合客服组")
+	}
 	item, err := s.buildProfileModel(req.ID, req.CreateAgentProfileRequest)
 	if err != nil {
 		return err
@@ -250,6 +253,9 @@ func (s *agentProfileService) DeleteAgentProfile(id int64, operator *dto.AuthPri
 	}
 	if !AgentTeamScopeService.CanManageTeam(operator, current.TeamID) {
 		return errorsx.Forbidden("只能删除自己管理的客服组成员")
+	}
+	if repositories.AgentTeamSquadMemberRepository.Take(sqls.DB(), "agent_profile_id = ? AND status = ?", current.ID, enums.StatusOk) != nil {
+		return errorsx.Forbidden("客服仍属于客服小组，请先从所有小组移除")
 	}
 	repositories.AgentProfileRepository.Delete(sqls.DB(), id)
 	return nil

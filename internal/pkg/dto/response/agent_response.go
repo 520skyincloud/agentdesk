@@ -42,15 +42,35 @@ type AgentTeamResponse struct {
 	Remark                 string       `json:"remark"`
 	Manageable             bool         `json:"manageable"`
 	PendingReplyCount      int          `json:"pendingReplyCount"`
+	SquadCount             int          `json:"squadCount"`
+}
+
+type AgentTeamSquadResponse struct {
+	ID                    int64        `json:"id"`
+	TeamID                int64        `json:"teamId"`
+	Name                  string       `json:"name"`
+	LeaderUserID          int64        `json:"leaderUserId"`
+	LeaderName            string       `json:"leaderName,omitempty"`
+	MemberProfileIDs      []int64      `json:"memberProfileIds"`
+	Status                enums.Status `json:"status"`
+	Remark                string       `json:"remark"`
+	Manageable            bool         `json:"manageable"`
+	ActiveScheduleID      int64        `json:"activeScheduleId"`
+	ActiveScheduleStartAt string       `json:"activeScheduleStartAt,omitempty"`
+	ActiveScheduleEndAt   string       `json:"activeScheduleEndAt,omitempty"`
+	NextScheduleStartAt   string       `json:"nextScheduleStartAt,omitempty"`
+	NextScheduleEndAt     string       `json:"nextScheduleEndAt,omitempty"`
 }
 
 type AgentTeamScheduleResponse struct {
-	ID       int64  `json:"id"`
-	TeamID   int64  `json:"teamId"`
-	TeamName string `json:"teamName,omitempty"`
-	StartAt  string `json:"startAt"`
-	EndAt    string `json:"endAt"`
-	Remark   string `json:"remark"`
+	ID        int64  `json:"id"`
+	TeamID    int64  `json:"teamId"`
+	TeamName  string `json:"teamName,omitempty"`
+	SquadID   int64  `json:"squadId"`
+	SquadName string `json:"squadName,omitempty"`
+	StartAt   string `json:"startAt"`
+	EndAt     string `json:"endAt"`
+	Remark    string `json:"remark"`
 }
 
 type AgentTeamScheduleBatchPreviewResponse struct {
@@ -62,6 +82,8 @@ type AgentTeamScheduleBatchPreviewResponse struct {
 type AgentTeamScheduleBatchPreviewItem struct {
 	TeamID         int64  `json:"teamId"`
 	TeamName       string `json:"teamName"`
+	SquadID        int64  `json:"squadId"`
+	SquadName      string `json:"squadName,omitempty"`
 	Date           string `json:"date"`
 	Weekday        int    `json:"weekday"`
 	StartAt        string `json:"startAt"`

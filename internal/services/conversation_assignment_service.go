@@ -60,8 +60,13 @@ func (s *conversationAssignmentService) FinishActiveAssignments(ctx *sqls.TxCont
 }
 
 func (s *conversationAssignmentService) CreateAssignment(ctx *sqls.TxContext, conversationID, fromUserID, toUserID int64, assignType enums.IMAssignmentType, reason string, operator *dto.AuthPrincipal, now time.Time) error {
+	return s.CreateAssignmentWithSquad(ctx, conversationID, 0, fromUserID, toUserID, assignType, reason, operator, now)
+}
+
+func (s *conversationAssignmentService) CreateAssignmentWithSquad(ctx *sqls.TxContext, conversationID, squadID, fromUserID, toUserID int64, assignType enums.IMAssignmentType, reason string, operator *dto.AuthPrincipal, now time.Time) error {
 	assignment := &models.ConversationAssignment{
 		ConversationID: conversationID,
+		SquadID:        squadID,
 		FromUserID:     fromUserID,
 		ToUserID:       toUserID,
 		AssignType:     strings.TrimSpace(string(assignType)),
