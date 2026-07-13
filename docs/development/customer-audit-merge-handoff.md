@@ -168,6 +168,7 @@ pnpm --dir web typecheck
 
 ## 9. 当前未完成能力
 
+- 综合客服组下客服小组与排班联动已按 `docs/design/agent-team-squad-scheduling.md` 实现；移动端仍需在可控窄视口补截图验收。
 - 大模型统筹派发尚未接入；当前自动派发仍是确定性规则。
 - 模型推荐理由、置信度、长期记忆和组长覆盖分析尚未实现。
 - 通知和审计已有事件基础，但尚未形成完整派单审计报表。
@@ -178,3 +179,33 @@ pnpm --dir web typecheck
 - 协同规则、归属共享契约、双向绑定 UI、会话导航和仿真数据保持独立提交，便于 review 和 cherry-pick。
 - 任何提交前逐文件暂存，禁止 `git add .`。
 - 回滚双向绑定时不得删除已有门店员工、企微实例、客服组或会话数据；只能撤销新增字段使用和幂等回填逻辑。
+
+## 11. 综合客服组与客服小组（2026-07-13）
+
+### 数据与接口
+
+- 新增 `AgentTeamSquad` 与 `AgentTeamSquadMember`，客服可在所属综合组内加入多个小组。
+- `AgentTeamSchedule.SquadID=0` 表示全组值班，正数表示指定小组值班。
+- `ConversationAssignment.SquadID` 保存派发小组快照；Conversation 仍只通过 `CurrentTeamID` 归属综合客服组。
+- 小组 CRUD 与成员替换接口位于 `/api/dashboard/agent-team/squad/*`，复用既有 `agentTeam.*` 全局权限，不增加平行权限。
+- DDL 仅通过 AutoMigrate，无 migration 版本，因此不与 `ai-billing` 的 `21-24` 或本分支 `25-26` 冲突。
+
+### 运行语义
+
+- 当前班次为全组值班时保持原派单候选逻辑。
+- 当前班次指定小组时，只允许该小组有效成员进入自动派单候选。
+- 指定小组无候选人时任务留在综合组待派发池，不回退全组。
+- 主管手动派发可覆盖值班小组，但不能跨综合客服组。
+- 已派发会话不随换班迁移；新任务和待派发任务使用新班次。
+
+### 页面
+
+- 客服档案页新增“客服成员 / 小组编排 / 服务范围”，原成员表和 CRUD 保持不变。
+- 小组编排支持拖拽加入、复选批量加入、移除、撤销、新建/编辑/删除和排班跳转。
+- 排班页新增可选小组，保持 `0=全组值班` 的兼容入口；列表与日历显示小组。
+
+### 并行分支与合并顺序
+
+- 同文件风险：`internal/models/models.go`、`internal/bootstrap/routes.go`、`web/lib/api/admin.ts`、`web/messages/zh-CN.json`、`web/messages/en-US.json`。
+- 不涉及 AI runtime、供应商、token 或计费。
+- 建议先合并小组模型/API，再合并排班与派单，最后合并两个前端步骤；禁止整文件覆盖 `ai-billing` 修改。
