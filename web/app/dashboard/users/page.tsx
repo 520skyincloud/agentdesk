@@ -1,7 +1,8 @@
 "use client"
 
-import { type KeyboardEvent, useCallback, useMemo, useState } from "react"
+import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react"
 import {
+  Building2Icon,
   KeyRoundIcon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -24,7 +25,9 @@ import {
 import { ListPagination } from "@/components/list-pagination"
 import {
   assignUserRoles,
+  bindStoreStaffUserToAgentTeam,
   createUser,
+  fetchAgentTeamsAll,
   fetchRoleListAll,
   fetchUserDetail,
   fetchUsers,
@@ -32,11 +35,14 @@ import {
   updateUser,
   updateUserStatus,
   type AdminRole,
+  type AdminAgentTeam,
   type AdminUser,
   type CreateAdminUserPayload,
   type ResetPasswordResult,
   type UpdateAdminUserPayload,
 } from "@/lib/api/admin"
+import { useAuth } from "@/components/auth-provider"
+import { OptionCombobox } from "@/components/option-combobox"
 import { Status } from "@/lib/generated/enums"
 import { useAppLocale, useI18n } from "@/i18n/provider"
 import { getRoleDisplayName } from "@/lib/role-i18n"
@@ -68,6 +74,12 @@ import {
 export default function DashboardUsersPage() {
   const t = useI18n()
   const { locale } = useAppLocale()
+  const { session } = useAuth()
+  const permissions = useMemo(() => new Set(session?.permissions ?? []), [session?.permissions])
+  const canViewAgentTeams = permissions.has("agentTeam.view")
+  const canUpdateAgentTeams = permissions.has("agentTeam.update")
+  const [agentTeams, setAgentTeams] = useState<AdminAgentTeam[]>([])
+  const [assigningTeamUserId, setAssigningTeamUserId] = useState<number | null>(null)
   const [creatingOpen, setCreatingOpen] = useState(false)
   const [savingCreate, setSavingCreate] = useState(false)
   const [initialPassword, setInitialPassword] = useState<{
@@ -94,6 +106,8 @@ export default function DashboardUsersPage() {
         defaultValue: "",
         trim: true,
       },
+      { name: "roleCode", label: "用户类型", defaultValue: "all" },
+      { name: "agentTeamId", label: "客服组归属", defaultValue: "all" },
     ],
     [t],
   )
@@ -101,6 +115,11 @@ export default function DashboardUsersPage() {
     (query: Record<string, string | number | boolean | string[] | number[] | undefined>) =>
       fetchUsers({
         username: typeof query.username === "string" ? query.username : undefined,
+        roleCode: query.roleCode === "store_staff" ? "store_staff" : undefined,
+        agentTeamId:
+          query.agentTeamId !== "all" && query.agentTeamId !== undefined
+            ? String(query.agentTeamId)
+            : undefined,
         page: Number(query.page),
         limit: Number(query.limit),
       }),
@@ -111,6 +130,33 @@ export default function DashboardUsersPage() {
     fetchList,
     loadFailed: t("user.loadFailed"),
   })
+  const agentTeamFilterOptions = useMemo(
+    () => [
+      { value: "all", label: "全部客服组" },
+      { value: "0", label: "暂未分配客服组" },
+      ...agentTeams.map((team) => ({ value: String(team.id), label: team.name })),
+    ],
+    [agentTeams],
+  )
+  const manageableAgentTeamOptions = useMemo(
+    () => [
+      { value: "0", label: "暂未分配客服组" },
+      ...agentTeams
+        .filter((team) => team.manageable && team.status === Status.Ok)
+        .map((team) => ({ value: String(team.id), label: team.name })),
+    ],
+    [agentTeams],
+  )
+
+  useEffect(() => {
+    if (!canViewAgentTeams) {
+      setAgentTeams([])
+      return
+    }
+    fetchAgentTeamsAll()
+      .then(setAgentTeams)
+      .catch((error) => toast.error(error instanceof Error ? error.message : "加载客服组失败"))
+  }, [canViewAgentTeams])
 
   function applyFilters() {
     list.applyFilters()
@@ -297,6 +343,30 @@ export default function DashboardUsersPage() {
     }
   }
 
+  async function handleBindAgentTeam(user: AdminUser, value: string) {
+    const teamId = Number(value || 0)
+    const currentTeamId = user.storeStaff?.agentTeamId || 0
+    if (teamId === currentTeamId || assigningTeamUserId != null) {
+      return
+    }
+    if (currentTeamId > 0) {
+      const targetName = agentTeams.find((team) => team.id === teamId)?.name || "暂未分配客服组"
+      if (!window.confirm(`确认将“${user.nickname || user.username}”调整到“${targetName}”？其绑定的企微员工号会同步更新。`)) {
+        return
+      }
+    }
+    setAssigningTeamUserId(user.id)
+    try {
+      await bindStoreStaffUserToAgentTeam({ userId: user.id, teamId })
+      toast.success(teamId > 0 ? "客服组归属已更新" : "已设为暂未分配客服组")
+      await list.loadData()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "更新客服组归属失败")
+    } finally {
+      setAssigningTeamUserId(null)
+    }
+  }
+
   return (
     <>
       <DashboardPage>
@@ -320,6 +390,31 @@ export default function DashboardUsersPage() {
               className="pl-9"
             />
           </div>
+          <div className="w-full sm:w-44">
+            <OptionCombobox
+              value={String(list.draftFilters.roleCode ?? "all")}
+              options={[
+                { value: "all", label: "全部用户类型" },
+                { value: "store_staff", label: "门店员工" },
+              ]}
+              onChange={(value) => list.setDraftFilter("roleCode", value)}
+              placeholder="用户类型"
+              searchPlaceholder="搜索用户类型"
+              emptyText="无匹配类型"
+            />
+          </div>
+          {canViewAgentTeams ? (
+            <div className="w-full sm:w-48">
+              <OptionCombobox
+                value={String(list.draftFilters.agentTeamId ?? "all")}
+                options={agentTeamFilterOptions}
+                onChange={(value) => list.setDraftFilter("agentTeamId", value)}
+                placeholder="客服组归属"
+                searchPlaceholder="搜索客服组"
+                emptyText="无匹配客服组"
+              />
+            </div>
+          ) : null}
           <Button variant="outline" onClick={applyFilters} disabled={list.loading}>
             {t("user.query")}
           </Button>
@@ -340,6 +435,7 @@ export default function DashboardUsersPage() {
               <TableHeader className="bg-[#f6f9ff]">
                 <TableRow>
                   <TableHead>{t("user.columnUser")}</TableHead>
+                  <TableHead>门店与客服组</TableHead>
                   <TableHead>{t("user.columnRoles")}</TableHead>
                   <TableHead>{t("user.columnStatus")}</TableHead>
                   <TableHead>{t("user.columnLastLogin")}</TableHead>
@@ -360,6 +456,56 @@ export default function DashboardUsersPage() {
                           <div className="text-xs text-muted-foreground">{item.username}</div>
                         </div>
                       </div>
+                    </TableCell>
+                    <TableCell>
+                      {(item.roles || []).some((role) => role.code === "store_staff") ? (
+                        <div className="min-w-52 space-y-2">
+                          <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                            <Building2Icon className="mt-0.5 size-3.5 shrink-0" />
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium text-foreground">
+                                {item.storeStaff?.storeName || "尚未绑定门店"}
+                              </div>
+                              <div className="truncate">
+                                {item.storeStaff?.wxWorkInstanceId
+                                  ? `企微：${[
+                                      item.storeStaff.wxWorkEmployeeName,
+                                      item.storeStaff.wxWorkEmployeeId,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" · ") || `实例 #${item.storeStaff.wxWorkInstanceId}`}`
+                                  : "暂未绑定企微员工号"}
+                              </div>
+                            </div>
+                          </div>
+                          {canViewAgentTeams ? (
+                            canUpdateAgentTeams && item.storeStaff?.bindingId ? (
+                              <OptionCombobox
+                                value={String(item.storeStaff.agentTeamId || 0)}
+                                options={manageableAgentTeamOptions}
+                                onChange={(value) => void handleBindAgentTeam(item, value)}
+                                placeholder={item.storeStaff.agentTeamName || "暂未分配客服组"}
+                                searchPlaceholder="搜索客服组"
+                                emptyText="无可管理客服组"
+                                disabled={
+                                  assigningTeamUserId === item.id ||
+                                  (item.storeStaff.agentTeamId > 0 &&
+                                    !agentTeams.find(
+                                      (team) =>
+                                        team.id === item.storeStaff?.agentTeamId && team.manageable,
+                                    ))
+                                }
+                              />
+                            ) : (
+                              <Badge variant="outline">
+                                {item.storeStaff?.agentTeamName || "暂未分配客服组"}
+                              </Badge>
+                            )
+                          ) : null}
+                        </div>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">-</span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1.5">
@@ -450,7 +596,7 @@ export default function DashboardUsersPage() {
                 ))}
                 {list.loading || list.result.results.length === 0 ? (
                   <DashboardTableStateRow
-                    colSpan={6}
+                    colSpan={7}
                     loading={list.loading}
                     loadingText={t("user.loadingRows")}
                     emptyText={t("user.emptyRows")}

@@ -33,6 +33,18 @@ export type AdminUser = {
   lastLoginIp?: string
   roles?: AdminRole[]
   permissions?: string[]
+  storeStaff?: {
+    bindingId: number
+    companyId: number
+    companyName: string
+    storeId: number
+    storeName: string
+    wxWorkInstanceId: number
+    wxWorkEmployeeName: string
+    wxWorkEmployeeId: string
+    agentTeamId: number
+    agentTeamName: string
+  }
 }
 
 export type UpdateAdminUserPayload = {
@@ -890,6 +902,7 @@ export type AdminAgentTeam = {
   id: number
   name: string
   leaderUserId: number
+  storeStaffUserIds: number[]
   companyScopeIds: number[]
   storeScopeIds: number[]
   wxWorkInstanceScopeIds: number[]
@@ -905,6 +918,7 @@ export type AdminAgentTeam = {
 export type CreateAdminAgentTeamPayload = {
   name: string
   leaderUserId: number
+  storeStaffUserIds: number[]
   companyScopeIds: number[]
   storeScopeIds: number[]
   wxWorkInstanceScopeIds: number[]
@@ -1492,6 +1506,16 @@ export function createUser(payload: CreateAdminUserPayload) {
 
 export function updateUser(payload: UpdateAdminUserPayload) {
   return request<void>("/api/dashboard/user/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function bindStoreStaffUserToAgentTeam(payload: {
+  userId: number
+  teamId: number
+}) {
+  return request<void>("/api/dashboard/user/bind_agent_team", {
     method: "POST",
     body: JSON.stringify(payload),
   })
