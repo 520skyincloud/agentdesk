@@ -205,6 +205,33 @@ func TestRuntimeIntentDetectSystemPromptDefinesHotelInfoServiceRequestBoundary(t
 	}
 }
 
+func TestRuntimeIntentDetectPromptCarriesImmediateBusinessClarification(t *testing.T) {
+	prompt := runtimeIntentDetectSystemPrompt()
+	for _, expected := range []string{
+		"紧邻的上一条 AI 客服消息正在就一个业务问题追问偏好、条件、范围或选项",
+		"附近餐饮推荐，偏好麻辣口味",
+		"不能从更早历史里挑一个旧主题强行续接",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("intent prompt missing follow-up rule %q: %s", expected, prompt)
+		}
+	}
+}
+
+func TestBuildRuntimeIntentDetectUserPromptMarksShortBusinessFollowUp(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "附近有什么好吃的"},
+		{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "附近餐饮想吃什么口味？"},
+	}}
+	req := RunInput{UserMessage: models.Message{ID: 3, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "麻辣口味的"}}
+	prompt := buildRuntimeIntentDetectUserPrompt(req, history, nil)
+	for _, expected := range []string{"麻辣口味的", "附近餐饮想吃什么口味", "hotel_info/surrounding_facilities", "完整检索问题"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("user prompt missing follow-up context %q: %s", expected, prompt)
+		}
+	}
+}
+
 func TestDeriveModelIntentFromTasksKeepsCheckinKnowledgePrimary(t *testing.T) {
 	intent := deriveModelIntentFromTasks(callbacks.IntentTraceData{
 		PrimaryIntent: "hotel_variable",
