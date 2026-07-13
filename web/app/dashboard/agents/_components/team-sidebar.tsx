@@ -40,6 +40,7 @@ type AgentTeamSidebarProps = {
   selectedTeamId: number | null;
   onSelectTeam: (team: AdminAgentTeam | null) => void;
   onTeamsChange?: (teams: AdminAgentTeam[]) => void;
+  onCreateSquad?: (team: AdminAgentTeam) => void;
 };
 
 function getStatusTabs(t: (key: string, values?: Record<string, string | number>) => string) {
@@ -54,6 +55,7 @@ export function AgentTeamSidebar({
   selectedTeamId,
   onSelectTeam,
   onTeamsChange,
+  onCreateSquad,
 }: AgentTeamSidebarProps) {
   const t = useI18n();
   const { session } = useAuth();
@@ -64,6 +66,7 @@ export function AgentTeamSidebar({
     permissions.has("agentTeam.create");
   const canUpdateTeam = permissions.has("agentTeam.update");
   const canDeleteTeam = permissions.has("agentTeam.delete");
+  const canCreateSquad = permissions.has("agentTeam.create");
   const canChangeLeader = roles.has("super_admin") || roles.has("admin");
   const statusTabs = getStatusTabs(t);
   const [keyword, setKeyword] = useState("");
@@ -263,6 +266,11 @@ export function AgentTeamSidebar({
                         stores: item.storeScopeIds.length,
                       })}
                     </span>
+                    {item.squadCount > 0 ? (
+                      <span className="mt-0.5 block text-xs text-muted-foreground">
+                        {t("agentProfile.teamSquadCount", { count: item.squadCount })}
+                      </span>
+                    ) : null}
                     {item.pendingReplyCount > 0 ? (
                       <span className="mt-0.5 block text-xs font-medium text-destructive tabular-nums">
                         {t("agentProfile.teamPendingReplies", {
@@ -279,7 +287,7 @@ export function AgentTeamSidebar({
                     {item.status === Status.Ok ? t("agentProfile.enabled") : t("agentProfile.disabled")}
                   </Badge>
                 </button>
-                {item.manageable && (canUpdateTeam || canDeleteTeam) ? (
+                {item.manageable && (canCreateSquad || canUpdateTeam || canDeleteTeam) ? (
                 <DropdownMenu>
                   <DropdownMenuTrigger
                     render={
@@ -294,6 +302,12 @@ export function AgentTeamSidebar({
                     <MoreHorizontalIcon />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-40 min-w-40">
+                    {canCreateSquad ? (
+                      <DropdownMenuItem onClick={() => onCreateSquad?.(item)}>
+                        <PlusIcon />
+                        {t("agentProfile.createSquad")}
+                      </DropdownMenuItem>
+                    ) : null}
                     <DropdownMenuItem
                       onClick={() => openEditDialog(item)}
                       disabled={!canUpdateTeam}

@@ -28,9 +28,11 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import {
   fetchAgentTeamsAll,
+  fetchAgentTeamSquads,
   generateAgentTeamScheduleBatch,
   previewAgentTeamScheduleBatch,
   type AdminAgentTeam,
+  type AdminAgentTeamSquad,
   type AdminAgentTeamScheduleBatchPreview,
   type BatchAdminAgentTeamSchedulePayload,
 } from "@/lib/api/admin"
@@ -74,6 +76,7 @@ function defaultFormState() {
   const today = todayDateValue()
   return {
     selectedTeamIds: [] as number[],
+    squadId: 0,
     startDate: today,
     endDate: today,
     weekdays: [1, 2, 3, 4, 5],
@@ -89,6 +92,7 @@ type DialogStep = "form" | "preview"
 function buildPayload(form: BatchFormState): BatchAdminAgentTeamSchedulePayload {
   return {
     teamIds: [...form.selectedTeamIds],
+    squadId: form.squadId,
     startDate: form.startDate,
     endDate: form.endDate,
     weekdays: [...form.weekdays],
@@ -136,6 +140,7 @@ export function BatchScheduleDialog({
 }: BatchScheduleDialogProps) {
   const t = useI18n()
   const [teams, setTeams] = useState<AdminAgentTeam[]>([])
+  const [squads, setSquads] = useState<AdminAgentTeamSquad[]>([])
   const [form, setForm] = useState(defaultFormState)
   const [step, setStep] = useState<DialogStep>("form")
   const [preview, setPreview] = useState<AdminAgentTeamScheduleBatchPreview | null>(null)
@@ -208,6 +213,21 @@ export function BatchScheduleDialog({
       ignore = true
     }
   }, [open, t])
+
+  useEffect(() => {
+    if (!open || form.selectedTeamIds.length !== 1) {
+      setSquads([])
+      if (form.squadId !== 0) updateForm({ squadId: 0 })
+      return
+    }
+    let ignore = false
+    void fetchAgentTeamSquads(form.selectedTeamIds[0])
+      .then((data) => { if (!ignore) setSquads(data.filter((item) => item.status === 0)) })
+      .catch((error) => { if (!ignore) toast.error(error instanceof Error ? error.message : t("agentTeamSchedule.loadSquadsFailed")) })
+    return () => { ignore = true }
+  // updateForm is intentionally excluded because changing the selected team owns squad reset.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.selectedTeamIds, open, t])
 
   function updateForm(values: Partial<BatchFormState>) {
     previewRequestIdRef.current += 1
@@ -355,6 +375,25 @@ export function BatchScheduleDialog({
                 ) : (
                   <div className="text-sm text-muted-foreground">{t("agentTeamSchedule.noSelectedTeams")}</div>
                 )}
+              </div>
+
+              <div className="space-y-2">
+                <Label>{t("agentTeamSchedule.squad")}</Label>
+                <OptionCombobox
+                  value={String(form.squadId)}
+                  options={[
+                    { value: "0", label: t("agentTeamSchedule.wholeTeamDuty") },
+                    ...squads.map((squad) => ({ value: String(squad.id), label: squad.name })),
+                  ]}
+                  placeholder={t("agentTeamSchedule.wholeTeamDuty")}
+                  searchPlaceholder={t("agentTeamSchedule.searchSquad")}
+                  emptyText={t("agentTeamSchedule.emptySquad")}
+                  disabled={form.selectedTeamIds.length !== 1}
+                  onChange={(value) => updateForm({ squadId: Number(value) || 0 })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {form.selectedTeamIds.length === 1 ? t("agentTeamSchedule.squadHint") : t("agentTeamSchedule.squadSingleTeamHint")}
+                </p>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">

@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   CalendarDaysIcon,
   CalendarRangeIcon,
@@ -81,6 +81,7 @@ export default function DashboardAgentTeamSchedulesPage() {
   const [dialogDefaults, setDialogDefaults] = useState<Partial<CreateAdminAgentTeamSchedulePayload> | null>(null)
   const [teams, setTeams] = useState<AdminAgentTeam[]>([])
   const [calendarItems, setCalendarItems] = useState<AdminAgentTeamSchedule[]>([])
+  const queryDefaultsApplied = useRef(false)
 
   const visibleTeams = useMemo(() => {
     if (teamFilter === "all") {
@@ -120,6 +121,9 @@ export default function DashboardAgentTeamSchedulesPage() {
             </div>
             <div className="text-xs text-muted-foreground">
               {t("agentTeamSchedule.teamId", { id: item.teamId })}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {item.squadName || t("agentTeamSchedule.wholeTeamDuty")}
             </div>
           </div>
         ),
@@ -162,6 +166,19 @@ export default function DashboardAgentTeamSchedulesPage() {
     try {
       const data = await fetchAgentTeamsAll()
       setTeams(data)
+      if (!queryDefaultsApplied.current) {
+        queryDefaultsApplied.current = true
+        const params = new URLSearchParams(window.location.search)
+        const teamId = Number(params.get("teamId")) || 0
+        const squadId = Number(params.get("squadId")) || 0
+        if (teamId > 0 && data.some((item) => item.id === teamId)) {
+          setTeamFilterInput(String(teamId))
+          setTeamFilter(String(teamId))
+          if (params.get("action") === "create") {
+            openCreateDialog({ teamId, squadId })
+          }
+        }
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("agentTeamSchedule.loadTeamsFailed"))
     }

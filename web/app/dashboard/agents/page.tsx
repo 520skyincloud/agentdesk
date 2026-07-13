@@ -17,6 +17,7 @@ import {
 import { useAuth } from "@/components/auth-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   createAgentProfile,
   deleteAgentProfile,
@@ -31,6 +32,7 @@ import { ServiceStatus } from "@/lib/generated/enums";
 import { formatDateTime } from "@/lib/utils";
 import { EditDialog } from "./_components/edit";
 import { AgentTeamSidebar } from "./_components/team-sidebar";
+import { SquadArrangement } from "./_components/squad-arrangement";
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string;
 
@@ -56,6 +58,8 @@ export default function DashboardAgentsPage() {
   const [selectedTeam, setSelectedTeam] = useState<AdminAgentTeam | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loadRefreshKey, setLoadRefreshKey] = useState(0);
+  const [activeView, setActiveView] = useState("members");
+  const [squadCreateRequestKey, setSquadCreateRequestKey] = useState(0);
   const permissions = new Set(session?.permissions ?? []);
   const canCreateAgent = Boolean(
     selectedTeam?.manageable && permissions.has("agent.create"),
@@ -275,6 +279,11 @@ export default function DashboardAgentsPage() {
           selectedTeamId={selectedTeam?.id ?? null}
           onSelectTeam={setSelectedTeam}
           onTeamsChange={handleTeamsChange}
+          onCreateSquad={(team) => {
+            setSelectedTeam(team);
+            setActiveView("squads");
+            setSquadCreateRequestKey((value) => value + 1);
+          }}
         />
       </div>
       <div className="relative hidden shrink-0 bg-background lg:block">
@@ -297,7 +306,20 @@ export default function DashboardAgentsPage() {
         </Button>
       </div>
       <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3 sm:p-4 lg:p-6">
-        <div className="flex h-full flex-col gap-6">
+        <Tabs value={activeView} onValueChange={setActiveView} className="h-full min-h-0">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="truncate text-lg font-semibold">{selectedTeam?.name ?? t("agentProfile.teamTitle")}</h1>
+              <p className="text-sm text-muted-foreground">{selectedTeam?.description || t("agentProfile.teamWorkspaceDescription")}</p>
+            </div>
+            <TabsList variant="line">
+              <TabsTrigger value="members">{t("agentProfile.memberView")}</TabsTrigger>
+              <TabsTrigger value="squads">{t("agentProfile.squadView")}</TabsTrigger>
+              <TabsTrigger value="scope">{t("agentProfile.scopeView")}</TabsTrigger>
+            </TabsList>
+          </div>
+          <TabsContent value="members" className="min-h-0">
+          <div className="flex h-full flex-col gap-6">
           <DashboardCrudPage<AdminAgentProfile, CreateAdminAgentProfilePayload>
             key={selectedTeam?.id ?? "all"}
             layout="fragment"
@@ -388,6 +410,30 @@ export default function DashboardAgentsPage() {
             }}
           />
         </div>
+          </TabsContent>
+          <TabsContent value="squads" className="min-h-0 overflow-hidden">
+            {selectedTeam ? (
+              <SquadArrangement
+                team={selectedTeam}
+                createRequestKey={squadCreateRequestKey}
+                canCreate={selectedTeam.manageable && permissions.has("agentTeam.create")}
+                canUpdate={selectedTeam.manageable && permissions.has("agentTeam.update")}
+                canDelete={selectedTeam.manageable && permissions.has("agentTeam.delete")}
+              />
+            ) : (
+              <div className="py-16 text-center text-muted-foreground">{t("agentProfile.selectTeamFirst")}</div>
+            )}
+          </TabsContent>
+          <TabsContent value="scope" className="min-h-0">
+            {selectedTeam ? (
+              <div className="grid gap-4 border bg-background p-5 sm:grid-cols-3">
+                <div><div className="text-sm text-muted-foreground">{t("agentProfile.serviceStoreStaff")}</div><div className="mt-1 text-2xl font-semibold tabular-nums">{selectedTeam.storeStaffUserIds.length}</div></div>
+                <div><div className="text-sm text-muted-foreground">{t("agentProfile.serviceWxWorkInstances")}</div><div className="mt-1 text-2xl font-semibold tabular-nums">{selectedTeam.wxWorkInstanceScopeIds.length}</div></div>
+                <div><div className="text-sm text-muted-foreground">{t("agentProfile.coveredStores")}</div><div className="mt-1 text-2xl font-semibold tabular-nums">{selectedTeam.storeScopeIds.length}</div></div>
+              </div>
+            ) : null}
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

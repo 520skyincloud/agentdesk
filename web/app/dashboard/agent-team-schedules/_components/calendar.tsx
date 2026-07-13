@@ -155,6 +155,7 @@ function buildMovePayload(item: AdminAgentTeamSchedule, date: string): UpdateAdm
   return {
     id: item.id,
     teamId: item.teamId,
+    squadId: item.squadId,
     startAt: formatDateTimeValue(nextStart),
     endAt: formatDateTimeValue(nextEnd),
     remark: item.remark,
@@ -185,6 +186,7 @@ function buildResizePayload(
   return {
     id: item.id,
     teamId: item.teamId,
+    squadId: item.squadId,
     startAt: formatDateTimeValue(startAt),
     endAt: formatDateTimeValue(endAt),
     remark: item.remark,
@@ -515,6 +517,7 @@ export function ScheduleCalendar({
                     <GripVerticalIcon className="size-3" />
                   </div>
                   <div className="truncate text-xs font-medium">{teamName}</div>
+                  <div className="truncate text-[11px] opacity-80">{item.squadName || t("agentTeamSchedule.wholeTeamDuty")}</div>
                   <div className="truncate text-xs">
                     {timeLayout ? `${timeLayout.startLabel} - ${timeLayout.endLabel}` : `${formatTime(item.startAt)} - ${formatTime(item.endAt)}`}
                   </div>

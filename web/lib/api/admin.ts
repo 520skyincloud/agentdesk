@@ -913,7 +913,37 @@ export type AdminAgentTeam = {
   remark: string
   manageable: boolean
   pendingReplyCount: number
+  squadCount: number
 }
+
+export type AdminAgentTeamSquad = {
+  id: number
+  teamId: number
+  name: string
+  leaderUserId: number
+  leaderName?: string
+  memberProfileIds: number[]
+  status: number
+  remark: string
+  manageable: boolean
+  activeScheduleId: number
+  activeScheduleStartAt?: string
+  activeScheduleEndAt?: string
+  nextScheduleStartAt?: string
+  nextScheduleEndAt?: string
+}
+
+export type CreateAdminAgentTeamSquadPayload = {
+  teamId: number
+  name: string
+  leaderUserId: number
+  memberIds: number[]
+  status: number
+  remark: string
+}
+
+export type UpdateAdminAgentTeamSquadPayload =
+  CreateAdminAgentTeamSquadPayload & { id: number }
 
 export type CreateAdminAgentTeamPayload = {
   name: string
@@ -935,6 +965,8 @@ export type AdminAgentTeamSchedule = {
   id: number
   teamId: number
   teamName?: string
+  squadId: number
+  squadName?: string
   startAt: string
   endAt: string
   remark: string
@@ -942,6 +974,7 @@ export type AdminAgentTeamSchedule = {
 
 export type CreateAdminAgentTeamSchedulePayload = {
   teamId: number
+  squadId: number
   startAt: string
   endAt: string
   remark: string
@@ -954,6 +987,7 @@ export type UpdateAdminAgentTeamSchedulePayload =
 
 export type BatchAdminAgentTeamSchedulePayload = {
   teamIds: number[]
+  squadId: number
   startDate: string
   endDate: string
   weekdays: number[]
@@ -966,6 +1000,8 @@ export type BatchAdminAgentTeamSchedulePayload = {
 export type AdminAgentTeamScheduleBatchPreviewItem = {
   teamId: number
   teamName: string
+  squadId: number
+  squadName?: string
   date: string
   weekday: number
   startAt: string
@@ -2097,6 +2133,43 @@ export function updateAgentTeam(payload: UpdateAdminAgentTeamPayload) {
 
 export function deleteAgentTeam(id: number) {
   return request<void>("/api/dashboard/agent-team/delete", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  })
+}
+
+export function fetchAgentTeamSquads(teamId: number) {
+  return request<AdminAgentTeamSquad[]>(
+    `/api/dashboard/agent-team/squad/list${toQueryString({ teamId })}`
+  )
+}
+
+export function createAgentTeamSquad(payload: CreateAdminAgentTeamSquadPayload) {
+  return request<AdminAgentTeamSquad[]>("/api/dashboard/agent-team/squad/create", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateAgentTeamSquad(payload: UpdateAdminAgentTeamSquadPayload) {
+  return request<void>("/api/dashboard/agent-team/squad/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function replaceAgentTeamSquadMembers(payload: {
+  squadId: number
+  agentProfileIds: number[]
+}) {
+  return request<void>("/api/dashboard/agent-team/squad/replace_members", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteAgentTeamSquad(id: number) {
+  return request<void>("/api/dashboard/agent-team/squad/delete", {
     method: "POST",
     body: JSON.stringify({ id }),
   })

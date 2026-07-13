@@ -25,8 +25,10 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   type AdminAgentTeam,
   type AdminAgentTeamSchedule,
+  type AdminAgentTeamSquad,
   type CreateAdminAgentTeamSchedulePayload,
   fetchAgentTeamSchedule,
+  fetchAgentTeamSquads,
   fetchAgentTeamsAll,
 } from "@/lib/api/admin"
 import { useI18n } from "@/i18n/provider"
@@ -45,6 +47,7 @@ type ScheduleEditDialogProps = {
 
 const emptyForm: EditForm = {
   teamId: "",
+  squadId: "0",
   startAt: "",
   endAt: "",
   remark: "",
@@ -52,6 +55,7 @@ const emptyForm: EditForm = {
 
 type EditForm = {
   teamId: string
+  squadId: string
   startAt: string
   endAt: string
   remark: string
@@ -60,6 +64,7 @@ type EditForm = {
 function createEditFormSchema(t: TFunction) {
   return z.object({
   teamId: z.string().trim().regex(/^\d+$/, t("agentTeamSchedule.teamRequired")),
+  squadId: z.string().trim().regex(/^\d+$/, t("agentTeamSchedule.squadRequired")),
   startAt: z.string().trim().min(1, t("agentTeamSchedule.startRequired")),
   endAt: z.string().trim().min(1, t("agentTeamSchedule.endRequired")),
   remark: z.string().trim(),
@@ -127,6 +132,7 @@ function buildForm(item: AdminAgentTeamSchedule | null, defaultValues?: Partial<
   if (!item) {
     return {
       teamId: defaultValues?.teamId ? String(defaultValues.teamId) : emptyForm.teamId,
+      squadId: String(defaultValues?.squadId ?? 0),
       startAt: toDateTimeLocal(defaultValues?.startAt),
       endAt: toDateTimeLocal(defaultValues?.endAt),
       remark: defaultValues?.remark ?? emptyForm.remark,
@@ -134,6 +140,7 @@ function buildForm(item: AdminAgentTeamSchedule | null, defaultValues?: Partial<
   }
   return {
     teamId: String(item.teamId),
+    squadId: String(item.squadId ?? 0),
     startAt: toDateTimeLocal(item.startAt),
     endAt: toDateTimeLocal(item.endAt),
     remark: item.remark || "",
@@ -143,6 +150,7 @@ function buildForm(item: AdminAgentTeamSchedule | null, defaultValues?: Partial<
 function buildPayload(form: EditForm): CreateAdminAgentTeamSchedulePayload {
   return {
     teamId: Number(form.teamId),
+    squadId: Number(form.squadId) || 0,
     startAt: form.startAt.trim(),
     endAt: form.endAt.trim(),
     remark: form.remark.trim(),
@@ -187,6 +195,7 @@ function ScheduleEditDialogBody({
 }: ScheduleEditDialogBodyProps) {
   const t = useI18n()
   const [teams, setTeams] = useState<AdminAgentTeam[]>([])
+  const [squads, setSquads] = useState<AdminAgentTeamSquad[]>([])
   const [loading, setLoading] = useState(false)
   const loadOptions = useCallback(async () => {
     try {
@@ -210,9 +219,11 @@ function ScheduleEditDialogBody({
     handleSubmit,
     reset,
     register,
+    watch,
     formState: { errors },
   } = form
   const minDateTime = todayDateTimeLocalMin()
+  const selectedTeamId = Number(watch("teamId")) || 0
 
   useEffect(() => {
     async function loadDetail() {
@@ -236,6 +247,18 @@ function ScheduleEditDialogBody({
   useEffect(() => {
     void loadOptions()
   }, [loadOptions])
+
+  useEffect(() => {
+    if (!selectedTeamId) {
+      setSquads([])
+      return
+    }
+    let ignore = false
+    void fetchAgentTeamSquads(selectedTeamId)
+      .then((data) => { if (!ignore) setSquads(data.filter((item) => item.status === 0)) })
+      .catch((error) => { if (!ignore) toast.error(error instanceof Error ? error.message : t("agentTeamSchedule.loadSquadsFailed")) })
+    return () => { ignore = true }
+  }, [selectedTeamId, t])
 
   async function onFormSubmit(values: EditForm) {
     await onSubmit(buildPayload(values))
@@ -275,6 +298,30 @@ function ScheduleEditDialogBody({
                     )}
                   />
                   <FieldError errors={[errors.teamId]} />
+                </FieldContent>
+              </Field>
+              <Field data-invalid={!!errors.squadId}>
+                <FieldLabel>{t("agentTeamSchedule.squad")}</FieldLabel>
+                <FieldContent>
+                  <Controller
+                    control={control}
+                    name="squadId"
+                    render={({ field }) => (
+                      <OptionCombobox
+                        value={field.value}
+                        options={[
+                          { value: "0", label: t("agentTeamSchedule.wholeTeamDuty") },
+                          ...squads.map((squad) => ({ value: String(squad.id), label: squad.name })),
+                        ]}
+                        placeholder={t("agentTeamSchedule.wholeTeamDuty")}
+                        searchPlaceholder={t("agentTeamSchedule.searchSquad")}
+                        emptyText={t("agentTeamSchedule.emptySquad")}
+                        disabled={!selectedTeamId}
+                        onChange={field.onChange}
+                      />
+                    )}
+                  />
+                  <FieldError errors={[errors.squadId]} />
                 </FieldContent>
               </Field>
             </div>
