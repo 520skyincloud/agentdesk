@@ -23,6 +23,27 @@
 - 改动前必须权衡对原流程的收益、兼容性、操作成本和破坏面。涉及改变原功能语义、主要操作路径、权限体系或共享契约时，先向用户说明利弊和边界，再实施。
 - 新能力应优先嵌入现有信息架构，并保持页面职责清晰；配置页不承担任务工作台职责，工作台也不重复配置能力。
 
+## 1.3 并行分支协同开发
+
+- 本项目存在并行开发分支。客服 / 对话审计功能在 `codex/customer-audit` 开发，大模型 / 计费功能在 `codex/ai-billing` 开发；开始任务和每次 push 后都必须先 `git fetch origin`，再检查双方同文件修改。
+- 修改共享契约前必须说明影响范围和兼容性。共享契约包括：models、migration、DTO、enum、路由、WebSocket payload、message/conversation service、`web/lib/api`、导航和多语言资源。
+- 共享契约优先采用向后兼容的新增方式；需要双方共同依赖时，优先拆成独立契约提交或 PR，再继续各自业务实现。
+- 禁止在客服 / 审计分支改变模型调用、AI 回复链路、模型供应商配置、token 统计或计费口径；确需修改时必须先与大模型 / 计费负责人确认字段语义和合并顺序。
+- Migration 版本在创建和提交前都必须与 `origin/main` 及所有活跃并行分支核对，禁止重复版本号。
+- 每个任务开始前必须说明：目标、预计文件、共享高风险文件、model/migration、DTO/enum/接口/WebSocket 影响、并行分支影响和验证命令。
+- 每个可提交步骤完成后必须记录：是否影响并行分支、是否需要 rebase、建议合并顺序、同文件修改和字段/状态语义冲突。提交应便于 review、回滚和 cherry-pick。
+- 禁止使用 `git reset --hard`、`git checkout -- .`、`git add .` 和 `git push --force`；不得回退或覆盖其他开发者的工作。
+
+## 1.4 文档权威与历史资料
+
+- 当前回复引擎设计以真实代码和 `docs/design/reply-runtime-engine.md` 为准；两者冲突时先追踪代码真实调用链，再更新文档或明确标注过期。
+- `docs/development-handoff.md`、`docs/wecom-hook-bridge.md` 和 `docs/generated/` 默认视为历史交接、历史接入或测试产物，不能直接作为当前产品架构依据。
+- 禁止因为旧文档恢复 FAQ、七鱼、旧 hook bridge、旧独立 Agent、旧企微字段或旧转人工逻辑。代码中仍存在同名能力时，必须通过入口、路由、service 调用和运行状态确认其当前语义。
+- 开发前优先使用 `rg` 查询页面、路由、handler、service、repository、model 和脚本引用，确认目标文件是否属于真实运行链路。
+- `docs/generated/` 不作为产品逻辑来源，默认不提交新生成的评测报告。
+- 发现误导性旧文档时，先记录文件名、过期原因和当前引用，再决定保留、标废、迁移到 archive 或删除；引用状态未查清前不得直接删除。
+- 每个业务步骤完成后更新对应开发交接文档，至少记录目标、文件、数据/接口变化、权限、迁移、验证、已知风险、并行分支影响和回滚边界。
+
 ## 2. 固定技术栈
 
 - 后端：`Golang` + `Gin` + `GORM` + `github.com/mlogclub/simple`
