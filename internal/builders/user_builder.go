@@ -28,13 +28,17 @@ func BuildUserResponse(item *models.User, options UserBuildOptions) *response.Us
 		return nil
 	}
 	ret := &response.UserResponse{
-		ID:          item.ID,
-		Username:    item.Username,
-		Nickname:    item.Nickname,
-		Avatar:      item.Avatar,
-		Status:      item.Status,
-		LastLoginAt: utils.FormatTimePtr(item.LastLoginAt),
-		LastLoginIP: item.LastLoginIP,
+		ID:                 item.ID,
+		TenantID:           item.TenantID,
+		Username:           item.Username,
+		Nickname:           item.Nickname,
+		Avatar:             item.Avatar,
+		RegistrationSource: item.RegistrationSource,
+		ApprovalStatus:     item.ApprovalStatus,
+		MustChangePassword: item.MustChangePassword,
+		Status:             item.Status,
+		LastLoginAt:        utils.FormatTimePtr(item.LastLoginAt),
+		LastLoginIP:        item.LastLoginIP,
 	}
 
 	if item.Mobile != nil {

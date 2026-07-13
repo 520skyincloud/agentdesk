@@ -9,6 +9,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -427,6 +428,7 @@ func setupAuthServiceTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open sqlite db: %v", err)
 	}
 	if err := db.AutoMigrate(
+		&models.Tenant{},
 		&models.User{},
 		&models.UserIdentity{},
 		&models.Role{},
@@ -437,6 +439,19 @@ func setupAuthServiceTestDB(t *testing.T) *gorm.DB {
 		&models.LoginCredentialLog{},
 	); err != nil {
 		t.Fatalf("migrate auth tables: %v", err)
+	}
+	now := time.Now()
+	if err := db.Create(&models.Tenant{
+		TenantCode:         constants.LegacyDefaultTenantCode,
+		LegalName:          "Legacy Test Tenant",
+		ShortName:          "Legacy",
+		RegistrationType:   "legacy",
+		RegistrationNo:     "LEGACY-TEST-" + t.Name(),
+		VerificationStatus: enums.TenantVerificationStatusVerified,
+		Status:             enums.StatusOk,
+		AuditFields:        models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create legacy test tenant: %v", err)
 	}
 	sqls.SetDB(db)
 	return db

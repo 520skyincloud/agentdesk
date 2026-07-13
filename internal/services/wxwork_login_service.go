@@ -141,18 +141,26 @@ func (s *wxWorkLoginService) createWxWorkUser(ctx *sqls.TxContext, profile *wxwo
 	mobile := strings.TrimSpace(profile.Mobile)
 	email := strings.TrimSpace(s.firstNonEmpty(profile.Email, profile.BizMail))
 	now := time.Now()
+	tenantID, err := TenantService.LegacyTenantID(ctx.Tx)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	if err := s.checkWxWorkProfile(ctx.Tx, username, mobile, email); err != nil {
 		return nil, nil, err
 	}
 
 	user := &models.User{
-		Username:     username,
-		Nickname:     s.resolveWxWorkNickname("", profile),
-		Avatar:       s.resolveWxWorkAvatar("", profile),
-		Password:     "",
-		PasswordSalt: "",
-		Status:       enums.StatusOk,
+		TenantID:           tenantID,
+		Username:           username,
+		Nickname:           s.resolveWxWorkNickname("", profile),
+		Avatar:             s.resolveWxWorkAvatar("", profile),
+		Password:           "",
+		PasswordSalt:       "",
+		RegistrationSource: enums.UserRegistrationSourceWxWork,
+		ApprovalStatus:     enums.UserApprovalStatusApproved,
+		ApprovedAt:         &now,
+		Status:             enums.StatusOk,
 		AuditFields: models.AuditFields{
 			CreatedAt:      now,
 			CreateUserID:   0,

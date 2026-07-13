@@ -12,7 +12,7 @@ import (
 )
 
 func init() {
-	register(27, "sync tenant auth foundation", func() error {
+	register(34, "sync tenant auth foundation", func() error {
 		return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 			return syncTenantAuthFoundation(ctx.Tx)
 		})
@@ -29,7 +29,7 @@ func syncTenantAuthFoundation(tx *gorm.DB) error {
 			slog.Error("legacy account permission overrides require manual migration",
 				"user_permission_override_count", overrideCount,
 			)
-			return fmt.Errorf("found %d legacy account permission overrides; migrate them to roles before retrying migration 27", overrideCount)
+			return fmt.Errorf("found %d legacy account permission overrides; migrate them to roles before retrying migration 34", overrideCount)
 		}
 	}
 

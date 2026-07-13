@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/i18nx"
 	"agent-desk/internal/services"
 
@@ -18,7 +19,9 @@ func AuthMiddleware(ctx *gin.Context) {
 func authenticateRequest(ctx *gin.Context) bool {
 	if _, err := services.AuthService.Authenticate(ctx); err != nil {
 		result := web.JsonError(err)
-		result.Message = i18nx.T(ctx, "error.auth.expired", nil)
+		if result.ErrorCode == errorsx.CodeAuthUnauthorized || result.ErrorCode == errorsx.CodeAuthInvalidToken {
+			result.Message = i18nx.T(ctx, "error.auth.expired", nil)
+		}
 		ctx.JSON(200, result)
 		ctx.Abort()
 		return false

@@ -127,15 +127,23 @@ func (s *oidcLoginService) createOIDCUser(ctx *sqls.TxContext, profile *oidcLogi
 	now := time.Now()
 	email := s.availableEmail(ctx.Tx, profile.Email)
 	username := s.availableUsername(ctx.Tx, profile)
+	tenantID, err := TenantService.LegacyTenantID(ctx.Tx)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	user := &models.User{
-		Username:     username,
-		Nickname:     s.resolveOIDCNickname("", profile),
-		Avatar:       s.resolveOIDCAvatar("", profile),
-		Email:        email,
-		Password:     "",
-		PasswordSalt: "",
-		Status:       enums.StatusOk,
+		TenantID:           tenantID,
+		Username:           username,
+		Nickname:           s.resolveOIDCNickname("", profile),
+		Avatar:             s.resolveOIDCAvatar("", profile),
+		Email:              email,
+		Password:           "",
+		PasswordSalt:       "",
+		RegistrationSource: enums.UserRegistrationSourceOIDC,
+		ApprovalStatus:     enums.UserApprovalStatusApproved,
+		ApprovedAt:         &now,
+		Status:             enums.StatusOk,
 		AuditFields: models.AuditFields{
 			CreatedAt:      now,
 			CreateUserID:   0,

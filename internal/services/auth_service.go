@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,18 +49,13 @@ func (s *authService) GetAuthPrincipal(ctx *gin.Context) *dto.AuthPrincipal {
 	return nil
 }
 
-func (s *authService) setAuthPrincipal(ctx *gin.Context, user *models.User, roles, permissions []string) *dto.AuthPrincipal {
-	principal := &dto.AuthPrincipal{
-		UserID:      user.ID,
-		Username:    user.Username,
-		Nickname:    user.Nickname,
-		Avatar:      user.Avatar,
-		Status:      user.Status,
-		Roles:       roles,
-		Permissions: permissions,
+func (s *authService) setAuthPrincipal(ctx *gin.Context, user *models.User, roles, permissions []string) (*dto.AuthPrincipal, error) {
+	principal, err := s.resolveAuthPrincipal(sqls.DB(), user, roles, permissions, ctx.GetHeader(constants.TenantHeaderName))
+	if err != nil {
+		return nil, err
 	}
 	ctx.Set(authPrincipalContextKey, principal)
-	return principal
+	return principal, nil
 }
 
 func (s *authService) RequirePermission(ctx *gin.Context, permission constants.Permission) (principal *dto.AuthPrincipal, err error) {
@@ -170,7 +166,10 @@ func (s *authService) Authenticate(ctx *gin.Context) (*dto.AuthPrincipal, error)
 	if err != nil {
 		return nil, err
 	}
-	principal := s.setAuthPrincipal(ctx, user, roles, permissions)
+	principal, err := s.setAuthPrincipal(ctx, user, roles, permissions)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now()
 	_ = LoginSessionService.Updates(session.ID, map[string]any{
@@ -197,15 +196,22 @@ func (s *authService) CurrentProfile(ctx *gin.Context) (*response.LoginResponse,
 
 	return &response.LoginResponse{
 		User: &response.AuthUserResponse{
-			ID:       principal.UserID,
-			Username: principal.Username,
-			Nickname: principal.Nickname,
-			Avatar:   principal.Avatar,
-			Status:   principal.Status,
-			Roles:    principal.Roles,
+			ID:                 principal.UserID,
+			TenantID:           principal.TenantID,
+			Username:           principal.Username,
+			Nickname:           principal.Nickname,
+			Avatar:             principal.Avatar,
+			Status:             principal.Status,
+			Roles:              principal.Roles,
+			RegistrationSource: principal.RegistrationSource,
+			ApprovalStatus:     principal.ApprovalStatus,
+			MustChangePassword: principal.MustChangePassword,
 		},
-		Permissions: principal.Permissions,
-		Roles:       principal.Roles,
+		Permissions:       principal.Permissions,
+		Roles:             principal.Roles,
+		ActiveTenantID:    principal.ActiveTenantID,
+		CanSwitchTenant:   principal.CanSwitchTenant,
+		IsPlatformAccount: principal.IsPlatformAccount,
 	}, nil
 }
 
@@ -250,20 +256,127 @@ func (s *authService) issueTokens(ctx *sqls.TxContext, user *models.User, client
 		return nil, err
 	}
 
+	principal, err := s.resolveAuthPrincipal(ctx.Tx, user, roles, permissions, "")
+	if err != nil {
+		return nil, err
+	}
 	return &response.LoginResponse{
 		AccessToken: accessToken,
 		ExpiresAt:   now.Add(tokenTTL).Format(time.DateTime),
 		User: &response.AuthUserResponse{
-			ID:       user.ID,
-			Username: user.Username,
-			Nickname: user.Nickname,
-			Avatar:   user.Avatar,
-			Status:   user.Status,
-			Roles:    roles,
+			ID:                 user.ID,
+			TenantID:           user.TenantID,
+			Username:           user.Username,
+			Nickname:           user.Nickname,
+			Avatar:             user.Avatar,
+			Status:             user.Status,
+			Roles:              roles,
+			RegistrationSource: user.RegistrationSource,
+			ApprovalStatus:     user.ApprovalStatus,
+			MustChangePassword: user.MustChangePassword,
 		},
-		Permissions: permissions,
-		Roles:       roles,
+		Permissions:       permissions,
+		Roles:             roles,
+		ActiveTenantID:    principal.ActiveTenantID,
+		CanSwitchTenant:   principal.CanSwitchTenant,
+		IsPlatformAccount: principal.IsPlatformAccount,
 	}, nil
+}
+
+func (s *authService) RequireTenantContext(ctx *gin.Context) (*dto.TenantContext, error) {
+	principal, err := s.Authenticate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if principal.ActiveTenantID <= 0 {
+		return nil, errorsx.Forbidden("请先选择接入公司")
+	}
+	return &dto.TenantContext{
+		TenantID:          principal.ActiveTenantID,
+		UserTenantID:      principal.TenantID,
+		IsPlatformAccount: principal.IsPlatformAccount,
+	}, nil
+}
+
+func (s *authService) resolveAuthPrincipal(db *gorm.DB, user *models.User, roles, permissions []string, requestedTenant string) (*dto.AuthPrincipal, error) {
+	if user == nil {
+		return nil, errorsx.Unauthorized("用户不存在或已被禁用")
+	}
+	if user.ApprovalStatus != "" && user.ApprovalStatus != enums.UserApprovalStatusApproved {
+		return nil, errorsx.Forbidden("账号尚未通过公司审核")
+	}
+	isPlatformAccount, err := repositories.RoleRepository.UserHasScope(db, user.ID, constants.RoleScopePlatform)
+	if err != nil {
+		return nil, err
+	}
+	hasTenantRole, err := repositories.RoleRepository.UserHasScope(db, user.ID, constants.RoleScopeTenant)
+	if err != nil {
+		return nil, err
+	}
+	if isPlatformAccount && hasTenantRole {
+		return nil, errorsx.Forbidden("账号同时持有平台角色和公司角色，请联系管理员处理")
+	}
+	if user.TenantID > 0 && isPlatformAccount {
+		return nil, errorsx.Forbidden("租户账号不能持有平台角色")
+	}
+	if user.TenantID == 0 && !isPlatformAccount && len(roles) > 0 {
+		return nil, errorsx.Forbidden("账号尚未归属接入公司")
+	}
+	requestedTenantID, err := parseTenantHeader(requestedTenant)
+	if err != nil {
+		return nil, err
+	}
+	canSwitchTenant := isPlatformAccount && slices.Contains(permissions, constants.PermissionTenantSwitch.Code)
+	activeTenantID := user.TenantID
+	if isPlatformAccount {
+		activeTenantID = 0
+		if requestedTenantID > 0 {
+			if !canSwitchTenant {
+				return nil, errorsx.Forbidden("无权限切换接入公司")
+			}
+			tenant := repositories.TenantRepository.Get(db, requestedTenantID)
+			if tenant == nil || tenant.Status != enums.StatusOk {
+				return nil, errorsx.Forbidden("接入公司不存在或已停用")
+			}
+			activeTenantID = tenant.ID
+		}
+	} else if user.TenantID > 0 {
+		if requestedTenantID > 0 && requestedTenantID != user.TenantID {
+			return nil, errorsx.Forbidden("不能切换到其他接入公司")
+		}
+		tenant := repositories.TenantRepository.Get(db, user.TenantID)
+		if tenant == nil || tenant.Status != enums.StatusOk {
+			return nil, errorsx.Forbidden("所属接入公司不存在或已停用")
+		}
+	}
+	return &dto.AuthPrincipal{
+		UserID:             user.ID,
+		TenantID:           user.TenantID,
+		ActiveTenantID:     activeTenantID,
+		Username:           user.Username,
+		Nickname:           user.Nickname,
+		Avatar:             user.Avatar,
+		Status:             user.Status,
+		Roles:              roles,
+		Permissions:        permissions,
+		CanSwitchTenant:    canSwitchTenant,
+		IsPlatformAccount:  isPlatformAccount,
+		RegistrationSource: user.RegistrationSource,
+		ApprovalStatus:     user.ApprovalStatus,
+		MustChangePassword: user.MustChangePassword,
+	}, nil
+}
+
+func parseTenantHeader(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "0" {
+		return 0, nil
+	}
+	tenantID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || tenantID <= 0 {
+		return 0, errorsx.InvalidParam("接入公司标识不合法")
+	}
+	return tenantID, nil
 }
 
 func (s *authService) resolveTokenTTL(authCfg config.AuthConfig) time.Duration {

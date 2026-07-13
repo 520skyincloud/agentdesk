@@ -3,13 +3,26 @@ package dto
 import "agent-desk/internal/pkg/enums"
 
 type AuthPrincipal struct {
-	UserID      int64
-	Username    string
-	Nickname    string
-	Avatar      string
-	Status      enums.Status
-	Roles       []string
-	Permissions []string
+	UserID             int64
+	TenantID           int64
+	ActiveTenantID     int64
+	Username           string
+	Nickname           string
+	Avatar             string
+	Status             enums.Status
+	Roles              []string
+	Permissions        []string
+	CanSwitchTenant    bool
+	IsPlatformAccount  bool
+	RegistrationSource enums.UserRegistrationSource
+	ApprovalStatus     enums.UserApprovalStatus
+	MustChangePassword bool
+}
+
+type TenantContext struct {
+	TenantID          int64
+	UserTenantID      int64
+	IsPlatformAccount bool
 }
 
 type WxWorkKFChannelConfig struct {

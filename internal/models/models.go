@@ -10,6 +10,9 @@ var Models = []any{
 	&Migration{},
 	&User{},
 	&UserIdentity{},
+	&Tenant{},
+	&TenantInvitation{},
+	&TenantRegistrationLog{},
 	&Company{},
 	&Customer{},
 	&CustomerIdentity{},
@@ -166,20 +169,76 @@ type AuditFields struct {
 
 // User 后台用户账号。
 type User struct {
-	ID           int64        `gorm:"primaryKey;autoIncrement"`
-	Username     string       `gorm:"type:varchar(100);not null;uniqueIndex"`
-	Nickname     string       `gorm:"type:varchar(100);not null;default:'';index"`
-	Avatar       string       `gorm:"type:varchar(255);not null;default:''"`
-	Mobile       *string      `gorm:"type:varchar(32);uniqueIndex"`
-	Email        *string      `gorm:"type:varchar(100);uniqueIndex"`
-	Password     string       `gorm:"type:varchar(255);not null;default:''"`
-	PasswordSalt string       `gorm:"type:varchar(64);not null;default:''"`
-	Status       enums.Status `gorm:"type:int;not null;default:0;index"`
-	LastLoginAt  *time.Time   `gorm:"type:datetime"`
-	LastLoginIP  string       `gorm:"type:varchar(64);not null;default:''"`
-	Remark       string       `gorm:"type:text"`
-	DeletedAt    *time.Time   `gorm:"type:datetime;index"`
+	ID                 int64                        `gorm:"primaryKey;autoIncrement"`
+	TenantID           int64                        `gorm:"type:bigint;not null;default:0;index"`
+	Username           string                       `gorm:"type:varchar(100);not null;uniqueIndex"`
+	Nickname           string                       `gorm:"type:varchar(100);not null;default:'';index"`
+	Avatar             string                       `gorm:"type:varchar(255);not null;default:''"`
+	Mobile             *string                      `gorm:"type:varchar(32);uniqueIndex"`
+	Email              *string                      `gorm:"type:varchar(100);uniqueIndex"`
+	Password           string                       `gorm:"type:varchar(255);not null;default:''"`
+	PasswordSalt       string                       `gorm:"type:varchar(64);not null;default:''"`
+	RegistrationSource enums.UserRegistrationSource `gorm:"type:varchar(30);not null;default:'platform_created';index"`
+	ApprovalStatus     enums.UserApprovalStatus     `gorm:"type:varchar(20);not null;default:'approved';index"`
+	ApprovedAt         *time.Time                   `gorm:"type:datetime;index"`
+	ApprovedBy         int64                        `gorm:"type:bigint;not null;default:0;index"`
+	MustChangePassword bool                         `gorm:"not null;default:false;index"`
+	Status             enums.Status                 `gorm:"type:int;not null;default:0;index"`
+	LastLoginAt        *time.Time                   `gorm:"type:datetime"`
+	LastLoginIP        string                       `gorm:"type:varchar(64);not null;default:''"`
+	Remark             string                       `gorm:"type:text"`
+	DeletedAt          *time.Time                   `gorm:"type:datetime;index"`
 	AuditFields
+}
+
+// Tenant 是平台接入的独立客户公司，也是所有租户业务数据的隔离根。
+type Tenant struct {
+	ID                 int64                          `gorm:"primaryKey;autoIncrement"`
+	TenantCode         string                         `gorm:"type:varchar(64);not null;uniqueIndex"`
+	LegalName          string                         `gorm:"type:varchar(200);not null;default:'';index"`
+	ShortName          string                         `gorm:"type:varchar(100);not null;default:'';index"`
+	RegistrationType   string                         `gorm:"type:varchar(30);not null;default:'';uniqueIndex:uk_tenant_registration"`
+	RegistrationNo     string                         `gorm:"type:varchar(64);not null;default:'';uniqueIndex:uk_tenant_registration"`
+	ContactName        string                         `gorm:"type:varchar(100);not null;default:''"`
+	ContactMobile      string                         `gorm:"type:varchar(32);not null;default:''"`
+	ContactEmail       string                         `gorm:"type:varchar(100);not null;default:''"`
+	Address            string                         `gorm:"type:varchar(500);not null;default:''"`
+	VerificationStatus enums.TenantVerificationStatus `gorm:"type:varchar(30);not null;default:'pending';index"`
+	VerifiedAt         *time.Time                     `gorm:"type:datetime;index"`
+	VerifiedBy         int64                          `gorm:"type:bigint;not null;default:0;index"`
+	Status             enums.Status                   `gorm:"type:int;not null;default:0;index"`
+	Remark             string                         `gorm:"type:text"`
+	AuditFields
+}
+
+// TenantInvitation 保存租户唯一有效邀请码的哈希和可受控展示的密文。
+type TenantInvitation struct {
+	ID             int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID       int64        `gorm:"type:bigint;not null;index;uniqueIndex:uk_tenant_invitation_version"`
+	CodeHash       string       `gorm:"type:varchar(64);not null;uniqueIndex"`
+	CodeCiphertext string       `gorm:"type:text;not null"`
+	CodeLast4      string       `gorm:"type:varchar(4);not null;default:''"`
+	Version        int          `gorm:"type:int;not null;default:1;uniqueIndex:uk_tenant_invitation_version"`
+	UsedCount      int64        `gorm:"type:bigint;not null;default:0"`
+	LastUsedAt     *time.Time   `gorm:"type:datetime;index"`
+	RotatedAt      *time.Time   `gorm:"type:datetime;index"`
+	Status         enums.Status `gorm:"type:int;not null;default:0;index"`
+	AuditFields
+}
+
+// TenantRegistrationLog 是邀请校验和注册结果的不可变安全日志。
+type TenantRegistrationLog struct {
+	ID           int64     `gorm:"primaryKey;autoIncrement"`
+	RequestID    string    `gorm:"type:varchar(128);not null;default:'';uniqueIndex"`
+	TenantID     int64     `gorm:"type:bigint;not null;default:0;index"`
+	InvitationID int64     `gorm:"type:bigint;not null;default:0;index"`
+	UserID       int64     `gorm:"type:bigint;not null;default:0;index"`
+	Principal    string    `gorm:"type:varchar(150);not null;default:'';index"`
+	Success      bool      `gorm:"not null;default:false;index"`
+	Reason       string    `gorm:"type:varchar(255);not null;default:''"`
+	ClientIP     string    `gorm:"type:varchar(64);not null;default:''"`
+	UserAgent    string    `gorm:"type:varchar(255);not null;default:''"`
+	CreatedAt    time.Time `gorm:"type:datetime;not null;index"`
 }
 
 // UserIdentity 第三方身份绑定信息。

@@ -1,4 +1,4 @@
-import { expireSession, readSession } from "@/lib/auth"
+import { expireSession, readActiveTenantId, readSession } from "@/lib/auth"
 import { readStoredLocale } from "@/i18n/config"
 import { translateCurrentMessage } from "@/i18n/messages"
 import { repairMojibakeDeep } from "@/lib/utils"
@@ -44,6 +44,10 @@ export async function request<T>(
 
   if (!skipAuth && session?.accessToken) {
     authHeaders.set("Authorization", `Bearer ${session.accessToken}`)
+    const activeTenantId = readActiveTenantId(session)
+    if (activeTenantId > 0 && !authHeaders.has("X-Tenant-ID")) {
+      authHeaders.set("X-Tenant-ID", String(activeTenantId))
+    }
   }
   if (
     !authHeaders.has("Content-Type") &&

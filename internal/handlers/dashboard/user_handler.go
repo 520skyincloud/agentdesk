@@ -35,6 +35,7 @@ func UserAnyList(ctx *gin.Context) {
 	cnd.Where("status <> ?", enums.StatusDeleted)
 	applyUserRoleFilter(ctx, cnd)
 	applyStoreStaffAgentTeamFilter(ctx, cnd)
+	services.UserService.ApplyTenantScope(cnd, operator)
 	list, paging := services.UserService.FindPageByCnd(cnd)
 	results := builders.BuildUserList(list, builders.UserBuildOptions{
 		Roles:                 true,
@@ -60,6 +61,7 @@ func UserAnyList_all(ctx *gin.Context) {
 	cnd.Where("status <> ?", enums.StatusDeleted)
 	applyUserRoleFilter(ctx, cnd)
 	applyStoreStaffAgentTeamFilter(ctx, cnd)
+	services.UserService.ApplyTenantScope(cnd, operator)
 
 	list := services.UserService.Find(cnd)
 	results := builders.BuildUserList(list, builders.UserBuildOptions{
@@ -115,7 +117,7 @@ func UserGetBy(ctx *gin.Context) {
 		return
 	}
 
-	item := services.UserService.Get(id)
+	item := services.UserService.GetInScope(id, operator)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("用户不存在"))
 		return

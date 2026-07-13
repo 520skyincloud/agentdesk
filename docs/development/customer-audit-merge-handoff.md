@@ -264,9 +264,9 @@ pnpm --dir web typecheck
 
 ### 数据与迁移
 
-- DDL 由 `AutoMigrate` 增加 Role/Permission 字段；DML 使用 `000027_sync_tenant_auth_foundation.go` 同步内置角色、权限和默认关系。
-- migration 27 先统计 `t_user_permission`。若存在历史记录则返回错误、保留全部记录并阻止服务带着权限语义变化启动；记录为空时不删除物理表，只移除运行时依赖。
-- migration 27 删除 `permission.sync` 及其角色关系，迁移保持幂等。
+- DDL 由 `AutoMigrate` 增加 Role/Permission 字段；DML 使用 `000034_sync_tenant_auth_foundation.go` 同步内置角色、权限和默认关系。
+- migration 34 先统计 `t_user_permission`。若存在历史记录则返回错误、保留全部记录并阻止服务带着权限语义变化启动；记录为空时不删除物理表，只移除运行时依赖。
+- migration 34 删除 `permission.sync` 及其角色关系，迁移保持幂等。
 
 ### 主要文件
 
@@ -274,7 +274,7 @@ pnpm --dir web typecheck
 internal/models/models.go
 internal/pkg/constants/auth.go
 internal/migration/000002_init_auth_data.go
-internal/migration/000027_sync_tenant_auth_foundation.go
+internal/migration/000034_sync_tenant_auth_foundation.go
 internal/services/auth_service.go
 internal/services/role_service.go
 internal/services/user_service.go
@@ -316,8 +316,83 @@ git diff --check
 
 ### 并行分支影响与合并顺序
 
-- 已在开始阶段执行 `git fetch origin`；`codex/ai-billing` 当前使用 migration 21-24，本分支使用 25-27，无版本重复。
+- 阶段 1 最初提交时使用 migration 27；并行分支后续占用 25-28、30-33 后，本分支在阶段 2 将权限迁移重编号为 34，避免最终树出现重复版本。
 - 高风险同文件为 `models.go`、`web/lib/api/admin.ts`、导航和双语资源；AI 分支当前最新提交未修改本阶段字段语义，但合并前仍需再次 fetch 和逐文件核对。
 - 本阶段不修改 AI runtime、供应商配置、token 统计、计费口径、会话/消息状态或 WebSocket payload。
 - 建议先合并本阶段权限共享契约，再由客服和 AI 分支 rebase；阶段 2 才增加 Tenant 和认证上下文。
-- 回滚边界：可以整体回滚阶段 1 代码和 migration 27；空的 `t_user_permission` 物理表保留，不做破坏性 DDL。
+- 回滚边界：可以整体回滚阶段 1 代码和 migration 34；空的 `t_user_permission` 物理表保留，不做破坏性 DDL。
+
+## 14. 多租户阶段 2：Tenant 与认证上下文（2026-07-13）
+
+### 本步骤目标与结果
+
+- 新增独立 `Tenant`、`TenantInvitation`、`TenantRegistrationLog` 模型及基础 repository/service，为后续公司创建与邀请注册提供契约；注册安全日志只提供创建和查询，邀请码历史不提供物理删除。本阶段没有开放相关 CRUD 或公开注册路由。
+- `User` 增加 `TenantID`、注册来源、审核状态、审核信息和首次改密标记。
+- 登录上下文增加 `TenantID`、`ActiveTenantID`、`CanSwitchTenant`、`IsPlatformAccount`；平台账号只有持有 `tenant.switch` 才能使用 `X-Tenant-ID` 进入公司上下文，租户账号始终固定在自身租户。
+- 前端统一请求客户端自动携带经本标签页校验的 `X-Tenant-ID`；活动公司使用 `sessionStorage` 保存，避免两个浏览器标签相互覆盖公司上下文。
+- 用户列表、全量下拉、详情、更新、停用、删除、重置密码和角色分配均先按租户范围定位目标账号；跨租户 ID 按不存在处理，不能通过错误差异确认其他公司账号。
+- 账号角色作用域形成双保险：迁移拒绝历史混合角色，登录拒绝运行时混合角色，角色分配拒绝平台账号绑定租户角色或租户账号绑定平台角色。
+
+### 数据与迁移
+
+- DDL 继续由 `AutoMigrate(models.Models...)` 创建 Tenant 表并扩展 User。
+- migration 35 创建 `legacy-default` 历史默认公司：平台角色账号回填为 `TenantID=0`，其余历史账号回填到默认公司。
+- migration 35 遇到同时持有启用平台角色和启用租户角色的账号时中止，不猜测归属；重复执行只处理仍为历史默认字段的账号，不覆盖之后创建的邀请账号或其他租户账号。
+- 阶段 1 migration 从 27 重编号为 34，阶段 2 使用 35。原因是 `origin/codex/ai-billing@a936a18` 已使用 25-28、30-33。
+- 曾在本分支旧提交上实际执行 migration 27 的开发数据库带有分支专属版本记录，不能直接作为最终合并数据库使用；合并前应备份并重建开发库，或逐条核对 `t_migration` 后人工修复，禁止直接删除生产迁移记录。
+
+### 兼容边界
+
+- 本阶段只完成认证和账号管理范围，不代表客户、门店、企微员工号、会话、消息、派单、工单、知识库、文件、WebSocket、Outbox 或 Qdrant 已完成租户隔离。
+- OIDC 与企业微信登录为保持现有自动建号链路，暂时把新账号归入 `legacy-default` 并直接审核通过；阶段 3 在开放邀请注册前必须改为通过可信租户映射建号，禁止 SaaS 新租户继续落入历史默认公司。
+- `X-Tenant-ID` 只是平台管理员当前选择，不是授权凭证；后端每次请求都会重新验证切换权限、租户状态和账号作用域。
+- 旧前端本地登录会话缺少租户字段时，首次 profile 刷新不携带公司头，后端返回完整上下文后覆盖旧会话格式。
+
+### 主要文件
+
+```text
+internal/models/models.go
+internal/pkg/enums/tenant.go
+internal/pkg/dto/dto.go
+internal/pkg/dto/response/auth_response.go
+internal/pkg/dto/response/admin_response.go
+internal/migration/000034_sync_tenant_auth_foundation.go
+internal/migration/000035_backfill_tenant_auth_context.go
+internal/repositories/tenant*_repository.go
+internal/services/tenant*_service.go
+internal/services/auth_service.go
+internal/services/user_service.go
+internal/services/oidc_login_service.go
+internal/services/wxwork_login_service.go
+internal/handlers/dashboard/user_handler.go
+internal/middleware/auth_middleware.go
+web/lib/auth.ts
+web/lib/api/client.ts
+web/components/auth-provider.tsx
+web/lib/api/admin.ts
+web/lib/generated/enums.ts
+```
+
+### 验证范围
+
+```text
+go test ./internal/services -run '<认证上下文、账号租户范围、角色作用域、OIDC 兼容测试>' -count=1
+go test ./internal/migration ./internal/middleware -run '<migration 34/35 与租户错误保留测试>' -count=1
+go test ./internal/services ./internal/migration ./internal/handlers/dashboard ./internal/middleware -run '^$' -count=1
+cd web && pnpm typecheck
+cd web && pnpm eslint components/auth-provider.tsx lib/api/client.ts lib/auth.ts lib/api/admin.ts lib/generated/enums.ts
+git diff --check
+```
+
+- migration、middleware、dashboard handler 和阶段 2 聚焦 service 测试通过。
+- `go test ./... -run '^$' -count=1` 全仓编译级验证通过。
+- `pnpm typecheck` 与阶段目标文件 eslint 通过；`make enums` 后生成文件稳定。
+- 全量前端 `*.test.mjs` 为 42/43：唯一失败是既有 `components/nav-main.test.mjs` 仍精确匹配无属性的 `<SidebarMenuButton />`，而当前已提交组件带 `className="rounded-xl"`；该文件不在阶段 2 差异中，本阶段未混入无关修复。
+
+### 并行分支影响与合并顺序
+
+- `origin/codex/ai-billing@a936a18` 与本阶段共同修改 `internal/models/models.go`、`internal/pkg/dto/response/auth_response.go`、`internal/services/wxwork_login_service.go` 和 `web/lib/api/admin.ts`，均为不同字段的相邻新增，合并时必须逐段保留双方内容，不能整文件选边。
+- AI 分支给 `User` 增加 `EmailVerifiedAt`，给认证选项增加邮箱验证码字段，并重构企微邮箱绑定；租户分支增加租户字段并为企微新账号选择租户。最终合并后的企微建号必须同时保留邮箱验证和租户归属。
+- 本阶段不修改模型调用、AI 回复链路、模型供应商、token 统计、FastGPT 或计费口径。
+- 由于阶段 2 同时承担阶段 1 migration 重编号，不应单独 cherry-pick `12d77b9`；应合并阶段 1 与阶段 2 的最终树，再让并行分支 rebase。
+- 回滚阶段 2 时可移除 Tenant 认证上下文代码，但已生成的 Tenant/User 新列由 AutoMigrate 保留；不得通过破坏性 DDL 回滚。

@@ -22,6 +22,7 @@ export type CursorResult<T> = {
 
 export type AdminUser = {
   id: number
+  tenantId: number
   username: string
   nickname: string
   avatar: string
@@ -34,6 +35,9 @@ export type AdminUser = {
   roles?: AdminRole[]
   permissions?: string[]
   manageable: boolean
+  registrationSource: string
+  approvalStatus: string
+  mustChangePassword: boolean
   storeStaff?: {
     bindingId: number
     companyId: number

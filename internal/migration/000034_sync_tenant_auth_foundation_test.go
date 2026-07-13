@@ -1,5 +1,7 @@
 package migration
 
+// These tests protect migration 34's non-destructive permission cleanup.
+
 import (
 	"strings"
 	"testing"

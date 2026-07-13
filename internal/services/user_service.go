@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
@@ -30,6 +31,14 @@ type userService struct {
 
 func (s *userService) Get(id int64) *models.User {
 	return repositories.UserRepository.Get(sqls.DB(), id)
+}
+
+func (s *userService) GetInScope(id int64, operator *dto.AuthPrincipal) *models.User {
+	if id <= 0 {
+		return nil
+	}
+	cnd := s.ApplyTenantScope(sqls.NewCnd().Eq("id", id), operator)
+	return repositories.UserRepository.FindOne(sqls.DB(), cnd)
 }
 
 func (s *userService) Take(where ...interface{}) *models.User {
@@ -100,6 +109,10 @@ func (s *userService) HasRole(userID int64, roleCode string) bool {
 }
 
 func (s *userService) CreateUser(req request.CreateUserRequest, operator *dto.AuthPrincipal) (*models.User, string, error) {
+	tenantID, registrationSource, err := s.resolveNewUserTenant(operator)
+	if err != nil {
+		return nil, "", err
+	}
 	username := strings.TrimSpace(req.Username)
 	if username == "" {
 		return nil, "", errorsx.InvalidParam("用户名不能为空")
@@ -126,17 +139,24 @@ func (s *userService) CreateUser(req request.CreateUserRequest, operator *dto.Au
 		return nil, "", err
 	}
 
+	now := time.Now()
 	user := &models.User{
-		Username:     username,
-		Nickname:     strings.TrimSpace(req.Nickname),
-		Password:     string(passwordHash),
-		Avatar:       strings.TrimSpace(req.Avatar),
-		Mobile:       mobile,
-		Email:        email,
-		Status:       enums.StatusOk,
-		Remark:       strings.TrimSpace(req.Remark),
-		PasswordSalt: "",
-		AuditFields:  utils.BuildAuditFields(operator),
+		TenantID:           tenantID,
+		Username:           username,
+		Nickname:           strings.TrimSpace(req.Nickname),
+		Password:           string(passwordHash),
+		Avatar:             strings.TrimSpace(req.Avatar),
+		Mobile:             mobile,
+		Email:              email,
+		RegistrationSource: registrationSource,
+		ApprovalStatus:     enums.UserApprovalStatusApproved,
+		ApprovedAt:         &now,
+		ApprovedBy:         operator.UserID,
+		MustChangePassword: true,
+		Status:             enums.StatusOk,
+		Remark:             strings.TrimSpace(req.Remark),
+		PasswordSalt:       "",
+		AuditFields:        utils.BuildAuditFields(operator),
 	}
 	if user.Nickname == "" {
 		user.Nickname = username
@@ -155,7 +175,12 @@ func (s *userService) CreateUser(req request.CreateUserRequest, operator *dto.Au
 }
 
 func (s *userService) UpdateUser(req request.UpdateUserRequest, operator *dto.AuthPrincipal) error {
-	user := s.Get(req.ID)
+	var user *models.User
+	if operator != nil && req.ID == operator.UserID {
+		user = s.Get(req.ID)
+	} else {
+		user = s.GetInScope(req.ID, operator)
+	}
 	if user == nil || user.DeletedAt != nil {
 		return errorsx.InvalidParam("用户不存在")
 	}
@@ -194,7 +219,7 @@ func (s *userService) UpdateUser(req request.UpdateUserRequest, operator *dto.Au
 }
 
 func (s *userService) DeleteUser(id int64, operator *dto.AuthPrincipal) error {
-	user := s.Get(id)
+	user := s.GetInScope(id, operator)
 	if user == nil {
 		return errorsx.InvalidParam("用户不存在")
 	}
@@ -215,7 +240,7 @@ func (s *userService) DeleteUser(id int64, operator *dto.AuthPrincipal) error {
 }
 
 func (s *userService) UpdateStatus(id int64, status int, operator *dto.AuthPrincipal) error {
-	user := s.Get(id)
+	user := s.GetInScope(id, operator)
 	if user == nil {
 		return errorsx.InvalidParam("用户不存在")
 	}
@@ -240,7 +265,7 @@ func (s *userService) UpdateStatus(id int64, status int, operator *dto.AuthPrinc
 }
 
 func (s *userService) ResetPassword(userID int64, operator *dto.AuthPrincipal) (string, error) {
-	user := s.Get(userID)
+	user := s.GetInScope(userID, operator)
 	if user == nil || user.DeletedAt != nil {
 		return "", errorsx.InvalidParam("用户不存在")
 	}
@@ -265,7 +290,7 @@ func (s *userService) ChangeOwnPassword(password string, operator *dto.AuthPrinc
 }
 
 func (s *userService) AssignRoles(userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
-	user := s.Get(userID)
+	user := s.GetInScope(userID, operator)
 	if user == nil || user.DeletedAt != nil {
 		return errorsx.InvalidParam("用户不存在")
 	}
@@ -285,6 +310,10 @@ func (s *userService) replaceUserRoles(userID int64, roleIDs []int64, operator *
 }
 
 func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
+	user := repositories.UserRepository.Get(db, userID)
+	if user == nil || user.DeletedAt != nil {
+		return errorsx.InvalidParam("用户不存在")
+	}
 	if err := db.Where("user_id = ?", userID).Delete(&models.UserRole{}).Error; err != nil {
 		return err
 	}
@@ -303,6 +332,12 @@ func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []in
 		}
 		if !RoleService.CanAssignRole(operator, role) {
 			return errorsx.Forbidden("不能分配同级或更高等级角色")
+		}
+		if user.TenantID > 0 && role.Scope != constants.RoleScopeTenant {
+			return errorsx.Forbidden("租户账号只能分配公司角色")
+		}
+		if user.TenantID == 0 && role.Scope != constants.RoleScopePlatform {
+			return errorsx.Forbidden("平台账号只能分配平台角色")
 		}
 		relation := &models.UserRole{
 			UserID:      userID,
@@ -323,6 +358,9 @@ func (s *userService) CanManageUser(operator *dto.AuthPrincipal, user *models.Us
 	if RoleService.HighestAuthorityLevel(operator) <= 0 {
 		return false
 	}
+	if !s.CanViewUser(operator, user) {
+		return false
+	}
 	relations := UserRoleService.Find(sqls.NewCnd().Eq("user_id", user.ID))
 	for i := range relations {
 		role := RoleService.Get(relations[i].RoleID)
@@ -331,6 +369,54 @@ func (s *userService) CanManageUser(operator *dto.AuthPrincipal, user *models.Us
 		}
 	}
 	return true
+}
+
+func (s *userService) CanViewUser(operator *dto.AuthPrincipal, user *models.User) bool {
+	if operator == nil || user == nil {
+		return false
+	}
+	if operator.IsPlatformAccount {
+		if operator.ActiveTenantID > 0 {
+			return user.TenantID == operator.ActiveTenantID
+		}
+		return user.TenantID == 0
+	}
+	return operator.TenantID > 0 && user.TenantID == operator.TenantID
+}
+
+func (s *userService) ApplyTenantScope(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {
+	if cnd == nil {
+		cnd = sqls.NewCnd()
+	}
+	if operator == nil {
+		return cnd.Where("1 = 0")
+	}
+	if operator.IsPlatformAccount {
+		if operator.ActiveTenantID > 0 {
+			return cnd.Eq("tenant_id", operator.ActiveTenantID)
+		}
+		return cnd.Eq("tenant_id", 0)
+	}
+	if operator.TenantID <= 0 {
+		return cnd.Where("1 = 0")
+	}
+	return cnd.Eq("tenant_id", operator.TenantID)
+}
+
+func (s *userService) resolveNewUserTenant(operator *dto.AuthPrincipal) (int64, enums.UserRegistrationSource, error) {
+	if operator == nil {
+		return 0, "", errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if operator.IsPlatformAccount {
+		if operator.ActiveTenantID > 0 {
+			return operator.ActiveTenantID, enums.UserRegistrationSourceTenant, nil
+		}
+		return 0, enums.UserRegistrationSourcePlatform, nil
+	}
+	if operator.TenantID <= 0 {
+		return 0, "", errorsx.Forbidden("账号尚未归属接入公司")
+	}
+	return operator.TenantID, enums.UserRegistrationSourceTenant, nil
 }
 
 func (s *userService) EnsureCanManageUser(operator *dto.AuthPrincipal, user *models.User) error {

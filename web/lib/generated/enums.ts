@@ -77,14 +77,35 @@ export const ContactTypeLabels: Record<ContactType, string> = {
   [ContactType.Other]: "其他",
 }
 
+export enum ConversationRouteStatus {
+  AIServing = "AI_SERVING",
+  StoreWecomManual = "STORE_WECOM_MANUAL",
+  HQAgentDeskPending = "HQ_AGENTDESK_PENDING",
+  HQAgentDeskServing = "HQ_AGENTDESK_SERVING",
+  AIFallback = "AI_FALLBACK",
+  Closed = "CLOSED",
+}
+export const ConversationRouteStatusLabels: Record<ConversationRouteStatus, string> = {
+  [ConversationRouteStatus.AIServing]: "AI接待中",
+  [ConversationRouteStatus.StoreWecomManual]: "门店企微人工接待",
+  [ConversationRouteStatus.HQAgentDeskPending]: "总部网页端待接管",
+  [ConversationRouteStatus.HQAgentDeskServing]: "总部网页端人工接待",
+  [ConversationRouteStatus.AIFallback]: "AI兜底中",
+  [ConversationRouteStatus.Closed]: "已关闭",
+}
+
 export enum ExternalSource {
   Guest = "guest",
   WxWorkKF = "wxwork_kf",
+  WxWorkCLI = "wxwork_cli",
+  WxWorkProtocol = "wxwork_protocol",
   User = "user",
 }
 export const ExternalSourceLabels: Record<ExternalSource, string> = {
   [ExternalSource.Guest]: "访客",
   [ExternalSource.WxWorkKF]: "企业微信客服",
+  [ExternalSource.WxWorkCLI]: "企业微信CLI",
+  [ExternalSource.WxWorkProtocol]: "企业微信协议",
   [ExternalSource.User]: "用户",
 }
 
@@ -148,6 +169,7 @@ export enum IMEventType {
   Close = "close",
   MessageSend = "message_send",
   MessageRecall = "message_recall",
+  RouteChange = "route_change",
 }
 export const IMEventTypeLabels: Record<IMEventType, string> = {
   [IMEventType.Create]: "创建会话",
@@ -156,6 +178,7 @@ export const IMEventTypeLabels: Record<IMEventType, string> = {
   [IMEventType.Close]: "关闭会话",
   [IMEventType.MessageSend]: "发送消息",
   [IMEventType.MessageRecall]: "撤回消息",
+  [IMEventType.RouteChange]: "接待路由变更",
 }
 
 export enum IMMessageStatus {
@@ -178,14 +201,38 @@ export const IMMessageStatusLabels: Record<IMMessageStatus, string> = {
 export enum IMMessageType {
   Text = "text",
   Image = "image",
+  Voice = "voice",
+  Video = "video",
   Attachment = "attachment",
   HTML = "html",
+  GIF = "gif",
+  Location = "location",
+  ContactCard = "contact_card",
+  Link = "link",
+  MiniProgram = "mini_program",
+  Feed = "feed",
+  FeedLive = "feed_live",
+  Quote = "quote",
+  MergedForward = "merged_forward",
+  ShopProduct = "shop_product",
 }
 export const IMMessageTypeLabels: Record<IMMessageType, string> = {
   [IMMessageType.Text]: "文本",
   [IMMessageType.Image]: "图片",
+  [IMMessageType.Voice]: "语音",
+  [IMMessageType.Video]: "视频",
   [IMMessageType.Attachment]: "附件",
   [IMMessageType.HTML]: "富文本",
+  [IMMessageType.GIF]: "动图",
+  [IMMessageType.Location]: "位置",
+  [IMMessageType.ContactCard]: "名片",
+  [IMMessageType.Link]: "链接",
+  [IMMessageType.MiniProgram]: "小程序",
+  [IMMessageType.Feed]: "视频号",
+  [IMMessageType.FeedLive]: "视频号直播",
+  [IMMessageType.Quote]: "引用消息",
+  [IMMessageType.MergedForward]: "合并转发",
+  [IMMessageType.ShopProduct]: "微信小店商品",
 }
 
 export enum IMParticipantType {
@@ -247,19 +294,45 @@ export const KnowledgeBaseTypeLabels: Record<KnowledgeBaseType, string> = {
   [KnowledgeBaseType.FastGPTCloud]: "FastGPT云端知识库",
 }
 
+export enum KnowledgeCandidateSource {
+  AgentDeskHQ = "agentdesk_hq",
+  StoreWecom = "store_wecom",
+  AINoAnswer = "ai_no_answer",
+}
+export const KnowledgeCandidateSourceLabels: Record<KnowledgeCandidateSource, string> = {
+  [KnowledgeCandidateSource.AgentDeskHQ]: "总部网页端人工",
+  [KnowledgeCandidateSource.StoreWecom]: "门店企微人工",
+  [KnowledgeCandidateSource.AINoAnswer]: "AI未解答",
+}
+
+export enum KnowledgeCandidateStatus {
+  Pending = "pending",
+  Approved = "approved",
+  Rejected = "rejected",
+  Exported = "exported",
+  Imported = "imported",
+}
+export const KnowledgeCandidateStatusLabels: Record<KnowledgeCandidateStatus, string> = {
+  [KnowledgeCandidateStatus.Pending]: "待审核",
+  [KnowledgeCandidateStatus.Approved]: "已通过",
+  [KnowledgeCandidateStatus.Rejected]: "已驳回",
+  [KnowledgeCandidateStatus.Exported]: "已导出",
+  [KnowledgeCandidateStatus.Imported]: "已导入知识库",
+}
+
 export enum KnowledgeChunkProvider {
   Fixed = "fixed",
   Structured = "structured",
   FAQ = "faq",
   Semantic = "semantic",
-  FastGPTCloud = "fastgpt_cloud",
+  FastGPT = "fastgpt_cloud",
 }
 export const KnowledgeChunkProviderLabels: Record<KnowledgeChunkProvider, string> = {
   [KnowledgeChunkProvider.Fixed]: "固定长度",
   [KnowledgeChunkProvider.Structured]: "结构化分块",
   [KnowledgeChunkProvider.FAQ]: "问答式分块",
   [KnowledgeChunkProvider.Semantic]: "语义分块",
-  [KnowledgeChunkProvider.FastGPTCloud]: "FastGPT云端",
+  [KnowledgeChunkProvider.FastGPT]: "FastGPT云端",
 }
 
 export enum KnowledgeChunkType {
@@ -354,13 +427,26 @@ export const StatusLabels: Record<Status, string> = {
   [Status.Deleted]: "已删除",
 }
 
+export enum TenantVerificationStatus {
+  Pending = "pending",
+  Verified = "verified",
+  Rejected = "rejected",
+}
+export const TenantVerificationStatusLabels: Record<TenantVerificationStatus, string> = {
+  [TenantVerificationStatus.Pending]: "待核验",
+  [TenantVerificationStatus.Verified]: "已核验",
+  [TenantVerificationStatus.Rejected]: "已驳回",
+}
+
 export enum ThirdProvider {
   WxWork = "wxwork",
   Dingtalk = "dingtalk",
+  OIDC = "oidc",
 }
 export const ThirdProviderLabels: Record<ThirdProvider, string> = {
   [ThirdProvider.WxWork]: "企业微信",
   [ThirdProvider.Dingtalk]: "钉钉",
+  [ThirdProvider.OIDC]: "OIDC",
 }
 
 export enum TicketStatus {
@@ -372,6 +458,34 @@ export const TicketStatusLabels: Record<TicketStatus, string> = {
   [TicketStatus.Pending]: "待处理",
   [TicketStatus.InProgress]: "处理中",
   [TicketStatus.Done]: "已处理",
+}
+
+export enum UserApprovalStatus {
+  Pending = "pending",
+  Approved = "approved",
+  Rejected = "rejected",
+}
+export const UserApprovalStatusLabels: Record<UserApprovalStatus, string> = {
+  [UserApprovalStatus.Pending]: "待审核",
+  [UserApprovalStatus.Approved]: "已通过",
+  [UserApprovalStatus.Rejected]: "已拒绝",
+}
+
+export enum UserRegistrationSource {
+  Platform = "platform_created",
+  Tenant = "tenant_created",
+  Invitation = "invitation",
+  LegacyMigration = "legacy_migration",
+  WxWork = "wxwork",
+  OIDC = "oidc",
+}
+export const UserRegistrationSourceLabels: Record<UserRegistrationSource, string> = {
+  [UserRegistrationSource.Platform]: "平台创建",
+  [UserRegistrationSource.Tenant]: "公司创建",
+  [UserRegistrationSource.Invitation]: "邀请注册",
+  [UserRegistrationSource.LegacyMigration]: "历史迁移",
+  [UserRegistrationSource.WxWork]: "企业微信登录",
+  [UserRegistrationSource.OIDC]: "OIDC 登录",
 }
 
 export enum VectorDBType {

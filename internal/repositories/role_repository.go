@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 
 	"agent-desk/internal/pkg/httpx/params"
 
@@ -103,4 +104,13 @@ func (r *roleRepository) Delete(db *gorm.DB, id int64) {
 
 func (r *roleRepository) GetByCode(db *gorm.DB, code string) *models.Role {
 	return r.FindOne(db, sqls.NewCnd().Eq("code", code))
+}
+
+func (r *roleRepository) UserHasScope(db *gorm.DB, userID int64, scope string) (bool, error) {
+	var count int64
+	err := db.Table("t_role AS r").
+		Joins("JOIN t_user_role AS ur ON ur.role_id = r.id").
+		Where("ur.user_id = ? AND r.scope = ? AND r.status = ?", userID, scope, enums.StatusOk).
+		Count(&count).Error
+	return count > 0, err
 }

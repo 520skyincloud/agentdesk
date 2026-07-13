@@ -50,27 +50,33 @@ func TestUserServiceAssignRolesEnforcesAuthority(t *testing.T) {
 	roles := seedAuthorityRoles(t, db)
 	platformOperatorRole := createAuthorityRole(t, db, "platform_operator", constants.RoleScopePlatform, 70)
 	adminUser := createAuthorityUser(t, db, "authority_admin")
-	admin := &dto.AuthPrincipal{UserID: adminUser.ID, Username: adminUser.Username, Roles: []string{constants.RoleCodeAdmin}}
+	legacyTenantID := authorityLegacyTenantID(t, db)
+	platformAdmin := &dto.AuthPrincipal{UserID: adminUser.ID, Username: adminUser.Username, Roles: []string{constants.RoleCodeAdmin}, IsPlatformAccount: true}
+	tenantAdmin := &dto.AuthPrincipal{UserID: adminUser.ID, Username: adminUser.Username, Roles: []string{constants.RoleCodeAdmin}, ActiveTenantID: legacyTenantID, IsPlatformAccount: true}
 
 	higherTarget := createAuthorityUser(t, db, "higher_target")
 	assignAuthorityRole(t, db, higherTarget.ID, roles[constants.RoleCodeSuperAdmin].ID)
-	if err := UserService.AssignRoles(higherTarget.ID, []int64{roles[constants.RoleCodeCsUser].ID}, admin); !hasCode(err, errorsx.CodeAuthForbidden) {
+	if err := UserService.AssignRoles(higherTarget.ID, []int64{roles[constants.RoleCodeCsUser].ID}, platformAdmin); !hasCode(err, errorsx.CodeAuthForbidden) {
 		t.Fatalf("expected higher account assignment to be forbidden, got %v", err)
 	}
 
 	lowerTarget := createAuthorityUser(t, db, "lower_target")
+	if err := db.Model(&models.User{}).Where("id = ?", lowerTarget.ID).Update("tenant_id", legacyTenantID).Error; err != nil {
+		t.Fatalf("assign lower target tenant: %v", err)
+	}
+	lowerTarget.TenantID = legacyTenantID
 	assignAuthorityRole(t, db, lowerTarget.ID, roles[constants.RoleCodeCsUser].ID)
-	if err := UserService.AssignRoles(lowerTarget.ID, []int64{roles[constants.RoleCodeCsTeamLeader].ID}, admin); err != nil {
+	if err := UserService.AssignRoles(lowerTarget.ID, []int64{roles[constants.RoleCodeCsTeamLeader].ID}, tenantAdmin); err != nil {
 		t.Fatalf("assign lower tenant role: %v", err)
 	}
 	assertOnlyUserRole(t, db, lowerTarget.ID, roles[constants.RoleCodeCsTeamLeader].ID)
 
-	if err := UserService.AssignRoles(lowerTarget.ID, []int64{platformOperatorRole.ID}, admin); !hasCode(err, errorsx.CodeAuthForbidden) {
+	if err := UserService.AssignRoles(lowerTarget.ID, []int64{platformOperatorRole.ID}, tenantAdmin); !hasCode(err, errorsx.CodeAuthForbidden) {
 		t.Fatalf("expected platform role assignment to be forbidden, got %v", err)
 	}
 	assertOnlyUserRole(t, db, lowerTarget.ID, roles[constants.RoleCodeCsTeamLeader].ID)
 
-	if err := UserService.AssignRoles(adminUser.ID, []int64{roles[constants.RoleCodeCsUser].ID}, admin); !hasCode(err, errorsx.CodeAuthForbidden) {
+	if err := UserService.AssignRoles(adminUser.ID, []int64{roles[constants.RoleCodeCsUser].ID}, platformAdmin); !hasCode(err, errorsx.CodeAuthForbidden) {
 		t.Fatalf("expected self role assignment to be forbidden, got %v", err)
 	}
 }
@@ -80,7 +86,7 @@ func TestUserServicePrivilegedMutationsEnforceAuthority(t *testing.T) {
 	roles := seedAuthorityRoles(t, db)
 	adminUser := createAuthorityUser(t, db, "mutation_admin")
 	assignAuthorityRole(t, db, adminUser.ID, roles[constants.RoleCodeAdmin].ID)
-	admin := &dto.AuthPrincipal{UserID: adminUser.ID, Username: adminUser.Username, Roles: []string{constants.RoleCodeAdmin}}
+	admin := &dto.AuthPrincipal{UserID: adminUser.ID, Username: adminUser.Username, Roles: []string{constants.RoleCodeAdmin}, IsPlatformAccount: true}
 	superUser := createAuthorityUser(t, db, "mutation_super")
 	assignAuthorityRole(t, db, superUser.ID, roles[constants.RoleCodeSuperAdmin].ID)
 
@@ -140,6 +146,9 @@ func TestTenantAdminCreatesAccountWithLowerRoleOnly(t *testing.T) {
 	db := setupAuthServiceTestDB(t)
 	roles := seedAuthorityRoles(t, db)
 	operator := &dto.AuthPrincipal{UserID: 300, Username: "tenant_admin", Roles: []string{constants.RoleCodeTenantAdmin}}
+	legacyTenantID := authorityLegacyTenantID(t, db)
+	operator.TenantID = legacyTenantID
+	operator.ActiveTenantID = legacyTenantID
 
 	user, password, err := UserService.CreateUser(request.CreateUserRequest{
 		Username: "new_tenant_agent",
@@ -150,6 +159,9 @@ func TestTenantAdminCreatesAccountWithLowerRoleOnly(t *testing.T) {
 	}
 	if user == nil || password == "" {
 		t.Fatalf("expected created user and generated password, got user=%+v password=%q", user, password)
+	}
+	if user.TenantID != legacyTenantID || user.RegistrationSource != enums.UserRegistrationSourceTenant || user.ApprovalStatus != enums.UserApprovalStatusApproved {
+		t.Fatalf("unexpected tenant account context: %+v", user)
 	}
 	assertOnlyUserRole(t, db, user.ID, roles[constants.RoleCodeCsUser].ID)
 
@@ -249,4 +261,13 @@ func assertOnlyUserRole(t *testing.T, db *gorm.DB, userID, roleID int64) {
 func authorityAuditFields() models.AuditFields {
 	now := time.Now()
 	return models.AuditFields{CreatedAt: now, UpdatedAt: now}
+}
+
+func authorityLegacyTenantID(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var tenant models.Tenant
+	if err := db.Where("tenant_code = ?", constants.LegacyDefaultTenantCode).Take(&tenant).Error; err != nil {
+		t.Fatalf("find legacy tenant: %v", err)
+	}
+	return tenant.ID
 }

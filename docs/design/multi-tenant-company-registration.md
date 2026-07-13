@@ -716,7 +716,7 @@ POST /api/auth/register
 - 移除前端角色 URL 白名单，改为查看权限和动作权限。
 - 审计 `UserPermission` 数据，但先不直接删除有数据的表。
 
-迁移安全规则：migration 27 若发现 `t_user_permission` 存在历史记录，必须中止启动并保留原数据，待人工转换为正式角色后重试；记录数为 0 时才停用运行时读取并保留空物理表。禁止静默删除账号级例外权限。
+迁移安全规则：migration 34 若发现 `t_user_permission` 存在历史记录，必须中止启动并保留原数据，待人工转换为正式角色后重试；记录数为 0 时才停用运行时读取并保留空物理表。禁止静默删除账号级例外权限。
 
 高风险共享文件：`internal/pkg/constants/auth.go`、权限 migration、`web/lib/navigation.tsx`、多语言资源。
 
@@ -726,6 +726,8 @@ POST /api/auth/register
 - 扩展 User、Role、AuthPrincipal 和登录响应。
 - 实现平台账号与租户账号上下文规则。
 - 统一请求客户端支持 `X-Tenant-ID`。
+
+迁移安全规则：migration 35 创建历史默认租户并回填现有账号。若账号同时持有启用中的平台角色和租户角色，迁移必须中止并保留原数据；重复执行不得覆盖后续创建的邀请注册账号或其他租户账号。
 
 高风险共享文件：`internal/models/models.go`、认证 DTO/service、`web/lib/api/client.ts`。
 

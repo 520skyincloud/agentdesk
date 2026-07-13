@@ -52,6 +52,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user: profile.user,
         permissions: profile.permissions,
         roles: profile.roles,
+        activeTenantId: profile.activeTenantId,
+        canSwitchTenant: profile.canSwitchTenant,
+        isPlatformAccount: profile.isPlatformAccount,
       }
       writeSession(nextSession)
       setSession(nextSession)

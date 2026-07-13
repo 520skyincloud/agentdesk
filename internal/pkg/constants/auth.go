@@ -32,7 +32,9 @@ const (
 )
 
 const (
-	AuthTokenPrefix = "ak_"
+	AuthTokenPrefix         = "ak_"
+	TenantHeaderName        = "X-Tenant-ID"
+	LegacyDefaultTenantCode = "legacy-default"
 )
 
 const (
