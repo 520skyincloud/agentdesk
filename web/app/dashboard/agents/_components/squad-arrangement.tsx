@@ -2,12 +2,15 @@
 
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
+  pointerWithin,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core"
 import {
   CalendarDaysIcon,
@@ -20,6 +23,7 @@ import {
   UsersRoundIcon,
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { createPortal } from "react-dom"
 import { toast } from "sonner"
 
 import { OptionCombobox } from "@/components/option-combobox"
@@ -58,7 +62,7 @@ function DraggableAgent({ profile, selected, disabled = false, onSelectedChange 
   onSelectedChange: (checked: boolean) => void
 }) {
   const t = useI18n()
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `profile-${profile.id}`,
     data: { profileId: profile.id },
     disabled,
@@ -66,8 +70,7 @@ function DraggableAgent({ profile, selected, disabled = false, onSelectedChange 
   return (
     <div
       ref={setNodeRef}
-      style={transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : undefined}
-      className={cn("flex items-center gap-2 border-b px-3 py-2.5 last:border-b-0", isDragging && "z-20 bg-background opacity-70 shadow-lg")}
+      className={cn("flex items-center gap-2 border-b px-3 py-2.5 last:border-b-0", isDragging && "opacity-35")}
     >
       <button type="button" disabled={disabled} aria-label={t("agentProfile.dragAgentToSquad", { name: profile.displayName })} className="cursor-grab touch-none text-muted-foreground active:cursor-grabbing disabled:cursor-default disabled:opacity-40" {...listeners} {...attributes}>
         <GripVerticalIcon className="size-4" />
@@ -78,6 +81,19 @@ function DraggableAgent({ profile, selected, disabled = false, onSelectedChange 
         <div className="truncate text-xs text-muted-foreground">{profile.agentCode}</div>
       </div>
       <Badge variant="outline" className="tabular-nums">{profile.activeTaskCount}/{profile.maxConcurrentCount}</Badge>
+    </div>
+  )
+}
+
+function AgentDragPreview({ profile }: { profile: AdminAgentProfile }) {
+  return (
+    <div className="flex h-full w-full cursor-grabbing items-center gap-2 border border-primary/60 bg-background px-3 py-2.5 shadow-xl">
+      <GripVerticalIcon className="size-4 shrink-0 text-primary" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium">{profile.displayName}</div>
+        <div className="truncate text-xs text-muted-foreground">{profile.agentCode}</div>
+      </div>
+      <Badge variant="outline" className="shrink-0 tabular-nums">{profile.activeTaskCount}/{profile.maxConcurrentCount}</Badge>
     </div>
   )
 }
@@ -140,6 +156,7 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
   const [saving, setSaving] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingSquad, setEditingSquad] = useState<AdminAgentTeamSquad | null>(null)
+  const [activeProfileId, setActiveProfileId] = useState(0)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -169,6 +186,7 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
   }, [canCreate, createRequestKey])
 
   const profileMap = useMemo(() => new Map(profiles.map((profile) => [profile.id, profile])), [profiles])
+  const activeProfile = activeProfileId > 0 ? profileMap.get(activeProfileId) : undefined
   const filteredProfiles = useMemo(() => {
     const query = keyword.trim().toLowerCase()
     return profiles.filter((profile) => !query || profile.displayName.toLowerCase().includes(query) || profile.agentCode.toLowerCase().includes(query))
@@ -188,7 +206,12 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
     }
   }
 
+  function handleDragStart(event: DragStartEvent) {
+    setActiveProfileId(Number(event.active.data.current?.profileId) || 0)
+  }
+
   function handleDragEnd(event: DragEndEvent) {
+    setActiveProfileId(0)
     const profileId = Number(event.active.data.current?.profileId)
     const squadId = Number(event.over?.data.current?.squadId)
     const squad = squads.find((item) => item.id === squadId)
@@ -226,7 +249,7 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
   if (loading) return <div className="py-16 text-center text-muted-foreground">{t("agentProfile.loading")}</div>
 
   return (
-    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+    <DndContext sensors={sensors} autoScroll={false} collisionDetection={pointerWithin} onDragStart={handleDragStart} onDragCancel={() => setActiveProfileId(0)} onDragEnd={handleDragEnd}>
       <div className="grid min-h-0 gap-4 xl:h-full xl:grid-cols-[minmax(280px,0.8fr)_minmax(420px,1.4fr)]">
         <section className="flex max-h-[520px] min-h-0 flex-col border bg-background xl:max-h-none">
           <header className="border-b p-3">
@@ -252,6 +275,12 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
         </section>
       </div>
       <SquadEditDialog open={dialogOpen} saving={saving} teamId={team.id} item={editingSquad} profiles={profiles} onOpenChange={setDialogOpen} onSubmit={handleSaveSquad} />
+      {activeProfile ? createPortal(
+        <DragOverlay dropAnimation={null}>
+          <AgentDragPreview profile={activeProfile} />
+        </DragOverlay>,
+        document.body,
+      ) : null}
     </DndContext>
   )
 }
