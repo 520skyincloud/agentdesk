@@ -159,6 +159,14 @@ func (s *userService) UpdateUser(req request.UpdateUserRequest, operator *dto.Au
 	if user == nil || user.DeletedAt != nil {
 		return errorsx.InvalidParam("用户不存在")
 	}
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if req.ID != operator.UserID {
+		if err := s.EnsureCanManageUser(operator, user); err != nil {
+			return err
+		}
+	}
 
 	mobile := utils.NormalizeNullableString(req.Mobile)
 	email := utils.NormalizeNullableString(req.Email)
@@ -190,6 +198,9 @@ func (s *userService) DeleteUser(id int64, operator *dto.AuthPrincipal) error {
 	if user == nil {
 		return errorsx.InvalidParam("用户不存在")
 	}
+	if err := s.EnsureCanManageUser(operator, user); err != nil {
+		return err
+	}
 
 	if err := s.Updates(id, map[string]any{
 		"status":           enums.StatusDisabled,
@@ -207,6 +218,9 @@ func (s *userService) UpdateStatus(id int64, status int, operator *dto.AuthPrinc
 	user := s.Get(id)
 	if user == nil {
 		return errorsx.InvalidParam("用户不存在")
+	}
+	if err := s.EnsureCanManageUser(operator, user); err != nil {
+		return err
 	}
 	if !slices.Contains(enums.StatusValues, enums.Status(status)) {
 		return errorsx.InvalidParam("状态值不合法")
@@ -226,6 +240,13 @@ func (s *userService) UpdateStatus(id int64, status int, operator *dto.AuthPrinc
 }
 
 func (s *userService) ResetPassword(userID int64, operator *dto.AuthPrincipal) (string, error) {
+	user := s.Get(userID)
+	if user == nil || user.DeletedAt != nil {
+		return "", errorsx.InvalidParam("用户不存在")
+	}
+	if err := s.EnsureCanManageUser(operator, user); err != nil {
+		return "", err
+	}
 	password, err := utils.GenerateRandomPassword(12)
 	if err != nil {
 		return "", err
@@ -248,6 +269,9 @@ func (s *userService) AssignRoles(userID int64, roleIDs []int64, operator *dto.A
 	if user == nil || user.DeletedAt != nil {
 		return errorsx.InvalidParam("用户不存在")
 	}
+	if err := s.EnsureCanManageUser(operator, user); err != nil {
+		return err
+	}
 	if err := s.replaceUserRoles(userID, roleIDs, operator); err != nil {
 		return err
 	}
@@ -264,13 +288,21 @@ func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []in
 	if err := db.Where("user_id = ?", userID).Delete(&models.UserRole{}).Error; err != nil {
 		return err
 	}
+	seen := make(map[int64]struct{}, len(roleIDs))
 	for _, roleID := range roleIDs {
-		role := RoleService.Get(roleID)
+		if _, exists := seen[roleID]; exists {
+			continue
+		}
+		seen[roleID] = struct{}{}
+		role := repositories.RoleRepository.Get(db, roleID)
 		if role == nil {
 			return errorsx.InvalidParam("角色不存在")
 		}
 		if role.Status != enums.StatusOk {
 			return errorsx.InvalidParam("禁用角色不允许分配")
+		}
+		if !RoleService.CanAssignRole(operator, role) {
+			return errorsx.Forbidden("不能分配同级或更高等级角色")
 		}
 		relation := &models.UserRole{
 			UserID:      userID,
@@ -280,6 +312,36 @@ func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []in
 		if err := db.Create(relation).Error; err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *userService) CanManageUser(operator *dto.AuthPrincipal, user *models.User) bool {
+	if operator == nil || user == nil || operator.UserID <= 0 || user.ID == operator.UserID {
+		return false
+	}
+	if RoleService.HighestAuthorityLevel(operator) <= 0 {
+		return false
+	}
+	relations := UserRoleService.Find(sqls.NewCnd().Eq("user_id", user.ID))
+	for i := range relations {
+		role := RoleService.Get(relations[i].RoleID)
+		if role != nil && !RoleService.CanManageRole(operator, role) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *userService) EnsureCanManageUser(operator *dto.AuthPrincipal, user *models.User) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if user != nil && user.ID == operator.UserID {
+		return errorsx.Forbidden("不能通过用户管理修改自己的账号")
+	}
+	if !s.CanManageUser(operator, user) {
+		return errorsx.Forbidden("目标账号包含无权管理的角色")
 	}
 	return nil
 }

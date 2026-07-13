@@ -217,3 +217,107 @@ pnpm --dir web typecheck
 - 同文件风险：`internal/models/models.go`、`internal/bootstrap/routes.go`、`web/lib/api/admin.ts`、`web/messages/zh-CN.json`、`web/messages/en-US.json`。
 - 不涉及 AI runtime、供应商、token 或计费。
 - 建议先合并小组模型/API，再合并排班与派单，最后合并两个前端步骤；禁止整文件覆盖 `ai-billing` 修改。
+
+## 12. 多租户公司与邀请注册设计（2026-07-13）
+
+### 设计依据
+
+- 新增 `docs/design/multi-tenant-company-registration.md`，作为租户公司、账号、角色权限、邀请注册、公司切换、数据隔离和后台导航的后续实现基线。
+- 本步骤只形成设计文档，没有修改 model、migration、DTO、接口、权限数据、页面或运行时。
+- 现有 `Company` 同时承担客户企业、门店公司和公司模型范围，后续不得直接改名为租户；设计采用独立 `Tenant`，原 `Company` 收敛为租户内客户企业。
+- 页面采用保守显示策略：模块和必要信息按查看权限保留，创建、编辑、删除、分配、导出、重置等选项按动作权限隐藏；后端仍逐接口鉴权。
+
+### 已确认权限边界
+
+- 账号只绑定角色，角色绑定权限；后续审计并废止 `UserPermission` 账号级例外权限。
+- 新增公司主管 `tenant_admin`，位于 `admin` 与 `cs_team_leader` 之间，只管理本租户。
+- 管理员及以上可以为低级角色配置权限；公司主管只能为本公司账号分配下级角色。
+- 前端角色 URL 白名单属于隐藏权限，后续改为查看权限和动作权限。
+- `RolePostUpdate_sort` 需补 `role.update`；无真实调用的 `permission.sync` 随权限基础阶段删除。
+- 新增租户、邀请码和注册审核权限时，通过独立幂等 DML migration 同步到全局权限管理。
+
+### 后续共享风险与合并顺序
+
+- 高风险文件：`internal/models/models.go`、认证 DTO/service、`internal/bootstrap/routes.go`、`internal/bootstrap/server.go`、`web/lib/api/client.ts`、`web/lib/api/admin.ts`、`web/lib/navigation.tsx` 和多语言资源。
+- Qdrant payload/filter、AIConfig、公司模型设置和计费边界必须与 `codex/ai-billing` 负责人共同确认，客服分支不得单独修改 AI runtime 或计费语义。
+- 建议先合并独立租户/权限共享契约，再让两个分支 rebase，之后分别实现客服业务隔离与 AI/计费租户维度。
+- 正式启用公司切换和公开注册前，必须完成列表、详情、写操作、WebSocket、回调、Outbox、向量和文件的双租户隔离验收。
+
+## 13. 多租户阶段 1：权限基础清理（2026-07-13）
+
+### 本步骤目标与结果
+
+- 新增 `tenant_admin` 公司主管角色，固定层级为 `super_admin=100`、`admin=80`、`tenant_admin=60`、`cs_team_leader=40`、成员角色 `=20`。
+- Role 新增 `scope`、`authority_level`，Permission 新增 `scope`；排序字段 `sort_no` 继续只承担页面顺序。
+- 新增接入公司、邀请码和注册审核权限，所有权限继续由全局权限管理页展示。
+- 账号仍只分配角色；认证不再合并 `t_user_permission` 账号级允许/拒绝记录。
+- 删除无真实路由和调用的 `permission.sync`，角色排序接口补 `role.update`。
+- 前端导航取消客服角色 URL 白名单，统一按 `*.view` 权限；用户与角色页面按动作权限和目标层级隐藏操作。
+
+### 账号与角色安全边界
+
+- 操作者只能分配和管理低于自身最高等级的角色，平台角色只能由超级管理员分配。
+- 不能通过用户管理修改自己的角色、密码、状态或删除自己；自己的基础资料仍可编辑。
+- 创建账号时若同时携带角色，除 `user.create` 外还必须具有 `user.assignRole`。
+- 更新、停用、删除、重置密码和角色分配都会拒绝包含同级或更高等级角色的目标账号。
+- 租户角色不能绑定 `scope=platform` 的权限，前后端均做限制。
+
+### 数据与迁移
+
+- DDL 由 `AutoMigrate` 增加 Role/Permission 字段；DML 使用 `000027_sync_tenant_auth_foundation.go` 同步内置角色、权限和默认关系。
+- migration 27 先统计 `t_user_permission`。若存在历史记录则返回错误、保留全部记录并阻止服务带着权限语义变化启动；记录为空时不删除物理表，只移除运行时依赖。
+- migration 27 删除 `permission.sync` 及其角色关系，迁移保持幂等。
+
+### 主要文件
+
+```text
+internal/models/models.go
+internal/pkg/constants/auth.go
+internal/migration/000002_init_auth_data.go
+internal/migration/000027_sync_tenant_auth_foundation.go
+internal/services/auth_service.go
+internal/services/role_service.go
+internal/services/user_service.go
+internal/handlers/dashboard/role_handler.go
+internal/handlers/dashboard/user_handler.go
+internal/builders/user_builder.go
+internal/pkg/dto/request/admin_request.go
+internal/pkg/dto/response/admin_response.go
+web/lib/navigation.tsx
+web/components/app-sidebar.tsx
+web/lib/api/admin.ts
+web/app/dashboard/roles/*
+web/app/dashboard/permissions/page.tsx
+web/app/dashboard/users/*
+web/messages/zh-CN.json
+web/messages/en-US.json
+```
+
+删除运行时文件：
+
+```text
+internal/repositories/user_permission_repository.go
+internal/services/user_permission_service.go
+```
+
+### 验证证据
+
+```text
+go test ./internal/handlers/dashboard ./internal/migration -count=1
+go test ./internal/services -run 'Test(RoleAuthorityAssignmentMatrix|UserServiceAssignRolesEnforcesAuthority|UserServicePrivilegedMutationsEnforceAuthority|RoleServiceTenantRoleRejectsPlatformPermission|TenantAdminCreatesAccountWithLowerRoleOnly|AuthServiceIgnoresLegacyAccountPermissionOverrides)$' -count=1
+cd web && pnpm typecheck
+cd web && pnpm eslint <本阶段目标文件>
+git diff --check
+```
+
+- Handler、migration 和阶段 1 service 测试通过。
+- 前端类型检查通过；目标 lint 只有 `app-sidebar.tsx` 既有 `<img>` 性能警告，无错误。
+- 全量 `go test ./internal/services` 仍会被既有异步 AI 回复测试在测试结束后访问已清空的全局 `sqls.DB()` 触发 nil panic；栈位于 `TriggerReplyAsync -> BuildRuntimeAIAgentForConversation`，与本阶段权限代码无关，不能作为阶段 1 通过证据，也不得隐瞒。
+
+### 并行分支影响与合并顺序
+
+- 已在开始阶段执行 `git fetch origin`；`codex/ai-billing` 当前使用 migration 21-24，本分支使用 25-27，无版本重复。
+- 高风险同文件为 `models.go`、`web/lib/api/admin.ts`、导航和双语资源；AI 分支当前最新提交未修改本阶段字段语义，但合并前仍需再次 fetch 和逐文件核对。
+- 本阶段不修改 AI runtime、供应商配置、token 统计、计费口径、会话/消息状态或 WebSocket payload。
+- 建议先合并本阶段权限共享契约，再由客服和 AI 分支 rebase；阶段 2 才增加 Tenant 和认证上下文。
+- 回滚边界：可以整体回滚阶段 1 代码和 migration 27；空的 `t_user_permission` 物理表保留，不做破坏性 DDL。

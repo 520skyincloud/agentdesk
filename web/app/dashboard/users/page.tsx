@@ -76,8 +76,12 @@ export default function DashboardUsersPage() {
   const { locale } = useAppLocale()
   const { session } = useAuth()
   const permissions = useMemo(() => new Set(session?.permissions ?? []), [session?.permissions])
+  const canCreateUsers = permissions.has("user.create")
+  const canUpdateUsers = permissions.has("user.update")
+  const canAssignRoles = permissions.has("user.assignRole") && permissions.has("role.view")
   const canViewAgentTeams = permissions.has("agentTeam.view")
   const canUpdateAgentTeams = permissions.has("agentTeam.update")
+  const hasUserRowActions = canUpdateUsers || canAssignRoles
   const [agentTeams, setAgentTeams] = useState<AdminAgentTeam[]>([])
   const [assigningTeamUserId, setAssigningTeamUserId] = useState<number | null>(null)
   const [creatingOpen, setCreatingOpen] = useState(false)
@@ -172,10 +176,16 @@ export default function DashboardUsersPage() {
   }
 
   function openEditDrawer(user: AdminUser) {
+    if (!canUpdateUsers || (!user.manageable && user.id !== session?.user.id)) {
+      return
+    }
     setEditingUser(user)
   }
 
   async function openAssignRolesDrawer(user: AdminUser) {
+    if (!canAssignRoles || !user.manageable) {
+      return
+    }
     setActionLoadingId(user.id)
     setAssigningRolesUser(user)
     setAssignRolesLoading(true)
@@ -372,10 +382,12 @@ export default function DashboardUsersPage() {
       <DashboardPage>
         <DashboardToolbar
           actions={
-            <Button onClick={() => setCreatingOpen(true)} disabled={list.loading}>
-              <PlusIcon />
-              {t("user.addUser")}
-            </Button>
+            canCreateUsers ? (
+              <Button onClick={() => setCreatingOpen(true)} disabled={list.loading}>
+                <PlusIcon />
+                {t("user.addUser")}
+              </Button>
+            ) : null
           }
         >
           <div className="relative w-full sm:w-72">
@@ -440,7 +452,9 @@ export default function DashboardUsersPage() {
                   <TableHead>{t("user.columnStatus")}</TableHead>
                   <TableHead>{t("user.columnLastLogin")}</TableHead>
                   <TableHead>{t("user.columnContact")}</TableHead>
-                  <TableHead className="w-[92px] text-right">{t("user.columnActions")}</TableHead>
+                  {hasUserRowActions ? (
+                    <TableHead className="w-[92px] text-right">{t("user.columnActions")}</TableHead>
+                  ) : null}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -543,17 +557,21 @@ export default function DashboardUsersPage() {
                         {item.email || "-"}
                       </div>
                     </TableCell>
-                    <TableCell className="text-right">
-                      <ButtonGroup className="ml-auto">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => openEditDrawer(item)}
-                          disabled={actionLoadingId === item.id}
-                        >
-                          {t("user.edit")}
-                        </Button>
-                        <DropdownMenu>
+                    {hasUserRowActions ? (
+                      <TableCell className="text-right">
+                        <ButtonGroup className="ml-auto">
+                          {canUpdateUsers && (item.manageable || item.id === session?.user.id) ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openEditDrawer(item)}
+                              disabled={actionLoadingId === item.id}
+                            >
+                              {t("user.edit")}
+                            </Button>
+                          ) : null}
+                          {item.manageable && (canAssignRoles || canUpdateUsers) ? (
+                            <DropdownMenu>
                           <DropdownMenuTrigger
                             render={<Button variant="outline" size="icon-sm" />}
                             aria-label={t("user.moreActions", { username: item.username })}
@@ -561,42 +579,50 @@ export default function DashboardUsersPage() {
                             <MoreHorizontalIcon />
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-40 min-w-40">
-                            <DropdownMenuItem
-                              onClick={() => void openAssignRolesDrawer(item)}
-                              disabled={actionLoadingId === item.id}
-                            >
-                              <ShieldIcon />
-                              {actionLoadingId === item.id
-                                ? t("user.processing")
-                                : t("user.assignRoles")}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => openResetDrawer(item)}
-                              disabled={actionLoadingId === item.id}
-                            >
-                              <KeyRoundIcon />
-                              {t("user.resetPassword")}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => handleToggleStatus(item)}
-                              disabled={actionLoadingId === item.id}
-                            >
-                              <ShieldIcon />
-                              {actionLoadingId === item.id
-                                ? t("user.processing")
-                                : item.status === Status.Ok
-                                  ? t("user.disabled")
-                                  : t("user.enabled")}
-                            </DropdownMenuItem>
+                            {canAssignRoles ? (
+                              <DropdownMenuItem
+                                onClick={() => void openAssignRolesDrawer(item)}
+                                disabled={actionLoadingId === item.id}
+                              >
+                                <ShieldIcon />
+                                {actionLoadingId === item.id
+                                  ? t("user.processing")
+                                  : t("user.assignRoles")}
+                              </DropdownMenuItem>
+                            ) : null}
+                            {canUpdateUsers ? (
+                              <>
+                                <DropdownMenuItem
+                                  onClick={() => openResetDrawer(item)}
+                                  disabled={actionLoadingId === item.id}
+                                >
+                                  <KeyRoundIcon />
+                                  {t("user.resetPassword")}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={() => handleToggleStatus(item)}
+                                  disabled={actionLoadingId === item.id}
+                                >
+                                  <ShieldIcon />
+                                  {actionLoadingId === item.id
+                                    ? t("user.processing")
+                                    : item.status === Status.Ok
+                                      ? t("user.disabled")
+                                      : t("user.enabled")}
+                                </DropdownMenuItem>
+                              </>
+                            ) : null}
                           </DropdownMenuContent>
-                        </DropdownMenu>
-                      </ButtonGroup>
-                    </TableCell>
+                            </DropdownMenu>
+                          ) : null}
+                        </ButtonGroup>
+                      </TableCell>
+                    ) : null}
                   </TableRow>
                 ))}
                 {list.loading || list.result.results.length === 0 ? (
                   <DashboardTableStateRow
-                    colSpan={7}
+                    colSpan={hasUserRowActions ? 7 : 6}
                     loading={list.loading}
                     loadingText={t("user.loadingRows")}
                     emptyText={t("user.emptyRows")}
@@ -609,6 +635,7 @@ export default function DashboardUsersPage() {
       <CreateUserDrawer
         open={creatingOpen}
         saving={savingCreate}
+        canAssignRoles={canAssignRoles}
         onOpenChange={handleCreateDrawerOpenChange}
         onSubmit={handleCreateUser}
       />

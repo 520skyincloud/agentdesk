@@ -3,9 +3,26 @@ package constants
 const (
 	RoleCodeSuperAdmin   = "super_admin"    // 超管
 	RoleCodeAdmin        = "admin"          // 管理员
+	RoleCodeTenantAdmin  = "tenant_admin"   // 公司主管
 	RoleCodeCsTeamLeader = "cs_team_leader" // 客服组长
 	RoleCodeCsUser       = "cs_user"        // 客服
 	RoleCodeStoreStaff   = "store_staff"    // 门店员工
+)
+
+const (
+	RoleScopePlatform = "platform"
+	RoleScopeTenant   = "tenant"
+
+	PermissionScopePlatform = "platform"
+	PermissionScopeTenant   = "tenant"
+)
+
+const (
+	RoleAuthoritySuperAdmin  = 100
+	RoleAuthorityAdmin       = 80
+	RoleAuthorityTenantAdmin = 60
+	RoleAuthorityTeamLeader  = 40
+	RoleAuthorityMember      = 20
 )
 
 const (
@@ -33,6 +50,7 @@ type Permission struct {
 	Name      string
 	Code      string
 	Type      string
+	Scope     string
 	GroupName string
 	Method    string
 	APIPath   string
@@ -50,18 +68,28 @@ var (
 
 	// 角色相关权限
 	PermissionRoleView             = Permission{Name: "查看角色", Code: "role.view", Type: "api", GroupName: "role", Method: "ANY", APIPath: "/api/dashboard/role/list", SortNo: 110}
-	PermissionRoleCreate           = Permission{Name: "创建角色", Code: "role.create", Type: "api", GroupName: "role", Method: "POST", APIPath: "/api/dashboard/role/create", SortNo: 120}
-	PermissionRoleUpdate           = Permission{Name: "更新角色", Code: "role.update", Type: "api", GroupName: "role", Method: "POST", APIPath: "/api/dashboard/role/update", SortNo: 130}
-	PermissionRoleDelete           = Permission{Name: "删除角色", Code: "role.delete", Type: "api", GroupName: "role", Method: "POST", APIPath: "/api/dashboard/role/delete", SortNo: 140}
-	PermissionRoleAssignPermission = Permission{Name: "分配角色权限", Code: "role.assignPermission", Type: "api", GroupName: "role", Method: "POST", APIPath: "/api/dashboard/role/assign_permission", SortNo: 150}
+	PermissionRoleCreate           = Permission{Name: "创建角色", Code: "role.create", Type: "api", Scope: PermissionScopePlatform, GroupName: "role", Method: "POST", APIPath: "/api/dashboard/role/create", SortNo: 120}
+	PermissionRoleUpdate           = Permission{Name: "更新角色", Code: "role.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "role", Method: "POST", APIPath: "/api/dashboard/role/update", SortNo: 130}
+	PermissionRoleDelete           = Permission{Name: "删除角色", Code: "role.delete", Type: "api", Scope: PermissionScopePlatform, GroupName: "role", Method: "POST", APIPath: "/api/dashboard/role/delete", SortNo: 140}
+	PermissionRoleAssignPermission = Permission{Name: "分配角色权限", Code: "role.assignPermission", Type: "api", Scope: PermissionScopePlatform, GroupName: "role", Method: "POST", APIPath: "/api/dashboard/role/assign_permission", SortNo: 150}
 
 	// 权限相关权限
 	PermissionPermissionView = Permission{Name: "查看权限", Code: "permission.view", Type: "api", GroupName: "permission", Method: "ANY", APIPath: "/api/dashboard/permission/list", SortNo: 210}
-	PermissionPermissionSync = Permission{Name: "同步权限", Code: "permission.sync", Type: "api", GroupName: "permission", Method: "POST", APIPath: "/api/dashboard/permission/sync", SortNo: 220}
 
 	// 会话相关权限
-	PermissionSessionView   = Permission{Name: "查看会话", Code: "session.view", Type: "api", GroupName: "session", Method: "ANY", APIPath: "/api/dashboard/session/list", SortNo: 310}
-	PermissionSessionRevoke = Permission{Name: "踢除会话", Code: "session.revoke", Type: "api", GroupName: "session", Method: "POST", APIPath: "/api/dashboard/session/revoke", SortNo: 320}
+	PermissionSessionView   = Permission{Name: "查看登录会话", Code: "session.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "session", Method: "ANY", APIPath: "/api/dashboard/session/list", SortNo: 310}
+	PermissionSessionRevoke = Permission{Name: "踢除登录会话", Code: "session.revoke", Type: "api", Scope: PermissionScopePlatform, GroupName: "session", Method: "POST", APIPath: "/api/dashboard/session/revoke", SortNo: 320}
+
+	// 接入公司与邀请注册相关权限
+	PermissionTenantView               = Permission{Name: "查看接入公司", Code: "tenant.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenant", Method: "ANY", APIPath: "/api/dashboard/tenant/list", SortNo: 330}
+	PermissionTenantCreate             = Permission{Name: "创建接入公司", Code: "tenant.create", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenant", Method: "POST", APIPath: "/api/dashboard/tenant/create", SortNo: 340}
+	PermissionTenantUpdate             = Permission{Name: "更新接入公司", Code: "tenant.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenant", Method: "POST", APIPath: "/api/dashboard/tenant/update", SortNo: 350}
+	PermissionTenantUpdateStatus       = Permission{Name: "启停接入公司", Code: "tenant.updateStatus", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenant", Method: "POST", APIPath: "/api/dashboard/tenant/update_status", SortNo: 360}
+	PermissionTenantSwitch             = Permission{Name: "切换接入公司", Code: "tenant.switch", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenant", Method: "ANY", APIPath: "/api/dashboard/tenant/list", SortNo: 370}
+	PermissionTenantInviteView         = Permission{Name: "查看公司邀请码", Code: "tenantInvite.view", Type: "api", GroupName: "tenantInvite", Method: "GET", APIPath: "/api/dashboard/tenant-invitation/current", SortNo: 380}
+	PermissionTenantInviteRotate       = Permission{Name: "重置公司邀请码", Code: "tenantInvite.rotate", Type: "api", GroupName: "tenantInvite", Method: "POST", APIPath: "/api/dashboard/tenant-invitation/rotate", SortNo: 390}
+	PermissionTenantRegistrationView   = Permission{Name: "查看邀请注册账号", Code: "tenantRegistration.view", Type: "api", GroupName: "tenantRegistration", Method: "ANY", APIPath: "/api/dashboard/tenant-registration/list", SortNo: 400}
+	PermissionTenantRegistrationReview = Permission{Name: "审核邀请注册账号", Code: "tenantRegistration.review", Type: "api", GroupName: "tenantRegistration", Method: "POST", APIPath: "/api/dashboard/tenant-registration/review", SortNo: 405}
 
 	// 客服会话相关权限
 	PermissionConversationView         = Permission{Name: "查看会话", Code: "conversation.view", Type: "api", GroupName: "conversation", Method: "ANY", APIPath: "/api/dashboard/conversation/list", SortNo: 410}
@@ -150,9 +178,9 @@ var (
 
 	// AI 配置相关权限
 	PermissionAIConfigView   = Permission{Name: "查看 AI 配置", Code: "aiConfig.view", Type: "api", GroupName: "aiConfig", Method: "ANY", APIPath: "/api/dashboard/ai-config/list", SortNo: 1390}
-	PermissionAIConfigCreate = Permission{Name: "创建 AI 配置", Code: "aiConfig.create", Type: "api", GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/create", SortNo: 1400}
-	PermissionAIConfigUpdate = Permission{Name: "更新 AI 配置", Code: "aiConfig.update", Type: "api", GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/update", SortNo: 1410}
-	PermissionAIConfigDelete = Permission{Name: "删除 AI 配置", Code: "aiConfig.delete", Type: "api", GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/delete", SortNo: 1420}
+	PermissionAIConfigCreate = Permission{Name: "创建 AI 配置", Code: "aiConfig.create", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/create", SortNo: 1400}
+	PermissionAIConfigUpdate = Permission{Name: "更新 AI 配置", Code: "aiConfig.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/update", SortNo: 1410}
+	PermissionAIConfigDelete = Permission{Name: "删除 AI 配置", Code: "aiConfig.delete", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/delete", SortNo: 1420}
 
 	// 知识库相关权限
 	PermissionKnowledgeBaseView   = Permission{Name: "查看知识库", Code: "knowledgeBase.view", Type: "api", GroupName: "knowledgeBase", Method: "ANY", APIPath: "/api/dashboard/knowledge-base/list", SortNo: 1410}
@@ -177,8 +205,8 @@ var (
 	PermissionSkillDefinitionDelete = Permission{Name: "删除技能定义", Code: "skillDefinition.delete", Type: "api", GroupName: "skillDefinition", Method: "POST", APIPath: "/api/dashboard/skill-definition/delete", SortNo: 1640}
 
 	// MCP 调试相关权限
-	PermissionMCPView = Permission{Name: "查看MCP调试信息", Code: "mcp.view", Type: "api", GroupName: "mcp", Method: "POST", APIPath: "/api/dashboard/mcp/list_tools", SortNo: 1710}
-	PermissionMCPCall = Permission{Name: "调用MCP工具", Code: "mcp.call", Type: "api", GroupName: "mcp", Method: "POST", APIPath: "/api/dashboard/mcp/call_tool", SortNo: 1720}
+	PermissionMCPView = Permission{Name: "查看MCP调试信息", Code: "mcp.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "mcp", Method: "POST", APIPath: "/api/dashboard/mcp/list_tools", SortNo: 1710}
+	PermissionMCPCall = Permission{Name: "调用MCP工具", Code: "mcp.call", Type: "api", Scope: PermissionScopePlatform, GroupName: "mcp", Method: "POST", APIPath: "/api/dashboard/mcp/call_tool", SortNo: 1720}
 )
 
 // Permissions 内置权限列表
@@ -194,9 +222,17 @@ var Permissions = []Permission{
 	PermissionRoleDelete,
 	PermissionRoleAssignPermission,
 	PermissionPermissionView,
-	PermissionPermissionSync,
 	PermissionSessionView,
 	PermissionSessionRevoke,
+	PermissionTenantView,
+	PermissionTenantCreate,
+	PermissionTenantUpdate,
+	PermissionTenantUpdateStatus,
+	PermissionTenantSwitch,
+	PermissionTenantInviteView,
+	PermissionTenantInviteRotate,
+	PermissionTenantRegistrationView,
+	PermissionTenantRegistrationReview,
 	PermissionConversationView,
 	PermissionConversationAssign,
 	PermissionConversationTransfer,
@@ -291,17 +327,20 @@ func init() {
 }
 
 type RoleSpec struct {
-	Name   string
-	Code   string
-	SortNo int
+	Name           string
+	Code           string
+	Scope          string
+	AuthorityLevel int
+	SortNo         int
 }
 
 var Roles = []RoleSpec{
-	{Name: "超级管理员", Code: RoleCodeSuperAdmin, SortNo: 1},
-	{Name: "管理员", Code: RoleCodeAdmin, SortNo: 2},
-	{Name: "客服组长", Code: RoleCodeCsTeamLeader, SortNo: 3},
-	{Name: "客服", Code: RoleCodeCsUser, SortNo: 4},
-	{Name: "门店员工", Code: RoleCodeStoreStaff, SortNo: 5},
+	{Name: "超级管理员", Code: RoleCodeSuperAdmin, Scope: RoleScopePlatform, AuthorityLevel: RoleAuthoritySuperAdmin, SortNo: 1},
+	{Name: "管理员", Code: RoleCodeAdmin, Scope: RoleScopePlatform, AuthorityLevel: RoleAuthorityAdmin, SortNo: 2},
+	{Name: "公司主管", Code: RoleCodeTenantAdmin, Scope: RoleScopeTenant, AuthorityLevel: RoleAuthorityTenantAdmin, SortNo: 3},
+	{Name: "客服组长", Code: RoleCodeCsTeamLeader, Scope: RoleScopeTenant, AuthorityLevel: RoleAuthorityTeamLeader, SortNo: 4},
+	{Name: "客服", Code: RoleCodeCsUser, Scope: RoleScopeTenant, AuthorityLevel: RoleAuthorityMember, SortNo: 5},
+	{Name: "门店员工", Code: RoleCodeStoreStaff, Scope: RoleScopeTenant, AuthorityLevel: RoleAuthorityMember, SortNo: 6},
 }
 
 var RolePermissions = map[string][]Permission{
@@ -309,8 +348,10 @@ var RolePermissions = map[string][]Permission{
 	RoleCodeAdmin: {
 		PermissionUserView, PermissionUserCreate, PermissionUserUpdate, PermissionUserAssignRole,
 		PermissionRoleView, PermissionRoleCreate, PermissionRoleUpdate, PermissionRoleAssignPermission,
-		PermissionPermissionView, PermissionPermissionSync,
+		PermissionPermissionView,
 		PermissionSessionView, PermissionSessionRevoke,
+		PermissionTenantView, PermissionTenantUpdate, PermissionTenantUpdateStatus, PermissionTenantSwitch,
+		PermissionTenantInviteView, PermissionTenantInviteRotate, PermissionTenantRegistrationView, PermissionTenantRegistrationReview,
 		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionConversationTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
@@ -325,6 +366,33 @@ var RolePermissions = map[string][]Permission{
 		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
 		PermissionAIAgentView, PermissionAIAgentCreate, PermissionAIAgentUpdate, PermissionAIAgentDelete,
 		PermissionAIConfigView, PermissionAIConfigCreate, PermissionAIConfigUpdate, PermissionAIConfigDelete,
+		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,
+		PermissionKnowledgeDocumentView, PermissionKnowledgeDocumentCreate, PermissionKnowledgeDocumentUpdate, PermissionKnowledgeDocumentDelete,
+		PermissionKnowledgeFAQView, PermissionKnowledgeFAQCreate, PermissionKnowledgeFAQUpdate, PermissionKnowledgeFAQDelete,
+		PermissionSkillDefinitionView, PermissionSkillDefinitionCreate, PermissionSkillDefinitionUpdate, PermissionSkillDefinitionDelete,
+		PermissionMCPView, PermissionMCPCall,
+	},
+	RoleCodeTenantAdmin: {
+		PermissionUserView, PermissionUserCreate, PermissionUserUpdate, PermissionUserDelete, PermissionUserAssignRole,
+		PermissionRoleView, PermissionPermissionView,
+		PermissionTenantInviteView, PermissionTenantInviteRotate, PermissionTenantRegistrationView, PermissionTenantRegistrationReview,
+		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionConversationTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
+		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
+		PermissionNotificationView, PermissionNotificationUpdate,
+		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
+		PermissionTagView, PermissionTagCreate, PermissionTagUpdate, PermissionTagDelete,
+		PermissionCompanyView, PermissionCompanyCreate, PermissionCompanyUpdate, PermissionCompanyDelete,
+		PermissionChannelView, PermissionChannelCreate, PermissionChannelUpdate, PermissionChannelDelete,
+		PermissionCustomerView, PermissionCustomerCreate, PermissionCustomerUpdate, PermissionCustomerDelete,
+		PermissionAgentView, PermissionAgentCreate, PermissionAgentUpdate, PermissionAgentDelete, PermissionAgentUpdateStatus, PermissionAgentConfig,
+		PermissionAgentTeamView, PermissionAgentTeamCreate, PermissionAgentTeamUpdate, PermissionAgentTeamDelete,
+		PermissionAgentTeamScheduleView, PermissionAgentTeamScheduleCreate, PermissionAgentTeamScheduleUpdate, PermissionAgentTeamScheduleDelete, PermissionAgentTeamScheduleBatchGenerate,
+		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
+		PermissionAIAgentView, PermissionAIAgentCreate, PermissionAIAgentUpdate, PermissionAIAgentDelete,
+		PermissionAIConfigView,
+		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,
+		PermissionKnowledgeDocumentView, PermissionKnowledgeDocumentCreate, PermissionKnowledgeDocumentUpdate, PermissionKnowledgeDocumentDelete,
+		PermissionKnowledgeFAQView, PermissionKnowledgeFAQCreate, PermissionKnowledgeFAQUpdate, PermissionKnowledgeFAQDelete,
 		PermissionSkillDefinitionView, PermissionSkillDefinitionCreate, PermissionSkillDefinitionUpdate, PermissionSkillDefinitionDelete,
 	},
 	RoleCodeCsTeamLeader: {
@@ -379,6 +447,13 @@ var RolePermissions = map[string][]Permission{
 		PermissionAIAgentView,
 		PermissionKnowledgeBaseView,
 	},
+}
+
+func NormalizePermissionScope(scope string) string {
+	if scope == PermissionScopePlatform {
+		return PermissionScopePlatform
+	}
+	return PermissionScopeTenant
 }
 
 func PermissionCodes() []string {

@@ -81,6 +81,15 @@ export default function DashboardPermissionsPage() {
           render: (item) => getPermissionGroupName(item.groupName, locale),
         },
         {
+          key: "scope",
+          label: t("permission.columnScope"),
+          render: (item) => (
+            <Badge variant={item.scope === "platform" ? "secondary" : "outline"}>
+              {t(item.scope === "platform" ? "permission.scopePlatform" : "permission.scopeTenant")}
+            </Badge>
+          ),
+        },
+        {
           key: "api",
           label: t("permission.columnApi"),
           render: (item) => (

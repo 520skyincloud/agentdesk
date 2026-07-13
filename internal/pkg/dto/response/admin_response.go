@@ -7,6 +7,7 @@ type PermissionResponse struct {
 	Name      string       `json:"name"`
 	Code      string       `json:"code"`
 	Type      string       `json:"type"`
+	Scope     string       `json:"scope"`
 	GroupName string       `json:"groupName"`
 	Method    string       `json:"method"`
 	ApiPath   string       `json:"apiPath"`
@@ -15,13 +16,17 @@ type PermissionResponse struct {
 }
 
 type RoleResponse struct {
-	ID          int64        `json:"id"`
-	Name        string       `json:"name"`
-	Code        string       `json:"code"`
-	Status      enums.Status `json:"status"`
-	IsSystem    bool         `json:"isSystem"`
-	SortNo      int          `json:"sortNo"`
-	Permissions []string     `json:"permissions,omitempty"`
+	ID             int64        `json:"id"`
+	Name           string       `json:"name"`
+	Code           string       `json:"code"`
+	Scope          string       `json:"scope"`
+	AuthorityLevel int          `json:"authorityLevel"`
+	Status         enums.Status `json:"status"`
+	IsSystem       bool         `json:"isSystem"`
+	SortNo         int          `json:"sortNo"`
+	Assignable     bool         `json:"assignable"`
+	Manageable     bool         `json:"manageable"`
+	Permissions    []string     `json:"permissions,omitempty"`
 }
 
 type UserResponse struct {
@@ -37,6 +42,7 @@ type UserResponse struct {
 	Roles       []RoleResponse                `json:"roles,omitempty"`
 	Permissions []string                      `json:"permissions,omitempty"`
 	StoreStaff  *StoreStaffAssignmentResponse `json:"storeStaff,omitempty"`
+	Manageable  bool                          `json:"manageable"`
 }
 
 type StoreStaffAssignmentResponse struct {

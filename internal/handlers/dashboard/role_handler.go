@@ -1,7 +1,9 @@
 package dashboard
 
 import (
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/httpx"
@@ -15,7 +17,8 @@ import (
 )
 
 func RoleAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionRoleView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionRoleView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -26,20 +29,14 @@ func RoleAnyList(ctx *gin.Context) {
 	list, paging := services.RoleService.FindPageByCnd(cnd)
 	results := make([]response.RoleResponse, 0, len(list))
 	for _, item := range list {
-		results = append(results, response.RoleResponse{
-			ID:       item.ID,
-			Name:     item.Name,
-			Code:     item.Code,
-			Status:   item.Status,
-			IsSystem: item.IsSystem,
-			SortNo:   item.SortNo,
-		})
+		results = append(results, buildRoleResponse(&item, operator))
 	}
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
 
 func RoleGetList_all(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionRoleView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionRoleView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -47,14 +44,7 @@ func RoleGetList_all(ctx *gin.Context) {
 	list := services.RoleService.Find(sqls.NewCnd().Asc("sort_no").Desc("id"))
 	results := make([]response.RoleResponse, 0, len(list))
 	for _, item := range list {
-		results = append(results, response.RoleResponse{
-			ID:       item.ID,
-			Name:     item.Name,
-			Code:     item.Code,
-			Status:   item.Status,
-			IsSystem: item.IsSystem,
-			SortNo:   item.SortNo,
-		})
+		results = append(results, buildRoleResponse(&item, operator))
 	}
 	httpx.WriteJSON(ctx, results)
 }
@@ -64,7 +54,8 @@ func RoleGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionRoleView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionRoleView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -83,15 +74,9 @@ func RoleGetBy(ctx *gin.Context) {
 			permissionCodes = append(permissionCodes, permission.Code)
 		}
 	}
-	httpx.WriteJSON(ctx, &response.RoleResponse{
-		ID:          item.ID,
-		Name:        item.Name,
-		Code:        item.Code,
-		Status:      item.Status,
-		IsSystem:    item.IsSystem,
-		SortNo:      item.SortNo,
-		Permissions: permissionCodes,
-	})
+	ret := buildRoleResponse(item, operator)
+	ret.Permissions = permissionCodes
+	httpx.WriteJSON(ctx, &ret)
 }
 
 func RolePostCreate(ctx *gin.Context) {
@@ -111,14 +96,8 @@ func RolePostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, &response.RoleResponse{
-		ID:       role.ID,
-		Name:     role.Name,
-		Code:     role.Code,
-		Status:   role.Status,
-		IsSystem: role.IsSystem,
-		SortNo:   role.SortNo,
-	})
+	ret := buildRoleResponse(role, operator)
+	httpx.WriteJSON(ctx, &ret)
 }
 
 func RolePostUpdate(ctx *gin.Context) {
@@ -141,7 +120,8 @@ func RolePostUpdate(ctx *gin.Context) {
 }
 
 func RolePostDelete(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionRoleDelete); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionRoleDelete)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -151,7 +131,7 @@ func RolePostDelete(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.RoleService.DeleteRole(req.ID); err != nil {
+	if err := services.RoleService.DeleteRole(req.ID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -197,14 +177,37 @@ func RolePostAssign_permission(ctx *gin.Context) {
 }
 
 func RolePostUpdate_sort(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionRoleUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	var ids []int64
 	if err := params.ReadJSON(ctx, &ids); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.RoleService.UpdateSort(ids); err != nil {
+	if err := services.RoleService.UpdateSort(ids, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	httpx.WriteJSON(ctx, nil)
+}
+
+func buildRoleResponse(item *models.Role, operator *dto.AuthPrincipal) response.RoleResponse {
+	if item == nil {
+		return response.RoleResponse{}
+	}
+	return response.RoleResponse{
+		ID:             item.ID,
+		Name:           item.Name,
+		Code:           item.Code,
+		Scope:          item.Scope,
+		AuthorityLevel: item.AuthorityLevel,
+		Status:         item.Status,
+		IsSystem:       item.IsSystem,
+		SortNo:         item.SortNo,
+		Assignable:     services.RoleService.CanAssignRole(operator, item),
+		Manageable:     services.RoleService.CanManageRole(operator, item),
+	}
 }

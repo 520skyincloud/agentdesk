@@ -37,6 +37,7 @@ import { Input } from "@/components/ui/input"
 type CreateUserDrawerProps = {
   open: boolean
   saving: boolean
+  canAssignRoles: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (payload: CreateAdminUserPayload) => Promise<void>
 }
@@ -81,6 +82,7 @@ function buildPayload(form: CreateForm): CreateAdminUserPayload {
 export function CreateUserDrawer({
   open,
   saving,
+  canAssignRoles,
   onOpenChange,
   onSubmit,
 }: CreateUserDrawerProps) {
@@ -90,6 +92,7 @@ export function CreateUserDrawer({
         <CreateUserDrawerBody
           key="create-user"
           saving={saving}
+          canAssignRoles={canAssignRoles}
           onOpenChange={onOpenChange}
           onSubmit={onSubmit}
         />
@@ -100,18 +103,20 @@ export function CreateUserDrawer({
 
 type CreateUserDrawerBodyProps = {
   saving: boolean
+  canAssignRoles: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (payload: CreateAdminUserPayload) => Promise<void>
 }
 
 function CreateUserDrawerBody({
   saving,
+  canAssignRoles,
   onOpenChange,
   onSubmit,
 }: CreateUserDrawerBodyProps) {
   const t = useI18n()
   const { locale } = useAppLocale()
-  const [rolesLoading, setRolesLoading] = useState(true)
+  const [rolesLoading, setRolesLoading] = useState(canAssignRoles)
   const [roles, setRoles] = useState<AdminRole[]>([])
   const [roleKeyword, setRoleKeyword] = useState("")
   const createFormSchema = useMemo(
@@ -163,11 +168,16 @@ function CreateUserDrawerBody({
   } = form
 
   useEffect(() => {
+    if (!canAssignRoles) {
+      setRoles([])
+      setRolesLoading(false)
+      return
+    }
     async function loadRoles() {
       setRolesLoading(true)
       try {
         const list = await fetchRoleListAll()
-        setRoles(list)
+        setRoles(list.filter((role) => role.assignable))
       } catch {
         setRoles([])
       } finally {
@@ -175,7 +185,7 @@ function CreateUserDrawerBody({
       }
     }
     void loadRoles()
-  }, [])
+  }, [canAssignRoles])
 
   const filteredRoles = useMemo(() => {
     const q = roleKeyword.trim().toLowerCase()
@@ -282,7 +292,7 @@ function CreateUserDrawerBody({
             </FieldContent>
           </Field>
 
-          <Field data-invalid={!!errors.roleIds}>
+          {canAssignRoles ? <Field data-invalid={!!errors.roleIds}>
             <FieldLabel>{t("user.rolesOptional")}</FieldLabel>
             <FieldContent>
               <div className="relative">
@@ -366,7 +376,7 @@ function CreateUserDrawerBody({
               />
               <FieldError errors={[errors.roleIds]} />
             </FieldContent>
-          </Field>
+          </Field> : null}
         </div>
         <DrawerFooter className="border-t">
           <Button type="submit" disabled={saving || rolesLoading}>

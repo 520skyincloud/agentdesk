@@ -48,6 +48,7 @@ func ensurePermissions(tx *gorm.DB) (map[string]*models.Permission, error) {
 				Name:      spec.Name,
 				Code:      spec.Code,
 				Type:      spec.Type,
+				Scope:     constants.NormalizePermissionScope(spec.Scope),
 				GroupName: spec.GroupName,
 				Method:    spec.Method,
 				APIPath:   spec.APIPath,
@@ -71,6 +72,7 @@ func ensurePermissions(tx *gorm.DB) (map[string]*models.Permission, error) {
 			if err := repositories.PermissionRepository.Updates(tx, permission.ID, map[string]any{
 				"name":             spec.Name,
 				"type":             spec.Type,
+				"scope":            constants.NormalizePermissionScope(spec.Scope),
 				"group_name":       spec.GroupName,
 				"method":           spec.Method,
 				"api_path":         spec.APIPath,
@@ -99,11 +101,13 @@ func ensureRoles(tx *gorm.DB) (map[string]*models.Role, error) {
 		role := repositories.RoleRepository.GetByCode(tx, spec.Code)
 		if role == nil {
 			role = &models.Role{
-				Name:     spec.Name,
-				Code:     spec.Code,
-				Status:   enums.StatusOk,
-				IsSystem: true,
-				SortNo:   spec.SortNo,
+				Name:           spec.Name,
+				Code:           spec.Code,
+				Scope:          spec.Scope,
+				AuthorityLevel: spec.AuthorityLevel,
+				Status:         enums.StatusOk,
+				IsSystem:       true,
+				SortNo:         spec.SortNo,
 				AuditFields: models.AuditFields{
 					CreatedAt:      now,
 					CreateUserID:   constants.SystemAuditUserID,
@@ -120,6 +124,8 @@ func ensureRoles(tx *gorm.DB) (map[string]*models.Role, error) {
 		} else {
 			if err := repositories.RoleRepository.Updates(tx, role.ID, map[string]any{
 				"name":             spec.Name,
+				"scope":            spec.Scope,
+				"authority_level":  spec.AuthorityLevel,
 				"sort_no":          spec.SortNo,
 				"status":           enums.StatusOk,
 				"is_system":        true,

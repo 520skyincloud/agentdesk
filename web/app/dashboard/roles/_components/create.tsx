@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo } from "react"
-import { Resolver, useForm } from "react-hook-form"
+import { Controller, Resolver, useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod/v4"
 
@@ -22,6 +22,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { OptionCombobox } from "@/components/option-combobox"
 import { Textarea } from "@/components/ui/textarea"
 import { useI18n } from "@/i18n/provider"
 
@@ -35,12 +36,16 @@ type CreateRoleDrawerProps = {
 type CreateForm = {
   name: string
   code: string
+  scope: "platform" | "tenant"
+  authorityLevel: number
   remark: string
 }
 
 const emptyForm: CreateForm = {
   name: "",
   code: "",
+  scope: "tenant",
+  authorityLevel: 10,
   remark: "",
 }
 
@@ -54,6 +59,8 @@ function buildPayload(form: CreateForm): CreateAdminRolePayload {
   return {
     name: form.name.trim(),
     code: form.code.trim(),
+    scope: form.scope,
+    authorityLevel: form.authorityLevel,
     remark: form.remark.trim(),
   }
 }
@@ -99,6 +106,8 @@ function CreateRoleDrawerBody({
           .trim()
           .min(1, t("role.codeRequired"))
           .regex(/^[A-Za-z][A-Za-z0-9:_-]*$/, t("role.codeInvalid")),
+        scope: z.enum(["platform", "tenant"]),
+        authorityLevel: z.number().int().min(1).max(99),
         remark: z.string().trim(),
       }),
     [t]
@@ -113,6 +122,7 @@ function CreateRoleDrawerBody({
   })
   const {
     handleSubmit,
+    control,
     register,
     reset,
     formState: { errors },
@@ -158,6 +168,48 @@ function CreateRoleDrawerBody({
                 {...register("code")}
               />
               <FieldError errors={[errors.code]} />
+            </FieldContent>
+          </Field>
+          <Field data-invalid={!!errors.scope}>
+            <FieldLabel>{t("role.scope")}</FieldLabel>
+            <FieldContent>
+              <Controller
+                control={control}
+                name="scope"
+                render={({ field }) => (
+                  <OptionCombobox
+                    value={field.value}
+                    options={[
+                      { value: "tenant", label: t("role.scopeTenant") },
+                      { value: "platform", label: t("role.scopePlatform") },
+                    ]}
+                    onChange={(value) => field.onChange(value || "tenant")}
+                    placeholder={t("role.scope")}
+                    searchPlaceholder={t("role.searchScope")}
+                    emptyText={t("role.emptyScope")}
+                  />
+                )}
+              />
+              <FieldError errors={[errors.scope]} />
+            </FieldContent>
+          </Field>
+          <Field data-invalid={!!errors.authorityLevel}>
+            <FieldLabel htmlFor="create-role-authority-level">
+              {t("role.authorityLevel")}
+            </FieldLabel>
+            <FieldContent>
+              <Input
+                id="create-role-authority-level"
+                type="number"
+                min={1}
+                max={99}
+                aria-invalid={!!errors.authorityLevel}
+                {...register("authorityLevel", { valueAsNumber: true })}
+              />
+              <div className="text-xs text-muted-foreground">
+                {t("role.authorityLevelHint")}
+              </div>
+              <FieldError errors={[errors.authorityLevel]} />
             </FieldContent>
           </Field>
           <Field data-invalid={!!errors.remark}>

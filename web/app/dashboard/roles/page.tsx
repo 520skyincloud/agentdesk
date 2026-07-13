@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   closestCenter,
@@ -64,17 +64,20 @@ import {
 import { Status } from "@/lib/generated/enums"
 import { useAppLocale, useI18n } from "@/i18n/provider"
 import { getRoleDisplayName } from "@/lib/role-i18n"
+import { useAuth } from "@/components/auth-provider"
 
 type SortableRoleRowProps = {
   item: AdminRole
-  disabled: boolean
+  sortableDisabled: boolean
+  canAssignPermissions: boolean
   actionLoading: boolean
   onAssignPermissions: (item: AdminRole) => void
 }
 
 function SortableRoleRow({
   item,
-  disabled,
+  sortableDisabled,
+  canAssignPermissions,
   actionLoading,
   onAssignPermissions,
 }: SortableRoleRowProps) {
@@ -90,7 +93,7 @@ function SortableRoleRow({
     isDragging,
   } = useSortable({
     id: item.id,
-    disabled,
+    disabled: sortableDisabled,
   })
 
   const style: CSSProperties = {
@@ -104,22 +107,23 @@ function SortableRoleRow({
       style={style}
       className={cn(
         isDragging && "relative z-10 bg-[#eef5ff] shadow-[0_12px_28px_rgba(37,99,235,0.12)]",
-        !disabled && "cursor-move"
+        !sortableDisabled && "cursor-move"
       )}
     >
       <TableCell className="w-14">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-8 cursor-grab active:cursor-grabbing"
-          disabled={disabled}
-          aria-label={t("role.dragSort", { name: displayName })}
-          {...attributes}
-          {...listeners}
-        >
-          <GripVerticalIcon className="size-4 text-muted-foreground" />
-        </Button>
+        {!sortableDisabled ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8 cursor-grab active:cursor-grabbing"
+            aria-label={t("role.dragSort", { name: displayName })}
+            {...attributes}
+            {...listeners}
+          >
+            <GripVerticalIcon className="size-4 text-muted-foreground" />
+          </Button>
+        ) : null}
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-3">
@@ -145,17 +149,25 @@ function SortableRoleRow({
           </Badge>
         ) : null}
       </TableCell>
+      <TableCell>
+        <Badge variant={item.scope === "platform" ? "secondary" : "outline"}>
+          {t(item.scope === "platform" ? "role.scopePlatform" : "role.scopeTenant")}
+        </Badge>
+      </TableCell>
+      <TableCell>{item.authorityLevel}</TableCell>
       <TableCell>{item.sortNo}</TableCell>
       <TableCell className="text-right">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => onAssignPermissions(item)}
-          disabled={disabled || actionLoading}
-        >
-          {actionLoading ? t("role.processing") : t("role.assignPermissions")}
-        </Button>
+        {canAssignPermissions && item.manageable ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onAssignPermissions(item)}
+            disabled={actionLoading}
+          >
+            {actionLoading ? t("role.processing") : t("role.assignPermissions")}
+          </Button>
+        ) : null}
       </TableCell>
     </TableRow>
   )
@@ -163,6 +175,14 @@ function SortableRoleRow({
 
 export default function DashboardRolesPage() {
   const t = useI18n()
+  const { session } = useAuth()
+  const permissionSet = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  )
+  const canCreate = permissionSet.has("role.create")
+  const canUpdate = permissionSet.has("role.update")
+  const canAssignPermissions = permissionSet.has("role.assignPermission")
   const [loading, setLoading] = useState(true)
   const [sorting, setSorting] = useState(false)
   const [creatingOpen, setCreatingOpen] = useState(false)
@@ -192,7 +212,7 @@ export default function DashboardRolesPage() {
     })
   )
 
-  async function loadRoles() {
+  const loadRoles = useCallback(async () => {
     setLoading(true)
     try {
       setResult(await fetchRoles({ limit: 200 }))
@@ -201,7 +221,7 @@ export default function DashboardRolesPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [t])
 
   function handleCreateDrawerOpenChange(open: boolean) {
     if (savingCreate) {
@@ -237,10 +257,13 @@ export default function DashboardRolesPage() {
         fetchPermissions({ limit: 500 }),
         fetchRoleDetail(role.id),
       ])
+      const compatiblePermissions = permissionsResult.results.filter(
+        (permission) => role.scope === "platform" || permission.scope !== "platform",
+      )
       const permissionCodeSet = new Set(roleDetail.permissions || [])
-      setAssignPermissionOptions(permissionsResult.results)
+      setAssignPermissionOptions(compatiblePermissions)
       setAssignPermissionIds(
-        permissionsResult.results
+        compatiblePermissions
           .filter((permission) => permissionCodeSet.has(permission.code))
           .map((permission) => permission.id)
       )
@@ -321,21 +344,23 @@ export default function DashboardRolesPage() {
 
   useEffect(() => {
     void loadRoles()
-  }, [])
+  }, [loadRoles])
 
   return (
     <DashboardPage>
       <DashboardToolbar
         actions={
           <>
-            <Button
-              type="button"
-              onClick={() => setCreatingOpen(true)}
-              disabled={loading || sorting}
-            >
-              <PlusIcon className="size-4" />
-              {t("role.add")}
-            </Button>
+            {canCreate ? (
+              <Button
+                type="button"
+                onClick={() => setCreatingOpen(true)}
+                disabled={loading || sorting}
+              >
+                <PlusIcon className="size-4" />
+                {t("role.add")}
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               onClick={() => void loadRoles()}
@@ -348,7 +373,7 @@ export default function DashboardRolesPage() {
         }
       >
         <div className="text-sm text-muted-foreground">
-          {t("role.dragHint")}
+          {t(canUpdate ? "role.dragHint" : "role.viewOnlyHint")}
         </div>
       </DashboardToolbar>
       <DashboardTableShell
@@ -373,6 +398,8 @@ export default function DashboardRolesPage() {
                   <TableHead>{t("role.columnRole")}</TableHead>
                   <TableHead>{t("role.columnCode")}</TableHead>
                   <TableHead>{t("role.columnStatus")}</TableHead>
+                  <TableHead>{t("role.columnScope")}</TableHead>
+                  <TableHead>{t("role.columnAuthorityLevel")}</TableHead>
                   <TableHead>{t("role.columnSort")}</TableHead>
                   <TableHead className="text-right">{t("role.columnActions")}</TableHead>
                 </TableRow>
@@ -386,7 +413,8 @@ export default function DashboardRolesPage() {
                     <SortableRoleRow
                       key={item.id}
                       item={item}
-                      disabled={loading || sorting}
+                      sortableDisabled={!canUpdate || loading || sorting}
+                      canAssignPermissions={canAssignPermissions}
                       actionLoading={actionLoadingId === item.id}
                       onAssignPermissions={(current) =>
                         void openAssignPermissionsDrawer(current)
@@ -396,7 +424,7 @@ export default function DashboardRolesPage() {
                 </SortableContext>
                 {loading || result.results.length === 0 ? (
                   <DashboardTableStateRow
-                    colSpan={6}
+                    colSpan={8}
                     loading={loading}
                     loadingText={t("role.loading")}
                     emptyText={t("role.empty")}

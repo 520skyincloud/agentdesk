@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
@@ -83,15 +84,29 @@ func (s *roleService) CreateRole(req request.CreateRoleRequest, operator *dto.Au
 	if s.Take("code = ?", code) != nil {
 		return nil, errorsx.InvalidParam("角色编码已存在")
 	}
+	scope := normalizeRoleScope(req.Scope)
+	authorityLevel := req.AuthorityLevel
+	if authorityLevel <= 0 {
+		authorityLevel = 10
+	}
+	operatorLevel := s.HighestAuthorityLevel(operator)
+	if operatorLevel <= 0 || authorityLevel >= operatorLevel {
+		return nil, errorsx.Forbidden("只能创建低于自身等级的角色")
+	}
+	if scope == constants.RoleScopePlatform && operatorLevel < constants.RoleAuthoritySuperAdmin {
+		return nil, errorsx.Forbidden("只有超级管理员可以创建平台角色")
+	}
 
 	role := &models.Role{
-		Name:        name,
-		Code:        code,
-		Status:      enums.StatusOk,
-		IsSystem:    false,
-		SortNo:      s.NextSortNo(),
-		Remark:      strings.TrimSpace(req.Remark),
-		AuditFields: utils.BuildAuditFields(operator),
+		Name:           name,
+		Code:           code,
+		Scope:          scope,
+		AuthorityLevel: authorityLevel,
+		Status:         enums.StatusOk,
+		IsSystem:       false,
+		SortNo:         s.NextSortNo(),
+		Remark:         strings.TrimSpace(req.Remark),
+		AuditFields:    utils.BuildAuditFields(operator),
 	}
 	if err := s.Create(role); err != nil {
 		return nil, err
@@ -103,6 +118,9 @@ func (s *roleService) UpdateRole(req request.UpdateRoleRequest, operator *dto.Au
 	role := s.Get(req.ID)
 	if role == nil {
 		return errorsx.InvalidParam("角色不存在")
+	}
+	if err := s.EnsureCanManageRole(operator, role); err != nil {
+		return err
 	}
 	now := time.Now()
 	return s.Updates(req.ID, map[string]any{
@@ -122,10 +140,21 @@ func (s *roleService) NextSortNo() int {
 	return 0
 }
 
-func (s *roleService) UpdateSort(ids []int64) error {
+func (s *roleService) UpdateSort(ids []int64, operator *dto.AuthPrincipal) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		for i, id := range ids {
-			if err := repositories.RoleRepository.UpdateColumn(ctx.Tx, id, "sort_no", i); err != nil {
+			if repositories.RoleRepository.Get(ctx.Tx, id) == nil {
+				return errorsx.InvalidParam("角色不存在")
+			}
+			if err := repositories.RoleRepository.Updates(ctx.Tx, id, map[string]any{
+				"sort_no":          i,
+				"update_user_id":   operator.UserID,
+				"update_user_name": operator.Username,
+				"updated_at":       time.Now(),
+			}); err != nil {
 				return err
 			}
 		}
@@ -133,10 +162,13 @@ func (s *roleService) UpdateSort(ids []int64) error {
 	})
 }
 
-func (s *roleService) DeleteRole(id int64) error {
+func (s *roleService) DeleteRole(id int64, operator *dto.AuthPrincipal) error {
 	role := s.Get(id)
 	if role == nil {
 		return errorsx.InvalidParam("角色不存在")
+	}
+	if err := s.EnsureCanManageRole(operator, role); err != nil {
+		return err
 	}
 	if role.IsSystem {
 		return errorsx.Forbidden("系统内置角色不允许删除")
@@ -152,6 +184,9 @@ func (s *roleService) UpdateStatus(id int64, status enums.Status, operator *dto.
 	role := s.Get(id)
 	if role == nil {
 		return errorsx.InvalidParam("角色不存在")
+	}
+	if err := s.EnsureCanManageRole(operator, role); err != nil {
+		return err
 	}
 	if !slices.Contains(enums.StatusValues, status) {
 		return errorsx.InvalidParam("状态值不合法")
@@ -172,6 +207,9 @@ func (s *roleService) AssignPermissions(roleID int64, permissionIDs []int64, ope
 	if role == nil {
 		return errorsx.InvalidParam("角色不存在")
 	}
+	if err := s.EnsureCanManageRole(operator, role); err != nil {
+		return err
+	}
 
 	return s.replaceRolePermissions(roleID, permissionIDs, operator)
 }
@@ -182,9 +220,19 @@ func (s *roleService) replaceRolePermissions(roleID int64, permissionIDs []int64
 			return err
 		}
 		for _, permissionID := range permissionIDs {
-			permission := PermissionService.Get(permissionID)
+			permission := repositories.PermissionRepository.Get(ctx.Tx, permissionID)
 			if permission == nil {
 				return errorsx.InvalidParam("权限不存在")
+			}
+			if permission.Status != enums.StatusOk {
+				return errorsx.InvalidParam("禁用权限不允许分配")
+			}
+			role := repositories.RoleRepository.Get(ctx.Tx, roleID)
+			if role == nil {
+				return errorsx.InvalidParam("角色不存在")
+			}
+			if normalizeRoleScope(role.Scope) == constants.RoleScopeTenant && normalizePermissionScope(permission.Scope) == constants.PermissionScopePlatform {
+				return errorsx.Forbidden("租户角色不能分配平台权限")
 			}
 			relation := &models.RolePermission{
 				RoleID:       roleID,
@@ -197,4 +245,60 @@ func (s *roleService) replaceRolePermissions(roleID int64, permissionIDs []int64
 		}
 		return nil
 	})
+}
+
+func (s *roleService) HighestAuthorityLevel(operator *dto.AuthPrincipal) int {
+	if operator == nil || len(operator.Roles) == 0 {
+		return 0
+	}
+	highest := 0
+	for _, code := range operator.Roles {
+		role := repositories.RoleRepository.GetByCode(sqls.DB(), strings.TrimSpace(code))
+		if role != nil && role.Status == enums.StatusOk && role.AuthorityLevel > highest {
+			highest = role.AuthorityLevel
+		}
+	}
+	return highest
+}
+
+func (s *roleService) CanManageRole(operator *dto.AuthPrincipal, role *models.Role) bool {
+	if operator == nil || role == nil || role.Code == constants.RoleCodeSuperAdmin {
+		return false
+	}
+	return role.AuthorityLevel < s.HighestAuthorityLevel(operator)
+}
+
+func (s *roleService) CanAssignRole(operator *dto.AuthPrincipal, role *models.Role) bool {
+	if !s.CanManageRole(operator, role) || role.Status != enums.StatusOk {
+		return false
+	}
+	operatorLevel := s.HighestAuthorityLevel(operator)
+	if normalizeRoleScope(role.Scope) == constants.RoleScopePlatform && operatorLevel < constants.RoleAuthoritySuperAdmin {
+		return false
+	}
+	return true
+}
+
+func (s *roleService) EnsureCanManageRole(operator *dto.AuthPrincipal, role *models.Role) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if !s.CanManageRole(operator, role) {
+		return errorsx.Forbidden("只能管理低于自身等级的角色")
+	}
+	return nil
+}
+
+func normalizeRoleScope(scope string) string {
+	if strings.TrimSpace(scope) == constants.RoleScopePlatform {
+		return constants.RoleScopePlatform
+	}
+	return constants.RoleScopeTenant
+}
+
+func normalizePermissionScope(scope string) string {
+	if strings.TrimSpace(scope) == constants.PermissionScopePlatform {
+		return constants.PermissionScopePlatform
+	}
+	return constants.PermissionScopeTenant
 }

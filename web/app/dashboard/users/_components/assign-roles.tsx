@@ -224,7 +224,8 @@ function AssignRolesDrawerBody({
                         ) : filteredRoles.length > 0 ? (
                           filteredRoles.map((role) => {
                             const checked = selectedRoleSet.has(role.id)
-                            const disabled = role.status !== Status.Ok && !checked
+                            const disabled =
+                              !role.assignable || (role.status !== Status.Ok && !checked)
 
                             return (
                               <label
@@ -263,6 +264,11 @@ function AssignRolesDrawerBody({
                                 {role.isSystem ? (
                                   <Badge variant="outline" className="shrink-0">
                                     {t("user.system")}
+                                  </Badge>
+                                ) : null}
+                                {!role.assignable ? (
+                                  <Badge variant="outline" className="shrink-0">
+                                    {t("user.roleNotAssignable")}
                                   </Badge>
                                 ) : null}
                                 <Badge

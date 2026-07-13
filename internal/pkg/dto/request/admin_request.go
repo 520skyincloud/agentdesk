@@ -53,9 +53,11 @@ type BindStoreStaffAgentTeamRequest struct {
 }
 
 type CreateRoleRequest struct {
-	Name   string `json:"name"`
-	Code   string `json:"code"`
-	Remark string `json:"remark"`
+	Name           string `json:"name"`
+	Code           string `json:"code"`
+	Scope          string `json:"scope"`
+	AuthorityLevel int    `json:"authorityLevel"`
+	Remark         string `json:"remark"`
 }
 
 type UpdateRoleRequest struct {

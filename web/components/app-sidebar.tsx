@@ -27,12 +27,12 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
   const t = useI18n()
   const { session } = useAuth()
   const navSections = useMemo(
-    () => filterDashboardNavForSession(session?.permissions, session?.roles),
-    [session?.permissions, session?.roles]
+    () => filterDashboardNavForSession(session?.permissions),
+    [session?.permissions]
   )
   const secondaryNavItems = useMemo(
-    () => filterDashboardSecondaryNavForSession(session?.permissions, session?.roles),
-    [session?.permissions, session?.roles]
+    () => filterDashboardSecondaryNavForSession(session?.permissions),
+    [session?.permissions]
   )
   const user = {
     name: session?.user.nickname || session?.user.username || t("common.notSignedIn"),

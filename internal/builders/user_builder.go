@@ -2,6 +2,7 @@ package builders
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
@@ -11,6 +12,7 @@ type UserBuildOptions struct {
 	Roles                 bool
 	Permissions           bool
 	StoreStaffAssignments map[int64]services.StoreStaffUserAssignment
+	Operator              *dto.AuthPrincipal
 }
 
 func BuildUserList(items []models.User, options UserBuildOptions) []response.UserResponse {
@@ -63,6 +65,9 @@ func BuildUserResponse(item *models.User, options UserBuildOptions) *response.Us
 			AgentTeamName:      assignment.AgentTeamName,
 		}
 	}
+	if options.Operator != nil {
+		ret.Manageable = services.UserService.CanManageUser(options.Operator, item)
+	}
 	return ret
 }
 
@@ -71,12 +76,14 @@ func buildAssignedRoles(userID int64) []response.RoleResponse {
 	results := make([]response.RoleResponse, 0, len(roles))
 	for _, role := range roles {
 		results = append(results, response.RoleResponse{
-			ID:       role.ID,
-			Name:     role.Name,
-			Code:     role.Code,
-			Status:   role.Status,
-			IsSystem: role.IsSystem,
-			SortNo:   role.SortNo,
+			ID:             role.ID,
+			Name:           role.Name,
+			Code:           role.Code,
+			Scope:          role.Scope,
+			AuthorityLevel: role.AuthorityLevel,
+			Status:         role.Status,
+			IsSystem:       role.IsSystem,
+			SortNo:         role.SortNo,
 		})
 	}
 	return results

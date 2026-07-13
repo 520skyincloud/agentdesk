@@ -23,31 +23,6 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
-/** Keep in sync with backend internal/pkg/constants/auth.go RoleCodeSuperAdmin. */
-export const DASHBOARD_ROLE_SUPER_ADMIN = "super_admin";
-const DASHBOARD_ROLE_CS_USER = "cs_user";
-const DASHBOARD_ROLE_CS_TEAM_LEADER = "cs_team_leader";
-const DASHBOARD_ROLE_STORE_STAFF = "store_staff";
-const STORE_STAFF_ALLOWED_URLS = new Set([
-  "/dashboard/store-workbench",
-]);
-const CS_USER_ALLOWED_URLS = new Set([
-  "/dashboard",
-  "/dashboard/conversations",
-  "/dashboard/tickets",
-  "/dashboard/customers",
-  "/dashboard/quick-replies",
-]);
-const CS_LEADER_ALLOWED_URLS = new Set([
-  ...CS_USER_ALLOWED_URLS,
-  "/dashboard/tags",
-  "/dashboard/conversation-monitor",
-  "/dashboard/conversation-dispatch",
-  "/dashboard/agents",
-  "/dashboard/agent-team-schedules",
-  "/dashboard/knowledge-candidates",
-]);
-
 export type DashboardNavMenuItem = {
   title: string;
   titleKey: string;
@@ -71,16 +46,8 @@ export type DashboardNavSectionConfig = {
 
 function navItemVisible(
   item: DashboardNavItemConfig,
-  superAdmin: boolean,
   permissionSet: Set<string>,
-  allowedUrls?: Set<string>,
 ): boolean {
-  if (superAdmin) {
-    return true;
-  }
-  if (allowedUrls && !allowedUrls.has(item.url)) {
-    return false;
-  }
   if (!item.requiredPermission) {
     return true;
   }
@@ -89,17 +56,14 @@ function navItemVisible(
 
 export function filterDashboardNavForSession(
   permissions: readonly string[] | undefined,
-  roles: readonly string[] | undefined,
 ): { titleKey: string; icon: ReactNode; items: DashboardNavMenuItem[] }[] {
-  const superAdmin = roles?.includes(DASHBOARD_ROLE_SUPER_ADMIN) ?? false;
-  const allowedUrls = dashboardRoleAllowedUrls(roles);
   const permissionSet = new Set(permissions ?? []);
   return dashboardNavSections
     .map((section) => ({
       titleKey: section.titleKey,
       icon: section.icon,
       items: section.items
-        .filter((item) => navItemVisible(item, superAdmin, permissionSet, allowedUrls))
+        .filter((item) => navItemVisible(item, permissionSet))
         .map(({ titleKey, url, icon }) => ({ title: titleKey, titleKey, url, icon })),
     }))
     .filter((section) => section.items.length > 0);
@@ -107,23 +71,11 @@ export function filterDashboardNavForSession(
 
 export function filterDashboardSecondaryNavForSession(
   permissions: readonly string[] | undefined,
-  roles: readonly string[] | undefined,
 ): DashboardNavMenuItem[] {
-  const superAdmin = roles?.includes(DASHBOARD_ROLE_SUPER_ADMIN) ?? false;
-  const allowedUrls = dashboardRoleAllowedUrls(roles);
   const permissionSet = new Set(permissions ?? []);
   return dashboardSecondaryNav
-    .filter((item) => navItemVisible(item, superAdmin, permissionSet, allowedUrls))
+    .filter((item) => navItemVisible(item, permissionSet))
     .map(({ titleKey, url, icon }) => ({ title: titleKey, titleKey, url, icon }));
-}
-
-function dashboardRoleAllowedUrls(roles: readonly string[] | undefined) {
-  if (!roles?.length) return undefined;
-  if (roles.includes(DASHBOARD_ROLE_SUPER_ADMIN)) return undefined;
-  if (roles.includes(DASHBOARD_ROLE_STORE_STAFF)) return STORE_STAFF_ALLOWED_URLS;
-  if (roles.includes(DASHBOARD_ROLE_CS_TEAM_LEADER)) return CS_LEADER_ALLOWED_URLS;
-  if (roles.includes(DASHBOARD_ROLE_CS_USER)) return CS_USER_ALLOWED_URLS;
-  return undefined;
 }
 
 export const dashboardNavSections: DashboardNavSectionConfig[] = [

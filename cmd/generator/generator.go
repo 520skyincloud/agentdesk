@@ -29,7 +29,6 @@ func main() {
 		codegen.GetGenerateStruct(&models.Permission{}),
 		codegen.GetGenerateStruct(&models.UserRole{}),
 		codegen.GetGenerateStruct(&models.RolePermission{}),
-		codegen.GetGenerateStruct(&models.UserPermission{}),
 		codegen.GetGenerateStruct(&models.LoginSession{}),
 		codegen.GetGenerateStruct(&models.LoginCredentialLog{}),
 		codegen.GetGenerateStruct(&models.Asset{}),

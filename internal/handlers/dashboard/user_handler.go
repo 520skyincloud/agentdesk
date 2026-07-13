@@ -7,6 +7,7 @@ import (
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/services"
 	"strconv"
@@ -20,7 +21,8 @@ import (
 )
 
 func UserAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionUserView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionUserView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -38,12 +40,14 @@ func UserAnyList(ctx *gin.Context) {
 		Roles:                 true,
 		Permissions:           false,
 		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments(userIDs(list)),
+		Operator:              operator,
 	})
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
 
 func UserAnyList_all(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionUserView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionUserView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -62,6 +66,7 @@ func UserAnyList_all(ctx *gin.Context) {
 		Roles:                 true,
 		Permissions:           false,
 		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments(userIDs(list)),
+		Operator:              operator,
 	})
 	httpx.WriteJSON(ctx, results)
 }
@@ -104,7 +109,8 @@ func UserGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionUserView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionUserView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -118,6 +124,7 @@ func UserGetBy(ctx *gin.Context) {
 		Roles:                 true,
 		Permissions:           true,
 		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments([]int64{item.ID}),
+		Operator:              operator,
 	}))
 }
 
@@ -151,13 +158,17 @@ func UserPostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if len(req.RoleIDs) > 0 && !services.AuthService.HasPermission(ctx, constants.PermissionUserAssignRole.Code) {
+		httpx.WriteJSON(ctx, errorsx.Forbidden("无权限在创建账号时分配角色"))
+		return
+	}
 	user, generatedPassword, err := services.UserService.CreateUser(req, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	httpx.WriteJSON(ctx, &response.CreateUserResultResponse{
-		User:     builders.BuildUserResponse(user, builders.UserBuildOptions{Roles: true, Permissions: true}),
+		User:     builders.BuildUserResponse(user, builders.UserBuildOptions{Roles: true, Permissions: true, Operator: operator}),
 		Password: generatedPassword,
 	})
 }

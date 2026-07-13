@@ -349,31 +349,10 @@ func (s *authService) loadUserPermissionCodes(tx *gorm.DB, userID int64) ([]stri
 		permissionCodes = append(permissionCodes, permission.Code)
 	}
 
-	overrideRows := make([]struct {
-		Code   string
-		Effect int
-	}, 0)
-	if err := tx.
-		Table("t_user_permission AS up").
-		Select("p.code, up.effect").
-		Joins("JOIN t_permission AS p ON p.id = up.permission_id").
-		Where("up.user_id = ? AND (up.expired_at IS NULL OR up.expired_at > ?)", userID, time.Now()).
-		Scan(&overrideRows).Error; err != nil {
-		return nil, err
-	}
-
 	permissionSet := make(map[string]bool, len(permissionCodes))
 	for _, code := range permissionCodes {
 		permissionSet[code] = true
 	}
-	for _, override := range overrideRows {
-		if override.Effect < 0 {
-			delete(permissionSet, override.Code)
-			continue
-		}
-		permissionSet[override.Code] = true
-	}
-
 	permissionCodes = permissionCodes[:0]
 	for code := range permissionSet {
 		permissionCodes = append(permissionCodes, code)

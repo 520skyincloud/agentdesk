@@ -33,6 +33,7 @@ export type AdminUser = {
   lastLoginIp?: string
   roles?: AdminRole[]
   permissions?: string[]
+  manageable: boolean
   storeStaff?: {
     bindingId: number
     companyId: number
@@ -79,15 +80,21 @@ export type AdminRole = {
   id: number
   name: string
   code: string
+  scope: "platform" | "tenant"
+  authorityLevel: number
   status: number
   isSystem: boolean
   sortNo: number
+  assignable: boolean
+  manageable: boolean
   permissions?: string[]
 }
 
 export type CreateAdminRolePayload = {
   name: string
   code: string
+  scope: "platform" | "tenant"
+  authorityLevel: number
   remark: string
 }
 
@@ -96,6 +103,7 @@ export type AdminPermission = {
   name: string
   code: string
   type: string
+  scope: "platform" | "tenant"
   groupName: string
   method: string
   apiPath: string

@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -368,6 +369,52 @@ func TestAuthServiceLogoutRevokesCurrentTokenOnly(t *testing.T) {
 	}
 }
 
+func TestAuthServiceIgnoresLegacyAccountPermissionOverrides(t *testing.T) {
+	db := setupAuthServiceTestDB(t)
+	user := createAuthTestUser(t, db, "legacy_override_user", "secret")
+	role := &models.Role{Name: "legacy role", Code: "legacy_role", Scope: "tenant", AuthorityLevel: 10, Status: enums.StatusOk}
+	if err := db.Create(role).Error; err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	allowed := &models.Permission{Name: "allowed", Code: "allowed.view", Type: "api", Scope: "tenant", Status: enums.StatusOk}
+	overrideOnly := &models.Permission{Name: "override", Code: "override.view", Type: "api", Scope: "tenant", Status: enums.StatusOk}
+	if err := db.Create([]*models.Permission{allowed, overrideOnly}).Error; err != nil {
+		t.Fatalf("create permissions: %v", err)
+	}
+	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
+		t.Fatalf("create user role: %v", err)
+	}
+	if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: allowed.ID}).Error; err != nil {
+		t.Fatalf("create role permission: %v", err)
+	}
+	if err := db.Exec(`CREATE TABLE t_user_permission (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id BIGINT NOT NULL,
+		permission_id BIGINT NOT NULL,
+		effect INTEGER NOT NULL,
+		expired_at DATETIME NULL
+	)`).Error; err != nil {
+		t.Fatalf("create legacy override table: %v", err)
+	}
+	if err := db.Exec("INSERT INTO t_user_permission(user_id, permission_id, effect) VALUES (?, ?, ?), (?, ?, ?)",
+		user.ID, allowed.ID, -1,
+		user.ID, overrideOnly.ID, 1,
+	).Error; err != nil {
+		t.Fatalf("seed legacy overrides: %v", err)
+	}
+
+	permissions, err := newAuthService().GetUserPermissions(user.ID)
+	if err != nil {
+		t.Fatalf("get user permissions: %v", err)
+	}
+	if !slices.Contains(permissions, allowed.Code) {
+		t.Fatalf("expected role permission to remain effective, got %v", permissions)
+	}
+	if slices.Contains(permissions, overrideOnly.Code) {
+		t.Fatalf("expected account override to be ignored, got %v", permissions)
+	}
+}
+
 func setupAuthServiceTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
@@ -386,7 +433,6 @@ func setupAuthServiceTestDB(t *testing.T) *gorm.DB {
 		&models.Permission{},
 		&models.UserRole{},
 		&models.RolePermission{},
-		&models.UserPermission{},
 		&models.LoginSession{},
 		&models.LoginCredentialLog{},
 	); err != nil {

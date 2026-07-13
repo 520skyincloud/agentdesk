@@ -19,7 +19,6 @@ var Models = []any{
 	&Permission{},
 	&UserRole{},
 	&RolePermission{},
-	&UserPermission{},
 	&LoginSession{},
 	&LoginCredentialLog{},
 	&Asset{},
@@ -272,13 +271,15 @@ type CustomerContact struct {
 
 // Role 角色定义。
 type Role struct {
-	ID       int64        `gorm:"primaryKey;autoIncrement"`
-	Name     string       `gorm:"type:varchar(100);not null;default:'';index"`
-	Code     string       `gorm:"type:varchar(100);not null;uniqueIndex"`
-	Status   enums.Status `gorm:"type:int;not null;default:0;index"`
-	IsSystem bool         `gorm:"not null;default:false;index"`
-	SortNo   int          `gorm:"type:int;not null;default:0;index"`
-	Remark   string       `gorm:"type:text"`
+	ID             int64        `gorm:"primaryKey;autoIncrement"`
+	Name           string       `gorm:"type:varchar(100);not null;default:'';index"`
+	Code           string       `gorm:"type:varchar(100);not null;uniqueIndex"`
+	Scope          string       `gorm:"type:varchar(20);not null;default:'tenant';index"`
+	AuthorityLevel int          `gorm:"type:int;not null;default:20;index"`
+	Status         enums.Status `gorm:"type:int;not null;default:0;index"`
+	IsSystem       bool         `gorm:"not null;default:false;index"`
+	SortNo         int          `gorm:"type:int;not null;default:0;index"`
+	Remark         string       `gorm:"type:text"`
 	AuditFields
 }
 
@@ -288,6 +289,7 @@ type Permission struct {
 	Name      string       `gorm:"type:varchar(100);not null;default:''"`
 	Code      string       `gorm:"type:varchar(150);not null;uniqueIndex"`
 	Type      string       `gorm:"type:varchar(20);not null;default:'';index"`
+	Scope     string       `gorm:"type:varchar(20);not null;default:'tenant';index"`
 	GroupName string       `gorm:"type:varchar(100);not null;default:'';index"`
 	ParentID  int64        `gorm:"type:bigint;not null;default:0;index"`
 	Path      string       `gorm:"type:varchar(255);not null;default:''"`
@@ -313,19 +315,6 @@ type RolePermission struct {
 	ID           int64 `gorm:"primaryKey;autoIncrement"`
 	RoleID       int64 `gorm:"type:bigint;not null;index;uniqueIndex:uk_role_permission"`
 	PermissionID int64 `gorm:"type:bigint;not null;index;uniqueIndex:uk_role_permission"`
-	AuditFields
-}
-
-// UserPermission 用户级例外权限。
-//
-//	用于处理少量临时授权或拒绝授权场景。
-type UserPermission struct {
-	ID           int64      `gorm:"primaryKey;autoIncrement"`
-	UserID       int64      `gorm:"type:bigint;not null;index;uniqueIndex:uk_user_permission"`
-	PermissionID int64      `gorm:"type:bigint;not null;index;uniqueIndex:uk_user_permission"`
-	Effect       int        `gorm:"type:int;not null;default:1;index"` // Effect 表示权限生效方式：1允许 -1拒绝。
-	ExpiredAt    *time.Time `gorm:"type:datetime"`
-	Remark       string     `gorm:"type:text"`
 	AuditFields
 }
 
