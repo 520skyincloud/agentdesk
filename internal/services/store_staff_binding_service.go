@@ -24,6 +24,7 @@ type storeStaffBindingService struct{}
 type StoreStaffRuntimeConfig struct {
 	BindingID               int64
 	UserID                  int64
+	AgentTeamID             int64
 	CompanyID               int64
 	StoreID                 int64
 	ManagedMode             string
@@ -37,6 +38,20 @@ type StoreStaffRuntimeConfig struct {
 	NoWxWorkInstance        bool
 }
 
+type StoreStaffUserAssignment struct {
+	BindingID          int64
+	UserID             int64
+	CompanyID          int64
+	CompanyName        string
+	StoreID            int64
+	StoreName          string
+	WxWorkInstanceID   int64
+	WxWorkEmployeeName string
+	WxWorkEmployeeID   string
+	AgentTeamID        int64
+	AgentTeamName      string
+}
+
 func (s *storeStaffBindingService) Get(id int64) *models.StoreStaffBinding {
 	if id <= 0 {
 		return nil
@@ -46,6 +61,54 @@ func (s *storeStaffBindingService) Get(id int64) *models.StoreStaffBinding {
 
 func (s *storeStaffBindingService) Take(where ...any) *models.StoreStaffBinding {
 	return repositories.StoreStaffBindingRepository.Take(sqls.DB(), where...)
+}
+
+func (s *storeStaffBindingService) FindUserAssignments(userIDs []int64) map[int64]StoreStaffUserAssignment {
+	result := make(map[int64]StoreStaffUserAssignment)
+	userIDs = uniquePositive(userIDs)
+	if len(userIDs) == 0 {
+		return result
+	}
+	bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().In("user_id", userIDs).Where("status <> ?", enums.StatusDeleted).Asc("id"))
+	for i := range bindings {
+		binding := &bindings[i]
+		if binding.UserID <= 0 {
+			continue
+		}
+		if _, exists := result[binding.UserID]; exists {
+			continue
+		}
+		assignment := StoreStaffUserAssignment{
+			BindingID:   binding.ID,
+			UserID:      binding.UserID,
+			CompanyID:   binding.CompanyID,
+			StoreID:     binding.StoreID,
+			AgentTeamID: binding.AgentTeamID,
+		}
+		if store := repositories.StoreRepository.Get(sqls.DB(), binding.StoreID); store != nil && store.Status != enums.StatusDeleted {
+			assignment.StoreName = store.Name
+			if assignment.CompanyID <= 0 {
+				assignment.CompanyID = store.CompanyID
+			}
+		}
+		if company := repositories.CompanyRepository.Get(sqls.DB(), assignment.CompanyID); company != nil && company.Status != enums.StatusDeleted {
+			assignment.CompanyName = company.Name
+		}
+		if team := repositories.AgentTeamRepository.Get(sqls.DB(), binding.AgentTeamID); team != nil && team.Status != enums.StatusDeleted {
+			assignment.AgentTeamName = team.Name
+		}
+		instance := repositories.WxWorkProtocolInstanceRepository.Take(sqls.DB(), "store_staff_binding_id = ? AND status <> ?", binding.ID, enums.StatusDeleted)
+		if instance == nil && binding.StoreID > 0 {
+			instance = repositories.WxWorkProtocolInstanceRepository.Take(sqls.DB(), "store_id = ? AND status <> ?", binding.StoreID, enums.StatusDeleted)
+		}
+		if instance != nil {
+			assignment.WxWorkInstanceID = instance.ID
+			assignment.WxWorkEmployeeName = instance.EmployeeName
+			assignment.WxWorkEmployeeID = instance.EmployeeUserID
+		}
+		result[binding.UserID] = assignment
+	}
+	return result
 }
 
 func (s *storeStaffBindingService) ResolveForInstance(instance *models.WxWorkProtocolInstance) StoreStaffRuntimeConfig {
@@ -64,6 +127,7 @@ func (s *storeStaffBindingService) ResolveForInstance(instance *models.WxWorkPro
 	}
 	return StoreStaffRuntimeConfig{
 		StoreID:                 instance.StoreID,
+		AgentTeamID:             instance.AgentTeamID,
 		ManagedMode:             constants.StoreManagedModeSemi,
 		ServiceHours:            strings.TrimSpace(instance.ServiceHours),
 		StoreRoomConversationID: strings.TrimSpace(instance.StoreRoomConversationID),
@@ -83,6 +147,7 @@ func (s *storeStaffBindingService) runtimeConfigFromBinding(binding *models.Stor
 	return StoreStaffRuntimeConfig{
 		BindingID:               binding.ID,
 		UserID:                  binding.UserID,
+		AgentTeamID:             binding.AgentTeamID,
 		CompanyID:               binding.CompanyID,
 		StoreID:                 binding.StoreID,
 		ManagedMode:             mode,
@@ -100,8 +165,12 @@ func (s *storeStaffBindingService) EnsureForInstance(instance *models.WxWorkProt
 		return nil, errorsx.InvalidParam("员工号未绑定门店")
 	}
 	if existing := s.Take("store_id = ? AND status <> ?", instance.StoreID, enums.StatusDeleted); existing != nil {
-		if instance.StoreStaffBindingID != existing.ID {
-			_ = repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), instance.ID, map[string]any{"store_staff_binding_id": existing.ID, "updated_at": time.Now()})
+		if instance.StoreStaffBindingID != existing.ID || instance.AgentTeamID != existing.AgentTeamID {
+			_ = repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), instance.ID, map[string]any{
+				"store_staff_binding_id": existing.ID,
+				"agent_team_id":          existing.AgentTeamID,
+				"updated_at":             time.Now(),
+			})
 		}
 		return existing, nil
 	}
@@ -111,6 +180,7 @@ func (s *storeStaffBindingService) EnsureForInstance(instance *models.WxWorkProt
 		companyID = store.CompanyID
 	}
 	item := &models.StoreStaffBinding{
+		AgentTeamID:             instance.AgentTeamID,
 		CompanyID:               companyID,
 		StoreID:                 instance.StoreID,
 		ManagedMode:             constants.StoreManagedModeSemi,

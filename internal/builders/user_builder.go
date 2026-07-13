@@ -8,8 +8,9 @@ import (
 )
 
 type UserBuildOptions struct {
-	Roles       bool
-	Permissions bool
+	Roles                 bool
+	Permissions           bool
+	StoreStaffAssignments map[int64]services.StoreStaffUserAssignment
 }
 
 func BuildUserList(items []models.User, options UserBuildOptions) []response.UserResponse {
@@ -47,6 +48,20 @@ func BuildUserResponse(item *models.User, options UserBuildOptions) *response.Us
 	if options.Permissions {
 		permissionCodes, _ := services.AuthService.GetUserPermissions(item.ID)
 		ret.Permissions = permissionCodes
+	}
+	if assignment, ok := options.StoreStaffAssignments[item.ID]; ok {
+		ret.StoreStaff = &response.StoreStaffAssignmentResponse{
+			BindingID:          assignment.BindingID,
+			CompanyID:          assignment.CompanyID,
+			CompanyName:        assignment.CompanyName,
+			StoreID:            assignment.StoreID,
+			StoreName:          assignment.StoreName,
+			WxWorkInstanceID:   assignment.WxWorkInstanceID,
+			WxWorkEmployeeName: assignment.WxWorkEmployeeName,
+			WxWorkEmployeeID:   assignment.WxWorkEmployeeID,
+			AgentTeamID:        assignment.AgentTeamID,
+			AgentTeamName:      assignment.AgentTeamName,
+		}
 	}
 	return ret
 }

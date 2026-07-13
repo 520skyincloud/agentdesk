@@ -234,3 +234,218 @@ func TestAgentTeamDerivesScopeFromWxWorkInstances(t *testing.T) {
 		t.Fatalf("instance scope = %v, want [%d]", instanceIDs, instance.ID)
 	}
 }
+
+func TestBindStoreStaffUserMovesCanonicalTeamAndSyncsWxWork(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.User{}, &models.Role{}, &models.UserRole{}, &models.Store{}, &models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{}, &models.AgentTeam{}); err != nil {
+		t.Fatalf("migrate binding models: %v", err)
+	}
+	sqls.SetDB(db)
+
+	store := &models.Store{StoreCode: "BIND-001", Name: "绑定测试门店", CompanyID: 9, Status: enums.StatusOk}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	user := &models.User{Username: "binding-store-staff", Nickname: "绑定门店员工", Status: enums.StatusOk}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	role := &models.Role{Name: "门店员工", Code: constants.RoleCodeStoreStaff, Status: enums.StatusOk}
+	if err := db.Create(role).Error; err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
+		t.Fatalf("create user role: %v", err)
+	}
+	teamA := &models.AgentTeam{Name: "绑定A组", Status: enums.StatusOk}
+	teamB := &models.AgentTeam{Name: "绑定B组", Status: enums.StatusOk}
+	if err := db.Create(teamA).Error; err != nil {
+		t.Fatalf("create team A: %v", err)
+	}
+	if err := db.Create(teamB).Error; err != nil {
+		t.Fatalf("create team B: %v", err)
+	}
+	binding := &models.StoreStaffBinding{UserID: user.ID, CompanyID: 9, StoreID: store.ID, Status: enums.StatusOk}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create store staff binding: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{Guid: "binding-instance", CompanyID: 9, StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	admin := &dto.AuthPrincipal{UserID: 1, Username: "admin", Roles: []string{constants.RoleCodeAdmin}}
+
+	if err := AgentTeamService.BindStoreStaffUser(user.ID, teamA.ID, admin); err != nil {
+		t.Fatalf("bind team A: %v", err)
+	}
+	if current := StoreStaffBindingService.Get(binding.ID); current == nil || current.AgentTeamID != teamA.ID {
+		t.Fatalf("store staff team = %+v, want %d", current, teamA.ID)
+	}
+	if current := WxWorkProtocolInstanceService.Get(instance.ID); current == nil || current.AgentTeamID != teamA.ID {
+		t.Fatalf("instance team = %+v, want %d", current, teamA.ID)
+	}
+	if current := AgentTeamService.Get(teamA.ID); current == nil || current.WxWorkInstanceScopeIDs != fmt.Sprint(instance.ID) || current.StoreScopeIDs != fmt.Sprint(store.ID) {
+		t.Fatalf("team A scope = %+v", current)
+	}
+
+	if err := AgentTeamService.BindStoreStaffUser(user.ID, teamB.ID, admin); err != nil {
+		t.Fatalf("move to team B: %v", err)
+	}
+	if current := AgentTeamService.Get(teamA.ID); current == nil || current.WxWorkInstanceScopeIDs != "" || current.StoreScopeIDs != "" {
+		t.Fatalf("team A scope was not cleared: %+v", current)
+	}
+	if current := AgentTeamService.Get(teamB.ID); current == nil || current.WxWorkInstanceScopeIDs != fmt.Sprint(instance.ID) || current.StoreScopeIDs != fmt.Sprint(store.ID) {
+		t.Fatalf("team B scope = %+v", current)
+	}
+}
+
+func TestUpdateAgentTeamAcceptsLegacyWxWorkScopeWithoutSilentClear(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.User{}, &models.Role{}, &models.UserRole{}, &models.Store{}, &models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{}, &models.AgentTeam{}); err != nil {
+		t.Fatalf("migrate binding models: %v", err)
+	}
+	sqls.SetDB(db)
+
+	role := &models.Role{Name: "门店员工", Code: constants.RoleCodeStoreStaff, Status: enums.StatusOk}
+	user := &models.User{Username: "legacy-scope-store-staff", Nickname: "旧范围门店员工", Status: enums.StatusOk}
+	store := &models.Store{StoreCode: "LEGACY-SCOPE", Name: "旧范围测试门店", CompanyID: 12, Status: enums.StatusOk}
+	team := &models.AgentTeam{Name: "旧范围测试组", Status: enums.StatusOk}
+	for _, item := range []any{role, user, store, team} {
+		if err := db.Create(item).Error; err != nil {
+			t.Fatalf("create fixture: %v", err)
+		}
+	}
+	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
+		t.Fatalf("create user role: %v", err)
+	}
+	binding := &models.StoreStaffBinding{UserID: user.ID, CompanyID: store.CompanyID, StoreID: store.ID, Status: enums.StatusOk}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create binding: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{Guid: "legacy-scope-instance", CompanyID: store.CompanyID, StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	admin := &dto.AuthPrincipal{UserID: 1, Username: "admin", Roles: []string{constants.RoleCodeAdmin}}
+
+	if err := AgentTeamService.UpdateAgentTeam(request.UpdateAgentTeamRequest{
+		ID: team.ID, Name: team.Name, Status: int(enums.StatusOk), WxWorkInstanceScopeIDs: []int64{instance.ID},
+	}, admin); err != nil {
+		t.Fatalf("update with legacy scope: %v", err)
+	}
+	if current := StoreStaffBindingService.Get(binding.ID); current == nil || current.AgentTeamID != team.ID {
+		t.Fatalf("legacy scope binding = %+v, want team %d", current, team.ID)
+	}
+	if current := WxWorkProtocolInstanceService.Get(instance.ID); current == nil || current.AgentTeamID != team.ID {
+		t.Fatalf("legacy scope instance = %+v, want team %d", current, team.ID)
+	}
+}
+
+func TestUpdateAgentTeamReplacesStoreStaffBindingsAndSyncsBothDirections(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.User{}, &models.Role{}, &models.UserRole{}, &models.Store{}, &models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{}, &models.AgentTeam{}); err != nil {
+		t.Fatalf("migrate binding models: %v", err)
+	}
+	sqls.SetDB(db)
+
+	role := &models.Role{Name: "门店员工", Code: constants.RoleCodeStoreStaff, Status: enums.StatusOk}
+	if err := db.Create(role).Error; err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	teamA := &models.AgentTeam{Name: "批量绑定A组", Status: enums.StatusOk}
+	teamB := &models.AgentTeam{Name: "批量绑定B组", Status: enums.StatusOk}
+	if err := db.Create(teamA).Error; err != nil {
+		t.Fatalf("create team A: %v", err)
+	}
+	if err := db.Create(teamB).Error; err != nil {
+		t.Fatalf("create team B: %v", err)
+	}
+
+	type staffFixture struct {
+		user     *models.User
+		store    *models.Store
+		binding  *models.StoreStaffBinding
+		instance *models.WxWorkProtocolInstance
+	}
+	staff := make([]staffFixture, 0, 3)
+	for i := 1; i <= 3; i++ {
+		user := &models.User{Username: fmt.Sprintf("batch-store-staff-%d", i), Nickname: fmt.Sprintf("门店员工%d", i), Status: enums.StatusOk}
+		if err := db.Create(user).Error; err != nil {
+			t.Fatalf("create user %d: %v", i, err)
+		}
+		if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
+			t.Fatalf("create user role %d: %v", i, err)
+		}
+		store := &models.Store{StoreCode: fmt.Sprintf("BATCH-%03d", i), Name: fmt.Sprintf("批量门店%d", i), CompanyID: int64(i), Status: enums.StatusOk}
+		if err := db.Create(store).Error; err != nil {
+			t.Fatalf("create store %d: %v", i, err)
+		}
+		initialTeamID := int64(0)
+		if i == 2 {
+			initialTeamID = teamB.ID
+		}
+		binding := &models.StoreStaffBinding{UserID: user.ID, AgentTeamID: initialTeamID, CompanyID: int64(i), StoreID: store.ID, Status: enums.StatusOk}
+		if err := db.Create(binding).Error; err != nil {
+			t.Fatalf("create binding %d: %v", i, err)
+		}
+		instance := &models.WxWorkProtocolInstance{Guid: fmt.Sprintf("batch-instance-%d", i), AgentTeamID: initialTeamID, CompanyID: int64(i), StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk}
+		if err := db.Create(instance).Error; err != nil {
+			t.Fatalf("create instance %d: %v", i, err)
+		}
+		staff = append(staff, staffFixture{user: user, store: store, binding: binding, instance: instance})
+	}
+	admin := &dto.AuthPrincipal{UserID: 1, Username: "admin", Roles: []string{constants.RoleCodeAdmin}}
+
+	if err := AgentTeamService.UpdateAgentTeam(request.UpdateAgentTeamRequest{
+		ID: teamA.ID, Name: teamA.Name, Status: int(enums.StatusOk), StoreStaffUserIDs: []int64{staff[0].user.ID, staff[1].user.ID},
+	}, admin); err != nil {
+		t.Fatalf("batch assign team A: %v", err)
+	}
+	for _, index := range []int{0, 1} {
+		if current := StoreStaffBindingService.Get(staff[index].binding.ID); current == nil || current.AgentTeamID != teamA.ID {
+			t.Fatalf("binding %d team = %+v, want %d", index, current, teamA.ID)
+		}
+		if current := WxWorkProtocolInstanceService.Get(staff[index].instance.ID); current == nil || current.AgentTeamID != teamA.ID {
+			t.Fatalf("instance %d team = %+v, want %d", index, current, teamA.ID)
+		}
+	}
+
+	if err := AgentTeamService.UpdateAgentTeam(request.UpdateAgentTeamRequest{
+		ID: teamB.ID, Name: teamB.Name, Status: int(enums.StatusOk), StoreStaffUserIDs: []int64{staff[1].user.ID, staff[2].user.ID},
+	}, admin); err != nil {
+		t.Fatalf("move and assign team B: %v", err)
+	}
+	if got := AgentTeamService.FindStoreStaffUserIDs(teamA.ID); len(got) != 1 || got[0] != staff[0].user.ID {
+		t.Fatalf("team A users = %v, want [%d]", got, staff[0].user.ID)
+	}
+	if got := AgentTeamService.FindStoreStaffUserIDs(teamB.ID); len(got) != 2 || got[0] != staff[1].user.ID || got[1] != staff[2].user.ID {
+		t.Fatalf("team B users = %v", got)
+	}
+	if current := AgentTeamService.Get(teamA.ID); current == nil || current.WxWorkInstanceScopeIDs != fmt.Sprint(staff[0].instance.ID) {
+		t.Fatalf("team A scope = %+v", current)
+	}
+
+	if err := AgentTeamService.UpdateAgentTeam(request.UpdateAgentTeamRequest{
+		ID: teamA.ID, Name: teamA.Name, Status: int(enums.StatusOk), StoreStaffUserIDs: []int64{},
+	}, admin); err != nil {
+		t.Fatalf("clear team A: %v", err)
+	}
+	if current := StoreStaffBindingService.Get(staff[0].binding.ID); current == nil || current.AgentTeamID != 0 {
+		t.Fatalf("cleared binding = %+v, want unassigned", current)
+	}
+	if current := WxWorkProtocolInstanceService.Get(staff[0].instance.ID); current == nil || current.AgentTeamID != 0 {
+		t.Fatalf("cleared instance = %+v, want unassigned", current)
+	}
+	if current := AgentTeamService.Get(teamA.ID); current == nil || current.StoreScopeIDs != "" || current.WxWorkInstanceScopeIDs != "" {
+		t.Fatalf("team A scope was not cleared: %+v", current)
+	}
+}

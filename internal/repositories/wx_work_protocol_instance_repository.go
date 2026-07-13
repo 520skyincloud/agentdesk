@@ -56,6 +56,20 @@ func (r *wxWorkProtocolInstanceRepository) Updates(db *gorm.DB, id int64, column
 	return db.Model(&models.WxWorkProtocolInstance{}).Where("id = ?", id).Updates(columns).Error
 }
 
+func (r *wxWorkProtocolInstanceRepository) UpdatesByIDs(db *gorm.DB, ids []int64, columns map[string]any) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return db.Model(&models.WxWorkProtocolInstance{}).Where("id IN ?", ids).Updates(columns).Error
+}
+
+func (r *wxWorkProtocolInstanceRepository) UpdatesByStoreStaffBindingIDs(db *gorm.DB, bindingIDs []int64, columns map[string]any) error {
+	if len(bindingIDs) == 0 {
+		return nil
+	}
+	return db.Model(&models.WxWorkProtocolInstance{}).Where("store_staff_binding_id IN ?", bindingIDs).Updates(columns).Error
+}
+
 func (r *wxWorkProtocolInstanceRepository) Delete(db *gorm.DB, id int64) error {
 	return db.Delete(&models.WxWorkProtocolInstance{}, "id = ?", id).Error
 }

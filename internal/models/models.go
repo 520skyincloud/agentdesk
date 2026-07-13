@@ -420,6 +420,7 @@ type Store struct {
 type StoreStaffBinding struct {
 	ID                      int64        `gorm:"primaryKey;autoIncrement"`
 	UserID                  int64        `gorm:"type:bigint;not null;default:0;index"`
+	AgentTeamID             int64        `gorm:"type:bigint;not null;default:0;index"` // AgentTeamID 为门店员工所属客服组，0 表示暂未分配。
 	CompanyID               int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreID                 int64        `gorm:"type:bigint;not null;default:0;uniqueIndex"`
 	ManagedMode             string       `gorm:"type:varchar(20);not null;default:'semi';index"`
@@ -437,6 +438,7 @@ type StoreStaffBinding struct {
 // WxWorkProtocolInstance 记录一个门店企微员工号实例及其唯一门店/知识库绑定。
 type WxWorkProtocolInstance struct {
 	ID                             int64        `gorm:"primaryKey;autoIncrement"`
+	AgentTeamID                    int64        `gorm:"type:bigint;not null;default:0;index"` // AgentTeamID 同步自门店员工绑定，供派单运行时快速查询。
 	Guid                           string       `gorm:"type:varchar(128);not null;default:'';uniqueIndex"`
 	ChannelID                      int64        `gorm:"type:bigint;not null;default:0;index"`
 	EmployeeUserID                 string       `gorm:"type:varchar(128);not null;default:'';index"`

@@ -25,17 +25,31 @@ type RoleResponse struct {
 }
 
 type UserResponse struct {
-	ID          int64          `json:"id"`
-	Username    string         `json:"username"`
-	Nickname    string         `json:"nickname"`
-	Avatar      string         `json:"avatar"`
-	Mobile      string         `json:"mobile,omitempty"`
-	Email       string         `json:"email,omitempty"`
-	Status      enums.Status   `json:"status"`
-	LastLoginAt string         `json:"lastLoginAt,omitempty"`
-	LastLoginIP string         `json:"lastLoginIp,omitempty"`
-	Roles       []RoleResponse `json:"roles,omitempty"`
-	Permissions []string       `json:"permissions,omitempty"`
+	ID          int64                         `json:"id"`
+	Username    string                        `json:"username"`
+	Nickname    string                        `json:"nickname"`
+	Avatar      string                        `json:"avatar"`
+	Mobile      string                        `json:"mobile,omitempty"`
+	Email       string                        `json:"email,omitempty"`
+	Status      enums.Status                  `json:"status"`
+	LastLoginAt string                        `json:"lastLoginAt,omitempty"`
+	LastLoginIP string                        `json:"lastLoginIp,omitempty"`
+	Roles       []RoleResponse                `json:"roles,omitempty"`
+	Permissions []string                      `json:"permissions,omitempty"`
+	StoreStaff  *StoreStaffAssignmentResponse `json:"storeStaff,omitempty"`
+}
+
+type StoreStaffAssignmentResponse struct {
+	BindingID          int64  `json:"bindingId"`
+	CompanyID          int64  `json:"companyId"`
+	CompanyName        string `json:"companyName"`
+	StoreID            int64  `json:"storeId"`
+	StoreName          string `json:"storeName"`
+	WxWorkInstanceID   int64  `json:"wxWorkInstanceId"`
+	WxWorkEmployeeName string `json:"wxWorkEmployeeName"`
+	WxWorkEmployeeID   string `json:"wxWorkEmployeeId"`
+	AgentTeamID        int64  `json:"agentTeamId"`
+	AgentTeamName      string `json:"agentTeamName"`
 }
 
 // CreateUserResultResponse 创建用户成功响应；password 仅在本次响应中返回一次。

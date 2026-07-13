@@ -78,6 +78,7 @@ func registerDashboardDashboardRoutes(group *gin.RouterGroup) {
 
 func registerDashboardUserRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.UserGetBy)
+	group.POST("/bind_agent_team", dashboard.UserPostBind_agent_team)
 	group.POST("/assign_role", dashboard.UserPostAssign_role)
 	group.POST("/change_password", dashboard.UserPostChange_password)
 	group.POST("/create", dashboard.UserPostCreate)

@@ -2,12 +2,14 @@ package dashboard
 
 import (
 	"agent-desk/internal/builders"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/services"
+	"strconv"
 	"strings"
 
 	"agent-desk/internal/pkg/httpx/params"
@@ -30,10 +32,12 @@ func UserAnyList(ctx *gin.Context) {
 	).Desc("id")
 	cnd.Where("status <> ?", enums.StatusDeleted)
 	applyUserRoleFilter(ctx, cnd)
+	applyStoreStaffAgentTeamFilter(ctx, cnd)
 	list, paging := services.UserService.FindPageByCnd(cnd)
 	results := builders.BuildUserList(list, builders.UserBuildOptions{
-		Roles:       true,
-		Permissions: false,
+		Roles:                 true,
+		Permissions:           false,
+		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments(userIDs(list)),
 	})
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
@@ -51,11 +55,13 @@ func UserAnyList_all(ctx *gin.Context) {
 	).Desc("id")
 	cnd.Where("status <> ?", enums.StatusDeleted)
 	applyUserRoleFilter(ctx, cnd)
+	applyStoreStaffAgentTeamFilter(ctx, cnd)
 
 	list := services.UserService.Find(cnd)
 	results := builders.BuildUserList(list, builders.UserBuildOptions{
-		Roles:       true,
-		Permissions: false,
+		Roles:                 true,
+		Permissions:           false,
+		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments(userIDs(list)),
 	})
 	httpx.WriteJSON(ctx, results)
 }
@@ -66,6 +72,31 @@ func applyUserRoleFilter(ctx *gin.Context, cnd *sqls.Cnd) {
 		return
 	}
 	cnd.Where("id IN (SELECT ur.user_id FROM t_user_role ur JOIN t_role r ON r.id = ur.role_id WHERE r.code = ? AND r.status = ?)", roleCode, enums.StatusOk)
+}
+
+func applyStoreStaffAgentTeamFilter(ctx *gin.Context, cnd *sqls.Cnd) {
+	raw := strings.TrimSpace(ctx.Query("agentTeamId"))
+	if raw == "" || raw == "all" {
+		return
+	}
+	teamID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || teamID < 0 {
+		return
+	}
+	if teamID == 0 {
+		cnd.Where("id IN (SELECT ur.user_id FROM t_user_role ur JOIN t_role r ON r.id = ur.role_id WHERE r.code = ? AND r.status = ?)", constants.RoleCodeStoreStaff, enums.StatusOk)
+		cnd.Where("id NOT IN (SELECT user_id FROM t_store_staff_binding WHERE status <> ? AND agent_team_id > 0)", enums.StatusDeleted)
+		return
+	}
+	cnd.Where("id IN (SELECT user_id FROM t_store_staff_binding WHERE status <> ? AND agent_team_id = ?)", enums.StatusDeleted, teamID)
+}
+
+func userIDs(list []models.User) []int64 {
+	ids := make([]int64, 0, len(list))
+	for i := range list {
+		ids = append(ids, list[i].ID)
+	}
+	return ids
 }
 
 func UserGetBy(ctx *gin.Context) {
@@ -84,9 +115,28 @@ func UserGetBy(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, builders.BuildUserResponse(item, builders.UserBuildOptions{
-		Roles:       true,
-		Permissions: true,
+		Roles:                 true,
+		Permissions:           true,
+		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments([]int64{item.ID}),
 	}))
+}
+
+func UserPostBind_agent_team(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.BindStoreStaffAgentTeamRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.AgentTeamService.BindStoreStaffUser(req.UserID, req.TeamID, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
 }
 
 func UserPostCreate(ctx *gin.Context) {

@@ -31,6 +31,7 @@ type AgentTeamResponse struct {
 	ID                     int64        `json:"id"`
 	Name                   string       `json:"name"`
 	LeaderUserID           int64        `json:"leaderUserId"`
+	StoreStaffUserIDs      []int64      `json:"storeStaffUserIds"`
 	CompanyScopeIDs        []int64      `json:"companyScopeIds"`
 	StoreScopeIDs          []int64      `json:"storeScopeIds"`
 	WxWorkInstanceScopeIDs []int64      `json:"wxWorkInstanceScopeIds"`

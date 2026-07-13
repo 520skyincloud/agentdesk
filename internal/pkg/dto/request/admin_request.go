@@ -47,6 +47,11 @@ type AssignRoleRequest struct {
 	RoleIDs []int64 `json:"roleIds"`
 }
 
+type BindStoreStaffAgentTeamRequest struct {
+	UserID int64 `json:"userId"`
+	TeamID int64 `json:"teamId"`
+}
+
 type CreateRoleRequest struct {
 	Name   string `json:"name"`
 	Code   string `json:"code"`
