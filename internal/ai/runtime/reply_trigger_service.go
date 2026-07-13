@@ -57,9 +57,26 @@ func (s *aiReplyService) TriggerReplyAsync(conversation models.Conversation, mes
 	}()
 }
 
+func (s *aiReplyService) TriggerReplySync(ctx context.Context, conversation models.Conversation, message models.Message) error {
+	if sqls.DB() == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+	aiAgent, ok := s.resolveRuntimeAIAgent(conversation)
+	if !ok || aiAgent.Status != enums.StatusOk {
+		return fmt.Errorf("runtime AI agent is unavailable")
+	}
+	timeout := s.resolveReplyTimeout(aiAgent)
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > timeout {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	return s.TriggerReply(ctx, conversation, message, aiAgent)
+}
+
 func (s *aiReplyService) resolveRuntimeAIAgent(conversation models.Conversation) (models.AIAgent, bool) {
-	if aiAgent, ok := svc.WxWorkProtocolInstanceService.BuildRuntimeAIAgentForConversation(conversation.ID); ok {
-		return aiAgent, true
+	if route := svc.ConversationRouteService.GetByConversationID(conversation.ID); route != nil && route.WxWorkInstanceID > 0 {
+		return svc.WxWorkProtocolInstanceService.BuildRuntimeAIAgentForConversation(conversation.ID)
 	}
 	aiAgent := svc.AIAgentService.Get(conversation.AIAgentID)
 	if aiAgent == nil {

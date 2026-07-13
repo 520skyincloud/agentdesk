@@ -1,0 +1,28 @@
+package response
+
+import "time"
+
+type FastGPTDatasetJobResponse struct {
+	ID              int64      `json:"id"`
+	StoreID         int64      `json:"storeId"`
+	KnowledgeBaseID int64      `json:"knowledgeBaseId"`
+	Action          string     `json:"action"`
+	Status          string     `json:"status"`
+	DatasetID       string     `json:"datasetId"`
+	CollectionID    string     `json:"collectionId"`
+	Filename        string     `json:"filename"`
+	AttemptCount    int        `json:"attemptCount"`
+	NextRetryAt     *time.Time `json:"nextRetryAt"`
+	LastError       string     `json:"lastError"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	UpdatedAt       time.Time  `json:"updatedAt"`
+}
+
+type FastGPTCollectionResponse struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	DataAmount     int    `json:"dataAmount"`
+	TrainingAmount int    `json:"trainingAmount"`
+	Forbid         bool   `json:"forbid"`
+}

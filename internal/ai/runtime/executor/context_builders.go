@@ -9,6 +9,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
+	"agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -49,6 +50,9 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 	if strings.TrimSpace(plan.Prompt) != "" {
 		messages = append(messages, schema.SystemMessage(plan.Prompt))
 	}
+	if instruction := buildAutoHandoffDisabledInstruction(req, plan.Intent); strings.TrimSpace(instruction) != "" {
+		messages = append(messages, schema.SystemMessage(instruction))
+	}
 	if !plan.Intent.ShouldReply {
 		if summary != nil {
 			summary.ReplyText = ""
@@ -62,6 +66,16 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 	}
 	messages = append(messages, schema.UserMessage(buildGenerationUserMessageText(req.UserMessage.Content, plan.Intent)))
 	return messages
+}
+
+func buildAutoHandoffDisabledInstruction(req RunInput, intent callbacks.IntentTraceData) string {
+	if !intent.NeedsHumanRoute || !isHandoffIntentCategory(intent) {
+		return ""
+	}
+	if services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
+		return ""
+	}
+	return "【当前会话接待边界】当前客户在此企微员工号下不允许自动转人工。不要提及任何内部设置，不要发起转人工确认、通知、派发或承诺同事处理。继续直接回答当前问题；若涉及紧急安全情况，优先给出可立即执行的自我保护和 120/110 建议。"
 }
 
 func buildGenerationUserMessageText(currentText string, intent callbacks.IntentTraceData) string {
@@ -276,7 +290,7 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 	if intent.PrimaryIntent == "hotel_info" || intent.PrimaryIntent == "service_request" {
 		parts = append(parts, "酒店信息/服务请求：只围绕当前问题使用知识库结果，不要把同一会话里的其他酒店问题一起回答。知识库已经给出答案时必须直接回答，不能说正在查、稍后查、内部确认或后续处理。如果当前问题里某一项知识库没有明确写明，只能说“当前资料没写明”并追问一个关键点。")
 	}
-	if isMultiQuestionCurrentTurn(currentText) {
+	if len(intent.IntentTasks) > 1 {
 		parts = append(parts, "当前轮包含连续多问：必须按客户消息顺序逐项覆盖当前轮每个问题；不要只回答主意图或最后一个问题。已检索到的知识必须直接答，缺资料时逐项说明“当前资料没写明”，不能说“帮你查/我查一下”。")
 	}
 	if intent.PrimaryIntent == "service_request" {
@@ -285,23 +299,8 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 	if looksLikeReturningCustomerTurn(currentText) {
 		parts = append(parts, "当前消息像是跨天/隔一段时间后重新咨询；旧消息或长期记忆里的房号、入住事实都已过期。缺少当前房号时只能重新询问，回复中不能沿用旧房号。回复必须点名当前问题本身，例如当前问电视就要提到电视，不能只欢迎回来或只问是否到房间。")
 	}
-	if shouldAttachRecentMediaUnderstandingToCurrentTurn(req, history) {
+	if shouldAttachRecentMediaUnderstandingToCurrentTurn(req, history, intent) {
 		parts = append(parts, "当前消息是在追问最近一条客户媒体/文件/语音理解结果；必须结合该媒体理解回答。如果媒体/语音理解里已经有本轮房号，回复里保留这个房号，不要只泛称“房间号记下了”。")
-	}
-	if intent.PrimaryIntent == "hotel_info" && intent.SubIntent == "invoice" {
-		parts = append(parts, "发票/开票问题：回复里必须明确提到“发票”或“开票”。如果当前问题是在追问图片/文件里的开票资料，只能说明资料里是否看到了抬头、税号、邮箱等关键信息，并引导按小程序或门店实际开票流程提交；没有真实系统结果时，不能表达资料已登记、已提交或已通知，也不能承诺前台一定可以直接开。")
-	}
-	if intent.PrimaryIntent == "hotel_info" && intent.SubIntent == "air_conditioner" {
-		parts = append(parts, "空调问题：回复必须明确提到“空调”或“制冷”，先给知识库里的一个可执行排查步骤；资料没写明时说“当前资料没写明”并追问当前房号。禁止只问房号，禁止说帮你转、转人工、转过去、找人处理或让工作人员处理。")
-	}
-	if intent.PrimaryIntent == "hotel_info" && isCheckinProcessSubIntent(intent.SubIntent) {
-		parts = append(parts, "办理入住：文本回复必须明确提到“入住”和“小程序”，并说明证件/身份核验/刷脸等知识库写明的关键步骤；小程序结构化消息由 Commit 发送，文本里不要说“我发你了/稍后发”。")
-	}
-	if intent.PrimaryIntent == "hotel_info" && intent.SubIntent == "supplies_self_help" {
-		parts = append(parts, "用品问题：回复必须点名客户当前问到的用品，例如浴帽、拖鞋、纸巾、牙刷等；不要只用“这些东西/一般用品”带过。")
-	}
-	if intent.PrimaryIntent == "hotel_info" && intent.SubIntent == "mini_program_issue" {
-		parts = append(parts, "小程序故障：只给客人可执行排查步骤，例如退出微信后重新进入小程序重试、切换网络、把报错页面截图发来继续判断。没有工具或路由结果时，不承诺人工介入、系统通知或后续联系。回复里要明确提到“小程序”和“重试/截图”。")
 	}
 	if intent.PrimaryIntent == "hotel_variable" || intent.NeedsResource || len(intent.ResourceActions) > 0 {
 		parts = append(parts, "酒店变量：只围绕当前请求的电话、定位、小程序等变量回复；未配置的变量要明确说未配置。定位/小程序结构化消息由 Commit 阶段发送，文本回复不要说发你、发给你、已经发、点开就能、让同事发、让同事联系、稍后处理或换成其他动作承诺。")
@@ -309,14 +308,11 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 			parts = append(parts, "混合变量+知识：最终文本只回答停车、早餐、发票、流程等知识问题；定位、小程序等变量会由系统按 resourceActions 单独发送结构化消息。")
 		}
 	}
-	if intent.PrimaryIntent == "interaction" && strings.TrimSpace(intent.SubIntent) != "media_context_follow_up" && isSimpleSocialTurnText(currentText) {
+	if intent.PrimaryIntent == "interaction" && strings.TrimSpace(intent.SubIntent) != "media_context_follow_up" {
 		parts = append(parts, "互动/感谢/确认：当前消息只是感谢、好的、确认、结束语或表情时，只回应这条当前消息；不要继续承诺上一条送物、维修、转人工或其他真实动作，也不要补答旧业务问题。单独表情且无明确业务上下文时，像真人值守一样轻接住即可，可自然说“我在，有事发我”。")
-		if isThanksSocialTurnText(currentText) {
-			parts = append(parts, "感谢类回复要明确接住客人的感谢，回复里必须包含“不客气”；如需补一句，只能说“有问题再说/有问题发我”这类轻确认，不能补充任何未执行的真实动作。")
-		}
 	}
-	if (intent.PrimaryIntent == "interaction" && isSocialCorrectionSubIntent(intent.SubIntent)) || looksLikeSocialCorrectionTurnText(currentText) {
-		parts = append(parts, "纠错/误会：承认看错或理解错即可，语气轻一点；回复里需要包含“收到”或“没事”，不要辩解，也不要补答旧业务问题。")
+	if intent.PrimaryIntent == "interaction" && isSocialCorrectionSubIntent(intent.SubIntent) {
+		parts = append(parts, "纠错/误会：完整上下文仍然保留，但本轮只允许用当前纠正和紧邻的上一条客服消息识别误会；自然承认看错、听错或理解错，只输出一句完整短句。不要辩解，不要补答或追问任何旧业务主题。")
 	}
 	return strings.Join(parts, "\n")
 }
@@ -332,56 +328,14 @@ func isSocialCorrectionSubIntent(subIntent string) bool {
 
 func isMultiQuestionCurrentTurn(text string) bool {
 	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return false
-	}
-	if strings.Count(trimmed, "\n") >= 1 || strings.Contains(trimmed, "[消息") {
-		return true
-	}
-	compact := normalizeConfiguredIntentText(trimmed)
-	if compact == "" {
-		return false
-	}
-	matches := 0
-	for _, terms := range [][]string{
-		{"早餐", "早饭"},
-		{"停车", "车位"},
-		{"剃须刀", "牙刷", "纸巾", "毛巾"},
-		{"wifi", "网络", "网"},
-		{"发票", "开票"},
-		{"小程序", "入住码"},
-		{"定位", "地址", "哪里", "在哪"},
-		{"电视", "投屏"},
-	} {
-		if containsAnyNormalized(compact, terms) {
-			matches++
-		}
-	}
-	return matches >= 2
+	return trimmed != "" && (strings.Count(trimmed, "\n") >= 1 || strings.Contains(trimmed, "[消息"))
 }
 
-func shouldAttachRecentMediaUnderstandingToCurrentTurn(req RunInput, history adapter.HistoryBuildResult) bool {
-	if isRuntimeMediaMessage(req.UserMessage.MessageType) {
-		return false
-	}
-	text := strings.TrimSpace(latestBurstMessageText(req.UserMessage.Content))
-	if text == "" {
-		text = strings.TrimSpace(req.UserMessage.Content)
-	}
-	if !replyengine.LooksLikeMediaFollowUp(text) && !isShortDirectFollowUpText(text) {
+func shouldAttachRecentMediaUnderstandingToCurrentTurn(req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) bool {
+	if isRuntimeMediaMessage(req.UserMessage.MessageType) || strings.TrimSpace(intent.SubIntent) != "media_context_follow_up" {
 		return false
 	}
 	return recentUsableMediaTextFromHistory(history) != ""
-}
-
-func isShortDirectFollowUpText(text string) bool {
-	compact := normalizeConfiguredIntentText(text)
-	if compact == "" || hasCurrentBusinessSignal(compact) {
-		return false
-	}
-	return containsAnyNormalized(compact, []string{
-		"能直接告诉我吗", "直接告诉我", "告诉我", "听清了吗", "看到了吗", "看见了吗", "收到了吗",
-	})
 }
 
 func looksLikeReturningCustomerTurn(text string) bool {
@@ -390,41 +344,6 @@ func looksLikeReturningCustomerTurn(text string) bool {
 		return false
 	}
 	return replyengine.ContainsAny(compact, "三天后", "两天后", "几天后", "隔天", "过几天", "又来了", "我又来了", "回来继续", "再次咨询")
-}
-
-func isSimpleSocialTurnText(text string) bool {
-	latest := strings.TrimSpace(latestBurstMessageText(text))
-	if latest == "" {
-		latest = strings.TrimSpace(text)
-	}
-	return isSimpleSocialConfirmText(latest)
-}
-
-func isThanksSocialTurnText(text string) bool {
-	latest := strings.TrimSpace(latestBurstMessageText(text))
-	if latest == "" {
-		latest = strings.TrimSpace(text)
-	}
-	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "，", "", ",", "", "。", "", ".", "", "！", "", "!", "", "？", "", "?", "").Replace(strings.ToLower(latest))
-	if compact == "" {
-		return false
-	}
-	return replyengine.ContainsAny(compact, "谢谢", "感谢", "辛苦")
-}
-
-func looksLikeSocialCorrectionTurnText(text string) bool {
-	latest := strings.TrimSpace(latestBurstMessageText(text))
-	if latest == "" {
-		latest = strings.TrimSpace(text)
-	}
-	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "，", "", ",", "", "。", "", ".", "", "！", "", "!", "", "？", "", "?", "").Replace(strings.ToLower(latest))
-	if compact == "" {
-		return false
-	}
-	return replyengine.ContainsAny(compact,
-		"我没给你发语音", "没给你发语音", "我没发语音", "没发语音", "没有发语音",
-		"我没说这个", "没说这个", "不是这个", "不是这意思", "你看错了", "你理解错了", "理解错了",
-	)
 }
 
 func buildWeatherToolInstruction(intent callbacks.IntentTraceData) string {

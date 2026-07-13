@@ -88,7 +88,7 @@ func TestRuntimePipelineBuildsIntentPromptAndReplyPlan(t *testing.T) {
 	}
 }
 
-func TestRuntimePipelineMediaFollowUpOverridesModelAfterIntentDetect(t *testing.T) {
+func TestRuntimePipelineMediaFollowUpKeepsModelIntentAfterIntentDetect(t *testing.T) {
 	detector := &recordingRuntimeIntentModelDetector{
 		intent: callbacks.IntentTraceData{
 			PrimaryIntent:    "hotel_info",
@@ -113,10 +113,24 @@ func TestRuntimePipelineMediaFollowUpOverridesModelAfterIntentDetect(t *testing.
 	}}}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, history, detector)
 	if !detector.called {
-		t.Fatal("expected IntentDetect model stage to run before media follow-up correction")
+		t.Fatal("expected IntentDetect model stage to run")
 	}
-	if plan.Intent.PrimaryIntent != "interaction" || plan.Intent.SubIntent != "media_context_follow_up" || plan.Intent.NeedsKnowledge {
-		t.Fatalf("expected media follow-up correction to interaction without knowledge, got %#v", plan.Intent)
+	if plan.Intent.PrimaryIntent != "hotel_info" || plan.Intent.SubIntent != "dining_feedback" || !plan.Intent.NeedsKnowledge {
+		t.Fatalf("expected media context to remain context while model intent is preserved, got %#v", plan.Intent)
+	}
+}
+
+func TestRuntimePipelineIntentDetectFailureSkipsReply(t *testing.T) {
+	req := RunInput{
+		Conversation: models.Conversation{ID: 7},
+		UserMessage:  models.Message{ID: 13, ConversationID: 7, MessageType: enums.IMMessageTypeText, Content: "WiFi 密码多少"},
+	}
+	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{err: context.DeadlineExceeded})
+	if plan.Intent.ShouldReply {
+		t.Fatalf("IntentDetect failure must not fabricate an interaction reply, got %#v", plan.Intent)
+	}
+	if plan.Intent.PrimaryIntent != "" || plan.Intent.DetectedIntent != "intent_detect_unavailable" {
+		t.Fatalf("expected explicit IntentDetect failure trace, got %#v", plan.Intent)
 	}
 }
 
@@ -125,7 +139,7 @@ func TestRuntimeIntentDetectPromptRequiresSpecificHotelInfoSubIntent(t *testing.
 	for _, expected := range []string{
 		"subIntent 字段纪律",
 		"checkin_process",
-		"“我要办理入住/怎么入住/入住怎么弄”属于 hotel_info + checkin_process",
+		"“我要办理入住/怎么入住/入住怎么弄”必须按顺序输出 hotel_info/checkin_process",
 		"只有用户只说“办理入住的小程序发我/入住小程序发我”且没有问步骤时",
 	} {
 		if !strings.Contains(prompt, expected) {
@@ -175,10 +189,54 @@ func TestRuntimeIntentDetectSystemPromptDefinesHotelInfoServiceRequestBoundary(t
 		"都不能输出 hotel_variable",
 		"resourceActions 字段纪律",
 		"禁止把电话、定位、小程序作为默认兜底一起输出",
+		"客户明确要其他地点的定位或导航时，不是 hotel_variable",
+		"都不能输出 provide_location 或发送门店定位",
+		"定位、地址、导航先判断对象",
+		"最近一轮仍在讨论的外部地点",
+		"都以该外部地点为准，优先于默认的酒店身份",
+		"只追问要哪个地点，不取变量",
+		"纠错与业务问题边界",
+		"纠错语气本身不是独立业务任务",
+		"我问的是停车，不是早餐，停车入口在哪",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("intent prompt missing boundary phrase %q: %s", expected, prompt)
 		}
+	}
+}
+
+func TestDeriveModelIntentFromTasksKeepsCheckinKnowledgePrimary(t *testing.T) {
+	intent := deriveModelIntentFromTasks(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_variable",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "hotel_info", SubIntent: "checkin_process", Text: "我要办理入住", NeedsKnowledge: true},
+			{Intent: "hotel_variable", SubIntent: "mini_program", Text: "发送入住小程序", NeedsResource: true, ResourceAction: "provide_mini_program"},
+		},
+	})
+	if intent.PrimaryIntent != "hotel_info" {
+		t.Fatalf("expected first business task to remain primary, got %#v", intent)
+	}
+	if !intent.NeedsKnowledge || !intent.NeedsResource || len(intent.ResourceActions) != 1 || intent.ResourceActions[0] != "provide_mini_program" {
+		t.Fatalf("expected checkin knowledge and mini program action to be aggregated, got %#v", intent)
+	}
+	if len(intent.SecondaryIntents) != 1 || intent.SecondaryIntents[0] != "hotel_variable" {
+		t.Fatalf("expected hotel variable to remain a secondary task, got %#v", intent.SecondaryIntents)
+	}
+}
+
+func TestDeriveModelIntentFromTasksDoesNotLetCorrectionToneHideBusinessTask(t *testing.T) {
+	intent := deriveModelIntentFromTasks(callbacks.IntentTraceData{
+		PrimaryIntent: "interaction",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "interaction", SubIntent: "correction", Text: "我问的不是早餐"},
+			{Intent: "hotel_info", SubIntent: "parking", Text: "停车入口在哪", NeedsKnowledge: true},
+		},
+	})
+	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge {
+		t.Fatalf("expected the corrected hotel question to be primary and retrieve knowledge, got %#v", intent)
+	}
+	if len(intent.SecondaryIntents) != 1 || intent.SecondaryIntents[0] != "interaction" {
+		t.Fatalf("expected correction tone to remain secondary context only, got %#v", intent.SecondaryIntents)
 	}
 }
 
@@ -240,7 +298,7 @@ func TestRuntimePipelineNoReplyForPlainMediaOnly(t *testing.T) {
 		},
 	}
 	plan := buildRuntimePipelinePlan(req, adapter.HistoryBuildResult{})
-	if plan.Intent.PrimaryIntent != "context_media" || plan.Intent.SubIntent != "media_only_no_question" {
+	if plan.Intent.PrimaryIntent != "" || plan.Intent.DetectedIntent != "media_gate" || plan.Intent.SubIntent != "media_only_no_question" {
 		t.Fatalf("expected context media gate, got %#v", plan.Intent)
 	}
 	if plan.Intent.ShouldReply {
@@ -701,8 +759,8 @@ func TestRuntimePipelineCheckinProcessAttachesMiniProgramTask(t *testing.T) {
 	if plan.ReplyPlan.TaskPlans[1].Output != "structured_resource_commit" || plan.ReplyPlan.TaskPlans[1].ResourceAction != "provide_mini_program" {
 		t.Fatalf("expected second task to commit mini program, got %#v", plan.ReplyPlan.TaskPlans)
 	}
-	if !strings.Contains(plan.Prompt, "办理入住流程必须按知识库") || !strings.Contains(plan.Prompt, "Commit 阶段单独发送") {
-		t.Fatalf("expected checkin prompt to explain tutorial plus commit boundary, got %q", plan.Prompt)
+	if !strings.Contains(plan.Prompt, "结构化变量任务只由 Commit 阶段发送") {
+		t.Fatalf("expected checkin plan to preserve the commit boundary, got %q", plan.Prompt)
 	}
 }
 
@@ -1082,9 +1140,6 @@ func TestCurrentTurnBoundaryInstructionForSocialThanksBlocksOldServicePromise(t 
 	content := "客人刚才连续发了几条消息：\n[10:00] 房间纸巾没了\n[10:01] 谢谢"
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: content}}
 	instruction := buildCurrentTurnBoundaryInstruction(req, adapter.HistoryBuildResult{}, callbacks.IntentTraceData{PrimaryIntent: "interaction", SubIntent: "social"})
-	if !strings.Contains(instruction, "不客气") {
-		t.Fatalf("expected thanks instruction to guide non-cold acknowledgement, got %q", instruction)
-	}
 	if !strings.Contains(instruction, "不要继续承诺上一条送物") {
 		t.Fatalf("expected social boundary to block stale service promise, got %q", instruction)
 	}
@@ -1117,8 +1172,8 @@ func TestCurrentTurnBoundaryInstructionForEmojiBlocksInternalReasoning(t *testin
 func TestCurrentTurnBoundaryInstructionForCorrectionRequiresFriendlyAck(t *testing.T) {
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "我没给你发语音大哥"}}
 	instruction := buildCurrentTurnBoundaryInstruction(req, adapter.HistoryBuildResult{}, callbacks.IntentTraceData{PrimaryIntent: "interaction", SubIntent: "correction"})
-	if !strings.Contains(instruction, "纠错/误会") || !strings.Contains(instruction, "收到") || !strings.Contains(instruction, "没事") {
-		t.Fatalf("expected correction boundary to require friendly acknowledgement, got %q", instruction)
+	if !strings.Contains(instruction, "纠错/误会") || !strings.Contains(instruction, "只输出一句完整短句") || !strings.Contains(instruction, "不要补答或追问任何旧业务主题") {
+		t.Fatalf("expected correction boundary to scope the reply to the current correction, got %q", instruction)
 	}
 }
 
@@ -1140,8 +1195,8 @@ func TestRuntimePipelineInvoiceAttachmentFollowUpUsesKnowledge(t *testing.T) {
 		t.Fatal("invoice attachment follow-up should use knowledge")
 	}
 	instruction := buildCurrentTurnBoundaryInstruction(req, history, plan.Intent)
-	if !strings.Contains(instruction, "不能表达资料已登记") || !strings.Contains(instruction, "回复里必须明确提到“发票”或“开票”") {
-		t.Fatalf("expected invoice media boundary to prevent fake commitment, got %q", instruction)
+	if !strings.Contains(instruction, "动作安全") || !strings.Contains(instruction, "当前资料没写明") {
+		t.Fatalf("expected invoice follow-up to retain category-level action safety, got %q", instruction)
 	}
 }
 
@@ -1283,18 +1338,6 @@ func TestRuntimePipelineAbuseWithoutHandoffDoesNotRequestHuman(t *testing.T) {
 	}
 	if plan.Intent.NeedsHumanRoute || plan.ToolKnowledge.ToolTriggered {
 		t.Fatalf("plain abuse must not trigger handoff confirmation, got intent=%#v tool=%#v", plan.Intent, plan.ToolKnowledge)
-	}
-}
-
-func TestDetectHotelVariableResourceTypeDoesNotTreatFacilityWhereAsLocation(t *testing.T) {
-	if got := detectHotelVariableResourceType("停车场在哪里"); got != "" {
-		t.Fatalf("parking location must be hotel_info, got variable %q", got)
-	}
-	if got := detectHotelVariableResourceType("你们酒店在哪里"); got != "location" {
-		t.Fatalf("store location should be hotel variable, got %q", got)
-	}
-	if got := detectHotelVariableResourceType("电话号码多少"); got != "phone" {
-		t.Fatalf("phone request should be phone variable, got %q", got)
 	}
 }
 
@@ -1484,7 +1527,7 @@ func TestRuntimePipelineModelExplicitHandoffUsesHumanComplaintRiskRoute(t *testi
 	}
 }
 
-func TestRuntimePipelinePureInsultDowngradesFromHumanRoute(t *testing.T) {
+func TestRuntimePipelineKeepsModelHumanRouteWithoutKeywordRewrite(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "human_complaint_risk", Name: "人工/投诉/风险", Priority: 100, MatchMode: "hybrid", NeedsHumanRoute: true, HumanRoutePolicy: "managed_mode", PromptPack: "按当前门店托管模式和排班路由。", Status: enums.StatusOk})
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "interaction", Name: "互动", Priority: 90, MatchMode: "hybrid", Status: enums.StatusOk})
@@ -1497,14 +1540,14 @@ func TestRuntimePipelinePureInsultDowngradesFromHumanRoute(t *testing.T) {
 		NeedsHumanRoute:  true,
 		Reason:           "模型把单纯辱骂误判为投诉风险",
 	}})
-	if plan.Intent.PrimaryIntent != "interaction" || plan.Intent.SubIntent != "frustration" {
-		t.Fatalf("expected pure insult to become interaction/frustration, got %#v", plan.Intent)
+	if plan.Intent.PrimaryIntent != "human_complaint_risk" || plan.Intent.SubIntent != "insult_complaint" {
+		t.Fatalf("expected model human intent to stay intact without keyword rewrite, got %#v", plan.Intent)
 	}
-	if plan.Intent.NeedsHumanRoute || plan.ToolKnowledge.ToolTriggered {
-		t.Fatalf("pure insult must not trigger handoff confirmation, intent=%#v tool=%#v", plan.Intent, plan.ToolKnowledge)
+	if !plan.Intent.NeedsHumanRoute || !plan.ToolKnowledge.ToolTriggered {
+		t.Fatalf("expected human route to follow the model result, intent=%#v tool=%#v", plan.Intent, plan.ToolKnowledge)
 	}
-	if !strings.Contains(plan.Intent.Reason, "pure frustration or insult downgraded") {
-		t.Fatalf("expected downgrade reason, got %q", plan.Intent.Reason)
+	if strings.Contains(plan.Intent.Reason, "downgraded") {
+		t.Fatalf("unexpected keyword downgrade reason, got %q", plan.Intent.Reason)
 	}
 }
 
@@ -1594,6 +1637,13 @@ func seedRuntimeIntentConfig(t *testing.T, item models.ReplyIntentConfig) {
 	if item.ScopeType == "" {
 		item.ScopeType = "global"
 	}
+	if item.IntentProfileID == 0 {
+		profile := &models.ReplyIntentProfile{}
+		if err := sqls.DB().Where("code = ?", "hotel").First(profile).Error; err != nil {
+			t.Fatalf("load test hotel intent profile: %v", err)
+		}
+		item.IntentProfileID = profile.ID
+	}
 	if err := sqls.DB().Create(&item).Error; err != nil {
 		t.Fatalf("create intent config: %v", err)
 	}
@@ -1607,8 +1657,25 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite error = %v", err)
 	}
-	if err := db.AutoMigrate(&models.ReplyIntentConfig{}, &models.AIConfig{}, &models.Store{}, &models.StoreAIModelSetting{}, &models.ConversationRouteState{}); err != nil {
+	if err := db.AutoMigrate(
+		&models.ReplyIntentProfile{},
+		&models.ReplyIntentConfig{},
+		&models.AIConfig{},
+		&models.Asset{},
+		&models.Store{},
+		&models.StoreAIModelSetting{},
+		&models.Conversation{},
+		&models.ConversationRouteState{},
+		&models.Message{},
+		&models.WxWorkProtocolInstance{},
+		&models.WxWorkCustomerHandoffSetting{},
+		&models.KnowledgeResourceGroup{},
+		&models.KnowledgeResourceItem{},
+	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
+	}
+	if err := db.Create(&models.ReplyIntentProfile{Code: "hotel", Name: "测试酒店行业", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("seed hotel intent profile: %v", err)
 	}
 	sqls.SetDB(db)
 	t.Cleanup(func() {

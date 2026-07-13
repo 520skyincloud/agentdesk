@@ -2,11 +2,19 @@ package runtime
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
+	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/toolx"
+
+	"github.com/glebarez/sqlite"
+	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 func TestSummaryPrimaryToolCodePrefersToolSearchTarget(t *testing.T) {
@@ -129,6 +137,64 @@ func TestStructuredVariableResourceTypesFromTraceIncludesPhone(t *testing.T) {
 	got := structuredVariableResourceTypesFromTrace(trace)
 	if len(got) != 1 || got[0] != "phone" {
 		t.Fatalf("expected phone structured resource, got %#v", got)
+	}
+}
+
+func TestKnowledgeResourceTraceBuildsOrderedImageCommitMessages(t *testing.T) {
+	dbName := "runtime_knowledge_resource_commit_" + strings.NewReplacer("/", "_").Replace(t.Name())
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{
+		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Asset{}, &models.WxWorkProtocolInstance{}, &models.ConversationRouteState{}); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	sqls.SetDB(db)
+	instance := &models.WxWorkProtocolInstance{ID: 7, Guid: "knowledge-resource-guid", Status: enums.StatusOk}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{ConversationID: 99, WxWorkInstanceID: instance.ID}).Error; err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	for _, asset := range []*models.Asset{
+		{AssetID: "knowledge-image-1", Provider: enums.AssetProviderLocal, StorageKey: "knowledge-resources/3/7/one.png", Filename: "one.png", MimeType: "image/png", Status: enums.AssetStatusSuccess},
+		{AssetID: "knowledge-image-2", Provider: enums.AssetProviderLocal, StorageKey: "knowledge-resources/3/7/two.png", Filename: "two.png", MimeType: "image/png", Status: enums.AssetStatusSuccess},
+	} {
+		if err := db.Create(asset).Error; err != nil {
+			t.Fatalf("create asset: %v", err)
+		}
+	}
+
+	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
+		"knowledgeResources":[
+			{"assetId":"knowledge-image-1","title":"入口图","sortNo":1},
+			{"assetId":"knowledge-image-2","title":"路线图","sortNo":2}
+		]
+	}`)}
+	service := newReplyCommitService()
+	if !service.HasStructuredVariableReply(trace) {
+		t.Fatal("knowledge image resources must be treated as structured commit actions")
+	}
+	replies := service.buildKnowledgeResourceReplies(replyCommitInput{
+		Conversation: models.Conversation{ID: 99},
+		Trace:        trace,
+	})
+	if len(replies) != 2 {
+		t.Fatalf("expected two image commit messages, got %#v", replies)
+	}
+	for index, reply := range replies {
+		if reply.ResourceType != "knowledge_image" || reply.MessageType != enums.IMMessageTypeImage {
+			t.Fatalf("expected image resource reply, got %#v", reply)
+		}
+		if !strings.Contains(reply.Payload, `"assetId":"knowledge-image-`) {
+			t.Fatalf("expected canonical asset payload, got %q", reply.Payload)
+		}
+		if index == 0 && reply.Content != "入口图" {
+			t.Fatalf("expected first image title to retain order, got %q", reply.Content)
+		}
 	}
 }
 

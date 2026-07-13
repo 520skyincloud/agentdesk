@@ -64,29 +64,6 @@ func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, histor
 	}
 }
 
-func shouldMediaFollowUpOverrideDetectedIntent(intent callbacks.IntentTraceData, currentText string) bool {
-	if !intent.ShouldReply {
-		return false
-	}
-	latestText := latestBurstMessageText(currentText)
-	if latestText == "" {
-		latestText = currentText
-	}
-	if intent.PrimaryIntent == "human_complaint_risk" {
-		return !hasCurrentHumanRiskSignal(latestText)
-	}
-	if intent.PrimaryIntent == "hotel_variable" {
-		return false
-	}
-	if intent.PrimaryIntent == "hotel_info" && (intent.SubIntent == "invoice" || intent.SubIntent == "check_in" || intent.SubIntent == "checkin_process" || intent.SubIntent == "network_wifi" || intent.SubIntent == "supplies_self_help") {
-		return false
-	}
-	if intent.NeedsResource || intent.NeedsHumanRoute {
-		return false
-	}
-	return true
-}
-
 func buildToolKnowledgeTrace(intent callbacks.IntentTraceData) callbacks.ToolKnowledgeTraceData {
 	policy := "当前意图无需额外工具或知识检索；继续携带完整上下文。"
 	if intent.NeedsKnowledge || intent.NeedsTool || intent.NeedsResource || intent.NeedsHumanRoute {
@@ -112,15 +89,10 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 		"回复像微信真人，通常 1-3 句。",
 	}
 	switch intent.PrimaryIntent {
-	case "context_media":
-		instructions = append(instructions, "图片/文件本身无明确诉求时只记录为上下文资产，不主动回复。")
 	case "hotel_info":
 		instructions = append(instructions, "酒店规则、设施、WiFi、发票、用品、停车、早餐等都属于酒店信息大分类。", "必须使用当前门店知识库或门店资料，不编造门店规则。")
 		if intent.SubIntent == "checkin_process" || intent.SubIntent == "check_in" {
 			instructions = append(instructions, "入住流程问题要优先说明小程序/证件/订单核验等知识库写明的办理步骤；不要只反问到店了吗，也不要把它当作小程序变量发送请求。")
-		}
-		if intent.SubIntent == "air_conditioner" {
-			instructions = append(instructions, "空调问题必须先给知识库里的自助排查步骤，并明确提到空调或制冷；不得只问房号、不得主动引导转人工或说帮你转过去。")
 		}
 	case "hotel_variable":
 		instructions = append(instructions, "门店账号变量只由 Commit 阶段读取和发送，不编造变量值。", "只提交本轮 resourceActions 明确需要的变量；Generate 阶段不要描述变量发送状态。")
@@ -150,38 +122,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 	default:
 		instructions = append(instructions, "未匹配到启用意图分类时，只围绕当前问题短答或追问一个关键点，不调用知识、资源或人工路由。")
 	}
-	instructions = append(instructions, runtimeIntentSpecificPromptInstructions(intent)...)
 	return callbacks.IntentPromptTraceData{PackName: name, Instructions: instructions}
-}
-
-func runtimeIntentSpecificPromptInstructions(intent callbacks.IntentTraceData) []string {
-	instructions := []string{
-		"没有真实工具、资源提交或接待路由结果时，不能承诺或暗示任何真实动作、内部核实、通知转告、登记安排、现场查看、后续跟进或已完成状态。",
-	}
-	switch intent.PrimaryIntent {
-	case "hotel_info":
-		instructions = append(instructions,
-			"酒店信息只基于当前门店知识库/门店资料回答；知识库没写明时，只说当前资料没写明并追问一个关键点，不能承诺查问或转告。",
-		)
-		if isCheckinProcessSubIntent(intent.SubIntent) || hasCheckinProcessTask(intent) {
-			instructions = append(instructions,
-				"办理入住流程必须按知识库给出可执行步骤；文本里必须提到入住、小程序以及证件/身份核验/刷脸等关键步骤；同时入住小程序入口由 Commit 阶段单独发送，Generate 阶段不要说后续发、已经发或让同事发。",
-			)
-		}
-	case "service_request":
-		instructions = append(instructions,
-			"服务请求仍先看知识库是否有自助路径或处理边界；没有明确结果时追问一个必要字段或进入人工意图/接待路由，不能口头暗示有人会现场处理。",
-		)
-	case "human_complaint_risk":
-		instructions = append(instructions,
-			"只有明确人工、投诉升级、赔付退款、订单风险或安全风险才进入人工确认/接待路由；单纯吐槽或辱骂先按不满接住，不主动转人工。",
-		)
-	case "interaction":
-		instructions = append(instructions,
-			"互动、纠错、吐槽或辱骂但无明确人工/投诉/安全诉求时，只自然接住当前情绪或当前话题，不能承诺任何真实动作。",
-		)
-	}
-	return instructions
 }
 
 func hasCheckinProcessTask(intent callbacks.IntentTraceData) bool {
@@ -217,17 +158,17 @@ func buildContextTrace(req RunInput, history adapter.HistoryBuildResult, intent 
 func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPromptTraceData) callbacks.ReplyPlanTraceData {
 	goal := "回答当前用户问题"
 	doNot := []string{"不要假承诺", "不要答非所问", "不要长篇模板化"}
+	useContext := []string{"currentTurn", "recentMessages", "compressedMemory", "mediaContext", "intentResources"}
 	taskPlans := buildReplyTaskPlans(intent)
 	switch intent.PrimaryIntent {
-	case "context_media":
-		goal = "不回复，只记录图片/文件上下文资产"
 	case "interaction":
 		if intent.SubIntent == "media_context_follow_up" {
 			goal = "结合最近图片/文件解析文本回答用户追问"
 			doNot = append(doNot, "不要复述 OCR", "不要只描述图片不回答问题")
 		} else if isSocialCorrectionSubIntent(intent.SubIntent) {
 			goal = "接住客户对上一轮误会的纠正"
-			doNot = append(doNot, "不要补答旧主题", "不要解释系统内部原因")
+			useContext = []string{"currentTurn", "immediatelyPreviousAssistantMessage"}
+			doNot = append(doNot, "不要补答旧主题", "不要解释系统内部原因", "不要追问旧业务问题")
 		} else if intent.SubIntent == "weather_query" || intent.ResourceAction == "get_weather" {
 			goal = "调用天气工具回答闲聊型天气查询"
 			doNot = append(doNot, "不要说查不到", "不要让用户自己看手机天气")
@@ -258,7 +199,7 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 		style = "自然微信口吻；多任务可以分句或分行逐项回复，不强压成一句"
 		doNot = append(doNot, "不要只答主意图或最后一个问题")
 	}
-	return callbacks.ReplyPlanTraceData{Intent: intent.PrimaryIntent, AnswerGoal: goal, UseContext: []string{"currentTurn", "recentMessages", "compressedMemory", "mediaContext", "intentResources"}, DoNot: doNot, Style: style, TaskPlans: taskPlans}
+	return callbacks.ReplyPlanTraceData{Intent: intent.PrimaryIntent, AnswerGoal: goal, UseContext: useContext, DoNot: doNot, Style: style, TaskPlans: taskPlans}
 }
 
 func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbacks.ReplyPlanTraceData) string {
@@ -328,6 +269,9 @@ func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbac
 	}
 	if plan.Intent == "interaction" && strings.Contains(plan.AnswerGoal, "图片/文件") {
 		b.WriteString("图片/文件上下文追问：如果当前问题是‘这是啥/这是干嘛的/什么意思/怎么样/你看’这类短指代，默认衔接最近一条已解析的图片或文件文本；直接结合上下文回答用户问法，不要把它当成无上下文问题。语音仍按既有语转文文本链路处理。\n")
+	}
+	if plan.Intent == "interaction" && strings.Contains(plan.AnswerGoal, "纠正") {
+		b.WriteString("纠错输出范围：完整上下文继续保留，但本次生成只用当前纠正和紧邻的上一条客服消息识别误会；只输出一句完整回应，不续答、更换或追问任何旧业务主题。\n")
 	}
 	if plan.Intent == "hotel_variable" {
 		b.WriteString("酒店变量发送：结构化变量只由 Commit 阶段发送。若本轮还有停车、早餐、发票等知识问题，文本回复只回答这些知识问题，不要写变量名称、发送状态或后续动作。\n")
@@ -498,52 +442,6 @@ func hasRecentMediaContext(history adapter.HistoryBuildResult) bool {
 	return false
 }
 
-func hasRecentMediaFollowUpContext(req RunInput, history adapter.HistoryBuildResult) bool {
-	if isRuntimeMediaMessage(req.UserMessage.MessageType) {
-		return false
-	}
-	followUpText := latestBurstMessageText(req.UserMessage.Content)
-	if followUpText == "" {
-		followUpText = req.UserMessage.Content
-	}
-	if !replyengine.LooksLikeMediaFollowUp(followUpText) {
-		return false
-	}
-	if isClearlyIndependentMediaFollowUpText(replyengine.NormalizeIntentText(followUpText)) {
-		return false
-	}
-	return hasRecentUsableMediaContext(history)
-}
-
-func recentMediaFollowUpIntent(req RunInput, history adapter.HistoryBuildResult) (callbacks.IntentTraceData, bool) {
-	if !hasRecentMediaFollowUpContext(req, history) {
-		return callbacks.IntentTraceData{}, false
-	}
-	return callbacks.IntentTraceData{
-		DetectedIntent:    "上下文后续追问",
-		MatchedIntentCode: "interaction",
-		PrimaryIntent:     "interaction",
-		SubIntent:         "media_context_follow_up",
-		IntentConfidence:  0.86,
-		ShouldReply:       true,
-		NeedsKnowledge:    false,
-		NeedsResource:     false,
-		NeedsHumanRoute:   false,
-		Reason:            "current short/deictic question should attach to recent understood media context",
-	}, true
-}
-
-func isClearlyIndependentMediaFollowUpText(compact string) bool {
-	if compact == "" {
-		return false
-	}
-	return replyengine.ContainsAny(compact,
-		"早餐", "停车", "发票", "押金", "退房", "入住时间", "会员", "wifi", "wi-fi", "无线网", "洗衣", "健身房", "餐厅",
-		"发定位", "酒店定位", "门店定位", "导航", "怎么去", "酒店地址", "我要办入住", "办理入住", "办入住", "小程序", "安心宿",
-		"送水", "拖鞋", "牙刷", "纸巾", "维修", "打扫", "保洁", "投诉", "转人工", "人工客服",
-	)
-}
-
 func latestBurstMessageText(content string) string {
 	content = strings.TrimSpace(content)
 	if content == "" || !strings.Contains(content, "客人刚才连续发了几条消息") {
@@ -583,23 +481,6 @@ func currentTurnDisplayText(content string) string {
 		return content
 	}
 	return "本轮客户连续消息（按时间顺序）：\n" + strings.Join(body, "\n")
-}
-
-func hasRecentUsableMediaContext(history adapter.HistoryBuildResult) bool {
-	for i := len(history.RawItems) - 1; i >= 0; i-- {
-		item := history.RawItems[i]
-		if item.SenderType != "" && item.SenderType != enums.IMSenderTypeCustomer {
-			continue
-		}
-		if !isRuntimeMediaMessage(item.MessageType) {
-			continue
-		}
-		mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(item.Payload)
-		if strings.TrimSpace(status) == "understood" && (strings.TrimSpace(mediaText) != "" || strings.TrimSpace(mediaSummary) != "") {
-			return true
-		}
-	}
-	return false
 }
 
 func hasAdjacentTextMediaQuestion(req RunInput, history adapter.HistoryBuildResult) bool {

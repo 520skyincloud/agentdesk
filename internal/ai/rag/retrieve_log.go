@@ -221,7 +221,7 @@ func defaultRetrieveSourceType(req *CreateRetrieveLogRequest) string {
 		return req.SourceType
 	}
 	if req.ChunkProvider == "fastgpt_cloud" {
-		return "cloud_knowledge"
+		return "fastgpt"
 	}
 	return "local_vector"
 }

@@ -32,6 +32,45 @@ func TestEnforceGeneratedReplyActionLedgerRemovesResourceCommitText(t *testing.T
 	}
 }
 
+func TestEnforceGeneratedReplyActionLedgerScopesCorrectionToFirstSentence(t *testing.T) {
+	summary := &RunResult{
+		ReplyText: "哈哈，是我看岔了，抱歉。你说电视打不开，是现在到房间了还是过几天才住？",
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent: "interaction",
+		SubIntent:     "correction",
+	}
+
+	enforceGeneratedReplyActionLedger(summary, collector)
+
+	if summary.ReplyText != "哈哈，是我看岔了，抱歉。" {
+		t.Fatalf("expected correction to stop after the current acknowledgement, got %q", summary.ReplyText)
+	}
+	if !strings.Contains(collector.Data.Pipeline.Validate.Reason, "current correction") {
+		t.Fatalf("expected correction scoping to be recorded, got %q", collector.Data.Pipeline.Validate.Reason)
+	}
+}
+
+func TestEnforceGeneratedReplyActionLedgerNormalizesIncompleteEnding(t *testing.T) {
+	summary := &RunResult{ReplyText: "门锁电量低了，稍等，"}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent:  "hotel_info",
+		SubIntent:      "door_lock",
+		NeedsKnowledge: true,
+	}
+
+	enforceGeneratedReplyActionLedger(summary, collector)
+
+	if summary.ReplyText != "门锁电量低了。" {
+		t.Fatalf("expected incomplete trailing clause to be removed, got %q", summary.ReplyText)
+	}
+	if !strings.Contains(collector.Data.Pipeline.Validate.Reason, "incomplete reply ending") {
+		t.Fatalf("expected incomplete ending normalization to be recorded, got %q", collector.Data.Pipeline.Validate.Reason)
+	}
+}
+
 func TestEnforceGeneratedReplyActionLedgerRemovesUnsupportedStaffAction(t *testing.T) {
 	summary := &RunResult{
 		ReplyText: "你到时候入住了跟我说下房号。我这边需要找同事过去看看。",

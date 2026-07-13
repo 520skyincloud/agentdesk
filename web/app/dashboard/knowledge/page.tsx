@@ -26,6 +26,8 @@ import { DebugPanel } from "./_components/debug-panel"
 import { DocumentList, type DocumentListActionState } from "./_components/document-list"
 import { FAQList, type FAQListActionState } from "./_components/faq-list"
 import { KnowledgeBaseList } from "./_components/knowledge-base-list"
+import { KnowledgeResourcePanel } from "./_components/knowledge-resource-panel"
+import { FastGPTFilePanel } from "./_components/fastgpt-file-panel"
 import { RetrieveLogList } from "./_components/retrieve-log-list"
 
 export default function DashboardKnowledgeDocumentsPage() {
@@ -74,6 +76,8 @@ export default function DashboardKnowledgeDocumentsPage() {
                 <TabsTrigger value="documents">
                   {isFastGPTCloudKnowledgeBase ? t("knowledge.cloudKnowledge") : isFAQKnowledgeBase ? t("knowledge.faq") : t("knowledge.document")}
                 </TabsTrigger>
+                {isFastGPTCloudKnowledgeBase ? <TabsTrigger value="fastgptFiles">文件管理</TabsTrigger> : null}
+                {isFastGPTCloudKnowledgeBase ? <TabsTrigger value="resources">图片资源</TabsTrigger> : null}
                 <TabsTrigger value="retrieveLogs">{t("knowledge.retrieveLogs")}</TabsTrigger>
               </TabsList>
               {activeTab === "documents" && !isFAQKnowledgeBase && documentActionState ? (
@@ -189,6 +193,12 @@ export default function DashboardKnowledgeDocumentsPage() {
             <RetrieveLogList
               knowledgeBaseId={selectedKnowledgeBase?.id ?? null}
             />
+          </TabsContent>
+          <TabsContent value="resources" className="min-h-0 flex-1">
+            <KnowledgeResourcePanel knowledgeBase={selectedKnowledgeBase} />
+          </TabsContent>
+          <TabsContent value="fastgptFiles" className="min-h-0 flex-1">
+            <FastGPTFilePanel knowledgeBase={selectedKnowledgeBase} />
           </TabsContent>
         </Tabs>
       </div>

@@ -14,7 +14,7 @@ func DefaultHotelIntentDetectPrompt() string {
 1. hotel_info：酒店信息咨询。包括酒店规则、设施、设备、用品、流程、费用、WiFi、发票、停车、早餐、入住/退房、电视投屏、空调、洗衣、周边、怎么操作、怎么办、在哪里、几点、多久、能不能。任务 needsKnowledge=true。
 2. hotel_variable：当前企微员工号配置的变量。只包括酒店电话、酒店定位/地址/导航、入住小程序。任务 needsResource=true，resourceAction 只可为 provide_phone、provide_location、provide_mini_program。
 3. service_request：客户明确要求门店人员执行现实动作。比如送物、补用品、打扫、叫醒、搬运行李、上门维修、让同事过来、找人处理。普通服务请求仍可 needsKnowledge=true，用知识库判断自助路径或处理边界。
-4. human_complaint_risk：明确人工、明确投诉升级、赔偿退款、订单/价格严重争议、安全事件。安全事件 subIntent=emergency_safety。单纯骂人、吐槽、说你笨但没有人工/投诉/赔付/安全诉求，不能归此类。
+4. human_complaint_risk：只处理明确人工、明确投诉升级、赔偿退款、订单/价格严重争议、安全事件。任务必须 needsHumanRoute=true，并使用下列 subIntent 之一：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety。单纯骂人、吐槽、说你笨但没有人工/投诉/赔付/安全诉求，不能归此类。设备、空调、电视、网络、入住等问题即使麻烦，只要是在问规则、步骤或自助处理，仍归 hotel_info；只有明确要求人工现场处理时才可进入 service_request。
 5. interaction：所有非业务互动、闲聊、感谢、确认、表情、玩笑、天气闲聊、纯纠错、单纯不满/辱骂但无明确人工/投诉/安全诉求、以及确实不明确的问题。任务默认不查知识、不取变量、不转人工；不明确时 subIntent=clarify 且 needsClarification=true，只追问一个关键点。
 
 hotel_info 与 service_request 的硬边界：
@@ -23,18 +23,29 @@ hotel_info 与 service_request 的硬边界：
 - 只有客户明确要人或动作，才归 service_request。
 - “空调不制冷怎么办”“电视投屏怎么弄”“我要办理入住”都是 hotel_info；“帮我送拖鞋上来”“叫人来看看空调”才是 service_request。
 
+人工/投诉/风险边界：
+- 只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格争议、安全事件，才能输出 human_complaint_risk 和 needsHumanRoute=true。
+- emergency_safety 代表已经识别到紧急安全情况，系统会直接进入已有接待路由；其他 human_complaint_risk 由系统先做二次确认。不要把普通服务请求、设备故障、知识库未命中、单纯不满自动升级成人工。
+
 hotel_info 与 hotel_variable 的硬边界：
-- “要门店变量”才 hotel_variable：电话多少/号码多少 -> provide_phone；定位发我/地址发我/导航发我/酒店在哪 -> provide_location；小程序发我/入住小程序 -> provide_mini_program。
+- “要当前酒店的门店变量”才 hotel_variable：电话多少/号码多少 -> provide_phone；酒店/门店/你们店的定位、地址、导航发我，或酒店在哪 -> provide_location；小程序发我/入住小程序 -> provide_mini_program。
 - WiFi、停车、早餐、发票、电视投屏、空调、用品、入住流程、退房流程不是酒店变量，必须是 hotel_info，都不能输出 hotel_variable。
 - “停车在哪里/停车怎么停”是 hotel_info + parking；“定位发我/酒店地址发我”才是 hotel_variable + provide_location。
+- 客户明确要其他地点的定位或导航时，不是 hotel_variable：若在问酒店周边/前文推荐地点，归 hotel_info + surrounding_facilities 并查知识库；其他外部地点归 interaction。无论如何都不能输出 provide_location 或发送门店定位。
+- 定位、地址、导航先判断对象：当前消息点名的外部地点，或最近一轮仍在讨论的外部地点所指代的“那里/那个地方/它/定位发我”，都以该外部地点为准，优先于默认的酒店身份；不能输出 provide_location。只有没有外部地点且语义明确索要当前酒店位置时，才可输出 provide_location。若同时有多个地点且无法唯一判断，归 interaction + clarify，只追问要哪个地点，不取变量。
 - “WiFi密码多少”是 hotel_info + network_wifi，不是 hotel_variable。
 
 多任务规则：
 - 当前消息里有多个问题或动作时，intentTasks 必须逐项拆分，按用户原顺序排列；不能只输出主意图或最后一句。
 - 混合任务示例：“定位发我，小程序也发一下，停车在哪”必须有 3 个 intentTasks：hotel_variable/location、hotel_variable/mini_program、hotel_info/parking。
-- 顶层汇总规则：若存在 human_complaint_risk 任务，primaryIntent=human_complaint_risk；否则若存在 hotel_variable 任务，primaryIntent=hotel_variable；否则 primaryIntent=第一个任务的 intent。
+- 顶层汇总规则：若存在 human_complaint_risk 任务，primaryIntent=human_complaint_risk；办理入住同时包含 checkin_process 与小程序资源任务时，primaryIntent=hotel_info；其他混合变量请求若存在 hotel_variable 任务，primaryIntent=hotel_variable；否则忽略只表达语气的 interaction 任务，primaryIntent=按用户原顺序出现的第一个业务任务；若没有业务任务，primaryIntent=interaction。
 - needsKnowledge=true 当且仅当任一任务 needsKnowledge=true 或 intent=hotel_info。
 - needsResource=true 当且仅当任一任务 needsResource=true 或 intent=hotel_variable。
+
+纠错与业务问题边界：
+- 纠错语气本身不是独立业务任务。客户只是在指出系统看错、听错、理解错，且没有要求继续回答业务问题时，归 interaction + correction。
+- 客户在纠错的同时明确指出要回答的酒店问题时，必须按被纠正后的业务目标分类，不能因为“不是、别串了、我问的是”等纠错语气归 interaction。
+- 示例：“我没给你发语音大哥” -> interaction/correction；“我问的是停车，不是早餐，停车入口在哪” -> hotel_info/parking 且 needsKnowledge=true。
 
 resourceActions 字段纪律：
 - resourceActions 只汇总 hotel_variable 任务里的 resourceAction，不允许默认补齐电话/定位/小程序。
@@ -43,7 +54,7 @@ resourceActions 字段纪律：
 subIntent 字段纪律：
 - subIntent 必须写具体业务子意图，不要空泛写 store_knowledge。
 - hotel_info 常用 subIntent：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、location_info、surrounding_facilities。
-- “我要办理入住/怎么入住/入住怎么弄”属于 hotel_info + checkin_process，并且必须同时输出一个 hotel_variable/mini_program/provide_mini_program 任务。
+- “我要办理入住/怎么入住/入住怎么弄”必须按顺序输出 hotel_info/checkin_process 和 hotel_variable/mini_program/provide_mini_program 两个任务；主意图保持 hotel_info，知识步骤先回答，小程序由 Commit 阶段另行发送。
 - 只有用户只说“办理入住的小程序发我/入住小程序发我”且没有问步骤时，才只输出 hotel_variable/provide_mini_program。
 
 上下文规则：

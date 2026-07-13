@@ -2,11 +2,22 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx/params"
+	"time"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+func (r *wxWorkProtocolInstanceRepository) GetForUpdate(db *gorm.DB, id int64) *models.WxWorkProtocolInstance {
+	ret := &models.WxWorkProtocolInstance{}
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ?", id).Error; err != nil {
+		return nil
+	}
+	return ret
+}
 
 var WxWorkProtocolInstanceRepository = newWxWorkProtocolInstanceRepository()
 
@@ -46,6 +57,20 @@ func (r *wxWorkProtocolInstanceRepository) FindPageByCnd(db *gorm.DB, cnd *sqls.
 	count := cnd.Count(db, &models.WxWorkProtocolInstance{})
 	paging = &sqls.Paging{Page: cnd.Paging.Page, Limit: cnd.Paging.Limit, Total: count}
 	return
+}
+
+func (r *wxWorkProtocolInstanceRepository) CountByWelcomeImageAssetID(db *gorm.DB, assetID string) (int64, error) {
+	var count int64
+	err := db.Model(&models.WxWorkProtocolInstance{}).
+		Where("welcome_image_asset_id = ?", assetID).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *wxWorkProtocolInstanceRepository) UpdateKnowledgeBaseByStore(db *gorm.DB, storeID, knowledgeBaseID int64, now time.Time, operatorName string) error {
+	return db.Model(&models.WxWorkProtocolInstance{}).
+		Where("store_id = ? AND status <> ?", storeID, enums.StatusDeleted).
+		Updates(map[string]any{"knowledge_base_id": knowledgeBaseID, "updated_at": now, "update_user_name": operatorName}).Error
 }
 
 func (r *wxWorkProtocolInstanceRepository) Create(db *gorm.DB, t *models.WxWorkProtocolInstance) error {

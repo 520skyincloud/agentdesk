@@ -2,6 +2,8 @@ package retrievers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"strings"
 	"time"
@@ -11,8 +13,11 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/tracex"
+	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
+	"agent-desk/internal/services"
 
 	"github.com/mlogclub/simple/sqls"
 )
@@ -81,6 +86,7 @@ func (r *KnowledgeRetriever) RetrieveByOptions(ctx context.Context, opts Knowled
 		KnowledgeBaseIDs: ids,
 		TopK:             opts.TopK,
 		ScoreThreshold:   opts.ScoreThreshold,
+		ContextMaxTokens: opts.ContextMaxTokens,
 	})
 }
 
@@ -135,7 +141,58 @@ func (r *KnowledgeRetriever) RetrieveContextByOptions(ctx context.Context, opts 
 	ret.TraceItems = buildRetrieverTraceItems(queryPreview, results, trace)
 	ret.TraceSummary = buildRetrieverTraceSummary(ret.Options, ret.Policies, ret.ContextResults, results, trace)
 	r.writeRuntimeRetrieveLog(query, retrieveMs, ret)
+	r.writeKnowledgeUsageEvent(ctx, retrieveMs, ret)
 	return ret, nil
+}
+
+func (r *KnowledgeRetriever) writeKnowledgeUsageEvent(ctx context.Context, retrieveMs int64, result *KnowledgeRetrieveResult) {
+	if result == nil || len(result.KnowledgeBaseIDs) == 0 {
+		return
+	}
+	requestID := strings.TrimSpace(tracex.RequestIDFromContext(ctx))
+	scope := usagex.ScopeFromContext(ctx)
+	if requestID == "" {
+		requestID = strings.TrimSpace(scope.RequestID)
+	}
+	if requestID == "" {
+		return
+	}
+	provider := "runtime"
+	if result.Trace != nil && len(result.Trace.Providers) > 0 {
+		provider = strings.Join(result.Trace.Providers, ",")
+	}
+	queryHash := sha256.Sum256([]byte(result.Query))
+	status := "completed"
+	if len(result.Hits) == 0 {
+		status = "empty"
+	}
+	requestCount := int64(1)
+	rerankCount := int64(0)
+	if result.Trace != nil {
+		if result.Trace.RequestCount > 0 {
+			requestCount = result.Trace.RequestCount
+		}
+		rerankCount = result.Trace.RerankCount
+	}
+	_ = services.AIUsageEventService.Record(models.AIUsageEvent{
+		EventKey:        requestID + ":knowledge_retrieve:" + hex.EncodeToString(queryHash[:8]),
+		ConversationID:  scope.ConversationID,
+		MessageID:       scope.MessageID,
+		KnowledgeBaseID: result.KnowledgeBaseIDs[0], RequestID: requestID,
+		Stage: "knowledge_retrieve", Provider: provider, OperationType: "knowledge_retrieve",
+		RequestCount: requestCount, RerankCount: rerankCount,
+		EstimatedContextTokens: int64(estimateKnowledgeContextTokens(result.ContextText)),
+		MetricSource:           services.AIUsageMetricSourceProviderOperation,
+		LatencyMS:              retrieveMs, Status: status,
+	})
+}
+
+func estimateKnowledgeContextTokens(text string) int {
+	runeCount := len([]rune(strings.TrimSpace(text)))
+	if runeCount == 0 {
+		return 0
+	}
+	return (runeCount + 1) / 2
 }
 
 func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(query string, retrieveMs int64, result *KnowledgeRetrieveResult) {
@@ -191,22 +248,28 @@ func inferRuntimeRetrieveSourceType(hits []response.KnowledgeSearchResult) strin
 	if len(hits) == 0 {
 		return "local_vector"
 	}
-	cloud := false
+	fastGPT := false
 	local := false
 	for _, hit := range hits {
-		if strings.Contains(hit.SectionPath, "FastGPT云端知识库") || strings.Contains(hit.DocumentTitle, "FastGPT云端知识库") {
-			cloud = true
+		if isFastGPTRetrieveResult(hit) {
+			fastGPT = true
 		} else {
 			local = true
 		}
 	}
-	if cloud && local {
+	if fastGPT && local {
 		return "hybrid"
 	}
-	if cloud {
-		return "cloud_knowledge"
+	if fastGPT {
+		return "fastgpt"
 	}
 	return "local_vector"
+}
+
+func isFastGPTRetrieveResult(hit response.KnowledgeSearchResult) bool {
+	return strings.Contains(hit.SectionPath, "FastGPT知识库/") ||
+		strings.Contains(hit.SectionPath, "FastGPT云端知识库") ||
+		strings.Contains(hit.DocumentTitle, "FastGPT云端知识库")
 }
 
 func runtimeRetrieveChunkProvider(result *KnowledgeRetrieveResult) string {

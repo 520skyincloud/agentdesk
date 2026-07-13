@@ -7,6 +7,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/usagex"
 
 	openai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
@@ -27,9 +28,12 @@ func (f *ChatModelFactory) Build(ctx context.Context, aiConfig models.AIConfig) 
 		BaseURL: strings.TrimSpace(aiConfig.BaseURL),
 		Model:   strings.TrimSpace(aiConfig.ModelName),
 	}
+	timeout := 60 * time.Second
 	if aiConfig.TimeoutMS > 0 {
-		conf.Timeout = time.Duration(aiConfig.TimeoutMS) * time.Millisecond
+		timeout = time.Duration(aiConfig.TimeoutMS) * time.Millisecond
 	}
+	conf.HTTPClient = usagex.NewHTTPClient(timeout)
+	conf.Timeout = timeout
 	if aiConfig.MaxOutputTokens > 0 {
 		maxCompletionTokens := aiConfig.MaxOutputTokens
 		conf.MaxCompletionTokens = &maxCompletionTokens

@@ -54,4 +54,12 @@ type Summary struct {
 	Interrupts            []InterruptContextSummary
 	TraceData             string
 	ErrorMessage          string
+	ModelUsageCalls       []ModelUsageCall
+}
+
+type ModelUsageCall struct {
+	PromptTokens       int
+	CompletionTokens   int
+	CachedPromptTokens int
+	ReasoningTokens    int
 }

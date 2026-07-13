@@ -373,3 +373,10 @@ func TestWxWorkProtocolMiniProgramMessageIsStructuredCard(t *testing.T) {
 		t.Fatalf("expected payload msg_type=%d, got %#v", wxProtocolMsgWeApp, got)
 	}
 }
+
+func TestNormalizeStoreRoomAtList(t *testing.T) {
+	got := normalizeStoreRoomAtList([]string{" staff-1 ", "", "staff-2", "staff-1", "0"})
+	if len(got) != 2 || got[0] != "staff-1" || got[1] != "staff-2" {
+		t.Fatalf("unexpected normalized at list: %#v", got)
+	}
+}

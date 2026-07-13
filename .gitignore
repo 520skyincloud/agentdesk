@@ -2,6 +2,7 @@
 .worktrees
 .idea
 .pnpm-store
+.env
 
 data/
 config/config.yaml

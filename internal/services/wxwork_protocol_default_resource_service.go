@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -24,27 +25,54 @@ var WxWorkProtocolDefaultResourceService = &wxWorkProtocolDefaultResourceService
 
 type wxWorkProtocolDefaultResourceService struct{}
 
-func (s *wxWorkProtocolDefaultResourceService) SendNewFriendWelcome(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) {
-	if conversation == nil || instance == nil || instance.Status != enums.StatusOk {
-		return
+func (s *wxWorkProtocolDefaultResourceService) SendNewFriendWelcome(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) error {
+	if conversation == nil || instance == nil || instance.Status != enums.StatusOk || !instance.WelcomeEnabled {
+		return nil
 	}
+	var sendErrors []error
 	requestID = tracex.NormalizeRequestID(requestID)
 	if message := strings.TrimSpace(instance.WelcomeMessage); message != "" {
 		_, err := MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_welcome_text_"+strs.UUID(), enums.IMMessageTypeText, utils.RepairMojibakeText(message), "", systemOperator(), requestID)
 		if err != nil {
 			slog.Warn("send wxwork welcome text failed", "conversation_id", conversation.ID, "instance_id", instance.ID, "error", err)
+			sendErrors = append(sendErrors, err)
+		}
+	}
+	if assetID := strings.TrimSpace(instance.WelcomeImageAssetID); assetID != "" {
+		if err := s.sendWelcomeImage(conversation, instance, assetID, requestID); err != nil {
+			slog.Warn("send wxwork welcome image failed", "conversation_id", conversation.ID, "instance_id", instance.ID, "error", err)
+			sendErrors = append(sendErrors, err)
 		}
 	}
 	if instance.WelcomeSendMiniProgram && strings.TrimSpace(instance.DefaultMiniProgramPayload) != "" {
 		if err := s.sendDefaultMiniProgram(conversation, instance, requestID); err != nil {
 			slog.Warn("send wxwork welcome mini program failed", "conversation_id", conversation.ID, "instance_id", instance.ID, "error", err)
+			sendErrors = append(sendErrors, err)
 		}
 	}
 	if instance.WelcomeAskLocation && strings.TrimSpace(instance.StoreLongitude) != "" && strings.TrimSpace(instance.StoreLatitude) != "" {
 		if err := s.sendDefaultLocation(conversation, instance, requestID); err != nil {
 			slog.Warn("send wxwork welcome location failed", "conversation_id", conversation.ID, "instance_id", instance.ID, "error", err)
+			sendErrors = append(sendErrors, err)
 		}
 	}
+	return errors.Join(sendErrors...)
+}
+
+func (s *wxWorkProtocolDefaultResourceService) sendWelcomeImage(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, assetID string, requestID string) error {
+	asset := AssetService.GetByAssetID(assetID)
+	if asset == nil || asset.Status != enums.AssetStatusSuccess {
+		return fmt.Errorf("欢迎语图片不存在或尚未上传完成")
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(asset.MimeType)), "image/") {
+		return fmt.Errorf("欢迎语资源不是图片")
+	}
+	payload, err := buildIMMessageAssetPayload(asset)
+	if err != nil {
+		return err
+	}
+	_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_welcome_image_"+strs.UUID(), enums.IMMessageTypeImage, asset.Filename, payload, systemOperator(), requestID)
+	return err
 }
 
 func (s *wxWorkProtocolDefaultResourceService) sendDefaultLocation(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) error {

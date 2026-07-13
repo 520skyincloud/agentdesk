@@ -22,6 +22,9 @@ type WxWorkProtocolInstanceResponse struct {
 	IntentProfileName              string       `json:"intentProfileName"`
 	StoreID                        int64        `json:"storeId"`
 	StoreStaffBindingID            int64        `json:"storeStaffBindingId"`
+	ReplacesInstanceID             int64        `json:"replacesInstanceId"`
+	ReplacedByInstanceID           int64        `json:"replacedByInstanceId"`
+	ReplacedAt                     *time.Time   `json:"replacedAt"`
 	ManagedMode                    string       `json:"managedMode"`
 	StoreCode                      string       `json:"storeCode"`
 	StoreName                      string       `json:"storeName"`
@@ -32,7 +35,10 @@ type WxWorkProtocolInstanceResponse struct {
 	StoreMapProvider               string       `json:"storeMapProvider"`
 	StoreContactPhone              string       `json:"storeContactPhone"`
 	DefaultMiniProgramPayload      string       `json:"defaultMiniProgramPayload"`
+	WelcomeEnabled                 bool         `json:"welcomeEnabled"`
 	WelcomeMessage                 string       `json:"welcomeMessage"`
+	WelcomeImageAssetID            string       `json:"welcomeImageAssetId"`
+	WelcomeImageURL                string       `json:"welcomeImageUrl"`
 	WelcomeSendMiniProgram         bool         `json:"welcomeSendMiniProgram"`
 	WelcomeAskLocation             bool         `json:"welcomeAskLocation"`
 	KnowledgeBaseID                int64        `json:"knowledgeBaseId"`
@@ -54,6 +60,8 @@ type WxWorkProtocolInstanceResponse struct {
 	PersonaPrompt                  string       `json:"personaPrompt"`
 	AutoAcceptFriendRequest        bool         `json:"autoAcceptFriendRequest"`
 	AutoAcceptFriendRemarkTemplate string       `json:"autoAcceptFriendRemarkTemplate"`
+	ContactAutomationLastAt        *time.Time   `json:"contactAutomationLastAt"`
+	ContactAutomationLastError     string       `json:"contactAutomationLastError"`
 	ContextMaxMessages             int          `json:"contextMaxMessages"`
 	ContextMaxTokens               int          `json:"contextMaxTokens"`
 	ContextCompressionEnabled      bool         `json:"contextCompressionEnabled"`
@@ -61,6 +69,8 @@ type WxWorkProtocolInstanceResponse struct {
 	RemoteSetupURL                 string       `json:"remoteSetupUrl"`
 	RemoteSetupExpiresAt           *time.Time   `json:"remoteSetupExpiresAt"`
 	RemoteSetupSubmittedAt         *time.Time   `json:"remoteSetupSubmittedAt"`
+	KnowledgeProvisionStatus       string       `json:"knowledgeProvisionStatus"`
+	KnowledgeProvisionError        string       `json:"knowledgeProvisionError"`
 	HealthStatus                   string       `json:"healthStatus"`
 	LastHeartbeatAt                *time.Time   `json:"lastHeartbeatAt"`
 	Status                         enums.Status `json:"status"`
@@ -114,6 +124,9 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		IntentProfileID:                item.IntentProfileID,
 		StoreID:                        item.StoreID,
 		StoreStaffBindingID:            item.StoreStaffBindingID,
+		ReplacesInstanceID:             item.ReplacesInstanceID,
+		ReplacedByInstanceID:           item.ReplacedByInstanceID,
+		ReplacedAt:                     item.ReplacedAt,
 		ManagedMode:                    "semi",
 		StoreAddress:                   utils.RepairMojibakeText(item.StoreAddress),
 		StoreNavigationName:            utils.RepairMojibakeText(item.StoreNavigationName),
@@ -122,7 +135,9 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		StoreMapProvider:               item.StoreMapProvider,
 		StoreContactPhone:              utils.RepairMojibakeText(item.StoreContactPhone),
 		DefaultMiniProgramPayload:      utils.RepairMojibakeText(item.DefaultMiniProgramPayload),
+		WelcomeEnabled:                 item.WelcomeEnabled,
 		WelcomeMessage:                 utils.RepairMojibakeText(item.WelcomeMessage),
+		WelcomeImageAssetID:            item.WelcomeImageAssetID,
 		WelcomeSendMiniProgram:         item.WelcomeSendMiniProgram,
 		WelcomeAskLocation:             item.WelcomeAskLocation,
 		KnowledgeBaseID:                item.KnowledgeBaseID,
@@ -140,6 +155,8 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		PersonaPrompt:                  utils.RepairMojibakeText(item.PersonaPrompt),
 		AutoAcceptFriendRequest:        item.AutoAcceptFriendRequest,
 		AutoAcceptFriendRemarkTemplate: utils.RepairMojibakeText(item.AutoAcceptFriendRemarkTemplate),
+		ContactAutomationLastAt:        item.ContactAutomationLastAt,
+		ContactAutomationLastError:     utils.RepairMojibakeText(item.ContactAutomationLastError),
 		ContextMaxMessages:             item.ContextMaxMessages,
 		ContextMaxTokens:               item.ContextMaxTokens,
 		ContextCompressionEnabled:      item.ContextCompressionEnabled,

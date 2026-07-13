@@ -7,7 +7,7 @@ import { startTransition, useEffect, useState } from "react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
-import { fetchAuthOptions, loginWithPassword, type AuthOptions } from "@/lib/api/auth"
+import { fetchAuthOptions, loginWithEmailCode, loginWithPassword, sendLoginEmailCode, type AuthOptions } from "@/lib/api/auth"
 import { useI18n } from "@/i18n/provider"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -20,7 +20,7 @@ import {
   FieldSeparator,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { KeyRoundIcon } from "lucide-react"
+import { KeyRoundIcon, MailIcon } from "lucide-react"
 
 function detectWxWorkEnvironment() {
   if (typeof navigator === "undefined") {
@@ -43,7 +43,11 @@ export function LoginForm({
   const [authOptions, setAuthOptions] = useState<AuthOptions>({
     wxworkEnabled: false,
     oidcEnabled: false,
+    emailCodeEnabled: false,
   })
+	const [email, setEmail] = useState("")
+	const [emailCode, setEmailCode] = useState("")
+	const [emailCodeSent, setEmailCodeSent] = useState(false)
   const nextPath = searchParams.get("next")
   const wxworkError = searchParams.get("wxworkError")
   const oidcError = searchParams.get("oidcError")
@@ -85,7 +89,7 @@ export function LoginForm({
       })
       .catch(() => {
         if (!cancelled) {
-          setAuthOptions({ wxworkEnabled: false, oidcEnabled: false })
+          setAuthOptions({ wxworkEnabled: false, oidcEnabled: false, emailCodeEnabled: false })
         }
       })
 
@@ -108,6 +112,40 @@ export function LoginForm({
       startTransition(() => {
         router.push(redirectPath)
       })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("auth.loginFailed"))
+    } finally {
+      setIsPending(false)
+    }
+  }
+
+  async function handleSendEmailCode() {
+    if (!email.trim()) {
+      toast.error("请输入已绑定的邮箱")
+      return
+    }
+    setIsPending(true)
+    try {
+      await sendLoginEmailCode(email.trim())
+      setEmailCodeSent(true)
+      toast.success("验证码已发送，请检查邮箱")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "验证码发送失败")
+    } finally {
+      setIsPending(false)
+    }
+  }
+
+  async function handleEmailLogin() {
+    if (!email.trim() || !emailCode.trim()) {
+      toast.error("请输入邮箱和验证码")
+      return
+    }
+    setIsPending(true)
+    try {
+      await loginWithEmailCode({ email: email.trim(), code: emailCode.trim() })
+      toast.success(t("auth.loginSuccess"))
+      startTransition(() => router.push(redirectPath))
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("auth.loginFailed"))
     } finally {
@@ -164,6 +202,25 @@ export function LoginForm({
                   {isPending ? t("auth.signingIn") : t("auth.signIn")}
                 </Button>
               </Field>
+              {authOptions.emailCodeEnabled ? (
+                <>
+                  <FieldSeparator className="*:data-[slot=field-separator-content]:bg-card">邮箱验证码登录</FieldSeparator>
+                  <Field>
+                    <FieldLabel htmlFor="email-login">门店主邮箱</FieldLabel>
+                    <Input id="email-login" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="email-code">验证码</FieldLabel>
+                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                      <Input id="email-code" inputMode="numeric" value={emailCode} onChange={(event) => setEmailCode(event.target.value)} placeholder="6 位验证码" autoComplete="one-time-code" />
+                      <Button type="button" variant="outline" onClick={() => void handleSendEmailCode()} disabled={isPending}>
+                        <MailIcon className="size-4" />{emailCodeSent ? "重新发送" : "发送验证码"}
+                      </Button>
+                    </div>
+                  </Field>
+                  <Field><Button type="button" onClick={() => void handleEmailLogin()} disabled={isPending}>邮箱登录</Button></Field>
+                </>
+              ) : null}
               {enabledProviderCount > 0 ? (
                 <>
                   <FieldSeparator className="*:data-[slot=field-separator-content]:bg-card">

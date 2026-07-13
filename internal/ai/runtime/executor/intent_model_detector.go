@@ -7,13 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/replyintent"
 	"agent-desk/internal/pkg/toolx"
+	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/schema"
@@ -115,7 +115,7 @@ func (list *runtimeIntentTaskList) UnmarshalJSON(data []byte) error {
 
 func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) (callbacks.IntentTraceData, callbacks.IntentPromptTraceData, bool) {
 	if isMediaOnlyWithoutActionableIntent(req.UserMessage) && !hasAdjacentTextMediaQuestion(req, history) {
-		intent := callbacks.IntentTraceData{DetectedIntent: "普通媒体无明确诉求", MatchedIntentCode: "context_media_gate", PrimaryIntent: "context_media", SubIntent: "media_only_no_question", IntentConfidence: 0.9, ShouldReply: false, Reason: "media context gate: media-only message has no actionable intent"}
+		intent := callbacks.IntentTraceData{DetectedIntent: "media_gate", MatchedIntentCode: "media_gate", SubIntent: "media_only_no_question", IntentConfidence: 0.9, ShouldReply: false, Reason: "media gate: media-only message has no actionable intent"}
 		return intent, selectIntentPromptPack(intent), true
 	}
 	configs := loadEnabledIntentConfigs(resolveRuntimeIntentScope(req))
@@ -128,10 +128,6 @@ func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history ada
 		return intent, selectIntentPromptPack(intent), true
 	}
 	intent = normalizeModelIntentTrace(intent, req, history, configs)
-	if mediaIntent, ok := recentMediaFollowUpIntent(req, history); ok && shouldMediaFollowUpOverrideDetectedIntent(intent, req.UserMessage.Content) {
-		mediaIntent.Reason = appendIntentReason(mediaIntent.Reason, "model intent was overridden after IntentDetect because current message is a direct follow-up to recent understood media")
-		intent = mediaIntent
-	}
 	if intent.PrimaryIntent == "" {
 		return callbacks.IntentTraceData{}, callbacks.IntentPromptTraceData{}, false
 	}
@@ -146,6 +142,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	}
 	intentCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
+	intentCtx, usageCapture := usagex.WithCapture(intentCtx)
 	chatModel, err := factory.NewChatModelFactory().Build(intentCtx, intentConfig)
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
@@ -156,16 +153,24 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		schema.SystemMessage(runtimeIntentDetectSystemPromptForProfile(profile)),
 		schema.UserMessage(buildRuntimeIntentDetectUserPrompt(req, history, configs)),
 	}
+	firstStartedAt := time.Now()
+	firstReceiptOffset := len(usageCapture.Receipts())
 	result, err := chatModel.Generate(intentCtx, messages)
 	if err != nil {
+		recordIntentModelUsage(req, intentConfig, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
 		return callbacks.IntentTraceData{}, err
 	}
+	recordIntentModelUsage(req, intentConfig, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
 	parsed, err := parseRuntimeIntentDetectJSON(result.Content)
 	if err != nil {
+		retryStartedAt := time.Now()
+		retryReceiptOffset := len(usageCapture.Receipts())
 		retry, retryErr := chatModel.Generate(intentCtx, append(messages, schema.SystemMessage("上一版 IntentDetect 输出不是合法 JSON。请重新输出严格 JSON。intentTasks 必须是数组，且是唯一事实来源；顶层 primaryIntent/needsKnowledge/needsResource/resourceActions 只能汇总 intentTasks。不要输出 Markdown、解释、注释或多余文本。")))
 		if retryErr != nil {
+			recordIntentModelUsage(req, intentConfig, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
 		}
+		recordIntentModelUsage(req, intentConfig, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
 		parsed, err = parseRuntimeIntentDetectJSON(retry.Content)
 		if err != nil {
 			return callbacks.IntentTraceData{}, err
@@ -192,6 +197,60 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		HumanRoutePolicy:     parsed.SubIntent,
 		Reason:               strings.TrimSpace("model IntentDetect JSON: " + parsed.Reason),
 	}, nil
+}
+
+func recordIntentModelUsage(req RunInput, aiConfig models.AIConfig, message *schema.Message, receipt *usagex.Receipt, attempt int, latencyMS int64, callErr error) {
+	requestID := strings.TrimSpace(req.UserMessage.RequestID)
+	if requestID == "" {
+		return
+	}
+	status := "completed"
+	errorMessage := ""
+	if callErr != nil {
+		status = "failed"
+		errorMessage = callErr.Error()
+	}
+	event := models.AIUsageEvent{
+		EventKey:       fmt.Sprintf("%s:intent_detect:%d", requestID, attempt),
+		ConversationID: req.Conversation.ID, MessageID: req.UserMessage.ID, RequestID: requestID,
+		Stage: "intent_detect", Provider: string(aiConfig.Provider), Model: aiConfig.ModelName,
+		AIConfigID: aiConfig.ID, ModelSource: "intent_model_resolver",
+		MetricSource: services.AIUsageMetricSourceProviderOperation,
+		LatencyMS:    latencyMS, Status: status, ErrorMessage: errorMessage,
+	}
+	if message != nil && message.ResponseMeta != nil && message.ResponseMeta.Usage != nil {
+		usage := message.ResponseMeta.Usage
+		event.PromptTokens = int64(usage.PromptTokens)
+		event.CompletionTokens = int64(usage.CompletionTokens)
+		event.CachedPromptTokens = int64(usage.PromptTokenDetails.CachedTokens)
+		event.ReasoningTokens = int64(usage.CompletionTokensDetails.ReasoningTokens)
+		event.MetricSource = services.AIUsageMetricSourceUpstreamActual
+	}
+	applyGatewayReceiptToUsageEvent(&event, receipt)
+	_ = services.AIUsageEventService.Record(event)
+}
+
+func gatewayReceiptSince(capture *usagex.Capture, offset int) *usagex.Receipt {
+	receipts := capture.Receipts()
+	if offset < 0 || offset >= len(receipts) {
+		return nil
+	}
+	receipt := receipts[len(receipts)-1]
+	return &receipt
+}
+
+func applyGatewayReceiptToUsageEvent(event *models.AIUsageEvent, receipt *usagex.Receipt) {
+	if event == nil || receipt == nil {
+		return
+	}
+	event.Gateway = receipt.Gateway
+	event.GatewayRequestID = receipt.RequestID
+	event.GatewayUpstreamID = receipt.UpstreamRequestID
+	event.CallStartedAt = &receipt.StartedAt
+	event.CallFinishedAt = &receipt.FinishedAt
+	if receipt.LatencyMS() > 0 {
+		event.LatencyMS = receipt.LatencyMS()
+	}
 }
 
 func convertRuntimeIntentTasks(tasks []runtimeIntentTaskJSON) []callbacks.IntentTaskTraceData {
@@ -278,9 +337,7 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	if mediaContext != "" {
 		b.WriteString("\n\n上下文中的媒体理解:\n")
 		b.WriteString(preview(mediaContext, 1200))
-		if replyengine.LooksLikeMediaFollowUp(req.UserMessage.Content) {
-			b.WriteString("\n注意：当前消息像是在追问最近图片/文件解析文本；媒体解析结果只是上下文，不要输出单独的媒体类意图。")
-		}
+		b.WriteString("\n媒体解析结果只是上下文，不要输出单独的媒体类意图；是否使用它解释当前问题，由你根据当前消息语义判断。")
 	}
 	if len(history.RawItems) > 0 {
 		b.WriteString("\n\n最近原始消息(低于当前消息优先级):\n")
@@ -431,24 +488,13 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 			intent.ToolCodes = appendIfMissing(intent.ToolCodes, toolx.BuiltinWeather.Code)
 		}
 	case "human_complaint_risk":
-		if !hasCurrentHumanRiskSignal(req.UserMessage.Content) && !intentHasHumanRouteTask(intent) {
-			intent.PrimaryIntent = "interaction"
-			intent.MatchedIntentCode = "interaction"
-			intent.SubIntent = "frustration"
-			intent.NeedsKnowledge = false
-			intent.NeedsResource = false
-			intent.NeedsHumanRoute = false
-			intent.HumanRoutePolicy = ""
-			intent.Reason = appendIntentReason(intent.Reason, "pure frustration or insult downgraded from human route; no explicit handoff, complaint escalation, compensation, refund, order risk, or safety signal in current message")
-			break
-		}
 		intent.NeedsKnowledge = false
 		intent.NeedsResource = false
 		intent.NeedsHumanRoute = true
 		if intent.SubIntent == "emergency_safety" {
 			intent.HumanRoutePolicy = "emergency_safety"
 		} else {
-			if isExplicitHandoffSubIntent(intent.SubIntent) || looksLikeExplicitHandoffRequest(req.UserMessage.Content) {
+			if strings.TrimSpace(intent.SubIntent) == "" {
 				intent.SubIntent = "explicit_handoff"
 			}
 			intent.HumanRoutePolicy = "managed_mode"
@@ -491,18 +537,15 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 	primary := ""
 	hasHuman := false
 	hasVariable := false
+	hasCheckinKnowledge := false
 	hasKnowledge := false
 	hasResource := false
 	resourceActions := make([]string, 0)
-	secondary := make([]string, 0)
 	for i := range intent.IntentTasks {
 		task := &intent.IntentTasks[i]
 		task.Intent = canonicalIntentCode(task.Intent)
 		if task.Intent == "" || !isRuntimeTopLevelIntent(task.Intent) {
 			task.Intent = "interaction"
-		}
-		if primary == "" {
-			primary = task.Intent
 		}
 		switch task.Intent {
 		case "human_complaint_risk":
@@ -519,6 +562,9 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 		case "hotel_info":
 			hasKnowledge = true
 			task.NeedsKnowledge = true
+			if isCheckinProcessSubIntent(task.SubIntent) {
+				hasCheckinKnowledge = true
+			}
 		}
 		if task.NeedsKnowledge {
 			hasKnowledge = true
@@ -526,17 +572,32 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 		if task.NeedsResource {
 			hasResource = true
 		}
+	}
+	if hasHuman {
+		primary = "human_complaint_risk"
+	} else if hasCheckinKnowledge {
+		primary = "hotel_info"
+	} else if hasVariable {
+		primary = "hotel_variable"
+	} else {
+		for _, task := range intent.IntentTasks {
+			if task.Intent != "interaction" {
+				primary = task.Intent
+				break
+			}
+		}
+	}
+	if primary == "" && len(intent.IntentTasks) > 0 {
+		primary = intent.IntentTasks[0].Intent
+	}
+	if primary == "" {
+		primary = "interaction"
+	}
+	secondary := make([]string, 0)
+	for _, task := range intent.IntentTasks {
 		if task.Intent != primary {
 			secondary = appendIfMissing(secondary, task.Intent)
 		}
-	}
-	switch {
-	case hasHuman:
-		primary = "human_complaint_risk"
-	case hasVariable:
-		primary = "hotel_variable"
-	case primary == "":
-		primary = "interaction"
 	}
 	if intent.PrimaryIntent != "" && intent.PrimaryIntent != primary {
 		intent.Reason = appendIntentReason(intent.Reason, "primaryIntent derived from intentTasks")
@@ -591,61 +652,15 @@ func mergeStringLists(first []string, second []string) []string {
 
 func intentDetectUnavailableIntent(reason string) callbacks.IntentTraceData {
 	return callbacks.IntentTraceData{
-		DetectedIntent:     "意图识别不可用",
-		MatchedIntentCode:  "interaction",
-		PrimaryIntent:      "interaction",
+		DetectedIntent:     "intent_detect_unavailable",
 		IntentConfidence:   0.35,
-		ShouldReply:        true,
-		NeedsClarification: true,
+		ShouldReply:        false,
+		NeedsClarification: false,
 		NeedsKnowledge:     false,
 		NeedsResource:      false,
 		NeedsHumanRoute:    false,
 		Reason:             strings.TrimSpace(reason),
 	}
-}
-
-func hasCurrentHumanRiskSignal(text string) bool {
-	compact := normalizeConfiguredIntentText(text)
-	if compact == "" {
-		return false
-	}
-	return isEmergencySafetyText(compact) || containsAnyNormalized(compact, []string{"转人工", "人工", "真人", "投诉", "赔偿", "退款", "退钱", "差评", "报警", "隐私", "身份证", "订单异常", "房型不对", "价格不一样", "贵了", "便宜"})
-}
-
-func hasExplicitStoreLocationResourceRequestText(text string) bool {
-	compact := normalizeConfiguredIntentText(text)
-	if compact == "" {
-		return false
-	}
-	if containsAnyNormalized(compact, []string{"停车场定位", "停车定位", "车场定位", "洗衣房定位", "前台定位", "餐厅定位", "医院定位"}) {
-		return false
-	}
-	if containsAnyNormalized(compact, []string{"发定位", "再发定位", "定位发", "定位再发", "把定位", "定位给", "定位也", "定位和", "酒店定位", "门店定位", "你们定位", "位置发我", "位置给我"}) {
-		return true
-	}
-	if containsAnyNormalized(compact, []string{"酒店地址", "门店地址", "你们地址", "你们酒店地址", "你们门店地址", "酒店导航", "门店导航"}) {
-		return true
-	}
-	return containsAnyNormalized(compact, []string{"导航", "怎么去"}) && containsAnyNormalized(compact, []string{"酒店", "门店", "你们店", "你们酒店"})
-}
-
-func hasCurrentBusinessSignal(text string) bool {
-	compact := normalizeConfiguredIntentText(text)
-	if compact == "" {
-		return false
-	}
-	return hasCurrentHumanRiskSignal(compact) || detectHotelVariableResourceType(compact) != "" || containsAnyNormalized(compact, []string{
-		"wifi", "wi-fi", "无线", "网络", "发票", "专票", "普票", "停车", "早餐", "早饭", "退房", "入住", "小程序", "定位", "地址", "电话",
-		"电视", "投屏", "小爱", "空调", "热水", "洗衣", "用品", "拖鞋", "牙刷", "纸巾", "浴巾", "浴帽", "矿泉水", "送水", "打扫", "保洁", "维修", "行李", "叫醒",
-	})
-}
-
-func isSimpleSocialConfirmText(text string) bool {
-	compact := normalizeConfiguredIntentText(text)
-	if compact == "" {
-		return false
-	}
-	return containsAnyNormalized(compact, []string{"谢谢", "感谢", "好的", "好", "嗯", "可以", "不用了", "先不用", "没事", "你好", "你也好", "😅", "😀", "😂", "🤣", "😊", "😄", "🙂", "👍", "👌"})
 }
 
 func enforceHumanRouteFlagByIntentCategory(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
@@ -670,29 +685,6 @@ func appendIntentReason(current string, addition string) string {
 		return current
 	}
 	return current + "; " + addition
-}
-
-func looksLikeExplicitHandoffRequest(text string) bool {
-	text = normalizeConfiguredIntentText(text)
-	return containsAnyNormalized(text, []string{"转人工", "找人工", "人工客服", "真人客服", "真人", "客服", "找个人", "找你们人", "人工处理"})
-}
-
-func isExplicitHandoffSubIntent(subIntent string) bool {
-	switch strings.TrimSpace(subIntent) {
-	case "explicit_handoff", "request_human", "human_request", "manual_service", "customer_service", "handoff_request":
-		return true
-	default:
-		return false
-	}
-}
-
-func intentHasHumanRouteTask(intent callbacks.IntentTraceData) bool {
-	for _, task := range intent.IntentTasks {
-		if task.Intent == "human_complaint_risk" || strings.TrimSpace(task.ResourceAction) == "human_route" {
-			return true
-		}
-	}
-	return false
 }
 
 func intentHasMixedHotelInfoTask(intent callbacks.IntentTraceData) bool {

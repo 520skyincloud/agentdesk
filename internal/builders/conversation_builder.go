@@ -93,6 +93,7 @@ func buildConversationRouteFields(ret *response.ConversationResponse, item *mode
 	ret.RouteTarget = route.RouteTarget
 	ret.HandoffReason = sanitizeVisibleHandoffReason(utils.RepairMojibakeText(route.HandoffReason))
 	ret.NeedHumanFollowUp = route.NeedHumanFollowUp
+	ret.AutoHandoffEnabled = services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabled(item.CustomerID, route.WxWorkInstanceID)
 	ret.ManualExpireAt = utils.FormatTimePtr(route.ManualExpireAt)
 	ret.ManualAttention = buildConversationManualAttention(route, ret.ManualExpireAt)
 	ret.StoreID = route.StoreID
@@ -158,11 +159,6 @@ func buildConversationManualAttention(route *models.ConversationRouteState, manu
 		ret.Level = "serving"
 		ret.Label = "人工处理中"
 		ret.ExpiresAt = manualExpireAt
-	case enums.ConversationRouteStatusAIServing, enums.ConversationRouteStatusAIFallback:
-		if strings.Contains(route.HandoffReason, "恢复AI") {
-			ret.Level = "timeout_restored"
-			ret.Label = "已恢复AI接待"
-		}
 	}
 	return ret
 }

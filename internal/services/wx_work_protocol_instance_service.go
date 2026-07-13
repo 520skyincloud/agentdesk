@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -80,7 +81,14 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgentForConversation(conve
 	if route == nil || route.WxWorkInstanceID <= 0 {
 		return models.AIAgent{}, false
 	}
-	return s.BuildRuntimeAIAgent(s.Get(route.WxWorkInstanceID)), true
+	instance := s.Get(route.WxWorkInstanceID)
+	if instance == nil || !instance.AIReplyEnabled {
+		return models.AIAgent{}, false
+	}
+	if _, err := s.resolveEffectiveIntentProfileID(instance.CompanyID, instance.IntentProfileID, true); err != nil {
+		return models.AIAgent{}, false
+	}
+	return s.BuildRuntimeAIAgent(instance), true
 }
 
 func (s *wxWorkProtocolInstanceService) Get(id int64) *models.WxWorkProtocolInstance {
@@ -234,10 +242,18 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 	if err != nil {
 		return nil, err
 	}
-	if err := s.validateBinding(req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
+	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	if err != nil {
 		return nil, err
 	}
-	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(companyID, intentProfileID, req.AIReplyEnabled)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateBinding(req.ChannelID, storeID, req.KnowledgeBaseID, effectiveIntentProfileID); err != nil {
+		return nil, err
+	}
+	welcomeImageAssetID, err := validateWxWorkWelcomeImageAsset(req.WelcomeImageAssetID)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +278,9 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		StoreMapProvider:               strings.TrimSpace(req.StoreMapProvider),
 		StoreContactPhone:              utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
 		DefaultMiniProgramPayload:      normalizeWxWorkJSONText(req.DefaultMiniProgramPayload),
+		WelcomeEnabled:                 req.WelcomeEnabled,
 		WelcomeMessage:                 normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
+		WelcomeImageAssetID:            welcomeImageAssetID,
 		WelcomeSendMiniProgram:         req.WelcomeSendMiniProgram,
 		WelcomeAskLocation:             req.WelcomeAskLocation,
 		KnowledgeBaseID:                req.KnowledgeBaseID,
@@ -340,7 +358,7 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 	item := &models.WxWorkProtocolInstance{
 		Guid:                      guid,
 		ChannelID:                 channel.ID,
-		AIReplyEnabled:            true,
+		AIReplyEnabled:            false,
 		CompanyID:                 req.CompanyID,
 		PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
 		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
@@ -349,7 +367,7 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 		ContextCompressionEnabled: true,
 		HealthStatus:              "login_qrcode",
 		Status:                    enums.StatusDisabled,
-		Remark:                    "扫码登录创建，登录成功后请补充店名、账号资料和知识库",
+		Remark:                    "扫码登录创建，登录成功后请补充店名、账号资料、行业 Profile 和知识库",
 		AuditFields:               utils.BuildAuditFields(operator),
 	}
 	item.CreatedAt = now
@@ -405,7 +423,7 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 		Guid:                      guid,
 		ChannelID:                 channel.ID,
 		CompanyID:                 req.CompanyID,
-		AIReplyEnabled:            true,
+		AIReplyEnabled:            false,
 		PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
 		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
 		ContextMaxMessages:        DefaultConversationContextMaxMessages,
@@ -414,11 +432,108 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 		RemoteSetupToken:          strings.ReplaceAll(uuid.NewString(), "-", ""),
 		HealthStatus:              "remote_setup",
 		Status:                    enums.StatusDisabled,
-		Remark:                    firstNonBlank(strings.TrimSpace(req.Remark), "远程开户链接创建，等待门店扫码登录并补充资料"),
+		Remark:                    firstNonBlank(strings.TrimSpace(req.Remark), "远程开户链接创建，等待门店扫码登录并补充行业 Profile、店名和知识库"),
 		AuditFields:               utils.BuildAuditFields(operator),
 	}
 	expiresAt := now.Add(14 * 24 * time.Hour)
 	item.RemoteSetupExpiresAt = &expiresAt
+	item.CreatedAt = now
+	item.UpdatedAt = now
+	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
+		return nil, err
+	}
+	_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(guid, item.ID)
+	return item, nil
+}
+
+func (s *wxWorkProtocolInstanceService) CreateReplacementRemoteSetup(req request.CreateWxWorkProtocolReplacementSetupRequest, operator *dto.AuthPrincipal) (*models.WxWorkProtocolInstance, error) {
+	if operator == nil {
+		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	old := s.Get(req.ID)
+	if old == nil || old.Status == enums.StatusDeleted || old.StoreID <= 0 {
+		return nil, errorsx.InvalidParam("原企微员工号不存在或未绑定门店")
+	}
+	scope := AgentTeamScopeService.Resolve(operator)
+	if !scope.Unrestricted {
+		allowed := false
+		for _, storeID := range scope.StoreIDs {
+			if storeID == old.StoreID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return nil, errorsx.Forbidden("无权限更换该门店的企微员工号")
+		}
+	}
+	if old.ReplacedByInstanceID > 0 {
+		return nil, errorsx.InvalidParam("该员工号已经完成替换")
+	}
+	if existing := s.Take("replaces_instance_id = ? AND remote_setup_submitted_at IS NULL AND status <> ?", old.ID, enums.StatusDeleted); existing != nil {
+		return existing, nil
+	}
+	if _, err := s.resolveEnabledProtocolChannel(old.ChannelID); err != nil {
+		return nil, err
+	}
+	guid := normalizeProtocolDeviceGUID(req.Guid)
+	var err error
+	if guid == "" {
+		channel := ChannelService.Get(old.ChannelID)
+		guid, err = s.claimStaleProtocolDeviceGUID(channel)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if existing := s.Take("guid = ? AND status <> ?", guid, enums.StatusDeleted); existing != nil {
+		return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他员工号")
+	}
+	now := time.Now()
+	expiresAt := now.Add(14 * 24 * time.Hour)
+	item := &models.WxWorkProtocolInstance{
+		Guid:                           guid,
+		ChannelID:                      old.ChannelID,
+		CompanyID:                      old.CompanyID,
+		IntentProfileID:                old.IntentProfileID,
+		StoreID:                        old.StoreID,
+		StoreStaffBindingID:            old.StoreStaffBindingID,
+		ReplacesInstanceID:             old.ID,
+		StoreAddress:                   old.StoreAddress,
+		StoreNavigationName:            old.StoreNavigationName,
+		StoreLongitude:                 old.StoreLongitude,
+		StoreLatitude:                  old.StoreLatitude,
+		StoreMapProvider:               old.StoreMapProvider,
+		StoreContactPhone:              old.StoreContactPhone,
+		DefaultMiniProgramPayload:      old.DefaultMiniProgramPayload,
+		WelcomeEnabled:                 old.WelcomeEnabled,
+		WelcomeMessage:                 old.WelcomeMessage,
+		WelcomeImageAssetID:            old.WelcomeImageAssetID,
+		WelcomeSendMiniProgram:         old.WelcomeSendMiniProgram,
+		WelcomeAskLocation:             old.WelcomeAskLocation,
+		KnowledgeBaseID:                old.KnowledgeBaseID,
+		Proxy:                          old.Proxy,
+		BridgeID:                       old.BridgeID,
+		StaffUserIDs:                   old.StaffUserIDs,
+		ServiceHours:                   old.ServiceHours,
+		StoreRoomConversationID:        old.StoreRoomConversationID,
+		StoreRoomNotifyEnabled:         old.StoreRoomNotifyEnabled,
+		StoreRoomAtList:                old.StoreRoomAtList,
+		FallbackToHQ:                   old.FallbackToHQ,
+		ManualTimeoutMinutes:           old.ManualTimeoutMinutes,
+		AIReplyEnabled:                 false,
+		PersonaPrompt:                  old.PersonaPrompt,
+		AutoAcceptFriendRequest:        old.AutoAcceptFriendRequest,
+		AutoAcceptFriendRemarkTemplate: old.AutoAcceptFriendRemarkTemplate,
+		ContextMaxMessages:             old.ContextMaxMessages,
+		ContextMaxTokens:               old.ContextMaxTokens,
+		ContextCompressionEnabled:      old.ContextCompressionEnabled,
+		RemoteSetupToken:               strings.ReplaceAll(uuid.NewString(), "-", ""),
+		RemoteSetupExpiresAt:           &expiresAt,
+		HealthStatus:                   "remote_setup",
+		Status:                         enums.StatusDisabled,
+		Remark:                         fmt.Sprintf("替换企微员工号 #%d，等待新员工号扫码并验证主邮箱", old.ID),
+		AuditFields:                    utils.BuildAuditFields(operator),
+	}
 	item.CreatedAt = now
 	item.UpdatedAt = now
 	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
@@ -495,55 +610,22 @@ func (s *wxWorkProtocolInstanceService) UpdateRemoteSetup(req request.UpdateWxWo
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	guid := normalizeProtocolDeviceGUID(req.Guid)
-	companyID := item.CompanyID
-	if companyID <= 0 && req.CompanyID > 0 {
-		companyID = req.CompanyID
-	}
-	storeID, err := s.ensureStoreForCompany(companyID, req.StoreID, req.StoreName, req.EmployeeName, nil)
+	updated, err := StoreAccountLifecycleService.CompleteRemoteSetup(item, req)
 	if err != nil {
 		return err
 	}
-	updates := map[string]any{
-		"employee_name":              utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
-		"company_id":                 companyID,
-		"store_id":                   storeID,
-		"store_address":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
-		"store_navigation_name":      utils.RepairMojibakeText(firstNonBlank(strings.TrimSpace(req.StoreNavigationName), strings.TrimSpace(req.StoreName))),
-		"store_longitude":            strings.TrimSpace(req.StoreLongitude),
-		"store_latitude":             strings.TrimSpace(req.StoreLatitude),
-		"store_map_provider":         strings.TrimSpace(req.StoreMapProvider),
-		"store_contact_phone":        utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
-		"knowledge_base_id":          req.KnowledgeBaseID,
-		"service_hours":              strings.TrimSpace(req.ServiceHours),
-		"store_room_conversation_id": normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
-		"store_room_notify_enabled":  req.StoreRoomNotifyEnabled,
-		"store_room_at_list":         normalizeWxWorkAtList(req.StoreRoomAtList),
-		"fallback_to_hq":             req.FallbackToHQ,
-		"manual_timeout_minutes":     normalizeManualTimeoutMinutes(req.ManualTimeoutMinutes),
-		"auto_accept_friend_request": req.AutoAcceptFriendRequest,
-		"remote_setup_submitted_at":  now,
-		"updated_at":                 now,
-		"update_user_name":           "remote_store_setup",
-	}
-	if guid != "" && guid != item.Guid {
-		if existing := s.Take("guid = ? AND id <> ? AND status <> ?", guid, item.ID, enums.StatusDeleted); existing != nil {
-			return errorsx.InvalidParam("该协议设备 GUID 已绑定到其他员工号")
-		}
-		updates["guid"] = guid
-	}
-	if err := repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), item.ID, updates); err != nil {
-		return err
-	}
-	updated := s.Get(item.ID)
 	if updated == nil {
 		return nil
 	}
 	if err := s.syncRouteStateBindingFromInstance(updated, "remote_store_setup"); err != nil {
 		return err
 	}
-	return s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, nil)
+	if updated.StoreID > 0 && updated.KnowledgeBaseID <= 0 {
+		if _, err := FastGPTDatasetService.EnqueueDefaultDatasetForRemoteSetup(updated.StoreID, firstNonBlank(req.StoreName, req.EmployeeName)); err != nil {
+			slog.Warn("enqueue FastGPT dataset after remote setup failed", "instanceId", updated.ID, "storeId", updated.StoreID, "error", err)
+		}
+	}
+	return nil
 }
 
 func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkProtocolInstanceRequest, operator *dto.AuthPrincipal) error {
@@ -568,10 +650,18 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	if err != nil {
 		return err
 	}
-	if err := s.validateBinding(req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
+	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	if err != nil {
 		return err
 	}
-	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(companyID, intentProfileID, req.AIReplyEnabled)
+	if err != nil {
+		return err
+	}
+	if err := s.validateBinding(req.ChannelID, storeID, req.KnowledgeBaseID, effectiveIntentProfileID); err != nil {
+		return err
+	}
+	welcomeImageAssetID, err := validateWxWorkWelcomeImageAsset(req.WelcomeImageAssetID)
 	if err != nil {
 		return err
 	}
@@ -595,7 +685,9 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		"store_map_provider":                 strings.TrimSpace(req.StoreMapProvider),
 		"store_contact_phone":                utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
 		"default_mini_program_payload":       normalizeWxWorkJSONText(req.DefaultMiniProgramPayload),
+		"welcome_enabled":                    req.WelcomeEnabled,
 		"welcome_message":                    normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
+		"welcome_image_asset_id":             welcomeImageAssetID,
 		"welcome_send_mini_program":          req.WelcomeSendMiniProgram,
 		"welcome_ask_location":               req.WelcomeAskLocation,
 		"knowledge_base_id":                  req.KnowledgeBaseID,
@@ -628,10 +720,18 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	if updated == nil {
 		return nil
 	}
+	if oldAssetID := strings.TrimSpace(current.WelcomeImageAssetID); oldAssetID != "" && oldAssetID != welcomeImageAssetID {
+		if err := AssetService.CleanupWelcomeImageAsset(oldAssetID, operator); err != nil {
+			slog.Warn("cleanup replaced wxwork welcome image failed", "instance_id", current.ID, "asset_id", oldAssetID, "error", err)
+		}
+	}
 	if err := s.syncRouteStateBindingFromInstance(updated, operator.Username); err != nil {
 		return err
 	}
-	return s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator)
+	if err := s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *wxWorkProtocolInstanceService) SetAIReplyEnabled(instanceID int64, enabled bool, operator *dto.AuthPrincipal) error {
@@ -641,6 +741,11 @@ func (s *wxWorkProtocolInstanceService) SetAIReplyEnabled(instanceID int64, enab
 	instance := s.Get(instanceID)
 	if instance == nil || instance.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("企微员工号实例不存在")
+	}
+	if enabled {
+		if _, err := s.resolveEffectiveIntentProfileID(instance.CompanyID, instance.IntentProfileID, true); err != nil {
+			return err
+		}
 	}
 	now := time.Now()
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -658,6 +763,19 @@ func (s *wxWorkProtocolInstanceService) SetAIReplyEnabled(instanceID int64, enab
 		if err := repositories.ConversationRouteStateRepository.ResetAIByWxWorkInstance(ctx.Tx, instance.ID, now, operator.Username); err != nil {
 			return err
 		}
+		if ctx.Tx.Migrator().HasTable(&models.AIManualResumeTask{}) {
+			if err := repositories.AIManualResumeTaskRepository.UnblockByWxWorkInstance(ctx.Tx, instance.ID, map[string]any{
+				"task_status":      aiManualResumeTaskReady,
+				"ready_at":         now,
+				"next_retry_at":    now,
+				"last_error":       "",
+				"updated_at":       now,
+				"update_user_id":   operator.UserID,
+				"update_user_name": operator.Username,
+			}); err != nil {
+				return err
+			}
+		}
 		return repositories.ConversationRepository.ReleaseAIServingByWxWorkInstance(ctx.Tx, instance.ID, now, operator.UserID, operator.Username)
 	})
 }
@@ -674,11 +792,15 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 	if err != nil {
 		return err
 	}
-	if err := s.validateBinding(instance.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
-		return err
-	}
 	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
 	if err != nil {
+		return err
+	}
+	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(companyID, intentProfileID, req.AIReplyEnabled)
+	if err != nil {
+		return err
+	}
+	if err := s.validateBinding(instance.ChannelID, storeID, req.KnowledgeBaseID, effectiveIntentProfileID); err != nil {
 		return err
 	}
 	if err := repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), req.ID, map[string]any{
@@ -1186,11 +1308,22 @@ func valueAsString(value any) string {
 }
 
 func normalizeWxWorkWelcomeMessage(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "您好，欢迎来到丽斯未来。自助入住可以在小程序里办理，需要门店定位的话我也可以发您。"
+	return utils.RepairMojibakeText(strings.TrimSpace(value))
+}
+
+func validateWxWorkWelcomeImageAsset(value string) (string, error) {
+	assetID := strings.TrimSpace(value)
+	if assetID == "" {
+		return "", nil
 	}
-	return utils.RepairMojibakeText(value)
+	asset := AssetService.GetByAssetID(assetID)
+	if asset == nil || asset.Status != enums.AssetStatusSuccess {
+		return "", errorsx.InvalidParam("欢迎语图片不存在或尚未上传完成")
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(asset.MimeType)), "image/") {
+		return "", errorsx.InvalidParam("欢迎语资源必须是图片")
+	}
+	return assetID, nil
 }
 
 func normalizeWxWorkRoomConversationID(value string) string {
@@ -1314,7 +1447,38 @@ func (s *wxWorkProtocolInstanceService) RequireStoreKnowledge(instance *models.W
 	return instance.StoreID, instance.KnowledgeBaseID, nil
 }
 
-func (s *wxWorkProtocolInstanceService) validateBinding(channelID, storeID, knowledgeBaseID int64) error {
+func (s *wxWorkProtocolInstanceService) resolveEffectiveIntentProfileID(companyID, instanceIntentProfileID int64, requireProfile bool) (int64, error) {
+	if instanceIntentProfileID > 0 {
+		if _, err := validateOptionalReplyIntentProfileID(instanceIntentProfileID); err != nil {
+			return 0, err
+		}
+	}
+	if companyID > 0 {
+		company := CompanyService.Get(companyID)
+		if company == nil || company.Status == enums.StatusDeleted {
+			return 0, errorsx.InvalidParam("公司不存在")
+		}
+		companyIntentProfileID, err := validateOptionalReplyIntentProfileID(company.IntentProfileID)
+		if err != nil {
+			return 0, err
+		}
+		if companyIntentProfileID > 0 {
+			if instanceIntentProfileID > 0 && instanceIntentProfileID != companyIntentProfileID {
+				return 0, errorsx.InvalidParam("员工号行业 Profile 必须与绑定公司一致")
+			}
+			return companyIntentProfileID, nil
+		}
+	}
+	if instanceIntentProfileID > 0 {
+		return instanceIntentProfileID, nil
+	}
+	if requireProfile {
+		return 0, errorsx.InvalidParam("启用 AI 前请先为公司或企微员工号绑定行业 Profile")
+	}
+	return 0, nil
+}
+
+func (s *wxWorkProtocolInstanceService) validateBinding(channelID, storeID, knowledgeBaseID, effectiveIntentProfileID int64) error {
 	if err := s.validateProtocolChannel(channelID); err != nil {
 		return err
 	}
@@ -1328,6 +1492,15 @@ func (s *wxWorkProtocolInstanceService) validateBinding(channelID, storeID, know
 		knowledgeBase := KnowledgeBaseService.Get(knowledgeBaseID)
 		if knowledgeBase == nil || knowledgeBase.Status == enums.StatusDeleted {
 			return errorsx.InvalidParam("知识库不存在")
+		}
+		if knowledgeBase.StoreID > 0 && storeID > 0 && knowledgeBase.StoreID != storeID {
+			return errorsx.InvalidParam("只能绑定当前门店自己的知识库")
+		}
+		if knowledgeBase.CompanyID > 0 && storeID > 0 {
+			store := StoreService.Get(storeID)
+			if store != nil && store.CompanyID > 0 && store.CompanyID != knowledgeBase.CompanyID {
+				return errorsx.InvalidParam("只能绑定当前公司下门店的知识库")
+			}
 		}
 	}
 	return nil

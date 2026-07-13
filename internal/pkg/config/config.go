@@ -4,6 +4,8 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,12 +15,56 @@ type Config struct {
 	DB              DBConfig              `yaml:"db"`
 	Logger          LoggerConfig          `yaml:"logger"`
 	Auth            AuthConfig            `yaml:"auth"`
+	Email           EmailConfig           `yaml:"email"`
+	FastGPT         FastGPTConfig         `yaml:"fastGPT"`
+	NewAPIUsage     NewAPIUsageConfig     `yaml:"newAPIUsage"`
 	Storage         StorageConfig         `yaml:"storage"`
 	VectorDB        VectorDBConfig        `yaml:"vectorDB"`
 	MCP             MCPConfig             `yaml:"mcp"`
 	WxWork          WxWorkConfig          `yaml:"wxWork"`
 	OIDC            OIDCConfig            `yaml:"oidc"`
 	CustomerSession CustomerSessionConfig `yaml:"customerSession"`
+}
+
+type EmailConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Host      string `yaml:"host"`
+	Port      int    `yaml:"port"`
+	Username  string `yaml:"username"`
+	Password  string `yaml:"password"`
+	From      string `yaml:"from"`
+	FromName  string `yaml:"fromName"`
+	TLSMode   string `yaml:"tlsMode"`
+	PublicURL string `yaml:"publicUrl"`
+}
+
+func (c EmailConfig) Address() string {
+	port := c.Port
+	if port <= 0 {
+		port = 587
+	}
+	return fmt.Sprintf("%s:%d", c.Host, port)
+}
+
+type FastGPTConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	BaseURL             string `yaml:"baseUrl"`
+	APIKey              string `yaml:"apiKey"`
+	TimeoutMS           int    `yaml:"timeoutMs"`
+	MaxRetries          int    `yaml:"maxRetries"`
+	RetrievalTokenLimit int    `yaml:"retrievalTokenLimit"`
+	VectorModel         string `yaml:"vectorModel"`
+	AgentModel          string `yaml:"agentModel"`
+	VLMModel            string `yaml:"vlmModel"`
+}
+
+type NewAPIUsageConfig struct {
+	Enabled          bool   `yaml:"enabled"`
+	BaseURL          string `yaml:"baseUrl"`
+	AccessToken      string `yaml:"accessToken"`
+	UserID           int64  `yaml:"userId"`
+	TimeoutMS        int    `yaml:"timeoutMs"`
+	FastGPTTokenName string `yaml:"fastGPTTokenName"`
 }
 
 type WxWorkNotifyConfig struct {
@@ -200,5 +246,68 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, cfg); err != nil {
 		return nil, err
 	}
+	if err := applyFastGPTEnv(cfg); err != nil {
+		return nil, err
+	}
+	if err := applyNewAPIUsageEnv(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+func applyNewAPIUsageEnv(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_NEW_API_USAGE_ENABLED")); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("parse AGENT_DESK_NEW_API_USAGE_ENABLED: %w", err)
+		}
+		cfg.NewAPIUsage.Enabled = enabled
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_NEW_API_USAGE_BASE_URL")); value != "" {
+		cfg.NewAPIUsage.BaseURL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_NEW_API_USAGE_ACCESS_TOKEN")); value != "" {
+		cfg.NewAPIUsage.AccessToken = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_NEW_API_USAGE_USER_ID")); value != "" {
+		userID, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("parse AGENT_DESK_NEW_API_USAGE_USER_ID: %w", err)
+		}
+		cfg.NewAPIUsage.UserID = userID
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_NEW_API_USAGE_FASTGPT_TOKEN_NAME")); value != "" {
+		cfg.NewAPIUsage.FastGPTTokenName = value
+	}
+	return nil
+}
+
+func applyFastGPTEnv(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_ENABLED")); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("parse AGENT_DESK_FASTGPT_ENABLED: %w", err)
+		}
+		cfg.FastGPT.Enabled = enabled
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_BASE_URL")); value != "" {
+		cfg.FastGPT.BaseURL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_API_KEY")); value != "" {
+		cfg.FastGPT.APIKey = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_RETRIEVAL_TOKEN_LIMIT")); value != "" {
+		limit, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("parse AGENT_DESK_FASTGPT_RETRIEVAL_TOKEN_LIMIT: %w", err)
+		}
+		cfg.FastGPT.RetrievalTokenLimit = limit
+	}
+	return nil
 }

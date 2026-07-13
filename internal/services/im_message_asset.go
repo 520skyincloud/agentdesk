@@ -51,6 +51,12 @@ func buildIMMessageAssetPayload(asset *models.Asset) (string, error) {
 	return buildIMMessageAssetPayloadWithMedia(asset, request.WxProtocolMediaPayload{})
 }
 
+// BuildIMMessageAssetPayload returns the canonical payload required by an
+// asset-backed outbound IM message.
+func BuildIMMessageAssetPayload(asset *models.Asset) (string, error) {
+	return buildIMMessageAssetPayload(asset)
+}
+
 func buildIMMessageAssetPayloadWithMedia(asset *models.Asset, wxMedia request.WxProtocolMediaPayload) (string, error) {
 	if asset == nil {
 		return "", errorsx.InvalidParam("附件不存在")

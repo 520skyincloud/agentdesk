@@ -33,8 +33,8 @@ func TestReplyEligibilityCanReply(t *testing.T) {
 
 	message = newCustomerMessageFixture("hello")
 	conversation.HandoffAt = ptrTime(time.Now())
-	if eligibility.CanReply(conversation, message, aiAgent) {
-		t.Fatalf("expected handed-off conversation to be rejected")
+	if !eligibility.CanReply(conversation, message, aiAgent) {
+		t.Fatalf("expected historical handoff metadata not to permanently block AI")
 	}
 
 	conversation = newConversationFixture()

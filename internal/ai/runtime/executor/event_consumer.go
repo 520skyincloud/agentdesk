@@ -102,6 +102,12 @@ func collectTokenUsage(message *schema.Message, summary *RunResult, collector *c
 		return
 	}
 	usage := message.ResponseMeta.Usage
+	summary.ModelUsageCalls = append(summary.ModelUsageCalls, ModelUsageCall{
+		PromptTokens:       usage.PromptTokens,
+		CompletionTokens:   usage.CompletionTokens,
+		CachedPromptTokens: usage.PromptTokenDetails.CachedTokens,
+		ReasoningTokens:    usage.CompletionTokensDetails.ReasoningTokens,
+	})
 	summary.PromptTokens += usage.PromptTokens
 	summary.CompletionTokens += usage.CompletionTokens
 	summary.TotalTokens += usage.TotalTokens

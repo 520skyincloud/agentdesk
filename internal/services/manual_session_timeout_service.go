@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -13,7 +14,7 @@ import (
 	"github.com/mlogclub/simple/sqls"
 )
 
-const manualTimeoutNotice = "同事这边本次人工接待已结束，后续我会继续帮您跟进。您有新的问题直接发我就行。"
+const manualTimeoutNotice = "刚才由同事协助的这段接待先结束了，接下来我继续在。之后有问题随时发我。"
 const storeSafetyTimeoutReminderKey = "storeSafetyTimeoutReminderSentAt"
 
 var ManualSessionTimeoutService = newManualSessionTimeoutService()
@@ -43,9 +44,9 @@ func (s *manualSessionTimeoutService) handleExpiredManualRoute(state models.Conv
 	case enums.ConversationRouteStatusStoreWecomManual:
 		return s.handleExpiredStoreWecomManual(state, now)
 	case enums.ConversationRouteStatusHQAgentDeskPending:
-		return s.restoreOne(state.ConversationID, now, "hq_pending_timeout", "总部网页待接入超时恢复AI", "", state.RouteStatus)
+		return s.restoreWaitingRoute(state, now, "hq_pending_timeout", "总部网页待接入超时恢复AI")
 	case enums.ConversationRouteStatusHQAgentDeskServing:
-		return s.restoreOne(state.ConversationID, now, "manual_idle_timeout", "人工服务空闲超时恢复AI", manualTimeoutNotice, state.RouteStatus)
+		return s.restoreOne(state, now, "manual_idle_timeout", "人工服务空闲超时恢复AI", manualTimeoutNotice, false, state.RouteStatus)
 	default:
 		return nil
 	}
@@ -61,14 +62,26 @@ func (s *manualSessionTimeoutService) handleExpiredStoreWecomManual(state models
 		}
 		return s.createTimeoutEvent(state.ConversationID, "store_safety_wait_timeout_reminded", "门店群安全风险跟进超时，已补发群提醒", state.RouteStatus, now)
 	}
-	customerNotice := ""
-	if !state.NeedHumanFollowUp {
-		customerNotice = manualTimeoutNotice
+	if state.NeedHumanFollowUp {
+		return s.restoreWaitingRoute(state, now, "store_wecom_wait_timeout", "门店群人工跟进超时恢复AI")
 	}
-	return s.restoreOne(state.ConversationID, now, "store_wecom_wait_timeout", "门店群人工跟进超时恢复AI", customerNotice, state.RouteStatus)
+	return s.restoreOne(state, now, "manual_idle_timeout", "门店人工服务空闲超时恢复AI", manualTimeoutNotice, false, state.RouteStatus)
 }
 
-func (s *manualSessionTimeoutService) restoreOne(conversationID int64, now time.Time, timeoutStage string, reason string, customerNotice string, fromStatus enums.ConversationRouteStatus) error {
+func (s *manualSessionTimeoutService) restoreWaitingRoute(state models.ConversationRouteState, now time.Time, timeoutStage string, reason string) error {
+	if !s.isAIReplyEnabledForRoute(state) {
+		AIManualResumeTaskService.EnsureForTimeout(state.ConversationID)
+		AIManualResumeTaskService.BlockForAIDisabled(state.ConversationID, now)
+		return s.markManualTimeoutBlockedByAIDisabled(state, now, timeoutStage)
+	}
+	if !AIManualResumeTaskService.EnsureForTimeout(state.ConversationID) {
+		return fmt.Errorf("cannot persist AI manual resume task for conversation %d", state.ConversationID)
+	}
+	return s.restoreOne(state, now, timeoutStage, reason, "", true, state.RouteStatus)
+}
+
+func (s *manualSessionTimeoutService) restoreOne(state models.ConversationRouteState, now time.Time, timeoutStage string, reason string, customerNotice string, resumeWaiting bool, fromStatus enums.ConversationRouteStatus) error {
+	conversationID := state.ConversationID
 	conversation := ConversationService.Get(conversationID)
 	if err := s.restoreConversationShell(conversationID, now, timeoutStage, reason, fromStatus); err != nil {
 		return err
@@ -76,8 +89,13 @@ func (s *manualSessionTimeoutService) restoreOne(conversationID int64, now time.
 	if err := ConversationRouteService.RestoreAI(conversationID, reason, now); err != nil {
 		return err
 	}
-	if conversation != nil && strings.TrimSpace(customerNotice) != "" {
-		if _, err := MessageService.SendAIServiceNoticeWithRequestID(conversationID, conversation.AIAgentID, customerNotice, "manual_timeout"); err != nil {
+	if resumeWaiting {
+		if !AIManualResumeTaskService.MarkReady(conversationID, now) {
+			return fmt.Errorf("cannot mark AI manual resume task ready for conversation %d", conversationID)
+		}
+	}
+	if conversation != nil && !resumeWaiting && s.isAIReplyEnabledForRoute(state) && strings.TrimSpace(customerNotice) != "" {
+		if _, err := MessageService.SendAIServiceNoticeWithPayloadAndRequestID(conversationID, conversation.AIAgentID, customerNotice, `{"serviceEvent":"manual_ai_resumed_idle_timeout"}`, "manual_timeout"); err != nil {
 			return err
 		}
 		_ = MessageSyncLogService.Create(conversationID, 0, enums.MessageSyncDirectionAgentDeskToWecom, "agentdesk", "store_wecom", "", enums.MessageSyncStatusSuccess, customerNotice, "")
@@ -89,6 +107,39 @@ func (s *manualSessionTimeoutService) restoreOne(conversationID int64, now time.
 		WsService.PublishConversationChanged(updated, enums.IMRealtimeEventConversationUpdated)
 	}
 	return nil
+}
+
+func (s *manualSessionTimeoutService) isAIReplyEnabledForRoute(state models.ConversationRouteState) bool {
+	if state.WxWorkInstanceID <= 0 {
+		return true
+	}
+	instance := WxWorkProtocolInstanceService.Get(state.WxWorkInstanceID)
+	return instance == nil || instance.AIReplyEnabled
+}
+
+func (s *manualSessionTimeoutService) markManualTimeoutBlockedByAIDisabled(state models.ConversationRouteState, now time.Time, timeoutStage string) error {
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current := repositories.ConversationRouteStateRepository.Take(ctx.Tx, "conversation_id = ?", state.ConversationID)
+		if current == nil || current.RouteStatus != state.RouteStatus {
+			return nil
+		}
+		if err := repositories.ConversationRouteStateRepository.Updates(ctx.Tx, current.ID, map[string]any{
+			"manual_expire_at":     nil,
+			"need_human_follow_up": true,
+			"handoff_reason":       "人工接待超时，但当前员工号AI回复已关闭",
+			"updated_at":           now,
+			"update_user_name":     "system",
+		}); err != nil {
+			return err
+		}
+		return ConversationEventLogService.CreateEvent(ctx, state.ConversationID, enums.IMEventTypeTransfer, enums.IMSenderTypeSystem, 0,
+			"人工接待超时，但当前员工号AI回复已关闭，仍需人工处理", ConversationService.buildEventPayload(map[string]any{
+				"timeoutStage": timeoutStage,
+				"fromRoute":    state.RouteStatus,
+				"action":       "keep_manual_ai_disabled",
+				"expiredAt":    now.Format(time.RFC3339),
+			}))
+	})
 }
 
 func (s *manualSessionTimeoutService) restoreConversationShell(conversationID int64, now time.Time, timeoutStage string, reason string, fromStatus enums.ConversationRouteStatus) error {

@@ -128,6 +128,12 @@ func (c *RuntimeTraceCollector) SetAnswerability(data AnswerabilityTraceData) {
 	}
 }
 
+func (c *RuntimeTraceCollector) SetKnowledgeResources(items []KnowledgeResourceTraceData) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Data.KnowledgeResources = append([]KnowledgeResourceTraceData(nil), items...)
+}
+
 func (c *RuntimeTraceCollector) SetPipeline(normalize NormalizeTraceData, intent IntentTraceData, prompt IntentPromptTraceData, contextBuild ContextBuildTraceData, toolKnowledge ToolKnowledgeTraceData, replyPlan ReplyPlanTraceData, generate GenerateTraceData, validate ValidateTraceData) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

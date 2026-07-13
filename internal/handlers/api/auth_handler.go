@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,11 +31,57 @@ func Login(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, ret)
 }
 
+func AuthPostEmailCodeSend(ctx *gin.Context) {
+	req := request.SendEmailCodeRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	challenge, err := services.EmailVerificationService.SendCode(
+		ctx.Request.Context(),
+		services.EmailVerificationPurposeLogin,
+		req.Email,
+		"",
+		ctx.ClientIP(),
+		ctx.GetHeader("User-Agent"),
+	)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, &response.EmailCodeChallengeResponse{
+		ExpiresAt:         challenge.ExpiresAt.Format(time.RFC3339),
+		RetryAfterSeconds: challenge.RetryAfterSecond,
+	})
+}
+
+func AuthPostEmailCodeLogin(ctx *gin.Context) {
+	req := request.EmailCodeLoginRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	ret, err := services.EmailVerificationService.LoginWithCode(
+		ctx.Request.Context(),
+		req.Email,
+		req.Code,
+		ctx.ClientIP(),
+		ctx.GetHeader("User-Agent"),
+		config.Current().Auth,
+	)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, ret)
+}
+
 func AuthOptions(ctx *gin.Context) {
 	cfg := config.Current()
 	httpx.WriteJSON(ctx, &response.AuthOptionsResponse{
-		WxWorkEnabled: cfg.WxWork.Enabled,
-		OIDCEnabled:   cfg.OIDC.Enabled,
+		WxWorkEnabled:    cfg.WxWork.Enabled,
+		OIDCEnabled:      cfg.OIDC.Enabled,
+		EmailCodeEnabled: cfg.Email.Enabled,
 	})
 }
 

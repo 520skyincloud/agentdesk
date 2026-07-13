@@ -13,13 +13,16 @@ import {
   checkWxWorkProtocolRemoteSetupLogin,
   fetchWxWorkProtocolRemoteSetup,
   getWxWorkProtocolRemoteSetupLoginQrcode,
+  sendWxWorkProtocolRemoteSetupEmailCode,
   updateWxWorkProtocolRemoteSetup,
+  verifyWxWorkProtocolRemoteSetupEmail,
   type WxWorkProtocolInstance,
   type WxWorkProtocolRemoteLoginQRCodeResult,
 } from "@/lib/api/admin"
 import { repairMojibakeText } from "@/lib/utils"
 
 type FormState = {
+  email: string
   employeeName: string
   storeName: string
   storeAddress: string
@@ -38,6 +41,7 @@ type FormState = {
 }
 
 const defaultForm: FormState = {
+  email: "",
   employeeName: "",
   storeName: "",
   storeAddress: "",
@@ -72,6 +76,10 @@ function WxWorkRemoteSetupContent() {
   const [saving, setSaving] = useState(false)
   const [qrcode, setQrcode] = useState<WxWorkProtocolRemoteLoginQRCodeResult | null>(null)
   const [checking, setChecking] = useState(false)
+  const [emailCode, setEmailCode] = useState("")
+  const [emailVerificationToken, setEmailVerificationToken] = useState("")
+  const [emailSending, setEmailSending] = useState(false)
+  const [emailVerifying, setEmailVerifying] = useState(false)
 
   useEffect(() => {
     setToken(searchParams.get("token") || "")
@@ -88,6 +96,7 @@ function WxWorkRemoteSetupContent() {
       const data = await fetchWxWorkProtocolRemoteSetup(nextToken)
       setInstance(data)
       setForm({
+        email: "",
         employeeName: repairMojibakeText(data.employeeName || ""),
         storeName: repairMojibakeText(data.storeName || ""),
         storeAddress: repairMojibakeText(data.storeAddress || ""),
@@ -171,15 +180,53 @@ function WxWorkRemoteSetupContent() {
 
   async function save() {
     if (!token) return
+	if (!emailVerificationToken) {
+		toast.error("请先验证门店主邮箱")
+		return
+	}
     setSaving(true)
     try {
-      await updateWxWorkProtocolRemoteSetup({ token, companyId: instance?.companyId || 0, ...form })
+      await updateWxWorkProtocolRemoteSetup({ token, companyId: instance?.companyId || 0, emailVerificationToken, ...form })
       toast.success("已提交门店配置")
       await loadRemoteSetup(token)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "保存失败")
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function sendEmailCode() {
+    if (!token || !form.email.trim()) {
+      toast.error("请填写门店主邮箱")
+      return
+    }
+    setEmailSending(true)
+    try {
+      await sendWxWorkProtocolRemoteSetupEmailCode({ token, email: form.email.trim() })
+      setEmailVerificationToken("")
+      toast.success("验证码已发送，请检查邮箱")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "验证码发送失败")
+    } finally {
+      setEmailSending(false)
+    }
+  }
+
+  async function verifyEmail() {
+    if (!token || !form.email.trim() || !emailCode.trim()) {
+      toast.error("请填写邮箱和验证码")
+      return
+    }
+    setEmailVerifying(true)
+    try {
+      const result = await verifyWxWorkProtocolRemoteSetupEmail({ token, email: form.email.trim(), code: emailCode.trim() })
+      setEmailVerificationToken(result.verificationToken)
+      toast.success("邮箱验证成功")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "邮箱验证失败")
+    } finally {
+      setEmailVerifying(false)
     }
   }
 
@@ -238,6 +285,12 @@ function WxWorkRemoteSetupContent() {
                   <CheckCircle2Icon className="size-4" /> 已同步：{repairMojibakeText(instance.employeeName) || instance.employeeUserId}
                 </div>
               ) : null}
+			  {instance?.knowledgeProvisionStatus ? (
+				<div className={`rounded-xl px-3 py-2 text-sm ${instance.knowledgeProvisionStatus === "failed" ? "bg-red-50 text-red-700" : instance.knowledgeProvisionStatus === "ready" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+				  知识库：{instance.knowledgeProvisionStatus === "ready" ? "已创建" : instance.knowledgeProvisionStatus === "failed" ? "创建失败" : "正在创建"}
+				  {instance.knowledgeProvisionError ? <div className="mt-1 text-xs leading-5">{instance.knowledgeProvisionError}</div> : null}
+				</div>
+			  ) : null}
             </div>
           </section>
 
@@ -251,6 +304,16 @@ function WxWorkRemoteSetupContent() {
 	              ) : null}
 	              <Field label="员工号显示名"><Input value={form.employeeName} onChange={(event) => setValue("employeeName", event.target.value)} placeholder="例如：吴朝伟" /></Field>
               <Field label="门店名称"><Input value={form.storeName} onChange={(event) => setValue("storeName", event.target.value)} placeholder="例如：丽斯未来酒店杭州某某店" /></Field>
+			  <div className="md:col-span-2 rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] p-4">
+				<label className="text-sm font-medium">门店主邮箱</label>
+				<p className="mt-1 text-xs leading-5 text-muted-foreground">该邮箱是长期系统身份。即使以后更换或停用企微员工号，仍可用验证码登录并保留门店资源。</p>
+				<div className="mt-3 grid gap-2 sm:grid-cols-[1fr_150px_auto_auto]">
+				  <Input type="email" value={form.email} onChange={(event) => { setValue("email", event.target.value); setEmailVerificationToken("") }} placeholder="name@example.com" disabled={Boolean(emailVerificationToken)} />
+				  <Input inputMode="numeric" value={emailCode} onChange={(event) => setEmailCode(event.target.value)} placeholder="6 位验证码" disabled={Boolean(emailVerificationToken)} />
+				  <Button type="button" variant="outline" onClick={() => void sendEmailCode()} disabled={emailSending || Boolean(emailVerificationToken)}>{emailSending ? "发送中" : "发送验证码"}</Button>
+				  <Button type="button" variant={emailVerificationToken ? "outline" : "default"} onClick={() => void verifyEmail()} disabled={emailVerifying || Boolean(emailVerificationToken)}>{emailVerificationToken ? "已验证" : emailVerifying ? "验证中" : "验证邮箱"}</Button>
+				</div>
+			  </div>
               <Field label="门店地址"><Input value={form.storeAddress} onChange={(event) => setValue("storeAddress", event.target.value)} placeholder="填写可导航地址" /></Field>
               <Field label="联系电话"><Input value={form.storeContactPhone} onChange={(event) => setValue("storeContactPhone", event.target.value)} placeholder="例如：0551-88888888 / 13800000000" /></Field>
               <Field label="定位卡片标题"><Input value={form.storeNavigationName} onChange={(event) => setValue("storeNavigationName", event.target.value)} placeholder="默认可用门店名称" /></Field>

@@ -148,8 +148,9 @@ type RuntimeTraceData struct {
 		Policies         []RetrieverPolicyTraceItem `json:"policies,omitempty"`
 		Items            []RetrieverTraceItem       `json:"items,omitempty"`
 	} `json:"retriever"`
-	Answerability AnswerabilityTraceData `json:"answerability,omitempty"`
-	Tools         struct {
+	Answerability      AnswerabilityTraceData       `json:"answerability,omitempty"`
+	KnowledgeResources []KnowledgeResourceTraceData `json:"knowledgeResources,omitempty"`
+	Tools              struct {
 		Count int             `json:"count,omitempty"`
 		Items []ToolTraceItem `json:"items,omitempty"`
 	} `json:"tools"`
@@ -226,6 +227,19 @@ type CommitMessageTraceData struct {
 	Content      string `json:"content,omitempty"`
 	Status       string `json:"status,omitempty"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
+}
+
+// KnowledgeResourceTraceData records a scoped asset selected from a retrieved knowledge record.
+// It stays outside IntentDetect output and outside the model message context.
+type KnowledgeResourceTraceData struct {
+	GroupID         int64  `json:"groupId,omitempty"`
+	ItemID          int64  `json:"itemId,omitempty"`
+	KnowledgeBaseID int64  `json:"knowledgeBaseId,omitempty"`
+	SourceRecordID  string `json:"sourceRecordId,omitempty"`
+	AssetID         string `json:"assetId,omitempty"`
+	Title           string `json:"title,omitempty"`
+	Description     string `json:"description,omitempty"`
+	SortNo          int    `json:"sortNo,omitempty"`
 }
 
 type ActionLedgerTraceData struct {

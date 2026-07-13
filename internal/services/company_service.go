@@ -130,7 +130,7 @@ func validateOptionalReplyIntentProfileID(id int64) (int64, error) {
 		return 0, nil
 	}
 	item := ReplyIntentProfileService.Get(id)
-	if item == nil || item.Status == enums.StatusDeleted {
+	if item == nil || item.Status != enums.StatusOk {
 		return 0, errorsx.InvalidParam("意图行业配置不存在")
 	}
 	return id, nil

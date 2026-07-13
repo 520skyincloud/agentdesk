@@ -3,6 +3,7 @@ package executor
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 )
@@ -16,19 +17,102 @@ func enforceGeneratedReplyActionLedger(summary *RunResult, collector *callbacks.
 		return
 	}
 	intent := collector.Data.Pipeline.Intent
-	cleaned := removeStructuredResourceCommitMentions(original, intent)
+	scoped := limitCorrectionReplyToCurrentTurn(original, intent)
+	cleaned := removeStructuredResourceCommitMentions(scoped, intent)
 	cleaned = removeUnsupportedStaffActionMentions(cleaned, intent)
 	cleaned = normalizeReplyTextWhitespace(cleaned)
+	cleaned = normalizeIncompleteReplyEnding(cleaned)
 	if cleaned == "" || cleaned == original {
 		return
 	}
 	summary.ReplyText = cleaned
 	collector.Data.Output.ReplyText = cleaned
 	collector.Data.Pipeline.Validate.Status = "passed"
-	collector.Data.Pipeline.Validate.Reason = appendValidationReason(
-		collector.Data.Pipeline.Validate.Reason,
-		"action ledger removed generated text that claimed uncommitted resource or staff actions",
-	)
+	if scoped != original {
+		collector.Data.Pipeline.Validate.Reason = appendValidationReason(
+			collector.Data.Pipeline.Validate.Reason,
+			"correction reply was scoped to the current correction and did not continue an older topic",
+		)
+	}
+	if cleaned != scoped {
+		collector.Data.Pipeline.Validate.Reason = appendValidationReason(
+			collector.Data.Pipeline.Validate.Reason,
+			"action ledger removed unsupported actions or normalized an incomplete reply ending",
+		)
+	}
+}
+
+func limitCorrectionReplyToCurrentTurn(text string, intent callbacks.IntentTraceData) string {
+	if intent.PrimaryIntent != "interaction" || !isSocialCorrectionSubIntent(intent.SubIntent) {
+		return text
+	}
+	sentences := splitTerminalReplySentences(text)
+	if len(sentences) == 0 {
+		return text
+	}
+	return sentences[0]
+}
+
+func splitTerminalReplySentences(text string) []string {
+	var ret []string
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(text) {
+		b.WriteRune(r)
+		if isTerminalReplySentenceDelimiter(r) {
+			if sentence := strings.TrimSpace(b.String()); sentence != "" {
+				ret = append(ret, sentence)
+			}
+			b.Reset()
+		}
+	}
+	if sentence := strings.TrimSpace(b.String()); sentence != "" {
+		ret = append(ret, sentence)
+	}
+	return ret
+}
+
+func isTerminalReplySentenceDelimiter(r rune) bool {
+	switch r {
+	case '。', '！', '？', '!', '?', '；', ';':
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeIncompleteReplyEnding(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || !endsWithIncompleteReplyDelimiter(text) {
+		return text
+	}
+	text = strings.TrimRight(text, "，,：:、；; \t\r\n")
+	if text == "" {
+		return ""
+	}
+	if index := strings.LastIndexAny(text, "，,"); index >= 0 {
+		lastClause := strings.TrimSpace(text[index+1:])
+		if utf8.RuneCountInString(lastClause) <= 4 {
+			text = strings.TrimSpace(text[:index])
+		}
+	}
+	text = strings.TrimRight(strings.TrimSpace(text), "，,：:、；; \t\r\n")
+	if text == "" {
+		return ""
+	}
+	return text + "。"
+}
+
+func endsWithIncompleteReplyDelimiter(text string) bool {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) == 0 {
+		return false
+	}
+	switch runes[len(runes)-1] {
+	case '，', ',', '：', ':', '、', '；', ';':
+		return true
+	default:
+		return false
+	}
 }
 
 func removeStructuredResourceCommitMentions(text string, intent callbacks.IntentTraceData) string {

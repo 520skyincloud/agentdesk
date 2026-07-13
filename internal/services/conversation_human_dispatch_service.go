@@ -510,18 +510,33 @@ func (s *conversationHumanDispatchService) notifyStoreRoomHandoff(conversationID
 }
 
 func (s *conversationHumanDispatchService) buildStoreRoomHandoffNotice(conversation *models.Conversation, reason string) string {
-	lines := []string{"有客人需要人工接待"}
+	return strings.Join([]string{
+		"有客人需要人工接待",
+		"客户：" + handoffNoticeCustomerName(conversation),
+		"摘要：" + compactHandoffNoticeField(s.buildHandoffConversationSummary(conversation, reason)),
+		"原因：" + compactHandoffNoticeField(cleanHandoffNoticeReason(reason)),
+	}, "\n")
+}
+
+func handoffNoticeCustomerName(conversation *models.Conversation) string {
+	if conversation == nil {
+		return "未命名客户"
+	}
 	if name := strings.TrimSpace(conversation.CustomerName); name != "" {
-		lines = append(lines, "客户："+name)
+		return name
 	}
-	if summary := strings.TrimSpace(s.buildHandoffConversationSummary(conversation, reason)); summary != "" {
-		lines = append(lines, "摘要："+summary)
+	if conversation.CustomerID > 0 {
+		if customer := CustomerService.Get(conversation.CustomerID); customer != nil {
+			if name := strings.TrimSpace(customer.Name); name != "" {
+				return name
+			}
+		}
 	}
-	if trimmedReason := strings.TrimSpace(cleanHandoffNoticeReason(reason)); trimmedReason != "" {
-		lines = append(lines, "原因："+trimmedReason)
-	}
-	lines = append(lines, fmt.Sprintf("后台：/dashboard/conversations?conversationId=%d", conversation.ID))
-	return strings.Join(lines, "\n")
+	return "未命名客户"
+}
+
+func compactHandoffNoticeField(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
 type handoffSummaryItem struct {

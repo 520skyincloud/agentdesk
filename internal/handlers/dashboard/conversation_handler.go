@@ -207,6 +207,24 @@ func ConversationPostTransfer(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
+func ConversationPostSet_auto_handoff_enabled(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationHandover)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.SetConversationAutoHandoffEnabledRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.WxWorkCustomerHandoffSettingService.SetForConversation(req.ConversationID, req.AutoHandoffEnabled, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
 func ConversationPostClose(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationClose)
 	if err != nil {

@@ -34,6 +34,15 @@ func toSummary(summary *executor.RunResult) *Summary {
 		TraceData:             summary.TraceData,
 		ErrorMessage:          summary.ErrorMessage,
 	}
+	if len(summary.ModelUsageCalls) > 0 {
+		ret.ModelUsageCalls = make([]ModelUsageCall, 0, len(summary.ModelUsageCalls))
+		for _, usage := range summary.ModelUsageCalls {
+			ret.ModelUsageCalls = append(ret.ModelUsageCalls, ModelUsageCall{
+				PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
+				CachedPromptTokens: usage.CachedPromptTokens, ReasoningTokens: usage.ReasoningTokens,
+			})
+		}
+	}
 	if len(summary.Interrupts) > 0 {
 		ret.Interrupts = make([]InterruptContextSummary, 0, len(summary.Interrupts))
 		for _, item := range summary.Interrupts {

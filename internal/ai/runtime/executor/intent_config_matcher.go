@@ -20,18 +20,7 @@ type runtimeIntentScope struct {
 	WxWorkInstanceID int64
 	CustomerID       int64
 	IntentProfileID  int64
-}
-
-func isEmergencySafetyText(text string) bool {
-	if containsAnyNormalized(text, []string{"摔倒", "摔跤", "滑倒", "受伤", "流血", "出血", "骨折", "晕倒", "昏倒", "报警", "救护车", "安全事故", "人身安全", "厕所太滑", "地太滑"}) {
-		return true
-	}
-	text = normalizeConfiguredIntentText(text)
-	if containsAnyNormalized(text, []string{"害怕", "不安全", "危险"}) && containsAnyNormalized(text, []string{"门锁", "房门", "门坏", "锁坏"}) {
-		return true
-	}
-	return text == "120" ||
-		containsAnyNormalized(text, []string{"打120", "拨120", "拨打120", "叫120", "联系120", "呼叫120"})
+	HasWxWorkAccount bool
 }
 
 func loadEnabledIntentConfigs(scope runtimeIntentScope) []models.ReplyIntentConfig {
@@ -40,8 +29,11 @@ func loadEnabledIntentConfigs(scope runtimeIntentScope) []models.ReplyIntentConf
 	if db == nil {
 		return list
 	}
+	if scope.IntentProfileID <= 0 {
+		return list
+	}
 	err := db.Where("status = ?", enums.StatusOk).
-		Where("(intent_profile_id = ? OR intent_profile_id = 0)", scope.IntentProfileID).
+		Where("intent_profile_id = ?", scope.IntentProfileID).
 		Where("(scope_type = ? OR (scope_type = ? AND company_id = ?) OR (scope_type = ? AND store_id = ?) OR (scope_type = ? AND wx_work_instance_id = ?))", "global", "company", scope.CompanyID, "store", scope.StoreID, "instance", scope.WxWorkInstanceID).
 		Order("priority DESC").Order("sort_no ASC").Order("id ASC").Find(&list).Error
 	if err != nil {
@@ -65,7 +57,6 @@ func promptTraceFromConfig(config models.ReplyIntentConfig, intent callbacks.Int
 	if validation := strings.TrimSpace(config.ValidationRules); validation != "" {
 		instructions = append(instructions, "发送前校验："+validation)
 	}
-	instructions = append(instructions, runtimeIntentSpecificPromptInstructions(intent)...)
 	return callbacks.IntentPromptTraceData{PackName: intent.PrimaryIntent, Instructions: instructions}
 }
 
@@ -143,87 +134,6 @@ func canonicalIntentCode(code string) string {
 	}
 }
 
-func detectHotelVariableResourceType(text string) string {
-	text = normalizeConfiguredIntentText(text)
-	if text == "" {
-		return ""
-	}
-	switch {
-	case isPhoneVariableRequestText(text):
-		return "phone"
-	case isMiniProgramVariableRequestText(text):
-		return "mini_program"
-	case isStoreLocationVariableRequestText(text):
-		return "location"
-	default:
-		return ""
-	}
-}
-
-func isPhoneVariableRequestText(text string) bool {
-	text = normalizeConfiguredIntentText(text)
-	if text == "" {
-		return false
-	}
-	return containsAnyNormalized(text, []string{
-		"电话", "电话号码", "联系电话", "联系方式", "酒店电话", "门店电话", "前台电话", "客服电话", "手机号", "座机",
-	}) || (containsAnyNormalized(text, []string{"号码"}) && containsAnyNormalized(text, []string{"电话", "手机", "前台", "酒店", "门店"}))
-}
-
-func isMiniProgramVariableRequestText(text string) bool {
-	text = normalizeConfiguredIntentText(text)
-	if text == "" {
-		return false
-	}
-	return containsAnyNormalized(text, []string{"小程序", "入住码", "安心宿"})
-}
-
-func isStoreLocationVariableRequestText(text string) bool {
-	text = normalizeConfiguredIntentText(text)
-	if text == "" {
-		return false
-	}
-	if hasExplicitStoreLocationResourceRequestText(text) {
-		return true
-	}
-	if hasFacilityLocationTargetText(text) {
-		return false
-	}
-	if containsAnyNormalized(text, []string{"定位", "发位置", "发个位置"}) {
-		return true
-	}
-	if containsAnyNormalized(text, []string{"酒店地址", "门店地址", "你们地址", "你们酒店地址", "你们门店地址"}) {
-		return true
-	}
-	if containsAnyNormalized(text, []string{"酒店在哪", "酒店在哪里", "门店在哪", "门店在哪里", "你们在哪", "你们在哪里", "你们酒店在哪", "你们酒店在哪里", "你们店在哪", "你们店在哪里", "店在哪", "店在哪里"}) {
-		return true
-	}
-	if containsAnyNormalized(text, []string{"导航", "怎么去"}) && containsAnyNormalized(text, []string{"酒店", "门店", "你们店", "你们酒店"}) {
-		return true
-	}
-	return false
-}
-
-func hasFacilityLocationTargetText(text string) bool {
-	text = normalizeConfiguredIntentText(text)
-	if text == "" {
-		return false
-	}
-	return containsAnyNormalized(text, []string{
-		"停车", "停车场", "车位", "入口", "洗衣", "洗衣房", "前台", "餐厅", "早餐", "吃饭", "外卖", "厨房",
-		"电梯", "房间", "用品", "浴帽", "拖鞋", "电视", "投屏", "空调", "医院", "药店", "商场", "便利店",
-	})
-}
-
-func containsAnyNormalized(text string, values []string) bool {
-	for _, value := range values {
-		if value != "" && strings.Contains(text, normalizeConfiguredIntentText(value)) {
-			return true
-		}
-	}
-	return false
-}
-
 func resolveRuntimeIntentScope(req RunInput) runtimeIntentScope {
 	scope := runtimeIntentScope{CustomerID: req.Conversation.CustomerID}
 	db := sqls.DB()
@@ -241,6 +151,7 @@ func resolveRuntimeIntentScope(req RunInput) runtimeIntentScope {
 	if scope.WxWorkInstanceID > 0 {
 		instance := repositories.WxWorkProtocolInstanceRepository.Get(db, scope.WxWorkInstanceID)
 		if instance != nil {
+			scope.HasWxWorkAccount = true
 			if instance.IntentProfileID > 0 {
 				scope.IntentProfileID = instance.IntentProfileID
 			}
@@ -270,7 +181,7 @@ func resolveRuntimeIntentScope(req RunInput) runtimeIntentScope {
 			scope.IntentProfileID = company.IntentProfileID
 		}
 	}
-	if scope.IntentProfileID <= 0 {
+	if scope.IntentProfileID <= 0 && !scope.HasWxWorkAccount {
 		if profile := repositories.ReplyIntentProfileRepository.Take(db, "code = ? AND status = ?", replyintent.DefaultHotelProfileCode, enums.StatusOk); profile != nil {
 			scope.IntentProfileID = profile.ID
 		}
@@ -287,6 +198,9 @@ func resolveRuntimeIntentProfile(scope runtimeIntentScope) *models.ReplyIntentPr
 		if profile := repositories.ReplyIntentProfileRepository.Get(db, scope.IntentProfileID); profile != nil && profile.Status == enums.StatusOk {
 			return profile
 		}
+	}
+	if scope.HasWxWorkAccount {
+		return nil
 	}
 	if profile := repositories.ReplyIntentProfileRepository.Take(db, "code = ? AND status = ?", replyintent.DefaultHotelProfileCode, enums.StatusOk); profile != nil {
 		return profile

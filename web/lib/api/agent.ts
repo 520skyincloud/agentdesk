@@ -34,7 +34,7 @@ export type AgentConversationParticipant = {
 
 export type AgentConversationManualAttention = {
   dot: boolean
-  level: "none" | "normal" | "urgent" | "serving" | "timeout_restored" | string
+  level: "none" | "normal" | "urgent" | "serving" | string
   label: string
   expiresAt?: string
 }
@@ -72,6 +72,7 @@ export type AgentConversation = {
   routeTarget?: string
   handoffReason?: string
   needHumanFollowUp?: boolean
+  autoHandoffEnabled?: boolean
   manualExpireAt?: string
   manualAttention?: AgentConversationManualAttention
   storeId?: number
@@ -244,6 +245,16 @@ export function transferAgentConversation(
   return request<void>("/api/dashboard/conversation/transfer", {
     method: "POST",
     body: JSON.stringify({ conversationId, toUserId, reason }),
+  })
+}
+
+export function setAgentConversationAutoHandoffEnabled(
+  conversationId: number,
+  autoHandoffEnabled: boolean,
+) {
+  return request<void>("/api/dashboard/conversation/set_auto_handoff_enabled", {
+    method: "POST",
+    body: JSON.stringify({ conversationId, autoHandoffEnabled }),
   })
 }
 

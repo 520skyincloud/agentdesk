@@ -139,8 +139,23 @@ func (s *wxWorkLoginService) loginWithWxWorkProfile(profile *wxwork.LoginUser, a
 func (s *wxWorkLoginService) createWxWorkUser(ctx *sqls.TxContext, profile *wxwork.LoginUser) (*models.User, *models.UserIdentity, error) {
 	username := strings.TrimSpace(profile.UserID)
 	mobile := strings.TrimSpace(profile.Mobile)
-	email := strings.TrimSpace(s.firstNonEmpty(profile.Email, profile.BizMail))
+	email := strings.ToLower(strings.TrimSpace(s.firstNonEmpty(profile.Email, profile.BizMail)))
 	now := time.Now()
+	if email != "" {
+		if existing := repositories.UserRepository.GetByEmail(ctx.Tx, email); existing != nil && existing.EmailVerifiedAt != nil {
+			if existing.Status != enums.StatusOk || existing.DeletedAt != nil {
+				return nil, nil, errorsx.Unauthorized("该邮箱绑定的系统账号已被禁用")
+			}
+			identity, err := s.createWxWorkIdentity(ctx.Tx, existing, profile, now)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := s.assignDefaultStoreStaffRole(ctx.Tx, existing); err != nil {
+				return nil, nil, err
+			}
+			return existing, identity, nil
+		}
+	}
 
 	if err := s.checkWxWorkProfile(ctx.Tx, username, mobile, email); err != nil {
 		return nil, nil, err
@@ -162,10 +177,28 @@ func (s *wxWorkLoginService) createWxWorkUser(ctx *sqls.TxContext, profile *wxwo
 			UpdateUserName: enums.GetThirdProviderLabel(enums.ThirdProviderWxWork),
 		},
 	}
+	if mobile != "" {
+		user.Mobile = &mobile
+	}
+	if email != "" {
+		user.Email = &email
+		user.EmailVerifiedAt = &now
+	}
 	if err := repositories.UserRepository.Create(ctx.Tx, user); err != nil {
 		return nil, nil, err
 	}
 
+	identity, err := s.createWxWorkIdentity(ctx.Tx, user, profile, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.assignDefaultStoreStaffRole(ctx.Tx, user); err != nil {
+		return nil, nil, err
+	}
+	return user, identity, nil
+}
+
+func (s *wxWorkLoginService) createWxWorkIdentity(tx *gorm.DB, user *models.User, profile *wxwork.LoginUser, now time.Time) (*models.UserIdentity, error) {
 	identity := &models.UserIdentity{
 		UserID:         user.ID,
 		Provider:       enums.ThirdProviderWxWork,
@@ -187,13 +220,10 @@ func (s *wxWorkLoginService) createWxWorkUser(ctx *sqls.TxContext, profile *wxwo
 	if unionID := strings.TrimSpace(profile.OpenID); unionID != "" {
 		identity.ProviderUnionID = &unionID
 	}
-	if err := repositories.UserIdentityRepository.Create(ctx.Tx, identity); err != nil {
-		return nil, nil, err
+	if err := repositories.UserIdentityRepository.Create(tx, identity); err != nil {
+		return nil, err
 	}
-	if err := s.assignDefaultStoreStaffRole(ctx.Tx, user); err != nil {
-		return nil, nil, err
-	}
-	return user, identity, nil
+	return identity, nil
 }
 
 func (s *wxWorkLoginService) assignDefaultStoreStaffRole(tx *gorm.DB, user *models.User) error {

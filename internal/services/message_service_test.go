@@ -66,6 +66,7 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		&models.WxWorkProtocolInstance{},
 		&models.Customer{},
 		&models.CustomerIdentity{},
+		&models.WxWorkCustomerHandoffSetting{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
 		&models.ConversationParticipant{},
@@ -245,6 +246,58 @@ func TestCreateExternalAgentMessageWithoutOutboxMarksStoreManualHandled(t *testi
 	}
 	if outboxCount != 0 {
 		t.Fatalf("expected self echo to avoid outbound outbox, got %d", outboxCount)
+	}
+}
+
+func TestCreateExternalAgentMessageWithoutOutboxTakesOverAIServingRoute(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	if err := db.Create(&models.Channel{
+		ID:          12,
+		Name:        "企微员工号",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-protocol-takeover-test",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("self-echo-takeover-user"), 12, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if _, err := MessageService.CreateExternalAgentMessageWithoutOutbox(conversation.ID, "wx-self-echo-takeover", enums.IMMessageTypeText, "我来接着处理。", "", "req-self-echo-takeover"); err != nil {
+		t.Fatalf("CreateExternalAgentMessageWithoutOutbox() error = %v", err)
+	}
+	state := ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.NeedHumanFollowUp || state.ManualExpireAt == nil {
+		t.Fatalf("expected external employee reply to enter manual servicing, got %+v", state)
+	}
+	if state.LastManualHandoffAt == nil {
+		t.Fatalf("expected external employee reply to begin a manual interval")
+	}
+}
+
+func TestMiniprogramHumanSupportUsesActiveRouteInsteadOfHandoffHistory(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("miniprogram-handoff-history"), 11, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if err := db.Model(&models.Conversation{}).Where("id = ?", conversation.ID).Update("handoff_at", time.Now()).Error; err != nil {
+		t.Fatalf("write historical handoff: %v", err)
+	}
+	updated := ConversationService.Get(conversation.ID)
+	if MiniprogramChatService.needHumanSupport("转人工", updated) {
+		t.Fatal("expected historical handoff alone not to report active human support")
+	}
+	if _, err := ConversationRouteService.EnterStoreWecomManual(conversation.ID, "正在门店人工接待", time.Now()); err != nil {
+		t.Fatalf("enter store manual: %v", err)
+	}
+	if !MiniprogramChatService.needHumanSupport("任意消息", ConversationService.Get(conversation.ID)) {
+		t.Fatal("expected active manual route to report human support")
 	}
 }
 

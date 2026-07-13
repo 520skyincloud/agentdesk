@@ -20,6 +20,17 @@ type LoginResponse struct {
 }
 
 type AuthOptionsResponse struct {
-	WxWorkEnabled bool `json:"wxworkEnabled"`
-	OIDCEnabled   bool `json:"oidcEnabled"`
+	WxWorkEnabled    bool `json:"wxworkEnabled"`
+	OIDCEnabled      bool `json:"oidcEnabled"`
+	EmailCodeEnabled bool `json:"emailCodeEnabled"`
+}
+
+type EmailCodeChallengeResponse struct {
+	ExpiresAt         string `json:"expiresAt"`
+	RetryAfterSeconds int    `json:"retryAfterSeconds"`
+}
+
+type EmailVerificationResponse struct {
+	VerificationToken string `json:"verificationToken"`
+	ExpiresAt         string `json:"expiresAt"`
 }

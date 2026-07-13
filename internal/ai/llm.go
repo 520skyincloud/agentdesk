@@ -17,6 +17,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/usagex"
 )
 
 type ChatCompletionResult struct {
@@ -145,7 +146,7 @@ func (s *llm) chatWithResponses(ctx context.Context, config models.AIConfig, sys
 	if config.TimeoutMS > 0 {
 		timeout = time.Duration(config.TimeoutMS) * time.Millisecond
 	}
-	client := &http.Client{Timeout: timeout}
+	client := usagex.NewHTTPClient(timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call responses api (model=%s provider=%s system_chars=%d user_chars=%d max_output_tokens=%d): %w",

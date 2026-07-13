@@ -27,8 +27,12 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import type { AgentConversation } from "@/lib/api/agent";
+import {
+  setAgentConversationAutoHandoffEnabled,
+  type AgentConversation,
+} from "@/lib/api/agent";
 import { type TagTree, fetchTagsAll } from "@/lib/api/admin";
 import { updateCompany, type AdminCompany } from "@/lib/api/company";
 import { fetchTickets, type TicketItem } from "@/lib/api/ticket";
@@ -610,7 +614,11 @@ function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProp
 }
 
 function SmartReplySection({ conversation }: { conversation: AgentConversation }) {
+  const loadConversations = useAgentConversationsStore((state) => state.loadConversations);
+  const [savingAutoHandoff, setSavingAutoHandoff] = useState(false);
   const aiServing = !conversation.routeStatus || conversation.routeStatus === "AI_SERVING";
+  const hasAccountScopedCustomer = Boolean(conversation.customerId && conversation.wxWorkInstanceId);
+  const autoHandoffEnabled = conversation.autoHandoffEnabled !== false;
   const manualAttention = conversation.manualAttention;
   const manualStatus =
     manualAttention && manualAttention.level !== "none"
@@ -626,6 +634,22 @@ function SmartReplySection({ conversation }: { conversation: AgentConversation }
         ? "默认10分钟无新客户消息恢复AI"
         : "-";
 
+  const toggleAutoHandoff = async (enabled: boolean) => {
+    if (!hasAccountScopedCustomer || savingAutoHandoff) {
+      return;
+    }
+    setSavingAutoHandoff(true);
+    try {
+      await setAgentConversationAutoHandoffEnabled(conversation.id, enabled);
+      await loadConversations();
+      toast.success(enabled ? "已允许该客户自动转人工" : "已禁止该客户自动转人工");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "自动转人工设置失败");
+    } finally {
+      setSavingAutoHandoff(false);
+    }
+  };
+
   return (
     <section className="agentdesk-subtle-surface space-y-2 rounded-xl p-3">
       <SectionHeading>智能回复设置</SectionHeading>
@@ -636,6 +660,20 @@ function SmartReplySection({ conversation }: { conversation: AgentConversation }
         <DetailRow label="AI托管" value={aiServing ? "已开启" : "人工接待中，AI停答"} />
         <DetailRow label="转人工" value={manualStatus} />
         <DetailRow label="人工超时" value={manualExpireText} />
+        {hasAccountScopedCustomer ? (
+          <div className="flex items-center justify-between gap-3 border-t border-[#e5edf7] pt-2">
+            <div className="min-w-0">
+              <p className="text-sm text-foreground">自动转人工</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">仅当前企微员工号</p>
+            </div>
+            <Switch
+              checked={autoHandoffEnabled}
+              disabled={savingAutoHandoff}
+              onCheckedChange={toggleAutoHandoff}
+              aria-label="切换该客户自动转人工"
+            />
+          </div>
+        ) : null}
       </div>
     </section>
   );

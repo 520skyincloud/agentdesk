@@ -263,7 +263,7 @@ export default function DashboardCompaniesPage() {
   ]
   const intentProfileOptions = useMemo(
     () => [
-      { value: "0", label: "使用系统默认" },
+      { value: "0", label: "暂不绑定（不能启用 AI）" },
       ...intentProfiles.map((item) => ({
         value: String(item.id),
         label: `${item.name}${item.industryCode ? ` · ${item.industryCode}` : ""}`,
@@ -427,7 +427,7 @@ export default function DashboardCompaniesPage() {
           label: "意图行业",
           render: (item) => (
             <span className="text-muted-foreground">
-              {intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || "系统默认"}
+              {intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || "未绑定"}
             </span>
           ),
         },
@@ -490,7 +490,7 @@ export default function DashboardCompaniesPage() {
             defaultValue: "0",
             valueFromItem: (item) => String(item.intentProfileId || 0),
             options: intentProfileOptions,
-            description: "公司默认的 IntentDetect 提示词和意图分类体系；员工号未单独设置时继承这里。",
+            description: "公司默认的 IntentDetect 提示词和意图分类体系；员工号未单独设置时继承这里。公司或账号未绑定行业时不能启用 AI。",
           },
           {
             name: "remark",

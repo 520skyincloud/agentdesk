@@ -18,8 +18,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   fetchKnowledgeBase,
+  fetchReplyIntentProfiles,
   type CreateKnowledgeBasePayload,
   type KnowledgeBase,
+  type ReplyIntentProfile,
 } from "@/lib/api/admin";
 import { useI18n } from "@/i18n/provider";
 import {
@@ -37,6 +39,7 @@ type KnowledgeBaseEditDialogProps = {
 };
 
 const emptyForm: EditForm = {
+	intentProfileId: "",
   name: "",
   description: "",
   knowledgeType: KnowledgeBaseType.Document,
@@ -49,12 +52,14 @@ const emptyForm: EditForm = {
   chunkOverlapTokens: "40",
   answerMode: String(KnowledgeAnswerMode.Strict),
   remark: "",
+	resourceAllowedHosts: "",
 };
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string;
 
 function createKnowledgeBaseFormSchema(t: TFunction) {
   return z.object({
+	intentProfileId: z.string().trim().refine((value) => Number(value) > 0, "请选择行业 Profile"),
   name: z.string().trim().min(1, t("knowledge.nameRequired")).max(100, t("knowledge.nameMax")),
   description: z.string().trim().max(500, t("knowledge.descriptionMax")),
   knowledgeType: z.string().trim().min(1, t("knowledge.typeRequired")),
@@ -64,13 +69,15 @@ function createKnowledgeBaseFormSchema(t: TFunction) {
   chunkProvider: z.string().trim().min(1, t("knowledge.chunkProviderRequired")),
   chunkTargetTokens: z.string().trim().min(1, t("knowledge.targetTokensRequired")),
   chunkMaxTokens: z.string().trim().min(1, t("knowledge.maxTokensRequired")),
-  chunkOverlapTokens: z.string().trim().min(1, t("knowledge.overlapTokensRequired")),
-  answerMode: z.string().trim().min(1, t("knowledge.answerModeRequired")),
-  remark: z.string().trim().max(500, t("knowledge.remarkMax")),
+    chunkOverlapTokens: z.string().trim().min(1, t("knowledge.overlapTokensRequired")),
+    answerMode: z.string().trim().min(1, t("knowledge.answerModeRequired")),
+    remark: z.string().trim().max(500, t("knowledge.remarkMax")),
+		resourceAllowedHosts: z.string().trim().max(1000, "图片可信域名不能超过 1000 个字符"),
   });
 }
 
 type EditForm = {
+	intentProfileId: string;
   name: string;
   description: string;
   knowledgeType: string;
@@ -83,6 +90,7 @@ type EditForm = {
   chunkOverlapTokens: string;
   answerMode: string;
   remark: string;
+	resourceAllowedHosts: string;
 };
 
 function getKnowledgeTypeOptions(t: TFunction) {
@@ -114,6 +122,7 @@ function buildForm(item: KnowledgeBase | null): EditForm {
   }
 
   return {
+		intentProfileId: item.intentProfileId > 0 ? String(item.intentProfileId) : "",
     name: item.name,
     description: item.description || "",
     knowledgeType: item.knowledgeType || KnowledgeBaseType.Document,
@@ -126,11 +135,17 @@ function buildForm(item: KnowledgeBase | null): EditForm {
     chunkOverlapTokens: String(item.chunkOverlapTokens),
     answerMode: String(item.answerMode),
     remark: item.remark || "",
+		resourceAllowedHosts: parseResourceAllowedHosts(item.remark),
   };
 }
 
 function buildPayload(form: EditForm): CreateKnowledgeBasePayload {
+	let remark = form.remark.trim();
+	if (form.knowledgeType === KnowledgeBaseType.FastGPTCloud) {
+		remark = mergeFastGPTResourceAllowedHosts(remark, form.resourceAllowedHosts);
+	}
   return {
+		intentProfileId: Number(form.intentProfileId),
     name: form.name.trim(),
     description: form.description.trim(),
     knowledgeType: form.knowledgeType,
@@ -142,8 +157,44 @@ function buildPayload(form: EditForm): CreateKnowledgeBasePayload {
     chunkMaxTokens: Number(form.chunkMaxTokens),
     chunkOverlapTokens: Number(form.chunkOverlapTokens),
     answerMode: Number(form.answerMode),
-    remark: form.remark.trim(),
+    remark,
   };
+}
+
+function parseResourceAllowedHosts(raw: string) {
+	try {
+		const config: unknown = raw.trim() ? JSON.parse(raw) : {};
+		if (!config || typeof config !== "object" || Array.isArray(config)) {
+			return "";
+		}
+		const value = (config as { resourceAllowedHosts?: unknown }).resourceAllowedHosts;
+		return Array.isArray(value)
+			? value.filter((item): item is string => typeof item === "string").join("\n")
+			: "";
+	} catch {
+		return "";
+	}
+}
+
+function mergeFastGPTResourceAllowedHosts(raw: string, values: string) {
+	let config: Record<string, unknown> = {};
+	if (raw) {
+		const parsed: unknown = JSON.parse(raw);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("FastGPT 配置必须是 JSON 对象");
+		}
+		config = { ...(parsed as Record<string, unknown>) };
+	}
+	const hosts = values
+		.split(/[\n,]/)
+		.map((value) => value.trim().replace(/^https?:\/\//, "").replace(/\/$/, ""))
+		.filter((value, index, all) => value.length > 0 && all.indexOf(value) === index);
+	if (hosts.length === 0) {
+		delete config.resourceAllowedHosts;
+	} else {
+		config.resourceAllowedHosts = hosts;
+	}
+	return JSON.stringify(config);
 }
 
 export function EditDialog({
@@ -187,6 +238,7 @@ function KnowledgeBaseFormDialogBody({
   const t = useI18n();
   const formId = "knowledge-base-edit-form";
   const [loading, setLoading] = useState(false);
+	const [intentProfiles, setIntentProfiles] = useState<ReplyIntentProfile[]>([]);
   const knowledgeBaseFormSchema = useMemo(() => createKnowledgeBaseFormSchema(t), [t]);
   const editFormResolver = useMemo(
     () => zodResolver(knowledgeBaseFormSchema) as Resolver<EditForm>,
@@ -204,12 +256,33 @@ function KnowledgeBaseFormDialogBody({
     handleSubmit,
     reset,
     register,
+		setError,
     watch,
     formState: { errors },
   } = form;
   const knowledgeType = watch("knowledgeType");
   const isFAQKnowledgeBase = knowledgeType === KnowledgeBaseType.FAQ;
   const isFastGPTCloudKnowledgeBase = knowledgeType === KnowledgeBaseType.FastGPTCloud;
+	const intentProfileOptions = useMemo(
+		() => intentProfiles.map((profile) => ({ value: String(profile.id), label: profile.name || profile.code })),
+		[intentProfiles],
+	);
+
+	useEffect(() => {
+		let cancelled = false;
+		void fetchReplyIntentProfiles({ status: 0, limit: 200 })
+			.then((page) => {
+				if (!cancelled) {
+					setIntentProfiles(page.results);
+				}
+			})
+			.catch((error) => {
+				console.error("Failed to load reply intent profiles:", error);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
   useEffect(() => {
     if (!open) {
@@ -249,8 +322,15 @@ function KnowledgeBaseFormDialogBody({
   }, [open, itemId, reset]);
 
   async function onFormSubmit(values: EditForm) {
-    const payload = buildPayload(values);
-    await onSubmit(payload);
+	try {
+		const payload = buildPayload(values);
+		await onSubmit(payload);
+	} catch (error) {
+		setError("remark", {
+			type: "validate",
+			message: error instanceof Error ? error.message : "知识库配置格式不正确",
+		});
+	}
   }
 
   return (
@@ -285,6 +365,26 @@ function KnowledgeBaseFormDialogBody({
           onSubmit={handleSubmit(onFormSubmit)}
           className="space-y-4"
         >
+		  <Field data-invalid={!!errors.intentProfileId}>
+			<FieldLabel htmlFor="kb-intent-profile">行业 Profile</FieldLabel>
+			<FieldContent>
+			  <Controller
+				control={control}
+				name="intentProfileId"
+				render={({ field }) => (
+				  <OptionCombobox
+					value={field.value}
+					options={intentProfileOptions}
+					placeholder="选择该知识库所属行业"
+					searchPlaceholder="搜索行业 Profile"
+					emptyText="暂无可用行业 Profile"
+					onChange={field.onChange}
+				  />
+				)}
+			  />
+			  <FieldError errors={[errors.intentProfileId]} />
+			</FieldContent>
+		  </Field>
           <Field data-invalid={!!errors.knowledgeType}>
             <FieldLabel htmlFor="kb-knowledge-type">{t("knowledge.knowledgeType")}</FieldLabel>
             <FieldContent>
@@ -487,6 +587,19 @@ function KnowledgeBaseFormDialogBody({
               <FieldError errors={[errors.remark]} />
             </FieldContent>
           </Field>
+          {isFastGPTCloudKnowledgeBase ? (
+            <Field>
+              <FieldLabel htmlFor="kb-resource-allowed-hosts">图片可信域名</FieldLabel>
+              <FieldContent>
+                <Textarea
+                  id="kb-resource-allowed-hosts"
+                  placeholder={"每行一个域名，例如 cdn.example.com。只允许这些域名的知识图片被同步到本系统。"}
+                  rows={3}
+                  {...register("resourceAllowedHosts")}
+                />
+              </FieldContent>
+            </Field>
+          ) : null}
         </form>
       )}
     </ProjectDialog>

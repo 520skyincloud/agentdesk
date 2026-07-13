@@ -570,11 +570,6 @@ func buildRealtimeManualAttention(route *models.ConversationRouteState, manualEx
 		ret.Level = "serving"
 		ret.Label = "人工处理中"
 		ret.ExpiresAt = manualExpireAt
-	case enums.ConversationRouteStatusAIServing, enums.ConversationRouteStatusAIFallback:
-		if strings.Contains(route.HandoffReason, "恢复AI") {
-			ret.Level = "timeout_restored"
-			ret.Label = "已恢复AI接待"
-		}
 	}
 	return ret
 }

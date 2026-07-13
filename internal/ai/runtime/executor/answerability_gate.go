@@ -16,6 +16,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
+	"agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
@@ -314,7 +315,42 @@ func appendUniqueRuntimeRetrieveResults(dst []rag.RetrieveResult, src []rag.Retr
 }
 
 func runtimeRetrieveResultKey(item rag.RetrieveResult) string {
-	return fmt.Sprintf("%d:%d:%d:%d:%s", item.KnowledgeBaseID, item.DocumentID, item.ChunkID, item.FaqID, strings.TrimSpace(item.Content))
+	return fmt.Sprintf("%d:%d:%d:%d:%s:%s", item.KnowledgeBaseID, item.DocumentID, item.ChunkID, item.FaqID, strings.TrimSpace(item.SourceRecordID), strings.TrimSpace(item.Content))
+}
+
+func resolveRuntimeKnowledgeResources(req RunInput, result *retrievers.KnowledgeRetrieveResult) []callbacks.KnowledgeResourceTraceData {
+	if result == nil || len(result.ContextResults) == 0 {
+		return nil
+	}
+	scope := resolveRuntimeIntentScope(req)
+	if scope.WxWorkInstanceID <= 0 || scope.IntentProfileID <= 0 {
+		return nil
+	}
+	sources := make([]services.KnowledgeResourceSourceRef, 0, len(result.ContextResults))
+	for _, item := range result.ContextResults {
+		if item.KnowledgeBaseID <= 0 || strings.TrimSpace(item.SourceRecordID) == "" {
+			continue
+		}
+		sources = append(sources, services.KnowledgeResourceSourceRef{
+			KnowledgeBaseID: item.KnowledgeBaseID,
+			SourceRecordID:  item.SourceRecordID,
+		})
+	}
+	resources := services.KnowledgeResourceService.ResolveForRuntime(scope.WxWorkInstanceID, scope.CompanyID, scope.IntentProfileID, sources)
+	ret := make([]callbacks.KnowledgeResourceTraceData, 0, len(resources))
+	for _, item := range resources {
+		ret = append(ret, callbacks.KnowledgeResourceTraceData{
+			GroupID:         item.GroupID,
+			ItemID:          item.ItemID,
+			KnowledgeBaseID: item.KnowledgeBaseID,
+			SourceRecordID:  item.SourceRecordID,
+			AssetID:         item.AssetID,
+			Title:           item.Title,
+			Description:     item.Description,
+			SortNo:          item.SortNo,
+		})
+	}
+	return ret
 }
 
 func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, state *answerabilityGateState) (*answerabilityGateState, error) {
@@ -386,6 +422,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	if state.Input.Collector != nil && result != nil {
 		state.Input.Collector.SetRetrieverSummary(result.TraceSummary)
 		state.Input.Collector.AddRetrieverItems(result.TraceItems)
+		state.Input.Collector.SetKnowledgeResources(resolveRuntimeKnowledgeResources(state.Input.Request, result))
 	}
 	if result == nil || len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)

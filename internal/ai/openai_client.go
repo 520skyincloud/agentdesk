@@ -10,13 +10,19 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/repositories"
 )
 
 func newOpenAIClient(config models.AIConfig) openai.Client {
+	timeout := 60 * time.Second
+	if config.TimeoutMS > 0 {
+		timeout = time.Duration(config.TimeoutMS) * time.Millisecond
+	}
 	opts := []option.RequestOption{
 		option.WithAPIKey(config.APIKey),
 		option.WithBaseURL(config.BaseURL),
+		option.WithHTTPClient(usagex.NewHTTPClient(timeout)),
 	}
 	if config.TimeoutMS > 0 {
 		opts = append(opts, option.WithRequestTimeout(time.Duration(config.TimeoutMS)*time.Millisecond))

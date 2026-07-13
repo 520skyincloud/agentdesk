@@ -39,11 +39,12 @@ func newReplyCommitService() *replyCommitService {
 }
 
 func (s *replyCommitService) HasStructuredVariableReply(trace *aiReplyTraceData) bool {
-	return len(structuredVariableResourceTypesFromTrace(trace)) > 0
+	return len(structuredVariableResourceTypesFromTrace(trace)) > 0 || len(knowledgeResourceItemsFromTrace(trace)) > 0
 }
 
 func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Message, error) {
 	structuredReplies := s.buildStructuredVariableReplies(input)
+	structuredReplies = append(structuredReplies, s.buildKnowledgeResourceReplies(input)...)
 	replyText := strings.TrimSpace(input.ReplyText)
 	if replyText == "" && len(structuredReplies) == 0 {
 		return nil, nil
@@ -238,6 +239,43 @@ func (s *replyCommitService) buildStructuredVariableReplies(input replyCommitInp
 	return ret
 }
 
+func (s *replyCommitService) buildKnowledgeResourceReplies(input replyCommitInput) []structuredVariableReply {
+	resources := knowledgeResourceItemsFromTrace(input.Trace)
+	if len(resources) == 0 {
+		return nil
+	}
+	if s.resolveWxWorkInstance(input.Conversation.ID) == nil {
+		appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem("knowledge_image", string(enums.IMMessageTypeImage), 0, "missing", "当前会话未绑定企微员工号")})
+		return nil
+	}
+	ret := make([]structuredVariableReply, 0, len(resources))
+	for _, resource := range resources {
+		asset := svc.AssetService.GetByAssetID(resource.AssetID)
+		if asset == nil || asset.Status != enums.AssetStatusSuccess {
+			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem("knowledge_image", string(enums.IMMessageTypeImage), 0, "missing", "知识图片资产不存在或不可用")})
+			continue
+		}
+		payload, err := svc.BuildIMMessageAssetPayload(asset)
+		if err != nil {
+			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem("knowledge_image", string(enums.IMMessageTypeImage), 0, "missing", err.Error())})
+			continue
+		}
+		content := strings.TrimSpace(resource.Title)
+		if content == "" {
+			content = strings.TrimSpace(asset.Filename)
+		}
+		reply := structuredVariableReply{
+			ResourceType: "knowledge_image",
+			MessageType:  enums.IMMessageTypeImage,
+			Content:      content,
+			Payload:      payload,
+		}
+		appendRuntimeTraceActionLedger(input.Trace, "preparedActions", []map[string]any{buildResourceActionLedgerItem(reply.ResourceType, string(reply.MessageType), 0, "prepared", "")})
+		ret = append(ret, reply)
+	}
+	return ret
+}
+
 func (s *replyCommitService) resolveWxWorkInstance(conversationID int64) *models.WxWorkProtocolInstance {
 	route := svc.ConversationRouteService.GetByConversationID(conversationID)
 	if route == nil || route.WxWorkInstanceID <= 0 {
@@ -252,6 +290,36 @@ func structuredVariableResourceTypeFromTrace(trace *aiReplyTraceData) string {
 		return ""
 	}
 	return resourceTypes[0]
+}
+
+type knowledgeResourceTraceItem struct {
+	AssetID string `json:"assetId"`
+	Title   string `json:"title"`
+	SortNo  int    `json:"sortNo"`
+}
+
+func knowledgeResourceItemsFromTrace(trace *aiReplyTraceData) []knowledgeResourceTraceItem {
+	if trace == nil || len(trace.Runtime) == 0 {
+		return nil
+	}
+	data := struct {
+		KnowledgeResources []knowledgeResourceTraceItem `json:"knowledgeResources"`
+	}{}
+	if err := json.Unmarshal(trace.Runtime, &data); err != nil {
+		return nil
+	}
+	ret := make([]knowledgeResourceTraceItem, 0, len(data.KnowledgeResources))
+	seen := map[string]bool{}
+	for _, item := range data.KnowledgeResources {
+		item.AssetID = strings.TrimSpace(item.AssetID)
+		item.Title = strings.TrimSpace(item.Title)
+		if item.AssetID == "" || seen[item.AssetID] {
+			continue
+		}
+		seen[item.AssetID] = true
+		ret = append(ret, item)
+	}
+	return ret
 }
 
 func structuredVariableResourceTypesFromTrace(trace *aiReplyTraceData) []string {
@@ -329,6 +397,11 @@ func structuredVariableResourceTypeFromAction(action string) string {
 
 func structuredRunLogReplyText(structured structuredVariableReply) string {
 	switch structured.MessageType {
+	case enums.IMMessageTypeImage:
+		if structured.ResourceType == "knowledge_image" {
+			return "[知识图片] " + strings.TrimSpace(structured.Content)
+		}
+		return "[图片] " + strings.TrimSpace(structured.Content)
 	case enums.IMMessageTypeLocation:
 		return "[位置] " + strings.TrimSpace(structured.Content)
 	case enums.IMMessageTypeMiniProgram:
@@ -474,6 +547,8 @@ func actionFromStructuredVariableResourceType(resourceType string) string {
 		return "provide_mini_program"
 	case "phone":
 		return "provide_phone"
+	case "knowledge_image":
+		return "send_knowledge_image"
 	default:
 		return strings.TrimSpace(resourceType)
 	}
