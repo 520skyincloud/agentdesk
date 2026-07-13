@@ -134,9 +134,28 @@ export default function ConversationsPage() {
       ),
     [instances],
   );
-  const accountCustomerCount = selectedInstance ? Number(selectedInstance.customerCount || 0) : aggregateAccountStats.customerCount;
-  const manualAttentionCount = selectedInstance ? Number(selectedInstance.manualAttentionCount || 0) : aggregateAccountStats.manualAttentionCount;
-  const urgentManualAttentionCount = selectedInstance ? Number(selectedInstance.urgentManualAttentionCount || 0) : aggregateAccountStats.urgentManualAttentionCount;
+  const myAttentionStats = useMemo(
+    () => ({
+      customerCount: conversations.length,
+      manualAttentionCount: conversations.filter((item) => item.manualAttention?.dot).length,
+      urgentManualAttentionCount: conversations.filter(
+        (item) => item.manualAttention?.level === "urgent",
+      ).length,
+    }),
+    [conversations],
+  );
+  const visibleAccountStats = showingMyAttention
+    ? myAttentionStats
+    : selectedInstance
+      ? {
+          customerCount: Number(selectedInstance.customerCount || 0),
+          manualAttentionCount: Number(selectedInstance.manualAttentionCount || 0),
+          urgentManualAttentionCount: Number(selectedInstance.urgentManualAttentionCount || 0),
+        }
+      : aggregateAccountStats;
+  const accountCustomerCount = visibleAccountStats.customerCount;
+  const manualAttentionCount = visibleAccountStats.manualAttentionCount;
+  const urgentManualAttentionCount = visibleAccountStats.urgentManualAttentionCount;
   const filteredInstances = useMemo(() => {
     const keyword = accountKeyword.trim().toLowerCase();
     if (!keyword) {
@@ -273,6 +292,21 @@ export default function ConversationsPage() {
     void loadWxWorkInstances();
   }, []);
 
+  useEffect(() => {
+    if (selectedWxWorkInstanceId !== null || !conversation?.wxWorkInstanceId) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const sourceButtons = document.querySelectorAll<HTMLButtonElement>(
+        `[data-wxwork-instance-id="${conversation.wxWorkInstanceId}"]`,
+      );
+      Array.from(sourceButtons)
+        .find((button) => button.offsetParent !== null)
+        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [conversation?.id, conversation?.wxWorkInstanceId, instances.length, selectedWxWorkInstanceId]);
+
   async function handleConversationChanged(conversationId: number) {
     await loadConversations();
     await loadMessages(conversationId, {
@@ -365,10 +399,10 @@ export default function ConversationsPage() {
         <div className="min-h-0 flex-1 overflow-y-auto p-3.5">
           <button
             type="button"
-            className={`mb-2 flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-sm transition ${
+            className={`sticky top-0 z-10 mb-2 flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-sm transition ${
               selectedWxWorkInstanceId === null
                 ? "bg-primary/10 text-primary ring-1 ring-inset ring-primary/15"
-                : "text-foreground hover:bg-muted"
+                : "bg-background text-foreground hover:bg-muted"
             }`}
             onClick={() => {
               selectWxWorkAccount(null);
@@ -380,19 +414,26 @@ export default function ConversationsPage() {
             </span>
             <span className="rounded-full bg-background px-1.5 text-[11px] text-muted-foreground shadow-sm">{aggregateAccountStats.customerCount}</span>
           </button>
-          {filteredInstances.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-            className={`group mb-2 w-full rounded-xl px-2.5 py-2 text-left text-sm transition ${
-                selectedWxWorkInstanceId === item.id
-                  ? "bg-primary/10 text-primary ring-1 ring-inset ring-primary/15"
-                  : "text-foreground hover:bg-muted"
-              }`}
-              onClick={() => {
-                selectWxWorkAccount(item.id);
-              }}
-            >
+          {filteredInstances.map((item) => {
+            const isAccountFilter = selectedWxWorkInstanceId === item.id;
+            const isCurrentConversationSource = conversation?.wxWorkInstanceId === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                data-wxwork-instance-id={item.id}
+                aria-current={isCurrentConversationSource ? "true" : undefined}
+                className={`group mb-2 w-full rounded-xl px-2.5 py-2 text-left text-sm transition ${
+                  isAccountFilter
+                    ? "bg-primary/10 text-primary ring-1 ring-inset ring-primary/15"
+                    : selectedWxWorkInstanceId === null && isCurrentConversationSource
+                      ? "bg-primary/5 text-primary ring-2 ring-inset ring-primary/35"
+                      : "text-foreground hover:bg-muted"
+                }`}
+                onClick={() => {
+                  selectWxWorkAccount(item.id);
+                }}
+              >
               <div className="flex items-center gap-2">
                 <Avatar className="relative size-9 shrink-0 rounded-lg">
                   <AvatarImage src={item.employeeAvatar || ""} />
@@ -432,8 +473,9 @@ export default function ConversationsPage() {
                   {item.fallbackToHQ === false ? "门店处理" : "总部兜底"}
                 </Badge>
               </div>
-            </button>
-          ))}
+              </button>
+            );
+          })}
           {filteredInstances.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border bg-muted/40 px-3 py-6 text-center text-xs text-muted-foreground">
               没有匹配的员工号
@@ -902,7 +944,6 @@ export default function ConversationsPage() {
                   size="sm"
                   className="h-8 rounded-lg"
                   onClick={() => {
-                    setSelectedWxWorkInstanceId(handoffConversation.wxWorkInstanceId || null);
                     void selectConversation(handoffConversation.id);
                   }}
                 >
