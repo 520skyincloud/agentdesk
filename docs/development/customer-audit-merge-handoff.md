@@ -3155,3 +3155,35 @@ git diff --check
 - AI 分支修改同一 `models.go`、Company service 和测试基础，且其模型仍缺本分支多项 TenantID。合并必须以本分支租户模型/索引和 service 条件为基线，逐字段叠加 AI 的 `IntentProfileID` 等变化；合并后重跑两个数据库的索引验证和 Company 页面/API 双租户用例。
 - 本批 DDL 由 AutoMigrate 和启动兼容器完成，不参与 migration 编号排序。兼容器必须位于 AutoMigrate 之后、DML runner 之前，调整顺序会造成新索引尚未建立就删除旧保护。
 - 代码可以回滚，数据库索引不能在已有跨租户同值后恢复为全局唯一。安全回滚保留组合索引，仅暂时恢复旧业务限制；任何删除合法数据以重建旧索引的方案都必须另行审批，不能作为自动 rollback。
+
+## 第 60 批：migration 命令退出码与配置入口（2026-07-15）
+
+### 问题与实现
+
+- MySQL 第 59 批首次演练时索引校验按预期失败，但 `cmd/migration` 只 `slog.Error` 后 return，Docker/CI 看到的退出码仍为 0。这会破坏“迁移失败必须阻断发布”的验收前提。
+- `main` 现在调用可测试的 `run(os.Args[1:])`；任意错误统一记录并 `os.Exit(1)`，成功返回 0。`run` 使用 `flag.NewFlagSet` 接收 `-config`，分阶段包装 load config、init DB、access connection、run migrations 错误并关闭连接池。
+- Makefile 的 migration target 使用已有 `CONFIG ?= config/config.yaml`，执行 `go run ./cmd/migration --config "$(CONFIG)"`，不再要求通过切换工作目录选择配置。
+
+### 文件与验证
+
+```text
+cmd/migration/main.go
+cmd/migration/main_test.go
+Makefile
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test ./cmd/migration -count=1
+go test ./... -count=1 -p 1
+go vet ./...
+cd web && rg --files -g '*.test.mjs' | sort | xargs node --test
+cd web && pnpm typecheck
+cd web && pnpm build
+git diff --check
+```
+
+- 失败子进程使用缺少组合唯一索引且含两条同租户重名 Company 的 SQLite，确认退出非零并且数据仍为两条；成功子进程使用显式 config 完成全量迁移，确认退出 0 且存在成功 migration 记录。
+- 没有 model、AutoMigrate 契约、DML migration 版本、DTO、enum、API、路由、WebSocket、权限、页面或 AI runtime 变化。
+- `origin/codex/ai-billing@f2d2da4` 不修改 `cmd/migration` 或 Makefile，无同文件冲突、不需要 migration 编号协调。可独立回滚；回滚不会修改数据库，但会重新让失败命令返回 0，因此不建议回滚。

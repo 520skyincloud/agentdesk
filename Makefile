@@ -126,7 +126,7 @@ enums:
 	@$(GO) run ./cmd/enums/generator.go
 
 migration:
-	@$(GO) run ./cmd/migration
+	@$(GO) run ./cmd/migration --config "$(CONFIG)"
 
 testdata:
 	@$(GO) run ./cmd/testdata

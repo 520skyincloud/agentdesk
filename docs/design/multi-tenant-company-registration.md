@@ -2010,3 +2010,13 @@ git diff --check
 - 聚焦 race、全仓串行 Go、`go vet ./...`、127 项前端契约、TypeScript、Next 生产构建和 diff 检查通过。没有 DTO、enum、API、Gin 路由、WebSocket、权限、页面或 AI/计费语义变化。
 - `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/models/models.go` 和 Company service，最终必须手工保留本分支 TenantID、三个组合索引、租户内重复校验及 AI 分支 Company `IntentProfileID` 等字段，不能整文件选边。
 - 一旦不同租户已经使用相同值，旧全局唯一索引无法恢复。代码回滚必须保留三个组合索引；强行恢复旧索引会失败或要求删除合法租户数据。启动兼容代码可在确认所有环境旧索引均退役后另批移除，不能随业务代码回滚自动反向建索引。
+
+## 60. 当前实施检查点：独立迁移命令失败语义（2026-07-15）
+
+MySQL 索引演练发现 `cmd/migration` 在配置、连接或迁移失败时只记录日志并从 `main` 返回，操作系统退出码仍为 0；部署脚本因此可能把失败当作成功。本检查点只修复命令生命周期，不改变任何迁移内容或顺序。
+
+- migration 命令新增与 server 一致的 `-config` 参数，默认仍为 `config/config.yaml`；`make migration CONFIG=/path/config.yaml` 会把指定路径传给命令。
+- 配置加载、数据库初始化、连接获取和 `InitMigrations` 任一步失败都会包装阶段信息并由 `main` 执行 `os.Exit(1)`；完整成功才记录 `migrations completed` 并返回 0。
+- 命令在退出前关闭连接池。该关闭只影响独立进程，不改变 server 启动时持有的数据库生命周期。
+- 子进程测试制造同租户重复 Company 数据，证明 AutoMigrate 失败时进程返回非零且原数据不变；另一子进程通过显式 config 对新 SQLite 完整迁移，证明成功退出 0 且 migration 成功记录存在。
+- 本批只修改 `cmd/migration`、Makefile、测试和文档；没有 model、DDL/DML migration、DTO、enum、API、权限、前端或 AI/计费变化。AI 分支没有同文件修改，可独立合并和回滚。
