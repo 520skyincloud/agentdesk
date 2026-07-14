@@ -818,6 +818,16 @@ POST /api/auth/register
 - `ConversationService.Create*` 不再允许缺失、停用或 `TenantID=0` 的渠道创建无归属客户。小程序无 Channel 的旧独立 Agent 兜底会收到明确错误，必须先配置真实接入渠道；本批没有修改 AI Agent 选择、回复引擎或模型调用。
 - Store、WxWorkProtocolInstance、Conversation、Message、Ticket 本体尚未增加 TenantID。门店关系已继承 Customer tenant，但门店/企微展示对象和工单关联仍需在父域租户化后继续校验。
 
+第六批实现状态（2026-07-14）：
+
+- `Store`、`StoreStaffBinding` 和 `WxWorkProtocolInstance` 增加 `TenantID`，先建立门店来源域的共享归属契约；本批不改变企微协议字段、模型调用或回复运行时。
+- migration 44 以显式 Tenant、客户企业 Company、接入 Channel、后台 User、客服组 AgentTeam、Customer/StoreCustomerRelation 等已有归属作为交叉证据。所有非零证据必须指向同一 Tenant，不能用来源优先级覆盖冲突。
+- 门店先汇总门店员工绑定、企微实例和客户门店关系的归属证据，再回填门店员工绑定，最后回填企微实例；缺失 Store/Company/Channel/User/AgentTeam/Customer 等父对象时整笔事务回滚。
+- 没有任何来源证据的历史门店、绑定或未绑定企微实例才归入 `legacy-default`；已有显式 Tenant 必须真实存在，重复执行不改变已确认归属。
+- DDL 继续由 AutoMigrate 增加 `bigint not null default 0` 索引字段。migration 44 不新增 DTO、enum、接口、权限或 WebSocket 字段。
+- 本批只是 Store/WxWork 的字段和历史回填契约，尚未完成后台 Handler/service/repository、协议回调、设备池、门店知识库和企微运行时的租户强制条件。公开注册仍必须关闭。
+- `codex/ai-billing` 同时修改 WxWork 实例模型、repository、handler 和 service。本批有意不触碰后三类运行时代码；合并时必须先保留三处 `TenantID`，再让双方基于共同归属字段继续各自运行时隔离和 AI 能力。
+
 ### 阶段 5：业务服务强制隔离
 
 - 用户、角色分配和客服组织。

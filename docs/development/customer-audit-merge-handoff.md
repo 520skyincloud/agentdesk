@@ -960,3 +960,51 @@ go test -p 1 ./... -count=1
 - `internal/services/customer_service.go`、Customer/Contact handlers/repositories、migration 43 当前不与 AI 分支同文件冲突，适合先独立合并；随后 AI 分支 rebase，解决 models/企微 service/测试夹具冲突并补 `WxWorkCustomerHandoffSetting.TenantID`。
 - 本步骤没有改变 AI 回复触发、模型供应商、FastGPT、token、计费或向量语义。`wxwork_protocol_service.go` 仅在联系人资料回写前验证实例 Channel 与 Customer tenant，并为最终 Customer 更新增加 tenant 条件。
 - 回滚运行时代码时保留新增列、migration 43 记录和已回填 TenantID；不得清零客户归属。若临时回滚严格 Channel 校验，也不得重新开放公开注册或允许跨租户后台客户访问。
+
+## 26. 多租户阶段 4F：门店与企微员工号归属契约（2026-07-14）
+
+### 本步骤目标与结果
+
+- 为 `Store`、`StoreStaffBinding`、`WxWorkProtocolInstance` 增加 `TenantID`，使门店、门店账号绑定和企微员工号实例具备可由后续后台、回调、会话与派单链路共同使用的租户根。
+- 本步骤按共享契约单独提交，不修改企微实例 service/handler/repository、AI runtime、模型供应商、token、计费或向量检索语义，降低与 `codex/ai-billing` 当前企微重构的同文件冲突。
+- 没有增加前端可提交的 tenant 字段，也没有改变企微协议请求/响应字段；公开注册和灰度多租户入口继续保持关闭。
+
+### Migration、契约与主要文件
+
+- migration 44 的 Store 归属会同时汇总：Store 自身显式 Tenant/Company，StoreStaffBinding 的显式 Tenant/User/AgentTeam/Company，WxWorkProtocolInstance 的显式 Tenant/Channel/AgentTeam/Company，以及 StoreCustomerRelation 对应 Customer tenant。
+- Store 回填完成后，StoreStaffBinding 必须与 Store/User/AgentTeam/Company 同租户；WxWorkProtocolInstance 必须与 Channel/Store/StoreStaffBinding/AgentTeam/Company 同租户。
+- 任一非零父 ID 缺失、父对象尚无 tenant、显式 tenant 不存在或多条证据跨租户时，migration 整笔回滚；只有完全没有归属证据的历史行才进入 `legacy-default`。重复执行幂等。
+- DDL 由 AutoMigrate 增加三个 `bigint not null default 0 index` 字段，兼容 SQLite/MySQL；migration 44 只做 DML 回填。
+
+```text
+internal/models/models.go
+internal/migration/000044_backfill_store_wxwork_tenants.go
+internal/migration/000044_backfill_store_wxwork_tenants_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+### 验证与边界
+
+```text
+go test ./internal/migration -run 'TestBackfillStoreAndWxWorkTenants' -count=1
+go test -race ./internal/migration -run 'TestBackfillStoreAndWxWorkTenants' -count=1
+go test ./internal/migration -count=1
+go vet ./...
+go test ./... -run '^$' -count=1
+go test -p 1 ./... -count=1
+git diff --check
+```
+
+- migration 测试覆盖 Company、Channel、User、AgentTeam、CustomerRelation 来源、显式值、legacy 兜底、重复执行、跨租户冲突、孤儿 Store 引用和无效显式 Tenant，并验证失败时前序更新一并回滚。
+- 聚焦测试、migration 全包、race、`go vet ./...` 和全仓编译通过。完整 `go test -p 1 ./... -count=1` 再次触发既有异步 AI 测试清理竞态：测试关闭全局 DB 后，`TriggerReplyAsync` 后台协程在 `BuildRuntimeAIAgentForConversation` 读取 `ConversationRouteState` 时因 nil DB panic；本步骤未修改该运行时或消息触发链路，不能把完整串行回归记录为通过。
+- 本步骤不等于 Store/WxWork 运行时隔离完成。后台列表/详情/写操作仍需按 `ActiveTenantID` 收紧；协议回调应先按全局稳定 GUID 找实例，再以实例 Tenant 校验后续资源，不能要求第三方回调携带浏览器租户头。
+- `WxWorkProtocolDevicePoolInstance`、`StoreAIModelSetting`、KnowledgeBase、Conversation/Message/派单、回调、Outbox、WebSocket、文件和向量仍需后续独立租户批次与双租户测试。
+- StoreCode、WxWork GUID 等历史全局唯一索引本步骤不调整；组合唯一范围要在运行时隔离完成后单独审计历史重复与 SQLite/MySQL 索引迁移。
+
+### 并行分支、合并顺序与回滚
+
+- 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 的 migration 最高为 33，migration 44 当前未冲突。
+- 同文件冲突限定在 `internal/models/models.go`。AI 分支为 Store/WxWork 增加欢迎内容、行业意图等字段，本步骤只增加三处 `TenantID`；合并必须逐字段保留，不能整段选边。
+- AI 分支还修改 `wx_work_protocol_instance_repository.go`、instance handler/service；本步骤有意不修改这些文件。建议先合并 Tenant/AuthPrincipal、Company/Channel、Customer 和本步骤 Store/WxWork 字段契约，再由 AI 分支 rebase，并在其新建/更新实例及门店流程中写入和校验 TenantID。
+- 客服分支后续再基于共同模型契约补后台管理、客服组范围、会话/派单和非 HTTP 链路隔离。回滚运行时代码时不得删除新增列、migration 44 记录或清空已回填归属。

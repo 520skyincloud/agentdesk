@@ -468,6 +468,7 @@ type Conversation struct {
 // Store 表示酒店门店，企微员工号实例与门店知识库都挂在门店上。
 type Store struct {
 	ID              int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID        int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreCode       string       `gorm:"type:varchar(64);not null;default:'';uniqueIndex"`
 	Name            string       `gorm:"type:varchar(120);not null;default:'';index"`
 	BrandName       string       `gorm:"type:varchar(120);not null;default:'';index"`
@@ -481,6 +482,7 @@ type Store struct {
 // StoreStaffBinding 表示门店员工登录 AgentDesk 后和公司/门店的唯一绑定。
 type StoreStaffBinding struct {
 	ID                      int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID                int64        `gorm:"type:bigint;not null;default:0;index"`
 	UserID                  int64        `gorm:"type:bigint;not null;default:0;index"`
 	AgentTeamID             int64        `gorm:"type:bigint;not null;default:0;index"` // AgentTeamID 为门店员工所属客服组，0 表示暂未分配。
 	CompanyID               int64        `gorm:"type:bigint;not null;default:0;index"`
@@ -500,6 +502,7 @@ type StoreStaffBinding struct {
 // WxWorkProtocolInstance 记录一个门店企微员工号实例及其唯一门店/知识库绑定。
 type WxWorkProtocolInstance struct {
 	ID                             int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID                       int64        `gorm:"type:bigint;not null;default:0;index"`
 	AgentTeamID                    int64        `gorm:"type:bigint;not null;default:0;index"` // AgentTeamID 同步自门店员工绑定，供派单运行时快速查询。
 	Guid                           string       `gorm:"type:varchar(128);not null;default:'';uniqueIndex"`
 	ChannelID                      int64        `gorm:"type:bigint;not null;default:0;index"`
