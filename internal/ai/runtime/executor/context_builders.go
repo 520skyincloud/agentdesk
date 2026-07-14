@@ -50,6 +50,9 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 	if strings.TrimSpace(plan.Prompt) != "" {
 		messages = append(messages, schema.SystemMessage(plan.Prompt))
 	}
+	if instruction := buildMultiReplyOutputInstruction(plan.ReplyPlan); strings.TrimSpace(instruction) != "" {
+		messages = append(messages, schema.SystemMessage(instruction))
+	}
 	if instruction := buildAutoHandoffDisabledInstruction(req, plan.Intent); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}

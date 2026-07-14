@@ -282,6 +282,37 @@ func TestSplitReplyTextForCommitKeepsSingleTaskReplyTogether(t *testing.T) {
 	}
 }
 
+func TestTextCommitTaskIDsFromTraceCapsAtThree(t *testing.T) {
+	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
+		"pipeline":{"replyPlan":{"taskPlans":[
+			{"intent":"hotel_info","output":"knowledge_text_reply"},
+			{"intent":"hotel_variable","output":"structured_resource_commit"},
+			{"intent":"hotel_info","output":"knowledge_text_reply"},
+			{"intent":"interaction","output":"text_reply"},
+			{"intent":"hotel_info","output":"knowledge_text_reply"}
+		]}}
+	}`)}
+	ids := textCommitTaskIDsFromTrace(trace)
+	if len(ids) != 3 || ids[0] != "task-1" || ids[2] != "task-3" {
+		t.Fatalf("expected three ordered text task ids, got %#v", ids)
+	}
+}
+
+func TestSplitReplyTextForCommitCapsMessagesAtThree(t *testing.T) {
+	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
+		"pipeline":{"replyPlan":{"taskPlans":[
+			{"intent":"hotel_info","output":"knowledge_text_reply"},
+			{"intent":"hotel_info","output":"knowledge_text_reply"},
+			{"intent":"hotel_info","output":"knowledge_text_reply"},
+			{"intent":"hotel_info","output":"knowledge_text_reply"}
+		]}}
+	}`)}
+	parts := splitReplyTextForCommit(trace, "一\n<<NEXT_MESSAGE>>\n二\n<<NEXT_MESSAGE>>\n三\n<<NEXT_MESSAGE>>\n四")
+	if len(parts) != 3 || parts[2] != "三\n\n四" {
+		t.Fatalf("expected extra replies to merge into third message, got %#v", parts)
+	}
+}
+
 func TestExtractInterruptMessageAndCheckpointError(t *testing.T) {
 	if got := extractInterruptMessage(`{"message":"请补充订单号"}`); got != "请补充订单号" {
 		t.Fatalf("unexpected interrupt message: %q", got)
