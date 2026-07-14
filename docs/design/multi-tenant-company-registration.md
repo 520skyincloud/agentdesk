@@ -1755,3 +1755,28 @@ git diff --check
 - 客户企业页、知识库页、回复意图页和企微员工号 Manager 仍有动作显隐/辅助接口加载需要统一收口；这些文件均被 `codex/ai-billing` 修改。公司详情还复用了同一个企微 Manager，不能只隐藏外层开户链接按钮就宣称完成。
 - 上述四个域必须在 AI 分支合并并确认最终 handler 权限后整页处理，尤其保留 FastGPT、意图行业、员工号欢迎语/模型设置和本分支租户范围；合并前不做局部补丁，避免同一页面形成两套权限判断。
 - 门店工作台继续是静态设计占位，不创建假接口或假按钮权限。其真实数据源、门店范围、通知动作和权限点确定前不纳入可运行功能验收。
+
+## 48. 当前实施检查点：Dashboard Handler 权限契约测试（2026-07-15）
+
+本检查点把第 47 批后的函数级权限复扫固化为 Go AST 测试，避免后续新增 dashboard handler 时只依赖人工记忆。它不新增业务权限，也不改变已有权限语义。
+
+### 测试契约
+
+- 测试解析 `internal/handlers/dashboard/*_handler.go`，识别所有导出的、接收 `*gin.Context` 的 handler。
+- 每个 handler 必须直接调用 `AuthService.RequirePermission/HasPermission`，或通过本包函数调用链最终进入上述检查；因此 AIConfig/Skill 平台写 helper、工单进展 helper 和企微统一动作 helper 都能按真实委托关系验证。
+- 唯一认证级例外是 `UserPostChange_password`：修改当前登录账号自己的密码不是可由角色收回的业务管理权限。测试要求该入口仍显式调用 `Authenticate`，而重置其他账号密码继续由 `user.update` 控制。
+- 测试不把函数名或 HTTP Method 当作权限事实，也不把“文件中某处出现过权限检查”等同于每个 handler 已鉴权。
+
+### 审计结论与边界
+
+- Skill 调试继续按既有权威设计使用 `skillDefinition.view`：租户只查看平台共享 Skill，并且 service 强制校验本公司 AIAgent、Conversation 和 Checkpoint；Skill 定义写入仍是 platform scope。
+- 会话已读、工单个人视图保存/删除、企微登录状态/群资料读取及公司模型设置读取虽使用 POST，但属于读取状态或当前账号偏好，不新增平行动作权限。
+- 知识库调试回答会触发模型并写检索日志，目前使用 `knowledgeDocument.view`。其租户知识库 ID 和检索向量已 fail-closed，但“查看是否应包含付费调试调用”必须结合 AI/计费分支最终用量口径决定；本分支不单方面新增权限或改变模型调用。
+- AST 契约只证明 handler 最终进入了权限检查，不证明某个动作选择的权限一定正确；动作语义仍需后端测试、前端显隐和角色职责三方核对。
+
+### 变更、验证与合并
+
+- 仅新增 `internal/handlers/dashboard/permission_contract_test.go` 和两份交接记录；没有生产 Go、权限常量、model、AutoMigrate、DML migration、DTO、enum、API、路由、WebSocket、前端或 AI runtime 变化。
+- `go test ./... -count=1`、`go vet ./...` 和 `git diff --check` 通过；定向测试同时覆盖权限调用图、总览、Skill 和 AIConfig 现有边界。
+- `origin/codex/ai-billing@f2d2da4` 不修改本批新增测试或两份交接文档，无同文件和 migration 冲突；合并 AI 分支后必须立即重跑该测试，新增 handler 若无权限契约会直接失败。
+- 本批可通过删除测试文件和本节文档独立回滚，无业务数据与运行行为回滚。

@@ -2560,3 +2560,42 @@ git diff --check
 - `rg` 复扫 dashboard handler 后，未再发现整个资源文件完全不含 `RequirePermission`、统一 permission helper 或 `HasPermission` 的后台入口；后续仍按函数和动作逐项核对，不能把文件级扫描当作最终安全证明。
 - 当前明确待合并后处理的前端域为：`web/app/dashboard/companies`、`web/app/dashboard/knowledge`、`web/app/dashboard/reply-intent-configs`、`web/components/wxwork-protocol/wxwork-protocol-instance-manager.tsx` 及复用该 Manager 的公司详情。AI 分支正在修改这些页面/API/handler，禁止合并前整文件覆盖。
 - 合并后的检查顺序：先确认最终后端动作权限，再处理主 CRUD 显隐和动作函数守卫，然后处理 Company/Channel/Knowledge/AIConfig 等辅助列表的按权限加载，最后跑双租户浏览器验收。门店工作台继续保持静态占位，不构造假运行链路。
+
+## 第 48 批：Dashboard Handler 权限契约测试（2026-07-15）
+
+### 目标与实现
+
+- 人工 `rg` 文件级扫描只能证明某个文件出现过权限代码，不能证明同文件每个导出 handler 都鉴权。本批新增 Go AST 测试，逐函数建立本包调用图并递归追踪 `RequirePermission/HasPermission`。
+- 直接校验和统一 helper 委托均被识别：AIConfig/Skill 平台写、工单进展和企微协议统一动作无需复制权限代码，也不会被误报。
+- `UserPostChange_password` 是唯一 allowlist：它只能修改当前 principal 的密码，属于认证级自服务；测试同时要求该函数调用 `Authenticate`。管理员重置他人密码不在 allowlist，继续要求 `user.update`。
+
+### 文件与契约
+
+```text
+internal/handlers/dashboard/permission_contract_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 没有生产代码、权限常量、默认角色、model、AutoMigrate、DML migration、DTO、enum、API、路由、WebSocket payload、前端或统一响应变化。
+- 测试负责发现“新增 handler 完全没有权限契约”，不替代动作权限选择审计。知识库调试回答当前会调用模型并写检索日志但复用 `knowledgeDocument.view`；该计费/调试边界留给 AI 分支合并后的最终权限审计，不在本分支改变模型或用量语义。
+- Skill 调试经代码和阶段 37 设计复核，继续允许持有 `skillDefinition.view` 的租户账号在本公司 Agent/Conversation/Checkpoint 范围内运行，不新增重复 call 权限。
+
+### 验证结果
+
+```text
+go test ./internal/handlers/dashboard -run TestDashboardHandlersHaveExplicitPermissionContract -count=1
+go test ./internal/handlers/dashboard -run 'Test(DashboardHandlersHaveExplicitPermissionContract|DashboardOverviewRequires|SkillDefinitionWritesReject|AIConfigWritesReject)' -count=1
+go test ./... -count=1
+go vet ./...
+git diff --check
+```
+
+- 全量 Go 和 vet 通过；权限契约测试成功追踪当前所有导出 dashboard handler。
+- 没有前端文件变化，因此不重复声明新的前端构建证据；前端 96 项回归与生产构建仍以第 47 批结果为最近证据。
+
+### 并行分支与回滚
+
+- 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 未修改新增测试或两份交接文档；无 migration、共享 DTO 或运行时同文件冲突。
+- AI 分支合并后必须先运行本测试，再开展 knowledge/company/wxwork/reply-intent 页面动作显隐审计。若新增 handler 失败，先确认是缺失权限还是有意的认证级自服务，禁止为通过测试随意扩充 allowlist。
+- 删除新增测试和本节文档即可回滚，不需要数据或配置回滚。
