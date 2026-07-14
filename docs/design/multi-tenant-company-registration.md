@@ -2092,3 +2092,14 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 聚焦 race 测试覆盖公司主管给本租户客服分配低级角色、拒绝同级公司主管和平台角色、拒绝跨租户账号、租户账号误持平台权限仍不能写全局角色、平台管理员不能管理同级/更高账号；前端权限契约测试确认账号页不直接分配权限。全部通过。
 - 本批只更新两份文档，无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端运行代码、AI 回复、模型调用、token、usage 或计费变化。`origin/codex/ai-billing@f2d2da4` 无同文件运行代码冲突，不要求 rebase、migration 排序或特殊合并顺序。
 - 可独立回滚本节文档，不影响运行时；不得把本结论误读为允许公司主管修改角色模板。未来新增角色仍必须由平台管理员在角色管理中建立并经权限管理分配权限，公司主管只把可分配角色赋给本公司低级账号。
+
+## 66. 当前实施检查点：客服小组自动派单成员租户收口（2026-07-15）
+
+客服小组创建、编辑和拖拽成员已校验综合客服组、客服档案与小组 TenantID，但自动派单使用的 `ActiveMemberProfileSet` 原先只按 squad/profile ID 读取。正常数据不会跨公司，历史脏关系却可能被当作当前排班小组成员，运行时边界不应只依赖事后完整性审计。
+
+- 自动派单把会话 TenantID 传入小组成员筛选；启用小组和启用成员关系都必须同时命中该 TenantID。租户不合法、外租户小组或外租户成员关系均返回空成员集合，使派单保持待处理而不是扩大候选池。
+- `filterProfilesByActiveSquads` 继续以已按租户筛出的客服档案和当前排班为入口，只补充同一租户参数；`squadId=0` 的整组排班兼容语义不变，指定小组仍只允许该小组成员进入候选池。
+- 小组负责人档案查询在 SQL 条件中增加综合客服组 TenantID，再保留原有 TeamID/TenantID 二次校验。页面、拖拽和编辑接口不变，一个客服仍可同时加入同一综合客服组内多个小组。
+- 回归测试直接向 tenant 101 小组插入 tenant 202 的启用成员关系；修复后该关系不能让 tenant 101 客服进入候选池，报告为 `no_matched_profile`。整组排班、正常指定小组、空小组和停用小组测试继续通过。
+- 聚焦 race、services 全包、全仓 `go test ./... -count=1 -p 1`、`go vet ./...` 和 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、页面、AI 回复、模型调用、token、usage 或计费变化。
+- `origin/codex/ai-billing@f2d2da4` 不修改本批 service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。可独立回滚两个 service、测试与本节文档；回滚会恢复脏跨租户小组成员影响自动派单候选的风险。

@@ -243,7 +243,7 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, te
 		Eq("status", enums.StatusOk).
 		Eq("auto_assign_enabled", true).
 		Eq("service_status", enums.ServiceStatusIdle))
-	profiles = s.filterProfilesByActiveSquads(profiles, activeSchedules)
+	profiles = s.filterProfilesByActiveSquads(profiles, activeSchedules, tenantID)
 	report.MatchedProfiles = len(profiles)
 	if len(profiles) == 0 {
 		report.Reason = "no_matched_profile"
@@ -423,14 +423,14 @@ func (s *conversationDispatchService) findActiveScheduleTeamIDs(teamIDs []int64,
 	return ret
 }
 
-func (s *conversationDispatchService) filterProfilesByActiveSquads(profiles []models.AgentProfile, activeSchedules map[int64]int64) []models.AgentProfile {
+func (s *conversationDispatchService) filterProfilesByActiveSquads(profiles []models.AgentProfile, activeSchedules map[int64]int64, tenantID int64) []models.AgentProfile {
 	squadIDs := make([]int64, 0, len(activeSchedules))
 	for _, squadID := range activeSchedules {
 		if squadID > 0 {
 			squadIDs = append(squadIDs, squadID)
 		}
 	}
-	membersBySquad := AgentTeamSquadService.ActiveMemberProfileSet(squadIDs)
+	membersBySquad := AgentTeamSquadService.ActiveMemberProfileSet(squadIDs, tenantID)
 	ret := make([]models.AgentProfile, 0, len(profiles))
 	for i := range profiles {
 		squadID, scheduled := activeSchedules[profiles[i].TeamID]

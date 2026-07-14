@@ -219,13 +219,13 @@ func (s *agentTeamSquadService) Delete(id int64, operator *dto.AuthPrincipal) er
 	})
 }
 
-func (s *agentTeamSquadService) ActiveMemberProfileSet(squadIDs []int64) map[int64]map[int64]struct{} {
+func (s *agentTeamSquadService) ActiveMemberProfileSet(squadIDs []int64, tenantID int64) map[int64]map[int64]struct{} {
 	squadIDs = uniquePositive(squadIDs)
 	ret := make(map[int64]map[int64]struct{}, len(squadIDs))
-	if len(squadIDs) == 0 {
+	if len(squadIDs) == 0 || tenantID <= 0 {
 		return ret
 	}
-	activeSquads := repositories.AgentTeamSquadRepository.Find(sqls.DB(), sqls.NewCnd().In("id", squadIDs).Eq("status", enums.StatusOk))
+	activeSquads := repositories.AgentTeamSquadRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("id", squadIDs).Eq("status", enums.StatusOk))
 	activeSquadIDs := make([]int64, 0, len(activeSquads))
 	for i := range activeSquads {
 		activeSquadIDs = append(activeSquadIDs, activeSquads[i].ID)
@@ -234,7 +234,7 @@ func (s *agentTeamSquadService) ActiveMemberProfileSet(squadIDs []int64) map[int
 	if len(activeSquadIDs) == 0 {
 		return ret
 	}
-	members := repositories.AgentTeamSquadMemberRepository.Find(sqls.DB(), sqls.NewCnd().In("squad_id", activeSquadIDs).Eq("status", enums.StatusOk))
+	members := repositories.AgentTeamSquadMemberRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("squad_id", activeSquadIDs).Eq("status", enums.StatusOk))
 	for i := range members {
 		ret[members[i].SquadID][members[i].AgentProfileID] = struct{}{}
 	}
@@ -294,7 +294,7 @@ func (s *agentTeamSquadService) validateMemberProfilesDB(db *gorm.DB, teamID, le
 	}
 	memberIDs = uniquePositive(memberIDs)
 	if leaderUserID > 0 {
-		leaderProfile := repositories.AgentProfileRepository.Take(db, "user_id = ? AND status <> ?", leaderUserID, enums.StatusDeleted)
+		leaderProfile := repositories.AgentProfileRepository.Take(db, "tenant_id = ? AND user_id = ? AND status <> ?", team.TenantID, leaderUserID, enums.StatusDeleted)
 		if leaderProfile == nil || leaderProfile.TeamID != teamID || leaderProfile.TenantID != team.TenantID {
 			return nil, errorsx.InvalidParam("小组负责人必须是综合客服组内客服")
 		}

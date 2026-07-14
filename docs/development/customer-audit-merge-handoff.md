@@ -3366,3 +3366,39 @@ git diff --check
 
 - `origin/codex/ai-billing@f2d2da4` 不修改本批两份文档对应的角色运行代码，当前无同文件运行冲突，不要求 rebase 或 migration 排序。最终合并必须保留现有 role/user/registration 权限测试，不能把租户角色误改为租户内可编辑实体。
 - 可独立回滚两份文档中的本批段落，无代码或数据库回滚。后续新增角色/权限时仍须先在权限管理形成显式权限点，由平台管理员配置角色权限；公司主管只负责给本公司账号赋角色。
+
+## 第 66 批：客服小组自动派单成员租户收口（2026-07-15）
+
+### 问题与实现
+
+- 小组配置写入已验证综合客服组、负责人和成员档案同租户，完整性审计也覆盖 Squad/Member/Profile 关系；但自动派单的 `ActiveMemberProfileSet` 原先读取启用小组和成员时没有 TenantID 条件，历史或手工脏关系可能被实时派单接受。
+- `ActiveMemberProfileSet` 新增 tenant 参数，并在启用小组、启用成员两次查询中都增加 `tenant_id = ?`。`filterProfilesByActiveSquads` 从 `pickDispatchCandidates` 的权威会话租户透传该值。
+- 小组负责人档案读取同步在 SQL 中限制综合客服组 TenantID，并继续检查 TeamID/TenantID，避免先全局读取再单靠内存比较。
+- 没有改变客服可加入多个小组、拖拽交互、排班状态机、负载排序、最大并发、整组排班 `squadId=0` 或 Assignment 的 squad 快照语义。
+
+### 文件与验证
+
+```text
+internal/services/agent_team_squad_service.go
+internal/services/conversation_dispatch_service.go
+internal/services/conversation_dispatch_squad_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^TestConversationDispatchCandidates(UseWholeTeamSchedule|FilterScheduledSquad|RejectCrossTenantSquadMembership|DoNotBroadenEmptyScheduledSquad|DoNotUseDisabledScheduledSquad)$' -count=1 -p 1
+go test -race ./internal/services -run '^TestAgentTeamSquad(MembershipAndValidation|DeleteRequiresScheduleCleanup)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 新测试伪造 tenant 202 成员关系指向 tenant 101 的有效小组与客服档案；候选池保持为空。全部聚焦与全量验证通过。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端、模型调用、token、usage 或计费变化。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 相对共同基线不修改本批 service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。最终合并保留 tenant 参数及脏关系回归测试即可。
+- 可独立回滚两个 service、测试和两份文档，无数据库回滚；回滚会重新允许错误 TenantID 的小组成员关系影响自动派单。历史脏数据仍应由只读完整性审计发现并另做幂等修复，运行时不得自动改写关系。

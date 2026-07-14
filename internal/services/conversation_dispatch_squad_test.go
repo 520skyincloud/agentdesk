@@ -50,6 +50,29 @@ func TestConversationDispatchCandidatesFilterScheduledSquad(t *testing.T) {
 	}
 }
 
+func TestConversationDispatchCandidatesRejectCrossTenantSquadMembership(t *testing.T) {
+	db := setupConversationDispatchSquadTestDB(t)
+	createDispatchSquadTeamAndAgents(t, db)
+	squadID := createDispatchSquad(t, db, nil)
+	if err := db.Create(&models.AgentTeamSquadMember{
+		TenantID:       202,
+		SquadID:        squadID,
+		AgentProfileID: 2,
+		Status:         enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create cross-tenant squad member error = %v", err)
+	}
+	createDispatchSquadSchedule(t, db, squadID)
+
+	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, 101, nil, time.Now())
+	if err != nil {
+		t.Fatalf("pickDispatchCandidates() error = %v", err)
+	}
+	if len(candidates) != 0 || report.Reason != "no_matched_profile" {
+		t.Fatalf("cross-tenant membership must not enter dispatch pool, got candidates=%+v report=%+v", candidates, report)
+	}
+}
+
 func TestConversationDispatchCandidatesDoNotBroadenEmptyScheduledSquad(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)
