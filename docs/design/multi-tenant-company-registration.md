@@ -1860,3 +1860,20 @@ git diff --check
 - 标准包级并发 `go test ./... -count=1` 仍会间歇触发既有测试全局 DB/配置互相覆盖，`internal/services` 单包和全仓 `-p 1` 均通过；该风险已在第 50 批记录，本批没有 Go 或测试基建改动，不能把它误记成本批业务回归或虚报标准命令通过。
 - `origin/codex/ai-billing@f2d2da4` 修改同一公司页面，增加意图行业列表、列、表单字段和 `intentProfileId` 提交。最终合并必须同时保留本批全部权限守卫和 AI 分支字段；意图列表只在 `aiConfig.view` 下读取/展示，编辑者无该权限时必须保留既有 `intentProfileId`，禁止以空选项静默清零，创建时才可使用默认 `0`。
 - 本批页面、测试和本节文档可整体回滚，无需数据回滚；回滚会恢复只读角色的误导写入口和跨资源 403。
+
+## 53. 当前实施检查点：回复意图平台写边界（2026-07-15）
+
+`ReplyIntentConfig` 经代码调用链确认仍由当前回复 runtime 的意图匹配和模型检测读取，不是历史页面。其后端接口复用 `aiConfig.view/create/update/delete`，写权限均为 platform scope；本批不新增隐藏权限或重复的意图管理权限。
+
+### 页面与权限
+
+- 持有 `aiConfig.view` 的账号仍可按既有导航和后端范围查看回复意图；查看不隐含新增、编辑、启停或删除。
+- 新增、编辑/启停、删除分别要求平台账号且具备 `aiConfig.create/update/delete`。按钮和操作列按此显隐，实际写函数也重复校验。
+- 租户账号即使因错误角色关系出现平台权限码，也不能在前端获得平台写入口；后端 platform scope 校验继续作为最终边界。
+
+### 验证与并行合并
+
+- 修改 `web/app/dashboard/reply-intent-configs/page.tsx`，新增 `web/app/dashboard/reply-intent-configs/platform-permissions.test.mjs`；没有 model、AutoMigrate、DML migration、DTO、enum、API、路由、WebSocket、权限常量、角色或导航变化。
+- 定向 1 项、全前端 107 项测试、typecheck、目标 ESLint、Next 生产构建、`go vet ./...` 和 `go test ./... -count=1 -p 1` 通过。
+- `origin/codex/ai-billing@f2d2da4` 在同一页面增加意图行业数据、筛选、列、表单字段和 `intentProfileId`。最终页面必须保留这些字段，同时保留本批平台身份与三项写权限守卫；意图行业选项读取继续属于 `aiConfig.view`，不能借由选项加载放宽写能力。
+- 本批可整体回滚且不需要数据回滚；回滚会重新向只读或租户账号展示必然失败的平台写动作。

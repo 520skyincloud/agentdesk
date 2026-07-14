@@ -2769,3 +2769,40 @@ git diff --check
 - 合并后的意图列表请求必须受 `aiConfig.view` 控制；无该权限时不显示依赖选项源的字段。编辑既有公司时必须保留原 `intentProfileId`，不能因选项未加载提交 `0`；新建且无意图访问时可使用默认 `0`。同时保留本批 `company.*`、`channel.view`、`aiConfig.*` 的 UI 与函数守卫。
 - 建议先保留 AI 分支最终 Company 类型、字段和 payload，再重放本批权限层并扩充本测试；随后重跑公司权限测试、typecheck、生产构建和双租户浏览器验收。
 - 本批可按页面、测试和两份文档整体回滚，无数据回滚；回滚会恢复只读账号的写入口、状态菜单和跨资源访问误导。
+
+## 第 53 批：回复意图平台写权限收口（2026-07-15）
+
+### 真实链路与设计判断
+
+- 通过 `rg` 追踪 model、service、handler 和 `internal/ai/runtime/executor` 后确认，`ReplyIntentConfig` 仍参与当前意图匹配、IntentDetect 和 prompt trace，不是旧文档中的废弃配置。
+- 后端 list/detail 使用 `aiConfig.view`，create/update/delete 使用 platform scope 的 `aiConfig.create/update/delete`。因此本批复用现有权限管理，不新增 `replyIntent.*` 平行权限，也不修改回复 runtime 或权限常量。
+- 页面现在要求“平台账号 + 对应动作权限”才能新增、编辑/启停或删除；每个包装函数再次检查同一能力。只读列表、筛选和刷新保持可用，无写能力时隐藏空操作列。
+
+### 文件与验证
+
+```text
+web/app/dashboard/reply-intent-configs/page.tsx
+web/app/dashboard/reply-intent-configs/platform-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+cd web && node --test app/dashboard/reply-intent-configs/platform-permissions.test.mjs
+cd web && rg --files -g '*.test.mjs' | sort | xargs node --test
+cd web && pnpm typecheck
+cd web && pnpm exec eslint app/dashboard/reply-intent-configs/page.tsx app/dashboard/reply-intent-configs/platform-permissions.test.mjs
+cd web && pnpm build
+go vet ./...
+go test ./... -count=1 -p 1
+git diff --check
+```
+
+- 定向 1 项、全前端 107 项、TypeScript、目标 ESLint、生产构建、vet 和串行全仓 Go 通过。
+- 没有 Go 生产代码、model、AutoMigrate、DML migration、request/response DTO、enum、API、Gin 路由、WebSocket、权限常量、默认角色、导航、AI 调用、token、usage 或计费变化。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 修改同一页面，增加 `ReplyIntentProfile` 获取、行业筛选/展示/表单和 `intentProfileId` payload。最终合并必须手工保留 AI 分支字段和本批 `useAuth`、平台身份、三项动作权限及函数守卫。
+- AI 分支新增的 `fetchReplyIntentProfiles` 仍应只在 `aiConfig.view` 页面内调用；它提供选项数据，不应改变 create/update/delete 的 platform scope。合并后扩充本测试以断言 profile 字段存在，再重跑 typecheck、build 和回复 runtime 测试。
+- 本批可按页面、测试和两份文档整体回滚，无需数据库处理；回滚不会绕过后端，但会恢复误导的租户写入口。

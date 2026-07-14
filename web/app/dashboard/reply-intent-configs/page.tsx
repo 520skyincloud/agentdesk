@@ -1,7 +1,9 @@
 "use client"
 
-import { BrainCircuitIcon, RefreshCwIcon } from "lucide-react"
+import { useMemo } from "react"
+import { RefreshCwIcon } from "lucide-react"
 
+import { useAuth } from "@/components/auth-provider"
 import {
   createDashboardStatusColumn,
   createDashboardStatusToggleAction,
@@ -62,6 +64,44 @@ function trimPreview(value: string, max = 56) {
 }
 
 export default function ReplyIntentConfigsPage() {
+  const { session } = useAuth()
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  )
+  const isPlatformAccount = Boolean(session?.isPlatformAccount)
+  const canCreate = isPlatformAccount && permissions.has("aiConfig.create")
+  const canUpdate = isPlatformAccount && permissions.has("aiConfig.update")
+  const canDelete = isPlatformAccount && permissions.has("aiConfig.delete")
+
+  async function createIntentWithPermission(
+    payload: CreateReplyIntentConfigPayload,
+  ) {
+    if (!canCreate) throw new Error("无权新增回复意图")
+    return createReplyIntentConfig(payload)
+  }
+
+  async function updateIntentWithPermission(
+    item: ReplyIntentConfig,
+    payload: CreateReplyIntentConfigPayload,
+  ) {
+    if (!canUpdate) throw new Error("无权更新回复意图")
+    return updateReplyIntentConfig({ id: item.id, ...payload })
+  }
+
+  async function deleteIntentWithPermission(item: ReplyIntentConfig) {
+    if (!canDelete) throw new Error("无权删除回复意图")
+    return deleteReplyIntentConfig(item.id)
+  }
+
+  async function updateIntentStatusWithPermission(
+    item: ReplyIntentConfig,
+    nextStatus: Status,
+  ) {
+    if (!canUpdate) throw new Error("无权更新回复意图状态")
+    return updateReplyIntentConfig({ ...item, status: nextStatus })
+  }
+
   return (
     <DashboardCrudPage<ReplyIntentConfig, CreateReplyIntentConfigPayload>
       filters={[
@@ -126,9 +166,12 @@ export default function ReplyIntentConfigsPage() {
       ]}
       fetchList={fetchReplyIntentConfigs}
       getItemId={(item) => item.id}
-      createItem={createReplyIntentConfig}
-      updateItem={(item, payload) => updateReplyIntentConfig({ id: item.id, ...payload })}
-      deleteItem={(item) => deleteReplyIntentConfig(item.id)}
+      createItem={createIntentWithPermission}
+      updateItem={updateIntentWithPermission}
+      showCreate={canCreate}
+      showEdit={canUpdate}
+      deleteItem={canDelete ? deleteIntentWithPermission : undefined}
+      showActionsColumn={canUpdate || canDelete}
       form={{
         fetchDetail: fetchReplyIntentConfig,
         fields: [
@@ -203,16 +246,21 @@ export default function ReplyIntentConfigsPage() {
           maxValue: () => "数值过大",
         },
       }}
-      rowActions={[
-        createDashboardStatusToggleAction<ReplyIntentConfig, Status>({
-          icon: <RefreshCwIcon />,
-          label: (item) => (item.status === Status.Ok ? "停用" : "启用"),
-          getNextStatus: (item) => (item.status === Status.Ok ? Status.Disabled : Status.Ok),
-          updateStatus: (item, nextStatus) => updateReplyIntentConfig({ ...item, status: nextStatus }),
-          successMessage: () => "状态已更新",
-          errorMessage: "状态更新失败",
-        }),
-      ]}
+      rowActions={
+        canUpdate
+          ? [
+              createDashboardStatusToggleAction<ReplyIntentConfig, Status>({
+                icon: <RefreshCwIcon />,
+                label: (item) => (item.status === Status.Ok ? "停用" : "启用"),
+                getNextStatus: (item) =>
+                  item.status === Status.Ok ? Status.Disabled : Status.Ok,
+                updateStatus: updateIntentStatusWithPermission,
+                successMessage: () => "状态已更新",
+                errorMessage: "状态更新失败",
+              }),
+            ]
+          : []
+      }
       labels={{
         refresh: "刷新",
         create: "新增意图",
