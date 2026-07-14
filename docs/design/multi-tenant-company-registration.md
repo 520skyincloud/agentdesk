@@ -2176,3 +2176,27 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限、WebSocket 或前端变化；不触及 AI 回复、模型调用、token、usage 或计费。
 - 以共同基线复核，`origin/codex/ai-billing@f2d2da4` 在本批文件中只同时修改 `wxwork_login_service.go`。最终必须逐段保留 AI 分支邮箱绑定逻辑与本批企微角色日志事务，不能整文件选边；`user_service.go` 和本批测试当前无 AI 同文件修改。71A 必须先合并并完成 AutoMigrate，本批无 migration 排序要求。
 - 回滚在线写入逻辑可停止生成新日志，但应保留 71A 表和既有数据。若连同“相同集合不重建”一起回滚，会恢复无意义 UserRole ID/AuditFields 变化；不得用回滚脚本删除已经形成的角色历史。
+
+## 72. 当前实施检查点：租户方案最终复扫与 AI 分支合并门槛（2026-07-15）
+
+本轮按现有页面、权限、service、数据模型、状态机和非 HTTP 链路重新核对租户公司、账号注册、全局角色权限、客服组/小组、排班、派单、通知、文件和完整性审计。`codex/customer-audit` 当前未发现新的本分支运行时越权缺口；公开注册仍按正式配置默认关闭。剩余工作不是新增一套租户或派单功能，而是把 `codex/ai-billing` 的新增能力并入同一租户与权限契约。
+
+### AI 新增模型分类
+
+- 必须增加 TenantID 并从权威父对象继承：AIManualResumeTask 从 Conversation，FastGPTDatasetJob 从 KnowledgeBase/Store，KnowledgeResourceGroup 从 KnowledgeBase/WxWorkInstance，KnowledgeResourceItem 从 Group，WxWorkCustomerHandoffSetting 从 Customer/Instance，AIUsageEvent 与 AIUsageGatewayCall 从 Conversation/Message/KnowledgeBase 所属租户。CompanyID/StoreID 不能代替租户根。
+- ReplyIntentProfile 是行业级平台模板，继续保持平台全局；租户可选择但不能按普通租户角色修改。EmailVerificationCode 是以全局唯一邮箱和不可逆 challenge 为边界的认证安全记录，继续作为平台认证数据，不进入租户业务列表。
+- 合并后的每个新增 TenantID 模型必须登记 TenantIntegrity policy、父子关系和双租户测试；模型覆盖基线将高于当前 52/52、65 表、127 关系，不能通过放宽审计绕过。
+
+### 运行时和权限阻断
+
+- AI 分支媒体理解仍存在全局 Message、Conversation、WxWorkInstance 和 Channel 读取；合并必须保留本分支 Message/Conversation 同租户校验、`ResolveForMessage` 租户路由和企微语音按租户取 Channel，再叠加 usage 记录，禁止用 AI 文件整段覆盖。
+- FastGPT dataset 的 provision、upload、delete collection 当前都只要求 `knowledgeBase.view`。必须分别映射 `knowledgeBase.create/update/delete`；collections/search test 可保留 view。权限必须进入权限管理和角色绑定，前端显隐与后端 RequirePermission 同步。
+- FastGPTDatasetService、KnowledgeResourceService 与 AI usage service 仍有全局 Store/KnowledgeBase/Instance/Asset/route 查询。写入前必须使用 ActiveTenantID 或父实体 TenantID，后台 worker 必须从持久化任务 TenantID 恢复上下文，不能依赖操作者当前切换公司。
+- 客服小组、排班和派单是本分支新增并已验证的能力。AI 分支基线中没有这些文件，但没有显式删除提交；正常 Git 合并应保留。集成时禁止以 AI 分支目录或页面整包覆盖本分支，否则会人为丢失已确认能力。
+
+### 合并规模与顺序
+
+- 共同基线 `e67e207` 上双方共有 53 个修改文件；`git merge-tree --write-tree HEAD origin/codex/ai-billing` 当前报告 24 个文本冲突，集中在 models/config/auth、RAG/知识库/媒体、企微实例、登录、知识页面和导航。必须按领域逐个解决，不能自动接受 ours/theirs。
+- AI DML migration 使用 21-33，本分支租户 migration 使用 34-56，当前无版本号重复。合并必须同时保留两段并重新执行 migration runner 的版本/remark 测试；UserRoleChangeLog 仍由 AutoMigrate 建表，不占 migration 号。
+- 合并顺序：先保留最终模型字段与注册表 -> 补 AI 新模型 TenantID/策略/回填 -> 合并 runtime 和 handler 权限 -> 保留客服小组/派单与租户导航 -> 运行 AutoMigrate/migration -> 双租户全链路、全量 Go/前端/构建和真实只读审计。
+- 在上述阻断全部关闭前，`tenantRegistration.enabled` 必须保持 false；公司主管账号、邀请码查看和内部账号创建可继续使用，但不得把邀请注册链接作为已上线能力发给租户用户。

@@ -3618,3 +3618,84 @@ git diff --check
 - 以共同基线比较，`origin/codex/ai-billing@f2d2da4` 在本批文件中只同时修改 `internal/services/wxwork_login_service.go`。最终需逐段保留 AI 分支已验证邮箱绑定逻辑和本批企微角色日志事务，禁止整文件选边；`user_service.go`、repository 和四个测试文件当前无 AI 同文件修改。
 - 合并顺序固定为 71A model/AutoMigrate -> 71B 在线写入 -> 合并后的全量 Go、模型策略覆盖与实际库审计。没有 DML migration 版本冲突，也不要求修改 AI runtime。
 - 71B 可回滚 service/repository/test 接线，但保留 UserRoleChangeLog 表和已有数据。回滚后新变更不再可审计，且相同集合会恢复删除重建，因此只适合紧急停写，不应作为长期兼容方案。
+
+## 第 72 批：最终遗漏扫描与 AI 分支合并阻断清单（2026-07-15）
+
+### 本分支结论
+
+- 重新追踪接入公司、邀请注册、角色/权限、账号、客服组/小组、排班、派单、会话、通知、文件和只读审计的页面到 repository 链路，未发现新的 `codex/customer-audit` 在线越权写入口。71A/71B 已补齐角色集合历史，正式配置的公开注册继续默认关闭。
+- 客服小组和派单文件是本分支在共同基线后的新增能力；AI 分支没有这些文件，但也没有显式删除差异。标准 Git 合并会保留，只有整目录/整页面采用 AI 版本才会人为丢失，集成时禁止这种做法。
+- 当前 TenantIntegrity 基线为 52/52 TenantID 模型、65 张必需表、127 条普通关系；合并 AI 新模型后必须提高基线，不能保留旧断言或把新模型排除在 models.Models 外。
+
+### AI 新增模型必须处理
+
+```text
+AIManualResumeTask              -> TenantID 继承 Conversation
+FastGPTDatasetJob               -> TenantID 继承 KnowledgeBase/Store
+KnowledgeResourceGroup          -> TenantID 继承 KnowledgeBase/WxWorkInstance
+KnowledgeResourceItem           -> TenantID 继承 KnowledgeResourceGroup
+WxWorkCustomerHandoffSetting    -> TenantID 继承 Customer/WxWorkInstance
+AIUsageEvent                    -> TenantID 继承 Conversation/Message/KnowledgeBase
+AIUsageGatewayCall              -> TenantID 继承 AIUsageEvent/Conversation
+```
+
+- ReplyIntentProfile 保持平台全局行业模板；EmailVerificationCode 保持全局认证挑战记录，因为当前邮箱全局唯一且该表不进入租户业务管理。两者仍需平台权限/认证用途测试，不能被租户普通写权限修改。
+- 上述业务模型必须补 AutoMigrate 字段、确定性历史回填、repository/service 租户条件、完整性 policy/relations 和双租户 worker 测试。CompanyID、StoreID 或不可见 UI 都不是租户隔离替代品。
+
+### 已确认运行时/权限阻断
+
+- AI 分支 `media_understanding_service.go` 仍按全局 Message/Conversation/WxWorkInstance/Channel 读取。最终实现必须保留本分支 Message/Conversation 同租户检查、StoreAIModelSetting `ResolveForMessage` 租户路由和企微语音按租户取 Channel，再合并 usage 事件。
+- `fastgpt_dataset_handler.go` 的 provision/upload/delete collection 当前均使用 `knowledgeBase.view`。目标映射固定为 provision=create、upload=update、delete=delete，collections/search test=view；前后端必须共用权限管理中的现有权限码。
+- FastGPTDatasetService、KnowledgeResourceService 和 AI usage service 的全局 Store/KnowledgeBase/Instance/Asset/route 读取必须改为父 TenantID 条件；异步 job 必须持久化 TenantID，不能在 worker 中依赖 HTTP operator。
+- `models.Models` 合并必须同时保留 Tenant/UserRoleChangeLog/AgentTeamSquad/TenantID 字段和 AI 新模型；不得恢复 UserPermission、全局 StoreCode/AgentCode/CompanyName 唯一索引或 AI 分支旧无 Tenant 结构。
+
+### 只读合并预演
+
+- 共同基线为 `e67e207`，双方共有 53 个修改文件。`git merge-tree --write-tree HEAD origin/codex/ai-billing` 报告 24 个文本冲突：
+
+```text
+internal/ai/rag/retrieve.go
+internal/bootstrap/server_route_test.go
+internal/builders/conversation_builder.go
+internal/handlers/api/auth_handler.go
+internal/models/models.go
+internal/pkg/config/config.go
+internal/pkg/config/config_test.go
+internal/pkg/dto/response/auth_response.go
+internal/repositories/conversation_route_state_repository.go
+internal/repositories/knowledge_retrieve_log_repository.go
+internal/services/asset_service.go
+internal/services/company_service.go
+internal/services/im_message_asset.go
+internal/services/knowledge_base_service.go
+internal/services/media_understanding_service.go
+internal/services/wx_work_protocol_instance_company_test.go
+internal/services/wx_work_protocol_instance_service.go
+internal/services/wxwork_login_service.go
+web/app/dashboard/knowledge/page.tsx
+web/app/dashboard/reply-intent-configs/page.tsx
+web/components/login-form.tsx
+web/components/wxwork-protocol/wxwork-protocol-instance-manager.tsx
+web/lib/api/auth.ts
+web/lib/navigation.tsx
+```
+
+- AI migration 为 21-33，本分支为 34-56，当前不重号。合并顺序必须是 71A 契约 -> AI 新模型 Tenant 化/回填 -> 71B 与 AI 登录/usage 逐段合并 -> handler 权限 -> 页面导航 -> 全量验证。
+- 最终验收至少执行：migration version/remark 测试、模型策略覆盖、全仓 Go/race/vet、前端契约/typecheck/build、双租户媒体/FastGPT/usage/客服派单测试，以及真实数据库只读 `tenant-integrity-audit`。全部通过前保持 `tenantRegistration.enabled=false`。
+
+### 本批文件与验证
+
+```text
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+git fetch origin
+base=$(git merge-base HEAD origin/codex/ai-billing)
+comm -12 <(git diff --name-only "$base"..HEAD | sort) <(git diff --name-only "$base"..origin/codex/ai-billing | sort)
+git merge-tree --write-tree HEAD origin/codex/ai-billing
+git diff --check
+```
+
+- 本批是只读遗漏与合并预演，不修改运行代码、模型、migration、API、权限或前端；merge-tree 只创建临时 Git tree 对象，不改变工作树。可独立回滚两份文档，但会失去当前精确阻断清单。
