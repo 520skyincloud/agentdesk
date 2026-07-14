@@ -1560,6 +1560,13 @@ export function updateUser(payload: UpdateAdminUserPayload) {
   })
 }
 
+export function deleteUser(id: number) {
+  return request<void>("/api/dashboard/user/delete", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  })
+}
+
 export function bindStoreStaffUserToAgentTeam(payload: {
   userId: number
   teamId: number

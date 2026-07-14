@@ -125,6 +125,32 @@ func TestConversationDispatchManualAssignmentStaysInOwningTeam(t *testing.T) {
 	}
 }
 
+func TestConversationDispatchManualAssignmentRejectsDisabledAccount(t *testing.T) {
+	db := setupConversationDispatchSquadTestDB(t)
+	createDispatchSquadTeamAndAgents(t, db)
+	if err := db.Model(&models.User{}).Where("id = ?", 102).Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable target user error = %v", err)
+	}
+
+	conversation := &models.Conversation{TenantID: 101, CurrentTeamID: 1, Status: enums.IMConversationStatusPending}
+	operator := &dto.AuthPrincipal{UserID: 9, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
+	if _, err := ConversationDispatchWorkbenchService.requireManageableTargetProfile(102, conversation, operator); err == nil || !strings.Contains(err.Error(), "账号已停用") {
+		t.Fatalf("expected disabled account rejection, got %v", err)
+	}
+
+	profile := AgentProfileService.Get(2)
+	if profile == nil {
+		t.Fatal("expected target profile")
+	}
+	loads, err := ConversationDispatchWorkbenchService.buildAgentLoads([]models.AgentProfile{*profile}, operator)
+	if err != nil {
+		t.Fatalf("buildAgentLoads() error = %v", err)
+	}
+	if len(loads) != 1 || loads[0].available {
+		t.Fatalf("disabled account should remain visible but unavailable, got %+v", loads)
+	}
+}
+
 func setupConversationDispatchSquadTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dbName := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())

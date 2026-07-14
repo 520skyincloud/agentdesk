@@ -200,7 +200,11 @@ function CreateUserDrawerBody({
   }, [locale, roleKeyword, roles])
 
   async function onFormSubmit(values: CreateForm) {
-    await onSubmit(buildPayload(values))
+    const payload = buildPayload(values)
+    await onSubmit({
+      ...payload,
+      roleIds: canAssignRoles ? payload.roleIds : [],
+    })
     reset(emptyForm)
     setRoleKeyword("")
   }

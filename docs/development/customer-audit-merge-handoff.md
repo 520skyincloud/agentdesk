@@ -2906,3 +2906,72 @@ git diff --check
 - 建议合并顺序：先以本分支租户、客服组织和派单契约为基线，再逐文件叠加 AI/计费分支对客服档案响应、页面和 API 类型的新增字段；最后重跑小组 service、派单小组、handler 权限、116 项前端测试、typecheck、生产构建和双租户浏览器验收。禁止通过接受 AI 分支删除来解决冲突。
 - 本批无需 rebase 当前远端；两分支同文件修改明确要求最终手工合并。字段、状态和权限语义必须以最终 handler/service 和权限常量复核，不能只按 TypeScript 编译结果判断。
 - 本批可按上述六个前端文件、测试和两份文档整体回滚，无数据库回滚；回滚只撤销权限显隐与辅助请求保护，不得连带删除既有客服小组、排班或派单能力。
+
+## 第 56 批：账号管理动作权限与安全删除（2026-07-15）
+
+### 原页面与权限判断
+
+- `/dashboard/users` 已同时承载账号列表、门店员工客服组反向绑定、邀请注册和注册审核，继续复用该页面，不新建平行账号中心。
+- 代码和后端确认账号只保存 `UserRole`，页面只调用 `assignUserRoles`；`RolePermission` 仍只在角色管理中配置。没有恢复账号级 `UserPermission` 或新增隐藏权限赋予。
+- 后端 `CanViewUser/CanManageUser/CanAssignRole` 已执行活动租户、同级/上级、平台/租户 scope 和自操作限制；前端显隐只改善体验，不替代这些最终边界。
+- 审计发现现有 `user.delete` 已在权限管理、公司主管默认角色、handler 和 service 中存在，但页面没有入口；同时创建、更新、重置、启停、归组、邀请重置和注册审核多处只靠按钮路径，函数缺少同权限二次守卫。
+
+### 文件与实现
+
+```text
+internal/services/user_service.go
+internal/services/user_delete_dependency_test.go
+internal/services/agent_profile_service.go
+internal/services/conversation_service.go
+internal/services/conversation_dispatch_workbench_service.go
+internal/services/conversation_dispatch_squad_test.go
+web/app/dashboard/users/page.tsx
+web/app/dashboard/users/action-permissions.test.mjs
+web/app/dashboard/users/_components/create.tsx
+web/app/dashboard/users/_components/invitation-dialog.tsx
+web/app/dashboard/users/_components/registration-review.tsx
+web/lib/api/admin.ts
+web/messages/zh-CN.json
+web/messages/en-US.json
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- `user.create` 控制账号创建，`user.update` 控制资料编辑、启停和重置密码，`user.delete` 控制软删除，`user.assignRole + role.view` 控制角色选择与分配。创建者没有角色分配能力时，组件和页面双层保证 `roleIds=[]`。
+- 页面新增 `deleteUser` API 包装和破坏性确认；提示明确“禁用”用于临时停用，“删除”会从账号管理移除并使会话失效。菜单只对后端标记 `manageable` 的账号展示，不允许自删或越级删除。
+- 门店员工组筛选仅在 `agentTeam.view` 下携带 `agentTeamId`；归组函数要求 `agentTeam.view + agentTeam.update + bindingId`，保留原双向同步 service。
+- 邀请弹窗 `open` 使用 `tenantInvite.view`，重置函数再次检查 `tenantInvite.rotate`。注册审核抽屉根据 `tenantRegistration.review` 和批准所需的 `user.assignRole + role.view` 生成 `canSubmit`，权限变化会关闭抽屉并阻止提交。
+- 创建、编辑、重置、角色分配和邀请弹窗的 `open` 都与动作权限同步；函数重复检查权限、目标 `manageable` 和当前加载状态。
+
+### 删除生命周期保护
+
+- 原 `DeleteUser` 只写 `status=disabled + deleted_at` 并注销会话。自动派单会过滤禁用 User，但派单工作台的手动目标校验主要依赖 `AgentProfile.status`，直接开放旧删除接口可能留下可手动派单的孤立客服。
+- 删除现在在事务中重新读取目标账号并检查五类依赖：未关闭且仍指派给该账号的会话、综合客服组组长、客服小组组长、未删除客服档案、未删除门店员工绑定。任一存在都返回明确业务错误，账号状态与 `deleted_at` 保持不变。
+- 依赖全部清理后才执行原软删除并在事务提交后注销登录会话。该策略不级联删除会话、客服档案、员工号或历史记录，也不改变数据模型，符合审计和回滚边界。
+- “禁用”继续作为可恢复的临时停用，不级联删除客服档案；但所有人工分配/转派目标现在复用 `AgentProfileService.GetEnabledForAssignment`，同时要求 User 未删除且状态启用、AgentProfile 状态启用。
+- 派单工作台负载列表保留禁用客服用于主管理解历史负载和配置，但 `available=false`；旧会话分配/转接接口、工作台指派/转派和 `CanServeConversation` 都拒绝禁用账号，自动派单原有 User 状态过滤保持不变。
+
+### 验证
+
+```text
+cd web && node --test app/dashboard/users/action-permissions.test.mjs
+cd web && rg --files -g '*.test.mjs' | sort | xargs node --test
+cd web && pnpm typecheck
+cd web && pnpm exec eslint app/dashboard/users/page.tsx app/dashboard/users/action-permissions.test.mjs app/dashboard/users/_components/create.tsx app/dashboard/users/_components/invitation-dialog.tsx app/dashboard/users/_components/registration-review.tsx lib/api/admin.ts
+cd web && pnpm build
+go test ./internal/services -run 'Test(UserServiceDelete|ConversationDispatchManualAssignment|ConversationDispatchCandidates)' -count=1
+go vet ./...
+go test ./... -count=1 -p 1
+git diff --check
+```
+
+- 定向前端 5 项、全前端 121 项、删除依赖 5 个子场景、无依赖成功路径和禁用账号人工派单/负载可用性路径、TypeScript、目标 ESLint、生产构建、vet、串行全仓 Go 和 diff 检查均通过。
+- 超级管理员在 3000 开发页实机看到邀请注册、注册审核、门店员工客服组归属和账号操作；菜单按当前权限显示分配角色、重置密码、禁用、删除。1280x720 无横向溢出，控制台 error/warning 为 0，未点击确认删除或修改测试数据。
+- 本批没有 model、AutoMigrate、DML migration、request/response DTO、enum、Gin 路由、WebSocket、权限常量、默认角色、导航、AI runtime、token、usage 或计费变化。
+
+### 并行合并与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 修改 `users/page.tsx`、创建/角色组件、`web/lib/api/admin.ts`、`user_handler.go`、`user_service.go`、`agent_profile_service.go`、`conversation_service.go` 和 admin request/response DTO；并删除 `conversation_dispatch_workbench_service.go`、`conversation_dispatch_squad_test.go`，其当前树中也不存在本分支邀请弹窗和注册审核组件。最终必须手工合并。
+- 建议以本分支租户身份、邀请审核、角色 authority、安全删除和客服小组派单为基线，再叠加 AI 分支账号字段。`DeleteUser` 的事务依赖检查、`GetEnabledForAssignment` 及三条人工派单调用、页面所有权限函数守卫、`deleteUser` API 和双语风险提示必须保留；AI 分支不得通过删除邀请/审核/派单文件解决冲突。
+- 合并后重跑 `role_user_authority_test`、`user_delete_dependency_test`、tenant registration business tests、dashboard handler 权限契约、121 项前端测试、typecheck、生产构建和双租户账号页验收。
+- 本批前后端应一起回滚：只回滚 service 会暴露危险删除，只回滚页面仍会留下外部接口生命周期风险。无 migration 或数据回滚；已经成功删除的账号不会因代码回滚自动恢复。

@@ -15,6 +15,7 @@ import (
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 var AgentProfileService = newAgentProfileService()
@@ -71,6 +72,29 @@ func (s *agentProfileService) GetByUserID(userID int64) *models.AgentProfile {
 		return nil
 	}
 	return repositories.AgentProfileRepository.FindOne(sqls.DB(), sqls.NewCnd().Eq("user_id", userID))
+}
+
+func (s *agentProfileService) GetEnabledForAssignment(db *gorm.DB, tenantID, userID int64) *models.AgentProfile {
+	if db == nil || tenantID <= 0 || userID <= 0 {
+		return nil
+	}
+	user := repositories.UserRepository.Take(
+		db,
+		"id = ? AND tenant_id = ? AND status = ? AND deleted_at IS NULL",
+		userID,
+		tenantID,
+		enums.StatusOk,
+	)
+	if user == nil {
+		return nil
+	}
+	return repositories.AgentProfileRepository.Take(
+		db,
+		"tenant_id = ? AND user_id = ? AND status = ?",
+		tenantID,
+		userID,
+		enums.StatusOk,
+	)
 }
 
 func (s *agentProfileService) MarkUserOnline(userID int64, username string, now time.Time) error {
@@ -150,7 +174,7 @@ func (s *agentProfileService) CanServeConversation(userID int64, conversationID 
 	if err != nil {
 		return false
 	}
-	profile := s.Take("tenant_id = ? AND user_id = ? AND status = ?", conversation.TenantID, userID, enums.StatusOk)
+	profile := s.GetEnabledForAssignment(sqls.DB(), conversation.TenantID, userID)
 	if profile == nil {
 		return false
 	}

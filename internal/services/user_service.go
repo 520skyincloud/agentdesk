@@ -248,17 +248,78 @@ func (s *userService) DeleteUser(id int64, operator *dto.AuthPrincipal) error {
 	if err := s.EnsureCanManageUser(operator, user); err != nil {
 		return err
 	}
-
-	if err := s.Updates(id, map[string]any{
-		"status":           enums.StatusDisabled,
-		"deleted_at":       time.Now(),
-		"update_user_id":   operator.UserID,
-		"update_user_name": operator.Username,
-		"updated_at":       time.Now(),
+	now := time.Now()
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current := repositories.UserRepository.Take(ctx.Tx, "id = ? AND tenant_id = ?", id, user.TenantID)
+		if current == nil || current.DeletedAt != nil {
+			return errorsx.InvalidParam("用户不存在")
+		}
+		if err := s.ensureDeleteDependenciesCleared(ctx.Tx, current); err != nil {
+			return err
+		}
+		return repositories.UserRepository.Updates(ctx.Tx, id, map[string]any{
+			"status":           enums.StatusDisabled,
+			"deleted_at":       now,
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+			"updated_at":       now,
+		})
 	}); err != nil {
 		return err
 	}
 	return LoginSessionService.RevokeByUser(id, operator.UserID, operator.Username)
+}
+
+func (s *userService) ensureDeleteDependenciesCleared(db *gorm.DB, user *models.User) error {
+	if user == nil {
+		return errorsx.InvalidParam("用户不存在")
+	}
+	if repositories.ConversationRepository.Take(
+		db,
+		"tenant_id = ? AND current_assignee_id = ? AND status <> ?",
+		user.TenantID,
+		user.ID,
+		enums.IMConversationStatusClosed,
+	) != nil {
+		return errorsx.InvalidParam("用户仍有未完成会话，请先完成转派或关闭")
+	}
+	if repositories.AgentTeamRepository.Take(
+		db,
+		"tenant_id = ? AND leader_user_id = ? AND status <> ?",
+		user.TenantID,
+		user.ID,
+		enums.StatusDeleted,
+	) != nil {
+		return errorsx.InvalidParam("用户仍是综合客服组组长，请先更换组长")
+	}
+	if repositories.AgentTeamSquadRepository.Take(
+		db,
+		"tenant_id = ? AND leader_user_id = ? AND status <> ?",
+		user.TenantID,
+		user.ID,
+		enums.StatusDeleted,
+	) != nil {
+		return errorsx.InvalidParam("用户仍是客服小组组长，请先更换组长")
+	}
+	if repositories.AgentProfileRepository.Take(
+		db,
+		"tenant_id = ? AND user_id = ? AND status <> ?",
+		user.TenantID,
+		user.ID,
+		enums.StatusDeleted,
+	) != nil {
+		return errorsx.InvalidParam("用户仍有关联客服档案，请先删除客服档案")
+	}
+	if repositories.StoreStaffBindingRepository.Take(
+		db,
+		"tenant_id = ? AND user_id = ? AND status <> ?",
+		user.TenantID,
+		user.ID,
+		enums.StatusDeleted,
+	) != nil {
+		return errorsx.InvalidParam("用户仍有关联门店员工身份，请先解除绑定")
+	}
+	return nil
 }
 
 func (s *userService) UpdateStatus(id int64, status int, operator *dto.AuthPrincipal) error {

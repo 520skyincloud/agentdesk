@@ -658,16 +658,18 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoads(profiles []models
 			profile:     profile,
 			activeCount: activeCounts[profile.UserID],
 		}
+		userEnabled := false
 		if team := AgentTeamService.GetInTenant(profile.TeamID, operator); team != nil {
 			load.teamName = utils.RepairMojibakeText(team.Name)
 		}
 		if user := UserService.GetInTenant(profile.UserID, AgentTeamScopeService.ActiveTenantID(operator)); user != nil {
 			load.username = user.Username
 			load.nickname = user.Nickname
+			userEnabled = user.Status == enums.StatusOk && user.DeletedAt == nil
 		}
 		load.pendingFirstReply, load.processingCount = s.countAgentTaskPhases(profile.UserID, profile.TenantID)
 		load.pendingReplyCount = s.countAgentPendingReplies(profile.UserID, profile.TenantID)
-		load.available = s.profileAvailable(profile, load.activeCount)
+		load.available = userEnabled && s.profileAvailable(profile, load.activeCount)
 		ret = append(ret, load)
 	}
 	return ret, nil
@@ -757,9 +759,9 @@ func (s *conversationDispatchWorkbenchService) requireManageableTargetProfile(us
 	if userID <= 0 {
 		return nil, errorsx.InvalidParam("请选择目标客服")
 	}
-	profile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ?", conversation.TenantID, userID)
-	if profile == nil || profile.Status != enums.StatusOk {
-		return nil, errorsx.InvalidParam("目标客服不存在")
+	profile := AgentProfileService.GetEnabledForAssignment(sqls.DB(), conversation.TenantID, userID)
+	if profile == nil {
+		return nil, errorsx.InvalidParam("目标客服不存在或账号已停用")
 	}
 	ownerTeamID := conversation.CurrentTeamID
 	if ownerTeamID <= 0 && conversation.CurrentAssigneeID > 0 {

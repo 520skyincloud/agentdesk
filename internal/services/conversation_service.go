@@ -249,9 +249,9 @@ func (s *conversationService) AssignConversation(req request.AssignConversationR
 	if tenantID <= 0 {
 		return errorsx.Forbidden("请先进入需要管理会话的接入公司")
 	}
-	targetProfile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ?", tenantID, req.AssigneeID)
-	if targetProfile == nil || targetProfile.Status != enums.StatusOk {
-		return errorsx.InvalidParam("目标客服不存在")
+	targetProfile := AgentProfileService.GetEnabledForAssignment(sqls.DB(), tenantID, req.AssigneeID)
+	if targetProfile == nil {
+		return errorsx.InvalidParam("目标客服不存在或账号已停用")
 	}
 	var assignedEvent events.ConversationAssignedEvent
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -465,9 +465,9 @@ func (s *conversationService) TransferConversation(conversationID, toUserID int6
 	if tenantID <= 0 {
 		return errorsx.Forbidden("请先进入需要管理会话的接入公司")
 	}
-	targetProfile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ?", tenantID, toUserID)
-	if targetProfile == nil || targetProfile.Status != enums.StatusOk {
-		return errorsx.InvalidParam("目标客服不存在")
+	targetProfile := AgentProfileService.GetEnabledForAssignment(sqls.DB(), tenantID, toUserID)
+	if targetProfile == nil {
+		return errorsx.InvalidParam("目标客服不存在或账号已停用")
 	}
 	var assignedEvent events.ConversationAssignedEvent
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {

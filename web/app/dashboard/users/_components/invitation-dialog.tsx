@@ -106,6 +106,9 @@ export function InvitationDialog({
   }
 
   async function rotateInvitation() {
+    if (!canRotate || rotating) {
+      return
+    }
     const confirmed = await confirm({
       title: t("tenantRegistration.rotateTitle"),
       description: t("tenantRegistration.rotateDescription"),

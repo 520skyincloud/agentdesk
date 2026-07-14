@@ -276,6 +276,8 @@ export function RegistrationReviewPanel({
 
       <RegistrationReviewDrawer
         target={reviewTarget}
+        canReview={canReview}
+        canApprove={canApprove}
         onOpenChange={(open) => {
           if (!open) {
             setReviewTarget(null)
@@ -303,21 +305,31 @@ function ApprovalStatusBadge({ status }: { status: UserApprovalStatus }) {
 
 type RegistrationReviewDrawerProps = {
   target: ReviewTarget | null
+  canReview: boolean
+  canApprove: boolean
   onOpenChange: (open: boolean) => void
   onReviewed: () => Promise<void>
 }
 
 function RegistrationReviewDrawer({
   target,
+  canReview,
+  canApprove,
   onOpenChange,
   onReviewed,
 }: RegistrationReviewDrawerProps) {
+  const canSubmit = Boolean(
+    target &&
+      canReview &&
+      (target.decision !== TenantRegistrationReviewDecision.Approve || canApprove)
+  )
   return (
-    <Drawer open={!!target} onOpenChange={onOpenChange} direction="right">
-      {target ? (
+    <Drawer open={canSubmit} onOpenChange={onOpenChange} direction="right">
+      {target && canSubmit ? (
         <RegistrationReviewDrawerBody
           key={`${target.record.userId}-${target.decision}`}
           target={target}
+          canSubmit={canSubmit}
           onOpenChange={onOpenChange}
           onReviewed={onReviewed}
         />
@@ -328,10 +340,12 @@ function RegistrationReviewDrawer({
 
 function RegistrationReviewDrawerBody({
   target,
+  canSubmit,
   onOpenChange,
   onReviewed,
 }: {
   target: ReviewTarget
+  canSubmit: boolean
   onOpenChange: (open: boolean) => void
   onReviewed: () => Promise<void>
 }) {
@@ -347,7 +361,7 @@ function RegistrationReviewDrawerBody({
   const requestRef = useRef<{ fingerprint: string; requestId: string } | null>(null)
 
   useEffect(() => {
-    if (!approving) {
+    if (!approving || !canSubmit) {
       setRolesLoading(false)
       return
     }
@@ -379,7 +393,7 @@ function RegistrationReviewDrawerBody({
     return () => {
       cancelled = true
     }
-  }, [approving, t])
+  }, [approving, canSubmit, t])
 
   const filteredRoles = useMemo(() => {
     const keyword = roleKeyword.trim().toLowerCase()
@@ -410,6 +424,9 @@ function RegistrationReviewDrawerBody({
   }
 
   async function submitReview() {
+    if (!canSubmit || saving) {
+      return
+    }
     const normalizedRemark = remark.trim()
     if (approving && selectedRoleIds.length === 0) {
       toast.error(t("tenantRegistration.roleRequired"))
@@ -562,7 +579,7 @@ function RegistrationReviewDrawerBody({
         <Button
           type="button"
           variant={approving ? "default" : "destructive"}
-          disabled={saving || rolesLoading}
+          disabled={!canSubmit || saving || rolesLoading}
           onClick={() => void submitReview()}
         >
           {saving ? <LoaderCircleIcon className="animate-spin" /> : null}

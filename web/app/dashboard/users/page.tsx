@@ -9,6 +9,7 @@ import {
   PlusIcon,
   SearchIcon,
   ShieldIcon,
+  Trash2Icon,
   UserPlusIcon,
   UserRoundIcon,
   UsersRoundIcon,
@@ -30,6 +31,7 @@ import {
   assignUserRoles,
   bindStoreStaffUserToAgentTeam,
   createUser,
+  deleteUser,
   fetchAgentTeamsAll,
   fetchRoleListAll,
   fetchUserDetail,
@@ -45,6 +47,7 @@ import {
   type UpdateAdminUserPayload,
 } from "@/lib/api/admin"
 import { useAuth } from "@/components/auth-provider"
+import { useConfirm } from "@/components/confirm-provider"
 import { OptionCombobox } from "@/components/option-combobox"
 import { Status } from "@/lib/generated/enums"
 import { useAppLocale, useI18n } from "@/i18n/provider"
@@ -79,11 +82,13 @@ import {
 
 export default function DashboardUsersPage() {
   const t = useI18n()
+  const confirm = useConfirm()
   const { locale } = useAppLocale()
   const { session } = useAuth()
   const permissions = useMemo(() => new Set(session?.permissions ?? []), [session?.permissions])
   const canCreateUsers = permissions.has("user.create")
   const canUpdateUsers = permissions.has("user.update")
+  const canDeleteUsers = permissions.has("user.delete")
   const canAssignRoles = permissions.has("user.assignRole") && permissions.has("role.view")
   const canViewInvitation = permissions.has("tenantInvite.view")
   const canRotateInvitation = permissions.has("tenantInvite.rotate")
@@ -91,7 +96,7 @@ export default function DashboardUsersPage() {
   const canReviewRegistrations = permissions.has("tenantRegistration.review")
   const canViewAgentTeams = permissions.has("agentTeam.view")
   const canUpdateAgentTeams = permissions.has("agentTeam.update")
-  const hasUserRowActions = canUpdateUsers || canAssignRoles
+  const hasUserRowActions = canUpdateUsers || canDeleteUsers || canAssignRoles
   const [agentTeams, setAgentTeams] = useState<AdminAgentTeam[]>([])
   const [assigningTeamUserId, setAssigningTeamUserId] = useState<number | null>(null)
   const [creatingOpen, setCreatingOpen] = useState(false)
@@ -133,13 +138,15 @@ export default function DashboardUsersPage() {
         username: typeof query.username === "string" ? query.username : undefined,
         roleCode: query.roleCode === "store_staff" ? "store_staff" : undefined,
         agentTeamId:
-          query.agentTeamId !== "all" && query.agentTeamId !== undefined
+          canViewAgentTeams &&
+          query.agentTeamId !== "all" &&
+          query.agentTeamId !== undefined
             ? String(query.agentTeamId)
             : undefined,
         page: Number(query.page),
         limit: Number(query.limit),
       }),
-    [],
+    [canViewAgentTeams],
   )
   const list = useDashboardPagedList<AdminUser>({
     filters,
@@ -188,10 +195,30 @@ export default function DashboardUsersPage() {
   }
 
   function openEditDrawer(user: AdminUser) {
-    if (!canUpdateUsers || (!user.manageable && user.id !== session?.user.id)) {
+    if (!canEditUser(user)) {
       return
     }
     setEditingUser(user)
+  }
+
+  function canEditUser(user: AdminUser | null) {
+    return Boolean(
+      user && canUpdateUsers && (user.manageable || user.id === session?.user.id)
+    )
+  }
+
+  function openCreateDrawer() {
+    if (!canCreateUsers) {
+      return
+    }
+    setCreatingOpen(true)
+  }
+
+  function openInvitationDialog() {
+    if (!canViewInvitation) {
+      return
+    }
+    setInvitationOpen(true)
   }
 
   async function openAssignRolesDrawer(user: AdminUser) {
@@ -244,7 +271,11 @@ export default function DashboardUsersPage() {
   }
 
   async function handleCreateUser(payload: CreateAdminUserPayload) {
-    if (savingCreate) {
+    if (
+      !canCreateUsers ||
+      savingCreate ||
+      (payload.roleIds.length > 0 && !canAssignRoles)
+    ) {
       return
     }
 
@@ -277,7 +308,12 @@ export default function DashboardUsersPage() {
   }
 
   async function handleSaveUser(payload: UpdateAdminUserPayload) {
-    if (savingEdit) {
+    if (
+      !editingUser ||
+      !canEditUser(editingUser) ||
+      payload.id !== editingUser.id ||
+      savingEdit
+    ) {
       return
     }
 
@@ -295,7 +331,11 @@ export default function DashboardUsersPage() {
   }
 
   async function handleAssignRoles(roleIds: number[]) {
-    if (!assigningRolesUser || savingRoles) {
+    if (
+      !canAssignRoles ||
+      !assigningRolesUser?.manageable ||
+      savingRoles
+    ) {
       return
     }
 
@@ -315,6 +355,9 @@ export default function DashboardUsersPage() {
   }
 
   function openResetDrawer(user: AdminUser) {
+    if (!canUpdateUsers || !user.manageable) {
+      return
+    }
     setResetPasswordResult(null)
     setResettingUser(user)
   }
@@ -330,7 +373,7 @@ export default function DashboardUsersPage() {
   }
 
   async function handleResetPassword() {
-    if (!resettingUser || savingPassword) {
+    if (!canUpdateUsers || !resettingUser?.manageable || savingPassword) {
       return
     }
 
@@ -347,6 +390,9 @@ export default function DashboardUsersPage() {
   }
 
   async function handleToggleStatus(user: AdminUser) {
+    if (!canUpdateUsers || !user.manageable || actionLoadingId != null) {
+      return
+    }
     setActionLoadingId(user.id)
     try {
       const nextStatus = user.status === Status.Ok ? Status.Disabled : Status.Ok
@@ -366,6 +412,13 @@ export default function DashboardUsersPage() {
   }
 
   async function handleBindAgentTeam(user: AdminUser, value: string) {
+    if (
+      !canViewAgentTeams ||
+      !canUpdateAgentTeams ||
+      !user.storeStaff?.bindingId
+    ) {
+      return
+    }
     const teamId = Number(value || 0)
     const currentTeamId = user.storeStaff?.agentTeamId || 0
     if (teamId === currentTeamId || assigningTeamUserId != null) {
@@ -386,6 +439,33 @@ export default function DashboardUsersPage() {
       toast.error(error instanceof Error ? error.message : "更新客服组归属失败")
     } finally {
       setAssigningTeamUserId(null)
+    }
+  }
+
+  async function handleDeleteUser(user: AdminUser) {
+    if (!canDeleteUsers || !user.manageable || actionLoadingId != null) {
+      return
+    }
+    const confirmed = await confirm({
+      title: t("user.confirmDeleteTitle"),
+      description: t("user.confirmDeleteDescription", {
+        username: user.username,
+      }),
+      confirmText: t("user.confirmDelete"),
+      variant: "destructive",
+    })
+    if (!confirmed) {
+      return
+    }
+    setActionLoadingId(user.id)
+    try {
+      await deleteUser(user.id)
+      toast.success(t("user.deleted", { username: user.username }))
+      await list.loadData()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("user.deleteFailed"))
+    } finally {
+      setActionLoadingId(null)
     }
   }
 
@@ -449,7 +529,7 @@ export default function DashboardUsersPage() {
                       {canViewInvitation ? (
                         <Button
                           variant="outline"
-                          onClick={() => setInvitationOpen(true)}
+                          onClick={openInvitationDialog}
                           disabled={list.loading}
                         >
                           <UserPlusIcon />
@@ -457,7 +537,7 @@ export default function DashboardUsersPage() {
                         </Button>
                       ) : null}
                       {canCreateUsers ? (
-                        <Button onClick={() => setCreatingOpen(true)} disabled={list.loading}>
+                        <Button onClick={openCreateDrawer} disabled={list.loading}>
                           <PlusIcon />
                           {t("user.addUser")}
                         </Button>
@@ -655,7 +735,7 @@ export default function DashboardUsersPage() {
                     {hasUserRowActions ? (
                       <TableCell className="text-right">
                         <ButtonGroup className="ml-auto">
-                          {canUpdateUsers && (item.manageable || item.id === session?.user.id) ? (
+                          {canEditUser(item) ? (
                             <Button
                               variant="outline"
                               size="sm"
@@ -665,7 +745,8 @@ export default function DashboardUsersPage() {
                               {t("user.edit")}
                             </Button>
                           ) : null}
-                          {item.manageable && (canAssignRoles || canUpdateUsers) ? (
+                          {item.manageable &&
+                          (canAssignRoles || canUpdateUsers || canDeleteUsers) ? (
                             <DropdownMenu>
                           <DropdownMenuTrigger
                             render={<Button variant="outline" size="icon-sm" />}
@@ -695,7 +776,7 @@ export default function DashboardUsersPage() {
                                   {t("user.resetPassword")}
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
-                                  onClick={() => handleToggleStatus(item)}
+                                  onClick={() => void handleToggleStatus(item)}
                                   disabled={actionLoadingId === item.id}
                                 >
                                   <ShieldIcon />
@@ -706,6 +787,16 @@ export default function DashboardUsersPage() {
                                       : t("user.enabled")}
                                 </DropdownMenuItem>
                               </>
+                            ) : null}
+                            {canDeleteUsers ? (
+                              <DropdownMenuItem
+                                onClick={() => void handleDeleteUser(item)}
+                                disabled={actionLoadingId === item.id}
+                                className="text-destructive focus:text-destructive"
+                              >
+                                <Trash2Icon />
+                                {t("user.delete")}
+                              </DropdownMenuItem>
                             ) : null}
                           </DropdownMenuContent>
                             </DropdownMenu>
@@ -736,7 +827,7 @@ export default function DashboardUsersPage() {
         </Tabs>
       </DashboardPage>
       <CreateUserDrawer
-        open={creatingOpen}
+        open={creatingOpen && canCreateUsers}
         saving={savingCreate}
         canAssignRoles={canAssignRoles}
         onOpenChange={handleCreateDrawerOpenChange}
@@ -753,14 +844,14 @@ export default function DashboardUsersPage() {
         }}
       />
       <EditDrawer
-        open={!!editingUser}
+        open={canEditUser(editingUser)}
         saving={savingEdit}
         itemId={editingUser?.id ?? null}
         onOpenChange={handleEditDrawerOpenChange}
         onSubmit={handleSaveUser}
       />
       <ResetPasswordDialogs
-        open={!!resettingUser}
+        open={Boolean(resettingUser?.manageable && canUpdateUsers)}
         saving={savingPassword}
         item={resettingUser}
         password={resetPasswordResult?.password || ""}
@@ -768,7 +859,7 @@ export default function DashboardUsersPage() {
         onConfirm={handleResetPassword}
       />
       <AssignRolesDrawer
-        open={!!assigningRolesUser}
+        open={Boolean(assigningRolesUser?.manageable && canAssignRoles)}
         saving={savingRoles}
         loading={assignRolesLoading}
         item={assigningRolesUser}
@@ -778,7 +869,7 @@ export default function DashboardUsersPage() {
         onSubmit={handleAssignRoles}
       />
       <InvitationDialog
-        open={invitationOpen}
+        open={invitationOpen && canViewInvitation}
         canRotate={canRotateInvitation}
         onOpenChange={setInvitationOpen}
       />
