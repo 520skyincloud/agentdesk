@@ -615,3 +615,51 @@ go test ./cmd/customer_audit_seed ./cmd/testdata ./cmd/testdata/agentteam -run '
 - 本步骤与 AI 分支仅在 `internal/models/models.go` 同文件重叠，字段位于客服组织模型；不修改 `EmailVerifiedAt`、AI 模型、回复引擎、FastGPT、token 或计费语义。合并时必须保留双方字段。
 - 含旧客服分支 migration 25/26 成功记录的数据库，在合并 AI 分支后会被定义校验明确阻止启动；开发环境优先备份后重建，其他环境必须逐条核对 remark 和真实数据效果后制定 remap，不自动修复。
 - 回滚代码时可移除新写入校验，但 AutoMigrate 新列和已回填 TenantID 保留；不得用破坏性 DDL 清列或删除迁移历史。
+
+## 18. 多租户阶段 4B：快捷回复租户隔离（2026-07-14）
+
+### 本步骤目标与结果
+
+- 为 `QuickReply` 增加 `TenantID`，并完成快捷回复后台真实运行链路的租户隔离。
+- 创建从 `AuthPrincipal.ActiveTenantID` 写入租户；没有当前公司上下文时拒绝创建，不接收前端租户字段。
+- 分页列表、可用快捷回复列表、详情、更新和删除均按当前租户查询。跨租户 ID 表现为不存在，最终更新/删除 SQL 也带 `tenant_id` 条件。
+- 沿用现有快捷回复页面、权限和 API，不新增平行入口，不改变 response DTO；前端统一 API client 已携带 `X-Tenant-ID`，无需页面改动。
+
+### Migration 与数据安全
+
+- migration 40 将历史 `tenant_id=0` 的快捷回复回填至 `legacy-default`，保留引用现存租户的显式归属。
+- 缺少历史默认租户或存在指向不存在租户的记录时，迁移失败并整体回滚；迁移可重复执行。
+- `cmd/testdata/quickreply` 固定写入 `legacy-default`。若测试数据固定 ID 已归属其他租户则报错停止，禁止覆盖。
+- DDL 由 AutoMigrate 增加 `bigint not null default 0` 索引字段；不删除旧列，不改变前端字段。
+
+### 主要文件
+
+```text
+internal/models/models.go
+internal/repositories/quick_reply_repository.go
+internal/services/quick_reply_service.go
+internal/handlers/dashboard/quick_reply_handler.go
+internal/migration/000040_backfill_quick_reply_tenants.go
+cmd/testdata/quickreply/init.go
+```
+
+### 验证与未完成边界
+
+```text
+go test ./internal/migration -run 'TestBackfillQuickReplyTenants' -count=1
+go test ./internal/services -run '^TestQuickReplyService' -count=1
+go test ./internal/handlers/dashboard ./cmd/testdata ./cmd/testdata/quickreply -run '^$' -count=1
+```
+
+- 双租户测试覆盖创建归属、列表/详情隔离、跨租户更新/删除拒绝、同租户更新/删除和无租户上下文拒绝；迁移测试覆盖幂等、显式归属保留和异常引用整笔回滚。
+- 已扫描运行时引用并删除快捷回复 service 中无人使用的全局 CRUD 包装，后台 handler 只能调用显式租户方法；repository 的通用 CRUD 仅供迁移和测试数据等内部链路使用。
+- `go test ./internal/migration -count=1`、聚焦 `go test -race`、`go vet ./...`、`go test ./... -run '^$' -count=1` 和 `cd web && pnpm typecheck` 通过。`go test ./... -count=1` 仍被既有 `TestBuildLightweightTicket` 未初始化全局 DB，以及三个门店人工回复测试夹具缺少当前角色/客服组服务范围阻断；均不在快捷回复运行链路，后者应作为独立测试修复提交处理。
+- `Tag` 没有在本批单独租户化。它同时参与 `ConversationTag` 和 `TicketTag`，必须等会话、工单具备租户所有权后一起回填和校验，避免形成半隔离关系。
+- 本步骤不代表客户、门店、企微实例、会话、消息、派单、工单、知识库、文件、WebSocket、回调、Outbox 或向量检索已经隔离；公开邀请注册继续保持关闭。
+
+### 并行分支与回滚
+
+- 开始本步骤时已核对 `origin/codex/ai-billing@f2d2da4`。该分支没有修改快捷回复 handler/repository/service/testdata，但同样修改 `internal/models/models.go`；合并时必须保留双方新增字段，不能整文件选边。
+- migration 40 高于并行分支当前最高版本 33；提交前仍需再次 fetch 并核对版本和同文件变化。
+- 本步骤不修改 AI runtime、模型调用、FastGPT、token 统计、计费、消息状态或 WebSocket payload。建议先合并租户认证与组织契约，再合并本批快捷回复字段和迁移。
+- 回滚运行时代码时保留已添加列和历史回填结果；不得删除 migration 40 记录或使用破坏性 DDL。旧版本运行时会忽略该字段，但重新开放多租户前必须恢复租户过滤。

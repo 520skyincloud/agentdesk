@@ -742,6 +742,7 @@ type ConversationTag struct {
 // QuickReply 快捷回复。
 type QuickReply struct {
 	ID        int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID  int64        `gorm:"type:bigint;not null;default:0;index"`
 	GroupName string       `gorm:"type:varchar(50);not null;default:'';index"`
 	Title     string       `gorm:"type:varchar(100);not null;default:'';index"`
 	Content   string       `gorm:"type:text"`

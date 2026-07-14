@@ -16,7 +16,8 @@ import (
 )
 
 func QuickReplyAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionQuickReplyView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionQuickReplyView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -27,7 +28,7 @@ func QuickReplyAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "title", Op: params.Like},
 	).Asc("sort_no").Desc("id")
 
-	list, paging := services.QuickReplyService.FindPageByCnd(cnd)
+	list, paging := services.QuickReplyService.FindPageInTenant(cnd, operator)
 	results := builders.BuildQuickReplyResponses(list)
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
@@ -37,12 +38,13 @@ func QuickReplyGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionQuickReplyView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionQuickReplyView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 
-	item := services.QuickReplyService.Get(id)
+	item := services.QuickReplyService.GetInTenant(id, operator)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("快捷回复不存在"))
 		return
@@ -51,11 +53,12 @@ func QuickReplyGetBy(ctx *gin.Context) {
 }
 
 func QuickReplyGetList_all(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionQuickReplyView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionQuickReplyView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	list := services.QuickReplyService.Find(sqls.NewCnd().Eq("status", enums.StatusOk).Asc("sort_no").Desc("id"))
+	list := services.QuickReplyService.FindInTenant(sqls.NewCnd().Eq("status", enums.StatusOk).Asc("sort_no").Desc("id"), operator)
 	results := builders.BuildQuickReplyResponses(list)
 	httpx.WriteJSON(ctx, results)
 }
@@ -100,7 +103,8 @@ func QuickReplyPostUpdate(ctx *gin.Context) {
 }
 
 func QuickReplyPostDelete(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionQuickReplyDelete); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionQuickReplyDelete)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -110,7 +114,7 @@ func QuickReplyPostDelete(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.QuickReplyService.DeleteQuickReply(req.ID); err != nil {
+	if err := services.QuickReplyService.DeleteQuickReply(req.ID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

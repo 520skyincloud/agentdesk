@@ -1,15 +1,22 @@
 package quickreply
 
 import (
+	"fmt"
+	"time"
+
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
-	"time"
 
 	"github.com/mlogclub/simple/sqls"
 )
 
 func Init() error {
+	tenant := repositories.TenantRepository.GetByTenantCode(sqls.DB(), constants.LegacyDefaultTenantCode)
+	if tenant == nil || tenant.Status != enums.StatusOk {
+		return fmt.Errorf("legacy default tenant is missing or disabled")
+	}
 	seed := []struct {
 		id        int64
 		groupName string
@@ -107,6 +114,7 @@ func Init() error {
 			if existing == nil {
 				item := &models.QuickReply{
 					ID:        row.id,
+					TenantID:  tenant.ID,
 					GroupName: row.groupName,
 					Title:     row.title,
 					Content:   row.content,
@@ -126,7 +134,11 @@ func Init() error {
 				}
 				continue
 			}
+			if existing.TenantID != tenant.ID {
+				return fmt.Errorf("quick reply %d belongs to tenant %d, expected %d", row.id, existing.TenantID, tenant.ID)
+			}
 			if err := repositories.QuickReplyRepository.Updates(ctx.Tx, row.id, map[string]any{
+				"tenant_id":        tenant.ID,
 				"group_name":       row.groupName,
 				"title":            row.title,
 				"content":          row.content,

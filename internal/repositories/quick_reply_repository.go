@@ -26,6 +26,13 @@ func (r *quickReplyRepository) Get(db *gorm.DB, id int64) *models.QuickReply {
 	return ret
 }
 
+func (r *quickReplyRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.QuickReply {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *quickReplyRepository) Take(db *gorm.DB, where ...interface{}) *models.QuickReply {
 	ret := &models.QuickReply{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -92,6 +99,10 @@ func (r *quickReplyRepository) Updates(db *gorm.DB, id int64, columns map[string
 	return
 }
 
+func (r *quickReplyRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.QuickReply{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *quickReplyRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.QuickReply{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return
@@ -99,4 +110,8 @@ func (r *quickReplyRepository) UpdateColumn(db *gorm.DB, id int64, name string, 
 
 func (r *quickReplyRepository) Delete(db *gorm.DB, id int64) {
 	db.Delete(&models.QuickReply{}, "id = ?", id)
+}
+
+func (r *quickReplyRepository) DeleteInTenant(db *gorm.DB, id, tenantID int64) error {
+	return db.Delete(&models.QuickReply{}, "id = ? AND tenant_id = ?", id, tenantID).Error
 }
