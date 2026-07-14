@@ -45,6 +45,8 @@ type EditDialogProps = {
   fixedCustomerId?: number
   titleOverride?: string
   descriptionOverride?: string
+  canAssign?: boolean
+  canManageTags?: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (payload: CreateTicketPayload | UpdateTicketPayload) => Promise<void>
 }
@@ -93,13 +95,13 @@ function buildInitialForm(initialValues?: Partial<CreateTicketPayload>): EditFor
   }
 }
 
-function buildPayload(form: EditForm): CreateTicketPayload {
+function buildPayload(form: EditForm, includeInitialAssignee: boolean): CreateTicketPayload {
   const currentAssigneeId = form.currentAssigneeId ?? 0
   return {
     title: form.title.trim(),
     description: form.description.trim(),
-    currentAssigneeId,
     tagIds: form.tagIds,
+    ...(includeInitialAssignee && currentAssigneeId > 0 ? { currentAssigneeId } : {}),
   }
 }
 
@@ -112,6 +114,8 @@ export function EditDialog({
   fixedCustomerId,
   titleOverride,
   descriptionOverride,
+  canAssign = false,
+  canManageTags = false,
   onOpenChange,
   onSubmit,
 }: EditDialogProps) {
@@ -129,6 +133,8 @@ export function EditDialog({
       fixedCustomerId={fixedCustomerId}
       titleOverride={titleOverride}
       descriptionOverride={descriptionOverride}
+      canAssign={canAssign}
+      canManageTags={canManageTags}
       onOpenChange={onOpenChange}
       onSubmit={onSubmit}
     />
@@ -146,6 +152,8 @@ function TicketEditDialogBody({
   fixedCustomerId,
   titleOverride,
   descriptionOverride,
+  canAssign = false,
+  canManageTags = false,
   onOpenChange,
   onSubmit,
 }: TicketEditDialogBodyProps) {
@@ -194,13 +202,13 @@ function TicketEditDialogBody({
     }
     void (async () => {
       const [tagData, agentData] = await Promise.all([
-        fetchTagsAll(),
-        fetchAgentProfilesAll(),
+        canManageTags ? fetchTagsAll() : Promise.resolve([]),
+        canAssign && !itemId ? fetchAgentProfilesAll() : Promise.resolve([]),
       ])
       setTags(Array.isArray(tagData) ? tagData : [])
       setAgents(Array.isArray(agentData) ? agentData : [])
     })()
-  }, [open])
+  }, [canAssign, canManageTags, itemId, open])
 
   const agentOptions = [{ value: "0", label: t("ticket.noAssignee") }].concat(
     agents.map((agent) => ({
@@ -214,7 +222,7 @@ function TicketEditDialogBody({
   )
 
   async function onFormSubmit(values: EditForm) {
-    const payload = buildPayload(values)
+    const payload = buildPayload(values, canAssign && !itemId)
     if (itemId) {
       await onSubmit({
         ticketId: itemId,
@@ -295,45 +303,49 @@ function TicketEditDialogBody({
               </FieldContent>
             </Field>
 
-            <Field>
-              <FieldLabel>{t("ticket.assignee")}</FieldLabel>
-              <FieldContent>
-                <Controller
-                  control={control}
-                  name="currentAssigneeId"
-                  render={({ field }) => (
-                    <OptionCombobox
-                      value={String(field.value ?? 0)}
-                      onChange={(value) => field.onChange(Number(value))}
-                      placeholder={t("ticket.selectAssignee")}
-                      options={agentOptions}
-                    />
-                  )}
-                />
-              </FieldContent>
-            </Field>
+            {canAssign && !itemId ? (
+              <Field>
+                <FieldLabel>{t("ticket.assignee")}</FieldLabel>
+                <FieldContent>
+                  <Controller
+                    control={control}
+                    name="currentAssigneeId"
+                    render={({ field }) => (
+                      <OptionCombobox
+                        value={String(field.value ?? 0)}
+                        onChange={(value) => field.onChange(Number(value))}
+                        placeholder={t("ticket.selectAssignee")}
+                        options={agentOptions}
+                      />
+                    )}
+                  />
+                </FieldContent>
+              </Field>
+            ) : null}
 
-            <Field>
-              <FieldLabel>{t("ticket.ticketTags")}</FieldLabel>
-              <FieldContent>
-                <Controller
-                  control={control}
-                  name="tagIds"
-                  render={({ field }) => (
-                    <TagSelector
-                      mode="multiple"
-                      value={field.value}
-                      onChange={field.onChange}
-                      tags={tags}
-                      placeholder={t("ticket.selectTags")}
-                      selectedCountText={(count) => t("ticket.selectedTags", { count })}
-                      searchPlaceholder={t("ticket.searchTags")}
-                      emptyText={t("ticket.emptyTags")}
-                    />
-                  )}
-                />
-              </FieldContent>
-            </Field>
+            {canManageTags ? (
+              <Field>
+                <FieldLabel>{t("ticket.ticketTags")}</FieldLabel>
+                <FieldContent>
+                  <Controller
+                    control={control}
+                    name="tagIds"
+                    render={({ field }) => (
+                      <TagSelector
+                        mode="multiple"
+                        value={field.value}
+                        onChange={field.onChange}
+                        tags={tags}
+                        placeholder={t("ticket.selectTags")}
+                        selectedCountText={(count) => t("ticket.selectedTags", { count })}
+                        searchPlaceholder={t("ticket.searchTags")}
+                        emptyText={t("ticket.emptyTags")}
+                      />
+                    )}
+                  />
+                </FieldContent>
+              </Field>
+            ) : null}
           </FieldGroup>
         </form>
       )}

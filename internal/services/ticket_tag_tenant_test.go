@@ -3,9 +3,11 @@ package services_test
 import (
 	"testing"
 
+	"agent-desk/internal/events"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/eventbus"
 	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
 
@@ -78,6 +80,7 @@ func TestTicketAndTagRuntimeTenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create tenant A ticket: %v", err)
 	}
+	eventbus.WaitAsync[events.TicketAssignedEvent]()
 	ticketB, err := services.TicketService.CreateTicket(request.CreateTicketRequest{
 		Title:             "B tenant ticket",
 		Description:       "B tenant ticket description",
@@ -89,6 +92,7 @@ func TestTicketAndTagRuntimeTenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create tenant B ticket: %v", err)
 	}
+	eventbus.WaitAsync[events.TicketAssignedEvent]()
 	if ticketA.TenantID != 101 || ticketB.TenantID != 202 {
 		t.Fatalf("ticket tenant inheritance mismatch: A=%d B=%d", ticketA.TenantID, ticketB.TenantID)
 	}
@@ -116,10 +120,9 @@ func TestTicketAndTagRuntimeTenantIsolation(t *testing.T) {
 	}
 
 	if err := services.TicketService.UpdateTicket(request.UpdateTicketRequest{
-		TicketID:          ticketB.ID,
-		Title:             "cross-tenant update",
-		Description:       "cross-tenant update description",
-		CurrentAssigneeID: assigneeA.UserID,
+		TicketID:    ticketB.ID,
+		Title:       "cross-tenant update",
+		Description: "cross-tenant update description",
 	}, adminA); err == nil {
 		t.Fatal("tenant A must not update tenant B ticket")
 	}
@@ -153,7 +156,7 @@ func TestTicketAndTagRuntimeTenantIsolation(t *testing.T) {
 		t.Fatalf("tenant B ticket changed after rejected operations: %+v", currentB)
 	}
 	progressesB := repositories.TicketProgressRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", 202).Eq("ticket_id", ticketB.ID))
-	if len(progressesB) != 1 {
+	if len(progressesB) != 2 {
 		t.Fatalf("tenant B progress changed after rejected operations: %+v", progressesB)
 	}
 

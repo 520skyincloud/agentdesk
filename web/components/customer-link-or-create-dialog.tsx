@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import { CustomerForm, type CustomerFormSavePayload } from "@/components/customer-form"
+import { useAuth } from "@/components/auth-provider"
 import { ProjectDialog } from "@/components/project-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -33,12 +34,24 @@ export function CustomerLinkOrCreateDialog({
   onSuccess,
 }: CustomerLinkOrCreateDialogProps) {
   const t = useI18n()
+  const { session } = useAuth()
   const [searchText, setSearchText] = useState("")
   const [searching, setSearching] = useState(false)
   const [results, setResults] = useState<AdminCustomer[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [linkingId, setLinkingId] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  )
+  const canLinkContext = conversationId
+    ? permissions.has("conversation.linkCustomer")
+    : ticketId
+      ? permissions.has("ticket.update")
+      : true
+  const canSearchExisting = canLinkContext && permissions.has("customer.view")
+  const canCreateCustomer = canLinkContext && permissions.has("customer.create")
 
   useEffect(() => {
     if (!open) {
@@ -51,6 +64,9 @@ export function CustomerLinkOrCreateDialog({
   }, [open])
 
   const runSearch = async () => {
+    if (!canSearchExisting) {
+      return
+    }
     const q = searchText.trim()
     if (!q) {
       toast.error(t("customerLink.keywordRequired"))
@@ -76,6 +92,9 @@ export function CustomerLinkOrCreateDialog({
   }
 
   const handleLinkExisting = async (customer: AdminCustomer) => {
+    if (!canSearchExisting) {
+      return
+    }
     const customerName = customer.name || t("customerLink.fallbackName", { id: customer.id })
     if (!conversationId && !ticketId) {
       toast.success(t("customerLink.selected", { name: customerName }))
@@ -108,6 +127,9 @@ export function CustomerLinkOrCreateDialog({
   }
 
   const onCreateSave = async (payload: CustomerFormSavePayload) => {
+    if (!canCreateCustomer) {
+      return
+    }
     setSaving(true)
     try {
       const created = await saveCustomerProfile(payload)
@@ -175,7 +197,7 @@ export function CustomerLinkOrCreateDialog({
           >
             {t("customerLink.close")}
           </Button>
-          {showCreate ? (
+          {canCreateCustomer && showCreate ? (
             <Button type="submit" form={createFormId} disabled={saving}>
               {saving
                 ? t("customerLink.submitting")
@@ -190,27 +212,29 @@ export function CustomerLinkOrCreateDialog({
       }
     >
       <div className="flex flex-col gap-4">
-        <div className="flex gap-2">
-          <Input
-            placeholder={t("customerLink.searchPlaceholder")}
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void runSearch();
-              }
-            }}
-          />
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={searching}
-            onClick={() => void runSearch()}
-          >
-            {searching ? t("customerLink.searching") : t("customerLink.search")}
-          </Button>
-        </div>
+        {canSearchExisting ? (
+          <div className="flex gap-2">
+            <Input
+              placeholder={t("customerLink.searchPlaceholder")}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  void runSearch()
+                }
+              }}
+            />
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={searching}
+              onClick={() => void runSearch()}
+            >
+              {searching ? t("customerLink.searching") : t("customerLink.search")}
+            </Button>
+          </div>
+        ) : null}
 
         {results.length > 0 ? (
           <ul className="max-h-48 space-y-1.5 overflow-y-auto rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-2 text-sm shadow-inner shadow-blue-100/30">
@@ -245,7 +269,7 @@ export function CustomerLinkOrCreateDialog({
                 >
                   {linkingId === row.id
                     ? t("customerLink.processing")
-                    : conversationId
+                    : conversationId || ticketId
                       ? t("customerLink.link")
                       : t("customerLink.select")}
                 </Button>
@@ -254,17 +278,19 @@ export function CustomerLinkOrCreateDialog({
           </ul>
         ) : null}
 
-        <div className="border-t border-border pt-2">
-          <button
-            type="button"
-            className="text-sm text-primary underline-offset-4 hover:underline"
-            onClick={() => setShowCreate((v) => !v)}
-          >
-            {showCreate ? t("customerLink.collapseCreate") : t("customerLink.showCreate")}
-          </button>
-        </div>
+        {canCreateCustomer ? (
+          <div className="border-t border-border pt-2">
+            <button
+              type="button"
+              className="text-sm text-primary underline-offset-4 hover:underline"
+              onClick={() => setShowCreate((v) => !v)}
+            >
+              {showCreate ? t("customerLink.collapseCreate") : t("customerLink.showCreate")}
+            </button>
+          </div>
+        ) : null}
 
-        {showCreate ? (
+        {canCreateCustomer && showCreate ? (
           <CustomerForm
             formId={createFormId}
             onSave={onCreateSave}
@@ -275,5 +301,5 @@ export function CustomerLinkOrCreateDialog({
         ) : null}
       </div>
     </ProjectDialog>
-  );
+  )
 }

@@ -26,14 +26,13 @@ type CreateTicketFromConversationRequest struct {
 }
 
 type UpdateTicketRequest struct {
-	TicketID          int64   `json:"ticketId"`
-	Title             string  `json:"title"`
-	Description       string  `json:"description"`
-	Category          string  `json:"category"`
-	Priority          string  `json:"priority"`
-	RoomNo            string  `json:"roomNo"`
-	TagIDs            []int64 `json:"tagIds"`
-	CurrentAssigneeID int64   `json:"currentAssigneeId"`
+	TicketID    int64   `json:"ticketId"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	Category    string  `json:"category"`
+	Priority    string  `json:"priority"`
+	RoomNo      string  `json:"roomNo"`
+	TagIDs      []int64 `json:"tagIds"`
 }
 
 type LinkTicketCustomerRequest struct {

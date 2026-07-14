@@ -521,6 +521,30 @@ func TestTicketAndTagListHandlersRequireActiveTenant(t *testing.T) {
 	}
 }
 
+func TestTicketCreateWithInitialAssigneeRequiresAssignPermission(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		handler func(*gin.Context)
+	}{
+		{name: "manual ticket", body: `{"title":"test","description":"test","currentAssigneeId":22}`, handler: TicketPostCreate},
+		{name: "conversation ticket", body: `{"conversationId":11,"title":"test","description":"test","currentAssigneeId":22}`, handler: TicketPostCreate_from_conversation},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, tt.body, &dto.AuthPrincipal{
+				UserID:         21,
+				TenantID:       9,
+				ActiveTenantID: 9,
+				Username:       "ticket-creator",
+				Permissions:    []string{constants.PermissionTicketCreate.Code},
+			})
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
 func newAuthzHandlerTestContext(t *testing.T, body string, principal *dto.AuthPrincipal) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

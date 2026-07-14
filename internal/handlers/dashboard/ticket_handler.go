@@ -157,6 +157,12 @@ func TicketPostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if req.CurrentAssigneeID > 0 {
+		if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionTicketAssign); err != nil {
+			httpx.WriteJSON(ctx, err)
+			return
+		}
+	}
 	item, err := services.TicketService.CreateTicket(req, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -175,6 +181,12 @@ func TicketPostCreate_from_conversation(ctx *gin.Context) {
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
+	}
+	if req.CurrentAssigneeID > 0 {
+		if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionTicketAssign); err != nil {
+			httpx.WriteJSON(ctx, err)
+			return
+		}
 	}
 	item, err := services.TicketService.CreateFromConversation(req, operator)
 	if err != nil {

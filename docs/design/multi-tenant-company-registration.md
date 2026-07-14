@@ -1626,3 +1626,28 @@ git diff --check
 - 全量 Go、vet、83 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；契约测试固定 `knowledgeBase.update` 与所有审核动作的关系，同时固定来源会话入口对只读账号可见。
 - 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 不修改本批页面或测试，无同文件和 migration 冲突，不需要 rebase。
 - 本批可独立回滚页面和测试且无需数据回滚；工单动作权限和 AI 分支中的客户企业页仍待后续独立收口。
+
+## 43. 当前实施检查点：工单职责权限与首次指派审计（2026-07-14）
+
+本检查点复用现有工单、会话和客户关联能力，不新增平行派单模型。工单仍负责跨会话事项闭环，会话派单仍负责即时消息回复；本批只收紧工单内部“内容编辑”和“负责人指派”的职责边界，并让页面准确表达已有权限。
+
+### 后端契约与审计
+
+- `ticket.update` 只修改标题、描述、分类、优先级、房间号和标签，不再接收或写入 `currentAssigneeId`；负责人只能通过 `/ticket/assign` 和 `ticket.assign` 变更，避免绕过指派原因、进展和通知事件。
+- 手工创建和会话转工单仍可设置初始负责人，但非零负责人同时要求 `ticket.create + ticket.assign`。仅有创建权限时可以创建未指派工单，不能顺带派给客服。
+- 创建时的初始负责人改为在同一事务内复用 `assignTicketTx`：先写“创建工单”，再写“指派处理人”进展，并在提交后发布 `TicketAssignedEvent`。因此首次指派与后续转派使用同一租户校验、人员状态校验和通知链路。
+- 兼容旧客户端：旧版更新请求继续携带 `currentAssigneeId` 时，后端 DTO 会忽略该字段而不是报错，但负责人不会变化。创建请求字段保持不变。
+
+### 页面权限与只读体验
+
+- 工单列表新增入口使用 `ticket.create`；负责人和标签筛选仅在分别具备 `agentProfile.view`、`tag.view` 时加载辅助数据，避免只读角色因无关列表接口 403 导致工单页失败。
+- 工单详情的内容编辑、指派、状态、进展分别使用 `ticket.update`、`ticket.assign`、`ticket.changeStatus`、`ticket.progress`。无写权限时仍显示工单内容、当前状态、负责人、客户资料和历史进展。
+- 已关联客户的档案编辑使用 `customer.update`；未关联工单的查找/新建客户同时要求 `ticket.update` 与对应的 `customer.view/customer.create`。共享客户关联弹窗也执行相同守卫。
+- 会话工作台中的转工单、转接和关闭分别使用 `ticket.create`、`conversation.transfer`、`conversation.close`；无任何动作权限时不显示空菜单。会话关联客户继续使用 `conversation.linkCustomer`，并叠加客户查看或创建权限。
+
+### 契约、验证与合并
+
+- 本批修改 request DTO 和服务行为，但没有 model、AutoMigrate、DML migration、enum、Gin 路由、WebSocket payload、权限常量、导航或 JsonResult 变化；不涉及 AI 回复、模型、token、usage 或计费。
+- 全量 Go、vet、87 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。新增 handler 测试固定创建/指派复合权限，service 测试固定编辑保留负责人及首次指派进展，前端契约测试固定工单和会话动作映射。
+- 开始前和提交前均已 fetch。最终范围扩展到 `conversation-info-panel.tsx` 后确认 AI 分支也修改该文件：本批位于前半段未关联客户权限入口，AI 分支位于后半段自动转人工和公司意图配置，当前 `merge-tree` 可自动合并且语义不重叠；合并时必须同时保留双方逻辑。无 migration 编号影响，不需要为本批单独 rebase。
+- 回滚后普通编辑会重新具备静默改派能力，首次指派也会丢失专用进展与通知，因此若只回滚前端会重新暴露后端职责漏洞；建议本批后端、前端和测试整体回滚。

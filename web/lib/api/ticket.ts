@@ -139,7 +139,6 @@ export type UpdateTicketPayload = {
   priority?: TicketPriority | string
   roomNo?: string
   tagIds?: number[]
-  currentAssigneeId?: number
 }
 
 function toQueryString(query?: Record<string, string | number | boolean | undefined>) {

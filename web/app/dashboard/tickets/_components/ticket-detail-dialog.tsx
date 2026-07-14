@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -16,6 +16,7 @@ import { toast } from "sonner"
 import { type CustomerFormSavePayload } from "@/components/customer-form"
 import { CustomerFormDialog } from "@/components/customer-form-dialog"
 import { CustomerLinkOrCreateDialog } from "@/components/customer-link-or-create-dialog"
+import { useAuth } from "@/components/auth-provider"
 import { useConfirm } from "@/components/confirm-provider"
 import { ContentEditor } from "@/components/content-editor"
 import { ProjectDialog } from "@/components/project-dialog"
@@ -104,6 +105,7 @@ export function TicketDetailDialog({
 }: TicketDetailDialogProps) {
   const t = useI18n()
   const confirm = useConfirm()
+  const { session } = useAuth()
   const [detail, setDetail] = useState<TicketDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [statusSaving, setStatusSaving] = useState<TicketStatus | null>(null)
@@ -119,6 +121,18 @@ export function TicketDetailDialog({
   const loadSeqRef = useRef(0)
   const dialogSeqRef = useRef(0)
   const currentTicketIdRef = useRef<number | null>(null)
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  )
+  const canUpdate = permissions.has("ticket.update")
+  const canAssign = permissions.has("ticket.assign") && permissions.has("agentProfile.view")
+  const canChangeStatus = permissions.has("ticket.changeStatus")
+  const canAddProgress = permissions.has("ticket.progress")
+  const canViewTags = permissions.has("tag.view")
+  const canViewCustomers = permissions.has("customer.view")
+  const canCreateCustomers = permissions.has("customer.create")
+  const canUpdateCustomers = permissions.has("customer.update")
   currentTicketIdRef.current = open ? ticketId : null
 
   function isCurrentOperation(targetTicketId: number, dialogSeq: number) {
@@ -176,7 +190,7 @@ export function TicketDetailDialog({
   }, [loadDetail, ticketId])
 
   async function handleStatusChange(status: TicketStatus) {
-    if (!detail || detail.ticket.status === status) {
+    if (!canChangeStatus || !detail || detail.ticket.status === status) {
       return
     }
     const confirmed = await confirm({
@@ -217,7 +231,7 @@ export function TicketDetailDialog({
   }
 
   async function handleCreateProgress() {
-    if (!detail) {
+    if (!canAddProgress || !detail) {
       return
     }
     const activeTicketId = detail.ticket.id
@@ -270,7 +284,7 @@ export function TicketDetailDialog({
   }
 
   async function handleUpdateTicket(payload: CreateTicketPayload | UpdateTicketPayload) {
-    if (!("ticketId" in payload) || payload.ticketId <= 0) {
+    if (!canUpdate || !("ticketId" in payload) || payload.ticketId <= 0) {
       toast.error(t("ticket.selectTicket"))
       return
     }
@@ -301,6 +315,9 @@ export function TicketDetailDialog({
   }
 
   async function handleUpdateCustomer(payload: CustomerFormSavePayload) {
+    if (!canUpdateCustomers) {
+      return
+    }
     const activeCustomerId = getTicketCustomerId(ticket)
     if (!ticket?.id || activeCustomerId <= 0) {
       toast.error(t("ticket.noLinkedCustomer"))
@@ -352,6 +369,9 @@ export function TicketDetailDialog({
   const ticket = detail?.ticket
   const customerId = getTicketCustomerId(ticket)
   const statusOptions = getStatusOptions(t)
+  const canManageCustomer = customerId > 0
+    ? canUpdateCustomers
+    : canUpdate && (canViewCustomers || canCreateCustomers)
 
   return (
     <>
@@ -397,40 +417,44 @@ export function TicketDetailDialog({
                 <div className="space-y-2">
                   <div className="text-sm font-medium text-muted-foreground">{t("ticket.currentStatus")}</div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger
-                        render={
-                          <Button
-                            type="button"
-                            variant="outline"
-                            disabled={!!statusSaving}
-                            className={cn(
-                              "h-9 min-w-36 justify-between gap-2 border px-3 font-medium",
-                              getTicketStatusMeta(ticket.status)?.className,
-                            )}
-                          />
-                        }
-                      >
-                        <span>{statusSaving ? t("ticket.updating") : getStatusLabel(ticket.status, t)}</span>
-                        <ChevronDownIcon className="size-4 opacity-70" />
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start" className="w-44 min-w-44">
-                        {statusOptions.map((option) => {
-                          const selected = ticket.status === option.value
-                          return (
-                            <DropdownMenuItem
-                              key={option.value}
-                              disabled={!!statusSaving || selected}
-                              onClick={() => void handleStatusChange(option.value)}
-                              className="justify-between"
-                            >
-                              <span>{option.label}</span>
-                              {selected ? <CheckIcon className="size-4 text-primary" /> : null}
-                            </DropdownMenuItem>
-                          )
-                        })}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    {canChangeStatus ? (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          render={
+                            <Button
+                              type="button"
+                              variant="outline"
+                              disabled={!!statusSaving}
+                              className={cn(
+                                "h-9 min-w-36 justify-between gap-2 border px-3 font-medium",
+                                getTicketStatusMeta(ticket.status)?.className,
+                              )}
+                            />
+                          }
+                        >
+                          <span>{statusSaving ? t("ticket.updating") : getStatusLabel(ticket.status, t)}</span>
+                          <ChevronDownIcon className="size-4 opacity-70" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-44 min-w-44">
+                          {statusOptions.map((option) => {
+                            const selected = ticket.status === option.value
+                            return (
+                              <DropdownMenuItem
+                                key={option.value}
+                                disabled={!!statusSaving || selected}
+                                onClick={() => void handleStatusChange(option.value)}
+                                className="justify-between"
+                              >
+                                <span>{option.label}</span>
+                                {selected ? <CheckIcon className="size-4 text-primary" /> : null}
+                              </DropdownMenuItem>
+                            )
+                          })}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    ) : (
+                      <TicketStatusBadge status={ticket.status} />
+                    )}
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -440,9 +464,11 @@ export function TicketDetailDialog({
                       <UserRoundIcon className="size-4 shrink-0 text-muted-foreground" />
                       <span className="truncate">{ticket.currentAssigneeName || t("ticket.unassigned")}</span>
                     </div>
-                    <Button type="button" size="sm" variant="outline" onClick={() => setAssignOpen(true)}>
-                      {t("ticket.assign")}
-                    </Button>
+                    {canAssign ? (
+                      <Button type="button" size="sm" variant="outline" onClick={() => setAssignOpen(true)}>
+                        {t("ticket.assign")}
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
               </section>
@@ -450,9 +476,11 @@ export function TicketDetailDialog({
               <section className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-sm font-medium text-muted-foreground">{t("ticket.tags")}</div>
-                  <Button type="button" size="sm" variant="outline" onClick={() => setEditOpen(true)}>
-                    {t("ticket.edit")}
-                  </Button>
+                  {canUpdate ? (
+                    <Button type="button" size="sm" variant="outline" onClick={() => setEditOpen(true)}>
+                      {t("ticket.edit")}
+                    </Button>
+                  ) : null}
                 </div>
                 {ticket.tags && ticket.tags.length > 0 ? (
                   <div className="flex flex-wrap gap-1.5">
@@ -470,22 +498,24 @@ export function TicketDetailDialog({
               <section className="agentdesk-subtle-surface space-y-3 rounded-xl p-3 text-sm">
                 <div className="flex items-center justify-between gap-2">
                   <div className="font-medium text-muted-foreground">{t("ticket.customerInfo")}</div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 shrink-0 gap-1 px-2 text-xs"
-                    onClick={() => {
-                      if (customerId > 0) {
-                        setCustomerEditOpen(true)
-                        return
-                      }
-                      setCustomerLinkOpen(true)
-                    }}
-                  >
-                    <PencilIcon className="size-3.5" />
-                    {customerId > 0 ? t("ticket.edit") : t("ticket.linkOrCreate")}
-                  </Button>
+                  {canManageCustomer ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 shrink-0 gap-1 px-2 text-xs"
+                      onClick={() => {
+                        if (customerId > 0) {
+                          setCustomerEditOpen(true)
+                          return
+                        }
+                        setCustomerLinkOpen(true)
+                      }}
+                    >
+                      <PencilIcon className="size-3.5" />
+                      {customerId > 0 ? t("ticket.edit") : t("ticket.linkOrCreate")}
+                    </Button>
+                  ) : null}
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <MetadataItem label={t("ticket.customer")} value={ticket.customer?.name || ticket.customerId} />
@@ -510,10 +540,12 @@ export function TicketDetailDialog({
                   <MessageSquareTextIcon className="size-4 text-muted-foreground" />
                   {t("ticket.progress")}
                 </div>
-                <Button type="button" size="sm" onClick={() => setProgressOpen(true)}>
-                  <PlusIcon className="size-3.5" />
-                  {t("ticket.addProgress")}
-                </Button>
+                {canAddProgress ? (
+                  <Button type="button" size="sm" onClick={() => setProgressOpen(true)}>
+                    <PlusIcon className="size-3.5" />
+                    {t("ticket.addProgress")}
+                  </Button>
+                ) : null}
               </div>
               <Separator />
               <div className="min-h-0 flex-1 overflow-y-auto p-4">
@@ -554,34 +586,35 @@ export function TicketDetailDialog({
       </ProjectDialog>
 
       <TicketAssignDialog
-        open={assignOpen}
+        open={canAssign && assignOpen}
         ticketId={ticket?.id ?? null}
         currentAssigneeId={ticket?.currentAssigneeId}
         onOpenChange={setAssignOpen}
         onSuccess={handleAssigned}
       />
       <EditDialog
-        open={editOpen}
+        open={canUpdate && editOpen}
         saving={editSaving}
         itemId={ticket?.id ?? null}
+        canManageTags={canViewTags}
         onOpenChange={setEditOpen}
         onSubmit={handleUpdateTicket}
       />
       <CustomerFormDialog
-        open={customerEditOpen}
+        open={canUpdateCustomers && customerEditOpen}
         onOpenChange={setCustomerEditOpen}
         saving={customerEditSaving}
         itemId={customerId > 0 ? customerId : null}
         onSave={handleUpdateCustomer}
       />
       <CustomerLinkOrCreateDialog
-        open={customerLinkOpen}
+        open={canUpdate && customerLinkOpen}
         onOpenChange={setCustomerLinkOpen}
         ticketId={ticket?.id ?? null}
         onSuccess={handleCustomerLinked}
       />
       <Dialog
-        open={progressOpen}
+        open={canAddProgress && progressOpen}
         onOpenChange={(nextOpen) => {
           if (progressSaving) {
             return

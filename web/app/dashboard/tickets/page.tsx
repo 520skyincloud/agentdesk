@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import {
   DashboardListPage,
   type DashboardListColumn,
@@ -102,6 +103,7 @@ function quickViewLabel(label: string, count: number) {
 
 export default function TicketsPage() {
   const t = useI18n()
+  const { session } = useAuth()
   const searchParams = useSearchParams()
   const [summary, setSummary] = useState<TicketSummary>(emptySummary)
   const [assigneeOptions, setAssigneeOptions] = useState<ComboboxOption[]>([])
@@ -111,6 +113,14 @@ export default function TicketsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [savingCreate, setSavingCreate] = useState(false)
   const listReloadRef = useRef<() => Promise<void>>(async () => undefined)
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  )
+  const canCreate = permissions.has("ticket.create")
+  const canAssign = permissions.has("ticket.assign")
+  const canViewAgentProfiles = permissions.has("agentProfile.view")
+  const canViewTags = permissions.has("tag.view")
 
   const assigneeAllOption = useMemo(() => getAssigneeAllOption(t), [t])
   const staleHourOptions = useMemo(() => getStaleHourOptions(t), [t])
@@ -175,28 +185,32 @@ export default function TicketsPage() {
         trim: true,
         className: "w-full sm:w-72",
       },
-      {
-        name: "currentAssigneeId",
-        label: t("ticket.allAssignees"),
-        type: "select",
-        defaultValue: "0",
-        allValue: "0",
-        valueType: "number",
-        options: assigneeOptions,
-        className: "w-full sm:w-44",
-      },
-      {
-        name: "tagId",
-        label: t("ticket.allTags"),
-        type: "tag",
-        defaultValue: "0",
-        allValue: "0",
-        valueType: "number",
-        tags,
-        searchPlaceholder: t("ticket.searchTags"),
-        emptyText: t("ticket.emptyTags"),
-        className: "w-full sm:w-44",
-      },
+      ...(canViewAgentProfiles
+        ? [{
+            name: "currentAssigneeId",
+            label: t("ticket.allAssignees"),
+            type: "select" as const,
+            defaultValue: "0",
+            allValue: "0",
+            valueType: "number" as const,
+            options: assigneeOptions,
+            className: "w-full sm:w-44",
+          }]
+        : []),
+      ...(canViewTags
+        ? [{
+            name: "tagId",
+            label: t("ticket.allTags"),
+            type: "tag" as const,
+            defaultValue: "0",
+            allValue: "0",
+            valueType: "number" as const,
+            tags,
+            searchPlaceholder: t("ticket.searchTags"),
+            emptyText: t("ticket.emptyTags"),
+            className: "w-full sm:w-44",
+          }]
+        : []),
       {
         name: "staleHours",
         label: t("ticket.staleThreshold"),
@@ -206,7 +220,7 @@ export default function TicketsPage() {
         className: "w-full sm:w-40",
       },
     ],
-    [assigneeOptions, quickViews, staleHourOptions, tags, t],
+    [assigneeOptions, canViewAgentProfiles, canViewTags, quickViews, staleHourOptions, tags, t],
   )
 
   const fetchList = useCallback(
@@ -348,7 +362,10 @@ export default function TicketsPage() {
 
   useEffect(() => {
     let active = true
-    Promise.all([fetchAgentProfilesAll(), fetchTagsAll()])
+    Promise.all([
+      canViewAgentProfiles ? fetchAgentProfilesAll() : Promise.resolve([]),
+      canViewTags ? fetchTagsAll() : Promise.resolve([]),
+    ])
       .then(([agents, tags]) => {
         if (!active) {
           return
@@ -372,7 +389,7 @@ export default function TicketsPage() {
     return () => {
       active = false
     }
-  }, [assigneeAllOption, t])
+  }, [assigneeAllOption, canViewAgentProfiles, canViewTags, t])
 
   async function handleCreateTicket(payload: CreateTicketPayload) {
     setSavingCreate(true)
@@ -404,10 +421,12 @@ export default function TicketsPage() {
                 <SearchXIcon className="size-4" />
                 {t("ticket.reset")}
               </Button>
-              <Button type="button" className="rounded-lg shadow-[0_8px_18px_rgba(47,107,255,0.18)]" onClick={() => setCreateOpen(true)}>
-                <PlusIcon className="size-4" />
-                {t("ticket.newTicket")}
-              </Button>
+              {canCreate ? (
+                <Button type="button" className="rounded-lg shadow-[0_8px_18px_rgba(47,107,255,0.18)]" onClick={() => setCreateOpen(true)}>
+                  <PlusIcon className="size-4" />
+                  {t("ticket.newTicket")}
+                </Button>
+              ) : null}
             </>
           )
         }}
@@ -421,9 +440,11 @@ export default function TicketsPage() {
       />
 
       <EditDialog
-        open={createOpen}
+        open={canCreate && createOpen}
         saving={savingCreate}
         itemId={null}
+        canAssign={canAssign && canViewAgentProfiles}
+        canManageTags={canViewTags}
         onOpenChange={setCreateOpen}
         onSubmit={handleCreateTicket}
       />

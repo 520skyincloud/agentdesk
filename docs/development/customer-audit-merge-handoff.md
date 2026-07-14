@@ -2297,3 +2297,61 @@ git diff --check
 
 - 开始前已 fetch：`origin/codex/ai-billing@f2d2da4` 与本批预计文件无同文件修改，无 migration 编号影响，不需要 rebase。
 - 本批不修改候选生成、AI 质检算法、知识导入、模型调用、token、usage 或计费。页面和测试可独立回滚，无数据回滚；回滚会恢复只读账号的失败写按钮。
+
+## 第 43 批：工单职责权限与首次指派审计（2026-07-14）
+
+### 目标与复用判断
+
+- 工单已有 `create/update/assign/changeStatus/progress` 细粒度权限和专用指派接口，但普通 `UpdateTicketRequest` 仍带 `currentAssigneeId`，导致 `ticket.update` 可绕过 `ticket.assign`、指派原因、进展记录和通知事件。
+- 手工创建、会话转工单也可在只有 `ticket.create` 时指定负责人；工单详情和会话菜单则未按现有动作权限显隐。
+- 本批复用现有工单、客户关联、会话菜单和权限点，不新增工单/派单平行模型。即时会话派单与跨会话工单继续保持原职责分界。
+
+### 文件与契约
+
+```text
+internal/handlers/dashboard/ticket_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+internal/pkg/dto/request/ticket_request.go
+internal/services/ticket_service.go
+internal/services/ticket_service_test.go
+internal/services/ticket_tag_tenant_test.go
+web/lib/api/ticket.ts
+web/app/dashboard/tickets/page.tsx
+web/app/dashboard/tickets/_components/edit.tsx
+web/app/dashboard/tickets/_components/ticket-detail-dialog.tsx
+web/app/dashboard/tickets/_components/create-ticket-from-conversation-dialog.tsx
+web/app/dashboard/tickets/action-permissions.test.mjs
+web/components/customer-link-or-create-dialog.tsx
+web/app/dashboard/conversations/page.tsx
+web/app/dashboard/conversations/_components/conversation-info-panel.tsx
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- `UpdateTicketRequest` 和前端 `UpdateTicketPayload` 删除 `currentAssigneeId`；`UpdateTicket` 不再校验或写负责人。旧请求的多余 JSON 字段被忽略，现有客户端不会因解析失败中断，但改派必须迁移到 `/ticket/assign`。
+- 两个创建 handler 在非零初始负责人时额外要求 `ticket.assign`。服务层创建未指派主记录后，在同一事务内调用 `assignTicketTx`，记录初始指派进展；事务提交后同时发布创建和指派事件。
+- 工单列表/详情按现有动作权限显示新建、编辑、指派、状态、进展和客户维护；Agent/标签辅助列表按其 view 权限按需加载。会话页按 `ticket.create/conversation.transfer/conversation.close` 收紧菜单和弹窗，客户关联弹窗按上下文关联权限叠加 `customer.view/create`。
+- 没有 model、AutoMigrate、DML migration、enum、Gin 路由、WebSocket payload、权限常量、导航或统一响应变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/tickets/page.tsx app/dashboard/tickets/_components/ticket-detail-dialog.tsx app/dashboard/tickets/_components/edit.tsx app/dashboard/tickets/_components/create-ticket-from-conversation-dialog.tsx app/dashboard/conversations/page.tsx app/dashboard/conversations/_components/conversation-info-panel.tsx components/customer-link-or-create-dialog.tsx lib/api/ticket.ts
+git diff --check
+```
+
+- 全量 Go、vet、87 项前端回归、typecheck、Next 生产构建和 diff 检查通过。
+- 目标 ESLint 无 error，保留会话页原有 `@next/next/no-img-element` warning；本批未修改对应图片节点。
+- 新测试覆盖创建时 `ticket.create + ticket.assign` 复合权限、普通编辑保留负责人、首次和再次指派进展、租户隔离，以及工单/会话/客户关联动作显隐。
+
+### 并行分支、合并与回滚
+
+- 开始前和提交前均已 fetch：`origin/codex/ai-billing@f2d2da4`。最终范围扩展后发现双方同改 `web/app/dashboard/conversations/_components/conversation-info-panel.tsx`；本批改前半段未关联客户权限，AI 分支改后半段自动转人工和公司意图字段，当前 `git merge-tree --write-tree HEAD origin/codex/ai-billing` 对该文件可自动合并。最终合并须保留双方区块并重新跑 typecheck/build；无 migration 冲突，不需要为本批单独 rebase。
+- 本批不修改 AI 回复 runtime、模型供应商、token、usage、计费或 ReplyIntentConfig。DTO 变化仅限工单普通更新不再接受负责人；AI 内部系统建单仍可调用服务层创建并获得完整首次指派审计。
+- 推荐整体合并后端、前端和测试。只回滚后端会恢复 `ticket.update` 静默改派漏洞；只回滚前端则旧创建表单会向无 `ticket.assign` 账号展示负责人并收到 403。
+- 无表结构和存量数据回滚。新增的首次指派进展与通知属于正确审计事实，不应在代码回滚时删除。

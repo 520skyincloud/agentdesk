@@ -120,6 +120,16 @@ export default function ConversationsPage() {
   const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([]);
   const [accountKeyword, setAccountKeyword] = useState("");
   const [handoffToastDismissedId, setHandoffToastDismissedId] = useState<number | null>(null);
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  );
+  const canCreateTicket = permissions.has("ticket.create");
+  const canAssignTicket = permissions.has("ticket.assign") && permissions.has("agentProfile.view");
+  const canViewTags = permissions.has("tag.view");
+  const canTransferConversation = permissions.has("conversation.transfer");
+  const canCloseConversation = permissions.has("conversation.close");
+  const canUseConversationActions = canCreateTicket || canTransferConversation || canCloseConversation;
   const isSupportAgent = session?.roles?.includes("cs_user") ?? false;
   const showingMyAttention = conversationFilter === "my_attention";
   const selectedInstance = instances.find((item) => item.id === selectedWxWorkInstanceId) ?? null;
@@ -663,43 +673,51 @@ export default function ConversationsPage() {
           >
             <CircleUserRoundIcon className="size-4" />
           </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className={workbenchIconButtonClassName}
-                  disabled={!conversation}
-                />
-              }
-            >
-              <MoreHorizontalIcon className="size-4" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44 min-w-44">
-              <DropdownMenuItem
-                onClick={() => setCreateTicketOpen(true)}
-                disabled={!conversation}
+          {canUseConversationActions ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={workbenchIconButtonClassName}
+                    disabled={!conversation}
+                  />
+                }
               >
-                <FilePlus2Icon />
-                {t("conversation.createTicket")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => setTransferOpen(true)}
-                disabled={!conversation || conversation.status !== 3}
-              >
-                <ArrowRightLeftIcon />
-                {t("conversation.transferConversation")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => setCloseOpen(true)}
-                disabled={!conversation || conversation.status === 4}
-              >
-                <CircleXIcon />
-                {t("conversation.closeConversation")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <MoreHorizontalIcon className="size-4" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44 min-w-44">
+                {canCreateTicket ? (
+                  <DropdownMenuItem
+                    onClick={() => setCreateTicketOpen(true)}
+                    disabled={!conversation}
+                  >
+                    <FilePlus2Icon />
+                    {t("conversation.createTicket")}
+                  </DropdownMenuItem>
+                ) : null}
+                {canTransferConversation ? (
+                  <DropdownMenuItem
+                    onClick={() => setTransferOpen(true)}
+                    disabled={!conversation || conversation.status !== 3}
+                  >
+                    <ArrowRightLeftIcon />
+                    {t("conversation.transferConversation")}
+                  </DropdownMenuItem>
+                ) : null}
+                {canCloseConversation ? (
+                  <DropdownMenuItem
+                    onClick={() => setCloseOpen(true)}
+                    disabled={!conversation || conversation.status === 4}
+                  >
+                    <CircleXIcon />
+                    {t("conversation.closeConversation")}
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
           <Button
             variant="ghost"
             size="icon"
@@ -756,7 +774,7 @@ export default function ConversationsPage() {
         </div>
       </div>
       <ConversationTransferDialog
-        open={transferOpen}
+        open={canTransferConversation && transferOpen}
         mode="transfer"
         conversationId={conversation?.id ?? null}
         onOpenChange={setTransferOpen}
@@ -768,7 +786,7 @@ export default function ConversationsPage() {
         }}
       />
       <ConversationCloseDialog
-        open={closeOpen}
+        open={canCloseConversation && closeOpen}
         conversationId={conversation?.id ?? null}
         onOpenChange={setCloseOpen}
         onSuccess={async () => {
@@ -779,7 +797,7 @@ export default function ConversationsPage() {
         }}
       />
       <CreateTicketFromConversationDialog
-        open={createTicketOpen}
+        open={canCreateTicket && createTicketOpen}
         onOpenChange={setCreateTicketOpen}
         conversation={
           conversation
@@ -792,6 +810,8 @@ export default function ConversationsPage() {
               }
             : null
         }
+        canAssign={canAssignTicket}
+        canManageTags={canViewTags}
         onSuccess={() => {
           setCreateTicketOpen(false);
         }}

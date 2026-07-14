@@ -17,6 +17,8 @@ type ConversationSeed = {
 type CreateTicketFromConversationDialogProps = {
   open: boolean
   conversation: ConversationSeed | null
+  canAssign?: boolean
+  canManageTags?: boolean
   onOpenChange: (open: boolean) => void
   onSuccess?: () => void
 }
@@ -24,6 +26,8 @@ type CreateTicketFromConversationDialogProps = {
 export function CreateTicketFromConversationDialog({
   open,
   conversation,
+  canAssign = false,
+  canManageTags = false,
   onOpenChange,
   onSuccess,
 }: CreateTicketFromConversationDialogProps) {
@@ -32,7 +36,7 @@ export function CreateTicketFromConversationDialog({
     ? {
         title: conversation.customerName || "",
         description: conversation.lastMessageSummary || "",
-        currentAssigneeId: conversation.currentAssigneeId || undefined,
+        currentAssigneeId: canAssign ? conversation.currentAssigneeId || undefined : undefined,
       }
     : undefined
 
@@ -45,6 +49,8 @@ export function CreateTicketFromConversationDialog({
       fixedConversationId={conversation?.id}
       fixedCustomerId={conversation?.customerId}
       initialValues={initialValues}
+      canAssign={canAssign}
+      canManageTags={canManageTags}
       titleOverride={t("ticket.conversationToTicket")}
       descriptionOverride={t("ticket.conversationToTicketDescription")}
       onSubmit={async (payload) => {
@@ -55,7 +61,7 @@ export function CreateTicketFromConversationDialog({
           conversationId: conversation.id,
           title: payload.title,
           description: payload.description,
-          currentAssigneeId: payload.currentAssigneeId,
+          currentAssigneeId: "currentAssigneeId" in payload ? payload.currentAssigneeId : undefined,
           tagIds: payload.tagIds,
         })
         toast.success(t("ticket.createSuccess"))

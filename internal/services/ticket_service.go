@@ -245,19 +245,18 @@ func (s *ticketService) CreateTicket(req request.CreateTicketRequest, operator *
 	}
 
 	ticket := &models.Ticket{
-		TenantID:          tenantID,
-		Title:             title,
-		Description:       description,
-		Category:          normalizeTicketCategory(req.Category),
-		Priority:          normalizeTicketPriority(req.Priority),
-		RoomNo:            strings.TrimSpace(req.RoomNo),
-		Source:            source,
-		Channel:           strings.TrimSpace(req.Channel),
-		CustomerID:        req.CustomerID,
-		ConversationID:    req.ConversationID,
-		Status:            enums.TicketStatusPending,
-		CurrentAssigneeID: req.CurrentAssigneeID,
-		AuditFields:       utils.BuildAuditFields(operator),
+		TenantID:       tenantID,
+		Title:          title,
+		Description:    description,
+		Category:       normalizeTicketCategory(req.Category),
+		Priority:       normalizeTicketPriority(req.Priority),
+		RoomNo:         strings.TrimSpace(req.RoomNo),
+		Source:         source,
+		Channel:        strings.TrimSpace(req.Channel),
+		CustomerID:     req.CustomerID,
+		ConversationID: req.ConversationID,
+		Status:         enums.TicketStatusPending,
+		AuditFields:    utils.BuildAuditFields(operator),
 	}
 
 	ticketNo, err := TicketNoSequenceService.Next(ticket.CreatedAt)
@@ -265,6 +264,7 @@ func (s *ticketService) CreateTicket(req request.CreateTicketRequest, operator *
 		return nil, err
 	}
 
+	var assignedEvent *events.TicketAssignedEvent
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		ticket.TicketNo = ticketNo
 		if err := repositories.TicketRepository.Create(ctx.Tx, ticket); err != nil {
@@ -273,13 +273,24 @@ func (s *ticketService) CreateTicket(req request.CreateTicketRequest, operator *
 		if err := TicketTagService.ReplaceTicketTags(ctx.Tx, ticket.ID, tenantID, tagIDs, operator); err != nil {
 			return err
 		}
-		return repositories.TicketProgressRepository.Create(ctx.Tx, &models.TicketProgress{
+		if err := repositories.TicketProgressRepository.Create(ctx.Tx, &models.TicketProgress{
 			TenantID:  tenantID,
 			TicketID:  ticket.ID,
 			Content:   "创建工单",
 			AuthorID:  operator.UserID,
 			CreatedAt: time.Now(),
-		})
+		}); err != nil {
+			return err
+		}
+		if req.CurrentAssigneeID <= 0 {
+			return nil
+		}
+		var err error
+		assignedEvent, err = s.assignTicketTx(ctx.Tx, request.AssignTicketRequest{
+			TicketID: ticket.ID,
+			ToUserID: req.CurrentAssigneeID,
+		}, tenantID, operator)
+		return err
 	}); err != nil {
 		return nil, err
 	}
@@ -288,6 +299,9 @@ func (s *ticketService) CreateTicket(req request.CreateTicketRequest, operator *
 		TicketID:   ticket.ID,
 		OperatorID: operator.UserID,
 	})
+	if assignedEvent != nil {
+		eventbus.PublishAsync(context.Background(), *assignedEvent)
+	}
 	return repositories.TicketRepository.GetInTenant(sqls.DB(), ticket.ID, tenantID), nil
 }
 
@@ -357,9 +371,6 @@ func (s *ticketService) UpdateTicket(req request.UpdateTicketRequest, operator *
 	if ticket == nil {
 		return errorsx.InvalidParam("工单不存在")
 	}
-	if err := s.validateAssignee(req.CurrentAssigneeID, tenantID); err != nil {
-		return err
-	}
 	tagIDs, err := TicketTagService.ValidateTagIDs(req.TagIDs, tenantID)
 	if err != nil {
 		return err
@@ -367,15 +378,14 @@ func (s *ticketService) UpdateTicket(req request.UpdateTicketRequest, operator *
 	now := time.Now()
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		if err := repositories.TicketRepository.UpdatesInTenant(ctx.Tx, ticket.ID, tenantID, map[string]any{
-			"title":               title,
-			"description":         description,
-			"category":            normalizeTicketCategory(req.Category),
-			"priority":            normalizeTicketPriority(req.Priority),
-			"room_no":             strings.TrimSpace(req.RoomNo),
-			"current_assignee_id": req.CurrentAssigneeID,
-			"updated_at":          now,
-			"update_user_id":      operator.UserID,
-			"update_user_name":    operator.Username,
+			"title":            title,
+			"description":      description,
+			"category":         normalizeTicketCategory(req.Category),
+			"priority":         normalizeTicketPriority(req.Priority),
+			"room_no":          strings.TrimSpace(req.RoomNo),
+			"updated_at":       now,
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
 		}); err != nil {
 			return err
 		}

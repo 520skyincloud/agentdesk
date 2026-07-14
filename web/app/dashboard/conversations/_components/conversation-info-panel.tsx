@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { type CustomerFormSavePayload } from "@/components/customer-form";
 import { CustomerFormDialog } from "@/components/customer-form-dialog";
 import { CustomerLinkOrCreateDialog } from "@/components/customer-link-or-create-dialog";
+import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -123,8 +124,16 @@ function SectionHeading({
   );
 }
 
+function useCanLinkConversationCustomer() {
+  const { session } = useAuth();
+  const permissions = new Set(session?.permissions ?? []);
+  return permissions.has("conversation.linkCustomer")
+    && (permissions.has("customer.view") || permissions.has("customer.create"));
+}
+
 function UnlinkedCustomerEmpty({ conversation }: { conversation: AgentConversation }) {
   const t = useI18n();
+  const canLinkCustomer = useCanLinkConversationCustomer();
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const loadConversations = useAgentConversationsStore((s) => s.loadConversations);
 
@@ -138,17 +147,19 @@ function UnlinkedCustomerEmpty({ conversation }: { conversation: AgentConversati
         <p className="mt-1 max-w-xs text-xs leading-relaxed text-muted-foreground">
           {t("conversation.unlinkedCustomerDescription")}
         </p>
-        <Button
-          type="button"
-          className="mt-4 gap-2"
-          onClick={() => setLinkDialogOpen(true)}
-        >
-          <Link2Icon className="size-4" />
-          {t("conversation.linkOrCreateCustomer")}
-        </Button>
+        {canLinkCustomer ? (
+          <Button
+            type="button"
+            className="mt-4 gap-2"
+            onClick={() => setLinkDialogOpen(true)}
+          >
+            <Link2Icon className="size-4" />
+            {t("conversation.linkOrCreateCustomer")}
+          </Button>
+        ) : null}
       </div>
       <CustomerLinkOrCreateDialog
-        open={linkDialogOpen}
+        open={canLinkCustomer && linkDialogOpen}
         onOpenChange={setLinkDialogOpen}
         conversationId={conversation.id}
         onSuccess={() => void loadConversations()}
@@ -159,6 +170,7 @@ function UnlinkedCustomerEmpty({ conversation }: { conversation: AgentConversati
 
 function MissingCustomerEmpty({ conversation }: { conversation: AgentConversation }) {
   const t = useI18n();
+  const canLinkCustomer = useCanLinkConversationCustomer();
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const loadConversations = useAgentConversationsStore((s) => s.loadConversations);
 
@@ -172,14 +184,16 @@ function MissingCustomerEmpty({ conversation }: { conversation: AgentConversatio
         <p className="mt-1 max-w-xs text-xs leading-relaxed text-muted-foreground">
           {t("conversation.missingCustomerDescription")}
         </p>
-        <Button
-          type="button"
-          className="mt-4 gap-2"
-          onClick={() => setLinkDialogOpen(true)}
-        >
-          <Link2Icon className="size-4" />
-          {t("conversation.relinkOrCreateCustomer")}
-        </Button>
+        {canLinkCustomer ? (
+          <Button
+            type="button"
+            className="mt-4 gap-2"
+            onClick={() => setLinkDialogOpen(true)}
+          >
+            <Link2Icon className="size-4" />
+            {t("conversation.relinkOrCreateCustomer")}
+          </Button>
+        ) : null}
       </div>
       <div className="space-y-2">
         <SectionHeading>{t("conversation.conversationOwner")}</SectionHeading>
@@ -189,7 +203,7 @@ function MissingCustomerEmpty({ conversation }: { conversation: AgentConversatio
         </div>
       </div>
       <CustomerLinkOrCreateDialog
-        open={linkDialogOpen}
+        open={canLinkCustomer && linkDialogOpen}
         onOpenChange={setLinkDialogOpen}
         conversationId={conversation.id}
         onSuccess={() => void loadConversations()}

@@ -67,6 +67,7 @@ func TestTicketServiceCreateTicketSetsPendingStatusAndTicketNo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTicket() error = %v", err)
 	}
+	eventbus.WaitAsync[events.TicketAssignedEvent]()
 	if created.TicketNo == "" || !strings.HasPrefix(created.TicketNo, "TK") {
 		t.Fatalf("expected generated ticket number, got %q", created.TicketNo)
 	}
@@ -78,11 +79,14 @@ func TestTicketServiceCreateTicketSetsPendingStatusAndTicketNo(t *testing.T) {
 	}
 
 	progresses := services.TicketProgressService.Find(sqls.NewCnd().Eq("ticket_id", created.ID))
-	if len(progresses) != 1 {
-		t.Fatalf("expected initial progress, got %d", len(progresses))
+	if len(progresses) != 2 {
+		t.Fatalf("expected creation and initial assignment progress, got %d", len(progresses))
 	}
 	if progresses[0].Content != "创建工单" || progresses[0].AuthorID != operator.UserID {
 		t.Fatalf("unexpected initial progress: %+v", progresses[0])
+	}
+	if !strings.Contains(progresses[1].Content, "指派处理人") || progresses[1].AuthorID != operator.UserID {
+		t.Fatalf("unexpected initial assignment progress: %+v", progresses[1])
 	}
 
 	tags := services.TicketService.GetTags(created.ID)
@@ -314,6 +318,7 @@ func TestTicketServiceAssignTicketCreatesProgressEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTicket() error = %v", err)
 	}
+	eventbus.WaitAsync[events.TicketAssignedEvent]()
 
 	if err := services.TicketService.AssignTicket(request.AssignTicketRequest{
 		TicketID: ticket.ID,
@@ -324,10 +329,10 @@ func TestTicketServiceAssignTicketCreatesProgressEntry(t *testing.T) {
 	}
 
 	progresses := services.TicketProgressService.Find(sqls.NewCnd().Eq("ticket_id", ticket.ID).Asc("id"))
-	if len(progresses) != 2 {
-		t.Fatalf("expected create progress and assignment progress, got %d: %+v", len(progresses), progresses)
+	if len(progresses) != 3 {
+		t.Fatalf("expected create and two assignment progress entries, got %d: %+v", len(progresses), progresses)
 	}
-	assignmentProgress := progresses[1]
+	assignmentProgress := progresses[2]
 	if assignmentProgress.AuthorID != operator.UserID {
 		t.Fatalf("expected assignment progress author %d, got %d", operator.UserID, assignmentProgress.AuthorID)
 	}
@@ -339,6 +344,40 @@ func TestTicketServiceAssignTicketCreatesProgressEntry(t *testing.T) {
 	}
 	if !strings.Contains(assignmentProgress.Content, "需要二线继续跟进") {
 		t.Fatalf("expected assignment reason in progress content, got %q", assignmentProgress.Content)
+	}
+}
+
+func TestTicketServiceUpdateTicketPreservesAssignee(t *testing.T) {
+	setupTicketTestDB(t)
+	operator := createTestOperator(t, "update-ticket-operator")
+	assigneeID := createTestUser(t, "update-ticket-assignee")
+	ticket, err := services.TicketService.CreateTicket(request.CreateTicketRequest{
+		Title:             "ticket before update",
+		Description:       "description before update",
+		CurrentAssigneeID: assigneeID,
+	}, operator)
+	if err != nil {
+		t.Fatalf("CreateTicket() error = %v", err)
+	}
+	eventbus.WaitAsync[events.TicketAssignedEvent]()
+
+	if err := services.TicketService.UpdateTicket(request.UpdateTicketRequest{
+		TicketID:    ticket.ID,
+		Title:       "ticket after update",
+		Description: "description after update",
+	}, operator); err != nil {
+		t.Fatalf("UpdateTicket() error = %v", err)
+	}
+
+	updated := repositories.TicketRepository.GetInTenant(sqls.DB(), ticket.ID, operator.ActiveTenantID)
+	if updated == nil {
+		t.Fatal("updated ticket not found")
+	}
+	if updated.CurrentAssigneeID != assigneeID {
+		t.Fatalf("UpdateTicket() changed assignee to %d, want %d", updated.CurrentAssigneeID, assigneeID)
+	}
+	if updated.Title != "ticket after update" {
+		t.Fatalf("UpdateTicket() title = %q", updated.Title)
 	}
 }
 
@@ -371,6 +410,7 @@ func TestTicketServiceSummaryCountsStaleTickets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTicket() mine error = %v", err)
 	}
+	eventbus.WaitAsync[events.TicketAssignedEvent]()
 	if _, err := services.TicketService.CreateTicket(createTestTicketRequest("unassigned ticket"), operator); err != nil {
 		t.Fatalf("CreateTicket() unassigned error = %v", err)
 	}
@@ -474,6 +514,7 @@ func TestTicketServiceFindPageAggregateEnrichesLookups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTicket() error = %v", err)
 	}
+	eventbus.WaitAsync[events.TicketAssignedEvent]()
 
 	aggregate, err := services.TicketService.FindPageAggregateByCnd(sqls.NewCnd().Eq("id", ticket.ID).Page(1, 10), operator)
 	if err != nil {
