@@ -88,6 +88,13 @@ func (s *messageService) FindLatestByConversationID(conversationID int64) (*mode
 	return s.FindOne(sqls.NewCnd().Eq("conversation_id", conversationID).Desc("seq_no").Desc("id")), nil
 }
 
+func (s *messageService) FindLatestByConversationIDInTenant(conversationID, tenantID int64) (*models.Message, error) {
+	if conversationID <= 0 || tenantID <= 0 {
+		return nil, nil
+	}
+	return s.FindOne(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("conversation_id", conversationID).Desc("seq_no").Desc("id")), nil
+}
+
 func (s *messageService) FindPageByParams(params *params.QueryParams) (list []models.Message, paging *sqls.Paging) {
 	return repositories.MessageRepository.FindPageByParams(sqls.DB(), params)
 }
@@ -785,8 +792,12 @@ func buildMessageSummary(messageType enums.IMMessageType, content string) string
 func (s *messageService) normalizeMessageContent(conversationID int64, messageType enums.IMMessageType, content, payload string) (string, string, string, error) {
 	switch messageType {
 	case enums.IMMessageTypeHTML:
+		conversation := ConversationService.Get(conversationID)
+		if conversation == nil || conversation.TenantID <= 0 {
+			return "", "", "", errorsx.InvalidParam("会话不存在或缺少接入公司归属")
+		}
 		sanitized := utils.SanitizeMessageHTML(content)
-		normalized, err := utils.NormalizeMessageHTMLAssets(sanitized)
+		normalized, err := utils.NormalizeMessageHTMLAssetsInTenant(sanitized, conversation.TenantID)
 		if err != nil {
 			return "", "", "", errorsx.InvalidParam("HTML消息中的图片必须使用已上传文件")
 		}
@@ -795,13 +806,17 @@ func (s *messageService) normalizeMessageContent(conversationID int64, messageTy
 			return "", "", "", errorsx.InvalidParam("消息内容不能为空")
 		}
 		return normalized, "", summary, nil
-	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment:
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment, enums.IMMessageTypeGIF:
 		assetPayload, err := parseIMMessageAssetPayload(payload)
 		if err != nil {
 			return "", "", "", err
 		}
-		asset := AssetService.GetByAssetID(assetPayload.AssetID)
-		if err := validateConversationAsset(asset, conversationID, messageType); err != nil {
+		conversation := ConversationService.Get(conversationID)
+		if conversation == nil || conversation.TenantID <= 0 {
+			return "", "", "", errorsx.InvalidParam("会话不存在或缺少接入公司归属")
+		}
+		asset := AssetService.GetByAssetIDInTenant(assetPayload.AssetID, conversation.TenantID)
+		if err := validateConversationAsset(asset, conversation, messageType); err != nil {
 			return "", "", "", err
 		}
 		canonicalPayload, err := buildIMMessageAssetPayloadWithMedia(asset, assetPayload.WxMedia)
@@ -815,6 +830,8 @@ func (s *messageService) normalizeMessageContent(conversationID int64, messageTy
 			summary = "[语音]"
 		} else if messageType == enums.IMMessageTypeVideo {
 			summary = "[视频]"
+		} else if messageType == enums.IMMessageTypeGIF {
+			summary = "[动画表情]"
 		}
 		content = strings.TrimSpace(asset.Filename)
 		return content, canonicalPayload, summary + s.suffixFilenameForSummary(asset.Filename), nil

@@ -284,7 +284,7 @@ func (s *wxWorkKFOutboundService) sendImageMessage(mapping *models.WxWorkKFConve
 		return "", fmt.Errorf("图片消息缺少 assetId")
 	}
 
-	asset := AssetService.GetByAssetID(chunk.AssetID)
+	asset := AssetService.GetByAssetIDInTenant(chunk.AssetID, message.TenantID)
 	if asset == nil {
 		return "", fmt.Errorf("图片资源不存在")
 	}

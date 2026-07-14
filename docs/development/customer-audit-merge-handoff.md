@@ -1350,3 +1350,61 @@ git diff --check
 - 提交前已 fetch，`origin/codex/ai-billing@f2d2da4`。同文件为 `internal/services/ws_service.go`、`internal/builders/conversation_builder.go`、`web/lib/api/admin.ts`。
 - 合并时逐方法保留 AI 分支的自动转人工状态、恢复展示、FastGPT/模型 API，以及本批的 tenant topic、订阅校验、实时 tenant 读取和 WebSocket URL 参数；不得整文件选边。
 - 本批可独立回滚 WebSocket topic、订阅校验和前端缓存重置，不涉及数据库回滚；回滚会重新暴露跨租户实时风险，因此在替代方案上线前必须继续关闭公开注册和多租户生产入口。
+
+## 33. 多租户阶段 4H/6D：Asset 归属、附件与媒体异步隔离（2026-07-14）
+
+### 目标与完成结果
+
+- 复用现有 Asset 主体，为文件增加 TenantID；不新增平行附件模型、不改变 AssetID、Provider、StorageKey 或前端 AssetResponse 契约。
+- migration 46 从显式 Tenant、非平台上传账号、媒体 Message `assetId` 和 HTML `data-asset-id` 确定历史归属；冲突、缺失创建账号/Asset 引用和无 Tenant 的引用消息会整笔回滚，存在但 TenantID 为 0 的平台账号不作为归属证据，无证据 Asset 归 legacy，重复执行幂等。
+- Dashboard Asset 列表/详情/上传/删除按 ActiveTenantID；客户和客服上传从 Conversation/ActiveTenant 继承；企微员工号协议和 KF 入站媒体从 Instance/Conversation 继承。
+- 图片、语音、视频、附件、GIF 和 HTML 图片在 Message 规范化阶段验证 Asset 与 Conversation 同租户；GIF 补齐原先遗漏的 Asset 存在性与状态校验。
+- 企微协议/KF 出站、消息响应元数据补齐和 AI 媒体理解均按 Message Tenant 读取 Asset。媒体理解的 Message、Conversation、RouteState、WxWorkInstance、最新追问和最终 payload 更新也携带 tenant。
+- 新文件 StorageKey 采用 `tenants/{tenantId}/...`，平台兼容路径为 `platform/...`，并继续叠加现有 OSS 全局前缀。
+
+### 主要文件与共享契约
+
+```text
+internal/models/models.go
+internal/migration/000046_backfill_asset_tenants.go
+internal/migration/000046_backfill_asset_tenants_test.go
+internal/repositories/asset_repository.go
+internal/services/asset_service.go
+internal/services/asset_tenant_test.go
+internal/handlers/api/message_handler.go
+internal/handlers/dashboard/asset_handler.go
+internal/handlers/dashboard/conversation_handler.go
+internal/pkg/utils/message.go
+internal/services/im_message_asset.go
+internal/services/message_service.go
+internal/services/message_service_test.go
+internal/services/media_understanding_service.go
+internal/services/wxwork_protocol_service.go
+internal/services/wxwork_kf_inbound_service.go
+internal/services/wxwork_kf_outbound_service.go
+```
+
+- 新增共享字段 `Asset.TenantID` 和 DML migration 46；没有 request/response DTO、enum、路由、WebSocket payload、新权限点或前端变化。
+- migration 46 创建前已核对 `origin/main` 最高 20、`origin/codex/ai-billing` 最高 33、本分支最高 45，无版本冲突。DDL 继续由 AutoMigrate 先执行。
+
+### 验证与已知边界
+
+```text
+go test ./internal/migration -run 'TestBackfillAssetTenants' -count=1
+go test -race ./internal/migration -run 'TestBackfillAssetTenants' -count=1
+go test -race ./internal/services -run 'TestAsset(RuntimeTenantIsolation|StoragePrefixIncludesTenant)' -count=1
+go test ./internal/services ./internal/handlers/api ./internal/handlers/dashboard ./internal/pkg/utils ./internal/migration -count=1
+go test ./... -run '^$' -count=1
+go vet ./...
+git diff --check
+```
+
+- 上述检查全部通过。migration 测试覆盖上传账号、平台账号、结构化附件、HTML、显式 Tenant、legacy、幂等、跨租户共享冲突、缺失创建账号和事务回滚；运行时测试覆盖列表/读取/删除、图片/GIF/HTML 引用和媒体异步最终更新。
+- `/api/asset/file/{assetId}` 和本地静态 URL 继续是客户/企微展示使用的 bearer URL；AssetID 不可预测但不等于授权。统一短期签名必须同时覆盖 local 与 OSS provider，未完成前公开注册和多租户生产入口继续关闭。
+- `internal/services/store_ai_model_setting_service.go` 仍有 AI-owned 的全局 RouteState 读取；Knowledge/向量与 AI 新增日志/AIManualResumeTask 也未完成 Tenant 契约，不在本批冒充完成。
+
+### 并行分支、合并顺序与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `models.go`、Message service、media understanding、企微协议 service 和 Conversation handler。建议先合并 Asset 字段/migration 46，再逐方法合并运行时隔离，最后重放 AI 分支 usage/计费和 FastGPT 变化。
+- media understanding 合并时，AI 分支的 usage capture、模型测试、自动触发增强必须保留；本批的 `message.TenantID` 参数、Asset/Message/Conversation/Route/Instance tenant 查询和最终 tenant 更新也必须保留。
+- 回滚运行时代码不得删除已执行的 Asset TenantID、migration 46 记录或清零归属。若 migration 因共享 Asset 冲突中止，应拆分或修复明确文件引用后重试，禁止把冲突文件直接归 legacy。

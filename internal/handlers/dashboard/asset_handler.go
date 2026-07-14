@@ -21,6 +21,11 @@ func AssetAnyList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	tenantCtx, err := services.AuthService.RequireTenantContext(ctx)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 
 	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "provider"},
@@ -32,7 +37,7 @@ func AssetAnyList(ctx *gin.Context) {
 		cnd = cnd.Eq("status", enums.AssetStatusSuccess)
 	}
 
-	list, paging := services.AssetService.FindPageByCnd(cnd)
+	list, paging := services.AssetService.FindPageByCndInTenant(cnd, tenantCtx.TenantID)
 	results := make([]response.AssetResponse, 0, len(list))
 	for _, item := range list {
 		results = append(results, builders.BuildAsset(&item))
@@ -49,7 +54,12 @@ func AssetGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	item := services.AssetService.Get(id)
+	tenantCtx, err := services.AuthService.RequireTenantContext(ctx)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item := services.AssetService.GetInTenant(id, tenantCtx.TenantID)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("文件不存在"))
 		return
@@ -74,7 +84,7 @@ func AssetPostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("请选择上传文件"))
 		return
 	}
-	item, err := services.AssetService.UploadFile(header, req.Prefix, operator)
+	item, err := services.AssetService.UploadFileInTenant(header, req.Prefix, operator.ActiveTenantID, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

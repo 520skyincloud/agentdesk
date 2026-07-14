@@ -519,12 +519,16 @@ func (s *wxWorkKFInboundService) buildInboundAssetPayload(conversationID int64, 
 	if mediaID == "" {
 		return "", "", errorsx.InvalidParam("企业微信媒体ID不能为空")
 	}
+	conversation := ConversationService.Get(conversationID)
+	if conversation == nil || conversation.TenantID <= 0 {
+		return "", "", errorsx.InvalidParam("企业微信媒体缺少会话租户归属")
+	}
 	materialCli := wxwork.GetWorkCli().GetMaterial()
 	data, err := materialCli.GetTempFile(mediaID)
 	if err != nil {
 		return "", "", err
 	}
-	asset, err := AssetService.UploadBytes(data, "", "", nil)
+	asset, err := AssetService.UploadBytesInTenant(data, "wxwork_kf/inbound", "", conversation.TenantID, nil)
 	if err != nil {
 		return "", "", err
 	}

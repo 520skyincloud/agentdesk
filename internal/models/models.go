@@ -419,6 +419,7 @@ type LoginCredentialLog struct {
 // Asset 存储的文件资源，如上传的附件等。
 type Asset struct {
 	ID         int64               `gorm:"primaryKey;autoIncrement"`
+	TenantID   int64               `gorm:"type:bigint;not null;default:0;index"`
 	AssetID    string              `gorm:"type:varchar(64);not null;uniqueIndex"`
 	Provider   enums.AssetProvider `gorm:"type:varchar(50);not null;default:'';index"`
 	StorageKey string              `gorm:"type:varchar(255);not null;default:'';uniqueIndex:uk_storage_key"`

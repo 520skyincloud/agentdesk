@@ -1159,3 +1159,33 @@ git diff --check
 
 - 本批没有 model、migration、request/response DTO、enum、Gin 路由或新权限点；WebSocket 事件 payload 结构不变，只改变服务端 topic 组成和订阅授权。
 - `codex/ai-billing@f2d2da4` 同时修改 `internal/services/ws_service.go`、`internal/builders/conversation_builder.go` 和 `web/lib/api/admin.ts`。合并必须保留 AI 分支的自动转人工/恢复展示及新增 AI API，同时保留本批 tenant topic、订阅校验和 WebSocket URL tenant 参数，禁止整文件覆盖。
+
+## 25. 当前实施检查点：Asset 归属与消息附件隔离（2026-07-14）
+
+本检查点将现有 Asset 作为租户文件主体继续复用，不新增会话附件表或平行文件入口。
+
+### 归属与回填
+
+- `Asset` 增加 TenantID，DDL 由 AutoMigrate 创建；migration 46 只做 DML 回填、一致性检查和冲突回滚。
+- 历史归属证据只接受 Asset 显式 Tenant、非平台 CreateUser、已租户化媒体 Message payload 中的 `assetId`，以及 HTML 消息的 `data-asset-id`。文件名、URL、StorageKey 和目录名不能作为租户事实。
+- 同一 Asset 被不同 Tenant 的 Message 引用、显式 Tenant 与上传账号/Message 冲突、Asset 引用不存在的创建账号、Message 引用不存在 Asset 或引用消息缺少 Tenant 时，migration 整笔回滚；存在但 TenantID 为 0 的平台账号不作为归属证据，无任何证据的孤立文件归 `legacy-default`，重复执行幂等。
+- 新租户文件的对象路径增加 `tenants/{tenantId}` 前缀；平台兼容资源使用 `platform` 前缀。全局 OSS 前缀继续位于最外层，不改变现有存储配置语义。
+
+### 运行时隔离
+
+- Dashboard Asset 列表、详情、上传和删除要求 ActiveTenantID；读取与最终更新 SQL 均携带 tenant。
+- 客户侧和客服侧上传从已鉴权 Conversation/ActiveTenant 继承 tenant；企微员工号协议和企业微信客服号入站媒体从 Instance/Conversation 继承 tenant。
+- 普通图片、语音、视频、附件和 GIF 在写入 Message 前必须按 Conversation Tenant 读取 Asset；HTML 图片同时校验 tenant、AssetID、Provider 和 StorageKey。
+- 企微协议/KF 出站只读取 Message Tenant 下的 Asset。媒体理解异步任务按 Message Tenant 读取 Asset、RouteState、WxWorkInstance、最新追问和 Conversation，并用 `message_id + tenant_id` 更新 payload。
+- Message 响应只有在同租户下才可通过 AssetID 补齐缺失元数据；已通过会话鉴权的 payload 仍可生成现有本地/OSS 展示 URL。
+
+### 尚未完成边界
+
+- `/api/asset/file/{assetId}` 以及本地存储静态 URL 继续承担客户和企微下载兼容，当前 AssetID 是不可预测 bearer 标识，但不是完整访问授权。后续必须统一设计短期签名、下载用途与本地/OSS 两种 provider 的一致校验，完成前不能宣称“文件 URL 已端到端隔离”。
+- KnowledgeBase/KnowledgeDocument、向量 payload、KnowledgeCandidate/RetrieveLog 仍未租户化；知识文档中的文件引用需在知识域共享契约中复用 Asset Tenant，不能建立第二套文件归属。
+- AI 分支新增的欢迎图 Asset 字段、AIManualResumeTask 和 usage 日志不在本分支模型中。合并时欢迎图必须验证 Store/WxWorkInstance 与 Asset 同租户，AIManualResumeTask/日志必须继承 Conversation tenant。
+
+### 合并要求
+
+- 本批增加 `Asset.TenantID` 和 migration 46；没有 request/response DTO、enum、Gin 路由、权限点或前端字段变化。
+- `codex/ai-billing@f2d2da4` 同时修改 `models.go`、Message、media understanding、企微协议和 Conversation handler。合并必须保留 AI 分支模型调用/usage/计费逻辑，并保留本批的 TenantID、tenant-qualified Asset/Message/Route/Instance 查询与最终更新；禁止整文件覆盖。

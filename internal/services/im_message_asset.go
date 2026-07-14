@@ -62,12 +62,12 @@ func buildIMMessageAssetPayloadWithMedia(asset *models.Asset, wxMedia request.Wx
 	return string(payload), nil
 }
 
-func buildIMMessageAssetPayloadForResponse(payload string) string {
+func buildIMMessageAssetPayloadForResponse(payload string, tenantID int64) string {
 	assetPayload, err := parseIMMessageAssetPayload(payload)
 	if err != nil {
 		return strings.TrimSpace(payload)
 	}
-	assetPayload = hydrateIMMessageAssetPayload(assetPayload)
+	assetPayload = hydrateIMMessageAssetPayload(assetPayload, tenantID)
 	if assetPayload.Provider != "" && assetPayload.StorageKey != "" {
 		if provider, err := storage.NewProvider(assetPayload.Provider); err == nil {
 			assetPayload.URL = provider.GetSignedURL(assetPayload.StorageKey)
@@ -80,7 +80,7 @@ func buildIMMessageAssetPayloadForResponse(payload string) string {
 	return string(data)
 }
 
-func hydrateIMMessageAssetPayload(payload *imMessageAssetPayload) *imMessageAssetPayload {
+func hydrateIMMessageAssetPayload(payload *imMessageAssetPayload, tenantID int64) *imMessageAssetPayload {
 	if payload == nil {
 		return nil
 	}
@@ -90,7 +90,7 @@ func hydrateIMMessageAssetPayload(payload *imMessageAssetPayload) *imMessageAsse
 	if payload.AssetID == "" {
 		return payload
 	}
-	asset := AssetService.GetByAssetID(payload.AssetID)
+	asset := AssetService.GetByAssetIDInTenant(payload.AssetID, tenantID)
 	if asset == nil {
 		return payload
 	}
@@ -112,9 +112,12 @@ func hydrateIMMessageAssetPayload(payload *imMessageAssetPayload) *imMessageAsse
 	return payload
 }
 
-func validateConversationAsset(asset *models.Asset, conversationID int64, messageType enums.IMMessageType) error {
+func validateConversationAsset(asset *models.Asset, conversation *models.Conversation, messageType enums.IMMessageType) error {
 	if asset == nil {
 		return errorsx.InvalidParam("附件不存在")
+	}
+	if conversation == nil || conversation.TenantID <= 0 || asset.TenantID != conversation.TenantID {
+		return errorsx.InvalidParam("附件不属于当前接入公司")
 	}
 	if asset.Status != enums.AssetStatusSuccess {
 		return errorsx.InvalidParam("附件尚未上传完成")

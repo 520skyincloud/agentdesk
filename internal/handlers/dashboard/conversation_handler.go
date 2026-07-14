@@ -348,7 +348,7 @@ func ConversationPostUpload_image(ctx *gin.Context) {
 		return
 	}
 
-	item, err := services.AssetService.UploadFile(header, "images", operator)
+	item, err := services.AssetService.UploadFileInTenant(header, "images", operator.ActiveTenantID, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -383,7 +383,7 @@ func ConversationPostUpload_attachment(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("请选择上传附件"))
 		return
 	}
-	item, err := services.AssetService.UploadFile(header, "attachments", operator)
+	item, err := services.AssetService.UploadFileInTenant(header, "attachments", operator.ActiveTenantID, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

@@ -927,12 +927,15 @@ func (s *wxWorkProtocolService) buildInboundMessageContent(instance *models.WxWo
 }
 
 func (s *wxWorkProtocolService) persistInboundMediaAsset(instance *models.WxWorkProtocolInstance, messageType enums.IMMessageType, msg request.WxProtocolChatMsg, media request.WxProtocolMediaPayload, filename string, mimeType string) (*models.Asset, error) {
+	if instance == nil || instance.TenantID <= 0 {
+		return nil, errorsx.InvalidParam("入站媒体缺少员工号租户归属")
+	}
 	if asset, err := s.downloadInboundMediaToAsset(instance, messageType, msg, media, filename, mimeType); err == nil && asset != nil {
 		return asset, nil
 	} else if err != nil {
 		slog.Warn("download inbound wxwork media failed", "msg_id", msg.MsgID, "message_type", messageType, "error", err)
 	}
-	return AssetService.RegisterExternal("wx_protocol", filename, media.FileSize, mimeType, media.URL, nil)
+	return AssetService.RegisterExternalInTenant("wx_protocol", filename, media.FileSize, mimeType, media.URL, instance.TenantID, nil)
 }
 
 func (s *wxWorkProtocolService) downloadInboundMediaToAsset(instance *models.WxWorkProtocolInstance, messageType enums.IMMessageType, msg request.WxProtocolChatMsg, media request.WxProtocolMediaPayload, filename string, mimeType string) (*models.Asset, error) {
@@ -981,10 +984,10 @@ func (s *wxWorkProtocolService) downloadInboundMediaToAsset(instance *models.WxW
 	if err != nil {
 		return nil, err
 	}
-	return s.assetFromWECDNDownloadResponse(raw, filename, mimeType)
+	return s.assetFromWECDNDownloadResponse(raw, filename, mimeType, instance.TenantID)
 }
 
-func (s *wxWorkProtocolService) assetFromWECDNDownloadResponse(raw string, filename string, mimeType string) (*models.Asset, error) {
+func (s *wxWorkProtocolService) assetFromWECDNDownloadResponse(raw string, filename string, mimeType string, tenantID int64) (*models.Asset, error) {
 	root := map[string]any{}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &root); err != nil {
 		return nil, errorsx.InvalidParam("企微私有化云存储下载响应不是 JSON")
@@ -1016,7 +1019,7 @@ func (s *wxWorkProtocolService) assetFromWECDNDownloadResponse(raw string, filen
 	if mimeType == "" && len(data) > 0 {
 		mimeType = http.DetectContentType(data)
 	}
-	return AssetService.UploadBytes(data, "wx_protocol/inbound", filename, nil)
+	return AssetService.UploadBytesInTenant(data, "wx_protocol/inbound", filename, tenantID, nil)
 }
 
 func firstDownloadURL(root map[string]any) string {
@@ -1703,7 +1706,7 @@ func (s *wxWorkProtocolService) prepareOutboundMessageMedia(cfg *dto.WxWorkProto
 	if strings.TrimSpace(assetPayload.WxMedia.FileID) != "" {
 		return nil
 	}
-	asset := AssetService.GetByAssetID(assetPayload.AssetID)
+	asset := AssetService.GetByAssetIDInTenant(assetPayload.AssetID, message.TenantID)
 	if asset == nil || asset.Status != enums.AssetStatusSuccess {
 		return errorsx.InvalidParam("富媒体资产不存在或不可访问")
 	}

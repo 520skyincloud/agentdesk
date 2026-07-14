@@ -506,6 +506,7 @@ func TestMediaUnderstandingTriggersRecentTextFollowUp(t *testing.T) {
 	now := time.Now()
 	media := models.Message{
 		ID:             100,
+		TenantID:       101,
 		ConversationID: 99,
 		ClientMsgID:    "media-100",
 		SeqNo:          1,
@@ -517,6 +518,7 @@ func TestMediaUnderstandingTriggersRecentTextFollowUp(t *testing.T) {
 	followAt := now.Add(2 * time.Second)
 	follow := models.Message{
 		ID:             101,
+		TenantID:       101,
 		ConversationID: 99,
 		ClientMsgID:    "follow-101",
 		SeqNo:          2,
@@ -546,6 +548,7 @@ func TestMediaUnderstandingDoesNotTriggerGifFollowUp(t *testing.T) {
 	now := time.Now()
 	media := models.Message{
 		ID:             110,
+		TenantID:       101,
 		ConversationID: 99,
 		ClientMsgID:    "media-110",
 		SeqNo:          1,
@@ -557,6 +560,7 @@ func TestMediaUnderstandingDoesNotTriggerGifFollowUp(t *testing.T) {
 	followAt := now.Add(2 * time.Second)
 	follow := models.Message{
 		ID:             111,
+		TenantID:       101,
 		ConversationID: 99,
 		ClientMsgID:    "gif-111",
 		SeqNo:          2,
@@ -582,6 +586,7 @@ func TestMediaUnderstandingDoesNotTriggerWithoutTextFollowUp(t *testing.T) {
 	now := time.Now()
 	media := models.Message{
 		ID:             102,
+		TenantID:       101,
 		ConversationID: 99,
 		ClientMsgID:    "media-102",
 		SeqNo:          1,

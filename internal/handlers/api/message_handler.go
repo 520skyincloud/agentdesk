@@ -149,7 +149,7 @@ func MessagePostUpload_image(ctx *gin.Context) {
 		return
 	}
 
-	item, err := services.AssetService.UploadFile(header, "images", nil)
+	item, err := services.AssetService.UploadFileInTenant(header, "images", conversation.TenantID, nil)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -178,6 +178,11 @@ func MessagePostUpload_attachment(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("conversationId不能为空"))
 		return
 	}
+	conversation := services.ConversationService.Get(conversationID)
+	if conversation == nil {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("会话不存在"))
+		return
+	}
 	if _, err := services.MessageService.ValidateConversationSender(conversationID, enums.IMSenderTypeCustomer, nil, external); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -188,7 +193,7 @@ func MessagePostUpload_attachment(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("请选择上传附件"))
 		return
 	}
-	item, err := services.AssetService.UploadFile(header, "attachments", nil)
+	item, err := services.AssetService.UploadFileInTenant(header, "attachments", conversation.TenantID, nil)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

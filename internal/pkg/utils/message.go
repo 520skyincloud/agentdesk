@@ -39,6 +39,17 @@ func SanitizeMessageHTML(content string) string {
 }
 
 func NormalizeMessageHTMLAssets(content string) (string, error) {
+	return normalizeMessageHTMLAssets(content, 0)
+}
+
+func NormalizeMessageHTMLAssetsInTenant(content string, tenantID int64) (string, error) {
+	if tenantID <= 0 {
+		return "", fmt.Errorf("html message asset tenant is required")
+	}
+	return normalizeMessageHTMLAssets(content, tenantID)
+}
+
+func normalizeMessageHTMLAssets(content string, tenantID int64) (string, error) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return "", nil
@@ -54,7 +65,7 @@ func NormalizeMessageHTMLAssets(content string) (string, error) {
 			return
 		}
 		if node.Type == html.ElementNode && node.Data == "img" {
-			asset, err := normalizeHTMLImageAsset(node)
+			asset, err := normalizeHTMLImageAsset(node, tenantID)
 			if err != nil {
 				walkErr = err
 				return
@@ -233,8 +244,8 @@ func BuildRenderableMessage(item *models.Message) (content, payload string) {
 	content = item.Content
 	payload = item.Payload
 	switch item.MessageType {
-	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment:
-		payload = buildIMMessageAssetPayloadForResponse(item.Payload)
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment, enums.IMMessageTypeGIF:
+		payload = buildIMMessageAssetPayloadForResponse(item.Payload, item.TenantID)
 	case enums.IMMessageTypeHTML:
 		content = BuildMessageHTMLForResponse(item.Content)
 	}
@@ -375,12 +386,12 @@ func removeHTMLAttr(node *html.Node, key string) {
 	node.Attr = dst
 }
 
-func buildIMMessageAssetPayloadForResponse(payload string) string {
+func buildIMMessageAssetPayloadForResponse(payload string, tenantIDs ...int64) string {
 	assetPayload, err := parseIMMessageAssetPayload(payload)
 	if err != nil {
 		return strings.TrimSpace(payload)
 	}
-	assetPayload = hydrateIMMessageAssetPayload(assetPayload)
+	assetPayload = hydrateIMMessageAssetPayload(assetPayload, tenantIDs...)
 	if assetPayload.Provider != "" && assetPayload.StorageKey != "" {
 		if strings.HasPrefix(assetPayload.StorageKey, "http://") || strings.HasPrefix(assetPayload.StorageKey, "https://") {
 			assetPayload.URL = assetPayload.StorageKey
@@ -410,7 +421,7 @@ func parseIMMessageAssetPayload(payload string) (*imMessageAssetPayload, error) 
 	return ret, nil
 }
 
-func hydrateIMMessageAssetPayload(payload *imMessageAssetPayload) *imMessageAssetPayload {
+func hydrateIMMessageAssetPayload(payload *imMessageAssetPayload, tenantIDs ...int64) *imMessageAssetPayload {
 	if payload == nil {
 		return nil
 	}
@@ -420,7 +431,12 @@ func hydrateIMMessageAssetPayload(payload *imMessageAssetPayload) *imMessageAsse
 	if payload.AssetID == "" {
 		return payload
 	}
-	asset := repositories.AssetRepository.GetByAssetID(sqls.DB(), payload.AssetID)
+	var asset *models.Asset
+	if len(tenantIDs) > 0 && tenantIDs[0] > 0 {
+		asset = repositories.AssetRepository.GetByAssetIDInTenant(sqls.DB(), payload.AssetID, tenantIDs[0])
+	} else {
+		asset = repositories.AssetRepository.GetByAssetID(sqls.DB(), payload.AssetID)
+	}
 	if asset == nil {
 		return payload
 	}
@@ -442,7 +458,7 @@ func hydrateIMMessageAssetPayload(payload *imMessageAssetPayload) *imMessageAsse
 	return payload
 }
 
-func normalizeHTMLImageAsset(node *html.Node) (*models.Asset, error) {
+func normalizeHTMLImageAsset(node *html.Node, tenantID int64) (*models.Asset, error) {
 	if node == nil {
 		return nil, nil
 	}
@@ -457,7 +473,12 @@ func normalizeHTMLImageAsset(node *html.Node) (*models.Asset, error) {
 		if !(hasAssetID && hasProvider && hasStorageKey) {
 			return nil, fmt.Errorf("html message image asset attributes are incomplete")
 		}
-		asset := repositories.AssetRepository.GetByAssetID(sqls.DB(), assetID)
+		var asset *models.Asset
+		if tenantID > 0 {
+			asset = repositories.AssetRepository.GetByAssetIDInTenant(sqls.DB(), assetID, tenantID)
+		} else {
+			asset = repositories.AssetRepository.GetByAssetID(sqls.DB(), assetID)
+		}
 		if asset == nil {
 			return nil, fmt.Errorf("html message image asset not found")
 		}

@@ -77,7 +77,7 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 	if payload.MediaStatus == "failed" || payload.MediaStatus == "empty" {
 		payload.MediaStatus = "retrying"
 		payload.MediaError = ""
-		if err := s.updateMessagePayload(message.ID, payload); err != nil {
+		if err := s.updateMessagePayload(message.ID, message.TenantID, payload); err != nil {
 			return err
 		}
 	}
@@ -104,16 +104,16 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 	payload.MediaSummary = limitText(text, 500)
 	payload.MediaStatus = "understood"
 	payload.MediaError = ""
-	if err := s.updateMessagePayload(message.ID, payload); err != nil {
+	if err := s.updateMessagePayload(message.ID, message.TenantID, payload); err != nil {
 		return err
 	}
-	updated := repositories.MessageRepository.Get(sqls.DB(), message.ID)
-	conversation := ConversationService.Get(message.ConversationID)
+	updated := repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), message.ConversationID, message.TenantID)
 	if updated != nil && conversation != nil {
 		WsService.PublishMessageUpdated(conversation, updated)
 		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
 	}
-	if updated != nil && conversation != nil && TriggerAIReplyAsyncHook != nil && s.canTriggerAIForMedia(conversation.ID) {
+	if updated != nil && conversation != nil && TriggerAIReplyAsyncHook != nil && s.canTriggerAIForMedia(conversation.ID, conversation.TenantID) {
 		if followUp := s.latestCustomerFollowUp(*updated); followUp != nil {
 			TriggerAIReplyAsyncHook(*conversation, *followUp)
 		} else if s.mediaUnderstandingShouldTriggerAI(*updated) {
@@ -127,7 +127,7 @@ func (s *mediaUnderstandingService) latestCustomerFollowUp(mediaMessage models.M
 	if mediaMessage.ConversationID <= 0 || mediaMessage.ID <= 0 || mediaMessage.SentAt == nil {
 		return nil
 	}
-	latest, err := MessageService.FindLatestByConversationID(mediaMessage.ConversationID)
+	latest, err := MessageService.FindLatestByConversationIDInTenant(mediaMessage.ConversationID, mediaMessage.TenantID)
 	if err != nil || latest == nil || latest.ID <= mediaMessage.ID || latest.SenderType != enums.IMSenderTypeCustomer {
 		return nil
 	}
@@ -182,7 +182,7 @@ func (s *mediaUnderstandingService) understandImage(ctx context.Context, message
 	if payload == nil {
 		return "", fmt.Errorf("图片 payload 为空")
 	}
-	asset := AssetService.GetByAssetID(payload.AssetID)
+	asset := AssetService.GetByAssetIDInTenant(payload.AssetID, message.TenantID)
 	data, mimeType, err := s.readAssetBytes(message, asset, payload)
 	if err != nil {
 		return "", err
@@ -205,7 +205,7 @@ func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message
 	} else if err != nil {
 		protocolErr = err
 	}
-	asset := AssetService.GetByAssetID(payload.AssetID)
+	asset := AssetService.GetByAssetIDInTenant(payload.AssetID, message.TenantID)
 	data, _, err := s.readAssetBytes(message, asset, payload)
 	if err != nil {
 		if protocolErr != nil {
@@ -231,11 +231,11 @@ func (s *mediaUnderstandingService) transcribeWxWorkVoice(ctx context.Context, m
 	if message == nil || payload == nil {
 		return "", fmt.Errorf("语音消息为空")
 	}
-	state := ConversationRouteService.GetByConversationID(message.ConversationID)
+	state := ConversationRouteService.GetByConversationIDInTenant(message.ConversationID, message.TenantID)
 	if state == nil || state.WxWorkInstanceID <= 0 {
 		return "", fmt.Errorf("会话缺少企微员工号实例绑定")
 	}
-	instance := WxWorkProtocolInstanceService.Get(state.WxWorkInstanceID)
+	instance := WxWorkProtocolInstanceService.GetByTenantID(state.WxWorkInstanceID, message.TenantID)
 	if instance == nil {
 		return "", fmt.Errorf("企微员工号实例不存在")
 	}
@@ -247,7 +247,7 @@ func (s *mediaUnderstandingService) transcribeWxWorkVoice(ctx context.Context, m
 	if err != nil {
 		return "", err
 	}
-	conversationID := strings.TrimSpace(wxWorkProtocolVoiceConversationID(message.Payload, message.ConversationID))
+	conversationID := strings.TrimSpace(wxWorkProtocolVoiceConversationID(message.Payload, message.ConversationID, message.TenantID))
 	msgID := strings.TrimSpace(wxWorkProtocolVoiceMsgID(message.Payload))
 	if msgID == "" && len(payload.WxMedia) > 0 {
 		msgID = nonNilString(payload.WxMedia["msg_id"])
@@ -361,7 +361,7 @@ func (s *mediaUnderstandingService) extractFileText(ctx context.Context, message
 	if payload == nil {
 		return "", fmt.Errorf("文件 payload 为空")
 	}
-	asset := AssetService.GetByAssetID(payload.AssetID)
+	asset := AssetService.GetByAssetIDInTenant(payload.AssetID, message.TenantID)
 	data, mimeType, err := s.readAssetBytes(message, asset, payload)
 	if err != nil {
 		return "", err
@@ -434,11 +434,11 @@ func (s *mediaUnderstandingService) recoverWxWorkMediaAsset(message *models.Mess
 	if message == nil || payload == nil || len(payload.WxMedia) == 0 {
 		return nil, fmt.Errorf("没有可用于二次下载的企微媒体参数")
 	}
-	state := ConversationRouteService.GetByConversationID(message.ConversationID)
+	state := ConversationRouteService.GetByConversationIDInTenant(message.ConversationID, message.TenantID)
 	if state == nil || state.WxWorkInstanceID <= 0 {
 		return nil, fmt.Errorf("会话缺少企微员工号实例绑定")
 	}
-	instance := WxWorkProtocolInstanceService.Get(state.WxWorkInstanceID)
+	instance := WxWorkProtocolInstanceService.GetByTenantID(state.WxWorkInstanceID, message.TenantID)
 	if instance == nil {
 		return nil, fmt.Errorf("企微员工号实例不存在")
 	}
@@ -456,7 +456,7 @@ func (s *mediaUnderstandingService) recoverWxWorkMediaAsset(message *models.Mess
 	payload.MimeType = asset.MimeType
 	payload.MediaError = ""
 	if message.ID > 0 {
-		if err := s.updateMessagePayload(message.ID, payload); err != nil {
+		if err := s.updateMessagePayload(message.ID, message.TenantID, payload); err != nil {
 			slog.Warn("update recovered wxwork media asset payload failed", "message_id", message.ID, "error", err)
 		}
 	}
@@ -491,7 +491,7 @@ func wxWorkProtocolVoiceMsgID(rawPayload string) string {
 	return ""
 }
 
-func wxWorkProtocolVoiceConversationID(rawPayload string, conversationID int64) string {
+func wxWorkProtocolVoiceConversationID(rawPayload string, conversationID, tenantID int64) string {
 	root := map[string]any{}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(rawPayload)), &root); err == nil {
 		if value := strings.TrimSpace(fmt.Sprint(root["conversation_id"])); value != "" && value != "<nil>" {
@@ -503,9 +503,9 @@ func wxWorkProtocolVoiceConversationID(rawPayload string, conversationID int64) 
 		}
 		fromUsername := strings.TrimSpace(fmt.Sprint(root["from_username"]))
 		toUsername := strings.TrimSpace(fmt.Sprint(root["to_username"]))
-		state := ConversationRouteService.GetByConversationID(conversationID)
+		state := ConversationRouteService.GetByConversationIDInTenant(conversationID, tenantID)
 		if state != nil && state.WxWorkInstanceID > 0 {
-			if instance := WxWorkProtocolInstanceService.Get(state.WxWorkInstanceID); instance != nil {
+			if instance := WxWorkProtocolInstanceService.GetByTenantID(state.WxWorkInstanceID, tenantID); instance != nil {
 				employeeID := strings.TrimSpace(instance.EmployeeUserID)
 				switch {
 				case employeeID != "" && fromUsername == employeeID && toUsername != "":
@@ -778,23 +778,26 @@ func (s *mediaUnderstandingService) markMediaUnderstanding(message *models.Messa
 	}
 	payload.MediaStatus = strings.TrimSpace(status)
 	payload.MediaError = limitText(errText, 500)
-	return s.updateMessagePayload(message.ID, payload)
+	return s.updateMessagePayload(message.ID, message.TenantID, payload)
 }
 
-func (s *mediaUnderstandingService) updateMessagePayload(messageID int64, payload *messageMediaPayload) error {
+func (s *mediaUnderstandingService) updateMessagePayload(messageID, tenantID int64, payload *messageMediaPayload) error {
+	if messageID <= 0 || tenantID <= 0 {
+		return fmt.Errorf("媒体理解消息缺少租户归属")
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	return repositories.MessageRepository.Updates(sqls.DB(), messageID, map[string]any{
+	return repositories.MessageRepository.UpdatesInTenant(sqls.DB(), messageID, tenantID, map[string]any{
 		"payload":          string(data),
 		"updated_at":       time.Now(),
 		"update_user_name": "media_understanding",
 	})
 }
 
-func (s *mediaUnderstandingService) canTriggerAIForMedia(conversationID int64) bool {
-	state := ConversationRouteService.GetByConversationID(conversationID)
+func (s *mediaUnderstandingService) canTriggerAIForMedia(conversationID, tenantID int64) bool {
+	state := ConversationRouteService.GetByConversationIDInTenant(conversationID, tenantID)
 	if state == nil {
 		return true
 	}
@@ -802,7 +805,7 @@ func (s *mediaUnderstandingService) canTriggerAIForMedia(conversationID int64) b
 		return false
 	}
 	if state.WxWorkInstanceID > 0 {
-		instance := WxWorkProtocolInstanceService.Get(state.WxWorkInstanceID)
+		instance := WxWorkProtocolInstanceService.GetByTenantID(state.WxWorkInstanceID, tenantID)
 		if instance != nil && !instance.AIReplyEnabled {
 			return false
 		}
