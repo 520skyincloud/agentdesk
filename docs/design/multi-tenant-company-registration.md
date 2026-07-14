@@ -2152,3 +2152,14 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 实际 `/tmp/agentdesk-tenant-stats.db` 审计继续 passed：51/51 模型策略、64/64 表、125/125 普通关系、0 违规；前后 mtime `1784055363`、大小 `4878336` 字节不变。
 - 聚焦 race、独立串行全仓 Go、vet 和 diff 检查通过。无 model、migration、DTO、API、权限、WebSocket、页面或 AI/计费变化；AI 分支无同文件冲突，不要求 rebase 或 migration 排序。
 - 可独立回滚审计 service/test 与本节文档，无数据库回滚；回滚只会失去历史职责悬空发现能力。违规修复必须先判断应恢复角色还是解除业务职责，不能由审计命令替业务负责人做决定。
+
+## 71A. 当前实施检查点：账号角色变更追加式审计契约（2026-07-15）
+
+现有 UserRole 只保存当前关系，角色替换会删除旧记录；AuditFields 也只能说明单条关系的创建和更新，无法还原账号角色集合从什么变成什么。TenantRegistrationLog、ConversationEventLog 和登录日志分别属于注册、会话与认证链路，不能复用为角色历史。本批先建立独立、追加式数据契约，下一批再接入所有角色替换入口。
+
+- 新增 UserRoleChangeLog，保存目标 TenantID/UserID、变更前后有序角色 ID JSON、变更前后有序角色 code JSON、操作人 ID/名称和创建时间。租户账号日志必须与目标账号同租户；平台账号日志允许 TenantID=0。OperatorID=0 表示无登录操作人的系统入口，正数操作人必须引用真实 User，但允许平台管理员操作租户账号。
+- 模型由 models.Models 注册并通过 AutoMigrate 建表，不占用 DML migration 版本。新增 repository 目前只提供 Create，禁止更新或删除，保持追加式语义；本批没有 API、页面或新权限，后续审计查看继续归客服/对话审计项目统一设计。
+- 租户完整性审计登记显式零租户策略，并新增目标账号同租户关系和操作人全局引用关系。基线由 51/51 模型、64 表、125 关系提升为 52/52、65 表、127 关系；测试覆盖租户日志、平台零租户日志、跨租户目标和不存在操作人。
+- 全仓 Go、定向 race、service 全包、go vet 和 diff 检查通过。无 DTO、enum、API、Gin 路由、权限、WebSocket、前端、AI 回复、模型调用、token、usage 或计费语义变化。
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/models/models.go`。最终合并必须同时保留 UserRoleChangeLog 和 AI 分支新增模型注册，合并后重新运行策略覆盖与全量 AutoMigrate 测试；无需 migration 排序。本批契约应先于 71B 角色写入接线合并。
+- 回滚可删除新 model、repository、模型注册、审计策略/关系、测试和本节文档；尚未接线时不会丢失在线日志。71B 开始写入后不得直接删除已生成的历史表，代码回滚也应保留数据供审计。

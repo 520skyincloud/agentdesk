@@ -32,14 +32,31 @@ func TestTenantIntegrityPoliciesCoverEveryRegisteredTenantModel(t *testing.T) {
 			t.Errorf("non-tenant model %s has a stale audit policy", name)
 		}
 	}
-	if len(policies) != 51 {
-		t.Fatalf("policy count = %d, want 51 explicit TenantID policies", len(policies))
+	if len(policies) != 52 {
+		t.Fatalf("policy count = %d, want 52 explicit TenantID policies", len(policies))
 	}
 }
 
 func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	db := openTenantIntegrityTestDB(t, true)
-	createCleanTenantIntegrityFixture(t, db)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	now := time.Now()
+	for _, item := range []*models.UserRoleChangeLog{
+		{
+			TenantID: 0, UserID: fixture.platformUser.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: "[]", BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: "[]",
+			CreatedAt: now,
+		},
+		{
+			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: "[]", BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: "[]",
+			OperatorID: fixture.platformUser.ID, OperatorName: fixture.platformUser.Username, CreatedAt: now,
+		},
+	} {
+		if err := db.Create(item).Error; err != nil {
+			t.Fatalf("create valid role change log: %v", err)
+		}
+	}
 
 	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 5})
 	if err != nil {
@@ -48,8 +65,11 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	if report.Status != "passed" || report.HasViolations() {
 		t.Fatalf("clean fixture failed audit: %#v", report.Violations)
 	}
-	if report.RegisteredTenantModels != 51 || report.PolicyCount != 51 {
-		t.Fatalf("tenant model coverage = %d/%d, want 51/51", report.RegisteredTenantModels, report.PolicyCount)
+	if report.RegisteredTenantModels != 52 || report.PolicyCount != 52 {
+		t.Fatalf("tenant model coverage = %d/%d, want 52/52", report.RegisteredTenantModels, report.PolicyCount)
+	}
+	if report.RequiredTables != 65 || report.ConfiguredRelations != 127 {
+		t.Fatalf("audit schema coverage = %d tables/%d relations, want 65/127", report.RequiredTables, report.ConfiguredRelations)
 	}
 	if report.CheckedTables != report.RequiredTables {
 		t.Fatalf("checked tables = %d, required = %d", report.CheckedTables, report.RequiredTables)
@@ -101,6 +121,14 @@ func TestTenantIntegrityAuditReportsTenantRelationAndRoleViolations(t *testing.T
 	if err := db.Create(&models.UserRole{UserID: fixture.platformUser.ID, RoleID: fixture.tenantRole.ID, AuditFields: audit}).Error; err != nil {
 		t.Fatalf("assign tenant role to platform user: %v", err)
 	}
+	invalidRoleChange := &models.UserRoleChangeLog{
+		TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserB.ID,
+		BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: "[]", BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: "[]",
+		OperatorID: 987654, OperatorName: "missing-operator", CreatedAt: now,
+	}
+	if err := db.Create(invalidRoleChange).Error; err != nil {
+		t.Fatalf("create invalid role change log: %v", err)
+	}
 	platformPermission := &models.Permission{
 		Name: "Platform only", Code: "test.platform.only", Type: "api", Scope: constants.PermissionScopePlatform,
 		Status: enums.StatusOk, AuditFields: audit,
@@ -135,6 +163,12 @@ func TestTenantIntegrityAuditReportsTenantRelationAndRoleViolations(t *testing.T
 	}
 	if userViolation.Count != 3 || len(userViolation.SampleIDs) != 2 {
 		t.Fatalf("User violation count/samples = %d/%d, want 3/2", userViolation.Count, len(userViolation.SampleIDs))
+	}
+	if violation := tenantIntegrityFindViolation(report, "TENANT_RELATION_MISMATCH", "UserRoleChangeLog.user_id"); violation == nil || violation.Count != 1 {
+		t.Fatalf("role change target tenant violation = %#v", violation)
+	}
+	if violation := tenantIntegrityFindViolation(report, "ORPHAN_PARENT_REFERENCE", "UserRoleChangeLog.operator_id"); violation == nil || violation.Count != 1 {
+		t.Fatalf("role change operator violation = %#v", violation)
 	}
 }
 

@@ -3541,3 +3541,40 @@ git diff --check
 
 - `origin/codex/ai-billing@f2d2da4` 不修改本批审计 service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。合并后仍需以最终 Role/UserRole 与新增 AI 模型运行完整审计。
 - 可独立回滚 service/test 和两份文档，无数据库回滚；回滚会失去历史职责对象缺角色和小组负责人缺本组档案的发现能力。修复必须人工确认恢复角色还是解除职责，再另做幂等 DML。
+
+## 第 71A 批：账号角色变更追加式审计契约（2026-07-15）
+
+### 目标与实现
+
+- UserRole 角色替换会删除旧关系，AuditFields 无法保存角色集合前后快照；注册、会话和登录日志语义均不匹配。本批新增独立 UserRoleChangeLog，不复用旧日志，也暂不增加查看页面或权限。
+- 日志保存 TenantID/UserID、排序后的前后角色 ID/code JSON、OperatorID/OperatorName 和 CreatedAt。TenantID=0 只用于平台账号日志；租户日志必须与目标 User 同租户。OperatorID 可为 0，正数只要求 User 引用存在，不要求同租户，以保留平台管理员在活动公司上下文中的合法操作。
+- model 注册进 models.Models，由 AutoMigrate 创建表；repository 仅暴露 Create，保持追加式写入边界。没有 DML migration、DTO、enum、API、Gin 路由、权限、WebSocket 或前端变化。
+- TenantIntegrityAudit 增加显式策略及两条关系，覆盖基线更新为 52/52 TenantID 模型、65 张必需表、127 条普通关系。测试验证平台零租户、租户日志、跨租户目标账号和不存在操作人。
+
+### 文件与验证
+
+```text
+internal/models/user_role_change_log.go
+internal/models/models.go
+internal/repositories/user_role_change_log_repository.go
+internal/services/tenant_integrity_audit_service.go
+internal/services/tenant_integrity_audit_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^TestTenantIntegrityAudit(PassesCleanTwoTenantFixture|ReportsTenantRelationAndRoleViolations)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 全部验证通过；没有生成或提交 docs/generated 报告，也没有修改 `.codex/audits/`。
+
+### 并行分支、合并与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/models/models.go`。最终不得整文件选边，必须保留双方新增模型并以合并后的 models.Models 重跑策略覆盖与 AutoMigrate。其余本批文件当前无同文件修改，无 migration 排序要求。
+- 合并顺序建议先 71A 数据契约，再合并 71B 在线写入；只合并 71B 而缺少 model/AutoMigrate 会在首次写日志时失败。
+- 71A 尚未写入业务日志时可整体回滚；71B 投产后即使回滚写入逻辑，也应保留日志表和历史数据，不得把业务回滚做成数据删除。
