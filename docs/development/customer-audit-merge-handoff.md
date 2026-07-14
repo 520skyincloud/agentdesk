@@ -1524,6 +1524,6 @@ git diff --check
 
 ### 并行分支、合并顺序与回滚
 
-- 开始及提交前均已 fetch，`origin/codex/ai-billing@f2d2da4`。AI 分支同文件集中于 `models.go`、KnowledgeBase service/builder、RAG retrieve/log/answer 和前端 knowledge API；vectordb provider 当前无同文件修改。
+- 开始、提交前及 push 后均已 fetch，`origin/codex/ai-billing@f2d2da4`。AI 分支同文件集中于 `models.go`、KnowledgeBase service/builder、KnowledgeRetrieveLog repository、RAG retrieve/log/answer 和前端 knowledge API；vectordb provider 当前无同文件修改。合并 RetrieveLog repository 时保留 AI 分支 `FindRecentQuestions` 与本批 tenant-aware list/detail 方法，并在其进入运行链前把 TenantID 作为必填查询边界。
 - 建议先合并本批字段/migration/repository 和 vectordb 契约，再逐方法合并 AI 分支 FastGPT/intent/usage 逻辑，最后补新增 Resource/Job/usage 模型 Tenant 并执行双租户 FastGPT 测试。
 - 可回滚后台 handler/service 和 Qdrant运行时代码，但不得删除已执行的 TenantID 字段、migration 48 历史或把冲突数据强行归 legacy。回滚 Qdrant Tenant filter 会重新开放跨租户向量风险，不得在多租户环境执行。

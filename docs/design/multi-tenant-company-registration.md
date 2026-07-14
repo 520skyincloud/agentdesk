@@ -1253,5 +1253,5 @@ git diff --check
 ### 并行合并要求
 
 - migration 48 创建前已核对：`origin/main` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 47，无版本冲突。
-- AI 分支同文件主要为 `models.go`、`knowledge_base_service.go`、`knowledge_builder.go`、`rag/answer.go`、`rag/retrieve.go`、`rag/retrieve_log.go` 和知识页面 API。建议先合并 TenantID/migration 48/repository 原语，再合并 FastGPT 模型字段与资源模型，最后逐方法合并 retrieve/log/runtime。
+- AI 分支同文件主要为 `models.go`、`knowledge_base_service.go`、`knowledge_builder.go`、`knowledge_retrieve_log_repository.go`、`rag/answer.go`、`rag/retrieve.go`、`rag/retrieve_log.go` 和知识页面 API。建议先合并 TenantID/migration 48/repository 原语，再合并 FastGPT 模型字段与资源模型，最后逐方法合并 retrieve/log/runtime；RetrieveLog repository 必须同时保留 AI 分支的近期问题查询和本批的 tenant-aware list/detail 原语，近期问题查询在投入租户业务前也必须增加租户参数。
 - 合并时必须保留 AI 分支的 FastGPT、intent profile、usage/计费和回复语义，同时保留本批的 TenantID、同租户父子校验、Qdrant tenant payload/filter、后台 ActiveTenant 和首页统计条件；禁止整文件选边。
