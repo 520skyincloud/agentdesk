@@ -45,23 +45,3 @@ func (s *userRoleService) FindPageByCnd(cnd *sqls.Cnd) (list []models.UserRole, 
 func (s *userRoleService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.UserRoleRepository.Count(sqls.DB(), cnd)
 }
-
-func (s *userRoleService) Create(t *models.UserRole) error {
-	return repositories.UserRoleRepository.Create(sqls.DB(), t)
-}
-
-func (s *userRoleService) Update(t *models.UserRole) error {
-	return repositories.UserRoleRepository.Update(sqls.DB(), t)
-}
-
-func (s *userRoleService) Updates(id int64, columns map[string]interface{}) error {
-	return repositories.UserRoleRepository.Updates(sqls.DB(), id, columns)
-}
-
-func (s *userRoleService) UpdateColumn(id int64, name string, value interface{}) error {
-	return repositories.UserRoleRepository.UpdateColumn(sqls.DB(), id, name, value)
-}
-
-func (s *userRoleService) Delete(id int64) {
-	repositories.UserRoleRepository.Delete(sqls.DB(), id)
-}

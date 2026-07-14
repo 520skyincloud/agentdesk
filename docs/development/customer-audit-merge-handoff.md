@@ -3699,3 +3699,36 @@ git diff --check
 ```
 
 - 本批是只读遗漏与合并预演，不修改运行代码、模型、migration、API、权限或前端；merge-tree 只创建临时 Git tree 对象，不改变工作树。可独立回滚两份文档，但会失去当前精确阻断清单。
+
+## 第 73 批：角色写入审计旁路契约（2026-07-15）
+
+### 问题与实现
+
+- 第 71B 批完成当前在线入口日志，但 UserRoleService 仍暴露无人调用的 Create/Update/Updates/UpdateColumn/Delete。它们无法执行角色等级、租户 scope、职责依赖、事务快照和会话撤销，因此不能作为兼容入口保留。
+- UserRoleService 收敛为只读查询。在线角色替换只允许 `UserService.replaceUserRolesDB`；企业微信新账号的默认门店员工角色只允许 `wxWorkLoginService.assignDefaultStoreStaffRole`，两者均已在 71B 同事务写 UserRoleChangeLog。
+- 新增源码 AST 契约，扫描所有 `internal/services/*.go` 非测试文件，识别 repository/service 写调用、`models.UserRole` GORM 写链和针对 `t_user_role` 的 Exec。允许清单精确到文件和函数，不是整文件豁免。
+- 独立检测器测试证明 Create/Update/Delete/链式 Model.Updates/原始 SQL 均会命中，Find 和其他 model 写入不会误报。migration 初始化和仿真 seed 不属于在线 service 扫描范围，保持原有确定性数据职责。
+
+### 文件与验证
+
+```text
+internal/services/user_role_service.go
+internal/services/user_role_write_contract_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestUserRoleRuntimeWritesStayBehindAuditedServices|TestIsUserRoleMutationCall|TestUserServiceAssignRolesEnforcesAuthority|TestUserRoleChangeLogRollsBackWithRoleReplacementTransaction|TestWxWorkDefaultStoreStaffRoleWritesOneAuditLog)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 全部通过。没有 model、AutoMigrate、DML migration、DTO、enum、API、权限、WebSocket、前端、AI runtime、模型调用、token、usage 或计费变化；没有修改 `.codex/audits/` 或生成 docs/generated 报告。
+
+### 并行分支与回滚
+
+- 以共同基线检查，`origin/codex/ai-billing@f2d2da4` 不修改本批 service/test 文件，当前无同文件冲突和 migration 排序要求。最终合并后必须保留 AST 契约并重跑，它会对 AI 分支新增 service 一并生效。
+- 可独立回滚四个文件中的本批变更且无需数据库回滚；回滚会恢复无权限、无日志的通用角色写旁路，不建议回滚。

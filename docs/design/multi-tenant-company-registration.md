@@ -2200,3 +2200,14 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - AI DML migration 使用 21-33，本分支租户 migration 使用 34-56，当前无版本号重复。合并必须同时保留两段并重新执行 migration runner 的版本/remark 测试；UserRoleChangeLog 仍由 AutoMigrate 建表，不占 migration 号。
 - 合并顺序：先保留最终模型字段与注册表 -> 补 AI 新模型 TenantID/策略/回填 -> 合并 runtime 和 handler 权限 -> 保留客服小组/派单与租户导航 -> 运行 AutoMigrate/migration -> 双租户全链路、全量 Go/前端/构建和真实只读审计。
 - 在上述阻断全部关闭前，`tenantRegistration.enabled` 必须保持 false；公司主管账号、邀请码查看和内部账号创建可继续使用，但不得把邀请注册链接作为已上线能力发给租户用户。
+
+## 73. 当前实施检查点：角色写入审计旁路契约（2026-07-15）
+
+第 71B 批已把所有现有在线角色入口接入 UserRoleChangeLog，但生成式 UserRoleService 仍保留无人调用的 Create/Update/Delete 等通用方法。它们没有权限、职责依赖或角色集合日志语义，后续功能一旦误用就会绕过已确认边界。本批不新增平行角色 API，而是删除这些无调用写方法并用源码契约阻止旁路重新出现。
+
+- UserRoleService 只保留 Get/Take/Find/FindOne/分页/Count 查询；在线角色集合写入必须经过 `UserService.replaceUserRolesDB`。企业微信首次登录补 `store_staff` 保留为唯一额外入口，并在原事务内追加完整角色快照。
+- 新增 AST 测试扫描 `internal/services` 下所有非测试 Go 文件。它同时识别 UserRoleRepository/UserRoleService 写方法、带 `models.UserRole` 的 GORM Create/Save/Update/Delete，以及引用 `t_user_role` 的 Exec；只有 `replaceUserRolesDB` 和 `assignDefaultStoreStaffRole` 两个函数获准。
+- 检测器表驱动测试覆盖 repository/service/GORM 链式调用/原始 SQL 四类写法，并确认查询、其他模型写和无关 SQL 不误报。migration 2 的内置角色初始化和 `customer_audit_seed` 仿真数据写入位于 service 运行时之外，继续作为明确例外；它们不代表在线账号操作。
+- 定向 race、完整 service、全仓 Go、go vet 和 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、权限、WebSocket、前端或 AI/计费变化。
+- 共同基线复核显示 AI 分支不修改 `user_role_service.go`，新增契约测试也无同文件冲突；无需 migration 顺序或 rebase。合并 AI 分支后该测试会自动检查其新增 service 是否出现未审计角色写入。
+- 可独立回滚 service 收口、测试和本节文档，不涉及数据回滚；回滚会重新暴露可绕过日志的通用写方法，因此不应把它作为兼容接口恢复。
