@@ -2234,3 +2234,15 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 测试覆盖两段合法链、相邻 before/after 断裂和最新 after 与当前角色不一致，两类错误各命中精确日志 ID；定向 race、完整 service、全仓 Go、go vet 和 diff 检查通过。
 - 无 model、AutoMigrate、migration、DTO、API、权限、WebSocket、前端或 AI/计费变化。AI 分支不修改本批运行文件，无同文件冲突或 migration 顺序要求。
 - 可独立回滚行锁、批量当前角色查询、连续性审计和测试；不涉及数据回滚，但会重新允许同账号并发替换形成歧义，并失去日志漏记/旁路写入发现能力。
+
+## 76A. 当前实施检查点：角色权限集合变更审计契约（2026-07-15）
+
+账号只能绑定角色、权限只能绑定角色的产品边界已经成立，但 RolePermission 仍只保存当前关系，替换时会删除旧记录；AuditFields 无法还原全局角色权限集合前后变化。本批先建立追加式数据契约，在线写入和旁路收口放在独立 76B，避免把“表已存在”误报为“审计已生效”。
+
+- 新增 RolePermissionChangeLog，保存 RoleID、变更时 RoleCode、前后 permission ID/code JSON、操作人 ID/名称和创建时间。Role/Permission 都是平台全局模板，日志不增加 TenantID。
+- RoleID 不建立当前父级关系：非内置 Role 在不再被账号使用后可以合法删除，历史日志必须继续保存被删角色证据；RoleCode 是删除后的稳定展示快照。正数 OperatorID 仍通过普通完整性关系要求引用真实 User，0 表示系统初始化入口。
+- 模型注册进 models.Models，由 AutoMigrate 建表；repository 目前只暴露 Create，不提供更新/删除。没有 DML migration、API、页面或新权限，后续审计查看仍归统一审计项目。
+- TenantIntegrity 模型策略仍为 52/52；必需表由 65 增至 66，普通关系由 127 增至 128。测试覆盖缺失操作人违规，并确认模型注册、表和关系覆盖完整。
+- 定向 race、完整 service、全仓 Go、go vet 和 diff 检查通过。无 DTO、enum、Gin 路由、WebSocket、前端、AI runtime、token、usage 或计费变化。
+- AI 分支同时修改 `internal/models/models.go`，最终必须同时保留 RolePermissionChangeLog、UserRoleChangeLog、租户模型和 AI 新模型注册；其余本批文件无同文件冲突，无 migration 排序要求。76A 必须先于 76B 合并。
+- 76B 上线写入前可整体回滚本契约；开始产生日志后即使停写也应保留表和历史数据，禁止把业务回滚实现成删除审计记录。

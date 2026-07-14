@@ -3807,3 +3807,40 @@ git diff --check
 
 - 共同基线检查显示 `origin/codex/ai-billing@f2d2da4` 不修改本批运行文件，无同文件冲突、migration 排序或 rebase 要求。
 - 可独立回滚九个文件中的本批变化，不需要数据库回滚；回滚会失去同账号并发序列化和日志连续性/终态检查，不建议回滚。
+
+## 第 76A 批：角色权限集合变更追加式审计契约（2026-07-15）
+
+### 目标与数据语义
+
+- RolePermission 当前只保存终态，角色管理每次替换会删除旧关系。账号级 UserPermission 已废止后，RolePermission 是全局权限派发的唯一核心关系，其前后变化必须独立留痕，不能复用 UserRoleChangeLog 或 migration 日志。
+- 新增 RolePermissionChangeLog：RoleID/RoleCode、before/after permission IDs JSON、before/after permission codes JSON、OperatorID/OperatorName、CreatedAt。角色和权限模板为平台全局，因此日志无 TenantID。
+- RoleID 故意不设当前关系审计：自定义角色可在无账号使用后删除，历史日志不能因目标 Role 已删除而失败。RoleCode 保存操作时身份；OperatorID>0 必须引用 User，系统入口可写 0。
+- model 通过 models.Models/AutoMigrate 注册，repository 只提供 Create。本批不接 `AssignPermissions`，所以不能把 76A 单独描述成在线权限审计完成。
+
+### 文件与验证
+
+```text
+internal/models/role_permission_change_log.go
+internal/models/models.go
+internal/repositories/role_permission_change_log_repository.go
+internal/services/tenant_integrity_audit_service.go
+internal/services/tenant_integrity_audit_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^TestTenantIntegrity(AuditPassesCleanTwoTenantFixture|AuditReportsTenantRelationAndRoleViolations|PoliciesCoverEveryRegisteredTenantModel)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 模型策略保持 52/52，必需表/普通关系更新为 66/128；缺失日志操作人精确报告 `ORPHAN_PARENT_REFERENCE`。全部验证通过。
+- 无 DML migration、DTO、enum、API、权限、WebSocket、前端或 AI/计费变化；没有修改 `.codex/audits/` 或 docs/generated。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/models/models.go`。最终需手工保留双方注册项并重跑 AutoMigrate/模型覆盖；其余文件无同文件冲突，无 migration 版本顺序要求。
+- 合并顺序为 76A 数据契约 -> 76B 在线事务写入 -> 后续语义/连续性审计。76B 投产前可回滚七个文件；投产后应保留表和历史行。

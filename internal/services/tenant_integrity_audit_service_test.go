@@ -70,8 +70,8 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	if report.RegisteredTenantModels != 52 || report.PolicyCount != 52 {
 		t.Fatalf("tenant model coverage = %d/%d, want 52/52", report.RegisteredTenantModels, report.PolicyCount)
 	}
-	if report.RequiredTables != 65 || report.ConfiguredRelations != 127 {
-		t.Fatalf("audit schema coverage = %d tables/%d relations, want 65/127", report.RequiredTables, report.ConfiguredRelations)
+	if report.RequiredTables != 66 || report.ConfiguredRelations != 128 {
+		t.Fatalf("audit schema coverage = %d tables/%d relations, want 66/128", report.RequiredTables, report.ConfiguredRelations)
 	}
 	if report.CheckedTables != report.RequiredTables {
 		t.Fatalf("checked tables = %d, required = %d", report.CheckedTables, report.RequiredTables)
@@ -132,6 +132,15 @@ func TestTenantIntegrityAuditReportsTenantRelationAndRoleViolations(t *testing.T
 	if err := db.Create(invalidRoleChange).Error; err != nil {
 		t.Fatalf("create invalid role change log: %v", err)
 	}
+	invalidPermissionChange := &models.RolePermissionChangeLog{
+		RoleID: fixture.platformRole.ID, RoleCode: fixture.platformRole.Code,
+		BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: "[]",
+		BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: "[]",
+		OperatorID: 987655, OperatorName: "missing-permission-operator", CreatedAt: now,
+	}
+	if err := db.Create(invalidPermissionChange).Error; err != nil {
+		t.Fatalf("create invalid permission change log: %v", err)
+	}
 	platformPermission := &models.Permission{
 		Name: "Platform only", Code: "test.platform.only", Type: "api", Scope: constants.PermissionScopePlatform,
 		Status: enums.StatusOk, AuditFields: audit,
@@ -172,6 +181,9 @@ func TestTenantIntegrityAuditReportsTenantRelationAndRoleViolations(t *testing.T
 	}
 	if violation := tenantIntegrityFindViolation(report, "ORPHAN_PARENT_REFERENCE", "UserRoleChangeLog.operator_id"); violation == nil || violation.Count != 1 {
 		t.Fatalf("role change operator violation = %#v", violation)
+	}
+	if violation := tenantIntegrityFindViolation(report, "ORPHAN_PARENT_REFERENCE", "RolePermissionChangeLog.operator_id"); violation == nil || violation.Count != 1 {
+		t.Fatalf("permission change operator violation = %#v", violation)
 	}
 }
 

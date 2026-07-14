@@ -23,6 +23,7 @@ var Models = []any{
 	&UserRole{},
 	&UserRoleChangeLog{},
 	&RolePermission{},
+	&RolePermissionChangeLog{},
 	&LoginSession{},
 	&LoginCredentialLog{},
 	&Asset{},

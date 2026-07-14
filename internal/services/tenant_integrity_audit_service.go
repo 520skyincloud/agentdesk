@@ -153,6 +153,7 @@ func tenantIntegrityRelations() []tenantIntegrityRelation {
 		global("UserRoleChangeLog", "operator_id", "User", false),
 		global("RolePermission", "role_id", "Role", true),
 		global("RolePermission", "permission_id", "Permission", true),
+		global("RolePermissionChangeLog", "operator_id", "User", false),
 		global("LoginSession", "user_id", "User", true),
 		global("LoginCredentialLog", "user_id", "User", false),
 		global("WxWorkProtocolDevicePoolInstance", "bound_wx_work_protocol_instance_id", "WxWorkProtocolInstance", false),
