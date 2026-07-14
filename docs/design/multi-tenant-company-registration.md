@@ -1746,5 +1746,5 @@ git diff --check
 
 - 本批新增权限常量和 DML migration 54；没有 model、AutoMigrate、request/response DTO、enum、业务数据字段、WebSocket payload 或 JsonResult 变化，也不修改总览指标计算口径。
 - 全量 Go、vet、96 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；测试覆盖后端权限/公司上下文双门槛、migration 幂等与默认角色范围、导航显隐和无权回退。
-- `origin/codex/ai-billing@f2d2da4` 同时修改 `web/lib/navigation.tsx` 和双语资源：AI 分支新增意图行业入口及其文案，本批修改总览入口和 `common.noAccessibleModules`，区块和语义不重叠。最终合并必须同时保留；AI 分支最高 migration 33，与 54 不冲突。
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `web/lib/navigation.tsx` 和双语资源：AI 分支新增意图行业入口及其文案，本批修改总览入口和 `common.noAccessibleModules`，本批区块和语义不重叠；但两条长期分支在导航数组还累计了其他变化，`git merge-tree --write-tree HEAD origin/codex/ai-billing` 已确认 `navigation.tsx` 需要手工合并。必须保留本分支完整租户导航与 `dashboard.view`，同时保留 AI 分支 `replyIntentProfiles`；双语资源本次可自动合并。AI 分支最高 migration 33，与 54 不冲突。
 - 回滚代码后数据库中多出的内置权限及角色关系不会破坏旧版本，不应通过破坏性 SQL 删除；若产品决定撤销总览权限，应先停用权限和清理角色关系，再单独做幂等 DML。

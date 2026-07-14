@@ -2552,5 +2552,5 @@ git diff --check
 ### 并行分支、合并与回滚
 
 - 开始前已 fetch。`origin/main` 最高 migration 20，`origin/codex/ai-billing@f2d2da4` 最高 33，本分支此前最高 53，migration 54 无编号冲突。
-- 同文件为 `web/lib/navigation.tsx`、`web/messages/zh-CN.json` 和 `web/messages/en-US.json`。AI 分支在导航后部增加意图行业入口并在 nav 文案区增加翻译；本批在导航首项增加 `dashboard.view` 并在 common 区增加无模块状态，当前区块和语义不重叠。合并后必须同时保留并重跑导航测试与 build。
+- 同文件为 `web/lib/navigation.tsx`、`web/messages/zh-CN.json` 和 `web/messages/en-US.json`。AI 分支在导航后部增加意图行业入口并在 nav 文案区增加翻译；本批在导航首项增加 `dashboard.view` 并在 common 区增加无模块状态，本批区块和语义不重叠。提交后的 `git merge-tree --write-tree HEAD origin/codex/ai-billing` 显示双语资源可自动合并，但 `navigation.tsx` 因两条长期分支在同一数组累计的其他变化需要手工解决；不得整文件选边，必须保留本分支完整租户导航、`dashboard.view` 和 AI 分支 `replyIntentProfiles`，然后重跑导航测试与 build。
 - 本批可独立回滚代码；数据库中已同步的额外权限和角色关系对旧代码无害，不使用破坏性 DML 回退。若未来取消权限，应通过新的幂等 migration 停用/解绑。
