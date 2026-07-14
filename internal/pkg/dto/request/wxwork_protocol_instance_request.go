@@ -29,6 +29,8 @@ type CreateWxWorkProtocolInstanceRequest struct {
 	StaffUserIDs                   string `json:"staffUserIds"`
 	ManagedMode                    string `json:"managedMode"`
 	ServiceHours                   string `json:"serviceHours"`
+	FrontDeskMode                  string `json:"frontDeskMode"`
+	FrontDeskHours                 string `json:"frontDeskHours"`
 	StoreRoomConversationID        string `json:"storeRoomConversationId"`
 	StoreRoomNotifyEnabled         bool   `json:"storeRoomNotifyEnabled"`
 	StoreRoomAtList                string `json:"storeRoomAtList"`
@@ -106,6 +108,8 @@ type UpdateWxWorkProtocolRemoteSetupRequest struct {
 	KnowledgeBaseID         int64  `json:"knowledgeBaseId"`
 	ManagedMode             string `json:"managedMode"`
 	ServiceHours            string `json:"serviceHours"`
+	FrontDeskMode           string `json:"frontDeskMode"`
+	FrontDeskHours          string `json:"frontDeskHours"`
 	StoreRoomConversationID string `json:"storeRoomConversationId"`
 	StoreRoomNotifyEnabled  bool   `json:"storeRoomNotifyEnabled"`
 	StoreRoomAtList         string `json:"storeRoomAtList"`
@@ -138,6 +142,8 @@ type UpdateWxWorkProtocolAISettingsRequest struct {
 	StaffUserIDs                   string `json:"staffUserIds"`
 	ManagedMode                    string `json:"managedMode"`
 	FallbackToHQ                   bool   `json:"fallbackToHQ"`
+	FrontDeskMode                  string `json:"frontDeskMode"`
+	FrontDeskHours                 string `json:"frontDeskHours"`
 	StoreRoomConversationID        string `json:"storeRoomConversationId"`
 	StoreRoomNotifyEnabled         bool   `json:"storeRoomNotifyEnabled"`
 	StoreRoomAtList                string `json:"storeRoomAtList"`
@@ -203,6 +209,11 @@ type VerifyWxWorkProtocolLoginRequest struct {
 	ID     int64  `json:"id"`
 	Ticket string `json:"ticket"`
 	Code   string `json:"code"`
+}
+
+type VerifyWxWorkProtocolRemoteLoginRequest struct {
+	Token string `json:"token"`
+	Code  string `json:"code"`
 }
 
 type AcceptWxWorkProtocolFriendRequest struct {

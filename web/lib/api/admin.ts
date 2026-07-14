@@ -319,6 +319,8 @@ export type WxWorkProtocolInstance = {
   staffUserIds: string
   managedMode: string
   serviceHours: string
+  frontDeskMode?: string
+  frontDeskHours?: string
   storeRoomConversationId: string
   storeRoomNotifyEnabled: boolean
   storeRoomAtList: string
@@ -419,6 +421,14 @@ export type WxWorkProtocolRemoteLoginQRCodeResult = {
   qrcodeContent?: string
 }
 
+export type WxWorkProtocolLoginStatus = {
+  status: "pending" | "scanned" | "verification_required" | "success" | "refused" | "expired" | "failed"
+  statusCode: number
+  requiresCode: boolean
+  message: string
+  rawResponse?: string
+}
+
 export type CreateWxWorkProtocolInstancePayload = {
   guid: string
   channelId: number
@@ -446,6 +456,8 @@ export type CreateWxWorkProtocolInstancePayload = {
   staffUserIds: string
   managedMode: string
   serviceHours: string
+  frontDeskMode?: string
+  frontDeskHours?: string
   storeRoomConversationId: string
   storeRoomNotifyEnabled: boolean
   storeRoomAtList: string
@@ -468,6 +480,8 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   autoAcceptFriendRequest: boolean
   autoAcceptFriendRemarkTemplate: string
   serviceHours: string
+  frontDeskMode?: string
+  frontDeskHours?: string
   manualTimeoutMinutes: number
   staffUserIds: string
   managedMode: string
