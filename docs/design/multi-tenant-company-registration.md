@@ -1042,6 +1042,7 @@ web/messages/en-US.json
 
 - `Conversation` 以显式 Tenant、Channel、Customer、当前客服组和非平台客服账号作为一致性证据；无任何证据的历史会话才归入 `legacy-default`。
 - `Message`、RouteState、SessionSummary、MessageSyncLog、Participant、ReadState、WxWorkKF 映射、ChannelMessageOutbox、Assignment、EventLog 和 ConversationInterrupt 继承父 Conversation，并验证 Message、Store、WxWorkInstance、Channel、Customer、Squad 等非零引用同租户。
+- 尚未映射到会话的原始协议 MessageSyncLog，以及尚未绑定会话的纯 AI checkpoint ConversationInterrupt，保留 `tenant_id=0` 作为平台隔离记录；它们不能进入任何租户业务查询。门店群通知 Outbox 使用负数合成 message_id，只有结构化 payload 明确为 `store_room_handoff_notice` 时才允许按父 Conversation 回填。
 - `Ticket` 以显式 Tenant、Customer、Conversation 和非平台负责人作为一致性证据；TicketProgress 继承 Ticket。TicketView 从租户账号继承，历史平台账号视图无法还原当时 ActiveTenant 时确定性归入 `legacy-default`。
 - `Tag` 同时服务 Conversation 与 Ticket，不能拆成两套平行标签。migration 45 将 ParentID 连通的整棵标签组件作为一个归属单元，汇总显式 Tenant、ConversationTag 和 TicketTag 证据；同一标签树被不同租户使用时中止迁移，要求人工拆分数据，不静默复制或覆盖。
 - `StoreCustomerRelation.LastConversationID` 在 Conversation 归属确定后执行同租户校验，防止客户门店关系指向其他租户会话。

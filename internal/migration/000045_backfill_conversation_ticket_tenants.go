@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"agent-desk/internal/models"
@@ -299,6 +300,12 @@ func backfillConversationChildren(
 	}
 	for i := range syncLogs {
 		item := &syncLogs[i]
+		if item.ConversationID <= 0 {
+			if item.MessageID > 0 || item.TenantID > 0 {
+				return fmt.Errorf("message sync log %d has tenant or message without conversation", item.ID)
+			}
+			continue
+		}
 		tenantID, err := requiredConversationDomainParentTenant("message sync log", item.ID, "conversation", item.ConversationID, conversationTenants)
 		if err != nil {
 			return err
@@ -381,11 +388,17 @@ func backfillConversationChildren(
 		if err != nil {
 			return err
 		}
-		if item.MessageID <= 0 {
+		if item.MessageID == 0 {
 			return fmt.Errorf("channel message outbox %d has no message", item.ID)
 		}
-		if err := validateConversationDomainReference("channel message outbox", item.ID, tenantID, "message", item.MessageID, messageTenants); err != nil {
-			return err
+		if item.MessageID < 0 {
+			if !isStoreRoomHandoffNoticeOutbox(*item) {
+				return fmt.Errorf("channel message outbox %d has unknown synthetic message %d", item.ID, item.MessageID)
+			}
+		} else {
+			if err := validateConversationDomainReference("channel message outbox", item.ID, tenantID, "message", item.MessageID, messageTenants); err != nil {
+				return err
+			}
 		}
 		if err := assignConversationDomainTenant(tx, &models.ChannelMessageOutbox{}, "channel message outbox", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
 			return err
@@ -430,6 +443,12 @@ func backfillConversationChildren(
 	}
 	for i := range interrupts {
 		item := &interrupts[i]
+		if item.ConversationID <= 0 {
+			if item.SourceMessageID > 0 || item.LastResumeMessageID > 0 || item.TenantID > 0 {
+				return fmt.Errorf("conversation interrupt %d has tenant or message without conversation", item.ID)
+			}
+			continue
+		}
 		tenantID, err := requiredConversationDomainParentTenant("conversation interrupt", item.ID, "conversation", item.ConversationID, conversationTenants)
 		if err != nil {
 			return err
@@ -445,6 +464,16 @@ func backfillConversationChildren(
 		}
 	}
 	return nil
+}
+
+func isStoreRoomHandoffNoticeOutbox(item models.ChannelMessageOutbox) bool {
+	if item.ChannelType != "wxwork_protocol" || item.ConversationID <= 0 {
+		return false
+	}
+	payload := struct {
+		Kind string `json:"kind"`
+	}{}
+	return json.Unmarshal([]byte(item.Payload), &payload) == nil && payload.Kind == "store_room_handoff_notice"
 }
 
 func backfillSimpleConversationChildren[T any](

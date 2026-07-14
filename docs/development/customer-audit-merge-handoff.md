@@ -1162,6 +1162,7 @@ git diff --check
 ```
 
 - 测试覆盖 19 个新增 TenantID 模型、所有直接会话子表、有效显式 Tenant 保留、legacy 兜底、平台账号历史 TicketView、重复执行、Channel/Customer 冲突、Ticket/StoreRelation 与 Conversation 的客户不一致、跨租户引用消息、Conversation/Ticket 共享标签冲突、孤儿 Message、非法显式 Tenant 和失败前写入整体回滚。
+- 推送后复查真实调用点发现两类合法的会话前置记录：协议通知会先写 `conversation_id=0` 的 MessageSyncLog，AI checkpoint 也可能先写 `conversation_id=0` 的 ConversationInterrupt；门店群通知 Outbox 则使用负数合成 message_id。migration 45 在合入主干和正式执行前修正为：前两类无业务引用记录保留 tenant 0 隔离，门店群任务只接受 JSON `kind=store_room_handoff_notice` 并从 Conversation 继承；未知负数任务、无会话却带消息/租户的记录继续中止迁移。测试已覆盖三类合法记录和伪造合成任务回滚。
 - 门店人工派发的既有测试夹具此前仍创建 `tenant_id=0` 的 Store、StoreStaffBinding、WxWorkProtocolInstance、AgentTeam、AgentProfile 和 User，租户化后的真实范围校验会把该夹具路由到总部或拒绝客服回复。本步骤只把夹具统一归入测试租户 101，并补建测试所需 MessageSyncLog 表；7 个门店人工派发、回复和超时聚焦测试恢复通过，未修改派发 service 或状态机。
 - migration 聚焦及 race、migration 全包、`go vet ./...`、全仓编译和 `git diff --check` 通过。完整 `go test ./internal/services -count=1` 仍会触发既有异步 AI 测试清理竞态：测试关闭或切换全局 DB 后，`TriggerReplyAsync` 后台协程继续从 `BuildRuntimeAIAgentForConversation` 读取 RouteState 并 nil pointer panic；本步骤不修改 AI runtime 生命周期，不能把完整 service 回归记录为通过。
 - 本步骤只是共享字段和历史回填契约。运行时创建目前仍可能写入 `tenant_id=0`，Conversation/Message/Ticket/Tag 的列表、详情、最终写入、派单和工单操作尚未收紧；公开注册继续关闭。

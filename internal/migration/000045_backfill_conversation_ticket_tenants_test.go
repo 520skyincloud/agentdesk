@@ -70,6 +70,10 @@ func TestBackfillConversationAndTicketDomainTenantsCoversAllChildrenAndIsIdempot
 		ChannelType: enums.ChannelTypeWxWorkKF, ConversationID: conversationA.ID, MessageID: replyA.ID,
 		SendStatus: "pending", AuditFields: conversationTicketAuditFields(),
 	}
+	storeRoomOutbox := &models.ChannelMessageOutbox{
+		ChannelType: enums.ChannelTypeWxWorkProtocol, ConversationID: conversationA.ID, MessageID: -time.Now().UnixNano(),
+		Payload: `{"kind":"store_room_handoff_notice"}`, SendStatus: "pending", AuditFields: conversationTicketAuditFields(),
+	}
 	assignment := &models.ConversationAssignment{
 		ConversationID: conversationA.ID, SquadID: squadA.ID, ToUserID: userA.ID,
 		Status: enums.IMAssignmentStatusActive, CreatedAt: time.Now(), OperatorID: platformUser.ID,
@@ -82,7 +86,15 @@ func TestBackfillConversationAndTicketDomainTenantsCoversAllChildrenAndIsIdempot
 		ConversationID: conversationA.ID, SourceMessageID: messageA.ID, LastResumeMessageID: replyA.ID,
 		CheckPointID: "checkpoint-a", InterruptID: "interrupt-a", Status: "pending", CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
-	for _, item := range []any{route, summary, syncLog, participant, readState, wxMapping, wxMessageRef, outbox, assignment, eventLog, interrupt} {
+	detachedSyncLog := &models.MessageSyncLog{
+		Direction: enums.MessageSyncDirectionWecomToAgentDesk, SyncStatus: enums.MessageSyncStatusPending,
+		Payload: "raw protocol notification", AuditFields: conversationTicketAuditFields(),
+	}
+	detachedCheckpoint := &models.ConversationInterrupt{
+		CheckPointID: "detached-checkpoint", CheckPointData: "checkpoint-data", Status: "checkpointed",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	for _, item := range []any{route, summary, syncLog, participant, readState, wxMapping, wxMessageRef, outbox, storeRoomOutbox, assignment, eventLog, interrupt, detachedSyncLog, detachedCheckpoint} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatalf("create conversation child %T: %v", item, err)
 		}
@@ -149,6 +161,7 @@ func TestBackfillConversationAndTicketDomainTenantsCoversAllChildrenAndIsIdempot
 		{model: &models.WxWorkKFConversation{}, id: wxMapping.ID},
 		{model: &models.WxWorkKFMessageRef{}, id: wxMessageRef.ID},
 		{model: &models.ChannelMessageOutbox{}, id: outbox.ID},
+		{model: &models.ChannelMessageOutbox{}, id: storeRoomOutbox.ID},
 		{model: &models.ConversationAssignment{}, id: assignment.ID},
 		{model: &models.ConversationEventLog{}, id: eventLog.ID},
 		{model: &models.ConversationInterrupt{}, id: interrupt.ID},
@@ -167,6 +180,31 @@ func TestBackfillConversationAndTicketDomainTenantsCoversAllChildrenAndIsIdempot
 	assertConversationTicketTenant(t, db, &models.Ticket{}, legacyTicket.ID, legacy.ID)
 	assertConversationTicketTenant(t, db, &models.TicketView{}, platformView.ID, legacy.ID)
 	assertConversationTicketTenant(t, db, &models.Tag{}, standaloneTag.ID, legacy.ID)
+	assertConversationTicketTenant(t, db, &models.MessageSyncLog{}, detachedSyncLog.ID, 0)
+	assertConversationTicketTenant(t, db, &models.ConversationInterrupt{}, detachedCheckpoint.ID, 0)
+}
+
+func TestBackfillConversationAndTicketDomainTenantsRejectsUnknownSyntheticOutbox(t *testing.T) {
+	db := setupConversationTicketTenantBackfillDB(t)
+	createConversationTicketTenant(t, db, constants.LegacyDefaultTenantCode)
+	tenant := createConversationTicketTenant(t, db, "synthetic-outbox")
+	channel := createConversationTicketChannel(t, db, tenant.ID, "synthetic-outbox-channel")
+	customer := createConversationTicketCustomer(t, db, tenant.ID, "synthetic-outbox-customer")
+	conversation := createConversationTicketConversation(t, db, 0, channel.ID, customer.ID, 0, 0, "synthetic-outbox-conversation")
+	outbox := &models.ChannelMessageOutbox{
+		ChannelType: enums.ChannelTypeWxWorkProtocol, ConversationID: conversation.ID, MessageID: -99,
+		Payload: `{"kind":"unknown"}`, SendStatus: "pending", AuditFields: conversationTicketAuditFields(),
+	}
+	if err := db.Create(outbox).Error; err != nil {
+		t.Fatalf("create unknown synthetic outbox: %v", err)
+	}
+
+	err := db.Transaction(backfillConversationAndTicketDomainTenants)
+	if err == nil || !strings.Contains(err.Error(), "unknown synthetic message") {
+		t.Fatalf("backfill error=%v want unknown synthetic outbox rejection", err)
+	}
+	assertConversationTicketTenant(t, db, &models.Conversation{}, conversation.ID, 0)
+	assertConversationTicketTenant(t, db, &models.ChannelMessageOutbox{}, outbox.ID, 0)
 }
 
 func TestBackfillConversationAndTicketDomainTenantsRejectsConversationConflictAndRollsBack(t *testing.T) {
