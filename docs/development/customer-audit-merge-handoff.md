@@ -2406,3 +2406,48 @@ git diff --check
 - 开始本批前已 fetch。`origin/codex/ai-billing@f2d2da4` 不修改派单页、监控页、监控详情或工单页面；无 migration 影响，不需要 rebase。
 - 本批不修改 AI 分支维护的聊天面板、自动转人工、回复 runtime、模型供应商、token、usage、计费或 ReplyIntentConfig。
 - 页面与测试可独立回滚，无数据回滚；回滚会恢复误导性的主管写按钮及辅助接口 403。`agent.view` 更正不应单独回退，否则合法工单指派角色会失去人员选择入口。
+
+## 第 45 批：平台存储与企微设备池只读边界（2026-07-14）
+
+### 目标与复用判断
+
+- `storageSetting.view/update` 与 `wxworkDevicePool.view/update/sync` 已是权限管理中可见的 platform scope 权限；两个 handler helper 还强制 `IsPlatformAccount`，后端边界完整。
+- 前端两页此前没有读取 Session 权限：只读平台账号可编辑 OSS/设备池凭据并看到保存、同步按钮，点击后才收到 403。
+- 本批只修页面表达和前端动作守卫，不新增权限、角色判断替代品、接口或配置模型。
+
+### 文件与契约
+
+```text
+web/app/dashboard/storage-settings/page.tsx
+web/app/dashboard/storage-settings/action-permissions.test.mjs
+web/app/dashboard/wxwork-device-pool/page.tsx
+web/app/dashboard/wxwork-device-pool/action-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 存储设置：`isPlatformAccount + storageSetting.update` 控制全部输入、Provider 下拉、私有 Bucket Switch 和保存按钮；保存函数增加同一守卫。
+- 设备池：`isPlatformAccount + wxworkDevicePool.update` 控制后台地址/账号/密码与保存；`isPlatformAccount + wxworkDevicePool.sync` 独立控制同步实例；两个函数都增加能力守卫。
+- 查看、刷新、配置状态、实例统计和实例列表不依赖写权限。没有后端、DTO、路由、权限常量、模型、迁移、导航或 JsonResult 变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/storage-settings/page.tsx app/dashboard/wxwork-device-pool/page.tsx
+git diff --check
+```
+
+- 全量 Go、vet、92 项前端回归、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。
+- Node 测试仅保留既有 typeless package warning；目标 ESLint 无 error/warning。
+- 新增源码契约测试固定平台身份、存储 update、设备池 update/sync 和只读 disabled 表单。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch。`origin/codex/ai-billing@f2d2da4` 不修改两个页面或测试，无 model/migration/共享 API 影响，不需要 rebase。
+- 本批不修改设备同步协议、企微员工号运行时、AI 回复、模型、token、usage 或计费。
+- 页面和测试可独立回滚，无数据回滚；后端平台防线必须保留。门店工作台仍是静态占位，知识库动作显隐待 AI 分支合并后处理。

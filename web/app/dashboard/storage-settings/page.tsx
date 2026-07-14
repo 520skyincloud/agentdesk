@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { SaveIcon } from "lucide-react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -28,9 +29,13 @@ const defaultSetting: StorageSetting = {
 }
 
 export default function StorageSettingsPage() {
+  const { session } = useAuth()
   const [form, setForm] = useState<StorageSetting>(defaultSetting)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const canUpdate = Boolean(
+    session?.isPlatformAccount && session.permissions.includes("storageSetting.update"),
+  )
 
   useEffect(() => {
     let mounted = true
@@ -61,6 +66,9 @@ export default function StorageSettingsPage() {
   }
 
   async function handleSave() {
+    if (!canUpdate) {
+      return
+    }
     setSaving(true)
     try {
       const saved = await updateStorageSetting(form)
@@ -82,10 +90,12 @@ export default function StorageSettingsPage() {
             配置 OSS、文件目录和企微富媒体发送所需的公网访问地址。
           </p>
         </div>
-        <Button onClick={() => void handleSave()} disabled={loading || saving}>
-          <SaveIcon className="size-4" />
-          {saving ? "保存中" : "保存"}
-        </Button>
+        {canUpdate ? (
+          <Button onClick={() => void handleSave()} disabled={loading || saving}>
+            <SaveIcon className="size-4" />
+            {saving ? "保存中" : "保存"}
+          </Button>
+        ) : null}
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -94,6 +104,7 @@ export default function StorageSettingsPage() {
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <Field label="默认存储类型">
               <select
+                disabled={!canUpdate}
                 className="h-10 rounded-xl border border-[#dbe7f6] bg-white px-3 text-sm shadow-[0_4px_12px_rgba(37,99,235,0.06)]"
                 value={form.defaultProvider}
                 onChange={(event) => patch({ defaultProvider: event.target.value })}
@@ -104,6 +115,7 @@ export default function StorageSettingsPage() {
             </Field>
             <Field label="上传大小上限 MB">
               <Input
+                disabled={!canUpdate}
                 type="number"
                 min={1}
                 value={form.maxUploadSizeMb}
@@ -111,23 +123,24 @@ export default function StorageSettingsPage() {
               />
             </Field>
             <Field label="Endpoint">
-              <Input value={form.ossEndpoint} onChange={(event) => patch({ ossEndpoint: event.target.value })} />
+              <Input disabled={!canUpdate} value={form.ossEndpoint} onChange={(event) => patch({ ossEndpoint: event.target.value })} />
             </Field>
             <Field label="Bucket">
-              <Input value={form.ossBucket} onChange={(event) => patch({ ossBucket: event.target.value })} />
+              <Input disabled={!canUpdate} value={form.ossBucket} onChange={(event) => patch({ ossBucket: event.target.value })} />
             </Field>
             <Field label="目录前缀">
-              <Input value={form.ossObjectPrefix} onChange={(event) => patch({ ossObjectPrefix: event.target.value })} placeholder="desk" />
+              <Input disabled={!canUpdate} value={form.ossObjectPrefix} onChange={(event) => patch({ ossObjectPrefix: event.target.value })} placeholder="desk" />
             </Field>
             <Field label="公开访问 Base URL">
-              <Input value={form.ossBaseUrl} onChange={(event) => patch({ ossBaseUrl: event.target.value })} />
+              <Input disabled={!canUpdate} value={form.ossBaseUrl} onChange={(event) => patch({ ossBaseUrl: event.target.value })} />
             </Field>
             <Field label="AccessKey ID">
-              <Input value={form.ossAccessKeyId} onChange={(event) => patch({ ossAccessKeyId: event.target.value })} />
+              <Input disabled={!canUpdate} value={form.ossAccessKeyId} onChange={(event) => patch({ ossAccessKeyId: event.target.value })} />
             </Field>
             <Field label={form.ossAccessKeySecretSet ? "AccessKey Secret（已设置）" : "AccessKey Secret"}>
               <Input
                 type="password"
+                disabled={!canUpdate}
                 value={form.ossAccessKeySecret || ""}
                 onChange={(event) => patch({ ossAccessKeySecret: event.target.value })}
                 placeholder={form.ossAccessKeySecretSet ? "留空表示不修改" : "请输入 AccessKey Secret"}
@@ -135,7 +148,7 @@ export default function StorageSettingsPage() {
             </Field>
           </div>
           <div className="mt-4 flex items-center gap-2">
-            <Switch checked={form.ossPrivate} onCheckedChange={(checked) => patch({ ossPrivate: checked })} />
+            <Switch disabled={!canUpdate} checked={form.ossPrivate} onCheckedChange={(checked) => patch({ ossPrivate: checked })} />
             <span className="text-sm">私有 Bucket 使用签名 URL</span>
           </div>
         </section>
@@ -144,16 +157,16 @@ export default function StorageSettingsPage() {
           <h2 className="text-base font-medium">企微富媒体链路</h2>
           <div className="mt-4 grid gap-4">
             <Field label="AgentDesk 公网地址">
-              <Input value={form.publicAssetBaseUrl} onChange={(event) => patch({ publicAssetBaseUrl: event.target.value })} />
+              <Input disabled={!canUpdate} value={form.publicAssetBaseUrl} onChange={(event) => patch({ publicAssetBaseUrl: event.target.value })} />
             </Field>
             <Field label="私有化云存储 wecdn_web 地址">
-              <Input value={form.wecdnBaseUrl} onChange={(event) => patch({ wecdnBaseUrl: event.target.value })} placeholder="http://112.124.109.106:34789" />
+              <Input disabled={!canUpdate} value={form.wecdnBaseUrl} onChange={(event) => patch({ wecdnBaseUrl: event.target.value })} placeholder="http://112.124.109.106:34789" />
             </Field>
             <Field label="本地存储目录">
-              <Input value={form.localRoot} onChange={(event) => patch({ localRoot: event.target.value })} />
+              <Input disabled={!canUpdate} value={form.localRoot} onChange={(event) => patch({ localRoot: event.target.value })} />
             </Field>
             <Field label="本地访问路径">
-              <Input value={form.localBaseUrl} onChange={(event) => patch({ localBaseUrl: event.target.value })} />
+              <Input disabled={!canUpdate} value={form.localBaseUrl} onChange={(event) => patch({ localBaseUrl: event.target.value })} />
             </Field>
           </div>
           <p className="mt-4 rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] px-3 py-2 text-xs leading-5 text-muted-foreground shadow-inner shadow-blue-100/30">

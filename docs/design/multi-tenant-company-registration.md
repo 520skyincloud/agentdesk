@@ -1676,3 +1676,26 @@ git diff --check
 - 全量 Go、vet、90 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。目标 ESLint 仅保留监控详情/页面和会话页已有的三个 warning，无 error。
 - 提交范围与 `origin/codex/ai-billing@f2d2da4` 无同业务页面修改；无需 rebase。最终合并后仍应重跑权限契约测试和生产构建。
 - 本批可独立回滚前端与测试且无需数据回滚；回滚会重新让只读观察角色看到必然失败的主管动作，并让缺少辅助 view 权限的页面产生 403。
+
+## 45. 当前实施检查点：平台存储与企微设备池只读边界（2026-07-14）
+
+本检查点核对平台配置页面与既有 platform scope 权限。后端已同时检查显式权限和 `IsPlatformAccount`，无需新增权限或隐藏授权；遗漏仅在前端把只读平台账号当作可编辑账号。
+
+### 页面职责与权限
+
+- 存储设置页面在 `storageSetting.view` 下继续展示 OSS、本地存储和企微富媒体链路配置状态；只有平台账号且具备 `storageSetting.update` 才能编辑字段、切换私有 Bucket 并保存。
+- 企微设备池在 `wxworkDevicePool.view` 下继续展示后台连接状态、实例统计、GUID、企微登录和本地绑定情况。
+- 设备池凭据编辑/保存使用 `wxworkDevicePool.update`，同步实例使用独立的 `wxworkDevicePool.sync`。两项能力互不隐含，页面分别隐藏按钮并在处理函数中重复守卫。
+- 只读页面保留刷新；凭据字段以禁用状态展示，不暴露密码明文。后端原有 platform account 防线仍是最终安全边界。
+
+### 审计中明确不实施的内容
+
+- 门店工作台当前是静态设计占位，没有加载、保存或通知跳转接口。其按钮不是可运行功能，本批不增加看似可用的假交互；后续实现前必须先定义真实权限、接口和门店绑定范围。
+- 知识库页面确有动作权限显隐遗漏，但 `codex/ai-billing` 正在修改知识库主页面和编辑组件；为避免覆盖 FastGPT/资源组逻辑，本批不改该域，待合并后按真实代码统一收口。
+
+### 契约、验证与合并
+
+- 没有 Go、model、AutoMigrate、DML migration、DTO、enum、API、路由、WebSocket、权限常量、导航或响应结构变化，也不修改存储保存与设备同步语义。
+- 全量 Go、vet、92 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；新增测试固定平台身份与 update/sync 权限的组合边界。
+- `origin/codex/ai-billing@f2d2da4` 不修改两个平台页面或新增测试，无同文件和 migration 冲突，不需要 rebase。
+- 本批可独立回滚页面与测试且无需数据回滚；回滚不会绕过后端，但会重新让只读平台账号编辑表单并触发 403。

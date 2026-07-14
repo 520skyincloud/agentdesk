@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { RefreshCwIcon, SaveIcon, ServerCogIcon } from "lucide-react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -28,12 +29,20 @@ const defaultSettings: WxWorkProtocolDevicePoolSettings = {
 }
 
 export default function WxWorkDevicePoolPage() {
+  const { session } = useAuth()
   const [settings, setSettings] = useState(defaultSettings)
   const [password, setPassword] = useState("")
   const [items, setItems] = useState<WxWorkProtocolDevicePoolInstance[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  )
+  const isPlatformAccount = session?.isPlatformAccount === true
+  const canUpdate = isPlatformAccount && permissions.has("wxworkDevicePool.update")
+  const canSync = isPlatformAccount && permissions.has("wxworkDevicePool.sync")
 
   const stats = useMemo(() => {
     const idle = items.filter((item) => item.syncStatus === "idle" && item.boundWxWorkProtocolInstanceId <= 0).length
@@ -63,6 +72,9 @@ export default function WxWorkDevicePoolPage() {
   }, [])
 
   async function handleSave() {
+    if (!canUpdate) {
+      return
+    }
     setSaving(true)
     try {
       const saved = await updateWxWorkProtocolDevicePoolSettings({
@@ -81,6 +93,9 @@ export default function WxWorkDevicePoolPage() {
   }
 
   async function handleSync() {
+    if (!canSync) {
+      return
+    }
     setSyncing(true)
     try {
       const result = await syncWxWorkProtocolDevicePool()
@@ -111,10 +126,12 @@ export default function WxWorkDevicePoolPage() {
             <RefreshCwIcon className="size-4" />
             刷新
           </Button>
-          <Button onClick={() => void handleSync()} disabled={loading || syncing || saving}>
-            <RefreshCwIcon className={syncing ? "size-4 animate-spin" : "size-4"} />
-            {syncing ? "同步中" : "同步实例"}
-          </Button>
+          {canSync ? (
+            <Button onClick={() => void handleSync()} disabled={loading || syncing || saving}>
+              <RefreshCwIcon className={syncing ? "size-4 animate-spin" : "size-4"} />
+              {syncing ? "同步中" : "同步实例"}
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -127,20 +144,22 @@ export default function WxWorkDevicePoolPage() {
             </p>
             <div className="mt-4 grid gap-4 md:grid-cols-3">
               <Field label="后台 API 地址">
-                <Input value={settings.adminBaseUrl} onChange={(event) => setSettings((current) => ({ ...current, adminBaseUrl: event.target.value }))} />
+                <Input disabled={!canUpdate} value={settings.adminBaseUrl} onChange={(event) => setSettings((current) => ({ ...current, adminBaseUrl: event.target.value }))} />
               </Field>
               <Field label="账号">
-                <Input value={settings.username} onChange={(event) => setSettings((current) => ({ ...current, username: event.target.value }))} placeholder="手机号 / 用户名" />
+                <Input disabled={!canUpdate} value={settings.username} onChange={(event) => setSettings((current) => ({ ...current, username: event.target.value }))} placeholder="手机号 / 用户名" />
               </Field>
               <Field label={settings.passwordSet ? "密码（已设置）" : "密码"}>
-                <Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={settings.passwordSet ? "留空表示不修改" : "请输入密码"} />
+                <Input disabled={!canUpdate} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={settings.passwordSet ? "留空表示不修改" : "请输入密码"} />
               </Field>
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-2">
-              <Button onClick={() => void handleSave()} disabled={saving || syncing}>
-                <SaveIcon className="size-4" />
-                {saving ? "保存中" : "保存配置"}
-              </Button>
+              {canUpdate ? (
+                <Button onClick={() => void handleSave()} disabled={saving || syncing}>
+                  <SaveIcon className="size-4" />
+                  {saving ? "保存中" : "保存配置"}
+                </Button>
+              ) : null}
               <Badge variant={settings.tokenSet ? "default" : "secondary"}>{settings.tokenSet ? "Token 已缓存" : "未登录"}</Badge>
               <span className="text-xs text-muted-foreground">Token 过期：{formatDateTime(settings.tokenExpireAt)}</span>
             </div>
