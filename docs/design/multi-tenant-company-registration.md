@@ -1316,3 +1316,29 @@ git diff --check
 - migration 49 创建前核对 `origin/main` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 48，无版本冲突。该 migration 只做权限和内置角色关系 DML，不涉及 model/AutoMigrate。
 - 测试覆盖 migration 重复执行、五项权限均为 platform scope、平台管理员默认绑定、公司主管未绑定，以及租户账号带平台权限、平台账号仅带旧 Asset/Channel 权限均被 handler 拒绝。
 - `auth.go`、migration 和 `navigation.tsx` 是并行共享文件。AI 分支合并时保留其新增 AI/计费权限和导航，同时保留本批五项平台权限、migration 49 与 handler 平台账号校验，禁止整文件覆盖。
+
+## 30. 当前实施检查点：邀请注册与账号审核前端闭环（2026-07-14）
+
+本检查点复用现有用户管理页和阶段 3A/3B 的邀请码、注册、审核接口，不新增平行账号后台，不把权限勾选器放回账号层。
+
+### 公开注册入口
+
+- `/api/auth/options` 增加 `tenantRegistrationEnabled`。登录页只有在开关开启时显示注册链接；`/register` 自身也先读取该开关，关闭时只显示不可用状态，不尝试调用未挂载的公开注册路由。
+- 注册页从 `/register?invite=...` 读取邀请码，自动校验并只展示后端返回的公司法定名称/简称。表单只提交 username、nickname、mobile、email、password、confirmPassword、invitationCode，不允许提交 Tenant、角色、客服组或门店字段。
+- 注册提交按规范化 payload 生成客户端请求指纹；相同内容重试复用同一个 `X-Request-Id`，内容改变后生成新请求标识，兼容后端精确重放和“同标识改内容拒绝”语义。
+- 成功页明确账号仍为待审核、禁用且无角色；不自动登录，也不把邀请码、密码或请求指纹写入页面日志。
+- 正式配置继续保持 `tenantRegistration.enabled=false`。页面完成不代表公开注册可以上线，仍需等待 AI 分支新增主体完成 Tenant 隔离并通过双租户验收。
+
+### 用户管理页职责
+
+- 现有 `/dashboard/users` 增加“账号 / 注册审核”标签，账号列表继续承载后台创建、资料修改、门店员工客服组归属、角色分配和密码管理；新增列只显示注册来源与审核状态。
+- “邀请注册”动作要求现有 `tenantInvite.view`；重置邀请码额外要求 `tenantInvite.rotate`。浮窗展示当前公司、邀请码、绝对注册链接、使用次数和最近使用/重置时间。公开注册关闭时明确提示链接暂不可用，不伪装成可注册。
+- “注册审核”标签要求 `tenantRegistration.view`；通过/拒绝动作要求 `tenantRegistration.review`。通过还必须同时具有 `user.assignRole` 与 `role.view`，角色列表只显示后端标记 `assignable=true` 且已启用的角色；拒绝必须填写原因且不提交角色。
+- 审核页只分配角色，不直接分配权限。所有权限继续在权限管理中可见，由管理员及以上在角色管理中配置；账号操作者只能赋予可分配角色。
+- 页面在桌面和 390px 窄屏下保持无页面级横向溢出；筛选项在窄屏堆叠，宽表格继续使用现有表格容器滚动。
+
+### 共享请求与合并边界
+
+- 公共请求客户端始终发送 `Accept-Language` 和 `X-Locale`，CORS allow headers 同步加入这两个值；否则前后端分端口部署会在预检阶段失败。同源部署行为不变。
+- 本批没有 model、AutoMigrate、DML migration、enum、Gin 路由、WebSocket payload 或新权限点。共享 JSON 只增加 AuthOptions 的 `tenantRegistrationEnabled`，其余注册 DTO 沿用阶段 3B。
+- `codex/ai-billing@f2d2da4` 同时修改 server、AuthOptions handler/DTO、登录页、auth API 和双语消息。合并必须同时保留 AI 分支邮箱验证/FastGPT/NewAPI 选项与本批注册开关、CORS 语言头和权限显隐，禁止整文件选边。

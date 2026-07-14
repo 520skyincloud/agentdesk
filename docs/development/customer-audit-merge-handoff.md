@@ -1638,3 +1638,66 @@ git diff --check
 - 回复意图配置属于 AI 分支真实回复引擎，当前不改。合并后需按代码确认平台模板/租户配置语义，再决定权限 scope，禁止依据旧回复意图文档恢复旧逻辑。
 - migration 49 创建前已核对 `origin/main@e67e207` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 48。共享文件为 `auth.go`、migration 目录和 `navigation.tsx`；合并时逐权限/导航项保留双方变化。
 - 可回滚 handler 和导航，但不能只回滚平台账号校验而保留旧 Asset/Channel 权限，否则重新开放越权。若必须回滚，应同时禁用页面和路由直到替代授权上线；已执行 migration 49 的权限记录可保留，不影响租户业务。
+
+## 38. 多租户阶段 7B：邀请注册、邀请码浮窗与账号审核前端（2026-07-14）
+
+### 目标与完成内容
+
+- 复用现有用户管理页完成邀请注册闭环，没有创建第二个账号管理入口。账号页新增“账号 / 注册审核”标签，原后台创建、门店员工归组、角色分配、启停和密码操作保持原语义。
+- 账号表增加注册来源/审核状态；“邀请注册”浮窗展示当前公司邀请码、绝对注册链接、使用次数和生命周期信息。重置前明确告知旧邀请码及旧链接立即失效。
+- 注册审核列表按 pending/approved/rejected 查询。通过审核只显示 `assignable` 且启用的角色，并要求 `tenantRegistration.review + user.assignRole + role.view`；拒绝必须填写原因且不提交角色。
+- 新增 `/register` 页面。页面读取公开 AuthOptions 开关，自动校验 URL 邀请码并显示公司身份；提交相同内容重试时复用 `X-Request-Id`，成功后只显示等待公司主管审核，不自动登录。
+- 登录页只有在 `tenantRegistrationEnabled=true` 时展示注册链接。仓库正式配置未开启公开注册；邀请浮窗会在开关关闭时明确标注链接暂不可用。
+- 修复前后端分端口时公共请求的 CORS 预检：允许请求客户端已经使用的 `Accept-Language` 和 `X-Locale`。没有扩大 allowed origin，也没有开放 credentials 或绕过鉴权。
+
+### 主要文件与契约
+
+```text
+internal/bootstrap/server.go
+internal/bootstrap/server_route_test.go
+internal/handlers/api/auth_handler.go
+internal/pkg/dto/response/auth_response.go
+web/app/register/page.tsx
+web/app/register/_components/registration-form.tsx
+web/app/register/tenant-registration-ui.test.mjs
+web/app/dashboard/users/page.tsx
+web/app/dashboard/users/_components/invitation-dialog.tsx
+web/app/dashboard/users/_components/registration-review.tsx
+web/components/login-form.tsx
+web/components/ui/alert.tsx
+web/lib/api/auth.ts
+web/lib/api/tenant-registration.ts
+web/messages/zh-CN.json
+web/messages/en-US.json
+```
+
+- AuthOptions response 增加 `tenantRegistrationEnabled`。这是向后兼容新增字段；旧前端忽略，新前端缺失时按 false 处理。
+- 没有 model、AutoMigrate、DML migration、enum、Gin 路由、WebSocket payload 或新权限点。继续使用阶段 3A/3B 已进入权限管理的 `tenantInvite.*`、`tenantRegistration.*`、`user.assignRole` 和 `role.view`。
+- 新增 shadcn alert 基础组件只用于注册不可用、公司身份和错误状态，没有修改其他基础组件。
+
+### 验证与环境发现
+
+```text
+go test ./internal/bootstrap -run 'TestNewServerExposesPublicAuthOptions|TestNewServer' -count=1
+go test ./... -count=1
+go test -race ./internal/bootstrap ./internal/services -run 'Test(NewServer|TenantRegistration)' -count=1
+go vet ./...
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && node --test app/register/tenant-registration-ui.test.mjs
+cd web && pnpm exec eslint <本批前端文件>
+git diff --check
+```
+
+- 全量 Go 测试、注册/Server 专项 race、`go vet`、Next 生产构建、typecheck、本批 ESLint 和 5 项注册 UI 契约测试均通过。
+- 全量前端 Node 历史测试为 52/53 通过；唯一失败是 `components/nav-main.test.mjs` 仍用 `/render={<SidebarMenuButton \/>}/` 匹配源码，而现有 `nav-main.tsx` 已是 `render={<SidebarMenuButton className="rounded-xl" />}`。本批未修改导航组件或该历史测试，不能将该源码正则漂移计为注册功能失败，也不在本批夹带修复。
+- 浏览器使用当前源码后端和独立临时 SQLite 验证：账号/审核标签、权限入口、邀请信息失败态、注册开关关闭态、完整注册表单、自动邀请码校验、桌面与 390x844 窄屏均正常；账号页和注册页无页面级横向溢出。
+- 使用旧 Docker MySQL 数据启动当前源码时，migration 39 因 `agent team 1 leader tenant 0 conflicts with team tenant 1` 主动失败。该环境存在历史平台账号担任租户客服组长的脏关系；不得跳过校验或猜测归属，部署前需由业务确认正确租户/组长后修复数据，再重跑 migration。
+- Docker 镜像构建尝试因拉取 `docker/dockerfile:1.7` 元数据超时中止，未形成代码编译失败证据；最终构建结果以本批提交前的 Go/Next 全量验证为准。
+
+### 并行分支、合并顺序与回滚
+
+- 开始时已 fetch，`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`。AI 分支同文件为 `server.go`、`server_route_test.go`、AuthOptions handler/DTO、登录页、auth API 和中英文消息。
+- 建议先合并租户认证/权限/阶段 3B 注册后端，再逐段合并 AuthOptions 与 CORS，最后合并注册页和用户页。必须保留 AI 分支邮箱验证/FastGPT/NewAPI/usage 选项和本批 tenant registration 开关、语言头及权限显隐。
+- 本批不需要 rebase 才能独立提交，但最终集成禁止整文件选边。没有修改 AI runtime、模型供应商、FastGPT、token、usage 或计费语义。
+- 可回滚前端注册入口、审核标签和 AuthOptions 新字段；后台阶段 3B 路由可继续保持关闭。CORS 语言头是现有请求客户端的必要兼容，不建议随 UI 回滚。邀请码及已审核账号数据不应通过删除表或破坏性 DDL 回滚。

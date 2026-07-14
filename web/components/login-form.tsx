@@ -43,6 +43,7 @@ export function LoginForm({
   const [authOptions, setAuthOptions] = useState<AuthOptions>({
     wxworkEnabled: false,
     oidcEnabled: false,
+    tenantRegistrationEnabled: false,
   })
   const nextPath = searchParams.get("next")
   const wxworkError = searchParams.get("wxworkError")
@@ -85,7 +86,11 @@ export function LoginForm({
       })
       .catch(() => {
         if (!cancelled) {
-          setAuthOptions({ wxworkEnabled: false, oidcEnabled: false })
+          setAuthOptions({
+            wxworkEnabled: false,
+            oidcEnabled: false,
+            tenantRegistrationEnabled: false,
+          })
         }
       })
 
@@ -213,9 +218,11 @@ export function LoginForm({
                   </Field>
                 </>
               ) : null}
-              {/* <FieldDescription className="text-center">
-                {t("auth.noAccount")} <a href="#">{t("auth.signUp")}</a>
-              </FieldDescription> */}
+              {authOptions.tenantRegistrationEnabled ? (
+                <FieldDescription className="text-center">
+                  {t("auth.noAccount")} <Link href="/register">{t("auth.signUp")}</Link>
+                </FieldDescription>
+              ) : null}
             </FieldGroup>
           </form>
           <div className="relative hidden bg-[#eef4fb] md:block">

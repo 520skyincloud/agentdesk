@@ -27,6 +27,7 @@ type LoginResponse struct {
 }
 
 type AuthOptionsResponse struct {
-	WxWorkEnabled bool `json:"wxworkEnabled"`
-	OIDCEnabled   bool `json:"oidcEnabled"`
+	WxWorkEnabled             bool `json:"wxworkEnabled"`
+	OIDCEnabled               bool `json:"oidcEnabled"`
+	TenantRegistrationEnabled bool `json:"tenantRegistrationEnabled"`
 }

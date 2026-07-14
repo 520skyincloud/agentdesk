@@ -3,12 +3,15 @@
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react"
 import {
   Building2Icon,
+  ClipboardCheckIcon,
   KeyRoundIcon,
   MoreHorizontalIcon,
   PlusIcon,
   SearchIcon,
   ShieldIcon,
+  UserPlusIcon,
   UserRoundIcon,
+  UsersRoundIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -50,7 +53,9 @@ import { formatDateTime } from "@/lib/utils"
 import { AssignRolesDrawer } from "./_components/assign-roles"
 import { CreateUserDrawer } from "./_components/create"
 import { EditDrawer } from "./_components/edit"
+import { InvitationDialog } from "./_components/invitation-dialog"
 import { InitialPasswordDialog } from "./_components/initial-password-dialog"
+import { RegistrationReviewPanel } from "./_components/registration-review"
 import { ResetPasswordDialogs } from "./_components/reset-password"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -62,6 +67,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
   TableBody,
@@ -79,12 +85,18 @@ export default function DashboardUsersPage() {
   const canCreateUsers = permissions.has("user.create")
   const canUpdateUsers = permissions.has("user.update")
   const canAssignRoles = permissions.has("user.assignRole") && permissions.has("role.view")
+  const canViewInvitation = permissions.has("tenantInvite.view")
+  const canRotateInvitation = permissions.has("tenantInvite.rotate")
+  const canViewRegistrations = permissions.has("tenantRegistration.view")
+  const canReviewRegistrations = permissions.has("tenantRegistration.review")
   const canViewAgentTeams = permissions.has("agentTeam.view")
   const canUpdateAgentTeams = permissions.has("agentTeam.update")
   const hasUserRowActions = canUpdateUsers || canAssignRoles
   const [agentTeams, setAgentTeams] = useState<AdminAgentTeam[]>([])
   const [assigningTeamUserId, setAssigningTeamUserId] = useState<number | null>(null)
   const [creatingOpen, setCreatingOpen] = useState(false)
+  const [invitationOpen, setInvitationOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<"accounts" | "registrations">("accounts")
   const [savingCreate, setSavingCreate] = useState(false)
   const [initialPassword, setInitialPassword] = useState<{
     username: string
@@ -377,19 +389,83 @@ export default function DashboardUsersPage() {
     }
   }
 
+  function registrationSourceLabel(source: string) {
+    switch (source) {
+      case "platform_created":
+        return t("tenantRegistration.sourcePlatform")
+      case "tenant_created":
+        return t("tenantRegistration.sourceTenant")
+      case "invitation":
+        return t("tenantRegistration.sourceInvitation")
+      case "wxwork":
+        return t("tenantRegistration.sourceWxWork")
+      case "oidc":
+        return t("tenantRegistration.sourceOIDC")
+      default:
+        return t("tenantRegistration.sourceLegacy")
+    }
+  }
+
+  function approvalStatusLabel(status: string) {
+    switch (status) {
+      case "pending":
+        return t("tenantRegistration.statusPending")
+      case "rejected":
+        return t("tenantRegistration.statusRejected")
+      default:
+        return t("tenantRegistration.statusApproved")
+    }
+  }
+
   return (
     <>
       <DashboardPage>
-        <DashboardToolbar
-          actions={
-            canCreateUsers ? (
-              <Button onClick={() => setCreatingOpen(true)} disabled={list.loading}>
-                <PlusIcon />
-                {t("user.addUser")}
-              </Button>
-            ) : null
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) =>
+            setActiveTab(value === "registrations" ? "registrations" : "accounts")
           }
+          className="gap-5"
         >
+          {canViewRegistrations ? (
+            <TabsList className="border border-[#dbe7f6] bg-[#f6f9ff] p-1 shadow-inner shadow-blue-100/40">
+              <TabsTrigger value="accounts">
+                <UsersRoundIcon />
+                {t("tenantRegistration.accountsTab")}
+              </TabsTrigger>
+              <TabsTrigger value="registrations">
+                <ClipboardCheckIcon />
+                {t("tenantRegistration.reviewTab")}
+              </TabsTrigger>
+            </TabsList>
+          ) : null}
+
+          {activeTab === "accounts" || !canViewRegistrations ? (
+            <>
+              <DashboardToolbar
+                actions={
+                  canCreateUsers || canViewInvitation ? (
+                    <>
+                      {canViewInvitation ? (
+                        <Button
+                          variant="outline"
+                          onClick={() => setInvitationOpen(true)}
+                          disabled={list.loading}
+                        >
+                          <UserPlusIcon />
+                          {t("tenantRegistration.inviteRegistration")}
+                        </Button>
+                      ) : null}
+                      {canCreateUsers ? (
+                        <Button onClick={() => setCreatingOpen(true)} disabled={list.loading}>
+                          <PlusIcon />
+                          {t("user.addUser")}
+                        </Button>
+                      ) : null}
+                    </>
+                  ) : null
+                }
+              >
           <div className="relative w-full sm:w-72">
             <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -430,8 +506,8 @@ export default function DashboardUsersPage() {
           <Button variant="outline" onClick={applyFilters} disabled={list.loading}>
             {t("user.query")}
           </Button>
-        </DashboardToolbar>
-        <DashboardTableShell
+              </DashboardToolbar>
+              <DashboardTableShell
           pagination={
             <ListPagination
               page={list.result.page.page}
@@ -442,13 +518,14 @@ export default function DashboardUsersPage() {
               onLimitChange={handleLimitChange}
             />
           }
-        >
+              >
             <Table>
               <TableHeader className="bg-[#f6f9ff]">
                 <TableRow>
                   <TableHead>{t("user.columnUser")}</TableHead>
                   <TableHead>门店与客服组</TableHead>
                   <TableHead>{t("user.columnRoles")}</TableHead>
+                  <TableHead>{t("tenantRegistration.columnSourceReview")}</TableHead>
                   <TableHead>{t("user.columnStatus")}</TableHead>
                   <TableHead>{t("user.columnLastLogin")}</TableHead>
                   <TableHead>{t("user.columnContact")}</TableHead>
@@ -533,6 +610,24 @@ export default function DashboardUsersPage() {
                         ) : (
                           <span className="text-sm text-muted-foreground">{t("user.unassigned")}</span>
                         )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="space-y-1.5">
+                        <div className="text-sm">
+                          {registrationSourceLabel(item.registrationSource)}
+                        </div>
+                        <Badge
+                          variant={
+                            item.approvalStatus === "rejected"
+                              ? "destructive"
+                              : item.approvalStatus === "pending"
+                                ? "outline"
+                                : "secondary"
+                          }
+                        >
+                          {approvalStatusLabel(item.approvalStatus)}
+                        </Badge>
                       </div>
                     </TableCell>
                     <TableCell>
@@ -622,7 +717,7 @@ export default function DashboardUsersPage() {
                 ))}
                 {list.loading || list.result.results.length === 0 ? (
                   <DashboardTableStateRow
-                    colSpan={hasUserRowActions ? 7 : 6}
+                    colSpan={hasUserRowActions ? 8 : 7}
                     loading={list.loading}
                     loadingText={t("user.loadingRows")}
                     emptyText={t("user.emptyRows")}
@@ -630,7 +725,15 @@ export default function DashboardUsersPage() {
                 ) : null}
               </TableBody>
             </Table>
-        </DashboardTableShell>
+              </DashboardTableShell>
+            </>
+          ) : (
+            <RegistrationReviewPanel
+              canReview={canReviewRegistrations}
+              canApprove={canReviewRegistrations && canAssignRoles}
+            />
+          )}
+        </Tabs>
       </DashboardPage>
       <CreateUserDrawer
         open={creatingOpen}
@@ -673,6 +776,11 @@ export default function DashboardUsersPage() {
         selectedRoleIds={assignRoleIds}
         onOpenChange={handleAssignRolesOpenChange}
         onSubmit={handleAssignRoles}
+      />
+      <InvitationDialog
+        open={invitationOpen}
+        canRotate={canRotateInvitation}
+        onOpenChange={setInvitationOpen}
       />
     </>
   )

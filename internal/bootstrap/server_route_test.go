@@ -179,6 +179,9 @@ func testInvitationEncryptionKey() string {
 
 func TestNewServerExposesPublicAuthOptions(t *testing.T) {
 	config.SetCurrent(&config.Config{
+		Auth: config.AuthConfig{
+			InvitationEncryptionKey: testInvitationEncryptionKey(),
+		},
 		Storage: config.StorageConfig{
 			AssetURLSigningSecret: "server-route-asset-signing-secret",
 			Local: config.LocalStorageConfig{
@@ -193,6 +196,7 @@ func TestNewServerExposesPublicAuthOptions(t *testing.T) {
 			Enabled:      false,
 			ClientSecret: "must-not-leak",
 		},
+		TenantRegistration: config.TenantRegistrationConfig{Enabled: true},
 	})
 
 	app, err := NewServer()
@@ -210,8 +214,9 @@ func TestNewServerExposesPublicAuthOptions(t *testing.T) {
 	var body struct {
 		Success bool `json:"success"`
 		Data    struct {
-			WxWorkEnabled bool `json:"wxworkEnabled"`
-			OIDCEnabled   bool `json:"oidcEnabled"`
+			WxWorkEnabled             bool `json:"wxworkEnabled"`
+			OIDCEnabled               bool `json:"oidcEnabled"`
+			TenantRegistrationEnabled bool `json:"tenantRegistrationEnabled"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -225,6 +230,9 @@ func TestNewServerExposesPublicAuthOptions(t *testing.T) {
 	}
 	if body.Data.OIDCEnabled {
 		t.Fatalf("oidcEnabled=true want false")
+	}
+	if !body.Data.TenantRegistrationEnabled {
+		t.Fatalf("tenantRegistrationEnabled=false want true")
 	}
 	if strings.Contains(rec.Body.String(), "must-not-leak") {
 		t.Fatalf("response leaked sensitive OIDC config: %s", rec.Body.String())
@@ -303,7 +311,7 @@ func TestNewServerAllowsConfiguredCORSOrigin(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodPost) {
 		t.Fatalf("Access-Control-Allow-Methods=%q should contain %q", got, http.MethodPost)
 	}
-	for _, header := range []string{"X-Request-Id", "X-Tenant-ID"} {
+	for _, header := range []string{"Accept-Language", "X-Locale", "X-Request-Id", "X-Tenant-ID"} {
 		if got := rec.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, header) {
 			t.Fatalf("Access-Control-Allow-Headers=%q should contain %q", got, header)
 		}

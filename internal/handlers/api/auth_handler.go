@@ -33,8 +33,9 @@ func Login(ctx *gin.Context) {
 func AuthOptions(ctx *gin.Context) {
 	cfg := config.Current()
 	httpx.WriteJSON(ctx, &response.AuthOptionsResponse{
-		WxWorkEnabled: cfg.WxWork.Enabled,
-		OIDCEnabled:   cfg.OIDC.Enabled,
+		WxWorkEnabled:             cfg.WxWork.Enabled,
+		OIDCEnabled:               cfg.OIDC.Enabled,
+		TenantRegistrationEnabled: cfg.TenantRegistration.Enabled,
 	})
 }
 

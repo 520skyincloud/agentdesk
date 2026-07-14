@@ -9,6 +9,7 @@ export type LoginRequest = {
 export type AuthOptions = {
   wxworkEnabled: boolean
   oidcEnabled: boolean
+  tenantRegistrationEnabled: boolean
 }
 
 export async function fetchAuthOptions() {
