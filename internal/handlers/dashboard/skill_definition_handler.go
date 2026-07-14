@@ -1,16 +1,18 @@
 package dashboard
 
 import (
-	"agent-desk/internal/pkg/httpx"
 	"context"
 	"strings"
 	"time"
 
 	"agent-desk/internal/builders"
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/services"
 
 	"agent-desk/internal/pkg/httpx/params"
@@ -80,7 +82,7 @@ func SkillDefinitionGetBy(ctx *gin.Context) {
 }
 
 func SkillDefinitionPostCreate(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionSkillDefinitionCreate)
+	operator, err := requireSkillDefinitionPlatformWrite(ctx, constants.PermissionSkillDefinitionCreate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -100,7 +102,7 @@ func SkillDefinitionPostCreate(ctx *gin.Context) {
 }
 
 func SkillDefinitionPostUpdate(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionSkillDefinitionUpdate)
+	operator, err := requireSkillDefinitionPlatformWrite(ctx, constants.PermissionSkillDefinitionUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -119,7 +121,7 @@ func SkillDefinitionPostUpdate(ctx *gin.Context) {
 }
 
 func SkillDefinitionPostUpdate_status(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionSkillDefinitionUpdate)
+	operator, err := requireSkillDefinitionPlatformWrite(ctx, constants.PermissionSkillDefinitionUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -165,7 +167,7 @@ func SkillDefinitionPostUpdate_status(ctx *gin.Context) {
 }
 
 func SkillDefinitionPostDelete(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionSkillDefinitionDelete)
+	operator, err := requireSkillDefinitionPlatformWrite(ctx, constants.PermissionSkillDefinitionDelete)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -197,7 +199,7 @@ func SkillDefinitionPostDelete(ctx *gin.Context) {
 }
 
 func SkillDefinitionPostRestore(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionSkillDefinitionDelete)
+	operator, err := requireSkillDefinitionPlatformWrite(ctx, constants.PermissionSkillDefinitionDelete)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -273,4 +275,15 @@ func SkillDefinitionPostDebug_resume(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, resp)
+}
+
+func requireSkillDefinitionPlatformWrite(ctx *gin.Context, permission constants.Permission) (*dto.AuthPrincipal, error) {
+	operator, err := services.AuthService.RequirePermission(ctx, permission)
+	if err != nil {
+		return nil, err
+	}
+	if !operator.IsPlatformAccount {
+		return nil, errorsx.Forbidden("只有平台账号可以管理技能定义")
+	}
+	return operator, nil
 }

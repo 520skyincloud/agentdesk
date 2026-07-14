@@ -1971,3 +1971,54 @@ git diff --check
 - AI 分支与本批同文件修改为 `models.go` 和 `reply_runlog_service.go`。合并先保留两个日志 Tenant 字段、migration 51、repository/service/handler，再逐方法合并回复日志；AI 分支的 final action、资源、Graph 和 committed reply 逻辑必须与本批 Conversation Tenant 继承同时存在。
 - 本批不改变模型调用、供应商、FastGPT、回复策略、token、usage 或计费口径。最终集成不要求本批先 rebase，但禁止对上述共享文件整文件选边。
 - 可回滚 tenant-aware 查询和运行时校验代码，但已回填 TenantID 不回写 0。删除字段、撤销 Active Tenant 条件或恢复全局详情会重新开放跨公司日志访问，不属于安全回滚方案。
+
+## 第 36 批：平台 Skill 定义写权限收口（2026-07-14）
+
+### 目标与复用判断
+
+- `SkillDefinition` 是平台共享定义，租户 AIAgent 只引用其 ID；现有 `skillDefinition.create/update/delete` 却是 tenant scope，并默认授予公司主管和客服组长，会让一个公司修改所有公司共用的技能模板。
+- 复用现有 Skill 页面、模型、接口和四项权限，不新增租户 Skill 模型或平行配置页。`view/debug` 保持租户可用，模板写操作收口平台账号。
+- 本批不触碰 Skill runtime、工具执行、模型调用、供应商、token、usage 或计费语义。
+
+### 文件与契约
+
+```text
+internal/pkg/constants/auth.go
+internal/migration/000052_restrict_skill_definition_writes.go
+internal/migration/000052_restrict_skill_definition_writes_test.go
+internal/handlers/dashboard/skill_definition_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+web/components/dashboard/crud/dashboard-crud-page.tsx
+web/app/dashboard/skill-definition/page.tsx
+web/app/dashboard/skill-definition/platform-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 三项 Skill 写权限改为 platform scope；超级管理员和管理员保留，公司主管、客服组长及其他 tenant scope 角色不再持有。权限记录没有删除，在权限管理中继续可见。
+- migration 52 先复用 `ensurePermissions/ensureRoles/ensureRolePermissions` 同步内置数据，再删除所有非 platform 角色上的三项历史关系；自定义平台角色已有绑定不受影响，重复执行幂等。
+- 创建、更新、启停、删除和恢复 handler 增加平台账号校验，防止历史脏关系或旧 token 绕过 scope。列表、详情和 debug 路径不变。
+- Skill 页面同时按平台账号和 create/update/delete 权限隐藏写操作。通用 CRUD 新增默认兼容的 `showCreate`，隐藏新增时刷新按钮仍保留。
+- 没有 model、AutoMigrate、DTO、enum、Gin 路由、WebSocket payload 或 JSON 契约变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go test -race ./internal/migration ./internal/handlers/dashboard -run 'Test(RestrictSkillDefinitionWritesToPlatform|SkillDefinitionWritesRejectTenantAccountEvenWithPlatformPermission)' -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/skill-definition/page.tsx components/dashboard/crud/dashboard-crud-page.tsx
+git diff --check
+```
+
+- Go 全量、专项 race、vet、73 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。
+- migration 测试覆盖两类平台内置角色、两类租户内置角色、自定义平台/租户角色和幂等；handler 测试覆盖五个写入口的脏权限防线；前端测试覆盖平台身份与三项权限的组合显隐。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@f25811b`；migration 52 与远端最高编号 20/33/51 不冲突。
+- AI 分支与本批预计文件没有同文件修改。本批不需要 rebase；最终合并如果 AI 分支新增 Skill 权限或页面动作，必须继续遵守“租户只读/调试、平台写模板”的边界。
+- 页面和通用 `showCreate` 可独立回滚，但权限 scope、migration 清理和 handler 平台防线应作为同一安全边界保留。恢复租户写权限会重新产生跨公司共享模板修改风险。

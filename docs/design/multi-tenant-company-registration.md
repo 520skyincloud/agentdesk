@@ -1487,3 +1487,23 @@ git diff --check
 - migration 51 创建并再次提交前均需核对远端编号。当前 `origin/main@e67e207` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支此前最高 50，无版本冲突。
 - AI 分支与本批重叠 `internal/models/models.go` 和 `internal/ai/runtime/reply_runlog_service.go`。合并必须同时保留 AI 分支的 final action、资源、Graph 和已提交回复定位逻辑，以及本批 `TenantID: input.Conversation.TenantID`；禁止整文件选边。
 - 建议先合并 Tenant 字段、migration 51 和 tenant-aware repository/service，再逐方法重放 AI 分支运行日志增强。回滚代码时已回填的 TenantID 不应写回 0；恢复全局日志查询会重新产生跨公司审计泄露风险。
+
+## 36. 当前实施检查点：平台 Skill 定义写权限收口（2026-07-14）
+
+本检查点复核无 TenantID 的后台资源后确认：`SkillDefinition` 按阶段 33 契约是所有公司可选择的全局平台定义，不是每家公司独立维护的业务数据。原权限却把创建、更新和删除标记为 tenant scope，并默认授予公司主管和客服组长，导致任一公司都能改变其他公司 AIAgent 共用的 Skill 行为。
+
+### 权限与页面职责
+
+- `skillDefinition.view` 继续保持 tenant scope，租户账号可查看全局技能说明、在本公司 AIAgent 中选择技能，并沿现有同租户 Agent/Conversation/Checkpoint 校验执行调试。
+- `skillDefinition.create/update/delete` 改为 platform scope，只允许平台账号持有。创建、编辑、启停、删除和恢复 handler 在权限校验后再次验证 `IsPlatformAccount`，历史脏角色或旧 token 即使携带权限也不能写入。
+- 公司主管和客服组长默认角色只保留 `skillDefinition.view`；平台超级管理员和管理员继续保留三项写权限。账号仍只分配角色，权限管理仍展示全部四项技能权限及其真实 scope。
+- Skill 页面按 `IsPlatformAccount + 动作权限` 隐藏新增、编辑、状态切换、删除和恢复；只读用户仍可刷新、筛选、查看和调试，不会看到点击后必然返回 403 的写按钮。
+- 通用 `DashboardCrudPage` 只向后兼容增加默认 `true` 的 `showCreate`，使页面可以隐藏新增但保留刷新；既有页面行为不变。
+
+### Migration 52、验证与边界
+
+- migration 52 幂等同步三项权限的 platform scope，保留所有平台角色已有绑定，并删除所有非 platform 角色上遗留的三项关系，包括自定义租户角色。
+- 本批没有 model、AutoMigrate、request/response DTO、enum、Gin 路由、WebSocket payload 或 Skill runtime 语义变化，不改变模型调用、工具执行、token、usage 或计费口径。
+- 测试覆盖超级管理员/管理员保留权限、内置和自定义租户角色清理、自定义平台角色保留、重复迁移，以及租户账号携带脏平台权限仍被五个写 handler 拒绝。前端契约固定动作显隐和刷新保留。
+- migration 52 创建前已 fetch：`origin/main@e67e207` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 51，无版本冲突。AI 分支不修改本批权限常量、Skill handler、Skill 页面或通用 CRUD 文件；无需 rebase，最终合并仍需保留本批 scope 与角色关系清理。
+- 回滚页面显隐不会改变服务端权限；回滚 migration 或 handler 防线会重新允许租户角色修改全局 Skill，不属于安全回滚。若未来要支持公司自定义 Skill，应新增明确 Tenant 归属和 AIAgent 同租户引用契约，而不是重新把当前全局写权限授予租户角色。

@@ -26,6 +26,7 @@ import { Status } from "@/lib/generated/enums";
 import { formatDateTime } from "@/lib/utils";
 import { EditDialog } from "./_components/edit";
 import { DebugDialog } from "./_components/debug-dialog";
+import { useAuth } from "@/components/auth-provider";
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string;
 
@@ -57,6 +58,18 @@ function getNextStatus(item: SkillDefinition) {
 
 export default function DashboardSkillsPage() {
   const t = useI18n();
+  const { session } = useAuth();
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  );
+  const isPlatformAccount = Boolean(session?.isPlatformAccount);
+  const canCreate =
+    isPlatformAccount && permissions.has("skillDefinition.create");
+  const canUpdate =
+    isPlatformAccount && permissions.has("skillDefinition.update");
+  const canDelete =
+    isPlatformAccount && permissions.has("skillDefinition.delete");
   const [debugDialogOpen, setDebugDialogOpen] = useState(false);
   const [debuggingItem, setDebuggingItem] = useState<SkillDefinition | null>(
     null,
@@ -147,19 +160,24 @@ export default function DashboardSkillsPage() {
         getLabel: (status) => statusLabel(status, t),
         getBadgeVariant: statusBadgeVariant,
         isEnabled: (status) => status === Status.Ok,
-        toggle: {
-          disabled: (item) => item.status === Status.Deleted,
-          getNextStatus,
-          updateStatus: (item, nextStatus) =>
-            updateSkillDefinitionStatus(item.id, nextStatus),
-          successMessage: (item, nextStatus) =>
-            t(nextStatus === Status.Ok ? "skillDefinition.enabled" : "skillDefinition.disabled", {
-              name: item.name,
-            }),
-          errorMessage: t("skillDefinition.statusUpdateFailed"),
-          ariaLabel: (item) =>
-            t("skillDefinition.toggleStatus", { name: item.name }),
-        },
+        toggle: canUpdate
+          ? {
+              disabled: (item) => item.status === Status.Deleted,
+              getNextStatus,
+              updateStatus: (item, nextStatus) =>
+                updateSkillDefinitionStatus(item.id, nextStatus),
+              successMessage: (item, nextStatus) =>
+                t(
+                  nextStatus === Status.Ok
+                    ? "skillDefinition.enabled"
+                    : "skillDefinition.disabled",
+                  { name: item.name },
+                ),
+              errorMessage: t("skillDefinition.statusUpdateFailed"),
+              ariaLabel: (item) =>
+                t("skillDefinition.toggleStatus", { name: item.name }),
+            }
+          : undefined,
       }),
       {
         key: "updatedAt",
@@ -174,7 +192,7 @@ export default function DashboardSkillsPage() {
         ),
       },
     ],
-    [t],
+    [canUpdate, t],
   );
 
   return (
@@ -193,11 +211,13 @@ export default function DashboardSkillsPage() {
         }
         getItemId={(item) => item.id}
         createItem={createSkillDefinition}
+        showCreate={canCreate}
+        showEdit={canUpdate}
         updateItem={(item, payload) =>
           updateSkillDefinition({ id: item.id, ...payload })
         }
-        deleteItem={(item) => deleteSkillDefinition(item.id)}
-        canDelete={(item) => item.status !== Status.Deleted}
+        deleteItem={canDelete ? (item) => deleteSkillDefinition(item.id) : undefined}
+        canDelete={canDelete ? (item) => item.status !== Status.Deleted : undefined}
         rowActions={[
           {
             key: "debug",
@@ -212,7 +232,7 @@ export default function DashboardSkillsPage() {
             key: "restore",
             icon: <RotateCcwIcon />,
             label: t("skillDefinition.restore"),
-            visible: (item) => item.status === Status.Deleted,
+            visible: (item) => canDelete && item.status === Status.Deleted,
             run: async ({ item, reload }) => {
               await restoreSkillDefinition(item.id);
               toast.success(t("skillDefinition.restored", { name: item.name }));

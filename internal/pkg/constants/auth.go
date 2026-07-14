@@ -211,9 +211,9 @@ var (
 
 	// Skill 定义相关权限
 	PermissionSkillDefinitionView   = Permission{Name: "查看技能定义", Code: "skillDefinition.view", Type: "api", GroupName: "skillDefinition", Method: "ANY", APIPath: "/api/dashboard/skill-definition/list", SortNo: 1610}
-	PermissionSkillDefinitionCreate = Permission{Name: "创建技能定义", Code: "skillDefinition.create", Type: "api", GroupName: "skillDefinition", Method: "POST", APIPath: "/api/dashboard/skill-definition/create", SortNo: 1620}
-	PermissionSkillDefinitionUpdate = Permission{Name: "更新技能定义", Code: "skillDefinition.update", Type: "api", GroupName: "skillDefinition", Method: "POST", APIPath: "/api/dashboard/skill-definition/update", SortNo: 1630}
-	PermissionSkillDefinitionDelete = Permission{Name: "删除技能定义", Code: "skillDefinition.delete", Type: "api", GroupName: "skillDefinition", Method: "POST", APIPath: "/api/dashboard/skill-definition/delete", SortNo: 1640}
+	PermissionSkillDefinitionCreate = Permission{Name: "创建技能定义", Code: "skillDefinition.create", Type: "api", Scope: PermissionScopePlatform, GroupName: "skillDefinition", Method: "POST", APIPath: "/api/dashboard/skill-definition/create", SortNo: 1620}
+	PermissionSkillDefinitionUpdate = Permission{Name: "更新技能定义", Code: "skillDefinition.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "skillDefinition", Method: "POST", APIPath: "/api/dashboard/skill-definition/update", SortNo: 1630}
+	PermissionSkillDefinitionDelete = Permission{Name: "删除技能定义", Code: "skillDefinition.delete", Type: "api", Scope: PermissionScopePlatform, GroupName: "skillDefinition", Method: "POST", APIPath: "/api/dashboard/skill-definition/delete", SortNo: 1640}
 
 	// MCP 调试相关权限
 	PermissionMCPView = Permission{Name: "查看MCP调试信息", Code: "mcp.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "mcp", Method: "POST", APIPath: "/api/dashboard/mcp/list_tools", SortNo: 1710}
@@ -411,7 +411,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,
 		PermissionKnowledgeDocumentView, PermissionKnowledgeDocumentCreate, PermissionKnowledgeDocumentUpdate, PermissionKnowledgeDocumentDelete,
 		PermissionKnowledgeFAQView, PermissionKnowledgeFAQCreate, PermissionKnowledgeFAQUpdate, PermissionKnowledgeFAQDelete,
-		PermissionSkillDefinitionView, PermissionSkillDefinitionCreate, PermissionSkillDefinitionUpdate, PermissionSkillDefinitionDelete,
+		PermissionSkillDefinitionView,
 	},
 	RoleCodeCsTeamLeader: {
 		PermissionUserView,
@@ -432,7 +432,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
 		PermissionAIAgentView, PermissionAIAgentCreate, PermissionAIAgentUpdate,
 		PermissionAIConfigView,
-		PermissionSkillDefinitionView, PermissionSkillDefinitionCreate, PermissionSkillDefinitionUpdate,
+		PermissionSkillDefinitionView,
 	},
 	RoleCodeCsUser: {
 		PermissionUserView,

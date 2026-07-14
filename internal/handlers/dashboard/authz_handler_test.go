@@ -100,6 +100,35 @@ func TestAgentRunLogHandlersRequireActiveTenant(t *testing.T) {
 	}
 }
 
+func TestSkillDefinitionWritesRejectTenantAccountEvenWithPlatformPermission(t *testing.T) {
+	tests := []struct {
+		name       string
+		permission string
+		handler    func(*gin.Context)
+	}{
+		{name: "create", permission: constants.PermissionSkillDefinitionCreate.Code, handler: SkillDefinitionPostCreate},
+		{name: "update", permission: constants.PermissionSkillDefinitionUpdate.Code, handler: SkillDefinitionPostUpdate},
+		{name: "update status", permission: constants.PermissionSkillDefinitionUpdate.Code, handler: SkillDefinitionPostUpdate_status},
+		{name: "delete", permission: constants.PermissionSkillDefinitionDelete.Code, handler: SkillDefinitionPostDelete},
+		{name: "restore", permission: constants.PermissionSkillDefinitionDelete.Code, handler: SkillDefinitionPostRestore},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, `{}`, &dto.AuthPrincipal{
+				UserID:            133,
+				TenantID:          9,
+				ActiveTenantID:    9,
+				Username:          "misconfigured-tenant-skill-editor",
+				IsPlatformAccount: false,
+				Permissions:       []string{tt.permission},
+			})
+
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
 func TestTenantManagementActionsRequireMatchingPermissions(t *testing.T) {
 	tests := []struct {
 		name       string
