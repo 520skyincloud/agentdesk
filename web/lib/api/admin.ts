@@ -1,6 +1,6 @@
-import { readSession } from "@/lib/auth"
+import { readActiveTenantId, readSession } from "@/lib/auth"
 import { request } from "@/lib/api/client"
-import { createWebSocketBaseUrl } from "@/lib/api/websocket"
+import { createAuthenticatedWebSocketUrl } from "@/lib/api/websocket"
 import { translateCurrentMessage } from "@/i18n/messages"
 
 export type Paging = {
@@ -1100,11 +1100,12 @@ export function createAdminWebSocketUrl() {
     throw new Error(translateCurrentMessage("api.authExpired"))
   }
 
-  const baseUrl = createWebSocketBaseUrl()
-  const params = new URLSearchParams({
-    accessToken: session.accessToken,
-  })
-  return `${baseUrl}/api/ws/dashboard?${params.toString()}`
+  const activeTenantId = readActiveTenantId(session)
+  return createAuthenticatedWebSocketUrl(
+    "/api/ws/dashboard",
+    session.accessToken,
+    activeTenantId
+  )
 }
 
 export function fetchChannels(

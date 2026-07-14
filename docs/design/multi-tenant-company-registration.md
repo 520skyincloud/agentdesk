@@ -1134,3 +1134,28 @@ git diff --check
 ```
 
 - `codex/ai-billing@f2d2da4` 没有修改 Ticket/Tag 文件；双方在 `internal/handlers/dashboard/conversation_handler.go` 有同文件改动。合并时保留 AI 分支的回复入口变化和本步骤的标签筛选 tenant/表名修复，禁止整文件覆盖。
+
+## 24. 当前实施检查点：WebSocket 与公司切换实时隔离（2026-07-14）
+
+本检查点复用现有 Dashboard、通知和开放 IM WebSocket，不新增平行实时通道或隐藏权限。
+
+### 已完成边界
+
+- Dashboard 会话 WebSocket 要求已有 `conversation.view` 权限和正数 `ActiveTenantID`；浏览器连接通过 `tenantId` query 传当前公司，后端只在 `/api/ws/*` 读取该 query，普通 HTTP 请求仍只接受租户 Header。
+- `ClientSession` 固化连接建立时的 TenantID；原全局 `admin:all` 改为 `admin:tenant:{tenantId}`，未分配会话只向所属公司广播。
+- Dashboard 手工订阅 `conversation:{id}` 时复用 `AgentTeamScopeService.CanViewConversation`，同时校验连接 Tenant 与当前认证 Tenant；访客手工订阅还必须满足连接 Tenant、Conversation Tenant 和外部身份所有权三者一致。
+- 访客默认 topic 改为 `guest:{tenantId}:{externalId}`，相同外部 ID 在不同公司不会共享在线状态或实时消息。
+- Conversation 实时路由展示按 Conversation Tenant 读取 RouteState、Store 和 WxWorkInstance；客户在线状态也按 tenant + externalId 判定。
+- 会话页切换公司时清空 Zustand 会话、消息、筛选和企微员工号缓存，并通过请求序号阻止旧公司异步响应回写；会话和通知 WebSocket 随当前公司变化断开重连。
+
+### 权限、兼容与后续缺口
+
+- 导航继续按权限点过滤；本批没有角色 URL 白名单。概览页保留为所有已登录角色可见的必要信息页，具体业务入口仍由 `*.view` 权限控制。
+- 站内通知 topic 仍按接收 UserID；User 固定归属单一 Tenant，通知记录从接收账号继承 Tenant，因此不会形成跨租户订阅。平台账号通知属于 tenant 0 平台域。
+- 客户会话本地缓存虽然使用 `guest:{externalId}` identity key，但缓存复用同时校验全局唯一 ChannelID；服务端 CustomerIdentity 查询仍按 Channel 所属 Tenant 限定，因此不新增重复 tenant key。
+- Asset/文件仍未租户化；企业微信客服号 KF Outbox 仍存在全局 helper；Knowledge/向量和 AI 日志继续由后续共享契约处理。公开邀请注册保持关闭。
+
+### 契约与合并要求
+
+- 本批没有 model、migration、request/response DTO、enum、Gin 路由或新权限点；WebSocket 事件 payload 结构不变，只改变服务端 topic 组成和订阅授权。
+- `codex/ai-billing@f2d2da4` 同时修改 `internal/services/ws_service.go`、`internal/builders/conversation_builder.go` 和 `web/lib/api/admin.ts`。合并必须保留 AI 分支的自动转人工/恢复展示及新增 AI API，同时保留本批 tenant topic、订阅校验和 WebSocket URL tenant 参数，禁止整文件覆盖。

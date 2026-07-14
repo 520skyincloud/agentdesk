@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import { createAdminWebSocketUrl } from "@/lib/api/admin"
 import { type AgentMessage } from "@/lib/api/agent"
 import { shouldReloadConversationListForRealtimePatch } from "@/lib/agent-conversation-realtime"
@@ -41,6 +42,7 @@ type AgentRealtimeEnvelope = {
 
 export function useAgentConversationRealtime() {
   const t = useI18n()
+  const { session } = useAuth()
   const selectedConversationId = useAgentConversationsStore(
     (state) => state.selectedConversationId
   )
@@ -50,11 +52,15 @@ export function useAgentConversationRealtime() {
   const realtimeRef = useRef<AgentRealtimeConnection | null>(null)
   const subscribedConversationIdRef = useRef<number | null>(null)
   const selectedConversationIdRef = useRef<number | null>(selectedConversationId)
-  const currentUserIdRef = useRef<number>(readSession()?.user.id ?? 0)
+  const currentUserIdRef = useRef<number>(session?.user.id ?? readSession()?.user.id ?? 0)
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId
   }, [selectedConversationId])
+
+  useEffect(() => {
+    currentUserIdRef.current = session?.user.id ?? 0
+  }, [session?.user.id])
 
   useEffect(() => {
     const realtime = createRealtimeConnectionManager({
@@ -212,7 +218,7 @@ export function useAgentConversationRealtime() {
       realtime.disconnect()
       subscribedConversationIdRef.current = null
     }
-  }, [setRealtimeStatus, t])
+  }, [session?.accessToken, session?.activeTenantId, setRealtimeStatus, t])
 
   useEffect(() => {
     const socket = realtimeRef.current?.getSocket()

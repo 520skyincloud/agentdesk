@@ -113,6 +113,27 @@ func TestAuthenticateUsesPerRequestTenantHeader(t *testing.T) {
 	if principal.ActiveTenantID != legacyTenant.ID || !principal.CanSwitchTenant {
 		t.Fatalf("unexpected request principal: %+v", principal)
 	}
+
+	wsCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	wsCtx.Request = httptest.NewRequest("GET", fmt.Sprintf("/api/ws/dashboard?accessToken=%s&tenantId=%d", login.AccessToken, legacyTenant.ID), nil)
+	wsPrincipal, err := newAuthService().Authenticate(wsCtx)
+	if err != nil {
+		t.Fatalf("authenticate websocket tenant query: %v", err)
+	}
+	if wsPrincipal.ActiveTenantID != legacyTenant.ID {
+		t.Fatalf("websocket active tenant = %d, want %d", wsPrincipal.ActiveTenantID, legacyTenant.ID)
+	}
+
+	nonWsCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	nonWsCtx.Request = httptest.NewRequest("GET", fmt.Sprintf("/api/auth/profile?tenantId=%d", legacyTenant.ID), nil)
+	nonWsCtx.Request.Header.Set("Authorization", "Bearer "+login.AccessToken)
+	nonWsPrincipal, err := newAuthService().Authenticate(nonWsCtx)
+	if err != nil {
+		t.Fatalf("authenticate non-websocket query: %v", err)
+	}
+	if nonWsPrincipal.ActiveTenantID != 0 {
+		t.Fatalf("non-websocket tenant query must be ignored, got %d", nonWsPrincipal.ActiveTenantID)
+	}
 }
 
 func TestUserTenantScopeAndCrossTenantManagement(t *testing.T) {

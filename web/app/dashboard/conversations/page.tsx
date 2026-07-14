@@ -75,6 +75,7 @@ function hasManualAttention(conversation?: { manualAttention?: { dot?: boolean }
 export default function ConversationsPage() {
   const t = useI18n();
   const { session } = useAuth();
+  const activeTenantId = session?.activeTenantId ?? session?.user.tenantId ?? 0;
   const conversation = useAgentConversationsStore(
     agentConversationSelectors.selectedConversation,
   );
@@ -89,6 +90,7 @@ export default function ConversationsPage() {
   const setSearchKeyword = useAgentConversationsStore((state) => state.setSearchKeyword);
   const conversationFilter = useAgentConversationsStore((state) => state.conversationFilter);
   const setConversationFilter = useAgentConversationsStore((state) => state.setConversationFilter);
+  const setTenantContext = useAgentConversationsStore((state) => state.setTenantContext);
   const loadConversations = useAgentConversationsStore(
     (state) => state.loadConversations,
   );
@@ -114,6 +116,7 @@ export default function ConversationsPage() {
   const [scanLoginResolving, setScanLoginResolving] = useState(false);
   const scanLoginSucceededRef = useRef(false);
   const scanLoginCheckingRef = useRef(false);
+  const instancesRequestSeqRef = useRef(0);
   const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([]);
   const [accountKeyword, setAccountKeyword] = useState("");
   const [handoffToastDismissedId, setHandoffToastDismissedId] = useState<number | null>(null);
@@ -275,22 +278,33 @@ export default function ConversationsPage() {
   }, [scanLoginOpen, scanLoginResult?.instance.id]);
 
   useEffect(() => {
+    setTenantContext(activeTenantId);
+  }, [activeTenantId, setTenantContext]);
+
+  useEffect(() => {
     void loadConversations().catch((error) => {
       toast.error(error instanceof Error ? error.message : t("conversation.loadListFailed"));
     });
-  }, [loadConversations, selectedWxWorkInstanceId, t]);
+  }, [activeTenantId, loadConversations, selectedWxWorkInstanceId, t]);
 
   const loadWxWorkInstances = async () => {
-    await fetchWxWorkProtocolInstances({ status: 0, limit: 200 })
-      .then((page) => setInstances(page.results ?? []))
-      .catch((error) => {
+    const requestSeq = ++instancesRequestSeqRef.current;
+    try {
+      const page = await fetchWxWorkProtocolInstances({ status: 0, limit: 200 });
+      if (requestSeq === instancesRequestSeqRef.current) {
+        setInstances(page.results ?? []);
+      }
+    } catch (error) {
+      if (requestSeq === instancesRequestSeqRef.current) {
         toast.error(error instanceof Error ? error.message : "加载员工号失败");
-      });
+      }
+    }
   };
 
   useEffect(() => {
+    setInstances([]);
     void loadWxWorkInstances();
-  }, []);
+  }, [activeTenantId]);
 
   useEffect(() => {
     if (selectedWxWorkInstanceId !== null || !conversation?.wxWorkInstanceId) {

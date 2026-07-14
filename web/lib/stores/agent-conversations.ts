@@ -90,6 +90,7 @@ function isGifFile(file: File) {
 }
 
 type AgentConversationsStore = {
+  tenantId: number
   searchKeyword: string
   conversationFilter: AgentConversationFilterKey
   selectedWxWorkInstanceId: number | null
@@ -112,6 +113,7 @@ type AgentConversationsStore = {
   setConversationFilter: (filter: AgentConversationFilterKey) => void
   setSelectedWxWorkInstanceId: (id: number | null) => void
   setRealtimeStatus: (status: RealtimeConnectionStatusValue) => void
+  setTenantContext: (tenantId: number) => void
   setConversationTags: (
     conversationId: number,
     tags: AgentConversation["tags"]
@@ -138,6 +140,7 @@ let conversationsRequestSeq = 0
 let messagesRequestSeq = 0
 
 export const useAgentConversationsStore = create<AgentConversationsStore>((set, get) => ({
+  tenantId: 0,
   searchKeyword: "",
   conversationFilter: "all_open",
   selectedWxWorkInstanceId: null,
@@ -171,6 +174,36 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
 
   setRealtimeStatus: (status) => {
     set({ realtimeStatus: status })
+  },
+
+  setTenantContext: (tenantId) => {
+    const normalizedTenantId = Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : 0
+    if (get().tenantId === normalizedTenantId) {
+      return
+    }
+    conversationsRequestSeq += 1
+    messagesRequestSeq += 1
+    set({
+      tenantId: normalizedTenantId,
+      searchKeyword: "",
+      conversationFilter: "all_open",
+      selectedWxWorkInstanceId: null,
+      conversations: [],
+      conversationsLoading: false,
+      conversationsLoaded: false,
+      selectedConversationId: null,
+      messages: [],
+      messagesLoading: false,
+      messagesLoadingMore: false,
+      messagesCursor: "",
+      messagesHasMore: false,
+      messagesLoadedConversationId: null,
+      sending: false,
+      uploadingAsset: false,
+      recallingMessageId: 0,
+      readingMessageId: 0,
+      realtimeStatus: "connecting",
+    })
   },
 
   setConversationTags: (conversationId, tags) => {

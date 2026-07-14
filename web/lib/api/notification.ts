@@ -1,6 +1,6 @@
-import { readSession } from "@/lib/auth"
+import { readActiveTenantId, readSession } from "@/lib/auth"
 import { request } from "@/lib/api/client"
-import { createWebSocketBaseUrl } from "@/lib/api/websocket"
+import { createAuthenticatedWebSocketUrl } from "@/lib/api/websocket"
 import type { PageResult } from "@/lib/api/admin"
 import { translateCurrentMessage } from "@/i18n/messages"
 
@@ -75,8 +75,10 @@ export function createNotificationWebSocketUrl() {
     throw new Error(translateCurrentMessage("api.authExpired"))
   }
 
-  const params = new URLSearchParams({
-    accessToken: session.accessToken,
-  })
-  return `${createWebSocketBaseUrl()}/api/ws/dashboard/notification?${params.toString()}`
+  const activeTenantId = readActiveTenantId(session)
+  return createAuthenticatedWebSocketUrl(
+    "/api/ws/dashboard/notification",
+    session.accessToken,
+    activeTenantId
+  )
 }

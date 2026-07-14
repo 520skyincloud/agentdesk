@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
@@ -48,7 +49,15 @@ func (s *wsService) HandleDashboardWS(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, web.JsonError(errorsx.Unauthorized("未登录或登录已过期")))
 		return
 	}
-	if err := s.upgradeConnection(ctx, principal, nil, realtimeRoleAdmin); err != nil {
+	if !AuthService.HasPermission(ctx, constants.PermissionConversationView.Code) {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, web.JsonError(errorsx.Forbidden("无权限查看会话")))
+		return
+	}
+	if principal.ActiveTenantID <= 0 {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, web.JsonError(errorsx.Forbidden("请先进入需要管理会话的接入公司")))
+		return
+	}
+	if err := s.upgradeConnection(ctx, principal, nil, realtimeRoleAdmin, principal.ActiveTenantID); err != nil {
 		slog.Error("upgrade admin websocket failed", "error", err, "path", ctx.Request.URL.Path)
 		ctx.Abort()
 		return
@@ -61,7 +70,7 @@ func (s *wsService) HandleDashboardNotificationWS(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, web.JsonError(errorsx.Unauthorized("未登录或登录已过期")))
 		return
 	}
-	if err := s.upgradeConnection(ctx, principal, nil, realtimeRoleNotification); err != nil {
+	if err := s.upgradeConnection(ctx, principal, nil, realtimeRoleNotification, principal.TenantID); err != nil {
 		slog.Error("upgrade dashboard notification websocket failed", "error", err, "path", ctx.Request.URL.Path)
 		ctx.Abort()
 		return
@@ -89,14 +98,14 @@ func (s *wsService) HandleOpenWS(ctx *gin.Context) {
 		external = result.ExternalUser
 		customerSessionInfo = result
 	}
-	if err := s.upgradeConnection(ctx, principal, external, realtimeRoleUser, customerSessionInfo); err != nil {
+	if err := s.upgradeConnection(ctx, principal, external, realtimeRoleUser, channel.TenantID, customerSessionInfo); err != nil {
 		slog.Error("upgrade open im websocket failed", "error", err, "path", ctx.Request.URL.Path, "channelId", channel.ChannelID, "channel_id", channel.ID)
 		ctx.Abort()
 		return
 	}
 }
 
-func (s *wsService) upgradeConnection(ctx *gin.Context, principal *dto.AuthPrincipal, external *openidentity.ExternalUser, role string, customerSessionInfo ...*CustomerSessionVerifyResult) error {
+func (s *wsService) upgradeConnection(ctx *gin.Context, principal *dto.AuthPrincipal, external *openidentity.ExternalUser, role string, tenantID int64, customerSessionInfo ...*CustomerSessionVerifyResult) error {
 	conn, err := s.upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 	if err != nil {
 		return err
@@ -104,6 +113,7 @@ func (s *wsService) upgradeConnection(ctx *gin.Context, principal *dto.AuthPrinc
 
 	session := &ClientSession{
 		ID:           s.nextID("conn"),
+		TenantID:     tenantID,
 		Conn:         conn,
 		Principal:    principal,
 		External:     external,
@@ -134,6 +144,7 @@ func (s *wsService) upgradeConnection(ctx *gin.Context, principal *dto.AuthPrinc
 	slog.Info("realtime client connected",
 		"connId", session.ID,
 		"role", session.Role,
+		"tenantId", session.TenantID,
 		"userId", logUserID,
 		"externalId", logExternalID,
 		"terminalType", session.TerminalType,
@@ -275,6 +286,7 @@ func (s *wsService) closeSession(session *ClientSession) {
 		slog.Info("realtime client disconnected",
 			"connId", session.ID,
 			"role", session.Role,
+			"tenantId", session.TenantID,
 			"userId", discUserID,
 			"externalId", discExternalID,
 			"terminalType", session.TerminalType,
@@ -458,7 +470,7 @@ func (s *wsService) PublishConversationChanged(conversation *models.Conversation
 		return
 	}
 	agentReadState, customerReadState := ConversationReadStateService.GetConversationReadStates(conversation.ID)
-	routePayload := s.buildConversationRouteRealtimePayload(conversation.ID)
+	routePayload := s.buildConversationRouteRealtimePayload(conversation.ID, conversation.TenantID)
 
 	event := s.newEvent(s.conversationTopic(conversation.ID), RealtimeConversationChangedEvent{
 		Type: eventType,
@@ -497,8 +509,8 @@ func (s *wsService) PublishConversationChanged(conversation *models.Conversation
 	s.PublishToTopics(s.routeConversationTopics(conversation), event)
 }
 
-func (s *wsService) buildConversationRouteRealtimePayload(conversationID int64) RealtimeConversationChangedPayload {
-	route := ConversationRouteService.GetByConversationID(conversationID)
+func (s *wsService) buildConversationRouteRealtimePayload(conversationID, tenantID int64) RealtimeConversationChangedPayload {
+	route := ConversationRouteService.GetByConversationIDInTenant(conversationID, tenantID)
 	if route == nil {
 		return RealtimeConversationChangedPayload{}
 	}
@@ -514,19 +526,19 @@ func (s *wsService) buildConversationRouteRealtimePayload(conversationID int64) 
 	}
 	payload.ManualAttention = buildRealtimeManualAttention(route, payload.ManualExpireAt)
 	if route.StoreID > 0 {
-		if store := StoreService.Get(route.StoreID); store != nil {
+		if store := StoreService.GetInTenant(route.StoreID, tenantID); store != nil {
 			payload.StoreName = utils.RepairMojibakeText(store.Name)
 		}
 	}
 	if route.WxWorkInstanceID > 0 {
-		if instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID); instance != nil {
+		if instance := WxWorkProtocolInstanceService.GetByTenantID(route.WxWorkInstanceID, tenantID); instance != nil {
 			payload.WxWorkEmployeeName = utils.RepairMojibakeText(instance.EmployeeName)
 			payload.WxWorkEmployeeUserID = instance.EmployeeUserID
 			if payload.StoreID == 0 {
 				payload.StoreID = instance.StoreID
 			}
 			if payload.StoreName == "" && instance.StoreID > 0 {
-				if store := StoreService.Get(instance.StoreID); store != nil {
+				if store := StoreService.GetInTenant(instance.StoreID, tenantID); store != nil {
 					payload.StoreName = utils.RepairMojibakeText(store.Name)
 				}
 			}
@@ -672,12 +684,12 @@ func (s *wsService) PublishToTopics(topics []string, event RealtimeEvent) {
 	}
 }
 
-func (s *wsService) IsGuestOnline(guestID string) bool {
+func (s *wsService) IsGuestOnline(tenantID int64, guestID string) bool {
 	guestID = strings.TrimSpace(guestID)
-	if guestID == "" {
+	if tenantID <= 0 || guestID == "" {
 		return false
 	}
-	return s.manager.HasTopic(s.guestTopic(guestID))
+	return s.manager.HasTopic(s.guestTopic(tenantID, guestID))
 }
 
 func (s *wsService) routeConversationTopics(conversation *models.Conversation) []string {
@@ -687,12 +699,12 @@ func (s *wsService) routeConversationTopics(conversation *models.Conversation) [
 
 	topics := []string{s.conversationTopic(conversation.ID)}
 	if identity := ConversationService.GetConversationExternalIdentity(conversation); identity != nil && strings.TrimSpace(identity.ExternalID) != "" {
-		topics = append(topics, s.guestTopic(identity.ExternalID))
+		topics = append(topics, s.guestTopic(conversation.TenantID, identity.ExternalID))
 	}
 	if conversation.CurrentAssigneeID > 0 {
 		topics = append(topics, s.adminTopic(conversation.CurrentAssigneeID))
-	} else {
-		topics = append(topics, realtimeTopicAdminAll)
+	} else if conversation.TenantID > 0 {
+		topics = append(topics, s.adminTenantTopic(conversation.TenantID))
 	}
 	return normalizeRealtimeTopics(topics)
 }
@@ -709,14 +721,14 @@ func (s *wsService) defaultTopics(session *ClientSession) []string {
 		}
 		return []string{s.notificationTopic(session.Principal.UserID)}
 	case realtimeRoleAdmin:
-		if session.Principal == nil || session.Principal.UserID <= 0 {
-			return []string{realtimeTopicAdminAll}
+		if session.Principal == nil || session.Principal.UserID <= 0 || session.TenantID <= 0 {
+			return nil
 		}
-		return []string{s.adminTopic(session.Principal.UserID), realtimeTopicAdminAll}
+		return []string{s.adminTopic(session.Principal.UserID), s.adminTenantTopic(session.TenantID)}
 	default:
 		// 开放 IM：仅 External、无 AuthPrincipal 的访客连接必须仍能订阅 guest:{externalId}，否则收不到推送。
-		if session.External != nil && strings.TrimSpace(session.External.ExternalID) != "" {
-			return []string{s.guestTopic(session.External.ExternalID)}
+		if session.TenantID > 0 && session.External != nil && strings.TrimSpace(session.External.ExternalID) != "" {
+			return []string{s.guestTopic(session.TenantID, session.External.ExternalID)}
 		}
 		if session.Principal != nil && session.Principal.UserID > 0 {
 			return []string{s.userTopic(session.Principal.UserID)}
@@ -766,10 +778,13 @@ func (s *wsService) canSubscribeConversation(session *ClientSession, conversatio
 		return false
 	}
 	if session.Role == realtimeRoleAdmin {
-		return true
+		return session.Principal != nil &&
+			session.TenantID > 0 &&
+			session.Principal.ActiveTenantID == session.TenantID &&
+			AgentTeamScopeService.CanViewConversation(session.Principal, conversationID)
 	}
 	conversation := ConversationService.Get(conversationID)
-	if conversation == nil {
+	if conversation == nil || session.TenantID <= 0 || conversation.TenantID != session.TenantID {
 		return false
 	}
 	if session.External != nil {
@@ -818,12 +833,16 @@ func (s *wsService) userTopic(userID int64) string {
 	return realtimeTopicUserPrefix + strconv.FormatInt(userID, 10)
 }
 
-func (s *wsService) guestTopic(guestID string) string {
-	return realtimeTopicGuestPrefix + strings.TrimSpace(guestID)
+func (s *wsService) guestTopic(tenantID int64, guestID string) string {
+	return realtimeTopicGuestPrefix + strconv.FormatInt(tenantID, 10) + ":" + strings.TrimSpace(guestID)
 }
 
 func (s *wsService) adminTopic(userID int64) string {
 	return realtimeTopicAdminPrefix + strconv.FormatInt(userID, 10)
+}
+
+func (s *wsService) adminTenantTopic(tenantID int64) string {
+	return realtimeTopicAdminTenantPrefix + strconv.FormatInt(tenantID, 10)
 }
 
 func (s *wsService) notificationTopic(userID int64) string {

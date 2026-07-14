@@ -13,6 +13,7 @@ import {
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import {
   createNotificationWebSocketUrl,
   fetchNotificationUnreadCount,
@@ -46,12 +47,13 @@ const NotificationContext = createContext<NotificationContextValue | null>(null)
 
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const t = useI18n()
+  const { session } = useAuth()
   const { locale } = useAppLocale()
   const router = useRouter()
   const [unreadCount, setUnreadCount] = useState(0)
   const [realtimeStatus, setRealtimeStatus] =
     useState<RealtimeConnectionStatus>("disconnected")
-  const currentUserIdRef = useRef(readSession()?.user.id ?? 0)
+  const currentUserIdRef = useRef(session?.user.id ?? readSession()?.user.id ?? 0)
 
   const refreshUnreadCount = useCallback(async () => {
     const result = await fetchNotificationUnreadCount()
@@ -72,11 +74,14 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   )
 
   useEffect(() => {
-    currentUserIdRef.current = readSession()?.user.id ?? 0
-    void refreshUnreadCount().catch(() => {
-      setUnreadCount(0)
-    })
-  }, [refreshUnreadCount])
+    currentUserIdRef.current = session?.user.id ?? 0
+    const timer = window.setTimeout(() => {
+      void refreshUnreadCount().catch(() => {
+        setUnreadCount(0)
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [refreshUnreadCount, session?.activeTenantId, session?.user.id])
 
   useEffect(() => {
     const realtime = createRealtimeConnectionManager({
@@ -136,7 +141,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     return () => {
       realtime.disconnect()
     }
-  }, [locale, markReadAndNavigate, refreshUnreadCount, t])
+  }, [locale, markReadAndNavigate, refreshUnreadCount, session?.accessToken, session?.activeTenantId, t])
 
   const value = useMemo<NotificationContextValue>(
     () => ({

@@ -18,7 +18,7 @@ import (
 func TestAIHandoffPublishesStoreManualConversationEvent(t *testing.T) {
 	db := setupHumanDispatchRealtimeTestDB(t)
 	WsService = newWsService()
-	session := captureHumanDispatchRealtimeSession(t, "admin:101", "admin:all")
+	session := captureHumanDispatchRealtimeSession(t, "admin:101", "admin:tenant:101")
 	aiAgent := createHumanDispatchRealtimeAIAgent(t, db, "1")
 	createHumanDispatchRealtimeTeam(t, db, 1)
 	createHumanDispatchRealtimeActiveSchedule(t, db, 1)
@@ -48,7 +48,7 @@ func TestAIHandoffPublishesStoreManualConversationEvent(t *testing.T) {
 func TestAIHandoffPublishesFinalTeamPoolConversationEvent(t *testing.T) {
 	db := setupHumanDispatchRealtimeTestDB(t)
 	WsService = newWsService()
-	session := captureHumanDispatchRealtimeSession(t, "admin:all")
+	session := captureHumanDispatchRealtimeSession(t, "admin:tenant:101")
 	aiAgent := createHumanDispatchRealtimeAIAgent(t, db, "1")
 	createHumanDispatchRealtimeTeam(t, db, 1)
 	createHumanDispatchRealtimeActiveSchedule(t, db, 1)

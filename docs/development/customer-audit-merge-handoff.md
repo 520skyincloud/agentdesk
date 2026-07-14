@@ -1293,3 +1293,60 @@ git diff --check
 - 开始时已 fetch，`origin/codex/ai-billing@f2d2da4`。AI 分支没有修改 Ticket/Tag 文件；双方同文件仅包含 `internal/handlers/dashboard/conversation_handler.go`，且本步骤只修改标签筛选和移除标签调用。
 - 建议在阶段 4G 字段/migration 45 和阶段 5F/6A 会话运行时隔离之后合并本步骤。合并 Conversation handler 时逐块保留 AI 分支回复入口和本步骤 `t_conversation_tag + tenant_id` 条件。
 - 本步骤不需要 rebase 当前远端分支。可回滚本步骤 handler/service/repository 调用、权限补漏和新增测试；不得删除已执行的 TenantID 字段、migration 45 数据或恢复跨租户工单/标签查询。
+
+## 32. 多租户阶段 6C：WebSocket 与前端公司上下文隔离（2026-07-14）
+
+### 目标与完成结果
+
+- Dashboard 会话 WebSocket 从当前公司建立连接，要求 `conversation.view + ActiveTenantID`；租户 query 仅对 `/api/ws/*` 生效，不扩大普通 HTTP 的租户来源。
+- `admin:all` 替换为 `admin:tenant:{tenantId}`；Dashboard Conversation topic 订阅复用客服组数据范围，访客订阅同时校验连接 tenant、Conversation tenant 和外部身份所有权。
+- 访客 topic 和在线状态使用 `tenantId + externalId`，解决不同公司相同企微/访客 ID 的实时碰撞。
+- 实时 RouteState、Store、WxWorkInstance 展示读取携带 Conversation Tenant；会话页公司切换会清空旧会话、消息、筛选和员工号缓存，并使会话/通知 WebSocket 重连。
+- 员工号列表和会话请求使用序号失效机制，旧公司慢响应不能覆盖新公司页面状态。
+
+### 主要文件与共享契约
+
+```text
+internal/builders/conversation_builder.go
+internal/services/auth_service.go
+internal/services/ws_realtime_types.go
+internal/services/ws_service.go
+internal/services/ws_service_test.go
+internal/services/tenant_auth_context_test.go
+internal/services/conversation_human_dispatch_realtime_test.go
+web/lib/api/websocket.ts
+web/lib/api/websocket.test.mjs
+web/lib/api/admin.ts
+web/lib/api/notification.ts
+web/lib/stores/agent-conversations.ts
+web/hooks/use-agent-conversation-realtime.ts
+web/components/notification-provider.tsx
+web/app/dashboard/conversations/page.tsx
+```
+
+- 没有 model、migration、DTO、enum、Gin 路由、新权限点或 WebSocket payload 字段变化。
+- `tenantId` query 是 WebSocket 握手的浏览器兼容传输方式；后端认证仅在请求路径以 `/api/ws/` 开头且 Tenant Header 为空时读取，防止普通 API 通过 query 绕过既有 Header 约定。
+
+### 验证、风险与后续
+
+```text
+go test ./internal/services ./internal/builders -count=1
+go test -race ./internal/services -run 'Test(Ws|AuthenticateUsesPerRequestTenantHeader|AIHandoff)' -count=1
+go test ./... -run '^$' -count=1
+go vet ./...
+cd web && pnpm typecheck
+cd web && pnpm exec eslint <本批改动文件>
+cd web && node --test lib/api/websocket.test.mjs lib/agent-conversation-realtime.test.mjs app/dashboard/channels/tenant-page.test.mjs
+git diff --check
+```
+
+- 上述检查通过；改动文件 eslint 只有会话页既有 `<img>` warning，无 error。
+- 全量 `pnpm lint` 仍失败于本批外的 content-editor、palette、i18n provider 等既有 React lint 错误；全量 MJS 测试仍失败于 `nav-main.test.mjs` 对已带 `className` 的 SidebarMenuButton 使用过时正则。两项均未由本批引入，不能记录为全量通过。
+- 审计确认通知记录从接收账号继承固定 Tenant；客户 session 缓存还会校验唯一 ChannelID，因此当前无需新增平行通知 topic 或重复客户 identity key。
+- 下一独立批次为 Asset/文件归属、Dashboard 文件列表和消息附件引用隔离；Knowledge/向量及 AIManualResumeTask/AI 日志需与 AI 分支共同契约后处理。公开注册继续关闭。
+
+### 并行分支、合并顺序与回滚
+
+- 提交前已 fetch，`origin/codex/ai-billing@f2d2da4`。同文件为 `internal/services/ws_service.go`、`internal/builders/conversation_builder.go`、`web/lib/api/admin.ts`。
+- 合并时逐方法保留 AI 分支的自动转人工状态、恢复展示、FastGPT/模型 API，以及本批的 tenant topic、订阅校验、实时 tenant 读取和 WebSocket URL 参数；不得整文件选边。
+- 本批可独立回滚 WebSocket topic、订阅校验和前端缓存重置，不涉及数据库回滚；回滚会重新暴露跨租户实时风险，因此在替代方案上线前必须继续关闭公开注册和多租户生产入口。

@@ -33,7 +33,7 @@ const (
 	realtimeTopicAdminPrefix        = "admin:"
 	realtimeTopicConversationPrefix = "conversation:"
 	realtimeTopicNotificationPrefix = "notification:"
-	realtimeTopicAdminAll           = "admin:all"
+	realtimeTopicAdminTenantPrefix  = "admin:tenant:"
 )
 
 type RealtimeEvent struct {
@@ -292,6 +292,7 @@ type realtimeClientMessage struct {
 
 type ClientSession struct {
 	ID           string
+	TenantID     int64
 	Conn         *websocket.Conn
 	Principal    *dto.AuthPrincipal
 	External     *openidentity.ExternalUser

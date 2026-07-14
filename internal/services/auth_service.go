@@ -50,7 +50,11 @@ func (s *authService) GetAuthPrincipal(ctx *gin.Context) *dto.AuthPrincipal {
 }
 
 func (s *authService) setAuthPrincipal(ctx *gin.Context, user *models.User, roles, permissions []string) (*dto.AuthPrincipal, error) {
-	principal, err := s.resolveAuthPrincipal(sqls.DB(), user, roles, permissions, ctx.GetHeader(constants.TenantHeaderName))
+	requestedTenant := ctx.GetHeader(constants.TenantHeaderName)
+	if strings.TrimSpace(requestedTenant) == "" && strings.HasPrefix(ctx.Request.URL.Path, "/api/ws/") {
+		requestedTenant = ctx.Query("tenantId")
+	}
+	principal, err := s.resolveAuthPrincipal(sqls.DB(), user, roles, permissions, requestedTenant)
 	if err != nil {
 		return nil, err
 	}
