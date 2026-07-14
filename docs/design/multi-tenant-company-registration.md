@@ -1804,3 +1804,21 @@ git diff --check
 - `go test -race ./cmd/customer_audit_seed -count=1`、`go test ./... -count=1`、`go vet ./...` 和 `git diff --check` 通过；生命周期测试单次普通执行约 1.2 秒。
 - 没有生产 Seed、model、AutoMigrate、DML migration、DTO、enum、API、权限、路由、WebSocket、前端或 AI runtime 变化。`origin/codex/ai-billing@f2d2da4` 不修改新增测试或两份交接文档，无同文件和 migration 冲突。
 - 本批可通过删除测试和本节文档独立回滚，不需要清理业务数据库；临时验证数据库已在本批结束前删除。
+
+## 50. 当前实施检查点：会话详情辅助资源与动作权限收口（2026-07-15）
+
+本检查点继续执行“页面查看权限不隐含其他资源权限、动作权限不由角色名称替代”的既定设计。审计发现会话工作台只要求 `conversation.view`，但详情侧栏会无条件读取客户档案、联系人、关联工单和标签树，并始终显示编辑客户、编辑客户企业和修改会话标签入口；自定义只读角色因此会收到多个 403，页面职责与权限管理中已存在的权限点不一致。
+
+### 复用权限与页面行为
+
+- 客户档案和联系人只在持有 `customer.view` 时加载；缺少该权限时仍保留会话的智能回复状态、员工号、门店和已附标签，不把客户档案读取失败误报成会话加载失败。
+- 客户编辑同时要求 `customer.view + customer.update`，客户企业编辑同时要求 `customer.view + company.update`。两个弹窗及保存回调都受相同能力控制，服务端既有权限与 Tenant 校验继续作为最终边界。
+- 关联工单只在持有 `ticket.view` 时加载。标签树只在持有 `tag.view` 时加载，只有同时持有 `tag.view + conversation.tag` 才显示会话标签选择器。
+- 会话响应已经携带的标签名称始终保留只读展示；没有 `tag.view` 时不请求完整标签树，因此不会泄露同租户其他标签，也不会把“不能管理标签”错误表达成“会话没有标签”。
+
+### 契约、验证与并行合并
+
+- 修改 `web/app/dashboard/conversations/_components/conversation-info-panel.tsx`，新增 `web/app/dashboard/conversations/conversation-info-permissions.test.mjs`。没有 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket payload、权限常量或 AI runtime 变化。
+- 全前端 99 项契约测试、`pnpm typecheck`、目标 ESLint、Next 生产构建、`go vet ./...`、最终 `go test ./... -count=1` 和 `git diff --check` 通过。验证期间一次并行全量 Go 运行在 `internal/services` 失败，单包与最终全量立即复跑通过；`-count=3` 会因该包复用全局 DB/配置状态导致第二轮批量失败，属于既有测试隔离限制，不能据此修改本批前端或宣称服务测试可重复进程内运行。
+- `origin/codex/ai-billing@f2d2da4` 同时修改会话详情组件：新增自动转人工开关，并在公司更新 payload 保留 `intentProfileId`。最终合并必须同时保留这两项和本批权限能力；该开关后端明确要求 `conversation.handover`，合并后前端必须按此权限隐藏并守卫，不能仅凭 `conversation.view` 展示。
+- 本批不改变客户、客户企业、工单和标签的后端语义，可独立回滚页面与契约测试；回滚会恢复越权辅助请求和误导性写入口。公开邀请注册仍受 AI 分支新增主体租户隔离与合并后页面权限复核门槛约束。

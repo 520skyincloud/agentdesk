@@ -131,6 +131,31 @@ function useCanLinkConversationCustomer() {
     && (permissions.has("customer.view") || permissions.has("customer.create"));
 }
 
+type ConversationInfoPermissions = {
+  canViewCustomer: boolean;
+  canUpdateCustomer: boolean;
+  canUpdateCompany: boolean;
+  canViewTickets: boolean;
+  canViewTags: boolean;
+  canManageTags: boolean;
+};
+
+function useConversationInfoPermissions(): ConversationInfoPermissions {
+  const { session } = useAuth();
+  const permissions = new Set(session?.permissions ?? []);
+  const canViewCustomer = permissions.has("customer.view");
+  const canViewTags = permissions.has("tag.view");
+
+  return {
+    canViewCustomer,
+    canUpdateCustomer: canViewCustomer && permissions.has("customer.update"),
+    canUpdateCompany: canViewCustomer && permissions.has("company.update"),
+    canViewTickets: permissions.has("ticket.view"),
+    canViewTags,
+    canManageTags: canViewTags && permissions.has("conversation.tag"),
+  };
+}
+
 function UnlinkedCustomerEmpty({ conversation }: { conversation: AgentConversation }) {
   const t = useI18n();
   const canLinkCustomer = useCanLinkConversationCustomer();
@@ -224,6 +249,7 @@ export function ConversationInfoPanel({
   variant = "default",
 }: ConversationInfoPanelProps) {
   const t = useI18n();
+  const permissions = useConversationInfoPermissions();
   const embedded = variant === "embedded";
 
   return (
@@ -256,7 +282,7 @@ export function ConversationInfoPanel({
           </p>
         ) : (
           <div className="space-y-4 py-3">
-            <CustomerBody conversation={conversation} />
+            <CustomerBody conversation={conversation} permissions={permissions} />
           </div>
         )}
       </div>
@@ -266,8 +292,10 @@ export function ConversationInfoPanel({
 
 function ConversationTagSection({
   conversation,
+  permissions,
 }: {
   conversation: AgentConversation;
+  permissions: ConversationInfoPermissions;
 }) {
   const t = useI18n();
   const setConversationTags = useAgentConversationsStore(
@@ -277,6 +305,12 @@ function ConversationTagSection({
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    if (!permissions.canViewTags) {
+      setAvailableTags([]);
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
 
     async function loadTags() {
@@ -302,20 +336,22 @@ function ConversationTagSection({
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [permissions.canViewTags, t]);
 
   return (
     <section className="space-y-2 border-t pt-2">
       <SectionHeading
         action={
-          <ConversationTagPicker
-            conversation={conversation}
-            availableTags={availableTags}
-            loading={loading}
-            onTagsChange={(tags) => {
-              setConversationTags(conversation.id, tags);
-            }}
-          />
+          permissions.canManageTags ? (
+            <ConversationTagPicker
+              conversation={conversation}
+              availableTags={availableTags}
+              loading={loading}
+              onTagsChange={(tags) => {
+                setConversationTags(conversation.id, tags);
+              }}
+            />
+          ) : undefined
         }
       >
         {t("conversation.conversationTags")}
@@ -331,7 +367,13 @@ function ConversationTagSection({
   );
 }
 
-function CustomerBody({ conversation }: { conversation: AgentConversation }) {
+function CustomerBody({
+  conversation,
+  permissions,
+}: {
+  conversation: AgentConversation;
+  permissions: ConversationInfoPermissions;
+}) {
   const customerId = conversation.customerId ?? 0;
 
   if (customerId <= 0) {
@@ -339,20 +381,40 @@ function CustomerBody({ conversation }: { conversation: AgentConversation }) {
       <div className="space-y-4">
         <SmartReplySection conversation={conversation} />
         <UnlinkedCustomerEmpty conversation={conversation} />
-        <ConversationTagSection conversation={conversation} />
+        <ConversationTagSection conversation={conversation} permissions={permissions} />
       </div>
     );
   }
 
-  return <CustomerLinkedBody conversation={conversation} customerId={customerId} />;
+  if (!permissions.canViewCustomer) {
+    return (
+      <div className="space-y-4">
+        <SmartReplySection conversation={conversation} />
+        <ConversationTagSection conversation={conversation} permissions={permissions} />
+      </div>
+    );
+  }
+
+  return (
+    <CustomerLinkedBody
+      conversation={conversation}
+      customerId={customerId}
+      permissions={permissions}
+    />
+  );
 }
 
 type CustomerLinkedBodyProps = {
   conversation: AgentConversation;
   customerId: number;
+  permissions: ConversationInfoPermissions;
 };
 
-function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProps) {
+function CustomerLinkedBody({
+  conversation,
+  customerId,
+  permissions,
+}: CustomerLinkedBodyProps) {
   const t = useI18n();
   const [loading, setLoading] = useState(true);
   const [customer, setCustomer] = useState<AdminCustomer | null>(null);
@@ -405,7 +467,7 @@ function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProp
     return (
       <div className="space-y-4">
         <MissingCustomerEmpty conversation={conversation} />
-        <ConversationTagSection conversation={conversation} />
+        <ConversationTagSection conversation={conversation} permissions={permissions} />
       </div>
     );
   }
@@ -447,16 +509,18 @@ function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProp
               </p>
             </div>
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 gap-1 px-2 text-xs"
-            onClick={() => setCustomerEditOpen(true)}
-          >
-            <PencilIcon className="size-3.5" />
-            {t("conversation.edit")}
-          </Button>
+          {permissions.canUpdateCustomer ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 gap-1 px-2 text-xs"
+              onClick={() => setCustomerEditOpen(true)}
+            >
+              <PencilIcon className="size-3.5" />
+              {t("conversation.edit")}
+            </Button>
+          ) : null}
         </div>
 
         <div className="space-y-2">
@@ -548,16 +612,18 @@ function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProp
                     ) : null}
                   </div>
                 </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 shrink-0 gap-1 px-2 text-xs"
-                  onClick={() => setCompanyEditOpen(true)}
-                >
-                  <PencilIcon className="size-3.5" />
-                  {t("conversation.edit")}
-                </Button>
+                {permissions.canUpdateCompany ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 shrink-0 gap-1 px-2 text-xs"
+                    onClick={() => setCompanyEditOpen(true)}
+                  >
+                    <PencilIcon className="size-3.5" />
+                    {t("conversation.edit")}
+                  </Button>
+                ) : null}
               </div>
               <div className="space-y-2 pt-1">
                 <DetailRow
@@ -583,35 +649,39 @@ function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProp
         </section>
       ) : null}
 
-      <RelatedTicketsSection conversation={conversation} />
+      {permissions.canViewTickets ? (
+        <RelatedTicketsSection conversation={conversation} />
+      ) : null}
 
-      <ConversationTagSection conversation={conversation} />
+      <ConversationTagSection conversation={conversation} permissions={permissions} />
 
-      <CustomerFormDialog
-        open={customerEditOpen}
-        onOpenChange={setCustomerEditOpen}
-        saving={customerEditSaving}
-        itemId={customer.id}
-        onSave={async (payload: CustomerFormSavePayload) => {
-          if (customerEditSaving) {
-            return;
-          }
-          setCustomerEditSaving(true);
-          try {
-            await saveCustomerProfile({ ...payload, id: customer.id });
-            toast.success(t("conversation.saved"));
-            void load();
-            setCustomerEditOpen(false);
-          } catch (e) {
-            toast.error(e instanceof Error ? e.message : t("conversation.saveFailed"));
-          } finally {
-            setCustomerEditSaving(false);
-          }
-        }}
-      />
-      {company ? (
+      {permissions.canUpdateCustomer ? (
+        <CustomerFormDialog
+          open={customerEditOpen}
+          onOpenChange={setCustomerEditOpen}
+          saving={customerEditSaving}
+          itemId={customer.id}
+          onSave={async (payload: CustomerFormSavePayload) => {
+            if (!permissions.canUpdateCustomer || customerEditSaving) {
+              return;
+            }
+            setCustomerEditSaving(true);
+            try {
+              await saveCustomerProfile({ ...payload, id: customer.id });
+              toast.success(t("conversation.saved"));
+              void load();
+              setCustomerEditOpen(false);
+            } catch (e) {
+              toast.error(e instanceof Error ? e.message : t("conversation.saveFailed"));
+            } finally {
+              setCustomerEditSaving(false);
+            }
+          }}
+        />
+      ) : null}
+      {company && permissions.canUpdateCompany ? (
         <CompanyEditDialog
-          open={companyEditOpen}
+          open={permissions.canUpdateCompany && companyEditOpen}
           onOpenChange={setCompanyEditOpen}
           company={company}
           onSaved={() => {

@@ -2644,3 +2644,42 @@ git diff --check
 
 - 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 不修改新增测试或两份交接文档；无共享文件和 migration 编号冲突。
 - 测试可独立删除，不影响现有 Seed CLI。测试失败时应先区分 migration 初始化、Seed 幂等、报告口径或 cleanup 孤儿，不允许为了恢复绿色而放宽精确基线。
+
+## 第 50 批：会话详情辅助资源与动作权限收口（2026-07-15）
+
+### 目标与原功能判断
+
+- 会话详情原本同时承担会话状态、客户档案、客户企业、关联工单和会话标签展示；这些是同一侧栏中的关联信息，不应拆出平行页面，但也不能用 `conversation.view` 代替各资源已有权限。
+- 审计确认后端已经分别使用 `customer.view/update`、`company.update`、`ticket.view`、`tag.view` 和 `conversation.tag`，缺口只在前端无条件加载辅助 API、无条件展示编辑控件。本批复用既有权限，不新增角色特判、隐藏权限或重复权限。
+
+### 文件与行为
+
+```text
+web/app/dashboard/conversations/_components/conversation-info-panel.tsx
+web/app/dashboard/conversations/conversation-info-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- `customer.view` 控制客户和联系人加载；`customer.update` 与 `company.update` 分别控制客户、客户企业编辑，且客户档案不可见时两个动作都不出现。
+- `ticket.view` 控制关联工单加载；`tag.view` 控制标签树加载；`tag.view + conversation.tag` 共同控制标签编辑器。
+- 会话 DTO 内已有标签继续以名称只读展示，不因无法读取标签树而消失。基础会话状态、来源员工号和门店信息也不依赖客户档案权限。
+- 契约测试固定六项权限映射、辅助读取短路、写弹窗显隐和现有标签只读保留。
+
+### 验证、风险与合并顺序
+
+```text
+node --test app/dashboard/conversations/conversation-info-permissions.test.mjs app/dashboard/tickets/action-permissions.test.mjs
+rg --files -g '*.test.mjs' | sort | xargs node --test
+pnpm typecheck
+pnpm exec eslint app/dashboard/conversations/_components/conversation-info-panel.tsx app/dashboard/conversations/conversation-info-permissions.test.mjs
+pnpm build
+go vet ./...
+go test ./... -count=1
+git diff --check
+```
+
+- 定向 7 项和全前端 99 项测试、TypeScript、目标 ESLint、Next 生产构建、vet、最终全仓 Go 单次测试及 diff 检查通过。
+- 首次并行验证中的全仓 Go 测试曾在 `internal/services` 失败，单包与最终全仓复跑通过；额外 `go test ./internal/services -count=3` 暴露该包在同进程重复运行时复用全局 DB/配置的既有隔离问题，第二轮起会批量报表缺失/表缺失。该问题不由本批前端产生，且涉及共享测试基础设施和回复异步状态，留作独立协同任务，不能把 `-count=3` 记录成通过。
+- AI 分支也修改 `conversation-info-panel.tsx`，加入自动转人工开关和 `intentProfileId` 保存兼容。合并顺序建议先保留本批 `ConversationInfoPermissions`，再重放 AI 开关；开关必须使用后端已经要求的 `conversation.handover` 做前端显隐和动作守卫，同时保留公司更新的 `intentProfileId`，禁止整文件二选一覆盖。
+- 本批无 migration、共享 DTO、enum、API、路由、WebSocket、模型调用、token、usage 或计费变化。页面和测试可独立回滚，回滚不需要数据处理，但会恢复只读账号的 403 和误导入口。
