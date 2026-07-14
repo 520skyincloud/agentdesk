@@ -84,8 +84,8 @@ func (s *companyService) CreateCompany(req request.CreateCompanyRequest, operato
 		return nil, errorsx.InvalidParam("公司名称不能为空")
 	}
 
-	existing := repositories.CompanyRepository.GetByName(sqls.DB(), name)
-	if existing != nil && existing.Status != enums.StatusDeleted {
+	existing := repositories.CompanyRepository.GetByNameInTenant(sqls.DB(), tenantID, name)
+	if existing != nil {
 		return nil, errorsx.InvalidParam("公司名称已存在")
 	}
 
@@ -98,6 +98,9 @@ func (s *companyService) CreateCompany(req request.CreateCompanyRequest, operato
 		AuditFields: utils.BuildAuditFields(operator),
 	}
 	if err := repositories.CompanyRepository.Create(sqls.DB(), item); err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, errorsx.InvalidParam("公司名称已存在")
+		}
 		return nil, err
 	}
 	return item, nil
@@ -116,7 +119,7 @@ func (s *companyService) UpdateCompany(req request.UpdateCompanyRequest, operato
 		return errorsx.InvalidParam("公司名称不能为空")
 	}
 
-	existing := repositories.CompanyRepository.GetByName(sqls.DB(), name)
+	existing := repositories.CompanyRepository.GetByNameInTenant(sqls.DB(), item.TenantID, name)
 	if existing != nil && existing.ID != req.ID {
 		return errorsx.InvalidParam("公司名称已存在")
 	}
@@ -130,6 +133,9 @@ func (s *companyService) UpdateCompany(req request.UpdateCompanyRequest, operato
 		"update_user_name": operator.Username,
 		"updated_at":       now,
 	}); err != nil {
+		if isDuplicateKeyError(err) {
+			return errorsx.InvalidParam("公司名称已存在")
+		}
 		return err
 	}
 	return nil

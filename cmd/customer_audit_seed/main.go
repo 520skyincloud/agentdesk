@@ -295,13 +295,18 @@ func printReport(db *gorm.DB, batch string) error {
 func buildReport(db *gorm.DB, batch string) report {
 	m := marker(batch)
 	remarkPattern := likeMarker(m)
+	tenant := repositories.TenantRepository.GetByTenantCode(db, constants.LegacyDefaultTenantCode)
+	var tenantID int64
+	if tenant != nil {
+		tenantID = tenant.ID
+	}
 
 	r := report{
 		Batch:  batch,
 		Marker: m,
 	}
-	r.CompanyMarked = count(db, &models.Company{}, "remark LIKE ? AND name = ?", remarkPattern, companyName)
-	r.CompanyNameExists = count(db, &models.Company{}, "name = ?", companyName) > 0
+	r.CompanyMarked = count(db, &models.Company{}, "tenant_id = ? AND remark LIKE ? AND name = ?", tenantID, remarkPattern, companyName)
+	r.CompanyNameExists = tenantID > 0 && count(db, &models.Company{}, "tenant_id = ? AND name = ?", tenantID, companyName) > 0
 	r.Channel = count(db, &models.Channel{}, "remark LIKE ? AND name = ?", remarkPattern, channelName)
 	r.Stores = count(db, &models.Store{}, "remark LIKE ? AND store_code LIKE ?", remarkPattern, storeCodePrefix+"%")
 	r.CSLeaders = count(db, &models.User{}, "remark LIKE ? AND username LIKE ?", remarkPattern, usernamePrefix+"cs_leader_%")
@@ -469,7 +474,10 @@ func (ctx *seedContext) upsertStores() error {
 		code := fmt.Sprintf("%s%03d", storeCodePrefix, i)
 		name := fmt.Sprintf("%s测试门店%03d", companyName, i)
 		item := &models.Store{}
-		err := ctx.db.Where("store_code = ?", code).Take(item).Error
+		err := ctx.db.Where("tenant_id = ? AND store_code = ?", ctx.tenant.ID, code).Take(item).Error
+		if err == gorm.ErrRecordNotFound {
+			err = ctx.db.Where("tenant_id = 0 AND store_code = ? AND remark LIKE ?", code, likeMarker(ctx.marker)).Take(item).Error
+		}
 		updates := map[string]any{
 			"tenant_id":        ctx.tenant.ID,
 			"name":             name,
@@ -671,7 +679,10 @@ func (ctx *seedContext) upsertAgentProfiles() error {
 		code := fmt.Sprintf("%s%03d", agentCodePrefix, i+1)
 		displayName := fmt.Sprintf("测试客服%03d", i+1)
 		item := &models.AgentProfile{}
-		err := ctx.db.Where("user_id = ? OR agent_code = ?", user.ID, code).Take(item).Error
+		err := ctx.db.Where("tenant_id = ? AND (user_id = ? OR agent_code = ?)", ctx.tenant.ID, user.ID, code).Take(item).Error
+		if err == gorm.ErrRecordNotFound {
+			err = ctx.db.Where("tenant_id = 0 AND (user_id = ? OR agent_code = ?) AND remark LIKE ?", user.ID, code, likeMarker(ctx.marker)).Take(item).Error
+		}
 		updates := map[string]any{
 			"tenant_id":               ctx.tenant.ID,
 			"user_id":                 user.ID,
@@ -690,8 +701,8 @@ func (ctx *seedContext) upsertAgentProfiles() error {
 			"update_user_name":        constants.SystemAuditUserName,
 		}
 		if err == nil {
-			if item.TenantID != ctx.tenant.ID {
-				return fmt.Errorf("test agent profile %d belongs to tenant %d, expected %d", item.ID, item.TenantID, ctx.tenant.ID)
+			if err := ctx.ensureSeedTenantOwnership("agent profile", item.ID, item.TenantID, item.Remark); err != nil {
+				return err
 			}
 			if err := ctx.db.Model(item).Updates(updates).Error; err != nil {
 				return err

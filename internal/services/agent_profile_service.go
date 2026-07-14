@@ -229,6 +229,9 @@ func (s *agentProfileService) CreateAgentProfile(req request.CreateAgentProfileR
 	}
 	item.AuditFields = utils.BuildAuditFields(operator)
 	if err := repositories.AgentProfileRepository.Create(sqls.DB(), item); err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, s.profileDuplicateError(item, 0)
+		}
 		return nil, err
 	}
 	s.dispatchPendingConversationsIfEligible(item)
@@ -284,6 +287,9 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 		"update_user_name":           operator.Username,
 		"updated_at":                 time.Now(),
 	}); err != nil {
+		if isDuplicateKeyError(err) {
+			return s.profileDuplicateError(item, req.ID)
+		}
 		return err
 	}
 	s.dispatchPendingConversationsIfEligible(item)
@@ -336,7 +342,7 @@ func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgen
 	if exists := s.Take("user_id = ? AND id <> ?", req.UserID, id); exists != nil {
 		return nil, errorsx.InvalidParam("该用户已存在客服档案")
 	}
-	if exists := s.Take("agent_code = ? AND id <> ?", req.AgentCode, id); exists != nil {
+	if exists := s.Take("tenant_id = ? AND agent_code = ? AND id <> ?", team.TenantID, req.AgentCode, id); exists != nil {
 		return nil, errorsx.InvalidParam("客服工号已存在")
 	}
 	if !enums.IsValidServiceStatus(req.ServiceStatus) {
@@ -361,6 +367,18 @@ func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgen
 		ReceiveOfflineMessage:  req.ReceiveOfflineMessage,
 		Remark:                 strings.TrimSpace(req.Remark),
 	}, nil
+}
+
+func (s *agentProfileService) profileDuplicateError(item *models.AgentProfile, id int64) error {
+	if item != nil {
+		if exists := s.Take("user_id = ? AND id <> ?", item.UserID, id); exists != nil {
+			return errorsx.InvalidParam("该用户已存在客服档案")
+		}
+		if exists := s.Take("tenant_id = ? AND agent_code = ? AND id <> ?", item.TenantID, item.AgentCode, id); exists != nil {
+			return errorsx.InvalidParam("客服工号已存在")
+		}
+	}
+	return errorsx.InvalidParam("客服档案信息重复")
 }
 
 func (s *agentProfileService) dispatchPendingConversationsIfEligible(item *models.AgentProfile) {

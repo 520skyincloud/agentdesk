@@ -154,6 +154,34 @@ func TestTenantIntegrityAuditReportsMissingRequiredTable(t *testing.T) {
 	}
 }
 
+func TestTenantIntegrityAuditReportsDuplicateTenantBusinessKeys(t *testing.T) {
+	db := openTenantIntegrityTestDB(t, true)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	if err := db.Migrator().DropIndex(&models.Company{}, "uk_company_tenant_name"); err != nil {
+		t.Fatalf("drop company tenant unique index: %v", err)
+	}
+	audit := tenantIntegrityTestAuditFields(time.Now())
+	for i := 0; i < 2; i++ {
+		if err := db.Create(&models.Company{
+			TenantID: fixture.tenantA.ID, Name: "duplicate tenant company", Status: enums.StatusOk, AuditFields: audit,
+		}).Error; err != nil {
+			t.Fatalf("create duplicate company %d: %v", i, err)
+		}
+	}
+
+	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 1})
+	if err != nil {
+		t.Fatalf("audit duplicate business keys: %v", err)
+	}
+	violation := tenantIntegrityFindViolation(report, "DUPLICATE_TENANT_COMPANY_NAME", "Company.name")
+	if violation == nil {
+		t.Fatalf("duplicate company names were not reported: %#v", report.Violations)
+	}
+	if violation.Count != 2 || len(violation.SampleIDs) != 1 {
+		t.Fatalf("duplicate violation count/samples = %d/%d, want 2/1", violation.Count, len(violation.SampleIDs))
+	}
+}
+
 type tenantIntegrityFixture struct {
 	tenantA      *models.Tenant
 	tenantB      *models.Tenant

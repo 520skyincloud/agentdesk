@@ -137,6 +137,29 @@ func TestAgentOrganizationRejectsCrossTenantProfileAndStoreStaffUnassignment(t *
 	}
 }
 
+func TestAgentCodeIsUniqueWithinTenant(t *testing.T) {
+	fixture := setupAgentOrganizationTenantFixture(t)
+	userA := createAgentOrganizationUser(t, fixture.db, 101, "tenant-a-shared-code")
+	userB := createAgentOrganizationUser(t, fixture.db, 202, "tenant-b-shared-code")
+	const sharedCode = "SHARED-001"
+	if _, err := AgentProfileService.CreateAgentProfile(request.CreateAgentProfileRequest{
+		UserID: userA.ID, TeamID: fixture.teamA.ID, AgentCode: sharedCode, DisplayName: "A共享工号客服",
+	}, fixture.adminA); err != nil {
+		t.Fatalf("create tenant A shared agent code: %v", err)
+	}
+	if _, err := AgentProfileService.CreateAgentProfile(request.CreateAgentProfileRequest{
+		UserID: userB.ID, TeamID: fixture.teamB.ID, AgentCode: sharedCode, DisplayName: "B共享工号客服",
+	}, fixture.adminB); err != nil {
+		t.Fatalf("create tenant B shared agent code: %v", err)
+	}
+	duplicateUser := createAgentOrganizationUser(t, fixture.db, 101, "tenant-a-duplicate-code")
+	if _, err := AgentProfileService.CreateAgentProfile(request.CreateAgentProfileRequest{
+		UserID: duplicateUser.ID, TeamID: fixture.teamA.ID, AgentCode: sharedCode, DisplayName: "A重复工号客服",
+	}, fixture.adminA); err == nil {
+		t.Fatal("same tenant duplicate agent code must fail")
+	}
+}
+
 func TestAgentOrganizationRepositoriesKeepTenantInFinalWritePredicate(t *testing.T) {
 	fixture := setupAgentOrganizationTenantFixture(t)
 	if err := repositories.AgentTeamRepository.UpdatesInTenant(fixture.db, fixture.teamB.ID, fixture.teamA.TenantID, map[string]any{"name": "越权更新"}); err != nil {
@@ -287,4 +310,20 @@ func assertAgentOrganizationTenantBUnchanged(t *testing.T, fixture agentOrganiza
 	if schedule := repositories.AgentTeamScheduleRepository.Get(fixture.db, fixture.scheduleB.ID); schedule == nil || schedule.Remark != fixture.scheduleB.Remark {
 		t.Fatalf("tenant B schedule changed: %+v", schedule)
 	}
+}
+
+func createAgentOrganizationUser(t *testing.T, db *gorm.DB, tenantID int64, username string) *models.User {
+	t.Helper()
+	user := &models.User{TenantID: tenantID, Username: username, Nickname: username, Status: enums.StatusOk}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("create agent user %s: %v", username, err)
+	}
+	role := repositories.RoleRepository.GetByCode(db, constants.RoleCodeCsUser)
+	if role == nil {
+		t.Fatal("customer service role fixture is missing")
+	}
+	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
+		t.Fatalf("assign agent role to %s: %v", username, err)
+	}
+	return user
 }

@@ -18,12 +18,11 @@ func newCompanyRepository() *companyRepository {
 type companyRepository struct {
 }
 
-func (r *companyRepository) GetByName(db *gorm.DB, name string) *models.Company {
-	ret := &models.Company{}
-	if err := db.First(ret, "name = ?", name).Error; err != nil {
+func (r *companyRepository) GetByNameInTenant(db *gorm.DB, tenantID int64, name string) *models.Company {
+	if tenantID <= 0 {
 		return nil
 	}
-	return ret
+	return r.Take(db, "tenant_id = ? AND name = ?", tenantID, name)
 }
 
 func (r *companyRepository) Get(db *gorm.DB, id int64) *models.Company {

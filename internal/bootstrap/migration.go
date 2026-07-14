@@ -11,5 +11,8 @@ func InitMigrations() error {
 	if err := sqls.DB().AutoMigrate(models.Models...); err != nil {
 		return err
 	}
+	if err := retireLegacyGlobalUniqueIndexes(sqls.DB()); err != nil {
+		return err
+	}
 	return migration.Migrate()
 }

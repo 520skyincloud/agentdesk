@@ -439,6 +439,9 @@ func (s *tenantIntegrityAuditService) Audit(
 		}
 	}
 
+	if err := s.auditTenantBusinessKeyDuplicates(db, metadata, available, report, sampleLimit); err != nil {
+		return nil, err
+	}
 	if err := s.auditRoleScopes(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
@@ -452,6 +455,41 @@ func (s *tenantIntegrityAuditService) Audit(
 		report.Status = "failed"
 	}
 	return report, nil
+}
+
+func (s *tenantIntegrityAuditService) auditTenantBusinessKeyDuplicates(
+	db *gorm.DB,
+	metadata map[string]tenantIntegrityModelMetadata,
+	available map[string]bool,
+	report *TenantIntegrityAuditReport,
+	sampleLimit int,
+) error {
+	checks := []struct {
+		model   string
+		column  string
+		code    string
+		message string
+	}{
+		{model: "Company", column: "name", code: "DUPLICATE_TENANT_COMPANY_NAME", message: "同一租户存在重复客户企业名称"},
+		{model: "Store", column: "store_code", code: "DUPLICATE_TENANT_STORE_CODE", message: "同一租户存在重复门店编码"},
+		{model: "AgentProfile", column: "agent_code", code: "DUPLICATE_TENANT_AGENT_CODE", message: "同一租户存在重复客服工号"},
+	}
+	for _, check := range checks {
+		if !available[check.model] {
+			continue
+		}
+		table := metadata[check.model].Table
+		where := fmt.Sprintf(
+			"c.tenant_id > 0 AND EXISTS (SELECT 1 FROM %s AS duplicate WHERE duplicate.tenant_id = c.tenant_id AND duplicate.%s = c.%s AND duplicate.id <> c.id)",
+			table, check.column, check.column,
+		)
+		if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+			Table: table, Alias: "c", Where: where, IDExpr: "c.id",
+		}, sampleLimit, check.code, check.model+"."+check.column, check.message); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *tenantIntegrityAuditService) auditRoleScopes(

@@ -7,6 +7,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -181,6 +182,58 @@ func TestSeedResourceUpsertsInheritTenantID(t *testing.T) {
 	assertSeedTenantRows(t, db, ctx.tenant.ID, 100, &models.Store{})
 	assertSeedTenantRows(t, db, ctx.tenant.ID, 1, &models.StoreStaffBinding{})
 	assertSeedTenantRows(t, db, ctx.tenant.ID, 1, &models.WxWorkProtocolInstance{})
+}
+
+func TestSeedUpsertsDoNotReuseOtherTenantBusinessCodes(t *testing.T) {
+	db := openSeedTenantTestDB(t, "cross_tenant_codes", &models.Store{}, &models.AgentProfile{})
+	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
+	ctx := &seedContext{
+		db:      db,
+		tenant:  &models.Tenant{ID: 77},
+		company: &models.Company{ID: 88},
+		teams:   []*models.AgentTeam{{ID: 101}},
+		agents:  []*models.User{{ID: 201}},
+		batch:   "cross-tenant-codes",
+		marker:  marker("cross-tenant-codes"),
+		now:     now,
+		audit:   simulationAuditFields(now),
+	}
+	otherStore := &models.Store{
+		TenantID: 88, StoreCode: storeCodePrefix + "001", Name: "other tenant store", Remark: "OTHER_TENANT",
+	}
+	otherProfile := &models.AgentProfile{
+		TenantID: 88, UserID: 301, AgentCode: agentCodePrefix + "001", DisplayName: "other tenant agent", Remark: "OTHER_TENANT",
+	}
+	if err := db.Create(otherStore).Error; err != nil {
+		t.Fatalf("create other tenant store: %v", err)
+	}
+	if err := db.Create(otherProfile).Error; err != nil {
+		t.Fatalf("create other tenant profile: %v", err)
+	}
+
+	if err := ctx.upsertStores(); err != nil {
+		t.Fatalf("upsert tenant stores: %v", err)
+	}
+	if err := ctx.upsertAgentProfiles(); err != nil {
+		t.Fatalf("upsert tenant profiles: %v", err)
+	}
+	if current := repositories.StoreRepository.Get(db, otherStore.ID); current == nil || current.TenantID != 88 || current.Name != "other tenant store" {
+		t.Fatalf("other tenant store changed: %+v", current)
+	}
+	if current := repositories.AgentProfileRepository.Get(db, otherProfile.ID); current == nil || current.TenantID != 88 || current.DisplayName != "other tenant agent" {
+		t.Fatalf("other tenant profile changed: %+v", current)
+	}
+	var ownStoreCount int64
+	if err := db.Model(&models.Store{}).Where("tenant_id = ? AND store_code = ?", 77, storeCodePrefix+"001").Count(&ownStoreCount).Error; err != nil {
+		t.Fatalf("count tenant store: %v", err)
+	}
+	var ownProfileCount int64
+	if err := db.Model(&models.AgentProfile{}).Where("tenant_id = ? AND agent_code = ?", 77, agentCodePrefix+"001").Count(&ownProfileCount).Error; err != nil {
+		t.Fatalf("count tenant profile: %v", err)
+	}
+	if ownStoreCount != 1 || ownProfileCount != 1 {
+		t.Fatalf("tenant rows store/profile = %d/%d, want 1/1", ownStoreCount, ownProfileCount)
+	}
 }
 
 func TestSimulationRecordsInheritTenantID(t *testing.T) {

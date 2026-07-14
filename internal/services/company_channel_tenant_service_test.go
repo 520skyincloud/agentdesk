@@ -68,6 +68,25 @@ func TestCompanyServiceEnforcesTenantContextAcrossCRUD(t *testing.T) {
 	assertCompanyChannelTenantBUnchanged(t, fixture, companyB, nil)
 }
 
+func TestCompanyNameIsUniqueWithinTenant(t *testing.T) {
+	fixture := setupCompanyChannelTenantFixture(t)
+	const sharedName = "共享客户企业名称"
+	companyA, err := CompanyService.CreateCompany(request.CreateCompanyRequest{Name: sharedName}, fixture.adminA)
+	if err != nil {
+		t.Fatalf("create tenant A shared company: %v", err)
+	}
+	companyB, err := CompanyService.CreateCompany(request.CreateCompanyRequest{Name: sharedName}, fixture.adminB)
+	if err != nil {
+		t.Fatalf("create tenant B shared company: %v", err)
+	}
+	if companyA.TenantID == companyB.TenantID {
+		t.Fatalf("shared companies have same tenant: A=%d B=%d", companyA.TenantID, companyB.TenantID)
+	}
+	if _, err := CompanyService.CreateCompany(request.CreateCompanyRequest{Name: sharedName}, fixture.adminA); err == nil {
+		t.Fatal("same tenant duplicate company name must fail")
+	}
+}
+
 func TestChannelServiceEnforcesTenantContextAcrossCRUD(t *testing.T) {
 	fixture := setupCompanyChannelTenantFixture(t)
 	channelA, err := ChannelService.CreateChannel(companyChannelTenantCreateChannelRequest("A租户官网", fixture.aiAgentA.ID), fixture.adminA)

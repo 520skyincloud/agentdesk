@@ -823,7 +823,7 @@ go test ./... -run '^$' -count=1
 - 双租户测试覆盖客服组/档案/小组/排班列表与详情、排班日历、客服负载、跨租户 body ID 更新/删除、成员关系污染、门店员工解除归属和最终 repository 写条件；无当前租户的组织列表 Handler 返回 forbidden。
 - 聚焦测试、race、vet 和全仓编译通过。全量 `go test -p 1 ./... -count=1` 仍失败于既有消息测试启动异步 AI 回复后关闭全局测试 DB，后台 goroutine 在 `BuildRuntimeAIAgentForConversation` 访问 nil DB；该问题已在阶段 3B/21 记录，本步骤不修改 AI runtime 或消息触发链路。
 - Conversation、Message、ConversationAssignment、ConversationRouteState 和 Ticket 尚未完成租户字段/运行时隔离，因此派单任务列表、全局待回复统计和会话动作不能随本步骤宣布完成；公开邀请注册继续保持关闭。
-- `AgentProfile.AgentCode` 的历史全局唯一索引未改为租户组合唯一。后续调整必须先审计重复值，再设计兼容 SQLite/MySQL 的索引迁移。
+- `AgentProfile.AgentCode` 在本步骤当时仍是历史全局唯一；第 59 批已完成重复审计、SQLite/MySQL 兼容升级并改为租户组合唯一。
 - 回滚可撤销 Handler/service 的租户方法调用和新增 repository 方法；没有数据库结构可回滚。回滚不得恢复后台全局组织读取后再开放多租户入口。
 
 ### 并行分支与合并顺序
@@ -878,7 +878,7 @@ go test ./... -run '^$' -count=1
 - 上述聚焦、race、vet 和全仓编译全部通过。完整 `go test -p 1 ./... -count=1` 仍失败于既有消息测试的异步 AI 回复协程：测试清理将全局 DB 置空后，后台 goroutine 在 `BuildRuntimeAIAgentForConversation` 继续读取 `ConversationRouteState` 并 panic。本步骤没有修改 AI runtime、消息触发或测试生命周期。
 - migration 测试覆盖旧值回填、显式值保留、重复执行幂等，以及缺失租户引用时已发生的前序更新一并回滚。双租户 service 测试覆盖创建继承、分页/详情、跨租户更新/启停/删除/密钥重置和 repository 最终条件。
 - 本步骤不能被解释为客户域或消息链路已经完成隔离。Customer/CustomerIdentity、Store/StoreStaffBinding、WxWorkProtocolInstance、Conversation/Message、派单、Ticket、回调、Outbox、WebSocket、文件与向量检索仍待后续批次。
-- `Company.Name` 仍是历史全局唯一，限制不同租户使用相同客户企业名称；`Channel.ChannelID` 有意保持全局唯一，以支持公开入口和回调反查。
+- 本步骤当时保留的 `Company.Name` 全局唯一已在第 59 批改为租户组合唯一；`Channel.ChannelID` 继续有意保持全局唯一，以支持公开入口和回调反查。
 - AIAgent 尚无 TenantID，Channel-to-AIAgent 暂时只能验证存在且启用。企业微信客服账号枚举仍来自平台全局配置，不代表租户级外部凭据已隔离。
 - Store/WxWork 本步骤有意延期：`codex/ai-billing` 正在修改企微远程接入、欢迎内容、意图配置和相关模型/service；未取得共同归属契约前不在客服分支抢改。
 
@@ -1000,7 +1000,7 @@ git diff --check
 - 聚焦测试、migration 全包、race、`go vet ./...` 和全仓编译通过。完整 `go test -p 1 ./... -count=1` 再次触发既有异步 AI 测试清理竞态：测试关闭全局 DB 后，`TriggerReplyAsync` 后台协程在 `BuildRuntimeAIAgentForConversation` 读取 `ConversationRouteState` 时因 nil DB panic；本步骤未修改该运行时或消息触发链路，不能把完整串行回归记录为通过。
 - 本步骤不等于 Store/WxWork 运行时隔离完成。后台列表/详情/写操作仍需按 `ActiveTenantID` 收紧；协议回调应先按全局稳定 GUID 找实例，再以实例 Tenant 校验后续资源，不能要求第三方回调携带浏览器租户头。
 - `WxWorkProtocolDevicePoolInstance`、`StoreAIModelSetting`、KnowledgeBase、Conversation/Message/派单、回调、Outbox、WebSocket、文件和向量仍需后续独立租户批次与双租户测试。
-- StoreCode、WxWork GUID 等历史全局唯一索引本步骤不调整；组合唯一范围要在运行时隔离完成后单独审计历史重复与 SQLite/MySQL 索引迁移。
+- 本步骤当时未调整 StoreCode、WxWork GUID。第 59 批已完成 StoreCode 租户组合唯一；WxWork GUID 继续作为协议设备级全局身份。
 
 ### 并行分支、合并顺序与回滚
 
@@ -3098,3 +3098,60 @@ git diff --check
 - `origin/codex/ai-billing@f2d2da4` 当前不修改新增代码或 Makefile，无同文件业务冲突；两分支都会依赖 `internal/models/models.go`。最终模型合并后必须先跑策略覆盖测试，再跑真实库审计，任何新增 TenantID 模型都要显式补策略和关系。
 - 本批不需要 migration 版本排序，也不要求 AI 分支先后合并。建议在最终模型契约确定后运行：覆盖测试 -> 全仓迁移测试 -> 只读一致性审计 -> 双租户浏览器/API 验收。
 - 可独立删除命令、repository、service、测试和 Makefile 入口回滚，无数据库回滚。回滚会失去部署前自动阻断能力，不应删除本次已经确认的数据规则记录；命令返回违规时必须另做可审查修复，禁止把本命令改成自动修复器。
+
+## 第 59 批：Company、Store、AgentProfile 租户组合唯一（2026-07-15）
+
+### 目标、关联链路与文件
+
+- 只调整已在设计中登记的三个租户业务标识：Company.Name、Store.StoreCode、AgentProfile.AgentCode。公开渠道、协议设备、登录标识、法定注册号和工单号继续全局唯一。
+- 原 Company/AgentProfile service 的重复查询仍是全局条件；`customer_audit_seed` 的门店和客服 upsert 也会按全局编码命中。三处必须与数据库索引同时修改，否则页面仍拒绝合法跨租户同值，或仿真工具会改写其他租户。
+
+```text
+internal/models/models.go
+internal/bootstrap/migration.go
+internal/bootstrap/tenant_unique_indexes.go
+internal/bootstrap/tenant_unique_indexes_test.go
+internal/repositories/company_repository.go
+internal/services/company_service.go
+internal/services/agent_profile_service.go
+internal/services/company_channel_tenant_service_test.go
+internal/services/agent_organization_tenant_service_test.go
+internal/services/tenant_integrity_audit_service.go
+internal/services/tenant_integrity_audit_service_test.go
+cmd/customer_audit_seed/main.go
+cmd/customer_audit_seed/simulation_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+### 实现与升级顺序
+
+- 新索引为 `uk_company_tenant_name(tenant_id,name)`、`uk_store_tenant_code(tenant_id,store_code)`、`uk_agent_profile_tenant_code(tenant_id,agent_code)`；字段 priority 显式固定列顺序。
+- `InitMigrations` 先运行现有 AutoMigrate。其成功后，兼容器分别读取 SQLite PRAGMA 或 MySQL information_schema，校验新索引和旧索引的唯一性/字段顺序，再删除三个已知旧索引；最后才进入 DML migration runner。
+- 新库没有旧索引时只验证新索引；升级库重复执行时幂等。若同租户已有重复数据，新索引创建失败并保留原数据；若旧索引名称被人工改成其他字段，兼容器拒绝删除并停止启动。
+- Company 和 AgentProfile 在 service 预检中使用 tenant 条件，数据库竞态错误继续映射为“公司名称已存在”或“客服工号已存在”。已软删除 Company 仍保留名称，和数据库非部分索引语义一致。
+- 仿真 upsert 先查目标 Tenant；仅当前 batch 标记的 tenant 0 历史行进入修复分支。Store/AgentProfile 的其他正租户同值行保持不变。租户审计增加三项重复业务键违规码。
+
+### 验证
+
+```text
+go test -race ./internal/bootstrap ./internal/services ./cmd/customer_audit_seed -run 'Test(TenantScopedUniqueIndexes|RetireLegacyGlobalUniqueIndexes|CompanyNameIsUniqueWithinTenant|AgentCodeIsUniqueWithinTenant|TenantIntegrityAuditReportsDuplicateTenantBusinessKeys|SeedUpsertsDoNotReuseOtherTenantBusinessCodes)' -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+go run ./cmd/tenant_integrity_audit --config /tmp/agentdesk-tenant-stats.yaml --sample-limit 5
+cd web && rg --files -g '*.test.mjs' | sort | xargs node --test
+cd web && pnpm typecheck
+cd web && pnpm build
+git diff --check
+```
+
+- 聚焦 race、受影响全包、全仓 Go、vet、127 项前端测试、TypeScript 和生产构建通过；原测试库只读审计仍为 51/51 模型、64/64 表、125/125 关系、0 违规。
+- SQLite 旧库副本升级后仅保留三个新组合唯一索引，业务行数保持 1/100/12；跨租户同值成功、同租户冲突、重复启动和升级后审计均通过。
+- MySQL 8.4 临时库从新库创建和模拟旧索引两条路径完成升级；最终索引均为唯一且列顺序正确，跨租户同名成功，同租户冲突返回 1062。未修改当前 Docker 运行数据库，临时数据库已删除。
+- 无 DML migration 版本、DTO、enum、API、路由、WebSocket、权限、前端或 AI runtime 变化。
+
+### 并行分支与回滚
+
+- AI 分支修改同一 `models.go`、Company service 和测试基础，且其模型仍缺本分支多项 TenantID。合并必须以本分支租户模型/索引和 service 条件为基线，逐字段叠加 AI 的 `IntentProfileID` 等变化；合并后重跑两个数据库的索引验证和 Company 页面/API 双租户用例。
+- 本批 DDL 由 AutoMigrate 和启动兼容器完成，不参与 migration 编号排序。兼容器必须位于 AutoMigrate 之后、DML runner 之前，调整顺序会造成新索引尚未建立就删除旧保护。
+- 代码可以回滚，数据库索引不能在已有跨租户同值后恢复为全局唯一。安全回滚保留组合索引，仅暂时恢复旧业务限制；任何删除合法数据以重建旧索引的方案都必须另行审批，不能作为自动 rollback。

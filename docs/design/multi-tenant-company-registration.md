@@ -779,7 +779,7 @@ POST /api/auth/register
 - 客服组创建必须从当前 `ActiveTenantID` 写入租户；公司主管可以创建和管理本公司客服组，不能管理其他租户客服组。
 - 历史数据出现账号与客服组租户冲突、跨租户小组成员或排班小组错配时 migration 中止，不自动改归属。
 - 客服分支旧 migration 25/26 已避让 AI 分支并重编号为 37/38，客服组织租户回填使用 39；migration runner 会拒绝同版本不同 remark 的历史记录。
-- 阶段 4A 当时只完成字段与回填；客服组织运行时查询和最终写入条件已在阶段 5 首批补齐。其他业务模型已按后续批次推进，租户一致性只读审计命令在第 58 批完成；组合唯一索引仍需按模型冲突和双数据库 DDL 边界另行分批处理。
+- 阶段 4A 当时只完成字段与回填；客服组织运行时查询和最终写入条件已在阶段 5 首批补齐。其他业务模型已按后续批次推进，租户一致性只读审计命令在第 58 批完成；已确认的 Company.Name、Store.StoreCode、AgentProfile.AgentCode 三项租户组合唯一索引在第 59 批完成。
 
 第二批实现状态（2026-07-14）：
 
@@ -804,7 +804,7 @@ POST /api/auth/register
 - Company/Channel 后台列表、详情、创建、更新、启停和删除均要求有效 `ActiveTenantID`；跨租户 ID 对调用方表现为不存在，最终更新 SQL 同样包含 `id + tenant_id`。渠道用户密钥重置也执行相同边界。
 - Company 的模型设置入口先确认目标客户企业属于当前租户，再调用原有设置 service；没有新增平行页面、权限、DTO、enum、Gin 路由或 WebSocket payload。
 - migration 42 将历史零租户 Company/Channel 确定性归入 `legacy-default`，保留指向现存租户的显式值；缺少默认租户或引用不存在租户时整笔事务回滚，重复执行不改变已确认归属。
-- `Channel.ChannelID` 继续保持全局唯一，因为公开接入和回调仍按该稳定标识全局反查渠道；`Company.Name` 暂时也保留历史全局唯一索引，后续改为租户组合唯一前必须先审计历史重名并兼容 SQLite/MySQL 索引迁移。
+- `Channel.ChannelID` 继续保持全局唯一，因为公开接入和回调仍按该稳定标识全局反查渠道；本步骤当时保留的 `Company.Name` 历史全局唯一索引已在第 59 批完成双数据库审计并改为 `tenant_id + name` 组合唯一。
 - 本批只完成 Company/Channel 归属和后台管理链路隔离。Customer、Store、WxWorkProtocolInstance、Conversation、Message、回调、Outbox 和 WebSocket 尚未沿 Channel tenant 形成完整链路，不能由本批推定完成。
 - AIAgent 在阶段 33 已完成租户化，Channel 创建/更新会验证 Agent 与当前公司一致；租户级第三方凭据隔离仍需在渠道设置重构时单独完成。
 
@@ -847,7 +847,7 @@ POST /api/auth/register
 - 门店员工无论分配到客服组还是解除分配，都先校验账号与原/目标客服组属于当前租户；客服组范围同步的最终写入也携带租户条件。
 - 双租户测试覆盖列表、详情、日历、客服负载、跨租户 ID 更新/删除、小组成员污染、门店员工解除归属和 repository 最终写入条件。
 - 本批没有给 Conversation/Message/Ticket/StoreStaffBinding 等其他业务表增加 TenantID。派单任务列表、全局待回复统计、会话状态机和非 HTTP 链路仍必须在对应批次独立验收，不能由客服组织隔离推定完成。
-- `AgentProfile.AgentCode` 仍使用历史全局唯一索引；这不构成越权，但会限制不同租户复用相同客服工号。组合唯一索引调整需要单独评估历史数据和 SQLite/MySQL 索引迁移，未夹带到本批运行时修复。
+- 本步骤当时保留的 `AgentProfile.AgentCode` 历史全局唯一索引已在第 59 批改为 `tenant_id + agent_code`；不同租户可复用工号，同租户重复继续由 service 和数据库双重拒绝。
 
 第二批实现状态（2026-07-14）：
 
@@ -1981,5 +1981,32 @@ git diff --check
 - service 测试覆盖双租户干净数据、缺表、零/负租户、未知租户、孤儿、跨租户关系、三类角色权限 scope 冲突和样本上限；命令测试以只有标记表的真实 SQLite 文件执行，确认运行前后表结构和数据完全不变。
 - `/tmp/agentdesk-tenant-stats.db` 实际只读审计通过：51/51 模型策略、64/64 必需表、125/125 关系，违规为 0；文件修改时间未变化。没有生成或提交 `docs/generated/` 报告。
 - 全仓串行 Go 测试、`go vet ./...`、127 项前端契约、TypeScript 和 Next 生产构建通过。没有 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket、前端页面、AI runtime、token、usage 或计费变化。
-- 正式部署应先在数据库备份和只读账号上运行本命令；返回 1 时按违规码人工确认归属并用单独、可审查的修复步骤处理，命令本身永不自动改数据。组合唯一索引仍是独立 DDL 批次，不能因为本审计通过而视为已完成。
+- 正式部署应先在数据库备份和只读账号上运行本命令；返回 1 时按违规码人工确认归属并用单独、可审查的修复步骤处理，命令本身永不自动改数据。第 59 批又补充三项同租户业务标识重复检查并完成对应组合唯一 DDL；审计通过与索引结构仍是两类证据，均需验收。
 - `origin/codex/ai-billing@f2d2da4` 不修改本批新增命令、repository、service 或 Makefile；其对 `internal/models/models.go` 的最终合并若新增 TenantID 模型，会由策略覆盖测试阻断并要求显式登记。本批不需要 migration 合并顺序，可独立回滚新增代码、测试、Makefile 入口和本节文档。
+
+## 59. 当前实施检查点：租户业务标识组合唯一（2026-07-15）
+
+本检查点处理多租户运行时隔离完成后仍存在的三个历史全局唯一约束。客户企业名称、门店编码和客服工号属于租户业务空间；继续全局唯一不会越权，但会让两个互相隔离的客户公司无法使用各自常见名称和内部编码。
+
+### 数据契约与业务链路
+
+- `Company` 使用唯一索引 `uk_company_tenant_name(tenant_id,name)`；`Store` 使用 `uk_store_tenant_code(tenant_id,store_code)`；`AgentProfile` 使用 `uk_agent_profile_tenant_code(tenant_id,agent_code)`。
+- Company 创建/更新重复查询改为当前 `ActiveTenantID` 内查询，客服档案工号按目标综合客服组 TenantID 查询；并发竞态下的数据库唯一错误转换为原有明确业务提示，不透传底层 SQL。
+- 同一租户仍禁止重复，包括已软删除 Company 占用的名称；不同租户允许相同名称、门店编码和客服工号。ChannelID、TenantCode、法定注册号、用户名/手机/邮箱、企微 GUID、OpenKfID 和 TicketNo 的全局唯一语义不变。
+- 仿真工具的 StoreCode/AgentCode upsert 同步按租户匹配；只有 `tenant_id=0` 且带当前 batch 标记的历史测试行允许被修复。其他正租户同值记录不会被读取或改写，report 的 CompanyNameExists 也限定 `legacy-default`。
+- 第 58 批只读审计新增 `DUPLICATE_TENANT_COMPANY_NAME`、`DUPLICATE_TENANT_STORE_CODE`、`DUPLICATE_TENANT_AGENT_CODE`，在 DDL 前即可给出总数和样本 ID。
+
+### 旧库升级与双数据库边界
+
+- GORM AutoMigrate 会创建新索引，但不会删除旧 `uk_company_name`、`idx_t_store_store_code`、`idx_t_agent_profile_agent_code`。启动顺序因此固定为：AutoMigrate 创建新索引 -> 校验新索引唯一性和列顺序 -> 校验旧索引仍是预期单列唯一 -> 幂等删除旧索引 -> 执行 DML migration。
+- 索引检查通过 SQLite PRAGMA 和 MySQL `information_schema.statistics` 的只读结构化查询实现；不依赖字符串解析，也不使用数据库私有 DDL 拼接。任何索引缺失、列顺序错误、非唯一或旧索引形态漂移都会 fail closed。
+- 该结构变化不占用 `internal/migration` 版本，因为该 runner 只允许 DML；新组合索引仍由 AutoMigrate 创建，兼容步骤只负责 GORM 不会自动执行的旧索引退役。
+- SQLite 真实测试库副本从旧索引升级后，Company/Store/AgentProfile 行数保持 1/100/12；三项新索引列顺序正确，旧索引消失，重复启动无输出且无变化。事务内跨租户同名成功，同租户重复被约束拒绝，升级后完整租户审计为 0 违规。
+- Docker MySQL 8.4 独立临时数据库完成新库启动、人工模拟旧索引、再次启动升级和索引查询；三项均得到 `NON_UNIQUE=0` 且列顺序正确。跨租户同名插入成功，同租户重复返回 1062。临时数据库、配置和二进制均已清理，运行库未修改。
+
+### 验证、合并与回滚
+
+- 测试覆盖新库索引、旧库升级、幂等清理、意外旧索引形态拒绝、同租户历史重复导致 AutoMigrate 失败且数据不变、Company/AgentCode 跨租户复用、仿真工具不命中异租户和审计重复样本上限。
+- 聚焦 race、全仓串行 Go、`go vet ./...`、127 项前端契约、TypeScript、Next 生产构建和 diff 检查通过。没有 DTO、enum、API、Gin 路由、WebSocket、权限、页面或 AI/计费语义变化。
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/models/models.go` 和 Company service，最终必须手工保留本分支 TenantID、三个组合索引、租户内重复校验及 AI 分支 Company `IntentProfileID` 等字段，不能整文件选边。
+- 一旦不同租户已经使用相同值，旧全局唯一索引无法恢复。代码回滚必须保留三个组合索引；强行恢复旧索引会失败或要求删除合法租户数据。启动兼容代码可在确认所有环境旧索引均退役后另批移除，不能随业务代码回滚自动反向建索引。
