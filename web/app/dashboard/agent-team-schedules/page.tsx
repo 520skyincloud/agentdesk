@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import {
   DashboardCrudPage,
   type DashboardCrudColumn,
@@ -66,6 +67,15 @@ function isHistoricalSchedule(item: AdminAgentTeamSchedule) {
 
 export default function DashboardAgentTeamSchedulesPage() {
   const t = useI18n()
+  const { session } = useAuth()
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions]
+  )
+  const canCreate = permissions.has("agentTeamSchedule.create")
+  const canUpdate = permissions.has("agentTeamSchedule.update")
+  const canDelete = permissions.has("agentTeamSchedule.delete")
+  const canBatchGenerate = permissions.has("agentTeamSchedule.batchGenerate")
   const [viewMode, setViewMode] = useState<ViewMode>("month")
   const [teamFilterInput, setTeamFilterInput] = useState("all")
   const [teamFilter, setTeamFilter] = useState("all")
@@ -174,15 +184,17 @@ export default function DashboardAgentTeamSchedulesPage() {
         if (teamId > 0 && data.some((item) => item.id === teamId)) {
           setTeamFilterInput(String(teamId))
           setTeamFilter(String(teamId))
-          if (params.get("action") === "create") {
-            openCreateDialog({ teamId, squadId })
+          if (params.get("action") === "create" && canCreate) {
+            setEditingItem(null)
+            setDialogDefaults({ teamId, squadId })
+            setDialogOpen(true)
           }
         }
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("agentTeamSchedule.loadTeamsFailed"))
     }
-  }, [t])
+  }, [canCreate, t])
 
   const refreshActiveView = useCallback(async () => {
     await loadCalendarData()
@@ -205,12 +217,18 @@ export default function DashboardAgentTeamSchedulesPage() {
   }
 
   function openCreateDialog(defaults?: Partial<CreateAdminAgentTeamSchedulePayload>) {
+    if (!canCreate) {
+      return
+    }
     setEditingItem(null)
     setDialogDefaults(defaults ?? null)
     setDialogOpen(true)
   }
 
   function openEditDialog(item: AdminAgentTeamSchedule) {
+    if (!canUpdate) {
+      return
+    }
     if (isHistoricalSchedule(item)) {
       toast.error(t("agentTeamSchedule.historyReadonly"))
       return
@@ -232,7 +250,7 @@ export default function DashboardAgentTeamSchedulesPage() {
   }
 
   async function handleSubmit(payload: CreateAdminAgentTeamSchedulePayload) {
-    if (saving) {
+    if (saving || (editingItem ? !canUpdate : !canCreate)) {
       return
     }
     setSaving(true)
@@ -260,6 +278,9 @@ export default function DashboardAgentTeamSchedulesPage() {
   }
 
   async function handleDeleteById(id: number) {
+    if (!canDelete) {
+      return
+    }
     setActionLoadingId(id)
     try {
       await deleteAgentTeamSchedule(id)
@@ -276,6 +297,9 @@ export default function DashboardAgentTeamSchedulesPage() {
   }
 
   async function handleCalendarUpdate(payload: UpdateAdminAgentTeamSchedulePayload) {
+    if (!canUpdate) {
+      return
+    }
     const startAt = parseLocalDateTime(payload.startAt)
     if (startAt && startAt < startOfDay(new Date())) {
       toast.error(t("agentTeamSchedule.historyReadonly"))
@@ -402,14 +426,18 @@ export default function DashboardAgentTeamSchedulesPage() {
               <RefreshCwIcon className={refreshing ? "animate-spin" : ""} />
               {t("agentTeamSchedule.refresh")}
             </Button>
-            <Button variant="outline" onClick={() => setBatchDialogOpen(true)}>
-              <LayersIcon />
-              {t("agentTeamSchedule.batch")}
-            </Button>
-            <Button onClick={() => openCreateDialog()}>
-              <PlusIcon />
-              {t("agentTeamSchedule.new")}
-            </Button>
+            {canBatchGenerate ? (
+              <Button variant="outline" onClick={() => setBatchDialogOpen(true)}>
+                <LayersIcon />
+                {t("agentTeamSchedule.batch")}
+              </Button>
+            ) : null}
+            {canCreate ? (
+              <Button onClick={() => openCreateDialog()}>
+                <PlusIcon />
+                {t("agentTeamSchedule.new")}
+              </Button>
+            ) : null}
           </div>
         </div>
 
@@ -424,6 +452,8 @@ export default function DashboardAgentTeamSchedulesPage() {
               schedules={calendarItems}
               loading={calendarLoading}
               savingId={actionLoadingId}
+              canCreate={canCreate}
+              canUpdate={canUpdate}
               onCreate={openCreateDialog}
               onEdit={openEditDialog}
               onMove={handleCalendarUpdate}
@@ -449,15 +479,22 @@ export default function DashboardAgentTeamSchedulesPage() {
               }
               getItemId={(item) => item.id}
               createItem={createAgentTeamSchedule}
+              showCreate={canCreate}
+              showEdit={canUpdate}
+              showActionsColumn={canUpdate || canDelete}
               updateItem={async (item, payload) => {
                 await updateAgentTeamSchedule({ id: item.id, ...payload })
                 await loadCalendarData()
               }}
               canEdit={(item) => !isHistoricalSchedule(item)}
-              deleteItem={async (item) => {
-                await deleteAgentTeamSchedule(item.id)
-                await loadCalendarData()
-              }}
+              deleteItem={
+                canDelete
+                  ? async (item) => {
+                      await deleteAgentTeamSchedule(item.id)
+                      await loadCalendarData()
+                    }
+                  : undefined
+              }
               canDelete={(item) => !isHistoricalSchedule(item)}
               renderEditDialog={({ open, saving: dialogSaving, itemId, onOpenChange, onSubmit }) => (
                 <EditDialog
@@ -499,7 +536,7 @@ export default function DashboardAgentTeamSchedulesPage() {
         defaultValues={dialogDefaults}
         onOpenChange={handleDialogOpenChange}
         onSubmit={handleSubmit}
-        onDelete={handleDeleteById}
+        onDelete={canDelete ? handleDeleteById : undefined}
       />
       <BatchScheduleDialog
         open={batchDialogOpen}

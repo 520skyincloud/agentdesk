@@ -37,6 +37,8 @@ type ScheduleCalendarProps = {
   schedules: AdminAgentTeamSchedule[]
   loading: boolean
   savingId: number | null
+  canCreate: boolean
+  canUpdate: boolean
   onCreate: (defaults: Partial<CreateAdminAgentTeamSchedulePayload>) => void
   onEdit: (item: AdminAgentTeamSchedule) => void
   onMove: (payload: UpdateAdminAgentTeamSchedulePayload) => Promise<void>
@@ -235,6 +237,8 @@ export function ScheduleCalendar({
   schedules,
   loading,
   savingId,
+  canCreate,
+  canUpdate,
   onCreate,
   onEdit,
   onMove,
@@ -246,6 +250,9 @@ export function ScheduleCalendar({
   const [interactionPreview, setInteractionPreview] = useState<InteractionPreview | null>(null)
 
   function handleBlankCellClick(day: Date) {
+    if (!canCreate) {
+      return
+    }
     const startAt = new Date(day)
     startAt.setHours(9, 0, 0, 0)
     const endAt = new Date(day)
@@ -312,6 +319,9 @@ export function ScheduleCalendar({
   }
 
   function handlePointerDown(event: ReactPointerEvent, item: AdminAgentTeamSchedule, type: DragState["type"], edge?: "start" | "end") {
+    if (!canUpdate) {
+      return
+    }
     event.preventDefault()
     event.stopPropagation()
     const target = event.currentTarget as HTMLElement
@@ -398,18 +408,22 @@ export function ScheduleCalendar({
         key={date}
         data-schedule-cell
         data-date={date}
-        role="button"
-        tabIndex={0}
+        role={canCreate && !historical ? "button" : undefined}
+        tabIndex={canCreate && !historical ? 0 : undefined}
         className={cn(
           "border-l border-t border-[#e3ebf6] bg-white p-2 text-left outline-none transition-colors first:border-l-0 hover:bg-[#f7faff] focus-visible:ring-2 focus-visible:ring-primary/25",
           dayIndex % 7 === 0 && "border-l-0",
           !inMonth && "bg-[#f7f9fd] text-muted-foreground",
           historical && "cursor-not-allowed bg-[#f4f7fb] hover:bg-[#f4f7fb]",
+          !canCreate && !historical && "cursor-default hover:bg-white",
           interactionPreview?.date === date &&
             (interactionPreview.invalid ? "bg-destructive/5 ring-2 ring-destructive/30" : "bg-primary/5 ring-2 ring-primary/35"),
           options?.className
         )}
         onClick={(event) => {
+          if (!canCreate) {
+            return
+          }
           if ((event.target as HTMLElement).closest("[data-schedule-block]")) {
             return
           }
@@ -419,7 +433,7 @@ export function ScheduleCalendar({
           handleBlankCellClick(day)
         }}
         onKeyDown={(event) => {
-          if (historical) {
+          if (!canCreate || historical) {
             return
           }
           if (event.key === "Enter" || event.key === " ") {
@@ -443,7 +457,7 @@ export function ScheduleCalendar({
                 {t("agentTeamSchedule.today")}
               </span>
             ) : null}
-            {historical ? null : <CalendarPlusIcon className="size-3.5 text-muted-foreground" />}
+            {!historical && canCreate ? <CalendarPlusIcon className="size-3.5 text-muted-foreground" /> : null}
           </div>
         </div>
         <div className="space-y-1">
@@ -452,17 +466,18 @@ export function ScheduleCalendar({
             const busy = savingId === item.id
             const active = interactionPreview?.itemId === item.id
             const timeLayout = dayTimeLayout.items.get(item.id)
-            const readonly = historical || isHistoricalDay(parseLocalDateTime(item.startAt))
+            const readonly = !canUpdate || historical || isHistoricalDay(parseLocalDateTime(item.startAt))
             return (
               <div key={`${item.id}-${date}`} className="relative h-10 rounded-lg bg-[#f4f7fb]">
                 <div
                   data-schedule-block
                   data-time-left={timeLayout?.leftPercent ?? 0}
                   data-time-width={timeLayout?.widthPercent ?? 100}
-                  role="button"
-                  tabIndex={0}
+                  role={!readonly ? "button" : undefined}
+                  tabIndex={!readonly ? 0 : undefined}
                   className={cn(
-                    "absolute inset-y-0 cursor-grab overflow-hidden rounded-lg border border-primary/15 bg-[#eef5ff] px-2 py-1.5 pl-4 pr-4 text-primary shadow-[0_8px_18px_rgba(37,99,235,0.10)] outline-none transition active:cursor-grabbing",
+                    "absolute inset-y-0 overflow-hidden rounded-lg border border-primary/15 bg-[#eef5ff] px-2 py-1.5 pl-4 pr-4 text-primary shadow-[0_8px_18px_rgba(37,99,235,0.10)] outline-none transition",
+                    !readonly && "cursor-grab active:cursor-grabbing",
                     active && "scale-[0.98] border-primary/50 bg-primary/15 opacity-80 ring-2 ring-primary/30",
                     readonly && "cursor-not-allowed opacity-60",
                     busy && "pointer-events-none opacity-60"
@@ -490,32 +505,26 @@ export function ScheduleCalendar({
                     }
                   }}
                 >
-                  <div
-                    className="absolute left-0 top-0 flex h-full w-3 cursor-ew-resize items-center justify-center bg-primary/15"
-                    onPointerDown={(event) => {
-                      if (readonly) {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        return
-                      }
-                      handlePointerDown(event, item, "resize", "start")
-                    }}
-                  >
-                    <GripVerticalIcon className="size-3" />
-                  </div>
-                  <div
-                    className="absolute right-0 top-0 flex h-full w-3 cursor-ew-resize items-center justify-center bg-primary/15"
-                    onPointerDown={(event) => {
-                      if (readonly) {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        return
-                      }
-                      handlePointerDown(event, item, "resize", "end")
-                    }}
-                  >
-                    <GripVerticalIcon className="size-3" />
-                  </div>
+                  {!readonly ? (
+                    <>
+                      <div
+                        className="absolute left-0 top-0 flex h-full w-3 cursor-ew-resize items-center justify-center bg-primary/15"
+                        onPointerDown={(event) =>
+                          handlePointerDown(event, item, "resize", "start")
+                        }
+                      >
+                        <GripVerticalIcon className="size-3" />
+                      </div>
+                      <div
+                        className="absolute right-0 top-0 flex h-full w-3 cursor-ew-resize items-center justify-center bg-primary/15"
+                        onPointerDown={(event) =>
+                          handlePointerDown(event, item, "resize", "end")
+                        }
+                      >
+                        <GripVerticalIcon className="size-3" />
+                      </div>
+                    </>
+                  ) : null}
                   <div className="truncate text-xs font-medium">{teamName}</div>
                   <div className="truncate text-[11px] opacity-80">{item.squadName || t("agentTeamSchedule.wholeTeamDuty")}</div>
                   <div className="truncate text-xs">

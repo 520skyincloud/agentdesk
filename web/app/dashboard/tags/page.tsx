@@ -32,6 +32,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import {
   createTag,
   deleteTag,
@@ -163,6 +164,8 @@ type SortableRowProps = {
   onToggleStatus: (item: TagNode) => void
   onDelete: (item: TagNode) => void
   actionLoadingId: number | null
+  canUpdate: boolean
+  canDelete: boolean
 }
 
 function SortableRow({
@@ -174,6 +177,8 @@ function SortableRow({
   onToggleStatus,
   onDelete,
   actionLoadingId,
+  canUpdate,
+  canDelete,
 }: SortableRowProps) {
   const t = useI18n()
   const {
@@ -202,20 +207,22 @@ function SortableRow({
         !disabled && "cursor-move"
       )}
     >
-      <TableCell className="w-14">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-8 cursor-grab active:cursor-grabbing"
-          disabled={disabled}
-          aria-label={t("tag.dragSort", { name: item.name })}
-          {...attributes}
-          {...listeners}
-        >
-          <GripVerticalIcon className="size-4 text-muted-foreground" />
-        </Button>
-      </TableCell>
+      {canUpdate ? (
+        <TableCell className="w-14">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8 cursor-grab active:cursor-grabbing"
+            disabled={disabled}
+            aria-label={t("tag.dragSort", { name: item.name })}
+            {...attributes}
+            {...listeners}
+          >
+            <GripVerticalIcon className="size-4 text-muted-foreground" />
+          </Button>
+        </TableCell>
+      ) : null}
       <TableCell>
         <div
           className="flex items-center gap-2"
@@ -244,12 +251,14 @@ function SortableRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-3">
-          <Switch
-            checked={item.status === 0}
-            disabled={actionLoadingId === item.id}
-            onCheckedChange={() => void onToggleStatus(item)}
-            aria-label={t("tag.toggleStatus", { name: item.name })}
-          />
+          {canUpdate ? (
+            <Switch
+              checked={item.status === 0}
+              disabled={actionLoadingId === item.id}
+              onCheckedChange={() => void onToggleStatus(item)}
+              aria-label={t("tag.toggleStatus", { name: item.name })}
+            />
+          ) : null}
           <Badge variant={item.status === 0 ? "default" : "outline"}>
             {item.status === 0 ? t("status.ok") : t("status.disabled")}
           </Badge>
@@ -263,40 +272,55 @@ function SortableRow({
       <TableCell className="text-sm text-muted-foreground">
         {item.createdAt}
       </TableCell>
-      <TableCell className="text-right">
-        <ButtonGroup className="ml-auto">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onEdit(item)}
-          >
-            {t("tag.edit")}
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={<Button variant="outline" size="icon-sm" />}
-              aria-label={t("tag.moreActions", { name: item.name })}
-            >
-              <MoreHorizontalIcon />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-40 min-w-40">
-              <DropdownMenuItem
-                onClick={() => void onDelete(item)}
-                className="text-destructive focus:text-destructive"
+      {canUpdate || canDelete ? (
+        <TableCell className="text-right">
+          <ButtonGroup className="ml-auto">
+            {canUpdate ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onEdit(item)}
               >
-                <Trash2Icon />
-                {actionLoadingId === item.id ? t("tag.deleting") : t("tag.delete")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </ButtonGroup>
-      </TableCell>
+                {t("tag.edit")}
+              </Button>
+            ) : null}
+            {canDelete ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={<Button variant="outline" size="icon-sm" />}
+                  aria-label={t("tag.moreActions", { name: item.name })}
+                >
+                  <MoreHorizontalIcon />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-40 min-w-40">
+                  <DropdownMenuItem
+                    onClick={() => void onDelete(item)}
+                    className="text-destructive focus:text-destructive"
+                  >
+                    <Trash2Icon />
+                    {actionLoadingId === item.id ? t("tag.deleting") : t("tag.delete")}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+          </ButtonGroup>
+        </TableCell>
+      ) : null}
     </TableRow>
   )
 }
 
 export default function DashboardTagsPage() {
   const t = useI18n()
+  const { session } = useAuth()
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions]
+  )
+  const canCreate = permissions.has("tag.create")
+  const canUpdate = permissions.has("tag.update")
+  const canDelete = permissions.has("tag.delete")
+  const showActions = canUpdate || canDelete
   const [keywordInput, setKeywordInput] = useState("")
   const [statusFilterInput, setStatusFilterInput] = useState("all")
   const [keyword, setKeyword] = useState("")
@@ -392,11 +416,17 @@ export default function DashboardTagsPage() {
   }
 
   function openCreateDialog() {
+    if (!canCreate) {
+      return
+    }
     setEditingItem(null)
     setDialogOpen(true)
   }
 
   function openEditDialog(item: TagNode) {
+    if (!canUpdate) {
+      return
+    }
     setEditingItem(item)
     setDialogOpen(true)
   }
@@ -412,7 +442,7 @@ export default function DashboardTagsPage() {
   }
 
   async function handleSubmit(payload: CreateTagPayload) {
-    if (saving) {
+    if (saving || (editingItem ? !canUpdate : !canCreate)) {
       return
     }
 
@@ -439,6 +469,9 @@ export default function DashboardTagsPage() {
   }
 
   async function handleToggleStatus(item: TagNode) {
+    if (!canUpdate) {
+      return
+    }
     setActionLoadingId(item.id)
     try {
       const nextStatus = item.status === 0 ? 1 : 0
@@ -456,6 +489,9 @@ export default function DashboardTagsPage() {
   }
 
   async function handleDelete(item: TagNode) {
+    if (!canDelete) {
+      return
+    }
     setActionLoadingId(item.id)
     try {
       await deleteTag(item.id)
@@ -497,6 +533,9 @@ export default function DashboardTagsPage() {
   }, [filteredTree, expandedIds])
 
   async function handleDragEnd(event: DragEndEvent) {
+    if (!canUpdate) {
+      return
+    }
     const { active, over } = event
     if (!over || active.id === over.id || sorting) {
       return
@@ -562,10 +601,12 @@ export default function DashboardTagsPage() {
               <Button variant="outline" onClick={collapseAll} disabled={loading}>
                 {t("tag.collapseAll")}
               </Button>
-              <Button onClick={openCreateDialog}>
-                <PlusIcon />
-                {t("tag.new")}
-              </Button>
+              {canCreate ? (
+                <Button onClick={openCreateDialog}>
+                  <PlusIcon />
+                  {t("tag.new")}
+                </Button>
+              ) : null}
             </>
           }
         >
@@ -604,12 +645,14 @@ export default function DashboardTagsPage() {
               <Table>
                 <TableHeader className="bg-[#f6f9ff]">
                   <TableRow>
-                    <TableHead className="w-14" />
+                    {canUpdate ? <TableHead className="w-14" /> : null}
                     <TableHead className="min-w-[260px]">{t("tag.columnName")}</TableHead>
                     <TableHead>{t("tag.columnStatus")}</TableHead>
                     <TableHead>{t("tag.columnRemark")}</TableHead>
                     <TableHead>{t("tag.columnCreatedAt")}</TableHead>
-                    <TableHead className="w-[92px] text-right">{t("tag.columnActions")}</TableHead>
+                    {showActions ? (
+                      <TableHead className="w-[92px] text-right">{t("tag.columnActions")}</TableHead>
+                    ) : null}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -621,19 +664,21 @@ export default function DashboardTagsPage() {
                       <SortableRow
                         key={item.id}
                         item={item}
-                        disabled={loading || sorting}
+                        disabled={!canUpdate || loading || sorting}
                         expanded={expandedIds.has(item.id)}
                         onToggleExpand={() => toggleExpanded(item.id)}
                         onEdit={openEditDialog}
                         onToggleStatus={handleToggleStatus}
                         onDelete={handleDelete}
                         actionLoadingId={actionLoadingId}
+                        canUpdate={canUpdate}
+                        canDelete={canDelete}
                       />
                     ))}
                   </SortableContext>
                   {loading || flatList.length === 0 ? (
                     <DashboardTableStateRow
-                      colSpan={6}
+                      colSpan={4 + (canUpdate ? 1 : 0) + (showActions ? 1 : 0)}
                       loading={loading}
                       loadingText={t("tag.loading")}
                       emptyText={t("tag.empty")}

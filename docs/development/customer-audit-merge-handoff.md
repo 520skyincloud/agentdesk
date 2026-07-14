@@ -2211,3 +2211,48 @@ git diff --check
 - 开始前已 fetch：`origin/codex/ai-billing@f2d2da4` 与本批预计文件无同文件修改，无 migration 编号影响，不需要 rebase。
 - 客户企业页 `web/app/dashboard/companies/page.tsx` 与 AI 分支同文件，本批主动避开；后续合并后再处理其 CRUD 与 AI 模型设置的双重权限显隐。
 - 本批只改页面表达和测试，可独立回滚且无需数据回滚。回滚不会绕过后端鉴权，但会重新让只读账号看到必然失败的写按钮。
+
+## 第 41 批：排班日历与标签树动作权限显隐（2026-07-14）
+
+### 目标与复用判断
+
+- 排班和标签后端已按现有 create/update/delete/batch 权限鉴权并完成 Tenant 隔离，不需要新权限或接口。
+- 两页存在标准按钮之外的隐式写入口：排班空白日期点击、排班块点击/拖动/拉伸，以及标签状态 Switch 和 DnD 排序。只隐藏顶部按钮仍会让只读账号触发失败请求。
+- 复用现有权限、页面和组件，通过能力 props 收紧交互，不新增平行工作台或角色硬编码。
+
+### 文件与契约
+
+```text
+web/app/dashboard/agent-team-schedules/page.tsx
+web/app/dashboard/agent-team-schedules/_components/calendar.tsx
+web/app/dashboard/agent-team-schedules/action-permissions.test.mjs
+web/app/dashboard/tags/page.tsx
+web/app/dashboard/tags/action-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 排班 create 控制顶部/列表/日期格新建和 URL 自动打开；update 控制列表编辑、排班块编辑、移动和缩放；delete 控制删除；batchGenerate 控制批量编排。
+- 日历组件显式接收 `canCreate/canUpdate`。无 create 的日期格去除按钮和键盘创建语义；无 update 的排班块去除按钮语义、拖动光标、pointer 写处理和缩放手柄。
+- 标签 create 控制新增，update 控制编辑/启停/排序，delete 控制删除。无 update 时隐藏拖拽列和 Switch；操作列和空状态列数按权限动态收缩。
+- 没有 Go、model、AutoMigrate、DML migration、request/response DTO、enum、API、Gin 路由、WebSocket payload、权限常量、导航或响应结构变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/agent-team-schedules/page.tsx app/dashboard/agent-team-schedules/_components/calendar.tsx app/dashboard/tags/page.tsx
+git diff --check
+```
+
+- 全量 Go、vet、82 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。
+- 排班契约测试覆盖四项权限、列表动作和日历 create/update 交互；标签测试覆盖新增、编辑/状态/排序、删除、动态列和只读布局。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch：`origin/codex/ai-billing@f2d2da4` 与本批预计文件无同文件修改，无 migration 编号影响，不需要 rebase。
+- 本批不修改 AI 回复、模型供应商、计费、企微协议或派单状态机。页面和测试可独立回滚，无数据回滚；回滚不会绕过后端，但会恢复只读账号可触发的失败写交互。
