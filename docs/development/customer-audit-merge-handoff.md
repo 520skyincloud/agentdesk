@@ -2724,3 +2724,48 @@ git diff --check
 - AI 分支同文件 Manager 新增欢迎语编辑、意图行业列表、替换账号远程链接和模型测试。最终合并必须把欢迎语 action/保存与替换链接函数置于 `canUpdateChannels`，把 `fetchReplyIntentProfiles` 置于 `canViewStoreModelSettings`，把模型测试按钮与函数置于 `canUpdateStoreModelSettings`，并保留 AI 分支所有字段和新替换流程。
 - AI 分支不修改会话主页面、公司详情或本批新测试，但修改 Manager 和 `web/lib/api/admin.ts`；本批没有 API 变更，因此建议先保留 AI 最终字段/API，再重放本批 Manager 权限层。禁止整文件采用任一分支版本。
 - 本批无 migration、共享 DTO、enum、路由、WebSocket、AI 回复、token、usage 或计费变化。整体回滚无需数据处理，但会重新暴露只读账号 403 和写入口误导。
+
+## 第 52 批：客户企业档案动作权限收口（2026-07-15）
+
+### 原功能判断与实现
+
+- `/dashboard/companies` 是当前租户内的客户企业档案 CRUD；平台租户接入与切换继续由 `/dashboard/channels` 承担，两者不合并、不新增第三个公司入口。
+- 后端已经分别要求 `company.view/create/update/delete`，公司模型接口已经分别要求 `aiConfig.view/update`。本批未改变接口语义，只修复前端无条件暴露新增、编辑、删除、启停和账号明细入口的问题。
+- 新增、编辑、删除和启停分别使用 `company.create/update/delete`；所有包装函数再次校验相同权限。`channel.view` 控制“账号列表”，`aiConfig.view/update` 分离模型读取与保存，相关导航、读取、保存函数均有守卫。
+- 只读用户保留列表查询、筛选和刷新；没有账号、模型、状态、编辑或删除动作时，操作列整体隐藏。
+
+### 文件与契约
+
+```text
+web/app/dashboard/companies/page.tsx
+web/app/dashboard/companies/action-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 新测试固定公司 CRUD、状态切换、账号明细、模型读取和模型保存的六类边界，并要求 UI 显隐和动作函数双重守卫。
+- 没有后端、model、AutoMigrate、DML migration、request/response DTO、enum、API、Gin 路由、WebSocket payload、权限常量、默认角色、导航或 JsonResult 变化；不涉及 AI 回复、模型调用、token、usage 或计费。
+
+### 验证结果与已知测试风险
+
+```text
+cd web && node --test app/dashboard/companies/action-permissions.test.mjs
+cd web && rg --files -g '*.test.mjs' | sort | xargs node --test
+cd web && pnpm typecheck
+cd web && pnpm exec eslint app/dashboard/companies/page.tsx app/dashboard/companies/action-permissions.test.mjs
+cd web && pnpm build
+go vet ./...
+go test ./internal/services -count=1
+go test ./... -count=1 -p 1
+git diff --check
+```
+
+- 定向 3 项和全前端 106 项测试、TypeScript、目标 ESLint、生产构建、vet、service 单包及串行全仓 Go 通过。
+- 标准 `go test ./... -count=1` 两次在 `internal/services` 失败并出现 `t_conversation_read_state` 被替换/缺表日志；随后 service 单包和全仓 `-p 1` 均通过。这与第 50 批记录的全局测试 DB/配置隔离问题一致，本批没有 Go 改动。后续应独立修复测试基建，不能把 `-p 1` 写成标准并行命令已经通过。
+
+### AI 分支合并与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 修改同一 `companies/page.tsx`，新增 `ReplyIntentProfile` 加载、意图行业列/表单和 `intentProfileId` payload，必须手工合并，禁止整文件选择任一分支。
+- 合并后的意图列表请求必须受 `aiConfig.view` 控制；无该权限时不显示依赖选项源的字段。编辑既有公司时必须保留原 `intentProfileId`，不能因选项未加载提交 `0`；新建且无意图访问时可使用默认 `0`。同时保留本批 `company.*`、`channel.view`、`aiConfig.*` 的 UI 与函数守卫。
+- 建议先保留 AI 分支最终 Company 类型、字段和 payload，再重放本批权限层并扩充本测试；随后重跑公司权限测试、typecheck、生产构建和双租户浏览器验收。
+- 本批可按页面、测试和两份文档整体回滚，无数据回滚；回滚会恢复只读账号的写入口、状态菜单和跨资源访问误导。

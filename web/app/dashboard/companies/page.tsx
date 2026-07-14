@@ -243,6 +243,10 @@ export default function DashboardCompaniesPage() {
   const [modelSettingsLoading, setModelSettingsLoading] = useState(false)
   const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
   const permissionSet = new Set(session?.permissions ?? [])
+  const canCreate = permissionSet.has("company.create")
+  const canUpdate = permissionSet.has("company.update")
+  const canDelete = permissionSet.has("company.delete")
+  const canViewAccounts = permissionSet.has("channel.view")
   const canViewModelSettings = permissionSet.has("aiConfig.view")
   const canUpdateModelSettings = permissionSet.has("aiConfig.update")
   const listStatusOptions = [
@@ -256,6 +260,10 @@ export default function DashboardCompaniesPage() {
   ]
 
   async function openCompanyModelSettings(company: AdminCompany) {
+    if (!canViewModelSettings) {
+      toast.error("无权查看公司模型设置")
+      return
+    }
     setModelSettingsCompany(company)
     setModelSettingsLoading(true)
     try {
@@ -274,6 +282,10 @@ export default function DashboardCompaniesPage() {
   }
 
   async function saveCompanyModelSettings() {
+    if (!canUpdateModelSettings) {
+      toast.error("无权更新公司模型设置")
+      return
+    }
     if (!modelSettingsCompany) return
     setModelSettingsSaving(true)
     try {
@@ -311,13 +323,43 @@ export default function DashboardCompaniesPage() {
     }
   }
 
+  async function createCompanyWithPermission(payload: CreateAdminCompanyPayload) {
+    if (!canCreate) throw new Error("无权创建客户企业")
+    return createCompany(payload)
+  }
+
+  async function updateCompanyWithPermission(company: AdminCompany, payload: CreateAdminCompanyPayload) {
+    if (!canUpdate) throw new Error("无权更新客户企业")
+    return updateCompany({ id: company.id, ...payload })
+  }
+
+  async function deleteCompanyWithPermission(company: AdminCompany) {
+    if (!canDelete) throw new Error("无权删除客户企业")
+    return deleteCompany(company.id)
+  }
+
+  async function updateCompanyStatusWithPermission(company: AdminCompany, nextStatus: Status) {
+    if (!canUpdate) throw new Error("无权更新客户企业状态")
+    return updateCompanyStatus(company.id, nextStatus)
+  }
+
+  function openCompanyAccounts(company: AdminCompany) {
+    if (!canViewAccounts) {
+      toast.error("无权查看接入账号")
+      return
+    }
+    router.push(`/dashboard/company-detail?id=${company.id}`)
+  }
+
   const rowActions: DashboardCrudRowAction<AdminCompany>[] = []
-	rowActions.push({
-		key: "accounts",
-		label: "账号列表",
-		icon: <UsersRoundIcon className="size-4" />,
-		run: async ({ item }) => router.push(`/dashboard/company-detail?id=${item.id}`),
-	})
+  if (canViewAccounts) {
+    rowActions.push({
+      key: "accounts",
+      label: "账号列表",
+      icon: <UsersRoundIcon className="size-4" />,
+      run: async ({ item }) => openCompanyAccounts(item),
+    })
+  }
   if (canViewModelSettings) {
     rowActions.push({
       key: "modelSettings",
@@ -326,23 +368,25 @@ export default function DashboardCompaniesPage() {
       run: async ({ item }) => openCompanyModelSettings(item),
     })
   }
-  rowActions.push(
-    createDashboardStatusToggleAction<AdminCompany, Status>({
-      disabled: (item) => item.status === Status.Deleted,
-      icon: (item) =>
-        item.status === Status.Ok ? <BanIcon /> : <CheckCircle2Icon />,
-      label: (item) =>
-        item.status === Status.Ok ? t("company.disable") : t("company.enable"),
-      getNextStatus: (item) =>
-        item.status === Status.Ok ? Status.Disabled : Status.Ok,
-      updateStatus: (item, nextStatus) => updateCompanyStatus(item.id, nextStatus),
-      successMessage: (item, nextStatus) =>
-        t(nextStatus === Status.Ok ? "company.enabled" : "company.disabled", {
-          name: item.name,
-        }),
-      errorMessage: t("company.statusUpdateFailed"),
-    }),
-  )
+  if (canUpdate) {
+    rowActions.push(
+      createDashboardStatusToggleAction<AdminCompany, Status>({
+        disabled: (item) => item.status === Status.Deleted,
+        icon: (item) =>
+          item.status === Status.Ok ? <BanIcon /> : <CheckCircle2Icon />,
+        label: (item) =>
+          item.status === Status.Ok ? t("company.disable") : t("company.enable"),
+        getNextStatus: (item) =>
+          item.status === Status.Ok ? Status.Disabled : Status.Ok,
+        updateStatus: updateCompanyStatusWithPermission,
+        successMessage: (item, nextStatus) =>
+          t(nextStatus === Status.Ok ? "company.enabled" : "company.disabled", {
+            name: item.name,
+          }),
+        errorMessage: t("company.statusUpdateFailed"),
+      }),
+    )
+  }
 
   return (
     <>
@@ -424,10 +468,13 @@ export default function DashboardCompaniesPage() {
       ]}
       fetchList={fetchCompanies}
       getItemId={(item) => item.id}
-      createItem={createCompany}
-      updateItem={(item, payload) => updateCompany({ id: item.id, ...payload })}
-      deleteItem={(item) => deleteCompany(item.id)}
+      createItem={createCompanyWithPermission}
+      updateItem={updateCompanyWithPermission}
+      showCreate={canCreate}
+      showEdit={canUpdate}
+      deleteItem={canDelete ? deleteCompanyWithPermission : undefined}
       canDelete={(item) => item.status !== Status.Deleted}
+      showActionsColumn={rowActions.length > 0 || canDelete}
       form={{
         fetchDetail: fetchCompany,
         fields: [

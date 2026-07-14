@@ -1841,3 +1841,22 @@ git diff --check
 - 定向 4 项、全前端 103 项契约测试、`pnpm typecheck`、目标 ESLint、Next 生产构建、`go test ./... -count=1`、`go vet ./...` 和 `git diff --check` 通过。目标 ESLint 仅保留会话页原有二维码 `<img>` 性能 warning，无新增 error 或 hooks warning。
 - `origin/codex/ai-billing@f2d2da4` 大幅修改同一 Manager，新增欢迎语、意图行业、保留旧号的替换链接和模型连通测试。合并时必须在最终 Manager 保留本批权限变量：欢迎语和替换链接使用 `channel.update`，意图行业选项读取使用 `aiConfig.view`，模型测试使用 `aiConfig.update`；其新增函数也必须有动作守卫。
 - 本批可按三个页面/组件、测试和本节文档整体回滚，不需要数据回滚；回滚会恢复只读账号的跨资源请求和误导写入口。公开邀请注册仍需等待 AI 分支新增模型 Tenant 契约和合并后双租户验收。
+
+## 52. 当前实施检查点：客户企业档案动作权限（2026-07-15）
+
+本检查点继续遵循“现有页面职责不变、每个动作复用权限管理中的全局权限”。`/dashboard/companies` 仍是租户内客户企业档案页，不承担平台租户接入职责，也不新增平行公司管理入口。
+
+### 页面动作与辅助入口
+
+- `company.create`、`company.update`、`company.delete` 分别控制新增、编辑/启停和删除；页面按钮、状态菜单和实际调用函数使用同一权限，不能只依赖后端 403 或按钮隐藏。
+- `channel.view` 只控制进入客户企业的企微账号明细，不成为客户企业列表的附加门槛；缺少该权限时不展示“账号列表”。
+- `aiConfig.view` 控制公司模型设置读取和入口，`aiConfig.update` 独立控制字段编辑与保存。读取权限不再隐含写权限，保存函数也执行二次守卫。
+- 只读账号继续使用查询、筛选和刷新；当没有任何行级动作时隐藏空操作列，避免制造可操作错觉。
+
+### 契约、验证与并行合并
+
+- 修改 `web/app/dashboard/companies/page.tsx`，新增 `web/app/dashboard/companies/action-permissions.test.mjs`。没有 Go、model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket payload、权限常量、导航或 JsonResult 变化。
+- 定向 3 项、全前端 106 项契约测试、`pnpm typecheck`、目标 ESLint、Next 生产构建、`go vet ./...` 和 `go test ./... -count=1 -p 1` 通过。
+- 标准包级并发 `go test ./... -count=1` 仍会间歇触发既有测试全局 DB/配置互相覆盖，`internal/services` 单包和全仓 `-p 1` 均通过；该风险已在第 50 批记录，本批没有 Go 或测试基建改动，不能把它误记成本批业务回归或虚报标准命令通过。
+- `origin/codex/ai-billing@f2d2da4` 修改同一公司页面，增加意图行业列表、列、表单字段和 `intentProfileId` 提交。最终合并必须同时保留本批全部权限守卫和 AI 分支字段；意图列表只在 `aiConfig.view` 下读取/展示，编辑者无该权限时必须保留既有 `intentProfileId`，禁止以空选项静默清零，创建时才可使用默认 `0`。
+- 本批页面、测试和本节文档可整体回滚，无需数据回滚；回滚会恢复只读角色的误导写入口和跨资源 403。
