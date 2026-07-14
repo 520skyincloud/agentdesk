@@ -2975,3 +2975,77 @@ git diff --check
 - 建议以本分支租户身份、邀请审核、角色 authority、安全删除和客服小组派单为基线，再叠加 AI 分支账号字段。`DeleteUser` 的事务依赖检查、`GetEnabledForAssignment` 及三条人工派单调用、页面所有权限函数守卫、`deleteUser` API 和双语风险提示必须保留；AI 分支不得通过删除邀请/审核/派单文件解决冲突。
 - 合并后重跑 `role_user_authority_test`、`user_delete_dependency_test`、tenant registration business tests、dashboard handler 权限契约、121 项前端测试、typecheck、生产构建和双租户账号页验收。
 - 本批前后端应一起回滚：只回滚 service 会暴露危险删除，只回滚页面仍会留下外部接口生命周期风险。无 migration 或数据回滚；已经成功删除的账号不会因代码回滚自动恢复。
+
+## 第 57 批：门店员工自助工作台与默认角色最小权限（2026-07-15）
+
+### 目标与现有功能取舍
+
+- `/dashboard/store-workbench` 原为静态设计占位。本批在原入口内接入真实数据，不新建平行门店配置页，不把企微员工号 Manager、客服组织或会话工作台复制进来。
+- 工作台只服务当前登录门店员工：读取与保存均使用认证主体 `UserID + ActiveTenantID`，请求不接收任意 `userId`、`bindingId`、`storeId` 或 `instanceId`。
+- 门店员工可维护与本店人工接待直接相关的托管模式、服务时间、门店通知群、@ 成员、人工超时和门店位置；公司、门店、综合组、企微连接、AI 开关及知识库归属只读。
+
+### 文件、接口与权限
+
+```text
+internal/bootstrap/routes.go
+internal/bootstrap/server.go
+internal/builders/store_workbench_builder.go
+internal/handlers/dashboard/store_workbench_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+internal/migration/000055_sync_store_workbench_permissions.go
+internal/migration/000055_sync_store_workbench_permissions_test.go
+internal/migration/000056_restrict_store_staff_to_workbench.go
+internal/migration/000056_restrict_store_staff_to_workbench_test.go
+internal/pkg/constants/auth.go
+internal/pkg/dto/request/store_workbench_request.go
+internal/pkg/dto/response/store_workbench_response.go
+internal/services/store_workbench_service.go
+internal/services/store_workbench_service_test.go
+web/app/dashboard/layout.tsx
+web/app/dashboard/layout-permissions.test.mjs
+web/app/dashboard/notifications/action-permissions.test.mjs
+web/app/dashboard/store-workbench/page.tsx
+web/app/dashboard/store-workbench/_components/store-room-picker.tsx
+web/app/dashboard/store-workbench/action-permissions.test.mjs
+web/components/nav-user.tsx
+web/lib/api/store-workbench.ts
+web/lib/navigation.tsx
+web/lib/navigation.test.mjs
+web/lib/permission-i18n.ts
+web/lib/permission-i18n.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 新增 `storeWorkbench.view/update`，权限在全局权限管理可见。内置 `store_staff` 默认只获得这两项；自定义角色仍由平台管理员在角色管理中显式配置。
+- 新增 `GET /api/dashboard/store-workbench/current` 与三个 POST：`update`、`room_list`、`room_member_list`。所有 handler 先校验显式权限和活动公司，再由 service 解析当前主体范围。
+- migration 55 同步两个权限，migration 56 只删除内置门店员工角色上除这两项外的历史关系；重复执行幂等，自定义角色权限测试确认不受影响。
+- 工作台群/成员选择直接复用已核对的 `wework.apifox.cn` 员工号协议接口；群会话统一保存 `R:` 前缀，`@全员` 保存 `0`，无手填 ID 兜底。
+- Dashboard Layout 新增统一直链权限守卫，来源仍是导航权限配置；不新增角色 URL 白名单。门店员工手工进入会话等无权路径会返回工作台。账号菜单的通知项同步受 `notification.view` 控制。
+
+### 验证
+
+```text
+gofmt -w internal/pkg/constants/auth.go internal/migration/000056_restrict_store_staff_to_workbench.go internal/migration/000056_restrict_store_staff_to_workbench_test.go
+go test ./internal/migration -run 'Test(SyncStoreWorkbenchPermissions|RestrictStoreStaffRoleToWorkbench)$' -count=1
+go test ./internal/services -run '^TestStoreWorkbench' -count=1
+go test ./internal/handlers/dashboard -run '^TestStoreWorkbench' -count=1
+go vet ./...
+go test ./... -count=1 -p 1
+cd web && rg --files -g '*.test.mjs' | sort | xargs node --test
+cd web && pnpm typecheck
+cd web && pnpm exec eslint app/dashboard/layout.tsx app/dashboard/store-workbench/page.tsx app/dashboard/store-workbench/_components/store-room-picker.tsx components/nav-user.tsx lib/api/store-workbench.ts lib/navigation.tsx
+cd web && pnpm build
+git diff --check
+```
+
+- 聚焦迁移/service/handler、全仓 Go、vet、127 项前端测试、TypeScript、目标 ESLint、Next 生产构建和 diff 检查通过。
+- 测试库 migration 55/56 各成功一次；数据库中内置 `store_staff` 最终仅有 `storeWorkbench.view/update`。
+- 浏览器使用 `test_customer_audit_store_staff_001` 验证：侧栏只有门店工作台，账号菜单只有修改密码/退出，无权会话直链回到工作台；1280x720 与 390x844 无横向溢出、重叠或控制台错误。未点击保存、定位授权或协议刷新，不修改业务数据。
+
+### 并行合并与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/bootstrap/routes.go`、`internal/bootstrap/server.go`、`web/lib/navigation.tsx`；最终合并必须逐段保留双方路由注册和导航项。AI 分支新增 `replyIntentProfiles`，本批新增工作台权限与通用直链守卫，不能整文件选边。
+- AI 分支最高 migration 33，本批 migration 55/56 无编号冲突；本批不修改 AI 回复、FastGPT、模型、token、usage 或计费口径。
+- 建议先保留本分支租户/权限/客服组织基础，再叠加 AI 分支路由和导航，最后重跑 dashboard handler 权限契约、导航/布局测试、全前端测试和生产构建。
+- 回滚必须把工作台接口、页面、权限常量和默认角色语义视为整体。已执行 migration 不得改号或改 remark；若撤销，应新增幂等迁移处理角色关系，不能删除迁移历史或恢复门店员工历史宽权限。

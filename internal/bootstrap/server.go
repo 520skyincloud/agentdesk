@@ -182,6 +182,7 @@ func addRouter(app *gin.Engine) {
 
 	dashboardGroup := app.Group("/api/dashboard", middleware.AuthMiddleware)
 	registerDashboardDashboardRoutes(dashboardGroup.Group("/dashboard"))
+	registerDashboardStoreWorkbenchRoutes(dashboardGroup.Group("/store-workbench"))
 	registerDashboardUserRoutes(dashboardGroup.Group("/user"))
 	registerDashboardTenantRoutes(dashboardGroup.Group("/tenant"))
 	registerDashboardTenantInvitationRoutes(dashboardGroup.Group("/tenant-invitation"))

@@ -45,12 +45,13 @@ export function NavUser({
   }
 }) {
   const t = useI18n()
-  const { signOut } = useAuth()
+  const { session, signOut } = useAuth()
   const { unreadCount } = useNotifications()
   const { isMobile } = useSidebar()
   const router = useRouter()
   const [changePasswordOpen, setChangePasswordOpen] = useState(false)
   const fallback = user.name.slice(0, 1).toUpperCase() || "U"
+  const canViewNotifications = session?.permissions.includes("notification.view") ?? false
   return (
     <>
       <SidebarMenu>
@@ -97,20 +98,22 @@ export function NavUser({
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
-                <DropdownMenuItem
-                  onClick={() => {
-                    router.push("/dashboard/notifications")
-                  }}
-                  className="gap-2"
-                >
-                  <BellIcon />
-                  <span className="flex-1">{t("nav.notifications")}</span>
-                  {unreadCount > 0 ? (
-                    <Badge className="h-5 min-w-5 px-1.5">
-                      {unreadCount > 99 ? "99+" : unreadCount}
-                    </Badge>
-                  ) : null}
-                </DropdownMenuItem>
+                {canViewNotifications ? (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      router.push("/dashboard/notifications")
+                    }}
+                    className="gap-2"
+                  >
+                    <BellIcon />
+                    <span className="flex-1">{t("nav.notifications")}</span>
+                    {unreadCount > 0 ? (
+                      <Badge className="h-5 min-w-5 px-1.5">
+                        {unreadCount > 99 ? "99+" : unreadCount}
+                      </Badge>
+                    ) : null}
+                  </DropdownMenuItem>
+                ) : null}
                 <DropdownMenuItem
                   onClick={() => {
                     setChangePasswordOpen(true)

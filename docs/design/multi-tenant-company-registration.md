@@ -1935,3 +1935,30 @@ git diff --check
 - 定向前端 5 项、全前端 121 项、删除依赖 5 类阻断和无依赖成功路径、禁用账号人工派单阻断、typecheck、目标 ESLint、Next 生产构建、`go vet ./...`、`go test ./... -count=1 -p 1` 与 diff 检查通过。1280x720 实页确认账号表格无横向溢出，菜单包含分配角色、重置密码、禁用和删除，控制台无 error/warning；未执行真实删除。
 - `origin/codex/ai-billing@f2d2da4` 修改同一账号页、创建/角色组件、API client、user handler/service/DTO、客服档案与会话 service，并删除派单工作台及小组测试；同时缺少邀请和注册审核组件。最终合并必须保留本批权限守卫、安全删除依赖、禁用账号派单阻断及完整租户邀请审核流程，再叠加 AI 分支字段；禁止整文件选边或接受组件删除。
 - 回滚前端会重新隐藏 `user.delete` 并恢复写函数缺少二次守卫；回滚 service 会使外部直接调用删除接口重新产生悬空业务关系，因此两部分应作为同一安全边界回滚，不需要数据库迁移。
+
+## 57. 当前实施检查点：门店员工自助工作台与角色收口（2026-07-15）
+
+本检查点把原静态 `/dashboard/store-workbench` 替换为门店员工当前账号专属的真实工作台。页面继续承担门店接待配置和运行状态查看，不并入企微员工号管理页、客服组织配置页或会话工作台，也不向请求暴露任意账号、门店、绑定或实例 ID。
+
+### 账号范围与真实运行链路
+
+- 新增租户级 `storeWorkbench.view` 与 `storeWorkbench.update`，均进入权限管理和角色管理；前者控制工作台、通知群及群成员只读数据，后者控制当前门店员工配置保存。
+- `GET /api/dashboard/store-workbench/current`、`POST /update`、`POST /room_list`、`POST /room_member_list` 全部由登录主体的 `UserID + ActiveTenantID` 反查唯一 `StoreStaffBinding`，再解析同租户门店、综合客服组、企微员工号和知识库。接口不接收可替换主体范围的 ID。
+- 一个账号出现多个有效门店绑定、一个绑定解析出多个企微实例、门店不存在或跨租户引用时均 fail closed；未绑定账号返回明确空态，停用绑定只读且禁止保存。
+- 保存同步更新门店员工绑定与其企微实例，事务内统一写入托管模式、服务时段、门店群、@ 成员、人工超时和总部兜底；门店地址、导航名称与经纬度只在已绑定实例上更新。
+- 门店群和成员选择复用企业微信员工号协议 `/room/get_room_list`、`/room/batch_get_room_detail`、`/room/batch_get_member_detail`；通知群使用 `R:` conversation ID，`@全员` 使用协议定义的 `0`。没有协议结果时不提供手填 ID 假入口。
+
+### 门店员工角色与界面边界
+
+- 内置 `store_staff` 角色默认只保留 `storeWorkbench.view/update`。migration 55 幂等创建权限和角色关系，migration 56 只清理该内置角色的历史宽权限，不修改任何租户自定义角色权限。
+- 侧栏工作台入口不再借用 `channel.view`；门店员工不再默认看到公司会话、企微账号管理、AI、知识库、客户、通知和其他后台模块。
+- Dashboard Layout 复用导航配置的权限和平台/公司上下文做直链守卫。手工打开无权模块会跳到第一个可访问页面；客户企业详情和通知中心补充显式附属路由规则。没有任何可访问模块的账号仍可在 `/dashboard` 看到原有空权限状态，避免重定向循环。
+- 账号下拉菜单的通知入口按 `notification.view` 隐藏；修改当前账号密码与退出登录继续保留，不把认证级自助动作误做成业务权限。
+
+### 契约、验证与并行边界
+
+- 新增 request/response DTO、builder、service、handler、四条 Gin 路由和 DML migration 55/56；没有 model、AutoMigrate、enum、WebSocket payload、AI runtime、模型供应商、token、usage 或计费变化。
+- service 测试覆盖当前账号/当前租户隔离、绑定与实例同步、危险配置拒绝、重复绑定 fail closed 和停用绑定；migration 测试覆盖幂等、内置角色收口及自定义角色保留；handler 和前端测试覆盖显式权限、无任意主体 ID、协议选择器和直链守卫。
+- 全量 Go、vet、127 项前端测试、TypeScript、目标 ESLint、Next 生产构建及 diff 检查通过。模拟门店员工在 1280x720 与 390x844 下只看到工作台，无横向溢出或控制台错误；无权会话直链自动返回工作台，验证期间未保存配置或修改业务数据。
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/bootstrap/routes.go`、`internal/bootstrap/server.go` 和 `web/lib/navigation.tsx`。最终必须手工保留本批工作台路由、`storeWorkbench.view`、直链守卫与 AI 分支回复意图行业入口；AI 分支最高 migration 33，与 55/56 不冲突。
+- 本批前后端、权限常量和两个 migration 构成同一边界。只回滚页面会留下无入口权限，只回滚 migration 会恢复门店员工历史宽权限；已执行 migration 不应改号或改 remark，撤销产品能力需另做幂等 DML。

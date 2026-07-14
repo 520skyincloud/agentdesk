@@ -55,6 +55,12 @@ export type DashboardNavContext = {
   hasActiveTenant: boolean;
 };
 
+type DashboardRouteAccessRule = {
+  url: string;
+  requiredPermission?: string;
+  context: DashboardNavContextScope;
+};
+
 function contextVisible(
   scope: DashboardNavContextScope,
   context: DashboardNavContext,
@@ -107,6 +113,69 @@ export function filterDashboardSecondaryNavForSession(
   return dashboardSecondaryNav
     .filter((item) => navItemVisible(item, permissionSet, context))
     .map(({ titleKey, url, icon }) => ({ title: titleKey, titleKey, url, icon }));
+}
+
+const dashboardSupplementalRouteAccessRules: DashboardRouteAccessRule[] = [
+  {
+    url: "/dashboard/company-detail",
+    requiredPermission: "company.view",
+    context: "tenant",
+  },
+  {
+    url: "/dashboard/notifications",
+    requiredPermission: "notification.view",
+    context: "tenant",
+  },
+];
+
+function findDashboardRouteAccessRule(
+  pathname: string | null | undefined,
+): DashboardRouteAccessRule | null {
+  if (!pathname) {
+    return null;
+  }
+  for (const section of dashboardNavSections) {
+    for (const item of section.items) {
+      if (isDashboardNavItemActive(pathname, item.url)) {
+        return {
+          url: item.url,
+          requiredPermission: item.requiredPermission,
+          context: item.context ?? section.context,
+        };
+      }
+    }
+  }
+  return dashboardSupplementalRouteAccessRules.find((rule) =>
+    isDashboardNavItemActive(pathname, rule.url),
+  ) ?? null;
+}
+
+export function dashboardPathIsAccessible(
+  pathname: string | null | undefined,
+  permissions: readonly string[] | undefined,
+  context: DashboardNavContext,
+): boolean {
+  const rule = findDashboardRouteAccessRule(pathname);
+  if (!rule) {
+    return true;
+  }
+  if (!contextVisible(rule.context, context)) {
+    return false;
+  }
+  return !rule.requiredPermission || new Set(permissions ?? []).has(rule.requiredPermission);
+}
+
+export function firstAccessibleDashboardPath(
+  permissions: readonly string[] | undefined,
+  context: DashboardNavContext,
+): string | null {
+  for (const section of filterDashboardNavForSession(permissions, context)) {
+    const item = section.items[0];
+    if (item) {
+      return item.url;
+    }
+  }
+  return null;
 }
 
 export function dashboardPathRequiresTenant(pathname: string | null | undefined): boolean {
@@ -190,7 +259,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         titleKey: "nav.storeWorkbench",
         url: "/dashboard/store-workbench",
         icon: <HomeIcon />,
-        requiredPermission: "channel.view",
+        requiredPermission: "storeWorkbench.view",
       },
       {
         titleKey: "nav.agents",

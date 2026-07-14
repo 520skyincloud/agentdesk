@@ -10,7 +10,11 @@ import { useAuth } from "@/components/auth-provider"
 import { NotificationProvider } from "@/components/notification-provider"
 import { SiteHeader } from "@/components/site-header"
 import { useI18n } from "@/i18n/provider"
-import { dashboardPathRequiresTenant } from "@/lib/navigation"
+import {
+  dashboardPathIsAccessible,
+  dashboardPathRequiresTenant,
+  firstAccessibleDashboardPath,
+} from "@/lib/navigation"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 
 export default function DashboardLayout({
@@ -23,11 +27,28 @@ export default function DashboardLayout({
   const pathname = usePathname()
   const router = useRouter()
   const isLoginRoute = pathname?.startsWith("/dashboard/login") ?? false
+  const navContext = {
+    isPlatformAccount: Boolean(session?.isPlatformAccount),
+    hasActiveTenant: (session?.activeTenantId ?? 0) > 0,
+  }
   const missingTenantContext = Boolean(
     ready &&
       session?.isPlatformAccount &&
       session.activeTenantId <= 0 &&
       dashboardPathRequiresTenant(pathname)
+  )
+  const fallbackPath = session
+    ? firstAccessibleDashboardPath(session.permissions, navContext)
+    : null
+  const routeAccessible = session
+    ? dashboardPathIsAccessible(pathname, session.permissions, navContext)
+    : true
+  const inaccessibleRoute = Boolean(
+    ready &&
+      session &&
+      !missingTenantContext &&
+      !routeAccessible &&
+      !(pathname === "/dashboard" && !fallbackPath)
   )
 
   useEffect(() => {
@@ -42,11 +63,17 @@ export default function DashboardLayout({
     }
   }, [missingTenantContext, router])
 
+  useEffect(() => {
+    if (inaccessibleRoute) {
+      router.replace(fallbackPath ?? "/dashboard")
+    }
+  }, [fallbackPath, inaccessibleRoute, router])
+
   if (isLoginRoute) {
     return <>{children}</>
   }
 
-  if (!ready || !session || missingTenantContext) {
+  if (!ready || !session || missingTenantContext || inaccessibleRoute) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(160deg,#f3f1e8_0%,#f8faf5_46%,#e8f7f2_100%)] p-6">
         <div className="flex items-center gap-3">

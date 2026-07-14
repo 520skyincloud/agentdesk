@@ -145,6 +145,31 @@ func TestChannelDetailRequiresUpdatePermission(t *testing.T) {
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
+func TestStoreWorkbenchViewRequiresExplicitPermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+		UserID:         141,
+		TenantID:       9,
+		ActiveTenantID: 9,
+		Username:       "store-workbench-without-view",
+	})
+
+	StoreWorkbenchGetCurrent(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
+func TestStoreWorkbenchUpdateDoesNotAcceptViewPermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, `{}`, &dto.AuthPrincipal{
+		UserID:         142,
+		TenantID:       9,
+		ActiveTenantID: 9,
+		Username:       "store-workbench-viewer",
+		Permissions:    []string{constants.PermissionStoreWorkbenchView.Code},
+	})
+
+	StoreWorkbenchPostUpdate(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
 func TestAgentRunLogHandlersRequireActiveTenant(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -29,6 +29,8 @@ test("localizes seeded permission display names to English", async () => {
   assert.equal(getPermissionDisplayName("agentTeamSchedule.batchGenerate", "\u6279\u91cf\u751f\u6210\u5ba2\u670d\u7ec4\u6392\u73ed", "en-US"), "Batch generate agent team schedules")
   assert.equal(getPermissionDisplayName("dashboard.view", "\u67e5\u770b\u8fd0\u8425\u603b\u89c8", "en-US"), "View operations overview")
   assert.equal(getPermissionGroupName("dashboard", "en-US"), "Operations overview")
+  assert.equal(getPermissionDisplayName("storeWorkbench.view", "查看门店工作台", "en-US"), "View store workbench")
+  assert.equal(getPermissionGroupName("storeWorkbench", "en-US"), "Store workbench")
   assert.equal(getPermissionGroupName("agentTeamSchedule", "en-US"), "Agent team schedules")
 })
 

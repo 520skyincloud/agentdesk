@@ -96,6 +96,10 @@ var (
 	// 运营总览相关权限
 	PermissionDashboardView = Permission{Name: "查看运营总览", Code: "dashboard.view", Type: "api", GroupName: "dashboard", Method: "GET", APIPath: "/api/dashboard/dashboard/overview", SortNo: 406}
 
+	// 门店工作台相关权限
+	PermissionStoreWorkbenchView   = Permission{Name: "查看门店工作台", Code: "storeWorkbench.view", Type: "api", GroupName: "storeWorkbench", Method: "GET", APIPath: "/api/dashboard/store-workbench/current", SortNo: 407}
+	PermissionStoreWorkbenchUpdate = Permission{Name: "更新门店工作台", Code: "storeWorkbench.update", Type: "api", GroupName: "storeWorkbench", Method: "POST", APIPath: "/api/dashboard/store-workbench/update", SortNo: 408}
+
 	// 客服会话相关权限
 	PermissionConversationView         = Permission{Name: "查看会话", Code: "conversation.view", Type: "api", GroupName: "conversation", Method: "ANY", APIPath: "/api/dashboard/conversation/list", SortNo: 410}
 	PermissionConversationAssign       = Permission{Name: "分配会话", Code: "conversation.assign", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/assign", SortNo: 430}
@@ -248,6 +252,8 @@ var Permissions = []Permission{
 	PermissionTenantRegistrationView,
 	PermissionTenantRegistrationReview,
 	PermissionDashboardView,
+	PermissionStoreWorkbenchView,
+	PermissionStoreWorkbenchUpdate,
 	PermissionConversationView,
 	PermissionConversationAssign,
 	PermissionConversationTransfer,
@@ -462,15 +468,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionSkillDefinitionView,
 	},
 	RoleCodeStoreStaff: {
-		PermissionConversationView, PermissionConversationSend, PermissionConversationHandover,
-		PermissionNotificationView, PermissionNotificationUpdate,
-		PermissionQuickReplyView,
-		PermissionTagView,
-		PermissionChannelView, PermissionChannelUpdate,
-		PermissionCustomerView,
-		PermissionAssetView, PermissionAssetCreate,
-		PermissionAIAgentView,
-		PermissionKnowledgeBaseView,
+		PermissionStoreWorkbenchView, PermissionStoreWorkbenchUpdate,
 	},
 }
 

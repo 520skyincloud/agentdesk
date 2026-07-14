@@ -44,6 +44,7 @@ async function loadNavigation() {
 
 const allPermissions = [
   "dashboard.view",
+  "storeWorkbench.view",
   "conversation.view",
   "ticket.view",
   "customer.view",
@@ -60,6 +61,7 @@ const allPermissions = [
   "user.view",
   "role.view",
   "permission.view",
+  "notification.view",
   "tenant.view",
   "storageSetting.view",
   "wxworkDevicePool.view",
@@ -143,6 +145,49 @@ test("operations overview requires its explicit permission", async () => {
 
   assert.equal(urls.includes("/dashboard"), true)
   assert.equal(urls.includes("/dashboard/conversations"), false)
+})
+
+test("store workbench uses its own permission instead of channel access", async () => {
+  const { filterDashboardNavForSession } = await loadNavigation()
+  const withWorkbench = filterDashboardNavForSession(["storeWorkbench.view"], {
+    isPlatformAccount: false,
+    hasActiveTenant: true,
+  })
+  const withChannelOnly = filterDashboardNavForSession(["channel.view"], {
+    isPlatformAccount: false,
+    hasActiveTenant: true,
+  })
+
+  assert.equal(itemUrls(withWorkbench).includes("/dashboard/store-workbench"), true)
+  assert.equal(itemUrls(withChannelOnly).includes("/dashboard/store-workbench"), false)
+  assert.equal(itemUrls(withChannelOnly).includes("/dashboard/wxwork-protocol-instances"), true)
+})
+
+test("direct dashboard routes reuse navigation permissions and context", async () => {
+  const { dashboardPathIsAccessible, firstAccessibleDashboardPath } = await loadNavigation()
+  const tenantContext = { isPlatformAccount: false, hasActiveTenant: true }
+
+  assert.equal(
+    dashboardPathIsAccessible("/dashboard/store-workbench", ["storeWorkbench.view"], tenantContext),
+    true,
+  )
+  assert.equal(
+    dashboardPathIsAccessible("/dashboard/conversations", ["storeWorkbench.view"], tenantContext),
+    false,
+  )
+  assert.equal(
+    dashboardPathIsAccessible("/dashboard/company-detail", ["company.view"], tenantContext),
+    true,
+  )
+  assert.equal(
+    dashboardPathIsAccessible("/dashboard/notifications", [], tenantContext),
+    false,
+  )
+  assert.equal(
+    dashboardPathIsAccessible("/dashboard/channels", ["tenant.view"], tenantContext),
+    false,
+  )
+  assert.equal(firstAccessibleDashboardPath(["storeWorkbench.view"], tenantContext), "/dashboard/store-workbench")
 })
 
 test("tenant page guard follows the same navigation context contract", async () => {

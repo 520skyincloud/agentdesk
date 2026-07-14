@@ -81,6 +81,13 @@ func registerDashboardDashboardRoutes(group *gin.RouterGroup) {
 	group.GET("/overview", dashboard.DashboardGetOverview)
 }
 
+func registerDashboardStoreWorkbenchRoutes(group *gin.RouterGroup) {
+	group.GET("/current", dashboard.StoreWorkbenchGetCurrent)
+	group.POST("/room_list", dashboard.StoreWorkbenchPostRoom_list)
+	group.POST("/room_member_list", dashboard.StoreWorkbenchPostRoom_member_list)
+	group.POST("/update", dashboard.StoreWorkbenchPostUpdate)
+}
+
 func registerDashboardUserRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.UserGetBy)
 	group.POST("/bind_agent_team", dashboard.UserPostBind_agent_team)

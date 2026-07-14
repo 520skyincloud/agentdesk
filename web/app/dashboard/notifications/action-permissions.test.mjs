@@ -7,6 +7,10 @@ const providerSource = await readFile(
   new URL("../../../components/notification-provider.tsx", import.meta.url),
   "utf8",
 )
+const navUserSource = await readFile(
+  new URL("../../../components/nav-user.tsx", import.meta.url),
+  "utf8",
+)
 
 test("notification read state uses update permission without blocking navigation", () => {
   assert.match(pageSource, /session\?\.permissions\.includes\("notification\.update"\)/)
@@ -20,4 +24,7 @@ test("notification read state uses update permission without blocking navigation
   assert.match(providerSource, /!notification\.readAt && canUpdate/)
   assert.match(providerSource, /finally \{/)
   assert.match(providerSource, /router\.push\(notification\.actionUrl\)/)
+  assert.match(navUserSource, /permissions\.includes\("notification\.view"\)/)
+  assert.match(navUserSource, /canViewNotifications \? \(/)
+  assert.match(navUserSource, /router\.push\("\/dashboard\/notifications"\)/)
 })

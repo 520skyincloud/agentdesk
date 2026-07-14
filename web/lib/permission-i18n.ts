@@ -30,6 +30,7 @@ const PERMISSION_RESOURCE_LABELS: Record<string, { singular: string; plural: str
   permission: { singular: "permission", plural: "permissions" },
   session: { singular: "session", plural: "sessions" },
   dashboard: { singular: "operations overview", plural: "operations overview" },
+  storeWorkbench: { singular: "store workbench", plural: "store workbench" },
   conversation: { singular: "conversation", plural: "conversations" },
   ticket: { singular: "ticket", plural: "tickets" },
   notification: { singular: "notification", plural: "notifications" },
