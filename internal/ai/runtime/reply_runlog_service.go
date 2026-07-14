@@ -43,6 +43,7 @@ func (s *replyRunLogService) Write(input replyRunLogInput) {
 		aiConfigID = input.Trace.AIConfigID
 	}
 	logItem := &models.AgentRunLog{
+		TenantID:         input.Conversation.TenantID,
 		ConversationID:   input.Conversation.ID,
 		MessageID:        input.Message.ID,
 		RequestID:        input.Message.RequestID,

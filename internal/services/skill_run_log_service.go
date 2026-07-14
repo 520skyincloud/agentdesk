@@ -22,6 +22,10 @@ func (s *skillRunLogService) Get(id int64) *models.SkillRunLog {
 	return repositories.SkillRunLogRepository.Get(sqls.DB(), id)
 }
 
+func (s *skillRunLogService) GetInTenant(id, tenantID int64) *models.SkillRunLog {
+	return repositories.SkillRunLogRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *skillRunLogService) Take(where ...interface{}) *models.SkillRunLog {
 	return repositories.SkillRunLogRepository.Take(sqls.DB(), where...)
 }
@@ -36,6 +40,14 @@ func (s *skillRunLogService) FindOne(cnd *sqls.Cnd) *models.SkillRunLog {
 
 func (s *skillRunLogService) FindPageByParams(params *params.QueryParams) (list []models.SkillRunLog, paging *sqls.Paging) {
 	return repositories.SkillRunLogRepository.FindPageByParams(sqls.DB(), params)
+}
+
+func (s *skillRunLogService) FindPageInTenant(queryParams *params.QueryParams, tenantID int64) (list []models.SkillRunLog, paging *sqls.Paging) {
+	if queryParams == nil || tenantID <= 0 {
+		return nil, &sqls.Paging{}
+	}
+	queryParams.Cnd.Eq("tenant_id", tenantID)
+	return repositories.SkillRunLogRepository.FindPageByParams(sqls.DB(), queryParams)
 }
 
 func (s *skillRunLogService) FindPageByCnd(cnd *sqls.Cnd) (list []models.SkillRunLog, paging *sqls.Paging) {

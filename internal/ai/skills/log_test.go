@@ -11,7 +11,7 @@ import (
 func TestBuildRunLogMatchedPlan(t *testing.T) {
 	log := BuildRunLog(
 		RuntimeContext{
-			AIAgent:         models.AIAgent{ID: 22},
+			AIAgent:         models.AIAgent{ID: 22, TenantID: 101},
 			AIConfig:        models.AIConfig{ID: 33},
 			ConversationID:  11,
 			ManualSkillCode: "manual_refund",
@@ -41,6 +41,9 @@ func TestBuildRunLogMatchedPlan(t *testing.T) {
 	if log.ConversationID != 11 || log.AIAgentID != 22 || log.AIConfigID != 33 {
 		t.Fatalf("unexpected ids in run log: %#v", log)
 	}
+	if log.TenantID != 101 {
+		t.Fatalf("unexpected tenant id: %d", log.TenantID)
+	}
 	if !log.Matched || !log.FinalSelected || log.SkillCode != "refund_skill" {
 		t.Fatalf("expected matched skill log, got %#v", log)
 	}
@@ -55,7 +58,7 @@ func TestBuildRunLogMatchedPlan(t *testing.T) {
 func TestBuildRunLogNotMatchedAndError(t *testing.T) {
 	log := BuildRunLog(
 		RuntimeContext{
-			AIAgent:     models.AIAgent{ID: 22},
+			AIAgent:     models.AIAgent{ID: 22, TenantID: 101},
 			UserMessage: "随便问问",
 		},
 		nil,
@@ -74,7 +77,7 @@ func TestBuildRunLogNotMatchedAndError(t *testing.T) {
 	}
 
 	noMatchLog := BuildRunLog(
-		RuntimeContext{AIAgent: models.AIAgent{ID: 22}, UserMessage: "随便问问"},
+		RuntimeContext{AIAgent: models.AIAgent{ID: 22, TenantID: 101}, UserMessage: "随便问问"},
 		&ExecutionPlan{MatchReason: ""},
 		&ExecutionTrace{Status: "not_matched"},
 		nil,

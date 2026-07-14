@@ -2,6 +2,7 @@ package skills
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"agent-desk/internal/models"
@@ -19,6 +20,7 @@ type RunLogService struct{}
 // Build 根据执行计划与运行结果构建 Skill 运行日志。
 func (s *RunLogService) Build(ctx RuntimeContext, plan *ExecutionPlan, trace *ExecutionTrace, err error) *models.SkillRunLog {
 	log := &models.SkillRunLog{
+		TenantID:        ctx.AIAgent.TenantID,
 		ConversationID:  ctx.ConversationID,
 		AIAgentID:       ctx.AIAgent.ID,
 		ManualSkillCode: ctx.ManualSkillCode,
@@ -57,7 +59,17 @@ func (s *RunLogService) Write(log *models.SkillRunLog) error {
 	if log == nil {
 		return nil
 	}
-	return repositories.SkillRunLogRepository.Create(sqls.DB(), log)
+	if log.TenantID <= 0 {
+		return fmt.Errorf("skill run log is missing tenant context")
+	}
+	db := sqls.DB()
+	if log.ConversationID > 0 && repositories.ConversationRepository.GetInTenant(db, log.ConversationID, log.TenantID) == nil {
+		return fmt.Errorf("skill run log conversation %d does not belong to tenant %d", log.ConversationID, log.TenantID)
+	}
+	if log.AIAgentID > 0 && repositories.AIAgentRepository.GetInTenant(db, log.AIAgentID, log.TenantID) == nil {
+		return fmt.Errorf("skill run log ai agent %d does not belong to tenant %d", log.AIAgentID, log.TenantID)
+	}
+	return repositories.SkillRunLogRepository.Create(db, log)
 }
 
 func (s *RunLogService) buildTraceData(trace *ExecutionTrace) string {

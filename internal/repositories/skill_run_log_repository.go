@@ -26,6 +26,17 @@ func (r *skillRunLogRepository) Get(db *gorm.DB, id int64) *models.SkillRunLog {
 	return ret
 }
 
+func (r *skillRunLogRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.SkillRunLog {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.SkillRunLog{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *skillRunLogRepository) Take(db *gorm.DB, where ...interface{}) *models.SkillRunLog {
 	ret := &models.SkillRunLog{}
 	if err := db.Take(ret, where...).Error; err != nil {

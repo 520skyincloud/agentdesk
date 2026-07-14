@@ -25,6 +25,17 @@ func (r *agentRunLogRepository) Get(db *gorm.DB, id int64) *models.AgentRunLog {
 	return ret
 }
 
+func (r *agentRunLogRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.AgentRunLog {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.AgentRunLog{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *agentRunLogRepository) Take(db *gorm.DB, where ...interface{}) *models.AgentRunLog {
 	ret := &models.AgentRunLog{}
 	if err := db.Take(ret, where...).Error; err != nil {

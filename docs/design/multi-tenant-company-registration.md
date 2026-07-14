@@ -1461,3 +1461,29 @@ git diff --check
 
 - 开始前已 fetch：`origin/codex/ai-billing@f2d2da4` 与本批重叠 `web/lib/navigation.tsx`、中英文资源，另修改 `web/lib/api/admin.ts`；本批没有修改 `admin.ts`，导航和文案只增加 `nav.channelSettings` 及 Channel 文案。
 - 合并 AI 分支时逐项保留其 `replyIntentProfiles` 导航/文案和本批 `channelSettings`，禁止整文件覆盖。本批未改模型调用、回复 runtime、FastGPT、模型供应商、token、usage 或计费语义，也不需要在合并前 rebase。
+
+## 35. 当前实施检查点：AI/Skill 运行日志租户隔离（2026-07-14）
+
+本检查点修复当前公司已经可访问 Agent 运行日志、但底层日志仍没有 Tenant 根字段的问题。复用现有运行日志、后台页面、Dashboard 指标和 `conversation.view` 权限，不新增平行审计页面、日志模型或隐藏权限。
+
+### 数据归属与 Migration 51
+
+- `AgentRunLog` 和 `SkillRunLog` 增加 `TenantID`，DDL 继续由 AutoMigrate 创建；migration 51 只负责历史数据归属回填和一致性检查。
+- Skill 日志从已有显式 Tenant、Conversation 和 AIAgent 解析归属；Agent 日志额外交叉核对 Message，并要求 Message 指向日志记录的同一 Conversation。所有非零证据必须指向同一有效 Tenant。
+- 引用缺失、Message/Conversation 不一致、跨租户 Conversation/AIAgent/Message 证据或已有 Tenant 与父记录冲突时，migration 整笔失败并回滚，不按名称、时间或日志内容猜测公司。
+- 完全没有父记录证据的历史日志归入 `legacy-default`。migration 可重复执行；已有正确 Tenant 保持不变，错误 Tenant 不会被静默重绑。
+
+### 运行时与读取边界
+
+- AI 回复总链路日志从当前 Conversation 继承 Tenant；写入前校验 Conversation、Message 和可选 AIAgent 均属于该 Tenant，并要求 Message 与 Conversation 匹配。
+- Skill 日志从运行时 AIAgent 继承 Tenant；写入前校验可选 Conversation 和 AIAgent 均属于该 Tenant。Skill 匹配、执行计划和错误记录语义不变。
+- `/dashboard/agent-run-logs` 的列表和详情先要求 Active Tenant，再按 `tenant_id` 查询；跨公司 ID 对当前公司表现为不存在。页面继续使用 `conversation.view`，因为该日志是会话回复链路的诊断视图，不增加重复的日志查看权限。
+- 首页“今日 Skill 失败”从日志自身 `tenant_id` 统计，不再依赖 Conversation 子查询，因此无 Conversation 的合法 Skill 运行也能归入正确公司，同时不会跨公司计数。
+
+### 契约、验证与合并边界
+
+- 没有 request/response DTO、enum、Gin 路由、WebSocket payload、页面入口或新权限点变化；账号仍只分配角色，角色仍在权限管理内绑定权限。
+- 双租户测试覆盖列表/详情隔离、运行时 Tenant 继承、跨租户父记录拒绝、Message/Conversation 不匹配拒绝、Dashboard 失败数隔离，以及 migration 的幂等、无证据兜底、冲突和缺失引用回滚。
+- migration 51 创建并再次提交前均需核对远端编号。当前 `origin/main@e67e207` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支此前最高 50，无版本冲突。
+- AI 分支与本批重叠 `internal/models/models.go` 和 `internal/ai/runtime/reply_runlog_service.go`。合并必须同时保留 AI 分支的 final action、资源、Graph 和已提交回复定位逻辑，以及本批 `TenantID: input.Conversation.TenantID`；禁止整文件选边。
+- 建议先合并 Tenant 字段、migration 51 和 tenant-aware repository/service，再逐方法重放 AI 分支运行日志增强。回滚代码时已回填的 TenantID 不应写回 0；恢复全局日志查询会重新产生跨公司审计泄露风险。

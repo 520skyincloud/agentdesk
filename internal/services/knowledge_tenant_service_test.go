@@ -102,6 +102,9 @@ func TestDashboardOverviewUsesActiveTenant(t *testing.T) {
 		&models.KnowledgeRetrieveLog{TenantID: adminA.ActiveTenantID, KnowledgeBaseID: 1, Question: "A", CreatedAt: now},
 		&models.KnowledgeRetrieveLog{TenantID: adminB.ActiveTenantID, KnowledgeBaseID: 2, Question: "B1", CreatedAt: now},
 		&models.KnowledgeRetrieveLog{TenantID: adminB.ActiveTenantID, KnowledgeBaseID: 2, Question: "B2", CreatedAt: now},
+		&models.SkillRunLog{TenantID: adminA.ActiveTenantID, ErrorMessage: "A failure", CreatedAt: now},
+		&models.SkillRunLog{TenantID: adminB.ActiveTenantID, ErrorMessage: "B failure 1", CreatedAt: now},
+		&models.SkillRunLog{TenantID: adminB.ActiveTenantID, ErrorMessage: "B failure 2", CreatedAt: now},
 	} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatalf("create dashboard fixture %T: %v", item, err)
@@ -112,14 +115,14 @@ func TestDashboardOverviewUsesActiveTenant(t *testing.T) {
 	if overviewA.Summary.TodayNewConversations != 1 || overviewA.Summary.PendingDispatchConversations != 0 {
 		t.Fatalf("tenant A conversation overview leaked: %+v", overviewA.Summary)
 	}
-	if overviewA.AIStats.EnabledChannels != 1 || overviewA.AIStats.EnabledAIAgents != 1 || overviewA.AIStats.TodayKnowledgeRetrieves != 1 {
+	if overviewA.AIStats.EnabledChannels != 1 || overviewA.AIStats.EnabledAIAgents != 1 || overviewA.AIStats.TodayKnowledgeRetrieves != 1 || overviewA.AIStats.TodaySkillRunFailCount != 1 {
 		t.Fatalf("tenant A AI overview leaked: %+v", overviewA.AIStats)
 	}
 	overviewB := DashboardService.GetOverview("7d", "zh-CN", adminB.ActiveTenantID)
 	if overviewB.Summary.TodayNewConversations != 2 || overviewB.Summary.PendingDispatchConversations != 2 {
 		t.Fatalf("tenant B conversation overview mismatch: %+v", overviewB.Summary)
 	}
-	if overviewB.AIStats.EnabledChannels != 1 || overviewB.AIStats.EnabledAIAgents != 1 || overviewB.AIStats.TodayKnowledgeRetrieves != 2 {
+	if overviewB.AIStats.EnabledChannels != 1 || overviewB.AIStats.EnabledAIAgents != 1 || overviewB.AIStats.TodayKnowledgeRetrieves != 2 || overviewB.AIStats.TodaySkillRunFailCount != 2 {
 		t.Fatalf("tenant B AI overview mismatch: %+v", overviewB.AIStats)
 	}
 }

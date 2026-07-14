@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/repositories"
 	"strings"
 
@@ -22,6 +23,10 @@ func (s *agentRunLogService) Get(id int64) *models.AgentRunLog {
 	return repositories.AgentRunLogRepository.Get(sqls.DB(), id)
 }
 
+func (s *agentRunLogService) GetInTenant(id, tenantID int64) *models.AgentRunLog {
+	return repositories.AgentRunLogRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *agentRunLogService) Take(where ...interface{}) *models.AgentRunLog {
 	return repositories.AgentRunLogRepository.Take(sqls.DB(), where...)
 }
@@ -38,6 +43,14 @@ func (s *agentRunLogService) FindPageByParams(params *params.QueryParams) (list 
 	return repositories.AgentRunLogRepository.FindPageByParams(sqls.DB(), params)
 }
 
+func (s *agentRunLogService) FindPageInTenant(queryParams *params.QueryParams, tenantID int64) (list []models.AgentRunLog, paging *sqls.Paging) {
+	if queryParams == nil || tenantID <= 0 {
+		return nil, &sqls.Paging{}
+	}
+	queryParams.Cnd.Eq("tenant_id", tenantID)
+	return repositories.AgentRunLogRepository.FindPageByParams(sqls.DB(), queryParams)
+}
+
 func (s *agentRunLogService) FindPageByCnd(cnd *sqls.Cnd) (list []models.AgentRunLog, paging *sqls.Paging) {
 	return repositories.AgentRunLogRepository.FindPageByCnd(sqls.DB(), cnd)
 }
@@ -47,7 +60,33 @@ func (s *agentRunLogService) Count(cnd *sqls.Cnd) int64 {
 }
 
 func (s *agentRunLogService) Create(t *models.AgentRunLog) error {
+	if err := s.validateCreate(t); err != nil {
+		return err
+	}
 	return repositories.AgentRunLogRepository.Create(sqls.DB(), t)
+}
+
+func (s *agentRunLogService) validateCreate(t *models.AgentRunLog) error {
+	if t == nil || t.TenantID <= 0 {
+		return errorsx.InvalidParam("Agent 运行日志缺少租户归属")
+	}
+	db := sqls.DB()
+	if t.ConversationID <= 0 {
+		return errorsx.InvalidParam("Agent 运行日志缺少会话")
+	}
+	if repositories.ConversationRepository.GetInTenant(db, t.ConversationID, t.TenantID) == nil {
+		return errorsx.InvalidParam("Agent 运行日志会话不属于当前租户")
+	}
+	if t.MessageID > 0 {
+		message := repositories.MessageRepository.GetInTenant(db, t.MessageID, t.TenantID)
+		if message == nil || message.ConversationID != t.ConversationID {
+			return errorsx.InvalidParam("Agent 运行日志消息与会话不匹配")
+		}
+	}
+	if t.AIAgentID > 0 && repositories.AIAgentRepository.GetInTenant(db, t.AIAgentID, t.TenantID) == nil {
+		return errorsx.InvalidParam("Agent 运行日志 AI Agent 不属于当前租户")
+	}
+	return nil
 }
 
 func (s *agentRunLogService) Update(t *models.AgentRunLog) error {

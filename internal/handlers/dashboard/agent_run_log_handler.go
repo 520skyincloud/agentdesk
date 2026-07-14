@@ -18,6 +18,11 @@ func AgentRunLogAnyList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	tenantCtx, err := services.AuthService.RequireTenantContext(ctx)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 
 	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "conversationId"},
@@ -39,7 +44,7 @@ func AgentRunLogAnyList(ctx *gin.Context) {
 	}
 	queryParams := params.NewQueryParams(ctx)
 	queryParams.Cnd = *cnd
-	list, paging := services.AgentRunLogService.FindPageByParams(queryParams)
+	list, paging := services.AgentRunLogService.FindPageInTenant(queryParams, tenantCtx.TenantID)
 	results := make([]response.AgentRunLogResponse, 0, len(list))
 	for _, item := range list {
 		results = append(results, builders.BuildAgentRunLog(&item))
@@ -56,8 +61,13 @@ func AgentRunLogGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	tenantCtx, err := services.AuthService.RequireTenantContext(ctx)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 
-	item := services.AgentRunLogService.Get(id)
+	item := services.AgentRunLogService.GetInTenant(id, tenantCtx.TenantID)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("Agent 运行日志不存在"))
 		return

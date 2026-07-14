@@ -71,7 +71,7 @@ func (s *dashboardService) GetOverview(rangeValue string, locale string, tenantI
 		return tx.Where("tenant_id = ? AND created_at >= ? AND answer_status IN ?", tenantID, todayStart, []int{2, 3, 4})
 	})
 	skillRunFailCount := repositories.DashboardRepository.CountSkillRunLogs(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("created_at >= ? AND error_message <> '' AND conversation_id IN (?)", todayStart, db.Model(&models.Conversation{}).Select("id").Where("tenant_id = ?", tenantID))
+		return tx.Where("tenant_id = ? AND created_at >= ? AND error_message <> ''", tenantID, todayStart)
 	})
 	aiHandoffCount := repositories.DashboardRepository.CountConversations(db, func(tx *gorm.DB) *gorm.DB {
 		return tx.Where("tenant_id = ? AND handoff_at >= ?", tenantID, todayStart)

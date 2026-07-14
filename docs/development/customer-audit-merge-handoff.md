@@ -1911,3 +1911,63 @@ git diff --check
 - `origin/codex/ai-billing@f2d2da4` 与本批重叠导航和双语资源，并修改 `admin.ts`；本批没有修改 `admin.ts`。合并时逐段保留 AI 分支 `replyIntentProfiles` 与本批 `channelSettings`，禁止整文件选边。
 - 本批没有触碰 AIAgent 模型、AIConfig、FastGPT、回复 runtime、token、usage 或计费。无 migration 版本冲突，无数据回滚边界。
 - 页面与导航可以独立回滚；Channel 列表脱敏和详情更新权限建议作为安全修复保留。若需要兼容只读详情，应新增不含密钥的只读 DTO，而不是恢复完整 `configJson` 暴露。
+
+## 第 35 批：AI/Skill 运行日志租户隔离（2026-07-14）
+
+### 目标与复用判断
+
+- 审计发现 `/dashboard/agent-run-logs` 已按现有 `conversation.view` 向公司账号开放，但 `AgentRunLog`、`SkillRunLog` 及后台列表/详情仍是全局数据，存在跨公司回复诊断日志泄露。
+- 复用现有日志表、Agent 运行日志页面、运行时写入服务和 Dashboard 指标，不新增页面、路由、DTO、enum、权限或 WebSocket payload。
+- `conversation.view` 继续控制 Agent 运行日志，因为该页面用于诊断会话回复链路；本批没有建立与会话查看职责重复的新权限。
+
+### 文件与契约变化
+
+```text
+internal/models/models.go
+internal/migration/000051_backfill_ai_run_log_tenants.go
+internal/migration/000051_backfill_ai_run_log_tenants_test.go
+internal/repositories/agent_run_log_repository.go
+internal/repositories/skill_run_log_repository.go
+internal/services/agent_run_log_service.go
+internal/services/skill_run_log_service.go
+internal/services/dashboard_service.go
+internal/services/ai_run_log_tenant_test.go
+internal/handlers/dashboard/agent_run_log_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+internal/ai/runtime/reply_runlog_service.go
+internal/ai/runtime/reply_runlog_service_test.go
+internal/ai/skills/runlog_service.go
+internal/ai/skills/runlog_tenant_test.go
+internal/ai/skills/log_test.go
+internal/services/knowledge_tenant_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- `AgentRunLog`、`SkillRunLog` 新增 `TenantID`；AutoMigrate 负责字段和索引，migration 51 从 Conversation、Message、AIAgent 及已有 Tenant 解析历史归属。
+- migration 对缺失引用、跨租户证据和 Message/Conversation 不一致执行事务级失败回滚；无任何父记录证据的日志才归 `legacy-default`，重复执行幂等。
+- Agent 日志创建要求正数 Tenant 和 Conversation，并校验可选 Message/AIAgent 同租户；回复 runtime 从 Conversation 写入 Tenant。Skill runtime 从 AIAgent 写入 Tenant，并在持久化前校验 Conversation/AIAgent 父记录。
+- Agent 日志后台列表/详情使用 Active Tenant；首页 Skill 失败数直接按日志 Tenant 统计。JSON 字段、接口路径、筛选参数和响应结构均不变。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go test -race ./internal/migration ./internal/services ./internal/ai/runtime ./internal/ai/skills -run 'Test(BackfillAIRunLogTenants|AgentRunLogServiceEnforcesTenantReadsAndWrites|DashboardOverviewUsesActiveTenant|ReplyRunLogStoresRequestID|SkillRunLogWriteEnforcesTenantParents|BuildRunLog)' -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+git diff --check
+```
+
+- Go 全量、专项 race、vet、71 项前端测试、typecheck、Next 生产构建和 diff 检查通过。
+- 测试覆盖双租户列表/详情、运行时继承、跨租户写入拒绝、Message/Conversation 关系校验、首页指标隔离，以及 migration 的幂等、legacy 兜底和冲突回滚。
+- `make generator` 已执行；生成器因既有 `TicketNoSequence` 注册产生了与手写并发序列 service 重名的无关未跟踪文件，该副产物已删除且未纳入提交，既有工单号实现未修改。
+
+### 并行分支、合并顺序与回滚
+
+- 开始和完成验证前均已 fetch。当前 `origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@3ea2678`；migration 51 与远端最高编号 20/33/50 不冲突。
+- AI 分支与本批同文件修改为 `models.go` 和 `reply_runlog_service.go`。合并先保留两个日志 Tenant 字段、migration 51、repository/service/handler，再逐方法合并回复日志；AI 分支的 final action、资源、Graph 和 committed reply 逻辑必须与本批 Conversation Tenant 继承同时存在。
+- 本批不改变模型调用、供应商、FastGPT、回复策略、token、usage 或计费口径。最终集成不要求本批先 rebase，但禁止对上述共享文件整文件选边。
+- 可回滚 tenant-aware 查询和运行时校验代码，但已回填 TenantID 不回写 0。删除字段、撤销 Active Tenant 条件或恢复全局详情会重新开放跨公司日志访问，不属于安全回滚方案。

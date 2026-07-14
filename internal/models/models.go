@@ -1197,6 +1197,7 @@ type SkillDefinition struct {
 // SkillRunLog 表示一次 Skill 运行过程的审计日志。
 type SkillRunLog struct {
 	ID                int64            `gorm:"primaryKey;autoIncrement"`                    // ID 为 Skill 运行日志主键。
+	TenantID          int64            `gorm:"type:bigint;not null;default:0;index"`        // TenantID 继承会话或运行时 AI Agent 的租户。
 	ConversationID    int64            `gorm:"type:bigint;not null;default:0;index"`        // ConversationID 为关联会话ID，无会话上下文时为0。
 	AIAgentID         int64            `gorm:"type:bigint;not null;default:0;index"`        // AIAgentID 为本次运行所属的 AI Agent ID。
 	AIConfigID        int64            `gorm:"type:bigint;not null;default:0;index"`        // AIConfigID 为本次运行实际使用的 AI 配置ID。
@@ -1218,6 +1219,7 @@ type SkillRunLog struct {
 // AgentRunLog 表示一次客服 Agent 自动运行的总链路日志。
 type AgentRunLog struct {
 	ID               int64     `gorm:"primaryKey;autoIncrement"`
+	TenantID         int64     `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID   int64     `gorm:"type:bigint;not null;default:0;index"`
 	MessageID        int64     `gorm:"type:bigint;not null;default:0;index"`
 	RequestID        string    `gorm:"type:varchar(128);not null;default:'';index"`

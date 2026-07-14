@@ -73,6 +73,33 @@ func TestChannelDetailRequiresUpdatePermission(t *testing.T) {
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
+func TestAgentRunLogHandlersRequireActiveTenant(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler func(*gin.Context)
+		detail  bool
+	}{
+		{name: "list", handler: AgentRunLogAnyList},
+		{name: "detail", handler: AgentRunLogGetBy, detail: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+				UserID:            132,
+				Username:          "platform-run-log-viewer",
+				IsPlatformAccount: true,
+				Permissions:       []string{constants.PermissionConversationView.Code},
+			})
+			if tt.detail {
+				ctx.Params = gin.Params{{Key: "id", Value: "1"}}
+			}
+
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
 func TestTenantManagementActionsRequireMatchingPermissions(t *testing.T) {
 	tests := []struct {
 		name       string
