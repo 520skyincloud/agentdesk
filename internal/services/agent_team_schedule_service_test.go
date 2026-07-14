@@ -135,22 +135,6 @@ func TestAgentTeamScheduleServiceCreateAllowsTodayEarlierThanCurrentTime(t *test
 	}
 }
 
-func TestAgentTeamScheduleServiceGenericCreateInheritsTenant(t *testing.T) {
-	db := setupAgentTeamScheduleTestDB(t)
-	createAgentTeamScheduleTestTeams(t, db)
-	tomorrow := time.Now().AddDate(0, 0, 1)
-	item := &models.AgentTeamSchedule{
-		TeamID: 1, StartAt: parseTestDateTime(t, formatTestDateTime(tomorrow, "09:00:00")),
-		EndAt: parseTestDateTime(t, formatTestDateTime(tomorrow, "18:00:00")), Status: enums.StatusOk,
-	}
-	if err := services.AgentTeamScheduleService.Create(item); err != nil {
-		t.Fatalf("generic Create() error = %v", err)
-	}
-	if item.TenantID != 101 {
-		t.Fatalf("generic schedule tenant = %d, want 101", item.TenantID)
-	}
-}
-
 func TestAgentTeamScheduleServiceCreateSupportsSquadAndRejectsCrossTeam(t *testing.T) {
 	db := setupAgentTeamScheduleTestDB(t)
 	createAgentTeamScheduleTestTeams(t, db)

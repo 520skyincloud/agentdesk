@@ -2330,3 +2330,14 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 本批只修改 AgentTeam service、新增契约测试并同步两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限码、WebSocket、前端或 AI/计费变化。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批文件无同文件修改，不要求 rebase 或 migration 排序。最终集成后该契约会继续扫描 AI 分支新增 service，阻止其绕过综合客服组领域入口。
 - 可独立回滚本批代码、测试和文档且无需数据库回滚；回滚会重新暴露无租户和无权限约束的综合客服组通用写方法，不建议回滚。
+
+## 81. 当前实施检查点：客服组排班写入口收口（2026-07-15）
+
+排班页面和 Handler 已分别通过 agentTeamSchedule.create/update/delete/batchGenerate 权限进入领域 service，并校验当前公司、综合客服组管理范围、小组归属、时间合法性和冲突；但 AgentTeamScheduleService 仍保留无操作者的通用 Create/Update/Updates/UpdateColumn/Delete，可绕过这些边界。唯一调用是验证旧通用 Create 自动继承 TenantID 的测试，正式 CreateAgentTeamSchedule 已覆盖相同继承语义。
+
+- 删除五个通用写方法和仅为该旁路存在的测试；保留所有查询、日历、单条领域动作和批量预览/生成接口，页面与 API 行为不变。
+- 删除不再被调用的 applyScheduleTenantDB；TenantID 继续由 buildScheduleModel/buildBatchScheduleCandidates 从当前公司内综合客服组派生，调用方不能自行指定。
+- 新增 AgentTeamSchedule 源码写契约，排班主表仅允许 CreateAgentTeamSchedule、UpdateAgentTeamSchedule、DeleteAgentTeamSchedule 和 BatchGenerate 写入。契约识别 CreateBatch、UpdatesInTenant、DeleteInTenant、通用 repository/service、GORM 模型写和原始 SQL。
+- 聚焦排班 race、完整 services、全仓 Go、go vet 和 diff 检查通过；单条创建/更新/删除、批量预览/生成、小组归属与冲突回归均通过。
+- 本批修改排班 service 与测试、新增写契约并同步两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限码、WebSocket、前端、消息/会话运行时或 AI/计费变化。
+- `origin/codex/ai-billing@f2d2da4` 不修改本批文件，无同文件冲突、rebase 或 migration 排序要求。可独立回滚且无需数据库回滚，但回滚会恢复无权限和无租户上下文的排班写旁路，不建议回滚。

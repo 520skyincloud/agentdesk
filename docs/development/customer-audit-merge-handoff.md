@@ -4074,3 +4074,34 @@ git diff --check
 - `/tmp/agentdesk-tenant-stats.db` 起初因服务早于第 71A/76A 批启动，缺少 UserRoleChangeLog 和 RolePermissionChangeLog；运行 `go run ./cmd/migration -config /tmp/agentdesk-tenant-stats.yaml` 后，只读审计通过 52/52 模型策略、66/66 表、128/128 关系、0 违规。审计前后 mtime `1784067966`、大小 `4935680` 字节均不变。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批四个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 79 批之后合并，最终重跑本契约。
 - 可回滚四个文件且无需数据库回滚，但会恢复综合客服组无约束通用写入口，不建议回滚。
+
+## 第 81 批：客服组排班写入口收口（2026-07-15）
+
+### 所有权与兼容边界
+
+- AgentTeamScheduleService 删除无操作者的 Create/Update/Updates/UpdateColumn/Delete，排班写入统一经过单条创建、更新、删除或批量生成领域动作。
+- 删除只服务于通用 Create 的 applyScheduleTenantDB 和对应测试。正式单条/批量路径继续从当前租户综合客服组派生 TenantID，并保留组长范围、小组归属、时间和冲突校验。
+- 新增源码契约识别 repository/service 通用写、CreateBatch、UpdatesInTenant、DeleteInTenant、GORM AgentTeamSchedule 和 t_agent_team_schedule 原始 SQL；仅四个领域动作获准写表。
+
+### 文件、验证与并行边界
+
+```text
+internal/services/agent_team_schedule_service.go
+internal/services/agent_team_schedule_service_test.go
+internal/services/agent_team_schedule_write_contract_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestAgentTeamScheduleRuntimeWritesStayBehindDomainServices|TestIsAgentTeamScheduleMutationCall|TestAgentTeamSchedule)' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限码、WebSocket、前端、消息/会话运行时、AI 回复、模型调用、token、usage 或计费变化。
+- 聚焦排班 race、完整 services、全仓 Go、go vet 和 diff 检查通过；写所有权契约与既有单条/批量排班测试全部通过。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批五个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 80 批后合并并重跑本契约。
+- 可回滚五个文件且无需数据库回滚，但会恢复排班无约束通用写入口，不建议回滚。

@@ -138,32 +138,6 @@ func (s *agentTeamScheduleService) FindCalendarSchedulesInTenant(req request.Age
 	return repositories.AgentTeamScheduleRepository.FindByTimeRangeInTenant(sqls.DB(), startAtValue, endAtValue, req.TeamID, req.SquadID, tenantID), nil
 }
 
-func (s *agentTeamScheduleService) Create(t *models.AgentTeamSchedule) error {
-	if err := s.applyScheduleTenantDB(sqls.DB(), t); err != nil {
-		return err
-	}
-	return repositories.AgentTeamScheduleRepository.Create(sqls.DB(), t)
-}
-
-func (s *agentTeamScheduleService) Update(t *models.AgentTeamSchedule) error {
-	if err := s.applyScheduleTenantDB(sqls.DB(), t); err != nil {
-		return err
-	}
-	return repositories.AgentTeamScheduleRepository.Update(sqls.DB(), t)
-}
-
-func (s *agentTeamScheduleService) Updates(id int64, columns map[string]interface{}) error {
-	return repositories.AgentTeamScheduleRepository.Updates(sqls.DB(), id, columns)
-}
-
-func (s *agentTeamScheduleService) UpdateColumn(id int64, name string, value interface{}) error {
-	return repositories.AgentTeamScheduleRepository.UpdateColumn(sqls.DB(), id, name, value)
-}
-
-func (s *agentTeamScheduleService) Delete(id int64) {
-	repositories.AgentTeamScheduleRepository.Delete(sqls.DB(), id)
-}
-
 func (s *agentTeamScheduleService) CreateAgentTeamSchedule(req request.CreateAgentTeamScheduleRequest, operator *dto.AuthPrincipal) (*models.AgentTeamSchedule, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
@@ -586,21 +560,6 @@ func (s *agentTeamScheduleService) validateScheduleSquadDB(db *gorm.DB, teamID, 
 	if team == nil || team.TenantID <= 0 || squad.TenantID != team.TenantID {
 		return errorsx.InvalidParam("客服小组与综合客服组的接入公司不一致")
 	}
-	return nil
-}
-
-func (s *agentTeamScheduleService) applyScheduleTenantDB(db *gorm.DB, item *models.AgentTeamSchedule) error {
-	if item == nil {
-		return errorsx.InvalidParam("客服组排班不能为空")
-	}
-	team := repositories.AgentTeamRepository.Get(db, item.TeamID)
-	if team == nil || team.TenantID <= 0 {
-		return errorsx.InvalidParam("客服组不存在或尚未归属接入公司")
-	}
-	if err := s.validateScheduleSquadDB(db, item.TeamID, item.SquadID); err != nil {
-		return err
-	}
-	item.TenantID = team.TenantID
 	return nil
 }
 
