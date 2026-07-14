@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation"
 import { BellIcon, CheckCheckIcon } from "lucide-react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import { DashboardListPage } from "@/components/dashboard/list"
 import { useNotifications } from "@/components/notification-provider"
 import { Badge } from "@/components/ui/badge"
@@ -20,8 +21,10 @@ import { useI18n } from "@/i18n/provider"
 
 export default function DashboardNotificationsPage() {
   const t = useI18n()
+  const { session } = useAuth()
   const router = useRouter()
   const { refreshUnreadCount } = useNotifications()
+  const canUpdate = session?.permissions.includes("notification.update") ?? false
   const readStatusOptions: Array<{ value: NotificationReadStatus; label: string }> = [
     { value: "all", label: t("notification.all") },
     { value: "unread", label: t("notification.unread") },
@@ -29,16 +32,16 @@ export default function DashboardNotificationsPage() {
   ]
 
   async function openNotification(item: NotificationItem) {
-    try {
-      if (!item.readAt) {
+    if (!item.readAt && canUpdate) {
+      try {
         await markNotificationRead(item.id)
         await refreshUnreadCount()
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : t("notification.openFailed"))
       }
-      if (item.actionUrl) {
-        router.push(item.actionUrl)
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("notification.openFailed"))
+    }
+    if (item.actionUrl) {
+      router.push(item.actionUrl)
     }
   }
 
@@ -68,7 +71,7 @@ export default function DashboardNotificationsPage() {
         },
       ]}
       fetchList={fetchNotifications}
-      renderToolbarActions={({ result, reload }) => (
+      renderToolbarActions={({ result, reload }) => canUpdate ? (
         <Button
           variant="outline"
           onClick={() => void markAllRead(reload)}
@@ -77,7 +80,7 @@ export default function DashboardNotificationsPage() {
           <CheckCheckIcon />
           {t("notification.markAllRead")}
         </Button>
-      )}
+      ) : null}
       renderContent={({ result, loading }) =>
         result.results.length > 0 ? (
           <div className="space-y-2 p-2">

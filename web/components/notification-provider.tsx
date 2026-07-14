@@ -54,23 +54,36 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   const [realtimeStatus, setRealtimeStatus] =
     useState<RealtimeConnectionStatus>("disconnected")
   const currentUserIdRef = useRef(session?.user.id ?? readSession()?.user.id ?? 0)
+  const canView = session?.permissions.includes("notification.view") ?? false
+  const canUpdate = session?.permissions.includes("notification.update") ?? false
 
   const refreshUnreadCount = useCallback(async () => {
+    if (!canView) {
+      setUnreadCount(0)
+      return
+    }
     const result = await fetchNotificationUnreadCount()
     setUnreadCount(result.unreadCount)
-  }, [])
+  }, [canView])
 
   const markReadAndNavigate = useCallback(
     async (notification: NotificationItem) => {
-      if (!notification.readAt) {
-        await markNotificationRead(notification.id)
-        setUnreadCount((current) => Math.max(0, current - 1))
+      if (!notification.readAt && canUpdate) {
+        try {
+          await markNotificationRead(notification.id)
+          setUnreadCount((current) => Math.max(0, current - 1))
+        } finally {
+          if (notification.actionUrl) {
+            router.push(notification.actionUrl)
+          }
+        }
+        return
       }
       if (notification.actionUrl) {
         router.push(notification.actionUrl)
       }
     },
-    [router]
+    [canUpdate, router]
   )
 
   useEffect(() => {
@@ -84,6 +97,10 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   }, [refreshUnreadCount, session?.activeTenantId, session?.user.id])
 
   useEffect(() => {
+    if (!canView) {
+      setRealtimeStatus("disconnected")
+      return
+    }
     const realtime = createRealtimeConnectionManager({
       createSocket: () => new WebSocket(createNotificationWebSocketUrl()),
       canReconnect: () => Boolean(readSession()?.accessToken),
@@ -141,7 +158,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     return () => {
       realtime.disconnect()
     }
-  }, [locale, markReadAndNavigate, refreshUnreadCount, session?.accessToken, session?.activeTenantId, t])
+  }, [canView, locale, markReadAndNavigate, refreshUnreadCount, session?.accessToken, session?.activeTenantId, t])
 
   const value = useMemo<NotificationContextValue>(
     () => ({

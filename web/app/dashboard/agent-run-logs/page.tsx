@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { SearchIcon } from "lucide-react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import { DashboardListPage } from "@/components/dashboard/list"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -92,6 +93,8 @@ function actionBadgeVariant(action: string) {
 
 export default function DashboardAgentRunLogsPage() {
   const t = useI18n()
+  const { session } = useAuth()
+  const canViewAIAgents = session?.permissions.includes("aiAgent.view") ?? false
   const [detailOpen, setDetailOpen] = useState(false)
   const [activeLogId, setActiveLogId] = useState<number | null>(null)
   const [aiAgents, setAiAgents] = useState<AIAgent[]>([])
@@ -111,6 +114,9 @@ export default function DashboardAgentRunLogsPage() {
   )
 
   useEffect(() => {
+    if (!canViewAIAgents) {
+      return
+    }
     async function loadAIAgents() {
       try {
         const data = await fetchAIAgentsAll()
@@ -120,7 +126,7 @@ export default function DashboardAgentRunLogsPage() {
       }
     }
     void loadAIAgents()
-  }, [t])
+  }, [canViewAIAgents, t])
 
   return (
     <>
@@ -184,18 +190,20 @@ export default function DashboardAgentRunLogsPage() {
             emptyText: t("agentRunLog.emptyStatus"),
             className: "min-w-0",
           },
-          {
-            name: "aiAgentId",
-            label: t("agentRunLog.selectAgent"),
-            type: "select",
-            defaultValue: "all",
-            allValue: "all",
-            options: aiAgentOptions,
-            placeholder: t("agentRunLog.selectAgent"),
-            searchPlaceholder: t("agentRunLog.searchAgent"),
-            emptyText: t("agentRunLog.emptyAgent"),
-            className: "min-w-0",
-          },
+          ...(canViewAIAgents
+            ? [{
+                name: "aiAgentId",
+                label: t("agentRunLog.selectAgent"),
+                type: "select" as const,
+                defaultValue: "all",
+                allValue: "all",
+                options: aiAgentOptions,
+                placeholder: t("agentRunLog.selectAgent"),
+                searchPlaceholder: t("agentRunLog.searchAgent"),
+                emptyText: t("agentRunLog.emptyAgent"),
+                className: "min-w-0",
+              }]
+            : []),
         ]}
         fetchList={fetchAgentRunLogs}
         renderContent={({ result, loading }) =>

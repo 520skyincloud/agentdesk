@@ -2451,3 +2451,50 @@ git diff --check
 - 开始前已 fetch。`origin/codex/ai-billing@f2d2da4` 不修改两个页面或测试，无 model/migration/共享 API 影响，不需要 rebase。
 - 本批不修改设备同步协议、企微员工号运行时、AI 回复、模型、token、usage 或计费。
 - 页面和测试可独立回滚，无数据回滚；后端平台防线必须保留。门店工作台仍是静态占位，知识库动作显隐待 AI 分支合并后处理。
+
+## 第 46 批：通知只读流程与运行日志辅助筛选（2026-07-14）
+
+### 目标与复用判断
+
+- 通知中心已有 `notification.view/update`，但页面和全局 Provider 默认把打开通知与标记已读绑定，导致只有 view 的账号点击未读通知时因更新 403 而无法导航。
+- Agent 运行日志主体属于会话审计视图，页面却无条件加载 AI Agent 列表；只有 `conversation.view` 而没有 `aiAgent.view` 的账号会因可选筛选接口 403 影响页面。
+- 本批复用现有权限并拆清主页面与辅助能力，不新增通知跳转权限、运行日志专属 Agent 权限或角色硬编码。
+
+### 文件与契约
+
+```text
+web/app/dashboard/notifications/page.tsx
+web/app/dashboard/notifications/action-permissions.test.mjs
+web/components/notification-provider.tsx
+web/app/dashboard/agent-run-logs/page.tsx
+web/app/dashboard/agent-run-logs/action-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 通知页面由 `notification.update` 控制单条/全部已读；通知业务跳转始终可用。Provider 在无 `notification.view` 时跳过未读 API 和 WebSocket，在无 update 时保留 Toast 跳转。
+- 有 update 但标记已读失败时，Provider 仍在 `finally` 中执行跳转；列表页同样把导航从更新请求的异常路径中解耦。
+- 运行日志只在 `aiAgent.view` 下请求并显示 AI Agent 筛选；主体日志列表与其他筛选保持可用。
+- 没有后端、model、AutoMigrate、DML migration、DTO、enum、API、路由、WebSocket payload、权限常量、导航或统一响应变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/notifications/page.tsx components/notification-provider.tsx app/dashboard/agent-run-logs/page.tsx
+git diff --check
+```
+
+- 全量 Go、vet、94 项前端回归、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。
+- Node 测试仅保留既有 typeless package warning；目标 ESLint 无 error/warning。
+- 新增源码契约测试固定通知 view/update 分界、更新失败不阻断跳转，以及运行日志 AI Agent 筛选的辅助权限。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch。`origin/codex/ai-billing@f2d2da4` 不修改本批页面、Provider 或测试，无共享契约、同文件和 migration 冲突，不需要 rebase。
+- 本批不修改 AI 回复 runtime、模型供应商、token、usage、计费或 ReplyIntentConfig。运行日志只改变可选筛选数据加载，不改变日志生成和查询语义。
+- 页面、Provider 和测试可独立回滚，无数据回滚；回滚会恢复通知只读跳转失败和运行日志辅助接口 403。

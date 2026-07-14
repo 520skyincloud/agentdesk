@@ -1699,3 +1699,27 @@ git diff --check
 - 全量 Go、vet、92 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；新增测试固定平台身份与 update/sync 权限的组合边界。
 - `origin/codex/ai-billing@f2d2da4` 不修改两个平台页面或新增测试，无同文件和 migration 冲突，不需要 rebase。
 - 本批可独立回滚页面与测试且无需数据回滚；回滚不会绕过后端，但会重新让只读平台账号编辑表单并触发 403。
+
+## 46. 当前实施检查点：通知只读流程与运行日志辅助筛选（2026-07-14）
+
+本检查点继续按“页面主权限负责核心职责，辅助资源权限只控制可选信息”的规则核对通知中心和 Agent 运行日志。两个页面都复用权限管理中已有权限，不新增角色隐含能力或重复权限。
+
+### 通知查看与已读边界
+
+- `notification.view` 控制通知列表、未读数请求和通知 WebSocket。没有查看权限时，Provider 不再请求未读接口或建立实时连接，并将本地未读数归零。
+- `notification.update` 只控制单条标记已读和全部标记已读；只读账号仍可点击带 `actionUrl` 的通知进入目标页面，导航不依赖更新权限。
+- 实时通知 Toast 的跳转遵循相同边界：有 update 时先尝试标记已读，无 update 时直接导航；标记已读失败也不能阻断用户进入通知指向的业务页面。
+- 通知列表保留筛选、刷新、内容查看和业务跳转；缺少 update 时仅隐藏“全部已读”，不会把通知中心误变成不可用页面。
+
+### 运行日志辅助筛选
+
+- Agent 运行日志的主体列表仍由 `conversation.view` 提供，不要求用户额外具备 AI Agent 管理权限。
+- AI Agent 下拉筛选及其 `/ai-agent/list_all` 请求只在具备 `aiAgent.view` 时加载和显示；缺少该辅助权限时仍可按状态、动作、时间和关键词查看运行日志。
+- 该筛选不改变日志接口的数据范围和服务端租户隔离，只避免页面因无权读取 AI Agent 列表而出现无关 403。
+
+### 契约、验证与合并
+
+- 没有后端、model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket payload、权限常量、导航或 JsonResult 变化；不修改 AI 回复、模型、token、usage 或计费语义。
+- 全量 Go、vet、94 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；新增测试固定通知 view/update 分界、跳转独立性和运行日志的 `aiAgent.view` 可选筛选。
+- `origin/codex/ai-billing@f2d2da4` 不修改本批页面、Provider 或测试，无同文件和 migration 冲突，不需要 rebase。
+- 本批可独立回滚前端与测试且无需数据回滚；回滚会重新使只读通知无法可靠跳转，并让无 `aiAgent.view` 的运行日志页面调用无权接口。
