@@ -26,6 +26,13 @@ func (r *knowledgeDocumentRepository) Get(db *gorm.DB, id int64) *models.Knowled
 	return ret
 }
 
+func (r *knowledgeDocumentRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.KnowledgeDocument {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *knowledgeDocumentRepository) Take(db *gorm.DB, where ...interface{}) *models.KnowledgeDocument {
 	ret := &models.KnowledgeDocument{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -94,6 +101,13 @@ func (r *knowledgeDocumentRepository) Updates(db *gorm.DB, id int64, columns map
 	return
 }
 
+func (r *knowledgeDocumentRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.KnowledgeDocument{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *knowledgeDocumentRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.KnowledgeDocument{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return
@@ -111,8 +125,25 @@ func (r *knowledgeDocumentRepository) FindByIDs(db *gorm.DB, ids []int64) (list 
 	return
 }
 
+func (r *knowledgeDocumentRepository) FindByIDsInTenant(db *gorm.DB, ids []int64, tenantID int64) (list []models.KnowledgeDocument) {
+	if len(ids) == 0 || tenantID <= 0 {
+		return nil
+	}
+	db.Where("id IN ? AND tenant_id = ?", ids, tenantID).Find(&list)
+	return
+}
+
 func (r *knowledgeDocumentRepository) CountByKnowledgeBaseID(db *gorm.DB, knowledgeBaseID int64) int64 {
 	var count int64
 	db.Model(&models.KnowledgeDocument{}).Where("knowledge_base_id = ?", knowledgeBaseID).Count(&count)
+	return count
+}
+
+func (r *knowledgeDocumentRepository) CountByKnowledgeBaseIDInTenant(db *gorm.DB, knowledgeBaseID, tenantID int64) int64 {
+	if knowledgeBaseID <= 0 || tenantID <= 0 {
+		return 0
+	}
+	var count int64
+	db.Model(&models.KnowledgeDocument{}).Where("knowledge_base_id = ? AND tenant_id = ?", knowledgeBaseID, tenantID).Count(&count)
 	return count
 }

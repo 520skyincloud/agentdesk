@@ -26,6 +26,13 @@ func (r *knowledgeBaseRepository) Get(db *gorm.DB, id int64) *models.KnowledgeBa
 	return ret
 }
 
+func (r *knowledgeBaseRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.KnowledgeBase {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *knowledgeBaseRepository) Take(db *gorm.DB, where ...interface{}) *models.KnowledgeBase {
 	ret := &models.KnowledgeBase{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -82,11 +89,32 @@ func (r *knowledgeBaseRepository) Updates(db *gorm.DB, id int64, columns map[str
 	return
 }
 
+func (r *knowledgeBaseRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.KnowledgeBase{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *knowledgeBaseRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.KnowledgeBase{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return
 }
 
+func (r *knowledgeBaseRepository) UpdateColumnInTenant(db *gorm.DB, id, tenantID int64, name string, value any) error {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.KnowledgeBase{}).Where("id = ? AND tenant_id = ?", id, tenantID).UpdateColumn(name, value).Error
+}
+
 func (r *knowledgeBaseRepository) Delete(db *gorm.DB, id int64) {
 	db.Delete(&models.KnowledgeBase{}, "id = ?", id)
+}
+
+func (r *knowledgeBaseRepository) DeleteInTenant(db *gorm.DB, id, tenantID int64) error {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Delete(&models.KnowledgeBase{}, "id = ? AND tenant_id = ?", id, tenantID).Error
 }

@@ -30,11 +30,11 @@ func KnowledgeCandidateAnyList(ctx *gin.Context) {
 	list, paging := services.KnowledgeCandidateService.FindPageByCnd(cnd)
 	results := builders.BuildKnowledgeCandidateList(list)
 	for i := range results {
-		if store := services.StoreService.Get(results[i].StoreID); store != nil {
+		if store := services.StoreService.GetInTenant(results[i].StoreID, operator.ActiveTenantID); store != nil {
 			results[i].StoreCode = store.StoreCode
 			results[i].StoreName = store.Name
 		}
-		if kb := services.KnowledgeBaseService.Get(results[i].KnowledgeBaseID); kb != nil {
+		if kb := services.KnowledgeBaseService.GetForOperator(results[i].KnowledgeBaseID, operator); kb != nil {
 			results[i].KnowledgeBaseName = kb.Name
 		}
 	}
@@ -112,7 +112,8 @@ func KnowledgeCandidatePostBatch_reject(ctx *gin.Context) {
 }
 
 func KnowledgeCandidatePostQuality_check(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -121,7 +122,7 @@ func KnowledgeCandidatePostQuality_check(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	ret, err := services.KnowledgeCandidateService.QualityCheck(req.IDs)
+	ret, err := services.KnowledgeCandidateService.QualityCheck(req.IDs, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

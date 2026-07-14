@@ -26,6 +26,13 @@ func (r *knowledgeChunkRepository) Get(db *gorm.DB, id int64) *models.KnowledgeC
 	return ret
 }
 
+func (r *knowledgeChunkRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.KnowledgeChunk {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *knowledgeChunkRepository) Take(db *gorm.DB, where ...interface{}) *models.KnowledgeChunk {
 	ret := &models.KnowledgeChunk{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -109,8 +116,24 @@ func (r *knowledgeChunkRepository) FindByDocumentID(db *gorm.DB, documentID int6
 	return
 }
 
+func (r *knowledgeChunkRepository) FindByDocumentIDInTenant(db *gorm.DB, documentID, tenantID int64) (list []models.KnowledgeChunk) {
+	if documentID <= 0 || tenantID <= 0 {
+		return nil
+	}
+	db.Where("document_id = ? AND tenant_id = ?", documentID, tenantID).Order("chunk_no asc").Find(&list)
+	return
+}
+
 func (r *knowledgeChunkRepository) FindByFaqID(db *gorm.DB, faqID int64) (list []models.KnowledgeChunk) {
 	db.Where("faq_id = ?", faqID).Order("chunk_no asc").Find(&list)
+	return
+}
+
+func (r *knowledgeChunkRepository) FindByFaqIDInTenant(db *gorm.DB, faqID, tenantID int64) (list []models.KnowledgeChunk) {
+	if faqID <= 0 || tenantID <= 0 {
+		return nil
+	}
+	db.Where("faq_id = ? AND tenant_id = ?", faqID, tenantID).Order("chunk_no asc").Find(&list)
 	return
 }
 
@@ -119,6 +142,14 @@ func (r *knowledgeChunkRepository) FindByVectorIDs(db *gorm.DB, vectorIDs []stri
 		return nil
 	}
 	db.Where("vector_id IN ?", vectorIDs).Find(&list)
+	return
+}
+
+func (r *knowledgeChunkRepository) FindByVectorIDsInTenant(db *gorm.DB, vectorIDs []string, tenantID int64) (list []models.KnowledgeChunk) {
+	if len(vectorIDs) == 0 || tenantID <= 0 {
+		return nil
+	}
+	db.Where("vector_id IN ? AND tenant_id = ?", vectorIDs, tenantID).Find(&list)
 	return
 }
 

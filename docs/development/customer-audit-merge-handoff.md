@@ -1469,3 +1469,61 @@ git diff --check
 - `origin/codex/ai-billing@f2d2da4` 同文件为 `models.go`、`media_understanding_service.go`、`message_service_test.go`、`wxwork_protocol_service.go` 和 `wxwork_protocol_service_test.go`。
 - 建议先合并 SyncState 字段/migration 47 与 repository/service tenant 原语，再逐方法合并协议 ref/voice 调用，最后重放 AI 分支 usage capture 和回复增强测试。不得整文件选边。
 - 可回滚 KF/CLI 运行时调用和新增测试，但不得删除已执行的 TenantID 字段、migration 47 记录或把冲突/孤立游标归 legacy。回滚隔离会重新暴露跨租户 outbox 风险，替代方案上线前公开注册保持关闭。
+
+## 35. 多租户阶段 4J/6F：知识域、首页指标与本地向量隔离（2026-07-14）
+
+### 目标与完成结果
+
+- 8 个现有知识实体增加 TenantID；migration 48 依据 Store、WxWorkProtocolInstance、ConversationRouteState、Conversation、KnowledgeBase 和非平台 User 的真实引用回填，冲突/缺失引用整笔回滚，无证据旧知识库归 legacy，重复执行幂等。
+- Dashboard 知识库、文档、FAQ、候选和检索日志按 ActiveTenantID 与客服组范围共同隔离；详情、写动作、排序、索引、调试、审核、导出和员工号绑定不再接受其他公司 ID。
+- Candidate 自动生成、RetrieveLog/Hit 写入、Chunk 生成/替换/删除和索引状态写回均继承并校验 Tenant。
+- Qdrant point payload 增加 `tenant_id`，查询强制 `tenant_id + knowledge_base_id`，缺少 Tenant 时 fail closed；关系库 hydrate 再按 Tenant 读取知识对象，混合租户检索报错。
+- 首页总览原先为全平台统计，本批同步修正为当前公司；AI Agent 数暂按当前公司 Channel 引用，Skill 失败数按关联 Conversation Tenant。
+- migration 将 Document/FAQ 标为 pending，提醒历史向量必须重建，避免旧无 Tenant payload 继续参与召回。
+
+### 主要文件与共享契约
+
+```text
+internal/models/models.go
+internal/migration/000048_backfill_knowledge_domain_tenants.go
+internal/migration/000048_backfill_knowledge_domain_tenants_test.go
+internal/repositories/knowledge_*_repository.go
+internal/repositories/dashboard_repository.go
+internal/services/knowledge_*_service.go
+internal/services/knowledge_tenant_service_test.go
+internal/services/agent_team_scope_service.go
+internal/services/dashboard_service.go
+internal/services/wx_work_protocol_instance_service.go
+internal/handlers/dashboard/knowledge_*_handler.go
+internal/handlers/dashboard/dashboard_handler.go
+internal/handlers/dashboard/wxwork_protocol_instance_handler.go
+internal/ai/rag/index*.go
+internal/ai/rag/retrieve*.go
+internal/ai/rag/vectordb/payload.go
+internal/ai/rag/vectordb/qdrant.go
+internal/ai/rag/vectordb/qdrant_test.go
+```
+
+- 新增共享字段：8 个知识实体的 TenantID；新增 DML migration 48；Qdrant payload/filter 增加内部 tenant 字段。
+- 没有前端 JSON DTO、enum、Gin 路由、WebSocket payload、新权限点或页面入口变化；首页 API 返回结构不变，仅统计口径改为当前公司。
+
+### 验证与部署边界
+
+```text
+go test ./internal/ai/rag/... ./internal/repositories ./internal/services ./internal/handlers/dashboard ./internal/migration -count=1
+go test -race ./internal/migration -run '^TestBackfillKnowledgeDomainTenants' -count=1
+go test -race ./internal/services -run 'Test(KnowledgeRuntimeTenantIsolation|DashboardOverviewUsesActiveTenant)' -count=1
+go test ./... -run '^$' -count=1
+go vet ./...
+git diff --check
+```
+
+- 专项覆盖：完整父子回填与幂等、共享知识库冲突回滚、子实体显式冲突回滚、后台读写隔离、Candidate 三方冲突、RetrieveLog 跨租户拒绝、首页指标隔离、Qdrant Tenant filter/fail-closed 和混合租户检索拒绝。
+- migration 48 后必须触发每个有效知识库的 rebuild；重建前本地向量召回为空是预期行为，禁止移除 Tenant filter 兼容旧 point。
+- FastGPTDatasetJob、KnowledgeResourceGroup/Item、AI usage/run log、AIManualResumeTask 和 AIAgent/AIConfig Tenant 仍需与 AI 分支合并后完成；文件 URL 签名仍未完成，因此公开注册保持关闭。
+
+### 并行分支、合并顺序与回滚
+
+- 开始及提交前均已 fetch，`origin/codex/ai-billing@f2d2da4`。AI 分支同文件集中于 `models.go`、KnowledgeBase service/builder、RAG retrieve/log/answer 和前端 knowledge API；vectordb provider 当前无同文件修改。
+- 建议先合并本批字段/migration/repository 和 vectordb 契约，再逐方法合并 AI 分支 FastGPT/intent/usage 逻辑，最后补新增 Resource/Job/usage 模型 Tenant 并执行双租户 FastGPT 测试。
+- 可回滚后台 handler/service 和 Qdrant运行时代码，但不得删除已执行的 TenantID 字段、migration 48 历史或把冲突数据强行归 legacy。回滚 Qdrant Tenant filter 会重新开放跨租户向量风险，不得在多租户环境执行。

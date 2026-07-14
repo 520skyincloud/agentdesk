@@ -37,11 +37,27 @@ func (s *knowledgeCandidateService) Get(id int64) *models.KnowledgeCandidate {
 	return repositories.KnowledgeCandidateRepository.Get(sqls.DB(), id)
 }
 
+func (s *knowledgeCandidateService) GetForOperator(id int64, operator *dto.AuthPrincipal) *models.KnowledgeCandidate {
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil
+	}
+	item := repositories.KnowledgeCandidateRepository.GetInTenant(sqls.DB(), id, tenantID)
+	if item == nil || !s.canReviewCandidate(item, operator) {
+		return nil
+	}
+	return item
+}
+
 func (s *knowledgeCandidateService) FindPageByCnd(cnd *sqls.Cnd) ([]models.KnowledgeCandidate, *sqls.Paging) {
 	return repositories.KnowledgeCandidateRepository.FindPageByCnd(sqls.DB(), cnd)
 }
 
 func (s *knowledgeCandidateService) UpsertCandidate(storeID, knowledgeBaseID, conversationID int64, messageIDs []int64, source enums.KnowledgeCandidateSource, question, answer, summary, evidence string, confidence float64, createdBy string) (*models.KnowledgeCandidate, error) {
+	tenantID, err := s.resolveCandidateTenant(storeID, knowledgeBaseID, conversationID)
+	if err != nil {
+		return nil, err
+	}
 	question = strings.TrimSpace(question)
 	answer = strings.TrimSpace(answer)
 	if question == "" {
@@ -49,7 +65,7 @@ func (s *knowledgeCandidateService) UpsertCandidate(storeID, knowledgeBaseID, co
 	}
 	key := buildKnowledgeCandidateSimilarityKey(storeID, knowledgeBaseID, question)
 	now := time.Now()
-	if existing := repositories.KnowledgeCandidateRepository.Take(sqls.DB(), "similarity_key = ? AND store_id = ? AND knowledge_base_id = ? AND status <> ?", key, storeID, knowledgeBaseID, enums.KnowledgeCandidateStatusRejected); existing != nil {
+	if existing := repositories.KnowledgeCandidateRepository.Take(sqls.DB(), "tenant_id = ? AND similarity_key = ? AND store_id = ? AND knowledge_base_id = ? AND status <> ?", tenantID, key, storeID, knowledgeBaseID, enums.KnowledgeCandidateStatusRejected); existing != nil {
 		updates := map[string]any{
 			"frequency":        existing.Frequency + 1,
 			"updated_at":       now,
@@ -61,12 +77,13 @@ func (s *knowledgeCandidateService) UpsertCandidate(storeID, knowledgeBaseID, co
 		if evidence != "" {
 			updates["evidence_text"] = mergeEvidence(existing.EvidenceText, evidence)
 		}
-		if err := repositories.KnowledgeCandidateRepository.Updates(sqls.DB(), existing.ID, updates); err != nil {
+		if err := repositories.KnowledgeCandidateRepository.UpdatesInTenant(sqls.DB(), existing.ID, tenantID, updates); err != nil {
 			return nil, err
 		}
-		return s.Get(existing.ID), nil
+		return repositories.KnowledgeCandidateRepository.GetInTenant(sqls.DB(), existing.ID, tenantID), nil
 	}
 	item := &models.KnowledgeCandidate{
+		TenantID:        tenantID,
 		StoreID:         storeID,
 		KnowledgeBaseID: knowledgeBaseID,
 		ConversationID:  conversationID,
@@ -89,11 +106,62 @@ func (s *knowledgeCandidateService) UpsertCandidate(storeID, knowledgeBaseID, co
 	return item, nil
 }
 
+func (s *knowledgeCandidateService) resolveCandidateTenant(storeID, knowledgeBaseID, conversationID int64) (int64, error) {
+	tenantID := int64(0)
+	merge := func(resource string, resourceID, resourceTenantID int64) error {
+		if resourceID <= 0 {
+			return nil
+		}
+		if resourceTenantID <= 0 {
+			return errorsx.InvalidParam(resource + "缺少接入公司归属")
+		}
+		if tenantID == 0 {
+			tenantID = resourceTenantID
+			return nil
+		}
+		if tenantID != resourceTenantID {
+			return errorsx.InvalidParam("待归档问答的会话、门店与知识库归属不一致")
+		}
+		return nil
+	}
+	if conversationID > 0 {
+		conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
+		if conversation == nil {
+			return 0, errorsx.InvalidParam("会话不存在")
+		}
+		if err := merge("会话", conversation.ID, conversation.TenantID); err != nil {
+			return 0, err
+		}
+	}
+	if storeID > 0 {
+		store := repositories.StoreRepository.Get(sqls.DB(), storeID)
+		if store == nil {
+			return 0, errorsx.InvalidParam("门店不存在")
+		}
+		if err := merge("门店", store.ID, store.TenantID); err != nil {
+			return 0, err
+		}
+	}
+	if knowledgeBaseID > 0 {
+		knowledgeBase := repositories.KnowledgeBaseRepository.Get(sqls.DB(), knowledgeBaseID)
+		if knowledgeBase == nil {
+			return 0, errorsx.InvalidParam("知识库不存在")
+		}
+		if err := merge("知识库", knowledgeBase.ID, knowledgeBase.TenantID); err != nil {
+			return 0, err
+		}
+	}
+	if tenantID <= 0 {
+		return 0, errorsx.InvalidParam("待归档问答缺少接入公司归属")
+	}
+	return tenantID, nil
+}
+
 func (s *knowledgeCandidateService) Update(req request.UpdateKnowledgeCandidateRequest, operator *dto.AuthPrincipal) error {
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item := s.Get(req.ID)
+	item := s.GetForOperator(req.ID, operator)
 	if item == nil {
 		return errorsx.InvalidParam("待归档问答不存在")
 	}
@@ -104,7 +172,7 @@ func (s *knowledgeCandidateService) Update(req request.UpdateKnowledgeCandidateR
 	if strings.TrimSpace(req.Status) != "" {
 		status = enums.KnowledgeCandidateStatus(strings.TrimSpace(req.Status))
 	}
-	return repositories.KnowledgeCandidateRepository.Updates(sqls.DB(), item.ID, map[string]any{
+	return repositories.KnowledgeCandidateRepository.UpdatesInTenant(sqls.DB(), item.ID, item.TenantID, map[string]any{
 		"question":         strings.TrimSpace(req.Question),
 		"answer":           strings.TrimSpace(req.Answer),
 		"summary":          strings.TrimSpace(req.Summary),
@@ -133,7 +201,10 @@ func (s *knowledgeCandidateService) BatchReject(ids []int64, operator *dto.AuthP
 	return s.batchReview(ids, enums.KnowledgeCandidateStatusRejected, operator)
 }
 
-func (s *knowledgeCandidateService) QualityCheck(ids []int64) (*response.KnowledgeCandidateQualityCheckResponse, error) {
+func (s *knowledgeCandidateService) QualityCheck(ids []int64, operator *dto.AuthPrincipal) (*response.KnowledgeCandidateQualityCheckResponse, error) {
+	if _, err := requireActiveTenantID(operator, "知识进化候选"); err != nil {
+		return nil, err
+	}
 	ids = uniquePositiveInt64s(ids)
 	if len(ids) == 0 {
 		return nil, errorsx.InvalidParam("请选择待归档问答")
@@ -142,7 +213,7 @@ func (s *knowledgeCandidateService) QualityCheck(ids []int64) (*response.Knowled
 		Reports: make([]response.KnowledgeCandidateQualityReport, 0, len(ids)),
 	}
 	for _, id := range ids {
-		item := s.Get(id)
+		item := s.GetForOperator(id, operator)
 		if item == nil {
 			return nil, errorsx.InvalidParam("待归档问答不存在")
 		}
@@ -164,15 +235,23 @@ func (s *knowledgeCandidateService) AnalyzeConversation(conversationID int64, op
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
-	conversation := ConversationService.Get(conversationID)
+	tenantID, err := requireActiveTenantID(operator, "会话")
+	if err != nil {
+		return nil, err
+	}
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), conversationID, tenantID)
 	if conversation == nil {
 		return nil, errorsx.InvalidParam("会话不存在")
 	}
-	route := ConversationRouteService.GetByConversationID(conversationID)
+	if !AgentTeamScopeService.CanViewConversation(operator, conversationID) {
+		return nil, errorsx.Forbidden("无权限查看该会话")
+	}
+	route := ConversationRouteService.GetByConversationIDInTenant(conversationID, tenantID)
 	if route == nil || route.StoreID <= 0 || route.KnowledgeBaseID <= 0 {
 		return &response.KnowledgeCandidateAnalyzeResponse{Skipped: true, Reason: "会话未绑定门店或知识库，不能归档"}, nil
 	}
 	messages := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
 		Eq("conversation_id", conversationID).
 		In("message_type", []string{string(enums.IMMessageTypeText), string(enums.IMMessageTypeHTML), string(enums.IMMessageTypeVoice)}).
 		Desc("id").Limit(40))
@@ -319,7 +398,7 @@ func knowledgeDecisionName(decision string) string {
 }
 
 func (s *knowledgeCandidateService) MarkImported(id int64, operator *dto.AuthPrincipal) error {
-	item := s.Get(id)
+	item := s.GetForOperator(id, operator)
 	if item == nil {
 		return errorsx.InvalidParam("待归档问答不存在")
 	}
@@ -338,19 +417,19 @@ func (s *knowledgeCandidateService) MarkImported(id int64, operator *dto.AuthPri
 		updates["update_user_id"] = operator.UserID
 		updates["update_user_name"] = operator.Username
 	}
-	return repositories.KnowledgeCandidateRepository.Updates(sqls.DB(), item.ID, updates)
+	return repositories.KnowledgeCandidateRepository.UpdatesInTenant(sqls.DB(), item.ID, item.TenantID, updates)
 }
 
 func (s *knowledgeCandidateService) review(id int64, status enums.KnowledgeCandidateStatus, operator *dto.AuthPrincipal) error {
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item := s.Get(id)
+	item := s.GetForOperator(id, operator)
 	if item == nil {
 		return errorsx.InvalidParam("待归档问答不存在")
 	}
 	now := time.Now()
-	return repositories.KnowledgeCandidateRepository.Updates(sqls.DB(), item.ID, map[string]any{
+	return repositories.KnowledgeCandidateRepository.UpdatesInTenant(sqls.DB(), item.ID, item.TenantID, map[string]any{
 		"status":           status,
 		"review_user_id":   operator.UserID,
 		"review_user_name": operator.Username,
@@ -369,17 +448,22 @@ func (s *knowledgeCandidateService) batchReview(ids []int64, status enums.Knowle
 	if len(ids) == 0 {
 		return errorsx.InvalidParam("请选择待归档问答")
 	}
+	tenantID, err := requireActiveTenantID(operator, "知识进化候选")
+	if err != nil {
+		return err
+	}
+	scope := AgentTeamScopeService.Resolve(operator)
 	now := time.Now()
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		for _, id := range ids {
-			item := repositories.KnowledgeCandidateRepository.Get(ctx.Tx, id)
+			item := repositories.KnowledgeCandidateRepository.GetInTenant(ctx.Tx, id, tenantID)
 			if item == nil {
 				return errorsx.InvalidParam("待归档问答不存在")
 			}
-			if !s.canReviewCandidate(item, operator) {
+			if !canReviewCandidateInScope(item, tenantID, scope) {
 				return errorsx.Forbidden("无权限维护该门店知识进化候选")
 			}
-			if err := repositories.KnowledgeCandidateRepository.Updates(ctx.Tx, item.ID, map[string]any{
+			if err := repositories.KnowledgeCandidateRepository.UpdatesInTenant(ctx.Tx, item.ID, tenantID, map[string]any{
 				"status":           status,
 				"review_user_id":   operator.UserID,
 				"review_user_name": operator.Username,
@@ -399,7 +483,14 @@ func (s *knowledgeCandidateService) canReviewCandidate(item *models.KnowledgeCan
 	if item == nil || operator == nil {
 		return false
 	}
-	scope := AgentTeamScopeService.Resolve(operator)
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	return canReviewCandidateInScope(item, tenantID, AgentTeamScopeService.Resolve(operator))
+}
+
+func canReviewCandidateInScope(item *models.KnowledgeCandidate, tenantID int64, scope ManagedDataScope) bool {
+	if item == nil || item.TenantID <= 0 || item.TenantID != tenantID {
+		return false
+	}
 	if scope.Unrestricted {
 		return true
 	}
@@ -412,8 +503,9 @@ func (s *knowledgeCandidateService) canReviewCandidate(item *models.KnowledgeCan
 }
 
 func (s *knowledgeCandidateService) ExportWeekly(req request.ExportKnowledgeCandidateWeeklyRequest, operator *dto.AuthPrincipal) (*response.KnowledgeCandidateExportResponse, error) {
-	if operator == nil {
-		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "知识进化候选")
+	if err != nil {
+		return nil, err
 	}
 	year, week := req.Year, req.Week
 	if year <= 0 || week <= 0 {
@@ -427,6 +519,7 @@ func (s *knowledgeCandidateService) ExportWeekly(req request.ExportKnowledgeCand
 	if req.StoreID > 0 {
 		cnd.Eq("store_id", req.StoreID)
 	}
+	cnd = AgentTeamScopeService.ApplyKnowledgeCandidateFilter(cnd, operator)
 	list := repositories.KnowledgeCandidateRepository.Find(sqls.DB(), cnd)
 	if len(list) == 0 {
 		return &response.KnowledgeCandidateExportResponse{Count: 0}, nil
@@ -439,10 +532,10 @@ func (s *knowledgeCandidateService) ExportWeekly(req request.ExportKnowledgeCand
 	total := 0
 	for storeID, items := range byStore {
 		storeCode := fmt.Sprintf("store-%d", storeID)
-		if store := StoreService.Get(storeID); store != nil && strings.TrimSpace(store.StoreCode) != "" {
+		if store := StoreService.GetInTenant(storeID, tenantID); store != nil && strings.TrimSpace(store.StoreCode) != "" {
 			storeCode = strings.TrimSpace(store.StoreCode)
 		}
-		dir := filepath.Join("exports", "knowledge-candidates", storeCode)
+		dir := filepath.Join("exports", "knowledge-candidates", fmt.Sprintf("tenant-%d", tenantID), storeCode)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, err
 		}
@@ -462,7 +555,7 @@ func (s *knowledgeCandidateService) ExportWeekly(req request.ExportKnowledgeCand
 		total += len(items)
 		now := time.Now()
 		for _, item := range items {
-			_ = repositories.KnowledgeCandidateRepository.Updates(sqls.DB(), item.ID, map[string]any{
+			_ = repositories.KnowledgeCandidateRepository.UpdatesInTenant(sqls.DB(), item.ID, tenantID, map[string]any{
 				"status":           enums.KnowledgeCandidateStatusExported,
 				"exported_at":      now,
 				"updated_at":       now,
@@ -479,11 +572,15 @@ func (s *knowledgeCandidateService) ExportWeekly(req request.ExportKnowledgeCand
 }
 
 func (s *knowledgeCandidateService) ExtractFromResolvedConversation(conversationID int64, source enums.KnowledgeCandidateSource) (*models.KnowledgeCandidate, error) {
-	state := ConversationRouteService.GetByConversationID(conversationID)
+	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
+	if conversation == nil || conversation.TenantID <= 0 {
+		return nil, nil
+	}
+	state := ConversationRouteService.GetByConversationIDInTenant(conversationID, conversation.TenantID)
 	if state == nil {
 		return nil, nil
 	}
-	messages := MessageService.Find(sqls.NewCnd().Eq("conversation_id", conversationID).Asc("seq_no").Limit(60))
+	messages := MessageService.Find(sqls.NewCnd().Eq("tenant_id", conversation.TenantID).Eq("conversation_id", conversationID).Asc("seq_no").Limit(60))
 	extraction := buildKnowledgeCandidateExtraction(messages)
 	if !extraction.Eligible {
 		return nil, nil

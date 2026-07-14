@@ -37,22 +37,22 @@ func (r *dashboardRepository) ListConversations(db *gorm.DB, query func(tx *gorm
 	return list
 }
 
-func (r *dashboardRepository) ListEnabledAgentProfiles(db *gorm.DB) []models.AgentProfile {
+func (r *dashboardRepository) ListEnabledAgentProfiles(db *gorm.DB, tenantID int64) []models.AgentProfile {
 	var list []models.AgentProfile
-	db.Model(&models.AgentProfile{}).Where("status = ?", enums.StatusOk).Find(&list)
+	db.Model(&models.AgentProfile{}).Where("tenant_id = ? AND status = ?", tenantID, enums.StatusOk).Find(&list)
 	return list
 }
 
-func (r *dashboardRepository) ListEnabledAgentTeams(db *gorm.DB) []models.AgentTeam {
+func (r *dashboardRepository) ListEnabledAgentTeams(db *gorm.DB, tenantID int64) []models.AgentTeam {
 	var list []models.AgentTeam
-	db.Model(&models.AgentTeam{}).Where("status = ?", enums.StatusOk).Order("id asc").Find(&list)
+	db.Model(&models.AgentTeam{}).Where("tenant_id = ? AND status = ?", tenantID, enums.StatusOk).Order("id asc").Find(&list)
 	return list
 }
 
-func (r *dashboardRepository) ListActiveTeamSchedules(db *gorm.DB, startAt, endAt time.Time) []models.AgentTeamSchedule {
+func (r *dashboardRepository) ListActiveTeamSchedules(db *gorm.DB, tenantID int64, startAt, endAt time.Time) []models.AgentTeamSchedule {
 	var list []models.AgentTeamSchedule
 	db.Model(&models.AgentTeamSchedule{}).
-		Where("status = ? AND start_at <= ? AND end_at >= ?", enums.StatusOk, endAt, startAt).
+		Where("tenant_id = ? AND status = ? AND start_at <= ? AND end_at >= ?", tenantID, enums.StatusOk, endAt, startAt).
 		Find(&list)
 	return list
 }

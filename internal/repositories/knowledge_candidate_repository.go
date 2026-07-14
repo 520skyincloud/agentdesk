@@ -24,6 +24,13 @@ func (r *knowledgeCandidateRepository) Get(db *gorm.DB, id int64) *models.Knowle
 	return ret
 }
 
+func (r *knowledgeCandidateRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.KnowledgeCandidate {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *knowledgeCandidateRepository) Take(db *gorm.DB, where ...any) *models.KnowledgeCandidate {
 	ret := &models.KnowledgeCandidate{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -58,4 +65,11 @@ func (r *knowledgeCandidateRepository) Create(db *gorm.DB, t *models.KnowledgeCa
 
 func (r *knowledgeCandidateRepository) Updates(db *gorm.DB, id int64, columns map[string]any) error {
 	return db.Model(&models.KnowledgeCandidate{}).Where("id = ?", id).Updates(columns).Error
+}
+
+func (r *knowledgeCandidateRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.KnowledgeCandidate{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
 }

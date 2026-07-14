@@ -27,7 +27,7 @@ func (s *index) loadFAQByID(faqID int64) (*models.KnowledgeFAQ, error) {
 }
 
 func (s *index) loadDocumentKnowledgeBase(document models.KnowledgeDocument) (*models.KnowledgeBase, error) {
-	knowledgeBase := repositories.KnowledgeBaseRepository.Get(sqls.DB(), document.KnowledgeBaseID)
+	knowledgeBase := repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), document.KnowledgeBaseID, document.TenantID)
 	if knowledgeBase == nil {
 		return nil, fmt.Errorf("knowledge base not found: %d", document.KnowledgeBaseID)
 	}
@@ -35,7 +35,7 @@ func (s *index) loadDocumentKnowledgeBase(document models.KnowledgeDocument) (*m
 }
 
 func (s *index) loadFAQKnowledgeBase(faq models.KnowledgeFAQ) (*models.KnowledgeBase, error) {
-	knowledgeBase := repositories.KnowledgeBaseRepository.Get(sqls.DB(), faq.KnowledgeBaseID)
+	knowledgeBase := repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), faq.KnowledgeBaseID, faq.TenantID)
 	if knowledgeBase == nil {
 		return nil, fmt.Errorf("knowledge base not found: %d", faq.KnowledgeBaseID)
 	}

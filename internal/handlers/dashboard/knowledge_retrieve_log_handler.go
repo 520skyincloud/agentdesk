@@ -14,7 +14,8 @@ import (
 )
 
 func KnowledgeRetrieveLogAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -35,13 +36,12 @@ func KnowledgeRetrieveLogAnyList(ctx *gin.Context) {
 		cnd.Where("rerank_enabled = ?", rerankEnabled > 0)
 	}
 
-	queryParams := params.NewQueryParams(ctx)
-	queryParams.Cnd = *cnd
-	list, paging := services.KnowledgeRetrieveLogService.FindPageByParams(queryParams)
+	cnd = services.AgentTeamScopeService.ApplyKnowledgeChildFilter(cnd, operator)
+	list, paging := services.KnowledgeRetrieveLogService.FindPageInTenant(cnd, operator.ActiveTenantID)
 	results := make([]response.KnowledgeRetrieveLogResponse, 0, len(list))
 	for _, item := range list {
 		resp := builders.BuildKnowledgeRetrieveLog(&item)
-		if knowledgeBase := services.KnowledgeBaseService.Get(item.KnowledgeBaseID); knowledgeBase != nil {
+		if knowledgeBase := services.KnowledgeBaseService.GetForOperator(item.KnowledgeBaseID, operator); knowledgeBase != nil {
 			resp.KnowledgeBaseName = knowledgeBase.Name
 		}
 		results = append(results, resp)
@@ -54,23 +54,28 @@ func KnowledgeRetrieveLogGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 
-	logItem := services.KnowledgeRetrieveLogService.Get(id)
+	logItem := services.KnowledgeRetrieveLogService.GetInTenant(id, operator.ActiveTenantID)
 	if logItem == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("检索日志不存在"))
 		return
 	}
 
 	logResp := builders.BuildKnowledgeRetrieveLog(logItem)
-	if knowledgeBase := services.KnowledgeBaseService.Get(logItem.KnowledgeBaseID); knowledgeBase != nil {
+	if !services.KnowledgeBaseService.CanAccessKnowledgeBase(logItem.KnowledgeBaseID, operator) {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权限查看该检索日志"))
+		return
+	}
+	if knowledgeBase := services.KnowledgeBaseService.GetForOperator(logItem.KnowledgeBaseID, operator); knowledgeBase != nil {
 		logResp.KnowledgeBaseName = knowledgeBase.Name
 	}
 
-	hits := services.KnowledgeRetrieveLogService.FindHitsByRetrieveLogID(id)
+	hits := services.KnowledgeRetrieveLogService.FindHitsInTenant(id, operator.ActiveTenantID)
 	hitResults := make([]response.KnowledgeRetrieveHitResponse, 0, len(hits))
 	for _, item := range hits {
 		hitResults = append(hitResults, builders.BuildKnowledgeRetrieveHitResponse(&item))

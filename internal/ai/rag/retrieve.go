@@ -37,6 +37,10 @@ func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) (
 	if !ok {
 		return nil, trace, nil
 	}
+	tenantID, err := resolveRetrievableKnowledgeBaseTenant(retrievableKnowledgeBases)
+	if err != nil {
+		return nil, trace, err
+	}
 
 	localKnowledgeBases, fastGPTCloudKnowledgeBases := splitFastGPTCloudKnowledgeBases(retrievableKnowledgeBases)
 	results := make([]RetrieveResult, 0)
@@ -48,7 +52,7 @@ func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) (
 		}
 		applySearchTrace(trace, searchTrace)
 		if len(searchResults) > 0 {
-			localResults, hydrateMs := s.hydrateRetrieveResults(searchResults)
+			localResults, hydrateMs := s.hydrateRetrieveResults(searchResults, tenantID)
 			trace.HydrateMs = hydrateMs
 			results = append(results, localResults...)
 		}
@@ -66,6 +70,26 @@ func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) (
 	return results, trace, nil
 }
 
+func resolveRetrievableKnowledgeBaseTenant(knowledgeBases []models.KnowledgeBase) (int64, error) {
+	tenantID := int64(0)
+	for i := range knowledgeBases {
+		if knowledgeBases[i].TenantID <= 0 {
+			return 0, fmt.Errorf("knowledge base %d has no tenant", knowledgeBases[i].ID)
+		}
+		if tenantID == 0 {
+			tenantID = knowledgeBases[i].TenantID
+			continue
+		}
+		if tenantID != knowledgeBases[i].TenantID {
+			return 0, fmt.Errorf("knowledge retrieval cannot span multiple tenants")
+		}
+	}
+	if tenantID <= 0 {
+		return 0, fmt.Errorf("knowledge retrieval has no tenant")
+	}
+	return tenantID, nil
+}
+
 func extractChunkType(payload vectordb.ChunkPayload) string {
 	if payload.ChunkType != "" {
 		return payload.ChunkType
@@ -73,13 +97,14 @@ func extractChunkType(payload vectordb.ChunkPayload) string {
 	return string(enums.KnowledgeChunkTypeText)
 }
 
-func (s *retrieve) logEmptySearchDiagnostics(ctx context.Context, provider vectordb.Provider, collectionName string, vector []float32, topK int, scoreThreshold float32, knowledgeBaseIDs []int64, req RetrieveRequest) {
+func (s *retrieve) logEmptySearchDiagnostics(ctx context.Context, provider vectordb.Provider, collectionName string, vector []float32, topK int, scoreThreshold float32, tenantID int64, knowledgeBaseIDs []int64, req RetrieveRequest) {
 	rawResults, err := provider.Search(ctx, &vectordb.SearchRequest{
 		CollectionName: collectionName,
 		Vector:         vector,
 		TopK:           topK,
 		ScoreThreshold: 0,
 		Filter: &vectordb.SearchFilter{
+			TenantID:         tenantID,
 			KnowledgeBaseIDs: knowledgeBaseIDs,
 		},
 	})

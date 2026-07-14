@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"fmt"
 	"time"
 
 	"agent-desk/internal/models"
@@ -11,7 +12,11 @@ import (
 )
 
 func (s *index) markDocumentIndexPending(documentID int64) error {
-	return repositories.KnowledgeDocumentRepository.Updates(sqls.DB(), documentID, map[string]any{
+	document := repositories.KnowledgeDocumentRepository.Get(sqls.DB(), documentID)
+	if document == nil || document.TenantID <= 0 {
+		return fmt.Errorf("knowledge document %d is missing or has no tenant", documentID)
+	}
+	return repositories.KnowledgeDocumentRepository.UpdatesInTenant(sqls.DB(), documentID, document.TenantID, map[string]any{
 		"index_status": enums.KnowledgeDocumentIndexStatusPending,
 		"indexed_at":   nil,
 		"index_error":  "",
@@ -20,8 +25,12 @@ func (s *index) markDocumentIndexPending(documentID int64) error {
 }
 
 func (s *index) markDocumentIndexIndexed(documentID int64) error {
+	document := repositories.KnowledgeDocumentRepository.Get(sqls.DB(), documentID)
+	if document == nil || document.TenantID <= 0 {
+		return fmt.Errorf("knowledge document %d is missing or has no tenant", documentID)
+	}
 	now := time.Now()
-	return repositories.KnowledgeDocumentRepository.Updates(sqls.DB(), documentID, map[string]any{
+	return repositories.KnowledgeDocumentRepository.UpdatesInTenant(sqls.DB(), documentID, document.TenantID, map[string]any{
 		"index_status": enums.KnowledgeDocumentIndexStatusIndexed,
 		"indexed_at":   &now,
 		"index_error":  "",
@@ -30,7 +39,11 @@ func (s *index) markDocumentIndexIndexed(documentID int64) error {
 }
 
 func (s *index) markDocumentIndexFailed(documentID int64, err error) error {
-	return repositories.KnowledgeDocumentRepository.Updates(sqls.DB(), documentID, map[string]any{
+	document := repositories.KnowledgeDocumentRepository.Get(sqls.DB(), documentID)
+	if document == nil || document.TenantID <= 0 {
+		return fmt.Errorf("knowledge document %d is missing or has no tenant", documentID)
+	}
+	return repositories.KnowledgeDocumentRepository.UpdatesInTenant(sqls.DB(), documentID, document.TenantID, map[string]any{
 		"index_status": enums.KnowledgeDocumentIndexStatusFailed,
 		"index_error":  truncateIndexError(err),
 		"updated_at":   time.Now(),
@@ -41,8 +54,12 @@ func (s *index) markKnowledgeBaseDocumentsIndexPending(knowledgeBaseID int64, do
 	if len(documentIDs) == 0 {
 		return nil
 	}
+	knowledgeBase := repositories.KnowledgeBaseRepository.Get(sqls.DB(), knowledgeBaseID)
+	if knowledgeBase == nil || knowledgeBase.TenantID <= 0 {
+		return fmt.Errorf("knowledge base %d is missing or has no tenant", knowledgeBaseID)
+	}
 	return sqls.DB().Model(&models.KnowledgeDocument{}).
-		Where("knowledge_base_id = ?", knowledgeBaseID).
+		Where("knowledge_base_id = ? AND tenant_id = ?", knowledgeBaseID, knowledgeBase.TenantID).
 		Where("id IN ?", documentIDs).
 		Updates(map[string]any{
 			"index_status": enums.KnowledgeDocumentIndexStatusPending,
@@ -53,7 +70,11 @@ func (s *index) markKnowledgeBaseDocumentsIndexPending(knowledgeBaseID int64, do
 }
 
 func (s *index) markFAQIndexPending(faqID int64) error {
-	return repositories.KnowledgeFAQRepository.Updates(sqls.DB(), faqID, map[string]any{
+	faq := repositories.KnowledgeFAQRepository.Get(sqls.DB(), faqID)
+	if faq == nil || faq.TenantID <= 0 {
+		return fmt.Errorf("knowledge faq %d is missing or has no tenant", faqID)
+	}
+	return repositories.KnowledgeFAQRepository.UpdatesInTenant(sqls.DB(), faqID, faq.TenantID, map[string]any{
 		"index_status": enums.KnowledgeDocumentIndexStatusPending,
 		"indexed_at":   nil,
 		"index_error":  "",
@@ -62,8 +83,12 @@ func (s *index) markFAQIndexPending(faqID int64) error {
 }
 
 func (s *index) markFAQIndexIndexed(faqID int64) error {
+	faq := repositories.KnowledgeFAQRepository.Get(sqls.DB(), faqID)
+	if faq == nil || faq.TenantID <= 0 {
+		return fmt.Errorf("knowledge faq %d is missing or has no tenant", faqID)
+	}
 	now := time.Now()
-	return repositories.KnowledgeFAQRepository.Updates(sqls.DB(), faqID, map[string]any{
+	return repositories.KnowledgeFAQRepository.UpdatesInTenant(sqls.DB(), faqID, faq.TenantID, map[string]any{
 		"index_status": enums.KnowledgeDocumentIndexStatusIndexed,
 		"indexed_at":   &now,
 		"index_error":  "",
@@ -72,7 +97,11 @@ func (s *index) markFAQIndexIndexed(faqID int64) error {
 }
 
 func (s *index) markFAQIndexFailed(faqID int64, err error) error {
-	return repositories.KnowledgeFAQRepository.Updates(sqls.DB(), faqID, map[string]any{
+	faq := repositories.KnowledgeFAQRepository.Get(sqls.DB(), faqID)
+	if faq == nil || faq.TenantID <= 0 {
+		return fmt.Errorf("knowledge faq %d is missing or has no tenant", faqID)
+	}
+	return repositories.KnowledgeFAQRepository.UpdatesInTenant(sqls.DB(), faqID, faq.TenantID, map[string]any{
 		"index_status": enums.KnowledgeDocumentIndexStatusFailed,
 		"index_error":  truncateIndexError(err),
 		"updated_at":   time.Now(),

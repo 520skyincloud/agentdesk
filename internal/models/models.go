@@ -1008,6 +1008,7 @@ type StoreAIModelSetting struct {
 // KnowledgeBase 知识库主表。
 type KnowledgeBase struct {
 	ID                    int64        `gorm:"primaryKey;autoIncrement"`                           // ID 为知识库主键。
+	TenantID              int64        `gorm:"type:bigint;not null;default:0;index"`               // TenantID 为知识库所属接入公司。
 	Name                  string       `gorm:"type:varchar(100);not null;default:'';index"`        // Name 为知识库名称。
 	Description           string       `gorm:"type:text"`                                          // Description 为知识库描述。
 	KnowledgeType         string       `gorm:"type:varchar(20);not null;default:'document';index"` // KnowledgeType 为知识库类型：document/faq。
@@ -1028,6 +1029,7 @@ type KnowledgeBase struct {
 // KnowledgeDocument 知识文档主表。
 type KnowledgeDocument struct {
 	ID              int64                              `gorm:"primaryKey;autoIncrement"`                          // ID 为文档主键。
+	TenantID        int64                              `gorm:"type:bigint;not null;default:0;index"`              // TenantID 继承所属知识库。
 	KnowledgeBaseID int64                              `gorm:"type:bigint;not null;index"`                        // KnowledgeBaseID 为所属知识库ID。
 	Title           string                             `gorm:"type:varchar(255);not null;default:'';index"`       // Title 为文档标题。
 	ContentType     enums.KnowledgeDocumentContentType `gorm:"type:varchar(20);not null;default:'html'"`          // ContentType 为内容类型：html/markdown。
@@ -1043,6 +1045,7 @@ type KnowledgeDocument struct {
 // KnowledgeFAQ FAQ 条目主表。
 type KnowledgeFAQ struct {
 	ID               int64                              `gorm:"primaryKey;autoIncrement"`                          // ID 为 FAQ 主键。
+	TenantID         int64                              `gorm:"type:bigint;not null;default:0;index"`              // TenantID 继承所属知识库。
 	KnowledgeBaseID  int64                              `gorm:"type:bigint;not null;index"`                        // KnowledgeBaseID 为所属 FAQ 知识库 ID。
 	Question         string                             `gorm:"type:varchar(500);not null;default:'';index"`       // Question 为标准问题。
 	Answer           string                             `gorm:"type:text"`                                         // Answer 为标准答案。
@@ -1058,6 +1061,7 @@ type KnowledgeFAQ struct {
 // KnowledgeCandidate 是人工解决和 AI 未解答问题沉淀出的待归档问答。
 type KnowledgeCandidate struct {
 	ID              int64                          `gorm:"primaryKey;autoIncrement"`
+	TenantID        int64                          `gorm:"type:bigint;not null;default:0;index"`
 	StoreID         int64                          `gorm:"type:bigint;not null;default:0;index"`
 	KnowledgeBaseID int64                          `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID  int64                          `gorm:"type:bigint;not null;default:0;index"`
@@ -1083,6 +1087,7 @@ type KnowledgeCandidate struct {
 // KnowledgeChunk 切片元数据表。
 type KnowledgeChunk struct {
 	ID              int64        `gorm:"primaryKey;autoIncrement"`                    // ID 为切片主键。
+	TenantID        int64        `gorm:"type:bigint;not null;default:0;index"`        // TenantID 继承所属知识库。
 	KnowledgeBaseID int64        `gorm:"type:bigint;not null;index"`                  // KnowledgeBaseID 为知识库ID。
 	DocumentID      int64        `gorm:"type:bigint;not null;default:0;index"`        // DocumentID 为文档ID。
 	FaqID           int64        `gorm:"type:bigint;not null;default:0;index"`        // FaqID 为 FAQ ID。
@@ -1104,6 +1109,7 @@ type KnowledgeChunk struct {
 // KnowledgeRetrieveLog 检索日志表。
 type KnowledgeRetrieveLog struct {
 	ID                 int64     `gorm:"primaryKey;autoIncrement"`                               // ID 为日志主键。
+	TenantID           int64     `gorm:"type:bigint;not null;default:0;index"`                   // TenantID 为本次检索所属接入公司。
 	KnowledgeBaseID    int64     `gorm:"type:bigint;not null;index"`                             // KnowledgeBaseID 为知识库ID。
 	SourceType         string    `gorm:"type:varchar(30);not null;default:'local_vector';index"` // SourceType 为检索来源：local_vector/cloud_knowledge/faq/hybrid。
 	Channel            string    `gorm:"type:varchar(30);not null;default:'';index"`             // Channel 为渠道：im会话, agent_assist坐席辅助, api开放接口, debug调试。
@@ -1138,6 +1144,7 @@ type KnowledgeRetrieveLog struct {
 // KnowledgeRetrieveHit 检索命中详情表。
 type KnowledgeRetrieveHit struct {
 	ID              int64     `gorm:"primaryKey;autoIncrement"`              // ID 为命中记录主键。
+	TenantID        int64     `gorm:"type:bigint;not null;default:0;index"`  // TenantID 继承所属检索日志。
 	RetrieveLogID   int64     `gorm:"type:bigint;not null;index"`            // RetrieveLogID 为检索日志ID。
 	KnowledgeBaseID int64     `gorm:"type:bigint;not null;default:0;index"`  // KnowledgeBaseID 为命中来源知识库ID。
 	ChunkID         int64     `gorm:"type:bigint;not null;index"`            // ChunkID 为切片ID。
@@ -1162,6 +1169,7 @@ type KnowledgeRetrieveHit struct {
 // KnowledgeFeedback 问答反馈表。
 type KnowledgeFeedback struct {
 	ID             int64     `gorm:"primaryKey;autoIncrement"`              // ID 为反馈主键。
+	TenantID       int64     `gorm:"type:bigint;not null;default:0;index"`  // TenantID 继承所属检索日志。
 	RetrieveLogID  int64     `gorm:"type:bigint;not null;index"`            // RetrieveLogID 为检索日志ID。
 	FeedbackType   int       `gorm:"type:int;not null;default:1;index"`     // FeedbackType 为反馈类型：1点赞 2点踩 3无帮助 4引用错误 5其他。
 	FeedbackReason string    `gorm:"type:varchar(500);not null;default:''"` // FeedbackReason 为反馈原因。

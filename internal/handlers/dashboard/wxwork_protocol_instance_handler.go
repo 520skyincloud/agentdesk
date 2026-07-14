@@ -707,7 +707,7 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance, op
 			ret.StoreStaffBindingID = runtime.BindingID
 		}
 	}
-	if knowledgeBase := services.KnowledgeBaseService.Get(item.KnowledgeBaseID); knowledgeBase != nil {
+	if knowledgeBase := services.KnowledgeBaseService.GetInTenant(item.KnowledgeBaseID, operator.ActiveTenantID); knowledgeBase != nil {
 		ret.KnowledgeBaseName = utils.RepairMojibakeText(knowledgeBase.Name)
 	}
 	stats := services.WxWorkProtocolInstanceService.CountStats(item.ID)

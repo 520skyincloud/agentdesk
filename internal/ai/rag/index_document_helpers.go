@@ -79,6 +79,7 @@ func (s *index) prepareDocumentVectors(ctx context.Context, knowledgeBase models
 		}
 		now := time.Now()
 		chunkModels = append(chunkModels, models.KnowledgeChunk{
+			TenantID:        knowledgeBase.TenantID,
 			KnowledgeBaseID: knowledgeBase.ID,
 			DocumentID:      document.ID,
 			ChunkNo:         chunk.ChunkNo,
@@ -100,6 +101,7 @@ func (s *index) prepareDocumentVectors(ctx context.Context, knowledgeBase models
 			ID:     chunkID,
 			Vector: embeddingResult.Vector,
 			Payload: vectordb.ChunkPayload{
+				TenantID:        knowledgeBase.TenantID,
 				KnowledgeBaseID: knowledgeBase.ID,
 				DocumentID:      document.ID,
 				DocumentTitle:   document.Title,

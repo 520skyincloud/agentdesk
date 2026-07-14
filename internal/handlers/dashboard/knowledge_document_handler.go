@@ -16,7 +16,8 @@ import (
 )
 
 func KnowledgeDocumentAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -38,6 +39,7 @@ func KnowledgeDocumentAnyList(ctx *gin.Context) {
 		}
 		cnd.Where("index_status = ?", indexStatus)
 	}
+	cnd = services.AgentTeamScopeService.ApplyKnowledgeChildFilter(cnd, operator)
 
 	list, paging := services.KnowledgeDocumentService.FindPageListByCnd(cnd)
 	results := make([]response.KnowledgeDocumentListResponse, 0, len(list))
@@ -52,12 +54,13 @@ func KnowledgeDocumentGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 
-	item := services.KnowledgeDocumentService.Get(id)
+	item := services.KnowledgeDocumentService.GetForOperator(id, operator)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("文档不存在"))
 		return
@@ -105,7 +108,8 @@ func KnowledgeDocumentPostUpdate(ctx *gin.Context) {
 }
 
 func KnowledgeDocumentPostDelete(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentDelete); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentDelete)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -118,7 +122,7 @@ func KnowledgeDocumentPostDelete(ctx *gin.Context) {
 		return
 	}
 
-	if err := services.KnowledgeDocumentService.DeleteKnowledgeDocument(req.ID); err != nil {
+	if err := services.KnowledgeDocumentService.DeleteKnowledgeDocument(req.ID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

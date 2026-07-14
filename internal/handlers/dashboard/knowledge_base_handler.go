@@ -10,13 +10,11 @@ import (
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
-	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
 
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/gin-gonic/gin"
-	"github.com/mlogclub/simple/sqls"
 	"github.com/mlogclub/simple/web"
 )
 
@@ -35,8 +33,7 @@ func KnowledgeBaseAnyList(ctx *gin.Context) {
 	list, paging := services.KnowledgeBaseService.FindPageByCnd(cnd)
 	results := make([]response.KnowledgeBaseResponse, 0, len(list))
 	for _, item := range list {
-		docCount := repositories.KnowledgeDocumentRepository.CountByKnowledgeBaseID(sqls.DB(), item.ID)
-		faqCount := repositories.KnowledgeFAQRepository.CountByKnowledgeBaseID(sqls.DB(), item.ID)
+		docCount, faqCount := services.KnowledgeBaseService.CountContents(item.ID, operator)
 		resp := builders.BuildKnowledgeBase(&item)
 		resp.DocumentCount = docCount
 		resp.FAQCount = faqCount
@@ -76,18 +73,13 @@ func KnowledgeBaseGetBy(ctx *gin.Context) {
 		return
 	}
 
-	item := services.KnowledgeBaseService.Get(id)
+	item := services.KnowledgeBaseService.GetForOperator(id, operator)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("知识库不存在"))
 		return
 	}
-	if !services.KnowledgeBaseService.CanAccessKnowledgeBase(item.ID, operator) {
-		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权限查看该知识库"))
-		return
-	}
 	resp := builders.BuildKnowledgeBase(item)
-	resp.DocumentCount = repositories.KnowledgeDocumentRepository.CountByKnowledgeBaseID(sqls.DB(), item.ID)
-	resp.FAQCount = repositories.KnowledgeFAQRepository.CountByKnowledgeBaseID(sqls.DB(), item.ID)
+	resp.DocumentCount, resp.FAQCount = services.KnowledgeBaseService.CountContents(item.ID, operator)
 	httpx.WriteJSON(ctx, resp)
 }
 
@@ -152,12 +144,17 @@ func KnowledgeBasePostDelete(ctx *gin.Context) {
 }
 
 func KnowledgeBasePostUpdate_sort(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	var ids []int64
 	if err := params.ReadJSON(ctx, &ids); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.KnowledgeBaseService.UpdateSort(ids); err != nil {
+	if err := services.KnowledgeBaseService.UpdateSort(ids, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -165,7 +162,8 @@ func KnowledgeBasePostUpdate_sort(ctx *gin.Context) {
 }
 
 func KnowledgeBasePostRebuild_index(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -178,7 +176,7 @@ func KnowledgeBasePostRebuild_index(ctx *gin.Context) {
 		return
 	}
 
-	knowledgeBase := services.KnowledgeBaseService.Get(req.ID)
+	knowledgeBase := services.KnowledgeBaseService.GetForOperator(req.ID, operator)
 	if knowledgeBase == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("知识库不存在"))
 		return

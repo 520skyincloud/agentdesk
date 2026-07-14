@@ -43,6 +43,7 @@ func (s *retrieve) searchKnowledgeBaseVectors(ctx context.Context, req RetrieveR
 			TopK:           topK,
 			ScoreThreshold: scoreThreshold,
 			Filter: &vectordb.SearchFilter{
+				TenantID:         knowledgeBase.TenantID,
 				KnowledgeBaseIDs: []int64{knowledgeBase.ID},
 			},
 		})
@@ -54,7 +55,7 @@ func (s *retrieve) searchKnowledgeBaseVectors(ctx context.Context, req RetrieveR
 			return nil, trace, fmt.Errorf("failed to search vectors: %w", searchErr)
 		}
 		if len(kbResults) == 0 && scoreThreshold > 0 {
-			s.logEmptySearchDiagnostics(ctx, provider, collectionName, embeddingResult.Vector, topK, scoreThreshold, []int64{knowledgeBase.ID}, req)
+			s.logEmptySearchDiagnostics(ctx, provider, collectionName, embeddingResult.Vector, topK, scoreThreshold, knowledgeBase.TenantID, []int64{knowledgeBase.ID}, req)
 		}
 		searchResults = append(searchResults, kbResults...)
 	}
@@ -72,7 +73,7 @@ func (s *retrieve) searchKnowledgeBaseVectors(ctx context.Context, req RetrieveR
 	return searchResults, trace, nil
 }
 
-func (s *retrieve) hydrateRetrieveResults(searchResults []vectordb.SearchResult) ([]RetrieveResult, int64) {
+func (s *retrieve) hydrateRetrieveResults(searchResults []vectordb.SearchResult, tenantID int64) ([]RetrieveResult, int64) {
 	if len(searchResults) == 0 {
 		return nil, 0
 	}
@@ -81,12 +82,12 @@ func (s *retrieve) hydrateRetrieveResults(searchResults []vectordb.SearchResult)
 	results := make([]RetrieveResult, 0, len(searchResults))
 	vectorIDs := make([]string, 0, len(searchResults))
 	for _, sr := range searchResults {
-		if strings.TrimSpace(sr.ID) == "" {
+		if strings.TrimSpace(sr.ID) == "" || sr.Payload.TenantID != tenantID {
 			continue
 		}
 		vectorIDs = append(vectorIDs, sr.ID)
 	}
-	chunks := repositories.KnowledgeChunkRepository.FindByVectorIDs(sqls.DB(), vectorIDs)
+	chunks := repositories.KnowledgeChunkRepository.FindByVectorIDsInTenant(sqls.DB(), vectorIDs, tenantID)
 	chunkByVectorID := make(map[string]*models.KnowledgeChunk, len(chunks))
 	documentIDs := make([]int64, 0)
 	faqIDs := make([]int64, 0)
@@ -108,13 +109,13 @@ func (s *retrieve) hydrateRetrieveResults(searchResults []vectordb.SearchResult)
 			}
 		}
 	}
-	documents := repositories.KnowledgeDocumentRepository.FindByIDs(sqls.DB(), documentIDs)
+	documents := repositories.KnowledgeDocumentRepository.FindByIDsInTenant(sqls.DB(), documentIDs, tenantID)
 	documentByID := make(map[int64]*models.KnowledgeDocument, len(documents))
 	for i := range documents {
 		document := &documents[i]
 		documentByID[document.ID] = document
 	}
-	faqs := repositories.KnowledgeFAQRepository.FindByIDs(sqls.DB(), faqIDs)
+	faqs := repositories.KnowledgeFAQRepository.FindByIDsInTenant(sqls.DB(), faqIDs, tenantID)
 	faqByID := make(map[int64]*models.KnowledgeFAQ, len(faqs))
 	for i := range faqs {
 		faq := &faqs[i]

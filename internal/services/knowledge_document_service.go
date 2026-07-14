@@ -35,6 +35,18 @@ func (s *knowledgeDocumentService) Get(id int64) *models.KnowledgeDocument {
 	return repositories.KnowledgeDocumentRepository.Get(sqls.DB(), id)
 }
 
+func (s *knowledgeDocumentService) GetForOperator(id int64, operator *dto.AuthPrincipal) *models.KnowledgeDocument {
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil
+	}
+	item := repositories.KnowledgeDocumentRepository.GetInTenant(sqls.DB(), id, tenantID)
+	if item == nil || !KnowledgeBaseService.CanAccessKnowledgeBase(item.KnowledgeBaseID, operator) {
+		return nil
+	}
+	return item
+}
+
 func (s *knowledgeDocumentService) Take(where ...interface{}) *models.KnowledgeDocument {
 	return repositories.KnowledgeDocumentRepository.Take(sqls.DB(), where...)
 }
@@ -84,12 +96,16 @@ func (s *knowledgeDocumentService) Delete(id int64) {
 }
 
 func (s *knowledgeDocumentService) CreateKnowledgeDocument(req request.CreateKnowledgeDocumentRequest, operator *dto.AuthPrincipal) (*models.KnowledgeDocument, error) {
-	if operator == nil {
-		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "知识文档")
+	if err != nil {
+		return nil, err
 	}
-	kb := KnowledgeBaseService.Get(req.KnowledgeBaseID)
+	kb := KnowledgeBaseService.GetInTenant(req.KnowledgeBaseID, tenantID)
 	if kb == nil {
 		return nil, errorsx.InvalidParam("知识库不存在")
+	}
+	if !KnowledgeBaseService.CanAccessKnowledgeBase(kb.ID, operator) {
+		return nil, errorsx.Forbidden("无权限维护该知识库")
 	}
 	if kb.KnowledgeType == string(enums.KnowledgeBaseTypeFAQ) {
 		return nil, errorsx.InvalidParam("FAQ知识库不支持文档")
@@ -99,22 +115,18 @@ func (s *knowledgeDocumentService) CreateKnowledgeDocument(req request.CreateKno
 		return nil, err
 	}
 	item.Status = enums.StatusOk
+	item.TenantID = tenantID
 	item.IndexStatus = enums.KnowledgeDocumentIndexStatusPending
 	item.IndexError = ""
 	item.IndexedAt = nil
 	item.AuditFields = utils.BuildAuditFields(operator)
-	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := ctx.Tx.Create(item).Error; err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
+	if err := repositories.KnowledgeDocumentRepository.Create(sqls.DB(), item); err != nil {
 		return nil, err
 	}
 	if err := rag.Index.IndexDocumentByID(context.Background(), item.ID); err != nil {
 		slog.Error("failed to index created knowledge document", "document_id", item.ID, "error", err)
 	}
-	item = s.Get(item.ID)
+	item = repositories.KnowledgeDocumentRepository.GetInTenant(sqls.DB(), item.ID, tenantID)
 	return item, nil
 }
 
@@ -122,23 +134,33 @@ func (s *knowledgeDocumentService) UpdateKnowledgeDocument(req request.UpdateKno
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.Get(req.ID)
+	tenantID, err := requireActiveTenantID(operator, "知识文档")
+	if err != nil {
+		return err
+	}
+	current := repositories.KnowledgeDocumentRepository.GetInTenant(sqls.DB(), req.ID, tenantID)
 	if current == nil {
 		return errorsx.InvalidParam("文档不存在")
 	}
-	kb := KnowledgeBaseService.Get(req.KnowledgeBaseID)
+	if !KnowledgeBaseService.CanAccessKnowledgeBase(current.KnowledgeBaseID, operator) {
+		return errorsx.Forbidden("无权限维护该知识文档")
+	}
+	kb := KnowledgeBaseService.GetInTenant(req.KnowledgeBaseID, tenantID)
 	if kb == nil {
 		return errorsx.InvalidParam("知识库不存在")
 	}
 	if kb.KnowledgeType == string(enums.KnowledgeBaseTypeFAQ) {
 		return errorsx.InvalidParam("FAQ知识库不支持文档")
 	}
+	if !KnowledgeBaseService.CanAccessKnowledgeBase(kb.ID, operator) {
+		return errorsx.Forbidden("无权限维护目标知识库")
+	}
 	item, err := s.buildKnowledgeDocumentModel(req.CreateKnowledgeDocumentRequest)
 	if err != nil {
 		return err
 	}
 	oldKnowledgeBaseID := current.KnowledgeBaseID
-	if err := repositories.KnowledgeDocumentRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	if err := repositories.KnowledgeDocumentRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
 		"knowledge_base_id": item.KnowledgeBaseID,
 		"title":             item.Title,
 		"content_type":      item.ContentType,
@@ -166,19 +188,27 @@ func (s *knowledgeDocumentService) UpdateKnowledgeDocument(req request.UpdateKno
 	return nil
 }
 
-func (s *knowledgeDocumentService) DeleteKnowledgeDocument(id int64) error {
-	current := s.Get(id)
+func (s *knowledgeDocumentService) DeleteKnowledgeDocument(id int64, operator *dto.AuthPrincipal) error {
+	tenantID, err := requireActiveTenantID(operator, "知识文档")
+	if err != nil {
+		return err
+	}
+	current := repositories.KnowledgeDocumentRepository.GetInTenant(sqls.DB(), id, tenantID)
 	if current == nil {
 		return errorsx.InvalidParam("文档不存在")
 	}
-	chunks := repositories.KnowledgeChunkRepository.FindByDocumentID(sqls.DB(), id)
+	if !KnowledgeBaseService.CanAccessKnowledgeBase(current.KnowledgeBaseID, operator) {
+		return errorsx.Forbidden("无权限删除该知识文档")
+	}
+	chunks := repositories.KnowledgeChunkRepository.FindByDocumentIDInTenant(sqls.DB(), id, tenantID)
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		_ = repositories.KnowledgeDocumentRepository.Updates(ctx.Tx, id, map[string]any{
+		if err := repositories.KnowledgeDocumentRepository.UpdatesInTenant(ctx.Tx, id, tenantID, map[string]any{
 			"status":     enums.StatusDeleted,
 			"updated_at": time.Now(),
-		})
-		ctx.Tx.Delete(&models.KnowledgeChunk{}, "document_id = ?", id)
-		return nil
+		}); err != nil {
+			return err
+		}
+		return ctx.Tx.Delete(&models.KnowledgeChunk{}, "document_id = ? AND tenant_id = ?", id, tenantID).Error
 	}); err != nil {
 		return err
 	}

@@ -29,6 +29,22 @@ func (s *knowledgeBaseService) Get(id int64) *models.KnowledgeBase {
 	return repositories.KnowledgeBaseRepository.Get(sqls.DB(), id)
 }
 
+func (s *knowledgeBaseService) GetInTenant(id, tenantID int64) *models.KnowledgeBase {
+	return repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
+func (s *knowledgeBaseService) GetForOperator(id int64, operator *dto.AuthPrincipal) *models.KnowledgeBase {
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil
+	}
+	item := repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), id, tenantID)
+	if item == nil || !s.CanAccessKnowledgeBase(item.ID, operator) {
+		return nil
+	}
+	return item
+}
+
 func (s *knowledgeBaseService) Take(where ...interface{}) *models.KnowledgeBase {
 	return repositories.KnowledgeBaseRepository.Take(sqls.DB(), where...)
 }
@@ -74,14 +90,16 @@ func (s *knowledgeBaseService) Delete(id int64) {
 }
 
 func (s *knowledgeBaseService) CreateKnowledgeBase(req request.CreateKnowledgeBaseRequest, operator *dto.AuthPrincipal) (*models.KnowledgeBase, error) {
-	if operator == nil {
-		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "知识库")
+	if err != nil {
+		return nil, err
 	}
 	item, err := s.buildKnowledgeBaseModel(req)
 	if err != nil {
 		return nil, err
 	}
 	item.Status = enums.StatusOk
+	item.TenantID = tenantID
 	item.AuditFields = utils.BuildAuditFields(operator)
 	if err := repositories.KnowledgeBaseRepository.Create(sqls.DB(), item); err != nil {
 		return nil, err
@@ -93,7 +111,11 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(req request.UpdateKnowledgeBa
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.Get(req.ID)
+	tenantID, err := requireActiveTenantID(operator, "知识库")
+	if err != nil {
+		return err
+	}
+	current := repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), req.ID, tenantID)
 	if current == nil {
 		return errorsx.InvalidParam("知识库不存在")
 	}
@@ -104,7 +126,7 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(req request.UpdateKnowledgeBa
 	if err != nil {
 		return err
 	}
-	return repositories.KnowledgeBaseRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	return repositories.KnowledgeBaseRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
 		"name":                    item.Name,
 		"description":             item.Description,
 		"knowledge_type":          item.KnowledgeType,
@@ -124,30 +146,44 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(req request.UpdateKnowledgeBa
 }
 
 func (s *knowledgeBaseService) DeleteKnowledgeBase(id int64, operator *dto.AuthPrincipal) error {
-	current := s.Get(id)
+	tenantID, err := requireActiveTenantID(operator, "知识库")
+	if err != nil {
+		return err
+	}
+	current := repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), id, tenantID)
 	if current == nil {
 		return errorsx.InvalidParam("知识库不存在")
 	}
 	if !s.CanAccessKnowledgeBase(current.ID, operator) {
 		return errorsx.Forbidden("无权限删除该知识库")
 	}
-	docCount := repositories.KnowledgeDocumentRepository.CountByKnowledgeBaseID(sqls.DB(), id)
+	docCount := repositories.KnowledgeDocumentRepository.CountByKnowledgeBaseIDInTenant(sqls.DB(), id, tenantID)
 	if docCount > 0 {
 		return errorsx.InvalidParam("知识库下存在文档，无法删除")
 	}
-	faqCount := repositories.KnowledgeFAQRepository.CountByKnowledgeBaseID(sqls.DB(), id)
+	faqCount := repositories.KnowledgeFAQRepository.CountByKnowledgeBaseIDInTenant(sqls.DB(), id, tenantID)
 	if faqCount > 0 {
 		return errorsx.InvalidParam("知识库下存在FAQ，无法删除")
 	}
-	repositories.KnowledgeBaseRepository.Delete(sqls.DB(), id)
-	return nil
+	return repositories.KnowledgeBaseRepository.DeleteInTenant(sqls.DB(), id, tenantID)
 }
 
 func (s *knowledgeBaseService) CanAccessKnowledgeBase(id int64, operator *dto.AuthPrincipal) bool {
 	if id <= 0 || operator == nil {
 		return false
 	}
-	scope := AgentTeamScopeService.Resolve(operator)
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 || repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), id, tenantID) == nil {
+		return false
+	}
+	return s.canAccessKnowledgeBaseScope(id, operator)
+}
+
+func (s *knowledgeBaseService) canAccessKnowledgeBaseScope(id int64, operator *dto.AuthPrincipal) bool {
+	return knowledgeBaseIDInScope(id, AgentTeamScopeService.Resolve(operator))
+}
+
+func knowledgeBaseIDInScope(id int64, scope ManagedDataScope) bool {
 	if scope.Unrestricted {
 		return true
 	}
@@ -159,15 +195,45 @@ func (s *knowledgeBaseService) CanAccessKnowledgeBase(id int64, operator *dto.Au
 	return false
 }
 
-func (s *knowledgeBaseService) UpdateSort(ids []int64) error {
+func (s *knowledgeBaseService) UpdateSort(ids []int64, operator *dto.AuthPrincipal) error {
+	tenantID, err := requireActiveTenantID(operator, "知识库")
+	if err != nil {
+		return err
+	}
+	scope := AgentTeamScopeService.Resolve(operator)
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		for i, id := range ids {
-			if err := repositories.KnowledgeBaseRepository.UpdateColumn(ctx.Tx, id, "sort_no", i); err != nil {
+			if repositories.KnowledgeBaseRepository.GetInTenant(ctx.Tx, id, tenantID) == nil || !knowledgeBaseIDInScope(id, scope) {
+				return errorsx.Forbidden("无权限调整该知识库排序")
+			}
+			if err := repositories.KnowledgeBaseRepository.UpdateColumnInTenant(ctx.Tx, id, tenantID, "sort_no", i); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+func (s *knowledgeBaseService) ValidateAccessibleIDs(ids []int64, operator *dto.AuthPrincipal) error {
+	if _, err := requireActiveTenantID(operator, "知识库"); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if id <= 0 || s.GetForOperator(id, operator) == nil {
+			return errorsx.Forbidden("请求包含无权访问的知识库")
+		}
+	}
+	return nil
+}
+
+func (s *knowledgeBaseService) CountContents(id int64, operator *dto.AuthPrincipal) (int64, int64) {
+	item := s.GetForOperator(id, operator)
+	if item == nil {
+		return 0, 0
+	}
+	documentCount := repositories.KnowledgeDocumentRepository.CountByKnowledgeBaseIDInTenant(sqls.DB(), item.ID, item.TenantID)
+	faqCount := repositories.KnowledgeFAQRepository.CountByKnowledgeBaseIDInTenant(sqls.DB(), item.ID, item.TenantID)
+	return documentCount, faqCount
 }
 
 func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowledgeBaseRequest) (*models.KnowledgeBase, error) {

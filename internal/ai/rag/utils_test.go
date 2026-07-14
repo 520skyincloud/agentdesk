@@ -2,6 +2,7 @@ package rag
 
 import (
 	"agent-desk/internal/ai/rag/vectordb"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"testing"
 )
@@ -24,6 +25,7 @@ func TestExtractPlainTextMarkdownUsesGoldmark(t *testing.T) {
 
 func TestChunkPayloadFromMapSupportsTypedConversion(t *testing.T) {
 	got := vectordb.ChunkPayloadFromMap(map[string]any{
+		"tenant_id":         "9",
 		"knowledge_base_id": "1",
 		"document_id":       "123",
 		"document_title":    "Doc",
@@ -34,10 +36,19 @@ func TestChunkPayloadFromMapSupportsTypedConversion(t *testing.T) {
 		"content":           "world",
 		"provider":          "structured",
 	})
-	if got.KnowledgeBaseID != 1 || got.DocumentID != 123 || got.ChunkNo != 2 {
+	if got.TenantID != 9 || got.KnowledgeBaseID != 1 || got.DocumentID != 123 || got.ChunkNo != 2 {
 		t.Fatalf("unexpected numeric conversion result: %+v", got)
 	}
 	if got.DocumentTitle != "Doc" || got.SectionPath != "A > B" || got.Provider != "structured" {
 		t.Fatalf("unexpected string conversion result: %+v", got)
+	}
+}
+
+func TestResolveRetrievableKnowledgeBaseTenantRejectsMixedTenants(t *testing.T) {
+	if _, err := resolveRetrievableKnowledgeBaseTenant([]models.KnowledgeBase{{ID: 1, TenantID: 10}, {ID: 2, TenantID: 20}}); err == nil {
+		t.Fatal("mixed-tenant knowledge retrieval was accepted")
+	}
+	if tenantID, err := resolveRetrievableKnowledgeBaseTenant([]models.KnowledgeBase{{ID: 1, TenantID: 10}, {ID: 2, TenantID: 10}}); err != nil || tenantID != 10 {
+		t.Fatalf("same-tenant resolution tenant=%d err=%v", tenantID, err)
 	}
 }

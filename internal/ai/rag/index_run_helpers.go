@@ -14,7 +14,7 @@ import (
 )
 
 func (s *index) runDocumentIndex(ctx context.Context, document models.KnowledgeDocument, knowledgeBase models.KnowledgeBase) ([]vectordb.Vector, int, error) {
-	existingChunks := repositories.KnowledgeChunkRepository.FindByDocumentID(sqls.DB(), document.ID)
+	existingChunks := repositories.KnowledgeChunkRepository.FindByDocumentIDInTenant(sqls.DB(), document.ID, document.TenantID)
 	chunks, err := s.buildDocumentChunks(ctx, document, knowledgeBase)
 	if err != nil {
 		return nil, 0, err
@@ -45,14 +45,14 @@ func (s *index) runDocumentIndex(ctx context.Context, document models.KnowledgeD
 	if err := provider.UpsertVectors(ctx, collectionName, vectors); err != nil {
 		return nil, 0, fmt.Errorf("failed to upsert vectors: %w", err)
 	}
-	if err := s.replaceDocumentChunks(document.ID, chunkModels); err != nil {
+	if err := s.replaceDocumentChunks(document.ID, document.TenantID, chunkModels); err != nil {
 		return nil, 0, fmt.Errorf("failed to save chunks: %w", err)
 	}
 	return vectors, len(chunks), nil
 }
 
 func (s *index) runFAQIndex(ctx context.Context, faq models.KnowledgeFAQ, knowledgeBase models.KnowledgeBase) error {
-	existingChunks := repositories.KnowledgeChunkRepository.FindByFaqID(sqls.DB(), faq.ID)
+	existingChunks := repositories.KnowledgeChunkRepository.FindByFaqIDInTenant(sqls.DB(), faq.ID, faq.TenantID)
 	content := buildFAQChunkContent(faq)
 	if content == "" {
 		return fmt.Errorf("faq content is empty")
@@ -89,7 +89,7 @@ func (s *index) runFAQIndex(ctx context.Context, faq models.KnowledgeFAQ, knowle
 	if err := provider.UpsertVectors(ctx, collectionName, []vectordb.Vector{vector}); err != nil {
 		return fmt.Errorf("failed to upsert vectors: %w", err)
 	}
-	if err := s.replaceFAQChunk(faq.ID, &chunkModel); err != nil {
+	if err := s.replaceFAQChunk(faq.ID, faq.TenantID, &chunkModel); err != nil {
 		return fmt.Errorf("failed to save faq chunk: %w", err)
 	}
 	return nil

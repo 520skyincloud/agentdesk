@@ -1219,3 +1219,39 @@ git diff --check
 ### 合并要求
 
 - 本批新增 `WxWorkKFSyncState.TenantID` 和 migration 47。`origin/codex/ai-billing@f2d2da4` 同时修改 `models.go`、media understanding、Message 测试和企微协议 service/test；合并必须逐方法保留 AI usage/回复逻辑与本批 tenant-qualified ref/voice 查询，禁止整文件覆盖。
+
+## 27. 当前实施检查点：知识域、首页指标与本地向量隔离（2026-07-14）
+
+本检查点复用现有知识库页面、权限和 RAG 结构，不新增平行知识入口，不改变模型选择、回答策略、FastGPT 请求或计费口径。
+
+### 归属契约与回填
+
+- `KnowledgeBase`、`KnowledgeDocument`、`KnowledgeFAQ`、`KnowledgeChunk`、`KnowledgeCandidate`、`KnowledgeRetrieveLog`、`KnowledgeRetrieveHit`、`KnowledgeFeedback` 增加 TenantID；DDL 仍由 AutoMigrate 创建，migration 48 只负责 DML 回填和一致性检查。
+- KnowledgeBase 只接受显式 Tenant、Store、WxWorkProtocolInstance、ConversationRouteState 和非平台创建账号作为归属证据。同一知识库出现跨租户证据、引用缺失或显式 Tenant 冲突时整笔回滚；完全无引用的历史知识库才归 `legacy-default`。
+- Document、FAQ 和 Chunk 必须继承 KnowledgeBase；Chunk 的 Document/FAQ 必须与其 KnowledgeBase 同租户且指向同一知识库。Candidate 交叉核对 KnowledgeBase、Store、Conversation 和非平台操作账号；RetrieveLog 交叉核对 KnowledgeBase 与 Conversation；Hit/Feedback 继承 RetrieveLog 并继续校验命中知识实体。
+- migration 48 重复执行幂等。由于旧 Qdrant point 不含 `tenant_id`，迁移会把未删除 Document/FAQ 的索引状态重置为 pending；部署后必须按公司重建知识库索引。
+
+### 后台和运行时边界
+
+- 知识库、文档、FAQ、候选问答和检索日志的列表先按 ActiveTenantID，再叠加客服组服务范围；详情、创建、更新、删除、排序、索引重建、调试检索、批量审核、导出和企微员工号知识库绑定均校验当前公司。
+- 管理员的 unrestricted 语义仅表示在当前公司内不受客服组范围限制，不再等于读取全平台知识数据。
+- Candidate 自动生成从 Conversation、Store、KnowledgeBase 三方解析 Tenant，冲突时拒绝写入；相似候选合并、审核、导出状态更新和导出目录均携带 Tenant。
+- RetrieveLog/Hit 从操作人、Conversation、KnowledgeBase 和命中结果解析同一 Tenant；后台检索日志详情只加载同租户 Hit。
+- 文档/FAQ 索引切片继承 KnowledgeBase Tenant，切片替换、状态写回、索引删除和整库重建的关系库 SQL 均携带 Tenant。
+- Qdrant payload 增加 `tenant_id`；本地向量检索强制使用 `tenant_id + knowledge_base_id`，未提供 Tenant 时构造不可命中的 fail-closed filter；关系库 hydrate 再按 Tenant 读取 Chunk、Document 和 FAQ，多租户知识库 ID 混合检索直接报错。
+- 首页总览从当前公司统计 Conversation、AgentProfile、AgentTeam、Schedule、Channel 和 KnowledgeRetrieveLog；AI Agent 暂按当前公司 Channel 引用统计，SkillRunLog 暂按关联 Conversation Tenant 统计。
+
+### 保留边界与上线要求
+
+- 本批没有新增 request/response JSON 字段、enum、Gin 路由、WebSocket payload、页面入口或权限点；既有知识库权限继续由权限管理和角色绑定分配。
+- `codex/ai-billing` 新增的 KnowledgeBase CompanyID/StoreID/FastGPT 字段必须与 TenantID 并存；FastGPTDatasetJob、KnowledgeResourceGroup/Item、AI usage/run log 和 AIManualResumeTask 尚未出现在本分支，合并后必须从 KnowledgeBase/Conversation/Asset 继承 Tenant，不能依靠 CompanyID 代替租户根。
+- FastGPT 远端检索必须在 AI 分支中继续校验 KnowledgeBase Tenant 与会话 Tenant；本批没有猜测远端协议字段，也没有改变 FastGPT dataset 或模型/计费语义。
+- AIAgent、AIConfig、SkillRunLog/AgentRunLog 的完整 Tenant 主体仍由 AI/计费分支负责。当前企微员工号运行时已校验 Instance 与 KnowledgeBase 同租户，但全局 AI Agent 后台仍不能宣称完成租户化。
+- 历史 Qdrant point 在重建前不会被新 Tenant filter 命中，这是预期的故障关闭。不得为恢复命中临时移除 Tenant filter；应执行知识库重建。
+- `/api/asset/file/{assetId}` 的短期签名授权仍未完成。知识/向量和文件 URL 均完成、AI 分支剩余主体合并并通过双租户测试前，公开邀请注册继续关闭。
+
+### 并行合并要求
+
+- migration 48 创建前已核对：`origin/main` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 47，无版本冲突。
+- AI 分支同文件主要为 `models.go`、`knowledge_base_service.go`、`knowledge_builder.go`、`rag/answer.go`、`rag/retrieve.go`、`rag/retrieve_log.go` 和知识页面 API。建议先合并 TenantID/migration 48/repository 原语，再合并 FastGPT 模型字段与资源模型，最后逐方法合并 retrieve/log/runtime。
+- 合并时必须保留 AI 分支的 FastGPT、intent profile、usage/计费和回复语义，同时保留本批的 TenantID、同租户父子校验、Qdrant tenant payload/filter、后台 ActiveTenant 和首页统计条件；禁止整文件选边。

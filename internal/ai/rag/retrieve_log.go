@@ -8,6 +8,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/response"
+	"agent-desk/internal/repositories"
 
 	"github.com/google/uuid"
 	"github.com/mlogclub/simple/sqls"
@@ -19,6 +20,7 @@ type retrieveLog struct {
 }
 
 type CreateRetrieveLogRequest struct {
+	TenantID           int64
 	KnowledgeBaseID    int64
 	SourceType         string
 	Channel            string
@@ -91,9 +93,13 @@ func (s *retrieveLog) FindHitsByRetrieveLogID(retrieveLogID int64) []models.Know
 	return list
 }
 
-func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, _ *dto.AuthPrincipal) (*models.KnowledgeRetrieveLog, error) {
+func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator *dto.AuthPrincipal) (*models.KnowledgeRetrieveLog, error) {
 	if req == nil {
 		return nil, fmt.Errorf("retrieve log request is nil")
+	}
+	tenantID, err := resolveRetrieveLogTenant(req, operator)
+	if err != nil {
+		return nil, err
 	}
 	now := time.Now()
 	topScore := 0.0
@@ -103,6 +109,7 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, _ *dto.Au
 	traceData := buildRetrieveTraceData(req)
 
 	log := &models.KnowledgeRetrieveLog{
+		TenantID:           tenantID,
 		KnowledgeBaseID:    req.KnowledgeBaseID,
 		SourceType:         defaultRetrieveSourceType(req),
 		Channel:            req.Channel,
@@ -150,6 +157,7 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, _ *dto.Au
 		for i, hit := range req.Hits {
 			hitKey := buildKnowledgeSearchResultKey(hit)
 			hitRecord := &models.KnowledgeRetrieveHit{
+				TenantID:        tenantID,
 				RetrieveLogID:   log.ID,
 				KnowledgeBaseID: hit.KnowledgeBaseID,
 				ChunkID:         hit.ChunkID,
@@ -180,6 +188,67 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, _ *dto.Au
 	}
 
 	return log, nil
+}
+
+func resolveRetrieveLogTenant(req *CreateRetrieveLogRequest, operator *dto.AuthPrincipal) (int64, error) {
+	tenantID := int64(0)
+	merge := func(source string, sourceID, sourceTenantID int64) error {
+		if sourceTenantID <= 0 {
+			return fmt.Errorf("knowledge retrieve log %s %d has no tenant", source, sourceID)
+		}
+		if tenantID == 0 {
+			tenantID = sourceTenantID
+			return nil
+		}
+		if tenantID != sourceTenantID {
+			return fmt.Errorf("knowledge retrieve log tenant %d conflicts with %s %d tenant %d", tenantID, source, sourceID, sourceTenantID)
+		}
+		return nil
+	}
+	if req.TenantID > 0 {
+		tenantID = req.TenantID
+	}
+	if operator != nil && operator.ActiveTenantID > 0 {
+		if err := merge("operator", operator.UserID, operator.ActiveTenantID); err != nil {
+			return 0, err
+		}
+	}
+	if req.ConversationID > 0 {
+		conversation := repositories.ConversationRepository.Get(sqls.DB(), req.ConversationID)
+		if conversation == nil {
+			return 0, fmt.Errorf("knowledge retrieve log references missing conversation %d", req.ConversationID)
+		}
+		if err := merge("conversation", conversation.ID, conversation.TenantID); err != nil {
+			return 0, err
+		}
+	}
+	knowledgeBaseIDs := make([]int64, 0, len(req.Hits)+1)
+	if req.KnowledgeBaseID > 0 {
+		knowledgeBaseIDs = append(knowledgeBaseIDs, req.KnowledgeBaseID)
+	}
+	for _, hit := range req.Hits {
+		if hit.KnowledgeBaseID > 0 {
+			knowledgeBaseIDs = append(knowledgeBaseIDs, hit.KnowledgeBaseID)
+		}
+	}
+	seen := make(map[int64]struct{}, len(knowledgeBaseIDs))
+	for _, knowledgeBaseID := range knowledgeBaseIDs {
+		if _, ok := seen[knowledgeBaseID]; ok {
+			continue
+		}
+		seen[knowledgeBaseID] = struct{}{}
+		knowledgeBase := repositories.KnowledgeBaseRepository.Get(sqls.DB(), knowledgeBaseID)
+		if knowledgeBase == nil {
+			return 0, fmt.Errorf("knowledge retrieve log references missing knowledge base %d", knowledgeBaseID)
+		}
+		if err := merge("knowledge base", knowledgeBase.ID, knowledgeBase.TenantID); err != nil {
+			return 0, err
+		}
+	}
+	if tenantID <= 0 {
+		return 0, fmt.Errorf("knowledge retrieve log has no tenant evidence")
+	}
+	return tenantID, nil
 }
 
 func buildRetrieveTraceData(req *CreateRetrieveLogRequest) string {

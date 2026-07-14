@@ -123,12 +123,16 @@ func (s *index) RemoveDocumentIndex(ctx context.Context, documentID int64) error
 	if document == nil {
 		return nil
 	}
-	chunks := repositories.KnowledgeChunkRepository.Find(sqls.DB(), sqls.NewCnd().Eq("document_id", documentID))
+	chunks := repositories.KnowledgeChunkRepository.FindByDocumentIDInTenant(sqls.DB(), documentID, document.TenantID)
 	return s.removeDocumentIndexByChunks(ctx, document.KnowledgeBaseID, documentID, chunks)
 }
 
 func (s *index) RemoveDocumentIndexFromKnowledgeBase(ctx context.Context, knowledgeBaseID int64, documentID int64) error {
-	chunks := repositories.KnowledgeChunkRepository.Find(sqls.DB(), sqls.NewCnd().Eq("document_id", documentID))
+	knowledgeBase := repositories.KnowledgeBaseRepository.Get(sqls.DB(), knowledgeBaseID)
+	if knowledgeBase == nil {
+		return nil
+	}
+	chunks := repositories.KnowledgeChunkRepository.FindByDocumentIDInTenant(sqls.DB(), documentID, knowledgeBase.TenantID)
 	return s.removeDocumentIndexByChunks(ctx, knowledgeBaseID, documentID, chunks)
 }
 
@@ -140,12 +144,16 @@ func (s *index) removeDocumentIndexByChunks(ctx context.Context, knowledgeBaseID
 	if len(chunks) == 0 {
 		return nil
 	}
+	tenantID, err := requireChunkTenant(chunks)
+	if err != nil {
+		return err
+	}
 
 	if err := s.deleteChunkVectors(ctx, collectChunkVectorIDs(chunks)); err != nil {
 		slog.Error("Failed to delete vectors", "error", err)
 	}
 
-	if err := deleteChunksByCondition("document_id", documentID); err != nil {
+	if err := deleteChunksByCondition("document_id", documentID, tenantID); err != nil {
 		return fmt.Errorf("failed to delete chunks: %w", err)
 	}
 
@@ -158,7 +166,7 @@ func (s *index) RemoveFAQIndex(ctx context.Context, faqID int64) error {
 	if faq == nil {
 		return nil
 	}
-	chunks := repositories.KnowledgeChunkRepository.FindByFaqID(sqls.DB(), faqID)
+	chunks := repositories.KnowledgeChunkRepository.FindByFaqIDInTenant(sqls.DB(), faqID, faq.TenantID)
 	return s.removeFAQIndexByChunks(ctx, faq.KnowledgeBaseID, faqID, chunks)
 }
 
@@ -170,10 +178,14 @@ func (s *index) removeFAQIndexByChunks(ctx context.Context, knowledgeBaseID int6
 	if len(chunks) == 0 {
 		return nil
 	}
+	tenantID, err := requireChunkTenant(chunks)
+	if err != nil {
+		return err
+	}
 	if err := s.deleteChunkVectors(ctx, collectChunkVectorIDs(chunks)); err != nil {
 		slog.Error("Failed to delete faq vectors", "error", err)
 	}
-	if err := deleteChunksByCondition("faq_id", faqID); err != nil {
+	if err := deleteChunksByCondition("faq_id", faqID, tenantID); err != nil {
 		return fmt.Errorf("failed to delete faq chunks: %w", err)
 	}
 	slog.Info("FAQ index removed", "faq_id", faqID, "chunks_removed", len(chunks))
@@ -243,7 +255,7 @@ func (s *index) RebuildKnowledgeBaseIndex(ctx context.Context, knowledgeBaseID i
 		return fmt.Errorf("knowledge base not found: %d", knowledgeBaseID)
 	}
 
-	if err := s.resetKnowledgeBaseIndexStorage(ctx, knowledgeBaseID); err != nil {
+	if err := s.resetKnowledgeBaseIndexStorage(ctx, *knowledgeBase); err != nil {
 		return err
 	}
 
@@ -251,6 +263,7 @@ func (s *index) RebuildKnowledgeBaseIndex(ctx context.Context, knowledgeBaseID i
 	failedCount := 0
 	if knowledgeBase.KnowledgeType == string(enums.KnowledgeBaseTypeFAQ) {
 		faqs := repositories.KnowledgeFAQRepository.Find(sqls.DB(), sqls.NewCnd().
+			Eq("tenant_id", knowledgeBase.TenantID).
 			Eq("knowledge_base_id", knowledgeBaseID).
 			Where("status != ?", enums.StatusDeleted))
 		if len(faqs) == 0 {
@@ -268,6 +281,7 @@ func (s *index) RebuildKnowledgeBaseIndex(ctx context.Context, knowledgeBaseID i
 		}
 	} else {
 		documents := repositories.KnowledgeDocumentRepository.Find(sqls.DB(), sqls.NewCnd().
+			Eq("tenant_id", knowledgeBase.TenantID).
 			Eq("knowledge_base_id", knowledgeBaseID).
 			Where("status != ?", enums.StatusDeleted))
 		if len(documents) == 0 {
@@ -339,7 +353,7 @@ func joinSimilarQuestions(items []string) string {
 	return result
 }
 
-func (s *index) resetKnowledgeBaseIndexStorage(ctx context.Context, knowledgeBaseID int64) error {
-	chunks := repositories.KnowledgeChunkRepository.Find(sqls.DB(), sqls.NewCnd().Eq("knowledge_base_id", knowledgeBaseID))
-	return s.cleanupKnowledgeBaseChunks(ctx, knowledgeBaseID, chunks)
+func (s *index) resetKnowledgeBaseIndexStorage(ctx context.Context, knowledgeBase models.KnowledgeBase) error {
+	chunks := repositories.KnowledgeChunkRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", knowledgeBase.TenantID).Eq("knowledge_base_id", knowledgeBase.ID))
+	return s.cleanupKnowledgeBaseChunks(ctx, knowledgeBase.ID, knowledgeBase.TenantID, chunks)
 }

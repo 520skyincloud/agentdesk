@@ -2,8 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
-
-	"agent-desk/internal/pkg/httpx/params"
+	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
 )
@@ -17,31 +16,19 @@ func newKnowledgeRetrieveLogService() *knowledgeRetrieveLogService {
 type knowledgeRetrieveLogService struct {
 }
 
-func (s *knowledgeRetrieveLogService) Get(id int64) *models.KnowledgeRetrieveLog {
-	ret := &models.KnowledgeRetrieveLog{}
-	if err := sqls.DB().First(ret, "id = ?", id).Error; err != nil {
-		return nil
-	}
-	return ret
+func (s *knowledgeRetrieveLogService) GetInTenant(id, tenantID int64) *models.KnowledgeRetrieveLog {
+	return repositories.KnowledgeRetrieveLogRepository.GetInTenant(sqls.DB(), id, tenantID)
 }
 
-func (s *knowledgeRetrieveLogService) FindPageByParams(params *params.QueryParams) (list []models.KnowledgeRetrieveLog, paging *sqls.Paging) {
-	cnd := &params.Cnd
-	cnd.Find(sqls.DB(), &list)
-	count := cnd.Count(sqls.DB(), &models.KnowledgeRetrieveLog{})
-	paging = &sqls.Paging{
-		Page:  cnd.Paging.Page,
-		Limit: cnd.Paging.Limit,
-		Total: count,
+func (s *knowledgeRetrieveLogService) FindPageInTenant(cnd *sqls.Cnd, tenantID int64) (list []models.KnowledgeRetrieveLog, paging *sqls.Paging) {
+	if tenantID <= 0 {
+		cnd = cnd.Where("1 = 0")
+	} else {
+		cnd = cnd.Eq("tenant_id", tenantID)
 	}
-	return
+	return repositories.KnowledgeRetrieveLogRepository.FindPageByCnd(sqls.DB(), cnd)
 }
 
-func (s *knowledgeRetrieveLogService) FindHitsByRetrieveLogID(retrieveLogID int64) []models.KnowledgeRetrieveHit {
-	if retrieveLogID <= 0 {
-		return nil
-	}
-	var list []models.KnowledgeRetrieveHit
-	sqls.DB().Where("retrieve_log_id = ?", retrieveLogID).Order("rank_no asc, id asc").Find(&list)
-	return list
+func (s *knowledgeRetrieveLogService) FindHitsInTenant(retrieveLogID, tenantID int64) []models.KnowledgeRetrieveHit {
+	return repositories.KnowledgeRetrieveLogRepository.FindHitsInTenant(sqls.DB(), retrieveLogID, tenantID)
 }

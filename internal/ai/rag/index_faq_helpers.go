@@ -15,6 +15,7 @@ func buildFAQChunkModel(knowledgeBase models.KnowledgeBase, faq models.Knowledge
 	chunkID := buildKnowledgeFAQChunkVectorID(knowledgeBase.ID, faq.ID, 0)
 	now := time.Now()
 	return models.KnowledgeChunk{
+		TenantID:        knowledgeBase.TenantID,
 		KnowledgeBaseID: knowledgeBase.ID,
 		FaqID:           faq.ID,
 		ChunkNo:         0,
@@ -43,6 +44,7 @@ func (s *index) prepareFAQVector(ctx context.Context, knowledgeBase models.Knowl
 		ID:     chunkID,
 		Vector: embeddingResult.Vector,
 		Payload: vectordb.ChunkPayload{
+			TenantID:        knowledgeBase.TenantID,
 			KnowledgeBaseID: knowledgeBase.ID,
 			FaqID:           faq.ID,
 			FaqQuestion:     faq.Question,

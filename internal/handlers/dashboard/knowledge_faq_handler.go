@@ -15,7 +15,8 @@ import (
 )
 
 func KnowledgeFAQAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeFAQView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeFAQView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -25,6 +26,7 @@ func KnowledgeFAQAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "question", Op: params.Like},
 		params.QueryFilter{ParamName: "indexStatus"},
 	).Desc("id")
+	cnd = services.AgentTeamScopeService.ApplyKnowledgeChildFilter(cnd, operator)
 	list, paging := services.KnowledgeFAQService.FindPageByCnd(cnd)
 	results := make([]response.KnowledgeFAQResponse, 0, len(list))
 	for _, item := range list {
@@ -38,12 +40,13 @@ func KnowledgeFAQGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeFAQView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeFAQView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 
-	item := services.KnowledgeFAQService.Get(id)
+	item := services.KnowledgeFAQService.GetForOperator(id, operator)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("FAQ不存在"))
 		return
@@ -89,7 +92,8 @@ func KnowledgeFAQPostUpdate(ctx *gin.Context) {
 }
 
 func KnowledgeFAQPostDelete(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeFAQDelete); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeFAQDelete)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -100,7 +104,7 @@ func KnowledgeFAQPostDelete(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.KnowledgeFAQService.DeleteKnowledgeFAQ(req.ID); err != nil {
+	if err := services.KnowledgeFAQService.DeleteKnowledgeFAQ(req.ID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

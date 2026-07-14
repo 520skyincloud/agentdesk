@@ -56,7 +56,7 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgent(instance *models.WxW
 		if strings.TrimSpace(instance.PersonaPrompt) != "" {
 			systemPrompt = mergeWxWorkPersonaIntoSystemPrompt(DefaultWxWorkProtocolPersonaPrompt, instance.PersonaPrompt)
 		}
-		if instance.KnowledgeBaseID > 0 {
+		if instance.KnowledgeBaseID > 0 && repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), instance.KnowledgeBaseID, instance.TenantID) != nil {
 			knowledgeIDs = fmt.Sprintf("%d", instance.KnowledgeBaseID)
 		}
 	}
@@ -76,11 +76,19 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgent(instance *models.WxW
 }
 
 func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgentForConversation(conversationID int64) (models.AIAgent, bool) {
-	route := ConversationRouteService.GetByConversationID(conversationID)
+	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
+	if conversation == nil || conversation.TenantID <= 0 {
+		return models.AIAgent{}, false
+	}
+	route := ConversationRouteService.GetByConversationIDInTenant(conversationID, conversation.TenantID)
 	if route == nil || route.WxWorkInstanceID <= 0 {
 		return models.AIAgent{}, false
 	}
-	return s.BuildRuntimeAIAgent(s.Get(route.WxWorkInstanceID)), true
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), route.WxWorkInstanceID, conversation.TenantID)
+	if instance == nil {
+		return models.AIAgent{}, false
+	}
+	return s.BuildRuntimeAIAgent(instance), true
 }
 
 func (s *wxWorkProtocolInstanceService) Get(id int64) *models.WxWorkProtocolInstance {
@@ -1372,7 +1380,7 @@ func (s *wxWorkProtocolInstanceService) validateBinding(tenantID, channelID, sto
 		}
 	}
 	if knowledgeBaseID > 0 {
-		knowledgeBase := KnowledgeBaseService.Get(knowledgeBaseID)
+		knowledgeBase := KnowledgeBaseService.GetInTenant(knowledgeBaseID, tenantID)
 		if knowledgeBase == nil || knowledgeBase.Status == enums.StatusDeleted {
 			return errorsx.InvalidParam("知识库不存在")
 		}

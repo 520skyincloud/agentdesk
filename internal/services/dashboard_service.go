@@ -24,7 +24,7 @@ func newDashboardService() *dashboardService {
 type dashboardService struct {
 }
 
-func (s *dashboardService) GetOverview(rangeValue string, locale string) response.DashboardOverviewResponse {
+func (s *dashboardService) GetOverview(rangeValue string, locale string, tenantID int64) response.DashboardOverviewResponse {
 	locale = i18nx.NormalizeLocale(locale)
 	now := time.Now()
 	normalizedRange, trendDays := normalizeDashboardRange(rangeValue)
@@ -33,23 +33,23 @@ func (s *dashboardService) GetOverview(rangeValue string, locale string) respons
 	db := sqls.DB()
 
 	conversationTodayCount := repositories.DashboardRepository.CountConversations(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("created_at >= ?", todayStart)
+		return tx.Where("tenant_id = ? AND created_at >= ?", tenantID, todayStart)
 	})
 	processingConversationCount := repositories.DashboardRepository.CountConversations(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("status IN ?", []enums.IMConversationStatus{
+		return tx.Where("tenant_id = ? AND status IN ?", tenantID, []enums.IMConversationStatus{
 			enums.IMConversationStatusAIServing,
 			enums.IMConversationStatusActive,
 		})
 	})
 	pendingConversationCount := repositories.DashboardRepository.CountConversations(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("status = ?", enums.IMConversationStatusPending)
+		return tx.Where("tenant_id = ? AND status = ?", tenantID, enums.IMConversationStatusPending)
 	})
 
-	agentProfiles := repositories.DashboardRepository.ListEnabledAgentProfiles(db)
-	agentTeams := repositories.DashboardRepository.ListEnabledAgentTeams(db)
-	activeSchedules := repositories.DashboardRepository.ListActiveTeamSchedules(db, now, now)
+	agentProfiles := repositories.DashboardRepository.ListEnabledAgentProfiles(db, tenantID)
+	agentTeams := repositories.DashboardRepository.ListEnabledAgentTeams(db, tenantID)
+	activeSchedules := repositories.DashboardRepository.ListActiveTeamSchedules(db, tenantID, now, now)
 	activeConversations := repositories.DashboardRepository.ListConversations(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("status IN ?", []enums.IMConversationStatus{
+		return tx.Where("tenant_id = ? AND status IN ?", tenantID, []enums.IMConversationStatus{
 			enums.IMConversationStatusAIServing,
 			enums.IMConversationStatusPending,
 			enums.IMConversationStatusActive,
@@ -59,28 +59,28 @@ func (s *dashboardService) GetOverview(rangeValue string, locale string) respons
 	onlineAgents, busyAgents, offlineAgents, teamLoads := s.buildAgentStats(now, agentTeams, agentProfiles, activeSchedules, activeConversations)
 
 	enabledAIAgentCount := repositories.DashboardRepository.CountAIAgents(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("status = ?", enums.StatusOk)
+		return tx.Where("status = ? AND id IN (?)", enums.StatusOk, db.Model(&models.Channel{}).Select("ai_agent_id").Where("tenant_id = ? AND ai_agent_id > ?", tenantID, 0))
 	})
 	enabledChannelCount := repositories.DashboardRepository.CountChannels(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("status = ?", enums.StatusOk)
+		return tx.Where("tenant_id = ? AND status = ?", tenantID, enums.StatusOk)
 	})
 	knowledgeRetrieveCount := repositories.DashboardRepository.CountKnowledgeRetrieveLogs(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("created_at >= ?", todayStart)
+		return tx.Where("tenant_id = ? AND created_at >= ?", tenantID, todayStart)
 	})
 	knowledgeRetrieveFailCount := repositories.DashboardRepository.CountKnowledgeRetrieveLogs(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("created_at >= ? AND answer_status IN ?", todayStart, []int{2, 3, 4})
+		return tx.Where("tenant_id = ? AND created_at >= ? AND answer_status IN ?", tenantID, todayStart, []int{2, 3, 4})
 	})
 	skillRunFailCount := repositories.DashboardRepository.CountSkillRunLogs(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("created_at >= ? AND error_message <> ''", todayStart)
+		return tx.Where("created_at >= ? AND error_message <> '' AND conversation_id IN (?)", todayStart, db.Model(&models.Conversation{}).Select("id").Where("tenant_id = ?", tenantID))
 	})
 	aiHandoffCount := repositories.DashboardRepository.CountConversations(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("handoff_at >= ?", todayStart)
+		return tx.Where("tenant_id = ? AND handoff_at >= ?", tenantID, todayStart)
 	})
 
 	enabledAIAgents := repositories.DashboardRepository.ListAIAgents(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("status = ?", enums.StatusOk)
+		return tx.Where("status = ? AND id IN (?)", enums.StatusOk, db.Model(&models.Channel{}).Select("ai_agent_id").Where("tenant_id = ? AND ai_agent_id > ?", tenantID, 0))
 	})
-	alerts := s.buildAlerts(now, db, enabledAIAgents, agentTeams, activeSchedules, locale)
+	alerts := s.buildAlerts(now, db, tenantID, enabledAIAgents, agentTeams, activeSchedules, locale)
 
 	return response.DashboardOverviewResponse{
 		Range:       normalizedRange,
@@ -93,8 +93,8 @@ func (s *dashboardService) GetOverview(rangeValue string, locale string) respons
 			AIServiceRate:                calcAIServiceRate(activeConversations),
 		},
 		ConversationStats: response.DashboardSectionStatsResponse{
-			StatusDistribution: buildConversationStatusDistribution(db, locale),
-			Trend:              buildConversationTrend(db, trendStart),
+			StatusDistribution: buildConversationStatusDistribution(db, tenantID, locale),
+			Trend:              buildConversationTrend(db, tenantID, trendStart),
 		},
 		AgentStats: response.DashboardAgentStatsResponse{
 			OnlineAgents:  onlineAgents,
@@ -217,13 +217,13 @@ func (s *dashboardService) buildAgentStats(now time.Time, teams []models.AgentTe
 	return onlineAgents, busyAgents, offlineAgents, teamLoads
 }
 
-func (s *dashboardService) buildAlerts(now time.Time, db *gorm.DB, aiAgents []models.AIAgent, teams []models.AgentTeam, schedules []models.AgentTeamSchedule, locale string) []response.DashboardAlertResponse {
+func (s *dashboardService) buildAlerts(now time.Time, db *gorm.DB, tenantID int64, aiAgents []models.AIAgent, teams []models.AgentTeam, schedules []models.AgentTeamSchedule, locale string) []response.DashboardAlertResponse {
 	alerts := make([]response.DashboardAlertResponse, 0, 4)
 	pendingTimeout := now.Add(-10 * time.Minute)
 	activeTimeout := now.Add(-30 * time.Minute)
 
 	pendingLongWaitCount := repositories.DashboardRepository.CountConversations(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("status = ? AND created_at < ?", enums.IMConversationStatusPending, pendingTimeout)
+		return tx.Where("tenant_id = ? AND status = ? AND created_at < ?", tenantID, enums.IMConversationStatusPending, pendingTimeout)
 	})
 	if pendingLongWaitCount > 0 {
 		alerts = append(alerts, response.DashboardAlertResponse{
@@ -237,7 +237,7 @@ func (s *dashboardService) buildAlerts(now time.Time, db *gorm.DB, aiAgents []mo
 	}
 
 	staleProcessingCount := repositories.DashboardRepository.CountConversations(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("status IN ? AND (last_message_at IS NULL OR last_message_at < ?)", []enums.IMConversationStatus{
+		return tx.Where("tenant_id = ? AND status IN ? AND (last_message_at IS NULL OR last_message_at < ?)", tenantID, []enums.IMConversationStatus{
 			enums.IMConversationStatusAIServing,
 			enums.IMConversationStatusActive,
 		}, activeTimeout)
@@ -301,26 +301,26 @@ func (s *dashboardService) buildAlerts(now time.Time, db *gorm.DB, aiAgents []mo
 	return alerts
 }
 
-func buildConversationStatusDistribution(db *gorm.DB, locale string) []response.DashboardStatusDistributionItem {
+func buildConversationStatusDistribution(db *gorm.DB, tenantID int64, locale string) []response.DashboardStatusDistributionItem {
 	ret := make([]response.DashboardStatusDistributionItem, 0, len(enums.IMConversationStatusValues))
 	for _, status := range enums.IMConversationStatusValues {
 		ret = append(ret, response.DashboardStatusDistributionItem{
 			Status: int(status),
 			Label:  conversationStatusLabel(status, locale),
 			Count: repositories.DashboardRepository.CountConversations(db, func(tx *gorm.DB) *gorm.DB {
-				return tx.Where("status = ?", status)
+				return tx.Where("tenant_id = ? AND status = ?", tenantID, status)
 			}),
 		})
 	}
 	return ret
 }
 
-func buildConversationTrend(db *gorm.DB, start time.Time) []response.DashboardTrendItem {
+func buildConversationTrend(db *gorm.DB, tenantID int64, start time.Time) []response.DashboardTrendItem {
 	created := repositories.DashboardRepository.ListConversations(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Select("created_at").Where("created_at >= ?", start)
+		return tx.Select("created_at").Where("tenant_id = ? AND created_at >= ?", tenantID, start)
 	})
 	closed := repositories.DashboardRepository.ListConversations(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Select("closed_at").Where("closed_at IS NOT NULL AND closed_at >= ?", start)
+		return tx.Select("closed_at").Where("tenant_id = ? AND closed_at IS NOT NULL AND closed_at >= ?", tenantID, start)
 	})
 	return buildTrendItems(start, created, closed, func(item models.Conversation) *time.Time {
 		return &item.CreatedAt

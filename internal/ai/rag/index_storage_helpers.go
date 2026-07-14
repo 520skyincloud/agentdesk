@@ -26,9 +26,9 @@ func (s *index) ensureCollection(ctx context.Context, provider vectordb.Provider
 	return nil
 }
 
-func (s *index) replaceDocumentChunks(documentID int64, chunkModels []models.KnowledgeChunk) error {
+func (s *index) replaceDocumentChunks(documentID, tenantID int64, chunkModels []models.KnowledgeChunk) error {
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := ctx.Tx.Where("document_id = ?", documentID).Delete(&models.KnowledgeChunk{}).Error; err != nil {
+		if err := ctx.Tx.Where("document_id = ? AND tenant_id = ?", documentID, tenantID).Delete(&models.KnowledgeChunk{}).Error; err != nil {
 			return err
 		}
 		for _, chunk := range chunkModels {
@@ -40,12 +40,12 @@ func (s *index) replaceDocumentChunks(documentID int64, chunkModels []models.Kno
 	})
 }
 
-func (s *index) replaceFAQChunk(faqID int64, chunkModel *models.KnowledgeChunk) error {
+func (s *index) replaceFAQChunk(faqID, tenantID int64, chunkModel *models.KnowledgeChunk) error {
 	if chunkModel == nil {
 		return nil
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := ctx.Tx.Where("faq_id = ?", faqID).Delete(&models.KnowledgeChunk{}).Error; err != nil {
+		if err := ctx.Tx.Where("faq_id = ? AND tenant_id = ?", faqID, tenantID).Delete(&models.KnowledgeChunk{}).Error; err != nil {
 			return err
 		}
 		return ctx.Tx.Create(chunkModel).Error

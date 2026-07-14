@@ -24,6 +24,7 @@ type SearchRequest struct {
 }
 
 type SearchFilter struct {
+	TenantID         int64   `json:"tenantId,omitempty"`
 	KnowledgeBaseIDs []int64 `json:"knowledgeBaseIds,omitempty"`
 	DocumentIDs      []int64 `json:"documentIds,omitempty"`
 }
@@ -246,7 +247,14 @@ func (p *QdrantProvider) buildFilter(filter *SearchFilter) *qdrant.Filter {
 		return nil
 	}
 
-	must := make([]*qdrant.Condition, 0, 2)
+	must := make([]*qdrant.Condition, 0, 3)
+	if len(filter.KnowledgeBaseIDs) > 0 || len(filter.DocumentIDs) > 0 {
+		tenantID := filter.TenantID
+		if tenantID <= 0 {
+			tenantID = -1
+		}
+		must = append(must, qdrant.NewMatchInt("tenant_id", tenantID))
+	}
 	if len(filter.KnowledgeBaseIDs) > 0 {
 		must = append(must, qdrant.NewMatchInts("knowledge_base_id", filter.KnowledgeBaseIDs...))
 	}

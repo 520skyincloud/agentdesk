@@ -110,6 +110,7 @@ func (s *agentTeamScopeService) CanManageTeam(operator *dto.AuthPrincipal, teamI
 }
 
 func (s *agentTeamScopeService) ApplyKnowledgeBaseFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {
+	cnd = s.ApplyTenantFilter(cnd, operator)
 	scope := s.Resolve(operator)
 	if scope.Unrestricted {
 		return cnd
@@ -121,6 +122,19 @@ func (s *agentTeamScopeService) ApplyKnowledgeBaseFilter(cnd *sqls.Cnd, operator
 }
 
 func (s *agentTeamScopeService) ApplyKnowledgeCandidateFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {
+	cnd = s.ApplyTenantFilter(cnd, operator)
+	scope := s.Resolve(operator)
+	if scope.Unrestricted {
+		return cnd
+	}
+	if len(scope.KnowledgeBaseIDs) == 0 {
+		return cnd.Eq("knowledge_base_id", -1)
+	}
+	return cnd.In("knowledge_base_id", scope.KnowledgeBaseIDs)
+}
+
+func (s *agentTeamScopeService) ApplyKnowledgeChildFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {
+	cnd = s.ApplyTenantFilter(cnd, operator)
 	scope := s.Resolve(operator)
 	if scope.Unrestricted {
 		return cnd

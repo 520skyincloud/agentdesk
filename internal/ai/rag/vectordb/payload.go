@@ -6,6 +6,7 @@ import (
 )
 
 type ChunkPayload struct {
+	TenantID        int64  `json:"tenant_id"`
 	KnowledgeBaseID int64  `json:"knowledge_base_id"`
 	DocumentID      int64  `json:"document_id"`
 	DocumentTitle   string `json:"document_title"`
@@ -28,6 +29,7 @@ func ChunkPayloadFromMap(data map[string]any) ChunkPayload {
 		return ChunkPayload{}
 	}
 	return ChunkPayload{
+		TenantID:        cast.ToInt64(data["tenant_id"]),
 		KnowledgeBaseID: cast.ToInt64(data["knowledge_base_id"]),
 		DocumentID:      cast.ToInt64(data["document_id"]),
 		DocumentTitle:   cast.ToString(data["document_title"]),

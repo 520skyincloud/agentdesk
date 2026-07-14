@@ -32,6 +32,18 @@ func (s *knowledgeFAQService) Get(id int64) *models.KnowledgeFAQ {
 	return repositories.KnowledgeFAQRepository.Get(sqls.DB(), id)
 }
 
+func (s *knowledgeFAQService) GetForOperator(id int64, operator *dto.AuthPrincipal) *models.KnowledgeFAQ {
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil
+	}
+	item := repositories.KnowledgeFAQRepository.GetInTenant(sqls.DB(), id, tenantID)
+	if item == nil || !KnowledgeBaseService.CanAccessKnowledgeBase(item.KnowledgeBaseID, operator) {
+		return nil
+	}
+	return item
+}
+
 func (s *knowledgeFAQService) FindPageByCnd(cnd *sqls.Cnd) (list []models.KnowledgeFAQ, paging *sqls.Paging) {
 	return repositories.KnowledgeFAQRepository.FindPageByCnd(sqls.DB(), cnd)
 }
@@ -41,10 +53,11 @@ func (s *knowledgeFAQService) FindPageByParams(queryParams *params.QueryParams) 
 }
 
 func (s *knowledgeFAQService) CreateKnowledgeFAQ(req request.CreateKnowledgeFAQRequest, operator *dto.AuthPrincipal) (*models.KnowledgeFAQ, error) {
-	if operator == nil {
-		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "FAQ")
+	if err != nil {
+		return nil, err
 	}
-	kb, err := s.requireFAQKnowledgeBase(req.KnowledgeBaseID)
+	kb, err := s.requireFAQKnowledgeBase(req.KnowledgeBaseID, tenantID, operator)
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +66,7 @@ func (s *knowledgeFAQService) CreateKnowledgeFAQ(req request.CreateKnowledgeFAQR
 		return nil, err
 	}
 	item.Status = kb.Status
+	item.TenantID = tenantID
 	item.IndexStatus = enums.KnowledgeDocumentIndexStatusPending
 	item.IndexError = ""
 	item.IndexedAt = nil
@@ -64,25 +78,32 @@ func (s *knowledgeFAQService) CreateKnowledgeFAQ(req request.CreateKnowledgeFAQR
 		slog.Error("failed to index created knowledge faq", "faq_id", item.ID, "error", err)
 		return item, nil
 	}
-	return s.Get(item.ID), nil
+	return repositories.KnowledgeFAQRepository.GetInTenant(sqls.DB(), item.ID, tenantID), nil
 }
 
 func (s *knowledgeFAQService) UpdateKnowledgeFAQ(req request.UpdateKnowledgeFAQRequest, operator *dto.AuthPrincipal) error {
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.Get(req.ID)
+	tenantID, err := requireActiveTenantID(operator, "FAQ")
+	if err != nil {
+		return err
+	}
+	current := repositories.KnowledgeFAQRepository.GetInTenant(sqls.DB(), req.ID, tenantID)
 	if current == nil {
 		return errorsx.InvalidParam("FAQ不存在")
 	}
-	if _, err := s.requireFAQKnowledgeBase(req.KnowledgeBaseID); err != nil {
+	if !KnowledgeBaseService.CanAccessKnowledgeBase(current.KnowledgeBaseID, operator) {
+		return errorsx.Forbidden("无权限维护该FAQ")
+	}
+	if _, err := s.requireFAQKnowledgeBase(req.KnowledgeBaseID, tenantID, operator); err != nil {
 		return err
 	}
 	item, err := s.buildKnowledgeFAQModel(req.CreateKnowledgeFAQRequest)
 	if err != nil {
 		return err
 	}
-	if err := repositories.KnowledgeFAQRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	if err := repositories.KnowledgeFAQRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
 		"knowledge_base_id": item.KnowledgeBaseID,
 		"question":          item.Question,
 		"answer":            item.Answer,
@@ -100,16 +121,24 @@ func (s *knowledgeFAQService) UpdateKnowledgeFAQ(req request.UpdateKnowledgeFAQR
 	return rag.Index.IndexFAQByID(context.Background(), req.ID)
 }
 
-func (s *knowledgeFAQService) DeleteKnowledgeFAQ(id int64) error {
-	current := s.Get(id)
+func (s *knowledgeFAQService) DeleteKnowledgeFAQ(id int64, operator *dto.AuthPrincipal) error {
+	tenantID, err := requireActiveTenantID(operator, "FAQ")
+	if err != nil {
+		return err
+	}
+	current := repositories.KnowledgeFAQRepository.GetInTenant(sqls.DB(), id, tenantID)
 	if current == nil {
 		return errorsx.InvalidParam("FAQ不存在")
 	}
-	chunks := repositories.KnowledgeChunkRepository.FindByFaqID(sqls.DB(), id)
+	if !KnowledgeBaseService.CanAccessKnowledgeBase(current.KnowledgeBaseID, operator) {
+		return errorsx.Forbidden("无权限删除该FAQ")
+	}
+	chunks := repositories.KnowledgeChunkRepository.FindByFaqIDInTenant(sqls.DB(), id, tenantID)
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		ctx.Tx.Delete(&models.KnowledgeFAQ{}, "id = ?", id)
-		ctx.Tx.Delete(&models.KnowledgeChunk{}, "faq_id = ?", id)
-		return nil
+		if err := repositories.KnowledgeFAQRepository.DeleteInTenant(ctx.Tx, id, tenantID); err != nil {
+			return err
+		}
+		return ctx.Tx.Delete(&models.KnowledgeChunk{}, "faq_id = ? AND tenant_id = ?", id, tenantID).Error
 	}); err != nil {
 		return err
 	}
@@ -139,13 +168,16 @@ func (s *knowledgeFAQService) buildKnowledgeFAQModel(req request.CreateKnowledge
 	}, nil
 }
 
-func (s *knowledgeFAQService) requireFAQKnowledgeBase(knowledgeBaseID int64) (*models.KnowledgeBase, error) {
-	kb := KnowledgeBaseService.Get(knowledgeBaseID)
+func (s *knowledgeFAQService) requireFAQKnowledgeBase(knowledgeBaseID, tenantID int64, operator *dto.AuthPrincipal) (*models.KnowledgeBase, error) {
+	kb := KnowledgeBaseService.GetInTenant(knowledgeBaseID, tenantID)
 	if kb == nil {
 		return nil, errorsx.InvalidParam("知识库不存在")
 	}
 	if kb.KnowledgeType != "faq" {
 		return nil, errorsx.InvalidParam("当前知识库不是FAQ知识库")
+	}
+	if !KnowledgeBaseService.CanAccessKnowledgeBase(kb.ID, operator) {
+		return nil, errorsx.Forbidden("无权限维护该知识库")
 	}
 	return kb, nil
 }

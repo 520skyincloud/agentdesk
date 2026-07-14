@@ -11,6 +11,11 @@ import (
 )
 
 func DashboardGetOverview(ctx *gin.Context) {
+	tenantCtx, err := services.AuthService.RequireTenantContext(ctx)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	rangeValue, _ := params.Get(ctx, "range")
-	httpx.WriteJSON(ctx, services.DashboardService.GetOverview(rangeValue, i18nx.Locale(ctx)))
+	httpx.WriteJSON(ctx, services.DashboardService.GetOverview(rangeValue, i18nx.Locale(ctx), tenantCtx.TenantID))
 }
