@@ -46,7 +46,8 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 	structuredReplies := s.buildStructuredVariableReplies(input)
 	structuredReplies = append(structuredReplies, s.buildKnowledgeResourceReplies(input)...)
 	replyText := strings.TrimSpace(input.ReplyText)
-	if strings.HasPrefix(strings.TrimSpace(input.Message.RequestID), "manual_resume_") {
+	isManualResume := strings.HasPrefix(strings.TrimSpace(input.Message.RequestID), "manual_resume_")
+	if isManualResume {
 		if replyText == "" {
 			replyText = manualResumeCustomerNotice
 		} else {
@@ -67,7 +68,19 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 				clientMessageID = fmt.Sprintf("%s_text_%d_%d", strings.TrimSpace(input.ClientPrefix), index+1, input.Message.ID)
 			}
 			message, err := s.sendAIMessage(input, clientMessageID, enums.IMMessageTypeText, text, "")
-			commitMessages = append(commitMessages, buildCommitMessageTrace(message, enums.IMMessageTypeText, "", text, err))
+			traceItem := buildCommitMessageTrace(message, enums.IMMessageTypeText, "", text, err)
+			taskIndex := index
+			if isManualResume && len(textMessages) > 1 {
+				if index == 0 {
+					taskIndex = -1
+				} else {
+					taskIndex = index - 1
+				}
+			}
+			if taskID := textCommitTaskIDFromTrace(input.Trace, taskIndex); taskID != "" {
+				traceItem["taskId"] = taskID
+			}
+			commitMessages = append(commitMessages, traceItem)
 			if err != nil {
 				s.updateCommitTrace(input, commitStartedAt, replyMessage, commitMessages, err)
 				return message, err
@@ -634,7 +647,7 @@ func splitReplyTextForCommit(trace *aiReplyTraceData, replyText string) []string
 	normalized := strings.ReplaceAll(replyText, "\r\n", "\n")
 	for _, marker := range []string{"<<NEXT_MESSAGE>>", "<NEXT_MESSAGE>", "[[NEXT_MESSAGE]]"} {
 		if strings.Contains(normalized, marker) {
-			return splitReplyTextByMarker(normalized, marker)
+			return capReplyTextParts(splitReplyTextByMarker(normalized, marker), 3)
 		}
 	}
 	if textCommitTaskCountFromTrace(trace) <= 1 {
@@ -642,9 +655,18 @@ func splitReplyTextForCommit(trace *aiReplyTraceData, replyText string) []string
 	}
 	parts := splitReplyTextByBlankLine(normalized)
 	if len(parts) > 1 {
-		return parts
+		return capReplyTextParts(parts, 3)
 	}
 	return []string{replyText}
+}
+
+func capReplyTextParts(parts []string, limit int) []string {
+	if limit <= 0 || len(parts) <= limit {
+		return parts
+	}
+	ret := append([]string(nil), parts[:limit-1]...)
+	ret = append(ret, strings.Join(parts[limit-1:], "\n\n"))
+	return ret
 }
 
 func splitReplyTextByMarker(text string, marker string) []string {
@@ -688,8 +710,23 @@ func splitReplyTextByBlankLine(text string) []string {
 }
 
 func textCommitTaskCountFromTrace(trace *aiReplyTraceData) int {
+	return len(textCommitTaskIDsFromTrace(trace))
+}
+
+func textCommitTaskIDFromTrace(trace *aiReplyTraceData, index int) string {
+	if index < 0 {
+		return ""
+	}
+	taskIDs := textCommitTaskIDsFromTrace(trace)
+	if index >= len(taskIDs) {
+		return ""
+	}
+	return taskIDs[index]
+}
+
+func textCommitTaskIDsFromTrace(trace *aiReplyTraceData) []string {
 	if trace == nil || len(trace.Runtime) == 0 {
-		return 0
+		return nil
 	}
 	data := struct {
 		Pipeline struct {
@@ -702,9 +739,9 @@ func textCommitTaskCountFromTrace(trace *aiReplyTraceData) int {
 		} `json:"pipeline"`
 	}{}
 	if err := json.Unmarshal(trace.Runtime, &data); err != nil {
-		return 0
+		return nil
 	}
-	count := 0
+	taskIDs := make([]string, 0, 3)
 	for _, task := range data.Pipeline.ReplyPlan.TaskPlans {
 		output := strings.TrimSpace(task.Output)
 		intent := strings.TrimSpace(task.Intent)
@@ -714,9 +751,11 @@ func textCommitTaskCountFromTrace(trace *aiReplyTraceData) int {
 		if output == "" && intent == "" {
 			continue
 		}
-		count++
+		if len(taskIDs) < 3 {
+			taskIDs = append(taskIDs, fmt.Sprintf("task-%d", len(taskIDs)+1))
+		}
 	}
-	return count
+	return taskIDs
 }
 
 func (s *replyCommitService) IncrementAIReplyRounds(conversationID int64, nextRounds int, aiAgentName string) error {
