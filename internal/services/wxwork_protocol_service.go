@@ -630,7 +630,11 @@ func (s *wxWorkProtocolService) scheduleWxWorkContactProfileSync(instance *model
 	if instance == nil || conversation == nil || conversation.CustomerID <= 0 || strings.TrimSpace(externalID) == "" {
 		return
 	}
-	if customer := CustomerService.Get(conversation.CustomerID); customer != nil && strings.TrimSpace(customer.Avatar) != "" {
+	channel := ChannelService.Get(instance.ChannelID)
+	if channel == nil || channel.TenantID <= 0 {
+		return
+	}
+	if customer := CustomerService.GetByTenantID(conversation.CustomerID, channel.TenantID); customer != nil && strings.TrimSpace(customer.Avatar) != "" {
 		return
 	}
 	go func(instanceID, conversationID, customerID int64, userID string) {
@@ -641,6 +645,14 @@ func (s *wxWorkProtocolService) scheduleWxWorkContactProfileSync(instance *model
 }
 
 func (s *wxWorkProtocolService) syncWxWorkContactProfile(instanceID, conversationID, customerID int64, userID string) error {
+	instance := WxWorkProtocolInstanceService.Get(instanceID)
+	if instance == nil {
+		return errorsx.InvalidParam("企微员工号实例不存在")
+	}
+	channel := ChannelService.Get(instance.ChannelID)
+	if channel == nil || channel.TenantID <= 0 || CustomerService.GetByTenantID(customerID, channel.TenantID) == nil {
+		return errorsx.InvalidParam("客户与接入渠道租户不匹配")
+	}
 	resp, err := s.callInstanceAPI(instanceID, "/contact/batch_get_userinfo", map[string]any{"user_list": []string{strings.TrimSpace(userID)}}, nil)
 	if err != nil {
 		return err
@@ -659,7 +671,7 @@ func (s *wxWorkProtocolService) syncWxWorkContactProfile(instanceID, conversatio
 	now := time.Now()
 	updates["updated_at"] = now
 	updates["update_user_name"] = wxWorkProtocolSystemOperatorName
-	if err := repositories.CustomerRepository.Updates(sqls.DB(), customerID, updates); err != nil {
+	if err := repositories.CustomerRepository.UpdatesInTenant(sqls.DB(), customerID, channel.TenantID, updates); err != nil {
 		return err
 	}
 	if strings.TrimSpace(name) != "" {

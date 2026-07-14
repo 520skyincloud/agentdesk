@@ -46,11 +46,25 @@ func (r *customerIdentityRepository) GetBy(db *gorm.DB, externalSource enums.Ext
 		Eq("external_id", externalID))
 }
 
+func (r *customerIdentityRepository) GetByInTenant(db *gorm.DB, tenantID int64, externalSource enums.ExternalSource, externalID string) *models.CustomerIdentity {
+	if tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "tenant_id = ? AND external_source = ? AND external_id = ?", tenantID, externalSource, externalID)
+}
+
 func (r *customerIdentityRepository) FindByCustomerID(db *gorm.DB, customerID int64) []models.CustomerIdentity {
 	if customerID <= 0 {
 		return nil
 	}
 	return r.Find(db, sqls.NewCnd().Eq("customer_id", customerID).Eq("status", enums.StatusOk).Desc("id"))
+}
+
+func (r *customerIdentityRepository) FindByCustomerIDInTenant(db *gorm.DB, customerID, tenantID int64) []models.CustomerIdentity {
+	if customerID <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Find(db, sqls.NewCnd().Eq("customer_id", customerID).Eq("tenant_id", tenantID).Asc("id"))
 }
 
 func (r *customerIdentityRepository) Find(db *gorm.DB, cnd *sqls.Cnd) (list []models.CustomerIdentity) {

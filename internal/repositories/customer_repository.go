@@ -43,12 +43,38 @@ func (r *customerRepository) CountByCompanyIDs(db *gorm.DB, companyIDs []int64, 
 	return ret
 }
 
+func (r *customerRepository) CountByCompanyIDsInTenant(db *gorm.DB, companyIDs []int64, tenantID int64, excludeStatus int) map[int64]int64 {
+	ret := make(map[int64]int64)
+	if len(companyIDs) == 0 || tenantID <= 0 {
+		return ret
+	}
+	rows := make([]CompanyCustomerCount, 0, len(companyIDs))
+	db.Model(&models.Customer{}).
+		Select("company_id, count(1) as cnt").
+		Where("tenant_id = ?", tenantID).
+		Where("company_id in ?", companyIDs).
+		Where("status <> ?", excludeStatus).
+		Group("company_id").
+		Scan(&rows)
+	for _, row := range rows {
+		ret[row.CompanyID] = row.Count
+	}
+	return ret
+}
+
 func (r *customerRepository) Get(db *gorm.DB, id int64) *models.Customer {
 	ret := &models.Customer{}
 	if err := db.First(ret, "id = ?", id).Error; err != nil {
 		return nil
 	}
 	return ret
+}
+
+func (r *customerRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.Customer {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
 }
 
 func (r *customerRepository) Take(db *gorm.DB, where ...interface{}) *models.Customer {
@@ -115,6 +141,10 @@ func (r *customerRepository) Update(db *gorm.DB, t *models.Customer) (err error)
 func (r *customerRepository) Updates(db *gorm.DB, id int64, columns map[string]interface{}) (err error) {
 	err = db.Model(&models.Customer{}).Where("id = ?", id).Updates(columns).Error
 	return
+}
+
+func (r *customerRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.Customer{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
 }
 
 func (r *customerRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {

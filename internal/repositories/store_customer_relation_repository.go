@@ -43,3 +43,7 @@ func (r *storeCustomerRelationRepository) Create(db *gorm.DB, t *models.StoreCus
 func (r *storeCustomerRelationRepository) Updates(db *gorm.DB, id int64, columns map[string]any) error {
 	return db.Model(&models.StoreCustomerRelation{}).Where("id = ?", id).Updates(columns).Error
 }
+
+func (r *storeCustomerRelationRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.StoreCustomerRelation{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}

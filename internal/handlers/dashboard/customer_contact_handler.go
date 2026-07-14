@@ -15,7 +15,12 @@ import (
 
 // AnyList GET/POST /customer-contact/list?customerId=
 func CustomerContactAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerView)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -24,13 +29,21 @@ func CustomerContactAnyList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("customerId 必填"))
 		return
 	}
-	list := services.CustomerContactService.FindActiveByCustomerID(customerID)
+	if services.CustomerService.GetInTenant(customerID, operator) == nil {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("客户不存在"))
+		return
+	}
+	list := services.CustomerContactService.FindActiveByCustomerID(customerID, operator)
 	httpx.WriteJSON(ctx, builders.BuildCustomerContactList(list))
 }
 
 func CustomerContactPostCreate(ctx *gin.Context) {
 	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerUpdate)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -54,6 +67,10 @@ func CustomerContactPostUpdate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	req := request.UpdateCustomerContactRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -69,6 +86,10 @@ func CustomerContactPostUpdate(ctx *gin.Context) {
 func CustomerContactPostDelete(ctx *gin.Context) {
 	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerUpdate)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

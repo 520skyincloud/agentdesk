@@ -808,6 +808,16 @@ POST /api/auth/register
 - 本批只完成 Company/Channel 归属和后台管理链路隔离。Customer、Store、WxWorkProtocolInstance、Conversation、Message、回调、Outbox 和 WebSocket 尚未沿 Channel tenant 形成完整链路，不能由本批推定完成。
 - AIAgent 尚未租户化，Channel 当前只能验证绑定 Agent 存在且启用，不能验证同租户；历史企业微信客服账号枚举仍依赖平台全局配置，租户级第三方凭据隔离需在渠道设置重构时单独完成。
 
+第五批实现状态（2026-07-14）：
+
+- `Customer`、`CustomerIdentity`、`CustomerContact` 和 `StoreCustomerRelation` 增加 `TenantID`。migration 43 优先从客户企业 Company 和历史 Conversation→Channel 确定 Customer 归属，无来源的孤立历史客户归入 `legacy-default`，三个子表严格继承父客户。
+- 同一客户若关联的 Company 与历史会话 Channel 属于不同租户，或子表是孤儿/显式租户与父客户冲突，migration 43 整笔事务回滚；重复执行保留已确认归属。
+- 客户与联系方式后台列表、详情、门店关系展示、创建、保存、更新、启停和删除全部要求 `ActiveTenantID`。列表 join 同时约束 Customer、Contact 和 Company 的 tenant，最终写 SQL 使用 `id + tenant_id`。
+- 手工创建/保存客户只能绑定当前租户的客户企业；联系方式新建和全量保存只继承父客户租户，不接受 request 指定租户。
+- 外部客户创建从真实 Channel 继承租户；同一 `ExternalSource + ExternalID` 可以在不同租户分别形成客户，但同租户内继续复用原客户。客户会话 token 校验、会话所有权检查和企微联系人资料回写均校验 Channel/Customer 同租户。
+- `ConversationService.Create*` 不再允许缺失、停用或 `TenantID=0` 的渠道创建无归属客户。小程序无 Channel 的旧独立 Agent 兜底会收到明确错误，必须先配置真实接入渠道；本批没有修改 AI Agent 选择、回复引擎或模型调用。
+- Store、WxWorkProtocolInstance、Conversation、Message、Ticket 本体尚未增加 TenantID。门店关系已继承 Customer tenant，但门店/企微展示对象和工单关联仍需在父域租户化后继续校验。
+
 ### 阶段 5：业务服务强制隔离
 
 - 用户、角色分配和客服组织。
@@ -836,6 +846,14 @@ POST /api/auth/register
 - Company 更新/启停/删除以及 Channel 更新/启停/删除/密钥重置的最终 repository SQL 均携带 `tenant_id`，不是只做列表过滤或前置读取。
 - 双租户测试覆盖创建继承、列表/详情隔离、跨租户 ID 篡改、无当前租户拒绝、最终写条件和 migration 回滚。
 - Customer service 仍可通过历史全局 Company 读取建立关联，Channel 之后的会话/消息链路也尚未租户化；这些跨域入口必须在父子归属可确定后继续收口。
+
+第三批实现状态（2026-07-14）：
+
+- 客户和联系方式后台 Handler 在原权限后要求当前公司；平台管理员未进入公司时不能读取客户或联系方式。
+- Customer service 的分页、详情、客户企业绑定、保存、更新、启停和删除使用当前租户，CustomerContact service 的列表、创建、复活软删行、更新、主联系方式切换和删除使用父客户租户。
+- 外部会话创建按 Channel tenant 查找/创建 CustomerIdentity；客户 session 验证和会话所有权不能用另一租户的同名外部身份通过。
+- 双租户测试覆盖同外部 ID 分租户、后台 CRUD、跨租户客户企业、联系方式 ID 注入、门店关系租户继承、repository 最终写条件和无当前租户拒绝。
+- Ticket 与派单/会话后台本体尚未租户化，它们对 Customer 的全局运行时读取仍需在对应批次改为父业务对象的 tenant 条件；不能由客户页隔离推定工单或会话隔离完成。
 
 ### 阶段 6：非 HTTP 链路隔离
 

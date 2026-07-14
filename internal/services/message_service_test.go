@@ -78,6 +78,13 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("auto migrate: %v", err)
 	}
 	sqls.SetDB(db)
+	if err := db.Create(&models.Channel{
+		ID: 11, TenantID: 101, Name: "测试网页渠道", ChannelType: enums.ChannelTypeWeb,
+		ChannelID: "message-welcome-test", Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}).Error; err != nil {
+		t.Fatalf("create default channel: %v", err)
+	}
 	return db
 }
 
@@ -207,7 +214,8 @@ func TestCreateExternalAgentMessageWithoutOutboxMarksStoreManualHandled(t *testi
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()
 	if err := db.Create(&models.Channel{
-		ID:          11,
+		ID:          12,
+		TenantID:    101,
 		Name:        "企微员工号",
 		ChannelType: enums.ChannelTypeWxWorkProtocol,
 		ChannelID:   "wxwork-protocol-test",
@@ -218,7 +226,7 @@ func TestCreateExternalAgentMessageWithoutOutboxMarksStoreManualHandled(t *testi
 	}
 	aiAgent := createWelcomeTestAIAgent(t, db, "")
 	external := welcomeTestExternalUser("self-echo-user")
-	conversation, err := ConversationService.Create(external, 11, aiAgent.ID)
+	conversation, err := ConversationService.Create(external, 12, aiAgent.ID)
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}

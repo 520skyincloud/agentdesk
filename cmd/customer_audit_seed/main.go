@@ -918,7 +918,7 @@ func (ctx *seedContext) upsertCustomers() error {
 func (ctx *seedContext) upsertCustomer(index int) (*models.Customer, error) {
 	name := fmt.Sprintf("测试顾客%03d", index)
 	item := &models.Customer{}
-	err := ctx.db.Where("name = ? AND remark LIKE ?", name, likeMarker(ctx.marker)).Take(item).Error
+	err := ctx.db.Where("tenant_id = ? AND name = ? AND remark LIKE ?", ctx.tenant.ID, name, likeMarker(ctx.marker)).Take(item).Error
 	gender := enums.GenderUnknown
 	if index%3 == 1 {
 		gender = enums.GenderMale
@@ -928,6 +928,7 @@ func (ctx *seedContext) upsertCustomer(index int) (*models.Customer, error) {
 	mobile := fmt.Sprintf("199%08d", index)
 	email := fmt.Sprintf("test_customer_audit_%03d@example.test", index)
 	updates := map[string]any{
+		"tenant_id":        ctx.tenant.ID,
 		"gender":           gender,
 		"company_id":       ctx.company.ID,
 		"primary_mobile":   mobile,
@@ -948,6 +949,7 @@ func (ctx *seedContext) upsertCustomer(index int) (*models.Customer, error) {
 		return nil, err
 	}
 	item = &models.Customer{
+		TenantID:      ctx.tenant.ID,
 		Name:          name,
 		Gender:        gender,
 		CompanyID:     ctx.company.ID,
@@ -966,8 +968,9 @@ func (ctx *seedContext) upsertCustomer(index int) (*models.Customer, error) {
 func (ctx *seedContext) upsertCustomerContact(index int, customer *models.Customer) error {
 	value := fmt.Sprintf("199%08d", index)
 	item := &models.CustomerContact{}
-	err := ctx.db.Where("customer_id = ? AND contact_type = ? AND contact_value = ?", customer.ID, enums.ContactTypeMobile, value).Take(item).Error
+	err := ctx.db.Where("tenant_id = ? AND customer_id = ? AND contact_type = ? AND contact_value = ?", ctx.tenant.ID, customer.ID, enums.ContactTypeMobile, value).Take(item).Error
 	updates := map[string]any{
+		"tenant_id":        ctx.tenant.ID,
 		"is_primary":       true,
 		"is_verified":      false,
 		"source":           "test_seed",
@@ -984,6 +987,7 @@ func (ctx *seedContext) upsertCustomerContact(index int, customer *models.Custom
 		return err
 	}
 	return ctx.db.Create(&models.CustomerContact{
+		TenantID:     ctx.tenant.ID,
 		CustomerID:   customer.ID,
 		ContactType:  enums.ContactTypeMobile,
 		ContactValue: value,
@@ -999,8 +1003,9 @@ func (ctx *seedContext) upsertCustomerIdentity(index int, customer *models.Custo
 	externalID := fmt.Sprintf("test_customer_audit_customer_%03d", index)
 	rawProfile := fmt.Sprintf(`{"%s":true,"batch":%q,"name":%q}`, ctx.marker, ctx.batch, customer.Name)
 	item := &models.CustomerIdentity{}
-	err := ctx.db.Where("customer_id = ? AND external_source = ? AND external_id = ?", customer.ID, enums.ExternalSourceWxWorkProtocol, externalID).Take(item).Error
+	err := ctx.db.Where("tenant_id = ? AND customer_id = ? AND external_source = ? AND external_id = ?", ctx.tenant.ID, customer.ID, enums.ExternalSourceWxWorkProtocol, externalID).Take(item).Error
 	updates := map[string]any{
+		"tenant_id":        ctx.tenant.ID,
 		"raw_profile":      rawProfile,
 		"status":           enums.StatusOk,
 		"updated_at":       ctx.now,
@@ -1014,6 +1019,7 @@ func (ctx *seedContext) upsertCustomerIdentity(index int, customer *models.Custo
 		return err
 	}
 	return ctx.db.Create(&models.CustomerIdentity{
+		TenantID:       ctx.tenant.ID,
 		CustomerID:     customer.ID,
 		ExternalSource: enums.ExternalSourceWxWorkProtocol,
 		ExternalID:     externalID,
@@ -1027,9 +1033,10 @@ func (ctx *seedContext) upsertStoreCustomerRelation(customerIndex int, storeInde
 	store := ctx.stores[storeIndex-1]
 	instance := ctx.wxInstances[storeIndex-1]
 	item := &models.StoreCustomerRelation{}
-	err := ctx.db.Where("customer_id = ? AND store_id = ?", customer.ID, store.ID).Take(item).Error
+	err := ctx.db.Where("tenant_id = ? AND customer_id = ? AND store_id = ?", ctx.tenant.ID, customer.ID, store.ID).Take(item).Error
 	notes := ctx.seedRemark(fmt.Sprintf("测试顾客%03d关联门店%03d", customerIndex, storeIndex))
 	updates := map[string]any{
+		"tenant_id":           ctx.tenant.ID,
 		"wx_work_instance_id": instance.ID,
 		"last_active_at":      ctx.now,
 		"visit_count":         relationVisitCount(customerIndex),
@@ -1050,6 +1057,7 @@ func (ctx *seedContext) upsertStoreCustomerRelation(customerIndex int, storeInde
 		return err
 	}
 	return ctx.db.Create(&models.StoreCustomerRelation{
+		TenantID:         ctx.tenant.ID,
 		CustomerID:       customer.ID,
 		StoreID:          store.ID,
 		WxWorkInstanceID: instance.ID,

@@ -32,6 +32,10 @@ func (s *customerContactService) Get(id int64) *models.CustomerContact {
 	return repositories.CustomerContactRepository.Get(sqls.DB(), id)
 }
 
+func (s *customerContactService) GetInTenant(id int64, operator *dto.AuthPrincipal) *models.CustomerContact {
+	return repositories.CustomerContactRepository.GetInTenant(sqls.DB(), id, customerTenantID(operator))
+}
+
 func (s *customerContactService) Take(where ...interface{}) *models.CustomerContact {
 	return repositories.CustomerContactRepository.Take(sqls.DB(), where...)
 }
@@ -77,12 +81,14 @@ func (s *customerContactService) Delete(id int64) {
 }
 
 // FindActiveByCustomerID 返回某客户下未删除的联系方式列表。
-func (s *customerContactService) FindActiveByCustomerID(customerID int64) []models.CustomerContact {
-	if customerID <= 0 {
+func (s *customerContactService) FindActiveByCustomerID(customerID int64, operator *dto.AuthPrincipal) []models.CustomerContact {
+	tenantID := customerTenantID(operator)
+	if customerID <= 0 || tenantID <= 0 {
 		return nil
 	}
 	cnd := sqls.NewCnd().
 		Where("customer_id = ?", customerID).
+		Where("tenant_id = ?", tenantID).
 		Where("status <> ?", enums.StatusDeleted).
 		Asc("id")
 	return repositories.CustomerContactRepository.Find(sqls.DB(), cnd)
@@ -99,12 +105,14 @@ func normalizeContactSource(v string) string {
 func (s *customerContactService) hasDuplicateContact(
 	db *gorm.DB,
 	customerID int64,
+	tenantID int64,
 	contactType enums.ContactType,
 	contactValue string,
 	excludeID int64,
 ) bool {
 	cnd := sqls.NewCnd().
 		Where("customer_id = ?", customerID).
+		Where("tenant_id = ?", tenantID).
 		Where("contact_type = ?", contactType).
 		Where("contact_value = ?", contactValue).
 		Where("status <> ?", enums.StatusDeleted)
@@ -118,11 +126,13 @@ func (s *customerContactService) hasDuplicateContact(
 func (s *customerContactService) findSoftDeletedContactByNaturalKey(
 	db *gorm.DB,
 	customerID int64,
+	tenantID int64,
 	contactType enums.ContactType,
 	contactValue string,
 ) *models.CustomerContact {
 	cnd := sqls.NewCnd().
 		Where("customer_id = ?", customerID).
+		Where("tenant_id = ?", tenantID).
 		Where("contact_type = ?", contactType).
 		Where("contact_value = ?", contactValue).
 		Where("status = ?", enums.StatusDeleted)
@@ -130,15 +140,16 @@ func (s *customerContactService) findSoftDeletedContactByNaturalKey(
 }
 
 // syncCustomerPrimaryFromContacts 根据当前主联系方式更新客户表冗余字段（列表检索用）。
-func (s *customerContactService) syncCustomerPrimaryFromContacts(db *gorm.DB, customerID int64) error {
-	if customerID <= 0 {
+func (s *customerContactService) syncCustomerPrimaryFromContacts(db *gorm.DB, customerID, tenantID int64) error {
+	if customerID <= 0 || tenantID <= 0 {
 		return nil
 	}
-	if repositories.CustomerRepository.Get(db, customerID) == nil {
+	if repositories.CustomerRepository.GetInTenant(db, customerID, tenantID) == nil {
 		return nil
 	}
 	cnd := sqls.NewCnd().
 		Where("customer_id = ?", customerID).
+		Where("tenant_id = ?", tenantID).
 		Where("is_primary = ?", true).
 		Where("status <> ?", enums.StatusDeleted)
 	primary := repositories.CustomerContactRepository.FindOne(db, cnd)
@@ -152,7 +163,7 @@ func (s *customerContactService) syncCustomerPrimaryFromContacts(db *gorm.DB, cu
 			pm = val
 		}
 	}
-	return repositories.CustomerRepository.Updates(db, customerID, map[string]any{
+	return repositories.CustomerRepository.UpdatesInTenant(db, customerID, tenantID, map[string]any{
 		"primary_mobile": pm,
 		"primary_email":  pe,
 		"updated_at":     time.Now(),
@@ -163,11 +174,15 @@ func (s *customerContactService) syncCustomerPrimaryFromContacts(db *gorm.DB, cu
 func (s *customerContactService) ReplaceAllForCustomerInTx(
 	ctx *sqls.TxContext,
 	customerID int64,
+	tenantID int64,
 	raw []request.CustomerProfileContactItem,
 	operator *dto.AuthPrincipal,
 ) error {
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if tenantID <= 0 || tenantID != customerTenantID(operator) || repositories.CustomerRepository.GetInTenant(ctx.Tx, customerID, tenantID) == nil {
+		return errorsx.InvalidParam("客户不存在")
 	}
 	type line struct {
 		id      *int64
@@ -210,6 +225,7 @@ func (s *customerContactService) ReplaceAllForCustomerInTx(
 
 	existing := repositories.CustomerContactRepository.Find(ctx.Tx, sqls.NewCnd().
 		Where("customer_id = ?", customerID).
+		Where("tenant_id = ?", tenantID).
 		Where("status <> ?", enums.StatusDeleted).
 		Asc("id"))
 
@@ -222,7 +238,7 @@ func (s *customerContactService) ReplaceAllForCustomerInTx(
 	now := time.Now()
 	for _, ex := range existing {
 		if _, ok := wantIDs[ex.ID]; !ok {
-			if err := repositories.CustomerContactRepository.Updates(ctx.Tx, ex.ID, map[string]any{
+			if err := repositories.CustomerContactRepository.UpdatesInTenant(ctx.Tx, ex.ID, tenantID, map[string]any{
 				"status":           enums.StatusDeleted,
 				"update_user_id":   operator.UserID,
 				"update_user_name": operator.Username,
@@ -239,19 +255,19 @@ func (s *customerContactService) ReplaceAllForCustomerInTx(
 
 	for _, it := range items {
 		if it.id != nil && *it.id > 0 {
-			row := repositories.CustomerContactRepository.Get(ctx.Tx, *it.id)
+			row := repositories.CustomerContactRepository.GetInTenant(ctx.Tx, *it.id, tenantID)
 			if row == nil || row.CustomerID != customerID || row.Status == enums.StatusDeleted {
 				return errorsx.InvalidParam("联系方式不存在")
 			}
-			if s.hasDuplicateContact(ctx.Tx, customerID, it.ct, it.val, *it.id) {
+			if s.hasDuplicateContact(ctx.Tx, customerID, tenantID, it.ct, it.val, *it.id) {
 				return errorsx.InvalidParam("该联系方式已存在")
 			}
 			if it.primary {
-				if err := s.clearPrimaryExcept(ctx.Tx, customerID, *it.id); err != nil {
+				if err := s.clearPrimaryExcept(ctx.Tx, customerID, tenantID, *it.id); err != nil {
 					return err
 				}
 			}
-			if err := repositories.CustomerContactRepository.Updates(ctx.Tx, *it.id, map[string]any{
+			if err := repositories.CustomerContactRepository.UpdatesInTenant(ctx.Tx, *it.id, tenantID, map[string]any{
 				"contact_type":     it.ct,
 				"contact_value":    it.val,
 				"is_primary":       it.primary,
@@ -264,16 +280,16 @@ func (s *customerContactService) ReplaceAllForCustomerInTx(
 			}
 			continue
 		}
-		if s.hasDuplicateContact(ctx.Tx, customerID, it.ct, it.val, 0) {
+		if s.hasDuplicateContact(ctx.Tx, customerID, tenantID, it.ct, it.val, 0) {
 			return errorsx.InvalidParam("该联系方式已存在")
 		}
-		if deleted := s.findSoftDeletedContactByNaturalKey(ctx.Tx, customerID, it.ct, it.val); deleted != nil {
+		if deleted := s.findSoftDeletedContactByNaturalKey(ctx.Tx, customerID, tenantID, it.ct, it.val); deleted != nil {
 			if it.primary {
-				if err := s.clearPrimaryExcept(ctx.Tx, customerID, deleted.ID); err != nil {
+				if err := s.clearPrimaryExcept(ctx.Tx, customerID, tenantID, deleted.ID); err != nil {
 					return err
 				}
 			}
-			if err := repositories.CustomerContactRepository.Updates(ctx.Tx, deleted.ID, map[string]any{
+			if err := repositories.CustomerContactRepository.UpdatesInTenant(ctx.Tx, deleted.ID, tenantID, map[string]any{
 				"status":           enums.StatusOk,
 				"contact_type":     it.ct,
 				"contact_value":    it.val,
@@ -291,11 +307,12 @@ func (s *customerContactService) ReplaceAllForCustomerInTx(
 			continue
 		}
 		if it.primary {
-			if err := s.clearPrimaryExcept(ctx.Tx, customerID, 0); err != nil {
+			if err := s.clearPrimaryExcept(ctx.Tx, customerID, tenantID, 0); err != nil {
 				return err
 			}
 		}
 		item := &models.CustomerContact{
+			TenantID:     tenantID,
 			CustomerID:   customerID,
 			ContactType:  it.ct,
 			ContactValue: it.val,
@@ -310,19 +327,20 @@ func (s *customerContactService) ReplaceAllForCustomerInTx(
 			return err
 		}
 	}
-	return s.syncCustomerPrimaryFromContacts(ctx.Tx, customerID)
+	return s.syncCustomerPrimaryFromContacts(ctx.Tx, customerID, tenantID)
 }
 
-func (s *customerContactService) clearPrimaryExcept(db *gorm.DB, customerID int64, exceptID int64) error {
+func (s *customerContactService) clearPrimaryExcept(db *gorm.DB, customerID, tenantID, exceptID int64) error {
 	cnd := sqls.NewCnd().
 		Where("customer_id = ?", customerID).
+		Where("tenant_id = ?", tenantID).
 		Where("is_primary = ?", true)
 	if exceptID > 0 {
 		cnd = cnd.Where("id <> ?", exceptID)
 	}
 	list := repositories.CustomerContactRepository.Find(db, cnd)
 	for i := range list {
-		if err := repositories.CustomerContactRepository.UpdateColumn(db, list[i].ID, "is_primary", false); err != nil {
+		if err := repositories.CustomerContactRepository.UpdateColumnInTenant(db, list[i].ID, tenantID, "is_primary", false); err != nil {
 			return err
 		}
 	}
@@ -344,10 +362,14 @@ func (s *customerContactService) CreateCustomerContact(req request.CreateCustome
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
+	tenantID := customerTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理客户的接入公司")
+	}
 	if req.CustomerID <= 0 {
 		return nil, errorsx.InvalidParam("客户不存在")
 	}
-	if CustomerService.Get(req.CustomerID) == nil {
+	if CustomerService.GetInTenant(req.CustomerID, operator) == nil {
 		return nil, errorsx.InvalidParam("客户不存在")
 	}
 	ct := strings.TrimSpace(req.ContactType)
@@ -368,13 +390,13 @@ func (s *customerContactService) CreateCustomerContact(req request.CreateCustome
 
 	var created *models.CustomerContact
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if s.hasDuplicateContact(ctx.Tx, req.CustomerID, enums.ContactType(ct), val, 0) {
+		if s.hasDuplicateContact(ctx.Tx, req.CustomerID, tenantID, enums.ContactType(ct), val, 0) {
 			return errorsx.InvalidParam("该联系方式已存在")
 		}
 		now := time.Now()
-		if deleted := s.findSoftDeletedContactByNaturalKey(ctx.Tx, req.CustomerID, enums.ContactType(ct), val); deleted != nil {
+		if deleted := s.findSoftDeletedContactByNaturalKey(ctx.Tx, req.CustomerID, tenantID, enums.ContactType(ct), val); deleted != nil {
 			if req.IsPrimary {
-				if err := s.clearPrimaryExcept(ctx.Tx, req.CustomerID, deleted.ID); err != nil {
+				if err := s.clearPrimaryExcept(ctx.Tx, req.CustomerID, tenantID, deleted.ID); err != nil {
 					return err
 				}
 			}
@@ -382,7 +404,7 @@ func (s *customerContactService) CreateCustomerContact(req request.CreateCustome
 			if req.IsVerified {
 				verifiedAt = &now
 			}
-			if err := repositories.CustomerContactRepository.Updates(ctx.Tx, deleted.ID, map[string]any{
+			if err := repositories.CustomerContactRepository.UpdatesInTenant(ctx.Tx, deleted.ID, tenantID, map[string]any{
 				"status":           status,
 				"contact_type":     enums.ContactType(ct),
 				"contact_value":    val,
@@ -397,11 +419,11 @@ func (s *customerContactService) CreateCustomerContact(req request.CreateCustome
 			}); err != nil {
 				return err
 			}
-			created = repositories.CustomerContactRepository.Get(ctx.Tx, deleted.ID)
-			return s.syncCustomerPrimaryFromContacts(ctx.Tx, req.CustomerID)
+			created = repositories.CustomerContactRepository.GetInTenant(ctx.Tx, deleted.ID, tenantID)
+			return s.syncCustomerPrimaryFromContacts(ctx.Tx, req.CustomerID, tenantID)
 		}
 		if req.IsPrimary {
-			if err := s.clearPrimaryExcept(ctx.Tx, req.CustomerID, 0); err != nil {
+			if err := s.clearPrimaryExcept(ctx.Tx, req.CustomerID, tenantID, 0); err != nil {
 				return err
 			}
 		}
@@ -410,6 +432,7 @@ func (s *customerContactService) CreateCustomerContact(req request.CreateCustome
 			verifiedAt = &now
 		}
 		item := &models.CustomerContact{
+			TenantID:     tenantID,
 			CustomerID:   req.CustomerID,
 			ContactType:  enums.ContactType(ct),
 			ContactValue: val,
@@ -425,7 +448,7 @@ func (s *customerContactService) CreateCustomerContact(req request.CreateCustome
 			return err
 		}
 		created = item
-		if err := s.syncCustomerPrimaryFromContacts(ctx.Tx, req.CustomerID); err != nil {
+		if err := s.syncCustomerPrimaryFromContacts(ctx.Tx, req.CustomerID, tenantID); err != nil {
 			return err
 		}
 		return nil
@@ -444,10 +467,11 @@ func (s *customerContactService) UpdateCustomerContact(req request.UpdateCustome
 	if req.ID <= 0 {
 		return errorsx.InvalidParam("联系方式不存在")
 	}
-	current := s.Get(req.ID)
+	current := s.GetInTenant(req.ID, operator)
 	if current == nil {
 		return errorsx.InvalidParam("联系方式不存在")
 	}
+	tenantID := current.TenantID
 	ct := strings.TrimSpace(req.ContactType)
 	if !enums.IsValidContactType(ct) {
 		return errorsx.InvalidParam("联系方式类型不合法")
@@ -461,11 +485,11 @@ func (s *customerContactService) UpdateCustomerContact(req request.UpdateCustome
 	}
 
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if s.hasDuplicateContact(ctx.Tx, current.CustomerID, enums.ContactType(ct), val, req.ID) {
+		if s.hasDuplicateContact(ctx.Tx, current.CustomerID, tenantID, enums.ContactType(ct), val, req.ID) {
 			return errorsx.InvalidParam("该联系方式已存在")
 		}
 		if req.IsPrimary {
-			if err := s.clearPrimaryExcept(ctx.Tx, current.CustomerID, req.ID); err != nil {
+			if err := s.clearPrimaryExcept(ctx.Tx, current.CustomerID, tenantID, req.ID); err != nil {
 				return err
 			}
 		}
@@ -478,7 +502,7 @@ func (s *customerContactService) UpdateCustomerContact(req request.UpdateCustome
 		} else {
 			verifiedAt = nil
 		}
-		if err := repositories.CustomerContactRepository.Updates(ctx.Tx, req.ID, map[string]any{
+		if err := repositories.CustomerContactRepository.UpdatesInTenant(ctx.Tx, req.ID, tenantID, map[string]any{
 			"contact_type":     enums.ContactType(ct),
 			"contact_value":    val,
 			"is_primary":       req.IsPrimary,
@@ -493,7 +517,7 @@ func (s *customerContactService) UpdateCustomerContact(req request.UpdateCustome
 		}); err != nil {
 			return err
 		}
-		return s.syncCustomerPrimaryFromContacts(ctx.Tx, current.CustomerID)
+		return s.syncCustomerPrimaryFromContacts(ctx.Tx, current.CustomerID, tenantID)
 	})
 }
 
@@ -505,13 +529,13 @@ func (s *customerContactService) DeleteCustomerContact(id int64, operator *dto.A
 	if id <= 0 {
 		return errorsx.InvalidParam("联系方式不存在")
 	}
-	current := s.Get(id)
+	current := s.GetInTenant(id, operator)
 	if current == nil {
 		return errorsx.InvalidParam("联系方式不存在")
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		now := time.Now()
-		if err := repositories.CustomerContactRepository.Updates(ctx.Tx, id, map[string]any{
+		if err := repositories.CustomerContactRepository.UpdatesInTenant(ctx.Tx, id, current.TenantID, map[string]any{
 			"status":           enums.StatusDeleted,
 			"update_user_id":   operator.UserID,
 			"update_user_name": operator.Username,
@@ -519,6 +543,6 @@ func (s *customerContactService) DeleteCustomerContact(id int64, operator *dto.A
 		}); err != nil {
 			return err
 		}
-		return s.syncCustomerPrimaryFromContacts(ctx.Tx, current.CustomerID)
+		return s.syncCustomerPrimaryFromContacts(ctx.Tx, current.CustomerID, current.TenantID)
 	})
 }

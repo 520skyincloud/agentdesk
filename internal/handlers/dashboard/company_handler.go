@@ -35,7 +35,7 @@ func CompanyAnyList(ctx *gin.Context) {
 	for _, item := range results {
 		companyIDs = append(companyIDs, item.ID)
 	}
-	countMap := services.CustomerService.CountByCompanyIDs(companyIDs)
+	countMap := services.CustomerService.CountByCompanyIDs(companyIDs, operator)
 	for i := range results {
 		results[i].CustomerCount = countMap[results[i].ID]
 	}

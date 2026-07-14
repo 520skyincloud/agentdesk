@@ -889,3 +889,74 @@ go test ./... -run '^$' -count=1
 - AI 分支还配套修改 Company request/response、builder 和前端页面；本步骤没有修改这些文件。建议先合并 Tenant/AuthPrincipal 基础契约，再合并本步骤 Company/Channel 归属，随后 AI 分支 rebase，并让 Company 创建/更新同时写入 `TenantID + IntentProfileID`、让更新 SQL 同时保留 `intent_profile_id` 和 `tenant_id` 条件；Store/WxWork 应在双方确认 Tenant 归属和迁移顺序后继续。
 - 本步骤不修改模型调用、回复引擎、FastGPT、token 统计、计费或向量语义。AI/计费负责人无需改变这些语义。
 - 回滚运行时代码时保留 AutoMigrate 已增加的列、migration 42 记录和已回填 TenantID；不得删除迁移历史或把已归属数据批量清零。公开注册继续保持关闭。
+
+## 25. 多租户阶段 4E/5C：客户主档、身份与联系方式隔离（2026-07-14）
+
+### 本步骤目标与结果
+
+- 为 `Customer`、`CustomerIdentity`、`CustomerContact`、`StoreCustomerRelation` 增加 `TenantID`，将客户域直接子表与父客户归属保持一致。
+- 客户列表 SQL 在 `t_customer` 主条件和 Contact/Company join 中同时使用 tenant；详情、门店关系展示、创建、更新、启停、删除与单事务档案保存都要求有效 `ActiveTenantID`。
+- 手工客户只能关联当前租户 Company。联系方式列表/创建/更新/删除、软删复活、主联系方式切换和批量替换都先验证父客户，并在最终 Customer/Contact 更新 SQL 使用 `id + tenant_id`。
+- 外部客户创建改为显式接收 Channel tenant；CustomerIdentity 按 `tenant_id + external_source + external_id` 查找，同一个外部 ID 在不同租户不会复用同一 Customer。
+- Conversation 创建先验证 Channel 存在、启用且已有租户归属，再创建/复用客户；CustomerSession 验证、客户会话所有权、外部身份回查和企微联系人资料异步回写都校验 Channel/Customer tenant。
+- StoreCustomerRelation 从父 Customer 继承 tenant，创建/更新最终条件携带 tenant；客户审计仿真 seed 的 Customer/Identity/Contact/Relation 也固定写入其 legacy tenant。
+
+### Migration、契约与主要文件
+
+- migration 43 的 Customer 归属来源优先级不是猜测覆盖：显式有效 Tenant、Company tenant、历史 Conversation→Channel tenant 必须互相一致；没有任何来源时才归入 `legacy-default`。
+- Company 缺失、Conversation 引用缺失 Channel、父来源跨租户、Identity/Contact/StoreRelation 孤儿或子表显式租户与父 Customer 冲突时，migration 失败并整体回滚；重复执行幂等。
+- DDL 继续由 AutoMigrate 增加 `bigint not null default 0` 索引字段；没有修改 request/response DTO、enum、Gin 路由、权限点、WebSocket payload 或前端文件。
+
+```text
+cmd/customer_audit_seed/main.go
+internal/models/models.go
+internal/repositories/customer_repository.go
+internal/repositories/customer_identity_repository.go
+internal/repositories/customer_contact_repository.go
+internal/repositories/store_customer_relation_repository.go
+internal/services/customer_service.go
+internal/services/customer_contact_service.go
+internal/services/customer_session_service.go
+internal/services/conversation_service.go
+internal/services/wxwork_protocol_service.go
+internal/handlers/dashboard/customer_handler.go
+internal/handlers/dashboard/customer_contact_handler.go
+internal/handlers/dashboard/company_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+internal/migration/000043_backfill_customer_domain_tenants.go
+internal/migration/000043_backfill_customer_domain_tenants_test.go
+internal/services/customer_tenant_service_test.go
+internal/services/customer_service_test.go
+internal/services/message_service_test.go
+internal/services/conversation_human_dispatch_service_test.go
+internal/services/wxwork_protocol_service_test.go
+```
+
+### 验证证据与已知边界
+
+```text
+go test ./internal/migration -run 'TestBackfillCustomerDomainTenants' -count=1
+go test ./internal/services -run 'Test(CustomerServiceEnforcesTenantContextAcrossCRUD|ExternalCustomerIdentityIsSeparatedByChannelTenant|ConversationCreationDerivesCustomerTenantFromChannel|CustomerContactServiceRejectsCrossTenantIDs|CustomerRepositoriesKeepTenantInFinalWritePredicate|CustomerServicesRequireActiveTenant)$' -count=1
+go test ./internal/handlers/dashboard -run 'TestCustomerListHandlersRequireActiveTenant$' -count=1
+go test -race ./internal/migration ./internal/services ./internal/handlers/dashboard -run 'Test(BackfillCustomerDomainTenants|CustomerServiceEnforcesTenantContextAcrossCRUD|ExternalCustomerIdentityIsSeparatedByChannelTenant|ConversationCreationDerivesCustomerTenantFromChannel|CustomerContactServiceRejectsCrossTenantIDs|CustomerRepositoriesKeepTenantInFinalWritePredicate|CustomerServicesRequireActiveTenant|CustomerListHandlersRequireActiveTenant|EnsureExternalCustomer|LoadCustomerPresentationData|ConversationHumanDispatchHumanOnly|WxWorkProtocolReferencedRecall|WxWorkProtocolEmployeeOutgoingEcho|ConversationCreate|CreateExternalAgentMessageWithoutOutbox)' -count=1
+go test ./internal/migration ./internal/handlers/dashboard -count=1
+go vet ./...
+go test ./... -run '^$' -count=1
+go test -p 1 ./... -count=1
+```
+
+- 上述 focused、race、全 migration/Handler、vet、全仓编译和完整串行测试均通过。本次完整串行测试等待异步回复协程结束后通过；此前已记录的测试清理竞态仍属于残余风险，当前步骤没有修改 AI runtime 生命周期。
+- migration 测试覆盖 Company 来源、Conversation→Channel 来源、无来源 legacy 兜底、显式值保留、重复执行、跨租户父来源冲突和孤儿子表整笔回滚。
+- 双租户测试覆盖后台 CRUD、同外部 ID 隔离、Conversation 从 Channel 继承、跨租户 Company/Customer/Contact ID 注入、档案批量保存、StoreRelation 继承和最终 repository 条件。
+- `Conversation`、`Message`、`Ticket`、`Store`、`StoreStaffBinding`、`WxWorkProtocolInstance` 尚无 TenantID。Conversation 创建已经保证新 Customer 来源明确，但会话列表/派单/工单、Store/WxWork 展示对象、回调、Outbox 和 WebSocket 仍需自己的租户字段与双租户测试。
+- 小程序若没有匹配到真实 Channel，旧独立 AI Agent fallback 现在会在 Conversation 创建时因无法确定租户而失败；没有伪造 tenant 或恢复旧独立 Agent。后续 UI/接口应明确提示先配置渠道。
+- `CustomerIdentityService` 的历史通用 CRUD 包仍存在但当前没有 handler、路由或调用方；真实运行链路均改用 tenant-aware repository/service。若后续重新开放身份管理，必须先提供租户化 API，不能直接复用全局 CRUD。
+- AI 分支新增 `WxWorkCustomerHandoffSetting`，它引用 Customer 和 WxWorkInstance，但当前 AI 分支模型没有 TenantID。合并后必须从 Customer 继承并校验实例租户，不能把本步骤视为该新增表已隔离。
+
+### 并行分支、合并顺序与回滚
+
+- 开始本步骤前 `origin/codex/ai-billing@f2d2da4` 的 migration 最高为 33，migration 43 当前未冲突；提交前仍需 fetch 复核。
+- 同文件重叠包括 `internal/models/models.go`、`internal/services/wxwork_protocol_service.go`、`internal/services/message_service_test.go`、`internal/services/conversation_human_dispatch_service_test.go` 和 `internal/services/wxwork_protocol_service_test.go`。生产 service 的 tenant 校验与 AI 分支的回复/企微能力语义互补，测试夹具也必须同时保留双方新增表和 Channel tenant，禁止整文件选边。
+- `internal/services/customer_service.go`、Customer/Contact handlers/repositories、migration 43 当前不与 AI 分支同文件冲突，适合先独立合并；随后 AI 分支 rebase，解决 models/企微 service/测试夹具冲突并补 `WxWorkCustomerHandoffSetting.TenantID`。
+- 本步骤没有改变 AI 回复触发、模型供应商、FastGPT、token、计费或向量语义。`wxwork_protocol_service.go` 仅在联系人资料回写前验证实例 Channel 与 Customer tenant，并为最终 Customer 更新增加 tenant 条件。
+- 回滚运行时代码时保留新增列、migration 43 记录和已回填 TenantID；不得清零客户归属。若临时回滚严格 Channel 校验，也不得重新开放公开注册或允许跨租户后台客户访问。

@@ -709,6 +709,13 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("auto migrate error = %v", err)
 	}
 	sqls.SetDB(db)
+	if err := db.Create(&models.Channel{
+		ID: 1, TenantID: 101, Name: "测试网页渠道", ChannelType: enums.ChannelTypeWeb,
+		ChannelID: "human-dispatch-test", Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}).Error; err != nil {
+		t.Fatalf("create default channel: %v", err)
+	}
 	return db
 }
 

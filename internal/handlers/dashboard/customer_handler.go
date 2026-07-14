@@ -18,7 +18,12 @@ import (
 )
 
 func CustomerPostList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerView)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -27,7 +32,7 @@ func CustomerPostList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	list, paging := services.CustomerService.ListCustomers(req)
+	list, paging := services.CustomerService.ListCustomers(req, operator)
 	presentation := services.CustomerService.LoadPresentationData(list, true)
 	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildCustomerListWithContext(list, buildCustomerContext(presentation)), Page: paging})
 }
@@ -37,11 +42,16 @@ func CustomerGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	item := services.CustomerService.Get(id)
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item := services.CustomerService.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		httpx.WriteJSON(ctx, nil)
 		return
@@ -55,11 +65,16 @@ func CustomerGetStore_relations(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	item := services.CustomerService.Get(id)
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item := services.CustomerService.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		httpx.WriteJSON(ctx, nil)
 		return
@@ -88,6 +103,10 @@ func CustomerPostSave_profile(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	item, err := services.CustomerService.SaveCustomerProfile(req, user)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -100,6 +119,10 @@ func CustomerPostSave_profile(ctx *gin.Context) {
 func CustomerPostCreate(ctx *gin.Context) {
 	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerCreate)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -123,6 +146,10 @@ func CustomerPostUpdate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	req := request.UpdateCustomerRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -141,6 +168,10 @@ func CustomerPostDelete(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	req := request.DeleteCustomerRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -156,6 +187,10 @@ func CustomerPostDelete(ctx *gin.Context) {
 func CustomerPostUpdate_status(ctx *gin.Context) {
 	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerUpdate)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

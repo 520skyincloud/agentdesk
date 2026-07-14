@@ -146,7 +146,11 @@ func (s *conversationService) createWithProfile(externalUser openidentity.Extern
 	var welcomeMessage *models.Message
 	created := false
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		customerID, err := CustomerService.EnsureExternalCustomer(ctx, externalUser)
+		channel := repositories.ChannelRepository.Get(ctx.Tx, channelID)
+		if channel == nil || channel.Status != enums.StatusOk || channel.TenantID <= 0 {
+			return errorsx.InvalidParam("接入渠道不存在、已停用或缺少租户归属")
+		}
+		customerID, err := CustomerService.EnsureExternalCustomer(ctx, channel.TenantID, externalUser)
 		if err != nil {
 			return err
 		}
@@ -847,7 +851,11 @@ func (s *conversationService) IsCustomerConversationOwner(conversation *models.C
 	if extID == "" || strings.TrimSpace(string(externalUser.ExternalSource)) == "" || conversation.CustomerID <= 0 {
 		return false
 	}
-	identity := repositories.CustomerIdentityRepository.GetBy(sqls.DB(), externalUser.ExternalSource, extID)
+	channel := ChannelService.Get(conversation.ChannelID)
+	if channel == nil || channel.TenantID <= 0 {
+		return false
+	}
+	identity := repositories.CustomerIdentityRepository.GetByInTenant(sqls.DB(), channel.TenantID, externalUser.ExternalSource, extID)
 	if identity == nil {
 		return false
 	}
@@ -922,7 +930,7 @@ func (s *conversationService) LinkConversationCustomer(conversationID, customerI
 	if conversationID <= 0 || customerID <= 0 {
 		return errorsx.InvalidParam("参数不合法")
 	}
-	cust := CustomerService.Get(customerID)
+	cust := CustomerService.GetInTenant(customerID, operator)
 	if cust == nil || cust.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("客户不存在")
 	}
@@ -964,11 +972,11 @@ func (s *conversationService) GetConversationExternalIdentity(conversation *mode
 	if conversation == nil || conversation.CustomerID <= 0 {
 		return nil
 	}
-	identities := repositories.CustomerIdentityRepository.FindByCustomerID(sqls.DB(), conversation.CustomerID)
-	if len(identities) == 0 {
-		return nil
-	}
-	if channel := ChannelService.Get(conversation.ChannelID); channel != nil {
+	if channel := ChannelService.Get(conversation.ChannelID); channel != nil && channel.TenantID > 0 {
+		identities := repositories.CustomerIdentityRepository.FindByCustomerIDInTenant(sqls.DB(), conversation.CustomerID, channel.TenantID)
+		if len(identities) == 0 {
+			return nil
+		}
 		expected := externalSourceForChannelType(channel.ChannelType)
 		if strings.TrimSpace(string(expected)) != "" {
 			for i := range identities {
@@ -977,8 +985,9 @@ func (s *conversationService) GetConversationExternalIdentity(conversation *mode
 				}
 			}
 		}
+		return &identities[0]
 	}
-	return &identities[0]
+	return nil
 }
 
 func externalSourceForChannelType(channelType string) enums.ExternalSource {

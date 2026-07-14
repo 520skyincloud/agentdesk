@@ -58,7 +58,7 @@ func (s *customerSessionService) Exchange(channel *models.Channel, externalUser 
 	}
 	var customerID int64
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		id, err := CustomerService.EnsureExternalCustomer(ctx, externalUser)
+		id, err := CustomerService.EnsureExternalCustomer(ctx, channel.TenantID, externalUser)
 		if err != nil {
 			return err
 		}
@@ -67,7 +67,7 @@ func (s *customerSessionService) Exchange(channel *models.Channel, externalUser 
 	}); err != nil {
 		return nil, err
 	}
-	customer := CustomerService.Get(customerID)
+	customer := CustomerService.GetByTenantID(customerID, channel.TenantID)
 	if customer == nil || customer.Status == enums.StatusDeleted {
 		return nil, errorsx.InvalidParam("客户不存在")
 	}
@@ -131,7 +131,7 @@ func (s *customerSessionService) VerifyRequest(ctx *gin.Context, channel *models
 	if claims.ChannelID != channel.ID || strings.TrimSpace(claims.ChannelCode) != strings.TrimSpace(channel.ChannelID) {
 		return nil, errorsx.Unauthorized("客服会话校验失败")
 	}
-	customer := CustomerService.Get(claims.CustomerID)
+	customer := CustomerService.GetByTenantID(claims.CustomerID, channel.TenantID)
 	if customer == nil || customer.Status == enums.StatusDeleted {
 		return nil, errorsx.Unauthorized("客服会话校验失败")
 	}
@@ -211,7 +211,7 @@ func (s *customerSessionService) externalUserFromClaims(claims *customerSessionC
 	default:
 		return nil, errorsx.Unauthorized("客服会话校验失败")
 	}
-	identity := repositories.CustomerIdentityRepository.GetBy(sqls.DB(), source, parts[1])
+	identity := repositories.CustomerIdentityRepository.GetByInTenant(sqls.DB(), customer.TenantID, source, parts[1])
 	if identity == nil || identity.CustomerID != claims.CustomerID {
 		return nil, errorsx.Unauthorized("客服会话校验失败")
 	}

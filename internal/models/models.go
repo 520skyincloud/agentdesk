@@ -281,6 +281,7 @@ type Company struct {
 //	用于存储客户稳定画像信息，不包含平台身份映射和多联系方式明细。
 type Customer struct {
 	ID            int64        `gorm:"primaryKey;autoIncrement"`                    // ID 为客户主键。
+	TenantID      int64        `gorm:"type:bigint;not null;default:0;index"`        // TenantID 为客户所属接入公司。
 	Name          string       `gorm:"type:varchar(100);not null;default:'';index"` // Name 为客户姓名或展示名称。
 	Avatar        string       `gorm:"type:varchar(1024);not null;default:''"`      // Avatar 为客户头像 URL，可由企微协议联系人资料同步。
 	Gender        enums.Gender `gorm:"type:int;not null;default:0;"`                // Gender 为性别：0未知 1男 2女。
@@ -296,6 +297,7 @@ type Customer struct {
 // CustomerIdentity 客户第三方身份映射表。
 type CustomerIdentity struct {
 	ID             int64                `gorm:"primaryKey;autoIncrement"`
+	TenantID       int64                `gorm:"type:bigint;not null;default:0;index"`
 	CustomerID     int64                `gorm:"type:bigint;not null;uniqueIndex:uk_customer_external"`                    // 为所属客户ID。
 	ExternalSource enums.ExternalSource `gorm:"type:varchar(30);uniqueIndex:uk_customer_external"`                        // 为外部身份来源
 	ExternalID     string               `gorm:"type:varchar(128);index:idx_external_id;uniqueIndex:uk_customer_external"` // 为平台侧用户唯一ID，与访客 ExternalID 对齐。
@@ -307,6 +309,7 @@ type CustomerIdentity struct {
 // StoreCustomerRelation 记录同一自然客户在不同门店下的独立业务关系。
 type StoreCustomerRelation struct {
 	ID                 int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID           int64        `gorm:"type:bigint;not null;default:0;index"`
 	CustomerID         int64        `gorm:"type:bigint;not null;index;uniqueIndex:uk_store_customer_relation"`
 	StoreID            int64        `gorm:"type:bigint;not null;index;uniqueIndex:uk_store_customer_relation"`
 	WxWorkInstanceID   int64        `gorm:"type:bigint;not null;default:0;index"`
@@ -324,6 +327,7 @@ type StoreCustomerRelation struct {
 //	用于维护客户的一对多联系方式，支持主联系方式、验证状态与失效标记。
 type CustomerContact struct {
 	ID           int64             `gorm:"primaryKey;autoIncrement"`
+	TenantID     int64             `gorm:"type:bigint;not null;default:0;index"`
 	CustomerID   int64             `gorm:"type:bigint;not null;index;uniqueIndex:uk_customer_contact"`                  // CustomerID 为所属客户ID。
 	ContactType  enums.ContactType `gorm:"type:varchar(30);not null;default:'';index;uniqueIndex:uk_customer_contact"`  // ContactType 为联系方式类型：mobile/email/wechat/other。
 	ContactValue string            `gorm:"type:varchar(200);not null;default:'';index;uniqueIndex:uk_customer_contact"` // ContactValue 为联系方式值。

@@ -43,6 +43,14 @@ func (s *customerService) Get(id int64) *models.Customer {
 	return repositories.CustomerRepository.Get(sqls.DB(), id)
 }
 
+func (s *customerService) GetInTenant(id int64, operator *dto.AuthPrincipal) *models.Customer {
+	return s.GetByTenantID(id, customerTenantID(operator))
+}
+
+func (s *customerService) GetByTenantID(id, tenantID int64) *models.Customer {
+	return repositories.CustomerRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *customerService) Take(where ...interface{}) *models.Customer {
 	return repositories.CustomerRepository.Take(sqls.DB(), where...)
 }
@@ -64,13 +72,17 @@ func (s *customerService) FindPageByCnd(cnd *sqls.Cnd) (list []models.Customer, 
 }
 
 // ListCustomers 客户分页列表（连联系方式表，支持按非主联系方式检索）。
-func (s *customerService) ListCustomers(req request.CustomerListRequest) (list []models.Customer, paging *sqls.Paging) {
-	if err := s.newCustomerListQuery(req).Distinct("c.*").Offset(req.Offset()).Order("c.id DESC").Limit(req.GetLimit()).Scan(&list).Error; err != nil {
+func (s *customerService) ListCustomers(req request.CustomerListRequest, operator *dto.AuthPrincipal) (list []models.Customer, paging *sqls.Paging) {
+	tenantID := customerTenantID(operator)
+	if tenantID <= 0 {
+		return []models.Customer{}, &sqls.Paging{Page: req.GetPage(), Limit: req.GetLimit(), Total: 0}
+	}
+	if err := s.newCustomerListQuery(req, tenantID).Distinct("c.*").Offset(req.Offset()).Order("c.id DESC").Limit(req.GetLimit()).Scan(&list).Error; err != nil {
 		slog.Error("customer list scan failed", slog.Any("error", err))
 	}
 
 	var total int64
-	if err := s.newCustomerListQuery(req).Distinct("c.id").Count(&total).Error; err != nil {
+	if err := s.newCustomerListQuery(req, tenantID).Distinct("c.id").Count(&total).Error; err != nil {
 		slog.Error("customer list count failed", slog.Any("error", err))
 	}
 
@@ -82,14 +94,14 @@ func (s *customerService) ListCustomers(req request.CustomerListRequest) (list [
 	return
 }
 
-func (s *customerService) newCustomerListQuery(req request.CustomerListRequest) *gorm.DB {
+func (s *customerService) newCustomerListQuery(req request.CustomerListRequest, tenantID int64) *gorm.DB {
 	deleted := int(enums.StatusDeleted)
 	tx := sqls.DB().
 		Table("t_customer AS c").
-		Joins("LEFT JOIN t_customer_contact AS cc ON cc.customer_id = c.id AND cc.status <> ?", deleted).
-		Joins("LEFT JOIN t_company AS co ON co.id = c.company_id")
+		Joins("LEFT JOIN t_customer_contact AS cc ON cc.customer_id = c.id AND cc.tenant_id = c.tenant_id AND cc.status <> ?", deleted).
+		Joins("LEFT JOIN t_company AS co ON co.id = c.company_id AND co.tenant_id = c.tenant_id")
 
-	tx.Where("c.status <> ?", enums.StatusDeleted)
+	tx.Where("c.tenant_id = ? AND c.status <> ?", tenantID, enums.StatusDeleted)
 
 	if req.Status != nil {
 		tx.Where("c.status = ?", *req.Status)
@@ -117,8 +129,8 @@ func (s *customerService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.CustomerRepository.Count(sqls.DB(), cnd)
 }
 
-func (s *customerService) CountByCompanyIDs(companyIDs []int64) map[int64]int64 {
-	return repositories.CustomerRepository.CountByCompanyIDs(sqls.DB(), companyIDs, int(enums.StatusDeleted))
+func (s *customerService) CountByCompanyIDs(companyIDs []int64, operator *dto.AuthPrincipal) map[int64]int64 {
+	return repositories.CustomerRepository.CountByCompanyIDsInTenant(sqls.DB(), companyIDs, customerTenantID(operator), int(enums.StatusDeleted))
 }
 
 func (s *customerService) LoadPresentationData(customers []models.Customer, includeStoreRelations bool) CustomerPresentationData {
@@ -133,13 +145,16 @@ func (s *customerService) LoadPresentationData(customers []models.Customer, incl
 	}
 	companyIDs := make([]int64, 0, len(customers))
 	customerIDs := make([]int64, 0, len(customers))
+	tenantIDs := make([]int64, 0, len(customers))
 	for i := range customers {
 		companyIDs = appendPositive(companyIDs, customers[i].CompanyID)
 		customerIDs = appendPositive(customerIDs, customers[i].ID)
+		tenantIDs = appendPositive(tenantIDs, customers[i].TenantID)
 	}
+	tenantIDs = uniquePositive(tenantIDs)
 	companyIDs = uniquePositive(companyIDs)
 	if len(companyIDs) > 0 {
-		companies := repositories.CompanyRepository.Find(sqls.DB(), sqls.NewCnd().In("id", companyIDs))
+		companies := repositories.CompanyRepository.Find(sqls.DB(), sqls.NewCnd().In("id", companyIDs).In("tenant_id", tenantIDs))
 		for i := range companies {
 			data.CompaniesByID[companies[i].ID] = &companies[i]
 		}
@@ -149,6 +164,7 @@ func (s *customerService) LoadPresentationData(customers []models.Customer, incl
 	}
 	relations := repositories.StoreCustomerRelationRepository.Find(sqls.DB(), sqls.NewCnd().
 		In("customer_id", uniquePositive(customerIDs)).
+		In("tenant_id", tenantIDs).
 		NotEq("status", enums.StatusDeleted).
 		Desc("last_active_at").
 		Desc("id"))
@@ -175,9 +191,12 @@ func (s *customerService) LoadPresentationData(customers []models.Customer, incl
 	return data
 }
 
-func (s *customerService) EnsureExternalCustomer(ctx *sqls.TxContext, externalUser openidentity.ExternalUser) (int64, error) {
+func (s *customerService) EnsureExternalCustomer(ctx *sqls.TxContext, tenantID int64, externalUser openidentity.ExternalUser) (int64, error) {
 	if ctx == nil || ctx.Tx == nil {
 		return 0, errorsx.InvalidParam("事务上下文不能为空")
+	}
+	if tenantID <= 0 {
+		return 0, errorsx.InvalidParam("接入渠道缺少租户归属")
 	}
 	externalSource := externalUser.ExternalSource
 	externalID := strings.TrimSpace(externalUser.ExternalID)
@@ -185,7 +204,7 @@ func (s *customerService) EnsureExternalCustomer(ctx *sqls.TxContext, externalUs
 		return 0, errorsx.Unauthorized("外部用户标识不能为空")
 	}
 	now := time.Now()
-	if identity := repositories.CustomerIdentityRepository.GetBy(ctx.Tx, externalSource, externalID); identity != nil {
+	if identity := repositories.CustomerIdentityRepository.GetByInTenant(ctx.Tx, tenantID, externalSource, externalID); identity != nil {
 		updates := map[string]any{
 			"last_active_at": now,
 			"updated_at":     now,
@@ -193,7 +212,7 @@ func (s *customerService) EnsureExternalCustomer(ctx *sqls.TxContext, externalUs
 		if strs.IsNotBlank(externalUser.ExternalName) {
 			updates["name"] = externalUser.ExternalName
 		}
-		if err := repositories.CustomerRepository.Updates(ctx.Tx, identity.CustomerID, updates); err != nil {
+		if err := repositories.CustomerRepository.UpdatesInTenant(ctx.Tx, identity.CustomerID, tenantID, updates); err != nil {
 			return 0, err
 		}
 
@@ -212,6 +231,7 @@ func (s *customerService) EnsureExternalCustomer(ctx *sqls.TxContext, externalUs
 	}
 
 	customer := &models.Customer{
+		TenantID:     tenantID,
 		Name:         buildExternalCustomerName(externalUser),
 		LastActiveAt: &now,
 		Status:       enums.StatusOk,
@@ -221,6 +241,7 @@ func (s *customerService) EnsureExternalCustomer(ctx *sqls.TxContext, externalUs
 		return 0, err
 	}
 	if err := repositories.CustomerIdentityRepository.Create(ctx.Tx, &models.CustomerIdentity{
+		TenantID:       tenantID,
 		CustomerID:     customer.ID,
 		ExternalSource: externalSource,
 		ExternalID:     externalID,
@@ -252,9 +273,14 @@ func (s *customerService) TouchStoreRelation(customerID, storeID, wxWorkInstance
 	if customerID <= 0 || storeID <= 0 {
 		return nil
 	}
-	existing := repositories.StoreCustomerRelationRepository.Take(sqls.DB(), "customer_id = ? AND store_id = ?", customerID, storeID)
+	customer := s.Get(customerID)
+	if customer == nil || customer.TenantID <= 0 {
+		return errorsx.InvalidParam("客户不存在或缺少租户归属")
+	}
+	existing := repositories.StoreCustomerRelationRepository.Take(sqls.DB(), "tenant_id = ? AND customer_id = ? AND store_id = ?", customer.TenantID, customerID, storeID)
 	if existing == nil {
 		return repositories.StoreCustomerRelationRepository.Create(sqls.DB(), &models.StoreCustomerRelation{
+			TenantID:           customer.TenantID,
 			CustomerID:         customerID,
 			StoreID:            storeID,
 			WxWorkInstanceID:   wxWorkInstanceID,
@@ -265,7 +291,7 @@ func (s *customerService) TouchStoreRelation(customerID, storeID, wxWorkInstance
 			AuditFields:        utils.BuildAuditFields(nil),
 		})
 	}
-	return repositories.StoreCustomerRelationRepository.Updates(sqls.DB(), existing.ID, map[string]any{
+	return repositories.StoreCustomerRelationRepository.UpdatesInTenant(sqls.DB(), existing.ID, customer.TenantID, map[string]any{
 		"wx_work_instance_id":  wxWorkInstanceID,
 		"last_conversation_id": conversationID,
 		"last_active_at":       at,
@@ -291,19 +317,24 @@ func (s *customerService) CreateCustomer(req request.CreateCustomerRequest, oper
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
+	tenantID := customerTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理客户的接入公司")
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, errorsx.InvalidParam("客户名称不能为空")
 	}
 
 	if req.CompanyID > 0 {
-		company := CompanyService.Get(req.CompanyID)
+		company := CompanyService.GetInTenant(req.CompanyID, operator)
 		if company == nil {
 			return nil, errorsx.InvalidParam("所属公司不存在")
 		}
 	}
 
 	item := &models.Customer{
+		TenantID:      tenantID,
 		Name:          name,
 		Gender:        enums.Gender(req.Gender),
 		CompanyID:     req.CompanyID,
@@ -324,7 +355,7 @@ func (s *customerService) UpdateCustomer(req request.UpdateCustomerRequest, oper
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item := s.Get(req.ID)
+	item := s.GetInTenant(req.ID, operator)
 	if item == nil {
 		return errorsx.InvalidParam("客户不存在")
 	}
@@ -334,7 +365,7 @@ func (s *customerService) UpdateCustomer(req request.UpdateCustomerRequest, oper
 	}
 
 	if req.CompanyID > 0 {
-		company := CompanyService.Get(req.CompanyID)
+		company := CompanyService.GetInTenant(req.CompanyID, operator)
 		if company == nil {
 			return errorsx.InvalidParam("所属公司不存在")
 		}
@@ -342,7 +373,7 @@ func (s *customerService) UpdateCustomer(req request.UpdateCustomerRequest, oper
 
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		now := time.Now()
-		if err := repositories.CustomerRepository.Updates(ctx.Tx, req.ID, map[string]any{
+		if err := repositories.CustomerRepository.UpdatesInTenant(ctx.Tx, req.ID, item.TenantID, map[string]any{
 			"name":             name,
 			"gender":           req.Gender,
 			"company_id":       req.CompanyID,
@@ -360,11 +391,11 @@ func (s *customerService) UpdateCustomer(req request.UpdateCustomerRequest, oper
 }
 
 func (s *customerService) DeleteCustomer(id int64, operator dto.AuthPrincipal) error {
-	item := s.Get(id)
+	item := s.GetInTenant(id, &operator)
 	if item == nil {
 		return errorsx.InvalidParam("客户不存在")
 	}
-	return repositories.CustomerRepository.Updates(sqls.DB(), id, map[string]any{
+	return repositories.CustomerRepository.UpdatesInTenant(sqls.DB(), id, item.TenantID, map[string]any{
 		"status":           enums.StatusDeleted,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
@@ -391,14 +422,14 @@ func (s *customerService) UpdateStatus(id int64, status int, operator *dto.AuthP
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item := s.Get(id)
+	item := s.GetInTenant(id, operator)
 	if item == nil {
 		return errorsx.InvalidParam("客户不存在")
 	}
 	if status != int(enums.StatusOk) && status != int(enums.StatusDisabled) {
 		return errorsx.InvalidParam("状态值不合法")
 	}
-	return repositories.CustomerRepository.Updates(sqls.DB(), id, map[string]any{
+	return repositories.CustomerRepository.UpdatesInTenant(sqls.DB(), id, item.TenantID, map[string]any{
 		"status":           status,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
@@ -411,12 +442,16 @@ func (s *customerService) SaveCustomerProfile(req request.SaveCustomerProfileReq
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
+	tenantID := customerTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理客户的接入公司")
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, errorsx.InvalidParam("客户名称不能为空")
 	}
 	if req.CompanyID > 0 {
-		if CompanyService.Get(req.CompanyID) == nil {
+		if CompanyService.GetInTenant(req.CompanyID, operator) == nil {
 			return nil, errorsx.InvalidParam("所属公司不存在")
 		}
 	}
@@ -427,6 +462,7 @@ func (s *customerService) SaveCustomerProfile(req request.SaveCustomerProfileReq
 		var customerID int64
 		if createMode {
 			c := &models.Customer{
+				TenantID:      tenantID,
 				Name:          name,
 				Gender:        enums.Gender(req.Gender),
 				CompanyID:     req.CompanyID,
@@ -443,12 +479,12 @@ func (s *customerService) SaveCustomerProfile(req request.SaveCustomerProfileReq
 			out = c
 		} else {
 			customerID = *req.ID
-			cur := repositories.CustomerRepository.Get(ctx.Tx, customerID)
+			cur := repositories.CustomerRepository.GetInTenant(ctx.Tx, customerID, tenantID)
 			if cur == nil {
 				return errorsx.InvalidParam("客户不存在")
 			}
 			now := time.Now()
-			if err := repositories.CustomerRepository.Updates(ctx.Tx, customerID, map[string]any{
+			if err := repositories.CustomerRepository.UpdatesInTenant(ctx.Tx, customerID, tenantID, map[string]any{
 				"name":             name,
 				"gender":           req.Gender,
 				"company_id":       req.CompanyID,
@@ -462,12 +498,19 @@ func (s *customerService) SaveCustomerProfile(req request.SaveCustomerProfileReq
 			if err := s.syncConversationCustomerName(ctx.Tx, customerID, name, operator, now); err != nil {
 				return err
 			}
-			out = repositories.CustomerRepository.Get(ctx.Tx, customerID)
+			out = repositories.CustomerRepository.GetInTenant(ctx.Tx, customerID, tenantID)
 		}
-		return CustomerContactService.ReplaceAllForCustomerInTx(ctx, customerID, req.Contacts, operator)
+		return CustomerContactService.ReplaceAllForCustomerInTx(ctx, customerID, tenantID, req.Contacts, operator)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+func customerTenantID(operator *dto.AuthPrincipal) int64 {
+	if operator == nil || operator.ActiveTenantID <= 0 {
+		return 0
+	}
+	return operator.ActiveTenantID
 }

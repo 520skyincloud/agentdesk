@@ -20,7 +20,7 @@ func TestEnsureExternalCustomerUpdatesNameFromExternalIdentity(t *testing.T) {
 
 	var firstID int64
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		id, err := services.CustomerService.EnsureExternalCustomer(ctx, openidentity.ExternalUser{
+		id, err := services.CustomerService.EnsureExternalCustomer(ctx, 101, openidentity.ExternalUser{
 			ExternalSource: enums.ExternalSourceUser,
 			ExternalID:     "user-1",
 			ExternalName:   "张三",
@@ -43,7 +43,7 @@ func TestEnsureExternalCustomerUpdatesNameFromExternalIdentity(t *testing.T) {
 
 	var secondID int64
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		id, err := services.CustomerService.EnsureExternalCustomer(ctx, openidentity.ExternalUser{
+		id, err := services.CustomerService.EnsureExternalCustomer(ctx, 101, openidentity.ExternalUser{
 			ExternalSource: enums.ExternalSourceUser,
 			ExternalID:     "user-1",
 			ExternalName:   "李四",
@@ -76,7 +76,7 @@ func TestEnsureExternalCustomerUpdatesNameFromExternalIdentity(t *testing.T) {
 
 func TestLoadCustomerPresentationDataAggregatesRelatedModels(t *testing.T) {
 	db := setupCustomerServiceTestDB(t)
-	company := &models.Company{Name: "测试企业", Status: enums.StatusOk}
+	company := &models.Company{TenantID: 101, Name: "测试企业", Status: enums.StatusOk}
 	if err := db.Create(company).Error; err != nil {
 		t.Fatalf("create company: %v", err)
 	}
@@ -88,12 +88,12 @@ func TestLoadCustomerPresentationDataAggregatesRelatedModels(t *testing.T) {
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create wxwork instance: %v", err)
 	}
-	customer := &models.Customer{Name: "测试客户", CompanyID: company.ID, Status: enums.StatusOk}
+	customer := &models.Customer{TenantID: 101, Name: "测试客户", CompanyID: company.ID, Status: enums.StatusOk}
 	if err := db.Create(customer).Error; err != nil {
 		t.Fatalf("create customer: %v", err)
 	}
 	relation := &models.StoreCustomerRelation{
-		CustomerID: customer.ID, StoreID: store.ID, WxWorkInstanceID: instance.ID, Status: enums.StatusOk,
+		TenantID: 101, CustomerID: customer.ID, StoreID: store.ID, WxWorkInstanceID: instance.ID, Status: enums.StatusOk,
 	}
 	if err := db.Create(relation).Error; err != nil {
 		t.Fatalf("create store relation: %v", err)

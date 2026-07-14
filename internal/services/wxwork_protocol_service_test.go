@@ -97,6 +97,7 @@ func TestWxWorkProtocolReferencedRecallMarksOriginalMessageRecalled(t *testing.T
 	now := time.Now()
 	channel := &models.Channel{
 		ID:          32,
+		TenantID:    101,
 		Name:        "企微员工号",
 		ChannelType: enums.ChannelTypeWxWorkProtocol,
 		ChannelID:   "wxwork-protocol-recall-test",
@@ -196,6 +197,7 @@ func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
 	now := time.Now()
 	channel := &models.Channel{
 		ID:          31,
+		TenantID:    101,
 		Name:        "企微员工号",
 		ChannelType: enums.ChannelTypeWxWorkProtocol,
 		ChannelID:   "wxwork-protocol-test",

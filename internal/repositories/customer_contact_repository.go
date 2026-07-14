@@ -26,6 +26,13 @@ func (r *customerContactRepository) Get(db *gorm.DB, id int64) *models.CustomerC
 	return ret
 }
 
+func (r *customerContactRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.CustomerContact {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *customerContactRepository) Take(db *gorm.DB, where ...interface{}) *models.CustomerContact {
 	ret := &models.CustomerContact{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -90,6 +97,14 @@ func (r *customerContactRepository) Update(db *gorm.DB, t *models.CustomerContac
 func (r *customerContactRepository) Updates(db *gorm.DB, id int64, columns map[string]interface{}) (err error) {
 	err = db.Model(&models.CustomerContact{}).Where("id = ?", id).Updates(columns).Error
 	return
+}
+
+func (r *customerContactRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.CustomerContact{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
+func (r *customerContactRepository) UpdateColumnInTenant(db *gorm.DB, id, tenantID int64, name string, value any) error {
+	return db.Model(&models.CustomerContact{}).Where("id = ? AND tenant_id = ?", id, tenantID).UpdateColumn(name, value).Error
 }
 
 func (r *customerContactRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
