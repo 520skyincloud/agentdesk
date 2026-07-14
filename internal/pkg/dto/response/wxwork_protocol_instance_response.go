@@ -51,6 +51,8 @@ type WxWorkProtocolInstanceResponse struct {
 	BridgeID                       string       `json:"bridgeId"`
 	StaffUserIDs                   string       `json:"staffUserIds"`
 	ServiceHours                   string       `json:"serviceHours"`
+	FrontDeskMode                  string       `json:"frontDeskMode"`
+	FrontDeskHours                 string       `json:"frontDeskHours"`
 	StoreRoomConversationID        string       `json:"storeRoomConversationId"`
 	StoreRoomNotifyEnabled         bool         `json:"storeRoomNotifyEnabled"`
 	StoreRoomAtList                string       `json:"storeRoomAtList"`
@@ -87,6 +89,14 @@ type StartWxWorkProtocolLoginResponse struct {
 	QRCode        string                         `json:"qrcode"`
 	QRCodeContent string                         `json:"qrcodeContent"`
 	Key           string                         `json:"key"`
+}
+
+type WxWorkProtocolLoginStatusResponse struct {
+	Status       string `json:"status"`
+	StatusCode   int    `json:"statusCode"`
+	RequiresCode bool   `json:"requiresCode"`
+	Message      string `json:"message"`
+	RawResponse  string `json:"rawResponse,omitempty"`
 }
 
 type WxWorkProtocolRoomOptionResponse struct {
@@ -146,6 +156,8 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		BridgeID:                       item.BridgeID,
 		StaffUserIDs:                   item.StaffUserIDs,
 		ServiceHours:                   item.ServiceHours,
+		FrontDeskMode:                  item.FrontDeskMode,
+		FrontDeskHours:                 item.FrontDeskHours,
 		StoreRoomConversationID:        item.StoreRoomConversationID,
 		StoreRoomNotifyEnabled:         item.StoreRoomNotifyEnabled,
 		StoreRoomAtList:                item.StoreRoomAtList,

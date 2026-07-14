@@ -594,6 +594,8 @@ type WxWorkProtocolInstance struct {
 	BridgeID                       string       `gorm:"type:varchar(128);not null;default:'';index"`
 	StaffUserIDs                   string       `gorm:"type:varchar(500);not null;default:''"`
 	ServiceHours                   string       `gorm:"type:varchar(200);not null;default:''"`
+	FrontDeskMode                  string       `gorm:"type:varchar(30);not null;default:'unmanned';index"`
+	FrontDeskHours                 string       `gorm:"type:varchar(200);not null;default:''"`
 	StoreRoomConversationID        string       `gorm:"type:varchar(128);not null;default:'';index"`
 	StoreRoomNotifyEnabled         bool         `gorm:"not null;default:false"`
 	StoreRoomAtList                string       `gorm:"type:varchar(500);not null;default:''"`
@@ -664,6 +666,9 @@ type AIManualResumeTask struct {
 	ReadyAt                *time.Time `gorm:"type:datetime;index"`
 	NextRetryAt            *time.Time `gorm:"type:datetime;index"`
 	RetryCount             int        `gorm:"type:int;not null;default:0"`
+	ReminderCount          int        `gorm:"type:int;not null;default:0"`
+	LastReminderAt         *time.Time `gorm:"type:datetime;index"`
+	NextReminderAt         *time.Time `gorm:"type:datetime;index"`
 	NoticeSentAt           *time.Time `gorm:"type:datetime;index"`
 	CompletedAt            *time.Time `gorm:"type:datetime;index"`
 	LastError              string     `gorm:"type:text"`
