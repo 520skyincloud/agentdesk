@@ -3506,3 +3506,38 @@ git diff --check
 
 - `origin/codex/ai-billing@f2d2da4` 不修改本批 User service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。最终合并保留本批前置校验顺序，避免恢复“先删后验”或静默级联。
 - 可独立回滚 service/test 和两份文档，无数据库回滚；回滚会恢复职责角色与组织/会话归属悬空风险。未来离职编排必须作为独立、可预览、可审计事务设计。
+
+## 第 70 批：职责对象与账号角色语义审计（2026-07-15）
+
+### 目标与实现
+
+- 第 69 批只阻止新错误，不能发现历史或手工数据中职责对象与角色不一致。本批继续扩展只读 `auditAgentOrganizationSemantics`。
+- AgentProfile、AgentTeam.LeaderUserID、StoreStaffBinding 分别通过 `NOT EXISTS(UserRole JOIN Role)` 检查启用的 `cs_user/cs_team_leader/store_staff`。业务对象仅排除 `StatusDeleted`，角色必须 `StatusOk`。
+- AgentTeamSquad.LeaderUserID 通过同 TenantID、同 TeamID、未删除 AgentProfile 检查本组客服身份，不错误要求小组负责人拥有综合组长角色。
+- 复用统一 Count、ID 排序样本、sampleLimit 和缺列缓存；不增加普通外键关系计数，不写库或自动修复。
+
+### 文件与验证
+
+```text
+internal/services/tenant_integrity_audit_service.go
+internal/services/tenant_integrity_audit_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^TestTenantIntegrityAudit(PassesCleanTwoTenantFixture|ReportsAgentOrganizationSemanticViolations|ReportsDutyRoleAndSquadLeaderViolations)$' -count=1 -p 1
+go run ./cmd/tenant_integrity_audit --config /tmp/agentdesk-tenant-stats.yaml --sample-limit 5
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 四类职责违规各 1 条且样本精确，合法职责记录不误报；前一批成员/排班语义和干净双租户 fixture 继续通过。
+- 实际 SQLite 报告 passed：51/51 模型策略、64/64 表、125/125 普通关系、0 违规；前后 mtime `1784055363`、大小 `4878336` 字节不变。
+- 全仓 Go、vet 和 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端、模型调用、token、usage 或计费变化；没有新增 generated 报告。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 不修改本批审计 service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。合并后仍需以最终 Role/UserRole 与新增 AI 模型运行完整审计。
+- 可独立回滚 service/test 和两份文档，无数据库回滚；回滚会失去历史职责对象缺角色和小组负责人缺本组档案的发现能力。修复必须人工确认恢复角色还是解除职责，再另做幂等 DML。

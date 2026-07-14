@@ -545,6 +545,79 @@ func (s *tenantIntegrityAuditService) auditAgentOrganizationSemantics(
 			}
 		}
 	}
+
+	if available["UserRole"] && available["Role"] {
+		userRoleTable := metadata["UserRole"].Table
+		roleTable := metadata["Role"].Table
+		baseReady := requireColumn("UserRole", userRoleTable, "user_id", "职责角色语义审计所需列不存在")
+		baseReady = requireColumn("UserRole", userRoleTable, "role_id", "职责角色语义审计所需列不存在") && baseReady
+		baseReady = requireColumn("Role", roleTable, "code", "职责角色语义审计所需列不存在") && baseReady
+		baseReady = requireColumn("Role", roleTable, "status", "职责角色语义审计所需列不存在") && baseReady
+		checks := []struct {
+			model      string
+			userColumn string
+			roleCode   string
+			code       string
+			entity     string
+			message    string
+		}{
+			{model: "AgentProfile", userColumn: "user_id", roleCode: constants.RoleCodeCsUser, code: "AGENT_PROFILE_MISSING_CS_USER_ROLE", entity: "AgentProfile.user_id", message: "未删除客服档案关联账号缺少启用的客服角色"},
+			{model: "AgentTeam", userColumn: "leader_user_id", roleCode: constants.RoleCodeCsTeamLeader, code: "AGENT_TEAM_LEADER_MISSING_ROLE", entity: "AgentTeam.leader_user_id", message: "未删除综合客服组负责人缺少启用的客服组长角色"},
+			{model: "StoreStaffBinding", userColumn: "user_id", roleCode: constants.RoleCodeStoreStaff, code: "STORE_STAFF_BINDING_MISSING_ROLE", entity: "StoreStaffBinding.user_id", message: "未删除门店员工绑定账号缺少启用的门店员工角色"},
+		}
+		for _, check := range checks {
+			if !baseReady || !available[check.model] {
+				continue
+			}
+			childTable := metadata[check.model].Table
+			ready := requireColumn(check.model, childTable, "status", "职责角色语义审计所需列不存在")
+			ready = requireColumn(check.model, childTable, check.userColumn, "职责角色语义审计所需列不存在") && ready
+			if !ready {
+				continue
+			}
+			where := fmt.Sprintf(
+				"c.status <> ? AND c.%s > 0 AND NOT EXISTS (SELECT 1 FROM %s AS ur JOIN %s AS role ON role.id = ur.role_id WHERE ur.user_id = c.%s AND role.code = ? AND role.status = ?)",
+				check.userColumn, userRoleTable, roleTable, check.userColumn,
+			)
+			if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+				Table: childTable, Alias: "c", Where: where,
+				Args: []any{enums.StatusDeleted, check.roleCode, enums.StatusOk}, IDExpr: "c.id",
+			}, sampleLimit, check.code, check.entity, check.message); err != nil {
+				return err
+			}
+		}
+	}
+
+	if available["AgentTeamSquad"] && available["AgentProfile"] {
+		squadTable := metadata["AgentTeamSquad"].Table
+		profileTable := metadata["AgentProfile"].Table
+		ready := true
+		for _, column := range []struct {
+			model string
+			table string
+			name  string
+		}{
+			{model: "AgentTeamSquad", table: squadTable, name: "status"},
+			{model: "AgentTeamSquad", table: squadTable, name: "tenant_id"},
+			{model: "AgentTeamSquad", table: squadTable, name: "team_id"},
+			{model: "AgentTeamSquad", table: squadTable, name: "leader_user_id"},
+			{model: "AgentProfile", table: profileTable, name: "status"},
+			{model: "AgentProfile", table: profileTable, name: "tenant_id"},
+			{model: "AgentProfile", table: profileTable, name: "team_id"},
+			{model: "AgentProfile", table: profileTable, name: "user_id"},
+		} {
+			ready = requireColumn(column.model, column.table, column.name, "客服小组负责人语义审计所需列不存在") && ready
+		}
+		if ready {
+			if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+				Table: squadTable, Alias: "c",
+				Where: "c.status <> ? AND c.leader_user_id > 0 AND NOT EXISTS (SELECT 1 FROM " + profileTable + " AS profile WHERE profile.tenant_id = c.tenant_id AND profile.team_id = c.team_id AND profile.user_id = c.leader_user_id AND profile.status <> ?)",
+				Args:  []any{enums.StatusDeleted, enums.StatusDeleted}, IDExpr: "c.id",
+			}, sampleLimit, "AGENT_TEAM_SQUAD_LEADER_PROFILE_MISMATCH", "AgentTeamSquad.leader_user_id", "未删除客服小组负责人缺少本综合客服组内客服档案"); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

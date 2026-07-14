@@ -2138,3 +2138,17 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 测试覆盖未完成会话、有效客服档案、综合组组长、门店员工绑定四个阻断点，确认每次失败后三个原职责角色都完整保留，并在清理依赖后允许移除。原角色等级、跨租户、平台 scope 和创建账号测试继续通过。
 - 聚焦 race、独立串行全仓 Go、`go vet ./...` 与 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端或 AI/计费变化；AI 分支无同文件冲突，不要求 rebase 或 migration 排序。
 - 可独立回滚 User service、测试与本节文档，无数据库回滚；回滚会重新允许职责角色与业务归属悬空。若未来要支持“一键离职/换岗”，应另建显式预览与事务编排，不得把本保护改成静默级联清理。
+
+## 70. 当前实施检查点：职责对象与账号角色语义审计（2026-07-15）
+
+第 69 批阻止在线角色调整制造新的职责悬空，但历史数据、迁移或手工写库仍可能存在“客服组织对象有效，账号却没有对应启用角色”。本批把相反方向纳入现有只读完整性审计，不自动补角色、不清负责人。
+
+- `AGENT_PROFILE_MISSING_CS_USER_ROLE`：未删除 AgentProfile 的 UserID 必须通过 UserRole 关联启用的 `cs_user`。
+- `AGENT_TEAM_LEADER_MISSING_ROLE`：未删除 AgentTeam 的非零 LeaderUserID 必须关联启用的 `cs_team_leader`。
+- `STORE_STAFF_BINDING_MISSING_ROLE`：未删除 StoreStaffBinding 的 UserID 必须关联启用的 `store_staff`。
+- `AGENT_TEAM_SQUAD_LEADER_PROFILE_MISMATCH`：未删除 AgentTeamSquad 的非零 LeaderUserID 必须存在同 TenantID、同 TeamID、未删除 AgentProfile。小组负责人继续是本综合组客服，不额外要求 `cs_team_leader`。
+- 三类职责角色检查使用 `NOT EXISTS(UserRole JOIN Role)` 并要求 Role.Status=OK；被禁用角色不提供可用职责。已删除业务对象不要求继续保留角色，停用但未删除对象仍需保持职责完整，避免再次启用时恢复悬空状态。
+- 测试同时建立合法和缺角色的客服档案、综合组组长、门店员工绑定，以及合法和缺本组档案的小组负责人；四类违规各精确报告 1 条，合法记录不误报。
+- 实际 `/tmp/agentdesk-tenant-stats.db` 审计继续 passed：51/51 模型策略、64/64 表、125/125 普通关系、0 违规；前后 mtime `1784055363`、大小 `4878336` 字节不变。
+- 聚焦 race、独立串行全仓 Go、vet 和 diff 检查通过。无 model、migration、DTO、API、权限、WebSocket、页面或 AI/计费变化；AI 分支无同文件冲突，不要求 rebase 或 migration 排序。
+- 可独立回滚审计 service/test 与本节文档，无数据库回滚；回滚只会失去历史职责悬空发现能力。违规修复必须先判断应恢复角色还是解除业务职责，不能由审计命令替业务负责人做决定。

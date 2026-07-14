@@ -304,6 +304,95 @@ func TestTenantIntegrityAuditReportsAgentOrganizationSemanticViolations(t *testi
 	}
 }
 
+func TestTenantIntegrityAuditReportsDutyRoleAndSquadLeaderViolations(t *testing.T) {
+	db := openTenantIntegrityTestDB(t, true)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	now := time.Now()
+	audit := tenantIntegrityTestAuditFields(now)
+
+	roles := map[string]*models.Role{}
+	for _, role := range []*models.Role{
+		{Name: "Audit CS User", Code: constants.RoleCodeCsUser, Scope: constants.RoleScopeTenant, Status: enums.StatusOk, AuditFields: audit},
+		{Name: "Audit Team Leader", Code: constants.RoleCodeCsTeamLeader, Scope: constants.RoleScopeTenant, Status: enums.StatusOk, AuditFields: audit},
+		{Name: "Audit Store Staff", Code: constants.RoleCodeStoreStaff, Scope: constants.RoleScopeTenant, Status: enums.StatusOk, AuditFields: audit},
+	} {
+		if err := db.Create(role).Error; err != nil {
+			t.Fatalf("create duty role %s: %v", role.Code, err)
+		}
+		roles[role.Code] = role
+	}
+	for _, code := range []string{constants.RoleCodeCsUser, constants.RoleCodeCsTeamLeader, constants.RoleCodeStoreStaff} {
+		if err := db.Create(&models.UserRole{UserID: fixture.tenantUserA.ID, RoleID: roles[code].ID, AuditFields: audit}).Error; err != nil {
+			t.Fatalf("assign valid duty role %s: %v", code, err)
+		}
+	}
+	missingRoleUser := &models.User{TenantID: fixture.tenantA.ID, Username: "audit-missing-duty-roles", Password: "x", Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(missingRoleUser).Error; err != nil {
+		t.Fatalf("create missing role user: %v", err)
+	}
+	validTeam := &models.AgentTeam{TenantID: fixture.tenantA.ID, Name: "Valid Duty Team", LeaderUserID: fixture.tenantUserA.ID, Status: enums.StatusOk, AuditFields: audit}
+	invalidTeam := &models.AgentTeam{TenantID: fixture.tenantA.ID, Name: "Invalid Duty Team", LeaderUserID: missingRoleUser.ID, Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(validTeam).Error; err != nil {
+		t.Fatalf("create valid duty team: %v", err)
+	}
+	if err := db.Create(invalidTeam).Error; err != nil {
+		t.Fatalf("create invalid duty team: %v", err)
+	}
+	validProfile := &models.AgentProfile{TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID, TeamID: validTeam.ID, AgentCode: "valid-duty-agent", DisplayName: "Valid Duty Agent", Status: enums.StatusOk, AuditFields: audit}
+	invalidProfile := &models.AgentProfile{TenantID: fixture.tenantA.ID, UserID: missingRoleUser.ID, TeamID: invalidTeam.ID, AgentCode: "invalid-duty-agent", DisplayName: "Invalid Duty Agent", Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(validProfile).Error; err != nil {
+		t.Fatalf("create valid duty profile: %v", err)
+	}
+	if err := db.Create(invalidProfile).Error; err != nil {
+		t.Fatalf("create invalid duty profile: %v", err)
+	}
+	validSquad := &models.AgentTeamSquad{TenantID: fixture.tenantA.ID, TeamID: validTeam.ID, Name: "Valid Leader Squad", LeaderUserID: fixture.tenantUserA.ID, Status: enums.StatusOk, AuditFields: audit}
+	invalidSquad := &models.AgentTeamSquad{TenantID: fixture.tenantA.ID, TeamID: validTeam.ID, Name: "Invalid Leader Squad", LeaderUserID: missingRoleUser.ID, Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(validSquad).Error; err != nil {
+		t.Fatalf("create valid leader squad: %v", err)
+	}
+	if err := db.Create(invalidSquad).Error; err != nil {
+		t.Fatalf("create invalid leader squad: %v", err)
+	}
+	validStore := &models.Store{TenantID: fixture.tenantA.ID, StoreCode: "valid-duty-store", Name: "Valid Duty Store", Status: enums.StatusOk, AuditFields: audit}
+	invalidStore := &models.Store{TenantID: fixture.tenantA.ID, StoreCode: "invalid-duty-store", Name: "Invalid Duty Store", Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(validStore).Error; err != nil {
+		t.Fatalf("create valid duty store: %v", err)
+	}
+	if err := db.Create(invalidStore).Error; err != nil {
+		t.Fatalf("create invalid duty store: %v", err)
+	}
+	validBinding := &models.StoreStaffBinding{TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID, StoreID: validStore.ID, AgentTeamID: validTeam.ID, Status: enums.StatusOk, AuditFields: audit}
+	invalidBinding := &models.StoreStaffBinding{TenantID: fixture.tenantA.ID, UserID: missingRoleUser.ID, StoreID: invalidStore.ID, AgentTeamID: invalidTeam.ID, Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(validBinding).Error; err != nil {
+		t.Fatalf("create valid store staff binding: %v", err)
+	}
+	if err := db.Create(invalidBinding).Error; err != nil {
+		t.Fatalf("create invalid store staff binding: %v", err)
+	}
+
+	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 5})
+	if err != nil {
+		t.Fatalf("audit duty role semantics: %v", err)
+	}
+	checks := []struct {
+		code     string
+		entity   string
+		sampleID int64
+	}{
+		{code: "AGENT_PROFILE_MISSING_CS_USER_ROLE", entity: "AgentProfile.user_id", sampleID: invalidProfile.ID},
+		{code: "AGENT_TEAM_LEADER_MISSING_ROLE", entity: "AgentTeam.leader_user_id", sampleID: invalidTeam.ID},
+		{code: "STORE_STAFF_BINDING_MISSING_ROLE", entity: "StoreStaffBinding.user_id", sampleID: invalidBinding.ID},
+		{code: "AGENT_TEAM_SQUAD_LEADER_PROFILE_MISMATCH", entity: "AgentTeamSquad.leader_user_id", sampleID: invalidSquad.ID},
+	}
+	for _, check := range checks {
+		violation := tenantIntegrityFindViolation(report, check.code, check.entity)
+		if violation == nil || violation.Count != 1 || len(violation.SampleIDs) != 1 || violation.SampleIDs[0] != check.sampleID {
+			t.Errorf("duty semantic violation %s = %#v", check.code, violation)
+		}
+	}
+}
+
 type tenantIntegrityFixture struct {
 	tenantA      *models.Tenant
 	tenantB      *models.Tenant
