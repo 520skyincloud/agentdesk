@@ -7,6 +7,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
@@ -25,6 +26,9 @@ func WxWorkProtocolInstanceAnyList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if !requireWxWorkTenantContext(ctx) {
+		return
+	}
 	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "guid", Op: params.Like},
@@ -37,7 +41,7 @@ func WxWorkProtocolInstanceAnyList(ctx *gin.Context) {
 	list, paging := services.WxWorkProtocolInstanceService.FindPageByCnd(cnd)
 	results := make([]response.WxWorkProtocolInstanceResponse, 0, len(list))
 	for _, item := range list {
-		results = append(results, buildWxWorkProtocolInstanceResponse(&item))
+		results = append(results, buildWxWorkProtocolInstanceResponse(&item, operator))
 	}
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
@@ -52,7 +56,10 @@ func WxWorkProtocolInstanceGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	item := services.WxWorkProtocolInstanceService.Get(id)
+	if !requireWxWorkTenantContext(ctx) {
+		return
+	}
+	item := services.WxWorkProtocolInstanceService.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号实例不存在"))
 		return
@@ -61,13 +68,16 @@ func WxWorkProtocolInstanceGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该企微员工号实例"))
 		return
 	}
-	httpx.WriteJSON(ctx, buildWxWorkProtocolInstanceResponse(item))
+	httpx.WriteJSON(ctx, buildWxWorkProtocolInstanceResponse(item, operator))
 }
 
 func WxWorkProtocolInstancePostCreate(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelCreate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkTenantContext(ctx) {
 		return
 	}
 	req := request.CreateWxWorkProtocolInstanceRequest{}
@@ -80,13 +90,16 @@ func WxWorkProtocolInstancePostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, buildWxWorkProtocolInstanceResponse(item))
+	httpx.WriteJSON(ctx, buildWxWorkProtocolInstanceResponse(item, operator))
 }
 
 func WxWorkProtocolInstancePostStart_login(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelCreate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkTenantContext(ctx) {
 		return
 	}
 	req := request.StartWxWorkProtocolLoginRequest{}
@@ -106,7 +119,7 @@ func WxWorkProtocolInstancePostStart_login(ctx *gin.Context) {
 	}
 	qrcode, qrcodeContent, key := parseWxWorkProtocolLoginQRCode(raw)
 	httpx.WriteJSON(ctx, response.StartWxWorkProtocolLoginResponse{
-		Instance:      buildWxWorkProtocolInstanceResponse(item),
+		Instance:      buildWxWorkProtocolInstanceResponse(item, operator),
 		RawResponse:   raw,
 		QRCode:        qrcode,
 		QRCodeContent: qrcodeContent,
@@ -118,6 +131,9 @@ func WxWorkProtocolInstancePostResolve_login_binding(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelCreate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkTenantContext(ctx) {
 		return
 	}
 	req := request.ResolveWxWorkProtocolLoginBindingRequest{}
@@ -143,6 +159,9 @@ func WxWorkProtocolInstancePostUpdate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
+		return
+	}
 	if err := services.WxWorkProtocolInstanceService.UpdateInstance(req, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -151,7 +170,8 @@ func WxWorkProtocolInstancePostUpdate(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostDelete(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelDelete); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelDelete)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -160,7 +180,10 @@ func WxWorkProtocolInstancePostDelete(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.WxWorkProtocolInstanceService.DeleteInstance(req.ID); err != nil {
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
+		return
+	}
+	if err := services.WxWorkProtocolInstanceService.DeleteInstance(req.ID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -168,13 +191,17 @@ func WxWorkProtocolInstancePostDelete(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostSet_notify_url(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.SetWxWorkProtocolNotifyURLRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	if err := services.WxWorkProtocolService.SetNotifyURL(req.ID, req.NotifyURL); err != nil {
@@ -195,6 +222,9 @@ func WxWorkProtocolInstancePostSet_ai_reply_enabled(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
+		return
+	}
 	if err := services.WxWorkProtocolInstanceService.SetAIReplyEnabled(req.ID, req.Enabled, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -213,6 +243,9 @@ func WxWorkProtocolInstancePostUpdate_ai_settings(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
+		return
+	}
 	if err := services.WxWorkProtocolInstanceService.UpdateAISettings(req, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -221,13 +254,17 @@ func WxWorkProtocolInstancePostUpdate_ai_settings(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostStore_ai_model_settings(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.UpdateStoreAIModelSettingsRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireStoreAIModelScopeAccess(ctx, operator, req) {
 		return
 	}
 	httpx.WriteJSON(ctx, services.StoreAIModelSettingService.ListResponses(req.CompanyID, req.StoreID, req.WxWorkInstanceID))
@@ -244,6 +281,9 @@ func WxWorkProtocolInstancePostUpdate_store_ai_model_settings(ctx *gin.Context) 
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if !requireStoreAIModelScopeAccess(ctx, operator, req) {
+		return
+	}
 	if err := services.StoreAIModelSettingService.UpdateStoreSettings(req, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -252,13 +292,17 @@ func WxWorkProtocolInstancePostUpdate_store_ai_model_settings(ctx *gin.Context) 
 }
 
 func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.WxWorkProtocolInstanceActionRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	resp, err := services.WxWorkProtocolService.GetLoginQRCode(req.ID)
@@ -275,6 +319,9 @@ func WxWorkProtocolInstancePostCreate_remote_setup(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if !requireWxWorkTenantContext(ctx) {
+		return
+	}
 	req := request.CreateWxWorkProtocolRemoteSetupRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -285,19 +332,23 @@ func WxWorkProtocolInstancePostCreate_remote_setup(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	resp := buildWxWorkProtocolInstanceResponse(item)
+	resp := buildWxWorkProtocolInstanceResponse(item, operator)
 	resp.RemoteSetupURL = buildRemoteSetupURL(ctx, item.RemoteSetupToken)
 	httpx.WriteJSON(ctx, resp)
 }
 
 func WxWorkProtocolInstancePostCheck_login_qrcode(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.CheckWxWorkProtocolLoginQRCodeRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	resp, err := services.WxWorkProtocolService.CheckLoginQRCode(req.ID)
@@ -309,13 +360,17 @@ func WxWorkProtocolInstancePostCheck_login_qrcode(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostVerify_login(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.VerifyWxWorkProtocolLoginRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	resp, err := services.WxWorkProtocolService.VerifyLoginQRCode(req.ID, req.Code)
@@ -347,13 +402,17 @@ func WxWorkProtocolInstancePostGet_corp_info(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostSet_proxy(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.WxWorkProtocolSetProxyRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	resp, err := services.WxWorkProtocolService.SetProxy(req.ID, req.Proxy)
@@ -369,13 +428,17 @@ func WxWorkProtocolInstancePostSync_friend_requests(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostAccept_friend_request(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.AcceptWxWorkProtocolFriendRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	resp, err := services.WxWorkProtocolService.AgreeContact(req.ID, req.Username, req.Scene)
@@ -387,13 +450,17 @@ func WxWorkProtocolInstancePostAccept_friend_request(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostRoom_list(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.WxWorkProtocolRoomListRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	resp, err := services.WxWorkProtocolService.GetRoomList(req.ID, req.StartIndex, req.Limit)
@@ -415,13 +482,17 @@ func WxWorkProtocolInstancePostRoom_list(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostRoom_member_detail(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.WxWorkProtocolRoomMemberDetailRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	if len(req.UserList) == 0 {
@@ -445,13 +516,17 @@ func WxWorkProtocolInstancePostRoom_member_detail(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostRoom_detail(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.WxWorkProtocolRoomDetailRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	resp, err := services.WxWorkProtocolService.BatchGetRoomDetail(req.ID, req.RoomList)
@@ -463,13 +538,17 @@ func WxWorkProtocolInstancePostRoom_detail(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostSync_room_info(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.WxWorkProtocolSyncRoomInfoRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	resp, err := services.WxWorkProtocolService.SyncRoomInfo(req.ID, req.RoomID, req.Version)
@@ -481,13 +560,17 @@ func WxWorkProtocolInstancePostSync_room_info(ctx *gin.Context) {
 }
 
 func writeWxWorkProtocolActionResponse(ctx *gin.Context, action func(int64) (string, error)) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.WxWorkProtocolInstanceActionRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	resp, err := action(req.ID)
@@ -499,13 +582,17 @@ func writeWxWorkProtocolActionResponse(ctx *gin.Context, action func(int64) (str
 }
 
 func WxWorkProtocolInstancePostInvite_room_member(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationSend); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationSend)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.InviteWxWorkProtocolRoomMemberRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
 	if err := services.WxWorkProtocolService.InviteRoomMember(req.ID, req.RoomID, req.UserList); err != nil {
@@ -515,22 +602,103 @@ func WxWorkProtocolInstancePostInvite_room_member(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
-func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) response.WxWorkProtocolInstanceResponse {
+func requireWxWorkTenantContext(ctx *gin.Context) bool {
+	if _, err := services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return false
+	}
+	return true
+}
+
+func requireWxWorkInstanceAccess(ctx *gin.Context, operator *dto.AuthPrincipal, instanceID int64) bool {
+	if !requireWxWorkTenantContext(ctx) {
+		return false
+	}
+	item := services.WxWorkProtocolInstanceService.GetInTenant(instanceID, operator)
+	if item == nil || item.Status == enums.StatusDeleted {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号实例不存在"))
+		return false
+	}
+	if !services.AgentTeamScopeService.CanViewWxWorkInstance(operator, instanceID) {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该企微员工号实例"))
+		return false
+	}
+	return true
+}
+
+func requireStoreAIModelScopeAccess(ctx *gin.Context, operator *dto.AuthPrincipal, req request.UpdateStoreAIModelSettingsRequest) bool {
+	if !requireWxWorkTenantContext(ctx) {
+		return false
+	}
+	if req.CompanyID > 0 {
+		company := services.CompanyService.GetInTenant(req.CompanyID, operator)
+		if company == nil || company.Status == enums.StatusDeleted {
+			httpx.WriteJSON(ctx, web.JsonErrorMsg("公司不存在"))
+			return false
+		}
+	}
+	if req.StoreID > 0 {
+		store := services.StoreService.GetInTenant(req.StoreID, operator.ActiveTenantID)
+		if store == nil || store.Status == enums.StatusDeleted {
+			httpx.WriteJSON(ctx, web.JsonErrorMsg("门店不存在"))
+			return false
+		}
+		if req.CompanyID > 0 && store.CompanyID > 0 && store.CompanyID != req.CompanyID {
+			httpx.WriteJSON(ctx, web.JsonErrorMsg("门店不属于所选公司"))
+			return false
+		}
+	}
+	if req.WxWorkInstanceID > 0 {
+		if !requireWxWorkInstanceAccess(ctx, operator, req.WxWorkInstanceID) {
+			return false
+		}
+		instance := services.WxWorkProtocolInstanceService.GetInTenant(req.WxWorkInstanceID, operator)
+		if instance.CompanyID > 0 {
+			company := services.CompanyService.GetInTenant(instance.CompanyID, operator)
+			if company == nil || company.Status == enums.StatusDeleted {
+				httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号绑定的公司不属于当前接入公司"))
+				return false
+			}
+		}
+		if instance.StoreID > 0 {
+			store := services.StoreService.GetInTenant(instance.StoreID, operator.ActiveTenantID)
+			if store == nil || store.Status == enums.StatusDeleted {
+				httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号绑定的门店不属于当前接入公司"))
+				return false
+			}
+			if instance.CompanyID > 0 && store.CompanyID > 0 && store.CompanyID != instance.CompanyID {
+				httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号绑定的公司与门店不一致"))
+				return false
+			}
+		}
+		if req.CompanyID > 0 && instance.CompanyID > 0 && instance.CompanyID != req.CompanyID {
+			httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号不属于所选公司"))
+			return false
+		}
+		if req.StoreID > 0 && instance.StoreID > 0 && instance.StoreID != req.StoreID {
+			httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号不属于所选门店"))
+			return false
+		}
+	}
+	return true
+}
+
+func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance, operator *dto.AuthPrincipal) response.WxWorkProtocolInstanceResponse {
 	ret := response.BuildWxWorkProtocolInstanceResponse(item)
 	if item == nil {
 		return ret
 	}
-	if channel := services.ChannelService.Get(item.ChannelID); channel != nil {
+	if channel := services.ChannelService.GetInTenant(item.ChannelID, operator); channel != nil {
 		ret.ChannelName = utils.RepairMojibakeText(channel.Name)
 	}
-	if store := services.StoreService.Get(item.StoreID); store != nil {
+	if store := services.StoreService.GetInTenant(item.StoreID, operator.ActiveTenantID); store != nil {
 		ret.StoreCode = store.StoreCode
 		ret.StoreName = utils.RepairMojibakeText(store.Name)
 		if ret.CompanyID == 0 {
 			ret.CompanyID = store.CompanyID
 		}
 	}
-	if company := services.CompanyService.Get(ret.CompanyID); company != nil {
+	if company := services.CompanyService.GetInTenant(ret.CompanyID, operator); company != nil {
 		ret.CompanyName = utils.RepairMojibakeText(company.Name)
 	}
 	if runtime := services.StoreStaffBindingService.ResolveForInstance(item); runtime.ManagedMode != "" {

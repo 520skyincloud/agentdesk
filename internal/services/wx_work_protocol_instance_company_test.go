@@ -17,11 +17,11 @@ import (
 
 func TestWxWorkProtocolRemoteSetupCreatesInternalStoreForCompany(t *testing.T) {
 	setupWxWorkProtocolInstanceCompanyTestDB(t)
-	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin"}
-	if err := sqls.DB().Create(&models.Company{ID: 11, Name: "测试公司", Status: enums.StatusOk}).Error; err != nil {
+	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin", ActiveTenantID: 101}
+	if err := sqls.DB().Create(&models.Company{ID: 11, TenantID: 101, Name: "测试公司", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create company: %v", err)
 	}
-	if err := sqls.DB().Create(&models.Channel{ID: 22, ChannelType: enums.ChannelTypeWxWorkProtocol, Name: "协议渠道", Status: enums.StatusOk}).Error; err != nil {
+	if err := sqls.DB().Create(&models.Channel{ID: 22, TenantID: 101, ChannelType: enums.ChannelTypeWxWorkProtocol, Name: "协议渠道", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
 
@@ -33,8 +33,8 @@ func TestWxWorkProtocolRemoteSetupCreatesInternalStoreForCompany(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRemoteSetupInstance() error = %v", err)
 	}
-	if instance.CompanyID != 11 {
-		t.Fatalf("expected company id on remote setup instance, got %d", instance.CompanyID)
+	if instance.TenantID != 101 || instance.CompanyID != 11 {
+		t.Fatalf("expected tenant/company on remote setup instance, got tenant=%d company=%d", instance.TenantID, instance.CompanyID)
 	}
 	if err := WxWorkProtocolInstanceService.UpdateRemoteSetup(request.UpdateWxWorkProtocolRemoteSetupRequest{
 		Token:                   instance.RemoteSetupToken,
@@ -59,7 +59,7 @@ func TestWxWorkProtocolRemoteSetupCreatesInternalStoreForCompany(t *testing.T) {
 	if store == nil {
 		t.Fatalf("expected generated store")
 	}
-	if store.CompanyID != 11 || store.Name != "丽斯未来酒店测试门店" {
+	if store.TenantID != 101 || store.CompanyID != 11 || store.Name != "丽斯未来酒店测试门店" {
 		t.Fatalf("unexpected generated store: %#v", store)
 	}
 }

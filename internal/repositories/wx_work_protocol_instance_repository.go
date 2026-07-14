@@ -71,6 +71,29 @@ func (r *wxWorkProtocolInstanceRepository) UpdatesInTenant(db *gorm.DB, id, tena
 	return db.Model(&models.WxWorkProtocolInstance{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
 }
 
+func (r *wxWorkProtocolInstanceRepository) ClaimTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) (bool, error) {
+	if id <= 0 || tenantID <= 0 {
+		return false, nil
+	}
+	updates := make(map[string]any, len(columns)+1)
+	for key, value := range columns {
+		updates[key] = value
+	}
+	updates["tenant_id"] = tenantID
+	result := db.Model(&models.WxWorkProtocolInstance{}).Where("id = ? AND tenant_id = ?", id, 0).Updates(updates)
+	return result.RowsAffected == 1, result.Error
+}
+
+func (r *wxWorkProtocolInstanceRepository) ReleaseLoginBinding(db *gorm.DB, id, tenantID int64, columns map[string]any) (bool, error) {
+	if id <= 0 || tenantID <= 0 {
+		return false, nil
+	}
+	result := db.Model(&models.WxWorkProtocolInstance{}).
+		Where("id = ? AND tenant_id IN ?", id, []int64{0, tenantID}).
+		Updates(columns)
+	return result.RowsAffected == 1, result.Error
+}
+
 func (r *wxWorkProtocolInstanceRepository) UpdatesByIDs(db *gorm.DB, ids []int64, columns map[string]any) error {
 	if len(ids) == 0 {
 		return nil
@@ -96,4 +119,8 @@ func (r *wxWorkProtocolInstanceRepository) UpdatesByStoreStaffBindingIDsInTenant
 
 func (r *wxWorkProtocolInstanceRepository) Delete(db *gorm.DB, id int64) error {
 	return db.Delete(&models.WxWorkProtocolInstance{}, "id = ?", id).Error
+}
+
+func (r *wxWorkProtocolInstanceRepository) DeleteInTenant(db *gorm.DB, id, tenantID int64) error {
+	return db.Delete(&models.WxWorkProtocolInstance{}, "id = ? AND tenant_id = ?", id, tenantID).Error
 }

@@ -1066,3 +1066,58 @@ git diff --check
 - 开始时 `origin/codex/ai-billing@f2d2da4`；本步骤不新增 migration。与 AI 分支同文件仅 `wx_work_protocol_instance_repository.go`，新增 tenant-aware 方法应与其远程接入/意图查询方法逐方法合并。
 - 不修改 AI 回复、欢迎语、模型供应商、FastGPT、token、计费或向量语义。建议先合并 migration 44 契约，再合并本步骤运行时过滤；AI 分支 rebase 后在其实例创建/更新链路调用相同 tenant-aware repository 方法。
 - 回滚本步骤时可撤销 Handler/service/repository 调用变化，但不得删除上一提交的 TenantID、migration 44 或已回填数据；在 WxWork 全动作和会话本体隔离完成前继续关闭公开注册。
+
+## 28. 多租户阶段 5E：企微员工号后台全动作隔离（2026-07-14）
+
+### 本步骤目标与结果
+
+- 承接 migration 44 的 `Store/StoreStaffBinding/WxWorkProtocolInstance.TenantID`，收紧企微员工号 dashboard 的列表、详情、创建、更新、删除、远程配置和全部协议动作。
+- 列表使用“当前租户 + 客服组范围”组合过滤；详情和动作统一通过当前租户实例读取及 `CanViewWxWorkInstance` 校验。跨租户 ID 对调用方表现为实例不存在，同租户但不在客服范围内表现为无权访问。
+- 创建、扫码登录和远程开户链接从 `ActiveTenantID` 继承归属；Channel、Company、Store 引用必须属于当前租户。GUID 保持协议设备级全局唯一，跨租户复用被拒绝。
+- 未知登录回调继续创建 `tenant_id=0 + pending_binding` 隔离记录。后台登录认领使用 `id + tenant_id=0` 原子条件；清理未归属登录占用使用 `tenant_id IN (0, 当前租户)` 最终条件，认领竞态下不会释放其他租户的设备绑定。
+- 远程配置 token 对应实例必须已有租户；远程提交自动创建/更新的 Store 和 StoreStaffBinding 继承该租户。复用已有 GUID 前先校验 Company，不能先认领后发现跨租户引用。
+- Instance 更新、AI 开关、AI 设置和删除使用 tenant-qualified repository 读写。response 中 Channel、Store、Company 名称也只从当前租户读取，避免污染关联泄露其他公司展示信息。
+- 门店模型设置两个现有入口增加 Company/Store/WxWorkInstance 租户及相互归属校验，只保护 dashboard 边界，不修改 AI 分支负责的模型设置、模型调用、token 或计费语义。
+
+### 主要文件与契约
+
+```text
+internal/repositories/wx_work_protocol_instance_repository.go
+internal/services/wx_work_protocol_instance_service.go
+internal/services/wx_work_protocol_instance_company_test.go
+internal/services/wx_work_protocol_instance_tenant_test.go
+internal/handlers/dashboard/wxwork_protocol_instance_handler.go
+internal/handlers/dashboard/wxwork_protocol_instance_tenant_handler_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- repository 新增 `ClaimTenant`、`ReleaseLoginBinding`、`DeleteInTenant` 等最终条件方法；旧全局 `Get/Take/Find/Updates` 继续服务协议回调、全局 GUID 唯一检查和历史 migration，不把运行时 dashboard 接回全局方法。
+- 没有 model、migration、request/response DTO、enum、Gin 路由、权限点、WebSocket payload 或前端文件变化。
+- 没有修改企业微信协议字段或接口。消息发送仍以 `wework.apifox.cn` 定义的 `conversation_id` 为准，本步骤没有恢复 CLI、微信客服 API、旧 hook bridge 或旧企微字段。
+
+### 验证与已知边界
+
+```text
+go test ./internal/services ./internal/handlers/dashboard -run 'WxWorkProtocol|AgentTeamScope|StoreStaffTenant' -count=1
+go test -race ./internal/services ./internal/handlers/dashboard -run 'WxWorkProtocol|AgentTeamScope|StoreStaffTenant' -count=1
+go test ./internal/migration -count=1
+go vet ./...
+go test ./... -run '^$' -count=1
+go test -p 1 ./... -count=1
+git diff --check
+```
+
+- 聚焦测试已覆盖双租户列表/详情读取、创建继承、跨租户 Channel/Company/Store/GUID 拒绝、更新/删除最终条件、未归属回调隔离、原子认领、远程配置 Store 继承，以及所有已注册协议动作在外部调用前拒绝跨租户实例。
+- 上述聚焦测试及其 race 版本、migration 全包、`go vet ./...`、全仓编译均通过。完整 `go test -p 1 ./... -count=1` 再次失败于既有 `TriggerReplyAsync` 测试清理竞态：全局 DB 清理后后台协程在 `BuildRuntimeAIAgentForConversation` 读取 RouteState 时 nil pointer；堆栈与阶段 4F/5D 记录一致，本步骤没有修改 AI runtime 生命周期，不能把完整串行回归记录为通过。
+- KnowledgeBase 尚无 TenantID，实例知识库展示与绑定校验仍是全局读取；设备池仍是平台全局资源；StoreAIModelSetting/AIConfig 底层隔离仍由 AI/计费分支负责。
+- 协议回调按全局稳定 GUID 识别实例是必要入口语义，但回调后的 Conversation/Message/RouteState/Assignment、Outbox、WebSocket 尚未端到端租户化。Conversation/Message 本体、派单和 Ticket 也仍是后续批次。
+- `CountStats` 仍通过实例 ID 聚合尚无 TenantID 的会话数据；handler 已保护实例访问，但不能替代会话域租户字段。
+- 公开注册继续关闭。只有知识库/向量、会话消息、回调投递和实时通道完成双租户验证后，才可重新评估启用。
+
+### 并行分支、合并顺序与回滚
+
+- 开始时已 fetch，`origin/codex/ai-billing@f2d2da4`。双方同文件包括企微实例 repository、service、handler 和 company test；必须逐方法合并，禁止整文件选边。
+- AI 分支需要保留欢迎内容、意图识别、FastGPT、模型设置和回复行为；本步骤需要保留 TenantID 继承、Channel/Company/Store 校验、tenant-qualified 最终写入、未知回调隔离和协议动作前置保护。建议先合并 Tenant/Store/WxWork 共享契约和本步骤隔离，再由 AI 分支 rebase 解决方法级冲突。
+- 本步骤没有新增 migration，无版本号冲突；没有修改模型供应商、回复 runtime、token 统计、计费或向量语义。
+- 可回滚本步骤的 handler/service/repository 调用变化和新增测试，但不得删除 migration 44 的字段/记录或清空已回填 TenantID。回滚期间必须继续关闭公开注册，不能恢复全局 dashboard 访问作为替代。

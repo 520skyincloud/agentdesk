@@ -1004,3 +1004,32 @@ web/messages/en-US.json
 5. 最后合并页面导航和公司设置。
 
 禁止整文件覆盖另一分支；每个可提交步骤都要更新 `docs/development/customer-audit-merge-handoff.md`，记录同文件修改、字段语义、验证和建议合并顺序。
+
+## 20. 当前实施检查点：企微员工号后台动作隔离（2026-07-14）
+
+本检查点承接阶段 4F 的 Store/WxWork 归属字段和阶段 5D 的客服组范围，完成企微员工号后台真实操作入口的租户边界，不改变企业微信协议、AI 回复或计费语义。
+
+### 已完成边界
+
+- 企微员工号列表先按 `ActiveTenantID` 限定，再叠加客服组可见范围；详情同时校验实例租户和 `AgentTeamScopeService` 数据范围。
+- 手工创建、扫码登录、远程开户链接创建均从认证上下文继承租户。Channel、Company、Store 只能引用当前租户对象，GUID 继续保持协议设备级全局唯一。
+- 未识别登录回调只能生成 `tenant_id=0 + pending_binding` 隔离记录；后台认领使用 `id + tenant_id=0` 原子条件，不能覆盖已被其他租户认领的实例。
+- 更新、AI 开关、AI 设置和删除先读取当前租户实例，最终 Instance/Store/StoreStaffBinding 写入 SQL 继续携带 tenant 条件。
+- 登录二维码、登录校验、恢复、停止、退出、资料同步、企业信息、代理、好友请求、群列表/详情/成员、群同步和邀请成员等全部协议动作，在调用协议 service 前统一校验当前租户和客服组实例范围。
+- 门店模型设置入口先验证请求中的 Company、Store、WxWorkInstance 均属于当前租户且彼此不冲突，再进入原模型设置 service；本步骤不修改模型配置、模型调用或计费实现。
+- 远程配置 token 作为无登录 bearer capability 使用，但 token 对应实例必须已有非零 TenantID；自动创建或更新的 Store 继承 token 实例租户。
+
+### 仍未完成边界
+
+- `KnowledgeBase` 尚无 TenantID。企微实例的知识库名称和绑定校验仍使用全局 ID；必须在知识库、文件、向量检索共同租户化后才能关闭此缺口。
+- `WxWorkProtocolDevicePoolInstance` 仍是平台全局设备池。GUID 全局唯一是当前协议资源约束，但设备池哪些操作仅平台管理员可见、哪些可授权租户认领仍需单独确定权限与数据策略。
+- 第三方协议回调不能依赖浏览器租户头，当前按全局 GUID 找实例；未知 GUID 已隔离，但已识别回调之后的 Conversation、Message、RouteState、Assignment、Outbox 和 WebSocket 仍需端到端租户审计。
+- `StoreAIModelSetting` 和 AIConfig 仍由 `codex/ai-billing` 负责。本检查点只保护现有 dashboard 入口，不宣称底层模型设置表已完成租户隔离。
+- 企微统计仍通过实例 ID 聚合尚无 TenantID 的 Conversation/RouteState；实例访问入口已保护，但会话域完成租户化前不能视为完整防线。
+- 公开邀请注册继续保持关闭；上述剩余业务域完成双租户验证前不得启用共享生产租户入口。
+
+### 兼容与合并要求
+
+- 本检查点不增加 model、migration、DTO、enum、Gin 路由、权限点、WebSocket payload 或前端字段。
+- `codex/ai-billing` 同时修改企微实例 repository/service/handler。合并必须逐方法保留其欢迎语、意图、FastGPT 和模型设置语义，同时保留本检查点的 TenantID 继承、关联对象校验、最终写入条件和协议动作前置保护。
+- migration 20 的历史 CompanyID 回填继续使用全局旧数据路径，不能误改为要求 ActiveTenantID；migration 44 才负责 Store/WxWork 的确定性租户归属。

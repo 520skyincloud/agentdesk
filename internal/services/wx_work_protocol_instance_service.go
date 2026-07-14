@@ -90,6 +90,11 @@ func (s *wxWorkProtocolInstanceService) Get(id int64) *models.WxWorkProtocolInst
 	return repositories.WxWorkProtocolInstanceRepository.Get(sqls.DB(), id)
 }
 
+func (s *wxWorkProtocolInstanceService) GetInTenant(id int64, operator *dto.AuthPrincipal) *models.WxWorkProtocolInstance {
+	tenantID := activeWxWorkTenantID(operator)
+	return repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *wxWorkProtocolInstanceService) Take(where ...any) *models.WxWorkProtocolInstance {
 	return repositories.WxWorkProtocolInstanceRepository.Take(sqls.DB(), where...)
 }
@@ -217,8 +222,9 @@ WHERE crs.wx_work_instance_id = ?`,
 }
 
 func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkProtocolInstanceRequest, operator *dto.AuthPrincipal) (*models.WxWorkProtocolInstance, error) {
-	if operator == nil {
-		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireWxWorkTenantID(operator)
+	if err != nil {
+		return nil, err
 	}
 	guid := strings.TrimSpace(req.Guid)
 	if guid == "" {
@@ -227,14 +233,14 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 	if existing := s.Take("guid = ?", guid); existing != nil {
 		return nil, errorsx.InvalidParam("guid 已存在")
 	}
-	if err := s.validateProtocolChannel(req.ChannelID); err != nil {
+	if err := s.validateProtocolChannel(req.ChannelID, tenantID); err != nil {
 		return nil, err
 	}
-	companyID, storeID, err := s.normalizeCompanyStoreBinding(req.CompanyID, req.StoreID, req.StoreName, req.EmployeeName, operator)
+	companyID, storeID, err := s.normalizeCompanyStoreBinding(tenantID, req.CompanyID, req.StoreID, req.StoreName, req.EmployeeName, operator)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.validateBinding(req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
+	if err := s.validateBinding(tenantID, req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
 		return nil, err
 	}
 	now := time.Now()
@@ -243,6 +249,7 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		status = enums.StatusOk
 	}
 	item := &models.WxWorkProtocolInstance{
+		TenantID:                       tenantID,
 		Guid:                           guid,
 		ChannelID:                      req.ChannelID,
 		EmployeeUserID:                 strings.TrimSpace(req.EmployeeUserID),
@@ -295,15 +302,16 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 }
 
 func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxWorkProtocolLoginRequest, operator *dto.AuthPrincipal) (*models.WxWorkProtocolInstance, error) {
-	if operator == nil {
-		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireWxWorkTenantID(operator)
+	if err != nil {
+		return nil, err
 	}
-	channel, err := s.resolveEnabledProtocolChannel(req.ChannelID)
+	channel, err := s.resolveEnabledProtocolChannel(req.ChannelID, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	if req.CompanyID > 0 {
-		if company := CompanyService.Get(req.CompanyID); company == nil || company.Status == enums.StatusDeleted {
+		if company := repositories.CompanyRepository.GetInTenant(sqls.DB(), req.CompanyID, tenantID); company == nil || company.Status == enums.StatusDeleted {
 			return nil, errorsx.InvalidParam("公司不存在")
 		}
 	}
@@ -317,21 +325,46 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 		}
 	}
 	if existing := s.Take("guid = ? AND status <> ?", guid, enums.StatusDeleted); existing != nil {
-		if req.CompanyID > 0 && existing.CompanyID > 0 && existing.CompanyID != req.CompanyID {
-			return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他公司账号")
-		}
-		if req.CompanyID > 0 && existing.CompanyID == 0 {
-			_ = repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), existing.ID, map[string]any{
+		if existing.TenantID == 0 {
+			if !s.canReuseForLogin(existing, now) {
+				return nil, errorsx.InvalidParam("该协议设备 GUID 已被未归属实例占用，暂不可认领")
+			}
+			claimed, claimErr := repositories.WxWorkProtocolInstanceRepository.ClaimTenant(sqls.DB(), existing.ID, tenantID, map[string]any{
+				"channel_id":       channel.ID,
 				"company_id":       req.CompanyID,
 				"updated_at":       now,
 				"update_user_id":   operator.UserID,
 				"update_user_name": operator.Username,
 			})
+			if claimErr != nil {
+				return nil, claimErr
+			}
+			if !claimed {
+				return nil, errorsx.InvalidParam("该协议设备 GUID 已被其他接入公司认领")
+			}
+			existing = repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), existing.ID, tenantID)
+		}
+		if existing == nil || existing.TenantID != tenantID {
+			return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他接入公司")
+		}
+		if req.CompanyID > 0 && existing.CompanyID > 0 && existing.CompanyID != req.CompanyID {
+			return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他公司账号")
+		}
+		if req.CompanyID > 0 && existing.CompanyID == 0 {
+			if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), existing.ID, tenantID, map[string]any{
+				"company_id":       req.CompanyID,
+				"updated_at":       now,
+				"update_user_id":   operator.UserID,
+				"update_user_name": operator.Username,
+			}); err != nil {
+				return nil, err
+			}
 			existing.CompanyID = req.CompanyID
 		}
 		return existing, nil
 	}
 	item := &models.WxWorkProtocolInstance{
+		TenantID:                  tenantID,
 		Guid:                      guid,
 		ChannelID:                 channel.ID,
 		AIReplyEnabled:            true,
@@ -356,12 +389,18 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 }
 
 func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.CreateWxWorkProtocolRemoteSetupRequest, operator *dto.AuthPrincipal) (*models.WxWorkProtocolInstance, error) {
-	if operator == nil {
-		return nil, errorsx.Unauthorized("未登录或登录已过期")
-	}
-	channel, err := s.resolveEnabledProtocolChannel(req.ChannelID)
+	tenantID, err := requireWxWorkTenantID(operator)
 	if err != nil {
 		return nil, err
+	}
+	channel, err := s.resolveEnabledProtocolChannel(req.ChannelID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if req.CompanyID > 0 {
+		if company := repositories.CompanyRepository.GetInTenant(sqls.DB(), req.CompanyID, tenantID); company == nil || company.Status == enums.StatusDeleted {
+			return nil, errorsx.InvalidParam("公司不存在")
+		}
 	}
 	now := time.Now()
 	guid := normalizeProtocolDeviceGUID(req.Guid)
@@ -374,28 +413,45 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 	}
 	if existing := s.Take("guid = ? AND status <> ?", guid, enums.StatusDeleted); existing != nil {
 		if s.canReuseForLogin(existing, now) {
-			if req.CompanyID > 0 && existing.CompanyID > 0 && existing.CompanyID != req.CompanyID {
-				return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他公司账号")
-			}
-			if req.CompanyID > 0 && existing.CompanyID == 0 {
-				_ = repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), existing.ID, map[string]any{
+			if existing.TenantID == 0 {
+				claimed, claimErr := repositories.WxWorkProtocolInstanceRepository.ClaimTenant(sqls.DB(), existing.ID, tenantID, map[string]any{
+					"channel_id":       channel.ID,
 					"company_id":       req.CompanyID,
 					"updated_at":       now,
 					"update_user_id":   operator.UserID,
 					"update_user_name": operator.Username,
 				})
+				if claimErr != nil {
+					return nil, claimErr
+				}
+				if !claimed {
+					return nil, errorsx.InvalidParam("该协议设备 GUID 已被其他接入公司认领")
+				}
+				existing = repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), existing.ID, tenantID)
+			}
+			if existing == nil || existing.TenantID != tenantID {
+				return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他接入公司")
+			}
+			if req.CompanyID > 0 && existing.CompanyID > 0 && existing.CompanyID != req.CompanyID {
+				return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他公司账号")
+			}
+			if req.CompanyID > 0 && existing.CompanyID == 0 {
+				if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), existing.ID, tenantID, map[string]any{
+					"company_id":       req.CompanyID,
+					"updated_at":       now,
+					"update_user_id":   operator.UserID,
+					"update_user_name": operator.Username,
+				}); err != nil {
+					return nil, err
+				}
 				existing.CompanyID = req.CompanyID
 			}
 			return existing, nil
 		}
 		return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他员工号")
 	}
-	if req.CompanyID > 0 {
-		if company := CompanyService.Get(req.CompanyID); company == nil || company.Status == enums.StatusDeleted {
-			return nil, errorsx.InvalidParam("公司不存在")
-		}
-	}
 	item := &models.WxWorkProtocolInstance{
+		TenantID:                  tenantID,
 		Guid:                      guid,
 		ChannelID:                 channel.ID,
 		CompanyID:                 req.CompanyID,
@@ -423,16 +479,17 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 }
 
 func (s *wxWorkProtocolInstanceService) ResolveLoginBinding(req request.ResolveWxWorkProtocolLoginBindingRequest, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireWxWorkTenantID(operator)
+	if err != nil {
+		return err
 	}
-	channel, err := s.resolveEnabledProtocolChannel(req.ChannelID)
+	channel, err := s.resolveEnabledProtocolChannel(req.ChannelID, tenantID)
 	if err != nil {
 		return err
 	}
 	guid := normalizeProtocolDeviceGUID(req.Guid)
 	if guid == "" {
-		guid, err = s.claimStaleProtocolDeviceGUID(channel)
+		guid, err = s.claimStaleProtocolDeviceGUID(channel, tenantID)
 		if err != nil {
 			return err
 		}
@@ -440,6 +497,9 @@ func (s *wxWorkProtocolInstanceService) ResolveLoginBinding(req request.ResolveW
 	existing := s.Take("guid = ? AND status <> ?", guid, enums.StatusDeleted)
 	if existing == nil {
 		return WxWorkProtocolDevicePoolService.ReleaseGUIDBinding(guid)
+	}
+	if existing.TenantID != 0 && existing.TenantID != tenantID {
+		return errorsx.InvalidParam("该协议设备 GUID 已绑定到其他接入公司")
 	}
 	if !s.canReleaseLoginBinding(existing, time.Now()) {
 		name := strings.TrimSpace(existing.EmployeeName)
@@ -449,14 +509,18 @@ func (s *wxWorkProtocolInstanceService) ResolveLoginBinding(req request.ResolveW
 		return errorsx.InvalidParam("该实例已绑定到已登录账号「" + name + "」，不能自动解绑；请在账号设置中执行退出登录或手动停用后再重新扫码")
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.WxWorkProtocolInstanceRepository.Updates(ctx.Tx, existing.ID, map[string]any{
+		released, err := repositories.WxWorkProtocolInstanceRepository.ReleaseLoginBinding(ctx.Tx, existing.ID, tenantID, map[string]any{
 			"status":           enums.StatusDeleted,
 			"remark":           strings.TrimSpace(existing.Remark + "\n已清理未登录临时占用，允许重新扫码绑定"),
 			"updated_at":       time.Now(),
 			"update_user_id":   operator.UserID,
 			"update_user_name": operator.Username,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
+		}
+		if !released {
+			return errorsx.InvalidParam("该协议设备 GUID 已被其他接入公司认领")
 		}
 		return repositories.WxWorkProtocolDevicePoolRepository.UpdateByGUID(ctx.Tx, guid, map[string]any{
 			"bound_wx_work_protocol_instance_id": 0,
@@ -489,13 +553,16 @@ func (s *wxWorkProtocolInstanceService) UpdateRemoteSetup(req request.UpdateWxWo
 	if err != nil {
 		return err
 	}
+	if item.TenantID <= 0 {
+		return errorsx.InvalidParam("远程配置实例缺少接入公司归属，请联系管理员重新生成链接")
+	}
 	now := time.Now()
 	guid := normalizeProtocolDeviceGUID(req.Guid)
 	companyID := item.CompanyID
 	if companyID <= 0 && req.CompanyID > 0 {
 		companyID = req.CompanyID
 	}
-	storeID, err := s.ensureStoreForCompany(companyID, req.StoreID, req.StoreName, req.EmployeeName, nil)
+	storeID, err := s.ensureStoreForCompany(item.TenantID, companyID, req.StoreID, req.StoreName, req.EmployeeName, nil)
 	if err != nil {
 		return err
 	}
@@ -526,10 +593,10 @@ func (s *wxWorkProtocolInstanceService) UpdateRemoteSetup(req request.UpdateWxWo
 		}
 		updates["guid"] = guid
 	}
-	if err := repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), item.ID, updates); err != nil {
+	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), item.ID, item.TenantID, updates); err != nil {
 		return err
 	}
-	updated := s.Get(item.ID)
+	updated := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), item.ID, item.TenantID)
 	if updated == nil {
 		return nil
 	}
@@ -537,10 +604,11 @@ func (s *wxWorkProtocolInstanceService) UpdateRemoteSetup(req request.UpdateWxWo
 }
 
 func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkProtocolInstanceRequest, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireWxWorkTenantID(operator)
+	if err != nil {
+		return err
 	}
-	current := s.Get(req.ID)
+	current := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), req.ID, tenantID)
 	if current == nil {
 		return errorsx.InvalidParam("企微员工号实例不存在")
 	}
@@ -551,21 +619,21 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	if existing := s.Take("guid = ? AND id <> ?", guid, req.ID); existing != nil {
 		return errorsx.InvalidParam("guid 已存在")
 	}
-	if err := s.validateProtocolChannel(req.ChannelID); err != nil {
+	if err := s.validateProtocolChannel(req.ChannelID, tenantID); err != nil {
 		return err
 	}
-	companyID, storeID, err := s.normalizeCompanyStoreBinding(req.CompanyID, req.StoreID, req.StoreName, req.EmployeeName, operator)
+	companyID, storeID, err := s.normalizeCompanyStoreBinding(tenantID, req.CompanyID, req.StoreID, req.StoreName, req.EmployeeName, operator)
 	if err != nil {
 		return err
 	}
-	if err := s.validateBinding(req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
+	if err := s.validateBinding(tenantID, req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
 		return err
 	}
 	status := enums.Status(req.Status)
 	if status != enums.StatusOk && status != enums.StatusDisabled {
 		status = current.Status
 	}
-	if err := repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
 		"guid":                               guid,
 		"channel_id":                         req.ChannelID,
 		"employee_user_id":                   strings.TrimSpace(req.EmployeeUserID),
@@ -608,7 +676,7 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	}); err != nil {
 		return err
 	}
-	updated := s.Get(req.ID)
+	updated := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), req.ID, tenantID)
 	if updated == nil {
 		return nil
 	}
@@ -616,16 +684,17 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 }
 
 func (s *wxWorkProtocolInstanceService) SetAIReplyEnabled(instanceID int64, enabled bool, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireWxWorkTenantID(operator)
+	if err != nil {
+		return err
 	}
-	instance := s.Get(instanceID)
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), instanceID, tenantID)
 	if instance == nil || instance.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("企微员工号实例不存在")
 	}
 	now := time.Now()
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.WxWorkProtocolInstanceRepository.Updates(ctx.Tx, instance.ID, map[string]any{
+		if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, instance.ID, tenantID, map[string]any{
 			"ai_reply_enabled": enabled,
 			"updated_at":       now,
 			"update_user_id":   operator.UserID,
@@ -644,21 +713,22 @@ func (s *wxWorkProtocolInstanceService) SetAIReplyEnabled(instanceID int64, enab
 }
 
 func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWorkProtocolAISettingsRequest, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
-	}
-	instance := s.Get(req.ID)
-	if instance == nil || instance.Status == enums.StatusDeleted {
-		return errorsx.InvalidParam("企微员工号实例不存在")
-	}
-	companyID, storeID, err := s.normalizeCompanyStoreBinding(req.CompanyID, req.StoreID, req.StoreName, instance.EmployeeName, operator)
+	tenantID, err := requireWxWorkTenantID(operator)
 	if err != nil {
 		return err
 	}
-	if err := s.validateBinding(instance.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), req.ID, tenantID)
+	if instance == nil || instance.Status == enums.StatusDeleted {
+		return errorsx.InvalidParam("企微员工号实例不存在")
+	}
+	companyID, storeID, err := s.normalizeCompanyStoreBinding(tenantID, req.CompanyID, req.StoreID, req.StoreName, instance.EmployeeName, operator)
+	if err != nil {
 		return err
 	}
-	if err := repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	if err := s.validateBinding(tenantID, instance.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
+		return err
+	}
+	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
 		"company_id":                         companyID,
 		"store_id":                           storeID,
 		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
@@ -691,7 +761,7 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 	}); err != nil {
 		return err
 	}
-	updated := s.Get(req.ID)
+	updated := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), req.ID, tenantID)
 	if updated == nil {
 		return nil
 	}
@@ -708,7 +778,7 @@ func (s *wxWorkProtocolInstanceService) syncStoreStaffBindingFromInstanceRequest
 	}
 	mode := normalizeStoreManagedMode(managedMode)
 	now := time.Now()
-	return repositories.StoreStaffBindingRepository.Updates(sqls.DB(), binding.ID, map[string]any{
+	return repositories.StoreStaffBindingRepository.UpdatesInTenant(sqls.DB(), binding.ID, binding.TenantID, map[string]any{
 		"managed_mode":               mode,
 		"service_hours":              strings.TrimSpace(serviceHours),
 		"store_room_conversation_id": normalizeWxWorkRoomConversationID(roomConversationID),
@@ -722,12 +792,12 @@ func (s *wxWorkProtocolInstanceService) syncStoreStaffBindingFromInstanceRequest
 	})
 }
 
-func (s *wxWorkProtocolInstanceService) normalizeCompanyStoreBinding(companyID int64, storeID int64, storeName string, fallbackName string, operator *dto.AuthPrincipal) (int64, int64, error) {
+func (s *wxWorkProtocolInstanceService) normalizeCompanyStoreBinding(tenantID int64, companyID int64, storeID int64, storeName string, fallbackName string, operator *dto.AuthPrincipal) (int64, int64, error) {
 	if companyID < 0 {
 		companyID = 0
 	}
 	if storeID > 0 {
-		store := StoreService.Get(storeID)
+		store := StoreService.GetInTenant(storeID, tenantID)
 		if store == nil || store.Status == enums.StatusDeleted {
 			return 0, 0, errorsx.InvalidParam("门店不存在")
 		}
@@ -735,31 +805,34 @@ func (s *wxWorkProtocolInstanceService) normalizeCompanyStoreBinding(companyID i
 			companyID = store.CompanyID
 		}
 	}
-	resolvedStoreID, err := s.ensureStoreForCompany(companyID, storeID, storeName, fallbackName, operator)
+	resolvedStoreID, err := s.ensureStoreForCompany(tenantID, companyID, storeID, storeName, fallbackName, operator)
 	if err != nil {
 		return 0, 0, err
 	}
 	if companyID <= 0 && resolvedStoreID > 0 {
-		if store := StoreService.Get(resolvedStoreID); store != nil {
+		if store := StoreService.GetInTenant(resolvedStoreID, tenantID); store != nil {
 			companyID = store.CompanyID
 		}
 	}
 	return companyID, resolvedStoreID, nil
 }
 
-func (s *wxWorkProtocolInstanceService) ensureStoreForCompany(companyID int64, storeID int64, storeName string, fallbackName string, operator *dto.AuthPrincipal) (int64, error) {
+func (s *wxWorkProtocolInstanceService) ensureStoreForCompany(tenantID int64, companyID int64, storeID int64, storeName string, fallbackName string, operator *dto.AuthPrincipal) (int64, error) {
+	if tenantID <= 0 {
+		return 0, errorsx.InvalidParam("门店缺少接入公司归属")
+	}
 	if companyID < 0 {
 		companyID = 0
 	}
 	if companyID > 0 {
-		if company := CompanyService.Get(companyID); company == nil || company.Status == enums.StatusDeleted {
+		if company := repositories.CompanyRepository.GetInTenant(sqls.DB(), companyID, tenantID); company == nil || company.Status == enums.StatusDeleted {
 			return 0, errorsx.InvalidParam("公司不存在")
 		}
 	}
 	name := utils.RepairMojibakeText(strings.TrimSpace(firstNonBlank(storeName, fallbackName)))
 	now := time.Now()
 	if storeID > 0 {
-		store := StoreService.Get(storeID)
+		store := StoreService.GetInTenant(storeID, tenantID)
 		if store == nil || store.Status == enums.StatusDeleted {
 			return 0, errorsx.InvalidParam("门店不存在")
 		}
@@ -777,7 +850,7 @@ func (s *wxWorkProtocolInstanceService) ensureStoreForCompany(companyID int64, s
 			columns["updated_at"] = now
 			columns["update_user_id"] = auditUserID(operator)
 			columns["update_user_name"] = auditUsername(operator)
-			if err := repositories.StoreRepository.Updates(sqls.DB(), store.ID, columns); err != nil {
+			if err := repositories.StoreRepository.UpdatesInTenant(sqls.DB(), store.ID, tenantID, columns); err != nil {
 				return 0, err
 			}
 		}
@@ -787,6 +860,7 @@ func (s *wxWorkProtocolInstanceService) ensureStoreForCompany(companyID int64, s
 		return 0, nil
 	}
 	item := &models.Store{
+		TenantID:    tenantID,
 		StoreCode:   generateWxWorkInternalStoreCode(companyID),
 		Name:        name,
 		CompanyID:   companyID,
@@ -907,15 +981,18 @@ func normalizeWxWorkPersonaPrompt(value string) string {
 	return utils.RepairMojibakeText(value)
 }
 
-func (s *wxWorkProtocolInstanceService) resolveEnabledProtocolChannel(channelID int64) (*models.Channel, error) {
+func (s *wxWorkProtocolInstanceService) resolveEnabledProtocolChannel(channelID, tenantID int64) (*models.Channel, error) {
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理企微员工号的接入公司")
+	}
 	if channelID <= 0 {
-		channel := ChannelService.Take("channel_type = ? AND status = ?", enums.ChannelTypeWxWorkProtocol, enums.StatusOk)
+		channel := repositories.ChannelRepository.Take(sqls.DB(), "tenant_id = ? AND channel_type = ? AND status = ?", tenantID, enums.ChannelTypeWxWorkProtocol, enums.StatusOk)
 		if channel == nil {
 			return nil, errorsx.InvalidParam("请先创建并启用企微员工号协议渠道")
 		}
 		return channel, nil
 	}
-	channel := ChannelService.Get(channelID)
+	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), channelID, tenantID)
 	if channel == nil || channel.Status != enums.StatusOk || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
 		return nil, errorsx.InvalidParam("请选择已启用的企微员工号协议渠道")
 	}
@@ -958,7 +1035,7 @@ func (s *wxWorkProtocolInstanceService) claimAvailableProtocolDeviceGUID(channel
 	return "", errorsx.InvalidParam("协议平台暂无可绑定的空闲实例，请先在协议平台初始化新设备")
 }
 
-func (s *wxWorkProtocolInstanceService) claimStaleProtocolDeviceGUID(channel *models.Channel) (string, error) {
+func (s *wxWorkProtocolInstanceService) claimStaleProtocolDeviceGUID(channel *models.Channel, tenantID int64) (string, error) {
 	if channel == nil {
 		return "", errorsx.InvalidParam("企微协议渠道不存在")
 	}
@@ -970,11 +1047,11 @@ func (s *wxWorkProtocolInstanceService) claimStaleProtocolDeviceGUID(channel *mo
 			continue
 		}
 		instance := s.Get(candidate.BoundWxWorkProtocolInstanceID)
-		if instance != nil && s.canReleaseLoginBinding(instance, now) {
+		if instance != nil && (instance.TenantID == 0 || instance.TenantID == tenantID) && s.canReleaseLoginBinding(instance, now) {
 			return guid, nil
 		}
 	}
-	items := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().NotEq("status", enums.StatusDeleted).Asc("id"))
+	items := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().In("tenant_id", []int64{0, tenantID}).NotEq("status", enums.StatusDeleted).Asc("id"))
 	for _, item := range items {
 		if s.canReleaseLoginBinding(&item, now) {
 			guid := normalizeProtocolDeviceGUID(item.Guid)
@@ -1262,11 +1339,15 @@ func firstPositiveID(values []int64) int64 {
 	return 0
 }
 
-func (s *wxWorkProtocolInstanceService) DeleteInstance(id int64) error {
-	if s.Get(id) == nil {
+func (s *wxWorkProtocolInstanceService) DeleteInstance(id int64, operator *dto.AuthPrincipal) error {
+	tenantID, err := requireWxWorkTenantID(operator)
+	if err != nil {
+		return err
+	}
+	if repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), id, tenantID) == nil {
 		return errorsx.InvalidParam("企微员工号实例不存在")
 	}
-	return repositories.WxWorkProtocolInstanceRepository.Delete(sqls.DB(), id)
+	return repositories.WxWorkProtocolInstanceRepository.DeleteInTenant(sqls.DB(), id, tenantID)
 }
 
 func (s *wxWorkProtocolInstanceService) RequireStoreKnowledge(instance *models.WxWorkProtocolInstance) (int64, int64, error) {
@@ -1276,12 +1357,12 @@ func (s *wxWorkProtocolInstanceService) RequireStoreKnowledge(instance *models.W
 	return instance.StoreID, instance.KnowledgeBaseID, nil
 }
 
-func (s *wxWorkProtocolInstanceService) validateBinding(channelID, storeID, knowledgeBaseID int64) error {
-	if err := s.validateProtocolChannel(channelID); err != nil {
+func (s *wxWorkProtocolInstanceService) validateBinding(tenantID, channelID, storeID, knowledgeBaseID int64) error {
+	if err := s.validateProtocolChannel(channelID, tenantID); err != nil {
 		return err
 	}
 	if storeID > 0 {
-		store := StoreService.Get(storeID)
+		store := StoreService.GetInTenant(storeID, tenantID)
 		if store == nil || store.Status == enums.StatusDeleted {
 			return errorsx.InvalidParam("门店不存在")
 		}
@@ -1295,10 +1376,28 @@ func (s *wxWorkProtocolInstanceService) validateBinding(channelID, storeID, know
 	return nil
 }
 
-func (s *wxWorkProtocolInstanceService) validateProtocolChannel(channelID int64) error {
-	channel := ChannelService.Get(channelID)
+func (s *wxWorkProtocolInstanceService) validateProtocolChannel(channelID, tenantID int64) error {
+	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), channelID, tenantID)
 	if channel == nil || channel.Status == enums.StatusDeleted || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
 		return errorsx.InvalidParam("请选择企微员工号协议渠道")
 	}
 	return nil
+}
+
+func activeWxWorkTenantID(operator *dto.AuthPrincipal) int64 {
+	if operator == nil || operator.ActiveTenantID <= 0 {
+		return 0
+	}
+	return operator.ActiveTenantID
+}
+
+func requireWxWorkTenantID(operator *dto.AuthPrincipal) (int64, error) {
+	if operator == nil {
+		return 0, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	tenantID := activeWxWorkTenantID(operator)
+	if tenantID <= 0 {
+		return 0, errorsx.Forbidden("请先进入需要管理企微员工号的接入公司")
+	}
+	return tenantID, nil
 }
