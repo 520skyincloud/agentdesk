@@ -1,6 +1,8 @@
 package services
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +17,7 @@ import (
 )
 
 func TestRoleAuthorityAssignmentMatrix(t *testing.T) {
-	db := setupAuthServiceTestDB(t)
+	db := setupRoleAuthorityTestDB(t)
 	roles := seedAuthorityRoles(t, db)
 	platformOperatorRole := createAuthorityRole(t, db, "platform_operator", constants.RoleScopePlatform, 70)
 
@@ -46,7 +48,7 @@ func TestRoleAuthorityAssignmentMatrix(t *testing.T) {
 }
 
 func TestUserServiceAssignRolesEnforcesAuthority(t *testing.T) {
-	db := setupAuthServiceTestDB(t)
+	db := setupRoleAuthorityTestDB(t)
 	roles := seedAuthorityRoles(t, db)
 	platformOperatorRole := createAuthorityRole(t, db, "platform_operator", constants.RoleScopePlatform, 70)
 	adminUser := createAuthorityUser(t, db, "authority_admin")
@@ -82,7 +84,7 @@ func TestUserServiceAssignRolesEnforcesAuthority(t *testing.T) {
 }
 
 func TestUserServicePrivilegedMutationsEnforceAuthority(t *testing.T) {
-	db := setupAuthServiceTestDB(t)
+	db := setupRoleAuthorityTestDB(t)
 	roles := seedAuthorityRoles(t, db)
 	adminUser := createAuthorityUser(t, db, "mutation_admin")
 	assignAuthorityRole(t, db, adminUser.ID, roles[constants.RoleCodeAdmin].ID)
@@ -117,7 +119,7 @@ func TestUserServicePrivilegedMutationsEnforceAuthority(t *testing.T) {
 }
 
 func TestRoleServiceTenantRoleRejectsPlatformPermission(t *testing.T) {
-	db := setupAuthServiceTestDB(t)
+	db := setupRoleAuthorityTestDB(t)
 	roles := seedAuthorityRoles(t, db)
 	tenantPermission := createAuthorityPermission(t, db, "tenant.feature.view", constants.PermissionScopeTenant)
 	platformPermission := createAuthorityPermission(t, db, "platform.feature.update", constants.PermissionScopePlatform)
@@ -143,7 +145,7 @@ func TestRoleServiceTenantRoleRejectsPlatformPermission(t *testing.T) {
 }
 
 func TestTenantAdminCreatesAccountWithLowerRoleOnly(t *testing.T) {
-	db := setupAuthServiceTestDB(t)
+	db := setupRoleAuthorityTestDB(t)
 	roles := seedAuthorityRoles(t, db)
 	operator := &dto.AuthPrincipal{UserID: 300, Username: "tenant_admin", Roles: []string{constants.RoleCodeTenantAdmin}}
 	legacyTenantID := authorityLegacyTenantID(t, db)
@@ -177,6 +179,81 @@ func TestTenantAdminCreatesAccountWithLowerRoleOnly(t *testing.T) {
 	}
 }
 
+func TestUserServiceAssignRolesPreservesDutyRoleDependencies(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	roles := seedAuthorityRoles(t, db)
+	tenantID := authorityLegacyTenantID(t, db)
+	operator := &dto.AuthPrincipal{
+		UserID: 900, Username: "tenant_admin", TenantID: tenantID, ActiveTenantID: tenantID,
+		Roles: []string{constants.RoleCodeTenantAdmin},
+	}
+	target := createAuthorityUser(t, db, "duty_role_target")
+	if err := db.Model(&models.User{}).Where("id = ?", target.ID).Update("tenant_id", tenantID).Error; err != nil {
+		t.Fatalf("assign duty target tenant: %v", err)
+	}
+	target.TenantID = tenantID
+	for _, code := range []string{constants.RoleCodeCsUser, constants.RoleCodeCsTeamLeader, constants.RoleCodeStoreStaff} {
+		assignAuthorityRole(t, db, target.ID, roles[code].ID)
+	}
+	conversation := &models.Conversation{TenantID: tenantID, CurrentAssigneeID: target.ID, Status: enums.IMConversationStatusActive}
+	team := &models.AgentTeam{TenantID: tenantID, Name: "duty team", LeaderUserID: target.ID, Status: enums.StatusOk}
+	if err := db.Create(conversation).Error; err != nil {
+		t.Fatalf("create assigned conversation: %v", err)
+	}
+	if err := db.Create(team).Error; err != nil {
+		t.Fatalf("create led team: %v", err)
+	}
+	profile := &models.AgentProfile{TenantID: tenantID, UserID: target.ID, TeamID: team.ID, AgentCode: "duty-agent", DisplayName: "Duty Agent", Status: enums.StatusOk}
+	binding := &models.StoreStaffBinding{TenantID: tenantID, UserID: target.ID, StoreID: 1, AgentTeamID: team.ID, Status: enums.StatusOk}
+	if err := db.Create(profile).Error; err != nil {
+		t.Fatalf("create agent profile: %v", err)
+	}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create store staff binding: %v", err)
+	}
+
+	withoutAgent := []int64{roles[constants.RoleCodeCsTeamLeader].ID, roles[constants.RoleCodeStoreStaff].ID}
+	if err := UserService.AssignRoles(target.ID, withoutAgent, operator); err == nil || !strings.Contains(err.Error(), "未完成会话") {
+		t.Fatalf("remove agent role with active conversation error = %v", err)
+	}
+	if err := db.Model(conversation).Update("status", enums.IMConversationStatusClosed).Error; err != nil {
+		t.Fatalf("close assigned conversation: %v", err)
+	}
+	if err := UserService.AssignRoles(target.ID, withoutAgent, operator); err == nil || !strings.Contains(err.Error(), "客服档案") {
+		t.Fatalf("remove agent role with profile error = %v", err)
+	}
+	withoutLeader := []int64{roles[constants.RoleCodeCsUser].ID, roles[constants.RoleCodeStoreStaff].ID}
+	if err := UserService.AssignRoles(target.ID, withoutLeader, operator); err == nil || !strings.Contains(err.Error(), "综合客服组组长") {
+		t.Fatalf("remove team leader role error = %v", err)
+	}
+	withoutStoreStaff := []int64{roles[constants.RoleCodeCsUser].ID, roles[constants.RoleCodeCsTeamLeader].ID}
+	if err := UserService.AssignRoles(target.ID, withoutStoreStaff, operator); err == nil || !strings.Contains(err.Error(), "门店员工身份") {
+		t.Fatalf("remove store staff role error = %v", err)
+	}
+	assertUserRoleCodes(t, db, target.ID,
+		constants.RoleCodeCsTeamLeader,
+		constants.RoleCodeCsUser,
+		constants.RoleCodeStoreStaff,
+	)
+
+	if err := db.Model(conversation).Update("status", enums.IMConversationStatusClosed).Error; err != nil {
+		t.Fatalf("keep conversation closed: %v", err)
+	}
+	if err := db.Model(profile).Update("status", enums.StatusDeleted).Error; err != nil {
+		t.Fatalf("delete agent profile: %v", err)
+	}
+	if err := db.Model(team).Update("leader_user_id", 0).Error; err != nil {
+		t.Fatalf("clear team leader: %v", err)
+	}
+	if err := db.Model(binding).Update("status", enums.StatusDeleted).Error; err != nil {
+		t.Fatalf("delete store staff binding: %v", err)
+	}
+	if err := UserService.AssignRoles(target.ID, nil, operator); err != nil {
+		t.Fatalf("remove duty roles after clearing dependencies: %v", err)
+	}
+	assertUserRoleCodes(t, db, target.ID)
+}
+
 func seedAuthorityRoles(t *testing.T, db *gorm.DB) map[string]*models.Role {
 	t.Helper()
 	roles := map[string]*models.Role{
@@ -185,8 +262,23 @@ func seedAuthorityRoles(t *testing.T, db *gorm.DB) map[string]*models.Role {
 		constants.RoleCodeTenantAdmin:  createAuthorityRole(t, db, constants.RoleCodeTenantAdmin, constants.RoleScopeTenant, constants.RoleAuthorityTenantAdmin),
 		constants.RoleCodeCsTeamLeader: createAuthorityRole(t, db, constants.RoleCodeCsTeamLeader, constants.RoleScopeTenant, constants.RoleAuthorityTeamLeader),
 		constants.RoleCodeCsUser:       createAuthorityRole(t, db, constants.RoleCodeCsUser, constants.RoleScopeTenant, constants.RoleAuthorityMember),
+		constants.RoleCodeStoreStaff:   createAuthorityRole(t, db, constants.RoleCodeStoreStaff, constants.RoleScopeTenant, constants.RoleAuthorityMember),
 	}
 	return roles
+}
+
+func setupRoleAuthorityTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := setupAuthServiceTestDB(t)
+	if err := db.AutoMigrate(
+		&models.Conversation{},
+		&models.AgentTeam{},
+		&models.AgentProfile{},
+		&models.StoreStaffBinding{},
+	); err != nil {
+		t.Fatalf("migrate role authority dependencies: %v", err)
+	}
+	return db
 }
 
 func createAuthorityRole(t *testing.T, db *gorm.DB, code, scope string, level int) *models.Role {
@@ -255,6 +347,23 @@ func assertOnlyUserRole(t *testing.T, db *gorm.DB, userID, roleID int64) {
 	}
 	if len(relations) != 1 || relations[0].RoleID != roleID {
 		t.Fatalf("unexpected user roles: %+v", relations)
+	}
+}
+
+func assertUserRoleCodes(t *testing.T, db *gorm.DB, userID int64, want ...string) {
+	t.Helper()
+	var codes []string
+	if err := db.Table("t_user_role AS ur").
+		Select("r.code").
+		Joins("JOIN t_role AS r ON r.id = ur.role_id").
+		Where("ur.user_id = ?", userID).
+		Order("r.code ASC").
+		Scan(&codes).Error; err != nil {
+		t.Fatalf("find user role codes: %v", err)
+	}
+	slices.Sort(want)
+	if !slices.Equal(codes, want) {
+		t.Fatalf("user role codes = %v, want %v", codes, want)
 	}
 }
 

@@ -2126,3 +2126,15 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 实际 `/tmp/agentdesk-tenant-stats.db` 审计继续 passed：51/51 TenantID 模型策略、64/64 表、125/125 普通关系、0 违规。执行前后文件 mtime 均为 `1784055363`，大小均为 `4878336` 字节。
 - 聚焦 race、独立串行全仓 Go、`go vet ./...` 和 diff 检查通过。无 model、migration、DTO、API、权限、WebSocket、页面或 AI/计费变化；AI 分支无同文件冲突，不要求 rebase 或 migration 排序。
 - 可独立回滚审计 service/test 和本节文档，无数据库回滚；回滚只会失去历史串组发现能力。发现违规后必须另开幂等 DML 修复批次，禁止审计命令自动挪人、改排班或删除记录。
+
+## 69. 当前实施检查点：职责角色移除前业务依赖保护（2026-07-15）
+
+账号删除已要求先转派会话、更换组长、删除客服档案并解除门店员工绑定，但角色调整原先可以直接移除职责角色并保留这些业务对象，造成账号角色与客服组织页面互相矛盾。本批复用现有账号管理与角色分配入口，不增加平行“岗位解绑”页面，也不自动级联删除数据。
+
+- `replaceUserRolesDB` 先去重并完整校验目标角色状态、等级和 scope，形成目标角色集合；再读取账号原 UserRole，只对“原来持有、此次不再保留”的职责角色检查依赖；通过后才删除旧关系并写入新关系。
+- 移除 `cs_user` 前要求没有未关闭的当前会话且没有未删除 AgentProfile；移除 `cs_team_leader` 前要求不再是任何未删除综合客服组的 LeaderUserID；移除 `store_staff` 前要求没有未删除 StoreStaffBinding。
+- 依赖存在时返回明确处理顺序，整个角色替换事务失败并保留原角色。清理对应会话/档案/组长/门店绑定后可正常移除；只新增角色、保留原职责角色或新建账号不触发无关检查。
+- 不把客服小组负责人绑定到 `cs_team_leader`：小组负责人按现有产品设计是本综合组客服档案并自动成为小组成员，因此由 `cs_user + AgentProfile` 依赖保护；综合客服组长才由 `cs_team_leader + Team.LeaderUserID` 表达。
+- 测试覆盖未完成会话、有效客服档案、综合组组长、门店员工绑定四个阻断点，确认每次失败后三个原职责角色都完整保留，并在清理依赖后允许移除。原角色等级、跨租户、平台 scope 和创建账号测试继续通过。
+- 聚焦 race、独立串行全仓 Go、`go vet ./...` 与 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端或 AI/计费变化；AI 分支无同文件冲突，不要求 rebase 或 migration 排序。
+- 可独立回滚 User service、测试与本节文档，无数据库回滚；回滚会重新允许职责角色与业务归属悬空。若未来要支持“一键离职/换岗”，应另建显式预览与事务编排，不得把本保护改成静默级联清理。

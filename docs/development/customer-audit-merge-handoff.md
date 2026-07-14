@@ -3473,3 +3473,36 @@ git diff --check
 
 - `origin/codex/ai-billing@f2d2da4` 不修改本批审计 service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。最终合并新增 AI/FastGPT 租户模型后仍需先过模型策略覆盖，再运行包括本批语义检查的实际库审计。
 - 可独立回滚 service/test 和两份文档，无数据库回滚；回滚会失去同租户串组历史问题的发现能力。任何修复必须根据报告另做幂等、可审阅 DML，不得让只读命令自动改组织关系。
+
+## 第 69 批：职责角色移除前业务依赖保护（2026-07-15）
+
+### 问题与实现
+
+- User 删除已有 `ensureDeleteDependenciesCleared`，但 `AssignRoles` 原先直接删除并重建 UserRole。公司主管可移除 `cs_user/cs_team_leader/store_staff`，同时留下客服档案、组长指派或门店员工绑定，页面归属和账号职责随即不一致。
+- `replaceUserRolesDB` 调整为先校验所有目标 Role，再比较原角色与目标角色；只有确实移除某项职责角色时才检查其依赖，避免新建账号或从未持有该职责的账号执行无关查询。
+- `cs_user` 保护未关闭当前会话和未删除 AgentProfile；`cs_team_leader` 保护未删除 AgentTeam.LeaderUserID；`store_staff` 保护未删除 StoreStaffBinding。错误信息要求先转派/关闭、删除档案、更换组长或解除绑定。
+- 依赖检查发生在删除 UserRole 之前并位于原事务内，失败保持原角色。没有自动清理、没有新增入口或隐藏权限。
+
+### 文件与验证
+
+```text
+internal/services/user_service.go
+internal/services/role_user_authority_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestUserServiceAssignRolesPreservesDutyRoleDependencies|TestUserServiceAssignRolesEnforcesAuthority|TestTenantAdminCreatesAccountWithLowerRoleOnly)$' -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 测试依次验证未完成会话、客服档案、综合组组长和门店员工绑定阻止职责角色移除；每次失败后三个原角色均保留，清理依赖后空角色集合可成功保存。
+- 全仓 Go、vet 和 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端、模型调用、token、usage 或计费变化。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 不修改本批 User service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。最终合并保留本批前置校验顺序，避免恢复“先删后验”或静默级联。
+- 可独立回滚 service/test 和两份文档，无数据库回滚；回滚会恢复职责角色与组织/会话归属悬空风险。未来离职编排必须作为独立、可预览、可审计事务设计。

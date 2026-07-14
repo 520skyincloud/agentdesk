@@ -397,10 +397,8 @@ func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []in
 	if user == nil || user.DeletedAt != nil {
 		return errorsx.InvalidParam("用户不存在")
 	}
-	if err := db.Where("user_id = ?", userID).Delete(&models.UserRole{}).Error; err != nil {
-		return err
-	}
 	seen := make(map[int64]struct{}, len(roleIDs))
+	roles := make([]*models.Role, 0, len(roleIDs))
 	for _, roleID := range roleIDs {
 		if _, exists := seen[roleID]; exists {
 			continue
@@ -422,13 +420,78 @@ func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []in
 		if user.TenantID == 0 && role.Scope != constants.RoleScopePlatform {
 			return errorsx.Forbidden("平台账号只能分配平台角色")
 		}
+		roles = append(roles, role)
+	}
+	if err := s.ensureRetainedRoleDependenciesDB(db, user, roles); err != nil {
+		return err
+	}
+	if err := db.Where("user_id = ?", userID).Delete(&models.UserRole{}).Error; err != nil {
+		return err
+	}
+	for _, role := range roles {
 		relation := &models.UserRole{
 			UserID:      userID,
-			RoleID:      roleID,
+			RoleID:      role.ID,
 			AuditFields: utils.BuildAuditFields(operator),
 		}
 		if err := db.Create(relation).Error; err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (s *userService) ensureRetainedRoleDependenciesDB(db *gorm.DB, user *models.User, roles []*models.Role) error {
+	if user == nil || user.TenantID <= 0 {
+		return nil
+	}
+	assigned := make(map[string]struct{})
+	relations := repositories.UserRoleRepository.Find(db, sqls.NewCnd().Eq("user_id", user.ID))
+	for i := range relations {
+		role := repositories.RoleRepository.Get(db, relations[i].RoleID)
+		if role != nil {
+			assigned[role.Code] = struct{}{}
+		}
+	}
+	retained := make(map[string]struct{}, len(roles))
+	for _, role := range roles {
+		if role != nil {
+			retained[role.Code] = struct{}{}
+		}
+	}
+	removesRole := func(code string) bool {
+		_, hadRole := assigned[code]
+		_, keepsRole := retained[code]
+		return hadRole && !keepsRole
+	}
+	if removesRole(constants.RoleCodeCsUser) {
+		if repositories.ConversationRepository.Take(db,
+			"tenant_id = ? AND current_assignee_id = ? AND status <> ?",
+			user.TenantID, user.ID, enums.IMConversationStatusClosed,
+		) != nil {
+			return errorsx.InvalidParam("用户仍有未完成会话，不能移除客服角色")
+		}
+		if repositories.AgentProfileRepository.Take(db,
+			"tenant_id = ? AND user_id = ? AND status <> ?",
+			user.TenantID, user.ID, enums.StatusDeleted,
+		) != nil {
+			return errorsx.InvalidParam("用户仍有关联客服档案，请先删除客服档案再移除客服角色")
+		}
+	}
+	if removesRole(constants.RoleCodeCsTeamLeader) {
+		if repositories.AgentTeamRepository.Take(db,
+			"tenant_id = ? AND leader_user_id = ? AND status <> ?",
+			user.TenantID, user.ID, enums.StatusDeleted,
+		) != nil {
+			return errorsx.InvalidParam("用户仍是综合客服组组长，请先更换组长再移除客服组长角色")
+		}
+	}
+	if removesRole(constants.RoleCodeStoreStaff) {
+		if repositories.StoreStaffBindingRepository.Take(db,
+			"tenant_id = ? AND user_id = ? AND status <> ?",
+			user.TenantID, user.ID, enums.StatusDeleted,
+		) != nil {
+			return errorsx.InvalidParam("用户仍有关联门店员工身份，请先解除绑定再移除门店员工角色")
 		}
 	}
 	return nil
