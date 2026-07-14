@@ -118,25 +118,28 @@ func (s *agentTeamService) UpdateAgentTeam(req request.UpdateAgentTeamRequest, o
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.GetInTenant(req.ID, operator)
-	if current == nil || current.Status == enums.StatusDeleted {
-		return errorsx.InvalidParam("客服组不存在")
-	}
-	if !AgentTeamScopeService.CanManageTeam(operator, current.ID) {
-		return errorsx.Forbidden("只能管理自己绑定的客服组")
-	}
-	if !AgentTeamScopeService.IsAdmin(operator) && req.LeaderUserID != current.LeaderUserID {
-		return errorsx.Forbidden("客服组长不能变更客服组负责人")
-	}
-	item, err := s.buildTeamModel(req.ID, current.TenantID, req.Name, req.LeaderUserID, req.Status, req.Description, req.Remark)
-	if err != nil {
-		return err
-	}
-	storeStaffUserIDs, scopeProvided, err := s.resolveRequestedStoreStaffUserIDsDB(sqls.DB(), current.TenantID, req.StoreStaffUserIDs, req.WxWorkInstanceScopeIDs)
-	if err != nil {
-		return err
-	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current, err := repositories.AgentTeamRepository.GetForUpdateInTenant(ctx.Tx, req.ID, AgentTeamScopeService.ActiveTenantID(operator))
+		if err != nil {
+			return err
+		}
+		if current == nil || current.Status == enums.StatusDeleted {
+			return errorsx.InvalidParam("客服组不存在")
+		}
+		if !AgentTeamScopeService.canManageTeam(operator, current) {
+			return errorsx.Forbidden("只能管理自己绑定的客服组")
+		}
+		if !AgentTeamScopeService.IsAdmin(operator) && req.LeaderUserID != current.LeaderUserID {
+			return errorsx.Forbidden("客服组长不能变更客服组负责人")
+		}
+		item, err := s.buildTeamModelDB(ctx.Tx, req.ID, current.TenantID, req.Name, req.LeaderUserID, req.Status, req.Description, req.Remark)
+		if err != nil {
+			return err
+		}
+		storeStaffUserIDs, scopeProvided, err := s.resolveRequestedStoreStaffUserIDsDB(ctx.Tx, current.TenantID, req.StoreStaffUserIDs, req.WxWorkInstanceScopeIDs)
+		if err != nil {
+			return err
+		}
 		if err := repositories.AgentTeamRepository.UpdatesInTenant(ctx.Tx, req.ID, current.TenantID, map[string]any{
 			"tenant_id":        current.TenantID,
 			"name":             item.Name,
@@ -161,61 +164,72 @@ func (s *agentTeamService) DeleteAgentTeam(id int64, operator *dto.AuthPrincipal
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.GetInTenant(id, operator)
-	if current == nil || current.Status == enums.StatusDeleted {
-		return errorsx.InvalidParam("客服组不存在")
-	}
-	if !AgentTeamScopeService.CanManageTeam(operator, current.ID) {
-		return errorsx.Forbidden("只能管理自己绑定的客服组")
-	}
-	if AgentProfileService.Take("team_id = ?", id) != nil {
-		return errorsx.Forbidden("客服组下仍有关联客服档案，无法删除")
-	}
-	if repositories.AgentTeamSquadRepository.Take(sqls.DB(), "team_id = ? AND status <> ?", id, enums.StatusDeleted) != nil {
-		return errorsx.Forbidden("客服组下仍有关联客服小组，无法删除")
-	}
-	if repositories.WxWorkProtocolInstanceRepository.Take(sqls.DB(), "tenant_id = ? AND agent_team_id = ? AND status <> ?", current.TenantID, id, enums.StatusDeleted) != nil {
-		return errorsx.Forbidden("客服组下仍有关联企微员工号，无法删除")
-	}
-	if repositories.StoreStaffBindingRepository.TakeInTenant(sqls.DB(), current.TenantID, "agent_team_id = ? AND status <> ?", id, enums.StatusDeleted) != nil {
-		return errorsx.Forbidden("客服组下仍有关联门店员工，无法删除")
-	}
-	if AgentTeamScheduleService.Take("team_id = ?", id) != nil {
-		return errorsx.Forbidden("客服组下仍有关联组排班，无法删除")
-	}
-	if AIAgentService.Take(
-		"tenant_id = ? AND (team_ids = ? OR team_ids LIKE ? OR team_ids LIKE ? OR team_ids LIKE ?) AND status <> ?",
-		current.TenantID,
-		utils.JoinInt64s([]int64{id}),
-		utils.JoinInt64s([]int64{id})+",%",
-		"%,"+utils.JoinInt64s([]int64{id}),
-		"%,"+utils.JoinInt64s([]int64{id})+",%",
-		enums.StatusDeleted,
-	) != nil {
-		return errorsx.Forbidden("客服组下仍有关联 AI Agent，无法删除")
-	}
-	return repositories.AgentTeamRepository.UpdatesInTenant(sqls.DB(), id, current.TenantID, map[string]any{
-		"status":           enums.StatusDeleted,
-		"update_user_id":   operator.UserID,
-		"update_user_name": operator.Username,
-		"updated_at":       time.Now(),
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current, err := repositories.AgentTeamRepository.GetForUpdateInTenant(ctx.Tx, id, AgentTeamScopeService.ActiveTenantID(operator))
+		if err != nil {
+			return err
+		}
+		if current == nil || current.Status == enums.StatusDeleted {
+			return errorsx.InvalidParam("客服组不存在")
+		}
+		if !AgentTeamScopeService.canManageTeam(operator, current) {
+			return errorsx.Forbidden("只能管理自己绑定的客服组")
+		}
+		if repositories.AgentProfileRepository.Take(ctx.Tx, "tenant_id = ? AND team_id = ?", current.TenantID, id) != nil {
+			return errorsx.Forbidden("客服组下仍有关联客服档案，无法删除")
+		}
+		if repositories.AgentTeamSquadRepository.Take(ctx.Tx, "tenant_id = ? AND team_id = ? AND status <> ?", current.TenantID, id, enums.StatusDeleted) != nil {
+			return errorsx.Forbidden("客服组下仍有关联客服小组，无法删除")
+		}
+		if repositories.WxWorkProtocolInstanceRepository.Take(ctx.Tx, "tenant_id = ? AND agent_team_id = ? AND status <> ?", current.TenantID, id, enums.StatusDeleted) != nil {
+			return errorsx.Forbidden("客服组下仍有关联企微员工号，无法删除")
+		}
+		if repositories.StoreStaffBindingRepository.TakeInTenant(ctx.Tx, current.TenantID, "agent_team_id = ? AND status <> ?", id, enums.StatusDeleted) != nil {
+			return errorsx.Forbidden("客服组下仍有关联门店员工，无法删除")
+		}
+		if repositories.AgentTeamScheduleRepository.Take(ctx.Tx, "tenant_id = ? AND team_id = ?", current.TenantID, id) != nil {
+			return errorsx.Forbidden("客服组下仍有关联组排班，无法删除")
+		}
+		if repositories.AIAgentRepository.Take(
+			ctx.Tx,
+			"tenant_id = ? AND (team_ids = ? OR team_ids LIKE ? OR team_ids LIKE ? OR team_ids LIKE ?) AND status <> ?",
+			current.TenantID,
+			utils.JoinInt64s([]int64{id}),
+			utils.JoinInt64s([]int64{id})+",%",
+			"%,"+utils.JoinInt64s([]int64{id}),
+			"%,"+utils.JoinInt64s([]int64{id})+",%",
+			enums.StatusDeleted,
+		) != nil {
+			return errorsx.Forbidden("客服组下仍有关联 AI Agent，无法删除")
+		}
+		return repositories.AgentTeamRepository.UpdatesInTenant(ctx.Tx, id, current.TenantID, map[string]any{
+			"status":           enums.StatusDeleted,
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+			"updated_at":       time.Now(),
+		})
 	})
 }
 
 func (s *agentTeamService) buildTeamModel(id, tenantID int64, name string, leaderUserID int64, status int, description, remark string) (*models.AgentTeam, error) {
+	return s.buildTeamModelDB(sqls.DB(), id, tenantID, name, leaderUserID, status, description, remark)
+}
+
+func (s *agentTeamService) buildTeamModelDB(db *gorm.DB, id, tenantID int64, name string, leaderUserID int64, status int, description, remark string) (*models.AgentTeam, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errorsx.InvalidParam("客服组名称不能为空")
 	}
-	if exists := s.Take("tenant_id = ? AND name = ? AND status <> ? AND id <> ?", tenantID, name, enums.StatusDeleted, id); exists != nil {
+	if exists := repositories.AgentTeamRepository.Take(db, "tenant_id = ? AND name = ? AND status <> ? AND id <> ?", tenantID, name, enums.StatusDeleted, id); exists != nil {
 		return nil, errorsx.InvalidParam("客服组名称已存在")
 	}
 	if leaderUserID > 0 {
-		leader := UserService.Get(leaderUserID)
+		leader := repositories.UserRepository.Get(db, leaderUserID)
 		if leader == nil || leader.Status != enums.StatusOk {
 			return nil, errorsx.InvalidParam("组长用户不存在或已停用")
 		}
-		if !UserService.HasRole(leaderUserID, constants.RoleCodeCsTeamLeader) {
+		role := repositories.RoleRepository.GetByCode(db, constants.RoleCodeCsTeamLeader)
+		if role == nil || role.Status != enums.StatusOk || repositories.UserRoleRepository.FindOne(db, sqls.NewCnd().Eq("user_id", leaderUserID).Eq("role_id", role.ID)) == nil {
 			return nil, errorsx.InvalidParam("所选用户不是客服组长账号")
 		}
 		if tenantID > 0 && leader.TenantID != tenantID {
@@ -522,13 +536,7 @@ func (s *agentTeamService) canManageTeamDB(db *gorm.DB, operator *dto.AuthPrinci
 		return false
 	}
 	team := repositories.AgentTeamRepository.GetInTenant(db, teamID, tenantID)
-	if AgentTeamScopeService.IsAdmin(operator) {
-		return team != nil
-	}
-	if !slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) {
-		return false
-	}
-	return team != nil && team.Status != enums.StatusDeleted && team.LeaderUserID == operator.UserID
+	return AgentTeamScopeService.canManageTeam(operator, team)
 }
 
 func (s *agentTeamService) syncTeamScopeFromAssignments(db *gorm.DB, teamID int64, operator *dto.AuthPrincipal) error {

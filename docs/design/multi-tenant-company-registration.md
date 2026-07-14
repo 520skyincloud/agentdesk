@@ -2354,3 +2354,17 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 全仓测试首次运行仍命中仓库既有并行夹具切换全局 sqls.DB，临时库缺 t_conversation_read_state；此前完整 services 已通过，随后原命令独立重跑通过。仿真库只读审计继续通过 52/52 模型策略、66/66 表、128/128 关系且 0 违规，前后 mtime/size 不变。
 - 本批修改两个 repository、客服组 scope、排班 service/测试和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端或 AI/计费变化。AI 分支无同文件修改，不要求 rebase 或 migration 排序。
 - 可独立回滚本批代码、测试和文档且无需数据库回滚；回滚会恢复多实例并发写出重叠排班的窗口，不建议回滚。
+
+## 83. 当前实施检查点：综合客服组更新删除与排班父锁闭环（2026-07-15）
+
+第 82 批让排班写入锁定 AgentTeam，但 UpdateAgentTeam/DeleteAgentTeam 仍在事务外读取 Team 和依赖，再执行更新。删除可能先确认“无排班”，随后与另一个实例创建排班交错，最终留下已删除综合组下的新排班；更新也可能基于锁前的旧负责人、状态和门店范围覆盖并发变化。
+
+- UpdateAgentTeam 在事务内按 ActiveTenantID 对 Team 执行 FOR UPDATE，重新确认存在、状态和管理职责，再通过事务版 buildTeamModelDB 校验名称、组长账号/角色及租户，解析门店员工范围并完成 Team 与绑定同步。
+- DeleteAgentTeam 在同一事务锁 Team 后重新鉴权，并使用该事务连接检查客服档案、小组、企微员工号、门店员工绑定、排班和 AI Agent 依赖；全部为空才软删除 Team。依赖失败会回滚并保留原状态。
+- Team 更新/删除与第 82 批四类排班写现在共享同一父行锁。排班先提交时，删除持锁后能看到排班并拒绝；删除先提交时，等待中的排班写会在持锁重检时看到 Team 已删除并拒绝，不再存在检查后新增排班窗口。
+- 普通 CanManageTeam、持锁更新/删除和 Team service 内 DB 校验复用 AgentTeamScopeService.canManageTeam，避免管理员/组长职责语义分叉。创建路径继续复用 buildTeamModel 对应的同一 DB 实现。
+- 测试确认更新和删除均携带 Team locking clause，排班依赖导致删除失败且 Team 仍为启用；原门店员工双向绑定、旧企微范围兼容、跨租户和排班锁测试继续通过。
+- 聚焦 race、完整 services、全仓 Go、go vet 和 diff 检查通过；仿真库只读审计继续通过 52/52 模型策略、66/66 表、128/128 关系且 0 违规，前后 mtime/size 不变。
+- 当前父锁闭环只对已经加入 Team 锁的排班写完整成立。客服档案、小组、门店绑定和 AI Agent 写入尚未全部锁父 Team；本批虽将其依赖查询移入事务，但不能宣称这些子域的检查后新增窗口已经全部关闭，需后续按各自真实写链分批接入。
+- 本批修改 AgentTeam service/测试和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端或 AI/计费变化。AI 分支无同文件修改，不要求 rebase 或 migration 排序。
+- 可独立回滚本批代码、测试和文档且无需数据库回滚；回滚会重新打开 Team 更新/删除与排班写的竞态窗口，不建议回滚。

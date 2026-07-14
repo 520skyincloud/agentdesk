@@ -497,3 +497,99 @@ func TestUpdateAgentTeamReplacesStoreStaffBindingsAndSyncsBothDirections(t *test
 		t.Fatalf("team A scope was not cleared: %+v", current)
 	}
 }
+
+func TestAgentTeamMutationsUseTeamRowLock(t *testing.T) {
+	tests := []struct {
+		name   string
+		action func(team *models.AgentTeam, operator *dto.AuthPrincipal) error
+	}{
+		{
+			name: "update",
+			action: func(team *models.AgentTeam, operator *dto.AuthPrincipal) error {
+				return AgentTeamService.UpdateAgentTeam(request.UpdateAgentTeamRequest{
+					ID: team.ID, Name: "锁内更新客服组", Status: int(enums.StatusOk),
+				}, operator)
+			},
+		},
+		{
+			name: "delete",
+			action: func(team *models.AgentTeam, operator *dto.AuthPrincipal) error {
+				return AgentTeamService.DeleteAgentTeam(team.ID, operator)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, team, operator := setupAgentTeamMutationTestDB(t)
+			seenLock := false
+			callbackName := "test:agent-team-" + tt.name + "-lock"
+			if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+				if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "AgentTeam" {
+					if _, locked := tx.Statement.Clauses["FOR"]; locked {
+						seenLock = true
+					}
+				}
+			}); err != nil {
+				t.Fatalf("register team lock callback: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := db.Callback().Query().Remove(callbackName); err != nil {
+					t.Errorf("remove team lock callback: %v", err)
+				}
+			})
+
+			if err := tt.action(team, operator); err != nil {
+				t.Fatalf("%s team: %v", tt.name, err)
+			}
+			if !seenLock {
+				t.Fatalf("%s did not lock the AgentTeam row", tt.name)
+			}
+		})
+	}
+}
+
+func TestDeleteAgentTeamChecksScheduleInsideTransaction(t *testing.T) {
+	db, team, operator := setupAgentTeamMutationTestDB(t)
+	schedule := &models.AgentTeamSchedule{
+		TenantID: team.TenantID, TeamID: team.ID, StartAt: time.Now().Add(time.Hour), EndAt: time.Now().Add(2 * time.Hour), Status: enums.StatusOk,
+	}
+	if err := db.Create(schedule).Error; err != nil {
+		t.Fatalf("create schedule: %v", err)
+	}
+	if err := AgentTeamService.DeleteAgentTeam(team.ID, operator); err == nil {
+		t.Fatal("DeleteAgentTeam() with schedule should fail")
+	}
+	current := AgentTeamService.Get(team.ID)
+	if current == nil || current.Status != enums.StatusOk {
+		t.Fatalf("team changed after rejected delete: %+v", current)
+	}
+}
+
+func setupAgentTeamMutationTestDB(t *testing.T) (*gorm.DB, *models.AgentTeam, *dto.AuthPrincipal) {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+		NamingStrategy: schema.NamingStrategy{
+			TablePrefix:   "t_",
+			SingularTable: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("open agent team mutation db: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.User{}, &models.Role{}, &models.UserRole{}, &models.AgentTeam{}, &models.AgentProfile{},
+		&models.AgentTeamSquad{}, &models.WxWorkProtocolInstance{}, &models.StoreStaffBinding{},
+		&models.AgentTeamSchedule{}, &models.AIAgent{},
+	); err != nil {
+		t.Fatalf("migrate agent team mutation models: %v", err)
+	}
+	sqls.SetDB(db)
+	team := &models.AgentTeam{TenantID: 101, Name: "事务客服组", Status: enums.StatusOk}
+	if err := db.Create(team).Error; err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
+	return db, team, operator
+}
