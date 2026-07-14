@@ -479,3 +479,80 @@ git diff --check
 - 本步骤不修改 AI runtime、模型供应商、FastGPT 运行语义、token 统计、计费、会话消息状态或 WebSocket payload。
 - 建议先合并阶段 1-3A 的租户共享契约，再让并行分支 rebase；阶段 3B 继续依赖当前 Tenant/User/Invitation 契约。
 - 回滚边界：可回滚阶段 3A 路由、service 和 DTO；AutoMigrate 新列及已创建 Tenant 数据不得用破坏性 DDL 删除，migration 36 已回填的历史客服组需按备份和明确映射处理。
+
+## 16. 多租户阶段 3B：公开邀请注册与租户内审核后端（2026-07-14）
+
+### 本步骤目标与结果
+
+- 新增公开邀请码校验和注册接口，以及租户内待审核账号列表、通过/拒绝审核接口；公开 handler 只解析请求，注册事务、限流、幂等、角色边界和安全日志均在 service。
+- 公开注册由 `tenantRegistration.enabled` 和 `AGENT_DESK_TENANT_REGISTRATION_ENABLED` 控制，默认关闭。启用时会校验阶段 3A 的独立邀请码加密密钥，无有效密钥时服务拒绝启动。
+- Gin 默认关闭代理信任，`server.trustedProxies` 只接受显式 IP/CIDR；这保证登录、验证码和邀请注册不能通过伪造 `X-Forwarded-For` 绕过 IP 限流。
+- 注册请求必须携带调用方生成的 `X-Request-Id`。安全日志新增 HMAC 请求指纹、审核操作者和客户端 IP 索引；密码、邀请码和账号明文不进入日志。同一请求标识修改请求内容会被拒绝。
+- 注册事务原子创建绑定邀请码租户的禁用待审核账号、增加邀请码使用次数并写成功日志。账号初始无角色，登录被拒绝；精确重放返回原账号，不重复增加使用次数。
+- 注册按客户端 IP、邀请码和账号标识三个维度限流；数据库查询错误只写服务端结构化日志，对外返回统一业务错误。
+- 审核限制在操作者 `ActiveTenantID` 内。通过审核必须同时拥有 `tenantRegistration.review` 与 `user.assignRole`，只能分配本租户且低于操作者授权等级的角色；拒绝必须填写原因且不能带角色。审核完成后撤销账号已有会话。
+- 注册动作和审核决定使用后端枚举，并通过 `make enums` 生成到前端共享枚举文件。
+
+### 数据、接口与配置
+
+- `TenantRegistrationLog` 新增 `RequestFingerprint`、`OperatorID`、`OperatorName`，`Action` 改为后端枚举类型；DDL 由 `AutoMigrate` 处理，本步骤没有 DML migration。
+- 新增路由：
+  - `POST /api/auth/register/validate_invite`
+  - `POST /api/auth/register`
+  - `GET /api/dashboard/tenant-registration/list`
+  - `POST /api/dashboard/tenant-registration/review`
+- 公开注册路由只在开关启用时挂载；后台审核路由始终挂载并继续由认证、租户上下文和权限控制。
+- 新增配置：`tenantRegistration.enabled`、`server.trustedProxies`。公开注册响应和邀请码校验响应均设置 `Cache-Control: no-store`。
+
+### 主要文件
+
+```text
+config/config.example.yaml
+internal/bootstrap/routes.go
+internal/bootstrap/server.go
+internal/models/models.go
+internal/pkg/config/config.go
+internal/pkg/enums/tenant.go
+internal/pkg/dto/request/tenant_registration_request.go
+internal/pkg/dto/response/tenant_registration_response.go
+internal/repositories/login_session_repository.go
+internal/repositories/tenant_invitation_repository.go
+internal/repositories/tenant_registration_log_repository.go
+internal/repositories/user_repository.go
+internal/services/tenant_invitation_crypto.go
+internal/services/tenant_registration_business_service.go
+internal/builders/tenant_registration_builder.go
+internal/handlers/api/tenant_registration_handler.go
+internal/handlers/dashboard/tenant_registration_handler.go
+web/lib/generated/enums.ts
+```
+
+### 验证范围
+
+```text
+go test ./internal/pkg/config ./internal/bootstrap -run 'Test(Load|NewServer|ConfigureTrustedProxies)' -count=1
+go test ./internal/handlers/api ./internal/handlers/dashboard -run 'TestTenantRegistration' -count=1
+go test ./internal/services -run '^TestTenantRegistration' -count=1
+go test ./internal/services -run '^TestTenantRegistrationConcurrentReplayCreatesOneAccount$' -count=20
+go test -race ./internal/services -run '^TestTenantRegistration' -count=1
+make enums
+```
+
+- 已覆盖默认关闭、缺少密钥拒绝启动、可信代理、敏感响应不缓存、显式幂等键、邀请码生命周期、三维限流、并发重放、待审核登录拒绝、租户边界、角色授权等级和审核权限组合。
+- 共享租户测试 helper 改为每次创建唯一 SQLite 内存库并在测试结束时关闭连接，消除 `-count` 重复运行造成的角色 fixture 污染。
+- `go vet ./...`、`go test ./... -run '^$' -count=1`、`cd web && pnpm typecheck` 和生成枚举文件 eslint 通过。
+- 全量 `go test ./... -count=1` 仍失败于阶段 3A 已记录的两个既有测试问题：`TestBuildLightweightTicket` 未初始化全局 DB；部分消息测试启动异步 AI 回复后过早清空全局 DB，后台 goroutine 在 `BuildRuntimeAIAgentForConversation` 访问 nil DB。阶段 3B 未修改 Ticket builder、AI runtime 或消息触发链路，不能把这两项记录成通过，也不越界夹带修复。
+
+### 未完成边界
+
+- 本步骤只完成阶段 3B 后端；`/register` 页面、账号页邀请浮窗和待审核 UI 仍在阶段 7，不提供半成品入口。
+- 公开注册开关必须保持关闭，直到阶段 4-6 完成业务数据及非 HTTP 链路隔离，并通过双租户验收。
+- OIDC 与企业微信自动建号仍按阶段 2 的兼容逻辑进入历史默认租户；在 SaaS 开放前必须改为可信租户映射，不能把邀请码注册误当成第三方登录隔离已完成。
+
+### 并行分支影响、合并顺序与回滚
+
+- 本步骤开始时已 `git fetch origin`；`origin/codex/ai-billing@f2d2da4` 与本步骤共同修改 `config/config.example.yaml`、`internal/pkg/config/config.go`、`internal/models/models.go`、`internal/bootstrap/routes.go`、`internal/bootstrap/server.go` 和 `internal/bootstrap/server_route_test.go`。
+- 合并时必须同时保留 AI 分支的 `User.EmailVerifiedAt`、邮箱验证码/FastGPT/NewAPI 配置、AI 模型与回复路由，以及本分支的租户注册字段、公开邀请路由和可信代理配置；不得整文件选边，也不得恢复已移除的账号级 `UserPermission`。
+- 邀请注册创建的账号必须保持 `EmailVerifiedAt=nil`，后续邮箱验证语义由 AI/计费分支负责人共同确认后再调整。
+- 本步骤不修改 AI runtime、模型调用、供应商、FastGPT、token 统计、计费、消息状态或 WebSocket payload。建议先合并阶段 1-3B 的租户认证共享契约，再让并行分支 rebase，之后继续阶段 4 的业务模型租户字段。
+- 回滚时可关闭注册开关并回滚路由/service；AutoMigrate 已增加的安全日志列保留，不执行破坏性 DDL。后台审核路由可独立保留，不影响平台管理员后台创建账号。

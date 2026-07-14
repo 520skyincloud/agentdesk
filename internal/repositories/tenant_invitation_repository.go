@@ -4,6 +4,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx/params"
+	"time"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
@@ -34,6 +35,23 @@ func (r *tenantInvitationRepository) DisableActiveByTenant(db *gorm.DB, tenantID
 	return db.Model(&models.TenantInvitation{}).
 		Where("tenant_id = ? AND status = ?", tenantID, enums.StatusOk).
 		Updates(columns).Error
+}
+
+func (r *tenantInvitationRepository) MarkUsed(db *gorm.DB, invitationID int64, usedAt time.Time) error {
+	result := db.Model(&models.TenantInvitation{}).
+		Where("id = ? AND status = ?", invitationID, enums.StatusOk).
+		Updates(map[string]any{
+			"used_count":   gorm.Expr("used_count + ?", 1),
+			"last_used_at": usedAt,
+			"updated_at":   usedAt,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (r *tenantInvitationRepository) Get(db *gorm.DB, id int64) *models.TenantInvitation {

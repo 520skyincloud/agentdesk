@@ -47,3 +47,29 @@ var userApprovalStatusLabelMap = map[UserApprovalStatus]string{
 	UserApprovalStatusApproved: "已通过",
 	UserApprovalStatusRejected: "已拒绝",
 }
+
+type TenantRegistrationAction string
+
+const (
+	TenantRegistrationActionValidateInvite TenantRegistrationAction = "validate_invite"
+	TenantRegistrationActionRegister       TenantRegistrationAction = "register"
+	TenantRegistrationActionReview         TenantRegistrationAction = "review"
+)
+
+var tenantRegistrationActionLabelMap = map[TenantRegistrationAction]string{
+	TenantRegistrationActionValidateInvite: "校验邀请码",
+	TenantRegistrationActionRegister:       "邀请注册",
+	TenantRegistrationActionReview:         "审核注册",
+}
+
+type TenantRegistrationReviewDecision string
+
+const (
+	TenantRegistrationReviewDecisionApprove TenantRegistrationReviewDecision = "approve"
+	TenantRegistrationReviewDecisionReject  TenantRegistrationReviewDecision = "reject"
+)
+
+var tenantRegistrationReviewDecisionLabelMap = map[TenantRegistrationReviewDecision]string{
+	TenantRegistrationReviewDecisionApprove: "通过",
+	TenantRegistrationReviewDecisionReject:  "拒绝",
+}

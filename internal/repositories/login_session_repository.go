@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"time"
 
 	"agent-desk/internal/pkg/httpx/params"
 
@@ -99,4 +100,15 @@ func (r *loginSessionRepository) UpdateColumn(db *gorm.DB, id int64, name string
 
 func (r *loginSessionRepository) Delete(db *gorm.DB, id int64) {
 	db.Delete(&models.LoginSession{}, "id = ?", id)
+}
+
+func (r *loginSessionRepository) RevokeActiveByUser(db *gorm.DB, userID, operatorID int64, operatorName string, revokedAt time.Time) error {
+	return db.Model(&models.LoginSession{}).
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Updates(map[string]any{
+			"revoked_at":       revokedAt,
+			"update_user_id":   operatorID,
+			"update_user_name": operatorName,
+			"updated_at":       revokedAt,
+		}).Error
 }

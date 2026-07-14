@@ -70,6 +70,18 @@ func decryptTenantInvitationCode(value, encodedKey string) (string, error) {
 }
 
 func tenantInvitationAEAD(encodedKey string) (cipher.AEAD, error) {
+	key, err := tenantInvitationKey(encodedKey)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+func tenantInvitationKey(encodedKey string) ([]byte, error) {
 	encodedKey = strings.TrimSpace(encodedKey)
 	if encodedKey == "" {
 		return nil, errors.New("公司邀请码加密密钥未配置")
@@ -81,9 +93,5 @@ func tenantInvitationAEAD(encodedKey string) (cipher.AEAD, error) {
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("公司邀请码加密密钥必须是 base64 编码的 32 字节值")
 	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
+	return key, nil
 }

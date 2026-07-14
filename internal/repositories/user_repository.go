@@ -136,6 +136,13 @@ func (r *userRepository) GetByEmail(db *gorm.DB, email string) *models.User {
 	return r.Take(db, "email = ?", email)
 }
 
+func (r *userRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.User {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *userRepository) FindTenantSupervisors(db *gorm.DB, tenantIDs []int64, roleCode string) (map[int64]*models.User, error) {
 	ret := make(map[int64]*models.User, len(tenantIDs))
 	if len(tenantIDs) == 0 {

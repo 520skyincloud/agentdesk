@@ -85,6 +85,46 @@ func TestTenantListRejectsTenantAccountEvenWithPlatformPermission(t *testing.T) 
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
+func TestTenantRegistrationListRequiresViewPermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+		UserID:         16,
+		Username:       "registration_reviewer",
+		TenantID:       7,
+		ActiveTenantID: 7,
+		Permissions:    []string{constants.PermissionTenantRegistrationReview.Code},
+	})
+
+	TenantRegistrationAnyList(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
+func TestTenantRegistrationReviewRequiresReviewPermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, `{}`, &dto.AuthPrincipal{
+		UserID:         17,
+		Username:       "registration_viewer",
+		TenantID:       7,
+		ActiveTenantID: 7,
+		Permissions:    []string{constants.PermissionTenantRegistrationView.Code},
+	})
+
+	TenantRegistrationPostReview(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
+func TestTenantRegistrationApprovalRequiresAssignRolePermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, `{"userId":9,"decision":"approve","roleIds":[3]}`, &dto.AuthPrincipal{
+		UserID:         18,
+		Username:       "registration_reviewer",
+		TenantID:       7,
+		ActiveTenantID: 7,
+		Permissions:    []string{constants.PermissionTenantRegistrationReview.Code},
+	})
+	ctx.Request.Header.Set("X-Request-Id", "review-without-role-assignment")
+
+	TenantRegistrationPostReview(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
 func newAuthzHandlerTestContext(t *testing.T, body string, principal *dto.AuthPrincipal) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

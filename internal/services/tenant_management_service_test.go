@@ -2,6 +2,8 @@ package services
 
 import (
 	"encoding/base64"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,8 +18,11 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 )
+
+var tenantManagementTestDBSequence atomic.Uint64
 
 func TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation(t *testing.T) {
 	db, operator := setupTenantManagementTestDB(t)
@@ -198,12 +203,23 @@ func TestTenantServiceRejectsInvalidLegalIdentityAndEmailFormats(t *testing.T) {
 
 func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
+	dbName := "tenant_management_" + strconv.FormatUint(tenantManagementTestDBSequence.Add(1), 10)
+	db, err := gorm.Open(sqlite.Open("file:"+dbName+"?mode=memory&cache=shared"), &gorm.Config{
 		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+		Logger:         logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get sqlite connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := sqlDB.Close(); err != nil {
+			t.Errorf("close sqlite: %v", err)
+		}
+	})
 	if err := db.AutoMigrate(
 		&models.Tenant{},
 		&models.TenantInvitation{},

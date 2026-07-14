@@ -1,5 +1,8 @@
 server:
   port: 8083
+  # 仅填写实际反向代理的 IP 或 CIDR。留空时忽略 X-Forwarded-For/X-Real-IP，
+  # 防止公开登录、邮箱验证码和邀请注册的 IP 限流被伪造请求头绕过。
+  trustedProxies: []
   cors:
     # 浏览器跨域白名单。生产环境必须改为实际前端/嵌入站点域名，例如 https://support.example.com。
     # 留空表示不允许跨域请求，只支持同源或非浏览器调用。
@@ -27,6 +30,11 @@ auth:
   # 公司邀请码 AES-256-GCM 密钥，填写 base64 编码的 32 字节随机值。生产环境优先通过
   # AGENT_DESK_INVITATION_ENCRYPTION_KEY 注入，不得复用登录或客服会话密钥。
   invitationEncryptionKey: ""
+
+tenantRegistration:
+  # 多租户业务数据与非 HTTP 链路完成隔离验收前必须保持关闭。
+  # 生产环境也可通过 AGENT_DESK_TENANT_REGISTRATION_ENABLED 覆盖。
+  enabled: false
 
 customerSession:
   # 客服会话 token 签名密钥。必须使用独立高强度随机字符串，不要复用渠道 userTokenSecret。

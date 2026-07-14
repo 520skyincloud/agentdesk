@@ -229,19 +229,22 @@ type TenantInvitation struct {
 
 // TenantRegistrationLog 是邀请校验和注册结果的不可变安全日志。
 type TenantRegistrationLog struct {
-	ID           int64     `gorm:"primaryKey;autoIncrement"`
-	RequestID    string    `gorm:"type:varchar(128);not null;default:'';uniqueIndex"`
-	Action       string    `gorm:"type:varchar(30);not null;default:'';index"`
-	TenantID     int64     `gorm:"type:bigint;not null;default:0;index"`
-	InvitationID int64     `gorm:"type:bigint;not null;default:0;index"`
-	InviteHash   string    `gorm:"type:varchar(64);not null;default:'';index"`
-	UserID       int64     `gorm:"type:bigint;not null;default:0;index"`
-	Principal    string    `gorm:"type:varchar(150);not null;default:'';index"`
-	Success      bool      `gorm:"not null;default:false;index"`
-	Reason       string    `gorm:"type:varchar(255);not null;default:''"`
-	ClientIP     string    `gorm:"type:varchar(64);not null;default:''"`
-	UserAgent    string    `gorm:"type:varchar(255);not null;default:''"`
-	CreatedAt    time.Time `gorm:"type:datetime;not null;index"`
+	ID                 int64                          `gorm:"primaryKey;autoIncrement"`
+	RequestID          string                         `gorm:"type:varchar(128);not null;default:'';uniqueIndex"`
+	RequestFingerprint string                         `gorm:"type:varchar(64);not null;default:'';index"`
+	Action             enums.TenantRegistrationAction `gorm:"type:varchar(30);not null;default:'';index"`
+	TenantID           int64                          `gorm:"type:bigint;not null;default:0;index"`
+	InvitationID       int64                          `gorm:"type:bigint;not null;default:0;index"`
+	InviteHash         string                         `gorm:"type:varchar(64);not null;default:'';index"`
+	UserID             int64                          `gorm:"type:bigint;not null;default:0;index"`
+	Principal          string                         `gorm:"type:varchar(150);not null;default:'';index"`
+	Success            bool                           `gorm:"not null;default:false;index"`
+	Reason             string                         `gorm:"type:varchar(255);not null;default:''"`
+	ClientIP           string                         `gorm:"type:varchar(64);not null;default:'';index"`
+	UserAgent          string                         `gorm:"type:varchar(255);not null;default:''"`
+	OperatorID         int64                          `gorm:"type:bigint;not null;default:0;index"`
+	OperatorName       string                         `gorm:"type:varchar(100);not null;default:''"`
+	CreatedAt          time.Time                      `gorm:"type:datetime;not null;index"`
 }
 
 // UserIdentity 第三方身份绑定信息。

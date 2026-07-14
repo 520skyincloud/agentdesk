@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -30,6 +31,14 @@ func NewServer() (*gin.Engine, error) {
 	printBanner()
 
 	app := gin.New()
+	if err := configureTrustedProxies(app, cfg.Server.TrustedProxies); err != nil {
+		return nil, err
+	}
+	if cfg.TenantRegistration.Enabled {
+		if err := services.TenantRegistrationService.ValidateConfiguration(); err != nil {
+			return nil, err
+		}
+	}
 	app.Use(requestIDMiddleware())
 	app.Use(corsMiddleware())
 	app.Use(gin.Recovery())
@@ -154,7 +163,11 @@ func addRouter(app *gin.Engine) {
 	app.Any("/api/mcp", gin.WrapH(mcps.NewHTTPHandler()))
 
 	apiGroup := app.Group("/api")
-	registerApiAuthRoutes(apiGroup.Group("/auth"))
+	authGroup := apiGroup.Group("/auth")
+	registerApiAuthRoutes(authGroup)
+	if config.Current().TenantRegistration.Enabled {
+		registerApiTenantRegistrationRoutes(authGroup)
+	}
 	registerApiAssetRoutes(apiGroup.Group("/asset"))
 	registerApiChannelRoutes(apiGroup.Group("/channel"))
 	registerApiCustomerRoutes(apiGroup.Group("/customer"))
@@ -173,6 +186,7 @@ func addRouter(app *gin.Engine) {
 	registerDashboardUserRoutes(dashboardGroup.Group("/user"))
 	registerDashboardTenantRoutes(dashboardGroup.Group("/tenant"))
 	registerDashboardTenantInvitationRoutes(dashboardGroup.Group("/tenant-invitation"))
+	registerDashboardTenantRegistrationRoutes(dashboardGroup.Group("/tenant-registration"))
 	registerDashboardCompanyRoutes(dashboardGroup.Group("/company"))
 	registerDashboardCustomerRoutes(dashboardGroup.Group("/customer"))
 	registerDashboardCustomerContactRoutes(dashboardGroup.Group("/customer-contact"))
@@ -210,4 +224,17 @@ func addRouter(app *gin.Engine) {
 	registerThirdWechatRoutes(thirdGroup.Group("/wechat"))
 	registerThirdWxWorkCLIRoutes(thirdGroup.Group("/wecom-cli"))
 	registerThirdWxWorkProtocolRoutes(thirdGroup.Group("/wxwork-protocol"))
+}
+
+func configureTrustedProxies(app *gin.Engine, trustedProxies []string) error {
+	if app == nil {
+		return fmt.Errorf("gin engine is required")
+	}
+	if len(trustedProxies) == 0 {
+		trustedProxies = nil
+	}
+	if err := app.SetTrustedProxies(trustedProxies); err != nil {
+		return fmt.Errorf("configure trusted proxies: %w", err)
+	}
+	return nil
 }

@@ -427,6 +427,26 @@ export const StatusLabels: Record<Status, string> = {
   [Status.Deleted]: "已删除",
 }
 
+export enum TenantRegistrationAction {
+  ValidateInvite = "validate_invite",
+  Register = "register",
+  Review = "review",
+}
+export const TenantRegistrationActionLabels: Record<TenantRegistrationAction, string> = {
+  [TenantRegistrationAction.ValidateInvite]: "校验邀请码",
+  [TenantRegistrationAction.Register]: "邀请注册",
+  [TenantRegistrationAction.Review]: "审核注册",
+}
+
+export enum TenantRegistrationReviewDecision {
+  Approve = "approve",
+  Reject = "reject",
+}
+export const TenantRegistrationReviewDecisionLabels: Record<TenantRegistrationReviewDecision, string> = {
+  [TenantRegistrationReviewDecision.Approve]: "通过",
+  [TenantRegistrationReviewDecision.Reject]: "拒绝",
+}
+
 export enum TenantVerificationStatus {
   Pending = "pending",
   Verified = "verified",

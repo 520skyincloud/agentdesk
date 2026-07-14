@@ -22,6 +22,11 @@ func registerApiAuthRoutes(group *gin.RouterGroup) {
 	group.GET("/oidc_login", api.OIDCLogin)
 }
 
+func registerApiTenantRegistrationRoutes(group *gin.RouterGroup) {
+	group.POST("/register/validate_invite", api.TenantRegistrationPostValidateInvite)
+	group.POST("/register", api.TenantRegistrationPostRegister)
+}
+
 func registerApiChannelRoutes(group *gin.RouterGroup) {
 	group.Any("/config", api.ChannelAnyConfig)
 }
@@ -101,6 +106,11 @@ func registerDashboardTenantRoutes(group *gin.RouterGroup) {
 func registerDashboardTenantInvitationRoutes(group *gin.RouterGroup) {
 	group.GET("/current", dashboard.TenantInvitationGetCurrent)
 	group.POST("/rotate", dashboard.TenantInvitationPostRotate)
+}
+
+func registerDashboardTenantRegistrationRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.TenantRegistrationAnyList)
+	group.POST("/review", dashboard.TenantRegistrationPostReview)
 }
 
 func registerDashboardCompanyRoutes(group *gin.RouterGroup) {

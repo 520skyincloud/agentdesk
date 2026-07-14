@@ -4,22 +4,24 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	Server          ServerConfig          `yaml:"server"`
-	DB              DBConfig              `yaml:"db"`
-	Logger          LoggerConfig          `yaml:"logger"`
-	Auth            AuthConfig            `yaml:"auth"`
-	Storage         StorageConfig         `yaml:"storage"`
-	VectorDB        VectorDBConfig        `yaml:"vectorDB"`
-	MCP             MCPConfig             `yaml:"mcp"`
-	WxWork          WxWorkConfig          `yaml:"wxWork"`
-	OIDC            OIDCConfig            `yaml:"oidc"`
-	CustomerSession CustomerSessionConfig `yaml:"customerSession"`
+	Server             ServerConfig             `yaml:"server"`
+	DB                 DBConfig                 `yaml:"db"`
+	Logger             LoggerConfig             `yaml:"logger"`
+	Auth               AuthConfig               `yaml:"auth"`
+	Storage            StorageConfig            `yaml:"storage"`
+	VectorDB           VectorDBConfig           `yaml:"vectorDB"`
+	MCP                MCPConfig                `yaml:"mcp"`
+	WxWork             WxWorkConfig             `yaml:"wxWork"`
+	OIDC               OIDCConfig               `yaml:"oidc"`
+	CustomerSession    CustomerSessionConfig    `yaml:"customerSession"`
+	TenantRegistration TenantRegistrationConfig `yaml:"tenantRegistration"`
 }
 
 type WxWorkNotifyConfig struct {
@@ -31,8 +33,9 @@ type WxWorkNotifyConfig struct {
 }
 
 type ServerConfig struct {
-	Port int        `yaml:"port"`
-	CORS CORSConfig `yaml:"cors"`
+	Port           int        `yaml:"port"`
+	CORS           CORSConfig `yaml:"cors"`
+	TrustedProxies []string   `yaml:"trustedProxies"`
 }
 
 func (s ServerConfig) Address() string {
@@ -68,6 +71,10 @@ type AuthConfig struct {
 	MaxFailedAttempts       int    `yaml:"maxFailedAttempts"`
 	CredentialLockMinute    int    `yaml:"credentialLockMinute"`
 	InvitationEncryptionKey string `yaml:"invitationEncryptionKey"`
+}
+
+type TenantRegistrationConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 type CustomerSessionConfig struct {
@@ -204,6 +211,13 @@ func Load(path string) (*Config, error) {
 	}
 	if invitationKey := strings.TrimSpace(os.Getenv("AGENT_DESK_INVITATION_ENCRYPTION_KEY")); invitationKey != "" {
 		cfg.Auth.InvitationEncryptionKey = invitationKey
+	}
+	if enabledValue := strings.TrimSpace(os.Getenv("AGENT_DESK_TENANT_REGISTRATION_ENABLED")); enabledValue != "" {
+		enabled, parseErr := strconv.ParseBool(enabledValue)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse AGENT_DESK_TENANT_REGISTRATION_ENABLED: %w", parseErr)
+		}
+		cfg.TenantRegistration.Enabled = enabled
 	}
 	return cfg, nil
 }

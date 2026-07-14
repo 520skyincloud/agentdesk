@@ -1,6 +1,8 @@
 package bootstrap
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,10 +10,14 @@ import (
 	"testing"
 
 	"agent-desk/internal/pkg/config"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestNewServerRegistersGinRoutes(t *testing.T) {
 	config.SetCurrent(&config.Config{
+		Auth:               config.AuthConfig{InvitationEncryptionKey: testInvitationEncryptionKey()},
+		TenantRegistration: config.TenantRegistrationConfig{Enabled: true},
 		Storage: config.StorageConfig{
 			Local: config.LocalStorageConfig{
 				Root:    "storage",
@@ -47,6 +53,10 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 		http.MethodPost + " /api/dashboard/tenant/create",
 		http.MethodGet + " /api/dashboard/tenant-invitation/current",
 		http.MethodPost + " /api/dashboard/tenant-invitation/rotate",
+		http.MethodGet + " /api/dashboard/tenant-registration/list",
+		http.MethodPost + " /api/dashboard/tenant-registration/review",
+		http.MethodPost + " /api/auth/register/validate_invite",
+		http.MethodPost + " /api/auth/register",
 		http.MethodPost + " /api/dashboard/conversation/send_message",
 		http.MethodGet + " /api/ws/dashboard",
 		http.MethodGet + " /api/ws/open",
@@ -56,6 +66,81 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 			t.Fatalf("expected route %s to be registered", route)
 		}
 	}
+}
+
+func TestNewServerKeepsPublicRegistrationDisabledByDefault(t *testing.T) {
+	config.SetCurrent(&config.Config{
+		Storage: config.StorageConfig{Local: config.LocalStorageConfig{Root: "storage", BaseURL: "/storage"}},
+	})
+
+	app, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	routes := make(map[string]bool)
+	for _, route := range app.Routes() {
+		routes[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{
+		http.MethodPost + " /api/auth/register/validate_invite",
+		http.MethodPost + " /api/auth/register",
+	} {
+		if routes[route] {
+			t.Fatalf("public registration route %s should be disabled", route)
+		}
+	}
+	if !routes[http.MethodGet+" /api/dashboard/tenant-registration/list"] {
+		t.Fatalf("dashboard registration review route should remain available")
+	}
+}
+
+func TestNewServerRejectsEnabledRegistrationWithoutEncryptionKey(t *testing.T) {
+	config.SetCurrent(&config.Config{
+		TenantRegistration: config.TenantRegistrationConfig{Enabled: true},
+		Storage:            config.StorageConfig{Local: config.LocalStorageConfig{Root: "storage", BaseURL: "/storage"}},
+	})
+
+	if _, err := NewServer(); err == nil || !strings.Contains(err.Error(), "tenant registration configuration") {
+		t.Fatalf("NewServer() error=%v want registration configuration error", err)
+	}
+}
+
+func TestConfigureTrustedProxiesControlsForwardedClientIP(t *testing.T) {
+	tests := []struct {
+		name           string
+		trustedProxies []string
+		wantIP         string
+	}{
+		{name: "forwarded header ignored by default", wantIP: "192.0.2.10"},
+		{name: "configured proxy accepted", trustedProxies: []string{"192.0.2.0/24"}, wantIP: "198.51.100.9"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := gin.New()
+			if err := configureTrustedProxies(app, tt.trustedProxies); err != nil {
+				t.Fatalf("configureTrustedProxies() error = %v", err)
+			}
+			app.GET("/client-ip", func(ctx *gin.Context) { ctx.String(http.StatusOK, ctx.ClientIP()) })
+			req := httptest.NewRequest(http.MethodGet, "/client-ip", nil)
+			req.RemoteAddr = "192.0.2.10:12345"
+			req.Header.Set("X-Forwarded-For", "198.51.100.9")
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, req)
+			if got := strings.TrimSpace(rec.Body.String()); got != tt.wantIP {
+				t.Fatalf("ClientIP()=%q want %q", got, tt.wantIP)
+			}
+		})
+	}
+}
+
+func TestConfigureTrustedProxiesRejectsInvalidCIDR(t *testing.T) {
+	if err := configureTrustedProxies(gin.New(), []string{"not-a-cidr"}); err == nil {
+		t.Fatalf("configureTrustedProxies() should reject invalid CIDR")
+	}
+}
+
+func testInvitationEncryptionKey() string {
+	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
 }
 
 func TestNewServerExposesPublicAuthOptions(t *testing.T) {

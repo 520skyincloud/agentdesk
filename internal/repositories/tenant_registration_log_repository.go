@@ -2,7 +2,9 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx/params"
+	"time"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
@@ -15,6 +17,33 @@ func newTenantRegistrationLogRepository() *tenantRegistrationLogRepository {
 }
 
 type tenantRegistrationLogRepository struct {
+}
+
+func (r *tenantRegistrationLogRepository) GetByRequestID(db *gorm.DB, requestID string) *models.TenantRegistrationLog {
+	return r.FindOne(db, sqls.NewCnd().Eq("request_id", requestID))
+}
+
+func (r *tenantRegistrationLogRepository) CountRecentByClientIP(db *gorm.DB, action enums.TenantRegistrationAction, clientIP string, since time.Time) (int64, error) {
+	return r.countRecent(db, action, "client_ip", clientIP, since)
+}
+
+func (r *tenantRegistrationLogRepository) CountRecentByInviteHash(db *gorm.DB, action enums.TenantRegistrationAction, inviteHash string, since time.Time) (int64, error) {
+	return r.countRecent(db, action, "invite_hash", inviteHash, since)
+}
+
+func (r *tenantRegistrationLogRepository) CountRecentByPrincipal(db *gorm.DB, action enums.TenantRegistrationAction, principal string, since time.Time) (int64, error) {
+	return r.countRecent(db, action, "principal", principal, since)
+}
+
+func (r *tenantRegistrationLogRepository) countRecent(db *gorm.DB, action enums.TenantRegistrationAction, column, value string, since time.Time) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	var count int64
+	err := db.Model(&models.TenantRegistrationLog{}).
+		Where("action = ? AND "+column+" = ? AND created_at >= ?", action, value, since).
+		Count(&count).Error
+	return count, err
 }
 
 func (r *tenantRegistrationLogRepository) Get(db *gorm.DB, id int64) *models.TenantRegistrationLog {
