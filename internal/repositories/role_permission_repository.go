@@ -23,6 +23,11 @@ type RolePermissionSnapshotItem struct {
 	PermissionCode string `gorm:"column:permission_code"`
 }
 
+type RolePermissionIDItem struct {
+	RoleID       int64 `gorm:"column:role_id"`
+	PermissionID int64 `gorm:"column:permission_id"`
+}
+
 func (r *rolePermissionRepository) Get(db *gorm.DB, id int64) *models.RolePermission {
 	ret := &models.RolePermission{}
 	if err := db.First(ret, "id = ?", id).Error; err != nil {
@@ -89,6 +94,19 @@ func (r *rolePermissionRepository) FindSnapshotByRoleID(db *gorm.DB, roleID int6
 		Joins("LEFT JOIN t_permission AS p ON p.id = rp.permission_id").
 		Where("rp.role_id = ?", roleID).
 		Order("rp.permission_id ASC").
+		Scan(&list).Error
+	return list, err
+}
+
+func (r *rolePermissionRepository) FindPermissionIDsByRoleIDs(db *gorm.DB, roleIDs []int64) ([]RolePermissionIDItem, error) {
+	list := make([]RolePermissionIDItem, 0)
+	if len(roleIDs) == 0 {
+		return list, nil
+	}
+	err := db.Model(&models.RolePermission{}).
+		Select("role_id, permission_id").
+		Where("role_id IN ?", roleIDs).
+		Order("role_id ASC, permission_id ASC").
 		Scan(&list).Error
 	return list, err
 }

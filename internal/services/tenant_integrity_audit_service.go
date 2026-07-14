@@ -457,6 +457,9 @@ func (s *tenantIntegrityAuditService) Audit(
 	if err := s.auditUserRoleChangeLogSemantics(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
+	if err := s.auditRolePermissionChangeLogSemantics(db, metadata, available, report, sampleLimit); err != nil {
+		return nil, err
+	}
 	if err := s.auditAgentOrganizationSemantics(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
@@ -841,6 +844,7 @@ func (s *tenantIntegrityAuditService) auditUserRoleChangeLogSemantics(
 		})
 	}
 	if len(invalidIDs) > 0 {
+		slices.Sort(invalidIDs)
 		samples := invalidIDs
 		if len(samples) > sampleLimit {
 			samples = samples[:sampleLimit]
@@ -953,6 +957,137 @@ func parseStrictRoleCodeSnapshot(raw string) ([]string, bool) {
 		}
 	}
 	return codes, true
+}
+
+func (s *tenantIntegrityAuditService) auditRolePermissionChangeLogSemantics(
+	db *gorm.DB,
+	metadata map[string]tenantIntegrityModelMetadata,
+	available map[string]bool,
+	report *TenantIntegrityAuditReport,
+	sampleLimit int,
+) error {
+	if !available["RolePermissionChangeLog"] {
+		return nil
+	}
+	table := metadata["RolePermissionChangeLog"].Table
+	columns := []string{"role_id", "before_permission_ids_json", "after_permission_ids_json", "before_permission_codes_json", "after_permission_codes_json"}
+	for _, column := range columns {
+		if !repositories.TenantIntegrityAuditRepository.HasColumn(db, table, column) {
+			report.addViolation("MISSING_REQUIRED_COLUMN", "RolePermissionChangeLog."+column, 1, nil, "角色权限变更快照审计所需列不存在")
+			return nil
+		}
+	}
+	rows, err := repositories.RolePermissionChangeLogRepository.FindAuditRows(db)
+	if err != nil {
+		return fmt.Errorf("read role permission change audit payloads failed: %w", err)
+	}
+	invalidIDs := make([]int64, 0)
+	invalidRoles := make(map[int64]struct{})
+	validByRole := make(map[int64][]tenantIntegrityPermissionChangeSnapshot)
+	for _, row := range rows {
+		beforeIDs, beforeIDsValid := parseStrictRoleIDSnapshot(row.BeforePermissionIDsJSON)
+		afterIDs, afterIDsValid := parseStrictRoleIDSnapshot(row.AfterPermissionIDsJSON)
+		beforeCodes, beforeCodesValid := parseStrictRoleCodeSnapshot(row.BeforePermissionCodesJSON)
+		afterCodes, afterCodesValid := parseStrictRoleCodeSnapshot(row.AfterPermissionCodesJSON)
+		if row.RoleID <= 0 || !beforeIDsValid || !afterIDsValid || !beforeCodesValid || !afterCodesValid ||
+			len(beforeIDs) != len(beforeCodes) || len(afterIDs) != len(afterCodes) ||
+			slices.Equal(beforeIDs, afterIDs) {
+			invalidIDs = append(invalidIDs, row.ID)
+			invalidRoles[row.RoleID] = struct{}{}
+			continue
+		}
+		validByRole[row.RoleID] = append(validByRole[row.RoleID], tenantIntegrityPermissionChangeSnapshot{
+			LogID: row.ID, BeforePermissionIDs: beforeIDs, AfterPermissionIDs: afterIDs,
+		})
+	}
+	if len(invalidIDs) > 0 {
+		slices.Sort(invalidIDs)
+		samples := invalidIDs
+		if len(samples) > sampleLimit {
+			samples = samples[:sampleLimit]
+		}
+		report.addViolation(
+			"ROLE_PERMISSION_CHANGE_LOG_PAYLOAD_INVALID",
+			"RolePermissionChangeLog.permission_snapshots",
+			int64(len(invalidIDs)),
+			samples,
+			"角色权限变更前后快照必须是有序、去重且数量对应的合法 JSON 数组，并且权限集合确实发生变化",
+		)
+	}
+	if !available["RolePermission"] {
+		return nil
+	}
+	return s.auditRolePermissionChangeLogContinuity(db, validByRole, invalidRoles, report, sampleLimit)
+}
+
+type tenantIntegrityPermissionChangeSnapshot struct {
+	LogID               int64
+	BeforePermissionIDs []int64
+	AfterPermissionIDs  []int64
+}
+
+func (s *tenantIntegrityAuditService) auditRolePermissionChangeLogContinuity(
+	db *gorm.DB,
+	validByRole map[int64][]tenantIntegrityPermissionChangeSnapshot,
+	invalidRoles map[int64]struct{},
+	report *TenantIntegrityAuditReport,
+	sampleLimit int,
+) error {
+	roleIDs := make([]int64, 0, len(validByRole))
+	for roleID := range validByRole {
+		if roleID <= 0 {
+			continue
+		}
+		if _, invalid := invalidRoles[roleID]; invalid {
+			continue
+		}
+		roleIDs = append(roleIDs, roleID)
+	}
+	slices.Sort(roleIDs)
+	currentRows, err := repositories.RolePermissionRepository.FindPermissionIDsByRoleIDs(db, roleIDs)
+	if err != nil {
+		return fmt.Errorf("read current role permissions for permission change audit failed: %w", err)
+	}
+	currentByRole := make(map[int64][]int64, len(roleIDs))
+	for _, roleID := range roleIDs {
+		currentByRole[roleID] = []int64{}
+	}
+	for _, row := range currentRows {
+		currentByRole[row.RoleID] = append(currentByRole[row.RoleID], row.PermissionID)
+	}
+
+	brokenLogIDs := make(map[int64]struct{})
+	for _, roleID := range roleIDs {
+		logs := validByRole[roleID]
+		for i := 1; i < len(logs); i++ {
+			if !slices.Equal(logs[i-1].AfterPermissionIDs, logs[i].BeforePermissionIDs) {
+				brokenLogIDs[logs[i].LogID] = struct{}{}
+			}
+		}
+		if len(logs) > 0 && !slices.Equal(logs[len(logs)-1].AfterPermissionIDs, currentByRole[roleID]) {
+			brokenLogIDs[logs[len(logs)-1].LogID] = struct{}{}
+		}
+	}
+	if len(brokenLogIDs) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(brokenLogIDs))
+	for id := range brokenLogIDs {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	samples := ids
+	if len(samples) > sampleLimit {
+		samples = samples[:sampleLimit]
+	}
+	report.addViolation(
+		"ROLE_PERMISSION_CHANGE_LOG_CHAIN_BROKEN",
+		"RolePermissionChangeLog.permission_snapshots",
+		int64(len(ids)),
+		samples,
+		"同一角色相邻权限变更快照不连续，或最后快照与当前 RolePermission 集合不一致",
+	)
+	return nil
 }
 
 func (s *tenantIntegrityAuditService) auditTenantBusinessKeyDuplicates(

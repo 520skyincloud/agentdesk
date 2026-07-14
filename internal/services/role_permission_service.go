@@ -45,23 +45,3 @@ func (s *rolePermissionService) FindPageByCnd(cnd *sqls.Cnd) (list []models.Role
 func (s *rolePermissionService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.RolePermissionRepository.Count(sqls.DB(), cnd)
 }
-
-func (s *rolePermissionService) Create(t *models.RolePermission) error {
-	return repositories.RolePermissionRepository.Create(sqls.DB(), t)
-}
-
-func (s *rolePermissionService) Update(t *models.RolePermission) error {
-	return repositories.RolePermissionRepository.Update(sqls.DB(), t)
-}
-
-func (s *rolePermissionService) Updates(id int64, columns map[string]interface{}) error {
-	return repositories.RolePermissionRepository.Updates(sqls.DB(), id, columns)
-}
-
-func (s *rolePermissionService) UpdateColumn(id int64, name string, value interface{}) error {
-	return repositories.RolePermissionRepository.UpdateColumn(sqls.DB(), id, name, value)
-}
-
-func (s *rolePermissionService) Delete(id int64) {
-	repositories.RolePermissionRepository.Delete(sqls.DB(), id)
-}

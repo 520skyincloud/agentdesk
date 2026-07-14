@@ -3882,3 +3882,42 @@ git diff --check
 - 与 `origin/codex/ai-billing@f2d2da4` 共同基线对照，本批七个文件没有同文件修改，当前不需要 rebase、migration 协调或 AI 负责人先行提交。
 - 合并顺序为 76A 数据契约 -> 76B 在线事务写入 -> 76C RolePermission 写旁路与日志 payload/链路审计。最终合并 AI 分支后仍须重跑本批事务和 AST 契约测试。
 - 76B 代码可独立回滚以停止在线日志，但 RolePermissionChangeLog 表及已生成历史行必须保留。回滚会恢复权限替换不可追溯，不建议长期维持。
+
+## 第 76C 批：角色权限写旁路与日志语义连续性（2026-07-15）
+
+### 写入契约与审计语义
+
+- RolePermissionService 删除五个通用写方法，只保留查询。在线 RolePermission 写入只允许 RoleService.replaceRolePermissions；新增 AST 测试扫描所有 service 非测试文件，覆盖 repository/service、GORM model 写链和原始 SQL。
+- RolePermissionChangeLog 的 before/after permission IDs/codes 必须是有序、去重、数量对应且确实发生变化的合法 JSON 数组，RoleID 必须为正数。违规统一报告 `ROLE_PERMISSION_CHANGE_LOG_PAYLOAD_INVALID`。
+- 同角色相邻日志检查 `previous.after_ids == current.before_ids`，最新日志检查 `after_ids == current RolePermission IDs`。断链或终态漂移报告 `ROLE_PERMISSION_CHANGE_LOG_CHAIN_BROKEN`；坏 payload 角色跳过连续性检查。
+- 历史快照不回查当前 Role/Permission 模板，允许合法删除后继续保存证据。当前 RolePermission 的 Role/Permission 引用仍由既有 128 条普通关系审计；migration 初始化和数据修复是在线 service 扫描外的明确例外。
+
+### 文件与验证
+
+```text
+internal/repositories/role_permission_change_log_repository.go
+internal/repositories/role_permission_repository.go
+internal/services/role_permission_service.go
+internal/services/role_permission_write_contract_test.go
+internal/services/tenant_integrity_audit_service.go
+internal/services/tenant_integrity_audit_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestRolePermissionRuntimeWritesStayBehindAuditedRoleService|TestIsRolePermissionMutationCall|TestRoleServiceAssignPermissionsWritesAuditLog|TestTenantIntegrityAuditPassesCleanTwoTenantFixture|TestTenantIntegrityAuditReportsInvalidRolePermissionChangePayloads|TestTenantIntegrityAuditReportsBrokenRolePermissionChangeChain)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 聚焦 race、完整 services 包、全仓 Go、vet 和 diff 检查均已通过；合法当前集合及已删除历史模板不误报，七类 payload 违规和两类连续性违规样本精确。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端或 AI/计费变化；模型策略、必需表和普通关系计数保持 52/52、66、128。
+
+### 并行分支、合并与回滚
+
+- 与 `origin/codex/ai-billing@f2d2da4` 共同基线对照，本批八个文件没有同文件修改；不需要 rebase、migration 版本协调或 AI 负责人前置提交。
+- 合并顺序固定为 76A 数据契约 -> 76B 在线事务写入 -> 76C 旁路与语义审计。最终合并 AI 分支后必须重跑两个角色关系 AST 契约和完整性审计。
+- 可回滚本批八个文件且无需数据库回滚，但 RolePermissionChangeLog 表和历史行必须保留。回滚会恢复未审计写旁路并失去日志损坏/断链发现，不建议长期使用。

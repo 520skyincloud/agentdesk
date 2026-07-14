@@ -41,6 +41,7 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	db := openTenantIntegrityTestDB(t, true)
 	fixture := createCleanTenantIntegrityFixture(t, db)
 	now := time.Now()
+	audit := tenantIntegrityTestAuditFields(now)
 	for _, item := range []*models.UserRoleChangeLog{
 		{
 			TenantID: 0, UserID: fixture.platformUser.ID,
@@ -57,6 +58,34 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatalf("create valid role change log: %v", err)
+		}
+	}
+	permission := &models.Permission{
+		Name: "Audit tenant permission", Code: "audit.tenant.permission", Type: "api",
+		Scope: constants.PermissionScopeTenant, Status: enums.StatusOk, AuditFields: audit,
+	}
+	if err := db.Create(permission).Error; err != nil {
+		t.Fatalf("create valid role permission: %v", err)
+	}
+	if err := db.Create(&models.RolePermission{RoleID: fixture.tenantRole.ID, PermissionID: permission.ID, AuditFields: audit}).Error; err != nil {
+		t.Fatalf("assign valid role permission: %v", err)
+	}
+	for _, item := range []*models.RolePermissionChangeLog{
+		{
+			RoleID: fixture.tenantRole.ID, RoleCode: fixture.tenantRole.Code,
+			BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: fmt.Sprintf("[%d]", permission.ID),
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: fmt.Sprintf("[%q]", permission.Code),
+			OperatorID: fixture.platformUser.ID, OperatorName: fixture.platformUser.Username, CreatedAt: now,
+		},
+		{
+			RoleID: 900001, RoleCode: "deleted_role_snapshot",
+			BeforePermissionIDsJSON: "[900002]", AfterPermissionIDsJSON: "[]",
+			BeforePermissionCodesJSON: "[\"deleted.permission.snapshot\"]", AfterPermissionCodesJSON: "[]",
+			CreatedAt: now,
+		},
+	} {
+		if err := db.Create(item).Error; err != nil {
+			t.Fatalf("create valid permission change log: %v", err)
 		}
 	}
 
@@ -297,6 +326,130 @@ func TestTenantIntegrityAuditReportsBrokenUserRoleChangeChain(t *testing.T) {
 	if violation == nil || violation.Count != 2 || len(violation.SampleIDs) != 2 ||
 		violation.SampleIDs[0] != rows[3].ID || violation.SampleIDs[1] != rows[4].ID {
 		t.Fatalf("role change chain violation = %#v", violation)
+	}
+}
+
+func TestTenantIntegrityAuditReportsInvalidRolePermissionChangePayloads(t *testing.T) {
+	db := openTenantIntegrityTestDB(t, true)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	now := time.Now()
+	validAfterIDs := "[11]"
+	validAfterCodes := "[\"tenant.permission.view\"]"
+	rows := []*models.RolePermissionChangeLog{
+		{
+			RoleID: fixture.tenantRole.ID, RoleCode: fixture.tenantRole.Code,
+			BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: validAfterIDs,
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: validAfterCodes, CreatedAt: now,
+		},
+		{
+			RoleID: fixture.tenantRole.ID, RoleCode: fixture.tenantRole.Code,
+			BeforePermissionIDsJSON: "not-json", AfterPermissionIDsJSON: validAfterIDs,
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: validAfterCodes, CreatedAt: now,
+		},
+		{
+			RoleID: fixture.tenantRole.ID, RoleCode: fixture.tenantRole.Code,
+			BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: "[22,11]",
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: "[\"tenant.permission.edit\",\"tenant.permission.view\"]", CreatedAt: now,
+		},
+		{
+			RoleID: fixture.tenantRole.ID, RoleCode: fixture.tenantRole.Code,
+			BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: "[11,11]",
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: "[\"tenant.permission.view\",\"tenant.permission.view\"]", CreatedAt: now,
+		},
+		{
+			RoleID: fixture.tenantRole.ID, RoleCode: fixture.tenantRole.Code,
+			BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: validAfterIDs,
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: "[]", CreatedAt: now,
+		},
+		{
+			RoleID: fixture.tenantRole.ID, RoleCode: fixture.tenantRole.Code,
+			BeforePermissionIDsJSON: validAfterIDs, AfterPermissionIDsJSON: validAfterIDs,
+			BeforePermissionCodesJSON: validAfterCodes, AfterPermissionCodesJSON: validAfterCodes, CreatedAt: now,
+		},
+		{
+			RoleID: fixture.tenantRole.ID, RoleCode: fixture.tenantRole.Code,
+			BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: validAfterIDs,
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: "[\" tenant.permission.view \" ]", CreatedAt: now,
+		},
+		{
+			RoleID: 0, RoleCode: "invalid_role_id",
+			BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: validAfterIDs,
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: validAfterCodes, CreatedAt: now,
+		},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("create permission change payload fixtures: %v", err)
+	}
+
+	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 2})
+	if err != nil {
+		t.Fatalf("audit permission change payloads: %v", err)
+	}
+	violation := tenantIntegrityFindViolation(report, "ROLE_PERMISSION_CHANGE_LOG_PAYLOAD_INVALID", "RolePermissionChangeLog.permission_snapshots")
+	if violation == nil || violation.Count != 7 || len(violation.SampleIDs) != 2 ||
+		violation.SampleIDs[0] != rows[1].ID || violation.SampleIDs[1] != rows[2].ID {
+		t.Fatalf("permission change payload violation = %#v", violation)
+	}
+}
+
+func TestTenantIntegrityAuditReportsBrokenRolePermissionChangeChain(t *testing.T) {
+	db := openTenantIntegrityTestDB(t, true)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	now := time.Now()
+	audit := tenantIntegrityTestAuditFields(now)
+	permissionA := &models.Permission{
+		Name: "Permission A", Code: "tenant.permission.a", Type: "api",
+		Scope: constants.PermissionScopeTenant, Status: enums.StatusOk, AuditFields: audit,
+	}
+	permissionB := &models.Permission{
+		Name: "Permission B", Code: "tenant.permission.b", Type: "api",
+		Scope: constants.PermissionScopeTenant, Status: enums.StatusOk, AuditFields: audit,
+	}
+	if err := db.Create(permissionA).Error; err != nil {
+		t.Fatalf("create permission A: %v", err)
+	}
+	if err := db.Create(permissionB).Error; err != nil {
+		t.Fatalf("create permission B: %v", err)
+	}
+	if err := db.Create(&models.RolePermission{RoleID: fixture.tenantRole.ID, PermissionID: permissionB.ID, AuditFields: audit}).Error; err != nil {
+		t.Fatalf("assign current tenant role permission: %v", err)
+	}
+	permissionAIDs := fmt.Sprintf("[%d]", permissionA.ID)
+	permissionACodes := fmt.Sprintf("[%q]", permissionA.Code)
+	permissionBIDs := fmt.Sprintf("[%d]", permissionB.ID)
+	permissionBCodes := fmt.Sprintf("[%q]", permissionB.Code)
+	rows := []*models.RolePermissionChangeLog{
+		{
+			RoleID: fixture.platformRole.ID, RoleCode: fixture.platformRole.Code,
+			BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: permissionAIDs,
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: permissionACodes, CreatedAt: now,
+		},
+		{
+			RoleID: fixture.tenantRole.ID, RoleCode: fixture.tenantRole.Code,
+			BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: permissionAIDs,
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: permissionACodes, CreatedAt: now,
+		},
+		{
+			RoleID: fixture.tenantRole.ID, RoleCode: fixture.tenantRole.Code,
+			BeforePermissionIDsJSON: "[]", AfterPermissionIDsJSON: permissionBIDs,
+			BeforePermissionCodesJSON: "[]", AfterPermissionCodesJSON: permissionBCodes, CreatedAt: now.Add(time.Second),
+		},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("create permission change chain fixtures: %v", err)
+	}
+
+	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 5})
+	if err != nil {
+		t.Fatalf("audit permission change chain: %v", err)
+	}
+	if violation := tenantIntegrityFindViolation(report, "ROLE_PERMISSION_CHANGE_LOG_PAYLOAD_INVALID", "RolePermissionChangeLog.permission_snapshots"); violation != nil {
+		t.Fatalf("valid individual payloads were rejected: %#v", violation)
+	}
+	violation := tenantIntegrityFindViolation(report, "ROLE_PERMISSION_CHANGE_LOG_CHAIN_BROKEN", "RolePermissionChangeLog.permission_snapshots")
+	if violation == nil || violation.Count != 2 || len(violation.SampleIDs) != 2 ||
+		violation.SampleIDs[0] != rows[0].ID || violation.SampleIDs[1] != rows[2].ID {
+		t.Fatalf("permission change chain violation = %#v", violation)
 	}
 }
 

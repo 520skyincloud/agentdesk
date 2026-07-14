@@ -2259,3 +2259,17 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 测试覆盖成功替换及排序快照、重复 ID 去重、相同集合不重建、租户角色拒绝平台权限、缺失/禁用权限保留旧集合、日志落库失败整笔回滚和 Role 行锁 clause。聚焦 race、完整 services 包、全仓 Go、vet 和 diff 检查均已通过。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批七个代码/文档文件无同文件修改，不要求 rebase 或 migration 排序。合并顺序保持 76A 数据契约 -> 76B 在线写入 -> 76C 写旁路及日志语义/连续性审计。
 - 可紧急回滚 76B 的 service/repository/test 接线以停止新日志，但必须保留 RolePermissionChangeLog 表和已有行；回滚会恢复无历史证据的权限替换，不应作为长期方案。
+
+## 76C. 当前实施检查点：角色权限写旁路与审计连续性收口（2026-07-15）
+
+76B 已让现有角色权限入口同事务写日志，但通用 RolePermissionService 仍暴露无鉴权、无快照的 CRUD 方法，审计也只检查操作人引用。本批关闭这些旁路，并把日志语义纳入现有 tenant-integrity-audit，不创建第二套审计工具。
+
+- RolePermissionService 收敛为只读查询，删除 Create/Update/Updates/UpdateColumn/Delete。新增 AST 契约扫描 `internal/services` 非测试文件，识别 repository/service 写方法、GORM RolePermission 写链和 `t_role_permission` 原始 SQL；唯一在线允许点是 `role_service.go:replaceRolePermissions`。
+- AST 表名匹配使用完整单词边界，不把 RolePermissionChangeLog 写入误判为 RolePermission 修改。migration 2/34/52/53/56 的初始化和幂等数据修复不属于在线 service 扫描，继续作为显式离线例外。
+- RolePermissionChangeLog 四个 JSON 快照列必须是非 null 数组：ID 为正数且严格升序，code 非空、无首尾空格且严格升序；同侧 ID/code 数量必须一致，before/after ID 集合必须不同，RoleID 必须为正数。违规码为 `ROLE_PERMISSION_CHANGE_LOG_PAYLOAD_INVALID`。
+- 同一 RoleID 的相邻日志必须满足上一条 after IDs 等于下一条 before IDs；最新 after IDs 必须等于当前 RolePermission 集合。违规码为 `ROLE_PERMISSION_CHANGE_LOG_CHAIN_BROKEN`，相邻断链记录后一条日志，终态漂移记录最后一条日志，同一日志去重。
+- 任一角色存在坏 payload 时跳过该角色连续性检查，避免一条根因产生连锁误报。快照中的历史 Role/Permission ID 和 code 不与当前模板回查；自定义角色或权限合法删除后，追加式证据仍有效。只有当前 RolePermission 关系继续受现有父级完整性审计约束。
+- 测试覆盖 AST 正反例、合法双租户与已删除模板快照、坏 JSON、逆序、重复、数量不一致、无变化、空格 code、非法 RoleID、相邻断链和当前终态漂移。聚焦 race、完整 services 包、全仓 Go、vet 和 diff 检查均已通过。
+- 本批修改两个 repository、RolePermission 只读 service、AST 契约、完整性审计 service/test 和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、权限、WebSocket、前端或 AI/计费变化。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批八个文件无同文件修改，不要求 rebase 或 migration 排序。76C 依赖 76A 日志契约和 76B 在线写入，必须按 A -> B -> C 合并。
+- 可独立回滚本批代码与文档且无需数据库回滚；回滚会重新暴露未审计的通用 RolePermission 写方法，并失去 payload/断链/终态漂移发现能力，不建议回滚。RolePermissionChangeLog 表和历史行始终保留。
