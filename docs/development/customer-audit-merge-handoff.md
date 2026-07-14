@@ -4252,3 +4252,43 @@ git diff --check
 - 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端、AI 回复、模型调用、token、usage 或计费变化。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批八个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 84 批后合并并重跑小组/档案/排班锁测试。
 - 可回滚八个文件且无需数据库回滚，但必须同时恢复档案与排班私有锁 helper；回滚会恢复小组与 Team 删除、排班、档案移动之间的竞态，不建议回滚。
+
+## 第 86 批：门店员工双向派组与企微同步并发闭环（2026-07-15）
+
+### 事务、锁序与兼容边界
+
+- 用户管理反向派组统一在事务内锁 User、该用户全部 StoreStaffBinding，再按 ID 升序锁原/目标 Team；客服组批量替换锁目标组当前绑定与所选用户绑定，再按 ID 升序锁全部受影响 Team。
+- 账号/角色/租户/门店绑定、原/目标组管理职责和当前归属全部在锁内复核。Binding、关联企微实例和所有受影响 Team 范围同事务同步；无字段、空数组、完整替换和同组幂等语义不变。
+- UpdateAgentTeam 没有门店范围输入时继续直接锁单个 Team；有范围输入时采用 Binding -> Teams 锁序。旧企微实例 ID 输入在持锁前后两次解析，不一致则拒绝旧请求。
+- EnsureForInstance 在事务内重读实例，已有绑定时按 Binding -> Team 锁序纠正实例快照；新绑定继承非零 TeamID 时也锁父 Team。它不会再把并发派组前的旧 AgentTeamID 写回企微实例。
+- 历史 migration 37/38 的两个 backfill 方法保持原 TenantID=0 迁移语义，本批不修改离线数据修复链。
+
+### 文件与验证
+
+```text
+internal/repositories/store_staff_binding_repository.go
+internal/services/agent_team_service.go
+internal/services/store_staff_binding_service.go
+internal/services/agent_team_scope_service_test.go
+internal/services/store_staff_tenant_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run 'TestEnsureStoreStaffBinding|TestStoreStaffBidirectionalAssignment|TestStoreStaffAssignmentRejects|TestBindStoreStaffUser|TestUpdateAgentTeam|TestAgentTeamMutationsUseTeamRowLock|TestAgentOrganization' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+go run ./cmd/tenant_integrity_audit --config /tmp/agentdesk-tenant-stats.yaml --pretty
+git diff --check
+```
+
+- 锁观测覆盖用户管理、客服组批量和企微 Ensure 三条在线路径；无权原组拒绝、Binding/实例原值保持、旧范围兼容、清空及同步回归通过。完整 services、全仓 Go、go vet 和 diff 检查通过。
+- 仿真库只读审计通过 52/52 模型策略、66/66 表、128/128 关系、0 违规；审计前后 mtime `1784067966`、大小 `4935680` 字节不变。
+
+### 并行分支与回滚
+
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端、AI 回复、模型调用、token、usage 或计费变化。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批七个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 85 批后合并，并重跑双向派组、企微 Ensure 与 Team 删除依赖测试。
+- 可回滚七个文件且无需数据库回滚；回滚会恢复双向入口旧值覆盖、父 Team 删除竞态和企微反同步覆盖，不建议回滚。

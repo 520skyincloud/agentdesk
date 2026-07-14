@@ -2397,3 +2397,20 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 聚焦 race、完整 services、全仓 Go、go vet 和 diff 检查通过；仿真库只读审计继续通过 52/52 模型策略、66/66 表、128/128 关系且 0 违规，审计前后 mtime `1784067966`、大小 `4935680` 字节不变。
 - 本批修改 Squad repository/service/测试、Team scope、档案/排班 helper 和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端或 AI/计费变化。AI 分支无同文件修改，不要求 rebase 或 migration 排序。
 - Team 删除与排班、档案、小组三个子域的父锁闭环已经成立；门店员工双向绑定仍需下一批接入受影响 Team 升序锁。AI Agent 的 team_ids 写仍属于 AI 分支协调范围。可独立回滚本批，但必须同时恢复档案/排班私有 helper；无需数据库回滚，回滚会重开上述竞态，不建议回滚。
+
+## 86. 当前实施检查点：门店员工双向派组与企微同步并发闭环（2026-07-15）
+
+门店员工归属可从客服组编辑页批量替换，也可从用户管理页反向指定客服组。旧实现两条入口都在事务外读取账号、绑定和原/目标 Team；客服组入口只锁目标 Team，用户入口完全不锁 Team。并发移动时可能基于旧归属覆盖，或与 Team 删除交错。企微实例编辑时的 EnsureForInstance 还可能读取旧 Binding 后把旧 AgentTeamID 反写到实例。
+
+- StoreStaffBindingRepository 增加按租户的单行、用户全部绑定、目标 Team 或所选用户绑定三种 FOR UPDATE 读取。批量查询均按 binding ID 升序，两个相反方向的批量替换不会以不同顺序锁相同绑定集合。
+- 用户管理反向绑定在单事务内按 User -> StoreStaffBinding -> 受影响 Team 顺序加锁；账号存在/状态、store_staff 角色、门店绑定、租户、目标 Team 启用状态和原/目标 Team 管理职责全部在锁内复核。该账号的全部有效门店绑定和对应企微实例原子切换。
+- 客服组批量替换先锁“当前属于目标组或属于所选账号”的全部 Binding，再从锁内最新 AgentTeamID 推导原组与目标组，按 Team ID 升序加锁。锁内重新校验账号、角色、门店绑定、租户和管理职责，然后按 binding ID 升序更新 Binding 与企微实例。
+- UpdateAgentTeam 在未提交门店员工范围时继续直接锁目标 Team，只修改组元数据；提交范围时改用 Binding -> 全部受影响 Team 锁序。旧 WxWorkInstanceScopeIDs 兼容输入仍先反解 UserID，持锁后再次解析并比较，归属已变化时整笔拒绝并要求刷新。
+- 批量入口继续表示目标客服组的完整门店员工集合：未提交字段不改变归属，空数组清空该组，选中其他组员工会移动并同步清理原组范围。同组无变化保持幂等；所有受影响 Team 的 company/store/wxwork scope 在同一事务内按 ID 顺序重算。
+- EnsureForInstance 现在在事务内重读实例；已有 Binding 时先锁 Binding，再锁其非零父 Team，最后纠正实例的 binding/team 快照并重算 Team 范围。新建 Binding 若继承非零 AgentTeamID，也先确认父 Team 存在且未删除。它与两条派组入口使用相同 Binding -> Team 顺序，不再用旧绑定覆盖刚完成的派组。
+- Team 删除持有 Team 锁并检查 Binding/实例依赖；派组先锁 Binding 后等待 Team 时，删除若先完成会让派组在持锁复核看到 Team 已删除并拒绝，派组若先持有 Team 则删除随后看到依赖并拒绝，不存在检查后新增依赖窗口。
+- 测试直接确认用户入口锁序为 User、Binding、Team 1、Team 2；客服组入口为 Binding、Team 1、Team 2；Ensure 为 Binding、Team。组长无权管理原组时派组失败且 Binding/实例均保持原值；原批量替换、清空、旧企微范围兼容、跨租户和 Team 行锁测试继续通过。
+- migration 37/38 的 BackfillWxWorkInstanceBindings/BackfillStoreStaffAgentTeamBindings 只由历史 DML migration 调用，继续保留其迁移前 TenantID=0 兼容语义；本批不把离线 backfill 当在线页面逻辑改写。
+- 聚焦 race、完整 services、全仓 Go、go vet 和 diff 检查通过；仿真库只读审计继续通过 52/52 模型策略、66/66 表、128/128 关系且 0 违规，审计前后 mtime `1784067966`、大小 `4935680` 字节不变。
+- 本批修改 StoreStaffBinding repository、AgentTeam/StoreStaffBinding service、两组既有测试和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端或 AI/计费变化。AI 分支无同文件修改，不要求 rebase 或 migration 排序。
+- 至此本分支可独立控制的 Team 子域中，排班、客服档案、客服小组和门店员工/企微双向归属均接入父锁。AI Agent 的 team_ids 写由 AI 分支所有，必须在集成阶段协调，不能由本分支直接改写。可独立回滚本批且无需数据库回滚，但会恢复双向派组和企微反同步竞态，不建议回滚。

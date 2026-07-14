@@ -179,49 +179,73 @@ func (s *storeStaffBindingService) EnsureForInstance(instance *models.WxWorkProt
 	if operator != nil && operator.ActiveTenantID > 0 && operator.ActiveTenantID != instance.TenantID {
 		return nil, errorsx.Forbidden("无权管理其他接入公司的门店员工绑定")
 	}
-	if existing := repositories.StoreStaffBindingRepository.TakeInTenant(sqls.DB(), instance.TenantID, "store_id = ? AND status <> ?", instance.StoreID, enums.StatusDeleted); existing != nil {
-		if instance.StoreStaffBindingID != existing.ID || instance.AgentTeamID != existing.AgentTeamID {
-			if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), instance.ID, instance.TenantID, map[string]any{
-				"store_staff_binding_id": existing.ID,
-				"agent_team_id":          existing.AgentTeamID,
-				"updated_at":             time.Now(),
-			}); err != nil {
-				return nil, err
+	var binding *models.StoreStaffBinding
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current := repositories.WxWorkProtocolInstanceRepository.GetInTenant(ctx.Tx, instance.ID, instance.TenantID)
+		if current == nil || current.Status == enums.StatusDeleted || current.StoreID <= 0 {
+			return errorsx.InvalidParam("员工号不存在、已删除或未绑定门店")
+		}
+		existing := repositories.StoreStaffBindingRepository.TakeInTenant(ctx.Tx, current.TenantID, "store_id = ? AND status <> ?", current.StoreID, enums.StatusDeleted)
+		if existing != nil {
+			var err error
+			binding, err = repositories.StoreStaffBindingRepository.GetForUpdateInTenant(ctx.Tx, existing.ID, current.TenantID)
+			if err != nil {
+				return err
+			}
+			if binding == nil || binding.Status == enums.StatusDeleted {
+				return errorsx.InvalidParam("门店员工绑定已变化，请重试")
+			}
+		} else {
+			store := repositories.StoreRepository.GetInTenant(ctx.Tx, current.StoreID, current.TenantID)
+			if store == nil || store.Status == enums.StatusDeleted {
+				return errorsx.InvalidParam("员工号绑定的门店不存在或不属于当前接入公司")
+			}
+			binding = &models.StoreStaffBinding{
+				TenantID:                current.TenantID,
+				AgentTeamID:             current.AgentTeamID,
+				CompanyID:               store.CompanyID,
+				StoreID:                 current.StoreID,
+				ManagedMode:             constants.StoreManagedModeSemi,
+				ServiceHours:            strings.TrimSpace(current.ServiceHours),
+				StoreRoomConversationID: strings.TrimSpace(current.StoreRoomConversationID),
+				StoreRoomNotifyEnabled:  current.StoreRoomNotifyEnabled,
+				StoreRoomAtList:         strings.TrimSpace(current.StoreRoomAtList),
+				FallbackToHQ:            current.FallbackToHQ,
+				ManualTimeoutMinutes:    normalizeManualTimeoutMinutes(current.ManualTimeoutMinutes),
+				Status:                  enums.StatusOk,
+				AuditFields:             utils.BuildAuditFields(operator),
 			}
 		}
-		return existing, nil
-	}
-	store := StoreService.GetInTenant(instance.StoreID, instance.TenantID)
-	if store == nil || store.Status == enums.StatusDeleted {
-		return nil, errorsx.InvalidParam("员工号绑定的门店不存在或不属于当前接入公司")
-	}
-	companyID := int64(0)
-	companyID = store.CompanyID
-	item := &models.StoreStaffBinding{
-		TenantID:                instance.TenantID,
-		AgentTeamID:             instance.AgentTeamID,
-		CompanyID:               companyID,
-		StoreID:                 instance.StoreID,
-		ManagedMode:             constants.StoreManagedModeSemi,
-		ServiceHours:            strings.TrimSpace(instance.ServiceHours),
-		StoreRoomConversationID: strings.TrimSpace(instance.StoreRoomConversationID),
-		StoreRoomNotifyEnabled:  instance.StoreRoomNotifyEnabled,
-		StoreRoomAtList:         strings.TrimSpace(instance.StoreRoomAtList),
-		FallbackToHQ:            instance.FallbackToHQ,
-		ManualTimeoutMinutes:    normalizeManualTimeoutMinutes(instance.ManualTimeoutMinutes),
-		Status:                  enums.StatusOk,
-		AuditFields:             utils.BuildAuditFields(operator),
-	}
-	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.StoreStaffBindingRepository.Create(ctx.Tx, item); err != nil {
-			return err
+		if binding.AgentTeamID > 0 {
+			team, err := repositories.AgentTeamRepository.GetForUpdateInTenant(ctx.Tx, binding.AgentTeamID, binding.TenantID)
+			if err != nil {
+				return err
+			}
+			if team == nil || team.Status == enums.StatusDeleted {
+				return errorsx.InvalidParam("门店员工绑定的客服组不存在或已删除")
+			}
 		}
-		return repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, instance.ID, instance.TenantID, map[string]any{
-			"store_staff_binding_id": item.ID,
-			"updated_at":             time.Now(),
-		})
-	}); err != nil {
+		if binding.ID <= 0 {
+			if err := repositories.StoreStaffBindingRepository.Create(ctx.Tx, binding); err != nil {
+				return err
+			}
+		}
+		if current.StoreStaffBindingID != binding.ID || current.AgentTeamID != binding.AgentTeamID {
+			if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, current.ID, current.TenantID, map[string]any{
+				"store_staff_binding_id": binding.ID,
+				"agent_team_id":          binding.AgentTeamID,
+				"updated_at":             time.Now(),
+			}); err != nil {
+				return err
+			}
+		}
+		if binding.AgentTeamID > 0 {
+			return AgentTeamService.syncTeamScopeFromAssignments(ctx.Tx, binding.AgentTeamID, operator)
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	return item, nil
+	return binding, nil
 }

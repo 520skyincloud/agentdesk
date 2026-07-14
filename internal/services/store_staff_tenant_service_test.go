@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"agent-desk/internal/models"
@@ -85,6 +86,48 @@ func TestEnsureStoreStaffBindingUsesInstanceTenant(t *testing.T) {
 	updated := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, 101)
 	if updated == nil || updated.StoreStaffBindingID != binding.ID {
 		t.Fatalf("updated instance=%+v want binding %d", updated, binding.ID)
+	}
+}
+
+func TestEnsureStoreStaffBindingLocksCanonicalBindingBeforeTeam(t *testing.T) {
+	db := setupStoreStaffTenantDB(t)
+	company := createStoreStaffTenantCompany(t, db, 101, "同步锁测试客户企业")
+	team := createStoreStaffTenantTeam(t, db, 101, "同步锁测试客服组")
+	store := createStoreStaffTenantStore(t, db, 101, company.ID, "ensure-lock-store")
+	binding := createStoreStaffTenantBinding(t, db, 101, 0, team.ID, company.ID, store.ID)
+	instance := createStoreStaffTenantInstance(t, db, 101, "ensure-lock-instance", 0, company.ID, store.ID, 0)
+	lockOrder := make([]string, 0, 2)
+	callbackName := "test:ensure-store-staff-binding-lock-order"
+	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if _, locked := tx.Statement.Clauses["FOR"]; !locked || tx.Statement.Schema == nil {
+			return
+		}
+		if tx.Statement.Schema.Name == "StoreStaffBinding" || tx.Statement.Schema.Name == "AgentTeam" {
+			lockOrder = append(lockOrder, tx.Statement.Schema.Name)
+		}
+	}); err != nil {
+		t.Fatalf("register ensure lock callback: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Callback().Query().Remove(callbackName); err != nil {
+			t.Errorf("remove ensure lock callback: %v", err)
+		}
+	})
+
+	operator := &dto.AuthPrincipal{UserID: 1, Username: "tenant-admin", ActiveTenantID: 101}
+	ensured, err := StoreStaffBindingService.EnsureForInstance(instance, operator)
+	if err != nil {
+		t.Fatalf("ensure existing store staff binding: %v", err)
+	}
+	if ensured == nil || ensured.ID != binding.ID || ensured.AgentTeamID != team.ID {
+		t.Fatalf("ensured binding = %+v", ensured)
+	}
+	if !slices.Equal(lockOrder, []string{"StoreStaffBinding", "AgentTeam"}) {
+		t.Fatalf("ensure lock order = %v, want [StoreStaffBinding AgentTeam]", lockOrder)
+	}
+	updated := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, 101)
+	if updated == nil || updated.StoreStaffBindingID != binding.ID || updated.AgentTeamID != team.ID {
+		t.Fatalf("ensured instance = %+v", updated)
 	}
 }
 
