@@ -2256,3 +2256,44 @@ git diff --check
 
 - 开始前已 fetch：`origin/codex/ai-billing@f2d2da4` 与本批预计文件无同文件修改，无 migration 编号影响，不需要 rebase。
 - 本批不修改 AI 回复、模型供应商、计费、企微协议或派单状态机。页面和测试可独立回滚，无数据回滚；回滚不会绕过后端，但会恢复只读账号可触发的失败写交互。
+
+## 第 42 批：知识候选审核动作权限显隐（2026-07-14）
+
+### 目标与复用判断
+
+- KnowledgeCandidate 后端列表已经使用 `knowledgeBase.view`，全部写动作已经统一使用 `knowledgeBase.update`，并叠加 Tenant/客服组范围；不需要新增候选专属权限。
+- 页面此前无权限判断，持有 view 的只读角色仍可选择候选并看到编辑、质检、审核、导出和导入标记按钮，点击后统一得到 403。
+- 复用现有知识库权限和当前页面，不增加平行审核页、角色判断或隐藏授权。
+
+### 文件与契约
+
+```text
+web/app/dashboard/knowledge-candidates/page.tsx
+web/app/dashboard/knowledge-candidates/action-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- `knowledgeBase.update` 控制选择列、批量审核工具栏、质检、周导出、单条编辑/通过/驳回/标记导入和编辑弹窗；动作函数也增加相同守卫。
+- `knowledgeBase.view` 继续提供候选内容、来源范围和会话跳转。会话入口不放入 `canManage`，避免只读审核人员失去核对上下文。
+- 没有 Go、model、AutoMigrate、DML migration、request/response DTO、enum、API、Gin 路由、WebSocket payload、权限常量、导航或响应结构变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/knowledge-candidates/page.tsx
+git diff --check
+```
+
+- 全量 Go、vet、83 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。
+- 新契约测试固定 update 权限、选择/审核显隐、编辑弹窗守卫和来源会话入口保留。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch：`origin/codex/ai-billing@f2d2da4` 与本批预计文件无同文件修改，无 migration 编号影响，不需要 rebase。
+- 本批不修改候选生成、AI 质检算法、知识导入、模型调用、token、usage 或计费。页面和测试可独立回滚，无数据回滚；回滚会恢复只读账号的失败写按钮。

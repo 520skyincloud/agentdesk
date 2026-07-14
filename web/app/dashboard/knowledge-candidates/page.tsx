@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import {
   CheckIcon,
   DownloadIcon,
@@ -13,6 +13,7 @@ import Link from "next/link"
 import { toast } from "sonner"
 
 import { DashboardListPage } from "@/components/dashboard/list"
+import { useAuth } from "@/components/auth-provider"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -77,6 +78,12 @@ function sourceBadgeVariant(source: string) {
 }
 
 export default function KnowledgeCandidatesPage() {
+  const { session } = useAuth()
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions]
+  )
+  const canManage = permissions.has("knowledgeBase.update")
   const [editing, setEditing] = useState<KnowledgeCandidate | null>(null)
   const [question, setQuestion] = useState("")
   const [answer, setAnswer] = useState("")
@@ -88,6 +95,7 @@ export default function KnowledgeCandidatesPage() {
   const [qualityReports, setQualityReports] = useState<KnowledgeCandidateQualityReport[]>([])
 
   function openEdit(item: KnowledgeCandidate) {
+    if (!canManage) return
     setEditing(item)
     setQuestion(item.question)
     setAnswer(item.answer)
@@ -96,7 +104,7 @@ export default function KnowledgeCandidatesPage() {
   }
 
   async function saveEdit() {
-    if (!editing) return
+    if (!canManage || !editing) return
     setSaving(true)
     try {
       await updateKnowledgeCandidate({
@@ -118,6 +126,7 @@ export default function KnowledgeCandidatesPage() {
   }
 
   async function runAction(action: () => Promise<void>, success: string) {
+    if (!canManage) return
     try {
       await action()
       toast.success(success)
@@ -128,6 +137,7 @@ export default function KnowledgeCandidatesPage() {
   }
 
   async function exportWeekly() {
+    if (!canManage) return
     try {
       const ret = await exportKnowledgeCandidatesWeekly({ status: "approved" })
       if (ret.count === 0) {
@@ -142,6 +152,7 @@ export default function KnowledgeCandidatesPage() {
   }
 
   async function runBatchAction(action: (ids: number[]) => Promise<void>, success: string) {
+    if (!canManage) return
     if (selectedIds.length === 0) {
       toast.error("请先选择待归档问答")
       return
@@ -157,6 +168,7 @@ export default function KnowledgeCandidatesPage() {
   }
 
   async function runQualityCheck() {
+    if (!canManage) return
     if (selectedIds.length === 0) {
       toast.error("请先选择待归档问答")
       return
@@ -171,12 +183,14 @@ export default function KnowledgeCandidatesPage() {
   }
 
   function toggleSelected(id: number) {
+    if (!canManage) return
     setSelectedIds((values) =>
       values.includes(id) ? values.filter((value) => value !== id) : [...values, id],
     )
   }
 
   function toggleSelectedPage(ids: number[]) {
+    if (!canManage) return
     if (ids.length === 0) return
     setSelectedIds((values) => {
       const allSelected = ids.every((id) => values.includes(id))
@@ -222,6 +236,9 @@ export default function KnowledgeCandidatesPage() {
         fetchList={fetchKnowledgeCandidates}
         getItemId={(item) => item.id}
         renderToolbarActions={({ result }) => {
+          if (!canManage) {
+            return null
+          }
           const pageIds = result.results.map((item) => item.id)
           const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.includes(id))
           return (
@@ -265,18 +282,22 @@ export default function KnowledgeCandidatesPage() {
           )
         }}
         columns={[
-          {
-            key: "select",
-            label: "",
-            className: "w-10",
-            render: (item) => (
-              <Checkbox
-                checked={selectedIds.includes(item.id)}
-                onCheckedChange={() => toggleSelected(item.id)}
-                aria-label={`选择候选 ${item.id}`}
-              />
-            ),
-          },
+          ...(canManage
+            ? [
+                {
+                  key: "select",
+                  label: "",
+                  className: "w-10",
+                  render: (item: KnowledgeCandidate) => (
+                    <Checkbox
+                      checked={selectedIds.includes(item.id)}
+                      onCheckedChange={() => toggleSelected(item.id)}
+                      aria-label={`选择候选 ${item.id}`}
+                    />
+                  ),
+                },
+              ]
+            : []),
           {
             key: "store",
             label: "门店/知识库",
@@ -340,34 +361,38 @@ export default function KnowledgeCandidatesPage() {
             className: "w-[260px] text-right",
             render: (item) => (
               <div className="flex flex-wrap justify-end gap-2">
-                <Button variant="outline" size="sm" onClick={() => openEdit(item)}>
-                  <PencilIcon />
-                  编辑
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void runAction(() => approveKnowledgeCandidate(item.id), "已通过")}
-                >
-                  <CheckIcon />
-                  通过
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void runAction(() => rejectKnowledgeCandidate(item.id), "已驳回")}
-                >
-                  <XIcon />
-                  驳回
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void runAction(() => markKnowledgeCandidateImported(item.id), "已标记导入")}
-                >
-                  <FileCheckIcon />
-                  导入
-                </Button>
+                {canManage ? (
+                  <>
+                    <Button variant="outline" size="sm" onClick={() => openEdit(item)}>
+                      <PencilIcon />
+                      编辑
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void runAction(() => approveKnowledgeCandidate(item.id), "已通过")}
+                    >
+                      <CheckIcon />
+                      通过
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void runAction(() => rejectKnowledgeCandidate(item.id), "已驳回")}
+                    >
+                      <XIcon />
+                      驳回
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void runAction(() => markKnowledgeCandidateImported(item.id), "已标记导入")}
+                    >
+                      <FileCheckIcon />
+                      导入
+                    </Button>
+                  </>
+                ) : null}
                 {item.conversationId > 0 ? (
                   <Button
                     variant="ghost"
@@ -392,7 +417,7 @@ export default function KnowledgeCandidatesPage() {
         }}
       />
 
-      <Dialog open={!!editing} onOpenChange={(open) => !open && setEditing(null)}>
+      <Dialog open={canManage && !!editing} onOpenChange={(open) => !open && setEditing(null)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>编辑待归档问答</DialogTitle>

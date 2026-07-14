@@ -1608,3 +1608,21 @@ git diff --check
 - 全量 Go、vet、82 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；测试固定排班日历鼠标/键盘交互与标签树各写动作的权限映射。
 - 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 不修改本批页面、日历组件或测试，无同文件与 migration 冲突，不需要 rebase。
 - 本批可独立回滚前端和测试且无需数据回滚；回滚会恢复误导性写交互。客户企业、知识候选和工单动作显隐仍需后续独立核对。
+
+## 42. 当前实施检查点：知识候选审核动作权限（2026-07-14）
+
+本检查点核对知识候选页面与现有知识库权限的关系。当前后端没有隐藏的候选审核权限：列表使用 `knowledgeBase.view`，编辑、质检、审核、导出和导入标记统一使用 `knowledgeBase.update`，因此前端应准确复用这两个既有权限而不是新增重复权限。
+
+### 页面职责与显隐
+
+- `knowledgeBase.view` 保留候选列表、问题/答案、门店与知识库来源、状态、创建时间以及来源会话跳转。
+- `knowledgeBase.update` 控制候选选择框、全选、质检、批量通过/驳回、周导出、单条编辑/通过/驳回/标记导入及编辑弹窗。
+- 只读账号不再看到可选择但无法处理的 Checkbox 或空审核工具栏；来源会话按钮独立保留，不随 update 权限隐藏。
+- 前端动作函数增加同一 `canManage` 守卫，避免未来 UI 组合变化重新触发写请求；服务端原权限和 Tenant/客服组范围校验仍是最终边界。
+
+### 契约、验证与合并
+
+- 没有 Go、model、AutoMigrate、DML migration、DTO、enum、API、路由、WebSocket payload、权限常量或导航变化，也没有改知识候选生成、质检判断和知识导入语义。
+- 全量 Go、vet、83 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；契约测试固定 `knowledgeBase.update` 与所有审核动作的关系，同时固定来源会话入口对只读账号可见。
+- 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 不修改本批页面或测试，无同文件和 migration 冲突，不需要 rebase。
+- 本批可独立回滚页面和测试且无需数据回滚；工单动作权限和 AI 分支中的客户企业页仍待后续独立收口。
