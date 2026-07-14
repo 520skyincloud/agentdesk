@@ -671,3 +671,47 @@ go test ./internal/handlers/dashboard ./cmd/testdata ./cmd/testdata/quickreply -
 - 三个原失败用例、整组人工派单/超时测试和对应 `go test -race` 均通过；`go test ./... -run '^$' -count=1` 通过。完整 services 包仅剩既有异步 AI 回复 goroutine 在测试清库后访问全局 DB 的失败，本步骤不修改 AI runtime。
 - 影响文件仅为 `internal/services/conversation_human_dispatch_service_test.go` 和本文档；不涉及 model/migration、DTO/enum、API、WebSocket 或 AI 回复链路。
 - 回滚边界仅为测试夹具。并行 `codex/ai-billing@f2d2da4` 同样扩展了该测试文件，新增 AI 恢复、门店通知和相关模型夹具；两侧改动语义互补但存在同文件冲突，合并时必须保留 AI 分支新增用例，并将本步骤的 `createHumanDispatchStoreAgent` 组织夹具应用到对应三个回复用例，不能整文件选边。
+
+## 20. 多租户阶段 4C：站内通知租户归属（2026-07-14）
+
+### 本步骤目标与结果
+
+- 为 `Notification` 增加 `TenantID`，归属唯一继承自 `RecipientUserID` 对应账号；调用方不能提交或覆盖通知租户。
+- 创建通知前校验接收账号存在且未删除，避免新增无法投递和无法确定租户的孤儿通知。
+- 通知分页、未读统计、单条已读和全部已读均使用 `recipient_user_id + tenant_id`。平台账号使用账号固定租户 `0`，不会因 `ActiveTenantID` 切换而隐藏平台通知。
+- 删除 notification service/repository 的全局单条读取路径，更新动作只能通过接收账号与租户组合定位。
+- API 路径、request/response DTO 和 WebSocket payload 不变，前端无需改动。
+
+### Migration 与数据安全
+
+- migration 41 按历史通知的接收账号回填 `TenantID`；租户账号写入其固定租户，平台账号保持 `0`。
+- 通知引用缺失账号，或已有显式非零租户与接收账号冲突时迁移失败并整笔回滚；重复执行不改变已确认归属。
+- 通知 `BizType/BizID/ActionURL` 不作为租户来源。它们只是业务关联和导航信息，目标工单/会话仍需在各自批次强制隔离。
+
+### 主要文件
+
+```text
+internal/models/models.go
+internal/repositories/notification_repository.go
+internal/services/notification_service.go
+internal/handlers/dashboard/notification_handler.go
+internal/migration/000041_backfill_notification_tenants.go
+internal/services/notification_service_test.go
+internal/services/event_handlers/notification_event_handler_test.go
+```
+
+### 验证、并行影响与回滚
+
+```text
+go test ./internal/migration -run 'TestBackfillNotificationTenants' -count=1
+go test ./internal/services -run '^TestNotificationService' -count=1
+go test -race ./internal/services -run '^TestNotificationService' -count=1
+go test ./internal/services/event_handlers -count=1
+go test ./internal/services -run 'Test(ConversationHumanDispatch|StoreManualAgentReply|ManualSessionTimeout|Handoff)' -count=1
+```
+
+- 覆盖租户继承、平台账号零租户、迁移幂等、冲突/孤儿回滚、跨账号与伪造租户已读拒绝、批量已读隔离，以及工单/会话事件通知继承接收账号租户。
+- `go test ./internal/migration -count=1`、`go vet ./...`、`go test ./... -run '^$' -count=1` 和 `cd web && pnpm typecheck` 通过；完整 `go test ./... -count=1` 中 services 与通知事件通过，仅剩既有 `TestBuildLightweightTicket` 因 builder 内部访问未初始化全局 DB 失败，作为独立分层修复处理。
+- 并行 `codex/ai-billing@f2d2da4` 不修改通知 handler/repository/service；仅在 `internal/models/models.go` 同文件重叠，合并时保留双方字段。
+- migration 41 高于并行分支当前最高版本 33；提交前仍需再次 fetch 核对。
+- 本步骤不修改 AI runtime、模型调用、计费、消息状态或通知 WebSocket 事件。回滚运行时代码时保留已添加列和回填结果，不删除迁移历史。

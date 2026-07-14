@@ -27,8 +27,7 @@ func NotificationAnyList(ctx *gin.Context) {
 
 	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "type", ColumnName: "notification_type"},
-	).Eq("recipient_user_id", operator.UserID).
-		Eq("status", enums.StatusOk).
+	).Eq("status", enums.StatusOk).
 		Desc("id")
 
 	switch strings.TrimSpace(ctx.Query("readStatus")) {
@@ -38,7 +37,7 @@ func NotificationAnyList(ctx *gin.Context) {
 		cnd.Where("read_at IS NOT NULL")
 	}
 
-	list, paging := services.NotificationService.FindPageByCnd(cnd)
+	list, paging := services.NotificationService.FindPageForPrincipal(cnd, operator)
 	httpx.WriteJSON(ctx, &web.PageResult{
 		Results: builders.BuildNotificationListWithLocale(list, i18nx.Locale(ctx)),
 		Page:    paging,
@@ -52,7 +51,7 @@ func NotificationGetUnread_count(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, &response.NotificationUnreadCountResponse{
-		UnreadCount: services.NotificationService.CountUnread(operator.UserID),
+		UnreadCount: services.NotificationService.CountUnread(operator),
 	})
 }
 
@@ -67,7 +66,7 @@ func NotificationPostMark_read(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.NotificationService.MarkRead(req.ID, operator.UserID); err != nil {
+	if err := services.NotificationService.MarkRead(req.ID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -80,7 +79,7 @@ func NotificationPostMark_all_read(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.NotificationService.MarkAllRead(operator.UserID); err != nil {
+	if err := services.NotificationService.MarkAllRead(operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

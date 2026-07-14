@@ -2,6 +2,7 @@ package event_handlers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -17,7 +18,8 @@ import (
 )
 
 func TestTicketAssignedInAppNotification(t *testing.T) {
-	setupNotificationEventHandlerTestDB(t)
+	db := setupNotificationEventHandlerTestDB(t)
+	createNotificationEventUser(t, db, 11, 101)
 
 	ticket := &models.Ticket{
 		TicketNo:          "TK202604280001",
@@ -49,7 +51,7 @@ func TestTicketAssignedInAppNotification(t *testing.T) {
 		t.Fatalf("expected 1 notification, got %d", len(list))
 	}
 	got := list[0]
-	if got.NotificationType != "ticket_assigned" || got.BizType != "ticket" || got.BizID != ticket.ID {
+	if got.TenantID != 101 || got.NotificationType != "ticket_assigned" || got.BizType != "ticket" || got.BizID != ticket.ID {
 		t.Fatalf("unexpected notification: %+v", got)
 	}
 	if got.ActionURL != "/dashboard/tickets?ticketId=1" {
@@ -58,7 +60,8 @@ func TestTicketAssignedInAppNotification(t *testing.T) {
 }
 
 func TestConversationAssignedInAppNotification(t *testing.T) {
-	setupNotificationEventHandlerTestDB(t)
+	db := setupNotificationEventHandlerTestDB(t)
+	createNotificationEventUser(t, db, 22, 202)
 
 	conversation := &models.Conversation{
 		CustomerName:      "张三",
@@ -89,7 +92,7 @@ func TestConversationAssignedInAppNotification(t *testing.T) {
 		t.Fatalf("expected 1 notification, got %d", len(list))
 	}
 	got := list[0]
-	if got.NotificationType != "conversation_assigned" || got.BizType != "conversation" || got.BizID != conversation.ID {
+	if got.TenantID != 202 || got.NotificationType != "conversation_assigned" || got.BizType != "conversation" || got.BizID != conversation.ID {
 		t.Fatalf("unexpected notification: %+v", got)
 	}
 	if got.ActionURL != "/dashboard/conversations?conversationId=1" {
@@ -115,9 +118,18 @@ func setupNotificationEventHandlerTestDB(t *testing.T) *gorm.DB {
 			_ = sqlDB.Close()
 		}
 	})
-	if err := db.AutoMigrate(&models.Notification{}, &models.Ticket{}, &models.Conversation{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Notification{}, &models.Ticket{}, &models.Conversation{}); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}
 	sqls.SetDB(db)
 	return db
+}
+
+func createNotificationEventUser(t *testing.T, db *gorm.DB, id, tenantID int64) {
+	t.Helper()
+	if err := db.Create(&models.User{
+		ID: id, TenantID: tenantID, Username: fmt.Sprintf("notification-event-%d", id), Nickname: "通知用户", Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create notification event user %d: %v", id, err)
+	}
 }

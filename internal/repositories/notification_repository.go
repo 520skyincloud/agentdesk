@@ -20,9 +20,12 @@ func newNotificationRepository() *notificationRepository {
 type notificationRepository struct {
 }
 
-func (r *notificationRepository) Get(db *gorm.DB, id int64) *models.Notification {
+func (r *notificationRepository) GetForRecipient(db *gorm.DB, id, userID, tenantID int64) *models.Notification {
+	if id <= 0 || userID <= 0 || tenantID < 0 {
+		return nil
+	}
 	ret := &models.Notification{}
-	if err := db.First(ret, "id = ?", id).Error; err != nil {
+	if err := db.First(ret, "id = ? AND recipient_user_id = ? AND tenant_id = ?", id, userID, tenantID).Error; err != nil {
 		return nil
 	}
 	return ret
@@ -61,8 +64,8 @@ func (r *notificationRepository) Updates(db *gorm.DB, id int64, columns map[stri
 	return db.Model(&models.Notification{}).Where("id = ?", id).Updates(columns).Error
 }
 
-func (r *notificationRepository) MarkAllRead(db *gorm.DB, userID int64, readAt time.Time) error {
+func (r *notificationRepository) MarkAllRead(db *gorm.DB, userID, tenantID int64, readAt time.Time) error {
 	return db.Model(&models.Notification{}).
-		Where("recipient_user_id = ? AND read_at IS NULL", userID).
+		Where("recipient_user_id = ? AND tenant_id = ? AND read_at IS NULL", userID, tenantID).
 		Updates(map[string]any{"read_at": readAt}).Error
 }

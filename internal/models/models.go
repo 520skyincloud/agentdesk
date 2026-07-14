@@ -144,6 +144,7 @@ type TicketView struct {
 // Notification 站内通知。
 type Notification struct {
 	ID               int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID         int64        `gorm:"type:bigint;not null;default:0;index"`
 	RecipientUserID  int64        `gorm:"type:bigint;not null;default:0;index"`
 	Title            string       `gorm:"type:varchar(255);not null;default:''"`
 	Content          string       `gorm:"type:text"`

@@ -1,11 +1,14 @@
 package services_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/services"
 
 	"github.com/glebarez/sqlite"
@@ -15,7 +18,11 @@ import (
 )
 
 func TestNotificationServiceCreateAndUnreadCount(t *testing.T) {
-	setupNotificationTestDB(t)
+	db := setupNotificationTestDB(t)
+	createNotificationTestUser(t, db, 101, 11)
+	createNotificationTestUser(t, db, 102, 22)
+	operator101 := notificationTestPrincipal(101, 11)
+	operator102 := notificationTestPrincipal(102, 22)
 
 	item, err := services.NotificationService.Create(request.CreateNotificationRequest{
 		RecipientUserID:  101,
@@ -32,19 +39,27 @@ func TestNotificationServiceCreateAndUnreadCount(t *testing.T) {
 	if item.ID == 0 {
 		t.Fatalf("expected notification id to be assigned")
 	}
-	if item.RecipientUserID != 101 || item.ReadAt != nil {
+	if item.TenantID != 11 || item.RecipientUserID != 101 || item.ReadAt != nil {
 		t.Fatalf("unexpected notification: %+v", item)
 	}
-	if got := services.NotificationService.CountUnread(101); got != 1 {
+	if got := services.NotificationService.CountUnread(operator101); got != 1 {
 		t.Fatalf("expected unread count 1, got %d", got)
 	}
-	if got := services.NotificationService.CountUnread(102); got != 0 {
+	if got := services.NotificationService.CountUnread(operator102); got != 0 {
 		t.Fatalf("expected unread count 0 for another user, got %d", got)
+	}
+	list, _ := services.NotificationService.FindPageForPrincipal(sqls.NewCnd(), operator101)
+	if len(list) != 1 || list[0].ID != item.ID {
+		t.Fatalf("tenant user list=%+v want own notification", list)
 	}
 }
 
 func TestNotificationServiceMarkReadRequiresOwner(t *testing.T) {
-	setupNotificationTestDB(t)
+	db := setupNotificationTestDB(t)
+	createNotificationTestUser(t, db, 201, 31)
+	createNotificationTestUser(t, db, 202, 32)
+	operator201 := notificationTestPrincipal(201, 31)
+	operator202 := notificationTestPrincipal(202, 32)
 
 	item, err := services.NotificationService.Create(request.CreateNotificationRequest{
 		RecipientUserID:  201,
@@ -59,22 +74,27 @@ func TestNotificationServiceMarkReadRequiresOwner(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if err := services.NotificationService.MarkRead(item.ID, 202); err == nil {
+	if err := services.NotificationService.MarkRead(item.ID, operator202); err == nil {
 		t.Fatalf("expected foreign user mark read to fail")
 	}
-	if got := services.NotificationService.CountUnread(201); got != 1 {
+	if err := services.NotificationService.MarkRead(item.ID, notificationTestPrincipal(201, 999)); err == nil {
+		t.Fatalf("expected mismatched tenant context to fail")
+	}
+	if got := services.NotificationService.CountUnread(operator201); got != 1 {
 		t.Fatalf("expected notification to remain unread, got %d", got)
 	}
-	if err := services.NotificationService.MarkRead(item.ID, 201); err != nil {
+	if err := services.NotificationService.MarkRead(item.ID, operator201); err != nil {
 		t.Fatalf("MarkRead() owner error = %v", err)
 	}
-	if got := services.NotificationService.CountUnread(201); got != 0 {
+	if got := services.NotificationService.CountUnread(operator201); got != 0 {
 		t.Fatalf("expected unread count 0 after mark read, got %d", got)
 	}
 }
 
 func TestNotificationServiceMarkAllReadOnlyCurrentUser(t *testing.T) {
-	setupNotificationTestDB(t)
+	db := setupNotificationTestDB(t)
+	createNotificationTestUser(t, db, 301, 41)
+	createNotificationTestUser(t, db, 302, 42)
 
 	for _, userID := range []int64{301, 301, 302} {
 		if _, err := services.NotificationService.Create(request.CreateNotificationRequest{
@@ -90,13 +110,13 @@ func TestNotificationServiceMarkAllReadOnlyCurrentUser(t *testing.T) {
 		}
 	}
 
-	if err := services.NotificationService.MarkAllRead(301); err != nil {
+	if err := services.NotificationService.MarkAllRead(notificationTestPrincipal(301, 41)); err != nil {
 		t.Fatalf("MarkAllRead() error = %v", err)
 	}
-	if got := services.NotificationService.CountUnread(301); got != 0 {
+	if got := services.NotificationService.CountUnread(notificationTestPrincipal(301, 41)); got != 0 {
 		t.Fatalf("expected user 301 unread count 0, got %d", got)
 	}
-	if got := services.NotificationService.CountUnread(302); got != 1 {
+	if got := services.NotificationService.CountUnread(notificationTestPrincipal(302, 42)); got != 1 {
 		t.Fatalf("expected user 302 unread count 1, got %d", got)
 	}
 }
@@ -120,9 +140,22 @@ func setupNotificationTestDB(t *testing.T) *gorm.DB {
 			_ = sqlDB.Close()
 		}
 	})
-	if err := db.AutoMigrate(&models.Notification{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.Notification{}); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}
 	sqls.SetDB(db)
 	return db
+}
+
+func createNotificationTestUser(t *testing.T, db *gorm.DB, id, tenantID int64) {
+	t.Helper()
+	if err := db.Create(&models.User{
+		ID: id, TenantID: tenantID, Username: "notification-user-" + strconv.FormatInt(id, 10), Nickname: "通知用户", Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create notification user %d: %v", id, err)
+	}
+}
+
+func notificationTestPrincipal(userID, tenantID int64) *dto.AuthPrincipal {
+	return &dto.AuthPrincipal{UserID: userID, TenantID: tenantID, ActiveTenantID: tenantID}
 }
