@@ -10,9 +10,11 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/openidentity"
+	"agent-desk/internal/repositories"
 	"agent-desk/internal/wxwork"
 
 	"github.com/mlogclub/simple/common/strs"
+	"github.com/mlogclub/simple/sqls"
 	"github.com/silenceper/wechat/v2/work/kf"
 	"github.com/silenceper/wechat/v2/work/kf/syncmsg"
 )
@@ -32,13 +34,22 @@ type wxWorkKFInboundService struct {
 }
 
 func (s *wxWorkKFInboundService) SyncCallbackMessages(message kf.CallbackMessage) error {
+	channel, err := s.getChannelByOpenKfID(message.OpenKfID)
+	if err != nil {
+		return err
+	}
+	if channel.TenantID <= 0 {
+		return errorsx.InvalidParam("企业微信客服渠道缺少接入公司归属")
+	}
+	tenantID := channel.TenantID
+
 	cli, err := wxwork.GetWorkCli().GetKF()
 	if err != nil {
 		return err
 	}
 
 	cursor := ""
-	if state := WxWorkKFSyncStateService.GetByOpenKfID(message.OpenKfID); state != nil {
+	if state := WxWorkKFSyncStateService.GetByOpenKfIDInTenant(message.OpenKfID, tenantID); state != nil {
 		cursor = strings.TrimSpace(state.NextCursor)
 	}
 
@@ -54,7 +65,7 @@ func (s *wxWorkKFInboundService) SyncCallbackMessages(message kf.CallbackMessage
 		}
 
 		for _, item := range result.MsgList {
-			if err := s.consumeSyncMessage(item); err != nil {
+			if err := s.consumeSyncMessage(item, tenantID); err != nil {
 				slog.Error("consume wxwork kf sync message failed",
 					"open_kfid", item.OpenKFID,
 					"external_userid", item.ExternalUserID,
@@ -66,7 +77,7 @@ func (s *wxWorkKFInboundService) SyncCallbackMessages(message kf.CallbackMessage
 			}
 		}
 
-		if err := s.saveNextCursor(message.OpenKfID, result.NextCursor); err != nil {
+		if err := s.saveNextCursor(tenantID, message.OpenKfID, result.NextCursor); err != nil {
 			return err
 		}
 
@@ -77,30 +88,33 @@ func (s *wxWorkKFInboundService) SyncCallbackMessages(message kf.CallbackMessage
 	}
 }
 
-func (s *wxWorkKFInboundService) consumeSyncMessage(item syncmsg.Message) error {
+func (s *wxWorkKFInboundService) consumeSyncMessage(item syncmsg.Message, tenantID int64) error {
+	if tenantID <= 0 {
+		return errorsx.InvalidParam("企业微信客服同步消息缺少接入公司归属")
+	}
 	msgID := strings.TrimSpace(item.MsgID)
 	if msgID == "" {
 		return errorsx.InvalidParam("企业微信消息ID不能为空")
 	}
-	if WxWorkKFMessageRefService.Take("wx_msg_id = ?", msgID) != nil {
+	if WxWorkKFMessageRefService.GetByWxMsgIDInTenant(msgID, tenantID) != nil {
 		return nil
 	}
 
 	switch strings.TrimSpace(item.MsgType) {
 	case "text":
-		return s.handleTextMessage(item)
+		return s.handleTextMessage(item, tenantID)
 	case "image":
-		return s.handleImageMessage(item)
+		return s.handleImageMessage(item, tenantID)
 	case "file":
-		return s.handleFileMessage(item)
+		return s.handleFileMessage(item, tenantID)
 	case "event":
-		return s.handleEventMessage(item)
+		return s.handleEventMessage(item, tenantID)
 	default:
-		return s.handleUnsupportedMessage(item)
+		return s.handleUnsupportedMessage(item, tenantID)
 	}
 }
 
-func (s *wxWorkKFInboundService) handleTextMessage(item syncmsg.Message) error {
+func (s *wxWorkKFInboundService) handleTextMessage(item syncmsg.Message, tenantID int64) error {
 	payload := syncmsg.Text{}
 	if err := json.Unmarshal(item.OriginData, &payload); err != nil {
 		return err
@@ -109,7 +123,7 @@ func (s *wxWorkKFInboundService) handleTextMessage(item syncmsg.Message) error {
 	conversation, err := s.ensureConversation(payload.BaseMessage, map[string]any{
 		"msgType": payload.MsgType,
 		"menuId":  payload.Text.MenuID,
-	})
+	}, tenantID)
 	if err != nil {
 		return err
 	}
@@ -127,7 +141,7 @@ func (s *wxWorkKFInboundService) handleTextMessage(item syncmsg.Message) error {
 	return s.createMessageRef(conversation.ID, message.ID, item, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
 }
 
-func (s *wxWorkKFInboundService) handleImageMessage(item syncmsg.Message) error {
+func (s *wxWorkKFInboundService) handleImageMessage(item syncmsg.Message, tenantID int64) error {
 	payload := syncmsg.Image{}
 	if err := json.Unmarshal(item.OriginData, &payload); err != nil {
 		return err
@@ -135,7 +149,7 @@ func (s *wxWorkKFInboundService) handleImageMessage(item syncmsg.Message) error 
 	conversation, err := s.ensureConversation(payload.BaseMessage, map[string]any{
 		"msgType": payload.MsgType,
 		"mediaId": payload.Image.MediaID,
-	})
+	}, tenantID)
 	if err != nil {
 		return err
 	}
@@ -157,7 +171,7 @@ func (s *wxWorkKFInboundService) handleImageMessage(item syncmsg.Message) error 
 	return s.createMessageRef(conversation.ID, message.ID, item, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
 }
 
-func (s *wxWorkKFInboundService) handleFileMessage(item syncmsg.Message) error {
+func (s *wxWorkKFInboundService) handleFileMessage(item syncmsg.Message, tenantID int64) error {
 	payload := syncmsg.File{}
 	if err := json.Unmarshal(item.OriginData, &payload); err != nil {
 		return err
@@ -165,7 +179,7 @@ func (s *wxWorkKFInboundService) handleFileMessage(item syncmsg.Message) error {
 	conversation, err := s.ensureConversation(payload.BaseMessage, map[string]any{
 		"msgType": payload.MsgType,
 		"mediaId": payload.File.MediaID,
-	})
+	}, tenantID)
 	if err != nil {
 		return err
 	}
@@ -187,12 +201,12 @@ func (s *wxWorkKFInboundService) handleFileMessage(item syncmsg.Message) error {
 	return s.createMessageRef(conversation.ID, message.ID, item, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
 }
 
-func (s *wxWorkKFInboundService) handleUnsupportedMessage(item syncmsg.Message) error {
+func (s *wxWorkKFInboundService) handleUnsupportedMessage(item syncmsg.Message, tenantID int64) error {
 	base, err := s.parseBaseMessage(item.OriginData)
 	if err != nil {
 		return err
 	}
-	conversation, convErr := s.ensureConversation(base, map[string]any{"msgType": item.MsgType})
+	conversation, convErr := s.ensureConversation(base, map[string]any{"msgType": item.MsgType}, tenantID)
 	if convErr != nil {
 		return convErr
 	}
@@ -211,20 +225,20 @@ func (s *wxWorkKFInboundService) handleUnsupportedMessage(item syncmsg.Message) 
 	return s.createMessageRef(conversation.ID, message.ID, item, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
 }
 
-func (s *wxWorkKFInboundService) handleEventMessage(item syncmsg.Message) error {
+func (s *wxWorkKFInboundService) handleEventMessage(item syncmsg.Message, tenantID int64) error {
 	switch strings.TrimSpace(item.EventType) {
 	case enums.WxWorkKFEventTypeEnterSession:
-		return s.handleEnterSessionEvent(item)
+		return s.handleEnterSessionEvent(item, tenantID)
 	case enums.WxWorkKFEventTypeSessionStatusChange:
-		return s.handleSessionStatusChangeEvent(item)
+		return s.handleSessionStatusChangeEvent(item, tenantID)
 	case enums.WxWorkKFEventTypeMsgSendFail:
-		return s.handleMsgSendFailEvent(item)
+		return s.handleMsgSendFailEvent(item, tenantID)
 	default:
-		return s.recordOrphanEvent(item, "收到未处理的企业微信事件")
+		return s.recordOrphanEvent(item, "收到未处理的企业微信事件", tenantID)
 	}
 }
 
-func (s *wxWorkKFInboundService) handleEnterSessionEvent(item syncmsg.Message) error {
+func (s *wxWorkKFInboundService) handleEnterSessionEvent(item syncmsg.Message, tenantID int64) error {
 	payload := syncmsg.EnterSessionEvent{}
 	if err := json.Unmarshal(item.OriginData, &payload); err != nil {
 		return err
@@ -234,7 +248,7 @@ func (s *wxWorkKFInboundService) handleEnterSessionEvent(item syncmsg.Message) e
 		"scene":       payload.Event.Scene,
 		"sceneParam":  payload.Event.SceneParam,
 		"welcomeCode": payload.Event.WelcomeCode,
-	})
+	}, tenantID)
 	if err != nil {
 		return err
 	}
@@ -244,7 +258,7 @@ func (s *wxWorkKFInboundService) handleEnterSessionEvent(item syncmsg.Message) e
 	return s.appendConversationEvent(conversation.ID, "微信客户进入会话", string(item.OriginData))
 }
 
-func (s *wxWorkKFInboundService) handleSessionStatusChangeEvent(item syncmsg.Message) error {
+func (s *wxWorkKFInboundService) handleSessionStatusChangeEvent(item syncmsg.Message, tenantID int64) error {
 	payload := syncmsg.SessionStatusChangeEvent{}
 	if err := json.Unmarshal(item.OriginData, &payload); err != nil {
 		return err
@@ -254,7 +268,7 @@ func (s *wxWorkKFInboundService) handleSessionStatusChangeEvent(item syncmsg.Mes
 	conversation, err := s.ensureConversation(base, map[string]any{
 		"changeType": payload.Event.ChangeType,
 		"msgCode":    payload.Event.MsgCode,
-	})
+	}, tenantID)
 	if err != nil {
 		return err
 	}
@@ -278,7 +292,7 @@ func (s *wxWorkKFInboundService) handleSessionStatusChangeEvent(item syncmsg.Mes
 	return s.appendConversationEvent(conversation.ID, "微信会话状态变更", string(item.OriginData))
 }
 
-func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message) error {
+func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message, tenantID int64) error {
 	payload := syncmsg.MsgSendFailEvent{}
 	if err := json.Unmarshal(item.OriginData, &payload); err != nil {
 		return err
@@ -290,11 +304,11 @@ func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message) er
 	conversation, err := s.ensureConversation(base, map[string]any{
 		"failMsgId": payload.Event.FailMsgID,
 		"failType":  payload.Event.FailType,
-	})
+	}, tenantID)
 	if err != nil {
 		return err
 	}
-	if ref := WxWorkKFMessageRefService.GetByWxMsgID(payload.Event.FailMsgID); ref != nil {
+	if ref := WxWorkKFMessageRefService.GetByWxMsgIDInTenant(payload.Event.FailMsgID, conversation.TenantID); ref != nil {
 		targetMessageID := ref.MessageID
 		slog.Warn("mark wxwork message ref failed",
 			"conversation_id", ref.ConversationID,
@@ -304,13 +318,13 @@ func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message) er
 			"open_kfid", payload.Event.OpenKFID,
 			"external_userid", payload.Event.ExternalUserID,
 		)
-		_ = WxWorkKFMessageRefService.Updates(ref.ID, map[string]any{
+		_ = WxWorkKFMessageRefService.UpdatesInTenant(ref.ID, conversation.TenantID, map[string]any{
 			"send_status": enums.WxWorkKFMessageSendStatusFailed,
 			"fail_reason": string(item.OriginData),
 			"updated_at":  time.Now(),
 		})
 
-		if outbox := ChannelMessageOutboxService.GetByMessageID(enums.ChannelTypeWxWorkKF, targetMessageID); outbox != nil {
+		if outbox := ChannelMessageOutboxService.GetByMessageIDInTenant(enums.ChannelTypeWxWorkKF, targetMessageID, conversation.TenantID); outbox != nil {
 			if err := WxWorkKFOutboundService.markOutboxFailed(outbox, string(item.OriginData)); err != nil {
 				slog.Warn("mark wxwork outbox failed from callback event failed",
 					"outbox_id", outbox.ID,
@@ -351,12 +365,12 @@ func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message) er
 	return s.appendConversationEvent(conversation.ID, "微信消息发送失败事件", string(item.OriginData))
 }
 
-func (s *wxWorkKFInboundService) recordOrphanEvent(item syncmsg.Message, content string) error {
+func (s *wxWorkKFInboundService) recordOrphanEvent(item syncmsg.Message, content string, tenantID int64) error {
 	base, err := s.parseBaseMessage(item.OriginData)
 	if err != nil {
 		return err
 	}
-	conversation, convErr := s.ensureConversation(base, map[string]any{"eventType": item.EventType})
+	conversation, convErr := s.ensureConversation(base, map[string]any{"eventType": item.EventType}, tenantID)
 	if convErr != nil {
 		return convErr
 	}
@@ -366,7 +380,7 @@ func (s *wxWorkKFInboundService) recordOrphanEvent(item syncmsg.Message, content
 	return s.appendConversationEvent(conversation.ID, content, string(item.OriginData))
 }
 
-func (s *wxWorkKFInboundService) ensureConversation(base syncmsg.BaseMessage, profile map[string]any) (*models.Conversation, error) {
+func (s *wxWorkKFInboundService) ensureConversation(base syncmsg.BaseMessage, profile map[string]any, tenantID int64) (*models.Conversation, error) {
 	externalID := strings.TrimSpace(base.ExternalUserID)
 	if externalID == "" {
 		return nil, errorsx.InvalidParam("企业微信客户ID不能为空")
@@ -374,6 +388,9 @@ func (s *wxWorkKFInboundService) ensureConversation(base syncmsg.BaseMessage, pr
 	channel, err := s.getChannelByOpenKfID(base.OpenKFID)
 	if err != nil {
 		return nil, err
+	}
+	if tenantID <= 0 || channel.TenantID != tenantID {
+		return nil, errorsx.InvalidParam("企业微信客服同步消息与回调接入公司不一致")
 	}
 
 	external := s.buildExternalUser(externalID)
@@ -399,9 +416,16 @@ func (s *wxWorkKFInboundService) ensureConversation(base syncmsg.BaseMessage, pr
 }
 
 func (s *wxWorkKFInboundService) upsertConversationMapping(conversationID, channelID int64, openKfID, externalUserID, servicerUserID string, sessionStatus enums.WxWorkKFSessionStatus, sendTime uint64, lastMsgID, rawProfile string) error {
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return err
+	}
+	if repositories.ChannelRepository.GetInTenant(sqls.DB(), channelID, conversation.TenantID) == nil {
+		return errorsx.InvalidParam("企业微信客服会话渠道不属于当前接入公司")
+	}
 	now := time.Now()
 	lastMsgTime := s.parseSendTime(sendTime)
-	existing := WxWorkKFConversationService.Take("conversation_id = ?", conversationID)
+	existing := WxWorkKFConversationService.GetByConversationIDInTenant(conversationID, conversation.TenantID)
 	if existing != nil {
 		updates := map[string]any{
 			"channel_id":       channelID,
@@ -419,7 +443,7 @@ func (s *wxWorkKFInboundService) upsertConversationMapping(conversationID, chann
 		if strings.TrimSpace(rawProfile) != "" {
 			updates["raw_profile"] = rawProfile
 		}
-		return WxWorkKFConversationService.Updates(existing.ID, updates)
+		return WxWorkKFConversationService.UpdatesInTenant(existing.ID, conversation.TenantID, updates)
 	}
 
 	return WxWorkKFConversationService.Create(&models.WxWorkKFConversation{
@@ -445,7 +469,11 @@ func (s *wxWorkKFInboundService) upsertConversationMapping(conversationID, chann
 }
 
 func (s *wxWorkKFInboundService) createMessageRef(conversationID, messageID int64, item syncmsg.Message, direction enums.WxWorkKFMessageDirection, sendStatus enums.WxWorkKFMessageSendStatus) error {
-	if WxWorkKFMessageRefService.Take("wx_msg_id = ?", item.MsgID) != nil {
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return err
+	}
+	if WxWorkKFMessageRefService.GetByWxMsgIDInTenant(item.MsgID, conversation.TenantID) != nil {
 		return nil
 	}
 	now := time.Now()
@@ -471,15 +499,15 @@ func (s *wxWorkKFInboundService) createMessageRef(conversationID, messageID int6
 	})
 }
 
-func (s *wxWorkKFInboundService) saveNextCursor(openKfID, nextCursor string) error {
+func (s *wxWorkKFInboundService) saveNextCursor(tenantID int64, openKfID, nextCursor string) error {
 	openKfID = strings.TrimSpace(openKfID)
-	if openKfID == "" {
-		return errorsx.InvalidParam("openKfID不能为空")
+	if tenantID <= 0 || openKfID == "" {
+		return errorsx.InvalidParam("同步游标缺少接入公司或 openKfID")
 	}
 	now := time.Now()
-	state := WxWorkKFSyncStateService.Take("open_kf_id = ?", openKfID)
+	state := WxWorkKFSyncStateService.GetByOpenKfIDInTenant(openKfID, tenantID)
 	if state != nil {
-		return WxWorkKFSyncStateService.Updates(state.ID, map[string]any{
+		return WxWorkKFSyncStateService.UpdatesInTenant(state.ID, tenantID, map[string]any{
 			"next_cursor":  strings.TrimSpace(nextCursor),
 			"last_sync_at": now,
 			"updated_at":   now,
@@ -487,6 +515,7 @@ func (s *wxWorkKFInboundService) saveNextCursor(openKfID, nextCursor string) err
 		})
 	}
 	return WxWorkKFSyncStateService.Create(&models.WxWorkKFSyncState{
+		TenantID:   tenantID,
 		OpenKfID:   openKfID,
 		NextCursor: strings.TrimSpace(nextCursor),
 		LastSyncAt: &now,

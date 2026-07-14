@@ -52,8 +52,11 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("get sqlite db: %v", err)
 	}
+	previousHook := TriggerAIReplyAsyncHook
+	TriggerAIReplyAsyncHook = nil
 	t.Cleanup(func() {
 		sqls.SetDB(nil)
+		TriggerAIReplyAsyncHook = previousHook
 		if err := sqlDB.Close(); err != nil {
 			t.Fatalf("close sqlite db: %v", err)
 		}

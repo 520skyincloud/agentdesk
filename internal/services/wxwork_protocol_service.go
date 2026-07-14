@@ -518,7 +518,7 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, reason)
 		return nil
 	}
-	if existing := WxWorkKFMessageRefService.GetByWxMsgID(clientMsgID); existing != nil {
+	if existing := WxWorkKFMessageRefService.GetByWxMsgIDInTenant(clientMsgID, instance.TenantID); existing != nil {
 		if s.canRepairEmployeeOutgoingEcho(instance, msg, existing, messageType) {
 			if handled := s.handleEmployeeOutgoingEcho(instance, msg, rawPayload, clientMsgID, messageType); handled {
 				return nil
@@ -600,7 +600,7 @@ func (s *wxWorkProtocolService) handleReferencedMessageRecall(instance *models.W
 	}
 	referID := strings.TrimSpace(msg.ReferIDText())
 	originalWxMsgID := s.protocolClientMessageID(instance.Guid, referID)
-	ref := WxWorkKFMessageRefService.GetByWxMsgID(originalWxMsgID)
+	ref := WxWorkKFMessageRefService.GetByWxMsgIDInTenant(originalWxMsgID, instance.TenantID)
 	if ref == nil || ref.MessageID <= 0 {
 		reason := fmt.Sprintf("recall target not found referid=%s msg_type=%d content_type=%d", referID, msg.MsgType, msg.ContentType)
 		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, reason)
@@ -611,7 +611,7 @@ func (s *wxWorkProtocolService) handleReferencedMessageRecall(instance *models.W
 		_ = MessageSyncLogService.Create(ref.ConversationID, ref.MessageID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
 		return err
 	}
-	_ = WxWorkKFMessageRefService.Updates(ref.ID, map[string]any{
+	_ = WxWorkKFMessageRefService.UpdatesInTenant(ref.ID, instance.TenantID, map[string]any{
 		"send_status": string(enums.WxWorkKFMessageSendStatusRecalled),
 		"raw_payload": strings.TrimSpace(rawPayload),
 		"updated_at":  time.Now(),
@@ -2123,7 +2123,10 @@ func (s *wxWorkProtocolService) upsertConversationMapping(instance *models.WxWor
 }
 
 func (s *wxWorkProtocolService) createMessageRef(conversationID, messageID int64, instance *models.WxWorkProtocolInstance, externalID, wxMsgID, rawPayload string, direction enums.WxWorkKFMessageDirection, sendStatus enums.WxWorkKFMessageSendStatus) error {
-	if existing := WxWorkKFMessageRefService.GetByWxMsgID(wxMsgID); existing != nil {
+	if instance == nil || instance.TenantID <= 0 {
+		return errorsx.InvalidParam("企微员工号消息映射缺少接入公司归属")
+	}
+	if existing := WxWorkKFMessageRefService.GetByWxMsgIDInTenant(wxMsgID, instance.TenantID); existing != nil {
 		updates := map[string]any{
 			"send_status": string(sendStatus),
 			"raw_payload": strings.TrimSpace(rawPayload),
@@ -2138,7 +2141,7 @@ func (s *wxWorkProtocolService) createMessageRef(conversationID, messageID int64
 		if sendStatus == enums.WxWorkKFMessageSendStatusSent || sendStatus == enums.WxWorkKFMessageSendStatusReceived {
 			updates["fail_reason"] = ""
 		}
-		return WxWorkKFMessageRefService.Updates(existing.ID, updates)
+		return WxWorkKFMessageRefService.UpdatesInTenant(existing.ID, instance.TenantID, updates)
 	}
 	now := time.Now()
 	return WxWorkKFMessageRefService.Create(&models.WxWorkKFMessageRef{

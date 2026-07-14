@@ -1,8 +1,10 @@
 package repositories
 
 import (
-	"agent-desk/internal/models"
+	"time"
 
+	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
@@ -21,6 +23,17 @@ type channelMessageOutboxRepository struct {
 func (r *channelMessageOutboxRepository) Get(db *gorm.DB, id int64) *models.ChannelMessageOutbox {
 	ret := &models.ChannelMessageOutbox{}
 	if err := db.First(ret, "id = ?", id).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *channelMessageOutboxRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.ChannelMessageOutbox {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.ChannelMessageOutbox{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
 		return nil
 	}
 	return ret
@@ -94,6 +107,25 @@ func (r *channelMessageOutboxRepository) Updates(db *gorm.DB, id int64, columns 
 
 func (r *channelMessageOutboxRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
 	return db.Model(&models.ChannelMessageOutbox{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
+func (r *channelMessageOutboxRepository) TryMarkSending(db *gorm.DB, id, tenantID int64, now time.Time) (bool, error) {
+	if id <= 0 || tenantID <= 0 {
+		return false, nil
+	}
+	result := db.Model(&models.ChannelMessageOutbox{}).
+		Where("id = ? AND tenant_id = ? AND send_status IN ?", id, tenantID, []string{
+			string(enums.ChannelMessageOutboxStatusPending),
+			string(enums.ChannelMessageOutboxStatusFailed),
+		}).
+		Updates(map[string]any{
+			"send_status": string(enums.ChannelMessageOutboxStatusSending),
+			"updated_at":  now,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func (r *channelMessageOutboxRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {

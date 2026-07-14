@@ -1408,3 +1408,64 @@ git diff --check
 - `origin/codex/ai-billing@f2d2da4` 同时修改 `models.go`、Message service、media understanding、企微协议 service 和 Conversation handler。建议先合并 Asset 字段/migration 46，再逐方法合并运行时隔离，最后重放 AI 分支 usage/计费和 FastGPT 变化。
 - media understanding 合并时，AI 分支的 usage capture、模型测试、自动触发增强必须保留；本批的 `message.TenantID` 参数、Asset/Message/Conversation/Route/Instance tenant 查询和最终 tenant 更新也必须保留。
 - 回滚运行时代码不得删除已执行的 Asset TenantID、migration 46 记录或清零归属。若 migration 因共享 Asset 冲突中止，应拆分或修复明确文件引用后重试，禁止把冲突文件直接归 legacy。
+
+## 34. 多租户阶段 4I/6E：KF 同步游标、Outbox 与 CLI bridge 隔离（2026-07-14）
+
+### 目标与完成结果
+
+- 复用现有 `WxWorkKFSyncState`、KF mapping/message ref 和统一 ChannelMessageOutbox，不新增渠道状态表或平行投递模型。
+- `WxWorkKFSyncState` 增加 TenantID；migration 47 根据相同 openKfId 的 KF Channel 回填，跨租户重复、显式冲突、无效 Tenant 和孤立游标整笔回滚，重复执行幂等。
+- KF callback 从 Channel 固化本批 Tenant，游标、每条消息、mapping、message ref 和失败回调均在该租户内处理。
+- KF worker 按每条 Outbox Tenant 读取 Message、Conversation、Mapping、Channel 和 Asset，并以 tenant 条件 claim/更新；Outbox 创建验证父会话和消息归属。
+- 员工号协议共用的 message ref 查询、撤回、回声修复和语音 ref 恢复按 instance/message tenant；没有改变员工号协议字段或 AI 回复语义。
+- CLI bridge 由 bridge token 命中的 Channel Tenant 限定入站幂等、会话复用、outbox poll 和 sent/failed 回写；双租户测试验证 A 公司凭据看不到也不能完成 B 公司任务。
+- `setupMessageWelcomeTestDB` 默认关闭真实异步 AI hook，避免测试 fixture 关闭 DB 后后台 goroutine 继续访问全局 DB；需要验证 hook 的测试仍显式安装 stub，生产代码不变。
+
+### 主要文件与共享契约
+
+```text
+internal/models/models.go
+internal/migration/000047_backfill_wxwork_kf_sync_state_tenants.go
+internal/migration/000047_backfill_wxwork_kf_sync_state_tenants_test.go
+internal/repositories/wx_work_kf_sync_state_repository.go
+internal/repositories/wx_work_kf_conversation_repository.go
+internal/repositories/wx_work_kf_message_ref_repository.go
+internal/repositories/channel_message_outbox_repository.go
+internal/services/wx_work_kf_sync_state_service.go
+internal/services/wx_work_kf_conversation_service.go
+internal/services/wx_work_kf_message_ref_service.go
+internal/services/channel_message_outbox_service.go
+internal/services/wxwork_kf_inbound_service.go
+internal/services/wxwork_kf_outbound_service.go
+internal/services/wxwork_cli_bridge_service.go
+internal/services/wxwork_protocol_service.go
+internal/services/media_understanding_service.go
+internal/services/wxwork_kf_tenant_test.go
+internal/services/wxwork_protocol_service_test.go
+internal/services/message_service_test.go
+```
+
+- 新增共享字段 `WxWorkKFSyncState.TenantID` 和 DML migration 47；没有 DTO、enum、路由、WebSocket payload、权限点或前端变化。
+- migration 47 创建前已核对 `origin/main` 最高 20、`origin/codex/ai-billing` 最高 33、本分支最高 46，无版本冲突。DDL 继续由 AutoMigrate 先执行。
+
+### 验证与运行边界
+
+```text
+go test ./internal/migration -run '^TestBackfillWxWorkKFSyncStateTenants' -count=1
+go test -race ./internal/migration -run '^TestBackfillWxWorkKFSyncStateTenants' -count=1
+go test -race ./internal/services -run 'TestWxWork(KFRuntimeTenantIsolation|CLIBridgePollsOnlyChannelTenant)|TestWxWorkProtocolReferencedRecallMarksOriginalMessageRecalled|TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef' -count=1
+go test ./internal/services ./internal/handlers/third ./internal/bootstrap -count=1
+go test ./... -run '^$' -count=1
+go vet ./...
+git diff --check
+```
+
+- 上述专项 migration、runtime/race、协议测试、完整 services/migration 测试、全仓编译和 vet 均已通过。
+- KF `DispatchPendingOutbox` 当前未注册 cron，本批只隔离代码，不启用旧能力；员工号协议 cron 不变。
+- CLI、企业微信客服号和员工号协议仍是三种独立入口，仅复用统一消息账本/mapping/outbox 数据结构，不互相借用协议字段。
+
+### 并行分支、合并顺序与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 同文件为 `models.go`、`media_understanding_service.go`、`message_service_test.go`、`wxwork_protocol_service.go` 和 `wxwork_protocol_service_test.go`。
+- 建议先合并 SyncState 字段/migration 47 与 repository/service tenant 原语，再逐方法合并协议 ref/voice 调用，最后重放 AI 分支 usage capture 和回复增强测试。不得整文件选边。
+- 可回滚 KF/CLI 运行时调用和新增测试，但不得删除已执行的 TenantID 字段、migration 47 记录或把冲突/孤立游标归 legacy。回滚隔离会重新暴露跨租户 outbox 风险，替代方案上线前公开注册保持关闭。

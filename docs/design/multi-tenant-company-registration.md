@@ -1189,3 +1189,33 @@ git diff --check
 
 - 本批增加 `Asset.TenantID` 和 migration 46；没有 request/response DTO、enum、Gin 路由、权限点或前端字段变化。
 - `codex/ai-billing@f2d2da4` 同时修改 `models.go`、Message、media understanding、企微协议和 Conversation handler。合并必须保留 AI 分支模型调用/usage/计费逻辑，并保留本批的 TenantID、tenant-qualified Asset/Message/Route/Instance 查询与最终更新；禁止整文件覆盖。
+
+## 26. 当前实施检查点：企业微信 KF/CLI 游标与投递隔离（2026-07-14）
+
+本检查点只收紧现有企业微信客服号回调、外部渠道 Outbox 和 CLI bridge，不新增渠道入口，也不把企业微信客服号、CLI 与员工号协议合并成同一协议。
+
+### 归属与回填
+
+- `WxWorkKFSyncState` 增加 TenantID，继续保持 `openKfID` 平台全局唯一；DDL 由 AutoMigrate 创建，migration 47 只做 DML 回填。
+- 同步游标的唯一归属证据是配置中 `openKfId` 相同的 `wxwork_kf` Channel Tenant。显式 Tenant 与 Channel 冲突、同一 openKfId 映射到不同 Tenant、Channel Tenant 无效或游标找不到 Channel 证据时，migration 整笔回滚；不把孤立游标猜测为 legacy。
+- `WxWorkKFConversation`、`WxWorkKFMessageRef` 和 `ChannelMessageOutbox` 已在 migration 45 从父 Conversation/Message 回填，本检查点不新增重复 migration，只修运行时读取和最终更新条件。
+
+### 运行时边界
+
+- KF callback 先由全局唯一 openKfId 解析 Channel 和 Tenant，再用该 Tenant 读取/保存 SyncMsg 游标；每条同步消息创建会话前再次校验其 Channel Tenant 与回调批次一致。
+- KF mapping、message ref、失败回调和 outbox 均按 Conversation/Outbox Tenant 读取；任务 claim 使用 `id + tenant_id + pending/failed` 原子条件，最终 sent/failed 更新也携带 tenant。
+- KF 全局 worker 可以扫描多个租户的待投递任务，但每条任务只用自身 TenantID 读取 Message、Conversation、Mapping、Channel 和 Asset。缺失 Tenant 的任务不会被处理。
+- 企微员工号协议仅对共用的 mapping/message ref 表增加 instance tenant 条件，协议字段和 `conversation_id` 语义不变。
+- `/api/third/wxwork-cli/*` 继续使用独立 CLI bridge token。token 命中的 Channel Tenant 限制入站幂等、会话映射、outbox poll、sent/failed 回写；一个公司的 CLI poll 不会 claim 其他公司的任务。
+- `ChannelMessageOutboxService.Create` 从父 Conversation 继承 Tenant，并校验正数 Message 与 Conversation 同租户；合成门店群通知继续允许负数 MessageID。
+
+### 保留边界
+
+- KF 下行 `DispatchPendingOutbox` 当前没有注册到 cron；本检查点没有擅自启用这项未运行能力。员工号协议 outbox cron 保持原状。
+- 旧全局 CRUD helper 为生成代码和内部兼容保留，但真实 KF/CLI/员工号运行链不再调用它们完成业务动作。
+- 本批没有 request/response DTO、enum、Gin 路由、权限点、WebSocket payload 或前端变化；现有 CLI/KF 路由及权限语义不变。
+- 下一步仍是 Knowledge/向量与 AI 日志共享契约；公开邀请注册继续关闭。
+
+### 合并要求
+
+- 本批新增 `WxWorkKFSyncState.TenantID` 和 migration 47。`origin/codex/ai-billing@f2d2da4` 同时修改 `models.go`、media understanding、Message 测试和企微协议 service/test；合并必须逐方法保留 AI usage/回复逻辑与本批 tenant-qualified ref/voice 查询，禁止整文件覆盖。

@@ -253,7 +253,7 @@ func (s *mediaUnderstandingService) transcribeWxWorkVoice(ctx context.Context, m
 		msgID = nonNilString(payload.WxMedia["msg_id"])
 	}
 	if conversationID == "" || msgID == "" {
-		refConversationID, refMsgID := waitWxWorkProtocolVoiceRefIDs(ctx, message.ID, 3*time.Second)
+		refConversationID, refMsgID := waitWxWorkProtocolVoiceRefIDs(ctx, message.ID, message.TenantID, 3*time.Second)
 		if conversationID == "" || msgID == "" {
 			if conversationID == "" {
 				conversationID = refConversationID
@@ -522,10 +522,10 @@ func wxWorkProtocolVoiceConversationID(rawPayload string, conversationID, tenant
 	return ""
 }
 
-func waitWxWorkProtocolVoiceRefIDs(ctx context.Context, messageID int64, timeout time.Duration) (conversationID string, msgID string) {
+func waitWxWorkProtocolVoiceRefIDs(ctx context.Context, messageID, tenantID int64, timeout time.Duration) (conversationID string, msgID string) {
 	deadline := time.Now().Add(timeout)
 	for {
-		conversationID, msgID = wxWorkProtocolVoiceRefIDs(messageID)
+		conversationID, msgID = wxWorkProtocolVoiceRefIDs(messageID, tenantID)
 		if conversationID != "" && msgID != "" {
 			return conversationID, msgID
 		}
@@ -535,11 +535,11 @@ func waitWxWorkProtocolVoiceRefIDs(ctx context.Context, messageID int64, timeout
 	}
 }
 
-func wxWorkProtocolVoiceRefIDs(messageID int64) (conversationID string, msgID string) {
-	if messageID <= 0 {
+func wxWorkProtocolVoiceRefIDs(messageID, tenantID int64) (conversationID string, msgID string) {
+	if messageID <= 0 || tenantID <= 0 {
 		return "", ""
 	}
-	ref := WxWorkKFMessageRefService.Take("message_id = ? AND direction = ?", messageID, string(enums.WxWorkKFMessageDirectionIn))
+	ref := WxWorkKFMessageRefService.FindOne(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("message_id", messageID).Eq("direction", string(enums.WxWorkKFMessageDirectionIn)))
 	if ref == nil {
 		return "", ""
 	}

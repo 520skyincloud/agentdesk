@@ -26,6 +26,17 @@ func (r *wxWorkKFSyncStateRepository) Get(db *gorm.DB, id int64) *models.WxWorkK
 	return ret
 }
 
+func (r *wxWorkKFSyncStateRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.WxWorkKFSyncState {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.WxWorkKFSyncState{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *wxWorkKFSyncStateRepository) Take(db *gorm.DB, where ...interface{}) *models.WxWorkKFSyncState {
 	ret := &models.WxWorkKFSyncState{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -90,6 +101,24 @@ func (r *wxWorkKFSyncStateRepository) Update(db *gorm.DB, t *models.WxWorkKFSync
 func (r *wxWorkKFSyncStateRepository) Updates(db *gorm.DB, id int64, columns map[string]interface{}) (err error) {
 	err = db.Model(&models.WxWorkKFSyncState{}).Where("id = ?", id).Updates(columns).Error
 	return
+}
+
+func (r *wxWorkKFSyncStateRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.WxWorkKFSyncState{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
+func (r *wxWorkKFSyncStateRepository) GetByOpenKfIDInTenant(db *gorm.DB, openKfID string, tenantID int64) *models.WxWorkKFSyncState {
+	if tenantID <= 0 {
+		return nil
+	}
+	ret := &models.WxWorkKFSyncState{}
+	if err := db.Take(ret, "tenant_id = ? AND open_kf_id = ?", tenantID, openKfID).Error; err != nil {
+		return nil
+	}
+	return ret
 }
 
 func (r *wxWorkKFSyncStateRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {

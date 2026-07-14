@@ -26,6 +26,17 @@ func (r *wxWorkKFConversationRepository) Get(db *gorm.DB, id int64) *models.WxWo
 	return ret
 }
 
+func (r *wxWorkKFConversationRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.WxWorkKFConversation {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.WxWorkKFConversation{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *wxWorkKFConversationRepository) Take(db *gorm.DB, where ...interface{}) *models.WxWorkKFConversation {
 	ret := &models.WxWorkKFConversation{}
 	if err := db.Take(ret, where...).Error; err != nil {

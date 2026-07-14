@@ -52,6 +52,7 @@ func TestWxWorkProtocolSkipsReferencedMutationMessage(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()
 	instance := &models.WxWorkProtocolInstance{
+		TenantID:       101,
 		Guid:           "guid-refer",
 		EmployeeUserID: "employee-1",
 		Status:         enums.StatusOk,
@@ -114,6 +115,7 @@ func TestWxWorkProtocolReferencedRecallMarksOriginalMessageRecalled(t *testing.T
 		t.Fatalf("create conversation: %v", err)
 	}
 	instance := &models.WxWorkProtocolInstance{
+		TenantID:       101,
 		Guid:           "guid-recall",
 		ChannelID:      channel.ID,
 		EmployeeUserID: "employee-1",
@@ -136,6 +138,7 @@ func TestWxWorkProtocolReferencedRecallMarksOriginalMessageRecalled(t *testing.T
 		t.Fatalf("send original customer message: %v", err)
 	}
 	if err := db.Create(&models.WxWorkKFMessageRef{
+		TenantID:       101,
 		ConversationID: conversation.ID,
 		MessageID:      message.ID,
 		WxMsgID:        originalWxMsgID,
@@ -214,6 +217,7 @@ func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
 		t.Fatalf("create conversation: %v", err)
 	}
 	instance := &models.WxWorkProtocolInstance{
+		TenantID:       101,
 		Guid:           "guid-1",
 		ChannelID:      channel.ID,
 		EmployeeUserID: "employee-1",
@@ -224,6 +228,7 @@ func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
 		t.Fatalf("create instance: %v", err)
 	}
 	if err := db.Create(&models.WxWorkKFConversation{
+		TenantID:       101,
 		ConversationID: conversation.ID,
 		ChannelID:      channel.ID,
 		OpenKfID:       "wx_protocol:guid-1:single",
@@ -235,6 +240,7 @@ func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
 	}
 	wxMsgID := "wx_protocol:guid-1:wx-msg-1"
 	if err := db.Create(&models.WxWorkKFMessageRef{
+		TenantID:       101,
 		ConversationID: conversation.ID,
 		MessageID:      0,
 		WxMsgID:        wxMsgID,

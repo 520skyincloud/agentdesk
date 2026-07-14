@@ -26,6 +26,17 @@ func (r *wxWorkKFMessageRefRepository) Get(db *gorm.DB, id int64) *models.WxWork
 	return ret
 }
 
+func (r *wxWorkKFMessageRefRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.WxWorkKFMessageRef {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.WxWorkKFMessageRef{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *wxWorkKFMessageRefRepository) Take(db *gorm.DB, where ...interface{}) *models.WxWorkKFMessageRef {
 	ret := &models.WxWorkKFMessageRef{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -90,6 +101,24 @@ func (r *wxWorkKFMessageRefRepository) Update(db *gorm.DB, t *models.WxWorkKFMes
 func (r *wxWorkKFMessageRefRepository) Updates(db *gorm.DB, id int64, columns map[string]interface{}) (err error) {
 	err = db.Model(&models.WxWorkKFMessageRef{}).Where("id = ?", id).Updates(columns).Error
 	return
+}
+
+func (r *wxWorkKFMessageRefRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.WxWorkKFMessageRef{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
+func (r *wxWorkKFMessageRefRepository) GetByWxMsgIDInTenant(db *gorm.DB, wxMsgID string, tenantID int64) *models.WxWorkKFMessageRef {
+	if tenantID <= 0 {
+		return nil
+	}
+	ret := &models.WxWorkKFMessageRef{}
+	if err := db.Take(ret, "tenant_id = ? AND wx_msg_id = ?", tenantID, wxMsgID).Error; err != nil {
+		return nil
+	}
+	return ret
 }
 
 func (r *wxWorkKFMessageRefRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {

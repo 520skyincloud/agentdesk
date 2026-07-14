@@ -23,6 +23,10 @@ func (s *wxWorkKFMessageRefService) Get(id int64) *models.WxWorkKFMessageRef {
 	return repositories.WxWorkKFMessageRefRepository.Get(sqls.DB(), id)
 }
 
+func (s *wxWorkKFMessageRefService) GetInTenant(id, tenantID int64) *models.WxWorkKFMessageRef {
+	return repositories.WxWorkKFMessageRefRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *wxWorkKFMessageRefService) Take(where ...interface{}) *models.WxWorkKFMessageRef {
 	return repositories.WxWorkKFMessageRefRepository.Take(sqls.DB(), where...)
 }
@@ -73,6 +77,10 @@ func (s *wxWorkKFMessageRefService) Updates(id int64, columns map[string]interfa
 	return repositories.WxWorkKFMessageRefRepository.Updates(sqls.DB(), id, columns)
 }
 
+func (s *wxWorkKFMessageRefService) UpdatesInTenant(id, tenantID int64, columns map[string]any) error {
+	return repositories.WxWorkKFMessageRefRepository.UpdatesInTenant(sqls.DB(), id, tenantID, columns)
+}
+
 func (s *wxWorkKFMessageRefService) UpdateColumn(id int64, name string, value interface{}) error {
 	return repositories.WxWorkKFMessageRefRepository.UpdateColumn(sqls.DB(), id, name, value)
 }
@@ -83,4 +91,8 @@ func (s *wxWorkKFMessageRefService) Delete(id int64) {
 
 func (s *wxWorkKFMessageRefService) GetByWxMsgID(wxMsgID string) *models.WxWorkKFMessageRef {
 	return repositories.WxWorkKFMessageRefRepository.Take(sqls.DB(), "wx_msg_id = ?", wxMsgID)
+}
+
+func (s *wxWorkKFMessageRefService) GetByWxMsgIDInTenant(wxMsgID string, tenantID int64) *models.WxWorkKFMessageRef {
+	return repositories.WxWorkKFMessageRefRepository.GetByWxMsgIDInTenant(sqls.DB(), wxMsgID, tenantID)
 }

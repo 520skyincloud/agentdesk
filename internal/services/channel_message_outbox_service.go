@@ -27,6 +27,10 @@ func (s *channelMessageOutboxService) Get(id int64) *models.ChannelMessageOutbox
 	return repositories.ChannelMessageOutboxRepository.Get(sqls.DB(), id)
 }
 
+func (s *channelMessageOutboxService) GetInTenant(id, tenantID int64) *models.ChannelMessageOutbox {
+	return repositories.ChannelMessageOutboxRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *channelMessageOutboxService) Take(where ...interface{}) *models.ChannelMessageOutbox {
 	return repositories.ChannelMessageOutboxRepository.Take(sqls.DB(), where...)
 }
@@ -52,6 +56,23 @@ func (s *channelMessageOutboxService) Count(cnd *sqls.Cnd) int64 {
 }
 
 func (s *channelMessageOutboxService) Create(t *models.ChannelMessageOutbox) error {
+	if t == nil {
+		return nil
+	}
+	conversation, err := requireConversationParent(sqls.DB(), t.ConversationID)
+	if err != nil {
+		return err
+	}
+	if t.TenantID > 0 && t.TenantID != conversation.TenantID {
+		return errorsx.InvalidParam("渠道投递任务不属于当前会话接入公司")
+	}
+	if t.MessageID > 0 {
+		message := repositories.MessageRepository.GetInTenant(sqls.DB(), t.MessageID, conversation.TenantID)
+		if message == nil || message.ConversationID != conversation.ID {
+			return errorsx.InvalidParam("渠道投递消息不属于当前会话")
+		}
+	}
+	t.TenantID = conversation.TenantID
 	return repositories.ChannelMessageOutboxRepository.Create(sqls.DB(), t)
 }
 
@@ -68,22 +89,7 @@ func (s *channelMessageOutboxService) UpdatesInTenant(id, tenantID int64, column
 }
 
 func (s *channelMessageOutboxService) TryMarkSending(id, tenantID int64) (bool, error) {
-	if id <= 0 || tenantID <= 0 {
-		return false, nil
-	}
-	result := sqls.DB().Model(&models.ChannelMessageOutbox{}).
-		Where("id = ? AND tenant_id = ? AND send_status IN ?", id, tenantID, []string{
-			string(enums.ChannelMessageOutboxStatusPending),
-			string(enums.ChannelMessageOutboxStatusFailed),
-		}).
-		Updates(map[string]any{
-			"send_status": string(enums.ChannelMessageOutboxStatusSending),
-			"updated_at":  time.Now(),
-		})
-	if result.Error != nil {
-		return false, result.Error
-	}
-	return result.RowsAffected > 0, nil
+	return repositories.ChannelMessageOutboxRepository.TryMarkSending(sqls.DB(), id, tenantID, time.Now())
 }
 
 func (s *channelMessageOutboxService) UpdateColumn(id int64, name string, value interface{}) error {
@@ -97,6 +103,13 @@ func (s *channelMessageOutboxService) Delete(id int64) {
 // GetByMessageID retrieves the outbox entry by message ID and channel type.
 func (s *channelMessageOutboxService) GetByMessageID(channelType string, messageID int64) *models.ChannelMessageOutbox {
 	return repositories.ChannelMessageOutboxRepository.Take(sqls.DB(), "channel_type = ? AND message_id = ?", channelType, messageID)
+}
+
+func (s *channelMessageOutboxService) GetByMessageIDInTenant(channelType string, messageID, tenantID int64) *models.ChannelMessageOutbox {
+	if messageID == 0 || tenantID <= 0 {
+		return nil
+	}
+	return repositories.ChannelMessageOutboxRepository.Take(sqls.DB(), "tenant_id = ? AND channel_type = ? AND message_id = ?", tenantID, channelType, messageID)
 }
 
 func (s *channelMessageOutboxService) EnqueueWxWorkKFMessage(conversation *models.Conversation, message *models.Message) error {
@@ -191,7 +204,7 @@ func (s *channelMessageOutboxService) enqueueExternalMessage(channelType string,
 	default:
 		return nil
 	}
-	if existing := s.GetByMessageID(channelType, message.ID); existing != nil {
+	if existing := s.GetByMessageIDInTenant(channelType, message.ID, conversation.TenantID); existing != nil {
 		return nil
 	}
 
@@ -227,6 +240,17 @@ func (s *channelMessageOutboxService) enqueueExternalMessage(channelType string,
 }
 
 func (s *channelMessageOutboxService) ListPending(channelType string, limit int) []models.ChannelMessageOutbox {
+	return s.listPending(channelType, 0, limit)
+}
+
+func (s *channelMessageOutboxService) ListPendingInTenant(channelType string, tenantID int64, limit int) []models.ChannelMessageOutbox {
+	if tenantID <= 0 {
+		return nil
+	}
+	return s.listPending(channelType, tenantID, limit)
+}
+
+func (s *channelMessageOutboxService) listPending(channelType string, tenantID int64, limit int) []models.ChannelMessageOutbox {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -238,5 +262,8 @@ func (s *channelMessageOutboxService) ListPending(channelType string, limit int)
 		}).
 		Asc("id").
 		Limit(limit)
+	if tenantID > 0 {
+		cnd.Eq("tenant_id", tenantID)
+	}
 	return s.Find(cnd)
 }

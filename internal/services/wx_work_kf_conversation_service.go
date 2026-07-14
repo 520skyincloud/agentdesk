@@ -23,6 +23,10 @@ func (s *wxWorkKFConversationService) Get(id int64) *models.WxWorkKFConversation
 	return repositories.WxWorkKFConversationRepository.Get(sqls.DB(), id)
 }
 
+func (s *wxWorkKFConversationService) GetInTenant(id, tenantID int64) *models.WxWorkKFConversation {
+	return repositories.WxWorkKFConversationRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *wxWorkKFConversationService) Take(where ...interface{}) *models.WxWorkKFConversation {
 	return repositories.WxWorkKFConversationRepository.Take(sqls.DB(), where...)
 }
@@ -73,6 +77,13 @@ func (s *wxWorkKFConversationService) Updates(id int64, columns map[string]inter
 
 func (s *wxWorkKFConversationService) UpdatesInTenant(id, tenantID int64, columns map[string]any) error {
 	return repositories.WxWorkKFConversationRepository.UpdatesInTenant(sqls.DB(), id, tenantID, columns)
+}
+
+func (s *wxWorkKFConversationService) GetByConversationIDInTenant(conversationID, tenantID int64) *models.WxWorkKFConversation {
+	if conversationID <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return repositories.WxWorkKFConversationRepository.FindOne(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).Eq("conversation_id", conversationID))
 }
 
 func (s *wxWorkKFConversationService) UpdateColumn(id int64, name string, value interface{}) error {

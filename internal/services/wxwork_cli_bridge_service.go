@@ -47,14 +47,11 @@ func (s *wxWorkCLIBridgeService) ConsumeInbound(req request.WxWorkCLIInboundRequ
 	}
 
 	wxMsgID := s.buildInboundMsgID(channel.ChannelID, chatType, chatID, req)
-	if WxWorkKFMessageRefService.Take("wx_msg_id = ?", wxMsgID) != nil {
-		ref := WxWorkKFMessageRefService.GetByWxMsgID(wxMsgID)
-		if ref != nil {
-			return &response.WxWorkCLIInboundResponse{
-				ConversationID: ref.ConversationID,
-				MessageID:      ref.MessageID,
-			}, nil
-		}
+	if ref := WxWorkKFMessageRefService.GetByWxMsgIDInTenant(wxMsgID, channel.TenantID); ref != nil {
+		return &response.WxWorkCLIInboundResponse{
+			ConversationID: ref.ConversationID,
+			MessageID:      ref.MessageID,
+		}, nil
 	}
 
 	conversation, err := s.ensureConversation(channel, chatType, chatID, req)
@@ -93,15 +90,15 @@ func (s *wxWorkCLIBridgeService) PollOutbox(req request.WxWorkCLIOutboxPollReque
 		limit = 20
 	}
 
-	items := ChannelMessageOutboxService.ListPending(enums.ChannelTypeWxWorkCLI, limit)
+	items := ChannelMessageOutboxService.ListPendingInTenant(enums.ChannelTypeWxWorkCLI, channel.TenantID, limit)
 	results := make([]response.WxWorkCLIOutboxItemResponse, 0, len(items))
 	now := time.Now()
 	for i := range items {
 		if items[i].NextRetryAt != nil && items[i].NextRetryAt.After(now) {
 			continue
 		}
-		message := MessageService.Get(items[i].MessageID)
-		if message == nil {
+		message := repositories.MessageRepository.GetInTenant(sqls.DB(), items[i].MessageID, channel.TenantID)
+		if message == nil || message.ConversationID != items[i].ConversationID {
 			_ = s.MarkOutboxFailed(request.WxWorkCLIOutboxFailedRequest{
 				ChannelID:   channel.ChannelID,
 				BridgeToken: req.BridgeToken,
@@ -110,11 +107,11 @@ func (s *wxWorkCLIBridgeService) PollOutbox(req request.WxWorkCLIOutboxPollReque
 			})
 			continue
 		}
-		mapping := WxWorkKFConversationService.Take("conversation_id = ?", items[i].ConversationID)
+		mapping := WxWorkKFConversationService.GetByConversationIDInTenant(items[i].ConversationID, channel.TenantID)
 		if mapping == nil || mapping.ChannelID != channel.ID {
 			continue
 		}
-		conversation := ConversationService.Get(items[i].ConversationID)
+		conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), items[i].ConversationID, channel.TenantID)
 		if conversation == nil || conversation.ChannelID != channel.ID {
 			continue
 		}
@@ -122,11 +119,12 @@ func (s *wxWorkCLIBridgeService) PollOutbox(req request.WxWorkCLIOutboxPollReque
 		if chatID == "" {
 			continue
 		}
-		if err := ChannelMessageOutboxService.Updates(items[i].ID, map[string]any{
-			"send_status": string(enums.ChannelMessageOutboxStatusSending),
-			"updated_at":  now,
-		}); err != nil {
+		claimed, err := ChannelMessageOutboxService.TryMarkSending(items[i].ID, channel.TenantID)
+		if err != nil {
 			return nil, err
+		}
+		if !claimed {
+			continue
 		}
 		results = append(results, response.WxWorkCLIOutboxItemResponse{
 			OutboxID:       items[i].ID,
@@ -146,26 +144,26 @@ func (s *wxWorkCLIBridgeService) MarkOutboxSent(req request.WxWorkCLIOutboxSentR
 	if err != nil {
 		return err
 	}
-	outbox := ChannelMessageOutboxService.Get(req.OutboxID)
+	outbox := ChannelMessageOutboxService.GetInTenant(req.OutboxID, channel.TenantID)
 	if outbox == nil || outbox.ChannelType != enums.ChannelTypeWxWorkCLI {
 		return errorsx.InvalidParam("投递任务不存在")
 	}
-	conversation := ConversationService.Get(outbox.ConversationID)
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), outbox.ConversationID, channel.TenantID)
 	if conversation == nil || conversation.ChannelID != channel.ID {
 		return errorsx.InvalidParam("投递任务不属于当前渠道")
 	}
-	mapping := WxWorkKFConversationService.Take("conversation_id = ?", outbox.ConversationID)
-	if mapping == nil {
+	mapping := WxWorkKFConversationService.GetByConversationIDInTenant(outbox.ConversationID, channel.TenantID)
+	if mapping == nil || mapping.ChannelID != channel.ID {
 		return errorsx.InvalidParam("企业微信CLI会话映射不存在")
 	}
-	message := MessageService.Get(outbox.MessageID)
-	if message == nil {
+	message := repositories.MessageRepository.GetInTenant(sqls.DB(), outbox.MessageID, channel.TenantID)
+	if message == nil || message.ConversationID != conversation.ID {
 		return errorsx.InvalidParam("平台消息不存在")
 	}
 
 	now := time.Now()
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.ChannelMessageOutboxRepository.Updates(ctx.Tx, outbox.ID, map[string]any{
+		if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, channel.TenantID, map[string]any{
 			"send_status": string(enums.ChannelMessageOutboxStatusSent),
 			"sent_at":     now,
 			"last_error":  "",
@@ -178,10 +176,11 @@ func (s *wxWorkCLIBridgeService) MarkOutboxSent(req request.WxWorkCLIOutboxSentR
 			wxMsgID = fmt.Sprintf("wxwork_cli_out:%d", outbox.ID)
 		}
 		wxMsgID = s.normalizeWxMsgID("wxcli_out", wxMsgID)
-		if existing := repositories.WxWorkKFMessageRefRepository.Take(ctx.Tx, "wx_msg_id = ?", wxMsgID); existing != nil {
+		if existing := repositories.WxWorkKFMessageRefRepository.FindOne(ctx.Tx, sqls.NewCnd().Eq("tenant_id", channel.TenantID).Eq("wx_msg_id", wxMsgID)); existing != nil {
 			return nil
 		}
 		return repositories.WxWorkKFMessageRefRepository.Create(ctx.Tx, &models.WxWorkKFMessageRef{
+			TenantID:       channel.TenantID,
 			ConversationID: conversation.ID,
 			MessageID:      message.ID,
 			WxMsgID:        wxMsgID,
@@ -209,18 +208,18 @@ func (s *wxWorkCLIBridgeService) MarkOutboxFailed(req request.WxWorkCLIOutboxFai
 	if err != nil {
 		return err
 	}
-	outbox := ChannelMessageOutboxService.Get(req.OutboxID)
+	outbox := ChannelMessageOutboxService.GetInTenant(req.OutboxID, channel.TenantID)
 	if outbox == nil || outbox.ChannelType != enums.ChannelTypeWxWorkCLI {
 		return errorsx.InvalidParam("投递任务不存在")
 	}
-	conversation := ConversationService.Get(outbox.ConversationID)
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), outbox.ConversationID, channel.TenantID)
 	if conversation == nil || conversation.ChannelID != channel.ID {
 		return errorsx.InvalidParam("投递任务不属于当前渠道")
 	}
 	now := time.Now()
 	retryCount := outbox.RetryCount + 1
 	nextRetryAt := now.Add(time.Minute)
-	return ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
+	return ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, channel.TenantID, map[string]any{
 		"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
 		"retry_count":   retryCount,
 		"next_retry_at": nextRetryAt,
@@ -238,6 +237,9 @@ func (s *wxWorkCLIBridgeService) requireChannel(channelID, bridgeToken string) (
 	if channel == nil || channel.Status != enums.StatusOk || channel.ChannelType != enums.ChannelTypeWxWorkCLI {
 		return nil, nil, errorsx.InvalidParam("企业微信CLI渠道不存在或未启用")
 	}
+	if channel.TenantID <= 0 {
+		return nil, nil, errorsx.InvalidParam("企业微信CLI渠道缺少接入公司归属")
+	}
 	cfg, err := ChannelService.ParseWxWorkCLIChannelConfig(channel.ConfigJSON)
 	if err != nil {
 		return nil, nil, errorsx.InvalidParam("企业微信CLI渠道配置不合法")
@@ -249,8 +251,8 @@ func (s *wxWorkCLIBridgeService) requireChannel(channelID, bridgeToken string) (
 }
 
 func (s *wxWorkCLIBridgeService) ensureConversation(channel *models.Channel, chatType int, chatID string, req request.WxWorkCLIInboundRequest) (*models.Conversation, error) {
-	if mapping := WxWorkKFConversationService.Take("channel_id = ? AND external_user_id = ? AND status = ?", channel.ID, chatID, enums.StatusOk); mapping != nil {
-		if conversation := ConversationService.Get(mapping.ConversationID); conversation != nil && conversation.Status != enums.IMConversationStatusClosed {
+	if mapping := WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", channel.TenantID).Eq("channel_id", channel.ID).Eq("external_user_id", chatID).Eq("status", enums.StatusOk)); mapping != nil {
+		if conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), mapping.ConversationID, channel.TenantID); conversation != nil && conversation.Status != enums.IMConversationStatusClosed {
 			return conversation, nil
 		}
 	}
@@ -259,18 +261,25 @@ func (s *wxWorkCLIBridgeService) ensureConversation(channel *models.Channel, cha
 	if err != nil {
 		return nil, err
 	}
-	if err := s.upsertConversationMapping(conversation.ID, channel.ID, chatType, chatID, req); err != nil {
+	if err := s.upsertConversationMapping(conversation.ID, channel, chatType, chatID, req); err != nil {
 		return nil, err
 	}
 	return conversation, nil
 }
 
-func (s *wxWorkCLIBridgeService) upsertConversationMapping(conversationID, channelID int64, chatType int, chatID string, req request.WxWorkCLIInboundRequest) error {
+func (s *wxWorkCLIBridgeService) upsertConversationMapping(conversationID int64, channel *models.Channel, chatType int, chatID string, req request.WxWorkCLIInboundRequest) error {
+	if channel == nil || channel.TenantID <= 0 {
+		return errorsx.InvalidParam("企业微信CLI渠道缺少接入公司归属")
+	}
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), conversationID, channel.TenantID)
+	if conversation == nil || conversation.ChannelID != channel.ID {
+		return errorsx.InvalidParam("企业微信CLI会话不属于当前渠道")
+	}
 	now := time.Now()
 	openKfID := s.mappingOpenKfID(chatType)
 	rawProfile := s.rawPayload(req)
-	if existing := WxWorkKFConversationService.Take("channel_id = ? AND external_user_id = ?", channelID, chatID); existing != nil {
-		return WxWorkKFConversationService.Updates(existing.ID, map[string]any{
+	if existing := WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", channel.TenantID).Eq("channel_id", channel.ID).Eq("external_user_id", chatID)); existing != nil {
+		return WxWorkKFConversationService.UpdatesInTenant(existing.ID, channel.TenantID, map[string]any{
 			"conversation_id":  conversationID,
 			"open_kf_id":       openKfID,
 			"external_user_id": strings.TrimSpace(chatID),
@@ -282,7 +291,7 @@ func (s *wxWorkCLIBridgeService) upsertConversationMapping(conversationID, chann
 	}
 	return WxWorkKFConversationService.Create(&models.WxWorkKFConversation{
 		ConversationID: conversationID,
-		ChannelID:      channelID,
+		ChannelID:      channel.ID,
 		OpenKfID:       openKfID,
 		ExternalUserID: strings.TrimSpace(chatID),
 		SessionStatus:  string(enums.WxWorkKFSessionStatusActive),
@@ -300,7 +309,10 @@ func (s *wxWorkCLIBridgeService) upsertConversationMapping(conversationID, chann
 }
 
 func (s *wxWorkCLIBridgeService) createMessageRef(conversationID, messageID int64, channel *models.Channel, chatType int, chatID, wxMsgID, rawPayload string, direction enums.WxWorkKFMessageDirection, sendStatus enums.WxWorkKFMessageSendStatus) error {
-	if WxWorkKFMessageRefService.Take("wx_msg_id = ?", wxMsgID) != nil {
+	if channel == nil || channel.TenantID <= 0 {
+		return errorsx.InvalidParam("企业微信CLI消息映射缺少接入公司归属")
+	}
+	if WxWorkKFMessageRefService.GetByWxMsgIDInTenant(wxMsgID, channel.TenantID) != nil {
 		return nil
 	}
 	now := time.Now()

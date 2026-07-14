@@ -75,7 +75,7 @@ func (s *wxWorkKFOutboundService) doDispatchPendingOutbox(limit int) int {
 
 	successCount := 0
 	for i := range items {
-		if err := s.processOutbox(items[i].ID); err != nil {
+		if err := s.processOutbox(items[i].ID, items[i].TenantID); err != nil {
 			slog.Warn("process wxwork kf outbox failed",
 				"outbox_id", items[i].ID,
 				"conversation_id", items[i].ConversationID,
@@ -89,8 +89,11 @@ func (s *wxWorkKFOutboundService) doDispatchPendingOutbox(limit int) int {
 	return successCount
 }
 
-func (s *wxWorkKFOutboundService) processOutbox(outboxID int64) error {
-	outbox := ChannelMessageOutboxService.Get(outboxID)
+func (s *wxWorkKFOutboundService) processOutbox(outboxID, tenantID int64) error {
+	if outboxID <= 0 || tenantID <= 0 {
+		return fmt.Errorf("企业微信客服投递任务缺少接入公司归属")
+	}
+	outbox := ChannelMessageOutboxService.GetInTenant(outboxID, tenantID)
 	if outbox == nil {
 		return nil
 	}
@@ -112,32 +115,31 @@ func (s *wxWorkKFOutboundService) processOutbox(outboxID int64) error {
 		"retry_count", outbox.RetryCount,
 	)
 
-	now := time.Now()
-	if err := ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
-		"send_status":      string(enums.ChannelMessageOutboxStatusSending),
-		"updated_at":       now,
-		"update_user_id":   outbox.UpdateUserID,
-		"update_user_name": outbox.UpdateUserName,
-	}); err != nil {
+	marked, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID, outbox.TenantID)
+	if err != nil {
 		return err
 	}
+	if !marked {
+		return nil
+	}
+	outbox.SendStatus = string(enums.ChannelMessageOutboxStatusSending)
 
-	message := MessageService.Get(outbox.MessageID)
-	if message == nil {
+	message := repositories.MessageRepository.GetInTenant(sqls.DB(), outbox.MessageID, outbox.TenantID)
+	if message == nil || message.ConversationID != outbox.ConversationID {
 		return s.markOutboxFailed(outbox, "平台消息不存在")
 	}
-	conversation := ConversationService.Get(outbox.ConversationID)
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), outbox.ConversationID, outbox.TenantID)
 	if conversation == nil {
 		return s.markOutboxFailed(outbox, "平台会话不存在")
 	}
-	mapping := WxWorkKFConversationService.Take("conversation_id = ?", conversation.ID)
+	mapping := WxWorkKFConversationService.GetByConversationIDInTenant(conversation.ID, outbox.TenantID)
 	if mapping == nil {
 		return s.markOutboxFailed(outbox, "企业微信会话映射不存在")
 	}
 	if mapping.ChannelID <= 0 {
 		return s.markOutboxFailed(outbox, "企业微信会话映射缺少渠道ID")
 	}
-	channel := ChannelService.Get(mapping.ChannelID)
+	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), mapping.ChannelID, outbox.TenantID)
 	if channel == nil || channel.Status != enums.StatusOk || channel.ChannelType != enums.ChannelTypeWxWorkKF {
 		return s.markOutboxFailed(outbox, "企业微信接入渠道不存在、未启用或类型不匹配")
 	}
@@ -173,8 +175,8 @@ func (s *wxWorkKFOutboundService) processOutbox(outboxID int64) error {
 	}
 
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		now = time.Now()
-		if err := repositories.ChannelMessageOutboxRepository.Updates(ctx.Tx, outbox.ID, map[string]any{
+		now := time.Now()
+		if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, outbox.TenantID, map[string]any{
 			"send_status":      string(enums.ChannelMessageOutboxStatusSent),
 			"sent_at":          now,
 			"last_error":       "",
@@ -184,7 +186,7 @@ func (s *wxWorkKFOutboundService) processOutbox(outboxID int64) error {
 		}); err != nil {
 			return err
 		}
-		if existing := repositories.WxWorkKFMessageRefRepository.Take(ctx.Tx, "message_id = ? AND direction = ?", message.ID, string(enums.WxWorkKFMessageDirectionOut)); existing == nil {
+		if existing := repositories.WxWorkKFMessageRefRepository.FindOne(ctx.Tx, sqls.NewCnd().Eq("tenant_id", outbox.TenantID).Eq("message_id", message.ID).Eq("direction", string(enums.WxWorkKFMessageDirectionOut))); existing == nil {
 			for i := range wxMsgIDs {
 				rawPayload := strings.TrimSpace(outbox.Payload)
 				if len(chunks) > i {
@@ -199,6 +201,7 @@ func (s *wxWorkKFOutboundService) processOutbox(outboxID int64) error {
 					}
 				}
 				if err := repositories.WxWorkKFMessageRefRepository.Create(ctx.Tx, &models.WxWorkKFMessageRef{
+					TenantID:       outbox.TenantID,
 					ConversationID: conversation.ID,
 					MessageID:      message.ID,
 					WxMsgID:        strings.TrimSpace(wxMsgIDs[i]),
@@ -371,7 +374,7 @@ func (s *wxWorkKFOutboundService) markOutboxFailed(outbox *models.ChannelMessage
 	if retryCount >= wxWorkKFOutboxMaxRetry {
 		nextRetryAt = nil
 	}
-	return ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
+	return ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, outbox.TenantID, map[string]any{
 		"send_status":      status,
 		"retry_count":      retryCount,
 		"next_retry_at":    nextRetryAt,

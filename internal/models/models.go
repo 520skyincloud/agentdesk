@@ -673,6 +673,7 @@ type Message struct {
 //	按 open_kfid 记录企业微信客服消息同步游标，用于 SyncMsg 增量拉取。
 type WxWorkKFSyncState struct {
 	ID         int64        `gorm:"primaryKey;autoIncrement"`                         // ID 为同步状态主键。
+	TenantID   int64        `gorm:"type:bigint;not null;default:0;index"`             // TenantID 继承 openKfID 对应渠道所属接入公司。
 	OpenKfID   string       `gorm:"type:varchar(64);not null;default:'';uniqueIndex"` // OpenKfID 为企业微信客服账号ID。
 	NextCursor string       `gorm:"type:varchar(128);not null;default:''"`            // NextCursor 为下一次增量同步使用的游标。
 	LastSyncAt *time.Time   `gorm:"type:datetime;index"`                              // LastSyncAt 为最近一次成功同步时间。
