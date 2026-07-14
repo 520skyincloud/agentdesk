@@ -4,8 +4,10 @@ import (
 	"strings"
 
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/pkg/httpx/params"
 	"agent-desk/internal/services"
@@ -14,7 +16,7 @@ import (
 )
 
 func StorageSettingGet(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAssetView); err != nil {
+	if _, err := requirePlatformStoragePermission(ctx, constants.PermissionStorageSettingView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -22,7 +24,7 @@ func StorageSettingGet(ctx *gin.Context) {
 }
 
 func StorageSettingPostUpdate(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAssetCreate)
+	operator, err := requirePlatformStoragePermission(ctx, constants.PermissionStorageSettingUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -58,6 +60,17 @@ func StorageSettingPostUpdate(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, buildStorageSettingResponse(setting))
+}
+
+func requirePlatformStoragePermission(ctx *gin.Context, permission constants.Permission) (*dto.AuthPrincipal, error) {
+	operator, err := services.AuthService.RequirePermission(ctx, permission)
+	if err != nil {
+		return nil, err
+	}
+	if !operator.IsPlatformAccount {
+		return nil, errorsx.Forbidden("只有平台账号可以管理存储设置")
+	}
+	return operator, nil
 }
 
 func buildStorageSettingResponse(setting services.StorageSetting) response.StorageSettingResponse {

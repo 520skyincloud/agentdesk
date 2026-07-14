@@ -1593,3 +1593,48 @@ git diff --check
 - 可回滚签名构建和前端 assetId-only 编辑，但不能只恢复 `StaticFS` 或无签名 Asset handler，否则会重新暴露跨租户文件。回滚应恢复为受鉴权代理下载或另一套完整授权方案。
 - 开始时已 fetch，`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`。AI 分支同文件包括 config、server、conversation builder、message utils、Asset handler/service、企微协议和测试。合并按方法保留 AI 分支 Email/FastGPT/NewAPI/usage/回复逻辑及本批签名/tenant 边界，禁止整文件覆盖。
 - 建议合并顺序：Asset Tenant/migration 46 -> 本批 assetaccess/下载路由/响应收口 -> AI 分支欢迎图、媒体理解、FastGPT 与 usage 重放。AI 新增资源只保存 AssetID 并复用签名入口。
+
+## 37. 多租户阶段 6H：平台存储与企微设备池权限收口（2026-07-14）
+
+### 目标与完成内容
+
+- 审计系统设置导航后确认：平台全局存储配置原复用 `asset.view/create`，平台全局企微设备池原复用 `channel.view/update`，导致公司主管可直接调用接口读取或修改平台级配置。
+- 新增 `storageSetting.view/update` 与 `wxworkDevicePool.view/update/sync` 五项 platform scope 权限；权限会显示在权限管理页，不在角色或 handler 中隐藏授权。
+- 超级管理员和平台管理员获得新权限；tenant_admin 及以下不获得。租户 Asset/Channel 权限继续保留原业务能力，不再进入平台设置 handler。
+- 存储 handler 和设备池 handler 在权限校验后再次要求 `IsPlatformAccount`。设备池列表/设置、配置修改和同步分别使用 view/update/sync，避免动作权限混用。
+- 导航复用原页面，只将“存储设置”和“企微设备池”可见条件切换为新权限；没有新增平行页面。
+- migration 49 幂等调用现有权限/内置角色同步函数。没有 model、AutoMigrate、request/response DTO、enum、Gin 路由或 WebSocket payload 变化。
+
+### 主要文件
+
+```text
+internal/pkg/constants/auth.go
+internal/migration/000049_sync_platform_system_permissions.go
+internal/migration/000049_sync_platform_system_permissions_test.go
+internal/handlers/dashboard/storage_setting_handler.go
+internal/handlers/dashboard/storage_setting_handler_test.go
+internal/handlers/dashboard/wxwork_protocol_device_pool_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+web/lib/navigation.tsx
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+### 验证与风险
+
+```text
+go test ./internal/migration ./internal/handlers/dashboard ./internal/services -count=1
+go test -race ./internal/migration ./internal/handlers/dashboard -run 'Test(SyncPlatformSystemPermissions|StorageSetting|WxWorkDevicePool)' -count=1
+go test ./... -run '^$' -count=1
+go vet ./...
+cd web && pnpm typecheck
+cd web && pnpm exec eslint lib/navigation.tsx
+git diff --check
+```
+
+- 专项覆盖 migration 幂等、权限 scope/APIPath、平台管理员与公司主管默认关系、租户账号即使持有平台权限仍拒绝、平台账号仅持有旧 Asset/Channel 权限仍拒绝、平台正常读写存储和设备池设置。
+- 全量 Go 测试、专项 race、`go vet ./...`、前端 typecheck、导航 ESLint 和 `git diff --check` 均通过；本地真实库已执行 migration 49，五项权限均为 platform scope，只有 `super_admin/admin` 获得默认绑定，两个原页面均返回 200。
+- 本批只改变后台授权，不改变任何企微员工号协议字段或远程请求；无需查询协议文档字段。设备池仍是平台全局库存，租户通过自己的 WxWorkProtocolInstance 使用已分配实例。
+- 回复意图配置属于 AI 分支真实回复引擎，当前不改。合并后需按代码确认平台模板/租户配置语义，再决定权限 scope，禁止依据旧回复意图文档恢复旧逻辑。
+- migration 49 创建前已核对 `origin/main@e67e207` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 48。共享文件为 `auth.go`、migration 目录和 `navigation.tsx`；合并时逐权限/导航项保留双方变化。
+- 可回滚 handler 和导航，但不能只回滚平台账号校验而保留旧 Asset/Channel 权限，否则重新开放越权。若必须回滚，应同时禁用页面和路由直到替代授权上线；已执行 migration 49 的权限记录可保留，不影响租户业务。

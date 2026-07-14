@@ -1292,3 +1292,27 @@ git diff --check
 - 本批没有 migration，当前本分支最高仍为 48；开始时 `origin/main` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33。
 - AI 分支同文件包括 `config.go`、`config.example.yaml`、`server.go`、`conversation_builder.go`、`utils/message.go`、Asset handler/service、企微协议 service 及测试。合并必须保留 AI 分支 Email/FastGPT/NewAPI/usage/回复增强，同时保留本批签名配置、TenantID 取数、响应去 StorageKey、静态目录关闭和企微签名 URL；禁止整文件选边。
 - 建议先合并 Asset Tenant/migration 46，再合并本批无 migration 的签名原语和下载路由，最后重放 AI 分支媒体理解、欢迎图、FastGPT 与 usage 测试。AI 分支新增欢迎图或资源表必须保存 AssetID 并在输出时复用本签名入口，不能重新保存 provider 直链。
+
+## 29. 当前实施检查点：平台系统设置权限边界（2026-07-14）
+
+本检查点修正“系统设置页面复用租户业务权限”的历史问题。存储设置和企微设备池继续是平台全局资源，不复制为每租户一套，也不改变 Asset、Channel 或企微员工号实例的租户业务职责。
+
+### 权限与角色契约
+
+- 权限管理新增五个可见平台权限：`storageSetting.view`、`storageSetting.update`、`wxworkDevicePool.view`、`wxworkDevicePool.update`、`wxworkDevicePool.sync`。全部标记为 `platform` scope，并记录真实 Dashboard API 路径。
+- migration 49 复用既有 `ensurePermissions/ensureRoles/ensureRolePermissions` 幂等同步权限与内置角色。超级管理员通过完整权限集获得权限，平台管理员默认获得五项权限；公司主管、客服组长、客服和门店员工不获得。
+- `asset.view/create/delete` 继续只负责当前租户 Asset；`channel.view/update` 继续只负责当前租户接入渠道和企微员工号。二者不再隐含平台存储密钥、全局目录或设备池管理权。
+- 角色服务继续禁止把 platform scope 权限分配给 tenant scope 角色。handler 额外校验 `IsPlatformAccount`，即使异常 token 或历史脏数据把平台权限带给租户账号，也不能访问平台设置。
+
+### 页面与接口职责
+
+- 现有“存储设置”和“企微设备池”页面保留在系统设置导航，不新增重复入口。导航分别按 `storageSetting.view` 与 `wxworkDevicePool.view` 显示。
+- 存储查看/修改接口分别要求对应独立权限；设备池列表和设置查看要求 view，修改远程后台配置要求 update，执行同步要求 sync。
+- 本批不改变 SystemConfig 数据模型、存储设置 DTO、设备池 DTO、路由或响应；不修改员工号协议字段、登录/消息/`conversation_id` 语义，也不触碰设备池远程 API 请求格式。
+- “回复意图配置”仍属于 AI/计费分支正在调整的回复引擎能力。本分支不凭旧文档改其 scope；合并 AI 分支后必须再确定它是平台模板还是租户配置，再赋予对应权限边界。
+
+### 迁移、验证与合并边界
+
+- migration 49 创建前核对 `origin/main` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 48，无版本冲突。该 migration 只做权限和内置角色关系 DML，不涉及 model/AutoMigrate。
+- 测试覆盖 migration 重复执行、五项权限均为 platform scope、平台管理员默认绑定、公司主管未绑定，以及租户账号带平台权限、平台账号仅带旧 Asset/Channel 权限均被 handler 拒绝。
+- `auth.go`、migration 和 `navigation.tsx` 是并行共享文件。AI 分支合并时保留其新增 AI/计费权限和导航，同时保留本批五项平台权限、migration 49 与 handler 平台账号校验，禁止整文件覆盖。

@@ -172,6 +172,15 @@ var (
 	PermissionAssetCreate = Permission{Name: "上传文件资源", Code: "asset.create", Type: "api", GroupName: "asset", Method: "POST", APIPath: "/api/dashboard/asset/create", SortNo: 1220}
 	PermissionAssetDelete = Permission{Name: "删除文件资源", Code: "asset.delete", Type: "api", GroupName: "asset", Method: "POST", APIPath: "/api/dashboard/asset/delete", SortNo: 1230}
 
+	// 平台存储设置相关权限
+	PermissionStorageSettingView   = Permission{Name: "查看平台存储设置", Code: "storageSetting.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "storageSetting", Method: "GET", APIPath: "/api/dashboard/storage-setting/get", SortNo: 1240}
+	PermissionStorageSettingUpdate = Permission{Name: "修改平台存储设置", Code: "storageSetting.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "storageSetting", Method: "POST", APIPath: "/api/dashboard/storage-setting/update", SortNo: 1250}
+
+	// 平台企微设备池相关权限
+	PermissionWxWorkDevicePoolView   = Permission{Name: "查看平台企微设备池", Code: "wxworkDevicePool.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "ANY", APIPath: "/api/dashboard/wxwork-protocol-device-pool/list", SortNo: 1260}
+	PermissionWxWorkDevicePoolUpdate = Permission{Name: "管理平台企微设备池", Code: "wxworkDevicePool.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/update_settings", SortNo: 1270}
+	PermissionWxWorkDevicePoolSync   = Permission{Name: "同步平台企微设备池", Code: "wxworkDevicePool.sync", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/sync", SortNo: 1280}
+
 	// AI Agent 相关权限
 	PermissionAIAgentView   = Permission{Name: "查看 AI Agent", Code: "aiAgent.view", Type: "api", GroupName: "aiAgent", Method: "ANY", APIPath: "/api/dashboard/ai-agent/list", SortNo: 1310}
 	PermissionAIAgentCreate = Permission{Name: "创建 AI Agent", Code: "aiAgent.create", Type: "api", GroupName: "aiAgent", Method: "POST", APIPath: "/api/dashboard/ai-agent/create", SortNo: 1320}
@@ -290,6 +299,11 @@ var Permissions = []Permission{
 	PermissionAssetView,
 	PermissionAssetCreate,
 	PermissionAssetDelete,
+	PermissionStorageSettingView,
+	PermissionStorageSettingUpdate,
+	PermissionWxWorkDevicePoolView,
+	PermissionWxWorkDevicePoolUpdate,
+	PermissionWxWorkDevicePoolSync,
 	PermissionAIAgentView,
 	PermissionAIAgentCreate,
 	PermissionAIAgentUpdate,
@@ -366,6 +380,8 @@ var RolePermissions = map[string][]Permission{
 		PermissionAgentTeamView, PermissionAgentTeamCreate, PermissionAgentTeamUpdate, PermissionAgentTeamDelete,
 		PermissionAgentTeamScheduleView, PermissionAgentTeamScheduleCreate, PermissionAgentTeamScheduleUpdate, PermissionAgentTeamScheduleDelete, PermissionAgentTeamScheduleBatchGenerate,
 		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
+		PermissionStorageSettingView, PermissionStorageSettingUpdate,
+		PermissionWxWorkDevicePoolView, PermissionWxWorkDevicePoolUpdate, PermissionWxWorkDevicePoolSync,
 		PermissionAIAgentView, PermissionAIAgentCreate, PermissionAIAgentUpdate, PermissionAIAgentDelete,
 		PermissionAIConfigView, PermissionAIConfigCreate, PermissionAIConfigUpdate, PermissionAIConfigDelete,
 		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,

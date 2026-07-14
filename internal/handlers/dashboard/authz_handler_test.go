@@ -98,6 +98,92 @@ func TestTenantListRejectsTenantAccountEvenWithPlatformPermission(t *testing.T) 
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
+func TestStorageSettingRejectsTenantAccountEvenWithPlatformPermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+		UserID:            151,
+		Username:          "misconfigured_tenant_storage_admin",
+		Permissions:       []string{constants.PermissionStorageSettingView.Code},
+		IsPlatformAccount: false,
+		TenantID:          9,
+		ActiveTenantID:    9,
+	})
+
+	StorageSettingGet(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
+func TestStorageSettingDoesNotReuseAssetPermissions(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		permissions []string
+		handler     func(*gin.Context)
+	}{
+		{name: "view", permissions: []string{constants.PermissionAssetView.Code}, handler: StorageSettingGet},
+		{name: "update", body: `{}`, permissions: []string{constants.PermissionAssetCreate.Code}, handler: StorageSettingPostUpdate},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, tt.body, &dto.AuthPrincipal{
+				UserID:            152,
+				Username:          "platform_asset_operator",
+				Permissions:       tt.permissions,
+				IsPlatformAccount: true,
+			})
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
+func TestWxWorkDevicePoolRejectsTenantAndChannelPermissions(t *testing.T) {
+	tests := []struct {
+		name      string
+		principal *dto.AuthPrincipal
+		handler   func(*gin.Context)
+	}{
+		{
+			name: "tenant account with platform permission",
+			principal: &dto.AuthPrincipal{
+				UserID: 161, Username: "tenant_device_pool_viewer", TenantID: 9, ActiveTenantID: 9,
+				Permissions: []string{constants.PermissionWxWorkDevicePoolView.Code},
+			},
+			handler: WxWorkProtocolDevicePoolGetSettings,
+		},
+		{
+			name: "platform account with channel view",
+			principal: &dto.AuthPrincipal{
+				UserID: 162, Username: "platform_channel_viewer", IsPlatformAccount: true,
+				Permissions: []string{constants.PermissionChannelView.Code},
+			},
+			handler: WxWorkProtocolDevicePoolGetSettings,
+		},
+		{
+			name: "platform account with channel update",
+			principal: &dto.AuthPrincipal{
+				UserID: 163, Username: "platform_channel_editor", IsPlatformAccount: true,
+				Permissions: []string{constants.PermissionChannelUpdate.Code},
+			},
+			handler: WxWorkProtocolDevicePoolPostSync,
+		},
+		{
+			name: "platform device pool editor without sync permission",
+			principal: &dto.AuthPrincipal{
+				UserID: 164, Username: "platform_device_pool_editor", IsPlatformAccount: true,
+				Permissions: []string{constants.PermissionWxWorkDevicePoolUpdate.Code},
+			},
+			handler: WxWorkProtocolDevicePoolPostSync,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, "", tt.principal)
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
 func TestTenantRegistrationListRequiresViewPermission(t *testing.T) {
 	ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
 		UserID:         16,

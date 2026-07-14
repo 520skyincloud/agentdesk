@@ -245,13 +245,13 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         titleKey: "nav.storageSettings",
         url: "/dashboard/storage-settings",
         icon: <HardDriveIcon />,
-        requiredPermission: "asset.view",
+        requiredPermission: "storageSetting.view",
       },
       {
         titleKey: "nav.wxworkDevicePool",
         url: "/dashboard/wxwork-device-pool",
         icon: <ServerCogIcon />,
-        requiredPermission: "channel.view",
+        requiredPermission: "wxworkDevicePool.view",
       },
       {
         titleKey: "nav.replyIntentConfigs",
