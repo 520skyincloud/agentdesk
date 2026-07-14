@@ -26,6 +26,17 @@ func (r *ticketRepository) Get(db *gorm.DB, id int64) *models.Ticket {
 	return ret
 }
 
+func (r *ticketRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.Ticket {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.Ticket{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *ticketRepository) Take(db *gorm.DB, where ...interface{}) *models.Ticket {
 	ret := &models.Ticket{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -90,6 +101,10 @@ func (r *ticketRepository) Update(db *gorm.DB, t *models.Ticket) (err error) {
 func (r *ticketRepository) Updates(db *gorm.DB, id int64, columns map[string]interface{}) (err error) {
 	err = db.Model(&models.Ticket{}).Where("id = ?", id).Updates(columns).Error
 	return
+}
+
+func (r *ticketRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.Ticket{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
 }
 
 func (r *ticketRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {

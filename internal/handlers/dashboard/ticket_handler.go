@@ -12,7 +12,6 @@ import (
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/gin-gonic/gin"
-	"github.com/mlogclub/simple/sqls"
 	"github.com/mlogclub/simple/web"
 )
 
@@ -36,7 +35,7 @@ func TicketAnyList(ctx *gin.Context) {
 		cnd.Where("ticket_no LIKE ? OR title LIKE ? OR description LIKE ?", keyword, keyword, keyword)
 	}
 	if tagID, _ := params.GetInt64(ctx, "tagId"); tagID > 0 {
-		cnd.Where("id IN (SELECT ticket_id FROM t_ticket_tag WHERE tag_id = ?)", tagID)
+		cnd.Where("id IN (SELECT ticket_id FROM t_ticket_tag WHERE tenant_id = ? AND tag_id = ?)", services.AgentTeamScopeService.ActiveTenantID(operator), tagID)
 	}
 	if mine, _ := params.Get(ctx, "mine"); mine == "1" || strings.EqualFold(mine, "true") {
 		cnd.Eq("current_assignee_id", operator.UserID)
@@ -48,7 +47,7 @@ func TicketAnyList(ctx *gin.Context) {
 		staleHours, _ := params.GetInt(ctx, "staleHours")
 		services.TicketService.ApplyStaleFilter(cnd, staleHours)
 	}
-	aggregate, err := services.TicketService.FindPageAggregateByCnd(cnd, operator.UserID)
+	aggregate, err := services.TicketService.FindPageAggregateByCnd(cnd, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -70,7 +69,12 @@ func TicketAnySummary(ctx *gin.Context) {
 		return
 	}
 	staleHours, _ := params.GetInt(ctx, "staleHours")
-	httpx.WriteJSON(ctx, builders.BuildTicketSummary(services.TicketService.GetSummary(operator, staleHours)))
+	summary, err := services.TicketService.GetSummaryForOperator(operator, staleHours)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildTicketSummary(summary))
 }
 
 func TicketAnyView_list(ctx *gin.Context) {
@@ -79,7 +83,12 @@ func TicketAnyView_list(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, builders.BuildTicketViewList(services.TicketViewService.ListByUser(operator.UserID)))
+	list, err := services.TicketViewService.ListForOperator(operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildTicketViewList(list))
 }
 
 func TicketPostSave_view(ctx *gin.Context) {
@@ -124,11 +133,12 @@ func TicketGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionTicketView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTicketView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	detail, err := services.TicketService.GetDetail(id)
+	detail, err := services.TicketService.GetDetail(id, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -247,7 +257,8 @@ func TicketPostChange_status(ctx *gin.Context) {
 }
 
 func TicketAnyProgressList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionTicketView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTicketView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -256,11 +267,11 @@ func TicketAnyProgressList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("工单不存在"))
 		return
 	}
-	if services.TicketService.Get(ticketID) == nil {
-		httpx.WriteJSON(ctx, web.JsonErrorMsg("工单不存在"))
+	progresses, err := services.TicketService.ListProgress(ticketID, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
 		return
 	}
-	progresses := services.TicketProgressService.Find(sqls.NewCnd().Eq("ticket_id", ticketID).Asc("id"))
 	httpx.WriteJSON(ctx, builders.BuildTicketProgressList(progresses))
 }
 

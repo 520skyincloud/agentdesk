@@ -42,7 +42,8 @@ func ConversationAnyList(ctx *gin.Context) {
 
 	// 标签搜索
 	if tagID, _ := params.GetInt64(ctx, "tagId"); tagID > 0 {
-		tagIDs := services.TagService.GetSelfAndDescendantIDs(tagID)
+		tenantID := services.AgentTeamScopeService.ActiveTenantID(operator)
+		tagIDs := services.TagService.GetSelfAndDescendantIDsInTenant(tagID, tenantID)
 		if len(tagIDs) == 0 {
 			httpx.WriteJSON(ctx, &web.PageResult{
 				Results: []response.ConversationResponse{},
@@ -50,7 +51,7 @@ func ConversationAnyList(ctx *gin.Context) {
 			})
 			return
 		}
-		cnd.Where("id IN (SELECT conversation_id FROM conversation_tag_rels WHERE tag_id IN (?))", tagIDs)
+		cnd.Where("id IN (SELECT conversation_id FROM t_conversation_tag WHERE tenant_id = ? AND tag_id IN (?))", tenantID, tagIDs)
 	}
 	if agentTeamID, _ := params.GetInt64(ctx, "agentTeamId"); agentTeamID > 0 {
 		userIDs := services.AgentProfileService.GetUserIDsByTeamIDInTenant(agentTeamID, services.AgentTeamScopeService.ActiveTenantID(operator))
@@ -429,7 +430,7 @@ func ConversationPostRemove_tag(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该会话"))
 		return
 	}
-	if err := services.ConversationTagService.RemoveTag(req); err != nil {
+	if err := services.ConversationTagService.RemoveTag(req, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

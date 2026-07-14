@@ -100,3 +100,8 @@ func (r *conversationTagRepository) UpdateColumn(db *gorm.DB, id int64, name str
 func (r *conversationTagRepository) Delete(db *gorm.DB, id int64) {
 	db.Delete(&models.ConversationTag{}, "id = ?", id)
 }
+
+func (r *conversationTagRepository) DeleteRelationInTenant(db *gorm.DB, conversationID, tagID, tenantID int64) error {
+	return db.Where("tenant_id = ? AND conversation_id = ? AND tag_id = ?", tenantID, conversationID, tagID).
+		Delete(&models.ConversationTag{}).Error
+}

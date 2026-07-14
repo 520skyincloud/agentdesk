@@ -14,25 +14,35 @@ import (
 )
 
 func TagAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	list, paging := services.TagService.FindPageByCnd(params.NewPagedSqlCnd(ctx,
+	list, paging, err := services.TagService.FindPageForOperator(params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "parentId"},
 		params.QueryFilter{ParamName: "name", Op: params.Like},
-	).Asc("sort_no").Desc("id"))
+	).Asc("sort_no").Desc("id"), operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	results := builders.BuildTagResponses(list)
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
 
 func TagGetList_all(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	list := services.TagService.FindAll()
+	list, err := services.TagService.FindAllForOperator(operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	results := builders.BuildTagTreeResponses(list)
 	httpx.WriteJSON(ctx, results)
 }
@@ -42,14 +52,15 @@ func TagGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 
-	item := services.TagService.Get(id)
-	if item == nil {
-		httpx.WriteJSON(ctx, web.JsonErrorMsg("标签不存在"))
+	item, err := services.TagService.GetForOperator(id, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
 		return
 	}
 	result := builders.BuildTagResponse(item)
@@ -97,7 +108,8 @@ func TagPostUpdate(ctx *gin.Context) {
 }
 
 func TagPostDelete(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagDelete); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagDelete)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -107,7 +119,7 @@ func TagPostDelete(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.TagService.DeleteTag(req.ID); err != nil {
+	if err := services.TagService.DeleteTag(req.ID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -115,12 +127,17 @@ func TagPostDelete(ctx *gin.Context) {
 }
 
 func TagPostUpdate_sort(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	var ids []int64
 	if err := params.ReadJSON(ctx, &ids); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.TagService.UpdateSort(ids); err != nil {
+	if err := services.TagService.UpdateSort(ids, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

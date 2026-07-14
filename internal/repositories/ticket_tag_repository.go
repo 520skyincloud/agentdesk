@@ -72,3 +72,7 @@ func (r *ticketTagRepository) Create(db *gorm.DB, t *models.TicketTag) error {
 func (r *ticketTagRepository) DeleteByTicketID(db *gorm.DB, ticketID int64) error {
 	return db.Where("ticket_id = ?", ticketID).Delete(&models.TicketTag{}).Error
 }
+
+func (r *ticketTagRepository) DeleteByTicketIDInTenant(db *gorm.DB, ticketID, tenantID int64) error {
+	return db.Where("tenant_id = ? AND ticket_id = ?", tenantID, ticketID).Delete(&models.TicketTag{}).Error
+}

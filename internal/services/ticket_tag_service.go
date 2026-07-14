@@ -36,8 +36,8 @@ func (s *ticketTagService) Create(db *gorm.DB, item *models.TicketTag) error {
 	return repositories.TicketTagRepository.Create(db, item)
 }
 
-func (s *ticketTagService) DeleteByTicketID(db *gorm.DB, ticketID int64) error {
-	return repositories.TicketTagRepository.DeleteByTicketID(db, ticketID)
+func (s *ticketTagService) DeleteByTicketIDInTenant(db *gorm.DB, ticketID, tenantID int64) error {
+	return repositories.TicketTagRepository.DeleteByTicketIDInTenant(db, ticketID, tenantID)
 }
 
 func (s *ticketTagService) NormalizeTagIDs(tagIDs []int64) []int64 {
@@ -59,12 +59,15 @@ func (s *ticketTagService) NormalizeTagIDs(tagIDs []int64) []int64 {
 	return result
 }
 
-func (s *ticketTagService) ValidateTagIDs(tagIDs []int64) ([]int64, error) {
+func (s *ticketTagService) ValidateTagIDs(tagIDs []int64, tenantID int64) ([]int64, error) {
 	normalized := s.NormalizeTagIDs(tagIDs)
 	if len(normalized) == 0 {
 		return nil, nil
 	}
-	tags := repositories.TagRepository.Find(sqls.DB(), sqls.NewCnd().In("id", normalized))
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理工单的接入公司")
+	}
+	tags := repositories.TagRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("id", normalized))
 	if len(tags) != len(normalized) {
 		return nil, errorsx.InvalidParam("存在无效工单标签")
 	}
@@ -76,8 +79,8 @@ func (s *ticketTagService) ValidateTagIDs(tagIDs []int64) ([]int64, error) {
 	return normalized, nil
 }
 
-func (s *ticketTagService) ReplaceTicketTags(db *gorm.DB, ticketID int64, tagIDs []int64, operator *dto.AuthPrincipal) error {
-	if err := s.DeleteByTicketID(db, ticketID); err != nil {
+func (s *ticketTagService) ReplaceTicketTags(db *gorm.DB, ticketID, tenantID int64, tagIDs []int64, operator *dto.AuthPrincipal) error {
+	if err := s.DeleteByTicketIDInTenant(db, ticketID, tenantID); err != nil {
 		return err
 	}
 	if len(tagIDs) == 0 {
@@ -86,6 +89,7 @@ func (s *ticketTagService) ReplaceTicketTags(db *gorm.DB, ticketID int64, tagIDs
 	now := time.Now()
 	for _, tagID := range tagIDs {
 		if err := s.Create(db, &models.TicketTag{
+			TenantID: tenantID,
 			TicketID: ticketID,
 			TagID:    tagID,
 			AuditFields: models.AuditFields{

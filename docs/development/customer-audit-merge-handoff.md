@@ -1235,3 +1235,61 @@ git diff --check
 - 本步骤开始及提交前均需 fetch。当前 `origin/codex/ai-billing@f2d2da4`；同文件包括 Conversation builder/handler、RouteState repository/service、Message service、人工派单/超时和企微协议 service。
 - 建议先合并阶段 4G 的 Tenant 字段/migration 45，再合并本步骤运行时隔离，之后由 AI 分支 rebase 并逐方法保留双方语义；禁止整文件覆盖。
 - 本步骤不需要新的 migration，也不需要 rebase 当前 `origin/codex/customer-audit`。回滚可撤销本步骤 handler/service/repository 调用和新增测试，但不能删除已执行的 TenantID 字段、migration 45 记录或恢复跨租户全局 Dashboard 访问。
+
+## 31. 多租户阶段 5G/6B：工单、标签与个人视图运行时隔离（2026-07-14）
+
+### 目标与完成结果
+
+- 复用现有 Ticket、Tag、ConversationTag 页面和 API，不把工单与会话派单合并，也不新增平行标签模型。
+- Ticket 列表、汇总、详情、进展、个人视图、创建、更新、关联客户、指派和状态流转全部按 ActiveTenantID 限定。
+- Customer、Conversation、Assignee、Tag 引用在写入前验证同租户；TicketProgress、TicketTag、TicketView 和 ConversationTag 创建继承 tenant，最终更新/删除继续携带 tenant 条件。
+- AI Graph 与企微默认资源以系统身份从已有 Conversation 创建 Ticket 时，从父会话继承 TenantID，保持 `codex/ai-billing` 和企微自动服务工单兼容。
+- Tag 树的父子关系、同级名称、排序、状态、删除和关联检查均限定当前租户。会话标签筛选从错误的历史表名 `conversation_tag_rels` 修正为当前 `t_conversation_tag`，工单/会话标签子查询均增加 tenant 条件。
+- `TagPostUpdate_sort` 补上已有 `tag.update` 权限校验。没有新增权限常量，权限仍由权限管理和角色绑定统一分配。
+
+### 主要文件与契约
+
+```text
+internal/handlers/dashboard/ticket_handler.go
+internal/handlers/dashboard/tag_handler.go
+internal/handlers/dashboard/conversation_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+internal/repositories/ticket_repository.go
+internal/repositories/ticket_progress_repository.go
+internal/repositories/ticket_view_repository.go
+internal/repositories/ticket_tag_repository.go
+internal/repositories/tag_repository.go
+internal/repositories/conversation_tag_repository.go
+internal/services/tenant_operation_guard.go
+internal/services/ticket_service.go
+internal/services/ticket_view_service.go
+internal/services/ticket_tag_service.go
+internal/services/tag_service.go
+internal/services/conversation_tag_service.go
+internal/services/ticket_service_test.go
+internal/services/ticket_tag_tenant_test.go
+```
+
+- 没有 model、migration、request/response DTO、enum、Gin 路由、权限常量、WebSocket payload 或前端文件变化。
+- 现有全局 Ticket/Tag CRUD helper 为内部事件和历史兼容保留；Dashboard handler 不再调用这些 helper。写操作统一通过 service 校验父对象与 tenant，再调用 tenant-qualified repository 方法。
+- TicketNoSequence 保持平台全局日序列；本步骤没有 migration 版本，也不改变 TicketNo 唯一索引。
+
+### 验证、风险与后续
+
+```text
+go test ./internal/services ./internal/handlers/dashboard -count=1
+go test -race ./internal/services -run 'Test(TicketAndTagRuntimeTenantIsolation|SystemTicketCreationInheritsConversationTenant)' -count=1
+go test ./... -run '^$' -count=1
+go vet ./...
+git diff --check
+```
+
+- 上述检查全部通过。双租户测试覆盖列表/聚合补充字段、详情、进展、创建引用、更新、关联、指派、状态、个人视图、标签树、会话标签和系统建单继承。
+- 站内通知从接收账号继承 tenant，但 TicketCreated 的企微 `defaultToUsers` 仍是平台全局配置；后续通知域审计需要明确平台告警与租户主管提醒边界。
+- WebSocket topic/订阅、权限与导航遗漏、公司切换后的前端缓存刷新仍在最终阶段审计；公开邀请注册继续关闭。
+
+### 并行分支、合并顺序与回滚
+
+- 开始时已 fetch，`origin/codex/ai-billing@f2d2da4`。AI 分支没有修改 Ticket/Tag 文件；双方同文件仅包含 `internal/handlers/dashboard/conversation_handler.go`，且本步骤只修改标签筛选和移除标签调用。
+- 建议在阶段 4G 字段/migration 45 和阶段 5F/6A 会话运行时隔离之后合并本步骤。合并 Conversation handler 时逐块保留 AI 分支回复入口和本步骤 `t_conversation_tag + tenant_id` 条件。
+- 本步骤不需要 rebase 当前远端分支。可回滚本步骤 handler/service/repository 调用、权限补漏和新增测试；不得删除已执行的 TenantID 字段、migration 45 数据或恢复跨租户工单/标签查询。

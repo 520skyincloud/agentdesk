@@ -29,6 +29,10 @@ func (s *tagService) Get(id int64) *models.Tag {
 	return repositories.TagRepository.Get(sqls.DB(), id)
 }
 
+func (s *tagService) GetInTenant(id, tenantID int64) *models.Tag {
+	return repositories.TagRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *tagService) Take(where ...interface{}) *models.Tag {
 	return repositories.TagRepository.Take(sqls.DB(), where...)
 }
@@ -47,6 +51,15 @@ func (s *tagService) FindPageByParams(params *params.QueryParams) (list []models
 
 func (s *tagService) FindPageByCnd(cnd *sqls.Cnd) (list []models.Tag, paging *sqls.Paging) {
 	return repositories.TagRepository.FindPageByCnd(sqls.DB(), cnd)
+}
+
+func (s *tagService) FindPageForOperator(cnd *sqls.Cnd, operator *dto.AuthPrincipal) (list []models.Tag, paging *sqls.Paging, err error) {
+	tenantID, err := requireActiveTenantID(operator, "标签")
+	if err != nil {
+		return nil, nil, err
+	}
+	list, paging = repositories.TagRepository.FindPageByCnd(sqls.DB(), cnd.Eq("tenant_id", tenantID))
+	return list, paging, nil
 }
 
 func (s *tagService) Count(cnd *sqls.Cnd) int64 {
@@ -86,8 +99,9 @@ func (s *tagService) FindByNameAndParentID(name string, parentID int64) *models.
 }
 
 func (s *tagService) CreateTag(req request.CreateTagRequest, operator *dto.AuthPrincipal) (*models.Tag, error) {
-	if operator == nil {
-		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "标签")
+	if err != nil {
+		return nil, err
 	}
 
 	name := strings.TrimSpace(req.Name)
@@ -96,18 +110,19 @@ func (s *tagService) CreateTag(req request.CreateTagRequest, operator *dto.AuthP
 	}
 
 	if req.ParentID > 0 {
-		parent := s.Get(req.ParentID)
+		parent := s.GetInTenant(req.ParentID, tenantID)
 		if parent == nil {
 			return nil, errorsx.InvalidParam("父标签不存在")
 		}
 	}
 
-	existing := s.FindByNameAndParentID(name, req.ParentID)
+	existing := s.FindOne(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("name", name).Eq("parent_id", req.ParentID))
 	if existing != nil {
 		return nil, errorsx.InvalidParam("同级下已存在相同名称的标签")
 	}
 
 	item := &models.Tag{
+		TenantID:    tenantID,
 		ParentID:    req.ParentID,
 		Name:        name,
 		Remark:      strings.TrimSpace(req.Remark),
@@ -115,7 +130,7 @@ func (s *tagService) CreateTag(req request.CreateTagRequest, operator *dto.AuthP
 		AuditFields: utils.BuildAuditFields(operator),
 	}
 
-	item.SortNo = s.NextSortNo(req.ParentID)
+	item.SortNo = s.NextSortNoInTenant(req.ParentID, tenantID)
 	if err := s.Create(item); err != nil {
 		return nil, err
 	}
@@ -130,12 +145,20 @@ func (s *tagService) NextSortNo(parentID int64) int {
 	return 1
 }
 
+func (s *tagService) NextSortNoInTenant(parentID, tenantID int64) int {
+	if temp := s.FindOne(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("parent_id", parentID).Desc("sort_no").Desc("id")); temp != nil {
+		return temp.SortNo + 1
+	}
+	return 1
+}
+
 func (s *tagService) UpdateTag(req request.UpdateTagRequest, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "标签")
+	if err != nil {
+		return err
 	}
 
-	item := s.Get(req.ID)
+	item := s.GetInTenant(req.ID, tenantID)
 	if item == nil {
 		return errorsx.InvalidParam("标签不存在")
 	}
@@ -149,18 +172,18 @@ func (s *tagService) UpdateTag(req request.UpdateTagRequest, operator *dto.AuthP
 		if req.ParentID == req.ID {
 			return errorsx.InvalidParam("不能将标签设为自己的子标签")
 		}
-		parent := s.Get(req.ParentID)
+		parent := s.GetInTenant(req.ParentID, tenantID)
 		if parent == nil {
 			return errorsx.InvalidParam("父标签不存在")
 		}
 	}
 
-	existing := s.FindByNameAndParentID(name, req.ParentID)
+	existing := s.FindOne(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("name", name).Eq("parent_id", req.ParentID))
 	if existing != nil && existing.ID != req.ID {
 		return errorsx.InvalidParam("同级下已存在相同名称的标签")
 	}
 
-	return s.Updates(req.ID, map[string]any{
+	return repositories.TagRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
 		"parent_id":        req.ParentID,
 		"name":             name,
 		"remark":           strings.TrimSpace(req.Remark),
@@ -170,10 +193,22 @@ func (s *tagService) UpdateTag(req request.UpdateTagRequest, operator *dto.AuthP
 	})
 }
 
-func (s *tagService) UpdateSort(ids []int64) error {
+func (s *tagService) UpdateSort(ids []int64, operator *dto.AuthPrincipal) error {
+	tenantID, err := requireActiveTenantID(operator, "标签")
+	if err != nil {
+		return err
+	}
+	ids = normalizeTagIDs(ids)
+	if len(ids) == 0 {
+		return nil
+	}
+	items := repositories.TagRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("id", ids))
+	if len(items) != len(ids) {
+		return errorsx.InvalidParam("存在不属于当前接入公司的标签")
+	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		for i, id := range ids {
-			if err := repositories.TagRepository.UpdateColumn(ctx.Tx, id, "sort_no", i+1); err != nil {
+			if err := repositories.TagRepository.UpdateColumnInTenant(ctx.Tx, id, tenantID, "sort_no", i+1); err != nil {
 				return err
 			}
 		}
@@ -181,36 +216,72 @@ func (s *tagService) UpdateSort(ids []int64) error {
 	})
 }
 
-func (s *tagService) DeleteTag(id int64) error {
-	item := s.Get(id)
+func (s *tagService) DeleteTag(id int64, operator *dto.AuthPrincipal) error {
+	tenantID, err := requireActiveTenantID(operator, "标签")
+	if err != nil {
+		return err
+	}
+	item := s.GetInTenant(id, tenantID)
 	if item == nil {
 		return errorsx.InvalidParam("标签不存在")
 	}
 
-	if s.HasChildren(id) {
+	if s.Count(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("parent_id", id)) > 0 {
 		return errorsx.InvalidParam("该标签下存在子标签，无法删除")
 	}
-	if ConversationTagService.Take("tag_id = ?", id) != nil {
+	if ConversationTagService.Take("tenant_id = ? AND tag_id = ?", tenantID, id) != nil {
 		return errorsx.InvalidParam("该标签已关联会话，无法删除")
 	}
-	if TicketTagService.Take("tag_id = ?", id) != nil {
+	if TicketTagService.Take("tenant_id = ? AND tag_id = ?", tenantID, id) != nil {
 		return errorsx.InvalidParam("该标签已关联工单，无法删除")
 	}
 
-	s.Delete(id)
-	return nil
+	return repositories.TagRepository.DeleteInTenant(sqls.DB(), id, tenantID)
 }
 
 func (s *tagService) FindAll() []models.Tag {
 	return s.Find(sqls.NewCnd().Asc("sort_no").Asc("id"))
 }
 
+func (s *tagService) FindAllInTenant(tenantID int64) []models.Tag {
+	if tenantID <= 0 {
+		return nil
+	}
+	return s.Find(sqls.NewCnd().Eq("tenant_id", tenantID).Asc("sort_no").Asc("id"))
+}
+
+func (s *tagService) FindAllForOperator(operator *dto.AuthPrincipal) ([]models.Tag, error) {
+	tenantID, err := requireActiveTenantID(operator, "标签")
+	if err != nil {
+		return nil, err
+	}
+	return s.FindAllInTenant(tenantID), nil
+}
+
+func (s *tagService) GetForOperator(id int64, operator *dto.AuthPrincipal) (*models.Tag, error) {
+	tenantID, err := requireActiveTenantID(operator, "标签")
+	if err != nil {
+		return nil, err
+	}
+	item := s.GetInTenant(id, tenantID)
+	if item == nil {
+		return nil, errorsx.InvalidParam("标签不存在")
+	}
+	return item, nil
+}
+
 func (s *tagService) GetSelfAndDescendantIDs(tagID int64) []int64 {
+	return collectTagSelfAndDescendantIDs(tagID, s.FindAll())
+}
+
+func (s *tagService) GetSelfAndDescendantIDsInTenant(tagID, tenantID int64) []int64 {
+	return collectTagSelfAndDescendantIDs(tagID, s.FindAllInTenant(tenantID))
+}
+
+func collectTagSelfAndDescendantIDs(tagID int64, allTags []models.Tag) []int64 {
 	if tagID <= 0 {
 		return nil
 	}
-
-	allTags := s.FindAll()
 	if len(allTags) == 0 {
 		return nil
 	}
@@ -245,12 +316,32 @@ func (s *tagService) GetSelfAndDescendantIDs(tagID int64) []int64 {
 	return result
 }
 
+func normalizeTagIDs(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	result := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	return result
+}
+
 func (s *tagService) UpdateStatus(id int64, status int, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "标签")
+	if err != nil {
+		return err
 	}
 
-	item := s.Get(id)
+	item := s.GetInTenant(id, tenantID)
 	if item == nil {
 		return errorsx.InvalidParam("标签不存在")
 	}
@@ -260,7 +351,7 @@ func (s *tagService) UpdateStatus(id int64, status int, operator *dto.AuthPrinci
 	}
 
 	now := time.Now()
-	return s.Updates(id, map[string]any{
+	return repositories.TagRepository.UpdatesInTenant(sqls.DB(), id, tenantID, map[string]any{
 		"status":           status,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,

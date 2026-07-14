@@ -24,6 +24,19 @@ func TestRoleUpdateSortRequiresUpdatePermission(t *testing.T) {
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
+func TestTagUpdateSortRequiresUpdatePermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, "[1]", &dto.AuthPrincipal{
+		UserID:         22,
+		TenantID:       101,
+		ActiveTenantID: 101,
+		Username:       "tag_viewer",
+		Permissions:    []string{constants.PermissionTagView.Code},
+	})
+
+	TagPostUpdate_sort(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
 func TestUserCreateWithRolesRequiresAssignRolePermission(t *testing.T) {
 	ctx, recorder := newAuthzHandlerTestContext(t, `{"username":"new_user","roleIds":[1]}`, &dto.AuthPrincipal{
 		UserID:      12,
@@ -192,6 +205,31 @@ func TestCustomerListHandlersRequireActiveTenant(t *testing.T) {
 				IsPlatformAccount: true,
 				Roles:             []string{constants.RoleCodeAdmin},
 				Permissions:       []string{constants.PermissionCustomerView.Code},
+			})
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
+func TestTicketAndTagListHandlersRequireActiveTenant(t *testing.T) {
+	tests := []struct {
+		name       string
+		permission string
+		handler    func(*gin.Context)
+	}{
+		{name: "ticket list", permission: constants.PermissionTicketView.Code, handler: TicketAnyList},
+		{name: "ticket views", permission: constants.PermissionTicketView.Code, handler: TicketAnyView_list},
+		{name: "tag list", permission: constants.PermissionTagView.Code, handler: TagAnyList},
+		{name: "tag tree", permission: constants.PermissionTagView.Code, handler: TagGetList_all},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+				UserID:            23,
+				Username:          "platform-ticket-tag-viewer",
+				IsPlatformAccount: true,
+				Permissions:       []string{tt.permission},
 			})
 			tt.handler(ctx)
 			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)

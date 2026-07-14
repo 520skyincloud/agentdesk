@@ -133,9 +133,13 @@ func (s *ticketService) FindPageByCnd(cnd *sqls.Cnd) (list []models.Ticket, pagi
 	return repositories.TicketRepository.FindPageByCnd(sqls.DB(), cnd)
 }
 
-func (s *ticketService) FindPageAggregateByCnd(cnd *sqls.Cnd, _ int64) (*TicketListAggregate, error) {
-	list, paging := repositories.TicketRepository.FindPageByCnd(sqls.DB(), cnd)
-	return s.buildTicketListAggregate(sqls.DB(), list, paging), nil
+func (s *ticketService) FindPageAggregateByCnd(cnd *sqls.Cnd, operator *dto.AuthPrincipal) (*TicketListAggregate, error) {
+	tenantID, err := requireActiveTenantID(operator, "工单")
+	if err != nil {
+		return nil, err
+	}
+	list, paging := repositories.TicketRepository.FindPageByCnd(sqls.DB(), cnd.Eq("tenant_id", tenantID))
+	return s.buildTicketListAggregate(sqls.DB(), list, paging, tenantID), nil
 }
 
 func (s *ticketService) ApplyStaleFilter(cnd *sqls.Cnd, staleHours int) *sqls.Cnd {
@@ -173,10 +177,18 @@ func (s *ticketService) Delete(id int64) {
 }
 
 func (s *ticketService) GetTags(ticketID int64) []models.Tag {
-	if ticketID <= 0 {
+	ticket := s.Get(ticketID)
+	if ticket == nil {
 		return nil
 	}
-	relations := TicketTagService.Find(sqls.NewCnd().Eq("ticket_id", ticketID).Asc("id"))
+	return s.GetTagsInTenant(ticketID, ticket.TenantID)
+}
+
+func (s *ticketService) GetTagsInTenant(ticketID, tenantID int64) []models.Tag {
+	if ticketID <= 0 || tenantID <= 0 {
+		return nil
+	}
+	relations := TicketTagService.Find(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("ticket_id", ticketID).Asc("id"))
 	if len(relations) == 0 {
 		return nil
 	}
@@ -184,7 +196,7 @@ func (s *ticketService) GetTags(ticketID int64) []models.Tag {
 	for i := range relations {
 		tagIDs = append(tagIDs, relations[i].TagID)
 	}
-	tags := repositories.TagRepository.Find(sqls.DB(), sqls.NewCnd().In("id", tagIDs))
+	tags := repositories.TagRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("id", tagIDs))
 	if len(tags) <= 1 {
 		return tags
 	}
@@ -205,6 +217,10 @@ func (s *ticketService) CreateTicket(req request.CreateTicketRequest, operator *
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
+	tenantID, err := s.resolveCreateTenantID(req.ConversationID, operator)
+	if err != nil {
+		return nil, err
+	}
 	title := strings.TrimSpace(req.Title)
 	description := strings.TrimSpace(req.Description)
 	if title == "" {
@@ -220,15 +236,16 @@ func (s *ticketService) CreateTicket(req request.CreateTicketRequest, operator *
 	if !enums.IsValidTicketSource(string(source)) {
 		return nil, errorsx.InvalidParam("工单来源不合法")
 	}
-	if err := s.validateTicketRefs(req.CustomerID, req.ConversationID, req.CurrentAssigneeID); err != nil {
+	if err := s.validateTicketRefs(req.CustomerID, req.ConversationID, req.CurrentAssigneeID, tenantID); err != nil {
 		return nil, err
 	}
-	tagIDs, err := TicketTagService.ValidateTagIDs(req.TagIDs)
+	tagIDs, err := TicketTagService.ValidateTagIDs(req.TagIDs, tenantID)
 	if err != nil {
 		return nil, err
 	}
 
 	ticket := &models.Ticket{
+		TenantID:          tenantID,
 		Title:             title,
 		Description:       description,
 		Category:          normalizeTicketCategory(req.Category),
@@ -253,10 +270,11 @@ func (s *ticketService) CreateTicket(req request.CreateTicketRequest, operator *
 		if err := repositories.TicketRepository.Create(ctx.Tx, ticket); err != nil {
 			return err
 		}
-		if err := TicketTagService.ReplaceTicketTags(ctx.Tx, ticket.ID, tagIDs, operator); err != nil {
+		if err := TicketTagService.ReplaceTicketTags(ctx.Tx, ticket.ID, tenantID, tagIDs, operator); err != nil {
 			return err
 		}
 		return repositories.TicketProgressRepository.Create(ctx.Tx, &models.TicketProgress{
+			TenantID:  tenantID,
 			TicketID:  ticket.ID,
 			Content:   "创建工单",
 			AuthorID:  operator.UserID,
@@ -270,16 +288,26 @@ func (s *ticketService) CreateTicket(req request.CreateTicketRequest, operator *
 		TicketID:   ticket.ID,
 		OperatorID: operator.UserID,
 	})
-	return s.Get(ticket.ID), nil
+	return repositories.TicketRepository.GetInTenant(sqls.DB(), ticket.ID, tenantID), nil
 }
 
 func (s *ticketService) CreateFromConversation(req request.CreateTicketFromConversationRequest, operator *dto.AuthPrincipal) (*models.Ticket, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
-	conversation := ConversationService.Get(req.ConversationID)
+	var conversation *models.Conversation
+	if tenantID := AgentTeamScopeService.ActiveTenantID(operator); tenantID > 0 {
+		conversation = repositories.ConversationRepository.GetInTenant(sqls.DB(), req.ConversationID, tenantID)
+	} else if operator.UserID == 0 {
+		conversation = repositories.ConversationRepository.Get(sqls.DB(), req.ConversationID)
+	} else {
+		return nil, errorsx.Forbidden("请先进入需要管理工单的接入公司")
+	}
 	if conversation == nil {
 		return nil, errorsx.InvalidParam("会话不存在")
+	}
+	if conversation.TenantID <= 0 {
+		return nil, errorsx.InvalidParam("会话缺少接入公司归属")
 	}
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
@@ -295,6 +323,8 @@ func (s *ticketService) CreateFromConversation(req request.CreateTicketFromConve
 	if description == "" {
 		description = title
 	}
+	scopedOperator := *operator
+	scopedOperator.ActiveTenantID = conversation.TenantID
 	return s.CreateTicket(request.CreateTicketRequest{
 		Title:             title,
 		Description:       description,
@@ -307,12 +337,13 @@ func (s *ticketService) CreateFromConversation(req request.CreateTicketFromConve
 		ConversationID:    conversation.ID,
 		TagIDs:            req.TagIDs,
 		CurrentAssigneeID: req.CurrentAssigneeID,
-	}, operator)
+	}, &scopedOperator)
 }
 
 func (s *ticketService) UpdateTicket(req request.UpdateTicketRequest, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "工单")
+	if err != nil {
+		return err
 	}
 	title := strings.TrimSpace(req.Title)
 	description := strings.TrimSpace(req.Description)
@@ -322,20 +353,20 @@ func (s *ticketService) UpdateTicket(req request.UpdateTicketRequest, operator *
 	if description == "" {
 		return errorsx.InvalidParam("工单描述不能为空")
 	}
-	ticket := s.Get(req.TicketID)
+	ticket := repositories.TicketRepository.GetInTenant(sqls.DB(), req.TicketID, tenantID)
 	if ticket == nil {
 		return errorsx.InvalidParam("工单不存在")
 	}
-	if err := s.validateAssignee(req.CurrentAssigneeID); err != nil {
+	if err := s.validateAssignee(req.CurrentAssigneeID, tenantID); err != nil {
 		return err
 	}
-	tagIDs, err := TicketTagService.ValidateTagIDs(req.TagIDs)
+	tagIDs, err := TicketTagService.ValidateTagIDs(req.TagIDs, tenantID)
 	if err != nil {
 		return err
 	}
 	now := time.Now()
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.TicketRepository.Updates(ctx.Tx, ticket.ID, map[string]any{
+		if err := repositories.TicketRepository.UpdatesInTenant(ctx.Tx, ticket.ID, tenantID, map[string]any{
 			"title":               title,
 			"description":         description,
 			"category":            normalizeTicketCategory(req.Category),
@@ -348,23 +379,24 @@ func (s *ticketService) UpdateTicket(req request.UpdateTicketRequest, operator *
 		}); err != nil {
 			return err
 		}
-		return TicketTagService.ReplaceTicketTags(ctx.Tx, ticket.ID, tagIDs, operator)
+		return TicketTagService.ReplaceTicketTags(ctx.Tx, ticket.ID, tenantID, tagIDs, operator)
 	})
 }
 
 func (s *ticketService) LinkCustomer(ticketID int64, customerID int64, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "工单")
+	if err != nil {
+		return err
 	}
-	ticket := s.Get(ticketID)
+	ticket := repositories.TicketRepository.GetInTenant(sqls.DB(), ticketID, tenantID)
 	if ticket == nil {
 		return errorsx.InvalidParam("工单不存在")
 	}
-	if customerID <= 0 || CustomerService.Get(customerID) == nil {
+	if customerID <= 0 || repositories.CustomerRepository.GetInTenant(sqls.DB(), customerID, tenantID) == nil {
 		return errorsx.InvalidParam("客户不存在")
 	}
 	if ticket.ConversationID > 0 {
-		conversation := ConversationService.Get(ticket.ConversationID)
+		conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), ticket.ConversationID, tenantID)
 		if conversation == nil {
 			return errorsx.InvalidParam("会话不存在")
 		}
@@ -373,7 +405,7 @@ func (s *ticketService) LinkCustomer(ticketID int64, customerID int64, operator 
 		}
 	}
 	now := time.Now()
-	return repositories.TicketRepository.Updates(sqls.DB(), ticket.ID, map[string]any{
+	return repositories.TicketRepository.UpdatesInTenant(sqls.DB(), ticket.ID, tenantID, map[string]any{
 		"customer_id":      customerID,
 		"updated_at":       now,
 		"update_user_id":   operator.UserID,
@@ -382,12 +414,13 @@ func (s *ticketService) LinkCustomer(ticketID int64, customerID int64, operator 
 }
 
 func (s *ticketService) AssignTicket(req request.AssignTicketRequest, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "工单")
+	if err != nil {
+		return err
 	}
 	var assignedEvent *events.TicketAssignedEvent
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		event, err := s.assignTicketTx(ctx.Tx, req, operator)
+		event, err := s.assignTicketTx(ctx.Tx, req, tenantID, operator)
 		if err != nil {
 			return err
 		}
@@ -403,14 +436,15 @@ func (s *ticketService) AssignTicket(req request.AssignTicketRequest, operator *
 }
 
 func (s *ticketService) ChangeStatus(req request.ChangeTicketStatusRequest, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "工单")
+	if err != nil {
+		return err
 	}
 	status := strings.TrimSpace(req.Status)
 	if !enums.IsValidTicketStatus(status) {
 		return errorsx.InvalidParam("工单状态不合法")
 	}
-	ticket := s.Get(req.TicketID)
+	ticket := repositories.TicketRepository.GetInTenant(sqls.DB(), req.TicketID, tenantID)
 	if ticket == nil {
 		return errorsx.InvalidParam("工单不存在")
 	}
@@ -419,7 +453,7 @@ func (s *ticketService) ChangeStatus(req request.ChangeTicketStatusRequest, oper
 	if enums.TicketStatus(status) == enums.TicketStatusDone {
 		handledAt = &now
 	}
-	return repositories.TicketRepository.Updates(sqls.DB(), ticket.ID, map[string]any{
+	return repositories.TicketRepository.UpdatesInTenant(sqls.DB(), ticket.ID, tenantID, map[string]any{
 		"status":           enums.TicketStatus(status),
 		"handled_at":       handledAt,
 		"updated_at":       now,
@@ -429,19 +463,21 @@ func (s *ticketService) ChangeStatus(req request.ChangeTicketStatusRequest, oper
 }
 
 func (s *ticketService) AddProgress(req request.CreateTicketProgressRequest, operator *dto.AuthPrincipal) (*models.TicketProgress, error) {
-	if operator == nil {
-		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "工单")
+	if err != nil {
+		return nil, err
 	}
 	content := strings.TrimSpace(req.Content)
 	if content == "" {
 		return nil, errorsx.InvalidParam("处理进展不能为空")
 	}
-	ticket := s.Get(req.TicketID)
+	ticket := repositories.TicketRepository.GetInTenant(sqls.DB(), req.TicketID, tenantID)
 	if ticket == nil {
 		return nil, errorsx.InvalidParam("工单不存在")
 	}
 	now := time.Now()
 	progress := &models.TicketProgress{
+		TenantID:  tenantID,
 		TicketID:  ticket.ID,
 		Content:   content,
 		AuthorID:  operator.UserID,
@@ -451,7 +487,7 @@ func (s *ticketService) AddProgress(req request.CreateTicketProgressRequest, ope
 		if err := repositories.TicketProgressRepository.Create(ctx.Tx, progress); err != nil {
 			return err
 		}
-		return repositories.TicketRepository.Updates(ctx.Tx, ticket.ID, map[string]any{
+		return repositories.TicketRepository.UpdatesInTenant(ctx.Tx, ticket.ID, tenantID, map[string]any{
 			"updated_at":       now,
 			"update_user_id":   operator.UserID,
 			"update_user_name": operator.Username,
@@ -462,19 +498,37 @@ func (s *ticketService) AddProgress(req request.CreateTicketProgressRequest, ope
 	return progress, nil
 }
 
-func (s *ticketService) GetDetail(id int64) (*TicketDetailAggregate, error) {
-	ticket := s.Get(id)
+func (s *ticketService) ListProgress(ticketID int64, operator *dto.AuthPrincipal) ([]models.TicketProgress, error) {
+	tenantID, err := requireActiveTenantID(operator, "工单")
+	if err != nil {
+		return nil, err
+	}
+	if repositories.TicketRepository.GetInTenant(sqls.DB(), ticketID, tenantID) == nil {
+		return nil, errorsx.InvalidParam("工单不存在")
+	}
+	return repositories.TicketProgressRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("ticket_id", ticketID).
+		Asc("id")), nil
+}
+
+func (s *ticketService) GetDetail(id int64, operator *dto.AuthPrincipal) (*TicketDetailAggregate, error) {
+	tenantID, err := requireActiveTenantID(operator, "工单")
+	if err != nil {
+		return nil, err
+	}
+	ticket := repositories.TicketRepository.GetInTenant(sqls.DB(), id, tenantID)
 	if ticket == nil {
 		return nil, errorsx.InvalidParam("工单不存在")
 	}
 	aggregate := &TicketDetailAggregate{
 		Ticket:     ticket,
-		Tags:       s.GetTags(id),
-		Progresses: repositories.TicketProgressRepository.Find(sqls.DB(), sqls.NewCnd().Eq("ticket_id", id).Asc("id")),
+		Tags:       s.GetTagsInTenant(id, tenantID),
+		Progresses: repositories.TicketProgressRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).Eq("ticket_id", id).Asc("id")),
 		Users:      make(map[int64]*models.User),
 	}
 	if ticket.CustomerID > 0 {
-		aggregate.Customer = CustomerService.Get(ticket.CustomerID)
+		aggregate.Customer = repositories.CustomerRepository.GetInTenant(sqls.DB(), ticket.CustomerID, tenantID)
 	}
 	userIDs := make([]int64, 0)
 	seen := make(map[int64]struct{})
@@ -493,7 +547,7 @@ func (s *ticketService) GetDetail(id int64) (*TicketDetailAggregate, error) {
 		addUserID(aggregate.Progresses[i].AuthorID)
 	}
 	if len(userIDs) > 0 {
-		users := repositories.UserRepository.FindByIds(sqls.DB(), userIDs)
+		users := repositories.UserRepository.FindByIdsInTenant(sqls.DB(), userIDs, tenantID)
 		for i := range users {
 			item := users[i]
 			aggregate.Users[item.ID] = &item
@@ -503,42 +557,52 @@ func (s *ticketService) GetDetail(id int64) (*TicketDetailAggregate, error) {
 }
 
 func (s *ticketService) GetSummary(operator *dto.AuthPrincipal, staleHours ...int) *TicketSummaryAggregate {
+	summary, err := s.GetSummaryForOperator(operator, staleHours...)
+	if err != nil {
+		return &TicketSummaryAggregate{}
+	}
+	return summary
+}
+
+func (s *ticketService) GetSummaryForOperator(operator *dto.AuthPrincipal, staleHours ...int) (*TicketSummaryAggregate, error) {
+	tenantID, err := requireActiveTenantID(operator, "工单")
+	if err != nil {
+		return nil, err
+	}
 	staleHour := 0
 	if len(staleHours) > 0 {
 		staleHour = staleHours[0]
 	}
 	summary := &TicketSummaryAggregate{
-		All:        s.Count(sqls.NewCnd()),
-		Pending:    s.Count(sqls.NewCnd().Eq("status", enums.TicketStatusPending)),
-		InProgress: s.Count(sqls.NewCnd().Eq("status", enums.TicketStatusInProgress)),
-		Done:       s.Count(sqls.NewCnd().Eq("status", enums.TicketStatusDone)),
-		Unassigned: s.Count(sqls.NewCnd().Eq("current_assignee_id", 0)),
-		Stale:      s.Count(s.ApplyStaleFilter(sqls.NewCnd(), staleHour)),
+		All:        s.Count(sqls.NewCnd().Eq("tenant_id", tenantID)),
+		Pending:    s.Count(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("status", enums.TicketStatusPending)),
+		InProgress: s.Count(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("status", enums.TicketStatusInProgress)),
+		Done:       s.Count(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("status", enums.TicketStatusDone)),
+		Unassigned: s.Count(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("current_assignee_id", 0)),
+		Stale:      s.Count(s.ApplyStaleFilter(sqls.NewCnd().Eq("tenant_id", tenantID), staleHour)),
 	}
-	if operator != nil {
-		summary.Mine = s.Count(sqls.NewCnd().Eq("current_assignee_id", operator.UserID))
-	}
-	return summary
+	summary.Mine = s.Count(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("current_assignee_id", operator.UserID))
+	return summary, nil
 }
 
-func (s *ticketService) assignTicketTx(tx *gorm.DB, req request.AssignTicketRequest, operator *dto.AuthPrincipal) (*events.TicketAssignedEvent, error) {
-	ticket := repositories.TicketRepository.Get(tx, req.TicketID)
+func (s *ticketService) assignTicketTx(tx *gorm.DB, req request.AssignTicketRequest, tenantID int64, operator *dto.AuthPrincipal) (*events.TicketAssignedEvent, error) {
+	ticket := repositories.TicketRepository.GetInTenant(tx, req.TicketID, tenantID)
 	if ticket == nil {
 		return nil, errorsx.InvalidParam("工单不存在")
 	}
-	if err := s.validateRequiredAssignee(req.ToUserID); err != nil {
+	if err := s.validateRequiredAssignee(req.ToUserID, tenantID); err != nil {
 		return nil, err
 	}
-	toUser := repositories.UserRepository.Get(tx, req.ToUserID)
+	toUser := repositories.UserRepository.GetInTenant(tx, req.ToUserID, tenantID)
 	if toUser == nil || toUser.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("负责人不存在")
 	}
 	var fromUser *models.User
 	if ticket.CurrentAssigneeID > 0 {
-		fromUser = repositories.UserRepository.Get(tx, ticket.CurrentAssigneeID)
+		fromUser = repositories.UserRepository.GetInTenant(tx, ticket.CurrentAssigneeID, tenantID)
 	}
 	now := time.Now()
-	if err := repositories.TicketRepository.Updates(tx, ticket.ID, map[string]any{
+	if err := repositories.TicketRepository.UpdatesInTenant(tx, ticket.ID, tenantID, map[string]any{
 		"current_assignee_id": req.ToUserID,
 		"updated_at":          now,
 		"update_user_id":      operator.UserID,
@@ -547,6 +611,7 @@ func (s *ticketService) assignTicketTx(tx *gorm.DB, req request.AssignTicketRequ
 		return nil, err
 	}
 	if err := repositories.TicketProgressRepository.Create(tx, &models.TicketProgress{
+		TenantID:  tenantID,
 		TicketID:  ticket.ID,
 		Content:   buildTicketAssignmentProgressContent(fromUser, toUser, req.Reason),
 		AuthorID:  operator.UserID,
@@ -563,7 +628,7 @@ func (s *ticketService) assignTicketTx(tx *gorm.DB, req request.AssignTicketRequ
 	}, nil
 }
 
-func (s *ticketService) buildTicketListAggregate(db *gorm.DB, list []models.Ticket, paging *sqls.Paging) *TicketListAggregate {
+func (s *ticketService) buildTicketListAggregate(db *gorm.DB, list []models.Ticket, paging *sqls.Paging, tenantID int64) *TicketListAggregate {
 	aggregate := &TicketListAggregate{
 		List:           list,
 		Paging:         paging,
@@ -599,16 +664,16 @@ func (s *ticketService) buildTicketListAggregate(db *gorm.DB, list []models.Tick
 			}
 		}
 	}
-	s.enrichTicketTags(db, aggregate, ticketIDs)
+	s.enrichTicketTags(db, aggregate, ticketIDs, tenantID)
 	if len(userIDs) > 0 {
-		users := repositories.UserRepository.FindByIds(db, userIDs)
+		users := repositories.UserRepository.FindByIdsInTenant(db, userIDs, tenantID)
 		for i := range users {
 			item := users[i]
 			aggregate.Users[item.ID] = &item
 		}
 	}
 	if len(customerIDs) > 0 {
-		customers := repositories.CustomerRepository.Find(db, sqls.NewCnd().In("id", customerIDs))
+		customers := repositories.CustomerRepository.Find(db, sqls.NewCnd().Eq("tenant_id", tenantID).In("id", customerIDs))
 		for i := range customers {
 			item := customers[i]
 			aggregate.Customers[item.ID] = &item
@@ -617,11 +682,11 @@ func (s *ticketService) buildTicketListAggregate(db *gorm.DB, list []models.Tick
 	return aggregate
 }
 
-func (s *ticketService) enrichTicketTags(db *gorm.DB, aggregate *TicketListAggregate, ticketIDs []int64) {
+func (s *ticketService) enrichTicketTags(db *gorm.DB, aggregate *TicketListAggregate, ticketIDs []int64, tenantID int64) {
 	if len(ticketIDs) == 0 {
 		return
 	}
-	ticketTags := repositories.TicketTagRepository.Find(db, sqls.NewCnd().In("ticket_id", ticketIDs).Asc("id"))
+	ticketTags := repositories.TicketTagRepository.Find(db, sqls.NewCnd().Eq("tenant_id", tenantID).In("ticket_id", ticketIDs).Asc("id"))
 	if len(ticketTags) == 0 {
 		return
 	}
@@ -636,7 +701,7 @@ func (s *ticketService) enrichTicketTags(db *gorm.DB, aggregate *TicketListAggre
 			tagIDs = append(tagIDs, relation.TagID)
 		}
 	}
-	tags := repositories.TagRepository.Find(db, sqls.NewCnd().In("id", tagIDs))
+	tags := repositories.TagRepository.Find(db, sqls.NewCnd().Eq("tenant_id", tenantID).In("id", tagIDs))
 	tagMap := make(map[int64]models.Tag, len(tags))
 	for i := range tags {
 		tagMap[tags[i].ID] = tags[i]
@@ -652,12 +717,12 @@ func (s *ticketService) enrichTicketTags(db *gorm.DB, aggregate *TicketListAggre
 	}
 }
 
-func (s *ticketService) validateTicketRefs(customerID, conversationID, assigneeID int64) error {
-	if customerID > 0 && CustomerService.Get(customerID) == nil {
+func (s *ticketService) validateTicketRefs(customerID, conversationID, assigneeID, tenantID int64) error {
+	if customerID > 0 && repositories.CustomerRepository.GetInTenant(sqls.DB(), customerID, tenantID) == nil {
 		return errorsx.InvalidParam("客户不存在")
 	}
 	if conversationID > 0 {
-		conversation := ConversationService.Get(conversationID)
+		conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), conversationID, tenantID)
 		if conversation == nil {
 			return errorsx.InvalidParam("会话不存在")
 		}
@@ -665,21 +730,21 @@ func (s *ticketService) validateTicketRefs(customerID, conversationID, assigneeI
 			return errorsx.InvalidParam("会话与客户不匹配")
 		}
 	}
-	return s.validateAssignee(assigneeID)
+	return s.validateAssignee(assigneeID, tenantID)
 }
 
-func (s *ticketService) validateAssignee(userID int64) error {
+func (s *ticketService) validateAssignee(userID, tenantID int64) error {
 	if userID <= 0 {
 		return nil
 	}
-	return s.validateRequiredAssignee(userID)
+	return s.validateRequiredAssignee(userID, tenantID)
 }
 
-func (s *ticketService) validateRequiredAssignee(userID int64) error {
+func (s *ticketService) validateRequiredAssignee(userID, tenantID int64) error {
 	if userID <= 0 {
 		return errorsx.InvalidParam("负责人不存在")
 	}
-	user := UserService.Get(userID)
+	user := repositories.UserRepository.GetInTenant(sqls.DB(), userID, tenantID)
 	if user == nil || user.Status != enums.StatusOk {
 		return errorsx.InvalidParam("负责人不存在")
 	}
@@ -690,27 +755,31 @@ func (s *ticketService) resolveConversationChannel(conversation *models.Conversa
 	if conversation == nil || conversation.ChannelID <= 0 {
 		return ""
 	}
-	if channel := ChannelService.Get(conversation.ChannelID); channel != nil {
+	if channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), conversation.ChannelID, conversation.TenantID); channel != nil {
 		return channel.ChannelType
 	}
 	return ""
 }
 
-func normalizeInt64IDs(ids []int64) []int64 {
-	if len(ids) == 0 {
-		return nil
+func (s *ticketService) resolveCreateTenantID(conversationID int64, operator *dto.AuthPrincipal) (int64, error) {
+	if operator == nil {
+		return 0, errorsx.Unauthorized("未登录或登录已过期")
 	}
-	seen := make(map[int64]struct{}, len(ids))
-	result := make([]int64, 0, len(ids))
-	for _, id := range ids {
-		if id <= 0 {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		result = append(result, id)
+	if tenantID := AgentTeamScopeService.ActiveTenantID(operator); tenantID > 0 {
+		return tenantID, nil
 	}
-	return result
+	if operator.UserID == 0 && conversationID > 0 {
+		conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
+		if conversation == nil {
+			return 0, errorsx.InvalidParam("会话不存在")
+		}
+		if conversation.TenantID <= 0 {
+			return 0, errorsx.InvalidParam("会话缺少接入公司归属")
+		}
+		return conversation.TenantID, nil
+	}
+	if operator.UserID <= 0 {
+		return 0, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	return 0, errorsx.Forbidden("请先进入需要管理工单的接入公司")
 }

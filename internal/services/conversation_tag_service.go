@@ -5,9 +5,9 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
-	"errors"
 
 	"agent-desk/internal/pkg/httpx/params"
 
@@ -71,25 +71,44 @@ func (s *conversationTagService) Delete(id int64) {
 	repositories.ConversationTagRepository.Delete(sqls.DB(), id)
 }
 
-func (s *conversationTagService) IsExists(conversationID int64, tagID int64) bool {
-	return repositories.ConversationTagRepository.FindOne(sqls.DB(), sqls.NewCnd().Where("conversation_id = ? AND tag_id = ?", conversationID, tagID)) != nil
+func (s *conversationTagService) IsExistsInTenant(conversationID, tagID, tenantID int64) bool {
+	return repositories.ConversationTagRepository.FindOne(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("conversation_id", conversationID).
+		Eq("tag_id", tagID)) != nil
 }
 
 func (s *conversationTagService) AddTag(req request.AddConversationTagRequest, operator *dto.AuthPrincipal) error {
-	tag := TagService.Get(req.TagID)
-	if tag == nil || tag.Status != enums.StatusOk {
-		return errors.New("标签不存在")
+	tenantID, err := requireActiveTenantID(operator, "会话标签")
+	if err != nil {
+		return err
 	}
-	if s.IsExists(req.ConversationID, req.TagID) {
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), req.ConversationID, tenantID)
+	if conversation == nil {
+		return errorsx.InvalidParam("会话不存在")
+	}
+	tag := repositories.TagRepository.GetInTenant(sqls.DB(), req.TagID, tenantID)
+	if tag == nil || tag.Status != enums.StatusOk {
+		return errorsx.InvalidParam("标签不存在")
+	}
+	if s.IsExistsInTenant(req.ConversationID, req.TagID, tenantID) {
 		return nil
 	}
 	return repositories.ConversationTagRepository.Create(sqls.DB(), &models.ConversationTag{
+		TenantID:       tenantID,
 		ConversationID: req.ConversationID,
 		TagID:          req.TagID,
 		AuditFields:    utils.BuildAuditFields(operator),
 	})
 }
 
-func (s *conversationTagService) RemoveTag(req request.RemoveConversationTagRequest) error {
-	return sqls.DB().Where("conversation_id = ? AND tag_id = ?", req.ConversationID, req.TagID).Delete(&models.ConversationTag{}).Error
+func (s *conversationTagService) RemoveTag(req request.RemoveConversationTagRequest, operator *dto.AuthPrincipal) error {
+	tenantID, err := requireActiveTenantID(operator, "会话标签")
+	if err != nil {
+		return err
+	}
+	if repositories.ConversationRepository.GetInTenant(sqls.DB(), req.ConversationID, tenantID) == nil {
+		return errorsx.InvalidParam("会话不存在")
+	}
+	return repositories.ConversationTagRepository.DeleteRelationInTenant(sqls.DB(), req.ConversationID, req.TagID, tenantID)
 }

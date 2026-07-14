@@ -26,6 +26,17 @@ func (r *tagRepository) Get(db *gorm.DB, id int64) *models.Tag {
 	return ret
 }
 
+func (r *tagRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.Tag {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.Tag{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *tagRepository) Take(db *gorm.DB, where ...interface{}) *models.Tag {
 	ret := &models.Tag{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -92,11 +103,23 @@ func (r *tagRepository) Updates(db *gorm.DB, id int64, columns map[string]interf
 	return
 }
 
+func (r *tagRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.Tag{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *tagRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.Tag{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return
 }
 
+func (r *tagRepository) UpdateColumnInTenant(db *gorm.DB, id, tenantID int64, name string, value any) error {
+	return db.Model(&models.Tag{}).Where("id = ? AND tenant_id = ?", id, tenantID).UpdateColumn(name, value).Error
+}
+
 func (r *tagRepository) Delete(db *gorm.DB, id int64) {
 	db.Delete(&models.Tag{}, "id = ?", id)
+}
+
+func (r *tagRepository) DeleteInTenant(db *gorm.DB, id, tenantID int64) error {
+	return db.Delete(&models.Tag{}, "id = ? AND tenant_id = ?", id, tenantID).Error
 }

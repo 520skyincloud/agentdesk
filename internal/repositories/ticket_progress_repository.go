@@ -26,6 +26,17 @@ func (r *ticketProgressRepository) Get(db *gorm.DB, id int64) *models.TicketProg
 	return ret
 }
 
+func (r *ticketProgressRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.TicketProgress {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.TicketProgress{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *ticketProgressRepository) Take(db *gorm.DB, where ...any) *models.TicketProgress {
 	ret := &models.TicketProgress{}
 	if err := db.Take(ret, where...).Error; err != nil {

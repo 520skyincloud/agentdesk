@@ -441,7 +441,7 @@ func TestTicketServiceFindPageAggregateFiltersStaleTickets(t *testing.T) {
 
 	aggregate, err := services.TicketService.FindPageAggregateByCnd(
 		services.TicketService.ApplyStaleFilter(sqls.NewCnd(), 24).Page(1, 10),
-		operator.UserID,
+		operator,
 	)
 	if err != nil {
 		t.Fatalf("FindPageAggregateByCnd() error = %v", err)
@@ -475,7 +475,7 @@ func TestTicketServiceFindPageAggregateEnrichesLookups(t *testing.T) {
 		t.Fatalf("CreateTicket() error = %v", err)
 	}
 
-	aggregate, err := services.TicketService.FindPageAggregateByCnd(sqls.NewCnd().Eq("id", ticket.ID).Page(1, 10), operator.UserID)
+	aggregate, err := services.TicketService.FindPageAggregateByCnd(sqls.NewCnd().Eq("id", ticket.ID).Page(1, 10), operator)
 	if err != nil {
 		t.Fatalf("FindPageAggregateByCnd() error = %v", err)
 	}
@@ -624,9 +624,13 @@ func createTestTicketRequest(title string) request.CreateTicketRequest {
 }
 
 func createTestOperator(t *testing.T, prefix string) *dto.AuthPrincipal {
+	return createTestOperatorInTenant(t, prefix, 101)
+}
+
+func createTestOperatorInTenant(t *testing.T, prefix string, tenantID int64) *dto.AuthPrincipal {
 	t.Helper()
-	userID := createTestUser(t, prefix)
-	return &dto.AuthPrincipal{UserID: userID, Username: prefix}
+	userID := createTestUserWithStatusInTenant(t, prefix, enums.StatusOk, tenantID)
+	return &dto.AuthPrincipal{UserID: userID, TenantID: tenantID, ActiveTenantID: tenantID, Username: prefix}
 }
 
 func createTestUser(t *testing.T, prefix string) int64 {
@@ -634,10 +638,15 @@ func createTestUser(t *testing.T, prefix string) int64 {
 }
 
 func createTestUserWithStatus(t *testing.T, prefix string, status enums.Status) int64 {
+	return createTestUserWithStatusInTenant(t, prefix, status, 101)
+}
+
+func createTestUserWithStatusInTenant(t *testing.T, prefix string, status enums.Status, tenantID int64) int64 {
 	t.Helper()
 	now := time.Now()
 	username := fmt.Sprintf("%s_%d", prefix, now.UnixNano())
 	user := &models.User{
+		TenantID: tenantID,
 		Username: username,
 		Nickname: prefix,
 		Status:   status,
@@ -657,10 +666,15 @@ func createTestUserWithStatus(t *testing.T, prefix string, status enums.Status) 
 }
 
 func createTestConversation(t *testing.T, customerID int64, prefix string) int64 {
+	return createTestConversationInTenant(t, customerID, prefix, 101)
+}
+
+func createTestConversationInTenant(t *testing.T, customerID int64, prefix string, tenantID int64) int64 {
 	t.Helper()
 
 	now := time.Now()
 	item := &models.Conversation{
+		TenantID:      tenantID,
 		CustomerID:    customerID,
 		CustomerName:  prefix,
 		Status:        enums.IMConversationStatusActive,
@@ -676,12 +690,17 @@ func createTestConversation(t *testing.T, customerID int64, prefix string) int64
 }
 
 func createTestCustomer(t *testing.T, prefix string) int64 {
+	return createTestCustomerInTenant(t, prefix, 101)
+}
+
+func createTestCustomerInTenant(t *testing.T, prefix string, tenantID int64) int64 {
 	t.Helper()
 
 	now := time.Now()
 	item := &models.Customer{
-		Name:   fmt.Sprintf("%s-%d", prefix, now.UnixNano()),
-		Status: enums.StatusOk,
+		TenantID: tenantID,
+		Name:     fmt.Sprintf("%s-%d", prefix, now.UnixNano()),
+		Status:   enums.StatusOk,
 		AuditFields: models.AuditFields{
 			CreatedAt:      now,
 			CreateUserID:   1,
@@ -698,13 +717,18 @@ func createTestCustomer(t *testing.T, prefix string) int64 {
 }
 
 func createTestTag(t *testing.T, prefix string) int64 {
+	return createTestTagInTenant(t, prefix, 101)
+}
+
+func createTestTagInTenant(t *testing.T, prefix string, tenantID int64) int64 {
 	t.Helper()
 
 	now := time.Now()
 	item := &models.Tag{
-		Name:   fmt.Sprintf("%s-%d", prefix, now.UnixNano()),
-		Status: enums.StatusOk,
-		SortNo: 1,
+		TenantID: tenantID,
+		Name:     fmt.Sprintf("%s-%d", prefix, now.UnixNano()),
+		Status:   enums.StatusOk,
+		SortNo:   1,
 		AuditFields: models.AuditFields{
 			CreatedAt:      now,
 			CreateUserID:   1,

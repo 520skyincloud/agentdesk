@@ -32,16 +32,18 @@ func (s *ticketViewService) Find(cnd *sqls.Cnd) []models.TicketView {
 	return repositories.TicketViewRepository.Find(sqls.DB(), cnd)
 }
 
-func (s *ticketViewService) ListByUser(userID int64) []models.TicketView {
-	if userID <= 0 {
-		return nil
+func (s *ticketViewService) ListForOperator(operator *dto.AuthPrincipal) ([]models.TicketView, error) {
+	tenantID, err := requireActiveTenantID(operator, "工单视图")
+	if err != nil {
+		return nil, err
 	}
-	return s.Find(sqls.NewCnd().Eq("user_id", userID).Asc("sort_no").Desc("id"))
+	return s.Find(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("user_id", operator.UserID).Asc("sort_no").Desc("id")), nil
 }
 
 func (s *ticketViewService) Save(req request.SaveTicketViewRequest, operator *dto.AuthPrincipal) (*models.TicketView, error) {
-	if operator == nil {
-		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "工单视图")
+	if err != nil {
+		return nil, err
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -53,11 +55,11 @@ func (s *ticketViewService) Save(req request.SaveTicketViewRequest, operator *dt
 	}
 	now := time.Now()
 	if req.ID > 0 {
-		item := repositories.TicketViewRepository.Get(sqls.DB(), req.ID)
+		item := repositories.TicketViewRepository.GetInTenant(sqls.DB(), req.ID, tenantID)
 		if item == nil || item.UserID != operator.UserID {
 			return nil, errorsx.InvalidParam("视图不存在")
 		}
-		if err := repositories.TicketViewRepository.Updates(sqls.DB(), req.ID, map[string]any{
+		if err := repositories.TicketViewRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
 			"name":             name,
 			"filters_json":     string(filtersJSON),
 			"update_user_id":   operator.UserID,
@@ -66,9 +68,10 @@ func (s *ticketViewService) Save(req request.SaveTicketViewRequest, operator *dt
 		}); err != nil {
 			return nil, err
 		}
-		return repositories.TicketViewRepository.Get(sqls.DB(), req.ID), nil
+		return repositories.TicketViewRepository.GetInTenant(sqls.DB(), req.ID, tenantID), nil
 	}
 	item := &models.TicketView{
+		TenantID:    tenantID,
 		UserID:      operator.UserID,
 		Name:        name,
 		FiltersJSON: string(filtersJSON),
@@ -81,12 +84,13 @@ func (s *ticketViewService) Save(req request.SaveTicketViewRequest, operator *dt
 }
 
 func (s *ticketViewService) Delete(id int64, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	tenantID, err := requireActiveTenantID(operator, "工单视图")
+	if err != nil {
+		return err
 	}
-	item := repositories.TicketViewRepository.Get(sqls.DB(), id)
+	item := repositories.TicketViewRepository.GetInTenant(sqls.DB(), id, tenantID)
 	if item == nil || item.UserID != operator.UserID {
 		return errorsx.InvalidParam("视图不存在")
 	}
-	return repositories.TicketViewRepository.Delete(sqls.DB(), id)
+	return repositories.TicketViewRepository.DeleteInTenant(sqls.DB(), id, tenantID)
 }

@@ -1098,3 +1098,39 @@ git diff --check
 - 新增 `internal/services/conversation_runtime_tenant_test.go`，覆盖跨租户读写拒绝、子记录 TenantID 继承、派单候选隔离、最终 SQL 条件、独立同步日志隔离及 checkpoint 升级/冲突。
 - 本检查点没有 model、migration、request/response DTO、enum、Gin 路由、权限点、WebSocket payload 或前端变化。
 - `codex/ai-billing@f2d2da4` 与本检查点存在 Conversation builder/handler、RouteState、Message、人工派单、超时和企微协议等同文件修改。合并必须逐方法保留 AI 分支的欢迎语、意图、FastGPT、人工恢复和媒体理解语义，同时保留本检查点的 ActiveTenant 校验、TenantID 继承及最终 tenant 写入条件。
+
+## 23. 当前实施检查点：工单与共享标签运行时隔离（2026-07-14）
+
+本检查点复用现有工单、标签和会话标签页面及权限，不新增平行工单或派单模型。工单继续表示需要持续跟进的服务事项，派单继续表示当前客户会话由谁回复；两者只通过 Conversation/Customer 关联，不合并状态机。
+
+### 已完成运行时边界
+
+- 工单列表、汇总、详情、进展和个人保存视图要求 ActiveTenantID；列表聚合补充的 Tag、User、Customer 也只读取当前租户。
+- 手工创建工单从 ActiveTenantID 继承 TenantID，并验证 Customer、Conversation、Assignee 和 Tag 均属于同一租户。AI Graph 和企微默认资源通过已有 Conversation 创建工单时，系统身份从父 Conversation 继承 tenant，不需要伪造浏览器租户头。
+- 更新、关联客户、指派、状态变更和新增进展先读取当前租户 Ticket；Ticket、TicketProgress、TicketTag 和 TicketView 的最终写入/删除携带 tenant 条件。
+- TicketProgress、TicketTag 和 TicketView 创建写入父 Ticket 或 ActiveTenant 的 TenantID；共享 Tag 不拆成工单标签和会话标签两套模型。
+- Tag 列表、树、详情、父标签、同级重名、排序、状态和删除均限定当前租户。ConversationTag 新增/删除同时校验 Conversation、Tag 和 relation tenant。
+- 工单与会话标签筛选子查询同时携带 tenant。会话筛选原来引用不存在的历史表名 `conversation_tag_rels`，现已改为当前 GORM 表 `t_conversation_tag`。
+
+### 权限、兼容与后续缺口
+
+- `/api/dashboard/tag/update_sort` 原先未做权限校验，现复用权限管理中已有的 `tag.update` 权限；没有新增隐藏权限或角色内硬编码授权。
+- TicketNoSequence 和 TicketNo 继续平台全局唯一，符合阶段 4G 决策；本步骤不改变工单号格式或并发分配算法。
+- TicketService 的全局 ID 只读 helper 继续供内部 TicketCreated/TicketAssigned 事件消费。所有用户输入可达的 Dashboard 读写路径均使用 tenant-aware 方法。
+- 工单创建/指派的站内通知会从接收账号继承 tenant；企微通知的 `defaultToUsers` 仍来自平台全局配置，需在通知域租户化时确定是平台运维告警还是租户主管通知，当前不擅自改变收件语义。
+- WebSocket notification topic、连接订阅和 ActionURL 打开后的二次鉴权仍属于实时通道审计；本步骤依靠工单详情接口阻止跨租户 URL 读取，但不宣称 WebSocket 已端到端隔离。
+
+### 契约与验证
+
+- 没有 model、migration、request/response DTO、enum、Gin 路由、权限常量、WebSocket payload 或前端文件变化；只收紧现有 handler/service/repository 调用。
+- 新增 `internal/services/ticket_tag_tenant_test.go`，覆盖双租户列表/聚合、详情、进展、创建引用、更新、指派、状态、视图、标签树、会话标签和最终写入，并覆盖 AI/企微系统建单继承父会话 tenant。
+
+```text
+go test ./internal/services ./internal/handlers/dashboard -count=1
+go test -race ./internal/services -run 'Test(TicketAndTagRuntimeTenantIsolation|SystemTicketCreationInheritsConversationTenant)' -count=1
+go test ./... -run '^$' -count=1
+go vet ./...
+git diff --check
+```
+
+- `codex/ai-billing@f2d2da4` 没有修改 Ticket/Tag 文件；双方在 `internal/handlers/dashboard/conversation_handler.go` 有同文件改动。合并时保留 AI 分支的回复入口变化和本步骤的标签筛选 tenant/表名修复，禁止整文件覆盖。
