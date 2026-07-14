@@ -111,9 +111,19 @@ func (r *userRoleRepository) FindRoleIDsByUserIDs(db *gorm.DB, userIDs []int64) 
 	return list, err
 }
 
+func (r *userRoleRepository) ExistsByRoleID(db *gorm.DB, roleID int64) (bool, error) {
+	var count int64
+	err := db.Model(&models.UserRole{}).Where("role_id = ?", roleID).Limit(1).Count(&count).Error
+	return count > 0, err
+}
+
 func (r *userRoleRepository) Create(db *gorm.DB, t *models.UserRole) (err error) {
 	err = db.Create(t).Error
 	return
+}
+
+func (r *userRoleRepository) DeleteByUserID(db *gorm.DB, userID int64) error {
+	return db.Where("user_id = ?", userID).Delete(&models.UserRole{}).Error
 }
 
 func (r *userRoleRepository) Update(db *gorm.DB, t *models.UserRole) (err error) {

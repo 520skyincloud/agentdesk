@@ -112,8 +112,8 @@ func (r *roleRepository) UpdateColumn(db *gorm.DB, id int64, name string, value 
 	return
 }
 
-func (r *roleRepository) Delete(db *gorm.DB, id int64) {
-	db.Delete(&models.Role{}, "id = ?", id)
+func (r *roleRepository) Delete(db *gorm.DB, id int64) error {
+	return db.Delete(&models.Role{}, "id = ?", id).Error
 }
 
 func (r *roleRepository) GetByCode(db *gorm.DB, code string) *models.Role {

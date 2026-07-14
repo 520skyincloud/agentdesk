@@ -26,7 +26,7 @@ func TestUserRoleRuntimeWritesStayBehindAuditedServices(t *testing.T) {
 	}
 	allowed := map[string]map[string]struct{}{
 		"user_service.go": {
-			"replaceUserRolesDB": {},
+			"replaceUserRolesInternalDB": {},
 		},
 		"wxwork_login_service.go": {
 			"assignDefaultStoreStaffRole": {},
@@ -79,6 +79,7 @@ func TestIsUserRoleMutationCall(t *testing.T) {
 		want       bool
 	}{
 		{name: "repository create", expression: "repositories.UserRoleRepository.Create(db, item)", want: true},
+		{name: "repository delete by user", expression: "repositories.UserRoleRepository.DeleteByUserID(db, userID)", want: true},
 		{name: "service update", expression: "UserRoleService.Update(item)", want: true},
 		{name: "gorm create", expression: "db.Create(&models.UserRole{})", want: true},
 		{name: "gorm delete chain", expression: "db.Where(\"user_id = ?\", id).Delete(&models.UserRole{})", want: true},
@@ -112,7 +113,7 @@ func isUserRoleMutationCall(call *ast.CallExpr) bool {
 		return false
 	}
 	writeMethod := map[string]struct{}{
-		"Create": {}, "Save": {}, "Update": {}, "Updates": {}, "UpdateColumn": {}, "Delete": {}, "Exec": {},
+		"Create": {}, "Save": {}, "Update": {}, "Updates": {}, "UpdateColumn": {}, "Delete": {}, "DeleteByUserID": {}, "Exec": {},
 	}
 	if _, ok := writeMethod[selector.Sel.Name]; !ok {
 		return false

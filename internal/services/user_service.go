@@ -197,7 +197,7 @@ func (s *userService) createManagedUserDB(db *gorm.DB, req request.CreateUserReq
 	if err = repositories.UserRepository.Create(db, user); err != nil {
 		return nil, "", err
 	}
-	if err = s.replaceUserRolesDB(db, user.ID, roleIDs, operator); err != nil {
+	if err = s.assignInitialUserRolesDB(db, user.ID, roleIDs, operator); err != nil {
 		return nil, "", err
 	}
 	return user, plain, nil
@@ -400,6 +400,20 @@ func (s *userService) replaceUserRoles(userID int64, roleIDs []int64, operator *
 }
 
 func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
+	return s.replaceUserRolesInternalDB(db, userID, roleIDs, operator, true)
+}
+
+func (s *userService) assignInitialUserRolesDB(db *gorm.DB, userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
+	return s.replaceUserRolesInternalDB(db, userID, roleIDs, operator, false)
+}
+
+func (s *userService) replaceUserRolesInternalDB(
+	db *gorm.DB,
+	userID int64,
+	roleIDs []int64,
+	operator *dto.AuthPrincipal,
+	enforceTargetAuthority bool,
+) error {
 	user, err := repositories.UserRepository.GetForUpdate(db, userID)
 	if err != nil {
 		return err
@@ -407,21 +421,34 @@ func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []in
 	if user == nil || user.DeletedAt != nil {
 		return errorsx.InvalidParam("用户不存在")
 	}
+	if enforceTargetAuthority {
+		if err := s.ensureCanManageUserDB(db, operator, user); err != nil {
+			return err
+		}
+	}
 	seen := make(map[int64]struct{}, len(roleIDs))
-	roles := make([]*models.Role, 0, len(roleIDs))
+	uniqueRoleIDs := make([]int64, 0, len(roleIDs))
 	for _, roleID := range roleIDs {
 		if _, exists := seen[roleID]; exists {
 			continue
 		}
 		seen[roleID] = struct{}{}
-		role := repositories.RoleRepository.Get(db, roleID)
+		uniqueRoleIDs = append(uniqueRoleIDs, roleID)
+	}
+	slices.Sort(uniqueRoleIDs)
+	roles := make([]*models.Role, 0, len(uniqueRoleIDs))
+	for _, roleID := range uniqueRoleIDs {
+		role, err := repositories.RoleRepository.GetForUpdate(db, roleID)
+		if err != nil {
+			return err
+		}
 		if role == nil {
 			return errorsx.InvalidParam("角色不存在")
 		}
 		if role.Status != enums.StatusOk {
 			return errorsx.InvalidParam("禁用角色不允许分配")
 		}
-		if !RoleService.CanAssignRole(operator, role) {
+		if !RoleService.canAssignRoleDB(db, operator, role) {
 			return errorsx.Forbidden("不能分配同级或更高等级角色")
 		}
 		if user.TenantID > 0 && role.Scope != constants.RoleScopeTenant {
@@ -443,7 +470,7 @@ func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []in
 	if err := s.ensureRetainedRoleDependenciesDB(db, user, before, roles); err != nil {
 		return err
 	}
-	if err := db.Where("user_id = ?", userID).Delete(&models.UserRole{}).Error; err != nil {
+	if err := repositories.UserRoleRepository.DeleteByUserID(db, userID); err != nil {
 		return err
 	}
 	for _, role := range roles {
@@ -452,7 +479,7 @@ func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []in
 			RoleID:      role.ID,
 			AuditFields: utils.BuildAuditFields(operator),
 		}
-		if err := db.Create(relation).Error; err != nil {
+		if err := repositories.UserRoleRepository.Create(db, relation); err != nil {
 			return err
 		}
 	}
@@ -582,19 +609,23 @@ func (s *userService) appendUserRoleChangeLogDB(db *gorm.DB, user *models.User, 
 }
 
 func (s *userService) CanManageUser(operator *dto.AuthPrincipal, user *models.User) bool {
+	return s.canManageUserDB(sqls.DB(), operator, user)
+}
+
+func (s *userService) canManageUserDB(db *gorm.DB, operator *dto.AuthPrincipal, user *models.User) bool {
 	if operator == nil || user == nil || operator.UserID <= 0 || user.ID == operator.UserID {
 		return false
 	}
-	if RoleService.HighestAuthorityLevel(operator) <= 0 {
+	if RoleService.highestAuthorityLevelDB(db, operator) <= 0 {
 		return false
 	}
 	if !s.CanViewUser(operator, user) {
 		return false
 	}
-	relations := UserRoleService.Find(sqls.NewCnd().Eq("user_id", user.ID))
+	relations := repositories.UserRoleRepository.Find(db, sqls.NewCnd().Eq("user_id", user.ID))
 	for i := range relations {
-		role := RoleService.Get(relations[i].RoleID)
-		if role != nil && !RoleService.CanManageRole(operator, role) {
+		role := repositories.RoleRepository.Get(db, relations[i].RoleID)
+		if role == nil || !RoleService.canManageRoleDB(db, operator, role) {
 			return false
 		}
 	}
@@ -650,13 +681,17 @@ func (s *userService) resolveNewUserTenant(operator *dto.AuthPrincipal) (int64, 
 }
 
 func (s *userService) EnsureCanManageUser(operator *dto.AuthPrincipal, user *models.User) error {
+	return s.ensureCanManageUserDB(sqls.DB(), operator, user)
+}
+
+func (s *userService) ensureCanManageUserDB(db *gorm.DB, operator *dto.AuthPrincipal, user *models.User) error {
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
 	if user != nil && user.ID == operator.UserID {
 		return errorsx.Forbidden("不能通过用户管理修改自己的账号")
 	}
-	if !s.CanManageUser(operator, user) {
+	if !s.canManageUserDB(db, operator, user) {
 		return errorsx.Forbidden("目标账号包含无权管理的角色")
 	}
 	return nil

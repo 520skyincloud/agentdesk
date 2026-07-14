@@ -283,6 +283,135 @@ func TestRoleRepositoryGetForUpdateUsesRowLock(t *testing.T) {
 	}
 }
 
+func TestRoleServiceDeleteRoleClearsPermissionsWithAuditLog(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	seedAuthorityRoles(t, db)
+	role := createAuthorityRole(t, db, "deletable_role", constants.RoleScopeTenant, constants.RoleAuthorityMember)
+	permissionB := createAuthorityPermission(t, db, "tenant.delete.zeta", constants.PermissionScopeTenant)
+	permissionA := createAuthorityPermission(t, db, "tenant.delete.alpha", constants.PermissionScopeTenant)
+	for _, permission := range []*models.Permission{permissionB, permissionA} {
+		if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
+			t.Fatalf("seed deletable role permission: %v", err)
+		}
+	}
+	operator := &dto.AuthPrincipal{UserID: 113, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+
+	if err := RoleService.DeleteRole(role.ID, operator); err != nil {
+		t.Fatalf("delete custom role: %v", err)
+	}
+	if got := RoleService.Get(role.ID); got != nil {
+		t.Fatalf("deleted role still exists: %+v", got)
+	}
+	assertRolePermissionIDs(t, db, role.ID)
+	assertSingleRolePermissionChangeLog(t, db, role.ID, operator.UserID,
+		[]int64{permissionA.ID, permissionB.ID}, nil,
+		[]string{permissionA.Code, permissionB.Code}, nil,
+	)
+}
+
+func TestRoleServiceDeleteRolePreservesInUseRole(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	seedAuthorityRoles(t, db)
+	role := createAuthorityRole(t, db, "in_use_role", constants.RoleScopeTenant, constants.RoleAuthorityMember)
+	permission := createAuthorityPermission(t, db, "tenant.in_use.view", constants.PermissionScopeTenant)
+	if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
+		t.Fatalf("seed in-use role permission: %v", err)
+	}
+	user := createAuthorityUser(t, db, "in_use_role_user")
+	assignAuthorityRole(t, db, user.ID, role.ID)
+	operator := &dto.AuthPrincipal{UserID: 114, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+
+	err := RoleService.DeleteRole(role.ID, operator)
+	if err == nil || !strings.Contains(err.Error(), "角色已被用户使用") {
+		t.Fatalf("DeleteRole() error = %v, want in-use rejection", err)
+	}
+	if got := RoleService.Get(role.ID); got == nil {
+		t.Fatal("in-use role was deleted")
+	}
+	assertRolePermissionIDs(t, db, role.ID, permission.ID)
+	assertRolePermissionChangeLogCount(t, db, role.ID, 0)
+}
+
+func TestRoleServiceDeleteRoleRollsBackWhenPermissionAuditFails(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	seedAuthorityRoles(t, db)
+	role := createAuthorityRole(t, db, "delete_rollback_role", constants.RoleScopeTenant, constants.RoleAuthorityMember)
+	permission := createAuthorityPermission(t, db, "tenant.delete.rollback", constants.PermissionScopeTenant)
+	if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
+		t.Fatalf("seed rollback role permission: %v", err)
+	}
+	if err := db.Migrator().DropTable(&models.RolePermissionChangeLog{}); err != nil {
+		t.Fatalf("drop role permission change log table: %v", err)
+	}
+	operator := &dto.AuthPrincipal{UserID: 115, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+
+	if err := RoleService.DeleteRole(role.ID, operator); err == nil {
+		t.Fatal("expected missing audit table to fail role deletion")
+	}
+	if got := RoleService.Get(role.ID); got == nil {
+		t.Fatal("role deletion was not rolled back")
+	}
+	assertRolePermissionIDs(t, db, role.ID, permission.ID)
+}
+
+func TestRoleServiceDeleteRoleRollsBackWhenRoleDeleteFails(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	seedAuthorityRoles(t, db)
+	role := createAuthorityRole(t, db, "delete_failure_role", constants.RoleScopeTenant, constants.RoleAuthorityMember)
+	permission := createAuthorityPermission(t, db, "tenant.delete.failure", constants.PermissionScopeTenant)
+	if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
+		t.Fatalf("seed delete failure role permission: %v", err)
+	}
+	forcedErr := errors.New("force role delete failure")
+	const callbackName = "test:force-role-delete-failure"
+	if err := db.Callback().Delete().Before("gorm:delete").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "Role" {
+			tx.AddError(forcedErr)
+		}
+	}); err != nil {
+		t.Fatalf("register role delete failure callback: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Callback().Delete().Remove(callbackName); err != nil {
+			t.Errorf("remove role delete failure callback: %v", err)
+		}
+	})
+	operator := &dto.AuthPrincipal{UserID: 116, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+
+	if err := RoleService.DeleteRole(role.ID, operator); !errors.Is(err, forcedErr) {
+		t.Fatalf("DeleteRole() error = %v, want %v", err, forcedErr)
+	}
+	if got := RoleService.Get(role.ID); got == nil {
+		t.Fatal("failed role deletion was not rolled back")
+	}
+	assertRolePermissionIDs(t, db, role.ID, permission.ID)
+	assertRolePermissionChangeLogCount(t, db, role.ID, 0)
+}
+
+func TestRoleServiceDeleteRolePreservesSystemRole(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	seedAuthorityRoles(t, db)
+	role := createAuthorityRole(t, db, "protected_system_role", constants.RoleScopeTenant, constants.RoleAuthorityMember)
+	if err := db.Model(role).Update("is_system", true).Error; err != nil {
+		t.Fatalf("protect system role: %v", err)
+	}
+	permission := createAuthorityPermission(t, db, "tenant.system.view", constants.PermissionScopeTenant)
+	if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
+		t.Fatalf("seed system role permission: %v", err)
+	}
+	operator := &dto.AuthPrincipal{UserID: 117, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+
+	err := RoleService.DeleteRole(role.ID, operator)
+	if err == nil || !strings.Contains(err.Error(), "系统内置角色不允许删除") {
+		t.Fatalf("DeleteRole() error = %v, want system role rejection", err)
+	}
+	if got := RoleService.Get(role.ID); got == nil {
+		t.Fatal("system role was deleted")
+	}
+	assertRolePermissionIDs(t, db, role.ID, permission.ID)
+	assertRolePermissionChangeLogCount(t, db, role.ID, 0)
+}
+
 func TestTenantAdminCreatesAccountWithLowerRoleOnly(t *testing.T) {
 	db := setupRoleAuthorityTestDB(t)
 	roles := seedAuthorityRoles(t, db)
@@ -461,6 +590,53 @@ func TestUserRepositoryGetForUpdateUsesRowLock(t *testing.T) {
 	if !seenLock {
 		t.Fatal("GetForUpdate query did not include a FOR locking clause")
 	}
+}
+
+func TestUserServiceAssignRolesLocksAssignedRole(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	roles := seedAuthorityRoles(t, db)
+	target := createAuthorityUser(t, db, "assigned_role_lock_target")
+	operator := &dto.AuthPrincipal{UserID: 902, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true}
+	const callbackName = "test:user-assigned-role-locking-clause"
+	seenLock := false
+	if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "Role" {
+			if _, locked := tx.Statement.Clauses["FOR"]; locked {
+				seenLock = true
+			}
+		}
+	}); err != nil {
+		t.Fatalf("register assigned role locking callback: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Callback().Query().Remove(callbackName); err != nil {
+			t.Errorf("remove assigned role locking callback: %v", err)
+		}
+	})
+
+	if err := UserService.replaceUserRolesDB(db, target.ID, []int64{roles[constants.RoleCodeAdmin].ID}, operator); err != nil {
+		t.Fatalf("replace user roles: %v", err)
+	}
+	if !seenLock {
+		t.Fatal("role assignment did not lock the assigned Role row")
+	}
+}
+
+func TestUserServiceReplaceRolesRechecksTargetAuthorityUnderLock(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	roles := seedAuthorityRoles(t, db)
+	target := createAuthorityUser(t, db, "locked_authority_target")
+	assignAuthorityRole(t, db, target.ID, roles[constants.RoleCodeSuperAdmin].ID)
+	operator := &dto.AuthPrincipal{
+		UserID: 903, Username: "admin", Roles: []string{constants.RoleCodeAdmin}, IsPlatformAccount: true,
+	}
+
+	err := UserService.replaceUserRolesDB(db, target.ID, []int64{roles[constants.RoleCodeAdmin].ID}, operator)
+	if !hasCode(err, errorsx.CodeAuthForbidden) {
+		t.Fatalf("replaceUserRolesDB() error = %v, want locked target authority rejection", err)
+	}
+	assertUserRoleCodes(t, db, target.ID, constants.RoleCodeSuperAdmin)
+	assertUserRoleChangeLogCount(t, db, target.ID, 0)
 }
 
 func TestWxWorkDefaultStoreStaffRoleWritesOneAuditLog(t *testing.T) {

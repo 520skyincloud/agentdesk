@@ -74,10 +74,6 @@ func (s *roleService) UpdateColumn(id int64, name string, value interface{}) err
 	return repositories.RoleRepository.UpdateColumn(sqls.DB(), id, name, value)
 }
 
-func (s *roleService) Delete(id int64) {
-	repositories.RoleRepository.Delete(sqls.DB(), id)
-}
-
 func (s *roleService) CreateRole(req request.CreateRoleRequest, operator *dto.AuthPrincipal) (*models.Role, error) {
 	name := strings.TrimSpace(req.Name)
 	code := strings.TrimSpace(req.Code)
@@ -166,21 +162,32 @@ func (s *roleService) UpdateSort(ids []int64, operator *dto.AuthPrincipal) error
 }
 
 func (s *roleService) DeleteRole(id int64, operator *dto.AuthPrincipal) error {
-	role := s.Get(id)
-	if role == nil {
-		return errorsx.InvalidParam("角色不存在")
-	}
-	if err := s.EnsureCanManageRole(operator, role); err != nil {
-		return err
-	}
-	if role.IsSystem {
-		return errorsx.Forbidden("系统内置角色不允许删除")
-	}
-	if UserRoleService.Take("role_id = ?", id) != nil {
-		return errorsx.Forbidden("角色已被用户使用，无法删除")
-	}
-	s.Delete(id)
-	return nil
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		role, err := repositories.RoleRepository.GetForUpdate(ctx.Tx, id)
+		if err != nil {
+			return err
+		}
+		if role == nil {
+			return errorsx.InvalidParam("角色不存在")
+		}
+		if err := s.ensureCanManageRoleDB(ctx.Tx, operator, role); err != nil {
+			return err
+		}
+		if role.IsSystem {
+			return errorsx.Forbidden("系统内置角色不允许删除")
+		}
+		inUse, err := repositories.UserRoleRepository.ExistsByRoleID(ctx.Tx, id)
+		if err != nil {
+			return err
+		}
+		if inUse {
+			return errorsx.Forbidden("角色已被用户使用，无法删除")
+		}
+		if err := replaceRolePermissionsDB(ctx.Tx, role, nil, operator); err != nil {
+			return err
+		}
+		return repositories.RoleRepository.Delete(ctx.Tx, id)
+	})
 }
 
 func (s *roleService) UpdateStatus(id int64, status enums.Status, operator *dto.AuthPrincipal) error {
@@ -226,7 +233,7 @@ func (s *roleService) replaceRolePermissions(roleID int64, permissionIDs []int64
 		if role == nil {
 			return errorsx.InvalidParam("角色不存在")
 		}
-		if err := s.EnsureCanManageRole(operator, role); err != nil {
+		if err := s.ensureCanManageRoleDB(ctx.Tx, operator, role); err != nil {
 			return err
 		}
 
@@ -250,29 +257,36 @@ func (s *roleService) replaceRolePermissions(roleID int64, permissionIDs []int64
 			permissions = append(permissions, permission)
 		}
 
-		before, err := loadRolePermissionSetSnapshotDB(ctx.Tx, roleID)
-		if err != nil {
-			return err
-		}
-		after := rolePermissionSetSnapshotFromPermissions(permissions)
-		if slices.Equal(before.IDs, after.IDs) {
-			return nil
-		}
-		if err := repositories.RolePermissionRepository.DeleteByRoleID(ctx.Tx, roleID); err != nil {
-			return err
-		}
-		for _, permission := range permissions {
-			relation := &models.RolePermission{
-				RoleID:       roleID,
-				PermissionID: permission.ID,
-				AuditFields:  utils.BuildAuditFields(operator),
-			}
-			if err := repositories.RolePermissionRepository.Create(ctx.Tx, relation); err != nil {
-				return err
-			}
-		}
-		return appendRolePermissionChangeLogDB(ctx.Tx, role, before, after, operator)
+		return replaceRolePermissionsDB(ctx.Tx, role, permissions, operator)
 	})
+}
+
+func replaceRolePermissionsDB(db *gorm.DB, role *models.Role, permissions []*models.Permission, operator *dto.AuthPrincipal) error {
+	if role == nil {
+		return errorsx.InvalidParam("角色不存在")
+	}
+	before, err := loadRolePermissionSetSnapshotDB(db, role.ID)
+	if err != nil {
+		return err
+	}
+	after := rolePermissionSetSnapshotFromPermissions(permissions)
+	if slices.Equal(before.IDs, after.IDs) {
+		return nil
+	}
+	if err := repositories.RolePermissionRepository.DeleteByRoleID(db, role.ID); err != nil {
+		return err
+	}
+	for _, permission := range permissions {
+		relation := &models.RolePermission{
+			RoleID:       role.ID,
+			PermissionID: permission.ID,
+			AuditFields:  utils.BuildAuditFields(operator),
+		}
+		if err := repositories.RolePermissionRepository.Create(db, relation); err != nil {
+			return err
+		}
+	}
+	return appendRolePermissionChangeLogDB(db, role, before, after, operator)
 }
 
 type rolePermissionSetSnapshot struct {
@@ -357,12 +371,16 @@ func appendRolePermissionChangeLogDB(
 }
 
 func (s *roleService) HighestAuthorityLevel(operator *dto.AuthPrincipal) int {
+	return s.highestAuthorityLevelDB(sqls.DB(), operator)
+}
+
+func (s *roleService) highestAuthorityLevelDB(db *gorm.DB, operator *dto.AuthPrincipal) int {
 	if operator == nil || len(operator.Roles) == 0 {
 		return 0
 	}
 	highest := 0
 	for _, code := range operator.Roles {
-		role := repositories.RoleRepository.GetByCode(sqls.DB(), strings.TrimSpace(code))
+		role := repositories.RoleRepository.GetByCode(db, strings.TrimSpace(code))
 		if role != nil && role.Status == enums.StatusOk && role.AuthorityLevel > highest {
 			highest = role.AuthorityLevel
 		}
@@ -371,17 +389,25 @@ func (s *roleService) HighestAuthorityLevel(operator *dto.AuthPrincipal) int {
 }
 
 func (s *roleService) CanManageRole(operator *dto.AuthPrincipal, role *models.Role) bool {
+	return s.canManageRoleDB(sqls.DB(), operator, role)
+}
+
+func (s *roleService) canManageRoleDB(db *gorm.DB, operator *dto.AuthPrincipal, role *models.Role) bool {
 	if operator == nil || role == nil || role.Code == constants.RoleCodeSuperAdmin {
 		return false
 	}
-	return role.AuthorityLevel < s.HighestAuthorityLevel(operator)
+	return role.AuthorityLevel < s.highestAuthorityLevelDB(db, operator)
 }
 
 func (s *roleService) CanAssignRole(operator *dto.AuthPrincipal, role *models.Role) bool {
-	if !s.CanManageRole(operator, role) || role.Status != enums.StatusOk {
+	return s.canAssignRoleDB(sqls.DB(), operator, role)
+}
+
+func (s *roleService) canAssignRoleDB(db *gorm.DB, operator *dto.AuthPrincipal, role *models.Role) bool {
+	if !s.canManageRoleDB(db, operator, role) || role.Status != enums.StatusOk {
 		return false
 	}
-	operatorLevel := s.HighestAuthorityLevel(operator)
+	operatorLevel := s.highestAuthorityLevelDB(db, operator)
 	if normalizeRoleScope(role.Scope) == constants.RoleScopePlatform && operatorLevel < constants.RoleAuthoritySuperAdmin {
 		return false
 	}
@@ -389,10 +415,14 @@ func (s *roleService) CanAssignRole(operator *dto.AuthPrincipal, role *models.Ro
 }
 
 func (s *roleService) EnsureCanManageRole(operator *dto.AuthPrincipal, role *models.Role) error {
+	return s.ensureCanManageRoleDB(sqls.DB(), operator, role)
+}
+
+func (s *roleService) ensureCanManageRoleDB(db *gorm.DB, operator *dto.AuthPrincipal, role *models.Role) error {
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	if !s.CanManageRole(operator, role) {
+	if !s.canManageRoleDB(db, operator, role) {
 		return errorsx.Forbidden("只能管理低于自身等级的角色")
 	}
 	return nil

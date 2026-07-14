@@ -2273,3 +2273,18 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 本批修改两个 repository、RolePermission 只读 service、AST 契约、完整性审计 service/test 和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、权限、WebSocket、前端或 AI/计费变化。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批八个文件无同文件修改，不要求 rebase 或 migration 排序。76C 依赖 76A 日志契约和 76B 在线写入，必须按 A -> B -> C 合并。
 - 可独立回滚本批代码与文档且无需数据库回滚；回滚会重新暴露未审计的通用 RolePermission 写方法，并失去 payload/断链/终态漂移发现能力，不建议回滚。RolePermissionChangeLog 表和历史行始终保留。
+
+## 77. 当前实施检查点：角色删除与账号赋角并发闭环（2026-07-15）
+
+76B/76C 收口了角色权限替换，却没有覆盖自定义角色删除：旧 DeleteRole 只删除 Role 主表，已有 RolePermission 会成为孤儿，也不会形成权限集合清空日志。进一步并发检查发现账号赋角只锁 User、不锁目标 Role，可能与角色删除交错后写出指向已删除角色的 UserRole。
+
+- DeleteRole 改为单事务：`FOR UPDATE` 锁定 Role，使用事务连接复核操作者等级，拒绝系统角色，通过 UserRoleRepository 确认无人使用，再调用唯一的 `replaceRolePermissionsDB(..., nil)` 清空权限并追加 before -> [] 日志，最后删除 Role。
+- RolePermission 清空、RolePermissionChangeLog 追加和 Role 删除同事务提交。日志表缺失、日志写失败或最后 Role 删除失败时，角色、权限关系和日志全部回滚；已被账号使用及系统内置角色在任何写入前拒绝。
+- 账号角色替换先锁 User，再对去重且按 ID 排序的目标 Role 逐个 `FOR UPDATE`。分配先持有 Role 锁时，删除在其提交后能看到 UserRole 并拒绝；删除先持有 Role 锁时，分配在角色删除后得到“角色不存在”，不会创建孤儿关系。排序锁定避免多角色分配形成反向锁序。
+- 已有账号替换角色在 User 行锁内重新读取当前 UserRole 和 Role，复核租户可见范围及目标账号最高等级，防止外层预检后目标账号被并发提权再由旧请求覆盖。当前关系引用缺失时保守拒绝管理，不把脏关系当作低权限。
+- 新建账号首次赋角单独使用 `assignInitialUserRolesDB`：新租户创建时平台管理员尚未切换 ActiveTenant，不能套用已有账号可见范围；该入口只在账号刚插入的同一事务内调用。首次赋角和已有账号替换仍共用唯一实际写函数 `replaceUserRolesInternalDB`，角色状态、scope、分配等级、日志与回滚规则完全一致。
+- Role/RolePermission/UserRole 写操作均通过 repository；RoleRepository.Delete 开始返回错误，UserRoleRepository 新增 ExistsByRoleID/DeleteByUserID。两个 AST 契约的唯一实际写允许点更新为 `replaceRolePermissionsDB` 和 `replaceUserRolesInternalDB`，企微默认门店员工角色仍保留原受审计例外。
+- 测试覆盖删除成功及排序快照、在用/系统角色拒绝、日志失败回滚、Role 删除失败回滚、账号赋角 Role 行锁、锁内目标等级复核、新租户创建/邀请审核和企微首次角色兼容。聚焦 race、完整 services 包、全仓 Go、vet 和 diff 检查均已通过。
+- 本批修改 Role/UserRole repository、Role/User service、两份 AST 契约、角色权限测试和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端或 AI/计费变化。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批九个文件无同文件修改，不要求 rebase 或 migration 排序。依赖 76A-76C，建议在其后合并；最终集成后必须重跑角色删除、账号赋角和两个 AST 契约。
+- 可回滚本批代码与文档且无需数据库回滚，但回滚会恢复角色删除孤儿关系和赋角/删除竞态，不建议回滚；RolePermissionChangeLog 历史行始终不得删除。

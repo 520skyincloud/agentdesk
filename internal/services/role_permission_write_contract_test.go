@@ -29,7 +29,7 @@ func TestRolePermissionRuntimeWritesStayBehindAuditedRoleService(t *testing.T) {
 	}
 	allowed := map[string]map[string]struct{}{
 		"role_service.go": {
-			"replaceRolePermissions": {},
+			"replaceRolePermissionsDB": {},
 		},
 	}
 

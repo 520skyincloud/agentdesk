@@ -3921,3 +3921,43 @@ git diff --check
 - 与 `origin/codex/ai-billing@f2d2da4` 共同基线对照，本批八个文件没有同文件修改；不需要 rebase、migration 版本协调或 AI 负责人前置提交。
 - 合并顺序固定为 76A 数据契约 -> 76B 在线事务写入 -> 76C 旁路与语义审计。最终合并 AI 分支后必须重跑两个角色关系 AST 契约和完整性审计。
 - 可回滚本批八个文件且无需数据库回滚，但 RolePermissionChangeLog 表和历史行必须保留。回滚会恢复未审计写旁路并失去日志损坏/断链发现，不建议长期使用。
+
+## 第 77 批：角色删除与账号赋角并发闭环（2026-07-15）
+
+### 删除与并发语义
+
+- 自定义角色删除在同一事务锁 Role、复核操作者、检查 UserRole、审计清空 RolePermission，再删除 Role。系统角色或已被账号使用的角色不发生任何写入；权限日志或 Role 删除失败会整体回滚。
+- 账号角色替换在锁 User 后，按排序后的目标 role IDs 逐一锁 Role，并在锁内重新校验目标账号当前角色等级。它与角色删除共享 Role 行锁，避免并发写出指向已删除角色的 UserRole。
+- 新账号首次赋角使用受控 `assignInitialUserRolesDB`，只跳过“已有账号可见/当前角色”复核，以支持平台管理员原子创建新租户主管；待分配角色的启用状态、scope、授权等级、事务日志均不跳过。
+- UserRole/RolePermission 实际写入分别只存在于 `replaceUserRolesInternalDB`、`replaceRolePermissionsDB`，service 通过 repository 操作关系表。migration 初始化/修复和企微默认门店员工角色保持既有明确例外。
+
+### 文件与验证
+
+```text
+internal/repositories/role_repository.go
+internal/repositories/user_role_repository.go
+internal/services/role_permission_write_contract_test.go
+internal/services/role_service.go
+internal/services/role_user_authority_test.go
+internal/services/user_role_write_contract_test.go
+internal/services/user_service.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestRoleServiceDeleteRole.*|TestUserServiceAssignRolesLocksAssignedRole|TestUserServiceReplaceRolesRechecksTargetAuthorityUnderLock|TestUserServiceAssignRolesEnforcesAuthority|TestTenantAdminCreatesAccountWithLowerRoleOnly|TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation|TestTenantRegistrationReviewApprovesRoleAndRevokesOldSessions|TestWxWorkDefaultStoreStaffRoleWritesOneAuditLog|TestRolePermissionRuntimeWritesStayBehindAuditedRoleService|TestUserRoleRuntimeWritesStayBehindAuditedServices)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 聚焦 race、完整 services 包、全仓 Go、vet 和 diff 检查均已通过。成功删除、四类拒绝/回滚、目标 Role 行锁、锁内账号等级复核及新租户/邀请/企微兼容路径均有回归。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端或 AI/计费变化；没有修改 `.codex/audits/` 或 docs/generated。
+
+### 并行分支、合并与回滚
+
+- 与 `origin/codex/ai-billing@f2d2da4` 共同基线对照，本批九个文件没有同文件修改；无需 rebase、migration 协调或 AI 负责人前置提交。
+- 合并顺序为 76A -> 76B -> 76C -> 77。AI 分支集成后重跑两个角色关系 AST 契约、角色删除、账号赋角和租户注册完整回归。
+- 可回滚本批代码与文档，不需数据库回滚，但会恢复角色删除遗留权限关系及删除/赋角竞态，不建议回滚；历史 RolePermissionChangeLog 必须保留。
