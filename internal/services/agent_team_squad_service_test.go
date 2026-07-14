@@ -26,6 +26,8 @@ func setupAgentTeamSquadTest(t *testing.T) (*gorm.DB, *dto.AuthPrincipal, *model
 	}
 	if err := db.AutoMigrate(
 		&models.User{},
+		&models.Role{},
+		&models.UserRole{},
 		&models.AgentTeam{},
 		&models.AgentProfile{},
 		&models.AgentTeamSquad{},
@@ -35,28 +37,66 @@ func setupAgentTeamSquadTest(t *testing.T) (*gorm.DB, *dto.AuthPrincipal, *model
 		t.Fatalf("migrate squad models: %v", err)
 	}
 	sqls.SetDB(db)
-	teamA := &models.AgentTeam{Name: "综合客服组A", Status: enums.StatusOk}
-	teamB := &models.AgentTeam{Name: "综合客服组B", Status: enums.StatusOk}
+	teamA := &models.AgentTeam{TenantID: 101, Name: "综合客服组A", Status: enums.StatusOk}
+	teamB := &models.AgentTeam{TenantID: 202, Name: "综合客服组B", Status: enums.StatusOk}
 	if err := db.Create(teamA).Error; err != nil {
 		t.Fatalf("create team A: %v", err)
 	}
 	if err := db.Create(teamB).Error; err != nil {
 		t.Fatalf("create team B: %v", err)
 	}
+	agentRole := &models.Role{Name: "客服", Code: constants.RoleCodeCsUser, Scope: constants.RoleScopeTenant, Status: enums.StatusOk}
+	if err := db.Create(agentRole).Error; err != nil {
+		t.Fatalf("create agent role: %v", err)
+	}
 	profiles := make([]models.AgentProfile, 0, 3)
 	for index, teamID := range []int64{teamA.ID, teamA.ID, teamB.ID} {
-		user := &models.User{Username: fmt.Sprintf("squad-user-%d", index+1), Nickname: "小组客服", Status: enums.StatusOk}
+		team := teamA
+		if teamID == teamB.ID {
+			team = teamB
+		}
+		user := &models.User{TenantID: team.TenantID, Username: fmt.Sprintf("squad-user-%d", index+1), Nickname: "小组客服", Status: enums.StatusOk}
 		if err := db.Create(user).Error; err != nil {
 			t.Fatalf("create user %d: %v", index, err)
 		}
-		profile := models.AgentProfile{UserID: user.ID, TeamID: teamID, AgentCode: fmt.Sprintf("squad-agent-%d", index+1), DisplayName: "小组客服", Status: enums.StatusOk}
+		if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: agentRole.ID}).Error; err != nil {
+			t.Fatalf("assign agent role %d: %v", index, err)
+		}
+		profile := models.AgentProfile{TenantID: team.TenantID, UserID: user.ID, TeamID: teamID, AgentCode: fmt.Sprintf("squad-agent-%d", index+1), DisplayName: "小组客服", Status: enums.StatusOk}
 		if err := db.Create(&profile).Error; err != nil {
 			t.Fatalf("create profile %d: %v", index, err)
 		}
 		profiles = append(profiles, profile)
 	}
-	admin := &dto.AuthPrincipal{UserID: 99, Username: "admin", Roles: []string{constants.RoleCodeAdmin}}
+	admin := &dto.AuthPrincipal{UserID: 99, Username: "admin", ActiveTenantID: teamA.TenantID, Roles: []string{constants.RoleCodeAdmin}}
 	return db, admin, teamA, teamB, profiles
+}
+
+func TestBuildAgentProfileModelInheritsTenantAndRejectsCrossTenant(t *testing.T) {
+	db, _, teamA, teamB, _ := setupAgentTeamSquadTest(t)
+	role := repositories.RoleRepository.GetByCode(db, constants.RoleCodeCsUser)
+	user := &models.User{TenantID: teamA.TenantID, Username: "profile-tenant-user", Nickname: "租户客服", Status: enums.StatusOk}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("create profile user: %v", err)
+	}
+	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
+		t.Fatalf("assign profile role: %v", err)
+	}
+	req := request.CreateAgentProfileRequest{
+		UserID: user.ID, TeamID: teamA.ID, AgentCode: "tenant-profile", DisplayName: "租户客服",
+		ServiceStatus: enums.ServiceStatusIdle,
+	}
+	profile, err := AgentProfileService.buildProfileModel(0, req)
+	if err != nil {
+		t.Fatalf("build profile: %v", err)
+	}
+	if profile.TenantID != teamA.TenantID {
+		t.Fatalf("profile tenant = %d, want %d", profile.TenantID, teamA.TenantID)
+	}
+	req.TeamID = teamB.ID
+	if _, err := AgentProfileService.buildProfileModel(0, req); err == nil {
+		t.Fatal("expected cross-tenant profile to be rejected")
+	}
 }
 
 func TestAgentTeamSquadMembershipAndValidation(t *testing.T) {
@@ -71,9 +111,17 @@ func TestAgentTeamSquadMembershipAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create squad: %v", err)
 	}
+	if squad.TenantID != teamA.TenantID {
+		t.Fatalf("squad tenant = %d, want %d", squad.TenantID, teamA.TenantID)
+	}
 	members := repositories.AgentTeamSquadMemberRepository.Find(db, sqls.NewCnd().Eq("squad_id", squad.ID).Eq("status", enums.StatusOk).Asc("agent_profile_id"))
 	if len(members) != 2 {
 		t.Fatalf("member count = %d, want 2", len(members))
+	}
+	for i := range members {
+		if members[i].TenantID != teamA.TenantID {
+			t.Fatalf("member tenant = %d, want %d", members[i].TenantID, teamA.TenantID)
+		}
 	}
 
 	if err := AgentTeamSquadService.ReplaceMembers(request.ReplaceAgentTeamSquadMembersRequest{SquadID: squad.ID, AgentProfileIDs: []int64{profiles[1].ID, profiles[1].ID}}, admin); err != nil {
@@ -119,7 +167,7 @@ func TestAgentTeamSquadDeleteRequiresScheduleCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create squad: %v", err)
 	}
-	schedule := &models.AgentTeamSchedule{TeamID: teamA.ID, SquadID: squad.ID, StartAt: time.Now().Add(time.Hour), EndAt: time.Now().Add(2 * time.Hour), Status: enums.StatusOk}
+	schedule := &models.AgentTeamSchedule{TenantID: teamA.TenantID, TeamID: teamA.ID, SquadID: squad.ID, StartAt: time.Now().Add(time.Hour), EndAt: time.Now().Add(2 * time.Hour), Status: enums.StatusOk}
 	if err := db.Create(schedule).Error; err != nil {
 		t.Fatalf("create schedule: %v", err)
 	}

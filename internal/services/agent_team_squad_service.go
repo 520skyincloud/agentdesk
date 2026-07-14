@@ -148,6 +148,7 @@ func (s *agentTeamSquadService) Update(req request.UpdateAgentTeamSquadRequest, 
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		if err := repositories.AgentTeamSquadRepository.Updates(ctx.Tx, req.ID, map[string]any{
+			"tenant_id":        item.TenantID,
 			"team_id":          item.TeamID,
 			"name":             item.Name,
 			"leader_user_id":   item.LeaderUserID,
@@ -249,6 +250,9 @@ func (s *agentTeamSquadService) buildModel(db *gorm.DB, id, teamID int64, name s
 	if team == nil || team.Status == enums.StatusDeleted {
 		return nil, nil, errorsx.InvalidParam("综合客服组不存在")
 	}
+	if team.TenantID <= 0 {
+		return nil, nil, errorsx.InvalidParam("综合客服组尚未归属接入公司")
+	}
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, nil, errorsx.InvalidParam("客服小组名称不能为空")
@@ -264,14 +268,18 @@ func (s *agentTeamSquadService) buildModel(db *gorm.DB, id, teamID int64, name s
 	if err != nil {
 		return nil, nil, err
 	}
-	return &models.AgentTeamSquad{ID: id, TeamID: teamID, Name: name, LeaderUserID: leaderUserID, Status: enums.Status(status), Remark: strings.TrimSpace(remark)}, memberIDs, nil
+	return &models.AgentTeamSquad{ID: id, TenantID: team.TenantID, TeamID: teamID, Name: name, LeaderUserID: leaderUserID, Status: enums.Status(status), Remark: strings.TrimSpace(remark)}, memberIDs, nil
 }
 
 func (s *agentTeamSquadService) validateMemberProfilesDB(db *gorm.DB, teamID, leaderUserID int64, memberIDs []int64) ([]int64, error) {
+	team := repositories.AgentTeamRepository.Get(db, teamID)
+	if team == nil || team.TenantID <= 0 || team.Status == enums.StatusDeleted {
+		return nil, errorsx.InvalidParam("综合客服组不存在或尚未归属接入公司")
+	}
 	memberIDs = uniquePositive(memberIDs)
 	if leaderUserID > 0 {
 		leaderProfile := repositories.AgentProfileRepository.Take(db, "user_id = ? AND status <> ?", leaderUserID, enums.StatusDeleted)
-		if leaderProfile == nil || leaderProfile.TeamID != teamID {
+		if leaderProfile == nil || leaderProfile.TeamID != teamID || leaderProfile.TenantID != team.TenantID {
 			return nil, errorsx.InvalidParam("小组负责人必须是综合客服组内客服")
 		}
 		memberIDs = append(memberIDs, leaderProfile.ID)
@@ -285,7 +293,7 @@ func (s *agentTeamSquadService) validateMemberProfilesDB(db *gorm.DB, teamID, le
 		return nil, errorsx.InvalidParam("部分客服档案不存在或已删除")
 	}
 	for i := range profiles {
-		if profiles[i].TeamID != teamID {
+		if profiles[i].TeamID != teamID || profiles[i].TenantID != team.TenantID {
 			return nil, errorsx.InvalidParam("客服小组只能包含所属综合客服组内客服")
 		}
 	}
@@ -294,6 +302,10 @@ func (s *agentTeamSquadService) validateMemberProfilesDB(db *gorm.DB, teamID, le
 }
 
 func (s *agentTeamSquadService) replaceMembersDB(db *gorm.DB, squad *models.AgentTeamSquad, memberIDs []int64, operator *dto.AuthPrincipal) error {
+	team := repositories.AgentTeamRepository.Get(db, squad.TeamID)
+	if team == nil || team.TenantID <= 0 || squad.TenantID != team.TenantID {
+		return errorsx.InvalidParam("客服小组与综合客服组的接入公司不一致")
+	}
 	memberIDs, err := s.validateMemberProfilesDB(db, squad.TeamID, squad.LeaderUserID, memberIDs)
 	if err != nil {
 		return err
@@ -308,13 +320,13 @@ func (s *agentTeamSquadService) replaceMembersDB(db *gorm.DB, squad *models.Agen
 		current := repositories.AgentTeamSquadMemberRepository.Take(db, "squad_id = ? AND agent_profile_id = ?", squad.ID, profileID)
 		if current != nil {
 			if err := repositories.AgentTeamSquadMemberRepository.Updates(db, current.ID, map[string]any{
-				"status": enums.StatusOk, "updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
+				"tenant_id": squad.TenantID, "status": enums.StatusOk, "updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
 			}); err != nil {
 				return err
 			}
 			continue
 		}
-		item := &models.AgentTeamSquadMember{SquadID: squad.ID, AgentProfileID: profileID, Status: enums.StatusOk, AuditFields: utils.BuildAuditFields(operator)}
+		item := &models.AgentTeamSquadMember{TenantID: squad.TenantID, SquadID: squad.ID, AgentProfileID: profileID, Status: enums.StatusOk, AuditFields: utils.BuildAuditFields(operator)}
 		if err := repositories.AgentTeamSquadMemberRepository.Create(db, item); err != nil {
 			return err
 		}

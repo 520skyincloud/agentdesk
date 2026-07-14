@@ -130,13 +130,32 @@ func TestAgentTeamScheduleServiceCreateAllowsTodayEarlierThanCurrentTime(t *test
 	if item == nil || item.ID == 0 {
 		t.Fatalf("expected created schedule, got %+v", item)
 	}
+	if item.TenantID != 101 {
+		t.Fatalf("schedule tenant = %d, want 101", item.TenantID)
+	}
+}
+
+func TestAgentTeamScheduleServiceGenericCreateInheritsTenant(t *testing.T) {
+	db := setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, db)
+	tomorrow := time.Now().AddDate(0, 0, 1)
+	item := &models.AgentTeamSchedule{
+		TeamID: 1, StartAt: parseTestDateTime(t, formatTestDateTime(tomorrow, "09:00:00")),
+		EndAt: parseTestDateTime(t, formatTestDateTime(tomorrow, "18:00:00")), Status: enums.StatusOk,
+	}
+	if err := services.AgentTeamScheduleService.Create(item); err != nil {
+		t.Fatalf("generic Create() error = %v", err)
+	}
+	if item.TenantID != 101 {
+		t.Fatalf("generic schedule tenant = %d, want 101", item.TenantID)
+	}
 }
 
 func TestAgentTeamScheduleServiceCreateSupportsSquadAndRejectsCrossTeam(t *testing.T) {
 	db := setupAgentTeamScheduleTestDB(t)
 	createAgentTeamScheduleTestTeams(t, db)
-	squad := &models.AgentTeamSquad{TeamID: 1, Name: "白班一组", Status: enums.StatusOk}
-	otherSquad := &models.AgentTeamSquad{TeamID: 2, Name: "晚班二组", Status: enums.StatusOk}
+	squad := &models.AgentTeamSquad{TenantID: 101, TeamID: 1, Name: "白班一组", Status: enums.StatusOk}
+	otherSquad := &models.AgentTeamSquad{TenantID: 101, TeamID: 2, Name: "晚班二组", Status: enums.StatusOk}
 	if err := db.Create(squad).Error; err != nil {
 		t.Fatalf("create squad: %v", err)
 	}
@@ -164,7 +183,7 @@ func TestAgentTeamScheduleServiceCreateSupportsSquadAndRejectsCrossTeam(t *testi
 func TestAgentTeamScheduleServiceBatchSquadRequiresSingleTeam(t *testing.T) {
 	db := setupAgentTeamScheduleTestDB(t)
 	createAgentTeamScheduleTestTeams(t, db)
-	squad := &models.AgentTeamSquad{TeamID: 1, Name: "批量排班小组", Status: enums.StatusOk}
+	squad := &models.AgentTeamSquad{TenantID: 101, TeamID: 1, Name: "批量排班小组", Status: enums.StatusOk}
 	if err := db.Create(squad).Error; err != nil {
 		t.Fatalf("create squad: %v", err)
 	}
@@ -471,6 +490,11 @@ func TestAgentTeamScheduleServiceBatchGenerateCreatesAllSchedules(t *testing.T) 
 	if len(schedules) != 4 {
 		t.Fatalf("expected 4 stored schedules, got %d: %+v", len(schedules), schedules)
 	}
+	for i := range schedules {
+		if schedules[i].TenantID != 101 {
+			t.Fatalf("generated schedule tenant = %d, want 101", schedules[i].TenantID)
+		}
+	}
 	expected := []struct {
 		teamID  int64
 		startAt string
@@ -586,8 +610,8 @@ func createAgentTeamScheduleTestData(t *testing.T, db *gorm.DB) {
 func createAgentTeamScheduleTestTeams(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	teams := []models.AgentTeam{
-		{ID: 1, Name: "售前组", Status: enums.StatusOk},
-		{ID: 2, Name: "售后组", Status: enums.StatusOk},
+		{ID: 1, TenantID: 101, Name: "售前组", Status: enums.StatusOk},
+		{ID: 2, TenantID: 101, Name: "售后组", Status: enums.StatusOk},
 	}
 	if err := db.Create(&teams).Error; err != nil {
 		t.Fatalf("create teams error = %v", err)
@@ -643,5 +667,5 @@ func parseTestDateTime(t *testing.T, value string) time.Time {
 }
 
 func testOperator() *dto.AuthPrincipal {
-	return &dto.AuthPrincipal{UserID: 1, Username: "tester", Status: enums.StatusOk, Roles: []string{constants.RoleCodeAdmin}}
+	return &dto.AuthPrincipal{UserID: 1, Username: "tester", ActiveTenantID: 101, Status: enums.StatusOk, Roles: []string{constants.RoleCodeAdmin}}
 }

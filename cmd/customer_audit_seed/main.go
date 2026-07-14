@@ -15,6 +15,7 @@ import (
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
 	"golang.org/x/crypto/bcrypt"
@@ -37,6 +38,7 @@ const (
 
 type seedContext struct {
 	db           *gorm.DB
+	tenant       *models.Tenant
 	batch        string
 	marker       string
 	passwordHash string
@@ -158,6 +160,9 @@ func seed(db *gorm.DB, batch, password string) error {
 
 	return sqls.WithTransaction(func(tx *sqls.TxContext) error {
 		ctx.db = tx.Tx
+		if err := ctx.loadTenant(); err != nil {
+			return err
+		}
 		if err := ctx.loadRoles(); err != nil {
 			return err
 		}
@@ -193,6 +198,14 @@ func seed(db *gorm.DB, batch, password string) error {
 		}
 		return nil
 	})
+}
+
+func (ctx *seedContext) loadTenant() error {
+	ctx.tenant = repositories.TenantRepository.GetByTenantCode(ctx.db, constants.LegacyDefaultTenantCode)
+	if ctx.tenant == nil || ctx.tenant.Status != enums.StatusOk {
+		return fmt.Errorf("legacy default tenant is missing or disabled")
+	}
+	return nil
 }
 
 func cleanup(db *gorm.DB, batch string) error {
@@ -538,6 +551,7 @@ func (ctx *seedContext) upsertUser(username, nickname string, roleID int64, rema
 	item := &models.User{}
 	err := ctx.db.Where("username = ?", username).Take(item).Error
 	updates := map[string]any{
+		"tenant_id":        ctx.tenant.ID,
 		"nickname":         nickname,
 		"password":         ctx.passwordHash,
 		"status":           enums.StatusOk,
@@ -548,17 +562,23 @@ func (ctx *seedContext) upsertUser(username, nickname string, roleID int64, rema
 		"update_user_name": constants.SystemAuditUserName,
 	}
 	if err == nil {
+		if item.TenantID != ctx.tenant.ID {
+			return nil, fmt.Errorf("test user %s belongs to tenant %d, expected %d", username, item.TenantID, ctx.tenant.ID)
+		}
 		if err := ctx.db.Model(item).Updates(updates).Error; err != nil {
 			return nil, err
 		}
 	} else if err == gorm.ErrRecordNotFound {
 		item = &models.User{
-			Username:    username,
-			Nickname:    nickname,
-			Password:    ctx.passwordHash,
-			Status:      enums.StatusOk,
-			Remark:      ctx.seedRemark(remark),
-			AuditFields: ctx.audit,
+			TenantID:           ctx.tenant.ID,
+			Username:           username,
+			Nickname:           nickname,
+			Password:           ctx.passwordHash,
+			RegistrationSource: enums.UserRegistrationSourceLegacyMigration,
+			ApprovalStatus:     enums.UserApprovalStatusApproved,
+			Status:             enums.StatusOk,
+			Remark:             ctx.seedRemark(remark),
+			AuditFields:        ctx.audit,
 		}
 		if err := ctx.db.Create(item).Error; err != nil {
 			return nil, err
@@ -593,8 +613,9 @@ func (ctx *seedContext) upsertTeams() error {
 			storeIDs = append(storeIDs, ctx.stores[storeIndex-1].ID)
 		}
 		item := &models.AgentTeam{}
-		err := ctx.db.Where("name = ?", teamName).Take(item).Error
+		err := ctx.db.Where("tenant_id = ? AND name = ?", ctx.tenant.ID, teamName).Take(item).Error
 		updates := map[string]any{
+			"tenant_id":         ctx.tenant.ID,
 			"leader_user_id":    ctx.leaders[i-1].ID,
 			"company_scope_ids": fmt.Sprintf("%d", ctx.company.ID),
 			"store_scope_ids":   joinInt64s(storeIDs),
@@ -616,6 +637,7 @@ func (ctx *seedContext) upsertTeams() error {
 			return err
 		}
 		item = &models.AgentTeam{
+			TenantID:        ctx.tenant.ID,
 			Name:            teamName,
 			LeaderUserID:    ctx.leaders[i-1].ID,
 			CompanyScopeIDs: fmt.Sprintf("%d", ctx.company.ID),
@@ -641,6 +663,7 @@ func (ctx *seedContext) upsertAgentProfiles() error {
 		item := &models.AgentProfile{}
 		err := ctx.db.Where("user_id = ? OR agent_code = ?", user.ID, code).Take(item).Error
 		updates := map[string]any{
+			"tenant_id":               ctx.tenant.ID,
 			"user_id":                 user.ID,
 			"team_id":                 team.ID,
 			"agent_code":              code,
@@ -657,6 +680,9 @@ func (ctx *seedContext) upsertAgentProfiles() error {
 			"update_user_name":        constants.SystemAuditUserName,
 		}
 		if err == nil {
+			if item.TenantID != ctx.tenant.ID {
+				return fmt.Errorf("test agent profile %d belongs to tenant %d, expected %d", item.ID, item.TenantID, ctx.tenant.ID)
+			}
 			if err := ctx.db.Model(item).Updates(updates).Error; err != nil {
 				return err
 			}
@@ -666,6 +692,7 @@ func (ctx *seedContext) upsertAgentProfiles() error {
 			return err
 		}
 		item = &models.AgentProfile{
+			TenantID:              ctx.tenant.ID,
 			UserID:                user.ID,
 			TeamID:                team.ID,
 			AgentCode:             code,

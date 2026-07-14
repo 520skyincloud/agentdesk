@@ -27,19 +27,13 @@ type InitResult struct {
 // 4. 为客服A和客服B创建客服档案，关联到该客服组
 func Init() (*InitResult, error) {
 	result := &InitResult{}
-
-	// 获取管理员用户
-	adminUser := repositories.UserRepository.Take(
-		sqls.DB(),
-		"username = ?",
-		constants.BootstrapAdminUsername,
-	)
-	if adminUser == nil {
-		return result, fmt.Errorf("bootstrap admin user not found")
+	tenant := repositories.TenantRepository.GetByTenantCode(sqls.DB(), constants.LegacyDefaultTenantCode)
+	if tenant == nil || tenant.Status != enums.StatusOk {
+		return result, fmt.Errorf("legacy default tenant is missing or disabled")
 	}
 
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		return initTeamAndUsers(ctx, adminUser, result)
+		return initTeamAndUsers(ctx, tenant, result)
 	})
 	if err != nil {
 		return result, fmt.Errorf("init team and users failed: %w", err)
@@ -48,14 +42,13 @@ func Init() (*InitResult, error) {
 	return result, nil
 }
 
-func initTeamAndUsers(ctx *sqls.TxContext, leaderUser *models.User, result *InitResult) error {
+func initTeamAndUsers(ctx *sqls.TxContext, tenant *models.Tenant, result *InitResult) error {
 	teamName := "默认客服组"
 	now := time.Now()
 
-	team := repositories.AgentTeamRepository.Take(ctx.Tx, "name = ?", teamName)
+	team := repositories.AgentTeamRepository.Take(ctx.Tx, "tenant_id = ? AND name = ?", tenant.ID, teamName)
 	if team != nil {
 		if err := ctx.Tx.Model(team).Updates(map[string]any{
-			"leader_user_id":   leaderUser.ID,
 			"update_user_id":   constants.SystemAuditUserID,
 			"update_user_name": constants.SystemAuditUserName,
 			"updated_at":       now,
@@ -64,10 +57,10 @@ func initTeamAndUsers(ctx *sqls.TxContext, leaderUser *models.User, result *Init
 		}
 	} else {
 		team = &models.AgentTeam{
-			Name:         teamName,
-			LeaderUserID: leaderUser.ID,
-			Status:       enums.StatusOk,
-			Description:  "Local testdata seed - default service team",
+			TenantID:    tenant.ID,
+			Name:        teamName,
+			Status:      enums.StatusOk,
+			Description: "Local testdata seed - default service team",
 			AuditFields: models.AuditFields{
 				CreatedAt:      now,
 				CreateUserID:   constants.SystemAuditUserID,
@@ -89,7 +82,7 @@ func initTeamAndUsers(ctx *sqls.TxContext, leaderUser *models.User, result *Init
 		code     string
 	}{
 		{
-			username: leaderUser.Username,
+			username: "agent_leader",
 			nickname: "客服组长",
 			code:     "AGENT_LEADER_A",
 		},
@@ -105,8 +98,8 @@ func initTeamAndUsers(ctx *sqls.TxContext, leaderUser *models.User, result *Init
 		},
 	}
 
-	for _, agentUser := range agentUsers {
-		userID, userCreated, err := createOrGetUser(ctx, agentUser.username, agentUser.nickname)
+	for index, agentUser := range agentUsers {
+		userID, userCreated, err := createOrGetUser(ctx, tenant.ID, agentUser.username, agentUser.nickname)
 		if err != nil {
 			return err
 		}
@@ -115,7 +108,7 @@ func initTeamAndUsers(ctx *sqls.TxContext, leaderUser *models.User, result *Init
 		}
 
 		// 创建或更新客服档案
-		profileCreated, err := createOrUpdateProfile(ctx, userID, team.ID, agentUser.code, agentUser.nickname)
+		profileCreated, err := createOrUpdateProfile(ctx, tenant.ID, userID, team.ID, agentUser.code, agentUser.nickname)
 		if err != nil {
 			return err
 		}
@@ -124,12 +117,20 @@ func initTeamAndUsers(ctx *sqls.TxContext, leaderUser *models.User, result *Init
 		} else {
 			result.UpdatesApplied++
 		}
+		if index == 0 {
+			if err := ctx.Tx.Model(team).Updates(map[string]any{
+				"leader_user_id": userID, "update_user_id": constants.SystemAuditUserID,
+				"update_user_name": constants.SystemAuditUserName, "updated_at": now,
+			}).Error; err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
 }
 
-func createOrGetUser(ctx *sqls.TxContext, username, nickname string) (int64, bool, error) {
+func createOrGetUser(ctx *sqls.TxContext, tenantID int64, username, nickname string) (int64, bool, error) {
 	user := repositories.UserRepository.Take(
 		ctx.Tx,
 		"username = ?",
@@ -137,6 +138,9 @@ func createOrGetUser(ctx *sqls.TxContext, username, nickname string) (int64, boo
 	)
 
 	if user != nil {
+		if user.TenantID != tenantID {
+			return 0, false, fmt.Errorf("testdata user %s belongs to tenant %d, expected %d", username, user.TenantID, tenantID)
+		}
 		return user.ID, false, nil
 	}
 
@@ -148,11 +152,14 @@ func createOrGetUser(ctx *sqls.TxContext, username, nickname string) (int64, boo
 
 	now := time.Now()
 	newUser := &models.User{
-		Username: username,
-		Nickname: nickname,
-		Password: string(hashedPassword),
-		Status:   enums.StatusOk,
-		Remark:   "Local testdata seed",
+		TenantID:           tenantID,
+		Username:           username,
+		Nickname:           nickname,
+		Password:           string(hashedPassword),
+		RegistrationSource: enums.UserRegistrationSourceLegacyMigration,
+		ApprovalStatus:     enums.UserApprovalStatusApproved,
+		Status:             enums.StatusOk,
+		Remark:             "Local testdata seed",
 		AuditFields: models.AuditFields{
 			CreatedAt:      now,
 			CreateUserID:   constants.SystemAuditUserID,
@@ -170,7 +177,7 @@ func createOrGetUser(ctx *sqls.TxContext, username, nickname string) (int64, boo
 	return newUser.ID, true, nil
 }
 
-func createOrUpdateProfile(ctx *sqls.TxContext, userID, teamID int64, agentCode, displayName string) (bool, error) {
+func createOrUpdateProfile(ctx *sqls.TxContext, tenantID, userID, teamID int64, agentCode, displayName string) (bool, error) {
 	profile := repositories.AgentProfileRepository.Take(
 		ctx.Tx,
 		"user_id = ?",
@@ -180,8 +187,12 @@ func createOrUpdateProfile(ctx *sqls.TxContext, userID, teamID int64, agentCode,
 	now := time.Now()
 
 	if profile != nil {
+		if profile.TenantID != tenantID {
+			return false, fmt.Errorf("testdata profile %d belongs to tenant %d, expected %d", profile.ID, profile.TenantID, tenantID)
+		}
 		// 档案已存在，更新关键信息
 		return false, ctx.Tx.Model(profile).Updates(map[string]any{
+			"tenant_id":        tenantID,
 			"team_id":          teamID,
 			"agent_code":       agentCode,
 			"display_name":     displayName,
@@ -194,6 +205,7 @@ func createOrUpdateProfile(ctx *sqls.TxContext, userID, teamID int64, agentCode,
 
 	// 创建新档案
 	newProfile := &models.AgentProfile{
+		TenantID:           tenantID,
 		UserID:             userID,
 		TeamID:             teamID,
 		AgentCode:          agentCode,

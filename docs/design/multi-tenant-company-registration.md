@@ -771,6 +771,14 @@ POST /api/auth/register
 - 建立组合唯一索引。
 - 生成一致性检查命令，不把临时结果提交到 `docs/generated/`。
 
+首批实现状态（2026-07-14）：
+
+- 已完成客服组织批次：`AgentProfile`、`AgentTeamSquad`、`AgentTeamSquadMember`、`AgentTeamSchedule` 增加 TenantID，并从 `AgentTeam`/`User` 确定性写入和回填。
+- 客服组创建必须从当前 `ActiveTenantID` 写入租户；公司主管可以创建和管理本公司客服组，不能管理其他租户客服组。
+- 历史数据出现账号与客服组租户冲突、跨租户小组成员或排班小组错配时 migration 中止，不自动改归属。
+- 客服分支旧 migration 25/26 已避让 AI 分支并重编号为 37/38，客服组织租户回填使用 39；migration runner 会拒绝同版本不同 remark 的历史记录。
+- 本批次尚未增加运行时查询过滤，也未完成其他业务模型、组合唯一索引和一致性检查命令；这些仍按后续阶段分批推进。
+
 ### 阶段 5：业务服务强制隔离
 
 - 用户、角色分配和客服组织。

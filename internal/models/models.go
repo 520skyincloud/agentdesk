@@ -848,6 +848,7 @@ type TicketProgress struct {
 // AgentProfile 客服档案。
 type AgentProfile struct {
 	ID                     int64               `gorm:"primaryKey;autoIncrement"`                         // ID 为客服档案主键。
+	TenantID               int64               `gorm:"type:bigint;not null;default:0;index"`             // TenantID 为客服档案所属接入公司，从客服组和账号归属确定。
 	UserID                 int64               `gorm:"type:bigint;not null;uniqueIndex"`                 // UserID 关联后台用户，一名用户只允许一份客服档案。
 	TeamID                 int64               `gorm:"type:bigint;not null;default:0;index"`             // TeamID 为客服所属客服组。
 	StoreScopeIDs          string              `gorm:"type:varchar(500);not null;default:''"`            // StoreScopeIDs 为客服可服务的门店ID，逗号分隔；为空时继承客服组范围。
@@ -886,6 +887,7 @@ type AgentTeam struct {
 // AgentTeamSquad 是综合客服组内用于排班和调度的客服小组，不独立承接会话。
 type AgentTeamSquad struct {
 	ID           int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID     int64        `gorm:"type:bigint;not null;default:0;index"`
 	TeamID       int64        `gorm:"type:bigint;not null;index"`
 	Name         string       `gorm:"type:varchar(100);not null;default:'';index"`
 	LeaderUserID int64        `gorm:"type:bigint;not null;default:0;index"`
@@ -897,6 +899,7 @@ type AgentTeamSquad struct {
 // AgentTeamSquadMember 记录客服档案与客服小组的多对多关系。
 type AgentTeamSquadMember struct {
 	ID             int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID       int64        `gorm:"type:bigint;not null;default:0;index"`
 	SquadID        int64        `gorm:"type:bigint;not null;index;uniqueIndex:uk_agent_team_squad_member"`
 	AgentProfileID int64        `gorm:"type:bigint;not null;index;uniqueIndex:uk_agent_team_squad_member"`
 	Status         enums.Status `gorm:"type:int;not null;default:0;index"`
@@ -905,13 +908,14 @@ type AgentTeamSquadMember struct {
 
 // AgentTeamSchedule 客服组排班。
 type AgentTeamSchedule struct {
-	ID      int64        `gorm:"primaryKey;autoIncrement"`              // ID 为组排班主键。
-	TeamID  int64        `gorm:"type:bigint;not null;index"`            // TeamID 为被排班的客服组ID。
-	SquadID int64        `gorm:"type:bigint;not null;default:0;index"`  // SquadID 为值班客服小组ID，0 表示全组值班。
-	StartAt time.Time    `gorm:"type:datetime;not null;index"`          // StartAt 为班次开始时间。
-	EndAt   time.Time    `gorm:"type:datetime;not null;index"`          // EndAt 为班次结束时间。
-	Remark  string       `gorm:"type:varchar(255);not null;default:''"` // Remark 记录排班备注。
-	Status  enums.Status `gorm:"type:int;not null;default:0;index"`     // Status 表示组排班记录状态。
+	ID       int64        `gorm:"primaryKey;autoIncrement"`              // ID 为组排班主键。
+	TenantID int64        `gorm:"type:bigint;not null;default:0;index"`  // TenantID 为排班所属接入公司，从客服组继承。
+	TeamID   int64        `gorm:"type:bigint;not null;index"`            // TeamID 为被排班的客服组ID。
+	SquadID  int64        `gorm:"type:bigint;not null;default:0;index"`  // SquadID 为值班客服小组ID，0 表示全组值班。
+	StartAt  time.Time    `gorm:"type:datetime;not null;index"`          // StartAt 为班次开始时间。
+	EndAt    time.Time    `gorm:"type:datetime;not null;index"`          // EndAt 为班次结束时间。
+	Remark   string       `gorm:"type:varchar(255);not null;default:''"` // Remark 记录排班备注。
+	Status   enums.Status `gorm:"type:int;not null;default:0;index"`     // Status 表示组排班记录状态。
 	AuditFields
 }
 

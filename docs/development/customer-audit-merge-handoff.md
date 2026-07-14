@@ -81,10 +81,10 @@
 
 DDL 由 AutoMigrate 执行，兼容 SQLite 和 MySQL。DML 回填使用：
 
-- `000025_backfill_wxwork_agent_team_bindings.go`
-- `000026_backfill_store_staff_agent_team_bindings.go`
+- `000037_backfill_wxwork_agent_team_bindings.go`
+- `000038_backfill_store_staff_agent_team_bindings.go`
 
-版本 `21-24` 已由 `codex/ai-billing` 使用，因此本分支不得恢复为 `21/22`。
+这两个迁移最初在客服分支使用 25/26；`codex/ai-billing` 后续占用 21-33 后，已在阶段 4 重编号为 37/38。执行过旧 25/26 的分支开发库不能直接与 AI 分支合并使用，必须重建或逐条核验后人工 remap，禁止直接删除生产迁移记录。
 
 ## 5. 接口与页面
 
@@ -194,7 +194,7 @@ pnpm --dir web typecheck
 - `AgentTeamSchedule.SquadID=0` 表示全组值班，正数表示指定小组值班。
 - `ConversationAssignment.SquadID` 保存派发小组快照；Conversation 仍只通过 `CurrentTeamID` 归属综合客服组。
 - 小组 CRUD 与成员替换接口位于 `/api/dashboard/agent-team/squad/*`，复用既有 `agentTeam.*` 全局权限，不增加平行权限。
-- DDL 仅通过 AutoMigrate，无 migration 版本，因此不与 `ai-billing` 的 `21-24` 或本分支 `25-26` 冲突。
+- DDL 仅通过 AutoMigrate；相关历史绑定 DML 最终使用 37/38，不与 `ai-billing` 的 21-33 冲突。
 
 ### 运行语义
 
@@ -556,3 +556,62 @@ make enums
 - 邀请注册创建的账号必须保持 `EmailVerifiedAt=nil`，后续邮箱验证语义由 AI/计费分支负责人共同确认后再调整。
 - 本步骤不修改 AI runtime、模型调用、供应商、FastGPT、token 统计、计费、消息状态或 WebSocket payload。建议先合并阶段 1-3B 的租户认证共享契约，再让并行分支 rebase，之后继续阶段 4 的业务模型租户字段。
 - 回滚时可关闭注册开关并回滚路由/service；AutoMigrate 已增加的安全日志列保留，不执行破坏性 DDL。后台审核路由可独立保留，不影响平台管理员后台创建账号。
+
+## 17. 多租户阶段 4A：客服组织租户字段与历史回填（2026-07-14）
+
+### 本步骤目标与结果
+
+- 为 `AgentProfile`、`AgentTeamSquad`、`AgentTeamSquadMember`、`AgentTeamSchedule` 增加 `TenantID`；`AgentTeam` 已在阶段 3A 增加该字段，继续作为客服组织的租户父级。
+- `AgentTeam` 页面创建现在必须存在 `ActiveTenantID`，并从认证上下文写入租户；公司主管被纳入客服组织管理员，但只能管理本租户客服组。平台管理员管理非历史客服组时也必须先进入对应公司。
+- 客服档案创建/更新同时校验账号与客服组属于同一租户，并从客服组写入 TenantID。
+- 客服小组、成员关系、单条排班和批量排班均从客服组继承 TenantID；跨租户账号、客服组、小组、成员或排班关系在 service 层拒绝。
+- 通用排班 `Create/Update` 同样补齐父级校验，避免绕过后台业务方法创建零租户排班。
+- `cmd/customer_audit_seed` 与 `cmd/testdata/agentteam` 明确使用 `legacy-default`，写入用户、客服组和客服档案租户字段；测试数据不再把平台超级管理员当作租户客服组长。
+
+### Migration 与数据安全
+
+- 原客服分支 migration 25/26 与 `codex/ai-billing` 的 25/26 语义冲突，最终重编号为：
+  - 37：企微员工号客服组绑定回填。
+  - 38：门店员工客服组绑定回填。
+  - 39：客服档案、小组、成员和排班租户回填。
+- migration 39 先由账号/客服组确定历史记录租户，再验证全部显式非零值和父子关系；客服组长账号错租户、客服账号与客服组冲突、跨租户小组成员、排班引用其他客服组小组或父记录缺失时整笔事务回滚，不猜测归属。
+- migration runner 新增“数据库已执行记录的 version + remark 必须匹配当前代码定义”校验，防止旧分支开发库把同版本的另一迁移静默跳过；同时修正迁移记录写入失败日志引用错误变量的问题。
+- DDL 仍由 AutoMigrate 增加兼容 SQLite/MySQL 的 `bigint not null default 0` 索引字段；本步骤不删除旧列或索引。
+
+### 主要文件
+
+```text
+internal/models/models.go
+internal/services/agent_profile_service.go
+internal/services/agent_team_service.go
+internal/services/agent_team_scope_service.go
+internal/services/agent_team_squad_service.go
+internal/services/agent_team_schedule_service.go
+internal/migration/migration.go
+internal/migration/000037_backfill_wxwork_agent_team_bindings.go
+internal/migration/000038_backfill_store_staff_agent_team_bindings.go
+internal/migration/000039_backfill_agent_organization_tenants.go
+cmd/customer_audit_seed/main.go
+cmd/testdata/agentteam/init.go
+cmd/testdata/README_AGENTTEAM.md
+```
+
+### 验证与未完成边界
+
+```text
+go test ./internal/migration -run 'Test(BackfillAgentOrganizationTenants|ValidateMigrationDefinition)' -count=1
+go test ./internal/services -run 'Test(AgentTeamScope|TenantAdminCreates|BindStoreStaff|UpdateAgentTeam|AgentTeamSquad|BuildAgentProfileModel|AgentTeamScheduleService)' -count=1
+go test ./cmd/customer_audit_seed ./cmd/testdata ./cmd/testdata/agentteam -run '^$' -count=1
+```
+
+- 已覆盖回填幂等、显式租户保留、账号/客服组冲突回滚、跨租户成员回滚、排班小组冲突回滚，公司主管当前租户创建/管理边界，以及客服档案、小组成员、单条和批量排班的新写入租户继承。
+- `go test -race` 聚焦用例、`go vet ./...`、`go test ./... -run '^$' -count=1` 和 `cd web && pnpm typecheck` 通过。完整 `internal/services` 中本步骤相关测试全部通过，包最终仍因阶段 3B 已记录的异步 AI 回复测试清库竞态而失败，本步骤未改 AI runtime。
+- 本步骤是阶段 4 的首个低冲突批次，只完成客服组织数据契约和写入一致性。列表、详情、统计、派单和排班查询的强制 `tenant_id` 过滤属于阶段 5，当前不能据此宣布客服组织运行时隔离完成。
+- 客户、客户企业、门店、企微员工号、会话、消息、派单、工单、知识库、文件、WebSocket、回调、Outbox 和向量检索仍待后续批次。
+
+### 并行分支与回滚
+
+- 开始和 migration 重编号前均已核对 `origin/codex/ai-billing@f2d2da4`；该分支 migration 最高为 33，本分支最终从 34 连续使用至 39。
+- 本步骤与 AI 分支仅在 `internal/models/models.go` 同文件重叠，字段位于客服组织模型；不修改 `EmailVerifiedAt`、AI 模型、回复引擎、FastGPT、token 或计费语义。合并时必须保留双方字段。
+- 含旧客服分支 migration 25/26 成功记录的数据库，在合并 AI 分支后会被定义校验明确阻止启动；开发环境优先备份后重建，其他环境必须逐条核对 remark 和真实数据效果后制定 remap，不自动修复。
+- 回滚代码时可移除新写入校验，但 AutoMigrate 新列和已回填 TenantID 保留；不得用破坏性 DDL 清列或删除迁移历史。

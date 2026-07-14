@@ -57,6 +57,7 @@ type AgentTeamScheduleBatchGenerateResult struct {
 }
 
 type batchScheduleCandidate struct {
+	TenantID  int64
 	TeamID    int64
 	TeamName  string
 	SquadID   int64
@@ -111,10 +112,16 @@ func (s *agentTeamScheduleService) FindCalendarSchedules(req request.AgentTeamSc
 }
 
 func (s *agentTeamScheduleService) Create(t *models.AgentTeamSchedule) error {
+	if err := s.applyScheduleTenantDB(sqls.DB(), t); err != nil {
+		return err
+	}
 	return repositories.AgentTeamScheduleRepository.Create(sqls.DB(), t)
 }
 
 func (s *agentTeamScheduleService) Update(t *models.AgentTeamSchedule) error {
+	if err := s.applyScheduleTenantDB(sqls.DB(), t); err != nil {
+		return err
+	}
 	return repositories.AgentTeamScheduleRepository.Update(sqls.DB(), t)
 }
 
@@ -173,6 +180,7 @@ func (s *agentTeamScheduleService) UpdateAgentTeamSchedule(req request.UpdateAge
 		return err
 	}
 	if err := repositories.AgentTeamScheduleRepository.Updates(sqls.DB(), req.ID, map[string]any{
+		"tenant_id":        item.TenantID,
 		"team_id":          item.TeamID,
 		"squad_id":         item.SquadID,
 		"start_at":         item.StartAt,
@@ -245,6 +253,7 @@ func (s *agentTeamScheduleService) BatchGenerate(req request.AgentTeamScheduleBa
 	schedules := make([]models.AgentTeamSchedule, 0, len(candidates))
 	for _, candidate := range candidates {
 		schedules = append(schedules, models.AgentTeamSchedule{
+			TenantID:    candidate.TenantID,
 			TeamID:      candidate.TeamID,
 			SquadID:     candidate.SquadID,
 			StartAt:     candidate.StartAt,
@@ -295,6 +304,9 @@ func (s *agentTeamScheduleService) buildScheduleModel(id, teamID, squadID int64,
 	if team == nil {
 		return nil, errorsx.InvalidParam("客服组不存在")
 	}
+	if team.TenantID <= 0 {
+		return nil, errorsx.InvalidParam("客服组尚未归属接入公司")
+	}
 	if !slices.Contains(enums.StatusValues, team.Status) {
 		return nil, errorsx.InvalidParam("客服组状态不合法")
 	}
@@ -325,11 +337,12 @@ func (s *agentTeamScheduleService) buildScheduleModel(id, teamID, squadID int64,
 		}
 	}
 	return &models.AgentTeamSchedule{
-		TeamID:  teamID,
-		SquadID: squadID,
-		StartAt: startAtValue,
-		EndAt:   endAtValue,
-		Remark:  strings.TrimSpace(remark),
+		TenantID: team.TenantID,
+		TeamID:   teamID,
+		SquadID:  squadID,
+		StartAt:  startAtValue,
+		EndAt:    endAtValue,
+		Remark:   strings.TrimSpace(remark),
 	}, nil
 }
 
@@ -374,6 +387,9 @@ func (s *agentTeamScheduleService) buildBatchScheduleCandidates(req request.Agen
 		if !ok || team.Status == enums.StatusDeleted {
 			return nil, errorsx.InvalidParam("客服组不存在")
 		}
+		if team.TenantID <= 0 {
+			return nil, errorsx.InvalidParam("客服组尚未归属接入公司")
+		}
 		if !slices.Contains(enums.StatusValues, team.Status) {
 			return nil, errorsx.InvalidParam("客服组状态不合法")
 		}
@@ -405,6 +421,7 @@ func (s *agentTeamScheduleService) buildBatchScheduleCandidates(req request.Agen
 					return nil, errorsx.InvalidParam(fmt.Sprintf("单次最多生成 %d 条排班", maxAgentTeamScheduleBatchItems))
 				}
 				candidates = append(candidates, batchScheduleCandidate{
+					TenantID:  team.TenantID,
 					TeamID:    teamID,
 					TeamName:  team.Name,
 					SquadID:   req.SquadID,
@@ -535,6 +552,25 @@ func (s *agentTeamScheduleService) validateScheduleSquadDB(db *gorm.DB, teamID, 
 	if squad.TeamID != teamID {
 		return errorsx.InvalidParam("客服小组不属于所选综合客服组")
 	}
+	team := repositories.AgentTeamRepository.Get(db, teamID)
+	if team == nil || team.TenantID <= 0 || squad.TenantID != team.TenantID {
+		return errorsx.InvalidParam("客服小组与综合客服组的接入公司不一致")
+	}
+	return nil
+}
+
+func (s *agentTeamScheduleService) applyScheduleTenantDB(db *gorm.DB, item *models.AgentTeamSchedule) error {
+	if item == nil {
+		return errorsx.InvalidParam("客服组排班不能为空")
+	}
+	team := repositories.AgentTeamRepository.Get(db, item.TeamID)
+	if team == nil || team.TenantID <= 0 {
+		return errorsx.InvalidParam("客服组不存在或尚未归属接入公司")
+	}
+	if err := s.validateScheduleSquadDB(db, item.TeamID, item.SquadID); err != nil {
+		return err
+	}
+	item.TenantID = team.TenantID
 	return nil
 }
 

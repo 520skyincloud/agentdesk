@@ -63,21 +63,27 @@ func (s *agentTeamScopeService) Resolve(operator *dto.AuthPrincipal) ManagedData
 }
 
 func (s *agentTeamScopeService) IsAdmin(operator *dto.AuthPrincipal) bool {
-	return operator != nil && (slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) || slices.Contains(operator.Roles, constants.RoleCodeAdmin))
+	return operator != nil && (slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) ||
+		slices.Contains(operator.Roles, constants.RoleCodeAdmin) ||
+		slices.Contains(operator.Roles, constants.RoleCodeTenantAdmin))
 }
 
 func (s *agentTeamScopeService) CanManageTeam(operator *dto.AuthPrincipal, teamID int64) bool {
 	if operator == nil || teamID <= 0 {
 		return false
 	}
-	if s.IsAdmin(operator) {
-		return true
+	team := repositories.AgentTeamRepository.Get(sqls.DB(), teamID)
+	if slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) || slices.Contains(operator.Roles, constants.RoleCodeAdmin) {
+		return team != nil && (team.TenantID == 0 || (operator.ActiveTenantID > 0 && team.TenantID == operator.ActiveTenantID))
+	}
+	if slices.Contains(operator.Roles, constants.RoleCodeTenantAdmin) {
+		return team != nil && operator.ActiveTenantID > 0 && team.TenantID == operator.ActiveTenantID
 	}
 	if !slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) {
 		return false
 	}
-	team := repositories.AgentTeamRepository.Get(sqls.DB(), teamID)
-	return team != nil && team.Status != enums.StatusDeleted && team.LeaderUserID == operator.UserID
+	return team != nil && team.Status != enums.StatusDeleted && team.LeaderUserID == operator.UserID &&
+		(team.TenantID == 0 || (operator.ActiveTenantID > 0 && team.TenantID == operator.ActiveTenantID))
 }
 
 func (s *agentTeamScopeService) ApplyKnowledgeBaseFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {

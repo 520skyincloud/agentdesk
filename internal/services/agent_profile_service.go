@@ -220,6 +220,7 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 		return err
 	}
 	if err := repositories.AgentProfileRepository.Updates(sqls.DB(), req.ID, map[string]any{
+		"tenant_id":                  item.TenantID,
 		"user_id":                    item.UserID,
 		"team_id":                    item.TeamID,
 		"store_scope_ids":            item.StoreScopeIDs,
@@ -265,7 +266,8 @@ func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgen
 	if req.UserID <= 0 {
 		return nil, errorsx.InvalidParam("请选择关联用户")
 	}
-	if UserService.Get(req.UserID) == nil {
+	user := UserService.Get(req.UserID)
+	if user == nil {
 		return nil, errorsx.InvalidParam("关联用户不存在")
 	}
 	if !UserService.HasRole(req.UserID, constants.RoleCodeCsUser) {
@@ -274,8 +276,12 @@ func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgen
 	if req.TeamID <= 0 {
 		return nil, errorsx.InvalidParam("请选择所属客服组")
 	}
-	if AgentTeamService.Get(req.TeamID) == nil {
+	team := AgentTeamService.Get(req.TeamID)
+	if team == nil {
 		return nil, errorsx.InvalidParam("所属客服组不存在")
+	}
+	if user.TenantID <= 0 || team.TenantID <= 0 || user.TenantID != team.TenantID {
+		return nil, errorsx.InvalidParam("客服账号与客服组必须属于同一接入公司")
 	}
 	req.AgentCode = strings.TrimSpace(req.AgentCode)
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
@@ -295,6 +301,7 @@ func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgen
 		return nil, errorsx.InvalidParam("最大并发接待数不能小于 0")
 	}
 	return &models.AgentProfile{
+		TenantID:               team.TenantID,
 		UserID:                 req.UserID,
 		TeamID:                 req.TeamID,
 		StoreScopeIDs:          "",

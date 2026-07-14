@@ -4,6 +4,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/services"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -57,14 +58,18 @@ func register(version int64, remark string, fn func() error) {
 }
 
 func runMigration(version int64) error {
-	migration, found := migrations[version]
-	if found && migration.Success {
-		return nil
-	}
-
 	f, ok := migrationFuncs[version]
 	if !ok {
 		return errors.New("migration function not found")
+	}
+	migration, found := migrations[version]
+	if found {
+		if err := validateMigrationDefinition(migration, f); err != nil {
+			return err
+		}
+		if migration.Success {
+			return nil
+		}
 	}
 
 	err := f.Fn()
@@ -89,13 +94,25 @@ func runMigration(version int64) error {
 	migration.UpdatedAt = time.Now()
 	if found {
 		if e := services.MigrationService.Update(&migration); e != nil {
-			slog.Error("update migration failed", "version", version, "error", err)
+			slog.Error("update migration failed", "version", version, "error", e)
 		}
 	} else {
 		if e := services.MigrationService.Create(&migration); e != nil {
-			slog.Error("create migration failed", "version", version, "error", err)
+			slog.Error("create migration failed", "version", version, "error", e)
 		}
 	}
 
 	return err
+}
+
+func validateMigrationDefinition(stored models.Migration, current MigrationFunc) error {
+	if stored.Version != current.Version || stored.Remark != current.Remark {
+		return fmt.Errorf(
+			"migration version %d definition mismatch: database remark %q, code remark %q; rebuild the development database or verify and remap migration history before continuing",
+			current.Version,
+			stored.Remark,
+			current.Remark,
+		)
+	}
+	return nil
 }

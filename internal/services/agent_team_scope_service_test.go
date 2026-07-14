@@ -201,6 +201,40 @@ func TestAgentTeamScopeCanManageTeam(t *testing.T) {
 	}
 }
 
+func TestTenantAdminCreatesAndManagesTeamsOnlyInActiveTenant(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.AgentTeam{}, &models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{}); err != nil {
+		t.Fatalf("migrate tenant team models: %v", err)
+	}
+	sqls.SetDB(db)
+	operator := &dto.AuthPrincipal{
+		UserID: 51, Username: "tenant-admin", TenantID: 101, ActiveTenantID: 101,
+		Roles: []string{constants.RoleCodeTenantAdmin},
+	}
+	team, err := AgentTeamService.CreateAgentTeam(request.CreateAgentTeamRequest{Name: "租户客服组", Status: int(enums.StatusOk)}, operator)
+	if err != nil {
+		t.Fatalf("CreateAgentTeam() error = %v", err)
+	}
+	if team.TenantID != operator.ActiveTenantID || !AgentTeamScopeService.CanManageTeam(operator, team.ID) {
+		t.Fatalf("created team=%+v is not manageable in active tenant", team)
+	}
+	other := &models.AgentTeam{TenantID: 202, Name: "其他租户客服组", Status: enums.StatusOk}
+	if err := db.Create(other).Error; err != nil {
+		t.Fatalf("create other tenant team: %v", err)
+	}
+	if AgentTeamScopeService.CanManageTeam(operator, other.ID) {
+		t.Fatal("tenant admin must not manage another tenant's team")
+	}
+	withoutContext := *operator
+	withoutContext.ActiveTenantID = 0
+	if _, err := AgentTeamService.CreateAgentTeam(request.CreateAgentTeamRequest{Name: "无上下文客服组", Status: int(enums.StatusOk)}, &withoutContext); err == nil {
+		t.Fatal("expected team creation without active tenant to be rejected")
+	}
+}
+
 func TestAgentTeamDerivesScopeFromWxWorkInstances(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {

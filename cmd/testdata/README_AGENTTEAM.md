@@ -10,11 +10,16 @@ Agent Team 初始化模块在 `cmd/testdata/agentteam/init.go` 中，用于创�
 
 1. **客服组创建**
    - 名称：`默认客服组`
-   - 组长：Bootstrap 管理员用户（username: `admin`）
+   - 所属公司：历史默认租户（`legacy-default`）
+   - 组长：租户客服组长测试账号（username: `agent_leader`）
    - 状态：启用
    - 描述：`Local testdata seed - default service team`
 
 2. **客服用户创建**
+   - **客服组长**：
+     - 用户名：`agent_leader`
+     - 昵称：`客服组长`
+     - 工号：`AGENT_LEADER_A`
    - **客服A**：
      - 用户名：`agent_a`
      - 昵称：`客服A`
@@ -23,7 +28,7 @@ Agent Team 初始化模块在 `cmd/testdata/agentteam/init.go` 中，用于创�
      - 用户名：`agent_b`
      - 昵称：`客服B`
      - 工号：`AGENT_B`
-   - 默认密码：`ChangeMe123!`（与管理员相同）
+   - 默认密码：`ChangeMe123!`
 
 3. **客服档案创建**
    - 为每个客服用户创建 `AgentProfile` 记录
@@ -49,9 +54,11 @@ type InitResult struct {
 
 该初始化过程是幂等的：
 
-- **客服组**：通过 `name` 字段去重。若组已存在，则只更新组长信息
+- **客服组**：通过 `tenant_id + name` 去重。若组已存在，则只更新组长信息
 - **客服用户**：通过 `username` 字段去重。若用户已存在，则只更新昵称和状态
 - **客服档案**：通过 `user_id` 字段去重。若档案已存在，则更新关键信息（组ID、工号、显示名等）
+
+测试客服组、账号和客服档案都显式写入 `legacy-default` 的 `TenantID`。平台超级管理员不再作为租户客服或客服组长使用。
 
 ## 事务支持
 
