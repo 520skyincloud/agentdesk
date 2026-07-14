@@ -2167,3 +2167,47 @@ git diff --check
 - 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@639b0a2`。AI 分支仅在检查范围内修改 `web/lib/navigation.tsx`，本批未修改该文件；预计文件无同文件冲突，无 migration 编号影响，不需要 rebase。
 - 本批不修改 AI 分支维护的 ReplyIntentConfig、模型供应商、回复 runtime、FastGPT、token、usage 或计费。合并后仍须按第 38 批门槛收口 ReplyIntentConfig 平台写权限。
 - 页面显隐可以独立回滚；Role/MCP handler 平台防线应保留。回滚 catalog 的 `aiAgent.view` 会再次破坏租户 AI Agent 工具选择，除非同步提供新的可见租户权限和完整角色迁移。
+
+## 第 40 批：快捷回复与客户档案动作权限显隐（2026-07-14）
+
+### 目标与复用判断
+
+- 快捷回复、客户档案后端已经按现有 create/update/delete 权限和 Active Tenant 正确鉴权，不需要新增权限、接口或数据模型。
+- 两个前端页面仍使用 `DashboardCrudPage` 默认写动作，导致只持有 view 的客服看到新增、编辑、启停和删除按钮；客户页同时有合法的只读详情动作，不能简单隐藏整个操作列。
+- 复用现有 `showCreate/showEdit/showActionsColumn`、条件 `deleteItem` 和 row action 机制，只修前端表达，不增加平行页面或角色硬编码。
+
+### 文件与契约
+
+```text
+web/app/dashboard/quick-replies/page.tsx
+web/app/dashboard/quick-replies/action-permissions.test.mjs
+web/app/dashboard/customers/page.tsx
+web/app/dashboard/customers/action-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 快捷回复：`quickReply.create` 显示新增，`quickReply.update` 显示编辑与启停，`quickReply.delete` 显示删除；没有 update/delete 时不渲染操作列。
+- 客户档案：`customer.create` 显示新增，`customer.update` 显示编辑与启停，`customer.delete` 显示删除；`customer.view` 下的详情、门店关系、会话跳转继续可用，所以操作列始终保留详情入口。
+- 没有 Go、model、AutoMigrate、DML migration、request/response DTO、enum、API、Gin 路由、WebSocket payload、权限常量、导航或响应结构变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/quick-replies/page.tsx app/dashboard/customers/page.tsx
+git diff --check
+```
+
+- 全量 Go、vet、79 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。
+- 两项新契约测试覆盖 create/update/delete 显隐；客户测试额外固定详情动作保留和状态动作只在 update 权限下出现。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch：`origin/codex/ai-billing@f2d2da4` 与本批预计文件无同文件修改，无 migration 编号影响，不需要 rebase。
+- 客户企业页 `web/app/dashboard/companies/page.tsx` 与 AI 分支同文件，本批主动避开；后续合并后再处理其 CRUD 与 AI 模型设置的双重权限显隐。
+- 本批只改页面表达和测试，可独立回滚且无需数据回滚。回滚不会绕过后端鉴权，但会重新让只读账号看到必然失败的写按钮。

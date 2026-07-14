@@ -1566,3 +1566,21 @@ git diff --check
 - 没有 model、AutoMigrate、DML migration、DTO、enum、Gin 路由、WebSocket payload、权限常量或导航变化。全量 Go、专项 race、vet、77 项前端测试、typecheck、Next 生产构建、目标 ESLint 和浏览器超管回归均通过。
 - 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@639b0a2`。AI 分支只在本批检查范围内修改了导航文件，本批不修改导航，因此无同文件冲突，也不需要 rebase。
 - 回滚页面显隐不会改变服务端权限；角色与 MCP handler 的平台账号防线不应单独回滚。若未来允许租户自建角色或 MCP Server，必须先增加明确 Tenant 归属和数据范围，不能仅移除平台校验。
+
+## 40. 当前实施检查点：快捷回复与客户档案动作权限显隐（2026-07-14）
+
+本检查点继续核对 tenant scope 页面“查看入口”和“写动作”的职责。后端 QuickReply、Customer handler 已按 create/update/delete 正确鉴权并按 Active Tenant 隔离，但前端通用 CRUD 仍默认展示所有写操作，导致只持有 view 的客服看到点击后必然失败的按钮。
+
+### 页面行为与权限契约
+
+- 快捷回复页复用 `quickReply.create/update/delete`：create 控制新增，update 控制编辑和启停，delete 控制删除；只读账号仍可筛选、刷新和查看内容，且完全隐藏空操作列。
+- 客户页复用 `customer.create/update/delete`：create 控制新建，update 控制编辑和启停，delete 控制删除。客户详情、门店关系和已有会话跳转属于 `customer.view` 的只读工作流，始终保留，因此只读账号仍看到详情操作而不是隐藏整列。
+- 页面只改变动作可见性，不以此替代服务端鉴权；现有 handler 权限、Active Tenant 校验、最终 tenant-qualified 写入保持不变。
+- 没有 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket payload、权限常量、导航或 JsonResult 变化。
+
+### 验证、并行与后续
+
+- 全量 Go、vet、79 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；新增契约测试固定两页的动作权限映射，并固定客户详情对只读账号可见。
+- 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 不修改两页或新增测试；无同文件和 migration 编号冲突，不需要 rebase。
+- 客户企业页与 AI 分支同文件，本批不改；排班、标签、知识候选和工单仍需按各自现有动作权限独立核对，不能把本批两个标准 CRUD 页完成解释为全后台显隐审计结束。
+- 本批可完整回滚前端页面与测试，无数据回滚；回滚会恢复误导性的只读写按钮，但不会改变后端权限和租户隔离。

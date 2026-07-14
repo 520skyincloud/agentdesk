@@ -1,7 +1,9 @@
 "use client"
 
 import { FileTextIcon, RefreshCwIcon } from "lucide-react"
+import { useMemo } from "react"
 
+import { useAuth } from "@/components/auth-provider"
 import {
   createDashboardStatusColumn,
   createDashboardStatusToggleAction,
@@ -33,6 +35,14 @@ function getStatusLabel(status: Status, t: (key: string) => string) {
 
 export default function DashboardQuickRepliesPage() {
   const t = useI18n()
+  const { session } = useAuth()
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions]
+  )
+  const canCreate = permissions.has("quickReply.create")
+  const canUpdate = permissions.has("quickReply.update")
+  const canDelete = permissions.has("quickReply.delete")
   const listStatusOptions = [
     { value: "all", label: t("status.all") },
     ...getEnumOptions(StatusLabels)
@@ -115,8 +125,11 @@ export default function DashboardQuickRepliesPage() {
       fetchList={fetchQuickReplies}
       getItemId={(item) => item.id}
       createItem={createQuickReply}
+      showCreate={canCreate}
+      showEdit={canUpdate}
+      showActionsColumn={canUpdate || canDelete}
       updateItem={(item, payload) => updateQuickReply({ id: item.id, ...payload })}
-      deleteItem={(item) => deleteQuickReply(item.id)}
+      deleteItem={canDelete ? (item) => deleteQuickReply(item.id) : undefined}
       form={{
         fetchDetail: fetchQuickReply,
         fields: [
@@ -192,34 +205,38 @@ export default function DashboardQuickRepliesPage() {
           maxValue: () => t("quickReply.sortInvalid"),
         },
       }}
-      rowActions={[
-        createDashboardStatusToggleAction<AdminQuickReply, Status>({
-          icon: <RefreshCwIcon />,
-          label: (item) =>
-            item.status === Status.Ok
-              ? t("quickReply.disable")
-              : t("quickReply.enable"),
-          getNextStatus: (item) =>
-            item.status === Status.Ok ? Status.Disabled : Status.Ok,
-          updateStatus: (item, nextStatus) =>
-            updateQuickReply({
-              id: item.id,
-              groupName: item.groupName,
-              title: item.title,
-              content: item.content,
-              sortNo: item.sortNo,
-              status: nextStatus,
-            }),
-          successMessage: (item, nextStatus) =>
-            t(
-              nextStatus === Status.Ok
-                ? "quickReply.enabled"
-                : "quickReply.disabled",
-              { title: item.title }
-            ),
-          errorMessage: t("quickReply.statusUpdateFailed"),
-        }),
-      ]}
+      rowActions={
+        canUpdate
+          ? [
+              createDashboardStatusToggleAction<AdminQuickReply, Status>({
+                icon: <RefreshCwIcon />,
+                label: (item) =>
+                  item.status === Status.Ok
+                    ? t("quickReply.disable")
+                    : t("quickReply.enable"),
+                getNextStatus: (item) =>
+                  item.status === Status.Ok ? Status.Disabled : Status.Ok,
+                updateStatus: (item, nextStatus) =>
+                  updateQuickReply({
+                    id: item.id,
+                    groupName: item.groupName,
+                    title: item.title,
+                    content: item.content,
+                    sortNo: item.sortNo,
+                    status: nextStatus,
+                  }),
+                successMessage: (item, nextStatus) =>
+                  t(
+                    nextStatus === Status.Ok
+                      ? "quickReply.enabled"
+                      : "quickReply.disabled",
+                    { title: item.title }
+                  ),
+                errorMessage: t("quickReply.statusUpdateFailed"),
+              }),
+            ]
+          : []
+      }
       labels={{
         refresh: t("quickReply.refresh"),
         create: t("quickReply.new"),

@@ -4,6 +4,7 @@ import { BanIcon, CheckCircle2Icon, EyeIcon, MessageCircleIcon } from "lucide-re
 import { useEffect, useMemo, useState } from "react";
 
 import { type CustomerFormSavePayload } from "@/components/customer-form";
+import { useAuth } from "@/components/auth-provider";
 import {
   DashboardCrudPage,
   createDashboardStatusColumn,
@@ -42,6 +43,14 @@ function getGenderText(gender: number, t: TFunction) {
 
 export default function DashboardCustomersPage() {
   const t = useI18n();
+  const { session } = useAuth();
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  );
+  const canCreate = permissions.has("customer.create");
+  const canUpdate = permissions.has("customer.update");
+  const canDelete = permissions.has("customer.delete");
   const [companyOptions, setCompanyOptions] = useState<ComboboxOption[]>([
     { value: "0", label: t("customer.allCompanies") },
   ]);
@@ -249,8 +258,10 @@ export default function DashboardCustomersPage() {
       }
       getItemId={(item) => item.id}
       createItem={saveCustomerProfile}
+      showCreate={canCreate}
+      showEdit={canUpdate}
       updateItem={(_item, payload) => saveCustomerProfile(payload)}
-      deleteItem={(item) => deleteCustomer(item.id)}
+      deleteItem={canDelete ? (item) => deleteCustomer(item.id) : undefined}
       canDelete={(item) => item.status !== Status.Deleted}
       rowActions={[
         {
@@ -259,24 +270,31 @@ export default function DashboardCustomersPage() {
           icon: <EyeIcon />,
           run: ({ item }) => setDetailCustomer(item),
         },
-        createDashboardStatusToggleAction<AdminCustomer, number>({
-          icon: (item) =>
-            item.status === Status.Ok ? <BanIcon /> : <CheckCircle2Icon />,
-          label: (item) =>
-            item.status === Status.Ok
-              ? t("customer.disable")
-              : t("customer.enable"),
-          disabled: (item) => item.status === Status.Deleted,
-          getNextStatus: (item) =>
-            item.status === Status.Ok ? Status.Disabled : Status.Ok,
-          updateStatus: (item, nextStatus) =>
-            updateCustomerStatus(item.id, nextStatus),
-          successMessage: (item, nextStatus) =>
-            t(nextStatus === Status.Ok ? "customer.enabled" : "customer.disabled", {
-              name: item.name,
-            }),
-          errorMessage: t("customer.statusUpdateFailed"),
-        }),
+        ...(canUpdate
+          ? [
+              createDashboardStatusToggleAction<AdminCustomer, number>({
+                icon: (item) =>
+                  item.status === Status.Ok ? <BanIcon /> : <CheckCircle2Icon />,
+                label: (item) =>
+                  item.status === Status.Ok
+                    ? t("customer.disable")
+                    : t("customer.enable"),
+                disabled: (item) => item.status === Status.Deleted,
+                getNextStatus: (item) =>
+                  item.status === Status.Ok ? Status.Disabled : Status.Ok,
+                updateStatus: (item, nextStatus) =>
+                  updateCustomerStatus(item.id, nextStatus),
+                successMessage: (item, nextStatus) =>
+                  t(
+                    nextStatus === Status.Ok
+                      ? "customer.enabled"
+                      : "customer.disabled",
+                    { name: item.name },
+                  ),
+                errorMessage: t("customer.statusUpdateFailed"),
+              }),
+            ]
+          : []),
       ]}
       renderEditDialog={({ open, saving, itemId, onOpenChange, onSubmit }) => (
         <EditDialog
