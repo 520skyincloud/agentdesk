@@ -3267,3 +3267,36 @@ git diff --check
 - `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/services/conversation_human_dispatch_service.go` 的门店群转人工文案，本批在同文件将总部站内通知切到 `CreateAndPushInTenant`。最终必须逐段保留两者；AI 分支新增 `handoffNoticeCustomerName` 时使用全局 `CustomerService.Get`，合并时必须改为 `GetByTenantID(conversation.CustomerID, conversation.TenantID)`。其余本批文件当前无同文件冲突，不要求 rebase 或 migration 排序。
 - 本轮同时审计 `media_understanding_service.go` 与 `store_ai_model_setting_service.go`，确认仍缺模型调用前 Message/Conversation 同租户校验、tenant-scoped route 解析和企微语音 Channel 同租户读取。AI 分支正修改这些文件的 usage/计费与二次触发，本分支不得越界改动；最终合并必须联合修复并增加双租户非 HTTP 测试，这仍是公开注册上线阻断项。
 - 本批可独立回滚通知 service、调用点、测试和文档，不涉及数据库回滚；回滚会重新允许错误异步事件跨租户通知，并恢复全局企微 fallback，因此不建议回滚。
+
+## 第 63 批：知识候选证据消息租户校验（2026-07-15）
+
+### 问题与实现
+
+- `KnowledgeCandidateService.UpsertCandidate` 已通过 Conversation/Store/KnowledgeBase 的真实模型合并 TenantID，但 `MessageIDs` 是逗号文本，不受数据库外键保护，原逻辑也未读取 Message 验证。错误调用可把其他租户或同租户其他会话的消息 ID 写成当前候选证据。
+- 新增 `validateCandidateMessageIDs`：空证据保持兼容；非空值拒绝零数/负数，按首次出现顺序去重，再以 `tenant_id + id IN (...)` 批量读取。数量不一致即 fail closed；有 ConversationID 时逐条要求 ConversationID 相同。
+- 校验发生在候选相似键查询之前，因此错误证据既不会创建新候选，也不会增加现有候选 frequency 或合并 evidence。人工分析和 `ExtractFromResolvedConversation` 无需各写一套规则。
+
+### 文件与验证
+
+```text
+internal/services/knowledge_candidate_service.go
+internal/services/knowledge_tenant_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^TestKnowledgeRuntimeTenantIsolation$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- tenant 101 同一会话的重复 MessageID 去重后保存一次；tenant 202 MessageID 被拒绝；tenant 101 另一 Conversation 的 MessageID 也被拒绝。正常父实体租户校验、知识候选创建和知识运行时测试继续通过。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端、模型调用、token、usage 或计费变化。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 相对共同基线不修改本批 service 或测试，当前无同文件冲突，不要求 rebase 或 migration 排序。
+- 可独立回滚四个文件中的本批变更，无数据库回滚；回滚会恢复跨租户/跨会话文本证据风险。若审计历史 MessageIDs，应新增只读解析规则和独立 DML 修复，不得在候选读取或审核时静默改写。

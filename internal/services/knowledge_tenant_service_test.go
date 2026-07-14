@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,36 @@ func TestKnowledgeRuntimeTenantIsolation(t *testing.T) {
 	}
 	if _, err := KnowledgeCandidateService.UpsertCandidate(storeA.ID, baseB.ID, conversationA.ID, nil, enums.KnowledgeCandidateSourceAINoAnswer, "cross tenant question", "answer", "", "", 0.8, "system"); err == nil {
 		t.Fatal("cross-tenant candidate was created")
+	}
+	conversationAOther := &models.Conversation{TenantID: adminA.ActiveTenantID, CustomerName: "A other customer", Status: enums.IMConversationStatusActive, LastActiveAt: time.Now(), LastMessageAt: time.Now(), AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()}}
+	conversationB := &models.Conversation{TenantID: adminB.ActiveTenantID, CustomerName: "B customer", Status: enums.IMConversationStatusActive, LastActiveAt: time.Now(), LastMessageAt: time.Now(), AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()}}
+	if err := db.Create(conversationAOther).Error; err != nil {
+		t.Fatalf("create other tenant A conversation: %v", err)
+	}
+	if err := db.Create(conversationB).Error; err != nil {
+		t.Fatalf("create tenant B conversation: %v", err)
+	}
+	now := time.Now()
+	messageA := &models.Message{TenantID: adminA.ActiveTenantID, ConversationID: conversationA.ID, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "A evidence", SendStatus: enums.IMMessageStatusSent, SentAt: &now}
+	messageAOther := &models.Message{TenantID: adminA.ActiveTenantID, ConversationID: conversationAOther.ID, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "A other evidence", SendStatus: enums.IMMessageStatusSent, SentAt: &now}
+	messageB := &models.Message{TenantID: adminB.ActiveTenantID, ConversationID: conversationB.ID, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "B evidence", SendStatus: enums.IMMessageStatusSent, SentAt: &now}
+	for label, message := range map[string]*models.Message{"tenant A": messageA, "other conversation": messageAOther, "tenant B": messageB} {
+		if err := db.Create(message).Error; err != nil {
+			t.Fatalf("create %s message: %v", label, err)
+		}
+	}
+	evidenceCandidate, err := KnowledgeCandidateService.UpsertCandidate(storeA.ID, baseA.ID, conversationA.ID, []int64{messageA.ID, messageA.ID}, enums.KnowledgeCandidateSourceAINoAnswer, "message evidence question", "answer", "", "", 0.8, "system")
+	if err != nil {
+		t.Fatalf("create candidate with same-conversation evidence: %v", err)
+	}
+	if evidenceCandidate.MessageIDs != fmt.Sprint(messageA.ID) {
+		t.Fatalf("candidate message ids=%q want=%d", evidenceCandidate.MessageIDs, messageA.ID)
+	}
+	if _, err := KnowledgeCandidateService.UpsertCandidate(storeA.ID, baseA.ID, conversationA.ID, []int64{messageB.ID}, enums.KnowledgeCandidateSourceAINoAnswer, "cross tenant evidence", "answer", "", "", 0.8, "system"); err == nil {
+		t.Fatal("cross-tenant message evidence was accepted")
+	}
+	if _, err := KnowledgeCandidateService.UpsertCandidate(storeA.ID, baseA.ID, conversationA.ID, []int64{messageAOther.ID}, enums.KnowledgeCandidateSourceAINoAnswer, "cross conversation evidence", "answer", "", "", 0.8, "system"); err == nil {
+		t.Fatal("same-tenant evidence from another conversation was accepted")
 	}
 
 	logItem, err := rag.RetrieveLog.CreateRetrieveLog(&rag.CreateRetrieveLogRequest{

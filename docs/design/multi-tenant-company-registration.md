@@ -2056,3 +2056,14 @@ MySQL 索引演练发现 `cmd/migration` 在配置、连接或迁移失败时只
 - `origin/codex/ai-billing@f2d2da4` 同时修改 `conversation_human_dispatch_service.go` 的门店群转人工文案，本批修改同文件的总部站内通知，最终需逐段合并：保留 `CreateAndPushInTenant`，同时保留新版门店群文案；其新增客户名回查必须改用 `GetByTenantID(conversation.CustomerID, conversation.TenantID)`。其余本批文件无同文件冲突，也无 migration 排序要求。
 - 同轮审计确认媒体理解任务仍须在模型调用前验证 Message/Conversation 同租户，`ResolveForMessage` 须使用租户 route，企微语音须按租户读取 Channel。相关文件正在 AI 分支承载 usage/计费改动，本分支按协作边界未修改；最终合并必须由 AI 负责人一起落地并补非 HTTP 双租户回归，否则公开邀请注册不得启用。
 - 本批可独立回滚通知 service、调用点和测试，不涉及数据库回滚；回滚会恢复错误事件跨租户通知与企微 fallback 串租风险，因此不建议回滚。
+
+## 63. 当前实施检查点：知识候选证据消息租户校验（2026-07-15）
+
+KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时合并校验 TenantID，但 `MessageIDs` 以逗号文本保存，原实现直接持久化调用方传值。它既不是数据库外键，也无法由普通父子关系审计逐项验证，因此外租户消息或同租户其他会话消息可能被记录为当前候选的证据。
+
+- `UpsertCandidate` 在问题去重和写入前统一校验证据：空列表继续允许；非空 ID 必须为正数，去重后每条 Message 必须属于候选 TenantID；候选带 ConversationID 时，每条 Message 还必须属于该会话。
+- 外租户、缺失或非法消息统一返回“消息证据不存在或归属不一致”，不暴露其他租户是否存在该 ID；同租户但来自其他会话的证据返回明确会话归属错误。验证失败不会创建候选，也不会增加已有候选频次。
+- 人工会话分析、人工接待结束后的自动提取及未来 Upsert 调用点复用同一 service 边界；不改变候选生成条件、质量判断、审核、导出或知识库内容。
+- 双租户测试覆盖同一会话重复证据去重保存、tenant 202 消息不能进入 tenant 101 候选、tenant 101 另一会话消息不能进入当前候选。聚焦 race、services 全包、全仓 Go、vet 和 diff 检查通过。
+- 只修改 `knowledge_candidate_service.go`、既有 `knowledge_tenant_service_test.go` 与两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、权限、WebSocket、前端或 AI/计费变化。AI 分支当前无同文件修改，不需要 rebase 或 migration 排序。
+- 可独立回滚代码、测试与文档，不涉及数据库回滚；回滚会恢复不可审计的跨租户/跨会话文本证据风险。历史数据如需检查，应新增显式解析 MessageIDs 的只读审计项，不能在读取候选时自动删除。

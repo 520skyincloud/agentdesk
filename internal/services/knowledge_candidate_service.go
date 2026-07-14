@@ -58,6 +58,10 @@ func (s *knowledgeCandidateService) UpsertCandidate(storeID, knowledgeBaseID, co
 	if err != nil {
 		return nil, err
 	}
+	messageIDs, err = s.validateCandidateMessageIDs(tenantID, conversationID, messageIDs)
+	if err != nil {
+		return nil, err
+	}
 	question = strings.TrimSpace(question)
 	answer = strings.TrimSpace(answer)
 	if question == "" {
@@ -155,6 +159,32 @@ func (s *knowledgeCandidateService) resolveCandidateTenant(storeID, knowledgeBas
 		return 0, errorsx.InvalidParam("待归档问答缺少接入公司归属")
 	}
 	return tenantID, nil
+}
+
+func (s *knowledgeCandidateService) validateCandidateMessageIDs(tenantID, conversationID int64, messageIDs []int64) ([]int64, error) {
+	if len(messageIDs) == 0 {
+		return nil, nil
+	}
+	for _, messageID := range messageIDs {
+		if messageID <= 0 {
+			return nil, errorsx.InvalidParam("待归档问答的消息证据不存在或归属不一致")
+		}
+	}
+	messageIDs = uniquePositiveInt64s(messageIDs)
+	messages := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		In("id", messageIDs))
+	if len(messages) != len(messageIDs) {
+		return nil, errorsx.InvalidParam("待归档问答的消息证据不存在或归属不一致")
+	}
+	if conversationID > 0 {
+		for i := range messages {
+			if messages[i].ConversationID != conversationID {
+				return nil, errorsx.InvalidParam("消息证据不属于待归档会话")
+			}
+		}
+	}
+	return messageIDs, nil
 }
 
 func (s *knowledgeCandidateService) Update(req request.UpdateKnowledgeCandidateRequest, operator *dto.AuthPrincipal) error {
