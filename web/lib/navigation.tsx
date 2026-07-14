@@ -6,7 +6,6 @@ import {
   CalendarClockIcon,
   FileCheck2Icon,
   FileTextIcon,
-  GlobeIcon,
   HardDriveIcon,
   HomeIcon,
   ServerCogIcon,
@@ -173,8 +172,8 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
       {
         titleKey: "nav.channels",
         url: "/dashboard/channels",
-        icon: <GlobeIcon />,
-        requiredPermission: "channel.view",
+        icon: <Building2Icon />,
+        requiredPermission: "tenant.view",
       },
     ],
   },

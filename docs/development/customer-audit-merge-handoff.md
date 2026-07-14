@@ -1,6 +1,6 @@
 # 客服与对话审计分支合并交接
 
-> 状态日期：2026-07-13
+> 状态日期：2026-07-14
 > 工作分支：`codex/customer-audit`
 > Draft PR：<https://github.com/520skyincloud/agentdesk/pull/1>
 > 并行分支：`codex/ai-billing`
@@ -731,3 +731,42 @@ go test ./internal/services -run 'Test(ConversationHumanDispatch|StoreManualAgen
 - 新增纯 builder context 测试和 Customer service 聚合测试；原 `TestBuildLightweightTicket` 未初始化全局 DB 的稳定崩溃已修复。
 - `go test ./internal/builders -count=1`、客户聚焦 service 测试、`go vet ./...`、`go test ./... -run '^$' -count=1` 与 `cd web && pnpm typecheck` 通过。完整测试只剩既有异步 AI 回复 goroutine 在测试清库后访问全局 DB，本步骤不修改 AI runtime。
 - 不涉及 model/migration、DTO/enum、路由、WebSocket 或前端文件。并行 `codex/ai-billing@f2d2da4` 不修改本步骤文件，无特殊合并顺序；回滚边界是 customer builder、handler 展示聚合和对应测试。
+
+## 22. 多租户阶段 7A：接入公司管理页（2026-07-14）
+
+### 本步骤目标与结果
+
+- `/dashboard/channels` 已从旧 Channel CRUD 替换为平台“接入公司”管理页；页面不再引用 `fetchChannels/createChannel/updateChannel/deleteChannel`，但 Channel model、service、handler、回调、消息路由和 Outbox 运行时全部保留。
+- 新增独立 `web/lib/api/tenant.ts`，只封装既有 `/api/dashboard/tenant/*` 契约；列表支持公司法定名称、公司编码、法定识别号、核验状态和启用状态筛选。
+- 列表展示公司法定名称/简称、`TenantCode`、统一社会信用代码、公司主管、业务联系人、核验状态和启用状态；旧 `/dashboard/companies` 继续承担客户企业管理，不与 Tenant 混用。
+- 创建表单分为公司法定资料、业务联系人、首个公司主管和平台备注。创建成功后单独显示主管用户名、一次性临时密码、邀请码、邀请链接和默认综合客服组 ID；敏感结果不写入列表或日志。
+- 编辑只更新公司资料，不重复创建或修改公司主管。启停当前正在进入的公司时会先清除前端当前公司上下文，再刷新登录资料。
+- “进入公司”调用既有 `setActiveTenantId` 和 `refreshProfile`，随后进入公司总览；回到列表可看到“当前公司”标记。
+
+### 权限、导航与共享组件
+
+- 导航名称改为“接入公司”，入口权限从 `channel.view` 改为 `tenant.view`。
+- `tenant.create` 控制新建按钮，`tenant.update` 控制编辑按钮，`tenant.updateStatus` 控制状态开关，`tenant.switch` 与 `canSwitchTenant` 共同控制进入公司动作；没有动作权限时不显示对应操作。
+- `DashboardCrudPage` 新增向后兼容的 `showEdit` 和 `showActionsColumn`，默认值保持原页面行为；用于真正隐藏无权操作，而不是保留不可用按钮。
+- 修复通用 CRUD 表头和 `ProjectDialog` 头尾在暗色模式下的对比度。新建表单和一次性结果弹窗均验证了独立滚动与移动端单列布局。
+- 中英文资源均新增 `tenant.*` 文案。公开 `/register` 页面仍不存在，`tenantRegistration.enabled` 继续保持关闭；结果中的邀请链接只作为已生成凭据展示，不代表注册入口已经开放。
+
+### 验证与未完成边界
+
+```text
+cd web && pnpm typecheck
+cd web && pnpm exec eslint app/dashboard/channels/page.tsx app/dashboard/channels/_components/edit.tsx app/dashboard/channels/_components/creation-result.tsx lib/api/tenant.ts components/dashboard/crud/dashboard-crud-page.tsx components/project-dialog.tsx lib/navigation.tsx
+cd web && node --test app/dashboard/channels/tenant-page.test.mjs components/dashboard/crud/dashboard-crud-utils.test.mjs
+cd web && pnpm build
+```
+
+- 使用当前源码、独立端口和临时 SQLite 数据库完成浏览器验收：桌面/390px 移动端列表、创建表单滚动、暗色模式、真实原子创建、一次性结果和进入公司状态同步均通过；测试数据与 `8083` Docker 数据完全隔离，数据库文件不进入 Git。
+- 本阶段不伪造客服数、门店数、客服组数和最近活跃时间；Tenant 列表 DTO 尚无这些统计，且相关业务表未全部完成租户化，应在事实源隔离后由后端聚合补充。
+- 平台管理/当前公司双层导航、侧边栏公司选择器、当前公司渠道设置和公开邀请注册继续延后。全域隔离完成前不得开放注册，也不得把旧 Channel 管理入口恢复到本页面。
+- 不涉及 model/migration、后端 DTO/enum、Gin 路由、WebSocket、AI runtime、FastGPT、模型调用、token 或计费。
+
+### 并行影响、合并顺序与回滚
+
+- 开始时核对 `origin/codex/ai-billing@f2d2da4`：双方共同修改 `web/lib/navigation.tsx` 和中英文资源。合并时必须同时保留 AI 分支的 `replyIntentProfiles` 导航/文案与本步骤的 `tenant.view` 接入公司入口/`tenant.*` 文案，不能整文件选边。
+- 建议在租户认证、权限和 Tenant 后端契约之后合并本步骤；不依赖新的 migration。合并后重新执行前端类型检查、导航契约测试和静态构建。
+- 回滚边界仅为接入公司前端、租户 API 封装、两个通用组件的可见性/暗色样式和导航文案。回滚不得删除 Channel 后端，也不得重新开放公开注册。

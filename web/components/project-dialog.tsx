@@ -146,7 +146,7 @@ function ProjectDialog({
             ) : null}
           </div>
         )}
-        <DialogHeader className={cn("shrink-0 border-b border-[#dbe7f6] bg-[#f8fbff] px-6 py-4 pr-20", headerClassName)}>
+        <DialogHeader className={cn("shrink-0 border-b border-[#dbe7f6] bg-[#f8fbff] px-6 py-4 pr-20 dark:border-border/60 dark:bg-muted/40", headerClassName)}>
           <DialogTitle className="text-base font-semibold tracking-normal text-foreground">{title}</DialogTitle>
           {description ? (
             <DialogDescription className="text-xs leading-5 text-muted-foreground">{description}</DialogDescription>
@@ -166,7 +166,7 @@ function ProjectDialog({
         )}
         {footer ? (
           <DialogFooter
-            className={cn("mx-0 mb-0 shrink-0 border-t border-[#dbe7f6] bg-[#f6f9ff] px-6 py-4", footerClassName)}
+            className={cn("mx-0 mb-0 shrink-0 border-t border-[#dbe7f6] bg-[#f6f9ff] px-6 py-4 dark:border-border/60 dark:bg-muted/40", footerClassName)}
           >
             {footer}
           </DialogFooter>

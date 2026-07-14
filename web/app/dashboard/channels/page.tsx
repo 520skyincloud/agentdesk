@@ -1,218 +1,356 @@
 "use client"
 
+import { useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
 import {
   Building2Icon,
-  MessagesSquareIcon,
-  MessageSquareMoreIcon,
+  LogInIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  ShieldCheckIcon,
   UserRoundCogIcon,
 } from "lucide-react"
+import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import {
   createDashboardStatusColumn,
   DashboardCrudPage,
+  type DashboardCrudRowAction,
 } from "@/components/dashboard/crud"
 import { Badge } from "@/components/ui/badge"
-import {
-  createChannel,
-  deleteChannel,
-  fetchChannels,
-  updateChannel,
-  updateChannelStatus,
-  type AdminChannel,
-  type CreateAdminChannelPayload,
-} from "@/lib/api/admin"
-import { getEnumOptions } from "@/lib/enums"
-import { Status, StatusLabels } from "@/lib/generated/enums"
+import { Button } from "@/components/ui/button"
 import { useI18n } from "@/i18n/provider"
-import { EditDialog } from "./_components/edit"
-
-function getChannelTypeLabel(channelType: string, t: (key: string) => string) {
-  if (channelType === "wechat_mp") {
-    return t("channel.typeWechatMp")
-  }
-  if (channelType === "wxwork_kf") {
-    return "企业微信客服号（历史）"
-  }
-  if (channelType === "wxwork_protocol") {
-    return "企微员工号协议"
-  }
-  if (channelType === "wxwork_cli") {
-    return "企业微信 CLI（历史）"
-  }
-  return t("channel.typeWeb")
-}
+import {
+  createTenant,
+  fetchTenants,
+  updateTenant,
+  updateTenantStatus,
+  type AdminTenant,
+  type CreateTenantResult,
+} from "@/lib/api/tenant"
+import { setActiveTenantId } from "@/lib/auth"
+import {
+  Status,
+  TenantVerificationStatus,
+} from "@/lib/generated/enums"
+import { TenantCreationResultDialog } from "./_components/creation-result"
+import {
+  TenantEditDialog,
+  type TenantFormPayload,
+} from "./_components/edit"
 
 function getStatusLabel(status: Status, t: (key: string) => string) {
-  if (status === Status.Disabled) {
-    return t("status.disabled")
-  }
-  if (status === Status.Deleted) {
-    return t("status.deleted")
-  }
-  return t("status.ok")
+  return t(status === Status.Ok ? "status.ok" : "status.disabled")
 }
 
-function ChannelIcon({ channelType }: { channelType: string }) {
-  if (channelType === "wechat_mp") {
-    return <MessagesSquareIcon className="size-4" />
+function getVerificationLabel(
+  status: TenantVerificationStatus,
+  t: (key: string) => string
+) {
+  if (status === TenantVerificationStatus.Verified) {
+    return t("tenant.verificationVerified")
   }
-  if (channelType === "wxwork_kf") {
-    return <MessageSquareMoreIcon className="size-4" />
+  if (status === TenantVerificationStatus.Rejected) {
+    return t("tenant.verificationRejected")
   }
-  if (channelType === "wxwork_protocol") {
-    return <UserRoundCogIcon className="size-4" />
-  }
-  return <Building2Icon className="size-4" />
+  return t("tenant.verificationPending")
 }
 
 export default function DashboardChannelsPage() {
   const t = useI18n()
-  const statusOptions = [
-    { value: "all", label: t("status.all") },
-    ...getEnumOptions(StatusLabels).map((option) => ({
-      value: String(option.value),
-      label: getStatusLabel(option.value as Status, t),
-    })),
-  ]
-  const channelTypeOptions = [
-    { value: "all", label: t("channel.allTypes") },
-    { value: "web", label: t("channel.typeWeb") },
-    { value: "wechat_mp", label: t("channel.typeWechatMp") },
-    { value: "wxwork_protocol", label: "企微员工号协议" },
-  ]
+  const router = useRouter()
+  const { session, refreshProfile } = useAuth()
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions]
+  )
+  const canCreate = permissions.has("tenant.create")
+  const canUpdate = permissions.has("tenant.update")
+  const canUpdateStatus = permissions.has("tenant.updateStatus")
+  const canSwitch = permissions.has("tenant.switch") && Boolean(session?.canSwitchTenant)
+  const showActionsColumn = canUpdate || canSwitch
+  const [creationResult, setCreationResult] =
+    useState<CreateTenantResult | null>(null)
+
+  const rowActions = useMemo<DashboardCrudRowAction<AdminTenant>[]>(
+    () =>
+      canSwitch
+        ? [
+            {
+              key: "enter-tenant",
+              label: (item) =>
+                session?.activeTenantId === item.id
+                  ? t("tenant.currentTenant")
+                  : t("tenant.enterTenant"),
+              icon: <LogInIcon />,
+              disabled: (item) =>
+                item.status !== Status.Ok || session?.activeTenantId === item.id,
+              run: async ({ item }) => {
+                setActiveTenantId(item.id)
+                await refreshProfile()
+                toast.success(t("tenant.enteredTenant", { name: item.shortName }))
+                router.push("/dashboard")
+                router.refresh()
+              },
+            },
+          ]
+        : [],
+    [canSwitch, refreshProfile, router, session?.activeTenantId, t]
+  )
+
+  const statusColumn = createDashboardStatusColumn<AdminTenant, Status>({
+    label: t("tenant.columnStatus"),
+    getStatus: (item) => item.status,
+    getLabel: (status) => getStatusLabel(status, t),
+    getBadgeVariant: (status) => (status === Status.Ok ? "default" : "outline"),
+    isEnabled: (status) => status === Status.Ok,
+    toggle: canUpdateStatus
+      ? {
+          getNextStatus: (item) =>
+            item.status === Status.Ok ? Status.Disabled : Status.Ok,
+          updateStatus: async (item, nextStatus) => {
+            await updateTenantStatus(item.id, nextStatus)
+            if (
+              nextStatus === Status.Disabled &&
+              session?.activeTenantId === item.id
+            ) {
+              setActiveTenantId(0)
+              await refreshProfile()
+            }
+          },
+          successMessage: (item, nextStatus) =>
+            t(
+              nextStatus === Status.Ok
+                ? "tenant.statusEnabled"
+                : "tenant.statusDisabled",
+              { name: item.shortName }
+            ),
+          errorMessage: t("tenant.statusUpdateFailed"),
+          ariaLabel: (item) => t("tenant.toggleStatus", { name: item.shortName }),
+        }
+      : undefined,
+  })
 
   return (
-    <DashboardCrudPage<AdminChannel, CreateAdminChannelPayload>
-      filters={[
-        {
-          name: "name",
-          label: t("channel.filterName"),
-          placeholder: t("channel.filterName"),
-          defaultValue: "",
-          trim: true,
-          className: "w-full sm:w-56",
-        },
-        {
-          name: "channelId",
-          label: t("channel.filterChannelId"),
-          placeholder: t("channel.filterChannelId"),
-          defaultValue: "",
-          trim: true,
-          className: "w-full sm:w-72",
-        },
-        {
-          name: "channelType",
-          label: t("channel.allTypes"),
-          type: "select",
-          defaultValue: "all",
-          allValue: "all",
-          options: channelTypeOptions,
-          className: "w-full sm:w-40",
-        },
-        {
-          name: "status",
-          label: t("status.all"),
-          type: "select",
-          defaultValue: "all",
-          allValue: "all",
-          options: statusOptions,
-          className: "w-full sm:w-36",
-        },
-      ]}
-      columns={[
-        {
-          key: "channel",
-          label: t("channel.columnChannel"),
-          render: (item) => (
-            <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-2xl border border-[#dbe7f6] bg-[#f6f9ff] text-primary shadow-inner shadow-blue-100/30">
-                <ChannelIcon channelType={item.channelType} />
-              </div>
-              <div>
-                <div className="font-medium">{item.name}</div>
-                <div className="text-xs text-muted-foreground">
-                  {getChannelTypeLabel(item.channelType, t)}
+    <>
+      <DashboardCrudPage<AdminTenant, TenantFormPayload>
+        filters={[
+          {
+            name: "legalName",
+            label: t("tenant.filterLegalName"),
+            placeholder: t("tenant.filterLegalName"),
+            defaultValue: "",
+            trim: true,
+            className: "w-full sm:w-56",
+          },
+          {
+            name: "tenantCode",
+            label: t("tenant.filterTenantCode"),
+            placeholder: t("tenant.filterTenantCode"),
+            defaultValue: "",
+            trim: true,
+            className: "w-full sm:w-48",
+          },
+          {
+            name: "registrationNo",
+            label: t("tenant.filterRegistrationNo"),
+            placeholder: t("tenant.filterRegistrationNo"),
+            defaultValue: "",
+            trim: true,
+            className: "w-full sm:w-56",
+          },
+          {
+            name: "verificationStatus",
+            label: t("tenant.filterVerification"),
+            type: "select",
+            defaultValue: "all",
+            allValue: "all",
+            options: [
+              { value: "all", label: t("tenant.allVerificationStatuses") },
+              {
+                value: TenantVerificationStatus.Pending,
+                label: t("tenant.verificationPending"),
+              },
+              {
+                value: TenantVerificationStatus.Verified,
+                label: t("tenant.verificationVerified"),
+              },
+              {
+                value: TenantVerificationStatus.Rejected,
+                label: t("tenant.verificationRejected"),
+              },
+            ],
+            className: "w-full sm:w-40",
+          },
+          {
+            name: "status",
+            label: t("tenant.filterStatus"),
+            type: "select",
+            defaultValue: "all",
+            allValue: "all",
+            valueType: "number",
+            options: [
+              { value: "all", label: t("status.all") },
+              { value: String(Status.Ok), label: t("status.ok") },
+              { value: String(Status.Disabled), label: t("status.disabled") },
+            ],
+            className: "w-full sm:w-36",
+          },
+        ]}
+        columns={[
+          {
+            key: "company",
+            label: t("tenant.columnCompany"),
+            className: "min-w-[250px]",
+            render: (item) => (
+              <div className="flex items-center gap-3">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-[#dbe7f6] bg-[#f6f9ff] text-primary">
+                  <Building2Icon className="size-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{item.shortName}</span>
+                    {session?.activeTenantId === item.id ? (
+                      <Badge variant="secondary">{t("tenant.currentTenant")}</Badge>
+                    ) : null}
+                  </div>
+                  <div className="truncate text-xs text-muted-foreground" title={item.legalName}>
+                    {item.legalName}
+                  </div>
+                  <div className="mt-0.5 font-mono text-xs text-muted-foreground">
+                    {item.tenantCode}
+                  </div>
                 </div>
               </div>
-            </div>
-          ),
-        },
-        {
-          key: "type",
-          label: t("channel.columnType"),
-          render: (item) => (
-            <Badge variant="outline">
-              {getChannelTypeLabel(item.channelType, t)}
-            </Badge>
-          ),
-        },
-        {
-          key: "channelId",
-          label: "ChannelID",
-          render: (item) => (
-            <span className="font-mono text-xs">{item.channelId || "-"}</span>
-          ),
-        },
-        {
-          key: "agent",
-          label: t("channel.columnAgent"),
-          render: (item) => item.aiAgentName || "-",
-        },
-        createDashboardStatusColumn<AdminChannel, Status>({
-          label: t("channel.columnStatus"),
-          getStatus: (item) => item.status as Status,
-          getLabel: (status) => getStatusLabel(status, t),
-          getBadgeVariant: (status) => (status === Status.Ok ? "default" : "outline"),
-          isEnabled: (status) => status === Status.Ok,
-          toggle: {
-            getNextStatus: (item) =>
-              item.status === Status.Ok ? Status.Disabled : Status.Ok,
-            updateStatus: (item, nextStatus) =>
-              updateChannelStatus(item.id, nextStatus),
-            successMessage: (item, nextStatus) =>
-              t(
-                nextStatus === Status.Ok
-                  ? "channel.statusEnabled"
-                  : "channel.statusDisabled",
-                { name: item.name }
-              ),
-            errorMessage: t("channel.statusUpdateFailed"),
-            ariaLabel: (item) => t("channel.toggleStatus", { name: item.name }),
+            ),
           },
-        }),
-      ]}
-      fetchList={fetchChannels}
-      getItemId={(item) => item.id}
-      createItem={createChannel}
-      updateItem={(item, payload) => updateChannel({ id: item.id, ...payload })}
-      deleteItem={(item) => deleteChannel(item.id)}
-      renderEditDialog={({ open, saving, itemId, onOpenChange, onSubmit }) => (
-        <EditDialog
-          open={open}
-          saving={saving}
-          itemId={itemId}
-          onOpenChange={onOpenChange}
-          onSubmit={onSubmit}
-        />
-      )}
-      labels={{
-        refresh: t("channel.refresh"),
-        create: t("channel.new"),
-        query: t("channel.query"),
-        loading: t("channel.loading"),
-        empty: t("channel.empty"),
-        actions: t("channel.columnActions"),
-        edit: t("channel.edit"),
-        delete: t("channel.delete"),
-        processing: t("channel.processing"),
-        moreActions: (item) => t("channel.moreActions", { name: item.name }),
-        loadFailed: t("channel.loadFailed"),
-        saveFailed: t("channel.saveFailed"),
-        deleteFailed: t("channel.deleteFailed"),
-        created: (payload) => t("channel.created", { name: payload.name }),
-        updated: (_item, payload) => t("channel.updated", { name: payload.name }),
-        deleted: (item) => t("channel.deleted", { name: item.name }),
-      }}
-    />
+          {
+            key: "registration",
+            label: t("tenant.columnRegistration"),
+            className: "min-w-[190px]",
+            render: (item) => (
+              <div>
+                <div className="text-sm">{t("tenant.registrationTypeCreditCode")}</div>
+                <div className="mt-1 font-mono text-xs text-muted-foreground">
+                  {item.registrationNo}
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "supervisor",
+            label: t("tenant.columnSupervisor"),
+            className: "min-w-[150px]",
+            render: (item) => (
+              <div className="flex items-center gap-2">
+                <UserRoundCogIcon className="size-4 text-muted-foreground" />
+                <div>
+                  <div className="text-sm">{item.supervisorNickname || "-"}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {item.supervisorUsername || "-"}
+                  </div>
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "contact",
+            label: t("tenant.columnContact"),
+            className: "min-w-[180px]",
+            render: (item) => (
+              <div className="text-sm">
+                <div>{item.contactName || "-"}</div>
+                <div className="text-xs text-muted-foreground">
+                  {item.contactMobile || item.contactEmail || "-"}
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "verification",
+            label: t("tenant.columnVerification"),
+            render: (item) => (
+              <Badge
+                variant={
+                  item.verificationStatus === TenantVerificationStatus.Verified
+                    ? "outline"
+                    : "secondary"
+                }
+              >
+                <ShieldCheckIcon />
+                {getVerificationLabel(item.verificationStatus, t)}
+              </Badge>
+            ),
+          },
+          statusColumn,
+        ]}
+        fetchList={fetchTenants}
+        getItemId={(item) => item.id}
+        createItem={async (payload) => {
+          const { supervisor, ...tenant } = payload
+          if (!supervisor) throw new Error(t("tenant.supervisorRequired"))
+          const result = await createTenant({ ...tenant, supervisor })
+          setCreationResult(result)
+          return result
+        }}
+        updateItem={(item, payload) => {
+          const tenant = { ...payload }
+          delete tenant.supervisor
+          return updateTenant({ id: item.id, ...tenant })
+        }}
+        showEdit={canUpdate}
+        showActionsColumn={showActionsColumn}
+        rowActions={rowActions}
+        renderEditDialog={({ open, saving, itemId, onOpenChange, onSubmit }) => (
+          <TenantEditDialog
+            open={open}
+            saving={saving}
+            itemId={itemId}
+            onOpenChange={onOpenChange}
+            onSubmit={onSubmit}
+          />
+        )}
+        renderToolbarActions={({ onRefresh, onCreate, loading }) => (
+          <>
+            <Button variant="outline" onClick={onRefresh} disabled={loading}>
+              <RefreshCwIcon className={loading ? "animate-spin" : undefined} />
+              {t("tenant.refresh")}
+            </Button>
+            {canCreate ? (
+              <Button onClick={onCreate} disabled={loading}>
+                <PlusIcon />
+                {t("tenant.new")}
+              </Button>
+            ) : null}
+          </>
+        )}
+        labels={{
+          refresh: t("tenant.refresh"),
+          create: t("tenant.new"),
+          query: t("common.query"),
+          loading: t("tenant.loading"),
+          empty: t("tenant.empty"),
+          actions: t("common.actions"),
+          edit: t("tenant.edit"),
+          delete: t("tenant.delete"),
+          processing: t("tenant.processing"),
+          moreActions: (item) => t("tenant.moreActions", { name: item.shortName }),
+          loadFailed: t("tenant.loadFailed"),
+          saveFailed: t("tenant.saveFailed"),
+          deleteFailed: t("tenant.deleteFailed"),
+          created: (payload) => t("tenant.created", { name: payload.shortName }),
+          updated: (_item, payload) =>
+            t("tenant.updated", { name: payload.shortName }),
+        }}
+      />
+
+      <TenantCreationResultDialog
+        result={creationResult}
+        onOpenChange={(open) => {
+          if (!open) setCreationResult(null)
+        }}
+      />
+    </>
   )
 }

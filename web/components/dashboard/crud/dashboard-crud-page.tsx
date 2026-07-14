@@ -148,6 +148,7 @@ export type DashboardCrudPageProps<TItem, TPayload> = {
   getItemId: (item: TItem) => number
   createItem: (payload: TPayload) => Promise<unknown>
   updateItem: (item: TItem, payload: TPayload) => Promise<unknown>
+  showEdit?: boolean | ((item: TItem) => boolean)
   canEdit?: (item: TItem) => boolean
   deleteItem?: (item: TItem) => Promise<unknown>
   canDelete?: (item: TItem) => boolean
@@ -167,6 +168,7 @@ export type DashboardCrudPageProps<TItem, TPayload> = {
   layout?: "page" | "fragment"
   showToolbar?: boolean
   showToolbarActions?: boolean
+  showActionsColumn?: boolean
   renderToolbarActions?: (state: DashboardCrudActionState) => ReactNode
   tableShellClassName?: string
   onActionStateChange?: (state: DashboardCrudActionState) => void
@@ -199,6 +201,7 @@ export function DashboardCrudPage<TItem, TPayload>({
   getItemId,
   createItem,
   updateItem,
+  showEdit = true,
   canEdit,
   deleteItem,
   canDelete,
@@ -211,6 +214,7 @@ export function DashboardCrudPage<TItem, TPayload>({
   layout = "page",
   showToolbar = true,
   showToolbarActions = true,
+  showActionsColumn = true,
   renderToolbarActions,
   tableShellClassName,
   onActionStateChange,
@@ -386,7 +390,7 @@ export function DashboardCrudPage<TItem, TPayload>({
   }
 
   const sortable = Boolean(sort?.enabled)
-  const colSpan = columns.length + 1 + (sortable ? 1 : 0)
+  const colSpan = columns.length + (showActionsColumn ? 1 : 0) + (sortable ? 1 : 0)
 
   function renderTableRow(
     item: TItem,
@@ -408,78 +412,82 @@ export function DashboardCrudPage<TItem, TPayload>({
             })}
           </TableCell>
         ))}
-        <TableCell className="text-right">
-          <ButtonGroup className="ml-auto">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={canEdit ? !canEdit(item) : false}
-              onClick={() => openEditDialog(item)}
-            >
-              {labels.edit}
-            </Button>
-            {renderRowActions || rowActions.length > 0 || deleteItem ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  render={<Button variant="outline" size="icon-sm" />}
-                  aria-label={labels.moreActions(item)}
+        {showActionsColumn ? (
+          <TableCell className="text-right">
+            <ButtonGroup className="ml-auto">
+              {(typeof showEdit === "function" ? showEdit(item) : showEdit) ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={canEdit ? !canEdit(item) : false}
+                  onClick={() => openEditDialog(item)}
                 >
-                  <MoreHorizontalIcon />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-40 min-w-40">
-                  {rowActions
-                    .filter((action) => isDashboardCrudActionVisible(action, item))
-                    .map((action) => {
-                      const icon =
-                        typeof action.icon === "function"
-                          ? action.icon(item)
-                          : action.icon
-                      const label =
-                        typeof action.label === "function"
-                          ? action.label(item)
-                          : action.label
-                      return (
-                        <DropdownMenuItem
-                          key={action.key}
-                          disabled={
-                            actionLoading ||
-                            isDashboardCrudActionDisabled(action, item)
-                          }
-                          className={
-                            action.variant === "destructive"
-                              ? "text-destructive focus:text-destructive"
-                              : undefined
-                          }
-                          onClick={() => void runRowAction(action, item, actionLoading)}
-                        >
-                          {icon}
-                          {actionLoading ? labels.processing : label}
-                        </DropdownMenuItem>
-                      )
+                  {labels.edit}
+                </Button>
+              ) : null}
+              {renderRowActions || rowActions.length > 0 || deleteItem ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={<Button variant="outline" size="icon-sm" />}
+                    aria-label={labels.moreActions(item)}
+                  >
+                    <MoreHorizontalIcon />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-40 min-w-40">
+                    {rowActions
+                      .filter((action) => isDashboardCrudActionVisible(action, item))
+                      .map((action) => {
+                        const icon =
+                          typeof action.icon === "function"
+                            ? action.icon(item)
+                            : action.icon
+                        const label =
+                          typeof action.label === "function"
+                            ? action.label(item)
+                            : action.label
+                        return (
+                          <DropdownMenuItem
+                            key={action.key}
+                            disabled={
+                              actionLoading ||
+                              isDashboardCrudActionDisabled(action, item)
+                            }
+                            className={
+                              action.variant === "destructive"
+                                ? "text-destructive focus:text-destructive"
+                                : undefined
+                            }
+                            onClick={() => void runRowAction(action, item, actionLoading)}
+                          >
+                            {icon}
+                            {actionLoading ? labels.processing : label}
+                          </DropdownMenuItem>
+                        )
+                      })}
+                    {renderRowActions?.({
+                      item,
+                      itemId: id,
+                      actionLoading,
+                      actionLoadingId,
+                      reload: loadData,
+                      setActionLoadingId,
                     })}
-                  {renderRowActions?.({
-                    item,
-                    itemId: id,
-                    actionLoading,
-                    actionLoadingId,
-                    reload: loadData,
-                    setActionLoadingId,
-                  })}
-                  {deleteItem ? (
-                    <DropdownMenuItem
-                      onClick={() => void handleDelete(item)}
-                      disabled={canDelete ? !canDelete(item) : false}
-                      className="text-destructive focus:text-destructive"
-                    >
-                      <Trash2Icon />
-                      {actionLoading ? labels.processing : labels.delete}
-                    </DropdownMenuItem>
-                  ) : null}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
-          </ButtonGroup>
-        </TableCell>
+                    {deleteItem ? (
+                      <DropdownMenuItem
+                        onClick={() => void handleDelete(item)}
+                        disabled={canDelete ? !canDelete(item) : false}
+                        className="text-destructive focus:text-destructive"
+                      >
+                        <Trash2Icon />
+                        {actionLoading ? labels.processing : labels.delete}
+                      </DropdownMenuItem>
+                    ) : null}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+            </ButtonGroup>
+          </TableCell>
+        ) : null}
       </>
     )
 
@@ -513,7 +521,7 @@ export function DashboardCrudPage<TItem, TPayload>({
 
   const tableElement = (
     <Table>
-      <TableHeader className="bg-[#f7faff] text-xs text-muted-foreground">
+      <TableHeader className="bg-[#f7faff] text-xs text-muted-foreground dark:bg-muted/40">
         <TableRow>
           {sortable ? <TableHead className="w-10" /> : null}
           {columns.map((column) => (
@@ -521,9 +529,11 @@ export function DashboardCrudPage<TItem, TPayload>({
               {column.label}
             </TableHead>
           ))}
-          <TableHead className="w-[92px] text-right">
-            {labels.actions}
-          </TableHead>
+          {showActionsColumn ? (
+            <TableHead className="w-[92px] text-right">
+              {labels.actions}
+            </TableHead>
+          ) : null}
         </TableRow>
       </TableHeader>
       {sortable ? (
