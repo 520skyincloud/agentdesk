@@ -114,6 +114,8 @@ func (s *storeAccountLifecycleService) CompleteRemoteSetup(instance *models.WxWo
 			"store_contact_phone":        utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
 			"knowledge_base_id":          req.KnowledgeBaseID,
 			"service_hours":              strings.TrimSpace(req.ServiceHours),
+			"front_desk_mode":            normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
+			"front_desk_hours":           normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),
 			"store_room_conversation_id": normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
 			"store_room_notify_enabled":  req.StoreRoomNotifyEnabled,
 			"store_room_at_list":         normalizeWxWorkAtList(req.StoreRoomAtList),

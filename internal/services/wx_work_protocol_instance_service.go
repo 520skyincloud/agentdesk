@@ -38,10 +38,16 @@ type WxWorkProtocolInstanceStats struct {
 	UrgentManualAttentionCount int64
 }
 
-const DefaultWxWorkProtocolPersonaPrompt = `你是酒店前台同事，说话简短、自然、像正常微信聊天。
+const DefaultWxWorkProtocolPersonaPrompt = `你是线上酒店接待，说话简短、自然、像正常微信聊天。
 不要用客服模板，不要加固定结尾，不要用“亲”“为您”“这边”“～”。
 能确定就直接答；需要真实动作时先收集一个最关键字段或进入接待路由，没工具或路由结果前别表达动作已执行或后续有人处理。
 互动要接住上下文，别总回“哈哈/收到”。闲聊、感谢、确认、表情和纠错都要顺着当前话题自然回应，结束类就收住。`
+
+const (
+	wxWorkFrontDeskModeUnmanned  = "unmanned"
+	wxWorkFrontDeskModeStaffed   = "staffed"
+	wxWorkFrontDeskModeScheduled = "scheduled"
+)
 
 func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgent(instance *models.WxWorkProtocolInstance) models.AIAgent {
 	name := "企微员工号AI"
@@ -57,6 +63,7 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgent(instance *models.WxW
 		if strings.TrimSpace(instance.PersonaPrompt) != "" {
 			systemPrompt = mergeWxWorkPersonaIntoSystemPrompt(DefaultWxWorkProtocolPersonaPrompt, instance.PersonaPrompt)
 		}
+		systemPrompt = appendWxWorkReceptionContext(systemPrompt, instance, time.Now())
 		if instance.KnowledgeBaseID > 0 && repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), instance.KnowledgeBaseID, instance.TenantID) != nil {
 			knowledgeIDs = fmt.Sprintf("%d", instance.KnowledgeBaseID)
 		}
@@ -166,6 +173,7 @@ func (s *wxWorkProtocolInstanceService) CreatePendingFromLogin(guid string, raw 
 		AIReplyEnabled:            true,
 		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
 		PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
+		FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
 		ContextMaxMessages:        DefaultConversationContextMaxMessages,
 		ContextMaxTokens:          DefaultConversationContextMaxTokens,
 		ContextCompressionEnabled: true,
@@ -305,6 +313,8 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		BridgeID:                       strings.TrimSpace(req.BridgeID),
 		StaffUserIDs:                   strings.TrimSpace(req.StaffUserIDs),
 		ServiceHours:                   strings.TrimSpace(req.ServiceHours),
+		FrontDeskMode:                  normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
+		FrontDeskHours:                 normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),
 		StoreRoomConversationID:        normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
 		StoreRoomNotifyEnabled:         req.StoreRoomNotifyEnabled,
 		StoreRoomAtList:                normalizeWxWorkAtList(req.StoreRoomAtList),
@@ -403,6 +413,7 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 		AIReplyEnabled:            false,
 		CompanyID:                 req.CompanyID,
 		PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
+		FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
 		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
 		ContextMaxMessages:        DefaultConversationContextMaxMessages,
 		ContextMaxTokens:          DefaultConversationContextMaxTokens,
@@ -490,6 +501,7 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 		CompanyID:                 req.CompanyID,
 		AIReplyEnabled:            false,
 		PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
+		FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
 		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
 		ContextMaxMessages:        DefaultConversationContextMaxMessages,
 		ContextMaxTokens:          DefaultConversationContextMaxTokens,
@@ -581,6 +593,8 @@ func (s *wxWorkProtocolInstanceService) CreateReplacementRemoteSetup(req request
 		BridgeID:                       old.BridgeID,
 		StaffUserIDs:                   old.StaffUserIDs,
 		ServiceHours:                   old.ServiceHours,
+		FrontDeskMode:                  normalizeWxWorkFrontDeskMode(old.FrontDeskMode),
+		FrontDeskHours:                 normalizeWxWorkFrontDeskHours(old.FrontDeskMode, old.FrontDeskHours),
 		StoreRoomConversationID:        old.StoreRoomConversationID,
 		StoreRoomNotifyEnabled:         old.StoreRoomNotifyEnabled,
 		StoreRoomAtList:                old.StoreRoomAtList,
@@ -774,6 +788,8 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		"bridge_id":                          strings.TrimSpace(req.BridgeID),
 		"staff_user_ids":                     strings.TrimSpace(req.StaffUserIDs),
 		"service_hours":                      strings.TrimSpace(req.ServiceHours),
+		"front_desk_mode":                    normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
+		"front_desk_hours":                   normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),
 		"store_room_conversation_id":         normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
 		"store_room_notify_enabled":          req.StoreRoomNotifyEnabled,
 		"store_room_at_list":                 normalizeWxWorkAtList(req.StoreRoomAtList),
@@ -900,6 +916,8 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 		"knowledge_base_id":                  req.KnowledgeBaseID,
 		"staff_user_ids":                     strings.TrimSpace(req.StaffUserIDs),
 		"service_hours":                      strings.TrimSpace(req.ServiceHours),
+		"front_desk_mode":                    normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
+		"front_desk_hours":                   normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),
 		"store_room_conversation_id":         normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
 		"store_room_notify_enabled":          req.StoreRoomNotifyEnabled,
 		"store_room_at_list":                 normalizeWxWorkAtList(req.StoreRoomAtList),
@@ -1149,6 +1167,48 @@ func normalizeWxWorkPersonaPrompt(value string) string {
 		return DefaultWxWorkProtocolPersonaPrompt
 	}
 	return utils.RepairMojibakeText(value)
+}
+
+func normalizeWxWorkFrontDeskMode(value string) string {
+	switch strings.TrimSpace(value) {
+	case wxWorkFrontDeskModeStaffed:
+		return wxWorkFrontDeskModeStaffed
+	case wxWorkFrontDeskModeScheduled:
+		return wxWorkFrontDeskModeScheduled
+	default:
+		return wxWorkFrontDeskModeUnmanned
+	}
+}
+
+func normalizeWxWorkFrontDeskHours(mode, value string) string {
+	if normalizeWxWorkFrontDeskMode(mode) != wxWorkFrontDeskModeScheduled {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func appendWxWorkReceptionContext(systemPrompt string, instance *models.WxWorkProtocolInstance, now time.Time) string {
+	if instance == nil {
+		return strings.TrimSpace(systemPrompt)
+	}
+	mode := normalizeWxWorkFrontDeskMode(instance.FrontDeskMode)
+	hours := normalizeWxWorkFrontDeskHours(mode, instance.FrontDeskHours)
+	var contextText string
+	switch mode {
+	case wxWorkFrontDeskModeStaffed:
+		contextText = "当前门店配置为有前台酒店。只有知识库或门店配置明确支持时，才可以引导客人去前台；经营模式本身不代表前台已经接单或能够完成具体动作。"
+	case wxWorkFrontDeskModeScheduled:
+		if hours == "" {
+			contextText = "当前门店配置为分时段前台，但尚未配置有效时段。不得据此声称前台有人或引导客人去前台。"
+		} else if isWithinStoreServiceHours(hours, now) {
+			contextText = fmt.Sprintf("当前门店配置为分时段前台，前台时段为 %s，当前处于该时段。仍只有知识库或门店配置明确支持时，才可以引导客人去前台；这不代表前台已经接单。", hours)
+		} else {
+			contextText = fmt.Sprintf("当前门店配置为分时段前台，前台时段为 %s，当前不在该时段。不得声称前台有人或引导客人去前台。", hours)
+		}
+	default:
+		contextText = "当前门店为无人化酒店，不设常驻前台。不得无依据引导客人去前台、声称前台有人或暂时离开，也不得承诺前台处理；需要人工时只能使用系统已有接待路由。"
+	}
+	return strings.TrimSpace(systemPrompt) + "\n\n门店接待模式：\n" + contextText
 }
 
 func (s *wxWorkProtocolInstanceService) resolveEnabledProtocolChannel(channelID, tenantID int64) (*models.Channel, error) {
