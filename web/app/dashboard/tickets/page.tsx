@@ -119,7 +119,7 @@ export default function TicketsPage() {
   )
   const canCreate = permissions.has("ticket.create")
   const canAssign = permissions.has("ticket.assign")
-  const canViewAgentProfiles = permissions.has("agentProfile.view")
+  const canViewAgentProfiles = permissions.has("agent.view")
   const canViewTags = permissions.has("tag.view")
 
   const assigneeAllOption = useMemo(() => getAssigneeAllOption(t), [t])

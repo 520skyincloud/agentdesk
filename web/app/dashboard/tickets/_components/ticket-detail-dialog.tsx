@@ -126,7 +126,7 @@ export function TicketDetailDialog({
     [session?.permissions],
   )
   const canUpdate = permissions.has("ticket.update")
-  const canAssign = permissions.has("ticket.assign") && permissions.has("agentProfile.view")
+  const canAssign = permissions.has("ticket.assign") && permissions.has("agent.view")
   const canChangeStatus = permissions.has("ticket.changeStatus")
   const canAddProgress = permissions.has("ticket.progress")
   const canViewTags = permissions.has("tag.view")

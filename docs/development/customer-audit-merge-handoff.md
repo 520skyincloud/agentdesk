@@ -2355,3 +2355,54 @@ git diff --check
 - 本批不修改 AI 回复 runtime、模型供应商、token、usage、计费或 ReplyIntentConfig。DTO 变化仅限工单普通更新不再接受负责人；AI 内部系统建单仍可调用服务层创建并获得完整首次指派审计。
 - 推荐整体合并后端、前端和测试。只回滚后端会恢复 `ticket.update` 静默改派漏洞；只回滚前端则旧创建表单会向无 `ticket.assign` 账号展示负责人并收到 403。
 - 无表结构和存量数据回滚。新增的首次指派进展与通知属于正确审计事实，不应在代码回滚时删除。
+
+## 第 44 批：派单与会话监控工作台动作权限（2026-07-14）
+
+### 目标与复用判断
+
+- 派单工作台后端已将列表/统计/客服负载放在 `conversation.view`，四个编排动作放在 `conversation.handover`；页面却只读取 `task.manageable`，导致只读账号仍看到全部编排按钮。
+- 会话监控后端已有 `conversation.assign/transfer/close`，页面列表和详情却无权限判断；标签、客服、客服组筛选还无条件调用各自 view 接口。
+- 第 43 批把客服列表辅助权限误写成不存在的 `agentProfile.view`。真实权限常量和 handler 均为 `agent.view`，本批立即更正，不新增别名或隐藏权限。
+
+### 文件与契约
+
+```text
+web/app/dashboard/conversation-dispatch/page.tsx
+web/app/dashboard/conversation-dispatch/action-permissions.test.mjs
+web/app/dashboard/conversation-monitor/page.tsx
+web/app/dashboard/conversation-monitor/_components/detail.tsx
+web/app/dashboard/conversation-monitor/action-permissions.test.mjs
+web/app/dashboard/tickets/page.tsx
+web/app/dashboard/tickets/_components/ticket-detail-dialog.tsx
+web/app/dashboard/tickets/action-permissions.test.mjs
+web/app/dashboard/conversations/page.tsx
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 派单页新增 `conversation.handover` 能力守卫，动态移除操作列、修正空状态 `colSpan`，并保护自动派发/派发/转派/释放函数和弹窗。`agentTeam.view` 独立控制客服组筛选和接口加载。
+- 会话监控页按 `conversation.assign/transfer/close` 拆分列表菜单、详情 footer 和弹窗；标记已读继续属于 view。`tag.view/agent.view/agentTeam.view` 控制三个辅助筛选及其数据请求。
+- 工单与会话转工单的可选负责人统一改用真实 `agent.view`；需要同时具备业务动作权限和客服查看权限才显示人员选择器。
+- 没有后端、model、AutoMigrate、DML migration、DTO、enum、API、路由、WebSocket、权限常量、导航或响应结构变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/conversation-dispatch/page.tsx app/dashboard/conversation-monitor/page.tsx app/dashboard/conversation-monitor/_components/detail.tsx app/dashboard/tickets/page.tsx app/dashboard/tickets/_components/ticket-detail-dialog.tsx app/dashboard/conversations/page.tsx
+git diff --check
+```
+
+- 全量 Go、vet、90 项前端回归、typecheck、Next 生产构建和 diff 检查通过。
+- 目标 ESLint 无 error；保留原有 warning：监控详情 `messages` 依赖、监控页 `loadDetail` 依赖、会话页 `<img>`。本批没有修改这些逻辑节点。
+- 新增契约测试固定派单 read/handover 分界、动态操作列和弹窗守卫，以及监控列表/详情各动作与辅助筛选权限。
+
+### 并行分支、合并与回滚
+
+- 开始本批前已 fetch。`origin/codex/ai-billing@f2d2da4` 不修改派单页、监控页、监控详情或工单页面；无 migration 影响，不需要 rebase。
+- 本批不修改 AI 分支维护的聊天面板、自动转人工、回复 runtime、模型供应商、token、usage、计费或 ReplyIntentConfig。
+- 页面与测试可独立回滚，无数据回滚；回滚会恢复误导性的主管写按钮及辅助接口 403。`agent.view` 更正不应单独回退，否则合法工单指派角色会失去人员选择入口。

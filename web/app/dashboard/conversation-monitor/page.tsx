@@ -10,6 +10,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import { ConversationCloseDialog } from "@/components/conversation-actions/close-dialog"
 import { ConversationTransferDialog } from "@/components/conversation-actions/transfer-dialog"
 import {
@@ -115,6 +116,17 @@ function getStatusOptions(
 
 export default function DashboardConversationsPage() {
   const t = useI18n()
+  const { session } = useAuth()
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  )
+  const canAssign = permissions.has("conversation.assign")
+  const canTransfer = permissions.has("conversation.transfer")
+  const canClose = permissions.has("conversation.close")
+  const canViewTags = permissions.has("tag.view")
+  const canViewAgents = permissions.has("agent.view")
+  const canViewTeams = permissions.has("agentTeam.view")
   const statusOptions = useMemo(() => getStatusOptions(t), [t])
   const [keywordInput, setKeywordInput] = useState("")
   const [statusFilterInput, setStatusFilterInput] = useState("all")
@@ -189,9 +201,9 @@ export default function DashboardConversationsPage() {
     async function loadFilterOptions() {
       try {
         const [tagData, assigneeData, teamData] = await Promise.all([
-          fetchTagsAll(),
-          fetchAgentProfilesAll(),
-          fetchAgentTeamsAll(),
+          canViewTags ? fetchTagsAll() : Promise.resolve([]),
+          canViewAgents ? fetchAgentProfilesAll() : Promise.resolve([]),
+          canViewTeams ? fetchAgentTeamsAll() : Promise.resolve([]),
         ])
         if (!cancelled) {
           setTags(Array.isArray(tagData) ? tagData : [])
@@ -222,7 +234,7 @@ export default function DashboardConversationsPage() {
     return () => {
       cancelled = true
     }
-  }, [t])
+  }, [canViewAgents, canViewTags, canViewTeams, t])
 
   useEffect(() => {
     detailItemRef.current = detailItem
@@ -513,6 +525,9 @@ export default function DashboardConversationsPage() {
   }
 
   function openAssign(item: AdminConversation) {
+    if (!canAssign) {
+      return
+    }
     setAssignItem(item)
     setAssignOpen(true)
   }
@@ -526,17 +541,27 @@ export default function DashboardConversationsPage() {
       setAssignItem(null)
       return
     }
-    setAssignOpen(true)
+    if (canAssign) {
+      setAssignOpen(true)
+    }
   }
 
   function openTransfer(item: AdminConversation) {
+    if (!canTransfer) {
+      return
+    }
     setTransferItem(item)
     setTransferOpen(true)
   }
 
   function openClose(item: AdminConversation) {
+    if (!canClose) {
+      return
+    }
     setCloseItem(item)
-    setCloseOpen(true)
+    if (canClose) {
+      setCloseOpen(true)
+    }
   }
 
   function handleCloseOpenChange(open: boolean) {
@@ -560,7 +585,9 @@ export default function DashboardConversationsPage() {
       setTransferItem(null)
       return
     }
-    setTransferOpen(true)
+    if (canTransfer) {
+      setTransferOpen(true)
+    }
   }
 
   async function refreshDetail() {
@@ -597,6 +624,9 @@ export default function DashboardConversationsPage() {
   }
 
   async function handleDispatch(item: AdminConversation) {
+    if (!canAssign) {
+      return
+    }
     setActionLoadingId(item.id)
     try {
       await dispatchConversation(item.id)
@@ -652,38 +682,44 @@ export default function DashboardConversationsPage() {
               onChange={handleStatusFilterChange}
             />
           </div>
-          <div className="w-full sm:w-64">
-            <TagSelector
-              mode="single"
-              value={Number(tagFilterInput)}
-              onChange={(value) => setTagFilterInput(String(value))}
-              tags={tags}
-              placeholder={t("conversationMonitor.selectTag")}
-              searchPlaceholder={t("conversationMonitor.searchTagPath")}
-              emptyText={t("conversationMonitor.emptyTags")}
-              rootOption={{ value: 0, label: t("conversationMonitor.allTags") }}
-            />
-          </div>
-          <div className="w-full sm:w-56">
-            <OptionCombobox
-              value={assigneeFilterInput}
-              options={assigneeOptions}
-              placeholder={t("conversationMonitor.selectAssignee")}
-              searchPlaceholder={t("conversationMonitor.searchAssignee")}
-              emptyText={t("conversationMonitor.emptyAssignees")}
-              onChange={setAssigneeFilterInput}
-            />
-          </div>
-          <div className="w-full sm:w-56">
-            <OptionCombobox
-              value={agentTeamFilterInput}
-              options={agentTeamOptions}
-              placeholder={t("conversationMonitor.selectTeam")}
-              searchPlaceholder={t("conversationMonitor.searchTeam")}
-              emptyText={t("conversationMonitor.emptyTeams")}
-              onChange={setAgentTeamFilterInput}
-            />
-          </div>
+          {canViewTags ? (
+            <div className="w-full sm:w-64">
+              <TagSelector
+                mode="single"
+                value={Number(tagFilterInput)}
+                onChange={(value) => setTagFilterInput(String(value))}
+                tags={tags}
+                placeholder={t("conversationMonitor.selectTag")}
+                searchPlaceholder={t("conversationMonitor.searchTagPath")}
+                emptyText={t("conversationMonitor.emptyTags")}
+                rootOption={{ value: 0, label: t("conversationMonitor.allTags") }}
+              />
+            </div>
+          ) : null}
+          {canViewAgents ? (
+            <div className="w-full sm:w-56">
+              <OptionCombobox
+                value={assigneeFilterInput}
+                options={assigneeOptions}
+                placeholder={t("conversationMonitor.selectAssignee")}
+                searchPlaceholder={t("conversationMonitor.searchAssignee")}
+                emptyText={t("conversationMonitor.emptyAssignees")}
+                onChange={setAssigneeFilterInput}
+              />
+            </div>
+          ) : null}
+          {canViewTeams ? (
+            <div className="w-full sm:w-56">
+              <OptionCombobox
+                value={agentTeamFilterInput}
+                options={agentTeamOptions}
+                placeholder={t("conversationMonitor.selectTeam")}
+                searchPlaceholder={t("conversationMonitor.searchTeam")}
+                emptyText={t("conversationMonitor.emptyTeams")}
+                onChange={setAgentTeamFilterInput}
+              />
+            </div>
+          ) : null}
           <Button variant="outline" onClick={applyFilters} disabled={loading}>
             <SearchIcon />
             {t("conversationMonitor.query")}
@@ -772,24 +808,28 @@ export default function DashboardConversationsPage() {
                               <MoreHorizontalIcon />
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-44 min-w-44">
-                              <DropdownMenuItem
-                                onClick={() => openAssign(item)}
-                                disabled={actionLoadingId === item.id || item.status !== 2}
-                              >
-                                <MessageCircleMoreIcon />
-                                {actionLoadingId === item.id
-                                  ? t("conversationMonitor.processing")
-                                  : t("conversationMonitor.assign")}
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => void handleDispatch(item)}
-                                disabled={actionLoadingId === item.id || item.status !== 2}
-                              >
-                                <RefreshCwIcon />
-                                {actionLoadingId === item.id
-                                  ? t("conversationMonitor.processing")
-                                  : t("conversationMonitor.retryDispatch")}
-                              </DropdownMenuItem>
+                              {canAssign ? (
+                                <>
+                                  <DropdownMenuItem
+                                    onClick={() => openAssign(item)}
+                                    disabled={actionLoadingId === item.id || item.status !== 2}
+                                  >
+                                    <MessageCircleMoreIcon />
+                                    {actionLoadingId === item.id
+                                      ? t("conversationMonitor.processing")
+                                      : t("conversationMonitor.assign")}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={() => void handleDispatch(item)}
+                                    disabled={actionLoadingId === item.id || item.status !== 2}
+                                  >
+                                    <RefreshCwIcon />
+                                    {actionLoadingId === item.id
+                                      ? t("conversationMonitor.processing")
+                                      : t("conversationMonitor.retryDispatch")}
+                                  </DropdownMenuItem>
+                                </>
+                              ) : null}
                               <DropdownMenuItem
                                 onClick={() => void handleRead(item)}
                                 disabled={actionLoadingId === item.id}
@@ -799,16 +839,18 @@ export default function DashboardConversationsPage() {
                                   ? t("conversationMonitor.processing")
                                   : t("conversationMonitor.markRead")}
                               </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => openTransfer(item)}
-                                disabled={actionLoadingId === item.id || item.status !== 3}
-                              >
-                                <MessageCircleMoreIcon />
-                                {actionLoadingId === item.id
-                                  ? t("conversationMonitor.processing")
-                                  : t("conversationMonitor.transfer")}
-                              </DropdownMenuItem>
-                              {item.status !== 4 ? (
+                              {canTransfer ? (
+                                <DropdownMenuItem
+                                  onClick={() => openTransfer(item)}
+                                  disabled={actionLoadingId === item.id || item.status !== 3}
+                                >
+                                  <MessageCircleMoreIcon />
+                                  {actionLoadingId === item.id
+                                    ? t("conversationMonitor.processing")
+                                    : t("conversationMonitor.transfer")}
+                                </DropdownMenuItem>
+                              ) : null}
+                              {canClose && item.status !== 4 ? (
                                 <DropdownMenuItem
                                   onClick={() => openClose(item)}
                                   disabled={actionLoadingId === item.id}
@@ -850,6 +892,9 @@ export default function DashboardConversationsPage() {
         loadingMoreMessages={detailMessagesLoadingMore}
         onLoadMoreMessages={loadMoreDetailMessages}
         onOpenChange={handleDetailOpenChange}
+        canAssign={canAssign}
+        canTransfer={canTransfer}
+        canClose={canClose}
         onOpenAssign={() => {
           if (!detailItem) {
             return
@@ -882,7 +927,7 @@ export default function DashboardConversationsPage() {
         }}
       />
       <ConversationCloseDialog
-        open={closeOpen}
+        open={canClose && closeOpen}
         conversationId={closeItem?.id ?? null}
         onOpenChange={handleCloseOpenChange}
         onSuccess={async () => {
@@ -895,7 +940,7 @@ export default function DashboardConversationsPage() {
         }}
       />
       <ConversationTransferDialog
-        open={assignOpen}
+        open={canAssign && assignOpen}
         mode="assign"
         conversationId={assignItem?.id ?? null}
         onOpenChange={handleAssignOpenChange}
@@ -909,7 +954,7 @@ export default function DashboardConversationsPage() {
         }}
       />
       <ConversationTransferDialog
-        open={transferOpen}
+        open={canTransfer && transferOpen}
         mode="transfer"
         conversationId={transferItem?.id ?? null}
         onOpenChange={handleTransferOpenChange}

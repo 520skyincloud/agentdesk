@@ -125,7 +125,7 @@ export default function ConversationsPage() {
     [session?.permissions],
   );
   const canCreateTicket = permissions.has("ticket.create");
-  const canAssignTicket = permissions.has("ticket.assign") && permissions.has("agentProfile.view");
+  const canAssignTicket = permissions.has("ticket.assign") && permissions.has("agent.view");
   const canViewTags = permissions.has("tag.view");
   const canTransferConversation = permissions.has("conversation.transfer");
   const canCloseConversation = permissions.has("conversation.close");

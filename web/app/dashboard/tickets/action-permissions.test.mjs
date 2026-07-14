@@ -23,7 +23,7 @@ const conversationInfoSource = await readFile(
 test("ticket list and detail actions follow explicit permissions", () => {
   assert.match(pageSource, /permissions\.has\("ticket\.create"\)/)
   assert.match(pageSource, /permissions\.has\("ticket\.assign"\)/)
-  assert.match(pageSource, /permissions\.has\("agentProfile\.view"\)/)
+  assert.match(pageSource, /permissions\.has\("agent\.view"\)/)
   assert.match(pageSource, /permissions\.has\("tag\.view"\)/)
   assert.match(pageSource, /\{canCreate \? \(/)
   assert.match(pageSource, /open=\{canCreate && createOpen\}/)

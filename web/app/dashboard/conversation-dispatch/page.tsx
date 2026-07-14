@@ -16,6 +16,7 @@ import {
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import {
   DashboardPage,
   DashboardTableShell,
@@ -111,6 +112,13 @@ type ActionDialogState = {
 
 export default function ConversationDispatchPage() {
   const t = useI18n()
+  const { session } = useAuth()
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  )
+  const canHandover = permissions.has("conversation.handover")
+  const canViewTeams = permissions.has("agentTeam.view")
   const statusOptions = useMemo(
     () => STATUS_OPTIONS.map((item) => ({ value: item.value, label: t(item.labelKey) })),
     [t]
@@ -193,6 +201,10 @@ export default function ConversationDispatchPage() {
   }, [query, teamFilter, t])
 
   useEffect(() => {
+    if (!canViewTeams) {
+      setTeams([{ value: "0", label: t("conversationDispatch.allTeams") }])
+      return
+    }
     let cancelled = false
     async function loadTeams() {
       try {
@@ -216,7 +228,7 @@ export default function ConversationDispatchPage() {
     return () => {
       cancelled = true
     }
-  }, [t])
+  }, [canViewTeams, t])
 
   useEffect(() => {
     void loadData()
@@ -245,6 +257,9 @@ export default function ConversationDispatchPage() {
   }
 
   async function handleAutoAssign(task: ConversationDispatchTask) {
+    if (!canHandover) {
+      return
+    }
     setActionLoadingId(task.conversationId)
     try {
       await autoAssignConversationDispatch(task.conversationId, task.teamId || undefined)
@@ -258,13 +273,16 @@ export default function ConversationDispatchPage() {
   }
 
   function openActionDialog(type: "assign" | "transfer" | "release", task: ConversationDispatchTask) {
+    if (!canHandover) {
+      return
+    }
     setDialog({ type, task })
     setDialogAssignee(type === "transfer" ? String(task.currentAssigneeId || 0) : String(task.recommendedAssigneeId || 0))
     setDialogReason("")
   }
 
   async function submitActionDialog() {
-    if (!dialog) return
+    if (!canHandover || !dialog) return
     const conversationId = dialog.task.conversationId
     setActionLoadingId(conversationId)
     try {
@@ -342,12 +360,14 @@ export default function ConversationDispatchPage() {
           onChange={setStatusInput}
           placeholder={t("conversationDispatch.allStatuses")}
         />
-        <OptionCombobox
-          value={teamInput}
-          options={teams}
-          onChange={setTeamInput}
-          placeholder={t("conversationDispatch.allTeams")}
-        />
+        {canViewTeams ? (
+          <OptionCombobox
+            value={teamInput}
+            options={teams}
+            onChange={setTeamInput}
+            placeholder={t("conversationDispatch.allTeams")}
+          />
+        ) : null}
         <Button onClick={submitFilters}>{t("common.query")}</Button>
       </DashboardToolbar>
 
@@ -375,13 +395,15 @@ export default function ConversationDispatchPage() {
                 <TableHead>{t("conversationDispatch.columnState")}</TableHead>
                 <TableHead>{t("conversationDispatch.columnAssignee")}</TableHead>
                 <TableHead>{t("conversationDispatch.columnWait")}</TableHead>
-                <TableHead className="text-right">{t("common.actions")}</TableHead>
+                {canHandover ? (
+                  <TableHead className="text-right">{t("common.actions")}</TableHead>
+                ) : null}
               </TableRow>
             </TableHeader>
             <TableBody>
               {result.results.length === 0 ? (
                 <DashboardTableStateRow
-                  colSpan={6}
+                  colSpan={canHandover ? 6 : 5}
                   loading={loading}
                   emptyText={t("conversationDispatch.emptyTasks")}
                 />
@@ -429,46 +451,48 @@ export default function ConversationDispatchPage() {
                         {task.manualExpireAt ? formatDateTime(task.manualExpireAt) : "-"}
                       </div>
                     </TableCell>
-                    <TableCell className="align-top text-right">
-                      <ButtonGroup>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          title={t("conversationDispatch.autoAssign")}
-                          disabled={!task.manageable || task.status !== "pending" || actionLoadingId === task.conversationId}
-                          onClick={() => handleAutoAssign(task)}
-                        >
-                          <BotIcon className="size-4" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          title={t("conversationDispatch.assign")}
-                          disabled={!task.manageable || task.status !== "pending" || actionLoadingId === task.conversationId}
-                          onClick={() => openActionDialog("assign", task)}
-                        >
-                          <CheckCircle2Icon className="size-4" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          title={t("conversationDispatch.transfer")}
-                          disabled={!task.manageable || !task.currentAssigneeId || actionLoadingId === task.conversationId}
-                          onClick={() => openActionDialog("transfer", task)}
-                        >
-                          <ArrowRightLeftIcon className="size-4" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          title={t("conversationDispatch.release")}
-                          disabled={!task.manageable || !task.currentAssigneeId || actionLoadingId === task.conversationId}
-                          onClick={() => openActionDialog("release", task)}
-                        >
-                          <RotateCcwIcon className="size-4" />
-                        </Button>
-                      </ButtonGroup>
-                    </TableCell>
+                    {canHandover ? (
+                      <TableCell className="align-top text-right">
+                        <ButtonGroup>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            title={t("conversationDispatch.autoAssign")}
+                            disabled={!task.manageable || task.status !== "pending" || actionLoadingId === task.conversationId}
+                            onClick={() => handleAutoAssign(task)}
+                          >
+                            <BotIcon className="size-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            title={t("conversationDispatch.assign")}
+                            disabled={!task.manageable || task.status !== "pending" || actionLoadingId === task.conversationId}
+                            onClick={() => openActionDialog("assign", task)}
+                          >
+                            <CheckCircle2Icon className="size-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            title={t("conversationDispatch.transfer")}
+                            disabled={!task.manageable || !task.currentAssigneeId || actionLoadingId === task.conversationId}
+                            onClick={() => openActionDialog("transfer", task)}
+                          >
+                            <ArrowRightLeftIcon className="size-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            title={t("conversationDispatch.release")}
+                            disabled={!task.manageable || !task.currentAssigneeId || actionLoadingId === task.conversationId}
+                            onClick={() => openActionDialog("release", task)}
+                          >
+                            <RotateCcwIcon className="size-4" />
+                          </Button>
+                        </ButtonGroup>
+                      </TableCell>
+                    ) : null}
                   </TableRow>
                 ))
               )}
@@ -520,7 +544,7 @@ export default function ConversationDispatchPage() {
         </div>
       </div>
 
-      <Dialog open={Boolean(dialog)} onOpenChange={(open) => !open && setDialog(null)}>
+      <Dialog open={canHandover && Boolean(dialog)} onOpenChange={(open) => !open && setDialog(null)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>

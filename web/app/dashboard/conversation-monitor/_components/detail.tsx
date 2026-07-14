@@ -38,6 +38,9 @@ type ConversationDetailDialogProps = {
   /** Whether older messages are available through cursor pagination. */
   messagesHasMore?: boolean;
   loadingMoreMessages?: boolean;
+  canAssign: boolean;
+  canTransfer: boolean;
+  canClose: boolean;
   onLoadMoreMessages?: () => void | Promise<void>;
   onOpenChange: (open: boolean) => void;
   onOpenAssign: () => void;
@@ -159,6 +162,9 @@ export function ConversationDetailDialog({
   messages: rawMessages,
   messagesHasMore = false,
   loadingMoreMessages = false,
+  canAssign,
+  canTransfer,
+  canClose,
   onLoadMoreMessages,
   onOpenChange,
   onOpenAssign,
@@ -292,24 +298,28 @@ export function ConversationDetailDialog({
               : t("conversationMonitor.noConversationInfo")}
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              onClick={onOpenAssign}
-              disabled={saving || !currentConversation || currentConversation.status !== 2}
-            >
-              <MessageCircleMoreIcon />
-              {saving ? t("conversationMonitor.processing") : t("conversationMonitor.assign")}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => void onDispatch()}
-              disabled={
-                saving || !currentConversation || !isPendingConversation
-              }
-            >
-              <MessageCircleMoreIcon />
-              {saving ? t("conversationMonitor.processing") : t("conversationMonitor.retryDispatch")}
-            </Button>
+            {canAssign ? (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={onOpenAssign}
+                  disabled={saving || !currentConversation || currentConversation.status !== 2}
+                >
+                  <MessageCircleMoreIcon />
+                  {saving ? t("conversationMonitor.processing") : t("conversationMonitor.assign")}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => void onDispatch()}
+                  disabled={
+                    saving || !currentConversation || !isPendingConversation
+                  }
+                >
+                  <MessageCircleMoreIcon />
+                  {saving ? t("conversationMonitor.processing") : t("conversationMonitor.retryDispatch")}
+                </Button>
+              </>
+            ) : null}
             <Button
               variant="outline"
               onClick={() => void onRead()}
@@ -318,16 +328,18 @@ export function ConversationDetailDialog({
               <CheckCheckIcon />
               {saving ? t("conversationMonitor.processing") : t("conversationMonitor.markRead")}
             </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={onOpenTransfer}
-              disabled={saving || !currentConversation || currentConversation.status !== 3}
-            >
-              <MessageCircleMoreIcon />
-              {saving ? t("conversationMonitor.processing") : t("conversationMonitor.transfer")}
-            </Button>
-            {!isClosedConversation ? (
+            {canTransfer ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onOpenTransfer}
+                disabled={saving || !currentConversation || currentConversation.status !== 3}
+              >
+                <MessageCircleMoreIcon />
+                {saving ? t("conversationMonitor.processing") : t("conversationMonitor.transfer")}
+              </Button>
+            ) : null}
+            {canClose && !isClosedConversation ? (
               <Button
                 variant="outline"
                 onClick={onOpenClose}

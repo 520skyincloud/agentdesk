@@ -1640,7 +1640,7 @@ git diff --check
 
 ### 页面权限与只读体验
 
-- 工单列表新增入口使用 `ticket.create`；负责人和标签筛选仅在分别具备 `agentProfile.view`、`tag.view` 时加载辅助数据，避免只读角色因无关列表接口 403 导致工单页失败。
+- 工单列表新增入口使用 `ticket.create`；负责人和标签筛选仅在分别具备 `agent.view`、`tag.view` 时加载辅助数据，避免只读角色因无关列表接口 403 导致工单页失败。
 - 工单详情的内容编辑、指派、状态、进展分别使用 `ticket.update`、`ticket.assign`、`ticket.changeStatus`、`ticket.progress`。无写权限时仍显示工单内容、当前状态、负责人、客户资料和历史进展。
 - 已关联客户的档案编辑使用 `customer.update`；未关联工单的查找/新建客户同时要求 `ticket.update` 与对应的 `customer.view/customer.create`。共享客户关联弹窗也执行相同守卫。
 - 会话工作台中的转工单、转接和关闭分别使用 `ticket.create`、`conversation.transfer`、`conversation.close`；无任何动作权限时不显示空菜单。会话关联客户继续使用 `conversation.linkCustomer`，并叠加客户查看或创建权限。
@@ -1651,3 +1651,28 @@ git diff --check
 - 全量 Go、vet、87 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。新增 handler 测试固定创建/指派复合权限，service 测试固定编辑保留负责人及首次指派进展，前端契约测试固定工单和会话动作映射。
 - 开始前和提交前均已 fetch。最终范围扩展到 `conversation-info-panel.tsx` 后确认 AI 分支也修改该文件：本批位于前半段未关联客户权限入口，AI 分支位于后半段自动转人工和公司意图配置，当前 `merge-tree` 可自动合并且语义不重叠；合并时必须同时保留双方逻辑。无 migration 编号影响，不需要为本批单独 rebase。
 - 回滚后普通编辑会重新具备静默改派能力，首次指派也会丢失专用进展与通知，因此若只回滚前端会重新暴露后端职责漏洞；建议本批后端、前端和测试整体回滚。
+
+## 44. 当前实施检查点：派单与会话监控工作台动作权限（2026-07-14）
+
+本检查点继续复用现有会话权限，不新增“主管角色专属”隐藏能力。页面能力只由权限管理中可见、可分配的权限点决定；客服组/任务的 `manageable` 仍负责业务范围，不能代替操作权限。
+
+### 派单工作台
+
+- `conversation.view` 提供派单任务、状态统计、等待时间、推荐客服和客服实时负载的只读视图。
+- `conversation.handover` 控制自动派发、手动派发、转派、释放以及对应操作列和弹窗。动作函数与弹窗 `open` 同时加守卫，不能只靠隐藏按钮。
+- `task.manageable` 继续校验组长是否可管理该任务；有 `conversation.handover` 但任务不在其管理范围时，按钮仍禁用。
+- 客服组筛选只在 `agentTeam.view` 下加载并显示；没有该权限不会调用客服组接口，也不会影响任务、统计和客服负载读取。
+
+### 会话监控工作台
+
+- 查看列表/详情、历史消息和标记已读继续属于 `conversation.view`；只读观察角色保留完整监控能力。
+- 分配和重试自动调度使用 `conversation.assign`，转接使用 `conversation.transfer`，关闭使用 `conversation.close`。列表菜单、详情页底部动作、事件函数和三个弹窗均使用相同权限。
+- 标签、客服、客服组筛选分别依赖 `tag.view`、`agent.view`、`agentTeam.view`；缺少任一辅助权限时只隐藏对应筛选并跳过接口，不影响基本监控页面。
+- 第 43 批曾误写前端辅助权限码 `agentProfile.view`，本批已按真实常量和 `/agent/list_all` handler 更正为 `agent.view`，同时修正文档和契约测试。后端从未存在或授予错误权限码。
+
+### 契约、验证与合并
+
+- 没有 Go、model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket payload、权限常量、导航或 JsonResult 变化；不涉及 AI 回复、模型、token、usage 或计费。
+- 全量 Go、vet、90 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。目标 ESLint 仅保留监控详情/页面和会话页已有的三个 warning，无 error。
+- 提交范围与 `origin/codex/ai-billing@f2d2da4` 无同业务页面修改；无需 rebase。最终合并后仍应重跑权限契约测试和生产构建。
+- 本批可独立回滚前端与测试且无需数据回滚；回滚会重新让只读观察角色看到必然失败的主管动作，并让缺少辅助 view 权限的页面产生 403。
