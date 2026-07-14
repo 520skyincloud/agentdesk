@@ -1507,3 +1507,22 @@ git diff --check
 - 测试覆盖超级管理员/管理员保留权限、内置和自定义租户角色清理、自定义平台角色保留、重复迁移，以及租户账号携带脏平台权限仍被五个写 handler 拒绝。前端契约固定动作显隐和刷新保留。
 - migration 52 创建前已 fetch：`origin/main@e67e207` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 51，无版本冲突。AI 分支不修改本批权限常量、Skill handler、Skill 页面或通用 CRUD 文件；无需 rebase，最终合并仍需保留本批 scope 与角色关系清理。
 - 回滚页面显隐不会改变服务端权限；回滚 migration 或 handler 防线会重新允许租户角色修改全局 Skill，不属于安全回滚。若未来要支持公司自定义 Skill，应新增明确 Tenant 归属和 AIAgent 同租户引用契约，而不是重新把当前全局写权限授予租户角色。
+
+## 37. 当前实施检查点：平台 AIConfig 写操作显隐与防线（2026-07-14）
+
+本检查点继续沿用已确认的 AIConfig 平台语义：模型供应商、API 接入和限额是平台配置，租户账号通过 `aiConfig.view` 只读查看可选模型，AIAgent 仍可引用启用的全局 AIConfig。审计发现服务端写权限已是 platform scope，但租户只读页面仍显示所有写控件，写 handler 也只依赖权限数组，没有像其他平台设置一样防御历史脏关系或旧 token。
+
+### 权限与页面行为
+
+- `aiConfig.view/create/update/delete` 的 code、scope 和默认角色关系不变，不新增权限或隐藏角色判断。租户角色继续只有 view，平台超级管理员和管理员按现有角色绑定持有写权限。
+- 创建、更新、启停、排序和删除 handler 在原权限校验后增加 `IsPlatformAccount` 校验；租户账号即使异常携带平台权限也不能修改全局 AIConfig。
+- AIConfig 页面同时按平台账号身份和 create/update/delete 权限展示新增、编辑、状态开关、拖拽排序、删除及操作列。租户只读用户仍能刷新、筛选和查看脱敏后的模型信息，不再看到必然失败的按钮。
+- 页面复用第 36 批 `DashboardCrudPage.showCreate`，没有增加第二套 CRUD 或模型配置入口。
+
+### 契约、验证与边界
+
+- 本批没有 model、AutoMigrate、DML migration、DTO、enum、Gin 路由、WebSocket payload 或 AIConfig service 变化；不修改 API Key 保存、模型调用、供应商、超时、重试、token、usage 或计费口径。
+- 测试覆盖租户账号异常持有 create/update/delete 时，五个写 handler 均返回禁止；前端契约覆盖平台身份、三项动作权限、状态开关、排序、删除和操作列显隐。
+- 全量 Go、专项 race、vet、74 项前端测试、typecheck、生产构建、目标 ESLint 和 diff 检查通过。
+- 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 不修改本批 AIConfig handler、页面、权限测试或通用 CRUD 文件；无 migration 编号和同文件冲突。本批可以独立合并，不需要重放 AI 分支模型配置实现。
+- 页面显隐可独立回滚，但 handler 平台账号校验应保留。未来若模型配置改为每租户独立，必须先设计 TenantID、密钥归属、计费和运行时解析，不能仅移除这次平台防线。

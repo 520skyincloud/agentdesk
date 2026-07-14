@@ -2022,3 +2022,49 @@ git diff --check
 - 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@f25811b`；migration 52 与远端最高编号 20/33/51 不冲突。
 - AI 分支与本批预计文件没有同文件修改。本批不需要 rebase；最终合并如果 AI 分支新增 Skill 权限或页面动作，必须继续遵守“租户只读/调试、平台写模板”的边界。
 - 页面和通用 `showCreate` 可独立回滚，但权限 scope、migration 清理和 handler 平台防线应作为同一安全边界保留。恢复租户写权限会重新产生跨公司共享模板修改风险。
+
+## 第 37 批：平台 AIConfig 写操作显隐与防线（2026-07-14）
+
+### 目标与复用判断
+
+- AIConfig 是平台模型供应商配置，现有 create/update/delete 权限已经是 platform scope；租户角色持有 view 只是为了查看并选择可用模型。
+- 审计发现租户只读页面仍展示新增、编辑、状态、排序和删除操作，五个写 handler 也没有防御异常携带平台权限的租户账号。
+- 复用现有 AIConfig 页面、接口、权限和第 36 批 `showCreate`，不修改模型配置 service、请求结构或运行时。
+
+### 文件与契约
+
+```text
+internal/handlers/dashboard/ai_config_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+web/app/dashboard/ai-configs/page.tsx
+web/app/dashboard/ai-configs/platform-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- create、update、update_status、update_sort、delete 在原动作权限后增加 `IsPlatformAccount` 校验；list、list_all 和 detail 保持只读开放。
+- 页面按 `isPlatformAccount + aiConfig.create/update/delete` 控制新增、编辑、状态开关、拖拽排序、删除和操作列；只读列表、筛选和刷新不受影响。
+- 权限常量、角色绑定、model、AutoMigrate、DML migration、DTO、enum、Gin 路由、WebSocket payload 和 JSON 契约均无变化。
+- API Key 继续只返回 `hasApiKey` 脱敏状态；本批不改变供应商接入、模型调用、超时重试、token、usage 或计费。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go test -race ./internal/handlers/dashboard -run TestAIConfigWritesRejectTenantAccountEvenWithPlatformPermission -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/ai-configs/page.tsx
+git diff --check
+```
+
+- Go 全量、专项 race、vet、74 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。
+- 后端测试固定五个写入口的脏权限防线；前端测试固定平台身份、三项动作权限和所有写控件显隐。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@a4d975c`。AI 分支与本批预计文件无同文件修改，无 migration 版本影响，也不需要 rebase。
+- 本批不改 AI/计费负责人维护的 AIConfig 字段、供应商、runtime、usage 或计费语义；最终合并无需重放模型配置代码。
+- 前端显隐可独立回滚；handler 平台防线应保留。若未来实现租户模型配置，需另行迁移模型和计费契约，不能把当前全局配置直接开放写入。

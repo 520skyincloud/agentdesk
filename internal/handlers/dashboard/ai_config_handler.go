@@ -2,9 +2,11 @@ package dashboard
 
 import (
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/services"
 
@@ -69,7 +71,7 @@ func AIConfigGetBy(ctx *gin.Context) {
 }
 
 func AIConfigPostCreate(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigCreate)
+	operator, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigCreate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -89,7 +91,7 @@ func AIConfigPostCreate(ctx *gin.Context) {
 }
 
 func AIConfigPostUpdate(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	operator, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -108,7 +110,7 @@ func AIConfigPostUpdate(ctx *gin.Context) {
 }
 
 func AIConfigPostDelete(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigDelete)
+	operator, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigDelete)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -127,7 +129,7 @@ func AIConfigPostDelete(ctx *gin.Context) {
 }
 
 func AIConfigPostUpdate_status(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	operator, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -146,7 +148,7 @@ func AIConfigPostUpdate_status(ctx *gin.Context) {
 }
 
 func AIConfigPostUpdateSort(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate); err != nil {
+	if _, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigUpdate); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -161,4 +163,15 @@ func AIConfigPostUpdateSort(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, nil)
+}
+
+func requireAIConfigPlatformWrite(ctx *gin.Context, permission constants.Permission) (*dto.AuthPrincipal, error) {
+	operator, err := services.AuthService.RequirePermission(ctx, permission)
+	if err != nil {
+		return nil, err
+	}
+	if !operator.IsPlatformAccount {
+		return nil, errorsx.Forbidden("只有平台账号可以管理 AI 配置")
+	}
+	return operator, nil
 }

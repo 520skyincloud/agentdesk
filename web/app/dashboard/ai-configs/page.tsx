@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 
+import { useAuth } from "@/components/auth-provider";
 import {
   DashboardCrudPage,
   createDashboardStatusColumn,
@@ -91,6 +92,15 @@ function getNextStatus(item: AIConfig) {
 
 export default function DashboardAIConfigsPage() {
   const t = useI18n();
+  const { session } = useAuth();
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  );
+  const isPlatformAccount = Boolean(session?.isPlatformAccount);
+  const canCreate = isPlatformAccount && permissions.has("aiConfig.create");
+  const canUpdate = isPlatformAccount && permissions.has("aiConfig.update");
+  const canDelete = isPlatformAccount && permissions.has("aiConfig.delete");
   const listStatusOptions = useMemo(() => getStatusOptions(t), [t]);
   const providerFilterOptions = useMemo(() => getProviderOptions(t), [t]);
   const modelTypeFilterOptions = useMemo(() => getModelTypeOptions(t), [t]);
@@ -225,24 +235,27 @@ export default function DashboardAIConfigsPage() {
         getBadgeVariant: (status) =>
           status === Status.Ok ? "default" : "outline",
         isEnabled: (status) => status === Status.Ok,
-        toggle: {
-          getNextStatus,
-          updateStatus: (item, nextStatus) =>
-            updateAIConfigStatus(item.id, nextStatus),
-          successMessage: (item, nextStatus) =>
-            t("aiConfig.statusChanged", {
-              name: item.name,
-              status:
-                nextStatus === Status.Ok
-                  ? t("aiConfig.enabled")
-                  : t("aiConfig.disabled"),
-            }),
-          errorMessage: t("aiConfig.statusUpdateFailed"),
-          ariaLabel: (item) => t("aiConfig.toggleStatus", { name: item.name }),
-        },
+        toggle: canUpdate
+          ? {
+              getNextStatus,
+              updateStatus: (item, nextStatus) =>
+                updateAIConfigStatus(item.id, nextStatus),
+              successMessage: (item, nextStatus) =>
+                t("aiConfig.statusChanged", {
+                  name: item.name,
+                  status:
+                    nextStatus === Status.Ok
+                      ? t("aiConfig.enabled")
+                      : t("aiConfig.disabled"),
+                }),
+              errorMessage: t("aiConfig.statusUpdateFailed"),
+              ariaLabel: (item) =>
+                t("aiConfig.toggleStatus", { name: item.name }),
+            }
+          : undefined,
       }),
     ],
-    [t],
+    [canUpdate, t],
   );
 
   return (
@@ -263,9 +276,12 @@ export default function DashboardAIConfigsPage() {
       }
       getItemId={(item) => item.id}
       createItem={createAIConfig}
+      showCreate={canCreate}
+      showEdit={canUpdate}
+      showActionsColumn={canUpdate || canDelete}
       updateItem={(item, payload) => updateAIConfig({ id: item.id, ...payload })}
-      deleteItem={(item) => deleteAIConfig(item.id)}
-      canDelete={(item) => item.status !== Status.Ok}
+      deleteItem={canDelete ? (item) => deleteAIConfig(item.id) : undefined}
+      canDelete={canDelete ? (item) => item.status !== Status.Ok : undefined}
       deleteConfirm={(item) => ({
         title: t("aiConfig.confirmDeleteTitle"),
         description: t("aiConfig.confirmDeleteDescription", {
@@ -276,7 +292,7 @@ export default function DashboardAIConfigsPage() {
         variant: "destructive",
       })}
       sort={{
-        enabled: true,
+        enabled: canUpdate,
         onReorder: (items) => updateAIConfigSort(items.map((item) => item.id)),
         successMessage: t("aiConfig.sortUpdated"),
         errorMessage: t("aiConfig.sortUpdateFailed"),
