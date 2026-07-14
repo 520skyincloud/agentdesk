@@ -865,6 +865,16 @@ POST /api/auth/register
 - 双租户测试覆盖同外部 ID 分租户、后台 CRUD、跨租户客户企业、联系方式 ID 注入、门店关系租户继承、repository 最终写条件和无当前租户拒绝。
 - Ticket 与派单/会话后台本体尚未租户化，它们对 Customer 的全局运行时读取仍需在对应批次改为父业务对象的 tenant 条件；不能由客户页隔离推定工单或会话隔离完成。
 
+第四批实现状态（2026-07-14）：
+
+- 用户管理列表、全量选项和详情现在要求当前公司；门店员工客服组筛选子查询和门店员工归属展示同时使用 `StoreStaffBinding.TenantID`，平台管理员未进入公司时直接拒绝。
+- 客服组新增/编辑时，无论使用门店员工账号 ID 还是兼容旧企微实例 ID，都只解析当前租户的 User/StoreStaffBinding/WxWorkProtocolInstance；分配、转组、解绑和客服组范围同步的最终 Binding/WxWork 更新 SQL 同时携带 tenant。
+- 公司主管 `tenant_admin` 在 `ManagedDataScope` 中是“当前租户内不受客服组范围限制”，不再被误当成无任何数据；超级管理员和平台管理员的 unrestricted 语义也先叠加当前 Tenant 过滤，不代表全平台可见。
+- Store、StoreStaffBinding、WxWorkProtocolInstance 的展示关联只从同租户 Company/AgentTeam/Store/Instance 读取，损坏的跨租户绑定不会补出另一公司的名称或企微账号。
+- 企微员工号列表使用现有 `ApplyWxWorkInstanceFilter` 时先按 Tenant 过滤；会话范围在客服组过滤前先按 Conversation.Channel→Channel.TenantID 限定当前公司，详情可见性执行同一前置条件。
+- migration 37/38 发生在 migration 44 之前，仍保留 nil-operator 的历史全局回填路径；运行时 operator 非空时才强制 tenant，专项测试验证零租户历史数据仍可按原顺序升级。
+- 本批没有修改企微实例创建/编辑/登录 handler/service、协议回调、设备池、AI 回复或计费。WxWork 全动作与非 HTTP 链路仍需下一批，Conversation/Message/派单本体也仍需独立 TenantID 和双租户测试。
+
 ### 阶段 6：非 HTTP 链路隔离
 
 - WebSocket。

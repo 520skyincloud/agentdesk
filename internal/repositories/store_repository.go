@@ -24,6 +24,17 @@ func (r *storeRepository) Get(db *gorm.DB, id int64) *models.Store {
 	return ret
 }
 
+func (r *storeRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.Store {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.Store{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *storeRepository) Take(db *gorm.DB, where ...any) *models.Store {
 	ret := &models.Store{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -54,4 +65,8 @@ func (r *storeRepository) Create(db *gorm.DB, t *models.Store) error {
 
 func (r *storeRepository) Updates(db *gorm.DB, id int64, columns map[string]any) error {
 	return db.Model(&models.Store{}).Where("id = ?", id).Updates(columns).Error
+}
+
+func (r *storeRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.Store{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
 }

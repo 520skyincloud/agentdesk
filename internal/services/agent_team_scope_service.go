@@ -19,6 +19,7 @@ type agentTeamScopeService struct{}
 func newAgentTeamScopeService() *agentTeamScopeService { return &agentTeamScopeService{} }
 
 type ManagedDataScope struct {
+	TenantID          int64
 	Unrestricted      bool
 	CompanyIDs        []int64
 	StoreIDs          []int64
@@ -27,15 +28,16 @@ type ManagedDataScope struct {
 }
 
 func (s *agentTeamScopeService) Resolve(operator *dto.AuthPrincipal) ManagedDataScope {
-	if operator == nil {
+	tenantID := s.ActiveTenantID(operator)
+	if tenantID <= 0 {
 		return ManagedDataScope{}
 	}
-	if slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) || slices.Contains(operator.Roles, constants.RoleCodeAdmin) {
-		return ManagedDataScope{Unrestricted: true}
+	if s.IsAdmin(operator) {
+		return ManagedDataScope{TenantID: tenantID, Unrestricted: true}
 	}
-	scope := ManagedDataScope{}
+	scope := ManagedDataScope{TenantID: tenantID}
 	if slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) {
-		teams := repositories.AgentTeamRepository.Find(sqls.DB(), sqls.NewCnd().Eq("leader_user_id", operator.UserID).Eq("status", enums.StatusOk))
+		teams := repositories.AgentTeamRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).Eq("leader_user_id", operator.UserID).Eq("status", enums.StatusOk))
 		for i := range teams {
 			scope.CompanyIDs = append(scope.CompanyIDs, utils.SplitInt64s(teams[i].CompanyScopeIDs)...)
 			scope.StoreIDs = append(scope.StoreIDs, utils.SplitInt64s(teams[i].StoreScopeIDs)...)
@@ -43,8 +45,8 @@ func (s *agentTeamScopeService) Resolve(operator *dto.AuthPrincipal) ManagedData
 		}
 	}
 	if slices.Contains(operator.Roles, constants.RoleCodeCsUser) {
-		if profile := repositories.AgentProfileRepository.Take(sqls.DB(), "user_id = ?", operator.UserID); profile != nil && profile.Status != enums.StatusDeleted {
-			if team := repositories.AgentTeamRepository.Get(sqls.DB(), profile.TeamID); team != nil && team.Status == enums.StatusOk {
+		if profile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ?", tenantID, operator.UserID); profile != nil && profile.Status != enums.StatusDeleted {
+			if team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), profile.TeamID, tenantID); team != nil && team.Status == enums.StatusOk {
 				scope.CompanyIDs = append(scope.CompanyIDs, utils.SplitInt64s(team.CompanyScopeIDs)...)
 				scope.StoreIDs = append(scope.StoreIDs, utils.SplitInt64s(team.StoreScopeIDs)...)
 				scope.WxWorkInstanceIDs = append(scope.WxWorkInstanceIDs, utils.SplitInt64s(team.WxWorkInstanceScopeIDs)...)
@@ -52,7 +54,7 @@ func (s *agentTeamScopeService) Resolve(operator *dto.AuthPrincipal) ManagedData
 		}
 	}
 	if slices.Contains(operator.Roles, constants.RoleCodeStoreStaff) {
-		bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().Eq("user_id", operator.UserID).Where("status <> ?", enums.StatusDeleted))
+		bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).Eq("user_id", operator.UserID).Where("status <> ?", enums.StatusDeleted))
 		for i := range bindings {
 			scope.CompanyIDs = appendPositive(scope.CompanyIDs, bindings[i].CompanyID)
 			scope.StoreIDs = appendPositive(scope.StoreIDs, bindings[i].StoreID)
@@ -130,6 +132,7 @@ func (s *agentTeamScopeService) ApplyKnowledgeCandidateFilter(cnd *sqls.Cnd, ope
 }
 
 func (s *agentTeamScopeService) ApplyWxWorkInstanceFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {
+	cnd = s.ApplyTenantFilter(cnd, operator)
 	scope := s.Resolve(operator)
 	if scope.Unrestricted {
 		return cnd
@@ -144,6 +147,11 @@ func (s *agentTeamScopeService) ApplyWxWorkInstanceFilter(cnd *sqls.Cnd, operato
 }
 
 func (s *agentTeamScopeService) ApplyConversationFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {
+	tenantID := s.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return cnd.Where("1 = 0")
+	}
+	cnd.Where("channel_id IN (SELECT id FROM t_channel WHERE tenant_id = ?)", tenantID)
 	scope := s.Resolve(operator)
 	if scope.Unrestricted {
 		return cnd
@@ -159,6 +167,14 @@ func (s *agentTeamScopeService) ApplyConversationFilter(cnd *sqls.Cnd, operator 
 
 func (s *agentTeamScopeService) CanViewConversation(operator *dto.AuthPrincipal, conversationID int64) bool {
 	if operator == nil || conversationID <= 0 {
+		return false
+	}
+	tenantID := s.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return false
+	}
+	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
+	if conversation == nil || repositories.ChannelRepository.GetInTenant(sqls.DB(), conversation.ChannelID, tenantID) == nil {
 		return false
 	}
 	if s.IsAdmin(operator) {
@@ -179,29 +195,36 @@ func (s *agentTeamScopeService) CanViewWxWorkInstance(operator *dto.AuthPrincipa
 	if operator == nil || instanceID <= 0 {
 		return false
 	}
+	tenantID := s.ActiveTenantID(operator)
+	if repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), instanceID, tenantID) == nil {
+		return false
+	}
 	scope := s.Resolve(operator)
 	return scope.Unrestricted || containsInt64(scope.WxWorkInstanceIDs, instanceID)
 }
 
 func (scope *ManagedDataScope) expand() {
+	if scope.TenantID <= 0 {
+		return
+	}
 	scope.CompanyIDs = uniquePositive(scope.CompanyIDs)
 	scope.StoreIDs = uniquePositive(scope.StoreIDs)
 	scope.WxWorkInstanceIDs = uniquePositive(scope.WxWorkInstanceIDs)
 	if len(scope.CompanyIDs) > 0 && len(scope.StoreIDs) == 0 && len(scope.WxWorkInstanceIDs) == 0 {
-		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().In("company_id", scope.CompanyIDs).Where("status <> ?", enums.StatusDeleted))
+		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", scope.TenantID).In("company_id", scope.CompanyIDs).Where("status <> ?", enums.StatusDeleted))
 		for i := range stores {
 			scope.StoreIDs = appendPositive(scope.StoreIDs, stores[i].ID)
 		}
 	}
 	scope.StoreIDs = uniquePositive(scope.StoreIDs)
 	if len(scope.StoreIDs) > 0 {
-		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().In("id", scope.StoreIDs).Where("status <> ?", enums.StatusDeleted))
+		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", scope.TenantID).In("id", scope.StoreIDs).Where("status <> ?", enums.StatusDeleted))
 		for i := range stores {
 			scope.CompanyIDs = appendPositive(scope.CompanyIDs, stores[i].CompanyID)
 			scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, stores[i].KnowledgeBaseID)
 		}
 		if len(scope.WxWorkInstanceIDs) == 0 {
-			instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().In("store_id", scope.StoreIDs).Where("status <> ?", enums.StatusDeleted))
+			instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", scope.TenantID).In("store_id", scope.StoreIDs).Where("status <> ?", enums.StatusDeleted))
 			for i := range instances {
 				scope.WxWorkInstanceIDs = appendPositive(scope.WxWorkInstanceIDs, instances[i].ID)
 				scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, instances[i].KnowledgeBaseID)
@@ -209,7 +232,7 @@ func (scope *ManagedDataScope) expand() {
 		}
 	}
 	if len(scope.WxWorkInstanceIDs) > 0 {
-		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().In("id", scope.WxWorkInstanceIDs).Where("status <> ?", enums.StatusDeleted))
+		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", scope.TenantID).In("id", scope.WxWorkInstanceIDs).Where("status <> ?", enums.StatusDeleted))
 		for i := range instances {
 			scope.StoreIDs = appendPositive(scope.StoreIDs, instances[i].StoreID)
 			scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, instances[i].KnowledgeBaseID)

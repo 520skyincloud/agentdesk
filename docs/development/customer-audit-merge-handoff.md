@@ -1008,3 +1008,61 @@ git diff --check
 - 同文件冲突限定在 `internal/models/models.go`。AI 分支为 Store/WxWork 增加欢迎内容、行业意图等字段，本步骤只增加三处 `TenantID`；合并必须逐字段保留，不能整段选边。
 - AI 分支还修改 `wx_work_protocol_instance_repository.go`、instance handler/service；本步骤有意不修改这些文件。建议先合并 Tenant/AuthPrincipal、Company/Channel、Customer 和本步骤 Store/WxWork 字段契约，再由 AI 分支 rebase，并在其新建/更新实例及门店流程中写入和校验 TenantID。
 - 客服分支后续再基于共同模型契约补后台管理、客服组范围、会话/派单和非 HTTP 链路隔离。回滚运行时代码时不得删除新增列、migration 44 记录或清空已回填归属。
+
+## 27. 多租户阶段 5D：用户管理与门店员工客服组归属隔离（2026-07-14）
+
+### 本步骤目标与结果
+
+- 保留现有“用户管理可给门店员工分配客服组、客服组编辑可反向选择门店员工”的双向入口，不新增平行页面；两侧列表、筛选、详情展示、分配、转组和解绑统一使用当前 `ActiveTenantID`。
+- 用户列表/全量选项/详情要求有效当前公司。`agentTeamId` 筛选中的 StoreStaffBinding 子查询携带 tenant，门店员工归属聚合只加载同租户 Store、Company、AgentTeam 和 WxWorkProtocolInstance。
+- 客服组创建/编辑兼容 `StoreStaffUserIDs` 和旧 `WxWorkInstanceScopeIDs` 两种 request 字段，但所有解析都限定当前租户；其他租户 ID 对调用方表现为不存在。
+- Binding 更新和按 Binding 批量同步 WxWorkInstance 的最终 SQL 使用 `tenant_id`；客服组范围回算只聚合当前租户 Binding/Instance，不能由污染关联扩入其他公司。
+- `tenant_admin`、super admin 和 admin 的 `Unrestricted` 重新定义为“当前公司内不受客服组范围限制”。企微实例列表先 tenant 后 team scope；会话列表和详情在原客服组范围前先通过 Conversation.Channel→Channel tenant 校验当前公司。
+- `EnsureForInstance` 要求实例、门店和 Binding 同租户；新建 Binding 与回写 Instance 处于同一事务，跨租户操作者不能创建或复用绑定。
+
+### 主要文件与契约
+
+```text
+internal/repositories/store_repository.go
+internal/repositories/store_staff_binding_repository.go
+internal/repositories/wx_work_protocol_instance_repository.go
+internal/services/store_service.go
+internal/services/store_staff_binding_service.go
+internal/services/agent_team_service.go
+internal/services/agent_team_scope_service.go
+internal/handlers/dashboard/user_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+internal/services/agent_team_scope_service_test.go
+internal/services/agent_organization_tenant_service_test.go
+internal/services/store_staff_tenant_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 没有 model、migration、request/response DTO、enum、Gin 路由、权限点、WebSocket payload 或前端文件变化；依赖上一提交 migration 44 已建立的三个 TenantID。
+- WxWork repository 只新增 `GetInTenant`、`UpdatesInTenant` 和 `UpdatesByStoreStaffBindingIDsInTenant`，旧全局方法继续供 migration 和协议按稳定标识读取，不改变其语义。
+- migration 37/38 调用的 `BackfillWxWorkInstanceBindings`、`BackfillStoreStaffAgentTeamBindings` 保留 nil-operator 全局路径；运行时客服组操作传入 operator 后才强制 tenant，避免历史升级顺序被破坏。
+
+### 验证与已知边界
+
+```text
+go test ./internal/services ./internal/handlers/dashboard -run 'Test(StoreStaff|StoreDomain|EnsureStoreStaff|LegacyStoreStaff|AgentTeamScope|BindStoreStaff|UpdateAgentTeam|AgentOrganization|AgentOrganizationListHandlersRequireActiveTenant)' -count=1
+go test -race ./internal/services ./internal/handlers/dashboard -run 'Test(StoreStaff|StoreDomain|EnsureStoreStaff|LegacyStoreStaff|AgentTeamScope|BindStoreStaff|UpdateAgentTeam|AgentOrganization|AgentOrganizationListHandlersRequireActiveTenant)' -count=1
+go test ./internal/migration -count=1
+go vet ./...
+go test ./... -run '^$' -count=1
+go test -p 1 ./... -count=1
+git diff --check
+```
+
+- 双租户测试包含故意污染的跨租户 User→Binding 关系，确认当前公司归属展示和企微实例范围不会读出污染行；Store/Binding/Instance 的错误租户最终更新条件均不改变目标记录。
+- 专项测试覆盖公司主管在当前租户的 unrestricted 范围、另一租户企微实例不可见、无当前租户不返回归属、跨租户 EnsureForInstance 被拒绝，以及 migration 37/38 对 `tenant_id=0` 历史数据仍可运行。
+- 上述聚焦、race、migration 全包、`go vet ./...` 和全仓编译通过。完整 `go test -p 1 ./... -count=1` 再次失败于既有 AI 异步测试清理竞态：全局 DB 清理后 `TriggerReplyAsync` 仍在 `BuildRuntimeAIAgentForConversation` 读取 RouteState 并 nil pointer panic；本步骤未修改该 goroutine 生命周期，不能记录完整串行回归通过。
+- 本步骤只完成用户管理、客服组归属和相关范围读取。WxWork 实例后台全部动作仍有全局 service 方法，协议回调/设备池/Outbox/WebSocket 尚未隔离；Conversation 只增加基于 Channel 的前置过滤，本体和 Message/RouteState/Assignment 尚无 TenantID。
+- `FindStoreStaffUserIDs`、`deriveScopeFromWxWorkInstances` 等无当前生产调用的历史全局 helper 暂保留给旧测试/迁移兼容；真实 Handler 已使用 `FindStoreStaffUserIDsInTenant`。若后续重新开放调用，必须传 tenant，不能直接接回页面。
+
+### 并行分支、合并顺序与回滚
+
+- 开始时 `origin/codex/ai-billing@f2d2da4`；本步骤不新增 migration。与 AI 分支同文件仅 `wx_work_protocol_instance_repository.go`，新增 tenant-aware 方法应与其远程接入/意图查询方法逐方法合并。
+- 不修改 AI 回复、欢迎语、模型供应商、FastGPT、token、计费或向量语义。建议先合并 migration 44 契约，再合并本步骤运行时过滤；AI 分支 rebase 后在其实例创建/更新链路调用相同 tenant-aware repository 方法。
+- 回滚本步骤时可撤销 Handler/service/repository 调用变化，但不得删除上一提交的 TenantID、migration 44 或已回填数据；在 WxWork 全动作和会话本体隔离完成前继续关闭公开注册。

@@ -24,9 +24,31 @@ func (r *storeStaffBindingRepository) Get(db *gorm.DB, id int64) *models.StoreSt
 	return ret
 }
 
+func (r *storeStaffBindingRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.StoreStaffBinding {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.StoreStaffBinding{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *storeStaffBindingRepository) Take(db *gorm.DB, where ...any) *models.StoreStaffBinding {
 	ret := &models.StoreStaffBinding{}
 	if err := db.Take(ret, where...).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *storeStaffBindingRepository) TakeInTenant(db *gorm.DB, tenantID int64, where ...any) *models.StoreStaffBinding {
+	if tenantID <= 0 {
+		return nil
+	}
+	ret := &models.StoreStaffBinding{}
+	if err := db.Where("tenant_id = ?", tenantID).Take(ret, where...).Error; err != nil {
 		return nil
 	}
 	return ret
@@ -54,4 +76,8 @@ func (r *storeStaffBindingRepository) Create(db *gorm.DB, t *models.StoreStaffBi
 
 func (r *storeStaffBindingRepository) Updates(db *gorm.DB, id int64, columns map[string]any) error {
 	return db.Model(&models.StoreStaffBinding{}).Where("id = ?", id).Updates(columns).Error
+}
+
+func (r *storeStaffBindingRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.StoreStaffBinding{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
 }

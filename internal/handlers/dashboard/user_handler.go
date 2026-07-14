@@ -26,6 +26,10 @@ func UserAnyList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 
 	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
@@ -34,13 +38,13 @@ func UserAnyList(ctx *gin.Context) {
 	).Desc("id")
 	cnd.Where("status <> ?", enums.StatusDeleted)
 	applyUserRoleFilter(ctx, cnd)
-	applyStoreStaffAgentTeamFilter(ctx, cnd)
+	applyStoreStaffAgentTeamFilter(ctx, cnd, operator.ActiveTenantID)
 	services.UserService.ApplyTenantScope(cnd, operator)
 	list, paging := services.UserService.FindPageByCnd(cnd)
 	results := builders.BuildUserList(list, builders.UserBuildOptions{
 		Roles:                 true,
 		Permissions:           false,
-		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments(userIDs(list)),
+		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments(userIDs(list), operator.ActiveTenantID),
 		Operator:              operator,
 	})
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
@@ -52,6 +56,10 @@ func UserAnyList_all(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 
 	cnd := params.NewSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
@@ -60,14 +68,14 @@ func UserAnyList_all(ctx *gin.Context) {
 	).Desc("id")
 	cnd.Where("status <> ?", enums.StatusDeleted)
 	applyUserRoleFilter(ctx, cnd)
-	applyStoreStaffAgentTeamFilter(ctx, cnd)
+	applyStoreStaffAgentTeamFilter(ctx, cnd, operator.ActiveTenantID)
 	services.UserService.ApplyTenantScope(cnd, operator)
 
 	list := services.UserService.Find(cnd)
 	results := builders.BuildUserList(list, builders.UserBuildOptions{
 		Roles:                 true,
 		Permissions:           false,
-		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments(userIDs(list)),
+		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments(userIDs(list), operator.ActiveTenantID),
 		Operator:              operator,
 	})
 	httpx.WriteJSON(ctx, results)
@@ -81,7 +89,7 @@ func applyUserRoleFilter(ctx *gin.Context, cnd *sqls.Cnd) {
 	cnd.Where("id IN (SELECT ur.user_id FROM t_user_role ur JOIN t_role r ON r.id = ur.role_id WHERE r.code = ? AND r.status = ?)", roleCode, enums.StatusOk)
 }
 
-func applyStoreStaffAgentTeamFilter(ctx *gin.Context, cnd *sqls.Cnd) {
+func applyStoreStaffAgentTeamFilter(ctx *gin.Context, cnd *sqls.Cnd, tenantID int64) {
 	raw := strings.TrimSpace(ctx.Query("agentTeamId"))
 	if raw == "" || raw == "all" {
 		return
@@ -90,12 +98,16 @@ func applyStoreStaffAgentTeamFilter(ctx *gin.Context, cnd *sqls.Cnd) {
 	if err != nil || teamID < 0 {
 		return
 	}
-	if teamID == 0 {
-		cnd.Where("id IN (SELECT ur.user_id FROM t_user_role ur JOIN t_role r ON r.id = ur.role_id WHERE r.code = ? AND r.status = ?)", constants.RoleCodeStoreStaff, enums.StatusOk)
-		cnd.Where("id NOT IN (SELECT user_id FROM t_store_staff_binding WHERE status <> ? AND agent_team_id > 0)", enums.StatusDeleted)
+	if tenantID <= 0 {
+		cnd.Where("1 = 0")
 		return
 	}
-	cnd.Where("id IN (SELECT user_id FROM t_store_staff_binding WHERE status <> ? AND agent_team_id = ?)", enums.StatusDeleted, teamID)
+	if teamID == 0 {
+		cnd.Where("id IN (SELECT ur.user_id FROM t_user_role ur JOIN t_role r ON r.id = ur.role_id WHERE r.code = ? AND r.status = ?)", constants.RoleCodeStoreStaff, enums.StatusOk)
+		cnd.Where("id NOT IN (SELECT user_id FROM t_store_staff_binding WHERE tenant_id = ? AND status <> ? AND agent_team_id > 0)", tenantID, enums.StatusDeleted)
+		return
+	}
+	cnd.Where("id IN (SELECT user_id FROM t_store_staff_binding WHERE tenant_id = ? AND status <> ? AND agent_team_id = ?)", tenantID, enums.StatusDeleted, teamID)
 }
 
 func userIDs(list []models.User) []int64 {
@@ -116,6 +128,10 @@ func UserGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 
 	item := services.UserService.GetInScope(id, operator)
 	if item == nil {
@@ -125,7 +141,7 @@ func UserGetBy(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, builders.BuildUserResponse(item, builders.UserBuildOptions{
 		Roles:                 true,
 		Permissions:           true,
-		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments([]int64{item.ID}),
+		StoreStaffAssignments: services.StoreStaffBindingService.FindUserAssignments([]int64{item.ID}, operator.ActiveTenantID),
 		Operator:              operator,
 	}))
 }

@@ -110,7 +110,7 @@ func (s *agentTeamService) CreateAgentTeam(req request.CreateAgentTeamRequest, o
 	if err != nil {
 		return nil, err
 	}
-	storeStaffUserIDs, _, err := s.resolveRequestedStoreStaffUserIDsDB(sqls.DB(), req.StoreStaffUserIDs, req.WxWorkInstanceScopeIDs)
+	storeStaffUserIDs, _, err := s.resolveRequestedStoreStaffUserIDsDB(sqls.DB(), operator.ActiveTenantID, req.StoreStaffUserIDs, req.WxWorkInstanceScopeIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func (s *agentTeamService) UpdateAgentTeam(req request.UpdateAgentTeamRequest, o
 	if err != nil {
 		return err
 	}
-	storeStaffUserIDs, scopeProvided, err := s.resolveRequestedStoreStaffUserIDsDB(sqls.DB(), req.StoreStaffUserIDs, req.WxWorkInstanceScopeIDs)
+	storeStaffUserIDs, scopeProvided, err := s.resolveRequestedStoreStaffUserIDsDB(sqls.DB(), current.TenantID, req.StoreStaffUserIDs, req.WxWorkInstanceScopeIDs)
 	if err != nil {
 		return err
 	}
@@ -190,10 +190,10 @@ func (s *agentTeamService) DeleteAgentTeam(id int64, operator *dto.AuthPrincipal
 	if repositories.AgentTeamSquadRepository.Take(sqls.DB(), "team_id = ? AND status <> ?", id, enums.StatusDeleted) != nil {
 		return errorsx.Forbidden("客服组下仍有关联客服小组，无法删除")
 	}
-	if WxWorkProtocolInstanceService.Take("agent_team_id = ? AND status <> ?", id, enums.StatusDeleted) != nil {
+	if repositories.WxWorkProtocolInstanceRepository.Take(sqls.DB(), "tenant_id = ? AND agent_team_id = ? AND status <> ?", current.TenantID, id, enums.StatusDeleted) != nil {
 		return errorsx.Forbidden("客服组下仍有关联企微员工号，无法删除")
 	}
-	if StoreStaffBindingService.Take("agent_team_id = ? AND status <> ?", id, enums.StatusDeleted) != nil {
+	if repositories.StoreStaffBindingRepository.TakeInTenant(sqls.DB(), current.TenantID, "agent_team_id = ? AND status <> ?", id, enums.StatusDeleted) != nil {
 		return errorsx.Forbidden("客服组下仍有关联门店员工，无法删除")
 	}
 	if AgentTeamScheduleService.Take("team_id = ?", id) != nil {
@@ -287,7 +287,10 @@ func (s *agentTeamService) deriveScopeFromWxWorkInstancesDB(db *gorm.DB, instanc
 	return uniquePositive(companyIDs), uniquePositive(storeIDs), instanceIDs, nil
 }
 
-func (s *agentTeamService) resolveRequestedStoreStaffUserIDsDB(db *gorm.DB, storeStaffUserIDs, legacyInstanceIDs []int64) ([]int64, bool, error) {
+func (s *agentTeamService) resolveRequestedStoreStaffUserIDsDB(db *gorm.DB, tenantID int64, storeStaffUserIDs, legacyInstanceIDs []int64) ([]int64, bool, error) {
+	if tenantID <= 0 {
+		return nil, false, errorsx.Forbidden("请先进入需要管理的接入公司")
+	}
 	if storeStaffUserIDs != nil {
 		return uniquePositive(storeStaffUserIDs), true, nil
 	}
@@ -298,7 +301,7 @@ func (s *agentTeamService) resolveRequestedStoreStaffUserIDsDB(db *gorm.DB, stor
 	if len(legacyInstanceIDs) == 0 {
 		return []int64{}, true, nil
 	}
-	instances := repositories.WxWorkProtocolInstanceRepository.Find(db, sqls.NewCnd().In("id", legacyInstanceIDs).Where("status <> ?", enums.StatusDeleted).Asc("id"))
+	instances := repositories.WxWorkProtocolInstanceRepository.Find(db, sqls.NewCnd().Eq("tenant_id", tenantID).In("id", legacyInstanceIDs).Where("status <> ?", enums.StatusDeleted).Asc("id"))
 	if len(instances) != len(legacyInstanceIDs) {
 		return nil, false, errorsx.InvalidParam("部分企微员工号不存在或已删除，请重新选择")
 	}
@@ -307,10 +310,10 @@ func (s *agentTeamService) resolveRequestedStoreStaffUserIDsDB(db *gorm.DB, stor
 		instance := &instances[i]
 		var binding *models.StoreStaffBinding
 		if instance.StoreStaffBindingID > 0 {
-			binding = repositories.StoreStaffBindingRepository.Get(db, instance.StoreStaffBindingID)
+			binding = repositories.StoreStaffBindingRepository.GetInTenant(db, instance.StoreStaffBindingID, tenantID)
 		}
 		if (binding == nil || binding.Status == enums.StatusDeleted) && instance.StoreID > 0 {
-			binding = repositories.StoreStaffBindingRepository.Take(db, "store_id = ? AND status <> ?", instance.StoreID, enums.StatusDeleted)
+			binding = repositories.StoreStaffBindingRepository.TakeInTenant(db, tenantID, "store_id = ? AND status <> ?", instance.StoreID, enums.StatusDeleted)
 		}
 		if binding == nil || binding.UserID <= 0 {
 			return nil, false, errorsx.InvalidParam("所选企微员工号未关联门店员工，无法加入客服组")
@@ -336,7 +339,7 @@ func (s *agentTeamService) BindStoreStaffUser(userID, teamID int64, operator *dt
 	if !UserService.HasRole(userID, constants.RoleCodeStoreStaff) {
 		return errorsx.InvalidParam("只有门店员工账号可以分配客服组")
 	}
-	bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().Eq("user_id", userID).Where("status <> ?", enums.StatusDeleted).Asc("id"))
+	bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).Eq("user_id", userID).Where("status <> ?", enums.StatusDeleted).Asc("id"))
 	if len(bindings) == 0 {
 		return errorsx.InvalidParam("该门店员工尚未绑定门店，当前保持暂未分配客服组")
 	}
@@ -374,7 +377,7 @@ func (s *agentTeamService) BindStoreStaffUser(userID, teamID int64, operator *dt
 		bindingIDs := make([]int64, 0, len(bindings))
 		for i := range bindings {
 			bindingIDs = append(bindingIDs, bindings[i].ID)
-			if err := repositories.StoreStaffBindingRepository.Updates(ctx.Tx, bindings[i].ID, map[string]any{
+			if err := repositories.StoreStaffBindingRepository.UpdatesInTenant(ctx.Tx, bindings[i].ID, tenantID, map[string]any{
 				"agent_team_id":    teamID,
 				"updated_at":       now,
 				"update_user_id":   operator.UserID,
@@ -383,7 +386,7 @@ func (s *agentTeamService) BindStoreStaffUser(userID, teamID int64, operator *dt
 				return err
 			}
 		}
-		if err := repositories.WxWorkProtocolInstanceRepository.UpdatesByStoreStaffBindingIDs(ctx.Tx, bindingIDs, map[string]any{
+		if err := repositories.WxWorkProtocolInstanceRepository.UpdatesByStoreStaffBindingIDsInTenant(ctx.Tx, bindingIDs, tenantID, map[string]any{
 			"agent_team_id":    teamID,
 			"updated_at":       now,
 			"update_user_id":   operator.UserID,
@@ -420,7 +423,13 @@ func (s *agentTeamService) FindStoreStaffUserIDsInTenant(teamID, tenantID int64)
 	if repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, tenantID) == nil {
 		return []int64{}
 	}
-	return s.FindStoreStaffUserIDs(teamID)
+	bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).Eq("agent_team_id", teamID).Where("status <> ?", enums.StatusDeleted).Asc("user_id"))
+	userIDs := make([]int64, 0, len(bindings))
+	for i := range bindings {
+		userIDs = appendPositive(userIDs, bindings[i].UserID)
+	}
+	slices.Sort(userIDs)
+	return uniquePositive(userIDs)
 }
 
 func (s *agentTeamService) replaceStoreStaffBindingsDB(db *gorm.DB, teamID int64, selectedUserIDs []int64, operator *dto.AuthPrincipal) error {
@@ -457,7 +466,7 @@ func (s *agentTeamService) replaceStoreStaffBindingsDB(db *gorm.DB, teamID int64
 				}
 			}
 		}
-		selectedBindings = repositories.StoreStaffBindingRepository.Find(db, sqls.NewCnd().In("user_id", selectedUserIDs).Where("status <> ?", enums.StatusDeleted).Asc("id"))
+		selectedBindings = repositories.StoreStaffBindingRepository.Find(db, sqls.NewCnd().Eq("tenant_id", tenantID).In("user_id", selectedUserIDs).Where("status <> ?", enums.StatusDeleted).Asc("id"))
 		boundUsers := make(map[int64]struct{}, len(selectedBindings))
 		for i := range selectedBindings {
 			boundUsers[selectedBindings[i].UserID] = struct{}{}
@@ -467,7 +476,7 @@ func (s *agentTeamService) replaceStoreStaffBindingsDB(db *gorm.DB, teamID int64
 		}
 	}
 
-	currentBindings := repositories.StoreStaffBindingRepository.Find(db, sqls.NewCnd().Eq("agent_team_id", teamID).Where("status <> ?", enums.StatusDeleted).Asc("id"))
+	currentBindings := repositories.StoreStaffBindingRepository.Find(db, sqls.NewCnd().Eq("tenant_id", tenantID).Eq("agent_team_id", teamID).Where("status <> ?", enums.StatusDeleted).Asc("id"))
 	changes := make(map[int64]int64)
 	affectedTeamIDs := map[int64]struct{}{teamID: {}}
 	for i := range currentBindings {
@@ -494,7 +503,7 @@ func (s *agentTeamService) replaceStoreStaffBindingsDB(db *gorm.DB, teamID int64
 
 	now := time.Now()
 	for bindingID, nextTeamID := range changes {
-		if err := repositories.StoreStaffBindingRepository.Updates(db, bindingID, map[string]any{
+		if err := repositories.StoreStaffBindingRepository.UpdatesInTenant(db, bindingID, tenantID, map[string]any{
 			"agent_team_id":    nextTeamID,
 			"updated_at":       now,
 			"update_user_id":   operator.UserID,
@@ -502,7 +511,7 @@ func (s *agentTeamService) replaceStoreStaffBindingsDB(db *gorm.DB, teamID int64
 		}); err != nil {
 			return err
 		}
-		if err := repositories.WxWorkProtocolInstanceRepository.UpdatesByStoreStaffBindingIDs(db, []int64{bindingID}, map[string]any{
+		if err := repositories.WxWorkProtocolInstanceRepository.UpdatesByStoreStaffBindingIDsInTenant(db, []int64{bindingID}, tenantID, map[string]any{
 			"agent_team_id":    nextTeamID,
 			"updated_at":       now,
 			"update_user_id":   operator.UserID,
@@ -541,7 +550,20 @@ func (s *agentTeamService) syncTeamScopeFromAssignments(db *gorm.DB, teamID int6
 	if teamID <= 0 {
 		return nil
 	}
-	bindings := repositories.StoreStaffBindingRepository.Find(db, sqls.NewCnd().Eq("agent_team_id", teamID).Where("status <> ?", enums.StatusDeleted).Asc("id"))
+	team := repositories.AgentTeamRepository.Get(db, teamID)
+	if team == nil || team.Status == enums.StatusDeleted {
+		return errorsx.InvalidParam("客服组不存在")
+	}
+	tenantID := team.TenantID
+	bindingCnd := sqls.NewCnd().Eq("agent_team_id", teamID).Where("status <> ?", enums.StatusDeleted).Asc("id")
+	if operator != nil {
+		activeTenantID := AgentTeamScopeService.ActiveTenantID(operator)
+		if tenantID <= 0 || activeTenantID != tenantID {
+			return errorsx.Forbidden("客服组不属于当前接入公司")
+		}
+		bindingCnd.Eq("tenant_id", tenantID)
+	}
+	bindings := repositories.StoreStaffBindingRepository.Find(db, bindingCnd)
 	bindingIDs := make([]int64, 0, len(bindings))
 	companyIDs := make([]int64, 0, len(bindings))
 	storeIDs := make([]int64, 0, len(bindings))
@@ -551,6 +573,9 @@ func (s *agentTeamService) syncTeamScopeFromAssignments(db *gorm.DB, teamID int6
 		storeIDs = appendPositive(storeIDs, bindings[i].StoreID)
 	}
 	instanceCnd := sqls.NewCnd().Where("status <> ?", enums.StatusDeleted).Asc("id")
+	if operator != nil {
+		instanceCnd.Eq("tenant_id", tenantID)
+	}
 	if len(bindingIDs) > 0 {
 		instanceCnd.Where("(store_staff_binding_id IN ? OR agent_team_id = ?)", bindingIDs, teamID)
 	} else {
@@ -580,10 +605,6 @@ func (s *agentTeamService) syncTeamScopeFromAssignments(db *gorm.DB, teamID int6
 	}
 	if operator == nil {
 		return repositories.AgentTeamRepository.Updates(db, teamID, columns)
-	}
-	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
-	if tenantID <= 0 || repositories.AgentTeamRepository.GetInTenant(db, teamID, tenantID) == nil {
-		return errorsx.Forbidden("客服组不属于当前接入公司")
 	}
 	return repositories.AgentTeamRepository.UpdatesInTenant(db, teamID, tenantID, columns)
 }

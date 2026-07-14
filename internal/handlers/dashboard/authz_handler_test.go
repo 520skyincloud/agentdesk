@@ -135,6 +135,7 @@ func TestAgentOrganizationListHandlersRequireActiveTenant(t *testing.T) {
 		{name: "profile list", permission: constants.PermissionAgentView.Code, handler: AgentAnyList},
 		{name: "squad list", permission: constants.PermissionAgentTeamView.Code, handler: AgentTeamSquadAnyList},
 		{name: "schedule list", permission: constants.PermissionAgentTeamScheduleView.Code, handler: AgentTeamScheduleAnyList},
+		{name: "user list", permission: constants.PermissionUserView.Code, handler: UserAnyList},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

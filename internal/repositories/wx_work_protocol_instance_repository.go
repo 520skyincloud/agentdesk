@@ -24,6 +24,17 @@ func (r *wxWorkProtocolInstanceRepository) Get(db *gorm.DB, id int64) *models.Wx
 	return ret
 }
 
+func (r *wxWorkProtocolInstanceRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.WxWorkProtocolInstance {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.WxWorkProtocolInstance{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *wxWorkProtocolInstanceRepository) Take(db *gorm.DB, where ...any) *models.WxWorkProtocolInstance {
 	ret := &models.WxWorkProtocolInstance{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -56,6 +67,10 @@ func (r *wxWorkProtocolInstanceRepository) Updates(db *gorm.DB, id int64, column
 	return db.Model(&models.WxWorkProtocolInstance{}).Where("id = ?", id).Updates(columns).Error
 }
 
+func (r *wxWorkProtocolInstanceRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.WxWorkProtocolInstance{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *wxWorkProtocolInstanceRepository) UpdatesByIDs(db *gorm.DB, ids []int64, columns map[string]any) error {
 	if len(ids) == 0 {
 		return nil
@@ -68,6 +83,15 @@ func (r *wxWorkProtocolInstanceRepository) UpdatesByStoreStaffBindingIDs(db *gor
 		return nil
 	}
 	return db.Model(&models.WxWorkProtocolInstance{}).Where("store_staff_binding_id IN ?", bindingIDs).Updates(columns).Error
+}
+
+func (r *wxWorkProtocolInstanceRepository) UpdatesByStoreStaffBindingIDsInTenant(db *gorm.DB, bindingIDs []int64, tenantID int64, columns map[string]any) error {
+	if len(bindingIDs) == 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.WxWorkProtocolInstance{}).
+		Where("store_staff_binding_id IN ? AND tenant_id = ?", bindingIDs, tenantID).
+		Updates(columns).Error
 }
 
 func (r *wxWorkProtocolInstanceRepository) Delete(db *gorm.DB, id int64) error {
