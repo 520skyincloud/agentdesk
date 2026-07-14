@@ -11,6 +11,7 @@ import {
   type DashboardCrudFilter,
 } from "@/components/dashboard/crud";
 import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/components/auth-provider";
 import {
   createAIAgent,
   deleteAIAgent,
@@ -62,6 +63,14 @@ function getNextStatus(item: AIAgent) {
 
 export default function DashboardAIAgentsPage() {
   const t = useI18n();
+  const { session } = useAuth();
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  );
+  const canCreate = permissions.has("aiAgent.create");
+  const canUpdate = permissions.has("aiAgent.update");
+  const canDelete = permissions.has("aiAgent.delete");
   const statusOptions = useMemo(() => getStatusOptions(t), [t]);
 
   const filters = useMemo<DashboardCrudFilter[]>(
@@ -198,24 +207,27 @@ export default function DashboardAIAgentsPage() {
         getBadgeVariant: (status) =>
           status === Status.Ok ? "default" : "secondary",
         isEnabled: (status) => status === Status.Ok,
-        toggle: {
-          getNextStatus,
-          updateStatus: (item, nextStatus) =>
-            updateAIAgentStatus(item.id, nextStatus),
-          successMessage: (item, nextStatus) =>
-            t("aiAgent.statusChanged", {
-              name: item.name,
-              status:
-                nextStatus === Status.Ok
-                  ? t("aiAgent.enabled")
-                  : t("aiAgent.stop"),
-            }),
-          errorMessage: t("aiAgent.statusUpdateFailed"),
-          ariaLabel: (item) => t("aiAgent.toggleStatus", { name: item.name }),
-        },
+        toggle: canUpdate
+          ? {
+              getNextStatus,
+              updateStatus: (item, nextStatus) =>
+                updateAIAgentStatus(item.id, nextStatus),
+              successMessage: (item, nextStatus) =>
+                t("aiAgent.statusChanged", {
+                  name: item.name,
+                  status:
+                    nextStatus === Status.Ok
+                      ? t("aiAgent.enabled")
+                      : t("aiAgent.stop"),
+                }),
+              errorMessage: t("aiAgent.statusUpdateFailed"),
+              ariaLabel: (item) =>
+                t("aiAgent.toggleStatus", { name: item.name }),
+            }
+          : undefined,
       }),
     ],
-    [t],
+    [canUpdate, t],
   );
 
   return (
@@ -232,34 +244,48 @@ export default function DashboardAIAgentsPage() {
       }
       getItemId={(item) => item.id}
       createItem={createAIAgent}
+      showCreate={canCreate}
+      showEdit={canUpdate}
+      showActionsColumn={canUpdate || canDelete}
       updateItem={(item, payload) => updateAIAgent({ id: item.id, ...payload })}
-      deleteItem={(item) => deleteAIAgent(item.id)}
-      rowActions={[
-        createDashboardStatusToggleAction<AIAgent, number>({
-          icon: <PowerIcon />,
-          label: (item) =>
-            item.status === Status.Ok ? t("aiAgent.stop") : t("aiAgent.enabled"),
-          getNextStatus,
-          updateStatus: (item, nextStatus) =>
-            updateAIAgentStatus(item.id, nextStatus),
-          successMessage: (item, nextStatus) =>
-            t("aiAgent.statusChanged", {
-              name: item.name,
-              status:
-                nextStatus === Status.Ok
-                  ? t("aiAgent.enabled")
-                  : t("aiAgent.stop"),
-            }),
-          errorMessage: t("aiAgent.statusUpdateFailed"),
-        }),
-      ]}
-      sort={{
-        enabled: true,
-        onReorder: (items) => updateAIAgentSort(items.map((item) => item.id)),
-        successMessage: t("aiAgent.sortUpdated"),
-        errorMessage: t("aiAgent.sortUpdateFailed"),
-        handleLabel: t("aiAgent.dragSort", { name: "" }),
-      }}
+      deleteItem={canDelete ? (item) => deleteAIAgent(item.id) : undefined}
+      rowActions={
+        canUpdate
+          ? [
+              createDashboardStatusToggleAction<AIAgent, number>({
+                icon: <PowerIcon />,
+                label: (item) =>
+                  item.status === Status.Ok
+                    ? t("aiAgent.stop")
+                    : t("aiAgent.enabled"),
+                getNextStatus,
+                updateStatus: (item, nextStatus) =>
+                  updateAIAgentStatus(item.id, nextStatus),
+                successMessage: (item, nextStatus) =>
+                  t("aiAgent.statusChanged", {
+                    name: item.name,
+                    status:
+                      nextStatus === Status.Ok
+                        ? t("aiAgent.enabled")
+                        : t("aiAgent.stop"),
+                  }),
+                errorMessage: t("aiAgent.statusUpdateFailed"),
+              }),
+            ]
+          : []
+      }
+      sort={
+        canUpdate
+          ? {
+              enabled: true,
+              onReorder: (items) =>
+                updateAIAgentSort(items.map((item) => item.id)),
+              successMessage: t("aiAgent.sortUpdated"),
+              errorMessage: t("aiAgent.sortUpdateFailed"),
+              handleLabel: t("aiAgent.dragSort", { name: "" }),
+            }
+          : undefined
+      }
       renderEditDialog={({ open, saving, itemId, onOpenChange, onSubmit }) => (
         <EditDialog
           open={open}

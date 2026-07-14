@@ -1,12 +1,14 @@
 package dashboard
 
 import (
-	"agent-desk/internal/pkg/httpx"
 	"context"
 
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
+	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/pkg/i18nx"
 	"agent-desk/internal/services"
 
@@ -16,7 +18,7 @@ import (
 )
 
 func MCPAnyList_servers(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionMCPView); err != nil {
+	if _, err := requireMCPPlatformPermission(ctx, constants.PermissionMCPView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -24,7 +26,7 @@ func MCPAnyList_servers(ctx *gin.Context) {
 }
 
 func MCPAnyCatalog(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionMCPView); err != nil {
+	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIAgentView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -51,7 +53,7 @@ func MCPAnyCatalog(ctx *gin.Context) {
 }
 
 func MCPPostTest_connection(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionMCPView); err != nil {
+	if _, err := requireMCPPlatformPermission(ctx, constants.PermissionMCPView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -69,7 +71,7 @@ func MCPPostTest_connection(ctx *gin.Context) {
 }
 
 func MCPPostList_tools(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionMCPView); err != nil {
+	if _, err := requireMCPPlatformPermission(ctx, constants.PermissionMCPView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -87,7 +89,7 @@ func MCPPostList_tools(ctx *gin.Context) {
 }
 
 func MCPPostCall_tool(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionMCPCall); err != nil {
+	if _, err := requireMCPPlatformPermission(ctx, constants.PermissionMCPCall); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -102,4 +104,15 @@ func MCPPostCall_tool(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, response.BuildMCPCallToolResponse(result))
+}
+
+func requireMCPPlatformPermission(ctx *gin.Context, permission constants.Permission) (*dto.AuthPrincipal, error) {
+	operator, err := services.AuthService.RequirePermission(ctx, permission)
+	if err != nil {
+		return nil, err
+	}
+	if !operator.IsPlatformAccount {
+		return nil, errorsx.Forbidden("只有平台账号可以使用 MCP 调试功能")
+	}
+	return operator, nil
 }

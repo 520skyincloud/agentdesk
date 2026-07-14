@@ -24,6 +24,78 @@ func TestRoleUpdateSortRequiresUpdatePermission(t *testing.T) {
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
+func TestRoleWritesRejectTenantAccountEvenWithPlatformPermission(t *testing.T) {
+	tests := []struct {
+		name       string
+		permission string
+		handler    func(*gin.Context)
+	}{
+		{name: "create", permission: constants.PermissionRoleCreate.Code, handler: RolePostCreate},
+		{name: "update", permission: constants.PermissionRoleUpdate.Code, handler: RolePostUpdate},
+		{name: "delete", permission: constants.PermissionRoleDelete.Code, handler: RolePostDelete},
+		{name: "update status", permission: constants.PermissionRoleUpdate.Code, handler: RolePostUpdate_status},
+		{name: "assign permission", permission: constants.PermissionRoleAssignPermission.Code, handler: RolePostAssign_permission},
+		{name: "update sort", permission: constants.PermissionRoleUpdate.Code, handler: RolePostUpdate_sort},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, `{}`, &dto.AuthPrincipal{
+				UserID:            111,
+				TenantID:          9,
+				ActiveTenantID:    9,
+				Username:          "misconfigured-tenant-role-admin",
+				IsPlatformAccount: false,
+				Permissions:       []string{tt.permission},
+			})
+
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
+func TestMCPDebugHandlersRejectTenantAccountEvenWithPlatformPermission(t *testing.T) {
+	tests := []struct {
+		name       string
+		permission string
+		handler    func(*gin.Context)
+	}{
+		{name: "list servers", permission: constants.PermissionMCPView.Code, handler: MCPAnyList_servers},
+		{name: "test connection", permission: constants.PermissionMCPView.Code, handler: MCPPostTest_connection},
+		{name: "list tools", permission: constants.PermissionMCPView.Code, handler: MCPPostList_tools},
+		{name: "call tool", permission: constants.PermissionMCPCall.Code, handler: MCPPostCall_tool},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, `{}`, &dto.AuthPrincipal{
+				UserID:            112,
+				TenantID:          9,
+				ActiveTenantID:    9,
+				Username:          "misconfigured-tenant-mcp-admin",
+				IsPlatformAccount: false,
+				Permissions:       []string{tt.permission},
+			})
+
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
+func TestMCPCatalogUsesAIAgentViewInsteadOfPlatformDebugPermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+		UserID:            113,
+		TenantID:          9,
+		ActiveTenantID:    9,
+		Username:          "tenant-mcp-debug-viewer",
+		IsPlatformAccount: false,
+		Permissions:       []string{constants.PermissionMCPView.Code},
+	})
+
+	MCPAnyCatalog(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
 func TestTagUpdateSortRequiresUpdatePermission(t *testing.T) {
 	ctx, recorder := newAuthzHandlerTestContext(t, "[1]", &dto.AuthPrincipal{
 		UserID:         22,

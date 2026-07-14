@@ -33,12 +33,20 @@ import {
   type MCPToolCallResult,
   type MCPToolInfo,
 } from "@/lib/api/admin";
+import { useAuth } from "@/components/auth-provider";
 import { useI18n } from "@/i18n/provider";
 
 const defaultServerCode = "";
 
 export default function MCPDashboardPage() {
   const t = useI18n();
+  const { session } = useAuth();
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  );
+  const canCallTools =
+    Boolean(session?.isPlatformAccount) && permissions.has("mcp.call");
   const [serverCode, setServerCode] = useState(defaultServerCode);
   const [servers, setServers] = useState<MCPServerInfo[]>([]);
   const [connection, setConnection] = useState<MCPConnectionResult | null>(
@@ -313,60 +321,62 @@ export default function MCPDashboardPage() {
                   </div>
                 </div>
 
-                <div className="agentdesk-subtle-surface space-y-4 rounded-2xl p-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="tool-arguments">Arguments JSON</Label>
-                    <JsonCodeEditor
-                      value={argumentsText}
-                      onChange={setArgumentsText}
-                      onValidationChange={setArgumentsError}
-                    />
-                  </div>
-                  <Button
-                    onClick={() => void handleCallTool()}
-                    disabled={
-                      callingTool ||
-                      loadingServers ||
-                      !serverCode ||
-                      !!argumentsError
-                    }
-                  >
-                    {callingTool ? (
-                      <Loader2Icon className="mr-2 size-4 animate-spin" />
-                    ) : (
-                      <WrenchIcon className="mr-2 size-4" />
-                    )}
-                    {t("mcp.testTool")}
-                  </Button>
-                  {toolResult ? (
-                    <div className="agentdesk-subtle-surface space-y-4 rounded-2xl p-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge
-                          variant={
-                            toolResult.isError ? "destructive" : "default"
-                          }
-                        >
-                          {toolResult.isError ? t("mcp.returnedError") : t("mcp.callSuccess")}
-                        </Badge>
-                        <span className="text-sm font-medium">
-                          {toolResult.toolName}
-                        </span>
-                      </div>
-                      <div>
-                        <p className="mb-2 text-xs font-medium text-muted-foreground">
-                          Content
-                        </p>
-                        <JsonViewer value={toolResult.content} />
-                      </div>
-                      <div>
-                        <p className="mb-2 text-xs font-medium text-muted-foreground">
-                          Structured Content
-                        </p>
-                        <JsonViewer value={toolResult.structuredContent} />
-                      </div>
+                {canCallTools ? (
+                  <div className="agentdesk-subtle-surface space-y-4 rounded-2xl p-4">
+                    <div className="grid gap-2">
+                      <Label htmlFor="tool-arguments">Arguments JSON</Label>
+                      <JsonCodeEditor
+                        value={argumentsText}
+                        onChange={setArgumentsText}
+                        onValidationChange={setArgumentsError}
+                      />
                     </div>
-                  ) : null}
-                </div>
+                    <Button
+                      onClick={() => void handleCallTool()}
+                      disabled={
+                        callingTool ||
+                        loadingServers ||
+                        !serverCode ||
+                        !!argumentsError
+                      }
+                    >
+                      {callingTool ? (
+                        <Loader2Icon className="mr-2 size-4 animate-spin" />
+                      ) : (
+                        <WrenchIcon className="mr-2 size-4" />
+                      )}
+                      {t("mcp.testTool")}
+                    </Button>
+                    {toolResult ? (
+                      <div className="agentdesk-subtle-surface space-y-4 rounded-2xl p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge
+                            variant={
+                              toolResult.isError ? "destructive" : "default"
+                            }
+                          >
+                            {toolResult.isError ? t("mcp.returnedError") : t("mcp.callSuccess")}
+                          </Badge>
+                          <span className="text-sm font-medium">
+                            {toolResult.toolName}
+                          </span>
+                        </div>
+                        <div>
+                          <p className="mb-2 text-xs font-medium text-muted-foreground">
+                            Content
+                          </p>
+                          <JsonViewer value={toolResult.content} />
+                        </div>
+                        <div>
+                          <p className="mb-2 text-xs font-medium text-muted-foreground">
+                            Structured Content
+                          </p>
+                          <JsonViewer value={toolResult.structuredContent} />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </>
             ) : null}
           </div>

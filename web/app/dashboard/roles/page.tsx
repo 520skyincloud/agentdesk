@@ -180,9 +180,11 @@ export default function DashboardRolesPage() {
     () => new Set(session?.permissions ?? []),
     [session?.permissions],
   )
-  const canCreate = permissionSet.has("role.create")
-  const canUpdate = permissionSet.has("role.update")
-  const canAssignPermissions = permissionSet.has("role.assignPermission")
+  const isPlatformAccount = Boolean(session?.isPlatformAccount)
+  const canCreate = isPlatformAccount && permissionSet.has("role.create")
+  const canUpdate = isPlatformAccount && permissionSet.has("role.update")
+  const canAssignPermissions =
+    isPlatformAccount && permissionSet.has("role.assignPermission")
   const [loading, setLoading] = useState(true)
   const [sorting, setSorting] = useState(false)
   const [creatingOpen, setCreatingOpen] = useState(false)

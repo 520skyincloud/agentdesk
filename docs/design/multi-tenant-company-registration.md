@@ -1546,3 +1546,23 @@ git diff --check
 - migration 53 创建前已 fetch：`origin/main@e67e207` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 52，无版本冲突。AI 分支不修改本批权限常量、Session handler 或权限测试；最终合并必须保留 migration 53 和常量矩阵测试。
 - ReplyIntentConfig 的页面和 handler 当前也缺少第 37 批同类平台写显隐/脏权限防线，但 `codex/ai-billing` 正在同时重写其模型、DTO、service、handler、migration 和整页。本分支不覆盖该运行语义；合并时必须让 create/update/delete 复用 AIConfig 平台账号防线，并按 create/update/delete 权限隐藏写操作。
 - 回滚 migration 或 Session handler 防线会重新开放全平台登录数据，不属于安全回滚。若未来需要公司主管查看本公司账号登录状态，应设计租户级只读 DTO 和按 User.TenantID 的专用接口，不能复用当前平台全量 Session API。
+
+## 39. 当前实施检查点：角色与 MCP 平台边界、AI Agent 动作显隐（2026-07-14）
+
+本检查点继续横向核对所有 platform scope 权限的真实 handler。迁移 53 已清理数据库关系，但已签发 token 或异常认证数据仍可能携带旧平台权限；同时发现 MCP 的只读工具目录与平台调试错误共用 `mcp.view`，使租户 AI Agent 编辑器无法读取可选工具。
+
+### 平台写操作与调试边界
+
+- 角色列表、详情和权限说明继续由 tenant scope 的 `role.view` 提供，公司主管和客服可以查看平台预设角色；创建、更新、启停、删除、排序和分配权限在原 platform scope 动作权限后统一增加 `IsPlatformAccount` 校验。
+- MCP Server 列表、连通性测试、远程工具枚举继续要求 `mcp.view + IsPlatformAccount`；真实工具调用要求 `mcp.call + IsPlatformAccount`。租户账号即使持有旧 token 中的 MCP 平台权限也不能读取服务器端点或触发远程工具。
+- `/api/dashboard/mcp/catalog` 不是平台调试接口，而是 AI Agent/Skill 表单读取工具名称、代码和 schema 的只读选项源。它改为复用现有 tenant scope `aiAgent.view`，不返回 MCP endpoint 或 header，也不新增平行权限和页面。
+- 本批没有改变 MCP 客户端、工具执行、AIAgent 工具白名单、Skill runtime、模型调用、token、usage 或计费语义。
+
+### 页面、验证与合并边界
+
+- 角色页只有平台账号同时持有 `role.create/update/assignPermission` 时才显示相应新增、拖拽和分配入口；租户账号保留只读角色上下文。
+- MCP 页只有平台账号同时持有 `mcp.call` 时才显示 Arguments 编辑器和真实调用按钮；`mcp.view` 仍只提供连接与工具元数据调试。
+- AI Agent 页补齐 `aiAgent.create/update/delete` 动作显隐：只读账号不再看到新增、编辑、启停、排序或删除，页面查看能力不变。
+- 没有 model、AutoMigrate、DML migration、DTO、enum、Gin 路由、WebSocket payload、权限常量或导航变化。全量 Go、专项 race、vet、77 项前端测试、typecheck、Next 生产构建、目标 ESLint 和浏览器超管回归均通过。
+- 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@639b0a2`。AI 分支只在本批检查范围内修改了导航文件，本批不修改导航，因此无同文件冲突，也不需要 rebase。
+- 回滚页面显隐不会改变服务端权限；角色与 MCP handler 的平台账号防线不应单独回滚。若未来允许租户自建角色或 MCP Server，必须先增加明确 Tenant 归属和数据范围，不能仅移除平台校验。

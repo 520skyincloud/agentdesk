@@ -2115,3 +2115,55 @@ git diff --check
 - 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@2d86659`；migration 53 与远端最高编号 20/33/52 不冲突。AI 分支与本批预计文件没有同文件修改。
 - ReplyIntentConfig 同样需要平台写显隐和 handler 脏权限防线，但 AI 分支同时重写其模型、DTO、service、handler、migration 和页面。本批不制造冲突；最终合并须把第 37 批 AIConfig 的平台写边界应用到合并后的 ReplyIntentConfig。
 - migration 53、常量矩阵和 Session handler 防线应整体保留。回滚会重新暴露平台登录会话；若新增租户登录审计，应另建 tenant-qualified 查询契约。
+
+## 第 39 批：角色与 MCP 平台防线、AI Agent 动作权限（2026-07-14）
+
+### 目标与复用判断
+
+- 审计剩余 platform permission 使用点后发现，角色写 handler 和 MCP 调试 handler 仍只校验权限数组，未防御租户旧 token 或异常权限数据。
+- `/api/dashboard/mcp/catalog` 同时被租户 AI Agent 编辑器和平台 Skill 编辑器使用，它只返回工具元数据，却错误复用 platform scope 的 `mcp.view`；迁移 53 后租户编辑器必然收到 403。
+- 复用现有角色、MCP、AI Agent 页面和权限体系：角色/MCP 调试增加平台身份防线，工具目录复用 `aiAgent.view`，AI Agent 页补齐既有动作权限显隐。不新增平行页面、权限点或业务模型。
+
+### 文件与契约
+
+```text
+internal/handlers/dashboard/role_handler.go
+internal/handlers/dashboard/mcp_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+web/app/dashboard/roles/page.tsx
+web/app/dashboard/roles/platform-permissions.test.mjs
+web/app/dashboard/mcp/page.tsx
+web/app/dashboard/mcp/platform-permissions.test.mjs
+web/app/dashboard/ai-agents/page.tsx
+web/app/dashboard/ai-agents/action-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 角色 create/update/delete/update_status/assign_permission/update_sort 统一要求对应 platform permission 和 `IsPlatformAccount`；list/list_all/detail 继续允许持有 `role.view` 的租户账号只读查看。
+- MCP list_servers/test_connection/list_tools 要求 `mcp.view + IsPlatformAccount`，call_tool 要求 `mcp.call + IsPlatformAccount`。catalog 改用 `aiAgent.view`，继续只返回工具 code、名称、来源和 schema，不暴露服务器 endpoint/header。
+- 角色页按平台身份和动作权限控制新增、拖拽、分配权限。MCP 页按平台身份和 `mcp.call` 隐藏真实调用编辑器。AI Agent 页按 create/update/delete 控制新增、编辑、状态、排序、删除和操作列。
+- 没有 model、AutoMigrate、DML migration、request/response DTO、enum、Gin 路由、WebSocket payload、权限常量、导航或 JsonResult 结构变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go test -race ./internal/handlers/dashboard -run 'Test(RoleWritesRejectTenantAccountEvenWithPlatformPermission|MCPDebugHandlersRejectTenantAccountEvenWithPlatformPermission|MCPCatalogUsesAIAgentViewInsteadOfPlatformDebugPermission)' -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/roles/page.tsx app/dashboard/mcp/page.tsx app/dashboard/ai-agents/page.tsx
+git diff --check
+```
+
+- 全量 Go、专项 race、vet、77 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。
+- 浏览器以当前超管账号验证角色页仍显示新增/拖拽/分配权限，AI Agent 页仍显示管理动作，MCP 页面正常加载且控制台无 error/warning。测试环境没有 MCP Server，真实调用显隐由源码契约测试固定。
+- 仓库没有安装可直接执行的 `prettier` 命令；未把该非项目脚本当作失败。目标 ESLint、typecheck 和 build 均通过。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@639b0a2`。AI 分支仅在检查范围内修改 `web/lib/navigation.tsx`，本批未修改该文件；预计文件无同文件冲突，无 migration 编号影响，不需要 rebase。
+- 本批不修改 AI 分支维护的 ReplyIntentConfig、模型供应商、回复 runtime、FastGPT、token、usage 或计费。合并后仍须按第 38 批门槛收口 ReplyIntentConfig 平台写权限。
+- 页面显隐可以独立回滚；Role/MCP handler 平台防线应保留。回滚 catalog 的 `aiAgent.view` 会再次破坏租户 AI Agent 工具选择，除非同步提供新的可见租户权限和完整角色迁移。
