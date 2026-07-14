@@ -452,27 +452,7 @@ func (s *agentTeamScheduleService) buildBatchScheduleCandidatesDB(db *gorm.DB, r
 }
 
 func (s *agentTeamScheduleService) lockManageableScheduleTeamsDB(db *gorm.DB, teamIDs []int64, operator *dto.AuthPrincipal, forbiddenMessage string) (map[int64]*models.AgentTeam, error) {
-	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
-	if tenantID <= 0 {
-		return nil, errorsx.Forbidden("请先选择接入公司")
-	}
-	teamIDs = uniquePositiveInt64s(teamIDs)
-	if len(teamIDs) == 0 {
-		return nil, errorsx.InvalidParam("请选择客服组")
-	}
-	slices.Sort(teamIDs)
-	teams := make(map[int64]*models.AgentTeam, len(teamIDs))
-	for _, teamID := range teamIDs {
-		team, err := repositories.AgentTeamRepository.GetForUpdateInTenant(db, teamID, tenantID)
-		if err != nil {
-			return nil, err
-		}
-		if !AgentTeamScopeService.canManageTeam(operator, team) {
-			return nil, errorsx.Forbidden(forbiddenMessage)
-		}
-		teams[teamID] = team
-	}
-	return teams, nil
+	return AgentTeamScopeService.lockManageableTeamsDB(db, teamIDs, operator, forbiddenMessage)
 }
 
 type scheduleBatchClockRange struct {

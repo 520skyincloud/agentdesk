@@ -7,10 +7,12 @@ import (
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 var AgentTeamScopeService = newAgentTeamScopeService()
@@ -115,6 +117,33 @@ func (s *agentTeamScopeService) canManageTeam(operator *dto.AuthPrincipal, team 
 		return false
 	}
 	return team.Status != enums.StatusDeleted && team.LeaderUserID == operator.UserID
+}
+
+func (s *agentTeamScopeService) lockManageableTeamsDB(db *gorm.DB, teamIDs []int64, operator *dto.AuthPrincipal, forbiddenMessage string) (map[int64]*models.AgentTeam, error) {
+	tenantID := s.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先选择接入公司")
+	}
+	teamIDs = uniquePositiveInt64s(teamIDs)
+	if len(teamIDs) == 0 {
+		return nil, errorsx.InvalidParam("请选择客服组")
+	}
+	slices.Sort(teamIDs)
+	teams := make(map[int64]*models.AgentTeam, len(teamIDs))
+	for _, teamID := range teamIDs {
+		team, err := repositories.AgentTeamRepository.GetForUpdateInTenant(db, teamID, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		if team == nil || team.Status == enums.StatusDeleted {
+			return nil, errorsx.InvalidParam("客服组不存在")
+		}
+		if !s.canManageTeam(operator, team) {
+			return nil, errorsx.Forbidden(forbiddenMessage)
+		}
+		teams[teamID] = team
+	}
+	return teams, nil
 }
 
 func (s *agentTeamScopeService) ApplyKnowledgeBaseFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {

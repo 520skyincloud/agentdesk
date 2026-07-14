@@ -2382,3 +2382,18 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 聚焦 race、完整 services、全仓 Go、go vet 和 diff 检查通过；仿真库只读审计继续通过 52/52 模型策略、66/66 表、128/128 关系且 0 违规，审计前后 mtime `1784067966`、大小 `4935680` 字节不变。
 - 本批修改 AgentProfile repository/service/测试和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端或 AI/计费变化。AI 分支无同文件修改，不要求 rebase 或 migration 排序。
 - 本批只关闭客服档案子域的 Team 删除竞态。客服小组和门店员工双向绑定仍需分别接入父 Team 锁；AI Agent 的 team_ids 写属于 AI 分支，必须协调后处理。可独立回滚本批且无需数据库回滚，但会恢复档案与 Team 删除/并发更新窗口，不建议回滚。
+
+## 85. 当前实施检查点：客服小组、成员与排班父锁闭环（2026-07-15）
+
+客服小组创建原本在事务外完成父组权限、重名和成员校验；编辑、拖拽成员替换、停用和删除也先读取旧小组及排班，再进入事务写入。该时序会与 Team 删除、排班写和客服档案跨组移动交错，产生已删除父组下新小组、基于旧小组覆盖更新或成员校验后档案换组等窗口。
+
+- AgentTeamSquadRepository 增加按 TenantID 的 GetForUpdateInTenant。创建在事务内锁父 Team；编辑、成员替换和删除先锁当前 Squad，再锁父 Team。小组不允许跨综合组，因此后三类只需一把父锁；公共 helper 仍对多个 ID 去重并升序锁定。
+- AgentTeamScopeService 提供统一的 lockManageableTeamsDB，档案、排班和小组共用 ActiveTenantID、Team 存在/删除状态、管理员/组长职责与升序锁规则。原档案与排班私有 helper 收敛为该实现，已有锁观测测试确认顺序不变。
+- 创建的小组重名、负责人、成员档案和租户校验全部在父锁内完成；同一 Team 的并发创建由父锁串行，避免两个请求同时通过重名查询。编辑在 Squad/Team 锁内重新构建全部字段和成员。
+- 拖拽成员替换在 Squad/Team 锁内重新校验成员档案。成员档案无需额外逐行锁：第 84 批档案跨组移动会锁其原 Team，因此移动和成员替换共享相同父锁；先完成的一方提交后，后执行方会看到最新成员关系或档案 TeamID 并拒绝不合法操作。
+- 停用和删除在持锁事务内检查当前/未来排班。第 82 批排班写同样锁 Team：排班先提交时小组停用/删除能看到依赖并拒绝；小组先删除时等待中的排班会在 Team 锁内看到 Squad 已删除并拒绝。删除小组与软删除成员关系继续原子提交。
+- 公共父锁 helper 统一拒绝 StatusDeleted 的 Team，修复平台管理员在旧管理判断中可能继续向已删除 Team 写档案或排班的边界漏洞；正常启用/停用 Team 的既有行为不变。
+- 测试直接观察四类写路径：创建锁父 Team；编辑、成员替换、删除同时锁 Squad 和父 Team。跨组成员拒绝后原成员集合不变，未来排班拒绝停用/删除后小组名称和状态不变；档案、排班、跨租户与原小组功能回归继续通过。
+- 聚焦 race、完整 services、全仓 Go、go vet 和 diff 检查通过；仿真库只读审计继续通过 52/52 模型策略、66/66 表、128/128 关系且 0 违规，审计前后 mtime `1784067966`、大小 `4935680` 字节不变。
+- 本批修改 Squad repository/service/测试、Team scope、档案/排班 helper 和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端或 AI/计费变化。AI 分支无同文件修改，不要求 rebase 或 migration 排序。
+- Team 删除与排班、档案、小组三个子域的父锁闭环已经成立；门店员工双向绑定仍需下一批接入受影响 Team 升序锁。AI Agent 的 team_ids 写仍属于 AI 分支协调范围。可独立回滚本批，但必须同时恢复档案/排班私有 helper；无需数据库回滚，回滚会重开上述竞态，不建议回滚。

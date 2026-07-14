@@ -121,44 +121,54 @@ func (s *agentTeamSquadService) ListByTeam(teamID int64, operator *dto.AuthPrinc
 }
 
 func (s *agentTeamSquadService) Create(req request.CreateAgentTeamSquadRequest, operator *dto.AuthPrincipal) (*models.AgentTeamSquad, error) {
-	if !AgentTeamScopeService.CanManageTeam(operator, req.TeamID) {
-		return nil, errorsx.Forbidden("无权在该客服组增设小组")
-	}
-	item, memberIDs, err := s.buildModel(sqls.DB(), 0, req.TeamID, req.Name, req.LeaderUserID, req.MemberIDs, req.Status, req.Remark)
-	if err != nil {
-		return nil, err
-	}
-	item.AuditFields = utils.BuildAuditFields(operator)
-	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	var item *models.AgentTeamSquad
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		teams, err := AgentTeamScopeService.lockManageableTeamsDB(ctx.Tx, []int64{req.TeamID}, operator, "无权在该客服组增设小组")
+		if err != nil {
+			return err
+		}
+		team := teams[req.TeamID]
+		var memberIDs []int64
+		item, memberIDs, err = s.buildModelDB(ctx.Tx, team, 0, req.Name, req.LeaderUserID, req.MemberIDs, req.Status, req.Remark)
+		if err != nil {
+			return err
+		}
+		item.AuditFields = utils.BuildAuditFields(operator)
 		if err := repositories.AgentTeamSquadRepository.Create(ctx.Tx, item); err != nil {
 			return err
 		}
-		return s.replaceMembersDB(ctx.Tx, item, memberIDs, operator)
-	}); err != nil {
+		return s.replaceMembersDB(ctx.Tx, team, item, memberIDs, operator)
+	})
+	if err != nil {
 		return nil, err
 	}
 	return item, nil
 }
 
 func (s *agentTeamSquadService) Update(req request.UpdateAgentTeamSquadRequest, operator *dto.AuthPrincipal) error {
-	current := s.GetInTenant(req.ID, operator)
-	if current == nil || current.Status == enums.StatusDeleted {
-		return errorsx.InvalidParam("客服小组不存在")
-	}
-	if req.TeamID != current.TeamID {
-		return errorsx.InvalidParam("客服小组不支持变更所属综合客服组")
-	}
-	if !AgentTeamScopeService.CanManageTeam(operator, current.TeamID) || !AgentTeamScopeService.CanManageTeam(operator, req.TeamID) {
-		return errorsx.Forbidden("无权编辑该客服小组")
-	}
-	item, memberIDs, err := s.buildModel(sqls.DB(), req.ID, req.TeamID, req.Name, req.LeaderUserID, req.MemberIDs, req.Status, req.Remark)
-	if err != nil {
-		return err
-	}
-	if current.Status != enums.StatusDisabled && item.Status == enums.StatusDisabled && s.hasCurrentOrFutureSchedule(item.ID, current.TenantID) {
-		return errorsx.Forbidden("客服小组仍有当前或未来排班，无法停用")
-	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current, err := repositories.AgentTeamSquadRepository.GetForUpdateInTenant(ctx.Tx, req.ID, AgentTeamScopeService.ActiveTenantID(operator))
+		if err != nil {
+			return err
+		}
+		if current == nil || current.Status == enums.StatusDeleted {
+			return errorsx.InvalidParam("客服小组不存在")
+		}
+		if req.TeamID != current.TeamID {
+			return errorsx.InvalidParam("客服小组不支持变更所属综合客服组")
+		}
+		teams, err := AgentTeamScopeService.lockManageableTeamsDB(ctx.Tx, []int64{current.TeamID}, operator, "无权编辑该客服小组")
+		if err != nil {
+			return err
+		}
+		team := teams[current.TeamID]
+		item, memberIDs, err := s.buildModelDB(ctx.Tx, team, req.ID, req.Name, req.LeaderUserID, req.MemberIDs, req.Status, req.Remark)
+		if err != nil {
+			return err
+		}
+		if current.Status != enums.StatusDisabled && item.Status == enums.StatusDisabled && s.hasCurrentOrFutureScheduleDB(ctx.Tx, item.ID, current.TenantID) {
+			return errorsx.Forbidden("客服小组仍有当前或未来排班，无法停用")
+		}
 		if err := repositories.AgentTeamSquadRepository.UpdatesInTenant(ctx.Tx, req.ID, current.TenantID, map[string]any{
 			"tenant_id":        item.TenantID,
 			"team_id":          item.TeamID,
@@ -172,39 +182,42 @@ func (s *agentTeamSquadService) Update(req request.UpdateAgentTeamSquadRequest, 
 		}); err != nil {
 			return err
 		}
-		return s.replaceMembersDB(ctx.Tx, item, memberIDs, operator)
+		return s.replaceMembersDB(ctx.Tx, team, item, memberIDs, operator)
 	})
 }
 
 func (s *agentTeamSquadService) ReplaceMembers(req request.ReplaceAgentTeamSquadMembersRequest, operator *dto.AuthPrincipal) error {
-	item := s.GetInTenant(req.SquadID, operator)
-	if item == nil || item.Status == enums.StatusDeleted {
-		return errorsx.InvalidParam("客服小组不存在")
-	}
-	if !AgentTeamScopeService.CanManageTeam(operator, item.TeamID) {
-		return errorsx.Forbidden("无权调整该客服小组成员")
-	}
-	memberIDs, err := s.validateMemberProfilesDB(sqls.DB(), item.TeamID, item.LeaderUserID, req.AgentProfileIDs)
-	if err != nil {
-		return err
-	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		return s.replaceMembersDB(ctx.Tx, item, memberIDs, operator)
+		item, err := repositories.AgentTeamSquadRepository.GetForUpdateInTenant(ctx.Tx, req.SquadID, AgentTeamScopeService.ActiveTenantID(operator))
+		if err != nil {
+			return err
+		}
+		if item == nil || item.Status == enums.StatusDeleted {
+			return errorsx.InvalidParam("客服小组不存在")
+		}
+		teams, err := AgentTeamScopeService.lockManageableTeamsDB(ctx.Tx, []int64{item.TeamID}, operator, "无权调整该客服小组成员")
+		if err != nil {
+			return err
+		}
+		return s.replaceMembersDB(ctx.Tx, teams[item.TeamID], item, req.AgentProfileIDs, operator)
 	})
 }
 
 func (s *agentTeamSquadService) Delete(id int64, operator *dto.AuthPrincipal) error {
-	item := s.GetInTenant(id, operator)
-	if item == nil || item.Status == enums.StatusDeleted {
-		return errorsx.InvalidParam("客服小组不存在")
-	}
-	if !AgentTeamScopeService.CanManageTeam(operator, item.TeamID) {
-		return errorsx.Forbidden("无权删除该客服小组")
-	}
-	if s.hasCurrentOrFutureSchedule(id, item.TenantID) {
-		return errorsx.Forbidden("客服小组仍有当前或未来排班，无法删除")
-	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		item, err := repositories.AgentTeamSquadRepository.GetForUpdateInTenant(ctx.Tx, id, AgentTeamScopeService.ActiveTenantID(operator))
+		if err != nil {
+			return err
+		}
+		if item == nil || item.Status == enums.StatusDeleted {
+			return errorsx.InvalidParam("客服小组不存在")
+		}
+		if _, err := AgentTeamScopeService.lockManageableTeamsDB(ctx.Tx, []int64{item.TeamID}, operator, "无权删除该客服小组"); err != nil {
+			return err
+		}
+		if s.hasCurrentOrFutureScheduleDB(ctx.Tx, id, item.TenantID) {
+			return errorsx.Forbidden("客服小组仍有当前或未来排班，无法删除")
+		}
 		now := time.Now()
 		if err := repositories.AgentTeamSquadRepository.UpdatesInTenant(ctx.Tx, id, item.TenantID, map[string]any{
 			"status":           enums.StatusDeleted,
@@ -243,8 +256,8 @@ func (s *agentTeamSquadService) ActiveMemberProfileSet(squadIDs []int64, tenantI
 	return ret, teamBySquad
 }
 
-func (s *agentTeamSquadService) hasCurrentOrFutureSchedule(squadID, tenantID int64) bool {
-	return AgentTeamScheduleService.FindOne(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("squad_id", squadID).Eq("status", enums.StatusOk).Gt("end_at", time.Now())) != nil
+func (s *agentTeamSquadService) hasCurrentOrFutureScheduleDB(db *gorm.DB, squadID, tenantID int64) bool {
+	return repositories.AgentTeamScheduleRepository.Take(db, "tenant_id = ? AND squad_id = ? AND status = ? AND end_at > ?", tenantID, squadID, enums.StatusOk, time.Now()) != nil
 }
 
 func (s *agentTeamSquadService) canViewTeam(teamID int64, operator *dto.AuthPrincipal) bool {
@@ -263,8 +276,7 @@ func (s *agentTeamSquadService) canViewTeam(teamID int64, operator *dto.AuthPrin
 	return profile != nil && profile.TenantID == tenantID && profile.Status != enums.StatusDeleted && profile.TeamID == teamID
 }
 
-func (s *agentTeamSquadService) buildModel(db *gorm.DB, id, teamID int64, name string, leaderUserID int64, memberIDs []int64, status int, remark string) (*models.AgentTeamSquad, []int64, error) {
-	team := repositories.AgentTeamRepository.Get(db, teamID)
+func (s *agentTeamSquadService) buildModelDB(db *gorm.DB, team *models.AgentTeam, id int64, name string, leaderUserID int64, memberIDs []int64, status int, remark string) (*models.AgentTeamSquad, []int64, error) {
 	if team == nil || team.Status == enums.StatusDeleted {
 		return nil, nil, errorsx.InvalidParam("综合客服组不存在")
 	}
@@ -278,26 +290,25 @@ func (s *agentTeamSquadService) buildModel(db *gorm.DB, id, teamID int64, name s
 	if status != int(enums.StatusOk) && status != int(enums.StatusDisabled) {
 		return nil, nil, errorsx.InvalidParam("客服小组状态不合法")
 	}
-	duplicate := repositories.AgentTeamSquadRepository.Take(db, "team_id = ? AND name = ? AND status <> ? AND id <> ?", teamID, name, enums.StatusDeleted, id)
+	duplicate := repositories.AgentTeamSquadRepository.Take(db, "tenant_id = ? AND team_id = ? AND name = ? AND status <> ? AND id <> ?", team.TenantID, team.ID, name, enums.StatusDeleted, id)
 	if duplicate != nil {
 		return nil, nil, errorsx.InvalidParam("同一综合客服组内小组名称不能重复")
 	}
-	memberIDs, err := s.validateMemberProfilesDB(db, teamID, leaderUserID, memberIDs)
+	memberIDs, err := s.validateMemberProfilesDB(db, team, leaderUserID, memberIDs)
 	if err != nil {
 		return nil, nil, err
 	}
-	return &models.AgentTeamSquad{ID: id, TenantID: team.TenantID, TeamID: teamID, Name: name, LeaderUserID: leaderUserID, Status: enums.Status(status), Remark: strings.TrimSpace(remark)}, memberIDs, nil
+	return &models.AgentTeamSquad{ID: id, TenantID: team.TenantID, TeamID: team.ID, Name: name, LeaderUserID: leaderUserID, Status: enums.Status(status), Remark: strings.TrimSpace(remark)}, memberIDs, nil
 }
 
-func (s *agentTeamSquadService) validateMemberProfilesDB(db *gorm.DB, teamID, leaderUserID int64, memberIDs []int64) ([]int64, error) {
-	team := repositories.AgentTeamRepository.Get(db, teamID)
+func (s *agentTeamSquadService) validateMemberProfilesDB(db *gorm.DB, team *models.AgentTeam, leaderUserID int64, memberIDs []int64) ([]int64, error) {
 	if team == nil || team.TenantID <= 0 || team.Status == enums.StatusDeleted {
 		return nil, errorsx.InvalidParam("综合客服组不存在或尚未归属接入公司")
 	}
 	memberIDs = uniquePositive(memberIDs)
 	if leaderUserID > 0 {
 		leaderProfile := repositories.AgentProfileRepository.Take(db, "tenant_id = ? AND user_id = ? AND status <> ?", team.TenantID, leaderUserID, enums.StatusDeleted)
-		if leaderProfile == nil || leaderProfile.TeamID != teamID || leaderProfile.TenantID != team.TenantID {
+		if leaderProfile == nil || leaderProfile.TeamID != team.ID || leaderProfile.TenantID != team.TenantID {
 			return nil, errorsx.InvalidParam("小组负责人必须是综合客服组内客服")
 		}
 		memberIDs = append(memberIDs, leaderProfile.ID)
@@ -311,7 +322,7 @@ func (s *agentTeamSquadService) validateMemberProfilesDB(db *gorm.DB, teamID, le
 		return nil, errorsx.InvalidParam("部分客服档案不存在或已删除")
 	}
 	for i := range profiles {
-		if profiles[i].TeamID != teamID || profiles[i].TenantID != team.TenantID {
+		if profiles[i].TeamID != team.ID || profiles[i].TenantID != team.TenantID {
 			return nil, errorsx.InvalidParam("客服小组只能包含所属综合客服组内客服")
 		}
 	}
@@ -319,12 +330,11 @@ func (s *agentTeamSquadService) validateMemberProfilesDB(db *gorm.DB, teamID, le
 	return memberIDs, nil
 }
 
-func (s *agentTeamSquadService) replaceMembersDB(db *gorm.DB, squad *models.AgentTeamSquad, memberIDs []int64, operator *dto.AuthPrincipal) error {
-	team := repositories.AgentTeamRepository.Get(db, squad.TeamID)
-	if team == nil || team.TenantID <= 0 || squad.TenantID != team.TenantID {
+func (s *agentTeamSquadService) replaceMembersDB(db *gorm.DB, team *models.AgentTeam, squad *models.AgentTeamSquad, memberIDs []int64, operator *dto.AuthPrincipal) error {
+	if team == nil || team.TenantID <= 0 || squad.TeamID != team.ID || squad.TenantID != team.TenantID {
 		return errorsx.InvalidParam("客服小组与综合客服组的接入公司不一致")
 	}
-	memberIDs, err := s.validateMemberProfilesDB(db, squad.TeamID, squad.LeaderUserID, memberIDs)
+	memberIDs, err := s.validateMemberProfilesDB(db, team, squad.LeaderUserID, memberIDs)
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -148,6 +149,10 @@ func TestAgentTeamSquadMembershipAndValidation(t *testing.T) {
 	if err := AgentTeamSquadService.ReplaceMembers(request.ReplaceAgentTeamSquadMembersRequest{SquadID: squad.ID, AgentProfileIDs: []int64{profiles[2].ID}}, admin); err == nil {
 		t.Fatal("expected cross-team member validation error")
 	}
+	members = repositories.AgentTeamSquadMemberRepository.Find(db, sqls.NewCnd().Eq("squad_id", squad.ID).Eq("status", enums.StatusOk).Asc("agent_profile_id"))
+	if len(members) != 2 || members[0].AgentProfileID != profiles[0].ID || members[1].AgentProfileID != profiles[1].ID {
+		t.Fatalf("rejected member replacement changed active members: %+v", members)
+	}
 	if _, err := AgentTeamSquadService.Create(request.CreateAgentTeamSquadRequest{TeamID: teamA.ID, Name: "客服一组", Status: int(enums.StatusOk)}, admin); err == nil {
 		t.Fatal("expected duplicate squad name error")
 	}
@@ -182,6 +187,9 @@ func TestAgentTeamSquadDeleteRequiresScheduleCleanup(t *testing.T) {
 	}, admin); err == nil {
 		t.Fatal("expected future schedule disable guard")
 	}
+	if current := AgentTeamSquadService.Get(squad.ID); current == nil || current.Status != enums.StatusOk || current.Name != squad.Name {
+		t.Fatalf("rejected schedule-dependent mutation changed squad: %+v", current)
+	}
 	if err := db.Model(schedule).Update("status", enums.StatusDeleted).Error; err != nil {
 		t.Fatalf("disable schedule: %v", err)
 	}
@@ -191,4 +199,97 @@ func TestAgentTeamSquadDeleteRequiresScheduleCleanup(t *testing.T) {
 	if current := AgentTeamSquadService.Get(squad.ID); current == nil || current.Status != enums.StatusDeleted {
 		t.Fatalf("deleted squad = %+v", current)
 	}
+}
+
+func TestAgentTeamSquadMutationsLockSquadAndParentTeam(t *testing.T) {
+	tests := []struct {
+		name          string
+		wantSquadLock bool
+		action        func(t *testing.T, db *gorm.DB, admin *dto.AuthPrincipal, team *models.AgentTeam) error
+	}{
+		{
+			name: "create",
+			action: func(t *testing.T, db *gorm.DB, admin *dto.AuthPrincipal, team *models.AgentTeam) error {
+				_, err := AgentTeamSquadService.Create(request.CreateAgentTeamSquadRequest{TeamID: team.ID, Name: "新建小组", Status: int(enums.StatusOk)}, admin)
+				return err
+			},
+		},
+		{
+			name:          "update",
+			wantSquadLock: true,
+			action: func(t *testing.T, db *gorm.DB, admin *dto.AuthPrincipal, team *models.AgentTeam) error {
+				squad := createAgentTeamSquadForLockTest(t, db, team, "待编辑小组")
+				return AgentTeamSquadService.Update(request.UpdateAgentTeamSquadRequest{
+					ID: squad.ID,
+					CreateAgentTeamSquadRequest: request.CreateAgentTeamSquadRequest{
+						TeamID: team.ID, Name: "已编辑小组", Status: int(enums.StatusOk),
+					},
+				}, admin)
+			},
+		},
+		{
+			name:          "replace members",
+			wantSquadLock: true,
+			action: func(t *testing.T, db *gorm.DB, admin *dto.AuthPrincipal, team *models.AgentTeam) error {
+				squad := createAgentTeamSquadForLockTest(t, db, team, "待调整成员小组")
+				return AgentTeamSquadService.ReplaceMembers(request.ReplaceAgentTeamSquadMembersRequest{SquadID: squad.ID}, admin)
+			},
+		},
+		{
+			name:          "delete",
+			wantSquadLock: true,
+			action: func(t *testing.T, db *gorm.DB, admin *dto.AuthPrincipal, team *models.AgentTeam) error {
+				squad := createAgentTeamSquadForLockTest(t, db, team, "待删除小组")
+				return AgentTeamSquadService.Delete(squad.ID, admin)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, admin, team, _, _ := setupAgentTeamSquadTest(t)
+			teamIDs := make([]int64, 0, 1)
+			squadLocked := false
+			callbackName := "test:agent-team-squad-locks-" + tt.name
+			if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+				if _, locked := tx.Statement.Clauses["FOR"]; !locked || tx.Statement.Schema == nil {
+					return
+				}
+				switch tx.Statement.Schema.Name {
+				case "AgentTeam":
+					if item, ok := tx.Statement.Dest.(*models.AgentTeam); ok {
+						teamIDs = append(teamIDs, item.ID)
+					}
+				case "AgentTeamSquad":
+					squadLocked = true
+				}
+			}); err != nil {
+				t.Fatalf("register lock callback: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := db.Callback().Query().Remove(callbackName); err != nil {
+					t.Errorf("remove lock callback: %v", err)
+				}
+			})
+
+			if err := tt.action(t, db, admin, team); err != nil {
+				t.Fatalf("%s squad: %v", tt.name, err)
+			}
+			if !slices.Equal(teamIDs, []int64{team.ID}) {
+				t.Fatalf("%s team locks = %v, want [%d]", tt.name, teamIDs, team.ID)
+			}
+			if squadLocked != tt.wantSquadLock {
+				t.Fatalf("%s squad lock = %v, want %v", tt.name, squadLocked, tt.wantSquadLock)
+			}
+		})
+	}
+}
+
+func createAgentTeamSquadForLockTest(t *testing.T, db *gorm.DB, team *models.AgentTeam, name string) *models.AgentTeamSquad {
+	t.Helper()
+	squad := &models.AgentTeamSquad{TenantID: team.TenantID, TeamID: team.ID, Name: name, Status: enums.StatusOk}
+	if err := db.Create(squad).Error; err != nil {
+		t.Fatalf("create squad %s: %v", name, err)
+	}
+	return squad
 }

@@ -1,10 +1,13 @@
 package repositories
 
 import (
+	"errors"
+
 	"agent-desk/internal/models"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var AgentTeamSquadRepository = &agentTeamSquadRepository{}
@@ -24,6 +27,21 @@ func (r *agentTeamSquadRepository) GetInTenant(db *gorm.DB, id, tenantID int64) 
 		return nil
 	}
 	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
+func (r *agentTeamSquadRepository) GetForUpdateInTenant(db *gorm.DB, id, tenantID int64) (*models.AgentTeamSquad, error) {
+	if id <= 0 || tenantID <= 0 {
+		return nil, nil
+	}
+	ret := &models.AgentTeamSquad{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (r *agentTeamSquadRepository) Take(db *gorm.DB, where ...any) *models.AgentTeamSquad {

@@ -4212,3 +4212,43 @@ git diff --check
 - 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端、AI 回复、模型调用、token、usage 或计费变化。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批五个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 83 批后合并并重跑档案/Team 锁测试。
 - 可回滚五个文件且无需数据库回滚，但会恢复客服档案与综合组删除、同档案并发更新的竞态，不建议回滚。
+
+## 第 85 批：客服小组、成员与排班父锁闭环（2026-07-15）
+
+### 事务、锁序与关联边界
+
+- AgentTeamSquad 创建在事务内锁父 Team；编辑、成员替换和删除先按 TenantID 锁 Squad，再锁父 Team。权限、重名、负责人、成员档案、租户和排班依赖均在锁内重新校验。
+- AgentTeamScopeService 新增公共 lockManageableTeamsDB，档案、排班和小组统一复用 ActiveTenantID、已删除 Team 拒绝、职责判定与多 Team 升序锁。档案和排班已有锁序不变。
+- 成员替换与客服档案跨组移动通过同一 Team 父锁串行；小组停用/删除与排班写也通过 Team 父锁串行。删除小组和软删除成员关系仍在同一事务提交。
+- 跨组成员校验或未来排班依赖拒绝时，不改变原成员、小组名称或状态。API、DTO、权限和拖拽页面行为不变。
+
+### 文件与验证
+
+```text
+internal/repositories/agent_team_squad_repository.go
+internal/services/agent_team_scope_service.go
+internal/services/agent_profile_service.go
+internal/services/agent_team_schedule_service.go
+internal/services/agent_team_squad_service.go
+internal/services/agent_team_squad_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run 'TestAgentTeamSquad|TestAgentProfileMutations|TestAgentTeamScheduleMutations|TestAgentOrganization' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+go run ./cmd/tenant_integrity_audit --config /tmp/agentdesk-tenant-stats.yaml --pretty
+git diff --check
+```
+
+- 锁观测覆盖小组创建、编辑、成员替换和删除；档案与排班锁回归同时通过。完整 services、全仓 Go、go vet 和 diff 检查通过。
+- 仿真库只读审计通过 52/52 模型策略、66/66 表、128/128 关系、0 违规；审计前后 mtime `1784067966`、大小 `4935680` 字节不变。
+
+### 并行分支与回滚
+
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端、AI 回复、模型调用、token、usage 或计费变化。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批八个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 84 批后合并并重跑小组/档案/排班锁测试。
+- 可回滚八个文件且无需数据库回滚，但必须同时恢复档案与排班私有锁 helper；回滚会恢复小组与 Team 删除、排班、档案移动之间的竞态，不建议回滚。
