@@ -118,6 +118,7 @@ func WxWorkProtocolInstancePostStart_login(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	services.WxWorkProtocolService.ResetLoginVerificationAttempts(item.ID)
 	qrcode, qrcodeContent, key := parseWxWorkProtocolLoginQRCode(raw)
 	httpx.WriteJSON(ctx, response.StartWxWorkProtocolLoginResponse{
 		Instance:      buildWxWorkProtocolInstanceResponse(item, operator),
@@ -273,6 +274,7 @@ func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	services.WxWorkProtocolService.ResetLoginVerificationAttempts(req.ID)
 	httpx.WriteJSON(ctx, resp)
 }
 
@@ -335,7 +337,7 @@ func WxWorkProtocolInstancePostCheck_login_qrcode(ctx *gin.Context) {
 	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
-	resp, err := services.WxWorkProtocolService.CheckLoginQRCode(req.ID)
+	resp, err := services.WxWorkProtocolService.CheckLoginQRCodeStatus(req.ID)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -357,7 +359,7 @@ func WxWorkProtocolInstancePostVerify_login(ctx *gin.Context) {
 	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
-	resp, err := services.WxWorkProtocolService.VerifyLoginQRCode(req.ID, req.Code)
+	resp, err := services.WxWorkProtocolService.VerifyLoginQRCodeStatus(req.ID, req.Code)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

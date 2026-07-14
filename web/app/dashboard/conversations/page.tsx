@@ -53,8 +53,10 @@ import {
   resolveWxWorkProtocolLoginBinding,
   startWxWorkProtocolLogin,
   syncWxWorkProtocolProfile,
+  verifyWxWorkProtocolLogin,
   type StartWxWorkProtocolLoginResult,
   type WxWorkProtocolInstance,
+  type WxWorkProtocolLoginStatus,
 } from "@/lib/api/admin";
 import {
   fetchCurrentAgentPresence,
@@ -119,6 +121,9 @@ export default function ConversationsPage() {
   const [remoteSetupLoading, setRemoteSetupLoading] = useState(false);
   const [scanLoginResult, setScanLoginResult] = useState<StartWxWorkProtocolLoginResult | null>(null);
   const [scanLoginStatus, setScanLoginStatus] = useState("等待生成登录二维码");
+  const [scanLoginProtocolStatus, setScanLoginProtocolStatus] = useState<WxWorkProtocolLoginStatus | null>(null);
+  const [scanLoginCode, setScanLoginCode] = useState("");
+  const [scanLoginVerifying, setScanLoginVerifying] = useState(false);
   const [scanLoginError, setScanLoginError] = useState("");
   const [scanLoginResolving, setScanLoginResolving] = useState(false);
   const scanLoginSucceededRef = useRef(false);
@@ -282,6 +287,8 @@ export default function ConversationsPage() {
     scanLoginSucceededRef.current = false;
     setScanLoginLoading(true);
     setScanLoginResult(null);
+    setScanLoginProtocolStatus(null);
+    setScanLoginCode("");
     setScanLoginError("");
     setScanLoginStatus("正在从协议平台空闲实例池绑定真实 guid，并生成登录二维码...");
     try {
@@ -296,6 +303,32 @@ export default function ConversationsPage() {
       toast.error(message);
     } finally {
       setScanLoginLoading(false);
+    }
+  };
+
+  const verifyScanLogin = async () => {
+    if (!scanLoginResult?.instance.id || !scanLoginCode.trim()) {
+      toast.error("请输入新设备显示的确认码");
+      return;
+    }
+    setScanLoginVerifying(true);
+    try {
+      const status = await verifyWxWorkProtocolLogin(scanLoginResult.instance.id, scanLoginCode.trim());
+      setScanLoginProtocolStatus(status);
+      setScanLoginStatus(status.message);
+      if (status.status === "success") {
+        await syncWxWorkProtocolProfile(scanLoginResult.instance.id).catch(() => "");
+        await loadWxWorkInstances();
+        scanLoginSucceededRef.current = true;
+        toast.success("员工号登录成功，请继续绑定门店和知识库");
+        setScanLoginOpen(false);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "确认码验证失败";
+      setScanLoginStatus(message);
+      toast.error(message);
+    } finally {
+      setScanLoginVerifying(false);
     }
   };
 
@@ -344,9 +377,9 @@ export default function ConversationsPage() {
       }
       scanLoginCheckingRef.current = true;
       try {
-        const raw = await checkWxWorkProtocolLoginQrcode(scanLoginResult.instance.id);
-        const lower = raw.toLowerCase();
-        if (lower.includes("success") || lower.includes("login") || lower.includes("已登录") || lower.includes("登录成功")) {
+        const status = await checkWxWorkProtocolLoginQrcode(scanLoginResult.instance.id);
+        setScanLoginProtocolStatus(status);
+        if (status.status === "success") {
           setScanLoginStatus("登录成功，正在同步员工号资料...");
           if (canUpdateWxWorkAccounts) {
             await syncWxWorkProtocolProfile(scanLoginResult.instance.id).catch(() => "");
@@ -356,7 +389,7 @@ export default function ConversationsPage() {
           toast.success("员工号登录成功，请继续绑定门店和知识库");
           setScanLoginOpen(false);
         } else {
-          setScanLoginStatus("等待扫码确认，系统会自动轮询登录状态");
+          setScanLoginStatus(status.message || "等待扫码确认，系统会自动轮询登录状态");
         }
       } catch (error) {
         setScanLoginStatus(error instanceof Error ? error.message : "检查扫码状态失败");
@@ -1027,6 +1060,15 @@ export default function ConversationsPage() {
                 <div className="font-medium text-foreground">{scanLoginStatus}</div>
                 {scanLoginResult?.qrcodeContent ? <div className="mt-1 break-all">二维码内容：{scanLoginResult.qrcodeContent}</div> : null}
               </div>
+              {scanLoginProtocolStatus?.requiresCode ? (
+                <div className="mt-3 grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                  <div className="text-sm font-medium text-amber-950">输入新设备登录确认码</div>
+                  <Input inputMode="numeric" autoComplete="one-time-code" value={scanLoginCode} onChange={(event) => setScanLoginCode(event.target.value)} placeholder="确认码" />
+                  <Button type="button" onClick={() => void verifyScanLogin()} disabled={scanLoginVerifying || !scanLoginCode.trim()}>
+                    {scanLoginVerifying ? "验证中..." : "验证并继续登录"}
+                  </Button>
+                </div>
+              ) : null}
               {scanLoginError ? (
                 <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
                   <div className="flex items-start gap-2">
