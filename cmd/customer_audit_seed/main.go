@@ -471,6 +471,7 @@ func (ctx *seedContext) upsertStores() error {
 		item := &models.Store{}
 		err := ctx.db.Where("store_code = ?", code).Take(item).Error
 		updates := map[string]any{
+			"tenant_id":        ctx.tenant.ID,
 			"name":             name,
 			"brand_name":       companyName,
 			"company_id":       ctx.company.ID,
@@ -481,9 +482,13 @@ func (ctx *seedContext) upsertStores() error {
 			"update_user_name": constants.SystemAuditUserName,
 		}
 		if err == nil {
+			if err := ctx.ensureSeedTenantOwnership("store", item.ID, item.TenantID, item.Remark); err != nil {
+				return err
+			}
 			if err := ctx.db.Model(item).Updates(updates).Error; err != nil {
 				return err
 			}
+			item.TenantID = ctx.tenant.ID
 			ctx.stores = append(ctx.stores, item)
 			continue
 		}
@@ -491,6 +496,7 @@ func (ctx *seedContext) upsertStores() error {
 			return err
 		}
 		item = &models.Store{
+			TenantID:    ctx.tenant.ID,
 			StoreCode:   code,
 			Name:        name,
 			BrandName:   companyName,
@@ -739,6 +745,7 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 	item := &models.StoreStaffBinding{}
 	err := ctx.db.Where("store_id = ?", store.ID).Take(item).Error
 	updates := map[string]any{
+		"tenant_id":              ctx.tenant.ID,
 		"user_id":                staff.ID,
 		"agent_team_id":          agentTeamID,
 		"company_id":             ctx.company.ID,
@@ -752,9 +759,13 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 		"update_user_name":       constants.SystemAuditUserName,
 	}
 	if err == nil {
+		if err := ctx.ensureSeedTenantOwnership("store staff binding", item.ID, item.TenantID, item.Remark); err != nil {
+			return nil, err
+		}
 		if err := ctx.db.Model(item).Updates(updates).Error; err != nil {
 			return nil, err
 		}
+		item.TenantID = ctx.tenant.ID
 		item.AgentTeamID = agentTeamID
 		return item, nil
 	}
@@ -762,6 +773,7 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 		return nil, err
 	}
 	item = &models.StoreStaffBinding{
+		TenantID:             ctx.tenant.ID,
 		UserID:               staff.ID,
 		AgentTeamID:          agentTeamID,
 		CompanyID:            ctx.company.ID,
@@ -786,6 +798,7 @@ func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, bin
 	item := &models.WxWorkProtocolInstance{}
 	err := ctx.db.Where("guid = ?", guid).Take(item).Error
 	updates := map[string]any{
+		"tenant_id":                          ctx.tenant.ID,
 		"agent_team_id":                      agentTeamID,
 		"channel_id":                         ctx.channel.ID,
 		"employee_user_id":                   employeeUserID,
@@ -815,15 +828,20 @@ func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, bin
 		"update_user_name":                   constants.SystemAuditUserName,
 	}
 	if err == nil {
+		if err := ctx.ensureSeedTenantOwnership("wxwork instance", item.ID, item.TenantID, item.Remark); err != nil {
+			return nil, err
+		}
 		if err := ctx.db.Model(item).Updates(updates).Error; err != nil {
 			return nil, err
 		}
+		item.TenantID = ctx.tenant.ID
 		return item, nil
 	}
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, err
 	}
 	item = &models.WxWorkProtocolInstance{
+		TenantID:                  ctx.tenant.ID,
 		AgentTeamID:               agentTeamID,
 		Guid:                      guid,
 		ChannelID:                 ctx.channel.ID,
@@ -1120,6 +1138,16 @@ func relationTags(customerIndex int) string {
 
 func (ctx *seedContext) seedRemark(label string) string {
 	return fmt.Sprintf("%s %s", ctx.marker, label)
+}
+
+func (ctx *seedContext) ensureSeedTenantOwnership(entity string, id, tenantID int64, remark string) error {
+	if tenantID == ctx.tenant.ID {
+		return nil
+	}
+	if tenantID == 0 && strings.Contains(remark, "TEST_SEED:") {
+		return nil
+	}
+	return fmt.Errorf("%s %d belongs to tenant %d, expected %d", entity, id, tenantID, ctx.tenant.ID)
 }
 
 func auditFields() models.AuditFields {

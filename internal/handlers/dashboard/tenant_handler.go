@@ -42,7 +42,12 @@ func TenantAnyList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildTenantList(list, supervisors), Page: paging})
+	stats, err := services.TenantService.FindOperationalStats(tenantIDs)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildTenantList(list, supervisors, stats), Page: paging})
 }
 
 func TenantGetBy(ctx *gin.Context) {
@@ -69,7 +74,16 @@ func TenantGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, builders.BuildTenant(item, builders.TenantBuildOptions{Supervisor: supervisors[id]}))
+	stats, err := services.TenantService.FindOperationalStats([]int64{id})
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	itemStats := stats[id]
+	httpx.WriteJSON(ctx, builders.BuildTenant(item, builders.TenantBuildOptions{
+		Supervisor: supervisors[id],
+		Stats:      &itemStats,
+	}))
 }
 
 func TenantPostCreate(ctx *gin.Context) {

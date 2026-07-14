@@ -1753,3 +1753,58 @@ web/messages/en-US.json
 
 - `codex/ai-billing@f2d2da4` 与本批重叠 `auth_response.go`、`navigation.tsx` 和双语资源，并在认证链路有不同实现。合并时保留 AI 分支邮箱/FastGPT/NewAPI/计费入口，同时保留 `activeTenantName`、上下文导航和权限过滤。
 - 可独立回滚前端导航和 `activeTenantName` 展示字段；回滚不能恢复角色 URL 白名单，也不能让平台未选公司时访问租户页面。无数据库回滚边界。
+
+## 40. 多租户阶段 7D：接入公司运营资源摘要（2026-07-14）
+
+### 目标与完成内容
+
+- 审计“接入公司”列表后确认，设计要求的客服数、门店数、客服组数和最后活跃时间尚未接入真实数据；此前相关主体尚无 TenantID，现有模型已经具备可靠租户归属，因此本批补齐该安全缺口。
+- `TenantRepository.FindOperationalStats` 对当前分页 TenantID 批量聚合 `AgentProfile`、`Store`、`AgentTeam`、`Conversation` 和 `User`，没有 N+1 查询。删除资源排除，停用资源保留在存量计数中。
+- `TenantService.FindOperationalStats` 负责比较最新会话活跃与最新未删除账号登录；builder 将聚合结果映射到 response DTO，handler 只编排 service 和 builder。
+- `/dashboard/channels` 保持唯一“接入公司”入口，只增加紧凑的资源/活跃列；旧 Channel 管理、企微员工号配置和 AI Agent 绑定没有回填到该页面。
+
+### 主要文件与契约
+
+```text
+internal/repositories/tenant_repository.go
+internal/services/tenant_service.go
+internal/pkg/dto/tenant.go
+internal/pkg/dto/response/tenant_response.go
+internal/builders/tenant_builder.go
+internal/handlers/dashboard/tenant_handler.go
+internal/services/tenant_management_service_test.go
+web/lib/api/tenant.ts
+web/app/dashboard/channels/page.tsx
+web/app/dashboard/channels/tenant-page.test.mjs
+web/messages/zh-CN.json
+web/messages/en-US.json
+```
+
+- `TenantResponse` 新增 `agentCount`、`storeCount`、`agentTeamCount`、`lastActiveAt`，属于向后兼容的只读字段。无 request DTO、model、AutoMigrate、DML migration、enum、Gin 路由、权限点或 WebSocket 变化。
+- SQLite 的 datetime 聚合值和 MySQL `parseTime=True` 返回形态不同，repository 的扫描器兼容 string、`[]byte` 和 `time.Time`，不使用数据库私有日期函数。
+- `tenant_repository_test.go` 覆盖 MySQL 常见 `time.Time` 与 SQLite string/`[]byte` 扫描形态。真实 MySQL 验证仍受既有 migration 39 `agent team 1 leader tenant 0 conflicts with team tenant 1` 阻断，未绕过该业务冲突。
+- 新增双租户 service 测试，覆盖跨租户隔离、删除/停用资源口径、删除账号排除，以及登录和会话活跃时间比较。前端契约测试覆盖四个字段的真实展示。
+- 浏览器用全新 SQLite 执行既有 `customer_audit_seed` 时发现旧脚本遗漏 TenantID：Store、StoreStaffBinding、WxWorkProtocolInstance 和模拟 Conversation 全部落在 tenant 0，导致列表门店数为 0 且派单池无法读取仿真会话。本批同步补齐这些主体及 RouteState、Participant、Message、Assignment、EventLog 的租户继承。
+- 历史零租户数据只在 Remark 带 `TEST_SEED:` 时允许修复；异租户或无标记记录拒绝重绑。`simulation_test.go` 新增资源创建/修复和会话全子记录租户测试，避免脚本再次绕过运行时隔离。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch；`origin/codex/ai-billing@f2d2da4` 只与本批重叠双语资源文件，并新增与本批不同的 `nav.replyIntentProfiles` key。合并时逐 key 保留，无需整文件选边。
+- 本批不触碰 AIAgent/AIConfig、FastGPT、模型供应商、回复 runtime、token、usage 或计费。旧 Channel 页面仍被 AIAgent 租户契约阻塞；不能把本批公司统计完成误认为渠道隔离完成。
+- 可独立回滚聚合方法、response 字段和前端列，无数据回滚边界；回滚不应影响阶段 7C 的公司上下文和导航。
+- `cmd/customer_audit_seed` 与 AI 分支无同文件修改。脚本修复后的测试数据已具备正数 TenantID；回滚脚本不应把数据库记录改回 tenant 0，清理继续按 `TEST_SEED:<batch>` marker 执行。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go test -race ./cmd/customer_audit_seed ./internal/services ./internal/repositories -run 'Test(SeedResourceUpsertsInheritTenantID|SimulationRecordsInheritTenantID|TenantOperationalStats)' -count=1
+go vet ./...
+cd web && node --test $(rg --files . | rg '\.test\.mjs$' | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+git diff --check
+```
+
+- Go 全量、专项 race、vet、67 项前端测试、typecheck、生产构建和 diff 检查通过。
+- 当前源码 + 全新 SQLite + 修复后仿真脚本的浏览器验证显示：客服 12、门店 100、客服组 3，最近活跃取模拟会话时间。桌面列表使用内部横向滚动；`390x844` 下 document width 保持 390，统计单元格宽/scrollWidth 均为 245，无页面级横向溢出或文本溢出。

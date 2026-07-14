@@ -1367,4 +1367,36 @@ git diff --check
 - 本批没有 model、AutoMigrate、DML migration、enum、Gin 路由、WebSocket payload 或新权限。共享 JSON 只新增 `LoginResponse.activeTenantName`；旧前端忽略，新前端缺失时回退为通用当前公司标签。
 - 当前公司“渠道接入”独立设置页仍未迁移，不能把平台“接入公司”页恢复成旧 Channel 管理页。AI Config、回复意图等最终平台/租户归属仍须在合并 AI 分支真实代码后确认。
 - 正式公开注册继续等待 AI 分支新增主体 Tenant 化、真实历史数据 migration 39 冲突修复和双租户全链路验收。
+
+## 32. 当前实施检查点：接入公司运营资源摘要（2026-07-14）
+
+本检查点补齐平台管理员在“接入公司”列表判断公司实际使用状态所需的最小信息，不把公司管理页扩展成客服任务工作台，也不恢复旧 Channel 编辑器。
+
+### 统计口径与页面职责
+
+- 每个接入公司显示客服档案数、门店数、综合客服组数和最近活跃时间。三类资源均按 `TenantID` 聚合，排除 `StatusDeleted`；停用但尚未删除的资源仍属于公司存量并计入。
+- 最近活跃时间取该公司 `Conversation.LastActiveAt` 最大值与未删除 `User.LastLoginAt` 最大值中的较晚者。已删除账号的历史登录时间不参与，避免删除账号继续抬高公司活跃度。
+- 列表对当前分页公司统一执行分组查询，不按公司逐行查询。页面只增加一列紧凑的“资源与活跃”摘要，保留原公司法定身份、主管、联系人、核验、启停和工作上下文切换职责。
+- 公司详情响应使用同一统计构建逻辑；新建公司结果在尚无资源活动时返回零值/空时间，不伪造活跃记录。
+
+### 契约与边界
+
+- `TenantResponse` 向后兼容增加 `agentCount`、`storeCount`、`agentTeamCount` 和可选 `lastActiveAt`。没有新增 model、AutoMigrate、DML migration、enum、Gin 路由、权限或 WebSocket payload。
+- SQLite 对 `MAX(datetime)` 返回字符串，MySQL `parseTime=True` 通常返回 `time.Time`；repository 统一兼容两种驱动值后再由 service 比较时间，保持 SQLite/MySQL 同一业务口径。
+- Repository 单测覆盖 `time.Time`、SQLite string/`[]byte`、空值和非法值；真实 MySQL 容器仍被已知 migration 39 历史组长归属冲突阻断，本批不跳过迁移伪造联调结果。
+- 本检查点不修改 AI Agent、AI Config、模型调用、回复引擎、token、usage 或计费语义。旧 Channel 编辑器仍不得恢复：当前 AIAgent/AIConfig 尚无完整 Tenant 契约，恢复后会暴露跨公司绑定风险。
+- 双租户测试覆盖资源计数不串租户、删除资源不计数、停用资源仍计数、删除账号登录不影响活跃时间，以及“账号登录/会话活跃两者取较晚值”。
+
+### 仿真数据租户继承补漏
+
+- 使用当前源码和全新 SQLite 执行 `cmd/customer_audit_seed` 时发现，脚本仍把 Store、StoreStaffBinding、WxWorkProtocolInstance 及模拟 Conversation 子记录写为 `tenant_id=0`。这些记录会被正确的租户查询隔离，导致公司列表显示门店 0、模拟会话也不能进入公司派单池。
+- 脚本现从已加载的 `legacy-default` Tenant 显式写入门店、门店员工绑定、企微实例、Conversation、RouteState、Participant、Message、Assignment 和 EventLog。重复执行也会同步 TenantID。
+- 历史 `tenant_id=0` 只在记录 Remark 明确包含 `TEST_SEED:` 时允许修复；非零异租户记录或没有仿真标记的平台记录会直接报错，不允许按全局唯一 StoreCode/GUID 静默改归属。
+- 仿真脚本测试覆盖资源首次创建、历史零租户修复和全套模拟会话子记录继承。修复后现有报告口径恢复为 100 门店、100 门店绑定、100 企微实例、36 会话、135 消息、21 派发记录，27 条需人工回复任务仍可用于后续派单测试。
+
+### 并行协作与回滚
+
+- `codex/ai-billing@f2d2da4` 与本批仅重叠中英文资源文件，且修改不同 key；最终合并仍应逐 key 保留双方文案，不整文件覆盖。
+- 本批可通过回滚 response 新字段、聚合方法和前端摘要列完整撤销，不涉及数据回滚。回滚统计不得顺带恢复旧 Channel 页面或改变当前公司上下文导航。
+- 仿真脚本修复可独立回滚代码，但已修正为正数 TenantID 的测试记录不应回写 0；需要清理时继续使用脚本的 marker cleanup，不做破坏性全表处理。
 - `auth_response.go`、`auth_service.go`、`navigation.tsx` 和双语资源与 `codex/ai-billing` 有同文件变化；合并必须逐字段、逐导航项保留双方能力，禁止整文件选边。

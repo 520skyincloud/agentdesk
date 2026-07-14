@@ -4,12 +4,14 @@ import (
 	"net/url"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/utils"
 )
 
 type TenantBuildOptions struct {
 	Supervisor *models.User
+	Stats      *dto.TenantOperationalStats
 }
 
 func BuildTenant(item *models.Tenant, options TenantBuildOptions) *response.TenantResponse {
@@ -41,13 +43,23 @@ func BuildTenant(item *models.Tenant, options TenantBuildOptions) *response.Tena
 		ret.SupervisorUsername = options.Supervisor.Username
 		ret.SupervisorNickname = options.Supervisor.Nickname
 	}
+	if options.Stats != nil {
+		ret.AgentCount = options.Stats.AgentCount
+		ret.StoreCount = options.Stats.StoreCount
+		ret.AgentTeamCount = options.Stats.AgentTeamCount
+		ret.LastActiveAt = utils.FormatTimePtr(options.Stats.LastActiveAt)
+	}
 	return ret
 }
 
-func BuildTenantList(list []models.Tenant, supervisors map[int64]*models.User) []response.TenantResponse {
+func BuildTenantList(list []models.Tenant, supervisors map[int64]*models.User, stats map[int64]dto.TenantOperationalStats) []response.TenantResponse {
 	ret := make([]response.TenantResponse, 0, len(list))
 	for i := range list {
-		item := BuildTenant(&list[i], TenantBuildOptions{Supervisor: supervisors[list[i].ID]})
+		itemStats := stats[list[i].ID]
+		item := BuildTenant(&list[i], TenantBuildOptions{
+			Supervisor: supervisors[list[i].ID],
+			Stats:      &itemStats,
+		})
 		if item != nil {
 			ret = append(ret, *item)
 		}

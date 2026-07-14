@@ -28,6 +28,10 @@ export type AdminTenant = {
   supervisorUserId: number
   supervisorUsername: string
   supervisorNickname: string
+  agentCount: number
+  storeCount: number
+  agentTeamCount: number
+  lastActiveAt?: string
   createdAt: string
   updatedAt: string
   createUserName: string

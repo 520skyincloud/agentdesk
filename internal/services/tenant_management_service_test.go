@@ -201,6 +201,88 @@ func TestTenantServiceRejectsInvalidLegalIdentityAndEmailFormats(t *testing.T) {
 	assertTenantFoundationCounts(t, db, 0, 0, 0)
 }
 
+func TestTenantOperationalStatsStayIsolatedAndExcludeDeletedResources(t *testing.T) {
+	db, operator := setupTenantManagementTestDB(t)
+	tenantA, err := TenantService.CreateTenant(tenantManagementCreateRequest("stats-a", "91350100MA8Y7A8B9C"), operator)
+	if err != nil {
+		t.Fatalf("create tenant A: %v", err)
+	}
+	tenantB, err := TenantService.CreateTenant(tenantManagementCreateRequest("stats-b", "91350100MA8Y7A8B8D"), operator)
+	if err != nil {
+		t.Fatalf("create tenant B: %v", err)
+	}
+
+	base := time.Date(2026, time.July, 14, 9, 0, 0, 0, time.UTC)
+	loginA := base.Add(2 * time.Hour)
+	loginB := base.Add(3 * time.Hour)
+	if err := db.Model(&models.User{}).Where("id = ?", tenantA.Supervisor.ID).Update("last_login_at", loginA).Error; err != nil {
+		t.Fatalf("update tenant A login: %v", err)
+	}
+	if err := db.Model(&models.User{}).Where("id = ?", tenantB.Supervisor.ID).Update("last_login_at", loginB).Error; err != nil {
+		t.Fatalf("update tenant B login: %v", err)
+	}
+
+	deletedAt := base.Add(9 * time.Hour)
+	deletedLogin := base.Add(10 * time.Hour)
+	deletedUser := &models.User{
+		TenantID:    tenantA.Tenant.ID,
+		Username:    "deleted_stats_user",
+		Nickname:    "Deleted Stats User",
+		Status:      enums.StatusDeleted,
+		LastLoginAt: &deletedLogin,
+		DeletedAt:   &deletedAt,
+		AuditFields: tenantManagementAuditFields(base),
+	}
+	if err := db.Create(deletedUser).Error; err != nil {
+		t.Fatalf("create deleted user: %v", err)
+	}
+
+	resources := []any{
+		&models.AgentProfile{TenantID: tenantA.Tenant.ID, UserID: tenantA.Supervisor.ID, AgentCode: "stats-agent-a", Status: enums.StatusOk, AuditFields: tenantManagementAuditFields(base)},
+		&models.AgentProfile{TenantID: tenantA.Tenant.ID, UserID: deletedUser.ID, AgentCode: "stats-agent-deleted", Status: enums.StatusDeleted, AuditFields: tenantManagementAuditFields(base)},
+		&models.AgentProfile{TenantID: tenantB.Tenant.ID, UserID: tenantB.Supervisor.ID, AgentCode: "stats-agent-b", Status: enums.StatusDisabled, AuditFields: tenantManagementAuditFields(base)},
+		&models.Store{TenantID: tenantA.Tenant.ID, StoreCode: "stats-store-a", Name: "Store A", Status: enums.StatusOk, AuditFields: tenantManagementAuditFields(base)},
+		&models.Store{TenantID: tenantA.Tenant.ID, StoreCode: "stats-store-deleted", Name: "Deleted Store", Status: enums.StatusDeleted, AuditFields: tenantManagementAuditFields(base)},
+		&models.Store{TenantID: tenantB.Tenant.ID, StoreCode: "stats-store-b", Name: "Store B", Status: enums.StatusDisabled, AuditFields: tenantManagementAuditFields(base)},
+		&models.AgentTeam{TenantID: tenantA.Tenant.ID, Name: "Deleted Team A", Status: enums.StatusDeleted, AuditFields: tenantManagementAuditFields(base)},
+		&models.AgentTeam{TenantID: tenantB.Tenant.ID, Name: "Deleted Team B", Status: enums.StatusDeleted, AuditFields: tenantManagementAuditFields(base)},
+	}
+	for _, resource := range resources {
+		if err := db.Create(resource).Error; err != nil {
+			t.Fatalf("create stats resource %T: %v", resource, err)
+		}
+	}
+
+	conversationAActive := base.Add(time.Hour)
+	conversationBActive := base.Add(4 * time.Hour)
+	conversations := []*models.Conversation{
+		{TenantID: tenantA.Tenant.ID, CustomerName: "Customer A", LastActiveAt: conversationAActive, LastMessageAt: conversationAActive, AuditFields: tenantManagementAuditFields(base)},
+		{TenantID: tenantB.Tenant.ID, CustomerName: "Customer B", LastActiveAt: conversationBActive, LastMessageAt: conversationBActive, AuditFields: tenantManagementAuditFields(base)},
+	}
+	if err := db.Create(&conversations).Error; err != nil {
+		t.Fatalf("create conversations: %v", err)
+	}
+
+	stats, err := TenantService.FindOperationalStats([]int64{tenantA.Tenant.ID, tenantB.Tenant.ID})
+	if err != nil {
+		t.Fatalf("find operational stats: %v", err)
+	}
+	statsA := stats[tenantA.Tenant.ID]
+	if statsA.AgentCount != 1 || statsA.StoreCount != 1 || statsA.AgentTeamCount != 1 {
+		t.Fatalf("tenant A stats = agents:%d stores:%d teams:%d, want 1/1/1", statsA.AgentCount, statsA.StoreCount, statsA.AgentTeamCount)
+	}
+	if statsA.LastActiveAt == nil || !statsA.LastActiveAt.Equal(loginA) {
+		t.Fatalf("tenant A last active = %v, want latest non-deleted login %v", statsA.LastActiveAt, loginA)
+	}
+	statsB := stats[tenantB.Tenant.ID]
+	if statsB.AgentCount != 1 || statsB.StoreCount != 1 || statsB.AgentTeamCount != 1 {
+		t.Fatalf("tenant B stats = agents:%d stores:%d teams:%d, want 1/1/1", statsB.AgentCount, statsB.StoreCount, statsB.AgentTeamCount)
+	}
+	if statsB.LastActiveAt == nil || !statsB.LastActiveAt.Equal(conversationBActive) {
+		t.Fatalf("tenant B last active = %v, want latest conversation activity %v", statsB.LastActiveAt, conversationBActive)
+	}
+}
+
 func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 	t.Helper()
 	dbName := "tenant_management_" + strconv.FormatUint(tenantManagementTestDBSequence.Add(1), 10)
@@ -227,6 +309,9 @@ func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 		&models.Role{},
 		&models.UserRole{},
 		&models.AgentTeam{},
+		&models.AgentProfile{},
+		&models.Store{},
+		&models.Conversation{},
 	); err != nil {
 		t.Fatalf("migrate tenant management tables: %v", err)
 	}
@@ -268,6 +353,15 @@ func tenantManagementCreateRequest(suffix, registrationNo string) request.Create
 			Mobile:   "139" + registrationNo[len(registrationNo)-8:],
 			Email:    "supervisor_" + suffix + "@tenant.example.com",
 		},
+	}
+}
+
+func tenantManagementAuditFields(at time.Time) models.AuditFields {
+	return models.AuditFields{
+		CreatedAt:      at,
+		CreateUserName: "test",
+		UpdatedAt:      at,
+		UpdateUserName: "test",
 	}
 }
 

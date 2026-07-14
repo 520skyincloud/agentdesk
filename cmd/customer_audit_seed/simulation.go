@@ -351,6 +351,7 @@ func (ctx *seedContext) createSimulationScenario(scenario simulationScenario) er
 	}
 
 	conversation := &models.Conversation{
+		TenantID:          ctx.tenant.ID,
 		ChannelID:         ctx.channel.ID,
 		CustomerID:        customer.ID,
 		CustomerName:      customer.Name,
@@ -376,6 +377,7 @@ func (ctx *seedContext) createSimulationScenario(scenario simulationScenario) er
 
 	lastCustomerAt := simulationLastCustomerMessageAt(scenario.Messages)
 	route := &models.ConversationRouteState{
+		TenantID:              ctx.tenant.ID,
 		ConversationID:        conversation.ID,
 		StoreID:               store.ID,
 		KnowledgeBaseID:       instance.KnowledgeBaseID,
@@ -481,6 +483,7 @@ func simulationLastCustomerMessageAt(lines []simulationLine) *time.Time {
 func (ctx *seedContext) createSimulationParticipants(conversation *models.Conversation, customer *models.Customer, assignee *models.User, scenario simulationScenario) error {
 	joinedAt := scenario.StartedAt
 	if err := ctx.db.Create(&models.ConversationParticipant{
+		TenantID:              ctx.tenant.ID,
 		ConversationID:        conversation.ID,
 		ParticipantType:       string(enums.IMParticipantTypeCustomer),
 		ParticipantID:         customer.ID,
@@ -495,6 +498,7 @@ func (ctx *seedContext) createSimulationParticipants(conversation *models.Conver
 		return nil
 	}
 	return ctx.db.Create(&models.ConversationParticipant{
+		TenantID:        ctx.tenant.ID,
 		ConversationID:  conversation.ID,
 		ParticipantType: string(enums.IMParticipantTypeAgent),
 		ParticipantID:   assignee.ID,
@@ -527,6 +531,7 @@ func (ctx *seedContext) createSimulationMessages(conversation *models.Conversati
 		sentAt := line.SentAt
 		deliveredAt := sentAt.Add(time.Second)
 		message := &models.Message{
+			TenantID:       ctx.tenant.ID,
 			ConversationID: conversation.ID,
 			SessionNo:      1,
 			RequestID:      fmt.Sprintf("simulation-%s-%02d", scenario.Key, index+1),
@@ -569,6 +574,7 @@ func (ctx *seedContext) createSimulationAssignment(conversation *models.Conversa
 		status = enums.IMAssignmentStatusInactive
 	}
 	return ctx.db.Create(&models.ConversationAssignment{
+		TenantID:       ctx.tenant.ID,
 		ConversationID: conversation.ID,
 		ToUserID:       assignee.ID,
 		AssignType:     string(enums.IMAssignmentTypeAssign),
@@ -583,6 +589,7 @@ func (ctx *seedContext) createSimulationAssignment(conversation *models.Conversa
 func (ctx *seedContext) createSimulationEvents(conversation *models.Conversation, assignee *models.User, scenario simulationScenario) error {
 	events := []models.ConversationEventLog{
 		{
+			TenantID:       ctx.tenant.ID,
 			ConversationID: conversation.ID,
 			RequestID:      "simulation-" + scenario.Key + "-create",
 			EventType:      enums.IMEventTypeCreate,
@@ -594,6 +601,7 @@ func (ctx *seedContext) createSimulationEvents(conversation *models.Conversation
 	if scenario.HandoffAt != nil {
 		payload, _ := json.Marshal(map[string]any{"simulation": true, "scenario": scenario.Key, "teamId": conversation.CurrentTeamID})
 		events = append(events, models.ConversationEventLog{
+			TenantID:       ctx.tenant.ID,
 			ConversationID: conversation.ID,
 			RequestID:      "simulation-" + scenario.Key + "-handoff",
 			EventType:      enums.IMEventTypeTransfer,
@@ -606,6 +614,7 @@ func (ctx *seedContext) createSimulationEvents(conversation *models.Conversation
 	if assignee != nil && scenario.AssignmentAt != nil {
 		payload, _ := json.Marshal(map[string]any{"simulation": true, "scenario": scenario.Key, "toUserId": assignee.ID, "teamId": conversation.CurrentTeamID})
 		events = append(events, models.ConversationEventLog{
+			TenantID:       ctx.tenant.ID,
 			ConversationID: conversation.ID,
 			RequestID:      "simulation-" + scenario.Key + "-assign",
 			EventType:      enums.IMEventTypeAssign,
@@ -618,6 +627,7 @@ func (ctx *seedContext) createSimulationEvents(conversation *models.Conversation
 	}
 	if scenario.ClosedAt != nil {
 		events = append(events, models.ConversationEventLog{
+			TenantID:       ctx.tenant.ID,
 			ConversationID: conversation.ID,
 			RequestID:      "simulation-" + scenario.Key + "-close",
 			EventType:      enums.IMEventTypeClose,

@@ -22,6 +22,10 @@ type TenantResponse struct {
 	SupervisorUserID   int64                          `json:"supervisorUserId"`
 	SupervisorUsername string                         `json:"supervisorUsername"`
 	SupervisorNickname string                         `json:"supervisorNickname"`
+	AgentCount         int64                          `json:"agentCount"`
+	StoreCount         int64                          `json:"storeCount"`
+	AgentTeamCount     int64                          `json:"agentTeamCount"`
+	LastActiveAt       string                         `json:"lastActiveAt,omitempty"`
 	CreatedAt          string                         `json:"createdAt"`
 	UpdatedAt          string                         `json:"updatedAt"`
 	CreateUserName     string                         `json:"createUserName"`

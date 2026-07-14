@@ -4,11 +4,15 @@ import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import {
   Building2Icon,
+  Clock3Icon,
+  HeadphonesIcon,
   LogInIcon,
   PlusIcon,
   RefreshCwIcon,
   ShieldCheckIcon,
+  StoreIcon,
   UserRoundCogIcon,
+  UsersRoundIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -34,6 +38,7 @@ import {
   Status,
   TenantVerificationStatus,
 } from "@/lib/generated/enums"
+import { formatDateTime } from "@/lib/utils"
 import { TenantCreationResultDialog } from "./_components/creation-result"
 import {
   TenantEditDialog,
@@ -278,6 +283,45 @@ export default function DashboardChannelsPage() {
                 <div>{item.contactName || "-"}</div>
                 <div className="text-xs text-muted-foreground">
                   {item.contactMobile || item.contactEmail || "-"}
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "resources",
+            label: t("tenant.columnResources"),
+            className: "min-w-[245px]",
+            render: (item) => (
+              <div className="space-y-1.5 text-xs">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
+                  <span className="inline-flex items-center gap-1">
+                    <HeadphonesIcon className="size-3.5" />
+                    {t("tenant.resourceAgents", { count: item.agentCount })}
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <StoreIcon className="size-3.5" />
+                    {t("tenant.resourceStores", { count: item.storeCount })}
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <UsersRoundIcon className="size-3.5" />
+                    {t("tenant.resourceTeams", { count: item.agentTeamCount })}
+                  </span>
+                </div>
+                <div
+                  className="flex items-center gap-1.5 text-muted-foreground"
+                  title={
+                    item.lastActiveAt
+                      ? formatDateTime(item.lastActiveAt)
+                      : t("tenant.neverActive")
+                  }
+                >
+                  <Clock3Icon className="size-3.5 shrink-0" />
+                  <span>{t("tenant.lastActive")}</span>
+                  <span className="font-medium text-foreground">
+                    {item.lastActiveAt
+                      ? formatDateTime(item.lastActiveAt)
+                      : t("tenant.neverActive")}
+                  </span>
                 </div>
               </div>
             ),

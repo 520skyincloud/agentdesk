@@ -36,3 +36,11 @@ test("tenant switching preserves the authenticated session and restores context 
   assert.match(pageSource, /refreshProfile\(\{ preserveSessionOnError: true \}\)/)
   assert.match(pageSource, /setActiveTenantId\(previousTenantId, previousTenantName\)/)
 })
+
+test("tenant rows show isolated resource counts and latest activity", () => {
+  assert.match(pageSource, /item\.agentCount/)
+  assert.match(pageSource, /item\.storeCount/)
+  assert.match(pageSource, /item\.agentTeamCount/)
+  assert.match(pageSource, /formatDateTime\(item\.lastActiveAt\)/)
+  assert.match(pageSource, /tenant\.columnResources/)
+})
