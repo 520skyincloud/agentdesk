@@ -1255,3 +1255,40 @@ git diff --check
 - migration 48 创建前已核对：`origin/main` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 47，无版本冲突。
 - AI 分支同文件主要为 `models.go`、`knowledge_base_service.go`、`knowledge_builder.go`、`knowledge_retrieve_log_repository.go`、`rag/answer.go`、`rag/retrieve.go`、`rag/retrieve_log.go` 和知识页面 API。建议先合并 TenantID/migration 48/repository 原语，再合并 FastGPT 模型字段与资源模型，最后逐方法合并 retrieve/log/runtime；RetrieveLog repository 必须同时保留 AI 分支的近期问题查询和本批的 tenant-aware list/detail 原语，近期问题查询在投入租户业务前也必须增加租户参数。
 - 合并时必须保留 AI 分支的 FastGPT、intent profile、usage/计费和回复语义，同时保留本批的 TenantID、同租户父子校验、Qdrant tenant payload/filter、后台 ActiveTenant 和首页统计条件；禁止整文件选边。
+
+## 28. 当前实施检查点：文件短期签名与本地存储收口（2026-07-14）
+
+本检查点继续复用 Asset、既有上传接口和 `/api/asset/file/{assetId}`，不建立第二套附件模型或公开文件入口。目标是补齐阶段 25 留下的下载授权缺口，同时保持客户聊天、客服工作台、历史消息和企微私有化 CDN 可用。
+
+### 签名访问契约
+
+- 应用层文件 URL 固定为 `/api/asset/file/{assetId}`，查询参数包含 `v`、`tenantId`、`expires`、`purpose` 和 `signature`。HMAC-SHA256 规范串绑定版本、AssetID、TenantID、过期时间和用途，签名使用 URL-safe Base64。
+- 当前用途只允许 `inline` 和 `wxwork_cdn`。浏览器展示、上传响应和客服头像使用 `inline`；企微私有化 CDN 拉取使用 `wxwork_cdn`。未知用途、缺失字段、篡改签名返回 403，过期返回 410。
+- 下载 handler 通过签名中的 TenantID 调用 `GetByAssetIDInTenant`，不再全局读取 Asset。删除、失败或跨租户不存在的 Asset 均不返回文件内容。
+- 本地与 OSS 均由同一个应用下载入口先完成签名和租户校验，再由服务端读取 provider。外部协议媒体 URL 也必须先经过签名入口，验证后才 302 到原地址，并设置 `Referrer-Policy: no-referrer` 和 `Cache-Control: private, no-store`。
+- 签名 URL 仍是有效期内可转交的 bearer capability，不宣称绑定具体浏览器或账号；它解决的是伪造、长期复用和跨租户替换，不替代消息/会话接口本身的查看权限。
+
+### 配置与启用条件
+
+- 新增 `storage.assetURLSigningSecret`、`storage.assetURLTTLSeconds` 和环境变量 `AGENT_DESK_ASSET_URL_SIGNING_SECRET`。默认有效期为 3600 秒。
+- 公开注册关闭的兼容环境在未配置独立密钥时，可从 `customerSession.secret` 通过固定领域标签派生资产密钥，避免现有本地环境立刻中断；这不是生产多租户配置。
+- 一旦 `tenantRegistration.enabled=true`，启动校验强制要求独立 `storage.assetURLSigningSecret`。不能以客服会话密钥派生兼容模式开启公开租户注册。
+
+### 响应、历史数据与头像兼容
+
+- AssetResponse 结构不变，但 `storageKey` 对外固定为空，`url` 改为应用签名 URL。媒体 Message 在库内仍可保存 provider/StorageKey 供内部投递，构建客户、客服和 WebSocket 响应时会重新按 `Message.TenantID + AssetID` 取 Asset、清除 StorageKey/旧 URL 并签发短期 URL。
+- HTML 消息的新编辑器只提交 `data-asset-id`；服务端按 Conversation Tenant 验证并归一化，入库时去除 `src`、provider 和 StorageKey。历史三字段 HTML 继续接受并交叉校验，响应时只输出 `data-asset-id + signed src`。
+- 前端不再从裸 AssetID 拼接无签名 URL。本地 `StaticFS` 和 Next.js `/storage/*` 开发代理已移除，配置目录不能绕过应用路由直接下载。
+- 客服头像仍复用 `AgentProfile.Avatar` URL 字段，不新增 AvatarAssetID。客服档案、历史消息发送者和 WebSocket 输出会识别旧本地/OSS URL或已过期的应用 URL，按档案 Tenant 重新签发；外部企微/OIDC 头像 URL 保持原样。
+
+### 权限、兼容与后续边界
+
+- 没有新增 model、migration、request/response DTO 字段、enum、Gin 路由、权限点或 WebSocket payload。权限管理不需要新增隐藏权限；生成签名 URL 的前提仍是用户已通过原 Asset、Conversation 或企微运行链读取到同租户业务对象。
+- OSS bucket 若配置为 provider 级公开，应用无法撤销通过 OSS 自身 URL 获得的访问；本批已停止向浏览器和消息响应暴露 StorageKey，正式多租户环境仍应使用私有 bucket。应用签名不能替代云存储 ACL。
+- FastGPTDatasetJob、KnowledgeResourceGroup/Item、AI usage/run log、AIManualResumeTask 和 AIAgent/AIConfig Tenant 仍需与 AI 分支合并后完成。文件 URL 已收口不代表 AI 分支新增主体已经隔离，公开注册继续关闭。
+
+### 并行合并要求
+
+- 本批没有 migration，当前本分支最高仍为 48；开始时 `origin/main` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33。
+- AI 分支同文件包括 `config.go`、`config.example.yaml`、`server.go`、`conversation_builder.go`、`utils/message.go`、Asset handler/service、企微协议 service 及测试。合并必须保留 AI 分支 Email/FastGPT/NewAPI/usage/回复增强，同时保留本批签名配置、TenantID 取数、响应去 StorageKey、静态目录关闭和企微签名 URL；禁止整文件选边。
+- 建议先合并 Asset Tenant/migration 46，再合并本批无 migration 的签名原语和下载路由，最后重放 AI 分支媒体理解、欢迎图、FastGPT 与 usage 测试。AI 分支新增欢迎图或资源表必须保存 AssetID 并在输出时复用本签名入口，不能重新保存 provider 直链。

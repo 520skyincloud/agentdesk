@@ -2,10 +2,10 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/assetaccess"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
-	"agent-desk/internal/services/storage"
 	"encoding/json"
 	"strings"
 )
@@ -64,15 +64,17 @@ func buildIMMessageAssetPayloadWithMedia(asset *models.Asset, wxMedia request.Wx
 
 func buildIMMessageAssetPayloadForResponse(payload string, tenantID int64) string {
 	assetPayload, err := parseIMMessageAssetPayload(payload)
-	if err != nil {
+	if err != nil || assetPayload == nil {
 		return strings.TrimSpace(payload)
 	}
 	assetPayload = hydrateIMMessageAssetPayload(assetPayload, tenantID)
-	if assetPayload.Provider != "" && assetPayload.StorageKey != "" {
-		if provider, err := storage.NewProvider(assetPayload.Provider); err == nil {
-			assetPayload.URL = provider.GetSignedURL(assetPayload.StorageKey)
+	assetPayload.URL = ""
+	if assetPayload.AssetID != "" && assetPayload.StorageKey != "" && tenantID > 0 {
+		if accessURL, err := assetaccess.BuildRelativeURL(assetPayload.AssetID, tenantID, assetaccess.PurposeInline); err == nil {
+			assetPayload.URL = accessURL
 		}
 	}
+	assetPayload.StorageKey = ""
 	data, err := json.Marshal(assetPayload)
 	if err != nil {
 		return strings.TrimSpace(payload)
@@ -84,22 +86,20 @@ func hydrateIMMessageAssetPayload(payload *imMessageAssetPayload, tenantID int64
 	if payload == nil {
 		return nil
 	}
-	if payload.Provider != "" && payload.StorageKey != "" {
-		return payload
-	}
 	if payload.AssetID == "" {
+		payload.StorageKey = ""
+		payload.URL = ""
 		return payload
 	}
 	asset := AssetService.GetByAssetIDInTenant(payload.AssetID, tenantID)
 	if asset == nil {
+		payload.Provider = ""
+		payload.StorageKey = ""
+		payload.URL = ""
 		return payload
 	}
-	if payload.Provider == "" {
-		payload.Provider = asset.Provider
-	}
-	if payload.StorageKey == "" {
-		payload.StorageKey = strings.TrimSpace(asset.StorageKey)
-	}
+	payload.Provider = asset.Provider
+	payload.StorageKey = strings.TrimSpace(asset.StorageKey)
 	if payload.Filename == "" {
 		payload.Filename = strings.TrimSpace(asset.Filename)
 	}

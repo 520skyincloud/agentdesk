@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/assetaccess"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
@@ -1844,10 +1845,11 @@ func (s *wxWorkProtocolService) publicAssetURL(cfg *dto.WxWorkProtocolChannelCon
 	if base == "" {
 		return "", errorsx.InvalidParam("企微协议 publicAssetBaseUrl 未配置，私有化 CDN 无法从公网拉取本地资产")
 	}
-	if strings.HasPrefix(asset.StorageKey, "http://") || strings.HasPrefix(asset.StorageKey, "https://") {
-		return asset.StorageKey, nil
+	accessURL, err := AssetService.BuildAccessURL(asset, assetaccess.PurposeWxWorkCDN)
+	if err != nil {
+		return "", err
 	}
-	return base + "/api/asset/file/" + url.PathEscape(asset.AssetID), nil
+	return base + accessURL, nil
 }
 
 func wxProtocolWECDNBaseURL(cfg *dto.WxWorkProtocolChannelConfig) string {

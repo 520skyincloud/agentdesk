@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/assetaccess"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/i18nx"
@@ -324,7 +325,7 @@ func BuildMessageWithReadStatesAndLocale(item *models.Message, agentReadState, c
 				if dn := strings.TrimSpace(profile.DisplayName); dn != "" {
 					ret.SenderName = dn
 				}
-				if av := strings.TrimSpace(profile.Avatar); av != "" {
+				if av := services.AssetService.RefreshAccessURL(profile.Avatar, item.TenantID, assetaccess.PurposeInline); av != "" {
 					ret.SenderAvatar = av
 				}
 			}

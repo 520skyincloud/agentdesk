@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,6 +21,7 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 		Auth:               config.AuthConfig{InvitationEncryptionKey: testInvitationEncryptionKey()},
 		TenantRegistration: config.TenantRegistrationConfig{Enabled: true},
 		Storage: config.StorageConfig{
+			AssetURLSigningSecret: "server-route-asset-signing-secret",
 			Local: config.LocalStorageConfig{
 				Root:    "storage",
 				BaseURL: "/storage",
@@ -105,6 +108,37 @@ func TestNewServerRejectsEnabledRegistrationWithoutEncryptionKey(t *testing.T) {
 	}
 }
 
+func TestNewServerRejectsEnabledRegistrationWithoutIndependentAssetSigningSecret(t *testing.T) {
+	config.SetCurrent(&config.Config{
+		Auth:               config.AuthConfig{InvitationEncryptionKey: testInvitationEncryptionKey()},
+		TenantRegistration: config.TenantRegistrationConfig{Enabled: true},
+		Storage:            config.StorageConfig{Local: config.LocalStorageConfig{Root: "storage", BaseURL: "/storage"}},
+	})
+
+	if _, err := NewServer(); err == nil || !strings.Contains(err.Error(), "assetURLSigningSecret") {
+		t.Fatalf("NewServer() error=%v want asset signing configuration error", err)
+	}
+}
+
+func TestNewServerDoesNotExposeLocalStorageDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "private.txt"), []byte("must-not-be-public"), 0600); err != nil {
+		t.Fatalf("write private file: %v", err)
+	}
+	config.SetCurrent(&config.Config{
+		Storage: config.StorageConfig{Local: config.LocalStorageConfig{Root: root, BaseURL: "/storage"}},
+	})
+	app, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	app.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/storage/private.txt", nil))
+	if recorder.Code != http.StatusNotFound || strings.Contains(recorder.Body.String(), "must-not-be-public") {
+		t.Fatalf("local storage bypass status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestConfigureTrustedProxiesControlsForwardedClientIP(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -146,6 +180,7 @@ func testInvitationEncryptionKey() string {
 func TestNewServerExposesPublicAuthOptions(t *testing.T) {
 	config.SetCurrent(&config.Config{
 		Storage: config.StorageConfig{
+			AssetURLSigningSecret: "server-route-asset-signing-secret",
 			Local: config.LocalStorageConfig{
 				Root:    "storage",
 				BaseURL: "/storage",

@@ -52,7 +52,6 @@ func NewServer() (*gin.Engine, error) {
 	if baseURL := strings.TrimRight(cfg.Storage.Local.BaseURL, "/"); baseURL != "" {
 		notFoundPrefixes = append(notFoundPrefixes, baseURL+"/")
 	}
-	app.StaticFS(cfg.Storage.Local.BaseURL, ginx.StaticFiles(cfg.Storage.Local.Root))
 	ginx.HandleSPA(app, ginx.SPAOptions{
 		Root:         "./web/out",
 		EmbeddedFS:   webspa.SPA,

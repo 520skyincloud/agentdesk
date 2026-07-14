@@ -26,10 +26,6 @@ export default function nextConfig(phase: string): NextConfig {
           source: "/api/:path*",
           destination: `${backendBaseUrl}/api/:path*`,
         },
-        {
-          source: "/storage/:path*",
-          destination: `${backendBaseUrl}/storage/:path*`,
-        },
       ]
     },
   }

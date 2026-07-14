@@ -14,25 +14,28 @@ import (
 )
 
 func TestBuildIMMessageAssetPayloadForResponseAddsSignedURL(t *testing.T) {
+	setupMessageTestDB(t)
 	config.SetCurrent(&config.Config{
 		Storage: config.StorageConfig{
-			Default: enums.AssetProviderLocal,
-			Local: config.LocalStorageConfig{
-				BaseURL: "https://files.example.com",
-			},
+			Default:               enums.AssetProviderLocal,
+			AssetURLSigningSecret: "message-test-signing-secret",
 		},
+	})
+	createTestAsset(t, &models.Asset{
+		TenantID: 101, AssetID: "asset_1", Provider: enums.AssetProviderLocal,
+		StorageKey: "attachments/demo.png", Filename: "demo.png", Status: enums.AssetStatusSuccess,
 	})
 
 	payload := `{"assetId":"asset_1","provider":"local","storageKey":"attachments/demo.png","filename":"demo.png"}`
-	got := buildIMMessageAssetPayloadForResponse(payload)
+	got := buildIMMessageAssetPayloadForResponse(payload, 101)
 
 	if !strings.Contains(got, `"provider":"local"`) {
 		t.Fatalf("expected provider in payload, got: %s", got)
 	}
-	if !strings.Contains(got, `"storageKey":"attachments/demo.png"`) {
-		t.Fatalf("expected storageKey in payload, got: %s", got)
+	if strings.Contains(got, `"storageKey"`) {
+		t.Fatalf("expected storageKey hidden from response, got: %s", got)
 	}
-	if !strings.Contains(got, `"url":"https://files.example.com/attachments/demo.png"`) {
+	if !strings.Contains(got, `"url":"/api/asset/file/asset_1?`) || !strings.Contains(got, `tenantId=101`) {
 		t.Fatalf("expected signed url in payload, got: %s", got)
 	}
 }
@@ -54,20 +57,26 @@ func TestSanitizeMessageHTMLStripsStoredSrcForManagedImages(t *testing.T) {
 }
 
 func TestBuildMessageHTMLForResponseAddsSignedURL(t *testing.T) {
+	setupMessageTestDB(t)
 	config.SetCurrent(&config.Config{
 		Storage: config.StorageConfig{
-			Default: enums.AssetProviderLocal,
-			Local: config.LocalStorageConfig{
-				BaseURL: "https://files.example.com",
-			},
+			Default:               enums.AssetProviderLocal,
+			AssetURLSigningSecret: "message-test-signing-secret",
 		},
 	})
+	createTestAsset(t, &models.Asset{
+		TenantID: 101, AssetID: "asset-html-1", Provider: enums.AssetProviderLocal,
+		StorageKey: "attachments/html-demo.png", Filename: "html-demo.png", Status: enums.AssetStatusSuccess,
+	})
 
-	html := `<p><img data-provider="local" data-storage-key="attachments/demo.png" alt="demo"></p>`
-	got := BuildMessageHTMLForResponse(html)
+	html := `<p><img data-asset-id="asset-html-1" data-provider="local" data-storage-key="attachments/html-demo.png" alt="demo"></p>`
+	got := BuildMessageHTMLForResponse(html, 101)
 
-	if !strings.Contains(got, `src="https://files.example.com/attachments/demo.png"`) {
+	if !strings.Contains(got, `src="/api/asset/file/asset-html-1?`) || !strings.Contains(got, `tenantId=101`) {
 		t.Fatalf("expected signed src in response html, got: %s", got)
+	}
+	if strings.Contains(got, "data-storage-key") || strings.Contains(got, "data-provider") {
+		t.Fatalf("expected storage metadata hidden from response html, got: %s", got)
 	}
 }
 
@@ -116,30 +125,35 @@ func TestBuildRuntimeMessageTextWithPayloadDropsUntranscribedVoice(t *testing.T)
 }
 
 func TestBuildRenderableMessageTransformsPayloadAndHTML(t *testing.T) {
+	setupMessageTestDB(t)
 	config.SetCurrent(&config.Config{
 		Storage: config.StorageConfig{
-			Default: enums.AssetProviderLocal,
-			Local: config.LocalStorageConfig{
-				BaseURL: "https://files.example.com",
-			},
+			Default:               enums.AssetProviderLocal,
+			AssetURLSigningSecret: "message-test-signing-secret",
 		},
+	})
+	createTestAsset(t, &models.Asset{
+		TenantID: 101, AssetID: "asset-render-1", Provider: enums.AssetProviderLocal,
+		StorageKey: "attachments/render.png", Filename: "render.png", Status: enums.AssetStatusSuccess,
 	})
 
 	image := &models.Message{
+		TenantID:    101,
 		MessageType: enums.IMMessageTypeImage,
-		Payload:     `{"assetId":"asset_1","provider":"local","storageKey":"attachments/demo.png","filename":"demo.png"}`,
+		Payload:     `{"assetId":"asset-render-1","provider":"local","storageKey":"attachments/render.png","filename":"render.png"}`,
 	}
 	_, imagePayload := BuildRenderableMessage(image)
-	if !strings.Contains(imagePayload, `"url":"https://files.example.com/attachments/demo.png"`) {
+	if !strings.Contains(imagePayload, `"url":"/api/asset/file/asset-render-1?`) {
 		t.Fatalf("expected image payload signed url, got: %s", imagePayload)
 	}
 
 	htmlMsg := &models.Message{
+		TenantID:    101,
 		MessageType: enums.IMMessageTypeHTML,
-		Content:     `<p><img data-provider="local" data-storage-key="attachments/demo.png"></p>`,
+		Content:     `<p><img data-asset-id="asset-render-1" data-provider="local" data-storage-key="attachments/render.png"></p>`,
 	}
 	htmlContent, _ := BuildRenderableMessage(htmlMsg)
-	if !strings.Contains(htmlContent, `src="https://files.example.com/attachments/demo.png"`) {
+	if !strings.Contains(htmlContent, `src="/api/asset/file/asset-render-1?`) {
 		t.Fatalf("expected html content signed src, got: %s", htmlContent)
 	}
 }
@@ -172,14 +186,30 @@ func TestNormalizeMessageHTMLAssetsKeepsValidAttrsAndRemovesSrc(t *testing.T) {
 	if !strings.Contains(got, `data-asset-id="asset_local_1"`) {
 		t.Fatalf("expected data-asset-id added, got: %s", got)
 	}
-	if !strings.Contains(got, `data-provider="local"`) {
-		t.Fatalf("expected data-provider added, got: %s", got)
+	if strings.Contains(got, `data-provider=`) {
+		t.Fatalf("expected data-provider removed, got: %s", got)
 	}
-	if !strings.Contains(got, `data-storage-key="images/demo.png"`) {
-		t.Fatalf("expected data-storage-key added, got: %s", got)
+	if strings.Contains(got, `data-storage-key=`) {
+		t.Fatalf("expected data-storage-key removed, got: %s", got)
 	}
 	if strings.Contains(got, `src=`) {
 		t.Fatalf("expected src removed after asset binding, got: %s", got)
+	}
+}
+
+func TestNormalizeMessageHTMLAssetsAcceptsAssetIDOnly(t *testing.T) {
+	setupMessageTestDB(t)
+	createTestAsset(t, &models.Asset{
+		TenantID: 101, AssetID: "asset_id_only", Provider: enums.AssetProviderLocal,
+		StorageKey: "images/id-only.png", Filename: "id-only.png", Status: enums.AssetStatusSuccess,
+	})
+
+	got, err := NormalizeMessageHTMLAssetsInTenant(`<p><img data-asset-id="asset_id_only" alt="demo"></p>`, 101)
+	if err != nil {
+		t.Fatalf("normalize assetId-only image: %v", err)
+	}
+	if !strings.Contains(got, `data-asset-id="asset_id_only"`) || strings.Contains(got, "data-storage-key") || strings.Contains(got, "src=") {
+		t.Fatalf("unexpected normalized html: %s", got)
 	}
 }
 

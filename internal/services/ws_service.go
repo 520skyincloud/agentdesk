@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/assetaccess"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/response"
@@ -412,7 +413,7 @@ func (s *wsService) fillRealtimeMessageSender(ret *response.MessageResponse, ite
 			if displayName := strings.TrimSpace(profile.DisplayName); displayName != "" {
 				ret.SenderName = displayName
 			}
-			if avatar := strings.TrimSpace(profile.Avatar); avatar != "" {
+			if avatar := AssetService.RefreshAccessURL(profile.Avatar, item.TenantID, assetaccess.PurposeInline); avatar != "" {
 				ret.SenderAvatar = avatar
 			}
 		}

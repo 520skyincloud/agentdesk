@@ -2,9 +2,9 @@ package utils
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/assetaccess"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
-	"agent-desk/internal/services/storage"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -72,8 +72,8 @@ func normalizeMessageHTMLAssets(content string, tenantID int64) (string, error) 
 			}
 			if asset != nil {
 				setHTMLAttr(node, "data-asset-id", strings.TrimSpace(asset.AssetID))
-				setHTMLAttr(node, "data-provider", strings.TrimSpace(string(asset.Provider)))
-				setHTMLAttr(node, "data-storage-key", strings.TrimSpace(asset.StorageKey))
+				removeHTMLAttr(node, "data-provider")
+				removeHTMLAttr(node, "data-storage-key")
 				removeHTMLAttr(node, "src")
 			}
 		}
@@ -247,12 +247,12 @@ func BuildRenderableMessage(item *models.Message) (content, payload string) {
 	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment, enums.IMMessageTypeGIF:
 		payload = buildIMMessageAssetPayloadForResponse(item.Payload, item.TenantID)
 	case enums.IMMessageTypeHTML:
-		content = BuildMessageHTMLForResponse(item.Content)
+		content = BuildMessageHTMLForResponse(item.Content, item.TenantID)
 	}
 	return content, payload
 }
 
-func BuildMessageHTMLForResponse(content string) string {
+func BuildMessageHTMLForResponse(content string, tenantIDs ...int64) string {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return ""
@@ -262,18 +262,35 @@ func BuildMessageHTMLForResponse(content string) string {
 		return content
 	}
 	var walk func(*html.Node)
+	tenantID := int64(0)
+	if len(tenantIDs) > 0 {
+		tenantID = tenantIDs[0]
+	}
 	walk = func(node *html.Node) {
 		if node == nil {
 			return
 		}
 		if node.Type == html.ElementNode && node.Data == "img" {
-			provider := enums.AssetProvider(strings.TrimSpace(findHTMLAttr(node, "data-provider")))
+			assetID := strings.TrimSpace(findHTMLAttr(node, "data-asset-id"))
 			storageKey := strings.TrimSpace(findHTMLAttr(node, "data-storage-key"))
-			if provider != "" && storageKey != "" {
-				if storageProvider, err := storage.NewProvider(provider); err == nil {
-					setHTMLAttr(node, "src", storageProvider.GetSignedURL(storageKey))
+			boundAsset := assetID != "" || storageKey != "" || strings.TrimSpace(findHTMLAttr(node, "data-provider")) != ""
+			if boundAsset {
+				removeHTMLAttr(node, "src")
+			}
+			var asset *models.Asset
+			if tenantID > 0 && assetID != "" {
+				asset = repositories.AssetRepository.GetByAssetIDInTenant(sqls.DB(), assetID, tenantID)
+			} else if tenantID > 0 && storageKey != "" {
+				asset = repositories.AssetRepository.GetByStorageKeyInTenant(sqls.DB(), storageKey, tenantID)
+			}
+			if asset != nil {
+				if accessURL, err := assetaccess.BuildRelativeURL(asset.AssetID, asset.TenantID, assetaccess.PurposeInline); err == nil {
+					setHTMLAttr(node, "src", accessURL)
+					setHTMLAttr(node, "data-asset-id", asset.AssetID)
 				}
 			}
+			removeHTMLAttr(node, "data-provider")
+			removeHTMLAttr(node, "data-storage-key")
 		}
 		for child := node.FirstChild; child != nil; child = child.NextSibling {
 			walk(child)
@@ -298,9 +315,10 @@ func stripHTMLImageSrcIfBound(content string) string {
 			return
 		}
 		if node.Type == html.ElementNode && node.Data == "img" {
+			assetID := strings.TrimSpace(findHTMLAttr(node, "data-asset-id"))
 			provider := strings.TrimSpace(findHTMLAttr(node, "data-provider"))
 			storageKey := strings.TrimSpace(findHTMLAttr(node, "data-storage-key"))
-			if provider != "" && storageKey != "" {
+			if assetID != "" || provider != "" || storageKey != "" {
 				removeHTMLAttr(node, "src")
 			}
 		}
@@ -388,17 +406,21 @@ func removeHTMLAttr(node *html.Node, key string) {
 
 func buildIMMessageAssetPayloadForResponse(payload string, tenantIDs ...int64) string {
 	assetPayload, err := parseIMMessageAssetPayload(payload)
-	if err != nil {
+	if err != nil || assetPayload == nil {
 		return strings.TrimSpace(payload)
 	}
 	assetPayload = hydrateIMMessageAssetPayload(assetPayload, tenantIDs...)
-	if assetPayload.Provider != "" && assetPayload.StorageKey != "" {
-		if strings.HasPrefix(assetPayload.StorageKey, "http://") || strings.HasPrefix(assetPayload.StorageKey, "https://") {
-			assetPayload.URL = assetPayload.StorageKey
-		} else if provider, err := storage.NewProvider(assetPayload.Provider); err == nil {
-			assetPayload.URL = provider.GetSignedURL(assetPayload.StorageKey)
+	assetPayload.URL = ""
+	tenantID := int64(0)
+	if len(tenantIDs) > 0 {
+		tenantID = tenantIDs[0]
+	}
+	if assetPayload.AssetID != "" && assetPayload.StorageKey != "" && tenantID > 0 {
+		if accessURL, err := assetaccess.BuildRelativeURL(assetPayload.AssetID, tenantID, assetaccess.PurposeInline); err == nil {
+			assetPayload.URL = accessURL
 		}
 	}
+	assetPayload.StorageKey = ""
 	data, err := json.Marshal(assetPayload)
 	if err != nil {
 		return strings.TrimSpace(payload)
@@ -425,27 +447,25 @@ func hydrateIMMessageAssetPayload(payload *imMessageAssetPayload, tenantIDs ...i
 	if payload == nil {
 		return nil
 	}
-	if payload.Provider != "" && payload.StorageKey != "" {
-		return payload
-	}
 	if payload.AssetID == "" {
+		payload.StorageKey = ""
+		payload.URL = ""
 		return payload
 	}
-	var asset *models.Asset
-	if len(tenantIDs) > 0 && tenantIDs[0] > 0 {
-		asset = repositories.AssetRepository.GetByAssetIDInTenant(sqls.DB(), payload.AssetID, tenantIDs[0])
-	} else {
-		asset = repositories.AssetRepository.GetByAssetID(sqls.DB(), payload.AssetID)
+	if len(tenantIDs) == 0 || tenantIDs[0] <= 0 {
+		payload.StorageKey = ""
+		payload.URL = ""
+		return payload
 	}
+	asset := repositories.AssetRepository.GetByAssetIDInTenant(sqls.DB(), payload.AssetID, tenantIDs[0])
 	if asset == nil {
+		payload.Provider = ""
+		payload.StorageKey = ""
+		payload.URL = ""
 		return payload
 	}
-	if payload.Provider == "" {
-		payload.Provider = asset.Provider
-	}
-	if payload.StorageKey == "" {
-		payload.StorageKey = strings.TrimSpace(asset.StorageKey)
-	}
+	payload.Provider = asset.Provider
+	payload.StorageKey = strings.TrimSpace(asset.StorageKey)
 	if payload.Filename == "" {
 		payload.Filename = strings.TrimSpace(asset.Filename)
 	}
@@ -469,10 +489,7 @@ func normalizeHTMLImageAsset(node *html.Node, tenantID int64) (*models.Asset, er
 	hasAssetID := assetID != ""
 	hasProvider := provider != ""
 	hasStorageKey := storageKey != ""
-	if hasAssetID || hasProvider || hasStorageKey {
-		if !(hasAssetID && hasProvider && hasStorageKey) {
-			return nil, fmt.Errorf("html message image asset attributes are incomplete")
-		}
+	if hasAssetID {
 		var asset *models.Asset
 		if tenantID > 0 {
 			asset = repositories.AssetRepository.GetByAssetIDInTenant(sqls.DB(), assetID, tenantID)
@@ -482,10 +499,13 @@ func normalizeHTMLImageAsset(node *html.Node, tenantID int64) (*models.Asset, er
 		if asset == nil {
 			return nil, fmt.Errorf("html message image asset not found")
 		}
-		if asset.Provider != provider || strings.TrimSpace(asset.StorageKey) != storageKey {
+		if (hasProvider && asset.Provider != provider) || (hasStorageKey && strings.TrimSpace(asset.StorageKey) != storageKey) {
 			return nil, fmt.Errorf("html message image asset attributes mismatch")
 		}
 		return asset, nil
+	}
+	if hasProvider || hasStorageKey {
+		return nil, fmt.Errorf("html message image asset attributes are incomplete")
 	}
 	return nil, fmt.Errorf("html message image must include asset metadata")
 }

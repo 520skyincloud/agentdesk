@@ -207,9 +207,6 @@ function resolveAssetURL(asset: MessageAssetPayload | null) {
   if (wxURL) {
     return wxURL
   }
-  if (asset.assetId?.trim()) {
-    return `/api/asset/file/${encodeURIComponent(asset.assetId.trim())}`
-  }
   return ""
 }
 

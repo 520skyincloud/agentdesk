@@ -2,8 +2,10 @@ package builders
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/assetaccess"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/utils"
+	"agent-desk/internal/services"
 )
 
 func BuildAgentProfileList(items []models.AgentProfile, users []models.User, teams []models.AgentTeam) []response.AgentProfileResponse {
@@ -46,7 +48,7 @@ func doBuildAgentProfileResponse(item *models.AgentProfile, user *models.User, t
 		WxWorkInstanceScopeIDs: utils.SplitInt64s(item.WxWorkInstanceScopeIDs),
 		AgentCode:              item.AgentCode,
 		DisplayName:            item.DisplayName,
-		Avatar:                 item.Avatar,
+		Avatar:                 services.AssetService.RefreshAccessURL(item.Avatar, item.TenantID, assetaccess.PurposeInline),
 		ServiceStatus:          item.ServiceStatus,
 		MaxConcurrentCount:     item.MaxConcurrentCount,
 		PriorityLevel:          item.PriorityLevel,

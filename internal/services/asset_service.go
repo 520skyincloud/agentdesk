@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/assetaccess"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -254,21 +256,76 @@ func (s *assetService) RegisterExternalInTenant(prefix string, filename string, 
 	return item, nil
 }
 
-func (s *assetService) GetSignedURL(id int64) (string, error) {
-	item := s.Get(id)
-	if item == nil {
-		return "", errorsx.InvalidParam("文件不存在")
+func (s *assetService) BuildAccessURL(item *models.Asset, purpose string) (string, error) {
+	if item == nil || item.TenantID <= 0 {
+		return "", errorsx.InvalidParam("文件不存在或缺少接入公司归属")
 	}
 	if item.Status != enums.AssetStatusSuccess {
 		return "", errorsx.InvalidParam("文件不可访问")
 	}
+	return assetaccess.BuildRelativeURL(item.AssetID, item.TenantID, purpose)
+}
 
-	provider, err := storage.NewProviderWithConfig(item.Provider, StorageSettingToConfig())
-	if err != nil {
-		return "", err
+func (s *assetService) RefreshAccessURL(raw string, tenantID int64, purpose string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || tenantID <= 0 {
+		return raw
 	}
-	accessURL := provider.GetSignedURL(item.StorageKey)
-	return accessURL, nil
+	assetID := assetaccess.AssetIDFromURL(raw)
+	recognizedInternalURL := assetID != ""
+	var item *models.Asset
+	if assetID != "" {
+		item = s.GetByAssetIDInTenant(assetID, tenantID)
+	} else if storageKey, ok := s.storageKeyFromConfiguredURL(raw); ok {
+		recognizedInternalURL = true
+		item = repositories.AssetRepository.GetByStorageKeyInTenant(sqls.DB(), storageKey, tenantID)
+	}
+	if item == nil {
+		if recognizedInternalURL {
+			return ""
+		}
+		return raw
+	}
+	accessURL, err := s.BuildAccessURL(item, purpose)
+	if err != nil {
+		return ""
+	}
+	return accessURL
+}
+
+func (s *assetService) storageKeyFromConfiguredURL(raw string) (string, bool) {
+	cfg := StorageSettingToConfig()
+	for _, baseURL := range []string{cfg.Local.BaseURL, cfg.OSS.BaseURL} {
+		if storageKey, ok := trimStorageBaseURL(raw, baseURL); ok {
+			return storageKey, true
+		}
+	}
+	return "", false
+}
+
+func trimStorageBaseURL(raw, base string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if raw == "" || base == "" {
+		return "", false
+	}
+	rawURL, rawErr := url.Parse(raw)
+	baseURL, baseErr := url.Parse(base)
+	if rawErr != nil || baseErr != nil {
+		return "", false
+	}
+	if baseURL.IsAbs() && (rawURL.Scheme != baseURL.Scheme || rawURL.Host != baseURL.Host) {
+		return "", false
+	}
+	basePath := strings.TrimRight(baseURL.Path, "/")
+	if basePath == "" || !strings.HasPrefix(rawURL.Path, basePath+"/") {
+		return "", false
+	}
+	storageKey, err := url.PathUnescape(strings.TrimPrefix(rawURL.Path, basePath+"/"))
+	if err != nil || strings.TrimSpace(storageKey) == "" {
+		return "", false
+	}
+	return strings.TrimLeft(storageKey, "/"), true
 }
 
 func (s *assetService) DeleteAsset(id int64, principal *dto.AuthPrincipal) error {

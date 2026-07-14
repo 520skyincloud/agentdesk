@@ -11,18 +11,6 @@ export const MessageImageExtension = Image.extend({
         renderHTML: (attributes) =>
           attributes.dataAssetId ? { "data-asset-id": attributes.dataAssetId } : {},
       },
-      dataProvider: {
-        default: null,
-        parseHTML: (element) => element.getAttribute("data-provider"),
-        renderHTML: (attributes) =>
-          attributes.dataProvider ? { "data-provider": attributes.dataProvider } : {},
-      },
-      dataStorageKey: {
-        default: null,
-        parseHTML: (element) => element.getAttribute("data-storage-key"),
-        renderHTML: (attributes) =>
-          attributes.dataStorageKey ? { "data-storage-key": attributes.dataStorageKey } : {},
-      },
     }
   },
 
@@ -53,8 +41,6 @@ export const MessageImageExtension = Image.extend({
         setImageAttr(image, "alt", attrs.alt)
         setImageAttr(image, "title", attrs.title)
         setImageAttr(image, "data-asset-id", attrs.dataAssetId)
-        setImageAttr(image, "data-provider", attrs.dataProvider)
-        setImageAttr(image, "data-storage-key", attrs.dataStorageKey)
         setImageUploading(wrapper, Boolean(String(attrs.title ?? "").startsWith("uploading-")))
       }
 
@@ -77,8 +63,6 @@ export const MessageImageExtension = Image.extend({
 
 export type UploadedEditorImage = {
   assetId: string
-  provider: string
-  storageKey: string
   filename?: string
 }
 
@@ -112,8 +96,6 @@ export function markEditorImageUploadedByTitle(
     return
   }
   image.setAttribute("data-asset-id", uploaded.assetId)
-  image.setAttribute("data-provider", uploaded.provider)
-  image.setAttribute("data-storage-key", uploaded.storageKey)
   image.setAttribute("alt", uploaded.filename || image.getAttribute("alt") || "image")
   image.classList.remove("agent-desk-editor-image-uploading")
   image.removeAttribute("data-uploading")
@@ -146,8 +128,6 @@ export function buildSendableEditorHTML(
     const uploaded = title ? uploadedImages?.get(title) : undefined
     if (uploaded) {
       image.setAttribute("data-asset-id", uploaded.assetId)
-      image.setAttribute("data-provider", uploaded.provider)
-      image.setAttribute("data-storage-key", uploaded.storageKey)
       image.setAttribute("alt", uploaded.filename || image.getAttribute("alt") || "image")
       image.removeAttribute("title")
     }

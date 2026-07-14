@@ -47,6 +47,10 @@ customerSession:
 storage:
   default: local
   maxUploadSizeMB: 20
+  # 文件下载地址签名密钥。多租户环境必须配置独立高强度随机字符串。
+  assetURLSigningSecret: ""
+  # 应用层签名下载地址有效期，默认 3600 秒。
+  assetURLTTLSeconds: 3600
   local:
     root: data/storage
     baseUrl: /storage

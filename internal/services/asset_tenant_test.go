@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/assetaccess"
+	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 
@@ -110,6 +112,35 @@ func TestAssetStoragePrefixIncludesTenant(t *testing.T) {
 	prefix := tenantStorageObjectPrefix("images", 101)
 	if !strings.Contains(prefix, "tenants/101/images") {
 		t.Fatalf("tenant storage prefix=%q", prefix)
+	}
+}
+
+func TestAssetAccessURLRefreshPreservesTenantBoundary(t *testing.T) {
+	fixture := setupConversationRuntimeTenantFixture(t)
+	if err := fixture.db.AutoMigrate(&models.Asset{}); err != nil {
+		t.Fatalf("migrate asset table: %v", err)
+	}
+	config.SetCurrent(&config.Config{Storage: config.StorageConfig{
+		AssetURLSigningSecret: "asset-refresh-signing-secret",
+		Local:                 config.LocalStorageConfig{BaseURL: "/uploads"},
+	}})
+	assetA := createAssetTenantFixture(t, fixture.db, 101, "refresh-asset-a")
+	assetB := createAssetTenantFixture(t, fixture.db, 202, "refresh-asset-b")
+
+	legacyURL := "/uploads/" + assetA.StorageKey
+	refreshed := AssetService.RefreshAccessURL(legacyURL, 101, assetaccess.PurposeInline)
+	if !strings.HasPrefix(refreshed, "/api/asset/file/"+assetA.AssetID+"?") || !strings.Contains(refreshed, "tenantId=101") {
+		t.Fatalf("refreshed legacy URL=%q", refreshed)
+	}
+	refreshedAgain := AssetService.RefreshAccessURL(refreshed, 101, assetaccess.PurposeInline)
+	if !strings.HasPrefix(refreshedAgain, "/api/asset/file/"+assetA.AssetID+"?") {
+		t.Fatalf("refreshed signed URL=%q", refreshedAgain)
+	}
+	if got := AssetService.RefreshAccessURL("/uploads/"+assetB.StorageKey, 101, assetaccess.PurposeInline); got != "" {
+		t.Fatalf("foreign tenant legacy URL refreshed as %q", got)
+	}
+	if got := AssetService.RefreshAccessURL("https://avatars.example.com/external.png", 101, assetaccess.PurposeInline); got != "https://avatars.example.com/external.png" {
+		t.Fatalf("external avatar URL changed to %q", got)
 	}
 }
 

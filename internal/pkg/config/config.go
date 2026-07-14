@@ -98,10 +98,12 @@ func (c CustomerSessionConfig) RefreshThreshold() int {
 }
 
 type StorageConfig struct {
-	Default         enums.AssetProvider `yaml:"default"`
-	MaxUploadSizeMB int64               `yaml:"maxUploadSizeMB"`
-	Local           LocalStorageConfig  `yaml:"local"`
-	OSS             OSSStorageConfig    `yaml:"oss"`
+	Default               enums.AssetProvider `yaml:"default"`
+	MaxUploadSizeMB       int64               `yaml:"maxUploadSizeMB"`
+	AssetURLSigningSecret string              `yaml:"assetURLSigningSecret"`
+	AssetURLTTLSeconds    int                 `yaml:"assetURLTTLSeconds"`
+	Local                 LocalStorageConfig  `yaml:"local"`
+	OSS                   OSSStorageConfig    `yaml:"oss"`
 }
 
 func (s StorageConfig) MaxUploadSizeBytes() int64 {
@@ -114,6 +116,13 @@ func (s StorageConfig) MaxUploadSizeBytes() int64 {
 func (s StorageConfig) MaxRequestBodySizeBytes() int64 {
 	limit := s.MaxUploadSizeBytes()
 	return limit + (1 << 20)
+}
+
+func (s StorageConfig) AssetURLTTL() int {
+	if s.AssetURLTTLSeconds <= 0 {
+		return 3600
+	}
+	return s.AssetURLTTLSeconds
 }
 
 type LocalStorageConfig struct {
@@ -211,6 +220,9 @@ func Load(path string) (*Config, error) {
 	}
 	if invitationKey := strings.TrimSpace(os.Getenv("AGENT_DESK_INVITATION_ENCRYPTION_KEY")); invitationKey != "" {
 		cfg.Auth.InvitationEncryptionKey = invitationKey
+	}
+	if assetURLSigningSecret := strings.TrimSpace(os.Getenv("AGENT_DESK_ASSET_URL_SIGNING_SECRET")); assetURLSigningSecret != "" {
+		cfg.Storage.AssetURLSigningSecret = assetURLSigningSecret
 	}
 	if enabledValue := strings.TrimSpace(os.Getenv("AGENT_DESK_TENANT_REGISTRATION_ENABLED")); enabledValue != "" {
 		enabled, parseErr := strconv.ParseBool(enabledValue)

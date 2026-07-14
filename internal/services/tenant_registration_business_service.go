@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/assetaccess"
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
@@ -81,6 +82,9 @@ func (s *tenantRegistrationService) ValidateConfiguration() error {
 	}
 	if _, err := tenantInvitationKey(config.Current().Auth.InvitationEncryptionKey); err != nil {
 		return fmt.Errorf("tenant registration configuration: %w", err)
+	}
+	if !assetaccess.HasIndependentSigningSecret() {
+		return fmt.Errorf("tenant registration configuration: storage.assetURLSigningSecret is required")
 	}
 	return nil
 }

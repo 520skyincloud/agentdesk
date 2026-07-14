@@ -1527,3 +1527,69 @@ git diff --check
 - 开始、提交前及 push 后均已 fetch，`origin/codex/ai-billing@f2d2da4`。AI 分支同文件集中于 `models.go`、KnowledgeBase service/builder、KnowledgeRetrieveLog repository、RAG retrieve/log/answer 和前端 knowledge API；vectordb provider 当前无同文件修改。合并 RetrieveLog repository 时保留 AI 分支 `FindRecentQuestions` 与本批 tenant-aware list/detail 方法，并在其进入运行链前把 TenantID 作为必填查询边界。
 - 建议先合并本批字段/migration/repository 和 vectordb 契约，再逐方法合并 AI 分支 FastGPT/intent/usage 逻辑，最后补新增 Resource/Job/usage 模型 Tenant 并执行双租户 FastGPT 测试。
 - 可回滚后台 handler/service 和 Qdrant运行时代码，但不得删除已执行的 TenantID 字段、migration 48 历史或把冲突数据强行归 legacy。回滚 Qdrant Tenant filter 会重新开放跨租户向量风险，不得在多租户环境执行。
+
+## 36. 多租户阶段 6G：Asset 短期签名、本地静态绕行与头像兼容（2026-07-14）
+
+### 目标与完成内容
+
+- 复用现有 `/api/asset/file/{assetId}`，将裸 AssetID bearer 下载改为 HMAC 短期签名。签名绑定版本、AssetID、TenantID、expires 和 purpose；支持 `inline`、`wxwork_cdn`，无签名/篡改为 403，过期为 410。
+- handler 验签后只用 `asset_id + tenant_id` 读取成功状态 Asset；local、OSS 和外部协议媒体都先经过同一应用授权入口。外部 URL 仅在成功验签后重定向。
+- 删除 Go `StaticFS` 本地目录挂载和 Next dev `/storage/*` 代理，阻止知道 StorageKey 后绕开签名路由。
+- AssetResponse 保留结构但不再返回 StorageKey；上传 URL、普通媒体消息、HTML 图片、REST 消息、WebSocket 消息和企微 CDN 拉取都生成应用签名 URL。前端删除裸 AssetID URL fallback。
+- 消息编辑器只提交 `data-asset-id`。服务端仍兼容历史 provider/StorageKey 三字段输入并校验，但标准化入库和响应均去除 StorageKey；历史 Message payload 无需重写。
+- `AgentProfile.Avatar` 继续保存 URL，不增加模型字段。客服档案、消息 builder 和 WebSocket 会将旧本地/OSS URL或已过期应用 URL按 Profile/Message Tenant 重新签发；外部头像原样返回。
+- 新增 `storage.assetURLSigningSecret`、`storage.assetURLTTLSeconds` 和 `AGENT_DESK_ASSET_URL_SIGNING_SECRET`。关闭公开注册时允许从 customer session secret 做领域隔离派生；开启注册时启动校验强制独立密钥。
+
+### 主要文件与共享契约
+
+```text
+config/config.example.yaml
+internal/pkg/config/config.go
+internal/pkg/config/config_test.go
+internal/pkg/assetaccess/asset_access.go
+internal/pkg/assetaccess/asset_access_test.go
+internal/handlers/api/asset_handler.go
+internal/handlers/api/asset_handler_test.go
+internal/services/asset_service.go
+internal/services/asset_tenant_test.go
+internal/services/im_message_asset.go
+internal/pkg/utils/message.go
+internal/pkg/utils/message_test.go
+internal/builders/asset_builder.go
+internal/builders/asset_builder_test.go
+internal/builders/agent_profile_builder.go
+internal/builders/conversation_builder.go
+internal/services/ws_service.go
+internal/services/wxwork_protocol_service.go
+internal/bootstrap/server.go
+internal/bootstrap/server_route_test.go
+web/components/chat/shared-message-editor.tsx
+web/lib/im-editor-image.ts
+web/lib/im-message.ts
+web/next.config.ts
+```
+
+- 没有 model、migration、request/response DTO 字段、enum、Gin 路由、权限常量或 WebSocket payload 变化。现有 AssetResponse 的 `storageKey` 字段为兼容保留但返回空字符串，`url` 字段语义由 provider URL 变为应用签名 URL。
+- 当前本分支 migration 最高 48；本步骤不占用 49。权限继续复用既有 Asset/Conversation 权限和客户会话鉴权，没有角色内隐藏授权。
+
+### 验证
+
+```text
+go test ./... -count=1
+go test -race ./internal/pkg/assetaccess ./internal/handlers/api ./internal/services -run 'TestAsset' -count=1
+go vet ./...
+cd web && pnpm typecheck
+cd web && pnpm exec eslint lib/im-editor-image.ts lib/im-message.ts components/chat/shared-message-editor.tsx next.config.ts
+git diff --check
+```
+
+- 单元测试覆盖有效、过期、篡改 asset/tenant/purpose、跨租户有效签名但无归属、无签名、外部重定向、local 真实文件读取、静态目录绕行、AssetResponse 去 StorageKey、旧头像 URL 刷新及 HTML assetId-only 编辑。
+- 全量 Go 测试、专项 race、`go vet ./...`、前端 typecheck、改动文件 ESLint 和 `git diff --check` 均通过。
+
+### 风险、回滚与并行分支
+
+- 签名 URL 在有效期内仍可被持有者转交；当前不绑定具体账号或浏览器。下载权限的来源仍是生成该 URL 的会话、文件或企微业务接口。
+- 公开 OSS bucket 的 ACL 不受应用控制；多租户生产必须使用私有 bucket。本批停止对外发送 StorageKey，但不能把应用签名误解为替代 OSS ACL。
+- 可回滚签名构建和前端 assetId-only 编辑，但不能只恢复 `StaticFS` 或无签名 Asset handler，否则会重新暴露跨租户文件。回滚应恢复为受鉴权代理下载或另一套完整授权方案。
+- 开始时已 fetch，`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`。AI 分支同文件包括 config、server、conversation builder、message utils、Asset handler/service、企微协议和测试。合并按方法保留 AI 分支 Email/FastGPT/NewAPI/usage/回复逻辑及本批签名/tenant 边界，禁止整文件覆盖。
+- 建议合并顺序：Asset Tenant/migration 46 -> 本批 assetaccess/下载路由/响应收口 -> AI 分支欢迎图、媒体理解、FastGPT 与 usage 重放。AI 新增资源只保存 AssetID 并复用签名入口。

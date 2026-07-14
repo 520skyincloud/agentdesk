@@ -97,6 +97,22 @@ func TestLoadOverridesTenantRegistrationFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadOverridesAssetURLSigningSecretFromEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("storage:\n  assetURLSigningSecret: yaml-secret\n"), 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	t.Setenv("AGENT_DESK_ASSET_URL_SIGNING_SECRET", "environment-secret")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Storage.AssetURLSigningSecret != "environment-secret" {
+		t.Fatalf("AssetURLSigningSecret=%q want environment override", cfg.Storage.AssetURLSigningSecret)
+	}
+}
+
 func TestLoadRejectsInvalidTenantRegistrationEnvironment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("{}\n"), 0600); err != nil {

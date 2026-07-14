@@ -263,7 +263,7 @@ export function SharedMessageEditor({
     try {
       setLocalUploading(true)
       const uploaded = await onUploadImageRef.current(file)
-      if (!uploaded?.assetId || !uploaded.provider || !uploaded.storageKey) {
+      if (!uploaded?.assetId) {
         removeEditorImageByTitle(editor, placeholderId)
         revokeEditorObjectUrl(objectUrlsRef.current, objectUrl)
         return
