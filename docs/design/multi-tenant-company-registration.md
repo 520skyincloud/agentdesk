@@ -763,7 +763,7 @@ POST /api/auth/register
 - 注册按可信客户端 IP、邀请码和账号标识限流。Gin 默认不信任转发头，只有 `server.trustedProxies` 明确配置的反向代理才能提供真实客户端 IP。
 - 邀请注册账号直接绑定邀请码对应租户，初始为禁用、待审核且无角色；审核通过必须同时具有 `tenantRegistration.review` 和 `user.assignRole`，并且只能分配操作者权限等级以下的本租户角色。
 - 审核通过、拒绝和幂等重放均保留注册安全日志；审核后撤销该账号已有登录会话。
-- `/register` 页面、账号页“邀请注册”浮窗和待审核列表仍属于阶段 7，当前不能因为后端路由存在就开启公开注册。
+- `/register` 页面、账号页“邀请注册”浮窗和待审核列表已在阶段 7B 完成；但正式配置继续关闭公开注册，页面存在不能替代全域隔离与上线验收。
 - 客户、门店、会话、派单、工单、知识库、WebSocket、回调、Outbox、文件和向量检索尚未全部完成租户隔离，因此生产和共享测试环境必须保持注册开关关闭。
 
 ### 阶段 4：租户字段与历史回填
@@ -1342,3 +1342,29 @@ git diff --check
 - 公共请求客户端始终发送 `Accept-Language` 和 `X-Locale`，CORS allow headers 同步加入这两个值；否则前后端分端口部署会在预检阶段失败。同源部署行为不变。
 - 本批没有 model、AutoMigrate、DML migration、enum、Gin 路由、WebSocket payload 或新权限点。共享 JSON 只增加 AuthOptions 的 `tenantRegistrationEnabled`，其余注册 DTO 沿用阶段 3B。
 - `codex/ai-billing@f2d2da4` 同时修改 server、AuthOptions handler/DTO、登录页、auth API 和双语消息。合并必须同时保留 AI 分支邮箱验证/FastGPT/NewAPI 选项与本批注册开关、CORS 语言头和权限显隐，禁止整文件选边。
+
+## 31. 当前实施检查点：公司上下文与平台/公司导航分层（2026-07-14）
+
+本检查点完成阶段 7 的侧边栏公司上下文与导航职责拆分，继续复用 `/dashboard/channels` 作为唯一“接入公司”入口，不新增 `/dashboard/tenants` 平行页面。
+
+### 公司上下文
+
+- 登录与资料响应增加向后兼容的 `activeTenantName`。名称来自认证阶段已经校验为启用状态的 Active Tenant，普通租户账号无需获得 `tenant.view` 或调用平台公司列表，也能明确看到所属公司。
+- 侧边栏品牌下固定显示工作上下文。租户账号只读显示所属公司；拥有 `tenant.view + tenant.switch` 的平台账号可以搜索启用公司、进入公司或返回平台管理。
+- Active Tenant 的 ID 与名称都保存在标签页级 `sessionStorage`；共享登录会话被另一标签更新时，当前标签仍以自己的公司上下文为准。
+- 平台账号未进入公司时，品牌首页指向“接入公司”；进入公司后指向公司总览。切换失败会恢复原公司上下文，不留下前端 ID 与认证资料不一致的状态。
+- 平台账号未进入公司却访问公司总览、会话、派单、客户、用户等租户页面时，布局按同一导航上下文契约重定向到“接入公司”，避免先发出缺少 Tenant 的业务请求。
+
+### 导航职责
+
+- 当前公司下分为“当前公司、客服组织、服务能力、账号与权限”；平台能力单独归入“平台管理”。平台账号进入公司后同时保留公司和平台入口，返回平台后收起所有租户业务入口。
+- 页面入口继续先按 `*.view` 权限过滤，再按平台/租户上下文过滤；没有恢复角色名称 URL 白名单，也没有新增隐藏权限。
+- `AI Agent` 与“企微员工号”页面原本存在真实路由和权限但遗漏侧边栏入口，本批分别按 `aiAgent.view` 和 `channel.view` 恢复。原“公司管理”明确改称“客户企业”，避免与 Tenant 接入公司混淆。
+- 角色和权限说明页保留在“账号与权限”，使公司主管拥有 `role.view`/`permission.view` 时仍可查看；用户管理只有存在 Active Tenant 时显示。
+
+### 契约与剩余边界
+
+- 本批没有 model、AutoMigrate、DML migration、enum、Gin 路由、WebSocket payload 或新权限。共享 JSON 只新增 `LoginResponse.activeTenantName`；旧前端忽略，新前端缺失时回退为通用当前公司标签。
+- 当前公司“渠道接入”独立设置页仍未迁移，不能把平台“接入公司”页恢复成旧 Channel 管理页。AI Config、回复意图等最终平台/租户归属仍须在合并 AI 分支真实代码后确认。
+- 正式公开注册继续等待 AI 分支新增主体 Tenant 化、真实历史数据 migration 39 冲突修复和双租户全链路验收。
+- `auth_response.go`、`auth_service.go`、`navigation.tsx` 和双语资源与 `codex/ai-billing` 有同文件变化；合并必须逐字段、逐导航项保留双方能力，禁止整文件选边。

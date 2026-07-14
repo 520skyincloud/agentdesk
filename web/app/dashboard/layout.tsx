@@ -10,6 +10,7 @@ import { useAuth } from "@/components/auth-provider"
 import { NotificationProvider } from "@/components/notification-provider"
 import { SiteHeader } from "@/components/site-header"
 import { useI18n } from "@/i18n/provider"
+import { dashboardPathRequiresTenant } from "@/lib/navigation"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 
 export default function DashboardLayout({
@@ -22,6 +23,12 @@ export default function DashboardLayout({
   const pathname = usePathname()
   const router = useRouter()
   const isLoginRoute = pathname?.startsWith("/dashboard/login") ?? false
+  const missingTenantContext = Boolean(
+    ready &&
+      session?.isPlatformAccount &&
+      session.activeTenantId <= 0 &&
+      dashboardPathRequiresTenant(pathname)
+  )
 
   useEffect(() => {
     if (ready && !session && !isLoginRoute) {
@@ -29,11 +36,17 @@ export default function DashboardLayout({
     }
   }, [isLoginRoute, ready, router, session])
 
+  useEffect(() => {
+    if (missingTenantContext) {
+      router.replace("/dashboard/channels")
+    }
+  }, [missingTenantContext, router])
+
   if (isLoginRoute) {
     return <>{children}</>
   }
 
-  if (!ready || !session) {
+  if (!ready || !session || missingTenantContext) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(160deg,#f3f1e8_0%,#f8faf5_46%,#e8f7f2_100%)] p-6">
         <div className="flex items-center gap-3">

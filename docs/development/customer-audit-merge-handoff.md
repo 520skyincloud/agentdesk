@@ -545,7 +545,7 @@ make enums
 
 ### 未完成边界
 
-- 本步骤只完成阶段 3B 后端；`/register` 页面、账号页邀请浮窗和待审核 UI 仍在阶段 7，不提供半成品入口。
+- 本步骤当时只完成阶段 3B 后端；`/register` 页面、账号页邀请浮窗和待审核 UI 后续已由第 38 节完成，正式配置仍保持关闭。
 - 公开注册开关必须保持关闭，直到阶段 4-6 完成业务数据及非 HTTP 链路隔离，并通过双租户验收。
 - OIDC 与企业微信自动建号仍按阶段 2 的兼容逻辑进入历史默认租户；在 SaaS 开放前必须改为可信租户映射，不能把邀请码注册误当成第三方登录隔离已完成。
 
@@ -749,7 +749,7 @@ go test ./internal/services -run 'Test(ConversationHumanDispatch|StoreManualAgen
 - `tenant.create` 控制新建按钮，`tenant.update` 控制编辑按钮，`tenant.updateStatus` 控制状态开关，`tenant.switch` 与 `canSwitchTenant` 共同控制进入公司动作；没有动作权限时不显示对应操作。
 - `DashboardCrudPage` 新增向后兼容的 `showEdit` 和 `showActionsColumn`，默认值保持原页面行为；用于真正隐藏无权操作，而不是保留不可用按钮。
 - 修复通用 CRUD 表头和 `ProjectDialog` 头尾在暗色模式下的对比度。新建表单和一次性结果弹窗均验证了独立滚动与移动端单列布局。
-- 中英文资源均新增 `tenant.*` 文案。公开 `/register` 页面仍不存在，`tenantRegistration.enabled` 继续保持关闭；结果中的邀请链接只作为已生成凭据展示，不代表注册入口已经开放。
+- 中英文资源均新增 `tenant.*` 文案。该步骤实施时公开 `/register` 尚未完成，后续已由第 38 节补齐；`tenantRegistration.enabled` 继续保持关闭。
 
 ### 验证与未完成边界
 
@@ -762,7 +762,7 @@ cd web && pnpm build
 
 - 使用当前源码、独立端口和临时 SQLite 数据库完成浏览器验收：桌面/390px 移动端列表、创建表单滚动、暗色模式、真实原子创建、一次性结果和进入公司状态同步均通过；测试数据与 `8083` Docker 数据完全隔离，数据库文件不进入 Git。
 - 本阶段不伪造客服数、门店数、客服组数和最近活跃时间；Tenant 列表 DTO 尚无这些统计，且相关业务表未全部完成租户化，应在事实源隔离后由后端聚合补充。
-- 平台管理/当前公司双层导航、侧边栏公司选择器、当前公司渠道设置和公开邀请注册继续延后。全域隔离完成前不得开放注册，也不得把旧 Channel 管理入口恢复到本页面。
+- 该步骤实施时平台/公司导航、公司选择器、渠道设置和公开邀请注册仍延后；注册与导航后续分别由第 38、39 节补齐。当前公司渠道设置仍未迁移，不得把旧 Channel 管理入口恢复到本页面。
 - 不涉及 model/migration、后端 DTO/enum、Gin 路由、WebSocket、AI runtime、FastGPT、模型调用、token 或计费。
 
 ### 并行影响、合并顺序与回滚
@@ -1701,3 +1701,55 @@ git diff --check
 - 建议先合并租户认证/权限/阶段 3B 注册后端，再逐段合并 AuthOptions 与 CORS，最后合并注册页和用户页。必须保留 AI 分支邮箱验证/FastGPT/NewAPI/usage 选项和本批 tenant registration 开关、语言头及权限显隐。
 - 本批不需要 rebase 才能独立提交，但最终集成禁止整文件选边。没有修改 AI runtime、模型供应商、FastGPT、token、usage 或计费语义。
 - 可回滚前端注册入口、审核标签和 AuthOptions 新字段；后台阶段 3B 路由可继续保持关闭。CORS 语言头是现有请求客户端的必要兼容，不建议随 UI 回滚。邀请码及已审核账号数据不应通过删除表或破坏性 DDL 回滚。
+
+## 39. 多租户阶段 7C：公司上下文与导航分层（2026-07-14）
+
+### 目标与完成内容
+
+- 品牌下新增唯一公司上下文入口。租户账号显示所属公司；平台账号可搜索启用公司、进入公司、返回平台管理或前往“接入公司”管理页。
+- 认证 `LoginResponse`/资料响应增加 `activeTenantName`，名称由已验证 Tenant 产生。普通租户账号不需要平台 `tenant.view` 权限即可显示公司身份。
+- 导航从旧“接待中心/客服配置/AI能力/系统管理”混排改为“当前公司/客服组织/服务能力/账号与权限/平台管理”。每个入口同时受现有查看权限和平台/Active Tenant 上下文约束。
+- 平台账号未选择公司时只显示角色权限与平台入口；进入公司后同时显示公司业务和平台入口。访问公司专属 URL 时若缺少 Active Tenant，布局自动回到 `/dashboard/channels`，不会先请求租户业务接口。
+- 恢复已有但漏掉导航的 `/dashboard/ai-agents` 与 `/dashboard/wxwork-protocol-instances`，分别复用 `aiAgent.view` 与 `channel.view`；原租户内“公司管理”文案改为“客户企业”。
+- 修复 `nav-main.test.mjs` 对现有 `SidebarMenuButton className` 的过时源码正则，未改变 NavMain 运行逻辑。
+
+### 主要文件与共享契约
+
+```text
+internal/pkg/dto/dto.go
+internal/pkg/dto/response/auth_response.go
+internal/services/auth_service.go
+internal/services/tenant_auth_context_test.go
+web/app/dashboard/layout.tsx
+web/app/dashboard/channels/page.tsx
+web/app/dashboard/channels/tenant-page.test.mjs
+web/components/app-sidebar.tsx
+web/components/auth-provider.tsx
+web/components/tenant-context-switcher.tsx
+web/components/tenant-context-switcher.test.mjs
+web/components/nav-main.test.mjs
+web/lib/auth.ts
+web/lib/auth.test.mjs
+web/lib/navigation.tsx
+web/lib/navigation.test.mjs
+web/messages/zh-CN.json
+web/messages/en-US.json
+```
+
+- 共享 JSON 只向后兼容增加 `activeTenantName`；没有 model、migration、enum、Gin 路由、WebSocket payload 或权限点变化。
+- 账号与角色/权限关系不变：账号仍只分配角色，角色绑定权限；上下文过滤不是角色名白名单，也不替代后端鉴权。
+- 用户主动切换公司时，资料刷新使用“保留会话并抛错”模式；失败后恢复原 Tenant。普通认证过期仍清理登录态并返回登录页，二者不混用。
+- Active Tenant ID 和名称均按标签页存储；测试覆盖共享 `localStorage` 被另一标签写入后，当前标签仍保留自己的公司 ID 与名称。
+
+### 验证、风险与后续
+
+- 专项 Go 测试覆盖平台切换和租户账号的 Active Tenant 名称；前端测试覆盖平台无公司、租户账号、平台进入公司、权限过滤、URL 上下文守卫和切换失败恢复。
+- 全量 Go、专项 race、`go vet`、前端 62 项 Node 测试、typecheck 与 Next 生产构建通过。
+- 浏览器使用当前源码临时 SQLite 后端验证平台模式、进入默认公司、返回平台、完整导航和公司总览；桌面与 `390x844` 移动侧栏无页面级横向溢出。
+- 当前公司渠道设置页面仍待后续迁移；AI Config/回复意图最终作用域须合并 AI 分支后按真实代码确认。公开注册继续关闭。
+- 旧 Docker MySQL 的 migration 39 仍因平台账号担任租户客服组长而中止，必须由业务确认正确组长后修复数据，不能在本批绕过。
+
+### 并行合并与回滚
+
+- `codex/ai-billing@f2d2da4` 与本批重叠 `auth_response.go`、`navigation.tsx` 和双语资源，并在认证链路有不同实现。合并时保留 AI 分支邮箱/FastGPT/NewAPI/计费入口，同时保留 `activeTenantName`、上下文导航和权限过滤。
+- 可独立回滚前端导航和 `activeTenantName` 展示字段；回滚不能恢复角色 URL 白名单，也不能让平台未选公司时访问租户页面。无数据库回滚边界。

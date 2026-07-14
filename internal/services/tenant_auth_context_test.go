@@ -51,8 +51,8 @@ func TestResolveAuthPrincipalEnforcesTenantContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("switch platform principal tenant: %v", err)
 	}
-	if platformPrincipal.ActiveTenantID != legacyTenant.ID {
-		t.Fatalf("active tenant = %d, want %d", platformPrincipal.ActiveTenantID, legacyTenant.ID)
+	if platformPrincipal.ActiveTenantID != legacyTenant.ID || platformPrincipal.ActiveTenantName != legacyTenant.ShortName {
+		t.Fatalf("active tenant = %d/%q, want %d/%q", platformPrincipal.ActiveTenantID, platformPrincipal.ActiveTenantName, legacyTenant.ID, legacyTenant.ShortName)
 	}
 
 	_, err = svc.resolveAuthPrincipal(db, platformUser,
@@ -66,7 +66,7 @@ func TestResolveAuthPrincipalEnforcesTenantContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve tenant principal: %v", err)
 	}
-	if tenantPrincipal.IsPlatformAccount || tenantPrincipal.ActiveTenantID != legacyTenant.ID {
+	if tenantPrincipal.IsPlatformAccount || tenantPrincipal.ActiveTenantID != legacyTenant.ID || tenantPrincipal.ActiveTenantName != legacyTenant.ShortName {
 		t.Fatalf("unexpected tenant principal: %+v", tenantPrincipal)
 	}
 	_, err = svc.resolveAuthPrincipal(db, tenantUser,

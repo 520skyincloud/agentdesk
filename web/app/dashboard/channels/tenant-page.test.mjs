@@ -30,3 +30,9 @@ test("channels route is exposed as tenant management through tenant.view", () =>
     /titleKey: "nav\.channels",[\s\S]*?url: "\/dashboard\/channels",[\s\S]*?requiredPermission: "tenant\.view"/
   )
 })
+
+test("tenant switching preserves the authenticated session and restores context on failure", () => {
+  assert.match(pageSource, /const previousTenantId = session\?\.activeTenantId \?\? 0/)
+  assert.match(pageSource, /refreshProfile\(\{ preserveSessionOnError: true \}\)/)
+  assert.match(pageSource, /setActiveTenantId\(previousTenantId, previousTenantName\)/)
+})

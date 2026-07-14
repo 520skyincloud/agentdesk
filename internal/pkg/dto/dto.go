@@ -6,6 +6,7 @@ type AuthPrincipal struct {
 	UserID             int64
 	TenantID           int64
 	ActiveTenantID     int64
+	ActiveTenantName   string
 	Username           string
 	Nickname           string
 	Avatar             string

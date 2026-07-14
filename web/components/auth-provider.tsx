@@ -23,8 +23,12 @@ import {
 type AuthContextValue = {
   session: AuthSession | null
   ready: boolean
-  refreshProfile: () => Promise<void>
+  refreshProfile: (options?: RefreshProfileOptions) => Promise<void>
   signOut: () => Promise<void>
+}
+
+type RefreshProfileOptions = {
+  preserveSessionOnError?: boolean
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -37,7 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isDashboardLoginRoute = pathname?.startsWith("/dashboard/login") ?? false
   const requiresAuth = (pathname?.startsWith("/dashboard") ?? false) && !isDashboardLoginRoute
 
-  const refreshProfile = useCallback(async () => {
+  const refreshProfile = useCallback(async (options: RefreshProfileOptions = {}) => {
     const stored = readSession()
     if (!stored) {
       setSession(null)
@@ -53,12 +57,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         permissions: profile.permissions,
         roles: profile.roles,
         activeTenantId: profile.activeTenantId,
+        activeTenantName: profile.activeTenantName,
         canSwitchTenant: profile.canSwitchTenant,
         isPlatformAccount: profile.isPlatformAccount,
       }
       writeSession(nextSession)
       setSession(nextSession)
-    } catch {
+    } catch (error) {
+      if (options.preserveSessionOnError) {
+        setSession(stored)
+        throw error
+      }
       clearSession()
       setSession(null)
       if (requiresAuth) {

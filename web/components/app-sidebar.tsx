@@ -13,6 +13,7 @@ import { useAuth } from "@/components/auth-provider"
 import { NavMain } from "@/components/nav-main"
 import { NavSecondary } from "@/components/nav-secondary"
 import { NavUser } from "@/components/nav-user"
+import { TenantContextSwitcher } from "@/components/tenant-context-switcher"
 import {
   Sidebar,
   SidebarContent,
@@ -26,14 +27,22 @@ import {
 export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
   const t = useI18n()
   const { session } = useAuth()
+  const navContext = useMemo(
+    () => ({
+      isPlatformAccount: Boolean(session?.isPlatformAccount),
+      hasActiveTenant: (session?.activeTenantId ?? 0) > 0,
+    }),
+    [session?.activeTenantId, session?.isPlatformAccount]
+  )
   const navSections = useMemo(
-    () => filterDashboardNavForSession(session?.permissions),
-    [session?.permissions]
+    () => filterDashboardNavForSession(session?.permissions, navContext),
+    [navContext, session?.permissions]
   )
   const secondaryNavItems = useMemo(
-    () => filterDashboardSecondaryNavForSession(session?.permissions),
-    [session?.permissions]
+    () => filterDashboardSecondaryNavForSession(session?.permissions, navContext),
+    [navContext, session?.permissions]
   )
+  const brandHref = navContext.hasActiveTenant ? "/dashboard" : "/dashboard/channels"
   const user = {
     name: session?.user.nickname || session?.user.username || t("common.notSignedIn"),
     email: session?.user.username || t("common.guest"),
@@ -42,12 +51,12 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
 
   return (
     <Sidebar collapsible="icon" className="border-r border-sidebar-border bg-sidebar" {...props}>
-      <SidebarHeader className="px-3 pt-3">
+      <SidebarHeader className="gap-2 px-3 pt-3">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
               className="h-12 rounded-xl data-[slot=sidebar-menu-button]:p-2!"
-              render={<Link href="/dashboard" />}
+              render={<Link href={brandHref} />}
             >
               <img
                 src="/images/zhixi-weibao-logo.png"
@@ -60,6 +69,7 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
+        <TenantContextSwitcher />
       </SidebarHeader>
       <SidebarContent>
         {navSections.map((section) => (

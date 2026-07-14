@@ -22,6 +22,7 @@ type LoginResponse struct {
 	Permissions       []string          `json:"permissions"`
 	Roles             []string          `json:"roles"`
 	ActiveTenantID    int64             `json:"activeTenantId"`
+	ActiveTenantName  string            `json:"activeTenantName"`
 	CanSwitchTenant   bool              `json:"canSwitchTenant"`
 	IsPlatformAccount bool              `json:"isPlatformAccount"`
 }

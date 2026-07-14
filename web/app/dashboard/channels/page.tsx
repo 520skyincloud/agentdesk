@@ -87,16 +87,31 @@ export default function DashboardChannelsPage() {
               disabled: (item) =>
                 item.status !== Status.Ok || session?.activeTenantId === item.id,
               run: async ({ item }) => {
-                setActiveTenantId(item.id)
-                await refreshProfile()
-                toast.success(t("tenant.enteredTenant", { name: item.shortName }))
-                router.push("/dashboard")
-                router.refresh()
+                const previousTenantId = session?.activeTenantId ?? 0
+                const previousTenantName = session?.activeTenantName ?? ""
+                try {
+                  setActiveTenantId(item.id, item.shortName)
+                  await refreshProfile({ preserveSessionOnError: true })
+                  toast.success(t("tenant.enteredTenant", { name: item.shortName }))
+                  router.push("/dashboard")
+                  router.refresh()
+                } catch (error) {
+                  setActiveTenantId(previousTenantId, previousTenantName)
+                  await refreshProfile({ preserveSessionOnError: true }).catch(() => undefined)
+                  throw error
+                }
               },
             },
           ]
         : [],
-    [canSwitch, refreshProfile, router, session?.activeTenantId, t]
+    [
+      canSwitch,
+      refreshProfile,
+      router,
+      session?.activeTenantId,
+      session?.activeTenantName,
+      t,
+    ]
   )
 
   const statusColumn = createDashboardStatusColumn<AdminTenant, Status>({
@@ -116,7 +131,7 @@ export default function DashboardChannelsPage() {
               session?.activeTenantId === item.id
             ) {
               setActiveTenantId(0)
-              await refreshProfile()
+              await refreshProfile({ preserveSessionOnError: true })
             }
           },
           successMessage: (item, nextStatus) =>

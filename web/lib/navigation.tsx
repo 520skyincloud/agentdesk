@@ -14,6 +14,7 @@ import {
   MessageSquareCodeIcon,
   MessageSquareShareIcon,
   MessageSquareMoreIcon,
+  NetworkIcon,
   SlidersHorizontalIcon,
   ShieldCheckIcon,
   TagsIcon,
@@ -21,6 +22,8 @@ import {
   UsersIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
+
+import { isDashboardNavItemActive } from "@/lib/navigation-active";
 
 export type DashboardNavMenuItem = {
   title: string;
@@ -35,18 +38,44 @@ export type DashboardNavItemConfig = Omit<DashboardNavMenuItem, "title"> & {
    * admin can see the module.
    */
   requiredPermission?: string;
+  context?: DashboardNavContextScope;
 };
 
 export type DashboardNavSectionConfig = {
   titleKey: string;
   icon: ReactNode;
+  context: DashboardNavContextScope;
   items: DashboardNavItemConfig[];
 };
+
+export type DashboardNavContextScope = "always" | "platform" | "tenant";
+
+export type DashboardNavContext = {
+  isPlatformAccount: boolean;
+  hasActiveTenant: boolean;
+};
+
+function contextVisible(
+  scope: DashboardNavContextScope,
+  context: DashboardNavContext,
+): boolean {
+  if (scope === "platform") {
+    return context.isPlatformAccount;
+  }
+  if (scope === "tenant") {
+    return context.hasActiveTenant;
+  }
+  return true;
+}
 
 function navItemVisible(
   item: DashboardNavItemConfig,
   permissionSet: Set<string>,
+  context: DashboardNavContext,
 ): boolean {
+  if (!contextVisible(item.context ?? "always", context)) {
+    return false;
+  }
   if (!item.requiredPermission) {
     return true;
   }
@@ -55,14 +84,16 @@ function navItemVisible(
 
 export function filterDashboardNavForSession(
   permissions: readonly string[] | undefined,
+  context: DashboardNavContext,
 ): { titleKey: string; icon: ReactNode; items: DashboardNavMenuItem[] }[] {
   const permissionSet = new Set(permissions ?? []);
   return dashboardNavSections
+    .filter((section) => contextVisible(section.context, context))
     .map((section) => ({
       titleKey: section.titleKey,
       icon: section.icon,
       items: section.items
-        .filter((item) => navItemVisible(item, permissionSet))
+        .filter((item) => navItemVisible(item, permissionSet, context))
         .map(({ titleKey, url, icon }) => ({ title: titleKey, titleKey, url, icon })),
     }))
     .filter((section) => section.items.length > 0);
@@ -70,11 +101,24 @@ export function filterDashboardNavForSession(
 
 export function filterDashboardSecondaryNavForSession(
   permissions: readonly string[] | undefined,
+  context: DashboardNavContext,
 ): DashboardNavMenuItem[] {
   const permissionSet = new Set(permissions ?? []);
   return dashboardSecondaryNav
-    .filter((item) => navItemVisible(item, permissionSet))
+    .filter((item) => navItemVisible(item, permissionSet, context))
     .map(({ titleKey, url, icon }) => ({ title: titleKey, titleKey, url, icon }));
+}
+
+export function dashboardPathRequiresTenant(pathname: string | null | undefined): boolean {
+  if (!pathname) {
+    return false;
+  }
+  return dashboardNavSections.some((section) =>
+    section.items.some((item) => {
+      const scope = item.context ?? section.context;
+      return scope === "tenant" && isDashboardNavItemActive(pathname, item.url);
+    }),
+  );
 }
 
 export const dashboardNavSections: DashboardNavSectionConfig[] = [
@@ -89,15 +133,10 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
   //   ],
   // },
   {
-    titleKey: "nav.receptionCenter",
+    titleKey: "nav.companyWorkspace",
     icon: <BotMessageSquareIcon />,
+    context: "tenant",
     items: [
-      {
-        titleKey: "nav.storeWorkbench",
-        url: "/dashboard/store-workbench",
-        icon: <HomeIcon />,
-        requiredPermission: "channel.view",
-      },
       {
         titleKey: "nav.overview",
         url: "/dashboard",
@@ -110,10 +149,10 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         requiredPermission: "conversation.view",
       },
       {
-        titleKey: "nav.tickets",
-        url: "/dashboard/tickets",
-        icon: <FileTextIcon />,
-        requiredPermission: "ticket.view",
+        titleKey: "nav.conversationDispatch",
+        url: "/dashboard/conversation-dispatch",
+        icon: <MessageSquareShareIcon />,
+        requiredPermission: "conversation.view",
       },
       {
         titleKey: "nav.conversationMonitor",
@@ -122,10 +161,10 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         requiredPermission: "conversation.view",
       },
       {
-        titleKey: "nav.conversationDispatch",
-        url: "/dashboard/conversation-dispatch",
-        icon: <MessageSquareShareIcon />,
-        requiredPermission: "conversation.view",
+        titleKey: "nav.tickets",
+        url: "/dashboard/tickets",
+        icon: <FileTextIcon />,
+        requiredPermission: "ticket.view",
       },
       {
         titleKey: "nav.customers",
@@ -142,20 +181,15 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
     ],
   },
   {
-    titleKey: "nav.agentConfig",
+    titleKey: "nav.customerServiceOrganization",
     icon: <UserCogIcon />,
+    context: "tenant",
     items: [
       {
-        titleKey: "nav.tags",
-        url: "/dashboard/tags",
-        icon: <TagsIcon />,
-        requiredPermission: "tag.view",
-      },
-      {
-        titleKey: "nav.quickReplies",
-        url: "/dashboard/quick-replies",
-        icon: <MessageSquareMoreIcon />,
-        requiredPermission: "quickReply.view",
+        titleKey: "nav.storeWorkbench",
+        url: "/dashboard/store-workbench",
+        icon: <HomeIcon />,
+        requiredPermission: "channel.view",
       },
       {
         titleKey: "nav.agents",
@@ -170,17 +204,24 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         requiredPermission: "agentTeamSchedule.view",
       },
       {
-        titleKey: "nav.channels",
-        url: "/dashboard/channels",
-        icon: <Building2Icon />,
-        requiredPermission: "tenant.view",
+        titleKey: "nav.wxworkProtocolInstances",
+        url: "/dashboard/wxwork-protocol-instances",
+        icon: <NetworkIcon />,
+        requiredPermission: "channel.view",
       },
     ],
   },
   {
-    titleKey: "nav.aiCapabilities",
+    titleKey: "nav.serviceCapabilities",
     icon: <BrainCircuitIcon />,
+    context: "tenant",
     items: [
+      {
+        titleKey: "nav.aiAgents",
+        url: "/dashboard/ai-agents",
+        icon: <BotMessageSquareIcon />,
+        requiredPermission: "aiAgent.view",
+      },
       {
         titleKey: "nav.knowledge",
         url: "/dashboard/knowledge",
@@ -192,6 +233,18 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         url: "/dashboard/knowledge-candidates",
         icon: <FileCheck2Icon />,
         requiredPermission: "knowledgeBase.view",
+      },
+      {
+        titleKey: "nav.quickReplies",
+        url: "/dashboard/quick-replies",
+        icon: <MessageSquareMoreIcon />,
+        requiredPermission: "quickReply.view",
+      },
+      {
+        titleKey: "nav.tags",
+        url: "/dashboard/tags",
+        icon: <TagsIcon />,
+        requiredPermission: "tag.view",
       },
       {
         titleKey: "nav.aiConfigs",
@@ -206,10 +259,10 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         requiredPermission: "skillDefinition.view",
       },
       {
-        titleKey: "nav.mcp",
-        url: "/dashboard/mcp",
-        icon: <MessageSquareCodeIcon />,
-        requiredPermission: "mcp.view",
+        titleKey: "nav.replyIntentConfigs",
+        url: "/dashboard/reply-intent-configs",
+        icon: <SlidersHorizontalIcon />,
+        requiredPermission: "aiConfig.view",
       },
       {
         titleKey: "nav.agentRunLogs",
@@ -220,14 +273,16 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
     ],
   },
   {
-    titleKey: "nav.system",
+    titleKey: "nav.accessManagement",
     icon: <ShieldCheckIcon />,
+    context: "always",
     items: [
       {
         titleKey: "nav.users",
         url: "/dashboard/users",
         icon: <UsersIcon />,
         requiredPermission: "user.view",
+        context: "tenant",
       },
       {
         titleKey: "nav.roles",
@@ -240,6 +295,19 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         url: "/dashboard/permissions",
         icon: <KeyRoundIcon />,
         requiredPermission: "permission.view",
+      },
+    ],
+  },
+  {
+    titleKey: "nav.platformManagement",
+    icon: <Building2Icon />,
+    context: "platform",
+    items: [
+      {
+        titleKey: "nav.channels",
+        url: "/dashboard/channels",
+        icon: <Building2Icon />,
+        requiredPermission: "tenant.view",
       },
       {
         titleKey: "nav.storageSettings",
@@ -254,10 +322,10 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         requiredPermission: "wxworkDevicePool.view",
       },
       {
-        titleKey: "nav.replyIntentConfigs",
-        url: "/dashboard/reply-intent-configs",
-        icon: <SlidersHorizontalIcon />,
-        requiredPermission: "aiConfig.view",
+        titleKey: "nav.mcp",
+        url: "/dashboard/mcp",
+        icon: <MessageSquareCodeIcon />,
+        requiredPermission: "mcp.view",
       },
     ],
   },

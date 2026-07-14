@@ -214,6 +214,7 @@ func (s *authService) CurrentProfile(ctx *gin.Context) (*response.LoginResponse,
 		Permissions:       principal.Permissions,
 		Roles:             principal.Roles,
 		ActiveTenantID:    principal.ActiveTenantID,
+		ActiveTenantName:  principal.ActiveTenantName,
 		CanSwitchTenant:   principal.CanSwitchTenant,
 		IsPlatformAccount: principal.IsPlatformAccount,
 	}, nil
@@ -282,6 +283,7 @@ func (s *authService) issueTokens(ctx *sqls.TxContext, user *models.User, client
 		Permissions:       permissions,
 		Roles:             roles,
 		ActiveTenantID:    principal.ActiveTenantID,
+		ActiveTenantName:  principal.ActiveTenantName,
 		CanSwitchTenant:   principal.CanSwitchTenant,
 		IsPlatformAccount: principal.IsPlatformAccount,
 	}, nil
@@ -332,6 +334,7 @@ func (s *authService) resolveAuthPrincipal(db *gorm.DB, user *models.User, roles
 	}
 	canSwitchTenant := isPlatformAccount && slices.Contains(permissions, constants.PermissionTenantSwitch.Code)
 	activeTenantID := user.TenantID
+	activeTenantName := ""
 	if isPlatformAccount {
 		activeTenantID = 0
 		if requestedTenantID > 0 {
@@ -343,6 +346,7 @@ func (s *authService) resolveAuthPrincipal(db *gorm.DB, user *models.User, roles
 				return nil, errorsx.Forbidden("接入公司不存在或已停用")
 			}
 			activeTenantID = tenant.ID
+			activeTenantName = tenant.ShortName
 		}
 	} else if user.TenantID > 0 {
 		if requestedTenantID > 0 && requestedTenantID != user.TenantID {
@@ -352,11 +356,13 @@ func (s *authService) resolveAuthPrincipal(db *gorm.DB, user *models.User, roles
 		if tenant == nil || tenant.Status != enums.StatusOk {
 			return nil, errorsx.Forbidden("所属接入公司不存在或已停用")
 		}
+		activeTenantName = tenant.ShortName
 	}
 	return &dto.AuthPrincipal{
 		UserID:             user.ID,
 		TenantID:           user.TenantID,
 		ActiveTenantID:     activeTenantID,
+		ActiveTenantName:   activeTenantName,
 		Username:           user.Username,
 		Nickname:           user.Nickname,
 		Avatar:             user.Avatar,
