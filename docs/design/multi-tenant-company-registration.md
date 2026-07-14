@@ -2037,3 +2037,22 @@ MySQL 索引演练发现 `cmd/migration` 在配置、连接或迁移失败时只
 - 双租户回归构造 tenant 101 Customer/Relation 指向 tenant 202 Company/Store/WxWorkProtocolInstance，确认关系仍可见而三个外租户展示对象均被拒绝；正常同租户聚合继续通过。聚焦 race、services 全包、全仓 Go、`go vet ./...` 和 diff 检查通过。
 - `origin/codex/ai-billing@f2d2da4` 没有本批展示聚合实现，相对共同基线也未修改 `customer_service.go`，当前无同文件冲突。最终合并后仍须确认本分支租户版 Customer service 和本批回归测试被保留；本批不需要 migration 排序或前置 rebase。
 - 可独立回滚 service 与测试，不涉及数据库回滚；回滚会恢复脏跨租户关系的展示信息泄漏。若需清理脏记录，应依据只读审计结果另做幂等、可审查的数据修复，不能在读取路径自动改写。
+
+## 62. 当前实施检查点：异步业务通知租户边界（2026-07-15）
+
+会话和工单分配事件由事务提交后异步处理，原 handler 只按业务 ID 全局读取 Conversation/Ticket，再由 NotificationService 按接收账号推导 TenantID。正常派单虽然已校验接收人，但错误事件、历史数据或后续调用点可把租户 A 的业务摘要写成租户 B 的通知；企微通知的全局默认接收人还可能在目标客服未绑定企微时收到其他租户业务内容。
+
+### 复用现有通知体系
+
+- NotificationService 保留通用 `Create/CreateAndPush`，新增 `CreateInTenant/CreateAndPushInTenant`。租户业务调用必须用业务实体 TenantID 读取接收账号，账号不存在于该租户时不创建通知、不推 WebSocket。
+- 工单分配、会话分配和总部转人工站内通知均切换到租户入口；事件结构不增加重复 TenantID，Conversation/Ticket 仍是权威租户来源。
+- WxWorkNotifyService 新增租户入口。指定处理人必须属于目标租户；没有企微身份时，只允许回退到配置中的同租户账号或平台账号，其他租户默认接收人被过滤。处理人、接入渠道等通知文案补充数据也按实体租户读取。
+- 这是通知投递边界，不改变派单、工单、角色权限或通知查看语义；平台账号进入默认接收范围是显式运维例外，租户账号不能跨公司接收。
+
+### 验证、并行边界与剩余阻断
+
+- 双租户测试覆盖错配 Ticket/Conversation 事件不产生站内通知、`CreateInTenant` 拒绝外租户接收人、企微 fallback 只保留目标租户与平台账号；原同租户通知、未读数、转人工及 event handler 测试继续通过。
+- 聚焦 race、services/event_handlers 全包、全仓 `go test ./... -count=1 -p 1`、`go vet ./...` 和 diff 检查通过。没有 model、AutoMigrate、DML migration、DTO、enum、事件结构、API、权限、WebSocket payload、前端或 AI/计费变化。
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `conversation_human_dispatch_service.go` 的门店群转人工文案，本批修改同文件的总部站内通知，最终需逐段合并：保留 `CreateAndPushInTenant`，同时保留新版门店群文案；其新增客户名回查必须改用 `GetByTenantID(conversation.CustomerID, conversation.TenantID)`。其余本批文件无同文件冲突，也无 migration 排序要求。
+- 同轮审计确认媒体理解任务仍须在模型调用前验证 Message/Conversation 同租户，`ResolveForMessage` 须使用租户 route，企微语音须按租户读取 Channel。相关文件正在 AI 分支承载 usage/计费改动，本分支按协作边界未修改；最终合并必须由 AI 负责人一起落地并补非 HTTP 双租户回归，否则公开邀请注册不得启用。
+- 本批可独立回滚通知 service、调用点和测试，不涉及数据库回滚；回滚会恢复错误事件跨租户通知与企微 fallback 串租风险，因此不建议回滚。

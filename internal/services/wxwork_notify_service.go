@@ -57,6 +57,36 @@ func (s *wxWorkNotifyService) SendTextToAssigneeOrDefault(assigneeID int64, titl
 	return s.sendText(title, body, toUsers)
 }
 
+func (s *wxWorkNotifyService) SendTextToAssigneeOrDefaultInTenant(assigneeID, tenantID int64, title, body string) error {
+	if !s.Enabled() {
+		return nil
+	}
+	if tenantID <= 0 {
+		return fmt.Errorf("企微通知缺少接入公司归属")
+	}
+	toUsers := s.resolveTenantToUsers(assigneeID, tenantID)
+	if len(toUsers) == 0 {
+		return nil
+	}
+	return s.sendText(title, body, toUsers)
+}
+
+func (s *wxWorkNotifyService) resolveTenantToUsers(assigneeID, tenantID int64) []string {
+	if tenantID <= 0 {
+		return nil
+	}
+	if assigneeID > 0 {
+		toUsers := s.resolveToUsersByUserIDsInTenant([]int64{assigneeID}, tenantID, false)
+		if len(toUsers) > 0 {
+			return toUsers
+		}
+		if UserService.GetInTenant(assigneeID, tenantID) == nil {
+			return nil
+		}
+	}
+	return s.defaultToUsersInTenant(tenantID)
+}
+
 func (s *wxWorkNotifyService) sendText(title, body string, toUsers []string) error {
 	if !s.Enabled() {
 		return nil
@@ -105,9 +135,35 @@ func (s *wxWorkNotifyService) resolveToUsersByUserIDs(userIDs []int64) []string 
 	return arrs.Distinct(toUsers)
 }
 
+func (s *wxWorkNotifyService) resolveToUsersByUserIDsInTenant(userIDs []int64, tenantID int64, includePlatform bool) []string {
+	userIDs = arrs.Distinct(userIDs)
+	if len(userIDs) == 0 || tenantID <= 0 {
+		return nil
+	}
+	tenantIDs := []int64{tenantID}
+	if includePlatform {
+		tenantIDs = append(tenantIDs, 0)
+	}
+	users := repositories.UserRepository.Find(sqls.DB(), sqls.NewCnd().
+		In("id", userIDs).
+		In("tenant_id", tenantIDs).
+		Eq("status", enums.StatusOk).
+		Asc("id"))
+	eligibleUserIDs := make([]int64, 0, len(users))
+	for i := range users {
+		eligibleUserIDs = append(eligibleUserIDs, users[i].ID)
+	}
+	return s.resolveToUsersByUserIDs(eligibleUserIDs)
+}
+
 func (s *wxWorkNotifyService) defaultToUsers() []string {
 	cfg := config.Current().WxWork.Notify
 	return s.resolveToUsersByUserIDs(cfg.ToUsers)
+}
+
+func (s *wxWorkNotifyService) defaultToUsersInTenant(tenantID int64) []string {
+	cfg := config.Current().WxWork.Notify
+	return s.resolveToUsersByUserIDsInTenant(cfg.ToUsers, tenantID, true)
 }
 
 func (s *wxWorkNotifyService) buildTextContent(title, body string) string {

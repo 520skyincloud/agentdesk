@@ -32,7 +32,7 @@ func handleConversationAssignedNotify(ctx context.Context, event events.Conversa
 	if conversation == nil {
 		return nil
 	}
-	return services.WxWorkNotifyService.SendTextToAssigneeOrDefault(event.ToUserID,
+	return services.WxWorkNotifyService.SendTextToAssigneeOrDefaultInTenant(event.ToUserID, conversation.TenantID,
 		conversationAssignedNotifyTitle(event.AssignType),
 		buildConversationAssignedNotifyBody(conversation, event.ToUserID, event.Reason, event.AssignType))
 }
@@ -61,7 +61,7 @@ func buildConversationAssignedNotifyBody(conversation *models.Conversation, assi
 		fmt.Sprintf("会话摘要: %s", strs.DefaultIfBlank(services.ConversationService.BuildConversationSummary(conversation), "-")),
 		fmt.Sprintf("接入渠道: %s", resolveConversationChannelLabel(conversation)),
 		fmt.Sprintf("当前状态: %s", enums.GetIMConversationStatusLabel(conversation.Status)),
-		fmt.Sprintf("处理人: %s", resolveNotifyUserLabel(assigneeID)),
+		fmt.Sprintf("处理人: %s", resolveNotifyUserLabel(assigneeID, conversation.TenantID)),
 	}
 	if strings.TrimSpace(reason) != "" {
 		lines = append(lines, fmt.Sprintf("%s: %s", reasonLabel, strings.TrimSpace(reason)))
@@ -74,17 +74,17 @@ func resolveConversationChannelLabel(conversation *models.Conversation) string {
 	if conversation == nil || conversation.ChannelID <= 0 {
 		return "-"
 	}
-	if channel := services.ChannelService.Get(conversation.ChannelID); channel != nil {
+	if channel := services.ChannelService.GetByTenantID(conversation.ChannelID, conversation.TenantID); channel != nil {
 		return strs.DefaultIfBlank(channel.Name, channel.ChannelType)
 	}
 	return "-"
 }
 
-func resolveNotifyUserLabel(userID int64) string {
+func resolveNotifyUserLabel(userID, tenantID int64) string {
 	if userID <= 0 {
 		return "-"
 	}
-	user := services.UserService.Get(userID)
+	user := services.UserService.GetInTenant(userID, tenantID)
 	if user == nil {
 		return fmt.Sprintf("用户#%d", userID)
 	}

@@ -38,7 +38,7 @@ func handleTicketAssignedInAppNotification(ctx context.Context, event events.Tic
 	if reason := strings.TrimSpace(event.Reason); reason != "" {
 		content = content + "\n指派原因: " + reason
 	}
-	_, err := services.NotificationService.CreateAndPush(request.CreateNotificationRequest{
+	_, err := services.NotificationService.CreateAndPushInTenant(request.CreateNotificationRequest{
 		RecipientUserID:  event.ToUserID,
 		Title:            "工单指派提醒",
 		Content:          content,
@@ -46,7 +46,7 @@ func handleTicketAssignedInAppNotification(ctx context.Context, event events.Tic
 		BizType:          "ticket",
 		BizID:            ticket.ID,
 		ActionURL:        fmt.Sprintf("/dashboard/tickets?ticketId=%d", ticket.ID),
-	})
+	}, ticket.TenantID)
 	if err != nil {
 		slog.Error("create ticket assigned in-app notification failed", "error", err, "ticketId", event.TicketID, "toUserId", event.ToUserID)
 	}
@@ -68,7 +68,7 @@ func handleConversationAssignedInAppNotification(ctx context.Context, event even
 	if reason := strings.TrimSpace(event.Reason); reason != "" {
 		content = content + "\n分配原因: " + reason
 	}
-	_, err := services.NotificationService.CreateAndPush(request.CreateNotificationRequest{
+	_, err := services.NotificationService.CreateAndPushInTenant(request.CreateNotificationRequest{
 		RecipientUserID:  event.ToUserID,
 		Title:            conversationAssignedNotifyTitle(event.AssignType),
 		Content:          content,
@@ -76,7 +76,7 @@ func handleConversationAssignedInAppNotification(ctx context.Context, event even
 		BizType:          "conversation",
 		BizID:            conversation.ID,
 		ActionURL:        fmt.Sprintf("/dashboard/conversations?conversationId=%d", conversation.ID),
-	})
+	}, conversation.TenantID)
 	if err != nil {
 		slog.Error("create conversation assigned in-app notification failed", "error", err, "conversationId", event.ConversationID, "toUserId", event.ToUserID)
 	}

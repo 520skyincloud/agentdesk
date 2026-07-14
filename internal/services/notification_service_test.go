@@ -121,6 +121,30 @@ func TestNotificationServiceMarkAllReadOnlyCurrentUser(t *testing.T) {
 	}
 }
 
+func TestNotificationServiceCreateInTenantRejectsForeignRecipient(t *testing.T) {
+	db := setupNotificationTestDB(t)
+	createNotificationTestUser(t, db, 501, 51)
+	createNotificationTestUser(t, db, 502, 52)
+	req := request.CreateNotificationRequest{
+		RecipientUserID: 502, Title: "跨租户通知", Content: "不应创建",
+		NotificationType: "conversation_assigned", BizType: "conversation", BizID: 9,
+	}
+	if _, err := services.NotificationService.CreateInTenant(req, 51); err == nil {
+		t.Fatal("expected foreign recipient to be rejected")
+	}
+	if count := services.NotificationService.CountUnread(notificationTestPrincipal(502, 52)); count != 0 {
+		t.Fatalf("foreign recipient received %d notifications", count)
+	}
+	req.RecipientUserID = 501
+	item, err := services.NotificationService.CreateInTenant(req, 51)
+	if err != nil {
+		t.Fatalf("same-tenant CreateInTenant() error = %v", err)
+	}
+	if item.TenantID != 51 || item.RecipientUserID != 501 {
+		t.Fatalf("unexpected same-tenant notification: %+v", item)
+	}
+}
+
 func setupNotificationTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 

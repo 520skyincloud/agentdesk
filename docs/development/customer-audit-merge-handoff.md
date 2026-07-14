@@ -3222,3 +3222,48 @@ git diff --check
 
 - `origin/codex/ai-billing@f2d2da4` 不包含本批 `LoadPresentationData`，相对共同基线也未修改 `internal/services/customer_service.go`，当前无同文件冲突。最终合并后仍须确认本批实现、回归测试和之前 Customer TenantID 约束全部保留。
 - 不需要 migration 编号协调；当前不要求 rebase。可独立回滚四个文件中的本批段落与代码，但回滚会重新暴露脏跨租户补充数据。数据清理必须另开可审查批次，不能把读取路径改成自动修复器。
+
+## 第 62 批：异步业务通知租户边界（2026-07-15）
+
+### 问题与实现
+
+- ConversationAssignedEvent、TicketAssignedEvent 和 TicketCreatedEvent 均在提交后异步消费。原 handler 按业务 ID 读取实体，却调用按 RecipientUserID 推导 TenantID 的通知接口；错误事件可把租户 A 的业务内容写给租户 B 账号。企微通知在处理人没有身份时使用全局默认接收人，也缺少目标租户过滤。
+- NotificationService 新增 `CreateInTenant/CreateAndPushInTenant`，内部以业务 TenantID 调用 UserRepository.GetInTenant；原通用入口保留，避免破坏非业务通知。会话/工单事件和 `notifyAgentDeskHandoff` 均传入已加载实体的 TenantID。
+- WxWorkNotifyService 新增 `SendTextToAssigneeOrDefaultInTenant`。指定处理人为外租户账号时直接停止；同租户处理人缺少企微身份时，fallback 仅从目标租户与 tenant 0 平台账号中选择启用账号。Channel 和处理人文案补充读取同步按实体 TenantID。
+- 不给内部 event 增加 TenantID，避免同时维护两份可能矛盾的租户证据；handler 每次重新读取 Conversation/Ticket 并以其 TenantID 为准。
+
+### 文件与验证
+
+```text
+internal/services/channel_service.go
+internal/services/conversation_human_dispatch_service.go
+internal/services/event_handlers/conversation_assigned_event_handler.go
+internal/services/event_handlers/notification_event_handler.go
+internal/services/event_handlers/notification_event_handler_test.go
+internal/services/event_handlers/ticket_assigned_event_handler.go
+internal/services/event_handlers/ticket_create_event_handler.go
+internal/services/notification_service.go
+internal/services/notification_service_test.go
+internal/services/wxwork_notify_service.go
+internal/services/wxwork_notify_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run 'Test(NotificationServiceCreateInTenantRejectsForeignRecipient|WxWorkNotifyTenantScopedRecipients)$' -count=1 -p 1
+go test -race ./internal/services/event_handlers -run 'Test(TicketAssignedInAppNotification|ConversationAssignedInAppNotification|AssignmentInAppNotificationsRejectCrossTenantRecipients)$' -count=1 -p 1
+go test ./internal/services ./internal/services/event_handlers -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 错配的 Ticket/Conversation 事件不再生成 Notification；同租户 CreateInTenant 正常写入，外租户接收人被拒绝。企微 tenant 101 fallback 得到 tenant 101 与平台接收人，不包含 tenant 202。
+- 聚焦 race、两个受影响包、全仓 Go、vet 和 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、event schema、API、路由、权限、WebSocket、前端、模型调用、token、usage 或计费变化。
+
+### 并行分支、剩余阻断与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/services/conversation_human_dispatch_service.go` 的门店群转人工文案，本批在同文件将总部站内通知切到 `CreateAndPushInTenant`。最终必须逐段保留两者；AI 分支新增 `handoffNoticeCustomerName` 时使用全局 `CustomerService.Get`，合并时必须改为 `GetByTenantID(conversation.CustomerID, conversation.TenantID)`。其余本批文件当前无同文件冲突，不要求 rebase 或 migration 排序。
+- 本轮同时审计 `media_understanding_service.go` 与 `store_ai_model_setting_service.go`，确认仍缺模型调用前 Message/Conversation 同租户校验、tenant-scoped route 解析和企微语音 Channel 同租户读取。AI 分支正修改这些文件的 usage/计费与二次触发，本分支不得越界改动；最终合并必须联合修复并增加双租户非 HTTP 测试，这仍是公开注册上线阻断项。
+- 本批可独立回滚通知 service、调用点、测试和文档，不涉及数据库回滚；回滚会重新允许错误异步事件跨租户通知，并恢复全局企微 fallback，因此不建议回滚。

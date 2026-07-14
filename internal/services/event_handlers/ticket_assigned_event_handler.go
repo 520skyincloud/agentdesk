@@ -29,7 +29,7 @@ func handleTicketAssignedNotify(ctx context.Context, event events.TicketAssigned
 		return nil
 	}
 	content := buildTicketAssignedNotifyBody(ticket, event.ToUserID, event.Reason)
-	return services.WxWorkNotifyService.SendTextToAssigneeOrDefault(event.ToUserID, "工单指派提醒", content)
+	return services.WxWorkNotifyService.SendTextToAssigneeOrDefaultInTenant(event.ToUserID, ticket.TenantID, "工单指派提醒", content)
 }
 
 func buildTicketAssignedNotifyBody(ticket *models.Ticket, assigneeID int64, reason string) string {
@@ -40,7 +40,7 @@ func buildTicketAssignedNotifyBody(ticket *models.Ticket, assigneeID int64, reas
 		fmt.Sprintf("工单号: %s", strs.DefaultIfBlank(ticket.TicketNo, fmt.Sprintf("#%d", ticket.ID))),
 		fmt.Sprintf("工单标题: %s", strs.DefaultIfBlank(ticket.Title, "-")),
 		fmt.Sprintf("当前状态: %s", enums.GetTicketStatusLabel(ticket.Status)),
-		fmt.Sprintf("处理人: %s", resolveNotifyUserLabel(assigneeID)),
+		fmt.Sprintf("处理人: %s", resolveNotifyUserLabel(assigneeID, ticket.TenantID)),
 	}
 	if strings.TrimSpace(reason) != "" {
 		lines = append(lines, fmt.Sprintf("指派原因: %s", strings.TrimSpace(reason)))

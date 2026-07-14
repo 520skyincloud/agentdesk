@@ -511,7 +511,7 @@ func (s *conversationHumanDispatchService) notifyAgentDeskHandoff(conversationID
 		content = content + "\n转人工原因: " + trimmedReason
 	}
 	for _, userID := range userIDs {
-		_, err := NotificationService.CreateAndPush(request.CreateNotificationRequest{
+		_, err := NotificationService.CreateAndPushInTenant(request.CreateNotificationRequest{
 			RecipientUserID:  userID,
 			Title:            "新的转人工请求",
 			Content:          content,
@@ -519,7 +519,7 @@ func (s *conversationHumanDispatchService) notifyAgentDeskHandoff(conversationID
 			BizType:          "conversation",
 			BizID:            conversation.ID,
 			ActionURL:        fmt.Sprintf("/dashboard/conversations?conversationId=%d", conversation.ID),
-		})
+		}, conversation.TenantID)
 		if err != nil {
 			slog.Warn("create agentdesk handoff notification failed", "conversation_id", conversation.ID, "recipient_user_id", userID, "error", err)
 		}

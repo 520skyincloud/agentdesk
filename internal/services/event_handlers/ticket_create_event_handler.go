@@ -29,7 +29,7 @@ func handleTicketCreatedNotify(ctx context.Context, event events.TicketCreatedEv
 		return nil
 	}
 	content := buildTicketCreatedNotifyBody(ticket)
-	return services.WxWorkNotifyService.SendTextToAssigneeOrDefault(ticket.CurrentAssigneeID, "工单创建提醒", content)
+	return services.WxWorkNotifyService.SendTextToAssigneeOrDefaultInTenant(ticket.CurrentAssigneeID, ticket.TenantID, "工单创建提醒", content)
 }
 
 func buildTicketCreatedNotifyBody(ticket *models.Ticket) string {
@@ -43,7 +43,7 @@ func buildTicketCreatedNotifyBody(ticket *models.Ticket) string {
 		fmt.Sprintf("当前状态: %s", enums.GetTicketStatusLabel(ticket.Status)),
 	}
 	if ticket.CurrentAssigneeID > 0 {
-		lines = append(lines, fmt.Sprintf("处理人: %s", resolveNotifyUserLabel(ticket.CurrentAssigneeID)))
+		lines = append(lines, fmt.Sprintf("处理人: %s", resolveNotifyUserLabel(ticket.CurrentAssigneeID, ticket.TenantID)))
 	}
 	lines = append(lines, fmt.Sprintf("时间: %s", time.Now().Format("2006-01-02 15:04:05")))
 	return strings.Join(lines, "\n")

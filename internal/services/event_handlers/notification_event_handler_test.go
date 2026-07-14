@@ -22,6 +22,7 @@ func TestTicketAssignedInAppNotification(t *testing.T) {
 	createNotificationEventUser(t, db, 11, 101)
 
 	ticket := &models.Ticket{
+		TenantID:          101,
 		TicketNo:          "TK202604280001",
 		Title:             "退款处理",
 		Source:            enums.TicketSourceManual,
@@ -64,6 +65,7 @@ func TestConversationAssignedInAppNotification(t *testing.T) {
 	createNotificationEventUser(t, db, 22, 202)
 
 	conversation := &models.Conversation{
+		TenantID:          202,
 		CustomerName:      "张三",
 		Status:            enums.IMConversationStatusActive,
 		CurrentAssigneeID: 22,
@@ -97,6 +99,43 @@ func TestConversationAssignedInAppNotification(t *testing.T) {
 	}
 	if got.ActionURL != "/dashboard/conversations?conversationId=1" {
 		t.Fatalf("unexpected action url: %q", got.ActionURL)
+	}
+}
+
+func TestAssignmentInAppNotificationsRejectCrossTenantRecipients(t *testing.T) {
+	db := setupNotificationEventHandlerTestDB(t)
+	createNotificationEventUser(t, db, 31, 301)
+	createNotificationEventUser(t, db, 32, 302)
+	now := time.Now()
+	ticket := &models.Ticket{
+		TenantID: 301, TicketNo: "TK-CROSS-TENANT", Title: "租户 A 工单",
+		Status: enums.TicketStatusPending, CurrentAssigneeID: 31,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := repositories.TicketRepository.Create(sqls.DB(), ticket); err != nil {
+		t.Fatalf("create ticket: %v", err)
+	}
+	conversation := &models.Conversation{
+		TenantID: 301, CustomerName: "租户 A 客户", Status: enums.IMConversationStatusActive,
+		CurrentAssigneeID: 31, AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := repositories.ConversationRepository.Create(sqls.DB(), conversation); err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	if err := handleTicketAssignedInAppNotification(context.Background(), events.TicketAssignedEvent{
+		TicketID: ticket.ID, ToUserID: 32, Reason: "错误跨租户事件",
+	}); err != nil {
+		t.Fatalf("ticket handler error: %v", err)
+	}
+	if err := handleConversationAssignedInAppNotification(context.Background(), events.ConversationAssignedEvent{
+		ConversationID: conversation.ID, ToUserID: 32, Reason: "错误跨租户事件",
+	}); err != nil {
+		t.Fatalf("conversation handler error: %v", err)
+	}
+
+	if count := repositories.NotificationRepository.Count(sqls.DB(), sqls.NewCnd()); count != 0 {
+		t.Fatalf("cross-tenant events created %d notifications", count)
 	}
 }
 

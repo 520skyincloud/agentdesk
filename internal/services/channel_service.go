@@ -42,6 +42,10 @@ func (s *channelService) GetInTenant(id int64, operator *dto.AuthPrincipal) *mod
 	return repositories.ChannelRepository.GetInTenant(sqls.DB(), id, channelTenantID(operator))
 }
 
+func (s *channelService) GetByTenantID(id, tenantID int64) *models.Channel {
+	return repositories.ChannelRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *channelService) Take(where ...interface{}) *models.Channel {
 	return repositories.ChannelRepository.Take(sqls.DB(), where...)
 }

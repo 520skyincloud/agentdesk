@@ -78,6 +78,48 @@ func TestWxWorkNotifyNormalizeDuplicateCheckInterval(t *testing.T) {
 	}
 }
 
+func TestWxWorkNotifyTenantScopedRecipients(t *testing.T) {
+	db := setupWxWorkNotifyTestDB(t)
+	config.SetCurrent(&config.Config{
+		WxWork: config.WxWorkConfig{
+			CorpID: "corp-tenant-scope",
+			Notify: config.WxWorkNotifyConfig{Enabled: true, ToUsers: []int64{21, 22, 23}},
+		},
+	})
+	users := []*models.User{
+		{ID: 21, TenantID: 101, Username: "tenant-a-notify", Status: enums.StatusOk},
+		{ID: 22, TenantID: 202, Username: "tenant-b-notify", Status: enums.StatusOk},
+		{ID: 23, TenantID: 0, Username: "platform-notify", Status: enums.StatusOk},
+	}
+	for _, user := range users {
+		if err := db.Create(user).Error; err != nil {
+			t.Fatalf("create user %d: %v", user.ID, err)
+		}
+	}
+	now := time.Now()
+	for _, identity := range []*models.UserIdentity{
+		{UserID: 21, Provider: enums.ThirdProviderWxWork, ProviderUserID: "wx_tenant_a", ProviderCorpID: "corp-tenant-scope", Status: enums.StatusOk, LastAuthAt: &now},
+		{UserID: 22, Provider: enums.ThirdProviderWxWork, ProviderUserID: "wx_tenant_b", ProviderCorpID: "corp-tenant-scope", Status: enums.StatusOk, LastAuthAt: &now},
+		{UserID: 23, Provider: enums.ThirdProviderWxWork, ProviderUserID: "wx_platform", ProviderCorpID: "corp-tenant-scope", Status: enums.StatusOk, LastAuthAt: &now},
+	} {
+		if err := repositories.UserIdentityRepository.Create(db, identity); err != nil {
+			t.Fatalf("create identity for user %d: %v", identity.UserID, err)
+		}
+	}
+
+	svc := newWxWorkNotifyService()
+	if got := svc.resolveToUsersByUserIDsInTenant([]int64{22}, 101, false); len(got) != 0 {
+		t.Fatalf("foreign assignee resolved as tenant A recipient: %#v", got)
+	}
+	if got := svc.resolveTenantToUsers(22, 101); len(got) != 0 {
+		t.Fatalf("foreign assignee fell back to tenant A defaults: %#v", got)
+	}
+	got := svc.defaultToUsersInTenant(101)
+	if len(got) != 2 || got[0] != "wx_tenant_a" || got[1] != "wx_platform" {
+		t.Fatalf("tenant A fallback recipients = %#v", got)
+	}
+}
+
 func setupWxWorkNotifyTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -96,7 +138,7 @@ func setupWxWorkNotifyTestDB(t *testing.T) *gorm.DB {
 			_ = sqlDB.Close()
 		}
 	})
-	if err := db.AutoMigrate(&models.UserIdentity{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.UserIdentity{}); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}
 	sqls.SetDB(db)

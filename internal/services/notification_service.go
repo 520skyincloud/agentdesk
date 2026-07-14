@@ -26,10 +26,26 @@ type notificationService struct {
 }
 
 func (s *notificationService) Create(req request.CreateNotificationRequest) (*models.Notification, error) {
+	return s.create(req, 0)
+}
+
+func (s *notificationService) CreateInTenant(req request.CreateNotificationRequest, tenantID int64) (*models.Notification, error) {
+	if tenantID <= 0 {
+		return nil, errorsx.InvalidParam("通知缺少接入公司归属")
+	}
+	return s.create(req, tenantID)
+}
+
+func (s *notificationService) create(req request.CreateNotificationRequest, tenantID int64) (*models.Notification, error) {
 	if req.RecipientUserID <= 0 {
 		return nil, errorsx.InvalidParam("接收人不能为空")
 	}
-	recipient := repositories.UserRepository.Get(sqls.DB(), req.RecipientUserID)
+	var recipient *models.User
+	if tenantID > 0 {
+		recipient = repositories.UserRepository.GetInTenant(sqls.DB(), req.RecipientUserID, tenantID)
+	} else {
+		recipient = repositories.UserRepository.Get(sqls.DB(), req.RecipientUserID)
+	}
 	if recipient == nil || recipient.Status == enums.StatusDeleted {
 		return nil, errorsx.InvalidParam("接收账号不存在")
 	}
@@ -54,6 +70,15 @@ func (s *notificationService) Create(req request.CreateNotificationRequest) (*mo
 
 func (s *notificationService) CreateAndPush(req request.CreateNotificationRequest) (*models.Notification, error) {
 	item, err := s.Create(req)
+	return s.pushCreated(item, err)
+}
+
+func (s *notificationService) CreateAndPushInTenant(req request.CreateNotificationRequest, tenantID int64) (*models.Notification, error) {
+	item, err := s.CreateInTenant(req, tenantID)
+	return s.pushCreated(item, err)
+}
+
+func (s *notificationService) pushCreated(item *models.Notification, err error) (*models.Notification, error) {
 	if err != nil {
 		return nil, err
 	}
