@@ -2683,3 +2683,44 @@ git diff --check
 - 首次并行验证中的全仓 Go 测试曾在 `internal/services` 失败，单包与最终全仓复跑通过；额外 `go test ./internal/services -count=3` 暴露该包在同进程重复运行时复用全局 DB/配置的既有隔离问题，第二轮起会批量报表缺失/表缺失。该问题不由本批前端产生，且涉及共享测试基础设施和回复异步状态，留作独立协同任务，不能把 `-count=3` 记录成通过。
 - AI 分支也修改 `conversation-info-panel.tsx`，加入自动转人工开关和 `intentProfileId` 保存兼容。合并顺序建议先保留本批 `ConversationInfoPermissions`，再重放 AI 开关；开关必须使用后端已经要求的 `conversation.handover` 做前端显隐和动作守卫，同时保留公司更新的 `intentProfileId`，禁止整文件二选一覆盖。
 - 本批无 migration、共享 DTO、enum、API、路由、WebSocket、模型调用、token、usage 或计费变化。页面和测试可独立回滚，回滚不需要数据处理，但会恢复只读账号的 403 和误导入口。
+
+## 第 51 批：企微员工号账号入口与 Manager 动作权限（2026-07-15）
+
+### 原链路与设计选择
+
+- 会话页中的企微账号列用于按员工号筛选客户并反映来源门店，属于会话导航；账号新增、编辑、删除、重新登录和远程开户链接属于渠道配置。两者原来共用一组无权限按钮，不能通过删除整个账号列解决，否则会破坏用户已确认的“全部账号/具体企微账号”工作流。
+- 本批保留会话主入口，把账号读取、开户和管理拆回后端已有 `channel.view/create/update/delete`；复用 Manager 同时自带权限，避免企微独立页、公司详情和会话抽屉各写一套不一致判断。
+
+### 文件与行为
+
+```text
+web/app/dashboard/conversations/page.tsx
+web/components/wxwork-protocol/wxwork-protocol-instance-manager.tsx
+web/app/dashboard/company-detail/page.tsx
+web/app/dashboard/conversations/wxwork-account-permissions.test.mjs
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 会话页无 `channel.view` 时不调用实例列表，清空旧实例和筛选 ID，只保留“全部账号”及会话列表；统计改用当前会话，避免显示为 0。具备查看权限时原员工号搜索、门店来源和当前来源亮显保持不变。
+- 现场扫码、占用清理、远程开户链接统一要求 `channel.view + channel.create`；扫码成功后的资料同步仅在另有 `channel.update` 时执行。账号管理抽屉由 `channel.update || channel.delete` 控制。
+- Manager 按 create/update/delete 控制 CRUD，按 update 控制更换登录；按 `knowledgeBase.view/company.view` 条件加载辅助选项，按 `aiConfig.view/update` 控制模型读取与保存。所有写函数补同权限守卫。
+- 客户企业详情按 `channel.view` 隐藏整个企微账号区域，按 `channel.view + channel.create` 显示公司专属开户链接；模型保存回调要求 `aiConfig.update`。
+
+### 验证、并行与回滚
+
+```text
+node --test app/dashboard/conversations/wxwork-account-permissions.test.mjs
+rg --files -g '*.test.mjs' | sort | xargs node --test
+pnpm typecheck
+pnpm exec eslint app/dashboard/company-detail/page.tsx app/dashboard/conversations/page.tsx app/dashboard/conversations/wxwork-account-permissions.test.mjs components/wxwork-protocol/wxwork-protocol-instance-manager.tsx
+pnpm build
+go test ./... -count=1
+go vet ./...
+git diff --check
+```
+
+- 定向 4 项、全前端 103 项、TypeScript、生产构建、Go 全量、vet 和 diff 检查通过；目标 ESLint 无 error，仅报告会话页既有二维码 `<img>` warning。
+- AI 分支同文件 Manager 新增欢迎语编辑、意图行业列表、替换账号远程链接和模型测试。最终合并必须把欢迎语 action/保存与替换链接函数置于 `canUpdateChannels`，把 `fetchReplyIntentProfiles` 置于 `canViewStoreModelSettings`，把模型测试按钮与函数置于 `canUpdateStoreModelSettings`，并保留 AI 分支所有字段和新替换流程。
+- AI 分支不修改会话主页面、公司详情或本批新测试，但修改 Manager 和 `web/lib/api/admin.ts`；本批没有 API 变更，因此建议先保留 AI 最终字段/API，再重放本批 Manager 权限层。禁止整文件采用任一分支版本。
+- 本批无 migration、共享 DTO、enum、路由、WebSocket、AI 回复、token、usage 或计费变化。整体回滚无需数据处理，但会重新暴露只读账号 403 和写入口误导。

@@ -1822,3 +1822,22 @@ git diff --check
 - 全前端 99 项契约测试、`pnpm typecheck`、目标 ESLint、Next 生产构建、`go vet ./...`、最终 `go test ./... -count=1` 和 `git diff --check` 通过。验证期间一次并行全量 Go 运行在 `internal/services` 失败，单包与最终全量立即复跑通过；`-count=3` 会因该包复用全局 DB/配置状态导致第二轮批量失败，属于既有测试隔离限制，不能据此修改本批前端或宣称服务测试可重复进程内运行。
 - `origin/codex/ai-billing@f2d2da4` 同时修改会话详情组件：新增自动转人工开关，并在公司更新 payload 保留 `intentProfileId`。最终合并必须同时保留这两项和本批权限能力；该开关后端明确要求 `conversation.handover`，合并后前端必须按此权限隐藏并守卫，不能仅凭 `conversation.view` 展示。
 - 本批不改变客户、客户企业、工单和标签的后端语义，可独立回滚页面与契约测试；回滚会恢复越权辅助请求和误导性写入口。公开邀请注册仍受 AI 分支新增主体租户隔离与合并后页面权限复核门槛约束。
+
+## 51. 当前实施检查点：企微员工号账号入口与 Manager 动作权限（2026-07-15）
+
+本检查点审计会话工作台、企微员工号独立页和客户企业详情共同复用的 `WxWorkProtocolInstanceManager`。会话页只要求 `conversation.view`，此前却无条件读取企微实例，并向所有账号显示新增、账号设置和远程开户链接；Manager 自身也无条件提供创建、编辑、删除和更换登录，并无条件加载知识库与客户企业选项。这使自定义会话只读角色整页出现 403，也让默认客服看到后端明确拒绝的账号管理动作。
+
+### 页面职责与复用权限
+
+- 会话工作台继续保留“全部账号”与全部会话入口，不把 `channel.view` 变成会话查看的附加门槛。缺少渠道查看权限时，只隐藏具体员工号导航和员工号搜索，统计由当前已加载会话计算；已有“全部账号下选择客户时来源员工号亮显”的行为在有渠道查看权限时保持不变。
+- `channel.view` 控制企微实例列表和账号导航；会话页开户流程需要 `channel.view + channel.create`，因为创建后还要轮询登录状态和刷新实例；账号设置入口需要 `channel.update` 或 `channel.delete`。
+- Manager 自身独立执行同一边界：无 `channel.view` 时不加载、不渲染；create/update/delete 分别控制新增、编辑和删除；“更换登录员工号”使用 `channel.update`。异步函数也有相同守卫，不能依赖按钮隐藏代替接口鉴权。
+- Manager 的知识库与客户企业辅助选项只在分别持有 `knowledgeBase.view`、`company.view` 时请求；没有客户企业查看权限时，编辑表单不渲染公司选择字段并保留原绑定，避免空选项把既有公司静默清零。
+- 模型设置读取和保存继续使用 `aiConfig.view/update`。客户企业详情的企微账号区由 `channel.view` 控制，公司专属远程开户链接由 `channel.view + channel.create` 控制；公司模型保存回调补充 `aiConfig.update` 守卫。
+
+### 契约、验证与并行合并
+
+- 修改 `web/app/dashboard/conversations/page.tsx`、`web/components/wxwork-protocol/wxwork-protocol-instance-manager.tsx`、`web/app/dashboard/company-detail/page.tsx`，新增 `web/app/dashboard/conversations/wxwork-account-permissions.test.mjs`。没有 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket payload 或权限常量变化。
+- 定向 4 项、全前端 103 项契约测试、`pnpm typecheck`、目标 ESLint、Next 生产构建、`go test ./... -count=1`、`go vet ./...` 和 `git diff --check` 通过。目标 ESLint 仅保留会话页原有二维码 `<img>` 性能 warning，无新增 error 或 hooks warning。
+- `origin/codex/ai-billing@f2d2da4` 大幅修改同一 Manager，新增欢迎语、意图行业、保留旧号的替换链接和模型连通测试。合并时必须在最终 Manager 保留本批权限变量：欢迎语和替换链接使用 `channel.update`，意图行业选项读取使用 `aiConfig.view`，模型测试使用 `aiConfig.update`；其新增函数也必须有动作守卫。
+- 本批可按三个页面/组件、测试和本节文档整体回滚，不需要数据回滚；回滚会恢复只读账号的跨资源请求和误导写入口。公开邀请注册仍需等待 AI 分支新增模型 Tenant 契约和合并后双租户验收。

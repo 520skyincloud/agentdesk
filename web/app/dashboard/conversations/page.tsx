@@ -17,7 +17,7 @@ import {
   SettingsIcon,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { ConversationCloseDialog } from "@/components/conversation-actions/close-dialog";
@@ -127,6 +127,11 @@ export default function ConversationsPage() {
   const canCreateTicket = permissions.has("ticket.create");
   const canAssignTicket = permissions.has("ticket.assign") && permissions.has("agent.view");
   const canViewTags = permissions.has("tag.view");
+  const canViewWxWorkAccounts = permissions.has("channel.view");
+  const canCreateWxWorkAccounts = canViewWxWorkAccounts && permissions.has("channel.create");
+  const canUpdateWxWorkAccounts = canViewWxWorkAccounts && permissions.has("channel.update");
+  const canDeleteWxWorkAccounts = canViewWxWorkAccounts && permissions.has("channel.delete");
+  const canManageWxWorkAccounts = canUpdateWxWorkAccounts || canDeleteWxWorkAccounts;
   const canTransferConversation = permissions.has("conversation.transfer");
   const canCloseConversation = permissions.has("conversation.close");
   const canUseConversationActions = canCreateTicket || canTransferConversation || canCloseConversation;
@@ -135,18 +140,27 @@ export default function ConversationsPage() {
   const selectedInstance = instances.find((item) => item.id === selectedWxWorkInstanceId) ?? null;
   const conversationInstance =
     instances.find((item) => item.id === conversation?.wxWorkInstanceId) ?? selectedInstance;
-  const aggregateAccountStats = useMemo(
-    () =>
-      instances.reduce(
+  const aggregateAccountStats = useMemo(() => {
+    if (!canViewWxWorkAccounts) {
+      return conversations.reduce(
+        (acc, item) => ({
+          customerCount: acc.customerCount + 1,
+          manualAttentionCount: acc.manualAttentionCount + (item.manualAttention?.dot ? 1 : 0),
+          urgentManualAttentionCount:
+            acc.urgentManualAttentionCount + (item.manualAttention?.level === "urgent" ? 1 : 0),
+        }),
+        { customerCount: 0, manualAttentionCount: 0, urgentManualAttentionCount: 0 },
+      );
+    }
+    return instances.reduce(
         (acc, item) => ({
           customerCount: acc.customerCount + Number(item.customerCount || 0),
           manualAttentionCount: acc.manualAttentionCount + Number(item.manualAttentionCount || 0),
           urgentManualAttentionCount: acc.urgentManualAttentionCount + Number(item.urgentManualAttentionCount || 0),
         }),
         { customerCount: 0, manualAttentionCount: 0, urgentManualAttentionCount: 0 },
-      ),
-    [instances],
-  );
+      );
+  }, [canViewWxWorkAccounts, conversations, instances]);
   const myAttentionStats = useMemo(
     () => ({
       customerCount: conversations.length,
@@ -170,6 +184,9 @@ export default function ConversationsPage() {
   const manualAttentionCount = visibleAccountStats.manualAttentionCount;
   const urgentManualAttentionCount = visibleAccountStats.urgentManualAttentionCount;
   const filteredInstances = useMemo(() => {
+    if (!canViewWxWorkAccounts) {
+      return [];
+    }
     const keyword = accountKeyword.trim().toLowerCase();
     if (!keyword) {
       return instances;
@@ -179,9 +196,28 @@ export default function ConversationsPage() {
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword)),
     );
-  }, [accountKeyword, instances]);
+  }, [accountKeyword, canViewWxWorkAccounts, instances]);
+
+  const loadWxWorkInstances = useCallback(async () => {
+    const requestSeq = ++instancesRequestSeqRef.current;
+    if (!canViewWxWorkAccounts) {
+      setInstances([]);
+      return;
+    }
+    try {
+      const page = await fetchWxWorkProtocolInstances({ status: 0, limit: 200 });
+      if (requestSeq === instancesRequestSeqRef.current) {
+        setInstances(page.results ?? []);
+      }
+    } catch (error) {
+      if (requestSeq === instancesRequestSeqRef.current) {
+        toast.error(error instanceof Error ? error.message : "加载员工号失败");
+      }
+    }
+  }, [canViewWxWorkAccounts]);
 
   const handleInstanceUpdated = (updated: WxWorkProtocolInstance) => {
+    if (!canViewWxWorkAccounts) return;
     setInstances((current) =>
       current.map((item) => (item.id === updated.id ? updated : item)),
     );
@@ -192,6 +228,9 @@ export default function ConversationsPage() {
   };
 
   const handleScanLoginOpenChange = (open: boolean) => {
+    if (open && !canCreateWxWorkAccounts) {
+      return;
+    }
     if (!open) {
       void cleanupPendingScanLogin();
     }
@@ -199,6 +238,7 @@ export default function ConversationsPage() {
   };
 
   const startScanLogin = async () => {
+    if (!canCreateWxWorkAccounts) return;
     setScanLoginOpen(true);
     scanLoginSucceededRef.current = false;
     setScanLoginLoading(true);
@@ -221,6 +261,7 @@ export default function ConversationsPage() {
   };
 
   const resolveScanLoginBinding = async () => {
+    if (!canCreateWxWorkAccounts) return;
     setScanLoginResolving(true);
     try {
       await resolveWxWorkProtocolLoginBinding(0);
@@ -237,6 +278,7 @@ export default function ConversationsPage() {
   };
 
   const createRemoteSetupLink = async () => {
+    if (!canCreateWxWorkAccounts) return;
     setScanLoginOpen(true);
     setRemoteSetupLoading(true);
     try {
@@ -253,7 +295,7 @@ export default function ConversationsPage() {
   };
 
   useEffect(() => {
-    if (!scanLoginOpen || !scanLoginResult?.instance.id) {
+    if (!canCreateWxWorkAccounts || !scanLoginOpen || !scanLoginResult?.instance.id) {
       return;
     }
     let disposed = false;
@@ -267,7 +309,9 @@ export default function ConversationsPage() {
         const lower = raw.toLowerCase();
         if (lower.includes("success") || lower.includes("login") || lower.includes("已登录") || lower.includes("登录成功")) {
           setScanLoginStatus("登录成功，正在同步员工号资料...");
-          await syncWxWorkProtocolProfile(scanLoginResult.instance.id).catch(() => "");
+          if (canUpdateWxWorkAccounts) {
+            await syncWxWorkProtocolProfile(scanLoginResult.instance.id).catch(() => "");
+          }
           await loadWxWorkInstances();
           scanLoginSucceededRef.current = true;
           toast.success("员工号登录成功，请继续绑定门店和知识库");
@@ -285,36 +329,26 @@ export default function ConversationsPage() {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [scanLoginOpen, scanLoginResult?.instance.id]);
+  }, [canCreateWxWorkAccounts, canUpdateWxWorkAccounts, loadWxWorkInstances, scanLoginOpen, scanLoginResult?.instance.id]);
 
   useEffect(() => {
     setTenantContext(activeTenantId);
   }, [activeTenantId, setTenantContext]);
 
   useEffect(() => {
+    setInstances([]);
+    if (!canViewWxWorkAccounts) {
+      setSelectedWxWorkInstanceId(null);
+      return;
+    }
+    void loadWxWorkInstances();
+  }, [activeTenantId, canViewWxWorkAccounts, loadWxWorkInstances, setSelectedWxWorkInstanceId]);
+
+  useEffect(() => {
     void loadConversations().catch((error) => {
       toast.error(error instanceof Error ? error.message : t("conversation.loadListFailed"));
     });
   }, [activeTenantId, loadConversations, selectedWxWorkInstanceId, t]);
-
-  const loadWxWorkInstances = async () => {
-    const requestSeq = ++instancesRequestSeqRef.current;
-    try {
-      const page = await fetchWxWorkProtocolInstances({ status: 0, limit: 200 });
-      if (requestSeq === instancesRequestSeqRef.current) {
-        setInstances(page.results ?? []);
-      }
-    } catch (error) {
-      if (requestSeq === instancesRequestSeqRef.current) {
-        toast.error(error instanceof Error ? error.message : "加载员工号失败");
-      }
-    }
-  };
-
-  useEffect(() => {
-    setInstances([]);
-    void loadWxWorkInstances();
-  }, [activeTenantId]);
 
   useEffect(() => {
     if (selectedWxWorkInstanceId !== null || !conversation?.wxWorkInstanceId) {
@@ -347,6 +381,7 @@ export default function ConversationsPage() {
   };
 
   const selectWxWorkAccount = (instanceId: number | null) => {
+    if (instanceId !== null && !canViewWxWorkAccounts) return;
     setSelectedWxWorkInstanceId(instanceId);
     if (showingMyAttention) {
       setConversationFilter("all_open");
@@ -368,37 +403,45 @@ export default function ConversationsPage() {
                 <div className="mt-0.5 text-[11px] text-muted-foreground">账号 / 回调 / AI 托管</div>
               </div>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className={`${workbenchIconButtonClassName} shrink-0`}
-              onClick={() => setAccountManagerOpen(true)}
-              aria-label="管理企微员工号"
-              title="管理企微员工号"
-            >
-              <SettingsIcon className="size-4" />
-            </Button>
+            {canManageWxWorkAccounts ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className={`${workbenchIconButtonClassName} shrink-0`}
+                onClick={() => setAccountManagerOpen(true)}
+                aria-label="管理企微员工号"
+                title="管理企微员工号"
+              >
+                <SettingsIcon className="size-4" />
+              </Button>
+            ) : null}
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-9 justify-center gap-1.5 rounded-lg border-primary/40 bg-background text-xs font-medium text-primary shadow-none hover:bg-primary/5 hover:text-primary"
-              onClick={() => void startScanLogin()}
-            >
-              <QrCodeIcon className="size-4" />
-              新增账号
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-9 justify-center gap-1.5 rounded-lg border-border bg-background text-xs font-medium text-foreground shadow-none hover:bg-muted"
-              onClick={() => setAccountManagerOpen(true)}
-            >
-              <SettingsIcon className="size-4" />
-              账号设置
-            </Button>
-          </div>
+          {canCreateWxWorkAccounts || canManageWxWorkAccounts ? (
+            <div className={`mt-3 grid gap-2 ${canCreateWxWorkAccounts && canManageWxWorkAccounts ? "grid-cols-2" : "grid-cols-1"}`}>
+              {canCreateWxWorkAccounts ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 justify-center gap-1.5 rounded-lg border-primary/40 bg-background text-xs font-medium text-primary shadow-none hover:bg-primary/5 hover:text-primary"
+                  onClick={() => void startScanLogin()}
+                >
+                  <QrCodeIcon className="size-4" />
+                  新增账号
+                </Button>
+              ) : null}
+              {canManageWxWorkAccounts ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-9 justify-center gap-1.5 rounded-lg border-border bg-background text-xs font-medium text-foreground shadow-none hover:bg-muted"
+                  onClick={() => setAccountManagerOpen(true)}
+                >
+                  <SettingsIcon className="size-4" />
+                  账号设置
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
             <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
               <div className="text-muted-foreground">客户</div>
@@ -409,16 +452,18 @@ export default function ConversationsPage() {
               <div className="mt-1 text-lg font-semibold leading-none text-destructive">{manualAttentionCount}</div>
             </div>
           </div>
-          <div className="relative mt-3">
-            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={accountKeyword}
-              onChange={(event) => setAccountKeyword(event.target.value)}
-              placeholder="搜索员工号/门店"
-              className="h-9 rounded-lg border-border bg-muted/50 pl-8 pr-8 text-xs shadow-none placeholder:text-muted-foreground focus-visible:bg-background"
-            />
-            <FilterIcon className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          </div>
+          {canViewWxWorkAccounts ? (
+            <div className="relative mt-3">
+              <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={accountKeyword}
+                onChange={(event) => setAccountKeyword(event.target.value)}
+                placeholder="搜索员工号/门店"
+                className="h-9 rounded-lg border-border bg-muted/50 pl-8 pr-8 text-xs shadow-none placeholder:text-muted-foreground focus-visible:bg-background"
+              />
+              <FilterIcon className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            </div>
+          ) : null}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-3.5">
           <button
@@ -500,7 +545,7 @@ export default function ConversationsPage() {
               </button>
             );
           })}
-          {filteredInstances.length === 0 ? (
+          {canViewWxWorkAccounts && filteredInstances.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border bg-muted/40 px-3 py-6 text-center text-xs text-muted-foreground">
               没有匹配的员工号
             </div>
@@ -509,15 +554,17 @@ export default function ConversationsPage() {
       </div>
       <div className="flex min-w-0 flex-1 flex-col bg-background/95">
         <div className="border-b border-border bg-background/95 px-4 py-4">
-          <Button
-            variant="outline"
-            size="sm"
-            className="mb-3 h-9 w-full justify-center gap-1.5 rounded-lg border-primary/40 bg-background text-xs font-medium text-primary shadow-none hover:bg-primary/5 hover:text-primary"
-            onClick={() => setAccountManagerOpen(true)}
-          >
-            <FilePlus2Icon className="size-4" />
-            管理会话入口
-          </Button>
+          {canManageWxWorkAccounts ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mb-3 h-9 w-full justify-center gap-1.5 rounded-lg border-primary/40 bg-background text-xs font-medium text-primary shadow-none hover:bg-primary/5 hover:text-primary"
+              onClick={() => setAccountManagerOpen(true)}
+            >
+              <FilePlus2Icon className="size-4" />
+              管理会话入口
+            </Button>
+          ) : null}
           {isSupportAgent ? (
             <div className="mb-3 grid grid-cols-2 rounded-md bg-muted p-1" role="group" aria-label={t("conversation.viewMode")}>
               <button
@@ -843,7 +890,7 @@ export default function ConversationsPage() {
           />
         </SheetContent>
       </Sheet>
-      <Sheet open={accountManagerOpen} onOpenChange={setAccountManagerOpen}>
+      <Sheet open={canManageWxWorkAccounts && accountManagerOpen} onOpenChange={setAccountManagerOpen}>
         <SheetContent
           side="left"
           className="flex w-full flex-col gap-0 overflow-y-auto border-r p-0 sm:max-w-6xl"
@@ -856,16 +903,18 @@ export default function ConversationsPage() {
                 在会话工作台内新增、编辑、删除员工号实例，并设置协议回调地址。企业微信员工号协议只按 wework.apifox.cn 文档字段接入。
               </SheetDescription>
             </SheetHeader>
-            <WxWorkProtocolInstanceManager
-              layout="fragment"
-              hideCreateActions
-              tableShellClassName="max-h-[70vh] overflow-auto"
-              onChanged={() => void loadWxWorkInstances()}
-            />
+            {canManageWxWorkAccounts ? (
+              <WxWorkProtocolInstanceManager
+                layout="fragment"
+                hideCreateActions
+                tableShellClassName="max-h-[70vh] overflow-auto"
+                onChanged={() => void loadWxWorkInstances()}
+              />
+            ) : null}
           </div>
         </SheetContent>
       </Sheet>
-      <Dialog open={scanLoginOpen} onOpenChange={handleScanLoginOpenChange}>
+      <Dialog open={canCreateWxWorkAccounts && scanLoginOpen} onOpenChange={handleScanLoginOpenChange}>
         <DialogContent className="agentdesk-surface rounded-2xl sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle>新增企微员工号</DialogTitle>

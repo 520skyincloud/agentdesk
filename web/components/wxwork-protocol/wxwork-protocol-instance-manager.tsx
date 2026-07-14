@@ -535,18 +535,30 @@ export function WxWorkProtocolInstanceManager({
   const [creatingLocal, setCreatingLocal] = useState(false)
   const [creatingRemote, setCreatingRemote] = useState(false)
   const permissionSet = useMemo(() => new Set(session?.permissions ?? []), [session?.permissions])
+  const canViewChannels = permissionSet.has("channel.view")
+  const canCreateChannels = canViewChannels && permissionSet.has("channel.create")
+  const canUpdateChannels = canViewChannels && permissionSet.has("channel.update")
+  const canDeleteChannels = canViewChannels && permissionSet.has("channel.delete")
+  const canViewKnowledgeBases = permissionSet.has("knowledgeBase.view")
+  const canViewCompanies = permissionSet.has("company.view")
   const canViewStoreModelSettings = permissionSet.has("aiConfig.view")
   const canUpdateStoreModelSettings = permissionSet.has("aiConfig.update")
   const lockedCompanyId = lockCompany ? Number(companyId || 0) : 0
   const lockedCompanyName = repairMojibakeText(companyName || "")
 
   useEffect(() => {
+    if (!canViewChannels) {
+      return
+    }
+
     async function loadOptions() {
       try {
         const [channelPage, kbList, companyPage] = await Promise.all([
           fetchChannels({ channelType: "wxwork_protocol", status: Status.Ok, limit: 200 }),
-          fetchKnowledgeBasesAll({ status: Status.Ok }),
-          lockCompany ? Promise.resolve({ results: [] }) : fetchCompanies({ status: Status.Ok, limit: 500 }),
+          canViewKnowledgeBases ? fetchKnowledgeBasesAll({ status: Status.Ok }) : Promise.resolve([]),
+          lockCompany || !canViewCompanies
+            ? Promise.resolve({ results: [] as AdminCompany[] })
+            : fetchCompanies({ status: Status.Ok, limit: 500 }),
         ])
         setChannels(channelPage.results)
         setKnowledgeBases(kbList)
@@ -556,7 +568,7 @@ export function WxWorkProtocolInstanceManager({
       }
     }
     void loadOptions()
-  }, [lockCompany])
+  }, [canViewChannels, canViewCompanies, canViewKnowledgeBases, lockCompany])
 
   const statusOptions = [
     { value: "all", label: "全部状态" },
@@ -595,6 +607,7 @@ export function WxWorkProtocolInstanceManager({
   }
 
   async function createLocalLoginInstance() {
+    if (!canCreateChannels) return
     setCreatingLocal(true)
     try {
       const item = await startWxWorkProtocolLogin(channels[0]?.id ?? 0, lockedCompanyId)
@@ -611,6 +624,7 @@ export function WxWorkProtocolInstanceManager({
   }
 
   async function createRemoteSetupLink() {
+    if (!canCreateChannels) return
     setCreatingRemote(true)
     try {
       const item = await createWxWorkProtocolRemoteSetup({
@@ -630,6 +644,7 @@ export function WxWorkProtocolInstanceManager({
   }
 
   async function replaceLoggedInAccount(item: WxWorkProtocolInstance) {
+    if (!canUpdateChannels) return
     const logoutResp = await logoutWxWorkProtocolInstance(item.id)
     const qrcodeResp = await getWxWorkProtocolLoginQrcode(item.id)
     const copiedText = [logoutResp, qrcodeResp].filter((text) => text?.trim()).join("\n\n")
@@ -650,6 +665,7 @@ export function WxWorkProtocolInstanceManager({
   }
 
   async function openStoreModelSettings(item: WxWorkProtocolInstance) {
+    if (!canViewStoreModelSettings) return
     setModelSettingsInstance(item)
     setModelSettingsLoading(true)
     try {
@@ -663,7 +679,7 @@ export function WxWorkProtocolInstanceManager({
   }
 
   async function saveStoreModelSettings() {
-    if (!modelSettingsInstance) return
+    if (!canUpdateStoreModelSettings || !modelSettingsInstance) return
     setModelSettingsSaving(true)
     try {
       const next = await updateStoreAIModelSettings({
@@ -775,18 +791,24 @@ export function WxWorkProtocolInstanceManager({
       run: async ({ item }) => openStoreModelSettings(item),
     })
   }
-  rowActions.push({
-    key: "replaceLogin",
-    label: "更换登录员工号",
-    icon: <QrCodeIcon className="size-4" />,
-    confirm: (item) => ({
-      title: "更换登录员工号",
-      description: `会先让 ${repairMojibakeText(item.employeeName) || "当前员工号"} 退出协议登录，然后生成新的扫码登录二维码。确认继续？`,
-      confirmText: "退出并重新扫码",
-      cancelText: "取消",
-    }),
-    run: async ({ item }) => replaceLoggedInAccount(item),
-  })
+  if (canUpdateChannels) {
+    rowActions.push({
+      key: "replaceLogin",
+      label: "更换登录员工号",
+      icon: <QrCodeIcon className="size-4" />,
+      confirm: (item) => ({
+        title: "更换登录员工号",
+        description: `会先让 ${repairMojibakeText(item.employeeName) || "当前员工号"} 退出协议登录，然后生成新的扫码登录二维码。确认继续？`,
+        confirmText: "退出并重新扫码",
+        cancelText: "取消",
+      }),
+      run: async ({ item }) => replaceLoggedInAccount(item),
+    })
+  }
+
+  if (!canViewChannels) {
+    return null
+  }
 
   return (
     <>
@@ -800,7 +822,7 @@ export function WxWorkProtocolInstanceManager({
             <RotateCwIcon className={state.loading ? "size-4 animate-spin" : "size-4"} />
             刷新
           </Button>
-          {!hideCreateActions ? (
+          {!hideCreateActions && canCreateChannels ? (
             <Button className="rounded-lg" onClick={() => setCreateDialogOpen(true)}>
               <PlusIcon className="size-4" />
               新增账号
@@ -950,21 +972,29 @@ export function WxWorkProtocolInstanceManager({
 	        ...(lockedCompanyId > 0 ? { companyId: lockedCompanyId } : {}),
 	      })}
       getItemId={(item) => item.id}
+      showCreate={!hideCreateActions && canCreateChannels}
+      showEdit={canUpdateChannels}
       createItem={async (payload) => {
+        if (!canCreateChannels) throw new Error("当前账号没有创建接入渠道的权限")
         const ret = await createWxWorkProtocolInstance(payload)
         notifyChanged()
         return ret
       }}
       updateItem={async (item, payload) => {
+        if (!canUpdateChannels) throw new Error("当前账号没有更新接入渠道的权限")
         const ret = await updateWxWorkProtocolInstance({ id: item.id, ...payload })
         notifyChanged()
         return ret
       }}
-      deleteItem={async (item) => {
-        const ret = await deleteWxWorkProtocolInstance(item.id)
-        notifyChanged()
-        return ret
-      }}
+      deleteItem={
+        canDeleteChannels
+          ? async (item) => {
+              const ret = await deleteWxWorkProtocolInstance(item.id)
+              notifyChanged()
+              return ret
+            }
+          : undefined
+      }
       rowActions={rowActions}
       form={{
         fetchDetail: fetchWxWorkProtocolInstance,
@@ -988,16 +1018,16 @@ export function WxWorkProtocolInstanceManager({
 	                </div>
 	              ),
 	            },
-	          ] : [
-	            {
-	              name: "companyId",
-	              label: "绑定公司",
-	              type: "select" as const,
-	              defaultValue: "0",
-	              options: [{ value: "0", label: "不绑定公司" }, ...companyOptions],
-	              description: "账号可以不绑定公司；绑定后模型会按员工号设置 > 公司默认 > 系统全局默认解析。",
-	            },
-	          ]),
+              ] : canViewCompanies ? [
+                {
+                  name: "companyId",
+                  label: "绑定公司",
+                  type: "select" as const,
+                  defaultValue: "0",
+                  options: [{ value: "0", label: "不绑定公司" }, ...companyOptions],
+                  description: "账号可以不绑定公司；绑定后模型会按员工号设置 > 公司默认 > 系统全局默认解析。",
+                },
+              ] : []),
 	          { name: "storeName", label: "店名/账号名称", type: "text", placeholder: "例如：丽斯未来酒店杭州某某店", description: "企微员工号就是门店账号。这里填店名即可，系统会维护内部兼容门店记录。" },
 	          { name: "storeId", label: "内部门店 ID（可选兼容）", type: "number", min: 0, description: "一般不用填；老数据或需要绑定已有内部门店时再填写。" },
           { name: "storeLocationGuide", label: "门店定位说明", type: "custom", render: renderLocationGuide },
@@ -1129,13 +1159,13 @@ export function WxWorkProtocolInstanceManager({
       }}
     />
     <StoreAIModelSettingsDialog
-      open={Boolean(modelSettingsInstance)}
+      open={canViewStoreModelSettings && Boolean(modelSettingsInstance)}
       instance={modelSettingsInstance}
       settings={modelSettings}
       aiConfigs={aiConfigs}
       loading={modelSettingsLoading}
       saving={modelSettingsSaving}
-      canSave={canUpdateStoreModelSettings}
+      canSave={canViewStoreModelSettings && canUpdateStoreModelSettings}
       onOpenChange={(open) => {
         if (!open) {
           setModelSettingsInstance(null)
@@ -1145,7 +1175,7 @@ export function WxWorkProtocolInstanceManager({
       onChange={setModelSettings}
       onSubmit={() => void saveStoreModelSettings()}
     />
-    <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+    <Dialog open={canCreateChannels && createDialogOpen} onOpenChange={setCreateDialogOpen}>
       <DialogContent className="max-w-3xl rounded-3xl p-5">
         <DialogHeader>
           <DialogTitle>新增企微员工号</DialogTitle>

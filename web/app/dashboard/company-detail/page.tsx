@@ -42,6 +42,8 @@ function DashboardCompanyDetailContent() {
   const [modelSettingsLoading, setModelSettingsLoading] = useState(false)
   const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
   const permissionSet = new Set(session?.permissions ?? [])
+  const canViewWxWorkAccounts = permissionSet.has("channel.view")
+  const canCreateWxWorkAccounts = canViewWxWorkAccounts && permissionSet.has("channel.create")
   const canViewModelSettings = permissionSet.has("aiConfig.view")
   const canUpdateModelSettings = permissionSet.has("aiConfig.update")
 
@@ -65,7 +67,7 @@ function DashboardCompanyDetailContent() {
   }, [companyId])
 
   async function createCompanyRemoteSetupLink() {
-    if (!company) return
+    if (!canCreateWxWorkAccounts || !company) return
     setCreatingRemote(true)
     try {
       const item = await createWxWorkProtocolRemoteSetup({
@@ -106,7 +108,7 @@ function DashboardCompanyDetailContent() {
   }
 
   async function saveCompanyModelSettings() {
-    if (!company) return
+    if (!canUpdateModelSettings || !company) return
     setModelSettingsSaving(true)
     try {
       const next = await updateCompanyAIModelSettings({
@@ -199,38 +201,42 @@ function DashboardCompanyDetailContent() {
                 公司模型设置
               </Button>
             ) : null}
-            <Button type="button" className="rounded-xl" disabled={creatingRemote} onClick={() => void createCompanyRemoteSetupLink()}>
-              {creatingRemote ? <RefreshCwIcon className="size-4 animate-spin" /> : <LinkIcon className="size-4" />}
-              生成该公司开户链接
-            </Button>
+            {canCreateWxWorkAccounts ? (
+              <Button type="button" className="rounded-xl" disabled={creatingRemote} onClick={() => void createCompanyRemoteSetupLink()}>
+                {creatingRemote ? <RefreshCwIcon className="size-4 animate-spin" /> : <LinkIcon className="size-4" />}
+                生成该公司开户链接
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>
 
-      <div className="space-y-3">
-        <div>
-          <h2 className="text-lg font-semibold text-foreground">企微员工号账号</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            员工号就是门店账号。这里新增或生成的开户链接会锁定到当前公司；门店负责人只需要填写店名/账号名称。
-          </p>
+      {canViewWxWorkAccounts ? (
+        <div className="space-y-3">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">企微员工号账号</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              员工号就是门店账号。这里新增或生成的开户链接会锁定到当前公司；门店负责人只需要填写店名/账号名称。
+            </p>
+          </div>
+          <WxWorkProtocolInstanceManager
+            layout="fragment"
+            tableShellClassName="rounded-3xl border border-[#dbe7f6] bg-white shadow-[0_16px_40px_rgba(35,74,122,0.06)]"
+            companyId={company.id}
+            companyName={company.name}
+            lockCompany
+          />
         </div>
-        <WxWorkProtocolInstanceManager
-          layout="fragment"
-          tableShellClassName="rounded-3xl border border-[#dbe7f6] bg-white shadow-[0_16px_40px_rgba(35,74,122,0.06)]"
-          companyId={company.id}
-          companyName={company.name}
-          lockCompany
-        />
-      </div>
+      ) : null}
 
       <CompanyAIModelSettingsDialog
-        open={modelSettingsOpen}
+        open={canViewModelSettings && modelSettingsOpen}
         company={company}
         settings={modelSettings}
         aiConfigs={aiConfigs}
         loading={modelSettingsLoading}
         saving={modelSettingsSaving}
-        canSave={canUpdateModelSettings}
+        canSave={canViewModelSettings && canUpdateModelSettings}
         onOpenChange={(open) => {
           setModelSettingsOpen(open)
           if (!open) {
