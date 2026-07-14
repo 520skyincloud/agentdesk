@@ -2222,3 +2222,15 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 测试包含合法平台/租户初始角色记录，以及非法 JSON、逆序、重复、ID/code 数量不一致、无实际变化和带空格 code 六类损坏记录；总数和前两个样本 ID 精确验证。审计仍只读，不自动排序、去重或覆盖证据。
 - 定向 race、完整 service、全仓 Go、go vet 和 diff 检查通过。模型/表/关系基线继续为 52/52、65、127；无 model、AutoMigrate、migration、DTO、API、权限、WebSocket、页面或 AI/计费变化。
 - AI 分支不修改本批 repository/service/test，当前无同文件冲突或 migration 顺序要求。可独立回滚本批读取、规则、测试和文档；回滚只会失去损坏快照发现能力，不应删除已存在日志。
+
+## 75. 当前实施检查点：角色变更并发顺序与日志连续性（2026-07-15）
+
+单条快照合法仍不能证明在线角色写入没有漏记或被并发覆盖。本批在第 71B/74 批基础上补充写入顺序和只读连续性证据，不要求上线前已有账号伪造历史日志。
+
+- `replaceUserRolesDB` 在读取旧角色前通过 UserRepository.GetForUpdate 锁定目标 User 行；锁由账号创建、手动分配、主管创建或注册审核的现有外层事务持有。MySQL 使用 `FOR UPDATE` 串行化同账号角色替换，SQLite 保持单写事务语义。
+- GORM callback 测试直接确认 User 查询携带 `FOR` locking clause，避免只凭方法名称推断加锁。角色校验、职责依赖、UserRole 替换和日志写入继续位于同一事务。
+- 审计按 `user_id + log id` 读取已通过 payload 校验的记录，同一账号下一条 before IDs 必须等于上一条 after IDs；最后一条 after IDs 必须等于当前 UserRole 集合。违规报告 `USER_ROLE_CHANGE_LOG_CHAIN_BROKEN`，样本为发生断点的下一条日志或终态漂移的最后一条日志。
+- 连续性只比较 role IDs，不比较 codes，避免角色模板合法改名造成误报。没有任何日志的历史账号不参与；同账号存在无效 payload 时只报告第 74 批违规并跳过该账号链检查，避免重复噪声。
+- 测试覆盖两段合法链、相邻 before/after 断裂和最新 after 与当前角色不一致，两类错误各命中精确日志 ID；定向 race、完整 service、全仓 Go、go vet 和 diff 检查通过。
+- 无 model、AutoMigrate、migration、DTO、API、权限、WebSocket、前端或 AI/计费变化。AI 分支不修改本批运行文件，无同文件冲突或 migration 顺序要求。
+- 可独立回滚行锁、批量当前角色查询、连续性审计和测试；不涉及数据回滚，但会重新允许同账号并发替换形成歧义，并失去日志漏记/旁路写入发现能力。

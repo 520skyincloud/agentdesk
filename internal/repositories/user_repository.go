@@ -3,12 +3,14 @@ package repositories
 import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"errors"
 	"strings"
 
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var UserRepository = newUserRepository()
@@ -26,6 +28,18 @@ func (r *userRepository) Get(db *gorm.DB, id int64) *models.User {
 		return nil
 	}
 	return ret
+}
+
+func (r *userRepository) GetForUpdate(db *gorm.DB, id int64) (*models.User, error) {
+	ret := &models.User{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ?", id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (r *userRepository) Take(db *gorm.DB, where ...interface{}) *models.User {

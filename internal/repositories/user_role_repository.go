@@ -23,6 +23,11 @@ type UserRoleSnapshotItem struct {
 	RoleCode string `gorm:"column:role_code"`
 }
 
+type UserRoleIDItem struct {
+	UserID int64 `gorm:"column:user_id"`
+	RoleID int64 `gorm:"column:role_id"`
+}
+
 func (r *userRoleRepository) Get(db *gorm.DB, id int64) *models.UserRole {
 	ret := &models.UserRole{}
 	if err := db.First(ret, "id = ?", id).Error; err != nil {
@@ -89,6 +94,19 @@ func (r *userRoleRepository) FindSnapshotByUserID(db *gorm.DB, userID int64) ([]
 		Joins("LEFT JOIN t_role AS r ON r.id = ur.role_id").
 		Where("ur.user_id = ?", userID).
 		Order("ur.role_id ASC").
+		Scan(&list).Error
+	return list, err
+}
+
+func (r *userRoleRepository) FindRoleIDsByUserIDs(db *gorm.DB, userIDs []int64) ([]UserRoleIDItem, error) {
+	list := make([]UserRoleIDItem, 0)
+	if len(userIDs) == 0 {
+		return list, nil
+	}
+	err := db.Model(&models.UserRole{}).
+		Select("user_id, role_id").
+		Where("user_id IN ?", userIDs).
+		Order("user_id ASC, role_id ASC").
 		Scan(&list).Error
 	return list, err
 }

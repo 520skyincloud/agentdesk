@@ -821,6 +821,8 @@ func (s *tenantIntegrityAuditService) auditUserRoleChangeLogSemantics(
 		return fmt.Errorf("read user role change audit payloads failed: %w", err)
 	}
 	invalidIDs := make([]int64, 0)
+	invalidUsers := make(map[int64]struct{})
+	validByUser := make(map[int64][]tenantIntegrityRoleChangeSnapshot)
 	for _, row := range rows {
 		beforeIDs, beforeIDsValid := parseStrictRoleIDSnapshot(row.BeforeRoleIDsJSON)
 		afterIDs, afterIDsValid := parseStrictRoleIDSnapshot(row.AfterRoleIDsJSON)
@@ -830,21 +832,98 @@ func (s *tenantIntegrityAuditService) auditUserRoleChangeLogSemantics(
 			len(beforeIDs) != len(beforeCodes) || len(afterIDs) != len(afterCodes) ||
 			slices.Equal(beforeIDs, afterIDs) {
 			invalidIDs = append(invalidIDs, row.ID)
+			invalidUsers[row.UserID] = struct{}{}
+			continue
 		}
+		validByUser[row.UserID] = append(validByUser[row.UserID], tenantIntegrityRoleChangeSnapshot{
+			LogID: row.ID, BeforeRoleIDs: beforeIDs, AfterRoleIDs: afterIDs,
+		})
 	}
-	if len(invalidIDs) == 0 {
+	if len(invalidIDs) > 0 {
+		samples := invalidIDs
+		if len(samples) > sampleLimit {
+			samples = samples[:sampleLimit]
+		}
+		report.addViolation(
+			"USER_ROLE_CHANGE_LOG_PAYLOAD_INVALID",
+			"UserRoleChangeLog.role_snapshots",
+			int64(len(invalidIDs)),
+			samples,
+			"角色变更前后快照必须是有序、去重且数量对应的合法 JSON 数组，并且角色集合确实发生变化",
+		)
+	}
+	if !available["UserRole"] {
 		return nil
 	}
-	samples := invalidIDs
+	return s.auditUserRoleChangeLogContinuity(db, validByUser, invalidUsers, report, sampleLimit)
+}
+
+type tenantIntegrityRoleChangeSnapshot struct {
+	LogID         int64
+	BeforeRoleIDs []int64
+	AfterRoleIDs  []int64
+}
+
+func (s *tenantIntegrityAuditService) auditUserRoleChangeLogContinuity(
+	db *gorm.DB,
+	validByUser map[int64][]tenantIntegrityRoleChangeSnapshot,
+	invalidUsers map[int64]struct{},
+	report *TenantIntegrityAuditReport,
+	sampleLimit int,
+) error {
+	userIDs := make([]int64, 0, len(validByUser))
+	for userID := range validByUser {
+		if userID <= 0 {
+			continue
+		}
+		if _, invalid := invalidUsers[userID]; invalid {
+			continue
+		}
+		userIDs = append(userIDs, userID)
+	}
+	slices.Sort(userIDs)
+	currentRows, err := repositories.UserRoleRepository.FindRoleIDsByUserIDs(db, userIDs)
+	if err != nil {
+		return fmt.Errorf("read current user roles for role change audit failed: %w", err)
+	}
+	currentByUser := make(map[int64][]int64, len(userIDs))
+	for _, userID := range userIDs {
+		currentByUser[userID] = []int64{}
+	}
+	for _, row := range currentRows {
+		currentByUser[row.UserID] = append(currentByUser[row.UserID], row.RoleID)
+	}
+
+	brokenLogIDs := make(map[int64]struct{})
+	for _, userID := range userIDs {
+		logs := validByUser[userID]
+		for i := 1; i < len(logs); i++ {
+			if !slices.Equal(logs[i-1].AfterRoleIDs, logs[i].BeforeRoleIDs) {
+				brokenLogIDs[logs[i].LogID] = struct{}{}
+			}
+		}
+		if len(logs) > 0 && !slices.Equal(logs[len(logs)-1].AfterRoleIDs, currentByUser[userID]) {
+			brokenLogIDs[logs[len(logs)-1].LogID] = struct{}{}
+		}
+	}
+	if len(brokenLogIDs) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(brokenLogIDs))
+	for id := range brokenLogIDs {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	samples := ids
 	if len(samples) > sampleLimit {
 		samples = samples[:sampleLimit]
 	}
 	report.addViolation(
-		"USER_ROLE_CHANGE_LOG_PAYLOAD_INVALID",
+		"USER_ROLE_CHANGE_LOG_CHAIN_BROKEN",
 		"UserRoleChangeLog.role_snapshots",
-		int64(len(invalidIDs)),
+		int64(len(ids)),
 		samples,
-		"角色变更前后快照必须是有序、去重且数量对应的合法 JSON 数组，并且角色集合确实发生变化",
+		"同一账号相邻角色变更快照不连续，或最后快照与当前 UserRole 集合不一致",
 	)
 	return nil
 }

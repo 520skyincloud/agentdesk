@@ -3767,3 +3767,43 @@ git diff --check
 
 - 共同基线检查显示 `origin/codex/ai-billing@f2d2da4` 不修改本批运行文件，无同文件冲突、migration 排序或 rebase 要求。
 - 可独立回滚五个文件中的本批变化，不涉及数据库回滚；回滚后损坏快照不会再由 preflight 发现，但不得删除或改写历史日志。
+
+## 第 75 批：角色变更并发顺序与日志连续性（2026-07-15）
+
+### 写入与审计语义
+
+- UserRole 角色替换原先在事务中读取 User，但没有行锁；同账号并发请求可能读取相同 before 并各自产生日志。本批新增 UserRepository.GetForUpdate，`replaceUserRolesDB` 在读取角色快照前锁定目标账号，MySQL 通过 `FOR UPDATE` 串行化，SQLite 沿用单写事务。
+- 行锁测试通过 GORM Query callback 检查 `FOR` clause，不依赖 SQL 日志字符串。所有现有角色写入口仍复用原事务，没有新增 mutex、分布式锁、状态字段或 API。
+- UserRoleChangeLog 审计行增加 UserID，UserRoleRepository 一次批量读取所有有日志账号的当前 role IDs。相邻日志比较 `previous.after_ids == current.before_ids`，最新日志比较 `after_ids == current UserRole IDs`。
+- 违规码为 `USER_ROLE_CHANGE_LOG_CHAIN_BROKEN`。相邻断链以后一条日志 ID 为样本；终态漂移以最后日志 ID 为样本，同一 ID 去重。无日志历史账号不参与，payload 已损坏的账号跳过连续性检查，只保留第 74 批原始违规。
+- code 不参与连续性，因为 Role 模板可能在两次账号变更之间合法改名；ID 快照才是角色集合身份。历史第一条 before 不要求为空，以兼容上线前已有账号从当前集合开始记录。
+
+### 文件与验证
+
+```text
+internal/repositories/user_repository.go
+internal/repositories/user_role_repository.go
+internal/repositories/user_role_change_log_repository.go
+internal/services/user_service.go
+internal/services/tenant_integrity_audit_service.go
+internal/services/tenant_integrity_audit_service_test.go
+internal/services/role_user_authority_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestUserRepositoryGetForUpdateUsesRowLock|TestUserServiceAssignRolesEnforcesAuthority|TestTenantAdminCreatesAccountWithLowerRoleOnly|TestUserRoleChangeLogRollsBackWithRoleReplacementTransaction|TestTenantIntegrityAuditPassesCleanTwoTenantFixture|TestTenantIntegrityAuditReportsInvalidUserRoleChangePayloads|TestTenantIntegrityAuditReportsBrokenUserRoleChangeChain)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 合法双段链不误报；另一账号的第二条 before 断裂和平台账号最新 after 漂移各报告一条，样本精确。全部验证通过。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、权限、WebSocket、前端、AI runtime、token、usage 或计费变化；没有修改 `.codex/audits/` 或 docs/generated。
+
+### 并行分支与回滚
+
+- 共同基线检查显示 `origin/codex/ai-billing@f2d2da4` 不修改本批运行文件，无同文件冲突、migration 排序或 rebase 要求。
+- 可独立回滚九个文件中的本批变化，不需要数据库回滚；回滚会失去同账号并发序列化和日志连续性/终态检查，不建议回滚。

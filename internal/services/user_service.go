@@ -400,7 +400,10 @@ func (s *userService) replaceUserRoles(userID int64, roleIDs []int64, operator *
 }
 
 func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
-	user := repositories.UserRepository.Get(db, userID)
+	user, err := repositories.UserRepository.GetForUpdate(db, userID)
+	if err != nil {
+		return err
+	}
 	if user == nil || user.DeletedAt != nil {
 		return errorsx.InvalidParam("用户不存在")
 	}

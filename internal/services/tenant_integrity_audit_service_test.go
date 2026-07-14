@@ -235,6 +235,59 @@ func TestTenantIntegrityAuditReportsInvalidUserRoleChangePayloads(t *testing.T) 
 	}
 }
 
+func TestTenantIntegrityAuditReportsBrokenUserRoleChangeChain(t *testing.T) {
+	db := openTenantIntegrityTestDB(t, true)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	now := time.Now()
+	platformIDs := fmt.Sprintf("[%d]", fixture.platformRole.ID)
+	platformCodes := fmt.Sprintf("[%q]", fixture.platformRole.Code)
+	tenantIDs := fmt.Sprintf("[%d]", fixture.tenantRole.ID)
+	tenantCodes := fmt.Sprintf("[%q]", fixture.tenantRole.Code)
+	rows := []*models.UserRoleChangeLog{
+		{
+			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: platformIDs,
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: platformCodes, CreatedAt: now,
+		},
+		{
+			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
+			BeforeRoleIDsJSON: platformIDs, AfterRoleIDsJSON: tenantIDs,
+			BeforeRoleCodesJSON: platformCodes, AfterRoleCodesJSON: tenantCodes, CreatedAt: now.Add(time.Second),
+		},
+		{
+			TenantID: fixture.tenantB.ID, UserID: fixture.tenantUserB.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: platformIDs,
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: platformCodes, CreatedAt: now,
+		},
+		{
+			TenantID: fixture.tenantB.ID, UserID: fixture.tenantUserB.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: tenantIDs,
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: tenantCodes, CreatedAt: now.Add(time.Second),
+		},
+		{
+			TenantID: 0, UserID: fixture.platformUser.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: tenantIDs,
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: tenantCodes, CreatedAt: now,
+		},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("create role change chain fixtures: %v", err)
+	}
+
+	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 5})
+	if err != nil {
+		t.Fatalf("audit role change chain: %v", err)
+	}
+	if violation := tenantIntegrityFindViolation(report, "USER_ROLE_CHANGE_LOG_PAYLOAD_INVALID", "UserRoleChangeLog.role_snapshots"); violation != nil {
+		t.Fatalf("valid individual payloads were rejected: %#v", violation)
+	}
+	violation := tenantIntegrityFindViolation(report, "USER_ROLE_CHANGE_LOG_CHAIN_BROKEN", "UserRoleChangeLog.role_snapshots")
+	if violation == nil || violation.Count != 2 || len(violation.SampleIDs) != 2 ||
+		violation.SampleIDs[0] != rows[3].ID || violation.SampleIDs[1] != rows[4].ID {
+		t.Fatalf("role change chain violation = %#v", violation)
+	}
+}
+
 func TestTenantIntegrityAuditReportsMissingRequiredTable(t *testing.T) {
 	db := openTenantIntegrityTestDB(t, true)
 	if err := db.Migrator().DropTable(&models.Notification{}); err != nil {

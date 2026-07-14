@@ -14,6 +14,7 @@ import (
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
@@ -307,6 +308,33 @@ func TestUserRoleChangeLogRollsBackWithRoleReplacementTransaction(t *testing.T) 
 	}
 	assertUserRoleCodes(t, db, target.ID, constants.RoleCodeCsUser)
 	assertUserRoleChangeLogCount(t, db, target.ID, 0)
+}
+
+func TestUserRepositoryGetForUpdateUsesRowLock(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	user := createAuthorityUser(t, db, "role_lock_target")
+	const callbackName = "test:user-role-locking-clause"
+	seenLock := false
+	if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "User" {
+			_, seenLock = tx.Statement.Clauses["FOR"]
+		}
+	}); err != nil {
+		t.Fatalf("register locking callback: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Callback().Query().Remove(callbackName); err != nil {
+			t.Errorf("remove locking callback: %v", err)
+		}
+	})
+
+	locked, err := repositories.UserRepository.GetForUpdate(db, user.ID)
+	if err != nil || locked == nil || locked.ID != user.ID {
+		t.Fatalf("GetForUpdate() = %+v, %v", locked, err)
+	}
+	if !seenLock {
+		t.Fatal("GetForUpdate query did not include a FOR locking clause")
+	}
 }
 
 func TestWxWorkDefaultStoreStaffRoleWritesOneAuditLog(t *testing.T) {
