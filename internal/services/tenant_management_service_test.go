@@ -2,7 +2,9 @@ package services
 
 import (
 	"encoding/base64"
+	"fmt"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
@@ -69,7 +72,8 @@ func TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation(t *testing.T) {
 		nil, []int64{tenantAdmin.ID}, nil, []string{constants.RoleCodeTenantAdmin},
 	)
 
-	current, code, err := TenantInvitationService.Current(result.Tenant.ID)
+	operator.ActiveTenantID = result.Tenant.ID
+	current, code, err := TenantInvitationService.Current(result.Tenant.ID, operator)
 	if err != nil || current.ID != result.Invitation.ID || code != result.InvitationCode {
 		t.Fatalf("current invitation mismatch: current=%+v code=%q err=%v", current, code, err)
 	}
@@ -176,6 +180,96 @@ func TestTenantInvitationServiceRotateInvalidatesOldCode(t *testing.T) {
 	}
 	if activeCount != 1 {
 		t.Fatalf("active invitation count = %d, want 1", activeCount)
+	}
+}
+
+func TestTenantInvitationCurrentRequiresActiveTenantAndViewPermission(t *testing.T) {
+	_, operator := setupTenantManagementTestDB(t)
+	created, err := TenantService.CreateTenant(tenantManagementCreateRequest("current-auth", "91350100MA8N1P2Q3R"), operator)
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	operator.ActiveTenantID = created.Tenant.ID
+
+	withoutView := *operator
+	withoutView.Permissions = []string{constants.PermissionTenantInviteRotate.Code}
+	if _, _, err := TenantInvitationService.Current(created.Tenant.ID, &withoutView); !hasCode(err, errorsx.CodeAuthForbidden) {
+		t.Fatalf("Current() without view error = %v, want forbidden", err)
+	}
+	wrongTenant := *operator
+	wrongTenant.ActiveTenantID = created.Tenant.ID + 1
+	if _, _, err := TenantInvitationService.Current(created.Tenant.ID, &wrongTenant); !hasCode(err, errorsx.CodeAuthForbidden) {
+		t.Fatalf("Current() cross-tenant error = %v, want forbidden", err)
+	}
+	invitation, code, err := TenantInvitationService.Current(created.Tenant.ID, operator)
+	if err != nil || invitation == nil || invitation.ID != created.Invitation.ID || code != created.InvitationCode {
+		t.Fatalf("Current() = invitation:%+v code:%q error:%v", invitation, code, err)
+	}
+}
+
+func TestTenantManagementMutationsUseTenantRowLock(t *testing.T) {
+	tests := []struct {
+		name   string
+		action func(created *CreateTenantResult, operator *dto.AuthPrincipal) error
+	}{
+		{
+			name: "update",
+			action: func(created *CreateTenantResult, operator *dto.AuthPrincipal) error {
+				return TenantService.UpdateTenant(request.UpdateTenantRequest{
+					ID: created.Tenant.ID, LegalName: "Locked Tenant", ShortName: "Locked",
+					RegistrationType: created.Tenant.RegistrationType, RegistrationNo: created.Tenant.RegistrationNo,
+					ContactName: "Locked Contact", ContactMobile: "13800008888", ContactEmail: "locked@example.com",
+				}, operator)
+			},
+		},
+		{
+			name: "status",
+			action: func(created *CreateTenantResult, operator *dto.AuthPrincipal) error {
+				return TenantService.UpdateTenantStatus(request.UpdateTenantStatusRequest{ID: created.Tenant.ID, Status: int(enums.StatusDisabled)}, operator)
+			},
+		},
+		{
+			name: "rotate invitation",
+			action: func(created *CreateTenantResult, operator *dto.AuthPrincipal) error {
+				operator.ActiveTenantID = created.Tenant.ID
+				_, _, err := TenantInvitationService.Rotate(created.Tenant.ID, operator)
+				return err
+			},
+		},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, operator := setupTenantManagementTestDB(t)
+			slug := strings.ReplaceAll(tt.name, " ", "-")
+			registrationNo := fmt.Sprintf("91350100MA8L%06d", i+1)
+			created, err := TenantService.CreateTenant(tenantManagementCreateRequest("lock-"+slug, registrationNo), operator)
+			if err != nil {
+				t.Fatalf("create tenant: %v", err)
+			}
+			callbackName := "test:tenant-" + slug + "-locking-clause"
+			seenLock := false
+			if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+				if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "Tenant" {
+					if _, locked := tx.Statement.Clauses["FOR"]; locked {
+						seenLock = true
+					}
+				}
+			}); err != nil {
+				t.Fatalf("register tenant locking callback: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := db.Callback().Query().Remove(callbackName); err != nil {
+					t.Errorf("remove tenant locking callback: %v", err)
+				}
+			})
+
+			if err := tt.action(created, operator); err != nil {
+				t.Fatalf("%s tenant: %v", tt.name, err)
+			}
+			if !seenLock {
+				t.Fatalf("%s did not lock the Tenant row", tt.name)
+			}
+		})
 	}
 }
 
@@ -335,7 +429,7 @@ func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 		UserID:            9001,
 		Username:          "platform_super",
 		Roles:             []string{constants.RoleCodeSuperAdmin},
-		Permissions:       []string{constants.PermissionTenantCreate.Code, constants.PermissionTenantUpdate.Code, constants.PermissionTenantUpdateStatus.Code, constants.PermissionTenantInviteRotate.Code},
+		Permissions:       []string{constants.PermissionTenantCreate.Code, constants.PermissionTenantUpdate.Code, constants.PermissionTenantUpdateStatus.Code, constants.PermissionTenantInviteView.Code, constants.PermissionTenantInviteRotate.Code},
 		IsPlatformAccount: true,
 	}
 	return db, operator

@@ -176,9 +176,12 @@ func (s *tenantRegistrationService) Register(req request.RegisterTenantUserReque
 
 	var user *models.User
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		currentTenant, err := repositories.TenantRepository.GetForUpdate(ctx.Tx, tenant.ID)
+		if err != nil {
+			return err
+		}
 		currentInvitation := repositories.TenantInvitationRepository.Get(ctx.Tx, invitation.ID)
 		current := repositories.TenantInvitationRepository.FindCurrent(ctx.Tx, tenant.ID)
-		currentTenant := repositories.TenantRepository.Get(ctx.Tx, tenant.ID)
 		if currentInvitation == nil || current == nil || current.ID != currentInvitation.ID || currentInvitation.Status != enums.StatusOk || currentTenant == nil || currentTenant.Status != enums.StatusOk {
 			return errorsx.InvalidParam("邀请码无效、已失效或公司暂不可用")
 		}
@@ -277,16 +280,19 @@ func (s *tenantRegistrationService) Review(req request.ReviewTenantRegistrationR
 
 	var reviewed *models.User
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		tenant, err := repositories.TenantRepository.GetForUpdate(ctx.Tx, operator.ActiveTenantID)
+		if err != nil {
+			return err
+		}
+		if tenant == nil || tenant.Status != enums.StatusOk {
+			return errorsx.Forbidden("当前接入公司不可用")
+		}
 		current := repositories.UserRepository.GetInTenant(ctx.Tx, req.UserID, operator.ActiveTenantID)
 		if current == nil || current.DeletedAt != nil || current.RegistrationSource != enums.UserRegistrationSourceInvitation {
 			return errorsx.InvalidParam("待审核账号不存在")
 		}
 		if current.ApprovalStatus != enums.UserApprovalStatusPending {
 			return errorsx.InvalidParam("该注册申请已经审核")
-		}
-		tenant := repositories.TenantRepository.Get(ctx.Tx, operator.ActiveTenantID)
-		if tenant == nil || tenant.Status != enums.StatusOk {
-			return errorsx.Forbidden("当前接入公司不可用")
 		}
 		approvalStatus := enums.UserApprovalStatusRejected
 		userStatus := enums.StatusDisabled

@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var TenantRepository = newTenantRepository()
@@ -72,6 +74,18 @@ func (r *tenantRepository) Get(db *gorm.DB, id int64) *models.Tenant {
 		return nil
 	}
 	return ret
+}
+
+func (r *tenantRepository) GetForUpdate(db *gorm.DB, id int64) (*models.Tenant, error) {
+	ret := &models.Tenant{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ?", id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (r *tenantRepository) Take(db *gorm.DB, where ...any) *models.Tenant {

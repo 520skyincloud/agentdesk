@@ -16,9 +16,9 @@ import (
 	"github.com/mlogclub/simple/sqls"
 )
 
-func (s *tenantInvitationService) Current(tenantID int64) (*models.TenantInvitation, string, error) {
-	if tenantID <= 0 {
-		return nil, "", errorsx.InvalidParam("接入公司不存在")
+func (s *tenantInvitationService) Current(tenantID int64, operator *dto.AuthPrincipal) (*models.TenantInvitation, string, error) {
+	if operator == nil || tenantID <= 0 || operator.ActiveTenantID != tenantID || !slices.Contains(operator.Permissions, constants.PermissionTenantInviteView.Code) {
+		return nil, "", errorsx.Forbidden("只能查看当前接入公司的邀请码")
 	}
 	tenant := repositories.TenantRepository.Get(sqls.DB(), tenantID)
 	if tenant == nil || tenant.Status == enums.StatusDeleted {
@@ -39,10 +39,6 @@ func (s *tenantInvitationService) Rotate(tenantID int64, operator *dto.AuthPrinc
 	if operator == nil || operator.ActiveTenantID != tenantID || !slices.Contains(operator.Permissions, constants.PermissionTenantInviteRotate.Code) {
 		return nil, "", errorsx.Forbidden("只能重置当前接入公司的邀请码")
 	}
-	tenant := repositories.TenantRepository.Get(sqls.DB(), tenantID)
-	if tenant == nil || tenant.Status != enums.StatusOk {
-		return nil, "", errorsx.InvalidParam("接入公司不存在或已停用")
-	}
 	code, err := generateTenantInvitationCode()
 	if err != nil {
 		return nil, "", err
@@ -55,6 +51,13 @@ func (s *tenantInvitationService) Rotate(tenantID int64, operator *dto.AuthPrinc
 
 	var created *models.TenantInvitation
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		tenant, err := repositories.TenantRepository.GetForUpdate(ctx.Tx, tenantID)
+		if err != nil {
+			return err
+		}
+		if tenant == nil || tenant.Status != enums.StatusOk {
+			return errorsx.InvalidParam("接入公司不存在或已停用")
+		}
 		latest := repositories.TenantInvitationRepository.FindLatest(ctx.Tx, tenantID)
 		version := 1
 		now := time.Now()

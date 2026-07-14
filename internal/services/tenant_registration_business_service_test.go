@@ -137,6 +137,48 @@ func TestTenantRegistrationCreatesPendingRolelessAccountAndReplaysExactly(t *tes
 	}
 }
 
+func TestTenantRegistrationAndReviewLockTenant(t *testing.T) {
+	fixture := setupTenantRegistrationTest(t)
+	const callbackName = "test:tenant-registration-locking-clause"
+	seenLock := false
+	if err := fixture.db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "Tenant" {
+			if _, locked := tx.Statement.Clauses["FOR"]; locked {
+				seenLock = true
+			}
+		}
+	}); err != nil {
+		t.Fatalf("register tenant registration locking callback: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := fixture.db.Callback().Query().Remove(callbackName); err != nil {
+			t.Errorf("remove tenant registration locking callback: %v", err)
+		}
+	})
+
+	registered, err := TenantRegistrationService.Register(
+		registrationRequest(fixture.invitationCode, "tenant-lock"),
+		registrationMeta("register-tenant-lock"),
+	)
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if !seenLock {
+		t.Fatal("registration did not lock the Tenant row")
+	}
+
+	seenLock = false
+	if _, err := TenantRegistrationService.Review(request.ReviewTenantRegistrationRequest{
+		UserID: registered.User.ID, Decision: enums.TenantRegistrationReviewDecisionApprove,
+		RoleIDs: []int64{fixture.csUserRole.ID}, Remark: "approved with tenant lock",
+	}, registrationMeta("review-tenant-lock"), fixture.operator); err != nil {
+		t.Fatalf("Review() error = %v", err)
+	}
+	if !seenLock {
+		t.Fatal("registration review did not lock the Tenant row")
+	}
+}
+
 func TestTenantRegistrationRejectsRequestIDReuseWithChangedPayload(t *testing.T) {
 	fixture := setupTenantRegistrationTest(t)
 	req := registrationRequest(fixture.invitationCode, "fingerprint")

@@ -44,7 +44,3 @@ func (s *tenantRegistrationLogService) FindPageByCnd(cnd *sqls.Cnd) (list []mode
 func (s *tenantRegistrationLogService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.TenantRegistrationLogRepository.Count(sqls.DB(), cnd)
 }
-
-func (s *tenantRegistrationLogService) Create(t *models.TenantRegistrationLog) error {
-	return repositories.TenantRegistrationLogRepository.Create(sqls.DB(), t)
-}

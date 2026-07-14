@@ -2302,3 +2302,18 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 本批修改 PermissionService、RoleService、角色权限测试、新增角色/权限定义 AST 契约并同步两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限码、WebSocket、前端或 AI/计费变化。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批六个文件无同文件修改，不要求 rebase 或 migration 排序。最终集成后应重跑四份角色关系/定义 AST 契约及角色 Handler 权限测试。
 - 可独立回滚本批代码、测试和文档且无需数据库回滚；回滚会恢复 Permission/Role 通用写旁路及角色状态删除绕过，不建议回滚。
+
+## 79. 当前实施检查点：租户根、邀请码与注册事务锁序（2026-07-15）
+
+接入公司、邀请码和注册审核真实链路复核发现：TenantService、TenantInvitationService、TenantRegistrationLogService 仍暴露通用写方法，可绕过公司创建基础数据、法定识别号校验、邀请码轮换和安全日志；公司更新/启停、邀请码轮换、公开注册和审核也没有共享 Tenant 行锁，停用操作可能与在途轮换或注册交错。公开注册当前虽默认关闭，但不能以开关代替底层一致性。
+
+- TenantService 删除 Create/Update/Updates/UpdateColumn/Delete；TenantInvitationService 删除 Create/Update/Updates/UpdateColumn；TenantRegistrationLogService 删除 Create。三者只保留查询，业务写分别归公司管理、邀请码生命周期和注册安全日志 service。
+- 新增 Tenant/Invitation/RegistrationLog 源码契约：Tenant 主表只允许 CreateTenant/UpdateTenant/UpdateTenantStatus 写；Invitation 只允许 CreateTenant、Rotate 和 Register 的使用次数更新写；RegistrationLog 只允许 `createSecurityLog` 追加。契约识别 repository、自定义 DisableActiveByTenant/MarkUsed、GORM model 和原始 SQL，migration 初始化仍是明确离线例外。
+- TenantRepository 新增 GetForUpdate。UpdateTenant、UpdateTenantStatus 在事务内锁 Tenant 后重新确认存在/状态，再做法定识别号冲突检查和更新；不再基于事务外旧快照写公司根记录。
+- Rotate 在事务内先锁 Tenant 并确认启用，再读取最新版本、禁用旧邀请码和创建新版本。同一公司并发轮换及公司停用/轮换通过 Tenant 锁串行，继续保留 `(tenant_id, version)` 唯一约束作为数据库兜底。
+- Register 在创建待审核账号前按 `Tenant -> Invitation` 锁序复核公司和当前邀请码；Review 按 `Tenant -> User -> Role` 锁序复核公司启用后再审核和赋角。公司启停、轮换、注册和审核因此共享 Tenant 锁，不会在停用提交后继续生成邀请码或通过注册。
+- `TenantInvitationService.Current` 现在同时要求请求 tenantID 等于 operator.ActiveTenantID 且持有 `tenantInvite.view`，不能仅凭 tenantID 在 service 层解密其他公司的邀请码。Handler 复用已认证 principal，HTTP 路径和响应不变。
+- 测试覆盖公司更新/状态/轮换三种 Tenant 行锁、注册/审核 Tenant 行锁、邀请码缺 view 和跨活动租户拒绝、合法读取、轮换版本与旧码失效、注册幂等与审核角色链，以及三类源码写契约。聚焦 race、完整 services、租户 Handler、全仓 Go、vet 和 diff 检查均已通过。
+- 本批修改 Tenant repository、公司/邀请码/注册 service 与测试、邀请码 Handler，新增租户基础写契约并同步两份文档，共十三个文件；无 model、AutoMigrate、DML migration、DTO、enum、HTTP 路径、权限码、WebSocket、前端或 AI/计费变化。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批十三个文件无同文件修改，不要求 rebase 或 migration 排序。最终集成后应重跑租户基础写契约、注册/审核 race 和完整性审计；在 AI 分支阻断关闭前 `tenantRegistration.enabled` 仍必须为 false。
+- 可独立回滚本批代码、测试和文档且无需数据库回滚；回滚会恢复租户根/邀请码/安全日志通用写旁路及停用/注册竞态，不建议回滚。

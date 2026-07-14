@@ -44,19 +44,3 @@ func (s *tenantInvitationService) FindPageByCnd(cnd *sqls.Cnd) (list []models.Te
 func (s *tenantInvitationService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.TenantInvitationRepository.Count(sqls.DB(), cnd)
 }
-
-func (s *tenantInvitationService) Create(t *models.TenantInvitation) error {
-	return repositories.TenantInvitationRepository.Create(sqls.DB(), t)
-}
-
-func (s *tenantInvitationService) Update(t *models.TenantInvitation) error {
-	return repositories.TenantInvitationRepository.Update(sqls.DB(), t)
-}
-
-func (s *tenantInvitationService) Updates(id int64, columns map[string]any) error {
-	return repositories.TenantInvitationRepository.Updates(sqls.DB(), id, columns)
-}
-
-func (s *tenantInvitationService) UpdateColumn(id int64, name string, value any) error {
-	return repositories.TenantInvitationRepository.UpdateColumn(sqls.DB(), id, name, value)
-}

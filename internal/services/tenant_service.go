@@ -77,23 +77,3 @@ func (s *tenantService) FindOperationalStats(tenantIDs []int64) (map[int64]dto.T
 	}
 	return stats, nil
 }
-
-func (s *tenantService) Create(t *models.Tenant) error {
-	return repositories.TenantRepository.Create(sqls.DB(), t)
-}
-
-func (s *tenantService) Update(t *models.Tenant) error {
-	return repositories.TenantRepository.Update(sqls.DB(), t)
-}
-
-func (s *tenantService) Updates(id int64, columns map[string]any) error {
-	return repositories.TenantRepository.Updates(sqls.DB(), id, columns)
-}
-
-func (s *tenantService) UpdateColumn(id int64, name string, value any) error {
-	return repositories.TenantRepository.UpdateColumn(sqls.DB(), id, name, value)
-}
-
-func (s *tenantService) Delete(id int64) {
-	repositories.TenantRepository.Delete(sqls.DB(), id)
-}

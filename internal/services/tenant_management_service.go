@@ -146,30 +146,35 @@ func (s *tenantService) UpdateTenant(req request.UpdateTenantRequest, operator *
 	if err != nil {
 		return err
 	}
-	current := repositories.TenantRepository.Get(sqls.DB(), req.ID)
-	if current == nil || current.Status == enums.StatusDeleted {
-		return errorsx.InvalidParam("接入公司不存在")
-	}
-	if existing := repositories.TenantRepository.GetByRegistration(sqls.DB(), normalized.RegistrationType, normalized.RegistrationNo); existing != nil && existing.ID != req.ID {
-		return errorsx.InvalidParam("公司法定识别号已存在")
-	}
-	now := time.Now()
-	return repositories.TenantRepository.Updates(sqls.DB(), req.ID, map[string]any{
-		"legal_name":          normalized.LegalName,
-		"short_name":          normalized.ShortName,
-		"registration_type":   normalized.RegistrationType,
-		"registration_no":     normalized.RegistrationNo,
-		"contact_name":        normalized.ContactName,
-		"contact_mobile":      normalized.ContactMobile,
-		"contact_email":       normalized.ContactEmail,
-		"address":             normalized.Address,
-		"remark":              normalized.Remark,
-		"verification_status": enums.TenantVerificationStatusVerified,
-		"verified_at":         now,
-		"verified_by":         operator.UserID,
-		"update_user_id":      operator.UserID,
-		"update_user_name":    operator.Username,
-		"updated_at":          now,
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current, err := repositories.TenantRepository.GetForUpdate(ctx.Tx, req.ID)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.Status == enums.StatusDeleted {
+			return errorsx.InvalidParam("接入公司不存在")
+		}
+		if existing := repositories.TenantRepository.GetByRegistration(ctx.Tx, normalized.RegistrationType, normalized.RegistrationNo); existing != nil && existing.ID != req.ID {
+			return errorsx.InvalidParam("公司法定识别号已存在")
+		}
+		now := time.Now()
+		return repositories.TenantRepository.Updates(ctx.Tx, req.ID, map[string]any{
+			"legal_name":          normalized.LegalName,
+			"short_name":          normalized.ShortName,
+			"registration_type":   normalized.RegistrationType,
+			"registration_no":     normalized.RegistrationNo,
+			"contact_name":        normalized.ContactName,
+			"contact_mobile":      normalized.ContactMobile,
+			"contact_email":       normalized.ContactEmail,
+			"address":             normalized.Address,
+			"remark":              normalized.Remark,
+			"verification_status": enums.TenantVerificationStatusVerified,
+			"verified_at":         now,
+			"verified_by":         operator.UserID,
+			"update_user_id":      operator.UserID,
+			"update_user_name":    operator.Username,
+			"updated_at":          now,
+		})
 	})
 }
 
@@ -180,15 +185,20 @@ func (s *tenantService) UpdateTenantStatus(req request.UpdateTenantStatusRequest
 	if req.Status != int(enums.StatusOk) && req.Status != int(enums.StatusDisabled) {
 		return errorsx.InvalidParam("接入公司状态不合法")
 	}
-	current := repositories.TenantRepository.Get(sqls.DB(), req.ID)
-	if current == nil || current.Status == enums.StatusDeleted {
-		return errorsx.InvalidParam("接入公司不存在")
-	}
-	return repositories.TenantRepository.Updates(sqls.DB(), req.ID, map[string]any{
-		"status":           req.Status,
-		"update_user_id":   operator.UserID,
-		"update_user_name": operator.Username,
-		"updated_at":       time.Now(),
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current, err := repositories.TenantRepository.GetForUpdate(ctx.Tx, req.ID)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.Status == enums.StatusDeleted {
+			return errorsx.InvalidParam("接入公司不存在")
+		}
+		return repositories.TenantRepository.Updates(ctx.Tx, req.ID, map[string]any{
+			"status":           req.Status,
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+			"updated_at":       time.Now(),
+		})
 	})
 }
 

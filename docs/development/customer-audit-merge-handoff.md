@@ -3998,3 +3998,48 @@ git diff --check
 - 与 `origin/codex/ai-billing@f2d2da4` 共同基线对照，本批六个文件没有同文件修改；无需 rebase、migration 协调或 AI 负责人前置提交。
 - 合并顺序为 76A -> 76B -> 76C -> 77 -> 78。AI 分支集成后必须重跑 Role、Permission、UserRole、RolePermission 四类源码写契约和 Handler 权限回归。
 - 可回滚本批六个文件且无需数据库回滚，但会恢复全局角色/权限通用写旁路和状态删除绕过，不建议回滚。
+
+## 第 79 批：租户根、邀请码与注册事务锁序（2026-07-15）
+
+### 所有权、权限与并发语义
+
+- Tenant、TenantInvitation、TenantRegistrationLog 三个生成式 service 收敛为只读。源码契约固定 Tenant 只由公司管理写、邀请码只由创建/轮换/注册使用计数写、安全日志只能由 createSecurityLog 追加。
+- UpdateTenant/UpdateTenantStatus、Rotate、Register、Review 全部在事务内锁 Tenant。锁序统一为 Tenant 在前，后续才访问 Invitation、User、Role，避免公司停用与邀请码轮换、注册、审核交错。
+- 邀请码 Current 必须匹配 operator.ActiveTenantID 并持有 `tenantInvite.view`，不能以内部 tenantID 参数作为授权。Rotate 继续要求当前租户和 `tenantInvite.rotate`。
+- 公开注册开关保持关闭；本批不开放路由，只补齐未来启用前必须成立的公司根并发和日志所有权边界。
+
+### 文件与验证
+
+```text
+internal/handlers/dashboard/tenant_invitation_handler.go
+internal/repositories/tenant_repository.go
+internal/services/tenant_service.go
+internal/services/tenant_management_service.go
+internal/services/tenant_management_service_test.go
+internal/services/tenant_invitation_service.go
+internal/services/tenant_invitation_business_service.go
+internal/services/tenant_registration_log_service.go
+internal/services/tenant_registration_business_service.go
+internal/services/tenant_registration_business_service_test.go
+internal/services/tenant_foundation_write_contract_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestTenantRuntimeWritesStayBehindManagementService|TestTenantInvitationRuntimeWritesStayBehindLifecycleServices|TestTenantRegistrationLogsRemainAppendOnly|TestIsTenantFoundationMutationCall|TestIsTenantInvitationMutationCall|TestIsTenantRegistrationLogMutationCall|TestTenantManagementMutationsUseTenantRowLock|TestTenantInvitationCurrentRequiresActiveTenantAndViewPermission|TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation|TestTenantInvitationServiceRotateInvalidatesOldCode|TestTenantRegistrationAndReviewLockTenant|TestTenantRegistrationCreatesPendingRolelessAccountAndReplaysExactly|TestTenantRegistrationReviewApprovesRoleAndRevokesOldSessions)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./internal/handlers/dashboard -run 'TestTenant' -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 聚焦 race、完整 services、租户 Handler、全仓 Go、vet 和 diff 检查均已通过；三类源码所有权、五条 Tenant 锁路径、邀请码读取授权及原有注册幂等/审核流程均有回归。
+- 无 model、AutoMigrate、DML migration、DTO、enum、HTTP 路径、权限码、WebSocket、前端或 AI/计费变化；没有修改 `.codex/audits/` 或 docs/generated。
+
+### 并行分支、合并与回滚
+
+- 与 `origin/codex/ai-billing@f2d2da4` 共同基线对照，本批十三个文件没有同文件修改；无需 rebase、migration 协调或 AI 负责人前置提交。
+- 合并顺序为 76A -> 76B -> 76C -> 77 -> 78 -> 79。最终集成后重跑租户基础写契约、注册/审核 race、TenantIntegrityAudit；AI 分支剩余 Tenant 化完成前公开注册继续关闭。
+- 可回滚本批十三个文件且无需数据库回滚，但会恢复租户根/邀请码/注册日志旁路和停用竞态，不建议回滚。

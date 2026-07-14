@@ -10,7 +10,8 @@ import (
 )
 
 func TenantInvitationGetCurrent(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionTenantInviteView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTenantInviteView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -20,7 +21,7 @@ func TenantInvitationGetCurrent(ctx *gin.Context) {
 		return
 	}
 	ctx.Header("Cache-Control", "no-store")
-	invitation, code, err := services.TenantInvitationService.Current(tenantContext.TenantID)
+	invitation, code, err := services.TenantInvitationService.Current(tenantContext.TenantID, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
