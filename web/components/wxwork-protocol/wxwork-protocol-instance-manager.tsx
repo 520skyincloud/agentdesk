@@ -85,6 +85,12 @@ type WelcomeSettingsDraft = {
   sendLocation: boolean
 }
 
+type ReceptionSettingsDraft = {
+  personaPrompt: string
+  frontDeskMode: "unmanned" | "staffed" | "scheduled"
+  frontDeskHours: string
+}
+
 function buildAssetFileURL(assetId: string) {
   const value = assetId.trim()
   return value ? `/api/asset/file/${encodeURIComponent(value)}` : ""
@@ -812,6 +818,8 @@ function buildWelcomeInstanceUpdatePayload(instance: WelcomeCapableInstance, dra
     staffUserIds: instance.staffUserIds || "",
     managedMode: instance.managedMode || "semi",
     serviceHours: instance.serviceHours || "",
+    frontDeskMode: instance.frontDeskMode || "unmanned",
+    frontDeskHours: instance.frontDeskHours || "",
     storeRoomConversationId: instance.storeRoomConversationId || "",
     storeRoomNotifyEnabled: instance.storeRoomNotifyEnabled === true,
     storeRoomAtList: instance.storeRoomAtList || "",
@@ -831,6 +839,102 @@ function buildWelcomeInstanceUpdatePayload(instance: WelcomeCapableInstance, dra
     welcomeEnabled: boolean
     welcomeImageAssetId: string
   }
+}
+
+function buildReceptionInstanceUpdatePayload(instance: WelcomeCapableInstance, draft: ReceptionSettingsDraft) {
+  const payload = buildWelcomeInstanceUpdatePayload(instance, {
+    enabled: instance.welcomeEnabled !== false,
+    message: instance.welcomeMessage || "",
+    imageAssetId: instance.welcomeImageAssetId || "",
+    imageUrl: instance.welcomeImageUrl || "",
+    uploadedImageRecordId: 0,
+    sendMiniProgram: instance.welcomeSendMiniProgram === true,
+    sendLocation: instance.welcomeAskLocation === true,
+  })
+  return {
+    ...payload,
+    personaPrompt: draft.personaPrompt.trim(),
+    frontDeskMode: draft.frontDeskMode,
+    frontDeskHours: draft.frontDeskMode === "scheduled" ? draft.frontDeskHours.trim() : "",
+  }
+}
+
+function ReceptionSettingsDialog({
+  instance,
+  draft,
+  saving,
+  onOpenChange,
+  onChange,
+  onSave,
+}: {
+  instance: WelcomeCapableInstance | null
+  draft: ReceptionSettingsDraft
+  saving: boolean
+  onOpenChange: (open: boolean) => void
+  onChange: (draft: ReceptionSettingsDraft) => void
+  onSave: () => void
+}) {
+  const modes: Array<{ value: ReceptionSettingsDraft["frontDeskMode"]; label: string; description: string }> = [
+    { value: "unmanned", label: "无人化酒店", description: "不设常驻前台，不会无依据引导客人去前台。" },
+    { value: "staffed", label: "有前台酒店", description: "仍需知识库或门店配置明确支持，不能凭经营模式编造能力。" },
+    { value: "scheduled", label: "分时段前台", description: "仅在配置时段内披露前台状态。" },
+  ]
+  return (
+    <Dialog open={Boolean(instance)} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl rounded-3xl p-5">
+        <DialogHeader>
+          <DialogTitle>接待人设</DialogTitle>
+          <DialogDescription>
+            {instance ? `${repairMojibakeText(instance.employeeName) || instance.guid} 的接待身份和门店经营模式。` : ""}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-5">
+          <div className="space-y-2">
+            <div className="text-sm font-medium">门店接待模式</div>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {modes.map((mode) => (
+                <button
+                  key={mode.value}
+                  type="button"
+                  className={`rounded-xl border p-3 text-left transition-colors ${draft.frontDeskMode === mode.value ? "border-primary bg-primary/5" : "border-border bg-background hover:bg-muted/50"}`}
+                  onClick={() => onChange({ ...draft, frontDeskMode: mode.value })}
+                >
+                  <div className="text-sm font-medium">{mode.label}</div>
+                  <div className="mt-1 text-xs leading-5 text-muted-foreground">{mode.description}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          {draft.frontDeskMode === "scheduled" ? (
+            <div className="space-y-2">
+              <label htmlFor="frontDeskHours" className="text-sm font-medium">前台服务时段</label>
+              <Input
+                id="frontDeskHours"
+                value={draft.frontDeskHours}
+                placeholder="例如：08:00-22:00；多个时段用分号分隔"
+                onChange={(event) => onChange({ ...draft, frontDeskHours: event.target.value })}
+              />
+            </div>
+          ) : null}
+          <div className="space-y-2">
+            <label htmlFor="personaPrompt" className="text-sm font-medium">人设提示词</label>
+            <Textarea
+              id="personaPrompt"
+              value={draft.personaPrompt}
+              rows={7}
+              placeholder="例如：你是线上酒店接待，说话简短、自然。"
+              onChange={(event) => onChange({ ...draft, personaPrompt: event.target.value })}
+            />
+            <p className="text-xs leading-5 text-muted-foreground">经营模式作为结构化上下文生效，不会新增意图分类，也不会改动意图识别 JSON。</p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
+          <Button type="button" onClick={onSave} disabled={saving}>{saving ? "保存中" : "保存设置"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 export function WxWorkProtocolInstanceManager({
@@ -864,6 +968,13 @@ export function WxWorkProtocolInstanceManager({
     sendLocation: false,
   })
   const [welcomeSettingsSaving, setWelcomeSettingsSaving] = useState(false)
+  const [receptionSettingsInstance, setReceptionSettingsInstance] = useState<WelcomeCapableInstance | null>(null)
+  const [receptionSettingsDraft, setReceptionSettingsDraft] = useState<ReceptionSettingsDraft>({
+    personaPrompt: "",
+    frontDeskMode: "unmanned",
+    frontDeskHours: "",
+  })
+  const [receptionSettingsSaving, setReceptionSettingsSaving] = useState(false)
   const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([])
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [creatingLocal, setCreatingLocal] = useState(false)
@@ -1019,6 +1130,36 @@ export function WxWorkProtocolInstanceManager({
       sendMiniProgram: extended.welcomeSendMiniProgram === true,
       sendLocation: extended.welcomeAskLocation === true,
     })
+  }
+
+  function openReceptionSettings(item: WxWorkProtocolInstance) {
+    const extended = item as WelcomeCapableInstance
+    const mode = extended.frontDeskMode === "staffed" || extended.frontDeskMode === "scheduled" ? extended.frontDeskMode : "unmanned"
+    setReceptionSettingsInstance(extended)
+    setReceptionSettingsDraft({
+      personaPrompt: repairMojibakeText(extended.personaPrompt || ""),
+      frontDeskMode: mode,
+      frontDeskHours: extended.frontDeskHours || "",
+    })
+  }
+
+  async function saveReceptionSettings() {
+    if (!receptionSettingsInstance) return
+    if (receptionSettingsDraft.frontDeskMode === "scheduled" && !receptionSettingsDraft.frontDeskHours.trim()) {
+      toast.error("请填写前台服务时段")
+      return
+    }
+    setReceptionSettingsSaving(true)
+    try {
+      await updateWxWorkProtocolInstance(buildReceptionInstanceUpdatePayload(receptionSettingsInstance, receptionSettingsDraft))
+      toast.success("接待人设已保存")
+      setReceptionSettingsInstance(null)
+      notifyChanged()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "保存接待人设失败")
+    } finally {
+      setReceptionSettingsSaving(false)
+    }
   }
 
   async function saveWelcomeSettings(): Promise<boolean> {
@@ -1187,6 +1328,12 @@ export function WxWorkProtocolInstanceManager({
   }
 
   const rowActions: DashboardCrudRowAction<WxWorkProtocolInstance>[] = []
+  rowActions.push({
+    key: "receptionSettings",
+    label: "接待人设",
+    icon: <UserRoundCogIcon className="size-4" />,
+    run: async ({ item }) => openReceptionSettings(item),
+  })
   rowActions.push({
     key: "welcomeSettings",
     label: "欢迎语设置",
@@ -1479,7 +1626,7 @@ export function WxWorkProtocolInstanceManager({
             options: managedModeOptions,
             description: "这个策略绑定到门店员工登录 AgentDesk 后的系统账号上，每个门店只允许一个；协议实例再绑定这个门店员工账号。",
           },
-          { name: "serviceHours", label: "门店服务时间", type: "text", placeholder: "例如：09:00-22:00；多个时段后续由排班页维护" },
+          { name: "serviceHours", label: "门店自行接待时段", type: "text", placeholder: "例如：09:00-22:00；半托管模式按此时段通知门店群" },
           { name: "storeRoomNotifyEnabled", label: "启用门店群通知", type: "switch" },
           { name: "storeRoomConversationId", label: "门店群", type: "custom", render: () => null },
           { name: "storeRoomAtList", label: "@ 成员", type: "custom", render: () => null },
@@ -1539,6 +1686,8 @@ export function WxWorkProtocolInstanceManager({
           staffUserIds: context.item?.staffUserIds || "",
           managedMode: String(values.managedMode || context.item?.managedMode || "semi"),
           serviceHours: String(values.serviceHours || ""),
+          frontDeskMode: context.item?.frontDeskMode || "unmanned",
+          frontDeskHours: context.item?.frontDeskHours || "",
           storeRoomConversationId: String(values.storeRoomConversationId || ""),
           storeRoomNotifyEnabled: values.storeRoomNotifyEnabled === true,
           storeRoomAtList: String(values.storeRoomAtList || ""),
@@ -1616,6 +1765,16 @@ export function WxWorkProtocolInstanceManager({
       }}
       onChange={setWelcomeSettingsDraft}
       onSave={saveWelcomeSettings}
+    />
+    <ReceptionSettingsDialog
+      instance={receptionSettingsInstance}
+      draft={receptionSettingsDraft}
+      saving={receptionSettingsSaving}
+      onOpenChange={(open) => {
+        if (!open) setReceptionSettingsInstance(null)
+      }}
+      onChange={setReceptionSettingsDraft}
+      onSave={() => void saveReceptionSettings()}
     />
     <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
       <DialogContent className="max-w-3xl rounded-3xl p-5">
