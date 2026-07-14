@@ -779,7 +779,7 @@ POST /api/auth/register
 - 客服组创建必须从当前 `ActiveTenantID` 写入租户；公司主管可以创建和管理本公司客服组，不能管理其他租户客服组。
 - 历史数据出现账号与客服组租户冲突、跨租户小组成员或排班小组错配时 migration 中止，不自动改归属。
 - 客服分支旧 migration 25/26 已避让 AI 分支并重编号为 37/38，客服组织租户回填使用 39；migration runner 会拒绝同版本不同 remark 的历史记录。
-- 阶段 4A 当时只完成字段与回填；客服组织运行时查询和最终写入条件已在阶段 5 首批补齐。其他业务模型、组合唯一索引和一致性检查命令仍按后续阶段分批推进。
+- 阶段 4A 当时只完成字段与回填；客服组织运行时查询和最终写入条件已在阶段 5 首批补齐。其他业务模型已按后续批次推进，租户一致性只读审计命令在第 58 批完成；组合唯一索引仍需按模型冲突和双数据库 DDL 边界另行分批处理。
 
 第二批实现状态（2026-07-14）：
 
@@ -1962,3 +1962,24 @@ git diff --check
 - 全量 Go、vet、127 项前端测试、TypeScript、目标 ESLint、Next 生产构建及 diff 检查通过。模拟门店员工在 1280x720 与 390x844 下只看到工作台，无横向溢出或控制台错误；无权会话直链自动返回工作台，验证期间未保存配置或修改业务数据。
 - `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/bootstrap/routes.go`、`internal/bootstrap/server.go` 和 `web/lib/navigation.tsx`。最终必须手工保留本批工作台路由、`storeWorkbench.view`、直链守卫与 AI 分支回复意图行业入口；AI 分支最高 migration 33，与 55/56 不冲突。
 - 本批前后端、权限常量和两个 migration 构成同一边界。只回滚页面会留下无入口权限，只回滚 migration 会恢复门店员工历史宽权限；已执行 migration 不应改号或改 remark，撤销产品能力需另做幂等 DML。
+
+## 58. 当前实施检查点：租户数据一致性只读审计（2026-07-15）
+
+本检查点完成阶段 4 约定的部署前一致性检查命令。它是上线和合并后的独立 preflight，不进入 Dashboard 页面、不新增权限，也不以修复脚本替代业务确认。
+
+### 审计范围与只读边界
+
+- 新增 `cmd/tenant_integrity_audit`，参数为 `-config`、`-sample-limit` 和 `-pretty`；Makefile 提供 `tenant-integrity-audit` 入口。输出始终为结构化 JSON，通过返回 0，发现违规返回 1，配置、连接或查询错误返回 2。
+- 命令只加载配置并调用 `bootstrap.InitDB`，不调用 `bootstrap.Init`、`InitMigrations`、`AutoMigrate` 或 DML migration。SQLite 在连接前确认数据库文件已经存在并强制 `mode=ro`；SQLite/MySQL 检查均运行在 `sql.TxOptions{ReadOnly:true}` 事务内。
+- 当前 `models.Models` 中 51 个含 `TenantID` 的模型全部有显式策略。测试会反射注册模型并与策略表双向比较，未来新增、删除或移除 TenantID 却未同步策略时直接失败，不能静默漏审。
+- 允许平台态零租户的 User、TicketView、Notification、Asset，以及注册失败日志、未绑定企微实例、脱离会话的消息同步日志和中断检查点均使用独立条件；其他租户模型要求 `tenant_id > 0`。所有正租户值还必须引用真实 Tenant。
+- 审计覆盖 64 张当前必需表和 125 条关系：缺表/缺列、必填父级为空、正数外键孤儿、父子 TenantID 不一致均形成稳定违规码和受 `sample-limit` 限制的样本 ID。
+- 权限体系额外检查角色和权限 scope 合法性、租户账号持有平台角色、平台账号持有租户角色、租户角色持有平台权限。操作人字段只检查引用存在，不强制与业务记录同租户，避免把平台管理员在活动公司内的合法操作误判为串租。
+
+### 验证、上线使用与剩余边界
+
+- service 测试覆盖双租户干净数据、缺表、零/负租户、未知租户、孤儿、跨租户关系、三类角色权限 scope 冲突和样本上限；命令测试以只有标记表的真实 SQLite 文件执行，确认运行前后表结构和数据完全不变。
+- `/tmp/agentdesk-tenant-stats.db` 实际只读审计通过：51/51 模型策略、64/64 必需表、125/125 关系，违规为 0；文件修改时间未变化。没有生成或提交 `docs/generated/` 报告。
+- 全仓串行 Go 测试、`go vet ./...`、127 项前端契约、TypeScript 和 Next 生产构建通过。没有 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket、前端页面、AI runtime、token、usage 或计费变化。
+- 正式部署应先在数据库备份和只读账号上运行本命令；返回 1 时按违规码人工确认归属并用单独、可审查的修复步骤处理，命令本身永不自动改数据。组合唯一索引仍是独立 DDL 批次，不能因为本审计通过而视为已完成。
+- `origin/codex/ai-billing@f2d2da4` 不修改本批新增命令、repository、service 或 Makefile；其对 `internal/models/models.go` 的最终合并若新增 TenantID 模型，会由策略覆盖测试阻断并要求显式登记。本批不需要 migration 合并顺序，可独立回滚新增代码、测试、Makefile 入口和本节文档。

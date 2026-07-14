@@ -3049,3 +3049,52 @@ git diff --check
 - AI 分支最高 migration 33，本批 migration 55/56 无编号冲突；本批不修改 AI 回复、FastGPT、模型、token、usage 或计费口径。
 - 建议先保留本分支租户/权限/客服组织基础，再叠加 AI 分支路由和导航，最后重跑 dashboard handler 权限契约、导航/布局测试、全前端测试和生产构建。
 - 回滚必须把工作台接口、页面、权限常量和默认角色语义视为整体。已执行 migration 不得改号或改 remark；若撤销，应新增幂等迁移处理角色关系，不能删除迁移历史或恢复门店员工历史宽权限。
+
+## 第 58 批：租户数据一致性只读审计命令（2026-07-15）
+
+### 目标、现有链路与文件
+
+- 完成设计阶段 4 的部署前一致性检查，不新增 Dashboard 页面、API、权限或平行业务模型。审计直接读取 `models.Models`、现有表和当前角色 scope 契约，不使用历史 generated 报告作为产品依据。
+- 命令只连接现有数据库，不运行 `bootstrap.Init`、`InitMigrations`、`AutoMigrate` 或 DML migration。SQLite 连接前拒绝缺失文件和内存库并强制 `mode=ro`，所有数据库在只读事务中执行。
+
+```text
+cmd/tenant_integrity_audit/main.go
+cmd/tenant_integrity_audit/main_test.go
+internal/repositories/tenant_integrity_audit_repository.go
+internal/services/tenant_integrity_audit_service.go
+internal/services/tenant_integrity_audit_service_test.go
+Makefile
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+### 数据策略与输出契约
+
+- 51 个注册 TenantID 模型全部显式登记零值策略；反射覆盖测试保证未来新增模型不登记即失败。User、TicketView、Notification、Asset 允许平台态 0，注册日志、未绑定企微实例、脱离会话同步日志和中断检查点使用受限零值条件，其余要求正租户。
+- 64 张必需表和 125 条父子关系覆盖客户、门店/企微、会话/消息、渠道映射/Outbox、派单、工单、客服组织、知识库和 AI 运行日志。检查缺表/租户列、非法或未知 TenantID、必填引用、孤儿引用和父子租户不一致。
+- 角色权限检查覆盖非法 scope、租户账号持有平台角色、平台账号持有租户角色、租户角色持有平台权限。业务归属字段要求 tenant 一致，Operator/Author/Reviewer 等操作人字段只要求引用存在，允许平台管理员在活动租户内执行有权动作。
+- JSON 报告包含时间、驱动、样本上限、模型/策略/表/关系计数和违规数组。成功退出 0，数据违规退出 1，配置/连接/执行错误退出 2；每项违规包含稳定 code、entity、总数、有限 sampleIds 和说明。
+
+### 验证
+
+```text
+go test ./internal/services ./cmd/tenant_integrity_audit -run 'TenantIntegrity|ReadOnly|ExecuteDoesNot' -count=1
+go run ./cmd/tenant_integrity_audit --config /tmp/agentdesk-tenant-stats.yaml --sample-limit 5 --pretty
+go test ./... -count=1 -p 1
+go vet ./...
+cd web && rg --files -g '*.test.mjs' | sort | xargs node --test
+cd web && pnpm typecheck
+cd web && pnpm build
+git diff --check
+```
+
+- 聚焦测试、全仓 Go、vet、127 项前端测试、TypeScript 和生产构建通过。
+- 实际测试库报告为 `passed`：51 个注册租户模型、51 个策略、64/64 表、125/125 关系、0 违规；审计前后 SQLite 大小与修改时间不变。
+- 命令测试在只有 `audit_marker` 表的文件上得到缺表违规后，确认没有创建任何业务表且标记数据不变；缺失 SQLite 路径也不会因连接而创建空库。
+- 本批没有 model、AutoMigrate、DML migration、request/response DTO、enum、API、Gin 路由、WebSocket、权限、前端或 AI/计费契约变化；没有写入 `docs/generated/`。
+
+### 并行分支、合并顺序与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 当前不修改新增代码或 Makefile，无同文件业务冲突；两分支都会依赖 `internal/models/models.go`。最终模型合并后必须先跑策略覆盖测试，再跑真实库审计，任何新增 TenantID 模型都要显式补策略和关系。
+- 本批不需要 migration 版本排序，也不要求 AI 分支先后合并。建议在最终模型契约确定后运行：覆盖测试 -> 全仓迁移测试 -> 只读一致性审计 -> 双租户浏览器/API 验收。
+- 可独立删除命令、repository、service、测试和 Makefile 入口回滚，无数据库回滚。回滚会失去部署前自动阻断能力，不应删除本次已经确认的数据规则记录；命令返回违规时必须另做可审查修复，禁止把本命令改成自动修复器。
