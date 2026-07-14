@@ -1175,3 +1175,63 @@ git diff --check
 - 双方同文件为 `internal/models/models.go`。AI 分支还修改 ConversationRouteState repository/service、Message service 和 Conversation handler，但本步骤有意不触碰这些运行时文件，适合作为独立共享契约先合并。
 - 建议先合并 migration 45 契约，再由 AI 分支 rebase，逐结构保留其 AIManualResumeTask、企微替换、欢迎语/意图/FastGPT 字段和本步骤 19 个 TenantID；之后双方分别基于同一 Tenant 字段实现 AI/计费日志与客服运行时隔离。
 - 回滚运行时代码时不得删除已执行的列、migration 45 记录或清零归属。若 migration 因历史跨租户 Tag/Message/父对象冲突中止，应先修复或拆分明确数据，再重试，禁止把冲突数据批量归 legacy 绕过。
+
+## 30. 多租户阶段 5F/6A：会话、消息、派单与企微协议投递隔离（2026-07-14）
+
+### 目标与完成结果
+
+- Conversation 创建继承 Channel tenant，未关闭会话复用按 tenant 限定；Dashboard 列表、详情和消息读取要求 ActiveTenantID。
+- 客服发送、撤回、分配、转派、释放、关闭及其最终写入拒绝跨租户 ID；Conversation 的参与者、消息、路由、已读、分配、事件、Interrupt、同步日志、企微映射和 Outbox 从父会话继承 tenant。
+- 派单排班、小组、客服档案、启用用户、实时负载、任务计数及返回展示字段都限定当前租户。
+- 企微协议 Outbox 的领取、投递状态和媒体状态更新使用 tenant-qualified 条件；Conversation/Message/Channel/Mapping/Instance 关系执行同租户校验。
+- detached MessageSyncLog 与 checkpoint-only ConversationInterrupt 保持 tenant 0 隔离；checkpoint 进入待处理会话时升级为父 Conversation tenant，并拒绝跨租户 checkpoint ID 复用。
+
+### 主要文件与共享契约
+
+```text
+internal/builders/conversation_builder.go
+internal/handlers/api/conversation_handler.go
+internal/handlers/dashboard/agent_team_handler.go
+internal/handlers/dashboard/conversation_handler.go
+internal/repositories/conversation_repository.go
+internal/repositories/message_repository.go
+internal/repositories/conversation_route_state_repository.go
+internal/repositories/conversation_read_state_repository.go
+internal/repositories/conversation_interrupt_repository.go
+internal/repositories/channel_message_outbox_repository.go
+internal/repositories/wx_work_kf_conversation_repository.go
+internal/services/conversation_tenant_guard.go
+internal/services/conversation_service.go
+internal/services/message_service.go
+internal/services/conversation_dispatch_service.go
+internal/services/conversation_dispatch_workbench_service.go
+internal/services/conversation_human_dispatch_service.go
+internal/services/conversation_interrupt_service.go
+internal/services/channel_message_outbox_service.go
+internal/services/wxwork_protocol_service.go
+internal/services/conversation_runtime_tenant_test.go
+```
+
+- 本步骤没有 model、migration、request/response DTO、enum、Gin 路由、权限点、WebSocket payload 或前端变化。
+- `ConversationRouteService.GetByConversationID` 与 `MessageService.FindLatestByConversationID` 保留全局 ID 兼容行为；租户敏感路径使用新增 tenant-aware 方法。原因是 AI runtime 和纯单测存在无完整 Conversation 行的局部对象，不能由客服分支改变其基础语义。
+
+### 验证、风险与后续
+
+```text
+go test ./internal/services -count=1
+go test -race ./internal/services -run 'TestConversation(Runtime|DispatchAndFinalWrites|InterruptRejects)' -count=1
+go test ./... -run '^$' -count=1
+go vet ./...
+git diff --check
+```
+
+- 上述检查已通过。完整 service 测试本次也通过；历史上存在的 AI 异步回复测试清理竞态未复现，但本步骤没有修改 AI goroutine 生命周期。
+- 下一独立批次为 Ticket、TicketProgress、TicketView、Tag、ConversationTag 和 TicketTag 运行时隔离；随后审计 WebSocket、权限遗漏、公司上下文和前端入口隐藏。
+- `internal/services/media_understanding_service.go` 的 Message 更新仍缺 tenant 条件，必须由 AI 分支从 Message 继承 TenantID 后修复。本分支不修改该 AI-owned 文件。
+- AI 分支还必须保证 ConversationSessionSummary 创建写入 TenantID，并为 AIManualResumeTask 增加 TenantID 和 migration 45 之后的新回填版本。
+
+### 并行分支、合并顺序与回滚
+
+- 本步骤开始及提交前均需 fetch。当前 `origin/codex/ai-billing@f2d2da4`；同文件包括 Conversation builder/handler、RouteState repository/service、Message service、人工派单/超时和企微协议 service。
+- 建议先合并阶段 4G 的 Tenant 字段/migration 45，再合并本步骤运行时隔离，之后由 AI 分支 rebase 并逐方法保留双方语义；禁止整文件覆盖。
+- 本步骤不需要新的 migration，也不需要 rebase 当前 `origin/codex/customer-audit`。回滚可撤销本步骤 handler/service/repository 调用和新增测试，但不能删除已执行的 TenantID 字段、migration 45 记录或恢复跨租户全局 Dashboard 访问。

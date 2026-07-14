@@ -64,7 +64,7 @@ func (s *conversationDispatchService) DispatchConversation(conversationID int64)
 	if conversation == nil {
 		return nil, nil
 	}
-	if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
+	if conversation.TenantID <= 0 || conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
 		return nil, nil
 	}
 	aiAgent := AIAgentService.Get(conversation.AIAgentID)
@@ -78,7 +78,7 @@ func (s *conversationDispatchService) DispatchPendingConversation(conversation *
 	if conversation == nil || aiAgent == nil {
 		return nil, nil
 	}
-	if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
+	if conversation.TenantID <= 0 || conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
 		return nil, nil
 	}
 
@@ -91,8 +91,8 @@ func (s *conversationDispatchService) DispatchPendingConversation(conversation *
 		return nil, nil
 	}
 
-	route := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversation.ID)
-	candidates, report, err := s.pickDispatchCandidates(teamIDs, route, time.Now())
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
+	candidates, report, err := s.pickDispatchCandidates(teamIDs, conversation.TenantID, route, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +155,7 @@ func (s *conversationDispatchService) DispatchPendingConversations(limit int) (i
 		limit = pendingDispatchBatchLimit
 	}
 	conversations := ConversationService.Find(sqls.NewCnd().
+		Where("tenant_id > ?", 0).
 		Eq("status", enums.IMConversationStatusPending).
 		Eq("current_assignee_id", 0).
 		Desc("id"))
@@ -209,13 +210,17 @@ func (s *conversationDispatchService) RunPendingDispatchLoop(interval time.Durat
 }
 
 // pickDispatchCandidates returns the eligible dispatch candidates for the given teamIDs at the given time, along with a report for debugging and analysis.
-func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, route *models.ConversationRouteState, now time.Time) ([]dispatchCandidate, dispatchPoolReport, error) {
+func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, tenantID int64, route *models.ConversationRouteState, now time.Time) ([]dispatchCandidate, dispatchPoolReport, error) {
 	report := dispatchPoolReport{
 		RequestedTeamIDs: append([]int64(nil), teamIDs...),
 	}
 
 	// 1. filter teams with active schedule
-	activeSchedules := s.findActiveScheduleSelections(teamIDs, now)
+	if tenantID <= 0 || (route != nil && route.TenantID != tenantID) {
+		report.Reason = "invalid_tenant_scope"
+		return nil, report, nil
+	}
+	activeSchedules := s.findActiveScheduleSelections(teamIDs, tenantID, now)
 	activeTeamIDs := make([]int64, 0, len(activeSchedules))
 	for _, teamID := range teamIDs {
 		if _, ok := activeSchedules[teamID]; ok {
@@ -229,7 +234,12 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, ro
 	}
 
 	// 2. find agent profiles for the active teams
-	profiles := AgentProfileService.GetDispatchAgents(activeTeamIDs)
+	profiles := AgentProfileService.Find(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		In("team_id", activeTeamIDs).
+		Eq("status", enums.StatusOk).
+		Eq("auto_assign_enabled", true).
+		Eq("service_status", enums.ServiceStatusIdle))
 	profiles = s.filterProfilesByActiveSquads(profiles, activeSchedules)
 	report.MatchedProfiles = len(profiles)
 	if len(profiles) == 0 {
@@ -237,7 +247,7 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, ro
 		return nil, report, nil
 	}
 
-	enabledProfiles, enabledUserIDs, reason := s.filterEnabledDispatchProfiles(profiles)
+	enabledProfiles, enabledUserIDs, reason := s.filterEnabledDispatchProfiles(profiles, tenantID)
 	if reason != "" {
 		report.Reason = reason
 		return nil, report, nil
@@ -260,7 +270,7 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, ro
 		}
 	}
 
-	activeCounts, err := s.findActiveConversationCountMap(enabledUserIDs)
+	activeCounts, err := s.findActiveConversationCountMap(enabledUserIDs, tenantID)
 	if err != nil {
 		return nil, report, err
 	}
@@ -325,7 +335,7 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, ro
 	return candidates, report, nil
 }
 
-func (s *conversationDispatchService) filterEnabledDispatchProfiles(profiles []models.AgentProfile) ([]models.AgentProfile, []int64, string) {
+func (s *conversationDispatchService) filterEnabledDispatchProfiles(profiles []models.AgentProfile, tenantID int64) ([]models.AgentProfile, []int64, string) {
 	userIDs := make([]int64, 0, len(profiles))
 	for _, profile := range profiles {
 		if profile.UserID > 0 {
@@ -337,6 +347,7 @@ func (s *conversationDispatchService) filterEnabledDispatchProfiles(profiles []m
 	}
 
 	enabledUsers := UserService.Find(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
 		In("id", userIDs).
 		Eq("status", enums.StatusOk))
 	if len(enabledUsers) == 0 {
@@ -364,12 +375,13 @@ func (s *conversationDispatchService) filterEnabledDispatchProfiles(profiles []m
 }
 
 // findActiveScheduleTeamIDs returns the subset of teamIDs that have active schedule at the given time.
-func (s *conversationDispatchService) findActiveScheduleSelections(teamIDs []int64, now time.Time) map[int64]int64 {
-	if len(teamIDs) == 0 {
+func (s *conversationDispatchService) findActiveScheduleSelections(teamIDs []int64, tenantID int64, now time.Time) map[int64]int64 {
+	if len(teamIDs) == 0 || tenantID <= 0 {
 		return map[int64]int64{}
 	}
 
 	teams := AgentTeamService.Find(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
 		In("id", teamIDs).
 		Eq("status", enums.StatusOk))
 	if len(teams) == 0 {
@@ -382,6 +394,7 @@ func (s *conversationDispatchService) findActiveScheduleSelections(teamIDs []int
 	}
 
 	schedules := AgentTeamScheduleService.Find(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
 		In("team_id", enabledTeamIDs).
 		Eq("status", enums.StatusOk).
 		Lte("start_at", now).
@@ -396,8 +409,8 @@ func (s *conversationDispatchService) findActiveScheduleSelections(teamIDs []int
 	return activeSet
 }
 
-func (s *conversationDispatchService) findActiveScheduleTeamIDs(teamIDs []int64, now time.Time) []int64 {
-	activeSchedules := s.findActiveScheduleSelections(teamIDs, now)
+func (s *conversationDispatchService) findActiveScheduleTeamIDs(teamIDs []int64, tenantID int64, now time.Time) []int64 {
+	activeSchedules := s.findActiveScheduleSelections(teamIDs, tenantID, now)
 	ret := make([]int64, 0, len(activeSchedules))
 	for _, teamID := range teamIDs {
 		if _, ok := activeSchedules[teamID]; ok && !slices.Contains(ret, teamID) {
@@ -431,9 +444,9 @@ func (s *conversationDispatchService) filterProfilesByActiveSquads(profiles []mo
 	return ret
 }
 
-func (s *conversationDispatchService) findActiveConversationCountMap(userIDs []int64) (map[int64]int, error) {
+func (s *conversationDispatchService) findActiveConversationCountMap(userIDs []int64, tenantID int64) (map[int64]int, error) {
 	ret := make(map[int64]int, len(userIDs))
-	if len(userIDs) == 0 {
+	if len(userIDs) == 0 || tenantID <= 0 {
 		return ret, nil
 	}
 
@@ -441,7 +454,7 @@ func (s *conversationDispatchService) findActiveConversationCountMap(userIDs []i
 	if err := sqls.DB().
 		Model(&models.Conversation{}).
 		Select("current_assignee_id, COUNT(1) AS active_count").
-		Where("status = ? AND current_assignee_id IN ?", enums.IMConversationStatusActive, userIDs).
+		Where("tenant_id = ? AND status = ? AND current_assignee_id IN ?", tenantID, enums.IMConversationStatusActive, userIDs).
 		Group("current_assignee_id").
 		Scan(&rows).Error; err != nil {
 		return nil, err
@@ -460,11 +473,14 @@ func (s *conversationDispatchService) tryAssignConversation(conversationID int64
 	operator := systemDispatchPrincipal()
 
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation := repositories.ConversationRepository.Get(ctx.Tx, conversationID)
+		conversation := repositories.ConversationRepository.GetInTenant(ctx.Tx, conversationID, candidate.profile.TenantID)
 		if conversation == nil {
 			return errConversationDispatchConflict
 		}
 		if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
+			return errConversationDispatchConflict
+		}
+		if conversation.TenantID <= 0 || candidate.profile.TenantID != conversation.TenantID {
 			return errConversationDispatchConflict
 		}
 
@@ -476,7 +492,7 @@ func (s *conversationDispatchService) tryAssignConversation(conversationID int64
 		}
 
 		result := ctx.Tx.Model(&models.Conversation{}).
-			Where("id = ? AND status = ? AND current_assignee_id = ?", conversationID, enums.IMConversationStatusPending, 0).
+			Where("id = ? AND tenant_id = ? AND status = ? AND current_assignee_id = ?", conversationID, conversation.TenantID, enums.IMConversationStatusPending, 0).
 			Updates(map[string]any{
 				"current_assignee_id": candidate.profile.UserID,
 				"current_team_id":     candidate.profile.TeamID,

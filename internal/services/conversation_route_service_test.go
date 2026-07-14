@@ -18,13 +18,18 @@ func TestHQAgentDeskServingTracksPendingReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.ConversationRouteState{}); err != nil {
+	if err := db.AutoMigrate(&models.Conversation{}, &models.ConversationRouteState{}); err != nil {
 		t.Fatalf("migrate route state: %v", err)
 	}
 	sqls.SetDB(db)
+	conversation := &models.Conversation{TenantID: 101, Status: enums.IMConversationStatusAIServing, LastActiveAt: time.Now(), LastMessageAt: time.Now()}
+	if err := db.Create(conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
 
 	route := &models.ConversationRouteState{
-		ConversationID:    101,
+		TenantID:          conversation.TenantID,
+		ConversationID:    conversation.ID,
 		RouteStatus:       enums.ConversationRouteStatusAIServing,
 		NeedHumanFollowUp: false,
 	}
@@ -59,13 +64,18 @@ func TestStoreManualTracksPendingReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.ConversationRouteState{}); err != nil {
+	if err := db.AutoMigrate(&models.Conversation{}, &models.ConversationRouteState{}); err != nil {
 		t.Fatalf("migrate route state: %v", err)
 	}
 	sqls.SetDB(db)
+	conversation := &models.Conversation{TenantID: 101, Status: enums.IMConversationStatusAIServing, LastActiveAt: time.Now(), LastMessageAt: time.Now()}
+	if err := db.Create(conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
 
 	route := &models.ConversationRouteState{
-		ConversationID:    202,
+		TenantID:          conversation.TenantID,
+		ConversationID:    conversation.ID,
 		RouteStatus:       enums.ConversationRouteStatusStoreWecomManual,
 		NeedHumanFollowUp: false,
 	}

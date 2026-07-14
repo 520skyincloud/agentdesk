@@ -38,6 +38,8 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 		&models.Channel{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
+		&models.ConversationAssignment{},
+		&models.Message{},
 	); err != nil {
 		t.Fatalf("migrate scope models: %v", err)
 	}
@@ -99,9 +101,9 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	}
 
 	now := time.Now()
-	conversationA := &models.Conversation{ChannelID: channel.ID, CustomerName: "客户A", Status: enums.IMConversationStatusActive, CurrentAssigneeID: 21, LastActiveAt: now.Add(-time.Minute), LastMessageAt: now.Add(-time.Minute)}
-	conversationB := &models.Conversation{ChannelID: channel.ID, CustomerName: "客户B", Status: enums.IMConversationStatusActive, CurrentAssigneeID: 22, LastActiveAt: now, LastMessageAt: now}
-	conversationAOther := &models.Conversation{ChannelID: channel.ID, CustomerName: "客户A-其他员工号", Status: enums.IMConversationStatusActive, LastActiveAt: now, LastMessageAt: now}
+	conversationA := &models.Conversation{TenantID: 101, ChannelID: channel.ID, CustomerName: "客户A", Status: enums.IMConversationStatusActive, CurrentAssigneeID: 21, LastActiveAt: now.Add(-time.Minute), LastMessageAt: now.Add(-time.Minute)}
+	conversationB := &models.Conversation{TenantID: 101, ChannelID: channel.ID, CustomerName: "客户B", Status: enums.IMConversationStatusActive, CurrentAssigneeID: 22, LastActiveAt: now, LastMessageAt: now}
+	conversationAOther := &models.Conversation{TenantID: 101, ChannelID: channel.ID, CustomerName: "客户A-其他员工号", Status: enums.IMConversationStatusActive, LastActiveAt: now, LastMessageAt: now}
 	if err := db.Create(conversationA).Error; err != nil {
 		t.Fatalf("create conversation A: %v", err)
 	}
@@ -111,13 +113,13 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	if err := db.Create(conversationAOther).Error; err != nil {
 		t.Fatalf("create conversation from other instance in store A: %v", err)
 	}
-	if err := db.Create(&models.ConversationRouteState{ConversationID: conversationA.ID, StoreID: storeA.ID, WxWorkInstanceID: instanceA.ID, NeedHumanFollowUp: true}).Error; err != nil {
+	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationA.ID, StoreID: storeA.ID, WxWorkInstanceID: instanceA.ID, NeedHumanFollowUp: true}).Error; err != nil {
 		t.Fatalf("create route A: %v", err)
 	}
-	if err := db.Create(&models.ConversationRouteState{ConversationID: conversationB.ID, StoreID: storeB.ID, WxWorkInstanceID: instanceB.ID, NeedHumanFollowUp: true}).Error; err != nil {
+	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationB.ID, StoreID: storeB.ID, WxWorkInstanceID: instanceB.ID, NeedHumanFollowUp: true}).Error; err != nil {
 		t.Fatalf("create route B: %v", err)
 	}
-	if err := db.Create(&models.ConversationRouteState{ConversationID: conversationAOther.ID, StoreID: storeA.ID, WxWorkInstanceID: instanceAOther.ID}).Error; err != nil {
+	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationAOther.ID, StoreID: storeA.ID, WxWorkInstanceID: instanceAOther.ID}).Error; err != nil {
 		t.Fatalf("create route for other instance in store A: %v", err)
 	}
 
@@ -165,7 +167,7 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	if len(attention) != 1 || attention[0].ID != conversationA.ID {
 		t.Fatalf("my attention = %+v, want only assigned conversation %d", attention, conversationA.ID)
 	}
-	pendingByTeam := ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()
+	pendingByTeam := ConversationDispatchWorkbenchService.PendingReplyCountsByTeam(agentA)
 	if pendingByTeam[teamA.ID] != 1 || pendingByTeam[teamB.ID] != 1 {
 		t.Fatalf("pending reply counts = %v, want team A=1 and team B=1", pendingByTeam)
 	}

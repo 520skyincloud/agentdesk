@@ -36,18 +36,24 @@ func (s *conversationRouteService) GetByConversationID(conversationID int64) *mo
 	return repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversationID)
 }
 
+func (s *conversationRouteService) GetByConversationIDInTenant(conversationID, tenantID int64) *models.ConversationRouteState {
+	return repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, tenantID)
+}
+
 func (s *conversationRouteService) Ensure(conversationID int64) (*models.ConversationRouteState, error) {
 	return s.ensureWithDB(sqls.DB(), conversationID)
 }
 
 func (s *conversationRouteService) ensureWithDB(db *gorm.DB, conversationID int64) (*models.ConversationRouteState, error) {
-	if conversationID <= 0 {
-		return nil, errorsx.InvalidParam("会话不存在")
+	conversation, err := requireConversationParent(db, conversationID)
+	if err != nil {
+		return nil, err
 	}
-	if existing := repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ?", conversationID); existing != nil {
+	if existing := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, conversation.TenantID); existing != nil {
 		return existing, nil
 	}
 	item := &models.ConversationRouteState{
+		TenantID:         conversation.TenantID,
 		ConversationID:   conversationID,
 		RouteStatus:      enums.ConversationRouteStatusAIServing,
 		RouteTarget:      "ai",
@@ -88,7 +94,7 @@ func (s *conversationRouteService) EnsureActiveSessionForCustomerMessage(convers
 		return state.SessionNo, nil
 	}
 	nextSessionNo := state.SessionNo + 1
-	if err := repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"session_no":               nextSessionNo,
 		"session_started_at":       now,
 		"route_status":             enums.ConversationRouteStatusAIServing,
@@ -104,7 +110,7 @@ func (s *conversationRouteService) EnsureActiveSessionForCustomerMessage(convers
 		return state.SessionNo, err
 	}
 	if conversation.Status == enums.IMConversationStatusClosed {
-		_ = repositories.ConversationRepository.Updates(sqls.DB(), conversation.ID, map[string]any{
+		_ = repositories.ConversationRepository.UpdatesInTenant(sqls.DB(), conversation.ID, conversation.TenantID, map[string]any{
 			"status":           enums.IMConversationStatusAIServing,
 			"closed_at":        nil,
 			"closed_by":        int64(0),
@@ -139,7 +145,7 @@ func (s *conversationRouteService) MarkCustomerMessage(conversationID int64, at 
 		updates["need_human_follow_up"] = true
 		updates["manual_expire_at"] = at.Add(DefaultManualTimeoutMinutes * time.Minute)
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, updates)
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, updates)
 }
 
 func (s *conversationRouteService) MarkAgentMessage(conversationID int64, at time.Time) error {
@@ -161,7 +167,7 @@ func (s *conversationRouteService) MarkAgentMessage(conversationID int64, at tim
 	default:
 		return nil
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, updates)
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, updates)
 }
 
 func (s *conversationRouteService) SetPendingAction(conversationID int64, action enums.ConversationPendingAction, payload string, expireAt time.Time) error {
@@ -169,7 +175,7 @@ func (s *conversationRouteService) SetPendingAction(conversationID int64, action
 	if err != nil {
 		return err
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"pending_action":           string(action),
 		"pending_action_payload":   payload,
 		"pending_action_expire_at": expireAt,
@@ -183,7 +189,7 @@ func (s *conversationRouteService) ClearPendingAction(conversationID int64) erro
 	if err != nil {
 		return err
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"pending_action":           "",
 		"pending_action_payload":   "",
 		"pending_action_expire_at": nil,
@@ -196,7 +202,7 @@ func (s *conversationRouteService) ClearExpiredPendingActions(action enums.Conve
 	states := s.ListExpiredPendingActions(action, now, limit)
 	count := 0
 	for _, state := range states {
-		if err := repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+		if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 			"pending_action":           "",
 			"pending_action_payload":   "",
 			"pending_action_expire_at": nil,
@@ -233,7 +239,7 @@ func (s *conversationRouteService) EnterHQAgentDeskPending(conversationID int64,
 	if err != nil {
 		return nil, err
 	}
-	if err := repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"route_status":             enums.ConversationRouteStatusHQAgentDeskPending,
 		"route_target":             "agentdesk_hq",
 		"manual_expire_at":         now.Add(DefaultHQAgentDeskPendingMinutes * time.Minute),
@@ -259,7 +265,7 @@ func (s *conversationRouteService) EnterStoreWecomManual(conversationID int64, r
 	if isSafetyHandoffReason(reason) {
 		expireAt = now.Add(DefaultStoreWecomSafetyManualMinutes * time.Minute)
 	}
-	if err := repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"route_status":             enums.ConversationRouteStatusStoreWecomManual,
 		"route_target":             "store_wecom",
 		"manual_expire_at":         expireAt,
@@ -281,7 +287,7 @@ func (s *conversationRouteService) MarkHumanFollowUpHandled(conversationID int64
 	if err != nil {
 		return err
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"need_human_follow_up": false,
 		"updated_at":           now,
 		"update_user_name":     "system",
@@ -297,7 +303,7 @@ func (s *conversationRouteService) EnterHQAgentDeskServing(conversationID int64,
 	if state.LastCustomerMessageAt != nil {
 		expireAt = state.LastCustomerMessageAt.Add(DefaultManualTimeoutMinutes * time.Minute)
 	}
-	if err := repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"route_status":             enums.ConversationRouteStatusHQAgentDeskServing,
 		"route_target":             "agentdesk_hq",
 		"manual_expire_at":         expireAt,
@@ -319,7 +325,7 @@ func (s *conversationRouteService) RestoreAI(conversationID int64, reason string
 	if err != nil {
 		return err
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"route_status":             enums.ConversationRouteStatusAIServing,
 		"route_target":             "ai",
 		"manual_expire_at":         nil,
@@ -338,7 +344,7 @@ func (s *conversationRouteService) MarkStoreSafetyTimeoutReminder(conversationID
 	if err != nil {
 		return err
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"manual_expire_at": expireAt,
 		"remark":           remark,
 		"updated_at":       now,

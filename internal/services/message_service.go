@@ -55,7 +55,11 @@ func (s *messageService) FindByConversationIDCursor(conversationID int64, cursor
 	} else if limit <= 0 {
 		limit = 20
 	}
-	cnd := sqls.NewCnd().Eq("conversation_id", conversationID).Limit(limit).Desc("id")
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return nil, cursor, false
+	}
+	cnd := sqls.NewCnd().Eq("tenant_id", conversation.TenantID).Eq("conversation_id", conversationID).Limit(limit).Desc("id")
 	if cursor > 0 {
 		cnd.Lt("id", cursor)
 	}
@@ -81,9 +85,6 @@ func (s *messageService) FindOne(cnd *sqls.Cnd) *models.Message {
 }
 
 func (s *messageService) FindLatestByConversationID(conversationID int64) (*models.Message, error) {
-	if conversationID <= 0 {
-		return nil, errorsx.InvalidParam("会话不存在")
-	}
 	return s.FindOne(sqls.NewCnd().Eq("conversation_id", conversationID).Desc("seq_no").Desc("id")), nil
 }
 
@@ -132,14 +133,18 @@ func (s *messageService) Delete(id int64) {
 }
 
 func (s *messageService) GetConversationReadTarget(conversationID, messageID int64) (*models.Message, error) {
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return nil, err
+	}
 	if messageID > 0 {
-		message := s.Get(messageID)
+		message := repositories.MessageRepository.GetInTenant(sqls.DB(), messageID, conversation.TenantID)
 		if message == nil || message.ConversationID != conversationID {
 			return nil, errorsx.InvalidParam("消息不存在")
 		}
 		return message, nil
 	}
-	return s.FindOne(sqls.NewCnd().Eq("conversation_id", conversationID).Desc("seq_no").Desc("id")), nil
+	return s.FindOne(sqls.NewCnd().Eq("tenant_id", conversation.TenantID).Eq("conversation_id", conversationID).Desc("seq_no").Desc("id")), nil
 }
 
 func (s *messageService) SendMessage(conversationID int64, senderType enums.IMSenderType, reqSenderID int64, clientMsgID string, messageType enums.IMMessageType, content, payload string, operator *dto.AuthPrincipal, external *openidentity.ExternalUser) (*models.Message, error) {
@@ -190,7 +195,8 @@ func (s *messageService) RecallAgentMessage(messageID int64, operator *dto.AuthP
 		return nil, errorsx.InvalidParam("消息不存在")
 	}
 
-	message := s.Get(messageID)
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	message := repositories.MessageRepository.GetInTenant(sqls.DB(), messageID, tenantID)
 	if message == nil {
 		return nil, errorsx.InvalidParam("消息不存在")
 	}
@@ -219,9 +225,9 @@ func (s *messageService) ApplyExternalMessageRecall(messageID int64, source stri
 	if message == nil {
 		return nil, errorsx.InvalidParam("消息不存在")
 	}
-	conversation := ConversationService.Get(message.ConversationID)
-	if conversation == nil {
-		return nil, errorsx.InvalidParam("会话不存在")
+	conversation, err := requireConversationParent(sqls.DB(), message.ConversationID)
+	if err != nil || message.TenantID != conversation.TenantID {
+		return nil, errorsx.InvalidParam("消息或会话不存在")
 	}
 	if message.RecalledAt != nil || message.SendStatus == enums.IMMessageStatusRecalled {
 		return message, nil
@@ -243,7 +249,7 @@ func (s *messageService) applyMessageRecall(message *models.Message, conversatio
 			"update_user_id":   operatorID,
 			"update_user_name": operatorName,
 		}
-		if err := repositories.MessageRepository.Updates(ctx.Tx, message.ID, updates); err != nil {
+		if err := repositories.MessageRepository.UpdatesInTenant(ctx.Tx, message.ID, conversation.TenantID, updates); err != nil {
 			return err
 		}
 
@@ -271,7 +277,7 @@ func (s *messageService) applyMessageRecall(message *models.Message, conversatio
 			"update_user_name":      operatorName,
 		}
 		if conversation.LastMessageID == message.ID {
-			lastMessage := repositories.MessageRepository.FindLastUnrecalledByConversationID(ctx.Tx, conversation.ID)
+			lastMessage := repositories.MessageRepository.FindLastUnrecalledByConversationIDInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
 			if lastMessage != nil {
 				conversationUpdates["last_message_id"] = lastMessage.ID
 				conversationUpdates["last_message_at"] = lastMessage.SentAt
@@ -282,7 +288,7 @@ func (s *messageService) applyMessageRecall(message *models.Message, conversatio
 				conversationUpdates["last_message_summary"] = ""
 			}
 		}
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversation.ID, conversationUpdates); err != nil {
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversation.ID, conversation.TenantID, conversationUpdates); err != nil {
 			return err
 		}
 
@@ -348,6 +354,7 @@ func (s *messageService) createAIWelcomeMessage(ctx *sqls.TxContext, conversatio
 		Nickname: "system",
 	}
 	message := &models.Message{
+		TenantID:       conversation.TenantID,
 		ConversationID: conversation.ID,
 		ClientMsgID:    strs.UUID(),
 		SenderType:     enums.IMSenderTypeAI,
@@ -355,7 +362,7 @@ func (s *messageService) createAIWelcomeMessage(ctx *sqls.TxContext, conversatio
 		MessageType:    enums.IMMessageTypeText,
 		Content:        content,
 		Payload:        payload,
-		SeqNo:          repositories.MessageRepository.NextSeqNo(ctx.Tx, conversation.ID),
+		SeqNo:          repositories.MessageRepository.NextSeqNoInTenant(ctx.Tx, conversation.ID, conversation.TenantID),
 		SendStatus:     enums.IMMessageStatusSent,
 		SentAt:         &now,
 		AuditFields: models.AuditFields{
@@ -395,7 +402,7 @@ func (s *messageService) createAIWelcomeMessage(ctx *sqls.TxContext, conversatio
 		"agent_unread_count":    agentUnreadCount,
 		"customer_unread_count": customerUnreadCount,
 	}
-	if err := repositories.ConversationRepository.Updates(ctx.Tx, conversation.ID, conversationUpdates); err != nil {
+	if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversation.ID, conversation.TenantID, conversationUpdates); err != nil {
 		return nil, err
 	}
 	if err := ConversationEventLogService.CreateEvent(ctx,
@@ -475,7 +482,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 
 	// 防抖，消息存在就不再发送了
 	if strs.IsNotBlank(clientMsgID) {
-		if existing := repositories.MessageRepository.GetByClientMsgID(sqls.DB(), conversation.ID, clientMsgID); existing != nil {
+		if existing := repositories.MessageRepository.GetByClientMsgIDInTenant(sqls.DB(), conversation.ID, conversation.TenantID, clientMsgID); existing != nil {
 			return existing, nil
 		}
 	}
@@ -485,7 +492,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		traceID       = tracex.NormalizeRequestID(requestID)
 		auditUserID   = int64(0)
 		auditUserName = ""
-		nextSeq       = repositories.MessageRepository.NextSeqNo(sqls.DB(), conversation.ID)
+		nextSeq       = repositories.MessageRepository.NextSeqNoInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
 		sessionNo     = ConversationRouteService.CurrentSessionNo(conversation.ID)
 	)
 	if senderType == enums.IMSenderTypeCustomer {
@@ -504,6 +511,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		auditUserName = displayExternalName(external)
 	}
 	message := &models.Message{
+		TenantID:       conversation.TenantID,
 		ConversationID: conversation.ID,
 		SessionNo:      sessionNo,
 		RequestID:      traceID,
@@ -567,7 +575,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		conversation.UpdatedAt = now
 		conversation.AgentUnreadCount = int(agentUnreadCount)
 		conversation.CustomerUnreadCount = int(customerUnreadCount)
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversation.ID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversation.ID, conversation.TenantID, map[string]any{
 			"last_message_id":       conversation.LastMessageID,
 			"last_message_at":       conversation.LastMessageAt,
 			"last_active_at":        conversation.LastActiveAt,
@@ -639,7 +647,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 				return message, err
 			}
 			if routeState.WxWorkInstanceID > 0 {
-				instance := WxWorkProtocolInstanceService.Get(routeState.WxWorkInstanceID)
+				instance := WxWorkProtocolInstanceService.GetByTenantID(routeState.WxWorkInstanceID, conversation.TenantID)
 				if instance != nil && !instance.AIReplyEnabled {
 					return message, err
 				}
@@ -687,7 +695,7 @@ func (s *messageService) enqueueOutboundChannelMessage(conversation *models.Conv
 	if conversation == nil || message == nil || conversation.ChannelID <= 0 {
 		return false
 	}
-	channel := ChannelService.Get(conversation.ChannelID)
+	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), conversation.ChannelID, conversation.TenantID)
 	if channel == nil {
 		return false
 	}
@@ -820,17 +828,18 @@ func (s *messageService) normalizeMessageContent(conversationID int64, messageTy
 }
 
 func (s *messageService) ValidateConversationSender(conversationID int64, senderType enums.IMSenderType, operator *dto.AuthPrincipal, external *openidentity.ExternalUser) (*models.Conversation, error) {
-	conversation := ConversationService.Get(conversationID)
-	if conversation == nil {
-		return nil, errorsx.InvalidParam("会话不存在")
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return nil, err
 	}
 	if conversation.Status == enums.IMConversationStatusClosed {
 		return nil, errorsx.InvalidParam("会话已关闭")
 	}
 	switch senderType {
 	case enums.IMSenderTypeAgent:
-		if operator == nil {
-			return nil, errorsx.Unauthorized("未登录或登录已过期")
+		conversation, err = requireOperatorConversation(sqls.DB(), conversationID, operator)
+		if err != nil {
+			return nil, err
 		}
 		if s.canSendStoreManualAgentMessage(conversation, operator) {
 			return conversation, nil
@@ -868,11 +877,18 @@ func (s *messageService) canSendStoreManualAgentMessage(conversation *models.Con
 	if conversation.Status == enums.IMConversationStatusClosed || conversation.CurrentAssigneeID != 0 {
 		return false
 	}
-	route := ConversationRouteService.GetByConversationID(conversation.ID)
+	if operator.ActiveTenantID != conversation.TenantID {
+		return false
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
 	if route == nil || route.RouteStatus != enums.ConversationRouteStatusStoreWecomManual {
 		return false
 	}
-	return ConversationService.isAdmin(operator) || AgentProfileService.CanServeConversation(operator.UserID, conversation.ID)
+	if ConversationService.isAdmin(operator) {
+		return true
+	}
+	profile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ? AND status = ?", conversation.TenantID, operator.UserID, enums.StatusOk)
+	return AgentProfileService.ProfileCanServeRoute(profile, route)
 }
 
 func (s *messageService) allowAIMessageOnPendingHandoff(conversation *models.Conversation) bool {

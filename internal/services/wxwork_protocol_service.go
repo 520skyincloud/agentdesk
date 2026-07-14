@@ -1310,11 +1310,11 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	if s.isStoreRoomNoticeOutbox(outbox) {
 		return s.dispatchStoreRoomNoticeOutbox(outbox)
 	}
-	conversation := ConversationService.Get(outbox.ConversationID)
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), outbox.ConversationID, outbox.TenantID)
 	if conversation == nil {
 		return s.markOutboxFailed(outbox, "会话不存在")
 	}
-	channel := ChannelService.Get(conversation.ChannelID)
+	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), conversation.ChannelID, conversation.TenantID)
 	if channel == nil || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
 		return nil
 	}
@@ -1322,19 +1322,19 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	if err != nil {
 		return s.markOutboxFailed(outbox, "企微协议渠道配置不合法")
 	}
-	message := MessageService.Get(outbox.MessageID)
-	if message == nil {
+	message := repositories.MessageRepository.GetInTenant(sqls.DB(), outbox.MessageID, conversation.TenantID)
+	if message == nil || message.ConversationID != conversation.ID {
 		return s.markOutboxFailed(outbox, "消息不存在")
 	}
-	mapping := WxWorkKFConversationService.Take("conversation_id = ?", conversation.ID)
+	mapping := WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", conversation.TenantID).Eq("conversation_id", conversation.ID))
 	if mapping == nil {
 		return s.markOutboxFailed(outbox, "企微协议会话映射不存在")
 	}
-	route := ConversationRouteService.GetByConversationID(conversation.ID)
+	route := ConversationRouteService.GetByConversationIDInTenant(conversation.ID, conversation.TenantID)
 	if route == nil || route.WxWorkInstanceID <= 0 {
 		return s.markOutboxFailed(outbox, "企微协议实例绑定不存在")
 	}
-	instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
+	instance := WxWorkProtocolInstanceService.GetByTenantID(route.WxWorkInstanceID, conversation.TenantID)
 	if instance == nil || instance.Status != enums.StatusOk {
 		return s.markOutboxFailed(outbox, "企微协议实例不存在或未启用")
 	}
@@ -1342,7 +1342,7 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	if protocolConversationID == "" {
 		return s.markOutboxFailed(outbox, "企微协议 conversation_id 为空")
 	}
-	claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID)
+	claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID, outbox.TenantID)
 	if err != nil {
 		return err
 	}
@@ -1357,7 +1357,7 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 		return s.markOutboxFailed(outbox, err.Error())
 	}
 	now := time.Now()
-	if err := ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
+	if err := ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, outbox.TenantID, map[string]any{
 		"send_status": string(enums.ChannelMessageOutboxStatusSent),
 		"sent_at":     now,
 		"last_error":  "",
@@ -1406,11 +1406,15 @@ func (s *wxWorkProtocolService) dispatchStoreRoomNoticeOutbox(outbox models.Chan
 	if err := json.Unmarshal([]byte(outbox.Payload), &payload); err != nil {
 		return s.markOutboxFailed(outbox, "门店群提醒 payload 不合法")
 	}
-	instance := WxWorkProtocolInstanceService.Get(payload.WxWorkInstanceID)
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), outbox.ConversationID, outbox.TenantID)
+	if conversation == nil || payload.ConversationID != conversation.ID {
+		return s.markOutboxFailed(outbox, "门店群提醒会话不存在或租户不一致")
+	}
+	instance := WxWorkProtocolInstanceService.GetByTenantID(payload.WxWorkInstanceID, conversation.TenantID)
 	if instance == nil || instance.Status != enums.StatusOk {
 		return s.markOutboxFailed(outbox, "企微协议实例不存在或未启用")
 	}
-	channel := ChannelService.Get(instance.ChannelID)
+	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), instance.ChannelID, conversation.TenantID)
 	if channel == nil || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
 		return s.markOutboxFailed(outbox, "企微协议渠道不存在")
 	}
@@ -1429,7 +1433,7 @@ func (s *wxWorkProtocolService) dispatchStoreRoomNoticeOutbox(outbox models.Chan
 	if content == "" {
 		return s.markOutboxFailed(outbox, "门店群提醒内容为空")
 	}
-	claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID)
+	claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID, outbox.TenantID)
 	if err != nil {
 		return err
 	}
@@ -1451,7 +1455,7 @@ func (s *wxWorkProtocolService) dispatchStoreRoomNoticeOutbox(outbox models.Chan
 		return s.markOutboxFailed(outbox, err.Error())
 	}
 	now := time.Now()
-	if err := ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
+	if err := ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, outbox.TenantID, map[string]any{
 		"send_status": string(enums.ChannelMessageOutboxStatusSent),
 		"sent_at":     now,
 		"last_error":  "",
@@ -1712,7 +1716,7 @@ func (s *wxWorkProtocolService) prepareOutboundMessageMedia(cfg *dto.WxWorkProto
 		return err
 	}
 	now := time.Now()
-	if err := repositories.MessageRepository.Updates(sqls.DB(), message.ID, map[string]any{
+	if err := repositories.MessageRepository.UpdatesInTenant(sqls.DB(), message.ID, message.TenantID, map[string]any{
 		"payload":    payload,
 		"updated_at": now,
 	}); err != nil {
@@ -1770,7 +1774,7 @@ func (s *wxWorkProtocolService) prepareOutboundMiniProgramMedia(cfg *dto.WxWorkP
 	body["wxMedia"] = wxProtocolMediaPayloadMap(media)
 	payloadBytes, _ := json.Marshal(body)
 	now := time.Now()
-	if err := repositories.MessageRepository.Updates(sqls.DB(), message.ID, map[string]any{
+	if err := repositories.MessageRepository.UpdatesInTenant(sqls.DB(), message.ID, message.TenantID, map[string]any{
 		"payload":    string(payloadBytes),
 		"updated_at": now,
 	}); err != nil {
@@ -2038,8 +2042,8 @@ func (s *wxWorkProtocolService) sentMessageID(guid string, raw string, outboxID 
 
 func (s *wxWorkProtocolService) ensureConversation(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, externalID string, rawPayload string) (*models.Conversation, bool, error) {
 	openKfID := s.mappingOpenKfID(instance, msg)
-	if mapping := WxWorkKFConversationService.Take("channel_id = ? AND open_kf_id = ? AND external_user_id = ? AND status = ?", instance.ChannelID, openKfID, externalID, enums.StatusOk); mapping != nil {
-		if conversation := ConversationService.Get(mapping.ConversationID); conversation != nil {
+	if mapping := WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", instance.TenantID).Eq("channel_id", instance.ChannelID).Eq("open_kf_id", openKfID).Eq("external_user_id", externalID).Eq("status", enums.StatusOk)); mapping != nil {
+		if conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), mapping.ConversationID, instance.TenantID); conversation != nil {
 			return conversation, false, nil
 		}
 	}
@@ -2063,7 +2067,10 @@ func (s *wxWorkProtocolService) ensureRouteState(conversationID int64, instance 
 	if err != nil {
 		return err
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	if state.TenantID != instance.TenantID {
+		return errorsx.InvalidParam("会话路由与企微员工号接入公司不一致")
+	}
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"store_id":            instance.StoreID,
 		"knowledge_base_id":   instance.KnowledgeBaseID,
 		"wx_work_instance_id": instance.ID,
@@ -2082,8 +2089,8 @@ func (s *wxWorkProtocolService) upsertConversationMapping(instance *models.WxWor
 	now := time.Now()
 	channelID := instance.ChannelID
 	openKfID := s.mappingOpenKfID(instance, msg)
-	if existing := WxWorkKFConversationService.Take("channel_id = ? AND open_kf_id = ? AND external_user_id = ?", channelID, openKfID, externalID); existing != nil {
-		return WxWorkKFConversationService.Updates(existing.ID, map[string]any{
+	if existing := WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", instance.TenantID).Eq("channel_id", channelID).Eq("open_kf_id", openKfID).Eq("external_user_id", externalID)); existing != nil {
+		return WxWorkKFConversationService.UpdatesInTenant(existing.ID, instance.TenantID, map[string]any{
 			"conversation_id":  conversationID,
 			"open_kf_id":       openKfID,
 			"external_user_id": externalID,
@@ -2156,7 +2163,7 @@ func (s *wxWorkProtocolService) createMessageRef(conversationID, messageID int64
 func (s *wxWorkProtocolService) markOutboxFailed(outbox models.ChannelMessageOutbox, reason string) error {
 	retryCount := outbox.RetryCount + 1
 	now := time.Now()
-	return ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
+	return ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, outbox.TenantID, map[string]any{
 		"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
 		"retry_count":   retryCount,
 		"next_retry_at": now.Add(time.Minute),
@@ -2474,11 +2481,11 @@ func (s *wxWorkProtocolService) findProtocolConversationMapping(instance *models
 			continue
 		}
 		seen[openKfID] = true
-		if mapping := WxWorkKFConversationService.Take("channel_id = ? AND open_kf_id = ? AND external_user_id = ? AND status = ?", instance.ChannelID, openKfID, externalID, enums.StatusOk); mapping != nil {
+		if mapping := WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", instance.TenantID).Eq("channel_id", instance.ChannelID).Eq("open_kf_id", openKfID).Eq("external_user_id", externalID).Eq("status", enums.StatusOk)); mapping != nil {
 			return mapping
 		}
 	}
-	return WxWorkKFConversationService.Take("channel_id = ? AND external_user_id = ? AND status = ?", instance.ChannelID, externalID, enums.StatusOk)
+	return WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", instance.TenantID).Eq("channel_id", instance.ChannelID).Eq("external_user_id", externalID).Eq("status", enums.StatusOk))
 }
 
 func (s *wxWorkProtocolService) externalConversationID(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg) string {

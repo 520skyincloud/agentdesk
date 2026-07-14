@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/repositories"
 
 	"agent-desk/internal/pkg/httpx/params"
@@ -47,6 +48,20 @@ func (s *wxWorkKFMessageRefService) Count(cnd *sqls.Cnd) int64 {
 }
 
 func (s *wxWorkKFMessageRefService) Create(t *models.WxWorkKFMessageRef) error {
+	if t == nil {
+		return nil
+	}
+	conversation, err := requireConversationParent(sqls.DB(), t.ConversationID)
+	if err != nil {
+		return err
+	}
+	if t.MessageID > 0 {
+		message := repositories.MessageRepository.GetInTenant(sqls.DB(), t.MessageID, conversation.TenantID)
+		if message == nil || message.ConversationID != conversation.ID {
+			return errorsx.InvalidParam("企业微信客服消息映射不属于当前会话")
+		}
+	}
+	t.TenantID = conversation.TenantID
 	return repositories.WxWorkKFMessageRefRepository.Create(sqls.DB(), t)
 }
 

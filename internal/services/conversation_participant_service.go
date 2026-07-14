@@ -71,7 +71,12 @@ func (s *conversationParticipantService) Delete(id int64) {
 }
 
 func (s *conversationParticipantService) CreateCustomerParticipant(ctx *sqls.TxContext, conversationID int64, externalUser openidentity.ExternalUser) error {
+	conversation, err := requireConversationParent(ctx.Tx, conversationID)
+	if err != nil {
+		return err
+	}
 	return repositories.ConversationParticipantRepository.Create(ctx.Tx, &models.ConversationParticipant{
+		TenantID:              conversation.TenantID,
 		ConversationID:        conversationID,
 		ParticipantType:       string(enums.IMParticipantTypeCustomer),
 		ParticipantID:         0,

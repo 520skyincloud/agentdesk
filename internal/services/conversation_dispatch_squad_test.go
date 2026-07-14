@@ -21,7 +21,7 @@ func TestConversationDispatchCandidatesUseWholeTeamSchedule(t *testing.T) {
 	createDispatchSquadTeamAndAgents(t, db)
 	createDispatchSquadSchedule(t, db, 0)
 
-	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, nil, time.Now())
+	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, 101, nil, time.Now())
 	if err != nil {
 		t.Fatalf("pickDispatchCandidates() error = %v", err)
 	}
@@ -41,7 +41,7 @@ func TestConversationDispatchCandidatesFilterScheduledSquad(t *testing.T) {
 	squadID := createDispatchSquad(t, db, []int64{2})
 	createDispatchSquadSchedule(t, db, squadID)
 
-	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, nil, time.Now())
+	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, 101, nil, time.Now())
 	if err != nil {
 		t.Fatalf("pickDispatchCandidates() error = %v", err)
 	}
@@ -56,7 +56,7 @@ func TestConversationDispatchCandidatesDoNotBroadenEmptyScheduledSquad(t *testin
 	squadID := createDispatchSquad(t, db, nil)
 	createDispatchSquadSchedule(t, db, squadID)
 
-	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, nil, time.Now())
+	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, 101, nil, time.Now())
 	if err != nil {
 		t.Fatalf("pickDispatchCandidates() error = %v", err)
 	}
@@ -74,7 +74,7 @@ func TestConversationDispatchCandidatesDoNotUseDisabledScheduledSquad(t *testing
 		t.Fatalf("disable scheduled squad error = %v", err)
 	}
 
-	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, nil, time.Now())
+	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, 101, nil, time.Now())
 	if err != nil {
 		t.Fatalf("pickDispatchCandidates() error = %v", err)
 	}
@@ -84,7 +84,10 @@ func TestConversationDispatchCandidatesDoNotUseDisabledScheduledSquad(t *testing
 }
 
 func TestConversationAssignmentStoresSquadSnapshot(t *testing.T) {
-	setupConversationDispatchSquadTestDB(t)
+	db := setupConversationDispatchSquadTestDB(t)
+	if err := db.Create(&models.Conversation{ID: 10, TenantID: 101, Status: enums.IMConversationStatusPending}).Error; err != nil {
+		t.Fatalf("create conversation error = %v", err)
+	}
 	operator := &dto.AuthPrincipal{UserID: 9, Username: "leader"}
 	now := time.Now()
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -112,7 +115,7 @@ func TestConversationDispatchManualAssignmentStaysInOwningTeam(t *testing.T) {
 		t.Fatalf("create other team profile error = %v", err)
 	}
 
-	conversation := &models.Conversation{CurrentTeamID: 1, Status: enums.IMConversationStatusPending}
+	conversation := &models.Conversation{TenantID: 101, CurrentTeamID: 1, Status: enums.IMConversationStatusPending}
 	operator := &dto.AuthPrincipal{UserID: 9, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
 	if _, err := ConversationDispatchWorkbenchService.requireManageableTargetProfile(103, conversation, operator); err == nil || !strings.Contains(err.Error(), "不属于当前会话综合客服组") {
 		t.Fatalf("expected cross-team manual assignment rejection, got %v", err)

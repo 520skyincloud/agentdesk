@@ -53,7 +53,7 @@ func ConversationAnyList(ctx *gin.Context) {
 		cnd.Where("id IN (SELECT conversation_id FROM conversation_tag_rels WHERE tag_id IN (?))", tagIDs)
 	}
 	if agentTeamID, _ := params.GetInt64(ctx, "agentTeamId"); agentTeamID > 0 {
-		userIDs := services.AgentProfileService.GetUserIDsByTeamID(agentTeamID)
+		userIDs := services.AgentProfileService.GetUserIDsByTeamIDInTenant(agentTeamID, services.AgentTeamScopeService.ActiveTenantID(operator))
 		if len(userIDs) == 0 {
 			httpx.WriteJSON(ctx, &web.PageResult{
 				Results: []response.ConversationResponse{},
@@ -114,19 +114,19 @@ func ConversationGetBy(ctx *gin.Context) {
 		return
 	}
 
+	if !services.AgentTeamScopeService.CanViewConversation(operator, id) {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("会话不存在"))
+		return
+	}
 	item := services.ConversationService.Get(id)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("会话不存在"))
 		return
 	}
-	if !services.AgentTeamScopeService.CanViewConversation(operator, id) {
-		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该会话"))
-		return
-	}
 
 	detail := response.ConversationDetailResponse{
 		ConversationResponse: builders.BuildConversationWithLocale(item, i18nx.Locale(ctx)),
-		Participants:         builders.BuildParticipantResponses(id),
+		Participants:         builders.BuildParticipantResponses(id, item.TenantID),
 	}
 	httpx.WriteJSON(ctx, detail)
 }
@@ -145,12 +145,8 @@ func ConversationAnyMessage_list(ctx *gin.Context) {
 		cursor, _         = params.GetInt64(ctx, "cursor")
 		limit, _          = params.GetInt(ctx, "limit")
 	)
-	if conversation := services.ConversationService.Get(conversationID); conversation == nil {
-		httpx.WriteJSON(ctx, web.JsonErrorMsg("会话不存在"))
-		return
-	}
 	if !services.AgentTeamScopeService.CanViewConversation(operator, conversationID) {
-		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该会话"))
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("会话不存在"))
 		return
 	}
 

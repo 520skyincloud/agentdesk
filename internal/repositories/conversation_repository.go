@@ -26,6 +26,17 @@ func (r *conversationRepository) Get(db *gorm.DB, id int64) *models.Conversation
 	return ret
 }
 
+func (r *conversationRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.Conversation {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.Conversation{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *conversationRepository) Take(db *gorm.DB, where ...interface{}) *models.Conversation {
 	ret := &models.Conversation{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -67,6 +78,7 @@ func (r *conversationRepository) FindPageByCndWithManualAttentionFirst(db *gorm.
 	query := db.Order(`CASE WHEN EXISTS (
 		SELECT 1 FROM t_conversation_route_state
 		WHERE t_conversation_route_state.conversation_id = t_conversation.id
+		AND t_conversation_route_state.tenant_id = t_conversation.tenant_id
 		AND t_conversation_route_state.need_human_follow_up = 1
 	) THEN 0 ELSE 1 END ASC`)
 	cnd.Find(query, &list)
@@ -107,12 +119,17 @@ func (r *conversationRepository) Updates(db *gorm.DB, id int64, columns map[stri
 	return
 }
 
-func (r *conversationRepository) ReleaseAIServingByWxWorkInstance(db *gorm.DB, wxWorkInstanceID int64, now any, operatorID int64, operatorName string) error {
+func (r *conversationRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.Conversation{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
+func (r *conversationRepository) ReleaseAIServingByWxWorkInstance(db *gorm.DB, wxWorkInstanceID, tenantID int64, now any, operatorID int64, operatorName string) error {
 	return db.Model(&models.Conversation{}).
+		Where("tenant_id = ?", tenantID).
 		Where(`id IN (
 			SELECT conversation_id FROM t_conversation_route_state
-			WHERE wx_work_instance_id = ? AND route_status = ?
-		)`, wxWorkInstanceID, "AI_SERVING").
+			WHERE tenant_id = ? AND wx_work_instance_id = ? AND route_status = ?
+		)`, tenantID, wxWorkInstanceID, "AI_SERVING").
 		Updates(map[string]any{
 			"status":              1,
 			"current_assignee_id": 0,

@@ -139,7 +139,12 @@ func (s *conversationReadStateService) GetByCustomerReader(conversationID int64,
 }
 
 func (s *conversationReadStateService) getByCursor(conversationID int64, c readerCursor) *models.ConversationReadState {
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return nil
+	}
 	return s.FindOne(sqls.NewCnd().
+		Eq("tenant_id", conversation.TenantID).
 		Eq("conversation_id", conversationID).
 		Eq("reader_type", c.readerType).
 		Eq("reader_id", c.readerID).
@@ -151,7 +156,11 @@ func (s *conversationReadStateService) GetConversationReadStates(conversationID 
 }
 
 func (s *conversationReadStateService) getConversationReadStates(db *gorm.DB, conversationID int64) (agentState, customerState *models.ConversationReadState) {
-	list := repositories.ConversationReadStateRepository.Find(db, sqls.NewCnd().Eq("conversation_id", conversationID))
+	conversation, err := requireConversationParent(db, conversationID)
+	if err != nil {
+		return nil, nil
+	}
+	list := repositories.ConversationReadStateRepository.Find(db, sqls.NewCnd().Eq("tenant_id", conversation.TenantID).Eq("conversation_id", conversationID))
 	return s.pickConversationReadStates(list)
 }
 
@@ -197,18 +206,22 @@ func (s *conversationReadStateService) markReadTxWithCursor(ctx *sqls.TxContext,
 	if c.readerType != enums.IMSenderTypeAgent && c.readerType != enums.IMSenderTypeCustomer {
 		return nil, errorsx.InvalidParam("不支持的已读操作类型")
 	}
+	if conversation.TenantID <= 0 || message.TenantID != conversation.TenantID || message.ConversationID != conversation.ID {
+		return nil, errorsx.InvalidParam("消息不存在或不属于当前会话")
+	}
 
 	now := time.Now()
 
 	item := &models.ConversationReadState{}
-	err := ctx.Tx.Where("conversation_id = ? AND reader_type = ? AND reader_id = ? AND external_reader_id = ?",
-		conversation.ID, c.readerType, c.readerID, c.externalReaderID,
+	err := ctx.Tx.Where("tenant_id = ? AND conversation_id = ? AND reader_type = ? AND reader_id = ? AND external_reader_id = ?",
+		conversation.TenantID, conversation.ID, c.readerType, c.readerID, c.externalReaderID,
 	).First(item).Error
 	if err != nil {
 		if err != gorm.ErrRecordNotFound {
 			return nil, err
 		}
 		item = &models.ConversationReadState{
+			TenantID:          conversation.TenantID,
 			ConversationID:    conversation.ID,
 			ReaderType:        c.readerType,
 			ReaderID:          c.readerID,
@@ -241,7 +254,7 @@ func (s *conversationReadStateService) markReadTxWithCursor(ctx *sqls.TxContext,
 	item.UpdatedAt = now
 	item.UpdateUserID = c.auditUserID
 	item.UpdateUserName = c.auditUserName
-	if err := repositories.ConversationReadStateRepository.Updates(ctx.Tx, item.ID, map[string]any{
+	if err := repositories.ConversationReadStateRepository.UpdatesInTenant(ctx.Tx, item.ID, conversation.TenantID, map[string]any{
 		"last_read_message_id": item.LastReadMessageID,
 		"last_read_seq_no":     item.LastReadSeqNo,
 		"last_read_at":         item.LastReadAt,
@@ -266,13 +279,17 @@ func (s *conversationReadStateService) CountUnreadMessages(ctx *sqls.TxContext, 
 		return 0, nil
 	}
 	var count int64
+	conversation, err := requireConversationParent(ctx.Tx, conversationID)
+	if err != nil {
+		return 0, err
+	}
 	query := ctx.Tx.Model(&models.Message{}).
-		Where("conversation_id = ? AND seq_no > ? AND recalled_at IS NULL AND send_status <> ?", conversationID, lastReadSeqNo, int(enums.IMMessageStatusRecalled))
+		Where("tenant_id = ? AND conversation_id = ? AND seq_no > ? AND recalled_at IS NULL AND send_status <> ?", conversation.TenantID, conversationID, lastReadSeqNo, int(enums.IMMessageStatusRecalled))
 	if len(normalizedSenderTypes) == 1 {
 		query = query.Where("sender_type = ?", normalizedSenderTypes[0])
 	} else {
 		query = query.Where("sender_type IN ?", normalizedSenderTypes)
 	}
-	err := query.Count(&count).Error
+	err = query.Count(&count).Error
 	return count, err
 }

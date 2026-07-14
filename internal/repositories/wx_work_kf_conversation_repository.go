@@ -92,6 +92,10 @@ func (r *wxWorkKFConversationRepository) Updates(db *gorm.DB, id int64, columns 
 	return
 }
 
+func (r *wxWorkKFConversationRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.WxWorkKFConversation{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *wxWorkKFConversationRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.WxWorkKFConversation{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return

@@ -93,11 +93,11 @@ func (s *agentProfileService) MarkUserOnline(userID int64, username string, now 
 	return repositories.AgentProfileRepository.UpdatesInTenant(sqls.DB(), profile.ID, profile.TenantID, columns)
 }
 
-func (s *agentProfileService) GetUserIDsByTeamID(teamID int64) []int64 {
-	if teamID <= 0 {
+func (s *agentProfileService) GetUserIDsByTeamIDInTenant(teamID, tenantID int64) []int64 {
+	if teamID <= 0 || tenantID <= 0 {
 		return nil
 	}
-	list := s.Find(sqls.NewCnd().Eq("team_id", teamID))
+	list := s.Find(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("team_id", teamID))
 	if len(list) == 0 {
 		return nil
 	}
@@ -110,8 +110,11 @@ func (s *agentProfileService) GetUserIDsByTeamID(teamID int64) []int64 {
 	return result
 }
 
-func (s *agentProfileService) GetActiveAgentUserIDs() []int64 {
-	list := s.Find(sqls.NewCnd().Eq("status", enums.StatusOk))
+func (s *agentProfileService) GetActiveAgentUserIDsInTenant(tenantID int64) []int64 {
+	if tenantID <= 0 {
+		return nil
+	}
+	list := s.Find(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("status", enums.StatusOk))
 	if len(list) == 0 {
 		return nil
 	}
@@ -143,11 +146,15 @@ func (s *agentProfileService) CanServeConversation(userID int64, conversationID 
 	if userID <= 0 || conversationID <= 0 {
 		return false
 	}
-	profile := s.Take("user_id = ? AND status = ?", userID, enums.StatusOk)
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return false
+	}
+	profile := s.Take("tenant_id = ? AND user_id = ? AND status = ?", conversation.TenantID, userID, enums.StatusOk)
 	if profile == nil {
 		return false
 	}
-	route := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversationID)
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, conversation.TenantID)
 	if route == nil {
 		return true
 	}
@@ -158,7 +165,10 @@ func (s *agentProfileService) ProfileCanServeRoute(profile *models.AgentProfile,
 	if profile == nil || route == nil {
 		return false
 	}
-	return teamCanServeRoute(AgentTeamService.Get(profile.TeamID), route)
+	if profile.TenantID <= 0 || route.TenantID != profile.TenantID {
+		return false
+	}
+	return teamCanServeRoute(repositories.AgentTeamRepository.GetInTenant(sqls.DB(), profile.TeamID, profile.TenantID), route)
 }
 
 func teamCanServeRoute(team *models.AgentTeam, route *models.ConversationRouteState) bool {

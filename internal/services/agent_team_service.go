@@ -36,6 +36,10 @@ func (s *agentTeamService) GetInTenant(id int64, operator *dto.AuthPrincipal) *m
 	return repositories.AgentTeamRepository.GetInTenant(sqls.DB(), id, AgentTeamScopeService.ActiveTenantID(operator))
 }
 
+func (s *agentTeamService) GetByTenantID(id, tenantID int64) *models.AgentTeam {
+	return repositories.AgentTeamRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *agentTeamService) Take(where ...interface{}) *models.AgentTeam {
 	return repositories.AgentTeamRepository.Take(sqls.DB(), where...)
 }

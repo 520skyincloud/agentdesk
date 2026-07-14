@@ -160,9 +160,13 @@ func (s *conversationDispatchWorkbenchService) ListAgentLoads(teamID int64, oper
 	return ret, nil
 }
 
-func (s *conversationDispatchWorkbenchService) PendingReplyCountsByTeam() map[int64]int {
+func (s *conversationDispatchWorkbenchService) PendingReplyCountsByTeam(operator *dto.AuthPrincipal) map[int64]int {
 	ret := make(map[int64]int)
-	routes := repositories.ConversationRouteStateRepository.Find(sqls.DB(), sqls.NewCnd().Eq("need_human_follow_up", true))
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return ret
+	}
+	routes := repositories.ConversationRouteStateRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).Eq("need_human_follow_up", true))
 	if len(routes) == 0 {
 		return ret
 	}
@@ -170,7 +174,7 @@ func (s *conversationDispatchWorkbenchService) PendingReplyCountsByTeam() map[in
 	for i := range routes {
 		conversationIDs = append(conversationIDs, routes[i].ConversationID)
 	}
-	conversations := ConversationService.Find(sqls.NewCnd().In("id", conversationIDs).In("status", []enums.IMConversationStatus{
+	conversations := ConversationService.Find(sqls.NewCnd().Eq("tenant_id", tenantID).In("id", conversationIDs).In("status", []enums.IMConversationStatus{
 		enums.IMConversationStatusPending,
 		enums.IMConversationStatusActive,
 	}))
@@ -182,12 +186,12 @@ func (s *conversationDispatchWorkbenchService) PendingReplyCountsByTeam() map[in
 			assigneeIDs = append(assigneeIDs, conversations[i].CurrentAssigneeID)
 		}
 	}
-	profiles := AgentProfileService.Find(sqls.NewCnd().In("user_id", uniquePositive(assigneeIDs)))
+	profiles := AgentProfileService.Find(sqls.NewCnd().Eq("tenant_id", tenantID).In("user_id", uniquePositive(assigneeIDs)))
 	teamByAssigneeID := make(map[int64]int64, len(profiles))
 	for i := range profiles {
 		teamByAssigneeID[profiles[i].UserID] = profiles[i].TeamID
 	}
-	teams := AgentTeamService.Find(sqls.NewCnd().Eq("status", enums.StatusOk))
+	teams := AgentTeamService.Find(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("status", enums.StatusOk))
 	for i := range routes {
 		route := routes[i]
 		conversation := conversationByID[route.ConversationID]
@@ -217,9 +221,9 @@ func (s *conversationDispatchWorkbenchService) AutoAssign(req request.Conversati
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	conversation := ConversationService.Get(req.ConversationID)
-	if conversation == nil {
-		return errorsx.InvalidParam("会话不存在")
+	conversation, err := requireOperatorConversation(sqls.DB(), req.ConversationID, operator)
+	if err != nil {
+		return err
 	}
 	if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
 		return errorsx.InvalidParam("只有待派发会话允许自动派发")
@@ -235,7 +239,7 @@ func (s *conversationDispatchWorkbenchService) AutoAssign(req request.Conversati
 	if !s.canManageTeam(operator, teamID) {
 		return errorsx.Forbidden("无权管理该客服组任务")
 	}
-	candidates, err := s.pickRuleCandidates(teamID, route)
+	candidates, err := s.pickRuleCandidates(teamID, conversation.TenantID, route)
 	if err != nil {
 		return err
 	}
@@ -249,9 +253,9 @@ func (s *conversationDispatchWorkbenchService) Assign(req request.ConversationDi
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	conversation := ConversationService.Get(req.ConversationID)
-	if conversation == nil {
-		return errorsx.InvalidParam("会话不存在")
+	conversation, err := requireOperatorConversation(sqls.DB(), req.ConversationID, operator)
+	if err != nil {
+		return err
 	}
 	if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
 		return errorsx.InvalidParam("只有待派发会话允许分配")
@@ -271,9 +275,9 @@ func (s *conversationDispatchWorkbenchService) Transfer(req request.Conversation
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	conversation := ConversationService.Get(req.ConversationID)
-	if conversation == nil {
-		return errorsx.InvalidParam("会话不存在")
+	conversation, err := requireOperatorConversation(sqls.DB(), req.ConversationID, operator)
+	if err != nil {
+		return err
 	}
 	if conversation.Status != enums.IMConversationStatusActive || conversation.CurrentAssigneeID <= 0 {
 		return errorsx.InvalidParam("只有已派发会话允许转派")
@@ -300,9 +304,9 @@ func (s *conversationDispatchWorkbenchService) Release(req request.ConversationD
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	conversation := ConversationService.Get(req.ConversationID)
-	if conversation == nil {
-		return errorsx.InvalidParam("会话不存在")
+	conversation, err := requireOperatorConversation(sqls.DB(), req.ConversationID, operator)
+	if err != nil {
+		return err
 	}
 	if conversation.Status != enums.IMConversationStatusActive || conversation.CurrentAssigneeID <= 0 {
 		return errorsx.InvalidParam("只有已派发会话允许释放")
@@ -320,8 +324,8 @@ func (s *conversationDispatchWorkbenchService) Release(req request.ConversationD
 		reason = "组长释放回待派发池"
 	}
 	now := time.Now()
-	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		current := repositories.ConversationRepository.Get(ctx.Tx, conversation.ID)
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current := repositories.ConversationRepository.GetInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
 		if current == nil {
 			return errorsx.InvalidParam("会话不存在")
 		}
@@ -331,7 +335,7 @@ func (s *conversationDispatchWorkbenchService) Release(req request.ConversationD
 		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, current.ID, now); err != nil {
 			return err
 		}
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, current.ID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, current.ID, current.TenantID, map[string]any{
 			"status":              enums.IMConversationStatusPending,
 			"current_assignee_id": int64(0),
 			"current_team_id":     teamID,
@@ -363,7 +367,11 @@ func (s *conversationDispatchWorkbenchService) Release(req request.ConversationD
 }
 
 func (s *conversationDispatchWorkbenchService) collectTasks(req request.ConversationDispatchListRequest, operator *dto.AuthPrincipal) ([]dispatchWorkbenchTask, error) {
-	cnd := sqls.NewCnd().In("status", []enums.IMConversationStatus{
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理派单的接入公司")
+	}
+	cnd := sqls.NewCnd().Eq("tenant_id", tenantID).In("status", []enums.IMConversationStatus{
 		enums.IMConversationStatusPending,
 		enums.IMConversationStatusActive,
 		enums.IMConversationStatusClosed,
@@ -381,7 +389,7 @@ func (s *conversationDispatchWorkbenchService) collectTasks(req request.Conversa
 	tasks := make([]dispatchWorkbenchTask, 0, len(conversations))
 	for i := range conversations {
 		conversation := conversations[i]
-		route := ConversationRouteService.GetByConversationID(conversation.ID)
+		route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, tenantID)
 		teamID := s.resolveTaskTeamID(&conversation, route)
 		if req.TeamID > 0 && teamID != req.TeamID {
 			continue
@@ -401,10 +409,10 @@ func (s *conversationDispatchWorkbenchService) collectTasks(req request.Conversa
 
 func (s *conversationDispatchWorkbenchService) buildTask(conversation models.Conversation, route *models.ConversationRouteState, teamID int64, manageable bool, now time.Time) dispatchWorkbenchTask {
 	var assignedAt *time.Time
-	if assignment := s.activeAssignment(conversation.ID); assignment != nil {
+	if assignment := s.activeAssignment(conversation.ID, conversation.TenantID); assignment != nil {
 		assignedAt = &assignment.CreatedAt
 	}
-	firstReplyAt := s.firstAgentReplyAt(conversation.ID, assignedAt)
+	firstReplyAt := s.firstAgentReplyAt(conversation.ID, conversation.TenantID, assignedAt)
 	status, label := s.resolveTaskStatus(&conversation, route, assignedAt, firstReplyAt, now)
 	baseAt := s.taskWaitingBaseAt(&conversation, route, assignedAt)
 	waitingSeconds := int64(0)
@@ -415,7 +423,7 @@ func (s *conversationDispatchWorkbenchService) buildTask(conversation models.Con
 		conversation:      conversation,
 		route:             route,
 		teamID:            teamID,
-		teamName:          s.teamName(teamID),
+		teamName:          s.teamName(teamID, conversation.TenantID),
 		manageable:        manageable,
 		status:            status,
 		statusLabel:       label,
@@ -424,7 +432,7 @@ func (s *conversationDispatchWorkbenchService) buildTask(conversation models.Con
 		firstAgentReplyAt: firstReplyAt,
 	}
 	if teamID > 0 && conversation.Status == enums.IMConversationStatusPending && conversation.CurrentAssigneeID == 0 {
-		if candidates, err := s.pickRuleCandidates(teamID, route); err == nil && len(candidates) > 0 {
+		if candidates, err := s.pickRuleCandidates(teamID, conversation.TenantID, route); err == nil && len(candidates) > 0 {
 			profile := candidates[0].profile
 			task.recommendedProfile = &profile
 			task.recommendation = s.buildRuleRecommendation(candidates[0])
@@ -457,7 +465,7 @@ func (s *conversationDispatchWorkbenchService) buildTaskResponses(tasks []dispat
 			RecommendationReason: task.recommendation,
 		}
 		if item.CurrentAssigneeID > 0 {
-			resp.CurrentAssigneeName = s.userDisplayName(item.CurrentAssigneeID)
+			resp.CurrentAssigneeName = s.userDisplayName(item.CurrentAssigneeID, item.TenantID)
 		}
 		if task.route != nil {
 			resp.RouteStatus = task.route.RouteStatus
@@ -468,19 +476,19 @@ func (s *conversationDispatchWorkbenchService) buildTaskResponses(tasks []dispat
 			resp.ManualExpireAt = utils.FormatTimePtr(task.route.ManualExpireAt)
 		}
 		if resp.StoreID > 0 {
-			if store := StoreService.Get(resp.StoreID); store != nil {
+			if store := StoreService.GetInTenant(resp.StoreID, item.TenantID); store != nil {
 				resp.StoreName = utils.RepairMojibakeText(store.Name)
 			}
 		}
 		if resp.WxWorkInstanceID > 0 {
-			if instance := WxWorkProtocolInstanceService.Get(resp.WxWorkInstanceID); instance != nil {
+			if instance := WxWorkProtocolInstanceService.GetByTenantID(resp.WxWorkInstanceID, item.TenantID); instance != nil {
 				resp.WxWorkEmployeeName = utils.RepairMojibakeText(instance.EmployeeName)
 				resp.WxWorkEmployeeUserID = instance.EmployeeUserID
 				if resp.StoreID == 0 {
 					resp.StoreID = instance.StoreID
 				}
 				if resp.StoreName == "" && instance.StoreID > 0 {
-					if store := StoreService.Get(instance.StoreID); store != nil {
+					if store := StoreService.GetInTenant(instance.StoreID, item.TenantID); store != nil {
 						resp.StoreName = utils.RepairMojibakeText(store.Name)
 					}
 				}
@@ -546,21 +554,22 @@ func (s *conversationDispatchWorkbenchService) matchTaskStatus(status string, re
 	return status == requested
 }
 
-func (s *conversationDispatchWorkbenchService) activeAssignment(conversationID int64) *models.ConversationAssignment {
-	if conversationID <= 0 {
+func (s *conversationDispatchWorkbenchService) activeAssignment(conversationID, tenantID int64) *models.ConversationAssignment {
+	if conversationID <= 0 || tenantID <= 0 {
 		return nil
 	}
 	return ConversationAssignmentService.FindOne(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
 		Eq("conversation_id", conversationID).
 		Eq("status", enums.IMAssignmentStatusActive).
 		Desc("id"))
 }
 
-func (s *conversationDispatchWorkbenchService) firstAgentReplyAt(conversationID int64, since *time.Time) *time.Time {
-	if conversationID <= 0 {
+func (s *conversationDispatchWorkbenchService) firstAgentReplyAt(conversationID, tenantID int64, since *time.Time) *time.Time {
+	if conversationID <= 0 || tenantID <= 0 {
 		return nil
 	}
-	cnd := sqls.NewCnd().Eq("conversation_id", conversationID).Eq("sender_type", enums.IMSenderTypeAgent).Asc("created_at")
+	cnd := sqls.NewCnd().Eq("tenant_id", tenantID).Eq("conversation_id", conversationID).Eq("sender_type", enums.IMSenderTypeAgent).Asc("created_at")
 	if since != nil {
 		cnd.Where("created_at >= ?", *since)
 	}
@@ -582,7 +591,7 @@ func (s *conversationDispatchWorkbenchService) resolveTaskTeamID(conversation *m
 		return conversation.CurrentTeamID
 	}
 	if conversation.CurrentAssigneeID > 0 {
-		if profile := AgentProfileService.GetByUserID(conversation.CurrentAssigneeID); profile != nil && profile.TeamID > 0 {
+		if profile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ?", conversation.TenantID, conversation.CurrentAssigneeID); profile != nil && profile.TeamID > 0 {
 			return profile.TeamID
 		}
 	}
@@ -593,8 +602,10 @@ func (s *conversationDispatchWorkbenchService) resolveTaskTeamID(conversation *m
 	}
 	if aiAgent := AIAgentService.Get(conversation.AIAgentID); aiAgent != nil {
 		teamIDs := utils.SplitInt64s(aiAgent.TeamIDs)
-		if len(teamIDs) > 0 {
-			return teamIDs[0]
+		for _, teamID := range teamIDs {
+			if team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, conversation.TenantID); team != nil && team.Status == enums.StatusOk {
+				return teamID
+			}
 		}
 	}
 	return 0
@@ -604,7 +615,7 @@ func (s *conversationDispatchWorkbenchService) findTeamIDByRoute(route *models.C
 	if route == nil {
 		return 0
 	}
-	teams := AgentTeamService.Find(sqls.NewCnd().Eq("status", enums.StatusOk).Asc("id"))
+	teams := AgentTeamService.Find(sqls.NewCnd().Eq("tenant_id", route.TenantID).Eq("status", enums.StatusOk).Asc("id"))
 	for _, team := range teams {
 		storeIDs := utils.SplitInt64s(team.StoreScopeIDs)
 		instanceIDs := utils.SplitInt64s(team.WxWorkInstanceScopeIDs)
@@ -637,7 +648,7 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoads(profiles []models
 			userIDs = append(userIDs, profile.UserID)
 		}
 	}
-	activeCounts, err := ConversationDispatchService.findActiveConversationCountMap(userIDs)
+	activeCounts, err := ConversationDispatchService.findActiveConversationCountMap(userIDs, AgentTeamScopeService.ActiveTenantID(operator))
 	if err != nil {
 		return nil, err
 	}
@@ -654,46 +665,48 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoads(profiles []models
 			load.username = user.Username
 			load.nickname = user.Nickname
 		}
-		load.pendingFirstReply, load.processingCount = s.countAgentTaskPhases(profile.UserID)
-		load.pendingReplyCount = s.countAgentPendingReplies(profile.UserID)
+		load.pendingFirstReply, load.processingCount = s.countAgentTaskPhases(profile.UserID, profile.TenantID)
+		load.pendingReplyCount = s.countAgentPendingReplies(profile.UserID, profile.TenantID)
 		load.available = s.profileAvailable(profile, load.activeCount)
 		ret = append(ret, load)
 	}
 	return ret, nil
 }
 
-func (s *conversationDispatchWorkbenchService) countAgentPendingReplies(userID int64) int {
-	if userID <= 0 {
+func (s *conversationDispatchWorkbenchService) countAgentPendingReplies(userID, tenantID int64) int {
+	if userID <= 0 || tenantID <= 0 {
 		return 0
 	}
 	conversations := ConversationService.Find(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
 		Eq("status", enums.IMConversationStatusActive).
 		Eq("current_assignee_id", userID))
 	count := 0
 	for i := range conversations {
-		if route := ConversationRouteService.GetByConversationID(conversations[i].ID); route != nil && route.NeedHumanFollowUp {
+		if route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversations[i].ID, tenantID); route != nil && route.NeedHumanFollowUp {
 			count++
 		}
 	}
 	return count
 }
 
-func (s *conversationDispatchWorkbenchService) countAgentTaskPhases(userID int64) (int, int) {
-	if userID <= 0 {
+func (s *conversationDispatchWorkbenchService) countAgentTaskPhases(userID, tenantID int64) (int, int) {
+	if userID <= 0 || tenantID <= 0 {
 		return 0, 0
 	}
 	conversations := ConversationService.Find(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
 		Eq("status", enums.IMConversationStatusActive).
 		Eq("current_assignee_id", userID))
 	pendingFirstReply := 0
 	processing := 0
 	for _, conversation := range conversations {
-		assignment := s.activeAssignment(conversation.ID)
+		assignment := s.activeAssignment(conversation.ID, tenantID)
 		var assignedAt *time.Time
 		if assignment != nil {
 			assignedAt = &assignment.CreatedAt
 		}
-		if s.firstAgentReplyAt(conversation.ID, assignedAt) == nil {
+		if s.firstAgentReplyAt(conversation.ID, tenantID, assignedAt) == nil {
 			pendingFirstReply++
 		} else {
 			processing++
@@ -725,8 +738,11 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoadResponse(load dispa
 	}
 }
 
-func (s *conversationDispatchWorkbenchService) pickRuleCandidates(teamID int64, route *models.ConversationRouteState) ([]dispatchCandidate, error) {
-	candidates, _, err := ConversationDispatchService.pickDispatchCandidates([]int64{teamID}, route, time.Now())
+func (s *conversationDispatchWorkbenchService) pickRuleCandidates(teamID, tenantID int64, route *models.ConversationRouteState) ([]dispatchCandidate, error) {
+	if route != nil && route.TenantID != tenantID {
+		return nil, errorsx.InvalidParam("会话路由与接入公司不一致")
+	}
+	candidates, _, err := ConversationDispatchService.pickDispatchCandidates([]int64{teamID}, tenantID, route, time.Now())
 	return candidates, err
 }
 
@@ -741,13 +757,13 @@ func (s *conversationDispatchWorkbenchService) requireManageableTargetProfile(us
 	if userID <= 0 {
 		return nil, errorsx.InvalidParam("请选择目标客服")
 	}
-	profile := AgentProfileService.GetByUserID(userID)
+	profile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ?", conversation.TenantID, userID)
 	if profile == nil || profile.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("目标客服不存在")
 	}
 	ownerTeamID := conversation.CurrentTeamID
 	if ownerTeamID <= 0 && conversation.CurrentAssigneeID > 0 {
-		if currentProfile := AgentProfileService.GetByUserID(conversation.CurrentAssigneeID); currentProfile != nil {
+		if currentProfile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ?", conversation.TenantID, conversation.CurrentAssigneeID); currentProfile != nil {
 			ownerTeamID = currentProfile.TeamID
 		}
 	}
@@ -757,7 +773,7 @@ func (s *conversationDispatchWorkbenchService) requireManageableTargetProfile(us
 	if !s.canManageTeam(operator, profile.TeamID) {
 		return nil, errorsx.Forbidden("无权派发到该客服组")
 	}
-	route := ConversationRouteService.GetByConversationID(conversation.ID)
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
 	if route != nil && !AgentProfileService.ProfileCanServeRoute(profile, route) {
 		return nil, errorsx.Forbidden("目标客服不在该会话门店或员工号服务范围内")
 	}
@@ -771,11 +787,14 @@ func (s *conversationDispatchWorkbenchService) assignToProfile(conversation *mod
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
+	if profile.TenantID != conversation.TenantID || operator.ActiveTenantID != conversation.TenantID {
+		return errorsx.Forbidden("会话、目标客服与当前接入公司不一致")
+	}
 	reason = strings.TrimSpace(reason)
 	now := time.Now()
 	var assignedEvent events.ConversationAssignedEvent
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		current := repositories.ConversationRepository.Get(ctx.Tx, conversation.ID)
+		current := repositories.ConversationRepository.GetInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
 		if current == nil {
 			return errorsx.InvalidParam("会话不存在")
 		}
@@ -791,7 +810,7 @@ func (s *conversationDispatchWorkbenchService) assignToProfile(conversation *mod
 		if err := ConversationAssignmentService.CreateAssignmentWithSquad(ctx, current.ID, squadID, current.CurrentAssigneeID, profile.UserID, assignType, reason, operator, now); err != nil {
 			return err
 		}
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, current.ID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, current.ID, current.TenantID, map[string]any{
 			"current_assignee_id": profile.UserID,
 			"current_team_id":     profile.TeamID,
 			"status":              enums.IMConversationStatusActive,
@@ -866,21 +885,21 @@ func (s *conversationDispatchWorkbenchService) buildRuleRecommendation(candidate
 	return strings.Join(parts, "，")
 }
 
-func (s *conversationDispatchWorkbenchService) teamName(teamID int64) string {
-	if teamID <= 0 {
+func (s *conversationDispatchWorkbenchService) teamName(teamID, tenantID int64) string {
+	if teamID <= 0 || tenantID <= 0 {
 		return ""
 	}
-	if team := AgentTeamService.Get(teamID); team != nil {
+	if team := AgentTeamService.GetByTenantID(teamID, tenantID); team != nil {
 		return utils.RepairMojibakeText(team.Name)
 	}
 	return ""
 }
 
-func (s *conversationDispatchWorkbenchService) userDisplayName(userID int64) string {
-	if userID <= 0 {
+func (s *conversationDispatchWorkbenchService) userDisplayName(userID, tenantID int64) string {
+	if userID <= 0 || tenantID <= 0 {
 		return ""
 	}
-	if user := UserService.Get(userID); user != nil {
+	if user := UserService.GetInTenant(userID, tenantID); user != nil {
 		if name := strings.TrimSpace(user.Nickname); name != "" {
 			return utils.RepairMojibakeText(name)
 		}
@@ -896,5 +915,5 @@ func (s *conversationDispatchWorkbenchService) profileDisplayName(profile *model
 	if name := strings.TrimSpace(profile.DisplayName); name != "" {
 		return utils.RepairMojibakeText(name)
 	}
-	return s.userDisplayName(profile.UserID)
+	return s.userDisplayName(profile.UserID, profile.TenantID)
 }

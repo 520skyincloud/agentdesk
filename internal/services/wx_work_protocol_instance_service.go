@@ -95,6 +95,10 @@ func (s *wxWorkProtocolInstanceService) GetInTenant(id int64, operator *dto.Auth
 	return repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), id, tenantID)
 }
 
+func (s *wxWorkProtocolInstanceService) GetByTenantID(id, tenantID int64) *models.WxWorkProtocolInstance {
+	return repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *wxWorkProtocolInstanceService) Take(where ...any) *models.WxWorkProtocolInstance {
 	return repositories.WxWorkProtocolInstanceRepository.Take(sqls.DB(), where...)
 }
@@ -705,10 +709,10 @@ func (s *wxWorkProtocolInstanceService) SetAIReplyEnabled(instanceID int64, enab
 		if !enabled {
 			return nil
 		}
-		if err := repositories.ConversationRouteStateRepository.ResetAIByWxWorkInstance(ctx.Tx, instance.ID, now, operator.Username); err != nil {
+		if err := repositories.ConversationRouteStateRepository.ResetAIByWxWorkInstance(ctx.Tx, instance.ID, instance.TenantID, now, operator.Username); err != nil {
 			return err
 		}
-		return repositories.ConversationRepository.ReleaseAIServingByWxWorkInstance(ctx.Tx, instance.ID, now, operator.UserID, operator.Username)
+		return repositories.ConversationRepository.ReleaseAIServingByWxWorkInstance(ctx.Tx, instance.ID, instance.TenantID, now, operator.UserID, operator.Username)
 	})
 }
 

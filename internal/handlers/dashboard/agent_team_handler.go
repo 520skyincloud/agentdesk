@@ -37,7 +37,7 @@ func AgentTeamAnyList(ctx *gin.Context) {
 		cnd.Where("status <> ?", enums.StatusDeleted)
 	}
 	list := services.AgentTeamService.FindInTenant(cnd, operator)
-	pendingReplyCounts := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()
+	pendingReplyCounts := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam(operator)
 	results := make([]response.AgentTeamResponse, 0, len(list))
 	for _, item := range list {
 		results = append(results, buildAgentTeamResponse(&item, operator, pendingReplyCounts[item.ID]))
@@ -56,7 +56,7 @@ func AgentTeamGetList_all(ctx *gin.Context) {
 		return
 	}
 	list := services.AgentTeamService.FindInTenant(sqls.NewCnd().Eq("status", enums.StatusOk), operator)
-	pendingReplyCounts := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()
+	pendingReplyCounts := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam(operator)
 	results := make([]response.AgentTeamResponse, 0, len(list))
 	for _, item := range list {
 		results = append(results, buildAgentTeamResponse(&item, operator, pendingReplyCounts[item.ID]))
@@ -83,7 +83,7 @@ func AgentTeamGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("客服组不存在"))
 		return
 	}
-	pendingReplyCount := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()[item.ID]
+	pendingReplyCount := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam(operator)[item.ID]
 	httpx.WriteJSON(ctx, buildAgentTeamResponse(item, operator, pendingReplyCount))
 }
 
@@ -107,7 +107,7 @@ func AgentTeamPostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	pendingReplyCount := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()[item.ID]
+	pendingReplyCount := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam(operator)[item.ID]
 	httpx.WriteJSON(ctx, buildAgentTeamResponse(item, operator, pendingReplyCount))
 }
 

@@ -93,15 +93,15 @@ func (s *manualSessionTimeoutService) restoreOne(conversationID int64, now time.
 
 func (s *manualSessionTimeoutService) restoreConversationShell(conversationID int64, now time.Time, timeoutStage string, reason string, fromStatus enums.ConversationRouteStatus) error {
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation := repositories.ConversationRepository.Get(ctx.Tx, conversationID)
-		if conversation == nil {
+		conversation, err := requireConversationParent(ctx.Tx, conversationID)
+		if err != nil {
 			return nil
 		}
 		if conversation.Status != enums.IMConversationStatusClosed {
 			if err := ConversationAssignmentService.FinishActiveAssignments(ctx, conversationID, now); err != nil {
 				return err
 			}
-			if err := repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
+			if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conversation.TenantID, map[string]any{
 				"status":              enums.IMConversationStatusAIServing,
 				"current_team_id":     int64(0),
 				"current_assignee_id": int64(0),

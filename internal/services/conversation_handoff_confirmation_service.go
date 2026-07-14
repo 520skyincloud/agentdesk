@@ -12,8 +12,10 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
+	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/common/strs"
+	"github.com/mlogclub/simple/sqls"
 )
 
 var ConversationHandoffConfirmationService = newConversationHandoffConfirmationService()
@@ -360,7 +362,7 @@ func markHandoffConfirmationMessage(message *models.Message, result handoffConfi
 		return err
 	}
 	message.Payload = string(data)
-	return MessageService.Updates(message.ID, map[string]any{"payload": message.Payload})
+	return repositories.MessageRepository.UpdatesInTenant(sqls.DB(), message.ID, message.TenantID, map[string]any{"payload": message.Payload})
 }
 
 func isConsumedHandoffConfirmationMessage(message models.Message) bool {

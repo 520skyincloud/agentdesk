@@ -51,6 +51,14 @@ func (s *conversationEventLogService) Count(cnd *sqls.Cnd) int64 {
 }
 
 func (s *conversationEventLogService) Create(t *models.ConversationEventLog) error {
+	if t == nil {
+		return nil
+	}
+	conversation, err := requireConversationParent(sqls.DB(), t.ConversationID)
+	if err != nil {
+		return err
+	}
+	t.TenantID = conversation.TenantID
 	return repositories.ConversationEventLogRepository.Create(sqls.DB(), t)
 }
 
@@ -75,7 +83,12 @@ func (s *conversationEventLogService) CreateEvent(ctx *sqls.TxContext, conversat
 }
 
 func (s *conversationEventLogService) CreateEventWithRequestID(ctx *sqls.TxContext, conversationID int64, requestID string, eventType enums.IMEventType, operatorType enums.IMSenderType, operatorID int64, content, payload string) error {
+	conversation, err := requireConversationParent(ctx.Tx, conversationID)
+	if err != nil {
+		return err
+	}
 	return repositories.ConversationEventLogRepository.Create(ctx.Tx, &models.ConversationEventLog{
+		TenantID:       conversation.TenantID,
 		ConversationID: conversationID,
 		RequestID:      tracex.NormalizeRequestID(requestID),
 		EventType:      eventType,

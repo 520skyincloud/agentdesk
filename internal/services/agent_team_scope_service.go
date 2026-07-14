@@ -151,16 +151,16 @@ func (s *agentTeamScopeService) ApplyConversationFilter(cnd *sqls.Cnd, operator 
 	if tenantID <= 0 {
 		return cnd.Where("1 = 0")
 	}
-	cnd.Where("channel_id IN (SELECT id FROM t_channel WHERE tenant_id = ?)", tenantID)
+	cnd.Eq("tenant_id", tenantID)
 	scope := s.Resolve(operator)
 	if scope.Unrestricted {
 		return cnd
 	}
 	if len(scope.WxWorkInstanceIDs) > 0 {
-		return cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE wx_work_instance_id IN (?))", scope.WxWorkInstanceIDs)
+		return cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE tenant_id = ? AND wx_work_instance_id IN (?))", tenantID, scope.WxWorkInstanceIDs)
 	}
 	if len(scope.StoreIDs) > 0 {
-		return cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE store_id IN (?))", scope.StoreIDs)
+		return cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE tenant_id = ? AND store_id IN (?))", tenantID, scope.StoreIDs)
 	}
 	return cnd.Eq("id", -1)
 }
@@ -173,14 +173,14 @@ func (s *agentTeamScopeService) CanViewConversation(operator *dto.AuthPrincipal,
 	if tenantID <= 0 {
 		return false
 	}
-	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
-	if conversation == nil || repositories.ChannelRepository.GetInTenant(sqls.DB(), conversation.ChannelID, tenantID) == nil {
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), conversationID, tenantID)
+	if conversation == nil {
 		return false
 	}
 	if s.IsAdmin(operator) {
 		return true
 	}
-	route := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversationID)
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, tenantID)
 	if route == nil {
 		return false
 	}

@@ -57,6 +57,10 @@ func (s *conversationService) ListConversations(operator *dto.AuthPrincipal, fil
 	if operator == nil || operator.UserID <= 0 {
 		return nil, nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil, nil, errorsx.Forbidden("请先进入需要管理会话的接入公司")
+	}
 	cnd := sqls.NewCnd().Page(paging.Page, paging.Limit)
 
 	if strs.IsNotBlank(keyword) {
@@ -66,7 +70,7 @@ func (s *conversationService) ListConversations(operator *dto.AuthPrincipal, fil
 	}
 
 	if wxWorkInstanceID > 0 && filter != request.AgentConversationFilterMyAttention {
-		cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE wx_work_instance_id = ?)", wxWorkInstanceID)
+		cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE tenant_id = ? AND wx_work_instance_id = ?)", tenantID, wxWorkInstanceID)
 	}
 	cnd = AgentTeamScopeService.ApplyConversationFilter(cnd, operator)
 
@@ -89,7 +93,7 @@ func (s *conversationService) ListConversations(operator *dto.AuthPrincipal, fil
 		}
 		cnd.Eq("current_assignee_id", operator.UserID).
 			Eq("status", enums.IMConversationStatusActive).
-			Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE need_human_follow_up = ?)", true).
+			Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE tenant_id = ? AND need_human_follow_up = ?)", tenantID, true).
 			Asc("last_active_at").Desc("id")
 	default:
 		return nil, nil, errorsx.InvalidParam("会话筛选项不合法")
@@ -103,11 +107,12 @@ func (s *conversationService) Updates(id int64, columns map[string]interface{}) 
 	return repositories.ConversationRepository.Updates(sqls.DB(), id, columns)
 }
 
-func (s *conversationService) getLatestNotFinishedByCustomerID(db *gorm.DB, customerID int64) *models.Conversation {
-	if customerID <= 0 {
+func (s *conversationService) getLatestNotFinishedByCustomerID(db *gorm.DB, customerID, tenantID int64) *models.Conversation {
+	if customerID <= 0 || tenantID <= 0 {
 		return nil
 	}
 	cnd := sqls.NewCnd()
+	cnd.Eq("tenant_id", tenantID)
 	cnd.Eq("customer_id", customerID)
 	cnd.In("status", []enums.IMConversationStatus{
 		enums.IMConversationStatusAIServing,
@@ -154,11 +159,11 @@ func (s *conversationService) createWithProfile(externalUser openidentity.Extern
 		if err != nil {
 			return err
 		}
-		customerName := s.getCustomerName(ctx.Tx, customerID)
-		if existing := s.getLatestNotFinishedByCustomerID(ctx.Tx, customerID); existing != nil {
+		customerName := s.getCustomerName(ctx.Tx, customerID, channel.TenantID)
+		if existing := s.getLatestNotFinishedByCustomerID(ctx.Tx, customerID, channel.TenantID); existing != nil {
 			conversation = existing
 			if customerName != "" && existing.CustomerName != customerName {
-				if err := repositories.ConversationRepository.Updates(ctx.Tx, existing.ID, map[string]any{
+				if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, existing.ID, channel.TenantID, map[string]any{
 					"customer_name": customerName,
 					"updated_at":    time.Now(),
 				}); err != nil {
@@ -171,6 +176,7 @@ func (s *conversationService) createWithProfile(externalUser openidentity.Extern
 		created = true
 		now := time.Now()
 		conversation = &models.Conversation{
+			TenantID:          channel.TenantID,
 			AIAgentID:         aiAgent.ID,
 			ChannelID:         channelID,
 			CustomerID:        customerID,
@@ -225,18 +231,22 @@ func (s *conversationService) createWithProfile(externalUser openidentity.Extern
 }
 
 func (s *conversationService) AssignConversation(req request.AssignConversationRequest, operator *dto.AuthPrincipal) error {
-	if operator == nil {
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if operator == nil || operator.UserID <= 0 {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	targetProfile := AgentProfileService.GetByUserID(req.AssigneeID)
+	if tenantID <= 0 {
+		return errorsx.Forbidden("请先进入需要管理会话的接入公司")
+	}
+	targetProfile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ?", tenantID, req.AssigneeID)
 	if targetProfile == nil || targetProfile.Status != enums.StatusOk {
 		return errorsx.InvalidParam("目标客服不存在")
 	}
 	var assignedEvent events.ConversationAssignedEvent
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation := repositories.ConversationRepository.Get(ctx.Tx, req.ConversationID)
-		if conversation == nil {
-			return errorsx.InvalidParam("会话不存在")
+		conversation, err := requireOperatorConversation(ctx.Tx, req.ConversationID, operator)
+		if err != nil {
+			return err
 		}
 		if conversation.Status != enums.IMConversationStatusPending {
 			return errorsx.InvalidParam("只有待接入会话允许分配")
@@ -248,7 +258,7 @@ func (s *conversationService) AssignConversation(req request.AssignConversationR
 		if err := ConversationAssignmentService.CreateAssignment(ctx, req.ConversationID, conversation.CurrentAssigneeID, req.AssigneeID, enums.IMAssignmentTypeAssign, req.Reason, operator, now); err != nil {
 			return err
 		}
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, req.ConversationID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, req.ConversationID, conversation.TenantID, map[string]any{
 			"current_assignee_id": req.AssigneeID,
 			"status":              enums.IMConversationStatusActive,
 			"update_user_id":      operator.UserID,
@@ -297,9 +307,9 @@ func (s *conversationService) TakeoverAIServingConversation(conversationID int64
 	}
 	var assignedEvent events.ConversationAssignedEvent
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation := repositories.ConversationRepository.Get(ctx.Tx, conversationID)
-		if conversation == nil {
-			return errorsx.InvalidParam("会话不存在")
+		conversation, err := requireOperatorConversation(ctx.Tx, conversationID, operator)
+		if err != nil {
+			return err
 		}
 		if conversation.Status == enums.IMConversationStatusClosed {
 			return errorsx.InvalidParam("会话已关闭")
@@ -311,14 +321,14 @@ func (s *conversationService) TakeoverAIServingConversation(conversationID int64
 			return errorsx.InvalidParam("当前会话不允许直接接管")
 		}
 
-		state := repositories.ConversationRouteStateRepository.Take(ctx.Tx, "conversation_id = ?", conversationID)
+		state := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(ctx.Tx, conversationID, conversation.TenantID)
 		if state == nil || (state.RouteStatus != enums.ConversationRouteStatusAIServing && state.RouteStatus != enums.ConversationRouteStatusAIFallback) {
 			return errorsx.InvalidParam("当前会话不处于 AI 接待状态")
 		}
 		if state.WxWorkInstanceID <= 0 {
 			return errorsx.InvalidParam("当前会话未绑定员工号，不能直接关闭 AI 回复")
 		}
-		instance := repositories.WxWorkProtocolInstanceRepository.Get(ctx.Tx, state.WxWorkInstanceID)
+		instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(ctx.Tx, state.WxWorkInstanceID, conversation.TenantID)
 		if instance == nil || instance.AIReplyEnabled {
 			return errorsx.InvalidParam("请先关闭当前员工号的 AI 回复")
 		}
@@ -334,7 +344,7 @@ func (s *conversationService) TakeoverAIServingConversation(conversationID int64
 		if err := ConversationAssignmentService.CreateAssignment(ctx, conversationID, conversation.CurrentAssigneeID, operator.UserID, enums.IMAssignmentTypeAssign, reason, operator, now); err != nil {
 			return err
 		}
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conversation.TenantID, map[string]any{
 			"current_assignee_id": operator.UserID,
 			"status":              enums.IMConversationStatusActive,
 			"update_user_id":      operator.UserID,
@@ -380,9 +390,9 @@ func (s *conversationService) EnsureAgentCanReply(conversationID int64, reason s
 	if operator == nil || operator.UserID <= 0 {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	conversation := s.Get(conversationID)
-	if conversation == nil {
-		return errorsx.InvalidParam("会话不存在")
+	conversation, err := requireOperatorConversation(sqls.DB(), conversationID, operator)
+	if err != nil {
+		return err
 	}
 	if conversation.Status == enums.IMConversationStatusClosed {
 		return errorsx.InvalidParam("会话已关闭")
@@ -390,7 +400,7 @@ func (s *conversationService) EnsureAgentCanReply(conversationID int64, reason s
 	if !AgentTeamScopeService.CanViewConversation(operator, conversationID) {
 		return errorsx.Forbidden("当前客服未绑定该门店或员工号，无法处理此会话")
 	}
-	if route := ConversationRouteService.GetByConversationID(conversationID); route != nil && route.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
+	if route := ConversationRouteService.GetByConversationIDInTenant(conversationID, conversation.TenantID); route != nil && route.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
 		return nil
 	}
 	if conversation.Status == enums.IMConversationStatusActive && conversation.CurrentAssigneeID == operator.UserID {
@@ -399,7 +409,7 @@ func (s *conversationService) EnsureAgentCanReply(conversationID int64, reason s
 	if (conversation.Status == enums.IMConversationStatusAIServing || conversation.Status == enums.IMConversationStatusPending) && conversation.CurrentAssigneeID == 0 {
 		return s.TakeoverAIServingConversation(conversationID, reason, operator)
 	}
-	_, err := MessageService.ValidateConversationSender(conversationID, enums.IMSenderTypeAgent, operator, nil)
+	_, err = MessageService.ValidateConversationSender(conversationID, enums.IMSenderTypeAgent, operator, nil)
 	return err
 }
 
@@ -408,9 +418,9 @@ func (s *conversationService) AutoAssignConversation(conversationID int64, opera
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
 
-	conversation := s.Get(conversationID)
-	if conversation == nil {
-		return errorsx.InvalidParam("会话不存在")
+	conversation, err := requireOperatorConversation(sqls.DB(), conversationID, operator)
+	if err != nil {
+		return err
 	}
 	if conversation.Status != enums.IMConversationStatusPending {
 		return errorsx.InvalidParam("只有待接入会话允许自动分配")
@@ -440,15 +450,19 @@ func (s *conversationService) TransferConversation(conversationID, toUserID int6
 	if toUserID <= 0 {
 		return errorsx.InvalidParam("目标客服不能为空")
 	}
-	targetProfile := AgentProfileService.GetByUserID(toUserID)
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return errorsx.Forbidden("请先进入需要管理会话的接入公司")
+	}
+	targetProfile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ?", tenantID, toUserID)
 	if targetProfile == nil || targetProfile.Status != enums.StatusOk {
 		return errorsx.InvalidParam("目标客服不存在")
 	}
 	var assignedEvent events.ConversationAssignedEvent
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation := repositories.ConversationRepository.Get(ctx.Tx, conversationID)
-		if conversation == nil {
-			return errorsx.InvalidParam("会话不存在")
+		conversation, err := requireOperatorConversation(ctx.Tx, conversationID, operator)
+		if err != nil {
+			return err
 		}
 		if !s.canTransferConversation(conversation, operator) {
 			return errorsx.Forbidden("无权转接该会话")
@@ -469,7 +483,7 @@ func (s *conversationService) TransferConversation(conversationID, toUserID int6
 		if err := ConversationAssignmentService.CreateAssignment(ctx, conversationID, conversation.CurrentAssigneeID, toUserID, enums.IMAssignmentTypeTransfer, reason, operator, now); err != nil {
 			return err
 		}
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conversation.TenantID, map[string]any{
 			"current_assignee_id": toUserID,
 			"status":              enums.IMConversationStatusActive,
 			"update_user_id":      operator.UserID,
@@ -548,8 +562,8 @@ func (s *conversationService) TryOffHoursHandoffByAIWithRequestID(conversationID
 }
 
 func (s *conversationService) CloseConversation(conversationID int64, closeReason string, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
+	if _, err := requireOperatorConversation(sqls.DB(), conversationID, operator); err != nil {
+		return err
 	}
 	return s.closeConversation(conversationID, enums.IMSenderTypeAgent, closeReason, operator)
 }
@@ -567,9 +581,9 @@ func (s *conversationService) CloseCustomerConversation(conversationID int64, ex
 
 func (s *conversationService) closeConversation(conversationID int64, senderType enums.IMSenderType, closeReason string, operator *dto.AuthPrincipal) error {
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation := repositories.ConversationRepository.Get(ctx.Tx, conversationID)
-		if conversation == nil {
-			return errorsx.InvalidParam("会话不存在")
+		conversation, err := requireConversationParent(ctx.Tx, conversationID)
+		if err != nil {
+			return err
 		}
 		if conversation.Status == enums.IMConversationStatusClosed {
 			return nil
@@ -604,7 +618,7 @@ func (s *conversationService) closeConversation(conversationID int64, senderType
 		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, conversationID, now); err != nil {
 			return err
 		}
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conversation.TenantID, map[string]any{
 			"status":           enums.IMConversationStatusClosed,
 			"closed_at":        now,
 			"closed_by":        operatorID,
@@ -615,8 +629,8 @@ func (s *conversationService) closeConversation(conversationID int64, senderType
 		}); err != nil {
 			return err
 		}
-		if route := repositories.ConversationRouteStateRepository.Take(ctx.Tx, "conversation_id = ?", conversationID); route != nil {
-			if err := repositories.ConversationRouteStateRepository.Updates(ctx.Tx, route.ID, map[string]any{
+		if route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(ctx.Tx, conversationID, conversation.TenantID); route != nil {
+			if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, route.ID, conversation.TenantID, map[string]any{
 				"route_status":         enums.ConversationRouteStatusClosed,
 				"route_target":         "closed",
 				"manual_expire_at":     nil,
@@ -647,12 +661,9 @@ func (s *conversationService) closeConversation(conversationID int64, senderType
 
 // MarkAgentConversationReadToMessage 控制台客服将会话已读推进到指定消息。
 func (s *conversationService) MarkAgentConversationReadToMessage(conversationID, messageID int64, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
-	}
-	conversation := s.Get(conversationID)
-	if conversation == nil {
-		return errorsx.InvalidParam("会话不存在")
+	conversation, err := requireOperatorConversation(sqls.DB(), conversationID, operator)
+	if err != nil {
+		return err
 	}
 	if !AgentTeamScopeService.CanViewConversation(operator, conversationID) {
 		return errorsx.Forbidden("无权访问该会话")
@@ -779,7 +790,7 @@ func (s *conversationService) markConversationReadWithActor(conversation *models
 		} else {
 			updates["customer_unread_count"] = 0
 		}
-		return true, s.Updates(conversation.ID, updates)
+		return true, repositories.ConversationRepository.UpdatesInTenant(sqls.DB(), conversation.ID, conversation.TenantID, updates)
 	}
 
 	currentReadState := actor.getReadState(conversation.ID)
@@ -793,7 +804,7 @@ func (s *conversationService) markConversationReadWithActor(conversation *models
 	}
 
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		currentConversation := repositories.ConversationRepository.Get(ctx.Tx, conversation.ID)
+		currentConversation := repositories.ConversationRepository.GetInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
 		if currentConversation == nil {
 			return errorsx.InvalidParam("会话不存在")
 		}
@@ -816,7 +827,7 @@ func (s *conversationService) markConversationReadWithActor(conversation *models
 			return nil
 		}
 		updateUserID, updateUserName := actor.conversationUpdateAudit()
-		return repositories.ConversationRepository.Updates(ctx.Tx, currentConversation.ID, map[string]any{
+		return repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, currentConversation.ID, currentConversation.TenantID, map[string]any{
 			"agent_unread_count":    agentUnreadCount,
 			"customer_unread_count": customerUnreadCount,
 			"update_user_id":        updateUserID,
@@ -851,11 +862,11 @@ func (s *conversationService) IsCustomerConversationOwner(conversation *models.C
 	if extID == "" || strings.TrimSpace(string(externalUser.ExternalSource)) == "" || conversation.CustomerID <= 0 {
 		return false
 	}
-	channel := ChannelService.Get(conversation.ChannelID)
-	if channel == nil || channel.TenantID <= 0 {
+	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), conversation.ChannelID, conversation.TenantID)
+	if channel == nil || channel.TenantID <= 0 || channel.TenantID != conversation.TenantID {
 		return false
 	}
-	identity := repositories.CustomerIdentityRepository.GetByInTenant(sqls.DB(), channel.TenantID, externalUser.ExternalSource, extID)
+	identity := repositories.CustomerIdentityRepository.GetByInTenant(sqls.DB(), conversation.TenantID, externalUser.ExternalSource, extID)
 	if identity == nil {
 		return false
 	}
@@ -872,11 +883,11 @@ func (s *conversationService) BuildConversationSummary(conversation *models.Conv
 	return strings.TrimSpace(conversation.CustomerName)
 }
 
-func (s *conversationService) getCustomerName(db *gorm.DB, customerID int64) string {
-	if customerID <= 0 {
+func (s *conversationService) getCustomerName(db *gorm.DB, customerID, tenantID int64) string {
+	if customerID <= 0 || tenantID <= 0 {
 		return ""
 	}
-	if customer := repositories.CustomerRepository.Get(db, customerID); customer != nil {
+	if customer := repositories.CustomerRepository.GetInTenant(db, customerID, tenantID); customer != nil {
 		return strings.TrimSpace(customer.Name)
 	}
 	return ""
@@ -908,7 +919,9 @@ func (s *conversationService) isAdmin(operator *dto.AuthPrincipal) bool {
 	if operator == nil {
 		return false
 	}
-	return slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) || slices.Contains(operator.Roles, constants.RoleCodeAdmin)
+	return slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) ||
+		slices.Contains(operator.Roles, constants.RoleCodeAdmin) ||
+		slices.Contains(operator.Roles, constants.RoleCodeTenantAdmin)
 }
 
 func (s *conversationService) buildEventPayload(payload map[string]any) string {
@@ -934,9 +947,9 @@ func (s *conversationService) LinkConversationCustomer(conversationID, customerI
 	if cust == nil || cust.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("客户不存在")
 	}
-	conv := s.Get(conversationID)
-	if conv == nil {
-		return errorsx.InvalidParam("会话不存在")
+	conv, err := requireOperatorConversation(sqls.DB(), conversationID, operator)
+	if err != nil {
+		return err
 	}
 	if conv.Status == enums.IMConversationStatusClosed {
 		return errorsx.InvalidParam("已关闭的会话无法关联客户")
@@ -945,13 +958,13 @@ func (s *conversationService) LinkConversationCustomer(conversationID, customerI
 		return errorsx.Forbidden("无权限关联该会话")
 	}
 
-	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		current := repositories.ConversationRepository.Get(ctx.Tx, conversationID)
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current := repositories.ConversationRepository.GetInTenant(ctx.Tx, conversationID, conv.TenantID)
 		if current == nil {
 			return errorsx.InvalidParam("会话不存在")
 		}
 		now := time.Now()
-		return repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
+		return repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conv.TenantID, map[string]any{
 			"customer_id":      customerID,
 			"customer_name":    strings.TrimSpace(cust.Name),
 			"update_user_id":   operator.UserID,
@@ -972,7 +985,7 @@ func (s *conversationService) GetConversationExternalIdentity(conversation *mode
 	if conversation == nil || conversation.CustomerID <= 0 {
 		return nil
 	}
-	if channel := ChannelService.Get(conversation.ChannelID); channel != nil && channel.TenantID > 0 {
+	if channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), conversation.ChannelID, conversation.TenantID); channel != nil {
 		identities := repositories.CustomerIdentityRepository.FindByCustomerIDInTenant(sqls.DB(), conversation.CustomerID, channel.TenantID)
 		if len(identities) == 0 {
 			return nil

@@ -1061,3 +1061,40 @@ web/messages/en-US.json
 - 本检查点增加 19 个 model 字段和 migration 45，没有 request/response DTO、enum、Gin 路由、权限点、WebSocket payload 或前端变化。
 - `codex/ai-billing` 同时修改 `models.go` 及 ConversationRouteState 相关运行时。合并必须逐结构保留 TenantID、AIManualResumeTask、欢迎语/意图/FastGPT 字段，禁止整文件选边。
 - 下一运行时批次必须让每个创建入口从父 Conversation/Ticket 或 ActiveTenant 写 TenantID，并让列表、详情、更新、状态流转、标签替换、派单、工单号使用方及最终 SQL 同时携带 tenant；迁移通过不能替代这些测试。
+
+## 22. 当前实施检查点：会话、消息与派单运行时隔离（2026-07-14）
+
+本检查点在阶段 4G 的归属字段和 migration 45 之上，完成会话、消息、派单及企微协议投递的主要运行时租户边界。它不改变 AI 回复、检索、模型供应商、token 或计费语义，也不把字段回填等同于后续工单、标签和实时通道已经隔离。
+
+### 已完成运行时边界
+
+- Conversation 创建从 Channel 继承 TenantID；未关闭会话复用同时按 CustomerID 和 TenantID 限定，不能复用其他租户会话。
+- Dashboard 会话列表、详情、消息列表以及客服发送、撤回、分配、转派、释放、关闭均要求认证上下文中的 ActiveTenantID，并在 service 和最终 repository 写入条件中校验 tenant。
+- ConversationParticipant、Message、ConversationRouteState、ConversationReadState、ConversationAssignment、ConversationEventLog、ConversationInterrupt、MessageSyncLog、WxWorkKF 映射及 ChannelMessageOutbox 从父 Conversation 继承 TenantID。
+- 派单排班、小组、客服档案、启用用户、实时负载和任务计数均限定当前租户；派单返回的用户、客服组、门店和企微实例展示信息也只从同一租户补充。
+- 企微协议的 Conversation、Message、Channel、Mapping、Instance 和 Outbox 关系执行同租户校验；Outbox 领取、成功、失败和媒体状态更新均携带 tenant 条件。门店群负数合成消息任务继续按结构化 `store_room_handoff_notice` 语义工作。
+- 尚未关联 Conversation 的原始 MessageSyncLog，以及只有 checkpoint、尚未绑定 Conversation 的 ConversationInterrupt，继续以 `tenant_id=0` 隔离；checkpoint 转成待处理 Interrupt 时继承 Conversation tenant，跨租户复用 checkpoint ID 会被拒绝。
+
+### 兼容边界与后续缺口
+
+- `ConversationRouteService.GetByConversationID` 和 `MessageService.FindLatestByConversationID` 有意保留内部全局 ID 兼容语义。AI runtime 和部分纯单元测试会构造缺少完整 Conversation 行的局部 fixture；租户敏感的 HTTP、派单和写入路径必须继续显式调用 tenant-aware 方法，不能在本分支全局改写这两个 helper。
+- Ticket、TicketProgress、TicketView、Tag、ConversationTag 和 TicketTag 只有归属字段及历史回填，运行时列表、详情、状态流转、标签替换和最终写入隔离仍是下一批次。
+- WebSocket topic、连接订阅和广播 payload 尚未完成租户审计；不能仅依赖会话详情接口阻止跨租户实时事件泄露。
+- KnowledgeCandidate、KnowledgeRetrieveLog、SkillRunLog、AgentRunLog、文件/Asset 和向量 payload 仍由各自领域后续处理。
+- `internal/services/media_understanding_service.go` 仍按 message ID 更新结果；该文件属于 AI 分支改动范围，合并后必须由 Message 解析 TenantID 并执行 tenant-qualified 更新。
+- AI 分支必须让 ConversationSessionSummary 创建继承 TenantID，并为 AIManualResumeTask 增加 TenantID；后者应使用 migration 45 之后的新 migration 回填，不能修改已经发布的 migration 45。
+- 公开邀请注册继续关闭。Ticket/Tag、WebSocket、知识库/向量和 AI 异步任务完成双租户验证前，不能宣称端到端生产隔离完成。
+
+### 验证与合并要求
+
+```text
+go test ./internal/services -count=1
+go test -race ./internal/services -run 'TestConversation(Runtime|DispatchAndFinalWrites|InterruptRejects)' -count=1
+go test ./... -run '^$' -count=1
+go vet ./...
+git diff --check
+```
+
+- 新增 `internal/services/conversation_runtime_tenant_test.go`，覆盖跨租户读写拒绝、子记录 TenantID 继承、派单候选隔离、最终 SQL 条件、独立同步日志隔离及 checkpoint 升级/冲突。
+- 本检查点没有 model、migration、request/response DTO、enum、Gin 路由、权限点、WebSocket payload 或前端变化。
+- `codex/ai-billing@f2d2da4` 与本检查点存在 Conversation builder/handler、RouteState、Message、人工派单、超时和企微协议等同文件修改。合并必须逐方法保留 AI 分支的欢迎语、意图、FastGPT、人工恢复和媒体理解语义，同时保留本检查点的 ActiveTenant 校验、TenantID 继承及最终 tenant 写入条件。

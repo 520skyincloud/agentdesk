@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/repositories"
 
 	"agent-desk/internal/pkg/httpx/params"
@@ -47,6 +48,18 @@ func (s *wxWorkKFConversationService) Count(cnd *sqls.Cnd) int64 {
 }
 
 func (s *wxWorkKFConversationService) Create(t *models.WxWorkKFConversation) error {
+	if t == nil {
+		return nil
+	}
+	conversation, err := requireConversationParent(sqls.DB(), t.ConversationID)
+	if err != nil {
+		return err
+	}
+	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), t.ChannelID, conversation.TenantID)
+	if channel == nil {
+		return errorsx.InvalidParam("企业微信客服会话渠道不存在或不属于会话接入公司")
+	}
+	t.TenantID = conversation.TenantID
 	return repositories.WxWorkKFConversationRepository.Create(sqls.DB(), t)
 }
 
@@ -56,6 +69,10 @@ func (s *wxWorkKFConversationService) Update(t *models.WxWorkKFConversation) err
 
 func (s *wxWorkKFConversationService) Updates(id int64, columns map[string]interface{}) error {
 	return repositories.WxWorkKFConversationRepository.Updates(sqls.DB(), id, columns)
+}
+
+func (s *wxWorkKFConversationService) UpdatesInTenant(id, tenantID int64, columns map[string]any) error {
+	return repositories.WxWorkKFConversationRepository.UpdatesInTenant(sqls.DB(), id, tenantID, columns)
 }
 
 func (s *wxWorkKFConversationService) UpdateColumn(id int64, name string, value interface{}) error {

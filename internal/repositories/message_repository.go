@@ -2,7 +2,7 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
-
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
@@ -21,6 +21,17 @@ type messageRepository struct {
 func (r *messageRepository) Get(db *gorm.DB, id int64) *models.Message {
 	ret := &models.Message{}
 	if err := db.First(ret, "id = ?", id).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *messageRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.Message {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.Message{}
+	if err := db.First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
 		return nil
 	}
 	return ret
@@ -46,6 +57,19 @@ func (r *messageRepository) FindLastUnrecalledByConversationID(db *gorm.DB, conv
 		Order("seq_no DESC").
 		Order("id DESC").
 		Limit(1).
+		Take(ret).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *messageRepository) FindLastUnrecalledByConversationIDInTenant(db *gorm.DB, conversationID, tenantID int64) *models.Message {
+	if conversationID <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.Message{}
+	if err := db.Where("tenant_id = ? AND conversation_id = ? AND recalled_at IS NULL AND send_status <> ?", tenantID, conversationID, enums.IMMessageStatusRecalled).
+		Order("seq_no DESC, id DESC").
 		Take(ret).Error; err != nil {
 		return nil
 	}
@@ -105,6 +129,10 @@ func (r *messageRepository) Updates(db *gorm.DB, id int64, columns map[string]in
 	return
 }
 
+func (r *messageRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.Message{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *messageRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.Message{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return
@@ -119,9 +147,20 @@ func (r *messageRepository) GetByClientMsgID(db *gorm.DB, conversationID int64, 
 	return r.FindOne(db, sqls.NewCnd().Where("conversation_id = ? AND client_msg_id = ?", conversationID, clientMsgID))
 }
 
+func (r *messageRepository) GetByClientMsgIDInTenant(db *gorm.DB, conversationID, tenantID int64, clientMsgID string) *models.Message {
+	return r.FindOne(db, sqls.NewCnd().Where("tenant_id = ? AND conversation_id = ? AND client_msg_id = ?", tenantID, conversationID, clientMsgID))
+}
+
 // NextSeqNo
 func (r *messageRepository) NextSeqNo(db *gorm.DB, conversationID int64) int64 {
 	if last := r.FindOne(db, sqls.NewCnd().Where("conversation_id = ?", conversationID).Desc("seq_no")); last != nil {
+		return last.SeqNo + 1
+	}
+	return 1
+}
+
+func (r *messageRepository) NextSeqNoInTenant(db *gorm.DB, conversationID, tenantID int64) int64 {
+	if last := r.FindOne(db, sqls.NewCnd().Where("tenant_id = ? AND conversation_id = ?", tenantID, conversationID).Desc("seq_no")); last != nil {
 		return last.SeqNo + 1
 	}
 	return 1

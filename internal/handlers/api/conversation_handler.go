@@ -41,7 +41,7 @@ func ConversationGetBy(ctx *gin.Context) {
 
 	detail := response.ConversationDetailResponse{
 		ConversationResponse: builders.BuildConversationWithLocale(item, i18nx.Locale(ctx)),
-		Participants:         builders.BuildParticipantResponses(id),
+		Participants:         builders.BuildParticipantResponses(id, item.TenantID),
 	}
 	httpx.WriteJSON(ctx, detail)
 }

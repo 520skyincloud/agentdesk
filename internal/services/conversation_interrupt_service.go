@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -35,7 +36,11 @@ func (s *conversationInterruptService) FindLatestPendingByConversationID(convers
 	if conversationID <= 0 {
 		return nil
 	}
-	return repositories.ConversationInterruptRepository.FindLatestPendingByConversationID(sqls.DB(), conversationID)
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return nil
+	}
+	return repositories.ConversationInterruptRepository.FindLatestPendingByConversationIDInTenant(sqls.DB(), conversationID, conversation.TenantID)
 }
 
 func (s *conversationInterruptService) SaveCheckpoint(checkPointID string, data []byte) error {
@@ -71,6 +76,11 @@ func (s *conversationInterruptService) CreateOrUpdatePending(item *models.Conver
 	if item == nil {
 		return nil
 	}
+	conversation, err := requireConversationParent(sqls.DB(), item.ConversationID)
+	if err != nil {
+		return err
+	}
+	item.TenantID = conversation.TenantID
 	now := time.Now()
 	if item.CreatedAt.IsZero() {
 		item.CreatedAt = now
@@ -80,7 +90,11 @@ func (s *conversationInterruptService) CreateOrUpdatePending(item *models.Conver
 	if item.Status == "" {
 		item.Status = "pending"
 	}
-	item = s.mergeForPendingUpdate(s.GetByCheckPointID(item.CheckPointID), item)
+	current := s.GetByCheckPointID(item.CheckPointID)
+	if current != nil && current.TenantID > 0 && current.TenantID != item.TenantID {
+		return errorsx.InvalidParam("中断检查点已属于其他接入公司")
+	}
+	item = s.mergeForPendingUpdate(current, item)
 	return repositories.ConversationInterruptRepository.UpsertByCheckPointID(sqls.DB(), item)
 }
 
@@ -116,6 +130,7 @@ func (s *conversationInterruptService) mergeForPendingUpdate(current, next *mode
 		return next
 	}
 	merged := *current
+	merged.TenantID = next.TenantID
 	merged.ConversationID = next.ConversationID
 	merged.AIAgentID = next.AIAgentID
 	merged.SourceMessageID = next.SourceMessageID
@@ -130,11 +145,11 @@ func (s *conversationInterruptService) mergeForPendingUpdate(current, next *mode
 
 func (s *conversationInterruptService) MarkResolved(id int64, lastResumeMessageID int64) error {
 	current := s.Get(id)
-	nextCount := 1
-	if current != nil {
-		nextCount = current.ResumeCount + 1
+	if current == nil {
+		return nil
 	}
-	return repositories.ConversationInterruptRepository.Updates(sqls.DB(), id, map[string]any{
+	nextCount := current.ResumeCount + 1
+	return repositories.ConversationInterruptRepository.UpdatesInTenant(sqls.DB(), id, current.TenantID, map[string]any{
 		"status":                 "resolved",
 		"last_resume_message_id": lastResumeMessageID,
 		"resume_count":           nextCount,
@@ -144,11 +159,11 @@ func (s *conversationInterruptService) MarkResolved(id int64, lastResumeMessageI
 
 func (s *conversationInterruptService) MarkCancelled(id int64, lastResumeMessageID int64) error {
 	current := s.Get(id)
-	nextCount := 1
-	if current != nil {
-		nextCount = current.ResumeCount + 1
+	if current == nil {
+		return nil
 	}
-	return repositories.ConversationInterruptRepository.Updates(sqls.DB(), id, map[string]any{
+	nextCount := current.ResumeCount + 1
+	return repositories.ConversationInterruptRepository.UpdatesInTenant(sqls.DB(), id, current.TenantID, map[string]any{
 		"status":                 "cancelled",
 		"last_resume_message_id": lastResumeMessageID,
 		"resume_count":           nextCount,
@@ -158,11 +173,11 @@ func (s *conversationInterruptService) MarkCancelled(id int64, lastResumeMessage
 
 func (s *conversationInterruptService) MarkExpired(id int64, lastResumeMessageID int64) error {
 	current := s.Get(id)
-	nextCount := 1
-	if current != nil {
-		nextCount = current.ResumeCount + 1
+	if current == nil {
+		return nil
 	}
-	return repositories.ConversationInterruptRepository.Updates(sqls.DB(), id, map[string]any{
+	nextCount := current.ResumeCount + 1
+	return repositories.ConversationInterruptRepository.UpdatesInTenant(sqls.DB(), id, current.TenantID, map[string]any{
 		"status":                 "expired",
 		"last_resume_message_id": lastResumeMessageID,
 		"resume_count":           nextCount,
@@ -172,11 +187,11 @@ func (s *conversationInterruptService) MarkExpired(id int64, lastResumeMessageID
 
 func (s *conversationInterruptService) MarkPendingAgain(id int64, interruptID, promptText string, lastResumeMessageID int64) error {
 	current := s.Get(id)
-	nextCount := 1
-	if current != nil {
-		nextCount = current.ResumeCount + 1
+	if current == nil {
+		return nil
 	}
-	return repositories.ConversationInterruptRepository.Updates(sqls.DB(), id, map[string]any{
+	nextCount := current.ResumeCount + 1
+	return repositories.ConversationInterruptRepository.UpdatesInTenant(sqls.DB(), id, current.TenantID, map[string]any{
 		"status":                 "pending",
 		"interrupt_id":           strings.TrimSpace(interruptID),
 		"prompt_text":            strings.TrimSpace(promptText),

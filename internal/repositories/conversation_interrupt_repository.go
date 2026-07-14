@@ -31,9 +31,9 @@ func (r *conversationInterruptRepository) GetByCheckPointID(db *gorm.DB, checkPo
 	return ret
 }
 
-func (r *conversationInterruptRepository) FindLatestPendingByConversationID(db *gorm.DB, conversationID int64) *models.ConversationInterrupt {
+func (r *conversationInterruptRepository) FindLatestPendingByConversationIDInTenant(db *gorm.DB, conversationID, tenantID int64) *models.ConversationInterrupt {
 	ret := &models.ConversationInterrupt{}
-	if err := db.Where("conversation_id = ? AND status = ?", conversationID, "pending").Order("id DESC").First(ret).Error; err != nil {
+	if err := db.Where("tenant_id = ? AND conversation_id = ? AND status = ?", tenantID, conversationID, "pending").Order("id DESC").First(ret).Error; err != nil {
 		return nil
 	}
 	return ret
@@ -64,12 +64,17 @@ func (r *conversationInterruptRepository) Updates(db *gorm.DB, id int64, columns
 	return db.Model(&models.ConversationInterrupt{}).Where("id = ?", id).Updates(columns).Error
 }
 
+func (r *conversationInterruptRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.ConversationInterrupt{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *conversationInterruptRepository) UpsertByCheckPointID(db *gorm.DB, item *models.ConversationInterrupt) error {
 	current := r.GetByCheckPointID(db, item.CheckPointID)
 	if current == nil {
 		return r.Create(db, item)
 	}
 	columns := map[string]any{
+		"tenant_id":              item.TenantID,
 		"conversation_id":        item.ConversationID,
 		"ai_agent_id":            item.AIAgentID,
 		"source_message_id":      item.SourceMessageID,
@@ -84,5 +89,5 @@ func (r *conversationInterruptRepository) UpsertByCheckPointID(db *gorm.DB, item
 		"expires_at":             item.ExpiresAt,
 		"updated_at":             item.UpdatedAt,
 	}
-	return r.Updates(db, current.ID, columns)
+	return r.UpdatesInTenant(db, current.ID, current.TenantID, columns)
 }

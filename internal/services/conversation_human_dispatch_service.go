@@ -64,7 +64,7 @@ func (s *conversationHumanDispatchService) TryOffHoursHandoffByAIWithRequestID(c
 		return false, errorsx.InvalidParam("会话不存在")
 	}
 	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
-	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, time.Now())
+	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, time.Now())
 	if len(activeTeamIDs) > 0 {
 		return false, nil
 	}
@@ -94,7 +94,7 @@ func (s *conversationHumanDispatchService) HandoffByAIWithRequestID(conversation
 		return statusResult, nil
 	}
 	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
-	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, time.Now())
+	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, time.Now())
 	runtime := s.resolveStoreStaffRuntime(conversationID)
 	now := time.Now()
 	if runtime.NoWxWorkInstance && len(activeTeamIDs) > 0 {
@@ -149,7 +149,7 @@ func (s *conversationHumanDispatchService) markManualHandoffRequested(conversati
 	if err != nil {
 		return err
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"last_manual_handoff_at": now,
 		"updated_at":             now,
 		"update_user_name":       "system",
@@ -166,11 +166,15 @@ func (s *conversationHumanDispatchService) canFallbackToHQ(conversationID int64)
 }
 
 func (s *conversationHumanDispatchService) resolveStoreStaffRuntime(conversationID int64) StoreStaffRuntimeConfig {
-	route := ConversationRouteService.GetByConversationID(conversationID)
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return StoreStaffRuntimeConfig{}
+	}
+	route := ConversationRouteService.GetByConversationIDInTenant(conversationID, conversation.TenantID)
 	if route == nil || route.WxWorkInstanceID <= 0 {
 		return StoreStaffRuntimeConfig{ManagedMode: constants.StoreManagedModeSemi, FallbackToHQ: true, ManualTimeoutMinutes: 10, NoWxWorkInstance: true}
 	}
-	return StoreStaffBindingService.ResolveForInstance(WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID))
+	return StoreStaffBindingService.ResolveForInstance(WxWorkProtocolInstanceService.GetByTenantID(route.WxWorkInstanceID, conversation.TenantID))
 }
 
 func (s *conversationHumanDispatchService) shouldRouteToStoreRoom(runtime StoreStaffRuntimeConfig, now time.Time, hasActiveTeamSchedule bool) bool {
@@ -195,8 +199,12 @@ func (s *conversationHumanDispatchService) storeRoomConfigured(runtime StoreStaf
 }
 
 func (s *conversationHumanDispatchService) ApplyHumanOnlyCreate(conversationID int64, aiAgent models.AIAgent) (*HandoffDecisionResult, error) {
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return nil, err
+	}
 	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
-	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, time.Now())
+	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, time.Now())
 	if len(activeTeamIDs) == 0 {
 		if err := s.moveToGlobalPool(conversationID, aiAgent.Name); err != nil {
 			return nil, err
@@ -217,12 +225,12 @@ func (s *conversationHumanDispatchService) DispatchPendingConversation(conversat
 	if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
 		return nil, errorsx.InvalidParam("只有待接入未分配会话允许自动分配")
 	}
-	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(orderedPositiveIDs(aiAgent.TeamIDs), time.Now())
+	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(orderedPositiveIDs(aiAgent.TeamIDs), conversation.TenantID, time.Now())
 	if len(activeTeamIDs) == 0 {
 		return &HandoffDecisionResult{Decision: HandoffDecisionOffHours}, nil
 	}
-	route := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversationID)
-	candidates, _, err := ConversationDispatchService.pickDispatchCandidates(activeTeamIDs, route, time.Now())
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, conversation.TenantID)
+	candidates, _, err := ConversationDispatchService.pickDispatchCandidates(activeTeamIDs, conversation.TenantID, route, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -256,8 +264,12 @@ func (s *conversationHumanDispatchService) dispatchAfterHandoff(conversationID, 
 }
 
 func (s *conversationHumanDispatchService) dispatchAfterHandoffWithRequestID(conversationID, aiAgentID int64, activeTeamIDs []int64, reason string, publishAssignEvent bool, requestID string) (*HandoffDecisionResult, error) {
-	route := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversationID)
-	candidates, _, err := ConversationDispatchService.pickDispatchCandidates(activeTeamIDs, route, time.Now())
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return nil, err
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, conversation.TenantID)
+	candidates, _, err := ConversationDispatchService.pickDispatchCandidates(activeTeamIDs, conversation.TenantID, route, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -313,11 +325,11 @@ func (s *conversationHumanDispatchService) markStoreRoomHandoff(conversationID i
 
 func (s *conversationHumanDispatchService) recordStoreRoomHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, now time.Time) error {
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation := repositories.ConversationRepository.Get(ctx.Tx, conversationID)
-		if conversation == nil {
-			return errorsx.InvalidParam("会话不存在")
+		conversation, err := requireConversationParent(ctx.Tx, conversationID)
+		if err != nil {
+			return err
 		}
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conversation.TenantID, map[string]any{
 			"handoff_at":       now,
 			"handoff_reason":   strings.TrimSpace(reason),
 			"update_user_id":   0,
@@ -350,7 +362,11 @@ func (s *conversationHumanDispatchService) markHQAgentDeskHandoff(conversationID
 
 func (s *conversationHumanDispatchService) recordHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, now time.Time) error {
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
+		conversation, err := requireConversationParent(ctx.Tx, conversationID)
+		if err != nil {
+			return err
+		}
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conversation.TenantID, map[string]any{
 			"handoff_at":          now,
 			"handoff_reason":      strings.TrimSpace(reason),
 			"status":              enums.IMConversationStatusPending,
@@ -374,14 +390,17 @@ func (s *conversationHumanDispatchService) moveToTeamPoolWithRequestID(conversat
 	now := time.Now()
 	var conversation *models.Conversation
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		current := repositories.ConversationRepository.Get(ctx.Tx, conversationID)
-		if current == nil {
-			return errorsx.InvalidParam("会话不存在")
+		current, err := requireConversationParent(ctx.Tx, conversationID)
+		if err != nil {
+			return err
+		}
+		if team := repositories.AgentTeamRepository.GetInTenant(ctx.Tx, teamID, current.TenantID); team == nil || team.Status != enums.StatusOk {
+			return errorsx.InvalidParam("目标客服组不存在或不属于会话接入公司")
 		}
 		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, conversationID, now); err != nil {
 			return err
 		}
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, current.TenantID, map[string]any{
 			"status":              enums.IMConversationStatusPending,
 			"current_team_id":     teamID,
 			"current_assignee_id": 0,
@@ -424,11 +443,11 @@ func (s *conversationHumanDispatchService) moveToTeamPoolWithRequestID(conversat
 func (s *conversationHumanDispatchService) moveToGlobalPool(conversationID int64, operatorName string) error {
 	now := time.Now()
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation := repositories.ConversationRepository.Get(ctx.Tx, conversationID)
-		if conversation == nil {
-			return errorsx.InvalidParam("会话不存在")
+		conversation, err := requireConversationParent(ctx.Tx, conversationID)
+		if err != nil {
+			return err
 		}
-		if err := repositories.ConversationRepository.Updates(ctx.Tx, conversationID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conversation.TenantID, map[string]any{
 			"status":              enums.IMConversationStatusPending,
 			"current_team_id":     0,
 			"current_assignee_id": 0,
@@ -458,7 +477,7 @@ func (s *conversationHumanDispatchService) notifyAgentDeskHandoff(conversationID
 	if conversation == nil {
 		return
 	}
-	userIDs := AgentProfileService.GetActiveAgentUserIDs()
+	userIDs := AgentProfileService.GetActiveAgentUserIDsInTenant(conversation.TenantID)
 	if len(userIDs) == 0 {
 		return
 	}
@@ -490,11 +509,11 @@ func (s *conversationHumanDispatchService) notifyStoreRoomHandoff(conversationID
 	if conversation == nil {
 		return
 	}
-	route := ConversationRouteService.GetByConversationID(conversationID)
+	route := ConversationRouteService.GetByConversationIDInTenant(conversationID, conversation.TenantID)
 	if route == nil || route.WxWorkInstanceID <= 0 {
 		return
 	}
-	instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
+	instance := WxWorkProtocolInstanceService.GetByTenantID(route.WxWorkInstanceID, conversation.TenantID)
 	if instance == nil {
 		return
 	}

@@ -3,6 +3,7 @@ package services
 import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/repositories"
 	"encoding/json"
 	"strings"
@@ -62,12 +63,16 @@ func (s *channelMessageOutboxService) Updates(id int64, columns map[string]inter
 	return repositories.ChannelMessageOutboxRepository.Updates(sqls.DB(), id, columns)
 }
 
-func (s *channelMessageOutboxService) TryMarkSending(id int64) (bool, error) {
-	if id <= 0 {
+func (s *channelMessageOutboxService) UpdatesInTenant(id, tenantID int64, columns map[string]any) error {
+	return repositories.ChannelMessageOutboxRepository.UpdatesInTenant(sqls.DB(), id, tenantID, columns)
+}
+
+func (s *channelMessageOutboxService) TryMarkSending(id, tenantID int64) (bool, error) {
+	if id <= 0 || tenantID <= 0 {
 		return false, nil
 	}
 	result := sqls.DB().Model(&models.ChannelMessageOutbox{}).
-		Where("id = ? AND send_status IN ?", id, []string{
+		Where("id = ? AND tenant_id = ? AND send_status IN ?", id, tenantID, []string{
 			string(enums.ChannelMessageOutboxStatusPending),
 			string(enums.ChannelMessageOutboxStatusFailed),
 		}).
@@ -112,6 +117,14 @@ func (s *channelMessageOutboxService) EnqueueWxWorkProtocolStoreRoomNotice(conve
 	if conversationID <= 0 || wxWorkInstanceID <= 0 || roomConversationID == "" || content == "" {
 		return nil
 	}
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return err
+	}
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), wxWorkInstanceID, conversation.TenantID)
+	if instance == nil {
+		return errorsx.InvalidParam("企微员工号实例不存在或不属于会话接入公司")
+	}
 	payload, err := json.Marshal(map[string]any{
 		"kind":               "store_room_handoff_notice",
 		"conversationId":     conversationID,
@@ -125,6 +138,7 @@ func (s *channelMessageOutboxService) EnqueueWxWorkProtocolStoreRoomNotice(conve
 	}
 	now := time.Now()
 	return s.Create(&models.ChannelMessageOutbox{
+		TenantID:       conversation.TenantID,
 		ChannelType:    enums.ChannelTypeWxWorkProtocol,
 		ConversationID: conversationID,
 		MessageID:      -now.UnixNano(),
@@ -147,8 +161,8 @@ func (s *channelMessageOutboxService) enqueueExternalMessage(channelType string,
 	if conversation == nil || message == nil {
 		return nil
 	}
-	channel := ChannelService.Get(conversation.ChannelID)
-	if channel == nil || channel.ChannelType != channelType {
+	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), conversation.ChannelID, conversation.TenantID)
+	if channel == nil || channel.TenantID != conversation.TenantID || channel.ChannelType != channelType || message.TenantID != conversation.TenantID {
 		return nil
 	}
 	if message.SenderType != enums.IMSenderTypeAgent && message.SenderType != enums.IMSenderTypeAI {
@@ -195,6 +209,7 @@ func (s *channelMessageOutboxService) enqueueExternalMessage(channelType string,
 
 	now := time.Now()
 	return s.Create(&models.ChannelMessageOutbox{
+		TenantID:       conversation.TenantID,
 		ChannelType:    channelType,
 		ConversationID: conversation.ID,
 		MessageID:      message.ID,

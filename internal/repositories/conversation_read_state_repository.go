@@ -82,6 +82,10 @@ func (r *conversationReadStateRepository) Updates(db *gorm.DB, id int64, columns
 	return
 }
 
+func (r *conversationReadStateRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.ConversationReadState{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *conversationReadStateRepository) UpdateColumn(db *gorm.DB, id int64, name string, value any) (err error) {
 	err = db.Model(&models.ConversationReadState{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return

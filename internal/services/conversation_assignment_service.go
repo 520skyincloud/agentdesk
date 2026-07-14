@@ -51,8 +51,12 @@ func (s *conversationAssignmentService) Count(cnd *sqls.Cnd) int64 {
 }
 
 func (s *conversationAssignmentService) FinishActiveAssignments(ctx *sqls.TxContext, conversationID int64, finishedAt time.Time) error {
+	conversation, err := requireConversationParent(ctx.Tx, conversationID)
+	if err != nil {
+		return err
+	}
 	return ctx.Tx.Model(&models.ConversationAssignment{}).
-		Where("conversation_id = ? AND status = ?", conversationID, enums.IMAssignmentStatusActive).
+		Where("tenant_id = ? AND conversation_id = ? AND status = ?", conversation.TenantID, conversationID, enums.IMAssignmentStatusActive).
 		Updates(map[string]any{
 			"status":      enums.IMAssignmentStatusInactive,
 			"finished_at": finishedAt,
@@ -64,7 +68,12 @@ func (s *conversationAssignmentService) CreateAssignment(ctx *sqls.TxContext, co
 }
 
 func (s *conversationAssignmentService) CreateAssignmentWithSquad(ctx *sqls.TxContext, conversationID, squadID, fromUserID, toUserID int64, assignType enums.IMAssignmentType, reason string, operator *dto.AuthPrincipal, now time.Time) error {
+	conversation, err := requireConversationParent(ctx.Tx, conversationID)
+	if err != nil {
+		return err
+	}
 	assignment := &models.ConversationAssignment{
+		TenantID:       conversation.TenantID,
 		ConversationID: conversationID,
 		SquadID:        squadID,
 		FromUserID:     fromUserID,

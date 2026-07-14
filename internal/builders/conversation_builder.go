@@ -51,7 +51,7 @@ func BuildConversationWithLocale(item *models.Conversation, locale string) respo
 		ret.CustomerOnline = services.WsService.IsGuestOnline(identity.ExternalID)
 	}
 	if item.CurrentAssigneeID > 0 {
-		if user := services.UserService.Get(item.CurrentAssigneeID); user != nil {
+		if user := services.UserService.GetInTenant(item.CurrentAssigneeID, item.TenantID); user != nil {
 			ret.CurrentAssigneeName = utils.RepairMojibakeText(user.Nickname)
 			if ret.CurrentAssigneeName == "" {
 				ret.CurrentAssigneeName = utils.RepairMojibakeText(user.Username)
@@ -59,12 +59,12 @@ func BuildConversationWithLocale(item *models.Conversation, locale string) respo
 		}
 	}
 	if item.CurrentTeamID > 0 {
-		if team := services.AgentTeamService.Get(item.CurrentTeamID); team != nil {
+		if team := services.AgentTeamService.GetByTenantID(item.CurrentTeamID, item.TenantID); team != nil {
 			ret.CurrentTeamName = utils.RepairMojibakeText(team.Name)
 		}
 	}
 	if item.ClosedBy > 0 {
-		if user := services.UserService.Get(item.ClosedBy); user != nil {
+		if user := services.UserService.GetInTenant(item.ClosedBy, item.TenantID); user != nil {
 			ret.ClosedByName = utils.RepairMojibakeText(user.Nickname)
 			if ret.ClosedByName == "" {
 				ret.ClosedByName = utils.RepairMojibakeText(user.Username)
@@ -72,7 +72,7 @@ func BuildConversationWithLocale(item *models.Conversation, locale string) respo
 		}
 	}
 	if item.CustomerID > 0 {
-		if customer := services.CustomerService.Get(item.CustomerID); customer != nil {
+		if customer := services.CustomerService.GetByTenantID(item.CustomerID, item.TenantID); customer != nil {
 			ret.CustomerAvatar = strings.TrimSpace(customer.Avatar)
 		}
 	}
@@ -84,7 +84,7 @@ func buildConversationRouteFields(ret *response.ConversationResponse, item *mode
 	if ret == nil || item == nil {
 		return
 	}
-	route := services.ConversationRouteService.GetByConversationID(item.ID)
+	route := services.ConversationRouteService.GetByConversationIDInTenant(item.ID, item.TenantID)
 	if route == nil {
 		return
 	}
@@ -98,24 +98,24 @@ func buildConversationRouteFields(ret *response.ConversationResponse, item *mode
 	ret.StoreID = route.StoreID
 	ret.WxWorkInstanceID = route.WxWorkInstanceID
 	if route.WxWorkInstanceID > 0 {
-		if mapping := services.WxWorkKFConversationService.Take("conversation_id = ?", item.ID); mapping != nil {
+		if mapping := services.WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", item.TenantID).Eq("conversation_id", item.ID)); mapping != nil {
 			ret.WxWorkExternalUserID = mapping.ExternalUserID
 		}
 	}
 	if route.StoreID > 0 {
-		if store := services.StoreService.Get(route.StoreID); store != nil {
+		if store := services.StoreService.GetInTenant(route.StoreID, item.TenantID); store != nil {
 			ret.StoreName = utils.RepairMojibakeText(store.Name)
 		}
 	}
 	if route.WxWorkInstanceID > 0 {
-		if instance := services.WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID); instance != nil {
+		if instance := services.WxWorkProtocolInstanceService.GetByTenantID(route.WxWorkInstanceID, item.TenantID); instance != nil {
 			ret.WxWorkEmployeeName = utils.RepairMojibakeText(instance.EmployeeName)
 			ret.WxWorkEmployeeUserID = instance.EmployeeUserID
 			if ret.StoreID == 0 {
 				ret.StoreID = instance.StoreID
 			}
 			if ret.StoreName == "" && instance.StoreID > 0 {
-				if store := services.StoreService.Get(instance.StoreID); store != nil {
+				if store := services.StoreService.GetInTenant(instance.StoreID, item.TenantID); store != nil {
 					ret.StoreName = utils.RepairMojibakeText(store.Name)
 				}
 			}
@@ -230,8 +230,11 @@ func localizeConversationSummary(locale string, summary string) string {
 	}
 }
 
-func BuildParticipantResponses(conversationID int64) []response.ConversationParticipantResponse {
-	list := services.ConversationParticipantService.Find(sqls.NewCnd().Eq("conversation_id", conversationID).Asc("id"))
+func BuildParticipantResponses(conversationID, tenantID int64) []response.ConversationParticipantResponse {
+	if conversationID <= 0 || tenantID <= 0 {
+		return nil
+	}
+	list := services.ConversationParticipantService.Find(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("conversation_id", conversationID).Asc("id"))
 	if len(list) == 0 {
 		return nil
 	}
@@ -328,7 +331,7 @@ func BuildMessageWithReadStatesAndLocale(item *models.Message, agentReadState, c
 			if ret.SenderName == "" {
 				if userSenderNames != nil {
 					ret.SenderName = userSenderNames[item.SenderID]
-				} else if user := services.UserService.Get(item.SenderID); user != nil {
+				} else if user := services.UserService.GetInTenant(item.SenderID, item.TenantID); user != nil {
 					ret.SenderName = user.Nickname
 					if ret.SenderName == "" {
 						ret.SenderName = user.Username
@@ -337,7 +340,7 @@ func BuildMessageWithReadStatesAndLocale(item *models.Message, agentReadState, c
 			}
 		} else if userSenderNames != nil {
 			ret.SenderName = userSenderNames[item.SenderID]
-		} else if user := services.UserService.Get(item.SenderID); user != nil {
+		} else if user := services.UserService.GetInTenant(item.SenderID, item.TenantID); user != nil {
 			ret.SenderName = user.Nickname
 			if ret.SenderName == "" {
 				ret.SenderName = user.Username
@@ -358,6 +361,10 @@ func localizeRenderableMessageContent(locale string, content string) string {
 }
 
 func collectAgentProfilesByMessages(list []models.Message) map[int64]*models.AgentProfile {
+	tenantID := list[0].TenantID
+	if tenantID <= 0 {
+		return nil
+	}
 	var agentUserIDs []int64
 	seen := make(map[int64]struct{})
 	for i := range list {
@@ -374,7 +381,7 @@ func collectAgentProfilesByMessages(list []models.Message) map[int64]*models.Age
 	if len(agentUserIDs) == 0 {
 		return nil
 	}
-	profiles := services.AgentProfileService.Find(sqls.NewCnd().In("user_id", agentUserIDs))
+	profiles := services.AgentProfileService.Find(sqls.NewCnd().Eq("tenant_id", tenantID).In("user_id", agentUserIDs))
 	out := make(map[int64]*models.AgentProfile, len(profiles))
 	for i := range profiles {
 		out[profiles[i].UserID] = &profiles[i]
@@ -410,7 +417,7 @@ func collectMessageSenderNameMaps(list []models.Message) (aiNames map[int64]stri
 	for _, a := range services.AIAgentService.FindByIds(aiIDs) {
 		aiNames[a.ID] = a.Name
 	}
-	for _, u := range services.UserService.FindByIds(userIDs) {
+	for _, u := range services.UserService.FindByIdsInTenant(userIDs, list[0].TenantID) {
 		name := u.Nickname
 		if name == "" {
 			name = u.Username

@@ -805,6 +805,7 @@ func createHumanDispatchConversation(t *testing.T, db *gorm.DB, aiAgentID int64,
 	t.Helper()
 	now := time.Now()
 	item := models.Conversation{
+		TenantID:      101,
 		AIAgentID:     aiAgentID,
 		ChannelID:     1,
 		CustomerID:    1,
@@ -824,6 +825,7 @@ func createHumanDispatchMessage(t *testing.T, db *gorm.DB, conversationID int64,
 	t.Helper()
 	now := time.Now().Add(time.Duration(seqNo) * time.Millisecond)
 	item := models.Message{
+		TenantID:       101,
 		ConversationID: conversationID,
 		SessionNo:      1,
 		RequestID:      "req-test",
@@ -889,7 +891,7 @@ func createHumanDispatchStoreRoomRuntime(t *testing.T, db *gorm.DB, conversation
 	if err := db.Create(&instance).Error; err != nil {
 		t.Fatalf("create wxwork protocol instance error = %v", err)
 	}
-	if err := db.Create(&models.ConversationRouteState{ConversationID: conversationID, StoreID: binding.StoreID, WxWorkInstanceID: instance.ID, RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai", SessionNo: 1}).Error; err != nil {
+	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationID, StoreID: binding.StoreID, WxWorkInstanceID: instance.ID, RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai", SessionNo: 1}).Error; err != nil {
 		t.Fatalf("create conversation route state error = %v", err)
 	}
 }

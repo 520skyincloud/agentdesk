@@ -179,7 +179,7 @@ func createHumanDispatchRealtimeAIAgent(t *testing.T, db *gorm.DB, teamIDs strin
 
 func createHumanDispatchRealtimeTeam(t *testing.T, db *gorm.DB, id int64) {
 	t.Helper()
-	if err := db.Create(&models.AgentTeam{ID: id, Name: "售后支持组", Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.AgentTeam{ID: id, TenantID: 101, Name: "售后支持组", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create team error = %v", err)
 	}
 }
@@ -188,10 +188,11 @@ func createHumanDispatchRealtimeActiveSchedule(t *testing.T, db *gorm.DB, teamID
 	t.Helper()
 	now := time.Now()
 	if err := db.Create(&models.AgentTeamSchedule{
-		TeamID:  teamID,
-		StartAt: now.Add(-time.Hour),
-		EndAt:   now.Add(time.Hour),
-		Status:  enums.StatusOk,
+		TenantID: 101,
+		TeamID:   teamID,
+		StartAt:  now.Add(-time.Hour),
+		EndAt:    now.Add(time.Hour),
+		Status:   enums.StatusOk,
 	}).Error; err != nil {
 		t.Fatalf("create schedule error = %v", err)
 	}
@@ -201,6 +202,7 @@ func createHumanDispatchRealtimeAgentProfile(t *testing.T, db *gorm.DB, userID, 
 	t.Helper()
 	if err := db.Create(&models.User{
 		ID:       userID,
+		TenantID: 101,
 		Username: "agent",
 		Nickname: "客服",
 		Status:   enums.StatusOk,
@@ -208,6 +210,7 @@ func createHumanDispatchRealtimeAgentProfile(t *testing.T, db *gorm.DB, userID, 
 		t.Fatalf("create user error = %v", err)
 	}
 	if err := db.Create(&models.AgentProfile{
+		TenantID:           101,
 		UserID:             userID,
 		TeamID:             teamID,
 		AgentCode:          "A001",
@@ -225,6 +228,7 @@ func createHumanDispatchRealtimeConversation(t *testing.T, db *gorm.DB, aiAgentI
 	t.Helper()
 	now := time.Now()
 	item := models.Conversation{
+		TenantID:      101,
 		AIAgentID:     aiAgentID,
 		ChannelID:     1,
 		CustomerID:    1,
