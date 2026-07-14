@@ -1,6 +1,8 @@
 package services
 
 import (
+	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 
+	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
 )
 
@@ -72,11 +75,20 @@ func TestUserServiceAssignRolesEnforcesAuthority(t *testing.T) {
 		t.Fatalf("assign lower tenant role: %v", err)
 	}
 	assertOnlyUserRole(t, db, lowerTarget.ID, roles[constants.RoleCodeCsTeamLeader].ID)
+	assertSingleUserRoleChangeLog(t, db, lowerTarget.ID, legacyTenantID, tenantAdmin.UserID,
+		[]int64{roles[constants.RoleCodeCsUser].ID}, []int64{roles[constants.RoleCodeCsTeamLeader].ID},
+		[]string{constants.RoleCodeCsUser}, []string{constants.RoleCodeCsTeamLeader},
+	)
+	if err := UserService.AssignRoles(lowerTarget.ID, []int64{roles[constants.RoleCodeCsTeamLeader].ID, roles[constants.RoleCodeCsTeamLeader].ID}, tenantAdmin); err != nil {
+		t.Fatalf("repeat unchanged tenant role: %v", err)
+	}
+	assertUserRoleChangeLogCount(t, db, lowerTarget.ID, 1)
 
 	if err := UserService.AssignRoles(lowerTarget.ID, []int64{platformOperatorRole.ID}, tenantAdmin); !hasCode(err, errorsx.CodeAuthForbidden) {
 		t.Fatalf("expected platform role assignment to be forbidden, got %v", err)
 	}
 	assertOnlyUserRole(t, db, lowerTarget.ID, roles[constants.RoleCodeCsTeamLeader].ID)
+	assertUserRoleChangeLogCount(t, db, lowerTarget.ID, 1)
 
 	if err := UserService.AssignRoles(adminUser.ID, []int64{roles[constants.RoleCodeCsUser].ID}, platformAdmin); !hasCode(err, errorsx.CodeAuthForbidden) {
 		t.Fatalf("expected self role assignment to be forbidden, got %v", err)
@@ -166,6 +178,9 @@ func TestTenantAdminCreatesAccountWithLowerRoleOnly(t *testing.T) {
 		t.Fatalf("unexpected tenant account context: %+v", user)
 	}
 	assertOnlyUserRole(t, db, user.ID, roles[constants.RoleCodeCsUser].ID)
+	assertSingleUserRoleChangeLog(t, db, user.ID, legacyTenantID, operator.UserID,
+		nil, []int64{roles[constants.RoleCodeCsUser].ID}, nil, []string{constants.RoleCodeCsUser},
+	)
 
 	_, _, err = UserService.CreateUser(request.CreateUserRequest{
 		Username: "new_tenant_admin",
@@ -176,6 +191,13 @@ func TestTenantAdminCreatesAccountWithLowerRoleOnly(t *testing.T) {
 	}
 	if UserService.GetByUsername("new_tenant_admin") != nil {
 		t.Fatal("expected failed account creation transaction to roll back user")
+	}
+	var totalRoleLogs int64
+	if err := db.Model(&models.UserRoleChangeLog{}).Count(&totalRoleLogs).Error; err != nil {
+		t.Fatalf("count role change logs: %v", err)
+	}
+	if totalRoleLogs != 1 {
+		t.Fatalf("role change log count = %d, want only successful account creation", totalRoleLogs)
 	}
 }
 
@@ -235,6 +257,7 @@ func TestUserServiceAssignRolesPreservesDutyRoleDependencies(t *testing.T) {
 		constants.RoleCodeCsUser,
 		constants.RoleCodeStoreStaff,
 	)
+	assertUserRoleChangeLogCount(t, db, target.ID, 0)
 
 	if err := db.Model(conversation).Update("status", enums.IMConversationStatusClosed).Error; err != nil {
 		t.Fatalf("keep conversation closed: %v", err)
@@ -252,6 +275,61 @@ func TestUserServiceAssignRolesPreservesDutyRoleDependencies(t *testing.T) {
 		t.Fatalf("remove duty roles after clearing dependencies: %v", err)
 	}
 	assertUserRoleCodes(t, db, target.ID)
+	assertSingleUserRoleChangeLog(t, db, target.ID, tenantID, operator.UserID,
+		[]int64{roles[constants.RoleCodeCsUser].ID, roles[constants.RoleCodeCsTeamLeader].ID, roles[constants.RoleCodeStoreStaff].ID}, nil,
+		[]string{constants.RoleCodeCsUser, constants.RoleCodeCsTeamLeader, constants.RoleCodeStoreStaff}, nil,
+	)
+}
+
+func TestUserRoleChangeLogRollsBackWithRoleReplacementTransaction(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	roles := seedAuthorityRoles(t, db)
+	tenantID := authorityLegacyTenantID(t, db)
+	operator := &dto.AuthPrincipal{
+		UserID: 901, Username: "tenant_admin", TenantID: tenantID, ActiveTenantID: tenantID,
+		Roles: []string{constants.RoleCodeTenantAdmin},
+	}
+	target := createAuthorityUser(t, db, "role_log_rollback")
+	if err := db.Model(&models.User{}).Where("id = ?", target.ID).Update("tenant_id", tenantID).Error; err != nil {
+		t.Fatalf("assign rollback target tenant: %v", err)
+	}
+	assignAuthorityRole(t, db, target.ID, roles[constants.RoleCodeCsUser].ID)
+
+	rollbackErr := errors.New("force role transaction rollback")
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := UserService.replaceUserRolesDB(ctx.Tx, target.ID, []int64{roles[constants.RoleCodeCsTeamLeader].ID}, operator); err != nil {
+			return err
+		}
+		return rollbackErr
+	})
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("role replacement rollback error = %v", err)
+	}
+	assertUserRoleCodes(t, db, target.ID, constants.RoleCodeCsUser)
+	assertUserRoleChangeLogCount(t, db, target.ID, 0)
+}
+
+func TestWxWorkDefaultStoreStaffRoleWritesOneAuditLog(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	roles := seedAuthorityRoles(t, db)
+	tenantID := authorityLegacyTenantID(t, db)
+	user := createAuthorityUser(t, db, "wxwork_store_staff")
+	if err := db.Model(&models.User{}).Where("id = ?", user.ID).Update("tenant_id", tenantID).Error; err != nil {
+		t.Fatalf("assign wxwork user tenant: %v", err)
+	}
+	user.TenantID = tenantID
+
+	for i := 0; i < 2; i++ {
+		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			return WxWorkLoginService.assignDefaultStoreStaffRole(ctx.Tx, user)
+		}); err != nil {
+			t.Fatalf("assign default store staff role %d: %v", i, err)
+		}
+	}
+	assertUserRoleCodes(t, db, user.ID, constants.RoleCodeStoreStaff)
+	assertSingleUserRoleChangeLog(t, db, user.ID, tenantID, user.ID,
+		nil, []int64{roles[constants.RoleCodeStoreStaff].ID}, nil, []string{constants.RoleCodeStoreStaff},
+	)
 }
 
 func seedAuthorityRoles(t *testing.T, db *gorm.DB) map[string]*models.Role {
@@ -364,6 +442,67 @@ func assertUserRoleCodes(t *testing.T, db *gorm.DB, userID int64, want ...string
 	slices.Sort(want)
 	if !slices.Equal(codes, want) {
 		t.Fatalf("user role codes = %v, want %v", codes, want)
+	}
+}
+
+func assertUserRoleChangeLogCount(t *testing.T, db *gorm.DB, userID, want int64) {
+	t.Helper()
+	var count int64
+	if err := db.Model(&models.UserRoleChangeLog{}).Where("user_id = ?", userID).Count(&count).Error; err != nil {
+		t.Fatalf("count user role change logs: %v", err)
+	}
+	if count != want {
+		t.Fatalf("user %d role change log count = %d, want %d", userID, count, want)
+	}
+}
+
+func assertSingleUserRoleChangeLog(
+	t *testing.T,
+	db *gorm.DB,
+	userID, tenantID, operatorID int64,
+	beforeIDs, afterIDs []int64,
+	beforeCodes, afterCodes []string,
+) {
+	t.Helper()
+	var logs []models.UserRoleChangeLog
+	if err := db.Where("user_id = ?", userID).Order("id ASC").Find(&logs).Error; err != nil {
+		t.Fatalf("find user role change logs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("user %d role change logs = %+v, want one", userID, logs)
+	}
+	log := logs[0]
+	if log.TenantID != tenantID || log.OperatorID != operatorID {
+		t.Fatalf("role change log scope = tenant:%d operator:%d, want %d/%d", log.TenantID, log.OperatorID, tenantID, operatorID)
+	}
+	var gotBeforeIDs, gotAfterIDs []int64
+	var gotBeforeCodes, gotAfterCodes []string
+	if err := json.Unmarshal([]byte(log.BeforeRoleIDsJSON), &gotBeforeIDs); err != nil {
+		t.Fatalf("decode before role IDs %q: %v", log.BeforeRoleIDsJSON, err)
+	}
+	if err := json.Unmarshal([]byte(log.AfterRoleIDsJSON), &gotAfterIDs); err != nil {
+		t.Fatalf("decode after role IDs %q: %v", log.AfterRoleIDsJSON, err)
+	}
+	if err := json.Unmarshal([]byte(log.BeforeRoleCodesJSON), &gotBeforeCodes); err != nil {
+		t.Fatalf("decode before role codes %q: %v", log.BeforeRoleCodesJSON, err)
+	}
+	if err := json.Unmarshal([]byte(log.AfterRoleCodesJSON), &gotAfterCodes); err != nil {
+		t.Fatalf("decode after role codes %q: %v", log.AfterRoleCodesJSON, err)
+	}
+	beforeIDs = append([]int64(nil), beforeIDs...)
+	afterIDs = append([]int64(nil), afterIDs...)
+	beforeCodes = append([]string(nil), beforeCodes...)
+	afterCodes = append([]string(nil), afterCodes...)
+	slices.Sort(beforeIDs)
+	slices.Sort(afterIDs)
+	slices.Sort(beforeCodes)
+	slices.Sort(afterCodes)
+	if !slices.Equal(gotBeforeIDs, beforeIDs) || !slices.Equal(gotAfterIDs, afterIDs) ||
+		!slices.Equal(gotBeforeCodes, beforeCodes) || !slices.Equal(gotAfterCodes, afterCodes) {
+		t.Fatalf("role change snapshots = ids:%v->%v codes:%v->%v, want ids:%v->%v codes:%v->%v",
+			gotBeforeIDs, gotAfterIDs, gotBeforeCodes, gotAfterCodes,
+			beforeIDs, afterIDs, beforeCodes, afterCodes,
+		)
 	}
 }
 

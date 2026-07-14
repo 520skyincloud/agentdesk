@@ -2163,3 +2163,16 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 全仓 Go、定向 race、service 全包、go vet 和 diff 检查通过。无 DTO、enum、API、Gin 路由、权限、WebSocket、前端、AI 回复、模型调用、token、usage 或计费语义变化。
 - `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/models/models.go`。最终合并必须同时保留 UserRoleChangeLog 和 AI 分支新增模型注册，合并后重新运行策略覆盖与全量 AutoMigrate 测试；无需 migration 排序。本批契约应先于 71B 角色写入接线合并。
 - 回滚可删除新 model、repository、模型注册、审计策略/关系、测试和本节文档；尚未接线时不会丢失在线日志。71B 开始写入后不得直接删除已生成的历史表，代码回滚也应保留数据供审计。
+
+## 71B. 当前实施检查点：账号角色变更在线写入（2026-07-15）
+
+本批把 71A 契约接入真实角色写链路。账号管理手动分配、账号创建、接入公司主管创建和邀请注册审核原本都汇聚到 `replaceUserRolesDB`；企业微信登录首次补 `store_staff` 是唯一额外运行时直写入口，也同步纳入。安装 migration 和客户审计仿真种子属于初始/测试数据，不伪装成人工角色变更。
+
+- UserRoleRepository 新增一次性 LEFT JOIN 快照查询，始终返回按 role ID 排序的当前 ID/code；UserService 对目标角色去重、校验并排序后比较集合。集合相同直接返回，不再删除重建 UserRole，也不产生虚假日志。
+- 集合确实变化时，职责依赖校验先于删除；UserRole 删除、新关系写入和 UserRoleChangeLog 创建位于同一事务。日志写入失败或外层后续步骤失败时，角色关系和日志一起回滚；权限不足、职责依赖未清理、注册审核失败均不留日志。
+- 创建普通账号和租户主管时记录 `[] -> 初始角色`；注册审核通过记录无角色到审核角色，拒绝且角色集合为空时不记伪变化；同 request ID 重放不会重复写。企业微信首次补门店员工角色记录完整前后集合，操作人记为该登录账号自身，再次登录已持有角色时不重复写。
+- 当前运行时代码扫描确认没有其他 UserRole 写入口：通用 UserRoleService 的写方法没有调用者；RoleService 只使用其只读查询。后续角色写入必须继续复用 UserService 事务边界，不能从 handler 或新 service 直接调用 repository 绕过日志。
+- 测试覆盖排序快照、重复角色 ID、无变化保存、权限失败、四类职责依赖失败、强制外层事务回滚、普通账号创建失败回滚、主管创建、注册审核通过/拒绝/重放和企微自动角色幂等。定向 race、service 全包、全仓 Go、go vet 与 diff 检查通过。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限、WebSocket 或前端变化；不触及 AI 回复、模型调用、token、usage 或计费。
+- 以共同基线复核，`origin/codex/ai-billing@f2d2da4` 在本批文件中只同时修改 `wxwork_login_service.go`。最终必须逐段保留 AI 分支邮箱绑定逻辑与本批企微角色日志事务，不能整文件选边；`user_service.go` 和本批测试当前无 AI 同文件修改。71A 必须先合并并完成 AutoMigrate，本批无 migration 排序要求。
+- 回滚在线写入逻辑可停止生成新日志，但应保留 71A 表和既有数据。若连同“相同集合不重建”一起回滚，会恢复无意义 UserRole ID/AuditFields 变化；不得用回滚脚本删除已经形成的角色历史。

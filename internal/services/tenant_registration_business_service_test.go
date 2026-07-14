@@ -324,6 +324,9 @@ func TestTenantRegistrationReviewApprovesRoleAndRevokesOldSessions(t *testing.T)
 		t.Fatalf("unexpected approved user: %+v", reviewed)
 	}
 	assertOnlyRegistrationRoles(t, fixture.db, reviewed.ID, fixture.csUserRole.ID)
+	assertSingleUserRoleChangeLog(t, fixture.db, reviewed.ID, fixture.tenant.ID, fixture.operator.UserID,
+		nil, []int64{fixture.csUserRole.ID}, nil, []string{constants.RoleCodeCsUser},
+	)
 	if old := repositories.LoginSessionRepository.Get(fixture.db, session.ID); old == nil || old.RevokedAt == nil {
 		t.Fatalf("old login session was not revoked: %+v", old)
 	}
@@ -340,6 +343,7 @@ func TestTenantRegistrationReviewApprovesRoleAndRevokesOldSessions(t *testing.T)
 	if err != nil || replayed.ID != reviewed.ID {
 		t.Fatalf("Review() replay=%+v error=%v", replayed, err)
 	}
+	assertUserRoleChangeLogCount(t, fixture.db, reviewed.ID, 1)
 	changed := reviewReq
 	changed.RoleIDs = []int64{fixture.teamLeaderRole.ID}
 	if _, err := TenantRegistrationService.Review(changed, reviewMeta, fixture.operator); !hasCode(err, errorsx.CodeInvalidParam) {
@@ -364,6 +368,7 @@ func TestTenantRegistrationReviewRejectsWithoutRoles(t *testing.T) {
 		t.Fatalf("unexpected rejected user: %+v", reviewed)
 	}
 	assertOnlyRegistrationRoles(t, fixture.db, reviewed.ID)
+	assertUserRoleChangeLogCount(t, fixture.db, reviewed.ID, 0)
 	if _, err := AuthService.Login(request.LoginRequest{Username: req.Username, Password: req.Password}, config.Current().Auth, "127.0.0.1", "test"); !hasCode(err, errorsx.CodeAuthInvalidAccount) {
 		t.Fatalf("rejected account login error=%v want invalid account", err)
 	}
@@ -392,6 +397,7 @@ func TestTenantRegistrationReviewEnforcesTenantAndRoleAuthority(t *testing.T) {
 		t.Fatalf("failed review changed user: %+v", current)
 	}
 	assertOnlyRegistrationRoles(t, fixture.db, current.ID)
+	assertUserRoleChangeLogCount(t, fixture.db, current.ID, 0)
 
 	other, err := TenantService.CreateTenant(tenantManagementCreateRequest("registration-other", "91350100MA8C4D5E6F"), fixture.platformOperator)
 	if err != nil {

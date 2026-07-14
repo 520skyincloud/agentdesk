@@ -65,6 +65,9 @@ func TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation(t *testing.T) {
 	if relationCount != 1 {
 		t.Fatalf("supervisor tenant_admin role count = %d", relationCount)
 	}
+	assertSingleUserRoleChangeLog(t, db, result.Supervisor.ID, result.Tenant.ID, operator.UserID,
+		nil, []int64{tenantAdmin.ID}, nil, []string{constants.RoleCodeTenantAdmin},
+	)
 
 	current, code, err := TenantInvitationService.Current(result.Tenant.ID)
 	if err != nil || current.ID != result.Invitation.ID || code != result.InvitationCode {
@@ -308,6 +311,7 @@ func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 		&models.User{},
 		&models.Role{},
 		&models.UserRole{},
+		&models.UserRoleChangeLog{},
 		&models.AgentTeam{},
 		&models.AgentProfile{},
 		&models.Store{},

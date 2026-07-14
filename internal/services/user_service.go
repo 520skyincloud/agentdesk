@@ -1,6 +1,8 @@
 package services
 
 import (
+	"encoding/json"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
@@ -27,6 +29,11 @@ func newUserService() *userService {
 }
 
 type userService struct {
+}
+
+type userRoleSetSnapshot struct {
+	IDs   []int64
+	Codes []string
 }
 
 func (s *userService) Get(id int64) *models.User {
@@ -422,7 +429,15 @@ func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []in
 		}
 		roles = append(roles, role)
 	}
-	if err := s.ensureRetainedRoleDependenciesDB(db, user, roles); err != nil {
+	before, err := s.loadUserRoleSetSnapshotDB(db, userID)
+	if err != nil {
+		return err
+	}
+	after := userRoleSetSnapshotFromRoles(roles)
+	if slices.Equal(before.IDs, after.IDs) {
+		return nil
+	}
+	if err := s.ensureRetainedRoleDependenciesDB(db, user, before, roles); err != nil {
 		return err
 	}
 	if err := db.Where("user_id = ?", userID).Delete(&models.UserRole{}).Error; err != nil {
@@ -438,20 +453,16 @@ func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []in
 			return err
 		}
 	}
-	return nil
+	return s.appendUserRoleChangeLogDB(db, user, before, after, operator)
 }
 
-func (s *userService) ensureRetainedRoleDependenciesDB(db *gorm.DB, user *models.User, roles []*models.Role) error {
+func (s *userService) ensureRetainedRoleDependenciesDB(db *gorm.DB, user *models.User, before userRoleSetSnapshot, roles []*models.Role) error {
 	if user == nil || user.TenantID <= 0 {
 		return nil
 	}
-	assigned := make(map[string]struct{})
-	relations := repositories.UserRoleRepository.Find(db, sqls.NewCnd().Eq("user_id", user.ID))
-	for i := range relations {
-		role := repositories.RoleRepository.Get(db, relations[i].RoleID)
-		if role != nil {
-			assigned[role.Code] = struct{}{}
-		}
+	assigned := make(map[string]struct{}, len(before.Codes))
+	for _, code := range before.Codes {
+		assigned[code] = struct{}{}
 	}
 	retained := make(map[string]struct{}, len(roles))
 	for _, role := range roles {
@@ -495,6 +506,76 @@ func (s *userService) ensureRetainedRoleDependenciesDB(db *gorm.DB, user *models
 		}
 	}
 	return nil
+}
+
+func (s *userService) loadUserRoleSetSnapshotDB(db *gorm.DB, userID int64) (userRoleSetSnapshot, error) {
+	items, err := repositories.UserRoleRepository.FindSnapshotByUserID(db, userID)
+	if err != nil {
+		return userRoleSetSnapshot{}, err
+	}
+	snapshot := userRoleSetSnapshot{IDs: make([]int64, 0, len(items)), Codes: make([]string, 0, len(items))}
+	for _, item := range items {
+		snapshot.IDs = append(snapshot.IDs, item.RoleID)
+		if item.RoleCode != "" {
+			snapshot.Codes = append(snapshot.Codes, item.RoleCode)
+		}
+	}
+	slices.Sort(snapshot.IDs)
+	slices.Sort(snapshot.Codes)
+	return snapshot, nil
+}
+
+func userRoleSetSnapshotFromRoles(roles []*models.Role) userRoleSetSnapshot {
+	snapshot := userRoleSetSnapshot{IDs: make([]int64, 0, len(roles)), Codes: make([]string, 0, len(roles))}
+	for _, role := range roles {
+		if role == nil {
+			continue
+		}
+		snapshot.IDs = append(snapshot.IDs, role.ID)
+		snapshot.Codes = append(snapshot.Codes, role.Code)
+	}
+	slices.Sort(snapshot.IDs)
+	slices.Sort(snapshot.Codes)
+	return snapshot
+}
+
+func (s *userService) appendUserRoleChangeLogDB(db *gorm.DB, user *models.User, before, after userRoleSetSnapshot, operator *dto.AuthPrincipal) error {
+	if user == nil || slices.Equal(before.IDs, after.IDs) {
+		return nil
+	}
+	beforeIDsJSON, err := json.Marshal(before.IDs)
+	if err != nil {
+		return err
+	}
+	afterIDsJSON, err := json.Marshal(after.IDs)
+	if err != nil {
+		return err
+	}
+	beforeCodesJSON, err := json.Marshal(before.Codes)
+	if err != nil {
+		return err
+	}
+	afterCodesJSON, err := json.Marshal(after.Codes)
+	if err != nil {
+		return err
+	}
+	operatorID := int64(0)
+	operatorName := "system"
+	if operator != nil {
+		operatorID = operator.UserID
+		operatorName = operator.Username
+	}
+	return repositories.UserRoleChangeLogRepository.Create(db, &models.UserRoleChangeLog{
+		TenantID:            user.TenantID,
+		UserID:              user.ID,
+		BeforeRoleIDsJSON:   string(beforeIDsJSON),
+		AfterRoleIDsJSON:    string(afterIDsJSON),
+		BeforeRoleCodesJSON: string(beforeCodesJSON),
+		AfterRoleCodesJSON:  string(afterCodesJSON),
+		OperatorID:          operatorID,
+		OperatorName:        operatorName,
+		CreatedAt:           time.Now(),
+	})
 }
 
 func (s *userService) CanManageUser(operator *dto.AuthPrincipal, user *models.User) bool {

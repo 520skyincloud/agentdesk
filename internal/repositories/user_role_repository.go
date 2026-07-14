@@ -18,6 +18,11 @@ func newUserRoleRepository() *userRoleRepository {
 type userRoleRepository struct {
 }
 
+type UserRoleSnapshotItem struct {
+	RoleID   int64  `gorm:"column:role_id"`
+	RoleCode string `gorm:"column:role_code"`
+}
+
 func (r *userRoleRepository) Get(db *gorm.DB, id int64) *models.UserRole {
 	ret := &models.UserRole{}
 	if err := db.First(ret, "id = ?", id).Error; err != nil {
@@ -75,6 +80,17 @@ func (r *userRoleRepository) CountBySql(db *gorm.DB, sqlStr string, paramArr ...
 
 func (r *userRoleRepository) Count(db *gorm.DB, cnd *sqls.Cnd) int64 {
 	return cnd.Count(db, &models.UserRole{})
+}
+
+func (r *userRoleRepository) FindSnapshotByUserID(db *gorm.DB, userID int64) ([]UserRoleSnapshotItem, error) {
+	list := make([]UserRoleSnapshotItem, 0)
+	err := db.Table("t_user_role AS ur").
+		Select("ur.role_id, COALESCE(r.code, '') AS role_code").
+		Joins("LEFT JOIN t_role AS r ON r.id = ur.role_id").
+		Where("ur.user_id = ?", userID).
+		Order("ur.role_id ASC").
+		Scan(&list).Error
+	return list, err
 }
 
 func (r *userRoleRepository) Create(db *gorm.DB, t *models.UserRole) (err error) {

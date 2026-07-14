@@ -434,6 +434,7 @@ func setupAuthServiceTestDB(t *testing.T) *gorm.DB {
 		&models.Role{},
 		&models.Permission{},
 		&models.UserRole{},
+		&models.UserRoleChangeLog{},
 		&models.RolePermission{},
 		&models.LoginSession{},
 		&models.LoginCredentialLog{},

@@ -4,6 +4,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -216,8 +217,12 @@ func (s *wxWorkLoginService) assignDefaultStoreStaffRole(tx *gorm.DB, user *mode
 	if existing != nil {
 		return nil
 	}
+	before, err := UserService.loadUserRoleSetSnapshotDB(tx, user.ID)
+	if err != nil {
+		return err
+	}
 	now := time.Now()
-	return repositories.UserRoleRepository.Create(tx, &models.UserRole{
+	if err := repositories.UserRoleRepository.Create(tx, &models.UserRole{
 		UserID: user.ID,
 		RoleID: role.ID,
 		AuditFields: models.AuditFields{
@@ -228,6 +233,15 @@ func (s *wxWorkLoginService) assignDefaultStoreStaffRole(tx *gorm.DB, user *mode
 			UpdateUserID:   user.ID,
 			UpdateUserName: user.Username,
 		},
+	}); err != nil {
+		return err
+	}
+	after, err := UserService.loadUserRoleSetSnapshotDB(tx, user.ID)
+	if err != nil {
+		return err
+	}
+	return UserService.appendUserRoleChangeLogDB(tx, user, before, after, &dto.AuthPrincipal{
+		UserID: user.ID, Username: user.Username, TenantID: user.TenantID, ActiveTenantID: user.TenantID,
 	})
 }
 

@@ -3578,3 +3578,43 @@ git diff --check
 - `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/models/models.go`。最终不得整文件选边，必须保留双方新增模型并以合并后的 models.Models 重跑策略覆盖与 AutoMigrate。其余本批文件当前无同文件修改，无 migration 排序要求。
 - 合并顺序建议先 71A 数据契约，再合并 71B 在线写入；只合并 71B 而缺少 model/AutoMigrate 会在首次写日志时失败。
 - 71A 尚未写入业务日志时可整体回滚；71B 投产后即使回滚写入逻辑，也应保留日志表和历史数据，不得把业务回滚做成数据删除。
+
+## 第 71B 批：账号角色变更在线写入（2026-07-15）
+
+### 真实入口与事务语义
+
+- 手动角色分配、后台账号创建、接入公司主管创建和邀请注册审核均复用 `UserService.replaceUserRolesDB`。企业微信登录首次为账号补 `store_staff` 是额外运行时入口，本批也写同一 UserRoleChangeLog；migration 初始化和仿真种子不记录为在线人工操作。
+- UserRoleRepository 通过 UserRole LEFT JOIN Role 返回可检查错误的当前快照。前后 ID/code 分别排序并编码为 JSON；输入重复 ID 或顺序变化不构成角色集合变化。
+- 角色集合无变化时不删除重建关系、不写日志。发生变化时，职责依赖校验、删除旧 UserRole、创建新 UserRole 和追加日志都使用调用方同一事务；任何一步失败或外层事务回滚都不保留部分角色或日志。
+- 普通账号/主管创建记录空集合到初始角色；注册审核通过记录审核角色，拒绝空集合和幂等重放不重复记录；企微补角色使用登录账号自身作为操作人并保留账号已有其他角色。
+- 运行时引用扫描未发现其他直接写入口。通用 UserRoleService 的写方法当前无调用者，RoleService 只使用读取；后续不得从 handler 或新 service 绕过 UserService 角色事务。
+
+### 文件与验证
+
+```text
+internal/repositories/user_role_repository.go
+internal/services/user_service.go
+internal/services/wxwork_login_service.go
+internal/services/auth_service_test.go
+internal/services/role_user_authority_test.go
+internal/services/tenant_management_service_test.go
+internal/services/tenant_registration_business_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestUserServiceAssignRolesEnforcesAuthority|TestTenantAdminCreatesAccountWithLowerRoleOnly|TestUserServiceAssignRolesPreservesDutyRoleDependencies|TestUserRoleChangeLogRollsBackWithRoleReplacementTransaction|TestWxWorkDefaultStoreStaffRoleWritesOneAuditLog|TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation|TestTenantRegistrationReviewApprovesRoleAndRevokesOldSessions|TestTenantRegistrationReviewRejectsWithoutRoles|TestTenantRegistrationReviewEnforcesTenantAndRoleAuthority)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 定向 race、完整 service、全仓 Go、vet 和 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端或 AI/计费变化；没有修改 `.codex/audits/`，也没有生成 docs/generated 报告。
+
+### 并行分支、合并与回滚
+
+- 以共同基线比较，`origin/codex/ai-billing@f2d2da4` 在本批文件中只同时修改 `internal/services/wxwork_login_service.go`。最终需逐段保留 AI 分支已验证邮箱绑定逻辑和本批企微角色日志事务，禁止整文件选边；`user_service.go`、repository 和四个测试文件当前无 AI 同文件修改。
+- 合并顺序固定为 71A model/AutoMigrate -> 71B 在线写入 -> 合并后的全量 Go、模型策略覆盖与实际库审计。没有 DML migration 版本冲突，也不要求修改 AI runtime。
+- 71B 可回滚 service/repository/test 接线，但保留 UserRoleChangeLog 表和已有数据。回滚后新变更不再可审计，且相同集合会恢复删除重建，因此只适合紧急停写，不应作为长期兼容方案。
