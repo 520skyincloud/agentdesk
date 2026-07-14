@@ -1121,3 +1121,56 @@ git diff --check
 - AI 分支需要保留欢迎内容、意图识别、FastGPT、模型设置和回复行为；本步骤需要保留 TenantID 继承、Channel/Company/Store 校验、tenant-qualified 最终写入、未知回调隔离和协议动作前置保护。建议先合并 Tenant/Store/WxWork 共享契约和本步骤隔离，再由 AI 分支 rebase 解决方法级冲突。
 - 本步骤没有新增 migration，无版本号冲突；没有修改模型供应商、回复 runtime、token 统计、计费或向量语义。
 - 可回滚本步骤的 handler/service/repository 调用变化和新增测试，但不得删除 migration 44 的字段/记录或清空已回填 TenantID。回滚期间必须继续关闭公开注册，不能恢复全局 dashboard 访问作为替代。
+
+## 29. 多租户阶段 4G：会话、派单、工单与共享标签归属契约（2026-07-14）
+
+### 本步骤目标与结果
+
+- 为会话、消息、派单和工单真实运行链路建立共同 TenantID 契约，避免后续各页面分别通过 Channel/Customer/Team 临时推断归属。
+- `Conversation`、`Message`、ConversationRouteState、ConversationSessionSummary、MessageSyncLog、ConversationParticipant、ConversationReadState、WxWorkKFConversation、WxWorkKFMessageRef、ChannelMessageOutbox、ConversationAssignment、ConversationEventLog 和 ConversationInterrupt 增加 TenantID。
+- `Ticket`、TicketProgress、TicketView、`Tag`、ConversationTag 和 TicketTag 增加 TenantID。Conversation/Ticket 共用 Tag 主体和父子树，不新增平行标签模型。
+- migration 45 先从已租户化 Channel、Customer、AgentTeam/User 确定 Conversation，再回填 Message 和全部会话子表；随后从 Customer/Conversation 确定 Ticket，最后按标签父子连通组件汇总 ConversationTag/TicketTag 证据。
+- Conversation.LastMessageID、Message.QuotedMessageID、ReadState.LastReadMessageID、SessionSummary/SyncLog/WxWorkRef/Outbox/Interrupt 的消息引用必须与父会话同租户；RouteState 的 Store/WxWorkInstance、WxWorkKFConversation 的 Channel、Assignment 的 Squad 也执行同一校验。
+- StoreCustomerRelation.LastConversationID 现在必须与 Relation.TenantID 一致；缺失引用、非法显式 Tenant、跨租户引用或同一标签树跨租户复用会使整笔 migration 回滚。
+- 无任何可靠归属证据的独立历史 Conversation、Ticket、Tag 归入 `legacy-default`；租户账号 TicketView 从 User 继承，历史平台账号视图归入 legacy。migration 重复执行幂等，不改写已确认归属。
+
+### 主要文件与契约
+
+```text
+internal/models/models.go
+internal/migration/000045_backfill_conversation_ticket_tenants.go
+internal/migration/000045_backfill_conversation_ticket_tenants_test.go
+internal/services/conversation_human_dispatch_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- DDL 继续由 AutoMigrate 增加 `bigint not null default 0 index`，migration 45 只做 DML、一致性验证和冲突回滚。
+- 本步骤没有修改 repository/service/handler、AI 回复、派单状态机、Ticket 编号算法、Outbox worker、WebSocket、request/response DTO、enum、Gin 路由、权限或前端。
+- `TicketNoSequence` 和 TicketNo 保持平台全局唯一分配语义；`WxWorkKFSyncState` 因缺少 ChannelID 留到渠道凭据批次，禁止按 OpenKfID 字符串猜租户。
+
+### 验证与已知边界
+
+```text
+go test ./internal/migration -run 'TestBackfillConversationAndTicketDomainTenants' -count=1
+go test -race ./internal/migration -run 'TestBackfillConversationAndTicketDomainTenants' -count=1
+go test ./internal/migration -count=1
+go vet ./...
+go test ./... -run '^$' -count=1
+go test -p 1 ./... -count=1
+git diff --check
+```
+
+- 测试覆盖 19 个新增 TenantID 模型、所有直接会话子表、有效显式 Tenant 保留、legacy 兜底、平台账号历史 TicketView、重复执行、Channel/Customer 冲突、Ticket/StoreRelation 与 Conversation 的客户不一致、跨租户引用消息、Conversation/Ticket 共享标签冲突、孤儿 Message、非法显式 Tenant 和失败前写入整体回滚。
+- 门店人工派发的既有测试夹具此前仍创建 `tenant_id=0` 的 Store、StoreStaffBinding、WxWorkProtocolInstance、AgentTeam、AgentProfile 和 User，租户化后的真实范围校验会把该夹具路由到总部或拒绝客服回复。本步骤只把夹具统一归入测试租户 101，并补建测试所需 MessageSyncLog 表；7 个门店人工派发、回复和超时聚焦测试恢复通过，未修改派发 service 或状态机。
+- migration 聚焦及 race、migration 全包、`go vet ./...`、全仓编译和 `git diff --check` 通过。完整 `go test ./internal/services -count=1` 仍会触发既有异步 AI 测试清理竞态：测试关闭或切换全局 DB 后，`TriggerReplyAsync` 后台协程继续从 `BuildRuntimeAIAgentForConversation` 读取 RouteState 并 nil pointer panic；本步骤不修改 AI runtime 生命周期，不能把完整 service 回归记录为通过。
+- 本步骤只是共享字段和历史回填契约。运行时创建目前仍可能写入 `tenant_id=0`，Conversation/Message/Ticket/Tag 的列表、详情、最终写入、派单和工单操作尚未收紧；公开注册继续关闭。
+- KnowledgeCandidate/KnowledgeRetrieveLog、SkillRunLog/AgentRunLog 尚未租户化；文件/Asset、回调、Outbox 消费、WebSocket topic 和异步任务也仍待阶段 6。
+- AI 分支新增 `AIManualResumeTask`，引用 Conversation/WxWorkInstance/Message，但本分支没有该模型。合并时必须给它增加 TenantID，并使用新的后续 migration 回填已在 migration 45 之后创建的数据，不能修改已发布 migration 45 的定义。
+
+### 并行分支、合并顺序与回滚
+
+- 开始时已 fetch，`origin/codex/ai-billing@f2d2da4`，其 migration 最高为 33；migration 45 当前无版本冲突。
+- 双方同文件为 `internal/models/models.go`。AI 分支还修改 ConversationRouteState repository/service、Message service 和 Conversation handler，但本步骤有意不触碰这些运行时文件，适合作为独立共享契约先合并。
+- 建议先合并 migration 45 契约，再由 AI 分支 rebase，逐结构保留其 AIManualResumeTask、企微替换、欢迎语/意图/FastGPT 字段和本步骤 19 个 TenantID；之后双方分别基于同一 Tenant 字段实现 AI/计费日志与客服运行时隔离。
+- 回滚运行时代码时不得删除已执行的列、migration 45 记录或清零归属。若 migration 因历史跨租户 Tag/Message/父对象冲突中止，应先修复或拆分明确数据，再重试，禁止把冲突数据批量归 legacy 绕过。

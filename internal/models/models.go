@@ -134,6 +134,7 @@ type TicketNoSequence struct {
 // TicketView 工单工作台个人保存视图。
 type TicketView struct {
 	ID          int64  `gorm:"primaryKey;autoIncrement"`
+	TenantID    int64  `gorm:"type:bigint;not null;default:0;index"`
 	UserID      int64  `gorm:"column:user_id;type:bigint;not null;index"`
 	Name        string `gorm:"column:name;type:varchar(100);not null;default:'';index"`
 	FiltersJSON string `gorm:"column:filters_json;type:text;not null"`
@@ -430,6 +431,7 @@ type Asset struct {
 
 type Tag struct {
 	ID       int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID int64        `gorm:"type:bigint;not null;default:0;index"`
 	ParentID int64        `gorm:"type:bigint;not null;index"`
 	Name     string       `gorm:"type:varchar(50);not null;"`
 	Remark   string       `gorm:"type:text;"`
@@ -441,6 +443,7 @@ type Tag struct {
 // Conversation 客服会话。
 type Conversation struct {
 	ID                  int64                           `gorm:"primaryKey;autoIncrement"`                    // ID 为会话主键。
+	TenantID            int64                           `gorm:"type:bigint;not null;default:0;index"`        // TenantID 为会话所属接入公司，从 Channel 与 Customer 共同确定。
 	AIAgentID           int64                           `gorm:"type:bigint;not null;default:0;index"`        // AIAgentID 为当前会话绑定的 AI Agent ID。
 	ChannelID           int64                           `gorm:"type:bigint;not null;default:0;index"`        // ChannelID 为该会话来源接入渠道ID。
 	CustomerID          int64                           `gorm:"type:bigint;not null;default:0;index"`        // CustomerID 为会话所属客户 ID。
@@ -552,6 +555,7 @@ type WxWorkProtocolInstance struct {
 // ConversationRouteState 保存 AgentDesk 本地判定的当前接待路由。
 type ConversationRouteState struct {
 	ID                    int64                         `gorm:"primaryKey;autoIncrement"`
+	TenantID              int64                         `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID        int64                         `gorm:"type:bigint;not null;uniqueIndex"`
 	StoreID               int64                         `gorm:"type:bigint;not null;default:0;index"`
 	KnowledgeBaseID       int64                         `gorm:"type:bigint;not null;default:0;index"`
@@ -577,6 +581,7 @@ type ConversationRouteState struct {
 // 原始消息仍永久保留；摘要只服务于 AI 超长上下文压缩，不作为审计原文。
 type ConversationSessionSummary struct {
 	ID                  int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID            int64        `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID      int64        `gorm:"type:bigint;not null;default:0;index:idx_conversation_session_summary,unique"`
 	SessionNo           int          `gorm:"type:int;not null;default:1;index:idx_conversation_session_summary,unique"`
 	WxWorkInstanceID    int64        `gorm:"type:bigint;not null;default:0;index"`
@@ -596,6 +601,7 @@ type ConversationSessionSummary struct {
 // MessageSyncLog 记录外部渠道与 AgentDesk 之间消息同步是否成功及跳过原因。
 type MessageSyncLog struct {
 	ID             int64                      `gorm:"primaryKey;autoIncrement"`
+	TenantID       int64                      `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID int64                      `gorm:"type:bigint;not null;default:0;index"`
 	MessageID      int64                      `gorm:"type:bigint;not null;default:0;index"`
 	Direction      enums.MessageSyncDirection `gorm:"type:varchar(40);not null;default:'';index"`
@@ -612,6 +618,7 @@ type MessageSyncLog struct {
 // ConversationParticipant 会话参与方。
 type ConversationParticipant struct {
 	ID                    int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID              int64        `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID        int64        `gorm:"type:bigint;not null;index;uniqueIndex:uk_conversation_participant"`
 	ParticipantType       string       `gorm:"type:varchar(30);not null;default:'';index;uniqueIndex:uk_conversation_participant"`
 	ParticipantID         int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_conversation_participant"`
@@ -625,6 +632,7 @@ type ConversationParticipant struct {
 // ConversationReadState 会话读游标。
 type ConversationReadState struct {
 	ID                int64              `gorm:"primaryKey;autoIncrement"`
+	TenantID          int64              `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID    int64              `gorm:"type:bigint;not null;index;uniqueIndex:uk_conversation_reader"`
 	ReaderType        enums.IMSenderType `gorm:"type:varchar(30);not null;default:'';index;uniqueIndex:uk_conversation_reader"`
 	ReaderID          int64              `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_conversation_reader"`
@@ -638,6 +646,7 @@ type ConversationReadState struct {
 // Message 会话消息。
 type Message struct {
 	ID              int64                 `gorm:"primaryKey;autoIncrement"`
+	TenantID        int64                 `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID  int64                 `gorm:"type:bigint;not null;index;uniqueIndex:uk_conversation_seq;uniqueIndex:uk_conversation_client_msg"`
 	SessionNo       int                   `gorm:"type:int;not null;default:1;index"`
 	RequestID       string                `gorm:"type:varchar(128);not null;default:'';index"`
@@ -676,6 +685,7 @@ type WxWorkKFSyncState struct {
 //	维护平台会话与企业微信客服会话上下文的对应关系，供入站同步和下行发送复用。
 type WxWorkKFConversation struct {
 	ID             int64        `gorm:"primaryKey;autoIncrement"`                                                         // ID 为渠道会话映射主键。
+	TenantID       int64        `gorm:"type:bigint;not null;default:0;index"`                                             // TenantID 继承平台会话所属接入公司。
 	ConversationID int64        `gorm:"type:bigint;not null;uniqueIndex"`                                                 // ConversationID 为平台会话ID，一条平台会话仅对应一条当前有效渠道映射。
 	ChannelID      int64        `gorm:"type:bigint;not null;default:0;index;index:idx_channel_ext"`                       // ChannelID 为所属接入渠道ID，用于标识该会话来自哪个企业微信渠道配置。
 	OpenKfID       string       `gorm:"type:varchar(191);not null;default:'';index:idx_openkf_ext"`                       // OpenKfID 为企业微信客服账号ID。
@@ -694,6 +704,7 @@ type WxWorkKFConversation struct {
 //	用于实现微信消息幂等消费，并保存平台消息与微信消息的双向映射关系。
 type WxWorkKFMessageRef struct {
 	ID             int64        `gorm:"primaryKey;autoIncrement"`                          // ID 为消息映射主键。
+	TenantID       int64        `gorm:"type:bigint;not null;default:0;index"`              // TenantID 继承平台会话所属接入公司。
 	ConversationID int64        `gorm:"type:bigint;not null;default:0;index"`              // ConversationID 为所属平台会话ID。
 	MessageID      int64        `gorm:"type:bigint;not null;default:0;index"`              // MessageID 为所属平台消息ID；仅渠道消息尚未生成平台消息时可暂为0。
 	WxMsgID        string       `gorm:"type:varchar(191);not null;default:'';uniqueIndex"` // WxMsgID 为企业微信消息ID，用于幂等去重。
@@ -713,6 +724,7 @@ type WxWorkKFMessageRef struct {
 //	用于记录平台消息提交后的渠道发送任务，保证第三方发送动作与主事务解耦。
 type ChannelMessageOutbox struct {
 	ID             int64      `gorm:"primaryKey;autoIncrement"`                                                  // ID 为投递任务主键。
+	TenantID       int64      `gorm:"type:bigint;not null;default:0;index"`                                      // TenantID 继承平台会话所属接入公司。
 	ChannelType    string     `gorm:"type:varchar(30);not null;default:'';index;uniqueIndex:uk_channel_message"` // ChannelType 为目标渠道类型，如 wxwork_kf。
 	ConversationID int64      `gorm:"type:bigint;not null;default:0;index"`                                      // ConversationID 为所属平台会话ID。
 	MessageID      int64      `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_channel_message"`             // MessageID 为待投递的平台消息ID。
@@ -728,6 +740,7 @@ type ChannelMessageOutbox struct {
 // ConversationAssignment 会话接待关系。
 type ConversationAssignment struct {
 	ID             int64                    `gorm:"primaryKey;autoIncrement"`
+	TenantID       int64                    `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID int64                    `gorm:"type:bigint;not null;index"`
 	SquadID        int64                    `gorm:"type:bigint;not null;default:0;index"` // SquadID 记录派发时采用的客服小组快照，0 表示全组或未指定。
 	FromUserID     int64                    `gorm:"type:bigint;not null;default:0;index"`
@@ -743,6 +756,7 @@ type ConversationAssignment struct {
 // ConversationTag 会话标签关联
 type ConversationTag struct {
 	ID             int64 `gorm:"primaryKey;autoIncrement"`
+	TenantID       int64 `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID int64 `gorm:"type:bigint;not null;index;uniqueIndex:uk_conversation_tag"`
 	TagID          int64 `gorm:"type:bigint;not null;index;uniqueIndex:uk_conversation_tag"`
 	AuditFields
@@ -810,6 +824,7 @@ type Channel struct {
 // ConversationEventLog 会话事件日志。
 type ConversationEventLog struct {
 	ID             int64              `gorm:"primaryKey;autoIncrement"`
+	TenantID       int64              `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID int64              `gorm:"type:bigint;not null;index"`
 	RequestID      string             `gorm:"type:varchar(128);not null;default:'';index"`
 	EventType      enums.IMEventType  `gorm:"type:varchar(50);not null;default:'';index"`
@@ -823,6 +838,7 @@ type ConversationEventLog struct {
 // Ticket 客服问题记录。
 type Ticket struct {
 	ID                int64              `gorm:"primaryKey;autoIncrement"`
+	TenantID          int64              `gorm:"type:bigint;not null;default:0;index"`
 	TicketNo          string             `gorm:"type:varchar(64);not null;default:'';uniqueIndex"`
 	Title             string             `gorm:"type:varchar(255);not null;default:'';index"`
 	Description       string             `gorm:"type:text"`
@@ -842,6 +858,7 @@ type Ticket struct {
 // TicketTag 工单标签关联。
 type TicketTag struct {
 	ID       int64 `gorm:"primaryKey;autoIncrement"`
+	TenantID int64 `gorm:"type:bigint;not null;default:0;index"`
 	TicketID int64 `gorm:"type:bigint;not null;index;uniqueIndex:uk_ticket_tag"`
 	TagID    int64 `gorm:"type:bigint;not null;index;uniqueIndex:uk_ticket_tag"`
 	AuditFields
@@ -850,6 +867,7 @@ type TicketTag struct {
 // TicketProgress 工单处理进展。
 type TicketProgress struct {
 	ID        int64     `gorm:"primaryKey;autoIncrement"`
+	TenantID  int64     `gorm:"type:bigint;not null;default:0;index"`
 	TicketID  int64     `gorm:"type:bigint;not null;index"`
 	Content   string    `gorm:"type:text"`
 	AuthorID  int64     `gorm:"type:bigint;not null;default:0;index"`
@@ -1252,6 +1270,7 @@ type ReplyIntentConfig struct {
 // ConversationInterrupt 表示会话级待恢复中断记录。
 type ConversationInterrupt struct {
 	ID                  int64      `gorm:"primaryKey;autoIncrement"`
+	TenantID            int64      `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID      int64      `gorm:"type:bigint;not null;default:0;index"`
 	AIAgentID           int64      `gorm:"type:bigint;not null;default:0;index"`
 	SourceMessageID     int64      `gorm:"type:bigint;not null;default:0;index"`

@@ -1033,3 +1033,30 @@ web/messages/en-US.json
 - 本检查点不增加 model、migration、DTO、enum、Gin 路由、权限点、WebSocket payload 或前端字段。
 - `codex/ai-billing` 同时修改企微实例 repository/service/handler。合并必须逐方法保留其欢迎语、意图、FastGPT 和模型设置语义，同时保留本检查点的 TenantID 继承、关联对象校验、最终写入条件和协议动作前置保护。
 - migration 20 的历史 CompanyID 回填继续使用全局旧数据路径，不能误改为要求 ActiveTenantID；migration 44 才负责 Store/WxWork 的确定性租户归属。
+
+## 21. 当前实施检查点：会话与工单域归属契约（2026-07-14）
+
+本检查点先建立会话、消息、派单、工单和共享标签的租户字段及历史回填契约，不提前改动 AI 回复、派单状态机、Outbox 消费或工单页面。运行时隔离必须在后续步骤基于该契约完成，不能把字段存在等同于功能已隔离。
+
+### 字段与回填范围
+
+- `Conversation` 以显式 Tenant、Channel、Customer、当前客服组和非平台客服账号作为一致性证据；无任何证据的历史会话才归入 `legacy-default`。
+- `Message`、RouteState、SessionSummary、MessageSyncLog、Participant、ReadState、WxWorkKF 映射、ChannelMessageOutbox、Assignment、EventLog 和 ConversationInterrupt 继承父 Conversation，并验证 Message、Store、WxWorkInstance、Channel、Customer、Squad 等非零引用同租户。
+- `Ticket` 以显式 Tenant、Customer、Conversation 和非平台负责人作为一致性证据；TicketProgress 继承 Ticket。TicketView 从租户账号继承，历史平台账号视图无法还原当时 ActiveTenant 时确定性归入 `legacy-default`。
+- `Tag` 同时服务 Conversation 与 Ticket，不能拆成两套平行标签。migration 45 将 ParentID 连通的整棵标签组件作为一个归属单元，汇总显式 Tenant、ConversationTag 和 TicketTag 证据；同一标签树被不同租户使用时中止迁移，要求人工拆分数据，不静默复制或覆盖。
+- `StoreCustomerRelation.LastConversationID` 在 Conversation 归属确定后执行同租户校验，防止客户门店关系指向其他租户会话。
+- migration 45 对任何缺失父对象、非法显式 Tenant、跨租户父子引用、引用消息或共享标签冲突整笔回滚；重复执行保留已确认归属。
+
+### 有意保留和后置范围
+
+- `TicketNoSequence` 继续作为平台全局日序号分配器，`Ticket.TicketNo` 继续全局唯一；它不承载租户业务内容，因此本批不改组合唯一索引和并发分配算法。
+- `WxWorkKFSyncState` 只有 OpenKfID、没有可靠 ChannelID，不能凭字符串猜租户，留到第三方渠道凭据和非 HTTP 同步批次。
+- KnowledgeCandidate/KnowledgeRetrieveLog 属于知识域，SkillRunLog/AgentRunLog 属于 AI 审计域，必须在各自负责人确认写入与查询语义后继承 Conversation tenant。
+- `codex/ai-billing` 新增的 `AIManualResumeTask` 当前不在本分支模型中。合并时必须新增 TenantID 并安排独立可重跑回填；已经执行过 migration 45 的数据库不能依赖重新执行 45 补这张后引入的表。
+- Asset、文件、向量 payload、WebSocket topic、回调、Outbox worker 和定时任务仍按阶段 6 分批完成。
+
+### 合并与运行要求
+
+- 本检查点增加 19 个 model 字段和 migration 45，没有 request/response DTO、enum、Gin 路由、权限点、WebSocket payload 或前端变化。
+- `codex/ai-billing` 同时修改 `models.go` 及 ConversationRouteState 相关运行时。合并必须逐结构保留 TenantID、AIManualResumeTask、欢迎语/意图/FastGPT 字段，禁止整文件选边。
+- 下一运行时批次必须让每个创建入口从父 Conversation/Ticket 或 ActiveTenant 写 TenantID，并让列表、详情、更新、状态流转、标签替换、派单、工单号使用方及最终 SQL 同时携带 tenant；迁移通过不能替代这些测试。

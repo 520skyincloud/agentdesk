@@ -703,6 +703,7 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		&models.ConversationEventLog{},
 		&models.ConversationReadState{},
 		&models.Message{},
+		&models.MessageSyncLog{},
 		&models.ChannelMessageOutbox{},
 		&models.Notification{},
 	); err != nil {
@@ -735,7 +736,7 @@ func createHumanDispatchAIAgent(t *testing.T, db *gorm.DB, mode enums.IMConversa
 
 func createHumanDispatchTeam(t *testing.T, db *gorm.DB, id int64, name string) {
 	t.Helper()
-	if err := db.Create(&models.AgentTeam{ID: id, Name: name, Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.AgentTeam{ID: id, TenantID: 101, Name: name, Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create team error = %v", err)
 	}
 }
@@ -744,10 +745,11 @@ func createHumanDispatchActiveSchedule(t *testing.T, db *gorm.DB, teamID int64) 
 	t.Helper()
 	now := time.Now()
 	if err := db.Create(&models.AgentTeamSchedule{
-		TeamID:  teamID,
-		StartAt: now.Add(-time.Hour),
-		EndAt:   now.Add(time.Hour),
-		Status:  enums.StatusOk,
+		TenantID: 101,
+		TeamID:   teamID,
+		StartAt:  now.Add(-time.Hour),
+		EndAt:    now.Add(time.Hour),
+		Status:   enums.StatusOk,
 	}).Error; err != nil {
 		t.Fatalf("create schedule error = %v", err)
 	}
@@ -757,6 +759,7 @@ func createHumanDispatchAgentProfile(t *testing.T, db *gorm.DB, userID, teamID i
 	t.Helper()
 	if err := db.Create(&models.User{
 		ID:       userID,
+		TenantID: 101,
 		Username: "agent",
 		Nickname: "客服",
 		Status:   enums.StatusOk,
@@ -764,6 +767,7 @@ func createHumanDispatchAgentProfile(t *testing.T, db *gorm.DB, userID, teamID i
 		t.Fatalf("create user error = %v", err)
 	}
 	if err := db.Create(&models.AgentProfile{
+		TenantID:           101,
 		UserID:             userID,
 		TeamID:             teamID,
 		AgentCode:          "A001",
@@ -788,10 +792,12 @@ func createHumanDispatchStoreAgent(t *testing.T, db *gorm.DB, userID int64) *dto
 	}
 	createHumanDispatchAgentProfile(t, db, userID, 1, enums.ServiceStatusIdle, 3, false, enums.StatusOk)
 	return &dto.AuthPrincipal{
-		UserID:   userID,
-		Username: "store-agent",
-		Nickname: "门店客服",
-		Roles:    []string{constants.RoleCodeCsUser},
+		UserID:         userID,
+		TenantID:       101,
+		ActiveTenantID: 101,
+		Username:       "store-agent",
+		Nickname:       "门店客服",
+		Roles:          []string{constants.RoleCodeCsUser},
 	}
 }
 
@@ -848,11 +854,12 @@ func setHumanDispatchConversationSummary(t *testing.T, db *gorm.DB, conversation
 
 func createHumanDispatchStoreRoomRuntime(t *testing.T, db *gorm.DB, conversationID int64, managedMode string, serviceHours string) {
 	t.Helper()
-	if err := db.Create(&models.Store{ID: 88, StoreCode: "store-room-test", Name: "测试门店", Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.Store{ID: 88, TenantID: 101, StoreCode: "store-room-test", Name: "测试门店", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create store error = %v", err)
 	}
 	binding := models.StoreStaffBinding{
 		ID:                      55,
+		TenantID:                101,
 		StoreID:                 88,
 		ManagedMode:             managedMode,
 		ServiceHours:            serviceHours,
@@ -868,6 +875,7 @@ func createHumanDispatchStoreRoomRuntime(t *testing.T, db *gorm.DB, conversation
 	}
 	instance := models.WxWorkProtocolInstance{
 		ID:                     77,
+		TenantID:               101,
 		Guid:                   "guid-store-room-test",
 		StoreID:                binding.StoreID,
 		StoreStaffBindingID:    binding.ID,
@@ -940,5 +948,5 @@ func setRouteManualExpireAt(t *testing.T, db *gorm.DB, conversationID int64, exp
 }
 
 func testHumanDispatchOperator() *dto.AuthPrincipal {
-	return &dto.AuthPrincipal{UserID: 9, Username: "dispatcher", Nickname: "调度员"}
+	return &dto.AuthPrincipal{UserID: 9, TenantID: 101, ActiveTenantID: 101, Username: "dispatcher", Nickname: "调度员"}
 }
