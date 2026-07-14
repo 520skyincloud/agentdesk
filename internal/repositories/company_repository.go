@@ -34,6 +34,13 @@ func (r *companyRepository) Get(db *gorm.DB, id int64) *models.Company {
 	return ret
 }
 
+func (r *companyRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.Company {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *companyRepository) Take(db *gorm.DB, where ...interface{}) *models.Company {
 	ret := &models.Company{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -98,6 +105,10 @@ func (r *companyRepository) Update(db *gorm.DB, t *models.Company) (err error) {
 func (r *companyRepository) Updates(db *gorm.DB, id int64, columns map[string]interface{}) (err error) {
 	err = db.Model(&models.Company{}).Where("id = ?", id).Updates(columns).Error
 	return
+}
+
+func (r *companyRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.Company{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
 }
 
 func (r *companyRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {

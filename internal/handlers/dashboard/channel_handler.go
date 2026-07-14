@@ -16,16 +16,21 @@ import (
 )
 
 func ChannelAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	list, paging := services.ChannelService.FindPageByCnd(params.NewPagedSqlCnd(ctx,
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	list, paging := services.ChannelService.FindPageInTenant(params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "name", Op: params.Like},
 		params.QueryFilter{ParamName: "channelType"},
 		params.QueryFilter{ParamName: "channelId", Op: params.Like},
-	).Where("status <> ?", enums.StatusDeleted).Desc("id"))
+	).Where("status <> ?", enums.StatusDeleted).Desc("id"), operator)
 	results := make([]response.ChannelResponse, 0, len(list))
 	for _, item := range list {
 		results = append(results, buildChannelResponse(&item))
@@ -38,11 +43,16 @@ func ChannelGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	item := services.ChannelService.Get(id)
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item := services.ChannelService.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("channel not found"))
 		return
@@ -51,7 +61,12 @@ func ChannelGetBy(ctx *gin.Context) {
 }
 
 func ChannelAnyWxworkKfAccounts(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView); err != nil {
+	_, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -66,6 +81,10 @@ func ChannelAnyWxworkKfAccounts(ctx *gin.Context) {
 func ChannelPostCreate(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelCreate)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -88,6 +107,10 @@ func ChannelPostUpdate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	req := request.UpdateChannelRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -103,6 +126,10 @@ func ChannelPostUpdate(ctx *gin.Context) {
 func ChannelPostUpdate_status(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -124,6 +151,10 @@ func ChannelPostReset_user_token_secret(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	req := request.ResetChannelUserTokenSecretRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -140,6 +171,10 @@ func ChannelPostReset_user_token_secret(ctx *gin.Context) {
 func ChannelPostDelete(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelDelete)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

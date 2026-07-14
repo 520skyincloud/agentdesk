@@ -27,6 +27,13 @@ func (r *channelRepository) Get(db *gorm.DB, id int64) *models.Channel {
 	return ret
 }
 
+func (r *channelRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.Channel {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *channelRepository) Take(db *gorm.DB, where ...interface{}) *models.Channel {
 	ret := &models.Channel{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -91,6 +98,10 @@ func (r *channelRepository) Update(db *gorm.DB, t *models.Channel) (err error) {
 func (r *channelRepository) Updates(db *gorm.DB, id int64, columns map[string]interface{}) (err error) {
 	err = db.Model(&models.Channel{}).Where("id = ?", id).Updates(columns).Error
 	return
+}
+
+func (r *channelRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.Channel{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
 }
 
 func (r *channelRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {

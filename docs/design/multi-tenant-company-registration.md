@@ -798,6 +798,16 @@ POST /api/auth/register
 - WebSocket 仍以已认证用户主题推送，response DTO 和事件 payload 不增加租户字段；通知中的 `ActionURL` 只负责导航，目标工单/会话接口仍必须独立执行租户鉴权。
 - 本批没有处理工单、会话本体的租户归属，也不代表通知关联的业务对象已经完成隔离。
 
+第四批实现状态（2026-07-14）：
+
+- 明确区分 `Tenant` 与历史 `Company`：`Tenant` 仍表示接入本系统的租户公司，`Company` 表示租户内部维护的客户企业档案；本批为 `Company` 和运行时接入配置 `Channel` 增加 `TenantID`。
+- Company/Channel 后台列表、详情、创建、更新、启停和删除均要求有效 `ActiveTenantID`；跨租户 ID 对调用方表现为不存在，最终更新 SQL 同样包含 `id + tenant_id`。渠道用户密钥重置也执行相同边界。
+- Company 的模型设置入口先确认目标客户企业属于当前租户，再调用原有设置 service；没有新增平行页面、权限、DTO、enum、Gin 路由或 WebSocket payload。
+- migration 42 将历史零租户 Company/Channel 确定性归入 `legacy-default`，保留指向现存租户的显式值；缺少默认租户或引用不存在租户时整笔事务回滚，重复执行不改变已确认归属。
+- `Channel.ChannelID` 继续保持全局唯一，因为公开接入和回调仍按该稳定标识全局反查渠道；`Company.Name` 暂时也保留历史全局唯一索引，后续改为租户组合唯一前必须先审计历史重名并兼容 SQLite/MySQL 索引迁移。
+- 本批只完成 Company/Channel 归属和后台管理链路隔离。Customer、Store、WxWorkProtocolInstance、Conversation、Message、回调、Outbox 和 WebSocket 尚未沿 Channel tenant 形成完整链路，不能由本批推定完成。
+- AIAgent 尚未租户化，Channel 当前只能验证绑定 Agent 存在且启用，不能验证同租户；历史企业微信客服账号枚举仍依赖平台全局配置，租户级第三方凭据隔离需在渠道设置重构时单独完成。
+
 ### 阶段 5：业务服务强制隔离
 
 - 用户、角色分配和客服组织。
@@ -818,6 +828,14 @@ POST /api/auth/register
 - 双租户测试覆盖列表、详情、日历、客服负载、跨租户 ID 更新/删除、小组成员污染、门店员工解除归属和 repository 最终写入条件。
 - 本批没有给 Conversation/Message/Ticket/StoreStaffBinding 等其他业务表增加 TenantID。派单任务列表、全局待回复统计、会话状态机和非 HTTP 链路仍必须在对应批次独立验收，不能由客服组织隔离推定完成。
 - `AgentProfile.AgentCode` 仍使用历史全局唯一索引；这不构成越权，但会限制不同租户复用相同客服工号。组合唯一索引调整需要单独评估历史数据和 SQLite/MySQL 索引迁移，未夹带到本批运行时修复。
+
+第二批实现状态（2026-07-14）：
+
+- Company/Channel 后台 Handler 在原动作权限后增加当前租户要求，平台管理员未进入公司时不能读取或管理客户企业与渠道配置。
+- Company/Channel service 提供当前租户分页和详情，并在创建时只继承 `AuthPrincipal.ActiveTenantID`；request/response 不开放可伪造的租户字段。
+- Company 更新/启停/删除以及 Channel 更新/启停/删除/密钥重置的最终 repository SQL 均携带 `tenant_id`，不是只做列表过滤或前置读取。
+- 双租户测试覆盖创建继承、列表/详情隔离、跨租户 ID 篡改、无当前租户拒绝、最终写条件和 migration 回滚。
+- Customer service 仍可通过历史全局 Company 读取建立关联，Channel 之后的会话/消息链路也尚未租户化；这些跨域入口必须在父子归属可确定后继续收口。
 
 ### 阶段 6：非 HTTP 链路隔离
 

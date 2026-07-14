@@ -377,11 +377,12 @@ func (ctx *seedContext) loadRoles() error {
 
 func (ctx *seedContext) upsertCompany() error {
 	item := &models.Company{}
-	err := ctx.db.Where("name = ?", companyName).Take(item).Error
+	err := ctx.db.Where("tenant_id = ? AND name = ?", ctx.tenant.ID, companyName).Take(item).Error
 	if err == nil {
 		ctx.company = item
 		if strings.Contains(item.Remark, ctx.marker) {
 			return ctx.db.Model(item).Updates(map[string]any{
+				"tenant_id":        ctx.tenant.ID,
 				"code":             "lissi-future-hotel",
 				"status":           enums.StatusOk,
 				"updated_at":       ctx.now,
@@ -395,6 +396,7 @@ func (ctx *seedContext) upsertCompany() error {
 		return err
 	}
 	item = &models.Company{
+		TenantID:    ctx.tenant.ID,
 		Name:        companyName,
 		Code:        "lissi-future-hotel",
 		Status:      enums.StatusOk,
@@ -420,8 +422,9 @@ func (ctx *seedContext) upsertChannel() error {
 		return err
 	}
 	item := &models.Channel{}
-	err = ctx.db.Where("name = ? AND channel_type = ?", channelName, enums.ChannelTypeWxWorkProtocol).Take(item).Error
+	err = ctx.db.Where("tenant_id = ? AND name = ? AND channel_type = ?", ctx.tenant.ID, channelName, enums.ChannelTypeWxWorkProtocol).Take(item).Error
 	updates := map[string]any{
+		"tenant_id":        ctx.tenant.ID,
 		"channel_type":     enums.ChannelTypeWxWorkProtocol,
 		"channel_id":       "test_customer_audit_wxwork_protocol",
 		"ai_agent_id":      0,
@@ -443,6 +446,7 @@ func (ctx *seedContext) upsertChannel() error {
 		return err
 	}
 	item = &models.Channel{
+		TenantID:    ctx.tenant.ID,
 		Name:        channelName,
 		ChannelType: enums.ChannelTypeWxWorkProtocol,
 		ChannelID:   "test_customer_audit_wxwork_protocol",

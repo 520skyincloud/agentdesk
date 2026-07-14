@@ -151,6 +151,30 @@ func TestAgentOrganizationListHandlersRequireActiveTenant(t *testing.T) {
 	}
 }
 
+func TestCompanyAndChannelListHandlersRequireActiveTenant(t *testing.T) {
+	tests := []struct {
+		name       string
+		permission string
+		handler    func(*gin.Context)
+	}{
+		{name: "company list", permission: constants.PermissionCompanyView.Code, handler: CompanyAnyList},
+		{name: "channel list", permission: constants.PermissionChannelView.Code, handler: ChannelAnyList},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+				UserID:            20,
+				Username:          "platform-company-viewer",
+				IsPlatformAccount: true,
+				Roles:             []string{constants.RoleCodeAdmin},
+				Permissions:       []string{tt.permission},
+			})
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
 func newAuthzHandlerTestContext(t *testing.T, body string, principal *dto.AuthPrincipal) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

@@ -15,15 +15,20 @@ import (
 )
 
 func CompanyAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionCompanyView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCompanyView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	list, paging := services.CompanyService.FindPageByCnd(params.NewPagedSqlCnd(ctx,
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	list, paging := services.CompanyService.FindPageInTenant(params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "name", Op: params.Like},
 		params.QueryFilter{ParamName: "code", Op: params.Like},
-	).Where("status <> ?", enums.StatusDeleted).Desc("id"))
+	).Where("status <> ?", enums.StatusDeleted).Desc("id"), operator)
 
 	results := builders.BuildCompanyList(list)
 	companyIDs := make([]int64, 0, len(results))
@@ -42,11 +47,16 @@ func CompanyGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionCompanyView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCompanyView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	item := services.CompanyService.Get(id)
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item := services.CompanyService.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		httpx.WriteJSON(ctx, nil)
 		return
@@ -58,6 +68,10 @@ func CompanyGetBy(ctx *gin.Context) {
 func CompanyPostCreate(ctx *gin.Context) {
 	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionCompanyCreate)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -81,6 +95,10 @@ func CompanyPostUpdate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	req := request.UpdateCompanyRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -96,6 +114,10 @@ func CompanyPostUpdate(ctx *gin.Context) {
 func CompanyPostDelete(ctx *gin.Context) {
 	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionCompanyDelete)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -117,6 +139,10 @@ func CompanyPostUpdate_status(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	req := request.UpdateCompanyStatusRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -130,13 +156,22 @@ func CompanyPostUpdate_status(ctx *gin.Context) {
 }
 
 func CompanyPostModel_settings(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.UpdateStoreAIModelSettingsRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if services.CompanyService.GetInTenant(req.CompanyID, operator) == nil {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("公司不存在"))
 		return
 	}
 	httpx.WriteJSON(ctx, services.StoreAIModelSettingService.ListResponses(req.CompanyID, 0, 0))
@@ -148,9 +183,17 @@ func CompanyPostUpdate_model_settings(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	req := request.UpdateStoreAIModelSettingsRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if services.CompanyService.GetInTenant(req.CompanyID, operator) == nil {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("公司不存在"))
 		return
 	}
 	if err := services.StoreAIModelSettingService.UpdateStoreSettings(req, operator); err != nil {

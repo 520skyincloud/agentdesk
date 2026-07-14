@@ -831,3 +831,61 @@ go test ./... -run '^$' -count=1
 - 本步骤开始前已 `git fetch origin`，共同基点 `e67e207` 后 `origin/codex/ai-billing@f2d2da4` 未修改本步骤客服组织、派单工作台或 agent profile builder 文件，无同文件冲突。
 - 本步骤依赖阶段 1-4A 的 Tenant/AuthPrincipal/客服组织字段，应在这些契约之后合并；随后再继续客户/门店/企微和会话/派单域隔离。
 - 不修改 AI 回复引擎、模型供应商、FastGPT、token、计费或向量语义。AI/计费分支不需要因本步骤 rebase 后调整字段语义，但合并前仍需再次 fetch 核对最新同文件变化。
+
+## 24. 多租户阶段 4D/5B：客户企业与接入渠道归属及后台隔离（2026-07-14）
+
+### 本步骤目标与结果
+
+- 先审计 Customer、Store、WxWork、Channel 与 Company 的真实调用链后，将本步骤收紧为两个可独立确定的根归属：租户内部客户企业 `Company` 和租户拥有的接入配置 `Channel`。
+- `Company` 和 `Channel` 增加 `TenantID`。创建只从 `AuthPrincipal.ActiveTenantID` 继承，不增加前端可提交租户字段。
+- Company/Channel 后台列表和详情按当前租户查询；创建、更新、启停、删除以及 Channel 用户密钥重置均要求有效当前租户。平台管理员未进入公司时即使持有原查看权限也返回 forbidden。
+- Company 模型设置读取/更新在调用原有 `StoreAIModelSettingService` 前，先确认目标 Company 属于当前租户。
+- Repository 的最终更新条件使用 `id + tenant_id`，跨租户 ID 篡改不能依赖前置读取绕过。公开接入、第三方回调和内部消息运行时仍保留按全局稳定 Channel ID 的读取方法，没有把 HTTP 管理权限规则错误套到非 HTTP 入口。
+- 客户审计仿真 seed 创建/复用 Company 和 Channel 时显式使用其 legacy tenant，不覆盖其他租户同类记录。
+
+### Migration、契约与主要文件
+
+- migration 42 将历史 `tenant_id=0` 的 Company/Channel 归入 `legacy-default`；已有非零值必须引用真实 Tenant，否则事务失败并回滚。重复执行保持现有归属。
+- DDL 由 AutoMigrate 增加兼容 SQLite/MySQL 的 `bigint not null default 0` 索引字段；本步骤不删除旧字段或索引。
+- 无 request/response DTO、enum、Gin 路由、权限点、WebSocket payload 或前端文件变化。原 `company.*`、`channel.*` 权限继续使用，不新增重复权限。
+
+```text
+cmd/customer_audit_seed/main.go
+internal/models/models.go
+internal/repositories/company_repository.go
+internal/repositories/channel_repository.go
+internal/services/company_service.go
+internal/services/channel_service.go
+internal/handlers/dashboard/company_handler.go
+internal/handlers/dashboard/channel_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+internal/migration/000042_backfill_company_channel_tenants.go
+internal/migration/000042_backfill_company_channel_tenants_test.go
+internal/services/company_channel_tenant_service_test.go
+```
+
+### 验证证据与已知边界
+
+```text
+go test ./internal/migration -run 'TestBackfillCompanyAndChannelTenants' -count=1
+go test ./internal/services -run 'Test(CompanyServiceEnforcesTenantContextAcrossCRUD|ChannelServiceEnforcesTenantContextAcrossCRUD|CompanyAndChannelRepositoriesKeepTenantInFinalWritePredicate|CompanyAndChannelServicesRequireActiveTenant)$' -count=1
+go test ./internal/handlers/dashboard -run 'TestCompanyAndChannelListHandlersRequireActiveTenant$' -count=1
+go test -race ./internal/migration ./internal/services ./internal/handlers/dashboard -run 'Test(BackfillCompanyAndChannelTenants|CompanyServiceEnforcesTenantContextAcrossCRUD|ChannelServiceEnforcesTenantContextAcrossCRUD|CompanyAndChannelRepositoriesKeepTenantInFinalWritePredicate|CompanyAndChannelServicesRequireActiveTenant|CompanyAndChannelListHandlersRequireActiveTenant)' -count=1
+go vet ./...
+go test ./... -run '^$' -count=1
+```
+
+- 上述聚焦、race、vet 和全仓编译全部通过。完整 `go test -p 1 ./... -count=1` 仍失败于既有消息测试的异步 AI 回复协程：测试清理将全局 DB 置空后，后台 goroutine 在 `BuildRuntimeAIAgentForConversation` 继续读取 `ConversationRouteState` 并 panic。本步骤没有修改 AI runtime、消息触发或测试生命周期。
+- migration 测试覆盖旧值回填、显式值保留、重复执行幂等，以及缺失租户引用时已发生的前序更新一并回滚。双租户 service 测试覆盖创建继承、分页/详情、跨租户更新/启停/删除/密钥重置和 repository 最终条件。
+- 本步骤不能被解释为客户域或消息链路已经完成隔离。Customer/CustomerIdentity、Store/StoreStaffBinding、WxWorkProtocolInstance、Conversation/Message、派单、Ticket、回调、Outbox、WebSocket、文件与向量检索仍待后续批次。
+- `Company.Name` 仍是历史全局唯一，限制不同租户使用相同客户企业名称；`Channel.ChannelID` 有意保持全局唯一，以支持公开入口和回调反查。
+- AIAgent 尚无 TenantID，Channel-to-AIAgent 暂时只能验证存在且启用。企业微信客服账号枚举仍来自平台全局配置，不代表租户级外部凭据已隔离。
+- Store/WxWork 本步骤有意延期：`codex/ai-billing` 正在修改企微远程接入、欢迎内容、意图配置和相关模型/service；未取得共同归属契约前不在客服分支抢改。
+
+### 并行分支、合并顺序与回滚
+
+- 任务开始时已 `git fetch origin`，核对 `origin/codex/ai-billing@f2d2da4`，其 migration 最高仍为 33，migration 42 当前未冲突。
+- 双方共同修改 `internal/models/models.go` 的 Company 区域：AI 分支增加 `Company.IntentProfileID`，本步骤增加 `Company.TenantID`。双方也共同修改 `internal/services/company_service.go`：AI 分支增加意图行业配置校验/写入，本步骤增加当前租户读取和最终 `id + tenant_id` 更新。合并必须逐字段、逐方法保留两组语义，不能整段或整文件选边；Channel 的本步骤字段/service 当前无同文件业务冲突。
+- AI 分支还配套修改 Company request/response、builder 和前端页面；本步骤没有修改这些文件。建议先合并 Tenant/AuthPrincipal 基础契约，再合并本步骤 Company/Channel 归属，随后 AI 分支 rebase，并让 Company 创建/更新同时写入 `TenantID + IntentProfileID`、让更新 SQL 同时保留 `intent_profile_id` 和 `tenant_id` 条件；Store/WxWork 应在双方确认 Tenant 归属和迁移顺序后继续。
+- 本步骤不修改模型调用、回复引擎、FastGPT、token 统计、计费或向量语义。AI/计费负责人无需改变这些语义。
+- 回滚运行时代码时保留 AutoMigrate 已增加的列、migration 42 记录和已回填 TenantID；不得删除迁移历史或把已归属数据批量清零。公开注册继续保持关闭。

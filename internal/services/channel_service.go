@@ -38,6 +38,10 @@ func (s *channelService) Get(id int64) *models.Channel {
 	return repositories.ChannelRepository.Get(sqls.DB(), id)
 }
 
+func (s *channelService) GetInTenant(id int64, operator *dto.AuthPrincipal) *models.Channel {
+	return repositories.ChannelRepository.GetInTenant(sqls.DB(), id, channelTenantID(operator))
+}
+
 func (s *channelService) Take(where ...interface{}) *models.Channel {
 	return repositories.ChannelRepository.Take(sqls.DB(), where...)
 }
@@ -56,6 +60,17 @@ func (s *channelService) FindPageByParams(params *params.QueryParams) (list []mo
 
 func (s *channelService) FindPageByCnd(cnd *sqls.Cnd) (list []models.Channel, paging *sqls.Paging) {
 	return repositories.ChannelRepository.FindPageByCnd(sqls.DB(), cnd)
+}
+
+func (s *channelService) FindPageInTenant(cnd *sqls.Cnd, operator *dto.AuthPrincipal) (list []models.Channel, paging *sqls.Paging) {
+	if cnd == nil {
+		cnd = sqls.NewCnd()
+	}
+	tenantID := channelTenantID(operator)
+	if tenantID <= 0 {
+		return repositories.ChannelRepository.FindPageByCnd(sqls.DB(), cnd.Where("1 = 0"))
+	}
+	return repositories.ChannelRepository.FindPageByCnd(sqls.DB(), cnd.Eq("tenant_id", tenantID))
 }
 
 func (s *channelService) Count(cnd *sqls.Cnd) int64 {
@@ -82,7 +97,11 @@ func (s *channelService) CreateChannel(req request.CreateChannelRequest, operato
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item, err := s.buildChannelModel(0, req)
+	tenantID := channelTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理渠道的接入公司")
+	}
+	item, err := s.buildChannelModel(0, tenantID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -97,15 +116,15 @@ func (s *channelService) UpdateChannel(req request.UpdateChannelRequest, operato
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.Get(req.ID)
+	current := s.GetInTenant(req.ID, operator)
 	if current == nil || current.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("接入渠道不存在")
 	}
-	item, err := s.buildChannelModel(req.ID, req.CreateChannelRequest)
+	item, err := s.buildChannelModel(req.ID, current.TenantID, req.CreateChannelRequest)
 	if err != nil {
 		return err
 	}
-	return repositories.ChannelRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	return repositories.ChannelRepository.UpdatesInTenant(sqls.DB(), req.ID, current.TenantID, map[string]any{
 		"channel_type":     item.ChannelType,
 		"channel_id":       item.ChannelID,
 		"ai_agent_id":      item.AIAgentID,
@@ -123,14 +142,14 @@ func (s *channelService) UpdateStatus(id int64, status int, operator *dto.AuthPr
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item := s.Get(id)
+	item := s.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("接入渠道不存在")
 	}
 	if status != int(enums.StatusOk) && status != int(enums.StatusDisabled) {
 		return errorsx.InvalidParam("状态值不合法")
 	}
-	return s.Updates(id, map[string]any{
+	return repositories.ChannelRepository.UpdatesInTenant(sqls.DB(), id, item.TenantID, map[string]any{
 		"status":           status,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
@@ -142,11 +161,11 @@ func (s *channelService) DeleteChannel(id int64, operator *dto.AuthPrincipal) er
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item := s.Get(id)
+	item := s.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("接入渠道不存在")
 	}
-	return s.Updates(id, map[string]any{
+	return repositories.ChannelRepository.UpdatesInTenant(sqls.DB(), id, item.TenantID, map[string]any{
 		"status":           enums.StatusDeleted,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
@@ -334,7 +353,7 @@ func (s *channelService) ResetUserTokenSecret(channelID int64, operator *dto.Aut
 	if operator == nil {
 		return "", errorsx.Unauthorized("未登录或登录已过期")
 	}
-	channel := s.Get(channelID)
+	channel := s.GetInTenant(channelID, operator)
 	if channel == nil || channel.Status == enums.StatusDeleted {
 		return "", errorsx.InvalidParam("接入渠道不存在")
 	}
@@ -370,7 +389,7 @@ func (s *channelService) ResetUserTokenSecret(channelID int64, operator *dto.Aut
 		}
 		configJSON = string(raw)
 	}
-	if err := repositories.ChannelRepository.Updates(sqls.DB(), channelID, map[string]any{
+	if err := repositories.ChannelRepository.UpdatesInTenant(sqls.DB(), channelID, channel.TenantID, map[string]any{
 		"config_json":      configJSON,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
@@ -422,7 +441,10 @@ func (s *channelService) GetEnabledChannel(ctx *gin.Context) *models.Channel {
 	return channel
 }
 
-func (s *channelService) buildChannelModel(id int64, req request.CreateChannelRequest) (*models.Channel, error) {
+func (s *channelService) buildChannelModel(id, tenantID int64, req request.CreateChannelRequest) (*models.Channel, error) {
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理渠道的接入公司")
+	}
 	channelType := strings.TrimSpace(req.ChannelType)
 	if channelType != enums.ChannelTypeWeb && channelType != enums.ChannelTypeWechatMP && channelType != enums.ChannelTypeWxWorkKF && channelType != enums.ChannelTypeWxWorkCLI && channelType != enums.ChannelTypeWxWorkProtocol {
 		return nil, errorsx.InvalidParam("渠道类型不合法")
@@ -448,7 +470,7 @@ func (s *channelService) buildChannelModel(id int64, req request.CreateChannelRe
 
 	channelID := ""
 	if id > 0 {
-		current := s.Get(id)
+		current := repositories.ChannelRepository.GetInTenant(sqls.DB(), id, tenantID)
 		if current == nil || current.Status == enums.StatusDeleted {
 			return nil, errorsx.InvalidParam("接入渠道不存在")
 		}
@@ -571,6 +593,7 @@ func (s *channelService) buildChannelModel(id int64, req request.CreateChannelRe
 	}
 
 	return &models.Channel{
+		TenantID:    tenantID,
 		ChannelType: channelType,
 		ChannelID:   channelID,
 		AIAgentID:   req.AIAgentID,
@@ -579,4 +602,11 @@ func (s *channelService) buildChannelModel(id int64, req request.CreateChannelRe
 		Status:      status,
 		Remark:      strings.TrimSpace(req.Remark),
 	}, nil
+}
+
+func channelTenantID(operator *dto.AuthPrincipal) int64 {
+	if operator == nil || operator.ActiveTenantID <= 0 {
+		return 0
+	}
+	return operator.ActiveTenantID
 }

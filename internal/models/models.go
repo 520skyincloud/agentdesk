@@ -267,11 +267,12 @@ type UserIdentity struct {
 //
 //	用于存储公司主体信息；Customer（人）可通过 CompanyID 关联到所属公司。
 type Company struct {
-	ID     int64        `gorm:"primaryKey;autoIncrement"`                               // ID 为公司主键。
-	Name   string       `gorm:"type:varchar(200);not null;uniqueIndex:uk_company_name"` // Name 为公司名称（唯一）。
-	Code   string       `gorm:"type:varchar(64);not null;index"`                        // Code 为公司编码/统一社会信用代码（可空语义用空串表示）。
-	Status enums.Status `gorm:"type:int;not null;default:0"`                            // Status 为公司状态。
-	Remark string       `gorm:"type:text"`                                              // Remark 为备注。
+	ID       int64        `gorm:"primaryKey;autoIncrement"`                               // ID 为公司主键。
+	TenantID int64        `gorm:"type:bigint;not null;default:0;index"`                   // TenantID 为客户企业所属接入公司。
+	Name     string       `gorm:"type:varchar(200);not null;uniqueIndex:uk_company_name"` // Name 为公司名称（唯一）。
+	Code     string       `gorm:"type:varchar(64);not null;index"`                        // Code 为公司编码/统一社会信用代码（可空语义用空串表示）。
+	Status   enums.Status `gorm:"type:int;not null;default:0"`                            // Status 为公司状态。
+	Remark   string       `gorm:"type:text"`                                              // Remark 为备注。
 	AuditFields
 }
 
@@ -783,6 +784,7 @@ type AIAgent struct {
 //	而具体消息收发、会话映射等运行时数据由各自的渠道业务表承载。
 type Channel struct {
 	ID          int64  `gorm:"primaryKey;autoIncrement"`                         // ID 为渠道主键。
+	TenantID    int64  `gorm:"type:bigint;not null;default:0;index"`             // TenantID 为接入渠道所属公司。
 	Name        string `gorm:"type:varchar(100);not null;default:'';index"`      // Name 为渠道名称，用于后台展示和业务识别，例如“官网客服”“企业微信主客服”。
 	ChannelType string `gorm:"type:varchar(30);not null;default:'';index"`       // ChannelType 为渠道类型，决定该渠道的接入方式和配置解释规则。当前规划的典型取值包括：web、wxwork_kf。
 	ChannelID   string `gorm:"type:varchar(64);not null;default:'';uniqueIndex"` // ChannelID 为渠道入口标识，由系统自动生成。对 web 渠道，该字段用于前端通过 X-Channel-Id 标识接入来源；对其他渠道，作为统一的系统内稳定渠道标识保留。

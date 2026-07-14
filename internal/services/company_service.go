@@ -32,6 +32,10 @@ func (s *companyService) Get(id int64) *models.Company {
 	return repositories.CompanyRepository.Get(sqls.DB(), id)
 }
 
+func (s *companyService) GetInTenant(id int64, operator *dto.AuthPrincipal) *models.Company {
+	return repositories.CompanyRepository.GetInTenant(sqls.DB(), id, companyTenantID(operator))
+}
+
 func (s *companyService) Take(where ...interface{}) *models.Company {
 	return repositories.CompanyRepository.Take(sqls.DB(), where...)
 }
@@ -52,6 +56,17 @@ func (s *companyService) FindPageByCnd(cnd *sqls.Cnd) (list []models.Company, pa
 	return repositories.CompanyRepository.FindPageByCnd(sqls.DB(), cnd)
 }
 
+func (s *companyService) FindPageInTenant(cnd *sqls.Cnd, operator *dto.AuthPrincipal) (list []models.Company, paging *sqls.Paging) {
+	if cnd == nil {
+		cnd = sqls.NewCnd()
+	}
+	tenantID := companyTenantID(operator)
+	if tenantID <= 0 {
+		return repositories.CompanyRepository.FindPageByCnd(sqls.DB(), cnd.Where("1 = 0"))
+	}
+	return repositories.CompanyRepository.FindPageByCnd(sqls.DB(), cnd.Eq("tenant_id", tenantID))
+}
+
 func (s *companyService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.CompanyRepository.Count(sqls.DB(), cnd)
 }
@@ -59,6 +74,10 @@ func (s *companyService) Count(cnd *sqls.Cnd) int64 {
 func (s *companyService) CreateCompany(req request.CreateCompanyRequest, operator *dto.AuthPrincipal) (*models.Company, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	tenantID := companyTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理客户企业的接入公司")
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -71,6 +90,7 @@ func (s *companyService) CreateCompany(req request.CreateCompanyRequest, operato
 	}
 
 	item := &models.Company{
+		TenantID:    tenantID,
 		Name:        name,
 		Code:        strings.TrimSpace(req.Code),
 		Status:      enums.StatusOk,
@@ -87,7 +107,7 @@ func (s *companyService) UpdateCompany(req request.UpdateCompanyRequest, operato
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item := s.Get(req.ID)
+	item := s.GetInTenant(req.ID, operator)
 	if item == nil {
 		return errorsx.InvalidParam("公司不存在")
 	}
@@ -102,7 +122,7 @@ func (s *companyService) UpdateCompany(req request.UpdateCompanyRequest, operato
 	}
 
 	now := time.Now()
-	if err := repositories.CompanyRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	if err := repositories.CompanyRepository.UpdatesInTenant(sqls.DB(), req.ID, item.TenantID, map[string]any{
 		"name":             name,
 		"code":             strings.TrimSpace(req.Code),
 		"remark":           strings.TrimSpace(req.Remark),
@@ -116,12 +136,12 @@ func (s *companyService) UpdateCompany(req request.UpdateCompanyRequest, operato
 }
 
 func (s *companyService) DeleteCompany(id int64, operator dto.AuthPrincipal) error {
-	item := s.Get(id)
+	item := s.GetInTenant(id, &operator)
 	if item == nil {
 		return errorsx.InvalidParam("公司不存在")
 	}
 
-	return repositories.CompanyRepository.Updates(sqls.DB(), id, map[string]any{
+	return repositories.CompanyRepository.UpdatesInTenant(sqls.DB(), id, item.TenantID, map[string]any{
 		"status":           enums.StatusDeleted,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
@@ -133,7 +153,7 @@ func (s *companyService) UpdateStatus(id int64, status int, operator *dto.AuthPr
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item := s.Get(id)
+	item := s.GetInTenant(id, operator)
 	if item == nil {
 		return errorsx.InvalidParam("公司不存在")
 	}
@@ -141,10 +161,17 @@ func (s *companyService) UpdateStatus(id int64, status int, operator *dto.AuthPr
 		return errorsx.InvalidParam("状态值不合法")
 	}
 	now := time.Now()
-	return repositories.CompanyRepository.Updates(sqls.DB(), id, map[string]any{
+	return repositories.CompanyRepository.UpdatesInTenant(sqls.DB(), id, item.TenantID, map[string]any{
 		"status":           status,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
 		"updated_at":       now,
 	})
+}
+
+func companyTenantID(operator *dto.AuthPrincipal) int64 {
+	if operator == nil || operator.ActiveTenantID <= 0 {
+		return 0
+	}
+	return operator.ActiveTenantID
 }
