@@ -18,6 +18,11 @@ func newRolePermissionRepository() *rolePermissionRepository {
 type rolePermissionRepository struct {
 }
 
+type RolePermissionSnapshotItem struct {
+	PermissionID   int64  `gorm:"column:permission_id"`
+	PermissionCode string `gorm:"column:permission_code"`
+}
+
 func (r *rolePermissionRepository) Get(db *gorm.DB, id int64) *models.RolePermission {
 	ret := &models.RolePermission{}
 	if err := db.First(ret, "id = ?", id).Error; err != nil {
@@ -77,9 +82,24 @@ func (r *rolePermissionRepository) Count(db *gorm.DB, cnd *sqls.Cnd) int64 {
 	return cnd.Count(db, &models.RolePermission{})
 }
 
+func (r *rolePermissionRepository) FindSnapshotByRoleID(db *gorm.DB, roleID int64) ([]RolePermissionSnapshotItem, error) {
+	list := make([]RolePermissionSnapshotItem, 0)
+	err := db.Table("t_role_permission AS rp").
+		Select("rp.permission_id, COALESCE(p.code, '') AS permission_code").
+		Joins("LEFT JOIN t_permission AS p ON p.id = rp.permission_id").
+		Where("rp.role_id = ?", roleID).
+		Order("rp.permission_id ASC").
+		Scan(&list).Error
+	return list, err
+}
+
 func (r *rolePermissionRepository) Create(db *gorm.DB, t *models.RolePermission) (err error) {
 	err = db.Create(t).Error
 	return
+}
+
+func (r *rolePermissionRepository) DeleteByRoleID(db *gorm.DB, roleID int64) error {
+	return db.Where("role_id = ?", roleID).Delete(&models.RolePermission{}).Error
 }
 
 func (r *rolePermissionRepository) Update(db *gorm.DB, t *models.RolePermission) (err error) {

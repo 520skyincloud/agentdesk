@@ -1,6 +1,8 @@
 package services
 
 import (
+	"encoding/json"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
@@ -16,6 +18,7 @@ import (
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 var RoleService = newRoleService()
@@ -216,10 +219,24 @@ func (s *roleService) AssignPermissions(roleID int64, permissionIDs []int64, ope
 
 func (s *roleService) replaceRolePermissions(roleID int64, permissionIDs []int64, operator *dto.AuthPrincipal) error {
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := ctx.Tx.Where("role_id = ?", roleID).Delete(&models.RolePermission{}).Error; err != nil {
+		role, err := repositories.RoleRepository.GetForUpdate(ctx.Tx, roleID)
+		if err != nil {
 			return err
 		}
+		if role == nil {
+			return errorsx.InvalidParam("角色不存在")
+		}
+		if err := s.EnsureCanManageRole(operator, role); err != nil {
+			return err
+		}
+
+		seen := make(map[int64]struct{}, len(permissionIDs))
+		permissions := make([]*models.Permission, 0, len(permissionIDs))
 		for _, permissionID := range permissionIDs {
+			if _, exists := seen[permissionID]; exists {
+				continue
+			}
+			seen[permissionID] = struct{}{}
 			permission := repositories.PermissionRepository.Get(ctx.Tx, permissionID)
 			if permission == nil {
 				return errorsx.InvalidParam("权限不存在")
@@ -227,23 +244,115 @@ func (s *roleService) replaceRolePermissions(roleID int64, permissionIDs []int64
 			if permission.Status != enums.StatusOk {
 				return errorsx.InvalidParam("禁用权限不允许分配")
 			}
-			role := repositories.RoleRepository.Get(ctx.Tx, roleID)
-			if role == nil {
-				return errorsx.InvalidParam("角色不存在")
-			}
 			if normalizeRoleScope(role.Scope) == constants.RoleScopeTenant && normalizePermissionScope(permission.Scope) == constants.PermissionScopePlatform {
 				return errorsx.Forbidden("租户角色不能分配平台权限")
 			}
+			permissions = append(permissions, permission)
+		}
+
+		before, err := loadRolePermissionSetSnapshotDB(ctx.Tx, roleID)
+		if err != nil {
+			return err
+		}
+		after := rolePermissionSetSnapshotFromPermissions(permissions)
+		if slices.Equal(before.IDs, after.IDs) {
+			return nil
+		}
+		if err := repositories.RolePermissionRepository.DeleteByRoleID(ctx.Tx, roleID); err != nil {
+			return err
+		}
+		for _, permission := range permissions {
 			relation := &models.RolePermission{
 				RoleID:       roleID,
-				PermissionID: permissionID,
+				PermissionID: permission.ID,
 				AuditFields:  utils.BuildAuditFields(operator),
 			}
-			if err := ctx.Tx.Create(relation).Error; err != nil {
+			if err := repositories.RolePermissionRepository.Create(ctx.Tx, relation); err != nil {
 				return err
 			}
 		}
+		return appendRolePermissionChangeLogDB(ctx.Tx, role, before, after, operator)
+	})
+}
+
+type rolePermissionSetSnapshot struct {
+	IDs   []int64
+	Codes []string
+}
+
+func loadRolePermissionSetSnapshotDB(db *gorm.DB, roleID int64) (rolePermissionSetSnapshot, error) {
+	items, err := repositories.RolePermissionRepository.FindSnapshotByRoleID(db, roleID)
+	if err != nil {
+		return rolePermissionSetSnapshot{}, err
+	}
+	snapshot := rolePermissionSetSnapshot{IDs: make([]int64, 0, len(items)), Codes: make([]string, 0, len(items))}
+	for _, item := range items {
+		snapshot.IDs = append(snapshot.IDs, item.PermissionID)
+		if item.PermissionCode != "" {
+			snapshot.Codes = append(snapshot.Codes, item.PermissionCode)
+		}
+	}
+	slices.Sort(snapshot.IDs)
+	slices.Sort(snapshot.Codes)
+	return snapshot, nil
+}
+
+func rolePermissionSetSnapshotFromPermissions(permissions []*models.Permission) rolePermissionSetSnapshot {
+	snapshot := rolePermissionSetSnapshot{IDs: make([]int64, 0, len(permissions)), Codes: make([]string, 0, len(permissions))}
+	for _, permission := range permissions {
+		if permission == nil {
+			continue
+		}
+		snapshot.IDs = append(snapshot.IDs, permission.ID)
+		snapshot.Codes = append(snapshot.Codes, permission.Code)
+	}
+	slices.Sort(snapshot.IDs)
+	slices.Sort(snapshot.Codes)
+	return snapshot
+}
+
+func appendRolePermissionChangeLogDB(
+	db *gorm.DB,
+	role *models.Role,
+	before rolePermissionSetSnapshot,
+	after rolePermissionSetSnapshot,
+	operator *dto.AuthPrincipal,
+) error {
+	if role == nil || slices.Equal(before.IDs, after.IDs) {
 		return nil
+	}
+	beforeIDsJSON, err := json.Marshal(before.IDs)
+	if err != nil {
+		return err
+	}
+	afterIDsJSON, err := json.Marshal(after.IDs)
+	if err != nil {
+		return err
+	}
+	beforeCodesJSON, err := json.Marshal(before.Codes)
+	if err != nil {
+		return err
+	}
+	afterCodesJSON, err := json.Marshal(after.Codes)
+	if err != nil {
+		return err
+	}
+	operatorID := int64(0)
+	operatorName := "system"
+	if operator != nil {
+		operatorID = operator.UserID
+		operatorName = operator.Username
+	}
+	return repositories.RolePermissionChangeLogRepository.Create(db, &models.RolePermissionChangeLog{
+		RoleID:                    role.ID,
+		RoleCode:                  role.Code,
+		BeforePermissionIDsJSON:   string(beforeIDsJSON),
+		AfterPermissionIDsJSON:    string(afterIDsJSON),
+		BeforePermissionCodesJSON: string(beforeCodesJSON),
+		AfterPermissionCodesJSON:  string(afterCodesJSON),
+		OperatorID:                operatorID,
+		OperatorName:              operatorName,
+		CreatedAt:                 time.Now(),
 	})
 }
 

@@ -2246,3 +2246,16 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 定向 race、完整 service、全仓 Go、go vet 和 diff 检查通过。无 DTO、enum、Gin 路由、WebSocket、前端、AI runtime、token、usage 或计费变化。
 - AI 分支同时修改 `internal/models/models.go`，最终必须同时保留 RolePermissionChangeLog、UserRoleChangeLog、租户模型和 AI 新模型注册；其余本批文件无同文件冲突，无 migration 排序要求。76A 必须先于 76B 合并。
 - 76B 上线写入前可整体回滚本契约；开始产生日志后即使停写也应保留表和历史数据，禁止把业务回滚实现成删除审计记录。
+
+## 76B. 当前实施检查点：角色权限集合在线事务审计（2026-07-15）
+
+76A 只建立日志表契约，本批把角色管理现有权限分配入口接入同一事务。页面、API 和权限点均不新增；角色仍由平台管理员在原角色管理页绑定权限，公司主管仍只能给本公司账号赋角色。
+
+- `RoleService.AssignPermissions` 进入事务后使用 `RoleRepository.GetForUpdate` 锁定目标 Role，并在锁内重新执行角色管理等级与平台账号校验。MySQL 通过 `FOR UPDATE` 串行化同角色写入，SQLite 保持单写事务语义。
+- 输入 permission ID 先去重，再逐项确认权限存在、启用且 scope 可分配；全部通过后才删除旧关系。租户角色仍禁止持有 platform 权限，缺失、禁用或跨 scope 请求不会清空已有权限，也不会产生审计行。
+- repository 按 permission ID 读取排序后的当前 ID/code 快照；新集合同样按 ID/code 独立排序后写入 `RolePermissionChangeLog`。相同 ID 集合重复提交直接返回，不删除重建 RolePermission，也不写无变化日志。
+- RolePermission 替换和日志追加位于同一事务。日志表缺失或写入失败会回滚关系删除与新增，保证“当前权限”和“变更证据”不会分离；日志继续保存操作时 RoleCode 和 PermissionCode 快照，不要求历史模板永久存在。
+- 本批只修改 role/role-permission repository、RoleService 和既有权限 service 测试数据库/权限矩阵测试；没有 model、AutoMigrate、DML migration、DTO、enum、Gin 路由、权限码、WebSocket、页面、AI runtime、模型调用、token、usage 或计费变化。
+- 测试覆盖成功替换及排序快照、重复 ID 去重、相同集合不重建、租户角色拒绝平台权限、缺失/禁用权限保留旧集合、日志落库失败整笔回滚和 Role 行锁 clause。聚焦 race、完整 services 包、全仓 Go、vet 和 diff 检查均已通过。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批七个代码/文档文件无同文件修改，不要求 rebase 或 migration 排序。合并顺序保持 76A 数据契约 -> 76B 在线写入 -> 76C 写旁路及日志语义/连续性审计。
+- 可紧急回滚 76B 的 service/repository/test 接线以停止新日志，但必须保留 RolePermissionChangeLog 表和已有行；回滚会恢复无历史证据的权限替换，不应作为长期方案。

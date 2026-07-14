@@ -155,6 +155,132 @@ func TestRoleServiceTenantRoleRejectsPlatformPermission(t *testing.T) {
 	if tenantCount != 1 {
 		t.Fatalf("expected transaction rollback to preserve tenant permission, got %d", tenantCount)
 	}
+	assertRolePermissionChangeLogCount(t, db, roles[constants.RoleCodeCsUser].ID, 0)
+}
+
+func TestRoleServiceAssignPermissionsWritesAuditLog(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	roles := seedAuthorityRoles(t, db)
+	role := roles[constants.RoleCodeCsUser]
+	beforePermission := createAuthorityPermission(t, db, "tenant.feature.before", constants.PermissionScopeTenant)
+	afterPermissionB := createAuthorityPermission(t, db, "tenant.feature.zeta", constants.PermissionScopeTenant)
+	afterPermissionA := createAuthorityPermission(t, db, "tenant.feature.alpha", constants.PermissionScopeTenant)
+	if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: beforePermission.ID}).Error; err != nil {
+		t.Fatalf("seed role permission: %v", err)
+	}
+	operator := &dto.AuthPrincipal{UserID: 110, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+
+	if err := RoleService.AssignPermissions(role.ID, []int64{afterPermissionB.ID, afterPermissionA.ID, afterPermissionB.ID}, operator); err != nil {
+		t.Fatalf("assign permissions: %v", err)
+	}
+	assertRolePermissionIDs(t, db, role.ID, afterPermissionA.ID, afterPermissionB.ID)
+	assertSingleRolePermissionChangeLog(t, db, role.ID, operator.UserID,
+		[]int64{beforePermission.ID}, []int64{afterPermissionA.ID, afterPermissionB.ID},
+		[]string{beforePermission.Code}, []string{afterPermissionA.Code, afterPermissionB.Code},
+	)
+	relationIDs := rolePermissionRelationIDs(t, db, role.ID)
+
+	if err := RoleService.AssignPermissions(role.ID, []int64{afterPermissionA.ID, afterPermissionB.ID, afterPermissionA.ID}, operator); err != nil {
+		t.Fatalf("repeat unchanged permissions: %v", err)
+	}
+	if got := rolePermissionRelationIDs(t, db, role.ID); !slices.Equal(got, relationIDs) {
+		t.Fatalf("unchanged permission assignment rebuilt relations: got %v, want %v", got, relationIDs)
+	}
+	assertRolePermissionChangeLogCount(t, db, role.ID, 1)
+}
+
+func TestRoleServiceAssignPermissionsRejectsInvalidPermissionWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name             string
+		invalidID        func(t *testing.T, db *gorm.DB) int64
+		wantErrorMessage string
+	}{
+		{
+			name: "missing permission",
+			invalidID: func(_ *testing.T, _ *gorm.DB) int64 {
+				return 999999
+			},
+			wantErrorMessage: "权限不存在",
+		},
+		{
+			name: "disabled permission",
+			invalidID: func(t *testing.T, db *gorm.DB) int64 {
+				permission := createAuthorityPermission(t, db, "tenant.feature.disabled", constants.PermissionScopeTenant)
+				if err := db.Model(permission).Update("status", enums.StatusDisabled).Error; err != nil {
+					t.Fatalf("disable permission: %v", err)
+				}
+				return permission.ID
+			},
+			wantErrorMessage: "禁用权限不允许分配",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupRoleAuthorityTestDB(t)
+			roles := seedAuthorityRoles(t, db)
+			role := roles[constants.RoleCodeCsUser]
+			beforePermission := createAuthorityPermission(t, db, "tenant.feature.preserved", constants.PermissionScopeTenant)
+			if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: beforePermission.ID}).Error; err != nil {
+				t.Fatalf("seed role permission: %v", err)
+			}
+			operator := &dto.AuthPrincipal{UserID: 111, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+
+			err := RoleService.AssignPermissions(role.ID, []int64{beforePermission.ID, tt.invalidID(t, db)}, operator)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErrorMessage) {
+				t.Fatalf("AssignPermissions() error = %v, want %q", err, tt.wantErrorMessage)
+			}
+			assertRolePermissionIDs(t, db, role.ID, beforePermission.ID)
+			assertRolePermissionChangeLogCount(t, db, role.ID, 0)
+		})
+	}
+}
+
+func TestRolePermissionChangeLogFailureRollsBackPermissionReplacement(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	roles := seedAuthorityRoles(t, db)
+	role := roles[constants.RoleCodeCsUser]
+	beforePermission := createAuthorityPermission(t, db, "tenant.feature.rollback.before", constants.PermissionScopeTenant)
+	afterPermission := createAuthorityPermission(t, db, "tenant.feature.rollback.after", constants.PermissionScopeTenant)
+	if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: beforePermission.ID}).Error; err != nil {
+		t.Fatalf("seed role permission: %v", err)
+	}
+	if err := db.Migrator().DropTable(&models.RolePermissionChangeLog{}); err != nil {
+		t.Fatalf("drop role permission change log table: %v", err)
+	}
+	operator := &dto.AuthPrincipal{UserID: 112, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+
+	if err := RoleService.AssignPermissions(role.ID, []int64{afterPermission.ID}, operator); err == nil {
+		t.Fatal("expected missing audit table to fail permission replacement")
+	}
+	assertRolePermissionIDs(t, db, role.ID, beforePermission.ID)
+}
+
+func TestRoleRepositoryGetForUpdateUsesRowLock(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	role := createAuthorityRole(t, db, "role_lock_target", constants.RoleScopeTenant, constants.RoleAuthorityMember)
+	const callbackName = "test:role-permission-locking-clause"
+	seenLock := false
+	if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "Role" {
+			_, seenLock = tx.Statement.Clauses["FOR"]
+		}
+	}); err != nil {
+		t.Fatalf("register locking callback: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Callback().Query().Remove(callbackName); err != nil {
+			t.Errorf("remove locking callback: %v", err)
+		}
+	})
+
+	locked, err := repositories.RoleRepository.GetForUpdate(db, role.ID)
+	if err != nil || locked == nil || locked.ID != role.ID {
+		t.Fatalf("GetForUpdate() = %+v, %v", locked, err)
+	}
+	if !seenLock {
+		t.Fatal("GetForUpdate query did not include a FOR locking clause")
+	}
 }
 
 func TestTenantAdminCreatesAccountWithLowerRoleOnly(t *testing.T) {
@@ -470,6 +596,94 @@ func assertUserRoleCodes(t *testing.T, db *gorm.DB, userID int64, want ...string
 	slices.Sort(want)
 	if !slices.Equal(codes, want) {
 		t.Fatalf("user role codes = %v, want %v", codes, want)
+	}
+}
+
+func assertRolePermissionIDs(t *testing.T, db *gorm.DB, roleID int64, want ...int64) {
+	t.Helper()
+	var got []int64
+	if err := db.Model(&models.RolePermission{}).
+		Where("role_id = ?", roleID).
+		Order("permission_id ASC").
+		Pluck("permission_id", &got).Error; err != nil {
+		t.Fatalf("find role permission IDs: %v", err)
+	}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("role %d permission IDs = %v, want %v", roleID, got, want)
+	}
+}
+
+func rolePermissionRelationIDs(t *testing.T, db *gorm.DB, roleID int64) []int64 {
+	t.Helper()
+	var got []int64
+	if err := db.Model(&models.RolePermission{}).
+		Where("role_id = ?", roleID).
+		Order("id ASC").
+		Pluck("id", &got).Error; err != nil {
+		t.Fatalf("find role permission relation IDs: %v", err)
+	}
+	return got
+}
+
+func assertRolePermissionChangeLogCount(t *testing.T, db *gorm.DB, roleID, want int64) {
+	t.Helper()
+	var count int64
+	if err := db.Model(&models.RolePermissionChangeLog{}).Where("role_id = ?", roleID).Count(&count).Error; err != nil {
+		t.Fatalf("count role permission change logs: %v", err)
+	}
+	if count != want {
+		t.Fatalf("role %d permission change log count = %d, want %d", roleID, count, want)
+	}
+}
+
+func assertSingleRolePermissionChangeLog(
+	t *testing.T,
+	db *gorm.DB,
+	roleID, operatorID int64,
+	beforeIDs, afterIDs []int64,
+	beforeCodes, afterCodes []string,
+) {
+	t.Helper()
+	var logs []models.RolePermissionChangeLog
+	if err := db.Where("role_id = ?", roleID).Order("id ASC").Find(&logs).Error; err != nil {
+		t.Fatalf("find role permission change logs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("role %d permission change logs = %+v, want one", roleID, logs)
+	}
+	log := logs[0]
+	if log.OperatorID != operatorID {
+		t.Fatalf("permission change log operator = %d, want %d", log.OperatorID, operatorID)
+	}
+	var gotBeforeIDs, gotAfterIDs []int64
+	var gotBeforeCodes, gotAfterCodes []string
+	if err := json.Unmarshal([]byte(log.BeforePermissionIDsJSON), &gotBeforeIDs); err != nil {
+		t.Fatalf("decode before permission IDs %q: %v", log.BeforePermissionIDsJSON, err)
+	}
+	if err := json.Unmarshal([]byte(log.AfterPermissionIDsJSON), &gotAfterIDs); err != nil {
+		t.Fatalf("decode after permission IDs %q: %v", log.AfterPermissionIDsJSON, err)
+	}
+	if err := json.Unmarshal([]byte(log.BeforePermissionCodesJSON), &gotBeforeCodes); err != nil {
+		t.Fatalf("decode before permission codes %q: %v", log.BeforePermissionCodesJSON, err)
+	}
+	if err := json.Unmarshal([]byte(log.AfterPermissionCodesJSON), &gotAfterCodes); err != nil {
+		t.Fatalf("decode after permission codes %q: %v", log.AfterPermissionCodesJSON, err)
+	}
+	beforeIDs = append([]int64(nil), beforeIDs...)
+	afterIDs = append([]int64(nil), afterIDs...)
+	beforeCodes = append([]string(nil), beforeCodes...)
+	afterCodes = append([]string(nil), afterCodes...)
+	slices.Sort(beforeIDs)
+	slices.Sort(afterIDs)
+	slices.Sort(beforeCodes)
+	slices.Sort(afterCodes)
+	if !slices.Equal(gotBeforeIDs, beforeIDs) || !slices.Equal(gotAfterIDs, afterIDs) ||
+		!slices.Equal(gotBeforeCodes, beforeCodes) || !slices.Equal(gotAfterCodes, afterCodes) {
+		t.Fatalf("permission change snapshots = ids:%v->%v codes:%v->%v, want ids:%v->%v codes:%v->%v",
+			gotBeforeIDs, gotAfterIDs, gotBeforeCodes, gotAfterCodes,
+			beforeIDs, afterIDs, beforeCodes, afterCodes,
+		)
 	}
 }
 

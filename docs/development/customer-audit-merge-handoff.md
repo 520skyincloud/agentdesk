@@ -3844,3 +3844,41 @@ git diff --check
 
 - `origin/codex/ai-billing@f2d2da4` 同时修改 `internal/models/models.go`。最终需手工保留双方注册项并重跑 AutoMigrate/模型覆盖；其余文件无同文件冲突，无 migration 版本顺序要求。
 - 合并顺序为 76A 数据契约 -> 76B 在线事务写入 -> 后续语义/连续性审计。76B 投产前可回滚七个文件；投产后应保留表和历史行。
+
+## 第 76B 批：角色权限集合在线事务审计（2026-07-15）
+
+### 运行语义与边界
+
+- 复用现有 RoleService.AssignPermissions、角色管理 API 和全局权限管理，不新增平行权限入口。事务内先锁定 Role 并重新校验操作者管理边界，再去重和验证全部 Permission，最后替换 RolePermission。
+- 租户角色不能绑定平台权限；缺失或禁用权限在删除旧关系前失败。相同 permission ID 集合不删除重建、不新增日志，避免重复提交制造假变更。
+- RolePermission 当前集合与 RolePermissionChangeLog 前后快照在同一事务提交。日志写失败会回滚关系变更；快照 ID/code 均稳定排序，RoleCode/PermissionCode 保存操作时展示证据。
+- 本批不改变角色模板全局存在、账号只能绑定角色、只有平台管理员可管理角色权限的既有产品边界，也不增加用户级权限分配。
+
+### 文件与验证
+
+```text
+internal/repositories/role_permission_repository.go
+internal/repositories/role_repository.go
+internal/services/auth_service_test.go
+internal/services/role_service.go
+internal/services/role_user_authority_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run 'TestRoleServiceTenantRoleRejectsPlatformPermission|TestRoleServiceAssignPermissions|TestRolePermissionChangeLogFailure|TestRoleRepositoryGetForUpdate' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 聚焦测试覆盖权限去重、排序快照、无变化幂等、非法/禁用/scope 失败不改旧集合、日志失败整笔回滚和行锁；聚焦 race、services 全包、全仓 Go、vet 和 diff 检查均已通过。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端或 AI/计费变化；没有修改 `.codex/audits/` 或生成 docs/generated 报告。
+
+### 并行分支、合并与回滚
+
+- 与 `origin/codex/ai-billing@f2d2da4` 共同基线对照，本批七个文件没有同文件修改，当前不需要 rebase、migration 协调或 AI 负责人先行提交。
+- 合并顺序为 76A 数据契约 -> 76B 在线事务写入 -> 76C RolePermission 写旁路与日志 payload/链路审计。最终合并 AI 分支后仍须重跑本批事务和 AST 契约测试。
+- 76B 代码可独立回滚以停止在线日志，但 RolePermissionChangeLog 表及已生成历史行必须保留。回滚会恢复权限替换不可追溯，不建议长期维持。
