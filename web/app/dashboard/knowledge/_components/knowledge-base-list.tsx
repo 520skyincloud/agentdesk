@@ -67,6 +67,9 @@ import { EditDialog } from "./knowledge-base-edit";
 type KnowledgeBaseListProps = {
   selectedKnowledgeBaseId: number | null;
   onSelectKnowledgeBase: (knowledgeBase: KnowledgeBase | null) => void;
+  canCreate: boolean;
+  canUpdate: boolean;
+  canDelete: boolean;
 };
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string;
@@ -88,6 +91,8 @@ type SortableKnowledgeBaseCardProps = {
   onEdit: () => void;
   onDelete: () => void;
   onRebuildIndex: () => void;
+  canUpdate: boolean;
+  canDelete: boolean;
   deleteLoadingId: number | null;
   rebuildIndexLoadingId: number | null;
   t: TFunction;
@@ -101,6 +106,8 @@ function SortableKnowledgeBaseCard({
   onEdit,
   onDelete,
   onRebuildIndex,
+  canUpdate,
+  canDelete,
   deleteLoadingId,
   rebuildIndexLoadingId,
   t,
@@ -153,7 +160,7 @@ function SortableKnowledgeBaseCard({
         <span className="shrink-0 text-xs text-muted-foreground">
           {item.knowledgeType === KnowledgeBaseType.FastGPTCloud ? "-" : item.knowledgeType === KnowledgeBaseType.FAQ ? item.faqCount : item.documentCount}
         </span>
-        <DropdownMenu>
+        {canUpdate || canDelete ? <DropdownMenu>
           <DropdownMenuTrigger
             render={
               <Button
@@ -167,7 +174,7 @@ function SortableKnowledgeBaseCard({
             <MoreHorizontalIcon className="size-3.5" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-40 min-w-40">
-            <DropdownMenuItem
+            {canUpdate ? <DropdownMenuItem
               onClick={(e) => {
                 e.stopPropagation();
                 onEdit();
@@ -175,8 +182,8 @@ function SortableKnowledgeBaseCard({
             >
               <PencilIcon className="mr-2 size-3.5" />
               {t("knowledge.edit")}
-            </DropdownMenuItem>
-            {item.knowledgeType !== KnowledgeBaseType.FastGPTCloud ? (
+            </DropdownMenuItem> : null}
+            {canUpdate && item.knowledgeType !== KnowledgeBaseType.FastGPTCloud ? (
               <DropdownMenuItem
                 onClick={(e) => {
                   e.stopPropagation();
@@ -187,7 +194,7 @@ function SortableKnowledgeBaseCard({
                 {rebuildIndexLoadingId === item.id ? t("knowledge.rebuilding") : t("knowledge.rebuildIndex")}
               </DropdownMenuItem>
             ) : null}
-            <DropdownMenuItem
+            {canDelete ? <DropdownMenuItem
               onClick={(e) => {
                 e.stopPropagation();
                 onDelete();
@@ -196,12 +203,12 @@ function SortableKnowledgeBaseCard({
             >
               <Trash2Icon className="mr-2 size-3.5" />
               {deleteLoadingId === item.id ? t("knowledge.deleting") : t("knowledge.delete")}
-            </DropdownMenuItem>
+            </DropdownMenuItem> : null}
           </DropdownMenuContent>
-        </DropdownMenu>
+        </DropdownMenu> : null}
       </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem
+      {canUpdate || canDelete ? <ContextMenuContent>
+        {canUpdate ? <ContextMenuItem
           onClick={(e) => {
             e.stopPropagation();
             onEdit();
@@ -209,8 +216,8 @@ function SortableKnowledgeBaseCard({
         >
           <PencilIcon className="mr-2 size-3.5" />
           {t("knowledge.edit")}
-        </ContextMenuItem>
-        {item.knowledgeType !== KnowledgeBaseType.FastGPTCloud ? (
+        </ContextMenuItem> : null}
+        {canUpdate && item.knowledgeType !== KnowledgeBaseType.FastGPTCloud ? (
           <ContextMenuItem
             onClick={(e) => {
               e.stopPropagation();
@@ -221,7 +228,7 @@ function SortableKnowledgeBaseCard({
             {rebuildIndexLoadingId === item.id ? t("knowledge.rebuilding") : t("knowledge.rebuildIndex")}
           </ContextMenuItem>
         ) : null}
-        <ContextMenuItem
+        {canDelete ? <ContextMenuItem
           onClick={(e) => {
             e.stopPropagation();
             onDelete();
@@ -230,8 +237,8 @@ function SortableKnowledgeBaseCard({
         >
           <Trash2Icon className="mr-2 size-3.5" />
           {deleteLoadingId === item.id ? t("knowledge.deleting") : t("knowledge.delete")}
-        </ContextMenuItem>
-      </ContextMenuContent>
+        </ContextMenuItem> : null}
+      </ContextMenuContent> : null}
     </ContextMenu>
   );
 }
@@ -239,6 +246,9 @@ function SortableKnowledgeBaseCard({
 export function KnowledgeBaseList({
   selectedKnowledgeBaseId,
   onSelectKnowledgeBase,
+  canCreate,
+  canUpdate,
+  canDelete,
 }: KnowledgeBaseListProps) {
   const t = useI18n();
   const [keywordInput, setKeywordInput] = useState("");
@@ -317,11 +327,19 @@ export function KnowledgeBaseList({
   }
 
   function openCreateDialog() {
+    if (!canCreate) {
+      toast.error("无权创建知识库");
+      return;
+    }
     setEditingItemId(null);
     setDialogOpen(true);
   }
 
   function openEditDialog(item: KnowledgeBase) {
+    if (!canUpdate) {
+      toast.error("无权更新知识库");
+      return;
+    }
     setEditingItemId(item.id);
     setDialogOpen(true);
   }
@@ -338,6 +356,10 @@ export function KnowledgeBaseList({
 
   async function handleSubmit(payload: CreateKnowledgeBasePayload) {
     if (saving) {
+      return;
+    }
+    if (editingItemId ? !canUpdate : !canCreate) {
+      toast.error(editingItemId ? "无权更新知识库" : "无权创建知识库");
       return;
     }
 
@@ -367,6 +389,10 @@ export function KnowledgeBaseList({
   }
 
   async function handleDelete(item: KnowledgeBase) {
+    if (!canDelete) {
+      toast.error("无权删除知识库");
+      return;
+    }
     setDeleteLoadingId(item.id);
     try {
       await deleteKnowledgeBase(item.id);
@@ -383,6 +409,10 @@ export function KnowledgeBaseList({
   }
 
   async function handleRebuildIndex(item: KnowledgeBase) {
+    if (!canUpdate) {
+      toast.error("无权重建知识库索引");
+      return;
+    }
     setRebuildIndexLoadingId(item.id);
     try {
       await rebuildKnowledgeBaseIndex(item.id);
@@ -397,6 +427,9 @@ export function KnowledgeBaseList({
   }
 
   async function handleDragEnd(event: DragEndEvent) {
+    if (!canUpdate) {
+      return;
+    }
     const { active, over } = event;
     if (!over || active.id === over.id || sorting) {
       return;
@@ -445,14 +478,14 @@ export function KnowledgeBaseList({
                   className={loading || sorting ? "animate-spin" : "size-4"}
                 />
               </Button>
-              <Button
+              {canCreate ? <Button
                 variant="ghost"
                 size="icon"
                 className="size-7"
                 onClick={openCreateDialog}
               >
                 <PlusIcon className="size-4" />
-              </Button>
+              </Button> : null}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -492,11 +525,13 @@ export function KnowledgeBaseList({
                     key={item.id}
                     item={item}
                     isSelected={selectedKnowledgeBaseId === item.id}
-                    disabled={loading || sorting}
+                    disabled={loading || sorting || !canUpdate}
                     onSelect={() => onSelectKnowledgeBase(item)}
                     onEdit={() => openEditDialog(item)}
                     onDelete={() => void handleDelete(item)}
                     onRebuildIndex={() => void handleRebuildIndex(item)}
+                    canUpdate={canUpdate}
+                    canDelete={canDelete}
                     deleteLoadingId={deleteLoadingId}
                     rebuildIndexLoadingId={rebuildIndexLoadingId}
                     t={t}

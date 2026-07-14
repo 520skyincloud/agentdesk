@@ -2806,3 +2806,50 @@ git diff --check
 - `origin/codex/ai-billing@f2d2da4` 修改同一页面，增加 `ReplyIntentProfile` 获取、行业筛选/展示/表单和 `intentProfileId` payload。最终合并必须手工保留 AI 分支字段和本批 `useAuth`、平台身份、三项动作权限及函数守卫。
 - AI 分支新增的 `fetchReplyIntentProfiles` 仍应只在 `aiConfig.view` 页面内调用；它提供选项数据，不应改变 create/update/delete 的 platform scope。合并后扩充本测试以断言 profile 字段存在，再重跑 typecheck、build 和回复 runtime 测试。
 - 本批可按页面、测试和两份文档整体回滚，无需数据库处理；回滚不会绕过后端，但会恢复误导的租户写入口。
+
+## 第 54 批：知识库分层动作权限收口（2026-07-15）
+
+### 原页面与实现选择
+
+- `/dashboard/knowledge` 原本就是“知识库侧栏 + 文档/FAQ 内容 + 检索日志 + 调试”的统一工作区，继续复用该信息架构，不新增平行配置页或第二套知识模型。
+- 左侧档案使用 `knowledgeBase.create/update/delete`；排序和整库索引重建属于 update。右侧文档使用 `knowledgeDocument.view/create/update/delete`，文档索引重建属于 update。FAQ 使用 `knowledgeFAQ.view/create/update/delete`，批量导入属于 create，FAQ 索引重建属于 update。
+- 检索日志、调试搜索和调试回答继续遵循当前 handler 的 `knowledgeDocument.view`。本批不改变调试回答的模型调用或 usage 语义；最终计费分支合并后仍须复核调试调用是否需要独立 call 权限。
+- 页面、弹窗、拖拽、菜单和异步函数都执行相同边界。仅有 `knowledgeBase.view` 的门店员工仍能看知识库名称和归属，但内容区显示无权状态，不再请求无权接口。
+
+### 文件与验证
+
+```text
+web/app/dashboard/knowledge/page.tsx
+web/app/dashboard/knowledge/_components/knowledge-base-list.tsx
+web/app/dashboard/knowledge/_components/document-list.tsx
+web/app/dashboard/knowledge/_components/faq-list.tsx
+web/app/dashboard/knowledge/action-permissions.test.mjs
+web/messages/zh-CN.json
+web/messages/en-US.json
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+cd web && node --test app/dashboard/knowledge/action-permissions.test.mjs
+cd web && rg --files -g '*.test.mjs' | sort | xargs node --test
+cd web && pnpm typecheck
+cd web && pnpm exec eslint app/dashboard/knowledge/page.tsx app/dashboard/knowledge/action-permissions.test.mjs app/dashboard/knowledge/_components/knowledge-base-list.tsx app/dashboard/knowledge/_components/document-list.tsx app/dashboard/knowledge/_components/faq-list.tsx
+cd web && pnpm build
+go vet ./...
+go test ./... -count=1 -p 1
+git diff --check
+```
+
+- 定向 4 项、全前端 111 项、TypeScript、目标 ESLint、生产构建、vet 和串行全仓 Go 通过。
+- 在当前登录态的 3000 开发服务打开知识库页，超级管理员可见知识库、检索日志、调试和新增入口；截图未见重叠，知识库相关 console error 为 0。验证后恢复原会话页，不保留额外测试标签。
+- 没有 Go 生产代码、model、AutoMigrate、DML migration、DTO、enum、API、路由、WebSocket、权限常量、默认角色、AI runtime、token、usage 或计费变化。
+
+### AI 分支合并阻断项
+
+- `origin/codex/ai-billing@f2d2da4` 修改同一 `knowledge/page.tsx` 和 `knowledge-base-edit.tsx`，并新增 `FastGPTFilePanel`、`KnowledgeResourcePanel`。合并必须保留本批权限变量和现有四层内容判断，不能整文件选边。
+- 图片资源 handler 已分别使用：list=`knowledgeBase.view`、sync=`knowledgeBase.update`、delete=`knowledgeBase.delete`；面板读取员工号还要求 `channel.view`。最终面板必须按辅助权限跳过员工号请求，并按 update/delete 隐藏和守卫动作。
+- FastGPT 文件 handler 当前把 provision、upload、collections、search_test、delete_collection 全部放在 `knowledgeBase.view` 下，其中初始化、上传、删除是明确写操作。这与全局权限派发制冲突，合并上线前必须先确定并实施 create/update/delete 权限映射，补 handler 权限测试和前端动作守卫；不能仅凭 view 开放，也不能在本分支猜测 AI 负责人最终数据语义。
+- `knowledge-base-edit.tsx` 新增 `fetchReplyIntentProfiles` 和 `intentProfileId`。最终选项请求依赖 `aiConfig.view`；自定义角色拥有 `knowledgeBase.update` 但没有 `aiConfig.view` 时，编辑必须保留既有行业绑定，禁止空列表提交清零。
+- AI 分支也修改双语资源；手工合并时保留本批 `knowledge.contentViewDenied`，并继续保留 AI 分支新增文案，禁止整文件选边。
+- 本批可按知识库页面、三个业务组件、测试、双语文案和两份文档整体回滚，不需要数据处理；回滚会恢复只读菜单、拖拽写入口和门店员工内容接口 403。

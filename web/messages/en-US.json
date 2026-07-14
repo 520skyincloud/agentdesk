@@ -2182,6 +2182,7 @@
     "newFAQ": "New FAQ",
     "ragDebug": "RAG Debug",
     "title": "Knowledge Base",
+    "contentViewDenied": "This account cannot view this knowledge content.",
     "allStatus": "All statuses",
     "statusOk": "Enabled",
     "statusDisabled": "Disabled",

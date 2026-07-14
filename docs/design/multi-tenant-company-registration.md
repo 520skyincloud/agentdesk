@@ -1877,3 +1877,22 @@ git diff --check
 - 定向 1 项、全前端 107 项测试、typecheck、目标 ESLint、Next 生产构建、`go vet ./...` 和 `go test ./... -count=1 -p 1` 通过。
 - `origin/codex/ai-billing@f2d2da4` 在同一页面增加意图行业数据、筛选、列、表单字段和 `intentProfileId`。最终页面必须保留这些字段，同时保留本批平台身份与三项写权限守卫；意图行业选项读取继续属于 `aiConfig.view`，不能借由选项加载放宽写能力。
 - 本批可整体回滚且不需要数据回滚；回滚会重新向只读或租户账号展示必然失败的平台写动作。
+
+## 54. 当前实施检查点：知识库分层动作权限（2026-07-15）
+
+知识库页面保留现有一页式工作区，不拆分重复入口；左侧知识库档案、右侧文档/FAQ、检索日志与调试分别复用后端已经存在的权限组。
+
+### 页面职责与权限
+
+- 左侧知识库新增、编辑/排序/重建索引、删除分别使用 `knowledgeBase.create/update/delete`；只读账号仍可搜索、选择和刷新知识库。
+- 普通知识文档的查看、新增、编辑/重建索引、删除分别使用 `knowledgeDocument.view/create/update/delete`。无写权限时不展示更多菜单，所有函数保留二次守卫。
+- FAQ 的查看、新增/导入、编辑/重建索引、删除分别使用 `knowledgeFAQ.view/create/update/delete`；导入弹窗不会向无 create 权限账号挂载。
+- 检索日志与调试搜索/回答按当前后端契约继续依赖 `knowledgeDocument.view`。只有 `knowledgeBase.view` 的门店员工可看知识库归属，但不会再请求文档、FAQ、日志或调试接口并产生 403。
+
+### 验证与合并边界
+
+- 修改知识库页面及知识库、文档、FAQ 三个组件，新增权限契约测试和双语无权状态；没有后端、model、migration、DTO、enum、API、路由、WebSocket、权限常量或角色变化。
+- 定向 4 项、全前端 111 项、typecheck、目标 ESLint、Next 生产构建、`go vet ./...` 和 `go test ./... -count=1 -p 1` 通过；本地 3000 开发页完成超级管理员实页检查，无布局重叠或知识库相关控制台错误。
+- AI 分支新增 FastGPT 文件和图片资源 Tab。图片资源 list/sync/delete 当前分别使用 `knowledgeBase.view/update/delete`，员工号辅助列表还需要 `channel.view`；最终前端必须按这些权限条件加载和显示。
+- AI 分支 FastGPT 文件的初始化、上传和删除 handler 当前错误地只要求 `knowledgeBase.view`。这是合并前阻断项：必须先把读、创建/上传、删除映射到明确可分配权限并补 handler/前端测试，不能把只读权限用于远端写操作，也不能仅靠隐藏按钮补救。
+- AI 分支知识库编辑器新增意图行业选项；该选项只在 `aiConfig.view` 下加载，无权限编辑既有知识库时必须保留 `intentProfileId`，不能以空选项清零。

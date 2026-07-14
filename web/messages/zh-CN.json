@@ -2225,6 +2225,7 @@
     "newFAQ": "新增FAQ",
     "ragDebug": "RAG 调试",
     "title": "知识库",
+    "contentViewDenied": "当前账号没有查看该知识内容的权限",
     "allStatus": "全部状态",
     "statusOk": "启用",
     "statusDisabled": "禁用",

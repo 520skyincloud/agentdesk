@@ -1,6 +1,7 @@
 "use client"
 
 import { Button } from "@/components/ui/button"
+import { useAuth } from "@/components/auth-provider"
 import {
   Sheet,
   SheetContent,
@@ -30,14 +31,28 @@ import { RetrieveLogList } from "./_components/retrieve-log-list"
 
 export default function DashboardKnowledgeDocumentsPage() {
   const t = useI18n()
+  const { session } = useAuth()
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState<KnowledgeBase | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [debugPanelOpen, setDebugPanelOpen] = useState(false)
   const [activeTab, setActiveTab] = useState("documents")
   const [documentActionState, setDocumentActionState] = useState<DocumentListActionState | null>(null)
   const [faqActionState, setFAQActionState] = useState<FAQListActionState | null>(null)
+  const permissions = new Set(session?.permissions ?? [])
+  const canCreateKnowledgeBase = permissions.has("knowledgeBase.create")
+  const canUpdateKnowledgeBase = permissions.has("knowledgeBase.update")
+  const canDeleteKnowledgeBase = permissions.has("knowledgeBase.delete")
+  const canViewDocuments = permissions.has("knowledgeDocument.view")
+  const canCreateDocuments = permissions.has("knowledgeDocument.create")
+  const canUpdateDocuments = permissions.has("knowledgeDocument.update")
+  const canDeleteDocuments = permissions.has("knowledgeDocument.delete")
+  const canViewFAQ = permissions.has("knowledgeFAQ.view")
+  const canCreateFAQ = permissions.has("knowledgeFAQ.create")
+  const canUpdateFAQ = permissions.has("knowledgeFAQ.update")
+  const canDeleteFAQ = permissions.has("knowledgeFAQ.delete")
   const isFAQKnowledgeBase = selectedKnowledgeBase?.knowledgeType === KnowledgeBaseType.FAQ
   const isFastGPTCloudKnowledgeBase = selectedKnowledgeBase?.knowledgeType === KnowledgeBaseType.FastGPTCloud
+  const visibleActiveTab = activeTab === "retrieveLogs" && !canViewDocuments ? "documents" : activeTab
 
   return (
     <div className="agentdesk-surface flex h-[calc(100vh-4rem)] overflow-hidden rounded-2xl">
@@ -49,6 +64,9 @@ export default function DashboardKnowledgeDocumentsPage() {
         <KnowledgeBaseList
           selectedKnowledgeBaseId={selectedKnowledgeBase?.id ?? null}
           onSelectKnowledgeBase={setSelectedKnowledgeBase}
+          canCreate={canCreateKnowledgeBase}
+          canUpdate={canUpdateKnowledgeBase}
+          canDelete={canDeleteKnowledgeBase}
         />
       </div>
       <div className="relative shrink-0 bg-[#f8fbff]">
@@ -67,16 +85,16 @@ export default function DashboardKnowledgeDocumentsPage() {
         </Button>
       </div>
       <div className="min-w-0 min-h-0 flex-1 bg-card">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full min-h-0 gap-0">
+        <Tabs value={visibleActiveTab} onValueChange={setActiveTab} className="h-full min-h-0 gap-0">
           <div className="border-b border-[#dbe7f6] bg-[#f8fbff] px-6 py-4">
             <div className="flex items-center gap-2">
               <TabsList className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-1 shadow-inner shadow-blue-100/40">
                 <TabsTrigger value="documents">
                   {isFastGPTCloudKnowledgeBase ? t("knowledge.cloudKnowledge") : isFAQKnowledgeBase ? t("knowledge.faq") : t("knowledge.document")}
                 </TabsTrigger>
-                <TabsTrigger value="retrieveLogs">{t("knowledge.retrieveLogs")}</TabsTrigger>
+                {canViewDocuments ? <TabsTrigger value="retrieveLogs">{t("knowledge.retrieveLogs")}</TabsTrigger> : null}
               </TabsList>
-              {activeTab === "documents" && !isFAQKnowledgeBase && documentActionState ? (
+              {visibleActiveTab === "documents" && !isFAQKnowledgeBase && !isFastGPTCloudKnowledgeBase && canViewDocuments && documentActionState ? (
                 <div className="ml-auto flex items-center gap-1">
                   <Button
                     variant="ghost"
@@ -115,18 +133,20 @@ export default function DashboardKnowledgeDocumentsPage() {
                   >
                     <Bug className="size-4" />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="agentdesk-soft-button size-8 rounded-lg"
-                    onClick={documentActionState.onCreate}
-                    aria-label={t("knowledge.newDocument")}
-                  >
-                    <PlusIcon className="size-4" />
-                  </Button>
+                  {canCreateDocuments ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="agentdesk-soft-button size-8 rounded-lg"
+                      onClick={documentActionState.onCreate}
+                      aria-label={t("knowledge.newDocument")}
+                    >
+                      <PlusIcon className="size-4" />
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
-              {activeTab === "documents" && isFAQKnowledgeBase && faqActionState ? (
+              {visibleActiveTab === "documents" && isFAQKnowledgeBase && canViewFAQ && faqActionState ? (
                 <div className="ml-auto flex items-center gap-1">
                   <Button
                     variant="ghost"
@@ -138,68 +158,98 @@ export default function DashboardKnowledgeDocumentsPage() {
                   >
                     <RefreshCwIcon className={faqActionState.loading ? "size-4 animate-spin" : "size-4"} />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="agentdesk-soft-button size-8 rounded-lg"
-                    onClick={faqActionState.onImport}
-                    disabled={faqActionState.importing}
-                    aria-label={t("knowledge.importFAQ")}
-                  >
-                    <DownloadIcon className="size-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="agentdesk-soft-button size-8 rounded-lg"
-                    onClick={() => setDebugPanelOpen(true)}
-                    aria-label={t("knowledge.openDebugPanel")}
-                  >
-                    <Bug className="size-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="agentdesk-soft-button size-8 rounded-lg"
-                    onClick={faqActionState.onCreate}
-                    aria-label={t("knowledge.newFAQ")}
-                  >
-                    <PlusIcon className="size-4" />
-                  </Button>
+                  {canCreateFAQ ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="agentdesk-soft-button size-8 rounded-lg"
+                      onClick={faqActionState.onImport}
+                      disabled={faqActionState.importing}
+                      aria-label={t("knowledge.importFAQ")}
+                    >
+                      <DownloadIcon className="size-4" />
+                    </Button>
+                  ) : null}
+                  {canViewDocuments ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="agentdesk-soft-button size-8 rounded-lg"
+                      onClick={() => setDebugPanelOpen(true)}
+                      aria-label={t("knowledge.openDebugPanel")}
+                    >
+                      <Bug className="size-4" />
+                    </Button>
+                  ) : null}
+                  {canCreateFAQ ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="agentdesk-soft-button size-8 rounded-lg"
+                      onClick={faqActionState.onCreate}
+                      aria-label={t("knowledge.newFAQ")}
+                    >
+                      <PlusIcon className="size-4" />
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
             </div>
           </div>
           <TabsContent value="documents" className="min-h-0 flex-1">
-            {isFastGPTCloudKnowledgeBase ? (
+            {isFastGPTCloudKnowledgeBase && canViewDocuments ? (
               <DebugPanel knowledgeBaseId={selectedKnowledgeBase?.id ?? null} />
-            ) : isFAQKnowledgeBase ? (
+            ) : isFastGPTCloudKnowledgeBase ? (
+              <KnowledgeContentDenied />
+            ) : isFAQKnowledgeBase && canViewFAQ ? (
               <FAQList
                 knowledgeBaseId={selectedKnowledgeBase?.id ?? null}
                 onActionStateChange={setFAQActionState}
+                canCreate={canCreateFAQ}
+                canUpdate={canUpdateFAQ}
+                canDelete={canDeleteFAQ}
               />
-            ) : (
-              <DocumentList 
+            ) : isFAQKnowledgeBase ? (
+              <KnowledgeContentDenied />
+            ) : canViewDocuments ? (
+              <DocumentList
                 knowledgeBaseId={selectedKnowledgeBase?.id ?? null}
                 onActionStateChange={setDocumentActionState}
+                canCreate={canCreateDocuments}
+                canUpdate={canUpdateDocuments}
+                canDelete={canDeleteDocuments}
               />
+            ) : (
+              <KnowledgeContentDenied />
             )}
           </TabsContent>
-          <TabsContent value="retrieveLogs" className="min-h-0 flex-1">
-            <RetrieveLogList
-              knowledgeBaseId={selectedKnowledgeBase?.id ?? null}
-            />
-          </TabsContent>
+          {canViewDocuments ? (
+            <TabsContent value="retrieveLogs" className="min-h-0 flex-1">
+              <RetrieveLogList
+                knowledgeBaseId={selectedKnowledgeBase?.id ?? null}
+              />
+            </TabsContent>
+          ) : null}
         </Tabs>
       </div>
-      <Sheet open={debugPanelOpen} onOpenChange={setDebugPanelOpen}>
+      <Sheet open={debugPanelOpen && canViewDocuments} onOpenChange={setDebugPanelOpen}>
         <SheetContent side="right" className="min-w-170">
           <SheetHeader>
             <SheetTitle>{t("knowledge.ragDebug")}</SheetTitle>
           </SheetHeader>
-          <DebugPanel knowledgeBaseId={selectedKnowledgeBase?.id ?? null} />
+          {canViewDocuments ? <DebugPanel knowledgeBaseId={selectedKnowledgeBase?.id ?? null} /> : null}
         </SheetContent>
       </Sheet>
+    </div>
+  )
+}
+
+function KnowledgeContentDenied() {
+  const t = useI18n()
+
+  return (
+    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      {t("knowledge.contentViewDenied")}
     </div>
   )
 }

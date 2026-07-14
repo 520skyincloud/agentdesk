@@ -59,6 +59,9 @@ import { DocumentEditDialog } from "./document-edit";
 type DocumentListProps = {
   knowledgeBaseId: number | null;
   onActionStateChange?: (state: DocumentListActionState) => void;
+  canCreate: boolean;
+  canUpdate: boolean;
+  canDelete: boolean;
 };
 
 export type DocumentListActionState = {
@@ -137,7 +140,13 @@ function renderIndexStatusBadge(item: KnowledgeDocumentListItem, t: TFunction) {
 
 const VIEW_MODE_STORAGE_KEY = "knowledge-document-view-mode";
 
-export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentListProps) {
+export function DocumentList({
+  knowledgeBaseId,
+  onActionStateChange,
+  canCreate,
+  canUpdate,
+  canDelete,
+}: DocumentListProps) {
   const t = useI18n();
   const [saving, setSaving] = useState(false);
   const [actionLoadingMap, setActionLoadingMap] = useState<Record<number, { rebuildIndex: boolean; delete: boolean }>>({});
@@ -152,6 +161,7 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
   });
   const statusOptions = useMemo(() => getStatusOptions(t), [t]);
   const indexStatusOptions = useMemo(() => getIndexStatusOptions(t), [t]);
+  const hasActions = canUpdate || canDelete;
 
   const filters = useMemo<DashboardPagedListFilter[]>(() => [
     {
@@ -225,9 +235,13 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
   }
 
   const openCreateDialog = useCallback(() => {
+    if (!canCreate) {
+      toast.error("无权创建知识文档");
+      return;
+    }
     setEditingItem(null);
     setDialogOpen(true);
-  }, []);
+  }, [canCreate]);
 
   useEffect(() => {
     if (!onActionStateChange) {
@@ -244,6 +258,10 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
   }, [onActionStateChange, loadData, openCreateDialog, viewMode, loading]);
 
   function openEditDialog(item: KnowledgeDocumentListItem) {
+    if (!canUpdate) {
+      toast.error("无权更新知识文档");
+      return;
+    }
     setEditingItem(item);
     setDialogOpen(true);
   }
@@ -260,6 +278,10 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
 
   async function handleSubmit(payload: CreateKnowledgeDocumentPayload) {
     if (saving) {
+      return;
+    }
+    if (editingItem ? !canUpdate : !canCreate) {
+      toast.error(editingItem ? "无权更新知识文档" : "无权创建知识文档");
       return;
     }
 
@@ -286,6 +308,10 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
   }
 
   async function handleDelete(item: KnowledgeDocumentListItem) {
+    if (!canDelete) {
+      toast.error("无权删除知识文档");
+      return;
+    }
     setActionLoadingMap((prev) => ({ ...prev, [item.id]: { ...prev[item.id], delete: true } }));
     try {
       await deleteKnowledgeDocument(item.id);
@@ -299,6 +325,10 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
   }
 
   async function handleBuildIndex(item: KnowledgeDocumentListItem) {
+    if (!canUpdate) {
+      toast.error("无权重建知识文档索引");
+      return;
+    }
     setActionLoadingMap((prev) => ({ ...prev, [item.id]: { ...prev[item.id], rebuildIndex: true } }));
     try {
       await buildKnowledgeDocumentIndex(item.id);
@@ -382,7 +412,7 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
                             </div>
                           </div>
                         </div>
-                        <DropdownMenu>
+                        {hasActions ? <DropdownMenu>
                           <DropdownMenuTrigger
                             render={
                               <Button
@@ -396,44 +426,44 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
                             <MoreHorizontalIcon className="size-3.5" />
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-32 min-w-32">
-                            <DropdownMenuItem onClick={() => openEditDialog(item)}>
+                            {canUpdate ? <DropdownMenuItem onClick={() => openEditDialog(item)}>
                               <PencilIcon className="mr-2 size-3.5" />
                               {t("knowledge.edit")}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => void handleBuildIndex(item)}>
+                            </DropdownMenuItem> : null}
+                            {canUpdate ? <DropdownMenuItem onClick={() => void handleBuildIndex(item)}>
                               <WrenchIcon className="mr-2 size-3.5" />
                               {actionLoadingMap[item.id]?.rebuildIndex ? t("knowledge.running") : t("knowledge.rebuildIndex")}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
+                            </DropdownMenuItem> : null}
+                            {canDelete ? <DropdownMenuItem
                               onClick={() => void handleDelete(item)}
                               className="text-destructive focus:text-destructive"
                             >
                               <Trash2Icon className="mr-2 size-3.5" />
                               {actionLoadingMap[item.id]?.delete ? t("knowledge.deleting") : t("knowledge.delete")}
-                            </DropdownMenuItem>
+                            </DropdownMenuItem> : null}
                           </DropdownMenuContent>
-                        </DropdownMenu>
+                        </DropdownMenu> : null}
                       </div>
                     </div>
                   </ContextMenuTrigger>
-                  <ContextMenuContent className="w-40">
-                    <ContextMenuItem onClick={() => openEditDialog(item)}>
+                  {hasActions ? <ContextMenuContent className="w-40">
+                    {canUpdate ? <ContextMenuItem onClick={() => openEditDialog(item)}>
                       <PencilIcon className="mr-2 size-3.5" />
                       {t("knowledge.edit")}
-                    </ContextMenuItem>
-                    <ContextMenuItem onClick={() => void handleBuildIndex(item)} disabled={actionLoadingMap[item.id]?.rebuildIndex}>
+                    </ContextMenuItem> : null}
+                    {canUpdate ? <ContextMenuItem onClick={() => void handleBuildIndex(item)} disabled={actionLoadingMap[item.id]?.rebuildIndex}>
                       <WrenchIcon className="mr-2 size-3.5" />
                       {actionLoadingMap[item.id]?.rebuildIndex ? t("knowledge.running") : t("knowledge.rebuildIndex")}
-                    </ContextMenuItem>
-                    <ContextMenuItem
+                    </ContextMenuItem> : null}
+                    {canDelete ? <ContextMenuItem
                       onClick={() => void handleDelete(item)}
                       variant="destructive"
                       disabled={actionLoadingMap[item.id]?.delete}
                     >
                       <Trash2Icon className="mr-2 size-3.5" />
                       {actionLoadingMap[item.id]?.delete ? t("knowledge.deleting") : t("knowledge.delete")}
-                    </ContextMenuItem>
-                  </ContextMenuContent>
+                    </ContextMenuItem> : null}
+                  </ContextMenuContent> : null}
                 </ContextMenu>
               ) : (
                 <ContextMenu key={item.id}>
@@ -456,7 +486,7 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
                       <div className="shrink-0 text-xs text-muted-foreground">
                         {formatDateTime(item.createdAt)}
                       </div>
-                      <DropdownMenu>
+                      {hasActions ? <DropdownMenu>
                         <DropdownMenuTrigger
                           render={
                             <Button
@@ -470,43 +500,43 @@ export function DocumentList({ knowledgeBaseId, onActionStateChange }: DocumentL
                           <MoreHorizontalIcon className="size-3.5" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-32 min-w-32">
-                          <DropdownMenuItem onClick={() => openEditDialog(item)}>
+                          {canUpdate ? <DropdownMenuItem onClick={() => openEditDialog(item)}>
                             <PencilIcon className="mr-2 size-3.5" />
                             {t("knowledge.edit")}
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => void handleBuildIndex(item)}>
+                          </DropdownMenuItem> : null}
+                          {canUpdate ? <DropdownMenuItem onClick={() => void handleBuildIndex(item)}>
                             <WrenchIcon className="mr-2 size-3.5" />
                             {actionLoadingMap[item.id]?.rebuildIndex ? t("knowledge.running") : t("knowledge.rebuildIndex")}
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
+                          </DropdownMenuItem> : null}
+                          {canDelete ? <DropdownMenuItem
                             onClick={() => void handleDelete(item)}
                             className="text-destructive focus:text-destructive"
                           >
                             <Trash2Icon className="mr-2 size-3.5" />
                             {actionLoadingMap[item.id]?.delete ? t("knowledge.deleting") : t("knowledge.delete")}
-                          </DropdownMenuItem>
+                          </DropdownMenuItem> : null}
                         </DropdownMenuContent>
-                      </DropdownMenu>
+                      </DropdownMenu> : null}
                     </div>
                   </ContextMenuTrigger>
-                  <ContextMenuContent className="w-40">
-                    <ContextMenuItem onClick={() => openEditDialog(item)}>
+                  {hasActions ? <ContextMenuContent className="w-40">
+                    {canUpdate ? <ContextMenuItem onClick={() => openEditDialog(item)}>
                       <PencilIcon className="mr-2 size-3.5" />
                       {t("knowledge.edit")}
-                    </ContextMenuItem>
-                    <ContextMenuItem onClick={() => void handleBuildIndex(item)} disabled={actionLoadingMap[item.id]?.rebuildIndex}>
+                    </ContextMenuItem> : null}
+                    {canUpdate ? <ContextMenuItem onClick={() => void handleBuildIndex(item)} disabled={actionLoadingMap[item.id]?.rebuildIndex}>
                       <WrenchIcon className="mr-2 size-3.5" />
                       {actionLoadingMap[item.id]?.rebuildIndex ? t("knowledge.running") : t("knowledge.rebuildIndex")}
-                    </ContextMenuItem>
-                    <ContextMenuItem
+                    </ContextMenuItem> : null}
+                    {canDelete ? <ContextMenuItem
                       onClick={() => void handleDelete(item)}
                       variant="destructive"
                       disabled={actionLoadingMap[item.id]?.delete}
                     >
                       <Trash2Icon className="mr-2 size-3.5" />
                       {actionLoadingMap[item.id]?.delete ? t("knowledge.deleting") : t("knowledge.delete")}
-                    </ContextMenuItem>
-                  </ContextMenuContent>
+                    </ContextMenuItem> : null}
+                  </ContextMenuContent> : null}
                 </ContextMenu>
               )
             ))}

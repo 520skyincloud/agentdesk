@@ -35,6 +35,9 @@ import { FAQImportDialog } from "./faq-import-dialog";
 type FAQListProps = {
   knowledgeBaseId: number | null;
   onActionStateChange?: (state: FAQListActionState) => void;
+  canCreate: boolean;
+  canUpdate: boolean;
+  canDelete: boolean;
 };
 
 export type FAQListActionState = DashboardCrudActionState & {
@@ -117,6 +120,9 @@ function renderIndexStatusBadge(item: KnowledgeFAQ, t: TFunction) {
 export function FAQList({
   knowledgeBaseId,
   onActionStateChange,
+  canCreate,
+  canUpdate,
+  canDelete,
 }: FAQListProps) {
   const t = useI18n();
   const [importing, setImporting] = useState(false);
@@ -131,10 +137,34 @@ export function FAQList({
     }
     onActionStateChange?.({
       ...crudActionState,
-      onImport: () => setImportDialogOpen(true),
+      onImport: () => {
+        if (!canCreate) {
+          toast.error("无权导入知识 FAQ");
+          return;
+        }
+        setImportDialogOpen(true);
+      },
       importing,
     });
-  }, [crudActionState, importing, onActionStateChange]);
+  }, [canCreate, crudActionState, importing, onActionStateChange]);
+
+  async function createFAQWithPermission(payload: CreateKnowledgeFAQPayload) {
+    if (!canCreate) throw new Error("无权创建知识 FAQ");
+    return createKnowledgeFAQ(payload);
+  }
+
+  async function updateFAQWithPermission(
+    item: KnowledgeFAQ,
+    payload: CreateKnowledgeFAQPayload,
+  ) {
+    if (!canUpdate) throw new Error("无权更新知识 FAQ");
+    return updateKnowledgeFAQ({ id: item.id, ...payload });
+  }
+
+  async function deleteFAQWithPermission(item: KnowledgeFAQ) {
+    if (!canDelete) throw new Error("无权删除知识 FAQ");
+    return deleteKnowledgeFAQ(item.id);
+  }
 
   const filters = useMemo<DashboardCrudFilter[]>(
     () => [
@@ -227,17 +257,22 @@ export function FAQList({
             })
           }
           getItemId={(item) => item.id}
-          createItem={createKnowledgeFAQ}
-          updateItem={(item, payload) =>
-            updateKnowledgeFAQ({ id: item.id, ...payload })
-          }
-          deleteItem={(item) => deleteKnowledgeFAQ(item.id)}
-          rowActions={[
+          createItem={createFAQWithPermission}
+          updateItem={updateFAQWithPermission}
+          showCreate={canCreate}
+          showEdit={canUpdate}
+          deleteItem={canDelete ? deleteFAQWithPermission : undefined}
+          showActionsColumn={canUpdate || canDelete}
+          rowActions={canUpdate ? [
             {
               key: "rebuild-index",
               icon: <WrenchIcon />,
               label: t("knowledge.rebuildIndex"),
               run: async ({ item, reload }) => {
+                if (!canUpdate) {
+                  toast.error("无权重建知识 FAQ 索引");
+                  return;
+                }
                 try {
                   await buildKnowledgeFAQIndex(item.id);
                   toast.success(t("knowledge.faqIndexRebuilt"));
@@ -251,7 +286,7 @@ export function FAQList({
                 }
               },
             },
-          ]}
+          ] : []}
           renderEditDialog={({
             open,
             saving,
@@ -291,7 +326,7 @@ export function FAQList({
         />
       </div>
 
-      <FAQImportDialog
+      {canCreate ? <FAQImportDialog
         open={importDialogOpen}
         knowledgeBaseId={knowledgeBaseId}
         importing={importing}
@@ -300,7 +335,7 @@ export function FAQList({
         onImported={async () => {
           crudActionState?.onRefresh();
         }}
-      />
+      /> : null}
     </>
   );
 }
