@@ -70,6 +70,15 @@ func (s *aiManualResumeTaskService) Schedule(conversationID int64, originMessage
 		return existing, nil
 	}
 	now := time.Now()
+	var nextReminderAt *time.Time
+	if state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
+		delay := 2 * time.Minute
+		if isSafetyHandoffReason(state.HandoffReason) {
+			delay = time.Minute
+		}
+		value := now.Add(delay)
+		nextReminderAt = &value
+	}
 	item := &models.AIManualResumeTask{
 		TenantID:               conversation.TenantID,
 		TaskKey:                taskKey,
@@ -80,6 +89,7 @@ func (s *aiManualResumeTaskService) Schedule(conversationID int64, originMessage
 		LatestWaitingMessageID: originMessageID,
 		RouteStatus:            string(state.RouteStatus),
 		TaskStatus:             aiManualResumeTaskWaiting,
+		NextReminderAt:         nextReminderAt,
 		AuditFields: models.AuditFields{
 			CreatedAt:      now,
 			CreateUserName: "system",
@@ -224,18 +234,80 @@ func (s *aiManualResumeTaskService) ProcessDue(limit int) int {
 		return 0
 	}
 	now := time.Now()
+	handled := s.processDueReminders(now, limit)
 	items := repositories.AIManualResumeTaskRepository.Find(db, sqls.NewCnd().
 		In("task_status", []string{aiManualResumeTaskReady, aiManualResumeTaskRetry}).
 		Where("next_retry_at IS NOT NULL AND next_retry_at <= ?", now).
 		Asc("next_retry_at").
 		Limit(limit))
-	handled := 0
 	for i := range items {
 		if s.processOne(items[i], now) {
 			handled++
 		}
 	}
 	return handled
+}
+
+func (s *aiManualResumeTaskService) processDueReminders(now time.Time, limit int) int {
+	items := repositories.AIManualResumeTaskRepository.Find(sqls.DB(), sqls.NewCnd().
+		Gt("tenant_id", 0).
+		Eq("task_status", aiManualResumeTaskWaiting).
+		Where("next_reminder_at IS NOT NULL AND next_reminder_at <= ?", now).
+		Asc("next_reminder_at").
+		Limit(limit))
+	handled := 0
+	for i := range items {
+		if s.processReminder(items[i], now) {
+			handled++
+		}
+	}
+	return handled
+}
+
+func (s *aiManualResumeTaskService) processReminder(task models.AIManualResumeTask, now time.Time) bool {
+	if task.TenantID <= 0 {
+		return false
+	}
+	state := ConversationRouteService.GetByConversationIDInTenant(task.ConversationID, task.TenantID)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || !state.NeedHumanFollowUp {
+		s.cancelTask(&task, "manual reminder no longer applies")
+		return true
+	}
+	safety := isSafetyHandoffReason(state.HandoffReason)
+	maxReminders := 1
+	if safety {
+		maxReminders = 2
+	}
+	if task.ReminderCount >= maxReminders {
+		_ = repositories.AIManualResumeTaskRepository.UpdatesInTenant(sqls.DB(), task.ID, task.TenantID, map[string]any{
+			"next_reminder_at": nil,
+			"updated_at":       now,
+		})
+		return true
+	}
+	reminderIndex := task.ReminderCount + 1
+	var nextReminderAt *time.Time
+	if safety && reminderIndex < maxReminders {
+		value := now.Add(time.Minute)
+		nextReminderAt = &value
+	}
+	claimed, err := repositories.AIManualResumeTaskRepository.ClaimReminderInTenant(sqls.DB(), task.ID, task.TenantID, task.ReminderCount, now, map[string]any{
+		"reminder_count":   reminderIndex,
+		"last_reminder_at": now,
+		"next_reminder_at": nextReminderAt,
+		"updated_at":       now,
+		"update_user_name": "system",
+	})
+	if err != nil || !claimed {
+		return false
+	}
+	reason := "人工接待仍未响应，请尽快处理。"
+	if safety {
+		reason = "安全/突发情况仍未响应，请立即关注并处理。"
+	}
+	noticeKey := fmt.Sprintf("%s:reminder:%d", task.TaskKey, reminderIndex)
+	ConversationHumanDispatchService.notifyStoreRoomHandoffWithKey(task.ConversationID, reason+" "+state.HandoffReason, noticeKey)
+	return true
 }
 
 func (s *aiManualResumeTaskService) processOne(task models.AIManualResumeTask, now time.Time) bool {
@@ -252,9 +324,14 @@ func (s *aiManualResumeTaskService) processOne(task models.AIManualResumeTask, n
 	if current == nil {
 		return false
 	}
+	requestID := "manual_resume_" + strings.ReplaceAll(current.HandoffToken, "-", "")
 	state := ConversationRouteService.GetByConversationIDInTenant(current.ConversationID, current.TenantID)
-	if state == nil || state.RouteStatus != enums.ConversationRouteStatusAIServing {
-		s.cancelTask(current, "conversation left AI serving before resume")
+	if state != nil && state.RouteStatus == enums.ConversationRouteStatusAIServing && s.hasCommittedResumeReply(current.ConversationID, current.TenantID, requestID) {
+		s.completeTask(current, now)
+		return true
+	}
+	if state == nil || !routeStatusBlocksManualResume(state.RouteStatus) {
+		s.cancelTask(current, "conversation left the waiting manual route before resume")
 		return true
 	}
 	if !s.aiReplyEnabled(current.WxWorkInstanceID, current.TenantID) {
@@ -271,27 +348,18 @@ func (s *aiManualResumeTaskService) processOne(task models.AIManualResumeTask, n
 		s.failOrRetry(current, fmt.Errorf("manual resume conversation or message is unavailable"), now)
 		return true
 	}
-	requestID := "manual_resume_" + strings.ReplaceAll(current.HandoffToken, "-", "")
 	if existing := MessageService.FindOne(sqls.NewCnd().
 		Eq("tenant_id", current.TenantID).
 		Eq("conversation_id", current.ConversationID).
 		Eq("sender_type", enums.IMSenderTypeAI).
 		Eq("request_id", requestID).
 		Desc("id")); existing != nil {
-		s.completeTask(current, now)
-		return true
-	}
-	if current.NoticeSentAt == nil {
-		if _, err := MessageService.SendAIServiceNoticeWithPayloadAndRequestID(current.ConversationID, conversation.AIAgentID, aiManualResumeNotice, `{"serviceEvent":"manual_ai_resumed_wait_timeout"}`, requestID+"_notice"); err != nil {
+		if err := s.finalizeResumeRoute(current, state, now); err != nil {
 			s.failOrRetry(current, err, now)
 			return true
 		}
-		noticeAt := time.Now()
-		_ = repositories.AIManualResumeTaskRepository.UpdatesInTenant(sqls.DB(), current.ID, current.TenantID, map[string]any{
-			"notice_sent_at":   noticeAt,
-			"updated_at":       noticeAt,
-			"update_user_name": "system",
-		})
+		s.completeTask(current, now)
+		return true
 	}
 	if TriggerAIReplySyncHook == nil {
 		s.failOrRetry(current, fmt.Errorf("synchronous AI reply hook is unavailable"), now)
@@ -316,8 +384,43 @@ func (s *aiManualResumeTaskService) processOne(task models.AIManualResumeTask, n
 		s.failOrRetry(current, err, time.Now())
 		return true
 	}
+	finishedAt := time.Now()
+	if err := s.finalizeResumeRoute(current, state, finishedAt); err != nil {
+		s.failOrRetry(current, err, finishedAt)
+		return true
+	}
 	s.completeTask(current, time.Now())
+	if updated := ConversationService.GetByTenantID(current.ConversationID, current.TenantID); updated != nil {
+		WsService.PublishConversationChanged(updated, enums.IMRealtimeEventConversationUpdated)
+	}
 	return true
+}
+
+func (s *aiManualResumeTaskService) hasCommittedResumeReply(conversationID, tenantID int64, requestID string) bool {
+	return MessageService.FindOne(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("conversation_id", conversationID).
+		Eq("sender_type", enums.IMSenderTypeAI).
+		Eq("request_id", requestID).
+		Desc("id")) != nil
+}
+
+func (s *aiManualResumeTaskService) finalizeResumeRoute(task *models.AIManualResumeTask, state *models.ConversationRouteState, now time.Time) error {
+	if task == nil || state == nil {
+		return fmt.Errorf("manual resume task or route state is unavailable")
+	}
+	if err := ManualSessionTimeoutService.restoreConversationShell(task.ConversationID, now, "manual_wait_resume_committed", "人工等待超时，AI已提交实际续答", state.RouteStatus); err != nil {
+		return err
+	}
+	keepFollowUp := isSafetyHandoffReason(state.HandoffReason)
+	if err := ConversationRouteService.RestoreAIWithFollowUpInTenant(task.ConversationID, task.TenantID, "人工等待超时，AI已恢复接待", now, keepFollowUp); err != nil {
+		return err
+	}
+	return repositories.AIManualResumeTaskRepository.UpdatesInTenant(sqls.DB(), task.ID, task.TenantID, map[string]any{
+		"notice_sent_at":   now,
+		"updated_at":       now,
+		"update_user_name": "system",
+	})
 }
 
 func (s *aiManualResumeTaskService) latestActiveTask(conversationID, tenantID int64, statuses []string) *models.AIManualResumeTask {
@@ -358,6 +461,33 @@ func (s *aiManualResumeTaskService) resolveResumeMessage(task *models.AIManualRe
 	message := repositories.MessageRepository.GetInTenant(sqls.DB(), messageID, task.TenantID)
 	if message == nil || message.ConversationID != task.ConversationID || message.SenderType != enums.IMSenderTypeCustomer || message.RecalledAt != nil {
 		return nil
+	}
+	startID := task.OriginMessageID
+	if startID <= 0 || startID > message.ID {
+		startID = message.ID
+	}
+	waitingMessages := MessageService.Find(sqls.NewCnd().
+		Eq("tenant_id", task.TenantID).
+		Eq("conversation_id", task.ConversationID).
+		Eq("sender_type", enums.IMSenderTypeCustomer).
+		Gte("id", startID).
+		Lte("id", message.ID).
+		Where("recalled_at IS NULL AND send_status <> ?", enums.IMMessageStatusRecalled).
+		Asc("seq_no").Asc("id"))
+	parts := make([]string, 0, len(waitingMessages))
+	for _, item := range waitingMessages {
+		if isConsumedHandoffConfirmationMessage(item) {
+			continue
+		}
+		text := strings.TrimSpace(item.Content)
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) > 0 {
+		copyMessage := *message
+		copyMessage.Content = strings.Join(parts, "\n")
+		return &copyMessage
 	}
 	return message
 }
@@ -419,6 +549,9 @@ func (s *aiManualResumeTaskService) failOrRetry(task *models.AIManualResumeTask,
 	})
 	if conversation := ConversationService.GetByTenantID(task.ConversationID, task.TenantID); conversation != nil {
 		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
+	}
+	if state := ConversationRouteService.GetByConversationIDInTenant(task.ConversationID, task.TenantID); state != nil && state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
+		ConversationHumanDispatchService.notifyStoreRoomHandoffWithKey(task.ConversationID, "AI 临时恢复失败，仍需人工接待。 "+state.HandoffReason, task.TaskKey+":resume_failed")
 	}
 }
 

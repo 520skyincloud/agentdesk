@@ -1,7 +1,6 @@
 package services
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -15,7 +14,6 @@ import (
 )
 
 const manualTimeoutNotice = "刚才由同事协助的这段接待先结束了，接下来我继续在。之后有问题随时发我。"
-const storeSafetyTimeoutReminderKey = "storeSafetyTimeoutReminderSentAt"
 
 var ManualSessionTimeoutService = newManualSessionTimeoutService()
 
@@ -53,15 +51,6 @@ func (s *manualSessionTimeoutService) handleExpiredManualRoute(state models.Conv
 }
 
 func (s *manualSessionTimeoutService) handleExpiredStoreWecomManual(state models.ConversationRouteState, now time.Time) error {
-	if isSafetyHandoffReason(state.HandoffReason) && !storeSafetyReminderAlreadySent(state.Remark) {
-		ConversationHumanDispatchService.notifyStoreRoomHandoff(state.ConversationID, "安全/突发情况等待门店跟进超时，请尽快处理；"+state.HandoffReason)
-		remark := buildStoreSafetyReminderRemark(state.Remark, now)
-		expireAt := now.Add(DefaultStoreWecomManualMinutes * time.Minute)
-		if err := ConversationRouteService.MarkStoreSafetyTimeoutReminder(state.ConversationID, expireAt, now, remark); err != nil {
-			return err
-		}
-		return s.createTimeoutEvent(state.ConversationID, "store_safety_wait_timeout_reminded", "门店群安全风险跟进超时，已补发群提醒", state.RouteStatus, now)
-	}
 	if state.NeedHumanFollowUp {
 		return s.restoreWaitingRoute(state, now, "store_wecom_wait_timeout", "门店群人工跟进超时恢复AI")
 	}
@@ -77,7 +66,25 @@ func (s *manualSessionTimeoutService) restoreWaitingRoute(state models.Conversat
 	if !AIManualResumeTaskService.EnsureForTimeout(state.ConversationID) {
 		return fmt.Errorf("cannot persist AI manual resume task for conversation %d", state.ConversationID)
 	}
-	return s.restoreOne(state, now, timeoutStage, reason, "", true, state.RouteStatus)
+	if state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
+		noticeReason := "门店员工暂未接入，AI 将先恢复处理。"
+		if isSafetyHandoffReason(state.HandoffReason) {
+			noticeReason = "安全/突发情况仍待人工跟进，AI 将先提供临时处理建议。"
+		}
+		task := AIManualResumeTaskService.latestActiveTask(state.ConversationID, state.TenantID, []string{aiManualResumeTaskWaiting, aiManualResumeTaskBlockedAIDisabled})
+		noticeKey := fmt.Sprintf("manual_resume:%d:final", state.ConversationID)
+		if task != nil {
+			noticeKey = task.TaskKey + ":final"
+		}
+		ConversationHumanDispatchService.notifyStoreRoomHandoffWithKey(state.ConversationID, noticeReason+" "+state.HandoffReason, noticeKey)
+	}
+	if !AIManualResumeTaskService.MarkReady(state.ConversationID, now) {
+		return fmt.Errorf("cannot mark AI manual resume task ready for conversation %d", state.ConversationID)
+	}
+	if err := ConversationRouteService.HoldManualRouteForAIResume(state.ConversationID, now); err != nil {
+		return err
+	}
+	return s.createTimeoutEvent(state.ConversationID, timeoutStage, reason+"，已准备真实续答", state.RouteStatus, now)
 }
 
 func (s *manualSessionTimeoutService) restoreOne(state models.ConversationRouteState, now time.Time, timeoutStage string, reason string, customerNotice string, resumeWaiting bool, fromStatus enums.ConversationRouteStatus) error {
@@ -197,27 +204,4 @@ func timeoutMinutesForStage(stage string) int {
 	default:
 		return 0
 	}
-}
-
-func storeSafetyReminderAlreadySent(remark string) bool {
-	remark = strings.TrimSpace(remark)
-	if remark == "" {
-		return false
-	}
-	values := map[string]any{}
-	if err := json.Unmarshal([]byte(remark), &values); err != nil {
-		return strings.Contains(remark, storeSafetyTimeoutReminderKey)
-	}
-	value, _ := values[storeSafetyTimeoutReminderKey].(string)
-	return strings.TrimSpace(value) != ""
-}
-
-func buildStoreSafetyReminderRemark(existing string, now time.Time) string {
-	values := map[string]any{}
-	if strings.TrimSpace(existing) != "" {
-		_ = json.Unmarshal([]byte(existing), &values)
-	}
-	values[storeSafetyTimeoutReminderKey] = now.Format(time.RFC3339)
-	bytes, _ := json.Marshal(values)
-	return string(bytes)
 }

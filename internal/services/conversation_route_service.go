@@ -347,6 +347,21 @@ func (s *conversationRouteService) MarkHumanFollowUpHandled(conversationID int64
 	})
 }
 
+func (s *conversationRouteService) HoldManualRouteForAIResume(conversationID int64, now time.Time) error {
+	state, err := s.Ensure(conversationID)
+	if err != nil {
+		return err
+	}
+	if !routeStatusBlocksAIReply(state.RouteStatus) {
+		return nil
+	}
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
+		"manual_expire_at": nil,
+		"updated_at":       now,
+		"update_user_name": "system",
+	})
+}
+
 func (s *conversationRouteService) EnterHQAgentDeskServing(conversationID int64, reason string, now time.Time) (*models.ConversationRouteState, error) {
 	return s.enterHQAgentDeskServingWithDB(sqls.DB(), conversationID, reason, now)
 }
@@ -375,6 +390,10 @@ func (s *conversationRouteService) enterHQAgentDeskServingWithDB(db *gorm.DB, co
 }
 
 func (s *conversationRouteService) RestoreAI(conversationID int64, reason string, now time.Time) error {
+	return s.RestoreAIWithFollowUp(conversationID, reason, now, false)
+}
+
+func (s *conversationRouteService) RestoreAIWithFollowUp(conversationID int64, reason string, now time.Time, needHumanFollowUp bool) error {
 	state, err := s.Ensure(conversationID)
 	if err != nil {
 		return err
@@ -386,7 +405,26 @@ func (s *conversationRouteService) RestoreAI(conversationID int64, reason string
 		"pending_action":           "",
 		"pending_action_payload":   "",
 		"pending_action_expire_at": nil,
-		"need_human_follow_up":     false,
+		"need_human_follow_up":     needHumanFollowUp,
+		"handoff_reason":           reason,
+		"updated_at":               now,
+		"update_user_name":         "system",
+	})
+}
+
+func (s *conversationRouteService) RestoreAIWithFollowUpInTenant(conversationID, tenantID int64, reason string, now time.Time, needHumanFollowUp bool) error {
+	state := s.GetByConversationIDInTenant(conversationID, tenantID)
+	if state == nil {
+		return errorsx.InvalidParam("会话路由不存在")
+	}
+	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, tenantID, map[string]any{
+		"route_status":             enums.ConversationRouteStatusAIServing,
+		"route_target":             "ai",
+		"manual_expire_at":         nil,
+		"pending_action":           "",
+		"pending_action_payload":   "",
+		"pending_action_expire_at": nil,
+		"need_human_follow_up":     needHumanFollowUp,
 		"handoff_reason":           reason,
 		"updated_at":               now,
 		"update_user_name":         "system",
