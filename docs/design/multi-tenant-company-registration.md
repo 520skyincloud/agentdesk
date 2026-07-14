@@ -2067,3 +2067,15 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 双租户测试覆盖同一会话重复证据去重保存、tenant 202 消息不能进入 tenant 101 候选、tenant 101 另一会话消息不能进入当前候选。聚焦 race、services 全包、全仓 Go、vet 和 diff 检查通过。
 - 只修改 `knowledge_candidate_service.go`、既有 `knowledge_tenant_service_test.go` 与两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、权限、WebSocket、前端或 AI/计费变化。AI 分支当前无同文件修改，不需要 rebase 或 migration 排序。
 - 可独立回滚代码、测试与文档，不涉及数据库回滚；回滚会恢复不可审计的跨租户/跨会话文本证据风险。历史数据如需检查，应新增显式解析 MessageIDs 的只读审计项，不能在读取候选时自动删除。
+
+## 64. 当前实施检查点：动态业务引用只读审计（2026-07-15）
+
+第 58 批的 125 条普通关系可以审计固定外键列，但不能表达 Notification 的 `biz_type + biz_id` 多态引用，也不能解析 KnowledgeCandidate 的逗号文本 `message_ids`。第 62/63 批已阻止新错误写入，本批补历史数据的只读发现能力，不自动修复。
+
+- Notification 对 `biz_type=conversation` 和 `biz_type=ticket` 分别 LEFT JOIN 对应父表；业务对象不存在或与通知 TenantID 不一致时报告 `DYNAMIC_TENANT_RELATION_MISMATCH`，entity 区分 `Notification.conversation` 与 `Notification.ticket`。
+- KnowledgeCandidate 由 repository 只读返回 `id/tenant_id/conversation_id/message_ids`，service 严格解析正整数并去重，再按 500 条批量读取 Message。非法文本、缺失消息、消息跨租户或不属于候选会话时，按候选记录报告 `KNOWLEDGE_CANDIDATE_MESSAGE_EVIDENCE_MISMATCH`。
+- 两项检查使用原 `sampleLimit`，总数按通知/候选记录计数，样本 ID 升序且有限；它们不伪装成普通外键，因此 `configuredRelations/checkedRelations` 继续保持 125/125。
+- 测试同时放入有效和错误数据：两类动态通知各 1 条违规，三个知识候选分别覆盖跨租户、跨会话和非法 ID，另有有效候选不误报；`sampleLimit=1` 时总数保留、样本各 1 条。
+- 实际 `/tmp/agentdesk-tenant-stats.db` 只读审计仍通过：51/51 模型策略、64/64 表、125/125 普通关系、0 违规。执行前后文件修改时间 `1784055363`、大小 `4878336` 字节均未变化。
+- 聚焦 race、全仓 Go、vet 和 diff 检查通过。只修改审计 repository/service/test 与两份文档；无 model、migration、DTO、API、权限、WebSocket、页面或 AI/计费变化。查询只使用 SQLite/MySQL 共同支持的 JOIN、IN、排序和基础比较。
+- AI 分支当前无同文件修改，不需要 rebase 或 migration 排序。可独立回滚本批代码、测试和文档，无数据库回滚；回滚只会失去历史动态引用检测，不能以删除违规业务数据代替本检查。

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -442,6 +444,9 @@ func (s *tenantIntegrityAuditService) Audit(
 	if err := s.auditTenantBusinessKeyDuplicates(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
+	if err := s.auditDynamicTenantReferences(db, metadata, available, report, sampleLimit); err != nil {
+		return nil, err
+	}
 	if err := s.auditRoleScopes(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
@@ -455,6 +460,175 @@ func (s *tenantIntegrityAuditService) Audit(
 		report.Status = "failed"
 	}
 	return report, nil
+}
+
+func (s *tenantIntegrityAuditService) auditDynamicTenantReferences(
+	db *gorm.DB,
+	metadata map[string]tenantIntegrityModelMetadata,
+	available map[string]bool,
+	report *TenantIntegrityAuditReport,
+	sampleLimit int,
+) error {
+	if err := s.auditNotificationBusinessReferences(db, metadata, available, report, sampleLimit); err != nil {
+		return err
+	}
+	return s.auditKnowledgeCandidateMessageEvidence(db, metadata, available, report, sampleLimit)
+}
+
+func (s *tenantIntegrityAuditService) auditNotificationBusinessReferences(
+	db *gorm.DB,
+	metadata map[string]tenantIntegrityModelMetadata,
+	available map[string]bool,
+	report *TenantIntegrityAuditReport,
+	sampleLimit int,
+) error {
+	if !available["Notification"] {
+		return nil
+	}
+	table := metadata["Notification"].Table
+	for _, column := range []string{"biz_type", "biz_id"} {
+		if !repositories.TenantIntegrityAuditRepository.HasColumn(db, table, column) {
+			report.addViolation("MISSING_REQUIRED_COLUMN", "Notification."+column, 1, nil, "动态业务引用审计所需列不存在")
+			return nil
+		}
+	}
+	checks := []struct {
+		bizType     string
+		parentModel string
+		entity      string
+	}{
+		{bizType: "conversation", parentModel: "Conversation", entity: "Notification.conversation"},
+		{bizType: "ticket", parentModel: "Ticket", entity: "Notification.ticket"},
+	}
+	for _, check := range checks {
+		if !available[check.parentModel] {
+			continue
+		}
+		if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+			Table: table, Alias: "c",
+			Joins: []string{"LEFT JOIN " + metadata[check.parentModel].Table + " AS p ON p.id = c.biz_id"},
+			Where: "c.biz_type = ? AND c.biz_id > 0 AND (p.id IS NULL OR c.tenant_id <> p.tenant_id)",
+			Args:  []any{check.bizType}, IDExpr: "c.id",
+		}, sampleLimit, "DYNAMIC_TENANT_RELATION_MISMATCH", check.entity, "通知与动态业务对象不存在或 tenant_id 不一致"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *tenantIntegrityAuditService) auditKnowledgeCandidateMessageEvidence(
+	db *gorm.DB,
+	metadata map[string]tenantIntegrityModelMetadata,
+	available map[string]bool,
+	report *TenantIntegrityAuditReport,
+	sampleLimit int,
+) error {
+	if !available["KnowledgeCandidate"] || !available["Message"] {
+		return nil
+	}
+	candidateTable := metadata["KnowledgeCandidate"].Table
+	for _, column := range []string{"conversation_id", "message_ids"} {
+		if !repositories.TenantIntegrityAuditRepository.HasColumn(db, candidateTable, column) {
+			report.addViolation("MISSING_REQUIRED_COLUMN", "KnowledgeCandidate."+column, 1, nil, "候选证据审计所需列不存在")
+			return nil
+		}
+	}
+	messageTable := metadata["Message"].Table
+	if !repositories.TenantIntegrityAuditRepository.HasColumn(db, messageTable, "conversation_id") {
+		return nil
+	}
+	rows, err := repositories.TenantIntegrityAuditRepository.FindCandidateEvidenceRows(db, candidateTable)
+	if err != nil {
+		return fmt.Errorf("read knowledge candidate message evidence failed: %w", err)
+	}
+	messageIDs := make([]int64, 0)
+	seenMessageIDs := make(map[int64]struct{})
+	parsedByCandidateID := make(map[int64][]int64, len(rows))
+	invalidCandidateIDs := make(map[int64]struct{})
+	for _, row := range rows {
+		ids, valid := parseTenantIntegrityMessageIDs(row.MessageIDs)
+		if !valid {
+			invalidCandidateIDs[row.ID] = struct{}{}
+			continue
+		}
+		parsedByCandidateID[row.ID] = ids
+		for _, id := range ids {
+			if _, exists := seenMessageIDs[id]; exists {
+				continue
+			}
+			seenMessageIDs[id] = struct{}{}
+			messageIDs = append(messageIDs, id)
+		}
+	}
+	sort.Slice(messageIDs, func(i, j int) bool { return messageIDs[i] < messageIDs[j] })
+	messagesByID := make(map[int64]repositories.TenantIntegrityMessageEvidenceRow, len(messageIDs))
+	const batchSize = 500
+	for start := 0; start < len(messageIDs); start += batchSize {
+		end := start + batchSize
+		if end > len(messageIDs) {
+			end = len(messageIDs)
+		}
+		messageRows, queryErr := repositories.TenantIntegrityAuditRepository.FindMessageEvidenceRows(db, messageTable, messageIDs[start:end])
+		if queryErr != nil {
+			return fmt.Errorf("read knowledge candidate evidence messages failed: %w", queryErr)
+		}
+		for _, message := range messageRows {
+			messagesByID[message.ID] = message
+		}
+	}
+	for _, row := range rows {
+		if _, invalid := invalidCandidateIDs[row.ID]; invalid {
+			continue
+		}
+		for _, messageID := range parsedByCandidateID[row.ID] {
+			message, exists := messagesByID[messageID]
+			if !exists || message.TenantID != row.TenantID || (row.ConversationID > 0 && message.ConversationID != row.ConversationID) {
+				invalidCandidateIDs[row.ID] = struct{}{}
+				break
+			}
+		}
+	}
+	if len(invalidCandidateIDs) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(invalidCandidateIDs))
+	for id := range invalidCandidateIDs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	samples := ids
+	if len(samples) > sampleLimit {
+		samples = samples[:sampleLimit]
+	}
+	report.addViolation(
+		"KNOWLEDGE_CANDIDATE_MESSAGE_EVIDENCE_MISMATCH",
+		"KnowledgeCandidate.message_ids",
+		int64(len(ids)),
+		samples,
+		"知识候选消息证据无效、跨租户或不属于候选会话",
+	)
+	return nil
+}
+
+func parseTenantIntegrityMessageIDs(raw string) ([]int64, bool) {
+	parts := strings.Split(strings.TrimSpace(raw), ",")
+	if len(parts) == 0 {
+		return nil, false
+	}
+	ret := make([]int64, 0, len(parts))
+	seen := make(map[int64]struct{}, len(parts))
+	for _, part := range parts {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || id <= 0 {
+			return nil, false
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ret = append(ret, id)
+	}
+	return ret, len(ret) > 0
 }
 
 func (s *tenantIntegrityAuditService) auditTenantBusinessKeyDuplicates(

@@ -182,11 +182,73 @@ func TestTenantIntegrityAuditReportsDuplicateTenantBusinessKeys(t *testing.T) {
 	}
 }
 
+func TestTenantIntegrityAuditReportsDynamicReferenceViolations(t *testing.T) {
+	db := openTenantIntegrityTestDB(t, true)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	now := time.Now()
+	audit := tenantIntegrityTestAuditFields(now)
+	conversationA := &models.Conversation{TenantID: fixture.tenantA.ID, CustomerName: "tenant A customer", Status: enums.IMConversationStatusActive, LastActiveAt: now, LastMessageAt: now, AuditFields: audit}
+	conversationAOther := &models.Conversation{TenantID: fixture.tenantA.ID, CustomerName: "tenant A other customer", Status: enums.IMConversationStatusActive, LastActiveAt: now, LastMessageAt: now, AuditFields: audit}
+	conversationB := &models.Conversation{TenantID: fixture.tenantB.ID, CustomerName: "tenant B customer", Status: enums.IMConversationStatusActive, LastActiveAt: now, LastMessageAt: now, AuditFields: audit}
+	for label, conversation := range map[string]*models.Conversation{"tenant A": conversationA, "tenant A other": conversationAOther, "tenant B": conversationB} {
+		if err := db.Create(conversation).Error; err != nil {
+			t.Fatalf("create %s conversation: %v", label, err)
+		}
+	}
+	messageA := &models.Message{TenantID: fixture.tenantA.ID, ConversationID: conversationA.ID, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "tenant A evidence", SendStatus: enums.IMMessageStatusSent, SentAt: &now, AuditFields: audit}
+	messageAOther := &models.Message{TenantID: fixture.tenantA.ID, ConversationID: conversationAOther.ID, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "tenant A other evidence", SendStatus: enums.IMMessageStatusSent, SentAt: &now, AuditFields: audit}
+	messageB := &models.Message{TenantID: fixture.tenantB.ID, ConversationID: conversationB.ID, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "tenant B evidence", SendStatus: enums.IMMessageStatusSent, SentAt: &now, AuditFields: audit}
+	for label, message := range map[string]*models.Message{"tenant A": messageA, "tenant A other": messageAOther, "tenant B": messageB} {
+		if err := db.Create(message).Error; err != nil {
+			t.Fatalf("create %s message: %v", label, err)
+		}
+	}
+	ticketA := &models.Ticket{TenantID: fixture.tenantA.ID, TicketNo: "AUDIT-DYNAMIC-TICKET-A", Title: "tenant A ticket", Status: enums.TicketStatusPending, AuditFields: audit}
+	if err := db.Create(ticketA).Error; err != nil {
+		t.Fatalf("create tenant A ticket: %v", err)
+	}
+	for _, notification := range []*models.Notification{
+		{TenantID: fixture.tenantB.ID, RecipientUserID: fixture.tenantUserB.ID, Title: "cross conversation", BizType: "conversation", BizID: conversationA.ID, Status: enums.StatusOk, CreatedAt: now},
+		{TenantID: fixture.tenantB.ID, RecipientUserID: fixture.tenantUserB.ID, Title: "cross ticket", BizType: "ticket", BizID: ticketA.ID, Status: enums.StatusOk, CreatedAt: now},
+		{TenantID: fixture.tenantA.ID, RecipientUserID: fixture.tenantUserA.ID, Title: "valid conversation", BizType: "conversation", BizID: conversationA.ID, Status: enums.StatusOk, CreatedAt: now},
+	} {
+		if err := db.Create(notification).Error; err != nil {
+			t.Fatalf("create notification %q: %v", notification.Title, err)
+		}
+	}
+	for _, candidate := range []*models.KnowledgeCandidate{
+		{TenantID: fixture.tenantA.ID, ConversationID: conversationA.ID, MessageIDs: fmt.Sprint(messageB.ID), Question: "cross tenant evidence", Status: enums.KnowledgeCandidateStatusPending, AuditFields: audit},
+		{TenantID: fixture.tenantA.ID, ConversationID: conversationA.ID, MessageIDs: fmt.Sprint(messageAOther.ID), Question: "cross conversation evidence", Status: enums.KnowledgeCandidateStatusPending, AuditFields: audit},
+		{TenantID: fixture.tenantA.ID, ConversationID: conversationA.ID, MessageIDs: "invalid,0", Question: "invalid evidence ids", Status: enums.KnowledgeCandidateStatusPending, AuditFields: audit},
+		{TenantID: fixture.tenantA.ID, ConversationID: conversationA.ID, MessageIDs: fmt.Sprint(messageA.ID), Question: "valid evidence", Status: enums.KnowledgeCandidateStatusPending, AuditFields: audit},
+	} {
+		if err := db.Create(candidate).Error; err != nil {
+			t.Fatalf("create candidate %q: %v", candidate.Question, err)
+		}
+	}
+
+	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 1})
+	if err != nil {
+		t.Fatalf("audit dynamic references: %v", err)
+	}
+	for _, entity := range []string{"Notification.conversation", "Notification.ticket"} {
+		violation := tenantIntegrityFindViolation(report, "DYNAMIC_TENANT_RELATION_MISMATCH", entity)
+		if violation == nil || violation.Count != 1 || len(violation.SampleIDs) != 1 {
+			t.Errorf("dynamic notification violation %s = %#v", entity, violation)
+		}
+	}
+	evidenceViolation := tenantIntegrityFindViolation(report, "KNOWLEDGE_CANDIDATE_MESSAGE_EVIDENCE_MISMATCH", "KnowledgeCandidate.message_ids")
+	if evidenceViolation == nil || evidenceViolation.Count != 3 || len(evidenceViolation.SampleIDs) != 1 {
+		t.Fatalf("candidate evidence violation = %#v", evidenceViolation)
+	}
+}
+
 type tenantIntegrityFixture struct {
 	tenantA      *models.Tenant
 	tenantB      *models.Tenant
 	platformUser *models.User
 	tenantUserA  *models.User
+	tenantUserB  *models.User
 	platformRole *models.Role
 	tenantRole   *models.Role
 }
@@ -244,7 +306,7 @@ func createCleanTenantIntegrityFixture(t *testing.T, db *gorm.DB) tenantIntegrit
 	}
 	return tenantIntegrityFixture{
 		tenantA: tenantA, tenantB: tenantB, platformUser: platformUser,
-		tenantUserA: tenantUserA, platformRole: platformRole, tenantRole: tenantRole,
+		tenantUserA: tenantUserA, tenantUserB: tenantUserB, platformRole: platformRole, tenantRole: tenantRole,
 	}
 }
 

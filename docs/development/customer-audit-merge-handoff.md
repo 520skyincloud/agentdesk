@@ -3300,3 +3300,39 @@ git diff --check
 
 - `origin/codex/ai-billing@f2d2da4` 相对共同基线不修改本批 service 或测试，当前无同文件冲突，不要求 rebase 或 migration 排序。
 - 可独立回滚四个文件中的本批变更，无数据库回滚；回滚会恢复跨租户/跨会话文本证据风险。若审计历史 MessageIDs，应新增只读解析规则和独立 DML 修复，不得在候选读取或审核时静默改写。
+
+## 第 64 批：动态业务引用只读审计（2026-07-15）
+
+### 目标与实现
+
+- 现有 125 条 `tenantIntegrityRelations` 只覆盖固定外键。Notification 的 `biz_type + biz_id` 和 KnowledgeCandidate 的文本 `message_ids` 不能直接登记为普通关系，第 62/63 批虽已收紧运行时写入，历史数据仍是审计盲区。
+- `auditNotificationBusinessReferences` 对 conversation/ticket 两种已知 BizType 分别执行结构化 LEFT JOIN，父级缺失或 TenantID 不同均报告 `DYNAMIC_TENANT_RELATION_MISMATCH`，不把动态检查计入普通关系数量。
+- `auditKnowledgeCandidateMessageEvidence` 通过 repository 读取必要列；service 严格解析逗号 ID，非法/零/负值整条候选失败。所有唯一 MessageID 排序后按 500 条批量读取，候选级检查 TenantID，并在有 ConversationID 时检查会话归属。
+- 违规按候选而不是按每个 MessageID 计数；样本按候选 ID 升序并服从统一 SampleLimit。命令仍只读，不运行迁移，不回填或删除数据。
+
+### 文件与验证
+
+```text
+internal/repositories/tenant_integrity_audit_repository.go
+internal/services/tenant_integrity_audit_service.go
+internal/services/tenant_integrity_audit_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^TestTenantIntegrityAudit(PassesCleanTwoTenantFixture|ReportsDynamicReferenceViolations)$' -count=1 -p 1
+go run ./cmd/tenant_integrity_audit --config /tmp/agentdesk-tenant-stats.yaml --sample-limit 5
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 测试得到 Notification conversation/ticket 各 1 条违规；KnowledgeCandidate 跨租户、跨会话、非法文本共 3 条违规，合法数据不误报，SampleLimit=1 时每类只返回 1 个样本。
+- 实际 SQLite 报告为 passed：51/51 TenantID 模型策略、64/64 必需表、125/125 普通关系、0 违规。数据库执行前后修改时间均为 `1784055363`，大小均为 `4878336` 字节。
+- 全仓 Go、vet 和 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端、模型调用、token、usage 或计费变化；没有生成 `docs/generated/` 报告。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 相对共同基线不修改本批审计文件，当前无同文件冲突，不要求 rebase 或 migration 排序。AI 模型最终合并新增 TenantID 实体后仍需先跑策略覆盖测试，再运行包括本批动态规则的真实库审计。
+- 可独立回滚 repository/service/test 和文档，无数据库回滚；回滚会失去历史动态引用检测。审计返回违规时必须另开幂等 DML 修复批次，禁止把本命令改为自动修复或删除器。

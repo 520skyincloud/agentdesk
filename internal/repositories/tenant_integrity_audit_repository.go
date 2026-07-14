@@ -24,6 +24,19 @@ type TenantIntegrityQueryResult struct {
 	SampleIDs []int64
 }
 
+type TenantIntegrityCandidateEvidenceRow struct {
+	ID             int64
+	TenantID       int64
+	ConversationID int64
+	MessageIDs     string
+}
+
+type TenantIntegrityMessageEvidenceRow struct {
+	ID             int64
+	TenantID       int64
+	ConversationID int64
+}
+
 func (r *tenantIntegrityAuditRepository) HasTable(db *gorm.DB, table string) bool {
 	return db.Migrator().HasTable(table)
 }
@@ -64,4 +77,26 @@ func (r *tenantIntegrityAuditRepository) Query(
 		return TenantIntegrityQueryResult{}, err
 	}
 	return result, nil
+}
+
+func (r *tenantIntegrityAuditRepository) FindCandidateEvidenceRows(db *gorm.DB, table string) ([]TenantIntegrityCandidateEvidenceRow, error) {
+	rows := make([]TenantIntegrityCandidateEvidenceRow, 0)
+	err := db.Table(table).
+		Select("id, tenant_id, conversation_id, message_ids").
+		Where("message_ids <> ''").
+		Order("id ASC").
+		Scan(&rows).Error
+	return rows, err
+}
+
+func (r *tenantIntegrityAuditRepository) FindMessageEvidenceRows(db *gorm.DB, table string, ids []int64) ([]TenantIntegrityMessageEvidenceRow, error) {
+	rows := make([]TenantIntegrityMessageEvidenceRow, 0, len(ids))
+	if len(ids) == 0 {
+		return rows, nil
+	}
+	err := db.Table(table).
+		Select("id, tenant_id, conversation_id").
+		Where("id IN ?", ids).
+		Scan(&rows).Error
+	return rows, err
 }
