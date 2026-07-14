@@ -4175,3 +4175,40 @@ git diff --check
 - 聚焦 race、完整 services、全仓 Go、go vet 和 diff 检查通过；仿真库审计通过 52/52 模型策略、66/66 表、128/128 关系、0 违规，审计前后 mtime `1784067966`、大小 `4935680` 字节不变。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批四个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 82 批后合并并重跑 Team/排班锁测试。
 - 可回滚四个文件且无需数据库回滚，但会恢复综合组更新/删除与排班写竞态，不建议回滚。
+
+## 第 84 批：客服档案与综合客服组父锁闭环（2026-07-15）
+
+### 事务、锁序与关联边界
+
+- CreateAgentProfile、UpdateAgentProfile、DeleteAgentProfile 统一进入 service 事务。创建锁目标 Team；更新先锁当前 AgentProfile，再按 ID 升序锁原/目标 Team；删除先锁 AgentProfile，再锁原 Team。
+- 账号、客服角色、租户、综合组管理职责、重复档案/工号和小组成员校验全部使用事务连接在锁内重做；最终更新/删除继续带 TenantID 谓词。被小组引用的档案不能跨综合组或删除，拒绝后数据保持不变。
+- 与第 83 批 Team 删除父锁组合后，客服档案创建和 Team 删除形成跨实例串行化；更新/删除的档案锁同时避免同一档案并发覆盖。待派发会话重试仅在事务提交后触发。
+- 本批不改变客服档案页面、API、DTO、权限或派单语义。客服小组和门店员工绑定尚未完成相同父锁闭环，不能据此宣称所有 Team 子域均已收口。
+
+### 文件与验证
+
+```text
+internal/repositories/agent_profile_repository.go
+internal/services/agent_profile_service.go
+internal/services/agent_profile_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run 'TestAgentProfile|TestAgentOrganization|TestAgentCodeIsUniqueWithinTenant|TestTeamCanServeRoute' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+go run ./cmd/tenant_integrity_audit --config /tmp/agentdesk-tenant-stats.yaml --pretty
+git diff --check
+```
+
+- 锁观测覆盖创建目标 Team、跨组升序 Team 和更新/删除 Profile 行锁；小组拒绝、跨租户与工号唯一性回归通过。完整 services、全仓 Go、go vet 和 diff 检查通过。
+- 仿真库只读审计通过 52/52 模型策略、66/66 表、128/128 关系、0 违规；审计前后 mtime `1784067966`、大小 `4935680` 字节不变。
+
+### 并行分支与回滚
+
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端、AI 回复、模型调用、token、usage 或计费变化。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批五个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 83 批后合并并重跑档案/Team 锁测试。
+- 可回滚五个文件且无需数据库回滚，但会恢复客服档案与综合组删除、同档案并发更新的竞态，不建议回滚。

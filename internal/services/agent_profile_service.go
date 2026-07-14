@@ -1,6 +1,10 @@
 package services
 
 import (
+	"slices"
+	"strings"
+	"time"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
@@ -9,8 +13,6 @@ import (
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
-	"strings"
-	"time"
 
 	"agent-desk/internal/pkg/httpx/params"
 
@@ -220,15 +222,20 @@ func (s *agentProfileService) CreateAgentProfile(req request.CreateAgentProfileR
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
-	if !AgentTeamScopeService.CanManageTeam(operator, req.TeamID) {
-		return nil, errorsx.Forbidden("只能在自己管理的客服组中新增客服")
-	}
-	item, err := s.buildProfileModel(0, req)
+	var item *models.AgentProfile
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		teams, err := s.lockManageableProfileTeamsDB(ctx.Tx, []int64{req.TeamID}, operator, "只能在自己管理的客服组中新增客服")
+		if err != nil {
+			return err
+		}
+		item, err = s.buildProfileModelDB(ctx.Tx, teams[req.TeamID], 0, req)
+		if err != nil {
+			return err
+		}
+		item.AuditFields = utils.BuildAuditFields(operator)
+		return repositories.AgentProfileRepository.Create(ctx.Tx, item)
+	})
 	if err != nil {
-		return nil, err
-	}
-	item.AuditFields = utils.BuildAuditFields(operator)
-	if err := repositories.AgentProfileRepository.Create(sqls.DB(), item); err != nil {
 		if isDuplicateKeyError(err) {
 			return nil, s.profileDuplicateError(item, 0)
 		}
@@ -251,42 +258,50 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.GetInTenant(req.ID, operator)
-	if current == nil {
-		return errorsx.InvalidParam("客服档案不存在")
-	}
-	if !AgentTeamScopeService.CanManageTeam(operator, current.TeamID) || !AgentTeamScopeService.CanManageTeam(operator, req.TeamID) {
-		return errorsx.Forbidden("客服原所属组和目标组都必须在你的管理范围内")
-	}
-	if !AgentTeamScopeService.IsAdmin(operator) && req.UserID != current.UserID {
-		return errorsx.Forbidden("客服组长不能更换客服档案关联账号")
-	}
-	if req.TeamID != current.TeamID && repositories.AgentTeamSquadMemberRepository.Take(sqls.DB(), "agent_profile_id = ? AND status = ?", current.ID, enums.StatusOk) != nil {
-		return errorsx.Forbidden("客服仍属于客服小组，请先从所有小组移除后再更换综合客服组")
-	}
-	item, err := s.buildProfileModel(req.ID, req.CreateAgentProfileRequest)
+	var item *models.AgentProfile
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current, err := repositories.AgentProfileRepository.GetForUpdateInTenant(ctx.Tx, req.ID, AgentTeamScopeService.ActiveTenantID(operator))
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return errorsx.InvalidParam("客服档案不存在")
+		}
+		teams, err := s.lockManageableProfileTeamsDB(ctx.Tx, []int64{current.TeamID, req.TeamID}, operator, "客服原所属组和目标组都必须在你的管理范围内")
+		if err != nil {
+			return err
+		}
+		if !AgentTeamScopeService.IsAdmin(operator) && req.UserID != current.UserID {
+			return errorsx.Forbidden("客服组长不能更换客服档案关联账号")
+		}
+		if req.TeamID != current.TeamID && repositories.AgentTeamSquadMemberRepository.Take(ctx.Tx, "tenant_id = ? AND agent_profile_id = ? AND status = ?", current.TenantID, current.ID, enums.StatusOk) != nil {
+			return errorsx.Forbidden("客服仍属于客服小组，请先从所有小组移除后再更换综合客服组")
+		}
+		item, err = s.buildProfileModelDB(ctx.Tx, teams[req.TeamID], req.ID, req.CreateAgentProfileRequest)
+		if err != nil {
+			return err
+		}
+		return repositories.AgentProfileRepository.UpdatesInTenant(ctx.Tx, req.ID, current.TenantID, map[string]any{
+			"tenant_id":                  item.TenantID,
+			"user_id":                    item.UserID,
+			"team_id":                    item.TeamID,
+			"store_scope_ids":            item.StoreScopeIDs,
+			"wx_work_instance_scope_ids": item.WxWorkInstanceScopeIDs,
+			"agent_code":                 item.AgentCode,
+			"display_name":               item.DisplayName,
+			"avatar":                     item.Avatar,
+			"service_status":             item.ServiceStatus,
+			"max_concurrent_count":       item.MaxConcurrentCount,
+			"priority_level":             item.PriorityLevel,
+			"auto_assign_enabled":        item.AutoAssignEnabled,
+			"receive_offline_message":    item.ReceiveOfflineMessage,
+			"remark":                     item.Remark,
+			"update_user_id":             operator.UserID,
+			"update_user_name":           operator.Username,
+			"updated_at":                 time.Now(),
+		})
+	})
 	if err != nil {
-		return err
-	}
-	if err := repositories.AgentProfileRepository.UpdatesInTenant(sqls.DB(), req.ID, current.TenantID, map[string]any{
-		"tenant_id":                  item.TenantID,
-		"user_id":                    item.UserID,
-		"team_id":                    item.TeamID,
-		"store_scope_ids":            item.StoreScopeIDs,
-		"wx_work_instance_scope_ids": item.WxWorkInstanceScopeIDs,
-		"agent_code":                 item.AgentCode,
-		"display_name":               item.DisplayName,
-		"avatar":                     item.Avatar,
-		"service_status":             item.ServiceStatus,
-		"max_concurrent_count":       item.MaxConcurrentCount,
-		"priority_level":             item.PriorityLevel,
-		"auto_assign_enabled":        item.AutoAssignEnabled,
-		"receive_offline_message":    item.ReceiveOfflineMessage,
-		"remark":                     item.Remark,
-		"update_user_id":             operator.UserID,
-		"update_user_name":           operator.Username,
-		"updated_at":                 time.Now(),
-	}); err != nil {
 		if isDuplicateKeyError(err) {
 			return s.profileDuplicateError(item, req.ID)
 		}
@@ -300,35 +315,45 @@ func (s *agentProfileService) DeleteAgentProfile(id int64, operator *dto.AuthPri
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.GetInTenant(id, operator)
-	if current == nil {
-		return errorsx.InvalidParam("客服档案不存在")
-	}
-	if !AgentTeamScopeService.CanManageTeam(operator, current.TeamID) {
-		return errorsx.Forbidden("只能删除自己管理的客服组成员")
-	}
-	if repositories.AgentTeamSquadMemberRepository.Take(sqls.DB(), "agent_profile_id = ? AND status = ?", current.ID, enums.StatusOk) != nil {
-		return errorsx.Forbidden("客服仍属于客服小组，请先从所有小组移除")
-	}
-	return repositories.AgentProfileRepository.DeleteInTenant(sqls.DB(), id, current.TenantID)
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current, err := repositories.AgentProfileRepository.GetForUpdateInTenant(ctx.Tx, id, AgentTeamScopeService.ActiveTenantID(operator))
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return errorsx.InvalidParam("客服档案不存在")
+		}
+		if _, err := s.lockManageableProfileTeamsDB(ctx.Tx, []int64{current.TeamID}, operator, "只能删除自己管理的客服组成员"); err != nil {
+			return err
+		}
+		if repositories.AgentTeamSquadMemberRepository.Take(ctx.Tx, "tenant_id = ? AND agent_profile_id = ? AND status = ?", current.TenantID, current.ID, enums.StatusOk) != nil {
+			return errorsx.Forbidden("客服仍属于客服小组，请先从所有小组移除")
+		}
+		return repositories.AgentProfileRepository.DeleteInTenant(ctx.Tx, id, current.TenantID)
+	})
 }
 
 func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgentProfileRequest) (*models.AgentProfile, error) {
+	team := repositories.AgentTeamRepository.Get(sqls.DB(), req.TeamID)
+	return s.buildProfileModelDB(sqls.DB(), team, id, req)
+}
+
+func (s *agentProfileService) buildProfileModelDB(db *gorm.DB, team *models.AgentTeam, id int64, req request.CreateAgentProfileRequest) (*models.AgentProfile, error) {
 	if req.UserID <= 0 {
 		return nil, errorsx.InvalidParam("请选择关联用户")
 	}
-	user := UserService.Get(req.UserID)
+	user := repositories.UserRepository.Get(db, req.UserID)
 	if user == nil {
 		return nil, errorsx.InvalidParam("关联用户不存在")
 	}
-	if !UserService.HasRole(req.UserID, constants.RoleCodeCsUser) {
+	role := repositories.RoleRepository.GetByCode(db, constants.RoleCodeCsUser)
+	if role == nil || role.Status != enums.StatusOk || repositories.UserRoleRepository.FindOne(db, sqls.NewCnd().Eq("user_id", req.UserID).Eq("role_id", role.ID)) == nil {
 		return nil, errorsx.InvalidParam("所选用户不是客服账号")
 	}
 	if req.TeamID <= 0 {
 		return nil, errorsx.InvalidParam("请选择所属客服组")
 	}
-	team := AgentTeamService.Get(req.TeamID)
-	if team == nil {
+	if team == nil || team.ID != req.TeamID || team.Status == enums.StatusDeleted {
 		return nil, errorsx.InvalidParam("所属客服组不存在")
 	}
 	if user.TenantID <= 0 || team.TenantID <= 0 || user.TenantID != team.TenantID {
@@ -339,10 +364,10 @@ func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgen
 	if req.AgentCode == "" || req.DisplayName == "" {
 		return nil, errorsx.InvalidParam("客服工号和展示名不能为空")
 	}
-	if exists := s.Take("user_id = ? AND id <> ?", req.UserID, id); exists != nil {
+	if exists := repositories.AgentProfileRepository.Take(db, "user_id = ? AND id <> ?", req.UserID, id); exists != nil {
 		return nil, errorsx.InvalidParam("该用户已存在客服档案")
 	}
-	if exists := s.Take("tenant_id = ? AND agent_code = ? AND id <> ?", team.TenantID, req.AgentCode, id); exists != nil {
+	if exists := repositories.AgentProfileRepository.Take(db, "tenant_id = ? AND agent_code = ? AND id <> ?", team.TenantID, req.AgentCode, id); exists != nil {
 		return nil, errorsx.InvalidParam("客服工号已存在")
 	}
 	if !enums.IsValidServiceStatus(req.ServiceStatus) {
@@ -367,6 +392,33 @@ func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgen
 		ReceiveOfflineMessage:  req.ReceiveOfflineMessage,
 		Remark:                 strings.TrimSpace(req.Remark),
 	}, nil
+}
+
+func (s *agentProfileService) lockManageableProfileTeamsDB(db *gorm.DB, teamIDs []int64, operator *dto.AuthPrincipal, forbiddenMessage string) (map[int64]*models.AgentTeam, error) {
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先选择接入公司")
+	}
+	teamIDs = uniquePositiveInt64s(teamIDs)
+	if len(teamIDs) == 0 {
+		return nil, errorsx.InvalidParam("请选择所属客服组")
+	}
+	slices.Sort(teamIDs)
+	teams := make(map[int64]*models.AgentTeam, len(teamIDs))
+	for _, teamID := range teamIDs {
+		team, err := repositories.AgentTeamRepository.GetForUpdateInTenant(db, teamID, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		if team == nil || team.Status == enums.StatusDeleted {
+			return nil, errorsx.InvalidParam("所属客服组不存在")
+		}
+		if !AgentTeamScopeService.canManageTeam(operator, team) {
+			return nil, errorsx.Forbidden(forbiddenMessage)
+		}
+		teams[teamID] = team
+	}
+	return teams, nil
 }
 
 func (s *agentProfileService) profileDuplicateError(item *models.AgentProfile, id int64) error {
