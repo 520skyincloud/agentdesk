@@ -219,26 +219,28 @@ func (s *agentTeamSquadService) Delete(id int64, operator *dto.AuthPrincipal) er
 	})
 }
 
-func (s *agentTeamSquadService) ActiveMemberProfileSet(squadIDs []int64, tenantID int64) map[int64]map[int64]struct{} {
+func (s *agentTeamSquadService) ActiveMemberProfileSet(squadIDs []int64, tenantID int64) (map[int64]map[int64]struct{}, map[int64]int64) {
 	squadIDs = uniquePositive(squadIDs)
 	ret := make(map[int64]map[int64]struct{}, len(squadIDs))
+	teamBySquad := make(map[int64]int64, len(squadIDs))
 	if len(squadIDs) == 0 || tenantID <= 0 {
-		return ret
+		return ret, teamBySquad
 	}
 	activeSquads := repositories.AgentTeamSquadRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("id", squadIDs).Eq("status", enums.StatusOk))
 	activeSquadIDs := make([]int64, 0, len(activeSquads))
 	for i := range activeSquads {
 		activeSquadIDs = append(activeSquadIDs, activeSquads[i].ID)
 		ret[activeSquads[i].ID] = make(map[int64]struct{})
+		teamBySquad[activeSquads[i].ID] = activeSquads[i].TeamID
 	}
 	if len(activeSquadIDs) == 0 {
-		return ret
+		return ret, teamBySquad
 	}
 	members := repositories.AgentTeamSquadMemberRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("squad_id", activeSquadIDs).Eq("status", enums.StatusOk))
 	for i := range members {
 		ret[members[i].SquadID][members[i].AgentProfileID] = struct{}{}
 	}
-	return ret
+	return ret, teamBySquad
 }
 
 func (s *agentTeamSquadService) hasCurrentOrFutureSchedule(squadID, tenantID int64) bool {

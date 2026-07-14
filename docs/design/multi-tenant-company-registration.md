@@ -2103,3 +2103,14 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 回归测试直接向 tenant 101 小组插入 tenant 202 的启用成员关系；修复后该关系不能让 tenant 101 客服进入候选池，报告为 `no_matched_profile`。整组排班、正常指定小组、空小组和停用小组测试继续通过。
 - 聚焦 race、services 全包、全仓 `go test ./... -count=1 -p 1`、`go vet ./...` 和 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、页面、AI 回复、模型调用、token、usage 或计费变化。
 - `origin/codex/ai-billing@f2d2da4` 不修改本批 service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。可独立回滚两个 service、测试与本节文档；回滚会恢复脏跨租户小组成员影响自动派单候选的风险。
+
+## 67. 当前实施检查点：排班小组与综合客服组运行时一致性（2026-07-15）
+
+第 66 批已按租户过滤自动派单的小组和成员关系，但同一租户内仍有第二层组织语义：排班记录的 SquadID 必须属于该排班的 TeamID。排班创建、更新、批量预览和通用 Create 已通过 `validateScheduleSquadDB` 校验 TeamID/TenantID，本批不重复修改写路径，只收紧历史数据的实时使用。
+
+- `ActiveMemberProfileSet` 在返回启用成员集合的同时返回每个启用小组的 TeamID；两份数据来自同一次 tenant-scoped 小组查询，不增加全局回查或 N+1。
+- 自动派单筛选指定小组时，同时要求 `teamBySquad[squadID] == profile.TeamID`。外租户、停用、缺失或属于其他综合客服组的小组均不能使客服进入候选池；整组排班 `squadId=0` 不受影响。
+- 为保留既有调试报告语义，错误小组排班仍先被识别为该综合组有排班，再在成员筛选阶段得到 `no_matched_profile`；没有把停用小组从该原因改成 `no_active_schedule_team`。
+- 新测试在 tenant 101 内构造综合组 A 的排班指向综合组 B 小组，并伪造 A 客服为 B 小组成员；修复后候选池为空。正常指定小组、整组、空小组、停用小组及第 66 批跨租户成员测试均通过。
+- 聚焦 race、services 单包、独立串行全仓 Go、`go vet ./...` 和 diff 检查通过。一次把 services 与全仓测试并行运行的验证因仓库既有全局 `sqls.DB/config` 测试夹具争用出现临时表缺失；两个进程结束后独立 `go test ./... -count=1 -p 1` 完整通过，不把并发验证失败隐瞒或误记为产品回归。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、页面、AI 回复或计费变化。AI 分支无同文件冲突，不要求 rebase 或 migration 排序；可独立回滚 service/test/文档，回滚会恢复同租户跨综合组脏排班影响候选池的风险。

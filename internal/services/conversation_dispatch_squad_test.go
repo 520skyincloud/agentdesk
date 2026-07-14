@@ -73,6 +73,35 @@ func TestConversationDispatchCandidatesRejectCrossTenantSquadMembership(t *testi
 	}
 }
 
+func TestConversationDispatchCandidatesRejectMismatchedScheduledSquad(t *testing.T) {
+	db := setupConversationDispatchSquadTestDB(t)
+	createDispatchSquadTeamAndAgents(t, db)
+	if err := db.Create(&models.AgentTeam{ID: 2, TenantID: 101, Name: "其他综合客服组", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create other team error = %v", err)
+	}
+	squad := &models.AgentTeamSquad{TenantID: 101, TeamID: 2, Name: "其他组白班", Status: enums.StatusOk}
+	if err := db.Create(squad).Error; err != nil {
+		t.Fatalf("create mismatched squad error = %v", err)
+	}
+	if err := db.Create(&models.AgentTeamSquadMember{
+		TenantID:       101,
+		SquadID:        squad.ID,
+		AgentProfileID: 1,
+		Status:         enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create mismatched squad member error = %v", err)
+	}
+	createDispatchSquadSchedule(t, db, squad.ID)
+
+	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, 101, nil, time.Now())
+	if err != nil {
+		t.Fatalf("pickDispatchCandidates() error = %v", err)
+	}
+	if len(candidates) != 0 || report.Reason != "no_matched_profile" {
+		t.Fatalf("mismatched scheduled squad must not enter dispatch pool, got candidates=%+v report=%+v", candidates, report)
+	}
+}
+
 func TestConversationDispatchCandidatesDoNotBroadenEmptyScheduledSquad(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)

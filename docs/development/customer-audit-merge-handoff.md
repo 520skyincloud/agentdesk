@@ -3402,3 +3402,39 @@ git diff --check
 
 - `origin/codex/ai-billing@f2d2da4` 相对共同基线不修改本批 service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。最终合并保留 tenant 参数及脏关系回归测试即可。
 - 可独立回滚两个 service、测试和两份文档，无数据库回滚；回滚会重新允许错误 TenantID 的小组成员关系影响自动派单。历史脏数据仍应由只读完整性审计发现并另做幂等修复，运行时不得自动改写关系。
+
+## 第 67 批：排班小组与综合客服组运行时一致性（2026-07-15）
+
+### 问题与实现
+
+- 现有 `validateScheduleSquadDB` 已覆盖单条/批量排班写入，要求 Squad 启用、TeamID 匹配且 Squad/Team TenantID 一致，因此没有新增第二套写规则。
+- 自动派单读取历史排班时只得到 `teamID -> squadID`，第 66 批虽按租户过滤小组成员，仍未验证该小组属于对应综合客服组。同租户脏排班配合同租户脏成员关系可能把其他综合组小组当成当前组排班。
+- `ActiveMemberProfileSet` 现在一次返回成员集合和 `squadID -> teamID`；`filterProfilesByActiveSquads` 要求小组 TeamID 与客服档案 TeamID 相同后才检查成员身份。
+- 第一次实现曾在排班选择阶段跳过错误/停用小组，使原测试的原因从 `no_matched_profile` 变成 `no_active_schedule_team`。为避免无必要契约漂移，最终实现改在成员筛选阶段校验，原报告语义保持不变。
+
+### 文件与验证
+
+```text
+internal/services/agent_team_squad_service.go
+internal/services/conversation_dispatch_service.go
+internal/services/conversation_dispatch_squad_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^TestConversationDispatchCandidates(UseWholeTeamSchedule|FilterScheduledSquad|RejectCrossTenantSquadMembership|RejectMismatchedScheduledSquad|DoNotBroadenEmptyScheduledSquad|DoNotUseDisabledScheduledSquad)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 新测试构造 tenant 101 综合组 A 排班引用综合组 B 小组，并把 A 客服以脏关系放入 B 小组；候选池为空且原因保持 `no_matched_profile`。聚焦 race、单包、独立串行全仓、vet 和 diff 检查通过。
+- 验证期间一次同时启动 services 与全仓测试，因仓库既有全局 DB/config 测试夹具争用出现临时表缺失；独立串行全仓随即通过。本批不修改测试基础设施，也不把并发运行失败记成业务通过。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端、模型调用、token、usage 或计费变化。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 不修改本批 service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。最终合并须同时保留第 66 批 tenant 过滤与本批 TeamID 匹配。
+- 可独立回滚三个运行/测试文件和两份文档，无数据库回滚；回滚会恢复同租户跨综合组脏排班影响自动派单候选的风险。完整性审计当前只能发现 TenantID 错配，TeamID 语义修复应另做显式审计/修复批次，不能在派单时自动改写历史排班。

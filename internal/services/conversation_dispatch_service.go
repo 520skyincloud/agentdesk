@@ -430,7 +430,7 @@ func (s *conversationDispatchService) filterProfilesByActiveSquads(profiles []mo
 			squadIDs = append(squadIDs, squadID)
 		}
 	}
-	membersBySquad := AgentTeamSquadService.ActiveMemberProfileSet(squadIDs, tenantID)
+	membersBySquad, teamBySquad := AgentTeamSquadService.ActiveMemberProfileSet(squadIDs, tenantID)
 	ret := make([]models.AgentProfile, 0, len(profiles))
 	for i := range profiles {
 		squadID, scheduled := activeSchedules[profiles[i].TeamID]
@@ -438,6 +438,9 @@ func (s *conversationDispatchService) filterProfilesByActiveSquads(profiles []mo
 			continue
 		}
 		if squadID > 0 {
+			if teamBySquad[squadID] != profiles[i].TeamID {
+				continue
+			}
 			if _, member := membersBySquad[squadID][profiles[i].ID]; !member {
 				continue
 			}
