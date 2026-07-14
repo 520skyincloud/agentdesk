@@ -45,23 +45,3 @@ func (s *permissionService) FindPageByCnd(cnd *sqls.Cnd) (list []models.Permissi
 func (s *permissionService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.PermissionRepository.Count(sqls.DB(), cnd)
 }
-
-func (s *permissionService) Create(t *models.Permission) error {
-	return repositories.PermissionRepository.Create(sqls.DB(), t)
-}
-
-func (s *permissionService) Update(t *models.Permission) error {
-	return repositories.PermissionRepository.Update(sqls.DB(), t)
-}
-
-func (s *permissionService) Updates(id int64, columns map[string]interface{}) error {
-	return repositories.PermissionRepository.Updates(sqls.DB(), id, columns)
-}
-
-func (s *permissionService) UpdateColumn(id int64, name string, value interface{}) error {
-	return repositories.PermissionRepository.UpdateColumn(sqls.DB(), id, name, value)
-}
-
-func (s *permissionService) Delete(id int64) {
-	repositories.PermissionRepository.Delete(sqls.DB(), id)
-}

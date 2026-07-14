@@ -58,23 +58,10 @@ func (s *roleService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.RoleRepository.Count(sqls.DB(), cnd)
 }
 
-func (s *roleService) Create(t *models.Role) error {
-	return repositories.RoleRepository.Create(sqls.DB(), t)
-}
-
-func (s *roleService) Update(t *models.Role) error {
-	return repositories.RoleRepository.Update(sqls.DB(), t)
-}
-
-func (s *roleService) Updates(id int64, columns map[string]interface{}) error {
-	return repositories.RoleRepository.Updates(sqls.DB(), id, columns)
-}
-
-func (s *roleService) UpdateColumn(id int64, name string, value interface{}) error {
-	return repositories.RoleRepository.UpdateColumn(sqls.DB(), id, name, value)
-}
-
 func (s *roleService) CreateRole(req request.CreateRoleRequest, operator *dto.AuthPrincipal) (*models.Role, error) {
+	if err := s.ensurePlatformRoleOperatorDB(sqls.DB(), operator); err != nil {
+		return nil, err
+	}
 	name := strings.TrimSpace(req.Name)
 	code := strings.TrimSpace(req.Code)
 	if name == "" || code == "" {
@@ -107,28 +94,33 @@ func (s *roleService) CreateRole(req request.CreateRoleRequest, operator *dto.Au
 		Remark:         strings.TrimSpace(req.Remark),
 		AuditFields:    utils.BuildAuditFields(operator),
 	}
-	if err := s.Create(role); err != nil {
+	if err := repositories.RoleRepository.Create(sqls.DB(), role); err != nil {
 		return nil, err
 	}
 	return role, nil
 }
 
 func (s *roleService) UpdateRole(req request.UpdateRoleRequest, operator *dto.AuthPrincipal) error {
-	role := s.Get(req.ID)
-	if role == nil {
-		return errorsx.InvalidParam("角色不存在")
-	}
-	if err := s.EnsureCanManageRole(operator, role); err != nil {
-		return err
-	}
-	now := time.Now()
-	return s.Updates(req.ID, map[string]any{
-		"name":             strings.TrimSpace(req.Name),
-		"sort_no":          req.SortNo,
-		"remark":           strings.TrimSpace(req.Remark),
-		"update_user_id":   operator.UserID,
-		"update_user_name": operator.Username,
-		"updated_at":       now,
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		role, err := repositories.RoleRepository.GetForUpdate(ctx.Tx, req.ID)
+		if err != nil {
+			return err
+		}
+		if role == nil {
+			return errorsx.InvalidParam("角色不存在")
+		}
+		if err := s.ensureCanMutateRoleDefinitionDB(ctx.Tx, operator, role); err != nil {
+			return err
+		}
+		now := time.Now()
+		return repositories.RoleRepository.Updates(ctx.Tx, req.ID, map[string]any{
+			"name":             strings.TrimSpace(req.Name),
+			"sort_no":          req.SortNo,
+			"remark":           strings.TrimSpace(req.Remark),
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+			"updated_at":       now,
+		})
 	})
 }
 
@@ -140,14 +132,33 @@ func (s *roleService) NextSortNo() int {
 }
 
 func (s *roleService) UpdateSort(ids []int64, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
-	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		for i, id := range ids {
-			if repositories.RoleRepository.Get(ctx.Tx, id) == nil {
+		if err := s.ensurePlatformRoleOperatorDB(ctx.Tx, operator); err != nil {
+			return err
+		}
+		seen := make(map[int64]struct{}, len(ids))
+		lockIDs := make([]int64, 0, len(ids))
+		for _, id := range ids {
+			if id <= 0 {
+				return errorsx.InvalidParam("角色 ID 不合法")
+			}
+			if _, exists := seen[id]; exists {
+				return errorsx.InvalidParam("角色排序列表包含重复项")
+			}
+			seen[id] = struct{}{}
+			lockIDs = append(lockIDs, id)
+		}
+		slices.Sort(lockIDs)
+		for _, id := range lockIDs {
+			role, err := repositories.RoleRepository.GetForUpdate(ctx.Tx, id)
+			if err != nil {
+				return err
+			}
+			if role == nil {
 				return errorsx.InvalidParam("角色不存在")
 			}
+		}
+		for i, id := range ids {
 			if err := repositories.RoleRepository.Updates(ctx.Tx, id, map[string]any{
 				"sort_no":          i,
 				"update_user_id":   operator.UserID,
@@ -170,7 +181,7 @@ func (s *roleService) DeleteRole(id int64, operator *dto.AuthPrincipal) error {
 		if role == nil {
 			return errorsx.InvalidParam("角色不存在")
 		}
-		if err := s.ensureCanManageRoleDB(ctx.Tx, operator, role); err != nil {
+		if err := s.ensureCanMutateRoleDefinitionDB(ctx.Tx, operator, role); err != nil {
 			return err
 		}
 		if role.IsSystem {
@@ -191,25 +202,27 @@ func (s *roleService) DeleteRole(id int64, operator *dto.AuthPrincipal) error {
 }
 
 func (s *roleService) UpdateStatus(id int64, status enums.Status, operator *dto.AuthPrincipal) error {
-	role := s.Get(id)
-	if role == nil {
-		return errorsx.InvalidParam("角色不存在")
+	if status != enums.StatusOk && status != enums.StatusDisabled {
+		return errorsx.InvalidParam("角色状态只支持启用或禁用，删除请使用角色删除功能")
 	}
-	if err := s.EnsureCanManageRole(operator, role); err != nil {
-		return err
-	}
-	if !slices.Contains(enums.StatusValues, status) {
-		return errorsx.InvalidParam("状态值不合法")
-	}
-	if err := s.Updates(id, map[string]any{
-		"status":           status,
-		"update_user_id":   operator.UserID,
-		"update_user_name": operator.Username,
-		"updated_at":       time.Now(),
-	}); err != nil {
-		return err
-	}
-	return nil
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		role, err := repositories.RoleRepository.GetForUpdate(ctx.Tx, id)
+		if err != nil {
+			return err
+		}
+		if role == nil {
+			return errorsx.InvalidParam("角色不存在")
+		}
+		if err := s.ensureCanMutateRoleDefinitionDB(ctx.Tx, operator, role); err != nil {
+			return err
+		}
+		return repositories.RoleRepository.Updates(ctx.Tx, id, map[string]any{
+			"status":           status,
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+			"updated_at":       time.Now(),
+		})
+	})
 }
 
 func (s *roleService) AssignPermissions(roleID int64, permissionIDs []int64, operator *dto.AuthPrincipal) error {
@@ -217,7 +230,7 @@ func (s *roleService) AssignPermissions(roleID int64, permissionIDs []int64, ope
 	if role == nil {
 		return errorsx.InvalidParam("角色不存在")
 	}
-	if err := s.EnsureCanManageRole(operator, role); err != nil {
+	if err := s.ensureCanMutateRoleDefinitionDB(sqls.DB(), operator, role); err != nil {
 		return err
 	}
 
@@ -233,7 +246,7 @@ func (s *roleService) replaceRolePermissions(roleID int64, permissionIDs []int64
 		if role == nil {
 			return errorsx.InvalidParam("角色不存在")
 		}
-		if err := s.ensureCanManageRoleDB(ctx.Tx, operator, role); err != nil {
+		if err := s.ensureCanMutateRoleDefinitionDB(ctx.Tx, operator, role); err != nil {
 			return err
 		}
 
@@ -426,6 +439,26 @@ func (s *roleService) ensureCanManageRoleDB(db *gorm.DB, operator *dto.AuthPrinc
 		return errorsx.Forbidden("只能管理低于自身等级的角色")
 	}
 	return nil
+}
+
+func (s *roleService) ensurePlatformRoleOperatorDB(db *gorm.DB, operator *dto.AuthPrincipal) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if !operator.IsPlatformAccount {
+		return errorsx.Forbidden("只有平台账号可以管理角色")
+	}
+	if s.highestAuthorityLevelDB(db, operator) <= 0 {
+		return errorsx.Forbidden("当前账号没有可用的角色管理等级")
+	}
+	return nil
+}
+
+func (s *roleService) ensureCanMutateRoleDefinitionDB(db *gorm.DB, operator *dto.AuthPrincipal, role *models.Role) error {
+	if err := s.ensurePlatformRoleOperatorDB(db, operator); err != nil {
+		return err
+	}
+	return s.ensureCanManageRoleDB(db, operator, role)
 }
 
 func normalizeRoleScope(scope string) string {

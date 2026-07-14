@@ -2288,3 +2288,17 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 本批修改 Role/UserRole repository、Role/User service、两份 AST 契约、角色权限测试和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端或 AI/计费变化。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批九个文件无同文件修改，不要求 rebase 或 migration 排序。依赖 76A-76C，建议在其后合并；最终集成后必须重跑角色删除、账号赋角和两个 AST 契约。
 - 可回滚本批代码与文档且无需数据库回滚，但回滚会恢复角色删除孤儿关系和赋角/删除竞态，不建议回滚；RolePermissionChangeLog 历史行始终不得删除。
+
+## 78. 当前实施检查点：全局角色定义与权限目录写边界（2026-07-15）
+
+角色权限页面与接口复核确认：Permission 页面只有列表/详情，本来就是全局权限目录；权限定义由 `constants.Permission` 和 migration 2 的幂等同步建立。Role 页面复用原创建、排序、派权入口，更新/状态/删除 API 虽未在当前页面暴露，仍属于真实在线契约。此前 PermissionService 和 RoleService 保留生成式通用 CRUD，可绕过页面权限与领域校验；Role 更新、状态和排序也没有统一行锁。
+
+- PermissionService 删除 Create/Update/Updates/UpdateColumn/Delete，只保留查询。新增 AST 契约扫描所有非测试 service，PermissionRepository/PermissionService、GORM Permission 和 `t_permission` 原始 SQL 在运行时一律不允许；migration 初始化/同步继续是唯一写入所有者。
+- RoleService 删除通用 Create/Update/Updates/UpdateColumn，在线角色定义写只保留 CreateRole、UpdateRole、UpdateSort、UpdateStatus、DeleteRole、AssignPermissions 六个领域入口。新增 Role AST 契约只允许 Role 主表写出现在 CreateRole/UpdateRole/UpdateSort/UpdateStatus/DeleteRole，RolePermission 写仍由第 76C 批独立契约约束。
+- 六个角色定义/派权/删除入口在 service 层要求 `IsPlatformAccount=true` 且操作者有有效角色等级；不再只依赖 Handler 的平台账号检查。公司主管和客服组长继续可以按角色层级给本公司账号赋角色，但即使错误持有 super_admin code 或平台权限，也不能修改全局角色模板和权限集合。
+- UpdateRole、UpdateStatus 对目标 Role 使用 `FOR UPDATE`；UpdateSort 先校验正数与重复 ID，再按 ID 升序锁定全部目标 Role，最后按调用方顺序写 SortNo，避免并发排序反向锁序和部分更新。DeleteRole、AssignPermissions 继续沿用 76B/77 的 Role 行锁。
+- UpdateStatus 只接受启用/禁用。`StatusDeleted` 必须走 DeleteRole，不能绕过系统角色保护、UserRole 占用检查、RolePermission 清空和追加式日志。当前前端没有状态删除入口，本约束封住直接 API 调用。
+- 测试覆盖租户账号对六个入口的 service 级拒绝、平台账号创建成功、更新/状态/排序三种行锁、排序重复 ID 原子拒绝、deleted 状态拒绝、Role/Permission AST 正反例，并回归派权日志、角色删除、账号赋角、租户创建与邀请审核。聚焦 race、完整 services 包、全仓 Go、Handler 回归、vet 和 diff 检查均已通过。
+- 本批修改 PermissionService、RoleService、角色权限测试、新增角色/权限定义 AST 契约并同步两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限码、WebSocket、前端或 AI/计费变化。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批六个文件无同文件修改，不要求 rebase 或 migration 排序。最终集成后应重跑四份角色关系/定义 AST 契约及角色 Handler 权限测试。
+- 可独立回滚本批代码、测试和文档且无需数据库回滚；回滚会恢复 Permission/Role 通用写旁路及角色状态删除绕过，不建议回滚。

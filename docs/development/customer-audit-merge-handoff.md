@@ -3961,3 +3961,40 @@ git diff --check
 - 与 `origin/codex/ai-billing@f2d2da4` 共同基线对照，本批九个文件没有同文件修改；无需 rebase、migration 协调或 AI 负责人前置提交。
 - 合并顺序为 76A -> 76B -> 76C -> 77。AI 分支集成后重跑两个角色关系 AST 契约、角色删除、账号赋角和租户注册完整回归。
 - 可回滚本批代码与文档，不需数据库回滚，但会恢复角色删除遗留权限关系及删除/赋角竞态，不建议回滚；历史 RolePermissionChangeLog 必须保留。
+
+## 第 78 批：全局角色定义与权限目录写边界（2026-07-15）
+
+### 页面职责与运行边界
+
+- 权限管理页面和 API 只有列表/详情，Permission 定义继续由 constants + migration 2 幂等同步，不增加手工 CRUD。PermissionService 收敛为只读，AST 契约禁止任何运行时 service 写 Permission。
+- 角色管理继续使用原 Role 页面、Handler 和权限码，不新增平行入口。RoleService 删除四个通用写方法，只允许 CreateRole、UpdateRole、UpdateSort、UpdateStatus、DeleteRole、AssignPermissions 承载全局角色操作。
+- 上述六个入口在 service 层再次要求平台账号和有效角色等级。租户公司主管仍可按既有层级把角色赋给本公司账号，但不能修改 Role 模板或 RolePermission；这与账号角色分配职责严格分开。
+- UpdateRole/UpdateStatus 锁定目标 Role；UpdateSort 校验重复/非法 ID 并按 ID 升序锁定后再按页面顺序更新。状态接口只允许启用/禁用，删除统一走带权限清空日志和占用检查的 DeleteRole。
+
+### 文件与验证
+
+```text
+internal/services/permission_service.go
+internal/services/role_service.go
+internal/services/role_user_authority_test.go
+internal/services/role_definition_write_contract_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestRoleDefinition.*|TestPermissionDefinitionsRemainMigrationOwned|TestIsRoleDefinitionMutationCall|TestIsPermissionDefinitionMutationCall|TestRoleServiceCreateRoleAllowsPlatformOperator|TestRoleServiceUpdateSortRejectsDuplicateIDs|TestRoleServiceUpdateStatusRejectsDeletedState|TestRoleServiceAssignPermissions.*|TestRoleServiceDeleteRole.*|TestUserServiceAssignRolesEnforcesAuthority|TestTenantAdminCreatesAccountWithLowerRoleOnly|TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation|TestTenantRegistrationReviewApprovesRoleAndRevokesOldSessions)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 聚焦 race、完整 services 包、全仓 Go、Handler 回归、vet 和 diff 检查均已通过；平台/租户身份矩阵、三种 Role 行锁、排序原子性、专用删除状态和 AST 探测器均有回归。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端或 AI/计费变化；没有修改 `.codex/audits/` 或 docs/generated。
+
+### 并行分支、合并与回滚
+
+- 与 `origin/codex/ai-billing@f2d2da4` 共同基线对照，本批六个文件没有同文件修改；无需 rebase、migration 协调或 AI 负责人前置提交。
+- 合并顺序为 76A -> 76B -> 76C -> 77 -> 78。AI 分支集成后必须重跑 Role、Permission、UserRole、RolePermission 四类源码写契约和 Handler 权限回归。
+- 可回滚本批六个文件且无需数据库回滚，但会恢复全局角色/权限通用写旁路和状态删除绕过，不建议回滚。

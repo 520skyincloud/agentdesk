@@ -51,6 +51,173 @@ func TestRoleAuthorityAssignmentMatrix(t *testing.T) {
 	}
 }
 
+func TestRoleDefinitionMutationsRequirePlatformAccount(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	seedAuthorityRoles(t, db)
+	role := createAuthorityRole(t, db, "tenant_blocked_role", constants.RoleScopeTenant, constants.RoleAuthorityMember)
+	permission := createAuthorityPermission(t, db, "tenant.blocked.permission", constants.PermissionScopeTenant)
+	if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
+		t.Fatalf("seed blocked role permission: %v", err)
+	}
+	operator := &dto.AuthPrincipal{
+		UserID: 104, Username: "misconfigured_tenant_super", TenantID: 1, ActiveTenantID: 1,
+		Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: false,
+	}
+	tests := []struct {
+		name   string
+		action func() error
+	}{
+		{
+			name: "create",
+			action: func() error {
+				_, err := RoleService.CreateRole(request.CreateRoleRequest{
+					Name: "blocked create", Code: "blocked_create", Scope: constants.RoleScopeTenant,
+					AuthorityLevel: constants.RoleAuthorityMember,
+				}, operator)
+				return err
+			},
+		},
+		{
+			name: "update",
+			action: func() error {
+				return RoleService.UpdateRole(request.UpdateRoleRequest{ID: role.ID, Name: "blocked update"}, operator)
+			},
+		},
+		{name: "sort", action: func() error { return RoleService.UpdateSort([]int64{role.ID}, operator) }},
+		{name: "delete", action: func() error { return RoleService.DeleteRole(role.ID, operator) }},
+		{name: "status", action: func() error { return RoleService.UpdateStatus(role.ID, enums.StatusDisabled, operator) }},
+		{name: "assign permission", action: func() error { return RoleService.AssignPermissions(role.ID, nil, operator) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.action(); !hasCode(err, errorsx.CodeAuthForbidden) {
+				t.Fatalf("role %s error = %v, want platform account rejection", tt.name, err)
+			}
+		})
+	}
+	if RoleService.Take("code = ?", "blocked_create") != nil {
+		t.Fatal("tenant account created a global role")
+	}
+	got := RoleService.Get(role.ID)
+	if got == nil || got.Name != role.Name || got.Status != enums.StatusOk {
+		t.Fatalf("tenant account mutated role: %+v", got)
+	}
+	assertRolePermissionIDs(t, db, role.ID, permission.ID)
+	assertRolePermissionChangeLogCount(t, db, role.ID, 0)
+}
+
+func TestRoleServiceCreateRoleAllowsPlatformOperator(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	seedAuthorityRoles(t, db)
+	operator := &dto.AuthPrincipal{
+		UserID: 105, Username: "platform_super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true,
+	}
+
+	role, err := RoleService.CreateRole(request.CreateRoleRequest{
+		Name: "Custom tenant role", Code: "custom_tenant_role", Scope: constants.RoleScopeTenant,
+		AuthorityLevel: constants.RoleAuthorityMember, Remark: "created through domain service",
+	}, operator)
+	if err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	if role == nil || role.ID <= 0 || role.Scope != constants.RoleScopeTenant || role.IsSystem {
+		t.Fatalf("unexpected created role: %+v", role)
+	}
+}
+
+func TestRoleDefinitionUpdatesUseRowLock(t *testing.T) {
+	tests := []struct {
+		name   string
+		action func(role *models.Role, operator *dto.AuthPrincipal) error
+	}{
+		{
+			name: "update",
+			action: func(role *models.Role, operator *dto.AuthPrincipal) error {
+				return RoleService.UpdateRole(request.UpdateRoleRequest{ID: role.ID, Name: "updated role"}, operator)
+			},
+		},
+		{
+			name: "status",
+			action: func(role *models.Role, operator *dto.AuthPrincipal) error {
+				return RoleService.UpdateStatus(role.ID, enums.StatusDisabled, operator)
+			},
+		},
+		{
+			name: "sort",
+			action: func(role *models.Role, operator *dto.AuthPrincipal) error {
+				return RoleService.UpdateSort([]int64{role.ID}, operator)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupRoleAuthorityTestDB(t)
+			seedAuthorityRoles(t, db)
+			role := createAuthorityRole(t, db, "lock_"+tt.name+"_role", constants.RoleScopeTenant, constants.RoleAuthorityMember)
+			operator := &dto.AuthPrincipal{
+				UserID: 106, Username: "platform_super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true,
+			}
+			callbackName := "test:role-definition-" + tt.name + "-locking-clause"
+			seenLock := false
+			if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+				if tx.Statement.Schema != nil && tx.Statement.Schema.Name == "Role" {
+					if _, locked := tx.Statement.Clauses["FOR"]; locked {
+						seenLock = true
+					}
+				}
+			}); err != nil {
+				t.Fatalf("register role locking callback: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := db.Callback().Query().Remove(callbackName); err != nil {
+					t.Errorf("remove role locking callback: %v", err)
+				}
+			})
+
+			if err := tt.action(role, operator); err != nil {
+				t.Fatalf("%s role definition: %v", tt.name, err)
+			}
+			if !seenLock {
+				t.Fatalf("%s role definition did not lock the Role row", tt.name)
+			}
+		})
+	}
+}
+
+func TestRoleServiceUpdateSortRejectsDuplicateIDs(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	seedAuthorityRoles(t, db)
+	role := createAuthorityRole(t, db, "duplicate_sort_role", constants.RoleScopeTenant, constants.RoleAuthorityMember)
+	operator := &dto.AuthPrincipal{
+		UserID: 107, Username: "platform_super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true,
+	}
+
+	err := RoleService.UpdateSort([]int64{role.ID, role.ID}, operator)
+	if err == nil || !strings.Contains(err.Error(), "重复") {
+		t.Fatalf("UpdateSort() error = %v, want duplicate rejection", err)
+	}
+	if got := RoleService.Get(role.ID); got == nil || got.SortNo != role.SortNo {
+		t.Fatalf("duplicate sort mutated role: %+v", got)
+	}
+}
+
+func TestRoleServiceUpdateStatusRejectsDeletedState(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	seedAuthorityRoles(t, db)
+	role := createAuthorityRole(t, db, "status_delete_role", constants.RoleScopeTenant, constants.RoleAuthorityMember)
+	operator := &dto.AuthPrincipal{
+		UserID: 108, Username: "platform_super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true,
+	}
+
+	err := RoleService.UpdateStatus(role.ID, enums.StatusDeleted, operator)
+	if err == nil || !strings.Contains(err.Error(), "角色删除功能") {
+		t.Fatalf("UpdateStatus() error = %v, want dedicated deletion rejection", err)
+	}
+	if got := RoleService.Get(role.ID); got == nil || got.Status != enums.StatusOk {
+		t.Fatalf("deleted status mutated role: %+v", got)
+	}
+}
+
 func TestUserServiceAssignRolesEnforcesAuthority(t *testing.T) {
 	db := setupRoleAuthorityTestDB(t)
 	roles := seedAuthorityRoles(t, db)
@@ -140,7 +307,7 @@ func TestRoleServiceTenantRoleRejectsPlatformPermission(t *testing.T) {
 		t.Fatalf("seed tenant role permission: %v", err)
 	}
 
-	operator := &dto.AuthPrincipal{UserID: 100, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+	operator := &dto.AuthPrincipal{UserID: 100, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true}
 	err := RoleService.AssignPermissions(roles[constants.RoleCodeCsUser].ID, []int64{tenantPermission.ID, platformPermission.ID}, operator)
 	if !hasCode(err, errorsx.CodeAuthForbidden) {
 		t.Fatalf("expected platform permission assignment to be forbidden, got %v", err)
@@ -168,7 +335,7 @@ func TestRoleServiceAssignPermissionsWritesAuditLog(t *testing.T) {
 	if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: beforePermission.ID}).Error; err != nil {
 		t.Fatalf("seed role permission: %v", err)
 	}
-	operator := &dto.AuthPrincipal{UserID: 110, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+	operator := &dto.AuthPrincipal{UserID: 110, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true}
 
 	if err := RoleService.AssignPermissions(role.ID, []int64{afterPermissionB.ID, afterPermissionA.ID, afterPermissionB.ID}, operator); err != nil {
 		t.Fatalf("assign permissions: %v", err)
@@ -224,7 +391,7 @@ func TestRoleServiceAssignPermissionsRejectsInvalidPermissionWithoutMutation(t *
 			if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: beforePermission.ID}).Error; err != nil {
 				t.Fatalf("seed role permission: %v", err)
 			}
-			operator := &dto.AuthPrincipal{UserID: 111, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+			operator := &dto.AuthPrincipal{UserID: 111, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true}
 
 			err := RoleService.AssignPermissions(role.ID, []int64{beforePermission.ID, tt.invalidID(t, db)}, operator)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErrorMessage) {
@@ -248,7 +415,7 @@ func TestRolePermissionChangeLogFailureRollsBackPermissionReplacement(t *testing
 	if err := db.Migrator().DropTable(&models.RolePermissionChangeLog{}); err != nil {
 		t.Fatalf("drop role permission change log table: %v", err)
 	}
-	operator := &dto.AuthPrincipal{UserID: 112, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+	operator := &dto.AuthPrincipal{UserID: 112, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true}
 
 	if err := RoleService.AssignPermissions(role.ID, []int64{afterPermission.ID}, operator); err == nil {
 		t.Fatal("expected missing audit table to fail permission replacement")
@@ -294,7 +461,7 @@ func TestRoleServiceDeleteRoleClearsPermissionsWithAuditLog(t *testing.T) {
 			t.Fatalf("seed deletable role permission: %v", err)
 		}
 	}
-	operator := &dto.AuthPrincipal{UserID: 113, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+	operator := &dto.AuthPrincipal{UserID: 113, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true}
 
 	if err := RoleService.DeleteRole(role.ID, operator); err != nil {
 		t.Fatalf("delete custom role: %v", err)
@@ -319,7 +486,7 @@ func TestRoleServiceDeleteRolePreservesInUseRole(t *testing.T) {
 	}
 	user := createAuthorityUser(t, db, "in_use_role_user")
 	assignAuthorityRole(t, db, user.ID, role.ID)
-	operator := &dto.AuthPrincipal{UserID: 114, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+	operator := &dto.AuthPrincipal{UserID: 114, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true}
 
 	err := RoleService.DeleteRole(role.ID, operator)
 	if err == nil || !strings.Contains(err.Error(), "角色已被用户使用") {
@@ -343,7 +510,7 @@ func TestRoleServiceDeleteRoleRollsBackWhenPermissionAuditFails(t *testing.T) {
 	if err := db.Migrator().DropTable(&models.RolePermissionChangeLog{}); err != nil {
 		t.Fatalf("drop role permission change log table: %v", err)
 	}
-	operator := &dto.AuthPrincipal{UserID: 115, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+	operator := &dto.AuthPrincipal{UserID: 115, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true}
 
 	if err := RoleService.DeleteRole(role.ID, operator); err == nil {
 		t.Fatal("expected missing audit table to fail role deletion")
@@ -376,7 +543,7 @@ func TestRoleServiceDeleteRoleRollsBackWhenRoleDeleteFails(t *testing.T) {
 			t.Errorf("remove role delete failure callback: %v", err)
 		}
 	})
-	operator := &dto.AuthPrincipal{UserID: 116, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+	operator := &dto.AuthPrincipal{UserID: 116, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true}
 
 	if err := RoleService.DeleteRole(role.ID, operator); !errors.Is(err, forcedErr) {
 		t.Fatalf("DeleteRole() error = %v, want %v", err, forcedErr)
@@ -399,7 +566,7 @@ func TestRoleServiceDeleteRolePreservesSystemRole(t *testing.T) {
 	if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
 		t.Fatalf("seed system role permission: %v", err)
 	}
-	operator := &dto.AuthPrincipal{UserID: 117, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}}
+	operator := &dto.AuthPrincipal{UserID: 117, Username: "super", Roles: []string{constants.RoleCodeSuperAdmin}, IsPlatformAccount: true}
 
 	err := RoleService.DeleteRole(role.ID, operator)
 	if err == nil || !strings.Contains(err.Error(), "系统内置角色不允许删除") {
