@@ -19,6 +19,7 @@
     "cancel": "取消",
     "confirm": "确认",
     "close": "关闭",
+    "noAccessibleModules": "当前账号没有可访问的后台模块",
     "fullscreen": "全屏显示",
     "exitFullscreen": "退出全屏"
   },

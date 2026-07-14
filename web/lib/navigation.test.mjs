@@ -43,6 +43,7 @@ async function loadNavigation() {
 }
 
 const allPermissions = [
+  "dashboard.view",
   "conversation.view",
   "ticket.view",
   "customer.view",
@@ -126,9 +127,22 @@ test("view permissions still control individual entries inside an allowed contex
   const urls = itemUrls(sections)
 
   assert.equal(urls.includes("/dashboard/conversations"), true)
+  assert.equal(urls.includes("/dashboard"), false)
   assert.equal(urls.includes("/dashboard/settings"), false)
   assert.equal(urls.includes("/dashboard/tickets"), false)
   assert.equal(urls.includes("/dashboard/roles"), false)
+})
+
+test("operations overview requires its explicit permission", async () => {
+  const { filterDashboardNavForSession } = await loadNavigation()
+  const sections = filterDashboardNavForSession(["dashboard.view"], {
+    isPlatformAccount: false,
+    hasActiveTenant: true,
+  })
+  const urls = itemUrls(sections)
+
+  assert.equal(urls.includes("/dashboard"), true)
+  assert.equal(urls.includes("/dashboard/conversations"), false)
 })
 
 test("tenant page guard follows the same navigation context contract", async () => {

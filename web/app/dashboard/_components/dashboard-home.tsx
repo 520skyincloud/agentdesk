@@ -1,9 +1,11 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { RefreshCwIcon } from "lucide-react"
 import { toast } from "sonner"
 
+import { useAuth } from "@/components/auth-provider"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Card, CardContent } from "@/components/ui/card"
@@ -13,6 +15,7 @@ import {
   type DashboardOverview,
   type DashboardRange,
 } from "@/lib/api/dashboard"
+import { filterDashboardNavForSession } from "@/lib/navigation"
 import { SummaryCards } from "./summary-cards"
 import { TrendPanel } from "./trend-panel"
 import { TeamLoadPanel } from "./team-load-panel"
@@ -36,6 +39,19 @@ function LoadingCards() {
 
 export function DashboardHome() {
   const t = useI18n()
+  const router = useRouter()
+  const { session } = useAuth()
+  const canViewOverview = session?.permissions.includes("dashboard.view") ?? false
+  const fallbackPath = useMemo(() => {
+    if (!session || canViewOverview) {
+      return null
+    }
+    const sections = filterDashboardNavForSession(session.permissions, {
+      isPlatformAccount: session.isPlatformAccount,
+      hasActiveTenant: session.activeTenantId > 0,
+    })
+    return sections.flatMap((section) => section.items).find((item) => item.url !== "/dashboard")?.url ?? null
+  }, [canViewOverview, session])
   const [range, setRange] = useState<DashboardRange>("7d")
   const [data, setData] = useState<DashboardOverview | null>(null)
   const [loading, setLoading] = useState(true)
@@ -43,6 +59,10 @@ export function DashboardHome() {
 
   const loadData = useCallback(
     async (nextRange: DashboardRange, showRefreshing = false) => {
+      if (!canViewOverview) {
+        setLoading(false)
+        return
+      }
       if (showRefreshing) {
         setRefreshing(true)
       } else {
@@ -58,12 +78,26 @@ export function DashboardHome() {
         setRefreshing(false)
       }
     },
-    [t]
+    [canViewOverview, t]
   )
 
   useEffect(() => {
+    if (!canViewOverview) {
+      if (fallbackPath) {
+        router.replace(fallbackPath)
+      }
+      return
+    }
     void loadData(range)
-  }, [loadData, range])
+  }, [canViewOverview, fallbackPath, loadData, range, router])
+
+  if (!canViewOverview) {
+    return (
+      <div className="flex min-h-60 items-center justify-center p-6 text-sm text-muted-foreground">
+        {fallbackPath ? t("common.loading") : t("common.noAccessibleModules")}
+      </div>
+    )
+  }
 
   const rangeOptions: Array<{ value: DashboardRange; label: string }> = [
     { value: "today", label: t("dashboardHome.rangeToday") },

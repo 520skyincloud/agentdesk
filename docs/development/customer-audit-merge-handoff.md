@@ -2498,3 +2498,59 @@ git diff --check
 - 开始前已 fetch。`origin/codex/ai-billing@f2d2da4` 不修改本批页面、Provider 或测试，无共享契约、同文件和 migration 冲突，不需要 rebase。
 - 本批不修改 AI 回复 runtime、模型供应商、token、usage、计费或 ReplyIntentConfig。运行日志只改变可选筛选数据加载，不改变日志生成和查询语义。
 - 页面、Provider 和测试可独立回滚，无数据回滚；回滚会恢复通知只读跳转失败和运行日志辅助接口 403。
+
+## 第 47 批：运营总览显式权限（2026-07-14）
+
+### 目标与复用判断
+
+- `/api/dashboard/dashboard/overview` 原先只要求 ActiveTenant，侧边栏总览入口也没有 `requiredPermission`。这构成未进入权限管理的隐藏读取能力，与“所有权限可见、角色绑定权限、账号只绑定角色”的规则冲突。
+- 总览是现有运营首页，不新增平行审计页面或第二套指标；本批只为它建立 `dashboard.view` 并复用现有角色、权限列表、导航过滤和 Tenant 上下文。
+- 客服默认需要查看今日运营信息，因此内置客服角色获得该权限；门店员工不默认获得公司级汇总。
+
+### 文件、权限与 migration
+
+```text
+internal/pkg/constants/auth.go
+internal/handlers/dashboard/dashboard_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+internal/migration/000054_sync_dashboard_overview_permission.go
+internal/migration/000054_sync_dashboard_overview_permission_test.go
+web/app/dashboard/_components/dashboard-home.tsx
+web/app/dashboard/_components/dashboard-home-permission.test.mjs
+web/lib/navigation.tsx
+web/lib/navigation.test.mjs
+web/lib/permission-i18n.ts
+web/lib/permission-i18n.test.mjs
+web/messages/zh-CN.json
+web/messages/en-US.json
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- `dashboard.view` 是 tenant scope、GET、`/api/dashboard/dashboard/overview` 的可分配权限。Handler 同时要求该权限和 ActiveTenant。
+- migration 54 复用 `ensurePermissions/ensureRoles/ensureRolePermissions` 幂等同步。默认关系为超级管理员、管理员、公司主管、客服组长和客服有权，门店员工无权；不改自定义角色。
+- 既有 `internal/pkg/constants/auth_test.go` 继续校验租户内置角色不能获得 platform scope 权限，本批定向和全量测试均包含该检查。
+- 总览导航按权限隐藏。无权限访问 `/dashboard` 时，前端复用 `filterDashboardNavForSession` 找到第一个有权模块并替换路由，同时在跳转前不请求 overview。
+- 没有 model、AutoMigrate、DTO、enum、业务 API 路径、指标查询、WebSocket、AI 回复、模型、token、usage 或计费变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/_components/dashboard-home.tsx lib/navigation.tsx lib/permission-i18n.ts
+git diff --check
+```
+
+- 全量 Go、vet、96 项前端回归、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过。
+- Node 测试仅保留既有 typeless package warning；目标 ESLint 无 error/warning。
+- 新测试固定无权限和无公司上下文均不可读、migration 可重复执行、门店员工不获得默认权限、总览入口按权限显隐及首页无权回退。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch。`origin/main` 最高 migration 20，`origin/codex/ai-billing@f2d2da4` 最高 33，本分支此前最高 53，migration 54 无编号冲突。
+- 同文件为 `web/lib/navigation.tsx`、`web/messages/zh-CN.json` 和 `web/messages/en-US.json`。AI 分支在导航后部增加意图行业入口并在 nav 文案区增加翻译；本批在导航首项增加 `dashboard.view` 并在 common 区增加无模块状态，当前区块和语义不重叠。合并后必须同时保留并重跑导航测试与 build。
+- 本批可独立回滚代码；数据库中已同步的额外权限和角色关系对旧代码无害，不使用破坏性 DML 回退。若未来取消权限，应通过新的幂等 migration 停用/解绑。

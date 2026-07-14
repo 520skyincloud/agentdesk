@@ -93,6 +93,9 @@ var (
 	PermissionTenantRegistrationView   = Permission{Name: "查看邀请注册账号", Code: "tenantRegistration.view", Type: "api", GroupName: "tenantRegistration", Method: "ANY", APIPath: "/api/dashboard/tenant-registration/list", SortNo: 400}
 	PermissionTenantRegistrationReview = Permission{Name: "审核邀请注册账号", Code: "tenantRegistration.review", Type: "api", GroupName: "tenantRegistration", Method: "POST", APIPath: "/api/dashboard/tenant-registration/review", SortNo: 405}
 
+	// 运营总览相关权限
+	PermissionDashboardView = Permission{Name: "查看运营总览", Code: "dashboard.view", Type: "api", GroupName: "dashboard", Method: "GET", APIPath: "/api/dashboard/dashboard/overview", SortNo: 406}
+
 	// 客服会话相关权限
 	PermissionConversationView         = Permission{Name: "查看会话", Code: "conversation.view", Type: "api", GroupName: "conversation", Method: "ANY", APIPath: "/api/dashboard/conversation/list", SortNo: 410}
 	PermissionConversationAssign       = Permission{Name: "分配会话", Code: "conversation.assign", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/assign", SortNo: 430}
@@ -244,6 +247,7 @@ var Permissions = []Permission{
 	PermissionTenantInviteRotate,
 	PermissionTenantRegistrationView,
 	PermissionTenantRegistrationReview,
+	PermissionDashboardView,
 	PermissionConversationView,
 	PermissionConversationAssign,
 	PermissionConversationTransfer,
@@ -368,6 +372,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionSessionView, PermissionSessionRevoke,
 		PermissionTenantView, PermissionTenantUpdate, PermissionTenantUpdateStatus, PermissionTenantSwitch,
 		PermissionTenantInviteView, PermissionTenantInviteRotate, PermissionTenantRegistrationView, PermissionTenantRegistrationReview,
+		PermissionDashboardView,
 		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionConversationTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
@@ -394,6 +399,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionUserView, PermissionUserCreate, PermissionUserUpdate, PermissionUserDelete, PermissionUserAssignRole,
 		PermissionRoleView, PermissionPermissionView,
 		PermissionTenantInviteView, PermissionTenantInviteRotate, PermissionTenantRegistrationView, PermissionTenantRegistrationReview,
+		PermissionDashboardView,
 		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionConversationTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
@@ -417,6 +423,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionUserView,
 		PermissionRoleView,
 		PermissionPermissionView,
+		PermissionDashboardView,
 		PermissionConversationView, PermissionConversationClose, PermissionConversationSend, PermissionConversationTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
@@ -437,6 +444,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionUserView,
 		PermissionRoleView,
 		PermissionPermissionView,
+		PermissionDashboardView,
 		PermissionConversationView,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,

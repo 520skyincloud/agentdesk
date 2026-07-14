@@ -141,6 +141,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         titleKey: "nav.overview",
         url: "/dashboard",
         icon: <LayoutDashboardIcon />,
+        requiredPermission: "dashboard.view",
       },
       {
         titleKey: "nav.conversations",

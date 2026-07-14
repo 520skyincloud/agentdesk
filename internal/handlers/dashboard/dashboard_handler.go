@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/services"
 
@@ -11,6 +12,10 @@ import (
 )
 
 func DashboardGetOverview(ctx *gin.Context) {
+	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionDashboardView); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	tenantCtx, err := services.AuthService.RequireTenantContext(ctx)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)

@@ -473,6 +473,30 @@ func TestCompanyAndChannelListHandlersRequireActiveTenant(t *testing.T) {
 	}
 }
 
+func TestDashboardOverviewRequiresExplicitPermission(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+		UserID:         201,
+		Username:       "dashboard-without-permission",
+		TenantID:       9,
+		ActiveTenantID: 9,
+	})
+
+	DashboardGetOverview(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
+func TestDashboardOverviewRequiresActiveTenant(t *testing.T) {
+	ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+		UserID:            202,
+		Username:          "platform-dashboard-viewer",
+		IsPlatformAccount: true,
+		Permissions:       []string{constants.PermissionDashboardView.Code},
+	})
+
+	DashboardGetOverview(ctx)
+	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+}
+
 func TestCustomerListHandlersRequireActiveTenant(t *testing.T) {
 	tests := []struct {
 		name    string

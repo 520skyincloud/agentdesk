@@ -1723,3 +1723,28 @@ git diff --check
 - 全量 Go、vet、94 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；新增测试固定通知 view/update 分界、跳转独立性和运行日志的 `aiAgent.view` 可选筛选。
 - `origin/codex/ai-billing@f2d2da4` 不修改本批页面、Provider 或测试，无同文件和 migration 冲突，不需要 rebase。
 - 本批可独立回滚前端与测试且无需数据回滚；回滚会重新使只读通知无法可靠跳转，并让无 `aiAgent.view` 的运行日志页面调用无权接口。
+
+## 47. 当前实施检查点：运营总览显式权限（2026-07-14）
+
+本检查点补齐后台首页原先的隐式访问。运营总览包含全公司会话、工单、客服负载和 AI 运行汇总，不能只凭“账号已登录并选中公司”开放；它必须像其他模块一样进入权限管理、角色配置、导航显隐和后端鉴权链路。
+
+### 权限与默认角色
+
+- 新增租户级 `dashboard.view`，名称为“查看运营总览”，对应 `GET /api/dashboard/dashboard/overview`；权限在权限管理页面可见，也可由平台管理员通过角色管理赋予或收回。
+- 超级管理员通过全权限集合获得该权限；管理员、公司主管、客服组长和客服的内置角色默认获得。客服是否能查看今日运营信息由该权限决定，不再由前端角色名特判。
+- 门店员工不默认获得公司级总览，避免把全公司客服负载和运营指标隐式暴露给门店账号；需要时必须通过合规角色显式赋予。
+- migration 54 幂等同步权限和内置角色关系，不覆盖自定义角色的选择，也不恢复账号级权限分配。
+
+### 接口、导航与登录落点
+
+- `DashboardGetOverview` 先校验 `dashboard.view`，再校验 `ActiveTenantID`；仅有权限但没有当前公司、或只有公司上下文但没有权限，均不能读取汇总。
+- 侧边栏“后台总览”按 `dashboard.view` 显隐。无该权限的账号直接进入 `/dashboard` 时不会请求总览接口，而是按同一导航权限规则跳到第一个可访问模块。
+- 若账号没有任何可访问后台模块，首页显示明确空权限状态，不制造循环跳转；该状态不代替后端鉴权。
+- 权限管理英文显示补充 `Operations overview / View operations overview`，中文继续使用后端权限名称。
+
+### 契约、验证与合并
+
+- 本批新增权限常量和 DML migration 54；没有 model、AutoMigrate、request/response DTO、enum、业务数据字段、WebSocket payload 或 JsonResult 变化，也不修改总览指标计算口径。
+- 全量 Go、vet、96 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；测试覆盖后端权限/公司上下文双门槛、migration 幂等与默认角色范围、导航显隐和无权回退。
+- `origin/codex/ai-billing@f2d2da4` 同时修改 `web/lib/navigation.tsx` 和双语资源：AI 分支新增意图行业入口及其文案，本批修改总览入口和 `common.noAccessibleModules`，区块和语义不重叠。最终合并必须同时保留；AI 分支最高 migration 33，与 54 不冲突。
+- 回滚代码后数据库中多出的内置权限及角色关系不会破坏旧版本，不应通过破坏性 SQL 删除；若产品决定撤销总览权限，应先停用权限和清理角色关系，再单独做幂等 DML。
