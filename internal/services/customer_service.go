@@ -146,17 +146,23 @@ func (s *customerService) LoadPresentationData(customers []models.Customer, incl
 	companyIDs := make([]int64, 0, len(customers))
 	customerIDs := make([]int64, 0, len(customers))
 	tenantIDs := make([]int64, 0, len(customers))
+	companyTenantByID := make(map[int64]int64, len(customers))
+	customerTenantByID := make(map[int64]int64, len(customers))
 	for i := range customers {
 		companyIDs = appendPositive(companyIDs, customers[i].CompanyID)
 		customerIDs = appendPositive(customerIDs, customers[i].ID)
 		tenantIDs = appendPositive(tenantIDs, customers[i].TenantID)
+		recordExpectedTenant(companyTenantByID, customers[i].CompanyID, customers[i].TenantID)
+		recordExpectedTenant(customerTenantByID, customers[i].ID, customers[i].TenantID)
 	}
 	tenantIDs = uniquePositive(tenantIDs)
 	companyIDs = uniquePositive(companyIDs)
 	if len(companyIDs) > 0 {
 		companies := repositories.CompanyRepository.Find(sqls.DB(), sqls.NewCnd().In("id", companyIDs).In("tenant_id", tenantIDs))
 		for i := range companies {
-			data.CompaniesByID[companies[i].ID] = &companies[i]
+			if companyTenantByID[companies[i].ID] == companies[i].TenantID {
+				data.CompaniesByID[companies[i].ID] = &companies[i]
+			}
 		}
 	}
 	if !includeStoreRelations || len(customerIDs) == 0 {
@@ -170,25 +176,50 @@ func (s *customerService) LoadPresentationData(customers []models.Customer, incl
 		Desc("id"))
 	storeIDs := make([]int64, 0, len(relations))
 	instanceIDs := make([]int64, 0, len(relations))
+	storeTenantByID := make(map[int64]int64, len(relations))
+	instanceTenantByID := make(map[int64]int64, len(relations))
 	for i := range relations {
 		relation := relations[i]
+		if customerTenantByID[relation.CustomerID] != relation.TenantID {
+			continue
+		}
 		data.StoreRelationsByCustomerID[relation.CustomerID] = append(data.StoreRelationsByCustomerID[relation.CustomerID], relation)
 		storeIDs = appendPositive(storeIDs, relation.StoreID)
 		instanceIDs = appendPositive(instanceIDs, relation.WxWorkInstanceID)
+		recordExpectedTenant(storeTenantByID, relation.StoreID, relation.TenantID)
+		recordExpectedTenant(instanceTenantByID, relation.WxWorkInstanceID, relation.TenantID)
 	}
 	if storeIDs = uniquePositive(storeIDs); len(storeIDs) > 0 {
-		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().In("id", storeIDs))
+		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().In("id", storeIDs).In("tenant_id", tenantIDs))
 		for i := range stores {
-			data.StoresByID[stores[i].ID] = &stores[i]
+			if storeTenantByID[stores[i].ID] == stores[i].TenantID {
+				data.StoresByID[stores[i].ID] = &stores[i]
+			}
 		}
 	}
 	if instanceIDs = uniquePositive(instanceIDs); len(instanceIDs) > 0 {
-		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().In("id", instanceIDs))
+		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().In("id", instanceIDs).In("tenant_id", tenantIDs))
 		for i := range instances {
-			data.WxWorkInstancesByID[instances[i].ID] = &instances[i]
+			if instanceTenantByID[instances[i].ID] == instances[i].TenantID {
+				data.WxWorkInstancesByID[instances[i].ID] = &instances[i]
+			}
 		}
 	}
 	return data
+}
+
+func recordExpectedTenant(expected map[int64]int64, id, tenantID int64) {
+	if id <= 0 || tenantID <= 0 {
+		return
+	}
+	current, exists := expected[id]
+	if !exists {
+		expected[id] = tenantID
+		return
+	}
+	if current != tenantID {
+		expected[id] = 0
+	}
 }
 
 func (s *customerService) EnsureExternalCustomer(ctx *sqls.TxContext, tenantID int64, externalUser openidentity.ExternalUser) (int64, error) {

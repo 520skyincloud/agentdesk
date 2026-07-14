@@ -80,11 +80,11 @@ func TestLoadCustomerPresentationDataAggregatesRelatedModels(t *testing.T) {
 	if err := db.Create(company).Error; err != nil {
 		t.Fatalf("create company: %v", err)
 	}
-	store := &models.Store{StoreCode: "presentation-store", Name: "测试门店", Status: enums.StatusOk}
+	store := &models.Store{TenantID: 101, StoreCode: "presentation-store", Name: "测试门店", Status: enums.StatusOk}
 	if err := db.Create(store).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	instance := &models.WxWorkProtocolInstance{Guid: "presentation-instance", StoreID: store.ID, EmployeeName: "测试员工号", Status: enums.StatusOk}
+	instance := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "presentation-instance", StoreID: store.ID, EmployeeName: "测试员工号", Status: enums.StatusOk}
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create wxwork instance: %v", err)
 	}
@@ -105,6 +105,52 @@ func TestLoadCustomerPresentationDataAggregatesRelatedModels(t *testing.T) {
 	}
 	if relations := data.StoreRelationsByCustomerID[customer.ID]; len(relations) != 1 || relations[0].ID != relation.ID {
 		t.Fatalf("unexpected customer relations: %+v", relations)
+	}
+}
+
+func TestLoadCustomerPresentationDataRejectsCrossTenantEnrichment(t *testing.T) {
+	db := setupCustomerServiceTestDB(t)
+	foreignCompany := &models.Company{TenantID: 202, Name: "其他租户企业", Status: enums.StatusOk}
+	if err := db.Create(foreignCompany).Error; err != nil {
+		t.Fatalf("create foreign company: %v", err)
+	}
+	foreignStore := &models.Store{TenantID: 202, StoreCode: "foreign-presentation-store", Name: "其他租户门店", Status: enums.StatusOk}
+	if err := db.Create(foreignStore).Error; err != nil {
+		t.Fatalf("create foreign store: %v", err)
+	}
+	foreignInstance := &models.WxWorkProtocolInstance{
+		TenantID: 202, Guid: "foreign-presentation-instance", StoreID: foreignStore.ID,
+		EmployeeName: "其他租户员工号", Status: enums.StatusOk,
+	}
+	if err := db.Create(foreignInstance).Error; err != nil {
+		t.Fatalf("create foreign wxwork instance: %v", err)
+	}
+	customer := &models.Customer{
+		TenantID: 101, Name: "当前租户客户", CompanyID: foreignCompany.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(customer).Error; err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	relation := &models.StoreCustomerRelation{
+		TenantID: 101, CustomerID: customer.ID, StoreID: foreignStore.ID,
+		WxWorkInstanceID: foreignInstance.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(relation).Error; err != nil {
+		t.Fatalf("create corrupt cross-tenant store relation: %v", err)
+	}
+
+	data := services.CustomerService.LoadPresentationData([]models.Customer{*customer}, true)
+	if data.CompaniesByID[foreignCompany.ID] != nil {
+		t.Fatalf("foreign company leaked into customer presentation data")
+	}
+	if data.StoresByID[foreignStore.ID] != nil {
+		t.Fatalf("foreign store leaked into customer presentation data")
+	}
+	if data.WxWorkInstancesByID[foreignInstance.ID] != nil {
+		t.Fatalf("foreign wxwork instance leaked into customer presentation data")
+	}
+	if relations := data.StoreRelationsByCustomerID[customer.ID]; len(relations) != 1 || relations[0].ID != relation.ID {
+		t.Fatalf("expected local relation to remain visible without foreign enrichment, got %+v", relations)
 	}
 }
 

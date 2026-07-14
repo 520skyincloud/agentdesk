@@ -3187,3 +3187,38 @@ git diff --check
 - 失败子进程使用缺少组合唯一索引且含两条同租户重名 Company 的 SQLite，确认退出非零并且数据仍为两条；成功子进程使用显式 config 完成全量迁移，确认退出 0 且存在成功 migration 记录。
 - 没有 model、AutoMigrate 契约、DML migration 版本、DTO、enum、API、路由、WebSocket、权限、页面或 AI runtime 变化。
 - `origin/codex/ai-billing@f2d2da4` 不修改 `cmd/migration` 或 Makefile，无同文件冲突、不需要 migration 编号协调。可独立回滚；回滚不会修改数据库，但会重新让失败命令返回 0，因此不建议回滚。
+
+## 第 61 批：客户展示补充数据逐关系租户校验（2026-07-15）
+
+### 目标与实现
+
+- 继续运行时租户边界审计。实际 Dashboard 链路为 Customer handler 按活动租户取 Customer，再由 `LoadPresentationData` 聚合 Company、StoreCustomerRelation、Store 和 WxWorkProtocolInstance，builder 将门店与员工号名称写入客户响应。
+- 原聚合对 Store 和 WxWorkProtocolInstance 只有 ID 条件，脏外键可把其他租户名称带入当前租户响应；Company 的集合级租户条件也不能证明混合批次中每个 Customer 与 Company 同租户。
+- 新实现记录每个 Customer/Company/Store/WxWorkProtocolInstance ID 的预期 TenantID：关系必须先与所属 Customer 同租户，父记录还必须与关系的预期租户一致。矛盾证据标记为不可补充，避免未来跨租户批量调用时因租户集合条件形成交叉匹配。
+- 本租户 StoreCustomerRelation 不因父引用错误而被读取链路删除或隐藏，响应保留关系本身但不补外租户名称；后续清理通过 `tenant_integrity_audit` 和单独 DML 修复完成。
+
+### 文件与验证
+
+```text
+internal/services/customer_service.go
+internal/services/customer_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^TestLoadCustomerPresentationData' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 正常 tenant 101 Company/Store/Instance/Customer/Relation 聚合继续完整返回。
+- 跨租户用例以 tenant 101 Customer/Relation 指向 tenant 202 Company/Store/Instance，确认三个外租户对象均不进入 presentation maps，而本地关系保留。聚焦 race、services、全仓 Go、vet 和 diff 检查通过。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端、模型调用、token、usage 或计费变化。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 不包含本批 `LoadPresentationData`，相对共同基线也未修改 `internal/services/customer_service.go`，当前无同文件冲突。最终合并后仍须确认本批实现、回归测试和之前 Customer TenantID 约束全部保留。
+- 不需要 migration 编号协调；当前不要求 rebase。可独立回滚四个文件中的本批段落与代码，但回滚会重新暴露脏跨租户补充数据。数据清理必须另开可审查批次，不能把读取路径改成自动修复器。

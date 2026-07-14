@@ -2020,3 +2020,20 @@ MySQL 索引演练发现 `cmd/migration` 在配置、连接或迁移失败时只
 - 命令在退出前关闭连接池。该关闭只影响独立进程，不改变 server 启动时持有的数据库生命周期。
 - 子进程测试制造同租户重复 Company 数据，证明 AutoMigrate 失败时进程返回非零且原数据不变；另一子进程通过显式 config 对新 SQLite 完整迁移，证明成功退出 0 且 migration 成功记录存在。
 - 本批只修改 `cmd/migration`、Makefile、测试和文档；没有 model、DDL/DML migration、DTO、enum、API、权限、前端或 AI/计费变化。AI 分支没有同文件修改，可独立合并和回滚。
+
+## 61. 当前实施检查点：客户展示补充数据逐关系租户校验（2026-07-15）
+
+客户列表、详情和门店关系接口已经按活动租户读取 Customer 与 StoreCustomerRelation，但 `LoadPresentationData` 随后仅按关联 ID 全局批量读取 Store 和 WxWorkProtocolInstance。历史脏关系若指向其他租户，当前租户响应会带出对方门店名称和企微员工号名称；Company 虽有允许租户集合条件，混合租户批次仍缺少逐条匹配证据。
+
+### 数据边界与现有链路复用
+
+- 本批复用现有 Customer handler、service 聚合和 builder，不新增页面、接口、状态或平行模型。Customer 确定 Company 的预期租户，StoreCustomerRelation 必须与所属 Customer 同租户，关系再确定 Store 和 WxWorkProtocolInstance 的预期租户。
+- Company、Store 和 WxWorkProtocolInstance 查询同时增加租户集合条件，返回后再逐 ID 校验预期 TenantID。同一 ID 出现矛盾租户证据时拒绝补充，避免未来跨租户批量调用时因 `IN (tenantIDs...)` 形成交叉匹配。
+- 当前租户自己的关系记录继续返回，但跨租户 Company/Store/WxWorkProtocolInstance 不进入 builder 上下文，因此不显示外租户名称。读取接口不隐式删除或修复历史记录，数据问题继续由只读完整性审计报告并通过独立 DML 批次处理。
+
+### 验证、合并与回滚
+
+- 修改 `internal/services/customer_service.go` 和 `internal/services/customer_service_test.go`，并同步两份权威文档。没有 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限、WebSocket、前端或 AI runtime 变化。
+- 双租户回归构造 tenant 101 Customer/Relation 指向 tenant 202 Company/Store/WxWorkProtocolInstance，确认关系仍可见而三个外租户展示对象均被拒绝；正常同租户聚合继续通过。聚焦 race、services 全包、全仓 Go、`go vet ./...` 和 diff 检查通过。
+- `origin/codex/ai-billing@f2d2da4` 没有本批展示聚合实现，相对共同基线也未修改 `customer_service.go`，当前无同文件冲突。最终合并后仍须确认本分支租户版 Customer service 和本批回归测试被保留；本批不需要 migration 排序或前置 rebase。
+- 可独立回滚 service 与测试，不涉及数据库回滚；回滚会恢复脏跨租户关系的展示信息泄漏。若需清理脏记录，应依据只读审计结果另做幂等、可审查的数据修复，不能在读取路径自动改写。
