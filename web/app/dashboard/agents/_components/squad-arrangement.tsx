@@ -53,6 +53,7 @@ type SquadArrangementProps = {
   canCreate: boolean
   canUpdate: boolean
   canDelete: boolean
+  canSchedule: boolean
 }
 
 function DraggableAgent({ profile, selected, disabled = false, onSelectedChange }: {
@@ -98,7 +99,7 @@ function AgentDragPreview({ profile }: { profile: AdminAgentProfile }) {
   )
 }
 
-function SquadContainer({ squad, profiles, canUpdate = false, canDelete = false, onRemove, onEdit, onDelete, onSchedule }: {
+function SquadContainer({ squad, profiles, canUpdate = false, canDelete = false, canSchedule = false, onRemove, onEdit, onDelete, onSchedule }: {
   squad: AdminAgentTeamSquad
   profiles: AdminAgentProfile[]
   onRemove: (profileId: number) => void
@@ -107,6 +108,7 @@ function SquadContainer({ squad, profiles, canUpdate = false, canDelete = false,
   onSchedule: () => void
   canUpdate?: boolean
   canDelete?: boolean
+  canSchedule?: boolean
 }) {
   const t = useI18n()
   const { setNodeRef, isOver } = useDroppable({ id: `squad-${squad.id}`, data: { squadId: squad.id } })
@@ -125,7 +127,7 @@ function SquadContainer({ squad, profiles, canUpdate = false, canDelete = false,
           {squad.nextScheduleStartAt ? <p className="mt-1 text-xs text-muted-foreground">{t("agentProfile.nextDuty", { time: formatDateTime(squad.nextScheduleStartAt) })}</p> : null}
         </div>
         <div className="flex shrink-0 gap-1">
-          {canUpdate ? <Button variant="ghost" size="icon-sm" onClick={onSchedule} aria-label={t("agentProfile.scheduleSquad")}><CalendarDaysIcon /></Button> : null}
+          {canSchedule ? <Button variant="ghost" size="icon-sm" onClick={onSchedule} aria-label={t("agentProfile.scheduleSquad")}><CalendarDaysIcon /></Button> : null}
           {canUpdate ? <Button variant="ghost" size="icon-sm" onClick={onEdit} aria-label={t("agentProfile.editSquad")}><PencilIcon /></Button> : null}
           {canDelete ? <Button variant="ghost" size="icon-sm" onClick={onDelete} aria-label={t("agentProfile.deleteSquad")}><Trash2Icon /></Button> : null}
         </div>
@@ -144,7 +146,7 @@ function SquadContainer({ squad, profiles, canUpdate = false, canDelete = false,
   )
 }
 
-export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate, canDelete }: SquadArrangementProps) {
+export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate, canDelete, canSchedule }: SquadArrangementProps) {
   const t = useI18n()
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
   const [profiles, setProfiles] = useState<AdminAgentProfile[]>([])
@@ -193,6 +195,10 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
   }, [keyword, profiles])
 
   async function saveMembers(squad: AdminAgentTeamSquad, memberProfileIds: number[], undoIds?: number[]) {
+    if (!canUpdate) {
+      toast.error("无权调整客服小组成员")
+      return
+    }
     const uniqueIds = [...new Set(memberProfileIds)]
     setSquads((items) => items.map((item) => item.id === squad.id ? { ...item, memberProfileIds: uniqueIds } : item))
     try {
@@ -207,11 +213,13 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
   }
 
   function handleDragStart(event: DragStartEvent) {
+    if (!canUpdate) return
     setActiveProfileId(Number(event.active.data.current?.profileId) || 0)
   }
 
   function handleDragEnd(event: DragEndEvent) {
     setActiveProfileId(0)
+    if (!canUpdate) return
     const profileId = Number(event.active.data.current?.profileId)
     const squadId = Number(event.over?.data.current?.squadId)
     const squad = squads.find((item) => item.id === squadId)
@@ -220,6 +228,10 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
   }
 
   async function handleSaveSquad(payload: CreateAdminAgentTeamSquadPayload) {
+    if (editingSquad ? !canUpdate : !canCreate) {
+      toast.error(editingSquad ? "无权更新客服小组" : "无权创建客服小组")
+      return
+    }
     setSaving(true)
     try {
       if (editingSquad) await updateAgentTeamSquad({ id: editingSquad.id, ...payload })
@@ -234,6 +246,10 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
   }
 
   async function handleDelete(squad: AdminAgentTeamSquad) {
+    if (!canDelete) {
+      toast.error("无权删除客服小组")
+      return
+    }
     if (!window.confirm(t("agentProfile.confirmDeleteSquad", { name: squad.name }))) return
     try {
       await deleteAgentTeamSquad(squad.id)
@@ -243,6 +259,10 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
   }
 
   function openSchedule(squad: AdminAgentTeamSquad) {
+    if (!canSchedule) {
+      toast.error("无权为客服小组创建排班")
+      return
+    }
     window.location.href = `/dashboard/agent-team-schedules?teamId=${team.id}&squadId=${squad.id}&action=create`
   }
 
@@ -261,7 +281,7 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
               </div>
               <Button className="w-full shrink-0 sm:w-auto" disabled={!canUpdate || !bulkSquadId || selectedIds.length === 0} onClick={() => {
                 const squad = squads.find((item) => String(item.id) === bulkSquadId)
-                if (squad) void saveMembers(squad, [...squad.memberProfileIds, ...selectedIds], squad.memberProfileIds)
+                if (canUpdate && squad) void saveMembers(squad, [...squad.memberProfileIds, ...selectedIds], squad.memberProfileIds)
               }}>{t("agentProfile.addSelectedToSquad", { count: selectedIds.length })}</Button>
             </div>
           </header>
@@ -271,10 +291,10 @@ export function SquadArrangement({ team, createRequestKey, canCreate, canUpdate,
         </section>
         <section className="min-h-0 space-y-3 pr-1 xl:overflow-y-auto">
           <div className="flex items-center justify-between gap-3"><div><h2 className="font-medium">{t("agentProfile.squadArrangement")}</h2><p className="text-xs text-muted-foreground">{t("agentProfile.squadArrangementSummary", { count: squads.length })}</p></div>{canCreate ? <Button className="shrink-0 whitespace-nowrap" onClick={() => { setEditingSquad(null); setDialogOpen(true) }}><PlusIcon />{t("agentProfile.newSquad")}</Button> : null}</div>
-          {squads.length ? squads.map((squad) => <SquadContainer key={squad.id} squad={squad} profiles={squad.memberProfileIds.map((id) => profileMap.get(id)).filter(Boolean) as AdminAgentProfile[]} canUpdate={canUpdate} canDelete={canDelete} onRemove={(profileId) => void saveMembers(squad, squad.memberProfileIds.filter((id) => id !== profileId), squad.memberProfileIds)} onEdit={() => { setEditingSquad(squad); setDialogOpen(true) }} onDelete={() => void handleDelete(squad)} onSchedule={() => openSchedule(squad)} />) : <div className="border border-dashed py-16 text-center text-muted-foreground">{t("agentProfile.noSquads")}</div>}
+          {squads.length ? squads.map((squad) => <SquadContainer key={squad.id} squad={squad} profiles={squad.memberProfileIds.map((id) => profileMap.get(id)).filter(Boolean) as AdminAgentProfile[]} canUpdate={canUpdate} canDelete={canDelete} canSchedule={canSchedule} onRemove={(profileId) => void saveMembers(squad, squad.memberProfileIds.filter((id) => id !== profileId), squad.memberProfileIds)} onEdit={() => { if (canUpdate) { setEditingSquad(squad); setDialogOpen(true) } }} onDelete={() => void handleDelete(squad)} onSchedule={() => openSchedule(squad)} />) : <div className="border border-dashed py-16 text-center text-muted-foreground">{t("agentProfile.noSquads")}</div>}
         </section>
       </div>
-      <SquadEditDialog open={dialogOpen} saving={saving} teamId={team.id} item={editingSquad} profiles={profiles} onOpenChange={setDialogOpen} onSubmit={handleSaveSquad} />
+      <SquadEditDialog open={dialogOpen && (editingSquad ? canUpdate : canCreate)} saving={saving} teamId={team.id} item={editingSquad} profiles={profiles} onOpenChange={setDialogOpen} onSubmit={handleSaveSquad} />
       {activeProfile ? createPortal(
         <DragOverlay dropAnimation={null}>
           <AgentDragPreview profile={activeProfile} />

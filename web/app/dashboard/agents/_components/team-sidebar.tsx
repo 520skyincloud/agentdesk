@@ -62,12 +62,15 @@ export function AgentTeamSidebar({
   const permissions = new Set(session?.permissions ?? []);
   const roles = new Set(session?.roles ?? []);
   const canCreateTeam =
-    (roles.has("super_admin") || roles.has("admin")) &&
+    (roles.has("super_admin") || roles.has("admin") || roles.has("tenant_admin")) &&
     permissions.has("agentTeam.create");
   const canUpdateTeam = permissions.has("agentTeam.update");
   const canDeleteTeam = permissions.has("agentTeam.delete");
   const canCreateSquad = permissions.has("agentTeam.create");
-  const canChangeLeader = roles.has("super_admin") || roles.has("admin");
+  const canChangeLeader =
+    roles.has("super_admin") ||
+    roles.has("admin") ||
+    roles.has("tenant_admin");
   const statusTabs = getStatusTabs(t);
   const [keyword, setKeyword] = useState("");
   const [statusFilter, setStatusFilter] =
@@ -133,11 +136,19 @@ export function AgentTeamSidebar({
   }, [keyword, statusFilter, teams]);
 
   function openCreateDialog() {
+    if (!canCreateTeam) {
+      toast.error("无权创建客服组");
+      return;
+    }
     setEditingItem(null);
     setDialogOpen(true);
   }
 
   function openEditDialog(item: AdminAgentTeam) {
+    if (!canUpdateTeam || !item.manageable) {
+      toast.error("无权更新客服组");
+      return;
+    }
     setEditingItem(item);
     setDialogOpen(true);
   }
@@ -154,6 +165,10 @@ export function AgentTeamSidebar({
 
   async function handleSubmit(payload: CreateAdminAgentTeamPayload) {
     if (saving) {
+      return;
+    }
+    if (editingItem ? !canUpdateTeam || !editingItem.manageable : !canCreateTeam) {
+      toast.error(editingItem ? "无权更新客服组" : "无权创建客服组");
       return;
     }
     setSaving(true);
@@ -176,6 +191,10 @@ export function AgentTeamSidebar({
   }
 
   async function handleDelete(item: AdminAgentTeam) {
+    if (!canDeleteTeam || !item.manageable) {
+      toast.error("无权删除客服组");
+      return;
+    }
     setActionLoadingId(item.id);
     try {
       await deleteAgentTeam(item.id);
@@ -308,21 +327,19 @@ export function AgentTeamSidebar({
                         {t("agentProfile.createSquad")}
                       </DropdownMenuItem>
                     ) : null}
-                    <DropdownMenuItem
+                    {canUpdateTeam ? <DropdownMenuItem
                       onClick={() => openEditDialog(item)}
-                      disabled={!canUpdateTeam}
                     >
                       <Pencil />
                       {t("agentProfile.edit")}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
+                    </DropdownMenuItem> : null}
+                    {canDeleteTeam ? <DropdownMenuItem
                       onClick={() => void handleDelete(item)}
-                      disabled={!canDeleteTeam}
                       className="text-destructive focus:text-destructive"
                     >
                       <Trash2Icon />
                       {actionLoadingId === item.id ? t("agentProfile.deleting") : t("agentProfile.delete")}
-                    </DropdownMenuItem>
+                    </DropdownMenuItem> : null}
                   </DropdownMenuContent>
                 </DropdownMenu>
                 ) : null}
@@ -337,10 +354,10 @@ export function AgentTeamSidebar({
         </ScrollArea>
       </div>
       <EditDialog
-        open={dialogOpen}
+        open={dialogOpen && (editingItem ? canUpdateTeam : canCreateTeam)}
         saving={saving}
         itemId={editingItem?.id ?? null}
-        canChangeLeader={canChangeLeader}
+        canChangeLeader={canChangeLeader && (editingItem ? canUpdateTeam : canCreateTeam)}
         onOpenChange={handleDialogOpenChange}
         onSubmit={handleSubmit}
       />

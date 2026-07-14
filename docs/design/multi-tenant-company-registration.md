@@ -1896,3 +1896,22 @@ git diff --check
 - AI 分支新增 FastGPT 文件和图片资源 Tab。图片资源 list/sync/delete 当前分别使用 `knowledgeBase.view/update/delete`，员工号辅助列表还需要 `channel.view`；最终前端必须按这些权限条件加载和显示。
 - AI 分支 FastGPT 文件的初始化、上传和删除 handler 当前错误地只要求 `knowledgeBase.view`。这是合并前阻断项：必须先把读、创建/上传、删除映射到明确可分配权限并补 handler/前端测试，不能把只读权限用于远端写操作，也不能仅靠隐藏按钮补救。
 - AI 分支知识库编辑器新增意图行业选项；该选项只在 `aiConfig.view` 下加载，无权限编辑既有知识库时必须保留 `intentProfileId`，不能以空选项清零。
+
+## 55. 当前实施检查点：客服组织页面动作权限（2026-07-15）
+
+客服档案页继续承担综合客服组、客服资源、小组编排和轻量服务范围配置，不新增平行组织页面。综合客服组负责服务范围与资源池，客服小组负责组内可重复成员编排和排班；客服可同时进入多个小组，这一已确认产品逻辑必须在后续合并中保留。
+
+### 页面职责与权限
+
+- `agent.view` 继续提供客服档案列表。档案新增、编辑、删除分别使用 `agent.create/update/delete`，按钮、操作列和异步函数使用同一权限守卫。
+- 新建客服档案必须同时具备 `agentTeam.view` 和 `user.view`，因为表单需要选择可管理综合组和已存在账号；缺少辅助查看权限时跳过对应接口并禁用选择器，编辑既有记录时保留原 ID。
+- 综合客服组与服务范围使用 `agentTeam.view/create/update/delete`。公司主管 `tenant_admin` 可以参与本租户组长和组织配置，但仍必须拥有权限管理页面赋予的对应动作权限，不引入角色隐藏授权。
+- 客服小组沿用 `agentTeam.create/update/delete`：创建小组用 create，编辑及拖拽/批量调整成员用 update，删除用 delete。只读账号仍可查看小组、成员和当班状态，但不能拖拽或打开写弹窗。
+- 小组排班入口同时要求 `agentTeamSchedule.view + agentTeamSchedule.create`。只拥有排班查看权限时不显示“创建排班”快捷动作，不把查看隐含成写入。
+
+### 验证与合并边界
+
+- 修改客服档案页、综合组侧栏、综合组编辑、客服档案编辑和小组编排组件，新增权限契约测试；没有 Go、model、AutoMigrate、DML migration、DTO、enum、API、路由、WebSocket、权限常量、默认角色、AI runtime、token、usage 或计费变化。
+- 定向 5 项、全前端 116 项、typecheck、目标 ESLint、Next 生产构建、`go vet ./...`、`go test ./... -count=1 -p 1` 和 diff 检查通过。目标 ESLint 仅保留原有客服头像 `<img>` 性能 warning。1280x720 实页检查确认成员、小组和组操作可见，小组双列无横向溢出，控制台无 error/warning。
+- `origin/codex/ai-billing@f2d2da4` 同时修改客服档案页、档案编辑、组编辑和组侧栏，并缺少当前小组页面；其分支状态还会删除小组 handler、repository、service、测试和派单工作台小组能力。客服小组是已确认业务能力，这些删除是合并阻断项，必须手工保留本分支完整小组与派单契约，再叠加 AI 分支字段，禁止整文件选边。
+- 本批可按五个页面组件、权限测试和两份文档整体回滚，不需要数据库处理；回滚会恢复误导性写入口和辅助资源 403，但不应被用来删除既有客服小组业务。

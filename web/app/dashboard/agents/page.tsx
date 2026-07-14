@@ -61,8 +61,13 @@ export default function DashboardAgentsPage() {
   const [activeView, setActiveView] = useState("members");
   const [squadCreateRequestKey, setSquadCreateRequestKey] = useState(0);
   const permissions = new Set(session?.permissions ?? []);
+  const canViewTeams = permissions.has("agentTeam.view");
+  const canViewUsers = permissions.has("user.view");
   const canCreateAgent = Boolean(
-    selectedTeam?.manageable && permissions.has("agent.create"),
+    selectedTeam?.manageable &&
+      canViewTeams &&
+      canViewUsers &&
+      permissions.has("agent.create"),
   );
   const canUpdateAgent = Boolean(
     selectedTeam?.manageable && permissions.has("agent.update"),
@@ -70,6 +75,29 @@ export default function DashboardAgentsPage() {
   const canDeleteAgent = Boolean(
     selectedTeam?.manageable && permissions.has("agent.delete"),
   );
+  const canScheduleSquad =
+    permissions.has("agentTeamSchedule.view") &&
+    permissions.has("agentTeamSchedule.create");
+
+  async function createAgentWithPermission(
+    payload: CreateAdminAgentProfilePayload,
+  ) {
+    if (!canCreateAgent) throw new Error("无权创建客服档案");
+    return createAgentProfile(payload);
+  }
+
+  async function updateAgentWithPermission(
+    item: AdminAgentProfile,
+    payload: CreateAdminAgentProfilePayload,
+  ) {
+    if (!canUpdateAgent) throw new Error("无权更新客服档案");
+    return updateAgentProfile({ id: item.id, ...payload });
+  }
+
+  async function deleteAgentWithPermission(item: AdminAgentProfile) {
+    if (!canDeleteAgent) throw new Error("无权删除客服档案");
+    return deleteAgentProfile(item.id);
+  }
 
   const handleTeamsChange = useCallback((nextTeams: AdminAgentTeam[]) => {
     setSelectedTeam((current) => {
@@ -268,43 +296,47 @@ export default function DashboardAgentsPage() {
 
   return (
     <div className="flex h-[calc(100vh-4rem)] min-h-0 flex-col overflow-hidden lg:flex-row">
-      <div
-        className={`shrink-0 overflow-hidden transition-[width,height] duration-200 ${
-          sidebarCollapsed
-            ? "h-0 w-full lg:h-full lg:w-0"
-            : "h-64 w-full lg:h-full lg:w-80"
-        }`}
-      >
-        <AgentTeamSidebar
-          selectedTeamId={selectedTeam?.id ?? null}
-          onSelectTeam={setSelectedTeam}
-          onTeamsChange={handleTeamsChange}
-          onCreateSquad={(team) => {
-            setSelectedTeam(team);
-            setActiveView("squads");
-            setSquadCreateRequestKey((value) => value + 1);
-          }}
-        />
-      </div>
-      <div className="relative hidden shrink-0 bg-background lg:block">
-        <Button
-          variant="outline"
-          size="icon"
-          className="absolute top-4 left-1/2 z-10 size-7 -translate-x-1/2 rounded-full border-border bg-background shadow-sm"
-          onClick={() => setSidebarCollapsed((value) => !value)}
-          aria-label={
+      {canViewTeams ? (
+        <div
+          className={`shrink-0 overflow-hidden transition-[width,height] duration-200 ${
             sidebarCollapsed
-              ? t("agentProfile.expandTeams")
-              : t("agentProfile.collapseTeams")
-          }
+              ? "h-0 w-full lg:h-full lg:w-0"
+              : "h-64 w-full lg:h-full lg:w-80"
+          }`}
         >
-          {sidebarCollapsed ? (
-            <PanelLeftOpenIcon className="size-3.5" />
-          ) : (
-            <PanelLeftCloseIcon className="size-3.5" />
-          )}
-        </Button>
-      </div>
+          <AgentTeamSidebar
+            selectedTeamId={selectedTeam?.id ?? null}
+            onSelectTeam={setSelectedTeam}
+            onTeamsChange={handleTeamsChange}
+            onCreateSquad={(team) => {
+              setSelectedTeam(team);
+              setActiveView("squads");
+              setSquadCreateRequestKey((value) => value + 1);
+            }}
+          />
+        </div>
+      ) : null}
+      {canViewTeams ? (
+        <div className="relative hidden shrink-0 bg-background lg:block">
+          <Button
+            variant="outline"
+            size="icon"
+            className="absolute top-4 left-1/2 z-10 size-7 -translate-x-1/2 rounded-full border-border bg-background shadow-sm"
+            onClick={() => setSidebarCollapsed((value) => !value)}
+            aria-label={
+              sidebarCollapsed
+                ? t("agentProfile.expandTeams")
+                : t("agentProfile.collapseTeams")
+            }
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpenIcon className="size-3.5" />
+            ) : (
+              <PanelLeftCloseIcon className="size-3.5" />
+            )}
+          </Button>
+        </div>
+      ) : null}
       <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3 sm:p-4 lg:p-6">
         <Tabs value={activeView} onValueChange={setActiveView} className="h-full min-h-0">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -312,11 +344,13 @@ export default function DashboardAgentsPage() {
               <h1 className="truncate text-lg font-semibold">{selectedTeam?.name ?? t("agentProfile.teamTitle")}</h1>
               <p className="text-sm text-muted-foreground">{selectedTeam?.description || t("agentProfile.teamWorkspaceDescription")}</p>
             </div>
-            <TabsList variant="line">
-              <TabsTrigger value="members">{t("agentProfile.memberView")}</TabsTrigger>
-              <TabsTrigger value="squads">{t("agentProfile.squadView")}</TabsTrigger>
-              <TabsTrigger value="scope">{t("agentProfile.scopeView")}</TabsTrigger>
-            </TabsList>
+            {canViewTeams ? (
+              <TabsList variant="line">
+                <TabsTrigger value="members">{t("agentProfile.memberView")}</TabsTrigger>
+                <TabsTrigger value="squads">{t("agentProfile.squadView")}</TabsTrigger>
+                <TabsTrigger value="scope">{t("agentProfile.scopeView")}</TabsTrigger>
+              </TabsList>
+            ) : null}
           </div>
           <TabsContent value="members" className="min-h-0">
           <div className="flex h-full flex-col gap-6">
@@ -347,13 +381,12 @@ export default function DashboardAgentsPage() {
               })
             }
             getItemId={(item) => item.id}
-            createItem={createAgentProfile}
-            updateItem={(item, payload) =>
-              updateAgentProfile({ id: item.id, ...payload })
-            }
-            deleteItem={(item) => deleteAgentProfile(item.id)}
-            canEdit={() => canUpdateAgent}
-            canDelete={() => canDeleteAgent}
+            createItem={createAgentWithPermission}
+            updateItem={updateAgentWithPermission}
+            showCreate={canCreateAgent}
+            showEdit={canUpdateAgent}
+            deleteItem={canDeleteAgent ? deleteAgentWithPermission : undefined}
+            showActionsColumn={canUpdateAgent || canDeleteAgent}
             renderToolbarActions={({ onRefresh, onCreate, loading }) => (
               <>
                 <Button variant="outline" onClick={onRefresh} disabled={loading}>
@@ -412,20 +445,21 @@ export default function DashboardAgentsPage() {
         </div>
           </TabsContent>
           <TabsContent value="squads" className="min-h-0 overflow-y-auto xl:overflow-hidden">
-            {selectedTeam ? (
+            {canViewTeams && selectedTeam ? (
               <SquadArrangement
                 team={selectedTeam}
                 createRequestKey={squadCreateRequestKey}
                 canCreate={selectedTeam.manageable && permissions.has("agentTeam.create")}
                 canUpdate={selectedTeam.manageable && permissions.has("agentTeam.update")}
                 canDelete={selectedTeam.manageable && permissions.has("agentTeam.delete")}
+                canSchedule={canScheduleSquad}
               />
             ) : (
               <div className="py-16 text-center text-muted-foreground">{t("agentProfile.selectTeamFirst")}</div>
             )}
           </TabsContent>
           <TabsContent value="scope" className="min-h-0">
-            {selectedTeam ? (
+            {canViewTeams && selectedTeam ? (
               <div className="grid gap-4 border bg-background p-5 sm:grid-cols-3">
                 <div><div className="text-sm text-muted-foreground">{t("agentProfile.serviceStoreStaff")}</div><div className="mt-1 text-2xl font-semibold tabular-nums">{selectedTeam.storeStaffUserIds.length}</div></div>
                 <div><div className="text-sm text-muted-foreground">{t("agentProfile.serviceWxWorkInstances")}</div><div className="mt-1 text-2xl font-semibold tabular-nums">{selectedTeam.wxWorkInstanceScopeIds.length}</div></div>

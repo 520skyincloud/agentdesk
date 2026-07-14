@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { z } from "zod/v4";
 
 import { OptionCombobox } from "@/components/option-combobox";
+import { useAuth } from "@/components/auth-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -255,6 +256,8 @@ function TeamEditDialogBody({
   onSubmit,
 }: TeamEditDialogBodyProps) {
   const t = useI18n();
+  const { session } = useAuth();
+  const canViewUsers = session?.permissions.includes("user.view") ?? false;
   const [leaders, setLeaders] = useState<AdminUser[]>([]);
   const [storeStaffUsers, setStoreStaffUsers] = useState<AdminUser[]>([]);
   const [userSelectOpen, setUserSelectOpen] = useState(false);
@@ -305,6 +308,11 @@ function TeamEditDialogBody({
   );
 
   const loadUsers = useCallback(async () => {
+    if (!canViewUsers) {
+      setLeaders([]);
+      setStoreStaffUsers([]);
+      return;
+    }
     setStaffLoading(true);
     try {
       const [leaderData, staffData] = await Promise.all([
@@ -318,7 +326,7 @@ function TeamEditDialogBody({
     } finally {
       setStaffLoading(false);
     }
-  }, [t]);
+  }, [canViewUsers, t]);
 
   useEffect(() => {
     async function loadDetail() {
@@ -482,7 +490,7 @@ function TeamEditDialogBody({
                               variant="outline"
                               role="combobox"
                               aria-expanded={userSelectOpen}
-                              disabled={!canChangeLeader}
+                              disabled={!canChangeLeader || !canViewUsers}
                               className="w-full justify-between font-normal"
                             />
                           }
@@ -490,7 +498,10 @@ function TeamEditDialogBody({
                           <span className="truncate">
                             {field.value === "0"
                               ? t("agentProfile.noLeader")
-                              : leaderOptions.find((option) => option.value === field.value)?.label ?? t("agentProfile.selectLeader")}
+                              : leaderOptions.find((option) => option.value === field.value)?.label ??
+                                (!canViewUsers
+                                  ? t("agentProfile.userFallback", { id: Number(field.value) })
+                                  : t("agentProfile.selectLeader"))}
                           </span>
                           <ChevronsUpDownIcon className="ml-2 size-4 shrink-0 opacity-50" />
                         </PopoverTrigger>
@@ -569,10 +580,10 @@ function TeamEditDialogBody({
                           {t("agentProfile.storeStaffScopeHint")}
                         </div>
                       </div>
-                      <Button type="button" variant="outline" onClick={() => setStaffDialogOpen(true)}>
+                      {canViewUsers ? <Button type="button" variant="outline" onClick={() => setStaffDialogOpen(true)}>
                         <UsersRoundIcon />
                         {t("agentProfile.manageStoreStaff")}
-                      </Button>
+                      </Button> : null}
                     </div>
                     {selectedUsers.length > 0 ? (
                       <div className="mt-3 flex flex-wrap gap-1.5">
@@ -612,7 +623,7 @@ function TeamEditDialogBody({
         )}
       </DialogContent>
 
-      <Dialog open={staffDialogOpen} onOpenChange={setStaffDialogOpen}>
+      <Dialog open={staffDialogOpen && canViewUsers} onOpenChange={setStaffDialogOpen}>
         <DialogContent className="flex h-[calc(100vh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:h-[min(760px,calc(100vh-2rem))] sm:max-w-6xl">
           <DialogHeader className="shrink-0 border-b px-6 py-4">
             <DialogTitle>{t("agentProfile.manageStoreStaff")}</DialogTitle>

@@ -2853,3 +2853,56 @@ git diff --check
 - `knowledge-base-edit.tsx` 新增 `fetchReplyIntentProfiles` 和 `intentProfileId`。最终选项请求依赖 `aiConfig.view`；自定义角色拥有 `knowledgeBase.update` 但没有 `aiConfig.view` 时，编辑必须保留既有行业绑定，禁止空列表提交清零。
 - AI 分支也修改双语资源；手工合并时保留本批 `knowledge.contentViewDenied`，并继续保留 AI 分支新增文案，禁止整文件选边。
 - 本批可按知识库页面、三个业务组件、测试、双语文案和两份文档整体回滚，不需要数据处理；回滚会恢复只读菜单、拖拽写入口和门店员工内容接口 403。
+
+## 第 55 批：客服组织页面动作权限收口（2026-07-15）
+
+### 目标与原页面职责
+
+- 继续复用 `/dashboard/agents`，不增加第二套客服组织入口。页面左侧管理综合客服组，右侧保留客服档案、小组编排和服务范围；配置页不承担派单工作台职责。
+- 综合客服组负责客服资源池、门店员工号服务范围和管理归属；客服小组是综合组内的调度/排班单元，客服可重复加入多个小组。该小组逻辑、双列拖拽和与排班/派单的关联均为用户确认保留的产品能力。
+- 本批只收口前端动作权限，没有改变客服组、客服小组、门店员工号反向绑定、排班或派单的数据语义。
+
+### 文件与权限边界
+
+```text
+web/app/dashboard/agents/page.tsx
+web/app/dashboard/agents/action-permissions.test.mjs
+web/app/dashboard/agents/_components/edit.tsx
+web/app/dashboard/agents/_components/team-sidebar.tsx
+web/app/dashboard/agents/_components/team-edit.tsx
+web/app/dashboard/agents/_components/squad-arrangement.tsx
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 客服档案 CRUD 分别使用 `agent.create/update/delete`，并同时约束按钮、操作列和实际请求函数。只读账号仍可查看任务负载、服务规则和最近状态。
+- 新建档案要求 `agentTeam.view + user.view` 提供合法组织和账号选项；缺少任一辅助权限时不调用对应 list API。编辑既有档案时禁用无权选择器并保留当前 ID，不以空选项覆盖。
+- 综合组 CRUD 使用 `agentTeam.create/update/delete`。`tenant_admin` 加入可管理角色集合，使公司主管可按租户职责建立综合组及设置组长；动作仍必须拥有显式权限，不存在角色名直接放行。
+- 组编辑器只有在 `user.view` 下加载组长和门店员工账号；无权时保留既有组长/员工 ID，隐藏门店员工双列选择入口。
+- 小组创建、编辑/成员拖拽、删除分别使用 `agentTeam.create/update/delete`。成员拖拽、批量加入、移除和请求函数全部由 update 控制。
+- 小组排班快捷入口要求 `agentTeamSchedule.view + agentTeamSchedule.create`；排班页面自身继续执行已有动作权限校验。
+
+### 验证结果
+
+```text
+cd web && node --test app/dashboard/agents/action-permissions.test.mjs
+cd web && rg --files -g '*.test.mjs' | sort | xargs node --test
+cd web && pnpm typecheck
+cd web && pnpm exec eslint app/dashboard/agents/page.tsx app/dashboard/agents/action-permissions.test.mjs app/dashboard/agents/_components/team-sidebar.tsx app/dashboard/agents/_components/team-edit.tsx app/dashboard/agents/_components/edit.tsx app/dashboard/agents/_components/squad-arrangement.tsx
+cd web && pnpm build
+go vet ./...
+go test ./... -count=1 -p 1
+git diff --check
+```
+
+- 定向 5 项、全前端 116 项、TypeScript、目标 ESLint、生产构建、vet、串行全仓 Go 和 diff 检查通过。目标 ESLint 只有 `agents/page.tsx` 原有 `<img>` 性能 warning，无 error。
+- 当前超级管理员登录态下实机检查 3000 开发页：三个综合组、客服档案任务负载、组操作菜单、成员/小组/服务范围 Tab 均正常；小组编排 1280x720 双列没有横向溢出，控制台 error/warning 为 0。
+- 本批没有 model、AutoMigrate、DML migration、request/response DTO、enum、API、Gin 路由、WebSocket payload、权限常量、默认角色、导航、AI 调用、token、usage 或计费变化。
+
+### 并行分支、合并顺序与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 修改同一 `agents/page.tsx`、`edit.tsx`、`team-edit.tsx`、`team-sidebar.tsx` 和 `web/lib/api/admin.ts`，不能自动整文件选边。
+- AI 分支当前树中不存在 `squad-arrangement.tsx`、`squad-edit.tsx`，相对本分支还会删除 `agent_team_squad` handler、两个 repository、service、service tests、派单小组测试和 `conversation_dispatch_workbench_service.go`。这些不是可接受的清理：客服小组及其派单联动已经通过产品确认和测试，合并前必须列为阻断项。
+- 建议合并顺序：先以本分支租户、客服组织和派单契约为基线，再逐文件叠加 AI/计费分支对客服档案响应、页面和 API 类型的新增字段；最后重跑小组 service、派单小组、handler 权限、116 项前端测试、typecheck、生产构建和双租户浏览器验收。禁止通过接受 AI 分支删除来解决冲突。
+- 本批无需 rebase 当前远端；两分支同文件修改明确要求最终手工合并。字段、状态和权限语义必须以最终 handler/service 和权限常量复核，不能只按 TypeScript 编译结果判断。
+- 本批可按上述六个前端文件、测试和两份文档整体回滚，无数据库回滚；回滚只撤销权限显隐与辅助请求保护，不得连带删除既有客服小组、排班或派单能力。

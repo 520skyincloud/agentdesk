@@ -9,6 +9,7 @@ import { z } from "zod/v4";
 
 import { ImageInput } from "@/components/image-input";
 import { OptionCombobox } from "@/components/option-combobox";
+import { useAuth } from "@/components/auth-provider";
 import { ProjectDialog } from "@/components/project-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -209,6 +210,10 @@ function AgentEditDialogBody({
   onSubmit,
 }: AgentEditDialogBodyProps) {
   const t = useI18n();
+  const { session } = useAuth();
+  const permissions = new Set(session?.permissions ?? []);
+  const canViewUsers = permissions.has("user.view");
+  const canViewTeams = permissions.has("agentTeam.view");
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [teams, setTeams] = useState<AdminAgentTeam[]>([]);
   const [userSelectOpen, setUserSelectOpen] = useState(false);
@@ -225,15 +230,17 @@ function AgentEditDialogBody({
   const loadOptions = useCallback(async () => {
     try {
       const [usersData, teamsData] = await Promise.all([
-        fetchUsersAll({ roleCode: "cs_user" }),
-        fetchAgentTeamsAll(),
+        canViewUsers
+          ? fetchUsersAll({ roleCode: "cs_user" })
+          : Promise.resolve([]),
+        canViewTeams ? fetchAgentTeamsAll() : Promise.resolve([]),
       ]);
       setUsers(usersData);
       setTeams(teamsData);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("agentProfile.loadOptionsFailed"));
     }
-  }, [t]);
+  }, [canViewTeams, canViewUsers, t]);
   const editFormSchema = useMemo(() => createEditFormSchema(t), [t]);
   const editFormResolver = useMemo(
     () => zodResolver(editFormSchema) as Resolver<EditForm>,
@@ -323,8 +330,8 @@ function AgentEditDialogBody({
                   name="userId"
                   render={({ field }) => (
                     <Popover
-                      open={userSelectOpen}
-                      onOpenChange={setUserSelectOpen}
+                      open={userSelectOpen && canViewUsers}
+                      onOpenChange={(open) => setUserSelectOpen(canViewUsers && open)}
                     >
                       <PopoverTrigger
                         render={
@@ -332,6 +339,7 @@ function AgentEditDialogBody({
                             variant="outline"
                             role="combobox"
                             aria-expanded={userSelectOpen}
+                            disabled={!canViewUsers}
                             className="w-full justify-between font-normal"
                           />
                         }
@@ -339,7 +347,12 @@ function AgentEditDialogBody({
                         <span className="truncate">
                           {userOptions.find(
                             (option) => option.value === field.value,
-                          )?.label ?? t("agentProfile.selectUser")}
+                          )?.label ??
+                            (!canViewUsers && field.value
+                              ? t("agentProfile.userFallback", {
+                                  id: Number(field.value),
+                                })
+                              : t("agentProfile.selectUser"))}
                         </span>
                         <ChevronsUpDownIcon className="ml-2 size-4 shrink-0 opacity-50" />
                       </PopoverTrigger>
@@ -403,6 +416,7 @@ function AgentEditDialogBody({
                       options={teamOptions}
                       value={field.value}
                       onChange={field.onChange}
+                      disabled={!canViewTeams}
                       placeholder={t("agentProfile.selectTeam")}
                       searchPlaceholder={t("agentProfile.searchTeams")}
                       emptyText={t("agentProfile.noTeams")}
