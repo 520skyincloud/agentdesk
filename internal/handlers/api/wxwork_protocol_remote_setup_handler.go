@@ -122,6 +122,7 @@ func WxWorkProtocolRemoteSetupPostLoginQrcode(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	services.WxWorkProtocolService.ResetLoginVerificationAttempts(item.ID)
 	httpx.WriteJSON(ctx, buildRemoteLoginQRCodeResponse(item.ID, resp))
 }
 
@@ -136,7 +137,26 @@ func WxWorkProtocolRemoteSetupPostCheckLogin(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	resp, err := services.WxWorkProtocolService.CheckLoginQRCode(item.ID)
+	resp, err := services.WxWorkProtocolService.CheckLoginQRCodeStatus(item.ID)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, resp)
+}
+
+func WxWorkProtocolRemoteSetupPostVerifyLogin(ctx *gin.Context) {
+	req := request.VerifyWxWorkProtocolRemoteLoginRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item, err := services.WxWorkProtocolInstanceService.GetRemoteSetupByToken(req.Token)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	resp, err := services.WxWorkProtocolService.VerifyLoginQRCodeStatus(item.ID, req.Code)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

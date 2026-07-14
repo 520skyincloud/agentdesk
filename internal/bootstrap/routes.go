@@ -74,6 +74,7 @@ func registerApiWxWorkProtocolRemoteSetupRoutes(group *gin.RouterGroup) {
 	group.POST("/verify_email", api.WxWorkProtocolRemoteSetupPostVerifyEmail)
 	group.POST("/login_qrcode", api.WxWorkProtocolRemoteSetupPostLoginQrcode)
 	group.POST("/check_login", api.WxWorkProtocolRemoteSetupPostCheckLogin)
+	group.POST("/verify_login", api.WxWorkProtocolRemoteSetupPostVerifyLogin)
 }
 
 func registerDashboardDashboardRoutes(group *gin.RouterGroup) {

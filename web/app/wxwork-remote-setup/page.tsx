@@ -16,7 +16,9 @@ import {
   sendWxWorkProtocolRemoteSetupEmailCode,
   updateWxWorkProtocolRemoteSetup,
   verifyWxWorkProtocolRemoteSetupEmail,
+  verifyWxWorkProtocolRemoteSetupLogin,
   type WxWorkProtocolInstance,
+  type WxWorkProtocolLoginStatus,
   type WxWorkProtocolRemoteLoginQRCodeResult,
 } from "@/lib/api/admin"
 import { repairMojibakeText } from "@/lib/utils"
@@ -76,6 +78,9 @@ function WxWorkRemoteSetupContent() {
   const [saving, setSaving] = useState(false)
   const [qrcode, setQrcode] = useState<WxWorkProtocolRemoteLoginQRCodeResult | null>(null)
   const [checking, setChecking] = useState(false)
+  const [loginStatus, setLoginStatus] = useState<WxWorkProtocolLoginStatus | null>(null)
+  const [loginCode, setLoginCode] = useState("")
+  const [loginVerifying, setLoginVerifying] = useState(false)
   const [emailCode, setEmailCode] = useState("")
   const [emailVerificationToken, setEmailVerificationToken] = useState("")
   const [emailSending, setEmailSending] = useState(false)
@@ -137,6 +142,8 @@ function WxWorkRemoteSetupContent() {
     try {
       const data = await getWxWorkProtocolRemoteSetupLoginQrcode(token)
       setQrcode(data)
+      setLoginStatus(null)
+      setLoginCode("")
       toast.success("已获取登录二维码")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "获取二维码失败")
@@ -147,14 +154,39 @@ function WxWorkRemoteSetupContent() {
     if (!token) return
     setChecking(true)
     try {
-      const raw = await checkWxWorkProtocolRemoteSetupLogin(token)
-      await navigator.clipboard.writeText(raw)
-      toast.success("已检查扫码状态，协议原文已复制")
-      await loadRemoteSetup(token)
+      const status = await checkWxWorkProtocolRemoteSetupLogin(token)
+      setLoginStatus(status)
+      if (status.status === "success") {
+        toast.success("员工号登录成功")
+        await loadRemoteSetup(token)
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "检查扫码状态失败")
     } finally {
       setChecking(false)
+    }
+  }
+
+  async function verifyLogin() {
+    if (!token || !loginCode.trim()) {
+      toast.error("请输入新设备显示的确认码")
+      return
+    }
+    setLoginVerifying(true)
+    try {
+      const status = await verifyWxWorkProtocolRemoteSetupLogin(token, loginCode.trim())
+      setLoginStatus(status)
+      if (status.status === "success") {
+        setLoginCode("")
+        toast.success("确认码验证成功，员工号已登录")
+        await loadRemoteSetup(token)
+      } else if (status.status === "verification_required") {
+        toast.error(status.message || "确认码未通过，请核对后重试")
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "确认码验证失败")
+    } finally {
+      setLoginVerifying(false)
     }
   }
 
@@ -280,6 +312,20 @@ function WxWorkRemoteSetupContent() {
                 <RefreshCwIcon className={checking ? "size-4 animate-spin" : "size-4"} />
                 检查扫码状态
               </Button>
+              {loginStatus ? (
+                <div className={`rounded-xl px-3 py-2 text-sm ${loginStatus.status === "success" ? "bg-emerald-50 text-emerald-700" : loginStatus.status === "failed" || loginStatus.status === "refused" || loginStatus.status === "expired" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-800"}`}>
+                  {loginStatus.message}
+                </div>
+              ) : null}
+              {loginStatus?.requiresCode ? (
+                <div className="grid gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                  <div className="text-sm font-medium text-amber-950">输入新设备登录确认码</div>
+                  <Input inputMode="numeric" autoComplete="one-time-code" value={loginCode} onChange={(event) => setLoginCode(event.target.value)} placeholder="确认码" />
+                  <Button type="button" onClick={() => void verifyLogin()} disabled={loginVerifying || !loginCode.trim()}>
+                    {loginVerifying ? "验证中..." : "验证并继续登录"}
+                  </Button>
+                </div>
+              ) : null}
               {instance?.employeeUserId ? (
                 <div className="flex items-center gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
                   <CheckCircle2Icon className="size-4" /> 已同步：{repairMojibakeText(instance.employeeName) || instance.employeeUserId}

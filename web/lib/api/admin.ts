@@ -1284,22 +1284,30 @@ export function getWxWorkProtocolRemoteSetupLoginQrcode(token: string) {
 }
 
 export function checkWxWorkProtocolRemoteSetupLogin(token: string) {
-  return request<string>("/api/wxwork-protocol-remote-setup/check_login", {
+  return request<WxWorkProtocolLoginStatus>("/api/wxwork-protocol-remote-setup/check_login", {
     method: "POST",
     skipAuth: true,
     body: JSON.stringify({ token }),
   })
 }
 
+export function verifyWxWorkProtocolRemoteSetupLogin(token: string, code: string) {
+  return request<WxWorkProtocolLoginStatus>("/api/wxwork-protocol-remote-setup/verify_login", {
+    method: "POST",
+    skipAuth: true,
+    body: JSON.stringify({ token, code }),
+  })
+}
+
 export function checkWxWorkProtocolLoginQrcode(id: number) {
-  return request<string>("/api/dashboard/wxwork-protocol-instance/check_login_qrcode", {
+  return request<WxWorkProtocolLoginStatus>("/api/dashboard/wxwork-protocol-instance/check_login_qrcode", {
     method: "POST",
     body: JSON.stringify({ id }),
   })
 }
 
 export function verifyWxWorkProtocolLogin(id: number, code: string) {
-  return request<string>("/api/dashboard/wxwork-protocol-instance/verify_login", {
+  return request<WxWorkProtocolLoginStatus>("/api/dashboard/wxwork-protocol-instance/verify_login", {
     method: "POST",
     body: JSON.stringify({ id, code }),
   })
