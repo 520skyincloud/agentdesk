@@ -4105,3 +4105,42 @@ git diff --check
 - 聚焦排班 race、完整 services、全仓 Go、go vet 和 diff 检查通过；写所有权契约与既有单条/批量排班测试全部通过。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批五个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 80 批后合并并重跑本契约。
 - 可回滚五个文件且无需数据库回滚，但会恢复排班无约束通用写入口，不建议回滚。
+
+## 第 82 批：客服组排班跨实例并发串行化（2026-07-15）
+
+### 事务、锁序与业务时序
+
+- 单条创建、更新、删除和批量生成均进入数据库事务，并以综合客服组行作为同组排班的跨实例互斥对象；原 writeMu 继续降低单进程 SQLite 争用，但不再承担唯一一致性保证。
+- 创建锁目标 Team；更新锁 Schedule 后按 ID 升序锁原/目标 Team；删除锁 Schedule 后锁 Team；批量生成按 ID 升序锁全部 Team。所有租户、管理职责、小组和冲突检查都在锁内重做。
+- 更新/删除使用按 TenantID 的 Schedule FOR UPDATE，综合组使用按 TenantID 的 Team FOR UPDATE。持锁 Team 与普通入口复用 AgentTeamScopeService 同一管理判定；批量候选和小组名称读取复用事务连接，提交并释放 writeMu 后才触发待派发会话重试。
+
+### 文件与验证
+
+```text
+internal/repositories/agent_team_repository.go
+internal/repositories/agent_team_schedule_repository.go
+internal/services/agent_team_scope_service.go
+internal/services/agent_team_schedule_service.go
+internal/services/agent_team_schedule_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestAgentTeamScheduleMutationsUseDatabaseLocks|TestAgentTeamScheduleRuntimeWritesStayBehindDomainServices|TestIsAgentTeamScheduleMutationCall|TestAgentTeamSchedule)' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+go run ./cmd/tenant_integrity_audit --config /tmp/agentdesk-tenant-stats.yaml --pretty
+git diff --check
+```
+
+- 锁观测测试覆盖四类写路径、排班行锁和综合组升序锁；聚焦 race、完整 services、全仓原命令独立重跑、go vet 和 diff 检查通过。
+- 全仓第一次运行因既有并行测试切换全局 sqls.DB，出现临时库缺 t_conversation_read_state；此前 services 全包通过，随后同一全仓命令重跑通过。本批没有依赖该波动证明成功。
+- 仿真库审计继续通过 52/52 模型策略、66/66 表、128/128 关系、0 违规；审计前后 mtime `1784067966`、大小 `4935680` 字节不变。
+
+### 并行分支与回滚
+
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端、AI 回复、模型调用、token、usage 或计费变化。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批七个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 81 批后合并并重跑锁测试。
+- 可回滚七个文件且无需数据库回滚，但会恢复多实例排班竞态，不建议回滚。

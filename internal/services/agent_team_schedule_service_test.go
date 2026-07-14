@@ -1,6 +1,7 @@
 package services_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -537,6 +538,102 @@ func TestAgentTeamScheduleServiceBatchGenerateRejectsConflictsWithoutPartialCrea
 	db.Model(&models.AgentTeamSchedule{}).Where("remark = ?", "不应创建").Count(&count)
 	if count != 0 {
 		t.Fatalf("expected no partial creates, got %d", count)
+	}
+}
+
+func TestAgentTeamScheduleMutationsUseDatabaseLocks(t *testing.T) {
+	tests := []struct {
+		name             string
+		wantTeamIDs      []int64
+		wantScheduleLock bool
+		action           func(t *testing.T, db *gorm.DB) error
+	}{
+		{
+			name:        "create",
+			wantTeamIDs: []int64{1},
+			action: func(t *testing.T, db *gorm.DB) error {
+				tomorrow := time.Now().AddDate(0, 0, 1)
+				_, err := services.AgentTeamScheduleService.CreateAgentTeamSchedule(request.CreateAgentTeamScheduleRequest{
+					TeamID: 1, StartAt: formatTestDateTime(tomorrow, "06:00:00"), EndAt: formatTestDateTime(tomorrow, "07:00:00"),
+				}, testOperator())
+				return err
+			},
+		},
+		{
+			name:             "update",
+			wantTeamIDs:      []int64{1, 2},
+			wantScheduleLock: true,
+			action: func(t *testing.T, db *gorm.DB) error {
+				id := createFutureAgentTeamSchedule(t, db)
+				tomorrow := time.Now().AddDate(0, 0, 1)
+				return services.AgentTeamScheduleService.UpdateAgentTeamSchedule(request.UpdateAgentTeamScheduleRequest{
+					ID: id,
+					CreateAgentTeamScheduleRequest: request.CreateAgentTeamScheduleRequest{
+						TeamID: 2, StartAt: formatTestDateTime(tomorrow, "06:00:00"), EndAt: formatTestDateTime(tomorrow, "07:00:00"),
+					},
+				}, testOperator())
+			},
+		},
+		{
+			name:             "delete",
+			wantTeamIDs:      []int64{1},
+			wantScheduleLock: true,
+			action: func(t *testing.T, db *gorm.DB) error {
+				return services.AgentTeamScheduleService.DeleteAgentTeamSchedule(createFutureAgentTeamSchedule(t, db), testOperator())
+			},
+		},
+		{
+			name:        "batch generate",
+			wantTeamIDs: []int64{1, 2},
+			action: func(t *testing.T, db *gorm.DB) error {
+				date := nextTestWeekday(time.Monday)
+				_, err := services.AgentTeamScheduleService.BatchGenerate(request.AgentTeamScheduleBatchRequest{
+					TeamIDs: []int64{2, 1}, StartDate: date.Format(time.DateOnly), EndDate: date.Format(time.DateOnly),
+					Weekdays: []int{weekdayForRequest(date)}, StartTime: "06:00", EndTime: "07:00",
+				}, testOperator())
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupAgentTeamScheduleTestDB(t)
+			createAgentTeamScheduleTestTeams(t, db)
+			teamIDs := make([]int64, 0, len(tt.wantTeamIDs))
+			scheduleLocked := false
+			callbackName := "test:schedule-locks-" + strings.ReplaceAll(tt.name, " ", "-")
+			if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+				if _, locked := tx.Statement.Clauses["FOR"]; !locked || tx.Statement.Schema == nil {
+					return
+				}
+				switch tx.Statement.Schema.Name {
+				case "AgentTeam":
+					if item, ok := tx.Statement.Dest.(*models.AgentTeam); ok {
+						teamIDs = append(teamIDs, item.ID)
+					}
+				case "AgentTeamSchedule":
+					scheduleLocked = true
+				}
+			}); err != nil {
+				t.Fatalf("register lock callback: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := db.Callback().Query().Remove(callbackName); err != nil {
+					t.Errorf("remove lock callback: %v", err)
+				}
+			})
+
+			if err := tt.action(t, db); err != nil {
+				t.Fatalf("%s schedule: %v", tt.name, err)
+			}
+			if !slices.Equal(teamIDs, tt.wantTeamIDs) {
+				t.Fatalf("%s team lock order = %v, want %v", tt.name, teamIDs, tt.wantTeamIDs)
+			}
+			if scheduleLocked != tt.wantScheduleLock {
+				t.Fatalf("%s schedule lock = %v, want %v", tt.name, scheduleLocked, tt.wantScheduleLock)
+			}
+		})
 	}
 }
 

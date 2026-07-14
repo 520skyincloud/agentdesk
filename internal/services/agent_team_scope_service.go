@@ -3,6 +3,7 @@ package services
 import (
 	"slices"
 
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
@@ -97,16 +98,23 @@ func (s *agentTeamScopeService) CanManageTeam(operator *dto.AuthPrincipal, teamI
 		return false
 	}
 	team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, tenantID)
+	return s.canManageTeam(operator, team)
+}
+
+func (s *agentTeamScopeService) canManageTeam(operator *dto.AuthPrincipal, team *models.AgentTeam) bool {
+	if operator == nil || team == nil || operator.ActiveTenantID <= 0 || team.TenantID != operator.ActiveTenantID {
+		return false
+	}
 	if slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) || slices.Contains(operator.Roles, constants.RoleCodeAdmin) {
-		return team != nil
+		return true
 	}
 	if slices.Contains(operator.Roles, constants.RoleCodeTenantAdmin) {
-		return team != nil
+		return true
 	}
 	if !slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) {
 		return false
 	}
-	return team != nil && team.Status != enums.StatusDeleted && team.LeaderUserID == operator.UserID
+	return team.Status != enums.StatusDeleted && team.LeaderUserID == operator.UserID
 }
 
 func (s *agentTeamScopeService) ApplyKnowledgeBaseFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {

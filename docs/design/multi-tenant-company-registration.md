@@ -2341,3 +2341,16 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 聚焦排班 race、完整 services、全仓 Go、go vet 和 diff 检查通过；单条创建/更新/删除、批量预览/生成、小组归属与冲突回归均通过。
 - 本批修改排班 service 与测试、新增写契约并同步两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限码、WebSocket、前端、消息/会话运行时或 AI/计费变化。
 - `origin/codex/ai-billing@f2d2da4` 不修改本批文件，无同文件冲突、rebase 或 migration 排序要求。可独立回滚且无需数据库回滚，但回滚会恢复无权限和无租户上下文的排班写旁路，不建议回滚。
+
+## 82. 当前实施检查点：客服组排班跨实例并发串行化（2026-07-15）
+
+第 81 批固定了排班表的四个写所有者，但它们仍主要依赖 agentTeamScheduleService.writeMu 防止重叠排班。该互斥只在单个 Go 进程内生效；多副本部署时，不同实例可能同时通过冲突查询并为同一综合客服组写入重叠时间段。批量生成虽有事务内二次查询，也没有可跨实例共享的锁对象。
+
+- AgentTeamRepository 和 AgentTeamScheduleRepository 增加按 TenantID 的 GetForUpdateInTenant。四类排班写都保留进程内互斥，并在数据库事务内使用 FOR UPDATE；SQLite 继续依赖单写事务，MySQL 由行锁提供跨实例串行化。
+- 创建先锁目标综合组；更新先锁当前排班，再按 ID 升序锁原综合组和目标综合组；删除先锁当前排班再锁其综合组；批量生成按综合组 ID 升序加锁。固定排序避免两个跨组更新或批量请求采用相反锁序。
+- 租户、角色职责、组长归属、综合组状态、小组归属、时间合法性和冲突检查全部在持锁事务内重新执行；持锁 Team 与普通入口复用 AgentTeamScopeService 同一管理判定，避免权限规则分叉。更新和删除不再依赖事务外旧排班，批量生成不再在事务外构造最终候选；小组名称也改为使用事务 repository 读取，不脱离当前快照。
+- 事务提交并释放本进程 writeMu 后才触发待派发会话重试，保持原有“排班已落库再派单”的时序，不把可能较慢的派单流程放在排班锁内。
+- 测试直接观察 GORM locking clause：创建锁团队 1；更新锁排班并按 1、2 锁原/目标团队；删除锁排班和团队 1；批量请求即使输入 2、1 也按 1、2 锁定。聚焦 race、完整 services、全仓 Go 独立重跑、go vet 和 diff 检查通过。
+- 全仓测试首次运行仍命中仓库既有并行夹具切换全局 sqls.DB，临时库缺 t_conversation_read_state；此前完整 services 已通过，随后原命令独立重跑通过。仿真库只读审计继续通过 52/52 模型策略、66/66 表、128/128 关系且 0 违规，前后 mtime/size 不变。
+- 本批修改两个 repository、客服组 scope、排班 service/测试和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端或 AI/计费变化。AI 分支无同文件修改，不要求 rebase 或 migration 排序。
+- 可独立回滚本批代码、测试和文档且无需数据库回滚；回滚会恢复多实例并发写出重叠排班的窗口，不建议回滚。
