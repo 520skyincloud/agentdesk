@@ -5,6 +5,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 	"encoding/json"
+	"hash/fnv"
 	"strings"
 	"time"
 
@@ -107,6 +108,10 @@ func (s *channelMessageOutboxService) EnqueueWxWorkProtocolMessage(conversation 
 }
 
 func (s *channelMessageOutboxService) EnqueueWxWorkProtocolStoreRoomNotice(conversationID int64, wxWorkInstanceID int64, roomConversationID string, content string, atList []string) error {
+	return s.EnqueueWxWorkProtocolStoreRoomNoticeWithKey(conversationID, wxWorkInstanceID, roomConversationID, content, atList, "")
+}
+
+func (s *channelMessageOutboxService) EnqueueWxWorkProtocolStoreRoomNoticeWithKey(conversationID int64, wxWorkInstanceID int64, roomConversationID string, content string, atList []string, noticeKey string) error {
 	roomConversationID = strings.TrimSpace(roomConversationID)
 	content = strings.TrimSpace(content)
 	if conversationID <= 0 || wxWorkInstanceID <= 0 || roomConversationID == "" || content == "" {
@@ -119,15 +124,25 @@ func (s *channelMessageOutboxService) EnqueueWxWorkProtocolStoreRoomNotice(conve
 		"roomConversationId": roomConversationID,
 		"content":            content,
 		"atList":             atList,
+		"noticeKey":          strings.TrimSpace(noticeKey),
 	})
 	if err != nil {
 		return err
 	}
 	now := time.Now()
+	messageID := -now.UnixNano()
+	if key := strings.TrimSpace(noticeKey); key != "" {
+		hasher := fnv.New64a()
+		_, _ = hasher.Write([]byte(key))
+		messageID = -int64(hasher.Sum64() & 0x7fffffffffffffff)
+		if existing := s.GetByMessageID(enums.ChannelTypeWxWorkProtocol, messageID); existing != nil {
+			return nil
+		}
+	}
 	return s.Create(&models.ChannelMessageOutbox{
 		ChannelType:    enums.ChannelTypeWxWorkProtocol,
 		ConversationID: conversationID,
-		MessageID:      -now.UnixNano(),
+		MessageID:      messageID,
 		Payload:        string(payload),
 		SendStatus:     string(enums.ChannelMessageOutboxStatusPending),
 		AuditFields: models.AuditFields{

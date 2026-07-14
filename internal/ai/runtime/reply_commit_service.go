@@ -46,6 +46,13 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 	structuredReplies := s.buildStructuredVariableReplies(input)
 	structuredReplies = append(structuredReplies, s.buildKnowledgeResourceReplies(input)...)
 	replyText := strings.TrimSpace(input.ReplyText)
+	if strings.HasPrefix(strings.TrimSpace(input.Message.RequestID), "manual_resume_") {
+		if replyText == "" {
+			replyText = manualResumeCustomerNotice
+		} else {
+			replyText = manualResumeCustomerNotice + "\n<<NEXT_MESSAGE>>\n" + replyText
+		}
+	}
 	if replyText == "" && len(structuredReplies) == 0 {
 		return nil, nil
 	}
@@ -92,6 +99,8 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 	}
 	return replyMessage, nil
 }
+
+const manualResumeCustomerNotice = "同事暂时没能接入，接下来我先继续帮你处理。"
 
 func (s *replyCommitService) sendAIMessage(input replyCommitInput, clientMessageID string, messageType enums.IMMessageType, content string, payload string) (*models.Message, error) {
 	return svc.MessageService.SendAIMessageWithRequestID(

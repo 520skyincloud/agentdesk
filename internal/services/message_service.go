@@ -646,6 +646,12 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		}
 		if routeState := ConversationRouteService.GetByConversationID(conversation.ID); routeState != nil {
 			if routeStatusBlocksAIReply(routeState.RouteStatus) {
+				if handled, handleErr := ConversationHandoffConfirmationService.HandleWaitingCustomerResolution(conversation, message, routeState); handleErr != nil {
+					slog.Warn("handle customer manual-wait resolution failed", "conversation_id", conversation.ID, "message_id", message.ID, "error", handleErr)
+					return message, err
+				} else if handled {
+					return message, err
+				}
 				if routeState.NeedHumanFollowUp {
 					AIManualResumeTaskService.RecordWaitingCustomerMessage(conversation.ID, message.ID)
 				}

@@ -298,9 +298,6 @@ func (s *conversationRouteService) EnterStoreWecomManual(conversationID int64, r
 		return nil, err
 	}
 	expireAt := now.Add(DefaultStoreWecomManualMinutes * time.Minute)
-	if isSafetyHandoffReason(reason) {
-		expireAt = now.Add(DefaultStoreWecomSafetyManualMinutes * time.Minute)
-	}
 	if err := repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
 		"route_status":             enums.ConversationRouteStatusStoreWecomManual,
 		"route_target":             "store_wecom",
@@ -327,6 +324,21 @@ func (s *conversationRouteService) MarkHumanFollowUpHandled(conversationID int64
 		"need_human_follow_up": false,
 		"updated_at":           now,
 		"update_user_name":     "system",
+	})
+}
+
+func (s *conversationRouteService) HoldManualRouteForAIResume(conversationID int64, now time.Time) error {
+	state, err := s.Ensure(conversationID)
+	if err != nil {
+		return err
+	}
+	if !routeStatusBlocksAIReply(state.RouteStatus) {
+		return nil
+	}
+	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, map[string]any{
+		"manual_expire_at": nil,
+		"updated_at":       now,
+		"update_user_name": "system",
 	})
 }
 
@@ -357,6 +369,10 @@ func (s *conversationRouteService) EnterHQAgentDeskServing(conversationID int64,
 }
 
 func (s *conversationRouteService) RestoreAI(conversationID int64, reason string, now time.Time) error {
+	return s.RestoreAIWithFollowUp(conversationID, reason, now, false)
+}
+
+func (s *conversationRouteService) RestoreAIWithFollowUp(conversationID int64, reason string, now time.Time, needHumanFollowUp bool) error {
 	state, err := s.Ensure(conversationID)
 	if err != nil {
 		return err
@@ -368,7 +384,7 @@ func (s *conversationRouteService) RestoreAI(conversationID int64, reason string
 		"pending_action":           "",
 		"pending_action_payload":   "",
 		"pending_action_expire_at": nil,
-		"need_human_follow_up":     false,
+		"need_human_follow_up":     needHumanFollowUp,
 		"handoff_reason":           reason,
 		"updated_at":               now,
 		"update_user_name":         "system",

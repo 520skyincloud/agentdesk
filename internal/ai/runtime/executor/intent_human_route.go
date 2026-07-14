@@ -11,6 +11,9 @@ import (
 )
 
 func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector) (bool, error) {
+	if strings.HasPrefix(strings.TrimSpace(req.UserMessage.RequestID), "manual_resume_") {
+		return false, nil
+	}
 	if summary == nil || collector == nil {
 		return false, nil
 	}

@@ -486,6 +486,10 @@ func (s *conversationHumanDispatchService) notifyAgentDeskHandoff(conversationID
 }
 
 func (s *conversationHumanDispatchService) notifyStoreRoomHandoff(conversationID int64, reason string) {
+	s.notifyStoreRoomHandoffWithKey(conversationID, reason, "")
+}
+
+func (s *conversationHumanDispatchService) notifyStoreRoomHandoffWithKey(conversationID int64, reason string, noticeKey string) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return
@@ -504,7 +508,7 @@ func (s *conversationHumanDispatchService) notifyStoreRoomHandoff(conversationID
 	}
 	content := s.buildStoreRoomHandoffNotice(conversation, reason)
 	atList := uniqueNonBlankStrings(strings.Split(runtime.StoreRoomAtList, ","))
-	if err := ChannelMessageOutboxService.EnqueueWxWorkProtocolStoreRoomNotice(conversationID, instance.ID, runtime.StoreRoomConversationID, content, atList); err != nil {
+	if err := ChannelMessageOutboxService.EnqueueWxWorkProtocolStoreRoomNoticeWithKey(conversationID, instance.ID, runtime.StoreRoomConversationID, content, atList, noticeKey); err != nil {
 		slog.Warn("enqueue store room handoff notice failed", "conversation_id", conversationID, "wx_work_instance_id", instance.ID, "error", err)
 	}
 }

@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"time"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
@@ -47,6 +48,13 @@ func (r *aiManualResumeTaskRepository) Updates(db *gorm.DB, id int64, columns ma
 func (r *aiManualResumeTaskRepository) Claim(db *gorm.DB, id int64, fromStatuses []string, columns map[string]any) (bool, error) {
 	result := db.Model(&models.AIManualResumeTask{}).
 		Where("id = ? AND task_status IN ?", id, fromStatuses).
+		Updates(columns)
+	return result.RowsAffected == 1, result.Error
+}
+
+func (r *aiManualResumeTaskRepository) ClaimReminder(db *gorm.DB, id int64, reminderCount int, now time.Time, columns map[string]any) (bool, error) {
+	result := db.Model(&models.AIManualResumeTask{}).
+		Where("id = ? AND task_status = ? AND reminder_count = ? AND next_reminder_at IS NOT NULL AND next_reminder_at <= ?", id, "waiting", reminderCount, now).
 		Updates(columns)
 	return result.RowsAffected == 1, result.Error
 }
