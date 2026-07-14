@@ -2599,3 +2599,48 @@ git diff --check
 - 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 未修改新增测试或两份交接文档；无 migration、共享 DTO 或运行时同文件冲突。
 - AI 分支合并后必须先运行本测试，再开展 knowledge/company/wxwork/reply-intent 页面动作显隐审计。若新增 handler 失败，先确认是缺失权限还是有意的认证级自服务，禁止为通过测试随意扩充 allowlist。
 - 删除新增测试和本节文档即可回滚，不需要数据或配置回滚。
+
+## 第 49 批：客服审计仿真全生命周期验证（2026-07-15）
+
+### 目标与方法
+
+- 旧仿真测试覆盖场景构造和 TenantID 继承，但没有在同一测试中证明“空库 migration -> seed -> 重复 seed -> report -> cleanup”的完整闭环。
+- 手工验证使用 `/tmp` 下独立 SQLite 和临时最小配置，不连接当前开发服务数据库。首次与重复 seed 后分别读取报告，cleanup 后再读取报告并直接检查会话子表。
+- 随后新增自动化生命周期测试，使用 `t.TempDir()` 创建数据库，不依赖外部 MySQL、Qdrant、企微服务或当前配置文件。
+
+### 文件与精确基线
+
+```text
+cmd/customer_audit_seed/lifecycle_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 核心资源：Company 1、Channel 1、Store 100、客服组长 3、客服 12、门店员工 100、AgentTeam 3、AgentProfile 12、StoreStaffBinding 100、WxWorkInstance 100、Customer/Contact/Identity 各 500、StoreCustomerRelation 801。
+- 仿真资源：Conversation 36、Message 135、历史 Assignment 21、当前已派发 18、实际覆盖客服 12、需人工回复 27；AI/Pending/Active/Closed 为 6/9/18/3。
+- 重复 seed 后整个可比较 report 必须完全相等，不仅检查三个布尔标志。
+
+### Cleanup 证明
+
+- cleanup 后 report 除 batch/marker 外全部为零。
+- 直接检查 `t_conversation`、`t_conversation_route_state`、`t_conversation_participant`、`t_message`、`t_conversation_assignment`、`t_conversation_event_log` 均无残留，防止因报告子查询失去 RouteState 而漏报孤儿数据。
+- 新鲜数据库最终仅剩 bootstrap admin；六个内置角色、`dashboard.view` 和 migration 54 继续存在，确认 cleanup 只删除带测试 marker 的业务数据。
+- 手工临时 YAML、SQLite、WAL 和 SHM 均已删除；不提交 `.codex/audits/` 或 `docs/generated/` 产物。
+
+### 验证结果
+
+```text
+go test ./cmd/customer_audit_seed -run TestFreshDatabaseSeedLifecycle -count=1 -v
+go test -race ./cmd/customer_audit_seed -count=1
+go test ./... -count=1
+go vet ./...
+git diff --check
+```
+
+- 上述验证全部通过；普通生命周期测试约 1.2 秒，race 包测试通过。
+- 没有生产 Seed、model、AutoMigrate、DML migration、DTO、enum、API、权限、路由、WebSocket、前端或 AI/计费语义变化。
+
+### 并行分支与回滚
+
+- 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 不修改新增测试或两份交接文档；无共享文件和 migration 编号冲突。
+- 测试可独立删除，不影响现有 Seed CLI。测试失败时应先区分 migration 初始化、Seed 幂等、报告口径或 cleanup 孤儿，不允许为了恢复绿色而放宽精确基线。

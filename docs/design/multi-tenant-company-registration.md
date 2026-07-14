@@ -1780,3 +1780,27 @@ git diff --check
 - `go test ./... -count=1`、`go vet ./...` 和 `git diff --check` 通过；定向测试同时覆盖权限调用图、总览、Skill 和 AIConfig 现有边界。
 - `origin/codex/ai-billing@f2d2da4` 不修改本批新增测试或两份交接文档，无同文件和 migration 冲突；合并 AI 分支后必须立即重跑该测试，新增 handler 若无权限契约会直接失败。
 - 本批可通过删除测试文件和本节文档独立回滚，无业务数据与运行行为回滚。
+
+## 49. 当前实施检查点：客服审计仿真全生命周期验证（2026-07-15）
+
+本检查点重新验证客服组、门店员工号、客户会话和派单仿真数据在当前 54 个 migration 契约下仍可从空库完整建立、重复执行和安全清理，并把手工验证升级为自动化测试。
+
+### 新鲜数据库证据
+
+- 使用独立临时 SQLite，从空库执行 AutoMigrate 和全部 DML migration 后再运行 `customer_audit_seed`，不读取或修改当前 8083 服务数据库。
+- 首次 seed 得到：1 个测试客户企业、1 个协议渠道、100 个门店、3 名客服组长、12 名客服、100 名门店员工、3 个综合客服组、12 个客服档案、100 个门店绑定、100 个企微实例、500 个客户及联系人/身份、801 条客户门店关系。
+- 仿真派单基线为 36 个会话、135 条消息、21 条历史 Assignment、18 条当前已派发任务覆盖 12 名客服、27 条需人工回复；状态分布为 AI 接待 6、待接入 9、处理中 18、已关闭 3。三个报告标志均为 `true`。
+- 对同一 batch 再次 seed 后，完整 report 逐字段保持一致，证明 upsert 和模拟会话重建不会累加用户、关系、消息或 Assignment。
+
+### Cleanup 与系统数据边界
+
+- cleanup 后 batch report 的所有业务计数归零；额外直接检查 Conversation、RouteState、Participant、Message、Assignment 和 EventLog 六张表均为 0，避免 RouteState 子查询归零却遗留孤儿消息的假通过。
+- cleanup 后数据库只保留 bootstrap admin，六个内置角色、`dashboard.view` 权限及成功的 migration 54 仍存在，证明测试清理没有越界删除系统认证数据。
+- 手工验证使用的临时配置和 SQLite 文件已删除，不写入仓库，也不生成 `docs/generated/` 报告。
+
+### 自动化测试与合并
+
+- 新增 `cmd/customer_audit_seed/lifecycle_test.go`，自动执行新鲜库迁移、首次 seed、重复 seed、精确报告比较、cleanup、孤儿表检查和系统数据保留检查。
+- `go test -race ./cmd/customer_audit_seed -count=1`、`go test ./... -count=1`、`go vet ./...` 和 `git diff --check` 通过；生命周期测试单次普通执行约 1.2 秒。
+- 没有生产 Seed、model、AutoMigrate、DML migration、DTO、enum、API、权限、路由、WebSocket、前端或 AI runtime 变化。`origin/codex/ai-billing@f2d2da4` 不修改新增测试或两份交接文档，无同文件和 migration 冲突。
+- 本批可通过删除测试和本节文档独立回滚，不需要清理业务数据库；临时验证数据库已在本批结束前删除。
