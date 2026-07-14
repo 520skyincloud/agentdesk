@@ -1852,3 +1852,62 @@ git diff --check
 - 当前 AI 分支未修改 `ai_agent_service.go` 和 AIAgent CRUD；高风险同文件是 `models.go`、`reply_trigger_service.go`、`miniprogram_chat_service.go`、会话 builder、转人工/企微运行时及测试。先合并 AIAgent Tenant 字段、migration 和 repository/service 原语，再逐方法合并：reply trigger 保留 AI 分支 route-aware 选择与本批 Tenant 查询，mini-program 保留 AI 分支人工状态判断与本批 Channel 必填边界；AIConfig 继续保留平台语义，禁止整文件覆盖。
 - 本批没有改变 AI 分支负责的模型调用、计费和 usage 字段。需要 rebase 时重点检查 AI 分支是否新增 AIAgent 字段或 runtime 调用点，并给所有新 Agent 查询补已知 Tenant。
 - 回滚边界为本批 tenant-aware 代码和入口校验；已回填 TenantID 不回写 0。保留字段与数据可以向后兼容，恢复全局 Agent 或删除 Tenant 字段会重新产生跨公司绑定风险。
+
+## 第 34 批：租户公司接入设置与 Channel 密钥权限收口（2026-07-14）
+
+### 目标与完成内容
+
+- 保持 `/dashboard/channels` 为平台“接入公司”，将原占位 `/dashboard/settings` 改为当前公司 Channel 管理，复用现有 Channel API、类型和 `channel.*` 权限。
+- 在“服务能力”增加租户上下文“接入设置”导航。平台账号未选择公司时不可见且 URL 守卫生效；租户账号按 `channel.view` 显示。
+- 页面支持 Web、微信公众号和企微员工号协议渠道的筛选、创建、编辑、启停和删除。编辑弹窗加载当前租户已启用 AIAgent，Web/公众号展示直接访问链接和 JWT Secret，企微协议展示当前真实运行配置。
+- 历史 `wxwork_kf`、`wxwork_cli` 只在已有记录中标记为历史，不恢复旧编辑表单、旧 bridge 或旧协议字段。
+- 修复原 Channel 列表/详情泄露 `configJson` 的权限缺口：列表始终脱敏，详情从 `channel.view` 收紧为现有 `channel.update`。没有新增权限点，权限管理仍是唯一授权来源。
+
+### 文件与契约
+
+```text
+internal/handlers/dashboard/channel_handler.go
+internal/handlers/dashboard/channel_handler_test.go
+internal/handlers/dashboard/authz_handler_test.go
+web/app/dashboard/settings/page.tsx
+web/app/dashboard/settings/_components/channel-edit.tsx
+web/app/dashboard/settings/channel-settings-page.test.mjs
+web/lib/navigation.tsx
+web/lib/navigation.test.mjs
+web/messages/zh-CN.json
+web/messages/en-US.json
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 没有 model、migration、request/response DTO 字段、enum、Gin 路由或 WebSocket payload 变化。
+- `GET /api/dashboard/channel/list` 和创建响应的 `configJson` 现在为空；`GET /api/dashboard/channel/{id}` 要求 `channel.update` 并继续返回编辑所需完整配置。创建、更新、启停、重置 Secret 和删除路径不变。
+- 企微协议开发前已查 `wework.apifox.cn/llms.txt` 及回调、设置通知地址、发送文本接口；本批没有改变协议 API body、回调或 `conversation_id` 前缀规则。
+
+### 权限、验证与风险
+
+- 页面显隐：`channel.view`；新建：`channel.create`；当前渠道编辑/启停/读取敏感详情/重置 Secret：`channel.update`；删除：`channel.delete`。历史 KF/CLI 记录禁用编辑和启停；账号仍只绑定角色，角色仍在权限管理内绑定权限。
+- 聚焦测试覆盖平台/租户页面职责、四权限显隐、租户导航、历史表单不恢复、列表敏感配置脱敏和详情更新权限。
+- 浏览器验证桌面、`390x844` 列表和新建/编辑弹窗，无页面级横向溢出和控制台错误；移动表格保留自身滚动，不挤宽页面。
+- 详情权限收紧可能影响绕过页面、仅持 `channel.view` 直接调用详情的历史客户端；仓库内当前唯一调用点是编辑弹窗，本批已按 `channel.update` 显示，因此正常 UI 无兼容损失。回滚该鉴权会重新暴露 App Secret，不建议回退。
+
+验证命令：
+
+```text
+go test ./... -count=1
+go test ./internal/handlers/dashboard -run 'Test(ChannelDetailRequiresUpdatePermission|ChannelListResponseRedactsSensitiveConfig)' -count=1
+go vet ./...
+cd web && node --test $(rg --files . | rg '\.test\.mjs$' | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+cd web && pnpm exec eslint app/dashboard/settings/page.tsx app/dashboard/settings/_components/channel-edit.tsx lib/navigation.tsx
+git diff --check
+```
+
+- Go 全量与权限专项、`go vet`、71 项前端测试、typecheck、生产构建、目标 ESLint 和 diff 检查均通过。
+
+### 并行合并与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 与本批重叠导航和双语资源，并修改 `admin.ts`；本批没有修改 `admin.ts`。合并时逐段保留 AI 分支 `replyIntentProfiles` 与本批 `channelSettings`，禁止整文件选边。
+- 本批没有触碰 AIAgent 模型、AIConfig、FastGPT、回复 runtime、token、usage 或计费。无 migration 版本冲突，无数据回滚边界。
+- 页面与导航可以独立回滚；Channel 列表脱敏和详情更新权限建议作为安全修复保留。若需要兼容只读详情，应新增不含密钥的只读 DTO，而不是恢复完整 `configJson` 暴露。

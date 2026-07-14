@@ -217,6 +217,12 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
     context: "tenant",
     items: [
       {
+        titleKey: "nav.channelSettings",
+        url: "/dashboard/settings",
+        icon: <NetworkIcon />,
+        requiredPermission: "channel.view",
+      },
+      {
         titleKey: "nav.aiAgents",
         url: "/dashboard/ai-agents",
         icon: <BotMessageSquareIcon />,

@@ -33,7 +33,7 @@ func ChannelAnyList(ctx *gin.Context) {
 	).Where("status <> ?", enums.StatusDeleted).Desc("id"), operator)
 	results := make([]response.ChannelResponse, 0, len(list))
 	for _, item := range list {
-		results = append(results, buildChannelResponse(&item))
+		results = append(results, buildChannelPublicResponse(&item))
 	}
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
@@ -43,7 +43,7 @@ func ChannelGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -98,7 +98,7 @@ func ChannelPostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, buildChannelResponse(item))
+	httpx.WriteJSON(ctx, buildChannelPublicResponse(item))
 }
 
 func ChannelPostUpdate(ctx *gin.Context) {
@@ -198,5 +198,11 @@ func buildChannelResponse(item *models.Channel) response.ChannelResponse {
 	if aiAgent := services.AIAgentService.GetByTenantID(item.AIAgentID, item.TenantID); aiAgent != nil {
 		ret.AIAgentName = aiAgent.Name
 	}
+	return ret
+}
+
+func buildChannelPublicResponse(item *models.Channel) response.ChannelResponse {
+	ret := buildChannelResponse(item)
+	ret.ConfigJSON = ""
 	return ret
 }

@@ -1433,3 +1433,31 @@ git diff --check
 - migration 50 创建前已 fetch 并核对：`origin/main@e67e207` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支此前最高 49，无版本冲突。
 - 当前 `origin/codex/ai-billing@f2d2da4` 未修改 `ai_agent_service.go` 和 AIAgent CRUD，但同文件包括 `models.go`、`reply_trigger_service.go`、`miniprogram_chat_service.go`、会话 builder、转人工/企微运行时及相关测试。合并时先保留 `AIAgent.TenantID`、migration 50、tenant-aware repository/service 原语；`reply_trigger_service.go` 同时保留 AI 分支 route-aware runtime 选择和本批 `conversation.TenantID` Agent 查询，`miniprogram_chat_service.go` 同时保留 AI 分支人工状态判断和本批 Channel 必填边界；禁止整文件选边。
 - 回滚代码可以撤销租户查询和运行时校验，但已回填的正数 TenantID 不应改回 0。若确需业务回滚，应保留字段和数据，只回退入口使用；删除字段或恢复全局 Agent 会重新引入跨公司绑定风险。
+
+## 34. 当前实施检查点：当前公司接入设置（2026-07-14）
+
+### 页面职责与复用判断
+
+- `/dashboard/channels` 继续是平台管理员唯一的“接入公司”页面，不恢复旧 Channel 编辑器，也不混入租户渠道配置。
+- 复用原占位的 `/dashboard/settings` 作为当前公司的“接入设置”，复用既有 Channel 模型、`/api/dashboard/channel/*` 接口、`web/lib/api/admin.ts` 方法和 `channel.view/create/update/delete` 权限，不增加平行模型、接口、状态或隐藏权限。
+- “接入设置”位于租户“服务能力”导航，只有存在 Active Tenant 且拥有 `channel.view` 时显示；平台账号未进入公司时由既有公司上下文守卫返回“接入公司”。
+- 页面管理 Web、微信公众号和当前真实企微员工号协议渠道。历史 `wxwork_kf`、`wxwork_cli` 记录可以在全部列表中识别和删除，但不进入编辑表单；没有恢复企业微信客服号、CLI、旧 hook bridge 或旧独立 Agent。
+- 企微协议字段以 `https://wework.apifox.cn/llms.txt`、回调说明、`/client/set_notify_url`、`/msg/send_text` 协议页和当前 `WxWorkProtocolChannelConfig` 运行代码交叉核对；本批不改变 `conversation_id`、`S:`/`R:` 前缀、消息发送或实例回调语义。
+
+### 权限与敏感配置边界
+
+- `channel.view` 只负责列表和导航；`channel.create` 控制新建；`channel.update` 控制当前渠道的编辑、启停、含敏感配置的详情读取和 User JWT Secret 重置；`channel.delete` 控制删除。历史 KF/CLI 记录的编辑和启停均禁用。
+- 审计发现历史 Channel 列表/详情均会返回完整 `configJson`，导致仅有 `channel.view` 的账号可读取 App Secret 和 Callback Token。本批将列表与创建响应的 `configJson` 固定清空，并把详情接口改为要求现有 `channel.update`；字段、URL 和 JsonResult 结构不变。
+- 新建/编辑弹窗只加载当前公司已启用的 AIAgent；后端继续校验 Channel 与 AIAgent 同租户。Web/公众号保留窗口参数、访问链接和 User JWT Secret；企微协议保留当前服务代码实际消费的 App Key、App Secret、API、设备池、WECDN、公共素材和 Callback Token 配置。
+
+### 数据、验证与回滚
+
+- 没有 model、AutoMigrate、DML migration、request/response DTO、enum、Gin 路由或 WebSocket payload 变化。列表 `configJson` 清空和详情鉴权属于现有接口的最小权限收口。
+- 前端契约测试固定平台公司页与租户 Channel 页不互换、四项权限分别生效、租户上下文导航和历史渠道表单不恢复；后端测试固定列表脱敏和仅查看账号不能读取详情。
+- 浏览器使用当前源码前端和临时 SQLite 后端验证：平台模式仍显示“接入公司”，进入默认公司后“接入设置”读取本公司渠道；桌面无横向溢出，`390x844` 下 document width 为 390、表格仅内部滚动、弹窗宽/scrollWidth 均为 388，控制台无错误。
+- 可独立回滚租户设置页、导航和列表脱敏；不需要数据回滚。若回滚详情鉴权会重新暴露敏感配置，不建议单独回滚该安全边界。
+
+### 并行分支影响
+
+- 开始前已 fetch：`origin/codex/ai-billing@f2d2da4` 与本批重叠 `web/lib/navigation.tsx`、中英文资源，另修改 `web/lib/api/admin.ts`；本批没有修改 `admin.ts`，导航和文案只增加 `nav.channelSettings` 及 Channel 文案。
+- 合并 AI 分支时逐项保留其 `replyIntentProfiles` 导航/文案和本批 `channelSettings`，禁止整文件覆盖。本批未改模型调用、回复 runtime、FastGPT、模型供应商、token、usage 或计费语义，也不需要在合并前 rebase。
