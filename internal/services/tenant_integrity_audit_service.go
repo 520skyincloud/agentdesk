@@ -11,6 +11,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 
 	"gorm.io/gorm"
@@ -447,6 +448,9 @@ func (s *tenantIntegrityAuditService) Audit(
 	if err := s.auditDynamicTenantReferences(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
+	if err := s.auditAgentOrganizationSemantics(db, metadata, available, report, sampleLimit); err != nil {
+		return nil, err
+	}
 	if err := s.auditRoleScopes(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
@@ -460,6 +464,88 @@ func (s *tenantIntegrityAuditService) Audit(
 		report.Status = "failed"
 	}
 	return report, nil
+}
+
+func (s *tenantIntegrityAuditService) auditAgentOrganizationSemantics(
+	db *gorm.DB,
+	metadata map[string]tenantIntegrityModelMetadata,
+	available map[string]bool,
+	report *TenantIntegrityAuditReport,
+	sampleLimit int,
+) error {
+	columnAvailability := make(map[string]bool)
+	requireColumn := func(model, table, column, message string) bool {
+		key := model + "." + column
+		if available, checked := columnAvailability[key]; checked {
+			return available
+		}
+		if repositories.TenantIntegrityAuditRepository.HasColumn(db, table, column) {
+			columnAvailability[key] = true
+			return true
+		}
+		columnAvailability[key] = false
+		report.addViolation("MISSING_REQUIRED_COLUMN", key, 1, nil, message)
+		return false
+	}
+
+	if available["AgentTeamSquadMember"] && available["AgentTeamSquad"] && available["AgentProfile"] {
+		memberTable := metadata["AgentTeamSquadMember"].Table
+		squadTable := metadata["AgentTeamSquad"].Table
+		profileTable := metadata["AgentProfile"].Table
+		ready := true
+		for _, column := range []struct {
+			model string
+			table string
+			name  string
+		}{
+			{model: "AgentTeamSquadMember", table: memberTable, name: "status"},
+			{model: "AgentTeamSquad", table: squadTable, name: "team_id"},
+			{model: "AgentProfile", table: profileTable, name: "team_id"},
+		} {
+			ready = requireColumn(column.model, column.table, column.name, "客服小组组织语义审计所需列不存在") && ready
+		}
+		if ready {
+			if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+				Table: memberTable, Alias: "c",
+				Joins: []string{
+					"LEFT JOIN " + squadTable + " AS squad ON squad.id = c.squad_id",
+					"LEFT JOIN " + profileTable + " AS profile ON profile.id = c.agent_profile_id",
+				},
+				Where: "c.status = ? AND squad.id IS NOT NULL AND profile.id IS NOT NULL AND squad.team_id <> profile.team_id",
+				Args:  []any{enums.StatusOk}, IDExpr: "c.id",
+			}, sampleLimit, "AGENT_TEAM_SQUAD_MEMBER_TEAM_MISMATCH", "AgentTeamSquadMember.agent_profile_id", "启用客服小组成员不属于该小组的综合客服组"); err != nil {
+				return err
+			}
+		}
+	}
+
+	if available["AgentTeamSchedule"] && available["AgentTeamSquad"] {
+		scheduleTable := metadata["AgentTeamSchedule"].Table
+		squadTable := metadata["AgentTeamSquad"].Table
+		ready := true
+		for _, column := range []struct {
+			model string
+			table string
+			name  string
+		}{
+			{model: "AgentTeamSchedule", table: scheduleTable, name: "team_id"},
+			{model: "AgentTeamSchedule", table: scheduleTable, name: "squad_id"},
+			{model: "AgentTeamSquad", table: squadTable, name: "team_id"},
+		} {
+			ready = requireColumn(column.model, column.table, column.name, "客服小组排班语义审计所需列不存在") && ready
+		}
+		if ready {
+			if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+				Table: scheduleTable, Alias: "c",
+				Joins:  []string{"LEFT JOIN " + squadTable + " AS squad ON squad.id = c.squad_id"},
+				Where:  "c.squad_id > 0 AND squad.id IS NOT NULL AND c.team_id <> squad.team_id",
+				IDExpr: "c.id",
+			}, sampleLimit, "AGENT_TEAM_SCHEDULE_SQUAD_TEAM_MISMATCH", "AgentTeamSchedule.squad_id", "客服小组排班引用了其他综合客服组的小组"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *tenantIntegrityAuditService) auditDynamicTenantReferences(

@@ -3438,3 +3438,38 @@ git diff --check
 
 - `origin/codex/ai-billing@f2d2da4` 不修改本批 service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。最终合并须同时保留第 66 批 tenant 过滤与本批 TeamID 匹配。
 - 可独立回滚三个运行/测试文件和两份文档，无数据库回滚；回滚会恢复同租户跨综合组脏排班影响自动派单候选的风险。完整性审计当前只能发现 TenantID 错配，TeamID 语义修复应另做显式审计/修复批次，不能在派单时自动改写历史排班。
+
+## 第 68 批：客服小组组织语义只读审计（2026-07-15）
+
+### 目标与实现
+
+- 现有普通关系审计只比较 TenantID，不能发现同一公司内“启用小组成员属于另一个综合组”或“排班引用另一个综合组的小组”。第 66/67 批已 fail closed，本批补历史数据可见性。
+- `auditAgentOrganizationSemantics` 使用结构化 JOIN 增加两项独立检查：启用 `AgentTeamSquadMember` 的 Profile.TeamID 必须等于 Squad.TeamID；非零 `AgentTeamSchedule.squad_id` 的 Schedule.TeamID 必须等于 Squad.TeamID。
+- 成员只检查 `StatusOk`，避免客服移组后已删除历史关系误报；排班检查保留全部非零小组引用，因为小组本身不支持变更所属综合组。父级缺失和 TenantID 错配继续由原 125 条关系处理。
+- 两项检查复用统一 Count/sampleLimit，不增加普通关系计数，不写库、不修复数据。
+
+### 文件与验证
+
+```text
+internal/services/tenant_integrity_audit_service.go
+internal/services/tenant_integrity_audit_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^TestTenantIntegrityAudit(PassesCleanTwoTenantFixture|ReportsAgentOrganizationSemanticViolations)$' -count=1 -p 1
+go run ./cmd/tenant_integrity_audit --config /tmp/agentdesk-tenant-stats.yaml --sample-limit 5
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 构造的串组成员和串组排班各报告 1 条，样本 ID 精确；合法成员/排班和干净双租户 fixture 不误报。
+- 实际 SQLite 报告 passed：51/51 模型策略、64/64 表、125/125 普通关系、0 违规。执行前后 mtime `1784055363`、大小 `4878336` 字节均不变。
+- 全仓 Go、vet 和 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端、模型调用、token、usage 或计费变化；没有新增 generated 报告。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 不修改本批审计 service/test，当前无同文件冲突，不要求 rebase 或 migration 排序。最终合并新增 AI/FastGPT 租户模型后仍需先过模型策略覆盖，再运行包括本批语义检查的实际库审计。
+- 可独立回滚 service/test 和两份文档，无数据库回滚；回滚会失去同租户串组历史问题的发现能力。任何修复必须根据报告另做幂等、可审阅 DML，不得让只读命令自动改组织关系。

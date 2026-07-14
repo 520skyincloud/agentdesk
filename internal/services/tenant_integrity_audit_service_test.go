@@ -243,6 +243,67 @@ func TestTenantIntegrityAuditReportsDynamicReferenceViolations(t *testing.T) {
 	}
 }
 
+func TestTenantIntegrityAuditReportsAgentOrganizationSemanticViolations(t *testing.T) {
+	db := openTenantIntegrityTestDB(t, true)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	now := time.Now()
+	audit := tenantIntegrityTestAuditFields(now)
+
+	teamA := &models.AgentTeam{TenantID: fixture.tenantA.ID, Name: "Audit Team A", Status: enums.StatusOk, AuditFields: audit}
+	teamB := &models.AgentTeam{TenantID: fixture.tenantA.ID, Name: "Audit Team B", Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(teamA).Error; err != nil {
+		t.Fatalf("create team A: %v", err)
+	}
+	if err := db.Create(teamB).Error; err != nil {
+		t.Fatalf("create team B: %v", err)
+	}
+	otherUser := &models.User{TenantID: fixture.tenantA.ID, Username: "audit-team-b-user", Password: "x", Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(otherUser).Error; err != nil {
+		t.Fatalf("create team B user: %v", err)
+	}
+	profileA := &models.AgentProfile{TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID, TeamID: teamA.ID, AgentCode: "audit-agent-a", DisplayName: "Audit Agent A", Status: enums.StatusOk, AuditFields: audit}
+	profileB := &models.AgentProfile{TenantID: fixture.tenantA.ID, UserID: otherUser.ID, TeamID: teamB.ID, AgentCode: "audit-agent-b", DisplayName: "Audit Agent B", Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(profileA).Error; err != nil {
+		t.Fatalf("create profile A: %v", err)
+	}
+	if err := db.Create(profileB).Error; err != nil {
+		t.Fatalf("create profile B: %v", err)
+	}
+	squadA := &models.AgentTeamSquad{TenantID: fixture.tenantA.ID, TeamID: teamA.ID, Name: "Audit Squad A", Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(squadA).Error; err != nil {
+		t.Fatalf("create squad A: %v", err)
+	}
+	validMember := &models.AgentTeamSquadMember{TenantID: fixture.tenantA.ID, SquadID: squadA.ID, AgentProfileID: profileA.ID, Status: enums.StatusOk, AuditFields: audit}
+	mismatchMember := &models.AgentTeamSquadMember{TenantID: fixture.tenantA.ID, SquadID: squadA.ID, AgentProfileID: profileB.ID, Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(validMember).Error; err != nil {
+		t.Fatalf("create valid squad member: %v", err)
+	}
+	if err := db.Create(mismatchMember).Error; err != nil {
+		t.Fatalf("create mismatched squad member: %v", err)
+	}
+	validSchedule := &models.AgentTeamSchedule{TenantID: fixture.tenantA.ID, TeamID: teamA.ID, SquadID: squadA.ID, StartAt: now, EndAt: now.Add(time.Hour), Status: enums.StatusOk, AuditFields: audit}
+	mismatchSchedule := &models.AgentTeamSchedule{TenantID: fixture.tenantA.ID, TeamID: teamB.ID, SquadID: squadA.ID, StartAt: now.Add(time.Hour), EndAt: now.Add(2 * time.Hour), Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(validSchedule).Error; err != nil {
+		t.Fatalf("create valid squad schedule: %v", err)
+	}
+	if err := db.Create(mismatchSchedule).Error; err != nil {
+		t.Fatalf("create mismatched squad schedule: %v", err)
+	}
+
+	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 5})
+	if err != nil {
+		t.Fatalf("audit agent organization semantics: %v", err)
+	}
+	memberViolation := tenantIntegrityFindViolation(report, "AGENT_TEAM_SQUAD_MEMBER_TEAM_MISMATCH", "AgentTeamSquadMember.agent_profile_id")
+	if memberViolation == nil || memberViolation.Count != 1 || len(memberViolation.SampleIDs) != 1 || memberViolation.SampleIDs[0] != mismatchMember.ID {
+		t.Fatalf("squad member semantic violation = %#v", memberViolation)
+	}
+	scheduleViolation := tenantIntegrityFindViolation(report, "AGENT_TEAM_SCHEDULE_SQUAD_TEAM_MISMATCH", "AgentTeamSchedule.squad_id")
+	if scheduleViolation == nil || scheduleViolation.Count != 1 || len(scheduleViolation.SampleIDs) != 1 || scheduleViolation.SampleIDs[0] != mismatchSchedule.ID {
+		t.Fatalf("squad schedule semantic violation = %#v", scheduleViolation)
+	}
+}
+
 type tenantIntegrityFixture struct {
 	tenantA      *models.Tenant
 	tenantB      *models.Tenant

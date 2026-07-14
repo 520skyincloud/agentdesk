@@ -2114,3 +2114,15 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 新测试在 tenant 101 内构造综合组 A 的排班指向综合组 B 小组，并伪造 A 客服为 B 小组成员；修复后候选池为空。正常指定小组、整组、空小组、停用小组及第 66 批跨租户成员测试均通过。
 - 聚焦 race、services 单包、独立串行全仓 Go、`go vet ./...` 和 diff 检查通过。一次把 services 与全仓测试并行运行的验证因仓库既有全局 `sqls.DB/config` 测试夹具争用出现临时表缺失；两个进程结束后独立 `go test ./... -count=1 -p 1` 完整通过，不把并发验证失败隐瞒或误记为产品回归。
 - 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、页面、AI 回复或计费变化。AI 分支无同文件冲突，不要求 rebase 或 migration 排序；可独立回滚 service/test/文档，回滚会恢复同租户跨综合组脏排班影响候选池的风险。
+
+## 68. 当前实施检查点：客服小组组织语义只读审计（2026-07-15）
+
+普通租户关系审计可以确认 Squad/Member/Profile/Schedule 的 TenantID 一致，却无法表达同一租户内的组织约束。第 66/67 批已让实时派单拒绝错误成员和串组排班，本批让这些历史问题也能在上线前被只读命令发现，不增加自动修复。
+
+- 新增 `AGENT_TEAM_SQUAD_MEMBER_TEAM_MISMATCH`：仅检查 `status=OK` 的启用成员关系，要求所引 AgentProfile.TeamID 等于 AgentTeamSquad.TeamID。已移除的历史成员不因客服后来移组而误报。
+- 新增 `AGENT_TEAM_SCHEDULE_SQUAD_TEAM_MISMATCH`：当 Schedule.SquadID 大于 0 且父小组存在时，要求 Schedule.TeamID 等于 Squad.TeamID。整组排班 `squadId=0` 不参与该检查。
+- 两项均复用 `TenantIntegrityQuery` 的 Count、ID 升序样本和统一 sampleLimit；缺少语义检查所需列时报告 `MISSING_REQUIRED_COLUMN`。它们不伪装成普通外键，因此 `configuredRelations/checkedRelations` 继续保持 125/125。
+- 测试在 tenant A 内建立两个综合客服组，分别插入一条合法与一条串组成员、一条合法与一条串组排班；两类违规各报告 1 条且样本精确命中错误记录，合法记录不误报，干净双租户 fixture 继续 passed。
+- 实际 `/tmp/agentdesk-tenant-stats.db` 审计继续 passed：51/51 TenantID 模型策略、64/64 表、125/125 普通关系、0 违规。执行前后文件 mtime 均为 `1784055363`，大小均为 `4878336` 字节。
+- 聚焦 race、独立串行全仓 Go、`go vet ./...` 和 diff 检查通过。无 model、migration、DTO、API、权限、WebSocket、页面或 AI/计费变化；AI 分支无同文件冲突，不要求 rebase 或 migration 排序。
+- 可独立回滚审计 service/test 和本节文档，无数据库回滚；回滚只会失去历史串组发现能力。发现违规后必须另开幂等 DML 修复批次，禁止审计命令自动挪人、改排班或删除记录。
