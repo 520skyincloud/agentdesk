@@ -2554,3 +2554,9 @@ git diff --check
 - 开始前已 fetch。`origin/main` 最高 migration 20，`origin/codex/ai-billing@f2d2da4` 最高 33，本分支此前最高 53，migration 54 无编号冲突。
 - 同文件为 `web/lib/navigation.tsx`、`web/messages/zh-CN.json` 和 `web/messages/en-US.json`。AI 分支在导航后部增加意图行业入口并在 nav 文案区增加翻译；本批在导航首项增加 `dashboard.view` 并在 common 区增加无模块状态，本批区块和语义不重叠。提交后的 `git merge-tree --write-tree HEAD origin/codex/ai-billing` 显示双语资源可自动合并，但 `navigation.tsx` 因两条长期分支在同一数组累计的其他变化需要手工解决；不得整文件选边，必须保留本分支完整租户导航、`dashboard.view` 和 AI 分支 `replyIntentProfiles`，然后重跑导航测试与 build。
 - 本批可独立回滚代码；数据库中已同步的额外权限和角色关系对旧代码无害，不使用破坏性 DML 回退。若未来取消权限，应通过新的幂等 migration 停用/解绑。
+
+### 权限复扫与下一合并边界
+
+- `rg` 复扫 dashboard handler 后，未再发现整个资源文件完全不含 `RequirePermission`、统一 permission helper 或 `HasPermission` 的后台入口；后续仍按函数和动作逐项核对，不能把文件级扫描当作最终安全证明。
+- 当前明确待合并后处理的前端域为：`web/app/dashboard/companies`、`web/app/dashboard/knowledge`、`web/app/dashboard/reply-intent-configs`、`web/components/wxwork-protocol/wxwork-protocol-instance-manager.tsx` 及复用该 Manager 的公司详情。AI 分支正在修改这些页面/API/handler，禁止合并前整文件覆盖。
+- 合并后的检查顺序：先确认最终后端动作权限，再处理主 CRUD 显隐和动作函数守卫，然后处理 Company/Channel/Knowledge/AIConfig 等辅助列表的按权限加载，最后跑双租户浏览器验收。门店工作台继续保持静态占位，不构造假运行链路。

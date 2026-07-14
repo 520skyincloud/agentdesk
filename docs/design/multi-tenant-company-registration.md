@@ -1748,3 +1748,10 @@ git diff --check
 - 全量 Go、vet、96 项前端测试、typecheck、Next 生产构建、目标 ESLint 和 diff 检查通过；测试覆盖后端权限/公司上下文双门槛、migration 幂等与默认角色范围、导航显隐和无权回退。
 - `origin/codex/ai-billing@f2d2da4` 同时修改 `web/lib/navigation.tsx` 和双语资源：AI 分支新增意图行业入口及其文案，本批修改总览入口和 `common.noAccessibleModules`，本批区块和语义不重叠；但两条长期分支在导航数组还累计了其他变化，`git merge-tree --write-tree HEAD origin/codex/ai-billing` 已确认 `navigation.tsx` 需要手工合并。必须保留本分支完整租户导航与 `dashboard.view`，同时保留 AI 分支 `replyIntentProfiles`；双语资源本次可自动合并。AI 分支最高 migration 33，与 54 不冲突。
 - 回滚代码后数据库中多出的内置权限及角色关系不会破坏旧版本，不应通过破坏性 SQL 删除；若产品决定撤销总览权限，应先停用权限和清理角色关系，再单独做幂等 DML。
+
+### 本轮复扫后的剩余边界
+
+- 继续以 `rg` 核对 dashboard handler 后，没有发现第二个像旧总览一样、整个后台资源文件完全缺少显式权限或统一权限 helper 的入口；这不替代逐动作测试，AI 分支合并后仍要重跑 handler 权限审计。
+- 客户企业页、知识库页、回复意图页和企微员工号 Manager 仍有动作显隐/辅助接口加载需要统一收口；这些文件均被 `codex/ai-billing` 修改。公司详情还复用了同一个企微 Manager，不能只隐藏外层开户链接按钮就宣称完成。
+- 上述四个域必须在 AI 分支合并并确认最终 handler 权限后整页处理，尤其保留 FastGPT、意图行业、员工号欢迎语/模型设置和本分支租户范围；合并前不做局部补丁，避免同一页面形成两套权限判断。
+- 门店工作台继续是静态设计占位，不创建假接口或假按钮权限。其真实数据源、门店范围、通知动作和权限点确定前不纳入可运行功能验收。
