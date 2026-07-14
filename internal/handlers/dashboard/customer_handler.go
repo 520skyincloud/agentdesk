@@ -2,9 +2,11 @@ package dashboard
 
 import (
 	"agent-desk/internal/builders"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
+	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/services"
@@ -26,7 +28,8 @@ func CustomerPostList(ctx *gin.Context) {
 		return
 	}
 	list, paging := services.CustomerService.ListCustomers(req)
-	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildCustomerList(list), Page: paging})
+	presentation := services.CustomerService.LoadPresentationData(list, true)
+	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildCustomerListWithContext(list, buildCustomerContext(presentation)), Page: paging})
 }
 
 func CustomerGetBy(ctx *gin.Context) {
@@ -43,7 +46,7 @@ func CustomerGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, nil)
 		return
 	}
-	ret := builders.BuildCustomer(item)
+	ret := buildCustomerResponse(item)
 	httpx.WriteJSON(ctx, &ret)
 }
 
@@ -56,11 +59,14 @@ func CustomerGetStore_relations(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if item := services.CustomerService.Get(id); item == nil || item.Status == enums.StatusDeleted {
+	item := services.CustomerService.Get(id)
+	if item == nil || item.Status == enums.StatusDeleted {
 		httpx.WriteJSON(ctx, nil)
 		return
 	}
-	httpx.WriteJSON(ctx, builders.BuildStoreCustomerRelationList(services.CustomerService.ListStoreRelations(id)))
+	presentation := services.CustomerService.LoadPresentationData([]models.Customer{*item}, true)
+	buildContext := buildCustomerContext(presentation)
+	httpx.WriteJSON(ctx, builders.BuildStoreCustomerRelationListWithContext(presentation.StoreRelationsByCustomerID[id], buildContext))
 }
 
 // PostSave_profile POST /save_profile — 客户主信息与联系方式在同一事务中保存。
@@ -87,7 +93,7 @@ func CustomerPostSave_profile(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	ret := builders.BuildCustomer(item)
+	ret := buildCustomerResponse(item)
 	httpx.WriteJSON(ctx, &ret)
 }
 
@@ -107,7 +113,7 @@ func CustomerPostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	ret := builders.BuildCustomer(item)
+	ret := buildCustomerResponse(item)
 	httpx.WriteJSON(ctx, &ret)
 }
 
@@ -163,4 +169,21 @@ func CustomerPostUpdate_status(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, nil)
+}
+
+func buildCustomerResponse(item *models.Customer) *response.CustomerResponse {
+	if item == nil {
+		return nil
+	}
+	presentation := services.CustomerService.LoadPresentationData([]models.Customer{*item}, true)
+	return builders.BuildCustomerWithContext(item, buildCustomerContext(presentation))
+}
+
+func buildCustomerContext(data services.CustomerPresentationData) *builders.CustomerBuildContext {
+	return &builders.CustomerBuildContext{
+		CompaniesByID:              data.CompaniesByID,
+		StoreRelationsByCustomerID: data.StoreRelationsByCustomerID,
+		StoresByID:                 data.StoresByID,
+		WxWorkInstancesByID:        data.WxWorkInstancesByID,
+	}
 }

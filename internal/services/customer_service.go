@@ -32,6 +32,13 @@ func newCustomerService() *customerService {
 type customerService struct {
 }
 
+type CustomerPresentationData struct {
+	CompaniesByID              map[int64]*models.Company
+	StoreRelationsByCustomerID map[int64][]models.StoreCustomerRelation
+	StoresByID                 map[int64]*models.Store
+	WxWorkInstancesByID        map[int64]*models.WxWorkProtocolInstance
+}
+
 func (s *customerService) Get(id int64) *models.Customer {
 	return repositories.CustomerRepository.Get(sqls.DB(), id)
 }
@@ -112,6 +119,60 @@ func (s *customerService) Count(cnd *sqls.Cnd) int64 {
 
 func (s *customerService) CountByCompanyIDs(companyIDs []int64) map[int64]int64 {
 	return repositories.CustomerRepository.CountByCompanyIDs(sqls.DB(), companyIDs, int(enums.StatusDeleted))
+}
+
+func (s *customerService) LoadPresentationData(customers []models.Customer, includeStoreRelations bool) CustomerPresentationData {
+	data := CustomerPresentationData{
+		CompaniesByID:              map[int64]*models.Company{},
+		StoreRelationsByCustomerID: map[int64][]models.StoreCustomerRelation{},
+		StoresByID:                 map[int64]*models.Store{},
+		WxWorkInstancesByID:        map[int64]*models.WxWorkProtocolInstance{},
+	}
+	if len(customers) == 0 {
+		return data
+	}
+	companyIDs := make([]int64, 0, len(customers))
+	customerIDs := make([]int64, 0, len(customers))
+	for i := range customers {
+		companyIDs = appendPositive(companyIDs, customers[i].CompanyID)
+		customerIDs = appendPositive(customerIDs, customers[i].ID)
+	}
+	companyIDs = uniquePositive(companyIDs)
+	if len(companyIDs) > 0 {
+		companies := repositories.CompanyRepository.Find(sqls.DB(), sqls.NewCnd().In("id", companyIDs))
+		for i := range companies {
+			data.CompaniesByID[companies[i].ID] = &companies[i]
+		}
+	}
+	if !includeStoreRelations || len(customerIDs) == 0 {
+		return data
+	}
+	relations := repositories.StoreCustomerRelationRepository.Find(sqls.DB(), sqls.NewCnd().
+		In("customer_id", uniquePositive(customerIDs)).
+		NotEq("status", enums.StatusDeleted).
+		Desc("last_active_at").
+		Desc("id"))
+	storeIDs := make([]int64, 0, len(relations))
+	instanceIDs := make([]int64, 0, len(relations))
+	for i := range relations {
+		relation := relations[i]
+		data.StoreRelationsByCustomerID[relation.CustomerID] = append(data.StoreRelationsByCustomerID[relation.CustomerID], relation)
+		storeIDs = appendPositive(storeIDs, relation.StoreID)
+		instanceIDs = appendPositive(instanceIDs, relation.WxWorkInstanceID)
+	}
+	if storeIDs = uniquePositive(storeIDs); len(storeIDs) > 0 {
+		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().In("id", storeIDs))
+		for i := range stores {
+			data.StoresByID[stores[i].ID] = &stores[i]
+		}
+	}
+	if instanceIDs = uniquePositive(instanceIDs); len(instanceIDs) > 0 {
+		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().In("id", instanceIDs))
+		for i := range instances {
+			data.WxWorkInstancesByID[instances[i].ID] = &instances[i]
+		}
+	}
+	return data
 }
 
 func (s *customerService) EnsureExternalCustomer(ctx *sqls.TxContext, externalUser openidentity.ExternalUser) (int64, error) {

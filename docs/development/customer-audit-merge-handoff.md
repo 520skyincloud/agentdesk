@@ -715,3 +715,19 @@ go test ./internal/services -run 'Test(ConversationHumanDispatch|StoreManualAgen
 - 并行 `codex/ai-billing@f2d2da4` 不修改通知 handler/repository/service；仅在 `internal/models/models.go` 同文件重叠，合并时保留双方字段。
 - migration 41 高于并行分支当前最高版本 33；提交前仍需再次 fetch 核对。
 - 本步骤不修改 AI runtime、模型调用、计费、消息状态或通知 WebSocket 事件。回滚运行时代码时保留已添加列和回填结果，不删除迁移历史。
+
+## 21. 客户响应构建分层与批量聚合修复（2026-07-14）
+
+### 本步骤目标与结果
+
+- `BuildCustomer` 和门店关系 builder 不再调用 Company/Customer/Store/WxWork service，builders 恢复为纯 `model + context -> response DTO` 映射。
+- Customer service 新增展示数据批量聚合：按当前客户集合一次加载客户企业、一次加载门店关系，再分别批量加载门店和企微员工号实例。
+- 客户列表、详情、创建/保存响应和门店关系接口显式传入构建上下文，保留原有 `company`、`storeRelations`、门店名和员工号名字段；API 路径与 DTO 不变。
+- 客户列表不再为每个客户逐条查询企业、门店关系、门店和企微实例，移除原有 N+1；工单 builder 使用基础客户映射时也不再隐式访问全局 DB。
+
+### 分层、验证与并行影响
+
+- 数据访问只在 Customer service 通过 repository 完成，handler 只负责调用 service、传递聚合数据和返回 DTO，builder 不依赖 service。
+- 新增纯 builder context 测试和 Customer service 聚合测试；原 `TestBuildLightweightTicket` 未初始化全局 DB 的稳定崩溃已修复。
+- `go test ./internal/builders -count=1`、客户聚焦 service 测试、`go vet ./...`、`go test ./... -run '^$' -count=1` 与 `cd web && pnpm typecheck` 通过。完整测试只剩既有异步 AI 回复 goroutine 在测试清库后访问全局 DB，本步骤不修改 AI runtime。
+- 不涉及 model/migration、DTO/enum、路由、WebSocket 或前端文件。并行 `codex/ai-billing@f2d2da4` 不修改本步骤文件，无特殊合并顺序；回滚边界是 customer builder、handler 展示聚合和对应测试。

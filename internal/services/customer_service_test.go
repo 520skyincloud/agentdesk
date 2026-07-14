@@ -74,6 +74,40 @@ func TestEnsureExternalCustomerUpdatesNameFromExternalIdentity(t *testing.T) {
 	}
 }
 
+func TestLoadCustomerPresentationDataAggregatesRelatedModels(t *testing.T) {
+	db := setupCustomerServiceTestDB(t)
+	company := &models.Company{Name: "测试企业", Status: enums.StatusOk}
+	if err := db.Create(company).Error; err != nil {
+		t.Fatalf("create company: %v", err)
+	}
+	store := &models.Store{StoreCode: "presentation-store", Name: "测试门店", Status: enums.StatusOk}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{Guid: "presentation-instance", StoreID: store.ID, EmployeeName: "测试员工号", Status: enums.StatusOk}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create wxwork instance: %v", err)
+	}
+	customer := &models.Customer{Name: "测试客户", CompanyID: company.ID, Status: enums.StatusOk}
+	if err := db.Create(customer).Error; err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	relation := &models.StoreCustomerRelation{
+		CustomerID: customer.ID, StoreID: store.ID, WxWorkInstanceID: instance.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(relation).Error; err != nil {
+		t.Fatalf("create store relation: %v", err)
+	}
+
+	data := services.CustomerService.LoadPresentationData([]models.Customer{*customer}, true)
+	if data.CompaniesByID[company.ID] == nil || data.StoresByID[store.ID] == nil || data.WxWorkInstancesByID[instance.ID] == nil {
+		t.Fatalf("missing related presentation data: %+v", data)
+	}
+	if relations := data.StoreRelationsByCustomerID[customer.ID]; len(relations) != 1 || relations[0].ID != relation.ID {
+		t.Fatalf("unexpected customer relations: %+v", relations)
+	}
+}
+
 func setupCustomerServiceTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -92,7 +126,15 @@ func setupCustomerServiceTestDB(t *testing.T) *gorm.DB {
 			_ = sqlDB.Close()
 		}
 	})
-	if err := db.AutoMigrate(&models.Customer{}, &models.CustomerIdentity{}, &models.Conversation{}); err != nil {
+	if err := db.AutoMigrate(
+		&models.Company{},
+		&models.Customer{},
+		&models.CustomerIdentity{},
+		&models.Conversation{},
+		&models.Store{},
+		&models.StoreCustomerRelation{},
+		&models.WxWorkProtocolInstance{},
+	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}
 	sqls.SetDB(db)
