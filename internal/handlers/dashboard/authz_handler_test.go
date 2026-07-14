@@ -158,6 +158,33 @@ func TestAIConfigWritesRejectTenantAccountEvenWithPlatformPermission(t *testing.
 	}
 }
 
+func TestSessionHandlersRejectTenantAccountEvenWithPlatformPermission(t *testing.T) {
+	tests := []struct {
+		name       string
+		permission string
+		handler    func(*gin.Context)
+	}{
+		{name: "list", permission: constants.PermissionSessionView.Code, handler: SessionAnyList},
+		{name: "revoke", permission: constants.PermissionSessionRevoke.Code, handler: SessionPostRevoke},
+		{name: "revoke by user", permission: constants.PermissionSessionRevoke.Code, handler: SessionPostRevokeByUser},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, `{}`, &dto.AuthPrincipal{
+				UserID:            135,
+				TenantID:          9,
+				ActiveTenantID:    9,
+				Username:          "misconfigured-tenant-session-admin",
+				IsPlatformAccount: false,
+				Permissions:       []string{tt.permission},
+			})
+
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
 func TestTenantManagementActionsRequireMatchingPermissions(t *testing.T) {
 	tests := []struct {
 		name       string

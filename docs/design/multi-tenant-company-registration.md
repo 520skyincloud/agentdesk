@@ -1526,3 +1526,23 @@ git diff --check
 - 全量 Go、专项 race、vet、74 项前端测试、typecheck、生产构建、目标 ESLint 和 diff 检查通过。
 - 开始前已 fetch，`origin/codex/ai-billing@f2d2da4` 不修改本批 AIConfig handler、页面、权限测试或通用 CRUD 文件；无 migration 编号和同文件冲突。本批可以独立合并，不需要重放 AI 分支模型配置实现。
 - 页面显隐可独立回滚，但 handler 平台账号校验应保留。未来若模型配置改为每租户独立，必须先设计 TenantID、密钥归属、计费和运行时解析，不能仅移除这次平台防线。
+
+## 38. 当前实施检查点：租户角色平台权限清理与登录会话保护（2026-07-14）
+
+本检查点从权限常量、默认角色和 handler 交叉审计发现：`session.view` 已声明为 platform scope，但仍被默认授予 `cs_team_leader`；`ensureRolePermissions` 只按常量建关系，不执行 RoleService 的 scope 校验，因此客服组长可直接调用 Session API 读取全平台账号的 IP、User-Agent 和登录状态。
+
+### 权限不变量与 Migration 53
+
+- 从客服组长默认权限中移除 `session.view`。LoginSession 继续是平台全局安全审计资源，不增加 TenantID，也不复制成每公司会话页。
+- migration 53 幂等同步当前权限/角色后，删除所有非 platform 角色与任意 platform permission 的历史关系；不仅修复内置客服组长，也清理历史自定义租户角色上的平台权限。平台内置和自定义角色绑定保持不变。
+- 新增常量矩阵测试：任何内置 tenant scope 角色一旦再次配置 platform permission，测试立即失败。运行时 `RoleService.AssignPermissions` 原有 scope 拒绝继续保留，形成常量、迁移和服务三层边界。
+- Session 列表、按会话撤销和按用户撤销在原 `session.view/revoke` 权限后增加 `IsPlatformAccount` 校验；历史脏关系或旧 token 即使仍携带权限，也不能读取或操作全局登录会话。
+
+### 契约、验证与剩余合并门槛
+
+- 没有 model、AutoMigrate、DTO、enum、Gin 路由、WebSocket payload、页面或导航变化；权限点仍完整显示在权限管理中，账号仍只通过角色获得权限。
+- 测试覆盖默认角色常量矩阵、内置客服组长历史关系、自定义租户/平台角色、所有平台权限交叉清理、迁移幂等，以及三个 Session handler 的脏权限防线。
+- 全量 Go、专项 race、vet、74 项前端回归、typecheck、Next 生产构建和 diff 检查通过。
+- migration 53 创建前已 fetch：`origin/main@e67e207` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支最高 52，无版本冲突。AI 分支不修改本批权限常量、Session handler 或权限测试；最终合并必须保留 migration 53 和常量矩阵测试。
+- ReplyIntentConfig 的页面和 handler 当前也缺少第 37 批同类平台写显隐/脏权限防线，但 `codex/ai-billing` 正在同时重写其模型、DTO、service、handler、migration 和整页。本分支不覆盖该运行语义；合并时必须让 create/update/delete 复用 AIConfig 平台账号防线，并按 create/update/delete 权限隐藏写操作。
+- 回滚 migration 或 Session handler 防线会重新开放全平台登录数据，不属于安全回滚。若未来需要公司主管查看本公司账号登录状态，应设计租户级只读 DTO 和按 User.TenantID 的专用接口，不能复用当前平台全量 Session API。

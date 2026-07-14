@@ -2068,3 +2068,50 @@ git diff --check
 - 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@a4d975c`。AI 分支与本批预计文件无同文件修改，无 migration 版本影响，也不需要 rebase。
 - 本批不改 AI/计费负责人维护的 AIConfig 字段、供应商、runtime、usage 或计费语义；最终合并无需重放模型配置代码。
 - 前端显隐可独立回滚；handler 平台防线应保留。若未来实现租户模型配置，需另行迁移模型和计费契约，不能把当前全局配置直接开放写入。
+
+## 第 38 批：租户角色平台权限清理与登录会话保护（2026-07-14）
+
+### 目标与发现
+
+- 权限审计发现 `session.view` 是 platform scope，却仍出现在 `cs_team_leader` 默认权限中；默认数据 migration 不调用 RoleService 的 scope 校验，因此客服组长实际获得了该权限。
+- Session handler 只检查权限数组，会返回全平台 LoginSession，并补充全局 User 用户名，构成真实跨租户登录信息泄露。
+- 本批保留 LoginSession 的平台审计定位，不增加租户 Session 平行模型或页面。
+
+### 文件与契约
+
+```text
+internal/pkg/constants/auth.go
+internal/pkg/constants/auth_test.go
+internal/migration/000053_remove_tenant_role_platform_permissions.go
+internal/migration/000053_remove_tenant_role_platform_permissions_test.go
+internal/handlers/dashboard/session_handler.go
+internal/handlers/dashboard/authz_handler_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+- 客服组长默认权限删除 `session.view`；permission 本身继续保留 platform scope 并在权限管理可见。
+- migration 53 同步内置权限/角色后，统一删除所有 tenant scope 角色上的全部 platform permission 关系，覆盖内置角色、历史自定义角色和未来误配置数据；平台角色关系不删除，重复执行幂等。
+- 常量单测固定内置 tenant role 不得包含 platform permission。Session list、revoke、revoke_by_user 额外要求 `IsPlatformAccount`，防御数据库脏关系和旧 token。
+- 没有 model、AutoMigrate、DTO、enum、Gin 路由、WebSocket、页面、导航或 JSON 契约变化。
+
+### 验证结果
+
+```text
+go test ./... -count=1
+go test -race ./internal/pkg/constants ./internal/migration ./internal/handlers/dashboard -run 'Test(BuiltinTenantRolesDoNotReceivePlatformPermissions|RemoveTenantRolePlatformPermissions|SessionHandlersRejectTenantAccountEvenWithPlatformPermission)' -count=1
+go vet ./...
+cd web && node --test $(find . -name '*.test.mjs' -not -path './node_modules/*' -print | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+git diff --check
+```
+
+- Go 全量、专项 race、vet、74 项前端回归、typecheck、Next 生产构建和 diff 检查通过。
+- 测试覆盖客服组长历史关系、自定义 tenant/platform 角色、全平台权限交叉清理、迁移幂等、内置常量矩阵及三个 Session API 防线。
+
+### 并行分支、合并与回滚
+
+- 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`、`origin/codex/customer-audit@2d86659`；migration 53 与远端最高编号 20/33/52 不冲突。AI 分支与本批预计文件没有同文件修改。
+- ReplyIntentConfig 同样需要平台写显隐和 handler 脏权限防线，但 AI 分支同时重写其模型、DTO、service、handler、migration 和页面。本批不制造冲突；最终合并须把第 37 批 AIConfig 的平台写边界应用到合并后的 ReplyIntentConfig。
+- migration 53、常量矩阵和 Session handler 防线应整体保留。回滚会重新暴露平台登录会话；若新增租户登录审计，应另建 tenant-qualified 查询契约。

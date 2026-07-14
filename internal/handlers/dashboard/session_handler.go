@@ -2,8 +2,10 @@ package dashboard
 
 import (
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
@@ -16,7 +18,7 @@ import (
 )
 
 func SessionAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionSessionView); err != nil {
+	if _, err := requireSessionPlatformPermission(ctx, constants.PermissionSessionView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -48,7 +50,7 @@ func SessionAnyList(ctx *gin.Context) {
 }
 
 func SessionPostRevoke(ctx *gin.Context) {
-	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionSessionRevoke)
+	user, err := requireSessionPlatformPermission(ctx, constants.PermissionSessionRevoke)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -67,7 +69,7 @@ func SessionPostRevoke(ctx *gin.Context) {
 }
 
 func SessionPostRevokeByUser(ctx *gin.Context) {
-	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionSessionRevoke)
+	user, err := requireSessionPlatformPermission(ctx, constants.PermissionSessionRevoke)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -83,4 +85,15 @@ func SessionPostRevokeByUser(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, nil)
+}
+
+func requireSessionPlatformPermission(ctx *gin.Context, permission constants.Permission) (*dto.AuthPrincipal, error) {
+	operator, err := services.AuthService.RequirePermission(ctx, permission)
+	if err != nil {
+		return nil, err
+	}
+	if !operator.IsPlatformAccount {
+		return nil, errorsx.Forbidden("只有平台账号可以管理登录会话")
+	}
+	return operator, nil
 }
