@@ -316,7 +316,7 @@ func BuildMessageWithReadStatesAndLocale(item *models.Message, agentReadState, c
 		if item.SenderType == enums.IMSenderTypeAI {
 			if aiSenderNames != nil {
 				ret.SenderName = aiSenderNames[item.SenderID]
-			} else if aiAgent := services.AIAgentService.Get(item.SenderID); aiAgent != nil {
+			} else if aiAgent := services.AIAgentService.GetByTenantID(item.SenderID, item.TenantID); aiAgent != nil {
 				ret.SenderName = aiAgent.Name
 			}
 		} else if item.SenderType == enums.IMSenderTypeAgent {
@@ -415,7 +415,7 @@ func collectMessageSenderNameMaps(list []models.Message) (aiNames map[int64]stri
 		seenUser[m.SenderID] = struct{}{}
 		userIDs = append(userIDs, m.SenderID)
 	}
-	for _, a := range services.AIAgentService.FindByIds(aiIDs) {
+	for _, a := range services.AIAgentService.FindByIdsInTenant(aiIDs, list[0].TenantID) {
 		aiNames[a.ID] = a.Name
 	}
 	for _, u := range services.UserService.FindByIdsInTenant(userIDs, list[0].TenantID) {

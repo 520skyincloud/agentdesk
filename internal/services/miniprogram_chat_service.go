@@ -21,11 +21,10 @@ import (
 )
 
 const (
-	miniprogramDefaultAgentName = "企微测试AI店长"
-	miniprogramAnswerPending    = "pending"
-	miniprogramAnswerAnswered   = "answered"
-	miniprogramAnswerHandoff    = "handoff"
-	miniprogramAnswerError      = "error"
+	miniprogramAnswerPending  = "pending"
+	miniprogramAnswerAnswered = "answered"
+	miniprogramAnswerHandoff  = "handoff"
+	miniprogramAnswerError    = "error"
 )
 
 var MiniprogramChatService = newMiniprogramChatService()
@@ -144,37 +143,10 @@ func (s *miniprogramChatService) ensureConversation(req request.MiniprogramChatC
 func (s *miniprogramChatService) resolveEntry(req request.MiniprogramChatContextRequest) (*models.Channel, *models.AIAgent) {
 	if channelID := strings.TrimSpace(req.ChannelID); channelID != "" {
 		if channel := repositories.ChannelRepository.GetByChannelID(sqls.DB(), channelID); channel != nil && channel.Status == enums.StatusOk {
-			return channel, AIAgentService.Get(channel.AIAgentID)
+			return channel, AIAgentService.GetByTenantID(channel.AIAgentID, channel.TenantID)
 		}
 	}
-
-	channels := ChannelService.Find(sqls.NewCnd().Eq("status", enums.StatusOk).Asc("id"))
-	for i := range channels {
-		agent := AIAgentService.Get(channels[i].AIAgentID)
-		if agent != nil && agent.Status == enums.StatusOk && strings.TrimSpace(agent.Name) == miniprogramDefaultAgentName {
-			return &channels[i], agent
-		}
-	}
-	for i := range channels {
-		if channels[i].ChannelType == enums.ChannelTypeWechatMP {
-			if agent := AIAgentService.Get(channels[i].AIAgentID); agent != nil && agent.Status == enums.StatusOk {
-				return &channels[i], agent
-			}
-		}
-	}
-	for i := range channels {
-		if agent := AIAgentService.Get(channels[i].AIAgentID); agent != nil && agent.Status == enums.StatusOk {
-			return &channels[i], agent
-		}
-	}
-	return nil, s.resolveAIAgent()
-}
-
-func (s *miniprogramChatService) resolveAIAgent() *models.AIAgent {
-	if agent := AIAgentService.Take("name = ? AND status = ?", miniprogramDefaultAgentName, enums.StatusOk); agent != nil {
-		return agent
-	}
-	return AIAgentService.FindOne(sqls.NewCnd().Eq("status", enums.StatusOk).Like("name", "%AI店长%").Asc("id"))
+	return nil, nil
 }
 
 func (s *miniprogramChatService) buildExternalUser(req request.MiniprogramChatContextRequest) *openidentity.ExternalUser {

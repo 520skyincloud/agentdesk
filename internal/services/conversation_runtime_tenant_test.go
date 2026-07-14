@@ -25,7 +25,8 @@ type conversationRuntimeTenantFixture struct {
 	db       *gorm.DB
 	adminA   *dto.AuthPrincipal
 	adminB   *dto.AuthPrincipal
-	aiAgent  models.AIAgent
+	aiAgentA models.AIAgent
+	aiAgentB models.AIAgent
 	channelA models.Channel
 	channelB models.Channel
 	teamA    models.AgentTeam
@@ -43,7 +44,7 @@ func TestConversationRuntimeChildrenInheritTenant(t *testing.T) {
 	t.Cleanup(func() { TriggerAIReplyAsyncHook = previousHook })
 
 	external := openidentity.ExternalUser{ExternalSource: enums.ExternalSourceGuest, ExternalID: "runtime-tenant-a", ExternalName: "A租户访客"}
-	conversation, err := ConversationService.CreateWithoutWelcome(external, fixture.channelA.ID, fixture.aiAgent.ID)
+	conversation, err := ConversationService.CreateWithoutWelcome(external, fixture.channelA.ID, fixture.aiAgentA.ID)
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestConversationRuntimeChildrenInheritTenant(t *testing.T) {
 	}
 	if err := ConversationInterruptService.CreateOrUpdatePending(&models.ConversationInterrupt{
 		ConversationID:  conversation.ID,
-		AIAgentID:       fixture.aiAgent.ID,
+		AIAgentID:       fixture.aiAgentA.ID,
 		SourceMessageID: message.ID,
 		CheckPointID:    "tenant-a-checkpoint",
 		InterruptID:     "confirm-handoff",
@@ -96,7 +97,7 @@ func TestConversationRuntimeRejectsCrossTenantOperations(t *testing.T) {
 	t.Cleanup(func() { TriggerAIReplyAsyncHook = previousHook })
 
 	externalB := openidentity.ExternalUser{ExternalSource: enums.ExternalSourceGuest, ExternalID: "runtime-tenant-b", ExternalName: "B租户访客"}
-	conversationB, err := ConversationService.CreateWithoutWelcome(externalB, fixture.channelB.ID, fixture.aiAgent.ID)
+	conversationB, err := ConversationService.CreateWithoutWelcome(externalB, fixture.channelB.ID, fixture.aiAgentB.ID)
 	if err != nil {
 		t.Fatalf("create tenant B conversation: %v", err)
 	}
@@ -237,7 +238,8 @@ func setupConversationRuntimeTenantFixture(t *testing.T) conversationRuntimeTena
 		db:       db,
 		adminA:   &dto.AuthPrincipal{UserID: 1001, TenantID: 101, ActiveTenantID: 101, Username: "tenant-a-admin", Roles: []string{constants.RoleCodeAdmin}},
 		adminB:   &dto.AuthPrincipal{UserID: 2001, TenantID: 202, ActiveTenantID: 202, Username: "tenant-b-admin", Roles: []string{constants.RoleCodeAdmin}},
-		aiAgent:  models.AIAgent{Name: "租户运行测试 Agent", Status: enums.StatusOk, ServiceMode: enums.IMConversationServiceModeAIOnly},
+		aiAgentA: models.AIAgent{TenantID: 101, Name: "A 租户运行测试 Agent", Status: enums.StatusOk, ServiceMode: enums.IMConversationServiceModeAIOnly},
+		aiAgentB: models.AIAgent{TenantID: 202, Name: "B 租户运行测试 Agent", Status: enums.StatusOk, ServiceMode: enums.IMConversationServiceModeAIOnly},
 		channelA: models.Channel{TenantID: 101, Name: "A租户渠道", ChannelType: enums.ChannelTypeWeb, ChannelID: "conversation-runtime-a", Status: enums.StatusOk},
 		channelB: models.Channel{TenantID: 202, Name: "B租户渠道", ChannelType: enums.ChannelTypeWeb, ChannelID: "conversation-runtime-b", Status: enums.StatusOk},
 		teamA:    models.AgentTeam{TenantID: 101, Name: "A租户客服组", Status: enums.StatusOk},
@@ -246,23 +248,27 @@ func setupConversationRuntimeTenantFixture(t *testing.T) conversationRuntimeTena
 		userB:    models.User{ID: 2001, TenantID: 202, Username: "tenant-b-admin", Status: enums.StatusOk},
 	}
 	for label, item := range map[string]any{
-		"ai agent":  &fixture.aiAgent,
-		"channel A": &fixture.channelA,
-		"channel B": &fixture.channelB,
-		"team A":    &fixture.teamA,
-		"team B":    &fixture.teamB,
-		"user A":    &fixture.userA,
-		"user B":    &fixture.userB,
+		"ai agent A": &fixture.aiAgentA,
+		"ai agent B": &fixture.aiAgentB,
+		"channel A":  &fixture.channelA,
+		"channel B":  &fixture.channelB,
+		"team A":     &fixture.teamA,
+		"team B":     &fixture.teamB,
+		"user A":     &fixture.userA,
+		"user B":     &fixture.userB,
 	} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatalf("create %s: %v", label, err)
 		}
 	}
-	if err := db.Model(&models.Channel{}).Where("id IN ?", []int64{fixture.channelA.ID, fixture.channelB.ID}).Update("ai_agent_id", fixture.aiAgent.ID).Error; err != nil {
-		t.Fatalf("bind channels to AI Agent: %v", err)
+	if err := db.Model(&models.Channel{}).Where("id = ?", fixture.channelA.ID).Update("ai_agent_id", fixture.aiAgentA.ID).Error; err != nil {
+		t.Fatalf("bind tenant A channel to AI Agent: %v", err)
 	}
-	fixture.channelA.AIAgentID = fixture.aiAgent.ID
-	fixture.channelB.AIAgentID = fixture.aiAgent.ID
+	if err := db.Model(&models.Channel{}).Where("id = ?", fixture.channelB.ID).Update("ai_agent_id", fixture.aiAgentB.ID).Error; err != nil {
+		t.Fatalf("bind tenant B channel to AI Agent: %v", err)
+	}
+	fixture.channelA.AIAgentID = fixture.aiAgentA.ID
+	fixture.channelB.AIAgentID = fixture.aiAgentB.ID
 	fixture.profileA = models.AgentProfile{TenantID: 101, UserID: fixture.userA.ID, TeamID: fixture.teamA.ID, AgentCode: "tenant-a-agent", DisplayName: "A租户客服", ServiceStatus: enums.ServiceStatusIdle, MaxConcurrentCount: 10, AutoAssignEnabled: true, Status: enums.StatusOk}
 	fixture.profileB = models.AgentProfile{TenantID: 202, UserID: fixture.userB.ID, TeamID: fixture.teamB.ID, AgentCode: "tenant-b-agent", DisplayName: "B租户客服", ServiceStatus: enums.ServiceStatusIdle, MaxConcurrentCount: 10, AutoAssignEnabled: true, Status: enums.StatusOk}
 	if err := db.Create(&fixture.profileA).Error; err != nil {

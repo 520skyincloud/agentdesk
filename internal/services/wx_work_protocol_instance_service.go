@@ -62,6 +62,7 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgent(instance *models.WxW
 	}
 	return models.AIAgent{
 		ID:                  0,
+		TenantID:            instance.TenantID,
 		Name:                name,
 		Description:         "企微员工号运行时配置",
 		Status:              enums.StatusOk,

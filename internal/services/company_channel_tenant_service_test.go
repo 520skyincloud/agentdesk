@@ -18,10 +18,11 @@ import (
 )
 
 type companyChannelTenantFixture struct {
-	db      *gorm.DB
-	adminA  *dto.AuthPrincipal
-	adminB  *dto.AuthPrincipal
-	aiAgent models.AIAgent
+	db       *gorm.DB
+	adminA   *dto.AuthPrincipal
+	adminB   *dto.AuthPrincipal
+	aiAgentA models.AIAgent
+	aiAgentB models.AIAgent
 }
 
 func TestCompanyServiceEnforcesTenantContextAcrossCRUD(t *testing.T) {
@@ -69,11 +70,11 @@ func TestCompanyServiceEnforcesTenantContextAcrossCRUD(t *testing.T) {
 
 func TestChannelServiceEnforcesTenantContextAcrossCRUD(t *testing.T) {
 	fixture := setupCompanyChannelTenantFixture(t)
-	channelA, err := ChannelService.CreateChannel(companyChannelTenantCreateChannelRequest("A租户官网", fixture.aiAgent.ID), fixture.adminA)
+	channelA, err := ChannelService.CreateChannel(companyChannelTenantCreateChannelRequest("A租户官网", fixture.aiAgentA.ID), fixture.adminA)
 	if err != nil {
 		t.Fatalf("create tenant A channel: %v", err)
 	}
-	channelB, err := ChannelService.CreateChannel(companyChannelTenantCreateChannelRequest("B租户官网", fixture.aiAgent.ID), fixture.adminB)
+	channelB, err := ChannelService.CreateChannel(companyChannelTenantCreateChannelRequest("B租户官网", fixture.aiAgentB.ID), fixture.adminB)
 	if err != nil {
 		t.Fatalf("create tenant B channel: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestChannelServiceEnforcesTenantContextAcrossCRUD(t *testing.T) {
 		t.Fatal("tenant A must not read tenant B channel")
 	}
 	if err := ChannelService.UpdateChannel(request.UpdateChannelRequest{
-		ID: channelB.ID, CreateChannelRequest: companyChannelTenantCreateChannelRequest("越权更新渠道", fixture.aiAgent.ID),
+		ID: channelB.ID, CreateChannelRequest: companyChannelTenantCreateChannelRequest("越权更新渠道", fixture.aiAgentA.ID),
 	}, fixture.adminA); err == nil {
 		t.Fatal("tenant A must not update tenant B channel")
 	}
@@ -103,7 +104,7 @@ func TestChannelServiceEnforcesTenantContextAcrossCRUD(t *testing.T) {
 		t.Fatal("tenant A must not delete tenant B channel")
 	}
 	if err := ChannelService.UpdateChannel(request.UpdateChannelRequest{
-		ID: channelA.ID, CreateChannelRequest: companyChannelTenantCreateChannelRequest("A租户已更新官网", fixture.aiAgent.ID),
+		ID: channelA.ID, CreateChannelRequest: companyChannelTenantCreateChannelRequest("A租户已更新官网", fixture.aiAgentA.ID),
 	}, fixture.adminA); err != nil {
 		t.Fatalf("update tenant A channel: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestCompanyAndChannelRepositoriesKeepTenantInFinalWritePredicate(t *testing
 	if err != nil {
 		t.Fatalf("create tenant B company: %v", err)
 	}
-	channelB, err := ChannelService.CreateChannel(companyChannelTenantCreateChannelRequest("B租户受保护渠道", fixture.aiAgent.ID), fixture.adminB)
+	channelB, err := ChannelService.CreateChannel(companyChannelTenantCreateChannelRequest("B租户受保护渠道", fixture.aiAgentB.ID), fixture.adminB)
 	if err != nil {
 		t.Fatalf("create tenant B channel: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestCompanyAndChannelServicesRequireActiveTenant(t *testing.T) {
 	if _, err := CompanyService.CreateCompany(request.CreateCompanyRequest{Name: "无租户企业"}, withoutTenant); err == nil {
 		t.Fatal("company create without active tenant must fail")
 	}
-	if _, err := ChannelService.CreateChannel(companyChannelTenantCreateChannelRequest("无租户渠道", fixture.aiAgent.ID), withoutTenant); err == nil {
+	if _, err := ChannelService.CreateChannel(companyChannelTenantCreateChannelRequest("无租户渠道", fixture.aiAgentA.ID), withoutTenant); err == nil {
 		t.Fatal("channel create without active tenant must fail")
 	}
 	if companies, _ := CompanyService.FindPageInTenant(companyChannelTenantPage(), withoutTenant); len(companies) != 0 {
@@ -174,12 +175,16 @@ func setupCompanyChannelTenantFixture(t *testing.T) companyChannelTenantFixture 
 		}
 	})
 	fixture := companyChannelTenantFixture{
-		db:      db,
-		adminA:  &dto.AuthPrincipal{UserID: 9001, Username: "admin-a", ActiveTenantID: 101},
-		adminB:  &dto.AuthPrincipal{UserID: 9002, Username: "admin-b", ActiveTenantID: 202},
-		aiAgent: models.AIAgent{Name: "测试接待 Agent", Status: enums.StatusOk},
+		db:       db,
+		adminA:   &dto.AuthPrincipal{UserID: 9001, Username: "admin-a", ActiveTenantID: 101},
+		adminB:   &dto.AuthPrincipal{UserID: 9002, Username: "admin-b", ActiveTenantID: 202},
+		aiAgentA: models.AIAgent{TenantID: 101, Name: "A 测试接待 Agent", Status: enums.StatusOk},
+		aiAgentB: models.AIAgent{TenantID: 202, Name: "B 测试接待 Agent", Status: enums.StatusOk},
 	}
-	if err := db.Create(&fixture.aiAgent).Error; err != nil {
+	if err := db.Create(&fixture.aiAgentA).Error; err != nil {
+		t.Fatalf("create tenant A AI Agent fixture: %v", err)
+	}
+	if err := db.Create(&fixture.aiAgentB).Error; err != nil {
 		t.Fatalf("create AI Agent fixture: %v", err)
 	}
 	return fixture

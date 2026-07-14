@@ -96,6 +96,7 @@ func createWelcomeTestAIAgent(t *testing.T, db *gorm.DB, welcomeMessage string) 
 
 	now := time.Now()
 	aiAgent := &models.AIAgent{
+		TenantID:       101,
 		Name:           "welcome-test-agent",
 		Status:         enums.StatusOk,
 		ServiceMode:    enums.IMConversationServiceModeAIOnly,

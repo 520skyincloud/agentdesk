@@ -63,6 +63,9 @@ func (s *conversationHumanDispatchService) TryOffHoursHandoffByAIWithRequestID(c
 	if conversation == nil {
 		return false, errorsx.InvalidParam("会话不存在")
 	}
+	if err := validateConversationAIAgentTenant(conversation, aiAgent); err != nil {
+		return false, err
+	}
 	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
 	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, time.Now())
 	if len(activeTeamIDs) > 0 {
@@ -89,6 +92,9 @@ func (s *conversationHumanDispatchService) HandoffByAIWithRequestID(conversation
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return nil, errorsx.InvalidParam("会话不存在")
+	}
+	if err := validateConversationAIAgentTenant(conversation, aiAgent); err != nil {
+		return nil, err
 	}
 	if statusResult := s.recentHandoffResult(conversationID); statusResult != nil {
 		return statusResult, nil
@@ -203,6 +209,9 @@ func (s *conversationHumanDispatchService) ApplyHumanOnlyCreate(conversationID i
 	if err != nil {
 		return nil, err
 	}
+	if err := validateConversationAIAgentTenant(conversation, aiAgent); err != nil {
+		return nil, err
+	}
 	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
 	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, time.Now())
 	if len(activeTeamIDs) == 0 {
@@ -221,6 +230,9 @@ func (s *conversationHumanDispatchService) DispatchPendingConversation(conversat
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return nil, errorsx.InvalidParam("会话不存在")
+	}
+	if err := validateConversationAIAgentTenant(conversation, aiAgent); err != nil {
+		return nil, err
 	}
 	if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
 		return nil, errorsx.InvalidParam("只有待接入未分配会话允许自动分配")
@@ -257,6 +269,16 @@ func (s *conversationHumanDispatchService) DispatchPendingConversation(conversat
 		WsService.PublishConversationChanged(teamPoolConversation, enums.IMRealtimeEventConversationUpdated)
 	}
 	return &HandoffDecisionResult{Decision: HandoffDecisionTeamPool, TeamID: teamID}, nil
+}
+
+func validateConversationAIAgentTenant(conversation *models.Conversation, aiAgent models.AIAgent) error {
+	if conversation == nil || conversation.TenantID <= 0 || aiAgent.TenantID != conversation.TenantID {
+		return errorsx.InvalidParam("AI Agent 不属于会话所在公司")
+	}
+	if aiAgent.ID > 0 && conversation.AIAgentID > 0 && aiAgent.ID != conversation.AIAgentID {
+		return errorsx.InvalidParam("AI Agent 与会话绑定不一致")
+	}
+	return nil
 }
 
 func (s *conversationHumanDispatchService) dispatchAfterHandoff(conversationID, aiAgentID int64, activeTeamIDs []int64, reason string, publishAssignEvent bool) (*HandoffDecisionResult, error) {

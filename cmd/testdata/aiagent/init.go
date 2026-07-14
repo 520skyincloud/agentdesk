@@ -3,6 +3,7 @@ package aiagent
 import (
 	"agent-desk/cmd/testdata/skill"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
@@ -21,6 +22,10 @@ type InitResult struct {
 // 依赖于 AI Config 和 Knowledge Base 已初始化
 func Init() (*InitResult, error) {
 	result := &InitResult{}
+	tenant := repositories.TenantRepository.GetByTenantCode(sqls.DB(), constants.LegacyDefaultTenantCode)
+	if tenant == nil {
+		return result, fmt.Errorf("legacy default tenant not found")
+	}
 
 	aiConfigID, err := getDefaultAIConfigID()
 	if err != nil {
@@ -41,11 +46,11 @@ func Init() (*InitResult, error) {
 		return result, fmt.Errorf("get default skill ids failed: %w", err)
 	}
 
-	seedItems := buildSeedItems(aiConfigID, knowledgeIDs, defaultTeamIDs, defaultSkillIDs)
+	seedItems := buildSeedItems(tenant.ID, aiConfigID, knowledgeIDs, defaultTeamIDs, defaultSkillIDs)
 	for _, item := range seedItems {
 		itemCopy := item
 		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-			existing := repositories.AIAgentRepository.Take(ctx.Tx, "name = ?", itemCopy.Name)
+			existing := repositories.AIAgentRepository.Take(ctx.Tx, "tenant_id = ? AND name = ?", itemCopy.TenantID, itemCopy.Name)
 			if existing != nil {
 				// 更新
 				if err := ctx.Tx.Model(existing).Updates(&itemCopy).Error; err != nil {
@@ -68,10 +73,11 @@ func Init() (*InitResult, error) {
 	return result, nil
 }
 
-func buildSeedItems(aiConfigID int64, knowledgeIDs []int64, defaultTeamIDs string, defaultSkillIDs string) []models.AIAgent {
+func buildSeedItems(tenantID, aiConfigID int64, knowledgeIDs []int64, defaultTeamIDs string, defaultSkillIDs string) []models.AIAgent {
 	now := time.Now()
 	return []models.AIAgent{
 		{
+			TenantID:    tenantID,
 			Name:        "测试AI客服",
 			Description: "本地测试 AI 客服 Agent",
 			Status:      enums.StatusOk,

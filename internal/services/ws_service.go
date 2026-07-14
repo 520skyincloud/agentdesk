@@ -405,7 +405,7 @@ func (s *wsService) fillRealtimeMessageSender(ret *response.MessageResponse, ite
 	}
 	switch item.SenderType {
 	case enums.IMSenderTypeAI:
-		if aiAgent := AIAgentService.Get(item.SenderID); aiAgent != nil {
+		if aiAgent := AIAgentService.GetByTenantID(item.SenderID, item.TenantID); aiAgent != nil {
 			ret.SenderName = aiAgent.Name
 		}
 	case enums.IMSenderTypeAgent:

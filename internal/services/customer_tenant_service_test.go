@@ -82,12 +82,15 @@ func TestExternalCustomerIdentityIsSeparatedByChannelTenant(t *testing.T) {
 
 func TestConversationCreationDerivesCustomerTenantFromChannel(t *testing.T) {
 	fixture := setupCustomerTenantFixture(t)
-	aiAgent := &models.AIAgent{Name: "租户会话测试 Agent", Status: enums.StatusOk, ServiceMode: enums.IMConversationServiceModeAIOnly}
-	if err := fixture.db.Create(aiAgent).Error; err != nil {
-		t.Fatalf("create AI Agent: %v", err)
+	aiAgentA := &models.AIAgent{TenantID: 101, Name: "A 租户会话测试 Agent", Status: enums.StatusOk, ServiceMode: enums.IMConversationServiceModeAIOnly}
+	aiAgentB := &models.AIAgent{TenantID: 202, Name: "B 租户会话测试 Agent", Status: enums.StatusOk, ServiceMode: enums.IMConversationServiceModeAIOnly}
+	for _, aiAgent := range []*models.AIAgent{aiAgentA, aiAgentB} {
+		if err := fixture.db.Create(aiAgent).Error; err != nil {
+			t.Fatalf("create AI Agent: %v", err)
+		}
 	}
-	channelA := &models.Channel{TenantID: 101, Name: "A租户渠道", ChannelType: enums.ChannelTypeWeb, ChannelID: "customer-tenant-a", AIAgentID: aiAgent.ID, Status: enums.StatusOk}
-	channelB := &models.Channel{TenantID: 202, Name: "B租户渠道", ChannelType: enums.ChannelTypeWeb, ChannelID: "customer-tenant-b", AIAgentID: aiAgent.ID, Status: enums.StatusOk}
+	channelA := &models.Channel{TenantID: 101, Name: "A租户渠道", ChannelType: enums.ChannelTypeWeb, ChannelID: "customer-tenant-a", AIAgentID: aiAgentA.ID, Status: enums.StatusOk}
+	channelB := &models.Channel{TenantID: 202, Name: "B租户渠道", ChannelType: enums.ChannelTypeWeb, ChannelID: "customer-tenant-b", AIAgentID: aiAgentB.ID, Status: enums.StatusOk}
 	if err := fixture.db.Create(channelA).Error; err != nil {
 		t.Fatalf("create tenant A channel: %v", err)
 	}
@@ -95,11 +98,11 @@ func TestConversationCreationDerivesCustomerTenantFromChannel(t *testing.T) {
 		t.Fatalf("create tenant B channel: %v", err)
 	}
 	external := openidentity.ExternalUser{ExternalSource: enums.ExternalSourceGuest, ExternalID: "conversation-shared-id", ExternalName: "跨租户同 ID 访客"}
-	conversationA, err := ConversationService.CreateWithoutWelcome(external, channelA.ID, aiAgent.ID)
+	conversationA, err := ConversationService.CreateWithoutWelcome(external, channelA.ID, aiAgentA.ID)
 	if err != nil {
 		t.Fatalf("create tenant A conversation: %v", err)
 	}
-	conversationB, err := ConversationService.CreateWithoutWelcome(external, channelB.ID, aiAgent.ID)
+	conversationB, err := ConversationService.CreateWithoutWelcome(external, channelB.ID, aiAgentB.ID)
 	if err != nil {
 		t.Fatalf("create tenant B conversation: %v", err)
 	}

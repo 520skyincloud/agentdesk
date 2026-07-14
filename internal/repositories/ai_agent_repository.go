@@ -26,6 +26,13 @@ func (r *aIAgentRepository) Get(db *gorm.DB, id int64) *models.AIAgent {
 	return ret
 }
 
+func (r *aIAgentRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.AIAgent {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *aIAgentRepository) Take(db *gorm.DB, where ...interface{}) *models.AIAgent {
 	ret := &models.AIAgent{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -92,9 +99,17 @@ func (r *aIAgentRepository) Updates(db *gorm.DB, id int64, columns map[string]in
 	return
 }
 
+func (r *aIAgentRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.AIAgent{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *aIAgentRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.AIAgent{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return
+}
+
+func (r *aIAgentRepository) UpdateColumnInTenant(db *gorm.DB, id, tenantID int64, name string, value any) error {
+	return db.Model(&models.AIAgent{}).Where("id = ? AND tenant_id = ?", id, tenantID).UpdateColumn(name, value).Error
 }
 
 func (r *aIAgentRepository) Delete(db *gorm.DB, id int64) {
@@ -107,5 +122,14 @@ func (r *aIAgentRepository) FindByIds(db *gorm.DB, ids []int64) []models.AIAgent
 	}
 	var list []models.AIAgent
 	db.Where("id IN ?", ids).Find(&list)
+	return list
+}
+
+func (r *aIAgentRepository) FindByIdsInTenant(db *gorm.DB, ids []int64, tenantID int64) []models.AIAgent {
+	if len(ids) == 0 || tenantID <= 0 {
+		return []models.AIAgent{}
+	}
+	var list []models.AIAgent
+	db.Where("id IN ? AND tenant_id = ?", ids, tenantID).Find(&list)
 	return list
 }

@@ -59,7 +59,7 @@ func (s *dashboardService) GetOverview(rangeValue string, locale string, tenantI
 	onlineAgents, busyAgents, offlineAgents, teamLoads := s.buildAgentStats(now, agentTeams, agentProfiles, activeSchedules, activeConversations)
 
 	enabledAIAgentCount := repositories.DashboardRepository.CountAIAgents(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("status = ? AND id IN (?)", enums.StatusOk, db.Model(&models.Channel{}).Select("ai_agent_id").Where("tenant_id = ? AND ai_agent_id > ?", tenantID, 0))
+		return tx.Where("tenant_id = ? AND status = ? AND id IN (?)", tenantID, enums.StatusOk, db.Model(&models.Channel{}).Select("ai_agent_id").Where("tenant_id = ? AND ai_agent_id > ?", tenantID, 0))
 	})
 	enabledChannelCount := repositories.DashboardRepository.CountChannels(db, func(tx *gorm.DB) *gorm.DB {
 		return tx.Where("tenant_id = ? AND status = ?", tenantID, enums.StatusOk)
@@ -78,7 +78,7 @@ func (s *dashboardService) GetOverview(rangeValue string, locale string, tenantI
 	})
 
 	enabledAIAgents := repositories.DashboardRepository.ListAIAgents(db, func(tx *gorm.DB) *gorm.DB {
-		return tx.Where("status = ? AND id IN (?)", enums.StatusOk, db.Model(&models.Channel{}).Select("ai_agent_id").Where("tenant_id = ? AND ai_agent_id > ?", tenantID, 0))
+		return tx.Where("tenant_id = ? AND status = ? AND id IN (?)", tenantID, enums.StatusOk, db.Model(&models.Channel{}).Select("ai_agent_id").Where("tenant_id = ? AND ai_agent_id > ?", tenantID, 0))
 	})
 	alerts := s.buildAlerts(now, db, tenantID, enabledAIAgents, agentTeams, activeSchedules, locale)
 

@@ -67,7 +67,7 @@ func (s *conversationDispatchService) DispatchConversation(conversationID int64)
 	if conversation.TenantID <= 0 || conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
 		return nil, nil
 	}
-	aiAgent := AIAgentService.Get(conversation.AIAgentID)
+	aiAgent := AIAgentService.GetByTenantID(conversation.AIAgentID, conversation.TenantID)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
 		return nil, nil
 	}
@@ -79,6 +79,9 @@ func (s *conversationDispatchService) DispatchPendingConversation(conversation *
 		return nil, nil
 	}
 	if conversation.TenantID <= 0 || conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
+		return nil, nil
+	}
+	if aiAgent.TenantID != conversation.TenantID {
 		return nil, nil
 	}
 

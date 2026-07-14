@@ -195,7 +195,7 @@ func buildChannelResponse(item *models.Channel) response.ChannelResponse {
 	if item == nil {
 		return ret
 	}
-	if aiAgent := services.AIAgentService.Get(item.AIAgentID); aiAgent != nil {
+	if aiAgent := services.AIAgentService.GetByTenantID(item.AIAgentID, item.TenantID); aiAgent != nil {
 		ret.AIAgentName = aiAgent.Name
 	}
 	return ret

@@ -371,7 +371,7 @@ func (s *wxWorkProtocolDefaultResourceService) createServiceTaskTicket(conversat
 	}, systemOperator())
 	if err != nil {
 		_, _ = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_service_task_failed_"+strs.UUID(), enums.IMMessageTypeText, "我这边登记没成功，先帮你转同事处理。", "", systemOperator(), requestID)
-		if aiAgent := AIAgentService.Get(conversation.AIAgentID); aiAgent != nil {
+		if aiAgent := AIAgentService.GetByTenantID(conversation.AIAgentID, conversation.TenantID); aiAgent != nil {
 			_, _ = ConversationHumanDispatchService.HandoffByAIWithRequestID(conversation.ID, *aiAgent, "服务工单创建失败", requestID)
 		} else {
 			_, _ = ConversationRouteService.EnterHQAgentDeskPending(conversation.ID, "服务工单创建失败", time.Now())

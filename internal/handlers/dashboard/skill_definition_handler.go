@@ -236,7 +236,8 @@ func SkillDefinitionPostRestore(ctx *gin.Context) {
 }
 
 func SkillDefinitionPostDebug_run(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionSkillDefinitionView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionSkillDefinitionView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -246,7 +247,7 @@ func SkillDefinitionPostDebug_run(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	resp, err := services.SkillRuntimeService.DebugRun(context.Background(), req)
+	resp, err := services.SkillRuntimeService.DebugRun(context.Background(), req, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -255,7 +256,8 @@ func SkillDefinitionPostDebug_run(ctx *gin.Context) {
 }
 
 func SkillDefinitionPostDebug_resume(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionSkillDefinitionView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionSkillDefinitionView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -265,7 +267,7 @@ func SkillDefinitionPostDebug_resume(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	resp, err := services.SkillRuntimeService.DebugResume(context.Background(), req)
+	resp, err := services.SkillRuntimeService.DebugResume(context.Background(), req, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

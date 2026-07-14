@@ -23,7 +23,8 @@ import (
 )
 
 func AIAgentAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIAgentView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIAgentView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -32,7 +33,7 @@ func AIAgentAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "name", Op: params.Like},
 		params.QueryFilter{ParamName: "code", Op: params.Like},
 	).Desc("sort_no").Desc("id")
-	list, paging := services.AIAgentService.FindPageByCnd(cnd)
+	list, paging := services.AIAgentService.FindPageInTenant(cnd, operator)
 	results := make([]response.AIAgentResponse, 0, len(list))
 	for _, item := range list {
 		results = append(results, buildAIAgentResponseWithLocale(&item, i18nx.Locale(ctx)))
@@ -41,11 +42,12 @@ func AIAgentAnyList(ctx *gin.Context) {
 }
 
 func AIAgentGetList_all(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIAgentView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIAgentView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	list := services.AIAgentService.Find(sqls.NewCnd().Where("status = ?", enums.StatusOk).Desc("sort_no").Desc("id"))
+	list := services.AIAgentService.FindInTenant(sqls.NewCnd().Where("status = ?", enums.StatusOk).Desc("sort_no").Desc("id"), operator)
 	results := make([]response.AIAgentResponse, 0, len(list))
 	for _, item := range list {
 		results = append(results, buildAIAgentResponseWithLocale(&item, i18nx.Locale(ctx)))
@@ -58,11 +60,12 @@ func AIAgentGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIAgentView); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIAgentView)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	item := services.AIAgentService.Get(id)
+	item := services.AIAgentService.GetInTenant(id, operator)
 	if item == nil {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("AI Agent 不存在"))
 		return
@@ -126,7 +129,8 @@ func AIAgentPostDelete(ctx *gin.Context) {
 }
 
 func AIAgentPostUpdate_sort(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIAgentUpdate); err != nil {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIAgentUpdate)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -135,7 +139,7 @@ func AIAgentPostUpdate_sort(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.AIAgentService.UpdateSort(ids); err != nil {
+	if err := services.AIAgentService.UpdateSort(ids, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -199,7 +203,7 @@ func buildAIAgentResponseWithLocale(item *models.AIAgent, locale string) respons
 		ret.AIConfigName = aiConfig.Name
 	}
 	for _, id := range utils.SplitInt64s(item.TeamIDs) {
-		if team := services.AgentTeamService.Get(id); team != nil {
+		if team := services.AgentTeamService.GetByTenantID(id, item.TenantID); team != nil {
 			ret.Teams = append(ret.Teams, response.AIAgentTeamResponse{
 				ID:   team.ID,
 				Name: team.Name,
@@ -207,7 +211,7 @@ func buildAIAgentResponseWithLocale(item *models.AIAgent, locale string) respons
 		}
 	}
 	for _, id := range ret.KnowledgeIDs {
-		if knowledgeBase := services.KnowledgeBaseService.Get(id); knowledgeBase != nil {
+		if knowledgeBase := services.KnowledgeBaseService.GetInTenant(id, item.TenantID); knowledgeBase != nil {
 			ret.KnowledgeBaseNames = append(ret.KnowledgeBaseNames, knowledgeBase.Name)
 		}
 	}

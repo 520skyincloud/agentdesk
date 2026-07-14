@@ -61,7 +61,7 @@ func (s *aiReplyService) resolveRuntimeAIAgent(conversation models.Conversation)
 	if aiAgent, ok := svc.WxWorkProtocolInstanceService.BuildRuntimeAIAgentForConversation(conversation.ID); ok {
 		return aiAgent, true
 	}
-	aiAgent := svc.AIAgentService.Get(conversation.AIAgentID)
+	aiAgent := svc.AIAgentService.GetByTenantID(conversation.AIAgentID, conversation.TenantID)
 	if aiAgent == nil {
 		return models.AIAgent{}, false
 	}

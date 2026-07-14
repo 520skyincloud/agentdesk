@@ -23,19 +23,19 @@ type InitResult struct {
 func Init() (*InitResult, error) {
 	result := &InitResult{}
 
-	aiAgentID, err := getDefaultAIAgentID()
+	aiAgent, err := getDefaultAIAgent()
 	if err != nil {
 		return result, fmt.Errorf("get default ai agent id failed: %w", err)
 	}
-	if aiAgentID == 0 {
+	if aiAgent == nil {
 		return result, fmt.Errorf("no default ai agent found, please init ai agent first")
 	}
 
-	seedItems := buildSeedItems(aiAgentID)
+	seedItems := buildSeedItems(aiAgent.TenantID, aiAgent.ID)
 	for _, item := range seedItems {
 		itemCopy := item
 		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-			existing := repositories.ChannelRepository.Take(ctx.Tx, "name = ? AND channel_type = ?", itemCopy.Name, itemCopy.ChannelType)
+			existing := repositories.ChannelRepository.Take(ctx.Tx, "tenant_id = ? AND name = ? AND channel_type = ?", itemCopy.TenantID, itemCopy.Name, itemCopy.ChannelType)
 			if existing != nil {
 				if err := ctx.Tx.Model(existing).Updates(&itemCopy).Error; err != nil {
 					return err
@@ -56,10 +56,11 @@ func Init() (*InitResult, error) {
 	return result, nil
 }
 
-func buildSeedItems(aiAgentID int64) []models.Channel {
+func buildSeedItems(tenantID, aiAgentID int64) []models.Channel {
 	now := time.Now()
 	return []models.Channel{
 		{
+			TenantID:    tenantID,
 			Name:        "官网客服",
 			ChannelType: enums.ChannelTypeWeb,
 			ChannelID:   strs.UUID(),
@@ -85,14 +86,14 @@ func buildSeedItems(aiAgentID int64) []models.Channel {
 	}
 }
 
-func getDefaultAIAgentID() (int64, error) {
+func getDefaultAIAgent() (*models.AIAgent, error) {
 	aiAgent := repositories.AIAgentRepository.Take(
 		sqls.DB(),
 		"status = ?",
 		enums.StatusOk,
 	)
 	if aiAgent == nil {
-		return 0, nil
+		return nil, nil
 	}
-	return aiAgent.ID, nil
+	return aiAgent, nil
 }

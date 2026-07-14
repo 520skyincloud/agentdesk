@@ -204,7 +204,8 @@ func (s *agentTeamService) DeleteAgentTeam(id int64, operator *dto.AuthPrincipal
 		return errorsx.Forbidden("客服组下仍有关联组排班，无法删除")
 	}
 	if AIAgentService.Take(
-		"(team_ids = ? OR team_ids LIKE ? OR team_ids LIKE ? OR team_ids LIKE ?) AND status <> ?",
+		"tenant_id = ? AND (team_ids = ? OR team_ids LIKE ? OR team_ids LIKE ? OR team_ids LIKE ?) AND status <> ?",
+		current.TenantID,
 		utils.JoinInt64s([]int64{id}),
 		utils.JoinInt64s([]int64{id})+",%",
 		"%,"+utils.JoinInt64s([]int64{id}),

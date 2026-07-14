@@ -41,6 +41,10 @@ func (s *conversationService) Get(id int64) *models.Conversation {
 	return repositories.ConversationRepository.Get(sqls.DB(), id)
 }
 
+func (s *conversationService) GetByTenantID(id, tenantID int64) *models.Conversation {
+	return repositories.ConversationRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *conversationService) Find(cnd *sqls.Cnd) []models.Conversation {
 	return repositories.ConversationRepository.Find(sqls.DB(), cnd)
 }
@@ -136,7 +140,11 @@ func (s *conversationService) CreateWithRuntimeProfileWithoutWelcome(externalUse
 }
 
 func (s *conversationService) create(externalUser openidentity.ExternalUser, channelID, aiAgentID int64, createWelcome bool) (*models.Conversation, error) {
-	aiAgent := AIAgentService.Get(aiAgentID)
+	channel := repositories.ChannelRepository.Get(sqls.DB(), channelID)
+	if channel == nil || channel.Status != enums.StatusOk || channel.TenantID <= 0 {
+		return nil, errorsx.InvalidParam("接入渠道不存在、已停用或缺少租户归属")
+	}
+	aiAgent := AIAgentService.GetByTenantID(aiAgentID, channel.TenantID)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("AI Agent not found")
 	}
@@ -154,6 +162,9 @@ func (s *conversationService) createWithProfile(externalUser openidentity.Extern
 		channel := repositories.ChannelRepository.Get(ctx.Tx, channelID)
 		if channel == nil || channel.Status != enums.StatusOk || channel.TenantID <= 0 {
 			return errorsx.InvalidParam("接入渠道不存在、已停用或缺少租户归属")
+		}
+		if aiAgent.TenantID != channel.TenantID {
+			return errorsx.InvalidParam("AI Agent 不属于接入渠道所在公司")
 		}
 		customerID, err := CustomerService.EnsureExternalCustomer(ctx, channel.TenantID, externalUser)
 		if err != nil {
@@ -429,7 +440,7 @@ func (s *conversationService) AutoAssignConversation(conversationID int64, opera
 		return errorsx.InvalidParam("当前会话已分配客服")
 	}
 
-	aiAgent := AIAgentService.Get(conversation.AIAgentID)
+	aiAgent := AIAgentService.GetByTenantID(conversation.AIAgentID, conversation.TenantID)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
 		return errorsx.InvalidParam("AI Agent 不存在或已停用")
 	}

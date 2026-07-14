@@ -18,6 +18,7 @@ import (
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 var AIAgentService = newAIAgentService()
@@ -36,12 +37,24 @@ func (s *aIAgentService) Get(id int64) *models.AIAgent {
 	return repositories.AIAgentRepository.Get(sqls.DB(), id)
 }
 
+func (s *aIAgentService) GetInTenant(id int64, operator *dto.AuthPrincipal) *models.AIAgent {
+	return s.GetByTenantID(id, AgentTeamScopeService.ActiveTenantID(operator))
+}
+
+func (s *aIAgentService) GetByTenantID(id, tenantID int64) *models.AIAgent {
+	return repositories.AIAgentRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *aIAgentService) Take(where ...interface{}) *models.AIAgent {
 	return repositories.AIAgentRepository.Take(sqls.DB(), where...)
 }
 
 func (s *aIAgentService) Find(cnd *sqls.Cnd) []models.AIAgent {
 	return repositories.AIAgentRepository.Find(sqls.DB(), cnd)
+}
+
+func (s *aIAgentService) FindInTenant(cnd *sqls.Cnd, operator *dto.AuthPrincipal) []models.AIAgent {
+	return repositories.AIAgentRepository.Find(sqls.DB(), AgentTeamScopeService.ApplyTenantFilter(cnd, operator))
 }
 
 func (s *aIAgentService) FindOne(cnd *sqls.Cnd) *models.AIAgent {
@@ -56,6 +69,10 @@ func (s *aIAgentService) FindPageByCnd(cnd *sqls.Cnd) (list []models.AIAgent, pa
 	return repositories.AIAgentRepository.FindPageByCnd(sqls.DB(), cnd)
 }
 
+func (s *aIAgentService) FindPageInTenant(cnd *sqls.Cnd, operator *dto.AuthPrincipal) (list []models.AIAgent, paging *sqls.Paging) {
+	return repositories.AIAgentRepository.FindPageByCnd(sqls.DB(), AgentTeamScopeService.ApplyTenantFilter(cnd, operator))
+}
+
 func (s *aIAgentService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.AIAgentRepository.Count(sqls.DB(), cnd)
 }
@@ -64,16 +81,25 @@ func (s *aIAgentService) FindByIds(ids []int64) []models.AIAgent {
 	return repositories.AIAgentRepository.FindByIds(sqls.DB(), ids)
 }
 
+func (s *aIAgentService) FindByIdsInTenant(ids []int64, tenantID int64) []models.AIAgent {
+	return repositories.AIAgentRepository.FindByIdsInTenant(sqls.DB(), ids, tenantID)
+}
+
 func (s *aIAgentService) CreateAIAgent(req request.CreateAIAgentRequest, operator *dto.AuthPrincipal) (*models.AIAgent, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item, err := s.buildAIAgentModel(0, req)
+	tenantID, err := requireActiveTenantID(operator, "AI Agent")
+	if err != nil {
+		return nil, err
+	}
+	item, err := s.buildAIAgentModel(sqls.DB(), 0, tenantID, req)
 	if err != nil {
 		return nil, err
 	}
 	item.Status = enums.StatusOk
 	item.SortNo = 0
+	item.TenantID = tenantID
 	item.AuditFields = utils.BuildAuditFields(operator)
 	if err := repositories.AIAgentRepository.Create(sqls.DB(), item); err != nil {
 		return nil, err
@@ -88,12 +114,17 @@ func (s *aIAgentService) CreateAIAgentWithTx(ctx *sqls.TxContext, req request.Cr
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item, err := s.buildAIAgentModel(0, req)
+	tenantID, err := requireActiveTenantID(operator, "AI Agent")
+	if err != nil {
+		return nil, err
+	}
+	item, err := s.buildAIAgentModel(ctx.Tx, 0, tenantID, req)
 	if err != nil {
 		return nil, err
 	}
 	item.Status = enums.StatusOk
 	item.SortNo = 0
+	item.TenantID = tenantID
 	item.AuditFields = utils.BuildAuditFields(operator)
 	if err := repositories.AIAgentRepository.Create(ctx.Tx, item); err != nil {
 		return nil, err
@@ -105,14 +136,18 @@ func (s *aIAgentService) UpdateAIAgent(req request.UpdateAIAgentRequest, operato
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	if s.Get(req.ID) == nil {
-		return errorsx.InvalidParam("AI Agent 不存在")
-	}
-	item, err := s.buildAIAgentModel(req.ID, req.CreateAIAgentRequest)
+	tenantID, err := requireActiveTenantID(operator, "AI Agent")
 	if err != nil {
 		return err
 	}
-	return repositories.AIAgentRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	if repositories.AIAgentRepository.GetInTenant(sqls.DB(), req.ID, tenantID) == nil {
+		return errorsx.InvalidParam("AI Agent 不存在")
+	}
+	item, err := s.buildAIAgentModel(sqls.DB(), req.ID, tenantID, req.CreateAIAgentRequest)
+	if err != nil {
+		return err
+	}
+	return repositories.AIAgentRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
 		"name":                  item.Name,
 		"description":           item.Description,
 		"ai_config_id":          item.AIConfigID,
@@ -141,14 +176,18 @@ func (s *aIAgentService) UpdateAIAgentWithTx(ctx *sqls.TxContext, req request.Up
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	if repositories.AIAgentRepository.Get(ctx.Tx, req.ID) == nil {
-		return errorsx.InvalidParam("AI Agent 不存在")
-	}
-	item, err := s.buildAIAgentModel(req.ID, req.CreateAIAgentRequest)
+	tenantID, err := requireActiveTenantID(operator, "AI Agent")
 	if err != nil {
 		return err
 	}
-	return repositories.AIAgentRepository.Updates(ctx.Tx, req.ID, map[string]any{
+	if repositories.AIAgentRepository.GetInTenant(ctx.Tx, req.ID, tenantID) == nil {
+		return errorsx.InvalidParam("AI Agent 不存在")
+	}
+	item, err := s.buildAIAgentModel(ctx.Tx, req.ID, tenantID, req.CreateAIAgentRequest)
+	if err != nil {
+		return err
+	}
+	return repositories.AIAgentRepository.UpdatesInTenant(ctx.Tx, req.ID, tenantID, map[string]any{
 		"name":                  item.Name,
 		"description":           item.Description,
 		"ai_config_id":          item.AIConfigID,
@@ -202,14 +241,18 @@ func (s *aIAgentService) BuildCreateRequestFromModel(item *models.AIAgent) reque
 }
 
 func (s *aIAgentService) DeleteAIAgent(id int64, operator *dto.AuthPrincipal) error {
-	current := s.Get(id)
+	tenantID, err := requireActiveTenantID(operator, "AI Agent")
+	if err != nil {
+		return err
+	}
+	current := repositories.AIAgentRepository.GetInTenant(sqls.DB(), id, tenantID)
 	if current == nil {
 		return errorsx.InvalidParam("AI Agent 不存在")
 	}
-	if ChannelService.Take("ai_agent_id = ?", id) != nil {
+	if ChannelService.Take("ai_agent_id = ? AND tenant_id = ?", id, tenantID) != nil {
 		return errorsx.Forbidden("已有接入渠道绑定该 AI Agent，无法删除")
 	}
-	return repositories.AIAgentRepository.Updates(sqls.DB(), id, map[string]any{
+	return repositories.AIAgentRepository.UpdatesInTenant(sqls.DB(), id, tenantID, map[string]any{
 		"status":           enums.StatusDeleted,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
@@ -217,18 +260,24 @@ func (s *aIAgentService) DeleteAIAgent(id int64, operator *dto.AuthPrincipal) er
 	})
 }
 
-func (s *aIAgentService) buildAIAgentModel(id int64, req request.CreateAIAgentRequest) (*models.AIAgent, error) {
+func (s *aIAgentService) buildAIAgentModel(db *gorm.DB, id, tenantID int64, req request.CreateAIAgentRequest) (*models.AIAgent, error) {
+	if db == nil {
+		return nil, errorsx.InvalidParam("数据库连接不能为空")
+	}
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理 AI Agent 的接入公司")
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, errorsx.InvalidParam("AI Agent 名称不能为空")
 	}
-	if exists := s.Take("name = ? AND id <> ?", name, id); exists != nil {
+	if exists := repositories.AIAgentRepository.Take(db, "tenant_id = ? AND name = ? AND id <> ?", tenantID, name, id); exists != nil {
 		return nil, errorsx.InvalidParam("AI Agent 名称已存在")
 	}
 	if req.AIConfigID <= 0 {
 		return nil, errorsx.InvalidParam("AI 配置不能为空")
 	}
-	aiConfig := AIConfigService.Get(req.AIConfigID)
+	aiConfig := repositories.AIConfigRepository.Get(db, req.AIConfigID)
 	if aiConfig == nil {
 		return nil, errorsx.InvalidParam("AI 配置不存在")
 	}
@@ -238,7 +287,7 @@ func (s *aIAgentService) buildAIAgentModel(id int64, req request.CreateAIAgentRe
 	if !slices.Contains(enums.IMConversationServiceModeValues, req.ServiceMode) {
 		return nil, errorsx.InvalidParam("服务模式不合法")
 	}
-	teamIDs, err := s.normalizeTeamIDs(req.TeamIDs)
+	teamIDs, err := s.normalizeTeamIDs(db, req.TeamIDs, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -259,14 +308,14 @@ func (s *aIAgentService) buildAIAgentModel(id int64, req request.CreateAIAgentRe
 		return nil, errorsx.InvalidParam("回复超时秒数不能小于 0")
 	}
 
-	knowledgeIDs, err := s.normalizeKnowledgeIDs(req.KnowledgeIDs)
+	knowledgeIDs, err := s.normalizeKnowledgeIDs(db, req.KnowledgeIDs, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	if len(knowledgeIDs) == 0 {
 		return nil, errorsx.InvalidParam("请至少选择一个知识库")
 	}
-	skillIDs, err := s.normalizeSkillIDs(req.SkillIDs)
+	skillIDs, err := s.normalizeSkillIDs(db, req.SkillIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -295,6 +344,7 @@ func (s *aIAgentService) buildAIAgentModel(id int64, req request.CreateAIAgentRe
 		graphToolsJSON = string(buf)
 	}
 	return &models.AIAgent{
+		TenantID:            tenantID,
 		Name:                name,
 		Description:         strings.TrimSpace(req.Description),
 		AIConfigID:          req.AIConfigID,
@@ -313,7 +363,7 @@ func (s *aIAgentService) buildAIAgentModel(id int64, req request.CreateAIAgentRe
 	}, nil
 }
 
-func (s *aIAgentService) normalizeTeamIDs(input []int64) ([]int64, error) {
+func (s *aIAgentService) normalizeTeamIDs(db *gorm.DB, input []int64, tenantID int64) ([]int64, error) {
 	ret := make([]int64, 0, len(input))
 	seen := make(map[int64]struct{})
 	for _, id := range input {
@@ -323,9 +373,9 @@ func (s *aIAgentService) normalizeTeamIDs(input []int64) ([]int64, error) {
 		if _, exists := seen[id]; exists {
 			continue
 		}
-		team := AgentTeamService.Get(id)
+		team := repositories.AgentTeamRepository.GetInTenant(db, id, tenantID)
 		if team == nil || team.Status == enums.StatusDeleted {
-			continue
+			return nil, errorsx.InvalidParam("客服组不存在或不属于当前公司")
 		}
 		// if team.Status != enums.StatusOk {
 		// 	return nil, errorsx.InvalidParam("客服组未启用")
@@ -337,7 +387,7 @@ func (s *aIAgentService) normalizeTeamIDs(input []int64) ([]int64, error) {
 	return ret, nil
 }
 
-func (s *aIAgentService) normalizeKnowledgeIDs(input []int64) ([]int64, error) {
+func (s *aIAgentService) normalizeKnowledgeIDs(db *gorm.DB, input []int64, tenantID int64) ([]int64, error) {
 	ret := make([]int64, 0, len(input))
 	seen := make(map[int64]struct{})
 	for _, id := range input {
@@ -347,9 +397,9 @@ func (s *aIAgentService) normalizeKnowledgeIDs(input []int64) ([]int64, error) {
 		if _, exists := seen[id]; exists {
 			continue
 		}
-		kb := KnowledgeBaseService.Get(id)
+		kb := repositories.KnowledgeBaseRepository.GetInTenant(db, id, tenantID)
 		if kb == nil || kb.Status == enums.StatusDeleted {
-			continue
+			return nil, errorsx.InvalidParam("知识库不存在或不属于当前公司")
 		}
 		// if kb.Status != enums.StatusOk {
 		// 	return nil, errorsx.InvalidParam("知识库未启用")
@@ -360,7 +410,7 @@ func (s *aIAgentService) normalizeKnowledgeIDs(input []int64) ([]int64, error) {
 	return ret, nil
 }
 
-func (s *aIAgentService) normalizeSkillIDs(input []int64) ([]int64, error) {
+func (s *aIAgentService) normalizeSkillIDs(db *gorm.DB, input []int64) ([]int64, error) {
 	ret := make([]int64, 0, len(input))
 	seen := make(map[int64]struct{})
 	for _, id := range input {
@@ -370,7 +420,7 @@ func (s *aIAgentService) normalizeSkillIDs(input []int64) ([]int64, error) {
 		if _, exists := seen[id]; exists {
 			continue
 		}
-		skill := SkillDefinitionService.Get(id)
+		skill := repositories.SkillDefinitionRepository.Get(db, id)
 		if skill == nil || skill.Status == enums.StatusDeleted {
 			continue
 		}
@@ -436,10 +486,17 @@ func (s *aIAgentService) normalizeGraphTools(input []string) ([]string, error) {
 	return ret, nil
 }
 
-func (s *aIAgentService) UpdateSort(ids []int64) error {
+func (s *aIAgentService) UpdateSort(ids []int64, operator *dto.AuthPrincipal) error {
+	tenantID, err := requireActiveTenantID(operator, "AI Agent")
+	if err != nil {
+		return err
+	}
+	if len(s.FindByIdsInTenant(ids, tenantID)) != len(ids) {
+		return errorsx.InvalidParam("排序列表包含不存在或不属于当前公司的 AI Agent")
+	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		for i, id := range ids {
-			if err := repositories.AIAgentRepository.UpdateColumn(ctx.Tx, id, "sort_no", i+1); err != nil {
+			if err := repositories.AIAgentRepository.UpdateColumnInTenant(ctx.Tx, id, tenantID, "sort_no", i+1); err != nil {
 				return err
 			}
 		}
@@ -451,7 +508,11 @@ func (s *aIAgentService) UpdateStatus(id int64, status int, operator *dto.AuthPr
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.Get(id)
+	tenantID, err := requireActiveTenantID(operator, "AI Agent")
+	if err != nil {
+		return err
+	}
+	current := repositories.AIAgentRepository.GetInTenant(sqls.DB(), id, tenantID)
 	if current == nil {
 		return errorsx.InvalidParam("AI Agent 不存在")
 	}
@@ -459,7 +520,7 @@ func (s *aIAgentService) UpdateStatus(id int64, status int, operator *dto.AuthPr
 		return errorsx.InvalidParam("状态值不合法")
 	}
 
-	return repositories.AIAgentRepository.Updates(sqls.DB(), id, map[string]any{
+	return repositories.AIAgentRepository.UpdatesInTenant(sqls.DB(), id, tenantID, map[string]any{
 		"status":           status,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,

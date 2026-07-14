@@ -806,7 +806,7 @@ POST /api/auth/register
 - migration 42 将历史零租户 Company/Channel 确定性归入 `legacy-default`，保留指向现存租户的显式值；缺少默认租户或引用不存在租户时整笔事务回滚，重复执行不改变已确认归属。
 - `Channel.ChannelID` 继续保持全局唯一，因为公开接入和回调仍按该稳定标识全局反查渠道；`Company.Name` 暂时也保留历史全局唯一索引，后续改为租户组合唯一前必须先审计历史重名并兼容 SQLite/MySQL 索引迁移。
 - 本批只完成 Company/Channel 归属和后台管理链路隔离。Customer、Store、WxWorkProtocolInstance、Conversation、Message、回调、Outbox 和 WebSocket 尚未沿 Channel tenant 形成完整链路，不能由本批推定完成。
-- AIAgent 尚未租户化，Channel 当前只能验证绑定 Agent 存在且启用，不能验证同租户；历史企业微信客服账号枚举仍依赖平台全局配置，租户级第三方凭据隔离需在渠道设置重构时单独完成。
+- AIAgent 在阶段 33 已完成租户化，Channel 创建/更新会验证 Agent 与当前公司一致；租户级第三方凭据隔离仍需在渠道设置重构时单独完成。
 
 第五批实现状态（2026-07-14）：
 
@@ -1246,7 +1246,7 @@ git diff --check
 - 本批没有新增 request/response JSON 字段、enum、Gin 路由、WebSocket payload、页面入口或权限点；既有知识库权限继续由权限管理和角色绑定分配。
 - `codex/ai-billing` 新增的 KnowledgeBase CompanyID/StoreID/FastGPT 字段必须与 TenantID 并存；FastGPTDatasetJob、KnowledgeResourceGroup/Item、AI usage/run log 和 AIManualResumeTask 尚未出现在本分支，合并后必须从 KnowledgeBase/Conversation/Asset 继承 Tenant，不能依靠 CompanyID 代替租户根。
 - FastGPT 远端检索必须在 AI 分支中继续校验 KnowledgeBase Tenant 与会话 Tenant；本批没有猜测远端协议字段，也没有改变 FastGPT dataset 或模型/计费语义。
-- AIAgent、AIConfig、SkillRunLog/AgentRunLog 的完整 Tenant 主体仍由 AI/计费分支负责。当前企微员工号运行时已校验 Instance 与 KnowledgeBase 同租户，但全局 AI Agent 后台仍不能宣称完成租户化。
+- AIAgent 已在阶段 33 成为 Tenant 主体；AIConfig 继续是平台级模型配置，SkillRunLog/AgentRunLog 等 AI 分支新增主体仍需按其真实运行链补齐 Tenant 契约。当前企微员工号运行时继续校验 Instance、KnowledgeBase 与会话同租户。
 - 历史 Qdrant point 在重建前不会被新 Tenant filter 命中，这是预期的故障关闭。不得为恢复命中临时移除 Tenant filter；应执行知识库重建。
 - `/api/asset/file/{assetId}` 的短期签名授权仍未完成。知识/向量和文件 URL 均完成、AI 分支剩余主体合并并通过双租户测试前，公开邀请注册继续关闭。
 
@@ -1285,7 +1285,7 @@ git diff --check
 
 - 没有新增 model、migration、request/response DTO 字段、enum、Gin 路由、权限点或 WebSocket payload。权限管理不需要新增隐藏权限；生成签名 URL 的前提仍是用户已通过原 Asset、Conversation 或企微运行链读取到同租户业务对象。
 - OSS bucket 若配置为 provider 级公开，应用无法撤销通过 OSS 自身 URL 获得的访问；本批已停止向浏览器和消息响应暴露 StorageKey，正式多租户环境仍应使用私有 bucket。应用签名不能替代云存储 ACL。
-- FastGPTDatasetJob、KnowledgeResourceGroup/Item、AI usage/run log、AIManualResumeTask 和 AIAgent/AIConfig Tenant 仍需与 AI 分支合并后完成。文件 URL 已收口不代表 AI 分支新增主体已经隔离，公开注册继续关闭。
+- FastGPTDatasetJob、KnowledgeResourceGroup/Item、AI usage/run log 和 AIManualResumeTask 仍需与 AI 分支合并后完成租户边界。AIAgent 已在阶段 33 租户化，AIConfig 明确保留为平台级模型配置；文件 URL 已收口不代表 AI 分支新增主体已经隔离，公开注册继续关闭。
 
 ### 并行合并要求
 
@@ -1384,7 +1384,7 @@ git diff --check
 - `TenantResponse` 向后兼容增加 `agentCount`、`storeCount`、`agentTeamCount` 和可选 `lastActiveAt`。没有新增 model、AutoMigrate、DML migration、enum、Gin 路由、权限或 WebSocket payload。
 - SQLite 对 `MAX(datetime)` 返回字符串，MySQL `parseTime=True` 通常返回 `time.Time`；repository 统一兼容两种驱动值后再由 service 比较时间，保持 SQLite/MySQL 同一业务口径。
 - Repository 单测覆盖 `time.Time`、SQLite string/`[]byte`、空值和非法值；真实 MySQL 容器仍被已知 migration 39 历史组长归属冲突阻断，本批不跳过迁移伪造联调结果。
-- 本检查点不修改 AI Agent、AI Config、模型调用、回复引擎、token、usage 或计费语义。旧 Channel 编辑器仍不得恢复：当前 AIAgent/AIConfig 尚无完整 Tenant 契约，恢复后会暴露跨公司绑定风险。
+- 本检查点自身不修改 AI Agent、AI Config、模型调用、回复引擎、token、usage 或计费语义。后续阶段 33 已完成 AIAgent Tenant 契约并关闭跨公司绑定；AIConfig 继续是平台配置。当前公司 Channel 管理入口仍应作为独立信息架构步骤恢复，不能把平台“接入公司”页改回旧编辑器。
 - 双租户测试覆盖资源计数不串租户、删除资源不计数、停用资源仍计数、删除账号登录不影响活跃时间，以及“账号登录/会话活跃两者取较晚值”。
 
 ### 仿真数据租户继承补漏
@@ -1400,3 +1400,36 @@ git diff --check
 - 本批可通过回滚 response 新字段、聚合方法和前端摘要列完整撤销，不涉及数据回滚。回滚统计不得顺带恢复旧 Channel 页面或改变当前公司上下文导航。
 - 仿真脚本修复可独立回滚代码，但已修正为正数 TenantID 的测试记录不应回写 0；需要清理时继续使用脚本的 marker cleanup，不做破坏性全表处理。
 - `auth_response.go`、`auth_service.go`、`navigation.tsx` 和双语资源与 `codex/ai-billing` 有同文件变化；合并必须逐字段、逐导航项保留双方能力，禁止整文件选边。
+
+## 33. 当前实施检查点：AIAgent 租户根与渠道绑定收口（2026-07-14）
+
+本检查点补齐当前公司导航已经开放、但后端仍按全局数据读取的 AI Agent。它只处理 AI 接待实例的租户归属和引用边界，不改变平台模型配置、模型调用或计费语义。
+
+### 数据与服务契约
+
+- `AIAgent.TenantID` 是正数租户根字段，只能从当前 `AuthPrincipal.ActiveTenantID` 继承；Create/Update request 不接收 TenantID。
+- AI Agent 名称改为公司内唯一，不同公司允许同名。列表、全部选项、详情、更新、删除、启停和排序均按 Active Tenant 查询；最终写入条件同时包含 `id + tenant_id`。
+- AI Agent 引用的 AgentTeam 与 KnowledgeBase 必须属于同一租户。SkillDefinition 和 AIConfig 本批继续是平台级定义；租户 AI Agent 可以引用已启用的全局 AIConfig。
+- Channel 创建/更新必须绑定同租户 AI Agent；Conversation 创建按 Channel Tenant 读取 Agent，并再次验证 Profile Tenant。AI 回复、派单、转人工、企微客服入站、消息发送者展示和 Channel 响应均使用已知 Conversation、Message 或 Channel Tenant 查 Agent。
+- 企微员工号当前真实运行链不再有独立 `ai_agent_id` 字段，而是按 Instance 动态构建运行时 Agent；本批只给该运行时对象继承 Instance Tenant，不恢复旧独立 Agent 或旧企微字段。
+- 小程序会话必须提供真实 ChannelID。没有渠道时不再全局扫描“AI 店长”作为兜底，避免绕过租户和 Channel 入口。
+- Skill 调试接口在执行全局 runtime Hook 前，先校验 Agent、Conversation 与 CheckPoint 都属于当前公司；Hook 本身的模型执行语义不变。
+
+### Migration 50
+
+- migration 50 在 AutoMigrate 增加字段后执行，证据来源为 AIAgent 显式 Tenant、Channel、Conversation、TeamIDs、KnowledgeIDs，以及非平台创建/更新账号。AIConfig 不提供租户证据。
+- 所有非零证据必须一致；缺失 Agent/Team/Knowledge/User 引用、无租户父记录或跨租户共享 Agent 都会使事务失败并回滚。无任何证据的历史 Agent 归入 `legacy-default`。
+- migration 可重复执行；已有正确 Tenant 不重写，已有 Tenant 与解析结果冲突时失败，不静默改归属。
+
+### 权限、兼容与剩余边界
+
+- 沿用权限管理中现有 `aiAgent.view/create/update/delete`，没有新增隐藏权限或角色特判。没有 request/response DTO、enum、Gin 路由或 WebSocket payload 变化。
+- AIConfig 明确保留平台级配置：`aiConfig.create/update/delete` 继续是 platform scope，租户角色只按现有授权查看可选配置。本批没有修改 FastGPT、模型供应商、回复引擎、Token、usage 或计费口径。
+- 当前公司 Channel 管理入口现在不再受跨租户 Agent 绑定阻塞，但仍应在“当前公司设置”中复用现有 Channel API 单独恢复，不能把平台“接入公司”页改回旧 Channel 编辑器。
+- AI 分支新增的 FastGPTDatasetJob、KnowledgeResourceGroup/Item、AIManualResumeTask、usage/run log 等主体仍需独立审计；AIAgent 完成不代表公开邀请注册可以启用。
+
+### 并行合并与回滚
+
+- migration 50 创建前已 fetch 并核对：`origin/main@e67e207` 最高 20、`origin/codex/ai-billing@f2d2da4` 最高 33、本分支此前最高 49，无版本冲突。
+- 当前 `origin/codex/ai-billing@f2d2da4` 未修改 `ai_agent_service.go` 和 AIAgent CRUD，但同文件包括 `models.go`、`reply_trigger_service.go`、`miniprogram_chat_service.go`、会话 builder、转人工/企微运行时及相关测试。合并时先保留 `AIAgent.TenantID`、migration 50、tenant-aware repository/service 原语；`reply_trigger_service.go` 同时保留 AI 分支 route-aware runtime 选择和本批 `conversation.TenantID` Agent 查询，`miniprogram_chat_service.go` 同时保留 AI 分支人工状态判断和本批 Channel 必填边界；禁止整文件选边。
+- 回滚代码可以撤销租户查询和运行时校验，但已回填的正数 TenantID 不应改回 0。若确需业务回滚，应保留字段和数据，只回退入口使用；删除字段或恢复全局 Agent 会重新引入跨公司绑定风险。

@@ -31,6 +31,17 @@ func (r *conversationInterruptRepository) GetByCheckPointID(db *gorm.DB, checkPo
 	return ret
 }
 
+func (r *conversationInterruptRepository) GetByCheckPointIDInTenant(db *gorm.DB, checkPointID string, tenantID int64) *models.ConversationInterrupt {
+	if checkPointID == "" || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.ConversationInterrupt{}
+	if err := db.Where("check_point_id = ? AND tenant_id = ?", checkPointID, tenantID).First(ret).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *conversationInterruptRepository) FindLatestPendingByConversationIDInTenant(db *gorm.DB, conversationID, tenantID int64) *models.ConversationInterrupt {
 	ret := &models.ConversationInterrupt{}
 	if err := db.Where("tenant_id = ? AND conversation_id = ? AND status = ?", tenantID, conversationID, "pending").Order("id DESC").First(ret).Error; err != nil {

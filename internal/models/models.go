@@ -779,6 +779,7 @@ type QuickReply struct {
 // AIAgent AI 接待实例。
 type AIAgent struct {
 	ID                  int64                           `gorm:"primaryKey;autoIncrement"`                    // ID 为 AI Agent 主键。
+	TenantID            int64                           `gorm:"type:bigint;not null;default:0;index"`        // TenantID 为 AI Agent 所属接入公司，由当前公司上下文继承。
 	Name                string                          `gorm:"type:varchar(100);not null;default:'';index"` // Name 为 AI Agent 名称。
 	Description         string                          `gorm:"type:varchar(255);not null;default:''"`       // Description 为 AI Agent 描述。
 	Status              enums.Status                    `gorm:"type:int;not null;index"`                     // Status 为 AI Agent

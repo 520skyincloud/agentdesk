@@ -146,17 +146,21 @@ func (s *conversationHandoffConfirmationService) resolveRuntimeAIAgent(conversat
 			return aiAgent
 		}
 	}
-	if payloadAgentID > 0 {
-		if aiAgent := AIAgentService.Get(payloadAgentID); aiAgent != nil {
+	if conversation != nil && payloadAgentID > 0 {
+		if aiAgent := AIAgentService.GetByTenantID(payloadAgentID, conversation.TenantID); aiAgent != nil {
 			return *aiAgent
 		}
 	}
 	if conversation != nil && conversation.AIAgentID > 0 {
-		if aiAgent := AIAgentService.Get(conversation.AIAgentID); aiAgent != nil {
+		if aiAgent := AIAgentService.GetByTenantID(conversation.AIAgentID, conversation.TenantID); aiAgent != nil {
 			return *aiAgent
 		}
 	}
-	return models.AIAgent{ID: 0, Name: "AI", Status: enums.StatusOk, ServiceMode: enums.IMConversationServiceModeAIFirst}
+	tenantID := int64(0)
+	if conversation != nil {
+		tenantID = conversation.TenantID
+	}
+	return models.AIAgent{ID: 0, TenantID: tenantID, Name: "AI", Status: enums.StatusOk, ServiceMode: enums.IMConversationServiceModeAIFirst}
 }
 
 func (s *conversationHandoffConfirmationService) alreadyInHumanRoute(conversationID int64) bool {

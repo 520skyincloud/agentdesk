@@ -32,6 +32,14 @@ func (s *conversationInterruptService) GetByCheckPointID(checkPointID string) *m
 	return repositories.ConversationInterruptRepository.GetByCheckPointID(sqls.DB(), checkPointID)
 }
 
+func (s *conversationInterruptService) GetByCheckPointIDInTenant(checkPointID string, tenantID int64) *models.ConversationInterrupt {
+	checkPointID = strings.TrimSpace(checkPointID)
+	if checkPointID == "" || tenantID <= 0 {
+		return nil
+	}
+	return repositories.ConversationInterruptRepository.GetByCheckPointIDInTenant(sqls.DB(), checkPointID, tenantID)
+}
+
 func (s *conversationInterruptService) FindLatestPendingByConversationID(conversationID int64) *models.ConversationInterrupt {
 	if conversationID <= 0 {
 		return nil

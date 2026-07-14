@@ -166,6 +166,7 @@ func setupHumanDispatchRealtimeTestDB(t *testing.T) *gorm.DB {
 func createHumanDispatchRealtimeAIAgent(t *testing.T, db *gorm.DB, teamIDs string) models.AIAgent {
 	t.Helper()
 	item := models.AIAgent{
+		TenantID:    101,
 		Name:        "测试AI",
 		ServiceMode: enums.IMConversationServiceModeAIFirst,
 		TeamIDs:     teamIDs,

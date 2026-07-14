@@ -85,8 +85,8 @@ func TestKnowledgeRuntimeTenantIsolation(t *testing.T) {
 func TestDashboardOverviewUsesActiveTenant(t *testing.T) {
 	db, adminA, adminB := setupKnowledgeTenantRuntimeDB(t)
 	now := time.Now()
-	agentA := &models.AIAgent{Name: "A agent", Status: enums.StatusOk}
-	agentB := &models.AIAgent{Name: "B agent", Status: enums.StatusOk}
+	agentA := &models.AIAgent{TenantID: adminA.ActiveTenantID, Name: "A agent", Status: enums.StatusOk}
+	agentB := &models.AIAgent{TenantID: adminB.ActiveTenantID, Name: "B agent", Status: enums.StatusOk}
 	if err := db.Create(agentA).Error; err != nil {
 		t.Fatalf("create agent A: %v", err)
 	}

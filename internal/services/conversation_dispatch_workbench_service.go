@@ -600,7 +600,7 @@ func (s *conversationDispatchWorkbenchService) resolveTaskTeamID(conversation *m
 			return teamID
 		}
 	}
-	if aiAgent := AIAgentService.Get(conversation.AIAgentID); aiAgent != nil {
+	if aiAgent := AIAgentService.GetByTenantID(conversation.AIAgentID, conversation.TenantID); aiAgent != nil {
 		teamIDs := utils.SplitInt64s(aiAgent.TeamIDs)
 		for _, teamID := range teamIDs {
 			if team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, conversation.TenantID); team != nil && team.Status == enums.StatusOk {

@@ -1790,7 +1790,7 @@ web/messages/en-US.json
 ### 并行分支、合并与回滚
 
 - 开始前已 fetch；`origin/codex/ai-billing@f2d2da4` 只与本批重叠双语资源文件，并新增与本批不同的 `nav.replyIntentProfiles` key。合并时逐 key 保留，无需整文件选边。
-- 本批不触碰 AIAgent/AIConfig、FastGPT、模型供应商、回复 runtime、token、usage 或计费。旧 Channel 页面仍被 AIAgent 租户契约阻塞；不能把本批公司统计完成误认为渠道隔离完成。
+- 本批自身不触碰 AIAgent/AIConfig、FastGPT、模型供应商、回复 runtime、token、usage 或计费；后续第 33 批已完成 AIAgent 租户契约。当前公司 Channel 管理入口仍需单独恢复，不能把公司统计或 Agent 隔离完成误认为页面职责已经迁移。
 - 可独立回滚聚合方法、response 字段和前端列，无数据回滚边界；回滚不应影响阶段 7C 的公司上下文和导航。
 - `cmd/customer_audit_seed` 与 AI 分支无同文件修改。脚本修复后的测试数据已具备正数 TenantID；回滚脚本不应把数据库记录改回 tenant 0，清理继续按 `TEST_SEED:<batch>` marker 执行。
 
@@ -1808,3 +1808,47 @@ git diff --check
 
 - Go 全量、专项 race、vet、67 项前端测试、typecheck、生产构建和 diff 检查通过。
 - 当前源码 + 全新 SQLite + 修复后仿真脚本的浏览器验证显示：客服 12、门店 100、客服组 3，最近活跃取模拟会话时间。桌面列表使用内部横向滚动；`390x844` 下 document width 保持 390，统计单元格宽/scrollWidth 均为 245，无页面级横向溢出或文本溢出。
+
+## 第 33 批：AIAgent 租户隔离与运行时引用收口（2026-07-14）
+
+### 目标与复用判断
+
+- 复用现有 `/dashboard/ai-agents`、`aiAgent.*` 权限、Channel/Conversation 模型和 AI runtime，不新增平行页面、权限、状态或独立 Agent 模型。
+- 修复 AIAgent 全局列表/详情/写入，以及 Channel 只校验 Agent 存在未校验同租户的问题，使当前公司 AI 客服、渠道、会话和派单形成同一租户边界。
+- AIConfig 按现有权限和阶段 6.1 继续作为平台模型配置；本批不修改模型供应商、FastGPT、回复策略、Token、usage 或计费。
+
+### 文件与契约变化
+
+- `internal/models/models.go`：AIAgent 新增 `TenantID`；客户端请求不能指定。
+- `internal/migration/000050_backfill_ai_agent_tenants.go`：从显式 Tenant、Channel、Conversation、TeamIDs、KnowledgeIDs 和非平台审计账号解析历史归属；冲突或缺失引用事务回滚，无证据归 `legacy-default`。
+- `internal/repositories/ai_agent_repository.go`、`internal/services/ai_agent_service.go`：增加 tenant-aware 读写、公司内名称唯一、同租户 Team/Knowledge 校验，最终更新/排序带 `id + tenant_id`。WithTx 校验读取使用同一事务连接。
+- AI Agent dashboard handler 按 Active Tenant 列表和详情；响应中的 Team/Knowledge 名称也按 `item.TenantID` 读取。沿用已有权限，不增加隐藏权限。
+- Channel、Conversation、AI reply、派单、转人工、企微 KF 入站、默认资源、WebSocket、消息 builder 和首页统计均使用已知 Tenant 读取 Agent；小程序移除无 Channel 的全局 Agent 扫描。
+- Skill 调试在调用现有 runtime Hook 前校验 Agent、Conversation、CheckPoint 属于当前公司。企微员工号继续使用当前动态 runtime Agent，并继承 Instance Tenant；未恢复旧 `ai_agent_id`。
+- `cmd/testdata` 的 AI Agent 与 Channel seed 显式归入 `legacy-default`，upsert 查询带 Tenant，避免 migration 后重新制造 tenant 0 数据。
+- 没有 request/response DTO、enum、Gin 路由、WebSocket payload 或新权限变化。
+
+### 测试与结果
+
+```text
+go test ./... -count=1
+go test -race ./internal/services -run 'Test(AIAgent|ConversationRuntime|ConversationHumanDispatch|ChannelServiceEnforcesTenantContext)' -count=1
+go test -race ./internal/migration -run 'TestBackfillAIAgentTenants' -count=1
+go vet ./...
+cd web && node --test $(rg --files . | rg '\.test\.mjs$' | sort)
+cd web && pnpm typecheck
+cd web && pnpm build
+git diff --check
+```
+
+- migration 覆盖多证据一致、幂等、两租户共享冲突回滚、缺失 Team 和缺失 Agent 引用。
+- service 覆盖列表/详情隔离、创建继承、跨租户同名、跨租户更新/启停/排序/删除拒绝、Team/Knowledge 引用拒绝、Channel/Conversation 绑定拒绝和 repository 最终写条件。
+- 全量 Go、专项 race、vet、67 项前端测试、typecheck 和生产构建通过。
+- 当前源码 `8085` + 前端 `3000` 浏览器双租户验证通过：默认公司只显示 A Agent，切换测试公司 B 后只显示 B Agent；临时数据随后清理并切回默认公司。`390x844` 下 document width/scrollWidth 均为 390，无页面级横向溢出。
+
+### 并行分支、合并顺序与回滚
+
+- 开始前已 fetch：`origin/main@e67e207`、`origin/codex/ai-billing@f2d2da4`。migration 50 创建时本分支最高 49，AI 分支最高 33，无版本冲突。
+- 当前 AI 分支未修改 `ai_agent_service.go` 和 AIAgent CRUD；高风险同文件是 `models.go`、`reply_trigger_service.go`、`miniprogram_chat_service.go`、会话 builder、转人工/企微运行时及测试。先合并 AIAgent Tenant 字段、migration 和 repository/service 原语，再逐方法合并：reply trigger 保留 AI 分支 route-aware 选择与本批 Tenant 查询，mini-program 保留 AI 分支人工状态判断与本批 Channel 必填边界；AIConfig 继续保留平台语义，禁止整文件覆盖。
+- 本批没有改变 AI 分支负责的模型调用、计费和 usage 字段。需要 rebase 时重点检查 AI 分支是否新增 AIAgent 字段或 runtime 调用点，并给所有新 Agent 查询补已知 Tenant。
+- 回滚边界为本批 tenant-aware 代码和入口校验；已回填 TenantID 不回写 0。保留字段与数据可以向后兼容，恢复全局 Agent 或删除 Tenant 字段会重新产生跨公司绑定风险。
