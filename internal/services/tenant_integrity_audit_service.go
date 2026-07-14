@@ -1,8 +1,10 @@
 package services
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -451,6 +453,9 @@ func (s *tenantIntegrityAuditService) Audit(
 	if err := s.auditDynamicTenantReferences(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
+	if err := s.auditUserRoleChangeLogSemantics(db, metadata, available, report, sampleLimit); err != nil {
+		return nil, err
+	}
 	if err := s.auditAgentOrganizationSemantics(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
@@ -791,6 +796,83 @@ func parseTenantIntegrityMessageIDs(raw string) ([]int64, bool) {
 		ret = append(ret, id)
 	}
 	return ret, len(ret) > 0
+}
+
+func (s *tenantIntegrityAuditService) auditUserRoleChangeLogSemantics(
+	db *gorm.DB,
+	metadata map[string]tenantIntegrityModelMetadata,
+	available map[string]bool,
+	report *TenantIntegrityAuditReport,
+	sampleLimit int,
+) error {
+	if !available["UserRoleChangeLog"] {
+		return nil
+	}
+	table := metadata["UserRoleChangeLog"].Table
+	columns := []string{"before_role_ids_json", "after_role_ids_json", "before_role_codes_json", "after_role_codes_json"}
+	for _, column := range columns {
+		if !repositories.TenantIntegrityAuditRepository.HasColumn(db, table, column) {
+			report.addViolation("MISSING_REQUIRED_COLUMN", "UserRoleChangeLog."+column, 1, nil, "角色变更快照审计所需列不存在")
+			return nil
+		}
+	}
+	rows, err := repositories.UserRoleChangeLogRepository.FindAuditRows(db)
+	if err != nil {
+		return fmt.Errorf("read user role change audit payloads failed: %w", err)
+	}
+	invalidIDs := make([]int64, 0)
+	for _, row := range rows {
+		beforeIDs, beforeIDsValid := parseStrictRoleIDSnapshot(row.BeforeRoleIDsJSON)
+		afterIDs, afterIDsValid := parseStrictRoleIDSnapshot(row.AfterRoleIDsJSON)
+		beforeCodes, beforeCodesValid := parseStrictRoleCodeSnapshot(row.BeforeRoleCodesJSON)
+		afterCodes, afterCodesValid := parseStrictRoleCodeSnapshot(row.AfterRoleCodesJSON)
+		if !beforeIDsValid || !afterIDsValid || !beforeCodesValid || !afterCodesValid ||
+			len(beforeIDs) != len(beforeCodes) || len(afterIDs) != len(afterCodes) ||
+			slices.Equal(beforeIDs, afterIDs) {
+			invalidIDs = append(invalidIDs, row.ID)
+		}
+	}
+	if len(invalidIDs) == 0 {
+		return nil
+	}
+	samples := invalidIDs
+	if len(samples) > sampleLimit {
+		samples = samples[:sampleLimit]
+	}
+	report.addViolation(
+		"USER_ROLE_CHANGE_LOG_PAYLOAD_INVALID",
+		"UserRoleChangeLog.role_snapshots",
+		int64(len(invalidIDs)),
+		samples,
+		"角色变更前后快照必须是有序、去重且数量对应的合法 JSON 数组，并且角色集合确实发生变化",
+	)
+	return nil
+}
+
+func parseStrictRoleIDSnapshot(raw string) ([]int64, bool) {
+	var ids []int64
+	if err := json.Unmarshal([]byte(raw), &ids); err != nil || ids == nil {
+		return nil, false
+	}
+	for i, id := range ids {
+		if id <= 0 || (i > 0 && ids[i-1] >= id) {
+			return nil, false
+		}
+	}
+	return ids, true
+}
+
+func parseStrictRoleCodeSnapshot(raw string) ([]string, bool) {
+	var codes []string
+	if err := json.Unmarshal([]byte(raw), &codes); err != nil || codes == nil {
+		return nil, false
+	}
+	for i, code := range codes {
+		if code == "" || strings.TrimSpace(code) != code || (i > 0 && codes[i-1] >= code) {
+			return nil, false
+		}
+	}
+	return codes, true
 }
 
 func (s *tenantIntegrityAuditService) auditTenantBusinessKeyDuplicates(

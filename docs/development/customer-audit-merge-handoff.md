@@ -3732,3 +3732,38 @@ git diff --check
 
 - 以共同基线检查，`origin/codex/ai-billing@f2d2da4` 不修改本批 service/test 文件，当前无同文件冲突和 migration 排序要求。最终合并后必须保留 AST 契约并重跑，它会对 AI 分支新增 service 一并生效。
 - 可独立回滚四个文件中的本批变更且无需数据库回滚；回滚会恢复无权限、无日志的通用角色写旁路，不建议回滚。
+
+## 第 74 批：角色变更快照语义只读审计（2026-07-15）
+
+### 规则与边界
+
+- 第 71A 批只检查 UserRoleChangeLog 的 TenantID 与 User/Operator 关系，无法发现四个 JSON 快照列损坏。本批继续复用 TenantIntegrityAudit，不创建第二套审计命令。
+- ID 数组必须可解析、非 null，元素为正数且严格升序；code 数组必须可解析、非 null，元素非空、无首尾空格且严格升序。严格升序同时保证去重。
+- before/after 各自的 ID/code 数量必须一致，before/after ID 集合必须不同。违规码为 `USER_ROLE_CHANGE_LOG_PAYLOAD_INVALID`，按日志行计数并使用统一 sampleLimit。
+- 不回查快照中的 Role 当前状态、ID 或 code。历史模板可能在变更后改名或删除，强制关联当前 Role 会破坏追加式证据语义；目标账号和操作人关系仍由普通完整性关系负责。
+
+### 文件与验证
+
+```text
+internal/repositories/user_role_change_log_repository.go
+internal/services/tenant_integrity_audit_service.go
+internal/services/tenant_integrity_audit_service_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^TestTenantIntegrityAudit(PassesCleanTwoTenantFixture|ReportsTenantRelationAndRoleViolations|ReportsInvalidUserRoleChangePayloads)$' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 合法平台/租户记录不误报；非法 JSON、逆序、重复、数量不一致、无变化和空格 code 共 6 条违规，SampleLimit=2 时保留总数并只返回前两个 ID。全部验证通过。
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、权限、WebSocket、前端、AI runtime、token、usage 或计费变化；模型策略、必需表和普通关系计数保持 52/52、65、127。
+
+### 并行分支与回滚
+
+- 共同基线检查显示 `origin/codex/ai-billing@f2d2da4` 不修改本批运行文件，无同文件冲突、migration 排序或 rebase 要求。
+- 可独立回滚五个文件中的本批变化，不涉及数据库回滚；回滚后损坏快照不会再由 preflight 发现，但不得删除或改写历史日志。

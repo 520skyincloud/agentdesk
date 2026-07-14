@@ -44,12 +44,14 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	for _, item := range []*models.UserRoleChangeLog{
 		{
 			TenantID: 0, UserID: fixture.platformUser.ID,
-			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: "[]", BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: "[]",
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: fmt.Sprintf("[%d]", fixture.platformRole.ID),
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: fmt.Sprintf("[%q]", fixture.platformRole.Code),
 			CreatedAt: now,
 		},
 		{
 			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
-			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: "[]", BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: "[]",
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: fmt.Sprintf("[%d]", fixture.tenantRole.ID),
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: fmt.Sprintf("[%q]", fixture.tenantRole.Code),
 			OperatorID: fixture.platformUser.ID, OperatorName: fixture.platformUser.Username, CreatedAt: now,
 		},
 	} {
@@ -123,7 +125,8 @@ func TestTenantIntegrityAuditReportsTenantRelationAndRoleViolations(t *testing.T
 	}
 	invalidRoleChange := &models.UserRoleChangeLog{
 		TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserB.ID,
-		BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: "[]", BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: "[]",
+		BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: fmt.Sprintf("[%d]", fixture.tenantRole.ID),
+		BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: fmt.Sprintf("[%q]", fixture.tenantRole.Code),
 		OperatorID: 987654, OperatorName: "missing-operator", CreatedAt: now,
 	}
 	if err := db.Create(invalidRoleChange).Error; err != nil {
@@ -169,6 +172,66 @@ func TestTenantIntegrityAuditReportsTenantRelationAndRoleViolations(t *testing.T
 	}
 	if violation := tenantIntegrityFindViolation(report, "ORPHAN_PARENT_REFERENCE", "UserRoleChangeLog.operator_id"); violation == nil || violation.Count != 1 {
 		t.Fatalf("role change operator violation = %#v", violation)
+	}
+}
+
+func TestTenantIntegrityAuditReportsInvalidUserRoleChangePayloads(t *testing.T) {
+	db := openTenantIntegrityTestDB(t, true)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	now := time.Now()
+	validAfterIDs := fmt.Sprintf("[%d]", fixture.tenantRole.ID)
+	validAfterCodes := fmt.Sprintf("[%q]", fixture.tenantRole.Code)
+	reversedIDs := fmt.Sprintf("[%d,%d]", fixture.tenantRole.ID, fixture.platformRole.ID)
+	rows := []*models.UserRoleChangeLog{
+		{
+			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: validAfterIDs,
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: validAfterCodes,
+			OperatorID: fixture.platformUser.ID, OperatorName: fixture.platformUser.Username, CreatedAt: now,
+		},
+		{
+			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
+			BeforeRoleIDsJSON: "not-json", AfterRoleIDsJSON: validAfterIDs,
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: validAfterCodes, CreatedAt: now,
+		},
+		{
+			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: reversedIDs,
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: fmt.Sprintf("[%q,%q]", fixture.platformRole.Code, fixture.tenantRole.Code), CreatedAt: now,
+		},
+		{
+			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: fmt.Sprintf("[%d,%d]", fixture.tenantRole.ID, fixture.tenantRole.ID),
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: fmt.Sprintf("[%q,%q]", fixture.tenantRole.Code, fixture.tenantRole.Code), CreatedAt: now,
+		},
+		{
+			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: validAfterIDs,
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: "[]", CreatedAt: now,
+		},
+		{
+			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
+			BeforeRoleIDsJSON: validAfterIDs, AfterRoleIDsJSON: validAfterIDs,
+			BeforeRoleCodesJSON: validAfterCodes, AfterRoleCodesJSON: validAfterCodes, CreatedAt: now,
+		},
+		{
+			TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID,
+			BeforeRoleIDsJSON: "[]", AfterRoleIDsJSON: validAfterIDs,
+			BeforeRoleCodesJSON: "[]", AfterRoleCodesJSON: "[\" role_with_spaces \" ]", CreatedAt: now,
+		},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("create role change payload fixtures: %v", err)
+	}
+
+	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 2})
+	if err != nil {
+		t.Fatalf("audit role change payloads: %v", err)
+	}
+	violation := tenantIntegrityFindViolation(report, "USER_ROLE_CHANGE_LOG_PAYLOAD_INVALID", "UserRoleChangeLog.role_snapshots")
+	if violation == nil || violation.Count != 6 || len(violation.SampleIDs) != 2 ||
+		violation.SampleIDs[0] != rows[1].ID || violation.SampleIDs[1] != rows[2].ID {
+		t.Fatalf("role change payload violation = %#v", violation)
 	}
 }
 

@@ -2211,3 +2211,14 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 定向 race、完整 service、全仓 Go、go vet 和 diff 检查通过。无 model、AutoMigrate、DML migration、DTO、enum、API、权限、WebSocket、前端或 AI/计费变化。
 - 共同基线复核显示 AI 分支不修改 `user_role_service.go`，新增契约测试也无同文件冲突；无需 migration 顺序或 rebase。合并 AI 分支后该测试会自动检查其新增 service 是否出现未审计角色写入。
 - 可独立回滚 service 收口、测试和本节文档，不涉及数据回滚；回滚会重新暴露可绕过日志的通用写方法，因此不应把它作为兼容接口恢复。
+
+## 74. 当前实施检查点：角色变更快照语义审计（2026-07-15）
+
+UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批纳入普通完整性审计，但 JSON 快照若被手工写坏，表和父子关系仍可能全部通过。本批扩展现有只读审计，不新增修复脚本或日志编辑入口。
+
+- Repository 按 ID 顺序只读取四个快照 JSON 列。before/after role IDs 必须是非 null 的 JSON 数组，可为空集合，但元素必须为正数、严格升序且不重复；role codes 同样必须是非 null JSON 数组，元素非空、无首尾空格、严格升序且不重复。
+- 每一侧 IDs 与 codes 数量必须一致，before/after ID 集合不得完全相同。违规统一报告 `USER_ROLE_CHANGE_LOG_PAYLOAD_INVALID`，entity 为 `UserRoleChangeLog.role_snapshots`，总数按日志行计，样本遵循全局 sampleLimit。
+- 不要求历史 ID 继续引用当前 Role，也不要求历史 code 等于 Role 当前 code：角色模板后续可能删除或改名，快照职责正是保留变更发生时证据。当前租户/账号/操作人关系继续由原 127 条普通关系检查。
+- 测试包含合法平台/租户初始角色记录，以及非法 JSON、逆序、重复、ID/code 数量不一致、无实际变化和带空格 code 六类损坏记录；总数和前两个样本 ID 精确验证。审计仍只读，不自动排序、去重或覆盖证据。
+- 定向 race、完整 service、全仓 Go、go vet 和 diff 检查通过。模型/表/关系基线继续为 52/52、65、127；无 model、AutoMigrate、migration、DTO、API、权限、WebSocket、页面或 AI/计费变化。
+- AI 分支不修改本批 repository/service/test，当前无同文件冲突或 migration 顺序要求。可独立回滚本批读取、规则、测试和文档；回滚只会失去损坏快照发现能力，不应删除已存在日志。
