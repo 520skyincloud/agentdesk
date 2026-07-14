@@ -663,3 +663,11 @@ go test ./internal/handlers/dashboard ./cmd/testdata ./cmd/testdata/quickreply -
 - migration 40 高于并行分支当前最高版本 33；提交前仍需再次 fetch 并核对版本和同文件变化。
 - 本步骤不修改 AI runtime、模型调用、FastGPT、token 统计、计费、消息状态或 WebSocket payload。建议先合并租户认证与组织契约，再合并本批快捷回复字段和迁移。
 - 回滚运行时代码时保留已添加列和历史回填结果；不得删除 migration 40 记录或使用破坏性 DDL。旧版本运行时会忽略该字段，但重新开放多租户前必须恢复租户过滤。
+
+## 19. 门店人工回复测试基线修复（2026-07-14）
+
+- 三个门店人工回复测试仍使用 `TeamID=0`、空角色的历史夹具，与当前“客服必须属于综合客服组，客服组纳管门店员工号”的真实权限模型冲突。
+- 测试现在创建纳管来源门店 `88` 和企微员工号实例 `77` 的综合客服组，将客服档案加入该组，并给操作者 `cs_user` 角色；不修改生产 service，不放宽会话可见或消息发送权限。
+- 三个原失败用例、整组人工派单/超时测试和对应 `go test -race` 均通过；`go test ./... -run '^$' -count=1` 通过。完整 services 包仅剩既有异步 AI 回复 goroutine 在测试清库后访问全局 DB 的失败，本步骤不修改 AI runtime。
+- 影响文件仅为 `internal/services/conversation_human_dispatch_service_test.go` 和本文档；不涉及 model/migration、DTO/enum、API、WebSocket 或 AI 回复链路。
+- 回滚边界仅为测试夹具。并行 `codex/ai-billing@f2d2da4` 同样扩展了该测试文件，新增 AI 恢复、门店通知和相关模型夹具；两侧改动语义互补但存在同文件冲突，合并时必须保留 AI 分支新增用例，并将本步骤的 `createHumanDispatchStoreAgent` 组织夹具应用到对应三个回复用例，不能整文件选边。

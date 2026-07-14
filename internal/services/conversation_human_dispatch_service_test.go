@@ -442,12 +442,11 @@ func TestStoreManualAgentReplyStartsIdleTimeout(t *testing.T) {
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
 	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
-	createHumanDispatchAgentProfile(t, db, 101, 0, enums.ServiceStatusIdle, 3, false, enums.StatusOk)
+	operator := createHumanDispatchStoreAgent(t, db, 101)
 
 	if _, err := services.ConversationHumanDispatchService.HandoffByAI(conversation.ID, aiAgent, "客人需要人工接待"); err != nil {
 		t.Fatalf("HandoffByAI() error = %v", err)
 	}
-	operator := &dto.AuthPrincipal{UserID: 101, Username: "store-staff", Nickname: "门店同事"}
 	if _, err := services.MessageService.SendAgentMessageWithRequestID(conversation.ID, 0, "store-manual-reply-timeout", enums.IMMessageTypeText, "我来处理。", "", operator, "req-store-reply"); err != nil {
 		t.Fatalf("SendAgentMessageWithRequestID() error = %v", err)
 	}
@@ -465,12 +464,11 @@ func TestManualSessionTimeoutRestoresStoreManualAfterAgentReplyWithCustomerNotic
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
 	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
-	createHumanDispatchAgentProfile(t, db, 101, 0, enums.ServiceStatusIdle, 3, false, enums.StatusOk)
+	operator := createHumanDispatchStoreAgent(t, db, 101)
 
 	if _, err := services.ConversationHumanDispatchService.HandoffByAI(conversation.ID, aiAgent, "客人需要人工接待"); err != nil {
 		t.Fatalf("HandoffByAI() error = %v", err)
 	}
-	operator := &dto.AuthPrincipal{UserID: 101, Username: "store-staff", Nickname: "门店同事"}
 	if _, err := services.MessageService.SendAgentMessageWithRequestID(conversation.ID, 0, "store-manual-reply-timeout-notice", enums.IMMessageTypeText, "我来处理。", "", operator, "req-store-reply-notice"); err != nil {
 		t.Fatalf("SendAgentMessageWithRequestID() error = %v", err)
 	}
@@ -493,7 +491,7 @@ func TestConversationHumanDispatchStoreManualAllowsWebReplyWithoutClaim(t *testi
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
 	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
-	createHumanDispatchAgentProfile(t, db, 101, 0, enums.ServiceStatusIdle, 3, false, enums.StatusOk)
+	operator := createHumanDispatchStoreAgent(t, db, 101)
 
 	result, err := services.ConversationHumanDispatchService.HandoffByAI(conversation.ID, aiAgent, "客人需要人工接待")
 	if err != nil {
@@ -503,7 +501,6 @@ func TestConversationHumanDispatchStoreManualAllowsWebReplyWithoutClaim(t *testi
 		t.Fatalf("expected store_wecom decision, got %+v", result)
 	}
 
-	operator := &dto.AuthPrincipal{UserID: 101, Username: "store-staff", Nickname: "门店同事"}
 	if err := services.ConversationService.EnsureAgentCanReply(conversation.ID, "门店群跟进后网页端回复", operator); err != nil {
 		t.Fatalf("EnsureAgentCanReply() error = %v", err)
 	}
@@ -770,6 +767,24 @@ func createHumanDispatchAgentProfile(t *testing.T, db *gorm.DB, userID, teamID i
 		Status:             status,
 	}).Error; err != nil {
 		t.Fatalf("create profile error = %v", err)
+	}
+}
+
+func createHumanDispatchStoreAgent(t *testing.T, db *gorm.DB, userID int64) *dto.AuthPrincipal {
+	t.Helper()
+	createHumanDispatchTeam(t, db, 1, "门店人工接待组")
+	if err := db.Model(&models.AgentTeam{}).Where("id = ?", 1).Updates(map[string]any{
+		"store_scope_ids":            "88",
+		"wx_work_instance_scope_ids": "77",
+	}).Error; err != nil {
+		t.Fatalf("bind store runtime to agent team error = %v", err)
+	}
+	createHumanDispatchAgentProfile(t, db, userID, 1, enums.ServiceStatusIdle, 3, false, enums.StatusOk)
+	return &dto.AuthPrincipal{
+		UserID:   userID,
+		Username: "store-agent",
+		Nickname: "门店客服",
+		Roles:    []string{constants.RoleCodeCsUser},
 	}
 }
 
