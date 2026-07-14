@@ -2079,3 +2079,16 @@ KnowledgeCandidate 的 Conversation、Store 和 KnowledgeBase 已在 Upsert 时�
 - 实际 `/tmp/agentdesk-tenant-stats.db` 只读审计仍通过：51/51 模型策略、64/64 表、125/125 普通关系、0 违规。执行前后文件修改时间 `1784055363`、大小 `4878336` 字节均未变化。
 - 聚焦 race、全仓 Go、vet 和 diff 检查通过。只修改审计 repository/service/test 与两份文档；无 model、migration、DTO、API、权限、WebSocket、页面或 AI/计费变化。查询只使用 SQLite/MySQL 共同支持的 JOIN、IN、排序和基础比较。
 - AI 分支当前无同文件修改，不需要 rebase 或 migration 排序。可独立回滚本批代码、测试和文档，无数据库回滚；回滚只会失去历史动态引用检测，不能以删除违规业务数据代替本检查。
+
+## 65. 当前实施检查点：公司主管角色分配边界复核（2026-07-15）
+
+本批按已确认方案复核账号创建、账号角色调整、邀请注册审核和全局角色管理四条真实入口。结论是现有实现已形成完整边界，无需新增平行权限、租户角色副本或隐藏授权逻辑。
+
+- Role 继续作为平台预设模板全局存在，不按租户复制。租户账号可在具备 `role.view` 时读取角色模板，但响应中的 `assignable` 由操作者最高角色等级、角色状态和 scope 共同计算；公司主管只能选择低于自身的 tenant 角色。
+- `UserService.CreateUser` 和 `UserService.AssignRoles` 最终都复用 `replaceUserRolesDB`。目标账号先受当前租户 scope 与账号等级约束，待分配角色再受禁用状态、同级/更高等级和 platform/tenant scope 约束；事务失败会回滚账号或保留原角色。
+- 邀请注册审核先按 `ActiveTenantID` 读取待审核账号，并要求 `tenant.registration.review` 与 `user.assignRole`；审核角色仍复用同一 service 校验。公司主管不能审核其他公司账号，也不能借审核分配 `tenant_admin` 或平台角色。
+- 角色创建、更新、删除、状态、排序和角色权限调整均通过 `requireRolePlatformPermission`，同时要求对应权限码与 `IsPlatformAccount=true`。即使租户账号因错误数据持有平台角色写权限，也无法修改全局 Role。账号管理只提交 `roleIds`，没有用户级 `permissionIds` 或直接权限分配入口。
+- 前端创建账号和注册审核只展示 `assignable && enabled` 的角色；角色调整抽屉可以展示目标账号已有但当前不可分配的角色以解释现状，但禁用选择并标记“不可分配”。角色管理写操作同时按平台账号和明确动作权限显隐。
+- 聚焦 race 测试覆盖公司主管给本租户客服分配低级角色、拒绝同级公司主管和平台角色、拒绝跨租户账号、租户账号误持平台权限仍不能写全局角色、平台管理员不能管理同级/更高账号；前端权限契约测试确认账号页不直接分配权限。全部通过。
+- 本批只更新两份文档，无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、前端运行代码、AI 回复、模型调用、token、usage 或计费变化。`origin/codex/ai-billing@f2d2da4` 无同文件运行代码冲突，不要求 rebase、migration 排序或特殊合并顺序。
+- 可独立回滚本节文档，不影响运行时；不得把本结论误读为允许公司主管修改角色模板。未来新增角色仍必须由平台管理员在角色管理中建立并经权限管理分配权限，公司主管只把可分配角色赋给本公司低级账号。

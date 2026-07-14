@@ -3336,3 +3336,33 @@ git diff --check
 
 - `origin/codex/ai-billing@f2d2da4` 相对共同基线不修改本批审计文件，当前无同文件冲突，不要求 rebase 或 migration 排序。AI 模型最终合并新增 TenantID 实体后仍需先跑策略覆盖测试，再运行包括本批动态规则的真实库审计。
 - 可独立回滚 repository/service/test 和文档，无数据库回滚；回滚会失去历史动态引用检测。审计返回违规时必须另开幂等 DML 修复批次，禁止把本命令改为自动修复或删除器。
+
+## 第 65 批：公司主管角色分配边界复核（2026-07-15）
+
+### 审计结论
+
+- 复核直接派角色、创建账号附带角色、邀请注册审核附带角色、全局角色写操作四条在线链路，现有实现符合已确认方案，因此本批不修改运行代码。
+- `CreateUser/AssignRoles/Review` 最终复用 `replaceUserRolesDB` 的角色状态、角色等级和 platform/tenant scope 校验；目标账号另受当前租户 scope 和账号等级约束。公司主管可以给本租户低级账号分配 `cs_team_leader/cs_user/store_staff` 等低级租户角色，不能分配 `tenant_admin`、平台角色或管理其他租户账号。
+- 全局 Role 是平台模板。创建、更新、删除、状态、排序和角色权限调整除明确权限码外还要求平台账号；租户账号即使因脏数据意外持有平台写权限也会被 handler 拒绝。平台管理员同样不能管理同级或更高角色账号。
+- 账号管理前端只提交角色，不存在直接用户权限分配；创建和注册审核只显示可分配启用角色，调整抽屉将不可分配角色禁用并标识，避免把目标账号已有高等级角色静默隐藏或误导为可编辑。
+
+### 文件与验证
+
+```text
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestRoleAuthorityAssignmentMatrix|TestUserServiceAssignRolesEnforcesAuthority|TestTenantAdminCreatesAccountWithLowerRoleOnly|TestUserTenantScopeAndCrossTenantManagement|TestTenantRegistrationReviewRejectsPeerRoleAndCrossTenantTarget)$' -count=1 -p 1
+go test -race ./internal/handlers/dashboard -run '^(TestRoleWritesRejectTenantAccountEvenWithPlatformPermission|TestUserCreateWithRolesRequiresAssignRolePermission)$' -count=1 -p 1
+node --test web/app/dashboard/users/action-permissions.test.mjs web/app/dashboard/roles/platform-permissions.test.mjs
+git diff --check
+```
+
+- 三组聚焦测试均通过。本批无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、运行前端、模型调用、token、usage 或计费变化。
+
+### 并行分支与回滚
+
+- `origin/codex/ai-billing@f2d2da4` 不修改本批两份文档对应的角色运行代码，当前无同文件运行冲突，不要求 rebase 或 migration 排序。最终合并必须保留现有 role/user/registration 权限测试，不能把租户角色误改为租户内可编辑实体。
+- 可独立回滚两份文档中的本批段落，无代码或数据库回滚。后续新增角色/权限时仍须先在权限管理形成显式权限点，由平台管理员配置角色权限；公司主管只负责给本公司账号赋角色。
