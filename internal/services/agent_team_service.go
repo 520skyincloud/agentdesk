@@ -80,26 +80,6 @@ func (s *agentTeamService) FindByIdsInTenant(ids []int64, tenantID int64) []mode
 	return repositories.AgentTeamRepository.FindByIdsInTenant(sqls.DB(), ids, tenantID)
 }
 
-func (s *agentTeamService) Create(t *models.AgentTeam) error {
-	return repositories.AgentTeamRepository.Create(sqls.DB(), t)
-}
-
-func (s *agentTeamService) Update(t *models.AgentTeam) error {
-	return repositories.AgentTeamRepository.Update(sqls.DB(), t)
-}
-
-func (s *agentTeamService) Updates(id int64, columns map[string]interface{}) error {
-	return repositories.AgentTeamRepository.Updates(sqls.DB(), id, columns)
-}
-
-func (s *agentTeamService) UpdateColumn(id int64, name string, value interface{}) error {
-	return repositories.AgentTeamRepository.UpdateColumn(sqls.DB(), id, name, value)
-}
-
-func (s *agentTeamService) Delete(id int64) {
-	repositories.AgentTeamRepository.Delete(sqls.DB(), id)
-}
-
 func (s *agentTeamService) CreateAgentTeam(req request.CreateAgentTeamRequest, operator *dto.AuthPrincipal) (*models.AgentTeam, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")

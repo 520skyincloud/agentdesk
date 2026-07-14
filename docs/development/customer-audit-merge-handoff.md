@@ -4043,3 +4043,34 @@ git diff --check
 - 与 `origin/codex/ai-billing@f2d2da4` 共同基线对照，本批十三个文件没有同文件修改；无需 rebase、migration 协调或 AI 负责人前置提交。
 - 合并顺序为 76A -> 76B -> 76C -> 77 -> 78 -> 79。最终集成后重跑租户基础写契约、注册/审核 race、TenantIntegrityAudit；AI 分支剩余 Tenant 化完成前公开注册继续关闭。
 - 可回滚本批十三个文件且无需数据库回滚，但会恢复租户根/邀请码/注册日志旁路和停用竞态，不建议回滚。
+
+## 第 80 批：综合客服组写入口收口（2026-07-15）
+
+### 所有权与兼容边界
+
+- AgentTeamService 删除无人调用的 Create/Update/Updates/UpdateColumn/Delete；综合客服组在线写继续复用原 CreateAgentTeam、UpdateAgentTeam、DeleteAgentTeam 和范围同步流程。
+- 新增源码契约固定 AgentTeam 主表写入所有者：公司创建可建立默认综合组，客服组领域 service 可创建、编辑、软删除和同步派单来源范围；其他 service 不得直接借 repository、通用 service、GORM 或原始 SQL 写主表。
+- 契约显式识别 UpdatesInTenant，并以完整表名边界区分 t_agent_team 与 t_agent_team_squad。现有 API、权限和页面路径不变。
+
+### 文件、验证与并行边界
+
+```text
+internal/services/agent_team_service.go
+internal/services/agent_team_write_contract_test.go
+docs/design/multi-tenant-company-registration.md
+docs/development/customer-audit-merge-handoff.md
+```
+
+```text
+go test -race ./internal/services -run '^(TestAgentTeamRuntimeWritesStayBehindDomainServices|TestIsAgentTeamMutationCall|TestAgentTeam)' -count=1 -p 1
+go test ./internal/services -count=1 -p 1
+go test ./... -count=1 -p 1
+go vet ./...
+git diff --check
+```
+
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限码、WebSocket、前端、AI 回复、模型调用、token、usage 或计费变化。
+- 聚焦 race、完整 services、同命令独立重跑的全仓 Go、go vet 和 diff 检查通过。全仓测试第一次运行时，services 包既有并行夹具切换全局 sqls.DB，出现临时库缺 t_conversation_read_state；此前完整 services 已通过，随后原全仓命令重跑通过，本批无调用回归。
+- `/tmp/agentdesk-tenant-stats.db` 起初因服务早于第 71A/76A 批启动，缺少 UserRoleChangeLog 和 RolePermissionChangeLog；运行 `go run ./cmd/migration -config /tmp/agentdesk-tenant-stats.yaml` 后，只读审计通过 52/52 模型策略、66/66 表、128/128 关系、0 违规。审计前后 mtime `1784067966`、大小 `4935680` 字节均不变。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批四个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 79 批之后合并，最终重跑本契约。
+- 可回滚四个文件且无需数据库回滚，但会恢复综合客服组无约束通用写入口，不建议回滚。

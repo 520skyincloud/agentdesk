@@ -2317,3 +2317,16 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 本批修改 Tenant repository、公司/邀请码/注册 service 与测试、邀请码 Handler，新增租户基础写契约并同步两份文档，共十三个文件；无 model、AutoMigrate、DML migration、DTO、enum、HTTP 路径、权限码、WebSocket、前端或 AI/计费变化。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批十三个文件无同文件修改，不要求 rebase 或 migration 排序。最终集成后应重跑租户基础写契约、注册/审核 race 和完整性审计；在 AI 分支阻断关闭前 `tenantRegistration.enabled` 仍必须为 false。
 - 可独立回滚本批代码、测试和文档且无需数据库回滚；回滚会恢复租户根/邀请码/安全日志通用写旁路及停用/注册竞态，不建议回滚。
+
+## 80. 当前实施检查点：综合客服组写入口收口（2026-07-15）
+
+综合客服组已经承担租户客服组织、门店员工号归属、小组与排班父级以及人工派单候选范围，但 AgentTeamService 仍保留无人调用的 Create/Update/Updates/UpdateColumn/Delete 通用写方法。它们不校验当前公司、操作者职责、组长角色、门店员工绑定或删除依赖，后续代码一旦误用就会绕过已经确认的客服组业务边界。
+
+- AgentTeamService 删除五个通用写方法，只保留查询和 CreateAgentTeam、UpdateAgentTeam、DeleteAgentTeam、BindStoreStaffUser 等领域动作。现有 Handler 和内部运行链路没有调用这些通用方法，接口与页面行为不变。
+- 新增 AgentTeam 源码写契约，运行时只允许 TenantService.CreateTenant 创建公司默认综合组，以及 AgentTeamService 的 CreateAgentTeam、UpdateAgentTeam、DeleteAgentTeam、syncTeamScopeFromAssignments 写主表。
+- 契约识别 AgentTeamRepository/AgentTeamService 通用写、UpdatesInTenant、自带 models.AgentTeam 的 GORM 写和 t_agent_team 原始 SQL；不会把 AgentTeamSquad 表或模型误判成综合客服组主表。
+- 聚焦 race、完整 services、全仓 Go 重跑、go vet 和 diff 检查通过。全仓测试首次运行因仓库既有并行测试切换全局 sqls.DB，临时库缺少 t_conversation_read_state；同命令独立重跑完整通过，未发现本批编译或行为回归。
+- 仿真库首次只读审计发现 UserRoleChangeLog、RolePermissionChangeLog 两张近期 AutoMigrate 表尚未落到早先启动的数据库；通过标准 migration 命令补表后，审计通过 52/52 模型策略、66/66 表、128/128 关系且 0 违规。复审前后数据库 mtime/size 不变，确认审计仍为只读。
+- 本批只修改 AgentTeam service、新增契约测试并同步两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、权限码、WebSocket、前端或 AI/计费变化。
+- 与 `origin/codex/ai-billing@f2d2da4` 对照，本批文件无同文件修改，不要求 rebase 或 migration 排序。最终集成后该契约会继续扫描 AI 分支新增 service，阻止其绕过综合客服组领域入口。
+- 可独立回滚本批代码、测试和文档且无需数据库回滚；回滚会重新暴露无租户和无权限约束的综合客服组通用写方法，不建议回滚。
