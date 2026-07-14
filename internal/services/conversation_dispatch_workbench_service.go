@@ -3,13 +3,11 @@ package services
 import (
 	"context"
 	"errors"
-	"slices"
 	"strings"
 	"time"
 
 	"agent-desk/internal/events"
 	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
@@ -151,7 +149,7 @@ func (s *conversationDispatchWorkbenchService) ListAgentLoads(teamID int64, oper
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
 	profiles := s.listVisibleAgentProfiles(teamID, operator)
-	loads, err := s.buildAgentLoads(profiles)
+	loads, err := s.buildAgentLoads(profiles, operator)
 	if err != nil {
 		return nil, err
 	}
@@ -620,41 +618,8 @@ func (s *conversationDispatchWorkbenchService) findTeamIDByRoute(route *models.C
 	return 0
 }
 
-func (s *conversationDispatchWorkbenchService) listManageableTeamIDs(operator *dto.AuthPrincipal) []int64 {
-	if operator == nil {
-		return nil
-	}
-	if s.isAdmin(operator) {
-		teams := AgentTeamService.Find(sqls.NewCnd().Eq("status", enums.StatusOk))
-		ret := make([]int64, 0, len(teams))
-		for _, team := range teams {
-			ret = append(ret, team.ID)
-		}
-		return ret
-	}
-	if !slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) {
-		return nil
-	}
-	teams := AgentTeamService.Find(sqls.NewCnd().Eq("leader_user_id", operator.UserID).Eq("status", enums.StatusOk))
-	ret := make([]int64, 0, len(teams))
-	for _, team := range teams {
-		ret = append(ret, team.ID)
-	}
-	return ret
-}
-
 func (s *conversationDispatchWorkbenchService) canManageTeam(operator *dto.AuthPrincipal, teamID int64) bool {
-	if operator == nil || teamID <= 0 {
-		return false
-	}
-	if s.isAdmin(operator) {
-		return true
-	}
-	return containsInt64(s.listManageableTeamIDs(operator), teamID)
-}
-
-func (s *conversationDispatchWorkbenchService) isAdmin(operator *dto.AuthPrincipal) bool {
-	return operator != nil && (slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) || slices.Contains(operator.Roles, constants.RoleCodeAdmin))
+	return AgentTeamScopeService.CanManageTeam(operator, teamID)
 }
 
 func (s *conversationDispatchWorkbenchService) listVisibleAgentProfiles(teamID int64, operator *dto.AuthPrincipal) []models.AgentProfile {
@@ -662,10 +627,10 @@ func (s *conversationDispatchWorkbenchService) listVisibleAgentProfiles(teamID i
 	if teamID > 0 {
 		cnd.Eq("team_id", teamID)
 	}
-	return AgentProfileService.Find(cnd.Asc("team_id").Desc("priority_level").Asc("id"))
+	return AgentProfileService.FindInTenant(cnd.Asc("team_id").Desc("priority_level").Asc("id"), operator)
 }
 
-func (s *conversationDispatchWorkbenchService) buildAgentLoads(profiles []models.AgentProfile) ([]dispatchWorkbenchAgentLoad, error) {
+func (s *conversationDispatchWorkbenchService) buildAgentLoads(profiles []models.AgentProfile, operator *dto.AuthPrincipal) ([]dispatchWorkbenchAgentLoad, error) {
 	userIDs := make([]int64, 0, len(profiles))
 	for _, profile := range profiles {
 		if profile.UserID > 0 {
@@ -680,10 +645,12 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoads(profiles []models
 	for _, profile := range profiles {
 		load := dispatchWorkbenchAgentLoad{
 			profile:     profile,
-			teamName:    s.teamName(profile.TeamID),
 			activeCount: activeCounts[profile.UserID],
 		}
-		if user := UserService.Get(profile.UserID); user != nil {
+		if team := AgentTeamService.GetInTenant(profile.TeamID, operator); team != nil {
+			load.teamName = utils.RepairMojibakeText(team.Name)
+		}
+		if user := UserService.GetInTenant(profile.UserID, AgentTeamScopeService.ActiveTenantID(operator)); user != nil {
 			load.username = user.Username
 			load.nickname = user.Nickname
 		}

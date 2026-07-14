@@ -24,6 +24,10 @@ func AgentTeamAnyList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	cnd := params.NewSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "leaderUserId"},
@@ -32,7 +36,7 @@ func AgentTeamAnyList(ctx *gin.Context) {
 	if _, ok := params.Get(ctx, "status"); !ok {
 		cnd.Where("status <> ?", enums.StatusDeleted)
 	}
-	list := services.AgentTeamService.Find(cnd)
+	list := services.AgentTeamService.FindInTenant(cnd, operator)
 	pendingReplyCounts := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()
 	results := make([]response.AgentTeamResponse, 0, len(list))
 	for _, item := range list {
@@ -47,7 +51,11 @@ func AgentTeamGetList_all(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	list := services.AgentTeamService.Find(sqls.NewCnd().Eq("status", enums.StatusOk))
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	list := services.AgentTeamService.FindInTenant(sqls.NewCnd().Eq("status", enums.StatusOk), operator)
 	pendingReplyCounts := services.ConversationDispatchWorkbenchService.PendingReplyCountsByTeam()
 	results := make([]response.AgentTeamResponse, 0, len(list))
 	for _, item := range list {
@@ -66,7 +74,11 @@ func AgentTeamGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	item := services.AgentTeamService.Get(id)
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item := services.AgentTeamService.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("客服组不存在"))
 		return
@@ -78,6 +90,10 @@ func AgentTeamGetBy(ctx *gin.Context) {
 func AgentTeamPostCreate(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamCreate)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -101,6 +117,10 @@ func AgentTeamPostUpdate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	req := request.UpdateAgentTeamRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -116,6 +136,10 @@ func AgentTeamPostUpdate(ctx *gin.Context) {
 func AgentTeamPostDelete(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAgentTeamDelete)
 	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -136,7 +160,7 @@ func buildAgentTeamResponse(item *models.AgentTeam, operator *dto.AuthPrincipal,
 		ID:                     item.ID,
 		Name:                   item.Name,
 		LeaderUserID:           item.LeaderUserID,
-		StoreStaffUserIDs:      services.AgentTeamService.FindStoreStaffUserIDs(item.ID),
+		StoreStaffUserIDs:      services.AgentTeamService.FindStoreStaffUserIDsInTenant(item.ID, operator.ActiveTenantID),
 		CompanyScopeIDs:        utils.SplitInt64s(item.CompanyScopeIDs),
 		StoreScopeIDs:          utils.SplitInt64s(item.StoreScopeIDs),
 		WxWorkInstanceScopeIDs: utils.SplitInt64s(item.WxWorkInstanceScopeIDs),
@@ -145,9 +169,9 @@ func buildAgentTeamResponse(item *models.AgentTeam, operator *dto.AuthPrincipal,
 		Remark:                 item.Remark,
 		Manageable:             services.AgentTeamScopeService.CanManageTeam(operator, item.ID),
 		PendingReplyCount:      pendingReplyCount,
-		SquadCount:             services.AgentTeamSquadService.CountByTeamID(item.ID),
+		SquadCount:             services.AgentTeamSquadService.CountByTeamIDInTenant(item.ID, operator.ActiveTenantID),
 	}
-	if user := services.UserService.Get(item.LeaderUserID); user != nil {
+	if user := services.UserService.GetInScope(item.LeaderUserID, operator); user != nil {
 		ret.LeaderUsername = user.Username
 		ret.LeaderNickname = user.Nickname
 	}

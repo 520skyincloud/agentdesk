@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
@@ -30,4 +31,14 @@ func (r *agentTeamSquadMemberRepository) Create(db *gorm.DB, item *models.AgentT
 
 func (r *agentTeamSquadMemberRepository) Updates(db *gorm.DB, id int64, columns map[string]any) error {
 	return db.Model(&models.AgentTeamSquadMember{}).Where("id = ?", id).Updates(columns).Error
+}
+
+func (r *agentTeamSquadMemberRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.AgentTeamSquadMember{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
+func (r *agentTeamSquadMemberRepository) UpdatesActiveBySquadInTenant(db *gorm.DB, squadID, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.AgentTeamSquadMember{}).
+		Where("squad_id = ? AND tenant_id = ? AND status <> ?", squadID, tenantID, enums.StatusDeleted).
+		Updates(columns).Error
 }

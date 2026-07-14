@@ -33,6 +33,10 @@ func (s *userService) Get(id int64) *models.User {
 	return repositories.UserRepository.Get(sqls.DB(), id)
 }
 
+func (s *userService) GetInTenant(id, tenantID int64) *models.User {
+	return repositories.UserRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *userService) GetInScope(id int64, operator *dto.AuthPrincipal) *models.User {
 	if id <= 0 {
 		return nil
@@ -67,6 +71,10 @@ func (s *userService) Count(cnd *sqls.Cnd) int64 {
 
 func (s *userService) FindByIds(ids []int64) []models.User {
 	return repositories.UserRepository.FindByIds(sqls.DB(), ids)
+}
+
+func (s *userService) FindByIdsInTenant(ids []int64, tenantID int64) []models.User {
+	return repositories.UserRepository.FindByIdsInTenant(sqls.DB(), ids, tenantID)
 }
 
 func (s *userService) Create(t *models.User) error {

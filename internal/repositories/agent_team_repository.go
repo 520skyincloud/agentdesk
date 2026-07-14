@@ -26,6 +26,13 @@ func (r *agentTeamRepository) Get(db *gorm.DB, id int64) *models.AgentTeam {
 	return ret
 }
 
+func (r *agentTeamRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.AgentTeam {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *agentTeamRepository) Take(db *gorm.DB, where ...interface{}) *models.AgentTeam {
 	ret := &models.AgentTeam{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -92,6 +99,10 @@ func (r *agentTeamRepository) Updates(db *gorm.DB, id int64, columns map[string]
 	return
 }
 
+func (r *agentTeamRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.AgentTeam{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *agentTeamRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.AgentTeam{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return
@@ -107,5 +118,14 @@ func (r *agentTeamRepository) FindByIds(db *gorm.DB, ids []int64) []models.Agent
 	}
 	var list []models.AgentTeam
 	db.Where("id IN ?", ids).Find(&list)
+	return list
+}
+
+func (r *agentTeamRepository) FindByIdsInTenant(db *gorm.DB, ids []int64, tenantID int64) []models.AgentTeam {
+	if len(ids) == 0 || tenantID <= 0 {
+		return []models.AgentTeam{}
+	}
+	var list []models.AgentTeam
+	db.Where("id IN ? AND tenant_id = ?", ids, tenantID).Find(&list)
 	return list
 }

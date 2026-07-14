@@ -102,18 +102,18 @@ func TestConversationAssignmentStoresSquadSnapshot(t *testing.T) {
 func TestConversationDispatchManualAssignmentStaysInOwningTeam(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)
-	if err := db.Create(&models.AgentTeam{ID: 2, Name: "其他综合客服组", Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.AgentTeam{ID: 2, TenantID: 101, Name: "其他综合客服组", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create other team error = %v", err)
 	}
-	if err := db.Create(&models.User{ID: 103, Username: "agent-c", Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.User{ID: 103, TenantID: 101, Username: "agent-c", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create other team user error = %v", err)
 	}
-	if err := db.Create(&models.AgentProfile{ID: 3, UserID: 103, TeamID: 2, AgentCode: "agent-c", DisplayName: "客服 C", Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.AgentProfile{ID: 3, TenantID: 101, UserID: 103, TeamID: 2, AgentCode: "agent-c", DisplayName: "客服 C", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create other team profile error = %v", err)
 	}
 
 	conversation := &models.Conversation{CurrentTeamID: 1, Status: enums.IMConversationStatusPending}
-	operator := &dto.AuthPrincipal{UserID: 9, Username: "admin", Roles: []string{constants.RoleCodeAdmin}}
+	operator := &dto.AuthPrincipal{UserID: 9, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
 	if _, err := ConversationDispatchWorkbenchService.requireManageableTargetProfile(103, conversation, operator); err == nil || !strings.Contains(err.Error(), "不属于当前会话综合客服组") {
 		t.Fatalf("expected cross-team manual assignment rejection, got %v", err)
 	}
@@ -155,19 +155,19 @@ func setupConversationDispatchSquadTestDB(t *testing.T) *gorm.DB {
 
 func createDispatchSquadTeamAndAgents(t *testing.T, db *gorm.DB) {
 	t.Helper()
-	if err := db.Create(&models.AgentTeam{ID: 1, Name: "综合客服组", Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.AgentTeam{ID: 1, TenantID: 101, Name: "综合客服组", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create team error = %v", err)
 	}
 	users := []models.User{
-		{ID: 101, Username: "agent-a", Status: enums.StatusOk},
-		{ID: 102, Username: "agent-b", Status: enums.StatusOk},
+		{ID: 101, TenantID: 101, Username: "agent-a", Status: enums.StatusOk},
+		{ID: 102, TenantID: 101, Username: "agent-b", Status: enums.StatusOk},
 	}
 	if err := db.Create(&users).Error; err != nil {
 		t.Fatalf("create users error = %v", err)
 	}
 	profiles := []models.AgentProfile{
-		{ID: 1, UserID: 101, TeamID: 1, AgentCode: "agent-a", DisplayName: "客服 A", Status: enums.StatusOk, ServiceStatus: enums.ServiceStatusIdle, AutoAssignEnabled: true, MaxConcurrentCount: 10},
-		{ID: 2, UserID: 102, TeamID: 1, AgentCode: "agent-b", DisplayName: "客服 B", Status: enums.StatusOk, ServiceStatus: enums.ServiceStatusIdle, AutoAssignEnabled: true, MaxConcurrentCount: 10},
+		{ID: 1, TenantID: 101, UserID: 101, TeamID: 1, AgentCode: "agent-a", DisplayName: "客服 A", Status: enums.StatusOk, ServiceStatus: enums.ServiceStatusIdle, AutoAssignEnabled: true, MaxConcurrentCount: 10},
+		{ID: 2, TenantID: 101, UserID: 102, TeamID: 1, AgentCode: "agent-b", DisplayName: "客服 B", Status: enums.StatusOk, ServiceStatus: enums.ServiceStatusIdle, AutoAssignEnabled: true, MaxConcurrentCount: 10},
 	}
 	if err := db.Create(&profiles).Error; err != nil {
 		t.Fatalf("create profiles error = %v", err)
@@ -176,12 +176,12 @@ func createDispatchSquadTeamAndAgents(t *testing.T, db *gorm.DB) {
 
 func createDispatchSquad(t *testing.T, db *gorm.DB, memberProfileIDs []int64) int64 {
 	t.Helper()
-	squad := models.AgentTeamSquad{TeamID: 1, Name: "白班小组", Status: enums.StatusOk}
+	squad := models.AgentTeamSquad{TenantID: 101, TeamID: 1, Name: "白班小组", Status: enums.StatusOk}
 	if err := db.Create(&squad).Error; err != nil {
 		t.Fatalf("create squad error = %v", err)
 	}
 	for _, profileID := range memberProfileIDs {
-		member := models.AgentTeamSquadMember{SquadID: squad.ID, AgentProfileID: profileID, Status: enums.StatusOk}
+		member := models.AgentTeamSquadMember{TenantID: 101, SquadID: squad.ID, AgentProfileID: profileID, Status: enums.StatusOk}
 		if err := db.Create(&member).Error; err != nil {
 			t.Fatalf("create squad member error = %v", err)
 		}
@@ -193,11 +193,12 @@ func createDispatchSquadSchedule(t *testing.T, db *gorm.DB, squadID int64) {
 	t.Helper()
 	now := time.Now()
 	schedule := models.AgentTeamSchedule{
-		TeamID:  1,
-		SquadID: squadID,
-		StartAt: now.Add(-time.Hour),
-		EndAt:   now.Add(time.Hour),
-		Status:  enums.StatusOk,
+		TenantID: 101,
+		TeamID:   1,
+		SquadID:  squadID,
+		StartAt:  now.Add(-time.Hour),
+		EndAt:    now.Add(time.Hour),
+		Status:   enums.StatusOk,
 	}
 	if err := db.Create(&schedule).Error; err != nil {
 		t.Fatalf("create schedule error = %v", err)

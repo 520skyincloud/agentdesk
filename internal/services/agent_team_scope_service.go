@@ -68,22 +68,43 @@ func (s *agentTeamScopeService) IsAdmin(operator *dto.AuthPrincipal) bool {
 		slices.Contains(operator.Roles, constants.RoleCodeTenantAdmin))
 }
 
+func (s *agentTeamScopeService) ActiveTenantID(operator *dto.AuthPrincipal) int64 {
+	if operator == nil || operator.ActiveTenantID <= 0 {
+		return 0
+	}
+	return operator.ActiveTenantID
+}
+
+func (s *agentTeamScopeService) ApplyTenantFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {
+	if cnd == nil {
+		cnd = sqls.NewCnd()
+	}
+	tenantID := s.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return cnd.Where("1 = 0")
+	}
+	return cnd.Eq("tenant_id", tenantID)
+}
+
 func (s *agentTeamScopeService) CanManageTeam(operator *dto.AuthPrincipal, teamID int64) bool {
 	if operator == nil || teamID <= 0 {
 		return false
 	}
-	team := repositories.AgentTeamRepository.Get(sqls.DB(), teamID)
+	tenantID := s.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return false
+	}
+	team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, tenantID)
 	if slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) || slices.Contains(operator.Roles, constants.RoleCodeAdmin) {
-		return team != nil && (team.TenantID == 0 || (operator.ActiveTenantID > 0 && team.TenantID == operator.ActiveTenantID))
+		return team != nil
 	}
 	if slices.Contains(operator.Roles, constants.RoleCodeTenantAdmin) {
-		return team != nil && operator.ActiveTenantID > 0 && team.TenantID == operator.ActiveTenantID
+		return team != nil
 	}
 	if !slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) {
 		return false
 	}
-	return team != nil && team.Status != enums.StatusDeleted && team.LeaderUserID == operator.UserID &&
-		(team.TenantID == 0 || (operator.ActiveTenantID > 0 && team.TenantID == operator.ActiveTenantID))
+	return team != nil && team.Status != enums.StatusDeleted && team.LeaderUserID == operator.UserID
 }
 
 func (s *agentTeamScopeService) ApplyKnowledgeBaseFilter(cnd *sqls.Cnd, operator *dto.AuthPrincipal) *sqls.Cnd {

@@ -34,6 +34,10 @@ func (s *agentTeamSquadService) Get(id int64) *models.AgentTeamSquad {
 	return repositories.AgentTeamSquadRepository.Get(sqls.DB(), id)
 }
 
+func (s *agentTeamSquadService) GetInTenant(id int64, operator *dto.AuthPrincipal) *models.AgentTeamSquad {
+	return repositories.AgentTeamSquadRepository.GetInTenant(sqls.DB(), id, AgentTeamScopeService.ActiveTenantID(operator))
+}
+
 func (s *agentTeamSquadService) FindByTeamIDs(teamIDs []int64) []models.AgentTeamSquad {
 	teamIDs = uniquePositive(teamIDs)
 	if len(teamIDs) == 0 {
@@ -49,11 +53,19 @@ func (s *agentTeamSquadService) CountByTeamID(teamID int64) int {
 	return len(repositories.AgentTeamSquadRepository.Find(sqls.DB(), sqls.NewCnd().Eq("team_id", teamID).Where("status <> ?", enums.StatusDeleted)))
 }
 
+func (s *agentTeamSquadService) CountByTeamIDInTenant(teamID, tenantID int64) int {
+	if teamID <= 0 || tenantID <= 0 {
+		return 0
+	}
+	return len(repositories.AgentTeamSquadRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).Eq("team_id", teamID).Where("status <> ?", enums.StatusDeleted)))
+}
+
 func (s *agentTeamSquadService) ListByTeam(teamID int64, operator *dto.AuthPrincipal) ([]AgentTeamSquadOverview, error) {
 	if !s.canViewTeam(teamID, operator) {
 		return nil, errorsx.Forbidden("无权查看该客服组的小组")
 	}
-	squads := repositories.AgentTeamSquadRepository.Find(sqls.DB(), sqls.NewCnd().Eq("team_id", teamID).Where("status <> ?", enums.StatusDeleted).Asc("id"))
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	squads := repositories.AgentTeamSquadRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).Eq("team_id", teamID).Where("status <> ?", enums.StatusDeleted).Asc("id"))
 	if len(squads) == 0 {
 		return []AgentTeamSquadOverview{}, nil
 	}
@@ -63,12 +75,12 @@ func (s *agentTeamSquadService) ListByTeam(teamID int64, operator *dto.AuthPrinc
 		squadIDs = append(squadIDs, squads[i].ID)
 		leaderUserIDs = appendPositive(leaderUserIDs, squads[i].LeaderUserID)
 	}
-	members := repositories.AgentTeamSquadMemberRepository.Find(sqls.DB(), sqls.NewCnd().In("squad_id", squadIDs).Eq("status", enums.StatusOk).Asc("agent_profile_id"))
+	members := repositories.AgentTeamSquadMemberRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("squad_id", squadIDs).Eq("status", enums.StatusOk).Asc("agent_profile_id"))
 	membersBySquad := make(map[int64][]int64, len(squads))
 	for i := range members {
 		membersBySquad[members[i].SquadID] = append(membersBySquad[members[i].SquadID], members[i].AgentProfileID)
 	}
-	leaders := UserService.FindByIds(uniquePositive(leaderUserIDs))
+	leaders := UserService.FindByIdsInTenant(uniquePositive(leaderUserIDs), tenantID)
 	leaderNames := make(map[int64]string, len(leaders))
 	for i := range leaders {
 		name := strings.TrimSpace(leaders[i].Nickname)
@@ -78,7 +90,7 @@ func (s *agentTeamSquadService) ListByTeam(teamID int64, operator *dto.AuthPrinc
 		leaderNames[leaders[i].ID] = name
 	}
 	now := time.Now()
-	schedules := AgentTeamScheduleService.Find(sqls.NewCnd().In("squad_id", squadIDs).Eq("status", enums.StatusOk).Gt("end_at", now).Asc("start_at"))
+	schedules := AgentTeamScheduleService.Find(sqls.NewCnd().Eq("tenant_id", tenantID).In("squad_id", squadIDs).Eq("status", enums.StatusOk).Gt("end_at", now).Asc("start_at"))
 	activeBySquad := make(map[int64]*models.AgentTeamSchedule, len(squads))
 	nextBySquad := make(map[int64]*models.AgentTeamSchedule, len(squads))
 	for i := range schedules {
@@ -129,7 +141,7 @@ func (s *agentTeamSquadService) Create(req request.CreateAgentTeamSquadRequest, 
 }
 
 func (s *agentTeamSquadService) Update(req request.UpdateAgentTeamSquadRequest, operator *dto.AuthPrincipal) error {
-	current := s.Get(req.ID)
+	current := s.GetInTenant(req.ID, operator)
 	if current == nil || current.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("客服小组不存在")
 	}
@@ -143,11 +155,11 @@ func (s *agentTeamSquadService) Update(req request.UpdateAgentTeamSquadRequest, 
 	if err != nil {
 		return err
 	}
-	if current.Status != enums.StatusDisabled && item.Status == enums.StatusDisabled && s.hasCurrentOrFutureSchedule(item.ID) {
+	if current.Status != enums.StatusDisabled && item.Status == enums.StatusDisabled && s.hasCurrentOrFutureSchedule(item.ID, current.TenantID) {
 		return errorsx.Forbidden("客服小组仍有当前或未来排班，无法停用")
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.AgentTeamSquadRepository.Updates(ctx.Tx, req.ID, map[string]any{
+		if err := repositories.AgentTeamSquadRepository.UpdatesInTenant(ctx.Tx, req.ID, current.TenantID, map[string]any{
 			"tenant_id":        item.TenantID,
 			"team_id":          item.TeamID,
 			"name":             item.Name,
@@ -165,7 +177,7 @@ func (s *agentTeamSquadService) Update(req request.UpdateAgentTeamSquadRequest, 
 }
 
 func (s *agentTeamSquadService) ReplaceMembers(req request.ReplaceAgentTeamSquadMembersRequest, operator *dto.AuthPrincipal) error {
-	item := s.Get(req.SquadID)
+	item := s.GetInTenant(req.SquadID, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("客服小组不存在")
 	}
@@ -182,19 +194,19 @@ func (s *agentTeamSquadService) ReplaceMembers(req request.ReplaceAgentTeamSquad
 }
 
 func (s *agentTeamSquadService) Delete(id int64, operator *dto.AuthPrincipal) error {
-	item := s.Get(id)
+	item := s.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("客服小组不存在")
 	}
 	if !AgentTeamScopeService.CanManageTeam(operator, item.TeamID) {
 		return errorsx.Forbidden("无权删除该客服小组")
 	}
-	if s.hasCurrentOrFutureSchedule(id) {
+	if s.hasCurrentOrFutureSchedule(id, item.TenantID) {
 		return errorsx.Forbidden("客服小组仍有当前或未来排班，无法删除")
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		now := time.Now()
-		if err := repositories.AgentTeamSquadRepository.Updates(ctx.Tx, id, map[string]any{
+		if err := repositories.AgentTeamSquadRepository.UpdatesInTenant(ctx.Tx, id, item.TenantID, map[string]any{
 			"status":           enums.StatusDeleted,
 			"updated_at":       now,
 			"update_user_id":   operator.UserID,
@@ -202,9 +214,8 @@ func (s *agentTeamSquadService) Delete(id int64, operator *dto.AuthPrincipal) er
 		}); err != nil {
 			return err
 		}
-		return ctx.Tx.Model(&models.AgentTeamSquadMember{}).
-			Where("squad_id = ? AND status <> ?", id, enums.StatusDeleted).
-			Updates(map[string]any{"status": enums.StatusDeleted, "updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username}).Error
+		return repositories.AgentTeamSquadMemberRepository.UpdatesActiveBySquadInTenant(ctx.Tx, id, item.TenantID,
+			map[string]any{"status": enums.StatusDeleted, "updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username})
 	})
 }
 
@@ -230,11 +241,16 @@ func (s *agentTeamSquadService) ActiveMemberProfileSet(squadIDs []int64) map[int
 	return ret
 }
 
-func (s *agentTeamSquadService) hasCurrentOrFutureSchedule(squadID int64) bool {
-	return AgentTeamScheduleService.FindOne(sqls.NewCnd().Eq("squad_id", squadID).Eq("status", enums.StatusOk).Gt("end_at", time.Now())) != nil
+func (s *agentTeamSquadService) hasCurrentOrFutureSchedule(squadID, tenantID int64) bool {
+	return AgentTeamScheduleService.FindOne(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("squad_id", squadID).Eq("status", enums.StatusOk).Gt("end_at", time.Now())) != nil
 }
 
 func (s *agentTeamSquadService) canViewTeam(teamID int64, operator *dto.AuthPrincipal) bool {
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, tenantID)
+	if team == nil || team.Status == enums.StatusDeleted {
+		return false
+	}
 	if AgentTeamScopeService.CanManageTeam(operator, teamID) {
 		return true
 	}
@@ -242,7 +258,7 @@ func (s *agentTeamSquadService) canViewTeam(teamID int64, operator *dto.AuthPrin
 		return false
 	}
 	profile := AgentProfileService.GetByUserID(operator.UserID)
-	return profile != nil && profile.Status != enums.StatusDeleted && profile.TeamID == teamID
+	return profile != nil && profile.TenantID == tenantID && profile.Status != enums.StatusDeleted && profile.TeamID == teamID
 }
 
 func (s *agentTeamSquadService) buildModel(db *gorm.DB, id, teamID int64, name string, leaderUserID int64, memberIDs []int64, status int, remark string) (*models.AgentTeamSquad, []int64, error) {
@@ -288,7 +304,7 @@ func (s *agentTeamSquadService) validateMemberProfilesDB(db *gorm.DB, teamID, le
 	if len(memberIDs) == 0 {
 		return []int64{}, nil
 	}
-	profiles := repositories.AgentProfileRepository.Find(db, sqls.NewCnd().In("id", memberIDs).Where("status <> ?", enums.StatusDeleted))
+	profiles := repositories.AgentProfileRepository.Find(db, sqls.NewCnd().Eq("tenant_id", team.TenantID).In("id", memberIDs).Where("status <> ?", enums.StatusDeleted))
 	if len(profiles) != len(memberIDs) {
 		return nil, errorsx.InvalidParam("部分客服档案不存在或已删除")
 	}
@@ -311,15 +327,14 @@ func (s *agentTeamSquadService) replaceMembersDB(db *gorm.DB, squad *models.Agen
 		return err
 	}
 	now := time.Now()
-	if err := db.Model(&models.AgentTeamSquadMember{}).
-		Where("squad_id = ? AND status <> ?", squad.ID, enums.StatusDeleted).
-		Updates(map[string]any{"status": enums.StatusDeleted, "updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username}).Error; err != nil {
+	if err := repositories.AgentTeamSquadMemberRepository.UpdatesActiveBySquadInTenant(db, squad.ID, squad.TenantID,
+		map[string]any{"status": enums.StatusDeleted, "updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username}); err != nil {
 		return err
 	}
 	for _, profileID := range memberIDs {
-		current := repositories.AgentTeamSquadMemberRepository.Take(db, "squad_id = ? AND agent_profile_id = ?", squad.ID, profileID)
+		current := repositories.AgentTeamSquadMemberRepository.Take(db, "tenant_id = ? AND squad_id = ? AND agent_profile_id = ?", squad.TenantID, squad.ID, profileID)
 		if current != nil {
-			if err := repositories.AgentTeamSquadMemberRepository.Updates(db, current.ID, map[string]any{
+			if err := repositories.AgentTeamSquadMemberRepository.UpdatesInTenant(db, current.ID, squad.TenantID, map[string]any{
 				"tenant_id": squad.TenantID, "status": enums.StatusOk, "updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
 			}); err != nil {
 				return err

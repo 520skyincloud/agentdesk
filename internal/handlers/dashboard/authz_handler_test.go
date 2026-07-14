@@ -125,6 +125,32 @@ func TestTenantRegistrationApprovalRequiresAssignRolePermission(t *testing.T) {
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
+func TestAgentOrganizationListHandlersRequireActiveTenant(t *testing.T) {
+	tests := []struct {
+		name       string
+		permission string
+		handler    func(*gin.Context)
+	}{
+		{name: "team list", permission: constants.PermissionAgentTeamView.Code, handler: AgentTeamAnyList},
+		{name: "profile list", permission: constants.PermissionAgentView.Code, handler: AgentAnyList},
+		{name: "squad list", permission: constants.PermissionAgentTeamView.Code, handler: AgentTeamSquadAnyList},
+		{name: "schedule list", permission: constants.PermissionAgentTeamScheduleView.Code, handler: AgentTeamScheduleAnyList},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+				UserID:            19,
+				Username:          "platform_viewer",
+				IsPlatformAccount: true,
+				Roles:             []string{constants.RoleCodeAdmin},
+				Permissions:       []string{tt.permission},
+			})
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
 func newAuthzHandlerTestContext(t *testing.T, body string, principal *dto.AuthPrincipal) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

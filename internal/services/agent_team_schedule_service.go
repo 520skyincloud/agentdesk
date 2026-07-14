@@ -72,6 +72,10 @@ func (s *agentTeamScheduleService) Get(id int64) *models.AgentTeamSchedule {
 	return repositories.AgentTeamScheduleRepository.Get(sqls.DB(), id)
 }
 
+func (s *agentTeamScheduleService) GetInTenant(id int64, operator *dto.AuthPrincipal) *models.AgentTeamSchedule {
+	return repositories.AgentTeamScheduleRepository.GetInTenant(sqls.DB(), id, AgentTeamScopeService.ActiveTenantID(operator))
+}
+
 func (s *agentTeamScheduleService) Take(where ...interface{}) *models.AgentTeamSchedule {
 	return repositories.AgentTeamScheduleRepository.Take(sqls.DB(), where...)
 }
@@ -92,6 +96,10 @@ func (s *agentTeamScheduleService) FindPageByCnd(cnd *sqls.Cnd) (list []models.A
 	return repositories.AgentTeamScheduleRepository.FindPageByCnd(sqls.DB(), cnd)
 }
 
+func (s *agentTeamScheduleService) FindPageInTenant(cnd *sqls.Cnd, operator *dto.AuthPrincipal) (list []models.AgentTeamSchedule, paging *sqls.Paging) {
+	return repositories.AgentTeamScheduleRepository.FindPageByCnd(sqls.DB(), AgentTeamScopeService.ApplyTenantFilter(cnd, operator))
+}
+
 func (s *agentTeamScheduleService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.AgentTeamScheduleRepository.Count(sqls.DB(), cnd)
 }
@@ -109,6 +117,25 @@ func (s *agentTeamScheduleService) FindCalendarSchedules(req request.AgentTeamSc
 		return nil, errorsx.InvalidParam("结束时间必须晚于开始时间")
 	}
 	return repositories.AgentTeamScheduleRepository.FindByTimeRange(sqls.DB(), startAtValue, endAtValue, req.TeamID, req.SquadID), nil
+}
+
+func (s *agentTeamScheduleService) FindCalendarSchedulesInTenant(req request.AgentTeamScheduleCalendarRequest, operator *dto.AuthPrincipal) ([]models.AgentTeamSchedule, error) {
+	startAtValue, err := parseRequiredDateTime(req.StartAt, "开始时间格式错误")
+	if err != nil {
+		return nil, err
+	}
+	endAtValue, err := parseRequiredDateTime(req.EndAt, "结束时间格式错误")
+	if err != nil {
+		return nil, err
+	}
+	if !endAtValue.After(startAtValue) {
+		return nil, errorsx.InvalidParam("结束时间必须晚于开始时间")
+	}
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先选择接入公司")
+	}
+	return repositories.AgentTeamScheduleRepository.FindByTimeRangeInTenant(sqls.DB(), startAtValue, endAtValue, req.TeamID, req.SquadID, tenantID), nil
 }
 
 func (s *agentTeamScheduleService) Create(t *models.AgentTeamSchedule) error {
@@ -165,7 +192,7 @@ func (s *agentTeamScheduleService) UpdateAgentTeamSchedule(req request.UpdateAge
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
 	s.writeMu.Lock()
-	current := s.Get(req.ID)
+	current := s.GetInTenant(req.ID, operator)
 	if current == nil {
 		s.writeMu.Unlock()
 		return errorsx.InvalidParam("客服组排班不存在")
@@ -179,7 +206,7 @@ func (s *agentTeamScheduleService) UpdateAgentTeamSchedule(req request.UpdateAge
 		s.writeMu.Unlock()
 		return err
 	}
-	if err := repositories.AgentTeamScheduleRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	if err := repositories.AgentTeamScheduleRepository.UpdatesInTenant(sqls.DB(), req.ID, current.TenantID, map[string]any{
 		"tenant_id":        item.TenantID,
 		"team_id":          item.TeamID,
 		"squad_id":         item.SquadID,
@@ -202,22 +229,21 @@ func (s *agentTeamScheduleService) DeleteAgentTeamSchedule(id int64, operator *d
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.Get(id)
+	current := s.GetInTenant(id, operator)
 	if current == nil {
 		return errorsx.InvalidParam("客服组排班不存在")
 	}
 	if !AgentTeamScopeService.CanManageTeam(operator, current.TeamID) {
 		return errorsx.Forbidden("只能删除自己管理的客服组排班")
 	}
-	repositories.AgentTeamScheduleRepository.Delete(sqls.DB(), id)
-	return nil
+	return repositories.AgentTeamScheduleRepository.DeleteInTenant(sqls.DB(), id, current.TenantID)
 }
 
 func (s *agentTeamScheduleService) BatchPreview(req request.AgentTeamScheduleBatchRequest, operator *dto.AuthPrincipal) (*AgentTeamScheduleBatchPreviewResult, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
-	candidates, err := s.buildBatchScheduleCandidates(req)
+	candidates, err := s.buildBatchScheduleCandidates(req, operator)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +259,7 @@ func (s *agentTeamScheduleService) BatchGenerate(req request.AgentTeamScheduleBa
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
 	s.writeMu.Lock()
-	candidates, err := s.buildBatchScheduleCandidates(req)
+	candidates, err := s.buildBatchScheduleCandidates(req, operator)
 	if err != nil {
 		s.writeMu.Unlock()
 		return nil, err
@@ -346,7 +372,7 @@ func (s *agentTeamScheduleService) buildScheduleModel(id, teamID, squadID int64,
 	}, nil
 }
 
-func (s *agentTeamScheduleService) buildBatchScheduleCandidates(req request.AgentTeamScheduleBatchRequest) ([]batchScheduleCandidate, error) {
+func (s *agentTeamScheduleService) buildBatchScheduleCandidates(req request.AgentTeamScheduleBatchRequest, operator *dto.AuthPrincipal) ([]batchScheduleCandidate, error) {
 	teamIDs := uniquePositiveInt64s(req.TeamIDs)
 	if len(teamIDs) == 0 {
 		return nil, errorsx.InvalidParam("请选择客服组")
@@ -377,7 +403,11 @@ func (s *agentTeamScheduleService) buildBatchScheduleCandidates(req request.Agen
 		return nil, err
 	}
 
-	teams := AgentTeamService.FindByIds(teamIDs)
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先选择接入公司")
+	}
+	teams := AgentTeamService.FindByIdsInTenant(teamIDs, tenantID)
 	teamsByID := make(map[int64]models.AgentTeam, len(teams))
 	for _, team := range teams {
 		teamsByID[team.ID] = team

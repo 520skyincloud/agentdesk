@@ -596,11 +596,11 @@ func createAgentTeamScheduleTestData(t *testing.T, db *gorm.DB) {
 		return ret
 	}
 	schedules := []models.AgentTeamSchedule{
-		{ID: 1, TeamID: 1, StartAt: parse("2026-04-26 20:00:00"), EndAt: parse("2026-04-27 10:00:00"), Status: enums.StatusOk},
-		{ID: 2, TeamID: 1, StartAt: parse("2026-04-28 09:00:00"), EndAt: parse("2026-04-28 18:00:00"), Status: enums.StatusOk},
-		{ID: 3, TeamID: 2, StartAt: parse("2026-05-03 20:00:00"), EndAt: parse("2026-05-04 08:00:00"), Status: enums.StatusOk},
-		{ID: 4, TeamID: 1, StartAt: parse("2026-04-20 09:00:00"), EndAt: parse("2026-04-20 18:00:00"), Status: enums.StatusOk},
-		{ID: 5, TeamID: 2, StartAt: parse("2026-05-04 09:00:00"), EndAt: parse("2026-05-04 18:00:00"), Status: enums.StatusOk},
+		{ID: 1, TenantID: 101, TeamID: 1, StartAt: parse("2026-04-26 20:00:00"), EndAt: parse("2026-04-27 10:00:00"), Status: enums.StatusOk},
+		{ID: 2, TenantID: 101, TeamID: 1, StartAt: parse("2026-04-28 09:00:00"), EndAt: parse("2026-04-28 18:00:00"), Status: enums.StatusOk},
+		{ID: 3, TenantID: 101, TeamID: 2, StartAt: parse("2026-05-03 20:00:00"), EndAt: parse("2026-05-04 08:00:00"), Status: enums.StatusOk},
+		{ID: 4, TenantID: 101, TeamID: 1, StartAt: parse("2026-04-20 09:00:00"), EndAt: parse("2026-04-20 18:00:00"), Status: enums.StatusOk},
+		{ID: 5, TenantID: 101, TeamID: 2, StartAt: parse("2026-05-04 09:00:00"), EndAt: parse("2026-05-04 18:00:00"), Status: enums.StatusOk},
 	}
 	if err := db.Create(&schedules).Error; err != nil {
 		t.Fatalf("create schedules error = %v", err)
@@ -646,10 +646,11 @@ func createFutureAgentTeamSchedule(t *testing.T, db *gorm.DB) int64 {
 	t.Helper()
 	tomorrow := time.Now().AddDate(0, 0, 1)
 	item := models.AgentTeamSchedule{
-		TeamID:  1,
-		StartAt: parseTestDateTime(t, formatTestDateTime(tomorrow, "09:00:00")),
-		EndAt:   parseTestDateTime(t, formatTestDateTime(tomorrow, "18:00:00")),
-		Status:  enums.StatusOk,
+		TenantID: 101,
+		TeamID:   1,
+		StartAt:  parseTestDateTime(t, formatTestDateTime(tomorrow, "09:00:00")),
+		EndAt:    parseTestDateTime(t, formatTestDateTime(tomorrow, "18:00:00")),
+		Status:   enums.StatusOk,
 	}
 	if err := db.Create(&item).Error; err != nil {
 		t.Fatalf("create future schedule error = %v", err)

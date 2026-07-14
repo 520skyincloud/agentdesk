@@ -174,8 +174,8 @@ func TestAgentTeamScopeCanManageTeam(t *testing.T) {
 	}
 	sqls.SetDB(db)
 
-	managed := &models.AgentTeam{Name: "managed", LeaderUserID: 11, Status: enums.StatusOk}
-	other := &models.AgentTeam{Name: "other", LeaderUserID: 12, Status: enums.StatusOk}
+	managed := &models.AgentTeam{TenantID: 101, Name: "managed", LeaderUserID: 11, Status: enums.StatusOk}
+	other := &models.AgentTeam{TenantID: 101, Name: "other", LeaderUserID: 12, Status: enums.StatusOk}
 	if err := db.Create(managed).Error; err != nil {
 		t.Fatalf("create managed team: %v", err)
 	}
@@ -183,9 +183,9 @@ func TestAgentTeamScopeCanManageTeam(t *testing.T) {
 		t.Fatalf("create other team: %v", err)
 	}
 
-	admin := &dto.AuthPrincipal{UserID: 1, Roles: []string{constants.RoleCodeAdmin}}
-	leader := &dto.AuthPrincipal{UserID: 11, Roles: []string{constants.RoleCodeCsTeamLeader}}
-	agent := &dto.AuthPrincipal{UserID: 21, Roles: []string{constants.RoleCodeCsUser}}
+	admin := &dto.AuthPrincipal{UserID: 1, ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
+	leader := &dto.AuthPrincipal{UserID: 11, ActiveTenantID: 101, Roles: []string{constants.RoleCodeCsTeamLeader}}
+	agent := &dto.AuthPrincipal{UserID: 21, ActiveTenantID: 101, Roles: []string{constants.RoleCodeCsUser}}
 
 	if !AgentTeamScopeService.CanManageTeam(admin, other.ID) {
 		t.Fatal("admin should manage every team")
@@ -198,6 +198,11 @@ func TestAgentTeamScopeCanManageTeam(t *testing.T) {
 	}
 	if AgentTeamScopeService.CanManageTeam(agent, managed.ID) {
 		t.Fatal("agent must not manage a team")
+	}
+	withoutTenant := *admin
+	withoutTenant.ActiveTenantID = 0
+	if AgentTeamScopeService.CanManageTeam(&withoutTenant, managed.ID) {
+		t.Fatal("platform admin must select a tenant before managing teams")
 	}
 }
 
@@ -283,7 +288,7 @@ func TestBindStoreStaffUserMovesCanonicalTeamAndSyncsWxWork(t *testing.T) {
 	if err := db.Create(store).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	user := &models.User{Username: "binding-store-staff", Nickname: "绑定门店员工", Status: enums.StatusOk}
+	user := &models.User{TenantID: 101, Username: "binding-store-staff", Nickname: "绑定门店员工", Status: enums.StatusOk}
 	if err := db.Create(user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -294,8 +299,8 @@ func TestBindStoreStaffUserMovesCanonicalTeamAndSyncsWxWork(t *testing.T) {
 	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
 		t.Fatalf("create user role: %v", err)
 	}
-	teamA := &models.AgentTeam{Name: "绑定A组", Status: enums.StatusOk}
-	teamB := &models.AgentTeam{Name: "绑定B组", Status: enums.StatusOk}
+	teamA := &models.AgentTeam{TenantID: 101, Name: "绑定A组", Status: enums.StatusOk}
+	teamB := &models.AgentTeam{TenantID: 101, Name: "绑定B组", Status: enums.StatusOk}
 	if err := db.Create(teamA).Error; err != nil {
 		t.Fatalf("create team A: %v", err)
 	}
@@ -310,7 +315,7 @@ func TestBindStoreStaffUserMovesCanonicalTeamAndSyncsWxWork(t *testing.T) {
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
-	admin := &dto.AuthPrincipal{UserID: 1, Username: "admin", Roles: []string{constants.RoleCodeAdmin}}
+	admin := &dto.AuthPrincipal{UserID: 1, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
 
 	if err := AgentTeamService.BindStoreStaffUser(user.ID, teamA.ID, admin); err != nil {
 		t.Fatalf("bind team A: %v", err)
@@ -347,9 +352,9 @@ func TestUpdateAgentTeamAcceptsLegacyWxWorkScopeWithoutSilentClear(t *testing.T)
 	sqls.SetDB(db)
 
 	role := &models.Role{Name: "门店员工", Code: constants.RoleCodeStoreStaff, Status: enums.StatusOk}
-	user := &models.User{Username: "legacy-scope-store-staff", Nickname: "旧范围门店员工", Status: enums.StatusOk}
+	user := &models.User{TenantID: 101, Username: "legacy-scope-store-staff", Nickname: "旧范围门店员工", Status: enums.StatusOk}
 	store := &models.Store{StoreCode: "LEGACY-SCOPE", Name: "旧范围测试门店", CompanyID: 12, Status: enums.StatusOk}
-	team := &models.AgentTeam{Name: "旧范围测试组", Status: enums.StatusOk}
+	team := &models.AgentTeam{TenantID: 101, Name: "旧范围测试组", Status: enums.StatusOk}
 	for _, item := range []any{role, user, store, team} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatalf("create fixture: %v", err)
@@ -366,7 +371,7 @@ func TestUpdateAgentTeamAcceptsLegacyWxWorkScopeWithoutSilentClear(t *testing.T)
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
-	admin := &dto.AuthPrincipal{UserID: 1, Username: "admin", Roles: []string{constants.RoleCodeAdmin}}
+	admin := &dto.AuthPrincipal{UserID: 1, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
 
 	if err := AgentTeamService.UpdateAgentTeam(request.UpdateAgentTeamRequest{
 		ID: team.ID, Name: team.Name, Status: int(enums.StatusOk), WxWorkInstanceScopeIDs: []int64{instance.ID},
@@ -395,8 +400,8 @@ func TestUpdateAgentTeamReplacesStoreStaffBindingsAndSyncsBothDirections(t *test
 	if err := db.Create(role).Error; err != nil {
 		t.Fatalf("create role: %v", err)
 	}
-	teamA := &models.AgentTeam{Name: "批量绑定A组", Status: enums.StatusOk}
-	teamB := &models.AgentTeam{Name: "批量绑定B组", Status: enums.StatusOk}
+	teamA := &models.AgentTeam{TenantID: 101, Name: "批量绑定A组", Status: enums.StatusOk}
+	teamB := &models.AgentTeam{TenantID: 101, Name: "批量绑定B组", Status: enums.StatusOk}
 	if err := db.Create(teamA).Error; err != nil {
 		t.Fatalf("create team A: %v", err)
 	}
@@ -412,7 +417,7 @@ func TestUpdateAgentTeamReplacesStoreStaffBindingsAndSyncsBothDirections(t *test
 	}
 	staff := make([]staffFixture, 0, 3)
 	for i := 1; i <= 3; i++ {
-		user := &models.User{Username: fmt.Sprintf("batch-store-staff-%d", i), Nickname: fmt.Sprintf("门店员工%d", i), Status: enums.StatusOk}
+		user := &models.User{TenantID: 101, Username: fmt.Sprintf("batch-store-staff-%d", i), Nickname: fmt.Sprintf("门店员工%d", i), Status: enums.StatusOk}
 		if err := db.Create(user).Error; err != nil {
 			t.Fatalf("create user %d: %v", i, err)
 		}
@@ -437,7 +442,7 @@ func TestUpdateAgentTeamReplacesStoreStaffBindingsAndSyncsBothDirections(t *test
 		}
 		staff = append(staff, staffFixture{user: user, store: store, binding: binding, instance: instance})
 	}
-	admin := &dto.AuthPrincipal{UserID: 1, Username: "admin", Roles: []string{constants.RoleCodeAdmin}}
+	admin := &dto.AuthPrincipal{UserID: 1, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
 
 	if err := AgentTeamService.UpdateAgentTeam(request.UpdateAgentTeamRequest{
 		ID: teamA.ID, Name: teamA.Name, Status: int(enums.StatusOk), StoreStaffUserIDs: []int64{staff[0].user.ID, staff[1].user.ID},

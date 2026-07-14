@@ -28,6 +28,13 @@ func (r *agentTeamScheduleRepository) Get(db *gorm.DB, id int64) *models.AgentTe
 	return ret
 }
 
+func (r *agentTeamScheduleRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.AgentTeamSchedule {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *agentTeamScheduleRepository) Take(db *gorm.DB, where ...interface{}) *models.AgentTeamSchedule {
 	ret := &models.AgentTeamSchedule{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -44,6 +51,22 @@ func (r *agentTeamScheduleRepository) Find(db *gorm.DB, cnd *sqls.Cnd) (list []m
 func (r *agentTeamScheduleRepository) FindByTimeRange(db *gorm.DB, startAt, endAt time.Time, teamID, squadID int64) (list []models.AgentTeamSchedule) {
 	query := db.Model(&models.AgentTeamSchedule{}).
 		Where("start_at < ? AND end_at > ?", endAt, startAt)
+	if teamID > 0 {
+		query = query.Where("team_id = ?", teamID)
+	}
+	if squadID > 0 {
+		query = query.Where("squad_id = ?", squadID)
+	}
+	query.Order("team_id ASC").Order("start_at ASC").Order("id ASC").Find(&list)
+	return
+}
+
+func (r *agentTeamScheduleRepository) FindByTimeRangeInTenant(db *gorm.DB, startAt, endAt time.Time, teamID, squadID, tenantID int64) (list []models.AgentTeamSchedule) {
+	if tenantID <= 0 {
+		return []models.AgentTeamSchedule{}
+	}
+	query := db.Model(&models.AgentTeamSchedule{}).
+		Where("tenant_id = ? AND start_at < ? AND end_at > ?", tenantID, endAt, startAt)
 	if teamID > 0 {
 		query = query.Where("team_id = ?", teamID)
 	}
@@ -127,6 +150,10 @@ func (r *agentTeamScheduleRepository) Updates(db *gorm.DB, id int64, columns map
 	return
 }
 
+func (r *agentTeamScheduleRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.AgentTeamSchedule{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *agentTeamScheduleRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.AgentTeamSchedule{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return
@@ -134,4 +161,8 @@ func (r *agentTeamScheduleRepository) UpdateColumn(db *gorm.DB, id int64, name s
 
 func (r *agentTeamScheduleRepository) Delete(db *gorm.DB, id int64) {
 	db.Delete(&models.AgentTeamSchedule{}, "id = ?", id)
+}
+
+func (r *agentTeamScheduleRepository) DeleteInTenant(db *gorm.DB, id, tenantID int64) error {
+	return db.Delete(&models.AgentTeamSchedule{}, "id = ? AND tenant_id = ?", id, tenantID).Error
 }

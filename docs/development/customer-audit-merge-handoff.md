@@ -770,3 +770,64 @@ cd web && pnpm build
 - 开始时核对 `origin/codex/ai-billing@f2d2da4`：双方共同修改 `web/lib/navigation.tsx` 和中英文资源。合并时必须同时保留 AI 分支的 `replyIntentProfiles` 导航/文案与本步骤的 `tenant.view` 接入公司入口/`tenant.*` 文案，不能整文件选边。
 - 建议在租户认证、权限和 Tenant 后端契约之后合并本步骤；不依赖新的 migration。合并后重新执行前端类型检查、导航契约测试和静态构建。
 - 回滚边界仅为接入公司前端、租户 API 封装、两个通用组件的可见性/暗色样式和导航文案。回滚不得删除 Channel 后端，也不得重新开放公开注册。
+
+## 23. 多租户阶段 5A：客服组织运行时隔离（2026-07-14）
+
+### 本步骤目标与结果
+
+- 衔接阶段 4A 已有 `TenantID`，补齐客服组、客服档案、客服小组/成员和排班的后台真实读取与写入隔离，不新增平行页面、状态或权限。
+- `agent-team`、`agent`、`agent-team/squad` 和 `agent-team-schedule` Handler 在原动作权限校验后统一要求有效 `ActiveTenantID`；平台管理员未进入公司时不能读取公司组织数据。
+- 列表、全量选择、详情和排班日历使用当前租户查询；提交其他租户的 path/query/body ID 不能读取、更新、删除或替换成员。
+- Repository 新增租户内 `Get/Updates/Delete/FindByIds` 方法。客服组、客服档案、小组、成员和排班的业务更新/删除最终 SQL 均包含 `tenant_id`，避免只依赖前置校验。
+- 门店员工分配与解除客服组均先按当前租户读取账号和客服组；从原组迁移、范围同步和客服组最终更新不能跨公司。
+- 客服档案 builder 移除 User/AgentTeam service 依赖，改为纯映射；Handler 只传入 service 已按租户加载的用户和客服组数据。
+- 客服档案页使用的派单客服负载列表按当前租户过滤，关联用户名和客服组名也只从当前租户读取；未改会话状态机、派单算法、AI 推荐或模型调用。
+
+### 主要文件与契约影响
+
+```text
+internal/repositories/agent_team_repository.go
+internal/repositories/agent_profile_repository.go
+internal/repositories/agent_team_squad_repository.go
+internal/repositories/agent_team_squad_member_repository.go
+internal/repositories/agent_team_schedule_repository.go
+internal/repositories/user_repository.go
+internal/services/agent_team_scope_service.go
+internal/services/agent_team_service.go
+internal/services/agent_profile_service.go
+internal/services/agent_team_squad_service.go
+internal/services/agent_team_schedule_service.go
+internal/services/conversation_dispatch_workbench_service.go
+internal/services/user_service.go
+internal/builders/agent_profile_builder.go
+internal/handlers/dashboard/agent_handler.go
+internal/handlers/dashboard/agent_team_handler.go
+internal/handlers/dashboard/agent_team_squad_handler.go
+internal/handlers/dashboard/agent_team_schedule_handler.go
+internal/services/agent_organization_tenant_service_test.go
+```
+
+- 无 model、AutoMigrate 字段、DML migration、DTO、enum、Gin 路由或 WebSocket payload 变化。
+- Repository/service 方法均为向后兼容新增；现有无租户通用方法保留给明确的运行时和回填调用，后台 HTTP 链路改用租户方法。
+- 修正历史测试夹具，使客服组、客服、门店员工和排班显式属于 `TenantID=101`；没有放宽生产权限。
+
+### 验证、已知边界与回滚
+
+```text
+go test ./internal/handlers/dashboard ./internal/services -run 'TestAgentOrganization|TestAgentTeamScopeCanManageTeam|TestTenantAdminCreatesAndManagesTeamsOnlyInActiveTenant|TestAgentTeamSquad|TestAgentTeamSchedule' -count=1
+go test -race ./internal/services ./internal/handlers/dashboard -run 'TestAgentOrganization|TestAgentTeamScopeCanManageTeam|TestTenantAdminCreatesAndManagesTeamsOnlyInActiveTenant|TestAgentTeamSquad|TestAgentTeamSchedule' -count=1
+go vet ./...
+go test ./... -run '^$' -count=1
+```
+
+- 双租户测试覆盖客服组/档案/小组/排班列表与详情、排班日历、客服负载、跨租户 body ID 更新/删除、成员关系污染、门店员工解除归属和最终 repository 写条件；无当前租户的组织列表 Handler 返回 forbidden。
+- 聚焦测试、race、vet 和全仓编译通过。全量 `go test -p 1 ./... -count=1` 仍失败于既有消息测试启动异步 AI 回复后关闭全局测试 DB，后台 goroutine 在 `BuildRuntimeAIAgentForConversation` 访问 nil DB；该问题已在阶段 3B/21 记录，本步骤不修改 AI runtime 或消息触发链路。
+- Conversation、Message、ConversationAssignment、ConversationRouteState 和 Ticket 尚未完成租户字段/运行时隔离，因此派单任务列表、全局待回复统计和会话动作不能随本步骤宣布完成；公开邀请注册继续保持关闭。
+- `AgentProfile.AgentCode` 的历史全局唯一索引未改为租户组合唯一。后续调整必须先审计重复值，再设计兼容 SQLite/MySQL 的索引迁移。
+- 回滚可撤销 Handler/service 的租户方法调用和新增 repository 方法；没有数据库结构可回滚。回滚不得恢复后台全局组织读取后再开放多租户入口。
+
+### 并行分支与合并顺序
+
+- 本步骤开始前已 `git fetch origin`，共同基点 `e67e207` 后 `origin/codex/ai-billing@f2d2da4` 未修改本步骤客服组织、派单工作台或 agent profile builder 文件，无同文件冲突。
+- 本步骤依赖阶段 1-4A 的 Tenant/AuthPrincipal/客服组织字段，应在这些契约之后合并；随后再继续客户/门店/企微和会话/派单域隔离。
+- 不修改 AI 回复引擎、模型供应商、FastGPT、token、计费或向量语义。AI/计费分支不需要因本步骤 rebase 后调整字段语义，但合并前仍需再次 fetch 核对最新同文件变化。

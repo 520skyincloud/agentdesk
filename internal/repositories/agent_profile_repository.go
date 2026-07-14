@@ -26,6 +26,13 @@ func (r *agentProfileRepository) Get(db *gorm.DB, id int64) *models.AgentProfile
 	return ret
 }
 
+func (r *agentProfileRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.AgentProfile {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return r.Take(db, "id = ? AND tenant_id = ?", id, tenantID)
+}
+
 func (r *agentProfileRepository) Take(db *gorm.DB, where ...interface{}) *models.AgentProfile {
 	ret := &models.AgentProfile{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -92,6 +99,10 @@ func (r *agentProfileRepository) Updates(db *gorm.DB, id int64, columns map[stri
 	return
 }
 
+func (r *agentProfileRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.AgentProfile{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *agentProfileRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.AgentProfile{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return
@@ -99,4 +110,8 @@ func (r *agentProfileRepository) UpdateColumn(db *gorm.DB, id int64, name string
 
 func (r *agentProfileRepository) Delete(db *gorm.DB, id int64) {
 	db.Delete(&models.AgentProfile{}, "id = ?", id)
+}
+
+func (r *agentProfileRepository) DeleteInTenant(db *gorm.DB, id, tenantID int64) error {
+	return db.Delete(&models.AgentProfile{}, "id = ? AND tenant_id = ?", id, tenantID).Error
 }

@@ -32,12 +32,20 @@ func (s *agentTeamService) Get(id int64) *models.AgentTeam {
 	return repositories.AgentTeamRepository.Get(sqls.DB(), id)
 }
 
+func (s *agentTeamService) GetInTenant(id int64, operator *dto.AuthPrincipal) *models.AgentTeam {
+	return repositories.AgentTeamRepository.GetInTenant(sqls.DB(), id, AgentTeamScopeService.ActiveTenantID(operator))
+}
+
 func (s *agentTeamService) Take(where ...interface{}) *models.AgentTeam {
 	return repositories.AgentTeamRepository.Take(sqls.DB(), where...)
 }
 
 func (s *agentTeamService) Find(cnd *sqls.Cnd) []models.AgentTeam {
 	return repositories.AgentTeamRepository.Find(sqls.DB(), cnd)
+}
+
+func (s *agentTeamService) FindInTenant(cnd *sqls.Cnd, operator *dto.AuthPrincipal) []models.AgentTeam {
+	return repositories.AgentTeamRepository.Find(sqls.DB(), AgentTeamScopeService.ApplyTenantFilter(cnd, operator))
 }
 
 func (s *agentTeamService) FindOne(cnd *sqls.Cnd) *models.AgentTeam {
@@ -52,12 +60,20 @@ func (s *agentTeamService) FindPageByCnd(cnd *sqls.Cnd) (list []models.AgentTeam
 	return repositories.AgentTeamRepository.FindPageByCnd(sqls.DB(), cnd)
 }
 
+func (s *agentTeamService) FindPageInTenant(cnd *sqls.Cnd, operator *dto.AuthPrincipal) (list []models.AgentTeam, paging *sqls.Paging) {
+	return repositories.AgentTeamRepository.FindPageByCnd(sqls.DB(), AgentTeamScopeService.ApplyTenantFilter(cnd, operator))
+}
+
 func (s *agentTeamService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.AgentTeamRepository.Count(sqls.DB(), cnd)
 }
 
 func (s *agentTeamService) FindByIds(ids []int64) []models.AgentTeam {
 	return repositories.AgentTeamRepository.FindByIds(sqls.DB(), ids)
+}
+
+func (s *agentTeamService) FindByIdsInTenant(ids []int64, tenantID int64) []models.AgentTeam {
+	return repositories.AgentTeamRepository.FindByIdsInTenant(sqls.DB(), ids, tenantID)
 }
 
 func (s *agentTeamService) Create(t *models.AgentTeam) error {
@@ -107,7 +123,7 @@ func (s *agentTeamService) CreateAgentTeam(req request.CreateAgentTeamRequest, o
 	}); err != nil {
 		return nil, err
 	}
-	item = repositories.AgentTeamRepository.Get(sqls.DB(), item.ID)
+	item = repositories.AgentTeamRepository.GetInTenant(sqls.DB(), item.ID, operator.ActiveTenantID)
 	if item == nil {
 		return nil, errorsx.BusinessError(0, "客服组创建成功，但读取最新数据失败")
 	}
@@ -118,7 +134,7 @@ func (s *agentTeamService) UpdateAgentTeam(req request.UpdateAgentTeamRequest, o
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.Get(req.ID)
+	current := s.GetInTenant(req.ID, operator)
 	if current == nil || current.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("客服组不存在")
 	}
@@ -137,7 +153,7 @@ func (s *agentTeamService) UpdateAgentTeam(req request.UpdateAgentTeamRequest, o
 		return err
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.AgentTeamRepository.Updates(ctx.Tx, req.ID, map[string]any{
+		if err := repositories.AgentTeamRepository.UpdatesInTenant(ctx.Tx, req.ID, current.TenantID, map[string]any{
 			"tenant_id":        current.TenantID,
 			"name":             item.Name,
 			"leader_user_id":   item.LeaderUserID,
@@ -161,7 +177,7 @@ func (s *agentTeamService) DeleteAgentTeam(id int64, operator *dto.AuthPrincipal
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.Get(id)
+	current := s.GetInTenant(id, operator)
 	if current == nil || current.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("客服组不存在")
 	}
@@ -193,7 +209,7 @@ func (s *agentTeamService) DeleteAgentTeam(id int64, operator *dto.AuthPrincipal
 	) != nil {
 		return errorsx.Forbidden("客服组下仍有关联 AI Agent，无法删除")
 	}
-	return repositories.AgentTeamRepository.Updates(sqls.DB(), id, map[string]any{
+	return repositories.AgentTeamRepository.UpdatesInTenant(sqls.DB(), id, current.TenantID, map[string]any{
 		"status":           enums.StatusDeleted,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
@@ -309,7 +325,11 @@ func (s *agentTeamService) BindStoreStaffUser(userID, teamID int64, operator *dt
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	user := repositories.UserRepository.Get(sqls.DB(), userID)
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return errorsx.Forbidden("请先进入需要管理门店员工的接入公司")
+	}
+	user := repositories.UserRepository.GetInTenant(sqls.DB(), userID, tenantID)
 	if user == nil || user.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("门店员工账号不存在")
 	}
@@ -321,7 +341,7 @@ func (s *agentTeamService) BindStoreStaffUser(userID, teamID int64, operator *dt
 		return errorsx.InvalidParam("该门店员工尚未绑定门店，当前保持暂未分配客服组")
 	}
 	if teamID > 0 {
-		team := s.Get(teamID)
+		team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, tenantID)
 		if team == nil || team.Status != enums.StatusOk {
 			return errorsx.InvalidParam("客服组不存在或已停用")
 		}
@@ -396,9 +416,17 @@ func (s *agentTeamService) FindStoreStaffUserIDs(teamID int64) []int64 {
 	return uniquePositive(userIDs)
 }
 
+func (s *agentTeamService) FindStoreStaffUserIDsInTenant(teamID, tenantID int64) []int64 {
+	if repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, tenantID) == nil {
+		return []int64{}
+	}
+	return s.FindStoreStaffUserIDs(teamID)
+}
+
 func (s *agentTeamService) replaceStoreStaffBindingsDB(db *gorm.DB, teamID int64, selectedUserIDs []int64, operator *dto.AuthPrincipal) error {
-	team := repositories.AgentTeamRepository.Get(db, teamID)
-	if team == nil || (team.TenantID > 0 && operator != nil && operator.ActiveTenantID > 0 && team.TenantID != operator.ActiveTenantID) {
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	team := repositories.AgentTeamRepository.GetInTenant(db, teamID, tenantID)
+	if team == nil {
 		return errorsx.InvalidParam("客服组不存在或不属于当前接入公司")
 	}
 	selectedUserIDs = uniquePositive(selectedUserIDs)
@@ -413,7 +441,7 @@ func (s *agentTeamService) replaceStoreStaffBindingsDB(db *gorm.DB, teamID int64
 	}
 	selectedBindings := make([]models.StoreStaffBinding, 0)
 	if len(selectedUserIDs) > 0 {
-		users := repositories.UserRepository.Find(db, sqls.NewCnd().In("id", selectedUserIDs).Where("status <> ?", enums.StatusDeleted))
+		users := repositories.UserRepository.Find(db, sqls.NewCnd().In("id", selectedUserIDs).Eq("tenant_id", tenantID).Where("status <> ?", enums.StatusDeleted))
 		if len(users) != len(selectedUserIDs) {
 			return errorsx.InvalidParam("部分门店员工账号不存在或已删除，请重新选择")
 		}
@@ -495,13 +523,17 @@ func (s *agentTeamService) canManageTeamDB(db *gorm.DB, operator *dto.AuthPrinci
 	if operator == nil || teamID <= 0 {
 		return false
 	}
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return false
+	}
+	team := repositories.AgentTeamRepository.GetInTenant(db, teamID, tenantID)
 	if AgentTeamScopeService.IsAdmin(operator) {
-		return true
+		return team != nil
 	}
 	if !slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) {
 		return false
 	}
-	team := repositories.AgentTeamRepository.Get(db, teamID)
 	return team != nil && team.Status != enums.StatusDeleted && team.LeaderUserID == operator.UserID
 }
 
@@ -538,14 +570,22 @@ func (s *agentTeamService) syncTeamScopeFromAssignments(db *gorm.DB, teamID int6
 	if operator != nil {
 		userID, username = operator.UserID, operator.Username
 	}
-	return repositories.AgentTeamRepository.Updates(db, teamID, map[string]any{
+	columns := map[string]any{
 		"company_scope_ids":          utils.JoinInt64s(uniquePositive(companyIDs)),
 		"store_scope_ids":            utils.JoinInt64s(uniquePositive(storeIDs)),
 		"wx_work_instance_scope_ids": utils.JoinInt64s(uniquePositive(instanceIDs)),
 		"updated_at":                 time.Now(),
 		"update_user_id":             userID,
 		"update_user_name":           username,
-	})
+	}
+	if operator == nil {
+		return repositories.AgentTeamRepository.Updates(db, teamID, columns)
+	}
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 || repositories.AgentTeamRepository.GetInTenant(db, teamID, tenantID) == nil {
+		return errorsx.Forbidden("客服组不属于当前接入公司")
+	}
+	return repositories.AgentTeamRepository.UpdatesInTenant(db, teamID, tenantID, columns)
 }
 
 func (s *agentTeamService) BackfillWxWorkInstanceBindings() error {

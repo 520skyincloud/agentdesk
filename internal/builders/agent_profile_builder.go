@@ -4,27 +4,12 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/utils"
-	"agent-desk/internal/services"
 )
 
-func BuildAgentProfileList(items []models.AgentProfile) []response.AgentProfileResponse {
+func BuildAgentProfileList(items []models.AgentProfile, users []models.User, teams []models.AgentTeam) []response.AgentProfileResponse {
 	if len(items) == 0 {
 		return []response.AgentProfileResponse{}
 	}
-
-	userIDs := make([]int64, 0, len(items))
-	teamIDs := make([]int64, 0, len(items))
-	for _, item := range items {
-		if item.UserID > 0 {
-			userIDs = append(userIDs, item.UserID)
-		}
-		if item.TeamID > 0 {
-			teamIDs = append(teamIDs, item.TeamID)
-		}
-	}
-
-	users := services.UserService.FindByIds(userIDs)
-	teams := services.AgentTeamService.FindByIds(teamIDs)
 
 	userMap := make(map[int64]*models.User, len(users))
 	for i := range users {
@@ -45,9 +30,7 @@ func BuildAgentProfileList(items []models.AgentProfile) []response.AgentProfileR
 	return results
 }
 
-func BuildAgentProfileResponse(item *models.AgentProfile) *response.AgentProfileResponse {
-	user := services.UserService.Get(item.UserID)
-	team := services.AgentTeamService.Get(item.TeamID)
+func BuildAgentProfileResponse(item *models.AgentProfile, user *models.User, team *models.AgentTeam) *response.AgentProfileResponse {
 	return doBuildAgentProfileResponse(item, user, team)
 }
 

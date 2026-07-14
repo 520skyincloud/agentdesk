@@ -30,12 +30,20 @@ func (s *agentProfileService) Get(id int64) *models.AgentProfile {
 	return repositories.AgentProfileRepository.Get(sqls.DB(), id)
 }
 
+func (s *agentProfileService) GetInTenant(id int64, operator *dto.AuthPrincipal) *models.AgentProfile {
+	return repositories.AgentProfileRepository.GetInTenant(sqls.DB(), id, AgentTeamScopeService.ActiveTenantID(operator))
+}
+
 func (s *agentProfileService) Take(where ...interface{}) *models.AgentProfile {
 	return repositories.AgentProfileRepository.Take(sqls.DB(), where...)
 }
 
 func (s *agentProfileService) Find(cnd *sqls.Cnd) []models.AgentProfile {
 	return repositories.AgentProfileRepository.Find(sqls.DB(), cnd)
+}
+
+func (s *agentProfileService) FindInTenant(cnd *sqls.Cnd, operator *dto.AuthPrincipal) []models.AgentProfile {
+	return repositories.AgentProfileRepository.Find(sqls.DB(), AgentTeamScopeService.ApplyTenantFilter(cnd, operator))
 }
 
 func (s *agentProfileService) FindOne(cnd *sqls.Cnd) *models.AgentProfile {
@@ -48,6 +56,10 @@ func (s *agentProfileService) FindPageByParams(params *params.QueryParams) (list
 
 func (s *agentProfileService) FindPageByCnd(cnd *sqls.Cnd) (list []models.AgentProfile, paging *sqls.Paging) {
 	return repositories.AgentProfileRepository.FindPageByCnd(sqls.DB(), cnd)
+}
+
+func (s *agentProfileService) FindPageInTenant(cnd *sqls.Cnd, operator *dto.AuthPrincipal) (list []models.AgentProfile, paging *sqls.Paging) {
+	return repositories.AgentProfileRepository.FindPageByCnd(sqls.DB(), AgentTeamScopeService.ApplyTenantFilter(cnd, operator))
 }
 
 func (s *agentProfileService) Count(cnd *sqls.Cnd) int64 {
@@ -78,7 +90,7 @@ func (s *agentProfileService) MarkUserOnline(userID int64, username string, now 
 	if profile.LastStatusAt == nil {
 		columns["last_status_at"] = now
 	}
-	return repositories.AgentProfileRepository.Updates(sqls.DB(), profile.ID, columns)
+	return repositories.AgentProfileRepository.UpdatesInTenant(sqls.DB(), profile.ID, profile.TenantID, columns)
 }
 
 func (s *agentProfileService) GetUserIDsByTeamID(teamID int64) []int64 {
@@ -202,7 +214,7 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.Get(req.ID)
+	current := s.GetInTenant(req.ID, operator)
 	if current == nil {
 		return errorsx.InvalidParam("客服档案不存在")
 	}
@@ -219,7 +231,7 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 	if err != nil {
 		return err
 	}
-	if err := repositories.AgentProfileRepository.Updates(sqls.DB(), req.ID, map[string]any{
+	if err := repositories.AgentProfileRepository.UpdatesInTenant(sqls.DB(), req.ID, current.TenantID, map[string]any{
 		"tenant_id":                  item.TenantID,
 		"user_id":                    item.UserID,
 		"team_id":                    item.TeamID,
@@ -248,7 +260,7 @@ func (s *agentProfileService) DeleteAgentProfile(id int64, operator *dto.AuthPri
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	current := s.Get(id)
+	current := s.GetInTenant(id, operator)
 	if current == nil {
 		return errorsx.InvalidParam("客服档案不存在")
 	}
@@ -258,8 +270,7 @@ func (s *agentProfileService) DeleteAgentProfile(id int64, operator *dto.AuthPri
 	if repositories.AgentTeamSquadMemberRepository.Take(sqls.DB(), "agent_profile_id = ? AND status = ?", current.ID, enums.StatusOk) != nil {
 		return errorsx.Forbidden("客服仍属于客服小组，请先从所有小组移除")
 	}
-	repositories.AgentProfileRepository.Delete(sqls.DB(), id)
-	return nil
+	return repositories.AgentProfileRepository.DeleteInTenant(sqls.DB(), id, current.TenantID)
 }
 
 func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgentProfileRequest) (*models.AgentProfile, error) {

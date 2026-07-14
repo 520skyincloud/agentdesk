@@ -112,6 +112,15 @@ func (r *userRepository) FindByIds(db *gorm.DB, ids []int64) []models.User {
 	return list
 }
 
+func (r *userRepository) FindByIdsInTenant(db *gorm.DB, ids []int64, tenantID int64) []models.User {
+	if len(ids) == 0 || tenantID <= 0 {
+		return []models.User{}
+	}
+	var list []models.User
+	db.Where("id IN ? AND tenant_id = ?", ids, tenantID).Find(&list)
+	return list
+}
+
 func (r *userRepository) GetByUsername(db *gorm.DB, username string) *models.User {
 	username = strings.TrimSpace(username)
 	if username == "" {
