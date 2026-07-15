@@ -47,6 +47,7 @@ func TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation(t *testing.T) {
 	if result.Invitation.TenantID != result.Tenant.ID || result.Invitation.Version != 1 || result.Invitation.Status != enums.StatusOk {
 		t.Fatalf("unexpected invitation: %+v", result.Invitation)
 	}
+	assertFreshTenantInvitationExpiry(t, result.Invitation)
 	if result.Invitation.CodeHash != hashTenantInvitationCode(result.InvitationCode) {
 		t.Fatal("invitation hash does not match the one-time plaintext")
 	}
@@ -147,6 +148,7 @@ func TestTenantInvitationServiceRotateInvalidatesOldCode(t *testing.T) {
 	if rotated.Version != 2 || newCode == created.InvitationCode {
 		t.Fatalf("unexpected rotated invitation: %+v code=%q", rotated, newCode)
 	}
+	assertFreshTenantInvitationExpiry(t, rotated)
 	old := repositories.TenantInvitationRepository.Get(db, created.Invitation.ID)
 	if old == nil || old.Status != enums.StatusDisabled || old.RotatedAt == nil {
 		t.Fatalf("old invitation was not invalidated: %+v", old)
@@ -451,6 +453,18 @@ func tenantManagementCreateRequest(suffix, registrationNo string) request.Create
 			Mobile:   "139" + registrationNo[len(registrationNo)-8:],
 			Email:    "supervisor_" + suffix + "@tenant.example.com",
 		},
+	}
+}
+
+func assertFreshTenantInvitationExpiry(t *testing.T, invitation *models.TenantInvitation) {
+	t.Helper()
+	if invitation == nil || invitation.ExpiresAt == nil {
+		t.Fatalf("invitation expiry missing: %+v", invitation)
+	}
+	want := time.Duration(constants.TenantInvitationValidityDays) * 24 * time.Hour
+	got := invitation.ExpiresAt.Sub(invitation.CreatedAt)
+	if got < want-time.Minute || got > want+time.Minute {
+		t.Fatalf("invitation validity=%v want approximately %v", got, want)
 	}
 }
 

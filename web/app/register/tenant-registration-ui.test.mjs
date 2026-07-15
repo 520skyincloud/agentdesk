@@ -43,6 +43,13 @@ test("invitation rotation warns about invalidating old links", () => {
   assert.match(invitationSource, /registrationClosedHint/)
 })
 
+test("expired invitations are visible but cannot be copied for registration", () => {
+  assert.match(invitationSource, /invitation\.expired/)
+  assert.match(invitationSource, /invitationExpiredHint/)
+  assert.match(invitationSource, /disabled=\{invitation\.expired\}/)
+  assert.match(invitationSource, /formatDateTime\(invitation\.expiresAt\)/)
+})
+
 test("registration approval only offers backend-assignable enabled roles", () => {
   assert.match(reviewSource, /role\.assignable && role\.status === Status\.Ok/)
   assert.match(reviewSource, /TenantRegistrationReviewDecision\.Approve/)

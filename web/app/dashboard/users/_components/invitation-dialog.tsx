@@ -164,14 +164,31 @@ export function InvitationDialog({
                   </div>
                 </div>
               </div>
-              <Badge variant={registrationEnabled ? "secondary" : "outline"}>
-                {registrationEnabled
+              <Badge
+                variant={
+                  invitation.expired
+                    ? "destructive"
+                    : registrationEnabled
+                      ? "secondary"
+                      : "outline"
+                }
+              >
+                {invitation.expired
+                  ? t("tenantRegistration.invitationExpired")
+                  : registrationEnabled
                   ? t("tenantRegistration.registrationOpen")
                   : t("tenantRegistration.registrationClosed")}
               </Badge>
             </div>
 
-            {!registrationEnabled ? (
+            {invitation.expired ? (
+              <Alert variant="destructive">
+                <AlertTitle>{t("tenantRegistration.invitationExpired")}</AlertTitle>
+                <AlertDescription>
+                  {t("tenantRegistration.invitationExpiredHint")}
+                </AlertDescription>
+              </Alert>
+            ) : !registrationEnabled ? (
               <Alert>
                 <AlertTitle>{t("tenantRegistration.registrationClosed")}</AlertTitle>
                 <AlertDescription>
@@ -196,6 +213,7 @@ export function InvitationDialog({
                   variant="outline"
                   size="icon"
                   aria-label={t("tenantRegistration.copyCode")}
+                  disabled={invitation.expired}
                   onClick={() => void copyValue(invitation.code, "code")}
                 >
                   {copied === "code" ? <CheckIcon /> : <CopyIcon />}
@@ -222,6 +240,7 @@ export function InvitationDialog({
                   variant="outline"
                   size="icon"
                   aria-label={t("tenantRegistration.copyLink")}
+                  disabled={invitation.expired}
                   onClick={() => void copyValue(absoluteInviteLink, "link")}
                 >
                   {copied === "link" ? <CheckIcon /> : <CopyIcon />}
@@ -229,7 +248,7 @@ export function InvitationDialog({
               </div>
             </div>
 
-            <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-t pt-4 text-sm sm:grid-cols-4">
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-t pt-4 text-sm sm:grid-cols-3">
               <div>
                 <dt className="text-xs text-muted-foreground">
                   {t("tenantRegistration.usedCount")}
@@ -247,6 +266,12 @@ export function InvitationDialog({
                   {t("tenantRegistration.createdAt")}
                 </dt>
                 <dd className="mt-1 font-medium">{formatDateTime(invitation.createdAt)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {t("tenantRegistration.expiresAt")}
+                </dt>
+                <dd className="mt-1 font-medium">{formatDateTime(invitation.expiresAt)}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted-foreground">

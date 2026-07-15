@@ -7,6 +7,7 @@ import { ProjectDialog } from "@/components/project-dialog"
 import { Button } from "@/components/ui/button"
 import { useI18n } from "@/i18n/provider"
 import type { CreateTenantResult } from "@/lib/api/tenant"
+import { formatDateTime } from "@/lib/utils"
 
 type TenantCreationResultDialogProps = {
   result: CreateTenantResult | null
@@ -33,6 +34,10 @@ export function TenantCreationResultDialog({
     },
     { label: t("tenant.resultInvitationCode"), value: result.invitation.code },
     { label: t("tenant.resultInvitationLink"), value: invitationLink },
+    {
+      label: t("tenant.resultInvitationExpiresAt"),
+      value: formatDateTime(result.invitation.expiresAt),
+    },
     {
       label: t("tenant.resultDefaultTeamId"),
       value: String(result.defaultAgentTeamId),

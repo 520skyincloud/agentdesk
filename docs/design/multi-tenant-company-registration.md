@@ -162,6 +162,7 @@
 | `Version` | 重置版本 |
 | `UsedCount` | 成功注册次数 |
 | `LastUsedAt` | 最近使用时间 |
+| `ExpiresAt` | 到期时间；缺失或不晚于当前时间时不可注册 |
 | `RotatedAt` | 最近重置时间 |
 | `Status` | 有效、失效 |
 | `AuditFields` | 创建和重置审计 |
@@ -170,6 +171,8 @@
 
 - 使用密码学安全随机数生成，不能使用数据库 ID、社会信用代码或顺序编号。
 - 全局唯一，不能暴露租户 ID。
+- 新建和重置的邀请码有效期均为 90 天；历史有效邀请码由 migration 58 从迁移执行时间起补齐 90 天。
+- 运行时对缺失 `ExpiresAt` 的邀请码 fail closed，不能把未迁移或脏数据当作永久有效。
 - 公司停用时自动不可用。
 - 重置后旧邀请码立即失效。
 - 日志不得明文记录邀请码。
@@ -2442,3 +2445,17 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 公开注册只在本地验收期间临时开启，并验证缺少邀请码密钥或 Asset 签名密钥时服务拒绝启动。验收结束后 `/tmp` 和仓库默认均恢复 `tenantRegistration.enabled: false`，不把测试开关误当生产开放决定。
 
 本批无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket、权限码或业务状态变化。回滚只会恢复 lint/race 门禁失败，不需要数据库回滚。
+
+## 89. 当前实施检查点：公司邀请码到期闭环（2026-07-15）
+
+最终验收复核发现第 16 节要求“过期邀请码不能注册”，但原 `TenantInvitation` 没有到期字段，既有生命周期测试也只覆盖无效、重置和停用公司。第 88 批验收矩阵将“过期”误写为已通过。本批补齐真实数据契约、运行时拒绝和界面状态，并修正文档证据。
+
+- `TenantInvitation` 新增可空 `ExpiresAt`。新建公司和重置邀请码都写入当前时间后 90 天；有效性统一要求状态启用、`ExpiresAt` 存在且晚于当前时间。公开校验和正式注册在事务内二次校验时都执行相同策略，避免只校验页面后绕过。
+- migration 58 只对 `status=启用且 expires_at IS NULL` 的历史邀请码回填“迁移执行时间 + 90 天”；已失效邀请码保持原样，已有到期值不覆盖，重复运行不延长有效期。DDL 继续由 AutoMigrate 增加兼容 SQLite/MySQL 的 datetime 索引列。
+- 邀请响应以向后兼容方式新增 `expiresAt` 和 `expired`。公司创建结果显示到期时间；公司主管仍可查看已过期邀请码以诊断，但页面明确提示过期、禁用复制邀请码/链接，并保留重置动作。重置后版本递增、生成新的 90 天期限并恢复复制。
+- service 测试覆盖新建/重置有效期、缺失/过去/未来到期策略，以及过期邀请码对 Validate 和 Register 的共同拒绝。migration 测试覆盖启用空值回填、失效空值不动、既有值不覆盖和幂等。
+- 最终宽范围 race 复跑暴露 SQLite 不执行 `FOR UPDATE` 时，同一请求的多个注册事务可能同时从读锁升级写锁并全部死锁。注册和审核写事务现在仅在 SQLite 驱动下使用进程内互斥串行；MySQL 仍使用既有行锁和并发模型。该互斥不包围密码哈希或只读校验，也不改变请求幂等结果。
+- 真实 SQLite 验收库确认 migration 58 成功登记，历史启用邀请码完成回填；浏览器在桌面和 412x915 视口确认过期提示、到期时间、复制禁用和重置恢复。独立 MySQL 8.4 tmpfs 实例完成首次建库、模拟历史空值后重跑 58、重复执行及既有未来值保留，实例已销毁。
+- 本批新增 model 字段、AutoMigrate DDL、DML migration 58 和响应 DTO 字段；没有权限码、角色、Gin 路由、请求 DTO、enum、WebSocket、AI 回复、模型调用、token、usage 或计费变化。公开注册仍保持关闭。
+- `internal/models/models.go` 是 AI 分支共享文件，合并时必须同时保留两边模型注册和本字段。migration 58 当前高于集成分支 57，并已核对 `origin/main`、`origin/codex/customer-audit`、`origin/codex/ai-billing` 无重复版本；最终 push 前再次 fetch 复核。
+- 代码回滚不会自动删除 AutoMigrate 已增加的 `expires_at`，也不应清除 migration 58 已回填的数据。紧急停用可回滚运行时和界面接线但保留列与历史到期值；恢复旧逻辑会重新允许永久邀请码，不建议作为长期方案。

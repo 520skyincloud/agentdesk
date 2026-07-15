@@ -4390,3 +4390,35 @@ git diff --check
 - `internal/ai/runtime/executor/answerability_gate_test.go` 属于 AI 分支同文件范围，但只修改测试同步；合并时保留 mutex 即可。四个前端文件属于共享基础设施，后续双方均应以本批 lint 通过版本为准。
 - 回滚前端文件会恢复全量 lint 的 5 个 error；回滚测试 mutex 会恢复 AI Runtime race 失败。均不需要数据库回滚。
 - 不提交 `.codex/audits/`、`docs/generated/`、`/tmp` 配置或验收数据库。公开注册继续关闭。
+
+## 第 89 批：公司邀请码到期闭环与验收纠错（2026-07-15）
+
+### 目标与真实缺口
+
+- 第 16 节要求过期邀请码不能注册，但第 88 批复核前 `TenantInvitation` 没有到期字段，`TestTenantRegistrationValidateInvitationTracksCurrentLifecycle` 也未构造过期数据。验收矩阵把“过期”写为通过是无效证据，本批明确纠正，不以文档结论替代真实代码。
+- 本批只补齐公司邀请码生命周期，不开放公开注册，不改变租户角色、权限派发、客服组、会话、AI 回复或计费逻辑。
+
+### 数据、接口与页面
+
+- `TenantInvitation` 增加 `ExpiresAt *time.Time`，AutoMigrate 创建兼容 SQLite/MySQL 的 datetime 索引列。新公司首码与每次重置码统一写入 90 天期限，常量为 `TenantInvitationValidityDays=90`。
+- 新增统一策略 `tenantInvitationUsableAt`：对象必须存在、状态启用、到期时间非空且晚于当前时间。公开校验和注册事务内复核共同使用；缺失 `expires_at` fail closed。
+- 最终宽范围 race 发现 SQLite 的 `FOR UPDATE` 不生效，六路相同注册事务可能全部在读锁升级写锁时死锁。`tenantRegistrationService.withWriteTransaction` 仅在 SQLite 驱动下串行注册/审核写事务；MySQL 继续使用 Tenant/Invitation/User/Role 行锁，密码哈希和只读预检不在互斥区内。
+- DML migration 58 只回填历史“启用 + 空到期时间”记录，值为执行时刻后 90 天；失效记录、已有值不改，重复执行不延长期限。
+- `TenantInvitationResponse` 向后兼容新增 `expiresAt`、`expired`。公司创建结果显示到期时间；用户管理邀请浮窗显示过期提示和到期时间，禁用复制邀请码/链接，但保留原 `tenantInvite.rotate` 重置入口。
+- 没有新增或修改权限码、角色、Gin 路由、请求 DTO、enum、WebSocket payload、AI runtime、模型调用、token、usage 或计费口径。公开注册配置继续为 false。
+
+### 文件与验证
+
+- 后端/数据：`internal/models/models.go`、`internal/pkg/constants/auth.go`、Tenant response/builder、公司/邀请/注册 service 与测试、新增邀请策略及测试、migration 58 与测试。
+- 前端：`web/lib/api/tenant.ts`、公司创建结果、邀请浮窗、注册 UI 契约测试和中英文资源。
+- 文档：本文件、`docs/design/multi-tenant-company-registration.md`、`docs/development/tenant-company-acceptance.md`。
+- 全仓 Go、vet、两组 service race、Handler/AI Runtime race、前端 lint/typecheck/生产构建、50 个 Node 契约文件共 128 个用例、JSON、diff 和冲突检查均通过；同请求并发注册修复后定向 race 连续 20 次通过。
+- 真实 SQLite 验收库确认 migration 58 成功、历史启用记录回填、新重置码到期时间为未来 90 天。浏览器桌面与 412x915 均确认过期提示、到期显示、复制禁用和重置恢复。
+- 独立临时 MySQL 8.4 tmpfs 实例完成首次建库；人工模拟启用空到期值并移除 58 执行记录后，重跑成功回填 90 天，既有未来值保持不变；再次执行结果和记录均稳定。实例、临时配置和验证数据已销毁。
+
+### 并行分支、合并与回滚
+
+- 开始本批时基线仍为 `origin/codex/customer-audit@c706815`、`origin/codex/ai-billing@f2d2da4`。`internal/models/models.go` 是 AI 分支共享文件，合并时必须同时保留双方模型字段和注册；其余本批代码未发现 AI 回复/计费同文件语义修改。
+- migration 58 在创建时高于集成分支 57；当时 `origin/main` 最大 20、customer-audit 最大 56、ai-billing 最大 33，无重复版本。push 前再次 fetch，若任一分支前进或出现 58，先协调迁移号，不能直接推送。
+- 建议第 87/88 批后合并本批。响应字段是兼容新增，旧前端可忽略；新前端依赖后端返回 `expired` 以禁用复制，因此部署顺序优先后端再前端。
+- 回滚代码不会删除 AutoMigrate 新列，也不得删除 migration 58 记录或清空已回填到期值。可以回滚 UI/运行时接线并保留数据，但会恢复永久邀请码风险；公开注册应始终保持关闭直到重新完成验收。

@@ -65,6 +65,24 @@ func TestTenantRegistrationValidateInvitationTracksCurrentLifecycle(t *testing.T
 	if err != nil || !newResult.Valid {
 		t.Fatalf("new invitation result=%+v error=%v want valid", newResult, err)
 	}
+	expiredAt := time.Now().Add(-time.Minute)
+	if err := fixture.db.Model(&models.TenantInvitation{}).Where("id = ?", rotated.ID).Update("expires_at", expiredAt).Error; err != nil {
+		t.Fatalf("expire invitation: %v", err)
+	}
+	expiredResult, err := TenantRegistrationService.ValidateInvitation(newCode, registrationMeta("validate-expired"))
+	if err != nil || expiredResult.Valid {
+		t.Fatalf("expired invitation result=%+v error=%v want invalid", expiredResult, err)
+	}
+	if _, err := TenantRegistrationService.Register(
+		registrationRequest(newCode, "expiredinvite"),
+		registrationMeta("register-expired-invite"),
+	); !hasCode(err, errorsx.CodeInvalidParam) {
+		t.Fatalf("expired invitation Register() error=%v want invalid invitation", err)
+	}
+	futureExpiry := time.Now().Add(time.Hour)
+	if err := fixture.db.Model(&models.TenantInvitation{}).Where("id = ?", rotated.ID).Update("expires_at", futureExpiry).Error; err != nil {
+		t.Fatalf("restore invitation expiry: %v", err)
+	}
 	if _, err := TenantRegistrationService.Register(
 		registrationRequest(fixture.invitationCode, "oldinvite"),
 		registrationMeta("register-old-invite"),

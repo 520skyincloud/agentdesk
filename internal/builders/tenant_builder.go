@@ -2,6 +2,7 @@ package builders
 
 import (
 	"net/url"
+	"time"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
@@ -80,6 +81,8 @@ func BuildTenantInvitation(item *models.TenantInvitation, tenant *models.Tenant,
 		Version:    item.Version,
 		UsedCount:  item.UsedCount,
 		LastUsedAt: utils.FormatTimePtr(item.LastUsedAt),
+		ExpiresAt:  utils.FormatTimePtr(item.ExpiresAt),
+		Expired:    item.ExpiresAt == nil || !item.ExpiresAt.After(time.Now()),
 		CreatedAt:  utils.FormatTime(item.CreatedAt),
 		RotatedAt:  utils.FormatTimePtr(item.RotatedAt),
 	}

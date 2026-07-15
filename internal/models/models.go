@@ -236,6 +236,7 @@ type TenantInvitation struct {
 	Version        int          `gorm:"type:int;not null;default:1;uniqueIndex:uk_tenant_invitation_version"`
 	UsedCount      int64        `gorm:"type:bigint;not null;default:0"`
 	LastUsedAt     *time.Time   `gorm:"type:datetime;index"`
+	ExpiresAt      *time.Time   `gorm:"type:datetime;index"`
 	RotatedAt      *time.Time   `gorm:"type:datetime;index"`
 	Status         enums.Status `gorm:"type:int;not null;default:0;index"`
 	AuditFields

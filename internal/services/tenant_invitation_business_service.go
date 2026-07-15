@@ -79,6 +79,7 @@ func (s *tenantInvitationService) Rotate(tenantID int64, operator *dto.AuthPrinc
 			CodeCiphertext: ciphertext,
 			CodeLast4:      code[len(code)-4:],
 			Version:        version,
+			ExpiresAt:      tenantInvitationExpiresAt(now),
 			RotatedAt:      &now,
 			Status:         enums.StatusOk,
 			AuditFields:    utils.BuildAuditFields(operator),

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-desk/internal/models"
@@ -45,7 +46,9 @@ var (
 	invitationCodePattern     = regexp.MustCompile(`^inv_[0-9a-f]{48}$`)
 )
 
-type tenantRegistrationService struct{}
+type tenantRegistrationService struct {
+	sqliteWriteMu sync.Mutex
+}
 
 type PublicRegistrationMeta struct {
 	RequestID string
@@ -175,20 +178,20 @@ func (s *tenantRegistrationService) Register(req request.RegisterTenantUserReque
 	}
 
 	var user *models.User
-	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	err = s.withWriteTransaction(func(ctx *sqls.TxContext) error {
 		currentTenant, err := repositories.TenantRepository.GetForUpdate(ctx.Tx, tenant.ID)
 		if err != nil {
 			return err
 		}
 		currentInvitation := repositories.TenantInvitationRepository.Get(ctx.Tx, invitation.ID)
 		current := repositories.TenantInvitationRepository.FindCurrent(ctx.Tx, tenant.ID)
-		if currentInvitation == nil || current == nil || current.ID != currentInvitation.ID || currentInvitation.Status != enums.StatusOk || currentTenant == nil || currentTenant.Status != enums.StatusOk {
+		now := time.Now()
+		if currentInvitation == nil || current == nil || current.ID != currentInvitation.ID || !tenantInvitationUsableAt(currentInvitation, now) || currentTenant == nil || currentTenant.Status != enums.StatusOk {
 			return errorsx.InvalidParam("邀请码无效、已失效或公司暂不可用")
 		}
 		if registrationIdentityExists(ctx.Tx, normalized) {
 			return errorsx.InvalidParam("注册信息不可用或已经提交")
 		}
-		now := time.Now()
 		mobile, email := normalized.Mobile, normalized.Email
 		user = &models.User{
 			TenantID:           tenant.ID,
@@ -279,7 +282,7 @@ func (s *tenantRegistrationService) Review(req request.ReviewTenantRegistrationR
 	}
 
 	var reviewed *models.User
-	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	err = s.withWriteTransaction(func(ctx *sqls.TxContext) error {
 		tenant, err := repositories.TenantRepository.GetForUpdate(ctx.Tx, operator.ActiveTenantID)
 		if err != nil {
 			return err
@@ -360,13 +363,22 @@ func (s *tenantRegistrationService) createSecurityLog(db *gorm.DB, input securit
 	})
 }
 
+func (s *tenantRegistrationService) withWriteTransaction(fn func(ctx *sqls.TxContext) error) error {
+	db := sqls.DB()
+	if db != nil && db.Dialector.Name() == "sqlite" {
+		s.sqliteWriteMu.Lock()
+		defer s.sqliteWriteMu.Unlock()
+	}
+	return sqls.WithTransaction(fn)
+}
+
 func (s *tenantRegistrationService) resolveActiveInvitation(db *gorm.DB, code string) (*models.TenantInvitation, *models.Tenant) {
 	code = normalizeTenantInvitationCode(code)
 	if !invitationCodePattern.MatchString(code) {
 		return nil, nil
 	}
 	invitation := repositories.TenantInvitationRepository.GetByCodeHash(db, hashTenantInvitationCode(code))
-	if invitation == nil || invitation.Status != enums.StatusOk {
+	if !tenantInvitationUsableAt(invitation, time.Now()) {
 		return nil, nil
 	}
 	current := repositories.TenantInvitationRepository.FindCurrent(db, invitation.TenantID)

@@ -25,6 +25,10 @@ const (
 	RoleAuthorityMember      = 20
 )
 
+// TenantInvitationValidityDays is the first-version validity window for a
+// newly created or rotated company invitation.
+const TenantInvitationValidityDays = 90
+
 const (
 	StoreManagedModeFull = "full"
 	StoreManagedModeSemi = "semi"

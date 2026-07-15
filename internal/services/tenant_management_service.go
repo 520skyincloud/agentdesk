@@ -115,6 +115,7 @@ func (s *tenantService) CreateTenant(req request.CreateTenantRequest, operator *
 			CodeCiphertext: invitationCiphertext,
 			CodeLast4:      invitationCode[len(invitationCode)-4:],
 			Version:        1,
+			ExpiresAt:      tenantInvitationExpiresAt(now),
 			Status:         enums.StatusOk,
 			AuditFields:    utils.BuildAuditFields(operator),
 		}

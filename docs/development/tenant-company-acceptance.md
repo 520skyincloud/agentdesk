@@ -41,7 +41,7 @@
 | 要求 | 直接证据 | 结果 |
 | --- | --- | --- |
 | 有效邀请码创建正确租户的待审核账号 | `TestTenantRegistrationCreatesPendingRolelessAccountAndReplaysExactly`；浏览器邀请链接识别甲公司并生成待审核账号 | 通过 |
-| 无效、过期、重置旧码和停用公司邀请码不能注册 | `TestTenantRegistrationValidateInvitationTracksCurrentLifecycle`；浏览器重置邀请码后旧链接立即显示无效 | 通过 |
+| 无效、过期、重置旧码和停用公司邀请码不能注册 | `TestTenantRegistrationValidateInvitationTracksCurrentLifecycle` 现在分别覆盖过期码的 Validate/Register 拒绝、旧码和停用公司；`TestTenantInvitationUsableAtFailsClosedForMissingOrExpiredDeadline` 覆盖缺失/过去/未来边界；浏览器确认过期码不可复制且重置后恢复 | 通过 |
 | tenantId、roleIds 不能由注册者控制 | `TestTenantRegistrationRejectsCallerControlledScope` | 通过 |
 | 重复提交只创建一个账号 | `TestTenantRegistrationConcurrentReplayCreatesOneAccount` 在 race 下通过 | 通过 |
 | 未审核账号不能访问后台 | `TestResolveAuthPrincipalRejectsPendingAndInconsistentAccounts`；浏览器审核前登录返回统一认证失败 | 通过 |
@@ -63,13 +63,13 @@
 | --- | --- | --- |
 | Go 单元与集成测试 | `go test ./... -count=1` | 通过 |
 | Go 静态检查 | `go vet ./...` | 通过 |
-| 关键并发路径 | 注册、角色、公司、客服小组/派单、租户运行链、AI Runtime 使用 `go test -race ... -p 1` | 通过 |
+| 关键并发路径 | 注册、角色、公司、客服小组/派单、租户运行链、AI Runtime 使用 `go test -race ... -p 1`；同请求并发注册修复后定向连续 20 次通过 | 通过 |
 | 前端类型 | `pnpm --dir web typecheck` | 通过 |
 | 前端 lint | `pnpm --dir web lint`，0 error，保留 33 个 warning | 通过 |
-| 前端生产构建 | `pnpm --dir web build`，46 个页面生成完成 | 通过 |
+| 前端生产构建与契约 | `pnpm --dir web build` 生成 46 个页面；50 个 `.test.mjs` 文件共 128 个用例通过 | 通过 |
 | SQLite | 真实验收库只读 tenant-integrity-audit 为 59/73/154、0 违规 | 通过 |
-| MySQL | MySQL 8.4 首次/重复 migration、复合唯一索引和只读审计通过；同租户重复键被 1062 拒绝，跨租户同键允许 | 通过 |
-| 浏览器桌面/移动端 | 公司创建、编辑、启停、主管、邀请、注册、审核、权限、双标签、412x915 布局 | 通过 |
+| MySQL | MySQL 8.4 首次/重复 migration、复合唯一索引和只读审计通过；migration 58 额外完成历史启用空到期值回填、既有未来值保留和重复执行不延长 | 通过 |
+| 浏览器桌面/移动端 | 公司创建、编辑、启停、主管、邀请、注册、审核、权限、双标签、412x915 布局；过期邀请码提示/禁用复制/重置恢复均实测 | 通过 |
 
 ## 3. 第 17 节验收标准证据
 
@@ -85,11 +85,15 @@
 | 查看权限保守显示，动作权限隐藏 | 公司主管角色页、客服用户页浏览器实测 | 通过 |
 | 列表、详情、写、导出、WebSocket、回调、任务、向量和文件通过双租户隔离 | service/handler/race 套件与 59/73/154 审计组合覆盖；具体测试见第 2 节 | 通过 |
 | 旧渠道页被替换，Channel 消息链保持可用 | `/dashboard/channels` 展示接入公司；租户 Channel、Conversation、WxWork 和 Outbox 测试继续通过 | 通过 |
-| 历史数据完成租户映射，无未确认账号开放到多租户 | migration 34-57 回填测试；浏览器写入后真实 SQLite 审计 0 违规 | 通过 |
+| 历史数据完成租户映射，无未确认账号开放到多租户 | migration 34-58 回填测试；浏览器写入后真实 SQLite 审计 0 违规 | 通过 |
 | SQLite、MySQL、Go、前端类型和关键浏览器流程通过 | 第 2.5 节全部通过 | 通过 |
 
 ## 4. 本批修复与风险
 
+- 复核发现此前第 2.3 节把“过期邀请码”并入生命周期测试，但当时模型没有 `ExpiresAt`，测试也未构造过期条件，属于验收假阳性。现已增加 `ExpiresAt`、90 天策略、migration 58、Validate/Register 双重拒绝测试和真实浏览器证据；不再沿用旧结论。
+- 历史启用邀请码从 migration 58 执行时起获得 90 天有效期；缺失到期时间在运行时 fail closed。已失效记录不回填，既有到期值不覆盖，避免迁移把旧码重新激活或延长。
+- 过期邀请码仍可由有 `tenantInvite.view` 的公司主管查看，用于确认原因；复制入口禁用，只有既有 `tenantInvite.rotate` 可生成新码。没有新增隐藏权限或账号级权限。
+- 宽范围 race 首次暴露 SQLite 的六路并发注册可能全部发生锁升级死锁。注册/审核写事务现仅在 SQLite 驱动下进程内串行，MySQL 行锁路径不变；`TestTenantRegistrationConcurrentReplayCreatesOneAccount` 需以 race 多次复跑作为门禁。
 - 修复 React 19 全量 lint 的 5 个 error：编辑器 actions 改为不可变构造；全屏不再用同步 mounted effect；主题和语言改为 `useSyncExternalStore`。存储键和产品交互不变。
 - 修复 `fakeKnowledgeContextRetriever` 在并发检索测试中的记录切片数据竞争。仅修改测试替身，不改变 AI 检索并发、模型调用、回复逻辑、token 或计费。
 - 全量 lint 仍有 33 个 warning，主要是既有图片优化、Hook dependency 和 minified SDK 告警；不阻断本次验收，但后续应单独治理。
@@ -98,5 +102,7 @@
 ## 5. 并行分支与回滚
 
 - `internal/ai/runtime/executor/answerability_gate_test.go` 来自 AI 分支范围，本批只增加测试互斥；合并 AI 分支后应保留该测试修复。
+- `internal/models/models.go` 是 AI 分支共享文件；合并时保留 `TenantInvitation.ExpiresAt` 及双方模型注册。响应 DTO 和 `web/lib/api/tenant.ts` 只做向后兼容字段新增。
+- migration 58 已在 SQLite 和独立 MySQL 8.4 验证。回滚代码时保留 `expires_at` 列与已回填值，不删除 migration 记录；公开注册继续关闭。
 - 四个前端 lint 文件属于共享前端基础设施；不涉及 models、migration、DTO、enum、API、路由、WebSocket 或权限码。
 - 回滚前端修复会恢复全量 lint 失败；回滚测试互斥会恢复 race 失败。两类回滚都不需要数据库操作。

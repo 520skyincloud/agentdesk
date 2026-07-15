@@ -74,6 +74,8 @@ export type TenantInvitation = {
   version: number
   usedCount: number
   lastUsedAt?: string
+  expiresAt?: string
+  expired: boolean
   createdAt: string
   rotatedAt?: string
 }

@@ -41,6 +41,8 @@ type TenantInvitationResponse struct {
 	Version    int    `json:"version"`
 	UsedCount  int64  `json:"usedCount"`
 	LastUsedAt string `json:"lastUsedAt,omitempty"`
+	ExpiresAt  string `json:"expiresAt,omitempty"`
+	Expired    bool   `json:"expired"`
 	CreatedAt  string `json:"createdAt"`
 	RotatedAt  string `json:"rotatedAt,omitempty"`
 }
