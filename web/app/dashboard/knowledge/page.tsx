@@ -27,6 +27,8 @@ import { DebugPanel } from "./_components/debug-panel"
 import { DocumentList, type DocumentListActionState } from "./_components/document-list"
 import { FAQList, type FAQListActionState } from "./_components/faq-list"
 import { KnowledgeBaseList } from "./_components/knowledge-base-list"
+import { KnowledgeResourcePanel } from "./_components/knowledge-resource-panel"
+import { FastGPTFilePanel } from "./_components/fastgpt-file-panel"
 import { RetrieveLogList } from "./_components/retrieve-log-list"
 
 export default function DashboardKnowledgeDocumentsPage() {
@@ -52,7 +54,10 @@ export default function DashboardKnowledgeDocumentsPage() {
   const canDeleteFAQ = permissions.has("knowledgeFAQ.delete")
   const isFAQKnowledgeBase = selectedKnowledgeBase?.knowledgeType === KnowledgeBaseType.FAQ
   const isFastGPTCloudKnowledgeBase = selectedKnowledgeBase?.knowledgeType === KnowledgeBaseType.FastGPTCloud
-  const visibleActiveTab = activeTab === "retrieveLogs" && !canViewDocuments ? "documents" : activeTab
+  const activeTabUnavailable =
+    (activeTab === "retrieveLogs" && !canViewDocuments) ||
+    ((activeTab === "fastgptFiles" || activeTab === "resources") && !isFastGPTCloudKnowledgeBase)
+  const visibleActiveTab = activeTabUnavailable ? "documents" : activeTab
 
   return (
     <div className="agentdesk-surface flex h-[calc(100vh-4rem)] overflow-hidden rounded-2xl">
@@ -92,6 +97,8 @@ export default function DashboardKnowledgeDocumentsPage() {
                 <TabsTrigger value="documents">
                   {isFastGPTCloudKnowledgeBase ? t("knowledge.cloudKnowledge") : isFAQKnowledgeBase ? t("knowledge.faq") : t("knowledge.document")}
                 </TabsTrigger>
+                {isFastGPTCloudKnowledgeBase ? <TabsTrigger value="fastgptFiles">文件管理</TabsTrigger> : null}
+                {isFastGPTCloudKnowledgeBase ? <TabsTrigger value="resources">图片资源</TabsTrigger> : null}
                 {canViewDocuments ? <TabsTrigger value="retrieveLogs">{t("knowledge.retrieveLogs")}</TabsTrigger> : null}
               </TabsList>
               {visibleActiveTab === "documents" && !isFAQKnowledgeBase && !isFastGPTCloudKnowledgeBase && canViewDocuments && documentActionState ? (
@@ -230,6 +237,12 @@ export default function DashboardKnowledgeDocumentsPage() {
               />
             </TabsContent>
           ) : null}
+          <TabsContent value="resources" className="min-h-0 flex-1">
+            <KnowledgeResourcePanel knowledgeBase={selectedKnowledgeBase} canSync={canUpdateKnowledgeBase} canDelete={canDeleteKnowledgeBase} />
+          </TabsContent>
+          <TabsContent value="fastgptFiles" className="min-h-0 flex-1">
+            <FastGPTFilePanel knowledgeBase={selectedKnowledgeBase} canUpload={canUpdateKnowledgeBase} canDelete={canDeleteKnowledgeBase} />
+          </TabsContent>
         </Tabs>
       </div>
       <Sheet open={debugPanelOpen && canViewDocuments} onOpenChange={setDebugPanelOpen}>

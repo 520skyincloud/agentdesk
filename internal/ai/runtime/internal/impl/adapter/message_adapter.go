@@ -22,19 +22,26 @@ type HistoryBuildResult struct {
 	MemoryItemCount int
 }
 
-func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit int) HistoryBuildResult {
+func BuildHistoryMessages(conversationID, currentMessageID, tenantID int64, limit int) HistoryBuildResult {
 	if conversationID <= 0 {
 		return HistoryBuildResult{}
 	}
 	if limit <= 0 {
-		limit = configuredHistoryLimit(conversationID)
+		limit = configuredHistoryLimit(conversationID, tenantID)
 	}
-	sessionNo := currentSessionNo(currentMessageID)
-	items := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
+	sessionNo := currentSessionNo(currentMessageID, tenantID)
+	cnd := sqls.NewCnd().
 		Eq("conversation_id", conversationID).
 		Eq("session_no", sessionNo).
 		Desc("id").
-		Limit(limit+1))
+		Limit(limit + 1)
+	if currentMessageID > 0 {
+		cnd.Lt("id", currentMessageID)
+	}
+	if tenantID > 0 {
+		cnd.Eq("tenant_id", tenantID)
+	}
+	items := repositories.MessageRepository.Find(sqls.DB(), cnd)
 	oldestKeptMessageID := int64(0)
 	if len(items) > 0 {
 		oldestKeptMessageID = items[len(items)-1].ID
@@ -47,9 +54,6 @@ func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit in
 		RawItems: make([]models.Message, 0, len(items)),
 	}
 	for _, item := range items {
-		if item.ID == currentMessageID {
-			continue
-		}
 		msg := BuildSchemaMessage(&item)
 		if msg == nil {
 			continue
@@ -57,19 +61,25 @@ func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit in
 		ret.RawItems = append(ret.RawItems, item)
 		ret.Messages = append(ret.Messages, msg)
 	}
-	ret.MemoryMessage, ret.MemorySource, ret.MemoryItemCount = buildConversationMemoryMessage(conversationID, sessionNo, oldestKeptMessageID)
+	ret.MemoryMessage, ret.MemorySource, ret.MemoryItemCount = buildConversationMemoryMessage(conversationID, tenantID, sessionNo, oldestKeptMessageID)
 	return ret
 }
 
-func configuredHistoryLimit(conversationID int64) int {
+func configuredHistoryLimit(conversationID, tenantID int64) int {
 	if conversationID <= 0 {
 		return defaultHistoryLimit
 	}
 	state := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversationID)
+	if tenantID > 0 {
+		state = repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ? AND tenant_id = ?", conversationID, tenantID)
+	}
 	if state == nil || state.WxWorkInstanceID <= 0 {
 		return defaultHistoryLimit
 	}
 	instance := repositories.WxWorkProtocolInstanceRepository.Get(sqls.DB(), state.WxWorkInstanceID)
+	if tenantID > 0 {
+		instance = repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), state.WxWorkInstanceID, tenantID)
+	}
 	if instance == nil || instance.ContextMaxMessages <= 0 {
 		return defaultHistoryLimit
 	}
@@ -82,18 +92,24 @@ func configuredHistoryLimit(conversationID int64) int {
 	return instance.ContextMaxMessages
 }
 
-func buildConversationMemoryMessage(conversationID int64, sessionNo int, beforeMessageID int64) (*schema.Message, string, int) {
+func buildConversationMemoryMessage(conversationID, tenantID int64, sessionNo int, beforeMessageID int64) (*schema.Message, string, int) {
 	if conversationID <= 0 || sessionNo <= 0 || beforeMessageID <= 0 {
 		return nil, "", 0
 	}
 	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
-	storeID, instanceID := resolveConversationStoreScope(conversationID)
+	if tenantID > 0 {
+		conversation = repositories.ConversationRepository.GetInTenant(sqls.DB(), conversationID, tenantID)
+	}
+	storeID, instanceID := resolveConversationStoreScope(conversationID, tenantID)
 	cnd := sqls.NewCnd().
 		Eq("conversation_id", conversationID).
 		Eq("session_no", sessionNo).
 		Eq("status", 0).
 		Desc("last_message_id").
 		Desc("id")
+	if tenantID > 0 {
+		cnd.Eq("tenant_id", tenantID)
+	}
 	if conversation != nil && conversation.CustomerID > 0 {
 		cnd.Eq("customer_id", conversation.CustomerID)
 	}
@@ -134,23 +150,29 @@ func buildSummaryMemoryText(summary *models.ConversationSessionSummary) string {
 	return "以下是本会话更早消息的压缩记忆，只用于承接上下文；原始消息仍以数据库为准，不能把未完成动作说成已完成：\n" + strings.Join(parts, "\n")
 }
 
-func currentSessionNo(currentMessageID int64) int {
+func currentSessionNo(currentMessageID, tenantID int64) int {
 	if currentMessageID <= 0 {
 		return 1
 	}
 	message := repositories.MessageRepository.Get(sqls.DB(), currentMessageID)
+	if tenantID > 0 {
+		message = repositories.MessageRepository.GetInTenant(sqls.DB(), currentMessageID, tenantID)
+	}
 	if message == nil || message.SessionNo <= 0 {
 		return 1
 	}
 	return message.SessionNo
 }
 
-func resolveConversationStoreScope(conversationID int64) (int64, int64) {
+func resolveConversationStoreScope(conversationID, tenantID int64) (int64, int64) {
 	db := sqls.DB()
 	if db == nil {
 		return 0, 0
 	}
 	state := repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ?", conversationID)
+	if tenantID > 0 {
+		state = repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ? AND tenant_id = ?", conversationID, tenantID)
+	}
 	if state == nil {
 		return 0, 0
 	}
@@ -161,7 +183,7 @@ func BuildSchemaMessage(item *models.Message) *schema.Message {
 	if item == nil {
 		return nil
 	}
-	content := buildRuntimeMessageText(item)
+	content := RuntimeHistoryMessageContent(item)
 	if content == "" {
 		return nil
 	}
@@ -173,6 +195,49 @@ func BuildSchemaMessage(item *models.Message) *schema.Message {
 	default:
 		return nil
 	}
+}
+
+func RuntimeHistoryMessageContent(item *models.Message) string {
+	if item == nil {
+		return ""
+	}
+	content := buildRuntimeMessageText(item)
+	if content == "" {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	parts = append(parts, "历史消息", RuntimeSpeakerLabel(item.SenderType))
+	if timeLabel := RuntimeMessageTimeLabel(item); timeLabel != "" {
+		parts = append(parts, timeLabel)
+	}
+	return "[" + strings.Join(parts, "][") + "] " + content
+}
+
+func RuntimeSpeakerLabel(sender enums.IMSenderType) string {
+	switch sender {
+	case enums.IMSenderTypeCustomer:
+		return "客户"
+	case enums.IMSenderTypeAI:
+		return "AI客服"
+	case enums.IMSenderTypeAgent:
+		return "人工客服"
+	default:
+		return "未知发送方"
+	}
+}
+
+func RuntimeMessageTimeLabel(item *models.Message) string {
+	if item == nil {
+		return ""
+	}
+	at := item.CreatedAt
+	if item.SentAt != nil && !item.SentAt.IsZero() {
+		at = *item.SentAt
+	}
+	if at.IsZero() {
+		return ""
+	}
+	return at.Local().Format("2006-01-02 15:04:05")
 }
 
 func buildRuntimeMessageText(item *models.Message) string {

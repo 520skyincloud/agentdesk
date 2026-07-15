@@ -64,6 +64,13 @@ func (r *conversationSessionSummaryRepository) Updates(db *gorm.DB, id int64, co
 	return db.Model(&models.ConversationSessionSummary{}).Where("id = ?", id).Updates(columns).Error
 }
 
+func (r *conversationSessionSummaryRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.ConversationSessionSummary{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *conversationSessionSummaryRepository) Delete(db *gorm.DB, id int64) {
 	db.Delete(&models.ConversationSessionSummary{}, "id = ?", id)
 }

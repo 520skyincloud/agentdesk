@@ -40,3 +40,15 @@ func (r *knowledgeRetrieveLogRepository) FindHitsInTenant(db *gorm.DB, retrieveL
 	db.Where("retrieve_log_id = ? AND tenant_id = ?", retrieveLogID, tenantID).Order("rank_no asc, id asc").Find(&list)
 	return list
 }
+
+func (r *knowledgeRetrieveLogRepository) FindRecentQuestionsInTenant(db *gorm.DB, tenantID int64, limit int) ([]models.KnowledgeRetrieveLog, error) {
+	if tenantID <= 0 {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	items := make([]models.KnowledgeRetrieveLog, 0, limit)
+	err := db.Where("tenant_id = ? AND knowledge_base_id > 0 AND question <> ''", tenantID).Order("id DESC").Limit(limit).Find(&items).Error
+	return items, err
+}

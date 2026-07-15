@@ -11,6 +11,7 @@ var AIReplyService = newAIReplyService()
 
 func init() {
 	svc.TriggerAIReplyAsyncHook = AIReplyService.TriggerReplyAsync
+	svc.TriggerAIReplySyncHook = AIReplyService.TriggerReplySync
 }
 
 func newAIReplyService() *aiReplyService {

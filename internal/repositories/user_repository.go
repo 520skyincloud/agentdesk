@@ -108,6 +108,13 @@ func (r *userRepository) Updates(db *gorm.DB, id int64, columns map[string]inter
 	return
 }
 
+func (r *userRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.User{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
 func (r *userRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {
 	err = db.Model(&models.User{}).Where("id = ?", id).UpdateColumn(name, value).Error
 	return

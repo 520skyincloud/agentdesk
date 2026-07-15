@@ -487,3 +487,16 @@ Normalize -> IntentDetect -> IntentPromptSelect -> ContextBuild -> Tool/Knowledg
 
 - 没有出现新的规则误判；继续硬编码会牺牲门店知识边界。
 - 剩余提速应优先依赖知识治理、结构化 FAQ 和 Responses `previous_response_id`。
+
+### 2026-07-15 多租户运行时边界
+
+AI/计费分支合入租户主线后，回复 Runtime 不再只依赖全局主键唯一性保证数据正确，以下链路已统一使用会话或任务持久化的 TenantID：
+
+- Intent scope 和门店变量：按 `conversation_id + tenant_id` 读取 RouteState，再按 `instance/store/company id + tenant_id` 读取企微员工号、门店和公司。
+- 历史与记忆：历史 Message、当前 session、RouteState 和 ConversationSessionSummary 全部带 TenantID；新摘要写入 TenantID，更新使用 `id + tenant_id`。空闲扫描按 tenant/conversation/session 分组并同租户关联摘要。
+- 知识检索：KnowledgeRetriever 在调用 RAG 前按 `AIAgent.TenantID` 过滤 KnowledgeIDs；检索策略和 AnswerMode 只读取同租户 KnowledgeBase。合法配置的召回和排序语义不变。
+- 知识图片：资源组、资源项和 Asset 必须与会话企微员工号属于同一 TenantID；最终 Commit 再次按会话租户读取实例和 Asset，脏 trace 不能跨租户发送图片。
+- 异步任务：FastGPT 数据集任务和人工超时 AI 恢复任务从自身记录读取 TenantID，所有父对象读取和状态更新都使用该租户。媒体理解先从全局唯一 Message ID 解析持久化租户，之后更新、会话读取和 AI 触发均带租户。
+- 用量证据：AIUsageEvent 从显式 TenantID、Conversation、Message、KnowledgeBase、企微员工号、Store 和 Company 合并租户证据；任一证据冲突则拒绝落库。FastGPT 独立 token 的平台聚合记录是唯一允许 TenantID=0 的用量类型。
+
+这些改动只收紧数据读取和持久化边界，不改变意图判断、模型供应商、token 统计、计费口径、回复文案或转人工状态机。对应回归覆盖错误租户知识图片、Agent 跨租户 KnowledgeIDs、摘要跨租户消息和原有 Runtime 全包。

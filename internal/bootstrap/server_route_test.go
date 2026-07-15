@@ -41,6 +41,8 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 
 	expected := []string{
 		http.MethodPost + " /api/auth/login",
+		http.MethodPost + " /api/auth/email-code/send",
+		http.MethodPost + " /api/auth/email-code/login",
 		http.MethodGet + " /api/auth/oidc_login",
 		http.MethodGet + " /api/auth/oidc_callback",
 		http.MethodPost + " /api/auth/oidc_exchange",
@@ -196,6 +198,7 @@ func TestNewServerExposesPublicAuthOptions(t *testing.T) {
 			Enabled:      false,
 			ClientSecret: "must-not-leak",
 		},
+		Email:              config.EmailConfig{Enabled: true, Password: "smtp-secret"},
 		TenantRegistration: config.TenantRegistrationConfig{Enabled: true},
 	})
 
@@ -217,6 +220,7 @@ func TestNewServerExposesPublicAuthOptions(t *testing.T) {
 			WxWorkEnabled             bool `json:"wxworkEnabled"`
 			OIDCEnabled               bool `json:"oidcEnabled"`
 			TenantRegistrationEnabled bool `json:"tenantRegistrationEnabled"`
+			EmailCodeEnabled          bool `json:"emailCodeEnabled"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -231,11 +235,17 @@ func TestNewServerExposesPublicAuthOptions(t *testing.T) {
 	if body.Data.OIDCEnabled {
 		t.Fatalf("oidcEnabled=true want false")
 	}
+	if !body.Data.EmailCodeEnabled {
+		t.Fatalf("emailCodeEnabled=false want true")
+	}
 	if !body.Data.TenantRegistrationEnabled {
 		t.Fatalf("tenantRegistrationEnabled=false want true")
 	}
 	if strings.Contains(rec.Body.String(), "must-not-leak") {
 		t.Fatalf("response leaked sensitive OIDC config: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "smtp-secret") {
+		t.Fatalf("response leaked SMTP config: %s", rec.Body.String())
 	}
 }
 

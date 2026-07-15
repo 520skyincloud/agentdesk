@@ -36,6 +36,10 @@ func (s *companyService) GetInTenant(id int64, operator *dto.AuthPrincipal) *mod
 	return repositories.CompanyRepository.GetInTenant(sqls.DB(), id, companyTenantID(operator))
 }
 
+func (s *companyService) GetByTenantID(id, tenantID int64) *models.Company {
+	return repositories.CompanyRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *companyService) Take(where ...interface{}) *models.Company {
 	return repositories.CompanyRepository.Take(sqls.DB(), where...)
 }
@@ -88,14 +92,19 @@ func (s *companyService) CreateCompany(req request.CreateCompanyRequest, operato
 	if existing != nil {
 		return nil, errorsx.InvalidParam("公司名称已存在")
 	}
+	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	if err != nil {
+		return nil, err
+	}
 
 	item := &models.Company{
-		TenantID:    tenantID,
-		Name:        name,
-		Code:        strings.TrimSpace(req.Code),
-		Status:      enums.StatusOk,
-		Remark:      strings.TrimSpace(req.Remark),
-		AuditFields: utils.BuildAuditFields(operator),
+		TenantID:        tenantID,
+		Name:            name,
+		Code:            strings.TrimSpace(req.Code),
+		IntentProfileID: intentProfileID,
+		Status:          enums.StatusOk,
+		Remark:          strings.TrimSpace(req.Remark),
+		AuditFields:     utils.BuildAuditFields(operator),
 	}
 	if err := repositories.CompanyRepository.Create(sqls.DB(), item); err != nil {
 		if isDuplicateKeyError(err) {
@@ -123,15 +132,20 @@ func (s *companyService) UpdateCompany(req request.UpdateCompanyRequest, operato
 	if existing != nil && existing.ID != req.ID {
 		return errorsx.InvalidParam("公司名称已存在")
 	}
+	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
+	if err != nil {
+		return err
+	}
 
 	now := time.Now()
 	if err := repositories.CompanyRepository.UpdatesInTenant(sqls.DB(), req.ID, item.TenantID, map[string]any{
-		"name":             name,
-		"code":             strings.TrimSpace(req.Code),
-		"remark":           strings.TrimSpace(req.Remark),
-		"update_user_id":   operator.UserID,
-		"update_user_name": operator.Username,
-		"updated_at":       now,
+		"name":              name,
+		"code":              strings.TrimSpace(req.Code),
+		"intent_profile_id": intentProfileID,
+		"remark":            strings.TrimSpace(req.Remark),
+		"update_user_id":    operator.UserID,
+		"update_user_name":  operator.Username,
+		"updated_at":        now,
 	}); err != nil {
 		if isDuplicateKeyError(err) {
 			return errorsx.InvalidParam("公司名称已存在")
@@ -139,6 +153,17 @@ func (s *companyService) UpdateCompany(req request.UpdateCompanyRequest, operato
 		return err
 	}
 	return nil
+}
+
+func validateOptionalReplyIntentProfileID(id int64) (int64, error) {
+	if id <= 0 {
+		return 0, nil
+	}
+	item := ReplyIntentProfileService.Get(id)
+	if item == nil || item.Status != enums.StatusOk {
+		return 0, errorsx.InvalidParam("意图行业配置不存在")
+	}
+	return id, nil
 }
 
 func (s *companyService) DeleteCompany(id int64, operator dto.AuthPrincipal) error {

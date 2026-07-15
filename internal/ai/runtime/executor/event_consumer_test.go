@@ -132,6 +132,9 @@ func TestConsumeAgentEventsCollectsTokenUsage(t *testing.T) {
 	if collector.Data.Model.Usage.CachedPromptTokens != 80 {
 		t.Fatalf("expected cached tokens in trace, got %d", collector.Data.Model.Usage.CachedPromptTokens)
 	}
+	if len(summary.ModelUsageCalls) != 1 || summary.ModelUsageCalls[0].PromptTokens != 120 || summary.ModelUsageCalls[0].CachedPromptTokens != 80 {
+		t.Fatalf("expected one billable upstream usage call, got %+v", summary.ModelUsageCalls)
+	}
 }
 
 func TestConsumeAgentEventsSuppressesBareHandoffToolCallText(t *testing.T) {

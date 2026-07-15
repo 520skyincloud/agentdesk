@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { CopyIcon, LinkIcon, LocateFixedIcon, MapPinIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SlidersHorizontalIcon, UserRoundCogIcon, UsersRoundIcon } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { CopyIcon, LinkIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SlidersHorizontalIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
@@ -16,32 +16,38 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
+import { Textarea } from "@/components/ui/textarea"
 import {
   createWxWorkProtocolRemoteSetup,
+  createWxWorkProtocolReplacementSetup,
   createWxWorkProtocolInstance,
   deleteWxWorkProtocolInstance,
   fetchAIConfigsAll,
   fetchChannels,
   fetchKnowledgeBasesAll,
+  fetchReplyIntentProfiles,
   fetchStoreAIModelSettings,
   fetchWxWorkProtocolInstance,
   fetchWxWorkProtocolInstances,
   fetchWxWorkProtocolRoomList,
   fetchWxWorkProtocolRoomMembers,
-  getWxWorkProtocolLoginQrcode,
-  logoutWxWorkProtocolInstance,
   startWxWorkProtocolLogin,
+  testStoreAIModelSetting,
   updateStoreAIModelSettings,
   updateWxWorkProtocolInstance,
+  uploadAsset,
   type AIConfig,
   type AdminChannel,
   type CreateWxWorkProtocolInstancePayload,
   type KnowledgeBase,
+  type ReplyIntentProfile,
   type StoreAIModelSetting,
   type WxWorkProtocolInstance,
   type WxWorkProtocolRoomMemberOption,
   type WxWorkProtocolRoomOption,
 } from "@/lib/api/admin"
+import { deleteAsset } from "@/lib/api/asset"
 import { fetchCompanies, type AdminCompany } from "@/lib/api/company"
 import { getEnumOptions } from "@/lib/enums"
 import { Status, StatusLabels } from "@/lib/generated/enums"
@@ -58,6 +64,29 @@ type WxWorkProtocolInstanceManagerProps = {
   companyId?: number
   companyName?: string
   lockCompany?: boolean
+}
+
+type WelcomeCapableInstance = WxWorkProtocolInstance & {
+  welcomeEnabled?: boolean
+  welcomeImageAssetId?: string
+  welcomeImageUrl?: string
+  contactAutomationLastAt?: string | null
+  contactAutomationLastError?: string
+}
+
+type WelcomeSettingsDraft = {
+  enabled: boolean
+  message: string
+  imageAssetId: string
+  imageUrl: string
+  uploadedImageRecordId: number
+  sendMiniProgram: boolean
+  sendLocation: boolean
+}
+
+function buildAssetFileURL(assetId: string) {
+  const value = assetId.trim()
+  return value ? `/api/asset/file/${encodeURIComponent(value)}` : ""
 }
 
 function getStatusLabel(status: Status) {
@@ -252,10 +281,12 @@ function StoreAIModelSettingsDialog({
   aiConfigs,
   loading,
   saving,
+  testingUsageCode,
   canSave,
   onOpenChange,
   onChange,
   onSubmit,
+  onTest,
 }: {
   open: boolean
   instance: WxWorkProtocolInstance | null
@@ -263,10 +294,12 @@ function StoreAIModelSettingsDialog({
   aiConfigs: AIConfig[]
   loading: boolean
   saving: boolean
+  testingUsageCode: string
   canSave: boolean
   onOpenChange: (open: boolean) => void
   onChange: (settings: StoreAIModelSetting[]) => void
   onSubmit: () => void
+  onTest: (setting: StoreAIModelSetting) => void
 }) {
   function updateSetting(usageCode: string, patch: Partial<StoreAIModelSetting>) {
     onChange(settings.map((item) => (item.usageCode === usageCode ? { ...item, ...patch } : item)))
@@ -291,7 +324,7 @@ function StoreAIModelSettingsDialog({
       provider: config.provider || "openai",
       baseUrl: config.baseUrl || "",
       apiKey: "",
-      apiMode: config.apiMode || "chat_completions",
+      apiMode: setting.expectedModelType === "vision" ? "chat_completions" : (config.apiMode || "chat_completions"),
       modelType: setting.expectedModelType,
       modelName: config.modelName || "",
       dimension: config.dimension || 0,
@@ -329,13 +362,15 @@ function StoreAIModelSettingsDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] p-3 text-sm leading-6 text-muted-foreground">
-          当前设置只影响这个企微员工号；未启用时继续使用公司默认，再没有就使用系统全局默认。
+          当前设置只影响这个企微员工号。选择“独立配置”后填写真实地址、密钥和模型名；每次改动参数都必须重新测试通过才能保存。
         </div>
         {loading ? (
           <div className="mt-3 rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] p-6 text-sm text-muted-foreground">正在读取模型设置...</div>
         ) : (
           <div className="mt-3 grid gap-3">
             {settings.map((setting) => {
+              const independent = setting.enabled
+              const isTesting = testingUsageCode === setting.usageCode
               return (
                 <div key={setting.usageCode} className="rounded-2xl border border-[#dbe7f6] bg-white p-4 shadow-[0_8px_24px_rgba(35,74,122,0.05)]">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -349,20 +384,32 @@ function StoreAIModelSettingsDialog({
                         {setting.effectiveBaseUrl ? ` · ${setting.effectiveBaseUrl}` : ""}
                       </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Button type="button" variant="outline" size="sm" className="rounded-xl" disabled={!canSave} onClick={() => copyGlobalDefault(setting)}>
-                        复制全局默认参数
-                      </Button>
-                      <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-                        <Checkbox
-                          checked={setting.enabled}
-                          disabled={!canSave}
-                          onCheckedChange={(checked) => updateSetting(setting.usageCode, { enabled: checked === true })}
-                        />
-                        启用覆盖
-                      </label>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      <div className="flex overflow-hidden rounded-xl border border-[#dbe7f6]">
+                        <Button type="button" size="sm" variant={independent ? "ghost" : "default"} className="rounded-none" disabled={!canSave} onClick={() => updateSetting(setting.usageCode, { enabled: false, testToken: "" })}>
+                          继承默认
+                        </Button>
+                        <Button type="button" size="sm" variant={independent ? "default" : "ghost"} className="rounded-none" disabled={!canSave} onClick={() => updateSetting(setting.usageCode, { enabled: true, testToken: "", apiMode: setting.expectedModelType === "vision" ? "chat_completions" : setting.apiMode })}>
+                          独立配置
+                        </Button>
+                      </div>
+                      {independent ? (
+                        <>
+                          <Button type="button" variant="outline" size="sm" className="rounded-xl" disabled={!canSave || isTesting} onClick={() => copyGlobalDefault(setting)}>
+                            复制系统默认参数
+                          </Button>
+                          <Button type="button" variant="outline" size="sm" className="rounded-xl" disabled={!canSave || isTesting} onClick={() => onTest(setting)}>
+                            {isTesting ? "测试中..." : "测试连接"}
+                          </Button>
+                        </>
+                      ) : null}
                     </div>
                   </div>
+                  {independent ? (
+                    <div className="mt-3 text-xs leading-5 text-muted-foreground">
+                      {setting.testToken ? "本次参数已测试通过，保存后生效。" : setting.lastTestStatus === "passed" ? `上次测试通过：${setting.lastTestedAt || "-"} · ${setting.lastTestLatencyMs || 0}ms` : "请填写参数后点击“测试连接”。"}
+                    </div>
+                  ) : null}
                   <div className="mt-4 grid gap-3 md:grid-cols-2">
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-muted-foreground">供应商</div>
@@ -378,7 +425,9 @@ function StoreAIModelSettingsDialog({
                       <div className="text-xs font-medium text-muted-foreground">API 模式</div>
                       <OptionCombobox
                         value={setting.apiMode || "chat_completions"}
-                        options={[
+                        options={setting.expectedModelType === "vision" ? [
+                          { value: "chat_completions", label: "Chat Completions" },
+                        ] : [
                           { value: "chat_completions", label: "Chat Completions" },
                           { value: "responses", label: "Responses API" },
                         ]}
@@ -512,6 +561,277 @@ function StoreAIModelSettingsDialog({
   )
 }
 
+function WelcomeSettingsDialog({
+  instance,
+  draft,
+  saving,
+  onOpenChange,
+  onChange,
+  onSave,
+}: {
+  instance: WelcomeCapableInstance | null
+  draft: WelcomeSettingsDraft
+  saving: boolean
+  onOpenChange: (open: boolean) => void
+  onChange: (draft: WelcomeSettingsDraft) => void
+  onSave: () => Promise<boolean>
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const committedImageRecordIdRef = useRef(0)
+  const [uploading, setUploading] = useState(false)
+
+  useEffect(() => {
+    if (instance) committedImageRecordIdRef.current = 0
+  }, [instance])
+  const hasMiniProgram = Boolean(instance?.defaultMiniProgramPayload?.trim())
+  const hasLocation = Boolean(instance?.storeLongitude?.trim() && instance?.storeLatitude?.trim())
+  const hasContent = Boolean(
+    draft.message.trim() ||
+    draft.imageAssetId ||
+    (draft.sendMiniProgram && hasMiniProgram) ||
+    (draft.sendLocation && hasLocation),
+  )
+
+  async function uploadWelcomeImage(file: File) {
+    if (!file.type.startsWith("image/")) {
+      toast.error("请选择图片文件")
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("欢迎语图片不能超过 10MB")
+      return
+    }
+    setUploading(true)
+    try {
+      const previousUploadedRecordId = draft.uploadedImageRecordId
+      const asset = await uploadAsset(file, "wxwork-welcome")
+      onChange({
+        ...draft,
+        imageAssetId: asset.assetId,
+        imageUrl: asset.url || buildAssetFileURL(asset.assetId),
+        uploadedImageRecordId: asset.id,
+      })
+      if (previousUploadedRecordId > 0) {
+        await cleanupUploadedImage(previousUploadedRecordId)
+      }
+      toast.success("欢迎语图片已上传")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "欢迎语图片上传失败")
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ""
+    }
+  }
+
+  async function cleanupUploadedImage(recordId: number) {
+    if (recordId <= 0) return
+    try {
+      await deleteAsset(recordId)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "临时欢迎语图片清理失败")
+    }
+  }
+
+  async function removeWelcomeImage() {
+    const uploadedRecordId = draft.uploadedImageRecordId
+    onChange({ ...draft, imageAssetId: "", imageUrl: "", uploadedImageRecordId: 0 })
+    await cleanupUploadedImage(uploadedRecordId)
+  }
+
+  async function closeDialog() {
+    if (saving || uploading) return
+    const uploadedRecordId = draft.uploadedImageRecordId
+    if (uploadedRecordId > 0 && uploadedRecordId !== committedImageRecordIdRef.current) {
+      await cleanupUploadedImage(uploadedRecordId)
+    }
+    onOpenChange(false)
+  }
+
+  async function saveAndClose() {
+    const saved = await onSave()
+    if (!saved) return
+    committedImageRecordIdRef.current = draft.uploadedImageRecordId
+    onOpenChange(false)
+  }
+
+  return (
+    <Dialog open={Boolean(instance)} onOpenChange={(open) => {
+      if (open) {
+        onOpenChange(true)
+        return
+      }
+      void closeDialog()
+    }}>
+      <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto rounded-3xl p-5">
+        <DialogHeader>
+          <DialogTitle>欢迎语设置</DialogTitle>
+          <DialogDescription>
+            {instance
+              ? `${repairMojibakeText(instance.employeeName) || instance.guid} 新增好友后，系统按下方顺序发送。`
+              : "设置企微员工号的新好友欢迎内容。"}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-4 rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] p-4">
+            <div>
+              <div className="font-medium text-foreground">启用新好友欢迎语</div>
+              <div className="mt-1 text-xs leading-5 text-muted-foreground">关闭后不会发送任何欢迎内容。</div>
+            </div>
+            <Switch checked={draft.enabled} onCheckedChange={(enabled) => onChange({ ...draft, enabled })} />
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm font-medium text-foreground">文字内容</div>
+            <Textarea
+              value={draft.message}
+              maxLength={500}
+              disabled={!draft.enabled}
+              className="min-h-28 rounded-xl border-[#dbe7f6]"
+              placeholder="例如：您好，欢迎添加本店企微。办理入住、停车或其他问题都可以直接发我。"
+              onChange={(event) => onChange({ ...draft, message: event.target.value })}
+            />
+            <div className="text-right text-xs text-muted-foreground">{draft.message.length}/500</div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm font-medium text-foreground">图片</div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) void uploadWelcomeImage(file)
+              }}
+            />
+            {draft.imageUrl ? (
+              <div className="relative w-fit overflow-hidden rounded-xl border border-[#dbe7f6] bg-[#f8fbff] p-2">
+                <img src={draft.imageUrl} alt="欢迎语图片预览" className="max-h-48 max-w-full rounded-lg object-contain" />
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="destructive"
+                  className="absolute right-3 top-3"
+                  disabled={!draft.enabled || uploading}
+                  aria-label="移除欢迎语图片"
+                  onClick={() => void removeWelcomeImage()}
+                >
+                  <XIcon className="size-4" />
+                </Button>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                className="h-24 w-full rounded-xl border-dashed border-[#cbdcf1] bg-[#f8fbff]"
+                disabled={!draft.enabled || uploading}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {uploading ? <RotateCwIcon className="size-4 animate-spin" /> : <UploadIcon className="size-4" />}
+                {uploading ? "上传中" : "上传欢迎语图片"}
+              </Button>
+            )}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#dbe7f6] bg-white p-4">
+              <div className="min-w-0">
+                <div className="font-medium text-foreground">发送入住小程序</div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {hasMiniProgram ? "使用当前账号已经绑定的小程序。" : "当前账号还没有绑定小程序。"}
+                </div>
+              </div>
+              <Switch
+                checked={draft.sendMiniProgram && hasMiniProgram}
+                disabled={!draft.enabled || !hasMiniProgram}
+                onCheckedChange={(sendMiniProgram) => onChange({ ...draft, sendMiniProgram })}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-[#dbe7f6] bg-white p-4">
+              <div className="min-w-0">
+                <div className="font-medium text-foreground">发送门店定位</div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {hasLocation ? "使用当前账号已经绑定的门店坐标。" : "当前账号还没有绑定门店坐标。"}
+                </div>
+              </div>
+              <Switch
+                checked={draft.sendLocation && hasLocation}
+                disabled={!draft.enabled || !hasLocation}
+                onCheckedChange={(sendLocation) => onChange({ ...draft, sendLocation })}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-[#f6f9ff] p-3 text-xs leading-5 text-muted-foreground">
+            发送顺序：文字 → 图片 → 小程序 → 定位。图片和小程序都会通过真实企微协议消息发送。
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => void closeDialog()} disabled={saving || uploading}>取消</Button>
+          <Button type="button" onClick={() => void saveAndClose()} disabled={saving || uploading || (draft.enabled && !hasContent)}>
+            {saving ? "保存中" : "保存设置"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function buildWelcomeInstanceUpdatePayload(instance: WelcomeCapableInstance, draft: WelcomeSettingsDraft) {
+  return {
+    id: instance.id,
+    guid: instance.guid,
+    channelId: instance.channelId,
+    employeeUserId: instance.employeeUserId,
+    employeeName: instance.employeeName,
+    employeeAvatar: instance.employeeAvatar,
+    companyId: instance.companyId || 0,
+    intentProfileId: instance.intentProfileId || 0,
+    storeId: instance.storeId || 0,
+    storeName: instance.storeName || instance.employeeName,
+    storeAddress: instance.storeAddress || "",
+    storeContactPhone: instance.storeContactPhone || "",
+    storeNavigationName: instance.storeNavigationName || "",
+    storeLongitude: instance.storeLongitude || "",
+    storeLatitude: instance.storeLatitude || "",
+    storeMapProvider: instance.storeMapProvider || "",
+    defaultMiniProgramPayload: instance.defaultMiniProgramPayload || "",
+    welcomeEnabled: draft.enabled,
+    welcomeMessage: draft.message.trim(),
+    welcomeImageAssetId: draft.imageAssetId,
+    welcomeSendMiniProgram: draft.sendMiniProgram,
+    welcomeAskLocation: draft.sendLocation,
+    knowledgeBaseId: instance.knowledgeBaseId || 0,
+    notifyUrl: instance.notifyUrl || CALLBACK_URL,
+    proxy: instance.proxy || "",
+    bridgeId: instance.bridgeId || "",
+    staffUserIds: instance.staffUserIds || "",
+    managedMode: instance.managedMode || "semi",
+    serviceHours: instance.serviceHours || "",
+    storeRoomConversationId: instance.storeRoomConversationId || "",
+    storeRoomNotifyEnabled: instance.storeRoomNotifyEnabled === true,
+    storeRoomAtList: instance.storeRoomAtList || "",
+    fallbackToHQ: instance.fallbackToHQ !== false,
+    manualTimeoutMinutes: instance.manualTimeoutMinutes || 10,
+    aiReplyEnabled: instance.aiReplyEnabled !== false,
+    personaPrompt: instance.personaPrompt || "",
+    autoAcceptFriendRequest: instance.autoAcceptFriendRequest === true,
+    autoAcceptFriendRemarkTemplate: instance.autoAcceptFriendRemarkTemplate || "",
+    contextMaxMessages: instance.contextMaxMessages || 15,
+    contextMaxTokens: instance.contextMaxTokens || 8000,
+    contextCompressionEnabled: instance.contextCompressionEnabled !== false,
+    status: instance.status,
+    remark: instance.remark || "",
+  } satisfies CreateWxWorkProtocolInstancePayload & {
+    id: number
+    welcomeEnabled: boolean
+    welcomeImageAssetId: string
+  }
+}
+
 export function WxWorkProtocolInstanceManager({
   layout = "page",
   onChanged,
@@ -525,11 +845,24 @@ export function WxWorkProtocolInstanceManager({
   const [channels, setChannels] = useState<AdminChannel[]>([])
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
   const [companies, setCompanies] = useState<AdminCompany[]>([])
+  const [intentProfiles, setIntentProfiles] = useState<ReplyIntentProfile[]>([])
   const [reloadKey, setReloadKey] = useState(0)
   const [modelSettingsInstance, setModelSettingsInstance] = useState<WxWorkProtocolInstance | null>(null)
   const [modelSettings, setModelSettings] = useState<StoreAIModelSetting[]>([])
   const [modelSettingsLoading, setModelSettingsLoading] = useState(false)
   const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
+  const [modelSettingTestingUsage, setModelSettingTestingUsage] = useState("")
+  const [welcomeSettingsInstance, setWelcomeSettingsInstance] = useState<WelcomeCapableInstance | null>(null)
+  const [welcomeSettingsDraft, setWelcomeSettingsDraft] = useState<WelcomeSettingsDraft>({
+    enabled: true,
+    message: "",
+    imageAssetId: "",
+    imageUrl: "",
+    uploadedImageRecordId: 0,
+    sendMiniProgram: false,
+    sendLocation: false,
+  })
+  const [welcomeSettingsSaving, setWelcomeSettingsSaving] = useState(false)
   const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([])
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [creatingLocal, setCreatingLocal] = useState(false)
@@ -553,22 +886,26 @@ export function WxWorkProtocolInstanceManager({
 
     async function loadOptions() {
       try {
-        const [channelPage, kbList, companyPage] = await Promise.all([
+        const [channelPage, kbList, companyPage, intentProfilePage] = await Promise.all([
           fetchChannels({ channelType: "wxwork_protocol", status: Status.Ok, limit: 200 }),
           canViewKnowledgeBases ? fetchKnowledgeBasesAll({ status: Status.Ok }) : Promise.resolve([]),
           lockCompany || !canViewCompanies
             ? Promise.resolve({ results: [] as AdminCompany[] })
             : fetchCompanies({ status: Status.Ok, limit: 500 }),
+          canViewStoreModelSettings
+            ? fetchReplyIntentProfiles({ status: Status.Ok, limit: 200 })
+            : Promise.resolve({ results: [] as ReplyIntentProfile[] }),
         ])
         setChannels(channelPage.results)
         setKnowledgeBases(kbList)
         setCompanies(companyPage.results)
+        setIntentProfiles(intentProfilePage.results)
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "加载选项失败")
       }
     }
     void loadOptions()
-  }, [canViewChannels, canViewCompanies, canViewKnowledgeBases, lockCompany])
+  }, [canViewChannels, canViewCompanies, canViewKnowledgeBases, canViewStoreModelSettings, lockCompany])
 
   const statusOptions = [
     { value: "all", label: "全部状态" },
@@ -599,6 +936,17 @@ export function WxWorkProtocolInstanceManager({
   const companyOptions = useMemo(
     () => companies.map((item) => ({ value: String(item.id), label: repairMojibakeText(item.name) || `公司 #${item.id}` })),
     [companies],
+  )
+
+  const intentProfileOptions = useMemo(
+    () => [
+      { value: "0", label: "继承公司行业（无公司时需选择）" },
+      ...intentProfiles.map((item) => ({
+        value: String(item.id),
+        label: `${item.name}${item.industryCode ? ` · ${item.industryCode}` : ""}`,
+      })),
+    ],
+    [intentProfiles],
   )
 
   function notifyChanged() {
@@ -645,13 +993,10 @@ export function WxWorkProtocolInstanceManager({
 
   async function replaceLoggedInAccount(item: WxWorkProtocolInstance) {
     if (!canUpdateChannels) return
-    const logoutResp = await logoutWxWorkProtocolInstance(item.id)
-    const qrcodeResp = await getWxWorkProtocolLoginQrcode(item.id)
-    const copiedText = [logoutResp, qrcodeResp].filter((text) => text?.trim()).join("\n\n")
-    if (copiedText) {
-      await navigator.clipboard.writeText(copiedText)
-    }
-    toast.success(copiedText ? "已下掉当前账号，重新登录二维码原文已复制" : "已下掉当前账号，请重新扫码登录")
+    const replacement = await createWxWorkProtocolReplacementSetup({ id: item.id })
+    const url = replacement.remoteSetupUrl || `${window.location.origin}/wxwork-remote-setup?token=${encodeURIComponent(replacement.remoteSetupToken || "")}`
+    await navigator.clipboard.writeText(url)
+    toast.success("替换链接已复制；新员工号验证成功前，旧员工号继续工作")
     notifyChanged()
   }
 
@@ -675,6 +1020,38 @@ export function WxWorkProtocolInstanceManager({
       setModelSettingsInstance(null)
     } finally {
       setModelSettingsLoading(false)
+    }
+  }
+
+  function openWelcomeSettings(item: WxWorkProtocolInstance) {
+    const extended = item as WelcomeCapableInstance
+    const welcomeImageAssetId = extended.welcomeImageAssetId || ""
+    setWelcomeSettingsInstance(extended)
+    setWelcomeSettingsDraft({
+      enabled: extended.welcomeEnabled !== false,
+      message: repairMojibakeText(extended.welcomeMessage || ""),
+      imageAssetId: welcomeImageAssetId,
+      imageUrl: extended.welcomeImageUrl || buildAssetFileURL(welcomeImageAssetId),
+      uploadedImageRecordId: 0,
+      sendMiniProgram: extended.welcomeSendMiniProgram === true,
+      sendLocation: extended.welcomeAskLocation === true,
+    })
+  }
+
+  async function saveWelcomeSettings(): Promise<boolean> {
+    if (!welcomeSettingsInstance) return false
+    setWelcomeSettingsSaving(true)
+    try {
+      const payload = buildWelcomeInstanceUpdatePayload(welcomeSettingsInstance, welcomeSettingsDraft)
+      await updateWxWorkProtocolInstance(payload)
+      toast.success("欢迎语设置已保存")
+      notifyChanged()
+      return true
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "保存欢迎语设置失败")
+      return false
+    } finally {
+      setWelcomeSettingsSaving(false)
     }
   }
 
@@ -704,6 +1081,7 @@ export function WxWorkProtocolInstanceManager({
           rpmLimit: Number(item.rpmLimit || 0),
           tpmLimit: Number(item.tpmLimit || 0),
           remark: item.remark || "",
+          testToken: item.testToken || "",
         })),
       })
       setModelSettings(next)
@@ -714,6 +1092,49 @@ export function WxWorkProtocolInstanceManager({
       toast.error(error instanceof Error ? error.message : "保存模型设置失败")
     } finally {
       setModelSettingsSaving(false)
+    }
+  }
+
+  async function testCurrentStoreModelSetting(setting: StoreAIModelSetting) {
+    if (!canUpdateStoreModelSettings || !modelSettingsInstance) return
+    setModelSettingTestingUsage(setting.usageCode)
+    try {
+      const result = await testStoreAIModelSetting({
+        companyId: modelSettingsInstance.companyId || 0,
+        storeId: modelSettingsInstance.storeId || 0,
+        wxWorkInstanceId: modelSettingsInstance.id,
+        setting: {
+          usageCode: setting.usageCode,
+          aiConfigId: Number(setting.aiConfigId || 0),
+          enabled: true,
+          provider: setting.provider || "openai",
+          baseUrl: setting.baseUrl || "",
+          apiKey: setting.apiKey || "",
+          apiMode: setting.apiMode || "chat_completions",
+          modelType: setting.modelType || setting.expectedModelType,
+          modelName: setting.modelName || "",
+          dimension: Number(setting.dimension || 0),
+          maxContextTokens: Number(setting.maxContextTokens || 0),
+          maxOutputTokens: Number(setting.maxOutputTokens || 0),
+          timeoutMs: Number(setting.timeoutMs || 30000),
+          maxRetryCount: Number(setting.maxRetryCount || 0),
+          rpmLimit: Number(setting.rpmLimit || 0),
+          tpmLimit: Number(setting.tpmLimit || 0),
+          remark: setting.remark || "",
+        },
+      })
+      setModelSettings((items) => items.map((item) => item.usageCode === setting.usageCode ? {
+        ...item,
+        testToken: result.testToken,
+        lastTestStatus: "passed",
+        lastTestedAt: result.testedAt,
+        lastTestLatencyMs: result.latencyMs,
+      } : item))
+      toast.success(`${setting.usageName} 测试通过，耗时 ${result.latencyMs}ms`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "模型连接测试失败")
+    } finally {
+      setModelSettingTestingUsage("")
     }
   }
 
@@ -783,6 +1204,14 @@ export function WxWorkProtocolInstanceManager({
   }
 
   const rowActions: DashboardCrudRowAction<WxWorkProtocolInstance>[] = []
+	if (canUpdateChannels) {
+	  rowActions.push({
+		key: "welcomeSettings",
+		label: "欢迎语设置",
+		icon: <MessageSquareTextIcon className="size-4" />,
+		run: async ({ item }) => openWelcomeSettings(item),
+	  })
+	}
   if (canViewStoreModelSettings) {
     rowActions.push({
       key: "storeModelSettings",
@@ -798,8 +1227,8 @@ export function WxWorkProtocolInstanceManager({
       icon: <QrCodeIcon className="size-4" />,
       confirm: (item) => ({
         title: "更换登录员工号",
-        description: `会先让 ${repairMojibakeText(item.employeeName) || "当前员工号"} 退出协议登录，然后生成新的扫码登录二维码。确认继续？`,
-        confirmText: "退出并重新扫码",
+        description: `会生成独立替换链接。${repairMojibakeText(item.employeeName) || "当前员工号"} 会继续工作，直到新员工号扫码并通过原门店主邮箱验证后才停用。`,
+        confirmText: "生成替换链接",
         cancelText: "取消",
       }),
       run: async ({ item }) => replaceLoggedInAccount(item),
@@ -903,9 +1332,12 @@ export function WxWorkProtocolInstanceManager({
 	              <div className="text-xs text-muted-foreground">
 	                {item.companyName ? `公司：${repairMojibakeText(item.companyName)}` : "未绑定公司"}
 	              </div>
-	              <div className="text-xs text-muted-foreground">
-	                {repairMojibakeText(item.knowledgeBaseName) || `知识库 ${item.knowledgeBaseId || "未配置"}`}
-	              </div>
+              <div className="text-xs text-muted-foreground">
+                {repairMojibakeText(item.knowledgeBaseName) || `知识库 ${item.knowledgeBaseId || "未配置"}`}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || (item.companyId > 0 ? "继承公司行业" : "未绑定")}
+              </div>
               {item.storeAddress || item.storeLatitude || item.storeLongitude ? (
                 <div className="text-xs text-muted-foreground">
                   {item.storeAddress || "未填地址"} {item.storeLatitude && item.storeLongitude ? `(${item.storeLatitude}, ${item.storeLongitude})` : ""}
@@ -954,6 +1386,9 @@ export function WxWorkProtocolInstanceManager({
               </div>
               <div className="max-w-48 truncate text-xs text-muted-foreground">
                 知识库：{repairMojibakeText(item.knowledgeBaseName) || `#${item.knowledgeBaseId || "未配置"}`}
+              </div>
+              <div className="max-w-48 truncate text-xs text-muted-foreground">
+                意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || (item.companyId > 0 ? "继承公司行业" : "未绑定")}
               </div>
               <div className="max-w-48 truncate text-xs text-muted-foreground">模型按员工号设置、公司默认、系统全局默认解析</div>
             </div>
@@ -1029,20 +1464,39 @@ export function WxWorkProtocolInstanceManager({
                 },
               ] : []),
 	          { name: "storeName", label: "店名/账号名称", type: "text", placeholder: "例如：丽斯未来酒店杭州某某店", description: "企微员工号就是门店账号。这里填店名即可，系统会维护内部兼容门店记录。" },
+          {
+            name: "intentProfileId",
+            label: "意图行业",
+            type: "select",
+            defaultValue: "0",
+            valueFromItem: (item) => String(item.intentProfileId || 0),
+            options: intentProfileOptions,
+            description: "决定这个员工号走哪套 IntentDetect 提示词和意图分类；未单独设置时继承绑定公司的行业。无公司账号必须选择行业，未绑定行业不能启用 AI。",
+          },
 	          { name: "storeId", label: "内部门店 ID（可选兼容）", type: "number", min: 0, description: "一般不用填；老数据或需要绑定已有内部门店时再填写。" },
           { name: "storeLocationGuide", label: "门店定位说明", type: "custom", render: renderLocationGuide },
           { name: "storeAddress", label: "门店地址", type: "text", placeholder: "例如：上海市..." },
+          { name: "storeContactPhone", label: "联系电话", type: "text", placeholder: "例如：0551-88888888 / 13800000000", description: "客户询问酒店电话时发送这个账号配置的电话变量，不从地址或备注里猜。" },
           { name: "storeNavigationName", label: "导航名称", type: "text", placeholder: "例如：丽斯未来酒店某某店" },
           { name: "storeLatitude", label: "门店纬度", type: "text", placeholder: "例如：31.230416" },
           { name: "storeLongitude", label: "门店经度", type: "text", placeholder: "例如：121.473701" },
           { name: "storeMapProvider", label: "坐标来源", type: "text", placeholder: "browser_geolocation / amap / tencent" },
           { name: "storeGeoPicker", label: "门店坐标", type: "custom", render: renderGeoPicker },
-          {
-            name: "resourceBindingSection",
+	          {
+	            name: "resourceBindingSection",
             label: "资源绑定",
             type: "section",
 	            description: "门店知识库决定酒店信息类回复；电话、定位、小程序等变量来自当前员工号绑定。管理员可在“模型设置”里配置当前员工号覆盖模型。",
-          },
+	          },
+	          {
+	            name: "knowledgeBaseId",
+	            label: "当前启用知识库",
+	            type: "select",
+	            defaultValue: "0",
+	            valueFromItem: (item) => String(item.knowledgeBaseId || 0),
+	            options: [{ value: "0", label: "暂不绑定" }, ...knowledgeBaseOptions],
+	            description: "当前员工号只检索这里明确绑定的一个 FastGPT 数据集；切换后不会并行召回其他门店知识库。",
+	          },
           {
             name: "manualRouteSection",
             label: "人工接待路由",
@@ -1071,8 +1525,12 @@ export function WxWorkProtocolInstanceManager({
             description: "AI 回复开关只控制当前员工号是否由回复引擎托管；模型按员工号设置、公司默认、系统全局默认依次解析。",
           },
           { name: "aiReplyEnabled", label: "AI 托管回复", type: "switch" },
-          { name: "autoAcceptFriendRequest", label: "自动通过好友申请", type: "switch" },
-          { name: "autoAcceptFriendRemarkTemplate", label: "好友通过备注模板", type: "text" },
+          {
+            name: "autoAcceptFriendRequest",
+            label: "自动通过好友申请",
+            type: "switch",
+            description: "收到企微好友申请回调后立即处理；定时同步只用于补偿漏回调。",
+          },
           {
             name: "status",
             label: "启用状态",
@@ -1092,18 +1550,22 @@ export function WxWorkProtocolInstanceManager({
 	          employeeName: String(values.employeeName || ""),
 	          employeeAvatar: context.item?.employeeAvatar || "",
 	          companyId: lockedCompanyId > 0 ? lockedCompanyId : Number(values.companyId || context.item?.companyId || 0),
+          intentProfileId: Number(values.intentProfileId || 0),
 	          storeId: Number(values.storeId || 0),
 	          storeName: String(values.storeName || context.item?.storeName || values.employeeName || ""),
 	          storeAddress: String(values.storeAddress || ""),
+          storeContactPhone: String(values.storeContactPhone || ""),
           storeNavigationName: String(values.storeNavigationName || ""),
           storeLatitude: String(values.storeLatitude || ""),
           storeLongitude: String(values.storeLongitude || ""),
           storeMapProvider: String(values.storeMapProvider || ""),
           defaultMiniProgramPayload: context.item?.defaultMiniProgramPayload || "",
+          welcomeEnabled: (context.item as WelcomeCapableInstance | undefined)?.welcomeEnabled ?? true,
           welcomeMessage: context.item?.welcomeMessage || DEFAULT_WELCOME_MESSAGE,
+          welcomeImageAssetId: (context.item as WelcomeCapableInstance | undefined)?.welcomeImageAssetId || "",
           welcomeSendMiniProgram: context.item?.welcomeSendMiniProgram ?? true,
           welcomeAskLocation: context.item?.welcomeAskLocation ?? true,
-          knowledgeBaseId: context.item?.knowledgeBaseId || 0,
+	          knowledgeBaseId: Number(values.knowledgeBaseId || 0),
           notifyUrl: context.item?.notifyUrl || CALLBACK_URL,
           proxy: context.item?.proxy || "",
           bridgeId: context.item?.bridgeId || "",
@@ -1166,14 +1628,27 @@ export function WxWorkProtocolInstanceManager({
       loading={modelSettingsLoading}
       saving={modelSettingsSaving}
       canSave={canViewStoreModelSettings && canUpdateStoreModelSettings}
+      testingUsageCode={modelSettingTestingUsage}
       onOpenChange={(open) => {
         if (!open) {
           setModelSettingsInstance(null)
           setModelSettings([])
+          setModelSettingTestingUsage("")
         }
       }}
       onChange={setModelSettings}
       onSubmit={() => void saveStoreModelSettings()}
+      onTest={(setting) => void testCurrentStoreModelSetting(setting)}
+    />
+    <WelcomeSettingsDialog
+      instance={welcomeSettingsInstance}
+      draft={welcomeSettingsDraft}
+      saving={welcomeSettingsSaving}
+      onOpenChange={(open) => {
+        if (!open) setWelcomeSettingsInstance(null)
+      }}
+      onChange={setWelcomeSettingsDraft}
+      onSave={saveWelcomeSettings}
     />
     <Dialog open={canCreateChannels && createDialogOpen} onOpenChange={setCreateDialogOpen}>
       <DialogContent className="max-w-3xl rounded-3xl p-5">

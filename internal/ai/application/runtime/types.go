@@ -41,6 +41,9 @@ type Summary struct {
 	ModelName             string
 	PromptTokens          int
 	CompletionTokens      int
+	TotalTokens           int
+	CachedPromptTokens    int
+	ReasoningTokens       int
 	HistoryMessageCount   int
 	RetrieverCount        int
 	ToolCallCount         int
@@ -51,4 +54,12 @@ type Summary struct {
 	Interrupts            []InterruptContextSummary
 	TraceData             string
 	ErrorMessage          string
+	ModelUsageCalls       []ModelUsageCall
+}
+
+type ModelUsageCall struct {
+	PromptTokens       int
+	CompletionTokens   int
+	CachedPromptTokens int
+	ReasoningTokens    int
 }

@@ -5,6 +5,8 @@ export type AdminCompany = {
   id: number
   name: string
   code: string
+  intentProfileId: number
+  intentProfileName: string
   customerCount: number
   status: number
   remark: string
@@ -15,6 +17,7 @@ export type AdminCompany = {
 export type CreateAdminCompanyPayload = {
   name: string
   code: string
+  intentProfileId: number
   remark: string
 }
 

@@ -361,20 +361,20 @@ func inferRetrieveSourceType(hits []response.KnowledgeSearchResult) string {
 	if len(hits) == 0 {
 		return "local_vector"
 	}
-	hasCloud := false
+	hasFastGPT := false
 	hasLocal := false
 	for _, hit := range hits {
-		if strings.Contains(hit.SectionPath, "FastGPT云端知识库") {
-			hasCloud = true
+		if strings.Contains(hit.SectionPath, "FastGPT知识库/") || strings.Contains(hit.SectionPath, "FastGPT云端知识库") {
+			hasFastGPT = true
 		} else {
 			hasLocal = true
 		}
 	}
-	if hasCloud && hasLocal {
+	if hasFastGPT && hasLocal {
 		return "hybrid"
 	}
-	if hasCloud {
-		return "cloud_knowledge"
+	if hasFastGPT {
+		return "fastgpt"
 	}
 	return "local_vector"
 }

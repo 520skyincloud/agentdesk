@@ -17,6 +17,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/usagex"
 )
 
 type ChatCompletionResult struct {
@@ -67,7 +68,7 @@ func (s *llm) ChatWithConfig(ctx context.Context, config models.AIConfig, system
 	if config.MaxOutputTokens > 0 {
 		params.MaxCompletionTokens = openai.Int(int64(config.MaxOutputTokens))
 	}
-	applyProviderSpecificChatParams(params, config)
+	applyProviderSpecificChatParams(&params, config)
 
 	client := newOpenAIClient(config)
 	chatResp, err := client.Chat.Completions.New(ctx, params)
@@ -145,7 +146,7 @@ func (s *llm) chatWithResponses(ctx context.Context, config models.AIConfig, sys
 	if config.TimeoutMS > 0 {
 		timeout = time.Duration(config.TimeoutMS) * time.Millisecond
 	}
-	client := &http.Client{Timeout: timeout}
+	client := usagex.NewHTTPClient(timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call responses api (model=%s provider=%s system_chars=%d user_chars=%d max_output_tokens=%d): %w",
@@ -202,11 +203,19 @@ func compactLLMResponseError(raw []byte) string {
 	return string(runes[:500]) + "..."
 }
 
-func applyProviderSpecificChatParams(params openai.ChatCompletionNewParams, config models.AIConfig) {
+func applyProviderSpecificChatParams(params *openai.ChatCompletionNewParams, config models.AIConfig) {
+	if params == nil {
+		return
+	}
+	extraFields := map[string]any{}
 	if isDashScopeQwenThinkingModel(config) {
-		params.SetExtraFields(map[string]any{
-			"enable_thinking": false,
-		})
+		extraFields["enable_thinking"] = false
+	}
+	if isDeepSeekV4ThinkingModel(config) {
+		extraFields["thinking"] = map[string]any{"type": "disabled"}
+	}
+	if len(extraFields) > 0 {
+		params.SetExtraFields(extraFields)
 	}
 }
 
@@ -214,4 +223,10 @@ func isDashScopeQwenThinkingModel(config models.AIConfig) bool {
 	baseURL := strings.ToLower(strings.TrimSpace(config.BaseURL))
 	modelName := strings.ToLower(strings.TrimSpace(config.ModelName))
 	return strings.Contains(baseURL, "dashscope.aliyuncs.com") && strings.HasPrefix(modelName, "qwen3")
+}
+
+func isDeepSeekV4ThinkingModel(config models.AIConfig) bool {
+	baseURL := strings.ToLower(strings.TrimSpace(config.BaseURL))
+	modelName := strings.ToLower(strings.TrimSpace(config.ModelName))
+	return strings.Contains(baseURL, "api.deepseek.com") && strings.HasPrefix(modelName, "deepseek-v4")
 }

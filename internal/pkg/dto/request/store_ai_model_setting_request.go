@@ -27,4 +27,12 @@ type StoreAIModelSettingUpdateRequest struct {
 	RPMLimit         int               `json:"rpmLimit"`
 	TPMLimit         int               `json:"tpmLimit"`
 	Remark           string            `json:"remark"`
+	TestToken        string            `json:"testToken"`
+}
+
+type TestStoreAIModelSettingRequest struct {
+	CompanyID        int64                            `json:"companyId"`
+	StoreID          int64                            `json:"storeId"`
+	WxWorkInstanceID int64                            `json:"wxWorkInstanceId"`
+	Setting          StoreAIModelSettingUpdateRequest `json:"setting"`
 }

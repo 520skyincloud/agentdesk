@@ -21,6 +21,9 @@ func toSummary(summary *executor.RunResult) *Summary {
 		ModelName:             summary.ModelName,
 		PromptTokens:          summary.PromptTokens,
 		CompletionTokens:      summary.CompletionTokens,
+		TotalTokens:           summary.TotalTokens,
+		CachedPromptTokens:    summary.CachedPromptTokens,
+		ReasoningTokens:       summary.ReasoningTokens,
 		HistoryMessageCount:   summary.HistoryMessageCount,
 		RetrieverCount:        summary.RetrieverCount,
 		ToolCallCount:         summary.ToolCallCount,
@@ -30,6 +33,15 @@ func toSummary(summary *executor.RunResult) *Summary {
 		Interrupted:           summary.Interrupted,
 		TraceData:             summary.TraceData,
 		ErrorMessage:          summary.ErrorMessage,
+	}
+	if len(summary.ModelUsageCalls) > 0 {
+		ret.ModelUsageCalls = make([]ModelUsageCall, 0, len(summary.ModelUsageCalls))
+		for _, usage := range summary.ModelUsageCalls {
+			ret.ModelUsageCalls = append(ret.ModelUsageCalls, ModelUsageCall{
+				PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
+				CachedPromptTokens: usage.CachedPromptTokens, ReasoningTokens: usage.ReasoningTokens,
+			})
+		}
 	}
 	if len(summary.Interrupts) > 0 {
 		ret.Interrupts = make([]InterruptContextSummary, 0, len(summary.Interrupts))

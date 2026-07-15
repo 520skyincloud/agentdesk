@@ -170,6 +170,51 @@ func (s *conversationRouteService) MarkAgentMessage(conversationID int64, at tim
 	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, updates)
 }
 
+// MarkExternalAgentMessage records a real reply sent from the bound WeCom employee account.
+// A local reply is a human takeover even when the previous route had already returned to AI.
+func (s *conversationRouteService) MarkExternalAgentMessage(conversationID int64, at time.Time) error {
+	state, err := s.Ensure(conversationID)
+	if err != nil {
+		return err
+	}
+	updates := map[string]any{
+		"manual_expire_at":     at.Add(DefaultManualTimeoutMinutes * time.Minute),
+		"need_human_follow_up": false,
+		"updated_at":           time.Now(),
+		"update_user_name":     "system",
+	}
+	enteredStoreManual := false
+	switch state.RouteStatus {
+	case enums.ConversationRouteStatusHQAgentDeskServing:
+		// Headquarters is already actively serving this conversation; keep its ownership.
+	case enums.ConversationRouteStatusStoreWecomManual:
+		// A store employee replied to an existing store-manual route; only extend the idle timer.
+	default:
+		enteredStoreManual = true
+		updates["route_status"] = enums.ConversationRouteStatusStoreWecomManual
+		updates["route_target"] = "store_wecom"
+		updates["pending_action"] = ""
+		updates["pending_action_payload"] = ""
+		updates["pending_action_expire_at"] = nil
+		updates["handoff_reason"] = "企微员工号人工接待"
+		updates["last_manual_handoff_at"] = at
+	}
+	if err := repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, updates); err != nil {
+		return err
+	}
+	if !enteredStoreManual {
+		return nil
+	}
+	return repositories.ConversationRepository.Updates(sqls.DB(), conversationID, map[string]any{
+		"status":              enums.IMConversationStatusAIServing,
+		"current_team_id":     int64(0),
+		"current_assignee_id": int64(0),
+		"updated_at":          at,
+		"update_user_id":      int64(0),
+		"update_user_name":    "system",
+	})
+}
+
 func (s *conversationRouteService) SetPendingAction(conversationID int64, action enums.ConversationPendingAction, payload string, expireAt time.Time) error {
 	state, err := s.Ensure(conversationID)
 	if err != nil {

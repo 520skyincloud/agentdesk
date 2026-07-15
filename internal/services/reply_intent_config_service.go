@@ -50,13 +50,18 @@ func (s *replyIntentConfigService) CreateReplyIntentConfig(req request.CreateRep
 	if err != nil {
 		return nil, err
 	}
-	if existing := repositories.ReplyIntentConfigRepository.Take(sqls.DB(), "code = ? AND scope_type = ? AND company_id = ? AND store_id = ? AND wx_work_instance_id = ?", code, scopeType, companyID, storeID, instanceID); existing != nil {
+	intentProfileID, err := normalizeIntentConfigProfileID(req.IntentProfileID)
+	if err != nil {
+		return nil, err
+	}
+	if existing := repositories.ReplyIntentConfigRepository.Take(sqls.DB(), "code = ? AND intent_profile_id = ? AND scope_type = ? AND company_id = ? AND store_id = ? AND wx_work_instance_id = ?", code, intentProfileID, scopeType, companyID, storeID, instanceID); existing != nil {
 		return nil, errorsx.InvalidParam("同一适用范围内意图编码已存在")
 	}
 	item := &models.ReplyIntentConfig{
 		Code:               code,
 		Name:               name,
 		Description:        strings.TrimSpace(req.Description),
+		IntentProfileID:    intentProfileID,
 		ScopeType:          scopeType,
 		CompanyID:          companyID,
 		StoreID:            storeID,
@@ -106,13 +111,18 @@ func (s *replyIntentConfigService) UpdateReplyIntentConfig(req request.UpdateRep
 	if err != nil {
 		return err
 	}
-	if existing := repositories.ReplyIntentConfigRepository.Take(sqls.DB(), "code = ? AND scope_type = ? AND company_id = ? AND store_id = ? AND wx_work_instance_id = ? AND id <> ?", code, scopeType, companyID, storeID, instanceID, req.ID); existing != nil {
+	intentProfileID, err := normalizeIntentConfigProfileID(req.IntentProfileID)
+	if err != nil {
+		return err
+	}
+	if existing := repositories.ReplyIntentConfigRepository.Take(sqls.DB(), "code = ? AND intent_profile_id = ? AND scope_type = ? AND company_id = ? AND store_id = ? AND wx_work_instance_id = ? AND id <> ?", code, intentProfileID, scopeType, companyID, storeID, instanceID, req.ID); existing != nil {
 		return errorsx.InvalidParam("同一适用范围内意图编码已存在")
 	}
 	return repositories.ReplyIntentConfigRepository.Updates(sqls.DB(), req.ID, map[string]any{
 		"code":                  code,
 		"name":                  name,
 		"description":           strings.TrimSpace(req.Description),
+		"intent_profile_id":     intentProfileID,
 		"scope_type":            scopeType,
 		"company_id":            companyID,
 		"store_id":              storeID,
@@ -166,6 +176,20 @@ func normalizeIntentStatus(status enums.Status) enums.Status {
 	return enums.StatusOk
 }
 
+func normalizeIntentConfigProfileID(id int64) (int64, error) {
+	if id > 0 {
+		item := ReplyIntentProfileService.Get(id)
+		if item == nil || item.Status == enums.StatusDeleted {
+			return 0, errorsx.InvalidParam("意图行业配置不存在")
+		}
+		return id, nil
+	}
+	if profile := ReplyIntentProfileService.DefaultHotelProfile(); profile != nil {
+		return profile.ID, nil
+	}
+	return 0, nil
+}
+
 func filterHiddenReplyIntentConfigs(list []models.ReplyIntentConfig) []models.ReplyIntentConfig {
 	results := make([]models.ReplyIntentConfig, 0, len(list))
 	for _, item := range list {
@@ -179,7 +203,7 @@ func filterHiddenReplyIntentConfigs(list []models.ReplyIntentConfig) []models.Re
 
 func isHiddenReplyIntentCode(code string) bool {
 	switch strings.TrimSpace(code) {
-	case "account_resource_phone", "account_resource_location", "account_resource_miniprogram", "no_reply_media_only", "media_question", "media_understanding", "complaint_or_risk", "handoff", "thanks_confirm", "social", "unknown_or_clarify", "invoice", "supplies_self_help", "hotel_knowledge", "store_info_invoice", "store_info_supplies", "store_info_general", "network_wifi":
+	case "account_resource_phone", "account_resource_location", "account_resource_miniprogram", "no_reply_media_only", "media_question", "media_understanding", "complaint_or_risk", "handoff", "thanks_confirm", "social", "social_confirm", "unknown_clarify", "unknown_or_clarify", "invoice", "supplies_self_help", "hotel_knowledge", "store_info_invoice", "store_info_supplies", "store_info_general", "network_wifi":
 		return true
 	default:
 		return false

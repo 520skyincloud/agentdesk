@@ -32,6 +32,7 @@ type messageService struct {
 type sendMessageOptions struct {
 	skipOutbound                bool
 	skipOutboundMediaValidation bool
+	externalAgentReply          bool
 	eventContent                string
 }
 
@@ -190,6 +191,7 @@ func (s *messageService) CreateExternalAgentMessageWithoutOutbox(conversationID 
 	}, nil, requestID, sendMessageOptions{
 		skipOutbound:                true,
 		skipOutboundMediaValidation: true,
+		externalAgentReply:          true,
 		eventContent:                "企微员工号人工回复",
 	})
 }
@@ -328,6 +330,10 @@ func (s *messageService) SendAIServiceNotice(conversationID int64, aiAgentID int
 }
 
 func (s *messageService) SendAIServiceNoticeWithRequestID(conversationID int64, aiAgentID int64, content string, requestID string) (*models.Message, error) {
+	return s.SendAIServiceNoticeWithPayloadAndRequestID(conversationID, aiAgentID, content, "", requestID)
+}
+
+func (s *messageService) SendAIServiceNoticeWithPayloadAndRequestID(conversationID int64, aiAgentID int64, content string, payload string, requestID string) (*models.Message, error) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return nil, errorsx.InvalidParam("会话不存在")
@@ -335,7 +341,7 @@ func (s *messageService) SendAIServiceNoticeWithRequestID(conversationID int64, 
 	if conversation.Status == enums.IMConversationStatusClosed {
 		return nil, errorsx.InvalidParam("会话已关闭")
 	}
-	return s.sendValidatedMessage(conversation, enums.IMSenderTypeAI, aiAgentID, strs.UUID(), enums.IMMessageTypeText, content, "", &dto.AuthPrincipal{
+	return s.sendValidatedMessage(conversation, enums.IMSenderTypeAI, aiAgentID, strs.UUID(), enums.IMMessageTypeText, content, payload, &dto.AuthPrincipal{
 		UserID:   0,
 		Username: "system",
 		Nickname: "system",
@@ -628,8 +634,18 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	}
 
 	if senderType == enums.IMSenderTypeAgent {
-		if markErr := ConversationRouteService.MarkAgentMessage(conversation.ID, now); markErr != nil {
+		markRouteMessage := ConversationRouteService.MarkAgentMessage
+		if options.externalAgentReply {
+			markRouteMessage = ConversationRouteService.MarkExternalAgentMessage
+		}
+		if markErr := markRouteMessage(conversation.ID, now); markErr != nil {
 			slog.Warn("mark agent route message failed", "conversation_id", conversation.ID, "error", markErr)
+		}
+		AIManualResumeTaskService.CancelActive(conversation.ID, "human agent replied")
+		if options.externalAgentReply {
+			if updatedConversation := ConversationService.Get(conversation.ID); updatedConversation != nil {
+				WsService.PublishConversationChanged(updatedConversation, enums.IMRealtimeEventConversationUpdated)
+			}
 		}
 	}
 
@@ -645,6 +661,9 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		}
 		if routeState := ConversationRouteService.GetByConversationID(conversation.ID); routeState != nil {
 			if routeStatusBlocksAIReply(routeState.RouteStatus) {
+				if routeState.NeedHumanFollowUp {
+					AIManualResumeTaskService.RecordWaitingCustomerMessage(conversation.ID, message.ID)
+				}
 				return message, err
 			}
 			if handled, handleErr := ConversationHandoffConfirmationService.HandleCustomerMessage(conversation, message); handleErr != nil {
@@ -659,9 +678,16 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 					return message, err
 				}
 			}
+			if routeState.RouteStatus == enums.ConversationRouteStatusAIServing {
+				AIManualResumeTaskService.CancelActive(conversation.ID, "new customer message is handled by the normal AI path")
+			}
 		}
 		if isMediaUnderstandingMessage(message.MessageType) {
-			MediaUnderstandingService.UnderstandInboundMessageAsync(message.ID)
+			if mediaMessageAlreadyUnderstood(*message) {
+				MediaUnderstandingService.triggerAIForUnderstoodMedia(message)
+			} else {
+				MediaUnderstandingService.UnderstandInboundMessageAsync(message.ID)
+			}
 			return message, err
 		}
 		if !shouldTriggerAIReply(message.MessageType) {
@@ -676,6 +702,14 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 
 func shouldTriggerAIReply(messageType enums.IMMessageType) bool {
 	return messageType == enums.IMMessageTypeText || messageType == enums.IMMessageTypeHTML
+}
+
+func mediaMessageAlreadyUnderstood(message models.Message) bool {
+	if !isMediaUnderstandingMessage(message.MessageType) {
+		return false
+	}
+	mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
+	return strings.TrimSpace(status) == "understood" && (strings.TrimSpace(mediaText) != "" || strings.TrimSpace(mediaSummary) != "")
 }
 
 func routeStatusBlocksAIReply(routeStatus enums.ConversationRouteStatus) bool {
@@ -820,6 +854,10 @@ func (s *messageService) normalizeMessageContent(conversationID int64, messageTy
 			return "", "", "", err
 		}
 		canonicalPayload, err := buildIMMessageAssetPayloadWithMedia(asset, assetPayload.WxMedia)
+		if err != nil {
+			return "", "", "", err
+		}
+		canonicalPayload, err = mergeIMMessageAssetUnderstandingPayload(canonicalPayload, assetPayload)
 		if err != nil {
 			return "", "", "", err
 		}

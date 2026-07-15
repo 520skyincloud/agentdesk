@@ -29,6 +29,10 @@ type RetrieveTrace struct {
 	EmbeddingMs    int64
 	VectorSearchMs int64
 	HydrateMs      int64
+	Providers      []string
+	DatasetIDs     []string
+	RequestCount   int64
+	RerankCount    int64
 }
 
 func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) ([]RetrieveResult, *RetrieveTrace, error) {
@@ -42,7 +46,7 @@ func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) (
 		return nil, trace, err
 	}
 
-	localKnowledgeBases, fastGPTCloudKnowledgeBases := splitFastGPTCloudKnowledgeBases(retrievableKnowledgeBases)
+	localKnowledgeBases, fastGPTKnowledgeBases := splitFastGPTKnowledgeBases(retrievableKnowledgeBases)
 	results := make([]RetrieveResult, 0)
 	if len(localKnowledgeBases) > 0 {
 		searchResults, searchTrace, err := s.searchKnowledgeBaseVectors(ctx, req, localKnowledgeBases)
@@ -57,15 +61,28 @@ func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) (
 			results = append(results, localResults...)
 		}
 	}
-	if len(fastGPTCloudKnowledgeBases) > 0 {
-		cloudResults, cloudMs, err := s.retrieveFastGPTCloudKnowledge(ctx, req, fastGPTCloudKnowledgeBases)
-		trace.VectorSearchMs += cloudMs
+	if len(fastGPTKnowledgeBases) > 0 {
+		fastGPTResults, fastGPTMs, err := s.retrieveFastGPTKnowledge(ctx, req, fastGPTKnowledgeBases)
+		trace.VectorSearchMs += fastGPTMs
 		if err != nil && len(results) == 0 {
 			return nil, trace, err
 		}
-		results = append(results, cloudResults...)
+		results = append(results, fastGPTResults...)
+		trace.Providers = append(trace.Providers, enums.KnowledgeRetrievalModeFastGPT)
+		appendTraceDatasetIDs(trace, fastGPTKnowledgeBases)
+		trace.RequestCount += int64(len(fastGPTKnowledgeBases))
+		for _, knowledgeBase := range fastGPTKnowledgeBases {
+			if knowledgeBase.DefaultRerankLimit > 0 {
+				trace.RerankCount++
+			}
+		}
 	}
-	sortRetrieveResults(results)
+	// FastGPT searchTest already returns the final mixed-recall order. Keep that
+	// order when it is the only provider; local or mixed-provider retrieval
+	// retains the existing score ordering.
+	if len(fastGPTKnowledgeBases) == 0 || len(localKnowledgeBases) > 0 {
+		sortRetrieveResults(results)
+	}
 
 	return results, trace, nil
 }
@@ -88,6 +105,27 @@ func resolveRetrievableKnowledgeBaseTenant(knowledgeBases []models.KnowledgeBase
 		return 0, fmt.Errorf("knowledge retrieval has no tenant")
 	}
 	return tenantID, nil
+}
+
+func appendTraceDatasetIDs(trace *RetrieveTrace, knowledgeBases []models.KnowledgeBase) {
+	if trace == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(trace.DatasetIDs)+len(knowledgeBases))
+	for _, datasetID := range trace.DatasetIDs {
+		seen[datasetID] = struct{}{}
+	}
+	for _, knowledgeBase := range knowledgeBases {
+		datasetID := strings.TrimSpace(knowledgeBase.DatasetID)
+		if datasetID == "" {
+			continue
+		}
+		if _, ok := seen[datasetID]; ok {
+			continue
+		}
+		seen[datasetID] = struct{}{}
+		trace.DatasetIDs = append(trace.DatasetIDs, datasetID)
+	}
 }
 
 func extractChunkType(payload vectordb.ChunkPayload) string {

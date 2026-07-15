@@ -400,11 +400,20 @@ func (s *userService) replaceUserRoles(userID int64, roleIDs []int64, operator *
 }
 
 func (s *userService) replaceUserRolesDB(db *gorm.DB, userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
-	return s.replaceUserRolesInternalDB(db, userID, roleIDs, operator, true)
+	return s.replaceUserRolesInternalDB(db, userID, roleIDs, operator, true, true)
 }
 
 func (s *userService) assignInitialUserRolesDB(db *gorm.DB, userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
-	return s.replaceUserRolesInternalDB(db, userID, roleIDs, operator, false)
+	return s.replaceUserRolesInternalDB(db, userID, roleIDs, operator, false, true)
+}
+
+func (s *userService) ensureSystemUserRoleDB(db *gorm.DB, userID, roleID int64, operator *dto.AuthPrincipal) error {
+	before, err := s.loadUserRoleSetSnapshotDB(db, userID)
+	if err != nil {
+		return err
+	}
+	roleIDs := append(append([]int64(nil), before.IDs...), roleID)
+	return s.replaceUserRolesInternalDB(db, userID, roleIDs, operator, false, false)
 }
 
 func (s *userService) replaceUserRolesInternalDB(
@@ -413,6 +422,7 @@ func (s *userService) replaceUserRolesInternalDB(
 	roleIDs []int64,
 	operator *dto.AuthPrincipal,
 	enforceTargetAuthority bool,
+	enforceRoleAuthority bool,
 ) error {
 	user, err := repositories.UserRepository.GetForUpdate(db, userID)
 	if err != nil {
@@ -448,7 +458,7 @@ func (s *userService) replaceUserRolesInternalDB(
 		if role.Status != enums.StatusOk {
 			return errorsx.InvalidParam("禁用角色不允许分配")
 		}
-		if !RoleService.canAssignRoleDB(db, operator, role) {
+		if enforceRoleAuthority && !RoleService.canAssignRoleDB(db, operator, role) {
 			return errorsx.Forbidden("不能分配同级或更高等级角色")
 		}
 		if user.TenantID > 0 && role.Scope != constants.RoleScopeTenant {

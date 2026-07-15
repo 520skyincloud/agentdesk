@@ -48,14 +48,15 @@ func (s *conversationMemoryService) ScanIdleConversations() {
 	latest := make([]models.Message, 0)
 	cutoff := time.Now().Add(-conversationMemoryIdleWindow)
 	err := sqls.DB().Raw(`
-SELECT m.* FROM t_message m
-JOIN (
-  SELECT conversation_id, session_no, MAX(id) AS max_id
-  FROM t_message
-  GROUP BY conversation_id, session_no
-) latest ON latest.max_id = m.id
-LEFT JOIN t_conversation_session_summary s
-  ON s.conversation_id = m.conversation_id
+	SELECT m.* FROM t_message m
+	JOIN (
+	  SELECT tenant_id, conversation_id, session_no, MAX(id) AS max_id
+	  FROM t_message
+	  GROUP BY tenant_id, conversation_id, session_no
+	) latest ON latest.max_id = m.id AND latest.tenant_id = m.tenant_id
+	LEFT JOIN t_conversation_session_summary s
+	  ON s.tenant_id = m.tenant_id
+	 AND s.conversation_id = m.conversation_id
  AND s.session_no = m.session_no
  AND s.last_message_id >= m.id
  AND s.status = ?
@@ -67,7 +68,7 @@ LIMIT 50`, enums.StatusOk, cutoff).Scan(&latest).Error
 		return
 	}
 	for _, message := range latest {
-		conversation := repositories.ConversationRepository.Get(sqls.DB(), message.ConversationID)
+		conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), message.ConversationID, message.TenantID)
 		if conversation == nil {
 			continue
 		}
@@ -76,12 +77,12 @@ LIMIT 50`, enums.StatusOk, cutoff).Scan(&latest).Error
 }
 
 func (s *conversationMemoryService) ScheduleUpdate(conversation models.Conversation, triggerMessage models.Message) {
-	if conversation.ID <= 0 || triggerMessage.ID <= 0 {
+	if conversation.ID <= 0 || conversation.TenantID <= 0 || triggerMessage.ID <= 0 || triggerMessage.TenantID != conversation.TenantID {
 		return
 	}
 	go func() {
 		time.Sleep(conversationMemoryIdleWindow)
-		if !s.isStillIdle(conversation.ID, triggerMessage.ID, triggerMessage.SessionNo) {
+		if !s.isStillIdle(conversation.ID, conversation.TenantID, triggerMessage.ID, triggerMessage.SessionNo) {
 			return
 		}
 		if err := s.Update(conversation, triggerMessage); err != nil {
@@ -90,11 +91,12 @@ func (s *conversationMemoryService) ScheduleUpdate(conversation models.Conversat
 	}()
 }
 
-func (s *conversationMemoryService) isStillIdle(conversationID int64, triggerMessageID int64, sessionNo int) bool {
+func (s *conversationMemoryService) isStillIdle(conversationID, tenantID, triggerMessageID int64, sessionNo int) bool {
 	if sessionNo <= 0 {
 		sessionNo = 1
 	}
 	latest := repositories.MessageRepository.FindOne(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
 		Eq("conversation_id", conversationID).
 		Eq("session_no", sessionNo).
 		Desc("id"))
@@ -102,12 +104,16 @@ func (s *conversationMemoryService) isStillIdle(conversationID int64, triggerMes
 }
 
 func (s *conversationMemoryService) Update(conversation models.Conversation, triggerMessage models.Message) error {
+	if conversation.TenantID <= 0 || triggerMessage.TenantID != conversation.TenantID {
+		return nil
+	}
 	sessionNo := triggerMessage.SessionNo
 	if sessionNo <= 0 {
 		sessionNo = 1
 	}
-	storeID, instanceID := resolveRuntimeConversationScope(conversation.ID)
+	storeID, instanceID := resolveRuntimeConversationScope(conversation.ID, conversation.TenantID)
 	items := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", conversation.TenantID).
 		Eq("conversation_id", conversation.ID).
 		Eq("session_no", sessionNo).
 		Desc("id").
@@ -121,6 +127,7 @@ func (s *conversationMemoryService) Update(conversation models.Conversation, tri
 	stableFacts, openIssues, preferences, mediaSummary := summarizeMemoryItems(items)
 	now := time.Now()
 	current := repositories.ConversationSessionSummaryRepository.FindOne(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", conversation.TenantID).
 		Eq("conversation_id", conversation.ID).
 		Eq("session_no", sessionNo).
 		Eq("store_id", storeID).
@@ -144,9 +151,10 @@ func (s *conversationMemoryService) Update(conversation models.Conversation, tri
 		"updated_at":           now,
 	}
 	if current != nil {
-		return repositories.ConversationSessionSummaryRepository.Updates(sqls.DB(), current.ID, columns)
+		return repositories.ConversationSessionSummaryRepository.UpdatesInTenant(sqls.DB(), current.ID, conversation.TenantID, columns)
 	}
 	item := &models.ConversationSessionSummary{
+		TenantID:            conversation.TenantID,
 		ConversationID:      conversation.ID,
 		SessionNo:           sessionNo,
 		WxWorkInstanceID:    instanceID,
@@ -259,8 +267,8 @@ func isMemoryMediaMessage(messageType enums.IMMessageType) bool {
 	}
 }
 
-func resolveRuntimeConversationScope(conversationID int64) (int64, int64) {
-	state := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ?", conversationID)
+func resolveRuntimeConversationScope(conversationID, tenantID int64) (int64, int64) {
+	state := repositories.ConversationRouteStateRepository.Take(sqls.DB(), "conversation_id = ? AND tenant_id = ?", conversationID, tenantID)
 	if state == nil {
 		return 0, 0
 	}

@@ -60,6 +60,7 @@ type ConversationResponse struct {
 	RouteTarget               string                              `json:"routeTarget,omitempty"`
 	HandoffReason             string                              `json:"handoffReason,omitempty"`
 	NeedHumanFollowUp         bool                                `json:"needHumanFollowUp"`
+	AutoHandoffEnabled        bool                                `json:"autoHandoffEnabled"`
 	ManualExpireAt            string                              `json:"manualExpireAt,omitempty"`
 	ManualAttention           ConversationManualAttentionResponse `json:"manualAttention"`
 	StoreID                   int64                               `json:"storeId,omitempty"`

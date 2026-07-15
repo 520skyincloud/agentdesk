@@ -7,6 +7,7 @@ type CreateWxWorkProtocolInstanceRequest struct {
 	EmployeeName                   string `json:"employeeName"`
 	EmployeeAvatar                 string `json:"employeeAvatar"`
 	CompanyID                      int64  `json:"companyId"`
+	IntentProfileID                int64  `json:"intentProfileId"`
 	StoreID                        int64  `json:"storeId"`
 	StoreName                      string `json:"storeName"`
 	StoreAddress                   string `json:"storeAddress"`
@@ -14,8 +15,11 @@ type CreateWxWorkProtocolInstanceRequest struct {
 	StoreLongitude                 string `json:"storeLongitude"`
 	StoreLatitude                  string `json:"storeLatitude"`
 	StoreMapProvider               string `json:"storeMapProvider"`
+	StoreContactPhone              string `json:"storeContactPhone"`
 	DefaultMiniProgramPayload      string `json:"defaultMiniProgramPayload"`
+	WelcomeEnabled                 bool   `json:"welcomeEnabled"`
 	WelcomeMessage                 string `json:"welcomeMessage"`
+	WelcomeImageAssetID            string `json:"welcomeImageAssetId"`
 	WelcomeSendMiniProgram         bool   `json:"welcomeSendMiniProgram"`
 	WelcomeAskLocation             bool   `json:"welcomeAskLocation"`
 	KnowledgeBaseID                int64  `json:"knowledgeBaseId"`
@@ -64,12 +68,30 @@ type CreateWxWorkProtocolRemoteSetupRequest struct {
 	Remark    string `json:"remark"`
 }
 
+type CreateWxWorkProtocolReplacementSetupRequest struct {
+	ID   int64  `json:"id"`
+	Guid string `json:"guid"`
+}
+
 type WxWorkProtocolRemoteSetupTokenRequest struct {
 	Token string `json:"token"`
 }
 
+type WxWorkProtocolRemoteSetupEmailCodeRequest struct {
+	Token string `json:"token"`
+	Email string `json:"email"`
+}
+
+type WxWorkProtocolRemoteSetupVerifyEmailRequest struct {
+	Token string `json:"token"`
+	Email string `json:"email"`
+	Code  string `json:"code"`
+}
+
 type UpdateWxWorkProtocolRemoteSetupRequest struct {
 	Token                   string `json:"token"`
+	Email                   string `json:"email"`
+	EmailVerificationToken  string `json:"emailVerificationToken"`
 	Guid                    string `json:"guid"`
 	EmployeeName            string `json:"employeeName"`
 	CompanyID               int64  `json:"companyId"`
@@ -80,6 +102,7 @@ type UpdateWxWorkProtocolRemoteSetupRequest struct {
 	StoreLongitude          string `json:"storeLongitude"`
 	StoreLatitude           string `json:"storeLatitude"`
 	StoreMapProvider        string `json:"storeMapProvider"`
+	StoreContactPhone       string `json:"storeContactPhone"`
 	KnowledgeBaseID         int64  `json:"knowledgeBaseId"`
 	ManagedMode             string `json:"managedMode"`
 	ServiceHours            string `json:"serviceHours"`
@@ -119,6 +142,7 @@ type UpdateWxWorkProtocolAISettingsRequest struct {
 	StoreRoomNotifyEnabled         bool   `json:"storeRoomNotifyEnabled"`
 	StoreRoomAtList                string `json:"storeRoomAtList"`
 	PersonaPrompt                  string `json:"personaPrompt"`
+	IntentProfileID                int64  `json:"intentProfileId"`
 	CompanyID                      int64  `json:"companyId"`
 	StoreID                        int64  `json:"storeId"`
 	StoreName                      string `json:"storeName"`
@@ -127,6 +151,7 @@ type UpdateWxWorkProtocolAISettingsRequest struct {
 	StoreLongitude                 string `json:"storeLongitude"`
 	StoreLatitude                  string `json:"storeLatitude"`
 	StoreMapProvider               string `json:"storeMapProvider"`
+	StoreContactPhone              string `json:"storeContactPhone"`
 	DefaultMiniProgramPayload      string `json:"defaultMiniProgramPayload"`
 	WelcomeMessage                 string `json:"welcomeMessage"`
 	WelcomeSendMiniProgram         bool   `json:"welcomeSendMiniProgram"`

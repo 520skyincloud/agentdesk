@@ -25,9 +25,11 @@ const handoffConfirmationModelTimeout = 2 * time.Second
 type conversationHandoffConfirmationService struct{}
 
 type handoffConfirmationPayload struct {
-	Reason    string `json:"reason"`
-	AIAgentID int64  `json:"aiAgentId"`
-	CreatedAt string `json:"createdAt"`
+	Reason          string `json:"reason"`
+	AIAgentID       int64  `json:"aiAgentId"`
+	OriginMessageID int64  `json:"originMessageId"`
+	HandoffToken    string `json:"handoffToken"`
+	CreatedAt       string `json:"createdAt"`
 }
 
 type handoffConfirmationClassifyResult struct {
@@ -65,6 +67,18 @@ func SetHumanHandoffConfirmationClassifierForTest(classifier func(context.Contex
 }
 
 func (s *conversationHandoffConfirmationService) RequestByAI(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) (bool, error) {
+	originMessageID := int64(0)
+	conversation := ConversationService.Get(conversationID)
+	if conversation == nil {
+		return false, fmt.Errorf("会话不存在")
+	}
+	if message := AIManualResumeTaskService.latestCustomerMessage(conversationID, conversation.TenantID); message != nil {
+		originMessageID = message.ID
+	}
+	return s.RequestByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID)
+}
+
+func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (bool, error) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return false, fmt.Errorf("会话不存在")
@@ -79,9 +93,11 @@ func (s *conversationHandoffConfirmationService) RequestByAI(conversationID int6
 		_ = ConversationRouteService.ClearPendingAction(conversationID)
 	}
 	payload, _ := json.Marshal(handoffConfirmationPayload{
-		Reason:    cleanHumanHandoffReason(reason),
-		AIAgentID: aiAgent.ID,
-		CreatedAt: time.Now().Format(time.RFC3339),
+		Reason:          cleanHumanHandoffReason(reason),
+		AIAgentID:       aiAgent.ID,
+		OriginMessageID: originMessageID,
+		HandoffToken:    AIManualResumeTaskService.NewHandoffToken(),
+		CreatedAt:       time.Now().Format(time.RFC3339),
 	})
 	if err := ConversationRouteService.SetPendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, string(payload), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute)); err != nil {
 		return false, err
@@ -100,6 +116,10 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 	}
 	state := ConversationRouteService.GetByConversationID(conversation.ID)
 	if state == nil || state.PendingAction != string(enums.ConversationPendingActionHumanHandoff) {
+		return false, nil
+	}
+	if !WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledInTenant(conversation.CustomerID, state.WxWorkInstanceID, conversation.TenantID) {
+		_ = ConversationRouteService.ClearPendingAction(conversation.ID)
 		return false, nil
 	}
 	text := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
@@ -137,6 +157,11 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 		reason = "用户确认需要人工接待"
 	}
 	_, err = ConversationHumanDispatchService.HandoffByAIWithRequestID(conversation.ID, aiAgent, reason, message.RequestID)
+	if err == nil {
+		if _, scheduleErr := AIManualResumeTaskService.Schedule(conversation.ID, payload.OriginMessageID, payload.HandoffToken); scheduleErr != nil {
+			slog.Warn("schedule AI manual resume task failed", "conversation_id", conversation.ID, "origin_message_id", payload.OriginMessageID, "error", scheduleErr)
+		}
+	}
 	return true, err
 }
 
@@ -422,6 +447,7 @@ func cleanHumanHandoffReason(value string) string {
 		"service_request",
 		"hotel_info",
 		"hotel_variable",
+		"interaction",
 		"social_confirm",
 		"unknown_clarify",
 		"emergency_safety",

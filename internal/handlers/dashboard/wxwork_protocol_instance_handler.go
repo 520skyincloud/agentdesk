@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-desk/internal/builders"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
@@ -291,6 +292,25 @@ func WxWorkProtocolInstancePostUpdate_store_ai_model_settings(ctx *gin.Context) 
 	httpx.WriteJSON(ctx, services.StoreAIModelSettingService.ListResponses(req.CompanyID, req.StoreID, req.WxWorkInstanceID))
 }
 
+func WxWorkProtocolInstancePostTest_store_ai_model_setting(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.TestStoreAIModelSettingRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	resp, err := services.StoreAIModelSettingService.TestStoreSetting(req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, resp)
+}
+
 func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
 	if err != nil {
@@ -328,6 +348,27 @@ func WxWorkProtocolInstancePostCreate_remote_setup(ctx *gin.Context) {
 		return
 	}
 	item, err := services.WxWorkProtocolInstanceService.CreateRemoteSetupInstance(req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	resp := buildWxWorkProtocolInstanceResponse(item, operator)
+	resp.RemoteSetupURL = buildRemoteSetupURL(ctx, item.RemoteSetupToken)
+	httpx.WriteJSON(ctx, resp)
+}
+
+func WxWorkProtocolInstancePostCreate_replacement_setup(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.CreateWxWorkProtocolReplacementSetupRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item, err := services.WxWorkProtocolInstanceService.CreateReplacementRemoteSetup(req, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -709,6 +750,9 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance, op
 	}
 	if knowledgeBase := services.KnowledgeBaseService.GetInTenant(item.KnowledgeBaseID, operator.ActiveTenantID); knowledgeBase != nil {
 		ret.KnowledgeBaseName = utils.RepairMojibakeText(knowledgeBase.Name)
+	}
+	if asset := services.AssetService.GetByAssetID(item.WelcomeImageAssetID); asset != nil {
+		ret.WelcomeImageURL = builders.BuildAsset(asset).URL
 	}
 	stats := services.WxWorkProtocolInstanceService.CountStats(item.ID)
 	ret.CustomerCount = stats.CustomerCount

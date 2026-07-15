@@ -2414,3 +2414,19 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 聚焦 race、完整 services、全仓 Go、go vet 和 diff 检查通过；仿真库只读审计继续通过 52/52 模型策略、66/66 表、128/128 关系且 0 违规，审计前后 mtime `1784067966`、大小 `4935680` 字节不变。
 - 本批修改 StoreStaffBinding repository、AgentTeam/StoreStaffBinding service、两组既有测试和两份文档；无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端或 AI/计费变化。AI 分支无同文件修改，不要求 rebase 或 migration 排序。
 - 至此本分支可独立控制的 Team 子域中，排班、客服档案、客服小组和门店员工/企微双向归属均接入父锁。AI Agent 的 team_ids 写由 AI 分支所有，必须在集成阶段协调，不能由本分支直接改写。可独立回滚本批且无需数据库回滚，但会恢复双向派组和企微反同步竞态，不建议回滚。
+
+## 87. 当前实施检查点：租户与 AI/计费分支集成验收（2026-07-15）
+
+`codex/tenant-ai-integration` 已在 `codex/customer-audit@c706815` 上合并 `origin/codex/ai-billing@f2d2da4`，并按最终模型、权限和运行时重新完成租户审计。该集成分支是两条长期分支进入主线的唯一候选，不应再把两个源分支分别重复合并到主线。
+
+- `WxWorkCustomerHandoffSetting`、`AIManualResumeTask`、`KnowledgeResourceGroup`、`KnowledgeResourceItem`、`FastGPTDatasetJob`、`AIUsageEvent`、`AIUsageGatewayCall` 已显式持久化 `TenantID`。`ConversationSessionSummary` 原有 TenantID 的在线创建、更新和查询也已补齐，避免新摘要继续落为 0。
+- DML migration 57 从客户、会话、消息、企微员工号、公司、门店和知识库等真实父对象回填上述 AI 集成数据。父对象缺失、租户证据冲突或当前 TenantID 非法时整笔回滚；无业务父对象的历史用量事件回落 legacy tenant；FastGPT 平台聚合网关记录允许保持 TenantID=0。
+- 租户完整性审计基线由 52/66/128 扩展为 59 个 TenantID 模型、73 张必需表和 154 条关系。覆盖测试要求策略、模型注册、表和关系数量同时匹配，不能只增加模型字段而遗漏审计关系。
+- 回复运行时按会话租户读取路由、企微员工号、门店、公司、历史消息、压缩记忆、知识库和图片 Asset。KnowledgeRetriever 在进入 RAG 前按 AIAgent.TenantID 过滤 KnowledgeIDs；错误租户或脏关联 fail closed，不再依赖全局主键唯一性作为隔离边界。
+- FastGPT 后台任务、人工超时 AI 恢复、客户自动转人工偏好、媒体理解结果和 AI usage 写入均携带持久化租户；后台任务的状态更新继续使用 `id + tenant_id`。
+- FastGPT 数据集权限复用现有 `knowledgeBase.create/update/delete/view`，意图配置/Profile 写操作保持平台账号防线。没有新增权限管理之外的隐藏授权，登录同时保留邮箱验证码和邀请码能力。
+- `tenantRegistration.enabled` 仍必须为 `false`。只有最终集成分支在 SQLite/MySQL 双租户真实数据验证、migration 57 实库审计和权限验收全部通过后，才可单独启用公开注册。
+
+验证结果：`go test ./... -count=1`、`go vet ./...`、`pnpm typecheck`、`pnpm build`、本次变更前端定向 ESLint、`git diff --check` 和冲突标记扫描均通过。全量 `pnpm lint` 仍被未修改的 content-editor、palette-toggle 和 i18n provider 五个既有 React lint error 阻断，不属于本次集成回归。
+
+回滚集成提交不会自动删除 AutoMigrate 新增列，也不会反向清除 migration 57 已写入的 TenantID；如需回滚，应先保持公开注册关闭，再按数据库备份和 migration 记录制定单独数据回退方案。

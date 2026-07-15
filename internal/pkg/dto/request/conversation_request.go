@@ -36,6 +36,11 @@ type TransferConversationRequest struct {
 	Reason         string `json:"reason"`
 }
 
+type SetConversationAutoHandoffEnabledRequest struct {
+	ConversationID     int64 `json:"conversationId"`
+	AutoHandoffEnabled bool  `json:"autoHandoffEnabled"`
+}
+
 type CloseConversationRequest struct {
 	ConversationID int64  `json:"conversationId"`
 	CloseReason    string `json:"closeReason"`

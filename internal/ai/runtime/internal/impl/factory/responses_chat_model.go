@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/usagex"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -68,7 +69,7 @@ func newResponsesChatModel(aiConfig models.AIConfig) *responsesChatModel {
 	}
 	return &responsesChatModel{
 		config: aiConfig,
-		client: &http.Client{Timeout: timeout},
+		client: usagex.NewHTTPClient(timeout),
 	}
 }
 

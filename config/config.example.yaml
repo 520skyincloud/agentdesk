@@ -36,6 +36,42 @@ tenantRegistration:
   # 生产环境也可通过 AGENT_DESK_TENANT_REGISTRATION_ENABLED 覆盖。
   enabled: false
 
+email:
+  # 邮箱验证码登录必须使用真实 SMTP；未配置时相关入口会明确不可用。
+  enabled: false
+  host: ""
+  port: 587
+  username: ""
+  password: ""
+  from: ""
+  fromName: "Agent Desk"
+  # 可选：starttls / tls / plain。生产环境建议 starttls 或 tls。
+  tlsMode: starttls
+  publicUrl: ""
+
+fastGPT:
+  # 平台统一托管的 FastGPT OpenAPI 连接。
+  enabled: false
+  baseUrl: ""
+  apiKey: ""
+  timeoutMs: 15000
+  maxRetries: 1
+  # FastGPT 检索引擎的最大参考 token。默认 400，避免过量召回抬高回复模型成本。
+  retrievalTokenLimit: 400
+  vectorModel: ""
+  agentModel: ""
+  vlmModel: ""
+
+# 可选：用于核对模型网关的真实消费日志。未配置时不影响模型调用和回复。
+newAPIUsage:
+  enabled: false
+  baseUrl: ""
+  accessToken: ""
+  userId: 0
+  timeoutMs: 5000
+  # FastGPT 内部模型统一使用的 New API token 名称，仅用于平台级用量归集。
+  fastGPTTokenName: ""
+
 customerSession:
   # 客服会话 token 签名密钥。必须使用独立高强度随机字符串，不要复用渠道 userTokenSecret。
   secret: ""

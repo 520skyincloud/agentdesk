@@ -4292,3 +4292,63 @@ git diff --check
 - 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、前端、AI 回复、模型调用、token、usage 或计费变化。
 - 与 `origin/codex/ai-billing@f2d2da4` 对照，本批七个文件无同文件修改；不要求 rebase、migration 协调或 AI 负责人前置提交。建议在第 85 批后合并，并重跑双向派组、企微 Ensure 与 Team 删除依赖测试。
 - 可回滚七个文件且无需数据库回滚；回滚会恢复双向入口旧值覆盖、父 Team 删除竞态和企微反同步覆盖，不建议回滚。
+
+## 第 87 批：租户主线与 AI/计费分支集成（2026-07-15）
+
+### 目标与合并范围
+
+- 集成工作树 `/Users/qifeng/Documents/zhixiweibao-integration`，分支 `codex/tenant-ai-integration`，以 `codex/customer-audit@c706815` 为第一父提交，合并 `origin/codex/ai-billing@f2d2da4`。
+- 24 个文本冲突已逐文件解决，保留租户公司、权限、客服组、派单和审计主线，同时合入邮箱验证码、FastGPT、意图引擎、模型用量和企微欢迎语。没有恢复 FAQ、七鱼、旧 hook bridge、旧独立 Agent 或旧企微字段。
+- 共享契约涉及 models/AutoMigrate、migration、认证 DTO、公司/知识库/企微 DTO、Gin 路由、`web/lib/api`、导航和双语资源。WebSocket 仅保留双方既有事件，无新增 payload/enum 语义。
+
+### 数据、运行时与权限
+
+- 七类 AI 集成模型新增 TenantID：WxWorkCustomerHandoffSetting、AIManualResumeTask、KnowledgeResourceGroup/Item、FastGPTDatasetJob、AIUsageEvent/GatewayCall。ConversationSessionSummary 的在线创建、更新、扫描和历史读取补齐 TenantID。
+- 新增 `internal/migration/000057_backfill_ai_integration_tenants.go` 及测试。回填从真实父对象解析租户，父对象缺失、非法租户或证据冲突整笔回滚；平台 FastGPT 聚合 gateway usage 可保持 TenantID=0。远端 `main`、customer-audit 和 ai-billing 最高 migration 分别为 20、56、33，57 无编号冲突。
+- TenantIntegrityAudit 扩展到 59 个 TenantID 模型、73 张必需表和 154 条关系。策略覆盖和干净双租户夹具均通过。
+- AI Runtime 增加纵深隔离：路由/企微/门店/公司、历史与压缩记忆、KnowledgeIDs/RAG、知识图片资源与 Asset 均按会话或 Agent 租户收口。后台 FastGPT、人工恢复、媒体理解、客户转人工偏好和 usage 链使用持久化租户。
+- FastGPT 创建/更新/删除/查看分别复用 `knowledgeBase.create/update/delete/view`。ReplyIntentConfig/Profile 写操作要求平台账号。远程开户注册的门店员工角色统一经过 UserService 角色审计链，不再直接写 UserRole。
+- 登录能力同时保留 `tenantRegistrationEnabled` 与 `emailCodeEnabled`；配置继续固定 `tenantRegistration.enabled: false`，本批不开放公开注册。
+
+### 文件与验证
+
+核心新增/收口文件包括：
+
+```text
+internal/migration/000057_backfill_ai_integration_tenants.go
+internal/migration/000057_backfill_ai_integration_tenants_test.go
+internal/services/tenant_integrity_audit_service.go
+internal/services/ai_manual_resume_task_service.go
+internal/services/fastgpt_dataset_service.go
+internal/services/knowledge_resource_service.go
+internal/services/ai_usage_event_service.go
+internal/ai/runtime/conversation_memory_service.go
+internal/ai/runtime/executor/intent_config_matcher.go
+internal/ai/runtime/internal/impl/adapter/message_adapter.go
+internal/ai/runtime/internal/impl/retrievers/knowledge_retriever.go
+internal/ai/runtime/reply_commit_service.go
+```
+
+已通过：
+
+```text
+go test ./internal/services -count=1
+go test ./internal/migration ./internal/ai/runtime/executor ./internal/handlers/api ./internal/handlers/dashboard -count=1
+go test ./internal/ai/runtime/... -count=1
+go test ./... -count=1
+go vet ./...
+cd web && pnpm typecheck
+cd web && pnpm build
+本次变更前端文件定向 pnpm eslint（0 error，1 个既有 img warning）
+git diff --check
+冲突标记扫描
+```
+
+全量 `pnpm lint` 仍失败于本批未修改的 `web/components/content-editor/html-editor.tsx`、`web/components/content-editor/index.tsx`、`web/components/palette-toggle.tsx` 和 `web/i18n/provider.tsx`，共 5 个 React lint error；另有既有 warning。不能把该基线问题写成集成通过，也不应在本提交夹带无关重构。
+
+### 并行分支、合并顺序与回滚
+
+- 开始时已 fetch：`origin/main@e67e207`、`origin/codex/customer-audit@c706815`、`origin/codex/ai-billing@f2d2da4`。集成分支包含两条源分支的完整提交历史，建议只评审并合并 `codex/tenant-ai-integration`，不要再分别合并源分支。
+- 最终提交前必须再次 fetch，并核对两个源分支是否前进；若任一前进，先在集成分支增量合并并重跑 59/73/154、全仓 Go 和前端构建。当前不需要 rebase。
+- 回滚集成提交可撤回代码和路由，但 AutoMigrate 新增列不会自动删除，migration 57 已写入的 TenantID 也不会自动恢复为 0。回滚前保持公开注册关闭，并使用数据库备份制定独立数据回退；不得直接删除 migration 记录或清空租户字段。
+- 本批不提交 `.codex/audits/` 或 `docs/generated/`。权威依据继续是代码、`docs/design/multi-tenant-company-registration.md` 和 `docs/design/reply-runtime-engine.md`。

@@ -3,6 +3,13 @@ package request
 import "agent-desk/internal/pkg/enums"
 
 type CreateKnowledgeBaseRequest struct {
+	IntentProfileID       int64   `json:"intentProfileId"`
+	CompanyID             int64   `json:"companyId"`
+	StoreID               int64   `json:"storeId"`
+	DatasetID             string  `json:"datasetId"`
+	DatasetName           string  `json:"datasetName"`
+	ConnectionID          string  `json:"connectionId"`
+	RetrievalMode         string  `json:"retrievalMode"`
 	Name                  string  `json:"name"`
 	Description           string  `json:"description"`
 	KnowledgeType         string  `json:"knowledgeType"`
@@ -20,6 +27,17 @@ type CreateKnowledgeBaseRequest struct {
 type UpdateKnowledgeBaseRequest struct {
 	ID int64 `json:"id"`
 	CreateKnowledgeBaseRequest
+}
+
+type SyncKnowledgeResourceGroupRequest struct {
+	WxWorkInstanceID       int64  `json:"wxWorkInstanceId"`
+	KnowledgeBaseID        int64  `json:"knowledgeBaseId"`
+	Query                  string `json:"query"`
+	ExpectedSourceRecordID string `json:"expectedSourceRecordId"`
+}
+
+type DeleteKnowledgeResourceGroupRequest struct {
+	ID int64 `json:"id"`
 }
 
 type CreateKnowledgeDocumentRequest struct {

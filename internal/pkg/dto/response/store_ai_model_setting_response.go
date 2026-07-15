@@ -31,4 +31,15 @@ type StoreAIModelSettingResponse struct {
 	EffectiveProvider       string `json:"effectiveProvider"`
 	EffectiveBaseURL        string `json:"effectiveBaseUrl"`
 	EffectiveModelSource    string `json:"effectiveModelSource"`
+	LastTestStatus          string `json:"lastTestStatus"`
+	LastTestedAt            string `json:"lastTestedAt,omitempty"`
+	LastTestLatencyMS       int64  `json:"lastTestLatencyMs"`
+}
+
+type TestStoreAIModelSettingResponse struct {
+	UsageCode string `json:"usageCode"`
+	ModelName string `json:"modelName"`
+	TestToken string `json:"testToken"`
+	TestedAt  string `json:"testedAt"`
+	LatencyMS int64  `json:"latencyMs"`
 }

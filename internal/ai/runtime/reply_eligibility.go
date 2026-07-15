@@ -17,7 +17,10 @@ func (e *replyEligibility) CanReply(conversation models.Conversation, message mo
 	if message.SenderType != enums.IMSenderTypeCustomer {
 		return false
 	}
-	if conversation.HandoffAt != nil || conversation.CurrentAssigneeID > 0 {
+	// HandoffAt is historical audit data. The active route state and assignee own
+	// whether AI is paused; treating this timestamp as active state permanently
+	// disabled AI after the first completed manual handoff.
+	if conversation.CurrentAssigneeID > 0 {
 		return false
 	}
 	if aiAgent.ServiceMode == enums.IMConversationServiceModeHumanOnly {

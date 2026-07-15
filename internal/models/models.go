@@ -17,6 +17,7 @@ var Models = []any{
 	&Customer{},
 	&CustomerIdentity{},
 	&StoreCustomerRelation{},
+	&WxWorkCustomerHandoffSetting{},
 	&CustomerContact{},
 	&Role{},
 	&Permission{},
@@ -26,6 +27,7 @@ var Models = []any{
 	&RolePermissionChangeLog{},
 	&LoginSession{},
 	&LoginCredentialLog{},
+	&EmailVerificationCode{},
 	&Asset{},
 	&Tag{},
 	&Conversation{},
@@ -41,6 +43,7 @@ var Models = []any{
 	&WxWorkKFMessageRef{},
 	&ChannelMessageOutbox{},
 	&ConversationRouteState{},
+	&AIManualResumeTask{},
 	&ConversationSessionSummary{},
 	&MessageSyncLog{},
 	&ConversationAssignment{},
@@ -70,9 +73,15 @@ var Models = []any{
 	&KnowledgeRetrieveHit{},
 	&KnowledgeFeedback{},
 	&KnowledgeCandidate{},
+	&KnowledgeResourceGroup{},
+	&KnowledgeResourceItem{},
+	&FastGPTDatasetJob{},
 	&SkillDefinition{},
 	&SkillRunLog{},
 	&AgentRunLog{},
+	&AIUsageEvent{},
+	&AIUsageGatewayCall{},
+	&ReplyIntentProfile{},
 	&ReplyIntentConfig{},
 	&ConversationInterrupt{},
 	&SystemConfig{},
@@ -180,6 +189,7 @@ type User struct {
 	Avatar             string                       `gorm:"type:varchar(255);not null;default:''"`
 	Mobile             *string                      `gorm:"type:varchar(32);uniqueIndex"`
 	Email              *string                      `gorm:"type:varchar(100);uniqueIndex"`
+	EmailVerifiedAt    *time.Time                   `gorm:"type:datetime;index"`
 	Password           string                       `gorm:"type:varchar(255);not null;default:''"`
 	PasswordSalt       string                       `gorm:"type:varchar(64);not null;default:''"`
 	RegistrationSource enums.UserRegistrationSource `gorm:"type:varchar(30);not null;default:'platform_created';index"`
@@ -270,12 +280,13 @@ type UserIdentity struct {
 //
 //	用于存储公司主体信息；Customer（人）可通过 CompanyID 关联到所属公司。
 type Company struct {
-	ID       int64        `gorm:"primaryKey;autoIncrement"`                                                           // ID 为公司主键。
-	TenantID int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_company_tenant_name,priority:1"` // TenantID 为客户企业所属接入公司。
-	Name     string       `gorm:"type:varchar(200);not null;uniqueIndex:uk_company_tenant_name,priority:2"`           // Name 为当前接入公司内唯一的客户企业名称。
-	Code     string       `gorm:"type:varchar(64);not null;index"`                                                    // Code 为公司编码/统一社会信用代码（可空语义用空串表示）。
-	Status   enums.Status `gorm:"type:int;not null;default:0"`                                                        // Status 为公司状态。
-	Remark   string       `gorm:"type:text"`                                                                          // Remark 为备注。
+	ID              int64        `gorm:"primaryKey;autoIncrement"`                                                           // ID 为公司主键。
+	TenantID        int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_company_tenant_name,priority:1"` // TenantID 为客户企业所属接入公司。
+	Name            string       `gorm:"type:varchar(200);not null;uniqueIndex:uk_company_tenant_name,priority:2"`           // Name 为当前接入公司内唯一的客户企业名称。
+	Code            string       `gorm:"type:varchar(64);not null;index"`                                                    // Code 为公司编码/统一社会信用代码（可空语义用空串表示）。
+	IntentProfileID int64        `gorm:"type:bigint;not null;default:0;index"`                                               // IntentProfileID 为公司默认意图行业配置。
+	Status          enums.Status `gorm:"type:int;not null;default:0"`                                                        // Status 为公司状态。
+	Remark          string       `gorm:"type:text"`                                                                          // Remark 为备注。
 	AuditFields
 }
 
@@ -322,6 +333,18 @@ type StoreCustomerRelation struct {
 	Tags               string       `gorm:"type:varchar(500);not null;default:''"`
 	StableNotes        string       `gorm:"type:text"`
 	Status             enums.Status `gorm:"type:int;not null;default:0;index"`
+	AuditFields
+}
+
+// WxWorkCustomerHandoffSetting 保存客户在单个企微员工号下的自动转人工偏好。
+// 同一自然客户在不同员工号下的设置必须独立，避免跨门店账号互相影响。
+type WxWorkCustomerHandoffSetting struct {
+	ID                 int64  `gorm:"primaryKey;autoIncrement"`
+	TenantID           int64  `gorm:"type:bigint;not null;default:0;index"`
+	CustomerID         int64  `gorm:"type:bigint;not null;index;uniqueIndex:uk_customer_wxwork_handoff_setting"`
+	WxWorkInstanceID   int64  `gorm:"type:bigint;not null;index;uniqueIndex:uk_customer_wxwork_handoff_setting"`
+	AutoHandoffEnabled bool   `gorm:"not null;default:true"`
+	Remark             string `gorm:"type:varchar(255);not null;default:''"`
 	AuditFields
 }
 
@@ -516,6 +539,7 @@ type WxWorkProtocolInstance struct {
 	EmployeeName                   string       `gorm:"type:varchar(120);not null;default:''"`
 	EmployeeAvatar                 string       `gorm:"type:varchar(1024);not null;default:''"`
 	CompanyID                      int64        `gorm:"type:bigint;not null;default:0;index"`
+	IntentProfileID                int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreID                        int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreStaffBindingID            int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreAddress                   string       `gorm:"type:varchar(500);not null;default:''"`
@@ -523,8 +547,11 @@ type WxWorkProtocolInstance struct {
 	StoreLongitude                 string       `gorm:"type:varchar(50);not null;default:''"`
 	StoreLatitude                  string       `gorm:"type:varchar(50);not null;default:''"`
 	StoreMapProvider               string       `gorm:"type:varchar(50);not null;default:''"`
+	StoreContactPhone              string       `gorm:"type:varchar(120);not null;default:''"`
 	DefaultMiniProgramPayload      string       `gorm:"type:text"`
+	WelcomeEnabled                 bool         `gorm:"not null;default:true"`
 	WelcomeMessage                 string       `gorm:"type:varchar(500);not null;default:''"`
+	WelcomeImageAssetID            string       `gorm:"type:varchar(64);not null;default:'';index"`
 	WelcomeSendMiniProgram         bool         `gorm:"not null;default:true"`
 	WelcomeAskLocation             bool         `gorm:"not null;default:true"`
 	KnowledgeBaseID                int64        `gorm:"type:bigint;not null;default:0;index"`
@@ -542,12 +569,19 @@ type WxWorkProtocolInstance struct {
 	PersonaPrompt                  string       `gorm:"type:text"`
 	AutoAcceptFriendRequest        bool         `gorm:"not null;default:false"`
 	AutoAcceptFriendRemarkTemplate string       `gorm:"type:varchar(500);not null;default:''"`
+	FriendRequestSyncSeq           string       `gorm:"type:varchar(64);not null;default:''"`
+	ContactSyncSeq                 string       `gorm:"type:varchar(64);not null;default:''"`
+	ContactAutomationLastAt        *time.Time   `gorm:"type:datetime;index"`
+	ContactAutomationLastError     string       `gorm:"type:varchar(500);not null;default:''"`
 	ContextMaxMessages             int          `gorm:"type:int;not null;default:30"`
 	ContextMaxTokens               int          `gorm:"type:int;not null;default:8000"`
 	ContextCompressionEnabled      bool         `gorm:"not null;default:true"`
 	RemoteSetupToken               string       `gorm:"type:varchar(80);not null;default:'';index"`
 	RemoteSetupExpiresAt           *time.Time   `gorm:"type:datetime;index"`
 	RemoteSetupSubmittedAt         *time.Time   `gorm:"type:datetime;index"`
+	ReplacesInstanceID             int64        `gorm:"type:bigint;not null;default:0;index"`
+	ReplacedByInstanceID           int64        `gorm:"type:bigint;not null;default:0;index"`
+	ReplacedAt                     *time.Time   `gorm:"type:datetime;index"`
 	HealthStatus                   string       `gorm:"type:varchar(30);not null;default:'unknown';index"`
 	LastHeartbeatAt                *time.Time   `gorm:"type:datetime;index"`
 	Status                         enums.Status `gorm:"type:int;not null;default:0;index"`
@@ -576,6 +610,29 @@ type ConversationRouteState struct {
 	NeedHumanFollowUp     bool                          `gorm:"not null;default:false;index"`
 	HandoffReason         string                        `gorm:"type:varchar(500);not null;default:''"`
 	Remark                string                        `gorm:"type:text"`
+	AuditFields
+}
+
+// AIManualResumeTask persists the AI continuation that must run after an
+// unanswered manual handoff times out. It is deliberately separate from the
+// conversation route state so retries never change route semantics.
+type AIManualResumeTask struct {
+	ID                     int64      `gorm:"primaryKey;autoIncrement"`
+	TenantID               int64      `gorm:"type:bigint;not null;default:0;index"`
+	TaskKey                string     `gorm:"type:varchar(128);not null;default:'';uniqueIndex"`
+	HandoffToken           string     `gorm:"type:varchar(64);not null;default:'';index"`
+	ConversationID         int64      `gorm:"type:bigint;not null;default:0;index"`
+	WxWorkInstanceID       int64      `gorm:"type:bigint;not null;default:0;index"`
+	OriginMessageID        int64      `gorm:"type:bigint;not null;default:0;index"`
+	LatestWaitingMessageID int64      `gorm:"type:bigint;not null;default:0;index"`
+	RouteStatus            string     `gorm:"type:varchar(40);not null;default:'';index"`
+	TaskStatus             string     `gorm:"type:varchar(30);not null;default:'waiting';index"`
+	ReadyAt                *time.Time `gorm:"type:datetime;index"`
+	NextRetryAt            *time.Time `gorm:"type:datetime;index"`
+	RetryCount             int        `gorm:"type:int;not null;default:0"`
+	NoticeSentAt           *time.Time `gorm:"type:datetime;index"`
+	CompletedAt            *time.Time `gorm:"type:datetime;index"`
+	LastError              string     `gorm:"type:text"`
 	AuditFields
 }
 
@@ -984,27 +1041,31 @@ type AIConfig struct {
 // otherwise company_id > 0 means the company default. There is no separate store
 // override layer because a WeCom employee account is the store account in this product.
 type StoreAIModelSetting struct {
-	ID               int64             `gorm:"primaryKey;autoIncrement"`
-	CompanyID        int64             `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_store_ai_model_scope_usage;index"`
-	StoreID          int64             `gorm:"type:bigint;not null;default:0;index"` // StoreID is kept only for display/audit of the employee account binding.
-	WxWorkInstanceID int64             `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_store_ai_model_scope_usage;index"`
-	UsageCode        string            `gorm:"type:varchar(80);not null;default:'';uniqueIndex:uk_store_ai_model_scope_usage;index"`
-	AIConfigID       int64             `gorm:"type:bigint;not null;default:0;index"` // AIConfigID is legacy data from the first override version; runtime no longer requires it.
-	Provider         enums.AIProvider  `gorm:"type:varchar(50);not null;default:'';index"`
-	BaseURL          string            `gorm:"type:varchar(255);not null;default:''"`
-	APIKey           string            `gorm:"type:varchar(255);not null;default:''"`
-	APIMode          string            `gorm:"type:varchar(40);not null;default:'chat_completions';index"`
-	ModelType        enums.AIModelType `gorm:"type:varchar(30);not null;default:'';index"`
-	ModelName        string            `gorm:"type:varchar(100);not null;default:'';index"`
-	Dimension        int               `gorm:"type:int;not null;default:0"`
-	MaxContextTokens int               `gorm:"type:int;not null;default:0"`
-	MaxOutputTokens  int               `gorm:"type:int;not null;default:0"`
-	TimeoutMS        int               `gorm:"type:int;not null;default:30000"`
-	MaxRetryCount    int               `gorm:"type:int;not null;default:0"`
-	RPMLimit         int               `gorm:"type:int;not null;default:0"`
-	TPMLimit         int               `gorm:"type:int;not null;default:0"`
-	Status           enums.Status      `gorm:"type:int;not null;default:0;index"`
-	Remark           string            `gorm:"type:text"`
+	ID                int64             `gorm:"primaryKey;autoIncrement"`
+	CompanyID         int64             `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_store_ai_model_scope_usage;index"`
+	StoreID           int64             `gorm:"type:bigint;not null;default:0;index"` // StoreID is kept only for display/audit of the employee account binding.
+	WxWorkInstanceID  int64             `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_store_ai_model_scope_usage;index"`
+	UsageCode         string            `gorm:"type:varchar(80);not null;default:'';uniqueIndex:uk_store_ai_model_scope_usage;index"`
+	AIConfigID        int64             `gorm:"type:bigint;not null;default:0;index"` // AIConfigID is legacy data from the first override version; runtime no longer requires it.
+	Provider          enums.AIProvider  `gorm:"type:varchar(50);not null;default:'';index"`
+	BaseURL           string            `gorm:"type:varchar(255);not null;default:''"`
+	APIKey            string            `gorm:"type:varchar(255);not null;default:''"`
+	APIMode           string            `gorm:"type:varchar(40);not null;default:'chat_completions';index"`
+	ModelType         enums.AIModelType `gorm:"type:varchar(30);not null;default:'';index"`
+	ModelName         string            `gorm:"type:varchar(100);not null;default:'';index"`
+	Dimension         int               `gorm:"type:int;not null;default:0"`
+	MaxContextTokens  int               `gorm:"type:int;not null;default:0"`
+	MaxOutputTokens   int               `gorm:"type:int;not null;default:0"`
+	TimeoutMS         int               `gorm:"type:int;not null;default:30000"`
+	MaxRetryCount     int               `gorm:"type:int;not null;default:0"`
+	RPMLimit          int               `gorm:"type:int;not null;default:0"`
+	TPMLimit          int               `gorm:"type:int;not null;default:0"`
+	Status            enums.Status      `gorm:"type:int;not null;default:0;index"`
+	ConfigFingerprint string            `gorm:"type:varchar(64);not null;default:'';index"`
+	LastTestStatus    string            `gorm:"type:varchar(20);not null;default:'';index"`
+	LastTestedAt      *time.Time        `gorm:"type:datetime;index"`
+	LastTestLatencyMS int64             `gorm:"type:bigint;not null;default:0"`
+	Remark            string            `gorm:"type:text"`
 	AuditFields
 }
 
@@ -1012,6 +1073,13 @@ type StoreAIModelSetting struct {
 type KnowledgeBase struct {
 	ID                    int64        `gorm:"primaryKey;autoIncrement"`                           // ID 为知识库主键。
 	TenantID              int64        `gorm:"type:bigint;not null;default:0;index"`               // TenantID 为知识库所属接入公司。
+	IntentProfileID       int64        `gorm:"type:bigint;not null;default:0;index"`               // IntentProfileID 为旧数据兼容字段，不参与运行时知识库选择。
+	CompanyID             int64        `gorm:"type:bigint;not null;default:0;index"`               // CompanyID 为知识库所属公司；0 表示独立门店。
+	StoreID               int64        `gorm:"type:bigint;not null;default:0;index"`               // StoreID 为知识库所属门店逻辑账号。
+	DatasetID             string       `gorm:"type:varchar(128);not null;default:'';index"`        // DatasetID 为 FastGPT 数据集 ID。
+	DatasetName           string       `gorm:"type:varchar(200);not null;default:''"`              // DatasetName 为 FastGPT 数据集名称。
+	ConnectionID          string       `gorm:"type:varchar(64);not null;default:'platform'"`       // ConnectionID 为平台 FastGPT 连接标识。
+	RetrievalMode         string       `gorm:"type:varchar(20);not null;default:'fastgpt';index"`  // RetrievalMode 为兼容字段；生产检索统一使用 FastGPT 引擎。
 	Name                  string       `gorm:"type:varchar(100);not null;default:'';index"`        // Name 为知识库名称。
 	Description           string       `gorm:"type:text"`                                          // Description 为知识库描述。
 	KnowledgeType         string       `gorm:"type:varchar(20);not null;default:'document';index"` // KnowledgeType 为知识库类型：document/faq。
@@ -1026,6 +1094,43 @@ type KnowledgeBase struct {
 	AnswerMode            int          `gorm:"type:int;not null;default:1"`                        // AnswerMode 为回答模式：1严格知识库模式 2辅助解释模式。
 	SortNo                int          `gorm:"type:int;not null;default:0;index"`                  // SortNo 为排序号，用于后台展示和知识库的人工排序管理。
 	Remark                string       `gorm:"type:text"`                                          // Remark 为备注。
+	AuditFields
+}
+
+// KnowledgeResourceGroup maps one stable cloud knowledge source record to reusable Agent Desk assets.
+// Resources stay outside the language-model context and are sent only after a matching knowledge hit.
+type KnowledgeResourceGroup struct {
+	ID               int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID         int64        `gorm:"type:bigint;not null;default:0;index"`
+	CompanyID        int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_knowledge_resource_group;uniqueIndex:uk_knowledge_resource_store_source;index"`
+	StoreID          int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_knowledge_resource_store_source;index"`
+	IntentProfileID  int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_knowledge_resource_group;index"`
+	KnowledgeBaseID  int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_knowledge_resource_group;uniqueIndex:uk_knowledge_resource_store_source;index"`
+	WxWorkInstanceID int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_knowledge_resource_group;index"`
+	SourceProvider   string       `gorm:"type:varchar(40);not null;default:'fastgpt_cloud';uniqueIndex:uk_knowledge_resource_group;uniqueIndex:uk_knowledge_resource_store_source;index"`
+	SourceRecordID   string       `gorm:"type:varchar(255);not null;default:'';uniqueIndex:uk_knowledge_resource_group;uniqueIndex:uk_knowledge_resource_store_source;index"`
+	Title            string       `gorm:"type:varchar(255);not null;default:''"`
+	Description      string       `gorm:"type:text"`
+	SourceHash       string       `gorm:"type:varchar(64);not null;default:'';index"`
+	Status           enums.Status `gorm:"type:int;not null;default:0;index"`
+	SortNo           int          `gorm:"type:int;not null;default:0;index"`
+	Remark           string       `gorm:"type:text"`
+	AuditFields
+}
+
+// KnowledgeResourceItem is one ordered, reusable image asset in a knowledge resource group.
+type KnowledgeResourceItem struct {
+	ID                       int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID                 int64        `gorm:"type:bigint;not null;default:0;index"`
+	KnowledgeResourceGroupID int64        `gorm:"type:bigint;not null;default:0;index"`
+	AssetID                  string       `gorm:"type:varchar(64);not null;default:'';index"`
+	SourceURL                string       `gorm:"type:text"`
+	SourceChecksum           string       `gorm:"type:varchar(64);not null;default:'';index"`
+	Title                    string       `gorm:"type:varchar(255);not null;default:''"`
+	Description              string       `gorm:"type:text"`
+	SortNo                   int          `gorm:"type:int;not null;default:0;index"`
+	Status                   enums.Status `gorm:"type:int;not null;default:0;index"`
+	Remark                   string       `gorm:"type:text"`
 	AuditFields
 }
 
@@ -1249,12 +1354,28 @@ type AgentRunLog struct {
 	CreatedAt        time.Time `gorm:"type:datetime;not null;index"`
 }
 
+// ReplyIntentProfile stores industry-level intent detection prompt and output schema.
+type ReplyIntentProfile struct {
+	ID                 int64        `gorm:"primaryKey;autoIncrement"`
+	Code               string       `gorm:"type:varchar(100);not null;uniqueIndex"`
+	Name               string       `gorm:"type:varchar(120);not null;default:''"`
+	IndustryCode       string       `gorm:"type:varchar(100);not null;default:'';index"`
+	Description        string       `gorm:"type:text"`
+	IntentDetectPrompt string       `gorm:"type:text"`
+	IntentJSONSchema   string       `gorm:"type:text"`
+	Status             enums.Status `gorm:"type:int;not null;default:0;index"`
+	SortNo             int          `gorm:"type:int;not null;default:0;index"`
+	Remark             string       `gorm:"type:text"`
+	AuditFields
+}
+
 // ReplyIntentConfig stores editable intent detection and prompt-pack rules for the reply runtime.
 type ReplyIntentConfig struct {
 	ID                 int64        `gorm:"primaryKey;autoIncrement"`
 	Code               string       `gorm:"type:varchar(100);not null;uniqueIndex:uk_reply_intent_scope"`
 	Name               string       `gorm:"type:varchar(120);not null;default:''"`
 	Description        string       `gorm:"type:text"`
+	IntentProfileID    int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
 	ScopeType          string       `gorm:"type:varchar(30);not null;default:'global';uniqueIndex:uk_reply_intent_scope;index"`
 	CompanyID          int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
 	StoreID            int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`

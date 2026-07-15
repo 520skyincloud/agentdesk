@@ -403,6 +403,12 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <MessageSquareCodeIcon />,
         requiredPermission: "mcp.view",
       },
+      {
+        titleKey: "nav.replyIntentProfiles",
+        url: "/dashboard/reply-intent-profiles",
+        icon: <BrainCircuitIcon />,
+        requiredPermission: "aiConfig.view",
+      },
     ],
   },
 ];

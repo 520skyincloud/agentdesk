@@ -39,6 +39,8 @@ const (
 	wxProtocolNotifyNewMsgAlt        = 11010
 	wxProtocolNotifyLoginOtherDevice = 11011
 	wxProtocolNotifyBatchNewMsgAlt   = 11013
+	wxProtocolNotifyFriendChange     = 2131
+	wxProtocolNotifyFriendApply      = 2132
 	wxProtocolMsgRevoke              = 1
 	wxProtocolMsgText                = 2
 	wxProtocolMsgLocation            = 3
@@ -100,10 +102,33 @@ func (s *wxWorkProtocolService) HandleCallback(req request.WxWorkProtocolCallbac
 		return s.handleMessage(instance, req.Data, raw)
 	case wxProtocolNotifyBatchNewMsg, wxProtocolNotifyBatchNewMsgAlt:
 		return s.handleBatchMessages(instance, req.Data, raw)
+	case wxProtocolNotifyFriendApply:
+		if instance.AutoAcceptFriendRequest {
+			go s.runContactAutomationCallback(instance.ID, req.NotifyType)
+		}
+		return nil
+	case wxProtocolNotifyFriendChange:
+		if instance.WelcomeEnabled {
+			go s.runContactAutomationCallback(instance.ID, req.NotifyType)
+		}
+		return nil
 	default:
 		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", externalMsgID, enums.MessageSyncStatusSkipped, raw, fmt.Sprintf("skip notify_type=%d", req.NotifyType))
 		slog.Info("skip wxwork protocol callback", "guid", req.Guid, "notify_type", req.NotifyType)
 		return nil
+	}
+}
+
+func (s *wxWorkProtocolService) runContactAutomationCallback(instanceID int64, notifyType int) {
+	var err error
+	switch notifyType {
+	case wxProtocolNotifyFriendApply:
+		err = WxWorkProtocolContactAutomationService.HandleFriendApply(instanceID)
+	case wxProtocolNotifyFriendChange:
+		err = WxWorkProtocolContactAutomationService.HandleFriendChange(instanceID)
+	}
+	if err != nil {
+		slog.Warn("wxwork contact callback automation failed", "instance_id", instanceID, "notify_type", notifyType, "error", err)
 	}
 }
 
@@ -1450,8 +1475,10 @@ func (s *wxWorkProtocolService) dispatchStoreRoomNoticeOutbox(outbox models.Chan
 		"content":         content,
 	}
 	path := "/msg/send_text"
-	if len(payload.AtList) > 0 {
-		body["at_list"] = payload.AtList
+	atList := normalizeStoreRoomAtList(payload.AtList)
+	if len(atList) > 0 {
+		body["content"] = "{$@}\n" + strings.TrimPrefix(content, "{$@}\n")
+		body["at_list"] = atList
 		path = "/msg/send_room_at"
 	}
 	resp, err := s.postJSON(cfg, path, body)
@@ -1469,6 +1496,23 @@ func (s *wxWorkProtocolService) dispatchStoreRoomNoticeOutbox(outbox models.Chan
 	}
 	_ = MessageSyncLogService.Create(payload.ConversationID, 0, enums.MessageSyncDirectionAgentDeskToWecom, "agentdesk", "wxwork_protocol_store_room", fmt.Sprintf("store_room_outbox_%d", outbox.ID), enums.MessageSyncStatusSuccess, resp, "")
 	return nil
+}
+
+func normalizeStoreRoomAtList(values []string) []string {
+	ret := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || value == "0" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		ret = append(ret, value)
+	}
+	return ret
 }
 
 func (s *wxWorkProtocolService) sendOutboxMessage(cfg *dto.WxWorkProtocolChannelConfig, instance *models.WxWorkProtocolInstance, conversationID string, message *models.Message) (string, error) {

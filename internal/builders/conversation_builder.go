@@ -94,6 +94,7 @@ func buildConversationRouteFields(ret *response.ConversationResponse, item *mode
 	ret.RouteTarget = route.RouteTarget
 	ret.HandoffReason = sanitizeVisibleHandoffReason(utils.RepairMojibakeText(route.HandoffReason))
 	ret.NeedHumanFollowUp = route.NeedHumanFollowUp
+	ret.AutoHandoffEnabled = services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledInTenant(item.CustomerID, route.WxWorkInstanceID, item.TenantID)
 	ret.ManualExpireAt = utils.FormatTimePtr(route.ManualExpireAt)
 	ret.ManualAttention = buildConversationManualAttention(route, ret.ManualExpireAt)
 	ret.StoreID = route.StoreID
@@ -188,6 +189,7 @@ func sanitizeVisibleHandoffReason(value string) string {
 		"service_request",
 		"hotel_info",
 		"hotel_variable",
+		"interaction",
 		"social_confirm",
 		"unknown_clarify",
 		"emergency_safety",

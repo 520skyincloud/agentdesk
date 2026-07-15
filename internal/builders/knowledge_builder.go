@@ -10,6 +10,13 @@ import (
 func BuildKnowledgeBase(item *models.KnowledgeBase) response.KnowledgeBaseResponse {
 	return response.KnowledgeBaseResponse{
 		ID:                    item.ID,
+		IntentProfileID:       item.IntentProfileID,
+		CompanyID:             item.CompanyID,
+		StoreID:               item.StoreID,
+		DatasetID:             item.DatasetID,
+		DatasetName:           item.DatasetName,
+		ConnectionID:          item.ConnectionID,
+		RetrievalMode:         item.RetrievalMode,
 		Name:                  item.Name,
 		Description:           item.Description,
 		KnowledgeType:         item.KnowledgeType,
@@ -31,6 +38,45 @@ func BuildKnowledgeBase(item *models.KnowledgeBase) response.KnowledgeBaseRespon
 		CreateUserName:        item.CreateUserName,
 		UpdateUserName:        item.UpdateUserName,
 	}
+}
+
+func BuildKnowledgeResourceGroup(item *models.KnowledgeResourceGroup, resourceItems []models.KnowledgeResourceItem) response.KnowledgeResourceGroupResponse {
+	ret := response.KnowledgeResourceGroupResponse{}
+	if item == nil {
+		return ret
+	}
+	ret = response.KnowledgeResourceGroupResponse{
+		ID:               item.ID,
+		CompanyID:        item.CompanyID,
+		StoreID:          item.StoreID,
+		IntentProfileID:  item.IntentProfileID,
+		KnowledgeBaseID:  item.KnowledgeBaseID,
+		WxWorkInstanceID: item.WxWorkInstanceID,
+		SourceProvider:   item.SourceProvider,
+		SourceRecordID:   item.SourceRecordID,
+		Title:            item.Title,
+		Description:      item.Description,
+		Status:           item.Status,
+		StatusName:       enums.GetStatusLabel(item.Status),
+		CreatedAt:        item.CreatedAt,
+		UpdatedAt:        item.UpdatedAt,
+		CreateUserName:   item.CreateUserName,
+		UpdateUserName:   item.UpdateUserName,
+		Items:            make([]response.KnowledgeResourceItemResponse, 0, len(resourceItems)),
+	}
+	for _, resourceItem := range resourceItems {
+		ret.Items = append(ret.Items, response.KnowledgeResourceItemResponse{
+			ID:                       resourceItem.ID,
+			KnowledgeResourceGroupID: resourceItem.KnowledgeResourceGroupID,
+			AssetID:                  resourceItem.AssetID,
+			Title:                    resourceItem.Title,
+			Description:              resourceItem.Description,
+			SortNo:                   resourceItem.SortNo,
+			Status:                   resourceItem.Status,
+			StatusName:               enums.GetStatusLabel(resourceItem.Status),
+		})
+	}
+	return ret
 }
 
 func BuildKnowledgeDocument(item *models.KnowledgeDocument) response.KnowledgeDocumentResponse {

@@ -2,6 +2,7 @@ package services
 
 import (
 	"testing"
+	"time"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
@@ -190,17 +191,32 @@ func TestStoreAIModelSettingUpdateKeepsExistingAPIKeyWhenBlank(t *testing.T) {
 		t.Fatalf("create setting: %v", err)
 	}
 
+	item := request.StoreAIModelSettingUpdateRequest{
+		UsageCode: StoreAIModelUsageReplyLLM,
+		Enabled:   true,
+		Provider:  enums.AIProviderOpenAI,
+		BaseURL:   "https://new.example.com/v1",
+		ModelType: enums.AIModelTypeLLM,
+		ModelName: "new-model",
+	}
+	fingerprint := storeAIModelSettingFingerprint(5, 7, 3, item, "sk-old", enums.AIModelTypeLLM)
+	item.TestToken = "test-token-existing-key"
+	StoreAIModelSettingService.testTokens.Store(item.TestToken, storeAIModelTestToken{
+		CompanyID:        5,
+		StoreID:          7,
+		WxWorkInstanceID: 3,
+		UsageCode:        StoreAIModelUsageReplyLLM,
+		Fingerprint:      fingerprint,
+		TestedAt:         time.Now(),
+		LatencyMS:        12,
+		ExpiresAt:        time.Now().Add(time.Minute),
+	})
+	defer StoreAIModelSettingService.testTokens.Delete(item.TestToken)
+
 	err := StoreAIModelSettingService.UpdateStoreSettings(request.UpdateStoreAIModelSettingsRequest{
 		StoreID:          7,
 		WxWorkInstanceID: 3,
-		Settings: []request.StoreAIModelSettingUpdateRequest{{
-			UsageCode: StoreAIModelUsageReplyLLM,
-			Enabled:   true,
-			Provider:  enums.AIProviderOpenAI,
-			BaseURL:   "https://new.example.com/v1",
-			ModelType: enums.AIModelTypeLLM,
-			ModelName: "new-model",
-		}},
+		Settings:         []request.StoreAIModelSettingUpdateRequest{item},
 	}, operator)
 	if err != nil {
 		t.Fatalf("UpdateStoreSettings() error = %v", err)
@@ -211,6 +227,75 @@ func TestStoreAIModelSettingUpdateKeepsExistingAPIKeyWhenBlank(t *testing.T) {
 	}
 	if setting.APIKey != "sk-old" || setting.BaseURL != "https://new.example.com/v1" || setting.ModelName != "new-model" {
 		t.Fatalf("unexpected setting after update: %#v", setting)
+	}
+}
+
+func TestStoreAIModelSettingUpdateRequiresMatchingConnectionTest(t *testing.T) {
+	setupStoreAIModelSettingTestDB(t)
+	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin"}
+	if err := sqls.DB().Create(&models.Store{ID: 7, CompanyID: 5, Name: "store", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	item := request.StoreAIModelSettingUpdateRequest{
+		UsageCode: StoreAIModelUsageReplyLLM,
+		Enabled:   true,
+		Provider:  enums.AIProviderOpenAI,
+		BaseURL:   "https://api.example.com/v1",
+		APIKey:    "sk-new",
+		ModelType: enums.AIModelTypeLLM,
+		ModelName: "new-model",
+	}
+	err := StoreAIModelSettingService.UpdateStoreSettings(request.UpdateStoreAIModelSettingsRequest{
+		StoreID:          7,
+		WxWorkInstanceID: 3,
+		Settings:         []request.StoreAIModelSettingUpdateRequest{item},
+	}, operator)
+	if err == nil {
+		t.Fatal("expected update without a verified test to fail")
+	}
+}
+
+func TestStoreAIModelSettingUpdateRejectsPersistedTestWithoutCurrentToken(t *testing.T) {
+	setupStoreAIModelSettingTestDB(t)
+	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin"}
+	if err := sqls.DB().Create(&models.Store{ID: 7, CompanyID: 5, Name: "store", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	item := request.StoreAIModelSettingUpdateRequest{
+		UsageCode: StoreAIModelUsageReplyLLM,
+		Enabled:   true,
+		Provider:  enums.AIProviderOpenAI,
+		BaseURL:   "https://api.example.com/v1",
+		ModelType: enums.AIModelTypeLLM,
+		ModelName: "new-model",
+	}
+	fingerprint := storeAIModelSettingFingerprint(5, 7, 3, item, "sk-old", enums.AIModelTypeLLM)
+	testedAt := time.Now()
+	if err := sqls.DB().Create(&models.StoreAIModelSetting{
+		CompanyID:         5,
+		StoreID:           7,
+		WxWorkInstanceID:  3,
+		UsageCode:         StoreAIModelUsageReplyLLM,
+		Provider:          item.Provider,
+		BaseURL:           item.BaseURL,
+		APIKey:            "sk-old",
+		ModelType:         item.ModelType,
+		ModelName:         item.ModelName,
+		Status:            enums.StatusOk,
+		ConfigFingerprint: fingerprint,
+		LastTestStatus:    "passed",
+		LastTestedAt:      &testedAt,
+	}).Error; err != nil {
+		t.Fatalf("create setting: %v", err)
+	}
+
+	err := StoreAIModelSettingService.UpdateStoreSettings(request.UpdateStoreAIModelSettingsRequest{
+		StoreID:          7,
+		WxWorkInstanceID: 3,
+		Settings:         []request.StoreAIModelSettingUpdateRequest{item},
+	}, operator)
+	if err == nil {
+		t.Fatal("expected persisted test result without a current test token to fail")
 	}
 }
 

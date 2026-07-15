@@ -340,12 +340,77 @@ func (s *assetService) DeleteAsset(id int64, principal *dto.AuthPrincipal) error
 	if item == nil {
 		return errorsx.InvalidParam("文件不存在")
 	}
-	return repositories.AssetRepository.UpdatesInTenant(sqls.DB(), id, tenantID, map[string]any{
+	if len(repositories.KnowledgeResourceItemRepository.FindByAssetIDInTenant(sqls.DB(), item.AssetID, tenantID)) > 0 {
+		return errorsx.InvalidParam("知识图片资源仍在使用，不能删除")
+	}
+	if isWxWorkWelcomeAsset(item) {
+		count, err := repositories.WxWorkProtocolInstanceRepository.CountByWelcomeImageAssetIDInTenant(sqls.DB(), item.AssetID, tenantID)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			return errorsx.InvalidParam("欢迎语图片仍在使用，不能删除")
+		}
+	}
+	if err := repositories.AssetRepository.UpdatesInTenant(sqls.DB(), id, tenantID, map[string]any{
 		"status":           enums.AssetStatusDeleted,
 		"update_user_id":   principal.UserID,
 		"update_user_name": principal.Username,
 		"updated_at":       time.Now(),
-	})
+	}); err != nil {
+		return err
+	}
+	if !isWxWorkWelcomeAsset(item) && !isKnowledgeResourceAsset(item) {
+		return nil
+	}
+	provider, err := storage.NewProviderWithConfig(item.Provider, StorageSettingToConfig())
+	if err != nil {
+		return err
+	}
+	return provider.Delete(item.StorageKey)
+}
+
+func (s *assetService) CleanupWelcomeImageAsset(assetID string, principal *dto.AuthPrincipal) error {
+	asset := s.GetByAssetID(assetID)
+	if asset == nil || !isWxWorkWelcomeAsset(asset) {
+		return nil
+	}
+	return s.DeleteAsset(asset.ID, principal)
+}
+
+func (s *assetService) DeleteTemporaryAsset(assetID string, tenantID int64) error {
+	asset := s.GetByAssetIDInTenant(assetID, tenantID)
+	if asset == nil {
+		return nil
+	}
+	key := "/" + strings.Trim(strings.ReplaceAll(strings.TrimSpace(asset.StorageKey), "\\", "/"), "/") + "/"
+	if !strings.Contains(key, "/fastgpt-upload-tmp/") {
+		return errorsx.InvalidParam("只能清理 FastGPT 上传临时资源")
+	}
+	provider, err := storage.NewProviderWithConfig(asset.Provider, StorageSettingToConfig())
+	if err != nil {
+		return err
+	}
+	if err := provider.Delete(asset.StorageKey); err != nil {
+		return err
+	}
+	return repositories.AssetRepository.UpdatesInTenant(sqls.DB(), asset.ID, tenantID, map[string]any{"status": enums.AssetStatusDeleted, "updated_at": time.Now(), "update_user_name": "fastgpt_job_cleanup"})
+}
+
+func isWxWorkWelcomeAsset(asset *models.Asset) bool {
+	if asset == nil {
+		return false
+	}
+	key := "/" + strings.Trim(strings.ReplaceAll(strings.TrimSpace(asset.StorageKey), "\\", "/"), "/") + "/"
+	return strings.Contains(key, "/wxwork-welcome/")
+}
+
+func isKnowledgeResourceAsset(asset *models.Asset) bool {
+	if asset == nil {
+		return false
+	}
+	key := "/" + strings.Trim(strings.ReplaceAll(strings.TrimSpace(asset.StorageKey), "\\", "/"), "/") + "/"
+	return strings.Contains(key, "/knowledge-resources/")
 }
 
 func (s *assetService) markAssetStatus(id, tenantID int64, status enums.AssetStatus, principal *dto.AuthPrincipal) error {

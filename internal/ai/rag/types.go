@@ -5,6 +5,7 @@ type RetrieveRequest struct {
 	Query            string
 	TopK             int
 	ScoreThreshold   float64
+	ContextMaxTokens int
 }
 
 type RetrieveResult struct {
@@ -18,6 +19,7 @@ type RetrieveResult struct {
 	Title           string  `json:"title"`
 	SectionPath     string  `json:"sectionPath"`
 	Content         string  `json:"content"`
+	SourceRecordID  string  `json:"sourceRecordId,omitempty"`
 	Score           float32 `json:"score"`
 	ChunkType       string  `json:"chunkType"`
 }

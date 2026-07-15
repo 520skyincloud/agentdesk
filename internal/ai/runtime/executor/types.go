@@ -57,4 +57,15 @@ type RunResult struct {
 	TraceData                 string
 	ErrorMessage              string
 	SkipReply                 bool
+	ModelUsageCalls           []ModelUsageCall
+}
+
+// ModelUsageCall preserves one upstream model response. It is intentionally
+// separate from the aggregate counters used by run diagnostics so billing can
+// meter retries without double counting the run total.
+type ModelUsageCall struct {
+	PromptTokens       int
+	CompletionTokens   int
+	CachedPromptTokens int
+	ReasoningTokens    int
 }

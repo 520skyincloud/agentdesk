@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"time"
 
 	"agent-desk/internal/models"
@@ -127,6 +128,13 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(req request.UpdateKnowledgeBa
 		return err
 	}
 	return repositories.KnowledgeBaseRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
+		"intent_profile_id":       item.IntentProfileID,
+		"company_id":              item.CompanyID,
+		"store_id":                item.StoreID,
+		"dataset_id":              item.DatasetID,
+		"dataset_name":            item.DatasetName,
+		"connection_id":           item.ConnectionID,
+		"retrieval_mode":          item.RetrievalMode,
 		"name":                    item.Name,
 		"description":             item.Description,
 		"knowledge_type":          item.KnowledgeType,
@@ -238,6 +246,13 @@ func (s *knowledgeBaseService) CountContents(id int64, operator *dto.AuthPrincip
 
 func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowledgeBaseRequest) (*models.KnowledgeBase, error) {
 	item := &models.KnowledgeBase{
+		IntentProfileID:       req.IntentProfileID,
+		CompanyID:             req.CompanyID,
+		StoreID:               req.StoreID,
+		DatasetID:             strings.TrimSpace(req.DatasetID),
+		DatasetName:           strings.TrimSpace(req.DatasetName),
+		ConnectionID:          strings.TrimSpace(req.ConnectionID),
+		RetrievalMode:         enums.KnowledgeRetrievalModeFastGPT,
 		Name:                  req.Name,
 		Description:           req.Description,
 		KnowledgeType:         req.KnowledgeType,
@@ -250,6 +265,28 @@ func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowled
 		ChunkOverlapTokens:    req.ChunkOverlapTokens,
 		AnswerMode:            req.AnswerMode,
 		Remark:                req.Remark,
+	}
+	if item.IntentProfileID > 0 {
+		intentProfileID, err := validateOptionalReplyIntentProfileID(item.IntentProfileID)
+		if err != nil {
+			return nil, err
+		}
+		item.IntentProfileID = intentProfileID
+	}
+	if item.StoreID > 0 {
+		store := StoreService.Get(item.StoreID)
+		if store == nil || store.Status == enums.StatusDeleted {
+			return nil, errorsx.InvalidParam("门店不存在")
+		}
+		if item.CompanyID <= 0 {
+			item.CompanyID = store.CompanyID
+		}
+		if item.CompanyID > 0 && store.CompanyID > 0 && item.CompanyID != store.CompanyID {
+			return nil, errorsx.InvalidParam("知识库与门店公司归属不一致")
+		}
+	}
+	if item.ConnectionID == "" {
+		item.ConnectionID = "platform"
 	}
 	if item.DefaultTopK == 0 {
 		item.DefaultTopK = 10

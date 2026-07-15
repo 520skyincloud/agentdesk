@@ -271,11 +271,12 @@ func (s *miniprogramChatService) buildMessage(item *models.Message) response.Min
 	}
 }
 
-func (s *miniprogramChatService) needHumanSupport(content string, conversation *models.Conversation) bool {
-	if strings.Contains(content, "转人工") || strings.Contains(content, "人工") {
-		return true
+func (s *miniprogramChatService) needHumanSupport(_ string, conversation *models.Conversation) bool {
+	if conversation == nil {
+		return false
 	}
-	return conversation != nil && conversation.HandoffAt != nil
+	state := ConversationRouteService.GetByConversationID(conversation.ID)
+	return state != nil && routeStatusBlocksAIReply(state.RouteStatus)
 }
 
 func (s *miniprogramChatService) parseSessionID(sessionID string) int64 {

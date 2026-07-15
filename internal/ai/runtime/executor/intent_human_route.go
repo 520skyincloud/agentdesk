@@ -32,9 +32,65 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		})
 		return false, nil
 	}
+	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
+		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
+			ToolCode: toolx.GraphHandoffConversation.Code,
+			ToolName: toolx.GraphHandoffConversation.Name,
+			Arguments: map[string]any{
+				"intent":    intent.PrimaryIntent,
+				"subIntent": intent.SubIntent,
+			},
+			Status:            "skipped",
+			RecommendedAction: "customer_auto_handoff_disabled",
+			ResultPreview:     "当前客户在此企微员工号下已关闭自动转人工；继续由 AI 直接回复",
+		})
+		return false, nil
+	}
 	reason := buildIntentHumanRouteReason(intent, req.UserMessage.Content)
 	started := time.Now()
-	promptSent, err := services.ConversationHandoffConfirmationService.RequestByAI(req.Conversation.ID, req.AIAgent, reason, strings.TrimSpace(req.UserMessage.RequestID))
+	if isEmergencySafetyHandoff(intent) {
+		_, err := services.ConversationHumanDispatchService.HandoffByAIWithRequestID(req.Conversation.ID, req.AIAgent, reason, strings.TrimSpace(req.UserMessage.RequestID))
+		if err == nil {
+			if _, scheduleErr := services.AIManualResumeTaskService.Schedule(req.Conversation.ID, req.UserMessage.ID, services.AIManualResumeTaskService.NewHandoffToken()); scheduleErr != nil {
+				// The human route is already active. Persisting the recovery task is
+				// best-effort here and is surfaced in the runtime trace below.
+				collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
+					ToolCode:          toolx.GraphHandoffConversation.Code,
+					ToolName:          toolx.GraphHandoffConversation.Name,
+					Status:            "warning",
+					ErrorMessage:      scheduleErr.Error(),
+					ResultPreview:     "human route active but AI resume task could not be persisted",
+					RecommendedAction: "inspect_manual_resume_task",
+				})
+			}
+		}
+		item := callbacks.GraphToolTraceItem{
+			ToolCode: toolx.GraphHandoffConversation.Code,
+			ToolName: toolx.GraphHandoffConversation.Name,
+			Arguments: map[string]any{
+				"reason":         reason,
+				"intent":         intent.PrimaryIntent,
+				"subIntent":      intent.SubIntent,
+				"routePolicy":    intent.HumanRoutePolicy,
+				"conversationId": req.Conversation.ID,
+			},
+			LatencyMs: time.Since(started).Milliseconds(),
+		}
+		if err != nil {
+			item.Status = "error"
+			item.ErrorMessage = err.Error()
+			collector.AddGraphToolItem(item)
+			return true, err
+		}
+		item.Status = "success"
+		item.RecommendedAction = "dispatch_emergency_handoff"
+		item.ResultPreview = "emergency safety routed directly to human reception"
+		collector.AddGraphToolItem(item)
+		summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, toolx.GraphHandoffConversation.Code)
+		summary.ToolCallCount = len(summary.InvokedToolCodes)
+		return true, nil
+	}
+	promptSent, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(req.Conversation.ID, req.AIAgent, reason, strings.TrimSpace(req.UserMessage.RequestID), req.UserMessage.ID)
 	item := callbacks.GraphToolTraceItem{
 		ToolCode: toolx.GraphHandoffConversation.Code,
 		ToolName: toolx.GraphHandoffConversation.Name,
@@ -69,6 +125,10 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 func isHandoffIntentCategory(intent callbacks.IntentTraceData) bool {
 	return canonicalIntentCode(intent.PrimaryIntent) == "human_complaint_risk" ||
 		canonicalIntentCode(intent.MatchedIntentCode) == "human_complaint_risk"
+}
+
+func isEmergencySafetyHandoff(intent callbacks.IntentTraceData) bool {
+	return isHandoffIntentCategory(intent) && strings.TrimSpace(intent.SubIntent) == "emergency_safety"
 }
 
 func buildIntentHumanRouteReason(intent callbacks.IntentTraceData, currentText string) string {
@@ -111,8 +171,8 @@ func sanitizeIntentHumanRouteReason(value string) string {
 		"service_request",
 		"hotel_info",
 		"hotel_variable",
-		"social_confirm",
-		"unknown_clarify",
+		"interaction",
+		"interaction",
 		"emergency_safety",
 		"NeedsHumanRoute",
 		"needsHumanRoute",

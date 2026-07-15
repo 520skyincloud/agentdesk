@@ -117,14 +117,11 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   const showBottomEditor = !isClosedConversation && !isPendingConversation;
   const currentUserId = readSession()?.user?.id ?? 0;
   const protocolRoomID = getProtocolRoomID(conversation?.wxWorkExternalUserId);
-  const manualStatusNotice =
-    manualAttention?.level === "timeout_restored"
-      ? "同事接待已结束，AI已继续接待。"
-      : manualAttention?.dot
-        ? `${manualAttention.label || "待人工"}，AI 暂停回复。`
-        : manualAttention?.level === "serving"
-          ? `${manualAttention.label || "人工处理中"}，AI 暂停回复。`
-          : "";
+  const manualStatusNotice = manualAttention?.dot
+    ? `${manualAttention.label || "待人工"}，AI 暂停回复。`
+    : manualAttention?.level === "serving"
+      ? `${manualAttention.label || "人工处理中"}，AI 暂停回复。`
+      : "";
   const manualStatusTone =
     manualAttention?.level === "urgent"
       ? "border-destructive/25 bg-destructive/5 text-destructive"
@@ -729,6 +726,17 @@ const MessageItem = memo(
     const isAi = message.senderType === "ai";
     const isAgentSide = message.senderType === "agent" || isAi;
     const isRecalled = Boolean(message.recalledAt) || message.sendStatus === 6;
+    const serviceEvent = parseServiceEvent(message.payload);
+    if (serviceEvent.startsWith("manual_ai_resumed_")) {
+      return (
+        <div className="mb-5 flex justify-center px-4">
+          <div className="max-w-[78%] text-center text-xs leading-5 text-muted-foreground">
+            <div>{message.content}</div>
+            <div className="mt-0.5 text-[10px] text-[#9aa4b4]">{formatDateTime(message.sentAt || "")}</div>
+          </div>
+        </div>
+      );
+    }
     const senderName = isCustomer
       ? repairMojibakeText(message.senderName) || t("conversation.customerSender")
       : isAi
@@ -887,4 +895,14 @@ function buildMessageHTML(message: {
   payload?: string;
 }) {
   return renderIMMessageHTML(message);
+}
+
+function parseServiceEvent(payload?: string) {
+  if (!payload?.trim().startsWith("{")) return "";
+  try {
+    const value = JSON.parse(payload) as { serviceEvent?: unknown };
+    return typeof value.serviceEvent === "string" ? value.serviceEvent.trim() : "";
+  } catch {
+    return "";
+  }
 }

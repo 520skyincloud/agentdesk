@@ -1,70 +1,13 @@
 package services
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"agent-desk/internal/models"
 	"github.com/mlogclub/simple/sqls"
 )
-
-func TestWxWorkDefaultResourceLocationIntentBuckets(t *testing.T) {
-	directCases := []string{
-		"发个定位给我",
-		"门店位置呢大哥",
-		"酒店定位发我一个",
-		"你倒是把定位发啊",
-		"你们酒店在哪里",
-		"怎么去你们酒店",
-		"到店路线怎么走",
-	}
-	for _, text := range directCases {
-		if !wantsDirectStoreLocation(text) {
-			t.Fatalf("expected direct location intent for %q", text)
-		}
-	}
-
-	weakCases := []string{
-		"离我多远",
-		"大概路线呢",
-	}
-	for _, text := range weakCases {
-		if wantsDirectStoreLocation(text) {
-			t.Fatalf("expected weak location intent not direct for %q", text)
-		}
-		if !wantsLocationDiscussion(text) {
-			t.Fatalf("expected weak location discussion for %q", text)
-		}
-	}
-}
-
-func TestWxWorkDefaultResourceConfirmationIntent(t *testing.T) {
-	confirmations := []string{"可以", "发啊", "好", "嗯", "对的", "OK"}
-	for _, text := range confirmations {
-		if !isPositiveConfirmation(text) {
-			t.Fatalf("expected confirmation for %q", text)
-		}
-	}
-
-	notConfirmations := []string{"可以办理入住吗", "好的那怎么去", "发票怎么开", "可以帮我送水吗"}
-	for _, text := range notConfirmations {
-		if isPositiveConfirmation(text) {
-			t.Fatalf("expected non-confirmation for %q", text)
-		}
-	}
-}
-
-func TestWxWorkDefaultResourceMiniProgramIntent(t *testing.T) {
-	if !wantsDefaultMiniProgram("怎么办入住呢") {
-		t.Fatal("expected check-in to request default mini program")
-	}
-	if !wantsDefaultMiniProgram("我想办入住") {
-		t.Fatal("expected check-in to request default mini program")
-	}
-	if !wantsDefaultMiniProgram("小程序发我一下") {
-		t.Fatal("expected plain mini program request to request default mini program")
-	}
-}
 
 func TestWxWorkDefaultResourceServiceTaskDoesNotEatRuntimeQuestions(t *testing.T) {
 	runtimeCases := []string{
@@ -162,5 +105,94 @@ func TestDeleteMiniProgramInternalStoreKeys(t *testing.T) {
 	}
 	if _, ok := body["storeQueryParams"]; ok {
 		t.Fatal("expected storeQueryParams to be stripped before protocol send")
+	}
+}
+
+func TestBuildDefaultLocationMessageUsesStructuredPayload(t *testing.T) {
+	content, payload, err := WxWorkProtocolDefaultResourceService.BuildDefaultLocationMessage(&models.WxWorkProtocolInstance{
+		StoreLongitude:      "117.263908",
+		StoreLatitude:       "31.824097",
+		StoreNavigationName: "丽斯未来酒店",
+		StoreAddress:        "九珑湾停车场入口",
+	})
+	if err != nil {
+		t.Fatalf("build location payload: %v", err)
+	}
+	if content != "丽斯未来酒店" {
+		t.Fatalf("unexpected content: %q", content)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(payload), &body); err != nil {
+		t.Fatalf("payload is not json: %v", err)
+	}
+	if body["title"] != "丽斯未来酒店" {
+		t.Fatalf("unexpected title: %#v", body["title"])
+	}
+	if body["address"] != "九珑湾停车场入口" {
+		t.Fatalf("unexpected address: %#v", body["address"])
+	}
+	if body["longitude"].(float64) != 117.263908 {
+		t.Fatalf("unexpected longitude: %#v", body["longitude"])
+	}
+	if body["latitude"].(float64) != 31.824097 {
+		t.Fatalf("unexpected latitude: %#v", body["latitude"])
+	}
+}
+
+func TestBuildDefaultPhoneMessageUsesExplicitStoreContactPhone(t *testing.T) {
+	content, payload, err := WxWorkProtocolDefaultResourceService.BuildDefaultPhoneMessage(&models.WxWorkProtocolInstance{
+		StoreContactPhone: " 0551-88886666 ",
+		Remark:            "备注里不要再猜电话 19900001111",
+		StoreAddress:      "地址里也可能有 400-000-0000",
+	})
+	if err != nil {
+		t.Fatalf("build phone message: %v", err)
+	}
+	if content != "酒店电话：0551-88886666" {
+		t.Fatalf("unexpected phone content: %q", content)
+	}
+	if payload != "" {
+		t.Fatalf("expected empty phone payload, got %q", payload)
+	}
+}
+
+func TestBuildDefaultPhoneMessageRequiresExplicitStoreContactPhone(t *testing.T) {
+	_, _, err := WxWorkProtocolDefaultResourceService.BuildDefaultPhoneMessage(&models.WxWorkProtocolInstance{
+		Remark:       "备注里有 19900001111 也不能猜",
+		StoreAddress: "地址里有 400-000-0000 也不能猜",
+	})
+	if err == nil || !strings.Contains(err.Error(), "未配置联系电话") {
+		t.Fatalf("expected missing explicit phone error, got %v", err)
+	}
+}
+
+func TestBuildDefaultMiniProgramMessageStripsProtocolEchoFields(t *testing.T) {
+	sqls.SetDB(nil)
+	content, payload, err := WxWorkProtocolDefaultResourceService.BuildDefaultMiniProgramMessage(&models.WxWorkProtocolInstance{
+		StoreID: 88,
+		DefaultMiniProgramPayload: `{
+			"title":"e秒安心住",
+			"appname":"自由家安心宿",
+			"page_path":"pages/order/index",
+			"conversation_id":"S:old",
+			"protocol_msg_id":"old_msg",
+			"send_result":"ok",
+			"store_query_params":{"hotelId":"HFNQ001"}
+		}`,
+	})
+	if err != nil {
+		t.Fatalf("build mini program payload: %v", err)
+	}
+	if content != "e秒安心住" {
+		t.Fatalf("unexpected content: %q", content)
+	}
+	if strings.Contains(payload, "conversation_id") || strings.Contains(payload, "protocol_msg_id") || strings.Contains(payload, "send_result") {
+		t.Fatalf("expected protocol echo fields stripped, got %s", payload)
+	}
+	if strings.Contains(payload, "store_query_params") {
+		t.Fatalf("expected internal store params stripped, got %s", payload)
+	}
+	if !strings.Contains(payload, "hotelId=HFNQ001") {
+		t.Fatalf("expected configured hotelId in page path, got %s", payload)
 	}
 }

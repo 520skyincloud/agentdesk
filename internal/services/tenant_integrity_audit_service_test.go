@@ -32,8 +32,8 @@ func TestTenantIntegrityPoliciesCoverEveryRegisteredTenantModel(t *testing.T) {
 			t.Errorf("non-tenant model %s has a stale audit policy", name)
 		}
 	}
-	if len(policies) != 52 {
-		t.Fatalf("policy count = %d, want 52 explicit TenantID policies", len(policies))
+	if len(policies) != 59 {
+		t.Fatalf("policy count = %d, want 59 explicit TenantID policies", len(policies))
 	}
 }
 
@@ -96,11 +96,11 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	if report.Status != "passed" || report.HasViolations() {
 		t.Fatalf("clean fixture failed audit: %#v", report.Violations)
 	}
-	if report.RegisteredTenantModels != 52 || report.PolicyCount != 52 {
-		t.Fatalf("tenant model coverage = %d/%d, want 52/52", report.RegisteredTenantModels, report.PolicyCount)
+	if report.RegisteredTenantModels != 59 || report.PolicyCount != 59 {
+		t.Fatalf("tenant model coverage = %d/%d, want 59/59", report.RegisteredTenantModels, report.PolicyCount)
 	}
-	if report.RequiredTables != 66 || report.ConfiguredRelations != 128 {
-		t.Fatalf("audit schema coverage = %d tables/%d relations, want 66/128", report.RequiredTables, report.ConfiguredRelations)
+	if report.RequiredTables != 73 || report.ConfiguredRelations != 154 {
+		t.Fatalf("audit schema coverage = %d tables/%d relations, want 73/154", report.RequiredTables, report.ConfiguredRelations)
 	}
 	if report.CheckedTables != report.RequiredTables {
 		t.Fatalf("checked tables = %d, required = %d", report.CheckedTables, report.RequiredTables)

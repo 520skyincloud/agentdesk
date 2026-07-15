@@ -22,6 +22,7 @@ func ReplyIntentConfigAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "code", Op: params.Like},
 		params.QueryFilter{ParamName: "name", Op: params.Like},
 		params.QueryFilter{ParamName: "resourceType"},
+		params.QueryFilter{ParamName: "intentProfileId", ColumnName: "intent_profile_id"},
 	).Asc("sort_no").Asc("priority").Desc("id")
 	list, paging := services.ReplyIntentConfigService.FindPageByCnd(cnd)
 	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildReplyIntentConfigs(list), Page: paging})
@@ -45,7 +46,7 @@ func ReplyIntentConfigGetBy(ctx *gin.Context) {
 }
 
 func ReplyIntentConfigPostCreate(ctx *gin.Context) {
-	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigCreate)
+	user, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigCreate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -64,7 +65,7 @@ func ReplyIntentConfigPostCreate(ctx *gin.Context) {
 }
 
 func ReplyIntentConfigPostUpdate(ctx *gin.Context) {
-	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	user, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -82,7 +83,7 @@ func ReplyIntentConfigPostUpdate(ctx *gin.Context) {
 }
 
 func ReplyIntentConfigPostDelete(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigDelete); err != nil {
+	if _, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigDelete); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

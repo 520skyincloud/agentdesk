@@ -48,6 +48,24 @@ func TestWxWorkProtocolLocationMessageIsNotVoice(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolTextWithStaleVoiceTimeIsNotVoice(t *testing.T) {
+	msg := request.WxProtocolChatMsg{
+		MsgID:       "1003888",
+		ContentType: 16,
+		Content:     "我没给你发语音大哥",
+		VoiceTime:   3,
+	}
+	msg.Normalize()
+
+	if got := msg.InferMsgType(); got != wxProtocolMsgText {
+		t.Fatalf("expected stale voice_time text to infer text msg_type=%d, got %d", wxProtocolMsgText, got)
+	}
+	svc := &wxWorkProtocolService{}
+	if got := svc.resolveInboundMessageType(msg); got != enums.IMMessageTypeText {
+		t.Fatalf("expected text message type, got %s", got)
+	}
+}
+
 func TestWxWorkProtocolSkipsReferencedMutationMessage(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()
@@ -361,5 +379,12 @@ func TestWxWorkProtocolMiniProgramMessageIsStructuredCard(t *testing.T) {
 	}
 	if got := body["msg_type"]; got != float64(wxProtocolMsgWeApp) {
 		t.Fatalf("expected payload msg_type=%d, got %#v", wxProtocolMsgWeApp, got)
+	}
+}
+
+func TestNormalizeStoreRoomAtList(t *testing.T) {
+	got := normalizeStoreRoomAtList([]string{" staff-1 ", "", "staff-2", "staff-1", "0"})
+	if len(got) != 2 || got[0] != "staff-1" || got[1] != "staff-2" {
+		t.Fatalf("unexpected normalized at list: %#v", got)
 	}
 }

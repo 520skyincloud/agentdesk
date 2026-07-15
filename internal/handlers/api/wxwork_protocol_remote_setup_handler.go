@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"time"
 
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
@@ -21,15 +22,19 @@ func WxWorkProtocolRemoteSetupGetByToken(ctx *gin.Context) {
 		return
 	}
 	ret := response.BuildWxWorkProtocolInstanceResponse(item)
-	if store := services.StoreService.Get(ret.StoreID); store != nil {
+	if store := services.StoreService.GetInTenant(ret.StoreID, item.TenantID); store != nil {
 		ret.StoreCode = store.StoreCode
 		ret.StoreName = utils.RepairMojibakeText(store.Name)
 		if ret.CompanyID == 0 {
 			ret.CompanyID = store.CompanyID
 		}
 	}
-	if company := services.CompanyService.Get(ret.CompanyID); company != nil {
+	if company := services.CompanyService.GetByTenantID(ret.CompanyID, item.TenantID); company != nil {
 		ret.CompanyName = utils.RepairMojibakeText(company.Name)
+	}
+	if job := services.FastGPTDatasetService.LatestJobByStore(ret.StoreID, item.TenantID); job != nil {
+		ret.KnowledgeProvisionStatus = job.Status
+		ret.KnowledgeProvisionError = utils.RepairMojibakeText(job.LastError)
 	}
 	httpx.WriteJSON(ctx, ret)
 }
@@ -45,6 +50,60 @@ func WxWorkProtocolRemoteSetupPostUpdate(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, nil)
+}
+
+func WxWorkProtocolRemoteSetupPostSendEmailCode(ctx *gin.Context) {
+	req := request.WxWorkProtocolRemoteSetupEmailCodeRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err := services.WxWorkProtocolInstanceService.GetRemoteSetupByToken(req.Token); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	challenge, err := services.EmailVerificationService.SendCode(
+		ctx.Request.Context(),
+		services.EmailVerificationPurposeRemoteSetup,
+		req.Email,
+		req.Token,
+		ctx.ClientIP(),
+		ctx.GetHeader("User-Agent"),
+	)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, &response.EmailCodeChallengeResponse{
+		ExpiresAt:         challenge.ExpiresAt.Format(time.RFC3339),
+		RetryAfterSeconds: challenge.RetryAfterSecond,
+	})
+}
+
+func WxWorkProtocolRemoteSetupPostVerifyEmail(ctx *gin.Context) {
+	req := request.WxWorkProtocolRemoteSetupVerifyEmailRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err := services.WxWorkProtocolInstanceService.GetRemoteSetupByToken(req.Token); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	verified, err := services.EmailVerificationService.VerifyCode(
+		services.EmailVerificationPurposeRemoteSetup,
+		req.Email,
+		req.Token,
+		req.Code,
+	)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, &response.EmailVerificationResponse{
+		VerificationToken: verified.VerificationToken,
+		ExpiresAt:         verified.ExpiresAt.Format(time.RFC3339),
+	})
 }
 
 func WxWorkProtocolRemoteSetupPostLoginQrcode(ctx *gin.Context) {

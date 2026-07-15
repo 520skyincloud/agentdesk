@@ -2,11 +2,33 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx/params"
+	"time"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+func (r *wxWorkProtocolInstanceRepository) GetForUpdate(db *gorm.DB, id int64) *models.WxWorkProtocolInstance {
+	ret := &models.WxWorkProtocolInstance{}
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ?", id).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *wxWorkProtocolInstanceRepository) GetForUpdateInTenant(db *gorm.DB, id, tenantID int64) *models.WxWorkProtocolInstance {
+	if id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.WxWorkProtocolInstance{}
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
 
 var WxWorkProtocolInstanceRepository = newWxWorkProtocolInstanceRepository()
 
@@ -57,6 +79,40 @@ func (r *wxWorkProtocolInstanceRepository) FindPageByCnd(db *gorm.DB, cnd *sqls.
 	count := cnd.Count(db, &models.WxWorkProtocolInstance{})
 	paging = &sqls.Paging{Page: cnd.Paging.Page, Limit: cnd.Paging.Limit, Total: count}
 	return
+}
+
+func (r *wxWorkProtocolInstanceRepository) CountByWelcomeImageAssetID(db *gorm.DB, assetID string) (int64, error) {
+	var count int64
+	err := db.Model(&models.WxWorkProtocolInstance{}).
+		Where("welcome_image_asset_id = ?", assetID).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *wxWorkProtocolInstanceRepository) CountByWelcomeImageAssetIDInTenant(db *gorm.DB, assetID string, tenantID int64) (int64, error) {
+	if assetID == "" || tenantID <= 0 {
+		return 0, nil
+	}
+	var count int64
+	err := db.Model(&models.WxWorkProtocolInstance{}).
+		Where("welcome_image_asset_id = ? AND tenant_id = ?", assetID, tenantID).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *wxWorkProtocolInstanceRepository) UpdateKnowledgeBaseByStore(db *gorm.DB, storeID, knowledgeBaseID int64, now time.Time, operatorName string) error {
+	return db.Model(&models.WxWorkProtocolInstance{}).
+		Where("store_id = ? AND status <> ?", storeID, enums.StatusDeleted).
+		Updates(map[string]any{"knowledge_base_id": knowledgeBaseID, "updated_at": now, "update_user_name": operatorName}).Error
+}
+
+func (r *wxWorkProtocolInstanceRepository) UpdateKnowledgeBaseByStoreInTenant(db *gorm.DB, storeID, knowledgeBaseID, tenantID int64, now time.Time, operatorName string) error {
+	if storeID <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.WxWorkProtocolInstance{}).
+		Where("store_id = ? AND tenant_id = ? AND status <> ?", storeID, tenantID, enums.StatusDeleted).
+		Updates(map[string]any{"knowledge_base_id": knowledgeBaseID, "updated_at": now, "update_user_name": operatorName}).Error
 }
 
 func (r *wxWorkProtocolInstanceRepository) Create(db *gorm.DB, t *models.WxWorkProtocolInstance) error {

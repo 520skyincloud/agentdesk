@@ -271,6 +271,7 @@ export type ReplyIntentConfig = {
   code: string
   name: string
   description: string
+  intentProfileId: number
   scopeType: string
   companyId: number
   storeId: number
@@ -292,6 +293,23 @@ export type ReplyIntentConfig = {
   replyPlanTemplate: string
   validationRules: string
   noReplyWhenMatched: boolean
+  status: number
+  sortNo: number
+  remark: string
+  createdAt: string
+  updatedAt: string
+  createUserName: string
+  updateUserName: string
+}
+
+export type ReplyIntentProfile = {
+  id: number
+  code: string
+  name: string
+  industryCode: string
+  description: string
+  intentDetectPrompt: string
+  intentJsonSchema: string
   status: number
   sortNo: number
   remark: string
@@ -365,10 +383,13 @@ export type WxWorkProtocolInstance = {
   employeeAvatar: string
   companyId: number
   companyName: string
+  intentProfileId: number
+  intentProfileName: string
   storeId: number
   storeCode: string
   storeName: string
   storeAddress: string
+  storeContactPhone: string
   storeNavigationName: string
   storeLongitude: string
   storeLatitude: string
@@ -404,6 +425,8 @@ export type WxWorkProtocolInstance = {
   remoteSetupUrl: string
   remoteSetupExpiresAt?: string | null
   remoteSetupSubmittedAt?: string | null
+  knowledgeProvisionStatus?: string
+  knowledgeProvisionError?: string
   healthStatus: string
   lastHeartbeatAt?: string | null
   status: number
@@ -493,9 +516,11 @@ export type CreateWxWorkProtocolInstancePayload = {
   employeeName: string
   employeeAvatar: string
   companyId: number
+  intentProfileId: number
   storeId: number
   storeName?: string
   storeAddress: string
+  storeContactPhone: string
   storeNavigationName: string
   storeLongitude: string
   storeLatitude: string
@@ -541,10 +566,12 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   storeRoomNotifyEnabled: boolean
   storeRoomAtList: string
   personaPrompt: string
+  intentProfileId: number
   companyId: number
   storeId: number
   storeName?: string
   storeAddress: string
+  storeContactPhone: string
   storeNavigationName: string
   storeLongitude: string
   storeLatitude: string
@@ -627,6 +654,7 @@ export type StoreAIModelSetting = {
   rpmLimit: number
   tpmLimit: number
   remark: string
+  testToken?: string
   effectiveAiConfigId: number
   effectiveModelSettingId: number
   effectiveAiConfigName: string
@@ -634,6 +662,9 @@ export type StoreAIModelSetting = {
   effectiveProvider: string
   effectiveBaseUrl: string
   effectiveModelSource: string
+  lastTestStatus: string
+  lastTestedAt?: string
+  lastTestLatencyMs: number
 }
 
 export type UpdateStoreAIModelSettingsPayload = {
@@ -658,7 +689,23 @@ export type UpdateStoreAIModelSettingsPayload = {
     rpmLimit: number
     tpmLimit: number
     remark: string
+    testToken?: string
   }>
+}
+
+export type TestStoreAIModelSettingPayload = {
+  companyId?: number
+  storeId: number
+  wxWorkInstanceId: number
+  setting: UpdateStoreAIModelSettingsPayload["settings"][number]
+}
+
+export type TestStoreAIModelSettingResult = {
+  usageCode: string
+  modelName: string
+  testToken: string
+  testedAt: string
+  latencyMs: number
 }
 
 export type CreateAIAgentPayload = {
@@ -708,6 +755,15 @@ export type CreateReplyIntentConfigPayload = Omit<
 >
 
 export type UpdateReplyIntentConfigPayload = CreateReplyIntentConfigPayload & {
+  id: number
+}
+
+export type CreateReplyIntentProfilePayload = Omit<
+  ReplyIntentProfile,
+  "id" | "createdAt" | "updatedAt" | "createUserName" | "updateUserName"
+>
+
+export type UpdateReplyIntentProfilePayload = CreateReplyIntentProfilePayload & {
   id: number
 }
 
@@ -1164,6 +1220,13 @@ export function createWxWorkProtocolRemoteSetup(payload: { channelId?: number; c
   })
 }
 
+export function createWxWorkProtocolReplacementSetup(payload: { id: number; guid?: string }) {
+  return request<WxWorkProtocolInstance>("/api/dashboard/wxwork-protocol-instance/create_replacement_setup", {
+    method: "POST",
+    body: JSON.stringify({ id: payload.id, guid: payload.guid ?? "" }),
+  })
+}
+
 export function updateWxWorkProtocolInstance(payload: UpdateWxWorkProtocolInstancePayload) {
   return request<void>("/api/dashboard/wxwork-protocol-instance/update", {
     method: "POST",
@@ -1267,6 +1330,13 @@ export function updateStoreAIModelSettings(payload: UpdateStoreAIModelSettingsPa
   })
 }
 
+export function testStoreAIModelSetting(payload: TestStoreAIModelSettingPayload) {
+  return request<TestStoreAIModelSettingResult>("/api/dashboard/wxwork-protocol-instance/test_store_ai_model_setting", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getWxWorkProtocolLoginQrcode(id: number) {
   return request<string>("/api/dashboard/wxwork-protocol-instance/login_qrcode", {
     method: "POST",
@@ -1282,11 +1352,14 @@ export function fetchWxWorkProtocolRemoteSetup(token: string) {
 
 export function updateWxWorkProtocolRemoteSetup(payload: {
   token: string
+  email: string
+  emailVerificationToken: string
   employeeName?: string
   companyId?: number
   storeId?: number
   storeName?: string
   storeAddress?: string
+  storeContactPhone?: string
   storeNavigationName?: string
   storeLongitude?: string
   storeLatitude?: string
@@ -1300,6 +1373,22 @@ export function updateWxWorkProtocolRemoteSetup(payload: {
   autoAcceptFriendRequest?: boolean
 }) {
   return request<void>("/api/wxwork-protocol-remote-setup/update", {
+    method: "POST",
+    skipAuth: true,
+    body: JSON.stringify(payload),
+  })
+}
+
+export function sendWxWorkProtocolRemoteSetupEmailCode(payload: { token: string; email: string }) {
+  return request<{ expiresAt: string; retryAfterSeconds: number }>("/api/wxwork-protocol-remote-setup/send_email_code", {
+    method: "POST",
+    skipAuth: true,
+    body: JSON.stringify(payload),
+  })
+}
+
+export function verifyWxWorkProtocolRemoteSetupEmail(payload: { token: string; email: string; code: string }) {
+  return request<{ verificationToken: string; expiresAt: string }>("/api/wxwork-protocol-remote-setup/verify_email", {
     method: "POST",
     skipAuth: true,
     body: JSON.stringify(payload),
@@ -1935,6 +2024,37 @@ export function deleteQuickReply(id: number) {
   })
 }
 
+export function fetchReplyIntentProfiles(query?: Record<string, string | number | undefined>) {
+  return request<PageResult<ReplyIntentProfile>>(
+    `/api/dashboard/reply-intent-profile/list${toQueryString(query)}`
+  )
+}
+
+export function fetchReplyIntentProfile(id: number) {
+  return request<ReplyIntentProfile>(`/api/dashboard/reply-intent-profile/${id}`)
+}
+
+export function createReplyIntentProfile(payload: CreateReplyIntentProfilePayload) {
+  return request<ReplyIntentProfile>("/api/dashboard/reply-intent-profile/create", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateReplyIntentProfile(payload: UpdateReplyIntentProfilePayload) {
+  return request<void>("/api/dashboard/reply-intent-profile/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteReplyIntentProfile(id: number) {
+  return request<void>("/api/dashboard/reply-intent-profile/delete", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  })
+}
+
 export function fetchReplyIntentConfigs(query?: Record<string, string | number | undefined>) {
   return request<PageResult<ReplyIntentConfig>>(
     `/api/dashboard/reply-intent-config/list${toQueryString(query)}`
@@ -2358,6 +2478,12 @@ export function updateAIConfigSort(ids: number[]) {
 
 export type KnowledgeBase = {
   id: number
+  intentProfileId: number
+  companyId: number
+  storeId: number
+  datasetId: string
+  datasetName: string
+  connectionId: string
   name: string
   description: string
   knowledgeType: string
@@ -2383,6 +2509,12 @@ export type KnowledgeBase = {
 }
 
 export type CreateKnowledgeBasePayload = {
+  intentProfileId: number
+  companyId?: number
+  storeId?: number
+  datasetId?: string
+  datasetName?: string
+  connectionId?: string
   name: string
   description: string
   knowledgeType: string
@@ -2397,8 +2529,85 @@ export type CreateKnowledgeBasePayload = {
   remark: string
 }
 
+export type FastGPTCollection = {
+  id: string
+  name: string
+  type: string
+  dataAmount: number
+  trainingAmount: number
+  forbid: boolean
+}
+
+export function fetchFastGPTCollections(knowledgeBaseId: number) {
+  return request<FastGPTCollection[]>("/api/dashboard/knowledge-base/fastgpt/collections", {
+    method: "POST",
+    body: JSON.stringify({ knowledgeBaseId }),
+  })
+}
+
+export function uploadFastGPTKnowledgeFile(knowledgeBaseId: number, file: File) {
+  const body = new FormData()
+  body.append("knowledgeBaseId", String(knowledgeBaseId))
+  body.append("file", file)
+  return request<{ jobId: number; status: string }>("/api/dashboard/knowledge-base/fastgpt/upload", {
+    method: "POST",
+    body,
+  })
+}
+
+export function deleteFastGPTCollection(knowledgeBaseId: number, collectionId: string) {
+  return request<void>("/api/dashboard/knowledge-base/fastgpt/delete_collection", {
+    method: "POST",
+    body: JSON.stringify({ knowledgeBaseId, collectionId }),
+  })
+}
+
+export function testFastGPTDatasetSearch(knowledgeBaseId: number, query: string) {
+  return request<{ raw: unknown }>("/api/dashboard/knowledge-base/fastgpt/search_test", {
+    method: "POST",
+    body: JSON.stringify({ knowledgeBaseId, query }),
+  })
+}
+
 export type UpdateKnowledgeBasePayload = CreateKnowledgeBasePayload & {
   id: number
+}
+
+export type KnowledgeResourceItem = {
+  id: number
+  knowledgeResourceGroupId: number
+  assetId: string
+  title: string
+  description: string
+  sortNo: number
+  status: number
+  statusName: string
+}
+
+export type KnowledgeResourceGroup = {
+  id: number
+  companyId: number
+  intentProfileId: number
+  knowledgeBaseId: number
+  wxWorkInstanceId: number
+  sourceProvider: string
+  sourceRecordId: string
+  title: string
+  description: string
+  status: number
+  statusName: string
+  items: KnowledgeResourceItem[]
+  createdAt: string
+  updatedAt: string
+  createUserName: string
+  updateUserName: string
+}
+
+export type SyncKnowledgeResourceGroupPayload = {
+  wxWorkInstanceId: number
+  knowledgeBaseId: number
+  query: string
+  expectedSourceRecordId?: string
 }
 
 export type KnowledgeDocument = {
@@ -2646,6 +2855,28 @@ export function updateKnowledgeBase(payload: UpdateKnowledgeBasePayload) {
 
 export function deleteKnowledgeBase(id: number) {
   return request<void>("/api/dashboard/knowledge-base/delete", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  })
+}
+
+export function fetchKnowledgeResourceGroups(
+  query?: Record<string, string | number | undefined>
+) {
+  return request<PageResult<KnowledgeResourceGroup>>(
+    `/api/dashboard/knowledge-resource/list${toQueryString(query)}`
+  )
+}
+
+export function syncKnowledgeResourceGroup(payload: SyncKnowledgeResourceGroupPayload) {
+  return request<KnowledgeResourceGroup>("/api/dashboard/knowledge-resource/sync", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteKnowledgeResourceGroup(id: number) {
+  return request<void>("/api/dashboard/knowledge-resource/delete", {
     method: "POST",
     body: JSON.stringify({ id }),
   })

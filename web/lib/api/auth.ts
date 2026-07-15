@@ -10,6 +10,12 @@ export type AuthOptions = {
   wxworkEnabled: boolean
   oidcEnabled: boolean
   tenantRegistrationEnabled: boolean
+  emailCodeEnabled: boolean
+}
+
+export type EmailCodeChallenge = {
+  expiresAt: string
+  retryAfterSeconds: number
 }
 
 export async function fetchAuthOptions() {
@@ -20,6 +26,24 @@ export async function fetchAuthOptions() {
 
 export async function loginWithPassword(payload: LoginRequest) {
   const data = await request<AuthSession>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    skipAuth: true,
+  })
+  writeSession(data)
+  return data
+}
+
+export async function sendLoginEmailCode(email: string) {
+  return request<EmailCodeChallenge>("/api/auth/email-code/send", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+    skipAuth: true,
+  })
+}
+
+export async function loginWithEmailCode(payload: { email: string; code: string }) {
+  const data = await request<AuthSession>("/api/auth/email-code/login", {
     method: "POST",
     body: JSON.stringify(payload),
     skipAuth: true,

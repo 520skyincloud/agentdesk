@@ -12,7 +12,7 @@ import (
 )
 
 func init() {
-	register(13, "normalize reply intent configs to seven categories", func() error {
+	register(13, "normalize reply intent configs to five categories", func() error {
 		return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 			now := time.Now()
 			for _, item := range defaultReplyIntentConfigs() {
@@ -38,7 +38,7 @@ func init() {
 					"reply_plan_template":   item.ReplyPlan,
 					"validation_rules":      item.ValidationRules,
 					"status":                enums.StatusOk,
-					"remark":                "七大意图分类体系",
+					"remark":                "五大意图分类体系",
 					"update_user_id":        constants.SystemAuditUserID,
 					"update_user_name":      constants.SystemAuditUserName,
 					"updated_at":            now,
@@ -69,7 +69,7 @@ func init() {
 					ValidationRules:    item.ValidationRules,
 					NoReplyWhenMatched: item.NoReply,
 					Status:             enums.StatusOk,
-					Remark:             "七大意图分类体系",
+					Remark:             "五大意图分类体系",
 					AuditFields: models.AuditFields{
 						CreatedAt:      now,
 						UpdatedAt:      now,
@@ -85,7 +85,7 @@ func init() {
 			}
 			for _, code := range []string{
 				"account_resource_phone", "account_resource_location", "account_resource_miniprogram",
-				"no_reply_media_only", "media_question", "complaint_or_risk", "handoff", "thanks_confirm", "social", "unknown_or_clarify",
+				"no_reply_media_only", "media_question", "complaint_or_risk", "handoff", "thanks_confirm", "social", "social_confirm", "unknown_clarify", "unknown_or_clarify",
 				"invoice", "supplies_self_help", "hotel_knowledge", "store_info_invoice", "store_info_supplies", "store_info_general", "network_wifi",
 			} {
 				current := findGlobalReplyIntentConfig(ctx, code)
@@ -94,7 +94,7 @@ func init() {
 				}
 				if err := repositories.ReplyIntentConfigRepository.Updates(ctx.Tx, current.ID, map[string]any{
 					"status":           enums.StatusDisabled,
-					"remark":           "已迁移到七大意图分类体系；变量和媒体门控不再作为独立分类",
+					"remark":           "已迁移到五大意图分类体系；变量和媒体门控不再作为独立分类",
 					"update_user_id":   constants.SystemAuditUserID,
 					"update_user_name": constants.SystemAuditUserName,
 					"updated_at":       now,
@@ -116,8 +116,7 @@ func findReusableLegacyReplyIntentConfig(ctx *sqls.TxContext, code string) *mode
 		"hotel_info":           {"hotel_knowledge", "network_wifi", "invoice", "supplies_self_help", "store_info_general"},
 		"hotel_variable":       {"account_resource_phone", "account_resource_location", "account_resource_miniprogram", "phone", "location", "checkin_miniprogram"},
 		"human_complaint_risk": {"complaint_or_risk", "handoff"},
-		"social_confirm":       {"thanks_confirm", "social"},
-		"unknown_clarify":      {"unknown_or_clarify"},
+		"interaction":          {"social_confirm", "unknown_clarify", "thanks_confirm", "social", "unknown_or_clarify"},
 	}
 	for _, legacyCode := range legacyCodes[code] {
 		if current := findGlobalReplyIntentConfig(ctx, legacyCode); current != nil {

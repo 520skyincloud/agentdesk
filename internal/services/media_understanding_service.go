@@ -21,19 +21,44 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/repositories"
 
+	"github.com/mlogclub/simple/common/strs"
 	"github.com/mlogclub/simple/sqls"
 )
 
 var MediaUnderstandingService = newMediaUnderstandingService()
 
 func newMediaUnderstandingService() *mediaUnderstandingService {
-	return &mediaUnderstandingService{httpClient: &http.Client{Timeout: 60 * time.Second}}
+	return &mediaUnderstandingService{httpClient: usagex.NewHTTPClient(60 * time.Second)}
 }
 
 type mediaUnderstandingService struct {
 	httpClient *http.Client
+}
+
+type upstreamModelUsage struct {
+	RequestID          string
+	PromptTokens       int64
+	CompletionTokens   int64
+	CachedPromptTokens int64
+	ReasoningTokens    int64
+}
+
+const visionConnectionTestImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JPGcAAAAASUVORK5CYII="
+
+// TestVisionConfig verifies the same OpenAI-compatible image path used by media understanding.
+func (s *mediaUnderstandingService) TestVisionConfig(ctx context.Context, config models.AIConfig) error {
+	config.MaxOutputTokens = 32
+	content, err := s.callOpenAICompatibleVision(ctx, config, visionConnectionTestImage)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("视觉模型返回为空")
+	}
+	return nil
 }
 
 type messageMediaPayload struct {
@@ -72,6 +97,7 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 		return s.markMediaUnderstanding(message, nil, "failed", "媒体 payload 解析失败: "+err.Error())
 	}
 	if strings.TrimSpace(payload.MediaText) != "" || payload.MediaStatus == "understood" {
+		s.triggerAIForUnderstoodMedia(message)
 		return nil
 	}
 	if payload.MediaStatus == "failed" || payload.MediaStatus == "empty" {
@@ -121,6 +147,27 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 		}
 	}
 	return nil
+}
+
+func (s *mediaUnderstandingService) triggerAIForUnderstoodMedia(message *models.Message) {
+	if message == nil || TriggerAIReplyAsyncHook == nil {
+		return
+	}
+	updated := repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)
+	if updated == nil {
+		updated = message
+	}
+	conversation := ConversationService.GetByTenantID(updated.ConversationID, updated.TenantID)
+	if conversation == nil || !s.canTriggerAIForMedia(conversation.ID, conversation.TenantID) {
+		return
+	}
+	if followUp := s.latestCustomerFollowUp(*updated); followUp != nil {
+		TriggerAIReplyAsyncHook(*conversation, *followUp)
+		return
+	}
+	if s.mediaUnderstandingShouldTriggerAI(*updated) {
+		TriggerAIReplyAsyncHook(*conversation, *updated)
+	}
 }
 
 func (s *mediaUnderstandingService) latestCustomerFollowUp(mediaMessage models.Message) *models.Message {
@@ -192,7 +239,11 @@ func (s *mediaUnderstandingService) understandImage(ctx context.Context, message
 		return "", err
 	}
 	imageURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
-	return s.callOpenAICompatibleVision(ctx, resolved.Config, imageURL)
+	startedAt := time.Now()
+	modelCtx, usageCapture := usagex.WithCapture(ctx)
+	text, usage, err := s.callOpenAICompatibleVisionWithUsage(modelCtx, resolved.Config, imageURL)
+	s.recordMediaModelUsage(message, resolved.Config, resolved.Source, "vision", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
+	return text, err
 }
 
 func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message *models.Message, payload *messageMediaPayload) (string, error) {
@@ -220,7 +271,10 @@ func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message
 		}
 		return "", err
 	}
-	text, err := s.callOpenAICompatibleASR(ctx, *config, payload.Filename, data)
+	startedAt := time.Now()
+	modelCtx, usageCapture := usagex.WithCapture(ctx)
+	text, usage, err := s.callOpenAICompatibleASRWithUsage(modelCtx, *config, payload.Filename, data)
+	s.recordMediaModelUsage(message, *config, StoreAIModelSourceGlobalDefault, "asr", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
 	if err != nil && protocolErr != nil {
 		return "", fmt.Errorf("企微语音翻译失败: %v；ASR 调用失败: %w", protocolErr, err)
 	}
@@ -657,54 +711,65 @@ func detectMimeType(filename string, data []byte) string {
 }
 
 func (s *mediaUnderstandingService) callOpenAICompatibleASR(ctx context.Context, config models.AIConfig, filename string, data []byte) (string, error) {
+	text, _, err := s.callOpenAICompatibleASRWithUsage(ctx, config, filename, data)
+	return text, err
+}
+
+func (s *mediaUnderstandingService) callOpenAICompatibleASRWithUsage(ctx context.Context, config models.AIConfig, filename string, data []byte) (string, *upstreamModelUsage, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	if baseURL == "" || strings.TrimSpace(config.APIKey) == "" || strings.TrimSpace(config.ModelName) == "" {
-		return "", fmt.Errorf("ASR 模型配置不完整")
+		return "", nil, fmt.Errorf("ASR 模型配置不完整")
 	}
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	_ = writer.WriteField("model", strings.TrimSpace(config.ModelName))
 	part, err := writer.CreateFormFile("file", defaultUploadFilename(filename, "voice.wav"))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if _, err := part.Write(data); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := writer.Close(); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/audio/transcriptions", body)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(config.APIKey))
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("ASR 调用失败: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return "", nil, fmt.Errorf("ASR 调用失败: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", err
+		return "", nil, err
 	}
+	usage := parseUpstreamModelUsage(parsed)
 	for _, key := range []string{"text", "content", "transcription"} {
 		if value := strings.TrimSpace(fmt.Sprint(parsed[key])); value != "" && value != "<nil>" {
-			return value, nil
+			return value, usage, nil
 		}
 	}
-	return "", fmt.Errorf("ASR 返回中没有 text 字段")
+	return "", usage, fmt.Errorf("ASR 返回中没有 text 字段")
 }
 
 func (s *mediaUnderstandingService) callOpenAICompatibleVision(ctx context.Context, config models.AIConfig, imageURL string) (string, error) {
+	text, _, err := s.callOpenAICompatibleVisionWithUsage(ctx, config, imageURL)
+	return text, err
+}
+
+func (s *mediaUnderstandingService) callOpenAICompatibleVisionWithUsage(ctx context.Context, config models.AIConfig, imageURL string) (string, *upstreamModelUsage, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	if baseURL == "" || strings.TrimSpace(config.APIKey) == "" || strings.TrimSpace(config.ModelName) == "" {
-		return "", fmt.Errorf("视觉/多模态模型配置不完整")
+		return "", nil, fmt.Errorf("视觉/多模态模型配置不完整")
 	}
 	body := map[string]any{
 		"model": strings.TrimSpace(config.ModelName),
@@ -728,20 +793,22 @@ func (s *mediaUnderstandingService) callOpenAICompatibleVision(ctx context.Conte
 	bodyBytes, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(config.APIKey))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("视觉模型调用失败: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return "", nil, fmt.Errorf("视觉模型调用失败: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	var parsed struct {
+		ID      string         `json:"id"`
+		Usage   map[string]any `json:"usage"`
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
@@ -749,12 +816,102 @@ func (s *mediaUnderstandingService) callOpenAICompatibleVision(ctx context.Conte
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("视觉模型没有返回结果")
+		return "", parseUpstreamModelUsage(map[string]any{"id": parsed.ID, "usage": parsed.Usage}), fmt.Errorf("视觉模型没有返回结果")
 	}
-	return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
+	usage := parseUpstreamModelUsage(map[string]any{"id": parsed.ID, "usage": parsed.Usage})
+	return strings.TrimSpace(parsed.Choices[0].Message.Content), usage, nil
+}
+
+func parseUpstreamModelUsage(payload map[string]any) *upstreamModelUsage {
+	if len(payload) == 0 {
+		return nil
+	}
+	usageMap, _ := payload["usage"].(map[string]any)
+	result := &upstreamModelUsage{RequestID: strings.TrimSpace(fmt.Sprint(payload["id"]))}
+	result.PromptTokens = jsonNumberToInt64(usageMap["prompt_tokens"])
+	result.CompletionTokens = jsonNumberToInt64(usageMap["completion_tokens"])
+	if details, ok := usageMap["prompt_tokens_details"].(map[string]any); ok {
+		result.CachedPromptTokens = jsonNumberToInt64(details["cached_tokens"])
+	}
+	if details, ok := usageMap["completion_tokens_details"].(map[string]any); ok {
+		result.ReasoningTokens = jsonNumberToInt64(details["reasoning_tokens"])
+	}
+	if result.RequestID == "<nil>" {
+		result.RequestID = ""
+	}
+	if result.RequestID == "" && result.PromptTokens == 0 && result.CompletionTokens == 0 && result.CachedPromptTokens == 0 && result.ReasoningTokens == 0 {
+		return nil
+	}
+	return result
+}
+
+func jsonNumberToInt64(value any) int64 {
+	switch item := value.(type) {
+	case float64:
+		return int64(item)
+	case int:
+		return int64(item)
+	case int64:
+		return item
+	case json.Number:
+		result, _ := item.Int64()
+		return result
+	default:
+		return 0
+	}
+}
+
+func (s *mediaUnderstandingService) recordMediaModelUsage(message *models.Message, config models.AIConfig, modelSource string, operationType string, usage *upstreamModelUsage, receipt *usagex.Receipt, latencyMS int64, callErr error) {
+	if message == nil {
+		return
+	}
+	status := "completed"
+	errorMessage := ""
+	metricSource := AIUsageMetricSourceProviderOperation
+	if callErr != nil {
+		status = "failed"
+		errorMessage = callErr.Error()
+	}
+	event := models.AIUsageEvent{
+		EventKey:       fmt.Sprintf("%s:media_understanding:%s", firstNonBlank(message.RequestID, fmt.Sprintf("message-%d", message.ID)), operationType),
+		ConversationID: message.ConversationID, MessageID: message.ID, RequestID: message.RequestID,
+		Stage: "media_understanding", Provider: string(config.Provider), Model: config.ModelName,
+		AIConfigID: config.ID, ModelSource: modelSource, OperationType: operationType,
+		MetricSource: metricSource, RequestCount: 1, LatencyMS: latencyMS, Status: status, ErrorMessage: errorMessage,
+	}
+	if usage != nil {
+		event.UpstreamRequestID = usage.RequestID
+		event.PromptTokens = usage.PromptTokens
+		event.CompletionTokens = usage.CompletionTokens
+		event.CachedPromptTokens = usage.CachedPromptTokens
+		event.ReasoningTokens = usage.ReasoningTokens
+		if usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.CachedPromptTokens > 0 || usage.ReasoningTokens > 0 {
+			event.MetricSource = AIUsageMetricSourceUpstreamActual
+		}
+	}
+	if receipt != nil {
+		event.Gateway = receipt.Gateway
+		event.GatewayRequestID = receipt.RequestID
+		event.GatewayUpstreamID = receipt.UpstreamRequestID
+		event.CallStartedAt = &receipt.StartedAt
+		event.CallFinishedAt = &receipt.FinishedAt
+		if receipt.LatencyMS() > 0 {
+			event.LatencyMS = receipt.LatencyMS()
+		}
+	}
+	_ = AIUsageEventService.Record(event)
+}
+
+func lastUsageReceipt(capture *usagex.Capture) *usagex.Receipt {
+	receipts := capture.Receipts()
+	if len(receipts) == 0 {
+		return nil
+	}
+	receipt := receipts[len(receipts)-1]
+	return &receipt
 }
 
 func defaultUploadFilename(filename, fallback string) string {
@@ -778,7 +935,36 @@ func (s *mediaUnderstandingService) markMediaUnderstanding(message *models.Messa
 	}
 	payload.MediaStatus = strings.TrimSpace(status)
 	payload.MediaError = limitText(errText, 500)
-	return s.updateMessagePayload(message.ID, message.TenantID, payload)
+	if err := s.updateMessagePayload(message.ID, message.TenantID, payload); err != nil {
+		return err
+	}
+	if message.MessageType == enums.IMMessageTypeVoice && (payload.MediaStatus == "failed" || payload.MediaStatus == "empty") {
+		s.sendVoiceTranscriptionFailedReply(message)
+	}
+	return nil
+}
+
+func (s *mediaUnderstandingService) sendVoiceTranscriptionFailedReply(message *models.Message) {
+	if message == nil || !s.canTriggerAIForMedia(message.ConversationID, message.TenantID) {
+		return
+	}
+	conversation := ConversationService.GetByTenantID(message.ConversationID, message.TenantID)
+	if conversation == nil {
+		return
+	}
+	_, err := MessageService.SendAIMessageWithRequestID(
+		conversation.ID,
+		conversation.AIAgentID,
+		"voice_transcription_failed_"+strs.UUID(),
+		enums.IMMessageTypeText,
+		"这条语音我没听清，方便打字发我一下吗？",
+		"",
+		systemOperator(),
+		message.RequestID,
+	)
+	if err != nil {
+		slog.Warn("send voice transcription failed reply failed", "message_id", message.ID, "error", err)
+	}
 }
 
 func (s *mediaUnderstandingService) updateMessagePayload(messageID, tenantID int64, payload *messageMediaPayload) error {

@@ -78,6 +78,20 @@ func (r *conversationRouteStateRepository) UpdatesInTenant(db *gorm.DB, id, tena
 	return db.Model(&models.ConversationRouteState{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
 }
 
+func (r *conversationRouteStateRepository) UpdateBindingByWxWorkInstance(db *gorm.DB, wxWorkInstanceID, tenantID, storeID, knowledgeBaseID int64, now any, operatorName string) error {
+	if wxWorkInstanceID <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.ConversationRouteState{}).
+		Where("wx_work_instance_id = ? AND tenant_id = ?", wxWorkInstanceID, tenantID).
+		Updates(map[string]any{
+			"store_id":          storeID,
+			"knowledge_base_id": knowledgeBaseID,
+			"updated_at":        now,
+			"update_user_name":  operatorName,
+		}).Error
+}
+
 func (r *conversationRouteStateRepository) ResetAIByWxWorkInstance(db *gorm.DB, wxWorkInstanceID, tenantID int64, now any, operatorName string) error {
 	return db.Model(&models.ConversationRouteState{}).
 		Where("tenant_id = ? AND wx_work_instance_id = ? AND route_status <> ?", tenantID, wxWorkInstanceID, "CLOSED").

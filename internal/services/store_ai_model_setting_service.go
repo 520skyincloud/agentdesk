@@ -1,10 +1,16 @@
 package services
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	"agent-desk/internal/ai"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
@@ -15,7 +21,9 @@ import (
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
+	"github.com/google/uuid"
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 const (
@@ -36,7 +44,20 @@ func newStoreAIModelSettingService() *storeAIModelSettingService {
 	return &storeAIModelSettingService{}
 }
 
-type storeAIModelSettingService struct{}
+type storeAIModelSettingService struct {
+	testTokens sync.Map
+}
+
+type storeAIModelTestToken struct {
+	CompanyID        int64
+	StoreID          int64
+	WxWorkInstanceID int64
+	UsageCode        string
+	Fingerprint      string
+	TestedAt         time.Time
+	LatencyMS        int64
+	ExpiresAt        time.Time
+}
 
 type StoreAIModelUsageMeta struct {
 	Code          string
@@ -147,6 +168,9 @@ func (s *storeAIModelSettingService) buildResponse(companyID int64, storeID int6
 		RPMLimit:          normalizeNonNegativeInt(settingForDisplay.RPMLimit),
 		TPMLimit:          normalizeNonNegativeInt(settingForDisplay.TPMLimit),
 		Remark:            utils.RepairMojibakeText(setting.Remark),
+		LastTestStatus:    strings.TrimSpace(setting.LastTestStatus),
+		LastTestedAt:      utils.FormatTimePtr(setting.LastTestedAt),
+		LastTestLatencyMS: setting.LastTestLatencyMS,
 	}
 	if config := AIConfigService.Get(setting.AIConfigID); config != nil {
 		ret.AIConfigName = utils.RepairMojibakeText(config.Name)
@@ -161,6 +185,73 @@ func (s *storeAIModelSettingService) buildResponse(companyID int64, storeID int6
 		ret.EffectiveModelSource = resolved.Source
 	}
 	return ret
+}
+
+func (s *storeAIModelSettingService) TestStoreSetting(req request.TestStoreAIModelSettingRequest, operator *dto.AuthPrincipal) (*response.TestStoreAIModelSettingResponse, error) {
+	if operator == nil {
+		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	companyID, storeID, wxWorkInstanceID, err := s.normalizeAIModelSettingScope(req.CompanyID, req.StoreID, req.WxWorkInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	item := req.Setting
+	usageCode := strings.TrimSpace(item.UsageCode)
+	meta, ok := StoreAIModelUsageMetaByCode(usageCode)
+	if !ok {
+		return nil, errorsx.InvalidParam("模型用途不合法")
+	}
+	existing := s.findScopeSetting(sqls.DB(), companyID, wxWorkInstanceID, usageCode)
+	apiKey := strings.TrimSpace(item.APIKey)
+	if existing != nil && apiKey == "" {
+		apiKey = existing.APIKey
+	}
+	modelType := firstNonBlankAIModelType(item.ModelType, meta.ExpectedType)
+	if err := validateStoreAIModelSettingPayload(item, apiKey, modelType, meta.ExpectedType); err != nil {
+		return nil, err
+	}
+	config := buildStoreAIModelTestConfig(item, apiKey, modelType)
+	testCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	startedAt := time.Now()
+	if meta.ExpectedType == enums.AIModelTypeVision {
+		if !strings.EqualFold(normalizeAIConfigAPIMode(item.APIMode), AIConfigAPIModeChatCompletions) {
+			return nil, errorsx.InvalidParam("媒体理解模型当前只支持 Chat Completions 模式")
+		}
+		if err := MediaUnderstandingService.TestVisionConfig(testCtx, config); err != nil {
+			return nil, errorsx.BusinessError(2005, "模型连接测试失败: "+limitText(err.Error(), 500))
+		}
+	} else {
+		config.MaxOutputTokens = 16
+		result, err := ai.LLM.ChatWithConfig(testCtx, config, "你是模型连接测试器，只回复 OK。", "请回复 OK")
+		if err != nil {
+			return nil, errorsx.BusinessError(2005, "模型连接测试失败: "+limitText(err.Error(), 500))
+		}
+		if result == nil || strings.TrimSpace(result.Content) == "" {
+			return nil, errorsx.BusinessError(2005, "模型连接测试失败: 模型返回为空")
+		}
+	}
+	testedAt := time.Now()
+	latencyMS := testedAt.Sub(startedAt).Milliseconds()
+	fingerprint := storeAIModelSettingFingerprint(companyID, storeID, wxWorkInstanceID, item, apiKey, modelType)
+	token := strings.ReplaceAll(uuid.NewString(), "-", "")
+	s.testTokens.Store(token, storeAIModelTestToken{
+		CompanyID:        companyID,
+		StoreID:          storeID,
+		WxWorkInstanceID: wxWorkInstanceID,
+		UsageCode:        usageCode,
+		Fingerprint:      fingerprint,
+		TestedAt:         testedAt,
+		LatencyMS:        latencyMS,
+		ExpiresAt:        testedAt.Add(10 * time.Minute),
+	})
+	return &response.TestStoreAIModelSettingResponse{
+		UsageCode: usageCode,
+		ModelName: strings.TrimSpace(item.ModelName),
+		TestToken: token,
+		TestedAt:  utils.FormatTime(testedAt),
+		LatencyMS: latencyMS,
+	}, nil
 }
 
 func (s *storeAIModelSettingService) UpdateStoreSettings(req request.UpdateStoreAIModelSettingsRequest, operator *dto.AuthPrincipal) error {
@@ -180,24 +271,23 @@ func (s *storeAIModelSettingService) UpdateStoreSettings(req request.UpdateStore
 				return errorsx.InvalidParam("模型用途不合法")
 			}
 
-			var existing *models.StoreAIModelSetting
-			if wxWorkInstanceID > 0 {
-				existing = repositories.StoreAIModelSettingRepository.Take(ctx.Tx,
-					"wx_work_instance_id = ? AND usage_code = ?",
-					wxWorkInstanceID, usageCode)
-			} else {
-				existing = repositories.StoreAIModelSettingRepository.Take(ctx.Tx,
-					"company_id = ? AND wx_work_instance_id = 0 AND usage_code = ?",
-					companyID, usageCode)
-			}
+			existing := s.findScopeSetting(ctx.Tx, companyID, wxWorkInstanceID, usageCode)
 			apiKey := strings.TrimSpace(item.APIKey)
 			if existing != nil && apiKey == "" {
 				apiKey = existing.APIKey
 			}
 			modelType := firstNonBlankAIModelType(item.ModelType, meta.ExpectedType)
+			fingerprint := ""
+			verifiedTest := storeAIModelTestToken{}
 			if item.Enabled {
 				if err := validateStoreAIModelSettingPayload(item, apiKey, modelType, meta.ExpectedType); err != nil {
 					return err
+				}
+				fingerprint = storeAIModelSettingFingerprint(companyID, storeID, wxWorkInstanceID, item, apiKey, modelType)
+				var verifyErr error
+				verifiedTest, verifyErr = s.requireVerifiedStoreSettingTest(item.TestToken, companyID, storeID, wxWorkInstanceID, usageCode, fingerprint)
+				if verifyErr != nil {
+					return verifyErr
 				}
 			}
 
@@ -206,27 +296,36 @@ func (s *storeAIModelSettingService) UpdateStoreSettings(req request.UpdateStore
 				status = enums.StatusOk
 			}
 			columns := map[string]any{
-				"company_id":          companyID,
-				"store_id":            storeID,
-				"wx_work_instance_id": wxWorkInstanceID,
-				"usage_code":          usageCode,
-				"provider":            item.Provider,
-				"base_url":            strings.TrimSpace(item.BaseURL),
-				"api_mode":            normalizeAIConfigAPIMode(item.APIMode),
-				"model_type":          modelType,
-				"model_name":          strings.TrimSpace(item.ModelName),
-				"dimension":           normalizeNonNegativeInt(item.Dimension),
-				"max_context_tokens":  normalizeNonNegativeInt(item.MaxContextTokens),
-				"max_output_tokens":   normalizeNonNegativeInt(item.MaxOutputTokens),
-				"timeout_ms":          normalizePositiveInt(item.TimeoutMS, 30000),
-				"max_retry_count":     normalizeNonNegativeInt(item.MaxRetryCount),
-				"rpm_limit":           normalizeNonNegativeInt(item.RPMLimit),
-				"tpm_limit":           normalizeNonNegativeInt(item.TPMLimit),
-				"status":              status,
-				"remark":              strings.TrimSpace(item.Remark),
-				"updated_at":          now,
-				"update_user_id":      operator.UserID,
-				"update_user_name":    operator.Username,
+				"company_id":           companyID,
+				"store_id":             storeID,
+				"wx_work_instance_id":  wxWorkInstanceID,
+				"usage_code":           usageCode,
+				"provider":             item.Provider,
+				"base_url":             strings.TrimSpace(item.BaseURL),
+				"api_mode":             normalizeAIConfigAPIMode(item.APIMode),
+				"model_type":           modelType,
+				"model_name":           strings.TrimSpace(item.ModelName),
+				"dimension":            normalizeNonNegativeInt(item.Dimension),
+				"max_context_tokens":   normalizeNonNegativeInt(item.MaxContextTokens),
+				"max_output_tokens":    normalizeNonNegativeInt(item.MaxOutputTokens),
+				"timeout_ms":           normalizePositiveInt(item.TimeoutMS, 30000),
+				"max_retry_count":      normalizeNonNegativeInt(item.MaxRetryCount),
+				"rpm_limit":            normalizeNonNegativeInt(item.RPMLimit),
+				"tpm_limit":            normalizeNonNegativeInt(item.TPMLimit),
+				"status":               status,
+				"config_fingerprint":   fingerprint,
+				"last_test_status":     "",
+				"last_tested_at":       nil,
+				"last_test_latency_ms": int64(0),
+				"remark":               strings.TrimSpace(item.Remark),
+				"updated_at":           now,
+				"update_user_id":       operator.UserID,
+				"update_user_name":     operator.Username,
+			}
+			if item.Enabled {
+				columns["last_test_status"] = "passed"
+				columns["last_tested_at"] = verifiedTest.TestedAt
+				columns["last_test_latency_ms"] = verifiedTest.LatencyMS
 			}
 			if strings.TrimSpace(item.APIKey) != "" || existing == nil {
 				columns["api_key"] = apiKey
@@ -238,25 +337,34 @@ func (s *storeAIModelSettingService) UpdateStoreSettings(req request.UpdateStore
 				continue
 			}
 			if err := repositories.StoreAIModelSettingRepository.Create(ctx.Tx, &models.StoreAIModelSetting{
-				CompanyID:        companyID,
-				StoreID:          storeID,
-				WxWorkInstanceID: wxWorkInstanceID,
-				UsageCode:        usageCode,
-				Provider:         item.Provider,
-				BaseURL:          strings.TrimSpace(item.BaseURL),
-				APIKey:           apiKey,
-				APIMode:          normalizeAIConfigAPIMode(item.APIMode),
-				ModelType:        modelType,
-				ModelName:        strings.TrimSpace(item.ModelName),
-				Dimension:        normalizeNonNegativeInt(item.Dimension),
-				MaxContextTokens: normalizeNonNegativeInt(item.MaxContextTokens),
-				MaxOutputTokens:  normalizeNonNegativeInt(item.MaxOutputTokens),
-				TimeoutMS:        normalizePositiveInt(item.TimeoutMS, 30000),
-				MaxRetryCount:    normalizeNonNegativeInt(item.MaxRetryCount),
-				RPMLimit:         normalizeNonNegativeInt(item.RPMLimit),
-				TPMLimit:         normalizeNonNegativeInt(item.TPMLimit),
-				Status:           status,
-				Remark:           strings.TrimSpace(item.Remark),
+				CompanyID:         companyID,
+				StoreID:           storeID,
+				WxWorkInstanceID:  wxWorkInstanceID,
+				UsageCode:         usageCode,
+				Provider:          item.Provider,
+				BaseURL:           strings.TrimSpace(item.BaseURL),
+				APIKey:            apiKey,
+				APIMode:           normalizeAIConfigAPIMode(item.APIMode),
+				ModelType:         modelType,
+				ModelName:         strings.TrimSpace(item.ModelName),
+				Dimension:         normalizeNonNegativeInt(item.Dimension),
+				MaxContextTokens:  normalizeNonNegativeInt(item.MaxContextTokens),
+				MaxOutputTokens:   normalizeNonNegativeInt(item.MaxOutputTokens),
+				TimeoutMS:         normalizePositiveInt(item.TimeoutMS, 30000),
+				MaxRetryCount:     normalizeNonNegativeInt(item.MaxRetryCount),
+				RPMLimit:          normalizeNonNegativeInt(item.RPMLimit),
+				TPMLimit:          normalizeNonNegativeInt(item.TPMLimit),
+				Status:            status,
+				ConfigFingerprint: fingerprint,
+				LastTestStatus:    map[bool]string{true: "passed", false: ""}[item.Enabled],
+				LastTestedAt:      testTimePtr(item.Enabled, verifiedTest.TestedAt),
+				LastTestLatencyMS: func() int64 {
+					if item.Enabled {
+						return verifiedTest.LatencyMS
+					}
+					return 0
+				}(),
+				Remark: strings.TrimSpace(item.Remark),
 				AuditFields: models.AuditFields{
 					CreatedAt:      now,
 					CreateUserID:   operator.UserID,
@@ -487,6 +595,89 @@ func validateStoreAIModelSettingPayload(item request.StoreAIModelSettingUpdateRe
 		return errorsx.InvalidParam("API Key 不能为空")
 	}
 	return nil
+}
+
+func (s *storeAIModelSettingService) findScopeSetting(db *gorm.DB, companyID int64, wxWorkInstanceID int64, usageCode string) *models.StoreAIModelSetting {
+	if db == nil {
+		return nil
+	}
+	if wxWorkInstanceID > 0 {
+		if setting := repositories.StoreAIModelSettingRepository.Take(db,
+			"company_id = ? AND wx_work_instance_id = ? AND usage_code = ?", companyID, wxWorkInstanceID, usageCode); setting != nil {
+			return setting
+		}
+		return repositories.StoreAIModelSettingRepository.Take(db,
+			"company_id = 0 AND wx_work_instance_id = ? AND usage_code = ?", wxWorkInstanceID, usageCode)
+	}
+	return repositories.StoreAIModelSettingRepository.Take(db,
+		"company_id = ? AND wx_work_instance_id = 0 AND usage_code = ?", companyID, usageCode)
+}
+
+func (s *storeAIModelSettingService) requireVerifiedStoreSettingTest(token string, companyID int64, storeID int64, wxWorkInstanceID int64, usageCode string, fingerprint string) (storeAIModelTestToken, error) {
+	token = strings.TrimSpace(token)
+	if token != "" {
+		if value, ok := s.testTokens.Load(token); ok {
+			if verified, ok := value.(storeAIModelTestToken); ok && time.Now().Before(verified.ExpiresAt) &&
+				verified.CompanyID == companyID && verified.StoreID == storeID && verified.WxWorkInstanceID == wxWorkInstanceID &&
+				verified.UsageCode == usageCode && verified.Fingerprint == fingerprint {
+				return verified, nil
+			}
+		}
+	}
+	return storeAIModelTestToken{}, errorsx.InvalidParam("请先测试连接并通过后再保存独立模型配置")
+}
+
+func storeAIModelSettingFingerprint(companyID int64, storeID int64, wxWorkInstanceID int64, item request.StoreAIModelSettingUpdateRequest, apiKey string, modelType enums.AIModelType) string {
+	value := map[string]any{
+		"companyId":        companyID,
+		"storeId":          storeID,
+		"wxWorkInstanceId": wxWorkInstanceID,
+		"usageCode":        strings.TrimSpace(item.UsageCode),
+		"provider":         strings.TrimSpace(string(item.Provider)),
+		"baseUrl":          strings.TrimSpace(item.BaseURL),
+		"apiKey":           strings.TrimSpace(apiKey),
+		"apiMode":          normalizeAIConfigAPIMode(item.APIMode),
+		"modelType":        string(modelType),
+		"modelName":        strings.TrimSpace(item.ModelName),
+		"dimension":        normalizeNonNegativeInt(item.Dimension),
+		"maxContextTokens": normalizeNonNegativeInt(item.MaxContextTokens),
+		"maxOutputTokens":  normalizeNonNegativeInt(item.MaxOutputTokens),
+		"timeoutMs":        normalizePositiveInt(item.TimeoutMS, 30000),
+		"maxRetryCount":    normalizeNonNegativeInt(item.MaxRetryCount),
+		"rpmLimit":         normalizeNonNegativeInt(item.RPMLimit),
+		"tpmLimit":         normalizeNonNegativeInt(item.TPMLimit),
+		"remark":           strings.TrimSpace(item.Remark),
+	}
+	data, _ := json.Marshal(value)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func buildStoreAIModelTestConfig(item request.StoreAIModelSettingUpdateRequest, apiKey string, modelType enums.AIModelType) models.AIConfig {
+	return models.AIConfig{
+		Name:             "员工号模型连接测试",
+		Provider:         item.Provider,
+		BaseURL:          strings.TrimSpace(item.BaseURL),
+		APIKey:           strings.TrimSpace(apiKey),
+		APIMode:          normalizeAIConfigAPIMode(item.APIMode),
+		ModelType:        modelType,
+		ModelName:        strings.TrimSpace(item.ModelName),
+		Dimension:        normalizeNonNegativeInt(item.Dimension),
+		MaxContextTokens: normalizeNonNegativeInt(item.MaxContextTokens),
+		MaxOutputTokens:  normalizePositiveInt(item.MaxOutputTokens, 32),
+		TimeoutMS:        normalizePositiveInt(item.TimeoutMS, 30000),
+		MaxRetryCount:    normalizeNonNegativeInt(item.MaxRetryCount),
+		RPMLimit:         normalizeNonNegativeInt(item.RPMLimit),
+		TPMLimit:         normalizeNonNegativeInt(item.TPMLimit),
+		Status:           enums.StatusOk,
+	}
+}
+
+func testTimePtr(enabled bool, value time.Time) *time.Time {
+	if !enabled || value.IsZero() {
+		return nil
+	}
+	return &value
 }
 
 func (s *storeAIModelSettingService) normalizeAIModelSettingScope(companyID int64, storeID int64, wxWorkInstanceID int64) (int64, int64, int64, error) {

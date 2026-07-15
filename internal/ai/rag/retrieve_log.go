@@ -3,6 +3,7 @@ package rag
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-desk/internal/models"
@@ -27,6 +28,8 @@ type CreateRetrieveLogRequest struct {
 	Scene              string
 	SessionID          string
 	ConversationID     int64
+	MessageID          int64
+	RequestID          string
 	Question           string
 	RewriteQuestion    string
 	Answer             string
@@ -39,6 +42,8 @@ type CreateRetrieveLogRequest struct {
 	RerankLimit        int
 	Hits               []response.KnowledgeSearchResult
 	UsedHits           []response.KnowledgeSearchResult
+	HitSourceRecordIDs []string
+	UsedHitRankNos     []int
 	Citations          []response.KnowledgeCitation
 	LatencyMs          int64
 	RetrieveMs         int64
@@ -50,9 +55,24 @@ type CreateRetrieveLogRequest struct {
 
 type retrieveTraceData struct {
 	Retrieve    retrieveTraceRetrieve    `json:"retrieve"`
+	Linkage     retrieveTraceLinkage     `json:"linkage"`
 	ChunkConfig retrieveTraceChunkConfig `json:"chunkConfig"`
 	Context     retrieveTraceContext     `json:"context"`
+	Hits        []retrieveTraceHit       `json:"hits,omitempty"`
 	Citations   []retrieveTraceCitation  `json:"citations"`
+}
+
+type retrieveTraceLinkage struct {
+	ConversationID int64  `json:"conversationId,omitempty"`
+	MessageID      int64  `json:"messageId,omitempty"`
+	RequestID      string `json:"requestId,omitempty"`
+}
+
+type retrieveTraceHit struct {
+	SourceRecordID string `json:"sourceRecordId,omitempty"`
+	RawRankNo      int    `json:"rawRankNo"`
+	ContextRankNo  int    `json:"contextRankNo,omitempty"`
+	DiscardReason  string `json:"discardReason,omitempty"`
 }
 
 type retrieveTraceRetrieve struct {
@@ -106,6 +126,11 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 	if len(req.Hits) > 0 {
 		topScore = req.Hits[0].Score
 	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = uuid.New().String()
+	}
+	req.RequestID = requestID
 	traceData := buildRetrieveTraceData(req)
 
 	log := &models.KnowledgeRetrieveLog{
@@ -116,7 +141,7 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 		Scene:              req.Scene,
 		SessionID:          req.SessionID,
 		ConversationID:     req.ConversationID,
-		RequestID:          uuid.New().String(),
+		RequestID:          requestID,
 		Question:           req.Question,
 		RewriteQuestion:    req.RewriteQuestion,
 		Answer:             req.Answer,
@@ -145,6 +170,12 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 	for _, item := range req.UsedHits {
 		usedHitKeys[buildKnowledgeSearchResultKey(item)] = struct{}{}
 	}
+	usedHitRanks := make(map[int]struct{}, len(req.UsedHitRankNos))
+	for _, rankNo := range req.UsedHitRankNos {
+		if rankNo > 0 {
+			usedHitRanks[rankNo] = struct{}{}
+		}
+	}
 	citationKeys := make(map[string]struct{}, len(req.Citations))
 	for _, item := range req.Citations {
 		citationKeys[buildKnowledgeCitationKey(item)] = struct{}{}
@@ -156,6 +187,10 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 		}
 		for i, hit := range req.Hits {
 			hitKey := buildKnowledgeSearchResultKey(hit)
+			usedInAnswer := hasHitKey(usedHitKeys, hitKey)
+			if len(usedHitRanks) > 0 {
+				_, usedInAnswer = usedHitRanks[i+1]
+			}
 			hitRecord := &models.KnowledgeRetrieveHit{
 				TenantID:        tenantID,
 				RetrieveLogID:   log.ID,
@@ -173,7 +208,7 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 				RankNo:          i + 1,
 				Score:           hit.Score,
 				RerankScore:     hit.RerankScore,
-				UsedInAnswer:    hasHitKey(usedHitKeys, hitKey),
+				UsedInAnswer:    usedInAnswer,
 				IsCitation:      hasHitKey(citationKeys, hitKey),
 				Snippet:         hit.Content,
 				CreatedAt:       now,
@@ -261,6 +296,11 @@ func buildRetrieveTraceData(req *CreateRetrieveLogRequest) string {
 			ContextHitCount: len(req.UsedHits),
 			CitationCount:   len(req.Citations),
 		},
+		Linkage: retrieveTraceLinkage{
+			ConversationID: req.ConversationID,
+			MessageID:      req.MessageID,
+			RequestID:      strings.TrimSpace(req.RequestID),
+		},
 		ChunkConfig: retrieveTraceChunkConfig{
 			Provider:      req.ChunkProvider,
 			TargetTokens:  req.ChunkTargetTokens,
@@ -274,12 +314,48 @@ func buildRetrieveTraceData(req *CreateRetrieveLogRequest) string {
 			UsedChunkKeys:    buildUsedChunkKeys(req.UsedHits),
 		},
 		Citations: buildTraceCitations(req.Citations),
+		Hits:      buildRetrieveTraceHits(req),
 	}
 	data, err := json.Marshal(trace)
 	if err != nil {
 		return ""
 	}
 	return string(data)
+}
+
+func buildRetrieveTraceHits(req *CreateRetrieveLogRequest) []retrieveTraceHit {
+	if req == nil || len(req.Hits) == 0 {
+		return nil
+	}
+	contextRanks := make(map[int]int, len(req.UsedHitRankNos))
+	for contextIndex, rawRankNo := range req.UsedHitRankNos {
+		if rawRankNo > 0 {
+			contextRanks[rawRankNo] = contextIndex + 1
+		}
+	}
+	result := make([]retrieveTraceHit, 0, len(req.Hits))
+	for index := range req.Hits {
+		rawRankNo := index + 1
+		contextRankNo := contextRanks[rawRankNo]
+		discardReason := ""
+		if contextRankNo == 0 {
+			discardReason = "context_limit_or_duplicate"
+		}
+		result = append(result, retrieveTraceHit{
+			SourceRecordID: sourceRecordIDAt(req.HitSourceRecordIDs, index),
+			RawRankNo:      rawRankNo,
+			ContextRankNo:  contextRankNo,
+			DiscardReason:  discardReason,
+		})
+	}
+	return result
+}
+
+func sourceRecordIDAt(items []string, index int) string {
+	if index < 0 || index >= len(items) {
+		return ""
+	}
+	return strings.TrimSpace(items[index])
 }
 
 func defaultRetrieveSourceType(req *CreateRetrieveLogRequest) string {
@@ -290,7 +366,7 @@ func defaultRetrieveSourceType(req *CreateRetrieveLogRequest) string {
 		return req.SourceType
 	}
 	if req.ChunkProvider == "fastgpt_cloud" {
-		return "cloud_knowledge"
+		return "fastgpt"
 	}
 	return "local_vector"
 }
