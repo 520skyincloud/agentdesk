@@ -352,6 +352,7 @@ func (ctx *seedContext) createSimulationScenario(scenario simulationScenario) er
 
 	conversation := &models.Conversation{
 		TenantID:          ctx.tenant.ID,
+		AIAgentID:         ctx.aiAgent.ID,
 		ChannelID:         ctx.channel.ID,
 		CustomerID:        customer.ID,
 		CustomerName:      customer.Name,

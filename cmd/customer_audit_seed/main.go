@@ -14,8 +14,10 @@ import (
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
+	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
+	"agent-desk/internal/services"
 
 	"github.com/mlogclub/simple/sqls"
 	"golang.org/x/crypto/bcrypt"
@@ -28,6 +30,12 @@ const (
 
 	companyName = "丽斯未来酒店"
 	channelName = "丽斯未来酒店测试企微员工号渠道"
+	aiAgentName = "丽斯未来酒店仿真测试智能客服"
+
+	tenantShortName        = "丽斯未来测试"
+	tenantRegistrationType = "simulation_test_id"
+	tenantRegistrationNo   = "LISSI-FUTURE-HOTEL-TEST-001"
+	tenantSupervisorName   = "test_customer_audit_tenant_admin"
 
 	usernamePrefix       = "test_customer_audit_"
 	storeCodePrefix      = "test_customer_audit_store_"
@@ -45,6 +53,11 @@ type seedContext struct {
 	now          time.Time
 	audit        models.AuditFields
 	roles        map[string]*models.Role
+	supervisor   *models.User
+	defaultTeam  *models.AgentTeam
+	invitation   *models.TenantInvitation
+	aiConfig     *models.AIConfig
+	aiAgent      *models.AIAgent
 	company      *models.Company
 	channel      *models.Channel
 	stores       []*models.Store
@@ -56,9 +69,25 @@ type seedContext struct {
 	customers    []*models.Customer
 }
 
+type seedOptions struct {
+	AIConfigID   int64
+	AIConfigName string
+}
+
 type report struct {
 	Batch                      string `json:"batch"`
 	Marker                     string `json:"marker"`
+	Tenant                     int64  `json:"tenant"`
+	TenantSupervisor           int64  `json:"tenantSupervisor"`
+	TenantInvitation           int64  `json:"tenantInvitation"`
+	DefaultAgentTeam           int64  `json:"defaultAgentTeam"`
+	AIAgent                    int64  `json:"aiAgent"`
+	AIAgentConfigID            int64  `json:"aiAgentConfigId"`
+	AIAgentConfigName          string `json:"aiAgentConfigName"`
+	AIAgentModelName           string `json:"aiAgentModelName"`
+	ModelConfigReused          bool   `json:"modelConfigReused"`
+	ChannelAIAgentBound        bool   `json:"channelAiAgentBound"`
+	SimulationAIAgentBound     int64  `json:"simulationAiAgentBound"`
 	CompanyMarked              int64  `json:"companyMarked"`
 	CompanyNameExists          bool   `json:"companyNameExists"`
 	Channel                    int64  `json:"channel"`
@@ -101,6 +130,8 @@ func run() error {
 	action := flag.String("action", "report", "action: seed, cleanup, report")
 	batch := flag.String("batch", defaultBatch, "test data batch")
 	password := flag.String("password", defaultPassword, "test account password")
+	aiConfigID := flag.Int64("ai-config-id", 0, "existing enabled LLM AI config ID to reuse")
+	aiConfigName := flag.String("ai-config-name", "", "existing enabled LLM AI config name to reuse")
 	flag.Parse()
 
 	normalizedBatch := strings.TrimSpace(*batch)
@@ -115,7 +146,10 @@ func run() error {
 
 	switch strings.ToLower(strings.TrimSpace(*action)) {
 	case "seed":
-		return seed(db, normalizedBatch, strings.TrimSpace(*password))
+		return seedWithOptions(db, normalizedBatch, strings.TrimSpace(*password), seedOptions{
+			AIConfigID:   *aiConfigID,
+			AIConfigName: strings.TrimSpace(*aiConfigName),
+		})
 	case "cleanup":
 		return cleanup(db, normalizedBatch)
 	case "report":
@@ -137,16 +171,32 @@ func initDB(configPath string) (*gorm.DB, error) {
 	if err := bootstrap.InitMigrations(); err != nil {
 		return nil, fmt.Errorf("run migrations failed: %w", err)
 	}
+	config.SetCurrent(cfg)
 	return db, nil
 }
 
 func seed(db *gorm.DB, batch, password string) error {
+	return seedWithOptions(db, batch, password, seedOptions{})
+}
+
+func seedWithOptions(db *gorm.DB, batch, password string, options seedOptions) error {
 	if password == "" {
 		password = defaultPassword
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hash test password failed: %w", err)
+	}
+	aiConfig, err := resolveSeedAIConfig(db, options)
+	if err != nil {
+		return err
+	}
+	tenant, err := ensureTestTenant(db, batch)
+	if err != nil {
+		return err
+	}
+	if err := ensureTestTenantInvitation(tenant); err != nil {
+		return err
 	}
 
 	ctx := &seedContext{
@@ -156,6 +206,7 @@ func seed(db *gorm.DB, batch, password string) error {
 		passwordHash: string(hash),
 		now:          time.Now(),
 		audit:        auditFields(),
+		aiConfig:     aiConfig,
 	}
 
 	return sqls.WithTransaction(func(tx *sqls.TxContext) error {
@@ -166,10 +217,10 @@ func seed(db *gorm.DB, batch, password string) error {
 		if err := ctx.loadRoles(); err != nil {
 			return err
 		}
-		if err := ctx.upsertCompany(); err != nil {
+		if err := ctx.loadTenantFoundation(); err != nil {
 			return err
 		}
-		if err := ctx.upsertChannel(); err != nil {
+		if err := ctx.upsertCompany(); err != nil {
 			return err
 		}
 		if err := ctx.upsertStores(); err != nil {
@@ -182,6 +233,12 @@ func seed(db *gorm.DB, batch, password string) error {
 			return err
 		}
 		if err := ctx.upsertAgentProfiles(); err != nil {
+			return err
+		}
+		if err := ctx.upsertAIAgent(); err != nil {
+			return err
+		}
+		if err := ctx.upsertChannel(); err != nil {
 			return err
 		}
 		if err := ctx.upsertStoreBindingsAndInstances(); err != nil {
@@ -201,11 +258,94 @@ func seed(db *gorm.DB, batch, password string) error {
 }
 
 func (ctx *seedContext) loadTenant() error {
-	ctx.tenant = repositories.TenantRepository.GetByTenantCode(ctx.db, constants.LegacyDefaultTenantCode)
+	ctx.tenant = repositories.TenantRepository.GetByRegistration(ctx.db, tenantRegistrationType, tenantRegistrationNo)
 	if ctx.tenant == nil || ctx.tenant.Status != enums.StatusOk {
-		return fmt.Errorf("legacy default tenant is missing or disabled")
+		return fmt.Errorf("%s simulation tenant is missing or disabled", companyName)
 	}
 	return nil
+}
+
+func ensureTestTenant(db *gorm.DB, batch string) (*models.Tenant, error) {
+	if existing := repositories.TenantRepository.GetByRegistration(db, tenantRegistrationType, tenantRegistrationNo); existing != nil {
+		if existing.LegalName != companyName || !strings.Contains(existing.Remark, "仿真测试") {
+			return nil, fmt.Errorf("test tenant registration identity is already used by non-seed tenant %d", existing.ID)
+		}
+		if !strings.Contains(existing.Remark, marker(batch)) {
+			return nil, fmt.Errorf("simulation tenant belongs to another seed batch; clean it up before using batch %s", batch)
+		}
+		return existing, nil
+	}
+
+	operator := &dto.AuthPrincipal{
+		UserID:            constants.SystemAuditUserID,
+		Username:          constants.SystemAuditUserName,
+		Roles:             []string{constants.RoleCodeSuperAdmin},
+		Permissions:       []string{constants.PermissionTenantCreate.Code},
+		IsPlatformAccount: true,
+	}
+	result, err := services.TenantService.CreateTenant(request.CreateTenantRequest{
+		LegalName:        companyName,
+		ShortName:        tenantShortName,
+		RegistrationType: tenantRegistrationType,
+		RegistrationNo:   tenantRegistrationNo,
+		ContactName:      "丽斯未来仿真测试联系人",
+		ContactMobile:    "19900008848",
+		ContactEmail:     "lissi-simulation@example.invalid",
+		Address:          "仿真测试地址，不代表真实经营地址",
+		Remark:           fmt.Sprintf("%s 仿真测试租户，不用于生产", marker(batch)),
+		Supervisor: request.CreateTenantSupervisorRequest{
+			Username: tenantSupervisorName,
+			Nickname: "丽斯未来测试公司主管",
+			Mobile:   "19900008849",
+			Email:    "lissi-supervisor@example.invalid",
+		},
+	}, operator)
+	if err != nil {
+		return nil, fmt.Errorf("create %s simulation tenant failed: %w", companyName, err)
+	}
+	return result.Tenant, nil
+}
+
+func ensureTestTenantInvitation(tenant *models.Tenant) error {
+	if tenant == nil {
+		return fmt.Errorf("simulation tenant is missing")
+	}
+	current := repositories.TenantInvitationRepository.FindCurrent(sqls.DB(), tenant.ID)
+	if current != nil && current.ExpiresAt != nil && current.ExpiresAt.After(time.Now()) {
+		return nil
+	}
+	operator := &dto.AuthPrincipal{
+		UserID:         constants.SystemAuditUserID,
+		ActiveTenantID: tenant.ID,
+		Username:       constants.SystemAuditUserName,
+		Permissions:    []string{constants.PermissionTenantInviteRotate.Code},
+	}
+	if _, _, err := services.TenantInvitationService.Rotate(tenant.ID, operator); err != nil {
+		return fmt.Errorf("refresh simulation tenant invitation failed: %w", err)
+	}
+	return nil
+}
+
+func resolveSeedAIConfig(db *gorm.DB, options seedOptions) (*models.AIConfig, error) {
+	var item *models.AIConfig
+	switch {
+	case options.AIConfigID > 0:
+		item = repositories.AIConfigRepository.Get(db, options.AIConfigID)
+	case options.AIConfigName != "":
+		item = repositories.AIConfigRepository.Take(db, "name = ? AND model_type = ? AND status = ?", options.AIConfigName, enums.AIModelTypeLLM, enums.StatusOk)
+	default:
+		item = repositories.AIConfigRepository.GetEnabled(db, enums.AIModelTypeLLM)
+	}
+	if item == nil {
+		return nil, fmt.Errorf("no reusable LLM model configuration found; configure one or pass --ai-config-id/--ai-config-name")
+	}
+	if item.Status != enums.StatusOk || item.ModelType != enums.AIModelTypeLLM {
+		return nil, fmt.Errorf("AI config %d (%s) must be an enabled LLM configuration", item.ID, item.Name)
+	}
+	if strings.TrimSpace(item.ModelName) == "" || strings.TrimSpace(item.BaseURL) == "" {
+		return nil, fmt.Errorf("AI config %d (%s) is incomplete and cannot be reused", item.ID, item.Name)
+	}
+	return item, nil
 }
 
 func cleanup(db *gorm.DB, batch string) error {
@@ -215,6 +355,11 @@ func cleanup(db *gorm.DB, batch string) error {
 
 	return sqls.WithTransaction(func(tx *sqls.TxContext) error {
 		db := tx.Tx
+		tenant := repositories.TenantRepository.GetByRegistration(db, tenantRegistrationType, tenantRegistrationNo)
+		var tenantID int64
+		if tenant != nil && strings.Contains(tenant.Remark, m) {
+			tenantID = tenant.ID
+		}
 		userSubquery := db.Model(&models.User{}).Select("id").Where("remark LIKE ?", remarkPattern)
 		customerSubquery := db.Model(&models.Customer{}).Select("id").Where("remark LIKE ?", remarkPattern)
 		storeSubquery := db.Model(&models.Store{}).Select("id").Where("remark LIKE ?", remarkPattern)
@@ -231,6 +376,9 @@ func cleanup(db *gorm.DB, batch string) error {
 			}},
 			{"login sessions", func() error {
 				return db.Where("user_id IN (?)", userSubquery).Delete(&models.LoginSession{}).Error
+			}},
+			{"user role change logs", func() error {
+				return db.Where("user_id IN (?)", userSubquery).Delete(&models.UserRoleChangeLog{}).Error
 			}},
 			{"customer contacts", func() error {
 				return db.Where("customer_id IN (?) OR remark LIKE ?", customerSubquery, remarkPattern).Delete(&models.CustomerContact{}).Error
@@ -249,6 +397,9 @@ func cleanup(db *gorm.DB, batch string) error {
 			}},
 			{"agent profiles", func() error {
 				return db.Where("remark LIKE ?", remarkPattern).Delete(&models.AgentProfile{}).Error
+			}},
+			{"ai agent", func() error {
+				return db.Where("tenant_id = ? AND name = ?", tenantID, aiAgentName).Delete(&models.AIAgent{}).Error
 			}},
 			{"agent teams", func() error {
 				return db.Where("remark LIKE ?", remarkPattern).Delete(&models.AgentTeam{}).Error
@@ -270,6 +421,18 @@ func cleanup(db *gorm.DB, batch string) error {
 			}},
 			{"company", func() error {
 				return db.Where("remark LIKE ? AND name = ?", remarkPattern, companyName).Delete(&models.Company{}).Error
+			}},
+			{"tenant invitations", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.TenantInvitation{}).Error
+			}},
+			{"tenant", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("id = ? AND registration_type = ? AND registration_no = ? AND remark LIKE ?", tenantID, tenantRegistrationType, tenantRegistrationNo, remarkPattern).Delete(&models.Tenant{}).Error
 			}},
 		}
 
@@ -295,7 +458,7 @@ func printReport(db *gorm.DB, batch string) error {
 func buildReport(db *gorm.DB, batch string) report {
 	m := marker(batch)
 	remarkPattern := likeMarker(m)
-	tenant := repositories.TenantRepository.GetByTenantCode(db, constants.LegacyDefaultTenantCode)
+	tenant := repositories.TenantRepository.GetByRegistration(db, tenantRegistrationType, tenantRegistrationNo)
 	var tenantID int64
 	if tenant != nil {
 		tenantID = tenant.ID
@@ -305,6 +468,21 @@ func buildReport(db *gorm.DB, batch string) report {
 		Batch:  batch,
 		Marker: m,
 	}
+	r.Tenant = count(db, &models.Tenant{}, "id = ? AND legal_name = ? AND remark LIKE ?", tenantID, companyName, remarkPattern)
+	r.TenantSupervisor = count(db, &models.User{}, "tenant_id = ? AND username = ? AND remark LIKE ?", tenantID, tenantSupervisorName, remarkPattern)
+	r.TenantInvitation = count(db, &models.TenantInvitation{}, "tenant_id = ? AND status = ?", tenantID, enums.StatusOk)
+	r.DefaultAgentTeam = count(db, &models.AgentTeam{}, "tenant_id = ? AND is_default = ? AND remark LIKE ?", tenantID, true, remarkPattern)
+	r.AIAgent = count(db, &models.AIAgent{}, "tenant_id = ? AND name = ?", tenantID, aiAgentName)
+	aiAgent := repositories.AIAgentRepository.Take(db, "tenant_id = ? AND name = ?", tenantID, aiAgentName)
+	if aiAgent != nil {
+		r.AIAgentConfigID = aiAgent.AIConfigID
+		if aiConfig := repositories.AIConfigRepository.Get(db, aiAgent.AIConfigID); aiConfig != nil {
+			r.AIAgentConfigName = aiConfig.Name
+			r.AIAgentModelName = aiConfig.ModelName
+			r.ModelConfigReused = aiConfig.Status == enums.StatusOk && aiConfig.ModelType == enums.AIModelTypeLLM
+		}
+		r.ChannelAIAgentBound = count(db, &models.Channel{}, "tenant_id = ? AND name = ? AND ai_agent_id = ?", tenantID, channelName, aiAgent.ID) == 1
+	}
 	r.CompanyMarked = count(db, &models.Company{}, "tenant_id = ? AND remark LIKE ? AND name = ?", tenantID, remarkPattern, companyName)
 	r.CompanyNameExists = tenantID > 0 && count(db, &models.Company{}, "tenant_id = ? AND name = ?", tenantID, companyName) > 0
 	r.Channel = count(db, &models.Channel{}, "remark LIKE ? AND name = ?", remarkPattern, channelName)
@@ -312,7 +490,7 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.CSLeaders = count(db, &models.User{}, "remark LIKE ? AND username LIKE ?", remarkPattern, usernamePrefix+"cs_leader_%")
 	r.CSUsers = count(db, &models.User{}, "remark LIKE ? AND username LIKE ?", remarkPattern, usernamePrefix+"cs_user_%")
 	r.StoreStaffUsers = count(db, &models.User{}, "remark LIKE ? AND username LIKE ?", remarkPattern, usernamePrefix+"store_staff_%")
-	r.AgentTeams = count(db, &models.AgentTeam{}, "remark LIKE ?", remarkPattern)
+	r.AgentTeams = count(db, &models.AgentTeam{}, "remark LIKE ? AND is_default = ?", remarkPattern, false)
 	r.AgentProfiles = count(db, &models.AgentProfile{}, "remark LIKE ? AND agent_code LIKE ?", remarkPattern, agentCodePrefix+"%")
 	r.StoreStaffBindings = count(db, &models.StoreStaffBinding{}, "remark LIKE ?", remarkPattern)
 	r.WxWorkInstances = count(db, &models.WxWorkProtocolInstance{}, "remark LIKE ? AND guid LIKE ?", remarkPattern, wxWorkGUIDPrefix+"%")
@@ -326,6 +504,9 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.SimulatedConversations = count(db, &models.Conversation{}, "id IN (?)", simulationConversationSubquery)
 	r.SimulatedMessages = count(db, &models.Message{}, "conversation_id IN (?)", simulationConversationSubquery)
 	r.SimulatedAssignments = count(db, &models.ConversationAssignment{}, "conversation_id IN (?)", simulationConversationSubquery)
+	if aiAgent != nil {
+		r.SimulationAIAgentBound = count(db, &models.Conversation{}, "id IN (?) AND ai_agent_id = ?", simulationConversationSubquery, aiAgent.ID)
+	}
 	r.SimulatedCurrentlyAssigned = count(db, &models.Conversation{}, "id IN (?) AND status = ? AND current_assignee_id > 0", simulationConversationSubquery, enums.IMConversationStatusActive)
 	db.Model(&models.Conversation{}).
 		Where("id IN (?) AND status = ? AND current_assignee_id > 0", simulationConversationSubquery, enums.IMConversationStatusActive).
@@ -336,7 +517,14 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.SimulatedPending = count(db, &models.Conversation{}, "id IN (?) AND status = ?", simulationConversationSubquery, enums.IMConversationStatusPending)
 	r.SimulatedActive = count(db, &models.Conversation{}, "id IN (?) AND status = ?", simulationConversationSubquery, enums.IMConversationStatusActive)
 	r.SimulatedClosed = count(db, &models.Conversation{}, "id IN (?) AND status = ?", simulationConversationSubquery, enums.IMConversationStatusClosed)
-	r.ExpectedCoreComplete = r.CompanyNameExists &&
+	r.ExpectedCoreComplete = r.Tenant == 1 &&
+		r.TenantSupervisor == 1 &&
+		r.TenantInvitation == 1 &&
+		r.DefaultAgentTeam == 1 &&
+		r.AIAgent == 1 &&
+		r.ModelConfigReused &&
+		r.ChannelAIAgentBound &&
+		r.CompanyNameExists &&
 		r.Channel == 1 &&
 		r.Stores == 100 &&
 		r.CSLeaders == 3 &&
@@ -353,6 +541,7 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.SimulationBaselineIntact = r.SimulatedConversations == expectedSimulationConversationCount &&
 		r.SimulatedMessages == expectedSimulationMessageCount &&
 		r.SimulatedAssignments == expectedSimulationAssignmentCount &&
+		r.SimulationAIAgentBound == expectedSimulationConversationCount &&
 		r.SimulatedCurrentlyAssigned == 18 &&
 		r.SimulatedAssignedAgents == 12 &&
 		r.SimulatedNeedReply == expectedSimulationNeedReplyCount &&
@@ -365,6 +554,7 @@ func buildReport(db *gorm.DB, batch string) report {
 
 func (ctx *seedContext) loadRoles() error {
 	required := []string{
+		constants.RoleCodeTenantAdmin,
 		constants.RoleCodeCsTeamLeader,
 		constants.RoleCodeCsUser,
 		constants.RoleCodeStoreStaff,
@@ -376,6 +566,54 @@ func (ctx *seedContext) loadRoles() error {
 			return fmt.Errorf("required role %s not found or disabled", code)
 		}
 		ctx.roles[code] = role
+	}
+	return nil
+}
+
+func (ctx *seedContext) loadTenantFoundation() error {
+	supervisor := &models.User{}
+	if err := ctx.db.Where("tenant_id = ? AND username = ?", ctx.tenant.ID, tenantSupervisorName).Take(supervisor).Error; err != nil {
+		return fmt.Errorf("load simulation tenant supervisor failed: %w", err)
+	}
+	if err := ctx.db.Model(supervisor).Updates(map[string]any{
+		"nickname":             "丽斯未来测试公司主管",
+		"password":             ctx.passwordHash,
+		"must_change_password": false,
+		"approval_status":      enums.UserApprovalStatusApproved,
+		"status":               enums.StatusOk,
+		"deleted_at":           nil,
+		"remark":               ctx.seedRemark("仿真测试公司主管账号，不用于生产"),
+		"updated_at":           ctx.now,
+		"update_user_id":       constants.SystemAuditUserID,
+		"update_user_name":     constants.SystemAuditUserName,
+	}).Error; err != nil {
+		return err
+	}
+	if err := ctx.replaceUserRole(supervisor.ID, ctx.roles[constants.RoleCodeTenantAdmin].ID); err != nil {
+		return err
+	}
+	ctx.supervisor = supervisor
+
+	defaultTeam := &models.AgentTeam{}
+	if err := ctx.db.Where("tenant_id = ? AND is_default = ?", ctx.tenant.ID, true).Take(defaultTeam).Error; err != nil {
+		return fmt.Errorf("load simulation tenant default team failed: %w", err)
+	}
+	if err := ctx.db.Model(defaultTeam).Updates(map[string]any{
+		"leader_user_id":   0,
+		"status":           enums.StatusOk,
+		"description":      "丽斯未来酒店仿真测试租户默认综合客服组",
+		"remark":           ctx.seedRemark("仿真测试默认综合客服组，不用于生产"),
+		"updated_at":       ctx.now,
+		"update_user_id":   constants.SystemAuditUserID,
+		"update_user_name": constants.SystemAuditUserName,
+	}).Error; err != nil {
+		return err
+	}
+	ctx.defaultTeam = defaultTeam
+
+	ctx.invitation = repositories.TenantInvitationRepository.FindCurrent(ctx.db, ctx.tenant.ID)
+	if ctx.invitation == nil || ctx.invitation.ExpiresAt == nil || !ctx.invitation.ExpiresAt.After(ctx.now) {
+		return fmt.Errorf("simulation tenant invitation is missing or expired")
 	}
 	return nil
 }
@@ -432,7 +670,7 @@ func (ctx *seedContext) upsertChannel() error {
 		"tenant_id":        ctx.tenant.ID,
 		"channel_type":     enums.ChannelTypeWxWorkProtocol,
 		"channel_id":       "test_customer_audit_wxwork_protocol",
-		"ai_agent_id":      0,
+		"ai_agent_id":      ctx.aiAgent.ID,
 		"config_json":      string(raw),
 		"status":           enums.StatusOk,
 		"remark":           ctx.seedRemark("测试企微员工号协议渠道"),
@@ -455,7 +693,7 @@ func (ctx *seedContext) upsertChannel() error {
 		Name:        channelName,
 		ChannelType: enums.ChannelTypeWxWorkProtocol,
 		ChannelID:   "test_customer_audit_wxwork_protocol",
-		AIAgentID:   0,
+		AIAgentID:   ctx.aiAgent.ID,
 		ConfigJSON:  string(raw),
 		Status:      enums.StatusOk,
 		Remark:      ctx.seedRemark("测试企微员工号协议渠道"),
@@ -731,6 +969,64 @@ func (ctx *seedContext) upsertAgentProfiles() error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (ctx *seedContext) upsertAIAgent() error {
+	if ctx.aiConfig == nil {
+		return fmt.Errorf("reusable AI configuration is missing")
+	}
+	teamIDs := make([]int64, 0, len(ctx.teams))
+	for _, team := range ctx.teams {
+		teamIDs = append(teamIDs, team.ID)
+	}
+	updates := map[string]any{
+		"tenant_id":             ctx.tenant.ID,
+		"description":           "丽斯未来酒店仿真测试智能客服，不用于生产服务",
+		"status":                enums.StatusOk,
+		"ai_config_id":          ctx.aiConfig.ID,
+		"service_mode":          enums.IMConversationServiceModeAIFirst,
+		"system_prompt":         "你是丽斯未来酒店仿真测试智能客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
+		"welcome_message":       "您好，这里是丽斯未来酒店仿真测试客服，请问有什么可以帮您？",
+		"reply_timeout_seconds": 180,
+		"team_ids":              joinInt64s(teamIDs),
+		"handoff_mode":          enums.AIAgentHandoffModeWaitPool,
+		"fallback_mode":         enums.AIAgentFallbackModeSuggestRetry,
+		"fallback_message":      "当前仿真测试知识不足，请补充信息或转人工客服处理。",
+		"sort_no":               0,
+		"updated_at":            ctx.now,
+		"update_user_id":        constants.SystemAuditUserID,
+		"update_user_name":      constants.SystemAuditUserName,
+	}
+	item := repositories.AIAgentRepository.Take(ctx.db, "tenant_id = ? AND name = ?", ctx.tenant.ID, aiAgentName)
+	if item != nil {
+		if err := repositories.AIAgentRepository.UpdatesInTenant(ctx.db, item.ID, ctx.tenant.ID, updates); err != nil {
+			return err
+		}
+		item.AIConfigID = ctx.aiConfig.ID
+		ctx.aiAgent = item
+		return nil
+	}
+	item = &models.AIAgent{
+		TenantID:            ctx.tenant.ID,
+		Name:                aiAgentName,
+		Description:         "丽斯未来酒店仿真测试智能客服，不用于生产服务",
+		Status:              enums.StatusOk,
+		AIConfigID:          ctx.aiConfig.ID,
+		ServiceMode:         enums.IMConversationServiceModeAIFirst,
+		SystemPrompt:        "你是丽斯未来酒店仿真测试智能客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
+		WelcomeMessage:      "您好，这里是丽斯未来酒店仿真测试客服，请问有什么可以帮您？",
+		ReplyTimeoutSeconds: 180,
+		TeamIDs:             joinInt64s(teamIDs),
+		HandoffMode:         enums.AIAgentHandoffModeWaitPool,
+		FallbackMode:        enums.AIAgentFallbackModeSuggestRetry,
+		FallbackMessage:     "当前仿真测试知识不足，请补充信息或转人工客服处理。",
+		AuditFields:         ctx.audit,
+	}
+	if err := repositories.AIAgentRepository.Create(ctx.db, item); err != nil {
+		return err
+	}
+	ctx.aiAgent = item
 	return nil
 }
 

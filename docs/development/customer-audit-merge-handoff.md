@@ -4422,3 +4422,48 @@ git diff --check
 - migration 58 在创建时高于集成分支 57；当时 `origin/main` 最大 20、customer-audit 最大 56、ai-billing 最大 33，无重复版本。push 前再次 fetch，若任一分支前进或出现 58，先协调迁移号，不能直接推送。
 - 建议第 87/88 批后合并本批。响应字段是兼容新增，旧前端可忽略；新前端依赖后端返回 `expired` 以禁用复制，因此部署顺序优先后端再前端。
 - 回滚代码不会删除 AutoMigrate 新列，也不得删除 migration 58 记录或清空已回填到期值。可以回滚 UI/运行时接线并保留数据，但会恢复永久邀请码风险；公开注册应始终保持关闭直到重新完成验收。
+
+## 第 90 批：丽斯未来酒店测试租户接入与主线合并要求（2026-07-15）
+
+### 实施结果
+
+- `cmd/customer_audit_seed` 不再把丽斯未来仿真数据挂到 `legacy-default`，而是通过现有 `TenantService.CreateTenant` 创建或复用独立测试租户。公司、主管、邀请码、默认综合客服组、3 个业务客服组、12 个客服、100 个门店员工、100 个门店/企微员工号、500 个客户及会话派单数据都继承该 TenantID。
+- 租户简称、主管账号、智能客服、门店、员工、客户、渠道及备注均明确包含“测试”或“仿真测试，不用于生产”。`t_company` 继续作为 Store/StoreStaffBinding 需要的租户内运营公司锚点，不是第二个租户根。
+- seed 复用平台已有启用 LLM `AIConfig`，支持 `--ai-config-id`、`--ai-config-name` 或默认启用 LLM。它只创建租户级 `AIAgent` 并让 Channel 引用；100 个企微员工号通过 Channel 间接使用该 Agent，不恢复已废弃的企微独立 Agent 字段。
+- AIConfig 是平台全局配置，seed 不复制、不改写、不输出 API Key。当前本地验收库从原 8083 环境安全复制 `deepseek / deepseek-v4-flash` 数据行后，以 `--ai-config-name deepseek` 绑定；密钥只存在本地数据库，不进入源码、文档、日志或 Git。
+- 仿真基线保持 36 个会话、135 条消息、21 条 assignment、27 条需人工跟进；所有会话新增真实 AIAgentID。seed 首次执行、重复执行、完整清理均通过，清理不会删除复用的全局 AIConfig。
+- 本批没有 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket、权限码、AI 回复、token、usage 或计费语义变化。
+
+### 验收证据
+
+- `/tmp/agentdesk-integration.db` 已在写入前备份到 `/tmp/agentdesk-integration.pre-lissi-20260715.db`；原 8083 Docker MySQL 只读查询，未执行 migration 或写操作。
+- seed report：独立租户 1、主管 1、有效邀请码 1、默认综合组 1、测试智能客服 1、业务组 3、客服档案 12、门店员工/企微实例 100、客户 500，核心与派单基线全部为 true。
+- tenant-integrity-audit：59 个 TenantID 模型、73 张必需表、154 条关系、0 违规。默认综合组负责人保持为空；公司主管不伪装成客服组长，3 个业务组各自绑定测试客服组长。
+- 浏览器：接入公司显示丽斯未来测试及 12 客服/100 门店/4 客服组；用户管理共 116 个租户账号；智能客服唯一记录绑定 deepseek；客服档案显示 3 个业务组各 9 条待回复；派单页显示 9 待派发、12 待首响、6 处理中；客户页显示 500 条测试客户。
+
+### 合并 main 的强制步骤
+
+1. 主线只合并 `codex/tenant-ai-integration`，不要再分别合并 `codex/customer-audit` 和 `codex/ai-billing`，否则会重复引入同一提交并增加共享文件冲突。
+2. 合并前执行 `git fetch origin`，重新核对 `origin/main`、`origin/codex/customer-audit`、`origin/codex/ai-billing` 和本集成分支。任一源分支前进时，先增量合入集成分支、处理同文件语义，再重跑全门禁。
+3. 重新检查 migration 最大版本和重复号，当前集成分支最高为 58。重点语义合并 `internal/models/models.go`、migration 注册、DTO/enum、路由、WebSocket payload、message/conversation service、`web/lib/api`、导航和多语言资源，不能用整文件覆盖任一分支。
+4. 生产数据升级前先对原 MySQL 做可恢复备份，并恢复到独立临时 MySQL 8.4。所有 migration、回填和完整性审计先在临时副本执行，禁止直接拿原数据卷试跑。
+5. 原 8083 MySQL 当前 migration 39 失败，已知冲突为 `agent team 1 leader tenant 0 conflicts with team tenant 1`。必须在临时副本中人工确认该组长和客服组的真实公司归属，形成明确映射/修复记录后再重跑；不得把冲突数据强行归到 legacy tenant，也不得跳过、伪造成功或删除 migration 记录。
+6. 临时副本必须从 39 继续跑到当前最高 migration，随后执行 59/73/154 tenant-integrity-audit、关键租户隔离测试和业务抽样。确认 0 违规后，才制定生产维护窗口和同样的可回滚步骤。
+7. 部署顺序先后端模型/AutoMigrate/DML migration 与 API，再前端。公开注册继续保持 `tenantRegistration.enabled=false`；本批测试邀请码和测试账号不构成开放注册决定。
+8. AIConfig API Key、邀请码明文、测试密码、SQLite/MySQL 数据文件和 `/tmp` 配置禁止提交。生产模型配置由目标环境安全注入；seed 只按 ID/名称引用现有配置。
+9. 回滚代码不会回退 AutoMigrate 列和 migration 34-58 的数据写入。回滚前保留数据库备份、关闭公开注册并按批次制定数据回退；丽斯未来仿真数据可用 seed cleanup 独立移除，但 cleanup 只允许作用于带对应 TEST_SEED marker 的测试租户。
+
+### 验证命令
+
+```text
+go test ./cmd/customer_audit_seed -count=1
+go test ./... -count=1
+go vet ./...
+pnpm --dir web lint
+pnpm --dir web typecheck
+pnpm --dir web build
+go run ./cmd/customer_audit_seed --config <isolated-config> --action seed --ai-config-name <existing-enabled-llm>
+go run ./cmd/customer_audit_seed --config <isolated-config> --action report
+go run ./cmd/tenant_integrity_audit --config <isolated-config> --pretty
+git diff --check
+```

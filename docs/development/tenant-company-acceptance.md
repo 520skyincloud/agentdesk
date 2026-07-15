@@ -106,3 +106,35 @@
 - migration 58 已在 SQLite 和独立 MySQL 8.4 验证。回滚代码时保留 `expires_at` 列与已回填值，不删除 migration 记录；公开注册继续关闭。
 - 四个前端 lint 文件属于共享前端基础设施；不涉及 models、migration、DTO、enum、API、路由、WebSocket 或权限码。
 - 回滚前端修复会恢复全量 lint 失败；回滚测试互斥会恢复 race 失败。两类回滚都不需要数据库操作。
+
+## 6. 丽斯未来酒店测试租户验收（2026-07-15）
+
+### 6.1 数据与模型绑定
+
+| 验收项 | 直接证据 | 结果 |
+| --- | --- | --- |
+| 丽斯未来是独立测试租户 | seed report 中 tenant=1；接入公司页面显示“丽斯未来测试 / 丽斯未来酒店” | 通过 |
+| 公司主管与邀请基础存在 | tenantSupervisor=1、tenantInvitation=1、defaultAgentTeam=1；主管账号为 `test_customer_audit_tenant_admin` | 通过 |
+| 全部测试数据归属同租户 | 59/73/154 tenant-integrity-audit 0 违规；公司、账号、客户、门店、企微、会话和派单均按 TenantID 查询 | 通过 |
+| 原模型配置被复用 | 本地隔离库安全复制原环境启用 `deepseek / deepseek-v4-flash`；AIAgent report 的 config ID/name/model 一致 | 通过 |
+| 模型密钥不进入仓库 | seed 只接受已有配置 ID/名称；report 不返回 API Key；源码和文档不包含密钥 | 通过 |
+| 全部主体明确为测试 | 租户、主管、智能客服、客服组、员工、门店、客户、渠道和企微备注包含测试/仿真测试标记 | 通过 |
+
+### 6.2 仿真业务基线
+
+| 数据 | 数量/状态 | 浏览器证据 |
+| --- | --- | --- |
+| 租户账号 | 116 | 用户管理显示共 116 条，门店员工账号及企微/客服组归属可见 |
+| 客服组织 | 默认综合组 1、业务组 3、客服 12 | 客服档案显示 34/33/33 个员工号覆盖，12 个客服负载可见 |
+| 门店与企微 | 100/100 | 接入公司资源统计门店 100；用户与客服组页面显示企微员工号来源 |
+| 客户 | 500 | 客户管理显示测试顾客和丽斯未来酒店/门店关系 |
+| 会话与消息 | 36/135 | seed report 基线稳定，Conversation 均写入租户级测试 AIAgentID |
+| 派单 | assignment 21、需人工 27 | 派单页显示待派发 9、待首响 12、处理中 6、可接单客服 12 |
+| 智能客服 | 1 | 智能客服页显示“丽斯未来酒店仿真测试智能客服 / deepseek / AI 优先” |
+
+### 6.3 安全、幂等与回滚
+
+- 原 8083 Docker MySQL 只读，旧丽斯未来 `t_company` 未删除或迁移；8084 SQLite 写入前备份为 `/tmp/agentdesk-integration.pre-lissi-20260715.db`。
+- fresh SQLite 生命周期测试覆盖 seed、report、重复 seed 和 cleanup。重复执行数量不变；cleanup 后测试租户及子数据为 0，平台复用 AIConfig 仍为 1。
+- 当前 8084 验收库执行 seed 两次后仍保持 36/135/21 和 0 租户违规。公开注册保持 `tenantRegistration.enabled=false`。
+- 本地数据库、邀请码、测试密码和 API Key 不进入 Git。生产合并前必须按交接文档在原 MySQL 的临时恢复副本处理 migration 39 冲突，禁止直接在原数据卷试迁移。

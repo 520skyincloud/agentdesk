@@ -261,6 +261,7 @@ func TestSimulationRecordsInheritTenantID(t *testing.T) {
 	ctx := &seedContext{
 		db:      db,
 		tenant:  &models.Tenant{ID: 77},
+		aiAgent: &models.AIAgent{ID: 87, TenantID: 77},
 		channel: &models.Channel{ID: 88},
 		batch:   "tenant-scope",
 		marker:  marker("tenant-scope"),

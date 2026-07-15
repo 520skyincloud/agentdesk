@@ -1,13 +1,16 @@
 package main
 
 import (
+	"encoding/base64"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"agent-desk/internal/bootstrap"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/enums"
 
 	"gorm.io/gorm"
 )
@@ -32,6 +35,22 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 	})
 	if err := bootstrap.InitMigrations(); err != nil {
 		t.Fatalf("migrate fresh database: %v", err)
+	}
+	config.SetCurrent(&config.Config{Auth: config.AuthConfig{
+		InvitationEncryptionKey: base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+	}})
+	if err := db.Create(&models.AIConfig{
+		Name:        "仿真测试复用模型",
+		Provider:    enums.AIProviderOpenAI,
+		BaseURL:     "https://example.invalid/v1",
+		APIKey:      "test-only-key",
+		ModelType:   enums.AIModelTypeLLM,
+		ModelName:   "test-only-model",
+		Status:      enums.StatusOk,
+		Remark:      "仿真测试模型配置，不用于生产",
+		AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}).Error; err != nil {
+		t.Fatalf("create reusable test AI config: %v", err)
 	}
 
 	batch := "fresh-lifecycle"
@@ -60,14 +79,24 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 	}
 
 	for name, model := range map[string]any{
-		"conversations": &models.Conversation{},
-		"route states":  &models.ConversationRouteState{},
-		"participants":  &models.ConversationParticipant{},
-		"messages":      &models.Message{},
-		"assignments":   &models.ConversationAssignment{},
-		"event logs":    &models.ConversationEventLog{},
+		"invitations":    &models.TenantInvitation{},
+		"AI agents":      &models.AIAgent{},
+		"companies":      &models.Company{},
+		"agent teams":    &models.AgentTeam{},
+		"agent profiles": &models.AgentProfile{},
+		"stores":         &models.Store{},
+		"customers":      &models.Customer{},
+		"conversations":  &models.Conversation{},
+		"route states":   &models.ConversationRouteState{},
+		"participants":   &models.ConversationParticipant{},
+		"messages":       &models.Message{},
+		"assignments":    &models.ConversationAssignment{},
+		"event logs":     &models.ConversationEventLog{},
 	} {
 		assertLifecycleRowCount(t, db, name, model, 0)
+	}
+	if got := count(db, &models.Tenant{}, "registration_type = ? AND registration_no = ?", tenantRegistrationType, tenantRegistrationNo); got != 0 {
+		t.Fatalf("simulation tenant count after cleanup=%d want=0", got)
 	}
 
 	assertLifecycleSystemData(t, db)
@@ -80,6 +109,10 @@ func assertCompleteSimulationReport(t *testing.T, got report) {
 	}
 	if got.CustomerContacts != 500 || got.CustomerIdentities != 500 || got.StoreCustomerRels != 801 {
 		t.Fatalf("customer relationship baseline changed: %+v", got)
+	}
+	if got.Tenant != 1 || got.TenantSupervisor != 1 || got.TenantInvitation != 1 || got.DefaultAgentTeam != 1 ||
+		got.AIAgent != 1 || !got.ModelConfigReused || got.AIAgentConfigName != "仿真测试复用模型" {
+		t.Fatalf("tenant/model foundation baseline changed: %+v", got)
 	}
 	if got.SimulatedConversations != 36 || got.SimulatedMessages != 135 || got.SimulatedAssignments != 21 ||
 		got.SimulatedCurrentlyAssigned != 18 || got.SimulatedAssignedAgents != 12 || got.SimulatedNeedReply != 27 {

@@ -2428,7 +2428,7 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 回复运行时按会话租户读取路由、企微员工号、门店、公司、历史消息、压缩记忆、知识库和图片 Asset。KnowledgeRetriever 在进入 RAG 前按 AIAgent.TenantID 过滤 KnowledgeIDs；错误租户或脏关联 fail closed，不再依赖全局主键唯一性作为隔离边界。
 - FastGPT 后台任务、人工超时 AI 恢复、客户自动转人工偏好、媒体理解结果和 AI usage 写入均携带持久化租户；后台任务的状态更新继续使用 `id + tenant_id`。
 - FastGPT 数据集权限复用现有 `knowledgeBase.create/update/delete/view`，意图配置/Profile 写操作保持平台账号防线。没有新增权限管理之外的隐藏授权，登录同时保留邮箱验证码和邀请码能力。
-- `tenantRegistration.enabled` 仍必须为 `false`。只有最终集成分支在 SQLite/MySQL 双租户真实数据验证、migration 57 实库审计和权限验收全部通过后，才可单独启用公开注册。
+- `tenantRegistration.enabled` 仍必须为 `false`。只有最终集成分支在 SQLite/MySQL 双租户真实数据验证、migration 57-58 及后续当前最高版本实库审计和权限验收全部通过后，才可单独启用公开注册。
 
 验证结果：`go test ./... -count=1`、`go vet ./...`、`pnpm typecheck`、`pnpm build`、本次变更前端定向 ESLint、`git diff --check` 和冲突标记扫描均通过。全量 `pnpm lint` 仍被未修改的 content-editor、palette-toggle 和 i18n provider 五个既有 React lint error 阻断，不属于本次集成回归。
 
@@ -2459,3 +2459,15 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 - 本批新增 model 字段、AutoMigrate DDL、DML migration 58 和响应 DTO 字段；没有权限码、角色、Gin 路由、请求 DTO、enum、WebSocket、AI 回复、模型调用、token、usage 或计费变化。公开注册仍保持关闭。
 - `internal/models/models.go` 是 AI 分支共享文件，合并时必须同时保留两边模型注册和本字段。migration 58 当前高于集成分支 57，并已核对 `origin/main`、`origin/codex/customer-audit`、`origin/codex/ai-billing` 无重复版本；最终 push 前再次 fetch 复核。
 - 代码回滚不会自动删除 AutoMigrate 已增加的 `expires_at`，也不应清除 migration 58 已回填的数据。紧急停用可回滚运行时和界面接线但保留列与历史到期值；恢复旧逻辑会重新允许永久邀请码，不建议作为长期方案。
+
+## 90. 当前实施检查点：丽斯未来酒店独立测试租户（2026-07-15）
+
+丽斯未来酒店没有被删除，也不是在另一套软件中重建。原 8083 MySQL 中的旧 `t_company` 数据仍原样保留；当前 8084 集成环境使用隔离 SQLite，现通过正式租户基础能力把同名仿真业务接入同一多租户系统。
+
+- `cmd/customer_audit_seed` 以固定测试登记身份创建/复用独立 Tenant，并调用真实 `TenantService.CreateTenant` 同步生成公司主管、默认综合客服组和 90 天邀请码。所有后续账号和业务数据继承该 TenantID。
+- 默认综合客服组用于租户基础组织，负责人为空；3 个测试业务客服组继续各自覆盖 34/33/33 个门店员工号并绑定测试客服组长。公司主管是 `tenant_admin`，不写成 `cs_team_leader`，避免角色和审计语义混用。
+- 平台 AIConfig 仍是全局模型配置，租户通过 AIAgent 引用。seed 可按现有配置 ID/名称选择启用 LLM，创建“丽斯未来酒店仿真测试智能客服”，Channel 绑定该 Agent，Conversation 写入该 AIAgentID；企微实例沿 Channel 间接继承，不增加旧独立 Agent 字段。
+- 所有生成主体都以名称、用户名或备注标明测试用途。模型密钥不进入 seed 参数、报告、文档或 Git；缺少启用且完整的 LLM 配置时 seed 明确失败，不生成假绑定。
+- 当前验收基线：116 个租户账号、4 个客服组、12 个客服档案、100 个门店和企微员工号、500 个客户、36 个会话、135 条消息、21 条 assignment；派单任务为 9 待派发、12 待首响、6 处理中。59/73/154 完整性审计 0 违规。
+- cleanup 只删除匹配 batch marker 的丽斯未来测试租户及子数据，保留平台 AIConfig。该能力用于本地仿真和合并验收，不是生产初始化 migration，也不会把特定客户名称硬编码进生产启动过程。
+- 本批只改 seed、测试和文档；无数据模型、migration、API、DTO、权限、WebSocket、AI runtime 或计费变更。主线合并与原 MySQL migration 39 处置要求见 `docs/development/customer-audit-merge-handoff.md` 第 90 批。
