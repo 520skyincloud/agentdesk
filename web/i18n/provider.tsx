@@ -5,12 +5,13 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react"
 
 import {
   DEFAULT_LOCALE,
+  LOCALE_STORAGE_KEY,
   type AppLocale,
   readStoredLocale,
   writeStoredLocale,
@@ -29,17 +30,31 @@ const LocaleContext = createContext<LocaleContextValue>({
   t: (key) => key,
 })
 
+const LOCALE_CHANGE_EVENT = "agentdesk:locale-change"
+
+function subscribeLocale(onStoreChange: () => void) {
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === LOCALE_STORAGE_KEY) {
+      onStoreChange()
+    }
+  }
+  window.addEventListener("storage", handleStorage)
+  window.addEventListener(LOCALE_CHANGE_EVENT, onStoreChange)
+  return () => {
+    window.removeEventListener("storage", handleStorage)
+    window.removeEventListener(LOCALE_CHANGE_EVENT, onStoreChange)
+  }
+}
+
 export function AppI18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<AppLocale>(DEFAULT_LOCALE)
+  const locale = useSyncExternalStore(
+    subscribeLocale,
+    readStoredLocale,
+    () => DEFAULT_LOCALE
+  )
 
   useEffect(() => {
-    const storedLocale = readStoredLocale()
-    setLocaleState(storedLocale)
-    document.documentElement.lang = storedLocale
-    document.title = translateMessage(storedLocale, "app.metadataTitle")
-  }, [])
-
-  useEffect(() => {
+    document.documentElement.lang = locale
     document.title = translateMessage(locale, "app.metadataTitle")
   }, [locale])
 
@@ -48,10 +63,8 @@ export function AppI18nProvider({ children }: { children: ReactNode }) {
       locale,
       t: (key, values) => translateMessage(locale, key, values),
       setLocale: (nextLocale) => {
-        setLocaleState(nextLocale)
         writeStoredLocale(nextLocale)
-        document.documentElement.lang = nextLocale
-        document.title = translateMessage(nextLocale, "app.metadataTitle")
+        window.dispatchEvent(new Event(LOCALE_CHANGE_EVENT))
       },
     }),
     [locale]

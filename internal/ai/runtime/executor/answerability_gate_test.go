@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"agent-desk/internal/ai/rag"
@@ -16,6 +17,7 @@ import (
 )
 
 type fakeKnowledgeContextRetriever struct {
+	mu               sync.Mutex
 	knowledgeBaseIDs []int64
 	result           *retrievers.KnowledgeRetrieveResult
 	resultsByQuery   map[string]*retrievers.KnowledgeRetrieveResult
@@ -29,8 +31,10 @@ func (r *fakeKnowledgeContextRetriever) KnowledgeBaseIDs() []int64 {
 }
 
 func (r *fakeKnowledgeContextRetriever) RetrieveContextByOptions(ctx context.Context, opts retrievers.KnowledgeRetrieveOptions, query string) (*retrievers.KnowledgeRetrieveResult, error) {
+	r.mu.Lock()
 	r.called = true
 	r.queries = append(r.queries, query)
+	r.mu.Unlock()
 	if r.err != nil {
 		return nil, r.err
 	}

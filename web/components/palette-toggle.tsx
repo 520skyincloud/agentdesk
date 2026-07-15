@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useSyncExternalStore } from "react"
 import { DropletsIcon, PaletteIcon } from "lucide-react"
 
 import { useI18n } from "@/i18n/provider"
@@ -16,6 +16,7 @@ import {
 type PaletteMode = "blue" | "green" | "gray"
 
 const PALETTE_STORAGE_KEY = "dashboard_palette"
+const PALETTE_CHANGE_EVENT = "agentdesk:palette-change"
 const DEFAULT_PALETTE: PaletteMode = "green"
 
 const paletteOptions: Array<{
@@ -54,22 +55,34 @@ function readPalette(): PaletteMode {
 function applyPalette(value: PaletteMode) {
   document.documentElement.dataset.palette = value
   window.localStorage.setItem(PALETTE_STORAGE_KEY, value)
+  window.dispatchEvent(new Event(PALETTE_CHANGE_EVENT))
+}
+
+function subscribePalette(onStoreChange: () => void) {
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === PALETTE_STORAGE_KEY) {
+      onStoreChange()
+    }
+  }
+  window.addEventListener("storage", handleStorage)
+  window.addEventListener(PALETTE_CHANGE_EVENT, onStoreChange)
+  return () => {
+    window.removeEventListener("storage", handleStorage)
+    window.removeEventListener(PALETTE_CHANGE_EVENT, onStoreChange)
+  }
 }
 
 export function PaletteToggle() {
   const t = useI18n()
-  const [palette, setPalette] = useState<PaletteMode>(DEFAULT_PALETTE)
-
-  useEffect(() => {
-    const storedPalette = readPalette()
-    setPalette(storedPalette)
-    applyPalette(storedPalette)
-  }, [])
+  const palette = useSyncExternalStore(
+    subscribePalette,
+    readPalette,
+    () => DEFAULT_PALETTE
+  )
 
   function handleChange(value: string) {
     const nextPalette: PaletteMode =
       value === "blue" || value === "gray" ? value : "green"
-    setPalette(nextPalette)
     applyPalette(nextPalette)
   }
 

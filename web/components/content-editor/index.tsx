@@ -59,15 +59,10 @@ export function ContentEditor({
   const t = useI18n()
   const editorHeight = normalizeHeight(height)
   const [fullscreen, setFullscreen] = useState(false)
-  const [mounted, setMounted] = useState(false)
   const normalizedAllowedModes = allowedModes.length > 0 ? allowedModes : CONTENT_MODE_OPTIONS
   const activeMode = normalizedAllowedModes.includes(value.mode)
     ? value.mode
     : normalizedAllowedModes[0]
-
-  useEffect(() => {
-    setMounted(true)
-  }, [])
 
   useEffect(() => {
     if (!fullscreen) {
@@ -166,7 +161,7 @@ export function ContentEditor({
     </div>
   )
 
-  if (fullscreen && mounted) {
+  if (fullscreen) {
     return createPortal(content, document.body)
   }
 

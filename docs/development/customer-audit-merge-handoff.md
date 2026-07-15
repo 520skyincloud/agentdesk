@@ -4352,3 +4352,41 @@ git diff --check
 - 最终提交前必须再次 fetch，并核对两个源分支是否前进；若任一前进，先在集成分支增量合并并重跑 59/73/154、全仓 Go 和前端构建。当前不需要 rebase。
 - 回滚集成提交可撤回代码和路由，但 AutoMigrate 新增列不会自动删除，migration 57 已写入的 TenantID 也不会自动恢复为 0。回滚前保持公开注册关闭，并使用数据库备份制定独立数据回退；不得直接删除 migration 记录或清空租户字段。
 - 本批不提交 `.codex/audits/` 或 `docs/generated/`。权威依据继续是代码、`docs/design/multi-tenant-company-registration.md` 和 `docs/design/reply-runtime-engine.md`。
+
+## 第 88 批：租户公司最终验收与门禁收口（2026-07-15）
+
+### 目标与修复
+
+- 按 `docs/design/multi-tenant-company-registration.md` 第 16、17 节逐条补齐直接证据，不再用“已合并”代替“已验收”。完整矩阵记录在 `docs/development/tenant-company-acceptance.md`。
+- 修复全量 lint 的 5 个 React error：编辑器 actions 不再原地 splice；ContentEditor 去掉同步 mounted effect；Palette 与 i18n 改用 `useSyncExternalStore`。原 storage key、主题、语言、编辑器和全屏行为保持不变。
+- `go test -race ./internal/ai/runtime/...` 发现测试替身并发记录 queries 的数据竞争；仅为 fake retriever 增加 mutex。生产 AI Runtime、模型调用、回复、token、usage 和计费均未修改。
+
+### 数据库与浏览器证据
+
+- 真实 SQLite 验收库在创建甲/乙公司、主管、邀请码、注册账号和审核记录后运行只读审计：59 个 TenantID 模型、73 张必需表、154 条关系、0 违规。
+- 独立临时 MySQL 8.4 使用 tmpfs，无现有数据卷。首次 migration、重复 migration、tenant-integrity-audit 通过；同租户重复公司名被 1062 拒绝，不同 tenant_id 同名允许；清理验证数据后审计仍为 0 违规并销毁实例。
+- 浏览器完成桌面和 412x915 移动验收。公司创建、编辑、启停、主管角色、邀请查看/重置、注册链接注册、待审核禁用、主管审核、客服登录、动作隐藏、直接请求 3001、A/B 切换和双标签页隔离均通过。
+- 公开注册只在 `/tmp` 验收配置临时开启。缺少邀请码密钥或 Asset URL 独立签名密钥时服务均拒绝启动；验收后已恢复关闭。
+
+### 验证命令
+
+```text
+go test ./... -count=1
+go vet ./...
+go test -race ./internal/services -run 'Test(TenantRegistration|TenantService|TenantInvitation|RoleAuthority|RoleDefinition|RoleService|RoleRepository|UserService|UserRepository|TenantAdmin|ConversationDispatch|ConversationAssignment|AgentTeamSquad|AgentTeamSchedule|AIUsageEvent|FastGPTFailedDatasetJob|TenantIntegrity)' -count=1 -p 1
+go test -race ./internal/services -run 'Test(Ws|Asset|Knowledge|AgentRunLog|WxWorkKF|WxWorkCLIBridge|ConversationRuntime|StoreStaff|AIAgent|Customer|TicketAndTag|SystemTicket|Notification)' -count=1 -p 1
+go test -race ./internal/handlers/dashboard ./internal/handlers/api -run 'Test(Role|Tenant|Dashboard|Permission|WxWork)' -count=1 -p 1
+go test -race ./internal/ai/runtime/... ./internal/ai/skills -count=1 -p 1
+pnpm --dir web lint
+pnpm --dir web typecheck
+pnpm --dir web build
+go run ./cmd/tenant_integrity_audit --config /tmp/agentdesk-integration.yaml --pretty
+git diff --check
+```
+
+### 并行分支与回滚
+
+- 无 model、AutoMigrate、DML migration、DTO、enum、API、路由、WebSocket、权限码或业务状态变化。
+- `internal/ai/runtime/executor/answerability_gate_test.go` 属于 AI 分支同文件范围，但只修改测试同步；合并时保留 mutex 即可。四个前端文件属于共享基础设施，后续双方均应以本批 lint 通过版本为准。
+- 回滚前端文件会恢复全量 lint 的 5 个 error；回滚测试 mutex 会恢复 AI Runtime race 失败。均不需要数据库回滚。
+- 不提交 `.codex/audits/`、`docs/generated/`、`/tmp` 配置或验收数据库。公开注册继续关闭。

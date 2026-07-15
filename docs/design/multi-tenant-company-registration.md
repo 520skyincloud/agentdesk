@@ -2430,3 +2430,15 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 验证结果：`go test ./... -count=1`、`go vet ./...`、`pnpm typecheck`、`pnpm build`、本次变更前端定向 ESLint、`git diff --check` 和冲突标记扫描均通过。全量 `pnpm lint` 仍被未修改的 content-editor、palette-toggle 和 i18n provider 五个既有 React lint error 阻断，不属于本次集成回归。
 
 回滚集成提交不会自动删除 AutoMigrate 新增列，也不会反向清除 migration 57 已写入的 TenantID；如需回滚，应先保持公开注册关闭，再按数据库备份和 migration 记录制定单独数据回退方案。
+
+## 88. 当前实施检查点：租户公司最终验收与工程门禁收口（2026-07-15）
+
+第 16、17 节已经按真实代码、测试、SQLite/MySQL 和浏览器逐条验收，完整证据矩阵见 `docs/development/tenant-company-acceptance.md`。
+
+- 全量前端 lint 的 5 个 React error 已关闭。编辑器工具栏不再原地 splice；全屏挂载判断移除同步 effect；主题和语言存储改用 `useSyncExternalStore`，保留原 storage key 和交互语义。`pnpm lint` 现在 0 error，仍有 33 个既有 warning。
+- AI Runtime race 发现的失败来自测试替身并发追加查询记录。本批只为 `fakeKnowledgeContextRetriever` 增加互斥，不修改实际检索、模型调用、回复、token 或计费；完整 AI Runtime race 已通过。
+- 临时 MySQL 8.4 在独立 tmpfs 上完成首次和重复 migration、复合唯一索引行为及 59/73/154 审计。真实 SQLite 验收库在浏览器创建 A/B 公司、主管、邀请账号和审核记录后再次审计，仍为 0 违规。
+- 浏览器完成公司创建/编辑/启停、公司主管权限、邀请码查看/重置/链接、待审核无角色账号、审核分配下级角色、动作隐藏与后端 3001、超管 A/B 切换、双标签页隔离和 412x915 移动布局验证。
+- 公开注册只在本地验收期间临时开启，并验证缺少邀请码密钥或 Asset 签名密钥时服务拒绝启动。验收结束后 `/tmp` 和仓库默认均恢复 `tenantRegistration.enabled: false`，不把测试开关误当生产开放决定。
+
+本批无 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket、权限码或业务状态变化。回滚只会恢复 lint/race 门禁失败，不需要数据库回滚。
