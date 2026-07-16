@@ -27,3 +27,26 @@ func TestConversationStatusLabelUsesEnglishLocale(t *testing.T) {
 		t.Fatalf("conversationStatusLabel() = %q", got)
 	}
 }
+
+func TestDashboardQuickLinksUseCurrentTenantPages(t *testing.T) {
+	t.Parallel()
+
+	wantLinks := []string{
+		"/dashboard/conversations",
+		"/dashboard/agents",
+		"/dashboard/knowledge",
+		"/dashboard/settings",
+	}
+	links := buildDashboardQuickLinks(i18nx.LocaleZhCN)
+	if len(links) != len(wantLinks) {
+		t.Fatalf("buildDashboardQuickLinks() length = %d, want %d", len(links), len(wantLinks))
+	}
+	for i, want := range wantLinks {
+		if links[i].Link != want {
+			t.Fatalf("buildDashboardQuickLinks()[%d].Link = %q, want %q", i, links[i].Link, want)
+		}
+	}
+	if links[len(links)-1].Title != "接入设置" {
+		t.Fatalf("settings quick link title = %q", links[len(links)-1].Title)
+	}
+}

@@ -58,7 +58,7 @@ func (s *answer) DebugSearch(ctx context.Context, req request.KnowledgeSearchReq
 	}, nil
 }
 
-func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerRequest, operator *dto.AuthPrincipal) (*response.KnowledgeAnswerResponse, error) {
+func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerRequest, aiConfig models.AIConfig, operator *dto.AuthPrincipal) (*response.KnowledgeAnswerResponse, error) {
 	if strings.TrimSpace(req.Question) == "" {
 		return nil, errorsx.InvalidParam("问题不能为空")
 	}
@@ -128,7 +128,7 @@ func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerReq
 		contextText := Retrieve.BuildContext(ctx, results, 4000)
 		systemPrompt := buildAnswerSystemPrompt(answerMode)
 		userPrompt := fmt.Sprintf("用户问题：%s\n\n参考资料：\n%s", req.Question, contextText)
-		llmResult, llmErr := ai.LLM.Chat(ctx, systemPrompt, userPrompt)
+		llmResult, llmErr := ai.LLM.ChatWithConfig(ctx, aiConfig, systemPrompt, userPrompt)
 		if llmErr != nil {
 			answerStatus = enums.KnowledgeAnswerStatusFallback
 			answer = buildFallbackAnswer(fallbackMode)

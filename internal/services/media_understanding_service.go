@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"agent-desk/internal/ai"
 	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
@@ -264,7 +263,7 @@ func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message
 		}
 		return "", err
 	}
-	config, err := ai.GetEnabledAIConfig(enums.AIModelTypeASR)
+	resolved, err := StoreAIModelSettingService.ResolveForMessage(message, StoreAIModelUsageSpeechRecognition)
 	if err != nil {
 		if protocolErr != nil {
 			return "", fmt.Errorf("企微语音翻译失败: %v；ASR 模型配置失败: %w", protocolErr, err)
@@ -273,8 +272,8 @@ func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message
 	}
 	startedAt := time.Now()
 	modelCtx, usageCapture := usagex.WithCapture(ctx)
-	text, usage, err := s.callOpenAICompatibleASRWithUsage(modelCtx, *config, payload.Filename, data)
-	s.recordMediaModelUsage(message, *config, StoreAIModelSourceGlobalDefault, "asr", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
+	text, usage, err := s.callOpenAICompatibleASRWithUsage(modelCtx, resolved.Config, payload.Filename, data)
+	s.recordMediaModelUsage(message, resolved.Config, resolved.Source, "asr", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
 	if err != nil && protocolErr != nil {
 		return "", fmt.Errorf("企微语音翻译失败: %v；ASR 调用失败: %w", protocolErr, err)
 	}

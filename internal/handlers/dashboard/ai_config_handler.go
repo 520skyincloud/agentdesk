@@ -17,7 +17,7 @@ import (
 )
 
 func AIConfigAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
+	if _, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -36,7 +36,7 @@ func AIConfigAnyList(ctx *gin.Context) {
 }
 
 func AIConfigAnyList_all(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
+	if _, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -57,7 +57,7 @@ func AIConfigGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
+	if _, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -71,7 +71,7 @@ func AIConfigGetBy(ctx *gin.Context) {
 }
 
 func AIConfigPostCreate(ctx *gin.Context) {
-	operator, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigCreate)
+	operator, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigCreate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -91,7 +91,7 @@ func AIConfigPostCreate(ctx *gin.Context) {
 }
 
 func AIConfigPostUpdate(ctx *gin.Context) {
-	operator, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigUpdate)
+	operator, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -110,7 +110,7 @@ func AIConfigPostUpdate(ctx *gin.Context) {
 }
 
 func AIConfigPostDelete(ctx *gin.Context) {
-	operator, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigDelete)
+	operator, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigDelete)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -129,7 +129,7 @@ func AIConfigPostDelete(ctx *gin.Context) {
 }
 
 func AIConfigPostUpdate_status(ctx *gin.Context) {
-	operator, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigUpdate)
+	operator, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -148,7 +148,7 @@ func AIConfigPostUpdate_status(ctx *gin.Context) {
 }
 
 func AIConfigPostUpdateSort(ctx *gin.Context) {
-	if _, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigUpdate); err != nil {
+	if _, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigUpdate); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -165,13 +165,13 @@ func AIConfigPostUpdateSort(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
-func requireAIConfigPlatformWrite(ctx *gin.Context, permission constants.Permission) (*dto.AuthPrincipal, error) {
+func requireAIConfigPlatformAccess(ctx *gin.Context, permission constants.Permission) (*dto.AuthPrincipal, error) {
 	operator, err := services.AuthService.RequirePermission(ctx, permission)
 	if err != nil {
 		return nil, err
 	}
 	if !operator.IsPlatformAccount {
-		return nil, errorsx.Forbidden("只有平台账号可以管理 AI 配置")
+		return nil, errorsx.Forbidden("只有平台账号可以查看或管理 AI 配置")
 	}
 	return operator, nil
 }

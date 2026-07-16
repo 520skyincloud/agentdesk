@@ -23,8 +23,8 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   debugResumeSkillDefinition,
   debugRunSkillDefinition,
-  fetchAIAgentsAll,
-  type AIAgent,
+  fetchRuntimeStrategyOptions,
+  type RuntimeStrategyOption,
   type SkillDebugResumePayload,
   type SkillDebugRunPayload,
   type SkillDebugRunResult,
@@ -125,7 +125,7 @@ function DebugDialogBody({
   const formId = `skill-debug-form-${skillCode}`
   const [running, setRunning] = useState(false)
   const [resuming, setResuming] = useState(false)
-  const [aiAgents, setAiAgents] = useState<AIAgent[]>([])
+  const [aiAgents, setAiAgents] = useState<RuntimeStrategyOption[]>([])
   const [result, setResult] = useState<SkillDebugRunResult | null>(null)
   const [resumeResult, setResumeResult] = useState<SkillDebugRunResult | null>(null)
   const [resumeMessage, setResumeMessage] = useState("")
@@ -152,16 +152,16 @@ function DebugDialogBody({
   const quickResumeActions = useMemo(() => getQuickResumeActions(t), [t])
 
   useEffect(() => {
-    async function loadAIAgents() {
+    async function loadRuntimeStrategies() {
       try {
-        const data = await fetchAIAgentsAll({ status: 1 })
+        const data = await fetchRuntimeStrategyOptions({ status: 1 })
         setAiAgents(data)
       } catch (error) {
-        console.error("Failed to load AI agents:", error)
+        console.error("Failed to load reception strategies:", error)
       }
     }
 
-    void loadAIAgents()
+    void loadRuntimeStrategies()
   }, [])
 
   useEffect(() => {
@@ -286,7 +286,7 @@ function DebugDialogBody({
             <form id={formId} onSubmit={handleSubmit(onSubmit)} className="space-y-4">
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 <Field data-invalid={!!errors.aiAgentId}>
-                  <FieldLabel>AI Agent</FieldLabel>
+                  <FieldLabel>{t("skillDefinition.selectAgent")}</FieldLabel>
                   <FieldContent>
                     <OptionCombobox
                       value={selectedAgentId}

@@ -150,6 +150,9 @@ func (s *aIConfigService) DeleteAIConfig(id int64, operator *dto.AuthPrincipal) 
 	if current.Status == enums.StatusOk {
 		return errorsx.Forbidden("启用中的AI配置不允许删除")
 	}
+	if repositories.TenantAIModelGrantRepository.Take(sqls.DB(), "ai_config_id = ? AND status = ?", id, enums.StatusOk) != nil {
+		return errorsx.Forbidden("AI配置仍授权给接入公司，请先撤销租户授权")
+	}
 	return repositories.AIConfigRepository.Updates(sqls.DB(), id, map[string]any{
 		"status":           enums.StatusDeleted,
 		"update_user_id":   operator.UserID,
@@ -170,12 +173,11 @@ func (s *aIConfigService) UpdateStatus(id int64, status enums.Status, operator *
 		return errorsx.InvalidParam("状态值不合法")
 	}
 
+	if status == enums.StatusDisabled && repositories.TenantAIModelGrantRepository.Take(sqls.DB(), "ai_config_id = ? AND status = ?", id, enums.StatusOk) != nil {
+		return errorsx.Forbidden("AI配置仍授权给接入公司，请先撤销租户授权")
+	}
+
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if status == enums.StatusOk {
-			if err := s.disableOthersByModelType(ctx, current.ModelType, id); err != nil {
-				return err
-			}
-		}
 		return repositories.AIConfigRepository.Updates(ctx.Tx, id, map[string]any{
 			"status":           status,
 			"update_user_id":   operator.UserID,
@@ -183,17 +185,6 @@ func (s *aIConfigService) UpdateStatus(id int64, status enums.Status, operator *
 			"updated_at":       time.Now(),
 		})
 	})
-}
-
-func (s *aIConfigService) disableOthersByModelType(ctx *sqls.TxContext, modelType enums.AIModelType, excludeID int64) error {
-	query := ctx.Tx.Model(&models.AIConfig{}).Where("model_type = ?", modelType)
-	if excludeID > 0 {
-		query = query.Where("id <> ?", excludeID)
-	}
-	return query.Updates(map[string]any{
-		"status":     int(enums.StatusDisabled),
-		"updated_at": time.Now(),
-	}).Error
 }
 
 func (s *aIConfigService) UpdateSort(ids []int64) error {
@@ -268,17 +259,6 @@ func (s *aIConfigService) buildAIConfigModel(req request.CreateAIConfigRequest) 
 		IntentDetectEnabled: req.IntentDetectEnabled && req.ModelType == enums.AIModelTypeLLM,
 		Remark:              strings.TrimSpace(req.Remark),
 	}, nil
-}
-
-func (s *aIConfigService) GetIntentDetectConfig(fallback models.AIConfig) models.AIConfig {
-	if item := repositories.AIConfigRepository.FindOne(sqls.DB(), sqls.NewCnd().
-		Eq("status", enums.StatusOk).
-		Eq("model_type", enums.AIModelTypeLLM).
-		Eq("intent_detect_enabled", true).
-		Asc("sort_no").Asc("id")); item != nil {
-		return *item
-	}
-	return fallback
 }
 
 func normalizeAIConfigAPIMode(value string) string {

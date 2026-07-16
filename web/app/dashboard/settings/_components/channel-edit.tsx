@@ -34,12 +34,12 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { useI18n } from "@/i18n/provider"
 import {
-  fetchAIAgentsAll,
   fetchChannel,
+  fetchRuntimeStrategyOptions,
   resetChannelUserTokenSecret,
-  type AIAgent,
   type AdminChannel,
   type CreateAdminChannelPayload,
+  type RuntimeStrategyOption,
 } from "@/lib/api/admin"
 import { Status } from "@/lib/generated/enums"
 
@@ -275,7 +275,7 @@ function ChannelEditDialogBody({
   const t = useI18n()
   const confirm = useConfirm()
   const [loading, setLoading] = useState(true)
-  const [agents, setAgents] = useState<AIAgent[]>([])
+  const [agents, setAgents] = useState<RuntimeStrategyOption[]>([])
   const [channel, setChannel] = useState<AdminChannel | null>(null)
   const schema = useMemo(() => createSchema(t), [t])
   const resolver = useMemo(
@@ -301,7 +301,7 @@ function ChannelEditDialogBody({
   useEffect(() => {
     let cancelled = false
     Promise.all([
-      fetchAIAgentsAll({ status: Status.Ok }),
+      fetchRuntimeStrategyOptions({ status: Status.Ok }),
       itemId ? fetchChannel(itemId) : Promise.resolve(null),
     ])
       .then(([agentList, item]) => {

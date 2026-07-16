@@ -126,7 +126,7 @@ func (s *miniprogramChatService) ensureConversation(req request.MiniprogramChatC
 
 	channel, aiAgent := s.resolveEntry(req)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
-		return nil, nil, errorsx.InvalidParam("AI Agent 不存在或未启用")
+		return nil, nil, errorsx.InvalidParam("接待策略不存在或未启用")
 	}
 	channelID := int64(0)
 	if channel != nil {

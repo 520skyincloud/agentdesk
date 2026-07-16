@@ -4,9 +4,9 @@ import test from "node:test"
 
 const pageSource = await readFile(new URL("./page.tsx", import.meta.url), "utf8")
 
-test("agent run log AI Agent filter follows AI Agent view permission", () => {
+test("agent run log strategy filter follows the internal strategy view permission", () => {
   assert.match(pageSource, /permissions\.includes\("aiAgent\.view"\)/)
-  assert.match(pageSource, /if \(!canViewAIAgents\)/)
-  assert.match(pageSource, /\.{3}\(canViewAIAgents/)
-  assert.match(pageSource, /const data = await fetchAIAgentsAll\(\)/)
+  assert.match(pageSource, /if \(!canViewRuntimeStrategies\)/)
+  assert.match(pageSource, /\.{3}\(canViewRuntimeStrategies/)
+  assert.match(pageSource, /const data = await fetchRuntimeStrategyOptions\(\)/)
 })

@@ -22,11 +22,7 @@ func init() {
 func DebugRunSkill(ctx context.Context, req request.SkillDebugRunRequest) (*response.SkillDebugRunResponse, error) {
 	aiAgent := svc.AIAgentService.Get(req.AIAgentID)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
-		return nil, errorsx.InvalidParam("AI Agent不存在或未启用")
-	}
-	aiConfig := svc.AIConfigService.Get(aiAgent.AIConfigID)
-	if aiConfig == nil {
-		return nil, errorsx.InvalidParam("AI Agent关联的AI配置不存在")
+		return nil, errorsx.InvalidParam("接待策略不存在或未启用")
 	}
 	var conversation *models.Conversation
 	if req.ConversationID > 0 {
@@ -34,7 +30,11 @@ func DebugRunSkill(ctx context.Context, req request.SkillDebugRunRequest) (*resp
 			return nil, errorsx.InvalidParam("会话不存在")
 		}
 	} else {
-		conversation = &models.Conversation{ID: req.ConversationID, AIAgentID: req.AIAgentID}
+		conversation = &models.Conversation{TenantID: aiAgent.TenantID, AIAgentID: req.AIAgentID}
+	}
+	aiConfig, err := resolveDebugRuntimeAIConfig(*aiAgent, conversation)
+	if err != nil {
+		return nil, err
 	}
 	message := models.Message{
 		ConversationID: req.ConversationID,
@@ -57,18 +57,14 @@ func DebugRunSkill(ctx context.Context, req request.SkillDebugRunRequest) (*resp
 func DebugResumeSkill(ctx context.Context, req request.SkillDebugResumeRequest) (*response.SkillDebugRunResponse, error) {
 	aiAgent := svc.AIAgentService.Get(req.AIAgentID)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
-		return nil, errorsx.InvalidParam("AI Agent不存在或未启用")
-	}
-	aiConfig := svc.AIConfigService.Get(aiAgent.AIConfigID)
-	if aiConfig == nil {
-		return nil, errorsx.InvalidParam("AI Agent关联的AI配置不存在")
+		return nil, errorsx.InvalidParam("接待策略不存在或未启用")
 	}
 	pendingInterrupt := svc.ConversationInterruptService.GetByCheckPointID(strings.TrimSpace(req.CheckPointID))
 	if pendingInterrupt == nil {
 		return nil, errorsx.InvalidParam("CheckPoint 不存在")
 	}
 	if pendingInterrupt.AIAgentID > 0 && pendingInterrupt.AIAgentID != req.AIAgentID {
-		return nil, errorsx.InvalidParam("CheckPoint 与 AI Agent 不匹配")
+		return nil, errorsx.InvalidParam("CheckPoint 与接待策略不匹配")
 	}
 	conversationID := req.ConversationID
 	if conversationID <= 0 {
@@ -82,7 +78,11 @@ func DebugResumeSkill(ctx context.Context, req request.SkillDebugResumeRequest) 
 		return nil, errorsx.InvalidParam("会话不存在")
 	}
 	if conversation.AIAgentID > 0 && conversation.AIAgentID != req.AIAgentID {
-		return nil, errorsx.InvalidParam("会话与 AI Agent 不匹配")
+		return nil, errorsx.InvalidParam("会话与接待策略不匹配")
+	}
+	aiConfig, err := resolveDebugRuntimeAIConfig(*aiAgent, conversation)
+	if err != nil {
+		return nil, err
 	}
 	resumeText := strings.TrimSpace(req.UserMessage)
 	summary, err := Service.Resume(ctx, applicationruntime.ResumeRequest{
@@ -117,6 +117,21 @@ func DebugResumeSkill(ctx context.Context, req request.SkillDebugResumeRequest) 
 		}
 	}
 	return buildSkillDebugResumeResponse(req, summary, conversationID), nil
+}
+
+func resolveDebugRuntimeAIConfig(aiAgent models.AIAgent, conversation *models.Conversation) (*models.AIConfig, error) {
+	if conversation != nil && conversation.ID > 0 {
+		resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(conversation.ID, svc.StoreAIModelUsageReplyLLM)
+		if err != nil {
+			return nil, err
+		}
+		return &resolved.Config, nil
+	}
+	resolved, err := svc.StoreAIModelSettingService.ResolveForTenant(aiAgent.TenantID, 0, svc.StoreAIModelUsageReplyLLM)
+	if err != nil {
+		return nil, err
+	}
+	return &resolved.Config, nil
 }
 
 func buildSkillDebugRunResponse(req request.SkillDebugRunRequest, summary *applicationruntime.Summary, skill *models.SkillDefinition) *response.SkillDebugRunResponse {

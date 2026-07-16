@@ -2466,8 +2466,25 @@ UserRoleChangeLog 的 TenantID、目标账号和操作人关系已由第 71A 批
 
 - `cmd/customer_audit_seed` 以固定测试登记身份创建/复用独立 Tenant，并调用真实 `TenantService.CreateTenant` 同步生成公司主管、默认综合客服组和 90 天邀请码。所有后续账号和业务数据继承该 TenantID。
 - 默认综合客服组用于租户基础组织，负责人为空；3 个测试业务客服组继续各自覆盖 34/33/33 个门店员工号并绑定测试客服组长。公司主管是 `tenant_admin`，不写成 `cs_team_leader`，避免角色和审计语义混用。
-- 平台 AIConfig 仍是全局模型配置，租户通过 AIAgent 引用。seed 可按现有配置 ID/名称选择启用 LLM，创建“丽斯未来酒店仿真测试智能客服”，Channel 绑定该 Agent，Conversation 写入该 AIAgentID；企微实例沿 Channel 间接继承，不增加旧独立 Agent 字段。
+- 平台 AIConfig 仍是全局模型配置。seed 可按现有配置 ID/名称选择启用 LLM，为测试租户创建 TenantAIModelGrant 和用途默认，并创建“丽斯未来酒店仿真测试接待策略”供 Channel、Conversation 保存稳定 AIAgentID；该内部策略的 `AIConfigID=0`，企微实例只在租户授权范围内使用默认或账号覆盖，不增加旧独立 Agent 字段。
 - 所有生成主体都以名称、用户名或备注标明测试用途。模型密钥不进入 seed 参数、报告、文档或 Git；缺少启用且完整的 LLM 配置时 seed 明确失败，不生成假绑定。
-- 当前验收基线：116 个租户账号、4 个客服组、12 个客服档案、100 个门店和企微员工号、500 个客户、36 个会话、135 条消息、21 条 assignment；派单任务为 9 待派发、12 待首响、6 处理中。59/73/154 完整性审计 0 违规。
+- 当前验收基线：116 个租户账号、4 个客服组、12 个客服档案、100 个门店和企微员工号、500 个客户、36 个会话、135 条消息、21 条 assignment；派单任务为 9 待派发、12 待首响、6 处理中。加入模型授权契约后以 61/74/153 完整性审计为准，结果为 0 违规。
 - cleanup 只删除匹配 batch marker 的丽斯未来测试租户及子数据，保留平台 AIConfig。该能力用于本地仿真和合并验收，不是生产初始化 migration，也不会把特定客户名称硬编码进生产启动过程。
 - 本批只改 seed、测试和文档；无数据模型、migration、API、DTO、权限、WebSocket、AI runtime 或计费变更。主线合并与原 MySQL migration 39 处置要求见 `docs/development/customer-audit-merge-handoff.md` 第 90 批。
+
+## 91. 当前实施检查点：平台模型授权与内部接待策略收口（2026-07-16）
+
+本批按“复用并升级现有能力，不增加平行模型管理链路”的原则重新审计 AIConfig、AIAgent、StoreAIModelSetting、回复运行时、企微员工号设置、知识调试和运行日志。结论是：AIConfig 属于平台模型接入；AIAgent 仍是渠道、会话、提示词、知识库、Skill、工具白名单和转人工策略共同引用的内部运行身份，不能删除表或兼容 ID，但原“智能客服”管理页把内部身份、模型选择和租户配置混在一起，已经不适合作为产品入口。
+
+- 平台继续通过原 `/dashboard/ai-configs` 管理供应商、模型、API 地址和密钥。AIConfig 全部读写接口同时要求对应权限与平台账号身份；租户账号即使持有历史脏权限也不能查看模型目录、凭据或具体接入参数。模型配置页和平台运行日志移入平台管理导航。
+- 新增 `TenantAIModelGrant` 作为接入公司到平台 AIConfig 的多选授权关系。平台管理员在“接入公司”三点菜单打开“模型授权”，可同时授权多个模型，并按回复、意图识别、媒体理解和语音识别用途设置租户默认；不复制密钥，不创建租户模型配置副本。
+- 复用并收窄 `StoreAIModelSetting`：它只保存租户默认或企微员工号的 `AIConfigID` 分配，不再持有 provider、base URL、API key、模型名、限额和连接测试结果。企微员工号“模型分配”只显示该租户已授权且类型匹配的模型；只有进入当前租户上下文的平台管理员可查看或修改。
+- 统一模型解析顺序为“企微员工号覆盖 -> 租户用途默认 -> 同类型已授权模型兜底”。任何层级都必须命中启用的 TenantAIModelGrant 和平台 AIConfig；不存在“未授权的系统全局默认”跨租户兜底。回复、意图识别、转人工摘要/确认、Skill 调试、媒体理解、语音识别和知识调试统一走该解析器。
+- AIAgent 的 `AIConfigID` 仅保留给 migration 59 读取历史绑定，在线模型解析不再读取该字段。新租户仍创建一条最小“默认接待策略”供 Channel/Conversation 保存稳定身份；只读 `/api/dashboard/ai-agent/list_all` 返回 `id/name/status`，用于渠道选择，不再暴露模型、提示词或工具配置。
+- 删除 `/dashboard/ai-agents` 页面及新增、编辑、删除、启停、排序接口；删除对应 request/response DTO、前端 API 和 `aiAgent.create/update/delete` 权限定义。兼容权限码 `aiAgent.view` 保留并在权限管理显示为“查看接待策略选项”，因为渠道设置仍需读取同租户内部策略；它不再代表独立管理模块。
+- 权限管理新增并同步四项平台权限：`tenantModelGrant.view/update`、`tenantModelAssignment.view/update`。前两项控制接入公司的模型授权和默认分配，后两项控制平台管理员进入租户后对企微员工号分配模型；权限全部在权限目录和角色派权链中可见，不存在 handler 内隐式角色授权。
+- 租户知识调试改为使用当前租户授权的回复模型，并在租户响应和页面中隐藏模型名称、prompt/completion token、TraceData 等平台诊断；平台账号保留诊断能力。AgentRunLog 继续是平台运行诊断，租户导航不显示，持久化 usage、token 和日志语义不变。
+- migration 59 删除已退役的 AIAgent 写权限及 RolePermission，清空历史 StoreAIModelSetting 中的凭据/模型快照字段，将可确定的公司/门店/员工号模型设置迁移为租户授权与用途分配，并从历史 AIAgent.AIConfigID 建立授权/默认值。归属无法确定的旧设置禁用且清密钥；重复 scope 去重；缺少内部接待策略的租户补一条默认策略。Migration 必须在备份恢复库先执行，不能把运行时继续依赖历史 AIConfigID 当作回滚方式。
+- 当前租户完整性登记新增 TenantAIModelGrant 表及其 Tenant/AIConfig 关系，并调整 StoreAIModelSetting 关系为租户/员工号/平台配置的最终契约。目标审计基线为 61 个 TenantID 模型、74 张必需表和 153 条关系；最终 SQLite/MySQL 实库结果记录在验收文档。
+
+本批不修改 AIUsageEvent、AIUsageGatewayCall、模型供应商适配器、token 统计或计费口径。合并时必须同时保留 AI 分支在回复、媒体、意图和 usage 上的最终语义，以及本批 TenantGrant/解析优先级和平台身份防线，禁止对 `models.go`、runtime、media 或多语言文件整文件选边。

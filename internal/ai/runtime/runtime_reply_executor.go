@@ -39,7 +39,7 @@ func newRuntimeReplyExecutor() *runtimeReplyExecutor {
 }
 
 func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInput) (*applicationruntime.Summary, error) {
-	resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(input.Conversation.ID, svc.StoreAIModelUsageReplyLLM, input.AIAgent.AIConfigID)
+	resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(input.Conversation.ID, svc.StoreAIModelUsageReplyLLM)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	if input.PendingInterrupt == nil {
 		return nil, fmt.Errorf("pending interrupt is required")
 	}
-	resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(input.Conversation.ID, svc.StoreAIModelUsageReplyLLM, input.AIAgent.AIConfigID)
+	resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(input.Conversation.ID, svc.StoreAIModelUsageReplyLLM)
 	if err != nil {
 		return nil, err
 	}

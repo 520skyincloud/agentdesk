@@ -53,7 +53,7 @@ test("channel editor supports current channels without reviving legacy channel f
   const source = await readFile(editDialogUrl, "utf8")
 
   assert.match(source, /"web" \| "wechat_mp" \| "wxwork_protocol"/)
-  assert.match(source, /fetchAIAgentsAll\(\{ status: Status\.Ok \}\)/)
+  assert.match(source, /fetchRuntimeStrategyOptions\(\{ status: Status\.Ok \}\)/)
   assert.match(source, /fetchChannel\(itemId\)/)
   assert.doesNotMatch(source, /WxWorkKFAccount|fetchWxWorkKFAccounts/)
   assert.doesNotMatch(source, /wecom-cli|wxwork_cli|bridgeToken/)

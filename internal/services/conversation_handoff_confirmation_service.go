@@ -214,7 +214,7 @@ func classifyHumanHandoffConfirmationWithModel(ctx context.Context, conversation
 	if text == "" {
 		return handoffConfirmationClassifyResult{Decision: humanHandoffConfirmationUnknown, Source: "empty"}
 	}
-	config, ok := resolveHandoffConfirmationAIConfig(conversation, payload)
+	config, ok := resolveHandoffConfirmationAIConfig(conversation)
 	if !ok {
 		return classifyHumanHandoffConfirmationWithFallback(text, "fallback:no_ai_config")
 	}
@@ -263,14 +263,15 @@ func classifyHumanHandoffConfirmationWithFallback(text string, source string) ha
 	}
 }
 
-func resolveHandoffConfirmationAIConfig(conversation *models.Conversation, payload handoffConfirmationPayload) (models.AIConfig, bool) {
-	var fallback models.AIConfig
-	if conversation != nil {
-		if resolved, err := StoreAIModelSettingService.ResolveForConversation(conversation.ID, StoreAIModelUsageIntentDetectLLM, 0); err == nil && resolved != nil && isUsableHandoffConfirmationAIConfig(&resolved.Config) {
-			fallback = resolved.Config
-		}
+func resolveHandoffConfirmationAIConfig(conversation *models.Conversation) (models.AIConfig, bool) {
+	if conversation == nil {
+		return models.AIConfig{}, false
 	}
-	config := AIConfigService.GetIntentDetectConfig(fallback)
+	resolved, err := StoreAIModelSettingService.ResolveForConversation(conversation.ID, StoreAIModelUsageIntentDetectLLM)
+	if err != nil || resolved == nil {
+		return models.AIConfig{}, false
+	}
+	config := resolved.Config
 	if !isUsableHandoffConfirmationAIConfig(&config) {
 		return models.AIConfig{}, false
 	}

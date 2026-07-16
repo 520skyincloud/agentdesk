@@ -46,7 +46,7 @@ func ReplyIntentConfigGetBy(ctx *gin.Context) {
 }
 
 func ReplyIntentConfigPostCreate(ctx *gin.Context) {
-	user, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigCreate)
+	user, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigCreate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -65,7 +65,7 @@ func ReplyIntentConfigPostCreate(ctx *gin.Context) {
 }
 
 func ReplyIntentConfigPostUpdate(ctx *gin.Context) {
-	user, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigUpdate)
+	user, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -83,7 +83,7 @@ func ReplyIntentConfigPostUpdate(ctx *gin.Context) {
 }
 
 func ReplyIntentConfigPostDelete(ctx *gin.Context) {
-	if _, err := requireAIConfigPlatformWrite(ctx, constants.PermissionAIConfigDelete); err != nil {
+	if _, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigDelete); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

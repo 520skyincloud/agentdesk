@@ -26,6 +26,7 @@ import {
   getKnowledgeRetrieveChannelLabel,
   getKnowledgeRetrieveSceneLabel,
 } from "@/lib/knowledge-i18n"
+import { useAuth } from "@/components/auth-provider"
 
 type RetrieveLogDetailDrawerProps = {
   open: boolean
@@ -77,6 +78,8 @@ export function RetrieveLogDetailDrawer({
   onOpenChange,
 }: RetrieveLogDetailDrawerProps) {
   const t = useI18n()
+  const { session } = useAuth()
+  const showModelDiagnostics = Boolean(session?.isPlatformAccount)
   const [loading, setLoading] = useState(false)
   const [detail, setDetail] = useState<KnowledgeRetrieveLogDetail | null>(null)
 
@@ -191,9 +194,13 @@ export function RetrieveLogDetailDrawer({
                   <Metric label={t("knowledge.retrieveMs")} value={`${detail.log.retrieveMs} ms`} />
                   <Metric label={t("knowledge.generateMs")} value={`${detail.log.generateMs} ms`} />
                   <Metric label={t("knowledge.totalMs")} value={`${detail.log.latencyMs} ms`} />
-                  <Metric label="Prompt Tokens" value={detail.log.promptTokens} />
-                  <Metric label="Completion Tokens" value={detail.log.completionTokens} />
-                  <Metric label={t("knowledge.model")} value={detail.log.modelName || "-"} mono />
+                  {showModelDiagnostics ? (
+                    <>
+                      <Metric label="Prompt Tokens" value={detail.log.promptTokens} />
+                      <Metric label="Completion Tokens" value={detail.log.completionTokens} />
+                      <Metric label={t("knowledge.model")} value={detail.log.modelName || "-"} mono />
+                    </>
+                  ) : null}
                   <Metric label={t("knowledge.sessionId")} value={detail.log.sessionId || "-"} mono />
                 </div>
               </section>
@@ -235,14 +242,16 @@ export function RetrieveLogDetailDrawer({
                 </div>
               </section>
 
-              <section className="space-y-3">
-                <h3 className="text-sm font-semibold">TraceData</h3>
-                <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.12)]">
-                  <pre className="overflow-x-auto text-xs leading-6 text-slate-100">
-                    {traceData ? JSON.stringify(traceData, null, 2) : detail.log.traceData || "-"}
-                  </pre>
-                </div>
-              </section>
+              {showModelDiagnostics ? (
+                <section className="space-y-3">
+                  <h3 className="text-sm font-semibold">TraceData</h3>
+                  <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 shadow-[0_10px_24px_rgba(15,23,42,0.12)]">
+                    <pre className="overflow-x-auto text-xs leading-6 text-slate-100">
+                      {traceData ? JSON.stringify(traceData, null, 2) : detail.log.traceData || "-"}
+                    </pre>
+                  </div>
+                </section>
+              ) : null}
             </div>
           )}
         </ScrollArea>

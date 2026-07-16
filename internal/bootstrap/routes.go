@@ -110,7 +110,9 @@ func registerDashboardTenantRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.TenantGetBy)
 	group.POST("/create", dashboard.TenantPostCreate)
 	group.Any("/list", dashboard.TenantAnyList)
+	group.POST("/model_access", dashboard.TenantPostModelAccess)
 	group.POST("/update", dashboard.TenantPostUpdate)
+	group.POST("/update_model_access", dashboard.TenantPostUpdateModelAccess)
 	group.POST("/update_status", dashboard.TenantPostUpdateStatus)
 }
 
@@ -129,9 +131,7 @@ func registerDashboardCompanyRoutes(group *gin.RouterGroup) {
 	group.POST("/create", dashboard.CompanyPostCreate)
 	group.POST("/delete", dashboard.CompanyPostDelete)
 	group.Any("/list", dashboard.CompanyAnyList)
-	group.POST("/model_settings", dashboard.CompanyPostModel_settings)
 	group.POST("/update", dashboard.CompanyPostUpdate)
-	group.POST("/update_model_settings", dashboard.CompanyPostUpdate_model_settings)
 	group.POST("/update_status", dashboard.CompanyPostUpdate_status)
 }
 
@@ -274,6 +274,7 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 	group.Any("/list", dashboard.WxWorkProtocolInstanceAnyList)
 	group.POST("/login_qrcode", dashboard.WxWorkProtocolInstancePostLogin_qrcode)
 	group.POST("/logout", dashboard.WxWorkProtocolInstancePostLogout)
+	group.POST("/model_assignments", dashboard.WxWorkProtocolInstancePostModelAssignments)
 	group.POST("/recover", dashboard.WxWorkProtocolInstancePostRecover)
 	group.POST("/resolve_login_binding", dashboard.WxWorkProtocolInstancePostResolve_login_binding)
 	group.POST("/room_list", dashboard.WxWorkProtocolInstancePostRoom_list)
@@ -288,10 +289,8 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 	group.POST("/sync_friend_requests", dashboard.WxWorkProtocolInstancePostSync_friend_requests)
 	group.POST("/sync_profile", dashboard.WxWorkProtocolInstancePostSync_profile)
 	group.POST("/update", dashboard.WxWorkProtocolInstancePostUpdate)
-	group.POST("/store_ai_model_settings", dashboard.WxWorkProtocolInstancePostStore_ai_model_settings)
-	group.POST("/test_store_ai_model_setting", dashboard.WxWorkProtocolInstancePostTest_store_ai_model_setting)
-	group.POST("/update_store_ai_model_settings", dashboard.WxWorkProtocolInstancePostUpdate_store_ai_model_settings)
 	group.POST("/update_ai_settings", dashboard.WxWorkProtocolInstancePostUpdate_ai_settings)
+	group.POST("/update_model_assignments", dashboard.WxWorkProtocolInstancePostUpdateModelAssignments)
 	group.POST("/verify_login", dashboard.WxWorkProtocolInstancePostVerify_login)
 }
 
@@ -337,14 +336,7 @@ func registerDashboardAgentTeamScheduleRoutes(group *gin.RouterGroup) {
 }
 
 func registerDashboardAIAgentRoutes(group *gin.RouterGroup) {
-	group.GET("/:id", dashboard.AIAgentGetBy)
-	group.POST("/create", dashboard.AIAgentPostCreate)
-	group.POST("/delete", dashboard.AIAgentPostDelete)
-	group.Any("/list", dashboard.AIAgentAnyList)
 	group.GET("/list_all", dashboard.AIAgentGetList_all)
-	group.POST("/update", dashboard.AIAgentPostUpdate)
-	group.POST("/update_sort", dashboard.AIAgentPostUpdate_sort)
-	group.POST("/update_status", dashboard.AIAgentPostUpdate_status)
 }
 
 func registerDashboardAIConfigRoutes(group *gin.RouterGroup) {

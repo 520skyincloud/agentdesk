@@ -4428,30 +4428,30 @@ git diff --check
 ### 实施结果
 
 - `cmd/customer_audit_seed` 不再把丽斯未来仿真数据挂到 `legacy-default`，而是通过现有 `TenantService.CreateTenant` 创建或复用独立测试租户。公司、主管、邀请码、默认综合客服组、3 个业务客服组、12 个客服、100 个门店员工、100 个门店/企微员工号、500 个客户及会话派单数据都继承该 TenantID。
-- 租户简称、主管账号、智能客服、门店、员工、客户、渠道及备注均明确包含“测试”或“仿真测试，不用于生产”。`t_company` 继续作为 Store/StoreStaffBinding 需要的租户内运营公司锚点，不是第二个租户根。
-- seed 复用平台已有启用 LLM `AIConfig`，支持 `--ai-config-id`、`--ai-config-name` 或默认启用 LLM。它只创建租户级 `AIAgent` 并让 Channel 引用；100 个企微员工号通过 Channel 间接使用该 Agent，不恢复已废弃的企微独立 Agent 字段。
-- AIConfig 是平台全局配置，seed 不复制、不改写、不输出 API Key。当前本地验收库从原 8083 环境安全复制 `deepseek / deepseek-v4-flash` 数据行后，以 `--ai-config-name deepseek` 绑定；密钥只存在本地数据库，不进入源码、文档、日志或 Git。
+- 租户简称、主管账号、内部接待策略、门店、员工、客户、渠道及备注均明确包含“测试”或“仿真测试，不用于生产”。`t_company` 继续作为 Store/StoreStaffBinding 需要的租户内运营公司锚点，不是第二个租户根。
+- seed 复用平台已有启用 LLM `AIConfig`，支持 `--ai-config-id`、`--ai-config-name` 或默认启用 LLM；它为租户建立 TenantAIModelGrant 和用途默认，并创建租户级内部 `AIAgent` 供 Channel/Conversation 保存稳定身份。100 个企微员工号只在租户授权池内继承默认或使用账号覆盖，不恢复已废弃的企微独立 Agent 字段。
+- AIConfig 是平台全局配置，seed 不复制、不改写、不输出 API Key。当前本地验收库从原 8083 环境安全复制 `deepseek / deepseek-v4-flash` 数据行后，以 `--ai-config-name deepseek` 建立授权和默认；密钥只存在本地数据库，不进入源码、文档、日志或 Git，`AIAgent.AIConfigID` 保持 0。
 - 仿真基线保持 36 个会话、135 条消息、21 条 assignment、27 条需人工跟进；所有会话新增真实 AIAgentID。seed 首次执行、重复执行、完整清理均通过，清理不会删除复用的全局 AIConfig。
 - 本批没有 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket、权限码、AI 回复、token、usage 或计费语义变化。
 
 ### 验收证据
 
 - `/tmp/agentdesk-integration.db` 已在写入前备份到 `/tmp/agentdesk-integration.pre-lissi-20260715.db`；原 8083 Docker MySQL 只读查询，未执行 migration 或写操作。
-- seed report：独立租户 1、主管 1、有效邀请码 1、默认综合组 1、测试智能客服 1、业务组 3、客服档案 12、门店员工/企微实例 100、客户 500，核心与派单基线全部为 true。
-- tenant-integrity-audit：59 个 TenantID 模型、73 张必需表、154 条关系、0 违规。默认综合组负责人保持为空；公司主管不伪装成客服组长，3 个业务组各自绑定测试客服组长。
-- 浏览器：接入公司显示丽斯未来测试及 12 客服/100 门店/4 客服组；用户管理共 116 个租户账号；智能客服唯一记录绑定 deepseek；客服档案显示 3 个业务组各 9 条待回复；派单页显示 9 待派发、12 待首响、6 处理中；客户页显示 500 条测试客户。
+- seed report：独立租户 1、主管 1、有效邀请码 1、默认综合组 1、内部接待策略 1、租户模型授权与用途默认有效、业务组 3、客服档案 12、门店员工/企微实例 100、客户 500，核心与派单基线全部为 true。
+- tenant-integrity-audit：61 个 TenantID 模型、74 张必需表、153 条关系、0 违规。默认综合组负责人保持为空；公司主管不伪装成客服组长，3 个业务组各自绑定测试客服组长。
+- 浏览器：接入公司显示丽斯未来测试及 12 客服/100 门店/4 客服组，三点菜单可见多模型授权；用户管理共 116 个租户账号；渠道和 Skill 调试显示内部测试接待策略；客服档案显示 3 个业务组各 9 条待回复；派单页显示 9 待派发、12 待首响、6 处理中；客户页显示 500 条测试客户。租户主管看不到平台模型配置和运行日志。
 
 ### 合并 main 的强制步骤
 
 1. 主线只合并 `codex/tenant-ai-integration`，不要再分别合并 `codex/customer-audit` 和 `codex/ai-billing`，否则会重复引入同一提交并增加共享文件冲突。
 2. 合并前执行 `git fetch origin`，重新核对 `origin/main`、`origin/codex/customer-audit`、`origin/codex/ai-billing` 和本集成分支。任一源分支前进时，先增量合入集成分支、处理同文件语义，再重跑全门禁。
-3. 重新检查 migration 最大版本和重复号，当前集成分支最高为 58。重点语义合并 `internal/models/models.go`、migration 注册、DTO/enum、路由、WebSocket payload、message/conversation service、`web/lib/api`、导航和多语言资源，不能用整文件覆盖任一分支。
+3. 重新检查 migration 最大版本和重复号，当前集成分支最高为 59。重点语义合并 `internal/models/models.go`、migration 注册、DTO/enum、路由、WebSocket payload、message/conversation service、`web/lib/api`、导航和多语言资源，不能用整文件覆盖任一分支。
 4. 生产数据升级前先对原 MySQL 做可恢复备份，并恢复到独立临时 MySQL 8.4。所有 migration、回填和完整性审计先在临时副本执行，禁止直接拿原数据卷试跑。
 5. 原 8083 MySQL 当前 migration 39 失败，已知冲突为 `agent team 1 leader tenant 0 conflicts with team tenant 1`。必须在临时副本中人工确认该组长和客服组的真实公司归属，形成明确映射/修复记录后再重跑；不得把冲突数据强行归到 legacy tenant，也不得跳过、伪造成功或删除 migration 记录。
-6. 临时副本必须从 39 继续跑到当前最高 migration，随后执行 59/73/154 tenant-integrity-audit、关键租户隔离测试和业务抽样。确认 0 违规后，才制定生产维护窗口和同样的可回滚步骤。
+6. 临时副本必须从 39 继续跑到当前最高 migration，随后执行 61/74/153 tenant-integrity-audit、关键租户隔离测试和业务抽样。确认 0 违规后，才制定生产维护窗口和同样的可回滚步骤。
 7. 部署顺序先后端模型/AutoMigrate/DML migration 与 API，再前端。公开注册继续保持 `tenantRegistration.enabled=false`；本批测试邀请码和测试账号不构成开放注册决定。
 8. AIConfig API Key、邀请码明文、测试密码、SQLite/MySQL 数据文件和 `/tmp` 配置禁止提交。生产模型配置由目标环境安全注入；seed 只按 ID/名称引用现有配置。
-9. 回滚代码不会回退 AutoMigrate 列和 migration 34-58 的数据写入。回滚前保留数据库备份、关闭公开注册并按批次制定数据回退；丽斯未来仿真数据可用 seed cleanup 独立移除，但 cleanup 只允许作用于带对应 TEST_SEED marker 的测试租户。
+9. 回滚代码不会回退 AutoMigrate 列和 migration 34-59 的数据写入。回滚前保留数据库备份、关闭公开注册并按批次制定数据回退；模型授权表和已清理凭据必须保留，不能把回滚实现为恢复旧租户 API Key 或 AIAgent 模型选择。丽斯未来仿真数据可用 seed cleanup 独立移除，但 cleanup 只允许作用于带对应 TEST_SEED marker 的测试租户。
 
 ### 验证命令
 
@@ -4467,3 +4467,52 @@ go run ./cmd/customer_audit_seed --config <isolated-config> --action report
 go run ./cmd/tenant_integrity_audit --config <isolated-config> --pretty
 git diff --check
 ```
+
+## 第 91 批：平台模型授权、AI Agent 管理退役与运行时收口（2026-07-16）
+
+### 审计结论与产品边界
+
+- 真实调用链确认 `AIAgent` 仍被 Channel、Conversation、回复提示词、知识/Skill/工具白名单、转人工策略、run log 和 checkpoint 引用。不能删除 model、repository、`AIAgentID` 或只读列表；删除这些兼容契约会直接破坏原有渠道和会话。
+- 原 `/dashboard/ai-agents` 管理页没有继续存在的产品职责：平台模型接入已由 AIConfig 管理，租户模型范围由授权关系管理，员工号覆盖由企微账号管理。页面及 create/update/delete/status/sort 路由、handler、DTO、前端 API 和三项写权限已删除。
+- 租户总览中与“会话管理”重复的“员工号智能客服”快捷项一并删除；旧平台“接入渠道”快捷项改为 `/dashboard/settings` 的“接入设置”，不再把公司主管导向无权限平台页面。
+- 内部对象统一显示为“接待策略”。`aiAgent.view` 作为渠道下拉所需只读权限保留，权限管理中明确命名“查看接待策略选项”；`/api/dashboard/ai-agent/list_all` 只返回 `id/name/status`。AIAgent 表内 `AIConfigID` 只供 migration 59 读取历史值，运行时不得再把它当模型选择来源。
+
+### 模型授权、分配与运行时
+
+- AIConfig 继续是平台全局模型接入，页面和全部读写 handler 都要求平台账号。平台管理员在接入公司行的三点菜单可多选授权模型，并设置回复、意图识别、媒体理解、语音识别用途默认值。
+- 新增 TenantAIModelGrant；StoreAIModelSetting 升级为只保存租户默认或企微员工号覆盖的分配关系。旧 company/store API key 编辑器、员工号模型连接测试和相应 DTO/API 已删除，租户不再复制或保存平台凭据。
+- 企微员工号“模型分配”仅可选择当前租户已授权且模型类型匹配的配置。统一解析顺序为员工号覆盖、租户默认、授权池兜底；撤销仍被默认或员工号使用的授权会拒绝。
+- Reply Runtime、Intent Detector、转人工摘要/确认、Skill Debug、Media Understanding、ASR 和 Knowledge Debug 已切到同一租户解析器。旧 `memory_summary_llm` 没有真实独立调用，已从用途目录移除；真实语音识别链补入 `speech_recognition`。
+- 租户知识调试使用租户授权回复模型，但 response/UI 隐藏模型名、prompt/completion token 和 TraceData；平台账号保留。存储的知识检索日志、AI usage、token 和计费数据不改。
+
+### 权限、数据与迁移
+
+- 新权限 `tenantModelGrant.view/update`、`tenantModelAssignment.view/update` 均为 platform scope，已加入权限常量、角色默认权限和权限国际化。handler 还校验 `IsPlatformAccount`；账号分配接口同时要求平台管理员已进入目标租户上下文。
+- migration 59 删除 `aiAgent.create/update/delete` 及其角色关系，迁移历史 StoreAIModelSetting 凭据/模型快照为 AIConfig 引用、TenantGrant 和用途分配，无法确定租户的旧行禁用并清密钥；历史 AIAgent 模型绑定迁移为租户授权/默认后不再参与在线解析。
+- AutoMigrate 新增 `t_tenant_ai_model_grant`。完整性审计目标调整为 61 个 TenantID 模型、74 张必需表、153 条关系。migration 59 创建时已核对 `origin/main@e67e207`、`origin/codex/customer-audit@c706815`、`origin/codex/ai-billing@f2d2da4`，三条远端均无重复编号。
+- 丽斯未来 seed 现在显式创建 TenantGrant 与租户用途默认，AIAgent.AIConfigID 保持 0；可见内部名称改为“丽斯未来酒店仿真测试接待策略”。报告校验租户默认模型和授权，不再以智能客服页/AIAgent 模型字段作为成功依据。
+
+### 主要文件与共享风险
+
+```text
+internal/models/models.go
+internal/migration/000059_migrate_tenant_ai_model_access.go
+internal/pkg/constants/ai_model.go
+internal/pkg/constants/auth.go
+internal/services/store_ai_model_setting_service.go
+internal/services/ai_agent_service.go
+internal/ai/runtime/runtime_reply_executor.go
+internal/ai/runtime/executor/intent_model_detector.go
+internal/services/media_understanding_service.go
+internal/handlers/dashboard/tenant_ai_model_handler.go
+internal/handlers/dashboard/knowledge_retrieve_handler.go
+web/app/dashboard/channels/_components/model-access.tsx
+web/components/wxwork-protocol/wxwork-model-assignment-dialog.tsx
+web/lib/navigation.tsx
+cmd/customer_audit_seed/main.go
+```
+
+- `models.go`、runtime、media、intent、usage repository、routes、API client、导航和双语资源都是共享高风险文件。最终合并必须逐字段/逐方法保留双方语义：本批负责租户授权与平台边界，AI 分支负责供应商调用、usage/token 和计费；不得整文件覆盖。
+- 建议合并顺序：model/AutoMigrate/TenantGrant repository -> migration 59 与权限同步 -> 统一解析 service -> runtime/媒体/意图接线 -> handler/API/UI -> seed 与文档。部署顺序仍为后端迁移/API 先于前端。
+- 回滚 UI 和路由不会恢复旧模型选择；migration 59 已清理的旧明文凭据和 AIAgent 写权限不会自动回填。紧急回滚应保留 TenantGrant、分配表和已清理数据，恢复上一版本前必须从数据库备份制定独立映射，禁止重新启用旧租户凭据编辑器。
+- 本批不提交 `docs/generated/`、数据库、密钥或临时配置。正式合并前再次 fetch，检查 migration 编号与共享文件同改，并按验收文档重跑 SQLite/MySQL、全仓测试和浏览器原功能回归。

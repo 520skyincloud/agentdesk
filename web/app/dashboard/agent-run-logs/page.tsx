@@ -11,9 +11,9 @@ import { Button } from "@/components/ui/button"
 import { AgentRunLogDetailDialog } from "./_components/detail"
 import {
   fetchAgentRunLogs,
-  fetchAIAgentsAll,
-  type AIAgent,
+  fetchRuntimeStrategyOptions,
   type AgentRunLog,
+  type RuntimeStrategyOption,
 } from "@/lib/api/admin"
 import { useI18n } from "@/i18n/provider"
 import { formatDateTime } from "@/lib/utils"
@@ -94,39 +94,39 @@ function actionBadgeVariant(action: string) {
 export default function DashboardAgentRunLogsPage() {
   const t = useI18n()
   const { session } = useAuth()
-  const canViewAIAgents = session?.permissions.includes("aiAgent.view") ?? false
+  const canViewRuntimeStrategies = session?.permissions.includes("aiAgent.view") ?? false
   const [detailOpen, setDetailOpen] = useState(false)
   const [activeLogId, setActiveLogId] = useState<number | null>(null)
-  const [aiAgents, setAiAgents] = useState<AIAgent[]>([])
+  const [runtimeStrategies, setRuntimeStrategies] = useState<RuntimeStrategyOption[]>([])
   const actionOptions = useMemo(() => getActionOptions(t), [t])
   const finalStatusOptions = useMemo(() => getFinalStatusOptions(t), [t])
   const hitlStatusOptions = useMemo(() => getHitlStatusOptions(t), [t])
 
-  const aiAgentOptions = useMemo(
+  const runtimeStrategyOptions = useMemo(
     () => [
       { value: "all", label: t("agentRunLog.allAgents") },
-      ...aiAgents.map((item) => ({
+      ...runtimeStrategies.map((item) => ({
         value: String(item.id),
         label: item.name,
       })),
     ],
-    [aiAgents, t]
+    [runtimeStrategies, t]
   )
 
   useEffect(() => {
-    if (!canViewAIAgents) {
+    if (!canViewRuntimeStrategies) {
       return
     }
-    async function loadAIAgents() {
+    async function loadRuntimeStrategies() {
       try {
-        const data = await fetchAIAgentsAll()
-        setAiAgents(data)
+        const data = await fetchRuntimeStrategyOptions()
+        setRuntimeStrategies(data)
       } catch (error) {
         toast.error(error instanceof Error ? error.message : t("agentRunLog.loadAgentsFailed"))
       }
     }
-    void loadAIAgents()
-  }, [canViewAIAgents, t])
+    void loadRuntimeStrategies()
+  }, [canViewRuntimeStrategies, t])
 
   return (
     <>
@@ -190,14 +190,14 @@ export default function DashboardAgentRunLogsPage() {
             emptyText: t("agentRunLog.emptyStatus"),
             className: "min-w-0",
           },
-          ...(canViewAIAgents
+          ...(canViewRuntimeStrategies
             ? [{
                 name: "aiAgentId",
                 label: t("agentRunLog.selectAgent"),
                 type: "select" as const,
                 defaultValue: "all",
                 allValue: "all",
-                options: aiAgentOptions,
+                options: runtimeStrategyOptions,
                 placeholder: t("agentRunLog.selectAgent"),
                 searchPlaceholder: t("agentRunLog.searchAgent"),
                 emptyText: t("agentRunLog.emptyAgent"),

@@ -44,6 +44,10 @@ func TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation(t *testing.T) {
 	if result.DefaultAgentTeam.TenantID != result.Tenant.ID || !result.DefaultAgentTeam.IsDefault {
 		t.Fatalf("unexpected default agent team: %+v", result.DefaultAgentTeam)
 	}
+	internalAgent := repositories.AIAgentRepository.FindOne(db, sqls.NewCnd().Eq("tenant_id", result.Tenant.ID).Eq("status", enums.StatusOk))
+	if internalAgent == nil || internalAgent.AIConfigID != 0 || internalAgent.Name != "默认接待策略" {
+		t.Fatalf("unexpected internal runtime identity: %+v", internalAgent)
+	}
 	if result.Invitation.TenantID != result.Tenant.ID || result.Invitation.Version != 1 || result.Invitation.Status != enums.StatusOk {
 		t.Fatalf("unexpected invitation: %+v", result.Invitation)
 	}
@@ -409,6 +413,7 @@ func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 		&models.UserRole{},
 		&models.UserRoleChangeLog{},
 		&models.AgentTeam{},
+		&models.AIAgent{},
 		&models.AgentProfile{},
 		&models.Store{},
 		&models.Conversation{},

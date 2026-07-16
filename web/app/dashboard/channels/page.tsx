@@ -4,6 +4,7 @@ import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import {
   Building2Icon,
+  BrainCircuitIcon,
   Clock3Icon,
   HeadphonesIcon,
   LogInIcon,
@@ -44,6 +45,7 @@ import {
   TenantEditDialog,
   type TenantFormPayload,
 } from "./_components/edit"
+import { TenantModelAccessDialog } from "./_components/model-access"
 
 function getStatusLabel(status: Status, t: (key: string) => string) {
   return t(status === Status.Ok ? "status.ok" : "status.disabled")
@@ -74,43 +76,57 @@ export default function DashboardChannelsPage() {
   const canUpdate = permissions.has("tenant.update")
   const canUpdateStatus = permissions.has("tenant.updateStatus")
   const canSwitch = permissions.has("tenant.switch") && Boolean(session?.canSwitchTenant)
-  const showActionsColumn = canUpdate || canSwitch
+  const canViewModelAccess = permissions.has("tenantModelGrant.view")
+  const canUpdateModelAccess = permissions.has("tenantModelGrant.update")
+  const showActionsColumn = canUpdate || canSwitch || canViewModelAccess
   const [creationResult, setCreationResult] =
     useState<CreateTenantResult | null>(null)
+  const [modelAccessTenant, setModelAccessTenant] =
+    useState<AdminTenant | null>(null)
 
   const rowActions = useMemo<DashboardCrudRowAction<AdminTenant>[]>(
-    () =>
-      canSwitch
-        ? [
-            {
-              key: "enter-tenant",
-              label: (item) =>
-                session?.activeTenantId === item.id
-                  ? t("tenant.currentTenant")
-                  : t("tenant.enterTenant"),
-              icon: <LogInIcon />,
-              disabled: (item) =>
-                item.status !== Status.Ok || session?.activeTenantId === item.id,
-              run: async ({ item }) => {
-                const previousTenantId = session?.activeTenantId ?? 0
-                const previousTenantName = session?.activeTenantName ?? ""
-                try {
-                  setActiveTenantId(item.id, item.shortName)
-                  await refreshProfile({ preserveSessionOnError: true })
-                  toast.success(t("tenant.enteredTenant", { name: item.shortName }))
-                  router.push("/dashboard")
-                  router.refresh()
-                } catch (error) {
-                  setActiveTenantId(previousTenantId, previousTenantName)
-                  await refreshProfile({ preserveSessionOnError: true }).catch(() => undefined)
-                  throw error
-                }
-              },
-            },
-          ]
-        : [],
+    () => {
+      const actions: DashboardCrudRowAction<AdminTenant>[] = []
+      if (canViewModelAccess) {
+        actions.push({
+          key: "model-access",
+          label: "模型授权",
+          icon: <BrainCircuitIcon />,
+          run: async ({ item }) => setModelAccessTenant(item),
+        })
+      }
+      if (canSwitch) {
+        actions.push({
+          key: "enter-tenant",
+          label: (item) =>
+            session?.activeTenantId === item.id
+              ? t("tenant.currentTenant")
+              : t("tenant.enterTenant"),
+          icon: <LogInIcon />,
+          disabled: (item) =>
+            item.status !== Status.Ok || session?.activeTenantId === item.id,
+          run: async ({ item }) => {
+            const previousTenantId = session?.activeTenantId ?? 0
+            const previousTenantName = session?.activeTenantName ?? ""
+            try {
+              setActiveTenantId(item.id, item.shortName)
+              await refreshProfile({ preserveSessionOnError: true })
+              toast.success(t("tenant.enteredTenant", { name: item.shortName }))
+              router.push("/dashboard")
+              router.refresh()
+            } catch (error) {
+              setActiveTenantId(previousTenantId, previousTenantName)
+              await refreshProfile({ preserveSessionOnError: true }).catch(() => undefined)
+              throw error
+            }
+          },
+        })
+      }
+      return actions
+    },
     [
       canSwitch,
+      canViewModelAccess,
       refreshProfile,
       router,
       session?.activeTenantId,
@@ -408,6 +424,14 @@ export default function DashboardChannelsPage() {
         result={creationResult}
         onOpenChange={(open) => {
           if (!open) setCreationResult(null)
+        }}
+      />
+      <TenantModelAccessDialog
+        open={Boolean(modelAccessTenant)}
+        tenant={modelAccessTenant}
+        canUpdate={canUpdateModelAccess}
+        onOpenChange={(open) => {
+          if (!open) setModelAccessTenant(null)
         }}
       />
     </>

@@ -114,7 +114,7 @@ export function AgentRunLogDetailDialog({
               { label: t("agentRunLog.logId"), value: String(activeLog.id) },
               { label: t("agentRunLog.conversationId"), value: String(activeLog.conversationId || "-") },
               { label: t("agentRunLog.messageId"), value: String(activeLog.messageId || "-") },
-              { label: "AI Agent", value: String(activeLog.aiAgentId || "-") },
+              { label: t("agentRunLog.selectAgent"), value: String(activeLog.aiAgentId || "-") },
             ]}
           />
 

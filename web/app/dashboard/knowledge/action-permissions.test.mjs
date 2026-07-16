@@ -2,11 +2,13 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import test from "node:test"
 
-const [pageSource, baseListSource, documentListSource, faqListSource, zhSource, enSource] = await Promise.all([
+const [pageSource, baseListSource, documentListSource, faqListSource, debugPanelSource, retrieveLogDetailSource, zhSource, enSource] = await Promise.all([
   readFile(new URL("./page.tsx", import.meta.url), "utf8"),
   readFile(new URL("./_components/knowledge-base-list.tsx", import.meta.url), "utf8"),
   readFile(new URL("./_components/document-list.tsx", import.meta.url), "utf8"),
   readFile(new URL("./_components/faq-list.tsx", import.meta.url), "utf8"),
+  readFile(new URL("./_components/debug-panel.tsx", import.meta.url), "utf8"),
+  readFile(new URL("./_components/retrieve-log-detail.tsx", import.meta.url), "utf8"),
   readFile(new URL("../../../messages/zh-CN.json", import.meta.url), "utf8"),
   readFile(new URL("../../../messages/en-US.json", import.meta.url), "utf8"),
 ])
@@ -71,4 +73,13 @@ test("knowledge FAQ import, CRUD and rebuild use FAQ action permissions", () => 
   assert.match(faqListSource, /showActionsColumn=\{canUpdate \|\| canDelete\}/)
   assert.match(faqListSource, /rowActions=\{canUpdate \? \[/)
   assert.match(faqListSource, /\{canCreate \? <FAQImportDialog/)
+})
+
+test("tenant knowledge diagnostics do not expose platform model details", () => {
+  assert.match(debugPanelSource, /const showModelDiagnostics = Boolean\(session\?\.isPlatformAccount\)/)
+  assert.match(debugPanelSource, /showModelDiagnostics \? ` · \$\{answerResult\.modelName/)
+  assert.match(retrieveLogDetailSource, /const showModelDiagnostics = Boolean\(session\?\.isPlatformAccount\)/)
+  assert.match(retrieveLogDetailSource, /showModelDiagnostics \? \(/)
+  assert.match(retrieveLogDetailSource, /<Metric label="Prompt Tokens"/)
+  assert.match(retrieveLogDetailSource, /<h3 className="text-sm font-semibold">TraceData<\/h3>/)
 })

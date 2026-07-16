@@ -108,6 +108,22 @@ func (s *tenantService) CreateTenant(req request.CreateTenantRequest, operator *
 		if err := repositories.AgentTeamRepository.Create(ctx.Tx, team); err != nil {
 			return err
 		}
+		internalAgent := &models.AIAgent{
+			TenantID:            tenant.ID,
+			Name:                "默认接待策略",
+			Description:         "接入公司内部运行身份",
+			Status:              enums.StatusOk,
+			ServiceMode:         enums.IMConversationServiceModeAIFirst,
+			SystemPrompt:        "回答应简短、准确；需要真实动作时必须进入现有服务路由，不得虚构已处理结果。",
+			ReplyTimeoutSeconds: 180,
+			TeamIDs:             utils.JoinInt64s([]int64{team.ID}),
+			HandoffMode:         enums.AIAgentHandoffModeWaitPool,
+			FallbackMode:        enums.AIAgentFallbackModeNoAnswer,
+			AuditFields:         utils.BuildAuditFields(operator),
+		}
+		if err := repositories.AIAgentRepository.Create(ctx.Tx, internalAgent); err != nil {
+			return err
+		}
 
 		invitation := &models.TenantInvitation{
 			TenantID:       tenant.ID,

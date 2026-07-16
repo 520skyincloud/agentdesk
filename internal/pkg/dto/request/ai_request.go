@@ -43,35 +43,3 @@ type UpdateAIConfigStatusRequest struct {
 	ID     int64        `json:"id"`
 	Status enums.Status `json:"status"`
 }
-
-type CreateAIAgentRequest struct {
-	Name                string                          `json:"name"`
-	Description         string                          `json:"description"`
-	AIConfigID          int64                           `json:"aiConfigId"`
-	ServiceMode         enums.IMConversationServiceMode `json:"serviceMode"`
-	SystemPrompt        string                          `json:"systemPrompt"`
-	WelcomeMessage      string                          `json:"welcomeMessage"`
-	ReplyTimeoutSeconds int                             `json:"replyTimeoutSeconds"`
-	TeamIDs             []int64                         `json:"teamIds"`
-	HandoffMode         enums.AIAgentHandoffMode        `json:"handoffMode"`
-	FallbackMode        enums.AIAgentFallbackMode       `json:"fallbackMode"`
-	FallbackMessage     string                          `json:"fallbackMessage"`
-	KnowledgeIDs        []int64                         `json:"knowledgeIds"`
-	SkillIDs            []int64                         `json:"skillIds"`
-	DirectTools         []AIAgentMCPToolRequest         `json:"directTools"`
-	GraphTools          []string                        `json:"graphTools"`
-}
-
-type UpdateAIAgentRequest struct {
-	ID int64 `json:"id"`
-	CreateAIAgentRequest
-}
-
-type DeleteAIAgentRequest struct {
-	ID int64 `json:"id"`
-}
-
-type UpdateAIAgentStatusRequest struct {
-	ID     int64 `json:"id"`
-	Status int   `json:"status"`
-}

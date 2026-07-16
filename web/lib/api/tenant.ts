@@ -88,6 +88,45 @@ export type CreateTenantResult = {
   invitation: TenantInvitation
 }
 
+export type TenantAIModelGrant = {
+  aiConfigId: number
+  name: string
+  provider: string
+  modelType: string
+  modelName: string
+  status: Status
+  requestCount: number
+  promptTokens: number
+  completionTokens: number
+  cachedPromptTokens: number
+  assignmentCount: number
+  assignedUsageCodes: string[]
+  assignedEmployeeCount: number
+}
+
+export type TenantAIModelUsage = {
+  usageCode: string
+  usageName: string
+  expectedModelType: string
+  aiConfigId: number
+  effectiveAiConfigId: number
+  effectiveModelName: string
+  effectiveSource: string
+}
+
+export type TenantAIModelAccess = {
+  tenantId: number
+  wxWorkInstanceId: number
+  grants: TenantAIModelGrant[]
+  usages: TenantAIModelUsage[]
+}
+
+export type UpdateTenantAIModelAccessPayload = {
+  tenantId: number
+  grantedAiConfigIds: number[]
+  defaults: Array<{ usageCode: string; aiConfigId: number }>
+}
+
 function toQueryString(query?: Record<string, string | number | undefined>) {
   if (!query) return ""
 
@@ -131,4 +170,23 @@ export function updateTenantStatus(id: number, status: Status) {
     method: "POST",
     body: JSON.stringify({ id, status }),
   })
+}
+
+export function fetchTenantAIModelAccess(tenantId: number) {
+  return request<TenantAIModelAccess>("/api/dashboard/tenant/model_access", {
+    method: "POST",
+    body: JSON.stringify({ tenantId }),
+  })
+}
+
+export function updateTenantAIModelAccess(
+  payload: UpdateTenantAIModelAccessPayload
+) {
+  return request<TenantAIModelAccess>(
+    "/api/dashboard/tenant/update_model_access",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }
+  )
 }

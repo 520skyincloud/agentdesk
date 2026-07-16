@@ -23,7 +23,7 @@ type skillRuntimeService struct{}
 
 func (s *skillRuntimeService) DebugRun(ctx context.Context, req request.SkillDebugRunRequest, operator *dto.AuthPrincipal) (*response.SkillDebugRunResponse, error) {
 	if req.AIAgentID <= 0 {
-		return nil, errorsx.InvalidParam("aiAgentId不能为空")
+		return nil, errorsx.InvalidParam("接待策略不能为空")
 	}
 	if strings.TrimSpace(req.SkillCode) == "" {
 		return nil, errorsx.InvalidParam("skillCode不能为空")
@@ -36,7 +36,7 @@ func (s *skillRuntimeService) DebugRun(ctx context.Context, req request.SkillDeb
 		return nil, err
 	}
 	if AIAgentService.GetByTenantID(req.AIAgentID, tenantID) == nil {
-		return nil, errorsx.InvalidParam("AI Agent不存在或不属于当前公司")
+		return nil, errorsx.InvalidParam("接待策略不存在或不属于当前公司")
 	}
 	if req.ConversationID > 0 {
 		conversation := ConversationService.GetByTenantID(req.ConversationID, tenantID)
@@ -44,7 +44,7 @@ func (s *skillRuntimeService) DebugRun(ctx context.Context, req request.SkillDeb
 			return nil, errorsx.InvalidParam("会话不存在或不属于当前公司")
 		}
 		if conversation.AIAgentID > 0 && conversation.AIAgentID != req.AIAgentID {
-			return nil, errorsx.InvalidParam("会话与 AI Agent 不匹配")
+			return nil, errorsx.InvalidParam("会话与接待策略不匹配")
 		}
 	}
 	if SkillDebugRunHook == nil {
@@ -55,7 +55,7 @@ func (s *skillRuntimeService) DebugRun(ctx context.Context, req request.SkillDeb
 
 func (s *skillRuntimeService) DebugResume(ctx context.Context, req request.SkillDebugResumeRequest, operator *dto.AuthPrincipal) (*response.SkillDebugRunResponse, error) {
 	if req.AIAgentID <= 0 {
-		return nil, errorsx.InvalidParam("aiAgentId不能为空")
+		return nil, errorsx.InvalidParam("接待策略不能为空")
 	}
 	if strings.TrimSpace(req.CheckPointID) == "" {
 		return nil, errorsx.InvalidParam("checkPointId不能为空")
@@ -68,7 +68,7 @@ func (s *skillRuntimeService) DebugResume(ctx context.Context, req request.Skill
 		return nil, err
 	}
 	if AIAgentService.GetByTenantID(req.AIAgentID, tenantID) == nil {
-		return nil, errorsx.InvalidParam("AI Agent不存在或不属于当前公司")
+		return nil, errorsx.InvalidParam("接待策略不存在或不属于当前公司")
 	}
 	interrupt := ConversationInterruptService.GetByCheckPointIDInTenant(strings.TrimSpace(req.CheckPointID), tenantID)
 	if interrupt == nil {
@@ -83,7 +83,7 @@ func (s *skillRuntimeService) DebugResume(ctx context.Context, req request.Skill
 		return nil, errorsx.InvalidParam("会话不存在或不属于当前公司")
 	}
 	if conversation.AIAgentID > 0 && conversation.AIAgentID != req.AIAgentID {
-		return nil, errorsx.InvalidParam("会话与 AI Agent 不匹配")
+		return nil, errorsx.InvalidParam("会话与接待策略不匹配")
 	}
 	if SkillDebugResumeHook == nil {
 		return nil, fmt.Errorf("skill debug resume runner is not initialized")

@@ -1624,22 +1624,34 @@ func TestResolveRuntimeIntentDetectAIConfigPrefersAccountOverride(t *testing.T) 
 	if err := sqls.DB().Create(&globalIntent).Error; err != nil {
 		t.Fatalf("create global ai config: %v", err)
 	}
-	if err := sqls.DB().Create(&models.Store{ID: 5, CompanyID: 2, Name: "store", Status: enums.StatusOk}).Error; err != nil {
+	tenant := models.Tenant{ID: 1, TenantCode: "intent-tenant", LegalName: "Intent Tenant", ShortName: "Intent", RegistrationType: "test", RegistrationNo: "intent-tenant-reg", Status: enums.StatusOk}
+	if err := sqls.DB().Create(&tenant).Error; err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	if err := sqls.DB().Create(&models.Store{ID: 5, TenantID: tenant.ID, Name: "store", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	if err := sqls.DB().Create(&models.ConversationRouteState{ConversationID: 7, StoreID: 5, WxWorkInstanceID: 11}).Error; err != nil {
+	if err := sqls.DB().Create(&models.WxWorkProtocolInstance{ID: 11, TenantID: tenant.ID, StoreID: 5, Guid: "intent-account", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if err := sqls.DB().Create(&models.Conversation{ID: 7, TenantID: tenant.ID, Status: enums.IMConversationStatusAIServing}).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if err := sqls.DB().Create(&models.ConversationRouteState{TenantID: tenant.ID, ConversationID: 7, StoreID: 5, WxWorkInstanceID: 11}).Error; err != nil {
 		t.Fatalf("create route state: %v", err)
 	}
+	accountIntent := models.AIConfig{ID: 4, Name: "account intent", Provider: enums.AIProviderOpenAI, BaseURL: "https://account.example.com/v1", APIKey: "sk-account", ModelType: enums.AIModelTypeLLM, ModelName: "account-intent-model", Status: enums.StatusOk}
+	if err := sqls.DB().Create(&accountIntent).Error; err != nil {
+		t.Fatalf("create account model: %v", err)
+	}
+	if err := sqls.DB().Create(&models.TenantAIModelGrant{TenantID: tenant.ID, AIConfigID: accountIntent.ID, Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("grant account model: %v", err)
+	}
 	if err := sqls.DB().Create(&models.StoreAIModelSetting{
-		CompanyID:        2,
-		StoreID:          5,
+		TenantID:         tenant.ID,
 		WxWorkInstanceID: 11,
 		UsageCode:        services.StoreAIModelUsageIntentDetectLLM,
-		Provider:         enums.AIProviderOpenAI,
-		BaseURL:          "https://account.example.com/v1",
-		APIKey:           "sk-account",
-		ModelType:        enums.AIModelTypeLLM,
-		ModelName:        "account-intent-model",
+		AIConfigID:       accountIntent.ID,
 		Status:           enums.StatusOk,
 	}).Error; err != nil {
 		t.Fatalf("create account model setting: %v", err)
@@ -1688,6 +1700,8 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 		&models.ReplyIntentProfile{},
 		&models.ReplyIntentConfig{},
 		&models.AIConfig{},
+		&models.Tenant{},
+		&models.TenantAIModelGrant{},
 		&models.Asset{},
 		&models.Store{},
 		&models.StoreAIModelSetting{},

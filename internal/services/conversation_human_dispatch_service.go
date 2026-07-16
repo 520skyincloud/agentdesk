@@ -273,10 +273,10 @@ func (s *conversationHumanDispatchService) DispatchPendingConversation(conversat
 
 func validateConversationAIAgentTenant(conversation *models.Conversation, aiAgent models.AIAgent) error {
 	if conversation == nil || conversation.TenantID <= 0 || aiAgent.TenantID != conversation.TenantID {
-		return errorsx.InvalidParam("AI Agent 不属于会话所在公司")
+		return errorsx.InvalidParam("接待策略不属于会话所在公司")
 	}
 	if aiAgent.ID > 0 && conversation.AIAgentID > 0 && aiAgent.ID != conversation.AIAgentID {
-		return errorsx.InvalidParam("AI Agent 与会话绑定不一致")
+		return errorsx.InvalidParam("接待策略与会话绑定不一致")
 	}
 	return nil
 }
@@ -649,12 +649,9 @@ func (s *conversationHumanDispatchService) buildAIHandoffConversationSummary(con
 
 func (s *conversationHumanDispatchService) resolveHandoffSummaryAIConfig(conversation *models.Conversation) (models.AIConfig, bool) {
 	if conversation != nil {
-		if resolved, err := StoreAIModelSettingService.ResolveForConversation(conversation.ID, StoreAIModelUsageReplyLLM, 0); err == nil && resolved != nil {
+		if resolved, err := StoreAIModelSettingService.ResolveForConversation(conversation.ID, StoreAIModelUsageReplyLLM); err == nil && resolved != nil {
 			return resolved.Config, true
 		}
-	}
-	if config, err := ai.GetEnabledAIConfig(enums.AIModelTypeLLM); err == nil && config != nil {
-		return *config, true
 	}
 	return models.AIConfig{}, false
 }

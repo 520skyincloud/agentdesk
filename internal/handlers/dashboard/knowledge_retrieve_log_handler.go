@@ -41,6 +41,7 @@ func KnowledgeRetrieveLogAnyList(ctx *gin.Context) {
 	results := make([]response.KnowledgeRetrieveLogResponse, 0, len(list))
 	for _, item := range list {
 		resp := builders.BuildKnowledgeRetrieveLog(&item)
+		hideKnowledgeModelDiagnostics(&resp, operator.IsPlatformAccount)
 		if knowledgeBase := services.KnowledgeBaseService.GetForOperator(item.KnowledgeBaseID, operator); knowledgeBase != nil {
 			resp.KnowledgeBaseName = knowledgeBase.Name
 		}
@@ -67,6 +68,7 @@ func KnowledgeRetrieveLogGetBy(ctx *gin.Context) {
 	}
 
 	logResp := builders.BuildKnowledgeRetrieveLog(logItem)
+	hideKnowledgeModelDiagnostics(&logResp, operator.IsPlatformAccount)
 	if !services.KnowledgeBaseService.CanAccessKnowledgeBase(logItem.KnowledgeBaseID, operator) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权限查看该检索日志"))
 		return
@@ -85,4 +87,14 @@ func KnowledgeRetrieveLogGetBy(ctx *gin.Context) {
 		Log:  logResp,
 		Hits: hitResults,
 	})
+}
+
+func hideKnowledgeModelDiagnostics(item *response.KnowledgeRetrieveLogResponse, isPlatformAccount bool) {
+	if item == nil || isPlatformAccount {
+		return
+	}
+	item.PromptTokens = 0
+	item.CompletionTokens = 0
+	item.ModelName = ""
+	item.TraceData = ""
 }

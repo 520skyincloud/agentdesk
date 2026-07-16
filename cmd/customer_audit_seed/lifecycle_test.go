@@ -59,6 +59,10 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 	}
 	first := buildReport(db, batch)
 	assertCompleteSimulationReport(t, first)
+	tenant := models.Tenant{}
+	if err := db.Where("registration_type = ? AND registration_no = ?", tenantRegistrationType, tenantRegistrationNo).Take(&tenant).Error; err != nil {
+		t.Fatalf("load simulation tenant: %v", err)
+	}
 
 	if err := seed(db, batch, defaultPassword); err != nil {
 		t.Fatalf("repeat seed: %v", err)
@@ -80,7 +84,6 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 
 	for name, model := range map[string]any{
 		"invitations":    &models.TenantInvitation{},
-		"AI agents":      &models.AIAgent{},
 		"companies":      &models.Company{},
 		"agent teams":    &models.AgentTeam{},
 		"agent profiles": &models.AgentProfile{},
@@ -95,6 +98,9 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 	} {
 		assertLifecycleRowCount(t, db, name, model, 0)
 	}
+	assertLifecycleScopedRowCount(t, db, "AI agents", &models.AIAgent{}, tenant.ID, 0)
+	assertLifecycleScopedRowCount(t, db, "model grants", &models.TenantAIModelGrant{}, tenant.ID, 0)
+	assertLifecycleScopedRowCount(t, db, "model assignments", &models.StoreAIModelSetting{}, tenant.ID, 0)
 	if got := count(db, &models.Tenant{}, "registration_type = ? AND registration_no = ?", tenantRegistrationType, tenantRegistrationNo); got != 0 {
 		t.Fatalf("simulation tenant count after cleanup=%d want=0", got)
 	}
@@ -111,7 +117,7 @@ func assertCompleteSimulationReport(t *testing.T, got report) {
 		t.Fatalf("customer relationship baseline changed: %+v", got)
 	}
 	if got.Tenant != 1 || got.TenantSupervisor != 1 || got.TenantInvitation != 1 || got.DefaultAgentTeam != 1 ||
-		got.AIAgent != 1 || !got.ModelConfigReused || got.AIAgentConfigName != "仿真测试复用模型" {
+		got.AIAgent != 1 || !got.ModelConfigReused || got.TenantDefaultConfigName != "仿真测试复用模型" {
 		t.Fatalf("tenant/model foundation baseline changed: %+v", got)
 	}
 	if got.SimulatedConversations != 36 || got.SimulatedMessages != 135 || got.SimulatedAssignments != 21 ||
@@ -128,6 +134,17 @@ func assertLifecycleRowCount(t *testing.T, db *gorm.DB, name string, model any, 
 	}
 	if count != want {
 		t.Fatalf("%s count=%d want=%d", name, count, want)
+	}
+}
+
+func assertLifecycleScopedRowCount(t *testing.T, db *gorm.DB, name string, model any, tenantID, want int64) {
+	t.Helper()
+	var count int64
+	if err := db.Model(model).Where("tenant_id = ?", tenantID).Count(&count).Error; err != nil {
+		t.Fatalf("count tenant-scoped %s: %v", name, err)
+	}
+	if count != want {
+		t.Fatalf("tenant-scoped %s count=%d want=%d", name, count, want)
 	}
 }
 

@@ -317,7 +317,7 @@ export default function StoreWorkbenchPage() {
           </section>
 
           <section className="rounded-lg border bg-card p-4">
-            <SectionTitle icon={WifiIcon} title="企微与智能客服" />
+            <SectionTitle icon={WifiIcon} title="企微与接待策略" />
             <div className="mt-4 divide-y">
               <InfoRow
                 label="企微员工号"

@@ -58,11 +58,25 @@ func KnowledgeRetrievePostDebugAnswer(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-
-	resp, err := rag.Answer.DebugAnswer(context.Background(), req, operator)
+	resolved, err := services.StoreAIModelSettingService.ResolveForTenant(
+		operator.ActiveTenantID,
+		0,
+		services.StoreAIModelUsageReplyLLM,
+	)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
+	}
+
+	resp, err := rag.Answer.DebugAnswer(context.Background(), req, resolved.Config, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !operator.IsPlatformAccount {
+		resp.ModelName = ""
+		resp.PromptTokens = 0
+		resp.CompletionTokens = 0
 	}
 	httpx.WriteJSON(ctx, resp)
 }

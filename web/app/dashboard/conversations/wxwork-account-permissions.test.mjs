@@ -7,6 +7,10 @@ const managerSource = await readFile(
   new URL("../../../components/wxwork-protocol/wxwork-protocol-instance-manager.tsx", import.meta.url),
   "utf8",
 )
+const modelAssignmentSource = await readFile(
+  new URL("../../../components/wxwork-protocol/wxwork-model-assignment-dialog.tsx", import.meta.url),
+  "utf8",
+)
 const companyDetailSource = await readFile(new URL("../company-detail/page.tsx", import.meta.url), "utf8")
 
 test("conversation workbench preserves all conversations while gating account navigation", () => {
@@ -37,8 +41,8 @@ test("wxwork instance manager owns its CRUD and auxiliary read permissions", () 
     "channel.delete",
     "knowledgeBase.view",
     "company.view",
-    "aiConfig.view",
-    "aiConfig.update",
+    "tenantModelAssignment.view",
+    "tenantModelAssignment.update",
   ]) {
     assert.match(managerSource, new RegExp(`permissionSet\\.has\\("${permission.replace(".", "\\.")}\"\\)`))
   }
@@ -49,7 +53,17 @@ test("wxwork instance manager owns its CRUD and auxiliary read permissions", () 
   assert.match(managerSource, /showEdit=\{canUpdateChannels\}/)
   assert.match(managerSource, /deleteItem=\{\s*canDeleteChannels\s*\?\s*async/)
   assert.match(managerSource, /if \(canUpdateChannels\) \{[\s\S]*key: "replaceLogin"/)
+  assert.match(managerSource, /key: "modelAssignments"/)
+  assert.match(managerSource, /<WxWorkModelAssignmentDialog/)
   assert.match(managerSource, /open=\{canCreateChannels && createDialogOpen\}/)
+})
+
+test("wxwork model assignment only selects from tenant grants", () => {
+  assert.match(modelAssignmentSource, /fetchWxWorkModelAssignments\(tenantId, instance\.id\)/)
+  assert.match(modelAssignmentSource, /access\.grants/)
+  assert.match(modelAssignmentSource, /updateWxWorkModelAssignments/)
+  assert.match(modelAssignmentSource, /label: "使用租户默认"/)
+  assert.doesNotMatch(modelAssignmentSource, /API Key|Base URL|config\.provider|grant\.provider/)
 })
 
 test("company detail gates its wxwork section and remote setup action", () => {
@@ -58,5 +72,6 @@ test("company detail gates its wxwork section and remote setup action", () => {
   assert.match(companyDetailSource, /if \(!canCreateWxWorkAccounts \|\| !company\) return/)
   assert.match(companyDetailSource, /\{canCreateWxWorkAccounts \? \(/)
   assert.match(companyDetailSource, /\{canViewWxWorkAccounts \? \(/)
-  assert.match(companyDetailSource, /open=\{canViewModelSettings && modelSettingsOpen\}/)
+  assert.match(companyDetailSource, /<WxWorkProtocolInstanceManager/)
+  assert.match(companyDetailSource, /lockCompany/)
 })

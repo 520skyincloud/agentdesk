@@ -57,6 +57,7 @@ const allPermissions = [
   "quickReply.view",
   "tag.view",
   "aiConfig.view",
+  "agentRunLog.view",
   "skillDefinition.view",
   "user.view",
   "role.view",
@@ -102,7 +103,9 @@ test("tenant accounts see company work areas but no platform controls", async ()
   assert.equal(keys.includes("nav.customerServiceOrganization"), true)
   assert.equal(keys.includes("nav.serviceCapabilities"), true)
   assert.equal(keys.includes("nav.platformManagement"), false)
-  assert.equal(urls.includes("/dashboard/ai-agents"), true)
+  assert.equal(urls.includes("/dashboard/ai-agents"), false)
+  assert.equal(urls.includes("/dashboard/ai-configs"), false)
+  assert.equal(urls.includes("/dashboard/agent-run-logs"), false)
   assert.equal(urls.includes("/dashboard/wxwork-protocol-instances"), true)
   assert.equal(urls.includes("/dashboard/settings"), true)
   assert.equal(urls.includes("/dashboard/channels"), false)
@@ -115,9 +118,12 @@ test("platform accounts inside a company can use both company and platform navig
     hasActiveTenant: true,
   })
   const keys = sectionKeys(sections)
+  const urls = itemUrls(sections)
 
   assert.equal(keys.includes("nav.companyWorkspace"), true)
   assert.equal(keys.includes("nav.platformManagement"), true)
+  assert.equal(urls.includes("/dashboard/ai-configs"), true)
+  assert.equal(urls.includes("/dashboard/agent-run-logs"), true)
 })
 
 test("view permissions still control individual entries inside an allowed context", async () => {

@@ -277,7 +277,7 @@ func convertRuntimeIntentTasks(tasks []runtimeIntentTaskJSON) []callbacks.Intent
 
 func resolveRuntimeIntentDetectAIConfig(req RunInput) models.AIConfig {
 	if sqls.DB() != nil && req.Conversation.ID > 0 {
-		if resolved, err := services.StoreAIModelSettingService.ResolveForConversation(req.Conversation.ID, services.StoreAIModelUsageIntentDetectLLM, 0); err == nil && resolved != nil {
+		if resolved, err := services.StoreAIModelSettingService.ResolveForConversation(req.Conversation.ID, services.StoreAIModelUsageIntentDetectLLM); err == nil && resolved != nil {
 			return resolved.Config
 		}
 	}
@@ -285,16 +285,6 @@ func resolveRuntimeIntentDetectAIConfig(req RunInput) models.AIConfig {
 		if resolved, err := services.StoreAIModelSettingService.Resolve(0, services.StoreAIModelUsageIntentDetectLLM); err == nil && resolved != nil {
 			return resolved.Config
 		}
-	}
-	return req.AIConfig
-}
-
-func resolveRuntimeAIConfigByStoreUsage(req RunInput, usageCode string, legacyAgentConfigID int64) models.AIConfig {
-	if sqls.DB() == nil {
-		return req.AIConfig
-	}
-	if resolved, err := services.StoreAIModelSettingService.ResolveForConversation(req.Conversation.ID, usageCode, legacyAgentConfigID); err == nil && resolved != nil {
-		return resolved.Config
 	}
 	return req.AIConfig
 }

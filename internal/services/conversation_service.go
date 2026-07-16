@@ -146,14 +146,14 @@ func (s *conversationService) create(externalUser openidentity.ExternalUser, cha
 	}
 	aiAgent := AIAgentService.GetByTenantID(aiAgentID, channel.TenantID)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
-		return nil, errorsx.InvalidParam("AI Agent not found")
+		return nil, errorsx.InvalidParam("接待策略不存在")
 	}
 	return s.createWithProfile(externalUser, channelID, *aiAgent, createWelcome)
 }
 
 func (s *conversationService) createWithProfile(externalUser openidentity.ExternalUser, channelID int64, aiAgent models.AIAgent, createWelcome bool) (*models.Conversation, error) {
 	if aiAgent.Status != enums.StatusOk {
-		return nil, errorsx.InvalidParam("AI Agent not found")
+		return nil, errorsx.InvalidParam("接待策略不存在")
 	}
 	var conversation *models.Conversation
 	var welcomeMessage *models.Message
@@ -164,7 +164,7 @@ func (s *conversationService) createWithProfile(externalUser openidentity.Extern
 			return errorsx.InvalidParam("接入渠道不存在、已停用或缺少租户归属")
 		}
 		if aiAgent.TenantID != channel.TenantID {
-			return errorsx.InvalidParam("AI Agent 不属于接入渠道所在公司")
+			return errorsx.InvalidParam("接待策略不属于接入渠道所在公司")
 		}
 		customerID, err := CustomerService.EnsureExternalCustomer(ctx, channel.TenantID, externalUser)
 		if err != nil {
@@ -442,7 +442,7 @@ func (s *conversationService) AutoAssignConversation(conversationID int64, opera
 
 	aiAgent := AIAgentService.GetByTenantID(conversation.AIAgentID, conversation.TenantID)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
-		return errorsx.InvalidParam("AI Agent 不存在或已停用")
+		return errorsx.InvalidParam("接待策略不存在或已停用")
 	}
 	result, err := ConversationHumanDispatchService.DispatchPendingConversation(conversationID, *aiAgent)
 	if err != nil {

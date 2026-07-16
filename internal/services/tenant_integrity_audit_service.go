@@ -140,6 +140,8 @@ func tenantIntegrityTablePolicies() map[string]tenantIntegrityTablePolicy {
 		"AgentRunLog":                  positive,
 		"AIUsageEvent":                 positive,
 		"AIUsageGatewayCall":           {AllowZeroCondition: "c.stage = 'fastgpt_internal_model' AND c.company_id = 0 AND c.store_id = 0 AND c.wx_work_instance_id = 0 AND c.conversation_id = 0 AND c.message_id = 0"},
+		"TenantAIModelGrant":           positive,
+		"StoreAIModelSetting":          positive,
 		"ConversationInterrupt":        {AllowZeroCondition: "c.conversation_id = 0 AND c.ai_agent_id = 0 AND c.source_message_id = 0 AND c.last_resume_message_id = 0"},
 	}
 }
@@ -298,6 +300,9 @@ func tenantIntegrityRelations() []tenantIntegrityRelation {
 		tenant("AIUsageEvent", "message_id", "Message", false),
 		tenant("AIUsageEvent", "knowledge_base_id", "KnowledgeBase", false),
 		global("AIUsageEvent", "ai_config_id", "AIConfig", false),
+		global("TenantAIModelGrant", "ai_config_id", "AIConfig", true),
+		tenant("StoreAIModelSetting", "wx_work_instance_id", "WxWorkProtocolInstance", false),
+		global("StoreAIModelSetting", "ai_config_id", "AIConfig", false),
 		tenant("AIUsageGatewayCall", "company_id", "Company", false),
 		tenant("AIUsageGatewayCall", "store_id", "Store", false),
 		tenant("AIUsageGatewayCall", "wx_work_instance_id", "WxWorkProtocolInstance", false),
@@ -308,10 +313,6 @@ func tenantIntegrityRelations() []tenantIntegrityRelation {
 		tenant("ConversationInterrupt", "source_message_id", "Message", false),
 		tenant("ConversationInterrupt", "last_resume_message_id", "Message", false),
 
-		global("StoreAIModelSetting", "company_id", "Company", false),
-		global("StoreAIModelSetting", "store_id", "Store", false),
-		global("StoreAIModelSetting", "wx_work_instance_id", "WxWorkProtocolInstance", false),
-		global("StoreAIModelSetting", "ai_config_id", "AIConfig", false),
 		global("ReplyIntentConfig", "company_id", "Company", false),
 		global("ReplyIntentConfig", "store_id", "Store", false),
 		global("ReplyIntentConfig", "wx_work_instance_id", "WxWorkProtocolInstance", false),

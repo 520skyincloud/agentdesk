@@ -458,11 +458,11 @@ func (s *channelService) buildChannelModel(id, tenantID int64, req request.Creat
 		return nil, errorsx.InvalidParam("渠道名称不能为空")
 	}
 	if req.AIAgentID <= 0 {
-		return nil, errorsx.InvalidParam("请选择 AI Agent")
+		return nil, errorsx.InvalidParam("请选择接待策略")
 	}
 	aiAgent := AIAgentService.GetByTenantID(req.AIAgentID, tenantID)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
-		return nil, errorsx.InvalidParam("AI Agent 不存在或未启用")
+		return nil, errorsx.InvalidParam("接待策略不存在或未启用")
 	}
 	status := enums.Status(req.Status)
 	if req.Status == 0 {

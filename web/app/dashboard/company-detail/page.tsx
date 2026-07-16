@@ -2,19 +2,16 @@
 
 import { Suspense, useEffect, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
-import { ArrowLeftIcon, Building2Icon, LinkIcon, RefreshCwIcon, SlidersHorizontalIcon } from "lucide-react"
+import { ArrowLeftIcon, Building2Icon, LinkIcon, RefreshCwIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
-import { CompanyAIModelSettingsDialog } from "@/components/company-ai-model-settings-dialog"
 import { WxWorkProtocolInstanceManager } from "@/components/wxwork-protocol/wxwork-protocol-instance-manager"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { createWxWorkProtocolRemoteSetup, fetchAIConfigsAll, type AIConfig, type StoreAIModelSetting } from "@/lib/api/admin"
+import { createWxWorkProtocolRemoteSetup } from "@/lib/api/admin"
 import {
   fetchCompany,
-  fetchCompanyAIModelSettings,
-  updateCompanyAIModelSettings,
   type AdminCompany,
 } from "@/lib/api/company"
 import { Status } from "@/lib/generated/enums"
@@ -36,16 +33,9 @@ function DashboardCompanyDetailContent() {
   const [company, setCompany] = useState<AdminCompany | null>(null)
   const [loading, setLoading] = useState(true)
   const [creatingRemote, setCreatingRemote] = useState(false)
-  const [modelSettingsOpen, setModelSettingsOpen] = useState(false)
-  const [modelSettings, setModelSettings] = useState<StoreAIModelSetting[]>([])
-  const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([])
-  const [modelSettingsLoading, setModelSettingsLoading] = useState(false)
-  const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
   const permissionSet = new Set(session?.permissions ?? [])
   const canViewWxWorkAccounts = permissionSet.has("channel.view")
   const canCreateWxWorkAccounts = canViewWxWorkAccounts && permissionSet.has("channel.create")
-  const canViewModelSettings = permissionSet.has("aiConfig.view")
-  const canUpdateModelSettings = permissionSet.has("aiConfig.update")
 
   useEffect(() => {
     async function loadCompany() {
@@ -81,67 +71,6 @@ function DashboardCompanyDetailContent() {
       toast.error(error instanceof Error ? error.message : "生成开户链接失败")
     } finally {
       setCreatingRemote(false)
-    }
-  }
-
-  async function openCompanyModelSettings() {
-    if (!company) return
-    if (!canViewModelSettings) {
-      toast.error("没有查看模型设置权限")
-      return
-    }
-    setModelSettingsOpen(true)
-    setModelSettingsLoading(true)
-    try {
-      const [settings, configs] = await Promise.all([
-        fetchCompanyAIModelSettings(company.id),
-        fetchAIConfigsAll({ status: Status.Ok }),
-      ])
-      setModelSettings(settings)
-      setAIConfigs(configs)
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "读取公司模型设置失败")
-      setModelSettingsOpen(false)
-    } finally {
-      setModelSettingsLoading(false)
-    }
-  }
-
-  async function saveCompanyModelSettings() {
-    if (!canUpdateModelSettings || !company) return
-    setModelSettingsSaving(true)
-    try {
-      const next = await updateCompanyAIModelSettings({
-        companyId: company.id,
-        storeId: 0,
-        wxWorkInstanceId: 0,
-        settings: modelSettings.map((item) => ({
-          usageCode: item.usageCode,
-          aiConfigId: Number(item.aiConfigId || 0),
-          enabled: item.enabled,
-          provider: item.provider || "openai",
-          baseUrl: item.baseUrl || "",
-          apiKey: item.apiKey || "",
-          apiMode: item.apiMode || "chat_completions",
-          modelType: item.modelType || item.expectedModelType,
-          modelName: item.modelName || "",
-          dimension: Number(item.dimension || 0),
-          maxContextTokens: Number(item.maxContextTokens || 0),
-          maxOutputTokens: Number(item.maxOutputTokens || 0),
-          timeoutMs: Number(item.timeoutMs || 30000),
-          maxRetryCount: Number(item.maxRetryCount || 0),
-          rpmLimit: Number(item.rpmLimit || 0),
-          tpmLimit: Number(item.tpmLimit || 0),
-          remark: item.remark || "",
-        })),
-      })
-      setModelSettings(next)
-      toast.success("公司模型设置已保存")
-      setModelSettingsOpen(false)
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "保存公司模型设置失败")
-    } finally {
-      setModelSettingsSaving(false)
     }
   }
 
@@ -195,12 +124,6 @@ function DashboardCompanyDetailContent() {
               <ArrowLeftIcon className="size-4" />
               返回列表
             </Button>
-            {canViewModelSettings ? (
-              <Button type="button" variant="outline" className="rounded-xl" onClick={() => void openCompanyModelSettings()}>
-                <SlidersHorizontalIcon className="size-4" />
-                公司模型设置
-              </Button>
-            ) : null}
             {canCreateWxWorkAccounts ? (
               <Button type="button" className="rounded-xl" disabled={creatingRemote} onClick={() => void createCompanyRemoteSetupLink()}>
                 {creatingRemote ? <RefreshCwIcon className="size-4 animate-spin" /> : <LinkIcon className="size-4" />}
@@ -229,23 +152,6 @@ function DashboardCompanyDetailContent() {
         </div>
       ) : null}
 
-      <CompanyAIModelSettingsDialog
-        open={canViewModelSettings && modelSettingsOpen}
-        company={company}
-        settings={modelSettings}
-        aiConfigs={aiConfigs}
-        loading={modelSettingsLoading}
-        saving={modelSettingsSaving}
-        canSave={canViewModelSettings && canUpdateModelSettings}
-        onOpenChange={(open) => {
-          setModelSettingsOpen(open)
-          if (!open) {
-            setModelSettings([])
-          }
-        }}
-        onChange={setModelSettings}
-        onSubmit={() => void saveCompanyModelSettings()}
-      />
     </div>
   )
 }

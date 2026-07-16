@@ -34,8 +34,6 @@ func TestWxWorkProtocolActionsRejectCrossTenantInstanceBeforeProtocolCall(t *tes
 			constants.PermissionChannelUpdate.Code,
 			constants.PermissionChannelDelete.Code,
 			constants.PermissionConversationSend.Code,
-			constants.PermissionAIConfigView.Code,
-			constants.PermissionAIConfigUpdate.Code,
 		},
 	}
 
@@ -65,8 +63,6 @@ func TestWxWorkProtocolActionsRejectCrossTenantInstanceBeforeProtocolCall(t *tes
 		{name: "room member detail", body: instanceActionBody(foreign.ID), handler: WxWorkProtocolInstancePostRoom_member_detail},
 		{name: "sync room info", body: instanceActionBody(foreign.ID), handler: WxWorkProtocolInstancePostSync_room_info},
 		{name: "invite room member", body: instanceActionBody(foreign.ID), handler: WxWorkProtocolInstancePostInvite_room_member},
-		{name: "model settings", body: modelSettingActionBody(foreign.ID), handler: WxWorkProtocolInstancePostStore_ai_model_settings},
-		{name: "update model settings", body: modelSettingActionBody(foreign.ID), handler: WxWorkProtocolInstancePostUpdate_store_ai_model_settings},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -95,28 +91,27 @@ func TestWxWorkProtocolActionRejectsInstanceOutsideAgentScope(t *testing.T) {
 	assertWxWorkProtocolTenantError(t, recorder.Body.Bytes(), "无权访问该企微员工号实例")
 }
 
-func TestWxWorkProtocolModelSettingsRejectPollutedInstanceRelations(t *testing.T) {
+func TestWxWorkProtocolModelAssignmentsRejectCrossTenantInstance(t *testing.T) {
 	db := setupWxWorkProtocolTenantHandlerDB(t)
-	foreignCompany := &models.Company{TenantID: 202, Name: "handler foreign company", Code: "handler-foreign-company", Status: enums.StatusOk}
-	if err := db.Create(foreignCompany).Error; err != nil {
-		t.Fatalf("create foreign company: %v", err)
-	}
 	instance := &models.WxWorkProtocolInstance{
-		TenantID: 101, Guid: "handler-polluted-guid", CompanyID: foreignCompany.ID, Status: enums.StatusOk,
+		TenantID: 202, Guid: "handler-foreign-model-guid", Status: enums.StatusOk,
+	}
+	if err := db.Create(&models.Tenant{ID: 101, TenantCode: "tenant-a", LegalName: "Tenant A", ShortName: "A", RegistrationType: "credit_code", RegistrationNo: "tenant-a-reg", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create tenant: %v", err)
 	}
 	if err := db.Create(instance).Error; err != nil {
-		t.Fatalf("create polluted instance: %v", err)
+		t.Fatalf("create foreign instance: %v", err)
 	}
 	principal := &dto.AuthPrincipal{
-		UserID: 12, Username: "tenant-a-admin", ActiveTenantID: 101,
-		Roles:       []string{constants.RoleCodeTenantAdmin},
-		Permissions: []string{constants.PermissionAIConfigView.Code},
+		UserID: 12, Username: "platform-admin", ActiveTenantID: 101, IsPlatformAccount: true,
+		Roles:       []string{constants.RoleCodeAdmin},
+		Permissions: []string{constants.PermissionTenantModelAssignmentView.Code},
 	}
-	ctx, recorder := newAuthzHandlerTestContext(t, modelSettingActionBody(instance.ID), principal)
+	ctx, recorder := newAuthzHandlerTestContext(t, modelAssignmentActionBody(101, instance.ID), principal)
 
-	WxWorkProtocolInstancePostStore_ai_model_settings(ctx)
+	WxWorkProtocolInstancePostModelAssignments(ctx)
 
-	assertWxWorkProtocolTenantError(t, recorder.Body.Bytes(), "企微员工号绑定的公司不属于当前接入公司")
+	assertWxWorkProtocolTenantError(t, recorder.Body.Bytes(), "企微员工号不存在或不属于当前接入公司")
 }
 
 func TestWxWorkProtocolListRequiresActiveTenant(t *testing.T) {
@@ -140,7 +135,7 @@ func setupWxWorkProtocolTenantHandlerDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.Company{}, &models.Store{}, &models.WxWorkProtocolInstance{}); err != nil {
+	if err := db.AutoMigrate(&models.Tenant{}, &models.Company{}, &models.Store{}, &models.WxWorkProtocolInstance{}, &models.AIConfig{}, &models.TenantAIModelGrant{}, &models.StoreAIModelSetting{}, &models.AIUsageEvent{}); err != nil {
 		t.Fatalf("migrate wxwork instance: %v", err)
 	}
 	sqls.SetDB(db)
@@ -152,8 +147,8 @@ func instanceActionBody(instanceID int64) string {
 	return `{"id":` + jsonInt64(instanceID) + `}`
 }
 
-func modelSettingActionBody(instanceID int64) string {
-	return `{"wxWorkInstanceId":` + jsonInt64(instanceID) + `,"settings":[]}`
+func modelAssignmentActionBody(tenantID, instanceID int64) string {
+	return `{"tenantId":` + jsonInt64(tenantID) + `,"wxWorkInstanceId":` + jsonInt64(instanceID) + `,"assignments":[]}`
 }
 
 func jsonInt64(value int64) string {

@@ -2,6 +2,7 @@ import { readActiveTenantId, readSession } from "@/lib/auth"
 import { request } from "@/lib/api/client"
 import { createAuthenticatedWebSocketUrl } from "@/lib/api/websocket"
 import { translateCurrentMessage } from "@/i18n/messages"
+import type { TenantAIModelAccess } from "@/lib/api/tenant"
 
 export type Paging = {
   page: number
@@ -590,151 +591,10 @@ export type UpdateWxWorkProtocolInstancePayload = CreateWxWorkProtocolInstancePa
   id: number
 }
 
-export type AIAgent = {
+export type RuntimeStrategyOption = {
   id: number
   name: string
-  description: string
   status: number
-  statusName: string
-  aiConfigId: number
-  aiConfigName?: string
-  serviceMode: number
-  serviceModeName: string
-  systemPrompt: string
-  welcomeMessage: string
-  replyTimeoutSeconds: number
-  teams: { id: number; name: string }[]
-  handoffMode: number
-  handoffModeName: string
-  fallbackMode: number
-  fallbackModeName: string
-  fallbackMessage: string
-  knowledgeIds: number[]
-  knowledgeBaseNames: string[]
-  skillIds: number[]
-  skills: { id: number; code: string; name: string }[]
-  directTools: {
-    toolCode: string
-    serverCode: string
-    toolName: string
-    title: string
-    description: string
-    arguments?: Record<string, string>
-  }[]
-  graphTools: string[]
-  sortNo: number
-  createdAt: string
-  updatedAt: string
-  createUserName: string
-  updateUserName: string
-}
-
-export type StoreAIModelSetting = {
-  companyId: number
-  storeId: number
-  wxWorkInstanceId: number
-  usageCode: string
-  usageName: string
-  expectedModelType: string
-  aiConfigId: number
-  aiConfigName: string
-  enabled: boolean
-  provider: string
-  baseUrl: string
-  hasApiKey: boolean
-  apiKey?: string
-  apiMode: string
-  modelType: string
-  modelName: string
-  dimension: number
-  maxContextTokens: number
-  maxOutputTokens: number
-  timeoutMs: number
-  maxRetryCount: number
-  rpmLimit: number
-  tpmLimit: number
-  remark: string
-  testToken?: string
-  effectiveAiConfigId: number
-  effectiveModelSettingId: number
-  effectiveAiConfigName: string
-  effectiveModelName: string
-  effectiveProvider: string
-  effectiveBaseUrl: string
-  effectiveModelSource: string
-  lastTestStatus: string
-  lastTestedAt?: string
-  lastTestLatencyMs: number
-}
-
-export type UpdateStoreAIModelSettingsPayload = {
-  companyId?: number
-  storeId: number
-  wxWorkInstanceId: number
-  settings: Array<{
-    usageCode: string
-    aiConfigId: number
-    enabled: boolean
-    provider: string
-    baseUrl: string
-    apiKey?: string
-    apiMode: string
-    modelType: string
-    modelName: string
-    dimension: number
-    maxContextTokens: number
-    maxOutputTokens: number
-    timeoutMs: number
-    maxRetryCount: number
-    rpmLimit: number
-    tpmLimit: number
-    remark: string
-    testToken?: string
-  }>
-}
-
-export type TestStoreAIModelSettingPayload = {
-  companyId?: number
-  storeId: number
-  wxWorkInstanceId: number
-  setting: UpdateStoreAIModelSettingsPayload["settings"][number]
-}
-
-export type TestStoreAIModelSettingResult = {
-  usageCode: string
-  modelName: string
-  testToken: string
-  testedAt: string
-  latencyMs: number
-}
-
-export type CreateAIAgentPayload = {
-  name: string
-  description: string
-  aiConfigId: number
-  serviceMode: number
-  systemPrompt: string
-  welcomeMessage: string
-  replyTimeoutSeconds: number
-  teamIds: number[]
-  handoffMode: number
-  fallbackMode: number
-  fallbackMessage: string
-  knowledgeIds: number[]
-  skillIds: number[]
-  directTools: {
-    toolCode: string
-    serverCode: string
-    toolName: string
-    title: string
-    description: string
-    arguments?: Record<string, string>
-  }[]
-  graphTools: string[]
-}
-
-export type UpdateAIAgentPayload = CreateAIAgentPayload & {
-  id: number
 }
 
 export type CreateAdminQuickReplyPayload = {
@@ -1316,25 +1176,31 @@ export function updateWxWorkProtocolAISettings(payload: UpdateWxWorkProtocolAISe
   })
 }
 
-export function fetchStoreAIModelSettings(storeId: number, wxWorkInstanceId = 0) {
-  return request<StoreAIModelSetting[]>("/api/dashboard/wxwork-protocol-instance/store_ai_model_settings", {
-    method: "POST",
-    body: JSON.stringify({ storeId, wxWorkInstanceId }),
-  })
+export function fetchWxWorkModelAssignments(
+  tenantId: number,
+  wxWorkInstanceId: number
+) {
+  return request<TenantAIModelAccess>(
+    "/api/dashboard/wxwork-protocol-instance/model_assignments",
+    {
+      method: "POST",
+      body: JSON.stringify({ tenantId, wxWorkInstanceId }),
+    }
+  )
 }
 
-export function updateStoreAIModelSettings(payload: UpdateStoreAIModelSettingsPayload) {
-  return request<StoreAIModelSetting[]>("/api/dashboard/wxwork-protocol-instance/update_store_ai_model_settings", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function testStoreAIModelSetting(payload: TestStoreAIModelSettingPayload) {
-  return request<TestStoreAIModelSettingResult>("/api/dashboard/wxwork-protocol-instance/test_store_ai_model_setting", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
+export function updateWxWorkModelAssignments(payload: {
+  tenantId: number
+  wxWorkInstanceId: number
+  assignments: Array<{ usageCode: string; aiConfigId: number }>
+}) {
+  return request<TenantAIModelAccess>(
+    "/api/dashboard/wxwork-protocol-instance/update_model_assignments",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }
+  )
 }
 
 export function getWxWorkProtocolLoginQrcode(id: number) {
@@ -1562,57 +1428,10 @@ export function deleteChannel(id: number) {
   })
 }
 
-export function fetchAIAgents(
-  query?: Record<string, string | number | undefined>
-) {
-  return request<PageResult<AIAgent>>(
-    `/api/dashboard/ai-agent/list${toQueryString(query)}`
-  )
-}
-
-export function fetchAIAgentsAll(query?: Record<string, string | number | undefined>) {
-  return request<AIAgent[]>(
+export function fetchRuntimeStrategyOptions(query?: Record<string, string | number | undefined>) {
+  return request<RuntimeStrategyOption[]>(
     `/api/dashboard/ai-agent/list_all${toQueryString(query)}`
   )
-}
-
-export function fetchAIAgent(id: number) {
-  return request<AIAgent>(`/api/dashboard/ai-agent/${id}`)
-}
-
-export function createAIAgent(payload: CreateAIAgentPayload) {
-  return request<AIAgent>("/api/dashboard/ai-agent/create", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function updateAIAgent(payload: UpdateAIAgentPayload) {
-  return request<void>("/api/dashboard/ai-agent/update", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function deleteAIAgent(id: number) {
-  return request<void>("/api/dashboard/ai-agent/delete", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  })
-}
-
-export function updateAIAgentSort(ids: number[]) {
-  return request<void>("/api/dashboard/ai-agent/update_sort", {
-    method: "POST",
-    body: JSON.stringify(ids),
-  })
-}
-
-export function updateAIAgentStatus(id: number, status: number) {
-  return request<void>("/api/dashboard/ai-agent/update_status", {
-    method: "POST",
-    body: JSON.stringify({ id, status }),
-  })
 }
 
 export function fetchUsers(query?: Record<string, string | number | undefined>) {

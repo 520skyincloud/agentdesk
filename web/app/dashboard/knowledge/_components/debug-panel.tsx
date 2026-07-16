@@ -19,6 +19,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/i18n/provider";
 import { getKnowledgeAnswerStatusLabel } from "@/lib/knowledge-i18n";
+import { useAuth } from "@/components/auth-provider";
 
 type DebugPanelProps = {
   knowledgeBaseId: number | null;
@@ -26,6 +27,8 @@ type DebugPanelProps = {
 
 export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
   const t = useI18n();
+  const { session } = useAuth();
+  const showModelDiagnostics = Boolean(session?.isPlatformAccount);
   const [question, setQuestion] = useState("");
   const [topK, setTopK] = useState("5");
   const [scoreThreshold, setScoreThreshold] = useState("0.2");
@@ -145,7 +148,8 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
                     {getKnowledgeAnswerStatusLabel(answerResult.answerStatus, answerResult.answerStatusName, t)}
                   </Badge>
                   <span className="text-xs text-muted-foreground">
-                    {answerResult.latencyMs}ms · {answerResult.modelName || "fallback"}
+                    {answerResult.latencyMs}ms
+                    {showModelDiagnostics ? ` · ${answerResult.modelName || "fallback"}` : ""}
                   </span>
                 </div>
                 <div className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30 whitespace-pre-wrap">

@@ -5,10 +5,10 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
-	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -16,305 +16,222 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-func TestStoreAIModelSettingResolveForWxWorkConversationPrefersAccountOverride(t *testing.T) {
-	setupStoreAIModelSettingTestDB(t)
-	legacy := models.AIConfig{
-		ID:        9,
-		Name:      "legacy agent",
-		Provider:  enums.AIProviderOpenAI,
-		BaseURL:   "https://api.example.com/v1",
-		APIKey:    "sk-legacy",
-		ModelType: enums.AIModelTypeLLM,
-		ModelName: "legacy-model",
-		Status:    enums.StatusOk,
-	}
-	if err := sqls.DB().Create(&legacy).Error; err != nil {
-		t.Fatalf("create legacy config: %v", err)
-	}
-	if err := sqls.DB().Create(&models.Store{ID: 7, CompanyID: 5, Name: "store", Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	if err := sqls.DB().Create(&models.ConversationRouteState{ConversationID: 42, StoreID: 7, WxWorkInstanceID: 3}).Error; err != nil {
-		t.Fatalf("create route state: %v", err)
-	}
-	if err := sqls.DB().Create(&models.StoreAIModelSetting{
-		CompanyID: 5,
-		UsageCode: StoreAIModelUsageIntentDetectLLM,
-		Provider:  enums.AIProviderOpenAI,
-		BaseURL:   "https://company.example.com/v1",
-		APIKey:    "sk-company",
-		ModelType: enums.AIModelTypeLLM,
-		ModelName: "company-intent-model",
-		Status:    enums.StatusOk,
-	}).Error; err != nil {
-		t.Fatalf("create company setting: %v", err)
-	}
-	if err := sqls.DB().Create(&models.StoreAIModelSetting{
-		CompanyID:        5,
-		StoreID:          7,
-		WxWorkInstanceID: 3,
-		UsageCode:        StoreAIModelUsageIntentDetectLLM,
-		Provider:         enums.AIProviderOpenAI,
-		BaseURL:          "https://account.example.com/v1",
-		APIKey:           "sk-account",
-		ModelType:        enums.AIModelTypeLLM,
-		ModelName:        "account-intent-model",
-		Status:           enums.StatusOk,
-	}).Error; err != nil {
-		t.Fatalf("create account setting: %v", err)
-	}
+func TestTenantModelResolvePrefersEmployeeThenTenantDefault(t *testing.T) {
+	db := setupTenantModelAccessTestDB(t)
+	fixture := createTenantModelFixture(t, db)
+	createTenantModelGrant(t, db, fixture.tenant.ID, fixture.defaultConfig.ID)
+	createTenantModelGrant(t, db, fixture.tenant.ID, fixture.employeeConfig.ID)
+	createTenantModelAssignment(t, db, fixture.tenant.ID, 0, constants.AIModelUsageReplyLLM, fixture.defaultConfig.ID)
+	createTenantModelAssignment(t, db, fixture.tenant.ID, fixture.instance.ID, constants.AIModelUsageReplyLLM, fixture.employeeConfig.ID)
 
-	resolved, err := StoreAIModelSettingService.ResolveForConversation(42, StoreAIModelUsageIntentDetectLLM, legacy.ID)
+	resolved, err := StoreAIModelSettingService.ResolveForConversation(fixture.conversation.ID, constants.AIModelUsageReplyLLM)
 	if err != nil {
 		t.Fatalf("ResolveForConversation() error = %v", err)
 	}
-	if resolved.Config.ModelName != "account-intent-model" || resolved.Source != StoreAIModelSourceAccountOverride {
-		t.Fatalf("expected account override instead of company or legacy agent config, got %#v", resolved)
-	}
-}
-
-func TestStoreAIModelSettingResolveUsesCompanyFallback(t *testing.T) {
-	setupStoreAIModelSettingTestDB(t)
-	if err := sqls.DB().Create(&models.Store{ID: 7, CompanyID: 5, Name: "store", Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	if err := sqls.DB().Create(&models.StoreAIModelSetting{
-		CompanyID: 5,
-		UsageCode: StoreAIModelUsageReplyLLM,
-		Provider:  enums.AIProviderOpenAI,
-		BaseURL:   "https://company.example.com/v1",
-		APIKey:    "sk-company",
-		ModelType: enums.AIModelTypeLLM,
-		ModelName: "company-model",
-		Status:    enums.StatusOk,
-	}).Error; err != nil {
-		t.Fatalf("create company setting: %v", err)
+	if resolved.Config.ID != fixture.employeeConfig.ID || resolved.Source != constants.AIModelSourceEmployeeOverride {
+		t.Fatalf("expected employee override, got %#v", resolved)
 	}
 
-	resolved, err := StoreAIModelSettingService.Resolve(7, StoreAIModelUsageReplyLLM)
+	if err := db.Model(&models.StoreAIModelSetting{}).
+		Where("tenant_id = ? AND wx_work_instance_id = ?", fixture.tenant.ID, fixture.instance.ID).
+		Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable employee assignment: %v", err)
+	}
+	resolved, err = StoreAIModelSettingService.ResolveForConversation(fixture.conversation.ID, constants.AIModelUsageReplyLLM)
 	if err != nil {
-		t.Fatalf("Resolve() error = %v", err)
+		t.Fatalf("ResolveForConversation() tenant default error = %v", err)
 	}
-	if resolved.Config.ModelName != "company-model" || resolved.Source != StoreAIModelSourceCompanyOverride {
-		t.Fatalf("expected company fallback, got %#v", resolved)
+	if resolved.Config.ID != fixture.defaultConfig.ID || resolved.Source != constants.AIModelSourceTenantDefault {
+		t.Fatalf("expected tenant default, got %#v", resolved)
 	}
 }
 
-func TestStoreAIModelSettingResolveUsesWxWorkInstanceCompanyBeforeStore(t *testing.T) {
-	setupStoreAIModelSettingTestDB(t)
-	if err := sqls.DB().Create(&models.Store{ID: 7, CompanyID: 5, Name: "store", Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	if err := sqls.DB().Create(&models.WxWorkProtocolInstance{ID: 3, Guid: "guid-3", StoreID: 7, CompanyID: 9, Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create wxwork instance: %v", err)
-	}
-	if err := sqls.DB().Create(&models.ConversationRouteState{ConversationID: 42, StoreID: 7, WxWorkInstanceID: 3}).Error; err != nil {
-		t.Fatalf("create route state: %v", err)
-	}
-	if err := sqls.DB().Create(&models.StoreAIModelSetting{
-		CompanyID: 5,
-		UsageCode: StoreAIModelUsageReplyLLM,
-		Provider:  enums.AIProviderOpenAI,
-		BaseURL:   "https://store-company.example.com/v1",
-		APIKey:    "sk-store-company",
-		ModelType: enums.AIModelTypeLLM,
-		ModelName: "store-company-model",
-		Status:    enums.StatusOk,
-	}).Error; err != nil {
-		t.Fatalf("create store company setting: %v", err)
-	}
-	if err := sqls.DB().Create(&models.StoreAIModelSetting{
-		CompanyID: 9,
-		UsageCode: StoreAIModelUsageReplyLLM,
-		Provider:  enums.AIProviderOpenAI,
-		BaseURL:   "https://instance-company.example.com/v1",
-		APIKey:    "sk-instance-company",
-		ModelType: enums.AIModelTypeLLM,
-		ModelName: "instance-company-model",
-		Status:    enums.StatusOk,
-	}).Error; err != nil {
-		t.Fatalf("create instance company setting: %v", err)
-	}
+func TestTenantModelResolveUsesOnlyAuthorizedFallback(t *testing.T) {
+	db := setupTenantModelAccessTestDB(t)
+	fixture := createTenantModelFixture(t, db)
+	unauthorized := createAIConfigForTenantModelTest(t, db, "unauthorized", "unauthorized-model", 100)
+	_ = unauthorized
+	createTenantModelGrant(t, db, fixture.tenant.ID, fixture.defaultConfig.ID)
 
-	resolved, err := StoreAIModelSettingService.ResolveForConversation(42, StoreAIModelUsageReplyLLM, 0)
+	resolved, err := StoreAIModelSettingService.ResolveForTenant(fixture.tenant.ID, 0, constants.AIModelUsageReplyLLM)
 	if err != nil {
-		t.Fatalf("ResolveForConversation() error = %v", err)
+		t.Fatalf("ResolveForTenant() error = %v", err)
 	}
-	if resolved.Config.ModelName != "instance-company-model" || resolved.Source != StoreAIModelSourceCompanyOverride {
-		t.Fatalf("expected wxwork instance company setting, got %#v", resolved)
-	}
-}
-
-func TestStoreAIModelSettingResolveFallsBackToGlobalDefault(t *testing.T) {
-	setupStoreAIModelSettingTestDB(t)
-	global := models.AIConfig{
-		ID:        1,
-		Name:      "global reply",
-		Provider:  enums.AIProviderOpenAI,
-		BaseURL:   "https://api.example.com/v1",
-		APIKey:    "sk-global",
-		ModelType: enums.AIModelTypeLLM,
-		ModelName: "global-model",
-		Status:    enums.StatusOk,
-	}
-	if err := sqls.DB().Create(&global).Error; err != nil {
-		t.Fatalf("create global config: %v", err)
-	}
-
-	resolved, err := StoreAIModelSettingService.Resolve(0, StoreAIModelUsageReplyLLM)
-	if err != nil {
-		t.Fatalf("Resolve() error = %v", err)
-	}
-	if resolved.Config.ModelName != "global-model" || resolved.Source != StoreAIModelSourceGlobalDefault {
-		t.Fatalf("expected global default, got %#v", resolved)
+	if resolved.Config.ID != fixture.defaultConfig.ID || resolved.Source != constants.AIModelSourceTenantFallback {
+		t.Fatalf("expected authorized fallback, got %#v", resolved)
 	}
 }
 
-func TestStoreAIModelSettingUpdateKeepsExistingAPIKeyWhenBlank(t *testing.T) {
-	setupStoreAIModelSettingTestDB(t)
-	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin"}
-	if err := sqls.DB().Create(&models.Store{ID: 7, CompanyID: 5, Name: "store", Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	if err := sqls.DB().Create(&models.StoreAIModelSetting{
-		CompanyID:        5,
-		StoreID:          7,
-		WxWorkInstanceID: 3,
-		UsageCode:        StoreAIModelUsageReplyLLM,
-		Provider:         enums.AIProviderOpenAI,
-		BaseURL:          "https://old.example.com/v1",
-		APIKey:           "sk-old",
-		ModelType:        enums.AIModelTypeLLM,
-		ModelName:        "old-model",
-		Status:           enums.StatusOk,
-	}).Error; err != nil {
-		t.Fatalf("create setting: %v", err)
-	}
+func TestTenantModelAccessSupportsMultipleGrantsAndBlocksUsedRevocation(t *testing.T) {
+	db := setupTenantModelAccessTestDB(t)
+	fixture := createTenantModelFixture(t, db)
+	operator := &dto.AuthPrincipal{UserID: 1, Username: "platform-admin", IsPlatformAccount: true}
 
-	item := request.StoreAIModelSettingUpdateRequest{
-		UsageCode: StoreAIModelUsageReplyLLM,
-		Enabled:   true,
-		Provider:  enums.AIProviderOpenAI,
-		BaseURL:   "https://new.example.com/v1",
-		ModelType: enums.AIModelTypeLLM,
-		ModelName: "new-model",
-	}
-	fingerprint := storeAIModelSettingFingerprint(5, 7, 3, item, "sk-old", enums.AIModelTypeLLM)
-	item.TestToken = "test-token-existing-key"
-	StoreAIModelSettingService.testTokens.Store(item.TestToken, storeAIModelTestToken{
-		CompanyID:        5,
-		StoreID:          7,
-		WxWorkInstanceID: 3,
-		UsageCode:        StoreAIModelUsageReplyLLM,
-		Fingerprint:      fingerprint,
-		TestedAt:         time.Now(),
-		LatencyMS:        12,
-		ExpiresAt:        time.Now().Add(time.Minute),
-	})
-	defer StoreAIModelSettingService.testTokens.Delete(item.TestToken)
-
-	err := StoreAIModelSettingService.UpdateStoreSettings(request.UpdateStoreAIModelSettingsRequest{
-		StoreID:          7,
-		WxWorkInstanceID: 3,
-		Settings:         []request.StoreAIModelSettingUpdateRequest{item},
+	err := StoreAIModelSettingService.UpdateTenantAccess(request.UpdateTenantAIModelAccessRequest{
+		TenantID:           fixture.tenant.ID,
+		GrantedAIConfigIDs: []int64{fixture.defaultConfig.ID, fixture.employeeConfig.ID},
+		Defaults:           []request.TenantAIModelDefaultRequest{{UsageCode: constants.AIModelUsageReplyLLM, AIConfigID: fixture.defaultConfig.ID}},
 	}, operator)
 	if err != nil {
-		t.Fatalf("UpdateStoreSettings() error = %v", err)
+		t.Fatalf("UpdateTenantAccess() error = %v", err)
 	}
-	setting := repositories.StoreAIModelSettingRepository.Take(sqls.DB(), "company_id = ? AND wx_work_instance_id = ? AND usage_code = ?", 5, 3, StoreAIModelUsageReplyLLM)
-	if setting == nil {
-		t.Fatalf("expected setting")
+	employeeSetting := &models.StoreAIModelSetting{
+		TenantID: fixture.tenant.ID, StoreID: 999, WxWorkInstanceID: fixture.instance.ID,
+		UsageCode: constants.AIModelUsageReplyLLM, AIConfigID: fixture.defaultConfig.ID,
+		Status: enums.StatusDisabled,
 	}
-	if setting.APIKey != "sk-old" || setting.BaseURL != "https://new.example.com/v1" || setting.ModelName != "new-model" {
-		t.Fatalf("unexpected setting after update: %#v", setting)
+	if err := db.Create(employeeSetting).Error; err != nil {
+		t.Fatalf("create employee setting: %v", err)
 	}
-}
+	if err := StoreAIModelSettingService.UpdateEmployeeAssignments(request.UpdateTenantAIModelAssignmentsRequest{
+		TenantID: fixture.tenant.ID, WxWorkInstanceID: fixture.instance.ID,
+		Assignments: []request.TenantAIModelDefaultRequest{{UsageCode: constants.AIModelUsageReplyLLM, AIConfigID: fixture.employeeConfig.ID}},
+	}, operator); err != nil {
+		t.Fatalf("UpdateEmployeeAssignments() error = %v", err)
+	}
 
-func TestStoreAIModelSettingUpdateRequiresMatchingConnectionTest(t *testing.T) {
-	setupStoreAIModelSettingTestDB(t)
-	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin"}
-	if err := sqls.DB().Create(&models.Store{ID: 7, CompanyID: 5, Name: "store", Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	item := request.StoreAIModelSettingUpdateRequest{
-		UsageCode: StoreAIModelUsageReplyLLM,
-		Enabled:   true,
-		Provider:  enums.AIProviderOpenAI,
-		BaseURL:   "https://api.example.com/v1",
-		APIKey:    "sk-new",
-		ModelType: enums.AIModelTypeLLM,
-		ModelName: "new-model",
-	}
-	err := StoreAIModelSettingService.UpdateStoreSettings(request.UpdateStoreAIModelSettingsRequest{
-		StoreID:          7,
-		WxWorkInstanceID: 3,
-		Settings:         []request.StoreAIModelSettingUpdateRequest{item},
+	err = StoreAIModelSettingService.UpdateTenantAccess(request.UpdateTenantAIModelAccessRequest{
+		TenantID:           fixture.tenant.ID,
+		GrantedAIConfigIDs: []int64{fixture.defaultConfig.ID},
+		Defaults:           []request.TenantAIModelDefaultRequest{{UsageCode: constants.AIModelUsageReplyLLM, AIConfigID: fixture.defaultConfig.ID}},
 	}, operator)
 	if err == nil {
-		t.Fatal("expected update without a verified test to fail")
+		t.Fatal("expected revocation of an employee-assigned model to fail")
+	}
+
+	var setting models.StoreAIModelSetting
+	if err := db.Where("tenant_id = ? AND wx_work_instance_id = ? AND usage_code = ?", fixture.tenant.ID, fixture.instance.ID, constants.AIModelUsageReplyLLM).Take(&setting).Error; err != nil {
+		t.Fatalf("load employee assignment: %v", err)
+	}
+	if setting.AIConfigID != fixture.employeeConfig.ID || setting.StoreID != 0 || setting.APIKey != "" || setting.BaseURL != "" || setting.Provider != "" || setting.ModelName != "" || setting.MaxContextTokens != 0 || setting.Remark != "" {
+		t.Fatalf("assignment must only reference platform AIConfig, got %#v", setting)
+	}
+	if setting.APIMode != "chat_completions" || setting.TimeoutMS != 30000 {
+		t.Fatalf("legacy model parameters were not reset: %#v", setting)
 	}
 }
 
-func TestStoreAIModelSettingUpdateRejectsPersistedTestWithoutCurrentToken(t *testing.T) {
-	setupStoreAIModelSettingTestDB(t)
-	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin"}
-	if err := sqls.DB().Create(&models.Store{ID: 7, CompanyID: 5, Name: "store", Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create store: %v", err)
+func TestTenantModelResolveUsesAuthorizedSpeechRecognitionModel(t *testing.T) {
+	db := setupTenantModelAccessTestDB(t)
+	fixture := createTenantModelFixture(t, db)
+	asr := &models.AIConfig{
+		Name: "asr", Provider: enums.AIProviderOpenAI, BaseURL: "https://example.com/v1", APIKey: "sk-asr",
+		ModelType: enums.AIModelTypeASR, ModelName: "asr-model", Status: enums.StatusOk,
 	}
-	item := request.StoreAIModelSettingUpdateRequest{
-		UsageCode: StoreAIModelUsageReplyLLM,
-		Enabled:   true,
-		Provider:  enums.AIProviderOpenAI,
-		BaseURL:   "https://api.example.com/v1",
-		ModelType: enums.AIModelTypeLLM,
-		ModelName: "new-model",
+	if err := db.Create(asr).Error; err != nil {
+		t.Fatalf("create ASR config: %v", err)
 	}
-	fingerprint := storeAIModelSettingFingerprint(5, 7, 3, item, "sk-old", enums.AIModelTypeLLM)
-	testedAt := time.Now()
-	if err := sqls.DB().Create(&models.StoreAIModelSetting{
-		CompanyID:         5,
-		StoreID:           7,
-		WxWorkInstanceID:  3,
-		UsageCode:         StoreAIModelUsageReplyLLM,
-		Provider:          item.Provider,
-		BaseURL:           item.BaseURL,
-		APIKey:            "sk-old",
-		ModelType:         item.ModelType,
-		ModelName:         item.ModelName,
-		Status:            enums.StatusOk,
-		ConfigFingerprint: fingerprint,
-		LastTestStatus:    "passed",
-		LastTestedAt:      &testedAt,
-	}).Error; err != nil {
-		t.Fatalf("create setting: %v", err)
+	createTenantModelGrant(t, db, fixture.tenant.ID, asr.ID)
+	createTenantModelAssignment(t, db, fixture.tenant.ID, fixture.instance.ID, constants.AIModelUsageSpeechRecognition, asr.ID)
+	message := &models.Message{ConversationID: fixture.conversation.ID}
+	resolved, err := StoreAIModelSettingService.ResolveForMessage(message, constants.AIModelUsageSpeechRecognition)
+	if err != nil {
+		t.Fatalf("ResolveForMessage() error = %v", err)
+	}
+	if resolved.Config.ID != asr.ID || resolved.Source != constants.AIModelSourceEmployeeOverride {
+		t.Fatalf("expected employee ASR override, got %#v", resolved)
+	}
+}
+
+func TestTenantModelUpdatesRequirePlatformAccountAndAuthorizedType(t *testing.T) {
+	db := setupTenantModelAccessTestDB(t)
+	fixture := createTenantModelFixture(t, db)
+	tenantOperator := &dto.AuthPrincipal{UserID: 2, Username: "tenant-admin", ActiveTenantID: fixture.tenant.ID}
+	if err := StoreAIModelSettingService.UpdateTenantAccess(request.UpdateTenantAIModelAccessRequest{
+		TenantID: fixture.tenant.ID, GrantedAIConfigIDs: []int64{fixture.defaultConfig.ID},
+	}, tenantOperator); err == nil {
+		t.Fatal("expected tenant account to be rejected")
 	}
 
-	err := StoreAIModelSettingService.UpdateStoreSettings(request.UpdateStoreAIModelSettingsRequest{
-		StoreID:          7,
-		WxWorkInstanceID: 3,
-		Settings:         []request.StoreAIModelSettingUpdateRequest{item},
-	}, operator)
+	vision := &models.AIConfig{Name: "vision", Provider: enums.AIProviderOpenAI, BaseURL: "https://example.com/v1", APIKey: "sk-vision", ModelType: enums.AIModelTypeVision, ModelName: "vision-model", Status: enums.StatusOk}
+	if err := db.Create(vision).Error; err != nil {
+		t.Fatalf("create vision config: %v", err)
+	}
+	platform := &dto.AuthPrincipal{UserID: 1, Username: "platform", IsPlatformAccount: true}
+	err := StoreAIModelSettingService.UpdateTenantAccess(request.UpdateTenantAIModelAccessRequest{
+		TenantID:           fixture.tenant.ID,
+		GrantedAIConfigIDs: []int64{vision.ID},
+		Defaults:           []request.TenantAIModelDefaultRequest{{UsageCode: constants.AIModelUsageReplyLLM, AIConfigID: vision.ID}},
+	}, platform)
 	if err == nil {
-		t.Fatal("expected persisted test result without a current test token to fail")
+		t.Fatal("expected model type mismatch to fail")
 	}
 }
 
-func setupStoreAIModelSettingTestDB(t *testing.T) *gorm.DB {
+type tenantModelFixture struct {
+	tenant         models.Tenant
+	instance       models.WxWorkProtocolInstance
+	conversation   models.Conversation
+	defaultConfig  models.AIConfig
+	employeeConfig models.AIConfig
+}
+
+func createTenantModelFixture(t *testing.T, db *gorm.DB) tenantModelFixture {
+	t.Helper()
+	fixture := tenantModelFixture{
+		tenant: models.Tenant{TenantCode: "tenant-" + t.Name(), LegalName: "Tenant", ShortName: "Tenant", RegistrationType: "credit_code", RegistrationNo: "REG-" + t.Name(), Status: enums.StatusOk},
+	}
+	if err := db.Create(&fixture.tenant).Error; err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	fixture.instance = models.WxWorkProtocolInstance{TenantID: fixture.tenant.ID, Guid: "guid-" + t.Name(), Status: enums.StatusOk}
+	if err := db.Create(&fixture.instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	fixture.conversation = models.Conversation{TenantID: fixture.tenant.ID, Status: enums.IMConversationStatusAIServing, LastActiveAt: time.Now()}
+	if err := db.Create(&fixture.conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	route := &models.ConversationRouteState{TenantID: fixture.tenant.ID, ConversationID: fixture.conversation.ID, WxWorkInstanceID: fixture.instance.ID}
+	if err := db.Create(route).Error; err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	fixture.defaultConfig = *createAIConfigForTenantModelTest(t, db, "default", "default-model", 10)
+	fixture.employeeConfig = *createAIConfigForTenantModelTest(t, db, "employee", "employee-model", 20)
+	return fixture
+}
+
+func createAIConfigForTenantModelTest(t *testing.T, db *gorm.DB, name, model string, sortNo int) *models.AIConfig {
+	t.Helper()
+	item := &models.AIConfig{Name: name, Provider: enums.AIProviderOpenAI, BaseURL: "https://example.com/v1", APIKey: "sk-test", ModelType: enums.AIModelTypeLLM, ModelName: model, SortNo: sortNo, Status: enums.StatusOk}
+	if err := db.Create(item).Error; err != nil {
+		t.Fatalf("create AI config: %v", err)
+	}
+	return item
+}
+
+func createTenantModelGrant(t *testing.T, db *gorm.DB, tenantID, configID int64) {
+	t.Helper()
+	if err := db.Create(&models.TenantAIModelGrant{TenantID: tenantID, AIConfigID: configID, Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create grant: %v", err)
+	}
+}
+
+func createTenantModelAssignment(t *testing.T, db *gorm.DB, tenantID, instanceID int64, usageCode string, configID int64) {
+	t.Helper()
+	if err := db.Create(&models.StoreAIModelSetting{TenantID: tenantID, WxWorkInstanceID: instanceID, UsageCode: usageCode, AIConfigID: configID, Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+}
+
+func setupTenantModelAccessTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
 		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
 	})
 	if err != nil {
-		t.Fatalf("open sqlite error = %v", err)
+		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.AIConfig{}, &models.Store{}, &models.WxWorkProtocolInstance{}, &models.StoreAIModelSetting{}, &models.ConversationRouteState{}); err != nil {
-		t.Fatalf("auto migrate error = %v", err)
+	if err := db.AutoMigrate(
+		&models.Tenant{}, &models.AIConfig{}, &models.TenantAIModelGrant{}, &models.StoreAIModelSetting{},
+		&models.Store{}, &models.WxWorkProtocolInstance{}, &models.Conversation{}, &models.ConversationRouteState{}, &models.AIUsageEvent{},
+	); err != nil {
+		t.Fatalf("auto migrate: %v", err)
 	}
 	sqls.SetDB(db)
 	t.Cleanup(func() {
 		sqls.SetDB(nil)
-		sqlDB, err := db.DB()
-		if err == nil {
+		if sqlDB, err := db.DB(); err == nil {
 			_ = sqlDB.Close()
 		}
 	})

@@ -43,7 +43,8 @@ const PERMISSION_RESOURCE_LABELS: Record<string, { singular: string; plural: str
   agentTeam: { singular: "agent team", plural: "agent teams" },
   agentTeamSchedule: { singular: "agent team schedule", plural: "agent team schedules" },
   asset: { singular: "file asset", plural: "file assets" },
-  aiAgent: { singular: "AI Agent", plural: "AI Agents" },
+  aiAgent: { singular: "reception strategy", plural: "reception strategies" },
+  runtimeStrategy: { singular: "reception strategy", plural: "reception strategies" },
   aiConfig: { singular: "AI configuration", plural: "AI configurations" },
   knowledgeBase: { singular: "knowledge base", plural: "knowledge bases" },
   knowledgeDocument: { singular: "knowledge document", plural: "knowledge documents" },
@@ -105,7 +106,7 @@ export function getPermissionGroupName(groupName: string | undefined, locale: st
 }
 
 function sentenceCase(value: string) {
-  if (value === "AI Agents" || value === "MCP tools") {
+  if (value === "MCP tools") {
     return value
   }
   return value.charAt(0).toUpperCase() + value.slice(1)

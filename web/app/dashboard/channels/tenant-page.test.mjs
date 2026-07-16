@@ -7,6 +7,10 @@ const navigationSource = await readFile(
   new URL("../../../lib/navigation.tsx", import.meta.url),
   "utf8"
 )
+const modelAccessSource = await readFile(
+  new URL("./_components/model-access.tsx", import.meta.url),
+  "utf8"
+)
 
 test("legacy channels page is replaced by tenant company management", () => {
   assert.match(pageSource, /fetchTenants/)
@@ -43,4 +47,16 @@ test("tenant rows show isolated resource counts and latest activity", () => {
   assert.match(pageSource, /item\.agentTeamCount/)
   assert.match(pageSource, /formatDateTime\(item\.lastActiveAt\)/)
   assert.match(pageSource, /tenant\.columnResources/)
+})
+
+test("tenant model access reuses the tenant action menu with explicit permissions", () => {
+  assert.match(pageSource, /permissions\.has\("tenantModelGrant\.view"\)/)
+  assert.match(pageSource, /permissions\.has\("tenantModelGrant\.update"\)/)
+  assert.match(pageSource, /key: "model-access"/)
+  assert.match(pageSource, /label: "模型授权"/)
+  assert.match(pageSource, /<TenantModelAccessDialog/)
+  assert.match(modelAccessSource, /fetchTenantAIModelAccess\(tenant\.id\)/)
+  assert.match(modelAccessSource, /grantedAiConfigIds: \[\.\.\.selectedIds\]/)
+  assert.match(modelAccessSource, /defaults: access\.usages\.map/)
+  assert.doesNotMatch(modelAccessSource, /API Key|Base URL/)
 })

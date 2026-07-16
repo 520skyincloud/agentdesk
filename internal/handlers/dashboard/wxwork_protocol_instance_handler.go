@@ -254,63 +254,6 @@ func WxWorkProtocolInstancePostUpdate_ai_settings(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
-func WxWorkProtocolInstancePostStore_ai_model_settings(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	req := request.UpdateStoreAIModelSettingsRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	if !requireStoreAIModelScopeAccess(ctx, operator, req) {
-		return
-	}
-	httpx.WriteJSON(ctx, services.StoreAIModelSettingService.ListResponses(req.CompanyID, req.StoreID, req.WxWorkInstanceID))
-}
-
-func WxWorkProtocolInstancePostUpdate_store_ai_model_settings(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	req := request.UpdateStoreAIModelSettingsRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	if !requireStoreAIModelScopeAccess(ctx, operator, req) {
-		return
-	}
-	if err := services.StoreAIModelSettingService.UpdateStoreSettings(req, operator); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, services.StoreAIModelSettingService.ListResponses(req.CompanyID, req.StoreID, req.WxWorkInstanceID))
-}
-
-func WxWorkProtocolInstancePostTest_store_ai_model_setting(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	req := request.TestStoreAIModelSettingRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	resp, err := services.StoreAIModelSettingService.TestStoreSetting(req, operator)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, resp)
-}
-
 func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
 	if err != nil {
@@ -663,63 +606,6 @@ func requireWxWorkInstanceAccess(ctx *gin.Context, operator *dto.AuthPrincipal, 
 	if !services.AgentTeamScopeService.CanViewWxWorkInstance(operator, instanceID) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该企微员工号实例"))
 		return false
-	}
-	return true
-}
-
-func requireStoreAIModelScopeAccess(ctx *gin.Context, operator *dto.AuthPrincipal, req request.UpdateStoreAIModelSettingsRequest) bool {
-	if !requireWxWorkTenantContext(ctx) {
-		return false
-	}
-	if req.CompanyID > 0 {
-		company := services.CompanyService.GetInTenant(req.CompanyID, operator)
-		if company == nil || company.Status == enums.StatusDeleted {
-			httpx.WriteJSON(ctx, web.JsonErrorMsg("公司不存在"))
-			return false
-		}
-	}
-	if req.StoreID > 0 {
-		store := services.StoreService.GetInTenant(req.StoreID, operator.ActiveTenantID)
-		if store == nil || store.Status == enums.StatusDeleted {
-			httpx.WriteJSON(ctx, web.JsonErrorMsg("门店不存在"))
-			return false
-		}
-		if req.CompanyID > 0 && store.CompanyID > 0 && store.CompanyID != req.CompanyID {
-			httpx.WriteJSON(ctx, web.JsonErrorMsg("门店不属于所选公司"))
-			return false
-		}
-	}
-	if req.WxWorkInstanceID > 0 {
-		if !requireWxWorkInstanceAccess(ctx, operator, req.WxWorkInstanceID) {
-			return false
-		}
-		instance := services.WxWorkProtocolInstanceService.GetInTenant(req.WxWorkInstanceID, operator)
-		if instance.CompanyID > 0 {
-			company := services.CompanyService.GetInTenant(instance.CompanyID, operator)
-			if company == nil || company.Status == enums.StatusDeleted {
-				httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号绑定的公司不属于当前接入公司"))
-				return false
-			}
-		}
-		if instance.StoreID > 0 {
-			store := services.StoreService.GetInTenant(instance.StoreID, operator.ActiveTenantID)
-			if store == nil || store.Status == enums.StatusDeleted {
-				httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号绑定的门店不属于当前接入公司"))
-				return false
-			}
-			if instance.CompanyID > 0 && store.CompanyID > 0 && store.CompanyID != instance.CompanyID {
-				httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号绑定的公司与门店不一致"))
-				return false
-			}
-		}
-		if req.CompanyID > 0 && instance.CompanyID > 0 && instance.CompanyID != req.CompanyID {
-			httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号不属于所选公司"))
-			return false
-		}
-		if req.StoreID > 0 && instance.StoreID > 0 && instance.StoreID != req.StoreID {
-			httpx.WriteJSON(ctx, web.JsonErrorMsg("企微员工号不属于所选门店"))
-			return false
-		}
 	}
 	return true
 }

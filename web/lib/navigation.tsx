@@ -293,12 +293,6 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         requiredPermission: "channel.view",
       },
       {
-        titleKey: "nav.aiAgents",
-        url: "/dashboard/ai-agents",
-        icon: <BotMessageSquareIcon />,
-        requiredPermission: "aiAgent.view",
-      },
-      {
         titleKey: "nav.knowledge",
         url: "/dashboard/knowledge",
         icon: <FileTextIcon />,
@@ -323,12 +317,6 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         requiredPermission: "tag.view",
       },
       {
-        titleKey: "nav.aiConfigs",
-        url: "/dashboard/ai-configs",
-        icon: <BrainCircuitIcon />,
-        requiredPermission: "aiConfig.view",
-      },
-      {
         titleKey: "nav.skillDefinition",
         url: "/dashboard/skill-definition",
         icon: <MessageSquareCodeIcon />,
@@ -339,12 +327,6 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         url: "/dashboard/reply-intent-configs",
         icon: <SlidersHorizontalIcon />,
         requiredPermission: "aiConfig.view",
-      },
-      {
-        titleKey: "nav.agentRunLogs",
-        url: "/dashboard/agent-run-logs",
-        icon: <ActivitySquareIcon />,
-        requiredPermission: "conversation.view",
       },
     ],
   },
@@ -384,6 +366,18 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         url: "/dashboard/channels",
         icon: <Building2Icon />,
         requiredPermission: "tenant.view",
+      },
+      {
+        titleKey: "nav.aiConfigs",
+        url: "/dashboard/ai-configs",
+        icon: <BrainCircuitIcon />,
+        requiredPermission: "aiConfig.view",
+      },
+      {
+        titleKey: "nav.agentRunLogs",
+        url: "/dashboard/agent-run-logs",
+        icon: <ActivitySquareIcon />,
+        requiredPermission: "agentRunLog.view",
       },
       {
         titleKey: "nav.storageSettings",

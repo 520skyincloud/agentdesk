@@ -26,11 +26,8 @@ test("company account navigation follows channel view permission", () => {
   assert.match(pageSource, /key: "accounts"/)
 })
 
-test("company model settings separate read and update permissions", () => {
-  assert.match(pageSource, /permissionSet\.has\("aiConfig\.view"\)/)
-  assert.match(pageSource, /permissionSet\.has\("aiConfig\.update"\)/)
-  assert.match(pageSource, /async function openCompanyModelSettings[\s\S]*?if \(!canViewModelSettings\)/)
-  assert.match(pageSource, /async function saveCompanyModelSettings[\s\S]*?if \(!canUpdateModelSettings\)/)
-  assert.match(pageSource, /if \(canViewModelSettings\) \{\s*rowActions\.push\(/)
-  assert.match(pageSource, /canSave=\{canUpdateModelSettings\}/)
+test("internal company page does not expose tenant model credentials", () => {
+  assert.doesNotMatch(pageSource, /aiConfig\.(view|update)/)
+  assert.doesNotMatch(pageSource, /CompanyAIModelSettingsDialog/)
+  assert.doesNotMatch(pageSource, /API Key|Base URL|模型设置/)
 })

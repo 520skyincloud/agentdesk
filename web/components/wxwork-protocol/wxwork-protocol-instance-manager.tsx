@@ -5,6 +5,7 @@ import { CopyIcon, LinkIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon,
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
+import { WxWorkModelAssignmentDialog } from "@/components/wxwork-protocol/wxwork-model-assignment-dialog"
 import {
   createDashboardStatusColumn,
   DashboardCrudPage,
@@ -15,7 +16,6 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -23,26 +23,20 @@ import {
   createWxWorkProtocolReplacementSetup,
   createWxWorkProtocolInstance,
   deleteWxWorkProtocolInstance,
-  fetchAIConfigsAll,
   fetchChannels,
   fetchKnowledgeBasesAll,
   fetchReplyIntentProfiles,
-  fetchStoreAIModelSettings,
   fetchWxWorkProtocolInstance,
   fetchWxWorkProtocolInstances,
   fetchWxWorkProtocolRoomList,
   fetchWxWorkProtocolRoomMembers,
   startWxWorkProtocolLogin,
-  testStoreAIModelSetting,
-  updateStoreAIModelSettings,
   updateWxWorkProtocolInstance,
   uploadAsset,
-  type AIConfig,
   type AdminChannel,
   type CreateWxWorkProtocolInstancePayload,
   type KnowledgeBase,
   type ReplyIntentProfile,
-  type StoreAIModelSetting,
   type WxWorkProtocolInstance,
   type WxWorkProtocolRoomMemberOption,
   type WxWorkProtocolRoomOption,
@@ -271,293 +265,6 @@ function StoreRoomPicker({
         )}
       </div>
     </div>
-  )
-}
-
-function StoreAIModelSettingsDialog({
-  open,
-  instance,
-  settings,
-  aiConfigs,
-  loading,
-  saving,
-  testingUsageCode,
-  canSave,
-  onOpenChange,
-  onChange,
-  onSubmit,
-  onTest,
-}: {
-  open: boolean
-  instance: WxWorkProtocolInstance | null
-  settings: StoreAIModelSetting[]
-  aiConfigs: AIConfig[]
-  loading: boolean
-  saving: boolean
-  testingUsageCode: string
-  canSave: boolean
-  onOpenChange: (open: boolean) => void
-  onChange: (settings: StoreAIModelSetting[]) => void
-  onSubmit: () => void
-  onTest: (setting: StoreAIModelSetting) => void
-}) {
-  function updateSetting(usageCode: string, patch: Partial<StoreAIModelSetting>) {
-    onChange(settings.map((item) => (item.usageCode === usageCode ? { ...item, ...patch } : item)))
-  }
-
-  function pickGlobalDefault(setting: StoreAIModelSetting) {
-    const list = aiConfigs.filter((config) => config.status === Status.Ok && config.modelType === setting.expectedModelType)
-    if (setting.usageCode === "intent_detect_llm") {
-      return list.find((config) => config.intentDetectEnabled) || list[0]
-    }
-    return list[0]
-  }
-
-  function copyGlobalDefault(setting: StoreAIModelSetting) {
-    const config = pickGlobalDefault(setting)
-    if (!config) {
-      toast.error("没有可复制的全局默认模型配置")
-      return
-    }
-    updateSetting(setting.usageCode, {
-      enabled: true,
-      provider: config.provider || "openai",
-      baseUrl: config.baseUrl || "",
-      apiKey: "",
-      apiMode: setting.expectedModelType === "vision" ? "chat_completions" : (config.apiMode || "chat_completions"),
-      modelType: setting.expectedModelType,
-      modelName: config.modelName || "",
-      dimension: config.dimension || 0,
-      maxContextTokens: config.maxContextTokens || 0,
-      maxOutputTokens: config.maxOutputTokens || 0,
-      timeoutMs: config.timeoutMs || 30000,
-      maxRetryCount: config.maxRetryCount || 0,
-      rpmLimit: config.rpmLimit || 0,
-      tpmLimit: config.tpmLimit || 0,
-      remark: setting.remark || "",
-    })
-    toast.success(config.hasApiKey ? "已复制全局非密钥参数，请在此处填写本覆盖的 API Key" : "已复制全局参数，请补齐 API Key")
-  }
-
-  function updateNumberSetting(usageCode: string, key: keyof StoreAIModelSetting, value: string) {
-    updateSetting(usageCode, { [key]: Number(value || 0) } as Partial<StoreAIModelSetting>)
-  }
-
-  function sourceLabel(source: string) {
-    if (source === "account_override") return "当前员工号设置"
-    if (source === "company_override") return "公司默认"
-    if (source === "agent_legacy") return "历史 Agent"
-    return "系统全局默认"
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[88vh] max-w-5xl overflow-y-auto rounded-3xl p-5">
-        <DialogHeader>
-          <DialogTitle>模型设置</DialogTitle>
-          <DialogDescription>
-            {instance
-              ? `${repairMojibakeText(instance.employeeName) || instance.guid} 的模型设置。优先级：当前员工号设置 > 公司默认 > 系统全局默认。`
-              : "按当前企微员工号设置回复链路模型；企微员工号就是门店账号。"}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] p-3 text-sm leading-6 text-muted-foreground">
-          当前设置只影响这个企微员工号。选择“独立配置”后填写真实地址、密钥和模型名；每次改动参数都必须重新测试通过才能保存。
-        </div>
-        {loading ? (
-          <div className="mt-3 rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] p-6 text-sm text-muted-foreground">正在读取模型设置...</div>
-        ) : (
-          <div className="mt-3 grid gap-3">
-            {settings.map((setting) => {
-              const independent = setting.enabled
-              const isTesting = testingUsageCode === setting.usageCode
-              return (
-                <div key={setting.usageCode} className="rounded-2xl border border-[#dbe7f6] bg-white p-4 shadow-[0_8px_24px_rgba(35,74,122,0.05)]">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0 flex-1">
-                      <div className="font-semibold text-foreground">{setting.usageName}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        用途：{setting.usageCode} · 类型：{setting.expectedModelType}
-                      </div>
-                      <div className="mt-2 text-xs leading-5 text-muted-foreground">
-                        当前生效：{setting.effectiveModelName || setting.effectiveAiConfigName || "-"}（{sourceLabel(setting.effectiveModelSource)}）
-                        {setting.effectiveBaseUrl ? ` · ${setting.effectiveBaseUrl}` : ""}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-2">
-                      <div className="flex overflow-hidden rounded-xl border border-[#dbe7f6]">
-                        <Button type="button" size="sm" variant={independent ? "ghost" : "default"} className="rounded-none" disabled={!canSave} onClick={() => updateSetting(setting.usageCode, { enabled: false, testToken: "" })}>
-                          继承默认
-                        </Button>
-                        <Button type="button" size="sm" variant={independent ? "default" : "ghost"} className="rounded-none" disabled={!canSave} onClick={() => updateSetting(setting.usageCode, { enabled: true, testToken: "", apiMode: setting.expectedModelType === "vision" ? "chat_completions" : setting.apiMode })}>
-                          独立配置
-                        </Button>
-                      </div>
-                      {independent ? (
-                        <>
-                          <Button type="button" variant="outline" size="sm" className="rounded-xl" disabled={!canSave || isTesting} onClick={() => copyGlobalDefault(setting)}>
-                            复制系统默认参数
-                          </Button>
-                          <Button type="button" variant="outline" size="sm" className="rounded-xl" disabled={!canSave || isTesting} onClick={() => onTest(setting)}>
-                            {isTesting ? "测试中..." : "测试连接"}
-                          </Button>
-                        </>
-                      ) : null}
-                    </div>
-                  </div>
-                  {independent ? (
-                    <div className="mt-3 text-xs leading-5 text-muted-foreground">
-                      {setting.testToken ? "本次参数已测试通过，保存后生效。" : setting.lastTestStatus === "passed" ? `上次测试通过：${setting.lastTestedAt || "-"} · ${setting.lastTestLatencyMs || 0}ms` : "请填写参数后点击“测试连接”。"}
-                    </div>
-                  ) : null}
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-muted-foreground">供应商</div>
-                      <Input
-                        value={setting.provider || "openai"}
-                        disabled={!canSave || !setting.enabled}
-                        onChange={(event) => updateSetting(setting.usageCode, { provider: event.target.value })}
-                        className="rounded-xl border-[#dbe7f6]"
-                        placeholder="openai"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-muted-foreground">API 模式</div>
-                      <OptionCombobox
-                        value={setting.apiMode || "chat_completions"}
-                        options={setting.expectedModelType === "vision" ? [
-                          { value: "chat_completions", label: "Chat Completions" },
-                        ] : [
-                          { value: "chat_completions", label: "Chat Completions" },
-                          { value: "responses", label: "Responses API" },
-                        ]}
-                        placeholder="选择 API 模式"
-                        triggerClassName="h-10 rounded-xl border-[#dbe7f6] bg-white"
-                        disabled={!canSave || !setting.enabled}
-                        onChange={(value) => updateSetting(setting.usageCode, { apiMode: value })}
-                      />
-                    </div>
-                    <div className="space-y-1 md:col-span-2">
-                      <div className="text-xs font-medium text-muted-foreground">Base URL</div>
-                      <Input
-                        value={setting.baseUrl || ""}
-                        disabled={!canSave || !setting.enabled}
-                        onChange={(event) => updateSetting(setting.usageCode, { baseUrl: event.target.value })}
-                        className="rounded-xl border-[#dbe7f6]"
-                        placeholder="https://api.openai.com/v1"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-muted-foreground">模型名</div>
-                      <Input
-                        value={setting.modelName || ""}
-                        disabled={!canSave || !setting.enabled}
-                        onChange={(event) => updateSetting(setting.usageCode, { modelName: event.target.value, modelType: setting.expectedModelType })}
-                        className="rounded-xl border-[#dbe7f6]"
-                        placeholder="gpt-4.1-mini / qwen-vl-plus"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-muted-foreground">API Key</div>
-                      <Input
-                        type="password"
-                        value={setting.apiKey || ""}
-                        disabled={!canSave || !setting.enabled}
-                        onChange={(event) => updateSetting(setting.usageCode, { apiKey: event.target.value })}
-                        className="rounded-xl border-[#dbe7f6]"
-                        placeholder={setting.hasApiKey ? "已设置，留空不修改" : "请输入 API Key"}
-                      />
-                    </div>
-                    <div className="grid gap-3 md:col-span-2 md:grid-cols-4">
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-muted-foreground">上下文 Token</div>
-                        <Input
-                          type="number"
-                          value={setting.maxContextTokens || 0}
-                          disabled={!canSave || !setting.enabled}
-                          onChange={(event) => updateNumberSetting(setting.usageCode, "maxContextTokens", event.target.value)}
-                          className="rounded-xl border-[#dbe7f6]"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-muted-foreground">输出 Token</div>
-                        <Input
-                          type="number"
-                          value={setting.maxOutputTokens || 0}
-                          disabled={!canSave || !setting.enabled}
-                          onChange={(event) => updateNumberSetting(setting.usageCode, "maxOutputTokens", event.target.value)}
-                          className="rounded-xl border-[#dbe7f6]"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-muted-foreground">超时 ms</div>
-                        <Input
-                          type="number"
-                          value={setting.timeoutMs || 30000}
-                          disabled={!canSave || !setting.enabled}
-                          onChange={(event) => updateNumberSetting(setting.usageCode, "timeoutMs", event.target.value)}
-                          className="rounded-xl border-[#dbe7f6]"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-muted-foreground">重试次数</div>
-                        <Input
-                          type="number"
-                          value={setting.maxRetryCount || 0}
-                          disabled={!canSave || !setting.enabled}
-                          onChange={(event) => updateNumberSetting(setting.usageCode, "maxRetryCount", event.target.value)}
-                          className="rounded-xl border-[#dbe7f6]"
-                        />
-                      </div>
-                    </div>
-                    <div className="grid gap-3 md:col-span-2 md:grid-cols-3">
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-muted-foreground">向量维度</div>
-                        <Input
-                          type="number"
-                          value={setting.dimension || 0}
-                          disabled={!canSave || !setting.enabled || setting.expectedModelType !== "embedding"}
-                          onChange={(event) => updateNumberSetting(setting.usageCode, "dimension", event.target.value)}
-                          className="rounded-xl border-[#dbe7f6]"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-muted-foreground">RPM 限制</div>
-                        <Input
-                          type="number"
-                          value={setting.rpmLimit || 0}
-                          disabled={!canSave || !setting.enabled}
-                          onChange={(event) => updateNumberSetting(setting.usageCode, "rpmLimit", event.target.value)}
-                          className="rounded-xl border-[#dbe7f6]"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-muted-foreground">TPM 限制</div>
-                        <Input
-                          type="number"
-                          value={setting.tpmLimit || 0}
-                          disabled={!canSave || !setting.enabled}
-                          onChange={(event) => updateNumberSetting(setting.usageCode, "tpmLimit", event.target.value)}
-                          className="rounded-xl border-[#dbe7f6]"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-        <DialogFooter>
-          <Button type="button" variant="outline" className="rounded-xl" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button type="button" className="rounded-xl" disabled={!canSave || saving || loading || !instance} onClick={onSubmit}>
-            {saving ? "保存中..." : "保存设置"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   )
 }
 
@@ -847,11 +554,7 @@ export function WxWorkProtocolInstanceManager({
   const [companies, setCompanies] = useState<AdminCompany[]>([])
   const [intentProfiles, setIntentProfiles] = useState<ReplyIntentProfile[]>([])
   const [reloadKey, setReloadKey] = useState(0)
-  const [modelSettingsInstance, setModelSettingsInstance] = useState<WxWorkProtocolInstance | null>(null)
-  const [modelSettings, setModelSettings] = useState<StoreAIModelSetting[]>([])
-  const [modelSettingsLoading, setModelSettingsLoading] = useState(false)
-  const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
-  const [modelSettingTestingUsage, setModelSettingTestingUsage] = useState("")
+  const [modelAssignmentInstance, setModelAssignmentInstance] = useState<WxWorkProtocolInstance | null>(null)
   const [welcomeSettingsInstance, setWelcomeSettingsInstance] = useState<WelcomeCapableInstance | null>(null)
   const [welcomeSettingsDraft, setWelcomeSettingsDraft] = useState<WelcomeSettingsDraft>({
     enabled: true,
@@ -863,7 +566,6 @@ export function WxWorkProtocolInstanceManager({
     sendLocation: false,
   })
   const [welcomeSettingsSaving, setWelcomeSettingsSaving] = useState(false)
-  const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([])
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [creatingLocal, setCreatingLocal] = useState(false)
   const [creatingRemote, setCreatingRemote] = useState(false)
@@ -874,8 +576,8 @@ export function WxWorkProtocolInstanceManager({
   const canDeleteChannels = canViewChannels && permissionSet.has("channel.delete")
   const canViewKnowledgeBases = permissionSet.has("knowledgeBase.view")
   const canViewCompanies = permissionSet.has("company.view")
-  const canViewStoreModelSettings = permissionSet.has("aiConfig.view")
-  const canUpdateStoreModelSettings = permissionSet.has("aiConfig.update")
+  const canViewModelAssignments = permissionSet.has("tenantModelAssignment.view")
+  const canUpdateModelAssignments = permissionSet.has("tenantModelAssignment.update")
   const lockedCompanyId = lockCompany ? Number(companyId || 0) : 0
   const lockedCompanyName = repairMojibakeText(companyName || "")
 
@@ -892,7 +594,7 @@ export function WxWorkProtocolInstanceManager({
           lockCompany || !canViewCompanies
             ? Promise.resolve({ results: [] as AdminCompany[] })
             : fetchCompanies({ status: Status.Ok, limit: 500 }),
-          canViewStoreModelSettings
+          canViewModelAssignments
             ? fetchReplyIntentProfiles({ status: Status.Ok, limit: 200 })
             : Promise.resolve({ results: [] as ReplyIntentProfile[] }),
         ])
@@ -905,7 +607,7 @@ export function WxWorkProtocolInstanceManager({
       }
     }
     void loadOptions()
-  }, [canViewChannels, canViewCompanies, canViewKnowledgeBases, canViewStoreModelSettings, lockCompany])
+  }, [canViewChannels, canViewCompanies, canViewKnowledgeBases, canViewModelAssignments, lockCompany])
 
   const statusOptions = [
     { value: "all", label: "全部状态" },
@@ -1000,27 +702,9 @@ export function WxWorkProtocolInstanceManager({
     notifyChanged()
   }
 
-  async function loadStoreModelSettings(item: WxWorkProtocolInstance) {
-    const [settings, configs] = await Promise.all([
-      fetchStoreAIModelSettings(item.storeId || 0, item.id),
-      fetchAIConfigsAll({ status: Status.Ok }),
-    ])
-    setModelSettings(settings)
-    setAIConfigs(configs)
-  }
-
-  async function openStoreModelSettings(item: WxWorkProtocolInstance) {
-    if (!canViewStoreModelSettings) return
-    setModelSettingsInstance(item)
-    setModelSettingsLoading(true)
-    try {
-      await loadStoreModelSettings(item)
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "读取模型设置失败")
-      setModelSettingsInstance(null)
-    } finally {
-      setModelSettingsLoading(false)
-    }
+  function openModelAssignments(item: WxWorkProtocolInstance) {
+    if (!canViewModelAssignments) return
+    setModelAssignmentInstance(item)
   }
 
   function openWelcomeSettings(item: WxWorkProtocolInstance) {
@@ -1052,89 +736,6 @@ export function WxWorkProtocolInstanceManager({
       return false
     } finally {
       setWelcomeSettingsSaving(false)
-    }
-  }
-
-  async function saveStoreModelSettings() {
-    if (!canUpdateStoreModelSettings || !modelSettingsInstance) return
-    setModelSettingsSaving(true)
-    try {
-      const next = await updateStoreAIModelSettings({
-        companyId: modelSettingsInstance.companyId || 0,
-        storeId: modelSettingsInstance.storeId || 0,
-        wxWorkInstanceId: modelSettingsInstance.id,
-        settings: modelSettings.map((item) => ({
-          usageCode: item.usageCode,
-          aiConfigId: Number(item.aiConfigId || 0),
-          enabled: item.enabled,
-          provider: item.provider || "openai",
-          baseUrl: item.baseUrl || "",
-          apiKey: item.apiKey || "",
-          apiMode: item.apiMode || "chat_completions",
-          modelType: item.modelType || item.expectedModelType,
-          modelName: item.modelName || "",
-          dimension: Number(item.dimension || 0),
-          maxContextTokens: Number(item.maxContextTokens || 0),
-          maxOutputTokens: Number(item.maxOutputTokens || 0),
-          timeoutMs: Number(item.timeoutMs || 30000),
-          maxRetryCount: Number(item.maxRetryCount || 0),
-          rpmLimit: Number(item.rpmLimit || 0),
-          tpmLimit: Number(item.tpmLimit || 0),
-          remark: item.remark || "",
-          testToken: item.testToken || "",
-        })),
-      })
-      setModelSettings(next)
-      toast.success("模型设置已保存")
-      setModelSettingsInstance(null)
-      notifyChanged()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "保存模型设置失败")
-    } finally {
-      setModelSettingsSaving(false)
-    }
-  }
-
-  async function testCurrentStoreModelSetting(setting: StoreAIModelSetting) {
-    if (!canUpdateStoreModelSettings || !modelSettingsInstance) return
-    setModelSettingTestingUsage(setting.usageCode)
-    try {
-      const result = await testStoreAIModelSetting({
-        companyId: modelSettingsInstance.companyId || 0,
-        storeId: modelSettingsInstance.storeId || 0,
-        wxWorkInstanceId: modelSettingsInstance.id,
-        setting: {
-          usageCode: setting.usageCode,
-          aiConfigId: Number(setting.aiConfigId || 0),
-          enabled: true,
-          provider: setting.provider || "openai",
-          baseUrl: setting.baseUrl || "",
-          apiKey: setting.apiKey || "",
-          apiMode: setting.apiMode || "chat_completions",
-          modelType: setting.modelType || setting.expectedModelType,
-          modelName: setting.modelName || "",
-          dimension: Number(setting.dimension || 0),
-          maxContextTokens: Number(setting.maxContextTokens || 0),
-          maxOutputTokens: Number(setting.maxOutputTokens || 0),
-          timeoutMs: Number(setting.timeoutMs || 30000),
-          maxRetryCount: Number(setting.maxRetryCount || 0),
-          rpmLimit: Number(setting.rpmLimit || 0),
-          tpmLimit: Number(setting.tpmLimit || 0),
-          remark: setting.remark || "",
-        },
-      })
-      setModelSettings((items) => items.map((item) => item.usageCode === setting.usageCode ? {
-        ...item,
-        testToken: result.testToken,
-        lastTestStatus: "passed",
-        lastTestedAt: result.testedAt,
-        lastTestLatencyMs: result.latencyMs,
-      } : item))
-      toast.success(`${setting.usageName} 测试通过，耗时 ${result.latencyMs}ms`)
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "模型连接测试失败")
-    } finally {
-      setModelSettingTestingUsage("")
     }
   }
 
@@ -1212,12 +813,12 @@ export function WxWorkProtocolInstanceManager({
 		run: async ({ item }) => openWelcomeSettings(item),
 	  })
 	}
-  if (canViewStoreModelSettings) {
+  if (canViewModelAssignments) {
     rowActions.push({
-      key: "storeModelSettings",
-      label: "模型设置",
+      key: "modelAssignments",
+      label: "模型分配",
       icon: <SlidersHorizontalIcon className="size-4" />,
-      run: async ({ item }) => openStoreModelSettings(item),
+      run: async ({ item }) => openModelAssignments(item),
     })
   }
   if (canUpdateChannels) {
@@ -1390,7 +991,7 @@ export function WxWorkProtocolInstanceManager({
               <div className="max-w-48 truncate text-xs text-muted-foreground">
                 意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || (item.companyId > 0 ? "继承公司行业" : "未绑定")}
               </div>
-              <div className="max-w-48 truncate text-xs text-muted-foreground">模型按员工号设置、公司默认、系统全局默认解析</div>
+              <div className="max-w-48 truncate text-xs text-muted-foreground">员工号覆盖租户默认，仅可选择平台授权模型</div>
             </div>
           ),
         },
@@ -1460,7 +1061,7 @@ export function WxWorkProtocolInstanceManager({
                   type: "select" as const,
                   defaultValue: "0",
                   options: [{ value: "0", label: "不绑定公司" }, ...companyOptions],
-                  description: "账号可以不绑定公司；绑定后模型会按员工号设置 > 公司默认 > 系统全局默认解析。",
+                  description: "账号可以不绑定内部公司；运行模型由接入公司授权池统一分配。",
                 },
               ] : []),
 	          { name: "storeName", label: "店名/账号名称", type: "text", placeholder: "例如：丽斯未来酒店杭州某某店", description: "企微员工号就是门店账号。这里填店名即可，系统会维护内部兼容门店记录。" },
@@ -1486,7 +1087,7 @@ export function WxWorkProtocolInstanceManager({
 	            name: "resourceBindingSection",
             label: "资源绑定",
             type: "section",
-	            description: "门店知识库决定酒店信息类回复；电话、定位、小程序等变量来自当前员工号绑定。管理员可在“模型设置”里配置当前员工号覆盖模型。",
+	            description: "门店知识库决定酒店信息类回复；电话、定位、小程序等变量来自当前员工号绑定。平台管理员可在“模型分配”里选择租户已授权模型。",
 	          },
 	          {
 	            name: "knowledgeBaseId",
@@ -1522,7 +1123,7 @@ export function WxWorkProtocolInstanceManager({
             name: "automationSection",
             label: "自动化开关",
             type: "section",
-            description: "AI 回复开关只控制当前员工号是否由回复引擎托管；模型按员工号设置、公司默认、系统全局默认依次解析。",
+            description: "AI 回复开关只控制当前员工号是否由回复引擎托管；模型按员工号覆盖、租户默认、授权池兜底依次解析。",
           },
           { name: "aiReplyEnabled", label: "AI 托管回复", type: "switch" },
           {
@@ -1620,25 +1221,15 @@ export function WxWorkProtocolInstanceManager({
         deleted: () => "实例已删除",
       }}
     />
-    <StoreAIModelSettingsDialog
-      open={canViewStoreModelSettings && Boolean(modelSettingsInstance)}
-      instance={modelSettingsInstance}
-      settings={modelSettings}
-      aiConfigs={aiConfigs}
-      loading={modelSettingsLoading}
-      saving={modelSettingsSaving}
-      canSave={canViewStoreModelSettings && canUpdateStoreModelSettings}
-      testingUsageCode={modelSettingTestingUsage}
+    <WxWorkModelAssignmentDialog
+      open={canViewModelAssignments && Boolean(modelAssignmentInstance)}
+      instance={modelAssignmentInstance}
+      canUpdate={canViewModelAssignments && canUpdateModelAssignments}
       onOpenChange={(open) => {
         if (!open) {
-          setModelSettingsInstance(null)
-          setModelSettings([])
-          setModelSettingTestingUsage("")
+          setModelAssignmentInstance(null)
         }
       }}
-      onChange={setModelSettings}
-      onSubmit={() => void saveStoreModelSettings()}
-      onTest={(setting) => void testCurrentStoreModelSetting(setting)}
     />
     <WelcomeSettingsDialog
       instance={welcomeSettingsInstance}

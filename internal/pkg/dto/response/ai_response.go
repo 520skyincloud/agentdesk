@@ -5,24 +5,10 @@ import (
 	"agent-desk/internal/pkg/enums"
 )
 
-type AIAgentTeamResponse struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
-}
-
-type AIAgentSkillResponse struct {
-	ID   int64  `json:"id"`
-	Code string `json:"code"`
-	Name string `json:"name"`
-}
-
-type AIAgentMCPToolResponse struct {
-	ToolCode    string            `json:"toolCode"`
-	ServerCode  string            `json:"serverCode"`
-	ToolName    string            `json:"toolName"`
-	Title       string            `json:"title"`
-	Description string            `json:"description"`
-	Arguments   map[string]string `json:"arguments"`
+type AIAgentOptionResponse struct {
+	ID     int64        `json:"id"`
+	Name   string       `json:"name"`
+	Status enums.Status `json:"status"`
 }
 
 type AIConfigResponse struct {
@@ -69,36 +55,4 @@ func BuildAIConfigResponse(item *models.AIConfig) AIConfigResponse {
 		SortNo:              item.SortNo,
 		Remark:              item.Remark,
 	}
-}
-
-type AIAgentResponse struct {
-	ID                  int64                           `json:"id"`
-	Name                string                          `json:"name"`
-	Description         string                          `json:"description"`
-	Status              enums.Status                    `json:"status"`
-	StatusName          string                          `json:"statusName"`
-	AIConfigID          int64                           `json:"aiConfigId"`
-	AIConfigName        string                          `json:"aiConfigName"`
-	ServiceMode         enums.IMConversationServiceMode `json:"serviceMode"`
-	ServiceModeName     string                          `json:"serviceModeName"`
-	SystemPrompt        string                          `json:"systemPrompt"`
-	WelcomeMessage      string                          `json:"welcomeMessage"`
-	ReplyTimeoutSeconds int                             `json:"replyTimeoutSeconds"`
-	Teams               []AIAgentTeamResponse           `json:"teams"`
-	HandoffMode         enums.AIAgentHandoffMode        `json:"handoffMode"`
-	HandoffModeName     string                          `json:"handoffModeName"`
-	FallbackMode        enums.AIAgentFallbackMode       `json:"fallbackMode"`
-	FallbackModeName    string                          `json:"fallbackModeName"`
-	FallbackMessage     string                          `json:"fallbackMessage"`
-	KnowledgeIDs        []int64                         `json:"knowledgeIds"`
-	KnowledgeBaseNames  []string                        `json:"knowledgeBaseNames"`
-	SkillIDs            []int64                         `json:"skillIds"`
-	Skills              []AIAgentSkillResponse          `json:"skills"`
-	DirectTools         []AIAgentMCPToolResponse        `json:"directTools"`
-	GraphTools          []string                        `json:"graphTools"`
-	SortNo              int                             `json:"sortNo"`
-	CreatedAt           string                          `json:"createdAt"`
-	UpdatedAt           string                          `json:"updatedAt"`
-	CreateUserName      string                          `json:"createUserName"`
-	UpdateUserName      string                          `json:"updateUserName"`
 }

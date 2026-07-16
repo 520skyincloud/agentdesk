@@ -192,14 +192,16 @@ var (
 	PermissionWxWorkDevicePoolUpdate = Permission{Name: "管理平台企微设备池", Code: "wxworkDevicePool.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/update_settings", SortNo: 1270}
 	PermissionWxWorkDevicePoolSync   = Permission{Name: "同步平台企微设备池", Code: "wxworkDevicePool.sync", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/sync", SortNo: 1280}
 
-	// AI Agent 相关权限
-	PermissionAIAgentView   = Permission{Name: "查看 AI Agent", Code: "aiAgent.view", Type: "api", GroupName: "aiAgent", Method: "ANY", APIPath: "/api/dashboard/ai-agent/list", SortNo: 1310}
-	PermissionAIAgentCreate = Permission{Name: "创建 AI Agent", Code: "aiAgent.create", Type: "api", GroupName: "aiAgent", Method: "POST", APIPath: "/api/dashboard/ai-agent/create", SortNo: 1320}
-	PermissionAIAgentUpdate = Permission{Name: "更新 AI Agent", Code: "aiAgent.update", Type: "api", GroupName: "aiAgent", Method: "POST", APIPath: "/api/dashboard/ai-agent/update", SortNo: 1330}
-	PermissionAIAgentDelete = Permission{Name: "删除 AI Agent", Code: "aiAgent.delete", Type: "api", GroupName: "aiAgent", Method: "POST", APIPath: "/api/dashboard/ai-agent/delete", SortNo: 1340}
+	// 接待策略只读选项权限。保留 aiAgent.view 编码以兼容历史角色和已签发 token。
+	PermissionAIAgentView                 = Permission{Name: "查看接待策略选项", Code: "aiAgent.view", Type: "api", GroupName: "runtimeStrategy", Method: "GET", APIPath: "/api/dashboard/ai-agent/list_all", SortNo: 1310}
+	PermissionTenantModelGrantView        = Permission{Name: "查看租户模型授权", Code: "tenantModelGrant.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenantModelGrant", Method: "POST", APIPath: "/api/dashboard/tenant/model_access", SortNo: 1350}
+	PermissionTenantModelGrantUpdate      = Permission{Name: "更新租户模型授权", Code: "tenantModelGrant.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenantModelGrant", Method: "POST", APIPath: "/api/dashboard/tenant/update_model_access", SortNo: 1360}
+	PermissionTenantModelAssignmentView   = Permission{Name: "查看租户账号模型分配", Code: "tenantModelAssignment.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenantModelAssignment", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-instance/model_assignments", SortNo: 1370}
+	PermissionTenantModelAssignmentUpdate = Permission{Name: "更新租户账号模型分配", Code: "tenantModelAssignment.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenantModelAssignment", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-instance/update_model_assignments", SortNo: 1380}
+	PermissionAgentRunLogView             = Permission{Name: "查看 AI 运行诊断", Code: "agentRunLog.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "agentRunLog", Method: "ANY", APIPath: "/api/dashboard/agent-run-log/list", SortNo: 1385}
 
 	// AI 配置相关权限
-	PermissionAIConfigView   = Permission{Name: "查看 AI 配置", Code: "aiConfig.view", Type: "api", GroupName: "aiConfig", Method: "ANY", APIPath: "/api/dashboard/ai-config/list", SortNo: 1390}
+	PermissionAIConfigView   = Permission{Name: "查看 AI 配置", Code: "aiConfig.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "ANY", APIPath: "/api/dashboard/ai-config/list", SortNo: 1390}
 	PermissionAIConfigCreate = Permission{Name: "创建 AI 配置", Code: "aiConfig.create", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/create", SortNo: 1400}
 	PermissionAIConfigUpdate = Permission{Name: "更新 AI 配置", Code: "aiConfig.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/update", SortNo: 1410}
 	PermissionAIConfigDelete = Permission{Name: "删除 AI 配置", Code: "aiConfig.delete", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/delete", SortNo: 1420}
@@ -319,9 +321,11 @@ var Permissions = []Permission{
 	PermissionWxWorkDevicePoolUpdate,
 	PermissionWxWorkDevicePoolSync,
 	PermissionAIAgentView,
-	PermissionAIAgentCreate,
-	PermissionAIAgentUpdate,
-	PermissionAIAgentDelete,
+	PermissionTenantModelGrantView,
+	PermissionTenantModelGrantUpdate,
+	PermissionTenantModelAssignmentView,
+	PermissionTenantModelAssignmentUpdate,
+	PermissionAgentRunLogView,
 	PermissionAIConfigView,
 	PermissionAIConfigCreate,
 	PermissionAIConfigUpdate,
@@ -397,7 +401,10 @@ var RolePermissions = map[string][]Permission{
 		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
 		PermissionStorageSettingView, PermissionStorageSettingUpdate,
 		PermissionWxWorkDevicePoolView, PermissionWxWorkDevicePoolUpdate, PermissionWxWorkDevicePoolSync,
-		PermissionAIAgentView, PermissionAIAgentCreate, PermissionAIAgentUpdate, PermissionAIAgentDelete,
+		PermissionAIAgentView,
+		PermissionTenantModelGrantView, PermissionTenantModelGrantUpdate,
+		PermissionTenantModelAssignmentView, PermissionTenantModelAssignmentUpdate,
+		PermissionAgentRunLogView,
 		PermissionAIConfigView, PermissionAIConfigCreate, PermissionAIConfigUpdate, PermissionAIConfigDelete,
 		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,
 		PermissionKnowledgeDocumentView, PermissionKnowledgeDocumentCreate, PermissionKnowledgeDocumentUpdate, PermissionKnowledgeDocumentDelete,
@@ -422,8 +429,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionAgentTeamView, PermissionAgentTeamCreate, PermissionAgentTeamUpdate, PermissionAgentTeamDelete,
 		PermissionAgentTeamScheduleView, PermissionAgentTeamScheduleCreate, PermissionAgentTeamScheduleUpdate, PermissionAgentTeamScheduleDelete, PermissionAgentTeamScheduleBatchGenerate,
 		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
-		PermissionAIAgentView, PermissionAIAgentCreate, PermissionAIAgentUpdate, PermissionAIAgentDelete,
-		PermissionAIConfigView,
+		PermissionAIAgentView,
 		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,
 		PermissionKnowledgeDocumentView, PermissionKnowledgeDocumentCreate, PermissionKnowledgeDocumentUpdate, PermissionKnowledgeDocumentDelete,
 		PermissionKnowledgeFAQView, PermissionKnowledgeFAQCreate, PermissionKnowledgeFAQUpdate, PermissionKnowledgeFAQDelete,
@@ -446,8 +452,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionAgentTeamView,
 		PermissionAgentTeamScheduleView, PermissionAgentTeamScheduleCreate, PermissionAgentTeamScheduleUpdate, PermissionAgentTeamScheduleDelete, PermissionAgentTeamScheduleBatchGenerate,
 		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
-		PermissionAIAgentView, PermissionAIAgentCreate, PermissionAIAgentUpdate,
-		PermissionAIConfigView,
+		PermissionAIAgentView,
 		PermissionSkillDefinitionView,
 	},
 	RoleCodeCsUser: {
@@ -468,7 +473,6 @@ var RolePermissions = map[string][]Permission{
 		PermissionAgentTeamView,
 		PermissionAgentTeamScheduleView,
 		PermissionAIAgentView,
-		PermissionAIConfigView,
 		PermissionSkillDefinitionView,
 	},
 	RoleCodeStoreStaff: {

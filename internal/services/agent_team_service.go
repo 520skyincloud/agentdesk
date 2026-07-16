@@ -228,7 +228,7 @@ func (s *agentTeamService) DeleteAgentTeam(id int64, operator *dto.AuthPrincipal
 			"%,"+utils.JoinInt64s([]int64{id})+",%",
 			enums.StatusDeleted,
 		) != nil {
-			return errorsx.Forbidden("客服组下仍有关联 AI Agent，无法删除")
+			return errorsx.Forbidden("客服组仍被内部接待策略引用，无法删除")
 		}
 		return repositories.AgentTeamRepository.UpdatesInTenant(ctx.Tx, id, current.TenantID, map[string]any{
 			"status":           enums.StatusDeleted,

@@ -30,7 +30,7 @@ const (
 
 	companyName = "丽斯未来酒店"
 	channelName = "丽斯未来酒店测试企微员工号渠道"
-	aiAgentName = "丽斯未来酒店仿真测试智能客服"
+	aiAgentName = "丽斯未来酒店仿真测试接待策略"
 
 	tenantShortName        = "丽斯未来测试"
 	tenantRegistrationType = "simulation_test_id"
@@ -82,9 +82,9 @@ type report struct {
 	TenantInvitation           int64  `json:"tenantInvitation"`
 	DefaultAgentTeam           int64  `json:"defaultAgentTeam"`
 	AIAgent                    int64  `json:"aiAgent"`
-	AIAgentConfigID            int64  `json:"aiAgentConfigId"`
-	AIAgentConfigName          string `json:"aiAgentConfigName"`
-	AIAgentModelName           string `json:"aiAgentModelName"`
+	TenantDefaultConfigID      int64  `json:"tenantDefaultConfigId"`
+	TenantDefaultConfigName    string `json:"tenantDefaultConfigName"`
+	TenantDefaultModelName     string `json:"tenantDefaultModelName"`
 	ModelConfigReused          bool   `json:"modelConfigReused"`
 	ChannelAIAgentBound        bool   `json:"channelAiAgentBound"`
 	SimulationAIAgentBound     int64  `json:"simulationAiAgentBound"`
@@ -398,6 +398,18 @@ func cleanup(db *gorm.DB, batch string) error {
 			{"agent profiles", func() error {
 				return db.Where("remark LIKE ?", remarkPattern).Delete(&models.AgentProfile{}).Error
 			}},
+			{"tenant model assignments", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.StoreAIModelSetting{}).Error
+			}},
+			{"tenant model grants", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.TenantAIModelGrant{}).Error
+			}},
 			{"ai agent", func() error {
 				return db.Where("tenant_id = ? AND name = ?", tenantID, aiAgentName).Delete(&models.AIAgent{}).Error
 			}},
@@ -475,13 +487,18 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.AIAgent = count(db, &models.AIAgent{}, "tenant_id = ? AND name = ?", tenantID, aiAgentName)
 	aiAgent := repositories.AIAgentRepository.Take(db, "tenant_id = ? AND name = ?", tenantID, aiAgentName)
 	if aiAgent != nil {
-		r.AIAgentConfigID = aiAgent.AIConfigID
-		if aiConfig := repositories.AIConfigRepository.Get(db, aiAgent.AIConfigID); aiConfig != nil {
-			r.AIAgentConfigName = aiConfig.Name
-			r.AIAgentModelName = aiConfig.ModelName
+		r.ChannelAIAgentBound = count(db, &models.Channel{}, "tenant_id = ? AND name = ? AND ai_agent_id = ?", tenantID, channelName, aiAgent.ID) == 1
+	}
+	defaultModel := repositories.StoreAIModelSettingRepository.Take(db,
+		"tenant_id = ? AND wx_work_instance_id = 0 AND usage_code = ? AND status = ?",
+		tenantID, constants.AIModelUsageReplyLLM, enums.StatusOk)
+	if defaultModel != nil {
+		r.TenantDefaultConfigID = defaultModel.AIConfigID
+		if aiConfig := repositories.AIConfigRepository.Get(db, defaultModel.AIConfigID); aiConfig != nil {
+			r.TenantDefaultConfigName = aiConfig.Name
+			r.TenantDefaultModelName = aiConfig.ModelName
 			r.ModelConfigReused = aiConfig.Status == enums.StatusOk && aiConfig.ModelType == enums.AIModelTypeLLM
 		}
-		r.ChannelAIAgentBound = count(db, &models.Channel{}, "tenant_id = ? AND name = ? AND ai_agent_id = ?", tenantID, channelName, aiAgent.ID) == 1
 	}
 	r.CompanyMarked = count(db, &models.Company{}, "tenant_id = ? AND remark LIKE ? AND name = ?", tenantID, remarkPattern, companyName)
 	r.CompanyNameExists = tenantID > 0 && count(db, &models.Company{}, "tenant_id = ? AND name = ?", tenantID, companyName) > 0
@@ -982,11 +999,12 @@ func (ctx *seedContext) upsertAIAgent() error {
 	}
 	updates := map[string]any{
 		"tenant_id":             ctx.tenant.ID,
-		"description":           "丽斯未来酒店仿真测试智能客服，不用于生产服务",
+		"name":                  aiAgentName,
+		"description":           "丽斯未来酒店仿真测试接待策略，不用于生产服务",
 		"status":                enums.StatusOk,
-		"ai_config_id":          ctx.aiConfig.ID,
+		"ai_config_id":          0,
 		"service_mode":          enums.IMConversationServiceModeAIFirst,
-		"system_prompt":         "你是丽斯未来酒店仿真测试智能客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
+		"system_prompt":         "你是丽斯未来酒店仿真测试客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
 		"welcome_message":       "您好，这里是丽斯未来酒店仿真测试客服，请问有什么可以帮您？",
 		"reply_timeout_seconds": 180,
 		"team_ids":              joinInt64s(teamIDs),
@@ -999,22 +1017,26 @@ func (ctx *seedContext) upsertAIAgent() error {
 		"update_user_name":      constants.SystemAuditUserName,
 	}
 	item := repositories.AIAgentRepository.Take(ctx.db, "tenant_id = ? AND name = ?", ctx.tenant.ID, aiAgentName)
+	if item == nil {
+		item = repositories.AIAgentRepository.FindOne(ctx.db, sqls.NewCnd().Eq("tenant_id", ctx.tenant.ID).Where("status <> ?", enums.StatusDeleted).Asc("id"))
+	}
 	if item != nil {
 		if err := repositories.AIAgentRepository.UpdatesInTenant(ctx.db, item.ID, ctx.tenant.ID, updates); err != nil {
 			return err
 		}
-		item.AIConfigID = ctx.aiConfig.ID
+		item.AIConfigID = 0
+		item.Name = aiAgentName
 		ctx.aiAgent = item
-		return nil
+		return ctx.ensureTenantModelAccess()
 	}
 	item = &models.AIAgent{
 		TenantID:            ctx.tenant.ID,
 		Name:                aiAgentName,
-		Description:         "丽斯未来酒店仿真测试智能客服，不用于生产服务",
+		Description:         "丽斯未来酒店仿真测试接待策略，不用于生产服务",
 		Status:              enums.StatusOk,
-		AIConfigID:          ctx.aiConfig.ID,
+		AIConfigID:          0,
 		ServiceMode:         enums.IMConversationServiceModeAIFirst,
-		SystemPrompt:        "你是丽斯未来酒店仿真测试智能客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
+		SystemPrompt:        "你是丽斯未来酒店仿真测试客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
 		WelcomeMessage:      "您好，这里是丽斯未来酒店仿真测试客服，请问有什么可以帮您？",
 		ReplyTimeoutSeconds: 180,
 		TeamIDs:             joinInt64s(teamIDs),
@@ -1027,6 +1049,47 @@ func (ctx *seedContext) upsertAIAgent() error {
 		return err
 	}
 	ctx.aiAgent = item
+	return ctx.ensureTenantModelAccess()
+}
+
+func (ctx *seedContext) ensureTenantModelAccess() error {
+	grant := repositories.TenantAIModelGrantRepository.Take(ctx.db,
+		"tenant_id = ? AND ai_config_id = ?", ctx.tenant.ID, ctx.aiConfig.ID)
+	if grant == nil {
+		grant = &models.TenantAIModelGrant{
+			TenantID: ctx.tenant.ID, AIConfigID: ctx.aiConfig.ID,
+			Status: enums.StatusOk, AuditFields: ctx.audit,
+		}
+		if err := repositories.TenantAIModelGrantRepository.Create(ctx.db, grant); err != nil {
+			return err
+		}
+	} else if err := repositories.TenantAIModelGrantRepository.Updates(ctx.db, grant.ID, map[string]any{
+		"status": enums.StatusOk, "updated_at": ctx.now,
+		"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+	}); err != nil {
+		return err
+	}
+
+	for _, usageCode := range []string{constants.AIModelUsageReplyLLM, constants.AIModelUsageIntentDetectLLM} {
+		setting := repositories.StoreAIModelSettingRepository.Take(ctx.db,
+			"tenant_id = ? AND wx_work_instance_id = 0 AND usage_code = ?", ctx.tenant.ID, usageCode)
+		if setting == nil {
+			setting = &models.StoreAIModelSetting{
+				TenantID: ctx.tenant.ID, UsageCode: usageCode, AIConfigID: ctx.aiConfig.ID,
+				Status: enums.StatusOk, AuditFields: ctx.audit,
+			}
+			if err := repositories.StoreAIModelSettingRepository.Create(ctx.db, setting); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := repositories.StoreAIModelSettingRepository.Updates(ctx.db, setting.ID, map[string]any{
+			"company_id": 0, "store_id": 0, "ai_config_id": ctx.aiConfig.ID, "status": enums.StatusOk,
+			"updated_at": ctx.now, "update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

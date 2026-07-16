@@ -582,11 +582,11 @@ func (s *wxWorkKFInboundService) getChannelByOpenKfID(openKfID string) (*models.
 		return nil, errorsx.InvalidParam("未找到匹配的企业微信接入渠道")
 	}
 	if channel.AIAgentID <= 0 {
-		return nil, errorsx.InvalidParam("企业微信接入渠道未绑定AI Agent")
+		return nil, errorsx.InvalidParam("企业微信接入渠道未绑定接待策略")
 	}
 	agent := AIAgentService.GetByTenantID(channel.AIAgentID, channel.TenantID)
 	if agent == nil || agent.Status != enums.StatusOk {
-		return nil, errorsx.InvalidParam("企业微信接入渠道绑定的AI Agent不存在或已禁用")
+		return nil, errorsx.InvalidParam("企业微信接入渠道绑定的接待策略不存在或已禁用")
 	}
 	return channel, nil
 }

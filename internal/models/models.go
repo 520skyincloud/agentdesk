@@ -64,6 +64,7 @@ var Models = []any{
 	&AgentTeamSquadMember{},
 	&AgentTeamSchedule{},
 	&AIConfig{},
+	&TenantAIModelGrant{},
 	&StoreAIModelSetting{},
 	&KnowledgeBase{},
 	&KnowledgeDocument{},
@@ -836,14 +837,15 @@ type QuickReply struct {
 	AuditFields
 }
 
-// AIAgent AI 接待实例。
+// AIAgent is the internal runtime strategy identity shared by channels and
+// conversations. It is not a tenant-facing model connection or model selector.
 type AIAgent struct {
-	ID                  int64                           `gorm:"primaryKey;autoIncrement"`                    // ID 为 AI Agent 主键。
-	TenantID            int64                           `gorm:"type:bigint;not null;default:0;index"`        // TenantID 为 AI Agent 所属接入公司，由当前公司上下文继承。
-	Name                string                          `gorm:"type:varchar(100);not null;default:'';index"` // Name 为 AI Agent 名称。
-	Description         string                          `gorm:"type:varchar(255);not null;default:''"`       // Description 为 AI Agent 描述。
-	Status              enums.Status                    `gorm:"type:int;not null;index"`                     // Status 为 AI Agent
-	AIConfigID          int64                           `gorm:"type:bigint;not null;default:0;index"`        // AIConfigID 为关联的 AI 配置ID。
+	ID                  int64                           `gorm:"primaryKey;autoIncrement"`                    // ID 为运行策略主键。
+	TenantID            int64                           `gorm:"type:bigint;not null;default:0;index"`        // TenantID 为运行策略所属接入公司。
+	Name                string                          `gorm:"type:varchar(100);not null;default:'';index"` // Name 为内部接待策略名称。
+	Description         string                          `gorm:"type:varchar(255);not null;default:''"`       // Description 为内部接待策略描述。
+	Status              enums.Status                    `gorm:"type:int;not null;index"`                     // Status 为运行策略状态。
+	AIConfigID          int64                           `gorm:"type:bigint;not null;default:0;index"`        // AIConfigID 仅用于 migration 59 读取历史绑定；运行时模型由租户授权解析器决定。
 	ServiceMode         enums.IMConversationServiceMode `gorm:"type:int;not null;default:3;index"`           // ServiceMode 为服务模式，如仅AI、仅人工、AI优先人工接管。
 	SystemPrompt        string                          `gorm:"type:text"`                                   // SystemPrompt 为该 Agent 的系统提示词。
 	WelcomeMessage      string                          `gorm:"type:text"`                                   // WelcomeMessage 为该 Agent 的欢迎语或首响模板。
@@ -1031,23 +1033,33 @@ type AIConfig struct {
 	RPMLimit            int               `gorm:"type:int;not null;default:0"`                                // RPMLimit 为每分钟请求数限制，0 表示未显式配置。
 	TPMLimit            int               `gorm:"type:int;not null;default:0"`                                // TPMLimit 为每分钟 token 数限制，0 表示未显式配置。
 	IntentDetectEnabled bool              `gorm:"not null;default:false;index"`                               // IntentDetectEnabled 表示该 LLM 配置可作为回复引擎意图识别模型。
-	Status              enums.Status      `gorm:"type:int;not null;index"`                                    // Status 状态；同一 modelType 仅允许一条启用记录。
+	Status              enums.Status      `gorm:"type:int;not null;index"`                                    // Status 状态；同一模型类型可启用多条接入供租户分别授权。
 	SortNo              int               `gorm:"type:int;not null;index"`                                    // SortNo 为排序号，用于后台展示和人工调整顺序。
 	Remark              string            `gorm:"type:text"`                                                  // Remark 为备注，用于记录用途、成本、限制和切换说明等补充信息。
 	AuditFields
 }
 
-// StoreAIModelSetting stores optional model overrides for enterprise WeCom runtime usages.
-// Scope rules: wx_work_instance_id > 0 means the employee/store-account override;
-// otherwise company_id > 0 means the company default. There is no separate store
-// override layer because a WeCom employee account is the store account in this product.
+// TenantAIModelGrant defines the platform-managed model pool available to one
+// tenant. Provider credentials remain on AIConfig and are never copied here.
+type TenantAIModelGrant struct {
+	ID         int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID   int64        `gorm:"type:bigint;not null;uniqueIndex:uk_tenant_ai_model_grant,priority:1;index"`
+	AIConfigID int64        `gorm:"type:bigint;not null;uniqueIndex:uk_tenant_ai_model_grant,priority:2;index"`
+	Status     enums.Status `gorm:"type:int;not null;default:0;index"`
+	AuditFields
+}
+
+// StoreAIModelSetting stores tenant defaults and optional WeCom employee
+// overrides. Provider credentials stay on the platform AIConfig; the legacy
+// credential columns below are retained only for one-time migration reads.
 type StoreAIModelSetting struct {
 	ID                int64             `gorm:"primaryKey;autoIncrement"`
-	CompanyID         int64             `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_store_ai_model_scope_usage;index"`
-	StoreID           int64             `gorm:"type:bigint;not null;default:0;index"` // StoreID is kept only for display/audit of the employee account binding.
-	WxWorkInstanceID  int64             `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_store_ai_model_scope_usage;index"`
-	UsageCode         string            `gorm:"type:varchar(80);not null;default:'';uniqueIndex:uk_store_ai_model_scope_usage;index"`
-	AIConfigID        int64             `gorm:"type:bigint;not null;default:0;index"` // AIConfigID is legacy data from the first override version; runtime no longer requires it.
+	TenantID          int64             `gorm:"type:bigint;not null;default:0;index"`
+	CompanyID         int64             `gorm:"type:bigint;not null;default:0;index"` // Legacy internal-company scope; new writes keep this at zero.
+	StoreID           int64             `gorm:"type:bigint;not null;default:0;index"` // Legacy store scope; new writes keep this at zero because the employee account already owns the store relation.
+	WxWorkInstanceID  int64             `gorm:"type:bigint;not null;default:0;index"`
+	UsageCode         string            `gorm:"type:varchar(80);not null;default:'';index"`
+	AIConfigID        int64             `gorm:"type:bigint;not null;default:0;index"`
 	Provider          enums.AIProvider  `gorm:"type:varchar(50);not null;default:'';index"`
 	BaseURL           string            `gorm:"type:varchar(255);not null;default:''"`
 	APIKey            string            `gorm:"type:varchar(255);not null;default:''"`

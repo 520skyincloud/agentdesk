@@ -14,7 +14,7 @@ import (
 )
 
 func AgentRunLogAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView); err != nil {
+	if _, err := requirePlatformPermission(ctx, constants.PermissionAgentRunLogView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -57,7 +57,7 @@ func AgentRunLogGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView); err != nil {
+	if _, err := requirePlatformPermission(ctx, constants.PermissionAgentRunLogView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

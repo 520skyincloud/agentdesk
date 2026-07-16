@@ -6,7 +6,7 @@
 
 - 集成分支：`codex/tenant-ai-integration`
 - 集成基线：`codex/customer-audit@c706815` + `origin/codex/ai-billing@f2d2da4`
-- 数据审计基线：59 个 TenantID 模型、73 张必需表、154 条租户关系
+- 数据审计基线：61 个 TenantID 模型、74 张必需表、153 条租户关系
 - SQLite 验收库：`/tmp/agentdesk-integration.db`
 - MySQL：独立临时 MySQL 8.4 实例，使用 tmpfs，不接触现有 Docker 数据卷
 - 浏览器：本地 `http://127.0.0.1:8084`，桌面和 412x915 移动视口
@@ -66,9 +66,9 @@
 | 关键并发路径 | 注册、角色、公司、客服小组/派单、租户运行链、AI Runtime 使用 `go test -race ... -p 1`；同请求并发注册修复后定向连续 20 次通过 | 通过 |
 | 前端类型 | `pnpm --dir web typecheck` | 通过 |
 | 前端 lint | `pnpm --dir web lint`，0 error，保留 33 个 warning | 通过 |
-| 前端生产构建与契约 | `pnpm --dir web build` 生成 46 个页面；50 个 `.test.mjs` 文件共 128 个用例通过 | 通过 |
-| SQLite | 真实验收库只读 tenant-integrity-audit 为 59/73/154、0 违规 | 通过 |
-| MySQL | MySQL 8.4 首次/重复 migration、复合唯一索引和只读审计通过；migration 58 额外完成历史启用空到期值回填、既有未来值保留和重复执行不延长 | 通过 |
+| 前端生产构建与契约 | `pnpm --dir web build` 生成 45 个页面，不再生成 `/dashboard/ai-agents`；50 个 `.test.mjs` 文件共 130 个用例通过 | 通过 |
+| SQLite | 真实验收库只读 tenant-integrity-audit 为 61/74/153、0 违规；migration 59 和 seed 重跑后仍保持仿真业务基线 | 通过 |
+| MySQL | MySQL 8.4 首次/重复 migration、复合唯一索引和 61/74/153 只读审计通过；migration 58 的邀请码回填与 migration 59 的模型授权迁移均完成首次、重复执行验证 | 通过 |
 | 浏览器桌面/移动端 | 公司创建、编辑、启停、主管、邀请、注册、审核、权限、双标签、412x915 布局；过期邀请码提示/禁用复制/重置恢复均实测 | 通过 |
 
 ## 3. 第 17 节验收标准证据
@@ -81,11 +81,11 @@
 | 邀请码可查看、复制、重置并完成链接注册 | 邀请弹窗显示邀请码/链接/版本；重置后版本递增且旧码失效；新链接完成注册 | 通过 |
 | 邀请账号归属正确租户、默认无角色并待审核 | 浏览器注册后不可登录，主管审核页显示待审核；service 测试断言 roleless 和租户归属 | 通过 |
 | 账号页面只分配角色，不能直接分配权限 | 用户页和表单无 permissionIds/账号权限入口；`action-permissions.test.mjs` 提供源码契约 | 通过 |
-| 所有业务权限在权限管理可见，无 URL 白名单或账号例外 | 权限页展示 111 个权限；`TestDashboardHandlersHaveExplicitPermissionContract` 和 override 忽略测试 | 通过 |
+| 所有业务权限在权限管理可见，无 URL 白名单或账号例外 | 权限页展示 113 个权限；59 号迁移已删除 3 项退役的 AIAgent 写权限；`TestDashboardHandlersHaveExplicitPermissionContract` 和 override 忽略测试 | 通过 |
 | 查看权限保守显示，动作权限隐藏 | 公司主管角色页、客服用户页浏览器实测 | 通过 |
-| 列表、详情、写、导出、WebSocket、回调、任务、向量和文件通过双租户隔离 | service/handler/race 套件与 59/73/154 审计组合覆盖；具体测试见第 2 节 | 通过 |
+| 列表、详情、写、导出、WebSocket、回调、任务、向量和文件通过双租户隔离 | service/handler/race 套件与 61/74/153 审计组合覆盖；具体测试见第 2 节 | 通过 |
 | 旧渠道页被替换，Channel 消息链保持可用 | `/dashboard/channels` 展示接入公司；租户 Channel、Conversation、WxWork 和 Outbox 测试继续通过 | 通过 |
-| 历史数据完成租户映射，无未确认账号开放到多租户 | migration 34-58 回填测试；浏览器写入后真实 SQLite 审计 0 违规 | 通过 |
+| 历史数据完成租户映射，无未确认账号开放到多租户 | migration 34-59 回填测试；浏览器写入后真实 SQLite 审计 0 违规 | 通过 |
 | SQLite、MySQL、Go、前端类型和关键浏览器流程通过 | 第 2.5 节全部通过 | 通过 |
 
 ## 4. 本批修复与风险
@@ -102,8 +102,8 @@
 ## 5. 并行分支与回滚
 
 - `internal/ai/runtime/executor/answerability_gate_test.go` 来自 AI 分支范围，本批只增加测试互斥；合并 AI 分支后应保留该测试修复。
-- `internal/models/models.go` 是 AI 分支共享文件；合并时保留 `TenantInvitation.ExpiresAt` 及双方模型注册。响应 DTO 和 `web/lib/api/tenant.ts` 只做向后兼容字段新增。
-- migration 58 已在 SQLite 和独立 MySQL 8.4 验证。回滚代码时保留 `expires_at` 列与已回填值，不删除 migration 记录；公开注册继续关闭。
+- `internal/models/models.go` 是 AI 分支共享文件；合并时同时保留 `TenantInvitation.ExpiresAt`、`TenantAIModelGrant` 及双方模型注册。响应 DTO 和 `web/lib/api/tenant.ts` 的兼容字段不能被整文件覆盖。
+- migration 58、59 已在 SQLite 和独立 MySQL 8.4 验证。回滚代码时保留 `expires_at`、模型授权表与已迁移关系，不删除 migration 记录或恢复旧明文模型凭据；公开注册继续关闭。
 - 四个前端 lint 文件属于共享前端基础设施；不涉及 models、migration、DTO、enum、API、路由、WebSocket 或权限码。
 - 回滚前端修复会恢复全量 lint 失败；回滚测试互斥会恢复 race 失败。两类回滚都不需要数据库操作。
 
@@ -115,10 +115,10 @@
 | --- | --- | --- |
 | 丽斯未来是独立测试租户 | seed report 中 tenant=1；接入公司页面显示“丽斯未来测试 / 丽斯未来酒店” | 通过 |
 | 公司主管与邀请基础存在 | tenantSupervisor=1、tenantInvitation=1、defaultAgentTeam=1；主管账号为 `test_customer_audit_tenant_admin` | 通过 |
-| 全部测试数据归属同租户 | 59/73/154 tenant-integrity-audit 0 违规；公司、账号、客户、门店、企微、会话和派单均按 TenantID 查询 | 通过 |
-| 原模型配置被复用 | 本地隔离库安全复制原环境启用 `deepseek / deepseek-v4-flash`；AIAgent report 的 config ID/name/model 一致 | 通过 |
+| 全部测试数据归属同租户 | 61/74/153 tenant-integrity-audit 0 违规；公司、账号、客户、门店、企微、会话、派单和模型授权均按 TenantID 查询 | 通过 |
+| 原模型配置被复用 | 本地隔离库安全复制原环境启用 `deepseek / deepseek-v4-flash`；seed 建立 TenantAIModelGrant 和租户用途默认，内部 AIAgent 的 `AIConfigID=0` | 通过 |
 | 模型密钥不进入仓库 | seed 只接受已有配置 ID/名称；report 不返回 API Key；源码和文档不包含密钥 | 通过 |
-| 全部主体明确为测试 | 租户、主管、智能客服、客服组、员工、门店、客户、渠道和企微备注包含测试/仿真测试标记 | 通过 |
+| 全部主体明确为测试 | 租户、主管、内部接待策略、客服组、员工、门店、客户、渠道和企微备注包含测试/仿真测试标记 | 通过 |
 
 ### 6.2 仿真业务基线
 
@@ -130,7 +130,7 @@
 | 客户 | 500 | 客户管理显示测试顾客和丽斯未来酒店/门店关系 |
 | 会话与消息 | 36/135 | seed report 基线稳定，Conversation 均写入租户级测试 AIAgentID |
 | 派单 | assignment 21、需人工 27 | 派单页显示待派发 9、待首响 12、处理中 6、可接单客服 12 |
-| 智能客服 | 1 | 智能客服页显示“丽斯未来酒店仿真测试智能客服 / deepseek / AI 优先” |
+| 内部接待策略 | 1 | 渠道和 Skill 调试选择器显示“丽斯未来酒店仿真测试接待策略”；租户不再看到独立智能客服管理页或平台模型参数 |
 
 ### 6.3 安全、幂等与回滚
 
@@ -138,3 +138,27 @@
 - fresh SQLite 生命周期测试覆盖 seed、report、重复 seed 和 cleanup。重复执行数量不变；cleanup 后测试租户及子数据为 0，平台复用 AIConfig 仍为 1。
 - 当前 8084 验收库执行 seed 两次后仍保持 36/135/21 和 0 租户违规。公开注册保持 `tenantRegistration.enabled=false`。
 - 本地数据库、邀请码、测试密码和 API Key 不进入 Git。生产合并前必须按交接文档在原 MySQL 的临时恢复副本处理 migration 39 冲突，禁止直接在原数据卷试迁移。
+
+## 7. 平台模型授权与原功能回归（2026-07-16）
+
+### 7.1 模型边界
+
+- 平台“模型配置”继续管理 AIConfig 和凭据；接入公司三点菜单可为租户多选授权模型并设置用途默认。租户主管看不到平台模型配置、模型授权、运行日志、token 或 trace。
+- 平台管理员进入租户后，企微员工号“模型分配”只列出该租户已授权模型。在线解析顺序为员工号覆盖、租户用途默认、同类型授权兜底，运行时不再读取 `AIAgent.AIConfigID`。
+- `/dashboard/ai-agents` 页面、导航和写接口已经退役；静态服务器对未知旧路径会回落公共首页，但构建产物、后台入口和对应管理 API 均不存在。渠道所需的内部身份只通过 `/api/dashboard/ai-agent/list_all` 只读选择。
+- 租户总览删除了与“会话管理”重复的“员工号智能客服”快捷项；原平台“接入渠道”快捷项改为当前租户的“接入设置”，避免公司主管进入无权限的平台页面。
+
+### 7.2 原有业务回归
+
+| 原功能 | 浏览器与数据证据 | 结果 |
+| --- | --- | --- |
+| 渠道设置 | 编辑渠道仍可加载内部接待策略选择器，保存契约未改 | 通过 |
+| 客户会话 | 加载 36 个仿真会话和 135 条消息；“全部账号”中选中客户后保持全部会话视图，并高亮来源企微员工号 | 通过 |
+| 人工派单 | 9 条待派发、12 条待首响、6 条处理中；12 名可用客服和手动派发候选正常加载 | 通过 |
+| 自动派单 | 当前无生效排班时明确提示无可用排班客服，不产生错误指派 | 通过 |
+| 客服档案与小组 | 3 个业务组各 4 名客服，负载、34/33/33 服务范围、小组编排和拖拽入口正常 | 通过 |
+| 客服排班 | 月历、班次和批量排班弹窗正常加载 | 通过 |
+| Skill 与知识库 | 调试弹窗继续解析内部接待策略；知识检索和 RAG 调试正常加载，租户诊断信息按权限脱敏 | 通过 |
+
+- 权限页中 `aiAgent.view` 只显示“查看接待策略选项”，API 为 `/api/dashboard/ai-agent/list_all`；已删除的三项 AIAgent 写权限不再存在。
+- 本轮不修改模型供应商适配器、AI usage、token 统计或计费口径。原有会话、派单、客服组、排班、知识和 Skill 状态机不增加平行模型或权限分支。

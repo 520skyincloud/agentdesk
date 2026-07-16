@@ -84,7 +84,7 @@ func (s *agentRunLogService) validateCreate(t *models.AgentRunLog) error {
 		}
 	}
 	if t.AIAgentID > 0 && repositories.AIAgentRepository.GetInTenant(db, t.AIAgentID, t.TenantID) == nil {
-		return errorsx.InvalidParam("Agent 运行日志 AI Agent 不属于当前租户")
+		return errorsx.InvalidParam("Agent 运行日志接待策略不属于当前租户")
 	}
 	return nil
 }
