@@ -8,6 +8,7 @@ import (
 // Models 注册所有需要迁移和代码生成的模型。
 var Models = []any{
 	&Migration{},
+	&MigrationDefinitionArchive{},
 	&User{},
 	&UserIdentity{},
 	&Tenant{},
@@ -45,6 +46,19 @@ var Models = []any{
 	&ConversationRouteState{},
 	&AIManualResumeTask{},
 	&ConversationSessionSummary{},
+	&ConversationServiceSession{},
+	&ConversationResponseSpan{},
+	&AgentPresenceSession{},
+	&QualityTemplate{},
+	&QualityTemplateItem{},
+	&QualityInspection{},
+	&QualityInspectionItem{},
+	&QualitySamplingBatch{},
+	&QualitySamplingItem{},
+	&DispatchDecisionLog{},
+	&ServiceAnalyticsPolicy{},
+	&ConversationEvaluation{},
+	&ReportViewPreset{},
 	&MessageSyncLog{},
 	&ConversationAssignment{},
 	&ConversationTag{},
@@ -97,6 +111,23 @@ type Migration struct {
 	RetryCount int       `gorm:"type:int;not null;default:0"`
 	CreatedAt  time.Time `gorm:"type:datetime"`
 	UpdatedAt  time.Time `gorm:"type:datetime"`
+}
+
+// MigrationDefinitionArchive preserves superseded migration records whose
+// version numbers were reused by historical parallel branches.
+type MigrationDefinitionArchive struct {
+	ID                int64     `gorm:"primaryKey;autoIncrement"`
+	SourceMigrationID int64     `gorm:"type:bigint;not null;uniqueIndex"`
+	Version           int64     `gorm:"type:bigint;not null;index"`
+	Remark            string    `gorm:"type:text"`
+	Success           bool      `gorm:"not null;default:false"`
+	ErrorInfo         string    `gorm:"type:text"`
+	RetryCount        int       `gorm:"type:int;not null;default:0"`
+	OriginalCreatedAt time.Time `gorm:"type:datetime"`
+	OriginalUpdatedAt time.Time `gorm:"type:datetime"`
+	ReplacementRemark string    `gorm:"type:text"`
+	ArchiveReason     string    `gorm:"type:text"`
+	ArchivedAt        time.Time `gorm:"type:datetime;not null"`
 }
 
 // WxWorkProtocolDevicePoolInstance 记录聚合智能后台同步到本地的真实 XBot 实例池。
@@ -479,6 +510,7 @@ type Conversation struct {
 	Status              enums.IMConversationStatus      `gorm:"type:int;not null;default:1;index"`           // Status 为会话状态，如待接入、处理中、已关闭。
 	ServiceMode         enums.IMConversationServiceMode `gorm:"type:int;not null;default:3;index"`           // ServiceMode 为服务模式，如仅AI、仅人工、AI优先人工接管。
 	Priority            int                             `gorm:"type:int;not null;default:0;index"`           // Priority 为会话优先级。
+	DispatchWeight      int                             `gorm:"type:int;not null;default:1"`                 // DispatchWeight 为智能派单评估的当前人工工作量权重，1 表示普通任务。
 	CurrentAssigneeID   int64                           `gorm:"type:bigint;not null;default:0;index"`        // CurrentAssigneeID 为当前接待客服ID。
 	CurrentTeamID       int64                           `gorm:"type:bigint;not null;default:0;index"`        // CurrentTeamID 为当前处理客服组ID。
 	LastMessageID       int64                           `gorm:"type:bigint;not null;default:0;index"`        // LastMessageID 为最后一条消息ID。
@@ -802,18 +834,22 @@ type ChannelMessageOutbox struct {
 
 // ConversationAssignment 会话接待关系。
 type ConversationAssignment struct {
-	ID             int64                    `gorm:"primaryKey;autoIncrement"`
-	TenantID       int64                    `gorm:"type:bigint;not null;default:0;index"`
-	ConversationID int64                    `gorm:"type:bigint;not null;index"`
-	SquadID        int64                    `gorm:"type:bigint;not null;default:0;index"` // SquadID 记录派发时采用的客服小组快照，0 表示全组或未指定。
-	FromUserID     int64                    `gorm:"type:bigint;not null;default:0;index"`
-	ToUserID       int64                    `gorm:"type:bigint;not null;default:0;index"`
-	AssignType     string                   `gorm:"type:varchar(30);not null;default:'';index"`
-	Reason         string                   `gorm:"type:varchar(255);not null;default:''"`
-	Status         enums.IMAssignmentStatus `gorm:"type:int;not null;index"`
-	CreatedAt      time.Time                `gorm:"type:datetime;not null;index"`
-	FinishedAt     *time.Time               `gorm:"type:datetime"`
-	OperatorID     int64                    `gorm:"type:bigint;not null;default:0;index"`
+	ID                 int64                       `gorm:"primaryKey;autoIncrement"`
+	TenantID           int64                       `gorm:"type:bigint;not null;default:0;index"`
+	ConversationID     int64                       `gorm:"type:bigint;not null;index"`
+	SessionNo          int                         `gorm:"type:int;not null;default:1;index"`    // SessionNo 固定本次分配所属会话轮次，历史报表和质检不得按当前路由反推。
+	SquadID            int64                       `gorm:"type:bigint;not null;default:0;index"` // SquadID 记录派发时采用的客服小组快照，0 表示全组或未指定。
+	FromUserID         int64                       `gorm:"type:bigint;not null;default:0;index"`
+	ToUserID           int64                       `gorm:"type:bigint;not null;default:0;index"`
+	AssignType         string                      `gorm:"type:varchar(30);not null;default:'';index"`
+	Reason             string                      `gorm:"type:varchar(255);not null;default:''"`
+	DispatchMode       enums.AgentTeamDispatchMode `gorm:"type:varchar(30);not null;default:'';index"` // DispatchMode 记录本次人工、规则或智能派单方式。
+	DecisionConfidence int                         `gorm:"type:int;not null;default:0"`                // DecisionConfidence 为模型派单置信度百分值，非模型派单为 0。
+	WorkloadWeight     int                         `gorm:"type:int;not null;default:1"`                // WorkloadWeight 为本次派单使用的任务工作量权重快照。
+	Status             enums.IMAssignmentStatus    `gorm:"type:int;not null;index"`
+	CreatedAt          time.Time                   `gorm:"type:datetime;not null;index"`
+	FinishedAt         *time.Time                  `gorm:"type:datetime"`
+	OperatorID         int64                       `gorm:"type:bigint;not null;default:0;index"`
 }
 
 // ConversationTag 会话标签关联
@@ -964,17 +1000,18 @@ type AgentProfile struct {
 
 // AgentTeam 客服组。
 type AgentTeam struct {
-	ID                     int64        `gorm:"primaryKey;autoIncrement"`                    // ID 为客服组主键。
-	TenantID               int64        `gorm:"type:bigint;not null;default:0;index"`        // TenantID 为客服组所属接入公司。
-	Name                   string       `gorm:"type:varchar(100);not null;default:'';index"` // Name 为客服组名称。
-	IsDefault              bool         `gorm:"not null;default:false;index"`                // IsDefault 表示该组是否为租户创建时生成的默认综合客服组。
-	LeaderUserID           int64        `gorm:"type:bigint;not null;default:0;index"`        // LeaderUserID 为组长用户ID，0 表示暂未设置。
-	CompanyScopeIDs        string       `gorm:"type:varchar(500);not null;default:''"`       // CompanyScopeIDs 为客服组可管理的公司ID，逗号分隔；为空则由门店范围反推。
-	StoreScopeIDs          string       `gorm:"type:varchar(500);not null;default:''"`       // StoreScopeIDs 为客服组可服务的门店ID，逗号分隔；为空表示不限制。
-	WxWorkInstanceScopeIDs string       `gorm:"type:varchar(500);not null;default:''"`       // WxWorkInstanceScopeIDs 为客服组可服务的企微员工号实例ID，逗号分隔；为空表示不限制。
-	Status                 enums.Status `gorm:"type:int;not null;default:0;index"`           // Status 表示客服组状态
-	Description            string       `gorm:"type:varchar(255);not null;default:''"`       // Description 为客服组简介，用于说明职责边界。
-	Remark                 string       `gorm:"type:text"`                                   // Remark 记录客服组内部备注。
+	ID                     int64                       `gorm:"primaryKey;autoIncrement"`                       // ID 为客服组主键。
+	TenantID               int64                       `gorm:"type:bigint;not null;default:0;index"`           // TenantID 为客服组所属接入公司。
+	Name                   string                      `gorm:"type:varchar(100);not null;default:'';index"`    // Name 为客服组名称。
+	IsDefault              bool                        `gorm:"not null;default:false;index"`                   // IsDefault 表示该组是否为租户创建时生成的默认综合客服组。
+	LeaderUserID           int64                       `gorm:"type:bigint;not null;default:0;index"`           // LeaderUserID 为组长用户ID，0 表示暂未设置。
+	CompanyScopeIDs        string                      `gorm:"type:varchar(500);not null;default:''"`          // CompanyScopeIDs 为客服组可管理的公司ID，逗号分隔；为空则由门店范围反推。
+	StoreScopeIDs          string                      `gorm:"type:varchar(500);not null;default:''"`          // StoreScopeIDs 为客服组可服务的门店ID，逗号分隔；为空表示不限制。
+	WxWorkInstanceScopeIDs string                      `gorm:"type:varchar(500);not null;default:''"`          // WxWorkInstanceScopeIDs 为客服组可服务的企微员工号实例ID，逗号分隔；为空表示不限制。
+	DispatchMode           enums.AgentTeamDispatchMode `gorm:"type:varchar(30);not null;default:'rule';index"` // DispatchMode 为客服组自动派单策略，默认保持规则均衡。
+	Status                 enums.Status                `gorm:"type:int;not null;default:0;index"`              // Status 表示客服组状态
+	Description            string                      `gorm:"type:varchar(255);not null;default:''"`          // Description 为客服组简介，用于说明职责边界。
+	Remark                 string                      `gorm:"type:text"`                                      // Remark 记录客服组内部备注。
 	AuditFields
 }
 

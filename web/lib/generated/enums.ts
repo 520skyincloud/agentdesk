@@ -44,6 +44,52 @@ export const AIProviderLabels: Record<AIProvider, string> = {
   [AIProvider.OpenAI]: "OpenAI",
 }
 
+export enum AgentPresenceStatus {
+  Online = "online",
+  Idle = "idle",
+  Busy = "busy",
+  Break = "break",
+}
+export const AgentPresenceStatusLabels: Record<AgentPresenceStatus, string> = {
+  [AgentPresenceStatus.Online]: "在线",
+  [AgentPresenceStatus.Idle]: "空闲",
+  [AgentPresenceStatus.Busy]: "忙碌",
+  [AgentPresenceStatus.Break]: "休息",
+}
+
+export enum AgentTeamDispatchMode {
+  Manual = "manual",
+  Rule = "rule",
+  Intelligent = "intelligent",
+}
+export const AgentTeamDispatchModeLabels: Record<AgentTeamDispatchMode, string> = {
+  [AgentTeamDispatchMode.Manual]: "人工派单",
+  [AgentTeamDispatchMode.Rule]: "规则均衡",
+  [AgentTeamDispatchMode.Intelligent]: "智能均衡",
+}
+
+export enum AnalyticsDataQuality {
+  Exact = "exact",
+  Estimated = "estimated",
+  Incomplete = "incomplete",
+}
+export const AnalyticsDataQualityLabels: Record<AnalyticsDataQuality, string> = {
+  [AnalyticsDataQuality.Exact]: "精确",
+  [AnalyticsDataQuality.Estimated]: "估算",
+  [AnalyticsDataQuality.Incomplete]: "不完整",
+}
+
+export enum AnalyticsFactOrigin {
+  Runtime = "runtime",
+  Backfill = "backfill",
+  Repair = "repair",
+}
+export const AnalyticsFactOriginLabels: Record<AnalyticsFactOrigin, string> = {
+  [AnalyticsFactOrigin.Runtime]: "实时采集",
+  [AnalyticsFactOrigin.Backfill]: "历史回填",
+  [AnalyticsFactOrigin.Repair]: "人工修复",
+}
+
 export enum AssetProvider {
   Local = "local",
   OSS = "oss",
@@ -77,6 +123,19 @@ export const ContactTypeLabels: Record<ContactType, string> = {
   [ContactType.Other]: "其他",
 }
 
+export enum ConversationEvaluationStatus {
+  Pending = "pending",
+  Submitted = "submitted",
+  Expired = "expired",
+  Cancelled = "cancelled",
+}
+export const ConversationEvaluationStatusLabels: Record<ConversationEvaluationStatus, string> = {
+  [ConversationEvaluationStatus.Pending]: "待评价",
+  [ConversationEvaluationStatus.Submitted]: "已评价",
+  [ConversationEvaluationStatus.Expired]: "已过期",
+  [ConversationEvaluationStatus.Cancelled]: "已取消",
+}
+
 export enum ConversationRouteStatus {
   AIServing = "AI_SERVING",
   StoreWecomManual = "STORE_WECOM_MANUAL",
@@ -92,6 +151,21 @@ export const ConversationRouteStatusLabels: Record<ConversationRouteStatus, stri
   [ConversationRouteStatus.HQAgentDeskServing]: "总部网页端人工接待",
   [ConversationRouteStatus.AIFallback]: "AI兜底中",
   [ConversationRouteStatus.Closed]: "已关闭",
+}
+
+export enum DispatchDecisionStatus {
+  Selected = "selected",
+  Fallback = "fallback",
+  Failed = "failed",
+  Override = "override",
+  Stale = "stale",
+}
+export const DispatchDecisionStatusLabels: Record<DispatchDecisionStatus, string> = {
+  [DispatchDecisionStatus.Selected]: "已选择",
+  [DispatchDecisionStatus.Fallback]: "已降级",
+  [DispatchDecisionStatus.Failed]: "失败",
+  [DispatchDecisionStatus.Override]: "人工覆盖",
+  [DispatchDecisionStatus.Stale]: "结果过期",
 }
 
 export enum ExternalSource {
@@ -405,6 +479,68 @@ export const KnowledgeRetrieveSceneLabels: Record<KnowledgeRetrieveScene, string
   [KnowledgeRetrieveScene.FirstResponse]: "首次回复",
   [KnowledgeRetrieveScene.Assist]: "辅助回复",
   [KnowledgeRetrieveScene.QA]: "问答",
+}
+
+export enum QualityInspectionResult {
+  Excellent = "excellent",
+  Passed = "passed",
+  Failed = "failed",
+}
+export const QualityInspectionResultLabels: Record<QualityInspectionResult, string> = {
+  [QualityInspectionResult.Excellent]: "优秀",
+  [QualityInspectionResult.Passed]: "合格",
+  [QualityInspectionResult.Failed]: "不合格",
+}
+
+export enum QualityInspectionStatus {
+  Draft = "draft",
+  Completed = "completed",
+}
+export const QualityInspectionStatusLabels: Record<QualityInspectionStatus, string> = {
+  [QualityInspectionStatus.Draft]: "草稿",
+  [QualityInspectionStatus.Completed]: "已完成",
+}
+
+export enum QualityRuleType {
+  Score = "score",
+  Metric = "metric",
+  Prohibited = "prohibited",
+}
+export const QualityRuleTypeLabels: Record<QualityRuleType, string> = {
+  [QualityRuleType.Score]: "人工评分",
+  [QualityRuleType.Metric]: "系统指标",
+  [QualityRuleType.Prohibited]: "禁忌项",
+}
+
+export enum QualitySamplingStatus {
+  Ready = "ready",
+  Completed = "completed",
+}
+export const QualitySamplingStatusLabels: Record<QualitySamplingStatus, string> = {
+  [QualitySamplingStatus.Ready]: "待质检",
+  [QualitySamplingStatus.Completed]: "已完成",
+}
+
+export enum ResponseSpanStatus {
+  Waiting = "waiting",
+  Replied = "replied",
+  Transferred = "transferred",
+  Abandoned = "abandoned",
+}
+export const ResponseSpanStatusLabels: Record<ResponseSpanStatus, string> = {
+  [ResponseSpanStatus.Waiting]: "等待回复",
+  [ResponseSpanStatus.Replied]: "已回复",
+  [ResponseSpanStatus.Transferred]: "已转派",
+  [ResponseSpanStatus.Abandoned]: "已结束等待",
+}
+
+export enum ServiceSessionStatus {
+  Open = "open",
+  Closed = "closed",
+}
+export const ServiceSessionStatusLabels: Record<ServiceSessionStatus, string> = {
+  [ServiceSessionStatus.Open]: "进行中",
+  [ServiceSessionStatus.Closed]: "已关闭",
 }
 
 export enum ServiceStatus {

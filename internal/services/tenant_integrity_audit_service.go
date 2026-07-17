@@ -71,11 +71,12 @@ type tenantIntegrityTablePolicy struct {
 }
 
 type tenantIntegrityRelation struct {
-	ChildModel  string
-	FKColumn    string
-	ParentModel string
-	Required    bool
-	TenantMatch bool
+	ChildModel            string
+	FKColumn              string
+	ParentModel           string
+	Required              bool
+	TenantMatch           bool
+	AllowParentTenantZero bool
 }
 
 func tenantIntegrityTablePolicies() map[string]tenantIntegrityTablePolicy {
@@ -117,6 +118,19 @@ func tenantIntegrityTablePolicies() map[string]tenantIntegrityTablePolicy {
 		"AIAgent":                      positive,
 		"Channel":                      positive,
 		"ConversationEventLog":         positive,
+		"ConversationServiceSession":   positive,
+		"ConversationResponseSpan":     positive,
+		"AgentPresenceSession":         positive,
+		"QualityTemplate":              positive,
+		"QualityTemplateItem":          positive,
+		"QualityInspection":            positive,
+		"QualityInspectionItem":        positive,
+		"QualitySamplingBatch":         positive,
+		"QualitySamplingItem":          positive,
+		"DispatchDecisionLog":          positive,
+		"ServiceAnalyticsPolicy":       positive,
+		"ConversationEvaluation":       positive,
+		"ReportViewPreset":             positive,
 		"Ticket":                       positive,
 		"TicketTag":                    positive,
 		"TicketProgress":               positive,
@@ -149,6 +163,12 @@ func tenantIntegrityTablePolicies() map[string]tenantIntegrityTablePolicy {
 func tenantIntegrityRelations() []tenantIntegrityRelation {
 	tenant := func(child, fk, parent string, required bool) tenantIntegrityRelation {
 		return tenantIntegrityRelation{ChildModel: child, FKColumn: fk, ParentModel: parent, Required: required, TenantMatch: true}
+	}
+	tenantOrPlatform := func(child, fk, parent string, required bool) tenantIntegrityRelation {
+		return tenantIntegrityRelation{
+			ChildModel: child, FKColumn: fk, ParentModel: parent, Required: required,
+			TenantMatch: true, AllowParentTenantZero: true,
+		}
 	}
 	global := func(child, fk, parent string, required bool) tenantIntegrityRelation {
 		return tenantIntegrityRelation{ChildModel: child, FKColumn: fk, ParentModel: parent, Required: required}
@@ -237,6 +257,55 @@ func tenantIntegrityRelations() []tenantIntegrityRelation {
 		tenant("ConversationTag", "conversation_id", "Conversation", true),
 		tenant("ConversationTag", "tag_id", "Tag", true),
 		tenant("ConversationEventLog", "conversation_id", "Conversation", true),
+		tenant("ConversationServiceSession", "conversation_id", "Conversation", true),
+		tenant("ConversationServiceSession", "customer_id", "Customer", false),
+		tenant("ConversationServiceSession", "channel_id", "Channel", false),
+		tenant("ConversationServiceSession", "store_id", "Store", false),
+		tenant("ConversationServiceSession", "wx_work_instance_id", "WxWorkProtocolInstance", false),
+		tenant("ConversationServiceSession", "first_assignment_id", "ConversationAssignment", false),
+		tenant("ConversationServiceSession", "last_assignment_id", "ConversationAssignment", false),
+		tenant("ConversationServiceSession", "assigned_team_id", "AgentTeam", false),
+		tenant("ConversationServiceSession", "assigned_squad_id", "AgentTeamSquad", false),
+		tenant("ConversationServiceSession", "assigned_agent_id", "User", false),
+		tenant("ConversationServiceSession", "last_message_id", "Message", false),
+		tenant("ConversationResponseSpan", "conversation_id", "Conversation", true),
+		tenant("ConversationResponseSpan", "assignment_id", "ConversationAssignment", false),
+		tenant("ConversationResponseSpan", "team_id", "AgentTeam", false),
+		tenant("ConversationResponseSpan", "squad_id", "AgentTeamSquad", false),
+		tenant("ConversationResponseSpan", "agent_id", "User", false),
+		tenant("ConversationResponseSpan", "customer_start_message_id", "Message", true),
+		tenant("ConversationResponseSpan", "customer_end_message_id", "Message", true),
+		tenant("ConversationResponseSpan", "reply_message_id", "Message", false),
+		tenant("AgentPresenceSession", "user_id", "User", true),
+		tenant("AgentPresenceSession", "agent_profile_id", "AgentProfile", true),
+		tenant("AgentPresenceSession", "team_id", "AgentTeam", false),
+		tenantOrPlatform("AgentPresenceSession", "changed_by", "User", false),
+		tenant("QualityTemplateItem", "template_id", "QualityTemplate", true),
+		tenant("QualityInspection", "conversation_id", "Conversation", true),
+		tenant("QualityInspection", "assignment_id", "ConversationAssignment", true),
+		tenant("QualityInspection", "agent_id", "User", true),
+		tenant("QualityInspection", "team_id", "AgentTeam", false),
+		tenant("QualityInspection", "template_id", "QualityTemplate", true),
+		tenantOrPlatform("QualityInspection", "inspected_by", "User", false),
+		tenant("QualityInspectionItem", "inspection_id", "QualityInspection", true),
+		tenant("QualityInspectionItem", "template_item_id", "QualityTemplateItem", true),
+		tenantOrPlatform("QualitySamplingBatch", "created_by", "User", true),
+		tenant("QualitySamplingItem", "batch_id", "QualitySamplingBatch", true),
+		tenant("QualitySamplingItem", "assignment_id", "ConversationAssignment", true),
+		tenant("QualitySamplingItem", "conversation_id", "Conversation", true),
+		tenant("QualitySamplingItem", "agent_id", "User", true),
+		tenant("QualitySamplingItem", "inspection_id", "QualityInspection", false),
+		tenant("DispatchDecisionLog", "conversation_id", "Conversation", true),
+		tenant("DispatchDecisionLog", "assignment_id", "ConversationAssignment", false),
+		tenant("DispatchDecisionLog", "selected_user_id", "User", false),
+		tenant("DispatchDecisionLog", "selected_team_id", "AgentTeam", false),
+		tenant("DispatchDecisionLog", "selected_squad_id", "AgentTeamSquad", false),
+		tenantOrPlatform("DispatchDecisionLog", "operator_id", "User", false),
+		tenant("ConversationEvaluation", "conversation_id", "Conversation", true),
+		tenant("ConversationEvaluation", "assignment_id", "ConversationAssignment", false),
+		tenant("ConversationEvaluation", "customer_id", "Customer", true),
+		tenantOrPlatform("ConversationEvaluation", "invited_by", "User", false),
+		tenantOrPlatform("ReportViewPreset", "user_id", "User", true),
 
 		global("AIAgent", "ai_config_id", "AIConfig", false),
 		tenant("Channel", "ai_agent_id", "AIAgent", false),
@@ -473,9 +542,13 @@ func (s *tenantIntegrityAuditService) Audit(
 			return nil, err
 		}
 		if relation.TenantMatch && child.HasTenantID && parent.HasTenantID {
+			mismatchWhere := "c." + relation.FKColumn + " > 0 AND p.id IS NOT NULL AND c.tenant_id <> p.tenant_id"
+			if relation.AllowParentTenantZero {
+				mismatchWhere += " AND p.tenant_id <> 0"
+			}
 			if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
 				Table: child.Table, Alias: "c", Joins: []string{join},
-				Where: "c." + relation.FKColumn + " > 0 AND p.id IS NOT NULL AND c.tenant_id <> p.tenant_id", IDExpr: "c.id",
+				Where: mismatchWhere, IDExpr: "c.id",
 			}, sampleLimit, "TENANT_RELATION_MISMATCH", entity, "子记录与父记录 tenant_id 不一致"); err != nil {
 				return nil, err
 			}
