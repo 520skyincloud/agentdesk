@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -13,13 +14,25 @@ import (
 )
 
 const (
-	expectedSimulationConversationCount = 36
-	expectedSimulationMessageCount      = 135
-	expectedSimulationAssignmentCount   = 21
-	expectedSimulationNeedReplyCount    = 27
+	expectedSimulationConversationCount        = 36
+	expectedSimulationMessageCount             = 135
+	expectedSimulationAssignmentCount          = 21
+	expectedSimulationNeedReplyCount           = 27
+	expectedSimulationServiceSessionCount      = 36
+	expectedSimulationResponseSpanCount        = 39
+	expectedSimulationWaitingResponseSpanCount = 27
+	expectedSimulationRepliedResponseSpanCount = 12
+	expectedSimulationPresenceCount            = 12
+	expectedSimulationQualityInspectionCount   = 9
+	expectedSimulationCompletedInspectionCount = 6
+	expectedSimulationQualityItemCount         = 54
+	expectedSimulationEvaluationCount          = 9
+	expectedSimulationSubmittedEvaluationCount = 6
+	expectedSimulationDispatchDecisionCount    = 30
 
-	simulationRemarkPrefix = "SIM_CONVERSATION:"
-	simulationManualWindow = 24 * time.Hour
+	simulationRemarkPrefix        = "SIM_CONVERSATION:"
+	simulationManualWindow        = 24 * time.Hour
+	simulationQualityTemplateName = "人工回复基础质检"
 )
 
 type simulationKind string
@@ -63,6 +76,7 @@ type simulationScenario struct {
 	ManualExpireAt *time.Time
 	ClosedAt       *time.Time
 	HandoffReason  string
+	CategoryCode   string
 	Messages       []simulationLine
 }
 
@@ -70,7 +84,10 @@ func (ctx *seedContext) upsertSimulationConversations() error {
 	if len(ctx.customers) < 500 || len(ctx.stores) < 100 || len(ctx.wxInstances) < 100 || len(ctx.teams) < 3 || len(ctx.agents) < 12 {
 		return fmt.Errorf("simulation prerequisites are incomplete")
 	}
-	if err := deleteSimulationConversations(ctx.db, ctx.marker); err != nil {
+	if err := deleteSimulationConversations(ctx.db, ctx.marker, ctx.tenant.ID); err != nil {
+		return err
+	}
+	if err := ctx.ensureSimulationAnalyticsFoundation(); err != nil {
 		return err
 	}
 	for _, scenario := range buildSimulationScenarios(ctx.now) {
@@ -78,12 +95,13 @@ func (ctx *seedContext) upsertSimulationConversations() error {
 			return fmt.Errorf("create simulation scenario %s failed: %w", scenario.Key, err)
 		}
 	}
-	return nil
+	return ctx.createSimulationPresenceSessions()
 }
 
 func buildSimulationScenarios(now time.Time) []simulationScenario {
 	storeStarts := []int{1, 35, 68}
 	topics := simulationTopics()
+	categories := []string{"网络服务", "餐饮服务", "设施维修", "噪音投诉", "客房服务", "账务发票", "门锁房卡", "预订变更", "停车出行", "投诉升级", "紧急协助", "其他咨询"}
 	scenarios := make([]simulationScenario, 0, expectedSimulationConversationCount)
 	for teamOffset, storeStart := range storeStarts {
 		teamIndex := teamOffset + 1
@@ -96,10 +114,109 @@ func buildSimulationScenarios(now time.Time) []simulationScenario {
 			}
 			scenario := newSimulationScenario(now, teamIndex, storeIndex, assigneeIndex, kind, topics[offset])
 			scenario.Key = fmt.Sprintf("team-%d-%s-%02d", teamIndex, kind, offset+1)
+			scenario.CategoryCode = categories[offset]
 			scenarios = append(scenarios, scenario)
 		}
 	}
 	return scenarios
+}
+
+func (ctx *seedContext) ensureSimulationAnalyticsFoundation() error {
+	policy := &models.ServiceAnalyticsPolicy{}
+	err := ctx.db.Where("tenant_id = ?", ctx.tenant.ID).Take(policy).Error
+	if err == gorm.ErrRecordNotFound {
+		policy = &models.ServiceAnalyticsPolicy{
+			TenantID: ctx.tenant.ID, QueueTargetSeconds: 60, FirstResponseTargetSeconds: 180,
+			ResponseTargetSeconds: 300, RepeatConsultationHours: 24, SatisfactionThreshold: 4,
+			EvaluationExpiryHours: 72, DefaultSampleSize: 20, AuditFields: ctx.audit,
+		}
+		if err := ctx.db.Create(policy).Error; err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+
+	template := &models.QualityTemplate{}
+	err = ctx.db.Where("tenant_id = ? AND is_default = ? AND status = ?", ctx.tenant.ID, true, enums.StatusOk).Order("id DESC").Take(template).Error
+	if err == gorm.ErrRecordNotFound {
+		template = &models.QualityTemplate{
+			TenantID: ctx.tenant.ID, Name: simulationQualityTemplateName,
+			Description: "仅评价人工客服在接待分段内发送的回复，AI与客户消息只作为上下文。",
+			TotalScore:  100, PassScore: 80, Version: 1, IsDefault: true, Status: enums.StatusOk, AuditFields: ctx.audit,
+		}
+		if err := ctx.db.Create(template).Error; err != nil {
+			return err
+		}
+		defaults := []models.QualityTemplateItem{
+			{Code: "courtesy", Name: "服务礼貌", Description: "称呼、语气和服务态度符合规范", RuleType: enums.QualityRuleTypeScore, MaxScore: 20, Required: true, SortNo: 10},
+			{Code: "understanding", Name: "需求理解", Description: "准确理解客户问题，没有答非所问", RuleType: enums.QualityRuleTypeScore, MaxScore: 25, Required: true, SortNo: 20},
+			{Code: "accuracy", Name: "信息准确", Description: "回复信息真实、准确且没有不当承诺", RuleType: enums.QualityRuleTypeScore, MaxScore: 25, Required: true, SortNo: 30},
+			{Code: "resolution", Name: "解决推进", Description: "给出清晰下一步并推动问题处理", RuleType: enums.QualityRuleTypeScore, MaxScore: 20, Required: true, SortNo: 40},
+			{Code: "compliance", Name: "合规安全", Description: "不泄露隐私，不越权承诺退款赔付", RuleType: enums.QualityRuleTypeScore, MaxScore: 10, Required: true, SortNo: 50},
+			{Code: "prohibited_privacy", Name: "隐私或安全禁忌", Description: "泄露客户隐私、索要敏感凭证或提供危险指引时一票否决", RuleType: enums.QualityRuleTypeProhibited, Required: true, HardFail: true, SortNo: 60},
+		}
+		for i := range defaults {
+			defaults[i].TenantID = ctx.tenant.ID
+			defaults[i].TemplateID = template.ID
+			defaults[i].Status = enums.StatusOk
+			defaults[i].AuditFields = ctx.audit
+			if err := ctx.db.Create(&defaults[i]).Error; err != nil {
+				return err
+			}
+		}
+	} else if err != nil {
+		return err
+	}
+	items := make([]models.QualityTemplateItem, 0)
+	if err := ctx.db.Where("tenant_id = ? AND template_id = ? AND status = ?", ctx.tenant.ID, template.ID, enums.StatusOk).
+		Order("sort_no ASC, id ASC").Find(&items).Error; err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return fmt.Errorf("default quality template %d has no enabled items", template.ID)
+	}
+	ctx.qualityTemplate = template
+	ctx.qualityTemplateItems = items
+	return nil
+}
+
+func (ctx *seedContext) createSimulationPresenceSessions() error {
+	userIDs := make([]int64, 0, len(ctx.agents))
+	for _, agent := range ctx.agents {
+		userIDs = append(userIDs, agent.ID)
+	}
+	if err := ctx.db.Where("tenant_id = ? AND user_id IN ?", ctx.tenant.ID, userIDs).Delete(&models.AgentPresenceSession{}).Error; err != nil {
+		return err
+	}
+	statuses := []enums.AgentPresenceStatus{
+		enums.AgentPresenceStatusOnline,
+		enums.AgentPresenceStatusIdle,
+		enums.AgentPresenceStatusBusy,
+		enums.AgentPresenceStatusBreak,
+	}
+	for index, agent := range ctx.agents {
+		profile := &models.AgentProfile{}
+		if err := ctx.db.Where("tenant_id = ? AND user_id = ?", ctx.tenant.ID, agent.ID).Take(profile).Error; err != nil {
+			return err
+		}
+		startedAt := ctx.now.Add(-time.Duration(45+index*3) * time.Minute)
+		status := statuses[index%len(statuses)]
+		breakReason := ""
+		if status == enums.AgentPresenceStatusBreak {
+			breakReason = "仿真测试短休"
+		}
+		item := &models.AgentPresenceSession{
+			TenantID: ctx.tenant.ID, UserID: agent.ID, AgentProfileID: profile.ID, TeamID: profile.TeamID,
+			Status: status, Source: "simulation_seed", BreakReason: breakReason,
+			ChangedBy: ctx.leaders[index/4].ID, StartedAt: startedAt, LastSeenAt: ctx.now,
+			AuditFields: simulationAuditFields(startedAt),
+		}
+		if err := ctx.db.Create(item).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func simulationKindForOffset(offset int) simulationKind {
@@ -402,7 +519,7 @@ func (ctx *seedContext) createSimulationScenario(scenario simulationScenario) er
 	if err := ctx.createSimulationParticipants(conversation, customer, assignee, scenario); err != nil {
 		return err
 	}
-	lastMessage, aiRounds, err := ctx.createSimulationMessages(conversation, assignee, scenario)
+	lastMessage, messages, aiRounds, err := ctx.createSimulationMessages(conversation, assignee, scenario)
 	if err != nil {
 		return err
 	}
@@ -430,10 +547,14 @@ func (ctx *seedContext) createSimulationScenario(scenario simulationScenario) er
 		return err
 	}
 
-	if err := ctx.createSimulationAssignment(conversation, assignee, scenario); err != nil {
+	assignment, err := ctx.createSimulationAssignment(conversation, assignee, scenario)
+	if err != nil {
 		return err
 	}
 	if err := ctx.createSimulationEvents(conversation, assignee, scenario); err != nil {
+		return err
+	}
+	if err := ctx.createSimulationAnalyticsFacts(conversation, customer, store, instance, team, assignee, assignment, messages, scenario); err != nil {
 		return err
 	}
 	return ctx.db.Model(&models.StoreCustomerRelation{}).
@@ -510,21 +631,22 @@ func (ctx *seedContext) createSimulationParticipants(conversation *models.Conver
 	}).Error
 }
 
-func (ctx *seedContext) createSimulationMessages(conversation *models.Conversation, assignee *models.User, scenario simulationScenario) (*models.Message, int, error) {
+func (ctx *seedContext) createSimulationMessages(conversation *models.Conversation, assignee *models.User, scenario simulationScenario) (*models.Message, []models.Message, int, error) {
 	payload, err := json.Marshal(map[string]any{
 		"simulation": true,
 		"batch":      ctx.batch,
 		"scenario":   scenario.Key,
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	var lastMessage *models.Message
+	messages := make([]models.Message, 0, len(scenario.Messages))
 	aiRounds := 0
 	for index, line := range scenario.Messages {
 		senderID, err := simulationSenderID(line.SenderType, assignee)
 		if err != nil {
-			return nil, 0, err
+			return nil, nil, 0, err
 		}
 		if line.SenderType == enums.IMSenderTypeAI {
 			aiRounds++
@@ -549,11 +671,12 @@ func (ctx *seedContext) createSimulationMessages(conversation *models.Conversati
 			AuditFields:    simulationAuditFields(sentAt),
 		}
 		if err := ctx.db.Create(message).Error; err != nil {
-			return nil, 0, err
+			return nil, nil, 0, err
 		}
 		lastMessage = message
+		messages = append(messages, *message)
 	}
-	return lastMessage, aiRounds, nil
+	return lastMessage, messages, aiRounds, nil
 }
 
 func simulationSenderID(senderType enums.IMSenderType, assignee *models.User) (int64, error) {
@@ -566,25 +689,460 @@ func simulationSenderID(senderType enums.IMSenderType, assignee *models.User) (i
 	return assignee.ID, nil
 }
 
-func (ctx *seedContext) createSimulationAssignment(conversation *models.Conversation, assignee *models.User, scenario simulationScenario) error {
+func (ctx *seedContext) createSimulationAssignment(conversation *models.Conversation, assignee *models.User, scenario simulationScenario) (*models.ConversationAssignment, error) {
 	if assignee == nil || scenario.AssignmentAt == nil {
-		return nil
+		return nil, nil
 	}
 	status := enums.IMAssignmentStatusActive
 	if scenario.ClosedAt != nil {
 		status = enums.IMAssignmentStatusInactive
 	}
-	return ctx.db.Create(&models.ConversationAssignment{
-		TenantID:       ctx.tenant.ID,
-		ConversationID: conversation.ID,
-		ToUserID:       assignee.ID,
-		AssignType:     string(enums.IMAssignmentTypeAssign),
-		Reason:         "仿真派单：" + scenario.HandoffReason,
-		Status:         status,
-		CreatedAt:      *scenario.AssignmentAt,
-		FinishedAt:     scenario.ClosedAt,
-		OperatorID:     ctx.leaders[scenario.TeamIndex-1].ID,
-	}).Error
+	dispatchMode := enums.AgentTeamDispatchModeIntelligent
+	confidence := 88
+	if scenario.Kind == simulationKindPriority {
+		dispatchMode = enums.AgentTeamDispatchModeManual
+		confidence = 0
+	} else if scenario.Kind == simulationKindUrgent || scenario.AssigneeIndex%4 == 2 {
+		dispatchMode = enums.AgentTeamDispatchModeRule
+		confidence = 0
+	}
+	assignment := &models.ConversationAssignment{
+		TenantID:           ctx.tenant.ID,
+		ConversationID:     conversation.ID,
+		SessionNo:          1,
+		ToUserID:           assignee.ID,
+		AssignType:         string(enums.IMAssignmentTypeAssign),
+		Reason:             "仿真派单：" + scenario.HandoffReason,
+		DispatchMode:       dispatchMode,
+		DecisionConfidence: confidence,
+		WorkloadWeight:     simulationWorkloadWeight(scenario.Kind),
+		Status:             status,
+		CreatedAt:          *scenario.AssignmentAt,
+		FinishedAt:         scenario.ClosedAt,
+		OperatorID:         ctx.leaders[scenario.TeamIndex-1].ID,
+	}
+	if err := ctx.db.Create(assignment).Error; err != nil {
+		return nil, err
+	}
+	return assignment, nil
+}
+
+func simulationWorkloadWeight(kind simulationKind) int {
+	switch kind {
+	case simulationKindPriority:
+		return 2
+	case simulationKindUrgent:
+		return 3
+	default:
+		return 1
+	}
+}
+
+func (ctx *seedContext) createSimulationAnalyticsFacts(
+	conversation *models.Conversation,
+	customer *models.Customer,
+	store *models.Store,
+	instance *models.WxWorkProtocolInstance,
+	team *models.AgentTeam,
+	assignee *models.User,
+	assignment *models.ConversationAssignment,
+	messages []models.Message,
+	scenario simulationScenario,
+) error {
+	session := buildSimulationServiceSession(conversation, customer, store, instance, team, assignee, assignment, messages, scenario)
+	if err := ctx.db.Create(session).Error; err != nil {
+		return err
+	}
+	if err := ctx.createSimulationResponseSpans(session, team, assignment, messages, scenario); err != nil {
+		return err
+	}
+	if scenario.HandoffAt != nil {
+		if err := ctx.createSimulationDispatchDecision(conversation, team, assignee, assignment, messages, scenario); err != nil {
+			return err
+		}
+	}
+	if assignment == nil || session.HumanMessageCount == 0 {
+		return nil
+	}
+	if err := ctx.createSimulationQualityInspection(conversation, team, assignment, messages, scenario); err != nil {
+		return err
+	}
+	return ctx.createSimulationEvaluation(session, assignment, scenario)
+}
+
+func buildSimulationServiceSession(
+	conversation *models.Conversation,
+	customer *models.Customer,
+	store *models.Store,
+	instance *models.WxWorkProtocolInstance,
+	team *models.AgentTeam,
+	assignee *models.User,
+	assignment *models.ConversationAssignment,
+	messages []models.Message,
+	scenario simulationScenario,
+) *models.ConversationServiceSession {
+	item := &models.ConversationServiceSession{
+		TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: 1,
+		CustomerID: customer.ID, ChannelID: conversation.ChannelID, StoreID: store.ID, WxWorkInstanceID: instance.ID,
+		ServiceMode: conversation.ServiceMode, Status: enums.ServiceSessionStatusOpen, StartedAt: scenario.StartedAt,
+		QueueEnteredAt: scenario.HandoffAt, AssignedTeamID: conversation.CurrentTeamID,
+		CategoryCode: scenario.CategoryCode, ResolutionCode: simulationResolutionCode(scenario.Kind),
+		SessionSummary: simulationSessionSummary(scenario), FactOrigin: enums.AnalyticsFactOriginRuntime,
+		DataQuality: enums.AnalyticsDataQualityExact, AuditFields: simulationAuditFields(scenario.StartedAt),
+	}
+	if item.AssignedTeamID == 0 && scenario.HandoffAt != nil {
+		item.AssignedTeamID = team.ID
+	}
+	if scenario.ClosedAt != nil {
+		item.Status = enums.ServiceSessionStatusClosed
+		item.EndedAt = scenario.ClosedAt
+		item.CloseReason = conversation.CloseReason
+	}
+	if assignment != nil {
+		item.AssignedAt = timePointer(assignment.CreatedAt)
+		item.FirstAssignmentID = assignment.ID
+		item.LastAssignmentID = assignment.ID
+		item.AssignedAgentID = assignment.ToUserID
+		item.AssignedSquadID = assignment.SquadID
+		item.AssignmentCount = 1
+		if scenario.HandoffAt != nil {
+			item.QueueSeconds = nonNegativeSimulationSeconds(*scenario.HandoffAt, assignment.CreatedAt)
+		}
+	}
+	for i := range messages {
+		message := &messages[i]
+		switch message.SenderType {
+		case enums.IMSenderTypeCustomer:
+			item.CustomerMessageCount++
+		case enums.IMSenderTypeAI:
+			item.AIMessageCount++
+		case enums.IMSenderTypeAgent:
+			item.HumanMessageCount++
+		case enums.IMSenderTypeSystem:
+			item.SystemMessageCount++
+		}
+		at := simulationMessageAt(message)
+		item.LastMessageID = message.ID
+		item.LastMessageAt = timePointer(at)
+		if message.SenderType == enums.IMSenderTypeAgent {
+			if item.FirstHumanReplyAt == nil {
+				item.FirstHumanReplyAt = timePointer(at)
+				if assignment != nil {
+					item.FirstResponseSeconds = nonNegativeSimulationSeconds(assignment.CreatedAt, at)
+				}
+				if scenario.HandoffAt != nil {
+					item.TotalHumanWaitSeconds = nonNegativeSimulationSeconds(*scenario.HandoffAt, at)
+				}
+			}
+			item.LastHumanReplyAt = timePointer(at)
+		}
+	}
+	item.AIHandled = item.AIMessageCount > 0
+	item.HumanHandled = item.HumanMessageCount > 0
+	_ = assignee
+	return item
+}
+
+func simulationResolutionCode(kind simulationKind) string {
+	switch kind {
+	case simulationKindClosed:
+		return "resolved"
+	case simulationKindProcessing:
+		return "follow_up"
+	case simulationKindAI:
+		return ""
+	default:
+		return "unresolved"
+	}
+}
+
+func simulationSessionSummary(scenario simulationScenario) string {
+	switch scenario.Kind {
+	case simulationKindClosed:
+		return fmt.Sprintf("客户咨询%s；人工已回复并完成处理。结果：%s", scenario.CategoryCode, scenario.Topic.Resolution)
+	case simulationKindProcessing:
+		return fmt.Sprintf("客户咨询%s；人工已首次响应，客户补充信息后等待继续处理。", scenario.CategoryCode)
+	case simulationKindAI:
+		return fmt.Sprintf("客户咨询%s；当前由 AI 完成常规答复，未进入人工队列。", scenario.CategoryCode)
+	default:
+		return fmt.Sprintf("客户咨询%s；已进入人工服务流程。转人工原因：%s", scenario.CategoryCode, scenario.HandoffReason)
+	}
+}
+
+func (ctx *seedContext) createSimulationResponseSpans(
+	session *models.ConversationServiceSession,
+	team *models.AgentTeam,
+	assignment *models.ConversationAssignment,
+	messages []models.Message,
+	scenario simulationScenario,
+) error {
+	if scenario.HandoffAt == nil {
+		return nil
+	}
+	type waitingBurst struct {
+		startID int64
+		endID   int64
+		count   int
+		at      time.Time
+	}
+	var waiting *waitingBurst
+	for i := range messages {
+		message := &messages[i]
+		at := simulationMessageAt(message)
+		if at.Before(*scenario.HandoffAt) {
+			continue
+		}
+		switch message.SenderType {
+		case enums.IMSenderTypeCustomer:
+			if waiting == nil {
+				waiting = &waitingBurst{startID: message.ID, endID: message.ID, count: 1, at: at}
+			} else {
+				waiting.endID = message.ID
+				waiting.count++
+			}
+		case enums.IMSenderTypeAgent:
+			if waiting == nil {
+				continue
+			}
+			span := buildSimulationResponseSpan(session, team, assignment, waiting.startID, waiting.endID, waiting.count, waiting.at)
+			span.RepliedAt = timePointer(at)
+			span.ReplyMessageID = message.ID
+			span.WaitSeconds = nonNegativeSimulationSeconds(waiting.at, at)
+			span.Status = enums.ResponseSpanStatusReplied
+			if err := ctx.db.Create(span).Error; err != nil {
+				return err
+			}
+			waiting = nil
+		}
+	}
+	if waiting == nil {
+		return nil
+	}
+	span := buildSimulationResponseSpan(session, team, assignment, waiting.startID, waiting.endID, waiting.count, waiting.at)
+	if scenario.ClosedAt != nil {
+		span.Status = enums.ResponseSpanStatusAbandoned
+		span.WaitSeconds = nonNegativeSimulationSeconds(waiting.at, *scenario.ClosedAt)
+	}
+	return ctx.db.Create(span).Error
+}
+
+func buildSimulationResponseSpan(
+	session *models.ConversationServiceSession,
+	team *models.AgentTeam,
+	assignment *models.ConversationAssignment,
+	startID, endID int64,
+	messageCount int,
+	startedAt time.Time,
+) *models.ConversationResponseSpan {
+	item := &models.ConversationResponseSpan{
+		TenantID: session.TenantID, ConversationID: session.ConversationID, SessionNo: session.SessionNo,
+		TeamID: team.ID, CustomerStartMessageID: startID, CustomerEndMessageID: endID,
+		CustomerMessageCount: messageCount, StartedAt: startedAt, Status: enums.ResponseSpanStatusWaiting,
+		FactOrigin: enums.AnalyticsFactOriginRuntime, DataQuality: enums.AnalyticsDataQualityExact,
+		AuditFields: simulationAuditFields(startedAt),
+	}
+	if assignment != nil {
+		item.AssignmentID = assignment.ID
+		item.SquadID = assignment.SquadID
+		item.AgentID = assignment.ToUserID
+	}
+	return item
+}
+
+func (ctx *seedContext) createSimulationDispatchDecision(
+	conversation *models.Conversation,
+	team *models.AgentTeam,
+	assignee *models.User,
+	assignment *models.ConversationAssignment,
+	messages []models.Message,
+	scenario simulationScenario,
+) error {
+	teamAgentStart := (scenario.TeamIndex - 1) * 4
+	candidateIDs := make([]int64, 0, 4)
+	candidates := make([]map[string]any, 0, 4)
+	for index := 0; index < 4; index++ {
+		userID := ctx.agents[teamAgentStart+index].ID
+		candidateIDs = append(candidateIDs, userID)
+		candidates = append(candidates, map[string]any{
+			"userId": userID, "teamId": team.ID, "activeCount": index,
+			"weightedOpenLoad": index + 1, "pendingFirstReply": index % 2, "normalizedLoad": float64(index+1) / 4,
+		})
+	}
+	userIDsJSON, _ := json.Marshal(candidateIDs)
+	candidatesJSON, _ := json.Marshal(candidates)
+	status := enums.DispatchDecisionStatusSelected
+	mode := string(enums.AgentTeamDispatchModeIntelligent)
+	reason := "大模型结合当前班次、负载与会话上下文选择客服"
+	fallbackReason := ""
+	if scenario.Kind == simulationKindPending {
+		status = enums.DispatchDecisionStatusFailed
+		reason = "当前候选客服达到仿真容量，任务保留在客服组待派池"
+		fallbackReason = "no_available_capacity"
+	} else if scenario.Kind == simulationKindPriority {
+		status = enums.DispatchDecisionStatusOverride
+		mode = string(enums.AgentTeamDispatchModeManual)
+		reason = "组长依据客户持续催促覆盖自动建议"
+	} else if scenario.Kind == simulationKindUrgent || scenario.AssigneeIndex%4 == 2 {
+		status = enums.DispatchDecisionStatusFallback
+		mode = string(enums.AgentTeamDispatchModeRule)
+		reason = "模型建议置信度不足，降级到规则均衡派单"
+		fallbackReason = "low_model_confidence"
+	}
+	decidedAt := *scenario.HandoffAt
+	inputLastMessageID := int64(0)
+	for i := range messages {
+		if messages[i].SenderType == enums.IMSenderTypeCustomer && !simulationMessageAt(&messages[i]).Before(decidedAt) {
+			inputLastMessageID = messages[i].ID
+			break
+		}
+	}
+	item := &models.DispatchDecisionLog{
+		TenantID: ctx.tenant.ID, DecisionKey: fmt.Sprintf("simulation:%s:%s", ctx.batch, scenario.Key),
+		ConversationID: conversation.ID, SessionNo: 1, Trigger: "simulation_auto_dispatch",
+		DecisionMode: mode, Status: status, CandidateUserIDsJSON: string(userIDsJSON), CandidateSnapshotJSON: string(candidatesJSON),
+		InputLastMessageID: inputLastMessageID, SelectedTeamID: team.ID, DecisionLatencyMillis: int64(80 + scenario.StoreIndex%40),
+		Reason: reason, FallbackReason: fallbackReason, OperatorID: constants.SystemAuditUserID,
+		DecidedAt: decidedAt, AuditFields: simulationAuditFields(decidedAt),
+	}
+	if assignment != nil && assignee != nil {
+		item.AssignmentID = assignment.ID
+		item.SelectedUserID = assignee.ID
+		item.SelectedSquadID = assignment.SquadID
+	}
+	return ctx.db.Create(item).Error
+}
+
+func (ctx *seedContext) createSimulationQualityInspection(
+	conversation *models.Conversation,
+	team *models.AgentTeam,
+	assignment *models.ConversationAssignment,
+	messages []models.Message,
+	scenario simulationScenario,
+) error {
+	status := enums.QualityInspectionStatusCompleted
+	if scenario.Kind == simulationKindProcessing && scenario.AssigneeIndex%4 == 3 {
+		status = enums.QualityInspectionStatusDraft
+	}
+	failed := status == enums.QualityInspectionStatusCompleted && scenario.Kind == simulationKindClosed && scenario.TeamIndex == 3
+	humanMessageIDs := make([]int64, 0, 2)
+	for i := range messages {
+		if messages[i].SenderType == enums.IMSenderTypeAgent {
+			humanMessageIDs = append(humanMessageIDs, messages[i].ID)
+		}
+	}
+	evidenceJSON, _ := json.Marshal(humanMessageIDs)
+	inspectedAt := scenario.StartedAt.Add(30 * time.Minute)
+	if scenario.ClosedAt != nil {
+		inspectedAt = scenario.ClosedAt.Add(5 * time.Minute)
+	}
+	inspection := &models.QualityInspection{
+		TenantID: ctx.tenant.ID, ConversationID: conversation.ID, SessionNo: 1, AssignmentID: assignment.ID,
+		AgentID: assignment.ToUserID, TeamID: team.ID, TemplateID: ctx.qualityTemplate.ID,
+		Status: status, MaxScore: ctx.qualityTemplate.TotalScore,
+		Summary: "仿真质检：仅评价该接待分段中的人工回复。", AuditFields: simulationAuditFields(inspectedAt),
+	}
+	if status == enums.QualityInspectionStatusCompleted {
+		inspection.InspectedBy = ctx.leaders[scenario.TeamIndex-1].ID
+		inspection.InspectedAt = timePointer(inspectedAt)
+	}
+	if err := ctx.db.Create(inspection).Error; err != nil {
+		return err
+	}
+	totalScore := 0
+	for _, templateItem := range ctx.qualityTemplateItems {
+		score := templateItem.MaxScore
+		passed := true
+		if status == enums.QualityInspectionStatusDraft {
+			score = 0
+			passed = false
+		} else if failed && templateItem.RuleType == enums.QualityRuleTypeScore {
+			score = templateItem.MaxScore * 7 / 10
+			passed = false
+		} else if templateItem.Code == "accuracy" {
+			score = templateItem.MaxScore - 5
+			passed = false
+		}
+		if templateItem.RuleType == enums.QualityRuleTypeProhibited {
+			score = 0
+			passed = true
+		}
+		totalScore += score
+		messageIDsJSON := "[]"
+		if templateItem.RuleType != enums.QualityRuleTypeProhibited {
+			messageIDsJSON = string(evidenceJSON)
+		}
+		item := &models.QualityInspectionItem{
+			TenantID: ctx.tenant.ID, InspectionID: inspection.ID, TemplateItemID: templateItem.ID,
+			ItemCode: templateItem.Code, ItemName: templateItem.Name, RuleType: templateItem.RuleType,
+			MaxScore: templateItem.MaxScore, Score: score, Passed: passed,
+			Evidence: "仿真人工回复证据", MessageIDsJSON: messageIDsJSON,
+			Comment: "用于运营分析与人工回复质检验收", AuditFields: simulationAuditFields(inspectedAt),
+		}
+		if err := ctx.db.Create(item).Error; err != nil {
+			return err
+		}
+	}
+	inspection.TotalScore = totalScore
+	if status == enums.QualityInspectionStatusCompleted {
+		switch {
+		case totalScore < ctx.qualityTemplate.PassScore:
+			inspection.Result = enums.QualityInspectionResultFailed
+		case totalScore*100 >= ctx.qualityTemplate.TotalScore*90:
+			inspection.Result = enums.QualityInspectionResultExcellent
+		default:
+			inspection.Result = enums.QualityInspectionResultPassed
+		}
+	}
+	return ctx.db.Model(inspection).Updates(map[string]any{"total_score": inspection.TotalScore, "result": inspection.Result}).Error
+}
+
+func (ctx *seedContext) createSimulationEvaluation(
+	session *models.ConversationServiceSession,
+	assignment *models.ConversationAssignment,
+	scenario simulationScenario,
+) error {
+	status := enums.ConversationEvaluationStatusSubmitted
+	if scenario.Kind == simulationKindProcessing && scenario.AssigneeIndex%4 == 3 {
+		status = enums.ConversationEvaluationStatusPending
+	}
+	invitedAt := ctx.now.Add(-5 * time.Minute)
+	if scenario.ClosedAt != nil {
+		invitedAt = scenario.ClosedAt.Add(time.Minute)
+	}
+	token := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:evaluation", ctx.marker, scenario.Key)))
+	item := &models.ConversationEvaluation{
+		TenantID: ctx.tenant.ID, ConversationID: session.ConversationID, SessionNo: session.SessionNo,
+		AssignmentID: assignment.ID, CustomerID: session.CustomerID, Status: status,
+		InviteChannel: "simulation_link", TokenHash: fmt.Sprintf("%x", token[:]), InvitedBy: ctx.leaders[scenario.TeamIndex-1].ID,
+		InvitedAt: invitedAt, ExpiresAt: invitedAt.Add(72 * time.Hour), AuditFields: simulationAuditFields(invitedAt),
+	}
+	if status == enums.ConversationEvaluationStatusSubmitted {
+		submittedAt := invitedAt.Add(time.Minute)
+		item.SubmittedAt = &submittedAt
+		item.Rating = 5
+		item.TagCodesJSON = `["resolved","professional","friendly"]`
+		item.Comment = "仿真评价：客服回复清晰，处理过程专业。"
+		if scenario.Kind == simulationKindClosed && scenario.TeamIndex == 3 {
+			item.Rating = 2
+			item.TagCodesJSON = `["slow","unresolved"]`
+			item.Comment = "仿真评价：等待时间较长，仍需继续改进。"
+		}
+	}
+	return ctx.db.Create(item).Error
+}
+
+func simulationMessageAt(message *models.Message) time.Time {
+	if message.SentAt != nil {
+		return *message.SentAt
+	}
+	return message.CreatedAt
+}
+
+func nonNegativeSimulationSeconds(from, to time.Time) int64 {
+	if !to.After(from) {
+		return 0
+	}
+	return int64(to.Sub(from) / time.Second)
 }
 
 func (ctx *seedContext) createSimulationEvents(conversation *models.Conversation, assignee *models.User, scenario simulationScenario) error {
@@ -664,13 +1222,80 @@ func simulationConversationIDs(db *gorm.DB, batchMarker string) ([]int64, error)
 	return ids, err
 }
 
-func deleteSimulationConversations(db *gorm.DB, batchMarker string) error {
+func deleteSimulationConversations(db *gorm.DB, batchMarker string, simulationTenantID int64) error {
 	conversationIDs, err := simulationConversationIDs(db, batchMarker)
 	if err != nil {
 		return err
 	}
+	if simulationTenantID > 0 {
+		if err := db.Where("tenant_id = ?", simulationTenantID).Delete(&models.AIUsageGatewayCall{}).Error; err != nil {
+			return err
+		}
+		if err := db.Where("tenant_id = ?", simulationTenantID).Delete(&models.AIUsageEvent{}).Error; err != nil {
+			return err
+		}
+	}
 	if len(conversationIDs) == 0 {
 		return nil
+	}
+	messageIDs := make([]int64, 0)
+	if err := db.Model(&models.Message{}).Where("conversation_id IN ?", conversationIDs).Pluck("id", &messageIDs).Error; err != nil {
+		return err
+	}
+	usageEventKeys := make([]string, 0)
+	usageEventQuery := db.Model(&models.AIUsageEvent{}).Where("conversation_id IN ?", conversationIDs)
+	if len(messageIDs) > 0 {
+		usageEventQuery = usageEventQuery.Or("message_id IN ?", messageIDs)
+	}
+	if err := usageEventQuery.Pluck("event_key", &usageEventKeys).Error; err != nil {
+		return err
+	}
+	usageGatewayDelete := db.Where("conversation_id IN ?", conversationIDs)
+	if len(messageIDs) > 0 {
+		usageGatewayDelete = usageGatewayDelete.Or("message_id IN ?", messageIDs)
+	}
+	if len(usageEventKeys) > 0 {
+		usageGatewayDelete = usageGatewayDelete.Or("event_key IN ?", usageEventKeys)
+	}
+	if err := usageGatewayDelete.Delete(&models.AIUsageGatewayCall{}).Error; err != nil {
+		return err
+	}
+	usageEventDelete := db.Where("conversation_id IN ?", conversationIDs)
+	if len(messageIDs) > 0 {
+		usageEventDelete = usageEventDelete.Or("message_id IN ?", messageIDs)
+	}
+	if err := usageEventDelete.Delete(&models.AIUsageEvent{}).Error; err != nil {
+		return err
+	}
+	assignmentIDs := make([]int64, 0)
+	if err := db.Model(&models.ConversationAssignment{}).Where("conversation_id IN ?", conversationIDs).Pluck("id", &assignmentIDs).Error; err != nil {
+		return err
+	}
+	inspectionIDs := make([]int64, 0)
+	if err := db.Model(&models.QualityInspection{}).Where("conversation_id IN ?", conversationIDs).Pluck("id", &inspectionIDs).Error; err != nil {
+		return err
+	}
+	if len(inspectionIDs) > 0 {
+		if err := db.Where("inspection_id IN ?", inspectionIDs).Delete(&models.QualityInspectionItem{}).Error; err != nil {
+			return err
+		}
+	}
+	if len(assignmentIDs) > 0 {
+		if err := db.Where("assignment_id IN ?", assignmentIDs).Delete(&models.QualitySamplingItem{}).Error; err != nil {
+			return err
+		}
+	}
+	analyticsDeleteSteps := []any{
+		&models.QualityInspection{},
+		&models.ConversationEvaluation{},
+		&models.ConversationResponseSpan{},
+		&models.DispatchDecisionLog{},
+		&models.ConversationServiceSession{},
+	}
+	for _, model := range analyticsDeleteSteps {
+		if err := db.Where("conversation_id IN ?", conversationIDs).Delete(model).Error; err != nil {
+			return err
+		}
 	}
 
 	ticketIDs := make([]int64, 0)

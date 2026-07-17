@@ -1,5 +1,13 @@
 # 客服与对话审计分支合并交接
 
+> **历史只读文档：2026-07-17 起停止更新。**
+>
+> 客服、派单、运营分析和质检后续只在 `codex/tenant-ai-integration` 开发，主线只合并该分支的一个 PR。
+>
+> 当前权威交接：`docs/development/tenant-ai-integration-merge-handoff.md`
+>
+> 当前运营分析方案：`docs/design/service-analytics-and-quality.md`
+
 > 状态日期：2026-07-14
 > 工作分支：`codex/customer-audit`
 > Draft PR：<https://github.com/520skyincloud/agentdesk/pull/1>
@@ -7,7 +15,8 @@
 
 ## 1. 文档使用边界
 
-- 本文只记录客服、派单、会话范围与仿真数据开发，不定义 AI 回复、token 或计费语义。
+- 本文只用于追溯 customer-audit 历史提交、旧验证和迁移来源，不能继续作为实现进度或最终合并依据。旧 Draft PR 不再进入 main。
+- 本文记录客服、派单、会话范围与仿真数据开发；智能派单只复用租户模型解析和 usage 证据链，不定义 AI 回复、价格、余额、token 或计费公式语义。
 - 当前回复引擎以真实代码和 `docs/design/reply-runtime-engine.md` 为准。
 - `docs/development-handoff.md`、`docs/wecom-hook-bridge.md` 和 `docs/generated/` 不能作为本分支实现依据。
 - 文件清单和冲突情况必须在提交或合并前重新通过 Git 核对，不能只依赖本文快照。
@@ -175,8 +184,8 @@ pnpm --dir web typecheck
 ## 9. 当前未完成能力
 
 - 综合客服组下客服小组与排班联动已按 `docs/design/agent-team-squad-scheduling.md` 实现并完成桌面、移动端定向验收。
-- 大模型统筹派发尚未接入；当前自动派发仍是确定性规则。
-- 模型推荐理由、置信度、长期记忆和组长覆盖分析尚未实现。
+- 大模型统筹派发已按 `docs/design/conversation-dispatch-engine.md` 接入；人工、规则和智能模式共用现有 Conversation/Assignment/RouteState 链路，模型失败自动降级规则。
+- 模型派单理由、置信度、任务权重和历史接待连续性已记录；向量长期记忆、组长覆盖率分析和完整派单质量报表尚未实现。
 - 通知和审计已有事件基础，但尚未形成完整派单审计报表。
 - 客服组归属、双向绑定、会话导航和仿真数据均已按职责拆分；本地 `.codex/audits/` 仅是页面验证截图，不进入 PR。
 
@@ -4516,3 +4525,65 @@ cmd/customer_audit_seed/main.go
 - 建议合并顺序：model/AutoMigrate/TenantGrant repository -> migration 59 与权限同步 -> 统一解析 service -> runtime/媒体/意图接线 -> handler/API/UI -> seed 与文档。部署顺序仍为后端迁移/API 先于前端。
 - 回滚 UI 和路由不会恢复旧模型选择；migration 59 已清理的旧明文凭据和 AIAgent 写权限不会自动回填。紧急回滚应保留 TenantGrant、分配表和已清理数据，恢复上一版本前必须从数据库备份制定独立映射，禁止重新启用旧租户凭据编辑器。
 - 本批不提交 `docs/generated/`、数据库、密钥或临时配置。正式合并前再次 fetch，检查 migration 编号与共享文件同改，并按验收文档重跑 SQLite/MySQL、全仓测试和浏览器原功能回归。
+
+## 第 92 批：持续消息下的规则与模型协同派单（2026-07-16）
+
+### 产品与运行边界
+
+- 权威设计新增 `docs/design/conversation-dispatch-engine.md`。Conversation 继续作为唯一派单单位，ConversationAssignment 保存分配快照；没有新增派单任务表、平行页面、状态机或权限体系。
+- 综合客服组新增 `manual/rule/intelligent` 派单模式，默认 `rule`。人工模式留在组长编排池；规则模式按硬约束和实时公平负载派发；智能模式先筛合法候选，再让租户授权模型在前三名中判断，任何失败都降级规则。
+- AI 转人工、待派会话新客户消息、释放回组池、进入客服组待派池和进入全局待派池都会触发 800ms 防抖派单，原 30 秒扫描保留为补偿。实时调度只在服务器数据库/cron 初始化完成后启用；模型期间新消息通过 LastMessageID 拒绝过期结果，同一会话单飞，防抖任务不跨数据库生命周期执行。
+- 已分配会话保持客服连续性，不因客户追问自动抢单。连续未回复消息条数和等待时间会增加当前客服动态负载，影响后续任务，解决“一名客服被持续追问但系统仍当作轻任务”的缺口。
+- 会话正式派给总部客服时，10 分钟人工服务窗口从派单成功时间重新起算；之后客户新消息和客服回复继续刷新空闲窗口。不能沿用客户进入待派池前的消息时间，否则客服可能刚接单就被超时任务恢复 AI。
+
+### 公平、模型与审计
+
+- 候选继续受租户、启用账号/档案、自动接单、服务状态、客服组模式、当前排班、小组成员、门店/企微范围、离线策略和最大并发硬约束。
+- 公平排序综合当前加权会话、待首响、待回复、连续消息压力、本班累计任务权重、最大并发和最近派单时间。待派队列按有效优先级/等待/FIFO，并在租户间轮转。
+- 最终事务锁定会话、客服档案和客服组，并以真实班次起点重新计算当前处理中、加权负载、待首响、待回复、本班累计权重和最近派单时间，同时复核当前排班小组成员资格；候选快照变化时拒绝旧结果并重排。
+- 新模型用途为 `dispatch_decision_llm`，通过现有 TenantGrant/StoreAIModelSetting 解析器读取。模型输入包含最近 12 条客户/AI/人工消息、转人工原因、等待时间、候选负载和历史接待连续性；输出必须为严格 JSON，8 秒超时、一次格式重试、低于 60% 置信度降级。
+- 模型不能选择候选外客服；明显偏离最低负载时由公平保护覆盖。Assignment 和事件记录模式、置信度、权重、优先级和理由。
+- Assignment、Conversation、事件日志和 `HQ_AGENTDESK_SERVING` RouteState 在同一事务落库；路由更新失败会整体回滚，事务提交后才发布 WebSocket 与异步分配事件。
+- 每次真实调用复用 AIUsageEvent，stage/operation 为 `dispatch_decision`。本批没有修改价格、余额、token 统计口径、账单聚合或扣费公式；计费负责人后续只需按既有 usage 证据链处理新增用途。
+
+### 数据、接口、权限与页面
+
+- AutoMigrate 兼容新增 `AgentTeam.DispatchMode`、`Conversation.DispatchWeight`、`ConversationAssignment.DispatchMode/DecisionConfidence/WorkloadWeight`；没有 DML migration。
+- 客服组创建/更新 DTO 和响应兼容新增派单模式；派单工作台响应新增任务方式、置信度、权重、优先级、理由及客服综合负载。没有新增 Gin 路由或 WebSocket payload。
+- 权限完全复用原全局权限派发制：模式设置使用 `agentTeam.update`，派单读取使用 `conversation.view`，组长动作使用 `conversation.handover`。
+- 现有客服组编辑弹窗增加三段式模式选择；现有派单页增加任务判断和实时公平负载信息，不新增智能派单页面。
+- 派单表格采用固定列宽、理由截断/换行和等待/操作列不换行；桌面列互不覆盖，移动端由现有 `DashboardTableShell` 在局部横向滚动，页面本身不被宽表撑开。
+- 丽斯未来测试租户三个业务客服组设为智能模式，并复用现有租户模型授权增加派单用途；默认综合组保持规则模式，Seed 不复制或输出模型密钥。
+
+### 主要文件与共享风险
+
+```text
+internal/models/models.go
+internal/pkg/constants/ai_model.go
+internal/pkg/enums/agent.go
+internal/services/store_ai_model_setting_service.go
+internal/services/conversation_dispatch_service.go
+internal/services/conversation_dispatch_decision_service.go
+internal/services/conversation_dispatch_load_service.go
+internal/services/conversation_dispatch_workbench_service.go
+internal/services/conversation_human_dispatch_service.go
+internal/services/message_service.go
+web/lib/api/admin.ts
+web/lib/generated/enums.ts
+web/app/dashboard/agents/_components/team-edit.tsx
+web/app/dashboard/conversation-dispatch/page.tsx
+cmd/customer_audit_seed/main.go
+```
+
+- `models.go`、模型用途/解析器、Message/Handoff service、API 类型、生成 enum 和双语资源均为共享契约。合并时必须保留第 91 批平台模型授权与本批 `dispatch_decision_llm` 用途，禁止恢复 AIAgent 模型字段或整文件覆盖 AI/计费实现。
+- 2026-07-16 最终 `git fetch origin` 后，与 `origin/codex/ai-billing` 的同文件修改为：`models.go`、`conversation_human_dispatch_service.go`、`conversation_route_service.go`、`cronx/cron.go`、`message_service.go`、`store_ai_model_setting_service.go`、`web/lib/api/admin.ts` 和双语资源。合并这些文件必须逐字段、逐方法保留双方逻辑；禁止用任一分支整文件覆盖另一分支。
+- 建议合并顺序：model/enum/用途常量 -> 派单负载与决策 service -> 人工转接和消息触发 -> DTO/workbench -> UI/seed/docs。后端 AutoMigrate/API 应先于前端部署。
+- 回滚运行时和 UI 可以恢复规则派单，但 AutoMigrate 新列不会自动删除；保留列和历史 Assignment 快照即可，不需要清数据。回滚不得删除 TenantGrant、StoreAIModelSetting、AIUsageEvent 或计费分支字段。
+
+### 验证
+
+- 新增测试覆盖租户队列轮转、紧急任务排序、合法模型选择、严格 JSON、格式重试、规则降级、公平保护、过期结果、事务容量复核、完整班次负载快照、小组成员变化、释放任务实时调度、路由失败整体回滚、加权负载、本班累计权重和连续消息压力。
+- 新增路由回归测试覆盖“客户已等待 8 分钟后才派单”的场景，确认客服仍从派单时刻获得完整 10 分钟服务窗口。
+- 2026-07-16 最终通过：`go test ./... -count=1`、派单/转人工聚焦 `go test -race`、`go vet ./...`、`make enums`、前端 `pnpm typecheck`、目标 ESLint、`pnpm build` 和 `git diff --check`。桌面 `1440x900` 验证页面宽度 1440、表格单元格重叠数 0；移动端 `390x844` 验证页面宽度仍为 390，1152px 宽表格仅在 339px 容器内滚动，控制台无 warning/error。
+- 丽斯未来测试库真实运行证据：三个业务客服组为智能模式，三个有效整组排班；9 条待派会话在一次补偿扫描中全部完成派发，产生 9 条 `dispatch_decision` 成功 usage 记录，Assignment 保存智能模式、置信度、工作量权重、优先级和模型理由。该数据仅用于本地仿真，不提交数据库或密钥。
+- 回滚边界：可单独回滚派单决策/负载 service、触发接线和页面，客服组模式退回 `rule` 后仍沿用既有规则派单；AutoMigrate 新列和历史 Assignment 快照应保留，不删除、不回填。不得回滚第 91 批 TenantGrant/StoreAIModelSetting/AIUsageEvent，也不得恢复旧 AIAgent 模型绑定、租户密钥编辑器或任何计费公式。

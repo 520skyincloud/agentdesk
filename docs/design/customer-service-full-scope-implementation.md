@@ -358,3 +358,19 @@ AI 自动服务任务必须写入 `category / priority / roomNo`。紧急维修�
 - 按当前已确认 `wework.apifox.cn` 文档，没有“列出全部群并一键选择群 ID”的明确接口，因此不能做假按钮。
 - 可用闭环是：把该员工号拉进门店群，让群里任意人发一条消息；企微消息回调里会带 `R:` 前缀的群 `conversation_id`，总部或后续辅助工具可从回调/会话原文复制填入。
 - 若未来协议新增“群列表/选择群/获取群 conversation_id”接口，再把远程页的输入框升级为真实选择器。
+
+## 11. 租户客服运营分析与人工回复质检（2026-07-17）
+
+本阶段覆盖客服需求文件第 1 至第 6 部分：实时数据、历史数据、响应度、坐席报表、会话记录和人工质检。第 7、8 部分知识库常用语/在线文档不在本阶段范围。
+
+完整指标口径、数据模型、页面职责、权限、满意度、历史回填、实施批次和验收标准以 `docs/design/service-analytics-and-quality.md` 为唯一设计依据。本文件不重复复制详细方案。
+
+当前真实状态：
+
+- integration 已具备 Tenant、权限、客服组/小组/排班、会话消息、规则与模型协同派单、会话监控基础和租户测试数据。
+- 运营事实、响应分段、Presence、人工质检、保存视图、范围化导出、固定抽样、禁忌项、真实满意度和分析页面均已进入 `codex/tenant-ai-integration` 的 B-E 语义提交，并通过独立提交门禁。
+- 当前产品功能已经完成，GitHub 交付仍需完成仿真/文档提交、最新全量门禁、push 和唯一 integration PR；二者不得混写。
+- 质检只评价 ConversationAssignment 分段内的人工客服回复，AI 和客户消息只作上下文。
+- customer-audit 自 2026-07-17 起为只读迁移来源；所有后续实现和文档只更新 `codex/tenant-ai-integration`，主线只合并一个 integration PR。
+
+唯一合并交接见 `docs/development/tenant-ai-integration-merge-handoff.md`。

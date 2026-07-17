@@ -1006,7 +1006,7 @@ web/messages/en-US.json
 4. AI 分支实现模型、计费和向量检索的租户维度。
 5. 最后合并页面导航和公司设置。
 
-禁止整文件覆盖另一分支；每个可提交步骤都要更新 `docs/development/customer-audit-merge-handoff.md`，记录同文件修改、字段语义、验证和建议合并顺序。
+禁止整文件覆盖另一分支；每个可提交步骤都要更新 `docs/development/tenant-ai-integration-merge-handoff.md`，记录同文件修改、字段语义、验证和建议合并顺序。`customer-audit` 交接从 2026-07-17 起只保留历史。
 
 ## 20. 当前实施检查点：企微员工号后台动作隔离（2026-07-14）
 

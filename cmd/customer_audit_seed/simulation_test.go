@@ -245,6 +245,9 @@ func TestSimulationRecordsInheritTenantID(t *testing.T) {
 		&models.ConversationAssignment{},
 		&models.ConversationEventLog{},
 		&models.StoreCustomerRelation{},
+		&models.ConversationServiceSession{},
+		&models.ConversationResponseSpan{},
+		&models.DispatchDecisionLog{},
 	)
 	now := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)
 	var scenario simulationScenario
@@ -276,8 +279,10 @@ func TestSimulationRecordsInheritTenantID(t *testing.T) {
 	ctx.teams[scenario.TeamIndex-1] = &models.AgentTeam{ID: 104, TenantID: ctx.tenant.ID}
 	ctx.leaders = make([]*models.User, scenario.TeamIndex)
 	ctx.leaders[scenario.TeamIndex-1] = &models.User{ID: 105, TenantID: ctx.tenant.ID}
-	ctx.agents = make([]*models.User, scenario.AssigneeIndex)
-	ctx.agents[scenario.AssigneeIndex-1] = &models.User{ID: 106, TenantID: ctx.tenant.ID}
+	ctx.agents = make([]*models.User, 4)
+	for index := range ctx.agents {
+		ctx.agents[index] = &models.User{ID: int64(106 + index), TenantID: ctx.tenant.ID}
+	}
 
 	if err := ctx.createSimulationScenario(scenario); err != nil {
 		t.Fatalf("create simulation scenario: %v", err)
@@ -289,6 +294,9 @@ func TestSimulationRecordsInheritTenantID(t *testing.T) {
 		&models.Message{},
 		&models.ConversationAssignment{},
 		&models.ConversationEventLog{},
+		&models.ConversationServiceSession{},
+		&models.ConversationResponseSpan{},
+		&models.DispatchDecisionLog{},
 	} {
 		assertSeedTenantRows(t, db, ctx.tenant.ID, -1, model)
 	}

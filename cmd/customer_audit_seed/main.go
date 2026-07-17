@@ -45,28 +45,30 @@ const (
 )
 
 type seedContext struct {
-	db           *gorm.DB
-	tenant       *models.Tenant
-	batch        string
-	marker       string
-	passwordHash string
-	now          time.Time
-	audit        models.AuditFields
-	roles        map[string]*models.Role
-	supervisor   *models.User
-	defaultTeam  *models.AgentTeam
-	invitation   *models.TenantInvitation
-	aiConfig     *models.AIConfig
-	aiAgent      *models.AIAgent
-	company      *models.Company
-	channel      *models.Channel
-	stores       []*models.Store
-	leaders      []*models.User
-	agents       []*models.User
-	storeStaff   []*models.User
-	teams        []*models.AgentTeam
-	wxInstances  []*models.WxWorkProtocolInstance
-	customers    []*models.Customer
+	db                   *gorm.DB
+	tenant               *models.Tenant
+	batch                string
+	marker               string
+	passwordHash         string
+	now                  time.Time
+	audit                models.AuditFields
+	roles                map[string]*models.Role
+	supervisor           *models.User
+	defaultTeam          *models.AgentTeam
+	invitation           *models.TenantInvitation
+	aiConfig             *models.AIConfig
+	aiAgent              *models.AIAgent
+	qualityTemplate      *models.QualityTemplate
+	qualityTemplateItems []models.QualityTemplateItem
+	company              *models.Company
+	channel              *models.Channel
+	stores               []*models.Store
+	leaders              []*models.User
+	agents               []*models.User
+	storeStaff           []*models.User
+	teams                []*models.AgentTeam
+	wxInstances          []*models.WxWorkProtocolInstance
+	customers            []*models.Customer
 }
 
 type seedOptions struct {
@@ -96,7 +98,10 @@ type report struct {
 	CSUsers                    int64  `json:"csUsers"`
 	StoreStaffUsers            int64  `json:"storeStaffUsers"`
 	AgentTeams                 int64  `json:"agentTeams"`
+	IntelligentAgentTeams      int64  `json:"intelligentAgentTeams"`
+	AgentTeamSchedules         int64  `json:"agentTeamSchedules"`
 	AgentProfiles              int64  `json:"agentProfiles"`
+	DispatchModelAssigned      bool   `json:"dispatchModelAssigned"`
 	StoreStaffBindings         int64  `json:"storeStaffBindings"`
 	WxWorkInstances            int64  `json:"wxWorkInstances"`
 	Customers                  int64  `json:"customers"`
@@ -113,6 +118,24 @@ type report struct {
 	SimulatedPending           int64  `json:"simulatedPending"`
 	SimulatedActive            int64  `json:"simulatedActive"`
 	SimulatedClosed            int64  `json:"simulatedClosed"`
+	ServiceSessions            int64  `json:"serviceSessions"`
+	ResponseSpans              int64  `json:"responseSpans"`
+	WaitingResponseSpans       int64  `json:"waitingResponseSpans"`
+	RepliedResponseSpans       int64  `json:"repliedResponseSpans"`
+	PresenceSessions           int64  `json:"presenceSessions"`
+	QualityTemplates           int64  `json:"qualityTemplates"`
+	QualityTemplateItems       int64  `json:"qualityTemplateItems"`
+	QualityInspections         int64  `json:"qualityInspections"`
+	CompletedInspections       int64  `json:"completedInspections"`
+	QualityInspectionItems     int64  `json:"qualityInspectionItems"`
+	Evaluations                int64  `json:"evaluations"`
+	SubmittedEvaluations       int64  `json:"submittedEvaluations"`
+	DispatchDecisionLogs       int64  `json:"dispatchDecisionLogs"`
+	SelectedDispatchDecisions  int64  `json:"selectedDispatchDecisions"`
+	FallbackDispatchDecisions  int64  `json:"fallbackDispatchDecisions"`
+	FailedDispatchDecisions    int64  `json:"failedDispatchDecisions"`
+	OverrideDispatchDecisions  int64  `json:"overrideDispatchDecisions"`
+	AnalyticsPolicies          int64  `json:"analyticsPolicies"`
 	ExpectedCoreComplete       bool   `json:"expectedCoreComplete"`
 	ExpectedSimulationComplete bool   `json:"expectedSimulationComplete"`
 	SimulationBaselineIntact   bool   `json:"simulationBaselineIntact"`
@@ -233,6 +256,9 @@ func seedWithOptions(db *gorm.DB, batch, password string, options seedOptions) e
 			return err
 		}
 		if err := ctx.upsertAgentProfiles(); err != nil {
+			return err
+		}
+		if err := ctx.upsertAgentTeamSchedules(); err != nil {
 			return err
 		}
 		if err := ctx.upsertAIAgent(); err != nil {
@@ -369,7 +395,32 @@ func cleanup(db *gorm.DB, batch string) error {
 			fn   func() error
 		}{
 			{"simulation conversations", func() error {
-				return deleteSimulationConversations(db, m)
+				return deleteSimulationConversations(db, m, tenantID)
+			}},
+			{"analytics presence", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.AgentPresenceSession{}).Error
+			}},
+			{"analytics quality template items", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				templateSubquery := db.Model(&models.QualityTemplate{}).Select("id").Where("tenant_id = ?", tenantID)
+				return db.Where("tenant_id = ? OR template_id IN (?)", tenantID, templateSubquery).Delete(&models.QualityTemplateItem{}).Error
+			}},
+			{"analytics quality templates", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.QualityTemplate{}).Error
+			}},
+			{"analytics policies", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.ServiceAnalyticsPolicy{}).Error
 			}},
 			{"login credential logs", func() error {
 				return db.Where("principal LIKE ?", userPattern).Delete(&models.LoginCredentialLog{}).Error
@@ -397,6 +448,9 @@ func cleanup(db *gorm.DB, batch string) error {
 			}},
 			{"agent profiles", func() error {
 				return db.Where("remark LIKE ?", remarkPattern).Delete(&models.AgentProfile{}).Error
+			}},
+			{"agent team schedules", func() error {
+				return db.Where("remark LIKE ?", remarkPattern).Delete(&models.AgentTeamSchedule{}).Error
 			}},
 			{"tenant model assignments", func() error {
 				if tenantID <= 0 {
@@ -508,7 +562,10 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.CSUsers = count(db, &models.User{}, "remark LIKE ? AND username LIKE ?", remarkPattern, usernamePrefix+"cs_user_%")
 	r.StoreStaffUsers = count(db, &models.User{}, "remark LIKE ? AND username LIKE ?", remarkPattern, usernamePrefix+"store_staff_%")
 	r.AgentTeams = count(db, &models.AgentTeam{}, "remark LIKE ? AND is_default = ?", remarkPattern, false)
+	r.IntelligentAgentTeams = count(db, &models.AgentTeam{}, "tenant_id = ? AND remark LIKE ? AND is_default = ? AND dispatch_mode = ?", tenantID, remarkPattern, false, enums.AgentTeamDispatchModeIntelligent)
+	r.AgentTeamSchedules = count(db, &models.AgentTeamSchedule{}, "tenant_id = ? AND remark LIKE ? AND status = ? AND start_at <= ? AND end_at > ?", tenantID, remarkPattern, enums.StatusOk, time.Now(), time.Now())
 	r.AgentProfiles = count(db, &models.AgentProfile{}, "remark LIKE ? AND agent_code LIKE ?", remarkPattern, agentCodePrefix+"%")
+	r.DispatchModelAssigned = count(db, &models.StoreAIModelSetting{}, "tenant_id = ? AND wx_work_instance_id = 0 AND usage_code = ? AND status = ?", tenantID, constants.AIModelUsageDispatchDecisionLLM, enums.StatusOk) == 1
 	r.StoreStaffBindings = count(db, &models.StoreStaffBinding{}, "remark LIKE ?", remarkPattern)
 	r.WxWorkInstances = count(db, &models.WxWorkProtocolInstance{}, "remark LIKE ? AND guid LIKE ?", remarkPattern, wxWorkGUIDPrefix+"%")
 	r.Customers = count(db, &models.Customer{}, "remark LIKE ?", remarkPattern)
@@ -534,6 +591,26 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.SimulatedPending = count(db, &models.Conversation{}, "id IN (?) AND status = ?", simulationConversationSubquery, enums.IMConversationStatusPending)
 	r.SimulatedActive = count(db, &models.Conversation{}, "id IN (?) AND status = ?", simulationConversationSubquery, enums.IMConversationStatusActive)
 	r.SimulatedClosed = count(db, &models.Conversation{}, "id IN (?) AND status = ?", simulationConversationSubquery, enums.IMConversationStatusClosed)
+	r.ServiceSessions = count(db, &models.ConversationServiceSession{}, "tenant_id = ? AND conversation_id IN (?)", tenantID, simulationConversationSubquery)
+	r.ResponseSpans = count(db, &models.ConversationResponseSpan{}, "tenant_id = ? AND conversation_id IN (?)", tenantID, simulationConversationSubquery)
+	r.WaitingResponseSpans = count(db, &models.ConversationResponseSpan{}, "tenant_id = ? AND conversation_id IN (?) AND status = ?", tenantID, simulationConversationSubquery, enums.ResponseSpanStatusWaiting)
+	r.RepliedResponseSpans = count(db, &models.ConversationResponseSpan{}, "tenant_id = ? AND conversation_id IN (?) AND status = ?", tenantID, simulationConversationSubquery, enums.ResponseSpanStatusReplied)
+	r.PresenceSessions = count(db, &models.AgentPresenceSession{}, "tenant_id = ? AND source = ?", tenantID, "simulation_seed")
+	r.QualityTemplates = count(db, &models.QualityTemplate{}, "tenant_id = ? AND is_default = ? AND status = ?", tenantID, true, enums.StatusOk)
+	qualityTemplateSubquery := db.Model(&models.QualityTemplate{}).Select("id").Where("tenant_id = ? AND is_default = ? AND status = ?", tenantID, true, enums.StatusOk)
+	r.QualityTemplateItems = count(db, &models.QualityTemplateItem{}, "tenant_id = ? AND template_id IN (?) AND status = ?", tenantID, qualityTemplateSubquery, enums.StatusOk)
+	r.QualityInspections = count(db, &models.QualityInspection{}, "tenant_id = ? AND conversation_id IN (?)", tenantID, simulationConversationSubquery)
+	r.CompletedInspections = count(db, &models.QualityInspection{}, "tenant_id = ? AND conversation_id IN (?) AND status = ?", tenantID, simulationConversationSubquery, enums.QualityInspectionStatusCompleted)
+	qualityInspectionSubquery := db.Model(&models.QualityInspection{}).Select("id").Where("tenant_id = ? AND conversation_id IN (?)", tenantID, simulationConversationSubquery)
+	r.QualityInspectionItems = count(db, &models.QualityInspectionItem{}, "tenant_id = ? AND inspection_id IN (?)", tenantID, qualityInspectionSubquery)
+	r.Evaluations = count(db, &models.ConversationEvaluation{}, "tenant_id = ? AND conversation_id IN (?)", tenantID, simulationConversationSubquery)
+	r.SubmittedEvaluations = count(db, &models.ConversationEvaluation{}, "tenant_id = ? AND conversation_id IN (?) AND status = ?", tenantID, simulationConversationSubquery, enums.ConversationEvaluationStatusSubmitted)
+	r.DispatchDecisionLogs = count(db, &models.DispatchDecisionLog{}, "tenant_id = ? AND conversation_id IN (?)", tenantID, simulationConversationSubquery)
+	r.SelectedDispatchDecisions = count(db, &models.DispatchDecisionLog{}, "tenant_id = ? AND conversation_id IN (?) AND status = ?", tenantID, simulationConversationSubquery, enums.DispatchDecisionStatusSelected)
+	r.FallbackDispatchDecisions = count(db, &models.DispatchDecisionLog{}, "tenant_id = ? AND conversation_id IN (?) AND status = ?", tenantID, simulationConversationSubquery, enums.DispatchDecisionStatusFallback)
+	r.FailedDispatchDecisions = count(db, &models.DispatchDecisionLog{}, "tenant_id = ? AND conversation_id IN (?) AND status = ?", tenantID, simulationConversationSubquery, enums.DispatchDecisionStatusFailed)
+	r.OverrideDispatchDecisions = count(db, &models.DispatchDecisionLog{}, "tenant_id = ? AND conversation_id IN (?) AND status = ?", tenantID, simulationConversationSubquery, enums.DispatchDecisionStatusOverride)
+	r.AnalyticsPolicies = count(db, &models.ServiceAnalyticsPolicy{}, "tenant_id = ?", tenantID)
 	r.ExpectedCoreComplete = r.Tenant == 1 &&
 		r.TenantSupervisor == 1 &&
 		r.TenantInvitation == 1 &&
@@ -548,13 +625,22 @@ func buildReport(db *gorm.DB, batch string) report {
 		r.CSUsers == 12 &&
 		r.StoreStaffUsers == 100 &&
 		r.AgentTeams == 3 &&
+		r.IntelligentAgentTeams == 3 &&
+		r.AgentTeamSchedules == 3 &&
 		r.AgentProfiles == 12 &&
+		r.DispatchModelAssigned &&
 		r.StoreStaffBindings == 100 &&
 		r.WxWorkInstances == 100 &&
 		r.Customers == 500
 	r.ExpectedSimulationComplete = r.SimulatedConversations == expectedSimulationConversationCount &&
 		r.SimulatedMessages >= expectedSimulationMessageCount &&
-		r.SimulatedAssignments >= expectedSimulationAssignmentCount
+		r.SimulatedAssignments >= expectedSimulationAssignmentCount &&
+		r.ServiceSessions == expectedSimulationServiceSessionCount &&
+		r.ResponseSpans == expectedSimulationResponseSpanCount &&
+		r.PresenceSessions == expectedSimulationPresenceCount &&
+		r.QualityInspections == expectedSimulationQualityInspectionCount &&
+		r.Evaluations == expectedSimulationEvaluationCount &&
+		r.DispatchDecisionLogs == expectedSimulationDispatchDecisionCount
 	r.SimulationBaselineIntact = r.SimulatedConversations == expectedSimulationConversationCount &&
 		r.SimulatedMessages == expectedSimulationMessageCount &&
 		r.SimulatedAssignments == expectedSimulationAssignmentCount &&
@@ -565,7 +651,25 @@ func buildReport(db *gorm.DB, batch string) report {
 		r.SimulatedAIServing == 6 &&
 		r.SimulatedPending == 9 &&
 		r.SimulatedActive == 18 &&
-		r.SimulatedClosed == 3
+		r.SimulatedClosed == 3 &&
+		r.ServiceSessions == expectedSimulationServiceSessionCount &&
+		r.ResponseSpans == expectedSimulationResponseSpanCount &&
+		r.WaitingResponseSpans == expectedSimulationWaitingResponseSpanCount &&
+		r.RepliedResponseSpans == expectedSimulationRepliedResponseSpanCount &&
+		r.PresenceSessions == expectedSimulationPresenceCount &&
+		r.QualityTemplates == 1 &&
+		r.QualityTemplateItems == 6 &&
+		r.QualityInspections == expectedSimulationQualityInspectionCount &&
+		r.CompletedInspections == expectedSimulationCompletedInspectionCount &&
+		r.QualityInspectionItems == expectedSimulationQualityItemCount &&
+		r.Evaluations == expectedSimulationEvaluationCount &&
+		r.SubmittedEvaluations == expectedSimulationSubmittedEvaluationCount &&
+		r.DispatchDecisionLogs == expectedSimulationDispatchDecisionCount &&
+		r.SelectedDispatchDecisions == 12 &&
+		r.FallbackDispatchDecisions == 6 &&
+		r.FailedDispatchDecisions == 9 &&
+		r.OverrideDispatchDecisions == 3 &&
+		r.AnalyticsPolicies == 1
 	return r
 }
 
@@ -617,6 +721,7 @@ func (ctx *seedContext) loadTenantFoundation() error {
 	}
 	if err := ctx.db.Model(defaultTeam).Updates(map[string]any{
 		"leader_user_id":   0,
+		"dispatch_mode":    enums.AgentTeamDispatchModeRule,
 		"status":           enums.StatusOk,
 		"description":      "丽斯未来酒店仿真测试租户默认综合客服组",
 		"remark":           ctx.seedRemark("仿真测试默认综合客服组，不用于生产"),
@@ -892,6 +997,7 @@ func (ctx *seedContext) upsertTeams() error {
 			"leader_user_id":    ctx.leaders[i-1].ID,
 			"company_scope_ids": fmt.Sprintf("%d", ctx.company.ID),
 			"store_scope_ids":   joinInt64s(storeIDs),
+			"dispatch_mode":     enums.AgentTeamDispatchModeIntelligent,
 			"status":            enums.StatusOk,
 			"description":       fmt.Sprintf("负责%s测试门店%03d-%03d", companyName, ranges[i-1][0], ranges[i-1][1]),
 			"remark":            ctx.seedRemark("测试客服组"),
@@ -915,6 +1021,7 @@ func (ctx *seedContext) upsertTeams() error {
 			LeaderUserID:    ctx.leaders[i-1].ID,
 			CompanyScopeIDs: fmt.Sprintf("%d", ctx.company.ID),
 			StoreScopeIDs:   joinInt64s(storeIDs),
+			DispatchMode:    enums.AgentTeamDispatchModeIntelligent,
 			Status:          enums.StatusOk,
 			Description:     fmt.Sprintf("负责%s测试门店%03d-%03d", companyName, ranges[i-1][0], ranges[i-1][1]),
 			Remark:          ctx.seedRemark("测试客服组"),
@@ -987,6 +1094,59 @@ func (ctx *seedContext) upsertAgentProfiles() error {
 		}
 	}
 	return nil
+}
+
+func (ctx *seedContext) upsertAgentTeamSchedules() error {
+	startAt := ctx.now.Add(-time.Hour)
+	endAt := ctx.now.Add(8 * time.Hour)
+	remark := ctx.seedRemark("测试智能派单当前班次")
+	teamIDs := make([]int64, 0, len(ctx.teams))
+	for _, team := range ctx.teams {
+		teamIDs = append(teamIDs, team.ID)
+		item := &models.AgentTeamSchedule{}
+		err := ctx.db.Where("tenant_id = ? AND team_id = ? AND remark = ?", ctx.tenant.ID, team.ID, remark).Order("id ASC").Take(item).Error
+		updates := map[string]any{
+			"tenant_id":        ctx.tenant.ID,
+			"team_id":          team.ID,
+			"squad_id":         0,
+			"start_at":         startAt,
+			"end_at":           endAt,
+			"remark":           remark,
+			"status":           enums.StatusOk,
+			"updated_at":       ctx.now,
+			"update_user_id":   constants.SystemAuditUserID,
+			"update_user_name": constants.SystemAuditUserName,
+		}
+		if err == nil {
+			if err := ctx.db.Model(item).Updates(updates).Error; err != nil {
+				return err
+			}
+			if err := ctx.db.Where("tenant_id = ? AND team_id = ? AND remark = ? AND id <> ?", ctx.tenant.ID, team.ID, remark, item.ID).Delete(&models.AgentTeamSchedule{}).Error; err != nil {
+				return err
+			}
+			continue
+		}
+		if err != gorm.ErrRecordNotFound {
+			return err
+		}
+		item = &models.AgentTeamSchedule{
+			TenantID:    ctx.tenant.ID,
+			TeamID:      team.ID,
+			SquadID:     0,
+			StartAt:     startAt,
+			EndAt:       endAt,
+			Remark:      remark,
+			Status:      enums.StatusOk,
+			AuditFields: ctx.audit,
+		}
+		if err := ctx.db.Create(item).Error; err != nil {
+			return err
+		}
+	}
+	if len(teamIDs) == 0 {
+		return nil
+	}
+	return ctx.db.Where("tenant_id = ? AND remark = ? AND team_id NOT IN ?", ctx.tenant.ID, remark, teamIDs).Delete(&models.AgentTeamSchedule{}).Error
 }
 
 func (ctx *seedContext) upsertAIAgent() error {
@@ -1070,7 +1230,7 @@ func (ctx *seedContext) ensureTenantModelAccess() error {
 		return err
 	}
 
-	for _, usageCode := range []string{constants.AIModelUsageReplyLLM, constants.AIModelUsageIntentDetectLLM} {
+	for _, usageCode := range []string{constants.AIModelUsageReplyLLM, constants.AIModelUsageIntentDetectLLM, constants.AIModelUsageDispatchDecisionLLM} {
 		setting := repositories.StoreAIModelSettingRepository.Take(ctx.db,
 			"tenant_id = ? AND wx_work_instance_id = 0 AND usage_code = ?", ctx.tenant.ID, usageCode)
 		if setting == nil {
