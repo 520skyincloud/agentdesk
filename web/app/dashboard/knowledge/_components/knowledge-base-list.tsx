@@ -50,7 +50,6 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { OptionCombobox } from "@/components/option-combobox";
 import {
-  createKnowledgeBase,
   deleteKnowledgeBase,
   fetchKnowledgeBases,
   rebuildKnowledgeBaseIndex,
@@ -63,6 +62,7 @@ import { useI18n } from "@/i18n/provider";
 import { KnowledgeBaseType, Status } from "@/lib/generated/enums";
 import { cn } from "@/lib/utils";
 import { EditDialog } from "./knowledge-base-edit";
+import { FastGPTProvisionDialog } from "./fastgpt-provision-dialog";
 
 type KnowledgeBaseListProps = {
   selectedKnowledgeBaseId: number | null;
@@ -263,6 +263,7 @@ export function KnowledgeBaseList({
     number | null
   >(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [fastGPTProvisionOpen, setFastGPTProvisionOpen] = useState(false);
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const statusOptions = useMemo(() => getStatusOptions(t), [t]);
@@ -326,15 +327,6 @@ export function KnowledgeBaseList({
     applyFilters();
   }
 
-  function openCreateDialog() {
-    if (!canCreate) {
-      toast.error("无权创建知识库");
-      return;
-    }
-    setEditingItemId(null);
-    setDialogOpen(true);
-  }
-
   function openEditDialog(item: KnowledgeBase) {
     if (!canUpdate) {
       toast.error("无权更新知识库");
@@ -375,8 +367,7 @@ export function KnowledgeBaseList({
         );
         toast.success(t("knowledge.baseUpdated", { name: editingItem?.name || payload.name }));
       } else {
-        await createKnowledgeBase(payload);
-        toast.success(t("knowledge.baseCreated", { name: payload.name }));
+        throw new Error("请使用“新建门店知识库”创建 FastGPT 知识库");
       }
       setDialogOpen(false);
       setEditingItemId(null);
@@ -482,7 +473,8 @@ export function KnowledgeBaseList({
                 variant="ghost"
                 size="icon"
                 className="size-7"
-                onClick={openCreateDialog}
+                onClick={() => setFastGPTProvisionOpen(true)}
+                aria-label="新建门店知识库"
               >
                 <PlusIcon className="size-4" />
               </Button> : null}
@@ -553,6 +545,11 @@ export function KnowledgeBaseList({
         itemId={editingItemId}
         onOpenChange={handleDialogOpenChange}
         onSubmit={handleSubmit}
+      />
+      <FastGPTProvisionDialog
+        open={fastGPTProvisionOpen}
+        onOpenChange={setFastGPTProvisionOpen}
+        onProvisioned={loadData}
       />
     </>
   );

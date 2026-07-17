@@ -39,7 +39,7 @@ type FastGPTSyncResource struct {
 	SortNo      int
 }
 
-func newPlatformFastGPTGateway() (*fastgptapi.Gateway, error) {
+func newPlatformFastGPTGateway(useIntegration bool) (*fastgptapi.Gateway, error) {
 	cfg := config.Current().FastGPT
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("platform FastGPT connection engine is disabled")
@@ -53,7 +53,7 @@ func newPlatformFastGPTGateway() (*fastgptapi.Gateway, error) {
 		maxRetries = 1
 	}
 	return fastgptapi.NewGateway(fastgptapi.Config{
-		BaseURL: strings.TrimSpace(cfg.BaseURL), APIKey: strings.TrimSpace(cfg.APIKey),
+		BaseURL: strings.TrimSpace(cfg.BaseURL), APIKey: strings.TrimSpace(cfg.APIKey), IntegrationToken: strings.TrimSpace(cfg.IntegrationToken), UseIntegration: useIntegration,
 		Timeout: timeout, MaxRetries: maxRetries,
 		VectorModel: strings.TrimSpace(cfg.VectorModel), AgentModel: strings.TrimSpace(cfg.AgentModel), VLMModel: strings.TrimSpace(cfg.VLMModel),
 	})
@@ -81,10 +81,6 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 	if strings.TrimSpace(req.Query) == "" || len(knowledgeBases) == 0 {
 		return nil, 0, nil
 	}
-	gateway, err := newPlatformFastGPTGateway()
-	if err != nil {
-		return nil, 0, err
-	}
 	startedAt := time.Now()
 	var (
 		mu       sync.Mutex
@@ -106,7 +102,16 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 				return
 			}
 			topK, scoreThreshold := resolveKnowledgeBaseSearchOptions(req, &knowledgeBase)
-			searchResult, searchErr := gateway.SearchDataset(ctx, fastgptapi.SearchDatasetRequest{
+			gateway, gatewayErr := newPlatformFastGPTGateway(strings.TrimSpace(knowledgeBase.ConnectionID) == fastgptapi.ManagedConnectionID)
+			if gatewayErr != nil {
+				mu.Lock()
+				errCount++
+				mu.Unlock()
+				return
+			}
+			// Transport scope is the only integration change here. Search mode,
+			// token budget, threshold, rerank choice and TopK remain unchanged.
+			searchResult, searchErr := gateway.ForStore(knowledgeBase.StoreID).SearchDataset(ctx, fastgptapi.SearchDatasetRequest{
 				DatasetID: datasetID, Query: req.Query, TokenLimit: resolveFastGPTTokenLimit(req.ContextMaxTokens),
 				Similarity: float64(scoreThreshold), SearchMode: "mixedRecall",
 				UseRerank: knowledgeBase.DefaultRerankLimit > 0, TopK: topK,
@@ -176,7 +181,7 @@ func FetchFastGPTSyncSource(ctx context.Context, knowledgeBase models.KnowledgeB
 	if !isFastGPTKnowledgeBase(knowledgeBase) {
 		return FastGPTSyncSource{}, fmt.Errorf("knowledge base is not a FastGPT source")
 	}
-	gateway, err := newPlatformFastGPTGateway()
+	gateway, err := newPlatformFastGPTGateway(strings.TrimSpace(knowledgeBase.ConnectionID) == fastgptapi.ManagedConnectionID)
 	if err != nil {
 		return FastGPTSyncSource{}, err
 	}
@@ -184,7 +189,7 @@ func FetchFastGPTSyncSource(ctx context.Context, knowledgeBase models.KnowledgeB
 	if topK < 10 {
 		topK = 10
 	}
-	result, err := gateway.SearchDataset(ctx, fastgptapi.SearchDatasetRequest{
+	result, err := gateway.ForStore(knowledgeBase.StoreID).SearchDataset(ctx, fastgptapi.SearchDatasetRequest{
 		DatasetID: strings.TrimSpace(knowledgeBase.DatasetID), Query: strings.TrimSpace(query),
 		TokenLimit: resolveFastGPTTokenLimit(0), Similarity: float64(scoreThreshold),
 		SearchMode: "mixedRecall", UseRerank: knowledgeBase.DefaultRerankLimit > 0, TopK: topK,

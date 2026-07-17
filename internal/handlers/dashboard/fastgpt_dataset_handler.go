@@ -73,6 +73,25 @@ func FastGPTDatasetPostCollections(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, ret)
 }
 
+func FastGPTDatasetPostJobs(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.FastGPTDatasetActionRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	ret, err := services.FastGPTDatasetService.ListJobs(req.KnowledgeBaseID, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, ret)
+}
+
 func FastGPTDatasetPostSearchTest(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView)
 	if err != nil {
@@ -104,6 +123,42 @@ func FastGPTDatasetPostDeleteCollection(ctx *gin.Context) {
 		return
 	}
 	if err := services.FastGPTDatasetService.DeleteCollection(ctx.Request.Context(), req.KnowledgeBaseID, req.CollectionID, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
+func FastGPTDatasetPostActivate(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.ActivateFastGPTKnowledgeBaseRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.FastGPTDatasetService.ActivateKnowledgeBase(req.WxWorkInstanceID, req.KnowledgeBaseID, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
+func FastGPTDatasetPostDeleteDataset(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseDelete)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.DeleteFastGPTDatasetRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.FastGPTDatasetService.DeleteDataset(ctx.Request.Context(), req.KnowledgeBaseID, req.ConfirmationName, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

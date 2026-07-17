@@ -738,3 +738,54 @@ func setupAgentTeamMutationTestDB(t *testing.T) (*gorm.DB, *models.AgentTeam, *d
 	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
 	return db, team, operator
 }
+
+func TestStoreStaffScopeIncludesEveryKnowledgeBaseOwnedByStore(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Store{}, &models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{}, &models.KnowledgeBase{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	sqls.SetDB(db)
+	t.Cleanup(func() {
+		sqls.SetDB(nil)
+		if raw, err := db.DB(); err == nil {
+			_ = raw.Close()
+		}
+	})
+
+	const tenantID int64 = 101
+	store := &models.Store{TenantID: tenantID, Name: "测试门店", Status: enums.StatusOk}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	if err := db.Create(&models.StoreStaffBinding{TenantID: tenantID, UserID: 77, StoreID: store.ID, Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create binding: %v", err)
+	}
+	first := &models.KnowledgeBase{TenantID: tenantID, StoreID: store.ID, DatasetID: "dataset-1", Name: "当前库", Status: enums.StatusOk}
+	second := &models.KnowledgeBase{TenantID: tenantID, StoreID: store.ID, DatasetID: "dataset-2", Name: "备用库", Status: enums.StatusOk}
+	if err := db.Create(first).Error; err != nil {
+		t.Fatalf("create first knowledge base: %v", err)
+	}
+	if err := db.Create(second).Error; err != nil {
+		t.Fatalf("create second knowledge base: %v", err)
+	}
+	if err := db.Create(&models.WxWorkProtocolInstance{TenantID: tenantID, Guid: "scope-instance", StoreID: store.ID, KnowledgeBaseID: first.ID, Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	scope := AgentTeamScopeService.Resolve(&dto.AuthPrincipal{UserID: 77, ActiveTenantID: tenantID, Roles: []string{constants.RoleCodeStoreStaff}})
+	if !testContainsInt64(scope.KnowledgeBaseIDs, first.ID) || !testContainsInt64(scope.KnowledgeBaseIDs, second.ID) {
+		t.Fatalf("store staff cannot see every store knowledge base: %#v", scope.KnowledgeBaseIDs)
+	}
+}
+
+func testContainsInt64(values []int64, target int64) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}

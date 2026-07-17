@@ -446,8 +446,11 @@ func registerDashboardKnowledgeBaseRoutes(group *gin.RouterGroup) {
 	group.POST("/fastgpt/provision", dashboard.FastGPTDatasetPostProvision)
 	group.POST("/fastgpt/upload", dashboard.FastGPTDatasetPostUpload)
 	group.POST("/fastgpt/collections", dashboard.FastGPTDatasetPostCollections)
+	group.POST("/fastgpt/jobs", dashboard.FastGPTDatasetPostJobs)
 	group.POST("/fastgpt/search_test", dashboard.FastGPTDatasetPostSearchTest)
 	group.POST("/fastgpt/delete_collection", dashboard.FastGPTDatasetPostDeleteCollection)
+	group.POST("/fastgpt/delete_dataset", dashboard.FastGPTDatasetPostDeleteDataset)
+	group.POST("/fastgpt/activate", dashboard.FastGPTDatasetPostActivate)
 }
 
 func registerDashboardKnowledgeResourceRoutes(group *gin.RouterGroup) {

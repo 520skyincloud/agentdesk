@@ -10,3 +10,13 @@ type FastGPTDatasetActionRequest struct {
 	CollectionID    string `json:"collectionId"`
 	Query           string `json:"query"`
 }
+
+type ActivateFastGPTKnowledgeBaseRequest struct {
+	WxWorkInstanceID int64 `json:"wxWorkInstanceId"`
+	KnowledgeBaseID  int64 `json:"knowledgeBaseId"`
+}
+
+type DeleteFastGPTDatasetRequest struct {
+	KnowledgeBaseID  int64  `json:"knowledgeBaseId"`
+	ConfirmationName string `json:"confirmationName"`
+}

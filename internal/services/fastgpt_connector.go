@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/errorsx"
 	fastgptapi "agent-desk/internal/pkg/fastgpt"
@@ -32,6 +33,7 @@ func NewPlatformFastGPTConnector() (*FastGPTConnector, error) {
 	}
 	baseURL := strings.TrimSpace(cfg.BaseURL)
 	apiKey := strings.TrimSpace(cfg.APIKey)
+	integrationToken := strings.TrimSpace(cfg.IntegrationToken)
 	if baseURL == "" || apiKey == "" {
 		return nil, errorsx.InvalidParam("平台 FastGPT 缺少地址或 API Key")
 	}
@@ -44,18 +46,72 @@ func NewPlatformFastGPTConnector() (*FastGPTConnector, error) {
 		maxRetries = 1
 	}
 	gateway, err := fastgptapi.NewGateway(fastgptapi.Config{
-		BaseURL:     baseURL,
-		APIKey:      apiKey,
-		Timeout:     timeout,
-		MaxRetries:  maxRetries,
-		VectorModel: strings.TrimSpace(cfg.VectorModel),
-		AgentModel:  strings.TrimSpace(cfg.AgentModel),
-		VLMModel:    strings.TrimSpace(cfg.VLMModel),
+		BaseURL:          baseURL,
+		APIKey:           apiKey,
+		IntegrationToken: integrationToken,
+		Timeout:          timeout,
+		MaxRetries:       maxRetries,
+		VectorModel:      strings.TrimSpace(cfg.VectorModel),
+		AgentModel:       strings.TrimSpace(cfg.AgentModel),
+		VLMModel:         strings.TrimSpace(cfg.VLMModel),
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &FastGPTConnector{gateway: gateway}, nil
+}
+
+// NewManagedStoreFastGPTConnector is used only for datasets explicitly
+// created under the Agent Desk Team integration. Legacy datasets deliberately
+// continue using the platform connector until a verified migration updates
+// their ConnectionID.
+func NewManagedStoreFastGPTConnector() (*FastGPTConnector, error) {
+	cfg := config.Current().FastGPT
+	if !cfg.Enabled {
+		return nil, errorsx.InvalidParam("平台 FastGPT 连接尚未启用")
+	}
+	baseURL := strings.TrimSpace(cfg.BaseURL)
+	integrationToken := strings.TrimSpace(cfg.IntegrationToken)
+	if baseURL == "" || integrationToken == "" {
+		return nil, errorsx.InvalidParam("平台 FastGPT 缺少服务端集成凭据")
+	}
+	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	maxRetries := cfg.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 1
+	}
+	gateway, err := fastgptapi.NewGateway(fastgptapi.Config{
+		BaseURL:          baseURL,
+		IntegrationToken: integrationToken,
+		UseIntegration:   true,
+		Timeout:          timeout,
+		MaxRetries:       maxRetries,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &FastGPTConnector{gateway: gateway}, nil
+}
+
+func NewFastGPTConnectorForKnowledgeBase(knowledgeBase *models.KnowledgeBase) (*FastGPTConnector, error) {
+	if knowledgeBase != nil && strings.TrimSpace(knowledgeBase.ConnectionID) == fastgptapi.ManagedConnectionID {
+		return NewManagedStoreFastGPTConnector()
+	}
+	return NewPlatformFastGPTConnector()
+}
+
+func (c *FastGPTConnector) ForStore(storeID int64) *FastGPTConnector {
+	if c == nil || c.gateway == nil {
+		return c
+	}
+	return &FastGPTConnector{gateway: c.gateway.ForStore(storeID)}
+}
+
+func (c *FastGPTConnector) EnsureStoreTenant(ctx context.Context, teamName string) (*fastgptapi.StoreTenant, error) {
+	return c.gateway.EnsureStoreTenant(ctx, teamName)
 }
 
 func (c *FastGPTConnector) CreateDataset(ctx context.Context, name, intro string) (*FastGPTDataset, error) {
@@ -70,6 +126,14 @@ func (c *FastGPTConnector) DeleteDataset(ctx context.Context, datasetID string) 
 	return c.gateway.DeleteDataset(ctx, datasetID)
 }
 
+func (c *FastGPTConnector) GetDatasetProfileSnapshot(ctx context.Context, datasetID string) (*fastgptapi.DatasetProfileSnapshot, error) {
+	return c.gateway.GetDatasetProfileSnapshot(ctx, datasetID)
+}
+
+func (c *FastGPTConnector) ListUsageEvents(ctx context.Context, datasetID, cursor string, limit int) (*fastgptapi.UsageEventPage, error) {
+	return c.gateway.ListUsageEvents(ctx, datasetID, cursor, limit)
+}
+
 func (c *FastGPTConnector) UploadLocalFile(ctx context.Context, datasetID, filename string, reader io.Reader) (string, error) {
 	return c.gateway.UploadLocalFile(ctx, datasetID, filename, reader)
 }
@@ -78,8 +142,8 @@ func (c *FastGPTConnector) ListCollections(ctx context.Context, datasetID string
 	return c.gateway.ListCollections(ctx, datasetID)
 }
 
-func (c *FastGPTConnector) DeleteCollections(ctx context.Context, collectionIDs []string) error {
-	return c.gateway.DeleteCollections(ctx, collectionIDs)
+func (c *FastGPTConnector) DeleteCollections(ctx context.Context, datasetID string, collectionIDs []string) error {
+	return c.gateway.DeleteCollections(ctx, datasetID, collectionIDs)
 }
 
 func (c *FastGPTConnector) SearchTest(ctx context.Context, datasetID, text string) (*FastGPTSearchResult, error) {
