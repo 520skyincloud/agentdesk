@@ -1,12 +1,15 @@
 package repositories
 
 import (
+	"errors"
+
 	"agent-desk/internal/models"
 
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ConversationRepository = newConversationRepository()
@@ -35,6 +38,21 @@ func (r *conversationRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *m
 		return nil
 	}
 	return ret
+}
+
+func (r *conversationRepository) GetForUpdateInTenant(db *gorm.DB, id, tenantID int64) (*models.Conversation, error) {
+	if id <= 0 || tenantID <= 0 {
+		return nil, nil
+	}
+	ret := &models.Conversation{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (r *conversationRepository) Take(db *gorm.DB, where ...interface{}) *models.Conversation {

@@ -371,8 +371,9 @@ export default function ConversationDispatchPage() {
         <Button onClick={submitFilters}>{t("common.query")}</Button>
       </DashboardToolbar>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+      <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_20rem]">
         <DashboardTableShell
+          className="min-w-0"
           pagination={
             <ListPagination
               page={result.page.page}
@@ -387,16 +388,16 @@ export default function ConversationDispatchPage() {
             />
           }
         >
-          <Table>
+          <Table className="min-w-[72rem] table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead>{t("conversationDispatch.columnConversation")}</TableHead>
-                <TableHead>{t("conversationDispatch.columnSource")}</TableHead>
-                <TableHead>{t("conversationDispatch.columnState")}</TableHead>
-                <TableHead>{t("conversationDispatch.columnAssignee")}</TableHead>
-                <TableHead>{t("conversationDispatch.columnWait")}</TableHead>
+                <TableHead className="w-[20rem]">{t("conversationDispatch.columnConversation")}</TableHead>
+                <TableHead className="w-[10rem]">{t("conversationDispatch.columnSource")}</TableHead>
+                <TableHead className="w-[9rem]">{t("conversationDispatch.columnState")}</TableHead>
+                <TableHead className="w-[14rem]">{t("conversationDispatch.columnAssignee")}</TableHead>
+                <TableHead className="w-[9rem]">{t("conversationDispatch.columnWait")}</TableHead>
                 {canHandover ? (
-                  <TableHead className="text-right">{t("common.actions")}</TableHead>
+                  <TableHead className="w-[10rem] text-right">{t("common.actions")}</TableHead>
                 ) : null}
               </TableRow>
             </TableHeader>
@@ -410,49 +411,74 @@ export default function ConversationDispatchPage() {
               ) : (
                 result.results.map((task) => (
                   <TableRow key={task.conversationId}>
-                    <TableCell className="min-w-[16rem] align-top">
-                      <div className="font-medium">
+                  <TableCell className="align-top">
+                    <div className="truncate font-medium">
                         {task.customerName || t("conversationDispatch.unknownCustomer", { id: task.conversationId })}
                       </div>
-                      <div className="mt-1 max-w-[24rem] truncate text-sm text-muted-foreground">
+                    <div className="mt-1 truncate text-sm text-muted-foreground">
                         {task.lastMessageSummary || "-"}
                       </div>
                       {task.handoffReason ? (
-                        <div className="mt-1 max-w-[24rem] truncate text-xs text-muted-foreground">
+                        <div className="mt-1 truncate text-xs text-muted-foreground">
                           {task.handoffReason}
+                        </div>
+                      ) : null}
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <Badge variant="outline">
+                          {t("conversationDispatch.workloadWeight", { value: task.workloadWeight || 1 })}
+                        </Badge>
+                        <Badge variant="outline">
+                          {t("conversationDispatch.priorityValue", { value: task.priority || 0 })}
+                        </Badge>
+                      </div>
+                    </TableCell>
+                    <TableCell className="align-top">
+                      <div className="truncate text-sm">{task.storeName || "-"}</div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {task.wxWorkEmployeeName || task.wxWorkEmployeeUserId || "-"}
+                      </div>
+                      <div className="mt-1 truncate text-xs text-muted-foreground">{task.teamName || "-"}</div>
+                    </TableCell>
+                    <TableCell className="align-top">
+                      <div className="flex flex-wrap gap-1.5">
+                        <Badge variant={statusBadgeVariant(task.status)}>{task.statusLabel}</Badge>
+                        {task.dispatchModeLabel ? <Badge variant="outline">{task.dispatchModeLabel}</Badge> : null}
+                      </div>
+                      {task.routeStatusLabel ? (
+                        <div className="mt-1 text-xs text-muted-foreground">{task.routeStatusLabel}</div>
+                      ) : null}
+                      {task.decisionConfidence ? (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {t("conversationDispatch.confidence", { value: task.decisionConfidence })}
                         </div>
                       ) : null}
                     </TableCell>
                     <TableCell className="align-top">
-                      <div className="text-sm">{task.storeName || "-"}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {task.wxWorkEmployeeName || task.wxWorkEmployeeUserId || "-"}
-                      </div>
-                      <div className="mt-1 text-xs text-muted-foreground">{task.teamName || "-"}</div>
-                    </TableCell>
-                    <TableCell className="align-top">
-                      <Badge variant={statusBadgeVariant(task.status)}>{task.statusLabel}</Badge>
-                      {task.routeStatusLabel ? (
-                        <div className="mt-1 text-xs text-muted-foreground">{task.routeStatusLabel}</div>
-                      ) : null}
-                    </TableCell>
-                    <TableCell className="align-top">
-                      <div className="text-sm">{task.currentAssigneeName || "-"}</div>
+                      <div className="truncate text-sm">{task.currentAssigneeName || "-"}</div>
                       {task.recommendedAssigneeName ? (
-                        <div className="mt-1 text-xs text-muted-foreground">
+                        <div className="mt-1 truncate text-xs text-muted-foreground">
                           <BotIcon className="mr-1 inline size-3" />
                           {task.recommendedAssigneeName}
                         </div>
                       ) : null}
+                      {task.assignmentReason ? (
+                        <div className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
+                          {task.assignmentReason}
+                        </div>
+                      ) : null}
                     </TableCell>
-                    <TableCell className="align-top">
+                    <TableCell className="align-top whitespace-nowrap">
                       <div className="font-medium tabular-nums">{formatDuration(task.waitingSeconds)}</div>
                       <div className="text-xs text-muted-foreground">
-                        {task.manualExpireAt ? formatDateTime(task.manualExpireAt) : "-"}
+                        {task.manualExpireAt
+                          ? t("conversationDispatch.manualWindowUntil", {
+                              time: formatDateTime(task.manualExpireAt),
+                            })
+                          : "-"}
                       </div>
                     </TableCell>
                     {canHandover ? (
-                      <TableCell className="align-top text-right">
+                      <TableCell className="align-top text-right whitespace-nowrap">
                         <ButtonGroup>
                           <Button
                             size="icon"
@@ -503,14 +529,14 @@ export default function ConversationDispatchPage() {
         <div className="space-y-3">
           <div className="rounded-lg border bg-card p-4">
             <div className="text-sm font-medium">{t("conversationDispatch.agentLoad")}</div>
-            <div className="mt-3 space-y-3">
+            <div className="mt-3 grid gap-x-6 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-1">
               {agents.length === 0 ? (
                 <div className="py-8 text-center text-sm text-muted-foreground">
                   {t("conversationDispatch.emptyAgents")}
                 </div>
               ) : (
                 agents.map((agent) => (
-                  <div key={agent.profileId} className="rounded-lg border p-3">
+                  <div key={agent.profileId} className="border-t py-3">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="truncate text-sm font-medium">{agentLabel(agent)}</div>
@@ -520,7 +546,7 @@ export default function ConversationDispatchPage() {
                         {agent.available ? t("conversationDispatch.available") : t("conversationDispatch.unavailable")}
                       </Badge>
                     </div>
-                    <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                    <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
                       <div>
                         <div className="text-muted-foreground">{t("conversationDispatch.activeCount")}</div>
                         <div className="mt-1 font-medium tabular-nums">
@@ -532,9 +558,16 @@ export default function ConversationDispatchPage() {
                         <div className="mt-1 font-medium tabular-nums">{agent.pendingFirstReply}</div>
                       </div>
                       <div>
-                        <div className="text-muted-foreground">{t("conversationDispatch.processingCount")}</div>
-                        <div className="mt-1 font-medium tabular-nums">{agent.processingCount}</div>
+                        <div className="text-muted-foreground">{t("conversationDispatch.weightedOpenLoad")}</div>
+                        <div className="mt-1 font-medium tabular-nums">{agent.weightedOpenLoad}</div>
                       </div>
+                      <div>
+                        <div className="text-muted-foreground">{t("conversationDispatch.shiftAssignedWeight")}</div>
+                        <div className="mt-1 font-medium tabular-nums">{agent.shiftAssignedWeight}</div>
+                      </div>
+                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      {t("conversationDispatch.normalizedLoad", { value: agent.normalizedLoad.toFixed(2) })}
                     </div>
                   </div>
                 ))

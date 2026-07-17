@@ -8,13 +8,11 @@ import (
 	"time"
 
 	"agent-desk/internal/ai"
-	"agent-desk/internal/events"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
-	"agent-desk/internal/pkg/eventbus"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
@@ -223,7 +221,7 @@ func (s *conversationHumanDispatchService) ApplyHumanOnlyCreate(conversationID i
 		}
 		return &HandoffDecisionResult{Decision: HandoffDecisionGlobalPool, Message: HandoffWaitingMessage}, nil
 	}
-	return s.dispatchAfterHandoff(conversationID, aiAgent.ID, activeTeamIDs, "仅人工模式新会话", false)
+	return s.dispatchAfterHandoff(conversationID, aiAgent.ID, activeTeamIDs, "仅人工模式新会话")
 }
 
 func (s *conversationHumanDispatchService) DispatchPendingConversation(conversationID int64, aiAgent models.AIAgent) (*HandoffDecisionResult, error) {
@@ -237,28 +235,22 @@ func (s *conversationHumanDispatchService) DispatchPendingConversation(conversat
 	if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
 		return nil, errorsx.InvalidParam("只有待接入未分配会话允许自动分配")
 	}
-	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(orderedPositiveIDs(aiAgent.TeamIDs), conversation.TenantID, time.Now())
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, conversation.TenantID)
+	teamIDs := ConversationDispatchService.resolveDispatchTeamIDs(conversation, &aiAgent, route)
+	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, time.Now())
 	if len(activeTeamIDs) == 0 {
 		return &HandoffDecisionResult{Decision: HandoffDecisionOffHours}, nil
 	}
-	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, conversation.TenantID)
-	candidates, _, err := ConversationDispatchService.pickDispatchCandidates(activeTeamIDs, conversation.TenantID, route, time.Now())
+	dispatched, err := ConversationDispatchService.DispatchPendingConversation(conversation, &aiAgent)
 	if err != nil {
 		return nil, err
 	}
-	if len(candidates) > 0 {
-		dispatched, err := ConversationDispatchService.tryAssignConversation(conversationID, candidates[0], "自动分配")
-		if err != nil {
-			return nil, err
-		}
-		if dispatched != nil {
-			WsService.PublishConversationChanged(dispatched, enums.IMRealtimeEventConversationAssigned)
-			return &HandoffDecisionResult{
-				Decision:   HandoffDecisionAssigned,
-				TeamID:     dispatched.CurrentTeamID,
-				AssigneeID: dispatched.CurrentAssigneeID,
-			}, nil
-		}
+	if dispatched != nil {
+		return &HandoffDecisionResult{
+			Decision:   HandoffDecisionAssigned,
+			TeamID:     dispatched.CurrentTeamID,
+			AssigneeID: dispatched.CurrentAssigneeID,
+		}, nil
 	}
 	teamID := activeTeamIDs[0]
 	teamPoolConversation, err := s.moveToTeamPool(conversationID, teamID, "手动触发自动分配")
@@ -281,36 +273,24 @@ func validateConversationAIAgentTenant(conversation *models.Conversation, aiAgen
 	return nil
 }
 
-func (s *conversationHumanDispatchService) dispatchAfterHandoff(conversationID, aiAgentID int64, activeTeamIDs []int64, reason string, publishAssignEvent bool) (*HandoffDecisionResult, error) {
-	return s.dispatchAfterHandoffWithRequestID(conversationID, aiAgentID, activeTeamIDs, reason, publishAssignEvent, "")
-}
-
-func (s *conversationHumanDispatchService) dispatchAfterHandoffWithRequestID(conversationID, aiAgentID int64, activeTeamIDs []int64, reason string, publishAssignEvent bool, requestID string) (*HandoffDecisionResult, error) {
+func (s *conversationHumanDispatchService) dispatchAfterHandoff(conversationID, aiAgentID int64, activeTeamIDs []int64, reason string) (*HandoffDecisionResult, error) {
 	conversation, err := requireConversationParent(sqls.DB(), conversationID)
 	if err != nil {
 		return nil, err
 	}
 	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, conversation.TenantID)
-	candidates, _, err := ConversationDispatchService.pickDispatchCandidates(activeTeamIDs, conversation.TenantID, route, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	if len(candidates) > 0 {
-		dispatched, err := ConversationDispatchService.tryAssignConversation(conversationID, candidates[0], "自动分配")
+	aiAgent := AIAgentService.GetByTenantID(aiAgentID, conversation.TenantID)
+	if aiAgent != nil {
+		if resolvedTeamIDs := ConversationDispatchService.resolveDispatchTeamIDs(conversation, aiAgent, route); len(resolvedTeamIDs) > 0 {
+			if resolvedActiveTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(resolvedTeamIDs, conversation.TenantID, time.Now()); len(resolvedActiveTeamIDs) > 0 {
+				activeTeamIDs = resolvedActiveTeamIDs
+			}
+		}
+		dispatched, err := ConversationDispatchService.DispatchPendingConversation(conversation, aiAgent)
 		if err != nil {
 			return nil, err
 		}
 		if dispatched != nil {
-			WsService.PublishConversationChanged(dispatched, enums.IMRealtimeEventConversationAssigned)
-			if publishAssignEvent {
-				eventbus.PublishAsync(context.Background(), events.ConversationAssignedEvent{
-					ConversationID: dispatched.ID,
-					ToUserID:       dispatched.CurrentAssigneeID,
-					OperatorID:     systemDispatchPrincipal().UserID,
-					Reason:         "自动分配",
-					AssignType:     events.ConversationAssignTypeAutoAssign,
-				})
-			}
 			return &HandoffDecisionResult{
 				Decision:   HandoffDecisionAssigned,
 				TeamID:     dispatched.CurrentTeamID,
@@ -320,8 +300,11 @@ func (s *conversationHumanDispatchService) dispatchAfterHandoffWithRequestID(con
 		}
 	}
 
+	if len(activeTeamIDs) == 0 {
+		return &HandoffDecisionResult{Decision: HandoffDecisionOffHours, Message: HandoffOffHoursMessage}, nil
+	}
 	teamID := activeTeamIDs[0]
-	teamPoolConversation, err := s.moveToTeamPoolWithRequestID(conversationID, teamID, reason, requestID)
+	teamPoolConversation, err := s.moveToTeamPool(conversationID, teamID, reason)
 	if err != nil {
 		return nil, err
 	}
@@ -374,11 +357,9 @@ func (s *conversationHumanDispatchService) markHQAgentDeskHandoff(conversationID
 	if err := s.recordHandoff(conversationID, aiAgent, trimmedReason, requestID, now); err != nil {
 		return err
 	}
-	if _, err := ConversationRouteService.EnterHQAgentDeskPending(conversationID, trimmedReason, now); err != nil {
-		return err
-	}
 	_ = s.markManualHandoffRequested(conversationID, now)
 	s.notifyAgentDeskHandoff(conversationID, trimmedReason)
+	ConversationDispatchService.ScheduleDispatch(conversationID)
 	return nil
 }
 
@@ -400,7 +381,11 @@ func (s *conversationHumanDispatchService) recordHandoff(conversationID int64, a
 		}); err != nil {
 			return err
 		}
-		return ConversationEventLogService.CreateEventWithRequestID(ctx, conversationID, requestID, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, aiAgent.ID, "AI转人工", strings.TrimSpace(reason))
+		if err := ConversationEventLogService.CreateEventWithRequestID(ctx, conversationID, requestID, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, aiAgent.ID, "AI转人工", strings.TrimSpace(reason)); err != nil {
+			return err
+		}
+		_, err = ConversationRouteService.enterHQAgentDeskPendingWithDB(ctx.Tx, conversationID, strings.TrimSpace(reason), now)
+		return err
 	})
 }
 
@@ -443,6 +428,9 @@ func (s *conversationHumanDispatchService) moveToTeamPoolWithRequestID(conversat
 		})); err != nil {
 			return err
 		}
+		if _, err := ConversationRouteService.enterHQAgentDeskPendingWithDB(ctx.Tx, conversationID, strings.TrimSpace(reason), now); err != nil {
+			return err
+		}
 		current.Status = enums.IMConversationStatusPending
 		current.CurrentTeamID = teamID
 		current.CurrentAssigneeID = 0
@@ -455,10 +443,8 @@ func (s *conversationHumanDispatchService) moveToTeamPoolWithRequestID(conversat
 	if err != nil {
 		return nil, err
 	}
-	if _, err := ConversationRouteService.EnterHQAgentDeskPending(conversationID, strings.TrimSpace(reason), now); err != nil {
-		return nil, err
-	}
 	s.notifyAgentDeskHandoff(conversationID, strings.TrimSpace(reason))
+	ConversationDispatchService.ScheduleDispatch(conversationID)
 	return conversation, nil
 }
 
@@ -479,18 +465,20 @@ func (s *conversationHumanDispatchService) moveToGlobalPool(conversationID int64
 		}); err != nil {
 			return err
 		}
-		return ConversationEventLogService.CreateEvent(ctx, conversationID, enums.IMEventTypeTransfer, enums.IMSenderTypeSystem, 0, "会话进入全局待接入", ConversationService.buildEventPayload(map[string]any{
+		if err := ConversationEventLogService.CreateEvent(ctx, conversationID, enums.IMEventTypeTransfer, enums.IMSenderTypeSystem, 0, "会话进入全局待接入", ConversationService.buildEventPayload(map[string]any{
 			"fromStatus": conversation.Status,
 			"toStatus":   enums.IMConversationStatusPending,
 			"decision":   string(HandoffDecisionGlobalPool),
-		}))
+		})); err != nil {
+			return err
+		}
+		_, err = ConversationRouteService.enterHQAgentDeskPendingWithDB(ctx.Tx, conversationID, "进入全局待接入", now)
+		return err
 	}); err != nil {
 		return err
 	}
-	if _, err := ConversationRouteService.EnterHQAgentDeskPending(conversationID, "进入全局待接入", now); err != nil {
-		return err
-	}
 	s.notifyAgentDeskHandoff(conversationID, "进入全局待接入")
+	ConversationDispatchService.ScheduleDispatch(conversationID)
 	return nil
 }
 

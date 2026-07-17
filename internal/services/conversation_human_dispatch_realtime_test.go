@@ -155,6 +155,9 @@ func setupHumanDispatchRealtimeTestDB(t *testing.T) *gorm.DB {
 		&models.ConversationEventLog{},
 		&models.ConversationReadState{},
 		&models.Message{},
+		&models.ConversationServiceSession{},
+		&models.ConversationResponseSpan{},
+		&models.DispatchDecisionLog{},
 		&models.ChannelMessageOutbox{},
 	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)

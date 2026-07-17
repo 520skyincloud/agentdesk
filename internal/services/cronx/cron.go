@@ -9,6 +9,7 @@ import (
 )
 
 func Init() {
+	services.ConversationDispatchService.EnableRealtimeScheduling()
 	c := cron.New()
 
 	addFunc(c, "0 4 ? * *", func() {

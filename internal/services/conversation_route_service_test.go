@@ -18,7 +18,7 @@ func TestHQAgentDeskServingTracksPendingReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.Conversation{}, &models.ConversationRouteState{}); err != nil {
+	if err := db.AutoMigrate(&models.Conversation{}, &models.ConversationRouteState{}, &models.ConversationServiceSession{}, &models.ConversationResponseSpan{}); err != nil {
 		t.Fatalf("migrate route state: %v", err)
 	}
 	sqls.SetDB(db)
@@ -59,12 +59,49 @@ func TestHQAgentDeskServingTracksPendingReply(t *testing.T) {
 	}
 }
 
+func TestHQAgentDeskServingStartsFullTimeoutWindowAtAssignment(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Conversation{}, &models.ConversationRouteState{}, &models.ConversationServiceSession{}, &models.ConversationResponseSpan{}); err != nil {
+		t.Fatalf("migrate route state: %v", err)
+	}
+	sqls.SetDB(db)
+	now := time.Now()
+	conversation := &models.Conversation{TenantID: 101, Status: enums.IMConversationStatusPending, LastActiveAt: now, LastMessageAt: now}
+	if err := db.Create(conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	lastCustomerMessageAt := now.Add(-8 * time.Minute)
+	route := &models.ConversationRouteState{
+		TenantID:              conversation.TenantID,
+		ConversationID:        conversation.ID,
+		RouteStatus:           enums.ConversationRouteStatusHQAgentDeskPending,
+		LastCustomerMessageAt: &lastCustomerMessageAt,
+		ManualExpireAt:        routeTimePtr(now.Add(-5 * time.Minute)),
+		NeedHumanFollowUp:     true,
+	}
+	if err := db.Create(route).Error; err != nil {
+		t.Fatalf("create route state: %v", err)
+	}
+
+	state, err := ConversationRouteService.EnterHQAgentDeskServing(conversation.ID, "测试派发", now)
+	if err != nil {
+		t.Fatalf("enter HQ serving: %v", err)
+	}
+	wantExpireAt := now.Add(DefaultManualTimeoutMinutes * time.Minute)
+	if state.ManualExpireAt == nil || state.ManualExpireAt.Before(wantExpireAt.Add(-time.Second)) || state.ManualExpireAt.After(wantExpireAt.Add(time.Second)) {
+		t.Fatalf("expected a full timeout window from assignment, got %v want around %v", state.ManualExpireAt, wantExpireAt)
+	}
+}
+
 func TestStoreManualTracksPendingReply(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.Conversation{}, &models.ConversationRouteState{}); err != nil {
+	if err := db.AutoMigrate(&models.Conversation{}, &models.ConversationRouteState{}, &models.ConversationServiceSession{}, &models.ConversationResponseSpan{}); err != nil {
 		t.Fatalf("migrate route state: %v", err)
 	}
 	sqls.SetDB(db)

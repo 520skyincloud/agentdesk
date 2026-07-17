@@ -12,7 +12,7 @@ import (
 )
 
 func ConversationDispatchAnyList(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationHandover)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -27,7 +27,7 @@ func ConversationDispatchAnyList(ctx *gin.Context) {
 }
 
 func ConversationDispatchAnyStats(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationHandover)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -41,7 +41,7 @@ func ConversationDispatchAnyStats(ctx *gin.Context) {
 }
 
 func ConversationDispatchAnyAgent_loads(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationHandover)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

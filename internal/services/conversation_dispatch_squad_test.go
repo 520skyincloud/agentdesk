@@ -226,7 +226,14 @@ func setupConversationDispatchSquadTestDB(t *testing.T) *gorm.DB {
 		&models.AgentTeamSchedule{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
+		&models.ConversationReadState{},
 		&models.ConversationAssignment{},
+		&models.ConversationEventLog{},
+		&models.Message{},
+		&models.ConversationServiceSession{},
+		&models.ConversationResponseSpan{},
+		&models.DispatchDecisionLog{},
+		&models.AIUsageEvent{},
 	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}

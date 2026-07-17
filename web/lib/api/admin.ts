@@ -195,6 +195,12 @@ export type ConversationDispatchTask = {
   recommendedAssigneeId?: number
   recommendedAssigneeName?: string
   recommendationReason?: string
+  dispatchMode?: string
+  dispatchModeLabel?: string
+  decisionConfidence?: number
+  workloadWeight: number
+  priority: number
+  assignmentReason?: string
 }
 
 export type ConversationDispatchStats = {
@@ -229,6 +235,9 @@ export type ConversationDispatchAgentLoad = {
   priorityLevel: number
   lastOnlineAt?: string
   lastStatusAt?: string
+  weightedOpenLoad: number
+  shiftAssignedWeight: number
+  normalizedLoad: number
 }
 
 export type AdminMessage = {
@@ -834,6 +843,8 @@ export type AdminAgentTeam = {
   companyScopeIds: number[]
   storeScopeIds: number[]
   wxWorkInstanceScopeIds: number[]
+  dispatchMode: string
+  dispatchModeLabel: string
   leaderUsername?: string
   leaderNickname?: string
   status: number
@@ -880,6 +891,7 @@ export type CreateAdminAgentTeamPayload = {
   companyScopeIds: number[]
   storeScopeIds: number[]
   wxWorkInstanceScopeIds: number[]
+  dispatchMode: string
   status: number
   description: string
   remark: string

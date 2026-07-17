@@ -28,21 +28,23 @@ type AgentProfileResponse struct {
 }
 
 type AgentTeamResponse struct {
-	ID                     int64        `json:"id"`
-	Name                   string       `json:"name"`
-	LeaderUserID           int64        `json:"leaderUserId"`
-	StoreStaffUserIDs      []int64      `json:"storeStaffUserIds"`
-	CompanyScopeIDs        []int64      `json:"companyScopeIds"`
-	StoreScopeIDs          []int64      `json:"storeScopeIds"`
-	WxWorkInstanceScopeIDs []int64      `json:"wxWorkInstanceScopeIds"`
-	LeaderUsername         string       `json:"leaderUsername,omitempty"`
-	LeaderNickname         string       `json:"leaderNickname,omitempty"`
-	Status                 enums.Status `json:"status"`
-	Description            string       `json:"description"`
-	Remark                 string       `json:"remark"`
-	Manageable             bool         `json:"manageable"`
-	PendingReplyCount      int          `json:"pendingReplyCount"`
-	SquadCount             int          `json:"squadCount"`
+	ID                     int64                       `json:"id"`
+	Name                   string                      `json:"name"`
+	LeaderUserID           int64                       `json:"leaderUserId"`
+	StoreStaffUserIDs      []int64                     `json:"storeStaffUserIds"`
+	CompanyScopeIDs        []int64                     `json:"companyScopeIds"`
+	StoreScopeIDs          []int64                     `json:"storeScopeIds"`
+	WxWorkInstanceScopeIDs []int64                     `json:"wxWorkInstanceScopeIds"`
+	DispatchMode           enums.AgentTeamDispatchMode `json:"dispatchMode"`
+	DispatchModeLabel      string                      `json:"dispatchModeLabel"`
+	LeaderUsername         string                      `json:"leaderUsername,omitempty"`
+	LeaderNickname         string                      `json:"leaderNickname,omitempty"`
+	Status                 enums.Status                `json:"status"`
+	Description            string                      `json:"description"`
+	Remark                 string                      `json:"remark"`
+	Manageable             bool                        `json:"manageable"`
+	PendingReplyCount      int                         `json:"pendingReplyCount"`
+	SquadCount             int                         `json:"squadCount"`
 }
 
 type AgentTeamSquadResponse struct {

@@ -46,6 +46,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useI18n } from "@/i18n/provider";
 import {
   type AdminAgentTeam,
@@ -54,7 +55,7 @@ import {
   fetchAgentTeam,
   fetchUsersAll,
 } from "@/lib/api/admin";
-import { Status } from "@/lib/generated/enums";
+import { AgentTeamDispatchMode, Status } from "@/lib/generated/enums";
 import { cn } from "@/lib/utils";
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string;
@@ -72,6 +73,7 @@ type EditForm = {
   name: string;
   leaderUserId: string;
   storeStaffUserIds: string;
+  dispatchMode: string;
   status: string;
   description: string;
   remark: string;
@@ -84,6 +86,7 @@ const emptyForm: EditForm = {
   name: "",
   leaderUserId: "0",
   storeStaffUserIds: "",
+  dispatchMode: AgentTeamDispatchMode.Rule,
   status: String(Status.Ok),
   description: "",
   remark: "",
@@ -94,6 +97,11 @@ function createEditFormSchema(t: TFunction) {
     name: z.string().trim().min(1, t("agentProfile.teamNameRequired")),
     leaderUserId: z.string().trim().regex(/^\d+$/, t("agentProfile.leaderInvalid")),
     storeStaffUserIds: z.string().trim(),
+    dispatchMode: z.enum([
+      AgentTeamDispatchMode.Manual,
+      AgentTeamDispatchMode.Rule,
+      AgentTeamDispatchMode.Intelligent,
+    ]),
     status: z.enum([String(Status.Ok), String(Status.Disabled)], {
       message: t("agentProfile.teamStatusRequired"),
     }),
@@ -124,6 +132,7 @@ function buildForm(item: AdminAgentTeam | null): EditForm {
     name: item.name,
     leaderUserId: String(item.leaderUserId),
     storeStaffUserIds: (item.storeStaffUserIds || []).join(","),
+    dispatchMode: item.dispatchMode || AgentTeamDispatchMode.Rule,
     status: String(item.status),
     description: item.description || "",
     remark: item.remark || "",
@@ -138,6 +147,7 @@ function buildPayload(form: EditForm): CreateAdminAgentTeamPayload {
     companyScopeIds: [],
     storeScopeIds: [],
     wxWorkInstanceScopeIds: [],
+    dispatchMode: form.dispatchMode,
     status: Number(form.status),
     description: form.description.trim(),
     remark: form.remark.trim(),
@@ -562,6 +572,35 @@ function TeamEditDialogBody({
                     )}
                   />
                   <FieldError errors={[errors.status]} />
+                </FieldContent>
+              </Field>
+              <Field data-invalid={!!errors.dispatchMode}>
+                <FieldLabel>{t("agentProfile.dispatchMode")}</FieldLabel>
+                <FieldContent>
+                  <Controller
+                    control={control}
+                    name="dispatchMode"
+                    render={({ field }) => (
+                      <ToggleGroup
+                        multiple={false}
+                        value={[field.value]}
+                        onValueChange={(value) => value[0] && field.onChange(value[0])}
+                        variant="outline"
+                        className="grid w-full grid-cols-3"
+                      >
+                        <ToggleGroupItem value={AgentTeamDispatchMode.Manual}>
+                          {t("agentProfile.dispatchManual")}
+                        </ToggleGroupItem>
+                        <ToggleGroupItem value={AgentTeamDispatchMode.Rule}>
+                          {t("agentProfile.dispatchRule")}
+                        </ToggleGroupItem>
+                        <ToggleGroupItem value={AgentTeamDispatchMode.Intelligent}>
+                          {t("agentProfile.dispatchIntelligent")}
+                        </ToggleGroupItem>
+                      </ToggleGroup>
+                    )}
+                  />
+                  <FieldError errors={[errors.dispatchMode]} />
                 </FieldContent>
               </Field>
               <input type="hidden" {...register("storeStaffUserIds")} />

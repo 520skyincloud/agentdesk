@@ -3,10 +3,11 @@ package constants
 import "agent-desk/internal/pkg/enums"
 
 const (
-	AIModelUsageReplyLLM           = "reply_llm"
-	AIModelUsageIntentDetectLLM    = "intent_detect_llm"
-	AIModelUsageMediaUnderstanding = "media_understanding"
-	AIModelUsageSpeechRecognition  = "speech_recognition"
+	AIModelUsageReplyLLM            = "reply_llm"
+	AIModelUsageIntentDetectLLM     = "intent_detect_llm"
+	AIModelUsageDispatchDecisionLLM = "dispatch_decision_llm"
+	AIModelUsageMediaUnderstanding  = "media_understanding"
+	AIModelUsageSpeechRecognition   = "speech_recognition"
 )
 
 const (
@@ -26,6 +27,7 @@ func AIModelUsageSpecs() []AIModelUsageSpec {
 	return []AIModelUsageSpec{
 		{Code: AIModelUsageReplyLLM, Name: "回复生成模型", ExpectedType: enums.AIModelTypeLLM},
 		{Code: AIModelUsageIntentDetectLLM, Name: "意图识别模型", ExpectedType: enums.AIModelTypeLLM},
+		{Code: AIModelUsageDispatchDecisionLLM, Name: "智能派单模型", ExpectedType: enums.AIModelTypeLLM},
 		{Code: AIModelUsageMediaUnderstanding, Name: "媒体理解模型", ExpectedType: enums.AIModelTypeVision},
 		{Code: AIModelUsageSpeechRecognition, Name: "语音识别模型", ExpectedType: enums.AIModelTypeASR},
 	}

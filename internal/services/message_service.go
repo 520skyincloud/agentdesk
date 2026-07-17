@@ -664,6 +664,9 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 				if routeState.NeedHumanFollowUp {
 					AIManualResumeTaskService.RecordWaitingCustomerMessage(conversation.ID, message.ID)
 				}
+				if routeState.RouteStatus == enums.ConversationRouteStatusHQAgentDeskPending && conversation.Status == enums.IMConversationStatusPending && conversation.CurrentAssigneeID == 0 {
+					ConversationDispatchService.ScheduleDispatch(conversation.ID)
+				}
 				return message, err
 			}
 			if handled, handleErr := ConversationHandoffConfirmationService.HandleCustomerMessage(conversation, message); handleErr != nil {

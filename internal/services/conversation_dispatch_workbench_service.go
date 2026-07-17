@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"errors"
+	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,18 +51,23 @@ type dispatchWorkbenchTask struct {
 	firstAgentReplyAt  *time.Time
 	recommendedProfile *models.AgentProfile
 	recommendation     string
+	assignment         *models.ConversationAssignment
+	dispatchMode       enums.AgentTeamDispatchMode
 }
 
 type dispatchWorkbenchAgentLoad struct {
-	profile           models.AgentProfile
-	teamName          string
-	username          string
-	nickname          string
-	activeCount       int
-	pendingFirstReply int
-	pendingReplyCount int
-	processingCount   int
-	available         bool
+	profile             models.AgentProfile
+	teamName            string
+	username            string
+	nickname            string
+	activeCount         int
+	pendingFirstReply   int
+	pendingReplyCount   int
+	processingCount     int
+	available           bool
+	weightedOpenLoad    int
+	shiftAssignedWeight int
+	normalizedLoad      float64
 }
 
 func newConversationDispatchWorkbenchService() *conversationDispatchWorkbenchService {
@@ -246,7 +253,7 @@ func (s *conversationDispatchWorkbenchService) AutoAssign(req request.Conversati
 	if len(candidates) == 0 {
 		return errorsx.InvalidParam("当前客服组暂无可自动派发客服")
 	}
-	return s.assignToProfile(conversation, candidates[0].profile, candidates[0].squadID, "规则自动派发", operator, enums.IMAssignmentTypeAssign, true)
+	return s.assignToProfile(conversation, candidates[0].profile, candidates[0].squadID, "规则自动派发", operator, enums.IMAssignmentTypeAssign, enums.AgentTeamDispatchModeRule, true)
 }
 
 func (s *conversationDispatchWorkbenchService) Assign(req request.ConversationDispatchActionRequest, operator *dto.AuthPrincipal) error {
@@ -268,7 +275,7 @@ func (s *conversationDispatchWorkbenchService) Assign(req request.ConversationDi
 	if reason == "" {
 		reason = "组长手动派发"
 	}
-	return s.assignToProfile(conversation, *profile, 0, reason, operator, enums.IMAssignmentTypeAssign, true)
+	return s.assignToProfile(conversation, *profile, 0, reason, operator, enums.IMAssignmentTypeAssign, enums.AgentTeamDispatchModeManual, true)
 }
 
 func (s *conversationDispatchWorkbenchService) Transfer(req request.ConversationDispatchActionRequest, operator *dto.AuthPrincipal) error {
@@ -297,7 +304,7 @@ func (s *conversationDispatchWorkbenchService) Transfer(req request.Conversation
 	if reason == "" {
 		reason = "组长转派"
 	}
-	return s.assignToProfile(conversation, *profile, 0, reason, operator, enums.IMAssignmentTypeTransfer, true)
+	return s.assignToProfile(conversation, *profile, 0, reason, operator, enums.IMAssignmentTypeTransfer, enums.AgentTeamDispatchModeManual, true)
 }
 
 func (s *conversationDispatchWorkbenchService) Release(req request.ConversationDispatchActionRequest, operator *dto.AuthPrincipal) error {
@@ -345,21 +352,23 @@ func (s *conversationDispatchWorkbenchService) Release(req request.ConversationD
 		}); err != nil {
 			return err
 		}
-		return ConversationEventLogService.CreateEvent(ctx, current.ID, enums.IMEventTypeTransfer, enums.IMSenderTypeAgent, operator.UserID, "会话释放回客服组待派发池", ConversationService.buildEventPayload(map[string]any{
+		if err := ConversationEventLogService.CreateEvent(ctx, current.ID, enums.IMEventTypeTransfer, enums.IMSenderTypeAgent, operator.UserID, "会话释放回客服组待派发池", ConversationService.buildEventPayload(map[string]any{
 			"fromStatus":     current.Status,
 			"toStatus":       enums.IMConversationStatusPending,
 			"fromAssigneeId": current.CurrentAssigneeID,
 			"toAssigneeId":   int64(0),
 			"toTeamId":       teamID,
 			"reason":         reason,
-		}))
+		})); err != nil {
+			return err
+		}
+		_, err := ConversationRouteService.enterHQAgentDeskPendingWithDB(ctx.Tx, current.ID, "释放回待派发池:"+reason, now)
+		return err
 	})
 	if err != nil {
 		return err
 	}
-	if _, err := ConversationRouteService.EnterHQAgentDeskPending(conversation.ID, "释放回待派发池:"+reason, now); err != nil {
-		return err
-	}
+	ConversationDispatchService.ScheduleDispatch(conversation.ID)
 	if updated := ConversationService.Get(conversation.ID); updated != nil {
 		WsService.PublishConversationChanged(updated, enums.IMRealtimeEventConversationUpdated)
 	}
@@ -370,6 +379,11 @@ func (s *conversationDispatchWorkbenchService) collectTasks(req request.Conversa
 	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
 	if tenantID <= 0 {
 		return nil, errorsx.Forbidden("请先进入需要管理派单的接入公司")
+	}
+	unrestricted := AgentTeamScopeService.IsAdmin(operator)
+	manageableTeamIDs := AgentTeamScopeService.ManageableTeamIDs(operator)
+	if !unrestricted && req.TeamID > 0 && !slices.Contains(manageableTeamIDs, req.TeamID) {
+		return []dispatchWorkbenchTask{}, nil
 	}
 	cnd := sqls.NewCnd().Eq("tenant_id", tenantID).In("status", []enums.IMConversationStatus{
 		enums.IMConversationStatusPending,
@@ -391,6 +405,9 @@ func (s *conversationDispatchWorkbenchService) collectTasks(req request.Conversa
 		conversation := conversations[i]
 		route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, tenantID)
 		teamID := s.resolveTaskTeamID(&conversation, route)
+		if !unrestricted && (teamID <= 0 || !slices.Contains(manageableTeamIDs, teamID)) {
+			continue
+		}
 		if req.TeamID > 0 && teamID != req.TeamID {
 			continue
 		}
@@ -409,7 +426,8 @@ func (s *conversationDispatchWorkbenchService) collectTasks(req request.Conversa
 
 func (s *conversationDispatchWorkbenchService) buildTask(conversation models.Conversation, route *models.ConversationRouteState, teamID int64, manageable bool, now time.Time) dispatchWorkbenchTask {
 	var assignedAt *time.Time
-	if assignment := s.activeAssignment(conversation.ID, conversation.TenantID); assignment != nil {
+	assignment := s.activeAssignment(conversation.ID, conversation.TenantID)
+	if assignment != nil {
 		assignedAt = &assignment.CreatedAt
 	}
 	firstReplyAt := s.firstAgentReplyAt(conversation.ID, conversation.TenantID, assignedAt)
@@ -430,6 +448,8 @@ func (s *conversationDispatchWorkbenchService) buildTask(conversation models.Con
 		waitingSeconds:    waitingSeconds,
 		assignedAt:        assignedAt,
 		firstAgentReplyAt: firstReplyAt,
+		assignment:        assignment,
+		dispatchMode:      s.teamDispatchMode(teamID, conversation.TenantID),
 	}
 	if teamID > 0 && conversation.Status == enums.IMConversationStatusPending && conversation.CurrentAssigneeID == 0 {
 		if candidates, err := s.pickRuleCandidates(teamID, conversation.TenantID, route); err == nil && len(candidates) > 0 {
@@ -463,6 +483,17 @@ func (s *conversationDispatchWorkbenchService) buildTaskResponses(tasks []dispat
 			AssignedAt:           utils.FormatTimePtr(task.assignedAt),
 			FirstAgentReplyAt:    utils.FormatTimePtr(task.firstAgentReplyAt),
 			RecommendationReason: task.recommendation,
+			DispatchMode:         task.dispatchMode,
+			DispatchModeLabel:    enums.GetAgentTeamDispatchModeLabel(task.dispatchMode),
+			WorkloadWeight:       normalizedWorkloadWeight(&item),
+			Priority:             normalizedConversationPriority(&item),
+		}
+		if task.assignment != nil {
+			resp.DispatchMode = task.assignment.DispatchMode
+			resp.DispatchModeLabel = enums.GetAgentTeamDispatchModeLabel(task.assignment.DispatchMode)
+			resp.DecisionConfidence = task.assignment.DecisionConfidence
+			resp.WorkloadWeight = task.assignment.WorkloadWeight
+			resp.AssignmentReason = utils.RepairMojibakeText(task.assignment.Reason)
 		}
 		if item.CurrentAssigneeID > 0 {
 			resp.CurrentAssigneeName = s.userDisplayName(item.CurrentAssigneeID, item.TenantID)
@@ -635,28 +666,41 @@ func (s *conversationDispatchWorkbenchService) canManageTeam(operator *dto.AuthP
 
 func (s *conversationDispatchWorkbenchService) listVisibleAgentProfiles(teamID int64, operator *dto.AuthPrincipal) []models.AgentProfile {
 	cnd := sqls.NewCnd().Where("status <> ?", enums.StatusDeleted)
+	manageableTeamIDs := AgentTeamScopeService.ManageableTeamIDs(operator)
 	if teamID > 0 {
+		if !slices.Contains(manageableTeamIDs, teamID) {
+			return []models.AgentProfile{}
+		}
 		cnd.Eq("team_id", teamID)
+	} else {
+		if len(manageableTeamIDs) == 0 {
+			return []models.AgentProfile{}
+		}
+		cnd.In("team_id", manageableTeamIDs)
 	}
 	return AgentProfileService.FindInTenant(cnd.Asc("team_id").Desc("priority_level").Asc("id"), operator)
 }
 
 func (s *conversationDispatchWorkbenchService) buildAgentLoads(profiles []models.AgentProfile, operator *dto.AuthPrincipal) ([]dispatchWorkbenchAgentLoad, error) {
-	userIDs := make([]int64, 0, len(profiles))
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	teamIDs := make([]int64, 0, len(profiles))
 	for _, profile := range profiles {
-		if profile.UserID > 0 {
-			userIDs = append(userIDs, profile.UserID)
+		if profile.TeamID > 0 && !slices.Contains(teamIDs, profile.TeamID) {
+			teamIDs = append(teamIDs, profile.TeamID)
 		}
 	}
-	activeCounts, err := ConversationDispatchService.findActiveConversationCountMap(userIDs, AgentTeamScopeService.ActiveTenantID(operator))
+	schedules := ConversationDispatchService.findActiveScheduleDetails(teamIDs, tenantID, time.Now())
+	dispatchLoads, err := ConversationDispatchService.buildDispatchLoadMap(profiles, schedules, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	ret := make([]dispatchWorkbenchAgentLoad, 0, len(profiles))
 	for _, profile := range profiles {
 		load := dispatchWorkbenchAgentLoad{
-			profile:     profile,
-			activeCount: activeCounts[profile.UserID],
+			profile:             profile,
+			activeCount:         dispatchLoads[profile.UserID].activeCount,
+			weightedOpenLoad:    dispatchLoads[profile.UserID].weightedOpenLoad,
+			shiftAssignedWeight: dispatchLoads[profile.UserID].shiftAssignedWeight,
 		}
 		userEnabled := false
 		if team := AgentTeamService.GetInTenant(profile.TeamID, operator); team != nil {
@@ -667,77 +711,49 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoads(profiles []models
 			load.nickname = user.Nickname
 			userEnabled = user.Status == enums.StatusOk && user.DeletedAt == nil
 		}
-		load.pendingFirstReply, load.processingCount = s.countAgentTaskPhases(profile.UserID, profile.TenantID)
-		load.pendingReplyCount = s.countAgentPendingReplies(profile.UserID, profile.TenantID)
+		load.pendingFirstReply = dispatchLoads[profile.UserID].pendingFirstReply
+		load.processingCount = load.activeCount - load.pendingFirstReply
+		load.pendingReplyCount = dispatchLoads[profile.UserID].pendingReplyCount
+		capacity := math.Max(float64(profile.MaxConcurrentCount), 1)
+		load.normalizedLoad = (float64(load.weightedOpenLoad)+float64(load.pendingFirstReply)*0.75+float64(load.pendingReplyCount)*0.5)/capacity + float64(load.shiftAssignedWeight)*0.03
 		load.available = userEnabled && s.profileAvailable(profile, load.activeCount)
 		ret = append(ret, load)
 	}
 	return ret, nil
 }
 
-func (s *conversationDispatchWorkbenchService) countAgentPendingReplies(userID, tenantID int64) int {
-	if userID <= 0 || tenantID <= 0 {
-		return 0
-	}
-	conversations := ConversationService.Find(sqls.NewCnd().
-		Eq("tenant_id", tenantID).
-		Eq("status", enums.IMConversationStatusActive).
-		Eq("current_assignee_id", userID))
-	count := 0
-	for i := range conversations {
-		if route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversations[i].ID, tenantID); route != nil && route.NeedHumanFollowUp {
-			count++
-		}
-	}
-	return count
-}
-
-func (s *conversationDispatchWorkbenchService) countAgentTaskPhases(userID, tenantID int64) (int, int) {
-	if userID <= 0 || tenantID <= 0 {
-		return 0, 0
-	}
-	conversations := ConversationService.Find(sqls.NewCnd().
-		Eq("tenant_id", tenantID).
-		Eq("status", enums.IMConversationStatusActive).
-		Eq("current_assignee_id", userID))
-	pendingFirstReply := 0
-	processing := 0
-	for _, conversation := range conversations {
-		assignment := s.activeAssignment(conversation.ID, tenantID)
-		var assignedAt *time.Time
-		if assignment != nil {
-			assignedAt = &assignment.CreatedAt
-		}
-		if s.firstAgentReplyAt(conversation.ID, tenantID, assignedAt) == nil {
-			pendingFirstReply++
-		} else {
-			processing++
-		}
-	}
-	return pendingFirstReply, processing
-}
-
 func (s *conversationDispatchWorkbenchService) buildAgentLoadResponse(load dispatchWorkbenchAgentLoad) response.ConversationDispatchAgentLoadResponse {
 	return response.ConversationDispatchAgentLoadResponse{
-		UserID:             load.profile.UserID,
-		ProfileID:          load.profile.ID,
-		TeamID:             load.profile.TeamID,
-		TeamName:           load.teamName,
-		Username:           load.username,
-		Nickname:           utils.RepairMojibakeText(load.nickname),
-		DisplayName:        utils.RepairMojibakeText(load.profile.DisplayName),
-		ServiceStatus:      load.profile.ServiceStatus,
-		MaxConcurrentCount: load.profile.MaxConcurrentCount,
-		ActiveCount:        load.activeCount,
-		PendingFirstReply:  load.pendingFirstReply,
-		PendingReplyCount:  load.pendingReplyCount,
-		ProcessingCount:    load.processingCount,
-		AutoAssignEnabled:  load.profile.AutoAssignEnabled,
-		Available:          load.available,
-		PriorityLevel:      load.profile.PriorityLevel,
-		LastOnlineAt:       utils.FormatTimePtr(load.profile.LastOnlineAt),
-		LastStatusAt:       utils.FormatTimePtr(load.profile.LastStatusAt),
+		UserID:              load.profile.UserID,
+		ProfileID:           load.profile.ID,
+		TeamID:              load.profile.TeamID,
+		TeamName:            load.teamName,
+		Username:            load.username,
+		Nickname:            utils.RepairMojibakeText(load.nickname),
+		DisplayName:         utils.RepairMojibakeText(load.profile.DisplayName),
+		ServiceStatus:       load.profile.ServiceStatus,
+		MaxConcurrentCount:  load.profile.MaxConcurrentCount,
+		ActiveCount:         load.activeCount,
+		PendingFirstReply:   load.pendingFirstReply,
+		PendingReplyCount:   load.pendingReplyCount,
+		ProcessingCount:     load.processingCount,
+		AutoAssignEnabled:   load.profile.AutoAssignEnabled,
+		Available:           load.available,
+		PriorityLevel:       load.profile.PriorityLevel,
+		LastOnlineAt:        utils.FormatTimePtr(load.profile.LastOnlineAt),
+		LastStatusAt:        utils.FormatTimePtr(load.profile.LastStatusAt),
+		WeightedOpenLoad:    load.weightedOpenLoad,
+		ShiftAssignedWeight: load.shiftAssignedWeight,
+		NormalizedLoad:      load.normalizedLoad,
 	}
+}
+
+func (s *conversationDispatchWorkbenchService) teamDispatchMode(teamID, tenantID int64) enums.AgentTeamDispatchMode {
+	team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, tenantID)
+	if team == nil {
+		return ""
+	}
+	return normalizedDispatchMode(team.DispatchMode)
 }
 
 func (s *conversationDispatchWorkbenchService) pickRuleCandidates(teamID, tenantID int64, route *models.ConversationRouteState) ([]dispatchCandidate, error) {
@@ -782,7 +798,7 @@ func (s *conversationDispatchWorkbenchService) requireManageableTargetProfile(us
 	return profile, nil
 }
 
-func (s *conversationDispatchWorkbenchService) assignToProfile(conversation *models.Conversation, profile models.AgentProfile, squadID int64, reason string, operator *dto.AuthPrincipal, assignType enums.IMAssignmentType, publish bool) error {
+func (s *conversationDispatchWorkbenchService) assignToProfile(conversation *models.Conversation, profile models.AgentProfile, squadID int64, reason string, operator *dto.AuthPrincipal, assignType enums.IMAssignmentType, dispatchMode enums.AgentTeamDispatchMode, publish bool) error {
 	if conversation == nil {
 		return errorsx.InvalidParam("会话不存在")
 	}
@@ -809,7 +825,11 @@ func (s *conversationDispatchWorkbenchService) assignToProfile(conversation *mod
 		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, current.ID, now); err != nil {
 			return err
 		}
-		if err := ConversationAssignmentService.CreateAssignmentWithSquad(ctx, current.ID, squadID, current.CurrentAssigneeID, profile.UserID, assignType, reason, operator, now); err != nil {
+		if err := ConversationAssignmentService.CreateAssignmentWithOptions(ctx, current.ID, current.CurrentAssigneeID, profile.UserID, assignType, reason, operator, now, ConversationAssignmentOptions{
+			SquadID:        squadID,
+			DispatchMode:   dispatchMode,
+			WorkloadWeight: normalizedWorkloadWeight(current),
+		}); err != nil {
 			return err
 		}
 		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, current.ID, current.TenantID, map[string]any{
@@ -835,8 +855,11 @@ func (s *conversationDispatchWorkbenchService) assignToProfile(conversation *mod
 			"toAssigneeId":   profile.UserID,
 			"toTeamId":       profile.TeamID,
 			"reason":         reason,
-			"dispatchMode":   "rule_or_manual",
+			"dispatchMode":   dispatchMode,
 		})); err != nil {
+			return err
+		}
+		if _, err := ConversationRouteService.enterHQAgentDeskServingWithDB(ctx.Tx, current.ID, "客服组派单:"+reason, now); err != nil {
 			return err
 		}
 		assignedEvent = events.ConversationAssignedEvent{
@@ -856,9 +879,6 @@ func (s *conversationDispatchWorkbenchService) assignToProfile(conversation *mod
 		if errors.Is(err, errConversationDispatchConflict) {
 			return errorsx.InvalidParam("当前会话状态已变化")
 		}
-		return err
-	}
-	if _, err := ConversationRouteService.EnterHQAgentDeskServing(conversation.ID, "客服组派单:"+reason, now); err != nil {
 		return err
 	}
 	if updated := ConversationService.Get(conversation.ID); updated != nil && publish {

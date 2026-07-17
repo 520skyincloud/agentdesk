@@ -223,6 +223,7 @@ func setupConversationRuntimeTenantFixture(t *testing.T) conversationRuntimeTena
 		&models.AgentTeam{}, &models.AgentTeamSchedule{}, &models.AgentProfile{}, &models.AgentTeamSquad{}, &models.AgentTeamSquadMember{},
 		&models.Conversation{}, &models.ConversationParticipant{}, &models.ConversationRouteState{}, &models.ConversationReadState{},
 		&models.Message{}, &models.ConversationAssignment{}, &models.ConversationEventLog{}, &models.ConversationInterrupt{}, &models.MessageSyncLog{},
+		&models.ConversationServiceSession{}, &models.ConversationResponseSpan{}, &models.DispatchDecisionLog{},
 	); err != nil {
 		t.Fatalf("migrate conversation runtime tenant tables: %v", err)
 	}

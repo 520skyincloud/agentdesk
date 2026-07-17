@@ -280,11 +280,15 @@ func (s *conversationRouteService) ConsumePendingAction(conversationID int64, ac
 }
 
 func (s *conversationRouteService) EnterHQAgentDeskPending(conversationID int64, reason string, now time.Time) (*models.ConversationRouteState, error) {
-	state, err := s.Ensure(conversationID)
+	return s.enterHQAgentDeskPendingWithDB(sqls.DB(), conversationID, reason, now)
+}
+
+func (s *conversationRouteService) enterHQAgentDeskPendingWithDB(db *gorm.DB, conversationID int64, reason string, now time.Time) (*models.ConversationRouteState, error) {
+	state, err := s.ensureWithDB(db, conversationID)
 	if err != nil {
 		return nil, err
 	}
-	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
+	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(db, state.ID, state.TenantID, map[string]any{
 		"route_status":             enums.ConversationRouteStatusHQAgentDeskPending,
 		"route_target":             "agentdesk_hq",
 		"manual_expire_at":         now.Add(DefaultHQAgentDeskPendingMinutes * time.Minute),
@@ -298,7 +302,7 @@ func (s *conversationRouteService) EnterHQAgentDeskPending(conversationID int64,
 	}); err != nil {
 		return nil, err
 	}
-	return s.GetByConversationID(conversationID), nil
+	return repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, state.TenantID), nil
 }
 
 func (s *conversationRouteService) EnterStoreWecomManual(conversationID int64, reason string, now time.Time) (*models.ConversationRouteState, error) {
@@ -340,15 +344,16 @@ func (s *conversationRouteService) MarkHumanFollowUpHandled(conversationID int64
 }
 
 func (s *conversationRouteService) EnterHQAgentDeskServing(conversationID int64, reason string, now time.Time) (*models.ConversationRouteState, error) {
-	state, err := s.Ensure(conversationID)
+	return s.enterHQAgentDeskServingWithDB(sqls.DB(), conversationID, reason, now)
+}
+
+func (s *conversationRouteService) enterHQAgentDeskServingWithDB(db *gorm.DB, conversationID int64, reason string, now time.Time) (*models.ConversationRouteState, error) {
+	state, err := s.ensureWithDB(db, conversationID)
 	if err != nil {
 		return nil, err
 	}
 	expireAt := now.Add(DefaultManualTimeoutMinutes * time.Minute)
-	if state.LastCustomerMessageAt != nil {
-		expireAt = state.LastCustomerMessageAt.Add(DefaultManualTimeoutMinutes * time.Minute)
-	}
-	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
+	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(db, state.ID, state.TenantID, map[string]any{
 		"route_status":             enums.ConversationRouteStatusHQAgentDeskServing,
 		"route_target":             "agentdesk_hq",
 		"manual_expire_at":         expireAt,
@@ -362,7 +367,7 @@ func (s *conversationRouteService) EnterHQAgentDeskServing(conversationID int64,
 	}); err != nil {
 		return nil, err
 	}
-	return s.GetByConversationID(conversationID), nil
+	return repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, state.TenantID), nil
 }
 
 func (s *conversationRouteService) RestoreAI(conversationID int64, reason string, now time.Time) error {

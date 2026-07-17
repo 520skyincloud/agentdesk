@@ -32,6 +32,12 @@ type ConversationDispatchTaskResponse struct {
 	RecommendedAssigneeID   int64                           `json:"recommendedAssigneeId,omitempty"`
 	RecommendedAssigneeName string                          `json:"recommendedAssigneeName,omitempty"`
 	RecommendationReason    string                          `json:"recommendationReason,omitempty"`
+	DispatchMode            enums.AgentTeamDispatchMode     `json:"dispatchMode,omitempty"`
+	DispatchModeLabel       string                          `json:"dispatchModeLabel,omitempty"`
+	DecisionConfidence      int                             `json:"decisionConfidence,omitempty"`
+	WorkloadWeight          int                             `json:"workloadWeight"`
+	Priority                int                             `json:"priority"`
+	AssignmentReason        string                          `json:"assignmentReason,omitempty"`
 }
 
 type ConversationDispatchStatsResponse struct {
@@ -48,24 +54,27 @@ type ConversationDispatchStatsResponse struct {
 }
 
 type ConversationDispatchAgentLoadResponse struct {
-	UserID             int64               `json:"userId"`
-	ProfileID          int64               `json:"profileId"`
-	TeamID             int64               `json:"teamId"`
-	TeamName           string              `json:"teamName,omitempty"`
-	Username           string              `json:"username,omitempty"`
-	Nickname           string              `json:"nickname,omitempty"`
-	DisplayName        string              `json:"displayName"`
-	ServiceStatus      enums.ServiceStatus `json:"serviceStatus"`
-	MaxConcurrentCount int                 `json:"maxConcurrentCount"`
-	ActiveCount        int                 `json:"activeCount"`
-	PendingFirstReply  int                 `json:"pendingFirstReply"`
-	PendingReplyCount  int                 `json:"pendingReplyCount"`
-	ProcessingCount    int                 `json:"processingCount"`
-	AutoAssignEnabled  bool                `json:"autoAssignEnabled"`
-	Available          bool                `json:"available"`
-	PriorityLevel      int                 `json:"priorityLevel"`
-	LastOnlineAt       string              `json:"lastOnlineAt,omitempty"`
-	LastStatusAt       string              `json:"lastStatusAt,omitempty"`
+	UserID              int64               `json:"userId"`
+	ProfileID           int64               `json:"profileId"`
+	TeamID              int64               `json:"teamId"`
+	TeamName            string              `json:"teamName,omitempty"`
+	Username            string              `json:"username,omitempty"`
+	Nickname            string              `json:"nickname,omitempty"`
+	DisplayName         string              `json:"displayName"`
+	ServiceStatus       enums.ServiceStatus `json:"serviceStatus"`
+	MaxConcurrentCount  int                 `json:"maxConcurrentCount"`
+	ActiveCount         int                 `json:"activeCount"`
+	PendingFirstReply   int                 `json:"pendingFirstReply"`
+	PendingReplyCount   int                 `json:"pendingReplyCount"`
+	ProcessingCount     int                 `json:"processingCount"`
+	AutoAssignEnabled   bool                `json:"autoAssignEnabled"`
+	Available           bool                `json:"available"`
+	PriorityLevel       int                 `json:"priorityLevel"`
+	LastOnlineAt        string              `json:"lastOnlineAt,omitempty"`
+	LastStatusAt        string              `json:"lastStatusAt,omitempty"`
+	WeightedOpenLoad    int                 `json:"weightedOpenLoad"`
+	ShiftAssignedWeight int                 `json:"shiftAssignedWeight"`
+	NormalizedLoad      float64             `json:"normalizedLoad"`
 }
 
 type ConversationDispatchListResponse struct {

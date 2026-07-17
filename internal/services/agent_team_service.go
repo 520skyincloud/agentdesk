@@ -96,7 +96,7 @@ func (s *agentTeamService) CreateAgentTeam(req request.CreateAgentTeamRequest, o
 	if operator.ActiveTenantID <= 0 {
 		return nil, errorsx.Forbidden("请先进入需要创建客服组的接入公司")
 	}
-	item, err := s.buildTeamModel(0, operator.ActiveTenantID, req.Name, req.LeaderUserID, req.Status, req.Description, req.Remark)
+	item, err := s.buildTeamModel(0, operator.ActiveTenantID, req.Name, req.LeaderUserID, req.DispatchMode, req.Status, req.Description, req.Remark)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +164,7 @@ func (s *agentTeamService) UpdateAgentTeam(req request.UpdateAgentTeamRequest, o
 		if !AgentTeamScopeService.IsAdmin(operator) && req.LeaderUserID != current.LeaderUserID {
 			return errorsx.Forbidden("客服组长不能变更客服组负责人")
 		}
-		item, err := s.buildTeamModelDB(ctx.Tx, req.ID, current.TenantID, req.Name, req.LeaderUserID, req.Status, req.Description, req.Remark)
+		item, err := s.buildTeamModelDB(ctx.Tx, req.ID, current.TenantID, req.Name, req.LeaderUserID, req.DispatchMode, req.Status, req.Description, req.Remark)
 		if err != nil {
 			return err
 		}
@@ -172,6 +172,7 @@ func (s *agentTeamService) UpdateAgentTeam(req request.UpdateAgentTeamRequest, o
 			"tenant_id":        current.TenantID,
 			"name":             item.Name,
 			"leader_user_id":   item.LeaderUserID,
+			"dispatch_mode":    item.DispatchMode,
 			"status":           item.Status,
 			"description":      item.Description,
 			"remark":           item.Remark,
@@ -239,11 +240,11 @@ func (s *agentTeamService) DeleteAgentTeam(id int64, operator *dto.AuthPrincipal
 	})
 }
 
-func (s *agentTeamService) buildTeamModel(id, tenantID int64, name string, leaderUserID int64, status int, description, remark string) (*models.AgentTeam, error) {
-	return s.buildTeamModelDB(sqls.DB(), id, tenantID, name, leaderUserID, status, description, remark)
+func (s *agentTeamService) buildTeamModel(id, tenantID int64, name string, leaderUserID int64, dispatchMode enums.AgentTeamDispatchMode, status int, description, remark string) (*models.AgentTeam, error) {
+	return s.buildTeamModelDB(sqls.DB(), id, tenantID, name, leaderUserID, dispatchMode, status, description, remark)
 }
 
-func (s *agentTeamService) buildTeamModelDB(db *gorm.DB, id, tenantID int64, name string, leaderUserID int64, status int, description, remark string) (*models.AgentTeam, error) {
+func (s *agentTeamService) buildTeamModelDB(db *gorm.DB, id, tenantID int64, name string, leaderUserID int64, dispatchMode enums.AgentTeamDispatchMode, status int, description, remark string) (*models.AgentTeam, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errorsx.InvalidParam("客服组名称不能为空")
@@ -267,6 +268,12 @@ func (s *agentTeamService) buildTeamModelDB(db *gorm.DB, id, tenantID int64, nam
 	if status != 0 && status != 1 {
 		return nil, errorsx.InvalidParam("客服组状态不合法")
 	}
+	if dispatchMode == "" {
+		dispatchMode = enums.AgentTeamDispatchModeRule
+	}
+	if !enums.IsValidAgentTeamDispatchMode(dispatchMode) {
+		return nil, errorsx.InvalidParam("客服组派单模式不合法")
+	}
 	return &models.AgentTeam{
 		TenantID:               tenantID,
 		Name:                   name,
@@ -274,6 +281,7 @@ func (s *agentTeamService) buildTeamModelDB(db *gorm.DB, id, tenantID int64, nam
 		CompanyScopeIDs:        "",
 		StoreScopeIDs:          "",
 		WxWorkInstanceScopeIDs: "",
+		DispatchMode:           dispatchMode,
 		Status:                 enums.Status(status),
 		Description:            strings.TrimSpace(description),
 		Remark:                 strings.TrimSpace(remark),

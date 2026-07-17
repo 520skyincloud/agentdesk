@@ -103,6 +103,28 @@ func (s *agentTeamScopeService) CanManageTeam(operator *dto.AuthPrincipal, teamI
 	return s.canManageTeam(operator, team)
 }
 
+func (s *agentTeamScopeService) ManageableTeamIDs(operator *dto.AuthPrincipal) []int64 {
+	tenantID := s.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil
+	}
+	cnd := sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Where("status <> ?", enums.StatusDeleted)
+	if !s.IsAdmin(operator) {
+		if !slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) {
+			return nil
+		}
+		cnd.Eq("leader_user_id", operator.UserID)
+	}
+	teams := repositories.AgentTeamRepository.Find(sqls.DB(), cnd.Asc("id"))
+	teamIDs := make([]int64, 0, len(teams))
+	for i := range teams {
+		teamIDs = append(teamIDs, teams[i].ID)
+	}
+	return teamIDs
+}
+
 func (s *agentTeamScopeService) canManageTeam(operator *dto.AuthPrincipal, team *models.AgentTeam) bool {
 	if operator == nil || team == nil || operator.ActiveTenantID <= 0 || team.TenantID != operator.ActiveTenantID {
 		return false
