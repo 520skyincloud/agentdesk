@@ -110,6 +110,168 @@ func TestWxWorkProtocolSkipsReferencedMutationMessage(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolSkipsInboundGroupMessageBeforeConversationCreation(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	instance := &models.WxWorkProtocolInstance{
+		Guid:           "guid-group-message",
+		EmployeeUserID: "employee-1",
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{}
+	err := svc.handleChatMessage(instance, request.WxProtocolChatMsg{
+		ID:          "1005538",
+		Sender:      "7881301988023128",
+		SenderName:  "香雪海",
+		Receiver:    "employee-1",
+		RoomID:      "10775325120961882",
+		ContentType: 101,
+		MsgType:     wxProtocolMsgImage,
+		URL:         "https://example.com/group-image.jpg",
+		SendTime:    now.Unix(),
+	}, `{"id":"1005538","sender":"7881301988023128","sender_name":"香雪海","receiver":"employee-1","roomid":"10775325120961882","content_type":101,"msg_type":5}`)
+	if err != nil {
+		t.Fatalf("handleChatMessage() error = %v", err)
+	}
+
+	for name, model := range map[string]any{
+		"customers":             &models.Customer{},
+		"customer identities":   &models.CustomerIdentity{},
+		"conversations":         &models.Conversation{},
+		"messages":              &models.Message{},
+		"conversation mappings": &models.WxWorkKFConversation{},
+		"message refs":          &models.WxWorkKFMessageRef{},
+		"outbox messages":       &models.ChannelMessageOutbox{},
+	} {
+		var count int64
+		if err := db.Model(model).Count(&count).Error; err != nil {
+			t.Fatalf("count %s: %v", name, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected group callback not to create %s, got %d", name, count)
+		}
+	}
+
+	var syncLog models.MessageSyncLog
+	if err := db.Where("external_msg_id = ?", "wx_protocol:guid-group-message:1005538").First(&syncLog).Error; err != nil {
+		t.Fatalf("expected skipped group message sync log: %v", err)
+	}
+	if syncLog.SyncStatus != enums.MessageSyncStatusSkipped || !strings.Contains(syncLog.ErrorMessage, "room_id=10775325120961882") {
+		t.Fatalf("unexpected group message sync log: %+v", syncLog)
+	}
+}
+
+func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	channel := &models.Channel{
+		ID:          45,
+		Name:        "企微员工号",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-protocol-new-account",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		Guid:            "guid-new-account",
+		ChannelID:       channel.ID,
+		EmployeeUserID:  "employee-new",
+		EmployeeName:    "新员工号",
+		StoreID:         77,
+		KnowledgeBaseID: 0,
+		AIReplyEnabled:  true,
+		Status:          enums.StatusOk,
+		AuditFields:     models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	customer := &models.Customer{
+		Name:        "新客户",
+		Avatar:      "https://example.com/customer-avatar.jpg",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(customer).Error; err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	if err := db.Create(&models.CustomerIdentity{
+		CustomerID:     customer.ID,
+		ExternalSource: enums.ExternalSourceWxWorkProtocol,
+		ExternalID:     "wxwork_protocol:guid-new-account:external-new-customer",
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create customer identity: %v", err)
+	}
+
+	previousHook := TriggerAIReplyAsyncHook
+	TriggerAIReplyAsyncHook = nil
+	t.Cleanup(func() {
+		TriggerAIReplyAsyncHook = previousHook
+	})
+
+	svc := &wxWorkProtocolService{}
+	err := svc.handleChatMessage(instance, request.WxProtocolChatMsg{
+		ID:          "1009001",
+		Sender:      "external-new-customer",
+		SenderName:  "新客户",
+		Receiver:    "employee-new",
+		RoomID:      "0",
+		ContentType: wxProtocolMsgText,
+		MsgType:     wxProtocolMsgText,
+		Content:     "你好",
+		SendTime:    now.Unix(),
+	}, `{"id":"1009001","sender":"external-new-customer","receiver":"employee-new","roomid":"0","content":"你好","msg_type":2}`)
+	if err != nil {
+		t.Fatalf("handleChatMessage() error = %v", err)
+	}
+
+	var conversation models.Conversation
+	if err := db.Order("id DESC").First(&conversation).Error; err != nil {
+		t.Fatalf("expected conversation: %v", err)
+	}
+	state := ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil {
+		t.Fatalf("expected route state")
+	}
+	if state.WxWorkInstanceID != instance.ID || state.StoreID != instance.StoreID || state.KnowledgeBaseID != 0 {
+		t.Fatalf("expected instance-scoped route before knowledge binding, got %+v", state)
+	}
+	if state.RouteStatus != enums.ConversationRouteStatusHQAgentDeskPending || !state.NeedHumanFollowUp {
+		t.Fatalf("expected AI paused and dashboard attention enabled, got %+v", state)
+	}
+
+	var customerMessages int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeCustomer).Count(&customerMessages).Error; err != nil {
+		t.Fatalf("count customer messages: %v", err)
+	}
+	if customerMessages != 1 {
+		t.Fatalf("expected one received customer message, got %d", customerMessages)
+	}
+	var aiMessages int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAI).Count(&aiMessages).Error; err != nil {
+		t.Fatalf("count AI messages: %v", err)
+	}
+	if aiMessages != 0 {
+		t.Fatalf("expected no fake configuration reply to customer, got %d", aiMessages)
+	}
+
+	var syncLog models.MessageSyncLog
+	externalMsgID := "wx_protocol:guid-new-account:1009001"
+	if err := db.Where("external_msg_id = ? AND sync_status = ?", externalMsgID, enums.MessageSyncStatusSuccess).First(&syncLog).Error; err != nil {
+		t.Fatalf("expected successful receive sync log: %v", err)
+	}
+}
+
 func TestWxWorkProtocolReferencedRecallMarksOriginalMessageRecalled(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()

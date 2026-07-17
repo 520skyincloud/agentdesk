@@ -66,6 +66,10 @@ func Init() {
 		if fastGPTCount > 0 {
 			slog.Info("FastGPT platform model usage imported", "count", fastGPTCount)
 		}
+		managedFastGPTCount := services.FastGPTUsageSyncService.ProcessDue(50)
+		if managedFastGPTCount > 0 {
+			slog.Info("FastGPT managed usage events imported", "count", managedFastGPTCount)
+		}
 	})
 
 	c.Start()

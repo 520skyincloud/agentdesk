@@ -111,6 +111,10 @@ func (scope *ManagedDataScope) expand() {
 			scope.WxWorkInstanceIDs = appendPositive(scope.WxWorkInstanceIDs, instances[i].ID)
 			scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, instances[i].KnowledgeBaseID)
 		}
+		knowledgeBases := repositories.KnowledgeBaseRepository.Find(sqls.DB(), sqls.NewCnd().In("store_id", scope.StoreIDs).Where("status <> ?", enums.StatusDeleted))
+		for i := range knowledgeBases {
+			scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, knowledgeBases[i].ID)
+		}
 	}
 	if len(scope.WxWorkInstanceIDs) > 0 {
 		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().In("id", scope.WxWorkInstanceIDs).Where("status <> ?", enums.StatusDeleted))

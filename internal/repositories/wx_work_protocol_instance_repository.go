@@ -73,6 +73,12 @@ func (r *wxWorkProtocolInstanceRepository) UpdateKnowledgeBaseByStore(db *gorm.D
 		Updates(map[string]any{"knowledge_base_id": knowledgeBaseID, "updated_at": now, "update_user_name": operatorName}).Error
 }
 
+func (r *wxWorkProtocolInstanceRepository) ClearKnowledgeBaseByID(db *gorm.DB, knowledgeBaseID int64, now time.Time, operatorName string) error {
+	return db.Model(&models.WxWorkProtocolInstance{}).
+		Where("knowledge_base_id = ? AND status <> ?", knowledgeBaseID, enums.StatusDeleted).
+		Updates(map[string]any{"knowledge_base_id": 0, "updated_at": now, "update_user_name": operatorName}).Error
+}
+
 func (r *wxWorkProtocolInstanceRepository) Create(db *gorm.DB, t *models.WxWorkProtocolInstance) error {
 	return db.Create(t).Error
 }

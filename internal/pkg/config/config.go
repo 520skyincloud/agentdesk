@@ -50,6 +50,7 @@ type FastGPTConfig struct {
 	Enabled             bool   `yaml:"enabled"`
 	BaseURL             string `yaml:"baseUrl"`
 	APIKey              string `yaml:"apiKey"`
+	IntegrationToken    string `yaml:"integrationToken"`
 	TimeoutMS           int    `yaml:"timeoutMs"`
 	MaxRetries          int    `yaml:"maxRetries"`
 	RetrievalTokenLimit int    `yaml:"retrievalTokenLimit"`
@@ -301,6 +302,9 @@ func applyFastGPTEnv(cfg *Config) error {
 	}
 	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_API_KEY")); value != "" {
 		cfg.FastGPT.APIKey = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_INTEGRATION_TOKEN")); value != "" {
+		cfg.FastGPT.IntegrationToken = value
 	}
 	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_RETRIEVAL_TOKEN_LIMIT")); value != "" {
 		limit, err := strconv.Atoi(value)

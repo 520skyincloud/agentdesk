@@ -2266,6 +2266,9 @@ export type KnowledgeBase = {
   datasetId: string
   datasetName: string
   connectionId: string
+  fastgptProfileName: string
+  fastgptProfileRevision: string
+  fastgptProfileStatus: string
   name: string
   description: string
   knowledgeType: string
@@ -2320,8 +2323,38 @@ export type FastGPTCollection = {
   forbid: boolean
 }
 
+export type FastGPTDatasetJob = {
+  id: number
+  storeId: number
+  knowledgeBaseId: number
+  action: string
+  status: string
+  datasetId: string
+  collectionId: string
+  filename: string
+  attemptCount: number
+  nextRetryAt?: string | null
+  lastError: string
+  createdAt: string
+  updatedAt: string
+}
+
+export function provisionFastGPTDataset(storeId: number, name: string) {
+  return request<{ jobId: number; status: string }>("/api/dashboard/knowledge-base/fastgpt/provision", {
+    method: "POST",
+    body: JSON.stringify({ storeId, name }),
+  })
+}
+
 export function fetchFastGPTCollections(knowledgeBaseId: number) {
   return request<FastGPTCollection[]>("/api/dashboard/knowledge-base/fastgpt/collections", {
+    method: "POST",
+    body: JSON.stringify({ knowledgeBaseId }),
+  })
+}
+
+export function fetchFastGPTDatasetJobs(knowledgeBaseId: number) {
+  return request<FastGPTDatasetJob[]>("/api/dashboard/knowledge-base/fastgpt/jobs", {
     method: "POST",
     body: JSON.stringify({ knowledgeBaseId }),
   })
@@ -2344,10 +2377,24 @@ export function deleteFastGPTCollection(knowledgeBaseId: number, collectionId: s
   })
 }
 
+export function deleteFastGPTDataset(knowledgeBaseId: number, confirmationName: string) {
+  return request<void>("/api/dashboard/knowledge-base/fastgpt/delete_dataset", {
+    method: "POST",
+    body: JSON.stringify({ knowledgeBaseId, confirmationName }),
+  })
+}
+
 export function testFastGPTDatasetSearch(knowledgeBaseId: number, query: string) {
   return request<{ raw: unknown }>("/api/dashboard/knowledge-base/fastgpt/search_test", {
     method: "POST",
     body: JSON.stringify({ knowledgeBaseId, query }),
+  })
+}
+
+export function activateFastGPTKnowledgeBase(wxWorkInstanceId: number, knowledgeBaseId: number) {
+  return request<void>("/api/dashboard/knowledge-base/fastgpt/activate", {
+    method: "POST",
+    body: JSON.stringify({ wxWorkInstanceId, knowledgeBaseId }),
   })
 }
 

@@ -21,6 +21,7 @@ import {
   type WxWorkProtocolLoginStatus,
   type WxWorkProtocolRemoteLoginQRCodeResult,
 } from "@/lib/api/admin"
+import { getBrowserCoordinates } from "@/lib/browser-geolocation"
 import { repairMojibakeText } from "@/lib/utils"
 
 type FormState = {
@@ -85,6 +86,7 @@ function WxWorkRemoteSetupContent() {
   const [emailVerificationToken, setEmailVerificationToken] = useState("")
   const [emailSending, setEmailSending] = useState(false)
   const [emailVerifying, setEmailVerifying] = useState(false)
+  const [locatingStoreCoordinates, setLocatingStoreCoordinates] = useState(false)
 
   useEffect(() => {
     setToken(searchParams.get("token") || "")
@@ -190,24 +192,22 @@ function WxWorkRemoteSetupContent() {
     }
   }
 
-  function getCurrentLocation() {
-    if (!navigator.geolocation) {
-      toast.error("当前浏览器不支持定位")
-      return
+  async function getCurrentLocation() {
+    setLocatingStoreCoordinates(true)
+    try {
+      const coordinates = await getBrowserCoordinates()
+      setForm((current) => ({
+        ...current,
+        storeLatitude: coordinates.latitude.toFixed(6),
+        storeLongitude: coordinates.longitude.toFixed(6),
+        storeMapProvider: "browser_geolocation",
+      }))
+      toast.success(`已填入当前坐标（精度约 ${Math.round(coordinates.accuracy)} 米），请确认是在门店现场获取`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "获取坐标失败，请手动填写经纬度")
+    } finally {
+      setLocatingStoreCoordinates(false)
     }
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setForm((current) => ({
-          ...current,
-          storeLatitude: String(position.coords.latitude),
-          storeLongitude: String(position.coords.longitude),
-          storeMapProvider: "browser_geolocation",
-        }))
-        toast.success("已填入当前坐标，请确认是在门店现场获取")
-      },
-      (error) => toast.error(error.message || "获取坐标失败"),
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 },
-    )
   }
 
   async function save() {
@@ -366,11 +366,11 @@ function WxWorkRemoteSetupContent() {
               <Field label="纬度"><Input value={form.storeLatitude} onChange={(event) => setValue("storeLatitude", event.target.value)} placeholder="例如：30.27415" /></Field>
               <Field label="经度"><Input value={form.storeLongitude} onChange={(event) => setValue("storeLongitude", event.target.value)} placeholder="例如：120.15515" /></Field>
               <div className="md:col-span-2">
-                <Button type="button" variant="outline" className="rounded-xl" onClick={getCurrentLocation}>
-                  <LocateFixedIcon className="size-4" />
-                  一键获取当前坐标
+                <Button type="button" variant="outline" className="rounded-xl" onClick={() => void getCurrentLocation()} disabled={locatingStoreCoordinates}>
+                  {locatingStoreCoordinates ? <RefreshCwIcon className="size-4 animate-spin" /> : <LocateFixedIcon className="size-4" />}
+                  {locatingStoreCoordinates ? "正在定位" : "一键获取当前坐标"}
                 </Button>
-                <p className="mt-2 text-xs leading-5 text-muted-foreground">请门店员工在门店现场点击，浏览器授权定位后会自动填入坐标。坐标用于以后客户要定位时发送真实微信定位卡片。</p>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">请门店员工在门店现场点击；浏览器定位不可用时，请从地图复制经纬度手动填写。坐标用于客户明确索要本门店定位时发送真实微信定位卡片。</p>
               </div>
               <Field label="客服服务时间"><Input value={form.serviceHours} onChange={(event) => setValue("serviceHours", event.target.value)} placeholder="例如：09:00-22:00" /></Field>
               <Field label="人工超时分钟"><Input type="number" value={form.manualTimeoutMinutes} onChange={(event) => setValue("manualTimeoutMinutes", Number(event.target.value || 10))} /></Field>

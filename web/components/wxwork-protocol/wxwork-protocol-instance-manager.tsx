@@ -52,6 +52,7 @@ import { deleteAsset } from "@/lib/api/asset"
 import { fetchCompanies, type AdminCompany } from "@/lib/api/company"
 import { getEnumOptions } from "@/lib/enums"
 import { Status, StatusLabels } from "@/lib/generated/enums"
+import { getBrowserCoordinates } from "@/lib/browser-geolocation"
 import { formatDateTime, repairMojibakeText } from "@/lib/utils"
 
 const CALLBACK_URL = "http://112.124.109.106:2332/api/third/wxwork-protocol/callback"
@@ -975,6 +976,7 @@ export function WxWorkProtocolInstanceManager({
     frontDeskHours: "",
   })
   const [receptionSettingsSaving, setReceptionSettingsSaving] = useState(false)
+  const [locatingStoreCoordinates, setLocatingStoreCoordinates] = useState(false)
   const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([])
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [creatingLocal, setCreatingLocal] = useState(false)
@@ -1269,34 +1271,31 @@ export function WxWorkProtocolInstanceManager({
       <div className="agentdesk-subtle-surface rounded-xl p-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm leading-6 text-muted-foreground">
-            门店在现场打开后台时，可用浏览器定位自动填入经纬度。地址名称仍建议人工核对。
+            门店在现场打开后台时，可用浏览器定位自动填入经纬度；定位不可用时请从地图复制坐标手动填写。地址名称仍建议人工核对。
           </div>
           <Button
             type="button"
             variant="outline"
             size="sm"
             className="agentdesk-soft-button h-9 rounded-lg"
-            onClick={() => {
-              if (!navigator.geolocation) {
-                toast.error("当前浏览器不支持定位")
-                return
+            disabled={locatingStoreCoordinates}
+            onClick={async () => {
+              setLocatingStoreCoordinates(true)
+              try {
+                const coordinates = await getBrowserCoordinates()
+                context.setValue("storeLatitude", coordinates.latitude.toFixed(6))
+                context.setValue("storeLongitude", coordinates.longitude.toFixed(6))
+                context.setValue("storeMapProvider", "browser_geolocation")
+                toast.success(`已填入当前坐标（精度约 ${Math.round(coordinates.accuracy)} 米），请确认是否为门店位置`)
+              } catch (error) {
+                toast.error(error instanceof Error ? error.message : "获取坐标失败，请手动填写经纬度")
+              } finally {
+                setLocatingStoreCoordinates(false)
               }
-              navigator.geolocation.getCurrentPosition(
-                (position) => {
-                  context.setValue("storeLatitude", String(position.coords.latitude))
-                  context.setValue("storeLongitude", String(position.coords.longitude))
-                  context.setValue("storeMapProvider", "browser_geolocation")
-                  toast.success("已填入当前坐标，请确认是否为门店位置")
-                },
-                (error) => {
-                  toast.error(error.message || "获取坐标失败，请检查浏览器定位授权")
-                },
-                { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 }
-              )
             }}
           >
-            <LocateFixedIcon className="size-4" />
-            一键获取当前坐标
+            {locatingStoreCoordinates ? <RotateCwIcon className="size-4 animate-spin" /> : <LocateFixedIcon className="size-4" />}
+            {locatingStoreCoordinates ? "正在定位" : "一键获取当前坐标"}
           </Button>
         </div>
       </div>
@@ -1313,7 +1312,7 @@ export function WxWorkProtocolInstanceManager({
           <div className="space-y-1 text-sm leading-6 text-muted-foreground">
             <div className="font-medium text-foreground">门店定位绑定</div>
             <div>客户说“发定位 / 怎么走 / 酒店在哪”时，系统会直接发送这里绑定的定位消息，不进大模型瞎编。</div>
-            <div>最快测试方式：用当前员工号收到一条门店定位，系统会自动写回经纬度；也可以用“一键获取当前坐标”手动填。</div>
+            <div>请在门店现场使用“一键获取当前坐标”，或从地图复制经纬度手动填写；客户发送的定位不会改写这里的门店坐标。</div>
           </div>
         </div>
       </div>

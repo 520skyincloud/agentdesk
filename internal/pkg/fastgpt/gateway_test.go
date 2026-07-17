@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -66,6 +67,73 @@ func TestGatewaySearchDatasetPreservesFastGPTMixedRecallOrder(t *testing.T) {
 	}
 	if len(result.Hits) != 2 || result.Hits[0].DataID != "data-first" || result.Hits[1].DataID != "data-second" {
 		t.Fatalf("FastGPT order was not preserved: %#v", result.Hits)
+	}
+}
+
+func TestGatewayManagedIntegrationUsesServiceTokenAndStoreScope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Agent-Desk-Token") != "integration-secret" || r.Header.Get("Authorization") != "" {
+			t.Fatalf("unexpected auth headers: %#v", r.Header)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		switch r.URL.Path {
+		case "/api/integration/agent-desk/tenant/ensure":
+			if payload["externalStoreId"] != "7" || payload["teamName"] != "南七店" {
+				t.Fatalf("tenant payload=%#v", payload)
+			}
+			_, _ = io.WriteString(w, `{"code":200,"data":{"externalStoreId":"7","teamId":"team-7","teamName":"南七店","status":"active"}}`)
+		case "/api/integration/agent-desk/dataset/search":
+			if payload["externalStoreId"] != "7" || payload["datasetId"] != "dataset-7" || payload["tokenLimit"] != float64(400) || payload["searchMode"] != "mixedRecall" || payload["useRerank"] != true || payload["topK"] != float64(5) {
+				t.Fatalf("search payload=%#v", payload)
+			}
+			_, _ = io.WriteString(w, `{"code":200,"data":{"datasetId":"dataset-7","list":[{"id":"data-7","datasetId":"dataset-7","q":"停车","a":"地下停车场","score":0.8}]}}`)
+		case "/api/integration/agent-desk/dataset/profile":
+			if payload["externalStoreId"] != "7" || payload["datasetId"] != "dataset-7" {
+				t.Fatalf("profile payload=%#v", payload)
+			}
+			_, _ = io.WriteString(w, `{"code":200,"data":{"datasetId":"dataset-7","datasetModelProfileId":"profile-7","profileName":"南七默认模型","profileRevision":3,"profileStatus":"configured","fingerprint":{"embedding":"e1","documentParser":"d1"}}}`)
+		case "/api/integration/agent-desk/dataset/collections":
+			if payload["externalStoreId"] != "7" || payload["datasetId"] != "dataset-7" {
+				t.Fatalf("collections payload=%#v", payload)
+			}
+			_, _ = io.WriteString(w, `{"code":200,"data":{"collections":[{"collectionId":"collection-7","name":"前厅资料.pdf","type":"file","dataAmount":12,"trainingAmount":2,"forbid":false}]}}`)
+		case "/api/integration/agent-desk/usage/list":
+			if payload["externalStoreId"] != "7" || payload["datasetId"] != "dataset-7" || payload["limit"] != float64(100) {
+				t.Fatalf("usage payload=%#v", payload)
+			}
+			_, _ = io.WriteString(w, `{"code":200,"data":{"events":[{"externalEventId":"model:7","kind":"model","stage":"embedding","provider":"dashscope","model":"text-embedding-v4","promptTokens":18,"completionTokens":0,"cachedTokens":0,"latencyMs":42,"status":"success"}],"nextCursor":"opaque-cursor"}}`)
+		default:
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	gateway, err := NewGateway(Config{BaseURL: server.URL, IntegrationToken: "integration-secret", UseIntegration: true, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped := gateway.ForStore(7)
+	tenant, err := scoped.EnsureStoreTenant(context.Background(), "南七店")
+	if err != nil || tenant.TeamID != "team-7" {
+		t.Fatalf("tenant=%#v err=%v", tenant, err)
+	}
+	result, err := scoped.SearchDataset(context.Background(), SearchDatasetRequest{DatasetID: "dataset-7", Query: "停车在哪", TokenLimit: 400, SearchMode: "mixedRecall", UseRerank: true, TopK: 5})
+	if err != nil || len(result.Hits) != 1 || result.Hits[0].DatasetID != "dataset-7" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	profile, err := scoped.GetDatasetProfileSnapshot(context.Background(), "dataset-7")
+	if err != nil || profile.ProfileID != "profile-7" || profile.ProfileName != "南七默认模型" || profile.ProfileRevision != "3" || profile.Fingerprint != "embedding:e1,documentParser:d1" {
+		t.Fatalf("profile=%#v err=%v", profile, err)
+	}
+	collections, err := scoped.ListCollections(context.Background(), "dataset-7")
+	if err != nil || len(collections) != 1 || collections[0].ID != "collection-7" || collections[0].DataAmount != 12 || collections[0].TrainingAmount != 2 {
+		t.Fatalf("collections=%#v err=%v", collections, err)
+	}
+	usage, err := scoped.ListUsageEvents(context.Background(), "dataset-7", "", 100)
+	if err != nil || usage.NextCursor != "opaque-cursor" || len(usage.Events) != 1 || usage.Events[0].ExternalEventID != "model:7" || usage.Events[0].PromptTokens != 18 {
+		t.Fatalf("usage=%#v err=%v", usage, err)
 	}
 }
 
@@ -184,13 +252,101 @@ func TestGatewayDatasetLifecycleIntegration(t *testing.T) {
 	if len(result.Hits) == 0 || !strings.Contains(result.Hits[0].Question+result.Hits[0].Answer, "南七网关验证成功") {
 		t.Fatalf("hits=%#v", result.Hits)
 	}
-	if err := gateway.DeleteCollections(ctx, []string{collectionID}); err != nil {
+	if err := gateway.DeleteCollections(ctx, datasetID, []string{collectionID}); err != nil {
 		t.Fatal(err)
 	}
 	if err := gateway.DeleteDataset(ctx, datasetID); err != nil {
 		t.Fatal(err)
 	}
 	datasetID = ""
+}
+
+// This is deliberately opt-in: it exercises the dedicated Agent Desk
+// service credential against a candidate FastGPT environment and creates only
+// a temporary Dataset under the selected Store's managed Team.
+func TestGatewayManagedIntegrationLifecycle(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("FASTGPT_MANAGED_INTEGRATION_LIFECYCLE")) != "1" {
+		t.Skip("managed FastGPT integration lifecycle is not enabled")
+	}
+	baseURL := firstNonBlank(os.Getenv("FASTGPT_MANAGED_INTEGRATION_BASE_URL"), os.Getenv("AGENT_DESK_FASTGPT_BASE_URL"))
+	token := firstNonBlank(os.Getenv("FASTGPT_MANAGED_INTEGRATION_TOKEN"), os.Getenv("AGENT_DESK_FASTGPT_INTEGRATION_TOKEN"))
+	storeIDRaw := strings.TrimSpace(os.Getenv("FASTGPT_MANAGED_INTEGRATION_STORE_ID"))
+	teamName := firstNonBlank(os.Getenv("FASTGPT_MANAGED_INTEGRATION_TEAM_NAME"), "Agent Desk 受控集成验证门店")
+	if baseURL == "" || token == "" || storeIDRaw == "" {
+		t.Skip("managed FastGPT integration environment is not configured")
+	}
+	storeID, err := strconv.ParseInt(storeIDRaw, 10, 64)
+	if err != nil || storeID <= 0 {
+		t.Fatalf("invalid FASTGPT_MANAGED_INTEGRATION_STORE_ID=%q", storeIDRaw)
+	}
+
+	gateway, err := NewGateway(Config{
+		BaseURL: baseURL, IntegrationToken: token, UseIntegration: true,
+		Timeout: 30 * time.Second, MaxRetries: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	scoped := gateway.ForStore(storeID)
+	tenant, err := scoped.EnsureStoreTenant(ctx, teamName)
+	if err != nil || tenant.TeamID == "" || tenant.ExternalStoreID != storeIDRaw {
+		t.Fatalf("tenant=%#v err=%v", tenant, err)
+	}
+	dataset, err := scoped.CreateDataset(ctx, "agent-desk-managed-integration-"+time.Now().Format("20060102-150405"), "temporary service integration test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	datasetID := dataset.ID
+	if strings.TrimSpace(os.Getenv("FASTGPT_MANAGED_INTEGRATION_KEEP_DATA")) != "1" {
+		t.Cleanup(func() {
+			if datasetID != "" {
+				_ = scoped.DeleteDataset(context.Background(), datasetID)
+			}
+		})
+	}
+	collectionID, err := scoped.UploadLocalFile(ctx, datasetID, "agent-desk-managed-integration.txt", strings.NewReader("Agent Desk 受控集成验证。暗号是门店 Team 隔离成功。"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := false
+	for !ready {
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
+		collections, listErr := scoped.ListCollections(ctx, datasetID)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		for _, collection := range collections {
+			if collection.ID == collectionID && collection.TrainingAmount == 0 && collection.DataAmount > 0 {
+				ready = true
+				break
+			}
+		}
+	}
+	result, err := scoped.SearchDataset(ctx, SearchDatasetRequest{
+		DatasetID: datasetID, Query: "门店 Team 隔离的暗号是什么", TokenLimit: 400,
+		SearchMode: "mixedRecall", UseRerank: true, TopK: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DatasetID != datasetID || len(result.Hits) == 0 || !strings.Contains(result.Hits[0].Question+result.Hits[0].Answer, "门店 Team 隔离成功") {
+		t.Fatalf("unexpected managed search result=%#v", result)
+	}
+	if err := scoped.DeleteCollections(ctx, datasetID, []string{collectionID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scoped.DeleteDataset(ctx, datasetID); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(os.Getenv("FASTGPT_MANAGED_INTEGRATION_KEEP_DATA")) != "1" {
+		datasetID = ""
+	}
 }
 
 func TestGatewaySearchDatasetRejectsMismatchedDataset(t *testing.T) {

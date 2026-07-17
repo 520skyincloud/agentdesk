@@ -18,10 +18,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   fetchKnowledgeBase,
-  fetchReplyIntentProfiles,
   type CreateKnowledgeBasePayload,
   type KnowledgeBase,
-  type ReplyIntentProfile,
 } from "@/lib/api/admin";
 import { useI18n } from "@/i18n/provider";
 import {
@@ -39,7 +37,6 @@ type KnowledgeBaseEditDialogProps = {
 };
 
 const emptyForm: EditForm = {
-	intentProfileId: "",
   name: "",
   description: "",
   knowledgeType: KnowledgeBaseType.Document,
@@ -59,8 +56,7 @@ type TFunction = (key: string, values?: Record<string, string | number>) => stri
 
 function createKnowledgeBaseFormSchema(t: TFunction) {
   return z.object({
-	intentProfileId: z.string().trim().refine((value) => Number(value) > 0, "请选择行业 Profile"),
-  name: z.string().trim().min(1, t("knowledge.nameRequired")).max(100, t("knowledge.nameMax")),
+    name: z.string().trim().min(1, t("knowledge.nameRequired")).max(100, t("knowledge.nameMax")),
   description: z.string().trim().max(500, t("knowledge.descriptionMax")),
   knowledgeType: z.string().trim().min(1, t("knowledge.typeRequired")),
   defaultTopK: z.string().trim().min(1, t("knowledge.topKRequired")),
@@ -77,7 +73,6 @@ function createKnowledgeBaseFormSchema(t: TFunction) {
 }
 
 type EditForm = {
-	intentProfileId: string;
   name: string;
   description: string;
   knowledgeType: string;
@@ -122,7 +117,6 @@ function buildForm(item: KnowledgeBase | null): EditForm {
   }
 
   return {
-		intentProfileId: item.intentProfileId > 0 ? String(item.intentProfileId) : "",
     name: item.name,
     description: item.description || "",
     knowledgeType: item.knowledgeType || KnowledgeBaseType.Document,
@@ -145,7 +139,7 @@ function buildPayload(form: EditForm): CreateKnowledgeBasePayload {
 		remark = mergeFastGPTResourceAllowedHosts(remark, form.resourceAllowedHosts);
 	}
   return {
-		intentProfileId: Number(form.intentProfileId),
+    intentProfileId: 0,
     name: form.name.trim(),
     description: form.description.trim(),
     knowledgeType: form.knowledgeType,
@@ -238,7 +232,6 @@ function KnowledgeBaseFormDialogBody({
   const t = useI18n();
   const formId = "knowledge-base-edit-form";
   const [loading, setLoading] = useState(false);
-	const [intentProfiles, setIntentProfiles] = useState<ReplyIntentProfile[]>([]);
   const knowledgeBaseFormSchema = useMemo(() => createKnowledgeBaseFormSchema(t), [t]);
   const editFormResolver = useMemo(
     () => zodResolver(knowledgeBaseFormSchema) as Resolver<EditForm>,
@@ -263,27 +256,6 @@ function KnowledgeBaseFormDialogBody({
   const knowledgeType = watch("knowledgeType");
   const isFAQKnowledgeBase = knowledgeType === KnowledgeBaseType.FAQ;
   const isFastGPTCloudKnowledgeBase = knowledgeType === KnowledgeBaseType.FastGPTCloud;
-	const intentProfileOptions = useMemo(
-		() => intentProfiles.map((profile) => ({ value: String(profile.id), label: profile.name || profile.code })),
-		[intentProfiles],
-	);
-
-	useEffect(() => {
-		let cancelled = false;
-		void fetchReplyIntentProfiles({ status: 0, limit: 200 })
-			.then((page) => {
-				if (!cancelled) {
-					setIntentProfiles(page.results);
-				}
-			})
-			.catch((error) => {
-				console.error("Failed to load reply intent profiles:", error);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, []);
-
   useEffect(() => {
     if (!open) {
       return;
@@ -365,26 +337,6 @@ function KnowledgeBaseFormDialogBody({
           onSubmit={handleSubmit(onFormSubmit)}
           className="space-y-4"
         >
-		  <Field data-invalid={!!errors.intentProfileId}>
-			<FieldLabel htmlFor="kb-intent-profile">行业 Profile</FieldLabel>
-			<FieldContent>
-			  <Controller
-				control={control}
-				name="intentProfileId"
-				render={({ field }) => (
-				  <OptionCombobox
-					value={field.value}
-					options={intentProfileOptions}
-					placeholder="选择该知识库所属行业"
-					searchPlaceholder="搜索行业 Profile"
-					emptyText="暂无可用行业 Profile"
-					onChange={field.onChange}
-				  />
-				)}
-			  />
-			  <FieldError errors={[errors.intentProfileId]} />
-			</FieldContent>
-		  </Field>
           <Field data-invalid={!!errors.knowledgeType}>
             <FieldLabel htmlFor="kb-knowledge-type">{t("knowledge.knowledgeType")}</FieldLabel>
             <FieldContent>

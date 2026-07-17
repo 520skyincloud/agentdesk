@@ -57,7 +57,6 @@ const (
 	wxProtocolMsgSystem              = 10000
 	wxProtocolMsgSystemAlt           = 1011
 	wxProtocolMsgReadReport          = 1012
-	wxProtocolConfigErrorNotice      = "当前门店配置异常，已通知人工处理。"
 )
 
 var wxProtocolURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
@@ -568,12 +567,20 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "self echo")
 		return nil
 	}
+	if roomID := s.inboundGroupRoomID(msg); roomID != "" {
+		reason := fmt.Sprintf("skip inbound group message room_id=%s", roomID)
+		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, reason)
+		return nil
+	}
 	externalID := s.externalConversationID(instance, msg)
 	if externalID == "" {
 		return nil
 	}
 	conversation, created, err := s.ensureConversation(instance, msg, externalID, rawPayload)
 	if err != nil {
+		return err
+	}
+	if err := s.ensureRouteState(conversation.ID, instance); err != nil {
 		return err
 	}
 	if _, _, err := WxWorkProtocolInstanceService.RequireStoreKnowledge(instance); err != nil {
@@ -588,11 +595,8 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 		}
 		s.scheduleWxWorkContactProfileSync(instance, conversation, externalID)
 		_ = s.createMessageRef(conversation.ID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
-		_ = MessageSyncLogService.Create(conversation.ID, message.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
-		return s.replyConfigError(conversation.ID, conversation.AIAgentID, clientMsgID)
-	}
-	if err := s.ensureRouteState(conversation.ID, instance); err != nil {
-		return err
+		_ = MessageSyncLogService.Create(conversation.ID, message.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "message received; AI paused until store knowledge is configured")
+		return nil
 	}
 	content, payload, err := s.buildInboundMessageContent(instance, messageType, msg)
 	if err != nil {
@@ -607,6 +611,18 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 		WxWorkProtocolDefaultResourceService.SendNewFriendWelcome(conversation, instance, "wx_welcome_"+strings.TrimPrefix(clientMsgID, "wx_protocol:"))
 	}
 	return s.createMessageRef(conversation.ID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
+}
+
+func (s *wxWorkProtocolService) inboundGroupRoomID(msg request.WxProtocolChatMsg) string {
+	roomID := strings.TrimSpace(msg.RoomID)
+	if roomID != "" && roomID != "0" {
+		return strings.TrimPrefix(roomID, "R:")
+	}
+	chatroom := strings.TrimSpace(msg.Chatroom)
+	if chatroom == "" || chatroom == "0" {
+		return ""
+	}
+	return strings.TrimPrefix(chatroom, "R:")
 }
 
 func (s *wxWorkProtocolService) isReferencedRecallMessage(msg request.WxProtocolChatMsg) bool {
@@ -2088,8 +2104,8 @@ func (s *wxWorkProtocolService) ensureConversation(instance *models.WxWorkProtoc
 }
 
 func (s *wxWorkProtocolService) ensureRouteState(conversationID int64, instance *models.WxWorkProtocolInstance) error {
-	if _, _, err := WxWorkProtocolInstanceService.RequireStoreKnowledge(instance); err != nil {
-		return err
+	if instance == nil || instance.Status != enums.StatusOk {
+		return errorsx.InvalidParam("企微员工号实例不存在或已停用")
 	}
 	state, err := ConversationRouteService.Ensure(conversationID)
 	if err != nil {
@@ -2102,12 +2118,6 @@ func (s *wxWorkProtocolService) ensureRouteState(conversationID int64, instance 
 		"updated_at":          time.Now(),
 		"update_user_name":    wxWorkProtocolSystemOperatorName,
 	})
-}
-
-func (s *wxWorkProtocolService) replyConfigError(conversationID int64, aiAgentID int64, clientMsgID string) error {
-	requestID := "wx_protocol_config_error_" + strings.TrimPrefix(clientMsgID, "wx_protocol:")
-	_, err := MessageService.SendAIServiceNoticeWithRequestID(conversationID, aiAgentID, wxProtocolConfigErrorNotice, requestID)
-	return err
 }
 
 func (s *wxWorkProtocolService) upsertConversationMapping(instance *models.WxWorkProtocolInstance, conversationID int64, msg request.WxProtocolChatMsg, externalID string, rawPayload string) error {
