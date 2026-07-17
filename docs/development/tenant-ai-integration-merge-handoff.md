@@ -51,13 +51,13 @@ runtime: http://127.0.0.1:8084
 branch: codex/customer-audit
 ```
 
-当前 Git 祖先关系已核对：`origin/main`、`origin/codex/ai-billing` 和 `origin/codex/customer-audit` 都是 integration HEAD 的祖先，没有三方分叉提交需要再合并。租户/AI 集成和 customer-audit 已进入同一提交历史，后续只需提交 integration 当前工作树并建立一个 PR。当前不需要 rebase；提交或 push 前若远端变化，必须重新判断。
+当前 Git 祖先关系已核对：`origin/main`、`origin/codex/ai-billing` 和 `origin/codex/customer-audit` 都是 integration HEAD 的祖先，没有三方分叉提交需要再合并。租户/AI 集成和 customer-audit 已进入同一提交历史，六个客服语义提交和最终门禁也已经完成；后续只需 push 和一个 PR。当前不需要 rebase；push 前若远端变化，必须重新判断。
 
 上述 SHA 只是本次审计快照。每次任务开始、创建 migration、提交和 push 前都必须重新 fetch，不能把本文 SHA 当永久基线。
 
-## 3. 当前 integration 未提交工作
+## 3. 当前 integration 提交状态
 
-2026-07-17 复核时，integration 工作树混合了自动派单、运营事实、总览、运营分析、会话记录、质检和文档。文件数量会继续变化，不再把易过期的计数当作合并依据；应以本节语义分组和 `git status --porcelain` 的提交前快照为准。当前不能直接一次提交，更不能直接推 PR。
+2026-07-17 已把自动派单、运营事实、总览、运营分析、会话记录、质检、仿真和文档按 `B -> A -> C -> D -> E -> F` 拆为六个语义提交。它们全部位于同一 `codex/tenant-ai-integration` 分支，只用于 review、回滚和依赖边界，不代表多个分支或多个 PR。
 
 自动派单主要范围：
 
@@ -116,7 +116,7 @@ web/app/dashboard/conversation-monitor/_components/session-workflow.tsx
 web/app/dashboard/_components/dashboard-home.tsx
 ```
 
-共享接线涉及 `models.go`、routes/server、Conversation/Message/Assignment/RouteState、WebSocket、权限、导航和多语言资源。必须按语义拆分暂存，不使用 `git add .`。
+共享接线涉及 `models.go`、routes/server、Conversation/Message/Assignment/RouteState、WebSocket、权限、导航和多语言资源，已经按语义拆分提交，未使用 `git add .`。
 
 当前验证证据：
 
@@ -139,7 +139,9 @@ PASS  平台租户切换、空租户/单日零值与旧详情/维度清空专项
 PASS  Presence 同用户双连接、部分/最终断开、重复关闭、心跳超时和休息恢复专项
 PASS  原 8083 历史库副本重复升级至 61，TenantIntegrityAudit 74/87/202、0 违规
 PASS  最新增量全仓 Go/vet/race、前端 lint/typecheck/Node/build、全新 SQLite/MySQL 重复 migration、隔离重复 Seed/report
-TODO  A-F 语义提交、push 与唯一 integration PR
+PASS  B/A/C/D/E/F 六个语义提交
+PASS  最终 fetch、完整发布门禁和 migration 60/61 远端冲突核对
+TODO  push 与唯一 integration PR
 ```
 
 MySQL 仿真稳定产出 36 个 ServiceSession、39 个 ResponseSpan、12 个 PresenceSession、9 个 QualityInspection、9 个 Evaluation、30 个 DispatchDecisionLog 和 1 个策略。重复 Seed 结果一致，cleanup 后租户业务事实归零。仿真本身不调用真实模型；测试交互产生的 usage 只按专用仿真租户和仿真会话清理，不改变记录、Token、价格或计费语义，平台与其他租户 usage 保留。生命周期测试覆盖正常关联、历史孤儿和平台无关证据。修复后租户完整性审计检查 74 个租户模型、87 张必需表和 202 条关系，0 违规，36 个 ServiceSession 均为 exact。
@@ -148,7 +150,7 @@ MySQL 仿真稳定产出 36 个 ServiceSession、39 个 ResponseSpan、12 个 Pr
 
 三档角色专项已经完成：公司主管可见本租户 36 个 ServiceSession、9 条质检和 9 条评价；客服组长 001 只见负责客服组 2 的 10 个 ServiceSession、3 条质检和 3 条评价；客服 003 只见本人 4 个 ServiceSession 和 2 条质检，评价后台接口按权限拒绝。浏览器中普通客服已完成质检显示 `95 / 100` 且所有评分、证据和评语只读，没有保存/完成动作；组长和公司主管的草稿质检字段可编辑并显示保存草稿、完成质检动作。导航按账号实际角色权限显示，没有依赖前端隐藏替代后端范围。
 
-此前记录的会话操作缺失、筛选契约分裂、Seed 缺分析事实、测试夹具缺表、前端枚举/typecheck 和历史小组快照问题均已处理，不能继续把旧失败当当前阻断。当前批次仍是未提交工作树，不允许写成已完成、已提交或已在 GitHub。
+此前记录的会话操作缺失、筛选契约分裂、Seed 缺分析事实、测试夹具缺表、前端枚举/typecheck 和历史小组快照问题均已处理，不能继续把旧失败当当前阻断。当前实现已形成六个本地语义提交，但在 push 和唯一 PR 完成前不得写成已进入 main。
 
 本轮继续完成：待派 ServiceSession 保存目标客服组快照并在释放至全局池时清零；ServiceSession 小记、质检详情/保存和抽样批次同时校验来源与组/本人范围；Presence 写入串行化并完成同用户多连接生命周期；评价 Token、保存视图和 Completed 质检补齐并发、幂等、所有权和跨租户门禁；平台租户切换、空租户和原 8083 历史副本升级均已验收。上述结论均来自 integration 当前代码、测试和隔离数据库，不引用 customer-audit 旧验证替代。
 
@@ -156,7 +158,7 @@ MySQL 仿真稳定产出 36 个 ServiceSession、39 个 ResponseSpan、12 个 Pr
 
 `codex/customer-audit` 只保留历史提交和旧样板用于追溯。它不再接受提交、不再补测试、不再更新业务文档，也不再建立或更新独立 PR。旧 Draft PR 应标记 superseded。
 
-运营分析独立文件和共享接线已经手工迁入 integration 当前工作树。后续发现遗漏时，只能在 integration 里依据当前代码修复，禁止回到 customer-audit 修改再二次搬运。customer-audit 的历史验证只能证明旧样板方向可行，不能替代 integration 当前门禁。
+运营分析独立文件和共享接线已经手工迁入并提交到 integration。后续发现遗漏时，只能在 integration 里依据当前代码修复，禁止回到 customer-audit 修改再二次搬运。customer-audit 的历史验证只能证明旧样板方向可行，不能替代 integration 当前门禁。
 
 `cmd/customer_audit_seed` 只是既有仿真命令的历史目录名，不是工作分支或第二个 PR。为避免本批扩大机械改名和脚本路径变更，当前保留该命令名；它的所有新增事实、测试和文档仍只在 `codex/tenant-ai-integration` 提交。后续若要产品化改名，应作为单独的纯重命名提交处理。
 
@@ -164,24 +166,24 @@ MySQL 仿真稳定产出 36 个 ServiceSession、39 个 ResponseSpan、12 个 Pr
 
 ## 5. 功能完成状态
 
-| 能力 | integration 当前状态 | 提交前动作 |
+| 能力 | integration 当前状态 | 发布前动作 |
 | --- | --- | --- |
 | 多租户公司、邀请注册、角色权限 | 已提交并运行 | 回归，不重建 |
 | 平台模型授权、租户默认、员工号覆盖 | 已提交并运行 | 回归，不改授权和计费语义 |
 | AI 回复、usage、token、计费契约 | 已集成 | 客服分析不得修改 |
 | 客服组、小组、排班 | 已提交并运行 | 作为组织范围和统计维度 |
-| 规则与模型协同派单 | 未提交实现 | 先恢复全量回归，再独立提交 |
-| 服务轮次、响应事实、数据质量 | 未提交实现，最新全量门禁、新鲜及历史 MySQL 已通过；待派目标组快照已修复，历史 36 轮均标 estimated | A-F 提交与唯一 PR |
-| 服务小记、范围导出 | 前后端、范围测试、三档角色、租户切换、主浏览器流程和最新全量门禁已接；导出超限会显式失败 | A-F 提交与唯一 PR |
-| 总览精确口径和角色范围 | 历史/实时聚合、目标组快照、直接请求范围、三档角色、租户切换、Presence 多连接、布局和最新全量门禁已验证 | A-F 提交与唯一 PR |
-| 运营分析六 Tab | P50/P90、四类客服视图、钻取、来源质量、汇总导出、连续自然日补零、空租户、三档范围、浏览器和最新全量门禁已验证 | A-F 提交与唯一 PR |
-| 会话记录 | ServiceSession 粒度、原操作、统一筛选、标签、导出、三档范围安全、人工证据、租户切换、布局和最新全量门禁已验证 | A-F 提交与唯一 PR |
-| 仅人工回复质检 | 抽样/评分/证据/模板/批次 UI、SQLite/race/MySQL 并发、人工证据和三档动作均通过；普通客服本人结果只读 | A-F 提交与唯一 PR |
-| 保存视图与范围化导出 | 所有权、默认唯一、跨用户不可见、租户切换、浏览器恢复、导出超限和最新全量门禁已验证 | A-F 提交与唯一 PR |
-| Presence | 工作台状态控件、出勤视图、SQLite/race/MySQL 并发、多连接、部分/最终断线、超时、休息恢复和最新全量门禁通过 | A-F 提交与唯一 PR |
-| 真实满意度 | Token/API、公开评价页、后台列表、聚合、并发、过期、跨租户、租户切换、三档范围、真实提交和最新全量门禁通过 | A-F 提交与唯一 PR |
-| 权限管理显示与默认角色 | 权限码、路由、直接请求、三档角色和最新全量门禁通过 | A-F 提交与唯一 PR |
-| 派单质量证据 | 成功、失败、降级、过期、人工覆盖、隔离 Seed、跨租户/组范围和最新全量门禁通过 | A-F 提交与唯一 PR |
+| 规则与模型协同派单 | 已提交并通过独立全仓回归 | push 与唯一 PR |
+| 服务轮次、响应事实、数据质量 | 已提交；新鲜及历史 MySQL 已通过，历史 36 轮均标 estimated | push 与唯一 PR |
+| 服务小记、范围导出 | 已提交；导出超限会显式失败 | push 与唯一 PR |
+| 总览精确口径和角色范围 | 已提交并完成三档范围、租户切换和 Presence 多连接验证 | push 与唯一 PR |
+| 运营分析六 Tab | 已提交并完成 P50/P90、四类客服视图、来源质量、钻取和导出验证 | push 与唯一 PR |
+| 会话记录 | 已提交并完成原操作、统一筛选、标签、导出、人工证据和三档范围验证 | push 与唯一 PR |
+| 仅人工回复质检 | 已提交；抽样、评分、证据、模板、不可变完成和三档动作均通过 | push 与唯一 PR |
+| 保存视图与范围化导出 | 已提交；所有权、租户切换、恢复和超限门禁通过 | push 与唯一 PR |
+| Presence | 已提交；状态控件、多连接、断线、超时和休息恢复通过 | push 与唯一 PR |
+| 真实满意度 | 已提交；Token/API、公开评价、聚合、并发和跨租户通过 | push 与唯一 PR |
+| 权限管理显示与默认角色 | 已提交；权限目录、路由、页面动作和直接请求通过 | push 与唯一 PR |
+| 派单质量证据 | 已提交；成功、失败、降级、过期和人工覆盖证据通过 | push 与唯一 PR |
 | 丽斯未来运营仿真 | analytics 事实、report/cleanup、usage 关联清理和幂等测试已完成 | 只作验收数据，不改变计费事实语义 |
 
 完成度判断统一使用四档：已提交运行、已写待验证、后端完成前端未接、未完成。禁止用“文件已存在”替代产品验收。
@@ -265,7 +267,7 @@ MySQL 仿真稳定产出 36 个 ServiceSession、39 个 ResponseSpan、12 个 Pr
 
 ## 9. Migration 与数据库要求
 
-integration 已提交的最高 migration 为 59；当前未跟踪工作树已经创建 60/61。2026-07-17 fetch 后与 main、ai-billing、customer-audit 无编号冲突，新鲜 MySQL 8.4 首次 migration、Seed 和租户完整性审计已通过；原 8083 历史库副本也已重复升级到 61 并通过完整性审计。提交前任何远端分支先占号时都必须调整，不能重复。
+integration 已提交 migration 60/61。2026-07-17 提交前 fetch 后与 main、ai-billing、customer-audit 无编号冲突，新鲜 MySQL 8.4 首次 migration、Seed 和租户完整性审计已通过；原 8083 历史库副本也已重复升级到 61 并通过完整性审计。push 前若远端分支占用相同编号，必须先处理，不能重复。
 
 生产升级前：
 
@@ -355,8 +357,8 @@ git diff --check
 
 ## 14. 当前下一步
 
-1. **单分支语义提交**：按第 7 节 `B -> A -> C -> D -> E -> F` 逐组精确暂存，不使用 `git add .`；每个提交记录 SHA、同文件冲突、验证、回滚边界和建议合并顺序。
-2. **唯一发布路径**：再次 fetch，确认 migration 60/61 和共享文件无远端抢占后，只 push `codex/tenant-ai-integration`，只建立一个 `codex/tenant-ai-integration -> main` PR。
+1. **最终发布门禁**：关键 race、前端 build、SQLite/MySQL 重复 migration、隔离 Seed/report/cleanup 和租户完整性审计已通过。
+2. **唯一发布路径**：最终 fetch 已确认 migration 60/61 和共享文件无远端抢占；只 push `codex/tenant-ai-integration`，只建立一个 `codex/tenant-ai-integration -> main` PR。
 3. `customer-audit` 保持冻结，旧 Draft PR 标记 superseded；主线不得再分别合入 customer-audit 或 ai-billing。
 
 ## 15. 2026-07-17 本轮复核记录
@@ -655,8 +657,8 @@ SQLite/MySQL：全新 SQLite、全新 MySQL 首次/重复 migration PASS；隔�
 ### 20.3 当前完成度
 
 - **产品功能：已完成并验收。** 客服需求 1-6、三档角色、租户切换、Presence 多连接、历史库副本升级、SQLite/MySQL、并发、仿真、桌面/移动和最新全量门禁均已通过。
-- **本地代码：已实现但尚未形成语义提交。** 当前能力仍位于 `codex/tenant-ai-integration` 未提交工作树，不能表述为已经进入 GitHub。
-- **GitHub 交付：未完成。** 只剩 `B -> A -> C -> D -> E -> F` 提交、再次 fetch/冲突核对、push 和唯一 integration PR。
+- **本地代码：已实现并形成六个语义提交。** `356b755 -> 14d2589 -> 6e58a88 -> edb0c31 -> acfa5f0 -> 3d65f5a` 全部位于 `codex/tenant-ai-integration`。
+- **GitHub 交付：未完成。** 最终发布门禁和 fetch/冲突核对已通过，只剩 push 和唯一 integration PR。
 
 不再新增产品功能作为本批前置。后续门禁发现问题时，在上述现有模型、service、API 和页面职责内修复；只有业务事实确实无法表达时，才允许新增 model/migration，并先更新设计与本交接。
 
@@ -664,7 +666,7 @@ SQLite/MySQL：全新 SQLite、全新 MySQL 首次/重复 migration PASS；隔�
 
 1. `codex/customer-audit` 永久冻结为只读历史；不再提交、不再同步、不再开 PR。
 2. `codex/ai-billing` 已在 integration 历史中吸收，仅用于语义回归参考，不再单独进入 main。
-3. 先提交 B 的共享事实契约，再提交 A 的自动派单，随后 C/D/E/F；每个提交记录 SHA、验证和回滚边界。
+3. B/A/C/D/E/F 已按共享事实、派单、运行捕获、运营页面、质检页面、仿真文档顺序提交；每个提交的 SHA、验证和回滚边界见第 21 节。
 4. push 前重新 fetch，核对 migration 60/61、共享文件和祖先关系。
 5. 最终只允许 `codex/tenant-ai-integration -> main` 一个 PR；旧 customer-audit PR 关闭并标记 `superseded by tenant-ai-integration`。
 
@@ -797,5 +799,66 @@ SQLite/MySQL：无数据库改动
 是否需要 rebase：提交时不需要；push 前重新 fetch
 建议合并顺序：B -> A -> C -> D -> E 已完成，下一步 F
 回滚边界：可独立回滚页面；服务事实、质检和评价数据不删除
-已知风险：F、完整数据库终验、push 和唯一 PR 尚未完成
+已知风险：完整数据库终验、push 和唯一 PR 尚未完成
 ```
+
+### 21.6 提交 F：租户仿真与单分支权威文档
+
+```text
+批次与日期：提交 F，2026-07-17
+目标：补齐丽斯未来租户运营事实仿真、重复 Seed/report/cleanup 证据，并冻结唯一分支和唯一 PR 规则
+Commit：3d65f5a test(seed): complete tenant service simulation
+文件：cmd/customer_audit_seed、AGENTS.md、客服组织/租户/运营分析设计文档、customer-audit 历史交接标废头、integration 唯一合并交接
+Model/AutoMigrate：无新增模型；仿真覆盖 B/C 已提交事实模型
+DML migration：无新增；沿用 60/61，不修改历史定义或 remark
+DTO/enum/API/WebSocket：无新增运行契约
+权限：无新增；仿真验证现有三档角色和 TenantID 范围
+运行语义：重复 Seed 清理专用仿真租户及仿真会话 usage 关联，不删除平台或其他租户记录，不改变 Token、价格、余额或计费语义
+验证命令与结果：go test ./cmd/customer_audit_seed PASS；提交前全仓 go test ./...、go vet、typecheck、lint（0 error）、Node 137/137 PASS；git diff --check PASS
+SQLite/MySQL：最终发布门禁已复跑；全新 SQLite/MySQL 首次与重复 migration、隔离 Seed/repeat/report/cleanup 和 TenantIntegrityAudit 74/87/202、0 违规均通过
+浏览器桌面/移动：沿用 1440x900、390x844 主流程验收基线
+与 main/ai-billing/customer-audit 同文件：只更新现有 Seed 和权威文档；customer-audit 保持只读，不修改 AI Runtime 或计费链路
+是否需要 rebase：提交时不需要；push 前重新 fetch
+建议合并顺序：B -> A -> C -> D -> E -> F 已全部完成，同一分支、一个 PR
+回滚边界：可独立回滚仿真和文档；不删除已产生的生产运营记录或 usage 证据
+已知风险：push 和唯一 PR 尚未完成
+```
+
+## 22. 2026-07-17 最终发布门禁
+
+最终 fetch 后远端基线未变化：
+
+```text
+origin/main                         e67e207
+origin/codex/ai-billing             f2d2da4
+origin/codex/customer-audit         c706815
+origin/codex/tenant-ai-integration  2ea04c8
+```
+
+四个远端引用均为 integration HEAD 的祖先，远端 integration 没有本地缺失提交；四个远端引用均未占用 migration 60/61，不需要 rebase 或改 migration 编号。
+
+```text
+PASS go test ./... -count=1
+PASS go vet ./...
+PASS critical service race
+PASS pnpm --dir web typecheck
+PASS pnpm --dir web lint: 0 error, 32 historical warnings
+PASS Node tests: 137/137
+PASS Next build: 47 static pages
+PASS fresh SQLite: first + repeat migration
+PASS fresh MySQL 8.4: first + repeat migration
+PASS fresh SQLite TenantIntegrityAudit: 74/87/202, 0 violations
+PASS fresh MySQL TenantIntegrityAudit: 74/87/202, 0 violations
+PASS isolated MySQL seed + repeat seed + report:
+     36 sessions / 39 spans / 30 decisions / 9 quality / 9 evaluations
+     expectedCoreComplete=true
+     expectedSimulationComplete=true
+     simulationBaselineIntact=true
+PASS isolated cleanup: simulation tenant facts all return to 0
+PASS post-cleanup MySQL TenantIntegrityAudit: 74/87/202, 0 violations
+PASS git diff --check
+```
+
+隔离 Seed 复用同一测试容器已有的启用 LLM 测试配置，只建立授权和引用，不调用真实模型，不新增 usage/Token/价格/余额事实。邀请码加密密钥只通过单次进程环境变量注入；临时数据库与 `/tmp` 配置不提交。
+
+当前只允许执行两个发布动作：push `codex/tenant-ai-integration`，创建或更新唯一的 `codex/tenant-ai-integration -> main` PR。禁止 push `codex/customer-audit`，禁止创建第二个客服 PR。
