@@ -4,7 +4,7 @@
 >
 > 唯一工作分支：`codex/tenant-ai-integration`
 >
-> 唯一主线目标：`codex/tenant-ai-integration -> main`
+> 唯一主线目标：`codex/tenant-ai-integration -> main`，PR #2
 >
 > 只读迁移来源：`codex/customer-audit`
 >
@@ -141,7 +141,7 @@ PASS  原 8083 历史库副本重复升级至 61，TenantIntegrityAudit 74/87/20
 PASS  最新增量全仓 Go/vet/race、前端 lint/typecheck/Node/build、全新 SQLite/MySQL 重复 migration、隔离重复 Seed/report
 PASS  B/A/C/D/E/F 六个语义提交
 PASS  最终 fetch、完整发布门禁和 migration 60/61 远端冲突核对
-TODO  push 与唯一 integration PR
+PASS  push 与唯一 integration PR #2；旧 customer-audit PR #1 已关闭
 ```
 
 MySQL 仿真稳定产出 36 个 ServiceSession、39 个 ResponseSpan、12 个 PresenceSession、9 个 QualityInspection、9 个 Evaluation、30 个 DispatchDecisionLog 和 1 个策略。重复 Seed 结果一致，cleanup 后租户业务事实归零。仿真本身不调用真实模型；测试交互产生的 usage 只按专用仿真租户和仿真会话清理，不改变记录、Token、价格或计费语义，平台与其他租户 usage 保留。生命周期测试覆盖正常关联、历史孤儿和平台无关证据。修复后租户完整性审计检查 74 个租户模型、87 张必需表和 202 条关系，0 违规，36 个 ServiceSession 均为 exact。
@@ -166,24 +166,24 @@ MySQL 仿真稳定产出 36 个 ServiceSession、39 个 ResponseSpan、12 个 Pr
 
 ## 5. 功能完成状态
 
-| 能力 | integration 当前状态 | 发布前动作 |
+| 能力 | integration 当前状态 | GitHub 状态 |
 | --- | --- | --- |
 | 多租户公司、邀请注册、角色权限 | 已提交并运行 | 回归，不重建 |
 | 平台模型授权、租户默认、员工号覆盖 | 已提交并运行 | 回归，不改授权和计费语义 |
 | AI 回复、usage、token、计费契约 | 已集成 | 客服分析不得修改 |
 | 客服组、小组、排班 | 已提交并运行 | 作为组织范围和统计维度 |
-| 规则与模型协同派单 | 已提交并通过独立全仓回归 | push 与唯一 PR |
-| 服务轮次、响应事实、数据质量 | 已提交；新鲜及历史 MySQL 已通过，历史 36 轮均标 estimated | push 与唯一 PR |
-| 服务小记、范围导出 | 已提交；导出超限会显式失败 | push 与唯一 PR |
-| 总览精确口径和角色范围 | 已提交并完成三档范围、租户切换和 Presence 多连接验证 | push 与唯一 PR |
-| 运营分析六 Tab | 已提交并完成 P50/P90、四类客服视图、来源质量、钻取和导出验证 | push 与唯一 PR |
-| 会话记录 | 已提交并完成原操作、统一筛选、标签、导出、人工证据和三档范围验证 | push 与唯一 PR |
-| 仅人工回复质检 | 已提交；抽样、评分、证据、模板、不可变完成和三档动作均通过 | push 与唯一 PR |
-| 保存视图与范围化导出 | 已提交；所有权、租户切换、恢复和超限门禁通过 | push 与唯一 PR |
-| Presence | 已提交；状态控件、多连接、断线、超时和休息恢复通过 | push 与唯一 PR |
-| 真实满意度 | 已提交；Token/API、公开评价、聚合、并发和跨租户通过 | push 与唯一 PR |
-| 权限管理显示与默认角色 | 已提交；权限目录、路由、页面动作和直接请求通过 | push 与唯一 PR |
-| 派单质量证据 | 已提交；成功、失败、降级、过期和人工覆盖证据通过 | push 与唯一 PR |
+| 规则与模型协同派单 | 已提交并通过独立全仓回归 | PR #2 |
+| 服务轮次、响应事实、数据质量 | 已提交；新鲜及历史 MySQL 已通过，历史 36 轮均标 estimated | PR #2 |
+| 服务小记、范围导出 | 已提交；导出超限会显式失败 | PR #2 |
+| 总览精确口径和角色范围 | 已提交并完成三档范围、租户切换和 Presence 多连接验证 | PR #2 |
+| 运营分析六 Tab | 已提交并完成 P50/P90、四类客服视图、来源质量、钻取和导出验证 | PR #2 |
+| 会话记录 | 已提交并完成原操作、统一筛选、标签、导出、人工证据和三档范围验证 | PR #2 |
+| 仅人工回复质检 | 已提交；抽样、评分、证据、模板、不可变完成和三档动作均通过 | PR #2 |
+| 保存视图与范围化导出 | 已提交；所有权、租户切换、恢复和超限门禁通过 | PR #2 |
+| Presence | 已提交；状态控件、多连接、断线、超时和休息恢复通过 | PR #2 |
+| 真实满意度 | 已提交；Token/API、公开评价、聚合、并发和跨租户通过 | PR #2 |
+| 权限管理显示与默认角色 | 已提交；权限目录、路由、页面动作和直接请求通过 | PR #2 |
+| 派单质量证据 | 已提交；成功、失败、降级、过期和人工覆盖证据通过 | PR #2 |
 | 丽斯未来运营仿真 | analytics 事实、report/cleanup、usage 关联清理和幂等测试已完成 | 只作验收数据，不改变计费事实语义 |
 
 完成度判断统一使用四档：已提交运行、已写待验证、后端完成前端未接、未完成。禁止用“文件已存在”替代产品验收。
@@ -358,8 +358,8 @@ git diff --check
 ## 14. 当前下一步
 
 1. **最终发布门禁**：关键 race、前端 build、SQLite/MySQL 重复 migration、隔离 Seed/report/cleanup 和租户完整性审计已通过。
-2. **唯一发布路径**：最终 fetch 已确认 migration 60/61 和共享文件无远端抢占；只 push `codex/tenant-ai-integration`，只建立一个 `codex/tenant-ai-integration -> main` PR。
-3. `customer-audit` 保持冻结，旧 Draft PR 标记 superseded；主线不得再分别合入 customer-audit 或 ai-billing。
+2. **唯一发布路径**：PR #2 是唯一 `codex/tenant-ai-integration -> main` 合并入口，等待评审与合并。
+3. `customer-audit` 保持冻结，旧 Draft PR #1 已关闭；主线不得再分别合入 customer-audit 或 ai-billing。
 
 ## 15. 2026-07-17 本轮复核记录
 
@@ -658,7 +658,7 @@ SQLite/MySQL：全新 SQLite、全新 MySQL 首次/重复 migration PASS；隔�
 
 - **产品功能：已完成并验收。** 客服需求 1-6、三档角色、租户切换、Presence 多连接、历史库副本升级、SQLite/MySQL、并发、仿真、桌面/移动和最新全量门禁均已通过。
 - **本地代码：已实现并形成六个语义提交。** `356b755 -> 14d2589 -> 6e58a88 -> edb0c31 -> acfa5f0 -> 3d65f5a` 全部位于 `codex/tenant-ai-integration`。
-- **GitHub 交付：未完成。** 最终发布门禁和 fetch/冲突核对已通过，只剩 push 和唯一 integration PR。
+- **GitHub 交付：已进入唯一 PR。** `codex/tenant-ai-integration` 已推送并创建 PR #2；旧 customer-audit PR #1 已关闭，等待 PR #2 评审与合并。
 
 不再新增产品功能作为本批前置。后续门禁发现问题时，在上述现有模型、service、API 和页面职责内修复；只有业务事实确实无法表达时，才允许新增 model/migration，并先更新设计与本交接。
 
@@ -861,4 +861,20 @@ PASS git diff --check
 
 隔离 Seed 复用同一测试容器已有的启用 LLM 测试配置，只建立授权和引用，不调用真实模型，不新增 usage/Token/价格/余额事实。邀请码加密密钥只通过单次进程环境变量注入；临时数据库与 `/tmp` 配置不提交。
 
-当前只允许执行两个发布动作：push `codex/tenant-ai-integration`，创建或更新唯一的 `codex/tenant-ai-integration -> main` PR。禁止 push `codex/customer-audit`，禁止创建第二个客服 PR。
+当前只允许维护、评审和合并 PR #2。禁止 push `codex/customer-audit`，禁止重新打开 PR #1，禁止创建第二个客服 PR。
+
+## 23. GitHub 发布记录
+
+```text
+2026-07-17
+push: codex/tenant-ai-integration 2ea04c8..6f371c5
+PR: https://github.com/520skyincloud/agentdesk/pull/2
+base: main
+head: codex/tenant-ai-integration
+state at creation: OPEN, ready for review
+old PR: https://github.com/520skyincloud/agentdesk/pull/1
+old PR action: commented as superseded and CLOSED
+GitHub account: Archi8848
+```
+
+PR #2 正文已列出需求范围、仅人工回复质检边界、migration 60/61、租户数据范围、验证证据和 AI/计费不变约束。后续修复只允许继续推到 `codex/tenant-ai-integration` 并更新 PR #2，不得恢复多分支同步。
