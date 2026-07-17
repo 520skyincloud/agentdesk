@@ -302,6 +302,9 @@ func (s *conversationRouteService) enterHQAgentDeskPendingWithDB(db *gorm.DB, co
 	}); err != nil {
 		return nil, err
 	}
+	if err := ServiceAnalyticsCaptureService.RecordQueueEntryWithDB(db, conversationID, state.TenantID, now); err != nil {
+		return nil, err
+	}
 	return repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, state.TenantID), nil
 }
 
@@ -328,6 +331,7 @@ func (s *conversationRouteService) EnterStoreWecomManual(conversationID int64, r
 	}); err != nil {
 		return nil, err
 	}
+	logServiceAnalyticsCaptureError("store_manual_entry", conversationID, ServiceAnalyticsCaptureService.RecordQueueEntry(conversationID, now))
 	return s.GetByConversationID(conversationID), nil
 }
 

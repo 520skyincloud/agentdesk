@@ -591,6 +591,7 @@ func (s *conversationService) CloseCustomerConversation(conversationID int64, ex
 }
 
 func (s *conversationService) closeConversation(conversationID int64, senderType enums.IMSenderType, closeReason string, operator *dto.AuthPrincipal) error {
+	var closedAt time.Time
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		conversation, err := requireConversationParent(ctx.Tx, conversationID)
 		if err != nil {
@@ -611,6 +612,7 @@ func (s *conversationService) closeConversation(conversationID int64, senderType
 			operatorName string
 		)
 		closeReason = strings.TrimSpace(closeReason)
+		closedAt = now
 		if senderType == enums.IMSenderTypeCustomer {
 			eventDesc = "客户关闭会话"
 		} else {
@@ -664,6 +666,7 @@ func (s *conversationService) closeConversation(conversationID int64, senderType
 	}); err != nil {
 		return err
 	}
+	logServiceAnalyticsCaptureError("close", conversationID, ServiceAnalyticsCaptureService.RecordClose(conversationID, closedAt, closeReason))
 	if conversation := s.Get(conversationID); conversation != nil {
 		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationClosed)
 	}

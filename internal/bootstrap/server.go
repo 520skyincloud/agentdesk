@@ -173,6 +173,7 @@ func addRouter(app *gin.Engine) {
 	registerApiConversationRoutes(apiGroup.Group("/conversation", middleware.ExternalUserMiddleware))
 	registerApiMessageRoutes(apiGroup.Group("/message", middleware.ExternalUserMiddleware))
 	registerApiMiniprogramRoutes(apiGroup.Group("/miniprogram"))
+	registerApiConversationEvaluationRoutes(apiGroup.Group("/evaluation"))
 	registerApiWxWorkProtocolRemoteSetupRoutes(apiGroup.Group("/wxwork-protocol-remote-setup"))
 
 	wsGroup := app.Group("/api/ws")
@@ -182,6 +183,14 @@ func addRouter(app *gin.Engine) {
 
 	dashboardGroup := app.Group("/api/dashboard", middleware.AuthMiddleware)
 	registerDashboardDashboardRoutes(dashboardGroup.Group("/dashboard"))
+	registerDashboardServiceAnalyticsRoutes(dashboardGroup.Group("/service-analytics"))
+	registerDashboardServiceSessionRoutes(dashboardGroup.Group("/service-session"))
+	registerDashboardQualityInspectionRoutes(dashboardGroup.Group("/quality-inspection"))
+	registerDashboardQualityTemplateRoutes(dashboardGroup.Group("/quality-template"))
+	registerDashboardQualitySamplingRoutes(dashboardGroup.Group("/quality-sampling"))
+	registerDashboardReportViewPresetRoutes(dashboardGroup.Group("/report-view-preset"))
+	registerDashboardAgentPresenceRoutes(dashboardGroup.Group("/agent-presence"))
+	registerDashboardConversationEvaluationRoutes(dashboardGroup.Group("/conversation-evaluation"))
 	registerDashboardStoreWorkbenchRoutes(dashboardGroup.Group("/store-workbench"))
 	registerDashboardUserRoutes(dashboardGroup.Group("/user"))
 	registerDashboardTenantRoutes(dashboardGroup.Group("/tenant"))

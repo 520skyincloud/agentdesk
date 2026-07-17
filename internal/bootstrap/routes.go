@@ -72,6 +72,11 @@ func registerApiMiniprogramRoutes(group *gin.RouterGroup) {
 	group.GET("/message/list", api.MiniprogramGetMessageList)
 }
 
+func registerApiConversationEvaluationRoutes(group *gin.RouterGroup) {
+	group.GET("/validate", api.ConversationEvaluationGetValidate)
+	group.POST("/submit", api.ConversationEvaluationPostSubmit)
+}
+
 func registerApiWxWorkProtocolRemoteSetupRoutes(group *gin.RouterGroup) {
 	group.GET("/:token", api.WxWorkProtocolRemoteSetupGetByToken)
 	group.POST("/update", api.WxWorkProtocolRemoteSetupPostUpdate)
@@ -83,6 +88,56 @@ func registerApiWxWorkProtocolRemoteSetupRoutes(group *gin.RouterGroup) {
 
 func registerDashboardDashboardRoutes(group *gin.RouterGroup) {
 	group.GET("/overview", dashboard.DashboardGetOverview)
+}
+
+func registerDashboardServiceAnalyticsRoutes(group *gin.RouterGroup) {
+	group.GET("/overview", dashboard.ServiceAnalyticsGetOverview)
+	group.GET("/dimensions", dashboard.ServiceAnalyticsGetDimensions)
+	group.GET("/export", dashboard.ServiceAnalyticsGetExport)
+	group.GET("/policy", dashboard.ServiceAnalyticsGetPolicy)
+	group.POST("/policy/update", dashboard.ServiceAnalyticsPostUpdatePolicy)
+}
+
+func registerDashboardServiceSessionRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.ServiceSessionAnyList)
+	group.GET("/dimensions", dashboard.ServiceSessionGetDimensions)
+	group.Any("/message_list", dashboard.ServiceSessionAnyMessageList)
+	group.GET("/export", dashboard.ServiceSessionGetExport)
+	group.POST("/annotate", dashboard.ServiceSessionPostAnnotate)
+	group.GET("/:id", dashboard.ServiceSessionGetBy)
+}
+
+func registerDashboardQualityInspectionRoutes(group *gin.RouterGroup) {
+	group.GET("/:id", dashboard.QualityInspectionGetBy)
+	group.Any("/pool", dashboard.QualityInspectionAnyPool)
+	group.POST("/save", dashboard.QualityInspectionPostSave)
+}
+
+func registerDashboardQualityTemplateRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.QualityTemplateAnyList)
+	group.POST("/save", dashboard.QualityTemplatePostSave)
+}
+
+func registerDashboardQualitySamplingRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.QualitySamplingAnyList)
+	group.POST("/create", dashboard.QualitySamplingPostCreate)
+	group.GET("/:id", dashboard.QualitySamplingGetBy)
+}
+
+func registerDashboardReportViewPresetRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.ReportViewPresetAnyList)
+	group.POST("/save", dashboard.ReportViewPresetPostSave)
+	group.POST("/delete", dashboard.ReportViewPresetPostDelete)
+}
+
+func registerDashboardAgentPresenceRoutes(group *gin.RouterGroup) {
+	group.GET("/current", dashboard.AgentPresenceGetCurrent)
+	group.POST("/update", dashboard.AgentPresencePostUpdate)
+}
+
+func registerDashboardConversationEvaluationRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.ConversationEvaluationAnyList)
+	group.POST("/invite", dashboard.ConversationEvaluationPostInvite)
 }
 
 func registerDashboardStoreWorkbenchRoutes(group *gin.RouterGroup) {

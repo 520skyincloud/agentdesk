@@ -63,6 +63,12 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 		http.MethodPost + " /api/auth/register/validate_invite",
 		http.MethodPost + " /api/auth/register",
 		http.MethodPost + " /api/dashboard/conversation/send_message",
+		http.MethodGet + " /api/dashboard/service-analytics/overview",
+		http.MethodGet + " /api/dashboard/service-analytics/export",
+		http.MethodGet + " /api/dashboard/service-session/list",
+		http.MethodGet + " /api/dashboard/quality-inspection/pool",
+		http.MethodGet + " /api/dashboard/quality-sampling/list",
+		http.MethodGet + " /api/dashboard/conversation-evaluation/list",
 		http.MethodGet + " /api/ws/dashboard",
 		http.MethodGet + " /api/ws/open",
 	}

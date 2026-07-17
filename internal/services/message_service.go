@@ -624,6 +624,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	if err != nil {
 		return nil, err
 	}
+	logServiceAnalyticsCaptureError("message", conversation.ID, ServiceAnalyticsCaptureService.RecordMessage(message))
 
 	// 处理websocket消息
 	WsService.PublishMessageCreated(conversation, message)

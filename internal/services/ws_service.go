@@ -153,8 +153,12 @@ func (s *wsService) upgradeConnection(ctx *gin.Context, principal *dto.AuthPrinc
 		"sessionCount", sessionCount,
 	)
 	if principal != nil && (role == realtimeRoleAdmin || role == realtimeRoleNotification) {
-		if err := AgentProfileService.MarkUserOnline(principal.UserID, principal.Username, time.Now()); err != nil {
+		now := time.Now()
+		if err := AgentProfileService.MarkUserOnline(principal.UserID, principal.Username, now); err != nil {
 			slog.Warn("mark realtime agent online failed", "error", err, "userId", principal.UserID, "role", role)
+		}
+		if err := AgentPresenceService.Touch(principal, "dashboard_ws", now); err != nil {
+			slog.Warn("record realtime agent presence failed", "error", err, "userId", principal.UserID, "role", role)
 		}
 	}
 
@@ -253,11 +257,24 @@ func (s *wsService) writePump(session *ClientSession) {
 				return
 			}
 		case <-ticker.C:
+			s.touchDashboardPresence(session, time.Now())
 			_ = session.Conn.SetWriteDeadline(time.Now().Add(realtimeWriteWait))
 			if err := session.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
 		}
+	}
+}
+
+func (s *wsService) touchDashboardPresence(session *ClientSession, at time.Time) {
+	if session == nil || session.Principal == nil || (session.Role != realtimeRoleAdmin && session.Role != realtimeRoleNotification) {
+		return
+	}
+	if err := AgentProfileService.MarkUserOnline(session.Principal.UserID, session.Principal.Username, at); err != nil {
+		slog.Warn("refresh realtime agent online state failed", "error", err, "userId", session.Principal.UserID, "role", session.Role)
+	}
+	if err := AgentPresenceService.Touch(session.Principal, "dashboard_ws", at); err != nil {
+		slog.Warn("refresh realtime agent presence failed", "error", err, "userId", session.Principal.UserID, "role", session.Role)
 	}
 }
 
@@ -293,6 +310,11 @@ func (s *wsService) closeSession(session *ClientSession) {
 			"terminalType", session.TerminalType,
 			"sessionCount", remaining,
 		)
+		if session.Principal != nil && (session.Role == realtimeRoleAdmin || session.Role == realtimeRoleNotification) && s.manager.CountUserSessions(session.TenantID, session.Principal.UserID) == 0 {
+			if err := AgentPresenceService.End(session.TenantID, session.Principal.UserID, time.Now()); err != nil {
+				slog.Warn("close realtime agent presence failed", "error", err, "userId", session.Principal.UserID, "role", session.Role)
+			}
+		}
 	})
 }
 

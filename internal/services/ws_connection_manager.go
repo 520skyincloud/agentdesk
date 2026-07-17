@@ -112,6 +112,19 @@ func (m *WsConnectionManager) HasTopic(topic string) bool {
 	return len(sessions) > 0
 }
 
+func (m *WsConnectionManager) CountUserSessions(tenantID, userID int64) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	count := 0
+	for _, session := range m.sessions {
+		if session == nil || session.TenantID != tenantID || session.Principal == nil || session.Principal.UserID != userID {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 func (m *WsConnectionManager) subscribeLocked(session *ClientSession, topic string) {
 	if _, exists := session.Topics[topic]; exists {
 		return

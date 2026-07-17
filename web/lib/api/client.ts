@@ -19,6 +19,29 @@ type RequestOptions = RequestInit & {
   onResponse?: (response: Response) => void
 }
 
+function buildRequestHeaders(options: RequestOptions) {
+  const session = readSession()
+  const authHeaders = new Headers(options.headers)
+  if (!options.skipAuth && session?.accessToken) {
+    authHeaders.set("Authorization", `Bearer ${session.accessToken}`)
+    const activeTenantId = readActiveTenantId(session)
+    if (activeTenantId > 0 && !authHeaders.has("X-Tenant-ID")) {
+      authHeaders.set("X-Tenant-ID", String(activeTenantId))
+    }
+  }
+  if (
+    !authHeaders.has("Content-Type") &&
+    options.body &&
+    !(typeof FormData !== "undefined" && options.body instanceof FormData)
+  ) {
+    authHeaders.set("Content-Type", "application/json")
+  }
+  const locale = readStoredLocale()
+  authHeaders.set("Accept-Language", locale)
+  authHeaders.set("X-Locale", locale)
+  return authHeaders
+}
+
 async function parseResult<T>(response: Response) {
   const payload = (await response.json()) as JsonResult<T>
   if (!response.ok || !payload.success) {
@@ -39,26 +62,7 @@ export async function request<T>(
   const { headers, skipAuth, baseUrl, onResponse, ...rest } = options
   delete (rest as RequestOptions).baseUrl
   delete (rest as RequestOptions).onResponse
-  const session = readSession()
-  const authHeaders = new Headers(headers)
-
-  if (!skipAuth && session?.accessToken) {
-    authHeaders.set("Authorization", `Bearer ${session.accessToken}`)
-    const activeTenantId = readActiveTenantId(session)
-    if (activeTenantId > 0 && !authHeaders.has("X-Tenant-ID")) {
-      authHeaders.set("X-Tenant-ID", String(activeTenantId))
-    }
-  }
-  if (
-    !authHeaders.has("Content-Type") &&
-    rest.body &&
-    !(typeof FormData !== "undefined" && rest.body instanceof FormData)
-  ) {
-    authHeaders.set("Content-Type", "application/json")
-  }
-  const locale = readStoredLocale()
-  authHeaders.set("Accept-Language", locale)
-  authHeaders.set("X-Locale", locale)
+  const authHeaders = buildRequestHeaders({ ...rest, headers, skipAuth })
 
   const requestBaseUrl = baseUrl !== undefined ? baseUrl : API_BASE_URL
   const response = await fetch(`${requestBaseUrl}${path}`, {
@@ -69,4 +73,25 @@ export async function request<T>(
   onResponse?.(response)
 
   return parseResult<T>(response)
+}
+
+export async function requestBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
+  const { headers, skipAuth, baseUrl, onResponse, ...rest } = options
+  const authHeaders = buildRequestHeaders({ ...rest, headers, skipAuth })
+  const requestBaseUrl = baseUrl !== undefined ? baseUrl : API_BASE_URL
+  const response = await fetch(`${requestBaseUrl}${path}`, {
+    ...rest,
+    headers: authHeaders,
+    cache: "no-store",
+  })
+  onResponse?.(response)
+  if (!response.ok) {
+    try {
+      await parseResult<never>(response)
+    } catch (error) {
+      throw error
+    }
+    throw new Error(translateCurrentMessage("api.requestFailed"))
+  }
+  return response.blob()
 }
