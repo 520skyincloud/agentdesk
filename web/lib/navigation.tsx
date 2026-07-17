@@ -213,6 +213,12 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         requiredPermission: "dashboard.view",
       },
       {
+        titleKey: "nav.serviceAnalytics",
+        url: "/dashboard/service-analytics",
+        icon: <ActivitySquareIcon />,
+        requiredPermission: "serviceAnalytics.view",
+      },
+      {
         titleKey: "nav.conversations",
         url: "/dashboard/conversations",
         icon: <BotMessageSquareIcon />,
@@ -222,13 +228,13 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         titleKey: "nav.conversationDispatch",
         url: "/dashboard/conversation-dispatch",
         icon: <MessageSquareShareIcon />,
-        requiredPermission: "conversation.view",
+        requiredPermission: "conversation.handover",
       },
       {
-        titleKey: "nav.conversationMonitor",
+        titleKey: "nav.conversationRecords",
         url: "/dashboard/conversation-monitor",
-        icon: <BotMessageSquareIcon />,
-        requiredPermission: "conversation.view",
+        icon: <FileCheck2Icon />,
+        requiredPermission: "conversationRecord.view",
       },
       {
         titleKey: "nav.tickets",

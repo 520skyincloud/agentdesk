@@ -44,8 +44,11 @@ async function loadNavigation() {
 
 const allPermissions = [
   "dashboard.view",
+  "serviceAnalytics.view",
+  "conversationRecord.view",
   "storeWorkbench.view",
   "conversation.view",
+  "conversation.handover",
   "ticket.view",
   "customer.view",
   "company.view",
@@ -135,10 +138,36 @@ test("view permissions still control individual entries inside an allowed contex
   const urls = itemUrls(sections)
 
   assert.equal(urls.includes("/dashboard/conversations"), true)
+  assert.equal(urls.includes("/dashboard/conversation-dispatch"), false)
   assert.equal(urls.includes("/dashboard"), false)
   assert.equal(urls.includes("/dashboard/settings"), false)
   assert.equal(urls.includes("/dashboard/tickets"), false)
   assert.equal(urls.includes("/dashboard/roles"), false)
+})
+
+test("dispatch orchestration requires the existing handover permission", async () => {
+  const { filterDashboardNavForSession, dashboardPathIsAccessible } = await loadNavigation()
+  const context = { isPlatformAccount: false, hasActiveTenant: true }
+  const viewOnly = filterDashboardNavForSession(["conversation.view"], context)
+  const handover = filterDashboardNavForSession(
+    ["conversation.view", "conversation.handover"],
+    context,
+  )
+
+  assert.equal(itemUrls(viewOnly).includes("/dashboard/conversation-dispatch"), false)
+  assert.equal(itemUrls(handover).includes("/dashboard/conversation-dispatch"), true)
+  assert.equal(
+    dashboardPathIsAccessible("/dashboard/conversation-dispatch", ["conversation.view"], context),
+    false,
+  )
+  assert.equal(
+    dashboardPathIsAccessible(
+      "/dashboard/conversation-dispatch",
+      ["conversation.view", "conversation.handover"],
+      context,
+    ),
+    true,
+  )
 })
 
 test("operations overview requires its explicit permission", async () => {
@@ -151,6 +180,20 @@ test("operations overview requires its explicit permission", async () => {
 
   assert.equal(urls.includes("/dashboard"), true)
   assert.equal(urls.includes("/dashboard/conversations"), false)
+})
+
+test("analytics and conversation records use their own permissions", async () => {
+  const { filterDashboardNavForSession, dashboardPathIsAccessible } = await loadNavigation()
+  const context = { isPlatformAccount: false, hasActiveTenant: true }
+  const analyticsOnly = filterDashboardNavForSession(["serviceAnalytics.view"], context)
+  const recordsOnly = filterDashboardNavForSession(["conversationRecord.view"], context)
+
+  assert.equal(itemUrls(analyticsOnly).includes("/dashboard/service-analytics"), true)
+  assert.equal(itemUrls(analyticsOnly).includes("/dashboard/conversation-monitor"), false)
+  assert.equal(itemUrls(recordsOnly).includes("/dashboard/conversation-monitor"), true)
+  assert.equal(itemUrls(recordsOnly).includes("/dashboard/conversations"), false)
+  assert.equal(dashboardPathIsAccessible("/dashboard/service-analytics", [], context), false)
+  assert.equal(dashboardPathIsAccessible("/dashboard/conversation-monitor", ["conversationRecord.view"], context), true)
 })
 
 test("store workbench uses its own permission instead of channel access", async () => {
