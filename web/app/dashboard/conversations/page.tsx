@@ -35,6 +35,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { OptionCombobox } from "@/components/option-combobox";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -55,6 +56,12 @@ import {
   type StartWxWorkProtocolLoginResult,
   type WxWorkProtocolInstance,
 } from "@/lib/api/admin";
+import {
+  fetchCurrentAgentPresence,
+  updateAgentPresence,
+  type AgentPresence,
+} from "@/lib/api/service-analytics";
+import { AgentPresenceStatus, AgentPresenceStatusLabels } from "@/lib/generated/enums";
 import {
   agentConversationSelectors,
   useAgentConversationsStore,
@@ -120,6 +127,10 @@ export default function ConversationsPage() {
   const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([]);
   const [accountKeyword, setAccountKeyword] = useState("");
   const [handoffToastDismissedId, setHandoffToastDismissedId] = useState<number | null>(null);
+  const [presence, setPresence] = useState<AgentPresence | null>(null);
+  const [presenceUpdating, setPresenceUpdating] = useState(false);
+  const [breakDialogOpen, setBreakDialogOpen] = useState(false);
+  const [breakReason, setBreakReason] = useState("用餐");
   const permissions = useMemo(
     () => new Set(session?.permissions ?? []),
     [session?.permissions],
@@ -135,7 +146,35 @@ export default function ConversationsPage() {
   const canTransferConversation = permissions.has("conversation.transfer");
   const canCloseConversation = permissions.has("conversation.close");
   const canUseConversationActions = canCreateTicket || canTransferConversation || canCloseConversation;
+  const canUpdatePresence = permissions.has("agentPresence.update");
   const isSupportAgent = session?.roles?.includes("cs_user") ?? false;
+
+  useEffect(() => {
+    if (!canUpdatePresence || activeTenantId <= 0) {
+      setPresence(null);
+      return;
+    }
+    void fetchCurrentAgentPresence()
+      .then(setPresence)
+      .catch((error) => toast.error(error instanceof Error ? error.message : "客服状态加载失败"));
+  }, [activeTenantId, canUpdatePresence]);
+
+  const changePresence = async (status: AgentPresenceStatus, reason = "") => {
+    if (!canUpdatePresence || presenceUpdating) return;
+    if (status === AgentPresenceStatus.Break && !reason.trim()) {
+      setBreakDialogOpen(true);
+      return;
+    }
+    setPresenceUpdating(true);
+    try {
+      setPresence(await updateAgentPresence({ status, breakReason: reason.trim() || undefined }));
+      if (status === AgentPresenceStatus.Break) setBreakDialogOpen(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "客服状态更新失败");
+    } finally {
+      setPresenceUpdating(false);
+    }
+  };
   const showingMyAttention = conversationFilter === "my_attention";
   const selectedInstance = instances.find((item) => item.id === selectedWxWorkInstanceId) ?? null;
   const conversationInstance =
@@ -696,6 +735,23 @@ export default function ConversationsPage() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1 sm:gap-1.5">
+          {canUpdatePresence ? (
+            <div className="w-20 sm:w-24" title={presence?.breakReason || "客服在线状态"}>
+              <OptionCombobox
+                value={presence?.status === "offline" ? "" : presence?.status ?? ""}
+                options={Object.values(AgentPresenceStatus).map((status) => ({ value: status, label: AgentPresenceStatusLabels[status] }))}
+                placeholder="离线"
+                searchPlaceholder="选择状态"
+                triggerClassName="h-8 w-20 rounded-md px-2 text-xs sm:w-24"
+                disabled={presenceUpdating}
+                onChange={(value) => {
+                  const status = value as AgentPresenceStatus;
+                  if (status === AgentPresenceStatus.Break) setBreakDialogOpen(true);
+                  else void changePresence(status);
+                }}
+              />
+            </div>
+          ) : null}
           {conversation && conversation.manualAttention?.dot ? (
             <Badge className={`hidden rounded-md px-2 text-xs font-normal shadow-none sm:inline-flex ${
               conversation.manualAttention.level === "urgent"
@@ -843,6 +899,22 @@ export default function ConversationsPage() {
           }
         }}
       />
+      <Dialog open={breakDialogOpen} onOpenChange={setBreakDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>进入休息状态</DialogTitle>
+            <DialogDescription>休息原因会进入客服出勤记录。</DialogDescription>
+          </DialogHeader>
+          <label className="space-y-2 text-sm">
+            休息原因
+            <Input value={breakReason} maxLength={100} onChange={(event) => setBreakReason(event.target.value)} placeholder="如：用餐、培训、会议" />
+          </label>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBreakDialogOpen(false)}>取消</Button>
+            <Button disabled={presenceUpdating || !breakReason.trim()} onClick={() => void changePresence(AgentPresenceStatus.Break, breakReason)}>{presenceUpdating ? "更新中" : "确认休息"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <CreateTicketFromConversationDialog
         open={canCreateTicket && createTicketOpen}
         onOpenChange={setCreateTicketOpen}
