@@ -26,3 +26,40 @@ type FastGPTCollectionResponse struct {
 	TrainingAmount int    `json:"trainingAmount"`
 	Forbid         bool   `json:"forbid"`
 }
+
+type FastGPTModelCredentialResponse struct {
+	Provider       string `json:"provider"`
+	BaseURL        string `json:"baseUrl"`
+	Model          string `json:"model"`
+	KeyConfigured  bool   `json:"keyConfigured"`
+	KeyFingerprint string `json:"keyFingerprint"`
+}
+
+type FastGPTModelProfileResponse struct {
+	ID             string                          `json:"id"`
+	Name           string                          `json:"name"`
+	Revision       int64                           `json:"revision"`
+	Status         string                          `json:"status"`
+	Embedding      FastGPTModelCredentialResponse  `json:"embedding"`
+	DocumentParser FastGPTModelCredentialResponse  `json:"documentParser"`
+	Vision         FastGPTModelCredentialResponse  `json:"vision"`
+	Rerank         *FastGPTModelCredentialResponse `json:"rerank,omitempty"`
+}
+
+type FastGPTModelProfileTestStageResponse struct {
+	Stage            string `json:"stage"`
+	Status           string `json:"status"`
+	PromptTokens     int64  `json:"promptTokens"`
+	CompletionTokens int64  `json:"completionTokens"`
+}
+
+type FastGPTModelProfileTestResponse struct {
+	TestToken string                                 `json:"testToken"`
+	ExpiresAt time.Time                              `json:"expiresAt"`
+	Results   []FastGPTModelProfileTestStageResponse `json:"results"`
+}
+
+type FastGPTModelProfileSaveResponse struct {
+	Profile           FastGPTModelProfileResponse `json:"profile"`
+	BoundDatasetCount int64                       `json:"boundDatasetCount"`
+}

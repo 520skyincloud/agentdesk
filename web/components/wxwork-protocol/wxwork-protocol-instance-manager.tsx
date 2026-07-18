@@ -1,10 +1,11 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { CopyIcon, LinkIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SlidersHorizontalIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
+import { CopyIcon, DatabaseZapIcon, LinkIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SlidersHorizontalIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
+import { FastGPTModelProfileDialog } from "@/components/wxwork-protocol/fastgpt-model-profile-dialog"
 import {
   createDashboardStatusColumn,
   DashboardCrudPage,
@@ -954,6 +955,7 @@ export function WxWorkProtocolInstanceManager({
   const [intentProfiles, setIntentProfiles] = useState<ReplyIntentProfile[]>([])
   const [reloadKey, setReloadKey] = useState(0)
   const [modelSettingsInstance, setModelSettingsInstance] = useState<WxWorkProtocolInstance | null>(null)
+  const [fastGPTModelProfileInstance, setFastGPTModelProfileInstance] = useState<WxWorkProtocolInstance | null>(null)
   const [modelSettings, setModelSettings] = useState<StoreAIModelSetting[]>([])
   const [modelSettingsLoading, setModelSettingsLoading] = useState(false)
   const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
@@ -984,6 +986,8 @@ export function WxWorkProtocolInstanceManager({
   const permissionSet = useMemo(() => new Set(session?.permissions ?? []), [session?.permissions])
   const canViewStoreModelSettings = permissionSet.has("aiConfig.view")
   const canUpdateStoreModelSettings = permissionSet.has("aiConfig.update")
+  const isPlatformAdmin = (session?.roles ?? []).some((role) => role === "super_admin" || role === "admin")
+  const canManageFastGPTModelProfile = isPlatformAdmin && canUpdateStoreModelSettings
   const lockedCompanyId = lockCompany ? Number(companyId || 0) : 0
   const lockedCompanyName = repairMojibakeText(companyName || "")
 
@@ -1342,9 +1346,17 @@ export function WxWorkProtocolInstanceManager({
   if (canViewStoreModelSettings) {
     rowActions.push({
       key: "storeModelSettings",
-      label: "模型设置",
+      label: "回复模型设置",
       icon: <SlidersHorizontalIcon className="size-4" />,
       run: async ({ item }) => openStoreModelSettings(item),
+    })
+  }
+  if (canManageFastGPTModelProfile) {
+    rowActions.push({
+      key: "fastGPTModelProfile",
+      label: "知识库模型设置",
+      icon: <DatabaseZapIcon className="size-4" />,
+      run: async ({ item }) => setFastGPTModelProfileInstance(item),
     })
   }
   rowActions.push({
@@ -1754,6 +1766,18 @@ export function WxWorkProtocolInstanceManager({
       onChange={setModelSettings}
       onSubmit={() => void saveStoreModelSettings()}
       onTest={(setting) => void testCurrentStoreModelSetting(setting)}
+    />
+    <FastGPTModelProfileDialog
+      open={Boolean(fastGPTModelProfileInstance)}
+      instance={fastGPTModelProfileInstance}
+      canSave={canManageFastGPTModelProfile}
+      onOpenChange={(open) => {
+        if (!open) setFastGPTModelProfileInstance(null)
+      }}
+      onSaved={() => {
+        setReloadKey((value) => value + 1)
+        onChanged?.()
+      }}
     />
     <WelcomeSettingsDialog
       instance={welcomeSettingsInstance}

@@ -165,6 +165,63 @@ func FastGPTDatasetPostDeleteDataset(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
+func FastGPTDatasetPostModelProfile(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.FastGPTModelProfileDetailRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	ret, err := services.FastGPTDatasetService.GetModelProfile(ctx.Request.Context(), req.WxWorkInstanceID, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, ret)
+}
+
+func FastGPTDatasetPostTestModelProfile(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.FastGPTModelProfileRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	ret, err := services.FastGPTDatasetService.TestModelProfile(ctx.Request.Context(), req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, ret)
+}
+
+func FastGPTDatasetPostUpdateModelProfile(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.FastGPTModelProfileRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	ret, err := services.FastGPTDatasetService.UpdateModelProfile(ctx.Request.Context(), req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, ret)
+}
+
 func parseMultipartInt64(ctx *gin.Context, name string) (int64, error) {
 	value, ok := params.GetInt64(ctx, name)
 	if !ok || value <= 0 {

@@ -1,8 +1,10 @@
 package services
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,20 @@ import (
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
 )
+
+func TestFastGPTModelProfileRejectsStoreStaff(t *testing.T) {
+	operator := &dto.AuthPrincipal{
+		UserID: 1,
+		Roles:  []string{constants.RoleCodeStoreStaff},
+		Permissions: []string{
+			constants.PermissionAIConfigUpdate.Code,
+		},
+	}
+	_, err := FastGPTDatasetService.GetModelProfile(context.Background(), 1, operator)
+	if err == nil || !strings.Contains(err.Error(), "仅平台管理员") {
+		t.Fatalf("store staff must not access model credentials, err=%v", err)
+	}
+}
 
 func TestFastGPTFailedDatasetJobCanBeRetried(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})

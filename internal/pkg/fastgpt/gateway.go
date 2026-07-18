@@ -64,6 +64,53 @@ type DatasetProfileSnapshot struct {
 	Fingerprint     string `json:"fingerprint"`
 }
 
+type ModelCredential struct {
+	Provider       string `json:"provider"`
+	BaseURL        string `json:"baseUrl"`
+	Model          string `json:"model"`
+	APIKey         string `json:"apiKey,omitempty"`
+	KeyConfigured  bool   `json:"keyConfigured,omitempty"`
+	KeyFingerprint string `json:"keyFingerprint,omitempty"`
+}
+
+type ModelProfile struct {
+	ID             string           `json:"_id"`
+	Name           string           `json:"name"`
+	Revision       int64            `json:"revision"`
+	Embedding      ModelCredential  `json:"embedding"`
+	DocumentParser ModelCredential  `json:"documentParser"`
+	Vision         ModelCredential  `json:"vision"`
+	Rerank         *ModelCredential `json:"rerank,omitempty"`
+}
+
+type ModelProfileInput struct {
+	DatasetID      string           `json:"datasetId"`
+	ProfileID      string           `json:"profileId,omitempty"`
+	Name           string           `json:"name"`
+	Embedding      ModelCredential  `json:"embedding"`
+	DocumentParser ModelCredential  `json:"documentParser"`
+	Vision         ModelCredential  `json:"vision"`
+	Rerank         *ModelCredential `json:"rerank,omitempty"`
+	DisableRerank  bool             `json:"-"`
+	TestToken      string           `json:"testToken,omitempty"`
+}
+
+type ModelProfileTestResult struct {
+	TestToken string    `json:"testToken"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	Results   []struct {
+		Stage            string `json:"stage"`
+		Status           string `json:"status"`
+		PromptTokens     int64  `json:"promptTokens"`
+		CompletionTokens int64  `json:"completionTokens"`
+	} `json:"results"`
+}
+
+type ModelProfileUpsertResult struct {
+	Profile           ModelProfile `json:"profile"`
+	BoundDatasetCount int64        `json:"boundDatasetCount"`
+}
+
 // UsageEvent is immutable evidence emitted by FastGPT. Token fields are only
 // populated when FastGPT received them from the upstream provider.
 type UsageEvent struct {
@@ -362,6 +409,90 @@ func (g *Gateway) GetDatasetProfileSnapshot(ctx context.Context, datasetID strin
 		ProfileStatus: strings.TrimSpace(raw.ProfileStatus),
 		Fingerprint:   strings.Join(parts, ","),
 	}, nil
+}
+
+func (g *Gateway) GetModelProfile(ctx context.Context, datasetID string) (*ModelProfile, error) {
+	if !g.usesIntegrationAPI() {
+		return nil, errors.New("FastGPT model profile management requires the integration API")
+	}
+	if err := g.requireStoreScope(); err != nil {
+		return nil, err
+	}
+	data, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/model-profile/detail", nil, map[string]any{
+		"externalStoreId": g.config.StoreID,
+		"datasetId":       strings.TrimSpace(datasetID),
+	}, true)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Profile *ModelProfile `json:"profile"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("parse FastGPT model profile: %w", err)
+	}
+	return result.Profile, nil
+}
+
+func (g *Gateway) TestModelProfile(ctx context.Context, input ModelProfileInput) (*ModelProfileTestResult, error) {
+	if !g.usesIntegrationAPI() {
+		return nil, errors.New("FastGPT model profile management requires the integration API")
+	}
+	if err := g.requireStoreScope(); err != nil {
+		return nil, err
+	}
+	payload := g.modelProfilePayload(input)
+	data, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/model-profile/test", nil, payload, false)
+	if err != nil {
+		return nil, err
+	}
+	var result ModelProfileTestResult
+	if err := json.Unmarshal(data, &result); err != nil || strings.TrimSpace(result.TestToken) == "" {
+		return nil, errors.New("FastGPT model profile test response is invalid")
+	}
+	return &result, nil
+}
+
+func (g *Gateway) UpsertModelProfile(ctx context.Context, input ModelProfileInput) (*ModelProfileUpsertResult, error) {
+	if !g.usesIntegrationAPI() {
+		return nil, errors.New("FastGPT model profile management requires the integration API")
+	}
+	if err := g.requireStoreScope(); err != nil {
+		return nil, err
+	}
+	payload := g.modelProfilePayload(input)
+	data, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/model-profile/upsert", nil, payload, false)
+	if err != nil {
+		return nil, err
+	}
+	var result ModelProfileUpsertResult
+	if err := json.Unmarshal(data, &result); err != nil || strings.TrimSpace(result.Profile.ID) == "" {
+		return nil, errors.New("FastGPT model profile save response is invalid")
+	}
+	return &result, nil
+}
+
+func (g *Gateway) modelProfilePayload(input ModelProfileInput) map[string]any {
+	payload := map[string]any{
+		"externalStoreId": g.config.StoreID,
+		"datasetId":       strings.TrimSpace(input.DatasetID),
+		"name":            strings.TrimSpace(input.Name),
+		"embedding":       input.Embedding,
+		"documentParser":  input.DocumentParser,
+		"vision":          input.Vision,
+	}
+	if strings.TrimSpace(input.ProfileID) != "" {
+		payload["profileId"] = strings.TrimSpace(input.ProfileID)
+	}
+	if input.DisableRerank {
+		payload["rerank"] = nil
+	} else if input.Rerank != nil {
+		payload["rerank"] = input.Rerank
+	}
+	if strings.TrimSpace(input.TestToken) != "" {
+		payload["testToken"] = strings.TrimSpace(input.TestToken)
+	}
+	return payload
 }
 
 func (g *Gateway) ListUsageEvents(ctx context.Context, datasetID, cursor string, limit int) (*UsageEventPage, error) {

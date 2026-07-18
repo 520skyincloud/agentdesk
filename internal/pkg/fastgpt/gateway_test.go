@@ -105,6 +105,24 @@ func TestGatewayManagedIntegrationUsesServiceTokenAndStoreScope(t *testing.T) {
 				t.Fatalf("usage payload=%#v", payload)
 			}
 			_, _ = io.WriteString(w, `{"code":200,"data":{"events":[{"externalEventId":"model:7","kind":"model","stage":"embedding","provider":"dashscope","model":"text-embedding-v4","promptTokens":18,"completionTokens":0,"cachedTokens":0,"latencyMs":42,"status":"success"}],"nextCursor":"opaque-cursor"}}`)
+		case "/api/integration/agent-desk/dataset/model-profile/detail":
+			if payload["externalStoreId"] != "7" || payload["datasetId"] != "dataset-7" {
+				t.Fatalf("model profile detail payload=%#v", payload)
+			}
+			_, _ = io.WriteString(w, `{"code":200,"data":{"datasetId":"dataset-7","profile":{"_id":"profile-7","name":"南七知识库模型","revision":4,"embedding":{"provider":"openai","baseUrl":"https://embedding.example/v1","model":"embedding-v4","keyConfigured":true,"keyFingerprint":"emb-1"},"documentParser":{"provider":"openai","baseUrl":"https://chat.example/v1","model":"chat-pro","keyConfigured":true,"keyFingerprint":"doc-1"},"vision":{"provider":"openai","baseUrl":"https://vision.example/v1","model":"vision-plus","keyConfigured":true,"keyFingerprint":"vis-1"}}}}`)
+		case "/api/integration/agent-desk/dataset/model-profile/test":
+			if payload["externalStoreId"] != "7" || payload["datasetId"] != "dataset-7" || payload["profileId"] != "profile-7" || payload["rerank"] != nil {
+				t.Fatalf("model profile test payload=%#v", payload)
+			}
+			if embedding, ok := payload["embedding"].(map[string]any); !ok || embedding["apiKey"] != nil {
+				t.Fatalf("saved key should be reused without exposing it: %#v", payload["embedding"])
+			}
+			_, _ = io.WriteString(w, `{"code":200,"data":{"testToken":"tested-token","expiresAt":"2026-07-18T10:00:00Z","results":[{"stage":"embedding","status":"success","promptTokens":2,"completionTokens":0},{"stage":"documentParser","status":"success","promptTokens":3,"completionTokens":1},{"stage":"vision","status":"success","promptTokens":4,"completionTokens":1}]}}`)
+		case "/api/integration/agent-desk/dataset/model-profile/upsert":
+			if payload["externalStoreId"] != "7" || payload["datasetId"] != "dataset-7" || payload["profileId"] != "profile-7" || payload["testToken"] != "tested-token" || payload["rerank"] != nil {
+				t.Fatalf("model profile upsert payload=%#v", payload)
+			}
+			_, _ = io.WriteString(w, `{"code":200,"data":{"profile":{"_id":"profile-7","name":"南七知识库模型","revision":5,"embedding":{"provider":"openai","baseUrl":"https://embedding.example/v1","model":"embedding-v4","keyConfigured":true,"keyFingerprint":"emb-1"},"documentParser":{"provider":"openai","baseUrl":"https://chat.example/v1","model":"chat-pro","keyConfigured":true,"keyFingerprint":"doc-1"},"vision":{"provider":"openai","baseUrl":"https://vision.example/v1","model":"vision-plus","keyConfigured":true,"keyFingerprint":"vis-1"}},"boundDatasetCount":2}}`)
 		default:
 			t.Fatalf("path=%s", r.URL.Path)
 		}
@@ -134,6 +152,26 @@ func TestGatewayManagedIntegrationUsesServiceTokenAndStoreScope(t *testing.T) {
 	usage, err := scoped.ListUsageEvents(context.Background(), "dataset-7", "", 100)
 	if err != nil || usage.NextCursor != "opaque-cursor" || len(usage.Events) != 1 || usage.Events[0].ExternalEventID != "model:7" || usage.Events[0].PromptTokens != 18 {
 		t.Fatalf("usage=%#v err=%v", usage, err)
+	}
+	modelProfile, err := scoped.GetModelProfile(context.Background(), "dataset-7")
+	if err != nil || modelProfile == nil || modelProfile.ID != "profile-7" || modelProfile.Embedding.KeyFingerprint != "emb-1" {
+		t.Fatalf("modelProfile=%#v err=%v", modelProfile, err)
+	}
+	modelInput := ModelProfileInput{
+		DatasetID: "dataset-7", ProfileID: "profile-7", Name: "南七知识库模型",
+		Embedding:      ModelCredential{Provider: "openai", BaseURL: "https://embedding.example/v1", Model: "embedding-v4", KeyConfigured: true},
+		DocumentParser: ModelCredential{Provider: "openai", BaseURL: "https://chat.example/v1", Model: "chat-pro", KeyConfigured: true},
+		Vision:         ModelCredential{Provider: "openai", BaseURL: "https://vision.example/v1", Model: "vision-plus", KeyConfigured: true},
+		DisableRerank:  true,
+	}
+	testResult, err := scoped.TestModelProfile(context.Background(), modelInput)
+	if err != nil || testResult.TestToken != "tested-token" || len(testResult.Results) != 3 {
+		t.Fatalf("testResult=%#v err=%v", testResult, err)
+	}
+	modelInput.TestToken = testResult.TestToken
+	saved, err := scoped.UpsertModelProfile(context.Background(), modelInput)
+	if err != nil || saved.Profile.Revision != 5 || saved.BoundDatasetCount != 2 {
+		t.Fatalf("saved=%#v err=%v", saved, err)
 	}
 }
 
