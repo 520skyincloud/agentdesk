@@ -114,14 +114,14 @@ func (s *fastGPTUsageSyncService) syncProfileSnapshot(knowledgeBase *models.Know
 	}
 	now := time.Now()
 	_ = repositories.KnowledgeBaseRepository.UpdatesInTenant(sqls.DB(), knowledgeBase.ID, knowledgeBase.TenantID, map[string]any{
-		"fastgpt_profile_id":          profile.ProfileID,
-		"fastgpt_profile_name":        profile.ProfileName,
-		"fastgpt_profile_revision":    profile.ProfileRevision,
-		"fastgpt_profile_fingerprint": profile.Fingerprint,
-		"fastgpt_profile_status":      firstNonBlank(profile.ProfileStatus, "pending"),
-		"fastgpt_profile_synced_at":   now,
-		"updated_at":                  now,
-		"update_user_name":            "fastgpt_usage_sync",
+		"fast_gpt_profile_id":          profile.ProfileID,
+		"fast_gpt_profile_name":        profile.ProfileName,
+		"fast_gpt_profile_revision":    profile.ProfileRevision,
+		"fast_gpt_profile_fingerprint": profile.Fingerprint,
+		"fast_gpt_profile_status":      firstNonBlank(profile.ProfileStatus, "pending"),
+		"fast_gpt_profile_synced_at":   now,
+		"updated_at":                   now,
+		"update_user_name":             "fastgpt_usage_sync",
 	})
 }
 

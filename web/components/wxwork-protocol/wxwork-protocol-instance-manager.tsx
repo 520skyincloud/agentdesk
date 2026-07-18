@@ -1,11 +1,12 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { CopyIcon, LinkIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SlidersHorizontalIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
+import { CopyIcon, DatabaseZapIcon, LinkIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SlidersHorizontalIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
 import { WxWorkModelAssignmentDialog } from "@/components/wxwork-protocol/wxwork-model-assignment-dialog"
+import { FastGPTModelProfileDialog } from "@/components/wxwork-protocol/fastgpt-model-profile-dialog"
 import {
   createDashboardStatusColumn,
   DashboardCrudPage,
@@ -661,6 +662,7 @@ export function WxWorkProtocolInstanceManager({
   const [intentProfiles, setIntentProfiles] = useState<ReplyIntentProfile[]>([])
   const [reloadKey, setReloadKey] = useState(0)
   const [modelAssignmentInstance, setModelAssignmentInstance] = useState<WxWorkProtocolInstance | null>(null)
+  const [fastGPTModelProfileInstance, setFastGPTModelProfileInstance] = useState<WxWorkProtocolInstance | null>(null)
   const [welcomeSettingsInstance, setWelcomeSettingsInstance] = useState<WelcomeCapableInstance | null>(null)
   const [welcomeSettingsDraft, setWelcomeSettingsDraft] = useState<WelcomeSettingsDraft>({
     enabled: true,
@@ -692,6 +694,7 @@ export function WxWorkProtocolInstanceManager({
   const canViewCompanies = permissionSet.has("company.view")
   const canViewModelAssignments = permissionSet.has("tenantModelAssignment.view")
   const canUpdateModelAssignments = permissionSet.has("tenantModelAssignment.update")
+  const canManageFastGPTModelProfile = permissionSet.has("aiConfig.update")
   const lockedCompanyId = lockCompany ? Number(companyId || 0) : 0
   const lockedCompanyName = repairMojibakeText(companyName || "")
 
@@ -966,6 +969,14 @@ export function WxWorkProtocolInstanceManager({
       label: "模型分配",
       icon: <SlidersHorizontalIcon className="size-4" />,
       run: async ({ item }) => openModelAssignments(item),
+    })
+  }
+  if (canManageFastGPTModelProfile) {
+    rowActions.push({
+      key: "fastGPTModelProfile",
+      label: "知识库模型设置",
+      icon: <DatabaseZapIcon className="size-4" />,
+      run: async ({ item }) => setFastGPTModelProfileInstance(item),
     })
   }
   if (canUpdateChannels) {
@@ -1378,6 +1389,18 @@ export function WxWorkProtocolInstanceManager({
         if (!open) {
           setModelAssignmentInstance(null)
         }
+      }}
+    />
+    <FastGPTModelProfileDialog
+      open={Boolean(fastGPTModelProfileInstance)}
+      instance={fastGPTModelProfileInstance}
+      canSave={canManageFastGPTModelProfile}
+      onOpenChange={(open) => {
+        if (!open) setFastGPTModelProfileInstance(null)
+      }}
+      onSaved={() => {
+        setReloadKey((value) => value + 1)
+        onChanged?.()
       }}
     />
     <WelcomeSettingsDialog

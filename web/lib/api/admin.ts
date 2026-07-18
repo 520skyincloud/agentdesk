@@ -2410,6 +2410,70 @@ export type FastGPTDatasetJob = {
   updatedAt: string
 }
 
+export type FastGPTModelCredential = {
+  provider: string
+  baseUrl: string
+  model: string
+  apiKey?: string
+  keyConfigured?: boolean
+  keyFingerprint?: string
+}
+
+export type FastGPTModelProfile = {
+  id: string
+  name: string
+  revision: number
+  status: string
+  embedding: FastGPTModelCredential
+  documentParser: FastGPTModelCredential
+  vision: FastGPTModelCredential
+  rerank?: FastGPTModelCredential | null
+}
+
+export type FastGPTModelProfilePayload = {
+  wxWorkInstanceId: number
+  profileId: string
+  name: string
+  embedding: FastGPTModelCredential
+  documentParser: FastGPTModelCredential
+  vision: FastGPTModelCredential
+  rerankEnabled: boolean
+  rerank?: FastGPTModelCredential | null
+  testToken?: string
+}
+
+export type FastGPTModelProfileTestResult = {
+  testToken: string
+  expiresAt: string
+  results: Array<{
+    stage: string
+    status: string
+    promptTokens: number
+    completionTokens: number
+  }>
+}
+
+export function fetchFastGPTModelProfile(wxWorkInstanceId: number) {
+  return request<FastGPTModelProfile | null>("/api/dashboard/knowledge-base/fastgpt/model_profile", {
+    method: "POST",
+    body: JSON.stringify({ wxWorkInstanceId }),
+  })
+}
+
+export function testFastGPTModelProfile(payload: FastGPTModelProfilePayload) {
+  return request<FastGPTModelProfileTestResult>("/api/dashboard/knowledge-base/fastgpt/test_model_profile", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateFastGPTModelProfile(payload: FastGPTModelProfilePayload) {
+  return request<{ profile: FastGPTModelProfile; boundDatasetCount: number }>("/api/dashboard/knowledge-base/fastgpt/update_model_profile", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export function provisionFastGPTDataset(storeId: number, name: string) {
   return request<{ jobId: number; status: string }>("/api/dashboard/knowledge-base/fastgpt/provision", {
     method: "POST",

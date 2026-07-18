@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"strings"
@@ -16,6 +17,19 @@ import (
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
 )
+
+func TestFastGPTModelProfileRequiresActiveTenant(t *testing.T) {
+	operator := &dto.AuthPrincipal{
+		UserID: 1,
+		Permissions: []string{
+			constants.PermissionAIConfigUpdate.Code,
+		},
+	}
+	_, err := FastGPTDatasetService.GetModelProfile(context.Background(), 1, operator)
+	if err == nil || !strings.Contains(err.Error(), "接入公司") {
+		t.Fatalf("model profile access without active tenant must fail, err=%v", err)
+	}
+}
 
 func TestFastGPTFailedDatasetJobCanBeRetried(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})

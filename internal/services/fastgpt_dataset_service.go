@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"mime/multipart"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
+	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -331,6 +334,178 @@ func (s *fastGPTDatasetService) ActivateKnowledgeBase(instanceID, knowledgeBaseI
 		"update_user_id":    operator.UserID,
 		"update_user_name":  operator.Username,
 	})
+}
+
+func (s *fastGPTDatasetService) GetModelProfile(ctx context.Context, instanceID int64, operator *dto.AuthPrincipal) (*response.FastGPTModelProfileResponse, error) {
+	instance, kb, connector, err := s.requireManagedInstanceKnowledgeBase(instanceID, operator)
+	if err != nil {
+		return nil, err
+	}
+	profile, err := connector.ForStore(instance.StoreID).GetModelProfile(ctx, kb.DatasetID)
+	if err != nil {
+		return nil, publicFastGPTError(err)
+	}
+	if profile == nil {
+		return nil, nil
+	}
+	return buildFastGPTModelProfileResponse(profile), nil
+}
+
+func (s *fastGPTDatasetService) TestModelProfile(ctx context.Context, req request.FastGPTModelProfileRequest, operator *dto.AuthPrincipal) (*response.FastGPTModelProfileTestResponse, error) {
+	instance, kb, connector, err := s.requireManagedInstanceKnowledgeBase(req.WxWorkInstanceID, operator)
+	if err != nil {
+		return nil, err
+	}
+	result, err := connector.ForStore(instance.StoreID).TestModelProfile(ctx, buildFastGPTModelProfileInput(kb.DatasetID, req))
+	if err != nil {
+		return nil, publicFastGPTModelTestError(err)
+	}
+	ret := &response.FastGPTModelProfileTestResponse{TestToken: result.TestToken, ExpiresAt: result.ExpiresAt}
+	for _, item := range result.Results {
+		ret.Results = append(ret.Results, response.FastGPTModelProfileTestStageResponse{
+			Stage: item.Stage, Status: item.Status, PromptTokens: item.PromptTokens, CompletionTokens: item.CompletionTokens,
+		})
+	}
+	return ret, nil
+}
+
+func (s *fastGPTDatasetService) UpdateModelProfile(ctx context.Context, req request.FastGPTModelProfileRequest, operator *dto.AuthPrincipal) (*response.FastGPTModelProfileSaveResponse, error) {
+	instance, kb, connector, err := s.requireManagedInstanceKnowledgeBase(req.WxWorkInstanceID, operator)
+	if err != nil {
+		return nil, err
+	}
+	result, err := connector.ForStore(instance.StoreID).UpsertModelProfile(ctx, buildFastGPTModelProfileInput(kb.DatasetID, req))
+	if err != nil {
+		return nil, publicFastGPTError(err)
+	}
+	if err := s.syncStoreModelProfileSnapshot(instance.StoreID, kb.TenantID, &result.Profile, operator); err != nil {
+		return nil, err
+	}
+	return &response.FastGPTModelProfileSaveResponse{
+		Profile: *buildFastGPTModelProfileResponse(&result.Profile), BoundDatasetCount: result.BoundDatasetCount,
+	}, nil
+}
+
+func (s *fastGPTDatasetService) requireManagedInstanceKnowledgeBase(instanceID int64, operator *dto.AuthPrincipal) (*models.WxWorkProtocolInstance, *models.KnowledgeBase, *FastGPTConnector, error) {
+	if operator == nil {
+		return nil, nil, nil, errorsx.Forbidden("无权配置知识库模型")
+	}
+	if instanceID <= 0 {
+		return nil, nil, nil, errorsx.InvalidParam("请选择企微员工号")
+	}
+	tenantID, err := requireActiveTenantID(operator, "FastGPT 知识库模型")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	instance := WxWorkProtocolInstanceService.GetByTenantID(instanceID, tenantID)
+	if instance == nil || instance.Status == enums.StatusDeleted || instance.StoreID <= 0 {
+		return nil, nil, nil, errorsx.InvalidParam("企微员工号不存在或未绑定门店")
+	}
+	if _, err := s.requireStoreAccess(instance.StoreID, operator); err != nil {
+		return nil, nil, nil, err
+	}
+	kb := KnowledgeBaseService.GetInTenant(instance.KnowledgeBaseID, tenantID)
+	if kb == nil || kb.Status != enums.StatusOk || kb.StoreID != instance.StoreID || strings.TrimSpace(kb.DatasetID) == "" {
+		return nil, nil, nil, errorsx.InvalidParam("当前员工号尚未绑定可用的 FastGPT 知识库")
+	}
+	if strings.TrimSpace(kb.ConnectionID) != fastgptapi.ManagedConnectionID {
+		return nil, nil, nil, errorsx.InvalidParam("当前知识库尚未迁移到门店 FastGPT Team，不能设置独立模型密钥")
+	}
+	connector, err := NewManagedStoreFastGPTConnector()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return instance, kb, connector, nil
+}
+
+func (s *fastGPTDatasetService) syncStoreModelProfileSnapshot(storeID, tenantID int64, profile *FastGPTModelProfile, operator *dto.AuthPrincipal) error {
+	if storeID <= 0 || tenantID <= 0 || profile == nil || strings.TrimSpace(profile.ID) == "" {
+		return errorsx.InvalidParam("FastGPT 返回的模型 Profile 无效")
+	}
+	now := time.Now()
+	fingerprintSource := strings.Join([]string{
+		profile.Embedding.KeyFingerprint,
+		profile.DocumentParser.KeyFingerprint,
+		profile.Vision.KeyFingerprint,
+		func() string {
+			if profile.Rerank != nil {
+				return profile.Rerank.KeyFingerprint
+			}
+			return ""
+		}(),
+	}, ":")
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(fingerprintSource)))
+	items := repositories.KnowledgeBaseRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("store_id", storeID).
+		Eq("connection_id", fastgptapi.ManagedConnectionID).
+		Eq("status", enums.StatusOk))
+	return sqls.WithTransaction(func(tx *sqls.TxContext) error {
+		for index := range items {
+			if err := repositories.KnowledgeBaseRepository.UpdatesInTenant(tx.Tx, items[index].ID, tenantID, map[string]any{
+				"fast_gpt_profile_id":          profile.ID,
+				"fast_gpt_profile_name":        profile.Name,
+				"fast_gpt_profile_revision":    strconv.FormatInt(profile.Revision, 10),
+				"fast_gpt_profile_fingerprint": fingerprint,
+				"fast_gpt_profile_status":      "ready",
+				"fast_gpt_profile_synced_at":   now,
+				"updated_at":                   now,
+				"update_user_id":               operator.UserID,
+				"update_user_name":             operator.Username,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func buildFastGPTModelProfileInput(datasetID string, req request.FastGPTModelProfileRequest) FastGPTModelProfileInput {
+	return FastGPTModelProfileInput{
+		DatasetID:      datasetID,
+		ProfileID:      req.ProfileID,
+		Name:           req.Name,
+		Embedding:      buildFastGPTModelCredential(req.Embedding),
+		DocumentParser: buildFastGPTModelCredential(req.DocumentParser),
+		Vision:         buildFastGPTModelCredential(req.Vision),
+		Rerank: func() *fastgptapi.ModelCredential {
+			if req.Rerank == nil {
+				return nil
+			}
+			value := buildFastGPTModelCredential(*req.Rerank)
+			return &value
+		}(),
+		DisableRerank: !req.RerankEnabled,
+		TestToken:     req.TestToken,
+	}
+}
+
+func buildFastGPTModelCredential(input request.FastGPTModelCredentialRequest) fastgptapi.ModelCredential {
+	return fastgptapi.ModelCredential{Provider: input.Provider, BaseURL: input.BaseURL, Model: input.Model, APIKey: input.APIKey}
+}
+
+func buildFastGPTModelProfileResponse(profile *FastGPTModelProfile) *response.FastGPTModelProfileResponse {
+	if profile == nil {
+		return nil
+	}
+	ret := &response.FastGPTModelProfileResponse{
+		ID: profile.ID, Name: profile.Name, Revision: profile.Revision, Status: "ready",
+		Embedding:      buildFastGPTModelCredentialResponse(profile.Embedding),
+		DocumentParser: buildFastGPTModelCredentialResponse(profile.DocumentParser),
+		Vision:         buildFastGPTModelCredentialResponse(profile.Vision),
+	}
+	if profile.Rerank != nil {
+		value := buildFastGPTModelCredentialResponse(*profile.Rerank)
+		ret.Rerank = &value
+	}
+	return ret
+}
+
+func buildFastGPTModelCredentialResponse(input fastgptapi.ModelCredential) response.FastGPTModelCredentialResponse {
+	return response.FastGPTModelCredentialResponse{
+		Provider: input.Provider, BaseURL: input.BaseURL, Model: input.Model,
+		KeyConfigured: input.KeyConfigured, KeyFingerprint: input.KeyFingerprint,
+	}
 }
 
 func (s *fastGPTDatasetService) uploadFile(ctx context.Context, connector *FastGPTConnector, job *models.FastGPTDatasetJob) error {
@@ -669,4 +844,29 @@ func publicFastGPTError(err error) error {
 		return nil
 	}
 	return errorsx.BusinessError(1, "FastGPT 服务暂不可用，请稍后重试")
+}
+
+func publicFastGPTModelTestError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errorsx.BusinessError(2, "模型测试超时，请检查接口地址或稍后重试")
+	}
+	var statusErr *fastgptapi.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return errorsx.BusinessError(2, "模型测试失败，请检查接口地址、密钥和模型名")
+	}
+	switch statusErr.StatusCode {
+	case http.StatusBadRequest:
+		return errorsx.BusinessError(2, "模型测试未通过，请检查模型名和接口兼容格式")
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return errorsx.BusinessError(2, "模型测试未通过，请检查 API Key 是否有效")
+	case http.StatusNotFound:
+		return errorsx.BusinessError(2, "模型测试未通过，请检查 Base URL 和模型名")
+	case http.StatusTooManyRequests:
+		return errorsx.BusinessError(2, "模型服务当前限流，请稍后重新测试")
+	default:
+		return errorsx.BusinessError(2, "模型服务暂不可用，请稍后重新测试")
+	}
 }

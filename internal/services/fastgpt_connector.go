@@ -21,6 +21,10 @@ type FastGPTConnector struct {
 
 type FastGPTDataset = fastgptapi.Dataset
 type FastGPTCollection = fastgptapi.Collection
+type FastGPTModelProfile = fastgptapi.ModelProfile
+type FastGPTModelProfileInput = fastgptapi.ModelProfileInput
+type FastGPTModelProfileTestResult = fastgptapi.ModelProfileTestResult
+type FastGPTModelProfileUpsertResult = fastgptapi.ModelProfileUpsertResult
 
 type FastGPTSearchResult struct {
 	Raw json.RawMessage `json:"raw"`
@@ -128,6 +132,18 @@ func (c *FastGPTConnector) DeleteDataset(ctx context.Context, datasetID string) 
 
 func (c *FastGPTConnector) GetDatasetProfileSnapshot(ctx context.Context, datasetID string) (*fastgptapi.DatasetProfileSnapshot, error) {
 	return c.gateway.GetDatasetProfileSnapshot(ctx, datasetID)
+}
+
+func (c *FastGPTConnector) GetModelProfile(ctx context.Context, datasetID string) (*FastGPTModelProfile, error) {
+	return c.gateway.GetModelProfile(ctx, datasetID)
+}
+
+func (c *FastGPTConnector) TestModelProfile(ctx context.Context, input FastGPTModelProfileInput) (*FastGPTModelProfileTestResult, error) {
+	return c.gateway.TestModelProfile(ctx, input)
+}
+
+func (c *FastGPTConnector) UpsertModelProfile(ctx context.Context, input FastGPTModelProfileInput) (*FastGPTModelProfileUpsertResult, error) {
+	return c.gateway.UpsertModelProfile(ctx, input)
 }
 
 func (c *FastGPTConnector) ListUsageEvents(ctx context.Context, datasetID, cursor string, limit int) (*fastgptapi.UsageEventPage, error) {
