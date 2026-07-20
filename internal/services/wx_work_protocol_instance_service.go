@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 var WxWorkProtocolInstanceService = newWxWorkProtocolInstanceService()
@@ -36,6 +37,16 @@ type WxWorkProtocolInstanceStats struct {
 	CustomerCount              int64
 	ManualAttentionCount       int64
 	UrgentManualAttentionCount int64
+}
+
+func (s *wxWorkProtocolInstanceService) activeInstanceForBindingDB(db *gorm.DB, tenantID, bindingID int64) *models.WxWorkProtocolInstance {
+	if tenantID <= 0 || bindingID <= 0 {
+		return nil
+	}
+	return repositories.WxWorkProtocolInstanceRepository.Take(db,
+		"tenant_id = ? AND store_staff_binding_id = ? AND replaced_by_instance_id = 0 AND status <> ?",
+		tenantID, bindingID, enums.StatusDeleted,
+	)
 }
 
 const DefaultWxWorkProtocolPersonaPrompt = `你是线上酒店接待，说话简短、自然、像正常微信聊天。
@@ -97,7 +108,7 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgentForConversation(conve
 	if instance == nil || !instance.AIReplyEnabled {
 		return models.AIAgent{}, false
 	}
-	if _, err := s.resolveEffectiveIntentProfileID(conversation.TenantID, instance.CompanyID, instance.IntentProfileID, true); err != nil {
+	if _, err := s.resolveEffectiveIntentProfileID(instance.IntentProfileID, true); err != nil {
 		return models.AIAgent{}, false
 	}
 	return s.BuildRuntimeAIAgent(instance), true
@@ -261,15 +272,19 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 	if err := s.validateProtocolChannel(req.ChannelID, tenantID); err != nil {
 		return nil, err
 	}
-	companyID, storeID, err := s.normalizeCompanyStoreBinding(tenantID, req.CompanyID, req.StoreID, req.StoreName, req.EmployeeName, operator)
-	if err != nil {
+	binding := repositories.StoreStaffBindingRepository.TakeInTenant(sqls.DB(), tenantID, "user_id = ? AND status = ?", req.StoreStaffUserID, enums.StatusOk)
+	if binding == nil {
+		return nil, errorsx.InvalidParam("该系统账号尚未建立门店身份，请使用现场扫码或绑定链接")
+	}
+	if err := StoreStaffBindingService.validateBindingOwnerDB(sqls.DB(), binding); err != nil {
 		return nil, err
 	}
+	storeID := binding.StoreID
 	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
 	if err != nil {
 		return nil, err
 	}
-	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(tenantID, companyID, intentProfileID, req.AIReplyEnabled)
+	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(intentProfileID, req.AIReplyEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -292,9 +307,11 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		EmployeeUserID:                 strings.TrimSpace(req.EmployeeUserID),
 		EmployeeName:                   utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
 		EmployeeAvatar:                 strings.TrimSpace(req.EmployeeAvatar),
-		CompanyID:                      companyID,
+		AgentTeamID:                    binding.AgentTeamID,
+		CompanyID:                      0,
 		IntentProfileID:                intentProfileID,
 		StoreID:                        storeID,
+		StoreStaffBindingID:            binding.ID,
 		StoreAddress:                   utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
 		StoreNavigationName:            utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
 		StoreLongitude:                 strings.TrimSpace(req.StoreLongitude),
@@ -334,10 +351,26 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 	}
 	item.CreatedAt = now
 	item.UpdatedAt = now
-	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
-		return nil, err
-	}
-	if err := s.syncStoreStaffBindingFromInstanceRequest(item, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator); err != nil {
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedBinding, lockErr := repositories.StoreStaffBindingRepository.GetForUpdateInTenant(ctx.Tx, binding.ID, tenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if lockedBinding == nil || lockedBinding.Status != enums.StatusOk || lockedBinding.UserID != req.StoreStaffUserID || lockedBinding.StoreID != storeID {
+			return errorsx.InvalidParam("门店员工身份已变化，请刷新后重试")
+		}
+		if err := StoreStaffBindingService.validateBindingOwnerDB(ctx.Tx, lockedBinding); err != nil {
+			return err
+		}
+		if current := s.activeInstanceForBindingDB(ctx.Tx, tenantID, lockedBinding.ID); current != nil {
+			return errorsx.InvalidParam("该系统账号已经绑定企微员工号，请使用更换登录员工号")
+		}
+		item.AgentTeamID = lockedBinding.AgentTeamID
+		if err := repositories.WxWorkProtocolInstanceRepository.Create(ctx.Tx, item); err != nil {
+			return err
+		}
+		return s.updateStoreStaffBindingFromInstanceRequestDB(ctx.Tx, lockedBinding, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator)
+	}); err != nil {
 		return nil, err
 	}
 	_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(guid, item.ID)
@@ -353,11 +386,6 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 	if err != nil {
 		return nil, err
 	}
-	if req.CompanyID > 0 {
-		if company := repositories.CompanyRepository.GetInTenant(sqls.DB(), req.CompanyID, tenantID); company == nil || company.Status == enums.StatusDeleted {
-			return nil, errorsx.InvalidParam("公司不存在")
-		}
-	}
 	now := time.Now()
 	guid := normalizeProtocolDeviceGUID(req.Guid)
 	if guid == "" {
@@ -367,66 +395,92 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 			return nil, err
 		}
 	}
-	if existing := s.Take("guid = ? AND status <> ?", guid, enums.StatusDeleted); existing != nil {
-		if existing.TenantID == 0 {
+	var item *models.WxWorkProtocolInstance
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		prepared, err := StoreStaffBindingService.prepareForUserDB(ctx.Tx, tenantID, req.StoreStaffUserID, req.StoreName, operator)
+		if err != nil {
+			return err
+		}
+		if current := s.activeInstanceForBindingDB(ctx.Tx, tenantID, prepared.Binding.ID); current != nil {
+			if current.HealthStatus == "login_qrcode" && strings.TrimSpace(current.EmployeeUserID) == "" {
+				item = current
+				return nil
+			}
+			return errorsx.InvalidParam("该系统账号已经绑定企微员工号，请使用更换登录员工号")
+		}
+		existing := repositories.WxWorkProtocolInstanceRepository.Take(ctx.Tx, "guid = ? AND status <> ?", guid, enums.StatusDeleted)
+		if existing != nil {
 			if !s.canReuseForLogin(existing, now) {
-				return nil, errorsx.InvalidParam("该协议设备 GUID 已被未归属实例占用，暂不可认领")
+				return errorsx.InvalidParam("该协议设备 GUID 已绑定到其他员工号")
 			}
-			claimed, claimErr := repositories.WxWorkProtocolInstanceRepository.ClaimTenant(sqls.DB(), existing.ID, tenantID, map[string]any{
-				"channel_id":       channel.ID,
-				"company_id":       req.CompanyID,
-				"updated_at":       now,
-				"update_user_id":   operator.UserID,
-				"update_user_name": operator.Username,
-			})
-			if claimErr != nil {
-				return nil, claimErr
+			if existing.TenantID != 0 && existing.TenantID != tenantID {
+				return errorsx.InvalidParam("该协议设备 GUID 已绑定到其他接入公司")
 			}
-			if !claimed {
-				return nil, errorsx.InvalidParam("该协议设备 GUID 已被其他接入公司认领")
-			}
-			existing = repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), existing.ID, tenantID)
-		}
-		if existing == nil || existing.TenantID != tenantID {
-			return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他接入公司")
-		}
-		if req.CompanyID > 0 && existing.CompanyID > 0 && existing.CompanyID != req.CompanyID {
-			return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他公司账号")
-		}
-		if req.CompanyID > 0 && existing.CompanyID == 0 {
-			if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), existing.ID, tenantID, map[string]any{
-				"company_id":       req.CompanyID,
-				"updated_at":       now,
-				"update_user_id":   operator.UserID,
-				"update_user_name": operator.Username,
+			if existing.TenantID == 0 {
+				claimed, claimErr := repositories.WxWorkProtocolInstanceRepository.ClaimTenant(ctx.Tx, existing.ID, tenantID, map[string]any{
+					"channel_id":             channel.ID,
+					"company_id":             0,
+					"store_id":               prepared.Store.ID,
+					"store_staff_binding_id": prepared.Binding.ID,
+					"agent_team_id":          prepared.Binding.AgentTeamID,
+					"health_status":          "login_qrcode",
+					"remark":                 "系统账号现场扫码绑定企微员工号",
+					"updated_at":             now,
+					"update_user_id":         operator.UserID,
+					"update_user_name":       operator.Username,
+				})
+				if claimErr != nil {
+					return claimErr
+				}
+				if !claimed {
+					return errorsx.InvalidParam("该协议设备 GUID 已被其他接入公司认领")
+				}
+			} else if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, existing.ID, tenantID, map[string]any{
+				"channel_id":             channel.ID,
+				"company_id":             0,
+				"store_id":               prepared.Store.ID,
+				"store_staff_binding_id": prepared.Binding.ID,
+				"agent_team_id":          prepared.Binding.AgentTeamID,
+				"health_status":          "login_qrcode",
+				"remark":                 "系统账号现场扫码绑定企微员工号",
+				"updated_at":             now,
+				"update_user_id":         operator.UserID,
+				"update_user_name":       operator.Username,
 			}); err != nil {
-				return nil, err
+				return err
 			}
-			existing.CompanyID = req.CompanyID
+			item = repositories.WxWorkProtocolInstanceRepository.GetInTenant(ctx.Tx, existing.ID, tenantID)
+			return nil
 		}
-		return existing, nil
-	}
-	item := &models.WxWorkProtocolInstance{
-		TenantID:                  tenantID,
-		Guid:                      guid,
-		ChannelID:                 channel.ID,
-		AIReplyEnabled:            false,
-		CompanyID:                 req.CompanyID,
-		PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
-		FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
-		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
-		ContextMaxMessages:        DefaultConversationContextMaxMessages,
-		ContextMaxTokens:          DefaultConversationContextMaxTokens,
-		ContextCompressionEnabled: true,
-		HealthStatus:              "login_qrcode",
-		Status:                    enums.StatusDisabled,
-		Remark:                    "扫码登录创建，登录成功后请补充店名、账号资料、行业 Profile 和知识库",
-		AuditFields:               utils.BuildAuditFields(operator),
-	}
-	item.CreatedAt = now
-	item.UpdatedAt = now
-	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
+		item = &models.WxWorkProtocolInstance{
+			TenantID:                  tenantID,
+			Guid:                      guid,
+			ChannelID:                 channel.ID,
+			AgentTeamID:               prepared.Binding.AgentTeamID,
+			StoreID:                   prepared.Store.ID,
+			StoreStaffBindingID:       prepared.Binding.ID,
+			AIReplyEnabled:            false,
+			CompanyID:                 0,
+			PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
+			FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
+			ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
+			ContextMaxMessages:        DefaultConversationContextMaxMessages,
+			ContextMaxTokens:          DefaultConversationContextMaxTokens,
+			ContextCompressionEnabled: true,
+			HealthStatus:              "login_qrcode",
+			Status:                    enums.StatusDisabled,
+			Remark:                    "系统账号现场扫码绑定企微员工号",
+			AuditFields:               utils.BuildAuditFields(operator),
+		}
+		item.CreatedAt = now
+		item.UpdatedAt = now
+		return repositories.WxWorkProtocolInstanceRepository.Create(ctx.Tx, item)
+	})
+	if err != nil {
 		return nil, err
+	}
+	if item == nil {
+		return nil, errorsx.BusinessError(0, "企微员工号绑定实例创建失败")
 	}
 	_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(guid, item.ID)
 	return item, nil
@@ -441,11 +495,6 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 	if err != nil {
 		return nil, err
 	}
-	if req.CompanyID > 0 {
-		if company := repositories.CompanyRepository.GetInTenant(sqls.DB(), req.CompanyID, tenantID); company == nil || company.Status == enums.StatusDeleted {
-			return nil, errorsx.InvalidParam("公司不存在")
-		}
-	}
 	now := time.Now()
 	guid := normalizeProtocolDeviceGUID(req.Guid)
 	if guid == "" {
@@ -455,69 +504,57 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 			return nil, err
 		}
 	}
-	if existing := s.Take("guid = ? AND status <> ?", guid, enums.StatusDeleted); existing != nil {
-		if s.canReuseForLogin(existing, now) {
-			if existing.TenantID == 0 {
-				claimed, claimErr := repositories.WxWorkProtocolInstanceRepository.ClaimTenant(sqls.DB(), existing.ID, tenantID, map[string]any{
-					"channel_id":       channel.ID,
-					"company_id":       req.CompanyID,
-					"updated_at":       now,
-					"update_user_id":   operator.UserID,
-					"update_user_name": operator.Username,
-				})
-				if claimErr != nil {
-					return nil, claimErr
-				}
-				if !claimed {
-					return nil, errorsx.InvalidParam("该协议设备 GUID 已被其他接入公司认领")
-				}
-				existing = repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), existing.ID, tenantID)
-			}
-			if existing == nil || existing.TenantID != tenantID {
-				return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他接入公司")
-			}
-			if req.CompanyID > 0 && existing.CompanyID > 0 && existing.CompanyID != req.CompanyID {
-				return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他公司账号")
-			}
-			if req.CompanyID > 0 && existing.CompanyID == 0 {
-				if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), existing.ID, tenantID, map[string]any{
-					"company_id":       req.CompanyID,
-					"updated_at":       now,
-					"update_user_id":   operator.UserID,
-					"update_user_name": operator.Username,
-				}); err != nil {
-					return nil, err
-				}
-				existing.CompanyID = req.CompanyID
-			}
-			return existing, nil
+	var item *models.WxWorkProtocolInstance
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		prepared, err := StoreStaffBindingService.prepareForUserDB(ctx.Tx, tenantID, req.StoreStaffUserID, req.StoreName, operator)
+		if err != nil {
+			return err
 		}
-		return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他员工号")
-	}
-	item := &models.WxWorkProtocolInstance{
-		TenantID:                  tenantID,
-		Guid:                      guid,
-		ChannelID:                 channel.ID,
-		CompanyID:                 req.CompanyID,
-		AIReplyEnabled:            false,
-		PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
-		FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
-		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
-		ContextMaxMessages:        DefaultConversationContextMaxMessages,
-		ContextMaxTokens:          DefaultConversationContextMaxTokens,
-		ContextCompressionEnabled: true,
-		RemoteSetupToken:          strings.ReplaceAll(uuid.NewString(), "-", ""),
-		HealthStatus:              "remote_setup",
-		Status:                    enums.StatusDisabled,
-		Remark:                    firstNonBlank(strings.TrimSpace(req.Remark), "远程开户链接创建，等待门店扫码登录并补充行业 Profile、店名和知识库"),
-		AuditFields:               utils.BuildAuditFields(operator),
-	}
-	expiresAt := now.Add(14 * 24 * time.Hour)
-	item.RemoteSetupExpiresAt = &expiresAt
-	item.CreatedAt = now
-	item.UpdatedAt = now
-	if err := repositories.WxWorkProtocolInstanceRepository.Create(sqls.DB(), item); err != nil {
+		if prepared.User.Email == nil || strings.TrimSpace(*prepared.User.Email) == "" {
+			return errorsx.InvalidParam("该系统账号尚未填写邮箱，无法发送绑定验证")
+		}
+		if current := s.activeInstanceForBindingDB(ctx.Tx, tenantID, prepared.Binding.ID); current != nil {
+			if current.HealthStatus == "remote_setup" && current.RemoteSetupSubmittedAt == nil && (current.RemoteSetupExpiresAt == nil || current.RemoteSetupExpiresAt.After(now)) {
+				item = current
+				return nil
+			}
+			return errorsx.InvalidParam("该系统账号已经绑定企微员工号，请使用更换登录员工号")
+		}
+		if existing := repositories.WxWorkProtocolInstanceRepository.Take(ctx.Tx, "guid = ? AND status <> ?", guid, enums.StatusDeleted); existing != nil {
+			return errorsx.InvalidParam("该协议设备 GUID 已绑定到其他员工号")
+		}
+		expiresAt := now.Add(14 * 24 * time.Hour)
+		item = &models.WxWorkProtocolInstance{
+			TenantID:                  tenantID,
+			Guid:                      guid,
+			ChannelID:                 channel.ID,
+			AgentTeamID:               prepared.Binding.AgentTeamID,
+			StoreID:                   prepared.Store.ID,
+			StoreStaffBindingID:       prepared.Binding.ID,
+			CompanyID:                 0,
+			AIReplyEnabled:            false,
+			PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
+			FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
+			ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
+			ContextMaxMessages:        DefaultConversationContextMaxMessages,
+			ContextMaxTokens:          DefaultConversationContextMaxTokens,
+			ContextCompressionEnabled: true,
+			RemoteSetupToken:          strings.ReplaceAll(uuid.NewString(), "-", ""),
+			RemoteSetupExpiresAt:      &expiresAt,
+			HealthStatus:              "remote_setup",
+			Status:                    enums.StatusDisabled,
+			Remark:                    firstNonBlank(strings.TrimSpace(req.Remark), "系统账号企微员工号绑定链接"),
+			AuditFields:               utils.BuildAuditFields(operator),
+		}
+		item.CreatedAt = now
+		item.UpdatedAt = now
+		return repositories.WxWorkProtocolInstanceRepository.Create(ctx.Tx, item)
+	})
+	if err != nil {
 		return nil, err
+	}
+	if item == nil {
+		return nil, errorsx.BusinessError(0, "企微员工号绑定链接创建失败")
 	}
 	_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(guid, item.ID)
 	return item, nil
@@ -548,6 +585,10 @@ func (s *wxWorkProtocolInstanceService) CreateReplacementRemoteSetup(req request
 	if old.ReplacedByInstanceID > 0 {
 		return nil, errorsx.InvalidParam("该员工号已经完成替换")
 	}
+	binding, err := StoreStaffBindingService.EnsureForInstance(old, operator)
+	if err != nil {
+		return nil, err
+	}
 	if existing := s.Take("tenant_id = ? AND replaces_instance_id = ? AND remote_setup_submitted_at IS NULL AND status <> ?", tenantID, old.ID, enums.StatusDeleted); existing != nil {
 		return existing, nil
 	}
@@ -571,10 +612,11 @@ func (s *wxWorkProtocolInstanceService) CreateReplacementRemoteSetup(req request
 		TenantID:                       tenantID,
 		Guid:                           guid,
 		ChannelID:                      old.ChannelID,
-		CompanyID:                      old.CompanyID,
+		AgentTeamID:                    binding.AgentTeamID,
+		CompanyID:                      0,
 		IntentProfileID:                old.IntentProfileID,
-		StoreID:                        old.StoreID,
-		StoreStaffBindingID:            old.StoreStaffBindingID,
+		StoreID:                        binding.StoreID,
+		StoreStaffBindingID:            binding.ID,
 		ReplacesInstanceID:             old.ID,
 		StoreAddress:                   old.StoreAddress,
 		StoreNavigationName:            old.StoreNavigationName,
@@ -701,7 +743,7 @@ func (s *wxWorkProtocolInstanceService) UpdateRemoteSetup(req request.UpdateWxWo
 	if item.TenantID <= 0 {
 		return errorsx.InvalidParam("远程配置实例缺少接入公司归属，请联系管理员重新生成链接")
 	}
-	updated, err := StoreAccountLifecycleService.CompleteRemoteSetup(item, req)
+	updated, err := StoreIdentityLifecycleService.CompleteBindingSetup(item, req)
 	if err != nil {
 		return err
 	}
@@ -738,15 +780,27 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	if err := s.validateProtocolChannel(req.ChannelID, tenantID); err != nil {
 		return err
 	}
-	companyID, storeID, err := s.normalizeCompanyStoreBinding(tenantID, req.CompanyID, req.StoreID, req.StoreName, req.EmployeeName, operator)
+	binding, err := StoreStaffBindingService.EnsureForInstance(current, operator)
 	if err != nil {
 		return err
+	}
+	storeID := binding.StoreID
+	if storeName := utils.RepairMojibakeText(strings.TrimSpace(req.StoreName)); storeName != "" {
+		if err := repositories.StoreRepository.UpdatesInTenant(sqls.DB(), storeID, tenantID, map[string]any{
+			"name":             storeName,
+			"company_id":       0,
+			"updated_at":       time.Now(),
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+		}); err != nil {
+			return err
+		}
 	}
 	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
 	if err != nil {
 		return err
 	}
-	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(tenantID, companyID, intentProfileID, req.AIReplyEnabled)
+	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(intentProfileID, req.AIReplyEnabled)
 	if err != nil {
 		return err
 	}
@@ -767,7 +821,7 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		"employee_user_id":                   strings.TrimSpace(req.EmployeeUserID),
 		"employee_name":                      utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
 		"employee_avatar":                    strings.TrimSpace(req.EmployeeAvatar),
-		"company_id":                         companyID,
+		"company_id":                         0,
 		"intent_profile_id":                  intentProfileID,
 		"store_id":                           storeID,
 		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
@@ -838,7 +892,7 @@ func (s *wxWorkProtocolInstanceService) SetAIReplyEnabled(instanceID int64, enab
 		return errorsx.InvalidParam("企微员工号实例不存在")
 	}
 	if enabled {
-		if _, err := s.resolveEffectiveIntentProfileID(tenantID, instance.CompanyID, instance.IntentProfileID, true); err != nil {
+		if _, err := s.resolveEffectiveIntentProfileID(instance.IntentProfileID, true); err != nil {
 			return err
 		}
 	}
@@ -884,15 +938,27 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 	if instance == nil || instance.Status == enums.StatusDeleted {
 		return errorsx.InvalidParam("企微员工号实例不存在")
 	}
-	companyID, storeID, err := s.normalizeCompanyStoreBinding(tenantID, req.CompanyID, req.StoreID, req.StoreName, instance.EmployeeName, operator)
+	binding, err := StoreStaffBindingService.EnsureForInstance(instance, operator)
 	if err != nil {
 		return err
+	}
+	storeID := binding.StoreID
+	if storeName := utils.RepairMojibakeText(strings.TrimSpace(req.StoreName)); storeName != "" {
+		if err := repositories.StoreRepository.UpdatesInTenant(sqls.DB(), storeID, tenantID, map[string]any{
+			"name":             storeName,
+			"company_id":       0,
+			"updated_at":       time.Now(),
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+		}); err != nil {
+			return err
+		}
 	}
 	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
 	if err != nil {
 		return err
 	}
-	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(tenantID, companyID, intentProfileID, req.AIReplyEnabled)
+	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(intentProfileID, req.AIReplyEnabled)
 	if err != nil {
 		return err
 	}
@@ -900,7 +966,7 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 		return err
 	}
 	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
-		"company_id":                         companyID,
+		"company_id":                         0,
 		"intent_profile_id":                  intentProfileID,
 		"store_id":                           storeID,
 		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
@@ -964,9 +1030,16 @@ func (s *wxWorkProtocolInstanceService) syncStoreStaffBindingFromInstanceRequest
 	if err != nil {
 		return err
 	}
+	return s.updateStoreStaffBindingFromInstanceRequestDB(sqls.DB(), binding, managedMode, serviceHours, roomConversationID, roomNotifyEnabled, roomAtList, fallbackToHQ, manualTimeoutMinutes, operator)
+}
+
+func (s *wxWorkProtocolInstanceService) updateStoreStaffBindingFromInstanceRequestDB(db *gorm.DB, binding *models.StoreStaffBinding, managedMode string, serviceHours string, roomConversationID string, roomNotifyEnabled bool, roomAtList string, fallbackToHQ bool, manualTimeoutMinutes int, operator *dto.AuthPrincipal) error {
+	if binding == nil || binding.ID <= 0 || binding.TenantID <= 0 {
+		return errorsx.InvalidParam("门店员工绑定不存在")
+	}
 	mode := normalizeStoreManagedMode(managedMode)
 	now := time.Now()
-	return repositories.StoreStaffBindingRepository.UpdatesInTenant(sqls.DB(), binding.ID, binding.TenantID, map[string]any{
+	return repositories.StoreStaffBindingRepository.UpdatesInTenant(db, binding.ID, binding.TenantID, map[string]any{
 		"managed_mode":               mode,
 		"service_hours":              strings.TrimSpace(serviceHours),
 		"store_room_conversation_id": normalizeWxWorkRoomConversationID(roomConversationID),
@@ -980,104 +1053,7 @@ func (s *wxWorkProtocolInstanceService) syncStoreStaffBindingFromInstanceRequest
 	})
 }
 
-func (s *wxWorkProtocolInstanceService) normalizeCompanyStoreBinding(tenantID int64, companyID int64, storeID int64, storeName string, fallbackName string, operator *dto.AuthPrincipal) (int64, int64, error) {
-	if companyID < 0 {
-		companyID = 0
-	}
-	if storeID > 0 {
-		store := StoreService.GetInTenant(storeID, tenantID)
-		if store == nil || store.Status == enums.StatusDeleted {
-			return 0, 0, errorsx.InvalidParam("门店不存在")
-		}
-		if companyID <= 0 {
-			companyID = store.CompanyID
-		}
-	}
-	resolvedStoreID, err := s.ensureStoreForCompany(tenantID, companyID, storeID, storeName, fallbackName, operator)
-	if err != nil {
-		return 0, 0, err
-	}
-	if companyID <= 0 && resolvedStoreID > 0 {
-		if store := StoreService.GetInTenant(resolvedStoreID, tenantID); store != nil {
-			companyID = store.CompanyID
-		}
-	}
-	return companyID, resolvedStoreID, nil
-}
-
-func (s *wxWorkProtocolInstanceService) ensureStoreForCompany(tenantID int64, companyID int64, storeID int64, storeName string, fallbackName string, operator *dto.AuthPrincipal) (int64, error) {
-	if tenantID <= 0 {
-		return 0, errorsx.InvalidParam("门店缺少接入公司归属")
-	}
-	if companyID < 0 {
-		companyID = 0
-	}
-	if companyID > 0 {
-		if company := repositories.CompanyRepository.GetInTenant(sqls.DB(), companyID, tenantID); company == nil || company.Status == enums.StatusDeleted {
-			return 0, errorsx.InvalidParam("公司不存在")
-		}
-	}
-	name := utils.RepairMojibakeText(strings.TrimSpace(firstNonBlank(storeName, fallbackName)))
-	now := time.Now()
-	if storeID > 0 {
-		store := StoreService.GetInTenant(storeID, tenantID)
-		if store == nil || store.Status == enums.StatusDeleted {
-			return 0, errorsx.InvalidParam("门店不存在")
-		}
-		if companyID > 0 && store.CompanyID > 0 && store.CompanyID != companyID {
-			return 0, errorsx.InvalidParam("门店不属于当前公司")
-		}
-		columns := map[string]any{}
-		if companyID > 0 && store.CompanyID == 0 {
-			columns["company_id"] = companyID
-		}
-		if name != "" && store.Name != name {
-			columns["name"] = name
-		}
-		if len(columns) > 0 {
-			columns["updated_at"] = now
-			columns["update_user_id"] = auditUserID(operator)
-			columns["update_user_name"] = auditUsername(operator)
-			if err := repositories.StoreRepository.UpdatesInTenant(sqls.DB(), store.ID, tenantID, columns); err != nil {
-				return 0, err
-			}
-		}
-		return store.ID, nil
-	}
-	if companyID <= 0 || name == "" {
-		return 0, nil
-	}
-	item := &models.Store{
-		TenantID:    tenantID,
-		StoreCode:   generateWxWorkInternalStoreCode(companyID),
-		Name:        name,
-		CompanyID:   companyID,
-		Status:      enums.StatusOk,
-		Remark:      "企微员工号开户自动生成的内部兼容门店记录",
-		AuditFields: utils.BuildAuditFields(operator),
-	}
-	item.CreatedAt = now
-	item.UpdatedAt = now
-	if item.CreateUserID == 0 {
-		item.CreateUserID = constants.SystemAuditUserID
-		item.CreateUserName = constants.SystemAuditUserName
-		item.UpdateUserID = constants.SystemAuditUserID
-		item.UpdateUserName = constants.SystemAuditUserName
-	}
-	if err := repositories.StoreRepository.Create(sqls.DB(), item); err != nil {
-		return 0, err
-	}
-	return item.ID, nil
-}
-
-func generateWxWorkInternalStoreCode(companyID int64) string {
-	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")
-	if len(suffix) > 12 {
-		suffix = suffix[:12]
-	}
-	return fmt.Sprintf("wxwork-%d-%s", companyID, suffix)
-}
-
+// BackfillCompanyIDFromStore 仅供历史 migration 20 重放；migration 63 会将活跃运行数据重新清零。
 func (s *wxWorkProtocolInstanceService) BackfillCompanyIDFromStore() error {
 	now := time.Now()
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -1598,33 +1574,17 @@ func (s *wxWorkProtocolInstanceService) RequireStoreKnowledge(instance *models.W
 	return instance.StoreID, instance.KnowledgeBaseID, nil
 }
 
-func (s *wxWorkProtocolInstanceService) resolveEffectiveIntentProfileID(tenantID, companyID, instanceIntentProfileID int64, requireProfile bool) (int64, error) {
+func (s *wxWorkProtocolInstanceService) resolveEffectiveIntentProfileID(instanceIntentProfileID int64, requireProfile bool) (int64, error) {
 	if instanceIntentProfileID > 0 {
 		if _, err := validateOptionalReplyIntentProfileID(instanceIntentProfileID); err != nil {
 			return 0, err
-		}
-	}
-	if companyID > 0 {
-		company := repositories.CompanyRepository.GetInTenant(sqls.DB(), companyID, tenantID)
-		if company == nil || company.Status == enums.StatusDeleted {
-			return 0, errorsx.InvalidParam("公司不存在")
-		}
-		companyIntentProfileID, err := validateOptionalReplyIntentProfileID(company.IntentProfileID)
-		if err != nil {
-			return 0, err
-		}
-		if companyIntentProfileID > 0 {
-			if instanceIntentProfileID > 0 && instanceIntentProfileID != companyIntentProfileID {
-				return 0, errorsx.InvalidParam("员工号行业 Profile 必须与绑定公司一致")
-			}
-			return companyIntentProfileID, nil
 		}
 	}
 	if instanceIntentProfileID > 0 {
 		return instanceIntentProfileID, nil
 	}
 	if requireProfile {
-		return 0, errorsx.InvalidParam("启用 AI 前请先为公司或企微员工号绑定行业 Profile")
+		return 0, errorsx.InvalidParam("启用 AI 前请先为企微员工号绑定行业 Profile")
 	}
 	return 0, nil
 }
@@ -1649,12 +1609,6 @@ func (s *wxWorkProtocolInstanceService) validateBinding(tenantID, channelID, sto
 		}
 		if knowledgeBase.StoreID > 0 && storeID > 0 && knowledgeBase.StoreID != storeID {
 			return errorsx.InvalidParam("只能绑定当前门店自己的知识库")
-		}
-		if knowledgeBase.CompanyID > 0 && storeID > 0 {
-			store := StoreService.Get(storeID)
-			if store != nil && store.CompanyID > 0 && store.CompanyID != knowledgeBase.CompanyID {
-				return errorsx.InvalidParam("只能绑定当前公司下门店的知识库")
-			}
 		}
 	}
 	return nil

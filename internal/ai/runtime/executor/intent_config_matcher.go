@@ -16,7 +16,6 @@ import (
 
 type runtimeIntentScope struct {
 	TenantID         int64
-	CompanyID        int64
 	StoreID          int64
 	WxWorkInstanceID int64
 	CustomerID       int64
@@ -35,7 +34,7 @@ func loadEnabledIntentConfigs(scope runtimeIntentScope) []models.ReplyIntentConf
 	}
 	err := db.Where("status = ?", enums.StatusOk).
 		Where("intent_profile_id = ?", scope.IntentProfileID).
-		Where("(scope_type = ? OR (scope_type = ? AND company_id = ?) OR (scope_type = ? AND store_id = ?) OR (scope_type = ? AND wx_work_instance_id = ?))", "global", "company", scope.CompanyID, "store", scope.StoreID, "instance", scope.WxWorkInstanceID).
+		Where("(scope_type = ? OR (scope_type = ? AND store_id = ?) OR (scope_type = ? AND wx_work_instance_id = ?))", "global", "store", scope.StoreID, "instance", scope.WxWorkInstanceID).
 		Order("priority DESC").Order("sort_no ASC").Order("id ASC").Find(&list).Error
 	if err != nil {
 		return nil
@@ -92,8 +91,6 @@ func intentScopeRank(config models.ReplyIntentConfig) int {
 		return 4
 	case "store":
 		return 3
-	case "company":
-		return 2
 	default:
 		return 1
 	}
@@ -162,39 +159,9 @@ func resolveRuntimeIntentScope(req RunInput) runtimeIntentScope {
 			if instance.IntentProfileID > 0 {
 				scope.IntentProfileID = instance.IntentProfileID
 			}
-			if instance.CompanyID > 0 {
-				scope.CompanyID = instance.CompanyID
-			}
 			if scope.StoreID <= 0 {
 				scope.StoreID = instance.StoreID
 			}
-			if scope.StoreID > 0 && scope.CompanyID <= 0 {
-				store := repositories.StoreRepository.Get(db, scope.StoreID)
-				if scope.TenantID > 0 {
-					store = repositories.StoreRepository.GetInTenant(db, scope.StoreID, scope.TenantID)
-				}
-				if store != nil {
-					scope.CompanyID = store.CompanyID
-				}
-			}
-		}
-	}
-	if scope.StoreID > 0 && scope.CompanyID <= 0 {
-		store := repositories.StoreRepository.Get(db, scope.StoreID)
-		if scope.TenantID > 0 {
-			store = repositories.StoreRepository.GetInTenant(db, scope.StoreID, scope.TenantID)
-		}
-		if store != nil {
-			scope.CompanyID = store.CompanyID
-		}
-	}
-	if scope.IntentProfileID <= 0 && scope.CompanyID > 0 {
-		company := repositories.CompanyRepository.Get(db, scope.CompanyID)
-		if scope.TenantID > 0 {
-			company = repositories.CompanyRepository.GetInTenant(db, scope.CompanyID, scope.TenantID)
-		}
-		if company != nil && company.IntentProfileID > 0 {
-			scope.IntentProfileID = company.IntentProfileID
 		}
 	}
 	if scope.IntentProfileID <= 0 && !scope.HasWxWorkAccount {

@@ -12,6 +12,7 @@ import (
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/pkg/httpx/params"
 	"agent-desk/internal/pkg/utils"
@@ -34,7 +35,6 @@ func WxWorkProtocolInstanceAnyList(ctx *gin.Context) {
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "guid", Op: params.Like},
 		params.QueryFilter{ParamName: "channelId"},
-		params.QueryFilter{ParamName: "companyId"},
 		params.QueryFilter{ParamName: "storeId"},
 		params.QueryFilter{ParamName: "knowledgeBaseId"},
 	).Where("status <> ?", enums.StatusDeleted).Where("health_status <> ?", "login_qrcode").Desc("id")
@@ -98,6 +98,10 @@ func WxWorkProtocolInstancePostStart_login(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelCreate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !services.AuthService.HasPermission(ctx, constants.PermissionUserView.Code) {
+		httpx.WriteJSON(ctx, errorsx.Forbidden("绑定企微员工号需要查看本公司已有账号"))
 		return
 	}
 	if !requireWxWorkTenantContext(ctx) {
@@ -284,6 +288,10 @@ func WxWorkProtocolInstancePostCreate_remote_setup(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if !services.AuthService.HasPermission(ctx, constants.PermissionUserView.Code) {
+		httpx.WriteJSON(ctx, errorsx.Forbidden("生成企微员工号绑定链接需要查看本公司已有账号"))
+		return
+	}
 	if !requireWxWorkTenantContext(ctx) {
 		return
 	}
@@ -346,9 +354,14 @@ func WxWorkProtocolInstancePostCheck_login_qrcode(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostVerify_login(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelView)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !services.AuthService.HasPermission(ctx, constants.PermissionChannelCreate.Code) &&
+		!services.AuthService.HasPermission(ctx, constants.PermissionChannelUpdate.Code) {
+		httpx.WriteJSON(ctx, errorsx.Forbidden("当前账号没有完成企微员工号登录验证的权限"))
 		return
 	}
 	req := request.VerifyWxWorkProtocolLoginRequest{}
@@ -623,17 +636,15 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance, op
 	if store := services.StoreService.GetInTenant(item.StoreID, operator.ActiveTenantID); store != nil {
 		ret.StoreCode = store.StoreCode
 		ret.StoreName = utils.RepairMojibakeText(store.Name)
-		if ret.CompanyID == 0 {
-			ret.CompanyID = store.CompanyID
-		}
-	}
-	if company := services.CompanyService.GetInTenant(ret.CompanyID, operator); company != nil {
-		ret.CompanyName = utils.RepairMojibakeText(company.Name)
 	}
 	if runtime := services.StoreStaffBindingService.ResolveForInstance(item); runtime.ManagedMode != "" {
 		ret.ManagedMode = runtime.ManagedMode
 		if runtime.BindingID > 0 {
 			ret.StoreStaffBindingID = runtime.BindingID
+		}
+		ret.StoreStaffUserID = runtime.UserID
+		if user := services.UserService.GetInScope(runtime.UserID, operator); user != nil {
+			ret.StoreStaffUserName = utils.RepairMojibakeText(user.Nickname)
 		}
 	}
 	if knowledgeBase := services.KnowledgeBaseService.GetInTenant(item.KnowledgeBaseID, operator.ActiveTenantID); knowledgeBase != nil {

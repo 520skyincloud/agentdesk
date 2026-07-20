@@ -8,7 +8,6 @@ import (
 )
 
 type CustomerBuildContext struct {
-	CompaniesByID              map[int64]*models.Company
 	StoreRelationsByCustomerID map[int64][]models.StoreCustomerRelation
 	StoresByID                 map[int64]*models.Store
 	WxWorkInstancesByID        map[int64]*models.WxWorkProtocolInstance
@@ -27,7 +26,6 @@ func BuildCustomerWithContext(item *models.Customer, ctx *CustomerBuildContext) 
 		Name:          item.Name,
 		Avatar:        item.Avatar,
 		Gender:        item.Gender,
-		CompanyID:     item.CompanyID,
 		LastActiveAt:  utils.FormatTimePtr(item.LastActiveAt),
 		PrimaryMobile: item.PrimaryMobile,
 		PrimaryEmail:  item.PrimaryEmail,
@@ -37,7 +35,6 @@ func BuildCustomerWithContext(item *models.Customer, ctx *CustomerBuildContext) 
 		UpdatedAt:     item.UpdatedAt.Format(time.DateTime),
 	}
 	if ctx != nil {
-		ret.Company = BuildCompany(ctx.CompaniesByID[item.CompanyID])
 		ret.StoreRelations = BuildStoreCustomerRelationListWithContext(ctx.StoreRelationsByCustomerID[item.ID], ctx)
 	}
 	return ret

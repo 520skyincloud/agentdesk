@@ -7,6 +7,7 @@ import {
   KeyRoundIcon,
   MoreHorizontalIcon,
   PlusIcon,
+  QrCodeIcon,
   SearchIcon,
   ShieldIcon,
   Trash2Icon,
@@ -60,6 +61,7 @@ import { InvitationDialog } from "./_components/invitation-dialog"
 import { InitialPasswordDialog } from "./_components/initial-password-dialog"
 import { RegistrationReviewPanel } from "./_components/registration-review"
 import { ResetPasswordDialogs } from "./_components/reset-password"
+import { WxWorkProtocolBindingDialog } from "@/components/wxwork-protocol/wxwork-protocol-binding-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
@@ -96,7 +98,8 @@ export default function DashboardUsersPage() {
   const canReviewRegistrations = permissions.has("tenantRegistration.review")
   const canViewAgentTeams = permissions.has("agentTeam.view")
   const canUpdateAgentTeams = permissions.has("agentTeam.update")
-  const hasUserRowActions = canUpdateUsers || canDeleteUsers || canAssignRoles
+  const canBindWxWork = permissions.has("channel.create") && permissions.has("user.view")
+  const hasUserRowActions = canUpdateUsers || canDeleteUsers || canAssignRoles || canBindWxWork
   const [agentTeams, setAgentTeams] = useState<AdminAgentTeam[]>([])
   const [assigningTeamUserId, setAssigningTeamUserId] = useState<number | null>(null)
   const [creatingOpen, setCreatingOpen] = useState(false)
@@ -113,6 +116,7 @@ export default function DashboardUsersPage() {
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null)
   const [resettingUser, setResettingUser] = useState<AdminUser | null>(null)
   const [assigningRolesUser, setAssigningRolesUser] = useState<AdminUser | null>(null)
+  const [bindingWxWorkUser, setBindingWxWorkUser] = useState<AdminUser | null>(null)
   const [assignRoleOptions, setAssignRoleOptions] = useState<AdminRole[]>([])
   const [assignRoleIds, setAssignRoleIds] = useState<number[]>([])
   const [assignRolesLoading, setAssignRolesLoading] = useState(false)
@@ -330,7 +334,7 @@ export default function DashboardUsersPage() {
     }
   }
 
-  async function handleAssignRoles(roleIds: number[]) {
+  async function handleAssignRoles(roleIds: number[], storeName: string) {
     if (
       !canAssignRoles ||
       !assigningRolesUser?.manageable ||
@@ -341,7 +345,7 @@ export default function DashboardUsersPage() {
 
     setSavingRoles(true)
     try {
-      await assignUserRoles(assigningRolesUser.id, roleIds)
+      await assignUserRoles(assigningRolesUser.id, roleIds, storeName)
       toast.success(t("user.rolesUpdated", { username: assigningRolesUser.username }))
       setAssigningRolesUser(null)
       setAssignRoleOptions([])
@@ -497,6 +501,14 @@ export default function DashboardUsersPage() {
     }
   }
 
+  function canBindUserWxWork(user: AdminUser) {
+    if (!canBindWxWork || !(user.roles || []).some((role) => role.code === "store_staff")) {
+      return false
+    }
+    if (!user.storeStaff?.wxWorkInstanceId) return true
+    return ["login_qrcode", "remote_setup"].includes(user.storeStaff.wxWorkHealthStatus || "")
+  }
+
   return (
     <>
       <DashboardPage>
@@ -638,7 +650,9 @@ export default function DashboardUsersPage() {
                                 {item.storeStaff?.storeName || "尚未绑定门店"}
                               </div>
                               <div className="truncate">
-                                {item.storeStaff?.wxWorkInstanceId
+                                {item.storeStaff?.wxWorkInstanceId && ["login_qrcode", "remote_setup"].includes(item.storeStaff.wxWorkHealthStatus || "")
+                                  ? "企微：绑定中"
+                                  : item.storeStaff?.wxWorkInstanceId
                                   ? `企微：${[
                                       item.storeStaff.wxWorkEmployeeName,
                                       item.storeStaff.wxWorkEmployeeId,
@@ -746,7 +760,7 @@ export default function DashboardUsersPage() {
                             </Button>
                           ) : null}
                           {item.manageable &&
-                          (canAssignRoles || canUpdateUsers || canDeleteUsers) ? (
+                          (canAssignRoles || canUpdateUsers || canDeleteUsers || canBindUserWxWork(item)) ? (
                             <DropdownMenu>
                           <DropdownMenuTrigger
                             render={<Button variant="outline" size="icon-sm" />}
@@ -755,6 +769,12 @@ export default function DashboardUsersPage() {
                             <MoreHorizontalIcon />
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-40 min-w-40">
+                            {canBindUserWxWork(item) ? (
+                              <DropdownMenuItem onClick={() => setBindingWxWorkUser(item)}>
+                                <QrCodeIcon />
+                                {item.storeStaff?.wxWorkInstanceId ? "继续企微绑定" : "绑定企微员工号"}
+                              </DropdownMenuItem>
+                            ) : null}
                             {canAssignRoles ? (
                               <DropdownMenuItem
                                 onClick={() => void openAssignRolesDrawer(item)}
@@ -872,6 +892,16 @@ export default function DashboardUsersPage() {
         open={invitationOpen && canViewInvitation}
         canRotate={canRotateInvitation}
         onOpenChange={setInvitationOpen}
+      />
+      <WxWorkProtocolBindingDialog
+        open={Boolean(bindingWxWorkUser && canBindWxWork)}
+        user={bindingWxWorkUser}
+        onOpenChange={(open) => {
+          if (!open) setBindingWxWorkUser(null)
+        }}
+        onChanged={async () => {
+          await list.loadData()
+        }}
       />
     </>
   )

@@ -336,7 +336,7 @@ func resolveRuntimeKnowledgeResources(req RunInput, result *retrievers.Knowledge
 			SourceRecordID:  item.SourceRecordID,
 		})
 	}
-	resources := services.KnowledgeResourceService.ResolveForRuntime(scope.WxWorkInstanceID, scope.CompanyID, req.Conversation.TenantID, sources)
+	resources := services.KnowledgeResourceService.ResolveForRuntime(scope.WxWorkInstanceID, req.Conversation.TenantID, sources)
 	ret := make([]callbacks.KnowledgeResourceTraceData, 0, len(resources))
 	for _, item := range resources {
 		ret = append(ret, callbacks.KnowledgeResourceTraceData{
@@ -478,7 +478,7 @@ func buildHotelVariableInstruction(req RunInput, intent callbacks.IntentTraceDat
 func buildHotelVariableInstructionFromInstance(instance *models.WxWorkProtocolInstance, currentText string, intent callbacks.IntentTraceData) string {
 	resourceTypes := requestedHotelVariableResourceTypes(currentText, intent)
 	if len(resourceTypes) == 0 {
-		return "酒店变量：当前请求需要门店账号变量，但未识别到具体变量动作。模型只能追问一个关键点，不能编造电话、定位或小程序入口。"
+		return "酒店变量：当前请求需要门店配置变量，但未识别到具体变量动作。模型只能追问一个关键点，不能编造电话、定位或小程序入口。"
 	}
 	if intent.NeedsKnowledge {
 		return "酒店变量：本轮同时有酒店信息问题和变量请求。电话、定位、小程序等变量由 Commit 阶段按 resourceActions 单独发送真实消息；本阶段只回答停车、早餐、发票、入住流程等知识问题。不要写“定位发你/小程序发你/我这边发你/已经发了/点开就能”，也不要复述变量详情。"

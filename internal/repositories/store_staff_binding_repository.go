@@ -84,6 +84,18 @@ func (r *storeStaffBindingRepository) FindForUpdateByUserInTenant(db *gorm.DB, t
 	}
 	var list []models.StoreStaffBinding
 	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("tenant_id = ? AND user_id = ? AND status = ?", tenantID, userID, enums.StatusOk).
+		Order("id ASC").
+		Find(&list).Error
+	return list, err
+}
+
+func (r *storeStaffBindingRepository) FindAllForUpdateByUserInTenant(db *gorm.DB, tenantID, userID int64) ([]models.StoreStaffBinding, error) {
+	if tenantID <= 0 || userID <= 0 {
+		return []models.StoreStaffBinding{}, nil
+	}
+	var list []models.StoreStaffBinding
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("tenant_id = ? AND user_id = ? AND status <> ?", tenantID, userID, enums.StatusDeleted).
 		Order("id ASC").
 		Find(&list).Error
@@ -95,7 +107,7 @@ func (r *storeStaffBindingRepository) FindForUpdateByTeamOrUsersInTenant(db *gor
 		return []models.StoreStaffBinding{}, nil
 	}
 	query := db.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("tenant_id = ? AND status <> ?", tenantID, enums.StatusDeleted)
+		Where("tenant_id = ? AND status = ?", tenantID, enums.StatusOk)
 	if len(userIDs) == 0 {
 		query = query.Where("agent_team_id = ?", teamID)
 	} else {

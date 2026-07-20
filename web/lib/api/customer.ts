@@ -1,15 +1,12 @@
 import { request } from "@/lib/api/client"
 import type { PageResult } from "@/lib/api/admin"
 import type { ContactType } from "@/lib/generated/enums"
-import { AdminCompany } from "./company"
 
 export type AdminCustomer = {
   id: number
   name: string
   avatar: string
   gender: number
-  companyId: number
-  company?: AdminCompany
   lastActiveAt?: string
   primaryMobile: string
   primaryEmail: string
@@ -40,7 +37,6 @@ export type StoreCustomerRelation = {
 export type CreateAdminCustomerPayload = {
   name: string
   gender: number
-  companyId: number
   primaryMobile: string
   primaryEmail: string
   remark: string
@@ -63,7 +59,6 @@ export type SaveCustomerProfilePayload = {
   id?: number
   name: string
   gender: number
-  companyId: number
   remark: string
   contacts: SaveCustomerProfileContactLine[]
 }
@@ -74,8 +69,7 @@ export type CustomerListRequest = {
   limit: number
   status?: number
   gender?: number
-  companyId?: number
-  /** Fuzzy match against customer name, primary phone, primary email, contacts, and company name. */
+  /** Fuzzy match against customer name, primary phone, primary email, and contacts. */
   keyword?: string
 }
 

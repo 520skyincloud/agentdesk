@@ -133,7 +133,6 @@ func TestSeedResourceUpsertsInheritTenantID(t *testing.T) {
 	ctx := &seedContext{
 		db:      db,
 		tenant:  &models.Tenant{ID: 77},
-		company: &models.Company{ID: 88},
 		channel: &models.Channel{ID: 99},
 		teams: []*models.AgentTeam{
 			{ID: 101},
@@ -162,6 +161,7 @@ func TestSeedResourceUpsertsInheritTenantID(t *testing.T) {
 	}
 	assertSeedTenantRows(t, db, ctx.tenant.ID, 1, &models.StoreStaffBinding{})
 	assertSeedTenantRows(t, db, ctx.tenant.ID, 1, &models.WxWorkProtocolInstance{})
+	assertSeedResourcesHaveNoLegacyCompany(t, db, ctx.tenant.ID)
 
 	for _, item := range []any{store, binding, instance} {
 		if err := db.Model(item).Update("tenant_id", 0).Error; err != nil {
@@ -182,6 +182,7 @@ func TestSeedResourceUpsertsInheritTenantID(t *testing.T) {
 	assertSeedTenantRows(t, db, ctx.tenant.ID, 100, &models.Store{})
 	assertSeedTenantRows(t, db, ctx.tenant.ID, 1, &models.StoreStaffBinding{})
 	assertSeedTenantRows(t, db, ctx.tenant.ID, 1, &models.WxWorkProtocolInstance{})
+	assertSeedResourcesHaveNoLegacyCompany(t, db, ctx.tenant.ID)
 }
 
 func TestSeedUpsertsDoNotReuseOtherTenantBusinessCodes(t *testing.T) {
@@ -190,7 +191,6 @@ func TestSeedUpsertsDoNotReuseOtherTenantBusinessCodes(t *testing.T) {
 	ctx := &seedContext{
 		db:      db,
 		tenant:  &models.Tenant{ID: 77},
-		company: &models.Company{ID: 88},
 		teams:   []*models.AgentTeam{{ID: 101}},
 		agents:  []*models.User{{ID: 201}},
 		batch:   "cross-tenant-codes",
@@ -335,5 +335,18 @@ func assertSeedTenantRows(t *testing.T, db *gorm.DB, tenantID, expected int64, m
 	}
 	if scoped != total {
 		t.Fatalf("%T tenant rows = %d, total = %d", model, scoped, total)
+	}
+}
+
+func assertSeedResourcesHaveNoLegacyCompany(t *testing.T, db *gorm.DB, tenantID int64) {
+	t.Helper()
+	for name, model := range map[string]any{
+		"stores":           &models.Store{},
+		"staff bindings":   &models.StoreStaffBinding{},
+		"wxwork instances": &models.WxWorkProtocolInstance{},
+	} {
+		if got := count(db, model, "tenant_id = ? AND company_id <> 0", tenantID); got != 0 {
+			t.Fatalf("%s with legacy company=%d want=0", name, got)
+		}
 	}
 }

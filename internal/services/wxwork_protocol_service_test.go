@@ -172,6 +172,7 @@ func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *tes
 	now := time.Now()
 	channel := &models.Channel{
 		ID:          45,
+		TenantID:    101,
 		Name:        "企微员工号",
 		ChannelType: enums.ChannelTypeWxWorkProtocol,
 		ChannelID:   "wxwork-protocol-new-account",
@@ -182,6 +183,7 @@ func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *tes
 		t.Fatalf("create channel: %v", err)
 	}
 	instance := &models.WxWorkProtocolInstance{
+		TenantID:        101,
 		Guid:            "guid-new-account",
 		ChannelID:       channel.ID,
 		EmployeeUserID:  "employee-new",
@@ -196,6 +198,7 @@ func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *tes
 		t.Fatalf("create instance: %v", err)
 	}
 	customer := &models.Customer{
+		TenantID:    101,
 		Name:        "新客户",
 		Avatar:      "https://example.com/customer-avatar.jpg",
 		Status:      enums.StatusOk,
@@ -205,6 +208,7 @@ func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *tes
 		t.Fatalf("create customer: %v", err)
 	}
 	if err := db.Create(&models.CustomerIdentity{
+		TenantID:       101,
 		CustomerID:     customer.ID,
 		ExternalSource: enums.ExternalSourceWxWorkProtocol,
 		ExternalID:     "wxwork_protocol:guid-new-account:external-new-customer",

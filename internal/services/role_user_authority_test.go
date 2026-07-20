@@ -263,6 +263,110 @@ func TestUserServiceAssignRolesEnforcesAuthority(t *testing.T) {
 	}
 }
 
+func TestAssignStoreStaffRoleCreatesOneStableStoreIdentity(t *testing.T) {
+	db := setupRoleAuthorityTestDB(t)
+	roles := seedAuthorityRoles(t, db)
+	tenantID := authorityLegacyTenantID(t, db)
+	operatorUser := createAuthorityUser(t, db, "store_identity_admin")
+	operator := &dto.AuthPrincipal{
+		UserID: operatorUser.ID, Username: operatorUser.Username,
+		Roles: []string{constants.RoleCodeAdmin}, ActiveTenantID: tenantID, IsPlatformAccount: true,
+	}
+	target := createAuthorityUser(t, db, "store_identity_target")
+	if err := db.Model(&models.User{}).Where("id = ?", target.ID).Update("tenant_id", tenantID).Error; err != nil {
+		t.Fatalf("assign target tenant: %v", err)
+	}
+	target.TenantID = tenantID
+
+	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "丽斯未来测试门店", operator); err != nil {
+		t.Fatalf("assign store staff role: %v", err)
+	}
+	binding := repositories.StoreStaffBindingRepository.TakeInTenant(db, tenantID, "user_id = ? AND status = ?", target.ID, enums.StatusOk)
+	if binding == nil || binding.CompanyID != 0 || binding.StoreID <= 0 {
+		t.Fatalf("missing stable store binding: %+v", binding)
+	}
+	store := repositories.StoreRepository.GetInTenant(db, binding.StoreID, tenantID)
+	if store == nil || store.Name != "丽斯未来测试门店" || store.CompanyID != 0 {
+		t.Fatalf("unexpected stable store: %+v", store)
+	}
+
+	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "丽斯未来测试门店（更新）", operator); err != nil {
+		t.Fatalf("repeat store staff role assignment: %v", err)
+	}
+	var count int64
+	if err := db.Model(&models.StoreStaffBinding{}).Where("tenant_id = ? AND user_id = ? AND status = ?", tenantID, target.ID, enums.StatusOk).Count(&count).Error; err != nil {
+		t.Fatalf("count stable store bindings: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("active store binding count=%d want=1", count)
+	}
+	if current := repositories.StoreRepository.GetInTenant(db, store.ID, tenantID); current == nil || current.Name != "丽斯未来测试门店（更新）" {
+		t.Fatalf("store identity name was not updated: %+v", current)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID: target.TenantID, Guid: "store-role-lifecycle", StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		AIReplyEnabled: true, HealthStatus: "online", Status: enums.StatusOk,
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create store role instance: %v", err)
+	}
+	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeCsUser].ID}, "", operator); err != nil {
+		t.Fatalf("remove store staff role: %v", err)
+	}
+	retiredBinding := repositories.StoreStaffBindingRepository.GetInTenant(db, binding.ID, tenantID)
+	retiredStore := repositories.StoreRepository.GetInTenant(db, store.ID, tenantID)
+	retiredInstance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, tenantID)
+	if retiredBinding == nil || retiredBinding.Status != enums.StatusDisabled || retiredStore == nil || retiredStore.Status != enums.StatusDisabled {
+		t.Fatalf("removed role left store identity active: binding=%+v store=%+v", retiredBinding, retiredStore)
+	}
+	if retiredInstance == nil || retiredInstance.Status != enums.StatusDisabled || retiredInstance.AIReplyEnabled || retiredInstance.HealthStatus != "identity_disabled" {
+		t.Fatalf("removed role left wxwork runtime active: %+v", retiredInstance)
+	}
+	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "丽斯未来测试门店（恢复）", operator); err != nil {
+		t.Fatalf("restore store staff role: %v", err)
+	}
+	restoredBinding := repositories.StoreStaffBindingRepository.TakeInTenant(db, tenantID, "user_id = ? AND status = ?", target.ID, enums.StatusOk)
+	restoredStore := repositories.StoreRepository.GetInTenant(db, store.ID, tenantID)
+	if restoredBinding == nil || restoredBinding.ID != binding.ID || restoredStore == nil || restoredStore.ID != store.ID || restoredStore.Status != enums.StatusOk || restoredStore.Name != "丽斯未来测试门店（恢复）" {
+		t.Fatalf("restored role did not reuse stable identity: binding=%+v store=%+v", restoredBinding, restoredStore)
+	}
+	if current := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, tenantID); current == nil || current.Status != enums.StatusDisabled || current.AIReplyEnabled {
+		t.Fatalf("restoring role must not silently reactivate wxwork: %+v", current)
+	}
+	if err := UserService.UpdateStatus(target.ID, int(enums.StatusDisabled), operator); err != nil {
+		t.Fatalf("disable store staff account: %v", err)
+	}
+	if current := repositories.StoreStaffBindingRepository.GetInTenant(db, binding.ID, tenantID); current == nil || current.Status != enums.StatusDisabled {
+		t.Fatalf("disabled account left binding active: %+v", current)
+	}
+	if current := repositories.StoreRepository.GetInTenant(db, store.ID, tenantID); current == nil || current.Status != enums.StatusDisabled {
+		t.Fatalf("disabled account left store active: %+v", current)
+	}
+	if err := UserService.UpdateStatus(target.ID, int(enums.StatusOk), operator); err != nil {
+		t.Fatalf("enable store staff account: %v", err)
+	}
+	if current := repositories.StoreStaffBindingRepository.GetInTenant(db, binding.ID, tenantID); current == nil || current.Status != enums.StatusOk {
+		t.Fatalf("enabled account did not reuse binding: %+v", current)
+	}
+	if current := repositories.StoreRepository.GetInTenant(db, store.ID, tenantID); current == nil || current.Status != enums.StatusOk || current.Name != "丽斯未来测试门店（恢复）" {
+		t.Fatalf("enabled account did not reuse store: %+v", current)
+	}
+	if current := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, tenantID); current == nil || current.Status != enums.StatusDisabled || current.AIReplyEnabled {
+		t.Fatalf("enabling account must not silently reactivate wxwork: %+v", current)
+	}
+
+	withoutName := createAuthorityUser(t, db, "store_identity_without_name")
+	if err := db.Model(&models.User{}).Where("id = ?", withoutName.ID).Update("tenant_id", tenantID).Error; err != nil {
+		t.Fatalf("assign second target tenant: %v", err)
+	}
+	if err := UserService.AssignRolesWithStoreName(withoutName.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "", operator); err == nil || !strings.Contains(err.Error(), "门店名称") {
+		t.Fatalf("missing store name error=%v", err)
+	}
+	if repositories.UserRoleRepository.FindOne(db, sqls.NewCnd().Eq("user_id", withoutName.ID).Eq("role_id", roles[constants.RoleCodeStoreStaff].ID)) != nil {
+		t.Fatal("failed store identity transaction left the role assigned")
+	}
+}
+
 func TestUserServicePrivilegedMutationsEnforceAuthority(t *testing.T) {
 	db := setupRoleAuthorityTestDB(t)
 	roles := seedAuthorityRoles(t, db)
@@ -672,15 +776,18 @@ func TestUserServiceAssignRolesPreservesDutyRoleDependencies(t *testing.T) {
 		t.Fatalf("remove team leader role error = %v", err)
 	}
 	withoutStoreStaff := []int64{roles[constants.RoleCodeCsUser].ID, roles[constants.RoleCodeCsTeamLeader].ID}
-	if err := UserService.AssignRoles(target.ID, withoutStoreStaff, operator); err == nil || !strings.Contains(err.Error(), "门店员工身份") {
-		t.Fatalf("remove store staff role error = %v", err)
+	if err := UserService.AssignRoles(target.ID, withoutStoreStaff, operator); err != nil {
+		t.Fatalf("remove store staff role: %v", err)
 	}
 	assertUserRoleCodes(t, db, target.ID,
 		constants.RoleCodeCsTeamLeader,
 		constants.RoleCodeCsUser,
-		constants.RoleCodeStoreStaff,
 	)
-	assertUserRoleChangeLogCount(t, db, target.ID, 0)
+	retiredBinding := repositories.StoreStaffBindingRepository.Get(db, binding.ID)
+	if retiredBinding == nil || retiredBinding.Status != enums.StatusDisabled {
+		t.Fatalf("store staff role removal did not retire binding: %+v", retiredBinding)
+	}
+	assertUserRoleChangeLogCount(t, db, target.ID, 1)
 
 	if err := db.Model(conversation).Update("status", enums.IMConversationStatusClosed).Error; err != nil {
 		t.Fatalf("keep conversation closed: %v", err)
@@ -691,17 +798,11 @@ func TestUserServiceAssignRolesPreservesDutyRoleDependencies(t *testing.T) {
 	if err := db.Model(team).Update("leader_user_id", 0).Error; err != nil {
 		t.Fatalf("clear team leader: %v", err)
 	}
-	if err := db.Model(binding).Update("status", enums.StatusDeleted).Error; err != nil {
-		t.Fatalf("delete store staff binding: %v", err)
-	}
 	if err := UserService.AssignRoles(target.ID, nil, operator); err != nil {
 		t.Fatalf("remove duty roles after clearing dependencies: %v", err)
 	}
 	assertUserRoleCodes(t, db, target.ID)
-	assertSingleUserRoleChangeLog(t, db, target.ID, tenantID, operator.UserID,
-		[]int64{roles[constants.RoleCodeCsUser].ID, roles[constants.RoleCodeCsTeamLeader].ID, roles[constants.RoleCodeStoreStaff].ID}, nil,
-		[]string{constants.RoleCodeCsUser, constants.RoleCodeCsTeamLeader, constants.RoleCodeStoreStaff}, nil,
-	)
+	assertUserRoleChangeLogCount(t, db, target.ID, 2)
 }
 
 func TestUserRoleChangeLogRollsBackWithRoleReplacementTransaction(t *testing.T) {
@@ -806,29 +907,6 @@ func TestUserServiceReplaceRolesRechecksTargetAuthorityUnderLock(t *testing.T) {
 	assertUserRoleChangeLogCount(t, db, target.ID, 0)
 }
 
-func TestWxWorkDefaultStoreStaffRoleWritesOneAuditLog(t *testing.T) {
-	db := setupRoleAuthorityTestDB(t)
-	roles := seedAuthorityRoles(t, db)
-	tenantID := authorityLegacyTenantID(t, db)
-	user := createAuthorityUser(t, db, "wxwork_store_staff")
-	if err := db.Model(&models.User{}).Where("id = ?", user.ID).Update("tenant_id", tenantID).Error; err != nil {
-		t.Fatalf("assign wxwork user tenant: %v", err)
-	}
-	user.TenantID = tenantID
-
-	for i := 0; i < 2; i++ {
-		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-			return WxWorkLoginService.assignDefaultStoreStaffRole(ctx.Tx, user)
-		}); err != nil {
-			t.Fatalf("assign default store staff role %d: %v", i, err)
-		}
-	}
-	assertUserRoleCodes(t, db, user.ID, constants.RoleCodeStoreStaff)
-	assertSingleUserRoleChangeLog(t, db, user.ID, tenantID, user.ID,
-		nil, []int64{roles[constants.RoleCodeStoreStaff].ID}, nil, []string{constants.RoleCodeStoreStaff},
-	)
-}
-
 func seedAuthorityRoles(t *testing.T, db *gorm.DB) map[string]*models.Role {
 	t.Helper()
 	roles := map[string]*models.Role{
@@ -849,7 +927,9 @@ func setupRoleAuthorityTestDB(t *testing.T) *gorm.DB {
 		&models.Conversation{},
 		&models.AgentTeam{},
 		&models.AgentProfile{},
+		&models.Store{},
 		&models.StoreStaffBinding{},
+		&models.WxWorkProtocolInstance{},
 	); err != nil {
 		t.Fatalf("migrate role authority dependencies: %v", err)
 	}

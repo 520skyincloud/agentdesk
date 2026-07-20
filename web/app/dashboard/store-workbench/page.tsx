@@ -176,7 +176,7 @@ export default function StoreWorkbenchPage() {
             <StoreIcon className="mx-auto size-10 text-muted-foreground" />
             <h2 className="mt-4 text-lg font-semibold">当前账号尚未绑定门店</h2>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              公司主管需要先在账号管理中将门店员工账号绑定到门店和综合客服组。
+              公司主管需要先在用户管理中给系统账号分配门店员工号角色、完成企微绑定，并安排综合客服组。
             </p>
           </div>
         </div>
@@ -308,11 +308,11 @@ export default function StoreWorkbenchPage() {
             <SectionTitle icon={Building2Icon} title="当前归属" />
             <div className="mt-4 divide-y">
               <InfoRow label="接入公司" value={data.tenantName || `#${data.tenantId}`} />
-              <InfoRow label="所属公司" value={data.companyName || "暂未关联"} />
+              <InfoRow label="接入公司" value={data.tenantName || "暂未关联"} />
               <InfoRow label="门店" value={data.storeName || `#${data.storeId}`} />
               <InfoRow label="门店编码" value={data.storeCode || "-"} />
               <InfoRow label="综合客服组" value={data.agentTeamName || "暂未分配"} />
-              <InfoRow label="门店员工账号" value={data.nickname || data.username} />
+              <InfoRow label="系统账号" value={data.nickname || data.username} />
             </div>
           </section>
 

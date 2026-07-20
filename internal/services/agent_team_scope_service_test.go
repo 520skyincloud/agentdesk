@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -174,6 +175,45 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	}
 }
 
+func TestAgentTeamLegacyCompanyScopeDoesNotExpandRuntimeAccess(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
+		Logger:         logger.Default.LogMode(logger.Silent),
+		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.AgentTeam{}, &models.Store{}, &models.WxWorkProtocolInstance{}, &models.KnowledgeBase{}); err != nil {
+		t.Fatalf("migrate scope models: %v", err)
+	}
+	sqls.SetDB(db)
+	t.Cleanup(func() { sqls.SetDB(nil) })
+	team := &models.AgentTeam{
+		TenantID: 101, Name: "仅历史公司范围", LeaderUserID: 77, CompanyScopeIDs: "9", Status: enums.StatusOk,
+	}
+	if err := db.Create(team).Error; err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	store := &models.Store{TenantID: 101, StoreCode: "legacy-company-store", Name: "不应被继承", CompanyID: 9, Status: enums.StatusOk}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "legacy-company-instance", StoreID: store.ID, CompanyID: 9, Status: enums.StatusOk}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	operator := &dto.AuthPrincipal{UserID: 77, ActiveTenantID: 101, Roles: []string{constants.RoleCodeCsTeamLeader}}
+	scope := AgentTeamScopeService.Resolve(operator)
+	if len(scope.StoreIDs) != 0 || len(scope.WxWorkInstanceIDs) != 0 || len(scope.KnowledgeBaseIDs) != 0 {
+		t.Fatalf("legacy company scope expanded runtime access: %+v", scope)
+	}
+	items := repositories.WxWorkProtocolInstanceRepository.Find(db, AgentTeamScopeService.ApplyWxWorkInstanceFilter(sqls.NewCnd(), operator))
+	if len(items) != 0 {
+		t.Fatalf("legacy company scope exposed instances: %+v", items)
+	}
+}
+
 func TestAgentTeamScopeCanManageTeam(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
@@ -247,40 +287,6 @@ func TestTenantAdminCreatesAndManagesTeamsOnlyInActiveTenant(t *testing.T) {
 	withoutContext.ActiveTenantID = 0
 	if _, err := AgentTeamService.CreateAgentTeam(request.CreateAgentTeamRequest{Name: "无上下文客服组", Status: int(enums.StatusOk)}, &withoutContext); err == nil {
 		t.Fatal("expected team creation without active tenant to be rejected")
-	}
-}
-
-func TestAgentTeamDerivesScopeFromWxWorkInstances(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	if err := db.AutoMigrate(&models.Store{}, &models.WxWorkProtocolInstance{}); err != nil {
-		t.Fatalf("migrate scope models: %v", err)
-	}
-	sqls.SetDB(db)
-
-	store := &models.Store{StoreCode: "S001", Name: "测试门店", CompanyID: 7, Status: enums.StatusOk}
-	if err := db.Create(store).Error; err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	instance := &models.WxWorkProtocolInstance{Guid: "scope-guid", StoreID: store.ID, CompanyID: 7, Status: enums.StatusOk}
-	if err := db.Create(instance).Error; err != nil {
-		t.Fatalf("create instance: %v", err)
-	}
-
-	companyIDs, storeIDs, instanceIDs, err := AgentTeamService.deriveScopeFromWxWorkInstances([]int64{instance.ID})
-	if err != nil {
-		t.Fatalf("derive scope: %v", err)
-	}
-	if len(companyIDs) != 1 || companyIDs[0] != 7 {
-		t.Fatalf("company scope = %v, want [7]", companyIDs)
-	}
-	if len(storeIDs) != 1 || storeIDs[0] != store.ID {
-		t.Fatalf("store scope = %v, want [%d]", storeIDs, store.ID)
-	}
-	if len(instanceIDs) != 1 || instanceIDs[0] != instance.ID {
-		t.Fatalf("instance scope = %v, want [%d]", instanceIDs, instance.ID)
 	}
 }
 

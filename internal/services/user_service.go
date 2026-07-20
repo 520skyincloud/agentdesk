@@ -112,6 +112,10 @@ func (s *userService) GetByEmail(email string) *models.User {
 	return repositories.UserRepository.GetByEmail(sqls.DB(), email)
 }
 
+func (s *userService) GetByTenantID(id, tenantID int64) *models.User {
+	return repositories.UserRepository.GetInTenant(sqls.DB(), id, tenantID)
+}
+
 func (s *userService) HasRole(userID int64, roleCode string) bool {
 	if userID <= 0 || strings.TrimSpace(roleCode) == "" {
 		return false
@@ -198,6 +202,9 @@ func (s *userService) createManagedUserDB(db *gorm.DB, req request.CreateUserReq
 		return nil, "", err
 	}
 	if err = s.assignInitialUserRolesDB(db, user.ID, roleIDs, operator); err != nil {
+		return nil, "", err
+	}
+	if err = s.syncStoreIdentityForRoleStateDB(db, user, req.StoreName, operator, false); err != nil {
 		return nil, "", err
 	}
 	return user, plain, nil
@@ -324,7 +331,7 @@ func (s *userService) ensureDeleteDependenciesCleared(db *gorm.DB, user *models.
 		user.ID,
 		enums.StatusDeleted,
 	) != nil {
-		return errorsx.InvalidParam("用户仍有关联门店员工身份，请先解除绑定")
+		return errorsx.InvalidParam("用户保留门店员工身份历史，不能删除；请停用账号或移除门店员工号角色")
 	}
 	return nil
 }
@@ -340,11 +347,35 @@ func (s *userService) UpdateStatus(id int64, status int, operator *dto.AuthPrinc
 	if !slices.Contains(enums.StatusValues, enums.Status(status)) {
 		return errorsx.InvalidParam("状态值不合法")
 	}
-	if err := s.Updates(id, map[string]any{
-		"status":           status,
-		"update_user_id":   operator.UserID,
-		"update_user_name": operator.Username,
-		"updated_at":       time.Now(),
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current, err := repositories.UserRepository.GetForUpdate(ctx.Tx, id)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.TenantID != user.TenantID {
+			return errorsx.InvalidParam("用户不存在")
+		}
+		columns := map[string]any{
+			"status":           status,
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+			"updated_at":       time.Now(),
+		}
+		if current.TenantID > 0 {
+			if err := repositories.UserRepository.UpdatesInTenant(ctx.Tx, id, current.TenantID, columns); err != nil {
+				return err
+			}
+		} else if err := repositories.UserRepository.Updates(ctx.Tx, id, columns); err != nil {
+			return err
+		}
+		current.Status = enums.Status(status)
+		if current.TenantID <= 0 {
+			return nil
+		}
+		if current.Status == enums.StatusOk {
+			return s.syncStoreIdentityForRoleStateDB(ctx.Tx, current, "", operator, false)
+		}
+		return StoreStaffBindingService.RetireForUserDB(ctx.Tx, current.TenantID, current.ID, operator)
 	}); err != nil {
 		return err
 	}
@@ -380,6 +411,10 @@ func (s *userService) ChangeOwnPassword(password string, operator *dto.AuthPrinc
 }
 
 func (s *userService) AssignRoles(userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
+	return s.AssignRolesWithStoreName(userID, roleIDs, "", operator)
+}
+
+func (s *userService) AssignRolesWithStoreName(userID int64, roleIDs []int64, storeName string, operator *dto.AuthPrincipal) error {
 	user := s.GetInScope(userID, operator)
 	if user == nil || user.DeletedAt != nil {
 		return errorsx.InvalidParam("用户不存在")
@@ -387,10 +422,50 @@ func (s *userService) AssignRoles(userID int64, roleIDs []int64, operator *dto.A
 	if err := s.EnsureCanManageUser(operator, user); err != nil {
 		return err
 	}
-	if err := s.replaceUserRoles(userID, roleIDs, operator); err != nil {
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		storeStaffRole := repositories.RoleRepository.GetByCode(ctx.Tx, constants.RoleCodeStoreStaff)
+		hadStoreStaffRole := storeStaffRole != nil && repositories.UserRoleRepository.FindOne(ctx.Tx, sqls.NewCnd().Eq("user_id", userID).Eq("role_id", storeStaffRole.ID)) != nil
+		if err := s.replaceUserRolesDB(ctx.Tx, userID, roleIDs, operator); err != nil {
+			return err
+		}
+		current, err := repositories.UserRepository.GetForUpdate(ctx.Tx, userID)
+		if err != nil {
+			return err
+		}
+		return s.syncStoreIdentityForRoleStateDB(ctx.Tx, current, storeName, operator, hadStoreStaffRole)
+	}); err != nil {
 		return err
 	}
 	return LoginSessionService.RevokeByUser(userID, operator.UserID, operator.Username)
+}
+
+func (s *userService) syncStoreIdentityForRoleStateDB(db *gorm.DB, user *models.User, storeName string, operator *dto.AuthPrincipal, retireIfMissing bool) error {
+	if user == nil || user.TenantID <= 0 {
+		return nil
+	}
+	role := repositories.RoleRepository.GetByCode(db, constants.RoleCodeStoreStaff)
+	if role == nil || role.Status != enums.StatusOk || repositories.UserRoleRepository.FindOne(db, sqls.NewCnd().Eq("user_id", user.ID).Eq("role_id", role.ID)) == nil {
+		if retireIfMissing {
+			return StoreStaffBindingService.RetireForUserDB(db, user.TenantID, user.ID, operator)
+		}
+		return nil
+	}
+	bindings, err := repositories.StoreStaffBindingRepository.FindAllForUpdateByUserInTenant(db, user.TenantID, user.ID)
+	if err != nil {
+		return err
+	}
+	if len(bindings) > 1 {
+		return errorsx.InvalidParam("该账号存在多个门店绑定，请先修复历史数据")
+	}
+	storeName = strings.TrimSpace(storeName)
+	if len(bindings) == 1 && bindings[0].Status == enums.StatusOk && storeName == "" {
+		return StoreStaffBindingService.validateBindingOwnerDB(db, &bindings[0])
+	}
+	if len(bindings) == 0 && storeName == "" {
+		return errorsx.InvalidParam("分配门店员工号角色时必须填写门店名称")
+	}
+	_, err = StoreStaffBindingService.prepareForUserDB(db, user.TenantID, user.ID, storeName, operator)
+	return err
 }
 
 func (s *userService) replaceUserRoles(userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
@@ -535,14 +610,6 @@ func (s *userService) ensureRetainedRoleDependenciesDB(db *gorm.DB, user *models
 			user.TenantID, user.ID, enums.StatusDeleted,
 		) != nil {
 			return errorsx.InvalidParam("用户仍是综合客服组组长，请先更换组长再移除客服组长角色")
-		}
-	}
-	if removesRole(constants.RoleCodeStoreStaff) {
-		if repositories.StoreStaffBindingRepository.Take(db,
-			"tenant_id = ? AND user_id = ? AND status <> ?",
-			user.TenantID, user.ID, enums.StatusDeleted,
-		) != nil {
-			return errorsx.InvalidParam("用户仍有关联门店员工身份，请先解除绑定再移除门店员工角色")
 		}
 	}
 	return nil

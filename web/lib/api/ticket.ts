@@ -20,15 +20,6 @@ export type TicketPriority = "low" | "normal" | "high" | "urgent"
 export type TicketCustomer = {
   id: number
   name: string
-  companyId?: number
-  company?: {
-    id: number
-    name: string
-    code?: string
-    remark?: string
-    createdAt?: string
-    updatedAt?: string
-  }
   primaryMobile?: string
   primaryEmail?: string
 }

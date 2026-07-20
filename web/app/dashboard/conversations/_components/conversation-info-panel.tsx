@@ -1,6 +1,5 @@
 "use client";
 import {
-  Building2Icon,
   Link2Icon,
   MailIcon,
   PencilIcon,
@@ -15,27 +14,12 @@ import { CustomerFormDialog } from "@/components/customer-form-dialog";
 import { CustomerLinkOrCreateDialog } from "@/components/customer-link-or-create-dialog";
 import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  Field,
-  FieldContent,
-  FieldLabel,
-} from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import {
   setAgentConversationAutoHandoffEnabled,
   type AgentConversation,
 } from "@/lib/api/agent";
 import { type TagTree, fetchTagsAll } from "@/lib/api/admin";
-import { updateCompany, type AdminCompany } from "@/lib/api/company";
 import { fetchTickets, type TicketItem } from "@/lib/api/ticket";
 import {
   fetchCustomer,
@@ -138,7 +122,6 @@ function useCanLinkConversationCustomer() {
 type ConversationInfoPermissions = {
   canViewCustomer: boolean;
   canUpdateCustomer: boolean;
-  canUpdateCompany: boolean;
   canViewTickets: boolean;
   canViewTags: boolean;
   canManageTags: boolean;
@@ -153,7 +136,6 @@ function useConversationInfoPermissions(): ConversationInfoPermissions {
   return {
     canViewCustomer,
     canUpdateCustomer: canViewCustomer && permissions.has("customer.update"),
-    canUpdateCompany: canViewCustomer && permissions.has("company.update"),
     canViewTickets: permissions.has("ticket.view"),
     canViewTags,
     canManageTags: canViewTags && permissions.has("conversation.tag"),
@@ -426,7 +408,6 @@ function CustomerLinkedBody({
 
   const [customerEditOpen, setCustomerEditOpen] = useState(false);
   const [customerEditSaving, setCustomerEditSaving] = useState(false);
-  const [companyEditOpen, setCompanyEditOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -458,7 +439,6 @@ function CustomerLinkedBody({
     !customer.name.trim() &&
     !customer.primaryMobile.trim() &&
     !customer.primaryEmail.trim() &&
-    customer.companyId === 0 &&
     !customer.remark.trim();
 
   if (loading && !customer) {
@@ -477,7 +457,6 @@ function CustomerLinkedBody({
   }
 
   const displayName = customer.name.trim() || t("conversation.unnamedCustomer");
-  const company = customer.company ?? null;
   const genderLabel =
     customer.gender === Gender.Male
       ? t("conversation.genderMale")
@@ -595,64 +574,6 @@ function CustomerLinkedBody({
         )}
       </section>
 
-      {customer.companyId > 0 ? (
-        <section className="border-t pt-2">
-          {company ? (
-            <div className="space-y-2">
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex min-w-0 flex-1 items-start gap-2 text-sm">
-                  <Building2Icon
-                    className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                    aria-hidden
-                  />
-                  <div className="min-w-0 flex-1 space-y-0.5">
-                    <p className="line-clamp-2 font-medium leading-snug text-foreground">
-                      {company.name}
-                    </p>
-                    {company.code ? (
-                      <p className="font-mono text-xs text-muted-foreground">
-                        {company.code}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-                {permissions.canUpdateCompany ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 shrink-0 gap-1 px-2 text-xs"
-                    onClick={() => setCompanyEditOpen(true)}
-                  >
-                    <PencilIcon className="size-3.5" />
-                    {t("conversation.edit")}
-                  </Button>
-                ) : null}
-              </div>
-              <div className="space-y-2 pt-1">
-                <DetailRow
-                  label={t("conversation.createdAt")}
-                  value={formatDateTime(company.createdAt)}
-                />
-                <DetailRow
-                  label={t("conversation.updatedAt")}
-                  value={formatDateTime(company.updatedAt)}
-                />
-              </div>
-              <DetailRow
-                label={t("conversation.remark")}
-                value={company.remark.trim() ? company.remark : ""}
-                valueClassName="whitespace-pre-wrap"
-              />
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              {t("conversation.companyUnavailable")}
-            </p>
-          )}
-        </section>
-      ) : null}
-
       {permissions.canViewTickets ? (
         <RelatedTicketsSection conversation={conversation} />
       ) : null}
@@ -680,16 +601,6 @@ function CustomerLinkedBody({
             } finally {
               setCustomerEditSaving(false);
             }
-          }}
-        />
-      ) : null}
-      {company && permissions.canUpdateCompany ? (
-        <CompanyEditDialog
-          open={permissions.canUpdateCompany && companyEditOpen}
-          onOpenChange={setCompanyEditOpen}
-          company={company}
-          onSaved={() => {
-            void load();
           }}
         />
       ) : null}
@@ -832,102 +743,5 @@ function RelatedTicketsSection({ conversation }: { conversation: AgentConversati
         <p className="text-sm text-muted-foreground">{t("conversation.noRelatedTickets")}</p>
       )}
     </section>
-  );
-}
-
-type CompanyEditDialogProps = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  company: AdminCompany;
-  onSaved: () => void;
-};
-
-function CompanyEditDialog({
-  open,
-  onOpenChange,
-  company,
-  onSaved,
-}: CompanyEditDialogProps) {
-  const t = useI18n();
-  const [name, setName] = useState("");
-  const [code, setCode] = useState("");
-  const [remark, setRemark] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    setName(company.name);
-    setCode(company.code);
-    setRemark(company.remark);
-  }, [open, company]);
-
-  const handleSubmit = async () => {
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      toast.error(t("conversation.companyNameRequired"));
-      return;
-    }
-    setSaving(true);
-    try {
-      await updateCompany({
-        id: company.id,
-        name: trimmedName,
-        code: code.trim(),
-        intentProfileId: company.intentProfileId || 0,
-        remark: remark.trim(),
-      });
-      toast.success(t("conversation.saved"));
-      onSaved();
-      onOpenChange(false);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : t("conversation.saveFailed"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md" showCloseButton>
-        <DialogHeader>
-          <DialogTitle>{t("conversation.editCompany")}</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-4 py-1">
-          <Field orientation="vertical">
-            <FieldLabel htmlFor="co-name">{t("conversation.companyName")}</FieldLabel>
-            <FieldContent>
-              <Input id="co-name" value={name} onChange={(e) => setName(e.target.value)} />
-            </FieldContent>
-          </Field>
-          <Field orientation="vertical">
-            <FieldLabel htmlFor="co-code">{t("conversation.companyCode")}</FieldLabel>
-            <FieldContent>
-              <Input id="co-code" value={code} onChange={(e) => setCode(e.target.value)} />
-            </FieldContent>
-          </Field>
-          <Field orientation="vertical">
-            <FieldLabel htmlFor="co-remark">{t("conversation.remark")}</FieldLabel>
-            <FieldContent>
-              <Textarea
-                id="co-remark"
-                value={remark}
-                onChange={(e) => setRemark(e.target.value)}
-                rows={3}
-              />
-            </FieldContent>
-          </Field>
-        </div>
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            {t("conversation.cancel")}
-          </Button>
-          <Button type="button" disabled={saving} onClick={() => void handleSubmit()}>
-            {saving ? t("conversation.saving") : t("conversation.save")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }

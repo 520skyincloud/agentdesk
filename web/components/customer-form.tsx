@@ -12,7 +12,6 @@ import {
 import { PlusIcon, Trash2Icon } from "lucide-react"
 import { z } from "zod/v4"
 
-import { CompanyPicker } from "@/components/company-picker"
 import { OptionCombobox } from "@/components/option-combobox"
 import { Button } from "@/components/ui/button"
 import {
@@ -55,7 +54,6 @@ const contactRowSchema = z.object({
 export type CustomerFormValues = {
   name: string
   gender: (typeof genderValueOptions)[number]
-  companyId: string
   remark: string
   contacts: CustomerContactFormRow[]
 }
@@ -80,7 +78,6 @@ function defaultContactRow(isPrimary: boolean): CustomerContactFormRow {
 const emptyCustomerForm: CustomerFormValues = {
   name: "",
   gender: "0",
-  companyId: "0",
   remark: "",
   contacts: [defaultContactRow(true)],
 }
@@ -90,14 +87,12 @@ function buildCustomerMainFromAdmin(item: AdminCustomer | null): Omit<CustomerFo
     return {
       name: "",
       gender: "0",
-      companyId: "0",
       remark: "",
     }
   }
   return {
     name: item.name,
     gender: String(item.gender) as "0" | "1" | "2",
-    companyId: String(item.companyId ?? 0),
     remark: item.remark ?? "",
   }
 }
@@ -215,43 +210,24 @@ function CustomerFormFields({
             </FieldContent>
           </Field>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field data-invalid={!!errors.gender}>
-              <FieldLabel htmlFor={id("gender")}>{t("customerForm.gender")}</FieldLabel>
-              <FieldContent>
-                <Controller
-                  control={control}
-                  name="gender"
-                  render={({ field }) => (
-                    <OptionCombobox
-                      value={field.value}
-                      options={genderOptions}
-                      placeholder={t("customerForm.gender")}
-                      onChange={field.onChange}
-                    />
-                  )}
-                />
-                <FieldError errors={[errors.gender]} />
-              </FieldContent>
-            </Field>
-
-            <Field data-invalid={!!errors.companyId}>
-              <FieldLabel htmlFor={id("company")}>{t("customerForm.company")}</FieldLabel>
-              <FieldContent>
-                <Controller
-                  control={control}
-                  name="companyId"
-                  render={({ field }) => (
-                    <CompanyPicker
-                      value={field.value}
-                      onChange={field.onChange}
-                    />
-                  )}
-                />
-                <FieldError errors={[errors.companyId]} />
-              </FieldContent>
-            </Field>
-          </div>
+          <Field data-invalid={!!errors.gender}>
+            <FieldLabel htmlFor={id("gender")}>{t("customerForm.gender")}</FieldLabel>
+            <FieldContent>
+              <Controller
+                control={control}
+                name="gender"
+                render={({ field }) => (
+                  <OptionCombobox
+                    value={field.value}
+                    options={genderOptions}
+                    placeholder={t("customerForm.gender")}
+                    onChange={field.onChange}
+                  />
+                )}
+              />
+              <FieldError errors={[errors.gender]} />
+            </FieldContent>
+          </Field>
 
           <Field data-invalid={!!errors.remark}>
             <FieldLabel htmlFor={id("remark")}>{t("customerForm.remark")}</FieldLabel>
@@ -400,7 +376,6 @@ export function CustomerForm({
       z.object({
         name: z.string().trim().min(1, t("customerForm.nameRequired")),
         gender: z.enum(genderValueOptions, { message: t("customerForm.genderRequired") }),
-        companyId: z.string().trim().regex(/^\d+$/, t("customerForm.companyRequired")),
         remark: z.string().trim(),
         contacts: z.array(contactRowSchema),
       }),
@@ -454,7 +429,6 @@ export function CustomerForm({
     const body: SaveCustomerProfilePayload = {
       name: values.name.trim(),
       gender: Number(values.gender),
-      companyId: Number(values.companyId),
       remark: values.remark.trim(),
       contacts: contacts.map((c) => ({
         id: c.id,

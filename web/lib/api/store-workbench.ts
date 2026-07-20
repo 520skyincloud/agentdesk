@@ -10,8 +10,6 @@ export type StoreWorkbenchData = {
   avatar: string
   bindingId: number
   bindingStatus: number
-  companyId: number
-  companyName: string
   storeId: number
   storeCode: string
   storeName: string

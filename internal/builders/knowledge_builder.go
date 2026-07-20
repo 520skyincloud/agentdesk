@@ -11,7 +11,6 @@ func BuildKnowledgeBase(item *models.KnowledgeBase) response.KnowledgeBaseRespon
 	return response.KnowledgeBaseResponse{
 		ID:                     item.ID,
 		IntentProfileID:        item.IntentProfileID,
-		CompanyID:              item.CompanyID,
 		StoreID:                item.StoreID,
 		DatasetID:              item.DatasetID,
 		DatasetName:            item.DatasetName,
@@ -50,7 +49,6 @@ func BuildKnowledgeResourceGroup(item *models.KnowledgeResourceGroup, resourceIt
 	}
 	ret = response.KnowledgeResourceGroupResponse{
 		ID:               item.ID,
-		CompanyID:        item.CompanyID,
 		StoreID:          item.StoreID,
 		IntentProfileID:  item.IntentProfileID,
 		KnowledgeBaseID:  item.KnowledgeBaseID,

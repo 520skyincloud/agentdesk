@@ -25,12 +25,12 @@ func WxWorkProtocolRemoteSetupGetByToken(ctx *gin.Context) {
 	if store := services.StoreService.GetInTenant(ret.StoreID, item.TenantID); store != nil {
 		ret.StoreCode = store.StoreCode
 		ret.StoreName = utils.RepairMojibakeText(store.Name)
-		if ret.CompanyID == 0 {
-			ret.CompanyID = store.CompanyID
-		}
 	}
-	if company := services.CompanyService.GetByTenantID(ret.CompanyID, item.TenantID); company != nil {
-		ret.CompanyName = utils.RepairMojibakeText(company.Name)
+	if binding := services.StoreStaffBindingService.GetInTenant(ret.StoreStaffBindingID, item.TenantID); binding != nil {
+		ret.StoreStaffUserID = binding.UserID
+		if user := services.UserService.GetByTenantID(binding.UserID, item.TenantID); user != nil {
+			ret.StoreStaffUserName = utils.RepairMojibakeText(user.Nickname)
+		}
 	}
 	if job := services.FastGPTDatasetService.LatestJobByStore(ret.StoreID, item.TenantID); job != nil {
 		ret.KnowledgeProvisionStatus = job.Status

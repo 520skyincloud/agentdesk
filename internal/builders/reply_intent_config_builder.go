@@ -17,7 +17,6 @@ func BuildReplyIntentConfig(item *models.ReplyIntentConfig) *response.ReplyInten
 		Description:        item.Description,
 		IntentProfileID:    item.IntentProfileID,
 		ScopeType:          item.ScopeType,
-		CompanyID:          item.CompanyID,
 		StoreID:            item.StoreID,
 		WxWorkInstanceID:   item.WxWorkInstanceID,
 		Priority:           item.Priority,

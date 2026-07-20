@@ -144,7 +144,6 @@ function buildPayload(form: EditForm): CreateAdminAgentTeamPayload {
     name: form.name.trim(),
     leaderUserId: Number(form.leaderUserId),
     storeStaffUserIds: parseIdList(form.storeStaffUserIds),
-    companyScopeIds: [],
     storeScopeIds: [],
     wxWorkInstanceScopeIds: [],
     dispatchMode: form.dispatchMode,
@@ -162,7 +161,6 @@ function staffSearchText(user: AdminUser) {
   return [
     user.nickname,
     user.username,
-    user.storeStaff?.companyName,
     user.storeStaff?.storeName,
     user.storeStaff?.wxWorkEmployeeName,
     user.storeStaff?.wxWorkEmployeeId,
@@ -209,7 +207,6 @@ function StoreStaffAccountRow({
         <div className="mt-1 truncate text-xs text-muted-foreground">
           {[
             user.storeStaff?.storeName || t("agentProfile.storeUnbound"),
-            user.storeStaff?.companyName,
             user.storeStaff?.wxWorkEmployeeName,
             user.storeStaff?.wxWorkEmployeeId,
           ]
@@ -275,7 +272,6 @@ function TeamEditDialogBody({
   const [staffKeyword, setStaffKeyword] = useState("");
   const [selectedStaffKeyword, setSelectedStaffKeyword] = useState("");
   const [assignmentFilter, setAssignmentFilter] = useState<AssignmentFilter>("all");
-  const [companyFilter, setCompanyFilter] = useState("all");
   const [bindingFilter, setBindingFilter] = useState<BindingFilter>("all");
   const [loading, setLoading] = useState(false);
   const [staffLoading, setStaffLoading] = useState(false);
@@ -361,21 +357,6 @@ function TeamEditDialogBody({
     void loadUsers();
   }, [loadUsers]);
 
-  const companyOptions = useMemo(() => {
-    const companies = new Map<number, string>();
-    storeStaffUsers.forEach((user) => {
-      const companyID = user.storeStaff?.companyId || 0;
-      if (companyID > 0) {
-        companies.set(companyID, user.storeStaff?.companyName || t("agentProfile.companyFallback", { id: companyID }));
-      }
-    });
-    return [
-      { value: "all", label: t("agentProfile.allCompanies") },
-      ...[...companies.entries()]
-        .sort((a, b) => a[1].localeCompare(b[1]))
-        .map(([id, name]) => ({ value: String(id), label: name })),
-    ];
-  }, [storeStaffUsers, t]);
   const assignmentOptions = useMemo(
     () => [
       { value: "available", label: t("agentProfile.staffAssignmentAvailable") },
@@ -411,7 +392,6 @@ function TeamEditDialogBody({
         }
         return true;
       })
-      .filter((user) => companyFilter === "all" || String(user.storeStaff?.companyId || 0) === companyFilter)
       .filter((user) => {
         if (bindingFilter === "bound") {
           return Boolean(user.storeStaff?.bindingId);
@@ -425,7 +405,7 @@ function TeamEditDialogBody({
         const boundDiff = Number(Boolean(b.storeStaff?.bindingId)) - Number(Boolean(a.storeStaff?.bindingId));
         return boundDiff || (a.storeStaff?.storeName || "").localeCompare(b.storeStaff?.storeName || "") || a.id - b.id;
       });
-  }, [assignmentFilter, bindingFilter, companyFilter, itemId, selectedUserIDSet, staffKeyword, storeStaffUsers]);
+  }, [assignmentFilter, bindingFilter, itemId, selectedUserIDSet, staffKeyword, storeStaffUsers]);
   const filteredSelectedUsers = useMemo(() => {
     const keyword = selectedStaffKeyword.trim().toLowerCase();
     if (!keyword) {
@@ -699,7 +679,7 @@ function TeamEditDialogBody({
                     className="pl-9"
                   />
                 </div>
-                <div className="grid gap-2 sm:grid-cols-3">
+                <div className="grid gap-2 sm:grid-cols-2">
                   <OptionCombobox
                     options={assignmentOptions}
                     value={assignmentFilter}
@@ -707,14 +687,6 @@ function TeamEditDialogBody({
                     placeholder={t("agentProfile.assignmentScope")}
                     searchPlaceholder={t("agentProfile.searchAssignmentScope")}
                     emptyText={t("agentProfile.emptyAssignmentScope")}
-                  />
-                  <OptionCombobox
-                    options={companyOptions}
-                    value={companyFilter}
-                    onChange={setCompanyFilter}
-                    placeholder={t("agentProfile.company")}
-                    searchPlaceholder={t("agentProfile.searchCompany")}
-                    emptyText={t("agentProfile.emptyCompany")}
                   />
                   <OptionCombobox
                     options={bindingOptions}

@@ -106,7 +106,7 @@ func (s *fastGPTDatasetService) enqueueDefaultDataset(store *models.Store, name 
 	job := &models.FastGPTDatasetJob{
 		TenantID:  store.TenantID,
 		TaskKey:   taskKey,
-		CompanyID: store.CompanyID,
+		CompanyID: 0,
 		StoreID:   store.ID,
 		Action:    fastGPTJobActionCreateDataset,
 		Status:    fastGPTJobStatusPending,
@@ -140,7 +140,7 @@ func (s *fastGPTDatasetService) EnqueueUpload(knowledgeBaseID int64, file *multi
 	job := &models.FastGPTDatasetJob{
 		TenantID:         knowledgeBase.TenantID,
 		TaskKey:          "fastgpt-upload-" + strings.ReplaceAll(uuid.NewString(), "-", ""),
-		CompanyID:        knowledgeBase.CompanyID,
+		CompanyID:        0,
 		StoreID:          knowledgeBase.StoreID,
 		KnowledgeBaseID:  knowledgeBase.ID,
 		Action:           fastGPTJobActionUploadFile,
@@ -237,7 +237,7 @@ func (s *fastGPTDatasetService) createDataset(ctx context.Context, connector *Fa
 	return sqls.WithTransaction(func(tx *sqls.TxContext) error {
 		knowledgeBase := &models.KnowledgeBase{
 			TenantID:              job.TenantID,
-			CompanyID:             store.CompanyID,
+			CompanyID:             0,
 			StoreID:               store.ID,
 			DatasetID:             dataset.ID,
 			DatasetName:           firstNonBlank(dataset.Name, job.Filename),
@@ -291,7 +291,7 @@ func (s *fastGPTDatasetService) ensureStoreTenant(ctx context.Context, connector
 	now := time.Now()
 	return repositories.FastGPTStoreTenantRepository.Save(sqls.DB(), &models.FastGPTStoreTenant{
 		TenantID:       store.TenantID,
-		CompanyID:      store.CompanyID,
+		CompanyID:      0,
 		StoreID:        store.ID,
 		TenantTeamID:   tenant.TeamID,
 		TenantTeamName: firstNonBlank(tenant.TeamName, store.Name),
@@ -548,7 +548,7 @@ func (s *fastGPTDatasetService) recordJobUsage(job *models.FastGPTDatasetJob, op
 	_ = AIUsageEventService.Record(models.AIUsageEvent{
 		TenantID:  job.TenantID,
 		EventKey:  fmt.Sprintf("fastgpt-job:%s:%s:%d", job.TaskKey, operationType, job.AttemptCount+1),
-		CompanyID: job.CompanyID, StoreID: job.StoreID, KnowledgeBaseID: job.KnowledgeBaseID,
+		CompanyID: 0, StoreID: job.StoreID, KnowledgeBaseID: job.KnowledgeBaseID,
 		Stage: "knowledge_manage", Provider: "fastgpt", OperationType: operationType,
 		RequestCount: 1, TrainingCount: trainingCount, FileBytes: fileBytes,
 		MetricSource: AIUsageMetricSourceProviderOperation,
@@ -661,7 +661,7 @@ func (s *fastGPTDatasetService) SearchTest(ctx context.Context, knowledgeBaseID 
 	_ = AIUsageEventService.Record(models.AIUsageEvent{
 		TenantID:  kb.TenantID,
 		EventKey:  "fastgpt-search-test:" + strings.ReplaceAll(uuid.NewString(), "-", ""),
-		CompanyID: kb.CompanyID, StoreID: kb.StoreID, KnowledgeBaseID: kb.ID,
+		CompanyID: 0, StoreID: kb.StoreID, KnowledgeBaseID: kb.ID,
 		Stage: "knowledge_search_test", Provider: "fastgpt", OperationType: "knowledge_retrieve",
 		RequestCount: 1, RerankCount: 1, MetricSource: AIUsageMetricSourceProviderOperation,
 		LatencyMS: time.Since(startedAt).Milliseconds(), Status: status, ErrorMessage: errorMessage,
@@ -695,7 +695,7 @@ func (s *fastGPTDatasetService) DeleteCollection(ctx context.Context, knowledgeB
 	_ = AIUsageEventService.Record(models.AIUsageEvent{
 		TenantID:  kb.TenantID,
 		EventKey:  "fastgpt-delete:" + strings.ReplaceAll(uuid.NewString(), "-", ""),
-		CompanyID: kb.CompanyID, StoreID: kb.StoreID, KnowledgeBaseID: kb.ID,
+		CompanyID: 0, StoreID: kb.StoreID, KnowledgeBaseID: kb.ID,
 		Stage: "knowledge_manage", Provider: "fastgpt", OperationType: "knowledge_delete",
 		RequestCount: 1, MetricSource: AIUsageMetricSourceProviderOperation,
 		LatencyMS: time.Since(startedAt).Milliseconds(), Status: status, ErrorMessage: errorMessage,
@@ -729,7 +729,7 @@ func (s *fastGPTDatasetService) DeleteDataset(ctx context.Context, knowledgeBase
 	_ = AIUsageEventService.Record(models.AIUsageEvent{
 		TenantID:  kb.TenantID,
 		EventKey:  "fastgpt-dataset-delete:" + strings.ReplaceAll(uuid.NewString(), "-", ""),
-		CompanyID: kb.CompanyID, StoreID: kb.StoreID, KnowledgeBaseID: kb.ID,
+		CompanyID: 0, StoreID: kb.StoreID, KnowledgeBaseID: kb.ID,
 		Stage: "knowledge_manage", Provider: "fastgpt", OperationType: "dataset_delete",
 		RequestCount: 1, MetricSource: AIUsageMetricSourceProviderOperation,
 		LatencyMS: time.Since(startedAt).Milliseconds(), Status: status, ErrorMessage: errorMessage,

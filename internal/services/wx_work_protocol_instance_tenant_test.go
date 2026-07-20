@@ -23,21 +23,23 @@ func TestWxWorkProtocolInstanceCRUDStaysInActiveTenant(t *testing.T) {
 	db := setupWxWorkProtocolTenantDB(t)
 	adminA := wxWorkProtocolTenantOperator(101, 1)
 	adminB := wxWorkProtocolTenantOperator(202, 2)
-	companyA := createWxWorkProtocolTenantCompany(t, db, 101, "企微租户A企业")
-	companyB := createWxWorkProtocolTenantCompany(t, db, 202, "企微租户B企业")
 	channelA := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-tenant-a")
 	channelB := createWxWorkProtocolTenantChannel(t, db, 202, "wxwork-tenant-b")
-	storeA := createWxWorkProtocolTenantStore(t, db, 101, companyA.ID, "WX-A")
-	storeB := createWxWorkProtocolTenantStore(t, db, 202, companyB.ID, "WX-B")
+	userA := createStoreStaffTenantUser(t, db, 101, "wxwork-store-user-a")
+	userB := createStoreStaffTenantUser(t, db, 202, "wxwork-store-user-b")
+	storeA := createWxWorkProtocolTenantStore(t, db, 101, 0, "WX-A")
+	storeB := createWxWorkProtocolTenantStore(t, db, 202, 0, "WX-B")
+	createStoreStaffTenantBinding(t, db, 101, userA.ID, 0, 0, storeA.ID)
+	createStoreStaffTenantBinding(t, db, 202, userB.ID, 0, 0, storeB.ID)
 
 	instanceA, err := WxWorkProtocolInstanceService.CreateInstance(request.CreateWxWorkProtocolInstanceRequest{
-		Guid: "tenant-a-guid", ChannelID: channelA.ID, CompanyID: companyA.ID, StoreID: storeA.ID, Status: int(enums.StatusOk),
+		Guid: "tenant-a-guid", ChannelID: channelA.ID, StoreStaffUserID: userA.ID, Status: int(enums.StatusOk),
 	}, adminA)
 	if err != nil {
 		t.Fatalf("create tenant A instance: %v", err)
 	}
 	instanceB, err := WxWorkProtocolInstanceService.CreateInstance(request.CreateWxWorkProtocolInstanceRequest{
-		Guid: "tenant-b-guid", ChannelID: channelB.ID, CompanyID: companyB.ID, StoreID: storeB.ID, Status: int(enums.StatusOk),
+		Guid: "tenant-b-guid", ChannelID: channelB.ID, StoreStaffUserID: userB.ID, Status: int(enums.StatusOk),
 	}, adminB)
 	if err != nil {
 		t.Fatalf("create tenant B instance: %v", err)
@@ -50,10 +52,9 @@ func TestWxWorkProtocolInstanceCRUDStaysInActiveTenant(t *testing.T) {
 	}
 
 	crossTenantCreates := []request.CreateWxWorkProtocolInstanceRequest{
-		{Guid: "foreign-channel-guid", ChannelID: channelB.ID, CompanyID: companyA.ID},
-		{Guid: "foreign-company-guid", ChannelID: channelA.ID, CompanyID: companyB.ID},
-		{Guid: "foreign-store-guid", ChannelID: channelA.ID, CompanyID: companyA.ID, StoreID: storeB.ID},
-		{Guid: instanceB.Guid, ChannelID: channelA.ID, CompanyID: companyA.ID},
+		{Guid: "foreign-channel-guid", ChannelID: channelB.ID, StoreStaffUserID: userA.ID},
+		{Guid: "foreign-user-guid", ChannelID: channelA.ID, StoreStaffUserID: userB.ID},
+		{Guid: instanceB.Guid, ChannelID: channelA.ID, StoreStaffUserID: userA.ID},
 	}
 	for index, req := range crossTenantCreates {
 		if _, createErr := WxWorkProtocolInstanceService.CreateInstance(req, adminA); createErr == nil {
@@ -64,7 +65,7 @@ func TestWxWorkProtocolInstanceCRUDStaysInActiveTenant(t *testing.T) {
 	if err := WxWorkProtocolInstanceService.UpdateInstance(request.UpdateWxWorkProtocolInstanceRequest{
 		ID: instanceB.ID,
 		CreateWxWorkProtocolInstanceRequest: request.CreateWxWorkProtocolInstanceRequest{
-			Guid: instanceB.Guid, ChannelID: channelA.ID, CompanyID: companyA.ID, Status: int(enums.StatusOk),
+			Guid: instanceB.Guid, ChannelID: channelA.ID, StoreStaffUserID: userA.ID, Status: int(enums.StatusOk),
 		},
 	}, adminA); err == nil {
 		t.Fatal("tenant A updated tenant B instance")
@@ -83,10 +84,41 @@ func TestWxWorkProtocolInstanceCRUDStaysInActiveTenant(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolInstanceCreateRollsBackWhenBindingSyncFails(t *testing.T) {
+	db := setupWxWorkProtocolTenantDB(t)
+	operator := wxWorkProtocolTenantOperator(101, 1)
+	channel := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-atomic-create")
+	user := createStoreStaffTenantUser(t, db, 101, "wxwork-atomic-user")
+	store := createWxWorkProtocolTenantStore(t, db, 101, 0, "WX-ATOMIC")
+	createStoreStaffTenantBinding(t, db, 101, user.ID, 0, 0, store.ID)
+
+	if err := db.Exec(`CREATE TRIGGER reject_store_binding_update
+		BEFORE UPDATE ON t_store_staff_binding
+		BEGIN
+			SELECT RAISE(ABORT, 'binding sync failed');
+		END`).Error; err != nil {
+		t.Fatalf("create binding update trigger: %v", err)
+	}
+
+	if _, err := WxWorkProtocolInstanceService.CreateInstance(request.CreateWxWorkProtocolInstanceRequest{
+		Guid: "atomic-create-guid", ChannelID: channel.ID, StoreStaffUserID: user.ID, Status: int(enums.StatusOk),
+	}, operator); err == nil {
+		t.Fatal("instance create unexpectedly succeeded when binding sync failed")
+	}
+	var count int64
+	if err := db.Model(&models.WxWorkProtocolInstance{}).Where("guid = ?", "atomic-create-guid").Count(&count).Error; err != nil {
+		t.Fatalf("count rolled back instance: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("binding sync failure left %d instance rows", count)
+	}
+}
+
 func TestWxWorkProtocolLoginClaimsOnlyUnownedInstance(t *testing.T) {
 	db := setupWxWorkProtocolTenantDB(t)
 	adminA := wxWorkProtocolTenantOperator(101, 1)
 	channelA := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-claim-a")
+	userA := createStoreStaffTenantUser(t, db, 101, "wxwork-claim-store-user")
 
 	pending, err := WxWorkProtocolInstanceService.CreatePendingFromLogin("claimable-guid", json.RawMessage(`{}`))
 	if err != nil {
@@ -97,8 +129,10 @@ func TestWxWorkProtocolLoginClaimsOnlyUnownedInstance(t *testing.T) {
 	}
 
 	claimed, err := WxWorkProtocolInstanceService.CreateLoginInstance(request.StartWxWorkProtocolLoginRequest{
-		ChannelID: channelA.ID,
-		Guid:      pending.Guid,
+		ChannelID:        channelA.ID,
+		Guid:             pending.Guid,
+		StoreStaffUserID: userA.ID,
+		StoreName:        "认领测试门店",
 	}, adminA)
 	if err != nil {
 		t.Fatalf("claim callback instance: %v", err)
@@ -115,10 +149,10 @@ func TestWxWorkProtocolLoginClaimsOnlyUnownedInstance(t *testing.T) {
 	}
 }
 
-func TestWxWorkProtocolRemoteSetupRejectsForeignCompanyBeforeGUIDClaim(t *testing.T) {
+func TestWxWorkProtocolRemoteSetupRejectsForeignStoreStaffBeforeGUIDClaim(t *testing.T) {
 	db := setupWxWorkProtocolTenantDB(t)
 	adminA := wxWorkProtocolTenantOperator(101, 1)
-	companyB := createWxWorkProtocolTenantCompany(t, db, 202, "远程配置租户B企业")
+	userB := createStoreStaffTenantUser(t, db, 202, "remote-foreign-store-user")
 	channelA := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-remote-a")
 	pending, err := WxWorkProtocolInstanceService.CreatePendingFromLogin("remote-pending-guid", json.RawMessage(`{}`))
 	if err != nil {
@@ -126,15 +160,101 @@ func TestWxWorkProtocolRemoteSetupRejectsForeignCompanyBeforeGUIDClaim(t *testin
 	}
 
 	if _, err := WxWorkProtocolInstanceService.CreateRemoteSetupInstance(request.CreateWxWorkProtocolRemoteSetupRequest{
-		ChannelID: channelA.ID,
-		Guid:      pending.Guid,
-		CompanyID: companyB.ID,
+		ChannelID:        channelA.ID,
+		Guid:             pending.Guid,
+		StoreStaffUserID: userB.ID,
+		StoreName:        "跨租户门店",
 	}, adminA); err == nil {
-		t.Fatal("foreign company remote setup unexpectedly succeeded")
+		t.Fatal("foreign store staff remote setup unexpectedly succeeded")
 	}
 	current := repositories.WxWorkProtocolInstanceRepository.Get(db, pending.ID)
 	if current == nil || current.TenantID != 0 || current.ChannelID != 0 || current.CompanyID != 0 {
 		t.Fatalf("rejected remote setup mutated quarantined instance: %+v", current)
+	}
+}
+
+func TestWxWorkProtocolBindingRejectsInvalidOrAlreadyBoundStoreStaff(t *testing.T) {
+	db := setupWxWorkProtocolTenantDB(t)
+	operator := wxWorkProtocolTenantOperator(101, 1)
+	channel := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-binding-guards")
+	validUser := createStoreStaffTenantUser(t, db, 101, "binding-valid-store-user")
+
+	withoutRole := &models.User{TenantID: 101, Username: "binding-no-role", Nickname: "无角色账号", Password: "test", Status: enums.StatusOk}
+	if err := db.Create(withoutRole).Error; err != nil {
+		t.Fatalf("create user without role: %v", err)
+	}
+	if _, err := WxWorkProtocolInstanceService.CreateLoginInstance(request.StartWxWorkProtocolLoginRequest{
+		ChannelID: channel.ID, Guid: "binding-no-role-guid", StoreStaffUserID: withoutRole.ID, StoreName: "无角色门店",
+	}, operator); err == nil {
+		t.Fatal("user without store_staff role unexpectedly bound a wxwork instance")
+	}
+
+	disabledUser := createStoreStaffTenantUser(t, db, 101, "binding-disabled-store-user")
+	if err := db.Model(&models.User{}).Where("id = ?", disabledUser.ID).Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable store staff user: %v", err)
+	}
+	if _, err := WxWorkProtocolInstanceService.CreateRemoteSetupInstance(request.CreateWxWorkProtocolRemoteSetupRequest{
+		ChannelID: channel.ID, Guid: "binding-disabled-guid", StoreStaffUserID: disabledUser.ID, StoreName: "停用账号门店",
+	}, operator); err == nil {
+		t.Fatal("disabled store staff user unexpectedly received a binding link")
+	}
+
+	store := createWxWorkProtocolTenantStore(t, db, 101, 0, "BINDING-EXISTING")
+	binding := createStoreStaffTenantBinding(t, db, 101, validUser.ID, 0, 0, store.ID)
+	if err := db.Create(&models.WxWorkProtocolInstance{
+		TenantID: 101, Guid: "binding-existing-guid", ChannelID: channel.ID, StoreID: store.ID,
+		StoreStaffBindingID: binding.ID, EmployeeUserID: "S:existing", Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create existing bound instance: %v", err)
+	}
+	var storesBefore int64
+	db.Model(&models.Store{}).Where("tenant_id = ?", 101).Count(&storesBefore)
+	if _, err := WxWorkProtocolInstanceService.CreateRemoteSetupInstance(request.CreateWxWorkProtocolRemoteSetupRequest{
+		ChannelID: channel.ID, Guid: "binding-second-guid", StoreStaffUserID: validUser.ID, StoreName: "重复绑定门店",
+	}, operator); err == nil {
+		t.Fatal("already bound store staff user unexpectedly received a second instance")
+	}
+	var storesAfter int64
+	db.Model(&models.Store{}).Where("tenant_id = ?", 101).Count(&storesAfter)
+	if storesAfter != storesBefore {
+		t.Fatalf("rejected duplicate binding created stores: %d -> %d", storesBefore, storesAfter)
+	}
+}
+
+func TestWxWorkProtocolReplacementReusesStoreBindingAndAccount(t *testing.T) {
+	db := setupWxWorkProtocolTenantDB(t)
+	operator := wxWorkProtocolTenantOperator(101, 1)
+	channel := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-replacement")
+	user := createStoreStaffTenantUser(t, db, 101, "replacement-store-user")
+	store := createWxWorkProtocolTenantStore(t, db, 101, 0, "REPLACEMENT-STORE")
+	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, 0, store.ID)
+	old := &models.WxWorkProtocolInstance{
+		TenantID: 101, Guid: "replacement-old-guid", ChannelID: channel.ID, StoreID: store.ID,
+		StoreStaffBindingID: binding.ID, EmployeeUserID: "S:old", Status: enums.StatusOk,
+	}
+	if err := db.Create(old).Error; err != nil {
+		t.Fatalf("create old instance: %v", err)
+	}
+	var usersBefore, storesBefore, bindingsBefore int64
+	db.Model(&models.User{}).Count(&usersBefore)
+	db.Model(&models.Store{}).Count(&storesBefore)
+	db.Model(&models.StoreStaffBinding{}).Count(&bindingsBefore)
+
+	replacement, err := WxWorkProtocolInstanceService.CreateReplacementRemoteSetup(request.CreateWxWorkProtocolReplacementSetupRequest{
+		ID: old.ID, Guid: "replacement-new-guid",
+	}, operator)
+	if err != nil {
+		t.Fatalf("create replacement setup: %v", err)
+	}
+	if replacement.StoreID != store.ID || replacement.StoreStaffBindingID != binding.ID || replacement.ReplacesInstanceID != old.ID || replacement.CompanyID != 0 {
+		t.Fatalf("replacement changed stable store identity: %+v", replacement)
+	}
+	var usersAfter, storesAfter, bindingsAfter int64
+	db.Model(&models.User{}).Count(&usersAfter)
+	db.Model(&models.Store{}).Count(&storesAfter)
+	db.Model(&models.StoreStaffBinding{}).Count(&bindingsAfter)
+	if usersAfter != usersBefore || storesAfter != storesBefore || bindingsAfter != bindingsBefore {
+		t.Fatalf("replacement created account identity rows: users %d->%d stores %d->%d bindings %d->%d", usersBefore, usersAfter, storesBefore, storesAfter, bindingsBefore, bindingsAfter)
 	}
 }
 
@@ -174,7 +294,7 @@ func setupWxWorkProtocolTenantDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&models.Company{}, &models.Store{}, &models.Channel{}, &models.StoreStaffBinding{},
+		&models.Company{}, &models.User{}, &models.Role{}, &models.UserRole{}, &models.Store{}, &models.Channel{}, &models.StoreStaffBinding{},
 		&models.WxWorkProtocolInstance{}, &models.WxWorkProtocolDevicePoolInstance{},
 	); err != nil {
 		t.Fatalf("migrate wxwork tenant models: %v", err)

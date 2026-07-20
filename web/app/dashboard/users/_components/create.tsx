@@ -45,6 +45,7 @@ type CreateUserDrawerProps = {
 type CreateForm = {
   username: string
   nickname: string
+  storeName: string
   avatar: string
   mobile: string
   email: string
@@ -55,6 +56,7 @@ type CreateForm = {
 const emptyForm: CreateForm = {
   username: "",
   nickname: "",
+  storeName: "",
   avatar: "",
   mobile: "",
   email: "",
@@ -71,6 +73,7 @@ function buildPayload(form: CreateForm): CreateAdminUserPayload {
   return {
     username: form.username.trim(),
     nickname: form.nickname.trim(),
+    storeName: form.storeName.trim(),
     avatar: form.avatar.trim(),
     mobile: toNullableString(form.mobile),
     email: toNullableString(form.email),
@@ -124,6 +127,7 @@ function CreateUserDrawerBody({
       z.object({
         username: z.string().trim().min(1, t("user.usernameRequired")),
         nickname: z.string().trim(),
+        storeName: z.string().trim(),
         avatar: z
           .string()
           .trim()
@@ -164,8 +168,16 @@ function CreateUserDrawerBody({
     handleSubmit,
     register,
     reset,
+    setError,
+    watch,
     formState: { errors },
   } = form
+
+  const selectedRoleIds = watch("roleIds") || []
+  const storeStaffRole = roles.find((role) => role.code === "store_staff")
+  const assigningStoreStaff = Boolean(
+    storeStaffRole && selectedRoleIds.includes(storeStaffRole.id)
+  )
 
   useEffect(() => {
     if (!canAssignRoles) {
@@ -200,6 +212,10 @@ function CreateUserDrawerBody({
   }, [locale, roleKeyword, roles])
 
   async function onFormSubmit(values: CreateForm) {
+    if (assigningStoreStaff && !values.storeName.trim()) {
+      setError("storeName", { message: t("user.storeNameRequired") })
+      return
+    }
     const payload = buildPayload(values)
     await onSubmit({
       ...payload,
@@ -381,6 +397,20 @@ function CreateUserDrawerBody({
               <FieldError errors={[errors.roleIds]} />
             </FieldContent>
           </Field> : null}
+          {assigningStoreStaff ? (
+            <Field data-invalid={!!errors.storeName}>
+              <FieldLabel htmlFor="create-store-name">{t("user.storeName")}</FieldLabel>
+              <FieldContent>
+                <Input
+                  id="create-store-name"
+                  placeholder={t("user.storeNamePlaceholder")}
+                  aria-invalid={!!errors.storeName}
+                  {...register("storeName")}
+                />
+                <FieldError errors={[errors.storeName]} />
+              </FieldContent>
+            </Field>
+          ) : null}
         </div>
         <DrawerFooter className="border-t">
           <Button type="submit" disabled={saving || rolesLoading}>

@@ -117,16 +117,16 @@ export function filterDashboardSecondaryNavForSession(
 
 const dashboardSupplementalRouteAccessRules: DashboardRouteAccessRule[] = [
   {
-    url: "/dashboard/company-detail",
-    requiredPermission: "company.view",
-    context: "tenant",
-  },
-  {
     url: "/dashboard/notifications",
     requiredPermission: "notification.view",
     context: "tenant",
   },
 ];
+
+const retiredDashboardRoutes = [
+  "/dashboard/companies",
+  "/dashboard/company-detail",
+] as const;
 
 function findDashboardRouteAccessRule(
   pathname: string | null | undefined,
@@ -155,6 +155,9 @@ export function dashboardPathIsAccessible(
   permissions: readonly string[] | undefined,
   context: DashboardNavContext,
 ): boolean {
+  if (retiredDashboardRoutes.some((url) => isDashboardNavItemActive(pathname ?? "", url))) {
+    return false;
+  }
   const rule = findDashboardRouteAccessRule(pathname);
   if (!rule) {
     return true;
@@ -247,12 +250,6 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         url: "/dashboard/customers",
         icon: <UsersIcon />,
         requiredPermission: "customer.view",
-      },
-      {
-        titleKey: "nav.companies",
-        url: "/dashboard/companies",
-        icon: <Building2Icon />,
-        requiredPermission: "company.view",
       },
     ],
   },

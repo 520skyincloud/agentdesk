@@ -196,7 +196,6 @@ func addRouter(app *gin.Engine) {
 	registerDashboardTenantRoutes(dashboardGroup.Group("/tenant"))
 	registerDashboardTenantInvitationRoutes(dashboardGroup.Group("/tenant-invitation"))
 	registerDashboardTenantRegistrationRoutes(dashboardGroup.Group("/tenant-registration"))
-	registerDashboardCompanyRoutes(dashboardGroup.Group("/company"))
 	registerDashboardCustomerRoutes(dashboardGroup.Group("/customer"))
 	registerDashboardCustomerContactRoutes(dashboardGroup.Group("/customer-contact"))
 	registerDashboardRoleRoutes(dashboardGroup.Group("/role"))

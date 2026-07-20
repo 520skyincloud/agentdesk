@@ -3,8 +3,6 @@ package services
 import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
-	"agent-desk/internal/pkg/constants"
-	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -14,7 +12,6 @@ import (
 	"time"
 
 	"github.com/mlogclub/simple/common/jsons"
-	"github.com/mlogclub/simple/common/strs"
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
 )
@@ -83,7 +80,7 @@ func (s *wxWorkLoginService) loginWithWxWorkProfile(profile *wxwork.LoginUser, a
 			err      error
 		)
 		if identity == nil {
-			user, identity, err = s.createWxWorkUser(ctx, profile)
+			user, identity, err = s.bindExistingWxWorkUser(ctx, profile)
 			if err != nil {
 				return err
 			}
@@ -137,71 +134,21 @@ func (s *wxWorkLoginService) loginWithWxWorkProfile(profile *wxwork.LoginUser, a
 	return ret, nil
 }
 
-func (s *wxWorkLoginService) createWxWorkUser(ctx *sqls.TxContext, profile *wxwork.LoginUser) (*models.User, *models.UserIdentity, error) {
-	username := strings.TrimSpace(profile.UserID)
-	mobile := strings.TrimSpace(profile.Mobile)
+func (s *wxWorkLoginService) bindExistingWxWorkUser(ctx *sqls.TxContext, profile *wxwork.LoginUser) (*models.User, *models.UserIdentity, error) {
 	email := strings.ToLower(strings.TrimSpace(s.firstNonEmpty(profile.Email, profile.BizMail)))
+	if email == "" {
+		return nil, nil, errorsx.Unauthorized("企业微信账号缺少邮箱，无法匹配已注册系统账号")
+	}
 	now := time.Now()
-	tenantID, err := TenantService.LegacyTenantID(ctx.Tx)
-	if err != nil {
-		return nil, nil, err
+	user := repositories.UserRepository.GetByEmail(ctx.Tx, email)
+	if user == nil || user.EmailVerifiedAt == nil {
+		return nil, nil, errorsx.Unauthorized("未找到已验证邮箱的系统账号，请先由公司主管创建账号或邀请注册")
 	}
-	if email != "" {
-		if existing := repositories.UserRepository.GetByEmail(ctx.Tx, email); existing != nil && existing.EmailVerifiedAt != nil {
-			if existing.Status != enums.StatusOk || existing.DeletedAt != nil {
-				return nil, nil, errorsx.Unauthorized("该邮箱绑定的系统账号已被禁用")
-			}
-			identity, err := s.createWxWorkIdentity(ctx.Tx, existing, profile, now)
-			if err != nil {
-				return nil, nil, err
-			}
-			if err := s.assignDefaultStoreStaffRole(ctx.Tx, existing); err != nil {
-				return nil, nil, err
-			}
-			return existing, identity, nil
-		}
+	if user.Status != enums.StatusOk || user.DeletedAt != nil {
+		return nil, nil, errorsx.Unauthorized("该邮箱绑定的系统账号已被禁用或尚未通过审核")
 	}
-
-	if err := s.checkWxWorkProfile(ctx.Tx, username, mobile, email); err != nil {
-		return nil, nil, err
-	}
-
-	user := &models.User{
-		TenantID:           tenantID,
-		Username:           username,
-		Nickname:           s.resolveWxWorkNickname("", profile),
-		Avatar:             s.resolveWxWorkAvatar("", profile),
-		Password:           "",
-		PasswordSalt:       "",
-		RegistrationSource: enums.UserRegistrationSourceWxWork,
-		ApprovalStatus:     enums.UserApprovalStatusApproved,
-		ApprovedAt:         &now,
-		Status:             enums.StatusOk,
-		AuditFields: models.AuditFields{
-			CreatedAt:      now,
-			CreateUserID:   0,
-			CreateUserName: enums.GetThirdProviderLabel(enums.ThirdProviderWxWork),
-			UpdatedAt:      now,
-			UpdateUserID:   0,
-			UpdateUserName: enums.GetThirdProviderLabel(enums.ThirdProviderWxWork),
-		},
-	}
-	if mobile != "" {
-		user.Mobile = &mobile
-	}
-	if email != "" {
-		user.Email = &email
-		user.EmailVerifiedAt = &now
-	}
-	if err := repositories.UserRepository.Create(ctx.Tx, user); err != nil {
-		return nil, nil, err
-	}
-
 	identity, err := s.createWxWorkIdentity(ctx.Tx, user, profile, now)
 	if err != nil {
-		return nil, nil, err
-	}
-	if err := s.assignDefaultStoreStaffRole(ctx.Tx, user); err != nil {
 		return nil, nil, err
 	}
 	return user, identity, nil
@@ -235,46 +182,6 @@ func (s *wxWorkLoginService) createWxWorkIdentity(tx *gorm.DB, user *models.User
 	return identity, nil
 }
 
-func (s *wxWorkLoginService) assignDefaultStoreStaffRole(tx *gorm.DB, user *models.User) error {
-	if user == nil || user.ID <= 0 {
-		return nil
-	}
-	role := repositories.RoleRepository.GetByCode(tx, constants.RoleCodeStoreStaff)
-	if role == nil || role.Status != enums.StatusOk {
-		return nil
-	}
-	existing := repositories.UserRoleRepository.FindOne(tx, sqls.NewCnd().Eq("user_id", user.ID).Eq("role_id", role.ID))
-	if existing != nil {
-		return nil
-	}
-	before, err := UserService.loadUserRoleSetSnapshotDB(tx, user.ID)
-	if err != nil {
-		return err
-	}
-	now := time.Now()
-	if err := repositories.UserRoleRepository.Create(tx, &models.UserRole{
-		UserID: user.ID,
-		RoleID: role.ID,
-		AuditFields: models.AuditFields{
-			CreatedAt:      now,
-			CreateUserID:   user.ID,
-			CreateUserName: user.Username,
-			UpdatedAt:      now,
-			UpdateUserID:   user.ID,
-			UpdateUserName: user.Username,
-		},
-	}); err != nil {
-		return err
-	}
-	after, err := UserService.loadUserRoleSetSnapshotDB(tx, user.ID)
-	if err != nil {
-		return err
-	}
-	return UserService.appendUserRoleChangeLogDB(tx, user, before, after, &dto.AuthPrincipal{
-		UserID: user.ID, Username: user.Username, TenantID: user.TenantID, ActiveTenantID: user.TenantID,
-	})
-}
-
 func (s *wxWorkLoginService) resolveWxWorkNickname(current string, profile *wxwork.LoginUser) string {
 	if profile != nil {
 		if name := strings.TrimSpace(profile.Name); name != "" {
@@ -297,26 +204,6 @@ func (s *wxWorkLoginService) resolveWxWorkAvatar(current string, profile *wxwork
 		}
 	}
 	return strings.TrimSpace(current)
-}
-
-func (s *wxWorkLoginService) checkWxWorkProfile(tx *gorm.DB, username, mobile string, email string) error {
-	if strs.IsBlank(username) {
-		return errorsx.BusinessError(5, "企业微信用户ID获取失败")
-	}
-	if existing := repositories.UserRepository.GetByUsername(tx, username); existing != nil {
-		return errorsx.BusinessError(5, "企业微信用户ID已被系统用户名占用")
-	}
-	if strs.IsNotBlank(mobile) {
-		if repositories.UserRepository.GetByMobile(tx, mobile) != nil {
-			return errorsx.BusinessError(6, "企业微信手机号已被系统用户占用")
-		}
-	}
-	if strs.IsNotBlank(email) {
-		if repositories.UserRepository.GetByEmail(tx, email) != nil {
-			return errorsx.BusinessError(7, "企业微信邮箱已被系统用户占用")
-		}
-	}
-	return nil
 }
 
 func (s *wxWorkLoginService) firstNonEmpty(values ...string) string {

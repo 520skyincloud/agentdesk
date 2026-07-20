@@ -4,7 +4,6 @@ import "agent-desk/internal/pkg/enums"
 
 type CreateKnowledgeBaseRequest struct {
 	IntentProfileID       int64   `json:"intentProfileId"`
-	CompanyID             int64   `json:"companyId"`
 	StoreID               int64   `json:"storeId"`
 	DatasetID             string  `json:"datasetId"`
 	DatasetName           string  `json:"datasetName"`

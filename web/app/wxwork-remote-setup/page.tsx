@@ -64,7 +64,7 @@ const defaultForm: FormState = {
 
 export default function WxWorkRemoteSetupPage() {
   return (
-    <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-[#f6f8fb] text-sm text-muted-foreground">加载远程开户链接...</div>}>
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-[#f6f8fb] text-sm text-muted-foreground">加载企微员工号绑定...</div>}>
       <WxWorkRemoteSetupContent />
     </Suspense>
   )
@@ -212,13 +212,13 @@ function WxWorkRemoteSetupContent() {
 
   async function save() {
     if (!token) return
-	if (!emailVerificationToken) {
-		toast.error("请先验证门店主邮箱")
-		return
-	}
+    if (!emailVerificationToken) {
+      toast.error("请先验证系统账号登记邮箱")
+      return
+    }
     setSaving(true)
     try {
-      await updateWxWorkProtocolRemoteSetup({ token, companyId: instance?.companyId || 0, emailVerificationToken, ...form })
+      await updateWxWorkProtocolRemoteSetup({ token, emailVerificationToken, ...form })
       toast.success("已提交门店配置")
       await loadRemoteSetup(token)
     } catch (error) {
@@ -230,7 +230,7 @@ function WxWorkRemoteSetupContent() {
 
   async function sendEmailCode() {
     if (!token || !form.email.trim()) {
-      toast.error("请填写门店主邮箱")
+      toast.error("请填写系统账号登记邮箱")
       return
     }
     setEmailSending(true)
@@ -263,7 +263,7 @@ function WxWorkRemoteSetupContent() {
   }
 
   if (loading) {
-    return <div className="flex min-h-screen items-center justify-center bg-[#f6f8fb] text-sm text-muted-foreground">加载远程开户链接...</div>
+    return <div className="flex min-h-screen items-center justify-center bg-[#f6f8fb] text-sm text-muted-foreground">加载企微员工号绑定...</div>
   }
 
   return (
@@ -273,8 +273,8 @@ function WxWorkRemoteSetupContent() {
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
               <div className="text-sm font-medium text-muted-foreground">知悉微宝</div>
-              <h1 className="mt-1 text-2xl font-semibold tracking-normal">企微员工号远程开户</h1>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">请用门店要接待客户的企业微信员工号扫码登录，并补充门店位置、服务时间和转人工通知群。链接生成时已自动绑定协议平台空闲实例，这里只配置当前账号。</p>
+              <h1 className="mt-1 text-2xl font-semibold tracking-normal">企微员工号绑定</h1>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">该链接已锁定公司主管选定的系统账号和门店。请用实际接待客户的企微员工号扫码，并补充门店资料。</p>
             </div>
             <div className="rounded-2xl bg-[#f4f7fb] px-4 py-3 text-sm text-muted-foreground">
               实例：<span className="font-mono text-foreground">{instance?.guid || "-"}</span>
@@ -341,18 +341,18 @@ function WxWorkRemoteSetupContent() {
           </section>
 
           <section className="rounded-3xl border border-[#dbe7f6] bg-white p-5 shadow-[0_16px_42px_rgba(35,74,122,0.06)]">
-            <h2 className="font-semibold">2. 填写门店资料</h2>
-	            <div className="mt-4 grid gap-4 md:grid-cols-2">
-	              {instance?.companyId ? (
-	                <div className="md:col-span-2 rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] px-4 py-3 text-sm text-muted-foreground">
-	                  当前开户链接已绑定公司：<span className="font-medium text-foreground">{repairMojibakeText(instance.companyName) || `公司 #${instance.companyId}`}</span>。门店端不可修改公司，填好店名后系统会自动生成内部兼容门店记录。
-	                </div>
-	              ) : null}
-	              <Field label="员工号显示名"><Input value={form.employeeName} onChange={(event) => setValue("employeeName", event.target.value)} placeholder="例如：吴朝伟" /></Field>
+            <h2 className="font-semibold">2. 确认账号并填写门店资料</h2>
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div className="md:col-span-2 rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] px-4 py-3 text-sm text-muted-foreground">
+                已绑定系统账号：<span className="font-medium text-foreground">{repairMojibakeText(instance?.storeStaffUserName || "") || `账号 #${instance?.storeStaffUserId || "-"}`}</span>
+                <span className="mx-2">·</span>
+                门店：<span className="font-medium text-foreground">{repairMojibakeText(instance?.storeName || "") || "待补充"}</span>。本页不会注册新账号或分配角色。
+              </div>
+              <Field label="员工号显示名"><Input value={form.employeeName} onChange={(event) => setValue("employeeName", event.target.value)} placeholder="例如：吴朝伟" /></Field>
               <Field label="门店名称"><Input value={form.storeName} onChange={(event) => setValue("storeName", event.target.value)} placeholder="例如：丽斯未来酒店杭州某某店" /></Field>
 			  <div className="md:col-span-2 rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] p-4">
-				<label className="text-sm font-medium">门店主邮箱</label>
-				<p className="mt-1 text-xs leading-5 text-muted-foreground">该邮箱是长期系统身份。即使以后更换或停用企微员工号，仍可用验证码登录并保留门店资源。</p>
+					<label className="text-sm font-medium">系统账号登记邮箱</label>
+					<p className="mt-1 text-xs leading-5 text-muted-foreground">请输入该系统账号在用户管理中登记的邮箱。验证仅用于确认绑定操作，不会创建账号或改变角色。</p>
 				<div className="mt-3 grid gap-2 sm:grid-cols-[1fr_150px_auto_auto]">
 				  <Input type="email" value={form.email} onChange={(event) => { setValue("email", event.target.value); setEmailVerificationToken("") }} placeholder="name@example.com" disabled={Boolean(emailVerificationToken)} />
 				  <Input inputMode="numeric" value={emailCode} onChange={(event) => setEmailCode(event.target.value)} placeholder="6 位验证码" disabled={Boolean(emailVerificationToken)} />

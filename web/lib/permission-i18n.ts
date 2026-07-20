@@ -36,7 +36,6 @@ const PERMISSION_RESOURCE_LABELS: Record<string, { singular: string; plural: str
   notification: { singular: "notification", plural: "notifications" },
   quickReply: { singular: "quick reply", plural: "quick replies" },
   tag: { singular: "tag", plural: "tags" },
-  company: { singular: "company", plural: "companies" },
   channel: { singular: "channel", plural: "channels" },
   customer: { singular: "customer", plural: "customers" },
   agent: { singular: "agent", plural: "agents" },

@@ -149,6 +149,8 @@ func tenantIntegrityTablePolicies() map[string]tenantIntegrityTablePolicy {
 		"KnowledgeFeedback":            positive,
 		"KnowledgeResourceGroup":       positive,
 		"KnowledgeResourceItem":        positive,
+		"FastGPTStoreTenant":           positive,
+		"FastGPTUsageSyncState":        positive,
 		"FastGPTDatasetJob":            positive,
 		"SkillRunLog":                  positive,
 		"AgentRunLog":                  positive,
@@ -350,6 +352,11 @@ func tenantIntegrityRelations() []tenantIntegrityRelation {
 		tenant("KnowledgeResourceGroup", "knowledge_base_id", "KnowledgeBase", true),
 		tenant("KnowledgeResourceGroup", "wx_work_instance_id", "WxWorkProtocolInstance", false),
 		tenant("KnowledgeResourceItem", "knowledge_resource_group_id", "KnowledgeResourceGroup", true),
+		tenant("FastGPTStoreTenant", "company_id", "Company", false),
+		tenant("FastGPTStoreTenant", "store_id", "Store", true),
+		tenant("FastGPTUsageSyncState", "company_id", "Company", false),
+		tenant("FastGPTUsageSyncState", "store_id", "Store", true),
+		tenant("FastGPTUsageSyncState", "knowledge_base_id", "KnowledgeBase", true),
 		tenant("FastGPTDatasetJob", "company_id", "Company", false),
 		tenant("FastGPTDatasetJob", "store_id", "Store", true),
 		tenant("FastGPTDatasetJob", "knowledge_base_id", "KnowledgeBase", false),
@@ -1210,7 +1217,7 @@ func (s *tenantIntegrityAuditService) auditTenantBusinessKeyDuplicates(
 		code    string
 		message string
 	}{
-		{model: "Company", column: "name", code: "DUPLICATE_TENANT_COMPANY_NAME", message: "同一租户存在重复客户企业名称"},
+		{model: "Company", column: "name", code: "DUPLICATE_TENANT_COMPANY_NAME", message: "同一租户存在重复旧公司档案名称"},
 		{model: "Store", column: "store_code", code: "DUPLICATE_TENANT_STORE_CODE", message: "同一租户存在重复门店编码"},
 		{model: "AgentProfile", column: "agent_code", code: "DUPLICATE_TENANT_AGENT_CODE", message: "同一租户存在重复客服工号"},
 	}

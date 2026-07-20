@@ -336,6 +336,14 @@ export function KnowledgeBaseList({
     setDialogOpen(true);
   }
 
+  function openCreateDialog() {
+    if (!canCreate) {
+      toast.error("无权创建知识库");
+      return;
+    }
+    setFastGPTProvisionOpen(true);
+  }
+
   function handleDialogOpenChange(open: boolean) {
     if (saving) {
       return;
@@ -473,7 +481,7 @@ export function KnowledgeBaseList({
                 variant="ghost"
                 size="icon"
                 className="size-7"
-                onClick={() => setFastGPTProvisionOpen(true)}
+                onClick={openCreateDialog}
                 aria-label="新建门店知识库"
               >
                 <PlusIcon className="size-4" />

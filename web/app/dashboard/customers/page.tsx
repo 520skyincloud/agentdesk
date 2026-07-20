@@ -1,7 +1,7 @@
 "use client";
 
 import { BanIcon, CheckCircle2Icon, EyeIcon, MessageCircleIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { type CustomerFormSavePayload } from "@/components/customer-form";
 import { useAuth } from "@/components/auth-provider";
@@ -12,7 +12,6 @@ import {
   type DashboardCrudColumn,
   type DashboardCrudFilter,
 } from "@/components/dashboard/crud";
-import { type ComboboxOption } from "@/components/option-combobox";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,7 +20,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { fetchCompanies, type AdminCompany } from "@/lib/api/company";
 import {
   deleteCustomer,
   fetchCustomers,
@@ -51,12 +49,6 @@ export default function DashboardCustomersPage() {
   const canCreate = permissions.has("customer.create");
   const canUpdate = permissions.has("customer.update");
   const canDelete = permissions.has("customer.delete");
-  const [companyOptions, setCompanyOptions] = useState<ComboboxOption[]>([
-    { value: "0", label: t("customer.allCompanies") },
-  ]);
-  const [companyNameMap, setCompanyNameMap] = useState<Record<number, string>>(
-    {},
-  );
   const [detailCustomer, setDetailCustomer] = useState<AdminCustomer | null>(null);
 
   const listStatusOptions = useMemo(
@@ -76,29 +68,6 @@ export default function DashboardCustomersPage() {
     ],
     [t],
   );
-
-  useEffect(() => {
-    async function loadCompanies() {
-      try {
-        const data = await fetchCompanies({ status: 0, page: 1, limit: 500 });
-        setCompanyOptions([
-          { value: "0", label: t("customer.allCompanies") },
-          ...data.results.map((item) => ({
-            value: String(item.id),
-            label: item.name,
-          })),
-        ]);
-        const map: Record<number, string> = {};
-        data.results.forEach((item: AdminCompany) => {
-          map[item.id] = item.name;
-        });
-        setCompanyNameMap(map);
-      } catch {
-        // Company names are optional display enrichment for this list.
-      }
-    }
-    void loadCompanies();
-  }, [t]);
 
   const filters = useMemo<DashboardCrudFilter[]>(
     () => [
@@ -121,16 +90,6 @@ export default function DashboardCustomersPage() {
         className: "w-full sm:w-36",
       },
       {
-        name: "companyId",
-        label: t("customer.columnCompany"),
-        type: "select",
-        defaultValue: "0",
-        allValue: "0",
-        valueType: "number",
-        options: companyOptions,
-        className: "w-full sm:w-56",
-      },
-      {
         name: "status",
         label: t("customer.columnStatus"),
         type: "select",
@@ -141,7 +100,7 @@ export default function DashboardCustomersPage() {
         className: "w-full sm:w-36",
       },
     ],
-    [companyOptions, genderOptions, listStatusOptions, t],
+    [genderOptions, listStatusOptions, t],
   );
 
   const columns = useMemo<DashboardCrudColumn<AdminCustomer>[]>(
@@ -164,17 +123,6 @@ export default function DashboardCustomersPage() {
         render: (item) => (
           <span className="text-muted-foreground">
             {getGenderText(item.gender, t)}
-          </span>
-        ),
-      },
-      {
-        key: "company",
-        label: t("customer.columnCompany"),
-        render: (item) => (
-          <span className="text-muted-foreground">
-            {item.companyId > 0
-              ? (companyNameMap[item.companyId] ?? String(item.companyId))
-              : "-"}
           </span>
         ),
       },
@@ -234,7 +182,7 @@ export default function DashboardCustomersPage() {
           status === Status.Ok ? "default" : "secondary",
       }),
     ],
-    [companyNameMap, t],
+    [t],
   );
 
   return (
@@ -250,8 +198,6 @@ export default function DashboardCustomersPage() {
             typeof query.status === "number" ? query.status : undefined,
           gender:
             typeof query.gender === "number" ? query.gender : undefined,
-          companyId:
-            typeof query.companyId === "number" ? query.companyId : undefined,
           page: Number(query.page),
           limit: Number(query.limit),
         })

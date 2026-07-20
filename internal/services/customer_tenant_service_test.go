@@ -20,25 +20,26 @@ import (
 )
 
 type customerTenantFixture struct {
-	db       *gorm.DB
-	adminA   *dto.AuthPrincipal
-	adminB   *dto.AuthPrincipal
-	companyA models.Company
-	companyB models.Company
+	db     *gorm.DB
+	adminA *dto.AuthPrincipal
+	adminB *dto.AuthPrincipal
 }
 
 func TestCustomerServiceEnforcesTenantContextAcrossCRUD(t *testing.T) {
 	fixture := setupCustomerTenantFixture(t)
-	customerA, err := CustomerService.CreateCustomer(request.CreateCustomerRequest{Name: "A租户客户", CompanyID: fixture.companyA.ID}, fixture.adminA)
+	customerA, err := CustomerService.CreateCustomer(request.CreateCustomerRequest{Name: "A租户客户"}, fixture.adminA)
 	if err != nil {
 		t.Fatalf("create tenant A customer: %v", err)
 	}
-	customerB, err := CustomerService.CreateCustomer(request.CreateCustomerRequest{Name: "B租户客户", CompanyID: fixture.companyB.ID}, fixture.adminB)
+	customerB, err := CustomerService.CreateCustomer(request.CreateCustomerRequest{Name: "B租户客户"}, fixture.adminB)
 	if err != nil {
 		t.Fatalf("create tenant B customer: %v", err)
 	}
 	if customerA.TenantID != fixture.adminA.ActiveTenantID || customerB.TenantID != fixture.adminB.ActiveTenantID {
 		t.Fatalf("unexpected customer tenants: A=%d B=%d", customerA.TenantID, customerB.TenantID)
+	}
+	if customerA.CompanyID != 0 || customerB.CompanyID != 0 {
+		t.Fatalf("new customers must not use legacy company scope: A=%d B=%d", customerA.CompanyID, customerB.CompanyID)
 	}
 
 	listA, paging := CustomerService.ListCustomers(request.CustomerListRequest{Page: 1, Limit: 20}, fixture.adminA)
@@ -56,9 +57,6 @@ func TestCustomerServiceEnforcesTenantContextAcrossCRUD(t *testing.T) {
 	}
 	if err := CustomerService.DeleteCustomer(customerB.ID, *fixture.adminA); err == nil {
 		t.Fatal("tenant A must not delete tenant B customer")
-	}
-	if _, err := CustomerService.CreateCustomer(request.CreateCustomerRequest{Name: "跨租户企业客户", CompanyID: fixture.companyB.ID}, fixture.adminA); err == nil {
-		t.Fatal("tenant A must not bind tenant B company")
 	}
 	assertTenantBCustomerUnchanged(t, fixture, customerB)
 }
@@ -206,7 +204,7 @@ func setupCustomerTenantFixture(t *testing.T) customerTenantFixture {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&models.Company{}, &models.Customer{}, &models.CustomerIdentity{}, &models.CustomerContact{},
+		&models.Customer{}, &models.CustomerIdentity{}, &models.CustomerContact{},
 		&models.StoreCustomerRelation{}, &models.Channel{}, &models.AIAgent{}, &models.Conversation{},
 		&models.ConversationParticipant{}, &models.ConversationEventLog{}, &models.Message{},
 	); err != nil {
@@ -221,17 +219,9 @@ func setupCustomerTenantFixture(t *testing.T) customerTenantFixture {
 		}
 	})
 	fixture := customerTenantFixture{
-		db:       db,
-		adminA:   &dto.AuthPrincipal{UserID: 9001, Username: "admin-a", ActiveTenantID: 101},
-		adminB:   &dto.AuthPrincipal{UserID: 9002, Username: "admin-b", ActiveTenantID: 202},
-		companyA: models.Company{TenantID: 101, Name: "A租户客户企业", Status: enums.StatusOk},
-		companyB: models.Company{TenantID: 202, Name: "B租户客户企业", Status: enums.StatusOk},
-	}
-	if err := db.Create(&fixture.companyA).Error; err != nil {
-		t.Fatalf("create tenant A company: %v", err)
-	}
-	if err := db.Create(&fixture.companyB).Error; err != nil {
-		t.Fatalf("create tenant B company: %v", err)
+		db:     db,
+		adminA: &dto.AuthPrincipal{UserID: 9001, Username: "admin-a", ActiveTenantID: 101},
+		adminB: &dto.AuthPrincipal{UserID: 9002, Username: "admin-b", ActiveTenantID: 202},
 	}
 	return fixture
 }

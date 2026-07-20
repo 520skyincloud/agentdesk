@@ -310,7 +310,7 @@ func UserPostAssign_role(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.UserService.AssignRoles(req.UserID, req.RoleIDs, operator); err != nil {
+	if err := services.UserService.AssignRolesWithStoreName(req.UserID, req.RoleIDs, req.StoreName, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

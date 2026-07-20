@@ -16,33 +16,44 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-func TestWxWorkProtocolRemoteSetupCreatesInternalStoreForCompany(t *testing.T) {
-	setupWxWorkProtocolInstanceCompanyTestDB(t)
+func TestWxWorkProtocolRemoteSetupBindsExistingStoreStaffWithoutCreatingAccount(t *testing.T) {
+	db := setupWxWorkProtocolInstanceCompanyTestDB(t)
 	sender := &captureEmailSender{}
 	originalEmailVerificationService := EmailVerificationService
 	EmailVerificationService = newEmailVerificationService(sender)
 	t.Cleanup(func() { EmailVerificationService = originalEmailVerificationService })
 	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin", ActiveTenantID: 101}
-	if err := sqls.DB().Create(&models.Role{Name: "门店员工", Code: constants.RoleCodeStoreStaff, Scope: constants.RoleScopeTenant, Status: enums.StatusOk}).Error; err != nil {
+	role := &models.Role{Name: "门店员工", Code: constants.RoleCodeStoreStaff, Scope: constants.RoleScopeTenant, Status: enums.StatusOk}
+	if err := db.Create(role).Error; err != nil {
 		t.Fatalf("create store staff role: %v", err)
 	}
-	if err := sqls.DB().Create(&models.Company{ID: 11, TenantID: 101, Name: "测试公司", Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create company: %v", err)
+	email := "owner@example.com"
+	user := &models.User{TenantID: 101, Username: "store-owner", Nickname: "丽斯未来测试门店", Email: &email, Password: "test", Status: enums.StatusOk}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("create existing store staff user: %v", err)
 	}
-	if err := sqls.DB().Create(&models.Channel{ID: 22, TenantID: 101, ChannelType: enums.ChannelTypeWxWorkProtocol, Name: "协议渠道", Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
+		t.Fatalf("assign store staff role: %v", err)
+	}
+	if err := db.Create(&models.Channel{ID: 22, TenantID: 101, ChannelType: enums.ChannelTypeWxWorkProtocol, Name: "协议渠道", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
+	var usersBefore, rolesBefore, userRolesBefore int64
+	db.Model(&models.User{}).Count(&usersBefore)
+	db.Model(&models.Role{}).Count(&rolesBefore)
+	db.Model(&models.UserRole{}).Count(&userRolesBefore)
 
 	instance, err := WxWorkProtocolInstanceService.CreateRemoteSetupInstance(request.CreateWxWorkProtocolRemoteSetupRequest{
-		ChannelID: 22,
-		Guid:      "guid-company-setup",
-		CompanyID: 11,
+		ChannelID:        22,
+		Guid:             "guid-store-staff-setup",
+		StoreStaffUserID: user.ID,
+		StoreName:        "丽斯未来酒店测试门店",
 	}, operator)
 	if err != nil {
 		t.Fatalf("CreateRemoteSetupInstance() error = %v", err)
 	}
-	if instance.TenantID != 101 || instance.CompanyID != 11 {
-		t.Fatalf("expected tenant/company on remote setup instance, got tenant=%d company=%d", instance.TenantID, instance.CompanyID)
+	if instance.TenantID != 101 || instance.CompanyID != 0 || instance.StoreID <= 0 || instance.StoreStaffBindingID <= 0 {
+		t.Fatalf("expected tenant/store/binding without company, got %#v", instance)
 	}
 	if _, err := EmailVerificationService.SendCode(context.Background(), EmailVerificationPurposeRemoteSetup, "owner@example.com", instance.RemoteSetupToken, "127.0.0.1", "test"); err != nil {
 		t.Fatalf("send email code: %v", err)
@@ -69,15 +80,30 @@ func TestWxWorkProtocolRemoteSetupCreatesInternalStoreForCompany(t *testing.T) {
 	if updated == nil {
 		t.Fatalf("expected updated instance")
 	}
-	if updated.CompanyID != 11 || updated.StoreID <= 0 {
-		t.Fatalf("expected company and generated store binding, got company=%d store=%d", updated.CompanyID, updated.StoreID)
+	if updated.CompanyID != 0 || updated.StoreID != instance.StoreID || updated.StoreStaffBindingID != instance.StoreStaffBindingID {
+		t.Fatalf("stable store binding changed during completion: %#v", updated)
 	}
 	store := StoreService.Get(updated.StoreID)
 	if store == nil {
 		t.Fatalf("expected generated store")
 	}
-	if store.TenantID != 101 || store.CompanyID != 11 || store.Name != "丽斯未来酒店测试门店" {
+	if store.TenantID != 101 || store.CompanyID != 0 || store.Name != "丽斯未来酒店测试门店" {
 		t.Fatalf("unexpected generated store: %#v", store)
+	}
+	binding := StoreStaffBindingService.GetInTenant(updated.StoreStaffBindingID, 101)
+	if binding == nil || binding.UserID != user.ID || binding.StoreID != store.ID || binding.CompanyID != 0 {
+		t.Fatalf("unexpected store staff binding: %#v", binding)
+	}
+	verifiedUser := UserService.GetByTenantID(user.ID, 101)
+	if verifiedUser == nil || verifiedUser.EmailVerifiedAt == nil {
+		t.Fatalf("existing user email was not marked verified: %#v", verifiedUser)
+	}
+	var usersAfter, rolesAfter, userRolesAfter int64
+	db.Model(&models.User{}).Count(&usersAfter)
+	db.Model(&models.Role{}).Count(&rolesAfter)
+	db.Model(&models.UserRole{}).Count(&userRolesAfter)
+	if usersAfter != usersBefore || rolesAfter != rolesBefore || userRolesAfter != userRolesBefore {
+		t.Fatalf("binding created account or role rows: users %d->%d roles %d->%d userRoles %d->%d", usersBefore, usersAfter, rolesBefore, rolesAfter, userRolesBefore, userRolesAfter)
 	}
 }
 
@@ -99,8 +125,19 @@ func TestWxWorkProtocolInstanceBackfillCompanyIDFromStore(t *testing.T) {
 }
 
 func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing.T) {
-	setupWxWorkProtocolInstanceCompanyTestDB(t)
+	db := setupWxWorkProtocolInstanceCompanyTestDB(t)
 	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin", ActiveTenantID: 101}
+	role := &models.Role{Name: "门店员工", Code: constants.RoleCodeStoreStaff, Scope: constants.RoleScopeTenant, Status: enums.StatusOk}
+	if err := db.Create(role).Error; err != nil {
+		t.Fatalf("create store staff role: %v", err)
+	}
+	user := &models.User{TenantID: 101, Username: "route-store-user", Nickname: "合肥南七店", Password: "test", Status: enums.StatusOk}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("create store staff user: %v", err)
+	}
+	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
+		t.Fatalf("assign store staff role: %v", err)
+	}
 	if err := sqls.DB().Create(&models.ReplyIntentProfile{ID: 301, Code: "hotel", Name: "测试酒店行业", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create intent profile: %v", err)
 	}
@@ -110,6 +147,10 @@ func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing
 	if err := sqls.DB().Create(&models.Store{ID: 31, TenantID: 101, StoreCode: "store-sync", Name: "合肥南七店", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
+	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, StoreID: 31, Status: enums.StatusOk}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create store staff binding: %v", err)
+	}
 	if err := sqls.DB().Create(&models.KnowledgeBase{ID: 101, TenantID: 101, IntentProfileID: 301, Name: "旧知识库", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create old knowledge base: %v", err)
 	}
@@ -117,15 +158,16 @@ func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing
 		t.Fatalf("create new knowledge base: %v", err)
 	}
 	if err := sqls.DB().Create(&models.WxWorkProtocolInstance{
-		ID:              7,
-		TenantID:        101,
-		Guid:            "guid-route-sync",
-		ChannelID:       22,
-		EmployeeName:    "吴朝伟",
-		StoreID:         31,
-		IntentProfileID: 301,
-		KnowledgeBaseID: 101,
-		Status:          enums.StatusOk,
+		ID:                  7,
+		TenantID:            101,
+		Guid:                "guid-route-sync",
+		ChannelID:           22,
+		EmployeeName:        "吴朝伟",
+		StoreID:             31,
+		StoreStaffBindingID: binding.ID,
+		IntentProfileID:     301,
+		KnowledgeBaseID:     101,
+		Status:              enums.StatusOk,
 	}).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
 	}

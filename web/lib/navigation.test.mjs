@@ -51,7 +51,6 @@ const allPermissions = [
   "conversation.handover",
   "ticket.view",
   "customer.view",
-  "company.view",
   "channel.view",
   "agent.view",
   "agentTeamSchedule.view",
@@ -224,10 +223,8 @@ test("direct dashboard routes reuse navigation permissions and context", async (
     dashboardPathIsAccessible("/dashboard/conversations", ["storeWorkbench.view"], tenantContext),
     false,
   )
-  assert.equal(
-    dashboardPathIsAccessible("/dashboard/company-detail", ["company.view"], tenantContext),
-    true,
-  )
+  assert.equal(dashboardPathIsAccessible("/dashboard/companies", ["customer.view"], tenantContext), false)
+  assert.equal(dashboardPathIsAccessible("/dashboard/company-detail/1", ["customer.view"], tenantContext), false)
   assert.equal(
     dashboardPathIsAccessible("/dashboard/notifications", [], tenantContext),
     false,

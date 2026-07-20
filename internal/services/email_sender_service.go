@@ -41,7 +41,7 @@ func (smtpEmailSender) SendVerificationCode(ctx context.Context, to, code, purpo
 
 	subject := "登录验证码"
 	if purpose == EmailVerificationPurposeRemoteSetup {
-		subject = "门店开户注册验证码"
+		subject = "企微员工号绑定验证码"
 	}
 	body := fmt.Sprintf("您的验证码是 %s，10 分钟内有效。请勿将验证码告诉他人。", code)
 	message := buildSMTPMessage(cfg, to, subject, body)

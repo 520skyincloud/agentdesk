@@ -34,7 +34,7 @@ func TestBuildKnowledgeBaseModelUsesLowerDefaultScoreThreshold(t *testing.T) {
 		}
 	})
 
-	item, err := KnowledgeBaseService.buildKnowledgeBaseModel(request.CreateKnowledgeBaseRequest{IntentProfileID: profile.ID})
+	item, err := KnowledgeBaseService.buildKnowledgeBaseModel(request.CreateKnowledgeBaseRequest{IntentProfileID: profile.ID}, 101)
 	if err != nil {
 		t.Fatalf("build knowledge base model failed: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestBuildKnowledgeBaseModelUsesLowerDefaultScoreThreshold(t *testing.T) {
 }
 
 func TestBuildKnowledgeBaseModelDoesNotRequireIntentProfile(t *testing.T) {
-	item, err := KnowledgeBaseService.buildKnowledgeBaseModel(request.CreateKnowledgeBaseRequest{Name: "独立门店 FastGPT"})
+	item, err := KnowledgeBaseService.buildKnowledgeBaseModel(request.CreateKnowledgeBaseRequest{Name: "独立门店 FastGPT"}, 101)
 	if err != nil {
 		t.Fatalf("knowledge base without industry profile should be valid: %v", err)
 	}

@@ -253,11 +253,6 @@ export function CustomerLinkOrCreateDialog({
                       {row.primaryEmail}
                     </span>
                   </div>
-                  {row.company?.name ? (
-                    <div className="truncate text-muted-foreground text-xs">
-                      {row.company.name}
-                    </div>
-                  ) : null}
                 </div>
                 <Button
                   type="button"

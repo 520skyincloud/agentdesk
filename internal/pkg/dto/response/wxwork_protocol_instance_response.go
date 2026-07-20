@@ -16,12 +16,12 @@ type WxWorkProtocolInstanceResponse struct {
 	EmployeeUserID                 string       `json:"employeeUserId"`
 	EmployeeName                   string       `json:"employeeName"`
 	EmployeeAvatar                 string       `json:"employeeAvatar"`
-	CompanyID                      int64        `json:"companyId"`
-	CompanyName                    string       `json:"companyName"`
 	IntentProfileID                int64        `json:"intentProfileId"`
 	IntentProfileName              string       `json:"intentProfileName"`
 	StoreID                        int64        `json:"storeId"`
 	StoreStaffBindingID            int64        `json:"storeStaffBindingId"`
+	StoreStaffUserID               int64        `json:"storeStaffUserId"`
+	StoreStaffUserName             string       `json:"storeStaffUserName"`
 	ReplacesInstanceID             int64        `json:"replacesInstanceId"`
 	ReplacedByInstanceID           int64        `json:"replacedByInstanceId"`
 	ReplacedAt                     *time.Time   `json:"replacedAt"`
@@ -130,7 +130,6 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		EmployeeUserID:                 item.EmployeeUserID,
 		EmployeeName:                   utils.RepairMojibakeText(item.EmployeeName),
 		EmployeeAvatar:                 item.EmployeeAvatar,
-		CompanyID:                      item.CompanyID,
 		IntentProfileID:                item.IntentProfileID,
 		StoreID:                        item.StoreID,
 		StoreStaffBindingID:            item.StoreStaffBindingID,

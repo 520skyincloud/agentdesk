@@ -216,7 +216,6 @@ func buildCustomerResponse(item *models.Customer) *response.CustomerResponse {
 
 func buildCustomerContext(data services.CustomerPresentationData) *builders.CustomerBuildContext {
 	return &builders.CustomerBuildContext{
-		CompaniesByID:              data.CompaniesByID,
 		StoreRelationsByCustomerID: data.StoreRelationsByCustomerID,
 		StoresByID:                 data.StoresByID,
 		WxWorkInstancesByID:        data.WxWorkInstancesByID,

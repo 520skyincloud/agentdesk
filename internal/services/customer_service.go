@@ -33,7 +33,6 @@ type customerService struct {
 }
 
 type CustomerPresentationData struct {
-	CompaniesByID              map[int64]*models.Company
 	StoreRelationsByCustomerID map[int64][]models.StoreCustomerRelation
 	StoresByID                 map[int64]*models.Store
 	WxWorkInstancesByID        map[int64]*models.WxWorkProtocolInstance
@@ -98,8 +97,7 @@ func (s *customerService) newCustomerListQuery(req request.CustomerListRequest, 
 	deleted := int(enums.StatusDeleted)
 	tx := sqls.DB().
 		Table("t_customer AS c").
-		Joins("LEFT JOIN t_customer_contact AS cc ON cc.customer_id = c.id AND cc.tenant_id = c.tenant_id AND cc.status <> ?", deleted).
-		Joins("LEFT JOIN t_company AS co ON co.id = c.company_id AND co.tenant_id = c.tenant_id")
+		Joins("LEFT JOIN t_customer_contact AS cc ON cc.customer_id = c.id AND cc.tenant_id = c.tenant_id AND cc.status <> ?", deleted)
 
 	tx.Where("c.tenant_id = ? AND c.status <> ?", tenantID, enums.StatusDeleted)
 
@@ -109,18 +107,14 @@ func (s *customerService) newCustomerListQuery(req request.CustomerListRequest, 
 	if req.Gender != nil {
 		tx.Where("c.gender = ?", *req.Gender)
 	}
-	if req.CompanyID != nil && *req.CompanyID > 0 {
-		tx.Where("c.company_id = ?", *req.CompanyID)
-	}
 	if kw := strings.TrimSpace(req.Keyword); strs.IsNotBlank(kw) {
 		pat := "%" + kw + "%"
 		tx.Where(`(
 c.name LIKE ? OR
 c.primary_mobile LIKE ? OR
 c.primary_email LIKE ? OR
-cc.contact_value LIKE ? OR
-co.name LIKE ?
-)`, pat, pat, pat, pat, pat)
+cc.contact_value LIKE ?
+)`, pat, pat, pat, pat)
 	}
 	return tx
 }
@@ -129,13 +123,8 @@ func (s *customerService) Count(cnd *sqls.Cnd) int64 {
 	return repositories.CustomerRepository.Count(sqls.DB(), cnd)
 }
 
-func (s *customerService) CountByCompanyIDs(companyIDs []int64, operator *dto.AuthPrincipal) map[int64]int64 {
-	return repositories.CustomerRepository.CountByCompanyIDsInTenant(sqls.DB(), companyIDs, customerTenantID(operator), int(enums.StatusDeleted))
-}
-
 func (s *customerService) LoadPresentationData(customers []models.Customer, includeStoreRelations bool) CustomerPresentationData {
 	data := CustomerPresentationData{
-		CompaniesByID:              map[int64]*models.Company{},
 		StoreRelationsByCustomerID: map[int64][]models.StoreCustomerRelation{},
 		StoresByID:                 map[int64]*models.Store{},
 		WxWorkInstancesByID:        map[int64]*models.WxWorkProtocolInstance{},
@@ -143,28 +132,15 @@ func (s *customerService) LoadPresentationData(customers []models.Customer, incl
 	if len(customers) == 0 {
 		return data
 	}
-	companyIDs := make([]int64, 0, len(customers))
 	customerIDs := make([]int64, 0, len(customers))
 	tenantIDs := make([]int64, 0, len(customers))
-	companyTenantByID := make(map[int64]int64, len(customers))
 	customerTenantByID := make(map[int64]int64, len(customers))
 	for i := range customers {
-		companyIDs = appendPositive(companyIDs, customers[i].CompanyID)
 		customerIDs = appendPositive(customerIDs, customers[i].ID)
 		tenantIDs = appendPositive(tenantIDs, customers[i].TenantID)
-		recordExpectedTenant(companyTenantByID, customers[i].CompanyID, customers[i].TenantID)
 		recordExpectedTenant(customerTenantByID, customers[i].ID, customers[i].TenantID)
 	}
 	tenantIDs = uniquePositive(tenantIDs)
-	companyIDs = uniquePositive(companyIDs)
-	if len(companyIDs) > 0 {
-		companies := repositories.CompanyRepository.Find(sqls.DB(), sqls.NewCnd().In("id", companyIDs).In("tenant_id", tenantIDs))
-		for i := range companies {
-			if companyTenantByID[companies[i].ID] == companies[i].TenantID {
-				data.CompaniesByID[companies[i].ID] = &companies[i]
-			}
-		}
-	}
 	if !includeStoreRelations || len(customerIDs) == 0 {
 		return data
 	}
@@ -357,18 +333,11 @@ func (s *customerService) CreateCustomer(req request.CreateCustomerRequest, oper
 		return nil, errorsx.InvalidParam("客户名称不能为空")
 	}
 
-	if req.CompanyID > 0 {
-		company := CompanyService.GetInTenant(req.CompanyID, operator)
-		if company == nil {
-			return nil, errorsx.InvalidParam("所属公司不存在")
-		}
-	}
-
 	item := &models.Customer{
 		TenantID:      tenantID,
 		Name:          name,
 		Gender:        enums.Gender(req.Gender),
-		CompanyID:     req.CompanyID,
+		CompanyID:     0,
 		PrimaryMobile: strings.TrimSpace(req.PrimaryMobile),
 		PrimaryEmail:  strings.TrimSpace(req.PrimaryEmail),
 		Status:        enums.StatusOk,
@@ -395,19 +364,12 @@ func (s *customerService) UpdateCustomer(req request.UpdateCustomerRequest, oper
 		return errorsx.InvalidParam("客户名称不能为空")
 	}
 
-	if req.CompanyID > 0 {
-		company := CompanyService.GetInTenant(req.CompanyID, operator)
-		if company == nil {
-			return errorsx.InvalidParam("所属公司不存在")
-		}
-	}
-
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		now := time.Now()
 		if err := repositories.CustomerRepository.UpdatesInTenant(ctx.Tx, req.ID, item.TenantID, map[string]any{
 			"name":             name,
 			"gender":           req.Gender,
-			"company_id":       req.CompanyID,
+			"company_id":       0,
 			"primary_mobile":   strings.TrimSpace(req.PrimaryMobile),
 			"primary_email":    strings.TrimSpace(req.PrimaryEmail),
 			"remark":           strings.TrimSpace(req.Remark),
@@ -481,11 +443,6 @@ func (s *customerService) SaveCustomerProfile(req request.SaveCustomerProfileReq
 	if name == "" {
 		return nil, errorsx.InvalidParam("客户名称不能为空")
 	}
-	if req.CompanyID > 0 {
-		if CompanyService.GetInTenant(req.CompanyID, operator) == nil {
-			return nil, errorsx.InvalidParam("所属公司不存在")
-		}
-	}
 	createMode := req.ID == nil || *req.ID <= 0
 
 	var out *models.Customer
@@ -496,7 +453,7 @@ func (s *customerService) SaveCustomerProfile(req request.SaveCustomerProfileReq
 				TenantID:      tenantID,
 				Name:          name,
 				Gender:        enums.Gender(req.Gender),
-				CompanyID:     req.CompanyID,
+				CompanyID:     0,
 				PrimaryMobile: "",
 				PrimaryEmail:  "",
 				Status:        enums.StatusOk,
@@ -518,7 +475,7 @@ func (s *customerService) SaveCustomerProfile(req request.SaveCustomerProfileReq
 			if err := repositories.CustomerRepository.UpdatesInTenant(ctx.Tx, customerID, tenantID, map[string]any{
 				"name":             name,
 				"gender":           req.Gender,
-				"company_id":       req.CompanyID,
+				"company_id":       0,
 				"remark":           strings.TrimSpace(req.Remark),
 				"update_user_id":   operator.UserID,
 				"update_user_name": operator.Username,

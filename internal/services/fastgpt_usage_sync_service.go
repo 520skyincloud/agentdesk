@@ -66,7 +66,7 @@ func (s *fastGPTUsageSyncService) SyncKnowledgeBase(knowledgeBaseID int64) error
 		now := time.Now()
 		state = &models.FastGPTUsageSyncState{
 			TenantID:        knowledgeBase.TenantID,
-			CompanyID:       knowledgeBase.CompanyID,
+			CompanyID:       0,
 			StoreID:         knowledgeBase.StoreID,
 			KnowledgeBaseID: knowledgeBase.ID,
 			TenantTeamID:    tenant.TenantTeamID,
@@ -98,7 +98,7 @@ func (s *fastGPTUsageSyncService) SyncKnowledgeBase(knowledgeBaseID int64) error
 		}
 	}
 	now := time.Now()
-	state.CompanyID = knowledgeBase.CompanyID
+	state.CompanyID = 0
 	state.StoreID = knowledgeBase.StoreID
 	state.TenantTeamID = tenant.TenantTeamID
 	state.Cursor = page.NextCursor
@@ -134,7 +134,7 @@ func (s *fastGPTUsageSyncService) saveFailure(knowledgeBase *models.KnowledgeBas
 	if state == nil {
 		state = &models.FastGPTUsageSyncState{
 			TenantID:        knowledgeBase.TenantID,
-			CompanyID:       knowledgeBase.CompanyID,
+			CompanyID:       0,
 			StoreID:         knowledgeBase.StoreID,
 			KnowledgeBaseID: knowledgeBase.ID,
 			CreatedAt:       now,
@@ -165,7 +165,7 @@ func toFastGPTUsageEvent(knowledgeBase *models.KnowledgeBase, tenant *models.Fas
 	return models.AIUsageEvent{
 		TenantID:           knowledgeBase.TenantID,
 		EventKey:           fmt.Sprintf("fastgpt:%s:%s", tenant.TenantTeamID, item.ExternalEventID),
-		CompanyID:          knowledgeBase.CompanyID,
+		CompanyID:          0,
 		StoreID:            knowledgeBase.StoreID,
 		KnowledgeBaseID:    knowledgeBase.ID,
 		RequestID:          item.RequestID,

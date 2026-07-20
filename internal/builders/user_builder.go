@@ -58,13 +58,12 @@ func BuildUserResponse(item *models.User, options UserBuildOptions) *response.Us
 	if assignment, ok := options.StoreStaffAssignments[item.ID]; ok {
 		ret.StoreStaff = &response.StoreStaffAssignmentResponse{
 			BindingID:          assignment.BindingID,
-			CompanyID:          assignment.CompanyID,
-			CompanyName:        assignment.CompanyName,
 			StoreID:            assignment.StoreID,
 			StoreName:          assignment.StoreName,
 			WxWorkInstanceID:   assignment.WxWorkInstanceID,
 			WxWorkEmployeeName: assignment.WxWorkEmployeeName,
 			WxWorkEmployeeID:   assignment.WxWorkEmployeeID,
+			WxWorkHealthStatus: assignment.WxWorkHealthStatus,
 			AgentTeamID:        assignment.AgentTeamID,
 			AgentTeamName:      assignment.AgentTeamName,
 		}

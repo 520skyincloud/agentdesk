@@ -474,13 +474,12 @@ func TestAgentOrganizationListHandlersRequireActiveTenant(t *testing.T) {
 	}
 }
 
-func TestCompanyAndChannelListHandlersRequireActiveTenant(t *testing.T) {
+func TestChannelListHandlerRequiresActiveTenant(t *testing.T) {
 	tests := []struct {
 		name       string
 		permission string
 		handler    func(*gin.Context)
 	}{
-		{name: "company list", permission: constants.PermissionCompanyView.Code, handler: CompanyAnyList},
 		{name: "channel list", permission: constants.PermissionChannelView.Code, handler: ChannelAnyList},
 	}
 	for _, tt := range tests {

@@ -2,12 +2,11 @@ package request
 
 // CustomerListRequest 客户分页列表查询（POST /customer/list JSON Body）。
 type CustomerListRequest struct {
-	Page      int    `json:"page"`
-	Limit     int    `json:"limit"`
-	Status    *int   `json:"status,omitempty"`
-	Gender    *int   `json:"gender,omitempty"`
-	CompanyID *int64 `json:"companyId,omitempty"`
-	// Keyword 模糊匹配：客户姓名、主手机号、主邮箱、任意联系方式（t_customer_contact）、公司名称（t_company）。
+	Page   int  `json:"page"`
+	Limit  int  `json:"limit"`
+	Status *int `json:"status,omitempty"`
+	Gender *int `json:"gender,omitempty"`
+	// Keyword 模糊匹配：客户姓名、主手机号、主邮箱和任意联系方式（t_customer_contact）。
 	Keyword string `json:"keyword"`
 }
 
@@ -32,7 +31,6 @@ func (r CustomerListRequest) Offset() int {
 type CreateCustomerRequest struct {
 	Name          string `json:"name"`
 	Gender        int    `json:"gender"`
-	CompanyID     int64  `json:"companyId"`
 	PrimaryMobile string `json:"primaryMobile"`
 	PrimaryEmail  string `json:"primaryEmail"`
 	Remark        string `json:"remark"`
@@ -66,7 +64,6 @@ type SaveCustomerProfileRequest struct {
 	ID        *int64                       `json:"id,omitempty"`
 	Name      string                       `json:"name"`
 	Gender    int                          `json:"gender"`
-	CompanyID int64                        `json:"companyId"`
 	Remark    string                       `json:"remark"`
 	Contacts  []CustomerProfileContactItem `json:"contacts"`
 }

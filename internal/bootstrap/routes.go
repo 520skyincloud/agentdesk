@@ -182,15 +182,6 @@ func registerDashboardTenantRegistrationRoutes(group *gin.RouterGroup) {
 	group.POST("/review", dashboard.TenantRegistrationPostReview)
 }
 
-func registerDashboardCompanyRoutes(group *gin.RouterGroup) {
-	group.GET("/:id", dashboard.CompanyGetBy)
-	group.POST("/create", dashboard.CompanyPostCreate)
-	group.POST("/delete", dashboard.CompanyPostDelete)
-	group.Any("/list", dashboard.CompanyAnyList)
-	group.POST("/update", dashboard.CompanyPostUpdate)
-	group.POST("/update_status", dashboard.CompanyPostUpdate_status)
-}
-
 func registerDashboardCustomerRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.CustomerGetBy)
 	group.GET("/:id/store_relations", dashboard.CustomerGetStore_relations)

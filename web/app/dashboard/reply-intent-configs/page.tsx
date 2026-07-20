@@ -56,9 +56,8 @@ const humanRoutePolicyOptions = [
 
 const scopeTypeOptions = [
   { value: "global", label: "全局默认" },
-  { value: "company", label: "公司级" },
   { value: "store", label: "门店级" },
-  { value: "instance", label: "账号级" },
+  { value: "instance", label: "企微员工号级" },
 ]
 
 function trimPreview(value: string, max = 56) {
@@ -151,7 +150,7 @@ export default function ReplyIntentConfigsPage() {
           label: "适用范围",
           render: (item) => {
             const label = scopeTypeOptions.find((option) => option.value === item.scopeType)?.label ?? (item.scopeType || "全局默认")
-            const id = item.scopeType === "company" ? item.companyId : item.scopeType === "store" ? item.storeId : item.scopeType === "instance" ? item.wxWorkInstanceId : 0
+            const id = item.scopeType === "store" ? item.storeId : item.scopeType === "instance" ? item.wxWorkInstanceId : 0
             return <Badge variant="outline">{id > 0 ? `${label}:${id}` : label}</Badge>
           },
         },
@@ -213,9 +212,8 @@ export default function ReplyIntentConfigsPage() {
           { name: "description", label: "意图说明", type: "textarea", rows: 3, placeholder: "这个意图负责哪些用户问题，不负责哪些问题。", trim: true },
           { name: "intentProfileId", label: "所属意图行业", type: "select", defaultValue: "0", options: profileOptionsForForm, valueType: "number", description: "当前酒店回复链路使用“酒店行业”；其他行业后续各自绑定自己的分类和 IntentDetect 提示词。" },
           { name: "scopeType", label: "适用范围", type: "select", defaultValue: "global", options: scopeTypeOptions, required: true, valueFromItem: (item) => item.scopeType || "global" },
-          { name: "companyId", label: "公司ID", type: "number", defaultValue: "0", min: 0, step: 1, valueType: "number", description: "公司级必填；其他范围填 0。" },
           { name: "storeId", label: "门店ID", type: "number", defaultValue: "0", min: 0, step: 1, valueType: "number", description: "门店级必填；其他范围填 0。" },
-          { name: "wxWorkInstanceId", label: "企微员工号账号ID", type: "number", defaultValue: "0", min: 0, step: 1, valueType: "number", description: "账号级必填；其他范围填 0。" },
+          { name: "wxWorkInstanceId", label: "企微员工号ID", type: "number", defaultValue: "0", min: 0, step: 1, valueType: "number", description: "企微员工号级必填；其他范围填 0。" },
           { name: "priority", label: "优先级", type: "number", defaultValue: "100", min: 0, step: 1, required: true, valueType: "number", description: "数字越大越优先，用于解决多个意图同时命中。" },
           { name: "matchMode", label: "识别方式", type: "select", defaultValue: "hybrid", options: matchModeOptions, required: true, valueFromItem: (item) => item.matchMode || "hybrid" },
           { name: "keywords", label: "关键词 / 短语", type: "textarea", rows: 4, placeholder: "每行一个关键词，或用逗号分隔。", trim: true },
@@ -223,7 +221,7 @@ export default function ReplyIntentConfigsPage() {
           { name: "negativeExamples", label: "反例 / 不应命中", type: "textarea", rows: 5, placeholder: "容易误判但不应归到这个意图的说法。", trim: true },
           { name: "requiredContext", label: "需要的上下文", type: "textarea", rows: 3, placeholder: "如：需要最近图片理解；需要门店绑定信息；需要当前账号知识库。", trim: true },
           { name: "needsKnowledge", label: "需要知识库", type: "checkbox", defaultValue: false, description: "命中后进入当前账号绑定知识库检索。" },
-          { name: "needsResource", label: "需要酒店变量", type: "checkbox", defaultValue: false, description: "仅用于“酒店变量”大类，命中后读取当前门店账号的小程序、定位、电话等真实变量。" },
+          { name: "needsResource", label: "需要酒店变量", type: "checkbox", defaultValue: false, description: "仅用于“酒店变量”大类，命中后读取当前门店配置的小程序、定位、电话等真实变量。" },
           { name: "resourceType", label: "酒店变量类型", type: "select", defaultValue: "", options: resourceTypeOptions, valueFromItem: (item) => item.resourceType || "" },
           { name: "needsTool", label: "需要工具", type: "checkbox", defaultValue: false, description: "命中后允许调用指定工具，不代表模型可自行承诺动作。" },
           { name: "toolCodes", label: "允许工具", type: "textarea", rows: 3, placeholder: "每行一个工具编码，例如 graph/handoff_to_human", trim: true },
@@ -243,7 +241,6 @@ export default function ReplyIntentConfigsPage() {
           description: String(values.description ?? ""),
           intentProfileId: Number(values.intentProfileId ?? 0),
           scopeType: String(values.scopeType ?? "global"),
-          companyId: Number(values.companyId ?? 0),
           storeId: Number(values.storeId ?? 0),
           wxWorkInstanceId: Number(values.wxWorkInstanceId ?? 0),
           priority: Number(values.priority ?? 100),

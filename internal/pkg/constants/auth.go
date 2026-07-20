@@ -153,12 +153,6 @@ var (
 	PermissionTagUpdate = Permission{Name: "更新标签", Code: "tag.update", Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/update", SortNo: 570}
 	PermissionTagDelete = Permission{Name: "删除标签", Code: "tag.delete", Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/delete", SortNo: 580}
 
-	// 公司相关权限
-	PermissionCompanyView   = Permission{Name: "查看公司", Code: "company.view", Type: "api", GroupName: "company", Method: "ANY", APIPath: "/api/dashboard/company/list", SortNo: 590}
-	PermissionCompanyCreate = Permission{Name: "创建公司", Code: "company.create", Type: "api", GroupName: "company", Method: "POST", APIPath: "/api/dashboard/company/create", SortNo: 600}
-	PermissionCompanyUpdate = Permission{Name: "更新公司", Code: "company.update", Type: "api", GroupName: "company", Method: "POST", APIPath: "/api/dashboard/company/update", SortNo: 610}
-	PermissionCompanyDelete = Permission{Name: "删除公司", Code: "company.delete", Type: "api", GroupName: "company", Method: "POST", APIPath: "/api/dashboard/company/delete", SortNo: 620}
-
 	// 接入渠道相关权限
 	PermissionChannelView   = Permission{Name: "查看接入渠道", Code: "channel.view", Type: "api", GroupName: "channel", Method: "ANY", APIPath: "/api/dashboard/channel/list", SortNo: 625}
 	PermissionChannelCreate = Permission{Name: "创建接入渠道", Code: "channel.create", Type: "api", GroupName: "channel", Method: "POST", APIPath: "/api/dashboard/channel/create", SortNo: 626}
@@ -313,10 +307,6 @@ var Permissions = []Permission{
 	PermissionTagCreate,
 	PermissionTagUpdate,
 	PermissionTagDelete,
-	PermissionCompanyView,
-	PermissionCompanyCreate,
-	PermissionCompanyUpdate,
-	PermissionCompanyDelete,
 	PermissionChannelView,
 	PermissionChannelCreate,
 	PermissionChannelUpdate,
@@ -424,7 +414,6 @@ var RolePermissions = map[string][]Permission{
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
 		PermissionTagView, PermissionTagCreate, PermissionTagUpdate, PermissionTagDelete,
-		PermissionCompanyView, PermissionCompanyCreate, PermissionCompanyUpdate, PermissionCompanyDelete,
 		PermissionChannelView, PermissionChannelCreate, PermissionChannelUpdate, PermissionChannelDelete,
 		PermissionCustomerView, PermissionCustomerCreate, PermissionCustomerUpdate, PermissionCustomerDelete,
 		PermissionAgentView, PermissionAgentCreate, PermissionAgentUpdate, PermissionAgentDelete, PermissionAgentUpdateStatus, PermissionAgentConfig,
@@ -458,7 +447,6 @@ var RolePermissions = map[string][]Permission{
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
 		PermissionTagView, PermissionTagCreate, PermissionTagUpdate, PermissionTagDelete,
-		PermissionCompanyView, PermissionCompanyCreate, PermissionCompanyUpdate, PermissionCompanyDelete,
 		PermissionChannelView, PermissionChannelCreate, PermissionChannelUpdate, PermissionChannelDelete,
 		PermissionCustomerView, PermissionCustomerCreate, PermissionCustomerUpdate, PermissionCustomerDelete,
 		PermissionAgentView, PermissionAgentCreate, PermissionAgentUpdate, PermissionAgentDelete, PermissionAgentUpdateStatus, PermissionAgentConfig,
@@ -485,7 +473,6 @@ var RolePermissions = map[string][]Permission{
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
 		PermissionTagView, PermissionTagCreate, PermissionTagUpdate, PermissionTagDelete,
-		PermissionCompanyView,
 		PermissionChannelView, PermissionChannelCreate, PermissionChannelUpdate,
 		PermissionCustomerView, PermissionCustomerCreate, PermissionCustomerUpdate,
 		PermissionAgentView, PermissionAgentUpdate,
@@ -509,7 +496,6 @@ var RolePermissions = map[string][]Permission{
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView,
 		PermissionTagView,
-		PermissionCompanyView,
 		PermissionChannelView,
 		PermissionCustomerView,
 		PermissionAssetView,

@@ -311,17 +311,15 @@ type UserIdentity struct {
 	AuditFields
 }
 
-// Company 客户公司（组织）表。
-//
-//	用于存储公司主体信息；Customer（人）可通过 CompanyID 关联到所属公司。
+// Company 是已退出运行链路的旧公司档案，仅保留历史迁移、审计和用量证据兼容。
 type Company struct {
-	ID              int64        `gorm:"primaryKey;autoIncrement"`                                                           // ID 为公司主键。
-	TenantID        int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_company_tenant_name,priority:1"` // TenantID 为客户企业所属接入公司。
-	Name            string       `gorm:"type:varchar(200);not null;uniqueIndex:uk_company_tenant_name,priority:2"`           // Name 为当前接入公司内唯一的客户企业名称。
-	Code            string       `gorm:"type:varchar(64);not null;index"`                                                    // Code 为公司编码/统一社会信用代码（可空语义用空串表示）。
-	IntentProfileID int64        `gorm:"type:bigint;not null;default:0;index"`                                               // IntentProfileID 为公司默认意图行业配置。
-	Status          enums.Status `gorm:"type:int;not null;default:0"`                                                        // Status 为公司状态。
-	Remark          string       `gorm:"type:text"`                                                                          // Remark 为备注。
+	ID              int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID        int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_company_tenant_name,priority:1"`
+	Name            string       `gorm:"type:varchar(200);not null;uniqueIndex:uk_company_tenant_name,priority:2"`
+	Code            string       `gorm:"type:varchar(64);not null;index"`
+	IntentProfileID int64        `gorm:"type:bigint;not null;default:0;index"` // 迁移 63 清零；运行时不得读取。
+	Status          enums.Status `gorm:"type:int;not null;default:0"`
+	Remark          string       `gorm:"type:text"`
 	AuditFields
 }
 
@@ -334,7 +332,7 @@ type Customer struct {
 	Name          string       `gorm:"type:varchar(100);not null;default:'';index"` // Name 为客户姓名或展示名称。
 	Avatar        string       `gorm:"type:varchar(1024);not null;default:''"`      // Avatar 为客户头像 URL，可由企微协议联系人资料同步。
 	Gender        enums.Gender `gorm:"type:int;not null;default:0;"`                // Gender 为性别：0未知 1男 2女。
-	CompanyID     int64        `gorm:"type:bigint;not null;default:0;index"`        // CompanyID 为所属公司ID；0表示无所属公司（个人客户）。
+	CompanyID     int64        `gorm:"type:bigint;not null;default:0;index"`        // CompanyID 为旧公司档案证据；新写入固定为 0。
 	LastActiveAt  *time.Time   `gorm:"type:datetime;"`                              // LastActiveAt 为最近活跃时间。
 	PrimaryMobile string       `gorm:"type:varchar(32);not null;default:'';index"`  // PrimaryMobile 为主手机号（冗余展示字段）。
 	PrimaryEmail  string       `gorm:"type:varchar(100);not null;default:'';index"` // PrimaryEmail 为主邮箱（冗余展示字段）。
@@ -372,7 +370,7 @@ type StoreCustomerRelation struct {
 }
 
 // WxWorkCustomerHandoffSetting 保存客户在单个企微员工号下的自动转人工偏好。
-// 同一自然客户在不同员工号下的设置必须独立，避免跨门店账号互相影响。
+// 同一自然客户在不同企微员工号下的设置必须独立，避免跨门店互相影响。
 type WxWorkCustomerHandoffSetting struct {
 	ID                 int64  `gorm:"primaryKey;autoIncrement"`
 	TenantID           int64  `gorm:"type:bigint;not null;default:0;index"`
@@ -530,27 +528,27 @@ type Conversation struct {
 	AuditFields
 }
 
-// Store 表示酒店门店，企微员工号实例与门店知识库都挂在门店上。
+// Store 是门店员工号角色账号对应的稳定门店身份，企微实例与门店知识库都挂在这里。
 type Store struct {
 	ID              int64        `gorm:"primaryKey;autoIncrement"`
 	TenantID        int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_tenant_code,priority:1"`
 	StoreCode       string       `gorm:"type:varchar(64);not null;default:'';uniqueIndex:uk_store_tenant_code,priority:2"`
 	Name            string       `gorm:"type:varchar(120);not null;default:'';index"`
 	BrandName       string       `gorm:"type:varchar(120);not null;default:'';index"`
-	CompanyID       int64        `gorm:"type:bigint;not null;default:0;index"`
+	CompanyID       int64        `gorm:"type:bigint;not null;default:0;index"` // CompanyID 为旧公司档案兼容字段；新写入固定为 0。
 	KnowledgeBaseID int64        `gorm:"type:bigint;not null;default:0;index"`
 	Status          enums.Status `gorm:"type:int;not null;default:0;index"`
 	Remark          string       `gorm:"type:text"`
 	AuditFields
 }
 
-// StoreStaffBinding 表示门店员工登录 AgentDesk 后和公司/门店的唯一绑定。
+// StoreStaffBinding 把已有门店员工号角色账号与稳定门店身份唯一绑定。
 type StoreStaffBinding struct {
 	ID                      int64        `gorm:"primaryKey;autoIncrement"`
 	TenantID                int64        `gorm:"type:bigint;not null;default:0;index"`
 	UserID                  int64        `gorm:"type:bigint;not null;default:0;index"`
 	AgentTeamID             int64        `gorm:"type:bigint;not null;default:0;index"` // AgentTeamID 为门店员工所属客服组，0 表示暂未分配。
-	CompanyID               int64        `gorm:"type:bigint;not null;default:0;index"`
+	CompanyID               int64        `gorm:"type:bigint;not null;default:0;index"` // CompanyID 为旧公司档案兼容字段；新写入固定为 0。
 	StoreID                 int64        `gorm:"type:bigint;not null;default:0;uniqueIndex"`
 	ManagedMode             string       `gorm:"type:varchar(20);not null;default:'semi';index"`
 	ServiceHours            string       `gorm:"type:varchar(200);not null;default:''"`
@@ -574,7 +572,7 @@ type WxWorkProtocolInstance struct {
 	EmployeeUserID                 string       `gorm:"type:varchar(128);not null;default:'';index"`
 	EmployeeName                   string       `gorm:"type:varchar(120);not null;default:''"`
 	EmployeeAvatar                 string       `gorm:"type:varchar(1024);not null;default:''"`
-	CompanyID                      int64        `gorm:"type:bigint;not null;default:0;index"`
+	CompanyID                      int64        `gorm:"type:bigint;not null;default:0;index"` // CompanyID 为旧公司档案兼容字段；新写入固定为 0。
 	IntentProfileID                int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreID                        int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreStaffBindingID            int64        `gorm:"type:bigint;not null;default:0;index"`
@@ -1012,7 +1010,7 @@ type AgentTeam struct {
 	Name                   string                      `gorm:"type:varchar(100);not null;default:'';index"`    // Name 为客服组名称。
 	IsDefault              bool                        `gorm:"not null;default:false;index"`                   // IsDefault 表示该组是否为租户创建时生成的默认综合客服组。
 	LeaderUserID           int64                       `gorm:"type:bigint;not null;default:0;index"`           // LeaderUserID 为组长用户ID，0 表示暂未设置。
-	CompanyScopeIDs        string                      `gorm:"type:varchar(500);not null;default:''"`          // CompanyScopeIDs 为客服组可管理的公司ID，逗号分隔；为空则由门店范围反推。
+	CompanyScopeIDs        string                      `gorm:"type:varchar(500);not null;default:''"`          // CompanyScopeIDs 为已停用的历史范围字段；新写入固定为空。
 	StoreScopeIDs          string                      `gorm:"type:varchar(500);not null;default:''"`          // StoreScopeIDs 为客服组可服务的门店ID，逗号分隔；为空表示不限制。
 	WxWorkInstanceScopeIDs string                      `gorm:"type:varchar(500);not null;default:''"`          // WxWorkInstanceScopeIDs 为客服组可服务的企微员工号实例ID，逗号分隔；为空表示不限制。
 	DispatchMode           enums.AgentTeamDispatchMode `gorm:"type:varchar(30);not null;default:'rule';index"` // DispatchMode 为客服组自动派单策略，默认保持规则均衡。
@@ -1099,7 +1097,7 @@ type TenantAIModelGrant struct {
 type StoreAIModelSetting struct {
 	ID                int64             `gorm:"primaryKey;autoIncrement"`
 	TenantID          int64             `gorm:"type:bigint;not null;default:0;index"`
-	CompanyID         int64             `gorm:"type:bigint;not null;default:0;index"` // Legacy internal-company scope; new writes keep this at zero.
+	CompanyID         int64             `gorm:"type:bigint;not null;default:0;index"` // CompanyID 为旧公司档案兼容字段；新写入固定为 0。
 	StoreID           int64             `gorm:"type:bigint;not null;default:0;index"` // Legacy store scope; new writes keep this at zero because the employee account already owns the store relation.
 	WxWorkInstanceID  int64             `gorm:"type:bigint;not null;default:0;index"`
 	UsageCode         string            `gorm:"type:varchar(80);not null;default:'';index"`
@@ -1131,7 +1129,7 @@ type KnowledgeBase struct {
 	ID                        int64        `gorm:"primaryKey;autoIncrement"`                           // ID 为知识库主键。
 	TenantID                  int64        `gorm:"type:bigint;not null;default:0;index"`               // TenantID 为知识库所属接入公司。
 	IntentProfileID           int64        `gorm:"type:bigint;not null;default:0;index"`               // IntentProfileID 为旧数据兼容字段，不参与运行时知识库选择。
-	CompanyID                 int64        `gorm:"type:bigint;not null;default:0;index"`               // CompanyID 为历史客户企业兼容字段；新门店知识库写入 0。
+	CompanyID                 int64        `gorm:"type:bigint;not null;default:0;index"`               // CompanyID 为旧公司档案兼容字段；新门店知识库写入 0。
 	StoreID                   int64        `gorm:"type:bigint;not null;default:0;index"`               // StoreID 为知识库所属内部稳定门店身份。
 	DatasetID                 string       `gorm:"type:varchar(128);not null;default:'';index"`        // DatasetID 为 FastGPT 数据集 ID。
 	DatasetName               string       `gorm:"type:varchar(200);not null;default:''"`              // DatasetName 为 FastGPT 数据集名称。

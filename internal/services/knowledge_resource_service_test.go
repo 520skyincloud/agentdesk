@@ -26,12 +26,12 @@ func setupKnowledgeResourceTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestResolveKnowledgeResourcesStaysWithinStoreAndKnowledgeScopeAcrossAccountReplacement(t *testing.T) {
+func TestResolveKnowledgeResourcesStaysWithinTenantStoreAndKnowledgeScopeAcrossAccountReplacement(t *testing.T) {
 	db := setupKnowledgeResourceTestDB(t)
 	for _, instance := range []models.WxWorkProtocolInstance{
-		{ID: 41, TenantID: 101, Guid: "old-account", CompanyID: 11, StoreID: 7, Status: enums.StatusOk},
-		{ID: 42, TenantID: 101, Guid: "replacement-account", CompanyID: 11, StoreID: 7, Status: enums.StatusOk},
-		{ID: 43, TenantID: 101, Guid: "other-store", CompanyID: 11, StoreID: 8, Status: enums.StatusOk},
+		{ID: 41, TenantID: 101, Guid: "old-account", CompanyID: 0, StoreID: 7, Status: enums.StatusOk},
+		{ID: 42, TenantID: 101, Guid: "replacement-account", CompanyID: 0, StoreID: 7, Status: enums.StatusOk},
+		{ID: 43, TenantID: 101, Guid: "other-store", CompanyID: 0, StoreID: 8, Status: enums.StatusOk},
 	} {
 		if err := db.Create(&instance).Error; err != nil {
 			t.Fatalf("create instance: %v", err)
@@ -51,7 +51,7 @@ func TestResolveKnowledgeResourcesStaysWithinStoreAndKnowledgeScopeAcrossAccount
 	}
 	group := &models.KnowledgeResourceGroup{
 		TenantID:         101,
-		CompanyID:        11,
+		CompanyID:        0,
 		StoreID:          7,
 		IntentProfileID:  0,
 		KnowledgeBaseID:  31,
@@ -78,11 +78,11 @@ func TestResolveKnowledgeResourcesStaysWithinStoreAndKnowledgeScopeAcrossAccount
 	}
 
 	sources := []KnowledgeResourceSourceRef{{KnowledgeBaseID: 31, SourceRecordID: "fastgpt-record-001"}}
-	resources := KnowledgeResourceService.ResolveForRuntime(41, 11, 101, sources)
+	resources := KnowledgeResourceService.ResolveForRuntime(41, 101, sources)
 	if len(resources) != 1 || resources[0].AssetID != asset.AssetID {
 		t.Fatalf("expected exactly scoped resource, got %+v", resources)
 	}
-	resources = KnowledgeResourceService.ResolveForRuntime(42, 11, 101, sources)
+	resources = KnowledgeResourceService.ResolveForRuntime(42, 101, sources)
 	if len(resources) != 1 || resources[0].AssetID != asset.AssetID {
 		t.Fatalf("replacement account should reuse store resource, got %+v", resources)
 	}
@@ -90,17 +90,15 @@ func TestResolveKnowledgeResourcesStaysWithinStoreAndKnowledgeScopeAcrossAccount
 	for _, scope := range []struct {
 		name      string
 		instance  int64
-		company   int64
 		tenant    int64
 		sourceRef []KnowledgeResourceSourceRef
 	}{
-		{name: "other store", instance: 43, company: 11, tenant: 101, sourceRef: sources},
-		{name: "other company", instance: 41, company: 12, tenant: 101, sourceRef: sources},
-		{name: "other tenant", instance: 41, company: 11, tenant: 202, sourceRef: sources},
-		{name: "other source", instance: 41, company: 11, tenant: 101, sourceRef: []KnowledgeResourceSourceRef{{KnowledgeBaseID: 31, SourceRecordID: "fastgpt-record-002"}}},
+		{name: "other store", instance: 43, tenant: 101, sourceRef: sources},
+		{name: "other tenant", instance: 41, tenant: 202, sourceRef: sources},
+		{name: "other source", instance: 41, tenant: 101, sourceRef: []KnowledgeResourceSourceRef{{KnowledgeBaseID: 31, SourceRecordID: "fastgpt-record-002"}}},
 	} {
 		t.Run(scope.name, func(t *testing.T) {
-			if got := KnowledgeResourceService.ResolveForRuntime(scope.instance, scope.company, scope.tenant, scope.sourceRef); len(got) != 0 {
+			if got := KnowledgeResourceService.ResolveForRuntime(scope.instance, scope.tenant, scope.sourceRef); len(got) != 0 {
 				t.Fatalf("resource crossed isolation boundary: %+v", got)
 			}
 		})

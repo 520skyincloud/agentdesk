@@ -24,7 +24,6 @@ func BuildStoreWorkbench(snapshot *services.StoreWorkbenchSnapshot) *response.St
 	}
 	ret.BindingID = snapshot.Binding.ID
 	ret.BindingStatus = snapshot.Binding.Status
-	ret.CompanyID = snapshot.Binding.CompanyID
 	ret.StoreID = snapshot.Binding.StoreID
 	ret.AgentTeamID = snapshot.Binding.AgentTeamID
 	ret.ManagedMode = snapshot.Runtime.ManagedMode
@@ -35,9 +34,6 @@ func BuildStoreWorkbench(snapshot *services.StoreWorkbenchSnapshot) *response.St
 	ret.FallbackToHQ = snapshot.Runtime.FallbackToHQ
 	ret.ManualTimeoutMinutes = snapshot.Runtime.ManualTimeoutMinutes
 	ret.UpdatedAt = snapshot.Binding.UpdatedAt.Format("2006-01-02 15:04:05")
-	if snapshot.Company != nil {
-		ret.CompanyName = snapshot.Company.Name
-	}
 	if snapshot.Store != nil {
 		ret.StoreCode = snapshot.Store.StoreCode
 		ret.StoreName = snapshot.Store.Name

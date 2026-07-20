@@ -77,6 +77,16 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 			t.Fatalf("expected route %s to be registered", route)
 		}
 	}
+	for _, route := range []string{
+		http.MethodGet + " /api/dashboard/company/list",
+		http.MethodPost + " /api/dashboard/company/create",
+		http.MethodPost + " /api/dashboard/company/update",
+		http.MethodPost + " /api/dashboard/company/delete",
+	} {
+		if routes[route] {
+			t.Fatalf("retired customer-company route %s must not be registered", route)
+		}
+	}
 }
 
 func TestNewServerKeepsPublicRegistrationDisabledByDefault(t *testing.T) {

@@ -58,6 +58,7 @@ export type ReviewTenantRegistrationPayload = {
   userId: number
   decision: TenantRegistrationReviewDecision
   roleIds: number[]
+  storeName: string
   remark: string
 }
 

@@ -20,14 +20,11 @@ func TestBuildCustomerUsesOnlyProvidedContext(t *testing.T) {
 	}
 
 	basic := BuildCustomer(customer)
-	if basic == nil || basic.Company != nil || basic.StoreRelations != nil {
+	if basic == nil || basic.StoreRelations != nil {
 		t.Fatalf("basic builder must not perform optional lookups: %+v", basic)
 	}
 
 	result := BuildCustomerWithContext(customer, &CustomerBuildContext{
-		CompaniesByID: map[int64]*models.Company{
-			2: {ID: 2, Name: "测试企业", Status: enums.StatusOk},
-		},
 		StoreRelationsByCustomerID: map[int64][]models.StoreCustomerRelation{1: {relation}},
 		StoresByID: map[int64]*models.Store{
 			4: {ID: 4, Name: "测试门店", Status: enums.StatusOk},
@@ -36,9 +33,6 @@ func TestBuildCustomerUsesOnlyProvidedContext(t *testing.T) {
 			5: {ID: 5, EmployeeName: "门店员工号", Status: enums.StatusOk},
 		},
 	})
-	if result == nil || result.Company == nil || result.Company.Name != "测试企业" {
-		t.Fatalf("expected company from context, got %+v", result)
-	}
 	if len(result.StoreRelations) != 1 || result.StoreRelations[0].StoreName != "测试门店" || result.StoreRelations[0].WxWorkInstanceName != "门店员工号" {
 		t.Fatalf("expected relation labels from context, got %+v", result.StoreRelations)
 	}

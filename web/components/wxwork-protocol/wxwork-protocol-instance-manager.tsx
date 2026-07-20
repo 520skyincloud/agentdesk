@@ -1,12 +1,13 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { CopyIcon, DatabaseZapIcon, LinkIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SlidersHorizontalIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
+import { CopyIcon, DatabaseZapIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SlidersHorizontalIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
 import { WxWorkModelAssignmentDialog } from "@/components/wxwork-protocol/wxwork-model-assignment-dialog"
 import { FastGPTModelProfileDialog } from "@/components/wxwork-protocol/fastgpt-model-profile-dialog"
+import { WxWorkProtocolBindingDialog } from "@/components/wxwork-protocol/wxwork-protocol-binding-dialog"
 import {
   createDashboardStatusColumn,
   DashboardCrudPage,
@@ -21,9 +22,7 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import {
-  createWxWorkProtocolRemoteSetup,
   createWxWorkProtocolReplacementSetup,
-  createWxWorkProtocolInstance,
   deleteWxWorkProtocolInstance,
   fetchChannels,
   fetchKnowledgeBasesAll,
@@ -32,7 +31,6 @@ import {
   fetchWxWorkProtocolInstances,
   fetchWxWorkProtocolRoomList,
   fetchWxWorkProtocolRoomMembers,
-  startWxWorkProtocolLogin,
   updateWxWorkProtocolInstance,
   uploadAsset,
   type AdminChannel,
@@ -44,7 +42,6 @@ import {
   type WxWorkProtocolRoomOption,
 } from "@/lib/api/admin"
 import { deleteAsset } from "@/lib/api/asset"
-import { fetchCompanies, type AdminCompany } from "@/lib/api/company"
 import { getEnumOptions } from "@/lib/enums"
 import { Status, StatusLabels } from "@/lib/generated/enums"
 import { getBrowserCoordinates } from "@/lib/browser-geolocation"
@@ -58,9 +55,6 @@ type WxWorkProtocolInstanceManagerProps = {
   onChanged?: () => void
   tableShellClassName?: string
   hideCreateActions?: boolean
-  companyId?: number
-  companyName?: string
-  lockCompany?: boolean
 }
 
 type WelcomeCapableInstance = WxWorkProtocolInstance & {
@@ -504,7 +498,7 @@ function buildWelcomeInstanceUpdatePayload(instance: WelcomeCapableInstance, dra
     employeeUserId: instance.employeeUserId,
     employeeName: instance.employeeName,
     employeeAvatar: instance.employeeAvatar,
-    companyId: instance.companyId || 0,
+    storeStaffUserId: instance.storeStaffUserId || 0,
     intentProfileId: instance.intentProfileId || 0,
     storeId: instance.storeId || 0,
     storeName: instance.storeName || instance.employeeName,
@@ -651,14 +645,10 @@ export function WxWorkProtocolInstanceManager({
   onChanged,
   tableShellClassName,
   hideCreateActions = false,
-  companyId,
-  companyName,
-  lockCompany = false,
 }: WxWorkProtocolInstanceManagerProps) {
   const { session } = useAuth()
   const [channels, setChannels] = useState<AdminChannel[]>([])
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
-  const [companies, setCompanies] = useState<AdminCompany[]>([])
   const [intentProfiles, setIntentProfiles] = useState<ReplyIntentProfile[]>([])
   const [reloadKey, setReloadKey] = useState(0)
   const [modelAssignmentInstance, setModelAssignmentInstance] = useState<WxWorkProtocolInstance | null>(null)
@@ -682,21 +672,17 @@ export function WxWorkProtocolInstanceManager({
   })
   const [receptionSettingsSaving, setReceptionSettingsSaving] = useState(false)
   const [locatingStoreCoordinates, setLocatingStoreCoordinates] = useState(false)
-  const [createDialogOpen, setCreateDialogOpen] = useState(false)
-  const [creatingLocal, setCreatingLocal] = useState(false)
-  const [creatingRemote, setCreatingRemote] = useState(false)
+  const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
   const permissionSet = useMemo(() => new Set(session?.permissions ?? []), [session?.permissions])
   const canViewChannels = permissionSet.has("channel.view")
   const canCreateChannels = canViewChannels && permissionSet.has("channel.create")
   const canUpdateChannels = canViewChannels && permissionSet.has("channel.update")
   const canDeleteChannels = canViewChannels && permissionSet.has("channel.delete")
   const canViewKnowledgeBases = permissionSet.has("knowledgeBase.view")
-  const canViewCompanies = permissionSet.has("company.view")
+  const canViewUsers = permissionSet.has("user.view")
   const canViewModelAssignments = permissionSet.has("tenantModelAssignment.view")
   const canUpdateModelAssignments = permissionSet.has("tenantModelAssignment.update")
   const canManageFastGPTModelProfile = permissionSet.has("aiConfig.update")
-  const lockedCompanyId = lockCompany ? Number(companyId || 0) : 0
-  const lockedCompanyName = repairMojibakeText(companyName || "")
 
   useEffect(() => {
     if (!canViewChannels) {
@@ -705,26 +691,22 @@ export function WxWorkProtocolInstanceManager({
 
     async function loadOptions() {
       try {
-        const [channelPage, kbList, companyPage, intentProfilePage] = await Promise.all([
+        const [channelPage, kbList, intentProfilePage] = await Promise.all([
           fetchChannels({ channelType: "wxwork_protocol", status: Status.Ok, limit: 200 }),
           canViewKnowledgeBases ? fetchKnowledgeBasesAll({ status: Status.Ok }) : Promise.resolve([]),
-          lockCompany || !canViewCompanies
-            ? Promise.resolve({ results: [] as AdminCompany[] })
-            : fetchCompanies({ status: Status.Ok, limit: 500 }),
           canViewModelAssignments
             ? fetchReplyIntentProfiles({ status: Status.Ok, limit: 200 })
             : Promise.resolve({ results: [] as ReplyIntentProfile[] }),
         ])
         setChannels(channelPage.results)
         setKnowledgeBases(kbList)
-        setCompanies(companyPage.results)
         setIntentProfiles(intentProfilePage.results)
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "加载选项失败")
       }
     }
     void loadOptions()
-  }, [canViewChannels, canViewCompanies, canViewKnowledgeBases, canViewModelAssignments, lockCompany])
+  }, [canViewChannels, canViewKnowledgeBases, canViewModelAssignments])
 
   const statusOptions = [
     { value: "all", label: "全部状态" },
@@ -752,14 +734,9 @@ export function WxWorkProtocolInstanceManager({
     [knowledgeBases],
   )
 
-  const companyOptions = useMemo(
-    () => companies.map((item) => ({ value: String(item.id), label: repairMojibakeText(item.name) || `公司 #${item.id}` })),
-    [companies],
-  )
-
   const intentProfileOptions = useMemo(
     () => [
-      { value: "0", label: "继承公司行业（无公司时需选择）" },
+      { value: "0", label: "暂不设置" },
       ...intentProfiles.map((item) => ({
         value: String(item.id),
         label: `${item.name}${item.industryCode ? ` · ${item.industryCode}` : ""}`,
@@ -771,43 +748,6 @@ export function WxWorkProtocolInstanceManager({
   function notifyChanged() {
     setReloadKey((value) => value + 1)
     onChanged?.()
-  }
-
-  async function createLocalLoginInstance() {
-    if (!canCreateChannels) return
-    setCreatingLocal(true)
-    try {
-      const item = await startWxWorkProtocolLogin(channels[0]?.id ?? 0, lockedCompanyId)
-      if (item.rawResponse?.trim()) {
-        await navigator.clipboard.writeText(item.rawResponse)
-      }
-      toast.success(`已自动绑定空闲实例：${item.instance.guid}，登录二维码原文已复制`)
-      notifyChanged()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "自动绑定空闲实例失败")
-    } finally {
-      setCreatingLocal(false)
-    }
-  }
-
-  async function createRemoteSetupLink() {
-    if (!canCreateChannels) return
-    setCreatingRemote(true)
-    try {
-      const item = await createWxWorkProtocolRemoteSetup({
-        channelId: channels[0]?.id ?? 0,
-        companyId: lockedCompanyId,
-        remark: lockedCompanyId > 0 ? `${lockedCompanyName || `公司 #${lockedCompanyId}`} 远程门店开户链接` : "远程门店开户链接",
-      })
-      const url = item.remoteSetupUrl || `${window.location.origin}/wxwork-remote-setup?token=${encodeURIComponent(item.remoteSetupToken || "")}`
-      await navigator.clipboard.writeText(url)
-      toast.success("远程开户注册链接已复制")
-      notifyChanged()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "生成远程链接失败")
-    } finally {
-      setCreatingRemote(false)
-    }
   }
 
   async function replaceLoggedInAccount(item: WxWorkProtocolInstance) {
@@ -1010,10 +950,10 @@ export function WxWorkProtocolInstanceManager({
             <RotateCwIcon className={state.loading ? "size-4 animate-spin" : "size-4"} />
             刷新
           </Button>
-          {!hideCreateActions && canCreateChannels ? (
-            <Button className="rounded-lg" onClick={() => setCreateDialogOpen(true)}>
+          {!hideCreateActions && canCreateChannels && canViewUsers ? (
+            <Button className="rounded-lg" onClick={() => setBindingDialogOpen(true)}>
               <PlusIcon className="size-4" />
-              新增账号
+              绑定企微员工号
             </Button>
           ) : null}
         </>
@@ -1045,17 +985,6 @@ export function WxWorkProtocolInstanceManager({
 	          options: [{ value: "all", label: "全部知识库" }, ...knowledgeBaseOptions],
 	          className: "w-full sm:w-48",
 	        },
-	        ...(!lockCompany ? [
-	          {
-	            name: "companyId",
-	            label: "公司",
-	            type: "select" as const,
-	            defaultValue: "all",
-	            allValue: "all",
-	            options: [{ value: "all", label: "全部公司" }, { value: "0", label: "未绑定公司" }, ...companyOptions],
-	            className: "w-full sm:w-48",
-	          },
-	        ] : []),
 	        {
 	          name: "status",
 	          label: "状态",
@@ -1088,14 +1017,12 @@ export function WxWorkProtocolInstanceManager({
           render: (item) => (
             <div className="space-y-1 text-sm">
 	              <div className="font-medium text-foreground">{repairMojibakeText(item.storeName) || repairMojibakeText(item.employeeName) || `账号 ${item.id}`}</div>
-	              <div className="text-xs text-muted-foreground">
-	                {item.companyName ? `公司：${repairMojibakeText(item.companyName)}` : "未绑定公司"}
-	              </div>
+	              <div className="text-xs text-muted-foreground">系统账号：{repairMojibakeText(item.storeStaffUserName) || `#${item.storeStaffUserId || "未绑定"}`}</div>
               <div className="text-xs text-muted-foreground">
                 {repairMojibakeText(item.knowledgeBaseName) || `知识库 ${item.knowledgeBaseId || "未配置"}`}
               </div>
               <div className="text-xs text-muted-foreground">
-                意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || (item.companyId > 0 ? "继承公司行业" : "未绑定")}
+                意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || "未设置"}
               </div>
               {item.storeAddress || item.storeLatitude || item.storeLongitude ? (
                 <div className="text-xs text-muted-foreground">
@@ -1147,7 +1074,7 @@ export function WxWorkProtocolInstanceManager({
                 知识库：{repairMojibakeText(item.knowledgeBaseName) || `#${item.knowledgeBaseId || "未配置"}`}
               </div>
               <div className="max-w-48 truncate text-xs text-muted-foreground">
-                意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || (item.companyId > 0 ? "继承公司行业" : "未绑定")}
+                意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || "未设置"}
               </div>
               <div className="max-w-48 truncate text-xs text-muted-foreground">员工号覆盖租户默认，仅可选择平台授权模型</div>
             </div>
@@ -1161,19 +1088,11 @@ export function WxWorkProtocolInstanceManager({
           isEnabled: (status) => status === Status.Ok,
         }),
       ]}
-	      fetchList={(query) => fetchWxWorkProtocolInstances({
-	        ...query,
-	        ...(lockedCompanyId > 0 ? { companyId: lockedCompanyId } : {}),
-	      })}
+	      fetchList={fetchWxWorkProtocolInstances}
       getItemId={(item) => item.id}
-      showCreate={!hideCreateActions && canCreateChannels}
+      showCreate={false}
       showEdit={canUpdateChannels}
-      createItem={async (payload) => {
-        if (!canCreateChannels) throw new Error("当前账号没有创建接入渠道的权限")
-        const ret = await createWxWorkProtocolInstance(payload)
-        notifyChanged()
-        return ret
-      }}
+      createItem={async () => { throw new Error("请从绑定企微员工号入口创建") }}
       updateItem={async (item, payload) => {
         if (!canUpdateChannels) throw new Error("当前账号没有更新接入渠道的权限")
         const ret = await updateWxWorkProtocolInstance({ id: item.id, ...payload })
@@ -1201,28 +1120,7 @@ export function WxWorkProtocolInstanceManager({
             description: "这里显示的是通过协议扫码登录的门店企业微信员工号。账号头像、UserID、GUID、回调、代理和 Bridge 等技术信息由系统同步和维护，不再开放手动填写。",
 	          },
 	          { name: "employeeName", label: "员工号名称", type: "text", placeholder: "扫码同步后会自动带出，可手动改展示名" },
-	          ...(lockCompany ? [
-	            {
-	              name: "companyLock",
-	              label: "绑定公司",
-	              type: "custom" as const,
-	              render: () => (
-	                <div className="rounded-xl border border-[#dbe7f6] bg-[#f8fbff] px-4 py-3 text-sm text-muted-foreground">
-	                  该入口生成的员工号会自动绑定到 <span className="font-medium text-foreground">{lockedCompanyName || `公司 #${lockedCompanyId || "-"}`}</span>，远程开户页不可改公司。
-	                </div>
-	              ),
-	            },
-              ] : canViewCompanies ? [
-                {
-                  name: "companyId",
-                  label: "绑定公司",
-                  type: "select" as const,
-                  defaultValue: "0",
-                  options: [{ value: "0", label: "不绑定公司" }, ...companyOptions],
-                  description: "账号可以不绑定内部公司；运行模型由接入公司授权池统一分配。",
-                },
-              ] : []),
-	          { name: "storeName", label: "店名/账号名称", type: "text", placeholder: "例如：丽斯未来酒店杭州某某店", description: "企微员工号就是门店账号。这里填店名即可，系统会维护内部兼容门店记录。" },
+	          { name: "storeName", label: "门店名称", type: "text", placeholder: "例如：丽斯未来酒店杭州某某店", description: "该名称来自绑定的系统账号所代表的门店。" },
           {
             name: "intentProfileId",
             label: "意图行业",
@@ -1230,9 +1128,9 @@ export function WxWorkProtocolInstanceManager({
             defaultValue: "0",
             valueFromItem: (item) => String(item.intentProfileId || 0),
             options: intentProfileOptions,
-            description: "决定这个员工号走哪套 IntentDetect 提示词和意图分类；未单独设置时继承绑定公司的行业。无公司账号必须选择行业，未绑定行业不能启用 AI。",
+            description: "决定这个员工号使用的意图检测提示词和分类；启用 AI 前必须设置。",
           },
-	          { name: "storeId", label: "内部门店 ID（可选兼容）", type: "number", min: 0, description: "一般不用填；老数据或需要绑定已有内部门店时再填写。" },
+	          { name: "storeId", label: "门店 ID", type: "custom", valueFromItem: (item) => item.storeId, render: () => null },
           { name: "storeLocationGuide", label: "门店定位说明", type: "custom", render: renderLocationGuide },
           { name: "storeAddress", label: "门店地址", type: "text", placeholder: "例如：上海市..." },
           { name: "storeContactPhone", label: "联系电话", type: "text", placeholder: "例如：0551-88888888 / 13800000000", description: "客户询问酒店电话时发送这个账号配置的电话变量，不从地址或备注里猜。" },
@@ -1269,7 +1167,7 @@ export function WxWorkProtocolInstanceManager({
             required: true,
             defaultValue: "semi",
             options: managedModeOptions,
-            description: "这个策略绑定到门店员工登录 AgentDesk 后的系统账号上，每个门店只允许一个；协议实例再绑定这个门店员工账号。",
+            description: "这个策略绑定到已分配门店员工号角色的系统账号上；该账号代表一家门店，再绑定实际使用的企微员工号。",
           },
           { name: "serviceHours", label: "门店自行接待时段", type: "text", placeholder: "例如：09:00-22:00；半托管模式按此时段通知门店群" },
           { name: "storeRoomNotifyEnabled", label: "启用门店群通知", type: "switch" },
@@ -1308,7 +1206,7 @@ export function WxWorkProtocolInstanceManager({
           employeeUserId: context.item?.employeeUserId || "",
 	          employeeName: String(values.employeeName || ""),
 	          employeeAvatar: context.item?.employeeAvatar || "",
-	          companyId: lockedCompanyId > 0 ? lockedCompanyId : Number(values.companyId || context.item?.companyId || 0),
+	          storeStaffUserId: context.item?.storeStaffUserId || 0,
           intentProfileId: Number(values.intentProfileId || 0),
 	          storeId: Number(values.storeId || 0),
 	          storeName: String(values.storeName || context.item?.storeName || values.employeeName || ""),
@@ -1423,48 +1321,11 @@ export function WxWorkProtocolInstanceManager({
       onChange={setReceptionSettingsDraft}
       onSave={() => void saveReceptionSettings()}
     />
-    <Dialog open={canCreateChannels && createDialogOpen} onOpenChange={setCreateDialogOpen}>
-      <DialogContent className="max-w-3xl rounded-3xl p-5">
-        <DialogHeader>
-          <DialogTitle>新增企微员工号</DialogTitle>
-          <DialogDescription>
-            先从系统管理的实例池认领一个真实空闲 GUID，再走扫码登录。现场负责人在旁边用左侧；外地门店用右侧链接自助完成。
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-2xl border border-[#dbe7f6] bg-white p-5 shadow-[0_12px_32px_rgba(35,74,122,0.06)]">
-            <div className="flex items-start gap-3">
-              <div className="agentdesk-icon-tile"><QrCodeIcon className="size-4" /></div>
-              <div className="min-w-0 flex-1">
-                <div className="font-semibold text-foreground">总部现场扫码</div>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  适合账号负责人就在你旁边。点击后系统自动认领一个空闲实例，并生成登录二维码原文。
-                </p>
-              </div>
-            </div>
-            <Button type="button" variant="outline" className="mt-5 w-full rounded-xl" disabled={creatingLocal || creatingRemote} onClick={() => void createLocalLoginInstance()}>
-              <QrCodeIcon className="size-4" />
-              {creatingLocal ? "生成中" : "生成现场扫码"}
-            </Button>
-          </div>
-          <div className="rounded-2xl border border-[#dbe7f6] bg-white p-5 shadow-[0_12px_32px_rgba(35,74,122,0.06)]">
-            <div className="flex items-start gap-3">
-              <div className="agentdesk-icon-tile"><LinkIcon className="size-4" /></div>
-              <div className="min-w-0 flex-1">
-                <div className="font-semibold text-foreground">远程门店自助开户</div>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  生成链接发给外地门店。对方打开后扫码登录，并填写门店名称、坐标、服务时间和通知群。
-                </p>
-              </div>
-            </div>
-            <Button type="button" className="mt-5 w-full rounded-xl" disabled={creatingLocal || creatingRemote} onClick={() => void createRemoteSetupLink()}>
-              <LinkIcon className="size-4" />
-              {creatingRemote ? "生成中" : "生成并复制链接"}
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+    <WxWorkProtocolBindingDialog
+      open={canCreateChannels && canViewUsers && bindingDialogOpen}
+      onOpenChange={setBindingDialogOpen}
+      onChanged={() => notifyChanged()}
+    />
     </>
   )
 }

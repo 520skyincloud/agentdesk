@@ -3,10 +3,10 @@ package request
 type CreateWxWorkProtocolInstanceRequest struct {
 	Guid                           string `json:"guid"`
 	ChannelID                      int64  `json:"channelId"`
+	StoreStaffUserID               int64  `json:"storeStaffUserId"`
 	EmployeeUserID                 string `json:"employeeUserId"`
 	EmployeeName                   string `json:"employeeName"`
 	EmployeeAvatar                 string `json:"employeeAvatar"`
-	CompanyID                      int64  `json:"companyId"`
 	IntentProfileID                int64  `json:"intentProfileId"`
 	StoreID                        int64  `json:"storeId"`
 	StoreName                      string `json:"storeName"`
@@ -53,9 +53,10 @@ type UpdateWxWorkProtocolInstanceRequest struct {
 }
 
 type StartWxWorkProtocolLoginRequest struct {
-	ChannelID int64  `json:"channelId"`
-	Guid      string `json:"guid"`
-	CompanyID int64  `json:"companyId"`
+	ChannelID        int64  `json:"channelId"`
+	Guid             string `json:"guid"`
+	StoreStaffUserID int64  `json:"storeStaffUserId"`
+	StoreName        string `json:"storeName"`
 }
 
 type ResolveWxWorkProtocolLoginBindingRequest struct {
@@ -64,10 +65,11 @@ type ResolveWxWorkProtocolLoginBindingRequest struct {
 }
 
 type CreateWxWorkProtocolRemoteSetupRequest struct {
-	ChannelID int64  `json:"channelId"`
-	Guid      string `json:"guid"`
-	CompanyID int64  `json:"companyId"`
-	Remark    string `json:"remark"`
+	ChannelID        int64  `json:"channelId"`
+	Guid             string `json:"guid"`
+	StoreStaffUserID int64  `json:"storeStaffUserId"`
+	StoreName        string `json:"storeName"`
+	Remark           string `json:"remark"`
 }
 
 type CreateWxWorkProtocolReplacementSetupRequest struct {
@@ -96,8 +98,6 @@ type UpdateWxWorkProtocolRemoteSetupRequest struct {
 	EmailVerificationToken  string `json:"emailVerificationToken"`
 	Guid                    string `json:"guid"`
 	EmployeeName            string `json:"employeeName"`
-	CompanyID               int64  `json:"companyId"`
-	StoreID                 int64  `json:"storeId"`
 	StoreName               string `json:"storeName"`
 	StoreAddress            string `json:"storeAddress"`
 	StoreNavigationName     string `json:"storeNavigationName"`
@@ -149,7 +149,6 @@ type UpdateWxWorkProtocolAISettingsRequest struct {
 	StoreRoomAtList                string `json:"storeRoomAtList"`
 	PersonaPrompt                  string `json:"personaPrompt"`
 	IntentProfileID                int64  `json:"intentProfileId"`
-	CompanyID                      int64  `json:"companyId"`
 	StoreID                        int64  `json:"storeId"`
 	StoreName                      string `json:"storeName"`
 	StoreAddress                   string `json:"storeAddress"`

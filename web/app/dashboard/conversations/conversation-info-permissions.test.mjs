@@ -16,14 +16,13 @@ test("conversation info auxiliary reads follow their explicit view permissions",
   assert.match(source, /permissions\.canViewTickets \? \(/)
 })
 
-test("conversation info mutations follow customer company and tag action permissions", () => {
+test("conversation info mutations follow customer and tag action permissions", () => {
   assert.match(source, /canUpdateCustomer: canViewCustomer && permissions\.has\("customer\.update"\)/)
-  assert.match(source, /canUpdateCompany: canViewCustomer && permissions\.has\("company\.update"\)/)
   assert.match(source, /canManageTags: canViewTags && permissions\.has\("conversation\.tag"\)/)
   assert.match(source, /permissions\.canManageTags \? \(/)
   assert.match(source, /permissions\.canUpdateCustomer \? \(/)
-  assert.match(source, /permissions\.canUpdateCompany \? \(/)
   assert.match(source, /if \(!permissions\.canUpdateCustomer \|\| customerEditSaving\)/)
+  assert.doesNotMatch(source, /company\.update|canUpdateCompany/)
 })
 
 test("assigned conversation tags stay visible without tag tree access", () => {

@@ -216,7 +216,7 @@ func (s *knowledgeResourceService) canAccessStore(operator *dto.AuthPrincipal, s
 	return false
 }
 
-func (s *knowledgeResourceService) ResolveForRuntime(wxWorkInstanceID, companyID, tenantID int64, sources []KnowledgeResourceSourceRef) []RuntimeKnowledgeResource {
+func (s *knowledgeResourceService) ResolveForRuntime(wxWorkInstanceID, tenantID int64, sources []KnowledgeResourceSourceRef) []RuntimeKnowledgeResource {
 	if wxWorkInstanceID <= 0 || tenantID <= 0 || len(sources) == 0 || sqls.DB() == nil {
 		return nil
 	}
@@ -225,10 +225,6 @@ func (s *knowledgeResourceService) ResolveForRuntime(wxWorkInstanceID, companyID
 		return nil
 	}
 	storeID := instance.StoreID
-	if companyID > 0 && companyID != instance.CompanyID {
-		return nil
-	}
-	companyID = instance.CompanyID
 	seenSource := map[string]bool{}
 	ret := make([]RuntimeKnowledgeResource, 0)
 	for _, source := range sources {
@@ -243,7 +239,7 @@ func (s *knowledgeResourceService) ResolveForRuntime(wxWorkInstanceID, companyID
 		group := repositories.KnowledgeResourceGroupRepository.Take(sqls.DB(),
 			"tenant_id = ? AND company_id = ? AND store_id = ? AND knowledge_base_id = ? AND source_provider = ? AND source_record_id = ? AND status = ?",
 			instance.TenantID,
-			companyID,
+			0,
 			storeID,
 			source.KnowledgeBaseID,
 			knowledgeResourceProviderFastGPT,
@@ -306,7 +302,7 @@ func (s *knowledgeResourceService) persistSyncedResources(instance *models.WxWor
 	existing := repositories.KnowledgeResourceGroupRepository.Take(sqls.DB(),
 		"tenant_id = ? AND company_id = ? AND store_id = ? AND knowledge_base_id = ? AND source_provider = ? AND source_record_id = ?",
 		instance.TenantID,
-		instance.CompanyID,
+		0,
 		instance.StoreID,
 		knowledgeBase.ID,
 		knowledgeResourceProviderFastGPT,
@@ -359,7 +355,7 @@ func (s *knowledgeResourceService) persistSyncedResources(instance *models.WxWor
 		if group == nil {
 			group = &models.KnowledgeResourceGroup{
 				TenantID:         instance.TenantID,
-				CompanyID:        instance.CompanyID,
+				CompanyID:        0,
 				StoreID:          instance.StoreID,
 				IntentProfileID:  0,
 				KnowledgeBaseID:  knowledgeBase.ID,

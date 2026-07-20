@@ -95,7 +95,7 @@ func (s *knowledgeBaseService) CreateKnowledgeBase(req request.CreateKnowledgeBa
 	if err != nil {
 		return nil, err
 	}
-	item, err := s.buildKnowledgeBaseModel(req)
+	item, err := s.buildKnowledgeBaseModel(req, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(req request.UpdateKnowledgeBa
 	if !s.CanAccessKnowledgeBase(current.ID, operator) {
 		return errorsx.Forbidden("无权限维护该知识库")
 	}
-	item, err := s.buildKnowledgeBaseModel(req.CreateKnowledgeBaseRequest)
+	item, err := s.buildKnowledgeBaseModel(req.CreateKnowledgeBaseRequest, tenantID)
 	if err != nil {
 		return err
 	}
@@ -244,10 +244,10 @@ func (s *knowledgeBaseService) CountContents(id int64, operator *dto.AuthPrincip
 	return documentCount, faqCount
 }
 
-func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowledgeBaseRequest) (*models.KnowledgeBase, error) {
+func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowledgeBaseRequest, tenantID int64) (*models.KnowledgeBase, error) {
 	item := &models.KnowledgeBase{
 		IntentProfileID:       req.IntentProfileID,
-		CompanyID:             req.CompanyID,
+		CompanyID:             0,
 		StoreID:               req.StoreID,
 		DatasetID:             strings.TrimSpace(req.DatasetID),
 		DatasetName:           strings.TrimSpace(req.DatasetName),
@@ -274,15 +274,9 @@ func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowled
 		item.IntentProfileID = intentProfileID
 	}
 	if item.StoreID > 0 {
-		store := StoreService.Get(item.StoreID)
+		store := StoreService.GetInTenant(item.StoreID, tenantID)
 		if store == nil || store.Status == enums.StatusDeleted {
 			return nil, errorsx.InvalidParam("门店不存在")
-		}
-		if item.CompanyID <= 0 {
-			item.CompanyID = store.CompanyID
-		}
-		if item.CompanyID > 0 && store.CompanyID > 0 && item.CompanyID != store.CompanyID {
-			return nil, errorsx.InvalidParam("知识库与门店公司归属不一致")
 		}
 	}
 	if item.ConnectionID == "" {

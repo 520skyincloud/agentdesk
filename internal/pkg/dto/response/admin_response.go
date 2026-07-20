@@ -51,13 +51,12 @@ type UserResponse struct {
 
 type StoreStaffAssignmentResponse struct {
 	BindingID          int64  `json:"bindingId"`
-	CompanyID          int64  `json:"companyId"`
-	CompanyName        string `json:"companyName"`
 	StoreID            int64  `json:"storeId"`
 	StoreName          string `json:"storeName"`
 	WxWorkInstanceID   int64  `json:"wxWorkInstanceId"`
 	WxWorkEmployeeName string `json:"wxWorkEmployeeName"`
 	WxWorkEmployeeID   string `json:"wxWorkEmployeeId"`
+	WxWorkHealthStatus string `json:"wxWorkHealthStatus"`
 	AgentTeamID        int64  `json:"agentTeamId"`
 	AgentTeamName      string `json:"agentTeamName"`
 }

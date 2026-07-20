@@ -11,7 +11,10 @@ const modelAssignmentSource = await readFile(
   new URL("../../../components/wxwork-protocol/wxwork-model-assignment-dialog.tsx", import.meta.url),
   "utf8",
 )
-const companyDetailSource = await readFile(new URL("../company-detail/page.tsx", import.meta.url), "utf8")
+const bindingDialogSource = await readFile(
+  new URL("../../../components/wxwork-protocol/wxwork-protocol-binding-dialog.tsx", import.meta.url),
+  "utf8",
+)
 
 test("conversation workbench preserves all conversations while gating account navigation", () => {
   assert.match(pageSource, /canViewWxWorkAccounts = permissions\.has\("channel\.view"\)/)
@@ -23,10 +26,9 @@ test("conversation workbench preserves all conversations while gating account na
 })
 
 test("conversation workbench separates account creation from account management", () => {
-  assert.match(pageSource, /canCreateWxWorkAccounts = canViewWxWorkAccounts && permissions\.has\("channel\.create"\)/)
+  assert.match(pageSource, /canCreateWxWorkAccounts = canViewWxWorkAccounts && permissions\.has\("channel\.create"\) && permissions\.has\("user\.view"\)/)
   assert.match(pageSource, /canUpdateWxWorkAccounts = canViewWxWorkAccounts && permissions\.has\("channel\.update"\)/)
   assert.match(pageSource, /canDeleteWxWorkAccounts = canViewWxWorkAccounts && permissions\.has\("channel\.delete"\)/)
-  assert.match(pageSource, /if \(!canCreateWxWorkAccounts\) return/)
   assert.match(pageSource, /open=\{canCreateWxWorkAccounts && scanLoginOpen\}/)
   assert.match(pageSource, /open=\{canManageWxWorkAccounts && accountManagerOpen\}/)
   assert.match(pageSource, /\{canCreateWxWorkAccounts \? \(/)
@@ -40,7 +42,7 @@ test("wxwork instance manager owns its CRUD and auxiliary read permissions", () 
     "channel.update",
     "channel.delete",
     "knowledgeBase.view",
-    "company.view",
+    "user.view",
     "tenantModelAssignment.view",
     "tenantModelAssignment.update",
   ]) {
@@ -48,14 +50,14 @@ test("wxwork instance manager owns its CRUD and auxiliary read permissions", () 
   }
   assert.match(managerSource, /if \(!canViewChannels\) \{[\s\S]*return null/)
   assert.match(managerSource, /canViewKnowledgeBases \? fetchKnowledgeBasesAll/)
-  assert.match(managerSource, /lockCompany \|\| !canViewCompanies/)
-  assert.match(managerSource, /showCreate=\{!hideCreateActions && canCreateChannels\}/)
+  assert.match(managerSource, /!hideCreateActions && canCreateChannels && canViewUsers/)
   assert.match(managerSource, /showEdit=\{canUpdateChannels\}/)
   assert.match(managerSource, /deleteItem=\{\s*canDeleteChannels\s*\?\s*async/)
   assert.match(managerSource, /if \(canUpdateChannels\) \{[\s\S]*key: "replaceLogin"/)
   assert.match(managerSource, /key: "modelAssignments"/)
   assert.match(managerSource, /<WxWorkModelAssignmentDialog/)
-  assert.match(managerSource, /open=\{canCreateChannels && createDialogOpen\}/)
+  assert.match(managerSource, /<WxWorkProtocolBindingDialog/)
+  assert.match(managerSource, /open=\{canCreateChannels && canViewUsers && bindingDialogOpen\}/)
 })
 
 test("wxwork model assignment only selects from tenant grants", () => {
@@ -66,12 +68,10 @@ test("wxwork model assignment only selects from tenant grants", () => {
   assert.doesNotMatch(modelAssignmentSource, /API Key|Base URL|config\.provider|grant\.provider/)
 })
 
-test("company detail gates its wxwork section and remote setup action", () => {
-  assert.match(companyDetailSource, /canViewWxWorkAccounts = permissionSet\.has\("channel\.view"\)/)
-  assert.match(companyDetailSource, /canCreateWxWorkAccounts = canViewWxWorkAccounts && permissionSet\.has\("channel\.create"\)/)
-  assert.match(companyDetailSource, /if \(!canCreateWxWorkAccounts \|\| !company\) return/)
-  assert.match(companyDetailSource, /\{canCreateWxWorkAccounts \? \(/)
-  assert.match(companyDetailSource, /\{canViewWxWorkAccounts \? \(/)
-  assert.match(companyDetailSource, /<WxWorkProtocolInstanceManager/)
-  assert.match(companyDetailSource, /lockCompany/)
+test("binding dialog only links an existing store staff role account", () => {
+  assert.match(bindingDialogSource, /permissionSet\.has\("channel\.create"\) && permissionSet\.has\("user\.view"\)/)
+  assert.match(bindingDialogSource, /fetchUsersAll\(\{ roleCode: "store_staff", status: Status\.Ok \}\)/)
+  assert.match(bindingDialogSource, /storeStaffUserId: Number\(userId\)/)
+  assert.match(bindingDialogSource, /该账号代表一家门店/)
+  assert.doesNotMatch(bindingDialogSource, /邀请开户|远程开户|createUser|assignUserRoles/)
 })

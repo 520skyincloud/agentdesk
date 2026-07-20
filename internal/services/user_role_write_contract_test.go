@@ -28,9 +28,6 @@ func TestUserRoleRuntimeWritesStayBehindAuditedServices(t *testing.T) {
 		"user_service.go": {
 			"replaceUserRolesInternalDB": {},
 		},
-		"wxwork_login_service.go": {
-			"assignDefaultStoreStaffRole": {},
-		},
 	}
 
 	violations := make([]string, 0)

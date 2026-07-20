@@ -12,8 +12,6 @@ type StoreWorkbenchResponse struct {
 	Avatar                  string       `json:"avatar"`
 	BindingID               int64        `json:"bindingId"`
 	BindingStatus           enums.Status `json:"bindingStatus"`
-	CompanyID               int64        `json:"companyId"`
-	CompanyName             string       `json:"companyName"`
 	StoreID                 int64        `json:"storeId"`
 	StoreCode               string       `json:"storeCode"`
 	StoreName               string       `json:"storeName"`

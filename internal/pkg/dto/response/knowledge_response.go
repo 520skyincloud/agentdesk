@@ -8,7 +8,6 @@ import (
 type KnowledgeBaseResponse struct {
 	ID                     int64        `json:"id"`
 	IntentProfileID        int64        `json:"intentProfileId"`
-	CompanyID              int64        `json:"companyId"`
 	StoreID                int64        `json:"storeId"`
 	DatasetID              string       `json:"datasetId"`
 	DatasetName            string       `json:"datasetName"`
@@ -54,7 +53,6 @@ type KnowledgeResourceItemResponse struct {
 
 type KnowledgeResourceGroupResponse struct {
 	ID               int64                           `json:"id"`
-	CompanyID        int64                           `json:"companyId"`
 	StoreID          int64                           `json:"storeId"`
 	IntentProfileID  int64                           `json:"intentProfileId"`
 	KnowledgeBaseID  int64                           `json:"knowledgeBaseId"`

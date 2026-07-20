@@ -8,7 +8,6 @@ type CreateReplyIntentConfigRequest struct {
 	Description        string       `json:"description"`
 	IntentProfileID    int64        `json:"intentProfileId"`
 	ScopeType          string       `json:"scopeType"`
-	CompanyID          int64        `json:"companyId"`
 	StoreID            int64        `json:"storeId"`
 	WxWorkInstanceID   int64        `json:"wxWorkInstanceId"`
 	Priority           int          `json:"priority"`

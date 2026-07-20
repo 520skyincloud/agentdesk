@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Controller, Resolver, useForm } from "react-hook-form"
+import { Controller, Resolver, useForm, useWatch } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { SearchIcon, ShieldAlertIcon, ShieldCheckIcon, ShieldIcon } from "lucide-react"
 import { z } from "zod/v4"
@@ -37,11 +37,12 @@ type AssignRolesDrawerProps = {
   roles: AdminRole[]
   selectedRoleIds: number[]
   onOpenChange: (open: boolean) => void
-  onSubmit: (roleIds: number[]) => Promise<void>
+  onSubmit: (roleIds: number[], storeName: string) => Promise<void>
 }
 
 const assignRolesSchema = z.object({
   roleIds: z.array(z.number().int().positive()),
+  storeName: z.string().trim(),
 })
 
 type AssignRolesForm = z.infer<typeof assignRolesSchema>
@@ -52,9 +53,10 @@ const assignRolesResolver = zodResolver(assignRolesSchema as never) as Resolver<
   z.output<typeof assignRolesSchema>
 >
 
-function buildForm(selectedRoleIds: number[]): AssignRolesForm {
+function buildForm(selectedRoleIds: number[], storeName: string): AssignRolesForm {
   return {
     roleIds: selectedRoleIds,
+    storeName,
   }
 }
 
@@ -93,7 +95,7 @@ type AssignRolesDrawerBodyProps = {
   roles: AdminRole[]
   selectedRoleIds: number[]
   onOpenChange: (open: boolean) => void
-  onSubmit: (roleIds: number[]) => Promise<void>
+  onSubmit: (roleIds: number[], storeName: string) => Promise<void>
 }
 
 function AssignRolesDrawerBody({
@@ -114,18 +116,26 @@ function AssignRolesDrawerBody({
     z.output<typeof assignRolesSchema>
   >({
     resolver: assignRolesResolver,
-    defaultValues: buildForm(selectedRoleIds),
+    defaultValues: buildForm(selectedRoleIds, item?.storeStaff?.storeName || ""),
   })
   const {
     control,
     handleSubmit,
+    register,
     reset,
+    setError,
     formState: { errors },
   } = form
 
+  const selectedRoles = useWatch({ control, name: "roleIds" }) || []
+  const storeStaffRole = roles.find((role) => role.code === "store_staff")
+  const assigningStoreStaff = Boolean(
+    storeStaffRole && selectedRoles.includes(storeStaffRole.id)
+  )
+
   useEffect(() => {
-    reset(buildForm(selectedRoleIds))
-  }, [reset, selectedRoleIds])
+    reset(buildForm(selectedRoleIds, item?.storeStaff?.storeName || ""))
+  }, [item?.storeStaff?.storeName, reset, selectedRoleIds])
 
   const roleMap = useMemo(
     () => new Map(roles.map((role) => [role.id, role])),
@@ -133,7 +143,11 @@ function AssignRolesDrawerBody({
   )
 
   async function onFormSubmit(values: AssignRolesForm) {
-    await onSubmit(values.roleIds)
+    if (assigningStoreStaff && !values.storeName.trim()) {
+      setError("storeName", { message: t("user.storeNameRequired") })
+      return
+    }
+    await onSubmit(values.roleIds, values.storeName.trim())
   }
 
   return (
@@ -331,6 +345,22 @@ function AssignRolesDrawerBody({
               )
             }}
           />
+          {assigningStoreStaff ? (
+            <div className="px-4 pb-4">
+              <Field data-invalid={!!errors.storeName}>
+                <FieldLabel htmlFor="assign-store-name">{t("user.storeName")}</FieldLabel>
+                <FieldContent>
+                  <Input
+                    id="assign-store-name"
+                    placeholder={t("user.storeNamePlaceholder")}
+                    aria-invalid={!!errors.storeName}
+                    {...register("storeName")}
+                  />
+                  <FieldError errors={[errors.storeName]} />
+                </FieldContent>
+              </Field>
+            </div>
+          ) : null}
         </div>
         <DrawerFooter className="border-t">
           <Button type="submit" disabled={saving || loading || !item}>

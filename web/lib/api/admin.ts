@@ -41,13 +41,12 @@ export type AdminUser = {
   mustChangePassword: boolean
   storeStaff?: {
     bindingId: number
-    companyId: number
-    companyName: string
     storeId: number
     storeName: string
     wxWorkInstanceId: number
     wxWorkEmployeeName: string
     wxWorkEmployeeId: string
+    wxWorkHealthStatus: string
     agentTeamId: number
     agentTeamName: string
   }
@@ -65,6 +64,7 @@ export type UpdateAdminUserPayload = {
 export type CreateAdminUserPayload = {
   username: string
   nickname: string
+  storeName: string
   avatar: string
   mobile: string | null
   email: string | null
@@ -283,7 +283,6 @@ export type ReplyIntentConfig = {
   description: string
   intentProfileId: number
   scopeType: string
-  companyId: number
   storeId: number
   wxWorkInstanceId: number
   priority: number
@@ -391,11 +390,12 @@ export type WxWorkProtocolInstance = {
   employeeUserId: string
   employeeName: string
   employeeAvatar: string
-  companyId: number
-  companyName: string
   intentProfileId: number
   intentProfileName: string
   storeId: number
+  storeStaffBindingId: number
+  storeStaffUserId: number
+  storeStaffUserName: string
   storeCode: string
   storeName: string
   storeAddress: string
@@ -535,7 +535,7 @@ export type CreateWxWorkProtocolInstancePayload = {
   employeeUserId: string
   employeeName: string
   employeeAvatar: string
-  companyId: number
+  storeStaffUserId: number
   intentProfileId: number
   storeId: number
   storeName?: string
@@ -591,7 +591,6 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   storeRoomAtList: string
   personaPrompt: string
   intentProfileId: number
-  companyId: number
   storeId: number
   storeName?: string
   storeAddress: string
@@ -854,7 +853,6 @@ export type AdminAgentTeam = {
   name: string
   leaderUserId: number
   storeStaffUserIds: number[]
-  companyScopeIds: number[]
   storeScopeIds: number[]
   wxWorkInstanceScopeIds: number[]
   dispatchMode: string
@@ -902,7 +900,6 @@ export type CreateAdminAgentTeamPayload = {
   name: string
   leaderUserId: number
   storeStaffUserIds: number[]
-  companyScopeIds: number[]
   storeScopeIds: number[]
   wxWorkInstanceScopeIds: number[]
   dispatchMode: string
@@ -1085,10 +1082,18 @@ export function createWxWorkProtocolInstance(payload: CreateWxWorkProtocolInstan
   })
 }
 
-export function startWxWorkProtocolLogin(channelId?: number, companyId?: number) {
+export function startWxWorkProtocolLogin(payload: {
+  channelId?: number
+  storeStaffUserId: number
+  storeName: string
+}) {
   return request<StartWxWorkProtocolLoginResult>("/api/dashboard/wxwork-protocol-instance/start_login", {
     method: "POST",
-    body: JSON.stringify({ channelId: channelId ?? 0, companyId: companyId ?? 0 }),
+    body: JSON.stringify({
+      channelId: payload.channelId ?? 0,
+      storeStaffUserId: payload.storeStaffUserId,
+      storeName: payload.storeName,
+    }),
   })
 }
 
@@ -1099,10 +1104,20 @@ export function resolveWxWorkProtocolLoginBinding(channelId?: number, guid?: str
   })
 }
 
-export function createWxWorkProtocolRemoteSetup(payload: { channelId?: number; companyId?: number; remark?: string }) {
+export function createWxWorkProtocolRemoteSetup(payload: {
+  channelId?: number
+  storeStaffUserId: number
+  storeName: string
+  remark?: string
+}) {
   return request<WxWorkProtocolInstance>("/api/dashboard/wxwork-protocol-instance/create_remote_setup", {
     method: "POST",
-    body: JSON.stringify({ channelId: payload.channelId ?? 0, companyId: payload.companyId ?? 0, remark: payload.remark ?? "" }),
+    body: JSON.stringify({
+      channelId: payload.channelId ?? 0,
+      storeStaffUserId: payload.storeStaffUserId,
+      storeName: payload.storeName,
+      remark: payload.remark ?? "",
+    }),
   })
 }
 
@@ -1247,8 +1262,6 @@ export function updateWxWorkProtocolRemoteSetup(payload: {
   email: string
   emailVerificationToken: string
   employeeName?: string
-  companyId?: number
-  storeId?: number
   storeName?: string
   storeAddress?: string
   storeContactPhone?: string
@@ -1486,6 +1499,7 @@ export function createUser(payload: CreateAdminUserPayload) {
     body: JSON.stringify({
       username: payload.username,
       nickname: payload.nickname,
+      storeName: payload.storeName,
       avatar: payload.avatar,
       mobile: payload.mobile,
       email: payload.email,
@@ -1544,10 +1558,10 @@ export function changeSelfPassword(password: string) {
   })
 }
 
-export function assignUserRoles(userId: number, roleIds: number[]) {
+export function assignUserRoles(userId: number, roleIds: number[], storeName: string) {
   return request<void>("/api/dashboard/user/assign_role", {
     method: "POST",
-    body: JSON.stringify({ userId, roleIds }),
+    body: JSON.stringify({ userId, roleIds, storeName }),
   })
 }
 
@@ -2332,7 +2346,6 @@ export function updateAIConfigSort(ids: number[]) {
 export type KnowledgeBase = {
   id: number
   intentProfileId: number
-  companyId: number
   storeId: number
   datasetId: string
   datasetName: string
@@ -2366,7 +2379,6 @@ export type KnowledgeBase = {
 
 export type CreateKnowledgeBasePayload = {
   intentProfileId: number
-  companyId?: number
   storeId?: number
   datasetId?: string
   datasetName?: string
@@ -2550,7 +2562,6 @@ export type KnowledgeResourceItem = {
 
 export type KnowledgeResourceGroup = {
   id: number
-  companyId: number
   intentProfileId: number
   knowledgeBaseId: number
   wxWorkInstanceId: number

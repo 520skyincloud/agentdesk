@@ -7,8 +7,6 @@ type CustomerResponse struct {
 	Name           string                          `json:"name"`
 	Avatar         string                          `json:"avatar"`
 	Gender         enums.Gender                    `json:"gender"`
-	CompanyID      int64                           `json:"companyId"`
-	Company        *CompanyResponse                `json:"company"`
 	LastActiveAt   string                          `json:"lastActiveAt"`
 	PrimaryMobile  string                          `json:"primaryMobile"`
 	PrimaryEmail   string                          `json:"primaryEmail"`

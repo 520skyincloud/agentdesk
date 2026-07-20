@@ -50,7 +50,7 @@ func TestEmailSendFailureDoesNotLeaveCooldownChallenge(t *testing.T) {
 	}
 }
 
-func TestRemoteSetupEmailCodeCreatesStableStoreAccount(t *testing.T) {
+func TestRemoteSetupEmailCodeVerifiesExistingStoreStaffAccount(t *testing.T) {
 	db := setupEmailLifecycleTestDB(t)
 	sender := &captureEmailSender{}
 	service := newEmailVerificationService(sender)
@@ -62,8 +62,25 @@ func TestRemoteSetupEmailCodeCreatesStableStoreAccount(t *testing.T) {
 	if err := db.Create(role).Error; err != nil {
 		t.Fatalf("create role: %v", err)
 	}
+	email := "owner@example.com"
+	user := &models.User{TenantID: 101, Username: "existing-store-owner", Nickname: "测试独立门店", Email: &email, Password: "test", Status: enums.StatusOk}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("create existing user: %v", err)
+	}
+	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
+		t.Fatalf("assign store staff role: %v", err)
+	}
+	store := &models.Store{TenantID: 101, StoreCode: "existing-store", Name: "测试独立门店", Status: enums.StatusOk}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create stable store: %v", err)
+	}
+	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, StoreID: store.ID, Status: enums.StatusOk}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create store staff binding: %v", err)
+	}
 	instance := &models.WxWorkProtocolInstance{
-		TenantID: 101, Guid: "device-a", ChannelID: 1, RemoteSetupToken: "setup-token", Status: enums.StatusDisabled,
+		TenantID: 101, Guid: "device-a", ChannelID: 1, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		RemoteSetupToken: "setup-token", Status: enums.StatusDisabled,
 		ManualTimeoutMinutes: 10,
 	}
 	instance.CreatedAt = time.Now()
@@ -73,6 +90,10 @@ func TestRemoteSetupEmailCodeCreatesStableStoreAccount(t *testing.T) {
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
+	var usersBefore, rolesBefore, userRolesBefore int64
+	db.Model(&models.User{}).Count(&usersBefore)
+	db.Model(&models.Role{}).Count(&rolesBefore)
+	db.Model(&models.UserRole{}).Count(&userRolesBefore)
 
 	if _, err := service.SendCode(context.Background(), EmailVerificationPurposeRemoteSetup, "owner@example.com", instance.RemoteSetupToken, "127.0.0.1", "test"); err != nil {
 		t.Fatalf("send code: %v", err)
@@ -91,28 +112,35 @@ func TestRemoteSetupEmailCodeCreatesStableStoreAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify code: %v", err)
 	}
-	updated, err := StoreAccountLifecycleService.CompleteRemoteSetup(instance, request.UpdateWxWorkProtocolRemoteSetupRequest{
+	updated, err := StoreIdentityLifecycleService.CompleteBindingSetup(instance, request.UpdateWxWorkProtocolRemoteSetupRequest{
 		Token: instance.RemoteSetupToken, Email: "owner@example.com", EmailVerificationToken: verified.VerificationToken,
 		EmployeeName: "门店员工", StoreName: "测试独立门店", FallbackToHQ: true, ManualTimeoutMinutes: 10,
 	})
 	if err != nil {
 		t.Fatalf("complete remote setup: %v", err)
 	}
-	if updated.StoreID <= 0 || updated.StoreStaffBindingID <= 0 {
+	if updated.StoreID != store.ID || updated.StoreStaffBindingID != binding.ID || updated.CompanyID != 0 {
 		t.Fatalf("stable store binding missing: %#v", updated)
 	}
 	if updated.AIReplyEnabled {
 		t.Fatal("AI must remain disabled until industry and dataset are ready")
 	}
-	binding := repositories.StoreStaffBindingRepository.Get(db, updated.StoreStaffBindingID)
-	if binding == nil || binding.UserID <= 0 {
-		t.Fatalf("primary store user binding missing: %#v", binding)
+	currentBinding := repositories.StoreStaffBindingRepository.Get(db, updated.StoreStaffBindingID)
+	if currentBinding == nil || currentBinding.UserID != user.ID || currentBinding.StoreID != store.ID || currentBinding.CompanyID != 0 {
+		t.Fatalf("primary store user binding changed: %#v", currentBinding)
 	}
-	user := repositories.UserRepository.Get(db, binding.UserID)
-	if user == nil || user.Email == nil || *user.Email != "owner@example.com" || user.EmailVerifiedAt == nil {
-		t.Fatalf("verified email user missing: %#v", user)
+	currentUser := repositories.UserRepository.Get(db, user.ID)
+	if currentUser == nil || currentUser.Email == nil || *currentUser.Email != "owner@example.com" || currentUser.EmailVerifiedAt == nil {
+		t.Fatalf("existing verified email user missing: %#v", currentUser)
 	}
-	if _, err := StoreAccountLifecycleService.CompleteRemoteSetup(instance, request.UpdateWxWorkProtocolRemoteSetupRequest{
+	var usersAfter, rolesAfter, userRolesAfter int64
+	db.Model(&models.User{}).Count(&usersAfter)
+	db.Model(&models.Role{}).Count(&rolesAfter)
+	db.Model(&models.UserRole{}).Count(&userRolesAfter)
+	if usersAfter != usersBefore || rolesAfter != rolesBefore || userRolesAfter != userRolesBefore {
+		t.Fatalf("remote setup changed account or role counts: users %d->%d roles %d->%d userRoles %d->%d", usersBefore, usersAfter, rolesBefore, rolesAfter, userRolesBefore, userRolesAfter)
+	}
+	if _, err := StoreIdentityLifecycleService.CompleteBindingSetup(instance, request.UpdateWxWorkProtocolRemoteSetupRequest{
 		Token: instance.RemoteSetupToken, Email: "owner@example.com", EmailVerificationToken: verified.VerificationToken, StoreName: "测试独立门店",
 	}); err == nil {
 		t.Fatal("verification token and remote setup must be single-use")

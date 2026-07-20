@@ -46,7 +46,7 @@ func (s *replyIntentConfigService) CreateReplyIntentConfig(req request.CreateRep
 	if code == "" || name == "" {
 		return nil, errorsx.InvalidParam("意图编码和名称不能为空")
 	}
-	scopeType, companyID, storeID, instanceID, err := normalizeIntentScope(req.ScopeType, req.CompanyID, req.StoreID, req.WxWorkInstanceID)
+	scopeType, storeID, instanceID, err := normalizeIntentScope(req.ScopeType, req.StoreID, req.WxWorkInstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +54,7 @@ func (s *replyIntentConfigService) CreateReplyIntentConfig(req request.CreateRep
 	if err != nil {
 		return nil, err
 	}
-	if existing := repositories.ReplyIntentConfigRepository.Take(sqls.DB(), "code = ? AND intent_profile_id = ? AND scope_type = ? AND company_id = ? AND store_id = ? AND wx_work_instance_id = ?", code, intentProfileID, scopeType, companyID, storeID, instanceID); existing != nil {
+	if existing := repositories.ReplyIntentConfigRepository.Take(sqls.DB(), "code = ? AND intent_profile_id = ? AND scope_type = ? AND company_id = 0 AND store_id = ? AND wx_work_instance_id = ?", code, intentProfileID, scopeType, storeID, instanceID); existing != nil {
 		return nil, errorsx.InvalidParam("同一适用范围内意图编码已存在")
 	}
 	item := &models.ReplyIntentConfig{
@@ -63,7 +63,7 @@ func (s *replyIntentConfigService) CreateReplyIntentConfig(req request.CreateRep
 		Description:        strings.TrimSpace(req.Description),
 		IntentProfileID:    intentProfileID,
 		ScopeType:          scopeType,
-		CompanyID:          companyID,
+		CompanyID:          0,
 		StoreID:            storeID,
 		WxWorkInstanceID:   instanceID,
 		Priority:           req.Priority,
@@ -107,7 +107,7 @@ func (s *replyIntentConfigService) UpdateReplyIntentConfig(req request.UpdateRep
 	if code == "" || name == "" {
 		return errorsx.InvalidParam("意图编码和名称不能为空")
 	}
-	scopeType, companyID, storeID, instanceID, err := normalizeIntentScope(req.ScopeType, req.CompanyID, req.StoreID, req.WxWorkInstanceID)
+	scopeType, storeID, instanceID, err := normalizeIntentScope(req.ScopeType, req.StoreID, req.WxWorkInstanceID)
 	if err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func (s *replyIntentConfigService) UpdateReplyIntentConfig(req request.UpdateRep
 	if err != nil {
 		return err
 	}
-	if existing := repositories.ReplyIntentConfigRepository.Take(sqls.DB(), "code = ? AND intent_profile_id = ? AND scope_type = ? AND company_id = ? AND store_id = ? AND wx_work_instance_id = ? AND id <> ?", code, intentProfileID, scopeType, companyID, storeID, instanceID, req.ID); existing != nil {
+	if existing := repositories.ReplyIntentConfigRepository.Take(sqls.DB(), "code = ? AND intent_profile_id = ? AND scope_type = ? AND company_id = 0 AND store_id = ? AND wx_work_instance_id = ? AND id <> ?", code, intentProfileID, scopeType, storeID, instanceID, req.ID); existing != nil {
 		return errorsx.InvalidParam("同一适用范围内意图编码已存在")
 	}
 	return repositories.ReplyIntentConfigRepository.Updates(sqls.DB(), req.ID, map[string]any{
@@ -124,7 +124,7 @@ func (s *replyIntentConfigService) UpdateReplyIntentConfig(req request.UpdateRep
 		"description":           strings.TrimSpace(req.Description),
 		"intent_profile_id":     intentProfileID,
 		"scope_type":            scopeType,
-		"company_id":            companyID,
+		"company_id":            0,
 		"store_id":              storeID,
 		"wx_work_instance_id":   instanceID,
 		"priority":              req.Priority,
@@ -210,30 +210,27 @@ func isHiddenReplyIntentCode(code string) bool {
 	}
 }
 
-func normalizeIntentScope(scopeType string, companyID int64, storeID int64, instanceID int64) (string, int64, int64, int64, error) {
+func normalizeIntentScope(scopeType string, storeID int64, instanceID int64) (string, int64, int64, error) {
 	scopeType = strings.TrimSpace(scopeType)
 	if scopeType == "" {
 		scopeType = "global"
 	}
 	switch scopeType {
 	case "global":
-		return scopeType, 0, 0, 0, nil
+		return scopeType, 0, 0, nil
 	case "company":
-		if companyID <= 0 {
-			return "", 0, 0, 0, errorsx.InvalidParam("公司级意图必须选择公司")
-		}
-		return scopeType, companyID, 0, 0, nil
+		return "", 0, 0, errorsx.InvalidParam("公司级意图范围已停用，请改用门店或企微员工号范围")
 	case "store":
 		if storeID <= 0 {
-			return "", 0, 0, 0, errorsx.InvalidParam("门店级意图必须选择门店")
+			return "", 0, 0, errorsx.InvalidParam("门店级意图必须选择门店")
 		}
-		return scopeType, 0, storeID, 0, nil
+		return scopeType, storeID, 0, nil
 	case "instance":
 		if instanceID <= 0 {
-			return "", 0, 0, 0, errorsx.InvalidParam("账号级意图必须选择企微员工号")
+			return "", 0, 0, errorsx.InvalidParam("企微员工号级意图必须选择企微员工号")
 		}
-		return scopeType, 0, 0, instanceID, nil
+		return scopeType, 0, instanceID, nil
 	default:
-		return "", 0, 0, 0, errorsx.InvalidParam("适用范围不正确")
+		return "", 0, 0, errorsx.InvalidParam("适用范围不正确")
 	}
 }

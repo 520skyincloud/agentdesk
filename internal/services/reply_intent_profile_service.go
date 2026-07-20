@@ -119,10 +119,6 @@ func (s *replyIntentProfileService) DeleteReplyIntentProfile(id int64) error {
 	if count > 0 {
 		return errorsx.InvalidParam("该意图行业已被意图分类使用，不能删除")
 	}
-	db.Model(&models.Company{}).Where("intent_profile_id = ?", id).Count(&count)
-	if count > 0 {
-		return errorsx.InvalidParam("该意图行业已被公司使用，不能删除")
-	}
 	db.Model(&models.WxWorkProtocolInstance{}).Where("intent_profile_id = ?", id).Count(&count)
 	if count > 0 {
 		return errorsx.InvalidParam("该意图行业已被企微员工号使用，不能删除")
@@ -138,6 +134,17 @@ func (s *replyIntentProfileService) DefaultHotelProfile() *models.ReplyIntentPro
 		return item
 	}
 	return repositories.ReplyIntentProfileRepository.Take(sqls.DB(), "status = ?", enums.StatusOk)
+}
+
+func validateOptionalReplyIntentProfileID(id int64) (int64, error) {
+	if id <= 0 {
+		return 0, nil
+	}
+	item := ReplyIntentProfileService.Get(id)
+	if item == nil || item.Status != enums.StatusOk {
+		return 0, errorsx.InvalidParam("意图行业配置不存在")
+	}
+	return id, nil
 }
 
 func normalizeReplyIntentIndustryCode(value string) string {

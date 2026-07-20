@@ -188,6 +188,15 @@ func (r *wxWorkProtocolInstanceRepository) UpdatesByStoreStaffBindingIDsInTenant
 		Updates(columns).Error
 }
 
+func (r *wxWorkProtocolInstanceRepository) UpdatesActiveByStoreStaffBindingIDsInTenant(db *gorm.DB, bindingIDs []int64, tenantID int64, columns map[string]any) error {
+	if len(bindingIDs) == 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.WxWorkProtocolInstance{}).
+		Where("store_staff_binding_id IN ? AND tenant_id = ? AND status <> ?", bindingIDs, tenantID, enums.StatusDeleted).
+		Updates(columns).Error
+}
+
 func (r *wxWorkProtocolInstanceRepository) Delete(db *gorm.DB, id int64) error {
 	return db.Delete(&models.WxWorkProtocolInstance{}, "id = ?", id).Error
 }

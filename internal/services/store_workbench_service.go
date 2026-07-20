@@ -32,7 +32,6 @@ type StoreWorkbenchSnapshot struct {
 	Nickname       string
 	Avatar         string
 	Binding        *models.StoreStaffBinding
-	Company        *models.Company
 	Store          *models.Store
 	AgentTeam      *models.AgentTeam
 	WxWorkInstance *models.WxWorkProtocolInstance
@@ -70,11 +69,8 @@ func (s *storeWorkbenchService) Current(operator *dto.AuthPrincipal) (*StoreWork
 	snapshot.Binding = binding
 	snapshot.Runtime = StoreStaffBindingService.runtimeConfigFromBinding(binding)
 
-	if binding.CompanyID > 0 {
-		snapshot.Company = repositories.CompanyRepository.GetInTenant(sqls.DB(), binding.CompanyID, operator.ActiveTenantID)
-	}
 	if binding.StoreID <= 0 {
-		return nil, errorsx.InvalidParam("当前门店员工账号尚未绑定门店")
+		return nil, errorsx.InvalidParam("当前系统账号尚未建立门店身份")
 	}
 	snapshot.Store = repositories.StoreRepository.GetInTenant(sqls.DB(), binding.StoreID, operator.ActiveTenantID)
 	if snapshot.Store == nil || snapshot.Store.Status == enums.StatusDeleted {

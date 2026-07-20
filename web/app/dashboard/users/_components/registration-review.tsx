@@ -356,6 +356,7 @@ function RegistrationReviewDrawerBody({
   const [roles, setRoles] = useState<AdminRole[]>([])
   const [roleKeyword, setRoleKeyword] = useState("")
   const [selectedRoleIds, setSelectedRoleIds] = useState<number[]>([])
+  const [storeName, setStoreName] = useState("")
   const [remark, setRemark] = useState("")
   const [saving, setSaving] = useState(false)
   const requestRef = useRef<{ fingerprint: string; requestId: string } | null>(null)
@@ -406,6 +407,10 @@ function RegistrationReviewDrawerBody({
         .includes(keyword)
     )
   }, [locale, roleKeyword, roles])
+  const storeStaffRole = roles.find((role) => role.code === "store_staff")
+  const assigningStoreStaff = Boolean(
+    storeStaffRole && selectedRoleIds.includes(storeStaffRole.id)
+  )
 
   function toggleRole(roleId: number, checked: boolean) {
     setSelectedRoleIds((current) =>
@@ -432,6 +437,10 @@ function RegistrationReviewDrawerBody({
       toast.error(t("tenantRegistration.roleRequired"))
       return
     }
+    if (approving && assigningStoreStaff && !storeName.trim()) {
+      toast.error(t("tenantRegistration.storeNameRequired"))
+      return
+    }
     if (!approving && !normalizedRemark) {
       toast.error(t("tenantRegistration.rejectReasonRequired"))
       return
@@ -440,6 +449,7 @@ function RegistrationReviewDrawerBody({
       userId: target.record.userId,
       decision: target.decision,
       roleIds: approving ? selectedRoleIds : [],
+      storeName: approving && assigningStoreStaff ? storeName.trim() : "",
       remark: normalizedRemark,
     }
     setSaving(true)
@@ -545,6 +555,19 @@ function RegistrationReviewDrawerBody({
                 </div>
               )}
             </div>
+            {assigningStoreStaff ? (
+              <div className="space-y-2">
+                <label htmlFor="registration-store-name" className="text-sm font-medium">
+                  {t("tenantRegistration.storeName")}
+                </label>
+                <Input
+                  id="registration-store-name"
+                  value={storeName}
+                  onChange={(event) => setStoreName(event.target.value)}
+                  placeholder={t("tenantRegistration.storeNamePlaceholder")}
+                />
+              </div>
+            ) : null}
           </section>
         ) : null}
 

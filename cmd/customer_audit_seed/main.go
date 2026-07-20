@@ -28,9 +28,9 @@ const (
 	defaultBatch    = "customer-audit-v1"
 	defaultPassword = "123456"
 
-	companyName = "丽斯未来酒店"
-	channelName = "丽斯未来酒店测试企微员工号渠道"
-	aiAgentName = "丽斯未来酒店仿真测试接待策略"
+	tenantLegalName = "丽斯未来酒店"
+	channelName     = "丽斯未来酒店测试企微员工号渠道"
+	aiAgentName     = "丽斯未来酒店仿真测试接待策略"
 
 	tenantShortName        = "丽斯未来测试"
 	tenantRegistrationType = "simulation_test_id"
@@ -60,7 +60,6 @@ type seedContext struct {
 	aiAgent              *models.AIAgent
 	qualityTemplate      *models.QualityTemplate
 	qualityTemplateItems []models.QualityTemplateItem
-	company              *models.Company
 	channel              *models.Channel
 	stores               []*models.Store
 	leaders              []*models.User
@@ -90,8 +89,8 @@ type report struct {
 	ModelConfigReused          bool   `json:"modelConfigReused"`
 	ChannelAIAgentBound        bool   `json:"channelAiAgentBound"`
 	SimulationAIAgentBound     int64  `json:"simulationAiAgentBound"`
-	CompanyMarked              int64  `json:"companyMarked"`
-	CompanyNameExists          bool   `json:"companyNameExists"`
+	LegacyCompanyRows          int64  `json:"legacyCompanyRows"`
+	LegacyCompanyReferences    int64  `json:"legacyCompanyReferences"`
 	Channel                    int64  `json:"channel"`
 	Stores                     int64  `json:"stores"`
 	CSLeaders                  int64  `json:"csLeaders"`
@@ -243,9 +242,6 @@ func seedWithOptions(db *gorm.DB, batch, password string, options seedOptions) e
 		if err := ctx.loadTenantFoundation(); err != nil {
 			return err
 		}
-		if err := ctx.upsertCompany(); err != nil {
-			return err
-		}
 		if err := ctx.upsertStores(); err != nil {
 			return err
 		}
@@ -279,21 +275,21 @@ func seedWithOptions(db *gorm.DB, batch, password string, options seedOptions) e
 		if err := ctx.upsertSimulationConversations(); err != nil {
 			return err
 		}
-		return nil
+		return ctx.retireLegacySimulationCompany()
 	})
 }
 
 func (ctx *seedContext) loadTenant() error {
 	ctx.tenant = repositories.TenantRepository.GetByRegistration(ctx.db, tenantRegistrationType, tenantRegistrationNo)
 	if ctx.tenant == nil || ctx.tenant.Status != enums.StatusOk {
-		return fmt.Errorf("%s simulation tenant is missing or disabled", companyName)
+		return fmt.Errorf("%s simulation tenant is missing or disabled", tenantLegalName)
 	}
 	return nil
 }
 
 func ensureTestTenant(db *gorm.DB, batch string) (*models.Tenant, error) {
 	if existing := repositories.TenantRepository.GetByRegistration(db, tenantRegistrationType, tenantRegistrationNo); existing != nil {
-		if existing.LegalName != companyName || !strings.Contains(existing.Remark, "仿真测试") {
+		if existing.LegalName != tenantLegalName || !strings.Contains(existing.Remark, "仿真测试") {
 			return nil, fmt.Errorf("test tenant registration identity is already used by non-seed tenant %d", existing.ID)
 		}
 		if !strings.Contains(existing.Remark, marker(batch)) {
@@ -310,7 +306,7 @@ func ensureTestTenant(db *gorm.DB, batch string) (*models.Tenant, error) {
 		IsPlatformAccount: true,
 	}
 	result, err := services.TenantService.CreateTenant(request.CreateTenantRequest{
-		LegalName:        companyName,
+		LegalName:        tenantLegalName,
 		ShortName:        tenantShortName,
 		RegistrationType: tenantRegistrationType,
 		RegistrationNo:   tenantRegistrationNo,
@@ -327,7 +323,7 @@ func ensureTestTenant(db *gorm.DB, batch string) (*models.Tenant, error) {
 		},
 	}, operator)
 	if err != nil {
-		return nil, fmt.Errorf("create %s simulation tenant failed: %w", companyName, err)
+		return nil, fmt.Errorf("create %s simulation tenant failed: %w", tenantLegalName, err)
 	}
 	return result.Tenant, nil
 }
@@ -485,8 +481,11 @@ func cleanup(db *gorm.DB, batch string) error {
 			{"channel", func() error {
 				return db.Where("remark LIKE ? AND name = ?", remarkPattern, channelName).Delete(&models.Channel{}).Error
 			}},
-			{"company", func() error {
-				return db.Where("remark LIKE ? AND name = ?", remarkPattern, companyName).Delete(&models.Company{}).Error
+			{"legacy company", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.Company{}).Error
 			}},
 			{"tenant invitations", func() error {
 				if tenantID <= 0 {
@@ -534,7 +533,7 @@ func buildReport(db *gorm.DB, batch string) report {
 		Batch:  batch,
 		Marker: m,
 	}
-	r.Tenant = count(db, &models.Tenant{}, "id = ? AND legal_name = ? AND remark LIKE ?", tenantID, companyName, remarkPattern)
+	r.Tenant = count(db, &models.Tenant{}, "id = ? AND legal_name = ? AND remark LIKE ?", tenantID, tenantLegalName, remarkPattern)
 	r.TenantSupervisor = count(db, &models.User{}, "tenant_id = ? AND username = ? AND remark LIKE ?", tenantID, tenantSupervisorName, remarkPattern)
 	r.TenantInvitation = count(db, &models.TenantInvitation{}, "tenant_id = ? AND status = ?", tenantID, enums.StatusOk)
 	r.DefaultAgentTeam = count(db, &models.AgentTeam{}, "tenant_id = ? AND is_default = ? AND remark LIKE ?", tenantID, true, remarkPattern)
@@ -554,8 +553,18 @@ func buildReport(db *gorm.DB, batch string) report {
 			r.ModelConfigReused = aiConfig.Status == enums.StatusOk && aiConfig.ModelType == enums.AIModelTypeLLM
 		}
 	}
-	r.CompanyMarked = count(db, &models.Company{}, "tenant_id = ? AND remark LIKE ? AND name = ?", tenantID, remarkPattern, companyName)
-	r.CompanyNameExists = tenantID > 0 && count(db, &models.Company{}, "tenant_id = ? AND name = ?", tenantID, companyName) > 0
+	r.LegacyCompanyRows = count(db, &models.Company{}, "tenant_id = ?", tenantID)
+	r.LegacyCompanyReferences = count(db, &models.Store{}, "tenant_id = ? AND company_id <> 0", tenantID) +
+		count(db, &models.StoreStaffBinding{}, "tenant_id = ? AND company_id <> 0", tenantID) +
+		count(db, &models.WxWorkProtocolInstance{}, "tenant_id = ? AND company_id <> 0", tenantID) +
+		count(db, &models.Customer{}, "tenant_id = ? AND company_id <> 0", tenantID) +
+		count(db, &models.AgentTeam{}, "tenant_id = ? AND company_scope_ids <> ''", tenantID) +
+		count(db, &models.KnowledgeBase{}, "tenant_id = ? AND company_id <> 0", tenantID) +
+		count(db, &models.StoreAIModelSetting{}, "tenant_id = ? AND company_id <> 0", tenantID) +
+		count(db, &models.KnowledgeResourceGroup{}, "tenant_id = ? AND company_id <> 0", tenantID) +
+		count(db, &models.FastGPTStoreTenant{}, "tenant_id = ? AND company_id <> 0", tenantID) +
+		count(db, &models.FastGPTUsageSyncState{}, "tenant_id = ? AND company_id <> 0", tenantID) +
+		count(db, &models.FastGPTDatasetJob{}, "tenant_id = ? AND company_id <> 0", tenantID)
 	r.Channel = count(db, &models.Channel{}, "remark LIKE ? AND name = ?", remarkPattern, channelName)
 	r.Stores = count(db, &models.Store{}, "remark LIKE ? AND store_code LIKE ?", remarkPattern, storeCodePrefix+"%")
 	r.CSLeaders = count(db, &models.User{}, "remark LIKE ? AND username LIKE ?", remarkPattern, usernamePrefix+"cs_leader_%")
@@ -618,7 +627,8 @@ func buildReport(db *gorm.DB, batch string) report {
 		r.AIAgent == 1 &&
 		r.ModelConfigReused &&
 		r.ChannelAIAgentBound &&
-		r.CompanyNameExists &&
+		r.LegacyCompanyRows == 0 &&
+		r.LegacyCompanyReferences == 0 &&
 		r.Channel == 1 &&
 		r.Stores == 100 &&
 		r.CSLeaders == 3 &&
@@ -740,41 +750,6 @@ func (ctx *seedContext) loadTenantFoundation() error {
 	return nil
 }
 
-func (ctx *seedContext) upsertCompany() error {
-	item := &models.Company{}
-	err := ctx.db.Where("tenant_id = ? AND name = ?", ctx.tenant.ID, companyName).Take(item).Error
-	if err == nil {
-		ctx.company = item
-		if strings.Contains(item.Remark, ctx.marker) {
-			return ctx.db.Model(item).Updates(map[string]any{
-				"tenant_id":        ctx.tenant.ID,
-				"code":             "lissi-future-hotel",
-				"status":           enums.StatusOk,
-				"updated_at":       ctx.now,
-				"update_user_id":   constants.SystemAuditUserID,
-				"update_user_name": constants.SystemAuditUserName,
-			}).Error
-		}
-		return nil
-	}
-	if err != nil && err != gorm.ErrRecordNotFound {
-		return err
-	}
-	item = &models.Company{
-		TenantID:    ctx.tenant.ID,
-		Name:        companyName,
-		Code:        "lissi-future-hotel",
-		Status:      enums.StatusOk,
-		Remark:      ctx.seedRemark("测试公司"),
-		AuditFields: ctx.audit,
-	}
-	if err := ctx.db.Create(item).Error; err != nil {
-		return err
-	}
-	ctx.company = item
-	return nil
-}
-
 func (ctx *seedContext) upsertChannel() error {
 	cfg := dto.WxWorkProtocolChannelConfig{
 		AppKey:        "test_customer_audit_app_key",
@@ -832,7 +807,7 @@ func (ctx *seedContext) upsertStores() error {
 	ctx.stores = make([]*models.Store, 0, 100)
 	for i := 1; i <= 100; i++ {
 		code := fmt.Sprintf("%s%03d", storeCodePrefix, i)
-		name := fmt.Sprintf("%s测试门店%03d", companyName, i)
+		name := fmt.Sprintf("%s测试门店%03d", tenantLegalName, i)
 		item := &models.Store{}
 		err := ctx.db.Where("tenant_id = ? AND store_code = ?", ctx.tenant.ID, code).Take(item).Error
 		if err == gorm.ErrRecordNotFound {
@@ -841,8 +816,8 @@ func (ctx *seedContext) upsertStores() error {
 		updates := map[string]any{
 			"tenant_id":        ctx.tenant.ID,
 			"name":             name,
-			"brand_name":       companyName,
-			"company_id":       ctx.company.ID,
+			"brand_name":       tenantLegalName,
+			"company_id":       0,
 			"status":           enums.StatusOk,
 			"remark":           ctx.seedRemark("测试分门店"),
 			"updated_at":       ctx.now,
@@ -867,8 +842,8 @@ func (ctx *seedContext) upsertStores() error {
 			TenantID:    ctx.tenant.ID,
 			StoreCode:   code,
 			Name:        name,
-			BrandName:   companyName,
-			CompanyID:   ctx.company.ID,
+			BrandName:   tenantLegalName,
+			CompanyID:   0,
 			Status:      enums.StatusOk,
 			Remark:      ctx.seedRemark("测试分门店"),
 			AuditFields: ctx.audit,
@@ -915,7 +890,7 @@ func (ctx *seedContext) upsertUsers() error {
 			fmt.Sprintf("%sstore_staff_%03d", usernamePrefix, i),
 			fmt.Sprintf("测试门店员工%03d", i),
 			ctx.roles[constants.RoleCodeStoreStaff].ID,
-			"测试门店员工账号",
+			"测试用门店员工号角色账号",
 		)
 		if err != nil {
 			return err
@@ -995,11 +970,11 @@ func (ctx *seedContext) upsertTeams() error {
 		updates := map[string]any{
 			"tenant_id":         ctx.tenant.ID,
 			"leader_user_id":    ctx.leaders[i-1].ID,
-			"company_scope_ids": fmt.Sprintf("%d", ctx.company.ID),
+			"company_scope_ids": "",
 			"store_scope_ids":   joinInt64s(storeIDs),
 			"dispatch_mode":     enums.AgentTeamDispatchModeIntelligent,
 			"status":            enums.StatusOk,
-			"description":       fmt.Sprintf("负责%s测试门店%03d-%03d", companyName, ranges[i-1][0], ranges[i-1][1]),
+			"description":       fmt.Sprintf("负责%s测试门店%03d-%03d", tenantLegalName, ranges[i-1][0], ranges[i-1][1]),
 			"remark":            ctx.seedRemark("测试客服组"),
 			"updated_at":        ctx.now,
 			"update_user_id":    constants.SystemAuditUserID,
@@ -1019,11 +994,11 @@ func (ctx *seedContext) upsertTeams() error {
 			TenantID:        ctx.tenant.ID,
 			Name:            teamName,
 			LeaderUserID:    ctx.leaders[i-1].ID,
-			CompanyScopeIDs: fmt.Sprintf("%d", ctx.company.ID),
+			CompanyScopeIDs: "",
 			StoreScopeIDs:   joinInt64s(storeIDs),
 			DispatchMode:    enums.AgentTeamDispatchModeIntelligent,
 			Status:          enums.StatusOk,
-			Description:     fmt.Sprintf("负责%s测试门店%03d-%03d", companyName, ranges[i-1][0], ranges[i-1][1]),
+			Description:     fmt.Sprintf("负责%s测试门店%03d-%03d", tenantLegalName, ranges[i-1][0], ranges[i-1][1]),
 			Remark:          ctx.seedRemark("测试客服组"),
 			AuditFields:     ctx.audit,
 		}
@@ -1278,7 +1253,7 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 		"tenant_id":              ctx.tenant.ID,
 		"user_id":                staff.ID,
 		"agent_team_id":          agentTeamID,
-		"company_id":             ctx.company.ID,
+		"company_id":             0,
 		"managed_mode":           constants.StoreManagedModeSemi,
 		"fallback_to_hq":         true,
 		"manual_timeout_minutes": 10,
@@ -1306,7 +1281,7 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 		TenantID:             ctx.tenant.ID,
 		UserID:               staff.ID,
 		AgentTeamID:          agentTeamID,
-		CompanyID:            ctx.company.ID,
+		CompanyID:            0,
 		StoreID:              store.ID,
 		ManagedMode:          constants.StoreManagedModeSemi,
 		FallbackToHQ:         true,
@@ -1333,7 +1308,7 @@ func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, bin
 		"channel_id":                         ctx.channel.ID,
 		"employee_user_id":                   employeeUserID,
 		"employee_name":                      "客服",
-		"company_id":                         ctx.company.ID,
+		"company_id":                         0,
 		"store_id":                           store.ID,
 		"store_staff_binding_id":             binding.ID,
 		"store_navigation_name":              store.Name,
@@ -1377,7 +1352,7 @@ func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, bin
 		ChannelID:                 ctx.channel.ID,
 		EmployeeUserID:            employeeUserID,
 		EmployeeName:              "客服",
-		CompanyID:                 ctx.company.ID,
+		CompanyID:                 0,
 		StoreID:                   store.ID,
 		StoreStaffBindingID:       binding.ID,
 		StoreNavigationName:       store.Name,
@@ -1463,6 +1438,13 @@ func (ctx *seedContext) upsertCustomers() error {
 	return nil
 }
 
+func (ctx *seedContext) retireLegacySimulationCompany() error {
+	if ctx.tenant == nil || ctx.tenant.ID <= 0 {
+		return nil
+	}
+	return ctx.db.Where("tenant_id = ?", ctx.tenant.ID).Delete(&models.Company{}).Error
+}
+
 func (ctx *seedContext) upsertCustomer(index int) (*models.Customer, error) {
 	name := fmt.Sprintf("测试顾客%03d", index)
 	item := &models.Customer{}
@@ -1478,7 +1460,7 @@ func (ctx *seedContext) upsertCustomer(index int) (*models.Customer, error) {
 	updates := map[string]any{
 		"tenant_id":        ctx.tenant.ID,
 		"gender":           gender,
-		"company_id":       ctx.company.ID,
+		"company_id":       0,
 		"primary_mobile":   mobile,
 		"primary_email":    email,
 		"status":           enums.StatusOk,
@@ -1500,7 +1482,7 @@ func (ctx *seedContext) upsertCustomer(index int) (*models.Customer, error) {
 		TenantID:      ctx.tenant.ID,
 		Name:          name,
 		Gender:        gender,
-		CompanyID:     ctx.company.ID,
+		CompanyID:     0,
 		PrimaryMobile: mobile,
 		PrimaryEmail:  email,
 		Status:        enums.StatusOk,
