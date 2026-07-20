@@ -723,14 +723,14 @@ func (s *wxWorkProtocolInstanceService) ResolveLoginBinding(req request.ResolveW
 func (s *wxWorkProtocolInstanceService) GetRemoteSetupByToken(token string) (*models.WxWorkProtocolInstance, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return nil, errorsx.InvalidParam("远程配置链接无效")
+		return nil, errorsx.InvalidParam("企微员工号绑定链接无效")
 	}
 	item := s.Take("remote_setup_token = ? AND status <> ?", token, enums.StatusDeleted)
 	if item == nil {
-		return nil, errorsx.InvalidParam("远程配置链接不存在或已失效")
+		return nil, errorsx.InvalidParam("企微员工号绑定链接不存在或已失效")
 	}
 	if item.RemoteSetupExpiresAt != nil && time.Now().After(*item.RemoteSetupExpiresAt) {
-		return nil, errorsx.InvalidParam("远程配置链接已过期，请联系总部重新生成")
+		return nil, errorsx.InvalidParam("企微员工号绑定链接已过期，请联系公司主管重新生成")
 	}
 	return item, nil
 }
@@ -741,7 +741,7 @@ func (s *wxWorkProtocolInstanceService) UpdateRemoteSetup(req request.UpdateWxWo
 		return err
 	}
 	if item.TenantID <= 0 {
-		return errorsx.InvalidParam("远程配置实例缺少接入公司归属，请联系管理员重新生成链接")
+		return errorsx.InvalidParam("企微员工号绑定记录缺少接入公司归属，请联系公司主管重新生成链接")
 	}
 	updated, err := StoreIdentityLifecycleService.CompleteBindingSetup(item, req)
 	if err != nil {

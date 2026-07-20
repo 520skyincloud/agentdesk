@@ -121,7 +121,7 @@ function WxWorkRemoteSetupContent() {
         autoAcceptFriendRequest: data.autoAcceptFriendRequest !== false,
       })
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "加载远程配置失败")
+      toast.error(error instanceof Error ? error.message : "加载企微员工号绑定信息失败")
     } finally {
       setLoading(false)
     }

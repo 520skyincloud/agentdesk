@@ -25,7 +25,7 @@ func newStoreIdentityLifecycleService() *storeIdentityLifecycleService {
 
 func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.WxWorkProtocolInstance, req request.UpdateWxWorkProtocolRemoteSetupRequest) (*models.WxWorkProtocolInstance, error) {
 	if instance == nil || instance.TenantID <= 0 {
-		return nil, errorsx.InvalidParam("远程配置链接不存在或已失效")
+		return nil, errorsx.InvalidParam("企微员工号绑定链接不存在或已失效")
 	}
 	email, err := normalizeVerificationEmail(req.Email)
 	if err != nil {
@@ -39,10 +39,10 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		current := repositories.WxWorkProtocolInstanceRepository.GetForUpdateInTenant(ctx.Tx, instance.ID, instance.TenantID)
 		if current == nil || current.Status == enums.StatusDeleted || current.RemoteSetupToken != req.Token {
-			return errorsx.InvalidParam("远程配置链接不存在或已失效")
+			return errorsx.InvalidParam("企微员工号绑定链接不存在或已失效")
 		}
 		if current.RemoteSetupExpiresAt != nil && time.Now().After(*current.RemoteSetupExpiresAt) {
-			return errorsx.InvalidParam("远程配置链接已过期，请联系总部重新生成")
+			return errorsx.InvalidParam("企微员工号绑定链接已过期，请联系公司主管重新生成")
 		}
 		if current.RemoteSetupSubmittedAt != nil {
 			return errorsx.InvalidParam("企微员工号绑定已提交，请勿重复操作")

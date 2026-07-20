@@ -15,6 +15,10 @@ const bindingDialogSource = await readFile(
   new URL("../../../components/wxwork-protocol/wxwork-protocol-binding-dialog.tsx", import.meta.url),
   "utf8",
 )
+const remoteBindingSource = await readFile(
+  new URL("../../wxwork-remote-setup/page.tsx", import.meta.url),
+  "utf8",
+)
 
 test("conversation workbench preserves all conversations while gating account navigation", () => {
   assert.match(pageSource, /canViewWxWorkAccounts = permissions\.has\("channel\.view"\)/)
@@ -74,4 +78,10 @@ test("binding dialog only links an existing store staff role account", () => {
   assert.match(bindingDialogSource, /storeStaffUserId: Number\(userId\)/)
   assert.match(bindingDialogSource, /该账号代表一家门店/)
   assert.doesNotMatch(bindingDialogSource, /邀请开户|远程开户|createUser|assignUserRoles/)
+})
+
+test("remote binding page remains an existing-account binding flow", () => {
+  assert.match(remoteBindingSource, /企微员工号绑定/)
+  assert.match(remoteBindingSource, /本页不会注册新账号或分配角色/)
+  assert.doesNotMatch(remoteBindingSource, /邀请开户|远程开户|门店开户注册|远程配置/)
 })
