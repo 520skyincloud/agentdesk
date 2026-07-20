@@ -23,15 +23,15 @@
 5. cmd/customer_audit_seed 只是历史命名的仿真命令，不表示仍有 customer-audit 开发分支。
 6. 不提交 docs/generated/、.codex/audits/、截图、临时数据库、密钥或本地配置。
 
-最后一次 fetch 的拓扑：
+2026-07-20 最后一轮 push 前 fetch 的拓扑：
 
     origin/main                         e67e207  -> integration 祖先
     origin/codex/customer-audit         c706815  -> integration 祖先
-    origin/codex/tenant-ai-integration  926129f  -> 本地待推送
+    origin/codex/tenant-ai-integration  926129f  -> 本轮 push 前远端基线
     origin/codex/ai-billing             33b6d14  -> 与 integration 在 f2d2da4 后分叉
     integration 最后一个代码提交        82abb92
 
-SHA 只是本次快照。push 或 merge 前必须重新 git fetch origin --prune 并复核。
+SHA 只是 push 前快照，不表示当前 PR 头仍停在这些提交。每次后续 push 或 merge 前仍必须重新执行 `git fetch origin --prune` 并复核。
 
 ## 2. 权威文档
 
