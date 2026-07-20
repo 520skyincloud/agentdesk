@@ -1,6 +1,6 @@
 # 客服、客户、知识、工单、排班一体化实施文档
 
-> 本文是 2026-06-29 起企微员工号主链路的统一实施准绳。所有事项一起纳入同一套设计，不再拆成阶段。实现时必须保持现有企微员工号协议规则：企业微信员工号相关能力唯一依据 `https://wework.apifox.cn/llms.txt` 及其具体接口页，禁止混用 CLI、企微客服号/KF、个人微信或旧 `weixins` 字段。
+> 本文是客服业务域的统一实施准绳。租户、账号注册、门店身份和企微绑定的当前权威设计分别以 `docs/design/multi-tenant-company-registration.md`、`docs/design/wxwork-managed-store-scope-implementation.md` 和真实代码为准；本文中的历史描述不得覆盖这三者。企业微信员工号相关能力唯一依据 `https://wework.apifox.cn/llms.txt` 及其具体接口页，禁止混用 CLI、企微客服号/KF、个人微信或旧 `weixins` 字段。
 
 ## 1. 总目标
 
@@ -339,10 +339,10 @@ AI 自动服务任务必须写入 `category / priority / roomNo`。紧急维修�
 - 员工号智能客服：模型、系统提示词、欢迎语、知识库、技能、工具、转人工策略放在账号行操作“智能客服配置”里。保存智能客服时，系统把所选第一个知识库同步到 `WxWorkProtocolInstance.knowledgeBaseId`，运行时仍只使用当前员工号自己的知识库。
 - 账号编辑页不再展示 `defaultMiniProgramPayload / welcomeMessage / personaPrompt / contextMaxMessages / contextMaxTokens / knowledgeBaseId` 等碎片字段，避免多个入口互相覆盖。
 
-新增账号有两种方式，但二者都必须先自动绑定协议平台里已经初始化好的空闲实例：
+企微员工号绑定有两种方式。两种方式都要求公司主管先选择本租户中已有、启用且已经分配 `store_staff` 角色的系统账号；该账号已经对应唯一 Store 和 StoreStaffBinding。绑定流程不得创建 User、分配角色或产生第二套“门店账号”：
 
-1. 总部现场扫码：总部点击“自动绑定空闲实例”。系统调用企微员工号渠道里的 `devicePoolUrl`，从协议平台实例列表选择一个未被 AgentDesk 绑定的真实 `guid`，创建本地 `WxWorkProtocolInstance`，并立即调用 `/login/get_login_qrcode` 获取二维码。若协议平台没有空闲实例或未配置设备池接口，则不创建任何占位账号。
-2. 远程门店自助开户：总部点击“生成并复制链接”。系统同样先绑定真实空闲 `guid`，再生成 `remoteSetupToken` 和公开页面 `/wxwork-remote-setup?token=...`。门店打开链接后可获取真实登录二维码、扫码登录、填写门店名称/地址/坐标/服务时间/门店群通知配置。
+1. 现场扫码绑定：公司主管选择已有、持有 `store_staff` 角色的系统账号，系统调用企微员工号渠道里的 `devicePoolUrl`，从协议平台实例列表选择一个未被 AgentDesk 绑定的真实 `guid`，创建绑定到现有 StoreStaffBinding 的 `WxWorkProtocolInstance`，并立即调用 `/login/get_login_qrcode` 获取二维码。若协议平台没有空闲实例或未配置设备池接口，则不创建占位实例。
+2. 企微员工号绑定链接：公司主管选择已有、持有 `store_staff` 角色的系统账号并点击“生成绑定链接”。系统绑定真实空闲 `guid`，生成一次 `remoteSetupToken` 和兼容公开地址 `/wxwork-remote-setup?token=...`。门店人员打开链接后使用实际企微员工号扫码，并以该系统账号登记的邮箱完成验证，再补充门店运营资料。URL 中的历史 `remote-setup` 名称只作为兼容路径，不表示开户或账号注册。
 
 注意：`guid` 是 `wework.apifox.cn` 统一请求格式中 `data.guid`，来源是协议平台“实例列表里的设备 ID”，不是 AgentDesk 本地 UUID。AgentDesk 只能保存绑定关系、过滤本地已绑定设备、调用 `/login/get_login_qrcode` 等 Apifox 业务接口；禁止再生成 `pending_...` 或假 GUID。
 
@@ -351,7 +351,7 @@ AI 自动服务任务必须写入 `category / priority / roomNo`。紧急维修�
 - 远程页面不进入 dashboard，不展示总部侧边栏，也不能查看其他账号。
 - 远程页面只能通过 token 修改当前实例的门店运营资料、坐标、服务时间、门店群通知和自动通过好友申请开关。
 - 远程页面不能修改模型、提示词、知识库、小程序 payload、企业级配置和客服组权限。
-- token 默认 14 天过期；过期后需要总部重新生成。
+- token 默认 14 天过期；过期后需要公司主管重新生成。
 
 门店群 conversation_id 获取规则：
 
@@ -369,7 +369,7 @@ AI 自动服务任务必须写入 `category / priority / roomNo`。紧急维修�
 
 - integration 已具备 Tenant、权限、客服组/小组/排班、会话消息、规则与模型协同派单、会话监控基础和租户测试数据。
 - 运营事实、响应分段、Presence、人工质检、保存视图、范围化导出、固定抽样、禁忌项、真实满意度和分析页面均已进入 `codex/tenant-ai-integration` 的 B-E 语义提交，并通过独立提交门禁。
-- 当前产品功能已经完成，GitHub 交付仍需完成仿真/文档提交、最新全量门禁、push 和唯一 integration PR；二者不得混写。
+- 当前实现、验证和 GitHub 交付状态以 `docs/development/tenant-ai-integration-merge-handoff.md` 的当前快照为准；本文不记录容易过期的临时 SHA、push 或 PR 状态。
 - 质检只评价 ConversationAssignment 分段内的人工客服回复，AI 和客户消息只作上下文。
 - customer-audit 自 2026-07-17 起为只读迁移来源；所有后续实现和文档只更新 `codex/tenant-ai-integration`，主线只合并一个 integration PR。
 
