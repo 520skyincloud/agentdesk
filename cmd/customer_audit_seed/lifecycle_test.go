@@ -63,6 +63,13 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 	if err := db.Where("registration_type = ? AND registration_no = ?", tenantRegistrationType, tenantRegistrationNo).Take(&tenant).Error; err != nil {
 		t.Fatalf("load simulation tenant: %v", err)
 	}
+	simulationUser := models.User{}
+	if err := db.Where("tenant_id = ?", tenant.ID).Order("id ASC").Take(&simulationUser).Error; err != nil {
+		t.Fatalf("load simulation user for report view fixture: %v", err)
+	}
+	createLifecycleReportViewPreset(t, db, tenant.ID, simulationUser.ID, "simulation-view")
+	otherTenant, otherUser := createLifecycleUnrelatedTenant(t, db)
+	otherPreset := createLifecycleReportViewPreset(t, db, otherTenant.ID, otherUser.ID, "unrelated-view")
 	firstUsage := createLifecycleUsageEvidence(t, db, batch, "repeat")
 
 	if err := seed(db, batch, defaultPassword); err != nil {
@@ -116,11 +123,79 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 	assertLifecycleScopedRowCount(t, db, "quality templates", &models.QualityTemplate{}, tenant.ID, 0)
 	assertLifecycleScopedRowCount(t, db, "quality template items", &models.QualityTemplateItem{}, tenant.ID, 0)
 	assertLifecycleScopedRowCount(t, db, "analytics policies", &models.ServiceAnalyticsPolicy{}, tenant.ID, 0)
+	assertLifecycleScopedRowCount(t, db, "report view presets", &models.ReportViewPreset{}, tenant.ID, 0)
+	if got := count(db, &models.ReportViewPreset{}, "id = ? AND tenant_id = ? AND user_id = ?", otherPreset.ID, otherTenant.ID, otherUser.ID); got != 1 {
+		t.Fatalf("cleanup changed unrelated tenant report view preset count=%d want=1", got)
+	}
 	if got := count(db, &models.Tenant{}, "registration_type = ? AND registration_no = ?", tenantRegistrationType, tenantRegistrationNo); got != 0 {
 		t.Fatalf("simulation tenant count after cleanup=%d want=0", got)
 	}
+	if err := db.Delete(&otherPreset).Error; err != nil {
+		t.Fatalf("delete unrelated report view fixture: %v", err)
+	}
+	if err := db.Delete(&otherUser).Error; err != nil {
+		t.Fatalf("delete unrelated user fixture: %v", err)
+	}
+	if err := db.Delete(&otherTenant).Error; err != nil {
+		t.Fatalf("delete unrelated tenant fixture: %v", err)
+	}
 
 	assertLifecycleSystemData(t, db)
+}
+
+func createLifecycleReportViewPreset(t *testing.T, db *gorm.DB, tenantID, userID int64, name string) models.ReportViewPreset {
+	t.Helper()
+	now := time.Now()
+	item := models.ReportViewPreset{
+		TenantID: tenantID,
+		UserID:   userID,
+		PageCode: "conversation-records",
+		Name:     name,
+		Status:   enums.StatusOk,
+		AuditFields: models.AuditFields{
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	if err := db.Create(&item).Error; err != nil {
+		t.Fatalf("create %s report view fixture: %v", name, err)
+	}
+	return item
+}
+
+func createLifecycleUnrelatedTenant(t *testing.T, db *gorm.DB) (models.Tenant, models.User) {
+	t.Helper()
+	now := time.Now()
+	tenant := models.Tenant{
+		TenantCode:       "T_LIFECYCLE_UNRELATED",
+		LegalName:        "生命周期无关租户",
+		ShortName:        "无关租户",
+		RegistrationType: "test",
+		RegistrationNo:   "LIFECYCLE-UNRELATED",
+		Status:           enums.StatusOk,
+		AuditFields: models.AuditFields{
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	if err := db.Create(&tenant).Error; err != nil {
+		t.Fatalf("create unrelated tenant fixture: %v", err)
+	}
+	user := models.User{
+		TenantID:       tenant.ID,
+		Username:       "lifecycle_unrelated_user",
+		Nickname:       "生命周期无关用户",
+		ApprovalStatus: enums.UserApprovalStatusApproved,
+		Status:         enums.StatusOk,
+		AuditFields: models.AuditFields{
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create unrelated user fixture: %v", err)
+	}
+	return tenant, user
 }
 
 type lifecycleUsageEvidence struct {

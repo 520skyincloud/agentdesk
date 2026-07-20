@@ -418,6 +418,12 @@ func cleanup(db *gorm.DB, batch string) error {
 				}
 				return db.Where("tenant_id = ?", tenantID).Delete(&models.ServiceAnalyticsPolicy{}).Error
 			}},
+			{"report view presets", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.ReportViewPreset{}).Error
+			}},
 			{"login credential logs", func() error {
 				return db.Where("principal LIKE ?", userPattern).Delete(&models.LoginCredentialLog{}).Error
 			}},
