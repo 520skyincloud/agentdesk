@@ -45,6 +45,7 @@ func NewServer() (*gin.Engine, error) {
 	app.Use(requestLogMiddleware())
 	app.Use(maxBodySizeMiddleware())
 	app.Use(i18nx.Middleware())
+	app.Use(retiredDashboardRouteMiddleware())
 
 	addRouter(app)
 
@@ -68,6 +69,23 @@ func NewServer() (*gin.Engine, error) {
 	})
 
 	return app, nil
+}
+
+func retiredDashboardRouteMiddleware() gin.HandlerFunc {
+	retiredRoutes := []string{"/dashboard/companies", "/dashboard/company-detail"}
+	return func(ctx *gin.Context) {
+		if ctx.Request.Method == http.MethodGet || ctx.Request.Method == http.MethodHead {
+			path := strings.TrimRight(ctx.Request.URL.Path, "/")
+			for _, route := range retiredRoutes {
+				if path == route || strings.HasPrefix(path, route+"/") {
+					ctx.Redirect(http.StatusTemporaryRedirect, "/dashboard/")
+					ctx.Abort()
+					return
+				}
+			}
+		}
+		ctx.Next()
+	}
 }
 
 func corsMiddleware() gin.HandlerFunc {

@@ -115,6 +115,31 @@ func TestNewServerKeepsPublicRegistrationDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestNewServerRedirectsRetiredDashboardPages(t *testing.T) {
+	config.SetCurrent(&config.Config{
+		Storage: config.StorageConfig{Local: config.LocalStorageConfig{Root: "storage", BaseURL: "/storage"}},
+	})
+
+	app, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	for _, path := range []string{
+		"/dashboard/companies",
+		"/dashboard/companies/",
+		"/dashboard/company-detail/1",
+	} {
+		recorder := httptest.NewRecorder()
+		app.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusTemporaryRedirect {
+			t.Fatalf("GET %s status=%d want=%d", path, recorder.Code, http.StatusTemporaryRedirect)
+		}
+		if location := recorder.Header().Get("Location"); location != "/dashboard/" {
+			t.Fatalf("GET %s location=%q want=/dashboard/", path, location)
+		}
+	}
+}
+
 func TestNewServerRejectsEnabledRegistrationWithoutEncryptionKey(t *testing.T) {
 	config.SetCurrent(&config.Config{
 		TenantRegistration: config.TenantRegistrationConfig{Enabled: true},
