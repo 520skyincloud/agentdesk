@@ -347,6 +347,7 @@ func (s *userService) UpdateStatus(id int64, status int, operator *dto.AuthPrinc
 	if !slices.Contains(enums.StatusValues, enums.Status(status)) {
 		return errorsx.InvalidParam("状态值不合法")
 	}
+	affectedTeamIDs := s.dispatchTeamIDsForUser(user.TenantID, user.ID)
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		current, err := repositories.UserRepository.GetForUpdate(ctx.Tx, id)
 		if err != nil {
@@ -379,6 +380,7 @@ func (s *userService) UpdateStatus(id int64, status int, operator *dto.AuthPrinc
 	}); err != nil {
 		return err
 	}
+	ConversationDispatchService.ReconcileConfigurationChange(user.TenantID, affectedTeamIDs...)
 	if status == int(enums.StatusDisabled) || status == int(enums.StatusDeleted) {
 		return LoginSessionService.RevokeByUser(id, operator.UserID, operator.Username)
 	}
@@ -422,6 +424,7 @@ func (s *userService) AssignRolesWithStoreName(userID int64, roleIDs []int64, st
 	if err := s.EnsureCanManageUser(operator, user); err != nil {
 		return err
 	}
+	affectedTeamIDs := s.dispatchTeamIDsForUser(user.TenantID, user.ID)
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		storeStaffRole := repositories.RoleRepository.GetByCode(ctx.Tx, constants.RoleCodeStoreStaff)
 		hadStoreStaffRole := storeStaffRole != nil && repositories.UserRoleRepository.FindOne(ctx.Tx, sqls.NewCnd().Eq("user_id", userID).Eq("role_id", storeStaffRole.ID)) != nil
@@ -436,7 +439,26 @@ func (s *userService) AssignRolesWithStoreName(userID int64, roleIDs []int64, st
 	}); err != nil {
 		return err
 	}
+	affectedTeamIDs = append(affectedTeamIDs, s.dispatchTeamIDsForUser(user.TenantID, user.ID)...)
+	ConversationDispatchService.ReconcileConfigurationChange(user.TenantID, affectedTeamIDs...)
 	return LoginSessionService.RevokeByUser(userID, operator.UserID, operator.Username)
+}
+
+func (s *userService) dispatchTeamIDsForUser(tenantID, userID int64) []int64 {
+	if tenantID <= 0 || userID <= 0 {
+		return nil
+	}
+	teamIDs := make([]int64, 0, 2)
+	if profile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ? AND status <> ?", tenantID, userID, enums.StatusDeleted); profile != nil {
+		teamIDs = appendPositive(teamIDs, profile.TeamID)
+	}
+	for _, binding := range repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("user_id", userID).
+		Where("status <> ?", enums.StatusDeleted)) {
+		teamIDs = appendPositive(teamIDs, binding.AgentTeamID)
+	}
+	return uniquePositive(teamIDs)
 }
 
 func (s *userService) syncStoreIdentityForRoleStateDB(db *gorm.DB, user *models.User, storeName string, operator *dto.AuthPrincipal, retireIfMissing bool) error {

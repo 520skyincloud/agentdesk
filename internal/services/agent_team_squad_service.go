@@ -146,7 +146,8 @@ func (s *agentTeamSquadService) Create(req request.CreateAgentTeamSquadRequest, 
 }
 
 func (s *agentTeamSquadService) Update(req request.UpdateAgentTeamSquadRequest, operator *dto.AuthPrincipal) error {
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	var tenantID, teamID int64
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		current, err := repositories.AgentTeamSquadRepository.GetForUpdateInTenant(ctx.Tx, req.ID, AgentTeamScopeService.ActiveTenantID(operator))
 		if err != nil {
 			return err
@@ -154,6 +155,7 @@ func (s *agentTeamSquadService) Update(req request.UpdateAgentTeamSquadRequest, 
 		if current == nil || current.Status == enums.StatusDeleted {
 			return errorsx.InvalidParam("客服小组不存在")
 		}
+		tenantID, teamID = current.TenantID, current.TeamID
 		if req.TeamID != current.TeamID {
 			return errorsx.InvalidParam("客服小组不支持变更所属综合客服组")
 		}
@@ -184,10 +186,16 @@ func (s *agentTeamSquadService) Update(req request.UpdateAgentTeamSquadRequest, 
 		}
 		return s.replaceMembersDB(ctx.Tx, team, item, memberIDs, operator)
 	})
+	if err != nil {
+		return err
+	}
+	ConversationDispatchService.ReconcileConfigurationChange(tenantID, teamID)
+	return nil
 }
 
 func (s *agentTeamSquadService) ReplaceMembers(req request.ReplaceAgentTeamSquadMembersRequest, operator *dto.AuthPrincipal) error {
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	var tenantID, teamID int64
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		item, err := repositories.AgentTeamSquadRepository.GetForUpdateInTenant(ctx.Tx, req.SquadID, AgentTeamScopeService.ActiveTenantID(operator))
 		if err != nil {
 			return err
@@ -195,12 +203,18 @@ func (s *agentTeamSquadService) ReplaceMembers(req request.ReplaceAgentTeamSquad
 		if item == nil || item.Status == enums.StatusDeleted {
 			return errorsx.InvalidParam("客服小组不存在")
 		}
+		tenantID, teamID = item.TenantID, item.TeamID
 		teams, err := AgentTeamScopeService.lockManageableTeamsDB(ctx.Tx, []int64{item.TeamID}, operator, "无权调整该客服小组成员")
 		if err != nil {
 			return err
 		}
 		return s.replaceMembersDB(ctx.Tx, teams[item.TeamID], item, req.AgentProfileIDs, operator)
 	})
+	if err != nil {
+		return err
+	}
+	ConversationDispatchService.ReconcileConfigurationChange(tenantID, teamID)
+	return nil
 }
 
 func (s *agentTeamSquadService) Delete(id int64, operator *dto.AuthPrincipal) error {
@@ -233,13 +247,17 @@ func (s *agentTeamSquadService) Delete(id int64, operator *dto.AuthPrincipal) er
 }
 
 func (s *agentTeamSquadService) ActiveMemberProfileSet(squadIDs []int64, tenantID int64) (map[int64]map[int64]struct{}, map[int64]int64) {
+	return s.ActiveMemberProfileSetDB(sqls.DB(), squadIDs, tenantID)
+}
+
+func (s *agentTeamSquadService) ActiveMemberProfileSetDB(db *gorm.DB, squadIDs []int64, tenantID int64) (map[int64]map[int64]struct{}, map[int64]int64) {
 	squadIDs = uniquePositive(squadIDs)
 	ret := make(map[int64]map[int64]struct{}, len(squadIDs))
 	teamBySquad := make(map[int64]int64, len(squadIDs))
-	if len(squadIDs) == 0 || tenantID <= 0 {
+	if db == nil || len(squadIDs) == 0 || tenantID <= 0 {
 		return ret, teamBySquad
 	}
-	activeSquads := repositories.AgentTeamSquadRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("id", squadIDs).Eq("status", enums.StatusOk))
+	activeSquads := repositories.AgentTeamSquadRepository.Find(db, sqls.NewCnd().Eq("tenant_id", tenantID).In("id", squadIDs).Eq("status", enums.StatusOk))
 	activeSquadIDs := make([]int64, 0, len(activeSquads))
 	for i := range activeSquads {
 		activeSquadIDs = append(activeSquadIDs, activeSquads[i].ID)
@@ -249,7 +267,7 @@ func (s *agentTeamSquadService) ActiveMemberProfileSet(squadIDs []int64, tenantI
 	if len(activeSquadIDs) == 0 {
 		return ret, teamBySquad
 	}
-	members := repositories.AgentTeamSquadMemberRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("squad_id", activeSquadIDs).Eq("status", enums.StatusOk))
+	members := repositories.AgentTeamSquadMemberRepository.Find(db, sqls.NewCnd().Eq("tenant_id", tenantID).In("squad_id", activeSquadIDs).Eq("status", enums.StatusOk))
 	for i := range members {
 		ret[members[i].SquadID][members[i].AgentProfileID] = struct{}{}
 	}

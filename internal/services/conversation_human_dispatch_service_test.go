@@ -13,6 +13,7 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/openidentity"
+	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
 
 	"github.com/glebarez/sqlite"
@@ -61,8 +62,9 @@ func TestConversationHumanDispatchAIHandoffEntersStoreManual(t *testing.T) {
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "1")
 	createHumanDispatchTeam(t, db, 1, "售后支持组")
 	createHumanDispatchActiveSchedule(t, db, 1)
-	createHumanDispatchAgentProfile(t, db, 101, 1, enums.ServiceStatusIdle, 3, true, enums.StatusOk)
+	createHumanDispatchAgentProfile(t, db, 101, 1, 3, true, enums.StatusOk)
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
 
 	result, err := services.ConversationHumanDispatchService.HandoffByAI(conversation.ID, aiAgent, "用户要求转人工")
 	if err != nil {
@@ -676,7 +678,7 @@ func TestConversationHumanDispatchNoneManagedEnqueuesStoreRoomNoticeWithoutSched
 	}
 }
 
-func TestConversationHumanDispatchAIHandoffFallsBackToFirstScheduledTeam(t *testing.T) {
+func TestConversationHumanDispatchAIHandoffIgnoresLegacyAgentTeamIDsWithoutRouteOwner(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "3,1,2")
 	createHumanDispatchTeam(t, db, 1, "售后支持组")
@@ -690,20 +692,20 @@ func TestConversationHumanDispatchAIHandoffFallsBackToFirstScheduledTeam(t *test
 	if err != nil {
 		t.Fatalf("HandoffByAI() error = %v", err)
 	}
-	if result == nil || result.Decision != services.HandoffDecisionStoreWecom {
-		t.Fatalf("expected store_wecom decision, got %+v", result)
+	if result == nil || result.Decision != services.HandoffDecisionHQAgentDesk {
+		t.Fatalf("expected hq_agentdesk decision, got %+v", result)
 	}
 
 	current := services.ConversationService.Get(conversation.ID)
-	if current.Status != enums.IMConversationStatusAIServing {
-		t.Fatalf("expected store manual handoff to keep ai-serving conversation shell, got status=%d", current.Status)
+	if current.Status != enums.IMConversationStatusPending {
+		t.Fatalf("expected pending HQ conversation, got status=%d", current.Status)
 	}
 	if current.CurrentTeamID != 0 || current.CurrentAssigneeID != 0 {
-		t.Fatalf("expected store manual with no assignee, got team=%d assignee=%d", current.CurrentTeamID, current.CurrentAssigneeID)
+		t.Fatalf("legacy AI Agent team IDs must not select a team, got team=%d assignee=%d", current.CurrentTeamID, current.CurrentAssigneeID)
 	}
 	route := services.ConversationRouteService.GetByConversationID(conversation.ID)
-	if route == nil || route.RouteStatus != enums.ConversationRouteStatusStoreWecomManual {
-		t.Fatalf("expected store manual route, got %+v", route)
+	if route == nil || route.RouteStatus != enums.ConversationRouteStatusHQAgentDeskPending {
+		t.Fatalf("expected HQ pending route, got %+v", route)
 	}
 }
 
@@ -736,8 +738,11 @@ func TestConversationHumanDispatchHumanOnlyCreateAssignsAvailableAgent(t *testin
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeHumanOnly, "1")
 	createHumanDispatchTeam(t, db, 1, "售后支持组")
+	if err := db.Model(&models.AgentTeam{}).Where("id = ?", 1).Update("is_default", true).Error; err != nil {
+		t.Fatalf("mark default team: %v", err)
+	}
 	createHumanDispatchActiveSchedule(t, db, 1)
-	createHumanDispatchAgentProfile(t, db, 101, 1, enums.ServiceStatusIdle, 3, true, enums.StatusOk)
+	createHumanDispatchAgentProfile(t, db, 101, 1, 3, true, enums.StatusOk)
 
 	conversation, err := services.ConversationService.Create(openidentity.ExternalUser{
 		ExternalSource: enums.ExternalSourceGuest,
@@ -752,37 +757,6 @@ func TestConversationHumanDispatchHumanOnlyCreateAssignsAvailableAgent(t *testin
 	}
 	if conversation.CurrentAssigneeID != 101 || conversation.CurrentTeamID != 1 {
 		t.Fatalf("unexpected assignment: assignee=%d team=%d", conversation.CurrentAssigneeID, conversation.CurrentTeamID)
-	}
-}
-
-func TestConversationAutoAssignManualDispatchOffHoursReturnsBusinessMessage(t *testing.T) {
-	db := setupConversationHumanDispatchTestDB(t)
-	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "1")
-	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusPending)
-
-	err := services.ConversationService.AutoAssignConversation(conversation.ID, testHumanDispatchOperator())
-	if err == nil {
-		t.Fatalf("expected off-hours manual dispatch to fail")
-	}
-	if !strings.Contains(err.Error(), "当前暂不在人工客服服务时间内") {
-		t.Fatalf("expected off-hours error, got %v", err)
-	}
-}
-
-func TestConversationAutoAssignManualDispatchFallsBackToTeamPool(t *testing.T) {
-	db := setupConversationHumanDispatchTestDB(t)
-	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "1")
-	createHumanDispatchTeam(t, db, 1, "售后支持组")
-	createHumanDispatchActiveSchedule(t, db, 1)
-	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusPending)
-
-	err := services.ConversationService.AutoAssignConversation(conversation.ID, testHumanDispatchOperator())
-	if err != nil {
-		t.Fatalf("AutoAssignConversation() error = %v", err)
-	}
-	current := services.ConversationService.Get(conversation.ID)
-	if current.Status != enums.IMConversationStatusPending || current.CurrentTeamID != 1 || current.CurrentAssigneeID != 0 {
-		t.Fatalf("expected team-pool pending conversation, got %+v", current)
 	}
 }
 
@@ -806,6 +780,10 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 	})
 	if err := db.AutoMigrate(
 		&models.User{},
+		&models.Role{},
+		&models.Permission{},
+		&models.UserRole{},
+		&models.RolePermission{},
 		&models.Customer{},
 		&models.CustomerIdentity{},
 		&models.WxWorkCustomerHandoffSetting{},
@@ -828,6 +806,7 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		&models.Message{},
 		&models.ConversationServiceSession{},
 		&models.ConversationResponseSpan{},
+		&models.AgentPresenceSession{},
 		&models.DispatchDecisionLog{},
 		&models.MessageSyncLog{},
 		&models.ChannelMessageOutbox{},
@@ -843,6 +822,22 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
 	}).Error; err != nil {
 		t.Fatalf("create default channel: %v", err)
+	}
+	role := models.Role{ID: 1, Name: "客服", Code: constants.RoleCodeCsUser, Status: enums.StatusOk}
+	if err := db.Create(&role).Error; err != nil {
+		t.Fatalf("create default agent role: %v", err)
+	}
+	permissions := []models.Permission{
+		{ID: 1, Name: "查看会话", Code: constants.PermissionConversationView.Code, Status: enums.StatusOk},
+		{ID: 2, Name: "发送会话消息", Code: constants.PermissionConversationSend.Code, Status: enums.StatusOk},
+	}
+	if err := db.Create(&permissions).Error; err != nil {
+		t.Fatalf("create default conversation permissions: %v", err)
+	}
+	for _, permission := range permissions {
+		if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
+			t.Fatalf("bind default conversation permission: %v", err)
+		}
 	}
 	return db
 }
@@ -883,7 +878,7 @@ func createHumanDispatchActiveSchedule(t *testing.T, db *gorm.DB, teamID int64) 
 	}
 }
 
-func createHumanDispatchAgentProfile(t *testing.T, db *gorm.DB, userID, teamID int64, serviceStatus enums.ServiceStatus, maxConcurrent int, autoAssign bool, status enums.Status) {
+func createHumanDispatchAgentProfile(t *testing.T, db *gorm.DB, userID, teamID int64, maxConcurrent int, autoAssign bool, status enums.Status) {
 	t.Helper()
 	if err := db.Create(&models.User{
 		ID:       userID,
@@ -894,18 +889,33 @@ func createHumanDispatchAgentProfile(t *testing.T, db *gorm.DB, userID, teamID i
 	}).Error; err != nil {
 		t.Fatalf("create user error = %v", err)
 	}
+	if err := db.Create(&models.UserRole{UserID: userID, RoleID: 1}).Error; err != nil {
+		t.Fatalf("bind agent role error = %v", err)
+	}
 	if err := db.Create(&models.AgentProfile{
 		TenantID:           101,
 		UserID:             userID,
 		TeamID:             teamID,
 		AgentCode:          "A001",
 		DisplayName:        "客服",
-		ServiceStatus:      serviceStatus,
 		MaxConcurrentCount: maxConcurrent,
 		AutoAssignEnabled:  autoAssign,
 		Status:             status,
 	}).Error; err != nil {
 		t.Fatalf("create profile error = %v", err)
+	}
+	if autoAssign {
+		profile := repositories.AgentProfileRepository.Take(db, "tenant_id = ? AND user_id = ?", 101, userID)
+		now := time.Now()
+		if profile == nil {
+			t.Fatal("created auto-assignment profile not found")
+		}
+		if err := db.Create(&models.AgentPresenceSession{
+			TenantID: 101, UserID: userID, AgentProfileID: profile.ID, TeamID: teamID,
+			Status: enums.AgentPresenceStatusIdle, Source: "test", StartedAt: now, LastSeenAt: now,
+		}).Error; err != nil {
+			t.Fatalf("create profile presence error = %v", err)
+		}
 	}
 }
 
@@ -918,7 +928,7 @@ func createHumanDispatchStoreAgent(t *testing.T, db *gorm.DB, userID int64) *dto
 	}).Error; err != nil {
 		t.Fatalf("bind store runtime to agent team error = %v", err)
 	}
-	createHumanDispatchAgentProfile(t, db, userID, 1, enums.ServiceStatusIdle, 3, false, enums.StatusOk)
+	createHumanDispatchAgentProfile(t, db, userID, 1, 3, false, enums.StatusOk)
 	return &dto.AuthPrincipal{
 		UserID:         userID,
 		TenantID:       101,

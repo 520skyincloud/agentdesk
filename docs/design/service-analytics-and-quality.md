@@ -78,7 +78,7 @@ git diff --check
 1 ServiceAnalyticsPolicy
 ```
 
-重复 Seed 结果一致，cleanup 后测试租户的上述业务事实归零；平台默认模板和策略按设计保留。仿真本身不调用真实模型，不产生新的 AIUsageEvent、Token、价格或计费数据。测试期间智能派单可能产生 usage 证据，因此 Seed/cleanup 仅清理专用仿真租户及其仿真会话的 usage 关联，保留平台和其他租户证据；生命周期测试同时覆盖正常关联、历史孤儿和平台无关记录。2026-07-17 修复后租户完整性审计结果为 74 个租户模型、87 张必需表、202 条关系、0 违规，36 个 ServiceSession 均为 exact。
+重复 Seed 结果一致，cleanup 后测试租户的上述业务事实归零；平台默认模板和策略按设计保留。仿真本身不调用真实模型，不产生新的 AIUsageEvent、Token、价格或计费数据。2026-07-21 起派单只使用人工或确定性规则，不再产生派单模型 usage；历史仿真或旧版本留下的模型派单 usage 仍按租户和会话保留为只读审计证据。生命周期测试继续覆盖正常关联、历史孤儿和平台无关记录。2026-07-17 修复时租户完整性审计结果为 74 个租户模型、87 张必需表、202 条关系、0 违规，36 个 ServiceSession 均为 exact；当前发布数字以唯一合并交接的最新门禁为准。
 
 真实 MySQL 8.4 并发门禁已通过：评价 Token 幂等提交、Completed 质检只有一个成功完成者、Presence 心跳与休息并发后只保留一个活动时段。
 
@@ -248,7 +248,7 @@ git diff --check
 
 Conversation、Message、ConversationRouteState、ConversationAssignment 和 ConversationEventLog 继续是业务状态真相。运营事实是可重建读模型，不反向控制回复、路由、派单或 AI Runtime。
 
-`ConversationAssignment` 兼容新增 `SessionNo`，用于把分配、转派和质检准确归属到服务轮次。integration 已有的 `SquadID`、`DispatchMode`、`DecisionConfidence`、`WorkloadWeight` 继续保留。
+`ConversationAssignment` 兼容新增 `SessionNo`，用于把分配、转派和质检准确归属到服务轮次。`SquadID`、`DispatchMode` 和 `WorkloadWeight` 继续作为当前派单事实；`DecisionConfidence` 只保留旧模型派单历史值，新人工/规则派单不再写入。
 
 ### 5.2 会话与响应事实
 

@@ -227,27 +227,24 @@ func (s *serviceAnalyticsCaptureService) RecordDispatchDecision(conversationID, 
 			teamID = profile.TeamID
 		}
 		return repositories.DispatchDecisionLogRepository.Create(ctx.Tx, &models.DispatchDecisionLog{
-			TenantID:             conversation.TenantID,
-			DecisionKey:          fmt.Sprintf("assignment:%d", assignment.ID),
-			ConversationID:       conversation.ID,
-			SessionNo:            assignment.SessionNo,
-			AssignmentID:         assignment.ID,
-			DecisionMode:         decisionMode,
-			Status:               status,
-			Trigger:              strings.TrimSpace(assignType),
-			CandidateUserIDsJSON: fmt.Sprintf("[%d]", toUserID),
-			CandidateSnapshotJSON: fmt.Sprintf(
-				`[{"userId":%d,"decisionConfidence":%d,"workloadWeight":%d}]`,
-				toUserID, assignment.DecisionConfidence, assignment.WorkloadWeight,
-			),
-			InputLastMessageID: conversation.LastMessageID,
-			SelectedUserID:     toUserID,
-			SelectedTeamID:     teamID,
-			SelectedSquadID:    assignment.SquadID,
-			Reason:             strings.TrimSpace(reason),
-			OperatorID:         operatorID,
-			DecidedAt:          assignment.CreatedAt,
-			AuditFields:        utils.BuildAuditFields(nil),
+			TenantID:              conversation.TenantID,
+			DecisionKey:           fmt.Sprintf("assignment:%d", assignment.ID),
+			ConversationID:        conversation.ID,
+			SessionNo:             assignment.SessionNo,
+			AssignmentID:          assignment.ID,
+			DecisionMode:          decisionMode,
+			Status:                status,
+			Trigger:               strings.TrimSpace(assignType),
+			CandidateUserIDsJSON:  fmt.Sprintf("[%d]", toUserID),
+			CandidateSnapshotJSON: fmt.Sprintf(`[{"userId":%d,"workloadWeight":%d}]`, toUserID, assignment.WorkloadWeight),
+			InputLastMessageID:    conversation.LastMessageID,
+			SelectedUserID:        toUserID,
+			SelectedTeamID:        teamID,
+			SelectedSquadID:       assignment.SquadID,
+			Reason:                strings.TrimSpace(reason),
+			OperatorID:            operatorID,
+			DecidedAt:             assignment.CreatedAt,
+			AuditFields:           utils.BuildAuditFields(nil),
 		})
 	})
 }
@@ -515,7 +512,8 @@ func (s *agentPresenceService) Touch(operator *dto.AuthPrincipal, source string,
 	if profile == nil {
 		return nil
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	becameAvailable := false
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		lockedProfile, err := repositories.AgentProfileRepository.GetForUpdateInTenant(ctx.Tx, profile.ID, operator.ActiveTenantID)
 		if err != nil || lockedProfile == nil || lockedProfile.UserID != operator.UserID {
 			return err
@@ -547,7 +545,7 @@ func (s *agentPresenceService) Touch(operator *dto.AuthPrincipal, source string,
 				})
 			}
 		}
-		return repositories.AgentPresenceSessionRepository.Create(ctx.Tx, &models.AgentPresenceSession{
+		if err := repositories.AgentPresenceSessionRepository.Create(ctx.Tx, &models.AgentPresenceSession{
 			TenantID:       operator.ActiveTenantID,
 			UserID:         operator.UserID,
 			AgentProfileID: lockedProfile.ID,
@@ -557,8 +555,16 @@ func (s *agentPresenceService) Touch(operator *dto.AuthPrincipal, source string,
 			StartedAt:      at,
 			LastSeenAt:     at,
 			AuditFields:    utils.BuildAuditFields(operator),
-		})
+		}); err != nil {
+			return err
+		}
+		becameAvailable = true
+		return nil
 	})
+	if err == nil && becameAvailable {
+		ConversationDispatchService.ScheduleTeamDispatch(operator.ActiveTenantID, profile.TeamID)
+	}
+	return err
 }
 
 func (s *agentPresenceService) GetCurrent(operator *dto.AuthPrincipal) (*models.AgentPresenceSession, error) {
@@ -623,6 +629,14 @@ func (s *agentPresenceService) SetStatus(operator *dto.AuthPrincipal, status enu
 	if err != nil {
 		return nil, err
 	}
+	switch status {
+	case enums.AgentPresenceStatusOnline, enums.AgentPresenceStatusIdle:
+		ConversationDispatchService.ScheduleTeamDispatch(operator.ActiveTenantID, profile.TeamID)
+	case enums.AgentPresenceStatusBreak:
+		if _, recoveryErr := ConversationDispatchService.RecoverAssignmentsForAgent(operator.ActiveTenantID, operator.UserID, 0); recoveryErr != nil {
+			slog.Warn("recover assignments after agent entered break failed", "error", recoveryErr, "tenantId", operator.ActiveTenantID, "userId", operator.UserID)
+		}
+	}
 	return created, nil
 }
 
@@ -634,7 +648,7 @@ func (s *agentPresenceService) End(tenantID, userID int64, at time.Time) error {
 	if profile == nil {
 		return nil
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		lockedProfile, err := repositories.AgentProfileRepository.GetForUpdateInTenant(ctx.Tx, profile.ID, tenantID)
 		if err != nil || lockedProfile == nil || lockedProfile.UserID != userID {
 			return err
@@ -652,6 +666,13 @@ func (s *agentPresenceService) End(tenantID, userID int64, at time.Time) error {
 			"update_user_name": "system",
 		})
 	})
+	if err != nil {
+		return err
+	}
+	if _, recoveryErr := ConversationDispatchService.RecoverAssignmentsForAgent(tenantID, userID, 0); recoveryErr != nil {
+		slog.Warn("recover assignments after agent went offline failed", "error", recoveryErr, "tenantId", tenantID, "userId", userID)
+	}
+	return nil
 }
 
 func monotonicPresenceTime(at, lastSeenAt time.Time) time.Time {

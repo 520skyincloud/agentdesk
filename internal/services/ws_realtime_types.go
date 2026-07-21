@@ -34,6 +34,7 @@ const (
 	realtimeTopicConversationPrefix = "conversation:"
 	realtimeTopicNotificationPrefix = "notification:"
 	realtimeTopicAdminTenantPrefix  = "admin:tenant:"
+	realtimeTopicDispatchPrefix     = "dispatch:tenant:"
 )
 
 type RealtimeEvent struct {

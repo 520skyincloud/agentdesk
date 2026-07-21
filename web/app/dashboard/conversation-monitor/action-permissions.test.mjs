@@ -17,7 +17,7 @@ test("conversation monitor maps actions to backend permissions", () => {
   }
 
   assert.match(pageSource, /fetchServiceSessionDimensions\(\)/)
-  assert.match(pageSource, /dispatchConversation\(item\.conversationId\)/)
+  assert.match(pageSource, /autoAssignConversationDispatch\(item\.conversationId\)/)
   assert.match(pageSource, /markConversationRead\(item\.conversationId\)/)
   assert.match(pageSource, /open=\{canAssign && assignOpen\}/)
   assert.match(pageSource, /open=\{canTransfer && transferOpen\}/)

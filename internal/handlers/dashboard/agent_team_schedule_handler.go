@@ -8,6 +8,7 @@ import (
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/httpx"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 
 	"agent-desk/internal/pkg/httpx/params"
@@ -206,12 +207,14 @@ func AgentTeamSchedulePostDelete(ctx *gin.Context) {
 
 func buildAgentTeamScheduleResponse(item *models.AgentTeamSchedule, operator *dto.AuthPrincipal) response.AgentTeamScheduleResponse {
 	ret := response.AgentTeamScheduleResponse{
-		ID:      item.ID,
-		TeamID:  item.TeamID,
-		SquadID: item.SquadID,
-		StartAt: item.StartAt.Format("2006-01-02 15:04:05"),
-		EndAt:   item.EndAt.Format("2006-01-02 15:04:05"),
-		Remark:  item.Remark,
+		ID:                      item.ID,
+		TeamID:                  item.TeamID,
+		SquadID:                 item.SquadID,
+		IncludedAgentProfileIDs: utils.SplitInt64s(item.IncludedAgentProfileIDs),
+		ExcludedAgentProfileIDs: utils.SplitInt64s(item.ExcludedAgentProfileIDs),
+		StartAt:                 item.StartAt.Format("2006-01-02 15:04:05"),
+		EndAt:                   item.EndAt.Format("2006-01-02 15:04:05"),
+		Remark:                  item.Remark,
 	}
 	if team := services.AgentTeamService.GetInTenant(item.TeamID, operator); team != nil {
 		ret.TeamName = team.Name

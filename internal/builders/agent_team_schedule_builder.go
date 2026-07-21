@@ -13,17 +13,20 @@ func BuildAgentTeamScheduleBatchPreviewResponse(result *services.AgentTeamSchedu
 	items := make([]response.AgentTeamScheduleBatchPreviewItem, 0, len(result.Items))
 	for _, item := range result.Items {
 		items = append(items, response.AgentTeamScheduleBatchPreviewItem{
-			TeamID:         item.TeamID,
-			TeamName:       item.TeamName,
-			SquadID:        item.SquadID,
-			SquadName:      item.SquadName,
-			Date:           item.Date.Format(time.DateOnly),
-			Weekday:        item.Weekday,
-			StartAt:        item.StartAt.Format(time.DateTime),
-			EndAt:          item.EndAt.Format(time.DateTime),
-			Remark:         item.Remark,
-			Conflict:       item.Conflict,
-			ConflictReason: item.ConflictReason,
+			TeamID:             item.TeamID,
+			TeamName:           item.TeamName,
+			SquadID:            item.SquadID,
+			SquadName:          item.SquadName,
+			Date:               item.Date.Format(time.DateOnly),
+			Weekday:            item.Weekday,
+			StartAt:            item.StartAt.Format(time.DateTime),
+			EndAt:              item.EndAt.Format(time.DateTime),
+			Remark:             item.Remark,
+			EligibleAgentCount: item.EligibleAgentCount,
+			TotalCapacity:      item.TotalCapacity,
+			CoverageWarning:    item.CoverageWarning,
+			Conflict:           item.Conflict,
+			ConflictReason:     item.ConflictReason,
 		})
 	}
 	return &response.AgentTeamScheduleBatchPreviewResponse{

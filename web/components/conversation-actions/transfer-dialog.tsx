@@ -126,7 +126,7 @@ function ConversationTransferDialogBody({
     setLoadingAgents(true)
     fetchAgentProfilesAll()
       .then((data) => {
-        setAgents(data.filter((item) => item.serviceStatus === 0))
+        setAgents(data)
       })
       .catch((error) => {
         toast.error(error instanceof Error ? error.message : t("conversationAction.loadAgentsFailed"))

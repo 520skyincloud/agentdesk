@@ -55,8 +55,13 @@ func (s *dashboardService) GetOverview(rangeValue string, locale string, tenantI
 			enums.IMConversationStatusActive,
 		})
 	})
+	activePresences := repositories.AgentPresenceSessionRepository.Find(db, sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Where("ended_at IS NULL").
+		Gte("last_seen_at", now.Add(-dispatchPresenceFreshness)).
+		Asc("id"))
 
-	onlineAgents, busyAgents, offlineAgents, teamLoads := s.buildAgentStats(now, agentTeams, agentProfiles, activeSchedules, activeConversations)
+	onlineAgents, busyAgents, offlineAgents, teamLoads := s.buildAgentStats(agentTeams, agentProfiles, activeSchedules, activeConversations, activePresences)
 
 	enabledAIAgentCount := repositories.DashboardRepository.CountAIAgents(db, func(tx *gorm.DB) *gorm.DB {
 		return tx.Where("tenant_id = ? AND status = ? AND id IN (?)", tenantID, enums.StatusOk, db.Model(&models.Channel{}).Select("ai_agent_id").Where("tenant_id = ? AND ai_agent_id > ?", tenantID, 0))
@@ -116,9 +121,7 @@ func (s *dashboardService) GetOverview(rangeValue string, locale string, tenantI
 	}
 }
 
-func (s *dashboardService) buildAgentStats(now time.Time, teams []models.AgentTeam, profiles []models.AgentProfile, schedules []models.AgentTeamSchedule, conversations []models.Conversation) (int64, int64, int64, []response.DashboardTeamLoadResponse) {
-	const onlineWindow = 15 * time.Minute
-
+func (s *dashboardService) buildAgentStats(teams []models.AgentTeam, profiles []models.AgentProfile, schedules []models.AgentTeamSchedule, conversations []models.Conversation, presences []models.AgentPresenceSession) (int64, int64, int64, []response.DashboardTeamLoadResponse) {
 	scheduledTeamIDs := make(map[int64]bool, len(schedules))
 	for _, item := range schedules {
 		scheduledTeamIDs[item.TeamID] = true
@@ -142,6 +145,16 @@ func (s *dashboardService) buildAgentStats(now time.Time, teams []models.AgentTe
 	var onlineAgents int64
 	var busyAgents int64
 	var offlineAgents int64
+	presenceByUserID := make(map[int64]models.AgentPresenceSession, len(presences))
+	for _, presence := range presences {
+		presenceByUserID[presence.UserID] = presence
+	}
+	activeAssignments := make(map[int64]int, len(conversations))
+	for _, conversation := range conversations {
+		if conversation.CurrentAssigneeID > 0 && conversation.Status != enums.IMConversationStatusClosed {
+			activeAssignments[conversation.CurrentAssigneeID]++
+		}
+	}
 
 	for _, profile := range profiles {
 		counter := teamCounters[profile.TeamID]
@@ -150,11 +163,13 @@ func (s *dashboardService) buildAgentStats(now time.Time, teams []models.AgentTe
 			teamCounters[profile.TeamID] = counter
 		}
 		counter.totalAgents++
-		counter.maxConcurrentCapacity += int64(profile.MaxConcurrentCount)
-		if profile.LastOnlineAt != nil && now.Sub(*profile.LastOnlineAt) <= onlineWindow {
+		if profile.MaxConcurrentCount > 0 {
+			counter.maxConcurrentCapacity += int64(profile.MaxConcurrentCount)
+		}
+		if presence, ok := presenceByUserID[profile.UserID]; ok {
 			counter.onlineAgents++
 			onlineAgents++
-			if profile.ServiceStatus == enums.ServiceStatusBusy {
+			if presence.Status != enums.AgentPresenceStatusBreak && (presence.Status == enums.AgentPresenceStatusBusy || activeAssignments[profile.UserID] > 0) {
 				counter.busyAgents++
 				busyAgents++
 			}

@@ -60,12 +60,10 @@ export const AgentPresenceStatusLabels: Record<AgentPresenceStatus, string> = {
 export enum AgentTeamDispatchMode {
   Manual = "manual",
   Rule = "rule",
-  Intelligent = "intelligent",
 }
 export const AgentTeamDispatchModeLabels: Record<AgentTeamDispatchMode, string> = {
   [AgentTeamDispatchMode.Manual]: "人工派单",
   [AgentTeamDispatchMode.Rule]: "规则均衡",
-  [AgentTeamDispatchMode.Intelligent]: "智能均衡",
 }
 
 export enum AnalyticsDataQuality {
@@ -541,15 +539,6 @@ export enum ServiceSessionStatus {
 export const ServiceSessionStatusLabels: Record<ServiceSessionStatus, string> = {
   [ServiceSessionStatus.Open]: "进行中",
   [ServiceSessionStatus.Closed]: "已关闭",
-}
-
-export enum ServiceStatus {
-  Idle = 0,
-  Busy = 1,
-}
-export const ServiceStatusLabels: Record<ServiceStatus, string> = {
-  [ServiceStatus.Idle]: "空闲",
-  [ServiceStatus.Busy]: "忙碌",
 }
 
 export enum Status {

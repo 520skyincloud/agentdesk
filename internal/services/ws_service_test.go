@@ -101,12 +101,28 @@ func TestWsTenantTopicsAndConversationSubscriptionIsolation(t *testing.T) {
 	if _, ok := defaultTopics[svc.adminTenantTopic(202)]; ok {
 		t.Fatalf("foreign tenant admin topic leaked: %+v", defaultTopics)
 	}
+	if _, ok := defaultTopics[svc.dispatchTenantTopic(101)]; ok {
+		t.Fatalf("user without handover permission must not receive dispatch topic: %+v", defaultTopics)
+	}
+	managerPrincipal := *fixture.adminA
+	managerPrincipal.Permissions = append(managerPrincipal.Permissions, constants.PermissionConversationHandover.Code)
+	managerSession := &ClientSession{TenantID: 101, Principal: &managerPrincipal, Role: realtimeRoleAdmin, Topics: map[string]struct{}{}}
+	managerTopics := sliceToSet(svc.defaultTopics(managerSession))
+	if _, ok := managerTopics[svc.dispatchTenantTopic(101)]; !ok {
+		t.Fatalf("handover manager dispatch topic missing: %+v", managerTopics)
+	}
+	if _, ok := managerTopics[svc.dispatchTenantTopic(202)]; ok {
+		t.Fatalf("foreign tenant dispatch topic leaked: %+v", managerTopics)
+	}
 	routeTopics := sliceToSet(svc.routeConversationTopics(conversationA))
 	if _, ok := routeTopics[svc.adminTenantTopic(101)]; !ok {
 		t.Fatalf("unassigned conversation missing tenant route topic: %+v", routeTopics)
 	}
 	if _, ok := routeTopics[svc.adminTenantTopic(202)]; ok {
 		t.Fatalf("unassigned conversation routed to foreign tenant: %+v", routeTopics)
+	}
+	if _, ok := routeTopics[svc.dispatchTenantTopic(101)]; !ok {
+		t.Fatalf("conversation missing tenant dispatch topic: %+v", routeTopics)
 	}
 
 	guestA := &ClientSession{

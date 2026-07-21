@@ -3,8 +3,8 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
-	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -13,9 +13,11 @@ import (
 
 	"agent-desk/internal/events"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/eventbus"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -26,30 +28,28 @@ var ConversationDispatchService = newConversationDispatchService()
 
 func newConversationDispatchService() *conversationDispatchService {
 	return &conversationDispatchService{
-		dispatchTimers: make(map[int64]*time.Timer),
-		llmChat:        defaultDispatchLLMChat,
-		resolveModel:   defaultDispatchModelResolver,
+		dispatchTimers: make(map[string]*time.Timer),
 	}
 }
 
 type conversationDispatchService struct {
 	dispatchMu                sync.Mutex
-	dispatchTimers            map[int64]*time.Timer
+	dispatchTimers            map[string]*time.Timer
 	dispatching               sync.Map
+	teamDispatching           sync.Map
 	realtimeSchedulingEnabled atomic.Bool
-	llmChat                   dispatchLLMChatFunc
-	resolveModel              dispatchModelResolverFunc
+	pendingTenantCursor       atomic.Int64
+	pendingTeamCursor         atomic.Int64
 }
 
 type dispatchCandidate struct {
 	profile             models.AgentProfile
 	squadID             int64
-	dispatchMode        enums.AgentTeamDispatchMode
 	activeCount         int
 	weightedOpenLoad    int
 	pendingFirstReply   int
 	pendingReplyCount   int
-	shiftAssignedWeight int
+	shiftWorkloadWeight int
 	normalizedLoad      float64
 	lastAssignedAt      time.Time
 }
@@ -64,26 +64,113 @@ type dispatchPoolReport struct {
 	ActiveScheduleTeams []int64
 	MatchedProfiles     int
 	EligibleProfiles    int
+	OnlineProfiles      int
 	CandidateCount      int
 	Reason              string
 }
 
-var errConversationDispatchConflict = errors.New("conversation dispatch conflict")
+var (
+	errConversationDispatchConflict     = errors.New("conversation dispatch conflict")
+	errConversationDispatchTeamMismatch = errors.New("conversation dispatch team mismatch")
+)
 
-const pendingDispatchBatchLimit = 50
+const (
+	dispatchTriggerAutomatic    = "auto_dispatch"
+	dispatchTriggerOperatorRule = "operator_rule_dispatch"
+)
+
+type ruleDispatchExecutionContext struct {
+	operator       *dto.AuthPrincipal
+	expectedTeamID int64
+	trigger        string
+	interactive    bool
+}
+
+func normalizeRuleDispatchExecutionContext(execution ruleDispatchExecutionContext) ruleDispatchExecutionContext {
+	if execution.operator == nil {
+		execution.operator = systemDispatchPrincipal()
+	}
+	execution.trigger = strings.TrimSpace(execution.trigger)
+	if execution.trigger == "" {
+		execution.trigger = dispatchTriggerAutomatic
+	}
+	return execution
+}
+
+const (
+	pendingDispatchBatchLimit     = 50
+	pendingDispatchTeamScanLimit  = 1000
+	pendingDispatchTeamScanFactor = 10
+	pendingCompensationTeamLimit  = 100
+	pendingUnresolvedScanLimit    = 20
+)
 
 const dispatchDebounceDelay = 800 * time.Millisecond
 
 var pendingDispatchRunning atomic.Bool
 
 type activeScheduleSelection struct {
-	SquadID int64
-	StartAt time.Time
-	EndAt   time.Time
+	ScheduleID              int64
+	SquadID                 int64
+	IncludedAgentProfileIDs []int64
+	ExcludedAgentProfileIDs []int64
+	StartAt                 time.Time
+	EndAt                   time.Time
+	Windows                 []activeScheduleWindow
 }
+
+type activeScheduleWindow struct {
+	ScheduleID              int64
+	SquadID                 int64
+	IncludedAgentProfileIDs []int64
+	ExcludedAgentProfileIDs []int64
+	StartAt                 time.Time
+	EndAt                   time.Time
+}
+
+type dispatchPresenceSnapshot struct {
+	Status     enums.AgentPresenceStatus
+	LastSeenAt time.Time
+}
+
+const dispatchPresenceFreshness = 3 * time.Minute
 
 func (s *conversationDispatchService) ScheduleDispatch(conversationID int64) {
 	if conversationID <= 0 || !s.realtimeSchedulingEnabled.Load() {
+		return
+	}
+	conversation := ConversationService.Get(conversationID)
+	if conversation != nil && conversation.TenantID > 0 {
+		route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
+		if teamIDs := s.resolveDispatchTeamIDs(conversation, route); len(teamIDs) == 1 {
+			s.ScheduleTeamDispatch(conversation.TenantID, teamIDs[0])
+			return
+		}
+	}
+	s.scheduleDispatchTimer(fmt.Sprintf("conversation:%d", conversationID), func() error {
+		_, err := s.DispatchPendingTeamForConversation(conversationID, pendingDispatchBatchLimit)
+		return err
+	})
+}
+
+// ScheduleTeamDispatch coalesces bursty conversation, presence and capacity events
+// into one queue drain for the affected team.
+func (s *conversationDispatchService) ScheduleTeamDispatch(tenantID, teamID int64) {
+	if tenantID <= 0 || teamID <= 0 || !s.realtimeSchedulingEnabled.Load() {
+		return
+	}
+	key := fmt.Sprintf("team:%d:%d", tenantID, teamID)
+	s.scheduleDispatchTimer(key, func() error {
+		count, err := s.DispatchPendingTeam(tenantID, teamID, pendingDispatchBatchLimit)
+		if err == nil && count >= pendingDispatchBatchLimit {
+			s.ScheduleTeamDispatch(tenantID, teamID)
+		}
+		return err
+	})
+}
+
+func (s *conversationDispatchService) scheduleDispatchTimer(key string, run func() error) {
+	if strings.TrimSpace(key) == "" || run == nil || !s.realtimeSchedulingEnabled.Load() {
 		return
 	}
 	db := sqls.DB()
@@ -92,26 +179,99 @@ func (s *conversationDispatchService) ScheduleDispatch(conversationID int64) {
 	}
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
-	if timer := s.dispatchTimers[conversationID]; timer != nil {
+	if timer := s.dispatchTimers[key]; timer != nil {
 		timer.Stop()
 	}
 	var timer *time.Timer
 	timer = time.AfterFunc(dispatchDebounceDelay, func() {
 		s.dispatchMu.Lock()
-		if s.dispatchTimers[conversationID] != timer {
+		if s.dispatchTimers[key] != timer {
 			s.dispatchMu.Unlock()
 			return
 		}
-		delete(s.dispatchTimers, conversationID)
+		delete(s.dispatchTimers, key)
 		s.dispatchMu.Unlock()
 		if sqls.DB() != db || !dispatchDatabaseReady(db) {
 			return
 		}
-		if _, err := s.DispatchConversation(conversationID); err != nil {
-			slog.Warn("scheduled conversation dispatch failed", "conversation_id", conversationID, "error", err)
+		if err := run(); err != nil {
+			slog.Warn("scheduled conversation dispatch failed", "dispatch_key", key, "error", err)
 		}
 	})
-	s.dispatchTimers[conversationID] = timer
+	s.dispatchTimers[key] = timer
+}
+
+func (s *conversationDispatchService) DispatchPendingTeamForConversation(conversationID int64, limit int) (int, error) {
+	conversation := ConversationService.Get(conversationID)
+	if conversation == nil || conversation.TenantID <= 0 {
+		return 0, nil
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
+	teamIDs := s.resolveDispatchTeamIDs(conversation, route)
+	if len(teamIDs) != 1 {
+		if conversation.Status == enums.IMConversationStatusPending && conversation.CurrentAssigneeID == 0 {
+			_, err := s.DispatchConversation(conversation.ID)
+			return 0, err
+		}
+		return 0, nil
+	}
+	return s.DispatchPendingTeam(conversation.TenantID, teamIDs[0], limit)
+}
+
+func (s *conversationDispatchService) DispatchPendingTeam(tenantID, teamID int64, limit int) (int, error) {
+	if tenantID <= 0 || teamID <= 0 {
+		return 0, nil
+	}
+	key := fmt.Sprintf("%d:%d", tenantID, teamID)
+	if _, loaded := s.teamDispatching.LoadOrStore(key, struct{}{}); loaded {
+		return 0, nil
+	}
+	defer s.teamDispatching.Delete(key)
+	if limit <= 0 || limit > pendingDispatchBatchLimit {
+		limit = pendingDispatchBatchLimit
+	}
+
+	team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, tenantID)
+	if team == nil || team.Status != enums.StatusOk || normalizedDispatchMode(team.DispatchMode) != enums.AgentTeamDispatchModeRule {
+		return 0, nil
+	}
+	scanLimit := limit * pendingDispatchTeamScanFactor
+	if scanLimit < pendingDispatchBatchLimit {
+		scanLimit = pendingDispatchBatchLimit
+	}
+	if scanLimit > pendingDispatchTeamScanLimit {
+		scanLimit = pendingDispatchTeamScanLimit
+	}
+	conversations, err := repositories.ConversationRepository.FindPendingUnassignedForTeam(sqls.DB(), tenantID, teamID, scanLimit)
+	if err != nil {
+		return 0, err
+	}
+	conversations = s.prioritizePendingConversationWindow(conversations, time.Now(), limit)
+	dispatchedCount := 0
+	var firstErr error
+	for i := range conversations {
+		if dispatchedCount >= limit {
+			break
+		}
+		conversation := &conversations[i]
+		route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, tenantID)
+		resolvedTeamIDs := s.resolveDispatchTeamIDs(conversation, route)
+		if len(resolvedTeamIDs) != 1 || resolvedTeamIDs[0] != teamID {
+			continue
+		}
+		dispatched, err := s.DispatchPendingConversation(conversation)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			slog.Warn("team pending conversation dispatch failed", "tenant_id", tenantID, "team_id", teamID, "conversation_id", conversation.ID, "error", err)
+			continue
+		}
+		if dispatched != nil {
+			dispatchedCount++
+		}
+	}
+	return dispatchedCount, firstErr
 }
 
 func (s *conversationDispatchService) EnableRealtimeScheduling() {
@@ -134,38 +294,52 @@ func (s *conversationDispatchService) DispatchConversation(conversationID int64)
 	if conversation.TenantID <= 0 || conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
 		return nil, nil
 	}
-	aiAgent := AIAgentService.GetByTenantID(conversation.AIAgentID, conversation.TenantID)
-	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
-		return nil, nil
-	}
-	return s.DispatchPendingConversation(conversation, aiAgent)
+	return s.DispatchPendingConversation(conversation)
 }
 
-func (s *conversationDispatchService) DispatchPendingConversation(conversation *models.Conversation, aiAgent *models.AIAgent) (*models.Conversation, error) {
-	if conversation == nil || aiAgent == nil {
+func (s *conversationDispatchService) DispatchPendingConversation(conversation *models.Conversation) (*models.Conversation, error) {
+	return s.dispatchPendingConversationWithContext(conversation, ruleDispatchExecutionContext{})
+}
+
+func (s *conversationDispatchService) dispatchPendingConversationWithContext(conversation *models.Conversation, execution ruleDispatchExecutionContext) (*models.Conversation, error) {
+	if conversation == nil {
 		return nil, nil
 	}
 	if conversation.TenantID <= 0 || conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
 		return nil, nil
 	}
-	if aiAgent.TenantID != conversation.TenantID {
-		return nil, nil
-	}
+	execution = normalizeRuleDispatchExecutionContext(execution)
 	decisionStartedAt := time.Now()
 	if _, loaded := s.dispatching.LoadOrStore(conversation.ID, struct{}{}); loaded {
 		s.ScheduleDispatch(conversation.ID)
+		if execution.interactive {
+			return nil, errConversationDispatchConflict
+		}
 		return nil, nil
 	}
 	defer s.dispatching.Delete(conversation.ID)
 
 	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
-	teamIDs := s.resolveDispatchTeamIDs(conversation, aiAgent, route)
+	teamIDs := s.resolveDispatchTeamIDs(conversation, route)
+	if execution.expectedTeamID > 0 && (len(teamIDs) != 1 || teamIDs[0] != execution.expectedTeamID) {
+		s.recordAutomaticDispatchEvidence(conversation, teamIDs, nil, nil, 0, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusStale, "会话归属客服组已变化", "team_mismatch", execution, decisionStartedAt)
+		return nil, errConversationDispatchTeamMismatch
+	}
+	recoveryLimitReached, err := s.ruleDispatchRecoveryLimitReached(conversation)
+	if err != nil {
+		return nil, err
+	}
+	if recoveryLimitReached {
+		s.notifyDispatchAttentionOnce(conversation, singleDispatchEvidenceTeamID(teamIDs), "dispatch_recovery_exhausted", "人工会话需要编排", "已达到规则自动重派上限", pendingConversationAt(*conversation))
+		return nil, nil
+	}
 	if len(teamIDs) == 0 {
 		slog.Debug("skip auto dispatch due to unresolved team",
 			"conversation_id", conversation.ID,
-			"ai_agent_id", aiAgent.ID,
+			"ai_agent_id", conversation.AIAgentID,
 		)
-		s.recordAutomaticDispatchEvidence(conversation, nil, nil, nil, 0, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusFailed, "未找到可承接该会话的客服组", "unresolved_team", decisionStartedAt)
+		s.recordAutomaticDispatchEvidence(conversation, nil, nil, nil, 0, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusFailed, "未找到可承接该会话的客服组", "unresolved_team", execution, decisionStartedAt)
+		s.notifyUnassignedConversationIfOverdue(conversation, 0, "unresolved_team", "未找到可承接该会话的客服组", time.Now())
 		return nil, nil
 	}
 	teamIDs = s.filterAutomaticTeamIDs(teamIDs, conversation.TenantID)
@@ -176,20 +350,29 @@ func (s *conversationDispatchService) DispatchPendingConversation(conversation *
 
 	candidates, report, err := s.pickDispatchCandidates(teamIDs, conversation.TenantID, route, time.Now())
 	if err != nil {
-		s.recordAutomaticDispatchEvidence(conversation, teamIDs, nil, nil, 0, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusFailed, "自动派单候选计算失败", err.Error(), decisionStartedAt)
+		s.recordAutomaticDispatchEvidence(conversation, teamIDs, nil, nil, 0, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusFailed, "自动派单候选计算失败", err.Error(), execution, decisionStartedAt)
 		return nil, err
+	}
+	candidates, err = s.filterRuleRetryCooldownCandidates(conversation, candidates, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 && report.CandidateCount > 0 {
+		report.CandidateCount = 0
+		report.Reason = "recent_assignment_cooldown"
 	}
 	if len(candidates) == 0 {
 		slog.Debug("no dispatch candidate available",
 			"conversation_id", conversation.ID,
-			"ai_agent_id", aiAgent.ID,
+			"ai_agent_id", conversation.AIAgentID,
 			"requested_team_ids", report.RequestedTeamIDs,
 			"active_schedule_team_ids", report.ActiveScheduleTeams,
 			"matched_profiles", report.MatchedProfiles,
 			"eligible_profiles", report.EligibleProfiles,
 			"reason", report.Reason,
 		)
-		s.recordAutomaticDispatchEvidence(conversation, teamIDs, nil, nil, 0, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusFailed, "当前值班范围内没有可接待客服", report.Reason, decisionStartedAt)
+		s.recordAutomaticDispatchEvidence(conversation, teamIDs, nil, nil, 0, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusFailed, "当前值班范围内没有可接待客服", report.Reason, execution, decisionStartedAt)
+		s.notifyUnassignedConversationIfOverdue(conversation, singleDispatchEvidenceTeamID(teamIDs), report.Reason, "当前值班范围内没有可接待客服", time.Now())
 		return nil, nil
 	}
 
@@ -204,20 +387,21 @@ func (s *conversationDispatchService) DispatchPendingConversation(conversation *
 		candidateDecision := decision
 		candidateDecision.candidate = candidate
 		if candidate.profile.UserID != decision.candidate.profile.UserID {
-			candidateDecision.mode = enums.AgentTeamDispatchModeRule
-			candidateDecision.confidence = 0
-			candidateDecision.reason = "智能候选失效，按公平队列顺延"
+			candidateDecision.reason = "规则首选候选失效，按公平队列顺延"
 		}
-		dispatched, err := s.tryAssignWithDecision(conversation.ID, candidateDecision)
+		dispatched, err := s.tryAssignWithDecisionContext(conversation.ID, candidateDecision, execution)
 		if err != nil {
-			if errors.Is(err, errConversationDispatchConflict) {
-				s.recordAutomaticDispatchEvidence(conversation, teamIDs, candidates, &candidate, 0, string(candidateDecision.mode), enums.DispatchDecisionStatusStale, "派单候选或会话状态已变化", err.Error(), decisionStartedAt)
+			if errors.Is(err, errConversationDispatchConflict) || errors.Is(err, errConversationDispatchTeamMismatch) {
+				s.recordAutomaticDispatchEvidence(conversation, teamIDs, candidates, &candidate, 0, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusStale, "派单候选或会话状态已变化", err.Error(), execution, decisionStartedAt)
 				if latest := ConversationService.Get(conversation.ID); latest != nil && latest.Status == enums.IMConversationStatusPending && latest.CurrentAssigneeID == 0 {
 					s.ScheduleDispatch(conversation.ID)
 				}
+				if execution.interactive {
+					return nil, err
+				}
 				return nil, nil
 			}
-			s.recordAutomaticDispatchEvidence(conversation, teamIDs, candidates, &candidate, 0, string(candidateDecision.mode), enums.DispatchDecisionStatusFailed, "自动派单执行失败", err.Error(), decisionStartedAt)
+			s.recordAutomaticDispatchEvidence(conversation, teamIDs, candidates, &candidate, 0, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusFailed, "自动派单执行失败", err.Error(), execution, decisionStartedAt)
 			return nil, err
 		}
 		if dispatched != nil {
@@ -229,28 +413,22 @@ func (s *conversationDispatchService) DispatchPendingConversation(conversation *
 				Desc("id")); assignment != nil {
 				assignmentID = assignment.ID
 			}
-			decisionStatus := enums.DispatchDecisionStatusSelected
-			fallbackReason := ""
-			if strings.Contains(candidateDecision.reason, "降级") || strings.Contains(candidateDecision.reason, "候选失效") {
-				decisionStatus = enums.DispatchDecisionStatusFallback
-				fallbackReason = candidateDecision.reason
-			}
-			s.recordAutomaticDispatchEvidence(conversation, teamIDs, candidates, &candidate, assignmentID, string(candidateDecision.mode), decisionStatus, candidateDecision.reason, fallbackReason, decisionStartedAt)
+			s.recordAutomaticDispatchEvidence(conversation, teamIDs, candidates, &candidate, assignmentID, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusSelected, candidateDecision.reason, "", execution, decisionStartedAt)
 			slog.Info("conversation auto dispatched",
 				"conversation_id", dispatched.ID,
-				"ai_agent_id", aiAgent.ID,
+				"ai_agent_id", conversation.AIAgentID,
 				"assignee_id", dispatched.CurrentAssigneeID,
 				"team_id", dispatched.CurrentTeamID,
 				"candidate_count", report.CandidateCount,
 				"requested_team_ids", report.RequestedTeamIDs,
-				"dispatch_mode", candidateDecision.mode,
+				"dispatch_mode", enums.AgentTeamDispatchModeRule,
 				"workload_weight", candidateDecision.workloadWeight,
 			)
 			WsService.PublishConversationChanged(dispatched, enums.IMRealtimeEventConversationAssigned)
 			eventbus.PublishAsync(context.Background(), events.ConversationAssignedEvent{
 				ConversationID: dispatched.ID,
 				ToUserID:       dispatched.CurrentAssigneeID,
-				OperatorID:     systemDispatchPrincipal().UserID,
+				OperatorID:     execution.operator.UserID,
 				Reason:         candidateDecision.reason,
 				AssignType:     events.ConversationAssignTypeAutoAssign,
 			})
@@ -259,10 +437,11 @@ func (s *conversationDispatchService) DispatchPendingConversation(conversation *
 	}
 	slog.Debug("auto dispatch candidate list exhausted without assignment",
 		"conversation_id", conversation.ID,
-		"ai_agent_id", aiAgent.ID,
+		"ai_agent_id", conversation.AIAgentID,
 		"candidate_count", report.CandidateCount,
 	)
-	s.recordAutomaticDispatchEvidence(conversation, teamIDs, candidates, nil, 0, string(decision.mode), enums.DispatchDecisionStatusFailed, "自动派单候选已全部失效", "candidate_exhausted", decisionStartedAt)
+	s.recordAutomaticDispatchEvidence(conversation, teamIDs, candidates, nil, 0, string(enums.AgentTeamDispatchModeRule), enums.DispatchDecisionStatusFailed, "自动派单候选已全部失效", "candidate_exhausted", execution, decisionStartedAt)
+	s.notifyUnassignedConversationIfOverdue(conversation, singleDispatchEvidenceTeamID(teamIDs), "candidate_exhausted", "自动派单候选已全部失效", time.Now())
 	return nil, nil
 }
 
@@ -276,6 +455,7 @@ func (s *conversationDispatchService) recordAutomaticDispatchEvidence(
 	status enums.DispatchDecisionStatus,
 	reason string,
 	fallbackReason string,
+	execution ruleDispatchExecutionContext,
 	startedAt time.Time,
 ) {
 	if conversation == nil || conversation.TenantID <= 0 {
@@ -287,14 +467,15 @@ func (s *conversationDispatchService) recordAutomaticDispatchEvidence(
 			UserID: candidate.profile.UserID, TeamID: candidate.profile.TeamID, SquadID: candidate.squadID,
 			ActiveCount: candidate.activeCount, WeightedOpenLoad: candidate.weightedOpenLoad,
 			PendingFirstReply: candidate.pendingFirstReply, PendingReplyCount: candidate.pendingReplyCount,
-			ShiftAssignedWeight: candidate.shiftAssignedWeight, NormalizedLoad: candidate.normalizedLoad,
+			ShiftWorkloadWeight: candidate.shiftWorkloadWeight, NormalizedLoad: candidate.normalizedLoad,
 		})
 	}
+	execution = normalizeRuleDispatchExecutionContext(execution)
 	evidence := DispatchDecisionEvidence{
-		ConversationID: conversation.ID, Trigger: "auto_dispatch", DecisionMode: mode, Status: status,
+		ConversationID: conversation.ID, Trigger: execution.trigger, DecisionMode: mode, Status: status,
 		Candidates: evidenceCandidates, InputLastMessageID: conversation.LastMessageID,
 		DecisionLatencyMillis: time.Since(startedAt).Milliseconds(), Reason: reason, FallbackReason: fallbackReason,
-		OperatorID: systemDispatchPrincipal().UserID, DecidedAt: time.Now(), AssignmentID: assignmentID,
+		OperatorID: execution.operator.UserID, DecidedAt: time.Now(), AssignmentID: assignmentID,
 	}
 	if selected != nil {
 		evidence.SelectedUserID = selected.profile.UserID
@@ -328,34 +509,34 @@ func (s *conversationDispatchService) DispatchPendingConversations(limit int) (i
 	}
 	defer pendingDispatchRunning.Store(false)
 
-	if limit <= 0 {
+	if limit <= 0 || limit > pendingDispatchBatchLimit {
 		limit = pendingDispatchBatchLimit
 	}
-	conversations := ConversationService.Find(sqls.NewCnd().
-		Where("tenant_id > ?", 0).
-		Eq("status", enums.IMConversationStatusPending).
-		Eq("current_assignee_id", 0).
-		Desc("priority").
-		Asc("handoff_at").
-		Asc("id"))
-	if len(conversations) == 0 {
+	tenantIDs, err := repositories.ConversationRepository.FindPendingUnassignedTenantIDs(sqls.DB(), s.pendingTenantCursor.Load(), limit)
+	if err != nil {
+		return 0, err
+	}
+	if len(tenantIDs) == 0 {
 		return 0, nil
 	}
-
+	s.pendingTenantCursor.Store(tenantIDs[len(tenantIDs)-1])
+	perTenantLimit := (limit + len(tenantIDs) - 1) / len(tenantIDs)
 	dispatchedCount := 0
 	scannedCount := 0
-	conversations = s.prioritizePendingConversations(conversations, time.Now())
-	for i, conversation := range fairPendingConversationQueue(conversations) {
-		if i >= limit {
+	var firstErr error
+	for _, tenantID := range tenantIDs {
+		if dispatchedCount >= limit {
 			break
 		}
-		scannedCount++
-		dispatched, err := s.DispatchConversation(conversation.ID)
-		if err != nil {
-			return dispatchedCount, err
+		budget := min(perTenantLimit, limit-dispatchedCount)
+		count, scanned, err := s.dispatchPendingRuleTeamsForTenant(tenantID, budget)
+		dispatchedCount += count
+		scannedCount += scanned
+		if err != nil && firstErr == nil {
+			firstErr = err
 		}
-		if dispatched != nil {
-			dispatchedCount++
+		if err := s.inspectUnresolvedPendingConversations(tenantID, 1); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	if scannedCount > 0 {
@@ -365,28 +546,98 @@ func (s *conversationDispatchService) DispatchPendingConversations(limit int) (i
 			"limit", limit,
 		)
 	}
-	return dispatchedCount, nil
+	return dispatchedCount, firstErr
 }
 
-func (s *conversationDispatchService) RunPendingDispatchLoop(interval time.Duration) {
-	if interval <= 0 {
-		interval = 30 * time.Second
+func (s *conversationDispatchService) dispatchPendingRuleTeamsForTenant(tenantID int64, budget int) (dispatchedCount, scannedCount int, firstErr error) {
+	if tenantID <= 0 || budget <= 0 {
+		return 0, 0, nil
 	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		slog.Info("pending conversation dispatch loop started",
-			"interval_seconds", int(interval/time.Second),
-		)
-
-		for {
-			if _, err := s.DispatchPendingConversations(0); err != nil {
-				slog.Warn("dispatch pending conversations loop failed", "error", err)
-			}
-			<-ticker.C
+	teams := repositories.AgentTeamRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("status", enums.StatusOk).
+		Asc("id").
+		Limit(pendingCompensationTeamLimit))
+	ruleTeams := make([]models.AgentTeam, 0, len(teams))
+	for _, team := range teams {
+		if normalizedDispatchMode(team.DispatchMode) == enums.AgentTeamDispatchModeRule {
+			ruleTeams = append(ruleTeams, team)
 		}
-	}()
+	}
+	if len(ruleTeams) == 0 {
+		return 0, 0, nil
+	}
+	ruleTeams = rotateDispatchTeams(ruleTeams, s.pendingTeamCursor.Load())
+	for i, team := range ruleTeams {
+		if dispatchedCount >= budget {
+			break
+		}
+		remainingTeams := len(ruleTeams) - i
+		teamBudget := (budget - dispatchedCount + remainingTeams - 1) / remainingTeams
+		if teamBudget < 1 {
+			teamBudget = 1
+		}
+		count, err := s.DispatchPendingTeam(tenantID, team.ID, teamBudget)
+		scannedCount++
+		s.pendingTeamCursor.Store(team.ID)
+		dispatchedCount += count
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			slog.Warn("rule team compensation dispatch failed", "tenant_id", tenantID, "team_id", team.ID, "error", err)
+		}
+	}
+	return dispatchedCount, scannedCount, firstErr
+}
+
+func rotateDispatchTeams(teams []models.AgentTeam, afterTeamID int64) []models.AgentTeam {
+	if len(teams) < 2 || afterTeamID <= 0 {
+		return teams
+	}
+	start := 0
+	for i := range teams {
+		if teams[i].ID > afterTeamID {
+			start = i
+			break
+		}
+		if i == len(teams)-1 {
+			start = 0
+		}
+	}
+	if start == 0 {
+		return teams
+	}
+	ret := make([]models.AgentTeam, 0, len(teams))
+	ret = append(ret, teams[start:]...)
+	ret = append(ret, teams[:start]...)
+	return ret
+}
+
+func (s *conversationDispatchService) inspectUnresolvedPendingConversations(tenantID int64, limit int) error {
+	if tenantID <= 0 || limit <= 0 {
+		return nil
+	}
+	items, err := repositories.ConversationRepository.FindPendingUnassignedByTenant(sqls.DB(), tenantID, pendingUnresolvedScanLimit)
+	if err != nil {
+		return err
+	}
+	inspected := 0
+	for i := range items {
+		conversation := &items[i]
+		route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, tenantID)
+		if len(s.resolveDispatchTeamIDs(conversation, route)) != 0 {
+			continue
+		}
+		if _, err := s.DispatchPendingConversation(conversation); err != nil {
+			return err
+		}
+		inspected++
+		if inspected >= limit {
+			break
+		}
+	}
+	return nil
 }
 
 // pickDispatchCandidates returns the eligible dispatch candidates for the given teamIDs at the given time, along with a report for debugging and analysis.
@@ -419,12 +670,8 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, te
 		In("team_id", activeTeamIDs).
 		Eq("status", enums.StatusOk).
 		Eq("auto_assign_enabled", true).
-		Eq("service_status", enums.ServiceStatusIdle))
-	activeSchedules := make(map[int64]int64, len(activeScheduleDetails))
-	for teamID, selection := range activeScheduleDetails {
-		activeSchedules[teamID] = selection.SquadID
-	}
-	profiles = s.filterProfilesByActiveSquads(profiles, activeSchedules, tenantID)
+		Where("max_concurrent_count > ?", 0))
+	profiles, scheduleWindowByProfileID := s.filterProfilesByActiveSchedules(profiles, activeScheduleDetails, tenantID)
 	report.MatchedProfiles = len(profiles)
 	if len(profiles) == 0 {
 		report.Reason = "no_matched_profile"
@@ -437,52 +684,75 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, te
 		return nil, report, nil
 	}
 	report.EligibleProfiles = len(enabledProfiles)
+	permittedUserIDs, err := repositories.PermissionRepository.FindUserIDsWithAllCodes(sqls.DB(), enabledUserIDs, []string{
+		constants.PermissionConversationView.Code,
+		constants.PermissionConversationSend.Code,
+	})
+	if err != nil {
+		return nil, report, err
+	}
+	permittedUserSet := int64Set(permittedUserIDs)
+	permittedProfiles := make([]models.AgentProfile, 0, len(enabledProfiles))
+	for _, profile := range enabledProfiles {
+		if _, ok := permittedUserSet[profile.UserID]; ok {
+			permittedProfiles = append(permittedProfiles, profile)
+		}
+	}
+	enabledProfiles = permittedProfiles
+	if len(enabledProfiles) == 0 {
+		report.Reason = "no_agent_with_reply_permission"
+		return nil, report, nil
+	}
 	if route != nil {
 		scopedProfiles := make([]models.AgentProfile, 0, len(enabledProfiles))
-		scopedUserIDs := make([]int64, 0, len(enabledUserIDs))
 		for _, profile := range enabledProfiles {
 			if AgentProfileService.ProfileCanServeRoute(&profile, route) {
 				scopedProfiles = append(scopedProfiles, profile)
-				scopedUserIDs = append(scopedUserIDs, profile.UserID)
 			}
 		}
 		enabledProfiles = scopedProfiles
-		enabledUserIDs = scopedUserIDs
 		if len(enabledProfiles) == 0 {
 			report.Reason = "no_profile_in_store_scope"
 			return nil, report, nil
 		}
 	}
+	enabledUserIDs = enabledUserIDs[:0]
+	for _, profile := range enabledProfiles {
+		enabledUserIDs = append(enabledUserIDs, profile.UserID)
+	}
+	presenceByUserID := s.loadDispatchPresenceMapDB(sqls.DB(), tenantID, enabledUserIDs, now)
+	onlineProfiles := make([]models.AgentProfile, 0, len(enabledProfiles))
+	for _, profile := range enabledProfiles {
+		if isDispatchPresenceEligible(presenceByUserID[profile.UserID], now) {
+			onlineProfiles = append(onlineProfiles, profile)
+		}
+	}
+	report.OnlineProfiles = len(onlineProfiles)
+	if len(onlineProfiles) == 0 {
+		report.Reason = "no_online_agent"
+		return nil, report, nil
+	}
+	enabledProfiles = onlineProfiles
 
 	loads, err := s.buildDispatchLoadMap(enabledProfiles, activeScheduleDetails, tenantID)
 	if err != nil {
 		return nil, report, err
 	}
-	teamModes := make(map[int64]enums.AgentTeamDispatchMode, len(activeTeamIDs))
-	for _, team := range AgentTeamService.Find(sqls.NewCnd().Eq("tenant_id", tenantID).In("id", activeTeamIDs).Eq("status", enums.StatusOk)) {
-		teamModes[team.ID] = normalizedDispatchMode(team.DispatchMode)
-	}
-
 	candidates := make([]dispatchCandidate, 0, len(enabledProfiles))
 	for _, profile := range enabledProfiles {
 		load := loads[profile.UserID]
-		if profile.MaxConcurrentCount > 0 && load.activeCount >= profile.MaxConcurrentCount {
+		if profile.MaxConcurrentCount <= 0 || load.activeCount >= profile.MaxConcurrentCount {
 			continue
 		}
-		if !profile.ReceiveOfflineMessage && profile.LastOnlineAt != nil && now.Sub(*profile.LastOnlineAt) > 15*time.Minute {
-			continue
-		}
-		capacity := math.Max(float64(profile.MaxConcurrentCount), 1)
-		normalizedLoad := (float64(load.weightedOpenLoad)+float64(load.pendingFirstReply)*0.75+float64(load.pendingReplyCount)*0.5)/capacity + float64(load.shiftAssignedWeight)*0.03
+		normalizedLoad := normalizedDispatchPressure(load, profile.MaxConcurrentCount)
 		candidates = append(candidates, dispatchCandidate{
 			profile:             profile,
-			squadID:             activeSchedules[profile.TeamID],
-			dispatchMode:        teamModes[profile.TeamID],
+			squadID:             scheduleWindowByProfileID[profile.ID].SquadID,
 			activeCount:         load.activeCount,
 			weightedOpenLoad:    load.weightedOpenLoad,
 			pendingFirstReply:   load.pendingFirstReply,
 			pendingReplyCount:   load.pendingReplyCount,
-			shiftAssignedWeight: load.shiftAssignedWeight,
+			shiftWorkloadWeight: load.shiftWorkloadWeight,
 			normalizedLoad:      normalizedLoad,
 			lastAssignedAt:      load.lastAssignedAt,
 		})
@@ -500,10 +770,12 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, te
 		case a.normalizedLoad > b.normalizedLoad:
 			return 1
 		}
+		aDebt := dispatchShiftDebt(a)
+		bDebt := dispatchShiftDebt(b)
 		switch {
-		case a.shiftAssignedWeight < b.shiftAssignedWeight:
+		case aDebt < bDebt:
 			return -1
-		case a.shiftAssignedWeight > b.shiftAssignedWeight:
+		case aDebt > bDebt:
 			return 1
 		}
 		switch {
@@ -522,14 +794,6 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, te
 		case a.profile.PriorityLevel > b.profile.PriorityLevel:
 			return -1
 		case a.profile.PriorityLevel < b.profile.PriorityLevel:
-			return 1
-		}
-		aLastStatusAt := zeroTime(a.profile.LastStatusAt)
-		bLastStatusAt := zeroTime(b.profile.LastStatusAt)
-		switch {
-		case aLastStatusAt.Before(bLastStatusAt):
-			return -1
-		case aLastStatusAt.After(bLastStatusAt):
 			return 1
 		}
 		switch {
@@ -621,13 +885,44 @@ func (s *conversationDispatchService) findActiveScheduleDetailsDB(db *gorm.DB, t
 		In("team_id", enabledTeamIDs).
 		Eq("status", enums.StatusOk).
 		Lte("start_at", now).
-		Gt("end_at", now))
+		Gt("end_at", now).
+		Desc("start_at").
+		Desc("id"))
 
 	activeSet := make(map[int64]activeScheduleSelection, len(schedules))
 	for _, schedule := range schedules {
-		if _, exists := activeSet[schedule.TeamID]; !exists {
-			activeSet[schedule.TeamID] = activeScheduleSelection{SquadID: schedule.SquadID, StartAt: schedule.StartAt, EndAt: schedule.EndAt}
+		window := activeScheduleWindow{
+			ScheduleID:              schedule.ID,
+			SquadID:                 schedule.SquadID,
+			IncludedAgentProfileIDs: utils.SplitInt64s(schedule.IncludedAgentProfileIDs),
+			ExcludedAgentProfileIDs: utils.SplitInt64s(schedule.ExcludedAgentProfileIDs),
+			StartAt:                 schedule.StartAt,
+			EndAt:                   schedule.EndAt,
 		}
+		selection, exists := activeSet[schedule.TeamID]
+		if !exists {
+			selection = activeScheduleSelection{
+				ScheduleID:              window.ScheduleID,
+				SquadID:                 window.SquadID,
+				IncludedAgentProfileIDs: append([]int64(nil), window.IncludedAgentProfileIDs...),
+				ExcludedAgentProfileIDs: append([]int64(nil), window.ExcludedAgentProfileIDs...),
+				StartAt:                 window.StartAt,
+				EndAt:                   window.EndAt,
+			}
+		} else {
+			selection.ScheduleID = 0
+			selection.SquadID = 0
+			selection.IncludedAgentProfileIDs = nil
+			selection.ExcludedAgentProfileIDs = nil
+			if window.StartAt.Before(selection.StartAt) {
+				selection.StartAt = window.StartAt
+			}
+			if window.EndAt.After(selection.EndAt) {
+				selection.EndAt = window.EndAt
+			}
+		}
+		selection.Windows = append(selection.Windows, window)
+		activeSet[schedule.TeamID] = selection
 	}
 	return activeSet
 }
@@ -643,56 +938,120 @@ func (s *conversationDispatchService) findActiveScheduleTeamIDs(teamIDs []int64,
 	return ret
 }
 
-func (s *conversationDispatchService) filterProfilesByActiveSquads(profiles []models.AgentProfile, activeSchedules map[int64]int64, tenantID int64) []models.AgentProfile {
-	squadIDs := make([]int64, 0, len(activeSchedules))
-	for _, squadID := range activeSchedules {
-		if squadID > 0 {
-			squadIDs = append(squadIDs, squadID)
-		}
-	}
+func (s *conversationDispatchService) filterProfilesByActiveSchedules(profiles []models.AgentProfile, activeSchedules map[int64]activeScheduleSelection, tenantID int64) ([]models.AgentProfile, map[int64]activeScheduleWindow) {
+	squadIDs := activeScheduleSquadIDs(activeSchedules)
 	membersBySquad, teamBySquad := AgentTeamSquadService.ActiveMemberProfileSet(squadIDs, tenantID)
 	ret := make([]models.AgentProfile, 0, len(profiles))
+	windowByProfileID := make(map[int64]activeScheduleWindow, len(profiles))
 	for i := range profiles {
-		squadID, scheduled := activeSchedules[profiles[i].TeamID]
+		selection, scheduled := activeSchedules[profiles[i].TeamID]
 		if !scheduled {
 			continue
 		}
-		if squadID > 0 {
-			if teamBySquad[squadID] != profiles[i].TeamID {
-				continue
-			}
-			if _, member := membersBySquad[squadID][profiles[i].ID]; !member {
-				continue
-			}
+		window, matched := matchingActiveScheduleSnapshot(&profiles[i], selection, membersBySquad, teamBySquad)
+		if !matched {
+			continue
 		}
 		ret = append(ret, profiles[i])
+		windowByProfileID[profiles[i].ID] = window
+	}
+	return ret, windowByProfileID
+}
+
+func profileMatchesActiveScheduleSnapshot(profile *models.AgentProfile, selection activeScheduleSelection, membersBySquad map[int64]map[int64]struct{}, teamBySquad map[int64]int64) bool {
+	_, matched := matchingActiveScheduleSnapshot(profile, selection, membersBySquad, teamBySquad)
+	return matched
+}
+
+func matchingActiveScheduleSnapshot(profile *models.AgentProfile, selection activeScheduleSelection, membersBySquad map[int64]map[int64]struct{}, teamBySquad map[int64]int64) (activeScheduleWindow, bool) {
+	if profile == nil || profile.ID <= 0 || profile.TeamID <= 0 {
+		return activeScheduleWindow{}, false
+	}
+	for _, window := range activeScheduleWindows(selection) {
+		if slices.Contains(window.ExcludedAgentProfileIDs, profile.ID) {
+			continue
+		}
+		if window.SquadID <= 0 {
+			return window, true
+		}
+		if teamBySquad[window.SquadID] != profile.TeamID {
+			continue
+		}
+		if slices.Contains(window.IncludedAgentProfileIDs, profile.ID) {
+			return window, true
+		}
+		if _, member := membersBySquad[window.SquadID][profile.ID]; member {
+			return window, true
+		}
+	}
+	return activeScheduleWindow{}, false
+}
+
+func activeScheduleWindows(selection activeScheduleSelection) []activeScheduleWindow {
+	if len(selection.Windows) > 0 {
+		return selection.Windows
+	}
+	if selection.ScheduleID <= 0 && selection.StartAt.IsZero() && selection.EndAt.IsZero() {
+		return nil
+	}
+	return []activeScheduleWindow{{
+		ScheduleID:              selection.ScheduleID,
+		SquadID:                 selection.SquadID,
+		IncludedAgentProfileIDs: selection.IncludedAgentProfileIDs,
+		ExcludedAgentProfileIDs: selection.ExcludedAgentProfileIDs,
+		StartAt:                 selection.StartAt,
+		EndAt:                   selection.EndAt,
+	}}
+}
+
+func activeScheduleSquadIDs(selections map[int64]activeScheduleSelection) []int64 {
+	ret := make([]int64, 0, len(selections))
+	for _, selection := range selections {
+		for _, window := range activeScheduleWindows(selection) {
+			if window.SquadID > 0 {
+				ret = append(ret, window.SquadID)
+			}
+		}
+	}
+	return uniquePositiveInt64s(ret)
+}
+
+func (s *conversationDispatchService) loadDispatchPresenceMapDB(db *gorm.DB, tenantID int64, userIDs []int64, now time.Time) map[int64]dispatchPresenceSnapshot {
+	ret := make(map[int64]dispatchPresenceSnapshot, len(userIDs))
+	userIDs = uniquePositiveInt64s(userIDs)
+	if db == nil || tenantID <= 0 || len(userIDs) == 0 {
+		return ret
+	}
+	sessions := repositories.AgentPresenceSessionRepository.Find(db, sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		In("user_id", userIDs).
+		Where("ended_at IS NULL").
+		Gte("last_seen_at", now.Add(-dispatchPresenceFreshness)).
+		Desc("id"))
+	for _, session := range sessions {
+		if _, exists := ret[session.UserID]; exists {
+			continue
+		}
+		ret[session.UserID] = dispatchPresenceSnapshot{Status: session.Status, LastSeenAt: session.LastSeenAt}
 	}
 	return ret
 }
 
-func (s *conversationDispatchService) findActiveConversationCountMap(userIDs []int64, tenantID int64) (map[int64]int, error) {
-	return s.findActiveConversationCountMapDB(sqls.DB(), userIDs, tenantID)
-}
-
-func (s *conversationDispatchService) tryAssignConversation(conversationID int64, candidate dispatchCandidate, reason string) (*models.Conversation, error) {
-	conversation := ConversationService.Get(conversationID)
-	expectedLastMessageID := int64(0)
-	if conversation != nil {
-		expectedLastMessageID = conversation.LastMessageID
+func isDispatchPresenceEligible(snapshot dispatchPresenceSnapshot, now time.Time) bool {
+	if snapshot.LastSeenAt.IsZero() || now.Sub(snapshot.LastSeenAt) > dispatchPresenceFreshness {
+		return false
 	}
-	return s.tryAssignWithDecision(conversationID, dispatchDecision{
-		candidate:             candidate,
-		mode:                  enums.AgentTeamDispatchModeRule,
-		reason:                reason,
-		workloadWeight:        normalizedWorkloadWeight(conversation),
-		priority:              normalizedConversationPriority(conversation),
-		expectedLastMessageID: expectedLastMessageID,
-	})
+	return snapshot.Status == enums.AgentPresenceStatusOnline || snapshot.Status == enums.AgentPresenceStatusIdle
 }
 
 func (s *conversationDispatchService) tryAssignWithDecision(conversationID int64, decision dispatchDecision) (*models.Conversation, error) {
+	return s.tryAssignWithDecisionContext(conversationID, decision, ruleDispatchExecutionContext{})
+}
+
+func (s *conversationDispatchService) tryAssignWithDecisionContext(conversationID int64, decision dispatchDecision, execution ruleDispatchExecutionContext) (*models.Conversation, error) {
 	now := time.Now()
-	operator := systemDispatchPrincipal()
+	execution = normalizeRuleDispatchExecutionContext(execution)
+	operator := execution.operator
 	candidate := decision.candidate
 
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -712,66 +1071,32 @@ func (s *conversationDispatchService) tryAssignWithDecision(conversationID int64
 		if conversation.LastMessageID != decision.expectedLastMessageID {
 			return errConversationDispatchConflict
 		}
-		profile, err := repositories.AgentProfileRepository.GetForUpdateInTenant(ctx.Tx, candidate.profile.ID, conversation.TenantID)
+		if execution.expectedTeamID > 0 {
+			route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
+			teamIDs := s.resolveDispatchTeamIDsDB(ctx.Tx, conversation, route)
+			if len(teamIDs) != 1 || teamIDs[0] != execution.expectedTeamID || candidate.profile.TeamID != execution.expectedTeamID {
+				return errConversationDispatchTeamMismatch
+			}
+		}
+		coolingDown, err := s.ruleDispatchCandidateCoolingDownDB(ctx.Tx, conversation, candidate.profile.UserID, now)
 		if err != nil {
 			return err
 		}
-		if profile == nil || profile.UserID != candidate.profile.UserID || profile.Status != enums.StatusOk || !profile.AutoAssignEnabled || profile.ServiceStatus != enums.ServiceStatusIdle {
+		if coolingDown {
 			return errConversationDispatchConflict
 		}
-		user := repositories.UserRepository.GetInTenant(ctx.Tx, profile.UserID, conversation.TenantID)
-		if user == nil || user.Status != enums.StatusOk || user.DeletedAt != nil {
-			return errConversationDispatchConflict
-		}
-		team, err := repositories.AgentTeamRepository.GetForUpdateInTenant(ctx.Tx, profile.TeamID, conversation.TenantID)
+		profile, activeSelection, err := s.validateDispatchDecisionCandidateDB(ctx.Tx, conversation, decision, now)
 		if err != nil {
 			return err
-		}
-		if team == nil || team.Status != enums.StatusOk {
-			return errConversationDispatchConflict
-		}
-		teamMode := normalizedDispatchMode(team.DispatchMode)
-		if teamMode == enums.AgentTeamDispatchModeManual || (decision.mode == enums.AgentTeamDispatchModeIntelligent && teamMode != enums.AgentTeamDispatchModeIntelligent) {
-			return errConversationDispatchConflict
-		}
-		activeScheduleDetails := s.findActiveScheduleDetailsDB(ctx.Tx, []int64{profile.TeamID}, conversation.TenantID, now)
-		activeSelection, scheduled := activeScheduleDetails[profile.TeamID]
-		if !scheduled || activeSelection.SquadID != candidate.squadID || !profileMatchesActiveScheduleDB(ctx.Tx, profile, activeSelection) {
-			return errConversationDispatchConflict
-		}
-		route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
-		if route != nil && !teamCanServeRoute(team, route) {
-			return errConversationDispatchConflict
-		}
-		activeCounts, err := s.findActiveConversationCountMapDB(ctx.Tx, []int64{profile.UserID}, conversation.TenantID)
-		if err != nil {
-			return err
-		}
-		if profile.MaxConcurrentCount > 0 && activeCounts[profile.UserID] >= profile.MaxConcurrentCount {
-			return errConversationDispatchConflict
-		}
-		currentLoads, err := s.buildDispatchLoadMapDB(ctx.Tx, []models.AgentProfile{*profile}, activeScheduleDetails, conversation.TenantID)
-		if err != nil {
-			return err
-		}
-		currentLoad := currentLoads[profile.UserID]
-		if currentLoad.activeCount != candidate.activeCount ||
-			currentLoad.weightedOpenLoad != candidate.weightedOpenLoad ||
-			currentLoad.pendingFirstReply != candidate.pendingFirstReply ||
-			currentLoad.pendingReplyCount != candidate.pendingReplyCount ||
-			currentLoad.shiftAssignedWeight != candidate.shiftAssignedWeight ||
-			!currentLoad.lastAssignedAt.Equal(candidate.lastAssignedAt) {
-			return errConversationDispatchConflict
 		}
 
 		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, conversationID, now); err != nil {
 			return err
 		}
 		if err := ConversationAssignmentService.CreateAssignmentWithOptions(ctx, conversationID, conversation.CurrentAssigneeID, profile.UserID, enums.IMAssignmentTypeAssign, decision.reason, operator, now, ConversationAssignmentOptions{
-			SquadID:            activeSelection.SquadID,
-			DispatchMode:       decision.mode,
-			DecisionConfidence: decision.confidence,
-			WorkloadWeight:     decision.workloadWeight,
+			SquadID:        activeSelection.SquadID,
+			DispatchMode:   enums.AgentTeamDispatchModeRule,
+			WorkloadWeight: decision.workloadWeight,
 		}); err != nil {
 			return err
 		}
@@ -795,7 +1120,7 @@ func (s *conversationDispatchService) tryAssignWithDecision(conversationID int64
 			return errConversationDispatchConflict
 		}
 
-		if err := ConversationEventLogService.CreateEvent(ctx, conversationID, enums.IMEventTypeAssign, enums.IMSenderTypeSystem, operator.UserID, "会话已自动分配", buildDispatchEventPayload(conversation.CurrentAssigneeID, profile.UserID, profile.TeamID, decision)); err != nil {
+		if err := ConversationEventLogService.CreateEvent(ctx, conversationID, enums.IMEventTypeAssign, enums.IMSenderTypeSystem, operator.UserID, "会话已按规则分配", buildDispatchEventPayload(conversation.CurrentAssigneeID, profile.UserID, profile.TeamID, decision, execution.trigger)); err != nil {
 			return err
 		}
 		_, err = ConversationRouteService.enterHQAgentDeskServingWithDB(ctx.Tx, conversationID, "网页端总部客服自动分配:"+strings.TrimSpace(decision.reason), now)
@@ -807,24 +1132,122 @@ func (s *conversationDispatchService) tryAssignWithDecision(conversationID int64
 	return ConversationService.Get(conversationID), nil
 }
 
-func profileMatchesActiveScheduleDB(db *gorm.DB, profile *models.AgentProfile, selection activeScheduleSelection) bool {
-	if db == nil || profile == nil || profile.TenantID <= 0 || profile.TeamID <= 0 {
-		return false
+func (s *conversationDispatchService) validateDispatchDecisionCandidateDB(db *gorm.DB, conversation *models.Conversation, decision dispatchDecision, now time.Time) (*models.AgentProfile, activeScheduleSelection, error) {
+	candidate := decision.candidate
+	if db == nil || conversation == nil || conversation.TenantID <= 0 {
+		return nil, activeScheduleSelection{}, errConversationDispatchConflict
 	}
-	if selection.SquadID <= 0 {
-		return true
+	profile, err := repositories.AgentProfileRepository.GetForUpdateInTenant(db, candidate.profile.ID, conversation.TenantID)
+	if err != nil {
+		return nil, activeScheduleSelection{}, err
 	}
-	squad := repositories.AgentTeamSquadRepository.GetInTenant(db, selection.SquadID, profile.TenantID)
-	if squad == nil || squad.Status != enums.StatusOk || squad.TeamID != profile.TeamID {
-		return false
+	if profile == nil || profile.UserID != candidate.profile.UserID || profile.Status != enums.StatusOk || !profile.AutoAssignEnabled || profile.MaxConcurrentCount <= 0 {
+		return nil, activeScheduleSelection{}, errConversationDispatchConflict
 	}
-	return repositories.AgentTeamSquadMemberRepository.Take(db,
-		"tenant_id = ? AND squad_id = ? AND agent_profile_id = ? AND status = ?",
-		profile.TenantID, selection.SquadID, profile.ID, enums.StatusOk,
-	) != nil
+	user := repositories.UserRepository.GetInTenant(db, profile.UserID, conversation.TenantID)
+	if user == nil || user.Status != enums.StatusOk || user.DeletedAt != nil {
+		return nil, activeScheduleSelection{}, errConversationDispatchConflict
+	}
+	permittedUserIDs, err := repositories.PermissionRepository.FindUserIDsWithAllCodes(db, []int64{profile.UserID}, []string{
+		constants.PermissionConversationView.Code,
+		constants.PermissionConversationSend.Code,
+	})
+	if err != nil {
+		return nil, activeScheduleSelection{}, err
+	}
+	if len(permittedUserIDs) != 1 || permittedUserIDs[0] != profile.UserID {
+		return nil, activeScheduleSelection{}, errConversationDispatchConflict
+	}
+	presence := s.loadDispatchPresenceMapDB(db, conversation.TenantID, []int64{profile.UserID}, now)[profile.UserID]
+	if !isDispatchPresenceEligible(presence, now) {
+		return nil, activeScheduleSelection{}, errConversationDispatchConflict
+	}
+	team, err := repositories.AgentTeamRepository.GetForUpdateInTenant(db, profile.TeamID, conversation.TenantID)
+	if err != nil {
+		return nil, activeScheduleSelection{}, err
+	}
+	if team == nil || team.Status != enums.StatusOk || normalizedDispatchMode(team.DispatchMode) != enums.AgentTeamDispatchModeRule {
+		return nil, activeScheduleSelection{}, errConversationDispatchConflict
+	}
+	activeScheduleDetails := s.findActiveScheduleDetailsDB(db, []int64{profile.TeamID}, conversation.TenantID, now)
+	activeSelection, scheduled := activeScheduleDetails[profile.TeamID]
+	matchedWindow, matched := matchingActiveScheduleDB(db, profile, activeSelection)
+	if !scheduled || !matched || matchedWindow.SquadID != candidate.squadID {
+		return nil, activeScheduleSelection{}, errConversationDispatchConflict
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversation.ID, conversation.TenantID)
+	if route != nil && !teamCanServeRoute(team, route) {
+		return nil, activeScheduleSelection{}, errConversationDispatchConflict
+	}
+	activeCounts, err := s.findActiveConversationCountMapDB(db, []int64{profile.UserID}, conversation.TenantID)
+	if err != nil {
+		return nil, activeScheduleSelection{}, err
+	}
+	if activeCounts[profile.UserID] >= profile.MaxConcurrentCount {
+		return nil, activeScheduleSelection{}, errConversationDispatchConflict
+	}
+	currentLoads, err := s.buildDispatchLoadMapDB(db, []models.AgentProfile{*profile}, activeScheduleDetails, conversation.TenantID)
+	if err != nil {
+		return nil, activeScheduleSelection{}, err
+	}
+	currentLoad := currentLoads[profile.UserID]
+	if currentLoad.activeCount != candidate.activeCount ||
+		currentLoad.weightedOpenLoad != candidate.weightedOpenLoad ||
+		currentLoad.pendingFirstReply != candidate.pendingFirstReply ||
+		currentLoad.pendingReplyCount != candidate.pendingReplyCount ||
+		currentLoad.shiftWorkloadWeight != candidate.shiftWorkloadWeight ||
+		!currentLoad.lastAssignedAt.Equal(candidate.lastAssignedAt) {
+		return nil, activeScheduleSelection{}, errConversationDispatchConflict
+	}
+	return profile, activeScheduleSelectionFromWindow(matchedWindow), nil
 }
 
-func buildDispatchEventPayload(fromAssigneeID, toAssigneeID, toTeamID int64, decision dispatchDecision) string {
+func profileMatchesActiveScheduleDB(db *gorm.DB, profile *models.AgentProfile, selection activeScheduleSelection) bool {
+	_, matched := matchingActiveScheduleDB(db, profile, selection)
+	return matched
+}
+
+func matchingActiveScheduleDB(db *gorm.DB, profile *models.AgentProfile, selection activeScheduleSelection) (activeScheduleWindow, bool) {
+	if db == nil || profile == nil || profile.TenantID <= 0 || profile.TeamID <= 0 {
+		return activeScheduleWindow{}, false
+	}
+	for _, window := range activeScheduleWindows(selection) {
+		if slices.Contains(window.ExcludedAgentProfileIDs, profile.ID) {
+			continue
+		}
+		if window.SquadID <= 0 {
+			return window, true
+		}
+		squad := repositories.AgentTeamSquadRepository.GetInTenant(db, window.SquadID, profile.TenantID)
+		if squad == nil || squad.Status != enums.StatusOk || squad.TeamID != profile.TeamID {
+			continue
+		}
+		if slices.Contains(window.IncludedAgentProfileIDs, profile.ID) {
+			return window, true
+		}
+		if repositories.AgentTeamSquadMemberRepository.Take(db,
+			"tenant_id = ? AND squad_id = ? AND agent_profile_id = ? AND status = ?",
+			profile.TenantID, window.SquadID, profile.ID, enums.StatusOk,
+		) != nil {
+			return window, true
+		}
+	}
+	return activeScheduleWindow{}, false
+}
+
+func activeScheduleSelectionFromWindow(window activeScheduleWindow) activeScheduleSelection {
+	return activeScheduleSelection{
+		ScheduleID:              window.ScheduleID,
+		SquadID:                 window.SquadID,
+		IncludedAgentProfileIDs: append([]int64(nil), window.IncludedAgentProfileIDs...),
+		ExcludedAgentProfileIDs: append([]int64(nil), window.ExcludedAgentProfileIDs...),
+		StartAt:                 window.StartAt,
+		EndAt:                   window.EndAt,
+		Windows:                 []activeScheduleWindow{window},
+	}
+}
+
+func buildDispatchEventPayload(fromAssigneeID, toAssigneeID, toTeamID int64, decision dispatchDecision, trigger string) string {
 	return ConversationService.buildEventPayload(map[string]any{
 		"fromStatus":     enums.IMConversationStatusPending,
 		"toStatus":       enums.IMConversationStatusActive,
@@ -832,10 +1255,10 @@ func buildDispatchEventPayload(fromAssigneeID, toAssigneeID, toTeamID int64, dec
 		"toAssigneeId":   toAssigneeID,
 		"toTeamId":       toTeamID,
 		"reason":         strings.TrimSpace(decision.reason),
-		"dispatchMode":   decision.mode,
-		"confidence":     decision.confidence,
+		"dispatchMode":   enums.AgentTeamDispatchModeRule,
 		"workloadWeight": decision.workloadWeight,
 		"priority":       decision.priority,
+		"trigger":        strings.TrimSpace(trigger),
 	})
 }
 
@@ -845,11 +1268,4 @@ func systemDispatchPrincipal() *dto.AuthPrincipal {
 		Username: "system",
 		Nickname: "system",
 	}
-}
-
-func zeroTime(value *time.Time) time.Time {
-	if value == nil {
-		return time.Time{}
-	}
-	return *value
 }

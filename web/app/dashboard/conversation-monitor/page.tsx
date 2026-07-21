@@ -39,7 +39,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   createAdminWebSocketUrl,
-  dispatchConversation,
+  autoAssignConversationDispatch,
   fetchConversationDetail,
   fetchConversationMessages,
   fetchTagsAll,
@@ -461,7 +461,7 @@ export default function ConversationRecordsPage() {
     if (!canAssign || item.status !== "open") return
     setActionLoadingId(item.conversationId)
     try {
-      await dispatchConversation(item.conversationId)
+      await autoAssignConversationDispatch(item.conversationId)
       toast.success(`会话 #${item.conversationId} 已重新触发自动派单`)
       await refreshSelectedConversation()
     } catch (error) {

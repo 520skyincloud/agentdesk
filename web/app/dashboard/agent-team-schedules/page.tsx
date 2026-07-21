@@ -23,6 +23,7 @@ import {
 } from "@/components/dashboard/crud"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
+import { Badge } from "@/components/ui/badge"
 import { OptionCombobox } from "@/components/option-combobox"
 import {
   createAgentTeamSchedule,
@@ -135,6 +136,20 @@ export default function DashboardAgentTeamSchedulesPage() {
             <div className="mt-1 text-xs text-muted-foreground">
               {item.squadName || t("agentTeamSchedule.wholeTeamDuty")}
             </div>
+            {item.includedAgentProfileIds.length > 0 || item.excludedAgentProfileIds.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {item.includedAgentProfileIds.length > 0 ? (
+                  <Badge variant="secondary">
+                    {t("agentTeamSchedule.includedAgentCount", { count: item.includedAgentProfileIds.length })}
+                  </Badge>
+                ) : null}
+                {item.excludedAgentProfileIds.length > 0 ? (
+                  <Badge variant="outline">
+                    {t("agentTeamSchedule.excludedAgentCount", { count: item.excludedAgentProfileIds.length })}
+                  </Badge>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ),
       },

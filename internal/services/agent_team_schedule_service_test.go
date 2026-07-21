@@ -79,21 +79,21 @@ func TestAgentTeamScheduleServiceFindCalendarSchedulesValidatesTimeRange(t *test
 	}
 }
 
-func TestAgentTeamScheduleServiceCreateRejectsCrossDaySchedule(t *testing.T) {
-	setupAgentTeamScheduleTestDB(t)
-	createAgentTeamScheduleTestTeams(t, sqls.DB())
+func TestAgentTeamScheduleServiceCreateAllowsOvernightSchedule(t *testing.T) {
+	db := setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, db)
 
 	tomorrow := time.Now().AddDate(0, 0, 1)
-	_, err := services.AgentTeamScheduleService.CreateAgentTeamSchedule(request.CreateAgentTeamScheduleRequest{
+	created, err := services.AgentTeamScheduleService.CreateAgentTeamSchedule(request.CreateAgentTeamScheduleRequest{
 		TeamID:  1,
 		StartAt: formatTestDateTime(tomorrow, "22:00:00"),
 		EndAt:   formatTestDateTime(tomorrow.AddDate(0, 0, 1), "08:00:00"),
 	}, testOperator())
-	if err == nil {
-		t.Fatalf("expected cross-day schedule to fail")
+	if err != nil {
+		t.Fatalf("expected overnight schedule to succeed, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "不能跨天") {
-		t.Fatalf("expected cross-day error, got %v", err)
+	if created == nil || created.EndAt.Sub(created.StartAt) != 10*time.Hour {
+		t.Fatalf("unexpected overnight schedule: %+v", created)
 	}
 }
 
@@ -147,6 +147,11 @@ func TestAgentTeamScheduleServiceCreateSupportsSquadAndRejectsCrossTeam(t *testi
 	if err := db.Create(otherSquad).Error; err != nil {
 		t.Fatalf("create other squad: %v", err)
 	}
+	if err := db.Create(&models.AgentTeamSquadMember{
+		TenantID: 101, SquadID: squad.ID, AgentProfileID: 9201, Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create squad member: %v", err)
+	}
 	tomorrow := time.Now().AddDate(0, 0, 1)
 	item, err := services.AgentTeamScheduleService.CreateAgentTeamSchedule(request.CreateAgentTeamScheduleRequest{
 		TeamID: 1, SquadID: squad.ID, StartAt: formatTestDateTime(tomorrow, "09:00:00"), EndAt: formatTestDateTime(tomorrow, "18:00:00"),
@@ -162,6 +167,61 @@ func TestAgentTeamScheduleServiceCreateSupportsSquadAndRejectsCrossTeam(t *testi
 	}, testOperator())
 	if err == nil || !strings.Contains(err.Error(), "不属于") {
 		t.Fatalf("expected cross-team squad error, got %v", err)
+	}
+}
+
+func TestAgentTeamScheduleServiceAllowsOnlyDifferentSquadsToOverlap(t *testing.T) {
+	db := setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, db)
+	secondUser := &models.User{ID: 9103, TenantID: 101, Username: "schedule-team-1-relief", Status: enums.StatusOk}
+	if err := db.Create(secondUser).Error; err != nil {
+		t.Fatalf("create second team agent: %v", err)
+	}
+	grantScheduleReplyPermissions(t, db, secondUser.ID)
+	secondProfile := &models.AgentProfile{ID: 9203, TenantID: 101, UserID: secondUser.ID, TeamID: 1, AgentCode: "schedule-team-1-relief", AutoAssignEnabled: true, MaxConcurrentCount: 5, Status: enums.StatusOk}
+	if err := db.Create(secondProfile).Error; err != nil {
+		t.Fatalf("create second team profile: %v", err)
+	}
+	squads := []models.AgentTeamSquad{
+		{TenantID: 101, TeamID: 1, Name: "白班交接组", Status: enums.StatusOk},
+		{TenantID: 101, TeamID: 1, Name: "晚班交接组", Status: enums.StatusOk},
+	}
+	if err := db.Create(&squads).Error; err != nil {
+		t.Fatalf("create handover squads: %v", err)
+	}
+	members := []models.AgentTeamSquadMember{
+		{TenantID: 101, SquadID: squads[0].ID, AgentProfileID: 9201, Status: enums.StatusOk},
+		{TenantID: 101, SquadID: squads[1].ID, AgentProfileID: secondProfile.ID, Status: enums.StatusOk},
+	}
+	if err := db.Create(&members).Error; err != nil {
+		t.Fatalf("create handover squad members: %v", err)
+	}
+	tomorrow := time.Now().AddDate(0, 0, 1)
+	first, err := services.AgentTeamScheduleService.CreateAgentTeamSchedule(request.CreateAgentTeamScheduleRequest{
+		TeamID: 1, SquadID: squads[0].ID,
+		StartAt: formatTestDateTime(tomorrow, "09:00:00"), EndAt: formatTestDateTime(tomorrow, "18:00:00"),
+	}, testOperator())
+	if err != nil || first == nil {
+		t.Fatalf("create outgoing squad schedule: item=%+v err=%v", first, err)
+	}
+	second, err := services.AgentTeamScheduleService.CreateAgentTeamSchedule(request.CreateAgentTeamScheduleRequest{
+		TeamID: 1, SquadID: squads[1].ID,
+		StartAt: formatTestDateTime(tomorrow, "17:30:00"), EndAt: formatTestDateTime(tomorrow, "23:00:00"),
+	}, testOperator())
+	if err != nil || second == nil {
+		t.Fatalf("different squads should overlap for handover: item=%+v err=%v", second, err)
+	}
+	if _, err := services.AgentTeamScheduleService.CreateAgentTeamSchedule(request.CreateAgentTeamScheduleRequest{
+		TeamID: 1, SquadID: squads[0].ID,
+		StartAt: formatTestDateTime(tomorrow, "17:00:00"), EndAt: formatTestDateTime(tomorrow, "19:00:00"),
+	}, testOperator()); err == nil || !strings.Contains(err.Error(), "不能") {
+		t.Fatalf("same squad overlap must fail, got %v", err)
+	}
+	if _, err := services.AgentTeamScheduleService.CreateAgentTeamSchedule(request.CreateAgentTeamScheduleRequest{
+		TeamID:  1,
+		StartAt: formatTestDateTime(tomorrow, "17:00:00"), EndAt: formatTestDateTime(tomorrow, "19:00:00"),
+	}, testOperator()); err == nil || !strings.Contains(err.Error(), "不能") {
+		t.Fatalf("full-team overlap must fail, got %v", err)
 	}
 }
 
@@ -191,7 +251,129 @@ func TestAgentTeamScheduleServiceBatchSquadRequiresSingleTeam(t *testing.T) {
 	}
 }
 
-func TestAgentTeamScheduleServiceUpdateRejectsCrossDaySchedule(t *testing.T) {
+func TestAgentTeamScheduleServiceBatchPreviewAppliesShiftOverridesAndCoverage(t *testing.T) {
+	db := setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, db)
+	users := []models.User{
+		{ID: 101, TenantID: 101, Username: "day-agent", Status: enums.StatusOk},
+		{ID: 102, TenantID: 101, Username: "relief-agent", Status: enums.StatusOk},
+	}
+	if err := db.Create(&users).Error; err != nil {
+		t.Fatalf("create schedule users: %v", err)
+	}
+	grantScheduleReplyPermissions(t, db, 101, 102)
+	profiles := []models.AgentProfile{
+		{ID: 11, TenantID: 101, UserID: 101, TeamID: 1, AgentCode: "schedule-day", Status: enums.StatusOk, AutoAssignEnabled: true, MaxConcurrentCount: 5},
+		{ID: 12, TenantID: 101, UserID: 102, TeamID: 1, AgentCode: "schedule-relief", Status: enums.StatusOk, AutoAssignEnabled: true, MaxConcurrentCount: 3},
+	}
+	if err := db.Create(&profiles).Error; err != nil {
+		t.Fatalf("create schedule profiles: %v", err)
+	}
+	squad := models.AgentTeamSquad{TenantID: 101, TeamID: 1, Name: "白班", Status: enums.StatusOk}
+	if err := db.Create(&squad).Error; err != nil {
+		t.Fatalf("create schedule squad: %v", err)
+	}
+	if err := db.Create(&models.AgentTeamSquadMember{
+		TenantID: 101, SquadID: squad.ID, AgentProfileID: 11, Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create schedule squad member: %v", err)
+	}
+	tomorrow := time.Now().AddDate(0, 0, 1)
+	req := request.AgentTeamScheduleBatchRequest{
+		TeamIDs:                 []int64{1},
+		SquadID:                 squad.ID,
+		IncludedAgentProfileIDs: []int64{12},
+		ExcludedAgentProfileIDs: []int64{11},
+		StartDate:               tomorrow.Format(time.DateOnly),
+		EndDate:                 tomorrow.Format(time.DateOnly),
+		Weekdays:                []int{weekdayForRequest(tomorrow)},
+		StartTime:               "09:00",
+		EndTime:                 "18:00",
+	}
+	preview, err := services.AgentTeamScheduleService.BatchPreview(req, testOperator())
+	if err != nil {
+		t.Fatalf("preview schedule overrides: %v", err)
+	}
+	if len(preview.Items) != 1 || preview.Items[0].EligibleAgentCount != 1 || preview.Items[0].TotalCapacity != 3 {
+		t.Fatalf("unexpected coverage after shift overrides: %+v", preview.Items)
+	}
+	if !strings.Contains(preview.Items[0].CoverageWarning, "单点") {
+		t.Fatalf("expected single-agent coverage warning, got %+v", preview.Items[0])
+	}
+	result, err := services.AgentTeamScheduleService.BatchGenerate(req, testOperator())
+	if err != nil || result.Created != 1 {
+		t.Fatalf("generate schedule overrides result=%+v err=%v", result, err)
+	}
+	var stored models.AgentTeamSchedule
+	if err := db.Where("team_id = ?", 1).Order("id DESC").Take(&stored).Error; err != nil {
+		t.Fatalf("load generated override schedule: %v", err)
+	}
+	if stored.IncludedAgentProfileIDs != "12" || stored.ExcludedAgentProfileIDs != "11" {
+		t.Fatalf("stored schedule overrides = include %q exclude %q", stored.IncludedAgentProfileIDs, stored.ExcludedAgentProfileIDs)
+	}
+}
+
+func TestAgentTeamScheduleCoverageFollowsDispatchMode(t *testing.T) {
+	db := setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, db)
+	if err := db.Model(&models.AgentProfile{}).Where("team_id = ?", 1).Updates(map[string]any{
+		"auto_assign_enabled":  false,
+		"max_concurrent_count": 0,
+	}).Error; err != nil {
+		t.Fatalf("disable automatic assignment capacity: %v", err)
+	}
+	if err := db.Model(&models.AgentTeam{}).Where("id = ?", 1).Update("dispatch_mode", enums.AgentTeamDispatchModeManual).Error; err != nil {
+		t.Fatalf("set manual dispatch mode: %v", err)
+	}
+	tomorrow := time.Now().AddDate(0, 0, 1)
+	req := request.AgentTeamScheduleBatchRequest{
+		TeamIDs: []int64{1}, StartDate: tomorrow.Format(time.DateOnly), EndDate: tomorrow.Format(time.DateOnly),
+		Weekdays: []int{weekdayForRequest(tomorrow)}, StartTime: "09:00", EndTime: "18:00",
+	}
+	preview, err := services.AgentTeamScheduleService.BatchPreview(req, testOperator())
+	if err != nil || len(preview.Items) != 1 || preview.Items[0].EligibleAgentCount != 1 || preview.Items[0].TotalCapacity != 0 {
+		t.Fatalf("manual coverage=%+v err=%v", preview, err)
+	}
+	if !strings.Contains(preview.Items[0].CoverageWarning, "人工接待") {
+		t.Fatalf("manual warning=%q", preview.Items[0].CoverageWarning)
+	}
+	if err := db.Model(&models.AgentTeam{}).Where("id = ?", 1).Update("dispatch_mode", enums.AgentTeamDispatchModeRule).Error; err != nil {
+		t.Fatalf("set rule dispatch mode: %v", err)
+	}
+	preview, err = services.AgentTeamScheduleService.BatchPreview(req, testOperator())
+	if err != nil || len(preview.Items) != 1 || preview.Items[0].EligibleAgentCount != 0 {
+		t.Fatalf("rule coverage=%+v err=%v", preview, err)
+	}
+	if !strings.Contains(preview.Items[0].CoverageWarning, "可自动接单") {
+		t.Fatalf("rule warning=%q", preview.Items[0].CoverageWarning)
+	}
+}
+
+func TestAgentTeamScheduleCoverageRejectsAgentWithoutReplyPermission(t *testing.T) {
+	db := setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, db)
+	sendPermission := models.Permission{}
+	if err := db.Where("code = ?", constants.PermissionConversationSend.Code).Take(&sendPermission).Error; err != nil {
+		t.Fatalf("load send permission: %v", err)
+	}
+	if err := db.Where("permission_id = ?", sendPermission.ID).Delete(&models.RolePermission{}).Error; err != nil {
+		t.Fatalf("remove send permission: %v", err)
+	}
+
+	tomorrow := time.Now().AddDate(0, 0, 1)
+	preview, err := services.AgentTeamScheduleService.BatchPreview(request.AgentTeamScheduleBatchRequest{
+		TeamIDs: []int64{1}, StartDate: tomorrow.Format(time.DateOnly), EndDate: tomorrow.Format(time.DateOnly),
+		Weekdays: []int{weekdayForRequest(tomorrow)}, StartTime: "09:00", EndTime: "18:00",
+	}, testOperator())
+	if err != nil || len(preview.Items) != 1 || preview.Items[0].EligibleAgentCount != 0 {
+		t.Fatalf("permission-gated coverage=%+v err=%v", preview, err)
+	}
+	if !strings.Contains(preview.Items[0].CoverageWarning, "回复权限") {
+		t.Fatalf("permission warning=%q", preview.Items[0].CoverageWarning)
+	}
+}
+
+func TestAgentTeamScheduleServiceUpdateAllowsOvernightSchedule(t *testing.T) {
 	db := setupAgentTeamScheduleTestDB(t)
 	createAgentTeamScheduleTestTeams(t, db)
 	existingID := createFutureAgentTeamSchedule(t, db)
@@ -205,11 +387,12 @@ func TestAgentTeamScheduleServiceUpdateRejectsCrossDaySchedule(t *testing.T) {
 			EndAt:   formatTestDateTime(tomorrow.AddDate(0, 0, 1), "08:00:00"),
 		},
 	}, testOperator())
-	if err == nil {
-		t.Fatalf("expected cross-day update to fail")
+	if err != nil {
+		t.Fatalf("expected overnight update to succeed, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "不能跨天") {
-		t.Fatalf("expected cross-day error, got %v", err)
+	updated := services.AgentTeamScheduleService.Get(existingID)
+	if updated == nil || updated.EndAt.Sub(updated.StartAt) != 10*time.Hour {
+		t.Fatalf("unexpected updated overnight schedule: %+v", updated)
 	}
 }
 
@@ -323,7 +506,54 @@ func TestAgentTeamScheduleServiceBatchPreviewRejectsHistoricalDate(t *testing.T)
 	}
 }
 
-func TestAgentTeamScheduleServiceBatchPreviewRejectsInvalidTimeRange(t *testing.T) {
+func TestAgentTeamScheduleServiceBatchPreviewSupportsOvernightTimeRange(t *testing.T) {
+	setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, sqls.DB())
+	tomorrow := time.Now().AddDate(0, 0, 1)
+
+	preview, err := services.AgentTeamScheduleService.BatchPreview(request.AgentTeamScheduleBatchRequest{
+		TeamIDs:   []int64{1},
+		StartDate: tomorrow.Format(time.DateOnly),
+		EndDate:   tomorrow.Format(time.DateOnly),
+		Weekdays:  []int{weekdayForRequest(tomorrow)},
+		StartTime: "18:00",
+		EndTime:   "09:00",
+	}, testOperator())
+	if err != nil {
+		t.Fatalf("expected overnight batch preview to succeed, got %v", err)
+	}
+	if len(preview.Items) != 1 || preview.Items[0].EndAt.Sub(preview.Items[0].StartAt) != 15*time.Hour {
+		t.Fatalf("unexpected overnight batch preview: %+v", preview)
+	}
+}
+
+func TestAgentTeamScheduleServiceBatchPreviewExpandsMultipleTimeRanges(t *testing.T) {
+	setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, sqls.DB())
+	tomorrow := time.Now().AddDate(0, 0, 1)
+
+	preview, err := services.AgentTeamScheduleService.BatchPreview(request.AgentTeamScheduleBatchRequest{
+		TeamIDs:   []int64{1},
+		StartDate: tomorrow.Format(time.DateOnly),
+		EndDate:   tomorrow.Format(time.DateOnly),
+		Weekdays:  []int{weekdayForRequest(tomorrow)},
+		TimeRanges: []request.AgentTeamScheduleTimeRange{
+			{StartTime: "08:00", EndTime: "12:00"},
+			{StartTime: "14:00", EndTime: "18:00"},
+		},
+	}, testOperator())
+	if err != nil {
+		t.Fatalf("preview multiple time ranges: %v", err)
+	}
+	if preview.Total != 2 || preview.Conflict {
+		t.Fatalf("unexpected multiple range preview: %+v", preview)
+	}
+	if preview.Items[0].StartAt.Hour() != 8 || preview.Items[1].StartAt.Hour() != 14 {
+		t.Fatalf("unexpected expanded ranges: %+v", preview.Items)
+	}
+}
+
+func TestAgentTeamScheduleServiceBatchPreviewRejectsDuplicateTimeRanges(t *testing.T) {
 	setupAgentTeamScheduleTestDB(t)
 	createAgentTeamScheduleTestTeams(t, sqls.DB())
 	tomorrow := time.Now().AddDate(0, 0, 1)
@@ -333,14 +563,71 @@ func TestAgentTeamScheduleServiceBatchPreviewRejectsInvalidTimeRange(t *testing.
 		StartDate: tomorrow.Format(time.DateOnly),
 		EndDate:   tomorrow.Format(time.DateOnly),
 		Weekdays:  []int{weekdayForRequest(tomorrow)},
-		StartTime: "18:00",
+		TimeRanges: []request.AgentTeamScheduleTimeRange{
+			{StartTime: "09:00", EndTime: "18:00"},
+			{StartTime: "09:00:00", EndTime: "18:00:00"},
+		},
+	}, testOperator())
+	if err == nil || !strings.Contains(err.Error(), "重复") {
+		t.Fatalf("expected duplicate time range error, got %v", err)
+	}
+}
+
+func TestAgentTeamScheduleServiceBatchPreviewMarksCandidateOverlap(t *testing.T) {
+	setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, sqls.DB())
+	tomorrow := time.Now().AddDate(0, 0, 1)
+
+	preview, err := services.AgentTeamScheduleService.BatchPreview(request.AgentTeamScheduleBatchRequest{
+		TeamIDs:   []int64{1},
+		StartDate: tomorrow.Format(time.DateOnly),
+		EndDate:   tomorrow.Format(time.DateOnly),
+		Weekdays:  []int{weekdayForRequest(tomorrow)},
+		TimeRanges: []request.AgentTeamScheduleTimeRange{
+			{StartTime: "22:00", EndTime: "08:00"},
+			{StartTime: "23:30", EndTime: "01:00"},
+		},
+	}, testOperator())
+	if err != nil {
+		t.Fatalf("preview overlapping candidate ranges: %v", err)
+	}
+	if !preview.Conflict || len(preview.Items) != 2 || !preview.Items[0].Conflict || !preview.Items[1].Conflict {
+		t.Fatalf("expected both candidate ranges to be marked as conflicting: %+v", preview)
+	}
+	if !strings.Contains(preview.Items[0].ConflictReason, "待生成") || !strings.Contains(preview.Items[1].ConflictReason, "待生成") {
+		t.Fatalf("expected candidate conflict reasons, got %+v", preview.Items)
+	}
+
+	result, err := services.AgentTeamScheduleService.BatchGenerate(request.AgentTeamScheduleBatchRequest{
+		TeamIDs:   []int64{1},
+		StartDate: tomorrow.Format(time.DateOnly),
+		EndDate:   tomorrow.Format(time.DateOnly),
+		Weekdays:  []int{weekdayForRequest(tomorrow)},
+		TimeRanges: []request.AgentTeamScheduleTimeRange{
+			{StartTime: "22:00", EndTime: "08:00"},
+			{StartTime: "23:30", EndTime: "01:00"},
+		},
+	}, testOperator())
+	if err == nil || result != nil {
+		t.Fatalf("expected overlapping candidate generation to fail, result=%+v err=%v", result, err)
+	}
+}
+
+func TestAgentTeamScheduleServiceBatchPreviewRejectsEqualStartAndEndTime(t *testing.T) {
+	setupAgentTeamScheduleTestDB(t)
+	createAgentTeamScheduleTestTeams(t, sqls.DB())
+	tomorrow := time.Now().AddDate(0, 0, 1)
+
+	_, err := services.AgentTeamScheduleService.BatchPreview(request.AgentTeamScheduleBatchRequest{
+		TeamIDs:   []int64{1},
+		StartDate: tomorrow.Format(time.DateOnly),
+		EndDate:   tomorrow.Format(time.DateOnly),
+		Weekdays:  []int{weekdayForRequest(tomorrow)},
+		StartTime: "09:00",
 		EndTime:   "09:00",
 	}, testOperator())
-	if err == nil {
-		t.Fatalf("expected invalid time range to fail")
-	}
-	if !strings.Contains(err.Error(), "结束时间必须晚于开始时间") {
-		t.Fatalf("expected invalid time range error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "不能相同") {
+		t.Fatalf("expected zero-length shift rejection, got %v", err)
 	}
 }
 
@@ -656,7 +943,18 @@ func setupAgentTeamScheduleTestDB(t *testing.T) *gorm.DB {
 			_ = sqlDB.Close()
 		}
 	})
-	if err := db.AutoMigrate(&models.AgentTeam{}, &models.AgentTeamSquad{}, &models.AgentTeamSchedule{}); err != nil {
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.Role{},
+		&models.Permission{},
+		&models.UserRole{},
+		&models.RolePermission{},
+		&models.AgentTeam{},
+		&models.AgentTeamSquad{},
+		&models.AgentTeamSquadMember{},
+		&models.AgentProfile{},
+		&models.AgentTeamSchedule{},
+	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}
 	sqls.SetDB(db)
@@ -691,11 +989,56 @@ func createAgentTeamScheduleTestData(t *testing.T, db *gorm.DB) {
 func createAgentTeamScheduleTestTeams(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	teams := []models.AgentTeam{
-		{ID: 1, TenantID: 101, Name: "售前组", Status: enums.StatusOk},
-		{ID: 2, TenantID: 101, Name: "售后组", Status: enums.StatusOk},
+		{ID: 1, TenantID: 101, Name: "售前组", DispatchMode: enums.AgentTeamDispatchModeRule, Status: enums.StatusOk},
+		{ID: 2, TenantID: 101, Name: "售后组", DispatchMode: enums.AgentTeamDispatchModeRule, Status: enums.StatusOk},
 	}
 	if err := db.Create(&teams).Error; err != nil {
 		t.Fatalf("create teams error = %v", err)
+	}
+	users := []models.User{
+		{ID: 9101, TenantID: 101, Username: "schedule-team-1", Status: enums.StatusOk},
+		{ID: 9102, TenantID: 101, Username: "schedule-team-2", Status: enums.StatusOk},
+	}
+	if err := db.Create(&users).Error; err != nil {
+		t.Fatalf("create schedule coverage users error = %v", err)
+	}
+	grantScheduleReplyPermissions(t, db, 9101, 9102)
+	profiles := []models.AgentProfile{
+		{ID: 9201, TenantID: 101, UserID: 9101, TeamID: 1, AgentCode: "schedule-team-1", AutoAssignEnabled: true, MaxConcurrentCount: 5, Status: enums.StatusOk},
+		{ID: 9202, TenantID: 101, UserID: 9102, TeamID: 2, AgentCode: "schedule-team-2", AutoAssignEnabled: true, MaxConcurrentCount: 5, Status: enums.StatusOk},
+	}
+	if err := db.Create(&profiles).Error; err != nil {
+		t.Fatalf("create schedule coverage profiles error = %v", err)
+	}
+}
+
+func grantScheduleReplyPermissions(t *testing.T, db *gorm.DB, userIDs ...int64) {
+	t.Helper()
+	role := models.Role{Name: "排班测试客服", Code: "schedule-test-agent", Scope: "tenant", Status: enums.StatusOk}
+	if err := db.Where("code = ?", role.Code).FirstOrCreate(&role).Error; err != nil {
+		t.Fatalf("create schedule reply role: %v", err)
+	}
+	for index, definition := range []constants.Permission{
+		constants.PermissionConversationView,
+		constants.PermissionConversationSend,
+	} {
+		permission := models.Permission{
+			Name: definition.Name, Code: definition.Code, Type: definition.Type,
+			Scope: "tenant", Status: enums.StatusOk, SortNo: index + 1,
+		}
+		if err := db.Where("code = ?", permission.Code).FirstOrCreate(&permission).Error; err != nil {
+			t.Fatalf("create schedule reply permission: %v", err)
+		}
+		binding := models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}
+		if err := db.Where("role_id = ? AND permission_id = ?", role.ID, permission.ID).FirstOrCreate(&binding).Error; err != nil {
+			t.Fatalf("bind schedule reply permission: %v", err)
+		}
+	}
+	for _, userID := range userIDs {
+		binding := models.UserRole{UserID: userID, RoleID: role.ID}
+		if err := db.Where("user_id = ? AND role_id = ?", userID, role.ID).FirstOrCreate(&binding).Error; err != nil {
+			t.Fatalf("bind schedule reply role: %v", err)
+		}
 	}
 }
 

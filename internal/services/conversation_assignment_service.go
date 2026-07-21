@@ -23,10 +23,9 @@ type conversationAssignmentService struct {
 }
 
 type ConversationAssignmentOptions struct {
-	SquadID            int64
-	DispatchMode       enums.AgentTeamDispatchMode
-	DecisionConfidence int
-	WorkloadWeight     int
+	SquadID        int64
+	DispatchMode   enums.AgentTeamDispatchMode
+	WorkloadWeight int
 }
 
 func (s *conversationAssignmentService) Get(id int64) *models.ConversationAssignment {
@@ -87,31 +86,23 @@ func (s *conversationAssignmentService) CreateAssignmentWithOptions(ctx *sqls.Tx
 	if workloadWeight <= 0 {
 		workloadWeight = 1
 	}
-	confidence := options.DecisionConfidence
-	if confidence < 0 {
-		confidence = 0
-	}
-	if confidence > 100 {
-		confidence = 100
-	}
 	dispatchMode := options.DispatchMode
 	if !enums.IsValidAgentTeamDispatchMode(dispatchMode) {
 		dispatchMode = enums.AgentTeamDispatchModeManual
 	}
 	assignment := &models.ConversationAssignment{
-		TenantID:           conversation.TenantID,
-		ConversationID:     conversationID,
-		SessionNo:          currentSessionNoDB(ctx.Tx, conversationID, conversation.TenantID),
-		SquadID:            options.SquadID,
-		FromUserID:         fromUserID,
-		ToUserID:           toUserID,
-		AssignType:         strings.TrimSpace(string(assignType)),
-		Reason:             strings.TrimSpace(reason),
-		DispatchMode:       dispatchMode,
-		DecisionConfidence: confidence,
-		WorkloadWeight:     workloadWeight,
-		Status:             enums.IMAssignmentStatusActive,
-		CreatedAt:          now,
+		TenantID:       conversation.TenantID,
+		ConversationID: conversationID,
+		SessionNo:      currentSessionNoDB(ctx.Tx, conversationID, conversation.TenantID),
+		SquadID:        options.SquadID,
+		FromUserID:     fromUserID,
+		ToUserID:       toUserID,
+		AssignType:     strings.TrimSpace(string(assignType)),
+		Reason:         strings.TrimSpace(reason),
+		DispatchMode:   dispatchMode,
+		WorkloadWeight: workloadWeight,
+		Status:         enums.IMAssignmentStatusActive,
+		CreatedAt:      now,
 	}
 	if operator != nil {
 		assignment.OperatorID = operator.UserID

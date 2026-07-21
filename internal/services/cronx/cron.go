@@ -17,6 +17,9 @@ func Init() {
 	})
 
 	addFunc(c, "@every 30s", func() {
+		if _, err := services.ConversationDispatchService.RecoverStaleAssignments(100); err != nil {
+			slog.Warn("recover stale rule assignments failed", "error", err)
+		}
 		if _, err := services.ConversationDispatchService.DispatchPendingConversations(0); err != nil {
 			slog.Warn("dispatch pending conversations loop failed", "error", err)
 		}

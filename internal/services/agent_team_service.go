@@ -117,6 +117,7 @@ func (s *agentTeamService) CreateAgentTeam(req request.CreateAgentTeamRequest, o
 	if item == nil {
 		return nil, errorsx.BusinessError(0, "客服组创建成功，但读取最新数据失败")
 	}
+	ConversationDispatchService.ReconcileConfigurationChange(item.TenantID, item.ID)
 	return item, nil
 }
 
@@ -124,8 +125,9 @@ func (s *agentTeamService) UpdateAgentTeam(req request.UpdateAgentTeamRequest, o
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	affectedTeamIDs := []int64{req.ID}
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		currentSnapshot := repositories.AgentTeamRepository.GetInTenant(ctx.Tx, req.ID, tenantID)
 		if currentSnapshot == nil || currentSnapshot.Status == enums.StatusDeleted {
 			return errorsx.InvalidParam("客服组不存在")
@@ -185,8 +187,14 @@ func (s *agentTeamService) UpdateAgentTeam(req request.UpdateAgentTeamRequest, o
 		if !scopeProvided {
 			return nil
 		}
+		affectedTeamIDs = append(affectedTeamIDs, replacement.affectedTeamIDs...)
 		return s.applyStoreStaffBindingReplacementDB(ctx.Tx, replacement, operator)
 	})
+	if err != nil {
+		return err
+	}
+	ConversationDispatchService.ReconcileConfigurationChange(tenantID, affectedTeamIDs...)
+	return nil
 }
 
 func (s *agentTeamService) DeleteAgentTeam(id int64, operator *dto.AuthPrincipal) error {
@@ -333,7 +341,8 @@ func (s *agentTeamService) BindStoreStaffUser(userID, teamID int64, operator *dt
 	if tenantID <= 0 {
 		return errorsx.Forbidden("请先进入需要管理门店员工的接入公司")
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	affectedTeamIDs := make([]int64, 0, 2)
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		user, err := repositories.UserRepository.GetForUpdate(ctx.Tx, userID)
 		if err != nil {
 			return err
@@ -352,7 +361,7 @@ func (s *agentTeamService) BindStoreStaffUser(userID, teamID int64, operator *dt
 		if len(bindings) == 0 {
 			return errorsx.InvalidParam("该门店员工尚未绑定门店，当前保持暂未分配客服组")
 		}
-		affectedTeamIDs := make([]int64, 0, len(bindings)+1)
+		affectedTeamIDs = make([]int64, 0, len(bindings)+1)
 		if teamID > 0 {
 			affectedTeamIDs = append(affectedTeamIDs, teamID)
 		}
@@ -412,6 +421,11 @@ func (s *agentTeamService) BindStoreStaffUser(userID, teamID int64, operator *dt
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	ConversationDispatchService.ReconcileConfigurationChange(tenantID, affectedTeamIDs...)
+	return nil
 }
 
 func (s *agentTeamService) FindStoreStaffUserIDs(teamID int64) []int64 {

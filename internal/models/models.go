@@ -510,7 +510,7 @@ type Conversation struct {
 	Status              enums.IMConversationStatus      `gorm:"type:int;not null;default:1;index"`           // Status 为会话状态，如待接入、处理中、已关闭。
 	ServiceMode         enums.IMConversationServiceMode `gorm:"type:int;not null;default:3;index"`           // ServiceMode 为服务模式，如仅AI、仅人工、AI优先人工接管。
 	Priority            int                             `gorm:"type:int;not null;default:0;index"`           // Priority 为会话优先级。
-	DispatchWeight      int                             `gorm:"type:int;not null;default:1"`                 // DispatchWeight 为智能派单评估的当前人工工作量权重，1 表示普通任务。
+	DispatchWeight      int                             `gorm:"type:int;not null;default:1"`                 // DispatchWeight 为规则派单使用的当前人工工作量权重，1 表示普通任务。
 	CurrentAssigneeID   int64                           `gorm:"type:bigint;not null;default:0;index"`        // CurrentAssigneeID 为当前接待客服ID。
 	CurrentTeamID       int64                           `gorm:"type:bigint;not null;default:0;index"`        // CurrentTeamID 为当前处理客服组ID。
 	LastMessageID       int64                           `gorm:"type:bigint;not null;default:0;index"`        // LastMessageID 为最后一条消息ID。
@@ -848,8 +848,8 @@ type ConversationAssignment struct {
 	ToUserID           int64                       `gorm:"type:bigint;not null;default:0;index"`
 	AssignType         string                      `gorm:"type:varchar(30);not null;default:'';index"`
 	Reason             string                      `gorm:"type:varchar(255);not null;default:''"`
-	DispatchMode       enums.AgentTeamDispatchMode `gorm:"type:varchar(30);not null;default:'';index"` // DispatchMode 记录本次人工、规则或智能派单方式。
-	DecisionConfidence int                         `gorm:"type:int;not null;default:0"`                // DecisionConfidence 为模型派单置信度百分值，非模型派单为 0。
+	DispatchMode       enums.AgentTeamDispatchMode `gorm:"type:varchar(30);not null;default:'';index"` // DispatchMode 记录本次人工、规则或历史智能派单方式。
+	DecisionConfidence int                         `gorm:"type:int;not null;default:0"`                // DecisionConfidence 仅保留历史模型派单置信度，新派单固定为 0。
 	WorkloadWeight     int                         `gorm:"type:int;not null;default:1"`                // WorkloadWeight 为本次派单使用的任务工作量权重快照。
 	Status             enums.IMAssignmentStatus    `gorm:"type:int;not null;index"`
 	CreatedAt          time.Time                   `gorm:"type:datetime;not null;index"`
@@ -982,24 +982,21 @@ type TicketProgress struct {
 
 // AgentProfile 客服档案。
 type AgentProfile struct {
-	ID                     int64               `gorm:"primaryKey;autoIncrement"`                                                                 // ID 为客服档案主键。
-	TenantID               int64               `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_agent_profile_tenant_code,priority:1"` // TenantID 为客服档案所属接入公司，从客服组和账号归属确定。
-	UserID                 int64               `gorm:"type:bigint;not null;uniqueIndex"`                                                         // UserID 关联后台用户，一名用户只允许一份客服档案。
-	TeamID                 int64               `gorm:"type:bigint;not null;default:0;index"`                                                     // TeamID 为客服所属客服组。
-	StoreScopeIDs          string              `gorm:"type:varchar(500);not null;default:''"`                                                    // StoreScopeIDs 为客服可服务的门店ID，逗号分隔；为空时继承客服组范围。
-	WxWorkInstanceScopeIDs string              `gorm:"type:varchar(500);not null;default:''"`                                                    // WxWorkInstanceScopeIDs 为客服可服务的企微员工号实例ID，逗号分隔；为空时继承客服组范围。
-	AgentCode              string              `gorm:"type:varchar(64);not null;default:'';uniqueIndex:uk_agent_profile_tenant_code,priority:2"` // AgentCode 为租户内唯一客服工号，用于业务侧识别客服。
-	DisplayName            string              `gorm:"type:varchar(100);not null;default:'';index"`                                              // DisplayName 为客服展示名，可区别于后台昵称。
-	Avatar                 string              `gorm:"type:varchar(1024);not null;default:''"`                                                   // Avatar 为客服头像 URL。
-	ServiceStatus          enums.ServiceStatus `gorm:"type:int;not null;default:0;index"`                                                        // ServiceStatus 表示客服服务状态：0空闲 1忙碌。
-	MaxConcurrentCount     int                 `gorm:"type:int;not null;default:0"`                                                              // MaxConcurrentCount 表示客服最大并发接待数。
-	PriorityLevel          int                 `gorm:"type:int;not null;default:0;index"`                                                        // PriorityLevel 表示自动分配优先级，值越大越优先。
-	AutoAssignEnabled      bool                `gorm:"not null;default:true;index"`                                                              // AutoAssignEnabled 表示是否参与自动分配。
-	ReceiveOfflineMessage  bool                `gorm:"not null;default:false"`                                                                   // ReceiveOfflineMessage 表示离线时是否仍接收离线消息或转接消息。
-	LastOnlineAt           *time.Time          `gorm:"type:datetime;index"`                                                                      // LastOnlineAt 记录最近一次在线时间。
-	LastStatusAt           *time.Time          `gorm:"type:datetime;index"`                                                                      // LastStatusAt 记录最近一次状态变更时间。
-	Status                 enums.Status        `gorm:"type:int;not null;default:0;index"`                                                        // Status 表示客服档案状态
-	Remark                 string              `gorm:"type:text"`                                                                                // Remark 记录客服备注信息。
+	ID                     int64        `gorm:"primaryKey;autoIncrement"`                                                                 // ID 为客服档案主键。
+	TenantID               int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_agent_profile_tenant_code,priority:1"` // TenantID 为客服档案所属接入公司，从客服组和账号归属确定。
+	UserID                 int64        `gorm:"type:bigint;not null;uniqueIndex"`                                                         // UserID 关联后台用户，一名用户只允许一份客服档案。
+	TeamID                 int64        `gorm:"type:bigint;not null;default:0;index"`                                                     // TeamID 为客服所属客服组。
+	StoreScopeIDs          string       `gorm:"type:varchar(500);not null;default:''"`                                                    // StoreScopeIDs 为客服可服务的门店ID，逗号分隔；为空时继承客服组范围。
+	WxWorkInstanceScopeIDs string       `gorm:"type:varchar(500);not null;default:''"`                                                    // WxWorkInstanceScopeIDs 为客服可服务的企微员工号实例ID，逗号分隔；为空时继承客服组范围。
+	AgentCode              string       `gorm:"type:varchar(64);not null;default:'';uniqueIndex:uk_agent_profile_tenant_code,priority:2"` // AgentCode 为租户内唯一客服工号，用于业务侧识别客服。
+	DisplayName            string       `gorm:"type:varchar(100);not null;default:'';index"`                                              // DisplayName 为客服展示名，可区别于后台昵称。
+	Avatar                 string       `gorm:"type:varchar(1024);not null;default:''"`                                                   // Avatar 为客服头像 URL。
+	MaxConcurrentCount     int          `gorm:"type:int;not null;default:0"`                                                              // MaxConcurrentCount 表示客服最大并发接待数。
+	PriorityLevel          int          `gorm:"type:int;not null;default:0;index"`                                                        // PriorityLevel 表示自动分配优先级，值越大越优先。
+	AutoAssignEnabled      bool         `gorm:"not null;default:true;index"`                                                              // AutoAssignEnabled 表示是否参与自动分配。
+	LastOnlineAt           *time.Time   `gorm:"type:datetime;index"`                                                                      // LastOnlineAt 记录最近一次在线时间。
+	Status                 enums.Status `gorm:"type:int;not null;default:0;index"`                                                        // Status 表示客服档案状态
+	Remark                 string       `gorm:"type:text"`                                                                                // Remark 记录客服备注信息。
 	AuditFields
 }
 
@@ -1044,14 +1041,16 @@ type AgentTeamSquadMember struct {
 
 // AgentTeamSchedule 客服组排班。
 type AgentTeamSchedule struct {
-	ID       int64        `gorm:"primaryKey;autoIncrement"`              // ID 为组排班主键。
-	TenantID int64        `gorm:"type:bigint;not null;default:0;index"`  // TenantID 为排班所属接入公司，从客服组继承。
-	TeamID   int64        `gorm:"type:bigint;not null;index"`            // TeamID 为被排班的客服组ID。
-	SquadID  int64        `gorm:"type:bigint;not null;default:0;index"`  // SquadID 为值班客服小组ID，0 表示全组值班。
-	StartAt  time.Time    `gorm:"type:datetime;not null;index"`          // StartAt 为班次开始时间。
-	EndAt    time.Time    `gorm:"type:datetime;not null;index"`          // EndAt 为班次结束时间。
-	Remark   string       `gorm:"type:varchar(255);not null;default:''"` // Remark 记录排班备注。
-	Status   enums.Status `gorm:"type:int;not null;default:0;index"`     // Status 表示组排班记录状态。
+	ID                      int64        `gorm:"primaryKey;autoIncrement"`               // ID 为组排班主键。
+	TenantID                int64        `gorm:"type:bigint;not null;default:0;index"`   // TenantID 为排班所属接入公司，从客服组继承。
+	TeamID                  int64        `gorm:"type:bigint;not null;index"`             // TeamID 为被排班的客服组ID。
+	SquadID                 int64        `gorm:"type:bigint;not null;default:0;index"`   // SquadID 为值班客服小组ID，0 表示全组值班。
+	IncludedAgentProfileIDs string       `gorm:"type:varchar(1000);not null;default:''"` // IncludedAgentProfileIDs 为本班临时加入的客服档案ID，逗号分隔。
+	ExcludedAgentProfileIDs string       `gorm:"type:varchar(1000);not null;default:''"` // ExcludedAgentProfileIDs 为本班请假或临时移出的客服档案ID，逗号分隔。
+	StartAt                 time.Time    `gorm:"type:datetime;not null;index"`           // StartAt 为班次开始时间，可与 EndAt 跨自然日。
+	EndAt                   time.Time    `gorm:"type:datetime;not null;index"`           // EndAt 为班次结束时间，最长不超过24小时。
+	Remark                  string       `gorm:"type:varchar(255);not null;default:''"`  // Remark 记录排班备注。
+	Status                  enums.Status `gorm:"type:int;not null;default:0;index"`      // Status 表示组排班记录状态。
 	AuditFields
 }
 

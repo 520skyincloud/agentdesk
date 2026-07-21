@@ -25,8 +25,9 @@ import (
 )
 
 const (
-	defaultBatch    = "customer-audit-v1"
-	defaultPassword = "123456"
+	defaultBatch                  = "customer-audit-v1"
+	defaultPassword               = "123456"
+	retiredDispatchModelUsageCode = "dispatch_decision_llm"
 
 	tenantLegalName = "丽斯未来酒店"
 	channelName     = "丽斯未来酒店测试企微员工号渠道"
@@ -76,68 +77,68 @@ type seedOptions struct {
 }
 
 type report struct {
-	Batch                      string `json:"batch"`
-	Marker                     string `json:"marker"`
-	Tenant                     int64  `json:"tenant"`
-	TenantSupervisor           int64  `json:"tenantSupervisor"`
-	TenantInvitation           int64  `json:"tenantInvitation"`
-	DefaultAgentTeam           int64  `json:"defaultAgentTeam"`
-	AIAgent                    int64  `json:"aiAgent"`
-	TenantDefaultConfigID      int64  `json:"tenantDefaultConfigId"`
-	TenantDefaultConfigName    string `json:"tenantDefaultConfigName"`
-	TenantDefaultModelName     string `json:"tenantDefaultModelName"`
-	ModelConfigReused          bool   `json:"modelConfigReused"`
-	ChannelAIAgentBound        bool   `json:"channelAiAgentBound"`
-	SimulationAIAgentBound     int64  `json:"simulationAiAgentBound"`
-	LegacyCompanyRows          int64  `json:"legacyCompanyRows"`
-	LegacyCompanyReferences    int64  `json:"legacyCompanyReferences"`
-	Channel                    int64  `json:"channel"`
-	Stores                     int64  `json:"stores"`
-	CSLeaders                  int64  `json:"csLeaders"`
-	CSUsers                    int64  `json:"csUsers"`
-	StoreStaffUsers            int64  `json:"storeStaffUsers"`
-	AgentTeams                 int64  `json:"agentTeams"`
-	IntelligentAgentTeams      int64  `json:"intelligentAgentTeams"`
-	AgentTeamSchedules         int64  `json:"agentTeamSchedules"`
-	AgentProfiles              int64  `json:"agentProfiles"`
-	DispatchModelAssigned      bool   `json:"dispatchModelAssigned"`
-	StoreStaffBindings         int64  `json:"storeStaffBindings"`
-	WxWorkInstances            int64  `json:"wxWorkInstances"`
-	Customers                  int64  `json:"customers"`
-	CustomerContacts           int64  `json:"customerContacts"`
-	CustomerIdentities         int64  `json:"customerIdentities"`
-	StoreCustomerRels          int64  `json:"storeCustomerRelations"`
-	SimulatedConversations     int64  `json:"simulatedConversations"`
-	SimulatedMessages          int64  `json:"simulatedMessages"`
-	SimulatedAssignments       int64  `json:"simulatedAssignments"`
-	SimulatedCurrentlyAssigned int64  `json:"simulatedCurrentlyAssigned"`
-	SimulatedAssignedAgents    int64  `json:"simulatedAssignedAgents"`
-	SimulatedNeedReply         int64  `json:"simulatedNeedReply"`
-	SimulatedAIServing         int64  `json:"simulatedAiServing"`
-	SimulatedPending           int64  `json:"simulatedPending"`
-	SimulatedActive            int64  `json:"simulatedActive"`
-	SimulatedClosed            int64  `json:"simulatedClosed"`
-	ServiceSessions            int64  `json:"serviceSessions"`
-	ResponseSpans              int64  `json:"responseSpans"`
-	WaitingResponseSpans       int64  `json:"waitingResponseSpans"`
-	RepliedResponseSpans       int64  `json:"repliedResponseSpans"`
-	PresenceSessions           int64  `json:"presenceSessions"`
-	QualityTemplates           int64  `json:"qualityTemplates"`
-	QualityTemplateItems       int64  `json:"qualityTemplateItems"`
-	QualityInspections         int64  `json:"qualityInspections"`
-	CompletedInspections       int64  `json:"completedInspections"`
-	QualityInspectionItems     int64  `json:"qualityInspectionItems"`
-	Evaluations                int64  `json:"evaluations"`
-	SubmittedEvaluations       int64  `json:"submittedEvaluations"`
-	DispatchDecisionLogs       int64  `json:"dispatchDecisionLogs"`
-	SelectedDispatchDecisions  int64  `json:"selectedDispatchDecisions"`
-	FallbackDispatchDecisions  int64  `json:"fallbackDispatchDecisions"`
-	FailedDispatchDecisions    int64  `json:"failedDispatchDecisions"`
-	OverrideDispatchDecisions  int64  `json:"overrideDispatchDecisions"`
-	AnalyticsPolicies          int64  `json:"analyticsPolicies"`
-	ExpectedCoreComplete       bool   `json:"expectedCoreComplete"`
-	ExpectedSimulationComplete bool   `json:"expectedSimulationComplete"`
-	SimulationBaselineIntact   bool   `json:"simulationBaselineIntact"`
+	Batch                       string `json:"batch"`
+	Marker                      string `json:"marker"`
+	Tenant                      int64  `json:"tenant"`
+	TenantSupervisor            int64  `json:"tenantSupervisor"`
+	TenantInvitation            int64  `json:"tenantInvitation"`
+	DefaultAgentTeam            int64  `json:"defaultAgentTeam"`
+	AIAgent                     int64  `json:"aiAgent"`
+	TenantDefaultConfigID       int64  `json:"tenantDefaultConfigId"`
+	TenantDefaultConfigName     string `json:"tenantDefaultConfigName"`
+	TenantDefaultModelName      string `json:"tenantDefaultModelName"`
+	ModelConfigReused           bool   `json:"modelConfigReused"`
+	ChannelAIAgentBound         bool   `json:"channelAiAgentBound"`
+	SimulationAIAgentBound      int64  `json:"simulationAiAgentBound"`
+	LegacyCompanyRows           int64  `json:"legacyCompanyRows"`
+	LegacyCompanyReferences     int64  `json:"legacyCompanyReferences"`
+	Channel                     int64  `json:"channel"`
+	Stores                      int64  `json:"stores"`
+	CSLeaders                   int64  `json:"csLeaders"`
+	CSUsers                     int64  `json:"csUsers"`
+	StoreStaffUsers             int64  `json:"storeStaffUsers"`
+	AgentTeams                  int64  `json:"agentTeams"`
+	RuleAgentTeams              int64  `json:"ruleAgentTeams"`
+	AgentTeamSchedules          int64  `json:"agentTeamSchedules"`
+	AgentProfiles               int64  `json:"agentProfiles"`
+	ActiveDispatchModelSettings int64  `json:"activeDispatchModelSettings"`
+	StoreStaffBindings          int64  `json:"storeStaffBindings"`
+	WxWorkInstances             int64  `json:"wxWorkInstances"`
+	Customers                   int64  `json:"customers"`
+	CustomerContacts            int64  `json:"customerContacts"`
+	CustomerIdentities          int64  `json:"customerIdentities"`
+	StoreCustomerRels           int64  `json:"storeCustomerRelations"`
+	SimulatedConversations      int64  `json:"simulatedConversations"`
+	SimulatedMessages           int64  `json:"simulatedMessages"`
+	SimulatedAssignments        int64  `json:"simulatedAssignments"`
+	SimulatedCurrentlyAssigned  int64  `json:"simulatedCurrentlyAssigned"`
+	SimulatedAssignedAgents     int64  `json:"simulatedAssignedAgents"`
+	SimulatedNeedReply          int64  `json:"simulatedNeedReply"`
+	SimulatedAIServing          int64  `json:"simulatedAiServing"`
+	SimulatedPending            int64  `json:"simulatedPending"`
+	SimulatedActive             int64  `json:"simulatedActive"`
+	SimulatedClosed             int64  `json:"simulatedClosed"`
+	ServiceSessions             int64  `json:"serviceSessions"`
+	ResponseSpans               int64  `json:"responseSpans"`
+	WaitingResponseSpans        int64  `json:"waitingResponseSpans"`
+	RepliedResponseSpans        int64  `json:"repliedResponseSpans"`
+	PresenceSessions            int64  `json:"presenceSessions"`
+	QualityTemplates            int64  `json:"qualityTemplates"`
+	QualityTemplateItems        int64  `json:"qualityTemplateItems"`
+	QualityInspections          int64  `json:"qualityInspections"`
+	CompletedInspections        int64  `json:"completedInspections"`
+	QualityInspectionItems      int64  `json:"qualityInspectionItems"`
+	Evaluations                 int64  `json:"evaluations"`
+	SubmittedEvaluations        int64  `json:"submittedEvaluations"`
+	DispatchDecisionLogs        int64  `json:"dispatchDecisionLogs"`
+	SelectedDispatchDecisions   int64  `json:"selectedDispatchDecisions"`
+	FallbackDispatchDecisions   int64  `json:"fallbackDispatchDecisions"`
+	FailedDispatchDecisions     int64  `json:"failedDispatchDecisions"`
+	OverrideDispatchDecisions   int64  `json:"overrideDispatchDecisions"`
+	AnalyticsPolicies           int64  `json:"analyticsPolicies"`
+	ExpectedCoreComplete        bool   `json:"expectedCoreComplete"`
+	ExpectedSimulationComplete  bool   `json:"expectedSimulationComplete"`
+	SimulationBaselineIntact    bool   `json:"simulationBaselineIntact"`
 }
 
 func main() {
@@ -577,10 +578,10 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.CSUsers = count(db, &models.User{}, "remark LIKE ? AND username LIKE ?", remarkPattern, usernamePrefix+"cs_user_%")
 	r.StoreStaffUsers = count(db, &models.User{}, "remark LIKE ? AND username LIKE ?", remarkPattern, usernamePrefix+"store_staff_%")
 	r.AgentTeams = count(db, &models.AgentTeam{}, "remark LIKE ? AND is_default = ?", remarkPattern, false)
-	r.IntelligentAgentTeams = count(db, &models.AgentTeam{}, "tenant_id = ? AND remark LIKE ? AND is_default = ? AND dispatch_mode = ?", tenantID, remarkPattern, false, enums.AgentTeamDispatchModeIntelligent)
+	r.RuleAgentTeams = count(db, &models.AgentTeam{}, "tenant_id = ? AND remark LIKE ? AND is_default = ? AND dispatch_mode = ?", tenantID, remarkPattern, false, enums.AgentTeamDispatchModeRule)
 	r.AgentTeamSchedules = count(db, &models.AgentTeamSchedule{}, "tenant_id = ? AND remark LIKE ? AND status = ? AND start_at <= ? AND end_at > ?", tenantID, remarkPattern, enums.StatusOk, time.Now(), time.Now())
 	r.AgentProfiles = count(db, &models.AgentProfile{}, "remark LIKE ? AND agent_code LIKE ?", remarkPattern, agentCodePrefix+"%")
-	r.DispatchModelAssigned = count(db, &models.StoreAIModelSetting{}, "tenant_id = ? AND wx_work_instance_id = 0 AND usage_code = ? AND status = ?", tenantID, constants.AIModelUsageDispatchDecisionLLM, enums.StatusOk) == 1
+	r.ActiveDispatchModelSettings = count(db, &models.StoreAIModelSetting{}, "tenant_id = ? AND usage_code = ? AND status = ?", tenantID, retiredDispatchModelUsageCode, enums.StatusOk)
 	r.StoreStaffBindings = count(db, &models.StoreStaffBinding{}, "remark LIKE ?", remarkPattern)
 	r.WxWorkInstances = count(db, &models.WxWorkProtocolInstance{}, "remark LIKE ? AND guid LIKE ?", remarkPattern, wxWorkGUIDPrefix+"%")
 	r.Customers = count(db, &models.Customer{}, "remark LIKE ?", remarkPattern)
@@ -641,10 +642,10 @@ func buildReport(db *gorm.DB, batch string) report {
 		r.CSUsers == 12 &&
 		r.StoreStaffUsers == 100 &&
 		r.AgentTeams == 3 &&
-		r.IntelligentAgentTeams == 3 &&
+		r.RuleAgentTeams == 3 &&
 		r.AgentTeamSchedules == 3 &&
 		r.AgentProfiles == 12 &&
-		r.DispatchModelAssigned &&
+		r.ActiveDispatchModelSettings == 0 &&
 		r.StoreStaffBindings == 100 &&
 		r.WxWorkInstances == 100 &&
 		r.Customers == 500
@@ -681,8 +682,8 @@ func buildReport(db *gorm.DB, batch string) report {
 		r.Evaluations == expectedSimulationEvaluationCount &&
 		r.SubmittedEvaluations == expectedSimulationSubmittedEvaluationCount &&
 		r.DispatchDecisionLogs == expectedSimulationDispatchDecisionCount &&
-		r.SelectedDispatchDecisions == 12 &&
-		r.FallbackDispatchDecisions == 6 &&
+		r.SelectedDispatchDecisions == 18 &&
+		r.FallbackDispatchDecisions == 0 &&
 		r.FailedDispatchDecisions == 9 &&
 		r.OverrideDispatchDecisions == 3 &&
 		r.AnalyticsPolicies == 1
@@ -978,7 +979,7 @@ func (ctx *seedContext) upsertTeams() error {
 			"leader_user_id":    ctx.leaders[i-1].ID,
 			"company_scope_ids": "",
 			"store_scope_ids":   joinInt64s(storeIDs),
-			"dispatch_mode":     enums.AgentTeamDispatchModeIntelligent,
+			"dispatch_mode":     enums.AgentTeamDispatchModeRule,
 			"status":            enums.StatusOk,
 			"description":       fmt.Sprintf("负责%s测试门店%03d-%03d", tenantLegalName, ranges[i-1][0], ranges[i-1][1]),
 			"remark":            ctx.seedRemark("测试客服组"),
@@ -1002,7 +1003,7 @@ func (ctx *seedContext) upsertTeams() error {
 			LeaderUserID:    ctx.leaders[i-1].ID,
 			CompanyScopeIDs: "",
 			StoreScopeIDs:   joinInt64s(storeIDs),
-			DispatchMode:    enums.AgentTeamDispatchModeIntelligent,
+			DispatchMode:    enums.AgentTeamDispatchModeRule,
 			Status:          enums.StatusOk,
 			Description:     fmt.Sprintf("负责%s测试门店%03d-%03d", tenantLegalName, ranges[i-1][0], ranges[i-1][1]),
 			Remark:          ctx.seedRemark("测试客服组"),
@@ -1027,21 +1028,19 @@ func (ctx *seedContext) upsertAgentProfiles() error {
 			err = ctx.db.Where("tenant_id = 0 AND (user_id = ? OR agent_code = ?) AND remark LIKE ?", user.ID, code, likeMarker(ctx.marker)).Take(item).Error
 		}
 		updates := map[string]any{
-			"tenant_id":               ctx.tenant.ID,
-			"user_id":                 user.ID,
-			"team_id":                 team.ID,
-			"agent_code":              code,
-			"display_name":            displayName,
-			"service_status":          enums.ServiceStatusIdle,
-			"max_concurrent_count":    20,
-			"priority_level":          10 - (i % 4),
-			"auto_assign_enabled":     true,
-			"receive_offline_message": true,
-			"status":                  enums.StatusOk,
-			"remark":                  ctx.seedRemark("测试总部客服档案"),
-			"updated_at":              ctx.now,
-			"update_user_id":          constants.SystemAuditUserID,
-			"update_user_name":        constants.SystemAuditUserName,
+			"tenant_id":            ctx.tenant.ID,
+			"user_id":              user.ID,
+			"team_id":              team.ID,
+			"agent_code":           code,
+			"display_name":         displayName,
+			"max_concurrent_count": 20,
+			"priority_level":       10 - (i % 4),
+			"auto_assign_enabled":  true,
+			"status":               enums.StatusOk,
+			"remark":               ctx.seedRemark("测试总部客服档案"),
+			"updated_at":           ctx.now,
+			"update_user_id":       constants.SystemAuditUserID,
+			"update_user_name":     constants.SystemAuditUserName,
 		}
 		if err == nil {
 			if err := ctx.ensureSeedTenantOwnership("agent profile", item.ID, item.TenantID, item.Remark); err != nil {
@@ -1056,19 +1055,17 @@ func (ctx *seedContext) upsertAgentProfiles() error {
 			return err
 		}
 		item = &models.AgentProfile{
-			TenantID:              ctx.tenant.ID,
-			UserID:                user.ID,
-			TeamID:                team.ID,
-			AgentCode:             code,
-			DisplayName:           displayName,
-			ServiceStatus:         enums.ServiceStatusIdle,
-			MaxConcurrentCount:    20,
-			PriorityLevel:         10 - (i % 4),
-			AutoAssignEnabled:     true,
-			ReceiveOfflineMessage: true,
-			Status:                enums.StatusOk,
-			Remark:                ctx.seedRemark("测试总部客服档案"),
-			AuditFields:           ctx.audit,
+			TenantID:           ctx.tenant.ID,
+			UserID:             user.ID,
+			TeamID:             team.ID,
+			AgentCode:          code,
+			DisplayName:        displayName,
+			MaxConcurrentCount: 20,
+			PriorityLevel:      10 - (i % 4),
+			AutoAssignEnabled:  true,
+			Status:             enums.StatusOk,
+			Remark:             ctx.seedRemark("测试总部客服档案"),
+			AuditFields:        ctx.audit,
 		}
 		if err := ctx.db.Create(item).Error; err != nil {
 			return err
@@ -1080,7 +1077,7 @@ func (ctx *seedContext) upsertAgentProfiles() error {
 func (ctx *seedContext) upsertAgentTeamSchedules() error {
 	startAt := ctx.now.Add(-time.Hour)
 	endAt := ctx.now.Add(8 * time.Hour)
-	remark := ctx.seedRemark("测试智能派单当前班次")
+	remark := ctx.seedRemark("测试规则均衡派单当前班次")
 	teamIDs := make([]int64, 0, len(ctx.teams))
 	for _, team := range ctx.teams {
 		teamIDs = append(teamIDs, team.ID)
@@ -1211,7 +1208,7 @@ func (ctx *seedContext) ensureTenantModelAccess() error {
 		return err
 	}
 
-	for _, usageCode := range []string{constants.AIModelUsageReplyLLM, constants.AIModelUsageIntentDetectLLM, constants.AIModelUsageDispatchDecisionLLM} {
+	for _, usageCode := range []string{constants.AIModelUsageReplyLLM, constants.AIModelUsageIntentDetectLLM} {
 		setting := repositories.StoreAIModelSettingRepository.Take(ctx.db,
 			"tenant_id = ? AND wx_work_instance_id = 0 AND usage_code = ?", ctx.tenant.ID, usageCode)
 		if setting == nil {
@@ -1231,7 +1228,12 @@ func (ctx *seedContext) ensureTenantModelAccess() error {
 			return err
 		}
 	}
-	return nil
+	return ctx.db.Model(&models.StoreAIModelSetting{}).
+		Where("tenant_id = ? AND usage_code = ? AND status <> ?", ctx.tenant.ID, retiredDispatchModelUsageCode, enums.StatusDeleted).
+		Updates(map[string]any{
+			"status": enums.StatusDeleted, "updated_at": ctx.now,
+			"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+		}).Error
 }
 
 func (ctx *seedContext) upsertStoreBindingsAndInstances() error {

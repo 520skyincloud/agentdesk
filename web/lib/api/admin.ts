@@ -189,7 +189,10 @@ export type ConversationDispatchTask = {
   lastMessageSummary?: string
   lastMessageAt?: string
   waitingSeconds: number
-  manualExpireAt?: string
+  slaType?: "queue" | "first_response" | string
+  slaStatus?: "normal" | "warning" | "overdue" | string
+  slaDeadlineAt?: string
+  slaRemainingSeconds: number
   assignedAt?: string
   firstAgentReplyAt?: string
   recommendedAssigneeId?: number
@@ -197,7 +200,6 @@ export type ConversationDispatchTask = {
   recommendationReason?: string
   dispatchMode?: string
   dispatchModeLabel?: string
-  decisionConfidence?: number
   workloadWeight: number
   priority: number
   assignmentReason?: string
@@ -224,7 +226,6 @@ export type ConversationDispatchAgentLoad = {
   username?: string
   nickname?: string
   displayName: string
-  serviceStatus: number
   maxConcurrentCount: number
   activeCount: number
   pendingFirstReply: number
@@ -232,11 +233,15 @@ export type ConversationDispatchAgentLoad = {
   processingCount: number
   autoAssignEnabled: boolean
   available: boolean
+  manuallyAssignable: boolean
+  availabilityCode: string
+  availabilityReason: string
+  presenceStatus?: string
+  presenceLastSeenAt?: string
   priorityLevel: number
   lastOnlineAt?: string
-  lastStatusAt?: string
   weightedOpenLoad: number
-  shiftAssignedWeight: number
+  shiftWorkloadWeight: number
   normalizedLoad: number
 }
 
@@ -812,13 +817,15 @@ export type AdminAgentProfile = {
   agentCode: string
   displayName: string
   avatar: string
-  serviceStatus: number
   maxConcurrentCount: number
   priorityLevel: number
   autoAssignEnabled: boolean
-  receiveOfflineMessage: boolean
   lastOnlineAt?: string
-  lastStatusAt?: string
+  presenceStatus?: string
+  presenceLastSeenAt?: string
+  available: boolean
+  availabilityCode?: string
+  availabilityReason?: string
   remark: string
   activeTaskCount: number
   pendingReplyCount: number
@@ -833,13 +840,9 @@ export type CreateAdminAgentProfilePayload = {
   agentCode: string
   displayName: string
   avatar: string
-  serviceStatus: number
   maxConcurrentCount: number
   priorityLevel: number
   autoAssignEnabled: boolean
-  receiveOfflineMessage: boolean
-  lastOnlineAt?: string
-  lastStatusAt?: string
   remark: string
 }
 
@@ -918,6 +921,8 @@ export type AdminAgentTeamSchedule = {
   teamName?: string
   squadId: number
   squadName?: string
+  includedAgentProfileIds: number[]
+  excludedAgentProfileIds: number[]
   startAt: string
   endAt: string
   remark: string
@@ -926,6 +931,8 @@ export type AdminAgentTeamSchedule = {
 export type CreateAdminAgentTeamSchedulePayload = {
   teamId: number
   squadId: number
+  includedAgentProfileIds: number[]
+  excludedAgentProfileIds: number[]
   startAt: string
   endAt: string
   remark: string
@@ -939,6 +946,8 @@ export type UpdateAdminAgentTeamSchedulePayload =
 export type BatchAdminAgentTeamSchedulePayload = {
   teamIds: number[]
   squadId: number
+  includedAgentProfileIds: number[]
+  excludedAgentProfileIds: number[]
   startDate: string
   endDate: string
   weekdays: number[]
@@ -958,6 +967,9 @@ export type AdminAgentTeamScheduleBatchPreviewItem = {
   startAt: string
   endAt: string
   remark: string
+  eligibleAgentCount: number
+  totalCapacity: number
+  coverageWarning?: string
   conflict: boolean
   conflictReason: string
 }
@@ -1636,13 +1648,6 @@ export function assignConversation(
   return request<void>("/api/dashboard/conversation/assign", {
     method: "POST",
     body: JSON.stringify({ conversationId, assigneeId, reason }),
-  })
-}
-
-export function dispatchConversation(conversationId: number) {
-  return request<void>("/api/dashboard/conversation/dispatch", {
-    method: "POST",
-    body: JSON.stringify({ conversationId }),
   })
 }
 

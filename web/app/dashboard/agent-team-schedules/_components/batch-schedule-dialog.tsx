@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { ArrowLeftIcon, CheckIcon, Loader2Icon, XIcon } from "lucide-react"
+import { ArrowLeftIcon, CheckIcon, Loader2Icon, PlusIcon, XIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { OptionCombobox } from "@/components/option-combobox"
@@ -28,16 +28,19 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import {
   fetchAgentTeamsAll,
+  fetchAgentProfilesAll,
   fetchAgentTeamSquads,
   generateAgentTeamScheduleBatch,
   previewAgentTeamScheduleBatch,
   type AdminAgentTeam,
+  type AdminAgentProfile,
   type AdminAgentTeamSquad,
   type AdminAgentTeamScheduleBatchPreview,
   type BatchAdminAgentTeamSchedulePayload,
 } from "@/lib/api/admin"
 import { useI18n } from "@/i18n/provider"
 import { cn } from "@/lib/utils"
+import { ScheduleAgentOverrides } from "./agent-overrides"
 
 type BatchScheduleDialogProps = {
   open: boolean
@@ -77,11 +80,12 @@ function defaultFormState() {
   return {
     selectedTeamIds: [] as number[],
     squadId: 0,
+    includedAgentProfileIds: [] as number[],
+    excludedAgentProfileIds: [] as number[],
     startDate: today,
     endDate: today,
     weekdays: [1, 2, 3, 4, 5],
-    startTime: "09:00",
-    endTime: "18:00",
+    timeRanges: [{ startTime: "09:00", endTime: "18:00" }],
     remark: "",
   }
 }
@@ -90,14 +94,18 @@ type BatchFormState = ReturnType<typeof defaultFormState>
 type DialogStep = "form" | "preview"
 
 function buildPayload(form: BatchFormState): BatchAdminAgentTeamSchedulePayload {
+  const firstRange = form.timeRanges[0] ?? { startTime: "", endTime: "" }
   return {
     teamIds: [...form.selectedTeamIds],
     squadId: form.squadId,
+    includedAgentProfileIds: [...form.includedAgentProfileIds],
+    excludedAgentProfileIds: [...form.excludedAgentProfileIds],
     startDate: form.startDate,
     endDate: form.endDate,
     weekdays: [...form.weekdays],
-    startTime: form.startTime,
-    endTime: form.endTime,
+    startTime: firstRange.startTime,
+    endTime: firstRange.endTime,
+    timeRanges: form.timeRanges.map((item) => ({ ...item })),
     remark: form.remark.trim(),
   }
 }
@@ -124,11 +132,15 @@ function validateForm(form: BatchFormState, t: TFunction) {
   if (form.weekdays.length === 0) {
     return t("agentTeamSchedule.selectAtLeastOneWeekday")
   }
-  if (!form.startTime || !form.endTime) {
+  if (form.timeRanges.length === 0 || form.timeRanges.some((item) => !item.startTime || !item.endTime)) {
     return t("agentTeamSchedule.selectStartEndTime")
   }
-  if (form.endTime <= form.startTime) {
-    return t("agentTeamSchedule.endAfterStart")
+  if (form.timeRanges.some((item) => item.endTime === item.startTime)) {
+    return t("agentTeamSchedule.batchTimeCannotMatch")
+  }
+  const rangeKeys = form.timeRanges.map((item) => `${item.startTime}-${item.endTime}`)
+  if (new Set(rangeKeys).size !== rangeKeys.length) {
+    return t("agentTeamSchedule.duplicateTimeRange")
   }
   return ""
 }
@@ -141,6 +153,7 @@ export function BatchScheduleDialog({
   const t = useI18n()
   const [teams, setTeams] = useState<AdminAgentTeam[]>([])
   const [squads, setSquads] = useState<AdminAgentTeamSquad[]>([])
+  const [profiles, setProfiles] = useState<AdminAgentProfile[]>([])
   const [form, setForm] = useState(defaultFormState)
   const [step, setStep] = useState<DialogStep>("form")
   const [preview, setPreview] = useState<AdminAgentTeamScheduleBatchPreview | null>(null)
@@ -217,16 +230,21 @@ export function BatchScheduleDialog({
   useEffect(() => {
     if (!open || form.selectedTeamIds.length !== 1) {
       setSquads([])
-      if (form.squadId !== 0) updateForm({ squadId: 0 })
+      setProfiles([])
       return
     }
     let ignore = false
-    void fetchAgentTeamSquads(form.selectedTeamIds[0])
-      .then((data) => { if (!ignore) setSquads(data.filter((item) => item.status === 0)) })
+    void Promise.all([
+      fetchAgentTeamSquads(form.selectedTeamIds[0]),
+      fetchAgentProfilesAll({ teamId: form.selectedTeamIds[0] }),
+    ])
+      .then(([squadData, profileData]) => {
+        if (ignore) return
+        setSquads(squadData.filter((item) => item.status === 0))
+        setProfiles(profileData)
+      })
       .catch((error) => { if (!ignore) toast.error(error instanceof Error ? error.message : t("agentTeamSchedule.loadSquadsFailed")) })
     return () => { ignore = true }
-  // updateForm is intentionally excluded because changing the selected team owns squad reset.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.selectedTeamIds, open, t])
 
   function updateForm(values: Partial<BatchFormState>) {
@@ -250,12 +268,22 @@ export function BatchScheduleDialog({
     if (!Number.isFinite(teamId) || form.selectedTeamIds.includes(teamId)) {
       return
     }
-    updateForm({ selectedTeamIds: [...form.selectedTeamIds, teamId] })
+    const selectedTeamIds = [...form.selectedTeamIds, teamId]
+    updateForm({
+      selectedTeamIds,
+      squadId: selectedTeamIds.length === 1 ? form.squadId : 0,
+      includedAgentProfileIds: [],
+      excludedAgentProfileIds: [],
+    })
   }
 
   function removeTeam(teamId: number) {
+    const selectedTeamIds = form.selectedTeamIds.filter((selectedTeamId) => selectedTeamId !== teamId)
     updateForm({
-      selectedTeamIds: form.selectedTeamIds.filter((selectedTeamId) => selectedTeamId !== teamId),
+      selectedTeamIds,
+      squadId: selectedTeamIds.length === 1 ? form.squadId : 0,
+      includedAgentProfileIds: [],
+      excludedAgentProfileIds: [],
     })
   }
 
@@ -264,6 +292,27 @@ export function BatchScheduleDialog({
       ? form.weekdays.filter((value) => value !== weekday)
       : [...form.weekdays, weekday].sort((a, b) => a - b)
     updateForm({ weekdays: nextWeekdays })
+  }
+
+  function updateTimeRange(index: number, field: "startTime" | "endTime", value: string) {
+    updateForm({
+      timeRanges: form.timeRanges.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, [field]: value } : item
+      ),
+    })
+  }
+
+  function addTimeRange() {
+    updateForm({
+      timeRanges: [...form.timeRanges, { startTime: "09:00", endTime: "18:00" }],
+    })
+  }
+
+  function removeTimeRange(index: number) {
+    if (form.timeRanges.length <= 1) return
+    updateForm({
+      timeRanges: form.timeRanges.filter((_, itemIndex) => itemIndex !== index),
+    })
   }
 
   async function handlePreview() {
@@ -396,6 +445,16 @@ export function BatchScheduleDialog({
                 </p>
               </div>
 
+              <ScheduleAgentOverrides
+                profiles={profiles}
+                includedProfileIds={form.includedAgentProfileIds}
+                excludedProfileIds={form.excludedAgentProfileIds}
+                disabled={form.selectedTeamIds.length !== 1}
+                onChange={(includedAgentProfileIds, excludedAgentProfileIds) =>
+                  updateForm({ includedAgentProfileIds, excludedAgentProfileIds })
+                }
+              />
+
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="batch-schedule-start-date">{t("agentTeamSchedule.startDate")}</Label>
@@ -441,25 +500,60 @@ export function BatchScheduleDialog({
                 </div>
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="batch-schedule-start-time">{t("agentTeamSchedule.startTime")}</Label>
-                  <Input
-                    id="batch-schedule-start-time"
-                    type="time"
-                    value={form.startTime}
-                    onChange={(event) => updateForm({ startTime: event.target.value })}
-                  />
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <Label>{t("agentTeamSchedule.timeRanges")}</Label>
+                  <Button type="button" variant="outline" size="sm" onClick={addTimeRange}>
+                    <PlusIcon />
+                    {t("agentTeamSchedule.addTimeRange")}
+                  </Button>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="batch-schedule-end-time">{t("agentTeamSchedule.endTime")}</Label>
-                  <Input
-                    id="batch-schedule-end-time"
-                    type="time"
-                    value={form.endTime}
-                    onChange={(event) => updateForm({ endTime: event.target.value })}
-                  />
+                <div className="space-y-3">
+                  {form.timeRanges.map((item, index) => {
+                    const overnight = Boolean(item.startTime && item.endTime && item.endTime < item.startTime)
+                    return (
+                      <div key={index} className="grid items-end gap-3 border-b pb-3 last:border-b-0 last:pb-0 sm:grid-cols-[1fr_1fr_auto]">
+                        <div className="space-y-2">
+                          <Label htmlFor={`batch-schedule-start-time-${index}`}>
+                            {t("agentTeamSchedule.startTime")}
+                          </Label>
+                          <Input
+                            id={`batch-schedule-start-time-${index}`}
+                            type="time"
+                            value={item.startTime}
+                            onChange={(event) => updateTimeRange(index, "startTime", event.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <div className="flex min-h-5 items-center gap-2">
+                            <Label htmlFor={`batch-schedule-end-time-${index}`}>
+                              {t("agentTeamSchedule.endTime")}
+                            </Label>
+                            {overnight ? <Badge variant="outline">{t("agentTeamSchedule.overnight")}</Badge> : null}
+                          </div>
+                          <Input
+                            id={`batch-schedule-end-time-${index}`}
+                            type="time"
+                            value={item.endTime}
+                            onChange={(event) => updateTimeRange(index, "endTime", event.target.value)}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          disabled={form.timeRanges.length <= 1}
+                          onClick={() => removeTimeRange(index)}
+                          aria-label={t("agentTeamSchedule.removeTimeRange")}
+                          title={t("agentTeamSchedule.removeTimeRange")}
+                        >
+                          <XIcon />
+                        </Button>
+                      </div>
+                    )
+                  })}
                 </div>
+                <p className="text-xs text-muted-foreground">{t("agentTeamSchedule.timeRangesHint")}</p>
               </div>
 
               <div className="space-y-2">
@@ -496,6 +590,7 @@ export function BatchScheduleDialog({
                         <TableHead>{t("agentTeamSchedule.date")}</TableHead>
                         <TableHead>{t("agentTeamSchedule.weekday")}</TableHead>
                         <TableHead>{t("agentTeamSchedule.time")}</TableHead>
+                        <TableHead>{t("agentTeamSchedule.coverage")}</TableHead>
                         <TableHead>{t("agentTeamSchedule.remark")}</TableHead>
                         <TableHead>{t("agentTeamSchedule.status")}</TableHead>
                       </TableRow>
@@ -517,6 +612,12 @@ export function BatchScheduleDialog({
                           <TableCell>
                             {item.startAt.slice(11, 16)} - {item.endAt.slice(11, 16)}
                           </TableCell>
+                          <TableCell>
+                            <div>{t("agentTeamSchedule.coverageValue", { count: item.eligibleAgentCount, capacity: item.totalCapacity })}</div>
+                            {item.coverageWarning ? (
+                              <div className="mt-1 text-xs text-amber-700">{item.coverageWarning}</div>
+                            ) : null}
+                          </TableCell>
                           <TableCell className="max-w-56 truncate">{item.remark || "-"}</TableCell>
                           <TableCell>
                             {item.conflict ? (
@@ -531,7 +632,7 @@ export function BatchScheduleDialog({
                       ))}
                       {preview && preview.items.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                          <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
                             {t("agentTeamSchedule.emptyPreview")}
                           </TableCell>
                         </TableRow>

@@ -19,6 +19,7 @@ func TestDashboardPresenceStaysActiveUntilLastUserSessionCloses(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	operator := createDashboardPresenceFixture(t, db, 803, now)
 	service := newWsService()
+	service.presenceDisconnectGrace = 20 * time.Millisecond
 	first := newDashboardPresenceTestSession("presence-first", operator)
 	second := newDashboardPresenceTestSession("presence-second", operator)
 
@@ -59,9 +60,10 @@ func TestDashboardPresenceStaysActiveUntilLastUserSessionCloses(t *testing.T) {
 	if got := service.manager.CountUserSessions(operator.ActiveTenantID, operator.UserID); got != 0 {
 		t.Fatalf("user session count after final disconnect=%d want=0", got)
 	}
-	if active := repositories.AgentPresenceSessionRepository.FindActive(db, operator.ActiveTenantID, operator.UserID); active != nil {
-		t.Fatalf("final disconnect left active presence=%+v", active)
+	if active := repositories.AgentPresenceSessionRepository.FindActive(db, operator.ActiveTenantID, operator.UserID); active == nil {
+		t.Fatal("final disconnect must keep presence active during reconnect grace")
 	}
+	waitForPresenceEnded(t, db, operator.ActiveTenantID, operator.UserID)
 
 	rows := repositories.AgentPresenceSessionRepository.Find(db, sqls.NewCnd().
 		Eq("tenant_id", operator.ActiveTenantID).
@@ -85,6 +87,7 @@ func TestDashboardPresenceBreakSurvivesHeartbeatsAndCanRecover(t *testing.T) {
 	t0 := time.Now().Truncate(time.Second)
 	operator := createDashboardPresenceFixture(t, db, 804, t0)
 	service := newWsService()
+	service.presenceDisconnectGrace = 20 * time.Millisecond
 	first := newDashboardPresenceTestSession("break-first", operator)
 	second := newDashboardPresenceTestSession("break-second", operator)
 	service.manager.Register(first, nil)
@@ -128,9 +131,7 @@ func TestDashboardPresenceBreakSurvivesHeartbeatsAndCanRecover(t *testing.T) {
 		t.Fatal("partial disconnect ended recovered presence")
 	}
 	service.closeSession(second)
-	if active := repositories.AgentPresenceSessionRepository.FindActive(db, operator.ActiveTenantID, operator.UserID); active != nil {
-		t.Fatalf("final disconnect left recovered presence active=%+v", active)
-	}
+	waitForPresenceEnded(t, db, operator.ActiveTenantID, operator.UserID)
 
 	rows := repositories.AgentPresenceSessionRepository.Find(db, sqls.NewCnd().
 		Eq("tenant_id", operator.ActiveTenantID).
@@ -146,6 +147,7 @@ func TestDashboardPresenceHeartbeatTimeoutKeepsOneRealtimeAgent(t *testing.T) {
 	t0 := time.Now().Truncate(time.Second)
 	operator := createDashboardPresenceFixture(t, db, 805, t0)
 	service := newWsService()
+	service.presenceDisconnectGrace = 20 * time.Millisecond
 	session := newDashboardPresenceTestSession("timeout-session", operator)
 	service.manager.Register(session, nil)
 
@@ -176,6 +178,33 @@ func TestDashboardPresenceHeartbeatTimeoutKeepsOneRealtimeAgent(t *testing.T) {
 	}
 
 	service.closeSession(session)
+	waitForPresenceEnded(t, db, operator.ActiveTenantID, operator.UserID)
+}
+
+func TestDashboardPresenceReconnectCancelsPendingDisconnect(t *testing.T) {
+	db := setupServiceAnalyticsTestDB(t)
+	now := time.Now().Truncate(time.Second)
+	operator := createDashboardPresenceFixture(t, db, 806, now)
+	service := newWsService()
+	service.presenceDisconnectGrace = 60 * time.Millisecond
+	first := newDashboardPresenceTestSession("reconnect-first", operator)
+	service.manager.Register(first, nil)
+	service.touchDashboardPresence(first, now)
+
+	service.closeSession(first)
+	if repositories.AgentPresenceSessionRepository.FindActive(db, operator.ActiveTenantID, operator.UserID) == nil {
+		t.Fatal("disconnect ended presence before reconnect grace elapsed")
+	}
+	replacement := newDashboardPresenceTestSession("reconnect-replacement", operator)
+	service.manager.Register(replacement, nil)
+	service.touchDashboardPresence(replacement, now.Add(30*time.Millisecond))
+	time.Sleep(90 * time.Millisecond)
+	if active := repositories.AgentPresenceSessionRepository.FindActive(db, operator.ActiveTenantID, operator.UserID); active == nil {
+		t.Fatal("reconnect did not cancel pending presence end")
+	}
+
+	service.closeSession(replacement)
+	waitForPresenceEnded(t, db, operator.ActiveTenantID, operator.UserID)
 }
 
 func createDashboardPresenceFixture(t *testing.T, db *gorm.DB, tenantID int64, at time.Time) *dto.AuthPrincipal {
@@ -253,4 +282,17 @@ func requireSingleActivePresence(t *testing.T, db *gorm.DB, tenantID, userID int
 		t.Fatalf("active presence status=%q want=%q rows=%+v", active.Status, status, rows)
 	}
 	return active
+}
+
+func waitForPresenceEnded(t *testing.T, db *gorm.DB, tenantID, userID int64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if repositories.AgentPresenceSessionRepository.FindActive(db, tenantID, userID) == nil {
+			time.Sleep(10 * time.Millisecond)
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("presence remained active after reconnect grace for tenant=%d user=%d", tenantID, userID)
 }

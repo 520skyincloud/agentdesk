@@ -28,7 +28,6 @@ func AgentAnyList(ctx *gin.Context) {
 	list, paging := services.AgentProfileService.FindPageInTenant(params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "userId"},
 		params.QueryFilter{ParamName: "teamId"},
-		params.QueryFilter{ParamName: "serviceStatus"},
 		params.QueryFilter{ParamName: "agentCode", Op: params.Like},
 		params.QueryFilter{ParamName: "displayName", Op: params.Like},
 	).Desc("id"), operator)
@@ -48,6 +47,11 @@ func AgentAnyList(ctx *gin.Context) {
 		results[i].ActiveTaskCount = load.ActiveCount
 		results[i].PendingReplyCount = load.PendingReplyCount
 		results[i].ProcessingTaskCount = load.ProcessingCount
+		results[i].PresenceStatus = load.PresenceStatus
+		results[i].PresenceLastSeenAt = load.PresenceLastSeenAt
+		results[i].Available = load.Available
+		results[i].AvailabilityCode = load.AvailabilityCode
+		results[i].AvailabilityReason = load.AvailabilityReason
 	}
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
@@ -65,7 +69,6 @@ func AgentGetList_all(ctx *gin.Context) {
 	list := services.AgentProfileService.FindInTenant(params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "userId"},
 		params.QueryFilter{ParamName: "teamId"},
-		params.QueryFilter{ParamName: "serviceStatus"},
 		params.QueryFilter{ParamName: "agentCode", Op: params.Like},
 	).Desc("id"), operator)
 

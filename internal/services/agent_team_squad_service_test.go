@@ -85,7 +85,7 @@ func TestBuildAgentProfileModelInheritsTenantAndRejectsCrossTenant(t *testing.T)
 	}
 	req := request.CreateAgentProfileRequest{
 		UserID: user.ID, TeamID: teamA.ID, AgentCode: "tenant-profile", DisplayName: "租户客服",
-		ServiceStatus: enums.ServiceStatusIdle,
+		MaxConcurrentCount: 5,
 	}
 	profile, err := AgentProfileService.buildProfileModel(0, req)
 	if err != nil {

@@ -56,7 +56,7 @@ func ConversationDispatchAnyAgent_loads(ctx *gin.Context) {
 }
 
 func ConversationDispatchPostAuto_assign(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationHandover)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationAssign)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -74,7 +74,7 @@ func ConversationDispatchPostAuto_assign(ctx *gin.Context) {
 }
 
 func ConversationDispatchPostAssign(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationHandover)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationAssign)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -92,7 +92,7 @@ func ConversationDispatchPostAssign(ctx *gin.Context) {
 }
 
 func ConversationDispatchPostTransfer(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationHandover)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTransfer)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -110,7 +110,7 @@ func ConversationDispatchPostTransfer(ctx *gin.Context) {
 }
 
 func ConversationDispatchPostRelease(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationHandover)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationRecycle)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

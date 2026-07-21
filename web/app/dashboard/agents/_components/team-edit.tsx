@@ -100,7 +100,6 @@ function createEditFormSchema(t: TFunction) {
     dispatchMode: z.enum([
       AgentTeamDispatchMode.Manual,
       AgentTeamDispatchMode.Rule,
-      AgentTeamDispatchMode.Intelligent,
     ]),
     status: z.enum([String(Status.Ok), String(Status.Disabled)], {
       message: t("agentProfile.teamStatusRequired"),
@@ -132,7 +131,10 @@ function buildForm(item: AdminAgentTeam | null): EditForm {
     name: item.name,
     leaderUserId: String(item.leaderUserId),
     storeStaffUserIds: (item.storeStaffUserIds || []).join(","),
-    dispatchMode: item.dispatchMode || AgentTeamDispatchMode.Rule,
+    dispatchMode:
+      item.dispatchMode === AgentTeamDispatchMode.Manual
+        ? AgentTeamDispatchMode.Manual
+        : AgentTeamDispatchMode.Rule,
     status: String(item.status),
     description: item.description || "",
     remark: item.remark || "",
@@ -566,16 +568,13 @@ function TeamEditDialogBody({
                         value={[field.value]}
                         onValueChange={(value) => value[0] && field.onChange(value[0])}
                         variant="outline"
-                        className="grid w-full grid-cols-3"
+                        className="grid w-full grid-cols-2"
                       >
                         <ToggleGroupItem value={AgentTeamDispatchMode.Manual}>
                           {t("agentProfile.dispatchManual")}
                         </ToggleGroupItem>
                         <ToggleGroupItem value={AgentTeamDispatchMode.Rule}>
                           {t("agentProfile.dispatchRule")}
-                        </ToggleGroupItem>
-                        <ToggleGroupItem value={AgentTeamDispatchMode.Intelligent}>
-                          {t("agentProfile.dispatchIntelligent")}
                         </ToggleGroupItem>
                       </ToggleGroup>
                     )}

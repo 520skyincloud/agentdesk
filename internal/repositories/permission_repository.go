@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 
 	"agent-desk/internal/pkg/httpx/params"
 
@@ -75,6 +76,26 @@ func (r *permissionRepository) CountBySql(db *gorm.DB, sqlStr string, paramArr .
 
 func (r *permissionRepository) Count(db *gorm.DB, cnd *sqls.Cnd) int64 {
 	return cnd.Count(db, &models.Permission{})
+}
+
+func (r *permissionRepository) FindUserIDsWithAllCodes(db *gorm.DB, userIDs []int64, codes []string) ([]int64, error) {
+	ret := make([]int64, 0)
+	if db == nil || len(userIDs) == 0 || len(codes) == 0 {
+		return ret, nil
+	}
+	err := db.Table("t_user_role AS ur").
+		Select("ur.user_id").
+		Joins("JOIN t_role AS r ON r.id = ur.role_id").
+		Joins("JOIN t_role_permission AS rp ON rp.role_id = r.id").
+		Joins("JOIN t_permission AS p ON p.id = rp.permission_id").
+		Where("ur.user_id IN ?", userIDs).
+		Where("r.status = ? AND p.status = ?", enums.StatusOk, enums.StatusOk).
+		Where("p.code IN ?", codes).
+		Group("ur.user_id").
+		Having("COUNT(DISTINCT p.code) = ?", len(codes)).
+		Order("ur.user_id ASC").
+		Scan(&ret).Error
+	return ret, err
 }
 
 func (r *permissionRepository) Create(db *gorm.DB, t *models.Permission) (err error) {

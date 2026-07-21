@@ -9,6 +9,7 @@ import (
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -203,6 +204,36 @@ func TestConversationDispatchManualAssignmentRejectsDisabledAccount(t *testing.T
 	}
 }
 
+func TestConversationDispatchManualAssignmentRequiresReplyPermissions(t *testing.T) {
+	db := setupConversationDispatchSquadTestDB(t)
+	createDispatchSquadTeamAndAgents(t, db)
+	permission := repositories.PermissionRepository.FindOne(db, sqls.NewCnd().Eq("code", constants.PermissionConversationSend.Code))
+	if permission == nil {
+		t.Fatal("expected conversation send permission")
+	}
+	if err := db.Where("permission_id = ?", permission.ID).Delete(&models.RolePermission{}).Error; err != nil {
+		t.Fatalf("remove conversation send permission: %v", err)
+	}
+
+	conversation := &models.Conversation{TenantID: 101, CurrentTeamID: 1, Status: enums.IMConversationStatusPending}
+	operator := &dto.AuthPrincipal{UserID: 9, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
+	if _, err := ConversationDispatchWorkbenchService.requireManageableTargetProfile(102, conversation, operator); err == nil || !strings.Contains(err.Error(), "缺少会话查看或回复权限") {
+		t.Fatalf("expected manual assignment permission rejection, got %v", err)
+	}
+
+	profile := AgentProfileService.Get(2)
+	if profile == nil {
+		t.Fatal("expected target profile")
+	}
+	loads, err := ConversationDispatchWorkbenchService.buildAgentLoads([]models.AgentProfile{*profile}, operator)
+	if err != nil {
+		t.Fatalf("buildAgentLoads() error = %v", err)
+	}
+	if len(loads) != 1 || loads[0].manuallyAssignable {
+		t.Fatalf("agent without reply permissions must not be manually assignable: %+v", loads)
+	}
+}
+
 func setupConversationDispatchSquadTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dbName := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
@@ -219,11 +250,19 @@ func setupConversationDispatchSquadTestDB(t *testing.T) *gorm.DB {
 	})
 	if err := db.AutoMigrate(
 		&models.User{},
+		&models.Role{},
+		&models.Permission{},
+		&models.UserRole{},
+		&models.RolePermission{},
 		&models.AgentTeam{},
 		&models.AgentProfile{},
 		&models.AgentTeamSquad{},
 		&models.AgentTeamSquadMember{},
 		&models.AgentTeamSchedule{},
+		&models.AgentPresenceSession{},
+		&models.AIAgent{},
+		&models.StoreStaffBinding{},
+		&models.WxWorkProtocolInstance{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
 		&models.ConversationReadState{},
@@ -233,7 +272,9 @@ func setupConversationDispatchSquadTestDB(t *testing.T) *gorm.DB {
 		&models.ConversationServiceSession{},
 		&models.ConversationResponseSpan{},
 		&models.DispatchDecisionLog{},
+		&models.Notification{},
 		&models.AIUsageEvent{},
+		&models.ServiceAnalyticsPolicy{},
 	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}
@@ -253,12 +294,41 @@ func createDispatchSquadTeamAndAgents(t *testing.T, db *gorm.DB) {
 	if err := db.Create(&users).Error; err != nil {
 		t.Fatalf("create users error = %v", err)
 	}
+	role := models.Role{ID: 1, Name: "客服", Code: constants.RoleCodeCsUser, Status: enums.StatusOk}
+	if err := db.Create(&role).Error; err != nil {
+		t.Fatalf("create agent role error = %v", err)
+	}
+	permissions := []models.Permission{
+		{ID: 1, Name: "查看会话", Code: constants.PermissionConversationView.Code, Status: enums.StatusOk},
+		{ID: 2, Name: "发送会话消息", Code: constants.PermissionConversationSend.Code, Status: enums.StatusOk},
+	}
+	if err := db.Create(&permissions).Error; err != nil {
+		t.Fatalf("create conversation permissions error = %v", err)
+	}
+	for _, user := range users {
+		if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
+			t.Fatalf("create user role error = %v", err)
+		}
+	}
+	for _, permission := range permissions {
+		if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
+			t.Fatalf("create role permission error = %v", err)
+		}
+	}
 	profiles := []models.AgentProfile{
-		{ID: 1, TenantID: 101, UserID: 101, TeamID: 1, AgentCode: "agent-a", DisplayName: "客服 A", Status: enums.StatusOk, ServiceStatus: enums.ServiceStatusIdle, AutoAssignEnabled: true, MaxConcurrentCount: 10},
-		{ID: 2, TenantID: 101, UserID: 102, TeamID: 1, AgentCode: "agent-b", DisplayName: "客服 B", Status: enums.StatusOk, ServiceStatus: enums.ServiceStatusIdle, AutoAssignEnabled: true, MaxConcurrentCount: 10},
+		{ID: 1, TenantID: 101, UserID: 101, TeamID: 1, AgentCode: "agent-a", DisplayName: "客服 A", Status: enums.StatusOk, AutoAssignEnabled: true, MaxConcurrentCount: 10},
+		{ID: 2, TenantID: 101, UserID: 102, TeamID: 1, AgentCode: "agent-b", DisplayName: "客服 B", Status: enums.StatusOk, AutoAssignEnabled: true, MaxConcurrentCount: 10},
 	}
 	if err := db.Create(&profiles).Error; err != nil {
 		t.Fatalf("create profiles error = %v", err)
+	}
+	now := time.Now()
+	presence := []models.AgentPresenceSession{
+		{TenantID: 101, UserID: 101, AgentProfileID: 1, TeamID: 1, Status: enums.AgentPresenceStatusIdle, Source: "test", StartedAt: now, LastSeenAt: now},
+		{TenantID: 101, UserID: 102, AgentProfileID: 2, TeamID: 1, Status: enums.AgentPresenceStatusIdle, Source: "test", StartedAt: now, LastSeenAt: now},
+	}
+	if err := db.Create(&presence).Error; err != nil {
+		t.Fatalf("create agent presence error = %v", err)
 	}
 }
 

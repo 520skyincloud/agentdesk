@@ -44,7 +44,6 @@ import {
   type CreateAdminAgentProfilePayload,
 } from "@/lib/api/admin";
 import { useI18n } from "@/i18n/provider";
-import { ServiceStatus } from "@/lib/generated/enums";
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string;
 
@@ -63,11 +62,9 @@ const emptyForm: EditForm = {
   agentCode: "",
   displayName: "",
   avatar: "",
-  serviceStatus: String(ServiceStatus.Idle) as "0" | "1",
-  maxConcurrentCount: "0",
+  maxConcurrentCount: "5",
   priorityLevel: "0",
   autoAssignEnabled: true,
-  receiveOfflineMessage: false,
   remark: "",
 };
 
@@ -77,11 +74,9 @@ type EditForm = {
   agentCode: string;
   displayName: string;
   avatar: string;
-  serviceStatus: "0" | "1";
   maxConcurrentCount: string;
   priorityLevel: string;
   autoAssignEnabled: boolean;
-  receiveOfflineMessage: boolean;
   remark: string;
 };
 
@@ -92,28 +87,18 @@ function createEditFormSchema(t: TFunction) {
   agentCode: z.string().trim().min(1, t("agentProfile.agentCodeRequired")),
   displayName: z.string().trim().min(1, t("agentProfile.displayNameRequired")),
   avatar: z.string().trim(),
-  serviceStatus: z.enum(["0", "1"], {
-    message: t("agentProfile.statusRequired"),
-  }),
   maxConcurrentCount: z
     .string()
     .trim()
-    .regex(/^\d+$/, t("agentProfile.maxConcurrentInvalid")),
+    .regex(/^\d+$/, t("agentProfile.maxConcurrentInvalid"))
+    .refine((value) => Number(value) >= 1 && Number(value) <= 50, t("agentProfile.maxConcurrentInvalid")),
   priorityLevel: z
     .string()
     .trim()
     .regex(/^-?\d+$/, t("agentProfile.priorityInvalid")),
   autoAssignEnabled: z.boolean(),
-  receiveOfflineMessage: z.boolean(),
   remark: z.string().trim(),
   });
-}
-
-function getServiceStatusOptions(t: TFunction) {
-  return [
-    { value: String(ServiceStatus.Idle), label: t("agentProfile.statusIdle") },
-    { value: String(ServiceStatus.Busy), label: t("agentProfile.statusBusy") },
-  ];
 }
 
 function buildForm(item: AdminAgentProfile | null): EditForm {
@@ -126,11 +111,9 @@ function buildForm(item: AdminAgentProfile | null): EditForm {
     agentCode: item.agentCode,
     displayName: item.displayName,
     avatar: item.avatar || "",
-    serviceStatus: String(item.serviceStatus) as EditForm["serviceStatus"],
     maxConcurrentCount: String(item.maxConcurrentCount),
     priorityLevel: String(item.priorityLevel),
     autoAssignEnabled: item.autoAssignEnabled,
-    receiveOfflineMessage: item.receiveOfflineMessage,
     remark: item.remark || "",
   };
 }
@@ -158,11 +141,9 @@ function buildPayload(form: EditForm): CreateAdminAgentProfilePayload {
     agentCode: form.agentCode.trim(),
     displayName: form.displayName.trim(),
     avatar: form.avatar.trim(),
-    serviceStatus: Number(form.serviceStatus),
     maxConcurrentCount: Number(form.maxConcurrentCount),
     priorityLevel: Number(form.priorityLevel),
     autoAssignEnabled: form.autoAssignEnabled,
-    receiveOfflineMessage: form.receiveOfflineMessage,
     remark: form.remark.trim(),
   };
 }
@@ -226,7 +207,6 @@ function AgentEditDialogBody({
     value: String(team.id),
     label: team.name,
   }));
-  const serviceStatusOptions = useMemo(() => getServiceStatusOptions(t), [t]);
   const loadOptions = useCallback(async () => {
     try {
       const [usersData, teamsData] = await Promise.all([
@@ -463,29 +443,6 @@ function AgentEditDialogBody({
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field data-invalid={!!errors.serviceStatus}>
-              <FieldLabel>{t("agentProfile.serviceStatus")}</FieldLabel>
-              <FieldContent>
-                <Controller
-                  control={control}
-                  name="serviceStatus"
-                  render={({ field }) => (
-                    <OptionCombobox
-                      options={serviceStatusOptions}
-                      value={field.value}
-                      onChange={field.onChange}
-                      placeholder={t("agentProfile.selectStatus")}
-                      searchPlaceholder={t("agentProfile.searchStatus")}
-                      emptyText={t("agentProfile.emptyStatus")}
-                    />
-                  )}
-                />
-                <FieldError errors={[errors.serviceStatus]} />
-              </FieldContent>
-            </Field>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field data-invalid={!!errors.maxConcurrentCount}>
               <FieldLabel htmlFor="agent-max-concurrent-count">
                 {t("agentProfile.maxConcurrent")}
@@ -494,7 +451,8 @@ function AgentEditDialogBody({
                 <Input
                   id="agent-max-concurrent-count"
                   type="number"
-                  min={0}
+                  min={1}
+                  max={50}
                   {...register("maxConcurrentCount")}
                 />
                 <FieldError errors={[errors.maxConcurrentCount]} />
@@ -521,21 +479,6 @@ function AgentEditDialogBody({
                 <Controller
                   control={control}
                   name="autoAssignEnabled"
-                  render={({ field }) => (
-                    <Switch
-                      checked={field.value}
-                      onCheckedChange={field.onChange}
-                    />
-                  )}
-                />
-              </FieldContent>
-            </Field>
-            <Field>
-              <FieldLabel>{t("agentProfile.receiveOfflineMessage")}</FieldLabel>
-              <FieldContent>
-                <Controller
-                  control={control}
-                  name="receiveOfflineMessage"
                   render={({ field }) => (
                     <Switch
                       checked={field.value}

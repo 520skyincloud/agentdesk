@@ -112,9 +112,6 @@ func (s *agentProfileService) MarkUserOnline(userID int64, username string, now 
 		"update_user_name": strings.TrimSpace(username),
 		"updated_at":       now,
 	}
-	if profile.LastStatusAt == nil {
-		columns["last_status_at"] = now
-	}
 	return repositories.AgentProfileRepository.UpdatesInTenant(sqls.DB(), profile.ID, profile.TenantID, columns)
 }
 
@@ -156,15 +153,6 @@ func (s *agentProfileService) GetActiveAgentUserIDsInTenant(tenantID int64) []in
 		result = append(result, item.UserID)
 	}
 	return result
-}
-
-// GetDispatchAgents 获取可用于分配会话的客服
-func (s *agentProfileService) GetDispatchAgents(teamIds []int64) []models.AgentProfile {
-	return AgentProfileService.Find(sqls.NewCnd().
-		In("team_id", teamIds).
-		Eq("status", enums.StatusOk).
-		Eq("auto_assign_enabled", true).
-		Eq("service_status", enums.ServiceStatusIdle))
 }
 
 func (s *agentProfileService) CanServeConversation(userID int64, conversationID int64) bool {
@@ -258,6 +246,7 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
 	var item *models.AgentProfile
+	var previous *models.AgentProfile
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		current, err := repositories.AgentProfileRepository.GetForUpdateInTenant(ctx.Tx, req.ID, AgentTeamScopeService.ActiveTenantID(operator))
 		if err != nil {
@@ -266,6 +255,8 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 		if current == nil {
 			return errorsx.InvalidParam("客服档案不存在")
 		}
+		copy := *current
+		previous = &copy
 		teams, err := AgentTeamScopeService.lockManageableTeamsDB(ctx.Tx, []int64{current.TeamID, req.TeamID}, operator, "客服原所属组和目标组都必须在你的管理范围内")
 		if err != nil {
 			return err
@@ -289,11 +280,9 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 			"agent_code":                 item.AgentCode,
 			"display_name":               item.DisplayName,
 			"avatar":                     item.Avatar,
-			"service_status":             item.ServiceStatus,
 			"max_concurrent_count":       item.MaxConcurrentCount,
 			"priority_level":             item.PriorityLevel,
 			"auto_assign_enabled":        item.AutoAssignEnabled,
-			"receive_offline_message":    item.ReceiveOfflineMessage,
 			"remark":                     item.Remark,
 			"update_user_id":             operator.UserID,
 			"update_user_name":           operator.Username,
@@ -306,6 +295,13 @@ func (s *agentProfileService) UpdateAgentProfile(req request.UpdateAgentProfileR
 		}
 		return err
 	}
+	if previous != nil {
+		_, _ = ConversationDispatchService.RecoverAssignmentsForAgent(previous.TenantID, previous.UserID, 0)
+		ConversationDispatchService.ScheduleTeamDispatch(previous.TenantID, previous.TeamID)
+	}
+	if item != nil && (previous == nil || item.UserID != previous.UserID) {
+		_, _ = ConversationDispatchService.RecoverAssignmentsForAgent(item.TenantID, item.UserID, 0)
+	}
 	s.dispatchPendingConversationsIfEligible(item)
 	return nil
 }
@@ -314,7 +310,8 @@ func (s *agentProfileService) DeleteAgentProfile(id int64, operator *dto.AuthPri
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	var deleted *models.AgentProfile
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		current, err := repositories.AgentProfileRepository.GetForUpdateInTenant(ctx.Tx, id, AgentTeamScopeService.ActiveTenantID(operator))
 		if err != nil {
 			return err
@@ -328,8 +325,18 @@ func (s *agentProfileService) DeleteAgentProfile(id int64, operator *dto.AuthPri
 		if repositories.AgentTeamSquadMemberRepository.Take(ctx.Tx, "tenant_id = ? AND agent_profile_id = ? AND status = ?", current.TenantID, current.ID, enums.StatusOk) != nil {
 			return errorsx.Forbidden("客服仍属于客服小组，请先从所有小组移除")
 		}
+		copy := *current
+		deleted = &copy
 		return repositories.AgentProfileRepository.DeleteInTenant(ctx.Tx, id, current.TenantID)
 	})
+	if err != nil {
+		return err
+	}
+	if deleted != nil {
+		_, _ = ConversationDispatchService.RecoverAssignmentsForAgent(deleted.TenantID, deleted.UserID, 0)
+		ConversationDispatchService.ScheduleTeamDispatch(deleted.TenantID, deleted.TeamID)
+	}
+	return nil
 }
 
 func (s *agentProfileService) buildProfileModel(id int64, req request.CreateAgentProfileRequest) (*models.AgentProfile, error) {
@@ -369,11 +376,8 @@ func (s *agentProfileService) buildProfileModelDB(db *gorm.DB, team *models.Agen
 	if exists := repositories.AgentProfileRepository.Take(db, "tenant_id = ? AND agent_code = ? AND id <> ?", team.TenantID, req.AgentCode, id); exists != nil {
 		return nil, errorsx.InvalidParam("客服工号已存在")
 	}
-	if !enums.IsValidServiceStatus(req.ServiceStatus) {
-		return nil, errorsx.InvalidParam("客服状态不合法")
-	}
-	if req.MaxConcurrentCount < 0 {
-		return nil, errorsx.InvalidParam("最大并发接待数不能小于 0")
+	if req.MaxConcurrentCount < 1 || req.MaxConcurrentCount > 50 {
+		return nil, errorsx.InvalidParam("最大并发接待数必须在 1 到 50 之间")
 	}
 	return &models.AgentProfile{
 		TenantID:               team.TenantID,
@@ -384,11 +388,9 @@ func (s *agentProfileService) buildProfileModelDB(db *gorm.DB, team *models.Agen
 		AgentCode:              req.AgentCode,
 		DisplayName:            req.DisplayName,
 		Avatar:                 strings.TrimSpace(req.Avatar),
-		ServiceStatus:          req.ServiceStatus,
 		MaxConcurrentCount:     req.MaxConcurrentCount,
 		PriorityLevel:          req.PriorityLevel,
 		AutoAssignEnabled:      req.AutoAssignEnabled,
-		ReceiveOfflineMessage:  req.ReceiveOfflineMessage,
 		Remark:                 strings.TrimSpace(req.Remark),
 	}, nil
 }
@@ -415,8 +417,5 @@ func (s *agentProfileService) dispatchPendingConversationsIfEligible(item *model
 	if !item.AutoAssignEnabled || item.MaxConcurrentCount <= 0 {
 		return
 	}
-	if item.ServiceStatus != enums.ServiceStatusIdle {
-		return
-	}
-	_, _ = ConversationDispatchService.DispatchPendingConversations(0)
+	ConversationDispatchService.ScheduleTeamDispatch(item.TenantID, item.TeamID)
 }

@@ -49,13 +49,10 @@ func doBuildAgentProfileResponse(item *models.AgentProfile, user *models.User, t
 		AgentCode:              item.AgentCode,
 		DisplayName:            item.DisplayName,
 		Avatar:                 services.AssetService.RefreshAccessURL(item.Avatar, item.TenantID, assetaccess.PurposeInline),
-		ServiceStatus:          item.ServiceStatus,
 		MaxConcurrentCount:     item.MaxConcurrentCount,
 		PriorityLevel:          item.PriorityLevel,
 		AutoAssignEnabled:      item.AutoAssignEnabled,
-		ReceiveOfflineMessage:  item.ReceiveOfflineMessage,
 		LastOnlineAt:           utils.FormatTimePtr(item.LastOnlineAt),
-		LastStatusAt:           utils.FormatTimePtr(item.LastStatusAt),
 		Remark:                 item.Remark,
 	}
 	if user != nil {

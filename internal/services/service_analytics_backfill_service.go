@@ -411,12 +411,16 @@ func (s *serviceAnalyticsCaptureService) backfillDispatchDecisionDB(db *gorm.DB,
 	if profile := repositories.AgentProfileRepository.Take(db, "tenant_id = ? AND user_id = ?", conversation.TenantID, assignment.ToUserID); profile != nil {
 		teamID = profile.TeamID
 	}
+	candidateSnapshot := fmt.Sprintf(`[{"userId":%d,"workloadWeight":%d}]`, assignment.ToUserID, assignment.WorkloadWeight)
+	if assignment.DecisionConfidence > 0 {
+		candidateSnapshot = fmt.Sprintf(`[{"userId":%d,"decisionConfidence":%d,"workloadWeight":%d}]`, assignment.ToUserID, assignment.DecisionConfidence, assignment.WorkloadWeight)
+	}
 	item := &models.DispatchDecisionLog{
 		TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: normalizedSessionNo(assignment.SessionNo),
 		DecisionKey: fmt.Sprintf("assignment:%d", assignment.ID), AssignmentID: assignment.ID,
 		Trigger: "backfill", DecisionMode: mode, Status: status,
 		CandidateUserIDsJSON:  fmt.Sprintf("[%d]", assignment.ToUserID),
-		CandidateSnapshotJSON: fmt.Sprintf(`[{"userId":%d,"decisionConfidence":%d,"workloadWeight":%d}]`, assignment.ToUserID, assignment.DecisionConfidence, assignment.WorkloadWeight),
+		CandidateSnapshotJSON: candidateSnapshot,
 		InputLastMessageID:    conversation.LastMessageID,
 		SelectedUserID:        assignment.ToUserID, SelectedTeamID: teamID, SelectedSquadID: assignment.SquadID,
 		Reason: strings.TrimSpace(assignment.Reason), OperatorID: assignment.OperatorID, DecidedAt: assignment.CreatedAt,

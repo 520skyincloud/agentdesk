@@ -26,10 +26,6 @@ type AssignConversationRequest struct {
 	Reason         string `json:"reason"`
 }
 
-type DispatchConversationRequest struct {
-	ConversationID int64 `json:"conversationId"`
-}
-
 type TransferConversationRequest struct {
 	ConversationID int64  `json:"conversationId"`
 	ToUserID       int64  `json:"toUserId"`

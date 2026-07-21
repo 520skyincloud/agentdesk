@@ -76,51 +76,111 @@ func (s *conversationRouteService) CurrentSessionNo(conversationID int64) int {
 }
 
 func (s *conversationRouteService) EnsureActiveSessionForCustomerMessage(conversation *models.Conversation, now time.Time) (int, error) {
-	if conversation == nil || conversation.ID <= 0 {
+	if conversation == nil || conversation.ID <= 0 || conversation.TenantID <= 0 {
 		return 1, errorsx.InvalidParam("会话不存在")
 	}
 	state, err := s.Ensure(conversation.ID)
 	if err != nil {
 		return 1, err
 	}
-	if state.SessionNo <= 0 {
-		state.SessionNo = 1
+	currentSessionNo := state.SessionNo
+	if currentSessionNo <= 0 {
+		currentSessionNo = 1
 	}
-	shouldStartNew := conversation.Status == enums.IMConversationStatusClosed || state.RouteStatus == enums.ConversationRouteStatusClosed
-	if !shouldStartNew && !conversation.LastActiveAt.IsZero() && now.Sub(conversation.LastActiveAt) >= defaultConversationSessionGap {
-		shouldStartNew = true
+	resultSessionNo := currentSessionNo
+	startedNewSession := false
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		current, lockErr := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if current == nil {
+			return errorsx.InvalidParam("会话不存在")
+		}
+		lockedState, lockErr := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, current.ID, current.TenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if lockedState == nil {
+			return errorsx.InvalidParam("会话路由不存在")
+		}
+		if lockedState.SessionNo <= 0 {
+			lockedState.SessionNo = 1
+			if updateErr := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, lockedState.ID, lockedState.TenantID, map[string]any{
+				"session_no":       lockedState.SessionNo,
+				"update_user_name": "system",
+				"updated_at":       now,
+			}); updateErr != nil {
+				return updateErr
+			}
+		}
+		resultSessionNo = lockedState.SessionNo
+		shouldStartNew := current.Status == enums.IMConversationStatusClosed || lockedState.RouteStatus == enums.ConversationRouteStatusClosed
+		if !shouldStartNew && !current.LastActiveAt.IsZero() && now.Sub(current.LastActiveAt) >= defaultConversationSessionGap {
+			shouldStartNew = true
+		}
+		if !shouldStartNew {
+			return nil
+		}
+
+		resultSessionNo = lockedState.SessionNo + 1
+		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, current.ID, now); err != nil {
+			return err
+		}
+		if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, lockedState.ID, lockedState.TenantID, map[string]any{
+			"session_no":               resultSessionNo,
+			"session_started_at":       now,
+			"route_status":             enums.ConversationRouteStatusAIServing,
+			"route_target":             "ai",
+			"manual_expire_at":         nil,
+			"pending_action":           "",
+			"pending_action_payload":   "",
+			"pending_action_expire_at": nil,
+			"handoff_reason":           "",
+			"need_human_follow_up":     false,
+			"updated_at":               now,
+			"update_user_name":         "system",
+		}); err != nil {
+			return err
+		}
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, current.ID, current.TenantID, map[string]any{
+			"status":              enums.IMConversationStatusAIServing,
+			"priority":            0,
+			"dispatch_weight":     1,
+			"current_assignee_id": int64(0),
+			"current_team_id":     int64(0),
+			"handoff_at":          nil,
+			"handoff_reason":      "",
+			"ai_reply_rounds":     0,
+			"closed_at":           nil,
+			"closed_by":           int64(0),
+			"close_reason":        "",
+			"update_user_id":      int64(0),
+			"update_user_name":    "system",
+			"updated_at":          now,
+		}); err != nil {
+			return err
+		}
+		startedNewSession = true
+		return nil
+	})
+	if err != nil {
+		return currentSessionNo, err
 	}
-	if !shouldStartNew {
-		return state.SessionNo, nil
+	if startedNewSession {
+		conversation.Status = enums.IMConversationStatusAIServing
+		conversation.Priority = 0
+		conversation.DispatchWeight = 1
+		conversation.CurrentAssigneeID = 0
+		conversation.CurrentTeamID = 0
+		conversation.HandoffAt = nil
+		conversation.HandoffReason = ""
+		conversation.AIReplyRounds = 0
+		conversation.ClosedAt = nil
+		conversation.ClosedBy = 0
+		conversation.CloseReason = ""
 	}
-	nextSessionNo := state.SessionNo + 1
-	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
-		"session_no":               nextSessionNo,
-		"session_started_at":       now,
-		"route_status":             enums.ConversationRouteStatusAIServing,
-		"route_target":             "ai",
-		"manual_expire_at":         nil,
-		"pending_action":           "",
-		"pending_action_payload":   "",
-		"pending_action_expire_at": nil,
-		"handoff_reason":           "",
-		"updated_at":               now,
-		"update_user_name":         "system",
-	}); err != nil {
-		return state.SessionNo, err
-	}
-	if conversation.Status == enums.IMConversationStatusClosed {
-		_ = repositories.ConversationRepository.UpdatesInTenant(sqls.DB(), conversation.ID, conversation.TenantID, map[string]any{
-			"status":           enums.IMConversationStatusAIServing,
-			"closed_at":        nil,
-			"closed_by":        int64(0),
-			"close_reason":     "",
-			"update_user_id":   int64(0),
-			"update_user_name": "system",
-			"updated_at":       now,
-		})
-	}
-	return nextSessionNo, nil
+	return resultSessionNo, nil
 }
 
 func routeTimePtr(t time.Time) *time.Time {

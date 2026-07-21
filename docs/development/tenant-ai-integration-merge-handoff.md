@@ -1,6 +1,6 @@
 # Tenant AI Integration 唯一合并交接
 
-> 状态日期：2026-07-20
+> 状态日期：2026-07-21
 >
 > 唯一工作分支：codex/tenant-ai-integration
 >
@@ -40,7 +40,7 @@ SHA 只是 push 前快照，不表示当前 PR 头仍停在这些提交。每次
 | AI 回复运行时 | 真实代码、docs/design/reply-runtime-engine.md |
 | 租户、注册、权限和隔离 | docs/design/multi-tenant-company-registration.md |
 | 门店身份、企微绑定和客服组范围 | docs/design/wxwork-managed-store-scope-implementation.md |
-| 自动派单 | docs/design/conversation-dispatch-engine.md |
+| 规则派单与班次恢复 | docs/design/conversation-dispatch-engine.md |
 | 运营分析和人工质检 | docs/design/service-analytics-and-quality.md |
 | FastGPT 托管门店知识 | docs/design/fastgpt-managed-store-knowledge.md |
 | 本次主线合并 | 本文件 |
@@ -116,9 +116,13 @@ Company 已从产品运行时退役：
 
 - 综合客服组、客服小组、拖拽成员、排班及双向门店员工范围。
 - 人工任务池、待派、已派、处理中、超时、手动派单、转派和释放。
-- 规则候选过滤、实时负载、公平性、排班小组、历史连续性和模型建议。
-- 模型失败、低置信度或非法候选时回退到确定性规则。
-- 派单结果、候选证据、模型理由、人工覆盖和失败原因可审计。
+- 派单模式只保留 `manual/rule`；模型选择客服已从运行时、配置页和模型用途删除。
+- 规则候选过滤、Presence、容量、实时压力、本班公平债务、排班小组、替班/请假和历史连续性。
+- 800ms 实时防抖、30 秒周期补偿、组队列连续消化和事务内状态复核。
+- 首响前支持班次/在线/权限/容量失效恢复；人工回复后仅在客户追问超过 Response SLA 且原客服硬不可用时有界接力。两阶段均包含事务复核、90 秒冷却和最多三次自动重派。
+- Queue SLA 与 First Response SLA 分离；路由 `ManualExpireAt` 不再作为派单 SLA。
+- 派单结果、候选证据、规则理由、人工覆盖、恢复和失败原因可审计。
+- 历史 `intelligent` Assignment、置信度、DecisionLog 和 usage 只读保留，不能恢复为当前配置能力。
 
 ### 4.3 运营分析和人工质检
 
@@ -162,7 +166,8 @@ Company 已从产品运行时退役：
 | 企微绑定页面 | web/components/wxwork-protocol/wxwork-protocol-binding-dialog.tsx |
 | Company 退役 | internal/migration/000063_retire_legacy_company_store_scopes.go、internal/bootstrap/server.go |
 | 租户完整性 | internal/services/tenant_integrity_audit_service.go、cmd/tenant_integrity_audit |
-| 自动派单 | internal/services/conversation_dispatch_*_service.go |
+| 规则派单与恢复 | internal/services/conversation_dispatch_*_service.go |
+| 排班与临时人员 | internal/services/agent_team_schedule_service.go、web/app/dashboard/agent-team-schedules/* |
 | 运营事实、质检 | internal/models/service_analytics.go、internal/services/service_analytics_*_service.go |
 | 丽斯未来仿真 | cmd/customer_audit_seed/* |
 
@@ -176,12 +181,14 @@ Company 已从产品运行时退役：
 | 61 | 回填服务轮次与分析事实 |
 | 62 | 迁移企微接待人设 |
 | 63 | 退役旧 Company 运行范围并修复门店身份 |
+| 64 | 退役模型派单、历史智能组转规则、关闭无容量自动接单 |
+| 65 | 同步客服回复与派单权限、更新现行 API 路径并补齐客服组长派发/转派 |
 
 DDL 继续由 AutoMigrate 完成；以上 DML 由 migration runner 幂等执行。
 
 ### 6.2 并行冲突
 
-codex/ai-billing 的历史变体使用 migration 60 处理企微人设。integration 已把该语义迁移为 62，为 60/61 的运营分析让位。合并时不得复制 ai-billing 的 000060_migrate_wxwork_reception_persona.go，也不得重编号已经进入 integration 的 60-63。
+codex/ai-billing 的历史变体使用 migration 60 处理企微人设。integration 已把该语义迁移为 62，为 60/61 的运营分析让位。合并时不得复制 ai-billing 的 000060_migrate_wxwork_reception_persona.go，也不得重编号已经进入 integration 的 60-65。
 
 创建任何后续 migration 前必须重新核对 origin/main、origin/codex/ai-billing 和其他活动分支。
 
@@ -196,6 +203,16 @@ Migration 63 会：
 - 为已有有效 store_staff User 回填缺失 Store + Binding。
 
 发布前必须备份数据库并在副本演练。简单回滚应用代码不能恢复已清理的旧 Company 权限和范围。
+
+### 6.4 Migration 64/65 边界
+
+Migration 64 只调整派单配置：
+
+- `AgentTeam.DispatchMode=intelligent` 幂等改为 `rule`。
+- `StoreAIModelSetting.usage_code=dispatch_decision_llm` 软删除，不删除平台 AIConfig、租户授权、回复/意图/媒体模型配置和历史 usage。
+- `AutoAssignEnabled=true` 但 `MaxConcurrentCount<=0` 的客服关闭自动接单，避免不可执行配置。
+
+历史 Assignment、DecisionLog、置信度和 usage 不改写。Migration 65 复用现有权限定义和角色关系，补齐客服实际回复及客服组长编排所需权限并更新权限管理中的现行派单路径，不建立隐藏授权。
 
 ## 7. ai-billing 语义映射
 
@@ -244,7 +261,7 @@ expectedCoreComplete=true、expectedSimulationComplete=true、simulationBaseline
 
 ### 8.2 运行后动态状态
 
-启动服务后自动派单会继续消费 9 条待派任务，当前观察到：
+启动服务且测试客服 Presence 仍有效时，规则派单会继续消费 9 条待派任务。历史观察基线为：
 
     Assignment                     30
     Currently assigned             27
@@ -318,14 +335,14 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
 - tenantRegistration.enabled 默认 false。启用前完成验证码、限流、邮箱/手机和隔离验收。
 - 丽斯未来 100 个企微实例是仿真数据，未连接真实协议设备时在线状态为 unknown 属于预期。
 - FastGPT 托管能力未配置时必须明确不可用，不能生成假 Dataset 或假模型测试结果。
-- 模型、Token 和计费配置由平台能力负责，本次只使用现有授权契约。
+- 模型、Token 和计费配置由平台能力负责；规则派单不读取模型配置、不产生派单模型 usage，也不修改回复/意图模型契约。
 
 ## 11. 合并步骤
 
 1. git fetch origin --prune。
 2. 确认 origin/main 和 origin/codex/customer-audit 仍是 integration 祖先。
 3. 对 origin/codex/ai-billing 执行提交和行为对照；若只有第 7 节映射提交，不再吸收。
-4. 核对 migration 60-63 没有远端新冲突。
+4. 核对 migration 60-65 没有远端新冲突。
 5. 确认正式工作树只包含预期提交，无 docs/generated/、密钥和临时产物。
 6. 运行第 9.3 节全部门禁。
 7. push codex/tenant-ai-integration 并更新 PR #2。
@@ -362,7 +379,7 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
 - 企微绑定是否仍只使用已有 User。
 - CompanyID 是否被重新带回运行时。
 - ai-billing migration 60 是否误覆盖 integration 60。
-- 模型和计费字段语义是否被客服侧改写。
+- 模型和计费字段语义是否被客服侧改写；只允许退役 `dispatch_decision_llm`，不能误删回复和意图模型用途。
 
 ## 13. 回滚边界
 
@@ -370,9 +387,9 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
 | --- | --- | --- |
 | 页面与路由 | 回滚对应应用提交 | 旧 Company 页面文件已删除，不能只移除重定向 |
 | Store 身份事务 | 回滚 service/UI 提交 | 已生成的 Store/Binding 需保留审计，不物理删除 |
-| Migration 60-63 | 数据库备份恢复或专门修复 migration | 不支持仅靠应用代码逆转 |
+| Migration 60-65 | 数据库备份恢复或专门修复 migration | 不支持仅靠应用代码逆转 |
 | 分析事实 | 停止捕获并保留事实表 | 不反向控制会话运行时 |
-| 自动派单 | 关闭自动策略并使用人工池 | 保留 Assignment/DecisionLog |
+| 规则派单 | 把客服组改为 `manual` 并使用人工池 | 保留 Assignment/DecisionLog；不恢复模型派单 |
 | FastGPT/模型 | 撤销租户授权或禁用托管连接 | 不修改历史 usage 和计费证据 |
 | 仿真数据 | customer_audit_seed --action cleanup | 仅清理带专用标识的丽斯未来测试数据 |
 
@@ -392,9 +409,163 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
 - 最终身份语义、账号入口和 Company 退役与真实代码一致。
 - 丽斯未来静态 Seed、动态运行和完整性审计均有证据。
 - 权威设计文档和本文件无旧开户/客户企业运行时语义。
+- 权威派单文档、页面和运行时只存在人工/规则两种模式，旧模型派单只作为历史审计说明。
 - 全量 Go、vet、前端 typecheck/lint/Node/build 和 diff 检查通过。
 - 正式 integration 工作树干净。
 - 分支成功 push，PR #2 指向最新提交。
 - 远端并行分支和 migration 再次复核，无遗漏提交需要吸收。
 
 main 实际合并由仓库负责人决定；在合并前只能写“PR 已就绪”，不能写“已进入 main”。
+
+## 16. 2026-07-21 规则派单核心正确性加固（未提交）
+
+### 16.1 本步目标与结果
+
+- 待派会话读取改为优先级窗口与最老窗口合并，实际处理预算也固定保留最老任务名额，防止持续高优先级流量造成饥饿。
+- 30 秒补偿由“租户全局待派列表”改为“租户轮转 -> 规则客服组轮转”；人工组积压不再占用规则派单预算，未解析客服组使用独立小窗口检查。
+- 首响、恢复、负载和历史连续性统一要求消息发送者等于 Assignment 的 `ToUserID`；其他客服消息不能替当前客服计入回复。
+- 连续性只认可真实成功回复，并支持复用同一 Conversation 的旧 `SessionNo`；同来源记录优先于跨来源记录。
+- 活动会话负载不再把全部人工/客户消息加载到服务内存，改为 Assignment 维度聚合，再按最老未回复消息 ID 批量取时间；同时去掉逐会话读取 RouteState 的 N+1 查询。
+
+### 16.2 文件与契约
+
+本步修改：
+
+    internal/repositories/conversation_repository.go
+    internal/repositories/conversation_assignment_repository.go
+    internal/repositories/message_repository.go
+    internal/services/conversation_dispatch_load_service.go
+    internal/services/conversation_dispatch_decision_service.go
+    internal/services/conversation_dispatch_service.go
+    internal/services/conversation_dispatch_rule_test.go
+    docs/design/conversation-dispatch-engine.md
+    docs/development/tenant-ai-integration-merge-handoff.md
+
+没有新增表、字段、枚举、接口、权限或 WebSocket payload；SQLite/MySQL 共用标准 CASE、聚合和子查询。`Conversation`、`ConversationAssignment`、`DispatchDecisionLog` 的既有语义不变。
+
+### 16.3 验证
+
+    PASS go test ./internal/services -run 'TestPendingRepositoryWindows|TestPendingProcessingWindow|TestDispatchReplyFacts|TestDispatchContinuity|TestDispatchLoad|TestConversationDispatchWorkbenchBatch|TestRuleAssignmentRecovery' -count=1
+    PASS go test ./internal/services -run 'TestPendingDispatchCompensation|TestPendingRepositoryWindows|TestPendingProcessingWindow|TestDispatchReplyFacts|TestDispatchContinuity|TestDispatchLoad' -count=1
+    PASS git diff --check
+
+新增回归明确覆盖：租户/客服组双窗口、处理预算最老任务保留、人工队列不挤占规则组、错误客服回复不计首响、旧会话轮次真实连续性。
+
+### 16.4 并行分支、合并与回滚
+
+- 已在本步开始前 fetch；本地 `codex/tenant-ai-integration` 与远端同为 `42dd560`。
+- `codex/ai-billing` 没有修改本步三个 repository、派单 decision/load/service 或规则测试；本步未触碰模型调用、AI 回复、Token 与计费语义。
+- `conversation_dispatch_service.go` 属于共享会话范围，但 ai-billing 当前未改该文件；后续提交前仍需再次 fetch 对照。
+- 本步为兼容查询和 service 排序修改，可按对应提交整体回滚；没有 DDL/DML，不需要数据库逆向操作。
+
+## 17. 2026-07-21 规则恢复、权限与实时工作台收口（未提交）
+
+### 17.1 目标与运行结果
+
+- 规则恢复分为 `first_response` 与 `follow_up` 两个阶段。首响前处理硬失效和 First Response SLA；已回复后只处理“客户仍等待超过 Response SLA + 原客服硬不可用”。
+- `busy`、负载偏高、关闭自动接单或容量调整不会打断已回复会话。离线/Presence 过期、休息、离班、账号/档案/客服组停用、失去回复权限或来源范围失效才属于追问阶段硬失效。
+- 恢复事务重新核验 Assignment、SessionNo、LastMessageID、当前回复/追问事实、SLA、原客服失效原因、候选资格、容量和负载。判断期间客服已回复时按冲突退出。
+- 客服组、小组、当前排班、客服档案、账号状态、用户角色和角色权限变更提交后，立即触发本租户恢复及受影响客服组队列补派；30 秒任务只作补偿。
+- 停用门店员工身份时同步重算原客服组来源范围，避免已停用门店/企微实例继续参与路由。
+- 会话记录页统一调用 `/api/dashboard/conversation-dispatch/auto_assign`；旧 `/api/dashboard/conversation/dispatch`、DTO、Handler、前端 API 和无人调用 service 包装已删除。
+- 派单工作台复用 Dashboard WebSocket，新增只向具备 `conversation.handover` 的用户订阅的 `dispatch:tenant:{tenantId}` 内部主题。可见页事件防抖刷新，隐藏页 60 秒补偿，payload 未改变。
+- 权限编码继续复用 `conversation.assign/transfer/handover/recycle`。权限管理 API 路径更新为 `/conversation-dispatch/*`，默认客服组长补齐派发和转派。
+
+### 17.2 本步文件与契约
+
+核心新增/修改：
+
+    internal/repositories/message_repository.go
+    internal/repositories/conversation_assignment_repository.go
+    internal/services/conversation_dispatch_recovery_service.go
+    internal/services/conversation_dispatch_recovery_test.go
+    internal/services/agent_team_service.go
+    internal/services/agent_team_squad_service.go
+    internal/services/agent_team_schedule_service.go
+    internal/services/store_staff_binding_service.go
+    internal/services/user_service.go
+    internal/services/role_service.go
+    internal/pkg/constants/auth.go
+    internal/migration/000065_sync_agent_reply_permission.go
+    internal/services/ws_service.go
+    internal/services/ws_realtime_types.go
+    internal/bootstrap/routes.go
+    internal/handlers/dashboard/conversation_handler.go
+    internal/pkg/dto/request/conversation_request.go
+    internal/services/conversation_service.go
+    internal/services/conversation_human_dispatch_service.go
+    web/lib/api/admin.ts
+    web/app/dashboard/conversation-monitor/page.tsx
+    web/app/dashboard/conversation-dispatch/page.tsx
+
+没有新增表、模型字段、派单模式、模型用途、Token 或计费语义。`ConversationAssignment.DecisionConfidence` 和旧模型决策事实继续只读保留。接口变更只有删除已被现行派单接口替代的 `/api/dashboard/conversation/dispatch`；调用方已经迁移。WebSocket 只新增服务端主题路由，不修改事件 payload。
+
+### 17.3 验证证据
+
+    PASS go test ./internal/services -count=1
+    PASS go test ./internal/migration -count=1
+    PASS go test ./internal/services -run 'TestRuleAssignmentRecovery|TestAgentBreakImmediatelyRecovers|TestRuleDispatchRetryCooldown' -count=1
+    PASS git diff --check
+
+新增测试明确覆盖：追问超时且休息/离班时转派、未超时不转、`busy` 不转、关闭自动接单/容量不打断已服务会话、无候选回原组池，以及判断后客服刚好回复时事务拒绝转派。最终全量 Go、前端 typecheck/lint/Node/build 和浏览器回归仍以本节之后的最新门禁记录为准。
+
+### 17.4 并行分支、合并顺序与回滚
+
+- 本步开始前已 fetch，权威工作树仍为 `codex/tenant-ai-integration`；`codex/customer-audit` 冻结，不再形成第二套 PR。
+- `origin/codex/ai-billing` 与 integration 同时涉及 `conversation_human_dispatch_service.go`、`conversation_route_service.go`、`models.go`、`cron.go` 和 `web/lib/api/admin.ts` 等共享文件。合并时必须保留本分支删除的旧 dispatch 包装，同时保留 ai-billing 的模型调用、AI 回复、Token 与计费实现，禁止整文件覆盖。
+- 推荐先合入共同依赖的 integration 契约，再按行为差异吸收 ai-billing；不要重新 cherry-pick 历史 customer-audit 派单提交。
+- 恢复和实时刷新代码可按应用提交回滚。Migration 65 是幂等权限补齐；若回滚页面，不应删除已赋予角色的权限关系。Migration 64 的模型用途软删除仍遵循数据库备份/修复迁移边界，不能靠恢复旧代码重新启用模型派单。
+
+## 18. 2026-07-21 最终门禁与真实运行验收（待本批提交）
+
+### 18.1 全量门禁
+
+    PASS go test ./... -count=1
+    PASS go vet ./...
+    PASS node --test **/*.test.mjs（136/136）
+    PASS pnpm typecheck
+    PASS pnpm lint（0 error；32 个既有 warning）
+    PASS npm run build（Next.js 45/45 静态页面）
+    PASS git diff --check
+
+第一次全仓测试和构建只因受限环境无法访问 Go 缓存、监听 `httptest` 本地端口和写入 `.next` 失败；使用相同命令在正常项目权限下重跑后全部通过，不属于代码失败。
+
+### 18.2 丽斯未来规则派单仿真
+
+为避免把旧服务进程和动态运行后的历史仿真误当成新规则证据，先停止 09:12 启动的旧 `8084` 进程，再使用同一专用批次和既有平台模型配置 `deepseek`（AIConfig ID 7）幂等重建丽斯未来测试租户。重建后的静态报告为：
+
+- 3 个业务客服组全部为 `rule`，3 个当前有效班次，12 名客服，0 个活跃派单模型设置。
+- 36 个会话、135 条消息、21 条历史/当前 Assignment；9 条待派、18 条当前已派、覆盖 12 名客服。
+- `expectedCoreComplete=true`、`expectedSimulationComplete=true`、`simulationBaselineIntact=true`。
+- 回复和意图模型授权继续保留；仿真未创建派单模型 usage。
+
+最新服务启动后，补偿扫描将 9 条待派任务全部以 `dispatch_mode=rule` 处理。每个客服组只从 2 名在线/空闲且在班客服中选择，忙碌和休息客服未接收新任务；日志同时出现首响 SLA 恢复和“客户追问超时 + 原客服硬不可用”的接力证据。页面通过 Dashboard WebSocket 自动刷新，无需用户手动刷新。
+
+### 18.3 浏览器验收
+
+- `/dashboard/conversation-dispatch`：只显示“规则均衡/人工派单”，无当前“智能均衡”；来源、客服组、状态、指派、SLA、负载、转派和释放均可见。可接单人数与 Presence 一致，在线/空闲为可接，忙碌/休息为不可接。
+- `/dashboard/agent-team-schedules`：月/周/列表、当前班次、批量排班、新建和客服组筛选正常，桌面无重叠。
+- `/dashboard/agents`：综合组、客服小组、服务范围、自动接单、并发、待首响/处理中负载正常，桌面无横向溢出。
+- `/dashboard/roles`、`/dashboard/permissions`：角色分配权限入口和派单权限 API 显示正常，无页面溢出。
+- `/dashboard/conversations`：全部账号保持选中时可同时高亮当前来源企微员工号；客户列表、人工待回复提示和聊天详情正常。
+- 浏览器控制台未发现 error 或 warning。
+
+### 18.4 运行数据说明
+
+静态 Seed 报告只证明可重复基线。服务启动后，自动派单、恢复和真实页面读取会自然增加 Assignment/DecisionLog 并改变待派数，因此运行后的报告不应继续要求等于静态基线。历史 `intelligent` Assignment 只在旧审计记录中保留；新 Seed、新补偿扫描和新人工操作只写 `rule/manual`。
+
+### 18.5 提交前远端复核
+
+最终 fetch 后远端引用为：`origin/main@e67e207`、`origin/codex/tenant-ai-integration@42dd560`、`origin/codex/ai-billing@33b6d14`、冻结的 `origin/codex/customer-audit@c706815`。Migration 64/65 未被其他活跃分支占用；ai-billing 的旧 Migration 60 接待语义已在 integration 以 Migration 62 映射，不能再次整提交吸收。
+
+ai-billing 与本批同时修改的共享文件仍为：
+
+    internal/bootstrap/routes.go
+    internal/models/models.go
+    internal/services/conversation_human_dispatch_service.go
+    internal/services/conversation_human_dispatch_service_test.go
+    internal/services/conversation_route_service.go
+    internal/services/cronx/cron.go
+    web/lib/api/admin.ts
+
+后续冲突解决必须保留本批的规则派单、恢复、旧 dispatch 删除和实时工作台，同时保留 ai-billing 的 AI 回复、FastGPT、模型 usage、Token 与计费行为。禁止整文件选边，禁止重新合并 `customer-audit`。

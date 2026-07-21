@@ -302,7 +302,7 @@ func assertCompleteSimulationReport(t *testing.T, got report) {
 	}
 	if got.Tenant != 1 || got.TenantSupervisor != 1 || got.TenantInvitation != 1 || got.DefaultAgentTeam != 1 ||
 		got.AIAgent != 1 || !got.ModelConfigReused || got.TenantDefaultConfigName != "仿真测试复用模型" ||
-		got.IntelligentAgentTeams != 3 || got.AgentTeamSchedules != 3 || !got.DispatchModelAssigned {
+		got.RuleAgentTeams != 3 || got.AgentTeamSchedules != 3 || got.ActiveDispatchModelSettings != 0 {
 		t.Fatalf("tenant/model foundation baseline changed: %+v", got)
 	}
 	if got.SimulatedConversations != 36 || got.SimulatedMessages != 135 || got.SimulatedAssignments != 21 ||

@@ -240,7 +240,6 @@ func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.POST("/assign", dashboard.ConversationPostAssign)
 	group.POST("/close", dashboard.ConversationPostClose)
 	group.Any("/conversations", dashboard.ConversationAnyConversations)
-	group.POST("/dispatch", dashboard.ConversationPostDispatch)
 	group.POST("/link_customer", dashboard.ConversationPostLink_customer)
 	group.Any("/list", dashboard.ConversationAnyList)
 	group.Any("/message_list", dashboard.ConversationAnyMessage_list)

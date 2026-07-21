@@ -144,17 +144,20 @@ func TestAgentCodeIsUniqueWithinTenant(t *testing.T) {
 	const sharedCode = "SHARED-001"
 	if _, err := AgentProfileService.CreateAgentProfile(request.CreateAgentProfileRequest{
 		UserID: userA.ID, TeamID: fixture.teamA.ID, AgentCode: sharedCode, DisplayName: "A共享工号客服",
+		MaxConcurrentCount: 5,
 	}, fixture.adminA); err != nil {
 		t.Fatalf("create tenant A shared agent code: %v", err)
 	}
 	if _, err := AgentProfileService.CreateAgentProfile(request.CreateAgentProfileRequest{
 		UserID: userB.ID, TeamID: fixture.teamB.ID, AgentCode: sharedCode, DisplayName: "B共享工号客服",
+		MaxConcurrentCount: 5,
 	}, fixture.adminB); err != nil {
 		t.Fatalf("create tenant B shared agent code: %v", err)
 	}
 	duplicateUser := createAgentOrganizationUser(t, fixture.db, 101, "tenant-a-duplicate-code")
 	if _, err := AgentProfileService.CreateAgentProfile(request.CreateAgentProfileRequest{
 		UserID: duplicateUser.ID, TeamID: fixture.teamA.ID, AgentCode: sharedCode, DisplayName: "A重复工号客服",
+		MaxConcurrentCount: 5,
 	}, fixture.adminA); err == nil {
 		t.Fatal("same tenant duplicate agent code must fail")
 	}
@@ -208,9 +211,9 @@ func setupAgentOrganizationTenantFixture(t *testing.T) agentOrganizationTenantFi
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&models.User{}, &models.Role{}, &models.UserRole{}, &models.AgentTeam{}, &models.AgentProfile{},
+		&models.User{}, &models.Role{}, &models.Permission{}, &models.UserRole{}, &models.RolePermission{}, &models.AgentTeam{}, &models.AgentProfile{},
 		&models.AgentTeamSquad{}, &models.AgentTeamSquadMember{}, &models.AgentTeamSchedule{}, &models.Conversation{},
-		&models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{},
+		&models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{}, &models.AgentPresenceSession{},
 	); err != nil {
 		t.Fatalf("migrate agent organization: %v", err)
 	}
@@ -244,6 +247,19 @@ func setupAgentOrganizationTenantFixture(t *testing.T) agentOrganizationTenantFi
 	}
 	if err := db.Create(&storeStaffRole).Error; err != nil {
 		t.Fatalf("create store staff role: %v", err)
+	}
+	permissions := []models.Permission{
+		{Name: "查看会话", Code: constants.PermissionConversationView.Code, Status: enums.StatusOk},
+		{Name: "发送会话", Code: constants.PermissionConversationSend.Code, Status: enums.StatusOk},
+	}
+	if err := db.Create(&permissions).Error; err != nil {
+		t.Fatalf("create agent permissions: %v", err)
+	}
+	if err := db.Create(&[]models.RolePermission{
+		{RoleID: agentRole.ID, PermissionID: permissions[0].ID},
+		{RoleID: agentRole.ID, PermissionID: permissions[1].ID},
+	}).Error; err != nil {
+		t.Fatalf("create agent role permissions: %v", err)
 	}
 	userRoles := []models.UserRole{
 		{UserID: fixture.userA.ID, RoleID: agentRole.ID},

@@ -424,36 +424,6 @@ func (s *conversationService) EnsureAgentCanReply(conversationID int64, reason s
 	return err
 }
 
-func (s *conversationService) AutoAssignConversation(conversationID int64, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
-	}
-
-	conversation, err := requireOperatorConversation(sqls.DB(), conversationID, operator)
-	if err != nil {
-		return err
-	}
-	if conversation.Status != enums.IMConversationStatusPending {
-		return errorsx.InvalidParam("只有待接入会话允许自动分配")
-	}
-	if conversation.CurrentAssigneeID > 0 {
-		return errorsx.InvalidParam("当前会话已分配客服")
-	}
-
-	aiAgent := AIAgentService.GetByTenantID(conversation.AIAgentID, conversation.TenantID)
-	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
-		return errorsx.InvalidParam("接待策略不存在或已停用")
-	}
-	result, err := ConversationHumanDispatchService.DispatchPendingConversation(conversationID, *aiAgent)
-	if err != nil {
-		return err
-	}
-	if result == nil || result.Decision == HandoffDecisionOffHours {
-		return errorsx.InvalidParam("当前暂不在人工客服服务时间内")
-	}
-	return nil
-}
-
 func (s *conversationService) TransferConversation(conversationID, toUserID int64, reason string, operator *dto.AuthPrincipal) error {
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
@@ -669,6 +639,7 @@ func (s *conversationService) closeConversation(conversationID int64, senderType
 	logServiceAnalyticsCaptureError("close", conversationID, ServiceAnalyticsCaptureService.RecordClose(conversationID, closedAt, closeReason))
 	if conversation := s.Get(conversationID); conversation != nil {
 		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationClosed)
+		ConversationDispatchService.ScheduleTeamDispatch(conversation.TenantID, conversation.CurrentTeamID)
 	}
 	return nil
 }

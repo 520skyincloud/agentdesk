@@ -34,7 +34,7 @@ Agent Team 初始化模块在 `cmd/testdata/agentteam/init.go` 中，用于创�
    - 为每个客服用户创建 `AgentProfile` 记录
    - 关联到 `默认客服组`
    - 初始设置：
-     - 服务状态：`空闲（ServiceStatusIdle）`
+     - 实时状态：由 `AgentPresenceSession` 在客服登录后记录，不写入静态客服档案
      - 最大并发接待数：`5`
      - 自动分配优先级：`10`
      - 开启自动分配：`true`
@@ -166,7 +166,7 @@ func initTeam(leaderUserID int64) (bool, error) {
 - `models.User` - 用户账号
 - `models.AgentProfile` - 客服档案
 - `models.AuditFields` - 审计字段
-- `enums.ServiceStatus` - 服务状态（空闲/忙碌）
+- `enums.AgentPresenceStatus` - 实时在线状态（在线/空闲/忙碌/休息）
 - `enums.Status` - 通用状态
 
 ## 相关仓库

@@ -21,14 +21,13 @@ import (
 // Legacy aliases keep the reply-runtime call sites stable while the model
 // selection rules live in one tenant-aware resolver.
 const (
-	StoreAIModelUsageReplyLLM            = constants.AIModelUsageReplyLLM
-	StoreAIModelUsageIntentDetectLLM     = constants.AIModelUsageIntentDetectLLM
-	StoreAIModelUsageDispatchDecisionLLM = constants.AIModelUsageDispatchDecisionLLM
-	StoreAIModelUsageMediaUnderstanding  = constants.AIModelUsageMediaUnderstanding
-	StoreAIModelUsageSpeechRecognition   = constants.AIModelUsageSpeechRecognition
-	StoreAIModelSourceAccountOverride    = constants.AIModelSourceEmployeeOverride
-	StoreAIModelSourceCompanyOverride    = constants.AIModelSourceTenantDefault
-	StoreAIModelSourceGlobalDefault      = constants.AIModelSourcePlatformDefault
+	StoreAIModelUsageReplyLLM           = constants.AIModelUsageReplyLLM
+	StoreAIModelUsageIntentDetectLLM    = constants.AIModelUsageIntentDetectLLM
+	StoreAIModelUsageMediaUnderstanding = constants.AIModelUsageMediaUnderstanding
+	StoreAIModelUsageSpeechRecognition  = constants.AIModelUsageSpeechRecognition
+	StoreAIModelSourceAccountOverride   = constants.AIModelSourceEmployeeOverride
+	StoreAIModelSourceCompanyOverride   = constants.AIModelSourceTenantDefault
+	StoreAIModelSourceGlobalDefault     = constants.AIModelSourcePlatformDefault
 )
 
 type StoreAIModelUsageMeta = constants.AIModelUsageSpec

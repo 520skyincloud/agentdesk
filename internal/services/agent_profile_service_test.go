@@ -73,6 +73,7 @@ func TestAgentProfileMutationsLockProfileAndParentTeams(t *testing.T) {
 			action: func(fixture agentProfileMutationFixture) error {
 				_, err := AgentProfileService.CreateAgentProfile(request.CreateAgentProfileRequest{
 					UserID: fixture.availableUser.ID, TeamID: fixture.teamB.ID, AgentCode: "CREATE-002", DisplayName: "新增客服",
+					MaxConcurrentCount: 5,
 				}, fixture.operator)
 				return err
 			},
@@ -86,6 +87,7 @@ func TestAgentProfileMutationsLockProfileAndParentTeams(t *testing.T) {
 					ID: fixture.profile.ID,
 					CreateAgentProfileRequest: request.CreateAgentProfileRequest{
 						UserID: fixture.profile.UserID, TeamID: fixture.teamA.ID, AgentCode: fixture.profile.AgentCode, DisplayName: "跨组客服",
+						MaxConcurrentCount: 5,
 					},
 				}, fixture.operator)
 			},
@@ -157,6 +159,7 @@ func TestAgentProfileSquadRejectionLeavesProfileUnchanged(t *testing.T) {
 		ID: fixture.profile.ID,
 		CreateAgentProfileRequest: request.CreateAgentProfileRequest{
 			UserID: fixture.profile.UserID, TeamID: fixture.teamA.ID, AgentCode: fixture.profile.AgentCode, DisplayName: "不应跨组",
+			MaxConcurrentCount: 5,
 		},
 	}, fixture.operator)
 	if err == nil {
@@ -234,6 +237,7 @@ func setupAgentProfileMutationFixture(t *testing.T) agentProfileMutationFixture 
 	}
 	fixture.profile = models.AgentProfile{
 		TenantID: 101, UserID: assignedUser.ID, TeamID: fixture.teamB.ID, AgentCode: "ASSIGNED-001", DisplayName: "原客服", Status: enums.StatusOk,
+		MaxConcurrentCount: 5,
 	}
 	if err := db.Create(&fixture.profile).Error; err != nil {
 		t.Fatalf("create profile: %v", err)

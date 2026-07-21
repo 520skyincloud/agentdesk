@@ -209,6 +209,78 @@ func TestConversationDispatchAndFinalWritesStayInTenant(t *testing.T) {
 	}
 }
 
+func TestCustomerMessageStartsCleanServiceSessionAfterIdleGap(t *testing.T) {
+	fixture := setupConversationRuntimeTenantFixture(t)
+	now := time.Now()
+	handoffAt := now.Add(-13 * time.Hour)
+	conversation := &models.Conversation{
+		TenantID:          fixture.adminA.ActiveTenantID,
+		ChannelID:         fixture.channelA.ID,
+		Status:            enums.IMConversationStatusActive,
+		Priority:          80,
+		DispatchWeight:    4,
+		CurrentAssigneeID: fixture.userA.ID,
+		CurrentTeamID:     fixture.teamA.ID,
+		HandoffAt:         &handoffAt,
+		HandoffReason:     "上一轮人工接待",
+		AIReplyRounds:     6,
+		LastActiveAt:      handoffAt,
+		LastMessageAt:     handoffAt,
+	}
+	if err := fixture.db.Create(conversation).Error; err != nil {
+		t.Fatalf("create idle active conversation: %v", err)
+	}
+	route := &models.ConversationRouteState{
+		TenantID:          conversation.TenantID,
+		ConversationID:    conversation.ID,
+		RouteStatus:       enums.ConversationRouteStatusHQAgentDeskServing,
+		RouteTarget:       "agentdesk_hq",
+		SessionNo:         4,
+		SessionStartedAt:  &handoffAt,
+		HandoffReason:     "上一轮人工接待",
+		NeedHumanFollowUp: true,
+	}
+	if err := fixture.db.Create(route).Error; err != nil {
+		t.Fatalf("create old route session: %v", err)
+	}
+	assignment := &models.ConversationAssignment{
+		TenantID:       conversation.TenantID,
+		ConversationID: conversation.ID,
+		SessionNo:      route.SessionNo,
+		ToUserID:       fixture.userA.ID,
+		DispatchMode:   enums.AgentTeamDispatchModeRule,
+		WorkloadWeight: conversation.DispatchWeight,
+		Status:         enums.IMAssignmentStatusActive,
+		CreatedAt:      handoffAt,
+	}
+	if err := fixture.db.Create(assignment).Error; err != nil {
+		t.Fatalf("create old active assignment: %v", err)
+	}
+
+	sessionNo, err := ConversationRouteService.EnsureActiveSessionForCustomerMessage(conversation, now)
+	if err != nil {
+		t.Fatalf("start clean service session: %v", err)
+	}
+	if sessionNo != 5 {
+		t.Fatalf("sessionNo=%d want 5", sessionNo)
+	}
+	current := repositories.ConversationRepository.GetInTenant(fixture.db, conversation.ID, conversation.TenantID)
+	if current == nil || current.Status != enums.IMConversationStatusAIServing || current.Priority != 0 || current.DispatchWeight != 1 || current.CurrentAssigneeID != 0 || current.CurrentTeamID != 0 || current.HandoffAt != nil || current.HandoffReason != "" || current.AIReplyRounds != 0 {
+		t.Fatalf("new service session retained old dispatch state: %+v", current)
+	}
+	currentRoute := repositories.ConversationRouteStateRepository.GetInTenant(fixture.db, route.ID, conversation.TenantID)
+	if currentRoute == nil || currentRoute.SessionNo != 5 || currentRoute.RouteStatus != enums.ConversationRouteStatusAIServing || currentRoute.RouteTarget != "ai" || currentRoute.NeedHumanFollowUp {
+		t.Fatalf("new route session retained old handoff state: %+v", currentRoute)
+	}
+	currentAssignment := repositories.ConversationAssignmentRepository.Get(fixture.db, assignment.ID)
+	if currentAssignment == nil || currentAssignment.Status != enums.IMAssignmentStatusInactive || currentAssignment.FinishedAt == nil {
+		t.Fatalf("old assignment was not closed: %+v", currentAssignment)
+	}
+	if conversation.Status != enums.IMConversationStatusAIServing || conversation.CurrentAssigneeID != 0 || conversation.AIReplyRounds != 0 {
+		t.Fatalf("caller snapshot was not refreshed: %+v", conversation)
+	}
+}
+
 func setupConversationRuntimeTenantFixture(t *testing.T) conversationRuntimeTenantFixture {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "conversation-runtime-tenant.db")), &gorm.Config{
@@ -219,11 +291,13 @@ func setupConversationRuntimeTenantFixture(t *testing.T) conversationRuntimeTena
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&models.User{}, &models.Customer{}, &models.CustomerIdentity{}, &models.Channel{}, &models.AIAgent{},
+		&models.User{}, &models.Role{}, &models.Permission{}, &models.UserRole{}, &models.RolePermission{},
+		&models.Customer{}, &models.CustomerIdentity{}, &models.Channel{}, &models.AIAgent{},
 		&models.AgentTeam{}, &models.AgentTeamSchedule{}, &models.AgentProfile{}, &models.AgentTeamSquad{}, &models.AgentTeamSquadMember{},
 		&models.Conversation{}, &models.ConversationParticipant{}, &models.ConversationRouteState{}, &models.ConversationReadState{},
 		&models.Message{}, &models.ConversationAssignment{}, &models.ConversationEventLog{}, &models.ConversationInterrupt{}, &models.MessageSyncLog{},
 		&models.ConversationServiceSession{}, &models.ConversationResponseSpan{}, &models.DispatchDecisionLog{},
+		&models.AgentPresenceSession{},
 	); err != nil {
 		t.Fatalf("migrate conversation runtime tenant tables: %v", err)
 	}
@@ -262,6 +336,27 @@ func setupConversationRuntimeTenantFixture(t *testing.T) conversationRuntimeTena
 			t.Fatalf("create %s: %v", label, err)
 		}
 	}
+	role := models.Role{Name: "客服", Code: constants.RoleCodeCsUser, Status: enums.StatusOk}
+	if err := db.Create(&role).Error; err != nil {
+		t.Fatalf("create agent role: %v", err)
+	}
+	permissions := []models.Permission{
+		{Name: "查看会话", Code: constants.PermissionConversationView.Code, Status: enums.StatusOk},
+		{Name: "发送会话消息", Code: constants.PermissionConversationSend.Code, Status: enums.StatusOk},
+	}
+	if err := db.Create(&permissions).Error; err != nil {
+		t.Fatalf("create conversation permissions: %v", err)
+	}
+	for _, userID := range []int64{fixture.userA.ID, fixture.userB.ID} {
+		if err := db.Create(&models.UserRole{UserID: userID, RoleID: role.ID}).Error; err != nil {
+			t.Fatalf("create user role: %v", err)
+		}
+	}
+	for _, permission := range permissions {
+		if err := db.Create(&models.RolePermission{RoleID: role.ID, PermissionID: permission.ID}).Error; err != nil {
+			t.Fatalf("create role permission: %v", err)
+		}
+	}
 	if err := db.Model(&models.Channel{}).Where("id = ?", fixture.channelA.ID).Update("ai_agent_id", fixture.aiAgentA.ID).Error; err != nil {
 		t.Fatalf("bind tenant A channel to AI Agent: %v", err)
 	}
@@ -270,8 +365,8 @@ func setupConversationRuntimeTenantFixture(t *testing.T) conversationRuntimeTena
 	}
 	fixture.channelA.AIAgentID = fixture.aiAgentA.ID
 	fixture.channelB.AIAgentID = fixture.aiAgentB.ID
-	fixture.profileA = models.AgentProfile{TenantID: 101, UserID: fixture.userA.ID, TeamID: fixture.teamA.ID, AgentCode: "tenant-a-agent", DisplayName: "A租户客服", ServiceStatus: enums.ServiceStatusIdle, MaxConcurrentCount: 10, AutoAssignEnabled: true, Status: enums.StatusOk}
-	fixture.profileB = models.AgentProfile{TenantID: 202, UserID: fixture.userB.ID, TeamID: fixture.teamB.ID, AgentCode: "tenant-b-agent", DisplayName: "B租户客服", ServiceStatus: enums.ServiceStatusIdle, MaxConcurrentCount: 10, AutoAssignEnabled: true, Status: enums.StatusOk}
+	fixture.profileA = models.AgentProfile{TenantID: 101, UserID: fixture.userA.ID, TeamID: fixture.teamA.ID, AgentCode: "tenant-a-agent", DisplayName: "A租户客服", MaxConcurrentCount: 10, AutoAssignEnabled: true, Status: enums.StatusOk}
+	fixture.profileB = models.AgentProfile{TenantID: 202, UserID: fixture.userB.ID, TeamID: fixture.teamB.ID, AgentCode: "tenant-b-agent", DisplayName: "B租户客服", MaxConcurrentCount: 10, AutoAssignEnabled: true, Status: enums.StatusOk}
 	if err := db.Create(&fixture.profileA).Error; err != nil {
 		t.Fatalf("create tenant A profile: %v", err)
 	}
@@ -285,6 +380,13 @@ func setupConversationRuntimeTenantFixture(t *testing.T) conversationRuntimeTena
 	}
 	if err := db.Create(&schedules).Error; err != nil {
 		t.Fatalf("create schedules: %v", err)
+	}
+	presence := []models.AgentPresenceSession{
+		{TenantID: 101, UserID: fixture.userA.ID, AgentProfileID: fixture.profileA.ID, TeamID: fixture.teamA.ID, Status: enums.AgentPresenceStatusIdle, Source: "test", StartedAt: now, LastSeenAt: now},
+		{TenantID: 202, UserID: fixture.userB.ID, AgentProfileID: fixture.profileB.ID, TeamID: fixture.teamB.ID, Status: enums.AgentPresenceStatusIdle, Source: "test", StartedAt: now, LastSeenAt: now},
+	}
+	if err := db.Create(&presence).Error; err != nil {
+		t.Fatalf("create presence sessions: %v", err)
 	}
 	return fixture
 }

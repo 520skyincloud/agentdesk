@@ -18,9 +18,11 @@ type agentDispatchLoadSnapshot struct {
 	weightedOpenLoad    int
 	pendingFirstReply   int
 	pendingReplyCount   int
-	shiftAssignedWeight int
+	shiftWorkloadWeight int
 	lastAssignedAt      time.Time
 }
+
+const pendingDispatchOldestQuotaDivisor = 5
 
 func normalizedDispatchMode(mode enums.AgentTeamDispatchMode) enums.AgentTeamDispatchMode {
 	if !enums.IsValidAgentTeamDispatchMode(mode) {
@@ -76,10 +78,29 @@ func fairPendingConversationQueue(conversations []models.Conversation) []models.
 }
 
 func (s *conversationDispatchService) prioritizePendingConversations(conversations []models.Conversation, now time.Time) []models.Conversation {
+	return s.prioritizePendingConversationWindow(conversations, now, len(conversations))
+}
+
+func (s *conversationDispatchService) prioritizePendingConversationWindow(conversations []models.Conversation, now time.Time, selectionLimit int) []models.Conversation {
 	ret := append([]models.Conversation(nil), conversations...)
+	if len(ret) < 2 {
+		return ret
+	}
 	priorities := make(map[int64]int, len(ret))
+	conversationIDs := make([]int64, 0, len(ret))
 	for i := range ret {
-		route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), ret[i].ID, ret[i].TenantID)
+		conversationIDs = append(conversationIDs, ret[i].ID)
+	}
+	routes := repositories.ConversationRouteStateRepository.Find(sqls.DB(), sqls.NewCnd().In("conversation_id", uniquePositiveInt64s(conversationIDs)))
+	routeByConversationID := make(map[int64]*models.ConversationRouteState, len(routes))
+	for i := range routes {
+		routeByConversationID[routes[i].ConversationID] = &routes[i]
+	}
+	for i := range ret {
+		route := routeByConversationID[ret[i].ID]
+		if route != nil && route.TenantID != ret[i].TenantID {
+			route = nil
+		}
 		_, priorities[ret[i].ID] = s.ruleDispatchAssessmentAt(&ret[i], route, now)
 	}
 	slices.SortStableFunc(ret, func(a, b models.Conversation) int {
@@ -103,7 +124,60 @@ func (s *conversationDispatchService) prioritizePendingConversations(conversatio
 			return 0
 		}
 	})
-	return ret
+	if selectionLimit <= 0 || selectionLimit > len(ret) {
+		selectionLimit = len(ret)
+	}
+	oldestQuota := selectionLimit / pendingDispatchOldestQuotaDivisor
+	if oldestQuota < 1 {
+		oldestQuota = 1
+	}
+	prioritySlots := selectionLimit - oldestQuota
+	selected := make(map[int64]struct{}, selectionLimit)
+	ordered := make([]models.Conversation, 0, len(ret))
+	for _, conversation := range ret {
+		if len(ordered) >= prioritySlots {
+			break
+		}
+		ordered = append(ordered, conversation)
+		selected[conversation.ID] = struct{}{}
+	}
+
+	oldest := append([]models.Conversation(nil), ret...)
+	slices.SortStableFunc(oldest, func(a, b models.Conversation) int {
+		aPendingAt := pendingConversationAt(a)
+		bPendingAt := pendingConversationAt(b)
+		if aPendingAt.Before(bPendingAt) {
+			return -1
+		}
+		if aPendingAt.After(bPendingAt) {
+			return 1
+		}
+		switch {
+		case a.ID < b.ID:
+			return -1
+		case a.ID > b.ID:
+			return 1
+		default:
+			return 0
+		}
+	})
+	for _, conversation := range oldest {
+		if len(ordered) >= selectionLimit {
+			break
+		}
+		if _, exists := selected[conversation.ID]; exists {
+			continue
+		}
+		ordered = append(ordered, conversation)
+		selected[conversation.ID] = struct{}{}
+	}
+	for _, conversation := range ret {
+		if _, exists := selected[conversation.ID]; exists {
+			continue
+		}
+		ordered = append(ordered, conversation)
+	}
+	return ordered
 }
 
 func pendingConversationAt(conversation models.Conversation) time.Time {
@@ -113,45 +187,62 @@ func pendingConversationAt(conversation models.Conversation) time.Time {
 	return conversation.CreatedAt
 }
 
-func (s *conversationDispatchService) resolveDispatchTeamIDs(conversation *models.Conversation, aiAgent *models.AIAgent, route *models.ConversationRouteState) []int64 {
-	if conversation == nil || conversation.TenantID <= 0 {
+func (s *conversationDispatchService) resolveDispatchTeamIDs(conversation *models.Conversation, route *models.ConversationRouteState) []int64 {
+	return s.resolveDispatchTeamIDsDB(sqls.DB(), conversation, route)
+}
+
+func (s *conversationDispatchService) resolveDispatchTeamIDsDB(db *gorm.DB, conversation *models.Conversation, route *models.ConversationRouteState) []int64 {
+	if db == nil || conversation == nil || conversation.TenantID <= 0 {
 		return nil
 	}
-	teamIDs := make([]int64, 0, 4)
+	teamIDs := make([]int64, 0, 2)
 	appendTeam := func(teamID int64) {
 		if teamID <= 0 || slices.Contains(teamIDs, teamID) {
 			return
 		}
-		team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamID, conversation.TenantID)
+		team := repositories.AgentTeamRepository.GetInTenant(db, teamID, conversation.TenantID)
 		if team != nil && team.Status == enums.StatusOk {
 			teamIDs = append(teamIDs, teamID)
 		}
 	}
-	appendTeam(conversation.CurrentTeamID)
 	if route != nil && route.TenantID == conversation.TenantID {
 		if route.WxWorkInstanceID > 0 {
-			if instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), route.WxWorkInstanceID, conversation.TenantID); instance != nil {
+			if instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, route.WxWorkInstanceID, conversation.TenantID); instance != nil {
 				appendTeam(instance.AgentTeamID)
 			}
 		}
 		if route.StoreID > 0 {
-			if binding := repositories.StoreStaffBindingRepository.TakeInTenant(sqls.DB(), conversation.TenantID, "store_id = ? AND status = ?", route.StoreID, enums.StatusOk); binding != nil {
+			if binding := repositories.StoreStaffBindingRepository.TakeInTenant(db, conversation.TenantID, "store_id = ? AND status = ?", route.StoreID, enums.StatusOk); binding != nil {
 				appendTeam(binding.AgentTeamID)
 			}
 		}
 		if len(teamIDs) == 0 {
-			for _, team := range AgentTeamService.Find(sqls.NewCnd().Eq("tenant_id", conversation.TenantID).Eq("status", enums.StatusOk).Asc("id")) {
+			matchedTeamIDs := make([]int64, 0, 2)
+			for _, team := range repositories.AgentTeamRepository.Find(db, sqls.NewCnd().Eq("tenant_id", conversation.TenantID).Eq("status", enums.StatusOk).Asc("id")) {
 				if (route.StoreID > 0 && slices.Contains(utils.SplitInt64s(team.StoreScopeIDs), route.StoreID)) ||
 					(route.WxWorkInstanceID > 0 && slices.Contains(utils.SplitInt64s(team.WxWorkInstanceScopeIDs), route.WxWorkInstanceID)) {
-					appendTeam(team.ID)
-					break
+					matchedTeamIDs = append(matchedTeamIDs, team.ID)
 				}
+			}
+			if len(matchedTeamIDs) == 1 {
+				appendTeam(matchedTeamIDs[0])
 			}
 		}
 	}
-	if len(teamIDs) == 0 && aiAgent != nil && aiAgent.TenantID == conversation.TenantID {
-		for _, teamID := range utils.SplitInt64s(aiAgent.TeamIDs) {
-			appendTeam(teamID)
+	if len(teamIDs) > 1 {
+		return nil
+	}
+	if len(teamIDs) == 0 {
+		appendTeam(conversation.CurrentTeamID)
+	}
+	if len(teamIDs) == 0 {
+		defaultTeams := repositories.AgentTeamRepository.Find(db, sqls.NewCnd().
+			Eq("tenant_id", conversation.TenantID).
+			Eq("is_default", true).
+			Eq("status", enums.StatusOk).
+			Asc("id"))
+		if len(defaultTeams) == 1 {
+			appendTeam(defaultTeams[0].ID)
 		}
 	}
 	return teamIDs
@@ -179,10 +270,8 @@ func (s *conversationDispatchService) buildDispatchLoadMapDB(db *gorm.DB, profil
 		return loads, nil
 	}
 	userIDs := make([]int64, 0, len(profiles))
-	profileTeamByUser := make(map[int64]int64, len(profiles))
 	for _, profile := range profiles {
 		userIDs = append(userIDs, profile.UserID)
-		profileTeamByUser[profile.UserID] = profile.TeamID
 		loads[profile.UserID] = agentDispatchLoadSnapshot{}
 	}
 	conversations := repositories.ConversationRepository.Find(db, sqls.NewCnd().
@@ -209,65 +298,79 @@ func (s *conversationDispatchService) buildDispatchLoadMapDB(db *gorm.DB, profil
 				activeAssignmentByConversation[assignment.ConversationID] = assignment
 			}
 		}
-		repliedAfterAssignment := make(map[int64]bool, len(conversationIDs))
-		unansweredCustomerMessages := make(map[int64]int, len(conversationIDs))
-		oldestUnansweredAt := make(map[int64]time.Time, len(conversationIDs))
-		for _, message := range repositories.MessageRepository.Find(db, sqls.NewCnd().
+		messageStates, err := repositories.MessageRepository.FindActiveAssignmentMessageStates(db, tenantID, userIDs)
+		if err != nil {
+			return nil, err
+		}
+		messageStateByConversation := make(map[int64]repositories.ActiveAssignmentMessageStateRow, len(messageStates))
+		oldestUnansweredMessageIDs := make([]int64, 0, len(messageStates))
+		for _, state := range messageStates {
+			messageStateByConversation[state.ConversationID] = state
+			if state.OldestUnansweredMessageID > 0 {
+				oldestUnansweredMessageIDs = append(oldestUnansweredMessageIDs, state.OldestUnansweredMessageID)
+			}
+		}
+		oldestUnansweredAtByMessageID := make(map[int64]time.Time, len(oldestUnansweredMessageIDs))
+		if len(oldestUnansweredMessageIDs) > 0 {
+			for _, message := range repositories.MessageRepository.Find(db, sqls.NewCnd().
+				Eq("tenant_id", tenantID).
+				In("id", uniquePositiveInt64s(oldestUnansweredMessageIDs))) {
+				oldestUnansweredAtByMessageID[message.ID] = message.CreatedAt
+			}
+		}
+		followupByConversation := make(map[int64]bool, len(conversationIDs))
+		for _, route := range repositories.ConversationRouteStateRepository.Find(db, sqls.NewCnd().
 			Eq("tenant_id", tenantID).
 			In("conversation_id", conversationIDs).
-			In("sender_type", []enums.IMSenderType{enums.IMSenderTypeAgent, enums.IMSenderTypeCustomer}).
-			Asc("created_at").
-			Asc("id")) {
-			assignment, exists := activeAssignmentByConversation[message.ConversationID]
-			if !exists || message.CreatedAt.Before(assignment.CreatedAt) {
-				continue
-			}
-			switch message.SenderType {
-			case enums.IMSenderTypeAgent:
-				repliedAfterAssignment[message.ConversationID] = true
-				unansweredCustomerMessages[message.ConversationID] = 0
-				delete(oldestUnansweredAt, message.ConversationID)
-			case enums.IMSenderTypeCustomer:
-				if unansweredCustomerMessages[message.ConversationID] == 0 {
-					oldestUnansweredAt[message.ConversationID] = message.CreatedAt
-				}
-				unansweredCustomerMessages[message.ConversationID]++
-			}
+			Eq("need_human_follow_up", true)) {
+			followupByConversation[route.ConversationID] = true
 		}
 		now := time.Now()
 		for _, conversation := range conversations {
 			load := loads[conversation.CurrentAssigneeID]
 			assignment, exists := activeAssignmentByConversation[conversation.ID]
-			if !exists || !repliedAfterAssignment[conversation.ID] {
+			state := messageStateByConversation[conversation.ID]
+			if !exists || state.LastAssignedReplySeq <= 0 {
 				load.pendingFirstReply++
 			}
 			if exists && assignment.CreatedAt.After(load.lastAssignedAt) {
 				load.lastAssignedAt = assignment.CreatedAt
 			}
-			unansweredCount := unansweredCustomerMessages[conversation.ID]
-			route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversation.ID, tenantID)
-			if unansweredCount > 0 || (route != nil && route.NeedHumanFollowUp) {
+			unansweredCount := state.UnansweredCustomerCount
+			if unansweredCount > 0 || followupByConversation[conversation.ID] {
 				load.pendingReplyCount++
-				load.weightedOpenLoad += dispatchBacklogPressure(unansweredCount, oldestUnansweredAt[conversation.ID], now)
+				oldestUnansweredAt := oldestUnansweredAtByMessageID[state.OldestUnansweredMessageID]
+				load.weightedOpenLoad += dispatchBacklogPressure(unansweredCount, oldestUnansweredAt, now)
 			}
 			loads[conversation.CurrentAssigneeID] = load
 		}
 	}
 
 	minimumShiftStart := time.Time{}
-	for _, selection := range schedules {
-		if minimumShiftStart.IsZero() || selection.StartAt.Before(minimumShiftStart) {
-			minimumShiftStart = selection.StartAt
+	shiftStartByUserID := make(map[int64]time.Time, len(profiles))
+	membersBySquad, teamBySquad := AgentTeamSquadService.ActiveMemberProfileSetDB(db, activeScheduleSquadIDs(schedules), tenantID)
+	for i := range profiles {
+		selection, exists := schedules[profiles[i].TeamID]
+		if !exists {
+			continue
+		}
+		window, matched := matchingActiveScheduleSnapshot(&profiles[i], selection, membersBySquad, teamBySquad)
+		if !matched || window.StartAt.IsZero() {
+			continue
+		}
+		shiftStartByUserID[profiles[i].UserID] = window.StartAt
+		if minimumShiftStart.IsZero() || window.StartAt.Before(minimumShiftStart) {
+			minimumShiftStart = window.StartAt
 		}
 	}
 	if !minimumShiftStart.IsZero() {
-		for _, assignment := range repositories.ConversationAssignmentRepository.Find(db, sqls.NewCnd().
-			Eq("tenant_id", tenantID).
-			In("to_user_id", userIDs).
-			Gte("created_at", minimumShiftStart).
-			Asc("created_at")) {
-			selection, exists := schedules[profileTeamByUser[assignment.ToUserID]]
-			if !exists || assignment.CreatedAt.Before(selection.StartAt) {
+		assignments, err := repositories.ConversationAssignmentRepository.FindShiftWorkAssignments(db, tenantID, userIDs, minimumShiftStart)
+		if err != nil {
+			return nil, err
+		}
+		for _, assignment := range assignments {
+			shiftStart, exists := shiftStartByUserID[assignment.ToUserID]
+			if !exists || assignment.CreatedAt.Before(shiftStart) {
 				continue
 			}
 			weight := assignment.WorkloadWeight
@@ -275,7 +378,7 @@ func (s *conversationDispatchService) buildDispatchLoadMapDB(db *gorm.DB, profil
 				weight = 1
 			}
 			load := loads[assignment.ToUserID]
-			load.shiftAssignedWeight += weight
+			load.shiftWorkloadWeight += weight
 			if assignment.CreatedAt.After(load.lastAssignedAt) {
 				load.lastAssignedAt = assignment.CreatedAt
 			}
@@ -283,6 +386,14 @@ func (s *conversationDispatchService) buildDispatchLoadMapDB(db *gorm.DB, profil
 		}
 	}
 	return loads, nil
+}
+
+func normalizedDispatchPressure(load agentDispatchLoadSnapshot, maxConcurrentCount int) float64 {
+	capacity := float64(maxConcurrentCount)
+	if capacity <= 0 {
+		capacity = 1
+	}
+	return (float64(load.weightedOpenLoad) + float64(load.pendingFirstReply)*0.75 + float64(load.pendingReplyCount)*0.5) / capacity
 }
 
 func dispatchBacklogPressure(unansweredCount int, oldestUnansweredAt, now time.Time) int {

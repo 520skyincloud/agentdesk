@@ -15,8 +15,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,10 +29,20 @@ import (
 
 var WsService = newWsService()
 
+const dashboardPresenceDisconnectGrace = 90 * time.Second
+
+type dashboardPresenceKey struct {
+	tenantID int64
+	userID   int64
+}
+
 type wsService struct {
-	upgrader websocket.Upgrader
-	seq      atomic.Uint64
-	manager  *WsConnectionManager
+	upgrader                websocket.Upgrader
+	seq                     atomic.Uint64
+	manager                 *WsConnectionManager
+	presenceEndMu           sync.Mutex
+	presenceEndTimers       map[dashboardPresenceKey]*time.Timer
+	presenceDisconnectGrace time.Duration
 }
 
 func newWsService() *wsService {
@@ -40,7 +52,9 @@ func newWsService() *wsService {
 				return true
 			},
 		},
-		manager: newWsConnectionManager(),
+		manager:                 newWsConnectionManager(),
+		presenceEndTimers:       make(map[dashboardPresenceKey]*time.Timer),
+		presenceDisconnectGrace: dashboardPresenceDisconnectGrace,
 	}
 }
 
@@ -270,6 +284,7 @@ func (s *wsService) touchDashboardPresence(session *ClientSession, at time.Time)
 	if session == nil || session.Principal == nil || (session.Role != realtimeRoleAdmin && session.Role != realtimeRoleNotification) {
 		return
 	}
+	s.cancelScheduledPresenceEnd(session.TenantID, session.Principal.UserID)
 	if err := AgentProfileService.MarkUserOnline(session.Principal.UserID, session.Principal.Username, at); err != nil {
 		slog.Warn("refresh realtime agent online state failed", "error", err, "userId", session.Principal.UserID, "role", session.Role)
 	}
@@ -311,11 +326,63 @@ func (s *wsService) closeSession(session *ClientSession) {
 			"sessionCount", remaining,
 		)
 		if session.Principal != nil && (session.Role == realtimeRoleAdmin || session.Role == realtimeRoleNotification) && s.manager.CountUserSessions(session.TenantID, session.Principal.UserID) == 0 {
-			if err := AgentPresenceService.End(session.TenantID, session.Principal.UserID, time.Now()); err != nil {
-				slog.Warn("close realtime agent presence failed", "error", err, "userId", session.Principal.UserID, "role", session.Role)
-			}
+			s.schedulePresenceEnd(session.TenantID, session.Principal.UserID, session.Role)
 		}
 	})
+}
+
+func (s *wsService) cancelScheduledPresenceEnd(tenantID, userID int64) {
+	if tenantID <= 0 || userID <= 0 {
+		return
+	}
+	key := dashboardPresenceKey{tenantID: tenantID, userID: userID}
+	s.presenceEndMu.Lock()
+	defer s.presenceEndMu.Unlock()
+	if timer := s.presenceEndTimers[key]; timer != nil {
+		timer.Stop()
+		delete(s.presenceEndTimers, key)
+	}
+}
+
+func (s *wsService) schedulePresenceEnd(tenantID, userID int64, role string) {
+	if tenantID <= 0 || userID <= 0 {
+		return
+	}
+	key := dashboardPresenceKey{tenantID: tenantID, userID: userID}
+	s.presenceEndMu.Lock()
+	defer s.presenceEndMu.Unlock()
+	if timer := s.presenceEndTimers[key]; timer != nil {
+		timer.Stop()
+	}
+	grace := s.presenceDisconnectGrace
+	if grace < 0 {
+		grace = 0
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(grace, func() {
+		s.finishScheduledPresenceEnd(key, timer, role)
+	})
+	s.presenceEndTimers[key] = timer
+}
+
+func (s *wsService) finishScheduledPresenceEnd(key dashboardPresenceKey, timer *time.Timer, role string) {
+	s.presenceEndMu.Lock()
+	if s.presenceEndTimers[key] != timer {
+		s.presenceEndMu.Unlock()
+		return
+	}
+	delete(s.presenceEndTimers, key)
+	if s.manager.CountUserSessions(key.tenantID, key.userID) > 0 {
+		s.presenceEndMu.Unlock()
+		return
+	}
+	if err := AgentPresenceService.End(key.tenantID, key.userID, time.Now()); err != nil {
+		slog.Warn("close realtime agent presence after reconnect grace failed", "error", err, "userId", key.userID, "role", role)
+	}
+	s.presenceEndMu.Unlock()
+	if _, err := ConversationDispatchService.RecoverAssignmentsForAgent(key.tenantID, key.userID, 0); err != nil {
+		slog.Warn("recover assignments after realtime agent disconnect failed", "error", err, "tenantId", key.tenantID, "userId", key.userID)
+	}
 }
 
 func (s *wsService) subscribeTopics(session *ClientSession, topics []string) []string {
@@ -724,6 +791,9 @@ func (s *wsService) routeConversationTopics(conversation *models.Conversation) [
 	} else if conversation.TenantID > 0 {
 		topics = append(topics, s.adminTenantTopic(conversation.TenantID))
 	}
+	if conversation.TenantID > 0 {
+		topics = append(topics, s.dispatchTenantTopic(conversation.TenantID))
+	}
 	return normalizeRealtimeTopics(topics)
 }
 
@@ -742,7 +812,11 @@ func (s *wsService) defaultTopics(session *ClientSession) []string {
 		if session.Principal == nil || session.Principal.UserID <= 0 || session.TenantID <= 0 {
 			return nil
 		}
-		return []string{s.adminTopic(session.Principal.UserID), s.adminTenantTopic(session.TenantID)}
+		topics := []string{s.adminTopic(session.Principal.UserID), s.adminTenantTopic(session.TenantID)}
+		if slices.Contains(session.Principal.Permissions, constants.PermissionConversationHandover.Code) {
+			topics = append(topics, s.dispatchTenantTopic(session.TenantID))
+		}
+		return topics
 	default:
 		// 开放 IM：仅 External、无 AuthPrincipal 的访客连接必须仍能订阅 guest:{externalId}，否则收不到推送。
 		if session.TenantID > 0 && session.External != nil && strings.TrimSpace(session.External.ExternalID) != "" {
@@ -861,6 +935,10 @@ func (s *wsService) adminTopic(userID int64) string {
 
 func (s *wsService) adminTenantTopic(tenantID int64) string {
 	return realtimeTopicAdminTenantPrefix + strconv.FormatInt(tenantID, 10)
+}
+
+func (s *wsService) dispatchTenantTopic(tenantID int64) string {
+	return realtimeTopicDispatchPrefix + strconv.FormatInt(tenantID, 10)
 }
 
 func (s *wsService) notificationTopic(userID int64) string {

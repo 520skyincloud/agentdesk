@@ -10,7 +10,6 @@ import (
 	"agent-desk/internal/ai"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
-	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/utils"
@@ -64,8 +63,7 @@ func (s *conversationHumanDispatchService) TryOffHoursHandoffByAIWithRequestID(c
 	if err := validateConversationAIAgentTenant(conversation, aiAgent); err != nil {
 		return false, err
 	}
-	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
-	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, time.Now())
+	activeTeamIDs := s.activeDispatchTeamIDs(conversation, time.Now())
 	if len(activeTeamIDs) > 0 {
 		return false, nil
 	}
@@ -97,18 +95,9 @@ func (s *conversationHumanDispatchService) HandoffByAIWithRequestID(conversation
 	if statusResult := s.recentHandoffResult(conversationID); statusResult != nil {
 		return statusResult, nil
 	}
-	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
-	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, time.Now())
 	runtime := s.resolveStoreStaffRuntime(conversationID)
 	now := time.Now()
-	if runtime.NoWxWorkInstance && len(activeTeamIDs) > 0 {
-		if err := s.markStoreRoomHandoff(conversationID, aiAgent, reason, requestID); err != nil {
-			return nil, err
-		}
-		_ = s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffStoreManualMessage, requestID)
-		return &HandoffDecisionResult{Decision: HandoffDecisionStoreWecom, Message: HandoffStoreManualMessage}, nil
-	}
-	if s.shouldRouteToStoreRoom(runtime, now, len(activeTeamIDs) > 0) {
+	if s.shouldRouteToStoreRoom(runtime, now) {
 		if err := s.markStoreRoomHandoff(conversationID, aiAgent, reason, requestID); err != nil {
 			return nil, err
 		}
@@ -181,7 +170,16 @@ func (s *conversationHumanDispatchService) resolveStoreStaffRuntime(conversation
 	return StoreStaffBindingService.ResolveForInstance(WxWorkProtocolInstanceService.GetByTenantID(route.WxWorkInstanceID, conversation.TenantID))
 }
 
-func (s *conversationHumanDispatchService) shouldRouteToStoreRoom(runtime StoreStaffRuntimeConfig, now time.Time, hasActiveTeamSchedule bool) bool {
+func (s *conversationHumanDispatchService) activeDispatchTeamIDs(conversation *models.Conversation, now time.Time) []int64 {
+	if conversation == nil || conversation.TenantID <= 0 {
+		return nil
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
+	teamIDs := ConversationDispatchService.resolveDispatchTeamIDs(conversation, route)
+	return ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, now)
+}
+
+func (s *conversationHumanDispatchService) shouldRouteToStoreRoom(runtime StoreStaffRuntimeConfig, now time.Time) bool {
 	if !s.storeRoomConfigured(runtime) {
 		return false
 	}
@@ -210,8 +208,7 @@ func (s *conversationHumanDispatchService) ApplyHumanOnlyCreate(conversationID i
 	if err := validateConversationAIAgentTenant(conversation, aiAgent); err != nil {
 		return nil, err
 	}
-	teamIDs := orderedPositiveIDs(aiAgent.TeamIDs)
-	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, time.Now())
+	activeTeamIDs := s.activeDispatchTeamIDs(conversation, time.Now())
 	if len(activeTeamIDs) == 0 {
 		if err := s.moveToGlobalPool(conversationID, aiAgent.Name); err != nil {
 			return nil, err
@@ -221,46 +218,7 @@ func (s *conversationHumanDispatchService) ApplyHumanOnlyCreate(conversationID i
 		}
 		return &HandoffDecisionResult{Decision: HandoffDecisionGlobalPool, Message: HandoffWaitingMessage}, nil
 	}
-	return s.dispatchAfterHandoff(conversationID, aiAgent.ID, activeTeamIDs, "仅人工模式新会话")
-}
-
-func (s *conversationHumanDispatchService) DispatchPendingConversation(conversationID int64, aiAgent models.AIAgent) (*HandoffDecisionResult, error) {
-	conversation := ConversationService.Get(conversationID)
-	if conversation == nil {
-		return nil, errorsx.InvalidParam("会话不存在")
-	}
-	if err := validateConversationAIAgentTenant(conversation, aiAgent); err != nil {
-		return nil, err
-	}
-	if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
-		return nil, errorsx.InvalidParam("只有待接入未分配会话允许自动分配")
-	}
-	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, conversation.TenantID)
-	teamIDs := ConversationDispatchService.resolveDispatchTeamIDs(conversation, &aiAgent, route)
-	activeTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(teamIDs, conversation.TenantID, time.Now())
-	if len(activeTeamIDs) == 0 {
-		return &HandoffDecisionResult{Decision: HandoffDecisionOffHours}, nil
-	}
-	dispatched, err := ConversationDispatchService.DispatchPendingConversation(conversation, &aiAgent)
-	if err != nil {
-		return nil, err
-	}
-	if dispatched != nil {
-		return &HandoffDecisionResult{
-			Decision:   HandoffDecisionAssigned,
-			TeamID:     dispatched.CurrentTeamID,
-			AssigneeID: dispatched.CurrentAssigneeID,
-		}, nil
-	}
-	teamID := activeTeamIDs[0]
-	teamPoolConversation, err := s.moveToTeamPool(conversationID, teamID, "手动触发自动分配")
-	if err != nil {
-		return nil, err
-	}
-	if teamPoolConversation != nil {
-		WsService.PublishConversationChanged(teamPoolConversation, enums.IMRealtimeEventConversationUpdated)
-	}
-	return &HandoffDecisionResult{Decision: HandoffDecisionTeamPool, TeamID: teamID}, nil
+	return s.dispatchAfterHandoff(conversationID, activeTeamIDs, "仅人工模式新会话")
 }
 
 func validateConversationAIAgentTenant(conversation *models.Conversation, aiAgent models.AIAgent) error {
@@ -273,31 +231,28 @@ func validateConversationAIAgentTenant(conversation *models.Conversation, aiAgen
 	return nil
 }
 
-func (s *conversationHumanDispatchService) dispatchAfterHandoff(conversationID, aiAgentID int64, activeTeamIDs []int64, reason string) (*HandoffDecisionResult, error) {
+func (s *conversationHumanDispatchService) dispatchAfterHandoff(conversationID int64, activeTeamIDs []int64, reason string) (*HandoffDecisionResult, error) {
 	conversation, err := requireConversationParent(sqls.DB(), conversationID)
 	if err != nil {
 		return nil, err
 	}
 	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, conversation.TenantID)
-	aiAgent := AIAgentService.GetByTenantID(aiAgentID, conversation.TenantID)
-	if aiAgent != nil {
-		if resolvedTeamIDs := ConversationDispatchService.resolveDispatchTeamIDs(conversation, aiAgent, route); len(resolvedTeamIDs) > 0 {
-			if resolvedActiveTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(resolvedTeamIDs, conversation.TenantID, time.Now()); len(resolvedActiveTeamIDs) > 0 {
-				activeTeamIDs = resolvedActiveTeamIDs
-			}
+	if resolvedTeamIDs := ConversationDispatchService.resolveDispatchTeamIDs(conversation, route); len(resolvedTeamIDs) > 0 {
+		if resolvedActiveTeamIDs := ConversationDispatchService.findActiveScheduleTeamIDs(resolvedTeamIDs, conversation.TenantID, time.Now()); len(resolvedActiveTeamIDs) > 0 {
+			activeTeamIDs = resolvedActiveTeamIDs
 		}
-		dispatched, err := ConversationDispatchService.DispatchPendingConversation(conversation, aiAgent)
-		if err != nil {
-			return nil, err
-		}
-		if dispatched != nil {
-			return &HandoffDecisionResult{
-				Decision:   HandoffDecisionAssigned,
-				TeamID:     dispatched.CurrentTeamID,
-				AssigneeID: dispatched.CurrentAssigneeID,
-				Message:    HandoffWaitingMessage,
-			}, nil
-		}
+	}
+	dispatched, err := ConversationDispatchService.DispatchPendingConversation(conversation)
+	if err != nil {
+		return nil, err
+	}
+	if dispatched != nil {
+		return &HandoffDecisionResult{
+			Decision:   HandoffDecisionAssigned,
+			TeamID:     dispatched.CurrentTeamID,
+			AssigneeID: dispatched.CurrentAssigneeID,
+			Message:    HandoffWaitingMessage,
+		}, nil
 	}
 
 	if len(activeTeamIDs) == 0 {
@@ -484,34 +439,34 @@ func (s *conversationHumanDispatchService) moveToGlobalPool(conversationID int64
 
 func (s *conversationHumanDispatchService) notifyAgentDeskHandoff(conversationID int64, reason string) {
 	conversation := ConversationService.Get(conversationID)
-	if conversation == nil {
+	if conversation == nil || conversation.TenantID <= 0 {
 		return
 	}
-	userIDs := AgentProfileService.GetActiveAgentUserIDsInTenant(conversation.TenantID)
-	if len(userIDs) == 0 {
-		return
-	}
-	content := fmt.Sprintf("会话 #%d 等待总部网页端接管", conversation.ID)
-	if summary := strings.TrimSpace(ConversationService.BuildConversationSummary(conversation)); summary != "" {
-		content = content + "\n" + summary
-	}
-	if trimmedReason := strings.TrimSpace(reason); trimmedReason != "" {
-		content = content + "\n转人工原因: " + trimmedReason
-	}
-	for _, userID := range userIDs {
-		_, err := NotificationService.CreateAndPushInTenant(request.CreateNotificationRequest{
-			RecipientUserID:  userID,
-			Title:            "新的转人工请求",
-			Content:          content,
-			NotificationType: "manual_handoff_created",
-			BizType:          "conversation",
-			BizID:            conversation.ID,
-			ActionURL:        fmt.Sprintf("/dashboard/conversations?conversationId=%d", conversation.ID),
-		}, conversation.TenantID)
-		if err != nil {
-			slog.Warn("create agentdesk handoff notification failed", "conversation_id", conversation.ID, "recipient_user_id", userID, "error", err)
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
+	teamIDs := ConversationDispatchService.resolveDispatchTeamIDs(conversation, route)
+	if len(teamIDs) == 1 {
+		team := repositories.AgentTeamRepository.GetInTenant(sqls.DB(), teamIDs[0], conversation.TenantID)
+		if team != nil && normalizedDispatchMode(team.DispatchMode) == enums.AgentTeamDispatchModeRule {
+			return
 		}
+		ConversationDispatchService.notifyDispatchAttentionOnce(
+			conversation,
+			teamIDs[0],
+			"manual_dispatch_queue",
+			"新的转人工请求",
+			strings.TrimSpace(reason),
+			pendingConversationAt(*conversation),
+		)
+		return
 	}
+	ConversationDispatchService.notifyDispatchAttentionOnce(
+		conversation,
+		0,
+		"dispatch_unresolved_team",
+		"转人工会话需要配置客服组",
+		strings.TrimSpace(reason),
+		pendingConversationAt(*conversation),
+	)
 }
 
 func (s *conversationHumanDispatchService) notifyStoreRoomHandoff(conversationID int64, reason string) {
@@ -770,10 +725,6 @@ func (s *conversationHumanDispatchService) sendAIText(conversationID, aiAgentID 
 func (s *conversationHumanDispatchService) sendAITextWithRequestID(conversationID, aiAgentID int64, content string, requestID string) error {
 	_, err := MessageService.SendAIServiceNoticeWithRequestID(conversationID, aiAgentID, content, requestID)
 	return err
-}
-
-func orderedPositiveIDs(value string) []int64 {
-	return uniquePositiveInt64sFromStrings(strings.Split(value, ","))
 }
 
 func uniqueNonBlankStrings(values []string) []string {

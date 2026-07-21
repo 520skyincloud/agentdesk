@@ -24,6 +24,7 @@ func TestAIHandoffPublishesStoreManualConversationEvent(t *testing.T) {
 	createHumanDispatchRealtimeActiveSchedule(t, db, 1)
 	createHumanDispatchRealtimeAgentProfile(t, db, 101, 1)
 	conversation := createHumanDispatchRealtimeConversation(t, db, aiAgent.ID)
+	createHumanDispatchRealtimeStoreRoomRuntime(t, db, conversation.ID)
 
 	result, err := ConversationHumanDispatchService.HandoffByAI(conversation.ID, aiAgent, "用户要求转人工")
 	if err != nil {
@@ -45,7 +46,7 @@ func TestAIHandoffPublishesStoreManualConversationEvent(t *testing.T) {
 	}
 }
 
-func TestAIHandoffPublishesFinalTeamPoolConversationEvent(t *testing.T) {
+func TestAIHandoffWithoutStoreRuntimePublishesHQPendingConversationEvent(t *testing.T) {
 	db := setupHumanDispatchRealtimeTestDB(t)
 	WsService = newWsService()
 	session := captureHumanDispatchRealtimeSession(t, "admin:tenant:101")
@@ -58,19 +59,19 @@ func TestAIHandoffPublishesFinalTeamPoolConversationEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandoffByAI() error = %v", err)
 	}
-	if result == nil || result.Decision != HandoffDecisionStoreWecom {
-		t.Fatalf("expected store_wecom decision, got %+v", result)
+	if result == nil || result.Decision != HandoffDecisionHQAgentDesk {
+		t.Fatalf("expected hq_agentdesk decision, got %+v", result)
 	}
 
 	event := findHumanDispatchRealtimeEvent(t, session, enums.IMRealtimeEventConversationUpdated)
 	if event.Data["conversationId"] != float64(conversation.ID) {
 		t.Fatalf("unexpected conversation id in event: %+v", event.Data)
 	}
-	if event.Data["status"] != float64(enums.IMConversationStatusAIServing) {
-		t.Fatalf("expected ai-serving status in store manual updated event, got %+v", event.Data["status"])
+	if event.Data["status"] != float64(enums.IMConversationStatusPending) {
+		t.Fatalf("expected pending status in HQ handoff event, got %+v", event.Data["status"])
 	}
-	if event.Data["routeStatus"] != string(enums.ConversationRouteStatusStoreWecomManual) {
-		t.Fatalf("expected store manual route status, got %+v", event.Data["routeStatus"])
+	if event.Data["routeStatus"] != string(enums.ConversationRouteStatusHQAgentDeskPending) {
+		t.Fatalf("expected HQ pending route status, got %+v", event.Data["routeStatus"])
 	}
 }
 
@@ -148,6 +149,9 @@ func setupHumanDispatchRealtimeTestDB(t *testing.T) *gorm.DB {
 		&models.AgentTeam{},
 		&models.AgentTeamSchedule{},
 		&models.AgentProfile{},
+		&models.Store{},
+		&models.StoreStaffBinding{},
+		&models.WxWorkProtocolInstance{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
 		&models.ConversationParticipant{},
@@ -219,7 +223,6 @@ func createHumanDispatchRealtimeAgentProfile(t *testing.T, db *gorm.DB, userID, 
 		TeamID:             teamID,
 		AgentCode:          "A001",
 		DisplayName:        "客服",
-		ServiceStatus:      enums.ServiceStatusIdle,
 		MaxConcurrentCount: 3,
 		AutoAssignEnabled:  true,
 		Status:             enums.StatusOk,
@@ -246,4 +249,30 @@ func createHumanDispatchRealtimeConversation(t *testing.T, db *gorm.DB, aiAgentI
 		t.Fatalf("create conversation error = %v", err)
 	}
 	return item
+}
+
+func createHumanDispatchRealtimeStoreRoomRuntime(t *testing.T, db *gorm.DB, conversationID int64) {
+	t.Helper()
+	if err := db.Create(&models.Store{ID: 88, TenantID: 101, StoreCode: "realtime-store", Name: "实时测试门店", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create realtime store: %v", err)
+	}
+	if err := db.Create(&models.StoreStaffBinding{
+		ID: 55, TenantID: 101, StoreID: 88, ManagedMode: "semi", ServiceHours: "00:00-23:59",
+		StoreRoomConversationID: "R:realtime-room", StoreRoomNotifyEnabled: true, FallbackToHQ: true,
+		Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create realtime store binding: %v", err)
+	}
+	if err := db.Create(&models.WxWorkProtocolInstance{
+		ID: 77, TenantID: 101, Guid: "realtime-instance", StoreID: 88, StoreStaffBindingID: 55,
+		StoreRoomNotifyEnabled: true, FallbackToHQ: true, Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create realtime wxwork instance: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		TenantID: 101, ConversationID: conversationID, StoreID: 88, WxWorkInstanceID: 77,
+		RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai", SessionNo: 1,
+	}).Error; err != nil {
+		t.Fatalf("create realtime route: %v", err)
+	}
 }

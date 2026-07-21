@@ -4,8 +4,9 @@ import test from "node:test"
 
 const pageSource = await readFile(new URL("./page.tsx", import.meta.url), "utf8")
 
-test("dispatch wait column labels the manual response window explicitly", () => {
+test("dispatch wait column uses queue and first-response SLA instead of route manual expiry", () => {
   assert.match(pageSource, /formatDuration\(task\.waitingSeconds\)/)
-  assert.match(pageSource, /conversationDispatch\.manualWindowUntil/)
-  assert.doesNotMatch(pageSource, /task\.manualExpireAt \? formatDateTime\(task\.manualExpireAt\)/)
+	assert.match(pageSource, /conversationDispatch\.queueSlaUntil/)
+	assert.match(pageSource, /conversationDispatch\.firstResponseSlaUntil/)
+	assert.doesNotMatch(pageSource, /task\.manualExpireAt/)
 })

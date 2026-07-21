@@ -24,14 +24,17 @@ import { OptionCombobox } from "@/components/option-combobox"
 import { Textarea } from "@/components/ui/textarea"
 import {
   type AdminAgentTeam,
+  type AdminAgentProfile,
   type AdminAgentTeamSchedule,
   type AdminAgentTeamSquad,
   type CreateAdminAgentTeamSchedulePayload,
+  fetchAgentProfilesAll,
   fetchAgentTeamSchedule,
   fetchAgentTeamSquads,
   fetchAgentTeamsAll,
 } from "@/lib/api/admin"
 import { useI18n } from "@/i18n/provider"
+import { ScheduleAgentOverrides } from "./agent-overrides"
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string
 
@@ -48,6 +51,8 @@ type ScheduleEditDialogProps = {
 const emptyForm: EditForm = {
   teamId: "",
   squadId: "0",
+  includedAgentProfileIds: [],
+  excludedAgentProfileIds: [],
   startAt: "",
   endAt: "",
   remark: "",
@@ -56,6 +61,8 @@ const emptyForm: EditForm = {
 type EditForm = {
   teamId: string
   squadId: string
+  includedAgentProfileIds: number[]
+  excludedAgentProfileIds: number[]
   startAt: string
   endAt: string
   remark: string
@@ -65,6 +72,8 @@ function createEditFormSchema(t: TFunction) {
   return z.object({
   teamId: z.string().trim().regex(/^\d+$/, t("agentTeamSchedule.teamRequired")),
   squadId: z.string().trim().regex(/^\d+$/, t("agentTeamSchedule.squadRequired")),
+  includedAgentProfileIds: z.array(z.number().int().positive()),
+  excludedAgentProfileIds: z.array(z.number().int().positive()),
   startAt: z.string().trim().min(1, t("agentTeamSchedule.startRequired")),
   endAt: z.string().trim().min(1, t("agentTeamSchedule.endRequired")),
   remark: z.string().trim(),
@@ -82,11 +91,11 @@ function createEditFormSchema(t: TFunction) {
     })
     return
   }
-  if (!isSameLocalDay(startAt, endAt)) {
+  if (endAt.getTime() - startAt.getTime() > 24 * 60 * 60 * 1000) {
     ctx.addIssue({
       code: "custom",
       path: ["endAt"],
-      message: t("agentTeamSchedule.singleDayOnly"),
+      message: t("agentTeamSchedule.durationMax24"),
     })
   }
   if (startAt < startOfLocalDay(new Date())) {
@@ -117,10 +126,6 @@ function startOfLocalDay(value: Date) {
   return ret
 }
 
-function isSameLocalDay(a: Date, b: Date) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
-}
-
 function todayDateTimeLocalMin() {
   const today = startOfLocalDay(new Date())
   const month = String(today.getMonth() + 1).padStart(2, "0")
@@ -133,6 +138,8 @@ function buildForm(item: AdminAgentTeamSchedule | null, defaultValues?: Partial<
     return {
       teamId: defaultValues?.teamId ? String(defaultValues.teamId) : emptyForm.teamId,
       squadId: String(defaultValues?.squadId ?? 0),
+      includedAgentProfileIds: defaultValues?.includedAgentProfileIds ?? [],
+      excludedAgentProfileIds: defaultValues?.excludedAgentProfileIds ?? [],
       startAt: toDateTimeLocal(defaultValues?.startAt),
       endAt: toDateTimeLocal(defaultValues?.endAt),
       remark: defaultValues?.remark ?? emptyForm.remark,
@@ -141,6 +148,8 @@ function buildForm(item: AdminAgentTeamSchedule | null, defaultValues?: Partial<
   return {
     teamId: String(item.teamId),
     squadId: String(item.squadId ?? 0),
+    includedAgentProfileIds: item.includedAgentProfileIds ?? [],
+    excludedAgentProfileIds: item.excludedAgentProfileIds ?? [],
     startAt: toDateTimeLocal(item.startAt),
     endAt: toDateTimeLocal(item.endAt),
     remark: item.remark || "",
@@ -151,6 +160,8 @@ function buildPayload(form: EditForm): CreateAdminAgentTeamSchedulePayload {
   return {
     teamId: Number(form.teamId),
     squadId: Number(form.squadId) || 0,
+    includedAgentProfileIds: form.includedAgentProfileIds,
+    excludedAgentProfileIds: form.excludedAgentProfileIds,
     startAt: form.startAt.trim(),
     endAt: form.endAt.trim(),
     remark: form.remark.trim(),
@@ -196,6 +207,7 @@ function ScheduleEditDialogBody({
   const t = useI18n()
   const [teams, setTeams] = useState<AdminAgentTeam[]>([])
   const [squads, setSquads] = useState<AdminAgentTeamSquad[]>([])
+  const [profiles, setProfiles] = useState<AdminAgentProfile[]>([])
   const [loading, setLoading] = useState(false)
   const loadOptions = useCallback(async () => {
     try {
@@ -216,14 +228,30 @@ function ScheduleEditDialogBody({
   })
   const {
     control,
+    getValues,
     handleSubmit,
     reset,
     register,
+    setValue,
     watch,
     formState: { errors },
   } = form
   const minDateTime = todayDateTimeLocalMin()
   const selectedTeamId = Number(watch("teamId")) || 0
+  const selectedSquadId = Number(watch("squadId")) || 0
+  const includedAgentProfileIds = watch("includedAgentProfileIds")
+  const excludedAgentProfileIds = watch("excludedAgentProfileIds")
+  const plannedCoverage = useMemo(() => {
+    const squad = squads.find((item) => item.id === selectedSquadId)
+    const baseIds = new Set(selectedSquadId > 0 ? squad?.memberProfileIds ?? [] : profiles.map((profile) => profile.id))
+    includedAgentProfileIds.forEach((profileId) => baseIds.add(profileId))
+    excludedAgentProfileIds.forEach((profileId) => baseIds.delete(profileId))
+    const eligible = profiles.filter((profile) => baseIds.has(profile.id) && profile.autoAssignEnabled && profile.maxConcurrentCount > 0)
+    return {
+      agentCount: eligible.length,
+      capacity: eligible.reduce((total, profile) => total + profile.maxConcurrentCount, 0),
+    }
+  }, [excludedAgentProfileIds, includedAgentProfileIds, profiles, selectedSquadId, squads])
 
   useEffect(() => {
     async function loadDetail() {
@@ -251,21 +279,37 @@ function ScheduleEditDialogBody({
   useEffect(() => {
     if (!selectedTeamId) {
       setSquads([])
+      setProfiles([])
       return
     }
     let ignore = false
-    void fetchAgentTeamSquads(selectedTeamId)
-      .then((data) => { if (!ignore) setSquads(data.filter((item) => item.status === 0)) })
+    void Promise.all([
+      fetchAgentTeamSquads(selectedTeamId),
+      fetchAgentProfilesAll({ teamId: selectedTeamId }),
+    ])
+      .then(([squadData, profileData]) => {
+        if (ignore) return
+        const enabledSquads = squadData.filter((item) => item.status === 0)
+        setSquads(enabledSquads)
+        setProfiles(profileData)
+        const validProfileIds = new Set(profileData.map((profile) => profile.id))
+        setValue("includedAgentProfileIds", getValues("includedAgentProfileIds").filter((id) => validProfileIds.has(id)))
+        setValue("excludedAgentProfileIds", getValues("excludedAgentProfileIds").filter((id) => validProfileIds.has(id)))
+        const currentSquadId = Number(getValues("squadId")) || 0
+        if (currentSquadId > 0 && !enabledSquads.some((item) => item.id === currentSquadId)) {
+          setValue("squadId", "0")
+        }
+      })
       .catch((error) => { if (!ignore) toast.error(error instanceof Error ? error.message : t("agentTeamSchedule.loadSquadsFailed")) })
     return () => { ignore = true }
-  }, [selectedTeamId, t])
+  }, [getValues, selectedTeamId, setValue, t])
 
   async function onFormSubmit(values: EditForm) {
     await onSubmit(buildPayload(values))
   }
 
   return (
-    <DialogContent className="max-w-xl gap-0 p-0 sm:max-w-xl">
+    <DialogContent className="max-w-2xl gap-0 p-0 sm:max-w-2xl">
       <DialogHeader className="px-6 pt-6">
         <DialogTitle>{itemId ? t("agentTeamSchedule.editTitle") : t("agentTeamSchedule.createTitle")}</DialogTitle>
       </DialogHeader>
@@ -324,6 +368,26 @@ function ScheduleEditDialogBody({
                   <FieldError errors={[errors.squadId]} />
                 </FieldContent>
               </Field>
+            </div>
+            <ScheduleAgentOverrides
+              profiles={profiles}
+              includedProfileIds={includedAgentProfileIds}
+              excludedProfileIds={excludedAgentProfileIds}
+              disabled={!selectedTeamId}
+              onChange={(included, excluded) => {
+                setValue("includedAgentProfileIds", included, { shouldDirty: true })
+                setValue("excludedAgentProfileIds", excluded, { shouldDirty: true })
+              }}
+            />
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span>{t("agentTeamSchedule.plannedCoverage", { count: plannedCoverage.agentCount, capacity: plannedCoverage.capacity })}</span>
+              {plannedCoverage.agentCount <= 1 ? (
+                <span className="text-destructive">
+                  {plannedCoverage.agentCount === 0
+                    ? t("agentTeamSchedule.noPlannedAgentWarning")
+                    : t("agentTeamSchedule.singlePlannedAgentWarning")}
+                </span>
+              ) : null}
             </div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field data-invalid={!!errors.startAt}>

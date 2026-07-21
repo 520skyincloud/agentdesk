@@ -187,9 +187,11 @@ func (s *storeStaffBindingService) RetireForUserDB(db *gorm.DB, tenantID, userID
 	}
 	now := time.Now()
 	bindingIDs := make([]int64, 0, len(bindings))
+	affectedTeamIDs := make([]int64, 0, len(bindings))
 	for i := range bindings {
 		binding := &bindings[i]
 		bindingIDs = append(bindingIDs, binding.ID)
+		affectedTeamIDs = appendPositive(affectedTeamIDs, binding.AgentTeamID)
 		if err := repositories.StoreStaffBindingRepository.UpdatesInTenant(db, binding.ID, tenantID, map[string]any{
 			"status":           enums.StatusDisabled,
 			"updated_at":       now,
@@ -209,14 +211,22 @@ func (s *storeStaffBindingService) RetireForUserDB(db *gorm.DB, tenantID, userID
 			}
 		}
 	}
-	return repositories.WxWorkProtocolInstanceRepository.UpdatesActiveByStoreStaffBindingIDsInTenant(db, bindingIDs, tenantID, map[string]any{
+	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesActiveByStoreStaffBindingIDsInTenant(db, bindingIDs, tenantID, map[string]any{
 		"status":           enums.StatusDisabled,
 		"ai_reply_enabled": false,
 		"health_status":    "identity_disabled",
 		"updated_at":       now,
 		"update_user_id":   auditUserID(operator),
 		"update_user_name": auditUsername(operator),
-	})
+	}); err != nil {
+		return err
+	}
+	for _, teamID := range uniquePositive(affectedTeamIDs) {
+		if err := AgentTeamService.syncTeamScopeFromAssignments(db, teamID, operator); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func generateStoreIdentityCode(tenantID int64) string {

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -27,11 +28,12 @@ type DispatchDecisionCandidateEvidence struct {
 	WeightedOpenLoad    int     `json:"weightedOpenLoad"`
 	PendingFirstReply   int     `json:"pendingFirstReply"`
 	PendingReplyCount   int     `json:"pendingReplyCount"`
-	ShiftAssignedWeight int     `json:"shiftAssignedWeight"`
+	ShiftWorkloadWeight int     `json:"shiftWorkloadWeight"`
 	NormalizedLoad      float64 `json:"normalizedLoad"`
 }
 
 type DispatchDecisionEvidence struct {
+	DecisionKey           string
 	ConversationID        int64
 	SessionNo             int
 	AssignmentID          int64
@@ -84,11 +86,29 @@ func (s *serviceAnalyticsCaptureService) RecordDispatchEvidence(evidence Dispatc
 	}
 	userIDsJSON, _ := json.Marshal(userIDs)
 	candidatesJSON, _ := json.Marshal(evidence.Candidates)
-	decisionKey := fmt.Sprintf("attempt:%d:%d:%d:%d", conversation.TenantID, conversation.ID, evidence.SessionNo, evidence.DecidedAt.UnixNano())
+	decisionKey := strings.TrimSpace(evidence.DecisionKey)
 	if evidence.AssignmentID > 0 {
 		decisionKey = fmt.Sprintf("assignment:%d", evidence.AssignmentID)
+	} else if decisionKey == "" {
+		fingerprint := fmt.Sprintf("%d|%d|%d|%s|%s|%s|%d|%d|%d|%d|%s|%s|%s",
+			conversation.TenantID,
+			conversation.ID,
+			evidence.SessionNo,
+			strings.TrimSpace(evidence.Trigger),
+			strings.TrimSpace(evidence.DecisionMode),
+			evidence.Status,
+			evidence.InputLastMessageID,
+			evidence.SelectedUserID,
+			evidence.SelectedTeamID,
+			evidence.SelectedSquadID,
+			strings.TrimSpace(evidence.Reason),
+			strings.TrimSpace(evidence.FallbackReason),
+			string(candidatesJSON),
+		)
+		hash := sha256.Sum256([]byte(fingerprint))
+		decisionKey = fmt.Sprintf("attempt:%d:%d:%d:%x", conversation.TenantID, conversation.ID, evidence.SessionNo, hash[:8])
 	}
-	return repositories.DispatchDecisionLogRepository.Create(sqls.DB(), &models.DispatchDecisionLog{
+	return repositories.DispatchDecisionLogRepository.CreateIfAbsent(sqls.DB(), &models.DispatchDecisionLog{
 		TenantID:              conversation.TenantID,
 		DecisionKey:           decisionKey,
 		ConversationID:        conversation.ID,

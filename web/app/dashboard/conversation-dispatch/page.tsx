@@ -2,18 +2,18 @@
 
 import {
   ArrowRightLeftIcon,
-  BotIcon,
   CheckCircle2Icon,
   Clock3Icon,
   MessageSquareTextIcon,
   RefreshCwIcon,
   RotateCcwIcon,
+  ScaleIcon,
   SearchIcon,
   SendIcon,
   TimerIcon,
   UserRoundCheckIcon,
 } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
@@ -52,6 +52,7 @@ import { useI18n } from "@/i18n/provider"
 import {
   assignConversationDispatch,
   autoAssignConversationDispatch,
+  createAdminWebSocketUrl,
   fetchAgentTeamsAll,
   fetchConversationDispatchAgentLoads,
   fetchConversationDispatchStats,
@@ -64,6 +65,7 @@ import {
   type ConversationDispatchTask,
   type PageResult,
 } from "@/lib/api/admin"
+import { createRealtimeConnectionManager } from "@/lib/realtime-connection"
 import { formatDateTime } from "@/lib/utils"
 
 const STATUS_OPTIONS = [
@@ -93,12 +95,17 @@ function statusBadgeVariant(status: string) {
 }
 
 function formatDuration(seconds: number) {
-  if (!Number.isFinite(seconds) || seconds <= 0) return "0m"
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s"
+  if (seconds < 60) return `${Math.floor(seconds)}s`
   const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return `${minutes}m`
   const hours = Math.floor(minutes / 60)
   const rest = minutes % 60
   return rest > 0 ? `${hours}h ${rest}m` : `${hours}h`
+}
+
+function isPendingDispatchTask(task: ConversationDispatchTask) {
+  return task.currentAssigneeId === 0 && ["pending", "warning", "timeout"].includes(task.status)
 }
 
 function agentLabel(agent: ConversationDispatchAgentLoad) {
@@ -117,7 +124,10 @@ export default function ConversationDispatchPage() {
     () => new Set(session?.permissions ?? []),
     [session?.permissions],
   )
-  const canHandover = permissions.has("conversation.handover")
+  const canAssign = permissions.has("conversation.assign")
+  const canTransfer = permissions.has("conversation.transfer")
+  const canRecycle = permissions.has("conversation.recycle")
+  const canManageActions = canAssign || canTransfer || canRecycle
   const canViewTeams = permissions.has("agentTeam.view")
   const statusOptions = useMemo(
     () => STATUS_OPTIONS.map((item) => ({ value: item.value, label: t(item.labelKey) })),
@@ -158,15 +168,35 @@ export default function ConversationDispatchPage() {
   const [dialogAssignee, setDialogAssignee] = useState("0")
   const [dialogReason, setDialogReason] = useState("")
 
+  const availabilityLabels = useMemo<Record<string, string>>(
+    () => ({
+      available: t("conversationDispatch.availabilityAvailable"),
+      profile_disabled: t("conversationDispatch.availabilityProfileDisabled"),
+      auto_assign_disabled: t("conversationDispatch.availabilityAutoAssignDisabled"),
+      capacity_missing: t("conversationDispatch.availabilityCapacityMissing"),
+      account_disabled: t("conversationDispatch.availabilityAccountDisabled"),
+      permission_missing: t("conversationDispatch.availabilityPermissionMissing"),
+      no_active_schedule: t("conversationDispatch.availabilityNoActiveSchedule"),
+      out_of_shift: t("conversationDispatch.availabilityOutOfShift"),
+      offline: t("conversationDispatch.availabilityOffline"),
+      break: t("conversationDispatch.availabilityBreak"),
+      busy: t("conversationDispatch.availabilityBusy"),
+      at_capacity: t("conversationDispatch.availabilityAtCapacity"),
+    }),
+    [t]
+  )
+
   const agentOptions = useMemo(
     () => [
       { value: "0", label: t("conversationDispatch.selectAgent") },
-      ...agents.map((item) => ({
-        value: String(item.userId),
-        label: `${agentLabel(item)} · ${item.activeCount}/${item.maxConcurrentCount || "∞"}`,
-      })),
+      ...agents
+        .filter((item) => item.manuallyAssignable && (!dialog?.task.teamId || item.teamId === dialog.task.teamId))
+        .map((item) => ({
+          value: String(item.userId),
+          label: `${agentLabel(item)} · ${item.activeCount}/${item.maxConcurrentCount || "∞"} · ${availabilityLabels[item.availabilityCode] || item.availabilityReason}`,
+        })),
     ],
-    [agents, t]
+    [agents, availabilityLabels, dialog?.task.teamId, t]
   )
 
   const query = useMemo(
@@ -199,6 +229,11 @@ export default function ConversationDispatchPage() {
       setLoading(false)
     }
   }, [query, teamFilter, t])
+
+  const loadDataRef = useRef(loadData)
+  useEffect(() => {
+    loadDataRef.current = loadData
+  }, [loadData])
 
   useEffect(() => {
     if (!canViewTeams) {
@@ -234,6 +269,49 @@ export default function ConversationDispatchPage() {
     void loadData()
   }, [loadData])
 
+  useEffect(() => {
+    if (!permissions.has("conversation.handover")) return
+    let refreshTimer: number | null = null
+    const scheduleRefresh = () => {
+      if (document.visibilityState === "hidden" || refreshTimer !== null) return
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null
+        void loadDataRef.current()
+      }, 300)
+    }
+    const realtime = createRealtimeConnectionManager({
+      createSocket: () => new WebSocket(createAdminWebSocketUrl()),
+      canReconnect: () => Boolean(session?.activeTenantId),
+      onOpen: scheduleRefresh,
+      onMessage: (event) => {
+        try {
+          const payload = JSON.parse(event.data) as { type?: string }
+          if (payload.type?.startsWith("conversation.") || payload.type?.startsWith("message.")) {
+            scheduleRefresh()
+          }
+        } catch {
+          // Ignore malformed realtime payloads; hidden-tab polling remains available.
+        }
+      },
+    })
+    const hiddenPolling = window.setInterval(() => {
+      if (document.visibilityState === "hidden") {
+        void loadDataRef.current()
+      }
+    }, 60_000)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") scheduleRefresh()
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    realtime.connect()
+    return () => {
+      realtime.disconnect()
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      window.clearInterval(hiddenPolling)
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer)
+    }
+  }, [permissions, session?.activeTenantId])
+
   function submitFilters() {
     setKeyword(keywordInput)
     setStatus(statusInput)
@@ -257,7 +335,7 @@ export default function ConversationDispatchPage() {
   }
 
   async function handleAutoAssign(task: ConversationDispatchTask) {
-    if (!canHandover) {
+    if (!canAssign) {
       return
     }
     setActionLoadingId(task.conversationId)
@@ -273,16 +351,20 @@ export default function ConversationDispatchPage() {
   }
 
   function openActionDialog(type: "assign" | "transfer" | "release", task: ConversationDispatchTask) {
-    if (!canHandover) {
+    if (!canUseAction(type)) {
       return
     }
     setDialog({ type, task })
-    setDialogAssignee(type === "transfer" ? String(task.currentAssigneeId || 0) : String(task.recommendedAssigneeId || 0))
+    setDialogAssignee(type === "assign" ? String(task.recommendedAssigneeId || 0) : "0")
     setDialogReason("")
   }
 
   async function submitActionDialog() {
-    if (!canHandover || !dialog) return
+    if (!dialog || !canUseAction(dialog.type)) return
+    if (!dialogReason.trim()) {
+      toast.error(t("conversationDispatch.reasonRequired"))
+      return
+    }
     const conversationId = dialog.task.conversationId
     setActionLoadingId(conversationId)
     try {
@@ -313,6 +395,12 @@ export default function ConversationDispatchPage() {
     } finally {
       setActionLoadingId(null)
     }
+  }
+
+  function canUseAction(type: "assign" | "transfer" | "release") {
+    if (type === "assign") return canAssign
+    if (type === "transfer") return canTransfer
+    return canRecycle
   }
 
   const statCards = [
@@ -396,7 +484,7 @@ export default function ConversationDispatchPage() {
                 <TableHead className="w-[9rem]">{t("conversationDispatch.columnState")}</TableHead>
                 <TableHead className="w-[14rem]">{t("conversationDispatch.columnAssignee")}</TableHead>
                 <TableHead className="w-[9rem]">{t("conversationDispatch.columnWait")}</TableHead>
-                {canHandover ? (
+                {canManageActions ? (
                   <TableHead className="w-[10rem] text-right">{t("common.actions")}</TableHead>
                 ) : null}
               </TableRow>
@@ -404,7 +492,7 @@ export default function ConversationDispatchPage() {
             <TableBody>
               {result.results.length === 0 ? (
                 <DashboardTableStateRow
-                  colSpan={canHandover ? 6 : 5}
+                  colSpan={canManageActions ? 6 : 5}
                   loading={loading}
                   emptyText={t("conversationDispatch.emptyTasks")}
                 />
@@ -447,17 +535,12 @@ export default function ConversationDispatchPage() {
                       {task.routeStatusLabel ? (
                         <div className="mt-1 text-xs text-muted-foreground">{task.routeStatusLabel}</div>
                       ) : null}
-                      {task.decisionConfidence ? (
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {t("conversationDispatch.confidence", { value: task.decisionConfidence })}
-                        </div>
-                      ) : null}
                     </TableCell>
                     <TableCell className="align-top">
                       <div className="truncate text-sm">{task.currentAssigneeName || "-"}</div>
                       {task.recommendedAssigneeName ? (
                         <div className="mt-1 truncate text-xs text-muted-foreground">
-                          <BotIcon className="mr-1 inline size-3" />
+                          <ScaleIcon className="mr-1 inline size-3" />
                           {task.recommendedAssigneeName}
                         </div>
                       ) : null}
@@ -468,54 +551,67 @@ export default function ConversationDispatchPage() {
                       ) : null}
                     </TableCell>
                     <TableCell className="align-top whitespace-nowrap">
-                      <div className="font-medium tabular-nums">{formatDuration(task.waitingSeconds)}</div>
+                      <div className="font-medium tabular-nums">
+                        {task.slaType ? formatDuration(task.waitingSeconds) : "-"}
+                      </div>
                       <div className="text-xs text-muted-foreground">
-                        {task.manualExpireAt
-                          ? t("conversationDispatch.manualWindowUntil", {
-                              time: formatDateTime(task.manualExpireAt),
-                            })
+                        {task.slaDeadlineAt
+                          ? t(
+                              task.slaType === "queue"
+                                ? "conversationDispatch.queueSlaUntil"
+                                : "conversationDispatch.firstResponseSlaUntil",
+                              { time: formatDateTime(task.slaDeadlineAt) },
+                            )
                           : "-"}
                       </div>
                     </TableCell>
-                    {canHandover ? (
+                    {canManageActions ? (
                       <TableCell className="align-top text-right whitespace-nowrap">
                         <ButtonGroup>
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            title={t("conversationDispatch.autoAssign")}
-                            disabled={!task.manageable || task.status !== "pending" || actionLoadingId === task.conversationId}
-                            onClick={() => handleAutoAssign(task)}
-                          >
-                            <BotIcon className="size-4" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            title={t("conversationDispatch.assign")}
-                            disabled={!task.manageable || task.status !== "pending" || actionLoadingId === task.conversationId}
-                            onClick={() => openActionDialog("assign", task)}
-                          >
-                            <CheckCircle2Icon className="size-4" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            title={t("conversationDispatch.transfer")}
-                            disabled={!task.manageable || !task.currentAssigneeId || actionLoadingId === task.conversationId}
-                            onClick={() => openActionDialog("transfer", task)}
-                          >
-                            <ArrowRightLeftIcon className="size-4" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            title={t("conversationDispatch.release")}
-                            disabled={!task.manageable || !task.currentAssigneeId || actionLoadingId === task.conversationId}
-                            onClick={() => openActionDialog("release", task)}
-                          >
-                            <RotateCcwIcon className="size-4" />
-                          </Button>
+                          {canAssign ? (
+                            <>
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                title={t("conversationDispatch.autoAssign")}
+                                disabled={!task.manageable || !isPendingDispatchTask(task) || task.dispatchMode !== "rule" || actionLoadingId === task.conversationId}
+                                onClick={() => handleAutoAssign(task)}
+                              >
+                                <ScaleIcon className="size-4" />
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                title={t("conversationDispatch.assign")}
+                                disabled={!task.manageable || !isPendingDispatchTask(task) || actionLoadingId === task.conversationId}
+                                onClick={() => openActionDialog("assign", task)}
+                              >
+                                <CheckCircle2Icon className="size-4" />
+                              </Button>
+                            </>
+                          ) : null}
+                          {canTransfer ? (
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              title={t("conversationDispatch.transfer")}
+                              disabled={!task.manageable || !task.currentAssigneeId || actionLoadingId === task.conversationId}
+                              onClick={() => openActionDialog("transfer", task)}
+                            >
+                              <ArrowRightLeftIcon className="size-4" />
+                            </Button>
+                          ) : null}
+                          {canRecycle ? (
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              title={t("conversationDispatch.release")}
+                              disabled={!task.manageable || !task.currentAssigneeId || actionLoadingId === task.conversationId}
+                              onClick={() => openActionDialog("release", task)}
+                            >
+                              <RotateCcwIcon className="size-4" />
+                            </Button>
+                          ) : null}
                         </ButtonGroup>
                       </TableCell>
                     ) : null}
@@ -562,12 +658,15 @@ export default function ConversationDispatchPage() {
                         <div className="mt-1 font-medium tabular-nums">{agent.weightedOpenLoad}</div>
                       </div>
                       <div>
-                        <div className="text-muted-foreground">{t("conversationDispatch.shiftAssignedWeight")}</div>
-                        <div className="mt-1 font-medium tabular-nums">{agent.shiftAssignedWeight}</div>
+                        <div className="text-muted-foreground">{t("conversationDispatch.shiftWorkloadWeight")}</div>
+                        <div className="mt-1 font-medium tabular-nums">{agent.shiftWorkloadWeight}</div>
                       </div>
                     </div>
                     <div className="mt-2 text-xs text-muted-foreground">
                       {t("conversationDispatch.normalizedLoad", { value: agent.normalizedLoad.toFixed(2) })}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {availabilityLabels[agent.availabilityCode] || agent.availabilityReason || t("conversationDispatch.unavailable")}
                     </div>
                   </div>
                 ))
@@ -577,7 +676,7 @@ export default function ConversationDispatchPage() {
         </div>
       </div>
 
-      <Dialog open={canHandover && Boolean(dialog)} onOpenChange={(open) => !open && setDialog(null)}>
+      <Dialog open={Boolean(dialog && canUseAction(dialog.type))} onOpenChange={(open) => !open && setDialog(null)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
@@ -602,6 +701,7 @@ export default function ConversationDispatchPage() {
             value={dialogReason}
             onChange={(event) => setDialogReason(event.target.value)}
             placeholder={t("conversationDispatch.reasonPlaceholder")}
+            aria-required="true"
           />
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialog(null)}>

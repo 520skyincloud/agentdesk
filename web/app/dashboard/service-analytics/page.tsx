@@ -628,7 +628,13 @@ export default function ServiceAnalyticsPage() {
           <TabsContent value="dispatch" className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <MetricTile title="派单决策" value={data.dispatch.decisionCount} detail={`成功选择 ${data.dispatch.selectedCount} · 自动率 ${percent(data.dispatch.autoRate)}`} icon={<ActivityIcon className="size-4" />} href={recordsHref({ view: "human" })} />
-              <MetricTile title="自动派单" value={data.dispatch.autoCount} detail={`规则 ${data.dispatch.ruleCount} · 模型 ${data.dispatch.modelCount} · 协同 ${data.dispatch.hybridCount}`} icon={<GaugeIcon className="size-4" />} tone="green" />
+              <MetricTile
+                title="自动派单"
+                value={data.dispatch.autoCount}
+                detail={`规则 ${data.dispatch.ruleCount} · 历史兼容 ${data.dispatch.modelCount + data.dispatch.hybridCount}`}
+                icon={<GaugeIcon className="size-4" />}
+                tone="green"
+              />
               <MetricTile title="降级 / 失败" value={data.dispatch.fallbackCount + data.dispatch.failedCount} detail={`降级 ${data.dispatch.fallbackCount} · 失败 ${data.dispatch.failedCount} · 过期 ${data.dispatch.staleCount}`} icon={<ShieldCheckIcon className="size-4" />} tone="rose" />
               <MetricTile title="人工干预" value={data.dispatch.overrideCount} detail={`人工派单 ${data.dispatch.manualCount} · 转派 ${data.dispatch.transferCount} · 均耗时 ${Math.round(data.dispatch.averageDecisionLatencyMillis)}ms`} icon={<ArrowRightLeftIcon className="size-4" />} tone="amber" />
             </div>

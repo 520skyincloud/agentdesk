@@ -205,7 +205,7 @@ func (s *roleService) UpdateStatus(id int64, status enums.Status, operator *dto.
 	if status != enums.StatusOk && status != enums.StatusDisabled {
 		return errorsx.InvalidParam("角色状态只支持启用或禁用，删除请使用角色删除功能")
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		role, err := repositories.RoleRepository.GetForUpdate(ctx.Tx, id)
 		if err != nil {
 			return err
@@ -223,6 +223,11 @@ func (s *roleService) UpdateStatus(id int64, status enums.Status, operator *dto.
 			"updated_at":       time.Now(),
 		})
 	})
+	if err != nil {
+		return err
+	}
+	s.reconcileDispatchForRole(id)
+	return nil
 }
 
 func (s *roleService) AssignPermissions(roleID int64, permissionIDs []int64, operator *dto.AuthPrincipal) error {
@@ -238,7 +243,7 @@ func (s *roleService) AssignPermissions(roleID int64, permissionIDs []int64, ope
 }
 
 func (s *roleService) replaceRolePermissions(roleID int64, permissionIDs []int64, operator *dto.AuthPrincipal) error {
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		role, err := repositories.RoleRepository.GetForUpdate(ctx.Tx, roleID)
 		if err != nil {
 			return err
@@ -272,6 +277,23 @@ func (s *roleService) replaceRolePermissions(roleID int64, permissionIDs []int64
 
 		return replaceRolePermissionsDB(ctx.Tx, role, permissions, operator)
 	})
+	if err != nil {
+		return err
+	}
+	s.reconcileDispatchForRole(roleID)
+	return nil
+}
+
+func (s *roleService) reconcileDispatchForRole(roleID int64) {
+	if roleID <= 0 {
+		return
+	}
+	relations := repositories.UserRoleRepository.Find(sqls.DB(), sqls.NewCnd().Eq("role_id", roleID))
+	userIDs := make([]int64, 0, len(relations))
+	for i := range relations {
+		userIDs = append(userIDs, relations[i].UserID)
+	}
+	ConversationDispatchService.ReconcileUserAuthorizationChanges(userIDs...)
 }
 
 func replaceRolePermissionsDB(db *gorm.DB, role *models.Role, permissions []*models.Permission, operator *dto.AuthPrincipal) error {

@@ -697,29 +697,23 @@ func (ctx *seedContext) createSimulationAssignment(conversation *models.Conversa
 	if scenario.ClosedAt != nil {
 		status = enums.IMAssignmentStatusInactive
 	}
-	dispatchMode := enums.AgentTeamDispatchModeIntelligent
-	confidence := 88
+	dispatchMode := enums.AgentTeamDispatchModeRule
 	if scenario.Kind == simulationKindPriority {
 		dispatchMode = enums.AgentTeamDispatchModeManual
-		confidence = 0
-	} else if scenario.Kind == simulationKindUrgent || scenario.AssigneeIndex%4 == 2 {
-		dispatchMode = enums.AgentTeamDispatchModeRule
-		confidence = 0
 	}
 	assignment := &models.ConversationAssignment{
-		TenantID:           ctx.tenant.ID,
-		ConversationID:     conversation.ID,
-		SessionNo:          1,
-		ToUserID:           assignee.ID,
-		AssignType:         string(enums.IMAssignmentTypeAssign),
-		Reason:             "仿真派单：" + scenario.HandoffReason,
-		DispatchMode:       dispatchMode,
-		DecisionConfidence: confidence,
-		WorkloadWeight:     simulationWorkloadWeight(scenario.Kind),
-		Status:             status,
-		CreatedAt:          *scenario.AssignmentAt,
-		FinishedAt:         scenario.ClosedAt,
-		OperatorID:         ctx.leaders[scenario.TeamIndex-1].ID,
+		TenantID:       ctx.tenant.ID,
+		ConversationID: conversation.ID,
+		SessionNo:      1,
+		ToUserID:       assignee.ID,
+		AssignType:     string(enums.IMAssignmentTypeAssign),
+		Reason:         "仿真派单：" + scenario.HandoffReason,
+		DispatchMode:   dispatchMode,
+		WorkloadWeight: simulationWorkloadWeight(scenario.Kind),
+		Status:         status,
+		CreatedAt:      *scenario.AssignmentAt,
+		FinishedAt:     scenario.ClosedAt,
+		OperatorID:     ctx.leaders[scenario.TeamIndex-1].ID,
 	}
 	if err := ctx.db.Create(assignment).Error; err != nil {
 		return nil, err
@@ -971,8 +965,8 @@ func (ctx *seedContext) createSimulationDispatchDecision(
 	userIDsJSON, _ := json.Marshal(candidateIDs)
 	candidatesJSON, _ := json.Marshal(candidates)
 	status := enums.DispatchDecisionStatusSelected
-	mode := string(enums.AgentTeamDispatchModeIntelligent)
-	reason := "大模型结合当前班次、负载与会话上下文选择客服"
+	mode := string(enums.AgentTeamDispatchModeRule)
+	reason := "规则引擎依据实时压力、本班累计负载和稳定轮转选择客服"
 	fallbackReason := ""
 	if scenario.Kind == simulationKindPending {
 		status = enums.DispatchDecisionStatusFailed
@@ -982,11 +976,6 @@ func (ctx *seedContext) createSimulationDispatchDecision(
 		status = enums.DispatchDecisionStatusOverride
 		mode = string(enums.AgentTeamDispatchModeManual)
 		reason = "组长依据客户持续催促覆盖自动建议"
-	} else if scenario.Kind == simulationKindUrgent || scenario.AssigneeIndex%4 == 2 {
-		status = enums.DispatchDecisionStatusFallback
-		mode = string(enums.AgentTeamDispatchModeRule)
-		reason = "模型建议置信度不足，降级到规则均衡派单"
-		fallbackReason = "low_model_confidence"
 	}
 	decidedAt := *scenario.HandoffAt
 	inputLastMessageID := int64(0)

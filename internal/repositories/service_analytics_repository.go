@@ -256,6 +256,16 @@ func (r *dispatchDecisionLogRepository) Create(db *gorm.DB, item *models.Dispatc
 	return db.Create(item).Error
 }
 
+func (r *dispatchDecisionLogRepository) CreateIfAbsent(db *gorm.DB, item *models.DispatchDecisionLog) error {
+	if db == nil || item == nil || item.DecisionKey == "" {
+		return nil
+	}
+	return db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "decision_key"}},
+		DoNothing: true,
+	}).Create(item).Error
+}
+
 func (r *dispatchDecisionLogRepository) Find(db *gorm.DB, cnd *sqls.Cnd) (list []models.DispatchDecisionLog) {
 	cnd.Find(db, &list)
 	return

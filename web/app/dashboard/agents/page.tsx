@@ -28,7 +28,6 @@ import {
   type CreateAdminAgentProfilePayload,
 } from "@/lib/api/admin";
 import { useI18n } from "@/i18n/provider";
-import { ServiceStatus } from "@/lib/generated/enums";
 import { formatDateTime } from "@/lib/utils";
 import { EditDialog } from "./_components/edit";
 import { AgentTeamSidebar } from "./_components/team-sidebar";
@@ -36,25 +35,19 @@ import { SquadArrangement } from "./_components/squad-arrangement";
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string;
 
-function getServiceStatusOptions(t: TFunction) {
-  return [
-    { value: "all", label: t("agentProfile.allStatuses") },
-    { value: String(ServiceStatus.Idle), label: t("agentProfile.statusIdle") },
-    { value: String(ServiceStatus.Busy), label: t("agentProfile.statusBusy") },
-  ];
-}
-
-function getStatusLabel(value: number, t: TFunction) {
-  return (
-    getServiceStatusOptions(t).find((item) => item.value === String(value))
-      ?.label ?? String(value)
-  );
+function getPresenceLabel(item: AdminAgentProfile, t: TFunction) {
+  if (!item.presenceStatus) return t("agentProfile.presenceOffline");
+  if (item.presenceStatus === "break") return t("agentProfile.presenceBreak");
+  if (item.activeTaskCount > 0 || item.presenceStatus === "busy") {
+    return t("agentProfile.presenceBusy");
+  }
+  if (item.presenceStatus === "idle") return t("agentProfile.presenceIdle");
+  return t("agentProfile.presenceOnline");
 }
 
 export default function DashboardAgentsPage() {
   const t = useI18n();
   const { session } = useAuth();
-  const serviceStatusOptions = useMemo(() => getServiceStatusOptions(t), [t]);
   const [selectedTeam, setSelectedTeam] = useState<AdminAgentTeam | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loadRefreshKey, setLoadRefreshKey] = useState(0);
@@ -136,17 +129,8 @@ export default function DashboardAgentsPage() {
         trim: true,
         className: "w-full sm:w-44",
       },
-      {
-        name: "serviceStatus",
-        label: t("agentProfile.allStatuses"),
-        type: "select",
-        defaultValue: "all",
-        allValue: "all",
-        options: serviceStatusOptions,
-        className: "w-full sm:w-36",
-      },
     ],
-    [serviceStatusOptions, t],
+    [t],
   );
 
   const columns = useMemo<DashboardCrudColumn<AdminAgentProfile>[]>(
@@ -180,12 +164,12 @@ export default function DashboardAgentsPage() {
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-1 md:hidden">
                 <Badge variant="outline">
-                  {getStatusLabel(item.serviceStatus, t)}
+                  {getPresenceLabel(item, t)}
                 </Badge>
                 <span className="text-[11px] text-muted-foreground">
-                  {t("agentProfile.mobileCapacity", {
-                    count: item.maxConcurrentCount,
-                  })}
+                  {item.maxConcurrentCount > 0
+                    ? t("agentProfile.mobileCapacity", { count: item.maxConcurrentCount })
+                    : t("agentProfile.capacityMissing")}
                 </span>
               </div>
             </div>
@@ -199,13 +183,15 @@ export default function DashboardAgentsPage() {
         render: (item) => (
           <>
             <Badge variant="outline">
-              {getStatusLabel(item.serviceStatus, t)}
+              {getPresenceLabel(item, t)}
             </Badge>
             <div className="mt-2 text-sm text-muted-foreground">
-              {t("agentProfile.capacityPriority", {
-                capacity: item.maxConcurrentCount,
-                priority: item.priorityLevel,
-              })}
+              {item.maxConcurrentCount > 0
+                ? t("agentProfile.capacityPriority", {
+                    capacity: item.maxConcurrentCount,
+                    priority: item.priorityLevel,
+                  })
+                : t("agentProfile.capacityMissing")}
             </div>
           </>
         ),
@@ -220,13 +206,6 @@ export default function DashboardAgentsPage() {
               {item.autoAssignEnabled
                 ? t("agentProfile.autoAssign")
                 : t("agentProfile.noAutoAssign")}
-            </Badge>
-            <Badge
-              variant={item.receiveOfflineMessage ? "secondary" : "outline"}
-            >
-              {item.receiveOfflineMessage
-                ? t("agentProfile.offlineReceive")
-                : t("agentProfile.noOfflineReceive")}
             </Badge>
           </div>
         ),
@@ -283,8 +262,8 @@ export default function DashboardAgentsPage() {
               })}
             </div>
             <div className="text-sm text-muted-foreground">
-              {t("agentProfile.statusAt", {
-                time: formatDateTime(item.lastStatusAt),
+              {t("agentProfile.presenceAt", {
+                time: formatDateTime(item.presenceLastSeenAt),
               })}
             </div>
           </>
@@ -371,10 +350,6 @@ export default function DashboardAgentsPage() {
                 agentCode:
                   typeof query.agentCode === "string"
                     ? query.agentCode
-                    : undefined,
-                serviceStatus:
-                  typeof query.serviceStatus === "string"
-                    ? query.serviceStatus
                     : undefined,
                 page: Number(query.page),
                 limit: Number(query.limit),

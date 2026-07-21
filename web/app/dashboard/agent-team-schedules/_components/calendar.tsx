@@ -158,6 +158,8 @@ function buildMovePayload(item: AdminAgentTeamSchedule, date: string): UpdateAdm
     id: item.id,
     teamId: item.teamId,
     squadId: item.squadId,
+    includedAgentProfileIds: item.includedAgentProfileIds,
+    excludedAgentProfileIds: item.excludedAgentProfileIds,
     startAt: formatDateTimeValue(nextStart),
     endAt: formatDateTimeValue(nextEnd),
     remark: item.remark,
@@ -171,16 +173,19 @@ function buildResizePayload(
 ): UpdateAdminAgentTeamSchedulePayload | null {
   const startAt = parseLocalDateTime(item.startAt)
   const endAt = parseLocalDateTime(item.endAt)
-  if (!isSameLocalDay(startAt, nextTime)) {
+  const edgeDate = edge === "start" ? startAt : endAt
+  if (!isSameLocalDay(edgeDate, nextTime)) {
     return null
   }
   if (edge === "start") {
-    if (endAt.getTime() - nextTime.getTime() < minDurationMs) {
+    const duration = endAt.getTime() - nextTime.getTime()
+    if (duration < minDurationMs || duration > dayMs) {
       return null
     }
     startAt.setTime(nextTime.getTime())
   } else {
-    if (nextTime.getTime() - startAt.getTime() < minDurationMs) {
+    const duration = nextTime.getTime() - startAt.getTime()
+    if (duration < minDurationMs || duration > dayMs) {
       return null
     }
     endAt.setTime(nextTime.getTime())
@@ -189,6 +194,8 @@ function buildResizePayload(
     id: item.id,
     teamId: item.teamId,
     squadId: item.squadId,
+    includedAgentProfileIds: item.includedAgentProfileIds,
+    excludedAgentProfileIds: item.excludedAgentProfileIds,
     startAt: formatDateTimeValue(startAt),
     endAt: formatDateTimeValue(endAt),
     remark: item.remark,
