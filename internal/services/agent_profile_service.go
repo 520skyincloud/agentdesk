@@ -191,6 +191,9 @@ func teamCanServeRoute(team *models.AgentTeam, route *models.ConversationRouteSt
 	if team == nil || team.Status != enums.StatusOk {
 		return false
 	}
+	if route.StoreID <= 0 && route.WxWorkInstanceID <= 0 {
+		return team.IsDefault
+	}
 	teamStoreIDs := utils.SplitInt64s(team.StoreScopeIDs)
 	teamInstanceIDs := utils.SplitInt64s(team.WxWorkInstanceScopeIDs)
 	if len(teamStoreIDs) == 0 && len(teamInstanceIDs) == 0 {

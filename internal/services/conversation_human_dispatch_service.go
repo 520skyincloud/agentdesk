@@ -12,11 +12,13 @@ import (
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 var ConversationHumanDispatchService = newConversationHumanDispatchService()
@@ -57,6 +59,12 @@ func (s *conversationHumanDispatchService) TryOffHoursHandoffByAI(conversationID
 }
 
 func (s *conversationHumanDispatchService) TryOffHoursHandoffByAIWithRequestID(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) (bool, error) {
+	unlock := lockConversationHandoff(conversationID)
+	defer unlock()
+	return s.tryOffHoursHandoffByAIWithRequestID(conversationID, aiAgent, reason, requestID)
+}
+
+func (s *conversationHumanDispatchService) tryOffHoursHandoffByAIWithRequestID(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) (bool, error) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return false, errorsx.InvalidParam("会话不存在")
@@ -68,12 +76,12 @@ func (s *conversationHumanDispatchService) TryOffHoursHandoffByAIWithRequestID(c
 	if len(activeTeamIDs) > 0 {
 		return false, nil
 	}
-	if s.isRecentManualHandoff(conversationID, time.Now()) {
-		return true, nil
-	}
-	_ = s.markManualHandoffRequested(conversationID, time.Now())
-	if err := s.createEventWithRequestID(conversationID, requestID, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, aiAgent.ID, "转人工失败：非服务时间", strings.TrimSpace(reason)); err != nil {
+	claimed, err := s.recordOffHoursHandoff(conversation, aiAgent, reason, requestID, time.Now())
+	if err != nil {
 		return true, err
+	}
+	if !claimed {
+		return true, nil
 	}
 	if err := s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffOffHoursMessage, requestID); err != nil {
 		return true, err
@@ -86,6 +94,9 @@ func (s *conversationHumanDispatchService) HandoffByAI(conversationID int64, aiA
 }
 
 func (s *conversationHumanDispatchService) HandoffByAIWithRequestID(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) (*HandoffDecisionResult, error) {
+	unlock := lockConversationHandoff(conversationID)
+	defer unlock()
+
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return nil, errorsx.InvalidParam("会话不存在")
@@ -93,61 +104,126 @@ func (s *conversationHumanDispatchService) HandoffByAIWithRequestID(conversation
 	if err := validateConversationAIAgentTenant(conversation, aiAgent); err != nil {
 		return nil, err
 	}
-	if statusResult := s.recentHandoffResult(conversationID); statusResult != nil {
+	if statusResult := s.currentHandoffResult(conversation); statusResult != nil {
 		return statusResult, nil
 	}
 	runtime := s.resolveStoreStaffRuntime(conversationID)
 	now := time.Now()
 	if s.shouldRouteToStoreRoom(runtime, now) {
-		if err := s.markStoreRoomHandoff(conversationID, aiAgent, reason, requestID); err != nil {
+		claimed, err := s.markStoreRoomHandoff(conversationID, aiAgent, reason, requestID)
+		if err != nil {
 			return nil, err
 		}
-		_ = s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffStoreManualMessage, requestID)
+		if claimed {
+			if sendErr := s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffStoreManualMessage, requestID); sendErr != nil {
+				slog.Warn("send store handoff waiting message failed", "conversation_id", conversationID, "error", sendErr)
+			}
+		}
 		return &HandoffDecisionResult{Decision: HandoffDecisionStoreWecom, Message: HandoffStoreManualMessage}, nil
 	}
 	if runtime.ManagedMode == constants.StoreManagedModeNone || !runtime.FallbackToHQ {
-		if _, err := s.TryOffHoursHandoffByAIWithRequestID(conversationID, aiAgent, reason, requestID); err != nil {
+		if _, err := s.tryOffHoursHandoffByAIWithRequestID(conversationID, aiAgent, reason, requestID); err != nil {
 			return nil, err
 		}
 		return &HandoffDecisionResult{Decision: HandoffDecisionOffHours, Message: HandoffOffHoursMessage}, nil
 	}
 
-	if err := s.markHQAgentDeskHandoff(conversationID, aiAgent, reason, requestID); err != nil {
+	claimed, err := s.markHQAgentDeskHandoff(conversationID, aiAgent, reason, requestID)
+	if err != nil {
 		return nil, err
 	}
-	_ = s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffWaitingMessage, requestID)
+	if claimed {
+		if sendErr := s.sendAITextWithRequestID(conversationID, aiAgent.ID, HandoffWaitingMessage, requestID); sendErr != nil {
+			slog.Warn("send HQ handoff waiting message failed", "conversation_id", conversationID, "error", sendErr)
+		}
+	}
 	return &HandoffDecisionResult{Decision: HandoffDecisionHQAgentDesk, Message: HandoffWaitingMessage}, nil
 }
 
-func (s *conversationHumanDispatchService) recentHandoffResult(conversationID int64) *HandoffDecisionResult {
-	state := ConversationRouteService.GetByConversationID(conversationID)
-	if state == nil || state.LastManualHandoffAt == nil || time.Since(*state.LastManualHandoffAt) > manualHandoffCooldown {
+func (s *conversationHumanDispatchService) currentHandoffResult(conversation *models.Conversation) *HandoffDecisionResult {
+	if conversation == nil || conversation.TenantID <= 0 {
+		return nil
+	}
+	state := ConversationRouteService.GetByConversationIDInTenant(conversation.ID, conversation.TenantID)
+	if state == nil {
 		return nil
 	}
 	switch state.RouteStatus {
 	case enums.ConversationRouteStatusStoreWecomManual:
-		return &HandoffDecisionResult{Decision: HandoffDecisionTeamPool, Message: HandoffStoreManualMessage}
-	case enums.ConversationRouteStatusHQAgentDeskPending, enums.ConversationRouteStatusHQAgentDeskServing:
-		return &HandoffDecisionResult{Decision: HandoffDecisionTeamPool, Message: HandoffWaitingMessage}
+		return &HandoffDecisionResult{Decision: HandoffDecisionStoreWecom, Message: HandoffStoreManualMessage}
+	case enums.ConversationRouteStatusHQAgentDeskPending:
+		return &HandoffDecisionResult{Decision: HandoffDecisionHQAgentDesk, TeamID: conversation.CurrentTeamID, Message: HandoffWaitingMessage}
+	case enums.ConversationRouteStatusHQAgentDeskServing:
+		if conversation.CurrentAssigneeID > 0 {
+			return &HandoffDecisionResult{Decision: HandoffDecisionAssigned, TeamID: conversation.CurrentTeamID, AssigneeID: conversation.CurrentAssigneeID, Message: HandoffWaitingMessage}
+		}
+		return &HandoffDecisionResult{Decision: HandoffDecisionHQAgentDesk, TeamID: conversation.CurrentTeamID, Message: HandoffWaitingMessage}
 	}
 	return nil
 }
 
-func (s *conversationHumanDispatchService) isRecentManualHandoff(conversationID int64, now time.Time) bool {
-	state := ConversationRouteService.GetByConversationID(conversationID)
-	return state != nil && state.LastManualHandoffAt != nil && now.Sub(*state.LastManualHandoffAt) <= manualHandoffCooldown
+func (s *conversationHumanDispatchService) handoffAlreadyRecordedDB(db *gorm.DB, conversation *models.Conversation, state *models.ConversationRouteState, requestID string) bool {
+	if conversation == nil || state == nil {
+		return false
+	}
+	if routeStatusBlocksAIReply(state.RouteStatus) {
+		return true
+	}
+	normalizedRequestID := tracex.NormalizeRequestID(requestID)
+	if normalizedRequestID == "" {
+		return false
+	}
+	return repositories.ConversationEventLogRepository.FindOne(db, sqls.NewCnd().
+		Eq("tenant_id", conversation.TenantID).
+		Eq("conversation_id", conversation.ID).
+		Eq("request_id", normalizedRequestID).
+		Eq("event_type", enums.IMEventTypeTransfer).
+		Eq("operator_type", enums.IMSenderTypeAI)) != nil
 }
 
-func (s *conversationHumanDispatchService) markManualHandoffRequested(conversationID int64, now time.Time) error {
-	state, err := ConversationRouteService.Ensure(conversationID)
-	if err != nil {
-		return err
+func (s *conversationHumanDispatchService) recordOffHoursHandoff(conversation *models.Conversation, aiAgent models.AIAgent, reason, requestID string, now time.Time) (bool, error) {
+	if conversation == nil {
+		return false, errorsx.InvalidParam("会话不存在")
 	}
-	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
-		"last_manual_handoff_at": now,
-		"updated_at":             now,
-		"update_user_name":       "system",
+	if _, err := ConversationRouteService.Ensure(conversation.ID); err != nil {
+		return false, err
+	}
+	claimed := false
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedConversation, lockErr := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if lockedConversation == nil {
+			return errorsx.InvalidParam("会话不存在")
+		}
+		state, lockErr := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if state == nil {
+			return errorsx.InvalidParam("会话路由不存在")
+		}
+		if s.handoffAlreadyRecordedDB(ctx.Tx, lockedConversation, state, requestID) {
+			return nil
+		}
+		if state.LastManualHandoffAt != nil && now.Sub(*state.LastManualHandoffAt) <= manualHandoffCooldown {
+			return nil
+		}
+		if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, state.ID, state.TenantID, map[string]any{
+			"last_manual_handoff_at": now,
+			"updated_at":             now,
+			"update_user_name":       "system",
+		}); err != nil {
+			return err
+		}
+		if err := ConversationEventLogService.CreateEventWithRequestID(ctx, conversation.ID, requestID, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, aiAgent.ID, "转人工失败：非服务时间", strings.TrimSpace(reason)); err != nil {
+			return err
+		}
+		claimed = true
+		return nil
 	})
+	return claimed, err
 }
 
 func (s *conversationHumanDispatchService) canUseStoreRoomHandoff(conversationID int64) bool {
@@ -270,27 +346,45 @@ func (s *conversationHumanDispatchService) dispatchAfterHandoff(conversationID i
 	return &HandoffDecisionResult{Decision: HandoffDecisionTeamPool, TeamID: teamID, Message: HandoffWaitingMessage}, nil
 }
 
-func (s *conversationHumanDispatchService) markStoreRoomHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) error {
+func (s *conversationHumanDispatchService) markStoreRoomHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) (bool, error) {
 	now := time.Now()
 	trimmedReason := strings.TrimSpace(reason)
-	if err := s.recordStoreRoomHandoff(conversationID, aiAgent, trimmedReason, requestID, now); err != nil {
-		return err
+	claimed, err := s.recordStoreRoomHandoff(conversationID, aiAgent, trimmedReason, requestID, now)
+	if err != nil || !claimed {
+		return claimed, err
 	}
-	if _, err := ConversationRouteService.EnterStoreWecomManual(conversationID, trimmedReason, now); err != nil {
-		return err
-	}
-	_ = s.markManualHandoffRequested(conversationID, now)
 	s.notifyStoreRoomHandoff(conversationID, trimmedReason)
-	return nil
+	return true, nil
 }
 
-func (s *conversationHumanDispatchService) recordStoreRoomHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, now time.Time) error {
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation, err := requireConversationParent(ctx.Tx, conversationID)
-		if err != nil {
-			return err
+func (s *conversationHumanDispatchService) recordStoreRoomHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, now time.Time) (bool, error) {
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return false, err
+	}
+	if _, err := ConversationRouteService.Ensure(conversationID); err != nil {
+		return false, err
+	}
+	claimed := false
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedConversation, lockErr := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, conversationID, conversation.TenantID)
+		if lockErr != nil {
+			return lockErr
 		}
-		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conversation.TenantID, map[string]any{
+		if lockedConversation == nil {
+			return errorsx.InvalidParam("会话不存在")
+		}
+		state, lockErr := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, conversationID, conversation.TenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if state == nil {
+			return errorsx.InvalidParam("会话路由不存在")
+		}
+		if s.handoffAlreadyRecordedDB(ctx.Tx, lockedConversation, state, requestID) {
+			return nil
+		}
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, lockedConversation.TenantID, map[string]any{
 			"handoff_at":       now,
 			"handoff_reason":   strings.TrimSpace(reason),
 			"update_user_id":   0,
@@ -299,33 +393,73 @@ func (s *conversationHumanDispatchService) recordStoreRoomHandoff(conversationID
 		}); err != nil {
 			return err
 		}
-		return ConversationEventLogService.CreateEventWithRequestID(ctx, conversationID, requestID, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, aiAgent.ID, "AI通知门店群跟进", ConversationService.buildEventPayload(map[string]any{
-			"status":   conversation.Status,
+		if err := ConversationEventLogService.CreateEventWithRequestID(ctx, conversationID, requestID, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, aiAgent.ID, "AI通知门店群跟进", ConversationService.buildEventPayload(map[string]any{
+			"status":   lockedConversation.Status,
 			"decision": string(HandoffDecisionStoreWecom),
 			"reason":   strings.TrimSpace(reason),
-		}))
-	})
-}
-
-func (s *conversationHumanDispatchService) markHQAgentDeskHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) error {
-	now := time.Now()
-	trimmedReason := strings.TrimSpace(reason)
-	if err := s.recordHandoff(conversationID, aiAgent, trimmedReason, requestID, now); err != nil {
-		return err
-	}
-	_ = s.markManualHandoffRequested(conversationID, now)
-	s.notifyAgentDeskHandoff(conversationID, trimmedReason)
-	ConversationDispatchService.ScheduleDispatch(conversationID)
-	return nil
-}
-
-func (s *conversationHumanDispatchService) recordHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, now time.Time) error {
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation, err := requireConversationParent(ctx.Tx, conversationID)
+		})); err != nil {
+			return err
+		}
+		updatedState, err := ConversationRouteService.enterStoreWecomManualWithDB(ctx.Tx, conversationID, strings.TrimSpace(reason), now)
 		if err != nil {
 			return err
 		}
-		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conversation.TenantID, map[string]any{
+		if updatedState == nil {
+			return errorsx.InvalidParam("会话路由不存在")
+		}
+		if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, updatedState.ID, updatedState.TenantID, map[string]any{
+			"last_manual_handoff_at": now,
+			"updated_at":             now,
+			"update_user_name":       "system",
+		}); err != nil {
+			return err
+		}
+		claimed = true
+		return nil
+	})
+	return claimed, err
+}
+
+func (s *conversationHumanDispatchService) markHQAgentDeskHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) (bool, error) {
+	now := time.Now()
+	trimmedReason := strings.TrimSpace(reason)
+	claimed, err := s.recordHandoff(conversationID, aiAgent, trimmedReason, requestID, now)
+	if err != nil || !claimed {
+		return claimed, err
+	}
+	s.notifyAgentDeskHandoff(conversationID, trimmedReason)
+	ConversationDispatchService.ScheduleDispatch(conversationID)
+	return true, nil
+}
+
+func (s *conversationHumanDispatchService) recordHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, now time.Time) (bool, error) {
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return false, err
+	}
+	if _, err := ConversationRouteService.Ensure(conversationID); err != nil {
+		return false, err
+	}
+	claimed := false
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedConversation, lockErr := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, conversationID, conversation.TenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if lockedConversation == nil {
+			return errorsx.InvalidParam("会话不存在")
+		}
+		state, lockErr := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, conversationID, conversation.TenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if state == nil {
+			return errorsx.InvalidParam("会话路由不存在")
+		}
+		if s.handoffAlreadyRecordedDB(ctx.Tx, lockedConversation, state, requestID) {
+			return nil
+		}
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, lockedConversation.TenantID, map[string]any{
 			"handoff_at":          now,
 			"handoff_reason":      strings.TrimSpace(reason),
 			"status":              enums.IMConversationStatusPending,
@@ -340,9 +474,24 @@ func (s *conversationHumanDispatchService) recordHandoff(conversationID int64, a
 		if err := ConversationEventLogService.CreateEventWithRequestID(ctx, conversationID, requestID, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, aiAgent.ID, "AI转人工", strings.TrimSpace(reason)); err != nil {
 			return err
 		}
-		_, err = ConversationRouteService.enterHQAgentDeskPendingWithDB(ctx.Tx, conversationID, strings.TrimSpace(reason), now)
-		return err
+		updatedState, err := ConversationRouteService.enterHQAgentDeskPendingWithDB(ctx.Tx, conversationID, strings.TrimSpace(reason), now)
+		if err != nil {
+			return err
+		}
+		if updatedState == nil {
+			return errorsx.InvalidParam("会话路由不存在")
+		}
+		if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, updatedState.ID, updatedState.TenantID, map[string]any{
+			"last_manual_handoff_at": now,
+			"updated_at":             now,
+			"update_user_name":       "system",
+		}); err != nil {
+			return err
+		}
+		claimed = true
+		return nil
 	})
+	return claimed, err
 }
 
 func (s *conversationHumanDispatchService) moveToTeamPool(conversationID, teamID int64, reason string) (*models.Conversation, error) {

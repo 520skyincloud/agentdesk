@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,6 +55,180 @@ func TestConversationHumanDispatchAIHandoffWithoutStoreRuntimeFallsBackToHQAgent
 	}
 	if message.SenderType != enums.IMSenderTypeAI || !strings.Contains(message.Content, services.HandoffWaitingMessage) {
 		t.Fatalf("unexpected HQ handoff message: %+v", message)
+	}
+}
+
+func TestConversationHumanDispatchSameRequestIsIdempotent(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "我要找人工")
+
+	const callers = 8
+	errCh := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := services.ConversationHumanDispatchService.HandoffByAIWithRequestID(conversation.ID, aiAgent, "用户明确要求人工", "handoff-idempotent-request")
+			errCh <- err
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent HandoffByAIWithRequestID() error = %v", err)
+		}
+	}
+
+	var transferCount int64
+	if err := db.Model(&models.ConversationEventLog{}).
+		Where("tenant_id = ? AND conversation_id = ? AND request_id = ? AND event_type = ? AND operator_type = ?", 101, conversation.ID, "handoff-idempotent-request", enums.IMEventTypeTransfer, enums.IMSenderTypeAI).
+		Count(&transferCount).Error; err != nil {
+		t.Fatalf("count handoff events: %v", err)
+	}
+	if transferCount != 1 {
+		t.Fatalf("expected one handoff event, got %d", transferCount)
+	}
+	var waitingCount int64
+	if err := db.Model(&models.Message{}).
+		Where("tenant_id = ? AND conversation_id = ? AND sender_type = ? AND content = ?", 101, conversation.ID, enums.IMSenderTypeAI, services.HandoffWaitingMessage).
+		Count(&waitingCount).Error; err != nil {
+		t.Fatalf("count handoff waiting messages: %v", err)
+	}
+	if waitingCount != 1 {
+		t.Fatalf("expected one handoff waiting message, got %d", waitingCount)
+	}
+
+	resumeErrCh := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			_, err := services.AIManualResumeTaskService.Schedule(conversation.ID, origin.ID, "concurrent-token-"+strconv.Itoa(index))
+			resumeErrCh <- err
+		}(i)
+	}
+	wg.Wait()
+	close(resumeErrCh)
+	for err := range resumeErrCh {
+		if err != nil {
+			t.Fatalf("concurrent Schedule() error = %v", err)
+		}
+	}
+	var taskCount int64
+	if err := db.Model(&models.AIManualResumeTask{}).
+		Where("tenant_id = ? AND conversation_id = ?", 101, conversation.ID).
+		Count(&taskCount).Error; err != nil {
+		t.Fatalf("count manual resume tasks: %v", err)
+	}
+	if taskCount != 1 {
+		t.Fatalf("expected one manual resume task, got %d", taskCount)
+	}
+}
+
+func TestConversationHandoffConfirmationSameRequestSendsOnePrompt(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "我要投诉")
+
+	const callers = 8
+	errCh := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(conversation.ID, aiAgent, "客人需要人工接待", "handoff-confirm-idempotent", origin.ID)
+			errCh <- err
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent RequestByAIWithOriginMessage() error = %v", err)
+		}
+	}
+
+	var promptCount int64
+	if err := db.Model(&models.Message{}).
+		Where("tenant_id = ? AND conversation_id = ? AND client_msg_id LIKE ?", 101, conversation.ID, "ai_handoff_confirm_%").
+		Count(&promptCount).Error; err != nil {
+		t.Fatalf("count handoff prompts: %v", err)
+	}
+	if promptCount != 1 {
+		t.Fatalf("expected one handoff confirmation prompt, got %d", promptCount)
+	}
+	state := services.ConversationRouteService.GetByConversationIDInTenant(conversation.ID, 101)
+	if state == nil || state.PendingAction != string(enums.ConversationPendingActionHumanHandoff) {
+		t.Fatalf("expected one pending handoff confirmation, got %+v", state)
+	}
+}
+
+func TestConversationHumanDispatchPendingTaskIsAssignedWhenAgentReturns(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	createHumanDispatchTeam(t, db, 1, "综合客服组")
+	if err := db.Model(&models.AgentTeam{}).Where("tenant_id = ? AND id = ?", 101, 1).Updates(map[string]any{
+		"is_default":    true,
+		"dispatch_mode": enums.AgentTeamDispatchModeRule,
+	}).Error; err != nil {
+		t.Fatalf("configure default rule team: %v", err)
+	}
+	createHumanDispatchActiveSchedule(t, db, 1)
+	createHumanDispatchAgentProfile(t, db, 101, 1, 3, true, enums.StatusOk)
+	if err := db.Model(&models.AgentPresenceSession{}).
+		Where("tenant_id = ? AND user_id = ? AND ended_at IS NULL", 101, 101).
+		Updates(map[string]any{"status": enums.AgentPresenceStatusBreak, "last_seen_at": time.Now()}).Error; err != nil {
+		t.Fatalf("put agent on break: %v", err)
+	}
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+
+	if _, err := services.ConversationHumanDispatchService.HandoffByAIWithRequestID(conversation.ID, aiAgent, "用户明确要求人工", "handoff-pending-recovery"); err != nil {
+		t.Fatalf("HandoffByAIWithRequestID() error = %v", err)
+	}
+	dispatched, err := services.ConversationDispatchService.DispatchConversation(conversation.ID)
+	if err != nil {
+		t.Fatalf("initial dispatch error = %v", err)
+	}
+	if dispatched != nil {
+		t.Fatalf("agent on break must not receive task, got %+v", dispatched)
+	}
+	current := services.ConversationService.Get(conversation.ID)
+	if current == nil || current.Status != enums.IMConversationStatusPending || current.CurrentAssigneeID != 0 {
+		t.Fatalf("task must remain visible in pending pool, got %+v", current)
+	}
+	oldHandoffAt := time.Now().Add(-2 * time.Hour)
+	if err := db.Model(&models.Conversation{}).Where("tenant_id = ? AND id = ?", 101, conversation.ID).Update("handoff_at", oldHandoffAt).Error; err != nil {
+		t.Fatalf("age pending task: %v", err)
+	}
+	if err := db.Model(&models.AgentPresenceSession{}).
+		Where("tenant_id = ? AND user_id = ? AND ended_at IS NULL", 101, 101).
+		Updates(map[string]any{"status": enums.AgentPresenceStatusIdle, "last_seen_at": time.Now()}).Error; err != nil {
+		t.Fatalf("return agent to service: %v", err)
+	}
+
+	count, err := services.ConversationDispatchService.DispatchPendingConversations(100)
+	if err != nil {
+		t.Fatalf("compensation dispatch error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one recovered pending task, got %d", count)
+	}
+	current = services.ConversationService.Get(conversation.ID)
+	if current == nil || current.Status != enums.IMConversationStatusActive || current.CurrentAssigneeID != 101 || current.CurrentTeamID != 1 {
+		t.Fatalf("expected deterministic rule assignment after agent returned, got %+v", current)
+	}
+	assignment := repositories.ConversationAssignmentRepository.FindOne(db, sqls.NewCnd().
+		Eq("tenant_id", 101).
+		Eq("conversation_id", conversation.ID).
+		Eq("status", enums.IMAssignmentStatusActive))
+	if assignment == nil || assignment.DispatchMode != enums.AgentTeamDispatchModeRule {
+		t.Fatalf("expected active rule assignment, got %+v", assignment)
 	}
 }
 
@@ -807,6 +982,7 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		&models.ConversationServiceSession{},
 		&models.ConversationResponseSpan{},
 		&models.AgentPresenceSession{},
+		&models.ServiceAnalyticsPolicy{},
 		&models.DispatchDecisionLog{},
 		&models.MessageSyncLog{},
 		&models.ChannelMessageOutbox{},

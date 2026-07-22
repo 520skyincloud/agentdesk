@@ -52,10 +52,9 @@ func (s *aiManualResumeTaskService) Schedule(conversationID int64, originMessage
 	if conversation == nil || conversation.TenantID <= 0 {
 		return nil, fmt.Errorf("conversation has no tenant")
 	}
-	state := ConversationRouteService.GetByConversationIDInTenant(conversationID, conversation.TenantID)
-	if state == nil || !routeStatusBlocksManualResume(state.RouteStatus) {
-		return nil, fmt.Errorf("conversation is not in a manual route")
-	}
+	unlock := lockConversationHandoff(conversationID)
+	defer unlock()
+
 	if originMessageID <= 0 {
 		if message := s.latestCustomerMessage(conversationID, conversation.TenantID); message != nil {
 			originMessageID = message.ID
@@ -66,41 +65,70 @@ func (s *aiManualResumeTaskService) Schedule(conversationID int64, originMessage
 		handoffToken = s.NewHandoffToken()
 	}
 	taskKey := fmt.Sprintf("manual_resume:%d:%s", conversationID, handoffToken)
-	if existing := repositories.AIManualResumeTaskRepository.Take(db, "task_key = ? AND tenant_id = ?", taskKey, conversation.TenantID); existing != nil {
-		return existing, nil
-	}
 	now := time.Now()
-	var nextReminderAt *time.Time
-	if state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
-		delay := 2 * time.Minute
-		if isSafetyHandoffReason(state.HandoffReason) {
-			delay = time.Minute
+	var result *models.AIManualResumeTask
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedConversation, lockErr := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, conversationID, conversation.TenantID)
+		if lockErr != nil {
+			return lockErr
 		}
-		value := now.Add(delay)
-		nextReminderAt = &value
-	}
-	item := &models.AIManualResumeTask{
-		TenantID:               conversation.TenantID,
-		TaskKey:                taskKey,
-		HandoffToken:           handoffToken,
-		ConversationID:         conversationID,
-		WxWorkInstanceID:       state.WxWorkInstanceID,
-		OriginMessageID:        originMessageID,
-		LatestWaitingMessageID: originMessageID,
-		RouteStatus:            string(state.RouteStatus),
-		TaskStatus:             aiManualResumeTaskWaiting,
-		NextReminderAt:         nextReminderAt,
-		AuditFields: models.AuditFields{
-			CreatedAt:      now,
-			CreateUserName: "system",
-			UpdatedAt:      now,
-			UpdateUserName: "system",
-		},
-	}
-	if err := repositories.AIManualResumeTaskRepository.Create(db, item); err != nil {
-		return nil, err
-	}
-	return item, nil
+		if lockedConversation == nil {
+			return fmt.Errorf("conversation has no tenant")
+		}
+		state, lockErr := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, conversationID, conversation.TenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if state == nil || !routeStatusBlocksManualResume(state.RouteStatus) {
+			return fmt.Errorf("conversation is not in a manual route")
+		}
+		if existing := repositories.AIManualResumeTaskRepository.Take(ctx.Tx,
+			"tenant_id = ? AND conversation_id = ? AND task_status IN ?",
+			conversation.TenantID,
+			conversationID,
+			[]string{aiManualResumeTaskWaiting, aiManualResumeTaskReady, aiManualResumeTaskRunning, aiManualResumeTaskRetry, aiManualResumeTaskBlockedAIDisabled},
+		); existing != nil {
+			result = existing
+			return nil
+		}
+		if existing := repositories.AIManualResumeTaskRepository.Take(ctx.Tx, "task_key = ? AND tenant_id = ?", taskKey, conversation.TenantID); existing != nil {
+			result = existing
+			return nil
+		}
+		var nextReminderAt *time.Time
+		if state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
+			delay := 2 * time.Minute
+			if isSafetyHandoffReason(state.HandoffReason) {
+				delay = time.Minute
+			}
+			value := now.Add(delay)
+			nextReminderAt = &value
+		}
+		item := &models.AIManualResumeTask{
+			TenantID:               conversation.TenantID,
+			TaskKey:                taskKey,
+			HandoffToken:           handoffToken,
+			ConversationID:         conversationID,
+			WxWorkInstanceID:       state.WxWorkInstanceID,
+			OriginMessageID:        originMessageID,
+			LatestWaitingMessageID: originMessageID,
+			RouteStatus:            string(state.RouteStatus),
+			TaskStatus:             aiManualResumeTaskWaiting,
+			NextReminderAt:         nextReminderAt,
+			AuditFields: models.AuditFields{
+				CreatedAt:      now,
+				CreateUserName: "system",
+				UpdatedAt:      now,
+				UpdateUserName: "system",
+			},
+		}
+		if createErr := repositories.AIManualResumeTaskRepository.Create(ctx.Tx, item); createErr != nil {
+			return createErr
+		}
+		result = item
+		return nil
+	})
+	return result, err
 }
 
 func (s *aiManualResumeTaskService) EnsureForTimeout(conversationID int64) bool {

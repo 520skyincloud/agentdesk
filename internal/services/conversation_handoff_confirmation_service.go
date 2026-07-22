@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"agent-desk/internal/ai"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
@@ -80,11 +82,22 @@ func (s *conversationHandoffConfirmationService) RequestByAI(conversationID int6
 }
 
 func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (bool, error) {
+	unlock := lockConversationHandoff(conversationID)
+	defer unlock()
+
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return false, fmt.Errorf("会话不存在")
 	}
+	if err := validateConversationAIAgentTenant(conversation, aiAgent); err != nil {
+		return false, err
+	}
 	if s.alreadyInHumanRoute(conversationID) {
+		return true, nil
+	}
+	handoffToken := handoffConfirmationToken(conversationID, requestID)
+	clientMsgID := "ai_handoff_confirm_" + handoffToken
+	if existing := repositories.MessageRepository.GetByClientMsgIDInTenant(sqls.DB(), conversationID, conversation.TenantID, clientMsgID); existing != nil {
 		return true, nil
 	}
 	if state := ConversationRouteService.GetByConversationID(conversationID); state != nil && state.PendingAction == string(enums.ConversationPendingActionHumanHandoff) {
@@ -97,15 +110,28 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 		Reason:          cleanHumanHandoffReason(reason),
 		AIAgentID:       aiAgent.ID,
 		OriginMessageID: originMessageID,
-		HandoffToken:    AIManualResumeTaskService.NewHandoffToken(),
+		HandoffToken:    handoffToken,
 		CreatedAt:       time.Now().Format(time.RFC3339),
 	})
-	if err := ConversationRouteService.SetPendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, string(payload), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute)); err != nil {
+	claimed, err := ConversationRouteService.TrySetPendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, string(payload), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute))
+	if err != nil {
 		return false, err
 	}
+	if !claimed {
+		return true, nil
+	}
 	content := buildHandoffConfirmationPrompt(reason)
-	_, err := MessageService.SendAIMessageWithRequestID(conversationID, aiAgent.ID, "ai_handoff_confirm_"+strs.UUID(), enums.IMMessageTypeText, content, "", systemOperator(), requestID)
+	_, err = MessageService.SendAIMessageWithRequestID(conversationID, aiAgent.ID, clientMsgID, enums.IMMessageTypeText, content, "", systemOperator(), requestID)
 	return true, err
+}
+
+func handoffConfirmationToken(conversationID int64, requestID string) string {
+	normalizedRequestID := tracex.NormalizeRequestID(requestID)
+	if normalizedRequestID == "" {
+		return AIManualResumeTaskService.NewHandoffToken()
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%s", conversationID, normalizedRequestID)))
+	return fmt.Sprintf("%x", sum[:16])
 }
 
 func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversation *models.Conversation, message *models.Message) (bool, error) {

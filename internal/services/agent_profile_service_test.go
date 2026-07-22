@@ -60,6 +60,18 @@ func TestTeamCanServeRouteRejectsEmptyTeamScope(t *testing.T) {
 	}
 }
 
+func TestTeamCanServeUnscopedHQRouteOnlyThroughDefaultTeam(t *testing.T) {
+	route := &models.ConversationRouteState{RouteStatus: enums.ConversationRouteStatusHQAgentDeskPending}
+	defaultTeam := &models.AgentTeam{ID: 1, Name: "默认客服组", IsDefault: true, Status: enums.StatusOk}
+	if !teamCanServeRoute(defaultTeam, route) {
+		t.Fatal("default team must serve an HQ route without store or WeCom scope")
+	}
+	nonDefaultTeam := &models.AgentTeam{ID: 2, Name: "普通客服组", Status: enums.StatusOk}
+	if teamCanServeRoute(nonDefaultTeam, route) {
+		t.Fatal("non-default team must not claim an unscoped HQ route")
+	}
+}
+
 func TestAgentProfileMutationsLockProfileAndParentTeams(t *testing.T) {
 	tests := []struct {
 		name            string
