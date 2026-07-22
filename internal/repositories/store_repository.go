@@ -1,11 +1,14 @@
 package repositories
 
 import (
+	"errors"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var StoreRepository = newStoreRepository()
@@ -33,6 +36,21 @@ func (r *storeRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.S
 		return nil
 	}
 	return ret
+}
+
+func (r *storeRepository) GetForUpdateInTenant(db *gorm.DB, id, tenantID int64) (*models.Store, error) {
+	if db == nil || id <= 0 || tenantID <= 0 {
+		return nil, errors.New("store id and tenant are required")
+	}
+	item := &models.Store{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(item, "id = ? AND tenant_id = ?", id, tenantID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return item, nil
 }
 
 func (r *storeRepository) Take(db *gorm.DB, where ...any) *models.Store {

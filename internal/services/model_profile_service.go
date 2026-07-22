@@ -504,17 +504,26 @@ func (s *storeModelProfileAssignmentService) assignBatch(tenantID int64, storeID
 				continue
 			}
 			status := current.Status
+			readiness := current.ReadinessStatus
 			if status == "" {
 				status = enums.StoreModelAssignmentStatusAssigned
 			}
-			if err := repositories.StoreModelProfileAssignmentRepository.Updates(ctx.Tx, current.ID, map[string]any{
+			if readiness == "" {
+				readiness = "pending"
+			}
+			updates := map[string]any{
 				"pending_template_id": template.ID, "pending_template_revision": template.Revision,
 				"pending_requested_at": now, "pending_requested_by": operator.UserID,
-				"pending_requested_by_name": operator.Username, "status": status, "readiness_status": "pending",
-				"last_error_class": "", "last_error_message": "", "assigned_at": now,
+				"pending_requested_by_name": operator.Username, "status": status, "readiness_status": readiness,
+				"assigned_at": now,
 				"assigned_by": operator.UserID, "assigned_by_name": operator.Username,
 				"updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
-			}); err != nil {
+			}
+			if status != enums.StoreModelAssignmentStatusBlocked {
+				updates["last_error_class"] = ""
+				updates["last_error_message"] = ""
+			}
+			if err := repositories.StoreModelProfileAssignmentRepository.Updates(ctx.Tx, current.ID, updates); err != nil {
 				return err
 			}
 		}

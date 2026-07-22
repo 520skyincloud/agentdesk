@@ -143,6 +143,8 @@ func registerDashboardConversationEvaluationRoutes(group *gin.RouterGroup) {
 
 func registerDashboardStoreWorkbenchRoutes(group *gin.RouterGroup) {
 	group.GET("/current", dashboard.StoreWorkbenchGetCurrent)
+	group.GET("/model_credential", dashboard.StoreWorkbenchGetModelCredential)
+	group.POST("/model_credential/update", dashboard.StoreWorkbenchPostUpdateModelCredential)
 	group.POST("/room_list", dashboard.StoreWorkbenchPostRoom_list)
 	group.POST("/room_member_list", dashboard.StoreWorkbenchPostRoom_member_list)
 	group.POST("/update", dashboard.StoreWorkbenchPostUpdate)
@@ -409,6 +411,17 @@ func registerDashboardStoreModelProfileRoutes(group *gin.RouterGroup) {
 	group.POST("/get", dashboard.StoreModelProfilePostGet)
 	group.POST("/assign", dashboard.StoreModelProfilePostAssign)
 	group.POST("/batch_assign", dashboard.StoreModelProfilePostBatchAssign)
+}
+
+func registerDashboardStoreModelCredentialRoutes(group *gin.RouterGroup) {
+	group.POST("/get", dashboard.StoreModelCredentialPostGet)
+	group.POST("/update", dashboard.StoreModelCredentialPostUpdate)
+	group.POST("/approve", dashboard.StoreModelCredentialPostApprove)
+	group.POST("/reject", dashboard.StoreModelCredentialPostReject)
+	group.POST("/disable", dashboard.StoreModelCredentialPostDisable)
+	group.POST("/audit", dashboard.StoreModelCredentialPostAudit)
+	group.POST("/policy", dashboard.StoreModelCredentialPostPolicy)
+	group.POST("/batch_policy", dashboard.StoreModelCredentialPostPolicy)
 }
 
 func registerDashboardReplyIntentConfigRoutes(group *gin.RouterGroup) {

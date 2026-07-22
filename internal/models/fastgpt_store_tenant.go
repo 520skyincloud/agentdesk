@@ -20,7 +20,7 @@ type FastGPTStoreTenant struct {
 	AppliedProfileRevision    int64      `gorm:"type:bigint;not null;default:0;index"`
 	TargetCredentialRevision  int64      `gorm:"type:bigint;not null;default:0;index"`
 	AppliedCredentialRevision int64      `gorm:"type:bigint;not null;default:0;index"`
-	AppliedKeyFingerprint     string     `gorm:"type:varchar(64);not null;default:'';index"`
+	AppliedKeyFingerprint     string     `gorm:"type:varchar(64);not null;default:'';index" json:"-"`
 	ReadinessStatus           string     `gorm:"type:varchar(30);not null;default:'pending';index"`
 	LastSyncedAt              *time.Time `gorm:"type:datetime;index"`
 	LastError                 string     `gorm:"type:text"`

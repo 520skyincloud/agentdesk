@@ -9,35 +9,37 @@ import (
 // StoreModelCredential stores one active and at most one candidate encrypted
 // NewAPI credential for a Tenant + Store. Secret material is never returned.
 type StoreModelCredential struct {
-	ID                      int64                          `gorm:"primaryKey;autoIncrement"`
-	TenantID                int64                          `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_model_credential,priority:1"`
-	StoreID                 int64                          `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_model_credential,priority:2"`
-	EncryptedKey            string                         `gorm:"type:text"`
-	KeyNonce                string                         `gorm:"type:varchar(255);not null;default:''"`
-	KeyFingerprint          string                         `gorm:"type:varchar(64);not null;default:'';index"`
-	CipherVersion           string                         `gorm:"type:varchar(30);not null;default:''"`
-	MasterKeyID             string                         `gorm:"type:varchar(100);not null;default:'';index"`
-	CredentialRevision      int64                          `gorm:"type:bigint;not null;default:0;index"`
-	Status                  enums.StoreCredentialStatus    `gorm:"type:varchar(30);not null;default:'unconfigured';index"`
-	CandidateEncryptedKey   string                         `gorm:"type:text"`
-	CandidateKeyNonce       string                         `gorm:"type:varchar(255);not null;default:''"`
-	CandidateKeyFingerprint string                         `gorm:"type:varchar(64);not null;default:'';index"`
-	CandidateCipherVersion  string                         `gorm:"type:varchar(30);not null;default:''"`
-	CandidateMasterKeyID    string                         `gorm:"type:varchar(100);not null;default:'';index"`
-	CandidateRevision       int64                          `gorm:"type:bigint;not null;default:0;index"`
-	CandidateStatus         enums.StoreCredentialStatus    `gorm:"type:varchar(30);not null;default:'';index"`
-	CandidateApprovalStatus enums.CredentialApprovalStatus `gorm:"type:varchar(30);not null;default:'not_required';index"`
-	CandidateRequestedBy    int64                          `gorm:"type:bigint;not null;default:0;index"`
-	CandidateRequestedAt    *time.Time                     `gorm:"type:datetime;index"`
-	CandidateApprovedBy     int64                          `gorm:"type:bigint;not null;default:0;index"`
-	CandidateApprovedAt     *time.Time                     `gorm:"type:datetime;index"`
-	LastTestStatus          string                         `gorm:"type:varchar(30);not null;default:'';index"`
-	LastTestedAt            *time.Time                     `gorm:"type:datetime;index"`
-	LastTestLatencyMS       int64                          `gorm:"type:bigint;not null;default:0"`
-	LastFastGPTSyncStatus   string                         `gorm:"type:varchar(30);not null;default:'';index"`
-	LastFastGPTSyncedAt     *time.Time                     `gorm:"type:datetime;index"`
-	LastErrorClass          string                         `gorm:"type:varchar(80);not null;default:'';index"`
-	LastErrorMessage        string                         `gorm:"type:text"`
+	ID                       int64                          `gorm:"primaryKey;autoIncrement"`
+	TenantID                 int64                          `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_model_credential,priority:1"`
+	StoreID                  int64                          `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_model_credential,priority:2"`
+	EncryptedKey             string                         `gorm:"type:text" json:"-"`
+	KeyNonce                 string                         `gorm:"type:varchar(255);not null;default:''" json:"-"`
+	KeyFingerprint           string                         `gorm:"type:varchar(64);not null;default:'';index" json:"-"`
+	CipherVersion            string                         `gorm:"type:varchar(30);not null;default:''" json:"-"`
+	MasterKeyID              string                         `gorm:"type:varchar(100);not null;default:'';index" json:"-"`
+	CredentialRevision       int64                          `gorm:"type:bigint;not null;default:0;index"`
+	Status                   enums.StoreCredentialStatus    `gorm:"type:varchar(30);not null;default:'unconfigured';index"`
+	CandidateEncryptedKey    string                         `gorm:"type:text" json:"-"`
+	CandidateKeyNonce        string                         `gorm:"type:varchar(255);not null;default:''" json:"-"`
+	CandidateKeyFingerprint  string                         `gorm:"type:varchar(64);not null;default:'';index" json:"-"`
+	CandidateCipherVersion   string                         `gorm:"type:varchar(30);not null;default:''" json:"-"`
+	CandidateMasterKeyID     string                         `gorm:"type:varchar(100);not null;default:'';index" json:"-"`
+	CandidateRevision        int64                          `gorm:"type:bigint;not null;default:0;index"`
+	CandidateProfileID       int64                          `gorm:"type:bigint;not null;default:0;index"`
+	CandidateProfileRevision int64                          `gorm:"type:bigint;not null;default:0;index"`
+	CandidateStatus          enums.StoreCredentialStatus    `gorm:"type:varchar(30);not null;default:'';index"`
+	CandidateApprovalStatus  enums.CredentialApprovalStatus `gorm:"type:varchar(30);not null;default:'not_required';index"`
+	CandidateRequestedBy     int64                          `gorm:"type:bigint;not null;default:0;index"`
+	CandidateRequestedAt     *time.Time                     `gorm:"type:datetime;index"`
+	CandidateApprovedBy      int64                          `gorm:"type:bigint;not null;default:0;index"`
+	CandidateApprovedAt      *time.Time                     `gorm:"type:datetime;index"`
+	LastTestStatus           string                         `gorm:"type:varchar(30);not null;default:'';index"`
+	LastTestedAt             *time.Time                     `gorm:"type:datetime;index"`
+	LastTestLatencyMS        int64                          `gorm:"type:bigint;not null;default:0"`
+	LastFastGPTSyncStatus    string                         `gorm:"type:varchar(30);not null;default:'';index"`
+	LastFastGPTSyncedAt      *time.Time                     `gorm:"type:datetime;index"`
+	LastErrorClass           string                         `gorm:"type:varchar(80);not null;default:'';index"`
+	LastErrorMessage         string                         `gorm:"type:text"`
 	AuditFields
 }
 
@@ -65,6 +67,8 @@ type StoreModelCredentialAuditLog struct {
 	Result           enums.CredentialAuditResult `gorm:"type:varchar(30);not null;default:'';index"`
 	FromRevision     int64                       `gorm:"type:bigint;not null;default:0"`
 	ToRevision       int64                       `gorm:"type:bigint;not null;default:0"`
+	ProfileID        int64                       `gorm:"type:bigint;not null;default:0;index"`
+	ProfileRevision  int64                       `gorm:"type:bigint;not null;default:0;index"`
 	FingerprintLast6 string                      `gorm:"type:varchar(6);not null;default:''"`
 	OperatorID       int64                       `gorm:"type:bigint;not null;default:0;index"`
 	OperatorName     string                      `gorm:"type:varchar(100);not null;default:''"`

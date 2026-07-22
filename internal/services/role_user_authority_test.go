@@ -289,6 +289,14 @@ func TestAssignStoreStaffRoleCreatesOneStableStoreIdentity(t *testing.T) {
 	if store == nil || store.Name != "丽斯未来测试门店" || store.CompanyID != 0 {
 		t.Fatalf("unexpected stable store: %+v", store)
 	}
+	credential := repositories.StoreModelCredentialRepository.GetByStore(db, tenantID, store.ID)
+	policy := repositories.StoreCredentialPolicyRepository.GetByStore(db, tenantID, store.ID)
+	if credential == nil || credential.Status != enums.StoreCredentialStatusUnconfigured {
+		t.Fatalf("new store missing unconfigured credential: %+v", credential)
+	}
+	if policy == nil || policy.AllowCredentialSelfService || policy.RequireSupervisorApproval {
+		t.Fatalf("new store credential policy must default closed: %+v", policy)
+	}
 
 	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "丽斯未来测试门店（更新）", operator); err != nil {
 		t.Fatalf("repeat store staff role assignment: %v", err)
@@ -929,6 +937,8 @@ func setupRoleAuthorityTestDB(t *testing.T) *gorm.DB {
 		&models.AgentProfile{},
 		&models.Store{},
 		&models.StoreStaffBinding{},
+		&models.StoreModelCredential{},
+		&models.StoreCredentialPolicy{},
 		&models.WxWorkProtocolInstance{},
 	); err != nil {
 		t.Fatalf("migrate role authority dependencies: %v", err)

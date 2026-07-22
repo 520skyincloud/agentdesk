@@ -1,14 +1,17 @@
 package services
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/securex"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -115,7 +118,7 @@ func TestStoreProfilePendingAssignmentPreservesActiveRevision(t *testing.T) {
 	if saved.TemplateID != active.ID || saved.TemplateRevision != active.Revision || saved.Status != enums.StoreModelAssignmentStatusReady {
 		t.Fatalf("active revision was overwritten: %#v", saved)
 	}
-	if saved.PendingTemplateID != candidate.ID || saved.PendingTemplateRevision != candidate.Revision || saved.ReadinessStatus != "pending" {
+	if saved.PendingTemplateID != candidate.ID || saved.PendingTemplateRevision != candidate.Revision || saved.ReadinessStatus != "ready" {
 		t.Fatalf("pending revision was not recorded: %#v", saved)
 	}
 	if err := StoreModelProfileAssignmentService.Assign(request.AssignStoreModelProfileRequest{
@@ -184,10 +187,20 @@ func TestModelCallResolverNeverFallsBackToLegacyAIConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	credential := &models.StoreModelCredential{
-		TenantID: tenant.ID, StoreID: store.ID, EncryptedKey: "ciphertext", KeyNonce: "nonce",
-		CredentialRevision: 4, Status: enums.StoreCredentialStatusActive,
+		TenantID: tenant.ID, StoreID: store.ID, CredentialRevision: 4, Status: enums.StoreCredentialStatusActive,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
+	cipher, cipherErr := securex.NewAESGCM(config.Current().StoreCredential.MasterKey)
+	if cipherErr != nil {
+		t.Fatal(cipherErr)
+	}
+	credential.EncryptedKey, credential.KeyNonce, cipherErr = cipher.Encrypt("new-runtime-key", storeCredentialAAD(tenant.ID, store.ID, credential.CredentialRevision))
+	if cipherErr != nil {
+		t.Fatal(cipherErr)
+	}
+	credential.KeyFingerprint = securex.Fingerprint("new-runtime-key")
+	credential.CipherVersion = securex.AESGCMCipherVersion
+	credential.MasterKeyID = config.Current().StoreCredential.MasterKeyID
 	if err := db.Create(credential).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -200,6 +213,12 @@ func TestModelCallResolverNeverFallsBackToLegacyAIConfig(t *testing.T) {
 	}
 	if resolved.ModelName == legacy.ModelName || resolved.GatewayBaseURL == legacy.BaseURL {
 		t.Fatalf("legacy configuration leaked into resolver: %#v", resolved)
+	}
+	if err := db.Model(store).Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ModelCallResolverService.Resolve(tenant.ID, store.ID, enums.ModelUsageSlotReplyLLM); err == nil {
+		t.Fatal("disabled Store must not resolve an active model credential")
 	}
 }
 
@@ -219,7 +238,10 @@ func setupModelProfileTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("AutoMigrate() error=%v", err)
 	}
 	sqls.SetDB(db)
+	masterKey := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	config.SetCurrent(&config.Config{StoreCredential: config.StoreCredentialConfig{MasterKey: masterKey, MasterKeyID: "model-profile-test-key"}})
 	t.Cleanup(func() {
+		config.SetCurrent(&config.Config{})
 		sqls.SetDB(nil)
 		if sqlDB, err := db.DB(); err == nil {
 			_ = sqlDB.Close()

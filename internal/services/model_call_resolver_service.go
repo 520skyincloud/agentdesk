@@ -23,7 +23,7 @@ type ModelCallConfig struct {
 	SlotID             int64
 	UsageCode          enums.ModelUsageSlot
 	Provider           string
-	GatewayBaseURL     string
+	GatewayBaseURL     string `json:"-"`
 	APIMode            string
 	ModelType          enums.AIModelType
 	ModelName          string
@@ -34,10 +34,12 @@ type ModelCallConfig struct {
 	MaxRetryCount      int
 	Temperature        float64
 	SchemaVersion      string
-	PromptTemplate     string
-	JSONSchema         string
+	PromptTemplate     string `json:"-"`
+	JSONSchema         string `json:"-"`
 	CredentialID       int64
 	CredentialRevision int64
+	APIKey             string `json:"-"`
+	KeyFingerprint     string `json:"-"`
 }
 
 var ModelCallResolverService = &modelCallResolverService{}
@@ -46,7 +48,7 @@ type modelCallResolverService struct{}
 
 func (s *modelCallResolverService) ResolveForStore(storeID int64, usageCode enums.ModelUsageSlot) (*ModelCallConfig, error) {
 	store := repositories.StoreRepository.Get(sqls.DB(), storeID)
-	if store == nil || store.Status == enums.StatusDeleted || store.TenantID <= 0 {
+	if store == nil || store.Status != enums.StatusOk || store.TenantID <= 0 {
 		return nil, errorsx.InvalidParam("门店不存在或缺少接入公司归属")
 	}
 	return s.Resolve(store.TenantID, store.ID, usageCode)
@@ -70,7 +72,7 @@ func (s *modelCallResolverService) Resolve(tenantID, storeID int64, usageCode en
 		return nil, errorsx.InvalidParam("模型用途不合法")
 	}
 	store := repositories.StoreRepository.GetInTenant(sqls.DB(), storeID, tenantID)
-	if store == nil || store.Status == enums.StatusDeleted {
+	if store == nil || store.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("门店不存在或不属于当前接入公司")
 	}
 	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(sqls.DB(), tenantID, storeID)
@@ -94,6 +96,13 @@ func (s *modelCallResolverService) Resolve(tenantID, storeID int64, usageCode en
 		strings.TrimSpace(credential.EncryptedKey) == "" || strings.TrimSpace(credential.KeyNonce) == "" {
 		return nil, errorsx.BusinessError(5, "门店 NewAPI 凭据尚未激活")
 	}
+	resolvedCredential, err := StoreModelCredentialService.ResolveActive(tenantID, storeID)
+	if err != nil {
+		return nil, err
+	}
+	if resolvedCredential.Revision != credential.CredentialRevision || resolvedCredential.Fingerprint != credential.KeyFingerprint {
+		return nil, errorsx.BusinessError(5, "门店 NewAPI 凭据正在切换，请稍后重试")
+	}
 	return &ModelCallConfig{
 		TenantID: tenantID, StoreID: storeID, AssignmentID: assignment.ID,
 		ProfileID: template.ID, ProfileCode: template.Code, ProfileRevision: template.Revision,
@@ -104,5 +113,6 @@ func (s *modelCallResolverService) Resolve(tenantID, storeID int64, usageCode en
 		TimeoutMS: slot.TimeoutMS, MaxRetryCount: slot.MaxRetryCount, Temperature: slot.Temperature,
 		SchemaVersion: slot.SchemaVersion, PromptTemplate: slot.PromptTemplate, JSONSchema: slot.JSONSchema,
 		CredentialID: credential.ID, CredentialRevision: credential.CredentialRevision,
+		APIKey: resolvedCredential.APIKey, KeyFingerprint: resolvedCredential.Fingerprint,
 	}, nil
 }

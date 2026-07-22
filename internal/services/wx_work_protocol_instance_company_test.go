@@ -252,6 +252,8 @@ func setupWxWorkProtocolInstanceCompanyTestDB(t *testing.T) *gorm.DB {
 		&models.Channel{},
 		&models.WxWorkProtocolInstance{},
 		&models.StoreStaffBinding{},
+		&models.StoreModelCredential{},
+		&models.StoreCredentialPolicy{},
 		&models.KnowledgeBase{},
 		&models.ConversationRouteState{},
 		&models.WxWorkProtocolDevicePoolInstance{},

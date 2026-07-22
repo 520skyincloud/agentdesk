@@ -48,13 +48,14 @@ const (
 type StoreCredentialStatus string
 
 const (
-	StoreCredentialStatusUnconfigured StoreCredentialStatus = "unconfigured"
-	StoreCredentialStatusTesting      StoreCredentialStatus = "testing"
-	StoreCredentialStatusSyncing      StoreCredentialStatus = "syncing_fastgpt"
-	StoreCredentialStatusReady        StoreCredentialStatus = "ready"
-	StoreCredentialStatusActive       StoreCredentialStatus = "active"
-	StoreCredentialStatusFailed       StoreCredentialStatus = "failed"
-	StoreCredentialStatusDisabled     StoreCredentialStatus = "disabled"
+	StoreCredentialStatusUnconfigured    StoreCredentialStatus = "unconfigured"
+	StoreCredentialStatusPendingApproval StoreCredentialStatus = "pending_approval"
+	StoreCredentialStatusTesting         StoreCredentialStatus = "testing"
+	StoreCredentialStatusSyncing         StoreCredentialStatus = "syncing_fastgpt"
+	StoreCredentialStatusReady           StoreCredentialStatus = "ready"
+	StoreCredentialStatusActive          StoreCredentialStatus = "active"
+	StoreCredentialStatusFailed          StoreCredentialStatus = "failed"
+	StoreCredentialStatusDisabled        StoreCredentialStatus = "disabled"
 )
 
 type CredentialApprovalStatus string
@@ -69,13 +70,15 @@ const (
 type CredentialAuditAction string
 
 const (
-	CredentialAuditActionConfigure CredentialAuditAction = "configure"
-	CredentialAuditActionTest      CredentialAuditAction = "test"
-	CredentialAuditActionSubmit    CredentialAuditAction = "submit"
-	CredentialAuditActionApprove   CredentialAuditAction = "approve"
-	CredentialAuditActionReject    CredentialAuditAction = "reject"
-	CredentialAuditActionActivate  CredentialAuditAction = "activate"
-	CredentialAuditActionDisable   CredentialAuditAction = "disable"
+	CredentialAuditActionConfigure    CredentialAuditAction = "configure"
+	CredentialAuditActionTest         CredentialAuditAction = "test"
+	CredentialAuditActionSubmit       CredentialAuditAction = "submit"
+	CredentialAuditActionApprove      CredentialAuditAction = "approve"
+	CredentialAuditActionReject       CredentialAuditAction = "reject"
+	CredentialAuditActionActivate     CredentialAuditAction = "activate"
+	CredentialAuditActionDisable      CredentialAuditAction = "disable"
+	CredentialAuditActionSyncFastGPT  CredentialAuditAction = "sync_fastgpt"
+	CredentialAuditActionPolicyUpdate CredentialAuditAction = "policy_update"
 )
 
 type CredentialAuditResult string

@@ -296,6 +296,7 @@ func setupWxWorkProtocolTenantDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(
 		&models.Company{}, &models.User{}, &models.Role{}, &models.UserRole{}, &models.Store{}, &models.Channel{}, &models.StoreStaffBinding{},
 		&models.WxWorkProtocolInstance{}, &models.WxWorkProtocolDevicePoolInstance{},
+		&models.StoreModelCredential{}, &models.StoreCredentialPolicy{},
 	); err != nil {
 		t.Fatalf("migrate wxwork tenant models: %v", err)
 	}

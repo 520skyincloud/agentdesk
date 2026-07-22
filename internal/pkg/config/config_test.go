@@ -162,3 +162,37 @@ func TestLoadAppliesNewAPIUsageEnvironment(t *testing.T) {
 		t.Fatalf("newAPIUsage=%#v", cfg.NewAPIUsage)
 	}
 }
+
+func TestLoadReadsStoreCredentialSecretsOnlyFromEnvironment(t *testing.T) {
+	t.Setenv("AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY", "environment-master-key")
+	t.Setenv("AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID", "kms-key-2026-07")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte(`storeCredential:
+  masterKey: yaml-must-be-ignored
+  masterKeyId: yaml-id-must-be-ignored
+`)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StoreCredential.MasterKey != "environment-master-key" || cfg.StoreCredential.MasterKeyID != "kms-key-2026-07" {
+		t.Fatalf("store credential config=%#v", cfg.StoreCredential)
+	}
+}
+
+func TestLoadDoesNotAcceptStoreCredentialSecretsFromYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("storeCredential:\n  masterKey: yaml-secret\n  masterKeyId: yaml-id\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StoreCredential.MasterKey != "" || cfg.StoreCredential.MasterKeyID != "" {
+		t.Fatalf("YAML secret unexpectedly loaded: %#v", cfg.StoreCredential)
+	}
+}

@@ -18,6 +18,7 @@ type Config struct {
 	Email              EmailConfig              `yaml:"email"`
 	FastGPT            FastGPTConfig            `yaml:"fastGPT"`
 	NewAPIUsage        NewAPIUsageConfig        `yaml:"newAPIUsage"`
+	StoreCredential    StoreCredentialConfig    `yaml:"-"`
 	Storage            StorageConfig            `yaml:"storage"`
 	VectorDB           VectorDBConfig           `yaml:"vectorDB"`
 	MCP                MCPConfig                `yaml:"mcp"`
@@ -67,6 +68,13 @@ type NewAPIUsageConfig struct {
 	UserID           int64  `yaml:"userId"`
 	TimeoutMS        int    `yaml:"timeoutMs"`
 	FastGPTTokenName string `yaml:"fastGPTTokenName"`
+}
+
+// StoreCredentialConfig is loaded exclusively from deployment secrets.
+// It must never be populated from the repository configuration file.
+type StoreCredentialConfig struct {
+	MasterKey   string `yaml:"-"`
+	MasterKeyID string `yaml:"-"`
 }
 
 type WxWorkNotifyConfig struct {
@@ -282,7 +290,16 @@ func Load(path string) (*Config, error) {
 	if err := applyNewAPIUsageEnv(cfg); err != nil {
 		return nil, err
 	}
+	applyStoreCredentialEnv(cfg)
 	return cfg, nil
+}
+
+func applyStoreCredentialEnv(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.StoreCredential.MasterKey = strings.TrimSpace(os.Getenv("AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY"))
+	cfg.StoreCredential.MasterKeyID = strings.TrimSpace(os.Getenv("AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID"))
 }
 
 func applyNewAPIUsageEnv(cfg *Config) error {

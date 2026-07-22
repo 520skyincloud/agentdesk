@@ -228,6 +228,21 @@ func (s *authService) GetUserPermissions(userID int64) ([]string, error) {
 	return s.loadUserPermissionCodes(sqls.DB(), userID)
 }
 
+func (s *authService) VerifyCurrentPassword(userID int64, password string) error {
+	if userID <= 0 || strings.TrimSpace(password) == "" {
+		return errorsx.InvalidParam("请输入当前账号密码")
+	}
+	user := repositories.UserRepository.Get(sqls.DB(), userID)
+	if user == nil || user.Status != enums.StatusOk || user.DeletedAt != nil ||
+		strs.IsBlank(user.Password) || bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)) != nil {
+		return errorsx.Forbidden("当前账号密码校验失败")
+	}
+	if user.MustChangePassword {
+		return errorsx.Forbidden("请先修改初始密码后再执行敏感操作")
+	}
+	return nil
+}
+
 func (s *authService) issueTokens(ctx *sqls.TxContext, user *models.User, clientIP, userAgent string, authCfg config.AuthConfig) (*response.LoginResponse, error) {
 	roles, permissions, err := s.loadUserAuthScope(ctx.Tx, user.ID)
 	if err != nil {
