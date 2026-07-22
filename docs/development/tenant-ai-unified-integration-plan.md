@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-22 产品决策已闭合，B0-B2 已完成并验证；B3 九槽 Model Profile、Store Assignment 与唯一 resolver 待实施
+> 状态：2026-07-22 产品决策已闭合，B0-B3 已完成并验证；B4 Store Credential 生命周期待实施
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1128,3 +1128,22 @@ git diff --check
 - 共享契约与并行影响：本批修改 Tenant/ReplyIntent DTO、行业 service/repository、Migration、Runtime 行业解析、接入公司页面、企微与知识库表单及导航；未修改九槽模型、Credential、Usage/Billing、FastGPT 行为、AI 回复状态机或规则派单。两个来源分支保持只读且 SHA 未前移。
 - 合并与回滚：B2 必须在 B3 Model Profile、B4 Credential 和 B7 Runtime 之前；`fec989d` 与 `a42f698` 应一起合入。Cleanup 前可以整体回滚 B2 应用代码，但已写入的 Profile、目录和审计表保留；禁止只回滚 Migration 068 后继续运行依赖 Tenant 行业的代码。
 - 后续边界：平台行业标签模板的数据契约和酒店固定目录已完成；最终模板管理展示、Tenant 标签开关/别名和 Store 客户标签 UI 在 B9 完成。旧下级行业字段的物理删除属于 B14，不能在 B2 提前破坏历史升级输入。
+
+### 25.4 2026-07-22 B3 九槽 Model Profile、Store 指派与唯一 resolver
+
+- 代码提交：后端契约、Migration 与 resolver 为 `843c781bd69f70bd00b066015f4878baac19abe4`；平台方案和接入公司门店指派前端为 `682b90545e7c018b1073186675def3f41e435611`。AI 行为来源继续固定为 `4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架继续固定为 `1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：提交前执行 `git fetch origin --prune`；两个固定来源和统一分支远端均未前移。Migration 069 在全部远端引用中无重号，继续采用动态编号机制。
+- Model Profile：平台可以创建方案、从任意既有 revision 复制新 revision、编辑 draft、执行九槽结构校验并二次确认提交 candidate。candidate 之后不可修改；九个用途槽必须完整、启用、类型匹配且统一使用 NewAPI Provider，不允许缺槽 fallback。
+- Store 指派：`StoreModelProfileAssignment` 明确拆分 active 与 pending revision。平台管理员和当前 Tenant 有权操作者可以按 Tenant 数据范围单个或批量指派 candidate/active revision；新指派只进入 pending，绝不会在 Credential 和 readiness 完成前覆盖旧 active revision。
+- 唯一 resolver：新增 `ModelCallResolverService`，只接受当前 Tenant + Store 的 ready Assignment、active Profile、精确用途槽和 active Store Credential。任何一项缺失均显式失败，不读取旧 `AIConfig`、Tenant Grant、StoreSetting、企微覆盖、平台密钥或其他 Store 凭据。B4 只在该 resolver 的运行时边界解密凭据。
+- API 与数据暴露：平台 Profile API 返回网关、槽、Prompt 和 Schema，仅平台账号且拥有 `aiConfig.view/update` 才可调用；Store 指派 API 再按 ActiveTenant 强制 Tenant 上限。Tenant 和门店侧只得到方案名、模型名、revision、pending/active 与 readiness，不得到 Provider、BaseURL、Prompt、Schema 或密钥。未修改 WebSocket 契约。
+- 权限：继续复用全局权限派发制中的 `aiConfig.view` 与 `aiConfig.update`，不建立隐藏权限或用户直绑权限；平台内部方案管理额外校验平台账号，Tenant 操作强制限定当前 Tenant。旧 `aiConfig.create/delete`、`tenantModelGrant.*` 和 `tenantModelAssignment.*` 已从权限种子及平台默认角色移除。
+- Migration 069：幂等建立 `standard` 九槽 Profile，但只迁移可公开的网关、模型名和模型参数，绝不迁移旧 `AIConfig.APIKey`，也不自动创建 Store Credential。结构完整时仅提交为 candidate；同时禁用并解绑上述废弃权限。回归测试证明后续 `ensurePermissions/ensureRolePermissions` 不会重新启用或重新绑定废弃权限。
+- 前端：原 `/dashboard/ai-configs` 升级为平台九槽方案和 revision 工作区；“接入公司”三点菜单中的旧模型授权改为“门店模型指派”，支持门店搜索、筛选范围全选/取消、批量指派和二次确认。租户没有平台方案内部入口，空模型槽显示“待填写模型”，桌面和移动弹窗使用稳定宽度与滚动边界。
+- 数据库验证：SQLite fresh/历史 Migration 069、幂等重跑、九槽约束、候选指派不覆盖 active、无旧密钥迁移和权限耐久测试通过；临时 MySQL 8.4 完成 Migration 069 首次运行与幂等验证，临时库和账号已删除。
+- 代码验证：`go test ./...`、`go vet ./...`、`git diff --check` 全部通过。沙箱内首次全量 Go 测试仅因既有 FastGPT `httptest` 无权监听随机端口失败；同一命令在允许本地监听的环境复跑通过，代码断言无失败。
+- 前端验证：`tsc --noEmit --incremental false`、B3 文件聚焦 ESLint、139 项 `*.test.mjs` 和 `next build --webpack` 全部通过。
+- 浏览器验证：使用临时 SQLite 和丽斯未来测试 Tenant，在 `1440x900` 与 `390x844` 验证九槽填写、结构校验、候选发布二次确认、门店批量 pending 指派和无 Credential 不误激活；页面无控制台 error/warn。临时服务已停止，未修改正式 `8083` 数据。
+- 共享契约与并行影响：本批修改 Model Profile/Assignment model、repository、service、DTO、builder、显式路由、权限种子、Migration、`web/lib/api/admin.ts`、平台模型页面和接入公司操作；未改 Credential 密文生命周期、FastGPT、Usage/Billing、AI Reply Runtime、客户标签、规则派单或运营事实。两个来源分支保持只读。
+- 合并与回滚：B3 必须在 B4 Credential、B6 FastGPT 和 B7 Runtime 前合入，后端提交必须先于前端提交。Cleanup 前可整体回滚 B3 应用代码；新增 Profile/Slot/Assignment 表和 Migration 记录可以保留，但不得启用依赖新 resolver 的 Runtime。禁止仅回滚 Assignment active/pending 字段后继续运行 B4 及以后代码。
+- 后续边界：当前没有任何 Store 会因 B3 单独变成 ready；Credential 候选测试、二次确认、不可变审计、active 切换以及失败时保留旧 active revision 全部属于 B4。旧 AIConfig/Grant/StoreSetting 的路由和模型仅为 B12/B14 迁移清理保留，不得重新接回新链路。
