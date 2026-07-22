@@ -33,6 +33,7 @@ const (
 	simulationRemarkPrefix        = "SIM_CONVERSATION:"
 	simulationManualWindow        = 24 * time.Hour
 	simulationQualityTemplateName = "人工回复基础质检"
+	simulationPresenceSource      = "simulation_seed"
 )
 
 type simulationKind string
@@ -189,26 +190,15 @@ func (ctx *seedContext) createSimulationPresenceSessions() error {
 	if err := ctx.db.Where("tenant_id = ? AND user_id IN ?", ctx.tenant.ID, userIDs).Delete(&models.AgentPresenceSession{}).Error; err != nil {
 		return err
 	}
-	statuses := []enums.AgentPresenceStatus{
-		enums.AgentPresenceStatusOnline,
-		enums.AgentPresenceStatusIdle,
-		enums.AgentPresenceStatusBusy,
-		enums.AgentPresenceStatusBreak,
-	}
 	for index, agent := range ctx.agents {
 		profile := &models.AgentProfile{}
 		if err := ctx.db.Where("tenant_id = ? AND user_id = ?", ctx.tenant.ID, agent.ID).Take(profile).Error; err != nil {
 			return err
 		}
 		startedAt := ctx.now.Add(-time.Duration(45+index*3) * time.Minute)
-		status := statuses[index%len(statuses)]
-		breakReason := ""
-		if status == enums.AgentPresenceStatusBreak {
-			breakReason = "仿真测试短休"
-		}
 		item := &models.AgentPresenceSession{
 			TenantID: ctx.tenant.ID, UserID: agent.ID, AgentProfileID: profile.ID, TeamID: profile.TeamID,
-			Status: status, Source: "simulation_seed", BreakReason: breakReason,
+			Status: enums.AgentPresenceStatusOnline, Source: simulationPresenceSource,
 			ChangedBy: ctx.leaders[index/4].ID, StartedAt: startedAt, LastSeenAt: ctx.now,
 			AuditFields: simulationAuditFields(startedAt),
 		}

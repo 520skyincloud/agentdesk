@@ -516,7 +516,7 @@ main 实际合并由仓库负责人决定；在合并前只能写“PR 已就绪
 - 推荐先合入共同依赖的 integration 契约，再按行为差异吸收 ai-billing；不要重新 cherry-pick 历史 customer-audit 派单提交。
 - 恢复和实时刷新代码可按应用提交回滚。Migration 65 是幂等权限补齐；若回滚页面，不应删除已赋予角色的权限关系。Migration 64 的模型用途软删除仍遵循数据库备份/修复迁移边界，不能靠恢复旧代码重新启用模型派单。
 
-## 18. 2026-07-21 最终门禁与真实运行验收（待本批提交）
+## 18. 2026-07-21 最终门禁与真实运行验收（已完成）
 
 ### 18.1 全量门禁
 
@@ -569,3 +569,44 @@ ai-billing 与本批同时修改的共享文件仍为：
     web/lib/api/admin.ts
 
 后续冲突解决必须保留本批的规则派单、恢复、旧 dispatch 删除和实时工作台，同时保留 ai-billing 的 AI 回复、FastGPT、模型 usage、Token 与计费行为。禁止整文件选边，禁止重新合并 `customer-audit`。
+
+## 19. 2026-07-22 丽斯未来测试客服在线保活（已完成）
+
+### 19.1 目标、诊断与边界
+
+- 用户完成排班后，12 名丽斯未来测试客服仍全部显示“当前未在线”。真实链路复核确认账号、客服档案、自动接单、并发、角色权限、客服组、班次和班次成员均已通过，唯一阻断是 Seed 的 `last_seen_at` 超过生产派单 3 分钟新鲜度。
+- 生产规则保持不变：真实客服仍需工作台/WebSocket 心跳，排班不能自动等同在线，也不为 `simulation_seed` 增加生产特判。
+- 本批只让丽斯未来的 12 个固定仿真客服持续在线。作用范围必须同时满足固定测试租户注册身份、启用租户、当前 batch 标记、12 个固定测试用户名和同 batch 客服档案标记。
+
+### 19.2 实现与运行方式
+
+- `cmd/customer_audit_seed` 新增 `--action keepalive` 和 `--keepalive-interval`，默认每分钟立即并持续刷新测试 Presence，最短间隔 10 秒；SIGINT/SIGTERM 可正常停止。
+- 初始 Seed 的 12 条 Presence 全部改为 `online`。保活将过期、busy、break 或已结束的合成时段恢复为新鲜 online；缺失时补建，并删除同一测试客服的重复合成行、关闭其他重复活动行，重复执行仍保持每人一个活动时段和总计 12 条合成 Presence。
+- 标准命令：
+
+      go run ./cmd/customer_audit_seed --config config/config.yaml --action keepalive --batch customer-audit-v1
+
+- 保活进程停止后不伪造未来时间；3 分钟后测试客服会按真实派单规则重新变为离线。30 秒后端补偿扫描负责消费恢复后的可派候选，无需新增主服务 cron 或测试专属生产逻辑。
+
+### 19.3 文件、契约与验证
+
+本批文件：
+
+    cmd/customer_audit_seed/main.go
+    cmd/customer_audit_seed/simulation.go
+    cmd/customer_audit_seed/presence_keepalive.go
+    cmd/customer_audit_seed/presence_keepalive_test.go
+    docs/design/service-analytics-and-quality.md
+    docs/development/tenant-ai-integration-merge-handoff.md
+
+- 没有 model、AutoMigrate、DML migration、DTO、enum、API、Gin 路由、WebSocket payload、权限、AI 回复、模型调用、Token、usage 或计费变化。
+- 测试覆盖 12 人初始全在线、过期/休息恢复、缺失行补建、重复合成/活动行收口、连续刷新幂等以及同租户无关账号不变。
+- 已通过：`go test ./cmd/customer_audit_seed -count=1`、`go test ./internal/services -run 'Presence|Dispatch' -count=1`、`go test ./... -count=1`、`go vet ./...` 和 `git diff --check`。
+- 当前 8084 同库进程已连续按分钟记录 `agents=12`。派单页由 `可接单客服 0` 恢复为 `12`，12 名客服均显示“在线且在班，可自动接单”；原 9 条规则待派任务已由补偿扫描派完，页面为待派 0、共 27 条人工任务，控制台无 error/warn。
+- 全仓 Go 与 vet 门禁已经通过；保活进程属于本地测试运行态，不进入 Git。提交前差异检查与远端复核均已完成。
+
+### 19.4 并行分支、合并与回滚
+
+- 开始前基线为 `codex/tenant-ai-integration@971c338`、`origin/codex/ai-billing@3538c8d`；提交前再次 fetch 后，`origin/codex/ai-billing` 已前进到 `4db7993`。本批四个命令代码文件未与该分支同文件修改；文档只更新唯一 integration 设计与交接，不恢复冻结的 customer-audit PR。
+- `ai-billing@4db7993` 新增客户标签生产化并使用 migration `64-67`，其中 `64/65` 与 integration 已有的“退役模型派单 / 同步客服回复权限”直接撞号；同时涉及 Tag model、权限、会话 DTO/API、AI 回复上下文和前端标签页面。该新增范围尚未完成语义吸收，不能整分支 merge 或直接 cherry-pick，PR #2 必须先完成逐项映射、迁移重编号和回归验证再合并 main。
+- 本批可在规则派单提交之后独立合并。回滚只需停止保活进程并回滚上述命令代码；无需回退数据库结构或删除历史业务数据。若需恢复静态仿真基线，可重新执行同 batch Seed。

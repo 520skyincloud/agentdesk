@@ -150,11 +150,12 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "config/config.yaml", "path to config file")
-	action := flag.String("action", "report", "action: seed, cleanup, report")
+	action := flag.String("action", "report", "action: seed, cleanup, report, keepalive")
 	batch := flag.String("batch", defaultBatch, "test data batch")
 	password := flag.String("password", defaultPassword, "test account password")
 	aiConfigID := flag.Int64("ai-config-id", 0, "existing enabled LLM AI config ID to reuse")
 	aiConfigName := flag.String("ai-config-name", "", "existing enabled LLM AI config name to reuse")
+	keepaliveInterval := flag.Duration("keepalive-interval", defaultSimulationPresenceKeepaliveInterval, "simulation agent presence keepalive interval")
 	flag.Parse()
 
 	normalizedBatch := strings.TrimSpace(*batch)
@@ -177,8 +178,10 @@ func run() error {
 		return cleanup(db, normalizedBatch)
 	case "report":
 		return printReport(db, normalizedBatch)
+	case "keepalive":
+		return runSimulationPresenceKeepalive(db, normalizedBatch, *keepaliveInterval)
 	default:
-		return fmt.Errorf("unsupported action %q, expected seed, cleanup, or report", *action)
+		return fmt.Errorf("unsupported action %q, expected seed, cleanup, report, or keepalive", *action)
 	}
 }
 
@@ -611,7 +614,7 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.ResponseSpans = count(db, &models.ConversationResponseSpan{}, "tenant_id = ? AND conversation_id IN (?)", tenantID, simulationConversationSubquery)
 	r.WaitingResponseSpans = count(db, &models.ConversationResponseSpan{}, "tenant_id = ? AND conversation_id IN (?) AND status = ?", tenantID, simulationConversationSubquery, enums.ResponseSpanStatusWaiting)
 	r.RepliedResponseSpans = count(db, &models.ConversationResponseSpan{}, "tenant_id = ? AND conversation_id IN (?) AND status = ?", tenantID, simulationConversationSubquery, enums.ResponseSpanStatusReplied)
-	r.PresenceSessions = count(db, &models.AgentPresenceSession{}, "tenant_id = ? AND source = ?", tenantID, "simulation_seed")
+	r.PresenceSessions = count(db, &models.AgentPresenceSession{}, "tenant_id = ? AND source = ?", tenantID, simulationPresenceSource)
 	r.QualityTemplates = count(db, &models.QualityTemplate{}, "tenant_id = ? AND is_default = ? AND status = ?", tenantID, true, enums.StatusOk)
 	qualityTemplateSubquery := db.Model(&models.QualityTemplate{}).Select("id").Where("tenant_id = ? AND is_default = ? AND status = ?", tenantID, true, enums.StatusOk)
 	r.QualityTemplateItems = count(db, &models.QualityTemplateItem{}, "tenant_id = ? AND template_id IN (?) AND status = ?", tenantID, qualityTemplateSubquery, enums.StatusOk)
