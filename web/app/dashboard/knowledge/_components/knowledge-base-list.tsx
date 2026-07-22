@@ -194,7 +194,7 @@ function SortableKnowledgeBaseCard({
                 {rebuildIndexLoadingId === item.id ? t("knowledge.rebuilding") : t("knowledge.rebuildIndex")}
               </DropdownMenuItem>
             ) : null}
-            {canDelete ? <DropdownMenuItem
+			{canDelete && item.knowledgeType !== KnowledgeBaseType.FastGPTCloud ? <DropdownMenuItem
               onClick={(e) => {
                 e.stopPropagation();
                 onDelete();
@@ -228,7 +228,7 @@ function SortableKnowledgeBaseCard({
             {rebuildIndexLoadingId === item.id ? t("knowledge.rebuilding") : t("knowledge.rebuildIndex")}
           </ContextMenuItem>
         ) : null}
-        {canDelete ? <ContextMenuItem
+		{canDelete && item.knowledgeType !== KnowledgeBaseType.FastGPTCloud ? <ContextMenuItem
           onClick={(e) => {
             e.stopPropagation();
             onDelete();

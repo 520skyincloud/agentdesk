@@ -2109,7 +2109,6 @@
     "emptyAnswerMode": "No matching answer modes",
     "remark": "Notes",
     "remarkPlaceholder": "Notes",
-    "fastGPTRemarkPlaceholder": "{\"baseUrl\":\"https://ht.iloveu2.cn\",\"endpoint\":\"/api/validate/fastgpt\",\"datasetId\":\"...\",\"datasetName\":\"...\"}",
     "allIndexStatus": "All index statuses",
     "searchStatus": "Search statuses",
     "emptyStatus": "No matching statuses",

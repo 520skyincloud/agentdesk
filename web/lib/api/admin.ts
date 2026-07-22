@@ -2,7 +2,6 @@ import { readActiveTenantId, readSession } from "@/lib/auth"
 import { request } from "@/lib/api/client"
 import { createAuthenticatedWebSocketUrl } from "@/lib/api/websocket"
 import { translateCurrentMessage } from "@/i18n/messages"
-import type { TenantAIModelAccess } from "@/lib/api/tenant"
 
 export type Paging = {
   page: number
@@ -1229,33 +1228,6 @@ export function updateWxWorkProtocolAISettings(payload: UpdateWxWorkProtocolAISe
     method: "POST",
     body: JSON.stringify(payload),
   })
-}
-
-export function fetchWxWorkModelAssignments(
-  tenantId: number,
-  wxWorkInstanceId: number
-) {
-  return request<TenantAIModelAccess>(
-    "/api/dashboard/wxwork-protocol-instance/model_assignments",
-    {
-      method: "POST",
-      body: JSON.stringify({ tenantId, wxWorkInstanceId }),
-    }
-  )
-}
-
-export function updateWxWorkModelAssignments(payload: {
-  tenantId: number
-  wxWorkInstanceId: number
-  assignments: Array<{ usageCode: string; aiConfigId: number }>
-}) {
-  return request<TenantAIModelAccess>(
-    "/api/dashboard/wxwork-protocol-instance/update_model_assignments",
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }
-  )
 }
 
 export function getWxWorkProtocolLoginQrcode(id: number) {
@@ -2551,6 +2523,7 @@ export type KnowledgeBase = {
   documentCount: number
   faqCount: number
   remark: string
+  resourceAllowedHosts: string[]
   createdAt: string
   updatedAt: string
   createUserName: string
@@ -2574,6 +2547,7 @@ export type CreateKnowledgeBasePayload = {
   chunkOverlapTokens: number
   answerMode: number
   remark: string
+  resourceAllowedHosts?: string[]
 }
 
 export type FastGPTCollection = {
@@ -2583,6 +2557,22 @@ export type FastGPTCollection = {
   dataAmount: number
   trainingAmount: number
   forbid: boolean
+}
+
+export type FastGPTSearchHit = {
+  dataId: string
+  collectionId: string
+  datasetId: string
+  sourceName: string
+  question: string
+  answer: string
+  score: number
+}
+
+export type FastGPTSearchResult = {
+  datasetId: string
+  hits: FastGPTSearchHit[]
+  latencyMs: number
 }
 
 export type FastGPTDatasetJob = {
@@ -2595,74 +2585,30 @@ export type FastGPTDatasetJob = {
   collectionId: string
   filename: string
   attemptCount: number
+  targetProfileId: number
+  targetProfileRevision: number
+  targetCredentialRevision: number
   nextRetryAt?: string | null
   lastError: string
+  lastErrorClass: string
   createdAt: string
   updatedAt: string
 }
 
-export type FastGPTModelCredential = {
-  provider: string
-  baseUrl: string
-  model: string
-  apiKey?: string
-  keyConfigured?: boolean
-  keyFingerprint?: string
-}
-
-export type FastGPTModelProfile = {
-  id: string
-  name: string
-  revision: number
-  status: string
-  embedding: FastGPTModelCredential
-  documentParser: FastGPTModelCredential
-  vision: FastGPTModelCredential
-  rerank?: FastGPTModelCredential | null
-}
-
-export type FastGPTModelProfilePayload = {
-  wxWorkInstanceId: number
-  profileId: string
-  name: string
-  embedding: FastGPTModelCredential
-  documentParser: FastGPTModelCredential
-  vision: FastGPTModelCredential
-  rerankEnabled: boolean
-  rerank?: FastGPTModelCredential | null
-  testToken?: string
-}
-
-export type FastGPTModelProfileTestResult = {
-  testToken: string
-  expiresAt: string
-  results: Array<{
-    stage: string
-    status: string
-    promptTokens: number
-    completionTokens: number
-  }>
-}
-
-export function fetchFastGPTModelProfile(wxWorkInstanceId: number) {
-  return request<FastGPTModelProfile | null>("/api/dashboard/knowledge-base/fastgpt/model_profile", {
-    method: "POST",
-    body: JSON.stringify({ wxWorkInstanceId }),
-  })
-}
-
-export function testFastGPTModelProfile(payload: FastGPTModelProfilePayload) {
-  return request<FastGPTModelProfileTestResult>("/api/dashboard/knowledge-base/fastgpt/test_model_profile", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function updateFastGPTModelProfile(payload: FastGPTModelProfilePayload) {
-  return request<{ profile: FastGPTModelProfile; boundDatasetCount: number }>("/api/dashboard/knowledge-base/fastgpt/update_model_profile", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
+export type FastGPTStoreReadiness = {
+  storeId: number
+  knowledgeBaseId: number
+  teamStatus: string
+  readinessStatus: string
+  modelProfileName: string
+  targetProfileId: number
+  targetProfileRevision: number
+  appliedProfileId: number
+  appliedProfileRevision: number
+  targetCredentialRevision: number
+  appliedCredentialRevision: number
+  lastSyncedAt?: string | null
+  lastErrorClass: string
 }
 
 export function provisionFastGPTDataset(storeId: number, name: string) {
@@ -2711,16 +2657,30 @@ export function deleteFastGPTDataset(knowledgeBaseId: number, confirmationName: 
 }
 
 export function testFastGPTDatasetSearch(knowledgeBaseId: number, query: string) {
-  return request<{ raw: unknown }>("/api/dashboard/knowledge-base/fastgpt/search_test", {
+  return request<FastGPTSearchResult>("/api/dashboard/knowledge-base/fastgpt/search_test", {
     method: "POST",
     body: JSON.stringify({ knowledgeBaseId, query }),
   })
 }
 
-export function activateFastGPTKnowledgeBase(wxWorkInstanceId: number, knowledgeBaseId: number) {
+export function activateFastGPTKnowledgeBase(storeId: number, knowledgeBaseId: number) {
   return request<void>("/api/dashboard/knowledge-base/fastgpt/activate", {
     method: "POST",
-    body: JSON.stringify({ wxWorkInstanceId, knowledgeBaseId }),
+    body: JSON.stringify({ storeId, knowledgeBaseId }),
+  })
+}
+
+export function fetchFastGPTStoreReadiness(storeId: number) {
+  return request<FastGPTStoreReadiness>("/api/dashboard/knowledge-base/fastgpt/readiness", {
+    method: "POST",
+    body: JSON.stringify({ storeId }),
+  })
+}
+
+export function resyncFastGPTStoreProfile(storeId: number) {
+  return request<{ jobId: number; status: string }>("/api/dashboard/knowledge-base/fastgpt/resync", {
+    method: "POST",
+    body: JSON.stringify({ storeId }),
   })
 }
 
@@ -2741,8 +2701,8 @@ export type KnowledgeResourceItem = {
 
 export type KnowledgeResourceGroup = {
   id: number
+  storeId: number
   knowledgeBaseId: number
-  wxWorkInstanceId: number
   sourceProvider: string
   sourceRecordId: string
   title: string
@@ -2757,7 +2717,6 @@ export type KnowledgeResourceGroup = {
 }
 
 export type SyncKnowledgeResourceGroupPayload = {
-  wxWorkInstanceId: number
   knowledgeBaseId: number
   query: string
   expectedSourceRecordId?: string

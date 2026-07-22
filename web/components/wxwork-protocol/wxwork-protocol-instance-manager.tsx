@@ -1,12 +1,10 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { CopyIcon, DatabaseZapIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, SlidersHorizontalIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
+import { CopyIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
-import { WxWorkModelAssignmentDialog } from "@/components/wxwork-protocol/wxwork-model-assignment-dialog"
-import { FastGPTModelProfileDialog } from "@/components/wxwork-protocol/fastgpt-model-profile-dialog"
 import { WxWorkProtocolBindingDialog } from "@/components/wxwork-protocol/wxwork-protocol-binding-dialog"
 import {
   createDashboardStatusColumn,
@@ -647,8 +645,6 @@ export function WxWorkProtocolInstanceManager({
   const [channels, setChannels] = useState<AdminChannel[]>([])
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
   const [reloadKey, setReloadKey] = useState(0)
-  const [modelAssignmentInstance, setModelAssignmentInstance] = useState<WxWorkProtocolInstance | null>(null)
-  const [fastGPTModelProfileInstance, setFastGPTModelProfileInstance] = useState<WxWorkProtocolInstance | null>(null)
   const [welcomeSettingsInstance, setWelcomeSettingsInstance] = useState<WelcomeCapableInstance | null>(null)
   const [welcomeSettingsDraft, setWelcomeSettingsDraft] = useState<WelcomeSettingsDraft>({
     enabled: true,
@@ -676,9 +672,6 @@ export function WxWorkProtocolInstanceManager({
   const canDeleteChannels = canViewChannels && permissionSet.has("channel.delete")
   const canViewKnowledgeBases = permissionSet.has("knowledgeBase.view")
   const canViewUsers = permissionSet.has("user.view")
-  const canViewModelAssignments = permissionSet.has("tenantModelAssignment.view")
-  const canUpdateModelAssignments = permissionSet.has("tenantModelAssignment.update")
-  const canManageFastGPTModelProfile = permissionSet.has("aiConfig.update")
 
   useEffect(() => {
     if (!canViewChannels) {
@@ -738,11 +731,6 @@ export function WxWorkProtocolInstanceManager({
     await navigator.clipboard.writeText(url)
     toast.success("替换链接已复制；新员工号验证成功前，旧员工号继续工作")
     notifyChanged()
-  }
-
-  function openModelAssignments(item: WxWorkProtocolInstance) {
-    if (!canViewModelAssignments) return
-    setModelAssignmentInstance(item)
   }
 
   function openWelcomeSettings(item: WxWorkProtocolInstance) {
@@ -882,22 +870,6 @@ export function WxWorkProtocolInstanceManager({
       label: "欢迎语设置",
       icon: <MessageSquareTextIcon className="size-4" />,
       run: async ({ item }) => openWelcomeSettings(item),
-    })
-  }
-  if (canViewModelAssignments) {
-    rowActions.push({
-      key: "modelAssignments",
-      label: "模型分配",
-      icon: <SlidersHorizontalIcon className="size-4" />,
-      run: async ({ item }) => openModelAssignments(item),
-    })
-  }
-  if (canManageFastGPTModelProfile) {
-    rowActions.push({
-      key: "fastGPTModelProfile",
-      label: "知识库模型设置",
-      icon: <DatabaseZapIcon className="size-4" />,
-      run: async ({ item }) => setFastGPTModelProfileInstance(item),
     })
   }
   if (canUpdateChannels) {
@@ -1057,7 +1029,7 @@ export function WxWorkProtocolInstanceManager({
               <div className="max-w-48 truncate text-xs text-muted-foreground">
                 公司行业：{item.industryName || "未绑定"}
               </div>
-              <div className="max-w-48 truncate text-xs text-muted-foreground">员工号覆盖租户默认，仅可选择平台授权模型</div>
+              <div className="max-w-48 truncate text-xs text-muted-foreground">模型：跟随绑定门店的生效模型方案</div>
             </div>
           ),
         },
@@ -1111,21 +1083,12 @@ export function WxWorkProtocolInstanceManager({
           { name: "storeLongitude", label: "门店经度", type: "text", placeholder: "例如：121.473701" },
           { name: "storeMapProvider", label: "坐标来源", type: "text", placeholder: "browser_geolocation / amap / tencent" },
           { name: "storeGeoPicker", label: "门店坐标", type: "custom", render: renderGeoPicker },
-	          {
-	            name: "resourceBindingSection",
+          {
+            name: "resourceBindingSection",
             label: "资源绑定",
             type: "section",
-	            description: "门店知识库决定酒店信息类回复；电话、定位、小程序等变量来自当前员工号绑定。平台管理员可在“模型分配”里选择租户已授权模型。",
-	          },
-	          {
-	            name: "knowledgeBaseId",
-	            label: "当前启用知识库",
-	            type: "select",
-	            defaultValue: "0",
-	            valueFromItem: (item) => String(item.knowledgeBaseId || 0),
-	            options: [{ value: "0", label: "暂不绑定" }, ...knowledgeBaseOptions],
-	            description: "当前员工号只检索这里明确绑定的一个 FastGPT 数据集；切换后不会并行召回其他门店知识库。",
-	          },
+            description: "知识库由所属门店统一管理并自动同步到企微账号；电话、定位、小程序等接待变量仍来自当前账号。",
+          },
           {
             name: "manualRouteSection",
             label: "人工接待路由",
@@ -1151,7 +1114,7 @@ export function WxWorkProtocolInstanceManager({
             name: "automationSection",
             label: "自动化开关",
             type: "section",
-            description: "AI 回复开关只控制当前员工号是否由回复引擎托管；模型按员工号覆盖、租户默认、授权池兜底依次解析。",
+            description: "AI 回复开关只控制当前企微员工号是否由回复引擎托管；模型与凭据由绑定门店的生效配置统一解析，本页不单独分配。",
           },
           { name: "aiReplyEnabled", label: "AI 托管回复", type: "switch" },
           {
@@ -1193,7 +1156,7 @@ export function WxWorkProtocolInstanceManager({
           welcomeImageAssetId: (context.item as WelcomeCapableInstance | undefined)?.welcomeImageAssetId || "",
           welcomeSendMiniProgram: context.item?.welcomeSendMiniProgram ?? true,
           welcomeAskLocation: context.item?.welcomeAskLocation ?? true,
-	          knowledgeBaseId: Number(values.knowledgeBaseId || 0),
+          knowledgeBaseId: context.item?.knowledgeBaseId || 0,
           notifyUrl: context.item?.notifyUrl || CALLBACK_URL,
           proxy: context.item?.proxy || "",
           bridgeId: context.item?.bridgeId || "",
@@ -1248,28 +1211,6 @@ export function WxWorkProtocolInstanceManager({
         created: () => "实例已创建",
         updated: () => "实例已更新",
         deleted: () => "实例已删除",
-      }}
-    />
-    <WxWorkModelAssignmentDialog
-      open={canViewModelAssignments && Boolean(modelAssignmentInstance)}
-      instance={modelAssignmentInstance}
-      canUpdate={canViewModelAssignments && canUpdateModelAssignments}
-      onOpenChange={(open) => {
-        if (!open) {
-          setModelAssignmentInstance(null)
-        }
-      }}
-    />
-    <FastGPTModelProfileDialog
-      open={Boolean(fastGPTModelProfileInstance)}
-      instance={fastGPTModelProfileInstance}
-      canSave={canManageFastGPTModelProfile}
-      onOpenChange={(open) => {
-        if (!open) setFastGPTModelProfileInstance(null)
-      }}
-      onSaved={() => {
-        setReloadKey((value) => value + 1)
-        onChanged?.()
       }}
     />
     <WelcomeSettingsDialog

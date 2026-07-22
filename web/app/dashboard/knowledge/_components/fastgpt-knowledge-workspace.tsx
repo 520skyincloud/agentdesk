@@ -1,19 +1,19 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { CheckCircle2Icon, CloudIcon, CopyIcon, DatabaseIcon, Link2Icon, Loader2Icon, RadioIcon, Trash2Icon } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { CheckCircle2Icon, CloudIcon, CopyIcon, DatabaseIcon, Link2Icon, Loader2Icon, RefreshCwIcon, Trash2Icon } from "lucide-react"
 import { toast } from "sonner"
 
-import { OptionCombobox } from "@/components/option-combobox"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
   activateFastGPTKnowledgeBase,
   deleteFastGPTDataset,
-  fetchWxWorkProtocolInstances,
+  fetchFastGPTStoreReadiness,
+  resyncFastGPTStoreProfile,
+  type FastGPTStoreReadiness,
   type KnowledgeBase,
-  type WxWorkProtocolInstance,
 } from "@/lib/api/admin"
 import { formatDateTime } from "@/lib/utils"
 import { FastGPTFilePanel } from "./fastgpt-file-panel"
@@ -25,69 +25,60 @@ type FastGPTKnowledgeWorkspaceProps = {
   canDelete: boolean
 }
 
-function instanceLabel(instance: WxWorkProtocolInstance) {
-  const storeName = instance.storeName.trim() || `门店 ${instance.storeId}`
-  const employeeName = instance.employeeName.trim()
-  return employeeName ? `${storeName} · ${employeeName}` : storeName
-}
-
 export function FastGPTKnowledgeWorkspace({ knowledgeBase, canUpdate, canDelete }: FastGPTKnowledgeWorkspaceProps) {
-  const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([])
-  const [loadingInstances, setLoadingInstances] = useState(false)
-  const [selectedInstanceId, setSelectedInstanceId] = useState("")
+  const [readiness, setReadiness] = useState<FastGPTStoreReadiness | null>(null)
+  const [loadingReadiness, setLoadingReadiness] = useState(false)
   const [activating, setActivating] = useState(false)
+  const [resyncing, setResyncing] = useState(false)
   const [deleteConfirmation, setDeleteConfirmation] = useState("")
   const [deletingDataset, setDeletingDataset] = useState(false)
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false)
 
-  const loadInstances = useCallback(async () => {
-    setLoadingInstances(true)
+  const loadReadiness = useCallback(async () => {
+    if (knowledgeBase.storeId <= 0) return
+    setLoadingReadiness(true)
     try {
-      const result = await fetchWxWorkProtocolInstances({ limit: 200 })
-      setInstances(result.results.filter((item) => item.storeId === knowledgeBase.storeId))
+      setReadiness(await fetchFastGPTStoreReadiness(knowledgeBase.storeId))
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "加载门店员工号失败")
+      toast.error(error instanceof Error ? error.message : "加载 FastGPT 就绪状态失败")
     } finally {
-      setLoadingInstances(false)
+      setLoadingReadiness(false)
     }
   }, [knowledgeBase.storeId])
 
   useEffect(() => {
-    void loadInstances()
-  }, [loadInstances])
-
-  const activeInstances = useMemo(
-    () => instances.filter((item) => item.knowledgeBaseId === knowledgeBase.id),
-    [instances, knowledgeBase.id],
-  )
-  const instanceOptions = useMemo(
-    () => instances.map((item) => ({ value: String(item.id), label: instanceLabel(item) })),
-    [instances],
-  )
-
-  useEffect(() => {
-    if (selectedInstanceId || instances.length === 0) {
-      return
-    }
-    setSelectedInstanceId(String(activeInstances[0]?.id ?? instances[0].id))
-  }, [activeInstances, instances, selectedInstanceId])
+    void loadReadiness()
+  }, [loadReadiness])
 
   async function activate() {
     if (!canUpdate) return
-    const instanceID = Number(selectedInstanceId)
-    if (!Number.isInteger(instanceID) || instanceID <= 0) {
-      toast.error("请选择要启用该知识库的门店员工号")
+    if (knowledgeBase.storeId <= 0) {
+      toast.error("知识库尚未关联门店")
       return
     }
     setActivating(true)
     try {
-      await activateFastGPTKnowledgeBase(instanceID, knowledgeBase.id)
-      await loadInstances()
-      toast.success("已设为该员工号后续消息的当前知识库")
+      await activateFastGPTKnowledgeBase(knowledgeBase.storeId, knowledgeBase.id)
+      await loadReadiness()
+      toast.success("已设为该门店当前知识库")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "设置当前知识库失败")
     } finally {
       setActivating(false)
+    }
+  }
+
+  async function resyncProfile() {
+    if (!canUpdate || knowledgeBase.storeId <= 0) return
+    setResyncing(true)
+    try {
+      await resyncFastGPTStoreProfile(knowledgeBase.storeId)
+      await loadReadiness()
+      toast.success("模型同步任务已进入队列")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "模型重同步失败")
+    } finally {
+      setResyncing(false)
     }
   }
 
@@ -105,7 +96,7 @@ export function FastGPTKnowledgeWorkspace({ knowledgeBase, canUpdate, canDelete 
     setDeletingDataset(true)
     try {
       await deleteFastGPTDataset(knowledgeBase.id, deleteConfirmation)
-      toast.success("FastGPT 数据集已删除，相关员工号已解除当前知识库绑定")
+      toast.success("FastGPT 数据集已删除，门店当前知识库已解除绑定")
       window.location.assign("/dashboard/knowledge")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除 FastGPT 数据集失败")
@@ -114,10 +105,9 @@ export function FastGPTKnowledgeWorkspace({ knowledgeBase, canUpdate, canDelete 
     }
   }
 
-  const profileLabel = knowledgeBase.fastgptProfileName.trim() || "未同步"
-  const profileMeta = knowledgeBase.fastgptProfileName.trim()
-    ? `版本 ${knowledgeBase.fastgptProfileRevision.trim() || "未提供"} · ${knowledgeBase.fastgptProfileStatus.trim() || "unknown"}`
-    : "等待 FastGPT Tenant/Profile 服务端接口同步"
+  const profileLabel = readiness?.modelProfileName.trim() || knowledgeBase.fastgptProfileName.trim() || "未同步"
+  const isCurrentKnowledgeBase = readiness?.knowledgeBaseId === knowledgeBase.id
+  const readinessStatus = readiness?.readinessStatus || "unconfigured"
 
   return (
     <div className="h-full min-h-0 overflow-y-auto bg-[#f8fbff] p-5 lg:p-6">
@@ -156,14 +146,18 @@ export function FastGPTKnowledgeWorkspace({ knowledgeBase, canUpdate, canDelete 
             </Button>
           </div>
           <div className="mt-3 rounded-md border border-[#e2eaf5] bg-[#f8fbff] px-3 py-2 text-xs">
-            <div className="font-medium text-foreground">当前模型 Profile：{profileLabel}</div>
-            <div className="mt-1 text-muted-foreground">{profileMeta}</div>
+            <div className="font-medium text-foreground">当前模型方案：{profileLabel}</div>
+            <div className="mt-1 text-muted-foreground">
+              方案版本 {readiness?.appliedProfileRevision || "未应用"} / 目标 {readiness?.targetProfileRevision || "未配置"}
+              <span className="px-1.5">·</span>
+              凭据版本 {readiness?.appliedCredentialRevision || "未应用"} / 目标 {readiness?.targetCredentialRevision || "未配置"}
+            </div>
           </div>
           {canDelete && showDeleteConfirmation ? (
             <div className="mt-4 border border-destructive/30 bg-destructive/5 p-4">
               <div className="text-sm font-medium text-destructive">永久删除这个知识库</div>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                这会真实删除 FastGPT 中的数据集及其中的文件，并解除当前使用它的员工号绑定。该操作不可恢复。
+				这会真实删除 FastGPT 中的数据集及其中的文件，并解除门店及其企微、会话路由投影绑定。该操作不可恢复。
               </p>
               <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                 <Input
@@ -193,37 +187,33 @@ export function FastGPTKnowledgeWorkspace({ knowledgeBase, canUpdate, canDelete 
           <aside className="h-fit border border-[#dbe7f6] bg-white p-4 shadow-sm">
             <div className="flex items-center gap-2">
               <Link2Icon className="size-4 text-primary" />
-              <h2 className="text-sm font-semibold">员工号启用范围</h2>
+              <h2 className="text-sm font-semibold">门店运行状态</h2>
             </div>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
-              每个员工号只会检索一个当前知识库。切换只作用于之后的新消息，不改写历史会话。
+              门店只有一个当前知识库，所属企微账号与已有会话路由会同步使用该绑定。
             </p>
             <div className="mt-4 rounded-md border border-[#e2eaf5] bg-[#f8fbff] p-3">
-              <div className="text-xs font-medium text-muted-foreground">当前使用这个知识库的员工号</div>
-              {loadingInstances ? <Loader2Icon className="mt-3 size-4 animate-spin text-primary" /> : activeInstances.length > 0 ? (
-                <div className="mt-3 space-y-2">
-                  {activeInstances.map((item) => (
-                    <div key={item.id} className="flex items-center gap-2 text-sm">
-                      <RadioIcon className="size-3.5 text-emerald-600" />
-                      <span className="min-w-0 truncate">{instanceLabel(item)}</span>
-                    </div>
-                  ))}
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-medium text-muted-foreground">FastGPT 就绪状态</div>
+                <Badge variant={readinessStatus === "ready" ? "default" : "secondary"}>{readinessStatus}</Badge>
+              </div>
+              {loadingReadiness ? <Loader2Icon className="mt-3 size-4 animate-spin text-primary" /> : (
+                <div className="mt-3 space-y-2 text-xs text-muted-foreground">
+                  <div>门店知识库：{isCurrentKnowledgeBase ? "当前启用" : "未启用"}</div>
+                  <div>FastGPT Team：{readiness?.teamStatus || "unconfigured"}</div>
+                  {readiness?.lastSyncedAt ? <div>最近同步：{formatDateTime(readiness.lastSyncedAt)}</div> : null}
+                  {readiness?.lastErrorClass ? <div className="break-all text-destructive">诊断：{readiness.lastErrorClass}</div> : null}
                 </div>
-              ) : <div className="mt-3 text-sm text-muted-foreground">暂未启用到任何员工号</div>}
+              )}
             </div>
-            {canUpdate ? <div className="mt-4 space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">设为指定员工号的当前知识库</label>
-              <OptionCombobox
-                value={selectedInstanceId}
-                onChange={(value) => setSelectedInstanceId(value ?? "")}
-                options={instanceOptions}
-                placeholder={loadingInstances ? "正在加载员工号" : "选择本门店员工号"}
-                searchPlaceholder="搜索员工号"
-                emptyText="当前门店暂无员工号"
-              />
-              <Button className="w-full" onClick={() => void activate()} disabled={activating || loadingInstances || instanceOptions.length === 0}>
+            {canUpdate ? <div className="mt-4 grid gap-2">
+              <Button className="w-full" onClick={() => void activate()} disabled={activating || isCurrentKnowledgeBase}>
                 {activating ? <Loader2Icon className="size-4 animate-spin" /> : <Link2Icon className="size-4" />}
-                设为当前启用库
+                {isCurrentKnowledgeBase ? "当前门店知识库" : "设为门店当前知识库"}
+              </Button>
+              <Button variant="outline" className="w-full" onClick={() => void resyncProfile()} disabled={resyncing || !isCurrentKnowledgeBase}>
+                {resyncing ? <Loader2Icon className="size-4 animate-spin" /> : <RefreshCwIcon className="size-4" />}
+                重新同步模型
               </Button>
             </div> : null}
           </aside>

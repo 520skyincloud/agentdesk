@@ -7,10 +7,6 @@ const managerSource = await readFile(
   new URL("../../../components/wxwork-protocol/wxwork-protocol-instance-manager.tsx", import.meta.url),
   "utf8",
 )
-const modelAssignmentSource = await readFile(
-  new URL("../../../components/wxwork-protocol/wxwork-model-assignment-dialog.tsx", import.meta.url),
-  "utf8",
-)
 const bindingDialogSource = await readFile(
   new URL("../../../components/wxwork-protocol/wxwork-protocol-binding-dialog.tsx", import.meta.url),
   "utf8",
@@ -47,8 +43,6 @@ test("wxwork instance manager owns its CRUD and auxiliary read permissions", () 
     "channel.delete",
     "knowledgeBase.view",
     "user.view",
-    "tenantModelAssignment.view",
-    "tenantModelAssignment.update",
   ]) {
     assert.match(managerSource, new RegExp(`permissionSet\\.has\\("${permission.replace(".", "\\.")}\"\\)`))
   }
@@ -58,18 +52,13 @@ test("wxwork instance manager owns its CRUD and auxiliary read permissions", () 
   assert.match(managerSource, /showEdit=\{canUpdateChannels\}/)
   assert.match(managerSource, /deleteItem=\{\s*canDeleteChannels\s*\?\s*async/)
   assert.match(managerSource, /if \(canUpdateChannels\) \{[\s\S]*key: "replaceLogin"/)
-  assert.match(managerSource, /key: "modelAssignments"/)
-  assert.match(managerSource, /<WxWorkModelAssignmentDialog/)
   assert.match(managerSource, /<WxWorkProtocolBindingDialog/)
   assert.match(managerSource, /open=\{canCreateChannels && canViewUsers && bindingDialogOpen\}/)
 })
 
-test("wxwork model assignment only selects from tenant grants", () => {
-  assert.match(modelAssignmentSource, /fetchWxWorkModelAssignments\(tenantId, instance\.id\)/)
-  assert.match(modelAssignmentSource, /access\.grants/)
-  assert.match(modelAssignmentSource, /updateWxWorkModelAssignments/)
-  assert.match(modelAssignmentSource, /label: "使用租户默认"/)
-  assert.doesNotMatch(modelAssignmentSource, /API Key|Base URL|config\.provider|grant\.provider/)
+test("wxwork manager does not expose the retired model grant chain", () => {
+  assert.match(managerSource, /模型与凭据由绑定门店的生效配置统一解析/)
+  assert.doesNotMatch(managerSource, /tenantModelAssignment|modelAssignments|WxWorkModelAssignmentDialog|员工号覆盖租户默认|授权池兜底/)
 })
 
 test("binding dialog only links an existing store staff role account", () => {

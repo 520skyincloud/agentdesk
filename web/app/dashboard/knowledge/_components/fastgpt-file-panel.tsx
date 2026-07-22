@@ -22,6 +22,7 @@ import {
   uploadFastGPTKnowledgeFile,
   type FastGPTCollection,
   type FastGPTDatasetJob,
+  type FastGPTSearchResult,
   type KnowledgeBase,
 } from "@/lib/api/admin"
 import { formatDateTime } from "@/lib/utils"
@@ -36,6 +37,8 @@ function jobLabel(action: string) {
       return "上传文件"
     case "poll_upload":
       return "解析与索引"
+    case "sync_profile":
+      return "同步模型方案"
     default:
       return action || "后台任务"
   }
@@ -60,17 +63,6 @@ function jobStatusLabel(status: string) {
   }
 }
 
-function formatSearchResult(raw: unknown) {
-  if (raw === null || raw === undefined) {
-    return "没有返回检索结果。"
-  }
-  try {
-    return JSON.stringify(raw, null, 2)
-  } catch {
-    return String(raw)
-  }
-}
-
 export function FastGPTFilePanel({ knowledgeBase, canUpload, canDelete }: { knowledgeBase: KnowledgeBase | null; canUpload: boolean; canDelete: boolean }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [collections, setCollections] = useState<FastGPTCollection[]>([])
@@ -80,7 +72,7 @@ export function FastGPTFilePanel({ knowledgeBase, canUpload, canDelete }: { know
   const [deletingId, setDeletingId] = useState("")
   const [query, setQuery] = useState("")
   const [searching, setSearching] = useState(false)
-  const [searchResult, setSearchResult] = useState<unknown>(undefined)
+  const [searchResult, setSearchResult] = useState<FastGPTSearchResult | null>(null)
 
   const refresh = useCallback(async () => {
     if (!knowledgeBase?.datasetId) {
@@ -151,10 +143,10 @@ export function FastGPTFilePanel({ knowledgeBase, canUpload, canDelete }: { know
     setSearching(true)
     try {
       const result = await testFastGPTDatasetSearch(knowledgeBase.id, query.trim())
-      setSearchResult(result.raw)
+      setSearchResult(result)
       toast.success("已完成当前知识库的真实检索测试")
     } catch (error) {
-      setSearchResult(undefined)
+      setSearchResult(null)
       toast.error(error instanceof Error ? error.message : "检索测试失败")
     } finally {
       setSearching(false)
@@ -234,7 +226,26 @@ export function FastGPTFilePanel({ knowledgeBase, canUpload, canDelete }: { know
             检索
           </Button>
         </div>
-        {searchResult !== undefined ? <pre className="mt-3 max-h-56 overflow-auto border border-[#dbe7f6] bg-white p-3 text-xs leading-5 text-foreground whitespace-pre-wrap">{formatSearchResult(searchResult)}</pre> : null}
+        {searchResult ? (
+          <div className="mt-3 max-h-72 overflow-y-auto border border-[#dbe7f6] bg-white">
+            <div className="flex items-center justify-between gap-3 border-b border-[#e7eef8] px-3 py-2 text-xs text-muted-foreground">
+              <span>命中 {searchResult.hits.length} 条</span>
+              <span>{searchResult.latencyMs} ms</span>
+            </div>
+            {searchResult.hits.length === 0 ? (
+              <div className="px-3 py-6 text-center text-xs text-muted-foreground">当前知识库没有匹配内容。</div>
+            ) : searchResult.hits.map((hit, index) => (
+              <div key={`${hit.dataId}-${index}`} className="border-b border-[#eef3fa] px-3 py-3 last:border-b-0">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="truncate font-medium text-foreground">{hit.sourceName || `命中 ${index + 1}`}</span>
+                  <span className="shrink-0 text-muted-foreground">相关度 {(hit.score * 100).toFixed(1)}%</span>
+                </div>
+                {hit.question ? <div className="mt-2 text-xs font-medium leading-5 text-foreground">{hit.question}</div> : null}
+                {hit.answer ? <div className="mt-1 whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{hit.answer}</div> : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
     </div>
   )

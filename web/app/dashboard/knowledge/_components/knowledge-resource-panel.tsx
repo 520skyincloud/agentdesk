@@ -1,10 +1,9 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { ImageIcon, Loader2Icon, RefreshCwIcon, Trash2Icon, UploadIcon } from "lucide-react"
 import { toast } from "sonner"
 
-import { OptionCombobox } from "@/components/option-combobox"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -12,11 +11,9 @@ import { Label } from "@/components/ui/label"
 import {
   deleteKnowledgeResourceGroup,
   fetchKnowledgeResourceGroups,
-  fetchWxWorkProtocolInstances,
   syncKnowledgeResourceGroup,
   type KnowledgeBase,
   type KnowledgeResourceGroup,
-  type WxWorkProtocolInstance,
 } from "@/lib/api/admin"
 import { formatDateTime } from "@/lib/utils"
 
@@ -27,55 +24,14 @@ type KnowledgeResourcePanelProps = {
 }
 
 export function KnowledgeResourcePanel({ knowledgeBase, canSync, canDelete }: KnowledgeResourcePanelProps) {
-  const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([])
   const [groups, setGroups] = useState<KnowledgeResourceGroup[]>([])
-  const [selectedInstanceID, setSelectedInstanceID] = useState("")
   const [query, setQuery] = useState("")
-  const [loadingInstances, setLoadingInstances] = useState(false)
   const [loadingGroups, setLoadingGroups] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [deletingID, setDeletingID] = useState<number | null>(null)
 
-  const instanceOptions = useMemo(
-    () => instances.map((instance) => ({
-      value: String(instance.id),
-      label: instance.storeName || instance.employeeName || `员工号 #${instance.id}`,
-    })),
-    [instances],
-  )
-
-  const refreshInstances = useCallback(async () => {
-    if (!knowledgeBase) {
-      setInstances([])
-      setSelectedInstanceID("")
-      return
-    }
-    setLoadingInstances(true)
-    try {
-      const page = await fetchWxWorkProtocolInstances({
-        knowledgeBaseId: knowledgeBase.id,
-        status: 0,
-        page: 1,
-        limit: 200,
-      })
-      setInstances(page.results)
-      setSelectedInstanceID((current) => {
-        if (page.results.some((item) => String(item.id) === current)) {
-          return current
-        }
-        return page.results.length > 0 ? String(page.results[0].id) : ""
-      })
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "读取已绑定员工号失败")
-      setInstances([])
-      setSelectedInstanceID("")
-    } finally {
-      setLoadingInstances(false)
-    }
-  }, [knowledgeBase])
-
   const refreshGroups = useCallback(async () => {
-    if (!knowledgeBase || !selectedInstanceID) {
+    if (!knowledgeBase) {
       setGroups([])
       return
     }
@@ -83,7 +39,6 @@ export function KnowledgeResourcePanel({ knowledgeBase, canSync, canDelete }: Kn
     try {
       const page = await fetchKnowledgeResourceGroups({
         knowledgeBaseId: knowledgeBase.id,
-        wxWorkInstanceId: Number(selectedInstanceID),
         page: 1,
         limit: 100,
       })
@@ -94,11 +49,7 @@ export function KnowledgeResourcePanel({ knowledgeBase, canSync, canDelete }: Kn
     } finally {
       setLoadingGroups(false)
     }
-  }, [knowledgeBase, selectedInstanceID])
-
-  useEffect(() => {
-    void refreshInstances()
-  }, [refreshInstances])
+  }, [knowledgeBase])
 
   useEffect(() => {
     void refreshGroups()
@@ -106,8 +57,8 @@ export function KnowledgeResourcePanel({ knowledgeBase, canSync, canDelete }: Kn
 
   async function handleSync() {
 	if (!canSync) return
-    if (!knowledgeBase || !selectedInstanceID) {
-      toast.error("请先选择已绑定当前知识库的员工号")
+    if (!knowledgeBase) {
+      toast.error("请先选择知识库")
       return
     }
     if (!query.trim()) {
@@ -118,7 +69,6 @@ export function KnowledgeResourcePanel({ knowledgeBase, canSync, canDelete }: Kn
     try {
       const group = await syncKnowledgeResourceGroup({
         knowledgeBaseId: knowledgeBase.id,
-        wxWorkInstanceId: Number(selectedInstanceID),
         query: query.trim(),
       })
       toast.success(`已同步 ${group.items.length} 张知识图片`)
@@ -152,19 +102,7 @@ export function KnowledgeResourcePanel({ knowledgeBase, canSync, canDelete }: Kn
     <div className="flex h-full min-h-0 flex-col">
       <div className="border-b border-[#dbe7f6] bg-[#f8fbff] px-6 py-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end">
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <Label htmlFor="knowledge-resource-instance">发送员工号</Label>
-            <OptionCombobox
-              value={selectedInstanceID}
-              options={instanceOptions}
-              placeholder={loadingInstances ? "正在读取员工号..." : "选择已绑定该知识库的员工号"}
-              searchPlaceholder="搜索店名或员工号"
-              emptyText="没有可用员工号"
-              disabled={loadingInstances || instanceOptions.length === 0}
-              onChange={setSelectedInstanceID}
-            />
-          </div>
-          <div className="min-w-0 flex-[2] space-y-1.5">
+		  <div className="min-w-0 flex-[2] space-y-1.5">
             <Label htmlFor="knowledge-resource-query">同步检索问题</Label>
             <Input
               id="knowledge-resource-query"
@@ -178,14 +116,14 @@ export function KnowledgeResourcePanel({ knowledgeBase, canSync, canDelete }: Kn
             <Button type="button" variant="outline" size="icon" onClick={() => void refreshGroups()} disabled={loadingGroups} aria-label="刷新图片资源">
               <RefreshCwIcon className={loadingGroups ? "size-4 animate-spin" : "size-4"} />
             </Button>
-			{canSync ? <Button type="button" onClick={() => void handleSync()} disabled={syncing || !selectedInstanceID}>
+			{canSync ? <Button type="button" onClick={() => void handleSync()} disabled={syncing}>
               {syncing ? <Loader2Icon className="mr-2 size-4 animate-spin" /> : <UploadIcon className="mr-2 size-4" />}
               同步图片
 			</Button> : null}
           </div>
         </div>
         <p className="mt-3 text-xs leading-5 text-muted-foreground">
-          仅同步 FastGPT 当前命中记录中明确声明的图片。图片会保存到本系统资产库，并按公司、门店和知识库隔离；更换企微员工号后仍可复用。
+		  仅同步 FastGPT 当前命中记录中明确声明的图片。图片会保存到本系统资产库，并按租户、门店和知识库隔离。
         </p>
       </div>
 
@@ -197,7 +135,7 @@ export function KnowledgeResourcePanel({ knowledgeBase, canSync, canDelete }: Kn
         ) : groups.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 py-16 text-center text-sm text-muted-foreground">
             <ImageIcon className="size-8 text-[#9ab5d8]" />
-            <span>当前员工号尚未同步知识图片资源。</span>
+			<span>当前门店知识库尚未同步图片资源。</span>
           </div>
         ) : (
           <div className="divide-y divide-[#e3edf9]">

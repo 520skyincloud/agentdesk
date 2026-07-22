@@ -2172,7 +2172,6 @@
     "emptyAnswerMode": "没有匹配的回答模式",
     "remark": "备注",
     "remarkPlaceholder": "备注信息",
-    "fastGPTRemarkPlaceholder": "{\"baseUrl\":\"https://ht.iloveu2.cn\",\"endpoint\":\"/api/validate/fastgpt\",\"datasetId\":\"...\",\"datasetName\":\"...\"}",
     "allIndexStatus": "全部索引状态",
     "searchStatus": "搜索状态",
     "emptyStatus": "未找到状态",

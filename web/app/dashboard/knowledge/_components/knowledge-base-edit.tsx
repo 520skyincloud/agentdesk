@@ -92,7 +92,6 @@ function getKnowledgeTypeOptions(t: TFunction) {
   return [
     { value: KnowledgeBaseType.Document, label: t("knowledge.typeDocument") },
     { value: KnowledgeBaseType.FAQ, label: t("knowledge.typeFAQ") },
-    { value: KnowledgeBaseType.FastGPTCloud, label: t("knowledge.typeFastGPTCloud") },
   ];
 }
 
@@ -128,16 +127,12 @@ function buildForm(item: KnowledgeBase | null): EditForm {
     chunkMaxTokens: String(item.chunkMaxTokens),
     chunkOverlapTokens: String(item.chunkOverlapTokens),
     answerMode: String(item.answerMode),
-    remark: item.remark || "",
-		resourceAllowedHosts: parseResourceAllowedHosts(item.remark),
+    remark: item.knowledgeType === KnowledgeBaseType.FastGPTCloud ? "" : item.remark || "",
+		resourceAllowedHosts: (item.resourceAllowedHosts || []).join("\n"),
   };
 }
 
 function buildPayload(form: EditForm): CreateKnowledgeBasePayload {
-	let remark = form.remark.trim();
-	if (form.knowledgeType === KnowledgeBaseType.FastGPTCloud) {
-		remark = mergeFastGPTResourceAllowedHosts(remark, form.resourceAllowedHosts);
-  }
   return {
     name: form.name.trim(),
     description: form.description.trim(),
@@ -150,44 +145,18 @@ function buildPayload(form: EditForm): CreateKnowledgeBasePayload {
     chunkMaxTokens: Number(form.chunkMaxTokens),
     chunkOverlapTokens: Number(form.chunkOverlapTokens),
     answerMode: Number(form.answerMode),
-    remark,
+		remark: form.knowledgeType === KnowledgeBaseType.FastGPTCloud ? "" : form.remark.trim(),
+		resourceAllowedHosts: form.knowledgeType === KnowledgeBaseType.FastGPTCloud
+			? normalizeResourceAllowedHosts(form.resourceAllowedHosts)
+			: [],
   };
 }
 
-function parseResourceAllowedHosts(raw: string) {
-	try {
-		const config: unknown = raw.trim() ? JSON.parse(raw) : {};
-		if (!config || typeof config !== "object" || Array.isArray(config)) {
-			return "";
-		}
-		const value = (config as { resourceAllowedHosts?: unknown }).resourceAllowedHosts;
-		return Array.isArray(value)
-			? value.filter((item): item is string => typeof item === "string").join("\n")
-			: "";
-	} catch {
-		return "";
-	}
-}
-
-function mergeFastGPTResourceAllowedHosts(raw: string, values: string) {
-	let config: Record<string, unknown> = {};
-	if (raw) {
-		const parsed: unknown = JSON.parse(raw);
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			throw new Error("FastGPT 配置必须是 JSON 对象");
-		}
-		config = { ...(parsed as Record<string, unknown>) };
-	}
-	const hosts = values
+function normalizeResourceAllowedHosts(values: string) {
+	return values
 		.split(/[\n,]/)
 		.map((value) => value.trim().replace(/^https?:\/\//, "").replace(/\/$/, ""))
 		.filter((value, index, all) => value.length > 0 && all.indexOf(value) === index);
-	if (hosts.length === 0) {
-		delete config.resourceAllowedHosts;
-	} else {
-		config.resourceAllowedHosts = hosts;
-	}
-	return JSON.stringify(config);
 }
 
 export function EditDialog({
@@ -339,20 +308,24 @@ function KnowledgeBaseFormDialogBody({
           <Field data-invalid={!!errors.knowledgeType}>
             <FieldLabel htmlFor="kb-knowledge-type">{t("knowledge.knowledgeType")}</FieldLabel>
             <FieldContent>
-              <Controller
-                control={control}
-                name="knowledgeType"
-                render={({ field }) => (
-                  <OptionCombobox
-                    value={field.value}
-                    options={knowledgeTypeOptions}
-                    placeholder={t("knowledge.selectKnowledgeType")}
-                    searchPlaceholder={t("knowledge.searchKnowledgeType")}
-                    emptyText={t("knowledge.emptyKnowledgeType")}
-                    onChange={field.onChange}
-                  />
-                )}
-              />
+				{isFastGPTCloudKnowledgeBase ? (
+					<Input id="kb-knowledge-type" value={t("knowledge.typeFastGPTCloud")} disabled />
+				) : (
+					<Controller
+						control={control}
+						name="knowledgeType"
+						render={({ field }) => (
+							<OptionCombobox
+								value={field.value}
+								options={knowledgeTypeOptions}
+								placeholder={t("knowledge.selectKnowledgeType")}
+								searchPlaceholder={t("knowledge.searchKnowledgeType")}
+								emptyText={t("knowledge.emptyKnowledgeType")}
+								onChange={field.onChange}
+							/>
+						)}
+					/>
+				)}
               <FieldError errors={[errors.knowledgeType]} />
             </FieldContent>
           </Field>
@@ -525,19 +498,21 @@ function KnowledgeBaseFormDialogBody({
             </Field>
           </div>
 
-          <Field data-invalid={!!errors.remark}>
-            <FieldLabel htmlFor="kb-remark">{t("knowledge.remark")}</FieldLabel>
-            <FieldContent>
-              <Textarea
-                id="kb-remark"
-                placeholder={isFastGPTCloudKnowledgeBase ? t("knowledge.fastGPTRemarkPlaceholder") : t("knowledge.remarkPlaceholder")}
-                rows={2}
-                aria-invalid={!!errors.remark}
-                {...register("remark")}
-              />
-              <FieldError errors={[errors.remark]} />
-            </FieldContent>
-          </Field>
+          {!isFastGPTCloudKnowledgeBase ? (
+			<Field data-invalid={!!errors.remark}>
+				<FieldLabel htmlFor="kb-remark">{t("knowledge.remark")}</FieldLabel>
+				<FieldContent>
+					<Textarea
+						id="kb-remark"
+						placeholder={t("knowledge.remarkPlaceholder")}
+						rows={2}
+						aria-invalid={!!errors.remark}
+						{...register("remark")}
+					/>
+					<FieldError errors={[errors.remark]} />
+				</FieldContent>
+			</Field>
+		  ) : null}
           {isFastGPTCloudKnowledgeBase ? (
             <Field>
               <FieldLabel htmlFor="kb-resource-allowed-hosts">图片可信域名</FieldLabel>
