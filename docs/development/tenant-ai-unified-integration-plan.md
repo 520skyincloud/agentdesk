@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-22 产品决策已闭合，B0 来源固定与基线审计已完成，业务代码尚未开始集成
+> 状态：2026-07-22 产品决策已闭合，B0-B2 已完成并验证；B3 九槽 Model Profile、Store Assignment 与唯一 resolver 待实施
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -8,7 +8,7 @@
 >
 > 当前 AI 来源审计：`origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`
 >
-> 最终 AI 来源：实施 B0 开始前重新 `git fetch origin --prune` 后的 `origin/codex/ai-billing` 最新提交
+> 最终 AI 来源：已固定 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`；每个 Batch 开始和提交前重新 fetch，若来源前移则先审计差异
 >
 > 服务发布端口：`8083`
 >
@@ -1109,3 +1109,22 @@ git diff --check
 - 合并顺序：B1 必须先于 B2 行业数据、B3 Resolver、B4 Credential 行为及所有 ai-billing Runtime 移植；B1 不应单独发布为业务功能。
 - 回滚边界：提交可独立回滚；已经 AutoMigrate 的新增表/列会留在数据库但当前无生产写入，不会被旧代码读取。禁止在完成 B12/B14 后单独回滚 B1。
 - 待后续验证：历史生产库完整升级、DML 回填、真实 NewAPI/FastGPT、旧 Schema Cleanup 和备份恢复分别属于 B2-B14，不能计入本批完成项。
+
+### 25.3 2026-07-22 B2 Tenant 行业绑定与权威目录
+
+- 代码提交：行业与迁移主体为 `fec989d4bea301b1c6fe515913e928838d0d6bd8`；浏览器验收修复为 `a42f698fffd2705dd209f652fca399ba51ace77f`。AI 行为来源继续固定为 `4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架继续固定为 `1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：两次提交前均执行 `git fetch origin --prune`；`origin/codex/ai-billing`、`origin/codex/tenant-ai-integration` 均未前移。远端最高 Migration 仍为 `ai-billing:067` 和 `tenant-ai-integration:065`，本批使用动态编号 `068`，无编号冲突。
+- Tenant 契约：创建 Tenant 必须绑定一个已发布且完整的行业 Profile；`Tenant.IntentProfileID` 是唯一行业事实源。Store、Company、企微实例、知识库和会话不再拥有可写行业覆盖，历史字段只保留为后续清理的迁移输入并持续写零。
+- 行业切换：只允许平台有权管理员在 Tenant 全部 AI 回复关闭后执行；请求必须携带二次确认和原因。事务内锁定 Tenant/Profile，失活旧行业标签及客户标签关系，实例化新行业目录，更新租户标签策略，并写入 append-only `TenantIndustryChangeLog`。
+- 行业目录：`ReplyIntentProfile` 正式承担行业 Profile；草稿可以分步配置，发布时强校验 Prompt、JSON Schema、启用意图和行业标签定义。已绑定 Tenant 的 Profile 不允许停用、删除或改变稳定行业编码。
+- 酒店基线：Migration 068 幂等建立酒店 Profile Revision 1、5 个顶层意图、4 类 31 个固定标签和 8 个互斥组；同时清理 Company、企微、知识库及旧作用域中的行业覆盖，并把历史 Tenant 显式绑定到酒店行业。
+- Runtime 范围：现有 Intent matcher 只通过 `Conversation -> Tenant -> IntentProfileID` 解析 Prompt、Schema 和分类；Tenant 缺失、行业未绑定、Profile 停用或目录不完整时返回明确错误，不回退酒店、Company、Store、企微或知识库配置。完整 ai-billing Runtime 行为仍属于 B7，不能把本批称为运行时移植完成。
+- 前端与权限：接入公司创建时行业必选，列表显示行业名称、稳定编码和 revision；危险切换表单显示原因和确认项。平台导航同时提供“意图行业”和“意图分类”，普通 Tenant 导航不暴露 Prompt、Schema 或分类管理。企微绑定和知识库创建表单已删除行业选择器。
+- 验收修复：浏览器发现两个行业列表把 `all` 错传为状态 `0`，并发现“意图分类”仍被旧导航标记为 Tenant 页面；`a42f698` 复用通用 `allValue` 契约修复筛选，并把两个行业入口统一归入平台上下文，增加对应回归测试。
+- 数据库验证：SQLite fresh 库执行全部 Migration、Migration 068 首次运行和幂等重跑通过；临时 MySQL 8.4 完成同一 Schema 与 Migration 068 场景验证，容器已停止并删除。仓库未写入数据库、截图或 generated 报告。
+- Go 验证：`go test ./... -count=1`、B2 行业与 Migration 定向测试、`go vet ./...` 和 `git diff --check` 通过。
+- 前端验证：`tsc --noEmit --incremental false`、139 项 `*.test.mjs`、ESLint 0 error/33 个既有 warning、SDK 构建和 `next build --webpack` 通过；标准 Turbopack 构建仅因 worktree 外部 `node_modules` 软链限制失败，不是产品代码错误。
+- 浏览器验证：fresh SQLite 在临时 `8085` 登录后确认酒店 Profile 1 条、意图 5 条、Tenant 行业展示和创建必选；企微绑定与知识库创建均无行业覆盖入口，页面控制台无 error/warn。`8083` 既有 Docker 服务未停止、未改库。
+- 共享契约与并行影响：本批修改 Tenant/ReplyIntent DTO、行业 service/repository、Migration、Runtime 行业解析、接入公司页面、企微与知识库表单及导航；未修改九槽模型、Credential、Usage/Billing、FastGPT 行为、AI 回复状态机或规则派单。两个来源分支保持只读且 SHA 未前移。
+- 合并与回滚：B2 必须在 B3 Model Profile、B4 Credential 和 B7 Runtime 之前；`fec989d` 与 `a42f698` 应一起合入。Cleanup 前可以整体回滚 B2 应用代码，但已写入的 Profile、目录和审计表保留；禁止只回滚 Migration 068 后继续运行依赖 Tenant 行业的代码。
+- 后续边界：平台行业标签模板的数据契约和酒店固定目录已完成；最终模板管理展示、Tenant 标签开关/别名和 Store 客户标签 UI 在 B9 完成。旧下级行业字段的物理删除属于 B14，不能在 B2 提前破坏历史升级输入。
