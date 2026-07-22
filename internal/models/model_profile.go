@@ -48,19 +48,24 @@ type ModelProfileSlot struct {
 
 // StoreModelProfileAssignment is the sole Store-to-profile binding.
 type StoreModelProfileAssignment struct {
-	ID               int64                            `gorm:"primaryKey;autoIncrement"`
-	TenantID         int64                            `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_model_profile_assignment,priority:1"`
-	StoreID          int64                            `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_model_profile_assignment,priority:2"`
-	TemplateID       int64                            `gorm:"type:bigint;not null;default:0;index"`
-	TemplateRevision int64                            `gorm:"type:bigint;not null;default:0;index"`
-	Status           enums.StoreModelAssignmentStatus `gorm:"type:varchar(30);not null;default:'assigned';index"`
-	ReadinessStatus  string                           `gorm:"type:varchar(30);not null;default:'pending';index"`
-	LastValidatedAt  *time.Time                       `gorm:"type:datetime;index"`
-	LastReadyAt      *time.Time                       `gorm:"type:datetime;index"`
-	LastErrorClass   string                           `gorm:"type:varchar(80);not null;default:'';index"`
-	LastErrorMessage string                           `gorm:"type:text"`
-	AssignedAt       time.Time                        `gorm:"type:datetime;not null;index"`
-	AssignedBy       int64                            `gorm:"type:bigint;not null;default:0;index"`
-	AssignedByName   string                           `gorm:"type:varchar(100);not null;default:''"`
+	ID                      int64                            `gorm:"primaryKey;autoIncrement"`
+	TenantID                int64                            `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_model_profile_assignment,priority:1"`
+	StoreID                 int64                            `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_model_profile_assignment,priority:2"`
+	TemplateID              int64                            `gorm:"type:bigint;not null;default:0;index"` // Active template; zero means the Store has never completed readiness.
+	TemplateRevision        int64                            `gorm:"type:bigint;not null;default:0;index"`
+	PendingTemplateID       int64                            `gorm:"type:bigint;not null;default:0;index"`
+	PendingTemplateRevision int64                            `gorm:"type:bigint;not null;default:0;index"`
+	PendingRequestedAt      *time.Time                       `gorm:"type:datetime;index"`
+	PendingRequestedBy      int64                            `gorm:"type:bigint;not null;default:0;index"`
+	PendingRequestedByName  string                           `gorm:"type:varchar(100);not null;default:''"`
+	Status                  enums.StoreModelAssignmentStatus `gorm:"type:varchar(30);not null;default:'assigned';index"`
+	ReadinessStatus         string                           `gorm:"type:varchar(30);not null;default:'pending';index"`
+	LastValidatedAt         *time.Time                       `gorm:"type:datetime;index"`
+	LastReadyAt             *time.Time                       `gorm:"type:datetime;index"`
+	LastErrorClass          string                           `gorm:"type:varchar(80);not null;default:'';index"`
+	LastErrorMessage        string                           `gorm:"type:text"`
+	AssignedAt              time.Time                        `gorm:"type:datetime;not null;index"`
+	AssignedBy              int64                            `gorm:"type:bigint;not null;default:0;index"`
+	AssignedByName          string                           `gorm:"type:varchar(100);not null;default:''"`
 	AuditFields
 }

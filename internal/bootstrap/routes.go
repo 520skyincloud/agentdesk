@@ -397,6 +397,20 @@ func registerDashboardAIConfigRoutes(group *gin.RouterGroup) {
 	group.POST("/update_status", dashboard.AIConfigPostUpdate_status)
 }
 
+func registerDashboardModelProfileTemplateRoutes(group *gin.RouterGroup) {
+	group.POST("/get", dashboard.ModelProfileTemplatePostGet)
+	group.POST("/create", dashboard.ModelProfileTemplatePostCreate)
+	group.POST("/update", dashboard.ModelProfileTemplatePostUpdate)
+	group.POST("/test", dashboard.ModelProfileTemplatePostTest)
+	group.POST("/publish", dashboard.ModelProfileTemplatePostPublish)
+}
+
+func registerDashboardStoreModelProfileRoutes(group *gin.RouterGroup) {
+	group.POST("/get", dashboard.StoreModelProfilePostGet)
+	group.POST("/assign", dashboard.StoreModelProfilePostAssign)
+	group.POST("/batch_assign", dashboard.StoreModelProfilePostBatchAssign)
+}
+
 func registerDashboardReplyIntentConfigRoutes(group *gin.RouterGroup) {
 	group.Any("/list", dashboard.ReplyIntentConfigAnyList)
 	group.GET("/:id", dashboard.ReplyIntentConfigGetBy)
