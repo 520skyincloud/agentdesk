@@ -109,6 +109,7 @@ var Models = []any{
 	&FastGPTStoreTenant{},
 	&FastGPTUsageSyncState{},
 	&FastGPTDatasetJob{},
+	&FastGPTRemoteResourceRetirement{},
 	&SkillDefinition{},
 	&SkillRunLog{},
 	&AgentRunLog{},
@@ -1152,35 +1153,38 @@ type StoreAIModelSetting struct {
 
 // KnowledgeBase 知识库主表。
 type KnowledgeBase struct {
-	ID                        int64        `gorm:"primaryKey;autoIncrement"`                           // ID 为知识库主键。
-	TenantID                  int64        `gorm:"type:bigint;not null;default:0;index"`               // TenantID 为知识库所属接入公司。
-	IntentProfileID           int64        `gorm:"type:bigint;not null;default:0;index"`               // IntentProfileID 为旧数据兼容字段，不参与运行时知识库选择。
-	CompanyID                 int64        `gorm:"type:bigint;not null;default:0;index"`               // CompanyID 为旧公司档案兼容字段；新门店知识库写入 0。
-	StoreID                   int64        `gorm:"type:bigint;not null;default:0;index"`               // StoreID 为知识库所属内部稳定门店身份。
-	DatasetID                 string       `gorm:"type:varchar(128);not null;default:'';index"`        // DatasetID 为 FastGPT 数据集 ID。
-	DatasetName               string       `gorm:"type:varchar(200);not null;default:''"`              // DatasetName 为 FastGPT 数据集名称。
-	ConnectionID              string       `gorm:"type:varchar(64);not null;default:'platform'"`       // ConnectionID 为平台 FastGPT 连接标识。
-	RetrievalMode             string       `gorm:"type:varchar(20);not null;default:'fastgpt';index"`  // RetrievalMode 为兼容字段；生产检索统一使用 FastGPT 引擎。
-	FastGPTProfileID          string       `gorm:"type:varchar(128);not null;default:'';index"`        // FastGPTProfileID 为 FastGPT Dataset Model Profile 的非敏感标识。
-	FastGPTProfileName        string       `gorm:"type:varchar(200);not null;default:''"`              // FastGPTProfileName 仅供门店侧展示。
-	FastGPTProfileRevision    string       `gorm:"type:varchar(80);not null;default:''"`               // FastGPTProfileRevision 为 FastGPT 侧配置版本。
-	FastGPTProfileFingerprint string       `gorm:"type:varchar(128);not null;default:''"`              // FastGPTProfileFingerprint 用于判断配置是否变更，不保存密钥。
-	FastGPTProfileStatus      string       `gorm:"type:varchar(30);not null;default:'pending';index"`  // FastGPTProfileStatus 为 pending/ready/failed 等同步状态。
-	FastGPTProfileSyncedAt    *time.Time   `gorm:"type:datetime;index"`                                // FastGPTProfileSyncedAt 为最后一次成功同步时间。
-	Name                      string       `gorm:"type:varchar(100);not null;default:'';index"`        // Name 为知识库名称。
-	Description               string       `gorm:"type:text"`                                          // Description 为知识库描述。
-	KnowledgeType             string       `gorm:"type:varchar(20);not null;default:'document';index"` // KnowledgeType 为知识库类型：document/faq。
-	Status                    enums.Status `gorm:"type:int;not null;index"`                            // Status 为状态
-	DefaultTopK               int          `gorm:"type:int;not null;default:10"`                       // DefaultTopK 为默认召回数量。
-	DefaultScoreThreshold     float64      `gorm:"type:decimal(5,4);not null;default:0.5"`             // DefaultScoreThreshold 为默认相似度阈值。
-	DefaultRerankLimit        int          `gorm:"type:int;not null;default:5"`                        // DefaultRerankLimit 为默认重排后保留数量。
-	ChunkProvider             string       `gorm:"type:varchar(30);not null;default:'structured'"`     // ChunkProvider 为知识库分块策略 provider。
-	ChunkTargetTokens         int          `gorm:"type:int;not null;default:300"`                      // ChunkTargetTokens 为目标 chunk token 数。
-	ChunkMaxTokens            int          `gorm:"type:int;not null;default:400"`                      // ChunkMaxTokens 为单 chunk 最大 token 数。
-	ChunkOverlapTokens        int          `gorm:"type:int;not null;default:40"`                       // ChunkOverlapTokens 为相邻 chunk 重叠 token 数。
-	AnswerMode                int          `gorm:"type:int;not null;default:1"`                        // AnswerMode 为回答模式：1严格知识库模式 2辅助解释模式。
-	SortNo                    int          `gorm:"type:int;not null;default:0;index"`                  // SortNo 为排序号，用于后台展示和知识库的人工排序管理。
-	Remark                    string       `gorm:"type:text"`                                          // Remark 为备注。
+	ID                               int64        `gorm:"primaryKey;autoIncrement"`                           // ID 为知识库主键。
+	TenantID                         int64        `gorm:"type:bigint;not null;default:0;index"`               // TenantID 为知识库所属接入公司。
+	IntentProfileID                  int64        `gorm:"type:bigint;not null;default:0;index"`               // IntentProfileID 为旧数据兼容字段，不参与运行时知识库选择。
+	CompanyID                        int64        `gorm:"type:bigint;not null;default:0;index"`               // CompanyID 为旧公司档案兼容字段；新门店知识库写入 0。
+	StoreID                          int64        `gorm:"type:bigint;not null;default:0;index"`               // StoreID 为知识库所属内部稳定门店身份。
+	DatasetID                        string       `gorm:"type:varchar(128);not null;default:'';index"`        // DatasetID 为 FastGPT 数据集 ID。
+	DatasetName                      string       `gorm:"type:varchar(200);not null;default:''"`              // DatasetName 为 FastGPT 数据集名称。
+	ConnectionID                     string       `gorm:"type:varchar(64);not null;default:'platform'"`       // ConnectionID 为平台 FastGPT 连接标识。
+	RetrievalMode                    string       `gorm:"type:varchar(20);not null;default:'fastgpt';index"`  // RetrievalMode 为兼容字段；生产检索统一使用 FastGPT 引擎。
+	FastGPTProfileID                 string       `gorm:"type:varchar(128);not null;default:'';index"`        // FastGPTProfileID 为 FastGPT Dataset Model Profile 的非敏感标识。
+	FastGPTProfileName               string       `gorm:"type:varchar(200);not null;default:''"`              // FastGPTProfileName 仅供门店侧展示。
+	FastGPTProfileRevision           string       `gorm:"type:varchar(80);not null;default:''"`               // FastGPTProfileRevision 为 FastGPT 侧配置版本。
+	FastGPTProfileFingerprint        string       `gorm:"type:varchar(128);not null;default:''"`              // FastGPTProfileFingerprint 用于判断配置是否变更，不保存密钥。
+	FastGPTProfileStatus             string       `gorm:"type:varchar(30);not null;default:'pending';index"`  // FastGPTProfileStatus 为 pending/ready/failed 等同步状态。
+	FastGPTProfileSyncedAt           *time.Time   `gorm:"type:datetime;index"`                                // FastGPTProfileSyncedAt 为最后一次成功同步时间。
+	FastGPTAppliedProfileID          int64        `gorm:"type:bigint;not null;default:0;index"`               // FastGPTAppliedProfileID 为该 Dataset 已实际应用的平台模型方案。
+	FastGPTAppliedProfileRevision    int64        `gorm:"type:bigint;not null;default:0;index"`               // FastGPTAppliedProfileRevision 为该 Dataset 已实际应用的平台方案 revision。
+	FastGPTAppliedCredentialRevision int64        `gorm:"type:bigint;not null;default:0;index"`               // FastGPTAppliedCredentialRevision 为该 Dataset 已实际应用的门店凭据 revision。
+	Name                             string       `gorm:"type:varchar(100);not null;default:'';index"`        // Name 为知识库名称。
+	Description                      string       `gorm:"type:text"`                                          // Description 为知识库描述。
+	KnowledgeType                    string       `gorm:"type:varchar(20);not null;default:'document';index"` // KnowledgeType 为知识库类型：document/faq。
+	Status                           enums.Status `gorm:"type:int;not null;index"`                            // Status 为状态
+	DefaultTopK                      int          `gorm:"type:int;not null;default:10"`                       // DefaultTopK 为默认召回数量。
+	DefaultScoreThreshold            float64      `gorm:"type:decimal(5,4);not null;default:0.5"`             // DefaultScoreThreshold 为默认相似度阈值。
+	DefaultRerankLimit               int          `gorm:"type:int;not null;default:5"`                        // DefaultRerankLimit 为默认重排后保留数量。
+	ChunkProvider                    string       `gorm:"type:varchar(30);not null;default:'structured'"`     // ChunkProvider 为知识库分块策略 provider。
+	ChunkTargetTokens                int          `gorm:"type:int;not null;default:300"`                      // ChunkTargetTokens 为目标 chunk token 数。
+	ChunkMaxTokens                   int          `gorm:"type:int;not null;default:400"`                      // ChunkMaxTokens 为单 chunk 最大 token 数。
+	ChunkOverlapTokens               int          `gorm:"type:int;not null;default:40"`                       // ChunkOverlapTokens 为相邻 chunk 重叠 token 数。
+	AnswerMode                       int          `gorm:"type:int;not null;default:1"`                        // AnswerMode 为回答模式：1严格知识库模式 2辅助解释模式。
+	SortNo                           int          `gorm:"type:int;not null;default:0;index"`                  // SortNo 为排序号，用于后台展示和知识库的人工排序管理。
+	Remark                           string       `gorm:"type:text"`                                          // Remark 为备注。
 	AuditFields
 }
 

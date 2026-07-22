@@ -33,6 +33,7 @@ type KnowledgeBaseResponse struct {
 	DocumentCount          int64        `json:"documentCount"`
 	FAQCount               int64        `json:"faqCount"`
 	Remark                 string       `json:"remark"`
+	ResourceAllowedHosts   []string     `json:"resourceAllowedHosts"`
 	CreatedAt              time.Time    `json:"createdAt"`
 	UpdatedAt              time.Time    `json:"updatedAt"`
 	CreateUserName         string       `json:"createUserName"`
@@ -51,21 +52,20 @@ type KnowledgeResourceItemResponse struct {
 }
 
 type KnowledgeResourceGroupResponse struct {
-	ID               int64                           `json:"id"`
-	StoreID          int64                           `json:"storeId"`
-	KnowledgeBaseID  int64                           `json:"knowledgeBaseId"`
-	WxWorkInstanceID int64                           `json:"wxWorkInstanceId"`
-	SourceProvider   string                          `json:"sourceProvider"`
-	SourceRecordID   string                          `json:"sourceRecordId"`
-	Title            string                          `json:"title"`
-	Description      string                          `json:"description"`
-	Status           enums.Status                    `json:"status"`
-	StatusName       string                          `json:"statusName"`
-	Items            []KnowledgeResourceItemResponse `json:"items"`
-	CreatedAt        time.Time                       `json:"createdAt"`
-	UpdatedAt        time.Time                       `json:"updatedAt"`
-	CreateUserName   string                          `json:"createUserName"`
-	UpdateUserName   string                          `json:"updateUserName"`
+	ID              int64                           `json:"id"`
+	StoreID         int64                           `json:"storeId"`
+	KnowledgeBaseID int64                           `json:"knowledgeBaseId"`
+	SourceProvider  string                          `json:"sourceProvider"`
+	SourceRecordID  string                          `json:"sourceRecordId"`
+	Title           string                          `json:"title"`
+	Description     string                          `json:"description"`
+	Status          enums.Status                    `json:"status"`
+	StatusName      string                          `json:"statusName"`
+	Items           []KnowledgeResourceItemResponse `json:"items"`
+	CreatedAt       time.Time                       `json:"createdAt"`
+	UpdatedAt       time.Time                       `json:"updatedAt"`
+	CreateUserName  string                          `json:"createUserName"`
+	UpdateUserName  string                          `json:"updateUserName"`
 }
 
 type KnowledgeDocumentResponse struct {

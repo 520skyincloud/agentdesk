@@ -37,8 +37,12 @@ type FastGPTUsageSyncState struct {
 	KnowledgeBaseID    int64      `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_fastgpt_usage_sync_state,priority:2;index"`
 	TenantTeamID       string     `gorm:"type:varchar(128);not null;default:'';index"`
 	Cursor             string     `gorm:"type:varchar(255);not null;default:''"`
+	ModelProfileID     int64      `gorm:"type:bigint;not null;default:0;index"`
 	ProfileRevision    int64      `gorm:"type:bigint;not null;default:0;index"`
 	CredentialRevision int64      `gorm:"type:bigint;not null;default:0;index"`
+	KeyFingerprint     string     `gorm:"type:varchar(64);not null;default:'';index" json:"-"`
+	FastGPTProfileID   string     `gorm:"type:varchar(128);not null;default:'';index"`
+	FastGPTRevision    string     `gorm:"type:varchar(80);not null;default:'';index"`
 	LastSyncedAt       *time.Time `gorm:"type:datetime;index"`
 	LastError          string     `gorm:"type:text"`
 	CreatedAt          time.Time  `gorm:"type:datetime;not null"`

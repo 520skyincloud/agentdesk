@@ -110,6 +110,17 @@ func (r *conversationRouteStateRepository) UpdateBindingByWxWorkInstance(db *gor
 		}).Error
 }
 
+func (r *conversationRouteStateRepository) UpdateKnowledgeBaseByStoreInTenant(db *gorm.DB, storeID, knowledgeBaseID, tenantID int64, now any, operatorName string) error {
+	if db == nil || storeID <= 0 || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.ConversationRouteState{}).
+		Where("tenant_id = ? AND store_id = ?", tenantID, storeID).
+		Updates(map[string]any{
+			"knowledge_base_id": knowledgeBaseID, "updated_at": now, "update_user_name": operatorName,
+		}).Error
+}
+
 func (r *conversationRouteStateRepository) ResetAIByWxWorkInstance(db *gorm.DB, wxWorkInstanceID, tenantID int64, now any, operatorName string) error {
 	return db.Model(&models.ConversationRouteState{}).
 		Where("tenant_id = ? AND wx_work_instance_id = ? AND route_status <> ?", tenantID, wxWorkInstanceID, "CLOSED").

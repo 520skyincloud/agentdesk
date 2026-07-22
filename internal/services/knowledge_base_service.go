@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -99,6 +100,9 @@ func (s *knowledgeBaseService) CreateKnowledgeBase(req request.CreateKnowledgeBa
 	if err != nil {
 		return nil, err
 	}
+	if item.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud) {
+		return nil, errorsx.InvalidParam("FastGPT 知识库只能通过门店知识库开通流程创建")
+	}
 	item.Status = enums.StatusOk
 	item.TenantID = tenantID
 	item.AuditFields = utils.BuildAuditFields(operator)
@@ -122,6 +126,26 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(req request.UpdateKnowledgeBa
 	}
 	if !s.CanAccessKnowledgeBase(current.ID, operator) {
 		return errorsx.Forbidden("无权限维护该知识库")
+	}
+	currentIsFastGPT := current.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud)
+	if currentIsFastGPT {
+		remark, err := buildFastGPTKnowledgeRemark(req.ResourceAllowedHosts)
+		if err != nil {
+			return err
+		}
+		req.StoreID = current.StoreID
+		req.DatasetID = current.DatasetID
+		req.DatasetName = current.DatasetName
+		req.ConnectionID = current.ConnectionID
+		req.RetrievalMode = current.RetrievalMode
+		req.KnowledgeType = current.KnowledgeType
+		req.ChunkProvider = current.ChunkProvider
+		req.ChunkTargetTokens = current.ChunkTargetTokens
+		req.ChunkMaxTokens = current.ChunkMaxTokens
+		req.ChunkOverlapTokens = current.ChunkOverlapTokens
+		req.Remark = remark
+	} else if req.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud) {
+		return errorsx.InvalidParam("普通知识库不能转换为 FastGPT 知识库，请使用门店知识库开通流程")
 	}
 	item, err := s.buildKnowledgeBaseModel(req.CreateKnowledgeBaseRequest, tenantID)
 	if err != nil {
@@ -165,6 +189,9 @@ func (s *knowledgeBaseService) DeleteKnowledgeBase(id int64, operator *dto.AuthP
 	if !s.CanAccessKnowledgeBase(current.ID, operator) {
 		return errorsx.Forbidden("无权限删除该知识库")
 	}
+	if current.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud) {
+		return errorsx.InvalidParam("FastGPT 知识库必须在知识库工作区中确认并删除远端数据集")
+	}
 	docCount := repositories.KnowledgeDocumentRepository.CountByKnowledgeBaseIDInTenant(sqls.DB(), id, tenantID)
 	if docCount > 0 {
 		return errorsx.InvalidParam("知识库下存在文档，无法删除")
@@ -174,6 +201,37 @@ func (s *knowledgeBaseService) DeleteKnowledgeBase(id int64, operator *dto.AuthP
 		return errorsx.InvalidParam("知识库下存在FAQ，无法删除")
 	}
 	return repositories.KnowledgeBaseRepository.DeleteInTenant(sqls.DB(), id, tenantID)
+}
+
+func buildFastGPTKnowledgeRemark(values []string) (string, error) {
+	hosts := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		host := strings.ToLower(strings.TrimSpace(value))
+		host = strings.TrimPrefix(host, "https://")
+		host = strings.TrimPrefix(host, "http://")
+		host = strings.TrimSuffix(host, "/")
+		if host == "" {
+			continue
+		}
+		if strings.Contains(host, "/") {
+			return "", errorsx.InvalidParam("图片可信域名只能填写域名，不能包含路径")
+		}
+		if !seen[host] {
+			seen[host] = true
+			hosts = append(hosts, host)
+		}
+	}
+	if len(hosts) == 0 {
+		return "", nil
+	}
+	payload, err := json.Marshal(struct {
+		ResourceAllowedHosts []string `json:"resourceAllowedHosts"`
+	}{ResourceAllowedHosts: hosts})
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
 }
 
 func (s *knowledgeBaseService) CanAccessKnowledgeBase(id int64, operator *dto.AuthPrincipal) bool {

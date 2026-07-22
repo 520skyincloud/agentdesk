@@ -3,23 +3,24 @@ package request
 import "agent-desk/internal/pkg/enums"
 
 type CreateKnowledgeBaseRequest struct {
-	StoreID               int64   `json:"storeId"`
-	DatasetID             string  `json:"datasetId"`
-	DatasetName           string  `json:"datasetName"`
-	ConnectionID          string  `json:"connectionId"`
-	RetrievalMode         string  `json:"retrievalMode"`
-	Name                  string  `json:"name"`
-	Description           string  `json:"description"`
-	KnowledgeType         string  `json:"knowledgeType"`
-	DefaultTopK           int     `json:"defaultTopK"`
-	DefaultScoreThreshold float64 `json:"defaultScoreThreshold"`
-	DefaultRerankLimit    int     `json:"defaultRerankLimit"`
-	ChunkProvider         string  `json:"chunkProvider"`
-	ChunkTargetTokens     int     `json:"chunkTargetTokens"`
-	ChunkMaxTokens        int     `json:"chunkMaxTokens"`
-	ChunkOverlapTokens    int     `json:"chunkOverlapTokens"`
-	AnswerMode            int     `json:"answerMode"`
-	Remark                string  `json:"remark"`
+	StoreID               int64    `json:"storeId"`
+	DatasetID             string   `json:"datasetId"`
+	DatasetName           string   `json:"datasetName"`
+	ConnectionID          string   `json:"connectionId"`
+	RetrievalMode         string   `json:"retrievalMode"`
+	Name                  string   `json:"name"`
+	Description           string   `json:"description"`
+	KnowledgeType         string   `json:"knowledgeType"`
+	DefaultTopK           int      `json:"defaultTopK"`
+	DefaultScoreThreshold float64  `json:"defaultScoreThreshold"`
+	DefaultRerankLimit    int      `json:"defaultRerankLimit"`
+	ChunkProvider         string   `json:"chunkProvider"`
+	ChunkTargetTokens     int      `json:"chunkTargetTokens"`
+	ChunkMaxTokens        int      `json:"chunkMaxTokens"`
+	ChunkOverlapTokens    int      `json:"chunkOverlapTokens"`
+	AnswerMode            int      `json:"answerMode"`
+	Remark                string   `json:"remark"`
+	ResourceAllowedHosts  []string `json:"resourceAllowedHosts"`
 }
 
 type UpdateKnowledgeBaseRequest struct {
@@ -28,7 +29,6 @@ type UpdateKnowledgeBaseRequest struct {
 }
 
 type SyncKnowledgeResourceGroupRequest struct {
-	WxWorkInstanceID       int64  `json:"wxWorkInstanceId"`
 	KnowledgeBaseID        int64  `json:"knowledgeBaseId"`
 	Query                  string `json:"query"`
 	ExpectedSourceRecordID string `json:"expectedSourceRecordId"`

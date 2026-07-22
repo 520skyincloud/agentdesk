@@ -59,6 +59,17 @@ func (r *fastGPTStoreTenantRepository) MarkActivationFailedIfAppliedRevision(db 
 		Updates(columns).Error
 }
 
+func (r *fastGPTStoreTenantRepository) ApplyTargetRevisions(db *gorm.DB, tenantID, storeID, profileID, profileRevision, credentialRevision int64, columns map[string]any) (bool, error) {
+	if db == nil || tenantID <= 0 || storeID <= 0 || profileID <= 0 || profileRevision <= 0 || credentialRevision <= 0 {
+		return false, errors.New("FastGPT target revision scope is required")
+	}
+	result := db.Model(&models.FastGPTStoreTenant{}).
+		Where("tenant_id = ? AND store_id = ? AND target_profile_id = ? AND target_profile_revision = ? AND target_credential_revision = ?",
+			tenantID, storeID, profileID, profileRevision, credentialRevision).
+		Updates(columns)
+	return result.RowsAffected == 1, result.Error
+}
+
 func (r *fastGPTStoreTenantRepository) Save(db *gorm.DB, item *models.FastGPTStoreTenant) error {
 	return db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "tenant_id"}, {Name: "store_id"}},
@@ -69,4 +80,15 @@ func (r *fastGPTStoreTenantRepository) Save(db *gorm.DB, item *models.FastGPTSto
 			"updated_at", "update_user_id", "update_user_name",
 		}),
 	}).Create(item).Error
+}
+
+func (r *fastGPTStoreTenantRepository) CreateIfAbsent(db *gorm.DB, item *models.FastGPTStoreTenant) (bool, error) {
+	if db == nil || item == nil || item.TenantID <= 0 || item.StoreID <= 0 {
+		return false, errors.New("fastgpt store tenant scope is required")
+	}
+	result := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tenant_id"}, {Name: "store_id"}},
+		DoNothing: true,
+	}).Create(item)
+	return result.RowsAffected == 1, result.Error
 }

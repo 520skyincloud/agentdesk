@@ -51,14 +51,10 @@ func (c EmailConfig) Address() string {
 type FastGPTConfig struct {
 	Enabled             bool   `yaml:"enabled"`
 	BaseURL             string `yaml:"baseUrl"`
-	APIKey              string `yaml:"apiKey"`
-	IntegrationToken    string `yaml:"integrationToken"`
+	IntegrationToken    string `yaml:"-"`
 	TimeoutMS           int    `yaml:"timeoutMs"`
 	MaxRetries          int    `yaml:"maxRetries"`
 	RetrievalTokenLimit int    `yaml:"retrievalTokenLimit"`
-	VectorModel         string `yaml:"vectorModel"`
-	AgentModel          string `yaml:"agentModel"`
-	VLMModel            string `yaml:"vlmModel"`
 }
 
 type NewAPIUsageConfig struct {
@@ -345,9 +341,6 @@ func applyFastGPTEnv(cfg *Config) error {
 	}
 	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_BASE_URL")); value != "" {
 		cfg.FastGPT.BaseURL = value
-	}
-	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_API_KEY")); value != "" {
-		cfg.FastGPT.APIKey = value
 	}
 	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_INTEGRATION_TOKEN")); value != "" {
 		cfg.FastGPT.IntegrationToken = value

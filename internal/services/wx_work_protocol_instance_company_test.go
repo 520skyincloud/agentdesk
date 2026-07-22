@@ -173,17 +173,17 @@ func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing
 	if err := sqls.DB().Create(&models.Channel{ID: 22, TenantID: 101, ChannelType: enums.ChannelTypeWxWorkProtocol, Name: "协议渠道", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
-	if err := sqls.DB().Create(&models.Store{ID: 31, TenantID: 101, StoreCode: "store-sync", Name: "合肥南七店", Status: enums.StatusOk}).Error; err != nil {
+	if err := sqls.DB().Create(&models.Store{ID: 31, TenantID: 101, StoreCode: "store-sync", Name: "合肥南七店", KnowledgeBaseID: 202, Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
 	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, StoreID: 31, Status: enums.StatusOk}
 	if err := db.Create(binding).Error; err != nil {
 		t.Fatalf("create store staff binding: %v", err)
 	}
-	if err := sqls.DB().Create(&models.KnowledgeBase{ID: 101, TenantID: 101, IntentProfileID: 301, Name: "旧知识库", Status: enums.StatusOk}).Error; err != nil {
+	if err := sqls.DB().Create(&models.KnowledgeBase{ID: 101, TenantID: 101, StoreID: 31, IntentProfileID: 301, Name: "旧知识库", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create old knowledge base: %v", err)
 	}
-	if err := sqls.DB().Create(&models.KnowledgeBase{ID: 202, TenantID: 101, IntentProfileID: 301, Name: "合肥南七店", Status: enums.StatusOk}).Error; err != nil {
+	if err := sqls.DB().Create(&models.KnowledgeBase{ID: 202, TenantID: 101, StoreID: 31, IntentProfileID: 301, Name: "合肥南七店", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create new knowledge base: %v", err)
 	}
 	if err := sqls.DB().Create(&models.WxWorkProtocolInstance{

@@ -182,13 +182,24 @@ func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *tes
 	if err := db.Create(channel).Error; err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
+	store := &models.Store{
+		ID:          77,
+		TenantID:    101,
+		StoreCode:   "knowledge-pending-store",
+		Name:        "待配置知识库门店",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
 	instance := &models.WxWorkProtocolInstance{
 		TenantID:        101,
 		Guid:            "guid-new-account",
 		ChannelID:       channel.ID,
 		EmployeeUserID:  "employee-new",
 		EmployeeName:    "新员工号",
-		StoreID:         77,
+		StoreID:         store.ID,
 		KnowledgeBaseID: 0,
 		AIReplyEnabled:  true,
 		Status:          enums.StatusOk,

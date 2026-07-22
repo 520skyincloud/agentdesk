@@ -86,29 +86,23 @@ func (s *knowledgeResourceService) SyncFastGPTResources(ctx context.Context, req
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
 	}
-	if req.WxWorkInstanceID <= 0 || req.KnowledgeBaseID <= 0 || strings.TrimSpace(req.Query) == "" {
-		return nil, errorsx.InvalidParam("请选择企微员工号、知识库并填写用于同步的检索问题")
+	if req.KnowledgeBaseID <= 0 || strings.TrimSpace(req.Query) == "" {
+		return nil, errorsx.InvalidParam("请选择知识库并填写用于同步的检索问题")
 	}
 	tenantID, err := requireActiveTenantID(operator, "知识图片资源")
 	if err != nil {
 		return nil, err
 	}
-	instance := WxWorkProtocolInstanceService.GetByTenantID(req.WxWorkInstanceID, tenantID)
-	if instance == nil || instance.Status != enums.StatusOk {
-		return nil, errorsx.InvalidParam("企微员工号不存在或未启用")
-	}
-	if !s.canAccessWxWorkInstance(operator, instance.ID) {
-		return nil, errorsx.Forbidden("无权限维护该企微员工号的知识图片资源")
-	}
-	if instance.KnowledgeBaseID != req.KnowledgeBaseID {
-		return nil, errorsx.InvalidParam("只能同步当前企微员工号已绑定的知识库资源")
-	}
 	knowledgeBase := KnowledgeBaseService.GetInTenant(req.KnowledgeBaseID, tenantID)
 	if knowledgeBase == nil || knowledgeBase.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("知识库不存在或未启用")
 	}
-	if knowledgeBase.StoreID > 0 && knowledgeBase.StoreID != instance.StoreID {
-		return nil, errorsx.InvalidParam("只能同步当前门店自己的知识图片资源")
+	store := StoreService.GetInTenant(knowledgeBase.StoreID, tenantID)
+	if store == nil || store.Status != enums.StatusOk || store.KnowledgeBaseID != knowledgeBase.ID {
+		return nil, errorsx.InvalidParam("只能同步当前门店已启用的知识库资源")
+	}
+	if !s.canAccessStore(operator, store.ID) {
+		return nil, errorsx.Forbidden("无权限维护该门店的知识图片资源")
 	}
 	if !KnowledgeBaseService.CanAccessKnowledgeBase(knowledgeBase.ID, operator) {
 		return nil, errorsx.Forbidden("无权限维护该知识库图片资源")
@@ -123,7 +117,7 @@ func (s *knowledgeResourceService) SyncFastGPTResources(ctx context.Context, req
 
 	source, err := rag.FetchFastGPTSyncSource(ctx, *knowledgeBase, strings.TrimSpace(req.Query))
 	if err != nil {
-		return nil, err
+		return nil, publicFastGPTError(err)
 	}
 	if expected := strings.TrimSpace(req.ExpectedSourceRecordID); expected != "" && expected != source.SourceRecordID {
 		return nil, errorsx.InvalidParam("FastGPT 返回的来源记录与确认记录不一致")
@@ -136,7 +130,7 @@ func (s *knowledgeResourceService) SyncFastGPTResources(ctx context.Context, req
 	if err != nil {
 		return nil, err
 	}
-	return s.persistSyncedResources(instance, knowledgeBase, source, images, operator)
+	return s.persistSyncedResources(store, knowledgeBase, source, images, operator)
 }
 
 func (s *knowledgeResourceService) FindPageByCnd(cnd *sqls.Cnd) ([]models.KnowledgeResourceGroup, *sqls.Paging) {
@@ -247,17 +241,6 @@ func (s *knowledgeResourceService) ResolveForRuntime(wxWorkInstanceID, tenantID 
 			enums.StatusOk,
 		)
 		if group == nil {
-			group = repositories.KnowledgeResourceGroupRepository.Take(sqls.DB(),
-				"tenant_id = ? AND knowledge_base_id = ? AND wx_work_instance_id = ? AND source_provider = ? AND source_record_id = ? AND status = ?",
-				instance.TenantID,
-				source.KnowledgeBaseID,
-				wxWorkInstanceID,
-				knowledgeResourceProviderFastGPT,
-				strings.TrimSpace(source.SourceRecordID),
-				enums.StatusOk,
-			)
-		}
-		if group == nil {
 			continue
 		}
 		for _, item := range repositories.KnowledgeResourceItemRepository.FindByGroupIDInTenant(sqls.DB(), group.ID, instance.TenantID) {
@@ -292,25 +275,25 @@ func (s *knowledgeResourceService) ResolveForRuntime(wxWorkInstanceID, tenantID 
 	return ret
 }
 
-func (s *knowledgeResourceService) persistSyncedResources(instance *models.WxWorkProtocolInstance, knowledgeBase *models.KnowledgeBase, source rag.FastGPTSyncSource, images []downloadedKnowledgeResourceImage, operator *dto.AuthPrincipal) (*models.KnowledgeResourceGroup, error) {
-	if instance == nil || knowledgeBase == nil || len(images) == 0 {
+func (s *knowledgeResourceService) persistSyncedResources(store *models.Store, knowledgeBase *models.KnowledgeBase, source rag.FastGPTSyncSource, images []downloadedKnowledgeResourceImage, operator *dto.AuthPrincipal) (*models.KnowledgeResourceGroup, error) {
+	if store == nil || knowledgeBase == nil || len(images) == 0 {
 		return nil, errorsx.InvalidParam("没有可保存的知识图片资源")
 	}
-	if instance.TenantID <= 0 || instance.TenantID != knowledgeBase.TenantID {
-		return nil, errorsx.InvalidParam("企微员工号与知识库不属于同一接入公司")
+	if store.TenantID <= 0 || store.TenantID != knowledgeBase.TenantID || store.ID != knowledgeBase.StoreID {
+		return nil, errorsx.InvalidParam("门店与知识库不属于同一接入公司")
 	}
 	existing := repositories.KnowledgeResourceGroupRepository.Take(sqls.DB(),
 		"tenant_id = ? AND company_id = ? AND store_id = ? AND knowledge_base_id = ? AND source_provider = ? AND source_record_id = ?",
-		instance.TenantID,
+		store.TenantID,
 		0,
-		instance.StoreID,
+		store.ID,
 		knowledgeBase.ID,
 		knowledgeResourceProviderFastGPT,
 		source.SourceRecordID,
 	)
 	oldItems := []models.KnowledgeResourceItem(nil)
 	if existing != nil {
-		oldItems = repositories.KnowledgeResourceItemRepository.FindByGroupIDInTenant(sqls.DB(), existing.ID, instance.TenantID)
+		oldItems = repositories.KnowledgeResourceItemRepository.FindByGroupIDInTenant(sqls.DB(), existing.ID, store.TenantID)
 	}
 	reusable := make(map[string]models.KnowledgeResourceItem, len(oldItems))
 	for _, item := range oldItems {
@@ -324,10 +307,10 @@ func (s *knowledgeResourceService) persistSyncedResources(instance *models.WxWor
 	for _, imageItem := range images {
 		key := imageItem.SourceURL + "|" + imageItem.Checksum
 		assetID := ""
-		if oldItem, ok := reusable[key]; ok && AssetService.GetByAssetIDInTenant(oldItem.AssetID, instance.TenantID) != nil {
+		if oldItem, ok := reusable[key]; ok && AssetService.GetByAssetIDInTenant(oldItem.AssetID, store.TenantID) != nil {
 			assetID = oldItem.AssetID
 		} else {
-			asset, err := AssetService.UploadBytes(imageItem.Data, fmt.Sprintf("knowledge-resources/%d/%d", knowledgeBase.ID, instance.StoreID), imageItem.Filename, operator)
+			asset, err := AssetService.UploadBytes(imageItem.Data, fmt.Sprintf("knowledge-resources/%d/%d", knowledgeBase.ID, store.ID), imageItem.Filename, operator)
 			if err != nil {
 				s.cleanupUnreferencedAssets(createdAssetIDs, operator)
 				return nil, err
@@ -336,7 +319,7 @@ func (s *knowledgeResourceService) persistSyncedResources(instance *models.WxWor
 			createdAssetIDs = append(createdAssetIDs, assetID)
 		}
 		items = append(items, models.KnowledgeResourceItem{
-			TenantID:       instance.TenantID,
+			TenantID:       store.TenantID,
 			AssetID:        assetID,
 			SourceURL:      imageItem.SourceURL,
 			SourceChecksum: imageItem.Checksum,
@@ -354,25 +337,24 @@ func (s *knowledgeResourceService) persistSyncedResources(instance *models.WxWor
 	err := sqls.WithTransaction(func(tx *sqls.TxContext) error {
 		if group == nil {
 			group = &models.KnowledgeResourceGroup{
-				TenantID:         instance.TenantID,
-				CompanyID:        0,
-				StoreID:          instance.StoreID,
-				IntentProfileID:  0,
-				KnowledgeBaseID:  knowledgeBase.ID,
-				WxWorkInstanceID: 0,
-				SourceProvider:   knowledgeResourceProviderFastGPT,
-				SourceRecordID:   source.SourceRecordID,
-				Title:            source.Title,
-				Description:      source.Description,
-				SourceHash:       sourceHash,
-				Status:           enums.StatusOk,
-				AuditFields:      utils.BuildAuditFields(operator),
+				TenantID:        store.TenantID,
+				CompanyID:       0,
+				StoreID:         store.ID,
+				IntentProfileID: 0,
+				KnowledgeBaseID: knowledgeBase.ID,
+				SourceProvider:  knowledgeResourceProviderFastGPT,
+				SourceRecordID:  source.SourceRecordID,
+				Title:           source.Title,
+				Description:     source.Description,
+				SourceHash:      sourceHash,
+				Status:          enums.StatusOk,
+				AuditFields:     utils.BuildAuditFields(operator),
 			}
 			if err := repositories.KnowledgeResourceGroupRepository.Create(tx.Tx, group); err != nil {
 				return err
 			}
 		} else {
-			if err := repositories.KnowledgeResourceGroupRepository.UpdatesInTenant(tx.Tx, group.ID, instance.TenantID, map[string]any{
+			if err := repositories.KnowledgeResourceGroupRepository.UpdatesInTenant(tx.Tx, group.ID, store.TenantID, map[string]any{
 				"company_id":          0,
 				"intent_profile_id":   0,
 				"wx_work_instance_id": 0,
@@ -386,7 +368,7 @@ func (s *knowledgeResourceService) persistSyncedResources(instance *models.WxWor
 			}); err != nil {
 				return err
 			}
-			if err := repositories.KnowledgeResourceItemRepository.DeleteByGroupIDInTenant(tx.Tx, group.ID, instance.TenantID); err != nil {
+			if err := repositories.KnowledgeResourceItemRepository.DeleteByGroupIDInTenant(tx.Tx, group.ID, store.TenantID); err != nil {
 				return err
 			}
 		}
@@ -405,7 +387,7 @@ func (s *knowledgeResourceService) persistSyncedResources(instance *models.WxWor
 	if existing != nil {
 		s.cleanupReplacedKnowledgeResourceAssets(oldItems, items, operator)
 	}
-	return repositories.KnowledgeResourceGroupRepository.GetInTenant(sqls.DB(), group.ID, instance.TenantID), nil
+	return repositories.KnowledgeResourceGroupRepository.GetInTenant(sqls.DB(), group.ID, store.TenantID), nil
 }
 
 func (s *knowledgeResourceService) downloadTrustedImages(ctx context.Context, allowedHosts []string, resources []rag.FastGPTSyncResource) ([]downloadedKnowledgeResourceImage, error) {
@@ -623,20 +605,4 @@ func assetIDsFromKnowledgeResourceItems(items []models.KnowledgeResourceItem) []
 
 func isFastGPTKnowledgeBaseForResources(item *models.KnowledgeBase) bool {
 	return item != nil && (item.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud) || item.ChunkProvider == string(enums.KnowledgeChunkProviderFastGPT))
-}
-
-func (s *knowledgeResourceService) canAccessWxWorkInstance(operator *dto.AuthPrincipal, instanceID int64) bool {
-	if operator == nil || instanceID <= 0 {
-		return false
-	}
-	scope := AgentTeamScopeService.Resolve(operator)
-	if scope.Unrestricted {
-		return true
-	}
-	for _, allowedID := range scope.WxWorkInstanceIDs {
-		if allowedID == instanceID {
-			return true
-		}
-	}
-	return false
 }

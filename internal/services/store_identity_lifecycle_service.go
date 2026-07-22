@@ -62,6 +62,10 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 		if store == nil || store.Status == enums.StatusDeleted {
 			return errorsx.InvalidParam("门店身份不存在或已删除")
 		}
+		knowledgeBaseID, err := WxWorkProtocolInstanceService.resolveStoreKnowledgeBaseIDDB(ctx.Tx, current.TenantID, store.ID)
+		if err != nil {
+			return err
+		}
 		storeName := utils.RepairMojibakeText(strings.TrimSpace(firstNonBlank(req.StoreName, store.Name)))
 		if storeName == "" {
 			return errorsx.InvalidParam("请填写门店名称")
@@ -135,7 +139,7 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 			"store_latitude":             strings.TrimSpace(req.StoreLatitude),
 			"store_map_provider":         strings.TrimSpace(req.StoreMapProvider),
 			"store_contact_phone":        utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
-			"knowledge_base_id":          req.KnowledgeBaseID,
+			"knowledge_base_id":          knowledgeBaseID,
 			"service_hours":              strings.TrimSpace(req.ServiceHours),
 			"front_desk_mode":            normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
 			"front_desk_hours":           normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),

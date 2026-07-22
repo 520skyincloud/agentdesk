@@ -2135,9 +2135,13 @@ func (s *wxWorkProtocolService) ensureRouteState(conversationID int64, instance 
 	if state.TenantID != instance.TenantID {
 		return errorsx.InvalidParam("会话路由与企微员工号接入公司不一致")
 	}
+	knowledgeBaseID, err := WxWorkProtocolInstanceService.resolveStoreKnowledgeBaseIDDB(sqls.DB(), instance.TenantID, instance.StoreID)
+	if err != nil {
+		return err
+	}
 	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
 		"store_id":            instance.StoreID,
-		"knowledge_base_id":   instance.KnowledgeBaseID,
+		"knowledge_base_id":   knowledgeBaseID,
 		"wx_work_instance_id": instance.ID,
 		"updated_at":          time.Now(),
 		"update_user_name":    wxWorkProtocolSystemOperatorName,

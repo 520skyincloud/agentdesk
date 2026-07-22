@@ -12,8 +12,8 @@ type FastGPTDatasetActionRequest struct {
 }
 
 type ActivateFastGPTKnowledgeBaseRequest struct {
-	WxWorkInstanceID int64 `json:"wxWorkInstanceId"`
-	KnowledgeBaseID  int64 `json:"knowledgeBaseId"`
+	StoreID         int64 `json:"storeId"`
+	KnowledgeBaseID int64 `json:"knowledgeBaseId"`
 }
 
 type DeleteFastGPTDatasetRequest struct {
@@ -21,25 +21,6 @@ type DeleteFastGPTDatasetRequest struct {
 	ConfirmationName string `json:"confirmationName"`
 }
 
-type FastGPTModelProfileDetailRequest struct {
-	WxWorkInstanceID int64 `json:"wxWorkInstanceId"`
-}
-
-type FastGPTModelCredentialRequest struct {
-	Provider string `json:"provider"`
-	BaseURL  string `json:"baseUrl"`
-	Model    string `json:"model"`
-	APIKey   string `json:"apiKey"`
-}
-
-type FastGPTModelProfileRequest struct {
-	WxWorkInstanceID int64                          `json:"wxWorkInstanceId"`
-	ProfileID        string                         `json:"profileId"`
-	Name             string                         `json:"name"`
-	Embedding        FastGPTModelCredentialRequest  `json:"embedding"`
-	DocumentParser   FastGPTModelCredentialRequest  `json:"documentParser"`
-	Vision           FastGPTModelCredentialRequest  `json:"vision"`
-	RerankEnabled    bool                           `json:"rerankEnabled"`
-	Rerank           *FastGPTModelCredentialRequest `json:"rerank"`
-	TestToken        string                         `json:"testToken"`
+type FastGPTStoreActionRequest struct {
+	StoreID int64 `json:"storeId"`
 }

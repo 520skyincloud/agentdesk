@@ -66,6 +66,8 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		&models.AIAgent{},
 		&models.Channel{},
 		&models.ChannelMessageOutbox{},
+		&models.Store{},
+		&models.KnowledgeBase{},
 		&models.WxWorkProtocolInstance{},
 		&models.Customer{},
 		&models.CustomerIdentity{},

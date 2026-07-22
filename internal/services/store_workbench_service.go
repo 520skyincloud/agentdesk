@@ -102,9 +102,6 @@ func (s *storeWorkbenchService) Current(operator *dto.AuthPrincipal) (*StoreWork
 	}
 
 	knowledgeBaseID := snapshot.Store.KnowledgeBaseID
-	if snapshot.WxWorkInstance != nil && snapshot.WxWorkInstance.KnowledgeBaseID > 0 {
-		knowledgeBaseID = snapshot.WxWorkInstance.KnowledgeBaseID
-	}
 	if knowledgeBaseID > 0 {
 		snapshot.KnowledgeBase = repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), knowledgeBaseID, operator.ActiveTenantID)
 	}

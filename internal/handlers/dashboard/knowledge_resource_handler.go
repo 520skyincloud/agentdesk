@@ -21,7 +21,6 @@ func KnowledgeResourceAnyList(ctx *gin.Context) {
 	}
 	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "knowledgeBaseId"},
-		params.QueryFilter{ParamName: "wxWorkInstanceId"},
 	).Desc("id")
 	cnd = services.KnowledgeResourceService.ApplyAccessibleScope(cnd, operator)
 	groups, paging := services.KnowledgeResourceService.FindPageByCnd(cnd)

@@ -2,7 +2,8 @@ package models
 
 import "time"
 
-// FastGPTDatasetJob records durable dataset creation/upload/delete work.
+// FastGPTDatasetJob records durable Dataset provision, upload/index polling and
+// Profile synchronization work.
 type FastGPTDatasetJob struct {
 	ID                       int64      `gorm:"primaryKey;autoIncrement"`
 	TenantID                 int64      `gorm:"type:bigint;not null;default:0;index"`

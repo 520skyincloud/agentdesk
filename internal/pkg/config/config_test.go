@@ -128,7 +128,6 @@ func TestLoadRejectsInvalidTenantRegistrationEnvironment(t *testing.T) {
 func TestLoadAppliesFastGPTSecretEnvironment(t *testing.T) {
 	t.Setenv("AGENT_DESK_FASTGPT_ENABLED", "true")
 	t.Setenv("AGENT_DESK_FASTGPT_BASE_URL", "https://fastgpt.example.com")
-	t.Setenv("AGENT_DESK_FASTGPT_API_KEY", "secret-from-environment")
 	t.Setenv("AGENT_DESK_FASTGPT_INTEGRATION_TOKEN", "integration-from-environment")
 	t.Setenv("AGENT_DESK_FASTGPT_RETRIEVAL_TOKEN_LIMIT", "400")
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -139,8 +138,23 @@ func TestLoadAppliesFastGPTSecretEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.FastGPT.Enabled || cfg.FastGPT.BaseURL != "https://fastgpt.example.com" || cfg.FastGPT.APIKey != "secret-from-environment" || cfg.FastGPT.IntegrationToken != "integration-from-environment" || cfg.FastGPT.RetrievalTokenLimit != 400 {
+	if !cfg.FastGPT.Enabled || cfg.FastGPT.BaseURL != "https://fastgpt.example.com" || cfg.FastGPT.IntegrationToken != "integration-from-environment" || cfg.FastGPT.RetrievalTokenLimit != 400 {
 		t.Fatalf("fastGPT=%#v", cfg.FastGPT)
+	}
+}
+
+func TestLoadIgnoresFastGPTIntegrationTokenInYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := "fastGPT:\n  enabled: true\n  baseUrl: https://fastgpt.example.com\n  integrationToken: must-not-load\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FastGPT.IntegrationToken != "" {
+		t.Fatalf("FastGPT integration token must come only from deployment secrets, got %q", cfg.FastGPT.IntegrationToken)
 	}
 }
 

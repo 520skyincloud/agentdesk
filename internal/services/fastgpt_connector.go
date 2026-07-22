@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"strings"
 	"time"
@@ -27,48 +26,13 @@ type FastGPTModelProfileTestResult = fastgptapi.ModelProfileTestResult
 type FastGPTModelProfileUpsertResult = fastgptapi.ModelProfileUpsertResult
 
 type FastGPTSearchResult struct {
-	Raw json.RawMessage `json:"raw"`
+	DatasetID string                        `json:"datasetId"`
+	Hits      []fastgptapi.SearchDatasetHit `json:"hits"`
+	LatencyMS int64                         `json:"latencyMs"`
 }
 
-func NewPlatformFastGPTConnector() (*FastGPTConnector, error) {
-	cfg := config.Current().FastGPT
-	if !cfg.Enabled {
-		return nil, errorsx.InvalidParam("平台 FastGPT 连接尚未启用")
-	}
-	baseURL := strings.TrimSpace(cfg.BaseURL)
-	apiKey := strings.TrimSpace(cfg.APIKey)
-	integrationToken := strings.TrimSpace(cfg.IntegrationToken)
-	if baseURL == "" || apiKey == "" {
-		return nil, errorsx.InvalidParam("平台 FastGPT 缺少地址或 API Key")
-	}
-	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	maxRetries := cfg.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 1
-	}
-	gateway, err := fastgptapi.NewGateway(fastgptapi.Config{
-		BaseURL:          baseURL,
-		APIKey:           apiKey,
-		IntegrationToken: integrationToken,
-		Timeout:          timeout,
-		MaxRetries:       maxRetries,
-		VectorModel:      strings.TrimSpace(cfg.VectorModel),
-		AgentModel:       strings.TrimSpace(cfg.AgentModel),
-		VLMModel:         strings.TrimSpace(cfg.VLMModel),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &FastGPTConnector{gateway: gateway}, nil
-}
-
-// NewManagedStoreFastGPTConnector is used only for datasets explicitly
-// created under the Agent Desk Team integration. Legacy datasets deliberately
-// continue using the platform connector until a verified migration updates
-// their ConnectionID.
+// NewManagedStoreFastGPTConnector is the only production FastGPT transport.
+// Store scope is asserted by the integration API on every remote operation.
 func NewManagedStoreFastGPTConnector() (*FastGPTConnector, error) {
 	cfg := config.Current().FastGPT
 	if !cfg.Enabled {
@@ -90,7 +54,6 @@ func NewManagedStoreFastGPTConnector() (*FastGPTConnector, error) {
 	gateway, err := fastgptapi.NewGateway(fastgptapi.Config{
 		BaseURL:          baseURL,
 		IntegrationToken: integrationToken,
-		UseIntegration:   true,
 		Timeout:          timeout,
 		MaxRetries:       maxRetries,
 	})
@@ -101,10 +64,11 @@ func NewManagedStoreFastGPTConnector() (*FastGPTConnector, error) {
 }
 
 func NewFastGPTConnectorForKnowledgeBase(knowledgeBase *models.KnowledgeBase) (*FastGPTConnector, error) {
-	if knowledgeBase != nil && strings.TrimSpace(knowledgeBase.ConnectionID) == fastgptapi.ManagedConnectionID {
-		return NewManagedStoreFastGPTConnector()
+	if knowledgeBase == nil || knowledgeBase.TenantID <= 0 || knowledgeBase.StoreID <= 0 ||
+		strings.TrimSpace(knowledgeBase.DatasetID) == "" || strings.TrimSpace(knowledgeBase.ConnectionID) != fastgptapi.ManagedConnectionID {
+		return nil, errorsx.InvalidParam("知识库尚未迁移到门店 FastGPT 托管连接")
 	}
-	return NewPlatformFastGPTConnector()
+	return NewManagedStoreFastGPTConnector()
 }
 
 func (c *FastGPTConnector) ForStore(storeID int64) *FastGPTConnector {
@@ -174,5 +138,5 @@ func (c *FastGPTConnector) SearchTest(ctx context.Context, datasetID, text strin
 	if err != nil {
 		return nil, err
 	}
-	return &FastGPTSearchResult{Raw: result.Raw}, nil
+	return &FastGPTSearchResult{DatasetID: result.DatasetID, Hits: result.Hits, LatencyMS: result.LatencyMS}, nil
 }

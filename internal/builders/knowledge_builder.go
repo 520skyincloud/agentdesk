@@ -5,9 +5,28 @@ import (
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"encoding/json"
+	"strings"
 )
 
 func BuildKnowledgeBase(item *models.KnowledgeBase) response.KnowledgeBaseResponse {
+	remark := item.Remark
+	resourceAllowedHosts := make([]string, 0)
+	if item.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud) {
+		remark = ""
+		config := struct {
+			ResourceAllowedHosts []string `json:"resourceAllowedHosts"`
+		}{}
+		if json.Unmarshal([]byte(item.Remark), &config) == nil {
+			seen := map[string]bool{}
+			for _, host := range config.ResourceAllowedHosts {
+				host = strings.ToLower(strings.TrimSpace(host))
+				if host != "" && !seen[host] {
+					seen[host] = true
+					resourceAllowedHosts = append(resourceAllowedHosts, host)
+				}
+			}
+		}
+	}
 	return response.KnowledgeBaseResponse{
 		ID:                     item.ID,
 		StoreID:                item.StoreID,
@@ -33,7 +52,8 @@ func BuildKnowledgeBase(item *models.KnowledgeBase) response.KnowledgeBaseRespon
 		ChunkOverlapTokens:     item.ChunkOverlapTokens,
 		AnswerMode:             item.AnswerMode,
 		AnswerModeName:         enums.GetKnowledgeAnswerModeLabel(enums.KnowledgeAnswerMode(item.AnswerMode)),
-		Remark:                 item.Remark,
+		Remark:                 remark,
+		ResourceAllowedHosts:   resourceAllowedHosts,
 		CreatedAt:              item.CreatedAt,
 		UpdatedAt:              item.UpdatedAt,
 		CreateUserName:         item.CreateUserName,
@@ -47,21 +67,20 @@ func BuildKnowledgeResourceGroup(item *models.KnowledgeResourceGroup, resourceIt
 		return ret
 	}
 	ret = response.KnowledgeResourceGroupResponse{
-		ID:               item.ID,
-		StoreID:          item.StoreID,
-		KnowledgeBaseID:  item.KnowledgeBaseID,
-		WxWorkInstanceID: item.WxWorkInstanceID,
-		SourceProvider:   item.SourceProvider,
-		SourceRecordID:   item.SourceRecordID,
-		Title:            item.Title,
-		Description:      item.Description,
-		Status:           item.Status,
-		StatusName:       enums.GetStatusLabel(item.Status),
-		CreatedAt:        item.CreatedAt,
-		UpdatedAt:        item.UpdatedAt,
-		CreateUserName:   item.CreateUserName,
-		UpdateUserName:   item.UpdateUserName,
-		Items:            make([]response.KnowledgeResourceItemResponse, 0, len(resourceItems)),
+		ID:              item.ID,
+		StoreID:         item.StoreID,
+		KnowledgeBaseID: item.KnowledgeBaseID,
+		SourceProvider:  item.SourceProvider,
+		SourceRecordID:  item.SourceRecordID,
+		Title:           item.Title,
+		Description:     item.Description,
+		Status:          item.Status,
+		StatusName:      enums.GetStatusLabel(item.Status),
+		CreatedAt:       item.CreatedAt,
+		UpdatedAt:       item.UpdatedAt,
+		CreateUserName:  item.CreateUserName,
+		UpdateUserName:  item.UpdateUserName,
+		Items:           make([]response.KnowledgeResourceItemResponse, 0, len(resourceItems)),
 	}
 	for _, resourceItem := range resourceItems {
 		ret.Items = append(ret.Items, response.KnowledgeResourceItemResponse{

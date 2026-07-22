@@ -13,6 +13,9 @@ import (
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/enums"
 	fastgptapi "agent-desk/internal/pkg/fastgpt"
+	"agent-desk/internal/repositories"
+
+	"github.com/mlogclub/simple/sqls"
 )
 
 const (
@@ -39,7 +42,7 @@ type FastGPTSyncResource struct {
 	SortNo      int
 }
 
-func newPlatformFastGPTGateway(useIntegration bool) (*fastgptapi.Gateway, error) {
+func newManagedFastGPTGateway() (*fastgptapi.Gateway, error) {
 	cfg := config.Current().FastGPT
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("platform FastGPT connection engine is disabled")
@@ -53,10 +56,33 @@ func newPlatformFastGPTGateway(useIntegration bool) (*fastgptapi.Gateway, error)
 		maxRetries = 1
 	}
 	return fastgptapi.NewGateway(fastgptapi.Config{
-		BaseURL: strings.TrimSpace(cfg.BaseURL), APIKey: strings.TrimSpace(cfg.APIKey), IntegrationToken: strings.TrimSpace(cfg.IntegrationToken), UseIntegration: useIntegration,
+		BaseURL: strings.TrimSpace(cfg.BaseURL), IntegrationToken: strings.TrimSpace(cfg.IntegrationToken),
 		Timeout: timeout, MaxRetries: maxRetries,
-		VectorModel: strings.TrimSpace(cfg.VectorModel), AgentModel: strings.TrimSpace(cfg.AgentModel), VLMModel: strings.TrimSpace(cfg.VLMModel),
 	})
+}
+
+func validateManagedFastGPTReadiness(knowledgeBase models.KnowledgeBase) error {
+	if knowledgeBase.TenantID <= 0 || knowledgeBase.StoreID <= 0 || strings.TrimSpace(knowledgeBase.DatasetID) == "" ||
+		strings.TrimSpace(knowledgeBase.ConnectionID) != fastgptapi.ManagedConnectionID || knowledgeBase.Status != enums.StatusOk {
+		return fmt.Errorf("managed FastGPT knowledge base is not ready")
+	}
+	store := repositories.StoreRepository.GetInTenant(sqls.DB(), knowledgeBase.StoreID, knowledgeBase.TenantID)
+	if store == nil || store.Status != enums.StatusOk || store.KnowledgeBaseID != knowledgeBase.ID {
+		return fmt.Errorf("managed FastGPT knowledge base is not active for the store")
+	}
+	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(sqls.DB(), knowledgeBase.TenantID, knowledgeBase.StoreID)
+	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), knowledgeBase.TenantID, knowledgeBase.StoreID)
+	binding := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(sqls.DB(), knowledgeBase.StoreID, knowledgeBase.TenantID)
+	if assignment == nil || assignment.Status != enums.StoreModelAssignmentStatusReady || assignment.TemplateID <= 0 || assignment.TemplateRevision <= 0 ||
+		credential == nil || credential.Status != enums.StoreCredentialStatusActive || credential.CredentialRevision <= 0 ||
+		binding == nil || binding.Status != "active" || binding.ReadinessStatus != "ready" ||
+		binding.AppliedProfileID != assignment.TemplateID || binding.AppliedProfileRevision != assignment.TemplateRevision ||
+		binding.AppliedCredentialRevision != credential.CredentialRevision || knowledgeBase.FastGPTProfileStatus != "ready" ||
+		knowledgeBase.FastGPTAppliedProfileID != assignment.TemplateID || knowledgeBase.FastGPTAppliedProfileRevision != assignment.TemplateRevision ||
+		knowledgeBase.FastGPTAppliedCredentialRevision != credential.CredentialRevision {
+		return fmt.Errorf("managed FastGPT profile is not ready")
+	}
+	return nil
 }
 
 func isFastGPTKnowledgeBase(knowledgeBase models.KnowledgeBase) bool {
@@ -94,6 +120,12 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if readinessErr := validateManagedFastGPTReadiness(knowledgeBase); readinessErr != nil {
+				mu.Lock()
+				errCount++
+				mu.Unlock()
+				return
+			}
 			datasetID := strings.TrimSpace(knowledgeBase.DatasetID)
 			if datasetID == "" {
 				mu.Lock()
@@ -102,7 +134,7 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 				return
 			}
 			topK, scoreThreshold := resolveKnowledgeBaseSearchOptions(req, &knowledgeBase)
-			gateway, gatewayErr := newPlatformFastGPTGateway(strings.TrimSpace(knowledgeBase.ConnectionID) == fastgptapi.ManagedConnectionID)
+			gateway, gatewayErr := newManagedFastGPTGateway()
 			if gatewayErr != nil {
 				mu.Lock()
 				errCount++
@@ -117,7 +149,7 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 				UseRerank: knowledgeBase.DefaultRerankLimit > 0, TopK: topK,
 			})
 			if searchErr != nil {
-				slog.Warn("FastGPT knowledge lookup failed", "knowledge_base_id", knowledgeBase.ID, "dataset_id", datasetID, "error", searchErr)
+				slog.Warn("FastGPT knowledge lookup failed", "knowledge_base_id", knowledgeBase.ID, "store_id", knowledgeBase.StoreID)
 				mu.Lock()
 				errCount++
 				mu.Unlock()
@@ -181,7 +213,10 @@ func FetchFastGPTSyncSource(ctx context.Context, knowledgeBase models.KnowledgeB
 	if !isFastGPTKnowledgeBase(knowledgeBase) {
 		return FastGPTSyncSource{}, fmt.Errorf("knowledge base is not a FastGPT source")
 	}
-	gateway, err := newPlatformFastGPTGateway(strings.TrimSpace(knowledgeBase.ConnectionID) == fastgptapi.ManagedConnectionID)
+	if err := validateManagedFastGPTReadiness(knowledgeBase); err != nil {
+		return FastGPTSyncSource{}, err
+	}
+	gateway, err := newManagedFastGPTGateway()
 	if err != nil {
 		return FastGPTSyncSource{}, err
 	}

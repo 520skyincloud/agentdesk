@@ -17,27 +17,39 @@ import (
 
 const maxResponseBytes = 4 << 20
 
-// ManagedConnectionID identifies datasets created through the Agent Desk
-// server-to-server integration. Existing FastGPT datasets keep their legacy
-// transport until they have been explicitly migrated into a managed Team.
+var ErrTransportUnavailable = errors.New("FastGPT transport unavailable")
+
+// ManagedConnectionID identifies datasets created through the only supported
+// Agent Desk server-to-server integration.
 const ManagedConnectionID = "agentdesk_integration"
 
 type Config struct {
 	BaseURL          string
-	APIKey           string
 	IntegrationToken string
-	UseIntegration   bool
 	StoreID          string
 	Timeout          time.Duration
 	MaxRetries       int
-	VectorModel      string
-	AgentModel       string
-	VLMModel         string
 }
 
 type Gateway struct {
 	config     Config
 	httpClient *http.Client
+}
+
+type TransportError struct {
+	cause error
+}
+
+func (e *TransportError) Error() string { return ErrTransportUnavailable.Error() }
+
+func (e *TransportError) Unwrap() error {
+	if e != nil && errors.Is(e.cause, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	if e != nil && errors.Is(e.cause, context.Canceled) {
+		return context.Canceled
+	}
+	return ErrTransportUnavailable
 }
 
 type Dataset struct {
@@ -121,7 +133,7 @@ type UsageEvent struct {
 	Provider         string    `json:"provider"`
 	Model            string    `json:"model"`
 	ProfileID        string    `json:"profileId"`
-	ProfileRevision  string    `json:"profileRevision"`
+	ProfileRevision  int64     `json:"profileRevision"`
 	RequestID        string    `json:"requestId"`
 	PromptTokens     int64     `json:"promptTokens"`
 	CompletionTokens int64     `json:"completionTokens"`
@@ -175,7 +187,6 @@ type SearchDatasetResult struct {
 	DatasetID string             `json:"datasetId"`
 	Hits      []SearchDatasetHit `json:"hits"`
 	LatencyMS int64              `json:"latencyMs"`
-	Raw       json.RawMessage    `json:"raw,omitempty"`
 }
 
 type apiResponse struct {
@@ -208,10 +219,9 @@ type rawSearchScore struct {
 
 func NewGateway(config Config) (*Gateway, error) {
 	config.BaseURL = strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
-	config.APIKey = strings.TrimSpace(config.APIKey)
 	config.IntegrationToken = strings.TrimSpace(config.IntegrationToken)
-	if config.BaseURL == "" || (config.APIKey == "" && (!config.UseIntegration || config.IntegrationToken == "")) {
-		return nil, errors.New("FastGPT gateway requires base URL and a service credential")
+	if config.BaseURL == "" || config.IntegrationToken == "" {
+		return nil, errors.New("FastGPT gateway requires base URL and an integration token")
 	}
 	if config.Timeout <= 0 {
 		config.Timeout = 30 * time.Second
@@ -228,24 +238,15 @@ func (g *Gateway) ForStore(storeID int64) *Gateway {
 	return &clone
 }
 
-func (g *Gateway) usesIntegrationAPI() bool {
-	return g.config.UseIntegration && g.config.IntegrationToken != ""
-}
-
 func (g *Gateway) requireStoreScope() error {
-	if g.usesIntegrationAPI() && strings.TrimSpace(g.config.StoreID) == "" {
+	if strings.TrimSpace(g.config.StoreID) == "" {
 		return errors.New("FastGPT integration requires a store scope")
 	}
 	return nil
 }
 
-// EnsureStoreTenant is intentionally available only through the dedicated
-// service-to-service integration API. Legacy FastGPT API keys cannot create
-// managed Agent Desk tenant teams.
+// EnsureStoreTenant creates or resolves the managed Team for one Store.
 func (g *Gateway) EnsureStoreTenant(ctx context.Context, teamName string) (*StoreTenant, error) {
-	if !g.usesIntegrationAPI() {
-		return nil, nil
-	}
 	if err := g.requireStoreScope(); err != nil {
 		return nil, err
 	}
@@ -270,81 +271,42 @@ func (g *Gateway) CreateDataset(ctx context.Context, name, intro string) (*Datas
 	if err := g.requireStoreScope(); err != nil {
 		return nil, err
 	}
-	if g.usesIntegrationAPI() {
-		data, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/create", nil, map[string]any{
-			"externalStoreId": g.config.StoreID,
-			"name":            strings.TrimSpace(name),
-			"intro":           strings.TrimSpace(intro),
-		}, false)
-		if err != nil {
-			return nil, err
-		}
-		var result struct {
-			DatasetID   string `json:"datasetId"`
-			DatasetName string `json:"datasetName"`
-		}
-		if err := json.Unmarshal(data, &result); err != nil || result.DatasetID == "" {
-			return nil, errors.New("FastGPT integration create response is missing datasetId")
-		}
-		return &Dataset{ID: result.DatasetID, Name: firstNonBlank(result.DatasetName, name)}, nil
-	}
-	payload := map[string]any{
-		"parentId": nil, "type": "dataset", "name": strings.TrimSpace(name),
-		"intro": strings.TrimSpace(intro), "avatar": "",
-	}
-	if model := strings.TrimSpace(g.config.VectorModel); model != "" {
-		payload["vectorModel"] = model
-	}
-	if model := strings.TrimSpace(g.config.AgentModel); model != "" {
-		payload["agentModel"] = model
-	}
-	if model := strings.TrimSpace(g.config.VLMModel); model != "" {
-		payload["vlmModel"] = model
-	}
-	data, err := g.doJSON(ctx, http.MethodPost, "/api/core/dataset/create", nil, payload, false)
+	data, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/create", nil, map[string]any{
+		"externalStoreId": g.config.StoreID,
+		"name":            strings.TrimSpace(name),
+		"intro":           strings.TrimSpace(intro),
+	}, false)
 	if err != nil {
 		return nil, err
 	}
-	var dataset Dataset
-	if err := json.Unmarshal(data, &dataset); err == nil && dataset.ID != "" {
-		return &dataset, nil
+	var result struct {
+		DatasetID   string `json:"datasetId"`
+		DatasetName string `json:"datasetName"`
 	}
-	var datasetID string
-	if err := json.Unmarshal(data, &datasetID); err == nil && datasetID != "" {
-		return &Dataset{ID: datasetID, Name: strings.TrimSpace(name)}, nil
+	if err := json.Unmarshal(data, &result); err != nil || result.DatasetID == "" {
+		return nil, errors.New("FastGPT integration create response is missing datasetId")
 	}
-	return nil, errors.New("FastGPT create dataset response is missing datasetId")
+	return &Dataset{ID: result.DatasetID, Name: firstNonBlank(result.DatasetName, name)}, nil
 }
 
 func (g *Gateway) GetDataset(ctx context.Context, datasetID string) (*Dataset, error) {
 	if err := g.requireStoreScope(); err != nil {
 		return nil, err
 	}
-	if g.usesIntegrationAPI() {
-		data, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/detail", nil, map[string]any{
-			"externalStoreId": g.config.StoreID, "datasetId": strings.TrimSpace(datasetID),
-		}, true)
-		if err != nil {
-			return nil, err
-		}
-		var result struct {
-			DatasetID   string `json:"datasetId"`
-			DatasetName string `json:"datasetName"`
-		}
-		if err := json.Unmarshal(data, &result); err != nil {
-			return nil, fmt.Errorf("parse FastGPT integration dataset: %w", err)
-		}
-		return &Dataset{ID: result.DatasetID, Name: result.DatasetName}, nil
-	}
-	data, err := g.doJSON(ctx, http.MethodGet, "/api/core/dataset/detail", url.Values{"id": []string{strings.TrimSpace(datasetID)}}, nil, true)
+	data, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/detail", nil, map[string]any{
+		"externalStoreId": g.config.StoreID, "datasetId": strings.TrimSpace(datasetID),
+	}, true)
 	if err != nil {
 		return nil, err
 	}
-	var dataset Dataset
-	if err := json.Unmarshal(data, &dataset); err != nil {
-		return nil, fmt.Errorf("parse FastGPT dataset: %w", err)
+	var result struct {
+		DatasetID   string `json:"datasetId"`
+		DatasetName string `json:"datasetName"`
 	}
-	return &dataset, nil
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("parse FastGPT integration dataset: %w", err)
+	}
+	return &Dataset{ID: result.DatasetID, Name: result.DatasetName}, nil
 }
 
 func (g *Gateway) DeleteDataset(ctx context.Context, datasetID string) error {
@@ -355,20 +317,13 @@ func (g *Gateway) DeleteDataset(ctx context.Context, datasetID string) error {
 	if err := g.requireStoreScope(); err != nil {
 		return err
 	}
-	if g.usesIntegrationAPI() {
-		_, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/delete", nil, map[string]any{
-			"externalStoreId": g.config.StoreID, "datasetId": datasetID,
-		}, false)
-		return err
-	}
-	_, err := g.doJSON(ctx, http.MethodDelete, "/api/core/dataset/delete", url.Values{"id": []string{datasetID}}, nil, false)
+	_, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/delete", nil, map[string]any{
+		"externalStoreId": g.config.StoreID, "datasetId": datasetID,
+	}, false)
 	return err
 }
 
 func (g *Gateway) GetDatasetProfileSnapshot(ctx context.Context, datasetID string) (*DatasetProfileSnapshot, error) {
-	if !g.usesIntegrationAPI() {
-		return nil, nil
-	}
 	if err := g.requireStoreScope(); err != nil {
 		return nil, err
 	}
@@ -412,9 +367,6 @@ func (g *Gateway) GetDatasetProfileSnapshot(ctx context.Context, datasetID strin
 }
 
 func (g *Gateway) GetModelProfile(ctx context.Context, datasetID string) (*ModelProfile, error) {
-	if !g.usesIntegrationAPI() {
-		return nil, errors.New("FastGPT model profile management requires the integration API")
-	}
 	if err := g.requireStoreScope(); err != nil {
 		return nil, err
 	}
@@ -435,9 +387,6 @@ func (g *Gateway) GetModelProfile(ctx context.Context, datasetID string) (*Model
 }
 
 func (g *Gateway) TestModelProfile(ctx context.Context, input ModelProfileInput) (*ModelProfileTestResult, error) {
-	if !g.usesIntegrationAPI() {
-		return nil, errors.New("FastGPT model profile management requires the integration API")
-	}
 	if err := g.requireStoreScope(); err != nil {
 		return nil, err
 	}
@@ -454,9 +403,6 @@ func (g *Gateway) TestModelProfile(ctx context.Context, input ModelProfileInput)
 }
 
 func (g *Gateway) UpsertModelProfile(ctx context.Context, input ModelProfileInput) (*ModelProfileUpsertResult, error) {
-	if !g.usesIntegrationAPI() {
-		return nil, errors.New("FastGPT model profile management requires the integration API")
-	}
 	if err := g.requireStoreScope(); err != nil {
 		return nil, err
 	}
@@ -496,9 +442,6 @@ func (g *Gateway) modelProfilePayload(input ModelProfileInput) map[string]any {
 }
 
 func (g *Gateway) ListUsageEvents(ctx context.Context, datasetID, cursor string, limit int) (*UsageEventPage, error) {
-	if !g.usesIntegrationAPI() {
-		return nil, nil
-	}
 	if err := g.requireStoreScope(); err != nil {
 		return nil, err
 	}
@@ -537,27 +480,18 @@ func (g *Gateway) UploadLocalFile(ctx context.Context, datasetID, filename strin
 		return "", err
 	}
 	dataPayload, _ := json.Marshal(map[string]any{
-		"datasetId": strings.TrimSpace(datasetID), "parentId": nil,
+		"externalStoreId": g.config.StoreID,
+		"datasetId":       strings.TrimSpace(datasetID), "parentId": nil,
 		"trainingType": "chunk", "chunkSettingMode": "auto",
 		"chunkSplitter": "", "qaPrompt": "", "metadata": map[string]any{},
 	})
-	if g.usesIntegrationAPI() {
-		var payload map[string]any
-		_ = json.Unmarshal(dataPayload, &payload)
-		payload["externalStoreId"] = g.config.StoreID
-		dataPayload, _ = json.Marshal(payload)
-	}
 	if err := writer.WriteField("data", string(dataPayload)); err != nil {
 		return "", err
 	}
 	if err := writer.Close(); err != nil {
 		return "", err
 	}
-	endpoint := "/api/core/dataset/collection/create/localFile"
-	if g.usesIntegrationAPI() {
-		endpoint = "/api/integration/agent-desk/dataset/upload"
-	}
-	req, err := g.newRequest(ctx, http.MethodPost, endpoint, nil, &body)
+	req, err := g.newRequest(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/upload", nil, &body)
 	if err != nil {
 		return "", err
 	}
@@ -583,73 +517,46 @@ func (g *Gateway) ListCollections(ctx context.Context, datasetID string) ([]Coll
 	if err := g.requireStoreScope(); err != nil {
 		return nil, err
 	}
-	if g.usesIntegrationAPI() {
-		data, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/collections", nil, map[string]any{
-			"externalStoreId": g.config.StoreID, "datasetId": datasetID,
-		}, true)
-		if err != nil {
-			return nil, err
-		}
-		var result struct {
-			Collections []struct {
-				ID             string `json:"collectionId"`
-				Name           string `json:"name"`
-				Type           string `json:"type"`
-				DataAmount     int    `json:"dataAmount"`
-				TrainingAmount int    `json:"trainingAmount"`
-				Forbid         bool   `json:"forbid"`
-			} `json:"collections"`
-		}
-		if err := json.Unmarshal(data, &result); err != nil {
-			return nil, fmt.Errorf("parse FastGPT integration collections: %w", err)
-		}
-		collections := make([]Collection, 0, len(result.Collections))
-		for _, item := range result.Collections {
-			collections = append(collections, Collection{
-				ID:             item.ID,
-				Name:           item.Name,
-				Type:           item.Type,
-				DataAmount:     item.DataAmount,
-				TrainingAmount: item.TrainingAmount,
-				Forbid:         item.Forbid,
-			})
-		}
-		return collections, nil
+	data, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/collections", nil, map[string]any{
+		"externalStoreId": g.config.StoreID, "datasetId": datasetID,
+	}, true)
+	if err != nil {
+		return nil, err
 	}
-	const pageSize = 30
-	collections := make([]Collection, 0, pageSize)
-	for page := 0; page < 100; page++ {
-		data, err := g.doJSON(ctx, http.MethodPost, "/api/core/dataset/collection/listV2", nil, map[string]any{
-			"offset": page * pageSize, "pageSize": pageSize, "datasetId": datasetID, "parentId": nil, "searchText": "",
-		}, true)
-		if err != nil {
-			return nil, err
-		}
-		var result struct {
-			List []Collection `json:"list"`
-		}
-		if err := json.Unmarshal(data, &result); err != nil {
-			return nil, fmt.Errorf("parse FastGPT collections: %w", err)
-		}
-		collections = append(collections, result.List...)
-		if len(result.List) < pageSize {
-			return collections, nil
-		}
+	var result struct {
+		Collections []struct {
+			ID             string `json:"collectionId"`
+			Name           string `json:"name"`
+			Type           string `json:"type"`
+			DataAmount     int    `json:"dataAmount"`
+			TrainingAmount int    `json:"trainingAmount"`
+			Forbid         bool   `json:"forbid"`
+		} `json:"collections"`
 	}
-	return nil, errors.New("FastGPT collection pagination exceeded safety limit")
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("parse FastGPT integration collections: %w", err)
+	}
+	collections := make([]Collection, 0, len(result.Collections))
+	for _, item := range result.Collections {
+		collections = append(collections, Collection{
+			ID:             item.ID,
+			Name:           item.Name,
+			Type:           item.Type,
+			DataAmount:     item.DataAmount,
+			TrainingAmount: item.TrainingAmount,
+			Forbid:         item.Forbid,
+		})
+	}
+	return collections, nil
 }
 
 func (g *Gateway) DeleteCollections(ctx context.Context, datasetID string, collectionIDs []string) error {
 	if err := g.requireStoreScope(); err != nil {
 		return err
 	}
-	if g.usesIntegrationAPI() {
-		_, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/delete-collections", nil, map[string]any{
-			"externalStoreId": g.config.StoreID, "datasetId": strings.TrimSpace(datasetID), "collectionIds": collectionIDs,
-		}, false)
-		return err
-	}
-	_, err := g.doJSON(ctx, http.MethodDelete, "/api/core/dataset/collection/delete", nil, map[string]any{"collectionIds": collectionIDs}, false)
+	_, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/delete-collections", nil, map[string]any{
+		"externalStoreId": g.config.StoreID, "datasetId": strings.TrimSpace(datasetID), "collectionIds": collectionIDs,
+	}, false)
 	return err
 }
 
@@ -669,30 +576,17 @@ func (g *Gateway) SearchDataset(ctx context.Context, input SearchDatasetRequest)
 		return nil, err
 	}
 	startedAt := time.Now()
-	endpoint := "/api/core/dataset/searchTest"
 	payload := map[string]any{
-		"datasetId":                        input.DatasetID,
-		"text":                             input.Query,
-		"limit":                            input.TokenLimit,
-		"similarity":                       input.Similarity,
-		"searchMode":                       input.SearchMode,
-		"usingReRank":                      input.UseRerank,
-		"datasetSearchUsingExtensionQuery": false,
+		"externalStoreId": g.config.StoreID,
+		"datasetId":       input.DatasetID,
+		"text":            input.Query,
+		"tokenLimit":      input.TokenLimit,
+		"similarity":      input.Similarity,
+		"searchMode":      input.SearchMode,
+		"useRerank":       input.UseRerank,
+		"topK":            input.TopK,
 	}
-	if g.usesIntegrationAPI() {
-		endpoint = "/api/integration/agent-desk/dataset/search"
-		payload = map[string]any{
-			"externalStoreId": g.config.StoreID,
-			"datasetId":       input.DatasetID,
-			"text":            input.Query,
-			"tokenLimit":      input.TokenLimit,
-			"similarity":      input.Similarity,
-			"searchMode":      input.SearchMode,
-			"useRerank":       input.UseRerank,
-			"topK":            input.TopK,
-		}
-	}
-	data, err := g.doJSON(ctx, http.MethodPost, endpoint, nil, payload, true)
+	data, err := g.doJSON(ctx, http.MethodPost, "/api/integration/agent-desk/dataset/search", nil, payload, true)
 	latencyMS := time.Since(startedAt).Milliseconds()
 	if err != nil {
 		return nil, err
@@ -711,7 +605,7 @@ func (g *Gateway) SearchDataset(ctx context.Context, input SearchDatasetRequest)
 	if input.TopK > 0 && len(filtered) > input.TopK {
 		filtered = filtered[:input.TopK]
 	}
-	return &SearchDatasetResult{DatasetID: input.DatasetID, Hits: filtered, LatencyMS: latencyMS, Raw: data}, nil
+	return &SearchDatasetResult{DatasetID: input.DatasetID, Hits: filtered, LatencyMS: latencyMS}, nil
 }
 
 func parseSearchHits(data json.RawMessage, expectedDatasetID string) ([]SearchDatasetHit, error) {
@@ -826,13 +720,9 @@ func (g *Gateway) newRequest(ctx context.Context, method, endpoint string, query
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, body)
 	if err != nil {
-		return nil, err
+		return nil, &TransportError{cause: err}
 	}
-	if g.usesIntegrationAPI() {
-		req.Header.Set("X-Agent-Desk-Token", g.config.IntegrationToken)
-	} else {
-		req.Header.Set("Authorization", "Bearer "+g.config.APIKey)
-	}
+	req.Header.Set("X-Agent-Desk-Token", g.config.IntegrationToken)
 	return req, nil
 }
 
@@ -842,13 +732,19 @@ type HTTPStatusError struct {
 }
 
 func (e *HTTPStatusError) Error() string {
-	return fmt.Sprintf("FastGPT HTTP %d: %s", e.StatusCode, e.Message)
+	return fmt.Sprintf("FastGPT HTTP status %d", e.StatusCode)
 }
+
+type APIResponseError struct {
+	Code int
+}
+
+func (e *APIResponseError) Error() string { return fmt.Sprintf("FastGPT API code %d", e.Code) }
 
 func (g *Gateway) execute(req *http.Request) (json.RawMessage, error) {
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("FastGPT request failed: %w", err)
+		return nil, &TransportError{cause: err}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
@@ -856,23 +752,16 @@ func (g *Gateway) execute(req *http.Request) (json.RawMessage, error) {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Message: g.sanitizeErrorText(string(body))}
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
 	var envelope apiResponse
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, fmt.Errorf("invalid FastGPT response: %w", err)
 	}
 	if envelope.Code != 200 {
-		return nil, fmt.Errorf("FastGPT returned code %d: %s", envelope.Code, g.sanitizeErrorText(firstNonBlank(envelope.Message, envelope.StatusText)))
+		return nil, &APIResponseError{Code: envelope.Code}
 	}
 	return envelope.Data, nil
-}
-
-func (g *Gateway) sanitizeErrorText(value string) string {
-	value = strings.ReplaceAll(value, g.config.APIKey, "***")
-	value = strings.ReplaceAll(value, "Bearer "+g.config.APIKey, "Bearer ***")
-	value = strings.ReplaceAll(value, g.config.IntegrationToken, "***")
-	return truncate(value, 500)
 }
 
 func firstNonBlank(values ...string) string {
@@ -882,12 +771,4 @@ func firstNonBlank(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func truncate(value string, limit int) string {
-	value = strings.TrimSpace(value)
-	if len(value) <= limit {
-		return value
-	}
-	return value[:limit]
 }

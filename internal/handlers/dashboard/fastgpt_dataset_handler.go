@@ -140,7 +140,7 @@ func FastGPTDatasetPostActivate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.FastGPTDatasetService.ActivateKnowledgeBase(req.WxWorkInstanceID, req.KnowledgeBaseID, operator); err != nil {
+	if err := services.FastGPTDatasetService.ActivateKnowledgeBase(req.StoreID, req.KnowledgeBaseID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -165,18 +165,18 @@ func FastGPTDatasetPostDeleteDataset(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
-func FastGPTDatasetPostModelProfile(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+func FastGPTDatasetPostReadiness(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	req := request.FastGPTModelProfileDetailRequest{}
+	req := request.FastGPTStoreActionRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	ret, err := services.FastGPTDatasetService.GetModelProfile(ctx.Request.Context(), req.WxWorkInstanceID, operator)
+	ret, err := services.FastGPTDatasetService.GetReadiness(req.StoreID, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -184,42 +184,23 @@ func FastGPTDatasetPostModelProfile(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, ret)
 }
 
-func FastGPTDatasetPostTestModelProfile(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+func FastGPTDatasetPostResync(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	req := request.FastGPTModelProfileRequest{}
+	req := request.FastGPTStoreActionRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	ret, err := services.FastGPTDatasetService.TestModelProfile(ctx.Request.Context(), req, operator)
+	job, err := services.FastGPTDatasetService.EnqueueProfileSync(req.StoreID, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, ret)
-}
-
-func FastGPTDatasetPostUpdateModelProfile(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	req := request.FastGPTModelProfileRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	ret, err := services.FastGPTDatasetService.UpdateModelProfile(ctx.Request.Context(), req, operator)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, ret)
+	httpx.WriteJSON(ctx, map[string]any{"jobId": job.ID, "status": job.Status})
 }
 
 func parseMultipartInt64(ctx *gin.Context, name string) (int64, error) {

@@ -64,7 +64,9 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgent(instance *models.WxW
 	name := "企微员工号AI"
 	systemPrompt := DefaultWxWorkProtocolPersonaPrompt
 	knowledgeIDs := ""
+	tenantID := int64(0)
 	if instance != nil {
+		tenantID = instance.TenantID
 		name = firstNonBlank(
 			utils.RepairMojibakeText(strings.TrimSpace(instance.EmployeeName)),
 			strings.TrimSpace(instance.EmployeeUserID),
@@ -75,13 +77,13 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgent(instance *models.WxW
 			systemPrompt = mergeWxWorkPersonaIntoSystemPrompt(DefaultWxWorkProtocolPersonaPrompt, instance.PersonaPrompt)
 		}
 		systemPrompt = appendWxWorkReceptionContext(systemPrompt, instance, time.Now())
-		if instance.KnowledgeBaseID > 0 && repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), instance.KnowledgeBaseID, instance.TenantID) != nil {
-			knowledgeIDs = fmt.Sprintf("%d", instance.KnowledgeBaseID)
+		if knowledgeBaseID, err := s.resolveStoreKnowledgeBaseIDDB(sqls.DB(), instance.TenantID, instance.StoreID); err == nil && knowledgeBaseID > 0 {
+			knowledgeIDs = fmt.Sprintf("%d", knowledgeBaseID)
 		}
 	}
 	return models.AIAgent{
 		ID:                  0,
-		TenantID:            instance.TenantID,
+		TenantID:            tenantID,
 		Name:                name,
 		Description:         "企微员工号运行时配置",
 		Status:              enums.StatusOk,
@@ -285,7 +287,8 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 			return nil, err
 		}
 	}
-	if err := s.validateBinding(tenantID, req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
+	knowledgeBaseID, err := s.validateBinding(tenantID, req.ChannelID, storeID)
+	if err != nil {
 		return nil, err
 	}
 	welcomeImageAssetID, err := validateWxWorkWelcomeImageAsset(req.WelcomeImageAssetID, tenantID)
@@ -321,7 +324,7 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		WelcomeImageAssetID:            welcomeImageAssetID,
 		WelcomeSendMiniProgram:         req.WelcomeSendMiniProgram,
 		WelcomeAskLocation:             req.WelcomeAskLocation,
-		KnowledgeBaseID:                req.KnowledgeBaseID,
+		KnowledgeBaseID:                knowledgeBaseID,
 		NotifyURL:                      strings.TrimSpace(req.NotifyURL),
 		Proxy:                          strings.TrimSpace(req.Proxy),
 		BridgeID:                       strings.TrimSpace(req.BridgeID),
@@ -603,6 +606,10 @@ func (s *wxWorkProtocolInstanceService) CreateReplacementRemoteSetup(req request
 	if existing := s.Take("guid = ? AND status <> ?", guid, enums.StatusDeleted); existing != nil {
 		return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他员工号")
 	}
+	knowledgeBaseID, err := s.resolveStoreKnowledgeBaseIDDB(sqls.DB(), tenantID, binding.StoreID)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	expiresAt := now.Add(14 * 24 * time.Hour)
 	item := &models.WxWorkProtocolInstance{
@@ -627,7 +634,7 @@ func (s *wxWorkProtocolInstanceService) CreateReplacementRemoteSetup(req request
 		WelcomeImageAssetID:            old.WelcomeImageAssetID,
 		WelcomeSendMiniProgram:         old.WelcomeSendMiniProgram,
 		WelcomeAskLocation:             old.WelcomeAskLocation,
-		KnowledgeBaseID:                old.KnowledgeBaseID,
+		KnowledgeBaseID:                knowledgeBaseID,
 		Proxy:                          old.Proxy,
 		BridgeID:                       old.BridgeID,
 		StaffUserIDs:                   old.StaffUserIDs,
@@ -798,7 +805,8 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 			return err
 		}
 	}
-	if err := s.validateBinding(tenantID, req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
+	knowledgeBaseID, err := s.validateBinding(tenantID, req.ChannelID, storeID)
+	if err != nil {
 		return err
 	}
 	welcomeImageAssetID, err := validateWxWorkWelcomeImageAsset(req.WelcomeImageAssetID, tenantID)
@@ -830,7 +838,7 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		"welcome_image_asset_id":             welcomeImageAssetID,
 		"welcome_send_mini_program":          req.WelcomeSendMiniProgram,
 		"welcome_ask_location":               req.WelcomeAskLocation,
-		"knowledge_base_id":                  req.KnowledgeBaseID,
+		"knowledge_base_id":                  knowledgeBaseID,
 		"notify_url":                         strings.TrimSpace(req.NotifyURL),
 		"proxy":                              strings.TrimSpace(req.Proxy),
 		"bridge_id":                          strings.TrimSpace(req.BridgeID),
@@ -953,7 +961,8 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 			return err
 		}
 	}
-	if err := s.validateBinding(tenantID, instance.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
+	knowledgeBaseID, err := s.validateBinding(tenantID, instance.ChannelID, storeID)
+	if err != nil {
 		return err
 	}
 	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
@@ -970,7 +979,7 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 		"welcome_message":                    normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
 		"welcome_send_mini_program":          req.WelcomeSendMiniProgram,
 		"welcome_ask_location":               req.WelcomeAskLocation,
-		"knowledge_base_id":                  req.KnowledgeBaseID,
+		"knowledge_base_id":                  knowledgeBaseID,
 		"staff_user_ids":                     strings.TrimSpace(req.StaffUserIDs),
 		"service_hours":                      strings.TrimSpace(req.ServiceHours),
 		"front_desk_mode":                    normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
@@ -1010,7 +1019,18 @@ func (s *wxWorkProtocolInstanceService) syncRouteStateBindingFromInstance(instan
 	if strings.TrimSpace(operatorName) == "" {
 		operatorName = "system"
 	}
-	return repositories.ConversationRouteStateRepository.UpdateBindingByWxWorkInstance(sqls.DB(), instance.ID, instance.TenantID, instance.StoreID, instance.KnowledgeBaseID, time.Now(), operatorName)
+	knowledgeBaseID, err := s.resolveStoreKnowledgeBaseIDDB(sqls.DB(), instance.TenantID, instance.StoreID)
+	if err != nil {
+		return err
+	}
+	if instance.KnowledgeBaseID != knowledgeBaseID {
+		if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), instance.ID, instance.TenantID, map[string]any{
+			"knowledge_base_id": knowledgeBaseID, "updated_at": time.Now(), "update_user_name": operatorName,
+		}); err != nil {
+			return err
+		}
+	}
+	return repositories.ConversationRouteStateRepository.UpdateBindingByWxWorkInstance(sqls.DB(), instance.ID, instance.TenantID, instance.StoreID, knowledgeBaseID, time.Now(), operatorName)
 }
 
 func (s *wxWorkProtocolInstanceService) syncStoreStaffBindingFromInstanceRequest(instance *models.WxWorkProtocolInstance, managedMode string, serviceHours string, roomConversationID string, roomNotifyEnabled bool, roomAtList string, fallbackToHQ bool, manualTimeoutMinutes int, operator *dto.AuthPrincipal) error {
@@ -1559,32 +1579,39 @@ func (s *wxWorkProtocolInstanceService) DeleteInstance(id int64, operator *dto.A
 }
 
 func (s *wxWorkProtocolInstanceService) RequireStoreKnowledge(instance *models.WxWorkProtocolInstance) (int64, int64, error) {
-	if instance == nil || instance.Status != enums.StatusOk || instance.StoreID <= 0 || instance.KnowledgeBaseID <= 0 {
-		return 0, 0, errorsx.InvalidParam("企微员工号未配置内部门店兼容记录或知识库")
+	if instance == nil || instance.Status != enums.StatusOk || instance.StoreID <= 0 {
+		return 0, 0, errorsx.InvalidParam("企微员工号未配置有效门店")
 	}
-	return instance.StoreID, instance.KnowledgeBaseID, nil
+	knowledgeBaseID, err := s.resolveStoreKnowledgeBaseIDDB(sqls.DB(), instance.TenantID, instance.StoreID)
+	if err != nil || knowledgeBaseID <= 0 {
+		return 0, 0, errorsx.InvalidParam("当前门店未配置有效知识库")
+	}
+	return instance.StoreID, knowledgeBaseID, nil
 }
 
-func (s *wxWorkProtocolInstanceService) validateBinding(tenantID, channelID, storeID, knowledgeBaseID int64) error {
+func (s *wxWorkProtocolInstanceService) validateBinding(tenantID, channelID, storeID int64) (int64, error) {
 	if err := s.validateProtocolChannel(channelID, tenantID); err != nil {
-		return err
+		return 0, err
 	}
-	if storeID > 0 {
-		store := StoreService.GetInTenant(storeID, tenantID)
-		if store == nil || store.Status == enums.StatusDeleted {
-			return errorsx.InvalidParam("门店不存在")
-		}
+	return s.resolveStoreKnowledgeBaseIDDB(sqls.DB(), tenantID, storeID)
+}
+
+func (s *wxWorkProtocolInstanceService) resolveStoreKnowledgeBaseIDDB(db *gorm.DB, tenantID, storeID int64) (int64, error) {
+	if db == nil || tenantID <= 0 || storeID <= 0 {
+		return 0, errorsx.InvalidParam("门店不存在")
 	}
-	if knowledgeBaseID > 0 {
-		knowledgeBase := KnowledgeBaseService.GetInTenant(knowledgeBaseID, tenantID)
-		if knowledgeBase == nil || knowledgeBase.Status == enums.StatusDeleted {
-			return errorsx.InvalidParam("知识库不存在")
-		}
-		if knowledgeBase.StoreID > 0 && storeID > 0 && knowledgeBase.StoreID != storeID {
-			return errorsx.InvalidParam("只能绑定当前门店自己的知识库")
-		}
+	store := repositories.StoreRepository.GetInTenant(db, storeID, tenantID)
+	if store == nil || store.Status == enums.StatusDeleted {
+		return 0, errorsx.InvalidParam("门店不存在")
 	}
-	return nil
+	if store.KnowledgeBaseID <= 0 {
+		return 0, nil
+	}
+	knowledgeBase := repositories.KnowledgeBaseRepository.GetInTenant(db, store.KnowledgeBaseID, tenantID)
+	if knowledgeBase == nil || knowledgeBase.Status != enums.StatusOk || knowledgeBase.StoreID != storeID {
+		return 0, errorsx.InvalidParam("当前门店知识库绑定无效，请先在知识库页面修复")
+	}
+	return knowledgeBase.ID, nil
 }
 
 func (s *wxWorkProtocolInstanceService) validateProtocolChannel(channelID, tenantID int64) error {
