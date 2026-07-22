@@ -25,11 +25,11 @@
 
 ## 1.3 并行分支协同开发
 
-- 本项目存在并行开发历史。租户、客服、对话审计、运营分析、人工质检以及需要进入主线的 AI / 计费集成，只允许在 `codex/tenant-ai-integration` 继续开发；`codex/customer-audit` 只作为只读迁移来源，`codex/ai-billing` 只作为并行语义参考。开始任务和每次 push 前后都必须先 `git fetch origin`，再检查所有活跃分支的同文件修改。
-- 主线只接受 `codex/tenant-ai-integration -> main` 一个集成 PR；禁止继续向 `codex/customer-audit` 增加提交，禁止把 `codex/customer-audit` 或 `codex/ai-billing` 再分别合入 main。迁移旧工作时必须在 integration 中按语义手工吸收并验证，禁止整分支或整文件覆盖。
+- 本项目存在并行开发历史。最终统一集成只允许在 `codex/tenant-ai-unified-integration` 继续开发；`codex/tenant-ai-integration` 是 Tenant、客服、派单、运营和质检骨架来源，`codex/ai-billing` 是行业、模型、凭据、FastGPT、客户标签和完整 AI 回复运行时来源，`codex/customer-audit` 只保留历史。开始任务和每次 push 前后都必须先 `git fetch origin --prune`，再检查所有来源分支的最新 SHA 和同文件修改。
+- 主线只接受 `codex/tenant-ai-unified-integration -> main` 一个最终 PR。原 PR #2 和三个来源分支均为只读审计来源，不再分别合入 main。迁移能力必须按 `docs/development/tenant-ai-unified-integration-plan.md` 的领域权威逐符号吸收并验证，禁止整分支 merge、整文件覆盖或直接 cherry-pick 混合领域提交。
 - 修改共享契约前必须说明影响范围和兼容性。共享契约包括：models、migration、DTO、enum、路由、WebSocket payload、message/conversation service、`web/lib/api`、导航和多语言资源。
 - 共享契约优先采用向后兼容的新增方式；需要双方共同依赖时，优先拆成独立契约提交或 PR，再继续各自业务实现。
-- 客服 / 审计开发禁止改变模型调用、AI 回复链路、模型供应商配置、token 统计或计费口径；确需修改时必须先与大模型 / 计费负责人确认字段语义和合并顺序，并在 integration 合并交接中记录。
+- 规则派单、运营和质检代码不得自行改变模型调用、AI 回复链路、模型供应商配置、token 统计或计费口径。AI 领域以实施开始时 `origin/codex/ai-billing` 最新提交为行为基线，只允许增加 Tenant/Store/行业范围和现有人工任务池适配；任何行为差异必须在最终权威方案的实施记录中说明。
 - Migration 版本在创建和提交前都必须与 `origin/main` 及所有活跃并行分支核对，禁止重复版本号。
 - 每个任务开始前必须说明：目标、预计文件、共享高风险文件、model/migration、DTO/enum/接口/WebSocket 影响、并行分支影响和验证命令。
 - 每个可提交步骤完成后必须记录：是否影响并行分支、是否需要 rebase、建议合并顺序、同文件修改和字段/状态语义冲突。提交应便于 review、回滚和 cherry-pick。
@@ -37,13 +37,13 @@
 
 ## 1.4 文档权威与历史资料
 
-- 当前回复引擎设计以真实代码和 `docs/design/reply-runtime-engine.md` 为准；两者冲突时先追踪代码真实调用链，再更新文档或明确标注过期。
-- `docs/development-handoff.md`、`docs/wecom-hook-bridge.md` 和 `docs/generated/` 默认视为历史交接、历史接入或测试产物，不能直接作为当前产品架构依据。
+- 最终目标架构以 `docs/development/tenant-ai-unified-integration-plan.md` 为准。AI 回复运行时在移植前以固定的 `origin/codex/ai-billing` 最新 SHA 为行为来源；移植后以真实代码和同步更新后的 `docs/design/reply-runtime-engine.md` 为准。代码与目标文档冲突时不得擅自选择一边，必须先核对当前实施 Batch 和来源 SHA。
+- `docs/development/tenant-ai-integration-merge-handoff.md`、`docs/development/customer-audit-merge-handoff.md`、`docs/development-handoff.md`、`docs/wecom-hook-bridge.md` 和 `docs/generated/` 默认视为历史交接、历史接入或测试产物，不能直接作为当前产品架构依据。
 - 禁止因为旧文档恢复 FAQ、七鱼、旧 hook bridge、旧独立 Agent、旧企微字段或旧转人工逻辑。代码中仍存在同名能力时，必须通过入口、路由、service 调用和运行状态确认其当前语义。
 - 开发前优先使用 `rg` 查询页面、路由、handler、service、repository、model 和脚本引用，确认目标文件是否属于真实运行链路。
 - `docs/generated/` 不作为产品逻辑来源，默认不提交新生成的评测报告。
 - 发现误导性旧文档时，先记录文件名、过期原因和当前引用，再决定保留、标废、迁移到 archive 或删除；引用状态未查清前不得直接删除。
-- 每个业务步骤完成后只更新 `docs/development/tenant-ai-integration-merge-handoff.md` 作为当前合并交接，至少记录目标、文件、数据/接口变化、权限、迁移、验证、已知风险、并行分支影响和回滚边界。`docs/development/customer-audit-merge-handoff.md` 仅保留历史，不再追加新批次。
+- 每个统一集成 Batch 完成后更新 `docs/development/tenant-ai-unified-integration-plan.md` 的实施记录，至少记录来源 SHA、目标、文件、数据/接口变化、权限、迁移、验证、已知风险、并行来源影响和回滚边界。旧 handoff 只保留历史，不再追加新批次。
 
 ## 2. 固定技术栈
 

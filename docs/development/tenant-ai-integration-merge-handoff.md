@@ -1,18 +1,18 @@
-# Tenant AI Integration 唯一合并交接
+# Tenant AI Integration 历史合并交接（已冻结）
 
-> 状态日期：2026-07-22
+> 冻结日期：2026-07-22
 >
-> 唯一工作分支：codex/tenant-ai-integration
+> 历史工作分支：codex/tenant-ai-integration
 >
-> 唯一目标：通过 PR #2 合并到 main
+> 历史 PR：PR #2，不再作为最终合并入口
 >
-> PR：https://github.com/520skyincloud/agentdesk/pull/2
+> 最终权威方案：`docs/development/tenant-ai-unified-integration-plan.md`
 >
-> 冻结来源：codex/customer-audit
+> 最终实施分支：`codex/tenant-ai-unified-integration`
 >
-> 并行参考：codex/ai-billing
+> AI 行为来源：实施前获取的 `origin/codex/ai-billing` 最新提交
 
-本文只记录当前可执行事实。历史阶段、旧失败、旧测试数字和已经关闭的阻断不再按时间堆叠；需要追溯时使用 Git 历史。代码与本文冲突时先追踪真实运行链，再更新本文。
+本文已冻结，只用于追溯 tenant-ai-integration 已完成的 Tenant、客服组织、规则派单、运营分析和质检事实。关于最终分支、行业、模型、凭据、FastGPT、AI 回复、客户标签、Migration 和物理清理的旧结论均已被 `tenant-ai-unified-integration-plan.md` 替代，不得再按本文第 1、7、11、20 节继续实施。
 
 ## 1. 合并决策
 

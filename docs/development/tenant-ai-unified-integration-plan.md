@@ -1,0 +1,1096 @@
+# Tenant AI 统一集成最终权威方案
+
+> 状态：2026-07-22 产品决策已闭合，B0 来源固定与基线审计已完成，业务代码尚未开始集成
+>
+> 唯一实施分支：`codex/tenant-ai-unified-integration`
+>
+> 分支基线：`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563`
+>
+> 当前 AI 来源审计：`origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`
+>
+> 最终 AI 来源：实施 B0 开始前重新 `git fetch origin --prune` 后的 `origin/codex/ai-billing` 最新提交
+>
+> 服务发布端口：`8083`
+>
+> 首个真实灰度租户：丽斯未来
+
+本文是 Tenant、行业、模型、门店凭据、FastGPT、AI 回复运行时、客户标签、计费、权限、页面、Migration、派单保护和发布回滚的唯一目标方案。本文描述的是最终目标，不表示代码已经实现。
+
+## 1. 权威、分支与替代关系
+
+### 1.1 唯一集成入口
+
+1. `codex/tenant-ai-unified-integration` 是唯一继续实施和形成最终 PR 的分支。
+2. 新分支以 `codex/tenant-ai-integration` 最新远端为骨架，保留其 Tenant、账号、权限、Store、企微身份、客服组织、规则派单、运营分析和人工质检。
+3. `codex/ai-billing` 是行业、模型、门店凭据、Billing、FastGPT、客户标签和完整 AI 回复运行时的行为来源；实施前必须重新获取最新提交并固定 SHA。
+4. `codex/tenant-ai-integration`、`codex/ai-billing` 和 `codex/customer-audit` 在新分支建立后全部视为只读来源，不再分别向 `main` 合并。
+5. 原 PR #2 只保留历史审计价值，停止作为最终交付入口。最终只建立一个 `codex/tenant-ai-unified-integration -> main` PR。
+6. 禁止整分支 merge、整文件选 ours/theirs 或直接 cherry-pick 混合领域提交。所有能力按本文定义的最终语义逐符号移植。
+
+### 1.2 文档权威
+
+本文替代以下旧结论：
+
+- `docs/development/tenant-ai-integration-merge-handoff.md` 中关于“唯一分支为 tenant-ai-integration”“只允许 PR #2”“保留 AIConfig/TenantAIModelGrant”“不物理删除旧表”的目标结论；
+- 旧的 `tenant-ai-billing-integration-plan.md`；
+- 下载文件 `tenant-ai-unified-integration-design.md` 中与本文的 Tenant 行业绑定、行业标签隔离、分支基线和用户最终答复冲突的部分。
+
+历史文档可以用于追溯已经完成的租户、派单和运营能力，不能作为最终模型、行业、标签或回复运行时依据。
+
+实施后，AI 回复引擎的代码与 `docs/design/reply-runtime-engine.md` 必须同步更新为从 `ai-billing` 最新版本移植并完成 Tenant 适配后的真实链路。在该批代码合入前，本文只定义目标，不把尚未实现的行为写成已完成。
+
+### 1.3 明确偏离旧开发约束
+
+本方案包含两项由用户明确确认的偏离：
+
+1. 不再只在 `codex/tenant-ai-integration` 开发，而是建立第三个唯一集成分支。
+2. 最终版本物理删除旧 `AIConfig`、`TenantAIModelGrant`、`StoreAIModelSetting`、`ConversationTag` 表和废弃字段。该操作不放入普通启动 AutoMigrate，而在停机维护、备份和预检后由独立破坏性 Schema Cleanup 执行。
+
+其余分层、权限、Tenant 隔离、SQLite/MySQL 兼容、显式路由、DTO、前端 API 封装和测试要求继续遵守 `AGENTS.md`。
+
+## 2. 已锁定的产品决定
+
+| 领域 | 最终决定 |
+| --- | --- |
+| 租户主体 | 使用 tenant-ai-integration 的 Tenant 架构，Tenant 是唯一隔离根 |
+| 门店主体 | Tenant 下直接管理 Store；一个 Store 只绑定一个系统门店员工 User |
+| 企微身份 | WxWorkProtocolInstance 是 Store 的渠道身份，不是系统门店员工账号 |
+| 行业 | Tenant 必须绑定一个行业 Profile；Store 和企微实例只能继承，不能覆盖 |
+| 意图识别 | 行业 Profile 决定 IntentDetect Prompt、JSON Schema 和意图分类集合 |
+| 模型事实源 | 使用 ModelProfileTemplate/ModelProfileSlot，删除旧 AIConfig 运行体系 |
+| 模型 Profile | 当前默认一套全局 Profile；架构允许平台建立多套并直接指定给 Store |
+| 模型用途 | 九个用途槽全部强制配置，不允许缺槽 fallback |
+| 网关 | 只支持一个统一 NewAPI 网关，Provider/BaseURL/APIMode 由平台 Profile 决定 |
+| 模型授权 | 不保留 TenantAIModelGrant、租户授权池或租户默认模型 |
+| 模型指派 | Store 直接绑定一个已发布 Model Profile；没有租户或企微多层覆盖 |
+| 凭据 | 每个 Tenant + Store 一条 StoreModelCredential；默认无 API Key |
+| 凭据录入 | 平台管理员、公司主管可录入；管理员可按 Store 开关门店员工自助录入 |
+| 凭据安全 | 密文保存、候选测试、二次确认、可选主管审批、不可变审计，永不回显明文 |
+| 计费身份 | 每个 Store 的 NewAPI API Key 是独立官方额度和账单身份 |
+| 计费范围 | 只做 NewAPI 查询、本地归因和对账，不做充值、扣费、套餐、发票或额度拦截 |
+| FastGPT | 完整采用 ai-billing 的 Dataset/Profile/RAG 行为，补 Tenant/Store 强隔离 |
+| AI 回复 | Prompt、Schema、状态机、Intent、Plan、RAG、Generate、Validate、Commit、Resume 和 Trace 以 ai-billing 最新版本为准 |
+| AI 转人工 | AI 只决定是否需要人工及客户文案，任务入池和选人仍使用现有规则派单 |
+| 客户标签 | 关系绑定 StoreCustomerRelation；同一自然客户在不同 Store 拥有独立标签 |
+| 标签目录 | 标签按行业固定定义，并实例化到各 Tenant；租户不能自建或改变语义 |
+| 标签控制 | 租户只能启停标签和设置显示别名；行业模板决定 AI、回复、场景和互斥规则 |
+| 标签上限 | 每个 StoreCustomerRelation 最多 6 个有效标签 |
+| 会话标签 | 删除 ConversationTag 产品与数据；复用 `conversation.tag` 权限码管理客户标签 |
+| 派单 | 只保留 manual/rule，完整保留现有确定性公平派单和恢复机制 |
+| Migration | 保留 integration 的 AutoMigrate、DML runner、历史归档、动态编号和失败门禁 |
+| 数据库 | 验证 SQLite 和 MySQL；fresh 与当前 integration 数据库最终得到同一套 Schema |
+| 旧表 | 旧模型和会话标签表退出代码后物理删除，不保留双运行链或回滚入口 |
+| 灰度 | 丽斯未来先验收；客户标签演化和回复标签上下文默认关闭，支持批量启停 |
+
+## 3. 最终总体架构
+
+```mermaid
+flowchart LR
+    P["平台管理员"] --> IP["行业 Profile"]
+    P --> MP["Model Profile"]
+    P --> T["Tenant"]
+    IP --> T
+    T --> S["Store + 唯一门店员工账号"]
+    MP --> SA["Store Model Profile Assignment"]
+    SA --> S
+    S --> C["StoreModelCredential"]
+    S --> W["WxWorkProtocolInstance"]
+    IP --> IC["行业意图分类"]
+    IP --> IT["行业标签模板"]
+    IT --> TT["Tenant Tag 实例"]
+    W --> R["AI Reply Runtime"]
+    IC --> R
+    MP --> R
+    C --> R
+    S --> F["FastGPT Dataset/Profile"]
+    F --> R
+    TT --> CT["Store 级客户标签"]
+    CT --> R
+    R --> H["现有人工任务池"]
+    H --> D["规则派单"]
+    R --> U["Usage + Billing 对账"]
+```
+
+一条生产消息的最终路径：
+
+```text
+企微客户消息
+  -> 从 Conversation/RouteState 解析 Tenant + Store + WxWork + Customer
+  -> 读取 Tenant 行业 Profile
+  -> 读取 Store 已发布 Model Profile Assignment
+  -> 解密 Store 当前 active Credential
+  -> 使用行业 Prompt/Schema/IntentConfig 执行 IntentDetect
+  -> ReplyPlan
+  -> FastGPT 检索、Rerank 和 Answerability
+  -> 工具、资源、人工路由决策
+  -> 按行业和 Store 读取已提交客户标签短上下文
+  -> Generate
+  -> Validate
+  -> Commit + Outbox + Usage + 运营事实
+  -> 需要人工时进入现有任务池和规则派单
+```
+
+任何范围、行业、Profile、必需槽或 Credential 校验失败都不得回退到旧 AIConfig、其他 Tenant、其他 Store、平台默认密钥或未指派模型。
+
+## 4. Tenant、Store 与账号边界
+
+### 4.1 Tenant
+
+- Tenant 是平台售卖客服系统的客户公司，也是所有业务数据的第一隔离键。
+- Tenant 必须有一个有效 `IntentProfileID` 才能启用任何 Store 的 AI 回复。
+- 行业由平台管理员在接入公司时绑定；公司主管只读查看行业名称，不能修改平台 Prompt、Schema 或分类。
+- Tenant 的账号、角色、权限、客服组、客户、Store、知识库、会话、账单聚合和标签策略均按 TenantID 隔离。
+
+### 4.2 Store 与唯一系统门店员工账号
+
+- 一个启用 Store 必须对应且只对应一个 `store_staff` User 和一个活动 StoreStaffBinding。
+- 这里的“门店员工账号”是本系统登录账号，不是企业微信员工号。
+- Store 只在公司主管邀请注册或用户注册审核完成后建立绑定，不存在无系统账号的活动 Store。
+- Store 与系统 User 的一对一关系由数据库唯一约束和 Service 事务共同保证。
+- WxWorkProtocolInstance 只能绑定该 Store，数量和协议能力按企微文档管理，但不改变系统 Store 账号的一对一规则。
+
+### 4.3 Store 生命周期与 API Key
+
+- Store 停用、转移或删除不会调用 NewAPI 修改、吊销或旋转上游 API Key。
+- Store 无效时本系统停止用该 Store 触发模型调用，但不擅自处理用户在另一套系统中的 Key 生命周期。
+- 本地 Credential 始终加密保存；Store 恢复后是否继续使用原 Credential 由有权限操作者显式确认。
+- 任何 Store 归属变化都必须重新校验 TenantID，禁止凭旧 StoreID 跨租户继续调用。
+
+## 5. 行业、意图分类与知识链
+
+### 5.1 复用现有行业能力
+
+现有 `ReplyIntentProfile` 已经表达行业级 IntentDetect 配置，不新增平行 `Industry` 主表。最终产品将其正式命名为“行业 Profile”，保留代码模型名以减少无意义迁移。
+
+`ReplyIntentProfile` 至少包含：
+
+- `Code`：稳定 Profile 编码；
+- `IndustryCode`：业务行业编码；
+- `Name/Description`：平台展示信息；
+- `IntentDetectPrompt`：该行业 IntentDetect 系统规则；
+- `IntentJSONSchema`：该行业严格输出 Schema；
+- `Revision/Status/SortNo`：发布版本和状态；
+- 审计字段。
+
+酒店行业是首个 Profile。未来零售、教育等行业必须分别提供完整 Prompt、Schema、分类、标签模板和验收数据，不能继承酒店硬编码后改名称。
+
+### 5.2 Tenant 唯一绑定
+
+- `Tenant.IntentProfileID` 是运行时唯一行业绑定。
+- 删除 Company 行业绑定语义；Company 继续只承担既有历史迁移边界，不参与行业解析。
+- `WxWorkProtocolInstance.IntentProfileID`、`KnowledgeBase.IntentProfileID` 和其他下级覆盖退出运行时并从最终 Schema 删除。
+- Store、企微、知识库和会话只能继承所属 Tenant 的行业。
+- Tenant 未绑定行业、Profile 被停用、Schema 无效或分类不完整时，相关 Store 不得打开 AI 回复。
+
+### 5.3 行业意图分类
+
+`ReplyIntentConfig` 只属于一个 `ReplyIntentProfile`，最终唯一键为：
+
+```text
+IntentProfileID + Code
+```
+
+删除其 Company、Store、WxWorkInstance 作用域和 fallback。每个行业 Profile 拥有自己的：
+
+- 顶层意图类别；
+- 子意图；
+- 正反例；
+- 必需上下文；
+- knowledge/resource/tool/human 标志；
+- PromptPack、ReplyPlanTemplate 和 ValidationRules；
+- 明确优先级和启停状态。
+
+IntentDetect 输出只能使用当前行业 Schema 和启用分类。未知或低置信输出按 ai-billing 最新 Runtime 的标准化规则处理，不得用酒店类别兜底其他行业。
+
+### 5.4 行业与知识库
+
+- 知识库仍按 Tenant + Store 隔离，不再单独绑定行业 ID。
+- Runtime 通过 Tenant 行业决定意图分类，再在当前 Store 的 KnowledgeBase 中检索。
+- 行业 Profile revision、知识 Profile revision 和 Store readiness 必须同时就绪才能打开 AI。
+- 行业切换会使旧知识分类、标签和评测失效。平台只允许在 Tenant AI 全部关闭后执行行业重置：清理旧行业标签关系、实例化新行业目录、重新同步 FastGPT、重新评测后再启用。
+
+### 5.5 行业管理权限与页面
+
+- 平台 `super_admin` 和拥有 `aiConfig.update` 的普通 `admin` 可以创建、编辑、测试、发布行业 Profile 和分类。
+- Tenant 角色只可查看当前行业名称，不可读取 Prompt、Schema、内部规则或其他行业。
+- “接入公司”创建 Tenant 时行业为必填；修改行业需要危险操作确认和不可变审计。
+- 平台导航保留“意图行业”和“意图分类”，但明确属于平台配置，不出现在普通租户导航。
+
+## 6. Model Profile 与 Store 模型指派
+
+### 6.1 唯一模型事实源
+
+最终模型配置固定为：
+
+```text
+ModelProfileTemplate
+  -> 9 个必需 ModelProfileSlot
+  -> StoreModelProfileAssignment
+  -> StoreModelCredential
+  -> 动态 ModelCallConfig
+```
+
+旧 `AIConfig`、`TenantAIModelGrant`、租户用途默认模型、企微覆盖和 StoreAIModelSetting 不再参与任何生产调用。
+
+### 6.2 九个必需用途槽
+
+每个可发布 Profile 必须完整配置：
+
+1. `reply_llm`
+2. `intent_detect_llm`
+3. `memory_summary_llm`
+4. `customer_tag_llm`
+5. `vision`
+6. `asr`
+7. `embedding`
+8. `rerank`
+9. `document_parser`
+
+每个 Slot 固定 Provider、BaseURL、APIMode、ModelType、ModelName、Dimension、超时、重试、Token 上限和必要的 Prompt/Schema 引用。只支持一个统一 NewAPI 网关，不允许 Store 自定义 BaseURL 或 Provider。
+
+缺少、停用、类型不符或测试失败的 Slot 会阻止 Profile 发布，不在运行时临时 fallback。
+
+### 6.3 一套默认与多 Profile 扩展
+
+- 首版迁移建立一套平台默认 Profile，并直接指派给全部通过 readiness 的测试 Store。
+- 平台可以创建多套 Profile，用于未来不同 Tenant 或 Store 使用不同模型组合。
+- 不建立租户授权池。Profile 由平台直接指派给 Store，可提供批量指派工具。
+- 一个 Store 同时只有一个 active Assignment；Tenant 和企微实例没有第二层覆盖。
+- Tenant 和门店员工只看到已指派的模型名称、revision 和就绪状态，不看到 Provider 密钥、BaseURL、Prompt、Schema 或其他 Profile。
+
+### 6.4 Profile 发布
+
+Profile 使用 draft/candidate/active revision：
+
+```text
+编辑 draft
+  -> 严格校验 9 个 Slot
+  -> 使用隔离测试 Credential 执行真实测试
+  -> 生成影响 Store 清单
+  -> 二次确认发布 candidate
+  -> Store readiness 验证
+  -> 激活 revision
+```
+
+旧 active revision 在新版本就绪前继续运行。平台可回滚到上一已发布 revision，但不能恢复旧 AIConfig resolver。
+
+### 6.5 唯一 Resolver
+
+所有 Chat、Responses、Embedding、Rerank、Vision、ASR 和 Document Parser 调用统一执行：
+
+```text
+RuntimeScope.StoreID
+  -> active StoreModelProfileAssignment
+  -> required usage Slot
+  -> active StoreModelCredential
+  -> ModelCallConfig
+```
+
+不存在 employee override、tenant default、tenant fallback、platform default 或 AIConfigID fallback。
+
+## 7. StoreModelCredential
+
+### 7.1 归属与默认状态
+
+- 唯一键：`TenantID + StoreID`。
+- 新 Store 默认 `unconfigured`，不自动创建或申请上游 API Key。
+- 平台只是录入用户已有的 NewAPI API Key，不承担 NewAPI 账户或 Key 创建。
+- 公司主管可以查看和维护本 Tenant 全部门店 Credential。
+- 门店员工是否能维护自己 Store 的 Credential，由 `AllowCredentialSelfService` 开关决定。
+- 平台管理员和公司主管可以按 Store 单独开关，也可以批量设置。
+
+### 7.2 更新与审批
+
+平台管理员或公司主管更新：
+
+```text
+重新输入当前密码
+  -> 显式二次确认
+  -> 写 candidate
+  -> 测试 9 个 Slot
+  -> 同步并测试 FastGPT Profile
+  -> CAS 激活
+```
+
+门店员工自助更新：
+
+```text
+管理员已允许自助
+  -> 重新输入当前密码
+  -> 显式二次确认
+  -> 按 Store 策略直接测试或进入公司主管审批
+  -> 测试与同步通过
+  -> CAS 激活
+```
+
+`RequireSupervisorApproval` 可由 Tenant 管理员开启。无论是否审批，至少必须完成密码复核和二次确认。
+
+### 7.3 加密和不可变审计
+
+- 使用 AES-256-GCM；master key 仅来自部署 Secret/KMS。
+- AAD 包含 `tenant:<tenantID>:store:<storeID>:revision:<revision>`。
+- active/candidate 使用递增 revision、fingerprint、CipherVersion 和 MasterKeyID。
+- API、日志、Trace、错误、WebSocket 和前端永不返回明文、密文、nonce 或完整 fingerprint。
+- 页面只显示掩码、fingerprint 后六位、revision、测试时间、同步状态和错误分类。
+- 旧 `AIConfig.APIKey` 不迁移、不遮罩保留，而是随旧表物理删除。掩码显示只适用于新的 StoreModelCredential。
+- `StoreModelCredentialAuditLog` append-only，记录操作者、范围、动作、revision、审批人、结果、RequestID 和时间，不保存 Key。
+
+### 7.4 状态机和并发
+
+```text
+active(rN)
+  -> candidate(rN+1, testing)
+  -> candidate(syncing_fastgpt)
+  -> candidate(ready)
+  -> active(rN+1)
+```
+
+- candidate 失败时旧 active 保持不变。
+- 同 Store 同时只允许一个 candidate。
+- MySQL 使用行锁和 CAS；SQLite 使用写事务串行化并复核 revision/fingerprint。
+- 有托管 Dataset 的 Store 在 FastGPT 同步失败时阻止激活并继续使用旧 active。
+- 首次配置失败时保持 `unconfigured/failed`，AI 消息进入现有人工任务池。
+
+## 8. Usage 与 Billing
+
+### 8.1 官方账单
+
+每个 Store 使用自己的 NewAPI API Key查询：
+
+- `/api/status`
+- `/api/usage/token/`
+- `/api/log/token`
+
+官方额度、已用、剩余、有效期、模型、人民币成本、单次请求和 request ID 以 NewAPI 返回为准。AgentDesk 不自行计算官方价格或余额。
+
+### 8.2 本地归因
+
+`AIUsageEvent`/`AIUsageGatewayCall` 至少记录：
+
+- TenantID、StoreID、WxWorkInstanceID；
+- ConversationID、MessageID、KnowledgeBaseID；
+- RequestID、Stage、OperationType；
+- ModelProfileID/Revision、UsageSlot、CredentialRevision、KeyFingerprint；
+- Provider、Model、Prompt/Completion/Cached Token 数；
+- GatewayRequestID、Latency、状态、错误分类和时间。
+
+不保存 Prompt、Response、客户正文、标签证据或 API Key。一次实际 provider 请求对应一条不可变调用证据；计量失败不能重复调用模型或重复发送回复。
+
+### 8.3 可见范围
+
+- 门店员工：查看本 Store 额度汇总、人民币金额、模型名、单次请求和 request ID。
+- 公司主管：查看本 Tenant 聚合账单和各 Store 明细。
+- 平台管理员：跨 Tenant 查看和筛选。
+- Tenant 普通客服和客服组长默认无 Billing 权限。
+- 租户只看到模型名，不展示 Provider、BaseURL、Prompt、Schema 或 Key。
+
+### 8.4 口径
+
+- 官方账单与本地归因分栏展示，不相加伪装成同一账本。
+- 使用 Asia/Shanghai 作为首版业务时区。
+- 日期跨度、结果数量、日志保留和导出上限由服务端统一限制，并与 ai-billing 最新实现保持一致。
+- 只做查询、归因、差异对账和导出，不做充值、扣费、套餐、发票或额度强制拦截。
+
+## 9. FastGPT 最终链路
+
+### 9.1 行为来源
+
+完整采用实施开始时 `ai-billing` 最新版本的：
+
+- Store Team/Dataset provision；
+- 文件上传、Collection 查询和删除；
+- Dataset 删除、激活和 Job 状态；
+- Profile 派生、测试、同步、重试和诊断；
+- Search、Embedding、Rerank 和 Answerability；
+- Usage 同步、Gateway receipt 和 Billing 关联。
+
+只把其 Company/Store 范围重写为可信 Tenant + Store 范围，不用 integration 的旧 FastGPT 行为覆盖。
+
+### 9.2 Profile 单向派生
+
+```text
+active ModelProfile revision
+  -> FastGPT Profile 派生投影
+  -> 每个 Store 排队 target revision
+  -> 使用该 Store active Credential 同步远端
+  -> 回写 applied revision/fingerprint/status
+```
+
+FastGPT 页面不再独立编辑模型内容，只显示实际状态、测试结果、revision 和重新同步动作。
+
+### 9.3 重建原则
+
+- 现有 FastGPT 本地 Profile 不作为最终事实源，按新 Model Profile 和 Store Credential 重新生成。
+- 每个 Store 按 ai-billing 最终流程重新 provision Team、Dataset、Collection 和 Profile；旧远端 Dataset/Collection 不作为最终运行资源，也不通过“可证明归属”直接复用。
+- 新 Dataset 完成上传、索引、检索和回复验收后，旧远端资源进入明确清理清单；清理必须校验 Tenant + Store + remote ID，禁止误删其他 Store 资源。
+- Runtime 切换前必须逐 Store 输出 readiness：Tenant/Store/行业/Profile/Credential/Dataset/九槽测试均通过。
+- target revision 未就绪时保持旧 applied revision，不允许迟到结果覆盖新 revision。
+
+## 10. AI 回复运行时
+
+### 10.1 百分百行为权威
+
+以下全部以实施前 `origin/codex/ai-billing` 最新提交为行为权威：
+
+- reply trigger、debounce、短消息合并和并发控制；
+- ConversationMemory 和 History 组装；
+- 行业 IntentDetect Prompt、Schema、校验、重试和 fallback；
+- IntentTasks、ReplyPlan 和多任务回复；
+- KnowledgeAnswerabilityGate；
+- FastGPT query、TopK、threshold、Embedding 和 Rerank；
+- 工具、资源和人工路由决策；
+- Generate 输入顺序和 Scope instruction；
+- Validate、NEXT_MESSAGE、结构化资源和 Commit；
+- Interrupt、Checkpoint、Resume 和人工超时恢复；
+- Trace、RunLog、Usage 和错误分类；
+- 客户标签上下文门禁和失败语义。
+
+Tenant 分支只向这些行为注入可信范围、现有人工任务池端口、运营事实和 WebSocket 路由。不得顺手修改 Prompt、Schema、意图类别、知识 query、工具参数、调用次数或 Resume 状态机。
+
+### 10.2 RuntimeScope
+
+内部不可变范围至少包含：
+
+```text
+TenantID
+StoreID
+WxWorkInstanceID
+IntentProfileID
+ModelProfileID/Revision
+KnowledgeBaseID
+ConversationID
+SessionNo
+CustomerID
+StoreCustomerRelationID
+MessageID
+RequestID
+```
+
+范围从已提交 Conversation、Message 和 RouteState 重建，不相信前端 tenantId/storeId，也不把 `context.Context` 当唯一范围存储。同步、异步、重试和 worker 都必须重新验证父链。
+
+### 10.3 人工交接
+
+- AI Runtime 决定是否转人工、原因和上传方案定义的客户等待文案。
+- 实际任务只通过现有 `ConversationHumanDispatchService` 进入人工池。
+- 选组、选小组、排班、Presence、容量、公平债务、连续性、SLA、转派和释放完全由现有规则派单负责。
+- IntentDetect、Profile、Credential 或解密失败时，不伪造 AI 回复，直接进入现有人工任务池。
+- 同一 RequestID 重试不得重复建任务、重复等待文案或重复 Assignment。
+
+### 10.4 Commit 顺序
+
+```text
+Validate
+  -> 生成稳定 ClientMsgID
+  -> Message + Conversation cursor + EventLog 事务提交
+  -> ServiceAnalyticsCapture
+  -> ObserveCommittedMessage 推进演化游标
+  -> ChannelMessageOutbox
+  -> WebSocket 发布/重同步
+```
+
+Outbox 或 WebSocket 失败不能重新生成模型回复。Observe 只推进状态，不能在消息提交路径调用标签模型。
+
+### 10.5 功能开关
+
+- `CustomerTagEvolutionEnabled` 默认关闭。
+- `ReplyTagContextEnabled` 默认关闭。
+- 开关按 Tenant + Store 生效。
+- 平台管理员和公司主管支持单个、批量选择、全部启用和全部停用。
+- 首次只对丽斯未来选定 Store 灰度，两个能力分开开启和回滚。
+
+## 11. 行业标签与 Store 客户画像
+
+### 11.1 行业模板，不是全局共享 Tag
+
+不使用 `TenantID=0` 的活动 Tag。新增平台级 `IndustryTagDefinition`，它只作为 `ReplyIntentProfile` 的固定标签模板；真正参与 Tenant 页面、客户关系和 Runtime 的仍是现有 Tenant `Tag`。
+
+```text
+ReplyIntentProfile
+  -> IndustryTagDefinition
+  -> Tenant 绑定行业时实例化 Tenant Tag
+  -> StoreCustomerRelation 关联 Tenant Tag
+```
+
+每个行业有完全独立的目录、互斥组、ApplicableScene、AIEnabled 和 ReplyEnabled。酒店首版使用上传方案的 4 类 31 个标签和 8 个互斥组；其他行业不得复用酒店目录。
+
+### 11.2 Tenant 可修改与不可修改
+
+Tenant 可以：
+
+- 启用或停用某个行业标签；
+- 设置仅用于页面展示的别名；
+- 配置演化静默时间、置信阈值、每轮操作上限和功能开关；
+- 批量启停门店的演化和回复上下文。
+
+Tenant 不可以：
+
+- 创建自定义标签或分类；
+- 修改 SemanticKey、父子层级、互斥组、AIEnabled、ReplyEnabled、ApplicableScene；
+- 物理删除行业标签；
+- 把其他行业标签混入当前 Tenant；
+- 修改平台模型使用的标准别名和语义规则。
+
+展示别名不参与模型判断。行业模板更新由平台发布并同步到绑定 Tenant。
+
+### 11.3 客户标签身份
+
+权威关系为：
+
+```text
+TenantID + StoreID + StoreCustomerRelationID + TagID
+```
+
+- 同一自然 Customer 在不同 Store 可以拥有完全不同的标签。
+- Tenant 客户详情按 Store 分组展示，不生成跨 Store 合并画像。
+- Store 关系转移或合并时，由公司主管在明确预览后选择保留来源、保留目标或清空重建，不自动猜测。
+- 每个 StoreCustomerRelation 最多 6 个有效标签；该上限不可由 Tenant 调高。
+- 有权限的客服、客服组长、公司主管可以从固定目录人工添加、移除或替换客户标签；终端客户不能修改。
+- 人工添加默认受保护，AI 不得删除或替换。
+
+### 11.4 可配置静默窗口演化
+
+完整采用 ai-billing 的链路并适配 Tenant：
+
+```text
+Message Commit
+  -> ObserveCommittedMessage
+  -> 静默窗口内新消息重置 deadline
+  -> 到期 claim EvolutionState
+  -> 更新 ConversationSessionSummary
+  -> 提取 KnowledgeCandidate
+  -> customer_tag_llm 输出严格 operations
+  -> 校验行业目录、Store 关系、证据、互斥、人工保护和 6 标签上限
+  -> 事务应用
+  -> append-only ChangeLog
+```
+
+Tenant 可配置静默时间、置信阈值和每轮操作上限；静默时间默认 24 小时，其余默认值来自 ai-billing。每客最大 6 个标签是平台硬上限。
+
+### 11.5 回复标签上下文
+
+- 只读取已提交、当前 Store、当前行业、启用且 ReplyEnabled 的标签。
+- 最多注入上传方案允许的少量相关标签；当前表达覆盖历史画像。
+- 知识型回复只有 Answerability=`has_context` 才允许注入。
+- 不进入 IntentDetect、ReplyPlan、检索 query、工具、资源、人工路由或 Resume。
+- 不新增模型调用或计费事件。
+- 任意查询或校验失败 fail open，原 Generate messages 保持不变。
+
+## 12. 旧链路彻底删除
+
+### 12.1 删除的生产概念
+
+- `AIConfig` 数据库模型、CRUD、页面、resolver 和明文 APIKey；
+- `TenantAIModelGrant` 和租户模型授权池；
+- 租户默认模型、企微员工号模型覆盖和所有 fallback；
+- `StoreAIModelSetting` 活动模型分配；
+- `ConversationTag` 和运营分析 `TagIDsJSON` 会话标签；
+- 旧 `/conversation/add_tag`、`/conversation/remove_tag`；
+- 旧 AIConfigID 在 AIAgent、RunLog、Usage 和前端 DTO 中的活动语义；
+- 只服务上述概念的 repository、service、handler、builder、DTO、API caller、页面、组件、导航、文案和测试。
+
+### 12.2 物理 Schema Cleanup
+
+最终生产 Schema 删除：
+
+```text
+t_ai_config
+t_tenant_ai_model_grant
+t_store_ai_model_setting
+t_conversation_tag
+conversation_service_session.tag_ids_json
+活动表中只属于旧 resolver 的 ai_config_id 列
+```
+
+实际表名和列名以实现时 GORM `TableName`/Schema 审计为准，禁止凭文档猜测执行 DROP。
+
+保留 `TicketTag`，因为它属于工单分类，不是会话标签或客户画像。
+
+### 12.3 删除顺序
+
+```text
+前端 caller/UI
+  -> route
+  -> handler/DTO/builder
+  -> service/repository
+  -> runtime caller
+  -> Models 注册
+  -> 只读预检与备份
+  -> 独立 Schema Cleanup
+```
+
+删除后旧接口必须真实返回 404，旧表和列在 SQLite/MySQL 最终 Schema 中均不存在。Git 历史和已经执行的 MigrationDefinitionArchive 只作为审计事实，不构成运行时残留。
+
+## 13. 规则派单保护边界
+
+以下语义完全保留 tenant-ai-integration：
+
+- manual/rule 两种模式；
+- 人工任务池和 Assignment 状态机；
+- 客服组、小组和排班；
+- Presence、容量和实时压力；
+- 本班公平债务和历史连续性；
+- SLA、stale recovery、转派和释放；
+- 派单、运营和质检事实。
+
+禁止恢复 `model/intelligent/hybrid` 派单、`dispatch_decision_llm`、LLM 选人或客户标签评分。AI 生成交接摘要不等于模型派单。
+
+## 14. 权限最终语义
+
+### 14.1 原则
+
+- 继续使用 Permission -> RolePermission -> UserRole。
+- 权限决定操作资格，Tenant/Store 范围是不可突破的强制上限。
+- 页面隐藏、角色名和前端 ActiveTenant 不能代替 Handler 与 Service 校验。
+- 普通平台 `admin` 获得权限后可以管理行业和 Model Profile，不限制为 `super_admin`。
+
+### 14.2 复用和退役
+
+| 权限码 | 最终语义 |
+| --- | --- |
+| `aiConfig.view` | 查看有权范围内的行业、Model Profile、Store 模型名称、Credential 状态 |
+| `aiConfig.update` | 平台编辑/发布行业与 Model Profile，或按范围更新 Store Credential/Assignment |
+| `conversation.tag` | 查看和管理有权客户的 Store 级客户标签 |
+| `tag.view` | 查看当前 Tenant 的行业标签目录和开关 |
+| `tag.update` | 更新当前 Tenant 标签启停、显示别名和标签策略 |
+| `knowledgeBase.*` | 管理当前 Tenant/Store FastGPT 知识能力 |
+
+退役并清理角色绑定：
+
+- `aiConfig.create/delete` 的旧 CRUD 语义；
+- `tenantModelGrant.*`；
+- `tenantModelAssignment.*`；
+- 旧 ConversationTag API 元数据。
+
+如现有角色已拥有 `conversation.tag` 或 `aiConfig.view/update`，Migration 保留 Permission ID 并更新名称/API 元数据，使其自动获得新语义；范围校验仍按角色和 Tenant/Store 执行。
+
+### 14.3 角色默认范围
+
+| 角色 | 行业/Profile | Store Assignment/Credential | Billing | 客户标签 |
+| --- | --- | --- | --- | --- |
+| 平台 super_admin/admin | 按权限管理 | 按权限管理全部 | 按权限跨 Tenant | 按权限跨 Tenant 审计 |
+| tenant_admin 公司主管 | 只读行业和模型名 | 管理本 Tenant 全部 Store | 聚合和明细 | 本 Tenant 各 Store |
+| cs_team_leader | 不管理 | 不管理 | 默认无 | 负责范围客户 |
+| cs_user | 不管理 | 不管理 | 默认无 | 本人可访问会话客户 |
+| store_staff | 只读自己 Store 模型名 | 开关允许时维护自己 Store | 自己 Store 全明细 | 自己 Store 可访问客户 |
+
+## 15. 页面信息架构
+
+### 15.1 平台侧
+
+- “接入公司”：创建 Tenant、绑定行业、查看 Store 模型 readiness、批量 Profile 指派、凭据状态和账单入口。
+- “意图行业”：管理行业 Profile、Prompt、Schema、revision、测试和发布。
+- “意图分类”：按行业维护分类和行为规则。
+- “行业标签模板”：按行业维护固定目录、互斥、场景和 AI/回复规则。
+- “模型配置”：替换旧 AIConfig 页面，管理 Model Profile 和九个 Slot。
+- “模型用量与账单”：跨 Tenant/Store 查询和对账。
+
+### 15.2 Tenant 公司主管侧
+
+- 整体继续使用现有 ActiveTenant Dashboard 壳层。
+- “门店管理”中显示行业、已指派模型名称、Credential readiness、FastGPT readiness 和账单摘要。
+- Store 行操作复用 Credential、账单和状态组件。
+- 标签页只展示当前行业固定目录，允许启停、显示别名和策略设置，不提供新增/删除。
+- 提供 Store 批量选择和“一键全部启用/停用”演化、回复标签上下文。
+
+### 15.3 门店员工侧
+
+- 在“门店工作台”复用同一 Credential 和 Billing 组件，只显示自己 Store。
+- 若 `AllowCredentialSelfService=false`，只显示掩码状态和联系主管操作。
+- 可以看到模型名称、额度、人民币金额、单次请求和 request ID，不看到 Provider、BaseURL、Prompt、Schema 或 Key。
+
+### 15.4 会话和客户
+
+- `/dashboard/conversations` 继续是实时回复工作台，显示当前 Store 客户标签。
+- 客户详情按 Store 分组显示独立标签和 ChangeLog。
+- 不再显示会话标签 picker。
+- 运营分析不再允许编辑 `TagIDsJSON`，只可读取服务分类、客户标签快照和质检事实。
+
+## 16. 最终数据模型与索引
+
+### 16.1 新增或扩展
+
+| 模型 | 关键字段/约束 |
+| --- | --- |
+| Tenant | `IntentProfileID`，绑定有效行业 Profile |
+| ReplyIntentProfile | IndustryCode、Prompt、Schema、Revision、Status |
+| ReplyIntentConfig | unique(IntentProfileID, Code)，无 Company/Store/WxWork scope |
+| IndustryTagDefinition | unique(IntentProfileID, SemanticKey)，平台固定模板 |
+| Tag | TenantID、IntentProfileID、TemplateDefinitionID、DisplayAlias、Status |
+| TenantCustomerTagPolicy | TenantID unique，静默时间、阈值、每轮上限、批量开关默认值 |
+| ModelProfileTemplate | 平台 Profile、draft/active revision |
+| ModelProfileSlot | unique(ProfileID, UsageSlot)，九槽强校验 |
+| StoreModelProfileAssignment | unique(TenantID, StoreID)，一个 active Profile |
+| StoreModelCredential | unique(TenantID, StoreID)，active/candidate 密文和 revision |
+| StoreCredentialPolicy | unique(TenantID, StoreID)，自助与审批开关 |
+| StoreModelCredentialAuditLog | append-only，Tenant/Store/operator/revision/action/result |
+| AIUsageEvent/GatewayCall | Tenant/Store/Slot/ProfileRevision/CredentialRevision |
+| CustomerTagRelation | unique(TenantID, StoreCustomerRelationID, TagID) |
+| CustomerTagChangeLog | append-only，Tenant/Store/Relation/Tag/证据/操作者 |
+| ConversationEvolutionState | unique(TenantID, ConversationID, SessionNo) + lease |
+| ConversationEvolutionRun | checkpoint/RunKey 唯一 + Tenant/Store |
+| FastGPTStoreTenant/Job/SyncState | TenantID + StoreID + revision/lease/retry |
+
+所有面向操作者和 worker 的查询都必须包含 TenantID；StoreID、主键全局唯一或 ActiveTenant 不能替代 Tenant 条件。
+
+### 16.2 删除
+
+- AIConfig、TenantAIModelGrant、StoreAIModelSetting、ConversationTag 活动 model；
+- WxWork/Knowledge/Company 的运行时 IntentProfile 覆盖字段；
+- ReplyIntentConfig 的 Company/Store/WxWork scope；
+- ConversationServiceSession.TagIDsJSON；
+- 旧 AIConfigID 活动字段。
+
+## 17. API 与事件目标
+
+### 17.1 平台行业与模型
+
+```text
+POST /api/dashboard/reply-intent-profile/get
+POST /api/dashboard/reply-intent-profile/create
+POST /api/dashboard/reply-intent-profile/update
+POST /api/dashboard/reply-intent-profile/test
+POST /api/dashboard/reply-intent-profile/publish
+
+POST /api/dashboard/model-profile-template/get
+POST /api/dashboard/model-profile-template/create
+POST /api/dashboard/model-profile-template/update
+POST /api/dashboard/model-profile-template/test
+POST /api/dashboard/model-profile-template/publish
+
+POST /api/dashboard/store-model-profile/assign
+POST /api/dashboard/store-model-profile/batch_assign
+```
+
+最终路径在实现时必须遵循现有 Gin 平铺路由规范；本文路径是契约目标，注册前仍需与现有 routes 对照。
+
+### 17.2 Credential 与 Billing
+
+```text
+POST /api/dashboard/store-model-credential/get
+POST /api/dashboard/store-model-credential/update
+POST /api/dashboard/store-model-credential/approve
+POST /api/dashboard/store-model-credential/policy
+POST /api/dashboard/store-model-credential/batch_policy
+POST /api/dashboard/billing-query/get
+POST /api/dashboard/billing-query/export
+```
+
+### 17.3 客户标签
+
+```text
+GET  /api/dashboard/conversation/customer_tag/options
+ANY  /api/dashboard/conversation/customer_tag/change_log
+POST /api/dashboard/conversation/customer_tag/add
+POST /api/dashboard/conversation/customer_tag/remove
+POST /api/dashboard/conversation/customer_tag/replace
+POST /api/dashboard/customer-tag/policy/update
+POST /api/dashboard/customer-tag/runtime/batch_toggle
+```
+
+### 17.4 删除接口
+
+旧 AIConfig CRUD、Tenant model access、WxWork model assignments、Conversation add/remove tag 和 FastGPT 独立模型编辑接口全部注销并返回 404。
+
+### 17.5 WebSocket
+
+- `store_model_profile.changed`
+- `store_model_credential.changed`
+- `fastgpt_profile.changed`
+- `customer_tag.changed`
+- `customer_tag_runtime_policy.changed`
+
+事件只包含刷新所需 ID、revision、status 和时间，不携带 Key、Prompt、Schema、客户正文或标签证据。
+
+## 18. Migration 与物理清理
+
+### 18.1 唯一目标 Schema
+
+只支持两类输入并收口为同一最终 Schema：
+
+1. fresh SQLite/MySQL；
+2. 当前 `tenant-ai-integration` 历史 SQLite/MySQL。
+
+`ai-billing` 数据库不是生产升级来源，只移植代码和行为。最终不保留双 Schema、双 resolver 或兼容运行模式。
+
+### 18.2 机制
+
+- DDL 新建字段/表仍优先由最终 `models.Models` 的 AutoMigrate 完成。
+- DML 回填、权限同步、行业/标签实例化和历史定义归档使用 integration runner。
+- Migration 编号在每个提交前 fetch 后动态选择，不预先锁死 68-75。
+- 保留 definition mismatch 检测、MigrationDefinitionArchive、失败阻止启动和幂等重跑测试。
+- 已执行历史 Migration 不改版本号、不伪造 remark、不删除审计记录。
+
+### 18.3 实施阶段
+
+1. 预检：未知 migration remark、Tenant/Store 断链、一 Store 多账号、重复唯一键、旧表存在性和 Key 字段计数。
+2. 扩展：AutoMigrate 新行业、Profile、Credential、Usage、Tag、Evolution 和 FastGPT 字段/表。
+3. 行业：给现有 Tenant 显式绑定酒店行业或输出 unresolved；没有可证明绑定时阻止启动。
+4. 模型：建立默认 Profile 九槽、Store Assignment；不迁移旧 AIConfig APIKey。
+5. 凭据：新 StoreModelCredential 默认 unconfigured，由用户重新配置。
+6. FastGPT：按新 Profile 生成 target revision 并输出 readiness。
+7. 标签：按 Tenant 行业实例化固定目录；删除所有旧 ConversationTag/TagIDsJSON 数据，不迁移。
+8. Runtime：切换唯一 resolver、完整 AI Runtime 和新 API/UI。
+9. 静态证明：旧 caller、route、repository、model registration 和构建路由为零。
+10. 停机备份后执行独立 Schema Cleanup，物理删除旧表/列。
+11. 重跑 preflight、完整性审计和 SQLite/MySQL Schema 快照对比。
+
+### 18.4 破坏性清理门禁
+
+由于用户明确要求不保留旧表，本步骤是对常规 AutoMigrate-only 规则的受控例外：
+
+- 只能由独立管理命令调用 GORM Migrator/数据库兼容 DDL；
+- 不能在普通 server 启动中自动执行；
+- 必须先停 `8083`、停止 worker、完成加密备份并验证可恢复；
+- 必须打印待删表/列、行数和非敏感引用计数，不打印 APIKey；
+- 必须要求显式环境确认和一次性操作令牌；
+- SQLite/MySQL 分别测试，禁止拼接未审计的方言 SQL；
+- 删除完成后回滚只能恢复整库备份，不能恢复旧应用继续生产。
+
+旧 AIConfig.APIKey 不进入日志、导出或新 Credential。它随旧表删除；新 Credential 永远只返回掩码。
+
+## 19. 代码集成方法
+
+### 19.1 B0 固定来源
+
+实施开始必须再次：
+
+```text
+git fetch origin --prune
+固定 tenant-ai-unified-integration HEAD
+固定 origin/codex/ai-billing 最新 SHA
+记录共同祖先和双方提交列表
+生成 integration-manifest.tsv
+```
+
+Manifest 每行记录 path、最终 owner、来源 SHA、目标 batch、保留符号、删除符号和验证测试。
+
+### 19.2 领域权威
+
+| 领域 | 代码骨架/行为来源 |
+| --- | --- |
+| Tenant、账号、角色、权限、Store、企微身份 | tenant-ai-integration |
+| 客服组、小组、排班、Presence、规则派单 | tenant-ai-integration |
+| 运营分析、人工质检、满意度 | tenant-ai-integration |
+| 行业 Profile、意图分类 | ai-billing 行为 + Tenant 唯一绑定重写 |
+| Model Profile、Credential、Usage、Billing | ai-billing |
+| FastGPT Dataset/Profile/RAG | ai-billing |
+| AI Reply Runtime 全链路 | ai-billing 最新版本 |
+| 客户标签、演化、回复上下文 | ai-billing + 行业/Tenant/Store 重写 |
+| Migration runner 和版本安全 | tenant-ai-integration |
+| 前端壳层、ActiveTenant、权限导航 | tenant-ai-integration |
+
+### 19.3 共享高风险文件
+
+以下文件必须手工逐符号重建，禁止整文件接受任一来源：
+
+```text
+AGENTS.md
+internal/models/models.go
+internal/bootstrap/routes.go
+internal/bootstrap/server.go
+internal/bootstrap/migration.go
+internal/pkg/constants/auth.go
+internal/pkg/dto/**
+internal/services/tenant_service.go
+internal/services/wx_work_protocol_instance_service.go
+internal/services/reply_intent_*
+internal/services/store_ai_model_setting_service.go
+internal/services/message_service.go
+internal/services/conversation_*
+internal/services/fastgpt_*
+internal/ai/runtime/**
+internal/services/tag_service.go
+web/lib/api/admin.ts
+web/lib/api/agent.ts
+web/lib/navigation.tsx
+web/app/dashboard/layout.tsx
+web/app/dashboard/conversations/**
+web/messages/zh-CN.json
+web/messages/en-US.json
+```
+
+每处理一个共享文件立即执行定向 diff 和关联测试，不先批量解决全部冲突。
+
+## 20. 分批实施顺序
+
+| Batch | 原子目标 | 合入门禁 |
+| --- | --- | --- |
+| B0 | fetch、固定最新 ai-billing、manifest、双方基线 | 来源工作树不变，集成树干净 |
+| B1 | Migration runner 与最终 model 契约 | SQLite/MySQL AutoMigrate 和历史 runner 测试 |
+| B2 | Tenant 行业绑定、行业 Profile/分类、行业标签模板 | 无 Company/企微行业 override，未绑定行业不能开 AI |
+| B3 | Model Profile 九槽、Store Assignment、唯一 resolver 契约 | 九槽强校验，无 grant/default/fallback |
+| B4 | Store Credential、安全、审批和不可变审计 | 并发 rotation、失败保活、秘密扫描 |
+| B5 | Usage、NewAPI Billing Query 和页面 | Store/Tenant/platform 范围与对账测试 |
+| B6 | FastGPT 重建与单向 Profile | provision/upload/search/sync/retry 全流程 |
+| B7 | ai-billing 完整 Reply Runtime 移植 | Prompt/Schema/阶段/调用次数 golden |
+| B8 | AI 人工交接适配现有任务池 | 规则派单全量回归、幂等转人工 |
+| B9 | 行业标签实例、客户标签关系和 UI | 固定目录、Store 隔离、人工保护、6 上限 |
+| B10 | Evolution worker | due/lease/retry/new-message race |
+| B11 | Reply 标签上下文和批量开关 | 无新增模型调用、Generate 门禁回归 |
+| B12 | 旧 API/UI/service/model 全链删除 | 静态搜索、旧接口 404、构建无旧页面 |
+| B13 | 丽斯未来真实 readiness 与灰度 | 8083、真实 NewAPI/FastGPT/回复/账单 |
+| B14 | 停机 Schema Cleanup 与发布候选 | 备份恢复、SQLite/MySQL 最终 Schema 一致 |
+
+任何 Batch 最多三个单一目的提交；模型、迁移、后端行为、前端入口和破坏性删除不得混成一个不可审查提交。
+
+## 21. 测试与验收
+
+### 21.1 固定命令
+
+```text
+gofmt 所有修改 Go 文件
+go test ./... -count=1
+go test -race ./internal/ai/... ./internal/services/... ./internal/repositories/...
+go vet ./...
+pnpm --dir web typecheck
+pnpm --dir web lint
+逐个执行 web 内全部 *.test.mjs
+pnpm --dir web build:sdk
+pnpm --dir web build
+git diff --check
+```
+
+### 21.2 Tenant、行业和权限
+
+- 双 Tenant 同名 Store、客户、标签和 Profile Assignment 不串数据。
+- Tenant 行业缺失/停用/切换、企微伪造 IntentProfileID 和跨 Tenant ID 均被拒绝。
+- 每个行业只使用自己的 Prompt、Schema、分类和标签。
+- 平台 admin、tenant_admin、组长、客服、store_staff 和无 ActiveTenant 用户逐项验证。
+- 一 Store 只能绑定一个系统门店员工账号；WxWork 身份不能代替系统账号。
+
+### 21.3 模型、Credential 和 Billing
+
+- 九槽逐个验证缺失、类型错误、超时和成功。
+- 多 Profile Store 指派和批量指派正确，无租户授权池和 fallback。
+- Credential 首次配置、candidate 失败、FastGPT 失败、CAS 失败和并发更新均不泄密。
+- 门店自助开关、密码复核、二次确认、主管审批和审计日志完整。
+- Store/Tenant/platform Billing 可见范围、金额、模型、request ID 和导出正确。
+- API、日志、Trace、错误、网络响应和构建产物无 Key、nonce 或完整 fingerprint。
+
+### 21.4 AI Runtime 等价性
+
+以实施前固定的 ai-billing 最新 SHA 保存确定性 golden：
+
+- IntentDetect messages、Prompt、Schema 和调用次数；
+- ReplyPlan、intentTasks、知识 query、Answerability；
+- Generate messages、Validate、NEXT_MESSAGE、Commit actions；
+- Interrupt、Checkpoint、Resume；
+- RunLog、Trace、Usage stage 和错误分类。
+
+允许差异只有 Tenant/Store/行业/Assignment 范围字段和现有运营事实 Hook。其他差异必须单独解释，不能称为 Tenant 适配。
+
+### 21.5 标签
+
+- 酒店目录严格为该行业定义的 4 类 31 标签和互斥规则；其他行业不会看到酒店标签。
+- Tenant 只能启停和设置显示别名，新增/删除/语义修改接口不存在。
+- 同一 Customer 在两个 Store 的标签互不影响。
+- 人工保护、互斥替换、主管迁移选择、6 个上限和 append-only ChangeLog 正确。
+- Observe Commit 零模型调用；只有 due 且开关开启时运行 customer_tag_llm。
+- Reply 标签上下文失败不改变原 messages，不新增 UsageEvent。
+
+### 21.6 派单、运营和前端
+
+- manual/rule、排班、Presence、容量、公平债务、SLA 和 stale recovery 全过。
+- AI 失败进入人工池且不重复任务。
+- ServiceSession、ResponseSpan、Assignment、运营分析、质检和满意度保持正常。
+- ActiveTenant 切换立即清理 Store Credential、Billing、标签、知识和会话缓存。
+- 桌面和移动验证平台、Tenant、门店工作台、会话和客户详情，无重叠和越权入口。
+
+### 21.7 数据库矩阵
+
+| 输入 | SQLite | MySQL 8.x |
+| --- | --- | --- |
+| fresh | 最终 Schema + 重跑 | 最终 Schema + 重跑 |
+| tenant-ai-integration 历史库 | 升级 + cleanup + 重跑 | 升级 + cleanup + 重跑 |
+
+每格验证：Migration archive、权限 ID、Tenant 行业、Store 一对一、九槽、Credential、行业标签、唯一索引、旧表/列不存在和重复执行幂等。
+
+## 22. 发布、回滚与 No-Go
+
+### 22.1 发布 No-Go
+
+任一条件成立禁止发布：
+
+- 未固定最新 ai-billing SHA 或 golden；
+- Tenant 行业 unresolved；
+- 活动 Store 缺少唯一系统账号、Profile Assignment、九槽、Credential 或 FastGPT readiness；
+- 跨 Tenant/Store 测试失败；
+- Runtime 与 ai-billing golden 的 Prompt、Schema、调用次数不符；
+- 规则派单或运营回归失败；
+- API Key 在任何输出中可见；
+- SQLite/MySQL 任一最终 Schema 不一致；
+- 旧 resolver/API/UI 仍可达；
+- Schema Cleanup 备份未实际恢复验证；
+- 真实 NewAPI、FastGPT 和丽斯未来消息验收未完成。
+
+### 22.2 上线顺序
+
+1. 在生产脱敏副本演练完整升级、cleanup 和备份恢复。
+2. 停止旧 `8083` 和全部 worker，记录 Message/Outbox/Assignment 游标。
+3. 完成数据库和远端 FastGPT 状态备份。
+4. 执行 preflight、AutoMigrate、DML migration 和 readiness。
+5. 启动新应用但保持标签演化/回复上下文关闭。
+6. 丽斯未来单 Store 验证行业、九槽、Credential、FastGPT、回复、转人工、派单、Usage、账单和运营事实。
+7. 扩大 ready Store 范围。
+8. 先批量灰度 ReplyTagContext，再独立灰度 Evolution。
+9. 验证稳定并确认无需旧版本回退后，停机执行 Schema Cleanup。
+10. 用同一发布镜像重启 `8083`，完成最终全链验收。
+
+### 22.3 回滚边界
+
+- Cleanup 前：可回退新 UI/Runtime/Profile Assignment 应用提交，数据库新增表保留；不能恢复模型派单。
+- Credential：candidate 失败继续使用旧 active revision。
+- FastGPT：保持旧 applied revision和重试任务。
+- 标签：关闭 Evolution/ReplyTagContext，保留新客户标签关系和 ChangeLog。
+- 派单：异常时切 manual，不回退为模型派单。
+- Cleanup 后：旧表已物理删除，禁止启动依赖旧 AIConfig/Grant/Setting/ConversationTag 的应用。严重问题只能恢复 cleanup 前整库备份并回退整个发布，不允许新旧应用并行。
+
+## 23. 完成判定
+
+只有同时满足以下条件，才能声明统一集成完成：
+
+- 最终 `main` 只通过新的统一集成 PR 接收本次能力；
+- Tenant 是唯一隔离根，Tenant 唯一绑定行业；
+- Store 和唯一系统门店员工账号一对一；
+- 行业决定 IntentDetect Prompt、Schema、分类和固定标签目录；
+- Model Profile/九槽/Store Assignment/Store Credential 是唯一模型系统；
+- AIConfig、TenantAIModelGrant、StoreAIModelSetting、ConversationTag 代码和物理表均不存在；
+- FastGPT 和 AI Reply Runtime 与固定 ai-billing 最新基线一致；
+- 客户标签按 Store 隔离、每客最多 6 个、Tenant 只能开关和设置显示别名；
+- AI 失败和明确转人工只进入现有规则派单；
+- Billing 按 Store 官方查询、按 Tenant 聚合、平台可跨 Tenant；
+- SQLite/MySQL fresh 和历史升级得到同一最终 Schema；
+- 丽斯未来在 `8083` 完成真实 NewAPI、FastGPT、回复、派单、账单和标签灰度；
+- 全量测试、构建、浏览器、秘密扫描、备份恢复和 Schema Cleanup 证据齐全。
+
+在以上条件完成前，文档和 PR 只能写“正在集成”或“待验收”，不得写“已合并完成”。
+
+## 24. 实施记录要求
+
+每个 Batch 完成后在本文末尾追加简短实施记录，至少包含：
+
+- 日期、Batch、提交 SHA；
+- ai-billing 固定来源 SHA；
+- 修改文件和共享高风险文件；
+- model/migration/DTO/enum/API/WebSocket/权限变化；
+- SQLite/MySQL、Go、前端和浏览器验证；
+- 并行来源影响、合并顺序和回滚边界；
+- 未测项和外部阻塞。
+
+不得把临时报告写入 `docs/generated/`，不得提交数据库、截图、密钥、下载原稿或本地审计产物。
+
+## 25. 实施记录
+
+### 25.1 2026-07-22 B0 来源固定与基线审计
+
+- 集成分支：`codex/tenant-ai-unified-integration`，固定骨架 `1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- AI 行为来源：执行 `git fetch origin --prune` 后固定 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`；共同祖先为 `f2d2da4df7f267bf99e94c4ba1e9911f8f371373`。
+- 来源提交：Tenant 骨架在共同祖先后 139 个提交，AI 来源 9 个提交；双方共同修改 116 个路径，禁止整分支 merge 或整文件选边。
+- 文件归属：新增 `docs/development/integration-manifest.tsv`，逐行记录全部 116 个重叠路径的最终 owner、来源 SHA、目标 Batch、保留/重建能力、删除项、验证命令和状态。
+- 共享契约：本批不修改 model、migration、DTO、enum、API、WebSocket 或权限；仅固定后续逐符号重建边界。
+- 租户基线：`go test ./... -count=1` 通过；ESLint 0 error、32 warning；`tsc --noEmit --incremental false` 通过；136 个 `*.test.mjs` 全部通过；`git diff --check` 通过。
+- AI 基线：`go test ./... -count=1` 和 TypeScript 通过；ESLint 基线为 11 error、48 warning，属于来源分支既存缺陷，移植对应前端时必须修复，不能带入最终分支。
+- 来源保护：detached AI 审计工作树保持干净；Tenant 来源工作树的两份既存未提交文档不属于本批，未修改、未覆盖。统一集成工作树当前仅含 B0 文档与清单变更。
+- 并行影响：`codex/tenant-ai-integration` 与 `codex/ai-billing` 从此仅作只读来源；后续每个 Batch 开始前重新 fetch 并核对来源是否前移，不再将任一来源分支单独合入 `main`。
+- 合并顺序：先提交 B0 文档证据，再实施 B1 最终 Schema/Migration 契约；任何运行时代码不得先于 B1-B4 的行业、Profile、Assignment 和 Credential 契约启用。
+- 回滚边界：B0 仅文档，可独立回滚，不影响运行代码、数据库或来源分支。
