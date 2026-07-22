@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/components/auth-provider"
+import { useIsMobile } from "@/hooks/use-mobile"
 import {
   Sheet,
   SheetContent,
@@ -33,6 +34,7 @@ import { RetrieveLogList } from "./_components/retrieve-log-list"
 export default function DashboardKnowledgeDocumentsPage() {
   const t = useI18n()
   const { session } = useAuth()
+  const isMobile = useIsMobile()
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState<KnowledgeBase | null>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [debugPanelOpen, setDebugPanelOpen] = useState(false)
@@ -57,17 +59,23 @@ export default function DashboardKnowledgeDocumentsPage() {
     (activeTab === "retrieveLogs" && !canViewDocuments) ||
     ((activeTab === "fastgptFiles" || activeTab === "resources") && !isFastGPTCloudKnowledgeBase)
   const visibleActiveTab = activeTabUnavailable ? "documents" : activeTab
+  const handleSelectKnowledgeBase = (knowledgeBase: KnowledgeBase | null) => {
+    setSelectedKnowledgeBase(knowledgeBase)
+    if (knowledgeBase && isMobile) {
+      setSidebarCollapsed(true)
+    }
+  }
 
   return (
     <div className="agentdesk-surface flex h-[calc(100vh-4rem)] overflow-hidden rounded-2xl">
       <div
         className={`shrink-0 overflow-hidden transition-[width] duration-200 ${
-          sidebarCollapsed ? "w-0" : "w-80"
+          sidebarCollapsed ? "w-0" : "w-full md:w-80"
         }`}
       >
         <KnowledgeBaseList
           selectedKnowledgeBaseId={selectedKnowledgeBase?.id ?? null}
-          onSelectKnowledgeBase={setSelectedKnowledgeBase}
+          onSelectKnowledgeBase={handleSelectKnowledgeBase}
           canCreate={canCreateKnowledgeBase}
           canUpdate={canUpdateKnowledgeBase}
           canDelete={canDeleteKnowledgeBase}
@@ -77,7 +85,9 @@ export default function DashboardKnowledgeDocumentsPage() {
         <Button
           variant="outline"
           size="icon"
-          className="agentdesk-soft-button absolute top-4 left-1/2 z-10 size-8 -translate-x-1/2 rounded-full"
+          className={`agentdesk-soft-button absolute top-4 z-10 size-8 rounded-full md:right-auto md:left-1/2 md:-translate-x-1/2 ${
+            sidebarCollapsed ? "left-3" : "right-3"
+          }`}
           onClick={() => setSidebarCollapsed((value) => !value)}
           aria-label={sidebarCollapsed ? t("knowledge.expandList") : t("knowledge.collapseList")}
         >
@@ -88,7 +98,7 @@ export default function DashboardKnowledgeDocumentsPage() {
           )}
         </Button>
       </div>
-      <div className="min-w-0 min-h-0 flex-1 bg-card">
+      <div className="min-w-0 min-h-0 flex-1 overflow-hidden bg-card">
         {isFastGPTCloudKnowledgeBase && selectedKnowledgeBase ? (
           <FastGPTKnowledgeWorkspace
             knowledgeBase={selectedKnowledgeBase}
@@ -241,7 +251,7 @@ export default function DashboardKnowledgeDocumentsPage() {
         )}
       </div>
       <Sheet open={debugPanelOpen && canViewDocuments} onOpenChange={setDebugPanelOpen}>
-        <SheetContent side="right" className="min-w-170">
+        <SheetContent side="right" className="w-[calc(100vw-1rem)] sm:w-auto sm:min-w-170">
           <SheetHeader>
             <SheetTitle>{t("knowledge.ragDebug")}</SheetTitle>
           </SheetHeader>
