@@ -1,556 +1,344 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect } from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { Controller, Resolver, useForm } from "react-hook-form"
+import { Controller, useFieldArray, useForm } from "react-hook-form"
 import { z } from "zod/v4"
 
-import { ProjectDialog } from "@/components/project-dialog"
+import { OptionCombobox } from "@/components/option-combobox"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
-  Field,
-  FieldContent,
-  FieldError,
-  FieldLabel,
-} from "@/components/ui/field"
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Field, FieldError, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { type AIConfig, type CreateAIConfigPayload, fetchAIConfig } from "@/lib/api/admin"
-import {
-  AIModelType,
-  AIProvider,
-} from "@/lib/generated/enums"
-import { useI18n } from "@/i18n/provider"
-import { OptionCombobox } from "./option-combobox"
+import type {
+  ModelProfileSlotPayload,
+  ModelProfileTemplate,
+  ModelUsageSlotOption,
+} from "@/lib/api/admin"
 
-type AIConfigEditDialogProps = {
+const slotSchema = z.object({
+  usageCode: z.string().min(1),
+  displayName: z.string().min(1),
+  modelType: z.string().min(1),
+  provider: z.literal("newapi"),
+  modelName: z.string(),
+  apiMode: z.string().min(1),
+  dimension: z.number().int().min(0),
+  maxContextTokens: z.number().int().min(0),
+  maxOutputTokens: z.number().int().min(0),
+  timeoutMs: z.number().int().positive(),
+  maxRetryCount: z.number().int().min(0).max(10),
+  temperature: z.number().min(0).max(2),
+  schemaVersion: z.string(),
+  promptTemplate: z.string(),
+  jsonSchema: z.string(),
+  enabled: z.boolean(),
+  sortNo: z.number().int().positive(),
+})
+
+const formSchema = z.object({
+  code: z.string().min(2).max(80),
+  name: z.string().min(1).max(120),
+  description: z.string(),
+  gatewayBaseUrl: z.string(),
+  slots: z.array(slotSchema).length(9),
+})
+
+export type ModelProfileFormValues = z.infer<typeof formSchema>
+
+type ModelProfileEditDialogProps = {
   open: boolean
   saving: boolean
-  itemId: number | null
+  profile: ModelProfileTemplate | null
+  requiredSlots: ModelUsageSlotOption[]
   onOpenChange: (open: boolean) => void
-  onSubmit: (payload: CreateAIConfigPayload) => Promise<void>
+  onSubmit: (values: ModelProfileFormValues) => Promise<void>
 }
 
-type TFunction = (key: string, values?: Record<string, string | number>) => string
+const apiModeOptions = [
+  { value: "chat_completions", label: "Chat Completions" },
+  { value: "responses", label: "Responses" },
+  { value: "audio_transcriptions", label: "Audio Transcriptions" },
+  { value: "embeddings", label: "Embeddings" },
+  { value: "rerank", label: "Rerank" },
+]
 
-const AI_CONFIG_API_MODE_CHAT = "chat_completions"
-const AI_CONFIG_API_MODE_RESPONSES = "responses"
-
-function getProviderOptions(t: TFunction) {
-  return [{ value: String(AIProvider.OpenAI), label: t("aiConfig.providerOpenAI") }]
+function defaultApiMode(usageCode: string) {
+  if (usageCode === "asr") return "audio_transcriptions"
+  if (usageCode === "embedding") return "embeddings"
+  if (usageCode === "rerank") return "rerank"
+  return "chat_completions"
 }
 
-function getModelTypeOptions(t: TFunction) {
-  return [
-    { value: String(AIModelType.LLM), label: t("aiConfig.modelTypeLlm") },
-    { value: String(AIModelType.Embedding), label: t("aiConfig.modelTypeEmbedding") },
-    { value: String(AIModelType.Rerank), label: t("aiConfig.modelTypeRerank") },
-    { value: String(AIModelType.Vision), label: "视觉/多模态模型" },
-    { value: String(AIModelType.ASR), label: "语音识别模型" },
-    { value: String(AIModelType.TTS), label: "语音合成模型" },
-  ]
+function emptySlots(requiredSlots: ModelUsageSlotOption[]): ModelProfileSlotPayload[] {
+  return requiredSlots.map((item, index) => ({
+    usageCode: item.usageCode,
+    displayName: item.displayName,
+    modelType: item.expectedModelType,
+    provider: "newapi",
+    modelName: "",
+    apiMode: defaultApiMode(item.usageCode),
+    dimension: 0,
+    maxContextTokens: 0,
+    maxOutputTokens: 0,
+    timeoutMs: 30000,
+    maxRetryCount: 0,
+    temperature: 0,
+    schemaVersion:
+      item.usageCode === "customer_tag_llm" ? "customer_tag_evolution.v1" : "",
+    promptTemplate: "",
+    jsonSchema: "",
+    enabled: true,
+    sortNo: index + 1,
+  }))
 }
 
-function getAPIModeOptions() {
-  return [
-    { value: AI_CONFIG_API_MODE_CHAT, label: "Chat Completions（通用兼容）" },
-    { value: AI_CONFIG_API_MODE_RESPONSES, label: "Responses API（需后端适配）" },
-  ]
-}
-
-const emptyForm: EditForm = {
-  name: "",
-  provider: AIProvider.OpenAI,
-  baseUrl: "",
-  apiKey: "",
-  apiMode: AI_CONFIG_API_MODE_CHAT,
-  modelType: AIModelType.LLM,
-  modelName: "",
-  dimension: "0",
-  maxContextTokens: "0",
-  maxOutputTokens: "0",
-  timeoutMs: "120000",
-  maxRetryCount: "0",
-  rpmLimit: "0",
-  tpmLimit: "0",
-  intentDetectEnabled: false,
-  remark: "",
-}
-
-type EditForm = {
-  name: string
-  provider: string
-  baseUrl: string
-  apiKey: string
-  apiMode: string
-  modelType: string
-  modelName: string
-  dimension: string
-  maxContextTokens: string
-  maxOutputTokens: string
-  timeoutMs: string
-  maxRetryCount: string
-  rpmLimit: string
-  tpmLimit: string
-  intentDetectEnabled: boolean
-  remark: string
-}
-
-function buildForm(item: AIConfig | null): EditForm {
-  if (!item) {
-    return emptyForm
+function formValues(
+  profile: ModelProfileTemplate | null,
+  requiredSlots: ModelUsageSlotOption[],
+): ModelProfileFormValues {
+  if (!profile) {
+    return {
+      code: "",
+      name: "",
+      description: "",
+      gatewayBaseUrl: "",
+      slots: emptySlots(requiredSlots),
+    }
   }
-
   return {
-    name: item.name,
-    provider: item.provider,
-    baseUrl: item.baseUrl,
-    apiKey: "",
-    apiMode: item.apiMode || AI_CONFIG_API_MODE_CHAT,
-    modelType: item.modelType,
-    modelName: item.modelName,
-    dimension: String(item.dimension),
-    maxContextTokens: String(item.maxContextTokens),
-    maxOutputTokens: String(item.maxOutputTokens),
-    timeoutMs: String(item.timeoutMs),
-    maxRetryCount: String(item.maxRetryCount),
-    rpmLimit: String(item.rpmLimit),
-    tpmLimit: String(item.tpmLimit),
-    intentDetectEnabled: item.intentDetectEnabled,
-    remark: item.remark ?? "",
-  }
-}
-
-function buildPayload(form: EditForm): CreateAIConfigPayload {
-  return {
-    name: form.name.trim(),
-    provider: form.provider,
-    baseUrl: form.baseUrl.trim(),
-    apiKey: form.apiKey.trim(),
-    apiMode: form.apiMode || AI_CONFIG_API_MODE_CHAT,
-    modelType: form.modelType,
-    modelName: form.modelName.trim(),
-    dimension: Number(form.dimension),
-    maxContextTokens: Number(form.maxContextTokens),
-    maxOutputTokens: Number(form.maxOutputTokens),
-    timeoutMs: Number(form.timeoutMs),
-    maxRetryCount: Number(form.maxRetryCount),
-    rpmLimit: Number(form.rpmLimit),
-    tpmLimit: Number(form.tpmLimit),
-    intentDetectEnabled: form.modelType === AIModelType.LLM && form.intentDetectEnabled,
-    remark: form.remark.trim(),
+    code: profile.code,
+    name: profile.name,
+    description: profile.description,
+    gatewayBaseUrl: profile.gatewayBaseUrl,
+    slots: profile.slots.map((slot) => {
+      const { id, ...payload } = slot
+      void id
+      return payload
+    }),
   }
 }
 
 export function EditDialog({
   open,
   saving,
-  itemId,
+  profile,
+  requiredSlots,
   onOpenChange,
   onSubmit,
-}: AIConfigEditDialogProps) {
-  if (!open) {
-    return null
-  }
-
-  return (
-    <AIConfigEditDialogBody
-      key={itemId ? `edit-${itemId}` : "create"}
-      open={open}
-      saving={saving}
-      itemId={itemId}
-      onOpenChange={onOpenChange}
-      onSubmit={onSubmit}
-    />
-  )
-}
-
-type AIConfigEditDialogBodyProps = AIConfigEditDialogProps
-
-function AIConfigEditDialogBody({
-  open,
-  saving,
-  itemId,
-  onOpenChange,
-  onSubmit,
-}: AIConfigEditDialogBodyProps) {
-  const formId = "ai-config-edit-form"
-  const t = useI18n()
-  const [loading, setLoading] = useState(false)
-  const providerOptions = useMemo(() => getProviderOptions(t), [t])
-  const modelTypeOptions = useMemo(() => getModelTypeOptions(t), [t])
-  const apiModeOptions = useMemo(() => getAPIModeOptions(), [])
-  const aiConfigFormSchema = useMemo(
-    () =>
-      z.object({
-        name: z.string().trim().min(1, t("aiConfig.nameRequired")),
-        provider: z.string().trim().min(1, t("aiConfig.providerRequired")),
-        baseUrl: z.string().trim().min(1, t("aiConfig.baseUrlRequired")),
-        apiKey: z.string().trim(),
-        apiMode: z.string().trim().min(1, "请选择接口模式"),
-        modelType: z.string().trim().min(1, t("aiConfig.modelTypeRequired")),
-        modelName: z.string().trim().min(1, t("aiConfig.modelNameRequired")),
-        dimension: z.string().trim().regex(/^\d+$/, t("aiConfig.dimensionInvalid")),
-        maxContextTokens: z.string().trim().regex(/^\d+$/, t("aiConfig.maxContextInvalid")),
-        maxOutputTokens: z.string().trim().regex(/^\d+$/, t("aiConfig.maxOutputInvalid")),
-        timeoutMs: z.string().trim().regex(/^\d+$/, t("aiConfig.timeoutInvalid")),
-        maxRetryCount: z.string().trim().regex(/^\d+$/, t("aiConfig.retryInvalid")),
-        rpmLimit: z.string().trim().regex(/^\d+$/, t("aiConfig.rpmInvalid")),
-        tpmLimit: z.string().trim().regex(/^\d+$/, t("aiConfig.tpmInvalid")),
-        intentDetectEnabled: z.boolean(),
-        remark: z.string().trim(),
-      }),
-    [t],
-  )
-  const editFormResolver = useMemo(
-    () => zodResolver(aiConfigFormSchema as never) as Resolver<EditForm>,
-    [aiConfigFormSchema],
-  )
-  const form = useForm<EditForm>({
-    resolver: editFormResolver,
-    defaultValues: emptyForm,
+}: ModelProfileEditDialogProps) {
+  const form = useForm<ModelProfileFormValues>({
+    resolver: zodResolver(formSchema),
+    defaultValues: formValues(profile, requiredSlots),
   })
-  const {
-    control,
-    handleSubmit,
-    reset,
-    register,
-    setValue,
-    watch,
-    formState: { errors },
-  } = form
-
-  const modelType = watch("modelType")
+  const fields = useFieldArray({ control: form.control, name: "slots" })
 
   useEffect(() => {
-    if (modelType !== AIModelType.LLM) {
-      setValue("intentDetectEnabled", false)
-    }
-  }, [modelType, setValue])
-
-  useEffect(() => {
-    async function loadDetail() {
-      if (!itemId) {
-        reset(emptyForm)
-        return
-      }
-      setLoading(true)
-      try {
-        const data = await fetchAIConfig(itemId)
-        reset(buildForm(data))
-      } catch (error) {
-        console.error("Failed to load AI config:", error)
-      } finally {
-        setLoading(false)
-      }
-    }
-    void loadDetail()
-  }, [itemId, reset])
-
-  async function onFormSubmit(values: EditForm) {
-    await onSubmit(buildPayload(values))
-  }
+    if (open) form.reset(formValues(profile, requiredSlots))
+  }, [form, open, profile, requiredSlots])
 
   return (
-    <ProjectDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title={itemId ? t("aiConfig.editTitle") : t("aiConfig.createTitle")}
-      size="xl"
-      footer={
-        <>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={saving}
-          >
-            {t("aiConfig.cancel")}
-          </Button>
-          <Button type="submit" form={formId} disabled={saving || loading}>
-            {saving ? t("aiConfig.saving") : itemId ? t("aiConfig.save") : t("aiConfig.create")}
-          </Button>
-        </>
-      }
-    >
-      {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <div className="text-muted-foreground">{t("aiConfig.loading")}</div>
-        </div>
-      ) : (
-        <form id={formId} onSubmit={handleSubmit(onFormSubmit)} className="space-y-4">
-          <Field data-invalid={!!errors.name}>
-            <FieldLabel htmlFor="ai-config-name">{t("aiConfig.name")}</FieldLabel>
-            <FieldContent>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl">
+        <DialogHeader className="border-b px-6 py-5">
+          <DialogTitle>{profile ? `编辑 ${profile.name}` : "新建模型方案"}</DialogTitle>
+          <DialogDescription>
+            {profile ? `${profile.code} · 版本 ${profile.revision}` : "草稿版本 1"}
+          </DialogDescription>
+        </DialogHeader>
+
+        <form
+          id="model-profile-form"
+          className="min-h-0 flex-1 overflow-y-auto"
+          onSubmit={form.handleSubmit(onSubmit)}
+        >
+          <section className="grid gap-4 border-b px-6 py-5 md:grid-cols-2 xl:grid-cols-4">
+            <Field>
+              <FieldLabel htmlFor="profile-code">方案编码</FieldLabel>
               <Input
-                id="ai-config-name"
-                placeholder={t("aiConfig.namePlaceholder")}
-                aria-invalid={!!errors.name}
-                {...register("name")}
+                id="profile-code"
+                disabled={Boolean(profile)}
+                {...form.register("code")}
               />
-              <FieldError errors={[errors.name]} />
-            </FieldContent>
-          </Field>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field data-invalid={!!errors.provider}>
-              <FieldLabel>{t("aiConfig.provider")}</FieldLabel>
-              <FieldContent>
-                <Controller
-                  control={control}
-                  name="provider"
-                  render={({ field }) => (
-                    <OptionCombobox
-                      value={field.value}
-                      options={providerOptions}
-                      placeholder={t("aiConfig.selectProvider")}
-                      searchPlaceholder={t("aiConfig.searchProvider")}
-                      emptyText={t("aiConfig.emptyProvider")}
-                      onChange={field.onChange}
-                    />
-                  )}
-                />
-                <FieldError errors={[errors.provider]} />
-              </FieldContent>
+              <FieldError>{form.formState.errors.code?.message}</FieldError>
             </Field>
-
-            <Field data-invalid={!!errors.modelType}>
-              <FieldLabel>{t("aiConfig.modelType")}</FieldLabel>
-              <FieldContent>
-                <Controller
-                  control={control}
-                  name="modelType"
-                  render={({ field }) => (
-                    <OptionCombobox
-                      value={field.value}
-                      options={modelTypeOptions}
-                      placeholder={t("aiConfig.selectModelType")}
-                      searchPlaceholder={t("aiConfig.searchModelType")}
-                      emptyText={t("aiConfig.emptyModelType")}
-                      onChange={field.onChange}
-                    />
-                  )}
-                />
-                <FieldError errors={[errors.modelType]} />
-              </FieldContent>
+            <Field>
+              <FieldLabel htmlFor="profile-name">方案名称</FieldLabel>
+              <Input id="profile-name" {...form.register("name")} />
+              <FieldError>{form.formState.errors.name?.message}</FieldError>
             </Field>
-          </div>
-
-          <Field data-invalid={!!errors.baseUrl}>
-            <FieldLabel htmlFor="ai-config-base-url">{t("aiConfig.baseUrl")}</FieldLabel>
-            <FieldContent>
+            <Field className="md:col-span-2">
+              <FieldLabel htmlFor="profile-gateway">统一 NewAPI 网关</FieldLabel>
               <Input
-                id="ai-config-base-url"
-                placeholder={t("aiConfig.baseUrlPlaceholder")}
-                aria-invalid={!!errors.baseUrl}
-                {...register("baseUrl")}
+                id="profile-gateway"
+                placeholder="https://gateway.example.com/v1"
+                {...form.register("gatewayBaseUrl")}
               />
-              <FieldError errors={[errors.baseUrl]} />
-            </FieldContent>
-          </Field>
-
-          <Field data-invalid={!!errors.apiKey}>
-            <FieldLabel htmlFor="ai-config-api-key">API Key</FieldLabel>
-            <FieldContent>
-              <Input
-                id="ai-config-api-key"
-                type="password"
-                placeholder={t("aiConfig.apiKeyPlaceholder")}
-                aria-invalid={!!errors.apiKey}
-                {...register("apiKey")}
-              />
-              <FieldError errors={[errors.apiKey]} />
-            </FieldContent>
-          </Field>
-
-          <Field data-invalid={!!errors.apiMode}>
-            <FieldLabel>接口模式</FieldLabel>
-            <FieldContent>
-              <Controller
-                control={control}
-                name="apiMode"
-                render={({ field }) => (
-                  <OptionCombobox
-                    value={field.value}
-                    options={apiModeOptions}
-                    placeholder="选择接口模式"
-                    searchPlaceholder="搜索接口模式"
-                    emptyText="暂无接口模式"
-                    onChange={field.onChange}
-                  />
-                )}
-              />
-              <div className="text-xs text-muted-foreground">
-                千问兼容模式用 Chat Completions；豆包/火山方舟可配置 Responses，需后端 Responses adapter 完成后启用。
-              </div>
-              <FieldError errors={[errors.apiMode]} />
-            </FieldContent>
-          </Field>
-
-          <Field orientation="horizontal">
-            <FieldLabel htmlFor="ai-config-intent-detect-enabled">可作为意图识别模型</FieldLabel>
-            <FieldContent>
-              <Controller
-                control={control}
-                name="intentDetectEnabled"
-                render={({ field }) => (
-                  <Switch
-                    id="ai-config-intent-detect-enabled"
-                    checked={field.value}
-                    disabled={modelType !== AIModelType.LLM}
-                    onCheckedChange={field.onChange}
-                  />
-                )}
-              />
-              <div className="text-xs text-muted-foreground">
-                开启后回复引擎会优先用该 LLM 做 IntentDetect JSON 分类；未配置时回退到当前回复模型。
-              </div>
-            </FieldContent>
-          </Field>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field data-invalid={!!errors.modelName}>
-              <FieldLabel htmlFor="ai-config-model-name">{t("aiConfig.modelName")}</FieldLabel>
-              <FieldContent>
-                <Input
-                  id="ai-config-model-name"
-                  placeholder={t("aiConfig.modelNamePlaceholder")}
-                  aria-invalid={!!errors.modelName}
-                  {...register("modelName")}
-                />
-                <FieldError errors={[errors.modelName]} />
-              </FieldContent>
+              <FieldError>{form.formState.errors.gatewayBaseUrl?.message}</FieldError>
             </Field>
-
-            <Field data-invalid={!!errors.dimension}>
-              <FieldLabel htmlFor="ai-config-dimension">{t("aiConfig.dimensionLabel")}</FieldLabel>
-              <FieldContent>
-                <Input
-                  id="ai-config-dimension"
-                  type="number"
-                  min={0}
-                  step={1}
-                  disabled={modelType !== AIModelType.Embedding}
-                  aria-invalid={!!errors.dimension}
-                  {...register("dimension")}
-                />
-                <FieldError errors={[errors.dimension]} />
-              </FieldContent>
-            </Field>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field data-invalid={!!errors.maxContextTokens}>
-              <FieldLabel htmlFor="ai-config-max-context">{t("aiConfig.maxContextTokens")}</FieldLabel>
-              <FieldContent>
-                <Input
-                  id="ai-config-max-context"
-                  type="number"
-                  min={0}
-                  step={1}
-                  aria-invalid={!!errors.maxContextTokens}
-                  {...register("maxContextTokens")}
-                />
-                <FieldError errors={[errors.maxContextTokens]} />
-              </FieldContent>
-            </Field>
-
-            <Field data-invalid={!!errors.maxOutputTokens}>
-              <FieldLabel htmlFor="ai-config-max-output">{t("aiConfig.maxOutputTokens")}</FieldLabel>
-              <FieldContent>
-                <Input
-                  id="ai-config-max-output"
-                  type="number"
-                  min={0}
-                  step={1}
-                  aria-invalid={!!errors.maxOutputTokens}
-                  {...register("maxOutputTokens")}
-                />
-                <FieldError errors={[errors.maxOutputTokens]} />
-              </FieldContent>
-            </Field>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field data-invalid={!!errors.timeoutMs}>
-              <FieldLabel htmlFor="ai-config-timeout">{t("aiConfig.timeoutMs")}</FieldLabel>
-              <FieldContent>
-                <Input
-                  id="ai-config-timeout"
-                  type="number"
-                  min={0}
-                  step={1}
-                  aria-invalid={!!errors.timeoutMs}
-                  {...register("timeoutMs")}
-                />
-                <FieldError errors={[errors.timeoutMs]} />
-              </FieldContent>
-            </Field>
-
-            <Field data-invalid={!!errors.maxRetryCount}>
-              <FieldLabel htmlFor="ai-config-retry">{t("aiConfig.maxRetryCount")}</FieldLabel>
-              <FieldContent>
-                <Input
-                  id="ai-config-retry"
-                  type="number"
-                  min={0}
-                  step={1}
-                  aria-invalid={!!errors.maxRetryCount}
-                  {...register("maxRetryCount")}
-                />
-                <FieldError errors={[errors.maxRetryCount]} />
-              </FieldContent>
-            </Field>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <Field data-invalid={!!errors.rpmLimit}>
-              <FieldLabel htmlFor="ai-config-rpm">{t("aiConfig.rpmLimit")}</FieldLabel>
-              <FieldContent>
-                <Input
-                  id="ai-config-rpm"
-                  type="number"
-                  min={0}
-                  step={1}
-                  aria-invalid={!!errors.rpmLimit}
-                  {...register("rpmLimit")}
-                />
-                <FieldError errors={[errors.rpmLimit]} />
-              </FieldContent>
-            </Field>
-
-            <Field data-invalid={!!errors.tpmLimit}>
-              <FieldLabel htmlFor="ai-config-tpm">{t("aiConfig.tpmLimit")}</FieldLabel>
-              <FieldContent>
-                <Input
-                  id="ai-config-tpm"
-                  type="number"
-                  min={0}
-                  step={1}
-                  aria-invalid={!!errors.tpmLimit}
-                  {...register("tpmLimit")}
-                />
-                <FieldError errors={[errors.tpmLimit]} />
-              </FieldContent>
-            </Field>
-          </div>
-
-          <Field data-invalid={!!errors.remark}>
-            <FieldLabel htmlFor="ai-config-remark">{t("aiConfig.remark")}</FieldLabel>
-            <FieldContent>
+            <Field className="md:col-span-2 xl:col-span-4">
+              <FieldLabel htmlFor="profile-description">备注</FieldLabel>
               <Textarea
-                id="ai-config-remark"
-                placeholder={t("aiConfig.remarkPlaceholder")}
-                rows={3}
-                aria-invalid={!!errors.remark}
-                {...register("remark")}
+                id="profile-description"
+                className="min-h-20 resize-y"
+                {...form.register("description")}
               />
-              <FieldError errors={[errors.remark]} />
-            </FieldContent>
-          </Field>
+            </Field>
+          </section>
+
+          <section className="divide-y">
+            {fields.fields.map((field, index) => {
+              const modelType = field.modelType
+              const usageCode = field.usageCode
+              const needsTokens = modelType === "llm" || modelType === "vision"
+              return (
+                <div key={field.id} className="grid gap-4 px-6 py-5 xl:grid-cols-[180px_1fr_180px_130px_130px]">
+                  <div className="min-w-0">
+                    <div className="font-medium">{field.displayName}</div>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      <Badge variant="outline">{field.usageCode}</Badge>
+                      <Badge variant="secondary">{field.modelType}</Badge>
+                      <Badge variant="outline">NewAPI</Badge>
+                    </div>
+                  </div>
+                  <Field>
+                    <FieldLabel htmlFor={`slot-${index}-model`}>模型名</FieldLabel>
+                    <Input
+                      id={`slot-${index}-model`}
+                      {...form.register(`slots.${index}.modelName`)}
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel>API 模式</FieldLabel>
+                    <Controller
+                      control={form.control}
+                      name={`slots.${index}.apiMode`}
+                      render={({ field: controllerField }) => (
+                        <OptionCombobox
+                          value={controllerField.value}
+                          options={apiModeOptions}
+                          placeholder="选择模式"
+                          onChange={controllerField.onChange}
+                        />
+                      )}
+                    />
+                  </Field>
+                  {modelType === "embedding" ? (
+                    <Field>
+                      <FieldLabel htmlFor={`slot-${index}-dimension`}>向量维度</FieldLabel>
+                      <Input
+                        id={`slot-${index}-dimension`}
+                        type="number"
+                        min={0}
+                        {...form.register(`slots.${index}.dimension`, { valueAsNumber: true })}
+                      />
+                    </Field>
+                  ) : (
+                    <Field>
+                      <FieldLabel htmlFor={`slot-${index}-timeout`}>超时 ms</FieldLabel>
+                      <Input
+                        id={`slot-${index}-timeout`}
+                        type="number"
+                        min={1}
+                        {...form.register(`slots.${index}.timeoutMs`, { valueAsNumber: true })}
+                      />
+                    </Field>
+                  )}
+                  <Field>
+                    <FieldLabel htmlFor={`slot-${index}-retry`}>重试</FieldLabel>
+                    <Input
+                      id={`slot-${index}-retry`}
+                      type="number"
+                      min={0}
+                      max={10}
+                      {...form.register(`slots.${index}.maxRetryCount`, { valueAsNumber: true })}
+                    />
+                  </Field>
+                  {needsTokens ? (
+                    <div className="grid gap-4 sm:grid-cols-3 xl:col-start-2 xl:col-span-4">
+                      <Field>
+                        <FieldLabel htmlFor={`slot-${index}-context`}>上下文 Token</FieldLabel>
+                        <Input
+                          id={`slot-${index}-context`}
+                          type="number"
+                          min={0}
+                          {...form.register(`slots.${index}.maxContextTokens`, { valueAsNumber: true })}
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor={`slot-${index}-output`}>输出 Token</FieldLabel>
+                        <Input
+                          id={`slot-${index}-output`}
+                          type="number"
+                          min={0}
+                          {...form.register(`slots.${index}.maxOutputTokens`, { valueAsNumber: true })}
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor={`slot-${index}-temperature`}>随机度</FieldLabel>
+                        <Input
+                          id={`slot-${index}-temperature`}
+                          type="number"
+                          min={0}
+                          max={2}
+                          step={0.1}
+                          {...form.register(`slots.${index}.temperature`, { valueAsNumber: true })}
+                        />
+                      </Field>
+                    </div>
+                  ) : null}
+                  {usageCode === "customer_tag_llm" ? (
+                    <div className="grid gap-4 xl:col-start-2 xl:col-span-4 xl:grid-cols-2">
+                      <Field>
+                        <FieldLabel htmlFor={`slot-${index}-schema-version`}>Schema 版本</FieldLabel>
+                        <Input
+                          id={`slot-${index}-schema-version`}
+                          {...form.register(`slots.${index}.schemaVersion`)}
+                        />
+                      </Field>
+                      <div />
+                      <Field>
+                        <FieldLabel htmlFor={`slot-${index}-prompt`}>Prompt</FieldLabel>
+                        <Textarea
+                          id={`slot-${index}-prompt`}
+                          className="min-h-32 resize-y font-mono text-xs"
+                          {...form.register(`slots.${index}.promptTemplate`)}
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor={`slot-${index}-schema`}>JSON Schema</FieldLabel>
+                        <Textarea
+                          id={`slot-${index}-schema`}
+                          className="min-h-32 resize-y font-mono text-xs"
+                          {...form.register(`slots.${index}.jsonSchema`)}
+                        />
+                      </Field>
+                    </div>
+                  ) : null}
+                </div>
+              )
+            })}
+          </section>
         </form>
-      )}
-    </ProjectDialog>
+
+        <DialogFooter className="mx-0 mb-0 rounded-none px-6">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button type="submit" form="model-profile-form" disabled={saving}>
+            {saving ? "保存中..." : "保存草稿"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

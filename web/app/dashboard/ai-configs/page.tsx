@@ -1,330 +1,416 @@
-"use client";
+"use client"
 
-import { useMemo } from "react";
-
-import { useAuth } from "@/components/auth-provider";
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
-  DashboardCrudPage,
-  createDashboardStatusColumn,
-  type DashboardCrudColumn,
-  type DashboardCrudFilter,
-} from "@/components/dashboard/crud";
-import { Badge } from "@/components/ui/badge";
+  CheckCircle2Icon,
+  CircleAlertIcon,
+  CopyPlusIcon,
+  Edit3Icon,
+  PlusIcon,
+  RefreshCwIcon,
+  RocketIcon,
+  ServerCogIcon,
+} from "lucide-react"
+import { toast } from "sonner"
+
+import { useAuth } from "@/components/auth-provider"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
-  createAIConfig,
-  deleteAIConfig,
-  fetchAIConfigs,
-  updateAIConfig,
-  updateAIConfigSort,
-  updateAIConfigStatus,
-  type AIConfig,
-  type CreateAIConfigPayload,
-} from "@/lib/api/admin";
-import { AIModelType, AIProvider, Status } from "@/lib/generated/enums";
-import { useI18n } from "@/i18n/provider";
-import { EditDialog } from "./_components/edit";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import {
+  createModelProfile,
+  fetchModelProfileCatalog,
+  publishModelProfile,
+  updateModelProfile,
+  validateModelProfile,
+  type ModelProfileCatalog,
+  type ModelProfileTemplate,
+  type ModelProfileValidation,
+} from "@/lib/api/admin"
+import { formatDateTime } from "@/lib/utils"
+import { EditDialog, type ModelProfileFormValues } from "./_components/edit"
 
-type TFunction = (key: string, values?: Record<string, string | number>) => string;
-
-function getStatusOptions(t: TFunction) {
-  return [
-    { value: "all", label: t("aiConfig.allStatuses") },
-    { value: String(Status.Ok), label: t("aiConfig.enabled") },
-    { value: String(Status.Disabled), label: t("aiConfig.disabled") },
-    { value: String(Status.Deleted), label: t("aiConfig.deletedStatus") },
-  ];
+const statusLabels: Record<ModelProfileTemplate["status"], string> = {
+  draft: "草稿",
+  candidate: "候选",
+  active: "生效",
+  retired: "已退役",
+  disabled: "已停用",
 }
 
-function getProviderOptions(t: TFunction, includeAll = true) {
-  const options = [
-    { value: String(AIProvider.OpenAI), label: t("aiConfig.providerOpenAI") },
-  ];
-  return includeAll
-    ? [{ value: "all", label: t("aiConfig.allProviders") }, ...options]
-    : options;
+function statusVariant(status: ModelProfileTemplate["status"]) {
+  if (status === "active") return "default" as const
+  if (status === "candidate") return "secondary" as const
+  return "outline" as const
 }
 
-function getModelTypeOptions(t: TFunction, includeAll = true) {
-  const options = [
-    { value: String(AIModelType.LLM), label: t("aiConfig.modelTypeLlm") },
-    {
-      value: String(AIModelType.Embedding),
-      label: t("aiConfig.modelTypeEmbedding"),
-    },
-    { value: String(AIModelType.Rerank), label: t("aiConfig.modelTypeRerank") },
-    { value: String(AIModelType.Vision), label: "视觉/多模态模型" },
-    { value: String(AIModelType.ASR), label: "语音识别模型" },
-    { value: String(AIModelType.TTS), label: "语音合成模型" },
-  ];
-  return includeAll
-    ? [{ value: "all", label: t("aiConfig.allTypes") }, ...options]
-    : options;
-}
-
-function getStatusLabel(value: Status, t: TFunction) {
-  return (
-    getStatusOptions(t).find((item) => item.value === String(value))?.label ??
-    String(value)
-  );
-}
-
-function getProviderLabel(value: AIProvider, t: TFunction) {
-  return (
-    getProviderOptions(t, false).find((item) => item.value === String(value))
-      ?.label ?? String(value)
-  );
-}
-
-function getModelTypeLabel(value: AIModelType, t: TFunction) {
-  return (
-    getModelTypeOptions(t, false).find((item) => item.value === String(value))
-      ?.label ?? String(value)
-  );
-}
-
-function getAPIModeLabel(value?: string) {
-  return value === "responses" ? "Responses" : "Chat"
-}
-
-function getNextStatus(item: AIConfig) {
-  return item.status === Status.Ok ? Status.Disabled : Status.Ok;
+function slotLimit(profile: ModelProfileTemplate, index: number) {
+  const slot = profile.slots[index]
+  if (slot.modelType === "embedding") return `${slot.dimension || 0} 维`
+  if (slot.maxContextTokens > 0 || slot.maxOutputTokens > 0) {
+    return `${slot.maxContextTokens || 0} / ${slot.maxOutputTokens || 0}`
+  }
+  return `${slot.timeoutMs} ms`
 }
 
 export default function DashboardAIConfigsPage() {
-  const t = useI18n();
-  const { session } = useAuth();
+  const { session } = useAuth()
   const permissions = useMemo(
     () => new Set(session?.permissions ?? []),
     [session?.permissions],
-  );
-  const isPlatformAccount = Boolean(session?.isPlatformAccount);
-  const canCreate = isPlatformAccount && permissions.has("aiConfig.create");
-  const canUpdate = isPlatformAccount && permissions.has("aiConfig.update");
-  const canDelete = isPlatformAccount && permissions.has("aiConfig.delete");
-  const listStatusOptions = useMemo(() => getStatusOptions(t), [t]);
-  const providerFilterOptions = useMemo(() => getProviderOptions(t), [t]);
-  const modelTypeFilterOptions = useMemo(() => getModelTypeOptions(t), [t]);
+  )
+  const canUpdate =
+    Boolean(session?.isPlatformAccount) && permissions.has("aiConfig.update")
+  const [catalog, setCatalog] = useState<ModelProfileCatalog | null>(null)
+  const [selectedId, setSelectedId] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editingProfile, setEditingProfile] = useState<ModelProfileTemplate | null>(null)
+  const [validation, setValidation] = useState<ModelProfileValidation | null>(null)
+  const [publishTarget, setPublishTarget] = useState<ModelProfileTemplate | null>(null)
 
-  const filters = useMemo<DashboardCrudFilter[]>(
-    () => [
-      {
-        name: "name",
-        label: t("aiConfig.filterName"),
-        placeholder: t("aiConfig.filterName"),
-        defaultValue: "",
-        trim: true,
-        className: "w-full sm:w-72",
-      },
-      {
-        name: "modelType",
-        label: t("aiConfig.allTypes"),
-        type: "select",
-        defaultValue: "all",
-        allValue: "all",
-        options: modelTypeFilterOptions,
-        className: "w-full sm:w-40",
-      },
-      {
-        name: "provider",
-        label: t("aiConfig.allProviders"),
-        type: "select",
-        defaultValue: "all",
-        allValue: "all",
-        options: providerFilterOptions,
-        className: "w-full sm:w-40",
-      },
-      {
-        name: "status",
-        label: t("aiConfig.allStatuses"),
-        type: "select",
-        defaultValue: "all",
-        allValue: "all",
-        options: listStatusOptions,
-        className: "w-full sm:w-32",
-      },
-    ],
-    [listStatusOptions, modelTypeFilterOptions, providerFilterOptions, t],
-  );
+  const load = useCallback(async (preferredId = 0) => {
+    setLoading(true)
+    try {
+      const next = await fetchModelProfileCatalog()
+      setCatalog(next)
+      setSelectedId((current) => {
+        const requested = preferredId || current
+        return next.profiles.some((item) => item.id === requested)
+          ? requested
+          : (next.profiles[0]?.id ?? 0)
+      })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "读取模型方案失败")
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-  const columns = useMemo<DashboardCrudColumn<AIConfig>[]>(
-    () => [
-      {
-        key: "config",
-        label: t("aiConfig.columnConfig"),
-        render: (item) => (
-          <div className="space-y-1 text-sm font-medium">{item.name}</div>
-        ),
-      },
-      {
-        key: "provider",
-        label: t("aiConfig.columnProvider"),
-        render: (item) => (
-          <Badge variant="outline">
-            {getProviderLabel(item.provider as AIProvider, t)}
-          </Badge>
-        ),
-      },
-      {
-        key: "model",
-        label: t("aiConfig.columnModel"),
-        render: (item) => (
-          <div className="space-y-1">
-            <Badge variant="secondary">
-              {getModelTypeLabel(item.modelType as AIModelType, t)}
-            </Badge>
-            {item.intentDetectEnabled ? (
-              <Badge variant="outline" className="ml-1 text-[11px]">
-                意图识别
-              </Badge>
-            ) : null}
-            <div className="text-sm">{item.modelName}</div>
-            {item.dimension > 0 ? (
-              <div className="text-xs text-muted-foreground">
-                {t("aiConfig.dimension", { count: item.dimension })}
-              </div>
-            ) : null}
-          </div>
-        ),
-      },
-      {
-        key: "access",
-        label: t("aiConfig.columnAccess"),
-        render: (item) => (
-          <div className="space-y-1 text-sm">
-            <div className="line-clamp-1">{item.baseUrl}</div>
-            <div className="text-xs text-muted-foreground">
-              {t("aiConfig.apiKey", { key: item.hasApiKey ? "****" : "-" })}
-            </div>
-            <Badge variant="outline" className="text-[11px]">
-              {getAPIModeLabel(item.apiMode)}
-            </Badge>
-          </div>
-        ),
-      },
-      {
-        key: "limits",
-        label: t("aiConfig.columnLimits"),
-        render: (item) => (
-          <div className="space-y-1 text-xs text-muted-foreground">
-            <div>
-              {t("aiConfig.contextTokens", {
-                count: item.maxContextTokens || 0,
-              })}
-            </div>
-            <div>
-              {t("aiConfig.outputTokens", {
-                count: item.maxOutputTokens || 0,
-              })}
-            </div>
-            <div>
-              {t("aiConfig.timeoutRetry", {
-                timeout: item.timeoutMs,
-                retries: item.maxRetryCount,
-              })}
-            </div>
-            <div>
-              RPM {item.rpmLimit || 0} / TPM {item.tpmLimit || 0}
-            </div>
-          </div>
-        ),
-      },
-      createDashboardStatusColumn<AIConfig, number>({
-        label: t("aiConfig.columnStatus"),
-        getStatus: (item) => item.status,
-        getLabel: (status) => getStatusLabel(status as Status, t),
-        getBadgeVariant: (status) =>
-          status === Status.Ok ? "default" : "outline",
-        isEnabled: (status) => status === Status.Ok,
-        toggle: canUpdate
-          ? {
-              getNextStatus,
-              updateStatus: (item, nextStatus) =>
-                updateAIConfigStatus(item.id, nextStatus),
-              successMessage: (item, nextStatus) =>
-                t("aiConfig.statusChanged", {
-                  name: item.name,
-                  status:
-                    nextStatus === Status.Ok
-                      ? t("aiConfig.enabled")
-                      : t("aiConfig.disabled"),
-                }),
-              errorMessage: t("aiConfig.statusUpdateFailed"),
-              ariaLabel: (item) =>
-                t("aiConfig.toggleStatus", { name: item.name }),
-            }
-          : undefined,
-      }),
-    ],
-    [canUpdate, t],
-  );
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const selected = useMemo(
+    () => catalog?.profiles.find((item) => item.id === selectedId) ?? null,
+    [catalog, selectedId],
+  )
+
+  async function submitProfile(values: ModelProfileFormValues) {
+    setSaving(true)
+    try {
+      const saved = editingProfile
+        ? await updateModelProfile({
+            id: editingProfile.id,
+            name: values.name.trim(),
+            description: values.description.trim(),
+            gatewayBaseUrl: values.gatewayBaseUrl.trim(),
+            slots: values.slots,
+          })
+        : await createModelProfile({
+            code: values.code.trim(),
+            name: values.name.trim(),
+            description: values.description.trim(),
+            gatewayBaseUrl: values.gatewayBaseUrl.trim(),
+            slots: values.slots,
+          })
+      toast.success(editingProfile ? "草稿已更新" : "模型方案已创建")
+      setEditorOpen(false)
+      setValidation(null)
+      await load(saved.id)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "保存模型方案失败")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function createRevision() {
+    if (!selected) return
+    setSaving(true)
+    try {
+      const created = await createModelProfile({ sourceTemplateId: selected.id })
+      toast.success(`已创建版本 ${created.revision}`)
+      setValidation(null)
+      await load(created.id)
+      setEditingProfile(created)
+      setEditorOpen(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "创建新版本失败")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function runValidation() {
+    if (!selected) return
+    try {
+      const result = await validateModelProfile(selected.id)
+      setValidation(result)
+      if (result.status === "passed") toast.success("九槽结构校验通过")
+      else toast.error(`结构校验发现 ${result.issues.length} 项问题`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "结构校验失败")
+    }
+  }
+
+  async function confirmPublish() {
+    if (!publishTarget) return
+    setSaving(true)
+    try {
+      const published = await publishModelProfile(publishTarget.id, publishTarget.revision)
+      toast.success(`版本 ${published.revision} 已提交为候选`)
+      setPublishTarget(null)
+      setValidation(null)
+      await load(published.id)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "候选发布失败")
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
-    <DashboardCrudPage<AIConfig, CreateAIConfigPayload>
-      filters={filters}
-      columns={columns}
-      fetchList={(query) =>
-        fetchAIConfigs({
-          name: typeof query.name === "string" ? query.name : undefined,
-          status: typeof query.status === "string" ? query.status : undefined,
-          provider:
-            typeof query.provider === "string" ? query.provider : undefined,
-          modelType:
-            typeof query.modelType === "string" ? query.modelType : undefined,
-          page: Number(query.page),
-          limit: Number(query.limit),
-        })
-      }
-      getItemId={(item) => item.id}
-      createItem={createAIConfig}
-      showCreate={canCreate}
-      showEdit={canUpdate}
-      showActionsColumn={canUpdate || canDelete}
-      updateItem={(item, payload) => updateAIConfig({ id: item.id, ...payload })}
-      deleteItem={canDelete ? (item) => deleteAIConfig(item.id) : undefined}
-      canDelete={canDelete ? (item) => item.status !== Status.Ok : undefined}
-      deleteConfirm={(item) => ({
-        title: t("aiConfig.confirmDeleteTitle"),
-        description: t("aiConfig.confirmDeleteDescription", {
-          name: item.name,
-        }),
-        confirmText: t("aiConfig.confirmDelete"),
-        cancelText: t("aiConfig.cancel"),
-        variant: "destructive",
-      })}
-      sort={{
-        enabled: canUpdate,
-        onReorder: (items) => updateAIConfigSort(items.map((item) => item.id)),
-        successMessage: t("aiConfig.sortUpdated"),
-        errorMessage: t("aiConfig.sortUpdateFailed"),
-        handleLabel: t("aiConfig.dragSort", { name: "" }),
-      }}
-      renderEditDialog={({ open, saving, itemId, onOpenChange, onSubmit }) => (
-        <EditDialog
-          open={open}
-          saving={saving}
-          itemId={itemId}
-          onOpenChange={onOpenChange}
-          onSubmit={onSubmit}
-        />
-      )}
-      labels={{
-        refresh: t("aiConfig.refresh"),
-        create: t("aiConfig.new"),
-        query: t("aiConfig.query"),
-        loading: t("aiConfig.loadingRows"),
-        empty: t("aiConfig.emptyRows"),
-        actions: t("aiConfig.columnActions"),
-        edit: t("aiConfig.edit"),
-        delete: t("aiConfig.delete"),
-        processing: t("aiConfig.deleting"),
-        moreActions: (item) => t("aiConfig.moreActions", { name: item.name }),
-        loadFailed: t("aiConfig.loadFailed"),
-        saveFailed: t("aiConfig.saveFailed"),
-        deleteFailed: t("aiConfig.deleteFailed"),
-        created: (payload) => t("aiConfig.created", { name: payload.name }),
-        updated: (item) => t("aiConfig.updated", { name: item.name }),
-        deleted: (item) => t("aiConfig.deleted", { name: item.name }),
-      }}
-    />
-  );
+    <div className="min-w-0">
+      <header className="flex flex-col gap-4 border-b pb-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-xl font-semibold">模型配置</h1>
+          <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+            <ServerCogIcon className="size-4" />
+            <span>NewAPI · 九槽模型方案</span>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+            <RefreshCwIcon className={loading ? "animate-spin" : ""} />
+            刷新
+          </Button>
+          {canUpdate ? (
+            <Button
+              type="button"
+              size="sm"
+              disabled={loading || (catalog?.requiredSlots.length ?? 0) !== 9}
+              onClick={() => {
+                setEditingProfile(null)
+                setEditorOpen(true)
+              }}
+            >
+              <PlusIcon />
+              新建方案
+            </Button>
+          ) : null}
+        </div>
+      </header>
+
+      <div className="grid min-h-[620px] lg:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className="border-b py-4 lg:border-r lg:border-b-0 lg:pr-4">
+          <div className="mb-3 flex items-center justify-between px-1">
+            <span className="text-sm font-medium">方案版本</span>
+            <Badge variant="secondary">{catalog?.profiles.length ?? 0}</Badge>
+          </div>
+          <div className="max-h-[680px] divide-y overflow-y-auto border-y">
+            {catalog?.profiles.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`w-full px-3 py-3 text-left transition-colors hover:bg-muted/50 ${
+                  item.id === selectedId ? "bg-muted" : ""
+                }`}
+                onClick={() => {
+                  setSelectedId(item.id)
+                  setValidation(null)
+                }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-sm font-medium">{item.name}</span>
+                  <Badge variant={statusVariant(item.status)}>{statusLabels[item.status]}</Badge>
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span className="truncate font-mono">{item.code}</span>
+                  <span>r{item.revision}</span>
+                </div>
+              </button>
+            ))}
+            {!loading && !catalog?.profiles.length ? (
+              <div className="px-3 py-12 text-center text-sm text-muted-foreground">暂无模型方案</div>
+            ) : null}
+          </div>
+        </aside>
+
+        <main className="min-w-0 py-4 lg:pl-5">
+          {selected ? (
+            <>
+              <div className="flex flex-col gap-4 border-b pb-4 xl:flex-row xl:items-start xl:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-lg font-semibold">{selected.name}</h2>
+                    <Badge variant={statusVariant(selected.status)}>{statusLabels[selected.status]}</Badge>
+                    <Badge variant="outline">版本 {selected.revision}</Badge>
+                  </div>
+                  <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{selected.description || "-"}</p>
+                  <div className="mt-3 grid gap-x-8 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
+                    <span className="truncate font-mono">{selected.gatewayBaseUrl || "网关未配置"}</span>
+                    <span>更新于 {formatDateTime(selected.updatedAt)}</span>
+                  </div>
+                </div>
+                {canUpdate ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {selected.status === "draft" ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setEditingProfile(selected)
+                        setEditorOpen(true)
+                      }}
+                    >
+                      <Edit3Icon />
+                      编辑
+                    </Button>
+                    ) : (
+                      <Button type="button" variant="outline" size="sm" onClick={() => void createRevision()} disabled={saving}>
+                        <CopyPlusIcon />
+                        新版本
+                      </Button>
+                    )}
+                    <Button type="button" variant="outline" size="sm" onClick={() => void runValidation()}>
+                      <CheckCircle2Icon />
+                      结构校验
+                    </Button>
+                    {selected.status === "draft" ? (
+                      <Button type="button" size="sm" onClick={() => setPublishTarget(selected)}>
+                        <RocketIcon />
+                        提交候选
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="overflow-x-auto py-4">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>用途</TableHead>
+                      <TableHead>模型</TableHead>
+                      <TableHead>类型</TableHead>
+                      <TableHead>API</TableHead>
+                      <TableHead>上限 / 超时</TableHead>
+                      <TableHead>状态</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {selected.slots.map((slot, index) => (
+                      <TableRow key={slot.usageCode}>
+                        <TableCell>
+                          <div className="font-medium">{slot.displayName}</div>
+                          <div className="mt-0.5 font-mono text-xs text-muted-foreground">{slot.usageCode}</div>
+                        </TableCell>
+                        <TableCell className="max-w-64 truncate font-mono text-xs">
+                          {slot.modelName || "未配置"}
+                        </TableCell>
+                        <TableCell><Badge variant="secondary">{slot.modelType}</Badge></TableCell>
+                        <TableCell className="text-xs">{slot.apiMode}</TableCell>
+                        <TableCell className="text-xs tabular-nums">{slotLimit(selected, index)}</TableCell>
+                        <TableCell>
+                          <Badge
+                            variant={
+                              !slot.enabled
+                                ? "destructive"
+                                : slot.modelName.trim()
+                                  ? "secondary"
+                                  : "outline"
+                            }
+                          >
+                            {!slot.enabled
+                              ? "已停用"
+                              : slot.modelName.trim()
+                                ? "已填写模型"
+                                : "待填写模型"}
+                          </Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {validation ? (
+                <section className="border-t pt-4">
+                  <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+                    {validation.status === "passed" ? (
+                      <CheckCircle2Icon className="size-4 text-emerald-600" />
+                    ) : (
+                      <CircleAlertIcon className="size-4 text-destructive" />
+                    )}
+                    <span>{validation.status === "passed" ? "结构校验通过" : "结构校验未通过"}</span>
+                  </div>
+                  {validation.issues.length ? (
+                    <div className="divide-y border-y">
+                      {validation.issues.map((issue, index) => (
+                        <div key={`${issue.usageCode}-${index}`} className="flex gap-3 py-2 text-sm">
+                          <span className="w-36 shrink-0 font-mono text-xs text-muted-foreground">{issue.usageCode || "profile"}</span>
+                          <span>{issue.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+            </>
+          ) : (
+            <div className="flex min-h-96 items-center justify-center text-sm text-muted-foreground">
+              {loading ? "正在读取模型方案..." : "请选择或新建模型方案"}
+            </div>
+          )}
+        </main>
+      </div>
+
+      <EditDialog
+        open={editorOpen}
+        saving={saving}
+        profile={editingProfile}
+        requiredSlots={catalog?.requiredSlots ?? []}
+        onOpenChange={setEditorOpen}
+        onSubmit={submitProfile}
+      />
+
+      <Dialog open={Boolean(publishTarget)} onOpenChange={(open) => !open && setPublishTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>提交候选版本</DialogTitle>
+            <DialogDescription>
+              {publishTarget ? `${publishTarget.name} · 版本 ${publishTarget.revision}` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="border-y py-3 text-sm">
+            九槽结构通过后进入候选状态。门店继续使用原生效版本，直至凭据和就绪校验完成。
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPublishTarget(null)}>取消</Button>
+            <Button type="button" onClick={() => void confirmPublish()} disabled={saving}>
+              {saving ? "提交中..." : `确认版本 ${publishTarget?.revision ?? ""}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
 }

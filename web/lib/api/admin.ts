@@ -2350,6 +2350,180 @@ export function updateAIConfigSort(ids: number[]) {
   })
 }
 
+export type ModelProfileSlot = {
+  id: number
+  usageCode: string
+  displayName: string
+  modelType: string
+  provider: "newapi"
+  modelName: string
+  apiMode: string
+  dimension: number
+  maxContextTokens: number
+  maxOutputTokens: number
+  timeoutMs: number
+  maxRetryCount: number
+  temperature: number
+  schemaVersion: string
+  promptTemplate: string
+  jsonSchema: string
+  enabled: boolean
+  sortNo: number
+}
+
+export type ModelProfileTemplate = {
+  id: number
+  code: string
+  name: string
+  description: string
+  revision: number
+  gatewayBaseUrl: string
+  status: "draft" | "candidate" | "active" | "retired" | "disabled"
+  publishedAt?: string | null
+  publishedByName: string
+  slots: ModelProfileSlot[]
+  createdAt: string
+  updatedAt: string
+}
+
+export type ModelUsageSlotOption = {
+  usageCode: string
+  displayName: string
+  expectedModelType: string
+}
+
+export type ModelProfileCatalog = {
+  profiles: ModelProfileTemplate[]
+  requiredSlots: ModelUsageSlotOption[]
+}
+
+export type ModelProfileSlotPayload = Omit<ModelProfileSlot, "id">
+
+export type CreateModelProfilePayload = {
+  sourceTemplateId?: number
+  code?: string
+  name?: string
+  description?: string
+  gatewayBaseUrl?: string
+  slots?: ModelProfileSlotPayload[]
+}
+
+export type UpdateModelProfilePayload = {
+  id: number
+  name: string
+  description: string
+  gatewayBaseUrl: string
+  slots: ModelProfileSlotPayload[]
+}
+
+export type ModelProfileValidation = {
+  templateId: number
+  revision: number
+  status: "passed" | "failed"
+  issues: Array<{ usageCode: string; message: string }>
+}
+
+export function fetchModelProfileCatalog(payload: { id?: number; code?: string } = {}) {
+  return request<ModelProfileCatalog>("/api/dashboard/model-profile-template/get", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function createModelProfile(payload: CreateModelProfilePayload) {
+  return request<ModelProfileTemplate>("/api/dashboard/model-profile-template/create", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateModelProfile(payload: UpdateModelProfilePayload) {
+  return request<ModelProfileTemplate>("/api/dashboard/model-profile-template/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function validateModelProfile(id: number) {
+  return request<ModelProfileValidation>("/api/dashboard/model-profile-template/test", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  })
+}
+
+export function publishModelProfile(id: number, confirmRevision: number) {
+  return request<ModelProfileTemplate>("/api/dashboard/model-profile-template/publish", {
+    method: "POST",
+    body: JSON.stringify({ id, confirmRevision }),
+  })
+}
+
+export type StoreModelProfileOption = {
+  templateId: number
+  code: string
+  name: string
+  revision: number
+  status: "candidate" | "active"
+  modelNames: string[]
+}
+
+export type StoreModelProfileAssignment = {
+  tenantId: number
+  storeId: number
+  storeCode: string
+  storeName: string
+  assignmentId: number
+  status: string
+  readinessStatus: string
+  activeTemplateId: number
+  activeTemplateName: string
+  activeTemplateRevision: number
+  pendingTemplateId: number
+  pendingTemplateName: string
+  pendingTemplateRevision: number
+  pendingRequestedAt?: string | null
+  lastValidatedAt?: string | null
+  lastReadyAt?: string | null
+  lastErrorMessage: string
+}
+
+export type StoreModelProfileAssignments = {
+  tenantId: number
+  profiles: StoreModelProfileOption[]
+  stores: StoreModelProfileAssignment[]
+}
+
+export function fetchStoreModelProfileAssignments(tenantId: number) {
+  return request<StoreModelProfileAssignments>("/api/dashboard/store-model-profile/get", {
+    method: "POST",
+    body: JSON.stringify({ tenantId }),
+  })
+}
+
+export function assignStoreModelProfile(payload: {
+  tenantId: number
+  storeId: number
+  templateId: number
+  confirmRevision: number
+}) {
+  return request<void>("/api/dashboard/store-model-profile/assign", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function batchAssignStoreModelProfile(payload: {
+  tenantId: number
+  storeIds: number[]
+  templateId: number
+  confirmRevision: number
+}) {
+  return request<void>("/api/dashboard/store-model-profile/batch_assign", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export type KnowledgeBase = {
   id: number
   storeId: number

@@ -76,8 +76,8 @@ export default function DashboardChannelsPage() {
   const canUpdate = permissions.has("tenant.update")
   const canUpdateStatus = permissions.has("tenant.updateStatus")
   const canSwitch = permissions.has("tenant.switch") && Boolean(session?.canSwitchTenant)
-  const canViewModelAccess = permissions.has("tenantModelGrant.view")
-  const canUpdateModelAccess = permissions.has("tenantModelGrant.update")
+  const canViewModelAccess = permissions.has("aiConfig.view")
+  const canUpdateModelAccess = permissions.has("aiConfig.update")
   const showActionsColumn = canUpdate || canSwitch || canViewModelAccess
   const [creationResult, setCreationResult] =
     useState<CreateTenantResult | null>(null)
@@ -90,7 +90,7 @@ export default function DashboardChannelsPage() {
       if (canViewModelAccess) {
         actions.push({
           key: "model-access",
-          label: "模型授权",
+          label: "门店模型指派",
           icon: <BrainCircuitIcon />,
           run: async ({ item }) => setModelAccessTenant(item),
         })

@@ -17,14 +17,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { fetchAIConfigsAll, type AIConfig } from "@/lib/api/admin"
 import {
-  fetchTenantAIModelAccess,
-  updateTenantAIModelAccess,
-  type AdminTenant,
-  type TenantAIModelAccess,
-} from "@/lib/api/tenant"
-import { Status } from "@/lib/generated/enums"
+  batchAssignStoreModelProfile,
+  fetchStoreModelProfileAssignments,
+  type StoreModelProfileAssignments,
+} from "@/lib/api/admin"
+import type { AdminTenant } from "@/lib/api/tenant"
 
 type TenantModelAccessDialogProps = {
   open: boolean
@@ -33,7 +31,12 @@ type TenantModelAccessDialogProps = {
   onOpenChange: (open: boolean) => void
 }
 
-const numberFormatter = new Intl.NumberFormat("zh-CN")
+function readinessLabel(value: string) {
+  if (value === "ready") return "已就绪"
+  if (value === "pending") return "待验证"
+  if (value === "blocked") return "受阻"
+  return "未配置"
+}
 
 export function TenantModelAccessDialog({
   open,
@@ -41,38 +44,28 @@ export function TenantModelAccessDialog({
   canUpdate,
   onOpenChange,
 }: TenantModelAccessDialogProps) {
+  const [data, setData] = useState<StoreModelProfileAssignments | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [query, setQuery] = useState("")
-  const [configs, setConfigs] = useState<AIConfig[]>([])
-  const [access, setAccess] = useState<TenantAIModelAccess | null>(null)
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
-  const [defaults, setDefaults] = useState<Record<string, number>>({})
+  const [profileId, setProfileId] = useState(0)
+  const [selectedStoreIds, setSelectedStoreIds] = useState<Set<number>>(new Set())
+  const [confirming, setConfirming] = useState(false)
 
   useEffect(() => {
     if (!open || !tenant) return
     let cancelled = false
     setLoading(true)
-    Promise.all([
-      fetchAIConfigsAll({ status: Status.Ok }),
-      fetchTenantAIModelAccess(tenant.id),
-    ])
-      .then(([nextConfigs, nextAccess]) => {
+    setConfirming(false)
+    setSelectedStoreIds(new Set())
+    fetchStoreModelProfileAssignments(tenant.id)
+      .then((next) => {
         if (cancelled) return
-        setConfigs(nextConfigs)
-        setAccess(nextAccess)
-        setSelectedIds(new Set(nextAccess.grants.map((item) => item.aiConfigId)))
-        setDefaults(
-          Object.fromEntries(
-            nextAccess.usages.map((item) => [item.usageCode, item.aiConfigId || 0])
-          )
-        )
+        setData(next)
+        setProfileId(next.profiles[0]?.templateId ?? 0)
       })
       .catch((error) => {
-        if (!cancelled) {
-          toast.error(error instanceof Error ? error.message : "读取模型授权失败")
-          onOpenChange(false)
-        }
+        if (!cancelled) toast.error(error instanceof Error ? error.message : "读取门店模型指派失败")
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -80,75 +73,68 @@ export function TenantModelAccessDialog({
     return () => {
       cancelled = true
     }
-  }, [open, onOpenChange, tenant])
+  }, [open, tenant])
 
-  const grantByConfigId = useMemo(
-    () => new Map(access?.grants.map((item) => [item.aiConfigId, item]) ?? []),
-    [access]
+  const selectedProfile = useMemo(
+    () => data?.profiles.find((item) => item.templateId === profileId) ?? null,
+    [data, profileId],
   )
-
-  const filteredGroups = useMemo(() => {
+  const filteredStores = useMemo(() => {
     const keyword = query.trim().toLowerCase()
-    const groups = new Map<string, AIConfig[]>()
-    for (const config of configs) {
-      if (config.status !== Status.Ok) continue
-      if (
-        keyword &&
-        ![config.name, config.modelName, config.provider, config.modelType]
-          .join(" ")
-          .toLowerCase()
-          .includes(keyword)
-      ) {
-        continue
-      }
-      const list = groups.get(config.modelType) ?? []
-      list.push(config)
-      groups.set(config.modelType, list)
-    }
-    return [...groups.entries()]
-  }, [configs, query])
+    if (!keyword) return data?.stores ?? []
+    return (data?.stores ?? []).filter((item) =>
+      [item.storeName, item.storeCode, item.activeTemplateName, item.pendingTemplateName]
+        .join(" ")
+        .toLowerCase()
+        .includes(keyword),
+    )
+  }, [data, query])
+  const allFilteredSelected =
+    filteredStores.length > 0 && filteredStores.every((item) => selectedStoreIds.has(item.storeId))
 
-  function toggleConfig(configId: number, checked: boolean) {
-    const currentGrant = grantByConfigId.get(configId)
-    if (!checked && currentGrant && currentGrant.assignedEmployeeCount > 0) {
-      toast.error(
-        `该模型仍分配给 ${currentGrant.assignedEmployeeCount} 个企微员工号，请先调整账号设置`
-      )
-      return
-    }
-    setSelectedIds((current) => {
+  function setStoreSelected(storeId: number, selected: boolean) {
+    setConfirming(false)
+    setSelectedStoreIds((current) => {
       const next = new Set(current)
-      if (checked) next.add(configId)
-      else next.delete(configId)
+      if (selected) next.add(storeId)
+      else next.delete(storeId)
       return next
     })
-    if (!checked) {
-      setDefaults((current) =>
-        Object.fromEntries(
-          Object.entries(current).map(([code, id]) => [code, id === configId ? 0 : id])
-        )
-      )
-    }
   }
 
-  async function save() {
-    if (!tenant || !access || !canUpdate) return
+  function toggleFiltered(selected: boolean) {
+    setConfirming(false)
+    setSelectedStoreIds((current) => {
+      const next = new Set(current)
+      for (const store of filteredStores) {
+        if (selected) next.add(store.storeId)
+        else next.delete(store.storeId)
+      }
+      return next
+    })
+  }
+
+  async function assign() {
+    if (!tenant || !selectedProfile || selectedStoreIds.size === 0 || !canUpdate) return
+    if (!confirming) {
+      setConfirming(true)
+      return
+    }
     setSaving(true)
     try {
-      const next = await updateTenantAIModelAccess({
+      await batchAssignStoreModelProfile({
         tenantId: tenant.id,
-        grantedAiConfigIds: [...selectedIds],
-        defaults: access.usages.map((item) => ({
-          usageCode: item.usageCode,
-          aiConfigId: defaults[item.usageCode] ?? 0,
-        })),
+        storeIds: [...selectedStoreIds],
+        templateId: selectedProfile.templateId,
+        confirmRevision: selectedProfile.revision,
       })
-      setAccess(next)
-      setSelectedIds(new Set(next.grants.map((item) => item.aiConfigId)))
-      toast.success("模型授权已更新")
-      onOpenChange(false)
+      const next = await fetchStoreModelProfileAssignments(tenant.id)
+      setData(next)
+      setSelectedStoreIds(new Set())
+      setConfirming(false)
+      toast.success(`已为门店提交 ${selectedProfile.name} r${selectedProfile.revision}`)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "保存模型授权失败")
+      toast.error(error instanceof Error ? error.message : "门店模型指派失败")
     } finally {
       setSaving(false)
     }
@@ -156,145 +142,127 @@ export function TenantModelAccessDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[88vh] max-w-5xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
         <DialogHeader className="border-b px-6 py-5">
           <DialogTitle className="flex items-center gap-2 text-lg">
             <BrainCircuitIcon className="size-5" />
-            模型授权
+            门店模型指派
           </DialogTitle>
-          <DialogDescription>
-            {tenant?.shortName ?? "接入公司"}
-          </DialogDescription>
+          <DialogDescription>{tenant?.shortName ?? "接入公司"}</DialogDescription>
         </DialogHeader>
 
-        {loading || !access ? (
+        {loading || !data ? (
           <div className="flex min-h-80 items-center justify-center text-sm text-muted-foreground">
-            正在读取模型授权...
+            正在读取门店模型状态...
           </div>
         ) : (
-          <div className="grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[1.2fr_0.8fr]">
-            <section className="flex min-h-0 flex-col border-b lg:border-r lg:border-b-0">
-              <div className="border-b px-5 py-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold">授权模型</h3>
-                  <Badge variant="secondary">{selectedIds.size} 个</Badge>
-                </div>
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="grid gap-4 border-b px-6 py-4 md:grid-cols-[minmax(260px,1fr)_minmax(260px,1fr)]">
+              <div>
+                <div className="mb-2 text-xs font-medium text-muted-foreground">目标模型方案</div>
+                <OptionCombobox
+                  value={profileId ? String(profileId) : ""}
+                  options={data.profiles.map((item) => ({
+                    value: String(item.templateId),
+                    label: `${item.name} · r${item.revision} · ${item.status === "active" ? "生效" : "候选"}`,
+                  }))}
+                  placeholder="选择候选或生效方案"
+                  disabled={!canUpdate || data.profiles.length === 0}
+                  onChange={(value) => {
+                    setProfileId(Number(value))
+                    setConfirming(false)
+                  }}
+                />
+                {selectedProfile ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {selectedProfile.modelNames.map((name) => (
+                      <Badge key={name} variant="outline">{name}</Badge>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <div>
+                <div className="mb-2 text-xs font-medium text-muted-foreground">门店筛选</div>
                 <div className="relative">
                   <SearchIcon className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
-                    placeholder="搜索名称、模型或供应商"
+                    placeholder="搜索门店、编码或模型方案"
                     className="pl-9"
                   />
                 </div>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
-                {filteredGroups.map(([modelType, items]) => (
-                  <div key={modelType} className="mb-5 last:mb-0">
-                    <div className="mb-1 text-xs font-medium text-muted-foreground uppercase">
-                      {modelType}
-                    </div>
-                    <div className="divide-y rounded-md border">
-                      {items.map((config) => {
-                        const grant = grantByConfigId.get(config.id)
-                        const checked = selectedIds.has(config.id)
-                        const locked = Boolean(grant && grant.assignedEmployeeCount > 0)
-                        return (
-                          <label
-                            key={config.id}
-                            className="flex cursor-pointer items-start gap-3 px-3 py-3 hover:bg-muted/40"
-                          >
-                            <Checkbox
-                              checked={checked}
-                              disabled={!canUpdate || (checked && locked)}
-                              onCheckedChange={(value) => toggleConfig(config.id, value === true)}
-                              aria-label={`授权 ${config.name}`}
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
-                                <span>{config.name}</span>
-                                {locked ? <Badge variant="outline">使用中</Badge> : null}
-                              </div>
-                              <div className="mt-1 truncate text-xs text-muted-foreground">
-                                {config.modelName} · {config.provider}
-                              </div>
-                              {grant ? (
-                                <div className="mt-1 text-xs text-muted-foreground">
-                                  {numberFormatter.format(grant.requestCount)} 次 · {numberFormatter.format(grant.promptTokens + grant.completionTokens)} tokens
-                                </div>
-                              ) : null}
-                            </div>
-                          </label>
-                        )
-                      })}
-                    </div>
-                  </div>
-                ))}
-                {filteredGroups.length === 0 ? (
-                  <div className="py-12 text-center text-sm text-muted-foreground">
-                    没有匹配的模型接入
-                  </div>
-                ) : null}
-              </div>
-            </section>
+            </div>
 
-            <section className="min-h-0 overflow-y-auto px-5 py-4">
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-sm font-semibold">用途默认模型</h3>
-                <span className="text-xs text-muted-foreground">未指定时按授权池顺序</span>
+            <div className="flex items-center justify-between gap-3 border-b px-6 py-3 text-sm">
+              <label className="flex items-center gap-2 font-medium">
+                <Checkbox
+                  checked={allFilteredSelected}
+                  disabled={!canUpdate || filteredStores.length === 0}
+                  onCheckedChange={(value) => toggleFiltered(value === true)}
+                  aria-label="选择当前筛选的全部门店"
+                />
+                当前筛选
+              </label>
+              <div className="text-muted-foreground">
+                已选 {selectedStoreIds.size} / {data.stores.length}
               </div>
-              <div className="space-y-4">
-                {access.usages.map((usage) => {
-                  const options = configs
-                    .filter(
-                      (config) =>
-                        selectedIds.has(config.id) &&
-                        config.status === Status.Ok &&
-                        config.modelType === usage.expectedModelType
-                    )
-                    .map((config) => ({
-                      value: String(config.id),
-                      label: `${config.name} · ${config.modelName}`,
-                    }))
-                  return (
-                    <div key={usage.usageCode}>
-                      <div className="mb-1.5 flex items-center justify-between gap-3">
-                        <label className="text-sm font-medium">{usage.usageName}</label>
-                        <span className="font-mono text-[11px] text-muted-foreground">
-                          {usage.expectedModelType}
-                        </span>
-                      </div>
-                      <OptionCombobox
-                        value={String(defaults[usage.usageCode] ?? 0)}
-                        onChange={(value) =>
-                          setDefaults((current) => ({
-                            ...current,
-                            [usage.usageCode]: Number(value),
-                          }))
-                        }
-                        options={[{ value: "0", label: "自动选择" }, ...options]}
-                        disabled={!canUpdate}
-                        placeholder="选择默认模型"
-                      />
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        当前生效：{usage.effectiveModelName || "暂无可用模型"}
-                      </div>
+            </div>
+
+            <div className="min-h-0 flex-1 divide-y overflow-y-auto">
+              {filteredStores.map((store) => (
+                <label key={store.storeId} className="grid cursor-pointer gap-3 px-6 py-3 hover:bg-muted/40 md:grid-cols-[28px_minmax(180px,1fr)_minmax(200px,1fr)_120px] md:items-center">
+                  <Checkbox
+                    checked={selectedStoreIds.has(store.storeId)}
+                    disabled={!canUpdate}
+                    onCheckedChange={(value) => setStoreSelected(store.storeId, value === true)}
+                    aria-label={`选择 ${store.storeName}`}
+                  />
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">{store.storeName}</div>
+                    <div className="font-mono text-xs text-muted-foreground">{store.storeCode}</div>
+                  </div>
+                  <div className="min-w-0 text-sm">
+                    <div className="truncate">
+                      {store.activeTemplateId > 0
+                        ? `${store.activeTemplateName} · r${store.activeTemplateRevision}`
+                        : "尚无生效方案"}
                     </div>
-                  )
-                })}
-              </div>
-            </section>
+                    {store.pendingTemplateId > 0 ? (
+                      <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                        待切换 {store.pendingTemplateName} · r{store.pendingTemplateRevision}
+                      </div>
+                    ) : null}
+                    {store.lastErrorMessage ? (
+                      <div className="mt-0.5 truncate text-xs text-destructive">{store.lastErrorMessage}</div>
+                    ) : null}
+                  </div>
+                  <Badge variant={store.readinessStatus === "ready" ? "default" : "outline"}>
+                    {readinessLabel(store.readinessStatus)}
+                  </Badge>
+                </label>
+              ))}
+              {filteredStores.length === 0 ? (
+                <div className="py-16 text-center text-sm text-muted-foreground">没有符合条件的门店</div>
+              ) : null}
+            </div>
           </div>
         )}
 
-        <DialogFooter className="border-t px-6 py-4">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
+        <DialogFooter className="mx-0 mb-0 rounded-none px-6">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           {canUpdate ? (
-            <Button disabled={loading || saving || !access} onClick={() => void save()}>
-              {saving ? "保存中..." : "保存授权"}
+            <Button
+              type="button"
+              disabled={saving || !selectedProfile || selectedStoreIds.size === 0}
+              onClick={() => void assign()}
+            >
+              {saving
+                ? "提交中..."
+                : confirming
+                  ? `确认指派 ${selectedStoreIds.size} 家门店`
+                  : `指派 ${selectedStoreIds.size} 家门店`}
             </Button>
           ) : null}
         </DialogFooter>
