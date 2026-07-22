@@ -8,6 +8,11 @@ import (
 )
 
 func InitMigrations() error {
+	// Validate migration identities before AutoMigrate changes any schema. An
+	// unknown parallel-branch definition must stop production startup first.
+	if err := migration.Preflight(sqls.DB()); err != nil {
+		return err
+	}
 	if err := sqls.DB().AutoMigrate(models.Models...); err != nil {
 		return err
 	}

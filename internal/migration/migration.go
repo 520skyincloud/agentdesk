@@ -50,6 +50,9 @@ func Migrate() error {
 	mu.Lock()
 	defer mu.Unlock()
 
+	if err := Preflight(sqls.DB()); err != nil {
+		return err
+	}
 	if err := archiveSupersededMigrationDefinitions(sqls.DB()); err != nil {
 		return err
 	}
@@ -67,6 +70,48 @@ func Migrate() error {
 		}
 	}
 	return nil
+}
+
+// Preflight validates migration identities without mutating the database. It
+// is deliberately called before AutoMigrate so an unknown parallel-branch
+// definition cannot partially alter a production schema before startup fails.
+func Preflight(db *gorm.DB) error {
+	if db == nil {
+		return errors.New("migration preflight database is nil")
+	}
+	if !db.Migrator().HasTable(&models.Migration{}) {
+		return nil
+	}
+	var storedMigrations []models.Migration
+	if err := db.Order("version ASC").Find(&storedMigrations).Error; err != nil {
+		return fmt.Errorf("load migration definitions for preflight: %w", err)
+	}
+	for _, stored := range storedMigrations {
+		current, ok := migrationFuncs[stored.Version]
+		if !ok {
+			return fmt.Errorf(
+				"migration preflight found unknown version %d with remark %q; verify the source branch and remap the history before startup",
+				stored.Version,
+				stored.Remark,
+			)
+		}
+		if isKnownSupersededMigrationDefinition(stored) {
+			continue
+		}
+		if err := validateMigrationDefinition(stored, current); err != nil {
+			return fmt.Errorf("migration preflight failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func isKnownSupersededMigrationDefinition(stored models.Migration) bool {
+	for _, definition := range supersededMigrationDefinitions {
+		if stored.Version == definition.Version && stored.Remark == definition.Remark {
+			return true
+		}
+	}
+	return false
 }
 
 func register(version int64, remark string, fn func() error) {

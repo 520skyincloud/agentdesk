@@ -30,7 +30,14 @@ var Models = []any{
 	&LoginCredentialLog{},
 	&EmailVerificationCode{},
 	&Asset{},
+	&IndustryTagDefinition{},
 	&Tag{},
+	&TenantCustomerTagPolicy{},
+	&StoreCustomerTagRuntimePolicy{},
+	&CustomerTagRelation{},
+	&CustomerTagChangeLog{},
+	&ConversationEvolutionState{},
+	&ConversationEvolutionRun{},
 	&Conversation{},
 	&Store{},
 	&StoreStaffBinding{},
@@ -77,9 +84,17 @@ var Models = []any{
 	&AgentTeamSquad{},
 	&AgentTeamSquadMember{},
 	&AgentTeamSchedule{},
+	// Legacy AI models remain registered only while B2-B11 migrations read the
+	// historical schema. B12 removes their runtime code and B14 drops the tables.
 	&AIConfig{},
 	&TenantAIModelGrant{},
 	&StoreAIModelSetting{},
+	&ModelProfileTemplate{},
+	&ModelProfileSlot{},
+	&StoreModelProfileAssignment{},
+	&StoreModelCredential{},
+	&StoreCredentialPolicy{},
+	&StoreModelCredentialAuditLog{},
 	&KnowledgeBase{},
 	&KnowledgeDocument{},
 	&KnowledgeFAQ{},
@@ -243,6 +258,7 @@ type User struct {
 // Tenant 是平台接入的独立客户公司，也是所有租户业务数据的隔离根。
 type Tenant struct {
 	ID                 int64                          `gorm:"primaryKey;autoIncrement"`
+	IntentProfileID    int64                          `gorm:"type:bigint;not null;default:0;index"`
 	TenantCode         string                         `gorm:"type:varchar(64);not null;uniqueIndex"`
 	LegalName          string                         `gorm:"type:varchar(200);not null;default:'';index"`
 	ShortName          string                         `gorm:"type:varchar(100);not null;default:'';index"`
@@ -489,13 +505,23 @@ type Asset struct {
 }
 
 type Tag struct {
-	ID       int64        `gorm:"primaryKey;autoIncrement"`
-	TenantID int64        `gorm:"type:bigint;not null;default:0;index"`
-	ParentID int64        `gorm:"type:bigint;not null;index"`
-	Name     string       `gorm:"type:varchar(50);not null;"`
-	Remark   string       `gorm:"type:text;"`
-	SortNo   int          `gorm:"type:int;not null;default:0"`
-	Status   enums.Status `gorm:"type:int;not null;default:0"`
+	ID                   int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID             int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_tenant_tag_template,priority:1"`
+	IntentProfileID      int64        `gorm:"type:bigint;not null;default:0;index"`
+	TemplateDefinitionID *int64       `gorm:"type:bigint;index;uniqueIndex:uk_tenant_tag_template,priority:2"`
+	ParentID             int64        `gorm:"type:bigint;not null;default:0;index"`
+	Name                 string       `gorm:"type:varchar(80);not null;default:''"`
+	DisplayAlias         string       `gorm:"type:varchar(80);not null;default:''"`
+	SemanticKey          string       `gorm:"type:varchar(128);not null;default:'';index"`
+	Aliases              string       `gorm:"type:text"`
+	ConflictGroup        string       `gorm:"type:varchar(80);not null;default:'';index"`
+	ApplicableScene      string       `gorm:"type:varchar(255);not null;default:''"`
+	AIEnabled            bool         `gorm:"not null;default:false;index"`
+	ReplyEnabled         bool         `gorm:"not null;default:false;index"`
+	SystemDefined        bool         `gorm:"not null;default:false;index"`
+	Remark               string       `gorm:"type:text"`
+	SortNo               int          `gorm:"type:int;not null;default:0;index"`
+	Status               enums.Status `gorm:"type:int;not null;default:0;index"`
 	AuditFields
 }
 
@@ -1423,6 +1449,9 @@ type ReplyIntentProfile struct {
 	Description        string       `gorm:"type:text"`
 	IntentDetectPrompt string       `gorm:"type:text"`
 	IntentJSONSchema   string       `gorm:"type:text"`
+	Revision           int64        `gorm:"type:bigint;not null;default:1;index"`
+	PublishedAt        *time.Time   `gorm:"type:datetime;index"`
+	PublishedBy        int64        `gorm:"type:bigint;not null;default:0;index"`
 	Status             enums.Status `gorm:"type:int;not null;default:0;index"`
 	SortNo             int          `gorm:"type:int;not null;default:0;index"`
 	Remark             string       `gorm:"type:text"`

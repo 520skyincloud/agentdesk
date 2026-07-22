@@ -17,6 +17,11 @@ type AIUsageGatewayCall struct {
 	MessageID                int64      `gorm:"type:bigint;not null;default:0;index"`
 	LocalRequestID           string     `gorm:"type:varchar(128);not null;default:'';index"`
 	Stage                    string     `gorm:"type:varchar(50);not null;default:'';index"`
+	ModelProfileID           int64      `gorm:"type:bigint;not null;default:0;index"`
+	ModelProfileRevision     int64      `gorm:"type:bigint;not null;default:0;index"`
+	UsageSlot                string     `gorm:"type:varchar(80);not null;default:'';index"`
+	CredentialRevision       int64      `gorm:"type:bigint;not null;default:0;index"`
+	KeyFingerprint           string     `gorm:"type:varchar(64);not null;default:'';index"`
 	Gateway                  string     `gorm:"type:varchar(40);not null;default:'';index"`
 	GatewayRequestID         string     `gorm:"type:varchar(191);not null;default:'';index"`
 	UpstreamRequestID        string     `gorm:"type:varchar(191);not null;default:'';index"`
@@ -36,6 +41,7 @@ type AIUsageGatewayCall struct {
 	ExternalCreatedAt        *time.Time `gorm:"type:datetime;index"`
 	ReconciledAt             *time.Time `gorm:"type:datetime;index"`
 	LastError                string     `gorm:"type:text"`
+	LastErrorClass           string     `gorm:"type:varchar(80);not null;default:'';index"`
 	CreatedAt                time.Time  `gorm:"type:datetime;not null;index"`
 	UpdatedAt                time.Time  `gorm:"type:datetime;not null"`
 }

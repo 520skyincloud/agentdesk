@@ -102,6 +102,53 @@ func TestArchiveSupersededMigrationDefinitionsLeavesUnknownConflict(t *testing.T
 	}
 }
 
+func TestPreflightAllowsFreshDatabaseWithoutMigrationTable(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "fresh.db")), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+		NamingStrategy: schema.NamingStrategy{
+			TablePrefix:   "t_",
+			SingularTable: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("open fresh database: %v", err)
+	}
+	if err := Preflight(db); err != nil {
+		t.Fatalf("Preflight() fresh database error=%v", err)
+	}
+}
+
+func TestPreflightAcceptsMatchingAndKnownSupersededDefinitions(t *testing.T) {
+	db := setupMigrationCompatibilityDB(t)
+	rows := []models.Migration{
+		{Version: 39, Remark: migrationFuncs[39].Remark, Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Version: 21, Remark: "sync customer service team leader permissions", Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("create migration definitions: %v", err)
+	}
+	if err := Preflight(db); err != nil {
+		t.Fatalf("Preflight() error=%v", err)
+	}
+}
+
+func TestPreflightRejectsUnknownDefinitionBeforeSchemaMutation(t *testing.T) {
+	for _, fixture := range []models.Migration{
+		{Version: 39, Remark: "unknown parallel definition", Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Version: 999, Remark: "future branch migration", Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	} {
+		t.Run(fixture.Remark, func(t *testing.T) {
+			db := setupMigrationCompatibilityDB(t)
+			if err := db.Create(&fixture).Error; err != nil {
+				t.Fatalf("create unknown migration definition: %v", err)
+			}
+			if err := Preflight(db); err == nil {
+				t.Fatal("Preflight() error=nil want rejection")
+			}
+		})
+	}
+}
+
 func TestCurrentIntentCleanupProducesFiveActiveCategories(t *testing.T) {
 	db := setupMigrationCompatibilityDB(t)
 	if err := db.AutoMigrate(&models.ReplyIntentConfig{}); err != nil {

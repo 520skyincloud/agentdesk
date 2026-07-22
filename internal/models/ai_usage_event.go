@@ -19,6 +19,11 @@ type AIUsageEvent struct {
 	Stage                  string     `gorm:"type:varchar(50);not null;default:'';index"`
 	Provider               string     `gorm:"type:varchar(50);not null;default:'';index"`
 	Model                  string     `gorm:"type:varchar(120);not null;default:'';index"`
+	ModelProfileID         int64      `gorm:"type:bigint;not null;default:0;index"`
+	ModelProfileRevision   int64      `gorm:"type:bigint;not null;default:0;index"`
+	UsageSlot              string     `gorm:"type:varchar(80);not null;default:'';index"`
+	CredentialRevision     int64      `gorm:"type:bigint;not null;default:0;index"`
+	KeyFingerprint         string     `gorm:"type:varchar(64);not null;default:'';index"`
 	AIConfigID             int64      `gorm:"type:bigint;not null;default:0;index"`
 	ModelSource            string     `gorm:"type:varchar(50);not null;default:'';index"`
 	UpstreamRequestID      string     `gorm:"type:varchar(191);not null;default:'';index"`
@@ -40,6 +45,7 @@ type AIUsageEvent struct {
 	MetricSource           string     `gorm:"type:varchar(40);not null;default:'';index"`
 	LatencyMS              int64      `gorm:"type:bigint;not null;default:0"`
 	Status                 string     `gorm:"type:varchar(30);not null;default:'';index"`
+	ErrorClass             string     `gorm:"type:varchar(80);not null;default:'';index"`
 	ErrorMessage           string     `gorm:"type:text"`
 	CreatedAt              time.Time  `gorm:"type:datetime;not null;index"`
 }
