@@ -16,6 +16,7 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/replyintent"
 	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
 
@@ -309,7 +310,17 @@ func ensureTestTenant(db *gorm.DB, batch string) (*models.Tenant, error) {
 		Permissions:       []string{constants.PermissionTenantCreate.Code},
 		IsPlatformAccount: true,
 	}
+	industryProfile := repositories.ReplyIntentProfileRepository.Take(
+		db,
+		"code = ? AND status = ?",
+		replyintent.DefaultHotelProfileCode,
+		enums.StatusOk,
+	)
+	if industryProfile == nil {
+		return nil, fmt.Errorf("published hotel industry profile is missing")
+	}
 	result, err := services.TenantService.CreateTenant(request.CreateTenantRequest{
+		IntentProfileID:  industryProfile.ID,
 		LegalName:        tenantLegalName,
 		ShortName:        tenantShortName,
 		RegistrationType: tenantRegistrationType,

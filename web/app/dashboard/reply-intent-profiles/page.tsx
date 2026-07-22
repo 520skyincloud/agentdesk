@@ -1,5 +1,9 @@
 "use client"
 
+import { useMemo } from "react"
+import { RefreshCwIcon } from "lucide-react"
+
+import { useAuth } from "@/components/auth-provider"
 import {
   createDashboardStatusColumn,
   createDashboardStatusToggleAction,
@@ -17,7 +21,7 @@ import {
 } from "@/lib/api/admin"
 import { getEnumOptions } from "@/lib/enums"
 import { Status, StatusLabels } from "@/lib/generated/enums"
-import { RefreshCwIcon } from "lucide-react"
+import { formatDateTime } from "@/lib/utils"
 
 const statusOptions = [
   { value: "all", label: "全部" },
@@ -32,6 +36,16 @@ function trimPreview(value: string, max = 80) {
 }
 
 export default function ReplyIntentProfilesPage() {
+  const { session } = useAuth()
+  const permissions = useMemo(
+    () => new Set(session?.permissions ?? []),
+    [session?.permissions],
+  )
+  const isPlatformAccount = Boolean(session?.isPlatformAccount)
+  const canCreate = isPlatformAccount && permissions.has("aiConfig.create")
+  const canUpdate = isPlatformAccount && permissions.has("aiConfig.update")
+  const canDelete = isPlatformAccount && permissions.has("aiConfig.delete")
+
   return (
     <DashboardCrudPage<ReplyIntentProfile, CreateReplyIntentProfilePayload>
       filters={[
@@ -69,6 +83,19 @@ export default function ReplyIntentProfilesPage() {
           className: "max-w-96",
           render: (item) => <span className="text-sm text-muted-foreground">{trimPreview(item.intentDetectPrompt)}</span>,
         },
+        {
+          key: "revision",
+          label: "发布版本",
+          className: "min-w-36",
+          render: (item) => (
+            <div className="space-y-1">
+              <Badge variant="outline">Revision {item.revision}</Badge>
+              <div className="text-xs text-muted-foreground">
+                {item.publishedAt ? formatDateTime(item.publishedAt) : "尚未发布"}
+              </div>
+            </div>
+          ),
+        },
         createDashboardStatusColumn<ReplyIntentProfile, Status>({
           label: "状态",
           getStatus: (item) => item.status as Status,
@@ -80,13 +107,16 @@ export default function ReplyIntentProfilesPage() {
       getItemId={(item) => item.id}
       createItem={createReplyIntentProfile}
       updateItem={(item, payload) => updateReplyIntentProfile({ id: item.id, ...payload })}
-      deleteItem={(item) => deleteReplyIntentProfile(item.id)}
+      deleteItem={canDelete ? (item) => deleteReplyIntentProfile(item.id) : undefined}
+      showCreate={canCreate}
+      showEdit={canUpdate}
+      showActionsColumn={canUpdate || canDelete}
       form={{
         fetchDetail: fetchReplyIntentProfile,
         fields: [
-          { name: "code", label: "行业配置编码", placeholder: "hotel", required: true, trim: true, description: "稳定编码；公司和员工号会通过这个配置决定 IntentDetect 总提示词和可用分类。" },
+          { name: "code", label: "行业配置编码", placeholder: "hotel", required: true, trim: true, description: "稳定编码；租户通过这个配置决定 IntentDetect 总提示词、分类和固定标签目录。" },
           { name: "name", label: "名称", placeholder: "酒店行业", required: true, trim: true },
-          { name: "industryCode", label: "业务行业编码", placeholder: "hotel / retail / education", trim: true, description: "用于标识业务行业，不直接参与模型判断；真正参与模型的是下面的提示词和 schema。" },
+          { name: "industryCode", label: "业务行业编码", placeholder: "hotel / retail / education", required: true, trim: true, description: "用于标识业务行业，不直接参与模型判断；真正参与模型的是下面的提示词和 schema。" },
           { name: "description", label: "说明", type: "textarea", rows: 3, placeholder: "这个行业的客服场景、适用范围和边界。", trim: true },
           {
             name: "intentDetectPrompt",
@@ -106,7 +136,7 @@ export default function ReplyIntentProfilesPage() {
             trim: true,
             description: "运行时会追加到总提示词后。字段设计要和代码解析结构兼容。",
           },
-          { name: "status", label: "状态", type: "select", defaultValue: String(Status.Ok), valueType: "number", options: statusOptions.filter((item) => item.value !== "all"), required: true, valueFromItem: (item) => String(item.status) },
+          { name: "status", label: "状态", type: "select", defaultValue: String(Status.Disabled), valueType: "number", options: statusOptions.filter((item) => item.value !== "all"), required: true, valueFromItem: (item) => String(item.status), description: "新行业先保存为停用草稿；意图分类和固定标签目录完整后才能发布。" },
           { name: "sortNo", label: "排序", type: "number", defaultValue: "0", min: 0, step: 1, valueType: "number" },
           { name: "remark", label: "备注", type: "textarea", rows: 3, trim: true },
         ],
@@ -135,16 +165,20 @@ export default function ReplyIntentProfilesPage() {
           maxValue: () => "数值过大",
         },
       }}
-      rowActions={[
-        createDashboardStatusToggleAction<ReplyIntentProfile, Status>({
-          icon: <RefreshCwIcon />,
-          label: (item) => (item.status === Status.Ok ? "停用" : "启用"),
-          getNextStatus: (item) => (item.status === Status.Ok ? Status.Disabled : Status.Ok),
-          updateStatus: (item, nextStatus) => updateReplyIntentProfile({ ...item, status: nextStatus }),
-          successMessage: () => "状态已更新",
-          errorMessage: "状态更新失败",
-        }),
-      ]}
+      rowActions={
+        canUpdate
+          ? [
+              createDashboardStatusToggleAction<ReplyIntentProfile, Status>({
+                icon: <RefreshCwIcon />,
+                label: (item) => (item.status === Status.Ok ? "停用" : "发布"),
+                getNextStatus: (item) => (item.status === Status.Ok ? Status.Disabled : Status.Ok),
+                updateStatus: (item, nextStatus) => updateReplyIntentProfile({ ...item, status: nextStatus }),
+                successMessage: () => "状态已更新",
+                errorMessage: "状态更新失败",
+              }),
+            ]
+          : []
+      }
       labels={{
         refresh: "刷新",
         create: "新增行业",

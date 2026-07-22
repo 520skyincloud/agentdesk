@@ -13,7 +13,7 @@ import (
 )
 
 func ReplyIntentProfileAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
+	if _, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -32,7 +32,7 @@ func ReplyIntentProfileGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
+	if _, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

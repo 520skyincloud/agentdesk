@@ -12,6 +12,10 @@ export type TenantPageResult<T> = {
 
 export type AdminTenant = {
   id: number
+  intentProfileId: number
+  industryCode: string
+  industryName: string
+  industryRevision: number
   tenantCode: string
   legalName: string
   shortName: string
@@ -46,6 +50,7 @@ export type TenantSupervisorPayload = {
 }
 
 export type TenantBasePayload = {
+  intentProfileId: number
   legalName: string
   shortName: string
   registrationType: string
@@ -63,6 +68,16 @@ export type CreateTenantPayload = TenantBasePayload & {
 
 export type UpdateTenantPayload = TenantBasePayload & {
   id: number
+  confirmIndustryChange: boolean
+  industryChangeReason: string
+}
+
+export type TenantIndustryOption = {
+  id: number
+  code: string
+  industryCode: string
+  name: string
+  revision: number
 }
 
 export type TenantInvitation = {
@@ -149,6 +164,12 @@ export function fetchTenants(
 
 export function fetchTenant(id: number) {
   return request<AdminTenant>(`/api/dashboard/tenant/${id}`)
+}
+
+export function fetchTenantIndustryOptions() {
+  return request<TenantIndustryOption[]>(
+    "/api/dashboard/tenant/industry_options"
+  )
 }
 
 export function createTenant(payload: CreateTenantPayload) {

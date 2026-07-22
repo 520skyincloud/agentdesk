@@ -373,13 +373,16 @@ func (s *knowledgeResourceService) persistSyncedResources(instance *models.WxWor
 			}
 		} else {
 			if err := repositories.KnowledgeResourceGroupRepository.UpdatesInTenant(tx.Tx, group.ID, instance.TenantID, map[string]any{
-				"title":            source.Title,
-				"description":      source.Description,
-				"source_hash":      sourceHash,
-				"status":           enums.StatusOk,
-				"updated_at":       now,
-				"update_user_id":   operator.UserID,
-				"update_user_name": operator.Username,
+				"company_id":          0,
+				"intent_profile_id":   0,
+				"wx_work_instance_id": 0,
+				"title":               source.Title,
+				"description":         source.Description,
+				"source_hash":         sourceHash,
+				"status":              enums.StatusOk,
+				"updated_at":          now,
+				"update_user_id":      operator.UserID,
+				"update_user_name":    operator.Username,
 			}); err != nil {
 				return err
 			}

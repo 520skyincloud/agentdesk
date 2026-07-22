@@ -26,7 +26,6 @@ import {
   deleteWxWorkProtocolInstance,
   fetchChannels,
   fetchKnowledgeBasesAll,
-  fetchReplyIntentProfiles,
   fetchWxWorkProtocolInstance,
   fetchWxWorkProtocolInstances,
   fetchWxWorkProtocolRoomList,
@@ -36,7 +35,6 @@ import {
   type AdminChannel,
   type CreateWxWorkProtocolInstancePayload,
   type KnowledgeBase,
-  type ReplyIntentProfile,
   type WxWorkProtocolInstance,
   type WxWorkProtocolRoomMemberOption,
   type WxWorkProtocolRoomOption,
@@ -499,7 +497,6 @@ function buildWelcomeInstanceUpdatePayload(instance: WelcomeCapableInstance, dra
     employeeName: instance.employeeName,
     employeeAvatar: instance.employeeAvatar,
     storeStaffUserId: instance.storeStaffUserId || 0,
-    intentProfileId: instance.intentProfileId || 0,
     storeId: instance.storeId || 0,
     storeName: instance.storeName || instance.employeeName,
     storeAddress: instance.storeAddress || "",
@@ -649,7 +646,6 @@ export function WxWorkProtocolInstanceManager({
   const { session } = useAuth()
   const [channels, setChannels] = useState<AdminChannel[]>([])
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([])
-  const [intentProfiles, setIntentProfiles] = useState<ReplyIntentProfile[]>([])
   const [reloadKey, setReloadKey] = useState(0)
   const [modelAssignmentInstance, setModelAssignmentInstance] = useState<WxWorkProtocolInstance | null>(null)
   const [fastGPTModelProfileInstance, setFastGPTModelProfileInstance] = useState<WxWorkProtocolInstance | null>(null)
@@ -691,22 +687,18 @@ export function WxWorkProtocolInstanceManager({
 
     async function loadOptions() {
       try {
-        const [channelPage, kbList, intentProfilePage] = await Promise.all([
+        const [channelPage, kbList] = await Promise.all([
           fetchChannels({ channelType: "wxwork_protocol", status: Status.Ok, limit: 200 }),
           canViewKnowledgeBases ? fetchKnowledgeBasesAll({ status: Status.Ok }) : Promise.resolve([]),
-          canViewModelAssignments
-            ? fetchReplyIntentProfiles({ status: Status.Ok, limit: 200 })
-            : Promise.resolve({ results: [] as ReplyIntentProfile[] }),
         ])
         setChannels(channelPage.results)
         setKnowledgeBases(kbList)
-        setIntentProfiles(intentProfilePage.results)
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "加载选项失败")
       }
     }
     void loadOptions()
-  }, [canViewChannels, canViewKnowledgeBases, canViewModelAssignments])
+  }, [canViewChannels, canViewKnowledgeBases])
 
   const statusOptions = [
     { value: "all", label: "全部状态" },
@@ -732,17 +724,6 @@ export function WxWorkProtocolInstanceManager({
   const knowledgeBaseOptions = useMemo(
     () => knowledgeBases.map((item) => ({ value: String(item.id), label: item.name })),
     [knowledgeBases],
-  )
-
-  const intentProfileOptions = useMemo(
-    () => [
-      { value: "0", label: "暂不设置" },
-      ...intentProfiles.map((item) => ({
-        value: String(item.id),
-        label: `${item.name}${item.industryCode ? ` · ${item.industryCode}` : ""}`,
-      })),
-    ],
-    [intentProfiles],
   )
 
   function notifyChanged() {
@@ -1022,7 +1003,7 @@ export function WxWorkProtocolInstanceManager({
                 {repairMojibakeText(item.knowledgeBaseName) || `知识库 ${item.knowledgeBaseId || "未配置"}`}
               </div>
               <div className="text-xs text-muted-foreground">
-                意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || "未设置"}
+                公司行业：{item.industryName || "未绑定"}
               </div>
               {item.storeAddress || item.storeLatitude || item.storeLongitude ? (
                 <div className="text-xs text-muted-foreground">
@@ -1074,7 +1055,7 @@ export function WxWorkProtocolInstanceManager({
                 知识库：{repairMojibakeText(item.knowledgeBaseName) || `#${item.knowledgeBaseId || "未配置"}`}
               </div>
               <div className="max-w-48 truncate text-xs text-muted-foreground">
-                意图行业：{intentProfiles.find((profile) => profile.id === item.intentProfileId)?.name || item.intentProfileName || "未设置"}
+                公司行业：{item.industryName || "未绑定"}
               </div>
               <div className="max-w-48 truncate text-xs text-muted-foreground">员工号覆盖租户默认，仅可选择平台授权模型</div>
             </div>
@@ -1121,15 +1102,6 @@ export function WxWorkProtocolInstanceManager({
 	          },
 	          { name: "employeeName", label: "员工号名称", type: "text", placeholder: "扫码同步后会自动带出，可手动改展示名" },
 	          { name: "storeName", label: "门店名称", type: "text", placeholder: "例如：丽斯未来酒店杭州某某店", description: "该名称来自绑定的系统账号所代表的门店。" },
-          {
-            name: "intentProfileId",
-            label: "意图行业",
-            type: "select",
-            defaultValue: "0",
-            valueFromItem: (item) => String(item.intentProfileId || 0),
-            options: intentProfileOptions,
-            description: "决定这个员工号使用的意图检测提示词和分类；启用 AI 前必须设置。",
-          },
 	          { name: "storeId", label: "门店 ID", type: "custom", valueFromItem: (item) => item.storeId, render: () => null },
           { name: "storeLocationGuide", label: "门店定位说明", type: "custom", render: renderLocationGuide },
           { name: "storeAddress", label: "门店地址", type: "text", placeholder: "例如：上海市..." },
@@ -1207,7 +1179,6 @@ export function WxWorkProtocolInstanceManager({
 	          employeeName: String(values.employeeName || ""),
 	          employeeAvatar: context.item?.employeeAvatar || "",
 	          storeStaffUserId: context.item?.storeStaffUserId || 0,
-          intentProfileId: Number(values.intentProfileId || 0),
 	          storeId: Number(values.storeId || 0),
 	          storeName: String(values.storeName || context.item?.storeName || values.employeeName || ""),
 	          storeAddress: String(values.storeAddress || ""),

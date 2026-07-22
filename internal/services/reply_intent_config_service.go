@@ -1,6 +1,7 @@
 package services
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 var ReplyIntentConfigService = newReplyIntentConfigService()
@@ -46,49 +48,52 @@ func (s *replyIntentConfigService) CreateReplyIntentConfig(req request.CreateRep
 	if code == "" || name == "" {
 		return nil, errorsx.InvalidParam("意图编码和名称不能为空")
 	}
-	scopeType, storeID, instanceID, err := normalizeIntentScope(req.ScopeType, req.StoreID, req.WxWorkInstanceID)
+	var item *models.ReplyIntentConfig
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		intentProfileID, err := requireIntentConfigProfileDB(ctx.Tx, req.IntentProfileID)
+		if err != nil {
+			return err
+		}
+		if existing := repositories.ReplyIntentConfigRepository.Take(ctx.Tx, "code = ? AND intent_profile_id = ?", code, intentProfileID); existing != nil {
+			return errorsx.InvalidParam("同一行业内意图编码已存在")
+		}
+		item = &models.ReplyIntentConfig{
+			Code:               code,
+			Name:               name,
+			Description:        strings.TrimSpace(req.Description),
+			IntentProfileID:    intentProfileID,
+			ScopeType:          "global",
+			CompanyID:          0,
+			StoreID:            0,
+			WxWorkInstanceID:   0,
+			Priority:           req.Priority,
+			MatchMode:          normalizeIntentMatchMode(req.MatchMode),
+			Keywords:           strings.TrimSpace(req.Keywords),
+			PositiveExamples:   strings.TrimSpace(req.PositiveExamples),
+			NegativeExamples:   strings.TrimSpace(req.NegativeExamples),
+			RequiredContext:    strings.TrimSpace(req.RequiredContext),
+			NeedsKnowledge:     req.NeedsKnowledge,
+			NeedsResource:      req.NeedsResource,
+			ResourceType:       strings.TrimSpace(req.ResourceType),
+			NeedsTool:          req.NeedsTool,
+			ToolCodes:          strings.TrimSpace(req.ToolCodes),
+			NeedsHumanRoute:    req.NeedsHumanRoute,
+			HumanRoutePolicy:   strings.TrimSpace(req.HumanRoutePolicy),
+			PromptPack:         strings.TrimSpace(req.PromptPack),
+			ReplyPlanTemplate:  strings.TrimSpace(req.ReplyPlanTemplate),
+			ValidationRules:    strings.TrimSpace(req.ValidationRules),
+			NoReplyWhenMatched: req.NoReplyWhenMatched,
+			Status:             normalizeIntentStatus(req.Status),
+			SortNo:             req.SortNo,
+			Remark:             strings.TrimSpace(req.Remark),
+			AuditFields:        utils.BuildAuditFields(operator),
+		}
+		if err := repositories.ReplyIntentConfigRepository.Create(ctx.Tx, item); err != nil {
+			return err
+		}
+		return publishIntentProfileMutationDB(ctx.Tx, intentProfileID, operator)
+	})
 	if err != nil {
-		return nil, err
-	}
-	intentProfileID, err := normalizeIntentConfigProfileID(req.IntentProfileID)
-	if err != nil {
-		return nil, err
-	}
-	if existing := repositories.ReplyIntentConfigRepository.Take(sqls.DB(), "code = ? AND intent_profile_id = ? AND scope_type = ? AND company_id = 0 AND store_id = ? AND wx_work_instance_id = ?", code, intentProfileID, scopeType, storeID, instanceID); existing != nil {
-		return nil, errorsx.InvalidParam("同一适用范围内意图编码已存在")
-	}
-	item := &models.ReplyIntentConfig{
-		Code:               code,
-		Name:               name,
-		Description:        strings.TrimSpace(req.Description),
-		IntentProfileID:    intentProfileID,
-		ScopeType:          scopeType,
-		CompanyID:          0,
-		StoreID:            storeID,
-		WxWorkInstanceID:   instanceID,
-		Priority:           req.Priority,
-		MatchMode:          normalizeIntentMatchMode(req.MatchMode),
-		Keywords:           strings.TrimSpace(req.Keywords),
-		PositiveExamples:   strings.TrimSpace(req.PositiveExamples),
-		NegativeExamples:   strings.TrimSpace(req.NegativeExamples),
-		RequiredContext:    strings.TrimSpace(req.RequiredContext),
-		NeedsKnowledge:     req.NeedsKnowledge,
-		NeedsResource:      req.NeedsResource,
-		ResourceType:       strings.TrimSpace(req.ResourceType),
-		NeedsTool:          req.NeedsTool,
-		ToolCodes:          strings.TrimSpace(req.ToolCodes),
-		NeedsHumanRoute:    req.NeedsHumanRoute,
-		HumanRoutePolicy:   strings.TrimSpace(req.HumanRoutePolicy),
-		PromptPack:         strings.TrimSpace(req.PromptPack),
-		ReplyPlanTemplate:  strings.TrimSpace(req.ReplyPlanTemplate),
-		ValidationRules:    strings.TrimSpace(req.ValidationRules),
-		NoReplyWhenMatched: req.NoReplyWhenMatched,
-		Status:             normalizeIntentStatus(req.Status),
-		SortNo:             req.SortNo,
-		Remark:             strings.TrimSpace(req.Remark),
-		AuditFields:        utils.BuildAuditFields(operator),
-	}
-	if err := repositories.ReplyIntentConfigRepository.Create(sqls.DB(), item); err != nil {
 		return nil, err
 	}
 	return item, nil
@@ -98,67 +103,87 @@ func (s *replyIntentConfigService) UpdateReplyIntentConfig(req request.UpdateRep
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	item := s.Get(req.ID)
-	if item == nil {
-		return errorsx.InvalidParam("意图配置不存在")
-	}
 	code := strings.TrimSpace(req.Code)
 	name := strings.TrimSpace(req.Name)
 	if code == "" || name == "" {
 		return errorsx.InvalidParam("意图编码和名称不能为空")
 	}
-	scopeType, storeID, instanceID, err := normalizeIntentScope(req.ScopeType, req.StoreID, req.WxWorkInstanceID)
-	if err != nil {
-		return err
-	}
-	intentProfileID, err := normalizeIntentConfigProfileID(req.IntentProfileID)
-	if err != nil {
-		return err
-	}
-	if existing := repositories.ReplyIntentConfigRepository.Take(sqls.DB(), "code = ? AND intent_profile_id = ? AND scope_type = ? AND company_id = 0 AND store_id = ? AND wx_work_instance_id = ? AND id <> ?", code, intentProfileID, scopeType, storeID, instanceID, req.ID); existing != nil {
-		return errorsx.InvalidParam("同一适用范围内意图编码已存在")
-	}
-	return repositories.ReplyIntentConfigRepository.Updates(sqls.DB(), req.ID, map[string]any{
-		"code":                  code,
-		"name":                  name,
-		"description":           strings.TrimSpace(req.Description),
-		"intent_profile_id":     intentProfileID,
-		"scope_type":            scopeType,
-		"company_id":            0,
-		"store_id":              storeID,
-		"wx_work_instance_id":   instanceID,
-		"priority":              req.Priority,
-		"match_mode":            normalizeIntentMatchMode(req.MatchMode),
-		"keywords":              strings.TrimSpace(req.Keywords),
-		"positive_examples":     strings.TrimSpace(req.PositiveExamples),
-		"negative_examples":     strings.TrimSpace(req.NegativeExamples),
-		"required_context":      strings.TrimSpace(req.RequiredContext),
-		"needs_knowledge":       req.NeedsKnowledge,
-		"needs_resource":        req.NeedsResource,
-		"resource_type":         strings.TrimSpace(req.ResourceType),
-		"needs_tool":            req.NeedsTool,
-		"tool_codes":            strings.TrimSpace(req.ToolCodes),
-		"needs_human_route":     req.NeedsHumanRoute,
-		"human_route_policy":    strings.TrimSpace(req.HumanRoutePolicy),
-		"prompt_pack":           strings.TrimSpace(req.PromptPack),
-		"reply_plan_template":   strings.TrimSpace(req.ReplyPlanTemplate),
-		"validation_rules":      strings.TrimSpace(req.ValidationRules),
-		"no_reply_when_matched": req.NoReplyWhenMatched,
-		"status":                normalizeIntentStatus(req.Status),
-		"sort_no":               req.SortNo,
-		"remark":                strings.TrimSpace(req.Remark),
-		"update_user_id":        operator.UserID,
-		"update_user_name":      operator.Username,
-		"updated_at":            time.Now(),
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		item, err := repositories.ReplyIntentConfigRepository.GetForUpdate(ctx.Tx, req.ID)
+		if err != nil {
+			return err
+		}
+		if item == nil {
+			return errorsx.InvalidParam("意图配置不存在")
+		}
+		intentProfileID, err := requireIntentConfigProfileDB(ctx.Tx, req.IntentProfileID)
+		if err != nil {
+			return err
+		}
+		if existing := repositories.ReplyIntentConfigRepository.Take(ctx.Tx, "code = ? AND intent_profile_id = ? AND id <> ?", code, intentProfileID, req.ID); existing != nil {
+			return errorsx.InvalidParam("同一行业内意图编码已存在")
+		}
+		if err := repositories.ReplyIntentConfigRepository.Updates(ctx.Tx, req.ID, map[string]any{
+			"code":                  code,
+			"name":                  name,
+			"description":           strings.TrimSpace(req.Description),
+			"intent_profile_id":     intentProfileID,
+			"scope_type":            "global",
+			"company_id":            0,
+			"store_id":              0,
+			"wx_work_instance_id":   0,
+			"priority":              req.Priority,
+			"match_mode":            normalizeIntentMatchMode(req.MatchMode),
+			"keywords":              strings.TrimSpace(req.Keywords),
+			"positive_examples":     strings.TrimSpace(req.PositiveExamples),
+			"negative_examples":     strings.TrimSpace(req.NegativeExamples),
+			"required_context":      strings.TrimSpace(req.RequiredContext),
+			"needs_knowledge":       req.NeedsKnowledge,
+			"needs_resource":        req.NeedsResource,
+			"resource_type":         strings.TrimSpace(req.ResourceType),
+			"needs_tool":            req.NeedsTool,
+			"tool_codes":            strings.TrimSpace(req.ToolCodes),
+			"needs_human_route":     req.NeedsHumanRoute,
+			"human_route_policy":    strings.TrimSpace(req.HumanRoutePolicy),
+			"prompt_pack":           strings.TrimSpace(req.PromptPack),
+			"reply_plan_template":   strings.TrimSpace(req.ReplyPlanTemplate),
+			"validation_rules":      strings.TrimSpace(req.ValidationRules),
+			"no_reply_when_matched": req.NoReplyWhenMatched,
+			"status":                normalizeIntentStatus(req.Status),
+			"sort_no":               req.SortNo,
+			"remark":                strings.TrimSpace(req.Remark),
+			"update_user_id":        operator.UserID,
+			"update_user_name":      operator.Username,
+			"updated_at":            time.Now(),
+		}); err != nil {
+			return err
+		}
+		for _, profileID := range sortedIntentProfileIDs(item.IntentProfileID, intentProfileID) {
+			if err := publishIntentProfileMutationDB(ctx.Tx, profileID, operator); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
-func (s *replyIntentConfigService) DeleteReplyIntentConfig(id int64) error {
-	if s.Get(id) == nil {
-		return errorsx.InvalidParam("意图配置不存在")
+func (s *replyIntentConfigService) DeleteReplyIntentConfig(id int64, operator *dto.AuthPrincipal) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	repositories.ReplyIntentConfigRepository.Delete(sqls.DB(), id)
-	return nil
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		item, err := repositories.ReplyIntentConfigRepository.GetForUpdate(ctx.Tx, id)
+		if err != nil {
+			return err
+		}
+		if item == nil {
+			return errorsx.InvalidParam("意图配置不存在")
+		}
+		if err := repositories.ReplyIntentConfigRepository.Delete(ctx.Tx, id); err != nil {
+			return err
+		}
+		return publishIntentProfileMutationDB(ctx.Tx, item.IntentProfileID, operator)
+	})
 }
 
 func normalizeIntentMatchMode(value string) string {
@@ -176,18 +201,71 @@ func normalizeIntentStatus(status enums.Status) enums.Status {
 	return enums.StatusOk
 }
 
-func normalizeIntentConfigProfileID(id int64) (int64, error) {
-	if id > 0 {
-		item := ReplyIntentProfileService.Get(id)
-		if item == nil || item.Status == enums.StatusDeleted {
-			return 0, errorsx.InvalidParam("意图行业配置不存在")
+func requireIntentConfigProfileDB(db *gorm.DB, id int64) (int64, error) {
+	if id <= 0 {
+		return 0, errorsx.InvalidParam("意图分类必须选择所属行业")
+	}
+	item := repositories.ReplyIntentProfileRepository.Get(db, id)
+	if item == nil || item.Status == enums.StatusDeleted {
+		return 0, errorsx.InvalidParam("意图行业配置不存在")
+	}
+	return id, nil
+}
+
+func publishIntentProfileMutationDB(db *gorm.DB, profileID int64, operator *dto.AuthPrincipal) error {
+	profile, err := repositories.ReplyIntentProfileRepository.GetForUpdate(db, profileID)
+	if err != nil {
+		return err
+	}
+	if profile == nil || profile.Status == enums.StatusDeleted {
+		return errorsx.InvalidParam("意图行业配置不存在")
+	}
+	if profile.Status == enums.StatusOk {
+		if _, err := TenantIndustryService.ValidateBindingProfileDB(db, profile.ID); err != nil {
+			return err
 		}
-		return id, nil
 	}
-	if profile := ReplyIntentProfileService.DefaultHotelProfile(); profile != nil {
-		return profile.ID, nil
+	revision := profile.Revision + 1
+	if revision <= 0 {
+		revision = 1
 	}
-	return 0, nil
+	now := time.Now()
+	updates := map[string]any{
+		"revision":         revision,
+		"update_user_id":   operator.UserID,
+		"update_user_name": operator.Username,
+		"updated_at":       now,
+	}
+	if profile.Status == enums.StatusOk {
+		updates["published_at"] = now
+		updates["published_by"] = operator.UserID
+	} else {
+		updates["published_at"] = nil
+		updates["published_by"] = 0
+	}
+	if err := repositories.ReplyIntentProfileRepository.Updates(db, profile.ID, updates); err != nil {
+		return err
+	}
+	return repositories.IndustryTagDefinitionRepository.UpdateRevisionByProfile(
+		db, profile.ID, revision, now, operator.UserID, operator.Username,
+	)
+}
+
+func sortedIntentProfileIDs(values ...int64) []int64 {
+	seen := make(map[int64]struct{}, len(values))
+	ret := make([]int64, 0, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		ret = append(ret, value)
+	}
+	sort.Slice(ret, func(i, j int) bool { return ret[i] < ret[j] })
+	return ret
 }
 
 func filterHiddenReplyIntentConfigs(list []models.ReplyIntentConfig) []models.ReplyIntentConfig {
@@ -207,30 +285,5 @@ func isHiddenReplyIntentCode(code string) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func normalizeIntentScope(scopeType string, storeID int64, instanceID int64) (string, int64, int64, error) {
-	scopeType = strings.TrimSpace(scopeType)
-	if scopeType == "" {
-		scopeType = "global"
-	}
-	switch scopeType {
-	case "global":
-		return scopeType, 0, 0, nil
-	case "company":
-		return "", 0, 0, errorsx.InvalidParam("公司级意图范围已停用，请改用门店或企微员工号范围")
-	case "store":
-		if storeID <= 0 {
-			return "", 0, 0, errorsx.InvalidParam("门店级意图必须选择门店")
-		}
-		return scopeType, storeID, 0, nil
-	case "instance":
-		if instanceID <= 0 {
-			return "", 0, 0, errorsx.InvalidParam("企微员工号级意图必须选择企微员工号")
-		}
-		return scopeType, 0, instanceID, nil
-	default:
-		return "", 0, 0, errorsx.InvalidParam("适用范围不正确")
 	}
 }

@@ -100,6 +100,17 @@ func (r *wxWorkProtocolInstanceRepository) CountByWelcomeImageAssetIDInTenant(db
 	return count, err
 }
 
+func (r *wxWorkProtocolInstanceRepository) CountAIEnabledInTenant(db *gorm.DB, tenantID int64) (int64, error) {
+	if db == nil || tenantID <= 0 {
+		return 0, nil
+	}
+	var count int64
+	err := db.Model(&models.WxWorkProtocolInstance{}).
+		Where("tenant_id = ? AND ai_reply_enabled = ? AND status <> ?", tenantID, true, enums.StatusDeleted).
+		Count(&count).Error
+	return count, err
+}
+
 func (r *wxWorkProtocolInstanceRepository) UpdateKnowledgeBaseByStore(db *gorm.DB, storeID, knowledgeBaseID int64, now time.Time, operatorName string) error {
 	return db.Model(&models.WxWorkProtocolInstance{}).
 		Where("store_id = ? AND status <> ?", storeID, enums.StatusDeleted).

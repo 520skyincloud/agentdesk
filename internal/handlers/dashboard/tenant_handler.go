@@ -47,7 +47,12 @@ func TenantAnyList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildTenantList(list, supervisors, stats), Page: paging})
+	profileIDs := make([]int64, 0, len(list))
+	for i := range list {
+		profileIDs = append(profileIDs, list[i].IntentProfileID)
+	}
+	profiles := services.TenantIndustryService.FindProfilesByIDs(profileIDs)
+	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildTenantList(list, supervisors, stats, profiles), Page: paging})
 }
 
 func TenantGetBy(ctx *gin.Context) {
@@ -80,10 +85,30 @@ func TenantGetBy(ctx *gin.Context) {
 		return
 	}
 	itemStats := stats[id]
+	profiles := services.TenantIndustryService.FindProfilesByIDs([]int64{item.IntentProfileID})
 	httpx.WriteJSON(ctx, builders.BuildTenant(item, builders.TenantBuildOptions{
-		Supervisor: supervisors[id],
-		Stats:      &itemStats,
+		Supervisor:    supervisors[id],
+		Stats:         &itemStats,
+		IntentProfile: profiles[item.IntentProfileID],
 	}))
+}
+
+func TenantGetIndustryOptions(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTenantView)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !operator.IsPlatformAccount {
+		httpx.WriteJSON(ctx, errorsx.Forbidden("只有平台账号可以选择接入公司行业"))
+		return
+	}
+	profiles, err := services.TenantIndustryService.FindBindableProfiles()
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildTenantIndustryOptions(profiles))
 }
 
 func TenantPostCreate(ctx *gin.Context) {
@@ -104,7 +129,12 @@ func TenantPostCreate(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, &response.CreateTenantResultResponse{
-		Tenant:             builders.BuildTenant(result.Tenant, builders.TenantBuildOptions{Supervisor: result.Supervisor}),
+		Tenant: builders.BuildTenant(result.Tenant, builders.TenantBuildOptions{
+			Supervisor: result.Supervisor,
+			IntentProfile: services.TenantIndustryService.FindProfilesByIDs(
+				[]int64{result.Tenant.IntentProfileID},
+			)[result.Tenant.IntentProfileID],
+		}),
 		SupervisorUsername: result.Supervisor.Username,
 		SupervisorPassword: result.SupervisorPassword,
 		DefaultAgentTeamID: result.DefaultAgentTeam.ID,

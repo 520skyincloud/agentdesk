@@ -27,6 +27,8 @@ import (
 
 var tenantManagementTestDBSequence atomic.Uint64
 
+const tenantManagementIndustryProfileID int64 = 7001
+
 func TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation(t *testing.T) {
 	db, operator := setupTenantManagementTestDB(t)
 	req := tenantManagementCreateRequest("atomic", "91350100MA8A1B2C3D")
@@ -120,6 +122,7 @@ func TestTenantServiceRejectsDuplicateRegistrationAndKeepsTenantCodeImmutable(t 
 	originalCode := first.Tenant.TenantCode
 	err = TenantService.UpdateTenant(request.UpdateTenantRequest{
 		ID:               first.Tenant.ID,
+		IntentProfileID:  first.Tenant.IntentProfileID,
 		LegalName:        "Updated Legal Name",
 		ShortName:        "Updated",
 		RegistrationType: first.Tenant.RegistrationType,
@@ -222,7 +225,8 @@ func TestTenantManagementMutationsUseTenantRowLock(t *testing.T) {
 			name: "update",
 			action: func(created *CreateTenantResult, operator *dto.AuthPrincipal) error {
 				return TenantService.UpdateTenant(request.UpdateTenantRequest{
-					ID: created.Tenant.ID, LegalName: "Locked Tenant", ShortName: "Locked",
+					ID: created.Tenant.ID, IntentProfileID: created.Tenant.IntentProfileID,
+					LegalName: "Locked Tenant", ShortName: "Locked",
 					RegistrationType: created.Tenant.RegistrationType, RegistrationNo: created.Tenant.RegistrationNo,
 					ContactName: "Locked Contact", ContactMobile: "13800008888", ContactEmail: "locked@example.com",
 				}, operator)
@@ -407,6 +411,7 @@ func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 	})
 	if err := db.AutoMigrate(
 		&models.Tenant{},
+		&models.TenantIndustryChangeLog{},
 		&models.TenantInvitation{},
 		&models.User{},
 		&models.Role{},
@@ -416,7 +421,15 @@ func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 		&models.AIAgent{},
 		&models.AgentProfile{},
 		&models.Store{},
+		&models.WxWorkProtocolInstance{},
 		&models.Conversation{},
+		&models.ReplyIntentProfile{},
+		&models.ReplyIntentConfig{},
+		&models.IndustryTagDefinition{},
+		&models.Tag{},
+		&models.TenantCustomerTagPolicy{},
+		&models.CustomerTagRelation{},
+		&models.CustomerTagChangeLog{},
 	); err != nil {
 		t.Fatalf("migrate tenant management tables: %v", err)
 	}
@@ -427,6 +440,36 @@ func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 	}
 	if err := db.Create(&roles).Error; err != nil {
 		t.Fatalf("create roles: %v", err)
+	}
+	profile := &models.ReplyIntentProfile{
+		ID: tenantManagementIndustryProfileID, Code: "test-service", Name: "测试服务行业",
+		IndustryCode: "test-service", IntentDetectPrompt: "detect", IntentJSONSchema: "schema",
+		Revision: 1, PublishedAt: &now, Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(profile).Error; err != nil {
+		t.Fatalf("create industry profile: %v", err)
+	}
+	if err := db.Create(&models.ReplyIntentConfig{
+		Code: "service", Name: "服务", IntentProfileID: profile.ID, ScopeType: "global",
+		Status: enums.StatusOk, AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create industry intent: %v", err)
+	}
+	parent := &models.IndustryTagDefinition{
+		IntentProfileID: profile.ID, Name: "分类", SemanticKey: "category.test",
+		DefinitionRevision: 1, Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(parent).Error; err != nil {
+		t.Fatalf("create industry tag category: %v", err)
+	}
+	if err := db.Create(&models.IndustryTagDefinition{
+		IntentProfileID: profile.ID, ParentID: parent.ID, Name: "标签", SemanticKey: "test.label",
+		AIEnabled: true, DefinitionRevision: 1, Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create industry tag: %v", err)
 	}
 	sqls.SetDB(db)
 	config.SetCurrent(&config.Config{Auth: config.AuthConfig{
@@ -444,6 +487,7 @@ func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 
 func tenantManagementCreateRequest(suffix, registrationNo string) request.CreateTenantRequest {
 	return request.CreateTenantRequest{
+		IntentProfileID:  tenantManagementIndustryProfileID,
 		LegalName:        "Tenant " + suffix,
 		ShortName:        "T-" + suffix,
 		RegistrationType: "unified_social_credit_code",

@@ -11,6 +11,7 @@ var Models = []any{
 	&MigrationDefinitionArchive{},
 	&User{},
 	&UserIdentity{},
+	&TenantIndustryChangeLog{},
 	&Tenant{},
 	&TenantInvitation{},
 	&TenantRegistrationLog{},
@@ -1465,10 +1466,10 @@ type ReplyIntentConfig struct {
 	Name               string       `gorm:"type:varchar(120);not null;default:''"`
 	Description        string       `gorm:"type:text"`
 	IntentProfileID    int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
-	ScopeType          string       `gorm:"type:varchar(30);not null;default:'global';uniqueIndex:uk_reply_intent_scope;index"`
-	CompanyID          int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
-	StoreID            int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
-	WxWorkInstanceID   int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
+	ScopeType          string       `gorm:"type:varchar(30);not null;default:'global';uniqueIndex:uk_reply_intent_scope;index"` // Legacy migration field; runtime only accepts global.
+	CompanyID          int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`             // Legacy migration field; runtime requires zero.
+	StoreID            int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`             // Legacy migration field; runtime requires zero.
+	WxWorkInstanceID   int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`             // Legacy migration field; runtime requires zero.
 	Priority           int          `gorm:"type:int;not null;default:100;index"`
 	MatchMode          string       `gorm:"type:varchar(30);not null;default:'hybrid';index"`
 	Keywords           string       `gorm:"type:text"`

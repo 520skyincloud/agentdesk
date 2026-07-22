@@ -54,12 +54,6 @@ const humanRoutePolicyOptions = [
   { value: "force_store_group", label: "门店群通知" },
 ]
 
-const scopeTypeOptions = [
-  { value: "global", label: "全局默认" },
-  { value: "store", label: "门店级" },
-  { value: "instance", label: "企微员工号级" },
-]
-
 function trimPreview(value: string, max = 56) {
   const text = value.trim().replace(/\s+/g, " ")
   return text.length > max ? `${text.slice(0, max)}...` : text || "-"
@@ -109,8 +103,8 @@ export default function ReplyIntentConfigsPage() {
   useEffect(() => {
     async function loadProfiles() {
       try {
-        const page = await fetchReplyIntentProfiles({ status: Status.Ok, limit: 200 })
-        setProfiles(page.results)
+        const page = await fetchReplyIntentProfiles({ limit: 200 })
+        setProfiles(page.results.filter((item) => item.status !== Status.Deleted))
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "加载意图行业失败")
       }
@@ -123,7 +117,6 @@ export default function ReplyIntentConfigsPage() {
     [profiles],
   )
   const profileOptionsWithAll = [{ value: "all", label: "全部行业" }, ...profileOptions]
-  const profileOptionsForForm = [{ value: "0", label: "默认酒店行业" }, ...profileOptions]
 
   return (
     <DashboardCrudPage<ReplyIntentConfig, CreateReplyIntentConfigPayload>
@@ -146,20 +139,11 @@ export default function ReplyIntentConfigsPage() {
           ),
         },
         {
-          key: "scopeType",
-          label: "适用范围",
-          render: (item) => {
-            const label = scopeTypeOptions.find((option) => option.value === item.scopeType)?.label ?? (item.scopeType || "全局默认")
-            const id = item.scopeType === "store" ? item.storeId : item.scopeType === "instance" ? item.wxWorkInstanceId : 0
-            return <Badge variant="outline">{id > 0 ? `${label}:${id}` : label}</Badge>
-          },
-        },
-        {
           key: "intentProfileId",
           label: "意图行业",
           render: (item) => {
             const profile = profiles.find((option) => option.id === item.intentProfileId)
-            return <Badge variant="outline">{profile ? profile.name : item.intentProfileId > 0 ? `行业 #${item.intentProfileId}` : "默认酒店行业"}</Badge>
+            return <Badge variant="outline">{profile ? profile.name : `行业 #${item.intentProfileId}`}</Badge>
           },
         },
         { key: "priority", label: "优先级", render: (item) => item.priority },
@@ -207,13 +191,10 @@ export default function ReplyIntentConfigsPage() {
       form={{
         fetchDetail: fetchReplyIntentConfig,
         fields: [
-          { name: "code", label: "意图编码", placeholder: "hotel_info", required: true, trim: true, description: "同一适用范围内唯一，运行日志和规则引用都看它。" },
+          { name: "code", label: "意图编码", placeholder: "hotel_info", required: true, trim: true, description: "同一行业内唯一，运行日志和规则引用都看它。" },
           { name: "name", label: "意图名称", placeholder: "酒店信息", required: true, trim: true },
           { name: "description", label: "意图说明", type: "textarea", rows: 3, placeholder: "这个意图负责哪些用户问题，不负责哪些问题。", trim: true },
-          { name: "intentProfileId", label: "所属意图行业", type: "select", defaultValue: "0", options: profileOptionsForForm, valueType: "number", description: "当前酒店回复链路使用“酒店行业”；其他行业后续各自绑定自己的分类和 IntentDetect 提示词。" },
-          { name: "scopeType", label: "适用范围", type: "select", defaultValue: "global", options: scopeTypeOptions, required: true, valueFromItem: (item) => item.scopeType || "global" },
-          { name: "storeId", label: "门店ID", type: "number", defaultValue: "0", min: 0, step: 1, valueType: "number", description: "门店级必填；其他范围填 0。" },
-          { name: "wxWorkInstanceId", label: "企微员工号ID", type: "number", defaultValue: "0", min: 0, step: 1, valueType: "number", description: "企微员工号级必填；其他范围填 0。" },
+          { name: "intentProfileId", label: "所属意图行业", type: "select", defaultValue: "", options: profileOptions, valueType: "number", required: true, description: "分类只属于一个行业；租户绑定行业后统一继承，门店和企微账号不能覆盖。" },
           { name: "priority", label: "优先级", type: "number", defaultValue: "100", min: 0, step: 1, required: true, valueType: "number", description: "数字越大越优先，用于解决多个意图同时命中。" },
           { name: "matchMode", label: "识别方式", type: "select", defaultValue: "hybrid", options: matchModeOptions, required: true, valueFromItem: (item) => item.matchMode || "hybrid" },
           { name: "keywords", label: "关键词 / 短语", type: "textarea", rows: 4, placeholder: "每行一个关键词，或用逗号分隔。", trim: true },
@@ -240,9 +221,6 @@ export default function ReplyIntentConfigsPage() {
           name: String(values.name ?? ""),
           description: String(values.description ?? ""),
           intentProfileId: Number(values.intentProfileId ?? 0),
-          scopeType: String(values.scopeType ?? "global"),
-          storeId: Number(values.storeId ?? 0),
-          wxWorkInstanceId: Number(values.wxWorkInstanceId ?? 0),
           priority: Number(values.priority ?? 100),
           matchMode: String(values.matchMode ?? "hybrid"),
           keywords: String(values.keywords ?? ""),

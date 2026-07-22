@@ -8,7 +8,6 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
-	"agent-desk/internal/pkg/replyintent"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 	"github.com/mlogclub/simple/sqls"
@@ -20,7 +19,6 @@ type runtimeIntentScope struct {
 	WxWorkInstanceID int64
 	CustomerID       int64
 	IntentProfileID  int64
-	HasWxWorkAccount bool
 }
 
 func loadEnabledIntentConfigs(scope runtimeIntentScope) []models.ReplyIntentConfig {
@@ -34,7 +32,7 @@ func loadEnabledIntentConfigs(scope runtimeIntentScope) []models.ReplyIntentConf
 	}
 	err := db.Where("status = ?", enums.StatusOk).
 		Where("intent_profile_id = ?", scope.IntentProfileID).
-		Where("(scope_type = ? OR (scope_type = ? AND store_id = ?) OR (scope_type = ? AND wx_work_instance_id = ?))", "global", "store", scope.StoreID, "instance", scope.WxWorkInstanceID).
+		Where("scope_type = ? AND company_id = 0 AND store_id = 0 AND wx_work_instance_id = 0", "global").
 		Order("priority DESC").Order("sort_no ASC").Order("id ASC").Find(&list).Error
 	if err != nil {
 		return nil
@@ -64,18 +62,16 @@ func collapseIntentConfigsByScope(list []models.ReplyIntentConfig) []models.Repl
 	selected := make(map[string]models.ReplyIntentConfig, len(list))
 	order := make([]string, 0, len(list))
 	for _, item := range list {
+		if strings.TrimSpace(item.ScopeType) != "global" || item.CompanyID != 0 || item.StoreID != 0 || item.WxWorkInstanceID != 0 {
+			continue
+		}
 		code := strings.TrimSpace(item.Code)
 		if code == "" {
 			continue
 		}
-		current, exists := selected[code]
-		if !exists {
+		if _, exists := selected[code]; !exists {
 			selected[code] = item
 			order = append(order, code)
-			continue
-		}
-		if intentConfigRank(item) > intentConfigRank(current) {
-			selected[code] = item
 		}
 	}
 	ret := make([]models.ReplyIntentConfig, 0, len(order))
@@ -83,25 +79,6 @@ func collapseIntentConfigsByScope(list []models.ReplyIntentConfig) []models.Repl
 		ret = append(ret, selected[code])
 	}
 	return ret
-}
-
-func intentScopeRank(config models.ReplyIntentConfig) int {
-	switch strings.TrimSpace(config.ScopeType) {
-	case "instance":
-		return 4
-	case "store":
-		return 3
-	default:
-		return 1
-	}
-}
-
-func intentConfigRank(config models.ReplyIntentConfig) int {
-	rank := intentScopeRank(config) * 10
-	if config.IntentProfileID > 0 {
-		rank += 1
-	}
-	return rank
 }
 
 func findInteractionConfig(configs []models.ReplyIntentConfig) (models.ReplyIntentConfig, bool) {
@@ -138,14 +115,25 @@ func resolveRuntimeIntentScope(req RunInput) runtimeIntentScope {
 	if db == nil {
 		return scope
 	}
-	if req.Conversation.ID <= 0 || !db.Migrator().HasTable(&models.ConversationRouteState{}) {
-		return scope
+	if req.Conversation.ID > 0 && scope.TenantID <= 0 && db.Migrator().HasTable(&models.Conversation{}) {
+		if conversation := repositories.ConversationRepository.Get(db, req.Conversation.ID); conversation != nil {
+			scope.TenantID = conversation.TenantID
+			if scope.CustomerID <= 0 {
+				scope.CustomerID = conversation.CustomerID
+			}
+		}
 	}
-	state := repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ?", req.Conversation.ID)
-	if scope.TenantID > 0 {
-		state = repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ? AND tenant_id = ?", req.Conversation.ID, scope.TenantID)
+	var state *models.ConversationRouteState
+	if req.Conversation.ID > 0 && db.Migrator().HasTable(&models.ConversationRouteState{}) {
+		state = repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ?", req.Conversation.ID)
+		if scope.TenantID > 0 {
+			state = repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ? AND tenant_id = ?", req.Conversation.ID, scope.TenantID)
+		}
 	}
 	if state != nil {
+		if scope.TenantID <= 0 {
+			scope.TenantID = state.TenantID
+		}
 		scope.StoreID = state.StoreID
 		scope.WxWorkInstanceID = state.WxWorkInstanceID
 	}
@@ -155,19 +143,17 @@ func resolveRuntimeIntentScope(req RunInput) runtimeIntentScope {
 			instance = repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, scope.WxWorkInstanceID, scope.TenantID)
 		}
 		if instance != nil {
-			scope.HasWxWorkAccount = true
-			if instance.IntentProfileID > 0 {
-				scope.IntentProfileID = instance.IntentProfileID
-			}
 			if scope.StoreID <= 0 {
 				scope.StoreID = instance.StoreID
 			}
 		}
 	}
-	if scope.IntentProfileID <= 0 && !scope.HasWxWorkAccount {
-		if profile := repositories.ReplyIntentProfileRepository.Take(db, "code = ? AND status = ?", replyintent.DefaultHotelProfileCode, enums.StatusOk); profile != nil {
-			scope.IntentProfileID = profile.ID
-		}
+	if scope.TenantID <= 0 {
+		return scope
+	}
+	tenant := repositories.TenantRepository.Get(db, scope.TenantID)
+	if tenant != nil && tenant.Status == enums.StatusOk {
+		scope.IntentProfileID = tenant.IntentProfileID
 	}
 	return scope
 }
@@ -177,18 +163,17 @@ func resolveRuntimeIntentProfile(scope runtimeIntentScope) *models.ReplyIntentPr
 	if db == nil || !db.Migrator().HasTable(&models.ReplyIntentProfile{}) {
 		return nil
 	}
-	if scope.IntentProfileID > 0 {
-		if profile := repositories.ReplyIntentProfileRepository.Get(db, scope.IntentProfileID); profile != nil && profile.Status == enums.StatusOk {
-			return profile
-		}
-	}
-	if scope.HasWxWorkAccount {
+	if scope.IntentProfileID <= 0 {
 		return nil
 	}
-	if profile := repositories.ReplyIntentProfileRepository.Take(db, "code = ? AND status = ?", replyintent.DefaultHotelProfileCode, enums.StatusOk); profile != nil {
-		return profile
+	profile := repositories.ReplyIntentProfileRepository.Get(db, scope.IntentProfileID)
+	if profile == nil || profile.Status != enums.StatusOk || profile.Revision <= 0 || profile.PublishedAt == nil {
+		return nil
 	}
-	return repositories.ReplyIntentProfileRepository.Take(db, "status = ?", enums.StatusOk)
+	if strings.TrimSpace(profile.IntentDetectPrompt) == "" || strings.TrimSpace(profile.IntentJSONSchema) == "" {
+		return nil
+	}
+	return profile
 }
 
 func intentContextMatches(config models.ReplyIntentConfig, req RunInput, history adapter.HistoryBuildResult, mediaText string) bool {

@@ -128,7 +128,7 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(req request.UpdateKnowledgeBa
 		return err
 	}
 	return repositories.KnowledgeBaseRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
-		"intent_profile_id":       item.IntentProfileID,
+		"intent_profile_id":       0,
 		"company_id":              item.CompanyID,
 		"store_id":                item.StoreID,
 		"dataset_id":              item.DatasetID,
@@ -246,7 +246,7 @@ func (s *knowledgeBaseService) CountContents(id int64, operator *dto.AuthPrincip
 
 func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowledgeBaseRequest, tenantID int64) (*models.KnowledgeBase, error) {
 	item := &models.KnowledgeBase{
-		IntentProfileID:       req.IntentProfileID,
+		IntentProfileID:       0,
 		CompanyID:             0,
 		StoreID:               req.StoreID,
 		DatasetID:             strings.TrimSpace(req.DatasetID),
@@ -265,13 +265,6 @@ func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowled
 		ChunkOverlapTokens:    req.ChunkOverlapTokens,
 		AnswerMode:            req.AnswerMode,
 		Remark:                req.Remark,
-	}
-	if item.IntentProfileID > 0 {
-		intentProfileID, err := validateOptionalReplyIntentProfileID(item.IntentProfileID)
-		if err != nil {
-			return nil, err
-		}
-		item.IntentProfileID = intentProfileID
 	}
 	if item.StoreID > 0 {
 		store := StoreService.GetInTenant(item.StoreID, tenantID)

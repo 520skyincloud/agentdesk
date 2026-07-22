@@ -8,9 +8,6 @@ type ReplyIntentConfigResponse struct {
 	Name               string       `json:"name"`
 	Description        string       `json:"description"`
 	IntentProfileID    int64        `json:"intentProfileId"`
-	ScopeType          string       `json:"scopeType"`
-	StoreID            int64        `json:"storeId"`
-	WxWorkInstanceID   int64        `json:"wxWorkInstanceId"`
 	Priority           int          `json:"priority"`
 	MatchMode          string       `json:"matchMode"`
 	Keywords           string       `json:"keywords"`

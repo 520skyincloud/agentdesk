@@ -10,6 +10,8 @@ type ReplyIntentProfileResponse struct {
 	Description        string       `json:"description"`
 	IntentDetectPrompt string       `json:"intentDetectPrompt"`
 	IntentJSONSchema   string       `json:"intentJsonSchema"`
+	Revision           int64        `json:"revision"`
+	PublishedAt        string       `json:"publishedAt,omitempty"`
 	Status             enums.Status `json:"status"`
 	SortNo             int          `json:"sortNo"`
 	Remark             string       `json:"remark"`

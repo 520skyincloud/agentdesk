@@ -275,6 +275,19 @@ export default function DashboardChannelsPage() {
             ),
           },
           {
+            key: "industry",
+            label: t("tenant.columnIndustry"),
+            className: "min-w-[170px]",
+            render: (item) => (
+              <div className="space-y-1">
+                <Badge variant="outline">{item.industryName || "-"}</Badge>
+                <div className="font-mono text-xs text-muted-foreground">
+                  {item.industryCode || "-"} · R{item.industryRevision || 0}
+                </div>
+              </div>
+            ),
+          },
+          {
             key: "supervisor",
             label: t("tenant.columnSupervisor"),
             className: "min-w-[150px]",
@@ -363,9 +376,20 @@ export default function DashboardChannelsPage() {
         fetchList={fetchTenants}
         getItemId={(item) => item.id}
         createItem={async (payload) => {
-          const { supervisor, ...tenant } = payload
-          if (!supervisor) throw new Error(t("tenant.supervisorRequired"))
-          const result = await createTenant({ ...tenant, supervisor })
+          if (!payload.supervisor) throw new Error(t("tenant.supervisorRequired"))
+          const result = await createTenant({
+            intentProfileId: payload.intentProfileId,
+            legalName: payload.legalName,
+            shortName: payload.shortName,
+            registrationType: payload.registrationType,
+            registrationNo: payload.registrationNo,
+            contactName: payload.contactName,
+            contactMobile: payload.contactMobile,
+            contactEmail: payload.contactEmail,
+            address: payload.address,
+            remark: payload.remark,
+            supervisor: payload.supervisor,
+          })
           setCreationResult(result)
           return result
         }}

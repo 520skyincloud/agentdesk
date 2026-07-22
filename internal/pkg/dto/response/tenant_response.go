@@ -6,6 +6,10 @@ import (
 
 type TenantResponse struct {
 	ID                 int64                          `json:"id"`
+	IntentProfileID    int64                          `json:"intentProfileId"`
+	IndustryCode       string                         `json:"industryCode"`
+	IndustryName       string                         `json:"industryName"`
+	IndustryRevision   int64                          `json:"industryRevision"`
 	TenantCode         string                         `json:"tenantCode"`
 	LegalName          string                         `json:"legalName"`
 	ShortName          string                         `json:"shortName"`
@@ -30,6 +34,14 @@ type TenantResponse struct {
 	UpdatedAt          string                         `json:"updatedAt"`
 	CreateUserName     string                         `json:"createUserName"`
 	UpdateUserName     string                         `json:"updateUserName"`
+}
+
+type TenantIndustryOptionResponse struct {
+	ID           int64  `json:"id"`
+	Code         string `json:"code"`
+	IndustryCode string `json:"industryCode"`
+	Name         string `json:"name"`
+	Revision     int64  `json:"revision"`
 }
 
 type TenantInvitationResponse struct {

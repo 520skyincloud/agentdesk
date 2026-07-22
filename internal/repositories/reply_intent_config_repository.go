@@ -1,11 +1,14 @@
 package repositories
 
 import (
+	"errors"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ReplyIntentConfigRepository = newReplyIntentConfigRepository()
@@ -22,6 +25,18 @@ func (r *replyIntentConfigRepository) Get(db *gorm.DB, id int64) *models.ReplyIn
 		return nil
 	}
 	return ret
+}
+
+func (r *replyIntentConfigRepository) GetForUpdate(db *gorm.DB, id int64) (*models.ReplyIntentConfig, error) {
+	ret := &models.ReplyIntentConfig{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ?", id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (r *replyIntentConfigRepository) Take(db *gorm.DB, where ...any) *models.ReplyIntentConfig {
@@ -72,6 +87,6 @@ func (r *replyIntentConfigRepository) Updates(db *gorm.DB, id int64, columns map
 	return db.Model(&models.ReplyIntentConfig{}).Where("id = ?", id).Updates(columns).Error
 }
 
-func (r *replyIntentConfigRepository) Delete(db *gorm.DB, id int64) {
-	db.Delete(&models.ReplyIntentConfig{}, "id = ?", id)
+func (r *replyIntentConfigRepository) Delete(db *gorm.DB, id int64) error {
+	return db.Delete(&models.ReplyIntentConfig{}, "id = ?", id).Error
 }

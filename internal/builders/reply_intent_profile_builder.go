@@ -18,6 +18,8 @@ func BuildReplyIntentProfile(item *models.ReplyIntentProfile) *response.ReplyInt
 		Description:        item.Description,
 		IntentDetectPrompt: item.IntentDetectPrompt,
 		IntentJSONSchema:   item.IntentJSONSchema,
+		Revision:           item.Revision,
+		PublishedAt:        utils.FormatTimePtr(item.PublishedAt),
 		Status:             item.Status,
 		SortNo:             item.SortNo,
 		Remark:             item.Remark,

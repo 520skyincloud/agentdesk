@@ -137,9 +137,8 @@ function buildPayload(form: EditForm): CreateKnowledgeBasePayload {
 	let remark = form.remark.trim();
 	if (form.knowledgeType === KnowledgeBaseType.FastGPTCloud) {
 		remark = mergeFastGPTResourceAllowedHosts(remark, form.resourceAllowedHosts);
-	}
+  }
   return {
-    intentProfileId: 0,
     name: form.name.trim(),
     description: form.description.trim(),
     knowledgeType: form.knowledgeType,

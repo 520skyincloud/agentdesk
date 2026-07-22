@@ -13,7 +13,7 @@ import (
 )
 
 func ReplyIntentConfigAnyList(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
+	if _, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -33,7 +33,7 @@ func ReplyIntentConfigGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
+	if _, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -83,7 +83,8 @@ func ReplyIntentConfigPostUpdate(ctx *gin.Context) {
 }
 
 func ReplyIntentConfigPostDelete(ctx *gin.Context) {
-	if _, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigDelete); err != nil {
+	user, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigDelete)
+	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -92,7 +93,7 @@ func ReplyIntentConfigPostDelete(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	if err := services.ReplyIntentConfigService.DeleteReplyIntentConfig(req.ID); err != nil {
+	if err := services.ReplyIntentConfigService.DeleteReplyIntentConfig(req.ID, user); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

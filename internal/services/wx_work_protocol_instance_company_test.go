@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"testing"
+	"time"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
@@ -138,8 +139,36 @@ func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing
 	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
 		t.Fatalf("assign store staff role: %v", err)
 	}
-	if err := sqls.DB().Create(&models.ReplyIntentProfile{ID: 301, Code: "hotel", Name: "测试酒店行业", Status: enums.StatusOk}).Error; err != nil {
+	publishedAt := time.Now()
+	if err := sqls.DB().Create(&models.ReplyIntentProfile{
+		ID: 301, Code: "hotel-test", Name: "测试酒店行业", IndustryCode: "hotel-test",
+		IntentDetectPrompt: "detect", IntentJSONSchema: "schema", Revision: 1,
+		PublishedAt: &publishedAt, Status: enums.StatusOk,
+	}).Error; err != nil {
 		t.Fatalf("create intent profile: %v", err)
+	}
+	if err := sqls.DB().Create(&models.ReplyIntentConfig{
+		Code: "hotel_info", Name: "酒店信息", IntentProfileID: 301, ScopeType: "global", Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create intent config: %v", err)
+	}
+	category := &models.IndustryTagDefinition{
+		IntentProfileID: 301, Name: "分类", SemanticKey: "category.test", DefinitionRevision: 1, Status: enums.StatusOk,
+	}
+	if err := sqls.DB().Create(category).Error; err != nil {
+		t.Fatalf("create tag category: %v", err)
+	}
+	if err := sqls.DB().Create(&models.IndustryTagDefinition{
+		IntentProfileID: 301, ParentID: category.ID, Name: "标签", SemanticKey: "test.tag",
+		AIEnabled: true, DefinitionRevision: 1, Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create tag definition: %v", err)
+	}
+	if err := sqls.DB().Create(&models.Tenant{
+		ID: 101, IntentProfileID: 301, TenantCode: "tenant-route-sync", LegalName: "测试公司",
+		ShortName: "测试公司", RegistrationType: "test", RegistrationNo: "route-sync", Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create tenant: %v", err)
 	}
 	if err := sqls.DB().Create(&models.Channel{ID: 22, TenantID: 101, ChannelType: enums.ChannelTypeWxWorkProtocol, Name: "协议渠道", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create channel: %v", err)
@@ -187,7 +216,6 @@ func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing
 	if err := WxWorkProtocolInstanceService.UpdateAISettings(request.UpdateWxWorkProtocolAISettingsRequest{
 		ID:              7,
 		AIReplyEnabled:  true,
-		IntentProfileID: 301,
 		StoreID:         31,
 		KnowledgeBaseID: 202,
 	}, operator); err != nil {
@@ -215,7 +243,10 @@ func setupWxWorkProtocolInstanceCompanyTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open sqlite error = %v", err)
 	}
 	if err := db.AutoMigrate(
+		&models.Tenant{},
 		&models.ReplyIntentProfile{},
+		&models.ReplyIntentConfig{},
+		&models.IndustryTagDefinition{},
 		&models.Company{},
 		&models.Store{},
 		&models.Channel{},

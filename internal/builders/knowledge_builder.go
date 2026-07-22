@@ -10,7 +10,6 @@ import (
 func BuildKnowledgeBase(item *models.KnowledgeBase) response.KnowledgeBaseResponse {
 	return response.KnowledgeBaseResponse{
 		ID:                     item.ID,
-		IntentProfileID:        item.IntentProfileID,
 		StoreID:                item.StoreID,
 		DatasetID:              item.DatasetID,
 		DatasetName:            item.DatasetName,
@@ -50,7 +49,6 @@ func BuildKnowledgeResourceGroup(item *models.KnowledgeResourceGroup, resourceIt
 	ret = response.KnowledgeResourceGroupResponse{
 		ID:               item.ID,
 		StoreID:          item.StoreID,
-		IntentProfileID:  item.IntentProfileID,
 		KnowledgeBaseID:  item.KnowledgeBaseID,
 		WxWorkInstanceID: item.WxWorkInstanceID,
 		SourceProvider:   item.SourceProvider,

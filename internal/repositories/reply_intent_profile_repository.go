@@ -1,11 +1,14 @@
 package repositories
 
 import (
+	"errors"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ReplyIntentProfileRepository = newReplyIntentProfileRepository()
@@ -22,6 +25,18 @@ func (r *replyIntentProfileRepository) Get(db *gorm.DB, id int64) *models.ReplyI
 		return nil
 	}
 	return ret
+}
+
+func (r *replyIntentProfileRepository) GetForUpdate(db *gorm.DB, id int64) (*models.ReplyIntentProfile, error) {
+	ret := &models.ReplyIntentProfile{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ?", id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (r *replyIntentProfileRepository) Take(db *gorm.DB, where ...any) *models.ReplyIntentProfile {

@@ -32,8 +32,8 @@ func TestTenantIntegrityPoliciesCoverEveryRegisteredTenantModel(t *testing.T) {
 			t.Errorf("non-tenant model %s has a stale audit policy", name)
 		}
 	}
-	if len(policies) != 76 {
-		t.Fatalf("policy count = %d, want 76 explicit TenantID policies", len(policies))
+	if len(policies) != 87 {
+		t.Fatalf("policy count = %d, want 87 explicit TenantID policies", len(policies))
 	}
 }
 
@@ -96,11 +96,11 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	if report.Status != "passed" || report.HasViolations() {
 		t.Fatalf("clean fixture failed audit: %#v", report.Violations)
 	}
-	if report.RegisteredTenantModels != 76 || report.PolicyCount != 76 {
-		t.Fatalf("tenant model coverage = %d/%d, want 76/76", report.RegisteredTenantModels, report.PolicyCount)
+	if report.RegisteredTenantModels != 87 || report.PolicyCount != 87 {
+		t.Fatalf("tenant model coverage = %d/%d, want 87/87", report.RegisteredTenantModels, report.PolicyCount)
 	}
-	if report.RequiredTables != 89 || report.ConfiguredRelations != 207 {
-		t.Fatalf("audit schema coverage = %d tables/%d relations, want 89/207", report.RequiredTables, report.ConfiguredRelations)
+	if report.RequiredTables != 103 || report.ConfiguredRelations != 256 {
+		t.Fatalf("audit schema coverage = %d tables/%d relations, want 103/256", report.RequiredTables, report.ConfiguredRelations)
 	}
 	if report.CheckedTables != report.RequiredTables {
 		t.Fatalf("checked tables = %d, required = %d", report.CheckedTables, report.RequiredTables)
@@ -722,13 +722,23 @@ func createCleanTenantIntegrityFixture(t *testing.T, db *gorm.DB) tenantIntegrit
 	t.Helper()
 	now := time.Now()
 	audit := tenantIntegrityTestAuditFields(now)
+	profile := &models.ReplyIntentProfile{
+		Code: "audit-industry", Name: "Audit Industry", IndustryCode: "audit",
+		IntentDetectPrompt: "audit prompt", IntentJSONSchema: "{}", Revision: 1,
+		PublishedAt: &now, Status: enums.StatusOk, AuditFields: audit,
+	}
+	if err := db.Create(profile).Error; err != nil {
+		t.Fatalf("create audit industry profile: %v", err)
+	}
 	tenantA := &models.Tenant{
-		TenantCode: "audit-tenant-a", LegalName: "Audit Tenant A", ShortName: "Tenant A",
+		IntentProfileID: profile.ID,
+		TenantCode:      "audit-tenant-a", LegalName: "Audit Tenant A", ShortName: "Tenant A",
 		RegistrationType: "credit_code", RegistrationNo: "AUDIT000000000001",
 		Status: enums.StatusOk, AuditFields: audit,
 	}
 	tenantB := &models.Tenant{
-		TenantCode: "audit-tenant-b", LegalName: "Audit Tenant B", ShortName: "Tenant B",
+		IntentProfileID: profile.ID,
+		TenantCode:      "audit-tenant-b", LegalName: "Audit Tenant B", ShortName: "Tenant B",
 		RegistrationType: "credit_code", RegistrationNo: "AUDIT000000000002",
 		Status: enums.StatusOk, AuditFields: audit,
 	}

@@ -7,7 +7,6 @@ type CreateWxWorkProtocolInstanceRequest struct {
 	EmployeeUserID                 string `json:"employeeUserId"`
 	EmployeeName                   string `json:"employeeName"`
 	EmployeeAvatar                 string `json:"employeeAvatar"`
-	IntentProfileID                int64  `json:"intentProfileId"`
 	StoreID                        int64  `json:"storeId"`
 	StoreName                      string `json:"storeName"`
 	StoreAddress                   string `json:"storeAddress"`
@@ -148,7 +147,6 @@ type UpdateWxWorkProtocolAISettingsRequest struct {
 	StoreRoomNotifyEnabled         bool   `json:"storeRoomNotifyEnabled"`
 	StoreRoomAtList                string `json:"storeRoomAtList"`
 	PersonaPrompt                  string `json:"personaPrompt"`
-	IntentProfileID                int64  `json:"intentProfileId"`
 	StoreID                        int64  `json:"storeId"`
 	StoreName                      string `json:"storeName"`
 	StoreAddress                   string `json:"storeAddress"`

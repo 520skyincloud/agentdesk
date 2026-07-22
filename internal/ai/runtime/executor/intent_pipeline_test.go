@@ -1624,18 +1624,15 @@ func TestResolveRuntimeIntentDetectAIConfigPrefersAccountOverride(t *testing.T) 
 	if err := sqls.DB().Create(&globalIntent).Error; err != nil {
 		t.Fatalf("create global ai config: %v", err)
 	}
-	tenant := models.Tenant{ID: 1, TenantCode: "intent-tenant", LegalName: "Intent Tenant", ShortName: "Intent", RegistrationType: "test", RegistrationNo: "intent-tenant-reg", Status: enums.StatusOk}
-	if err := sqls.DB().Create(&tenant).Error; err != nil {
-		t.Fatalf("create tenant: %v", err)
+	tenant := models.Tenant{}
+	if err := sqls.DB().First(&tenant, 1).Error; err != nil {
+		t.Fatalf("load tenant: %v", err)
 	}
 	if err := sqls.DB().Create(&models.Store{ID: 5, TenantID: tenant.ID, Name: "store", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
 	if err := sqls.DB().Create(&models.WxWorkProtocolInstance{ID: 11, TenantID: tenant.ID, StoreID: 5, Guid: "intent-account", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create account: %v", err)
-	}
-	if err := sqls.DB().Create(&models.Conversation{ID: 7, TenantID: tenant.ID, Status: enums.IMConversationStatusAIServing}).Error; err != nil {
-		t.Fatalf("create conversation: %v", err)
 	}
 	if err := sqls.DB().Create(&models.ConversationRouteState{TenantID: tenant.ID, ConversationID: 7, StoreID: 5, WxWorkInstanceID: 11}).Error; err != nil {
 		t.Fatalf("create route state: %v", err)
@@ -1716,8 +1713,24 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}
-	if err := db.Create(&models.ReplyIntentProfile{Code: "hotel", Name: "测试酒店行业", Status: enums.StatusOk}).Error; err != nil {
+	now := time.Now()
+	profile := &models.ReplyIntentProfile{
+		Code: "hotel", IndustryCode: "hotel", Name: "测试酒店行业",
+		IntentDetectPrompt: "测试行业意图识别", IntentJSONSchema: `{\"type\":\"object\"}`,
+		Revision: 1, PublishedAt: &now, Status: enums.StatusOk,
+	}
+	if err := db.Create(profile).Error; err != nil {
 		t.Fatalf("seed hotel intent profile: %v", err)
+	}
+	tenant := &models.Tenant{
+		ID: 1, IntentProfileID: profile.ID, TenantCode: "intent-tenant", LegalName: "Intent Tenant",
+		ShortName: "Intent", RegistrationType: "test", RegistrationNo: "intent-tenant-reg", Status: enums.StatusOk,
+	}
+	if err := db.Create(tenant).Error; err != nil {
+		t.Fatalf("seed intent tenant: %v", err)
+	}
+	if err := db.Create(&models.Conversation{ID: 7, TenantID: tenant.ID, Status: enums.IMConversationStatusAIServing}).Error; err != nil {
+		t.Fatalf("seed intent conversation: %v", err)
 	}
 	sqls.SetDB(db)
 	t.Cleanup(func() {

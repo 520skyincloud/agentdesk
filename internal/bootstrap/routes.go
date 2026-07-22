@@ -163,6 +163,7 @@ func registerDashboardUserRoutes(group *gin.RouterGroup) {
 }
 
 func registerDashboardTenantRoutes(group *gin.RouterGroup) {
+	group.GET("/industry_options", dashboard.TenantGetIndustryOptions)
 	group.GET("/:id", dashboard.TenantGetBy)
 	group.POST("/create", dashboard.TenantPostCreate)
 	group.Any("/list", dashboard.TenantAnyList)

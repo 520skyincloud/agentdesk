@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
+import { TriangleAlertIcon } from "lucide-react"
 import { Controller, type Resolver, useForm } from "react-hook-form"
 import { z } from "zod/v4"
 import { toast } from "sonner"
@@ -9,6 +10,7 @@ import { toast } from "sonner"
 import { OptionCombobox } from "@/components/option-combobox"
 import { ProjectDialog } from "@/components/project-dialog"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Field,
   FieldContent,
@@ -20,13 +22,17 @@ import { Textarea } from "@/components/ui/textarea"
 import { useI18n } from "@/i18n/provider"
 import {
   fetchTenant,
+  fetchTenantIndustryOptions,
   type AdminTenant,
   type TenantBasePayload,
+  type TenantIndustryOption,
   type TenantSupervisorPayload,
 } from "@/lib/api/tenant"
 
 export type TenantFormPayload = TenantBasePayload & {
   supervisor?: TenantSupervisorPayload
+  confirmIndustryChange: boolean
+  industryChangeReason: string
 }
 
 type TenantEditDialogProps = {
@@ -38,6 +44,7 @@ type TenantEditDialogProps = {
 }
 
 type TenantForm = {
+  intentProfileId: string
   legalName: string
   shortName: string
   registrationType: string
@@ -51,9 +58,12 @@ type TenantForm = {
   supervisorNickname: string
   supervisorMobile: string
   supervisorEmail: string
+  confirmIndustryChange: boolean
+  industryChangeReason: string
 }
 
 const emptyForm: TenantForm = {
+  intentProfileId: "",
   legalName: "",
   shortName: "",
   registrationType: "unified_social_credit_code",
@@ -67,12 +77,15 @@ const emptyForm: TenantForm = {
   supervisorNickname: "",
   supervisorMobile: "",
   supervisorEmail: "",
+  confirmIndustryChange: false,
+  industryChangeReason: "",
 }
 
 function buildForm(item: AdminTenant | null): TenantForm {
   if (!item) return emptyForm
 
   return {
+    intentProfileId: String(item.intentProfileId || ""),
     legalName: item.legalName || "",
     shortName: item.shortName || "",
     registrationType:
@@ -87,11 +100,25 @@ function buildForm(item: AdminTenant | null): TenantForm {
     supervisorNickname: "",
     supervisorMobile: "",
     supervisorEmail: "",
+    confirmIndustryChange: false,
+    industryChangeReason: "",
   }
 }
 
-function buildPayload(values: TenantForm, creating: boolean): TenantFormPayload {
+function buildPayload(
+  values: TenantForm,
+  creating: boolean,
+  originalIntentProfileId: number,
+): TenantFormPayload {
+  const intentProfileId = Number(values.intentProfileId)
+  const industryChanged = !creating && intentProfileId !== originalIntentProfileId
   const payload: TenantFormPayload = {
+    intentProfileId,
+    confirmIndustryChange:
+      industryChanged && values.confirmIndustryChange === true,
+    industryChangeReason: industryChanged
+      ? values.industryChangeReason.trim()
+      : "",
     legalName: values.legalName.trim(),
     shortName: values.shortName.trim(),
     registrationType: values.registrationType.trim().toLowerCase(),
@@ -128,11 +155,17 @@ function TenantEditDialogBody({
   onSubmit,
 }: TenantEditDialogProps) {
   const t = useI18n()
-  const [loading, setLoading] = useState(Boolean(itemId))
+  const [loading, setLoading] = useState(true)
+  const [industryOptions, setIndustryOptions] = useState<TenantIndustryOption[]>([])
+  const [originalIntentProfileId, setOriginalIntentProfileId] = useState(0)
   const schema = useMemo(
     () =>
       z
         .object({
+          intentProfileId: z
+            .string()
+            .trim()
+            .refine((value) => Number(value) > 0, t("tenant.industryRequired")),
           legalName: z.string().trim().min(1, t("tenant.legalNameRequired")).max(200),
           shortName: z.string().trim().min(1, t("tenant.shortNameRequired")).max(100),
           registrationType: z.string().trim().min(1),
@@ -164,8 +197,30 @@ function TenantEditDialogBody({
           supervisorNickname: z.string().trim().max(100),
           supervisorMobile: z.string().trim().max(32),
           supervisorEmail: z.string().trim().max(100),
+          confirmIndustryChange: z.boolean(),
+          industryChangeReason: z.string().trim().max(500),
         })
         .superRefine((values, ctx) => {
+          if (
+            itemId &&
+            Number(values.intentProfileId) !== originalIntentProfileId
+          ) {
+            if (!values.confirmIndustryChange) {
+              ctx.addIssue({
+                code: "custom",
+                path: ["confirmIndustryChange"],
+                message: t("tenant.industryChangeConfirmRequired"),
+              })
+            }
+            if (!values.industryChangeReason.trim()) {
+              ctx.addIssue({
+                code: "custom",
+                path: ["industryChangeReason"],
+                message: t("tenant.industryChangeReasonRequired"),
+              })
+            }
+          }
+
           if (itemId) return
 
           const requiredSupervisorFields: Array<
@@ -212,7 +267,7 @@ function TenantEditDialogBody({
             })
           }
         }),
-    [itemId, t]
+    [itemId, originalIntentProfileId, t]
   )
   const resolver = useMemo(
     () => zodResolver(schema as never) as Resolver<TenantForm>,
@@ -227,16 +282,23 @@ function TenantEditDialogBody({
     handleSubmit,
     register,
     reset,
+    watch,
     formState: { errors },
   } = form
 
   useEffect(() => {
     let cancelled = false
-    if (!itemId) return
 
-    void fetchTenant(itemId)
-      .then((item) => {
-        if (!cancelled) reset(buildForm(item))
+    setLoading(true)
+    void Promise.all([
+      fetchTenantIndustryOptions(),
+      itemId ? fetchTenant(itemId) : Promise.resolve(null),
+    ])
+      .then(([options, item]) => {
+        if (cancelled) return
+        setIndustryOptions(options)
+        setOriginalIntentProfileId(item?.intentProfileId || 0)
+        reset(buildForm(item))
       })
       .catch((error) => {
         if (!cancelled) {
@@ -255,11 +317,20 @@ function TenantEditDialogBody({
   }, [itemId, reset, t])
 
   async function submit(values: TenantForm) {
-    await onSubmit(buildPayload(values, !itemId))
+    await onSubmit(buildPayload(values, !itemId, originalIntentProfileId))
   }
 
   const formId = "tenant-edit-form"
   const creating = !itemId
+  const selectedIntentProfileId = Number(watch("intentProfileId"))
+  const industryChanged =
+    !creating &&
+    originalIntentProfileId > 0 &&
+    selectedIntentProfileId !== originalIntentProfileId
+  const industryComboboxOptions = industryOptions.map((item) => ({
+    value: String(item.id),
+    label: `${item.name} · ${item.industryCode} · R${item.revision}`,
+  }))
 
   return (
     <ProjectDialog
@@ -367,6 +438,90 @@ function TenantEditDialogBody({
               <FieldError errors={[errors.registrationNo]} />
             </FieldContent>
           </Field>
+
+          <SectionTitle title={t("tenant.industrySection")} />
+
+          <Field
+            className="md:col-span-2"
+            data-invalid={!!errors.intentProfileId}
+          >
+            <FieldLabel>{t("tenant.industry")}</FieldLabel>
+            <FieldContent>
+              <Controller
+                name="intentProfileId"
+                control={control}
+                render={({ field }) => (
+                  <OptionCombobox
+                    value={field.value}
+                    onChange={field.onChange}
+                    options={industryComboboxOptions}
+                    placeholder={t("tenant.industryPlaceholder")}
+                    searchPlaceholder={t("tenant.industrySearchPlaceholder")}
+                    emptyText={t("tenant.industryEmpty")}
+                  />
+                )}
+              />
+              <p className="text-xs leading-5 text-muted-foreground">
+                {t("tenant.industryDescription")}
+              </p>
+              <FieldError errors={[errors.intentProfileId]} />
+            </FieldContent>
+          </Field>
+
+          {industryChanged ? (
+            <div className="grid gap-4 border-l-2 border-destructive bg-destructive/5 p-4 md:col-span-2 md:grid-cols-2">
+              <div className="flex gap-3 md:col-span-2">
+                <TriangleAlertIcon className="mt-0.5 size-5 shrink-0 text-destructive" />
+                <div>
+                  <div className="text-sm font-medium text-foreground">
+                    {t("tenant.industryChangeTitle")}
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    {t("tenant.industryChangeDescription")}
+                  </p>
+                </div>
+              </div>
+              <Field data-invalid={!!errors.industryChangeReason}>
+                <FieldLabel htmlFor="tenant-industry-change-reason">
+                  {t("tenant.industryChangeReason")}
+                </FieldLabel>
+                <FieldContent>
+                  <Textarea
+                    id="tenant-industry-change-reason"
+                    rows={3}
+                    placeholder={t("tenant.industryChangeReasonPlaceholder")}
+                    aria-invalid={!!errors.industryChangeReason}
+                    {...register("industryChangeReason")}
+                  />
+                  <FieldError errors={[errors.industryChangeReason]} />
+                </FieldContent>
+              </Field>
+              <Field data-invalid={!!errors.confirmIndustryChange}>
+                <FieldContent className="h-full justify-center">
+                  <Controller
+                    name="confirmIndustryChange"
+                    control={control}
+                    render={({ field }) => (
+                      <label
+                        htmlFor="tenant-confirm-industry-change"
+                        className="flex cursor-pointer items-start gap-3 text-sm leading-6"
+                      >
+                        <Checkbox
+                          id="tenant-confirm-industry-change"
+                          checked={field.value}
+                          onCheckedChange={(checked) =>
+                            field.onChange(checked === true)
+                          }
+                        />
+                        <span>{t("tenant.industryChangeConfirm")}</span>
+                      </label>
+                    )}
+                  />
+                  <FieldError errors={[errors.confirmIndustryChange]} />
+                </FieldContent>
+              </Field>
+            </div>
+          ) : null}
 
           <SectionTitle title={t("tenant.contactSection")} />
 

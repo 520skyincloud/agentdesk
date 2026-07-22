@@ -108,7 +108,7 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgentForConversation(conve
 	if instance == nil || !instance.AIReplyEnabled {
 		return models.AIAgent{}, false
 	}
-	if _, err := s.resolveEffectiveIntentProfileID(instance.IntentProfileID, true); err != nil {
+	if _, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), instance.TenantID); err != nil {
 		return models.AIAgent{}, false
 	}
 	return s.BuildRuntimeAIAgent(instance), true
@@ -280,15 +280,12 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		return nil, err
 	}
 	storeID := binding.StoreID
-	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
-	if err != nil {
-		return nil, err
+	if req.AIReplyEnabled {
+		if _, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID); err != nil {
+			return nil, err
+		}
 	}
-	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(intentProfileID, req.AIReplyEnabled)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.validateBinding(tenantID, req.ChannelID, storeID, req.KnowledgeBaseID, effectiveIntentProfileID); err != nil {
+	if err := s.validateBinding(tenantID, req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
 		return nil, err
 	}
 	welcomeImageAssetID, err := validateWxWorkWelcomeImageAsset(req.WelcomeImageAssetID, tenantID)
@@ -309,7 +306,7 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		EmployeeAvatar:                 strings.TrimSpace(req.EmployeeAvatar),
 		AgentTeamID:                    binding.AgentTeamID,
 		CompanyID:                      0,
-		IntentProfileID:                intentProfileID,
+		IntentProfileID:                0,
 		StoreID:                        storeID,
 		StoreStaffBindingID:            binding.ID,
 		StoreAddress:                   utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
@@ -614,7 +611,7 @@ func (s *wxWorkProtocolInstanceService) CreateReplacementRemoteSetup(req request
 		ChannelID:                      old.ChannelID,
 		AgentTeamID:                    binding.AgentTeamID,
 		CompanyID:                      0,
-		IntentProfileID:                old.IntentProfileID,
+		IntentProfileID:                0,
 		StoreID:                        binding.StoreID,
 		StoreStaffBindingID:            binding.ID,
 		ReplacesInstanceID:             old.ID,
@@ -796,15 +793,12 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 			return err
 		}
 	}
-	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
-	if err != nil {
-		return err
+	if req.AIReplyEnabled {
+		if _, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID); err != nil {
+			return err
+		}
 	}
-	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(intentProfileID, req.AIReplyEnabled)
-	if err != nil {
-		return err
-	}
-	if err := s.validateBinding(tenantID, req.ChannelID, storeID, req.KnowledgeBaseID, effectiveIntentProfileID); err != nil {
+	if err := s.validateBinding(tenantID, req.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
 		return err
 	}
 	welcomeImageAssetID, err := validateWxWorkWelcomeImageAsset(req.WelcomeImageAssetID, tenantID)
@@ -822,7 +816,7 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		"employee_name":                      utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
 		"employee_avatar":                    strings.TrimSpace(req.EmployeeAvatar),
 		"company_id":                         0,
-		"intent_profile_id":                  intentProfileID,
+		"intent_profile_id":                  0,
 		"store_id":                           storeID,
 		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
 		"store_navigation_name":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
@@ -892,7 +886,7 @@ func (s *wxWorkProtocolInstanceService) SetAIReplyEnabled(instanceID int64, enab
 		return errorsx.InvalidParam("企微员工号实例不存在")
 	}
 	if enabled {
-		if _, err := s.resolveEffectiveIntentProfileID(instance.IntentProfileID, true); err != nil {
+		if _, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID); err != nil {
 			return err
 		}
 	}
@@ -954,20 +948,17 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 			return err
 		}
 	}
-	intentProfileID, err := validateOptionalReplyIntentProfileID(req.IntentProfileID)
-	if err != nil {
-		return err
+	if req.AIReplyEnabled {
+		if _, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID); err != nil {
+			return err
+		}
 	}
-	effectiveIntentProfileID, err := s.resolveEffectiveIntentProfileID(intentProfileID, req.AIReplyEnabled)
-	if err != nil {
-		return err
-	}
-	if err := s.validateBinding(tenantID, instance.ChannelID, storeID, req.KnowledgeBaseID, effectiveIntentProfileID); err != nil {
+	if err := s.validateBinding(tenantID, instance.ChannelID, storeID, req.KnowledgeBaseID); err != nil {
 		return err
 	}
 	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
 		"company_id":                         0,
-		"intent_profile_id":                  intentProfileID,
+		"intent_profile_id":                  0,
 		"store_id":                           storeID,
 		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
 		"store_navigation_name":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
@@ -1574,25 +1565,7 @@ func (s *wxWorkProtocolInstanceService) RequireStoreKnowledge(instance *models.W
 	return instance.StoreID, instance.KnowledgeBaseID, nil
 }
 
-func (s *wxWorkProtocolInstanceService) resolveEffectiveIntentProfileID(instanceIntentProfileID int64, requireProfile bool) (int64, error) {
-	if instanceIntentProfileID > 0 {
-		if _, err := validateOptionalReplyIntentProfileID(instanceIntentProfileID); err != nil {
-			return 0, err
-		}
-	}
-	if instanceIntentProfileID > 0 {
-		return instanceIntentProfileID, nil
-	}
-	if requireProfile {
-		return 0, errorsx.InvalidParam("启用 AI 前请先为企微员工号绑定行业 Profile")
-	}
-	return 0, nil
-}
-
-func (s *wxWorkProtocolInstanceService) validateBinding(tenantID, channelID, storeID, knowledgeBaseID, effectiveIntentProfileID int64) error {
-	if effectiveIntentProfileID < 0 {
-		return errorsx.InvalidParam("意图行业配置无效")
-	}
+func (s *wxWorkProtocolInstanceService) validateBinding(tenantID, channelID, storeID, knowledgeBaseID int64) error {
 	if err := s.validateProtocolChannel(channelID, tenantID); err != nil {
 		return err
 	}

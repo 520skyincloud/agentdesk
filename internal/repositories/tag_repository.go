@@ -37,6 +37,29 @@ func (r *tagRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models.Tag
 	return ret
 }
 
+func (r *tagRepository) TakeByTemplateInTenant(db *gorm.DB, tenantID, templateDefinitionID int64) *models.Tag {
+	ret := &models.Tag{}
+	if err := db.Take(ret, "tenant_id = ? AND template_definition_id = ?", tenantID, templateDefinitionID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *tagRepository) TakeBySemanticKeyInTenant(db *gorm.DB, tenantID int64, semanticKey string) *models.Tag {
+	ret := &models.Tag{}
+	if err := db.Take(ret, "tenant_id = ? AND semantic_key = ?", tenantID, semanticKey).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *tagRepository) FindByProfileInTenant(db *gorm.DB, tenantID, intentProfileID int64) ([]models.Tag, error) {
+	ret := make([]models.Tag, 0)
+	err := db.Where("tenant_id = ? AND intent_profile_id = ?", tenantID, intentProfileID).
+		Order("parent_id ASC, sort_no ASC, id ASC").Find(&ret).Error
+	return ret, err
+}
+
 func (r *tagRepository) Take(db *gorm.DB, where ...interface{}) *models.Tag {
 	ret := &models.Tag{}
 	if err := db.Take(ret, where...).Error; err != nil {

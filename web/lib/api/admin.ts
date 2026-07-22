@@ -287,9 +287,6 @@ export type ReplyIntentConfig = {
   name: string
   description: string
   intentProfileId: number
-  scopeType: string
-  storeId: number
-  wxWorkInstanceId: number
   priority: number
   matchMode: string
   keywords: string
@@ -324,6 +321,8 @@ export type ReplyIntentProfile = {
   description: string
   intentDetectPrompt: string
   intentJsonSchema: string
+  revision: number
+  publishedAt?: string
   status: number
   sortNo: number
   remark: string
@@ -395,8 +394,7 @@ export type WxWorkProtocolInstance = {
   employeeUserId: string
   employeeName: string
   employeeAvatar: string
-  intentProfileId: number
-  intentProfileName: string
+  industryName: string
   storeId: number
   storeStaffBindingId: number
   storeStaffUserId: number
@@ -541,7 +539,6 @@ export type CreateWxWorkProtocolInstancePayload = {
   employeeName: string
   employeeAvatar: string
   storeStaffUserId: number
-  intentProfileId: number
   storeId: number
   storeName?: string
   storeAddress: string
@@ -595,7 +592,6 @@ export type UpdateWxWorkProtocolAISettingsPayload = {
   storeRoomNotifyEnabled: boolean
   storeRoomAtList: string
   personaPrompt: string
-  intentProfileId: number
   storeId: number
   storeName?: string
   storeAddress: string
@@ -647,7 +643,13 @@ export type UpdateReplyIntentConfigPayload = CreateReplyIntentConfigPayload & {
 
 export type CreateReplyIntentProfilePayload = Omit<
   ReplyIntentProfile,
-  "id" | "createdAt" | "updatedAt" | "createUserName" | "updateUserName"
+  | "id"
+  | "revision"
+  | "publishedAt"
+  | "createdAt"
+  | "updatedAt"
+  | "createUserName"
+  | "updateUserName"
 >
 
 export type UpdateReplyIntentProfilePayload = CreateReplyIntentProfilePayload & {
@@ -2350,7 +2352,6 @@ export function updateAIConfigSort(ids: number[]) {
 
 export type KnowledgeBase = {
   id: number
-  intentProfileId: number
   storeId: number
   datasetId: string
   datasetName: string
@@ -2383,7 +2384,6 @@ export type KnowledgeBase = {
 }
 
 export type CreateKnowledgeBasePayload = {
-  intentProfileId: number
   storeId?: number
   datasetId?: string
   datasetName?: string
@@ -2567,7 +2567,6 @@ export type KnowledgeResourceItem = {
 
 export type KnowledgeResourceGroup = {
   id: number
-  intentProfileId: number
   knowledgeBaseId: number
   wxWorkInstanceId: number
   sourceProvider: string

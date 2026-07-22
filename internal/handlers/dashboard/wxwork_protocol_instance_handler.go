@@ -637,6 +637,12 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance, op
 		ret.StoreCode = store.StoreCode
 		ret.StoreName = utils.RepairMojibakeText(store.Name)
 	}
+	if tenant := services.TenantService.Get(item.TenantID); tenant != nil {
+		profiles := services.TenantIndustryService.FindProfilesByIDs([]int64{tenant.IntentProfileID})
+		if profile := profiles[tenant.IntentProfileID]; profile != nil {
+			ret.IndustryName = profile.Name
+		}
+	}
 	if runtime := services.StoreStaffBindingService.ResolveForInstance(item); runtime.ManagedMode != "" {
 		ret.ManagedMode = runtime.ManagedMode
 		if runtime.BindingID > 0 {

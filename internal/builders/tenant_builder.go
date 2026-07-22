@@ -11,8 +11,9 @@ import (
 )
 
 type TenantBuildOptions struct {
-	Supervisor *models.User
-	Stats      *dto.TenantOperationalStats
+	Supervisor    *models.User
+	Stats         *dto.TenantOperationalStats
+	IntentProfile *models.ReplyIntentProfile
 }
 
 func BuildTenant(item *models.Tenant, options TenantBuildOptions) *response.TenantResponse {
@@ -21,6 +22,7 @@ func BuildTenant(item *models.Tenant, options TenantBuildOptions) *response.Tena
 	}
 	ret := &response.TenantResponse{
 		ID:                 item.ID,
+		IntentProfileID:    item.IntentProfileID,
 		TenantCode:         item.TenantCode,
 		LegalName:          item.LegalName,
 		ShortName:          item.ShortName,
@@ -39,6 +41,11 @@ func BuildTenant(item *models.Tenant, options TenantBuildOptions) *response.Tena
 		CreateUserName:     item.CreateUserName,
 		UpdateUserName:     item.UpdateUserName,
 	}
+	if options.IntentProfile != nil {
+		ret.IndustryCode = options.IntentProfile.IndustryCode
+		ret.IndustryName = options.IntentProfile.Name
+		ret.IndustryRevision = options.IntentProfile.Revision
+	}
 	if options.Supervisor != nil {
 		ret.SupervisorUserID = options.Supervisor.ID
 		ret.SupervisorUsername = options.Supervisor.Username
@@ -53,17 +60,29 @@ func BuildTenant(item *models.Tenant, options TenantBuildOptions) *response.Tena
 	return ret
 }
 
-func BuildTenantList(list []models.Tenant, supervisors map[int64]*models.User, stats map[int64]dto.TenantOperationalStats) []response.TenantResponse {
+func BuildTenantList(list []models.Tenant, supervisors map[int64]*models.User, stats map[int64]dto.TenantOperationalStats, profiles map[int64]*models.ReplyIntentProfile) []response.TenantResponse {
 	ret := make([]response.TenantResponse, 0, len(list))
 	for i := range list {
 		itemStats := stats[list[i].ID]
 		item := BuildTenant(&list[i], TenantBuildOptions{
-			Supervisor: supervisors[list[i].ID],
-			Stats:      &itemStats,
+			Supervisor:    supervisors[list[i].ID],
+			Stats:         &itemStats,
+			IntentProfile: profiles[list[i].IntentProfileID],
 		})
 		if item != nil {
 			ret = append(ret, *item)
 		}
+	}
+	return ret
+}
+
+func BuildTenantIndustryOptions(items []models.ReplyIntentProfile) []response.TenantIndustryOptionResponse {
+	ret := make([]response.TenantIndustryOptionResponse, 0, len(items))
+	for i := range items {
+		ret = append(ret, response.TenantIndustryOptionResponse{
+			ID: items[i].ID, Code: items[i].Code, IndustryCode: items[i].IndustryCode,
+			Name: items[i].Name, Revision: items[i].Revision,
+		})
 	}
 	return ret
 }

@@ -56,11 +56,21 @@ func (s *tenantService) CreateTenant(req request.CreateTenantRequest, operator *
 
 	result := &CreateTenantResult{InvitationCode: normalizeTenantInvitationCode(invitationCode)}
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if profile, err := repositories.ReplyIntentProfileRepository.GetForUpdate(ctx.Tx, normalized.IntentProfileID); err != nil {
+			return err
+		} else if profile == nil {
+			return errorsx.InvalidParam("所选行业不存在")
+		}
+		profile, err := TenantIndustryService.ValidateBindingProfileDB(ctx.Tx, normalized.IntentProfileID)
+		if err != nil {
+			return err
+		}
 		if existing := repositories.TenantRepository.GetByRegistration(ctx.Tx, normalized.RegistrationType, normalized.RegistrationNo); existing != nil {
 			return errorsx.InvalidParam("公司法定识别号已存在")
 		}
 		now := time.Now()
 		tenant := &models.Tenant{
+			IntentProfileID:    profile.ID,
 			TenantCode:         tenantCode,
 			LegalName:          normalized.LegalName,
 			ShortName:          normalized.ShortName,
@@ -78,6 +88,9 @@ func (s *tenantService) CreateTenant(req request.CreateTenantRequest, operator *
 			AuditFields:        utils.BuildAuditFields(operator),
 		}
 		if err := repositories.TenantRepository.Create(ctx.Tx, tenant); err != nil {
+			return err
+		}
+		if err := TenantIndustryService.InitializeTenantDB(ctx.Tx, tenant, operator); err != nil {
 			return err
 		}
 
@@ -174,8 +187,19 @@ func (s *tenantService) UpdateTenant(req request.UpdateTenantRequest, operator *
 		if existing := repositories.TenantRepository.GetByRegistration(ctx.Tx, normalized.RegistrationType, normalized.RegistrationNo); existing != nil && existing.ID != req.ID {
 			return errorsx.InvalidParam("公司法定识别号已存在")
 		}
+		if err := TenantIndustryService.ChangeTenantDB(
+			ctx.Tx,
+			current,
+			req.IntentProfileID,
+			req.ConfirmIndustryChange,
+			req.IndustryChangeReason,
+			operator,
+		); err != nil {
+			return err
+		}
 		now := time.Now()
 		return repositories.TenantRepository.Updates(ctx.Tx, req.ID, map[string]any{
+			"intent_profile_id":   req.IntentProfileID,
 			"legal_name":          normalized.LegalName,
 			"short_name":          normalized.ShortName,
 			"registration_type":   normalized.RegistrationType,
@@ -237,7 +261,8 @@ type normalizedTenantFields struct {
 
 type normalizedCreateTenantRequest struct {
 	normalizedTenantFields
-	Supervisor request.CreateTenantSupervisorRequest
+	IntentProfileID int64
+	Supervisor      request.CreateTenantSupervisorRequest
 }
 
 var unifiedSocialCreditCodePattern = regexp.MustCompile(`^[0-9ABCDEFGHJKLMNPQRTUWXY]{18}$`)
@@ -262,7 +287,14 @@ func normalizeCreateTenantRequest(req request.CreateTenantRequest) (*normalizedC
 	if !isPlainEmailAddress(supervisor.Email) {
 		return nil, errorsx.InvalidParam("公司主管邮箱格式不合法")
 	}
-	return &normalizedCreateTenantRequest{normalizedTenantFields: *fields, Supervisor: supervisor}, nil
+	if req.IntentProfileID <= 0 {
+		return nil, errorsx.InvalidParam("接入公司必须选择行业")
+	}
+	return &normalizedCreateTenantRequest{
+		normalizedTenantFields: *fields,
+		IntentProfileID:        req.IntentProfileID,
+		Supervisor:             supervisor,
+	}, nil
 }
 
 func normalizeTenantFields(legalName, shortName, registrationType, registrationNo, contactName, contactMobile, contactEmail, address, remark string) (*normalizedTenantFields, error) {

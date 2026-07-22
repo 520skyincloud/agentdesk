@@ -139,6 +139,17 @@ func (r *tenantRepository) Count(db *gorm.DB, cnd *sqls.Cnd) int64 {
 	return cnd.Count(db, &models.Tenant{})
 }
 
+func (r *tenantRepository) CountByIntentProfile(db *gorm.DB, intentProfileID int64) (int64, error) {
+	if db == nil || intentProfileID <= 0 {
+		return 0, nil
+	}
+	var count int64
+	err := db.Model(&models.Tenant{}).
+		Where("intent_profile_id = ? AND status <> ?", intentProfileID, enums.StatusDeleted).
+		Count(&count).Error
+	return count, err
+}
+
 func (r *tenantRepository) FindOperationalStats(db *gorm.DB, tenantIDs []int64) (map[int64]TenantOperationalStats, error) {
 	stats := make(map[int64]TenantOperationalStats, len(tenantIDs))
 	for _, tenantID := range tenantIDs {

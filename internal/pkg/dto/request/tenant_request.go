@@ -1,6 +1,7 @@
 package request
 
 type CreateTenantRequest struct {
+	IntentProfileID  int64                         `json:"intentProfileId"`
 	LegalName        string                        `json:"legalName"`
 	ShortName        string                        `json:"shortName"`
 	RegistrationType string                        `json:"registrationType"`
@@ -21,16 +22,19 @@ type CreateTenantSupervisorRequest struct {
 }
 
 type UpdateTenantRequest struct {
-	ID               int64  `json:"id"`
-	LegalName        string `json:"legalName"`
-	ShortName        string `json:"shortName"`
-	RegistrationType string `json:"registrationType"`
-	RegistrationNo   string `json:"registrationNo"`
-	ContactName      string `json:"contactName"`
-	ContactMobile    string `json:"contactMobile"`
-	ContactEmail     string `json:"contactEmail"`
-	Address          string `json:"address"`
-	Remark           string `json:"remark"`
+	ID                    int64  `json:"id"`
+	IntentProfileID       int64  `json:"intentProfileId"`
+	ConfirmIndustryChange bool   `json:"confirmIndustryChange"`
+	IndustryChangeReason  string `json:"industryChangeReason"`
+	LegalName             string `json:"legalName"`
+	ShortName             string `json:"shortName"`
+	RegistrationType      string `json:"registrationType"`
+	RegistrationNo        string `json:"registrationNo"`
+	ContactName           string `json:"contactName"`
+	ContactMobile         string `json:"contactMobile"`
+	ContactEmail          string `json:"contactEmail"`
+	Address               string `json:"address"`
+	Remark                string `json:"remark"`
 }
 
 type UpdateTenantStatusRequest struct {
