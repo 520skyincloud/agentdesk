@@ -45,6 +45,7 @@ async function loadNavigation() {
 const allPermissions = [
   "dashboard.view",
   "serviceAnalytics.view",
+  "billing.view",
   "conversationRecord.view",
   "storeWorkbench.view",
   "conversation.view",
@@ -86,12 +87,13 @@ test("platform accounts without a selected company only see platform-safe naviga
     hasActiveTenant: false,
   })
 
-  assert.deepEqual(sectionKeys(sections), ["nav.accessManagement", "nav.platformManagement"])
+  assert.deepEqual(sectionKeys(sections), ["nav.companyWorkspace", "nav.accessManagement", "nav.platformManagement"])
   assert.equal(itemUrls(sections).includes("/dashboard/users"), false)
   assert.equal(itemUrls(sections).includes("/dashboard/channels"), true)
   assert.equal(itemUrls(sections).includes("/dashboard/reply-intent-profiles"), true)
   assert.equal(itemUrls(sections).includes("/dashboard/reply-intent-configs"), true)
   assert.equal(itemUrls(sections).includes("/dashboard"), false)
+  assert.equal(itemUrls(sections).includes("/dashboard/billing-query"), true)
 })
 
 test("tenant accounts see company work areas but no platform controls", async () => {
@@ -115,6 +117,7 @@ test("tenant accounts see company work areas but no platform controls", async ()
   assert.equal(urls.includes("/dashboard/channels"), false)
   assert.equal(urls.includes("/dashboard/reply-intent-profiles"), false)
   assert.equal(urls.includes("/dashboard/reply-intent-configs"), false)
+  assert.equal(urls.includes("/dashboard/billing-query"), true)
 })
 
 test("platform accounts inside a company can use both company and platform navigation", async () => {
@@ -130,6 +133,7 @@ test("platform accounts inside a company can use both company and platform navig
   assert.equal(keys.includes("nav.platformManagement"), true)
   assert.equal(urls.includes("/dashboard/ai-configs"), true)
   assert.equal(urls.includes("/dashboard/agent-run-logs"), true)
+  assert.equal(urls.includes("/dashboard/billing-query"), true)
 })
 
 test("view permissions still control individual entries inside an allowed context", async () => {
@@ -251,4 +255,16 @@ test("tenant page guard follows the same navigation context contract", async () 
   assert.equal(dashboardPathRequiresTenant("/dashboard/reply-intent-profiles"), false)
   assert.equal(dashboardPathRequiresTenant("/dashboard/reply-intent-configs"), false)
   assert.equal(dashboardPathRequiresTenant("/dashboard/roles"), false)
+  assert.equal(dashboardPathRequiresTenant("/dashboard/billing-query"), false)
+})
+
+test("billing uses one permission-gated route across platform and tenant scopes", async () => {
+  const { filterDashboardNavForSession, dashboardPathIsAccessible } = await loadNavigation()
+  const platformContext = { isPlatformAccount: true, hasActiveTenant: false }
+  const tenantContext = { isPlatformAccount: false, hasActiveTenant: true }
+
+  assert.equal(itemUrls(filterDashboardNavForSession(["billing.view"], platformContext)).includes("/dashboard/billing-query"), true)
+  assert.equal(itemUrls(filterDashboardNavForSession(["billing.view"], tenantContext)).includes("/dashboard/billing-query"), true)
+  assert.equal(dashboardPathIsAccessible("/dashboard/billing-query", [], platformContext), false)
+  assert.equal(dashboardPathIsAccessible("/dashboard/billing-query", ["billing.view"], platformContext), true)
 })

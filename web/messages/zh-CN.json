@@ -2607,6 +2607,7 @@
     "conversationMonitor": "会话记录",
     "conversationRecords": "会话记录",
     "serviceAnalytics": "运营分析",
+    "modelBilling": "模型账单",
     "conversationDispatch": "客服组派单",
     "customers": "客户管理",
     "agentConfig": "客服配置",

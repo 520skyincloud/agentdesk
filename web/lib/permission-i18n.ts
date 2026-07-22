@@ -1,5 +1,6 @@
 const PERMISSION_ACTION_LABELS: Record<string, string> = {
   view: "View",
+  export: "Export",
   create: "Create",
   update: "Update",
   delete: "Delete",
@@ -45,6 +46,7 @@ const PERMISSION_RESOURCE_LABELS: Record<string, { singular: string; plural: str
   aiAgent: { singular: "reception strategy", plural: "reception strategies" },
   runtimeStrategy: { singular: "reception strategy", plural: "reception strategies" },
   aiConfig: { singular: "AI configuration", plural: "AI configurations" },
+  billing: { singular: "model billing record", plural: "model billing records" },
   knowledgeBase: { singular: "knowledge base", plural: "knowledge bases" },
   knowledgeDocument: { singular: "knowledge document", plural: "knowledge documents" },
   knowledgeFAQ: { singular: "knowledge FAQ", plural: "knowledge FAQs" },

@@ -32,6 +32,8 @@ test("localizes seeded permission display names to English", async () => {
   assert.equal(getPermissionDisplayName("storeWorkbench.view", "查看门店工作台", "en-US"), "View store workbench")
   assert.equal(getPermissionGroupName("storeWorkbench", "en-US"), "Store workbench")
   assert.equal(getPermissionGroupName("agentTeamSchedule", "en-US"), "Agent team schedules")
+  assert.equal(getPermissionDisplayName("billing.view", "查看门店模型账单与用量", "en-US"), "View model billing records")
+  assert.equal(getPermissionGroupName("billing", "en-US"), "Model billing records")
 })
 
 test("keeps original permission names for Chinese locale", async () => {
