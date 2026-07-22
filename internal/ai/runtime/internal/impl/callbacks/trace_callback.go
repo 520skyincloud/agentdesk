@@ -307,10 +307,21 @@ type ToolKnowledgeTraceData struct {
 }
 
 type GenerateTraceData struct {
-	Policy    string `json:"policy,omitempty"`
-	Status    string `json:"status,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	LatencyMs int64  `json:"latencyMs,omitempty"`
+	Policy     string                   `json:"policy,omitempty"`
+	Status     string                   `json:"status,omitempty"`
+	Reason     string                   `json:"reason,omitempty"`
+	LatencyMs  int64                    `json:"latencyMs,omitempty"`
+	TagContext ReplyTagContextTraceData `json:"tagContext,omitempty"`
+}
+
+type ReplyTagContextTraceData struct {
+	SchemaVersion string   `json:"schemaVersion,omitempty"`
+	Status        string   `json:"status,omitempty"`
+	Scenes        []string `json:"scenes,omitempty"`
+	TagIDs        []int64  `json:"tagIds,omitempty"`
+	Count         int      `json:"count,omitempty"`
+	RenderedChars int      `json:"renderedChars,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
 }
 
 type ValidateTraceData struct {

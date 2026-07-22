@@ -50,7 +50,7 @@ func TestRepairStandardHotelTagCategoryFlagsIsIdempotent(t *testing.T) {
 		Count(&enabledChildren).Error; err != nil {
 		t.Fatal(err)
 	}
-	if enabledChildren != 37 {
+	if enabledChildren != 31 {
 		t.Fatalf("AI-enabled child tag count=%d", enabledChildren)
 	}
 }

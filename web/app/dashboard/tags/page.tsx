@@ -52,10 +52,12 @@ import {
 } from "@/components/dashboard-page"
 import { OptionCombobox } from "@/components/option-combobox"
 import { EditDialog } from "./_components/edit"
+import { ConflictRules } from "./_components/conflict-rules"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
 import { Switch } from "@/components/ui/switch"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import {
   DropdownMenu,
@@ -74,6 +76,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { useI18n } from "@/i18n/provider"
+import { fetchCompanies } from "@/lib/api/company"
 
 type TagNode = TagTree & {
   children: TagNode[]
@@ -163,6 +166,8 @@ type SortableRowProps = {
   onToggleStatus: (item: TagNode) => void
   onDelete: (item: TagNode) => void
   actionLoadingId: number | null
+  conflictLabel: string
+  companyName: string
 }
 
 function SortableRow({
@@ -174,6 +179,8 @@ function SortableRow({
   onToggleStatus,
   onDelete,
   actionLoadingId,
+  conflictLabel,
+  companyName,
 }: SortableRowProps) {
   const t = useI18n()
   const {
@@ -243,6 +250,20 @@ function SortableRow({
         </div>
       </TableCell>
       <TableCell>
+        {item.companyId === 0 ? "全局" : companyName || `公司 ${item.companyId}`}
+      </TableCell>
+      <TableCell>
+        <Badge variant={item.systemDefined ? "default" : "outline"}>
+          {item.systemDefined ? "系统" : "自定义"}
+        </Badge>
+      </TableCell>
+      <TableCell>{item.parentId === 0 ? "-" : item.aiEnabled ? "开启" : "关闭"}</TableCell>
+      <TableCell>{item.parentId === 0 ? "-" : item.replyEnabled ? "开启" : "关闭"}</TableCell>
+      <TableCell>{item.applicableScene ? sceneLabel(item.applicableScene) : "-"}</TableCell>
+      <TableCell className="max-w-52 text-sm text-muted-foreground">
+        <span className="line-clamp-2">{conflictLabel || "-"}</span>
+      </TableCell>
+      <TableCell>
         <div className="flex items-center gap-3">
           <Switch
             checked={item.status === 0}
@@ -254,14 +275,6 @@ function SortableRow({
             {item.status === 0 ? t("status.ok") : t("status.disabled")}
           </Badge>
         </div>
-      </TableCell>
-      <TableCell>
-        <span className="line-clamp-2 text-sm text-muted-foreground">
-          {item.remark || "-"}
-        </span>
-      </TableCell>
-      <TableCell className="text-sm text-muted-foreground">
-        {item.createdAt}
       </TableCell>
       <TableCell className="text-right">
         <ButtonGroup className="ml-auto">
@@ -280,19 +293,37 @@ function SortableRow({
               <MoreHorizontalIcon />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-40 min-w-40">
-              <DropdownMenuItem
-                onClick={() => void onDelete(item)}
-                className="text-destructive focus:text-destructive"
-              >
-                <Trash2Icon />
-                {actionLoadingId === item.id ? t("tag.deleting") : t("tag.delete")}
-              </DropdownMenuItem>
+              {!item.systemDefined ? (
+                <DropdownMenuItem
+                  onClick={() => void onDelete(item)}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2Icon />
+                  {actionLoadingId === item.id ? t("tag.deleting") : t("tag.delete")}
+                </DropdownMenuItem>
+              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
         </ButtonGroup>
       </TableCell>
     </TableRow>
   )
+}
+
+function sceneLabel(scene: string) {
+  const labels: Record<string, string> = {
+    room_assignment: "房间安排",
+    room_selection: "房型选择",
+    arrival_service: "到店入住",
+    stay_service: "连住续住",
+    checkout_service: "退房服务",
+    invoice_service: "发票服务",
+    parking_service: "停车服务",
+    pet_service: "宠物服务",
+    room_service: "客房服务",
+    customer_profile: "客户画像",
+  }
+  return labels[scene] ?? scene
 }
 
 export default function DashboardTagsPage() {
@@ -308,6 +339,7 @@ export default function DashboardTagsPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<{ id: number; name: string } | null>(null)
   const [allTags, setAllTags] = useState<Tag[]>([])
+  const [companyNames, setCompanyNames] = useState<Map<number, string>>(new Map())
   const [tree, setTree] = useState<TagNode[]>([])
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
 
@@ -335,13 +367,24 @@ export default function DashboardTagsPage() {
   const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [treeData, listData] = await Promise.all([
+      const [treeData, listData, companyData] = await Promise.all([
         fetchTagsAll(),
         fetchTags({ page: 1, limit: 10000 }),
+        fetchCompanies({ page: 1, limit: 1000 }).catch(() => null),
       ])
       const nextTree = withDepth(treeData)
       setTree(nextTree)
       setAllTags(Array.isArray(listData.results) ? listData.results : [])
+      if (companyData) {
+        setCompanyNames(
+          new Map(
+            (Array.isArray(companyData.results) ? companyData.results : []).map((company) => [
+              company.id,
+              company.name,
+            ])
+          )
+        )
+      }
       setExpandedIds(collectParentIds(nextTree))
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("tag.loadFailed"))
@@ -478,6 +521,20 @@ export default function DashboardTagsPage() {
     [keyword, statusFilter, tree]
   )
 
+  const conflictLabels = useMemo(() => {
+    const result = new Map<number, string>()
+    allTags.forEach((tag) => {
+      if (!tag.conflictGroup) {
+        return
+      }
+      const names = allTags
+        .filter((candidate) => candidate.id !== tag.id && candidate.conflictGroup === tag.conflictGroup)
+        .map((candidate) => candidate.name)
+      result.set(tag.id, [...new Set(names)].join(" / "))
+    })
+    return result
+  }, [allTags])
+
   type FlatItem = TagNode & { hasChildren: boolean }
   const [flatList, setFlatList] = useState<FlatItem[]>([])
 
@@ -549,100 +606,121 @@ export default function DashboardTagsPage() {
   return (
     <>
       <DashboardPage>
-        <DashboardToolbar
-          actions={
-            <>
-              <Button variant="outline" onClick={() => void loadData()} disabled={loading}>
-                <RefreshCwIcon className={loading ? "animate-spin" : ""} />
-                {t("tag.refresh")}
-              </Button>
-              <Button variant="outline" onClick={expandAll} disabled={loading}>
-                {t("tag.expandAll")}
-              </Button>
-              <Button variant="outline" onClick={collapseAll} disabled={loading}>
-                {t("tag.collapseAll")}
-              </Button>
-              <Button onClick={openCreateDialog}>
-                <PlusIcon />
-                {t("tag.new")}
-              </Button>
-            </>
-          }
-        >
-          <div className="relative w-full sm:w-72">
-            <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={keywordInput}
-              onChange={(event) => setKeywordInput(event.target.value)}
-              onKeyDown={handleFilterKeyDown}
-              placeholder={t("tag.filterName")}
-              className="pl-9"
-            />
-          </div>
-          <div className="w-full sm:w-40">
-            <OptionCombobox
-              value={statusFilterInput}
-              options={listStatusOptions}
-              placeholder={t("status.all")}
-              searchPlaceholder={t("tag.searchStatus")}
-              emptyText={t("tag.emptyStatus")}
-              disabled={loading}
-              onChange={handleStatusFilterChange}
-            />
-          </div>
-          <Button variant="outline" onClick={applyFilters} disabled={loading}>
-            <SearchIcon />
-            {t("tag.query")}
-          </Button>
-        </DashboardToolbar>
-        <DashboardTableShell>
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handleDragEnd}
+        <Tabs defaultValue="catalog" className="gap-4">
+          <TabsList className="w-fit">
+            <TabsTrigger value="catalog">标签目录</TabsTrigger>
+            <TabsTrigger value="conflicts">互斥规则</TabsTrigger>
+          </TabsList>
+          <TabsContent value="catalog" className="space-y-4">
+            <DashboardToolbar
+              actions={
+                <>
+                  <Button variant="outline" onClick={() => void loadData()} disabled={loading}>
+                    <RefreshCwIcon className={loading ? "animate-spin" : ""} />
+                    {t("tag.refresh")}
+                  </Button>
+                  <Button variant="outline" onClick={expandAll} disabled={loading}>
+                    {t("tag.expandAll")}
+                  </Button>
+                  <Button variant="outline" onClick={collapseAll} disabled={loading}>
+                    {t("tag.collapseAll")}
+                  </Button>
+                  <Button onClick={openCreateDialog}>
+                    <PlusIcon />
+                    {t("tag.new")}
+                  </Button>
+                </>
+              }
             >
-              <Table>
-                <TableHeader className="bg-[#f6f9ff]">
-                  <TableRow>
-                    <TableHead className="w-14" />
-                    <TableHead className="min-w-[260px]">{t("tag.columnName")}</TableHead>
-                    <TableHead>{t("tag.columnStatus")}</TableHead>
-                    <TableHead>{t("tag.columnRemark")}</TableHead>
-                    <TableHead>{t("tag.columnCreatedAt")}</TableHead>
-                    <TableHead className="w-[92px] text-right">{t("tag.columnActions")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <SortableContext
-                    items={flatList.map((item) => item.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    {flatList.map((item) => (
-                      <SortableRow
-                        key={item.id}
-                        item={item}
-                        disabled={loading || sorting}
-                        expanded={expandedIds.has(item.id)}
-                        onToggleExpand={() => toggleExpanded(item.id)}
-                        onEdit={openEditDialog}
-                        onToggleStatus={handleToggleStatus}
-                        onDelete={handleDelete}
-                        actionLoadingId={actionLoadingId}
-                      />
-                    ))}
-                  </SortableContext>
-                  {loading || flatList.length === 0 ? (
-                    <DashboardTableStateRow
-                      colSpan={6}
-                      loading={loading}
-                      loadingText={t("tag.loading")}
-                      emptyText={t("tag.empty")}
-                    />
-                  ) : null}
-                </TableBody>
-              </Table>
-            </DndContext>
-        </DashboardTableShell>
+              <div className="relative w-full sm:w-72">
+                <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={keywordInput}
+                  onChange={(event) => setKeywordInput(event.target.value)}
+                  onKeyDown={handleFilterKeyDown}
+                  placeholder={t("tag.filterName")}
+                  className="pl-9"
+                />
+              </div>
+              <div className="w-full sm:w-40">
+                <OptionCombobox
+                  value={statusFilterInput}
+                  options={listStatusOptions}
+                  placeholder={t("status.all")}
+                  searchPlaceholder={t("tag.searchStatus")}
+                  emptyText={t("tag.emptyStatus")}
+                  disabled={loading}
+                  onChange={handleStatusFilterChange}
+                />
+              </div>
+              <Button variant="outline" onClick={applyFilters} disabled={loading}>
+                <SearchIcon />
+                {t("tag.query")}
+              </Button>
+            </DashboardToolbar>
+            <DashboardTableShell>
+              <div className="overflow-x-auto">
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleDragEnd}
+                >
+                  <Table className="min-w-[1320px]">
+                    <TableHeader className="bg-[#f6f9ff]">
+                      <TableRow>
+                        <TableHead className="w-14" />
+                        <TableHead className="min-w-[260px]">{t("tag.columnName")}</TableHead>
+                        <TableHead className="w-32">作用域</TableHead>
+                        <TableHead className="w-24">类型</TableHead>
+                        <TableHead className="w-24">AI 提取</TableHead>
+                        <TableHead className="w-24">回复参考</TableHead>
+                        <TableHead className="w-32">适用场景</TableHead>
+                        <TableHead className="min-w-48">互斥成员</TableHead>
+                        <TableHead>{t("tag.columnStatus")}</TableHead>
+                        <TableHead className="w-[92px] text-right">
+                          {t("tag.columnActions")}
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <SortableContext
+                        items={flatList.map((item) => item.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {flatList.map((item) => (
+                          <SortableRow
+                            key={item.id}
+                            item={item}
+                            disabled={loading || sorting}
+                            expanded={expandedIds.has(item.id)}
+                            onToggleExpand={() => toggleExpanded(item.id)}
+                            onEdit={openEditDialog}
+                            onToggleStatus={handleToggleStatus}
+                            onDelete={handleDelete}
+                            actionLoadingId={actionLoadingId}
+                            conflictLabel={conflictLabels.get(item.id) ?? ""}
+                            companyName={companyNames.get(item.companyId) ?? ""}
+                          />
+                        ))}
+                      </SortableContext>
+                      {loading || flatList.length === 0 ? (
+                        <DashboardTableStateRow
+                          colSpan={10}
+                          loading={loading}
+                          loadingText={t("tag.loading")}
+                          emptyText={t("tag.empty")}
+                        />
+                      ) : null}
+                    </TableBody>
+                  </Table>
+                </DndContext>
+              </div>
+            </DashboardTableShell>
+          </TabsContent>
+          <TabsContent value="conflicts">
+            <ConflictRules tags={allTags} onChanged={loadData} />
+          </TabsContent>
+        </Tabs>
       </DashboardPage>
       <EditDialog
         open={dialogOpen}

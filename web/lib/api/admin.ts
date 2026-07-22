@@ -91,12 +91,6 @@ export type AdminPermission = {
   sortNo: number
 }
 
-export type ConversationTag = {
-  id: number
-  name: string
-  color: string
-}
-
 export type ConversationParticipant = {
   id: number
   participantType: string
@@ -3176,6 +3170,7 @@ export type Tag = {
   replyEnabled: boolean
   applicableScene: string
   mergedIntoTagId: number
+  systemDefined: boolean
   remark: string
   sortNo: number
   status: number
@@ -3195,6 +3190,7 @@ export type TagTree = {
   replyEnabled: boolean
   applicableScene: string
   mergedIntoTagId: number
+  systemDefined: boolean
   remark: string
   sortNo: number
   status: number
@@ -3207,15 +3203,11 @@ export type CreateTagPayload = {
   companyId: number
   parentId: number
   name: string
-  semanticKey: string
   aliases: string
-  conflictGroup: string
   aiEnabled: boolean
   replyEnabled: boolean
   applicableScene: string
-  mergedIntoTagId: number
   remark: string
-  status: number
 }
 
 export type UpdateTagPayload = CreateTagPayload & {
@@ -3268,5 +3260,46 @@ export function updateTagStatus(id: number, status: number) {
   return request<void>("/api/dashboard/tag/update_status", {
     method: "POST",
     body: JSON.stringify({ id, status }),
+  })
+}
+
+export type TagConflictGroupMember = {
+  tagId: number
+  name: string
+  companyId: number
+  systemDefined: boolean
+}
+
+export type TagConflictGroup = {
+  groupKey: string
+  companyId: number
+  systemDefined: boolean
+  members: TagConflictGroupMember[]
+}
+
+export function fetchTagConflictGroups(companyId?: number) {
+  return request<TagConflictGroup[]>(
+    `/api/dashboard/tag/conflict_group/list${toQueryString({ companyId })}`
+  )
+}
+
+export function createTagConflictGroup(payload: { companyId: number; tagIds: number[] }) {
+  return request<{ groupKey: string }>("/api/dashboard/tag/conflict_group/create", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function assignTagConflictGroup(payload: { tagId: number; groupKey: string }) {
+  return request<void>("/api/dashboard/tag/conflict_group/assign", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteTagConflictGroup(payload: { companyId: number; groupKey: string }) {
+  return request<void>("/api/dashboard/tag/conflict_group/delete", {
+    method: "POST",
+    body: JSON.stringify(payload),
   })
 }

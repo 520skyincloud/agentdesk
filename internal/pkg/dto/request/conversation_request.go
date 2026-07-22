@@ -16,7 +16,6 @@ type ConversationListRequest struct {
 	ServiceMode       int    `json:"serviceMode"`
 	CurrentAssigneeID int64  `json:"currentAssigneeId"`
 	Keyword           string `json:"keyword"`
-	TagID             int64  `json:"tagId"`
 }
 
 type AssignConversationRequest struct {
@@ -48,16 +47,6 @@ type CloseConversationRequest struct {
 type ReadConversationRequest struct {
 	ConversationID int64 `json:"conversationId"`
 	MessageID      int64 `json:"messageId"`
-}
-
-type AddConversationTagRequest struct {
-	ConversationID int64 `json:"conversationId"`
-	TagID          int64 `json:"tagId"`
-}
-
-type RemoveConversationTagRequest struct {
-	ConversationID int64 `json:"conversationId"`
-	TagID          int64 `json:"tagId"`
 }
 
 type AddCustomerTagRequest struct {

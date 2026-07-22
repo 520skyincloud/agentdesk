@@ -53,6 +53,7 @@ type CommonTagSelectorProps = {
   selectedCountText?: (count: number) => string
   triggerText?: string
   pendingTagId?: number | null
+  selectLeavesOnly?: boolean
 }
 
 type MultipleTagSelectorProps = CommonTagSelectorProps & {
@@ -107,6 +108,7 @@ export function TagSelector(props: TagSelectorProps) {
     selectedCountText,
     triggerText,
     pendingTagId = null,
+    selectLeavesOnly = false,
   } = props
   const [query, setQuery] = useState("")
   const [collapsedIds, setCollapsedIds] = useState<Set<number>>(new Set())
@@ -141,6 +143,7 @@ export function TagSelector(props: TagSelectorProps) {
       replyEnabled: false,
       applicableScene: "",
       mergedIntoTagId: 0,
+      systemDefined: false,
       remark: "",
       sortNo: 0,
       status: 0,
@@ -183,6 +186,9 @@ export function TagSelector(props: TagSelectorProps) {
       : singleSelected?.path ?? placeholder)
 
   function handleSelect(tagId: number) {
+    if (selectLeavesOnly && flatTags.find((tag) => tag.id === tagId)?.parentId === 0) {
+      return
+    }
     if (props.mode === "single") {
       props.onChange(tagId)
       setOpen(false)
@@ -253,14 +259,17 @@ export function TagSelector(props: TagSelectorProps) {
                     const pending = pendingTagId === tag.id
                     const hasChildren = tag.children.length > 0
                     const collapsed = collapsedIds.has(tag.id)
+                    const selectionBlocked = selectLeavesOnly && tag.parentId === 0
 
                     return (
                       <CommandItem
                         key={tag.id}
                         value={tag.searchableText}
                         disabled={disabled || pendingTagId !== null}
+                        aria-disabled={selectionBlocked || undefined}
                         onSelect={() => handleSelect(tag.id)}
                         className={cn(
+                          selectionBlocked && "cursor-default text-muted-foreground",
                           props.mode === "single" &&
                             checked &&
                             "bg-[#eef5ff] text-primary"
@@ -297,7 +306,7 @@ export function TagSelector(props: TagSelectorProps) {
                           )}
                           {pending ? (
                             <Loader2Icon className="size-4 shrink-0 animate-spin" />
-                          ) : props.mode === "multiple" ? (
+                          ) : props.mode === "multiple" && !selectionBlocked ? (
                             <Checkbox
                               checked={checked}
                               tabIndex={-1}

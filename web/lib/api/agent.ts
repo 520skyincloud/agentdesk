@@ -1,4 +1,5 @@
 import { request } from "@/lib/api/client"
+import type { TagTree } from "@/lib/api/admin"
 
 export type Paging = {
   page: number
@@ -17,11 +18,6 @@ export type CursorResult<T> = {
   hasMore: boolean
 }
 
-export type AgentConversationTag = {
-  id: number
-  name: string
-}
-
 export type AgentCustomerTag = {
   id: number
   tagId: number
@@ -31,6 +27,22 @@ export type AgentCustomerTag = {
   evidenceCount: number
   manualProtected: boolean
   updatedAt?: string
+}
+
+export type CustomerTagChangeLog = {
+  id: number
+  action: "add" | "refresh" | "replace" | "remove" | string
+  oldTagId: number
+  oldTagName?: string
+  newTagId: number
+  newTagName?: string
+  evidenceMessageIds: number[]
+  source: "ai" | "manual" | "system" | string
+  confidence: number
+  operatorType: string
+  operatorId: number
+  operatorName: string
+  createdAt: string
 }
 
 export type AgentConversationParticipant = {
@@ -92,7 +104,6 @@ export type AgentConversation = {
   wxWorkExternalUserId?: string
   wxWorkEmployeeName?: string
   wxWorkEmployeeUserId?: string
-  tags?: AgentConversationTag[]
   customerTags?: AgentCustomerTag[]
   participants?: AgentConversationParticipant[]
 }
@@ -280,26 +291,6 @@ export function linkConversationToCustomer(payload: {
   })
 }
 
-export function addConversationTag(payload: {
-  conversationId: number
-  tagId: number
-}) {
-  return request<void>("/api/dashboard/conversation/add_tag", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function removeConversationTag(payload: {
-  conversationId: number
-  tagId: number
-}) {
-  return request<void>("/api/dashboard/conversation/remove_tag", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
 export function addCustomerTag(payload: {
   conversationId: number
   tagId: number
@@ -329,6 +320,26 @@ export function replaceCustomerTag(payload: {
     method: "POST",
     body: JSON.stringify(payload),
   })
+}
+
+export function fetchCustomerTagOptions(conversationId: number) {
+  const params = new URLSearchParams({ conversationId: String(conversationId) })
+  return request<TagTree[]>(`/api/dashboard/conversation/customer_tag/options?${params}`)
+}
+
+export function fetchCustomerTagChangeLogs(
+  conversationId: number,
+  page = 1,
+  limit = 20
+) {
+  const params = new URLSearchParams({
+    conversationId: String(conversationId),
+    page: String(page),
+    limit: String(limit),
+  })
+  return request<PageResult<CustomerTagChangeLog>>(
+    `/api/dashboard/conversation/customer_tag/change_log?${params}`
+  )
 }
 
 export function retryConversationEvolution(conversationId: number) {

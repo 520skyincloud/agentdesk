@@ -1,8 +1,11 @@
 package params
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -66,6 +69,96 @@ func ReadJSON(ctx *gin.Context, obj any) error {
 		return err
 	}
 	return validateStruct(obj)
+}
+
+// ReadStrictJSON rejects unknown fields and multiple JSON values. Use it for
+// contracts whose shape is part of the business safety boundary.
+func ReadStrictJSON(ctx *gin.Context, obj any) error {
+	if ctx == nil {
+		return errors.New("request context is nil")
+	}
+	const maxStrictJSONBodyBytes = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(ctx.Request.Body, maxStrictJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > maxStrictJSONBodyBytes {
+		return errors.New("request body is too large")
+	}
+	if err := rejectDuplicateJSONKeys(body); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(obj); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("request body must contain exactly one JSON value")
+		}
+		return err
+	}
+	return validateStruct(obj)
+}
+
+func rejectDuplicateJSONKeys(body []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := scanStrictJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return errors.New("request body must contain exactly one JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func scanStrictJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("invalid JSON object key")
+			}
+			if _, exists := seen[key]; exists {
+				return fmt.Errorf("duplicate JSON field %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := scanStrictJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			if err := scanStrictJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	default:
+		return errors.New("invalid JSON delimiter")
+	}
 }
 
 func validateStruct(obj any) error {

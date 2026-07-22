@@ -10,13 +10,10 @@ type CreateTagRequest struct {
 	CompanyID       int64  `json:"companyId"`
 	ParentID        int64  `json:"parentId"`
 	Name            string `json:"name"`
-	SemanticKey     string `json:"semanticKey"`
 	Aliases         string `json:"aliases"`
-	ConflictGroup   string `json:"conflictGroup"`
 	AIEnabled       bool   `json:"aiEnabled"`
 	ReplyEnabled    bool   `json:"replyEnabled"`
 	ApplicableScene string `json:"applicableScene"`
-	MergedIntoTagID int64  `json:"mergedIntoTagId"`
 	Remark          string `json:"remark"`
 }
 
@@ -32,4 +29,19 @@ type DeleteTagRequest struct {
 type UpdateTagStatusRequest struct {
 	ID     int64 `json:"id"`
 	Status int   `json:"status"`
+}
+
+type CreateTagConflictGroupRequest struct {
+	CompanyID int64   `json:"companyId"`
+	TagIDs    []int64 `json:"tagIds"`
+}
+
+type AssignTagConflictGroupRequest struct {
+	TagID    int64  `json:"tagId"`
+	GroupKey string `json:"groupKey"`
+}
+
+type DeleteTagConflictGroupRequest struct {
+	CompanyID int64  `json:"companyId"`
+	GroupKey  string `json:"groupKey"`
 }

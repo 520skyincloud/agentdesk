@@ -472,17 +472,18 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
           </div>
         ) : messages.length > 0 ? (
           messages.map((message) => (
-            <MessageItem
-              key={message.id}
-              message={message}
-              customerAvatar={conversation.customerAvatar}
-              onImageSettled={handleImageSettled}
-              canRecall={message.senderType === "agent" && message.senderId === currentUserId}
-              recalling={recallingMessageId === message.id}
-              onRecall={async (messageId) => {
-                await recallMessage(messageId);
-              }}
-            />
+            <div key={message.id} id={`message-${message.id}`} className="transition-shadow">
+              <MessageItem
+                message={message}
+                customerAvatar={conversation.customerAvatar}
+                onImageSettled={handleImageSettled}
+                canRecall={message.senderType === "agent" && message.senderId === currentUserId}
+                recalling={recallingMessageId === message.id}
+                onRecall={async (messageId) => {
+                  await recallMessage(messageId);
+                }}
+              />
+            </div>
           ))
         ) : (
           <div className="py-8 text-center text-sm text-muted-foreground">

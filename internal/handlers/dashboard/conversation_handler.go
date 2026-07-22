@@ -39,18 +39,6 @@ func ConversationAnyList(ctx *gin.Context) {
 		cnd.Where("customer_name LIKE ? OR last_message_summary LIKE ?", keywordLike, keywordLike)
 	}
 
-	// 标签搜索
-	if tagID, _ := params.GetInt64(ctx, "tagId"); tagID > 0 {
-		tagIDs := services.TagService.GetSelfAndDescendantIDs(tagID)
-		if len(tagIDs) == 0 {
-			httpx.WriteJSON(ctx, &web.PageResult{
-				Results: []response.ConversationResponse{},
-				Page:    paging,
-			})
-			return
-		}
-		cnd.Where("id IN (SELECT conversation_id FROM conversation_tag_rels WHERE tag_id IN (?))", tagIDs)
-	}
 	if agentTeamID, _ := params.GetInt64(ctx, "agentTeamId"); agentTeamID > 0 {
 		userIDs := services.AgentProfileService.GetUserIDsByTeamID(agentTeamID)
 		if len(userIDs) == 0 {
@@ -402,51 +390,14 @@ func ConversationPostUpload_attachment(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, builders.BuildAsset(item))
 }
 
-func ConversationPostAdd_tag(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-
-	req := request.AddConversationTagRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	if err := services.ConversationTagService.AddTag(req, operator); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, nil)
-}
-
-func ConversationPostRemove_tag(ctx *gin.Context) {
-	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-
-	req := request.RemoveConversationTagRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	if err := services.ConversationTagService.RemoveTag(req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, nil)
-}
-
 func ConversationPostCustomer_tag_add(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTag)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.AddCustomerTagRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
+	if err := params.ReadStrictJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -459,13 +410,13 @@ func ConversationPostCustomer_tag_add(ctx *gin.Context) {
 }
 
 func ConversationPostCustomer_tag_remove(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTag)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.RemoveCustomerTagRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
+	if err := params.ReadStrictJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -478,13 +429,13 @@ func ConversationPostCustomer_tag_remove(ctx *gin.Context) {
 }
 
 func ConversationPostCustomer_tag_replace(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTag)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.ReplaceCustomerTagRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
+	if err := params.ReadStrictJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -497,13 +448,13 @@ func ConversationPostCustomer_tag_replace(ctx *gin.Context) {
 }
 
 func ConversationPostEvolution_retry(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTag)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	req := request.RetryConversationEvolutionRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
+	if err := params.ReadStrictJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
@@ -512,6 +463,46 @@ func ConversationPostEvolution_retry(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationGetCustomer_tag_options(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	conversationID, ok := params.GetInt64(ctx, "conversationId")
+	if !ok || conversationID <= 0 {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("会话ID不能为空"))
+		return
+	}
+	list, err := services.CustomerTagService.ListOptionsForConversation(conversationID, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildTagTreeResponses(list))
+}
+
+func ConversationAnyCustomer_tag_change_log(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	conversationID, ok := params.GetInt64(ctx, "conversationId")
+	if !ok || conversationID <= 0 {
+		httpx.WriteJSON(ctx, web.JsonErrorMsg("会话ID不能为空"))
+		return
+	}
+	page := params.FormValueIntDefault(ctx, "page", 1)
+	limit := params.FormValueIntDefault(ctx, "limit", 20)
+	list, paging, err := services.CustomerTagService.ListChangeLogsForConversation(conversationID, page, limit, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, &web.PageResult{Results: list, Page: paging})
 }
 
 func publishCustomerTagChanged(conversationID int64) {

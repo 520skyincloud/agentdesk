@@ -147,6 +147,10 @@ func registerDashboardSessionRoutes(group *gin.RouterGroup) {
 }
 
 func registerDashboardTagRoutes(group *gin.RouterGroup) {
+	group.GET("/conflict_group/list", dashboard.TagGetConflict_group_list)
+	group.POST("/conflict_group/create", dashboard.TagPostConflict_group_create)
+	group.POST("/conflict_group/assign", dashboard.TagPostConflict_group_assign)
+	group.POST("/conflict_group/delete", dashboard.TagPostConflict_group_delete)
 	group.GET("/:id", dashboard.TagGetBy)
 	group.POST("/create", dashboard.TagPostCreate)
 	group.POST("/delete", dashboard.TagPostDelete)
@@ -165,10 +169,11 @@ func registerDashboardModelProfileTemplateRoutes(group *gin.RouterGroup) {
 
 func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.ConversationGetBy)
-	group.POST("/add_tag", dashboard.ConversationPostAdd_tag)
 	group.POST("/assign", dashboard.ConversationPostAssign)
 	group.POST("/close", dashboard.ConversationPostClose)
 	group.Any("/conversations", dashboard.ConversationAnyConversations)
+	group.GET("/customer_tag/options", dashboard.ConversationGetCustomer_tag_options)
+	group.Any("/customer_tag/change_log", dashboard.ConversationAnyCustomer_tag_change_log)
 	group.POST("/customer_tag/add", dashboard.ConversationPostCustomer_tag_add)
 	group.POST("/customer_tag/remove", dashboard.ConversationPostCustomer_tag_remove)
 	group.POST("/customer_tag/replace", dashboard.ConversationPostCustomer_tag_replace)
@@ -179,7 +184,6 @@ func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.Any("/message_list", dashboard.ConversationAnyMessage_list)
 	group.POST("/read", dashboard.ConversationPostRead)
 	group.POST("/recall_message", dashboard.ConversationPostRecall_message)
-	group.POST("/remove_tag", dashboard.ConversationPostRemove_tag)
 	group.POST("/send_message", dashboard.ConversationPostSend_message)
 	group.POST("/set_auto_handoff_enabled", dashboard.ConversationPostSet_auto_handoff_enabled)
 	group.POST("/transfer", dashboard.ConversationPostTransfer)

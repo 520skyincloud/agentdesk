@@ -54,12 +54,14 @@ type answerabilityGateInput struct {
 }
 
 type answerabilityGateState struct {
-	Input          answerabilityGateInput
-	KnowledgeIDs   []int64
-	RetrieveResult *retrievers.KnowledgeRetrieveResult
-	Decision       knowledgeGuardDecision
-	SkipGate       bool
-	ErrorMessage   string
+	Input               answerabilityGateInput
+	KnowledgeIDs        []int64
+	RetrieveResult      *retrievers.KnowledgeRetrieveResult
+	Decision            knowledgeGuardDecision
+	SkipGate            bool
+	AnswerabilityStatus string
+	AnswerabilityReason string
+	ErrorMessage        string
 }
 
 func NewKnowledgeAnswerabilityGate() *KnowledgeAnswerabilityGate {
@@ -872,7 +874,12 @@ func (s *answerabilityGateState) prependDecisionInstruction(instruction string) 
 }
 
 func (s *answerabilityGateState) recordAnswerabilityWithLatency(status string, reason string, err error, started time.Time) {
-	if s == nil || s.Input.Collector == nil {
+	if s == nil {
+		return
+	}
+	s.AnswerabilityStatus = strings.TrimSpace(status)
+	s.AnswerabilityReason = strings.TrimSpace(reason)
+	if s.Input.Collector == nil {
 		return
 	}
 	errorMessage := strings.TrimSpace(s.ErrorMessage)
@@ -880,8 +887,8 @@ func (s *answerabilityGateState) recordAnswerabilityWithLatency(status string, r
 		errorMessage = err.Error()
 	}
 	data := callbacks.AnswerabilityTraceData{
-		Status:       status,
-		Reason:       strings.TrimSpace(reason),
+		Status:       s.AnswerabilityStatus,
+		Reason:       s.AnswerabilityReason,
 		ErrorMessage: errorMessage,
 	}
 	if !started.IsZero() {

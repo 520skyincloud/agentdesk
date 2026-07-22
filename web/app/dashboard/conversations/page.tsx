@@ -43,6 +43,7 @@ import {
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { WxWorkProtocolInstanceManager } from "@/components/wxwork-protocol/wxwork-protocol-instance-manager";
 import { useAgentConversationRealtime } from "@/hooks/use-agent-conversation-realtime";
+import { useIsLgUp } from "@/hooks/use-lg-media";
 import { useI18n } from "@/i18n/provider";
 import {
   checkWxWorkProtocolLoginQrcode,
@@ -56,6 +57,7 @@ import {
   type WxWorkProtocolInstance,
   type WxWorkProtocolLoginStatus,
 } from "@/lib/api/admin";
+import { type AgentCustomerTag } from "@/lib/api/agent";
 import {
   agentConversationSelectors,
   useAgentConversationsStore,
@@ -77,8 +79,75 @@ function isUrgentManualAttention(conversation?: { manualAttention?: { level?: st
   return conversation?.manualAttention?.level === "urgent";
 }
 
+function customerTagSourceLabel(source: string) {
+  switch (source) {
+    case "manual":
+      return "人工";
+    case "ai":
+      return "AI";
+    default:
+      return "系统";
+  }
+}
+
+function CustomerTagSummary({
+  tags,
+  onOpen,
+}: {
+  tags: AgentCustomerTag[];
+  onOpen: () => void;
+}) {
+  const renderTags = (limit: number, showSource: boolean) => {
+    const visibleTags = tags.slice(0, limit);
+    const remaining = Math.max(0, tags.length - limit);
+
+    return (
+      <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+        {visibleTags.map((tag) => {
+          const name = repairMojibakeText(tag.name);
+          const label = showSource
+            ? `${name} · ${customerTagSourceLabel(tag.source)}`
+            : name;
+          return (
+            <span
+              key={tag.tagId}
+              title={label}
+              className="inline-flex h-5 min-w-0 max-w-24 flex-1 items-center justify-center rounded-md border border-[#dbe7f6] bg-[#f7f9fd] px-1.5 text-[10px] leading-none text-[#526072]"
+            >
+              <span className="truncate">{label}</span>
+            </span>
+          );
+        })}
+        {remaining > 0 ? (
+          <span className="inline-flex h-5 shrink-0 items-center rounded-md border border-[#dbe7f6] bg-white px-1.5 text-[10px] leading-none text-[#64748b]">
+            +{remaining}
+          </span>
+        ) : null}
+      </span>
+    );
+  };
+
+  return (
+    <button
+      type="button"
+      className="mt-0.5 flex h-5 min-w-0 max-w-full items-center overflow-hidden text-left"
+      aria-label="查看客户标签"
+      title="查看客户标签"
+      onClick={onOpen}
+    >
+      <span className="flex min-w-0 flex-1 lg:hidden">
+        {renderTags(2, false)}
+      </span>
+      <span className="hidden min-w-0 flex-1 lg:flex">
+        {renderTags(4, true)}
+      </span>
+    </button>
+  );
+}
+
 export default function ConversationsPage() {
   const t = useI18n();
+  const isLgUp = useIsLgUp();
   const conversation = useAgentConversationsStore(
     agentConversationSelectors.selectedConversation,
   );
@@ -156,6 +225,17 @@ export default function ConversationsPage() {
     setInstances((current) =>
       current.map((item) => (item.id === updated.id ? updated : item)),
     );
+  };
+
+  const openCustomerInfo = () => {
+    if (!conversation) {
+      return;
+    }
+    if (isLgUp) {
+      setDetailSheetOpen(true);
+      return;
+    }
+    setMobileCustomerSheetOpen(true);
   };
 
   const cleanupPendingScanLogin = async () => {
@@ -547,15 +627,22 @@ export default function ConversationsPage() {
                       id: conversation.customerId || conversation.id,
                     })}
                 </p>
-                <p className="mt-0.5 truncate text-xs text-[#7a8599]">
-                  <span>{t("conversation.channelNumber", { id: conversation.channelId || "-" })}</span>
-                  {conversation.customerId ? (
-                    <>
-                      <span className="text-muted-foreground/60"> / </span>
-                      <span>{t("conversation.linkedCustomer")}</span>
-                    </>
-                  ) : null}
-                </p>
+                {(conversation.customerTags ?? []).length > 0 ? (
+                  <CustomerTagSummary
+                    tags={conversation.customerTags ?? []}
+                    onOpen={openCustomerInfo}
+                  />
+                ) : (
+                  <p className="mt-0.5 truncate text-xs text-[#7a8599]">
+                    <span>{t("conversation.channelNumber", { id: conversation.channelId || "-" })}</span>
+                    {conversation.customerId ? (
+                      <>
+                        <span className="text-muted-foreground/60"> / </span>
+                        <span>{t("conversation.linkedCustomer")}</span>
+                      </>
+                    ) : null}
+                  </p>
+                )}
               </div>
             </>
           ) : (

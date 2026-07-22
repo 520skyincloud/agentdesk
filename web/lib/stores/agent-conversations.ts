@@ -93,10 +93,6 @@ type AgentConversationsStore = {
   setConversationFilter: (filter: AgentConversationFilterKey) => void
   setSelectedWxWorkInstanceId: (id: number | null) => void
   setRealtimeStatus: (status: RealtimeConnectionStatusValue) => void
-  setConversationTags: (
-    conversationId: number,
-    tags: AgentConversation["tags"]
-  ) => void
   refreshConversationDetail: (conversationId: number) => Promise<void>
   loadConversations: () => Promise<void>
   selectConversation: (conversationId: number) => Promise<void>
@@ -153,19 +149,6 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
 
   setRealtimeStatus: (status) => {
     set({ realtimeStatus: status })
-  },
-
-  setConversationTags: (conversationId, tags) => {
-    set((state) => ({
-      conversations: state.conversations.map((item) =>
-        item.id === conversationId
-          ? {
-              ...item,
-              tags: tags && tags.length > 0 ? tags : [],
-            }
-          : item
-      ),
-    }))
   },
 
   refreshConversationDetail: async (conversationId) => {

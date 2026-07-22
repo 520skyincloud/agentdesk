@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Controller, Resolver, useForm } from "react-hook-form";
+import { Controller, Resolver, useForm, useWatch } from "react-hook-form";
 import { z } from "zod/v4";
 
 import { ProjectDialog } from "@/components/project-dialog";
+import { OptionCombobox } from "@/components/option-combobox";
 import { TagSelector } from "@/components/tag-selector";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +25,7 @@ import {
   type Tag,
   type TagTree,
 } from "@/lib/api/admin";
+import { fetchCompanies, type AdminCompany } from "@/lib/api/company";
 import { useI18n } from "@/i18n/provider";
 
 type TagFormDialogProps = {
@@ -38,13 +40,10 @@ const emptyForm: EditForm = {
   companyId: 0,
   parentId: "0",
   name: "",
-  semanticKey: "",
   aliases: "",
-  conflictGroup: "",
-  aiEnabled: true,
+  aiEnabled: false,
   replyEnabled: false,
   applicableScene: "",
-  mergedIntoTagId: "0",
   remark: "",
 };
 
@@ -52,13 +51,10 @@ type EditForm = {
   companyId: number;
   parentId: string;
   name: string;
-  semanticKey: string;
   aliases: string;
-  conflictGroup: string;
   aiEnabled: boolean;
   replyEnabled: boolean;
   applicableScene: string;
-  mergedIntoTagId: string;
   remark: string;
 };
 
@@ -71,13 +67,10 @@ function buildForm(item: Tag | null): EditForm {
     companyId: item.companyId,
     parentId: String(item.parentId),
     name: item.name,
-    semanticKey: item.semanticKey,
     aliases: item.aliases,
-    conflictGroup: item.conflictGroup,
     aiEnabled: item.aiEnabled,
     replyEnabled: item.replyEnabled,
     applicableScene: item.applicableScene,
-    mergedIntoTagId: String(item.mergedIntoTagId || 0),
     remark: item.remark,
   };
 }
@@ -87,15 +80,11 @@ function buildPayload(form: EditForm): CreateTagPayload {
     companyId: form.companyId,
     parentId: Number(form.parentId),
     name: form.name.trim(),
-    semanticKey: form.semanticKey.trim(),
     aliases: form.aliases.trim(),
-    conflictGroup: form.conflictGroup.trim(),
     aiEnabled: form.aiEnabled,
     replyEnabled: form.replyEnabled,
     applicableScene: form.applicableScene.trim(),
-    mergedIntoTagId: Number(form.mergedIntoTagId),
     remark: form.remark.trim(),
-    status: 0,
   };
 }
 
@@ -141,21 +130,29 @@ function TagFormDialogBody({
   const formId = "tag-edit-form";
   const [loading, setLoading] = useState(false);
   const [parentTags, setParentTags] = useState<TagTree[]>([]);
+  const [parentOptionsLoaded, setParentOptionsLoaded] = useState(false);
+  const [companies, setCompanies] = useState<AdminCompany[]>([]);
+  const [systemDefined, setSystemDefined] = useState(false);
 
   const tagFormSchema = useMemo(
     () =>
       z.object({
         parentId: z.string(),
-        name: z.string().trim().min(1, t("tag.nameRequired")).max(5, "标签名称最多 5 个字"),
+        name: z.string().trim().min(1, t("tag.nameRequired")),
         companyId: z.number(),
-        semanticKey: z.string(),
         aliases: z.string(),
-        conflictGroup: z.string(),
         aiEnabled: z.boolean(),
         replyEnabled: z.boolean(),
         applicableScene: z.string(),
-        mergedIntoTagId: z.string(),
         remark: z.string(),
+      }).superRefine((value, context) => {
+        const maxLength = value.parentId === "0" ? 20 : 5;
+        if ([...value.name.trim()].length > maxLength) {
+          context.addIssue({ code: "custom", path: ["name"], message: `名称最多 ${maxLength} 个字` });
+        }
+        if (value.parentId !== "0" && value.replyEnabled && !value.applicableScene) {
+          context.addIssue({ code: "custom", path: ["applicableScene"], message: "请选择适用场景" });
+        }
       }),
     [t],
   );
@@ -172,30 +169,86 @@ function TagFormDialogBody({
     handleSubmit,
     reset,
     register,
+    setValue,
     formState: { errors },
   } = form;
+  const parentId = useWatch({ control, name: "parentId" });
+  const companyId = useWatch({ control, name: "companyId" });
+  const isCategory = parentId === "0";
+
+  const visibleParentTags = useMemo(
+    () => parentTags.filter((item) => item.companyId === 0 || item.companyId === companyId),
+    [companyId, parentTags],
+  );
+
+  const companyOptions = useMemo(
+    () => [
+      { value: "0", label: "全局" },
+      ...companies.map((company) => ({ value: String(company.id), label: company.name })),
+    ],
+    [companies],
+  );
+  const sceneOptions = useMemo(
+    () => [
+      { value: "", label: "不参与回复" },
+      { value: "room_assignment", label: "房间安排" },
+      { value: "room_selection", label: "房型选择" },
+      { value: "arrival_service", label: "到店入住" },
+      { value: "stay_service", label: "连住续住" },
+      { value: "checkout_service", label: "退房服务" },
+      { value: "invoice_service", label: "发票服务" },
+      { value: "parking_service", label: "停车服务" },
+      { value: "pet_service", label: "宠物服务" },
+      { value: "room_service", label: "客房服务" },
+      { value: "customer_profile", label: "客户画像" },
+    ],
+    [],
+  );
 
   useEffect(() => {
-    async function loadParentTags() {
+    async function loadFormOptions() {
       try {
-        const data = await fetchTagsAll();
-        setParentTags(Array.isArray(data) ? data : []);
+        const [tagData, companyData] = await Promise.all([
+          fetchTagsAll(),
+          fetchCompanies({ page: 1, limit: 1000, status: 0 }),
+        ]);
+        setParentTags(
+          (Array.isArray(tagData) ? tagData : [])
+            .filter((item) => item.parentId === 0)
+            .map((item) => ({ ...item, children: [] })),
+        );
+        setParentOptionsLoaded(true);
+        setCompanies(Array.isArray(companyData.results) ? companyData.results : []);
       } catch (error) {
-        console.error("Failed to load parent tags:", error);
+        console.error("Failed to load tag form options:", error);
       }
     }
-    void loadParentTags();
+    void loadFormOptions();
   }, [itemId]);
+
+  useEffect(() => {
+    const selectedParentId = Number(parentId);
+    if (
+      !parentOptionsLoaded ||
+      selectedParentId <= 0 ||
+      visibleParentTags.some((item) => item.id === selectedParentId)
+    ) {
+      return;
+    }
+    setValue("parentId", "0", { shouldValidate: true });
+  }, [parentId, parentOptionsLoaded, setValue, visibleParentTags]);
 
   useEffect(() => {
     async function loadDetail() {
       if (!itemId) {
+        setSystemDefined(false);
         reset(emptyForm);
         return;
       }
       setLoading(true);
       try {
         const data = await fetchTag(itemId);
+        setSystemDefined(data.systemDefined);
         reset(buildForm(data));
       } catch (error) {
         console.error("Failed to load tag:", error);
@@ -244,6 +297,27 @@ function TagFormDialogBody({
           onSubmit={handleSubmit(onFormSubmit)}
           className="space-y-4"
         >
+          <Field data-invalid={!!errors.companyId}>
+            <FieldLabel>作用域</FieldLabel>
+            <FieldContent>
+              <Controller
+                control={control}
+                name="companyId"
+                render={({ field }) => (
+                  <OptionCombobox
+                    value={String(field.value)}
+                    options={companyOptions}
+                    placeholder="选择作用域"
+                    searchPlaceholder="搜索公司"
+                    emptyText="暂无可用公司"
+                    disabled={saving || Boolean(itemId)}
+                    onChange={(value) => field.onChange(Number(value ?? 0))}
+                  />
+                )}
+              />
+              <FieldError errors={[errors.companyId]} />
+            </FieldContent>
+          </Field>
           <Field data-invalid={!!errors.parentId}>
             <FieldLabel htmlFor="tag-parent-id">{t("tag.parent")}</FieldLabel>
             <FieldContent>
@@ -255,12 +329,12 @@ function TagFormDialogBody({
                     mode="single"
                     value={Number(field.value)}
                     onChange={(value) => field.onChange(String(value))}
-                    tags={parentTags}
+                    tags={visibleParentTags}
                     placeholder={t("tag.rootParent")}
                     searchPlaceholder={t("tag.searchParent")}
                     emptyText={t("tag.emptyParent")}
-                    disabled={saving}
-                    rootOption={{ value: 0, label: t("tag.rootParent") }}
+                    disabled={saving || systemDefined}
+                    rootOption={!itemId || isCategory ? { value: 0, label: t("tag.rootParent") } : undefined}
                     excludeIds={itemId ? [itemId] : undefined}
                   />
                 )}
@@ -274,23 +348,12 @@ function TagFormDialogBody({
               <Input
                 id="tag-name"
                 placeholder={t("tag.namePlaceholder")}
-                maxLength={5}
+                maxLength={isCategory ? 20 : 5}
+                disabled={systemDefined}
                 aria-invalid={!!errors.name}
                 {...register("name")}
               />
               <FieldError errors={[errors.name]} />
-            </FieldContent>
-          </Field>
-          <Field data-invalid={!!errors.semanticKey}>
-            <FieldLabel htmlFor="tag-semantic-key">语义标识</FieldLabel>
-            <FieldContent>
-              <Input
-                id="tag-semantic-key"
-                placeholder="例如 room.quiet；留空自动生成"
-                aria-invalid={!!errors.semanticKey}
-                {...register("semanticKey")}
-              />
-              <FieldError errors={[errors.semanticKey]} />
             </FieldContent>
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -306,66 +369,36 @@ function TagFormDialogBody({
                 <FieldError errors={[errors.aliases]} />
               </FieldContent>
             </Field>
-            <Field data-invalid={!!errors.conflictGroup}>
-              <FieldLabel htmlFor="tag-conflict-group">互斥组</FieldLabel>
+            <Field data-invalid={!!errors.applicableScene}>
+              <FieldLabel>适用场景</FieldLabel>
               <FieldContent>
-                <Input
-                  id="tag-conflict-group"
-                  placeholder="同组标签可相互替换"
-                  aria-invalid={!!errors.conflictGroup}
-                  {...register("conflictGroup")}
+                <Controller
+                  control={control}
+                  name="applicableScene"
+                  render={({ field }) => (
+                    <OptionCombobox
+                      value={field.value}
+                      options={sceneOptions}
+                      placeholder="选择适用场景"
+                      searchPlaceholder="搜索场景"
+                      emptyText="暂无场景"
+                      disabled={saving || isCategory}
+                      onChange={(value) => field.onChange(value ?? "")}
+                    />
+                  )}
                 />
-                <FieldError errors={[errors.conflictGroup]} />
+                <FieldError errors={[errors.applicableScene]} />
               </FieldContent>
             </Field>
           </div>
-          <Field data-invalid={!!errors.applicableScene}>
-            <FieldLabel htmlFor="tag-applicable-scene">适用场景</FieldLabel>
-            <FieldContent>
-              <Input
-                id="tag-applicable-scene"
-                placeholder="例如 room_preference"
-                aria-invalid={!!errors.applicableScene}
-                {...register("applicableScene")}
-              />
-              <FieldError errors={[errors.applicableScene]} />
-            </FieldContent>
-          </Field>
-          <Field data-invalid={!!errors.mergedIntoTagId}>
-            <FieldLabel htmlFor="tag-merged-into">已合并到</FieldLabel>
-            <FieldContent>
-              <Controller
-                control={control}
-                name="mergedIntoTagId"
-                render={({ field }) => (
-                  <TagSelector
-                    mode="single"
-                    value={Number(field.value)}
-                    onChange={(value) => field.onChange(String(value))}
-                    tags={parentTags}
-                    placeholder="未合并"
-                    searchPlaceholder="搜索标准标签"
-                    emptyText="未找到标签"
-                    disabled={saving}
-                    rootOption={{ value: 0, label: "未合并" }}
-                    excludeIds={itemId ? [itemId] : undefined}
-                  />
-                )}
-              />
-              <FieldError errors={[errors.mergedIntoTagId]} />
-            </FieldContent>
-          </Field>
           <div className="grid gap-3 sm:grid-cols-2">
             <Controller
               control={control}
               name="aiEnabled"
               render={({ field }) => (
                 <label className="flex items-center justify-between gap-3 rounded-md border px-3 py-2.5 text-sm">
-                  <span>
-                    <span className="block font-medium">允许 AI 使用</span>
-                    <span className="block text-xs text-muted-foreground">标签模型只能选择已开启标签</span>
-                  </span>
-                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                  <span className="font-medium">AI 提取</span>
+                  <Switch checked={field.value} disabled={isCategory} onCheckedChange={field.onChange} />
                 </label>
               )}
             />
@@ -374,11 +407,8 @@ function TagFormDialogBody({
               name="replyEnabled"
               render={({ field }) => (
                 <label className="flex items-center justify-between gap-3 rounded-md border px-3 py-2.5 text-sm">
-                  <span>
-                    <span className="block font-medium">允许回复参考</span>
-                    <span className="block text-xs text-muted-foreground">总开关默认关闭，本轮不会注入回复</span>
-                  </span>
-                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                  <span className="font-medium">回复参考</span>
+                  <Switch checked={field.value} disabled={isCategory} onCheckedChange={field.onChange} />
                 </label>
               )}
             />

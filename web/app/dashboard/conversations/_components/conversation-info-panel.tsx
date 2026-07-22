@@ -1,7 +1,9 @@
 "use client";
 import {
   Building2Icon,
+  HistoryIcon,
   Link2Icon,
+  Loader2Icon,
   MailIcon,
   PencilIcon,
   PhoneIcon,
@@ -30,14 +32,23 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import {
   addCustomerTag,
+  fetchCustomerTagChangeLogs,
+  fetchCustomerTagOptions,
   removeCustomerTag,
   setAgentConversationAutoHandoffEnabled,
   type AgentConversation,
+  type CustomerTagChangeLog,
 } from "@/lib/api/agent";
-import { type TagTree, fetchTagsAll } from "@/lib/api/admin";
+import { type TagTree } from "@/lib/api/admin";
 import { updateCompany, type AdminCompany } from "@/lib/api/company";
 import { fetchTickets, type TicketItem } from "@/lib/api/ticket";
 import {
@@ -54,12 +65,9 @@ import {
   Gender,
 } from "@/lib/generated/enums";
 import { useAgentConversationsStore } from "@/lib/stores/agent-conversations";
+import { flattenTagTree } from "@/lib/tag-tree";
 import { cn, formatDateTime, repairMojibakeText } from "@/lib/utils";
 import { useI18n } from "@/i18n/provider";
-import {
-  ConversationTagBadges,
-  ConversationTagPicker,
-} from "./conversation-tag-picker";
 import { TicketStatusBadge } from "../../tickets/_components/ticket-status-badge";
 
 function contactTypeLabel(
@@ -258,74 +266,7 @@ export function ConversationInfoPanel({
   );
 }
 
-function ConversationTagSection({
-  conversation,
-}: {
-  conversation: AgentConversation;
-}) {
-  const t = useI18n();
-  const setConversationTags = useAgentConversationsStore(
-    (state) => state.setConversationTags,
-  );
-  const [availableTags, setAvailableTags] = useState<TagTree[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadTags() {
-      setLoading(true);
-      try {
-        const data = await fetchTagsAll();
-        if (!cancelled) {
-          setAvailableTags(Array.isArray(data) ? data : []);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          toast.error(error instanceof Error ? error.message : t("conversation.loadTagsFailed"));
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    void loadTags();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [t]);
-
-  return (
-    <section className="space-y-2 border-t pt-2">
-      <SectionHeading
-        action={
-          <ConversationTagPicker
-            conversation={conversation}
-            availableTags={availableTags}
-            loading={loading}
-            onTagsChange={(tags) => {
-              setConversationTags(conversation.id, tags);
-            }}
-          />
-        }
-      >
-        {t("conversation.conversationTags")}
-      </SectionHeading>
-      <ConversationTagBadges
-        tags={conversation.tags}
-        availableTags={availableTags}
-      />
-      {!conversation.tags || conversation.tags.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{t("conversation.noConversationTags")}</p>
-      ) : null}
-    </section>
-  );
-}
-
-function CustomerLongTermTagSection({
+function CustomerTagSection({
   conversation,
 }: {
   conversation: AgentConversation;
@@ -335,12 +276,19 @@ function CustomerLongTermTagSection({
   );
   const [availableTags, setAvailableTags] = useState<TagTree[]>([]);
   const [pendingTagId, setPendingTagId] = useState<number | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [history, setHistory] = useState<CustomerTagChangeLog[]>([]);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [locatingMessageId, setLocatingMessageId] = useState<number | null>(null);
   const currentTags = conversation.customerTags ?? [];
   const selectedTagIds = currentTags.map((item) => item.tagId);
 
   useEffect(() => {
     let cancelled = false;
-    void fetchTagsAll()
+    void fetchCustomerTagOptions(conversation.id)
       .then((data) => {
         if (!cancelled) {
           setAvailableTags(Array.isArray(data) ? data : []);
@@ -354,7 +302,113 @@ function CustomerLongTermTagSection({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [conversation.id]);
+
+  useEffect(() => {
+    if (!historyOpen) {
+      return;
+    }
+    let cancelled = false;
+    setHistoryLoading(true);
+    setHistoryLoadingMore(false);
+    setHistory([]);
+    setHistoryPage(1);
+    setHistoryTotal(0);
+    void fetchCustomerTagChangeLogs(conversation.id)
+      .then((data) => {
+        if (!cancelled) {
+          setHistory(Array.isArray(data.results) ? data.results : []);
+          setHistoryPage(data.page?.page ?? 1);
+          setHistoryTotal(data.page?.total ?? data.results.length);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          toast.error(error instanceof Error ? error.message : "加载标签历史失败");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setHistoryLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversation.id, historyOpen]);
+
+  async function loadMoreHistory() {
+    if (historyLoadingMore || history.length >= historyTotal) {
+      return;
+    }
+    setHistoryLoadingMore(true);
+    try {
+      const data = await fetchCustomerTagChangeLogs(conversation.id, historyPage + 1);
+      const incoming = Array.isArray(data.results) ? data.results : [];
+      setHistory((current) => {
+        const existing = new Set(current.map((item) => item.id));
+        return [...current, ...incoming.filter((item) => !existing.has(item.id))];
+      });
+      setHistoryPage(data.page?.page ?? historyPage + 1);
+      setHistoryTotal(data.page?.total ?? historyTotal);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "加载更多标签历史失败");
+    } finally {
+      setHistoryLoadingMore(false);
+    }
+  }
+
+  async function locateEvidenceMessage(messageId: number) {
+    if (locatingMessageId !== null) {
+      return;
+    }
+    setLocatingMessageId(messageId);
+    try {
+      let target = document.getElementById(`message-${messageId}`);
+      while (!target) {
+        const state = useAgentConversationsStore.getState();
+        if (state.selectedConversationId !== conversation.id) {
+          toast.error("当前会话已切换，无法定位证据消息");
+          return;
+        }
+        if (state.messages.some((message) => message.id === messageId)) {
+          for (let attempt = 0; attempt < 3 && !target; attempt += 1) {
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+            target = document.getElementById(`message-${messageId}`);
+          }
+          break;
+        }
+        if (!state.messagesHasMore) {
+          break;
+        }
+        const previousCursor = state.messagesCursor;
+        const previousCount = state.messages.length;
+        await state.loadOlderMessages();
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        const next = useAgentConversationsStore.getState();
+        if (next.messagesCursor === previousCursor && next.messages.length === previousCount) {
+          break;
+        }
+        target = document.getElementById(`message-${messageId}`);
+      }
+      if (!target) {
+        toast.error("未在当前会话历史中找到该证据消息");
+        return;
+      }
+      setHistoryOpen(false);
+      requestAnimationFrame(() => {
+        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+        target?.classList.add("ring-2", "ring-primary", "ring-offset-2");
+        window.setTimeout(() => {
+          target?.classList.remove("ring-2", "ring-primary", "ring-offset-2");
+        }, 1800);
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "加载证据消息失败");
+    } finally {
+      setLocatingMessageId(null);
+    }
+  }
 
   async function updateTags(nextTagIds: number[]) {
     if (pendingTagId !== null) {
@@ -368,7 +422,16 @@ function CustomerLongTermTagSection({
       return;
     }
     const removing = current.has(tagId);
-    if (!removing && selectedTagIds.length >= 20) {
+    const flatOptions = flattenTagTree(availableTags);
+    const nextTag = flatOptions.find((item) => item.id === tagId);
+    const replacesConflict = Boolean(
+      nextTag?.conflictGroup &&
+      currentTags.some((item) => {
+        const currentOption = flatOptions.find((option) => option.id === item.tagId);
+        return currentOption?.conflictGroup === nextTag.conflictGroup;
+      })
+    );
+    if (!removing && selectedTagIds.length >= 20 && !replacesConflict) {
       toast.error("每位客户最多保留 20 个有效标签");
       return;
     }
@@ -380,9 +443,9 @@ function CustomerLongTermTagSection({
         await addCustomerTag({ conversationId: conversation.id, tagId });
       }
       await refreshConversationDetail(conversation.id);
-      toast.success(removing ? "已移除客户长期标签" : "已添加客户长期标签");
+      toast.success(removing ? "已移除客户标签" : "已添加客户标签");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "更新客户长期标签失败");
+      toast.error(error instanceof Error ? error.message : "更新客户标签失败");
     } finally {
       setPendingTagId(null);
     }
@@ -392,27 +455,39 @@ function CustomerLongTermTagSection({
     <section className="space-y-2 border-t pt-2">
       <SectionHeading
         action={
-          <TagSelector
-            mode="multiple"
-            value={selectedTagIds}
-            onChange={(value) => void updateTags(value)}
-            tags={availableTags}
-            pendingTagId={pendingTagId}
-            placeholder="编辑"
-            triggerText="编辑"
-            searchPlaceholder="搜索标准标签"
-            loadingText="加载标签中..."
-            emptyText="暂无可用标签"
-            align="end"
-            showSelectedBadges={false}
-            triggerVariant="ghost"
-            triggerSize="sm"
-            triggerClassName="h-7 w-auto shrink-0 justify-start gap-1 px-2 text-xs"
-            contentClassName="w-72"
-          />
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              title="来源历史"
+              onClick={() => setHistoryOpen(true)}
+            >
+              <HistoryIcon />
+            </Button>
+            <TagSelector
+              mode="multiple"
+              value={selectedTagIds}
+              onChange={(value) => void updateTags(value)}
+              tags={availableTags}
+              pendingTagId={pendingTagId}
+              selectLeavesOnly
+              placeholder="编辑"
+              triggerText="编辑"
+              searchPlaceholder="搜索客户标签"
+              loadingText="加载标签中..."
+              emptyText="暂无可用标签"
+              align="end"
+              showSelectedBadges={false}
+              triggerVariant="ghost"
+              triggerSize="sm"
+              triggerClassName="h-7 w-auto shrink-0 justify-start gap-1 px-2 text-xs"
+              contentClassName="w-72"
+            />
+          </div>
         }
       >
-        客户长期标签
+        客户标签
       </SectionHeading>
       {currentTags.length > 0 ? (
         <div className="flex flex-wrap gap-1.5">
@@ -423,6 +498,9 @@ function CustomerLongTermTagSection({
               title={item.source === "manual" ? "人工确认" : "24 小时知识进化"}
             >
               {item.name}
+              <span className="text-[10px] text-muted-foreground">
+                {item.source === "manual" ? "人工" : "AI"}
+              </span>
               <button
                 type="button"
                 className="flex size-4 items-center justify-center text-muted-foreground hover:text-destructive"
@@ -438,10 +516,88 @@ function CustomerLongTermTagSection({
           ))}
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">暂无客户长期标签</p>
+        <p className="text-sm text-muted-foreground">暂无客户标签</p>
       )}
+      <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+        <SheetContent className="w-full sm:max-w-md">
+          <SheetHeader className="border-b">
+            <SheetTitle>客户标签来源历史</SheetTitle>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+            {historyLoading ? (
+              <p className="py-10 text-center text-muted-foreground">加载中...</p>
+            ) : history.length === 0 ? (
+              <p className="py-10 text-center text-muted-foreground">暂无标签历史</p>
+            ) : (
+              <div className="divide-y">
+                {history.map((item) => (
+                  <div key={item.id} className="space-y-2 py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">{customerTagChangeLabel(item)}</span>
+                      <span className="text-xs text-muted-foreground">{formatDateTime(item.createdAt)}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                      <span>{item.source === "manual" ? "人工" : item.source === "ai" ? "AI" : "系统"}</span>
+                      {item.operatorName ? <span>· {item.operatorName}</span> : null}
+                      {item.confidence > 0 ? <span>· 置信度 {Math.round(item.confidence * 100)}%</span> : null}
+                    </div>
+                    {(item.evidenceMessageIds ?? []).length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {(item.evidenceMessageIds ?? []).map((messageId) => (
+                          <Button
+                            key={messageId}
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            disabled={locatingMessageId !== null}
+                            onClick={() => void locateEvidenceMessage(messageId)}
+                          >
+                            {locatingMessageId === messageId ? (
+                              <Loader2Icon className="animate-spin" />
+                            ) : null}
+                            消息 #{messageId}
+                          </Button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+                {history.length < historyTotal ? (
+                  <div className="flex justify-center py-4">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={historyLoadingMore}
+                      onClick={() => void loadMoreHistory()}
+                    >
+                      {historyLoadingMore ? <Loader2Icon className="animate-spin" /> : null}
+                      加载更多
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
     </section>
   );
+}
+
+function customerTagChangeLabel(item: CustomerTagChangeLog) {
+  switch (item.action) {
+    case "add":
+      return `新增 ${item.newTagName || `标签 ${item.newTagId}`}`;
+    case "refresh":
+      return `刷新 ${item.newTagName || item.oldTagName || `标签 ${item.newTagId || item.oldTagId}`}`;
+    case "replace":
+      return `${item.oldTagName || `标签 ${item.oldTagId}`} → ${item.newTagName || `标签 ${item.newTagId}`}`;
+    case "remove":
+      return `移除 ${item.oldTagName || `标签 ${item.oldTagId}`}`;
+    default:
+      return item.action;
+  }
 }
 
 function CustomerBody({ conversation }: { conversation: AgentConversation }) {
@@ -452,7 +608,6 @@ function CustomerBody({ conversation }: { conversation: AgentConversation }) {
       <div className="space-y-4">
         <SmartReplySection conversation={conversation} />
         <UnlinkedCustomerEmpty conversation={conversation} />
-        <ConversationTagSection conversation={conversation} />
       </div>
     );
   }
@@ -518,7 +673,6 @@ function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProp
     return (
       <div className="space-y-4">
         <MissingCustomerEmpty conversation={conversation} />
-        <ConversationTagSection conversation={conversation} />
       </div>
     );
   }
@@ -698,9 +852,8 @@ function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProp
 
       <RelatedTicketsSection conversation={conversation} />
 
-      <CustomerLongTermTagSection conversation={conversation} />
+      <CustomerTagSection conversation={conversation} />
 
-      <ConversationTagSection conversation={conversation} />
 
       <CustomerFormDialog
         open={customerEditOpen}

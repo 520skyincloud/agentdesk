@@ -47,7 +47,6 @@ var Models = []any{
 	&ConversationEvolutionRun{},
 	&MessageSyncLog{},
 	&ConversationAssignment{},
-	&ConversationTag{},
 	&QuickReply{},
 	&ConversationEventLog{},
 	&Ticket{},
@@ -406,10 +405,11 @@ type Tag struct {
 	SemanticKey     string       `gorm:"type:varchar(128);not null;default:'';index"`
 	Aliases         string       `gorm:"type:text"`
 	ConflictGroup   string       `gorm:"type:varchar(80);not null;default:'';index"`
-	AIEnabled       bool         `gorm:"not null;default:true;index"`
+	AIEnabled       bool         `gorm:"not null;default:false;index"`
 	ReplyEnabled    bool         `gorm:"not null;default:false;index"`
 	ApplicableScene string       `gorm:"type:varchar(255);not null;default:''"`
 	MergedIntoTagID int64        `gorm:"type:bigint;not null;default:0;index"`
+	SystemDefined   bool         `gorm:"not null;default:false;index"`
 	Remark          string       `gorm:"type:text;"`
 	SortNo          int          `gorm:"type:int;not null;default:0"`
 	Status          enums.Status `gorm:"type:int;not null;default:0"`
@@ -748,14 +748,6 @@ type ConversationAssignment struct {
 	CreatedAt      time.Time                `gorm:"type:datetime;not null;index"`
 	FinishedAt     *time.Time               `gorm:"type:datetime"`
 	OperatorID     int64                    `gorm:"type:bigint;not null;default:0;index"`
-}
-
-// ConversationTag 会话标签关联
-type ConversationTag struct {
-	ID             int64 `gorm:"primaryKey;autoIncrement"`
-	ConversationID int64 `gorm:"type:bigint;not null;index;uniqueIndex:uk_conversation_tag"`
-	TagID          int64 `gorm:"type:bigint;not null;index;uniqueIndex:uk_conversation_tag"`
-	AuditFields
 }
 
 // QuickReply 快捷回复。

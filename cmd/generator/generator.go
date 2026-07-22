@@ -42,7 +42,6 @@ func main() {
 		codegen.GetGenerateStruct(&models.WxWorkKFMessageRef{}),
 		codegen.GetGenerateStruct(&models.ChannelMessageOutbox{}),
 		codegen.GetGenerateStruct(&models.ConversationAssignment{}),
-		codegen.GetGenerateStruct(&models.ConversationTag{}),
 		codegen.GetGenerateStruct(&models.QuickReply{}),
 		codegen.GetGenerateStruct(&models.AIAgent{}),
 		codegen.GetGenerateStruct(&models.Channel{}),

@@ -2,11 +2,6 @@ package response
 
 import "agent-desk/internal/pkg/enums"
 
-type ConversationTagResponse struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
-}
-
 type CustomerTagResponse struct {
 	ID              int64   `json:"id"`
 	TagID           int64   `json:"tagId"`
@@ -16,6 +11,22 @@ type CustomerTagResponse struct {
 	EvidenceCount   int     `json:"evidenceCount"`
 	ManualProtected bool    `json:"manualProtected"`
 	UpdatedAt       string  `json:"updatedAt,omitempty"`
+}
+
+type CustomerTagChangeLogResponse struct {
+	ID                 int64   `json:"id"`
+	Action             string  `json:"action"`
+	OldTagID           int64   `json:"oldTagId"`
+	OldTagName         string  `json:"oldTagName,omitempty"`
+	NewTagID           int64   `json:"newTagId"`
+	NewTagName         string  `json:"newTagName,omitempty"`
+	EvidenceMessageIDs []int64 `json:"evidenceMessageIds"`
+	Source             string  `json:"source"`
+	Confidence         float64 `json:"confidence"`
+	OperatorType       string  `json:"operatorType"`
+	OperatorID         int64   `json:"operatorId"`
+	OperatorName       string  `json:"operatorName"`
+	CreatedAt          string  `json:"createdAt"`
 }
 
 type ConversationParticipantResponse struct {

@@ -568,13 +568,20 @@ func TestAllowedCustomerTagsExcludeCategoryNodes(t *testing.T) {
 func TestCustomerTagAIRespectsManualProtection(t *testing.T) {
 	db := setupConversationEvolutionTestDB(t)
 	now := time.Now()
+	parent := &models.Tag{
+		Name: "房间偏好", SemanticKey: "category.room_preference", Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(parent).Error; err != nil {
+		t.Fatal(err)
+	}
 	oldTag := &models.Tag{
-		Name: "喜静", SemanticKey: "room.quiet", ConflictGroup: "room.noise",
+		ParentID: parent.ID, Name: "喜静", SemanticKey: "room.quiet", ConflictGroup: "room.noise",
 		AIEnabled: true, Status: enums.StatusOk,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	newTag := &models.Tag{
-		Name: "喜热闹", SemanticKey: "room.lively", ConflictGroup: "room.noise",
+		ParentID: parent.ID, Name: "喜热闹", SemanticKey: "room.lively", ConflictGroup: "room.noise",
 		AIEnabled: true, Status: enums.StatusOk,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}

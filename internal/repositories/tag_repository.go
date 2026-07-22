@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 
 	"agent-desk/internal/pkg/httpx/params"
 
@@ -37,6 +38,14 @@ func (r *tagRepository) Take(db *gorm.DB, where ...interface{}) *models.Tag {
 func (r *tagRepository) Find(db *gorm.DB, cnd *sqls.Cnd) (list []models.Tag) {
 	cnd.Find(db, &list)
 	return
+}
+
+func (r *tagRepository) FindEffectiveLeavesByCompany(db *gorm.DB, companyID int64) ([]models.Tag, error) {
+	var list []models.Tag
+	err := db.Where("status = ? AND parent_id <> ? AND merged_into_tag_id = ?", enums.StatusOk, 0, 0).
+		Where("company_id = 0 OR company_id = ?", companyID).
+		Order("sort_no ASC, id ASC").Find(&list).Error
+	return list, err
 }
 
 func (r *tagRepository) FindOne(db *gorm.DB, cnd *sqls.Cnd) *models.Tag {
@@ -97,6 +106,6 @@ func (r *tagRepository) UpdateColumn(db *gorm.DB, id int64, name string, value i
 	return
 }
 
-func (r *tagRepository) Delete(db *gorm.DB, id int64) {
-	db.Delete(&models.Tag{}, "id = ?", id)
+func (r *tagRepository) Delete(db *gorm.DB, id int64) error {
+	return db.Delete(&models.Tag{}, "id = ?", id).Error
 }

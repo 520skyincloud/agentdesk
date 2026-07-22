@@ -63,6 +63,12 @@ func (r *customerTagRelationRepository) FindActiveByRelationID(db *gorm.DB, rela
 	return list
 }
 
+func (r *customerTagRelationRepository) FindActiveByRelationIDWithError(db *gorm.DB, relationID int64) ([]models.CustomerTagRelation, error) {
+	var list []models.CustomerTagRelation
+	err := db.Where("store_customer_relation_id = ? AND relation_status = ?", relationID, "active").Order("id ASC").Find(&list).Error
+	return list, err
+}
+
 func (r *customerTagRelationRepository) CountActiveByRelationID(db *gorm.DB, relationID int64) int64 {
 	return sqls.NewCnd().Eq("store_customer_relation_id", relationID).Eq("relation_status", "active").Count(db, &models.CustomerTagRelation{})
 }
@@ -77,6 +83,25 @@ func (r *customerTagRelationRepository) Updates(db *gorm.DB, id int64, columns m
 
 func (r *customerTagChangeLogRepository) Create(db *gorm.DB, item *models.CustomerTagChangeLog) error {
 	return db.Create(item).Error
+}
+
+func (r *customerTagChangeLogRepository) FindPageByRelationID(db *gorm.DB, relationID int64, page, limit int) ([]models.CustomerTagChangeLog, *sqls.Paging, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	var total int64
+	query := db.Model(&models.CustomerTagChangeLog{}).Where("store_customer_relation_id = ?", relationID)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, nil, err
+	}
+	var list []models.CustomerTagChangeLog
+	if err := query.Order("id DESC").Offset((page - 1) * limit).Limit(limit).Find(&list).Error; err != nil {
+		return nil, nil, err
+	}
+	return list, &sqls.Paging{Page: page, Limit: limit, Total: total}, nil
 }
 
 func (r *conversationEvolutionStateRepository) GetByConversationSession(db *gorm.DB, conversationID int64, sessionNo int) *models.ConversationEvolutionState {

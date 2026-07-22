@@ -63,7 +63,8 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		}
 		return messages
 	}
-	appendRetrievedContext(ctx, req, plan.Intent, summary, collector, gate, &messages)
+	retrievedContext := appendRetrievedContext(ctx, req, plan.Intent, summary, collector, gate, &messages)
+	appendReplyTagContext(req, plan.Intent, plan.ReplyPlan, retrievedContext.AnswerabilityStatus, collector, &messages)
 	if instruction := buildGenerationScopeInstruction(plan.Intent); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
@@ -399,9 +400,14 @@ func recentUsableMediaTextFromHistory(history adapter.HistoryBuildResult) string
 	return ""
 }
 
-func appendRetrievedContext(ctx context.Context, req RunInput, intent callbacks.IntentTraceData, summary *RunResult, collector *callbacks.RuntimeTraceCollector, gate *KnowledgeAnswerabilityGate, messages *[]*schema.Message) knowledgeGuardDecision {
+type retrievedContextOutcome struct {
+	Decision            knowledgeGuardDecision
+	AnswerabilityStatus string
+}
+
+func appendRetrievedContext(ctx context.Context, req RunInput, intent callbacks.IntentTraceData, summary *RunResult, collector *callbacks.RuntimeTraceCollector, gate *KnowledgeAnswerabilityGate, messages *[]*schema.Message) retrievedContextOutcome {
 	if messages == nil {
-		return knowledgeGuardDecision{}
+		return retrievedContextOutcome{AnswerabilityStatus: answerabilityStatusUnanswerable}
 	}
 	if gate == nil {
 		gate = NewKnowledgeAnswerabilityGate()
@@ -427,11 +433,17 @@ func appendRetrievedContext(ctx context.Context, req RunInput, intent callbacks.
 				ErrorMessage: errorMessage,
 			})
 		}
-		return buildKnowledgeUnavailableDecision(req.AIAgent, utils.SplitInt64s(req.AIAgent.KnowledgeIDs))
+		return retrievedContextOutcome{
+			Decision:            buildKnowledgeUnavailableDecision(req.AIAgent, utils.SplitInt64s(req.AIAgent.KnowledgeIDs)),
+			AnswerabilityStatus: answerabilityStatusUnanswerable,
+		}
 	}
 	*messages = append((*messages)[:0], state.Input.Messages...)
 	if state.SkipGate {
-		return knowledgeGuardDecision{}
+		return retrievedContextOutcome{AnswerabilityStatus: state.AnswerabilityStatus}
 	}
-	return state.Decision
+	return retrievedContextOutcome{
+		Decision:            state.Decision,
+		AnswerabilityStatus: state.AnswerabilityStatus,
+	}
 }

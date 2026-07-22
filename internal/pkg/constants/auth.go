@@ -69,7 +69,7 @@ var (
 	PermissionConversationTransfer     = Permission{Name: "转接会话", Code: "conversation.transfer", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/transfer", SortNo: 440}
 	PermissionConversationClose        = Permission{Name: "关闭会话", Code: "conversation.close", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/close", SortNo: 450}
 	PermissionConversationSend         = Permission{Name: "发送会话消息", Code: "conversation.send", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/send_message", SortNo: 460}
-	PermissionConversationTag          = Permission{Name: "管理会话标签", Code: "conversation.tag", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/add_tag", SortNo: 470}
+	PermissionCustomerTag              = Permission{Name: "管理客户标签", Code: "conversation.tag", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/customer_tag/add", SortNo: 470}
 	PermissionConversationHandover     = Permission{Name: "处理会话交接", Code: "conversation.handover", Type: "api", GroupName: "conversation", Method: "ANY", APIPath: "/api/dashboard/conversation/handover_list", SortNo: 480}
 	PermissionConversationRecycle      = Permission{Name: "回收会话", Code: "conversation.recycle", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/recycle", SortNo: 490}
 	PermissionConversationLinkCustomer = Permission{Name: "关联会话客户", Code: "conversation.linkCustomer", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/link_customer", SortNo: 495}
@@ -202,7 +202,7 @@ var Permissions = []Permission{
 	PermissionConversationTransfer,
 	PermissionConversationClose,
 	PermissionConversationSend,
-	PermissionConversationTag,
+	PermissionCustomerTag,
 	PermissionConversationHandover,
 	PermissionConversationRecycle,
 	PermissionConversationLinkCustomer,
@@ -311,7 +311,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionRoleView, PermissionRoleCreate, PermissionRoleUpdate, PermissionRoleAssignPermission,
 		PermissionPermissionView, PermissionPermissionSync,
 		PermissionSessionView, PermissionSessionRevoke,
-		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionConversationTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
+		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
@@ -332,7 +332,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionRoleView,
 		PermissionPermissionView,
 		PermissionSessionView,
-		PermissionConversationView, PermissionConversationClose, PermissionConversationSend, PermissionConversationTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
+		PermissionConversationView, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
@@ -352,7 +352,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionUserView,
 		PermissionRoleView,
 		PermissionPermissionView,
-		PermissionConversationView,
+		PermissionConversationView, PermissionCustomerTag,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView,
@@ -369,7 +369,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionSkillDefinitionView,
 	},
 	RoleCodeStoreStaff: {
-		PermissionConversationView, PermissionConversationSend, PermissionConversationHandover,
+		PermissionConversationView, PermissionConversationSend, PermissionCustomerTag, PermissionConversationHandover,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView,
 		PermissionTagView,
