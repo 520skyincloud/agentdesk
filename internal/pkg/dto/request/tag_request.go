@@ -7,9 +7,17 @@ type TagListRequest struct {
 }
 
 type CreateTagRequest struct {
-	ParentID int64  `json:"parentId"`
-	Name     string `json:"name"`
-	Remark   string `json:"remark"`
+	CompanyID       int64  `json:"companyId"`
+	ParentID        int64  `json:"parentId"`
+	Name            string `json:"name"`
+	SemanticKey     string `json:"semanticKey"`
+	Aliases         string `json:"aliases"`
+	ConflictGroup   string `json:"conflictGroup"`
+	AIEnabled       bool   `json:"aiEnabled"`
+	ReplyEnabled    bool   `json:"replyEnabled"`
+	ApplicableScene string `json:"applicableScene"`
+	MergedIntoTagID int64  `json:"mergedIntoTagId"`
+	Remark          string `json:"remark"`
 }
 
 type UpdateTagRequest struct {

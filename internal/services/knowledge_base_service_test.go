@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestBuildKnowledgeBaseModelUsesLowerDefaultScoreThreshold(t *testing.T) {
+func TestBuildKnowledgeBaseModelUsesSouthSevenDefaults(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -38,8 +38,36 @@ func TestBuildKnowledgeBaseModelUsesLowerDefaultScoreThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build knowledge base model failed: %v", err)
 	}
-	if item.DefaultScoreThreshold != 0.2 {
-		t.Fatalf("expected default score threshold 0.2, got %v", item.DefaultScoreThreshold)
+	if item.DefaultTopK != 5 || item.DefaultScoreThreshold != 0.2 || item.DefaultRerankLimit != 10 {
+		t.Fatalf("unexpected retrieval defaults: topK=%d threshold=%v rerank=%d", item.DefaultTopK, item.DefaultScoreThreshold, item.DefaultRerankLimit)
+	}
+	if item.ChunkTargetTokens != 300 || item.ChunkMaxTokens != 400 || item.ChunkOverlapTokens != 40 {
+		t.Fatalf("unexpected chunk defaults: target=%d max=%d overlap=%d", item.ChunkTargetTokens, item.ChunkMaxTokens, item.ChunkOverlapTokens)
+	}
+	if item.AnswerMode != int(enums.KnowledgeAnswerModeStrict) {
+		t.Fatalf("expected strict answer mode, got %d", item.AnswerMode)
+	}
+}
+
+func TestBuildFastGPTKnowledgeBaseModelUsesSouthSevenDefaults(t *testing.T) {
+	item, err := KnowledgeBaseService.buildKnowledgeBaseModel(request.CreateKnowledgeBaseRequest{
+		Name:          "新门店知识库",
+		KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud),
+	})
+	if err != nil {
+		t.Fatalf("build FastGPT knowledge base model failed: %v", err)
+	}
+	if item.DefaultTopK != 5 || item.DefaultScoreThreshold != 0.2 || item.DefaultRerankLimit != 10 {
+		t.Fatalf("unexpected FastGPT retrieval defaults: topK=%d threshold=%v rerank=%d", item.DefaultTopK, item.DefaultScoreThreshold, item.DefaultRerankLimit)
+	}
+	if item.ChunkProvider != string(enums.KnowledgeChunkProviderFastGPT) {
+		t.Fatalf("expected FastGPT chunk provider, got %q", item.ChunkProvider)
+	}
+	if item.ChunkTargetTokens != 300 || item.ChunkMaxTokens != 400 || item.ChunkOverlapTokens != 40 {
+		t.Fatalf("unexpected FastGPT chunk defaults: target=%d max=%d overlap=%d", item.ChunkTargetTokens, item.ChunkMaxTokens, item.ChunkOverlapTokens)
+	}
+	if item.AnswerMode != int(enums.KnowledgeAnswerModeStrict) {
+		t.Fatalf("expected strict answer mode, got %d", item.AnswerMode)
 	}
 }
 

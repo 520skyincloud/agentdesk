@@ -24,6 +24,9 @@ func (s *skillRuntimeService) DebugRun(ctx context.Context, req request.SkillDeb
 	if req.AIAgentID <= 0 {
 		return nil, errorsx.InvalidParam("aiAgentId不能为空")
 	}
+	if req.ConversationID <= 0 {
+		return nil, errorsx.InvalidParam("conversationId不能为空，模型调试必须绑定真实门店会话")
+	}
 	if strings.TrimSpace(req.SkillCode) == "" {
 		return nil, errorsx.InvalidParam("skillCode不能为空")
 	}

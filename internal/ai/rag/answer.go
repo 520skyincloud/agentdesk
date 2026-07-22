@@ -27,6 +27,11 @@ func (s *answer) DebugSearch(ctx context.Context, req request.KnowledgeSearchReq
 	if strings.TrimSpace(req.Question) == "" {
 		return nil, errorsx.InvalidParam("问题不能为空")
 	}
+	var err error
+	ctx, err = withKnowledgeModelScope(ctx, s.loadKnowledgeBases(req.KnowledgeBaseIDs))
+	if err != nil {
+		return nil, err
+	}
 	startedAt := time.Now()
 	results, err := s.retrieve(req, ctx)
 	if err != nil {
@@ -61,6 +66,11 @@ func (s *answer) DebugSearch(ctx context.Context, req request.KnowledgeSearchReq
 func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerRequest, operator *dto.AuthPrincipal) (*response.KnowledgeAnswerResponse, error) {
 	if strings.TrimSpace(req.Question) == "" {
 		return nil, errorsx.InvalidParam("问题不能为空")
+	}
+	var err error
+	ctx, err = withKnowledgeModelScope(ctx, s.loadKnowledgeBases(req.KnowledgeBaseIDs))
+	if err != nil {
+		return nil, err
 	}
 	startedAt := time.Now()
 

@@ -610,6 +610,8 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		return nil, err
 	}
 
+	ConversationEvolutionService.ObserveCommittedMessage(conversation, message)
+
 	// 处理websocket消息
 	WsService.PublishMessageCreated(conversation, message)
 	WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)

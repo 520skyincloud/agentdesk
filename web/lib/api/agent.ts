@@ -22,6 +22,17 @@ export type AgentConversationTag = {
   name: string
 }
 
+export type AgentCustomerTag = {
+  id: number
+  tagId: number
+  name: string
+  source: "ai" | "manual" | string
+  confidence: number
+  evidenceCount: number
+  manualProtected: boolean
+  updatedAt?: string
+}
+
 export type AgentConversationParticipant = {
   id: number
   participantType: string
@@ -82,6 +93,7 @@ export type AgentConversation = {
   wxWorkEmployeeName?: string
   wxWorkEmployeeUserId?: string
   tags?: AgentConversationTag[]
+  customerTags?: AgentCustomerTag[]
   participants?: AgentConversationParticipant[]
 }
 
@@ -285,5 +297,43 @@ export function removeConversationTag(payload: {
   return request<void>("/api/dashboard/conversation/remove_tag", {
     method: "POST",
     body: JSON.stringify(payload),
+  })
+}
+
+export function addCustomerTag(payload: {
+  conversationId: number
+  tagId: number
+}) {
+  return request<void>("/api/dashboard/conversation/customer_tag/add", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function removeCustomerTag(payload: {
+  conversationId: number
+  tagId: number
+}) {
+  return request<void>("/api/dashboard/conversation/customer_tag/remove", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function replaceCustomerTag(payload: {
+  conversationId: number
+  oldTagId: number
+  newTagId: number
+}) {
+  return request<void>("/api/dashboard/conversation/customer_tag/replace", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function retryConversationEvolution(conversationId: number) {
+  return request<void>("/api/dashboard/conversation/evolution/retry", {
+    method: "POST",
+    body: JSON.stringify({ conversationId }),
   })
 }

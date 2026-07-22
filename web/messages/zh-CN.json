@@ -2323,7 +2323,8 @@
     "notifications": "通知中心",
     "changePassword": "修改密码",
     "signOut": "退出登录",
-    "storeWorkbench": "门店工作台"
+    "storeWorkbench": "门店工作台",
+    "billingQuery": "计费查询"
   },
   "theme": {
     "toggle": "切换主题",

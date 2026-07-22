@@ -121,7 +121,7 @@ type UsageEvent struct {
 	Provider         string    `json:"provider"`
 	Model            string    `json:"model"`
 	ProfileID        string    `json:"profileId"`
-	ProfileRevision  string    `json:"profileRevision"`
+	ProfileRevision  int64     `json:"profileRevision"`
 	RequestID        string    `json:"requestId"`
 	PromptTokens     int64     `json:"promptTokens"`
 	CompletionTokens int64     `json:"completionTokens"`

@@ -233,8 +233,13 @@ func (s *fastGPTDatasetService) createDataset(ctx context.Context, connector *Fa
 			Name:                  firstNonBlank(dataset.Name, job.Filename),
 			KnowledgeType:         string(enums.KnowledgeBaseTypeFastGPTCloud),
 			Status:                enums.StatusOk,
-			DefaultTopK:           10,
-			DefaultScoreThreshold: 0.2,
+			DefaultTopK:           defaultKnowledgeBaseTopK,
+			DefaultScoreThreshold: defaultKnowledgeBaseScoreThreshold,
+			DefaultRerankLimit:    defaultKnowledgeBaseRerankLimit,
+			ChunkProvider:         string(enums.KnowledgeChunkProviderFastGPT),
+			ChunkTargetTokens:     defaultKnowledgeBaseTargetTokens,
+			ChunkMaxTokens:        defaultKnowledgeBaseMaxTokens,
+			ChunkOverlapTokens:    defaultKnowledgeBaseOverlapTokens,
 			AnswerMode:            int(enums.KnowledgeAnswerModeStrict),
 			FastGPTProfileStatus:  "pending",
 			AuditFields: models.AuditFields{
@@ -277,7 +282,7 @@ func (s *fastGPTDatasetService) ensureStoreTenant(ctx context.Context, connector
 		return err
 	}
 	now := time.Now()
-	return repositories.FastGPTStoreTenantRepository.Save(sqls.DB(), &models.FastGPTStoreTenant{
+	if err := repositories.FastGPTStoreTenantRepository.Save(sqls.DB(), &models.FastGPTStoreTenant{
 		CompanyID:      store.CompanyID,
 		StoreID:        store.ID,
 		TenantTeamID:   tenant.TeamID,
@@ -288,7 +293,11 @@ func (s *fastGPTDatasetService) ensureStoreTenant(ctx context.Context, connector
 		AuditFields: models.AuditFields{
 			CreatedAt: now, CreateUserName: "fastgpt_integration", UpdatedAt: now, UpdateUserName: "fastgpt_integration",
 		},
-	})
+	}); err != nil {
+		return err
+	}
+	FastGPTProfileTemplateService.QueueStore(store.ID)
+	return nil
 }
 
 // ActivateKnowledgeBase switches the current FastGPT dataset for one employee
@@ -335,38 +344,13 @@ func (s *fastGPTDatasetService) GetModelProfile(ctx context.Context, instanceID 
 }
 
 func (s *fastGPTDatasetService) TestModelProfile(ctx context.Context, req request.FastGPTModelProfileRequest, operator *dto.AuthPrincipal) (*response.FastGPTModelProfileTestResponse, error) {
-	instance, kb, connector, err := s.requireManagedInstanceKnowledgeBase(req.WxWorkInstanceID, operator)
-	if err != nil {
-		return nil, err
-	}
-	result, err := connector.ForStore(instance.StoreID).TestModelProfile(ctx, buildFastGPTModelProfileInput(kb.DatasetID, req))
-	if err != nil {
-		return nil, publicFastGPTModelTestError(err)
-	}
-	ret := &response.FastGPTModelProfileTestResponse{TestToken: result.TestToken, ExpiresAt: result.ExpiresAt}
-	for _, item := range result.Results {
-		ret.Results = append(ret.Results, response.FastGPTModelProfileTestStageResponse{
-			Stage: item.Stage, Status: item.Status, PromptTokens: item.PromptTokens, CompletionTokens: item.CompletionTokens,
-		})
-	}
-	return ret, nil
+	_, _, _ = ctx, req, operator
+	return nil, errorsx.Forbidden("单知识库模型密钥测试入口已停用，请使用平台模型模板和门店唯一模型密钥")
 }
 
 func (s *fastGPTDatasetService) UpdateModelProfile(ctx context.Context, req request.FastGPTModelProfileRequest, operator *dto.AuthPrincipal) (*response.FastGPTModelProfileSaveResponse, error) {
-	instance, kb, connector, err := s.requireManagedInstanceKnowledgeBase(req.WxWorkInstanceID, operator)
-	if err != nil {
-		return nil, err
-	}
-	result, err := connector.ForStore(instance.StoreID).UpsertModelProfile(ctx, buildFastGPTModelProfileInput(kb.DatasetID, req))
-	if err != nil {
-		return nil, publicFastGPTError(err)
-	}
-	if err := s.syncStoreModelProfileSnapshot(instance.StoreID, &result.Profile, operator); err != nil {
-		return nil, err
-	}
-	return &response.FastGPTModelProfileSaveResponse{
-		Profile: *buildFastGPTModelProfileResponse(&result.Profile), BoundDatasetCount: result.BoundDatasetCount,
-	}, nil
+	_, _, _ = ctx, req, operator
+	return nil, errorsx.Forbidden("单知识库模型密钥配置入口已停用，请使用平台模型模板和门店唯一模型密钥")
 }
 
 func (s *fastGPTDatasetService) requireManagedInstanceKnowledgeBase(instanceID int64, operator *dto.AuthPrincipal) (*models.WxWorkProtocolInstance, *models.KnowledgeBase, *FastGPTConnector, error) {
@@ -395,6 +379,16 @@ func (s *fastGPTDatasetService) requireManagedInstanceKnowledgeBase(instanceID i
 		return nil, nil, nil, err
 	}
 	return instance, kb, connector, nil
+}
+
+func validateFastGPTModelProfileRequest(req request.FastGPTModelProfileRequest) error {
+	if !req.RerankEnabled || req.Rerank == nil {
+		return errorsx.InvalidParam("重排模型为知识库检索必填项，不能关闭")
+	}
+	if strings.TrimSpace(req.Rerank.Provider) == "" || strings.TrimSpace(req.Rerank.BaseURL) == "" || strings.TrimSpace(req.Rerank.Model) == "" {
+		return errorsx.InvalidParam("请完整填写重排模型的 Provider、Base URL 和模型名")
+	}
+	return nil
 }
 
 func (s *fastGPTDatasetService) syncStoreModelProfileSnapshot(storeID int64, profile *FastGPTModelProfile, operator *dto.AuthPrincipal) error {
@@ -453,7 +447,7 @@ func buildFastGPTModelProfileInput(datasetID string, req request.FastGPTModelPro
 			value := buildFastGPTModelCredential(*req.Rerank)
 			return &value
 		}(),
-		DisableRerank: !req.RerankEnabled,
+		DisableRerank: false,
 		TestToken:     req.TestToken,
 	}
 }

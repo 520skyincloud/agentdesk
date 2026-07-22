@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { DatabaseZapIcon } from "lucide-react";
 
 import {
   DashboardCrudPage,
@@ -8,7 +9,9 @@ import {
   type DashboardCrudColumn,
   type DashboardCrudFilter,
 } from "@/components/dashboard/crud";
+import { ModelProfileTemplateDialog } from "@/components/model-profile-template-dialog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   createAIConfig,
   deleteAIConfig,
@@ -91,6 +94,7 @@ function getNextStatus(item: AIConfig) {
 
 export default function DashboardAIConfigsPage() {
   const t = useI18n();
+  const [profileTemplateOpen, setProfileTemplateOpen] = useState(false);
   const listStatusOptions = useMemo(() => getStatusOptions(t), [t]);
   const providerFilterOptions = useMemo(() => getProviderOptions(t), [t]);
   const modelTypeFilterOptions = useMemo(() => getModelTypeOptions(t), [t]);
@@ -246,7 +250,8 @@ export default function DashboardAIConfigsPage() {
   );
 
   return (
-    <DashboardCrudPage<AIConfig, CreateAIConfigPayload>
+    <>
+      <DashboardCrudPage<AIConfig, CreateAIConfigPayload>
       filters={filters}
       columns={columns}
       fetchList={(query) =>
@@ -291,6 +296,17 @@ export default function DashboardAIConfigsPage() {
           onSubmit={onSubmit}
         />
       )}
+      renderToolbarActions={({ loading }) => (
+        <Button
+          type="button"
+          variant="outline"
+          disabled={loading}
+          onClick={() => setProfileTemplateOpen(true)}
+        >
+          <DatabaseZapIcon className="size-4" />
+          统一网关与门店模型模板
+        </Button>
+      )}
       labels={{
         refresh: t("aiConfig.refresh"),
         create: t("aiConfig.new"),
@@ -309,6 +325,11 @@ export default function DashboardAIConfigsPage() {
         updated: (item) => t("aiConfig.updated", { name: item.name }),
         deleted: (item) => t("aiConfig.deleted", { name: item.name }),
       }}
-    />
+      />
+      <ModelProfileTemplateDialog
+        open={profileTemplateOpen}
+        onOpenChange={setProfileTemplateOpen}
+      />
+    </>
   );
 }

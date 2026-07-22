@@ -54,14 +54,18 @@ func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInp
 	input.AIAgent.AIConfigID = aiConfig.ID
 	runtimeStartedAt := time.Now()
 	runCtx, usageCapture := usagex.WithCapture(ctx)
-	runCtx = usagex.WithScope(runCtx, usagex.Scope{ConversationID: input.Conversation.ID, MessageID: input.Message.ID, RequestID: input.Message.RequestID})
+	runCtx = usagex.WithScope(runCtx, usagex.Scope{
+		ConversationID: input.Conversation.ID, MessageID: input.Message.ID,
+		RequestID: input.Message.RequestID, CredentialRevision: resolved.CredentialRevision,
+		ModelSource: resolved.Source,
+	})
 	summary, err := Service.Run(runCtx, applicationruntime.Request{
 		Conversation: input.Conversation,
 		UserMessage:  input.Message,
 		AIAgent:      input.AIAgent,
 		AIConfig:     aiConfig,
 	})
-	e.recordReplyModelUsage(input.Conversation, input.Message, aiConfig, resolved.Source, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
+	e.recordReplyModelUsage(input.Conversation, input.Message, aiConfig, resolved.Source, resolved.CredentialRevision, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
 	if input.Trace != nil {
 		input.Trace.RuntimeLatencyMs = time.Since(runtimeStartedAt).Milliseconds()
 		e.fillTraceFromSummary(input.Trace, summary, err)
@@ -91,7 +95,11 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 		input.Trace.ResumeSource = "pending_interrupt"
 	}
 	resumeCtx, usageCapture := usagex.WithCapture(ctx)
-	resumeCtx = usagex.WithScope(resumeCtx, usagex.Scope{ConversationID: input.Conversation.ID, MessageID: input.Message.ID, RequestID: input.Message.RequestID})
+	resumeCtx = usagex.WithScope(resumeCtx, usagex.Scope{
+		ConversationID: input.Conversation.ID, MessageID: input.Message.ID,
+		RequestID: input.Message.RequestID, CredentialRevision: resolved.CredentialRevision,
+		ModelSource: resolved.Source,
+	})
 	summary, err := Service.Resume(resumeCtx, applicationruntime.ResumeRequest{
 		Conversation: input.Conversation,
 		AIAgent:      input.AIAgent,
@@ -101,7 +109,7 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 			strings.TrimSpace(input.PendingInterrupt.InterruptID): e.resumeMessageText(input.Message),
 		},
 	})
-	e.recordReplyModelUsage(input.Conversation, input.Message, aiConfig, resolved.Source, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
+	e.recordReplyModelUsage(input.Conversation, input.Message, aiConfig, resolved.Source, resolved.CredentialRevision, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
 	if input.Trace != nil {
 		input.Trace.RuntimeLatencyMs = time.Since(runtimeStartedAt).Milliseconds()
 		e.fillTraceFromSummary(input.Trace, summary, err)
@@ -109,14 +117,14 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	return summary, err
 }
 
-func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Conversation, message models.Message, aiConfig models.AIConfig, modelSource string, summary *applicationruntime.Summary, receipts []usagex.Receipt, runErr error, latencyMS int64) {
+func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Conversation, message models.Message, aiConfig models.AIConfig, modelSource string, credentialRevision int64, summary *applicationruntime.Summary, receipts []usagex.Receipt, runErr error, latencyMS int64) {
 	requestID := strings.TrimSpace(message.RequestID)
 	if requestID == "" {
 		return
 	}
 	errorMessage := ""
 	if runErr != nil {
-		errorMessage = runErr.Error()
+		errorMessage = "model_call_failed"
 	}
 	runID := ""
 	if summary != nil {
@@ -131,7 +139,7 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 				EventKey:       fmt.Sprintf("%s:reply_generate:%s:failed", requestID, runID),
 				ConversationID: conversation.ID, MessageID: message.ID, RequestID: requestID,
 				Stage: "reply_generate", Provider: string(aiConfig.Provider), Model: aiConfig.ModelName,
-				AIConfigID: aiConfig.ID, ModelSource: modelSource,
+				AIConfigID: aiConfig.ID, ModelSource: modelSource, CredentialRevision: credentialRevision,
 				MetricSource: svc.AIUsageMetricSourceProviderOperation,
 				LatencyMS:    latencyMS, Status: "failed", ErrorMessage: errorMessage,
 			}
@@ -145,7 +153,7 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 			EventKey:       fmt.Sprintf("%s:reply_generate:%s:%d", requestID, runID, index+1),
 			ConversationID: conversation.ID, MessageID: message.ID, RequestID: requestID,
 			Stage: "reply_generate", Provider: string(aiConfig.Provider), Model: aiConfig.ModelName,
-			AIConfigID: aiConfig.ID, ModelSource: modelSource,
+			AIConfigID: aiConfig.ID, ModelSource: modelSource, CredentialRevision: credentialRevision,
 			PromptTokens: int64(usage.PromptTokens), CompletionTokens: int64(usage.CompletionTokens),
 			CachedPromptTokens: int64(usage.CachedPromptTokens), ReasoningTokens: int64(usage.ReasoningTokens),
 			MetricSource: svc.AIUsageMetricSourceUpstreamActual,
@@ -159,7 +167,7 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 			EventKey:       fmt.Sprintf("%s:reply_generate:%s:failed", requestID, runID),
 			ConversationID: conversation.ID, MessageID: message.ID, RequestID: requestID,
 			Stage: "reply_generate", Provider: string(aiConfig.Provider), Model: aiConfig.ModelName,
-			AIConfigID: aiConfig.ID, ModelSource: modelSource,
+			AIConfigID: aiConfig.ID, ModelSource: modelSource, CredentialRevision: credentialRevision,
 			MetricSource: svc.AIUsageMetricSourceProviderOperation,
 			LatencyMS:    latencyMS, Status: "failed", ErrorMessage: errorMessage,
 		}

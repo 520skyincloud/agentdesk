@@ -56,9 +56,15 @@ func (c *Capture) Receipts() []Receipt {
 type captureContextKey struct{}
 
 type Scope struct {
-	ConversationID int64
-	MessageID      int64
-	RequestID      string
+	CompanyID          int64
+	StoreID            int64
+	WxWorkInstanceID   int64
+	ConversationID     int64
+	MessageID          int64
+	KnowledgeBaseID    int64
+	RequestID          string
+	CredentialRevision int64
+	ModelSource        string
 }
 
 type scopeContextKey struct{}
@@ -78,6 +84,10 @@ func ScopeFromContext(ctx context.Context) Scope {
 	}
 	scope, _ := ctx.Value(scopeContextKey{}).(Scope)
 	return scope
+}
+
+func CaptureFromContext(ctx context.Context) *Capture {
+	return captureFromContext(ctx)
 }
 
 func captureFromContext(ctx context.Context) *Capture {

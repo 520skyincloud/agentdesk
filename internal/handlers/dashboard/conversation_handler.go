@@ -10,6 +10,7 @@ import (
 	"agent-desk/internal/services"
 	"strconv"
 	"strings"
+	"time"
 
 	"agent-desk/internal/pkg/httpx/params"
 
@@ -121,6 +122,7 @@ func ConversationGetBy(ctx *gin.Context) {
 		ConversationResponse: builders.BuildConversationWithLocale(item, i18nx.Locale(ctx)),
 		Participants:         builders.BuildParticipantResponses(id),
 	}
+	detail.CustomerTags = services.CustomerTagService.ListForConversation(id)
 	httpx.WriteJSON(ctx, detail)
 }
 
@@ -435,4 +437,93 @@ func ConversationPostRemove_tag(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationPostCustomer_tag_add(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.AddCustomerTagRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.CustomerTagService.ManualAdd(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	publishCustomerTagChanged(req.ConversationID)
+	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationPostCustomer_tag_remove(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.RemoveCustomerTagRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.CustomerTagService.ManualRemove(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	publishCustomerTagChanged(req.ConversationID)
+	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationPostCustomer_tag_replace(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.ReplaceCustomerTagRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.CustomerTagService.ManualReplace(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	publishCustomerTagChanged(req.ConversationID)
+	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationPostEvolution_retry(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.RetryConversationEvolutionRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.ConversationEvolutionService.Retry(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
+func publishCustomerTagChanged(conversationID int64) {
+	conversation := services.ConversationService.Get(conversationID)
+	route := services.ConversationRouteService.GetByConversationID(conversationID)
+	if conversation == nil || route == nil {
+		return
+	}
+	services.WsService.PublishCustomerTagChanged(
+		conversationID,
+		route.StoreID,
+		conversation.CustomerID,
+		time.Now(),
+	)
 }

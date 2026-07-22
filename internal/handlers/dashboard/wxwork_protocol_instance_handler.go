@@ -218,6 +218,10 @@ func WxWorkProtocolInstancePostUpdate_ai_settings(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostStore_ai_model_settings(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -231,6 +235,10 @@ func WxWorkProtocolInstancePostStore_ai_model_settings(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostUpdate_store_ai_model_settings(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -249,6 +257,10 @@ func WxWorkProtocolInstancePostUpdate_store_ai_model_settings(ctx *gin.Context) 
 }
 
 func WxWorkProtocolInstancePostTest_store_ai_model_setting(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)

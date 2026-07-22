@@ -131,8 +131,16 @@ export function TagSelector(props: TagSelectorProps) {
     }
     return {
       id: props.rootOption.value,
+      companyId: 0,
       parentId: 0,
       name: props.rootOption.label,
+      semanticKey: "",
+      aliases: "",
+      conflictGroup: "",
+      aiEnabled: false,
+      replyEnabled: false,
+      applicableScene: "",
+      mergedIntoTagId: 0,
       remark: "",
       sortNo: 0,
       status: 0,

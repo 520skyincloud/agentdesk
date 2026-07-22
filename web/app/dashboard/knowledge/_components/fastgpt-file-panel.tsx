@@ -104,6 +104,8 @@ export function FastGPTFilePanel({ knowledgeBase }: { knowledgeBase: KnowledgeBa
   }, [knowledgeBase.datasetId, knowledgeBase.id])
 
   useEffect(() => {
+    setQuery("")
+    setSearchResult(undefined)
     void refresh()
   }, [refresh])
 

@@ -79,6 +79,18 @@ func (s *authService) RequirePermission(ctx *gin.Context, permission constants.P
 	return principal, nil
 }
 
+func (s *authService) RequireRole(ctx *gin.Context, roleCode string) (principal *dto.AuthPrincipal, err error) {
+	if principal = s.GetAuthPrincipal(ctx); principal == nil {
+		if principal, err = s.Authenticate(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if principal == nil || !slices.Contains(principal.Roles, strings.TrimSpace(roleCode)) {
+		return principal, errorsx.Forbidden("无权限执行该操作")
+	}
+	return principal, nil
+}
+
 func (s *authService) Login(req request.LoginRequest, authCfg config.AuthConfig, clientIP, userAgent string) (*response.LoginResponse, error) {
 	username := strings.TrimSpace(req.Username)
 	principal := normalizeLoginPrincipal(username)

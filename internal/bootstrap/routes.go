@@ -157,13 +157,23 @@ func registerDashboardTagRoutes(group *gin.RouterGroup) {
 	group.POST("/update_status", dashboard.TagPostUpdate_status)
 }
 
+func registerDashboardModelProfileTemplateRoutes(group *gin.RouterGroup) {
+	group.POST("/get", dashboard.ModelProfileTemplatePostGet)
+	group.POST("/update", dashboard.ModelProfileTemplatePostUpdate)
+	group.POST("/test", dashboard.ModelProfileTemplatePostTest)
+}
+
 func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.ConversationGetBy)
 	group.POST("/add_tag", dashboard.ConversationPostAdd_tag)
 	group.POST("/assign", dashboard.ConversationPostAssign)
 	group.POST("/close", dashboard.ConversationPostClose)
 	group.Any("/conversations", dashboard.ConversationAnyConversations)
+	group.POST("/customer_tag/add", dashboard.ConversationPostCustomer_tag_add)
+	group.POST("/customer_tag/remove", dashboard.ConversationPostCustomer_tag_remove)
+	group.POST("/customer_tag/replace", dashboard.ConversationPostCustomer_tag_replace)
 	group.POST("/dispatch", dashboard.ConversationPostDispatch)
+	group.POST("/evolution/retry", dashboard.ConversationPostEvolution_retry)
 	group.POST("/link_customer", dashboard.ConversationPostLink_customer)
 	group.Any("/list", dashboard.ConversationAnyList)
 	group.Any("/message_list", dashboard.ConversationAnyMessage_list)
@@ -313,6 +323,16 @@ func registerDashboardAIConfigRoutes(group *gin.RouterGroup) {
 	group.POST("/update_status", dashboard.AIConfigPostUpdate_status)
 }
 
+func registerDashboardStoreModelCredentialRoutes(group *gin.RouterGroup) {
+	group.POST("/get", dashboard.StoreModelCredentialPostGet)
+	group.POST("/stores", dashboard.StoreModelCredentialPostStores)
+	group.POST("/update", dashboard.StoreModelCredentialPostUpdate)
+}
+
+func registerDashboardBillingQueryRoutes(group *gin.RouterGroup) {
+	group.POST("/get", dashboard.BillingQueryPostGet)
+}
+
 func registerDashboardReplyIntentConfigRoutes(group *gin.RouterGroup) {
 	group.Any("/list", dashboard.ReplyIntentConfigAnyList)
 	group.GET("/:id", dashboard.ReplyIntentConfigGetBy)
@@ -361,6 +381,9 @@ func registerDashboardKnowledgeBaseRoutes(group *gin.RouterGroup) {
 	group.POST("/fastgpt/model_profile", dashboard.FastGPTDatasetPostModelProfile)
 	group.POST("/fastgpt/test_model_profile", dashboard.FastGPTDatasetPostTestModelProfile)
 	group.POST("/fastgpt/update_model_profile", dashboard.FastGPTDatasetPostUpdateModelProfile)
+	group.POST("/fastgpt/profile_template", dashboard.FastGPTProfileTemplatePostGet)
+	group.POST("/fastgpt/update_profile_template", dashboard.FastGPTProfileTemplatePostUpdate)
+	group.POST("/fastgpt/sync_profile_template", dashboard.FastGPTProfileTemplatePostSync)
 }
 
 func registerDashboardKnowledgeResourceRoutes(group *gin.RouterGroup) {

@@ -104,7 +104,7 @@ func TestGatewayManagedIntegrationUsesServiceTokenAndStoreScope(t *testing.T) {
 			if payload["externalStoreId"] != "7" || payload["datasetId"] != "dataset-7" || payload["limit"] != float64(100) {
 				t.Fatalf("usage payload=%#v", payload)
 			}
-			_, _ = io.WriteString(w, `{"code":200,"data":{"events":[{"externalEventId":"model:7","kind":"model","stage":"embedding","provider":"dashscope","model":"text-embedding-v4","promptTokens":18,"completionTokens":0,"cachedTokens":0,"latencyMs":42,"status":"success"}],"nextCursor":"opaque-cursor"}}`)
+			_, _ = io.WriteString(w, `{"code":200,"data":{"events":[{"externalEventId":"model:7","kind":"model","stage":"embedding","provider":"dashscope","model":"text-embedding-v4","profileId":"profile-7","profileRevision":3,"promptTokens":18,"completionTokens":0,"cachedTokens":0,"latencyMs":42,"status":"success"}],"nextCursor":"opaque-cursor"}}`)
 		case "/api/integration/agent-desk/dataset/model-profile/detail":
 			if payload["externalStoreId"] != "7" || payload["datasetId"] != "dataset-7" {
 				t.Fatalf("model profile detail payload=%#v", payload)
@@ -150,7 +150,7 @@ func TestGatewayManagedIntegrationUsesServiceTokenAndStoreScope(t *testing.T) {
 		t.Fatalf("collections=%#v err=%v", collections, err)
 	}
 	usage, err := scoped.ListUsageEvents(context.Background(), "dataset-7", "", 100)
-	if err != nil || usage.NextCursor != "opaque-cursor" || len(usage.Events) != 1 || usage.Events[0].ExternalEventID != "model:7" || usage.Events[0].PromptTokens != 18 {
+	if err != nil || usage.NextCursor != "opaque-cursor" || len(usage.Events) != 1 || usage.Events[0].ExternalEventID != "model:7" || usage.Events[0].ProfileRevision != 3 || usage.Events[0].PromptTokens != 18 {
 		t.Fatalf("usage=%#v err=%v", usage, err)
 	}
 	modelProfile, err := scoped.GetModelProfile(context.Background(), "dataset-7")

@@ -387,9 +387,6 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			summary.ReplyText = committedReplyText(*replyMessage)
 		}
 		replyCtx.Trace.ReplySent = replyMessage != nil
-		if replyMessage != nil && s.memory != nil {
-			s.memory.ScheduleUpdate(replyCtx.Conversation, *replyMessage)
-		}
 	}
 	return nil
 }

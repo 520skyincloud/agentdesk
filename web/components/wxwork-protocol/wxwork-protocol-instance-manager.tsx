@@ -6,6 +6,7 @@ import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
 import { FastGPTModelProfileDialog } from "@/components/wxwork-protocol/fastgpt-model-profile-dialog"
+import { FastGPTProfileTemplateDialog } from "@/components/wxwork-protocol/fastgpt-profile-template-dialog"
 import {
   createDashboardStatusColumn,
   DashboardCrudPage,
@@ -956,6 +957,7 @@ export function WxWorkProtocolInstanceManager({
   const [reloadKey, setReloadKey] = useState(0)
   const [modelSettingsInstance, setModelSettingsInstance] = useState<WxWorkProtocolInstance | null>(null)
   const [fastGPTModelProfileInstance, setFastGPTModelProfileInstance] = useState<WxWorkProtocolInstance | null>(null)
+  const [fastGPTProfileTemplateOpen, setFastGPTProfileTemplateOpen] = useState(false)
   const [modelSettings, setModelSettings] = useState<StoreAIModelSetting[]>([])
   const [modelSettingsLoading, setModelSettingsLoading] = useState(false)
   const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
@@ -986,7 +988,7 @@ export function WxWorkProtocolInstanceManager({
   const permissionSet = useMemo(() => new Set(session?.permissions ?? []), [session?.permissions])
   const canViewStoreModelSettings = permissionSet.has("aiConfig.view")
   const canUpdateStoreModelSettings = permissionSet.has("aiConfig.update")
-  const isPlatformAdmin = (session?.roles ?? []).some((role) => role === "super_admin" || role === "admin")
+  const isPlatformAdmin = (session?.roles ?? []).includes("super_admin")
   const canManageFastGPTModelProfile = isPlatformAdmin && canUpdateStoreModelSettings
   const lockedCompanyId = lockCompany ? Number(companyId || 0) : 0
   const lockedCompanyName = repairMojibakeText(companyName || "")
@@ -1384,6 +1386,12 @@ export function WxWorkProtocolInstanceManager({
             <RotateCwIcon className={state.loading ? "size-4 animate-spin" : "size-4"} />
             刷新
           </Button>
+          {canManageFastGPTModelProfile ? (
+            <Button variant="outline" className="rounded-lg border-[#dce7f4] bg-card" onClick={() => setFastGPTProfileTemplateOpen(true)}>
+              <DatabaseZapIcon className="size-4" />
+              Profile 模板
+            </Button>
+          ) : null}
           {!hideCreateActions ? (
             <Button className="rounded-lg" onClick={() => setCreateDialogOpen(true)}>
               <PlusIcon className="size-4" />
@@ -1775,6 +1783,15 @@ export function WxWorkProtocolInstanceManager({
         if (!open) setFastGPTModelProfileInstance(null)
       }}
       onSaved={() => {
+        setReloadKey((value) => value + 1)
+        onChanged?.()
+      }}
+    />
+    <FastGPTProfileTemplateDialog
+      open={fastGPTProfileTemplateOpen}
+      canSave={canManageFastGPTModelProfile}
+      onOpenChange={setFastGPTProfileTemplateOpen}
+      onChanged={() => {
         setReloadKey((value) => value + 1)
         onChanged?.()
       }}

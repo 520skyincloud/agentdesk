@@ -130,6 +130,10 @@ func CompanyPostUpdate_status(ctx *gin.Context) {
 }
 
 func CompanyPostModel_settings(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -143,6 +147,10 @@ func CompanyPostModel_settings(ctx *gin.Context) {
 }
 
 func CompanyPostUpdate_model_settings(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)

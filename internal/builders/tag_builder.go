@@ -11,14 +11,22 @@ func BuildTagResponse(item *models.Tag) response.TagResponse {
 		return response.TagResponse{}
 	}
 	return response.TagResponse{
-		ID:        item.ID,
-		ParentID:  item.ParentID,
-		Name:      item.Name,
-		Remark:    item.Remark,
-		SortNo:    item.SortNo,
-		Status:    item.Status,
-		CreatedAt: item.CreatedAt.Format(time.DateTime),
-		UpdatedAt: item.UpdatedAt.Format(time.DateTime),
+		ID:              item.ID,
+		CompanyID:       item.CompanyID,
+		ParentID:        item.ParentID,
+		Name:            item.Name,
+		SemanticKey:     item.SemanticKey,
+		Aliases:         item.Aliases,
+		ConflictGroup:   item.ConflictGroup,
+		AIEnabled:       item.AIEnabled,
+		ReplyEnabled:    item.ReplyEnabled,
+		ApplicableScene: item.ApplicableScene,
+		MergedIntoTagID: item.MergedIntoTagID,
+		Remark:          item.Remark,
+		SortNo:          item.SortNo,
+		Status:          item.Status,
+		CreatedAt:       item.CreatedAt.Format(time.DateTime),
+		UpdatedAt:       item.UpdatedAt.Format(time.DateTime),
 	}
 }
 
@@ -44,15 +52,23 @@ func BuildTagTreeResponses(list []models.Tag) []*response.TagTreeResponse {
 	for i := range list {
 		item := &list[i]
 		nodeMap[item.ID] = &response.TagTreeResponse{
-			ID:        item.ID,
-			ParentID:  item.ParentID,
-			Name:      item.Name,
-			Remark:    item.Remark,
-			SortNo:    item.SortNo,
-			Status:    item.Status,
-			CreatedAt: item.CreatedAt.Format(time.DateTime),
-			UpdatedAt: item.UpdatedAt.Format(time.DateTime),
-			Children:  make([]*response.TagTreeResponse, 0),
+			ID:              item.ID,
+			CompanyID:       item.CompanyID,
+			ParentID:        item.ParentID,
+			Name:            item.Name,
+			SemanticKey:     item.SemanticKey,
+			Aliases:         item.Aliases,
+			ConflictGroup:   item.ConflictGroup,
+			AIEnabled:       item.AIEnabled,
+			ReplyEnabled:    item.ReplyEnabled,
+			ApplicableScene: item.ApplicableScene,
+			MergedIntoTagID: item.MergedIntoTagID,
+			Remark:          item.Remark,
+			SortNo:          item.SortNo,
+			Status:          item.Status,
+			CreatedAt:       item.CreatedAt.Format(time.DateTime),
+			UpdatedAt:       item.UpdatedAt.Format(time.DateTime),
+			Children:        make([]*response.TagTreeResponse, 0),
 		}
 	}
 

@@ -72,6 +72,10 @@ func (s *index) IndexDocument(ctx context.Context, document models.KnowledgeDocu
 	if err != nil {
 		return fail(err)
 	}
+	ctx, err = withKnowledgeModelScope(ctx, []models.KnowledgeBase{*knowledgeBase})
+	if err != nil {
+		return fail(err)
+	}
 	vectors, chunkCount, err := s.runDocumentIndex(ctx, document, *knowledgeBase)
 	if err != nil {
 		return fail(err)
@@ -106,6 +110,10 @@ func (s *index) IndexFAQByID(ctx context.Context, faqID int64) error {
 		return err
 	}
 	knowledgeBase, err := s.loadFAQKnowledgeBase(*faq)
+	if err != nil {
+		return fail(err)
+	}
+	ctx, err = withKnowledgeModelScope(ctx, []models.KnowledgeBase{*knowledgeBase})
 	if err != nil {
 		return fail(err)
 	}
@@ -241,6 +249,11 @@ func (s *index) RebuildKnowledgeBaseIndex(ctx context.Context, knowledgeBaseID i
 	knowledgeBase := repositories.KnowledgeBaseRepository.Get(sqls.DB(), knowledgeBaseID)
 	if knowledgeBase == nil {
 		return fmt.Errorf("knowledge base not found: %d", knowledgeBaseID)
+	}
+	var err error
+	ctx, err = withKnowledgeModelScope(ctx, []models.KnowledgeBase{*knowledgeBase})
+	if err != nil {
+		return err
 	}
 
 	if err := s.resetKnowledgeBaseIndexStorage(ctx, knowledgeBaseID); err != nil {

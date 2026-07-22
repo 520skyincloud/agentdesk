@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
+	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 
 	"github.com/glebarez/sqlite"
@@ -29,6 +30,24 @@ func TestFastGPTModelProfileRejectsStoreStaff(t *testing.T) {
 	_, err := FastGPTDatasetService.GetModelProfile(context.Background(), 1, operator)
 	if err == nil || !strings.Contains(err.Error(), "仅平台管理员") {
 		t.Fatalf("store staff must not access model credentials, err=%v", err)
+	}
+}
+
+func TestFastGPTModelProfileRequiresRerank(t *testing.T) {
+	req := request.FastGPTModelProfileRequest{}
+	if err := validateFastGPTModelProfileRequest(req); err == nil || !strings.Contains(err.Error(), "重排模型") {
+		t.Fatalf("disabled rerank must be rejected, err=%v", err)
+	}
+
+	req.RerankEnabled = true
+	req.Rerank = &request.FastGPTModelCredentialRequest{Provider: "openai", BaseURL: "https://rerank.example/v1"}
+	if err := validateFastGPTModelProfileRequest(req); err == nil || !strings.Contains(err.Error(), "模型名") {
+		t.Fatalf("incomplete rerank must be rejected, err=%v", err)
+	}
+
+	req.Rerank.Model = "rerank-v3"
+	if err := validateFastGPTModelProfileRequest(req); err != nil {
+		t.Fatalf("complete rerank should pass, err=%v", err)
 	}
 }
 

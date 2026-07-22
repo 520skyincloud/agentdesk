@@ -14,6 +14,7 @@ import {
   LayoutDashboardIcon,
   MessageSquareCodeIcon,
   MessageSquareMoreIcon,
+  ReceiptTextIcon,
   SlidersHorizontalIcon,
   ShieldCheckIcon,
   TagsIcon,
@@ -29,6 +30,7 @@ const DASHBOARD_ROLE_CS_TEAM_LEADER = "cs_team_leader";
 const DASHBOARD_ROLE_STORE_STAFF = "store_staff";
 const STORE_STAFF_ALLOWED_URLS = new Set([
   "/dashboard/store-workbench",
+  "/dashboard/billing-query",
 ]);
 const CS_USER_ALLOWED_URLS = new Set([
   "/dashboard",
@@ -57,8 +59,10 @@ export type DashboardNavItemConfig = Omit<DashboardNavMenuItem, "title"> & {
   /**
    * Keep in sync with backend Permission.Code. Missing value means any signed-in
    * admin can see the module.
-   */
+  */
   requiredPermission?: string;
+  superAdminOnly?: boolean;
+  allowedRoles?: string[];
 };
 
 export type DashboardNavSectionConfig = {
@@ -71,10 +75,20 @@ function navItemVisible(
   item: DashboardNavItemConfig,
   superAdmin: boolean,
   permissionSet: Set<string>,
+  roles: readonly string[] | undefined,
   allowedUrls?: Set<string>,
 ): boolean {
   if (superAdmin) {
     return true;
+  }
+  if (item.superAdminOnly) {
+    return false;
+  }
+  if (
+    item.allowedRoles?.length &&
+    !item.allowedRoles.some((role) => roles?.includes(role))
+  ) {
+    return false;
   }
   if (allowedUrls && !allowedUrls.has(item.url)) {
     return false;
@@ -97,7 +111,7 @@ export function filterDashboardNavForSession(
       titleKey: section.titleKey,
       icon: section.icon,
       items: section.items
-        .filter((item) => navItemVisible(item, superAdmin, permissionSet, allowedUrls))
+        .filter((item) => navItemVisible(item, superAdmin, permissionSet, roles, allowedUrls))
         .map(({ titleKey, url, icon }) => ({ title: titleKey, titleKey, url, icon })),
     }))
     .filter((section) => section.items.length > 0);
@@ -111,7 +125,7 @@ export function filterDashboardSecondaryNavForSession(
   const allowedUrls = dashboardRoleAllowedUrls(roles);
   const permissionSet = new Set(permissions ?? []);
   return dashboardSecondaryNav
-    .filter((item) => navItemVisible(item, superAdmin, permissionSet, allowedUrls))
+    .filter((item) => navItemVisible(item, superAdmin, permissionSet, roles, allowedUrls))
     .map(({ titleKey, url, icon }) => ({ title: titleKey, titleKey, url, icon }));
 }
 
@@ -239,6 +253,13 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         url: "/dashboard/ai-configs",
         icon: <BrainCircuitIcon />,
         requiredPermission: "aiConfig.view",
+        superAdminOnly: true,
+      },
+      {
+        titleKey: "nav.billingQuery",
+        url: "/dashboard/billing-query",
+        icon: <ReceiptTextIcon />,
+        allowedRoles: [DASHBOARD_ROLE_STORE_STAFF],
       },
       {
         titleKey: "nav.skillDefinition",

@@ -110,10 +110,14 @@ export function FastGPTKnowledgeWorkspace({ knowledgeBase }: FastGPTKnowledgeWor
     }
   }
 
-  const profileLabel = knowledgeBase.fastgptProfileName.trim() || "未同步"
+  const profileStatus = knowledgeBase.fastgptProfileStatus.trim()
+  const usesGlobalProfile = profileStatus === "unconfigured"
+  const profileLabel = knowledgeBase.fastgptProfileName.trim() || (usesGlobalProfile ? "使用 FastGPT 全局默认" : "未同步")
   const profileMeta = knowledgeBase.fastgptProfileName.trim()
-    ? `版本 ${knowledgeBase.fastgptProfileRevision.trim() || "未提供"} · ${knowledgeBase.fastgptProfileStatus.trim() || "unknown"}`
-    : "等待 FastGPT Tenant/Profile 服务端接口同步"
+    ? `版本 ${knowledgeBase.fastgptProfileRevision.trim() || "未提供"} · ${profileStatus || "unknown"}`
+    : usesGlobalProfile
+      ? "当前数据集未配置独立 Profile，模型配置和密钥继承 FastGPT 全局设置"
+      : "等待 FastGPT Tenant/Profile 服务端接口同步"
 
   return (
     <div className="h-full min-h-0 overflow-y-auto bg-[#f8fbff] p-5 lg:p-6">

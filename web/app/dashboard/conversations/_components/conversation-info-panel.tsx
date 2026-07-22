@@ -6,6 +6,7 @@ import {
   PencilIcon,
   PhoneIcon,
   UserRoundIcon,
+  XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -13,6 +14,7 @@ import { toast } from "sonner";
 import { type CustomerFormSavePayload } from "@/components/customer-form";
 import { CustomerFormDialog } from "@/components/customer-form-dialog";
 import { CustomerLinkOrCreateDialog } from "@/components/customer-link-or-create-dialog";
+import { TagSelector } from "@/components/tag-selector";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,6 +32,8 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  addCustomerTag,
+  removeCustomerTag,
   setAgentConversationAutoHandoffEnabled,
   type AgentConversation,
 } from "@/lib/api/agent";
@@ -321,6 +325,125 @@ function ConversationTagSection({
   );
 }
 
+function CustomerLongTermTagSection({
+  conversation,
+}: {
+  conversation: AgentConversation;
+}) {
+  const refreshConversationDetail = useAgentConversationsStore(
+    (state) => state.refreshConversationDetail,
+  );
+  const [availableTags, setAvailableTags] = useState<TagTree[]>([]);
+  const [pendingTagId, setPendingTagId] = useState<number | null>(null);
+  const currentTags = conversation.customerTags ?? [];
+  const selectedTagIds = currentTags.map((item) => item.tagId);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchTagsAll()
+      .then((data) => {
+        if (!cancelled) {
+          setAvailableTags(Array.isArray(data) ? data : []);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          toast.error(error instanceof Error ? error.message : "加载客户标签失败");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function updateTags(nextTagIds: number[]) {
+    if (pendingTagId !== null) {
+      return;
+    }
+    const current = new Set(selectedTagIds);
+    const tagId =
+      nextTagIds.find((id) => !current.has(id)) ??
+      selectedTagIds.find((id) => !nextTagIds.includes(id));
+    if (!tagId) {
+      return;
+    }
+    const removing = current.has(tagId);
+    if (!removing && selectedTagIds.length >= 20) {
+      toast.error("每位客户最多保留 20 个有效标签");
+      return;
+    }
+    setPendingTagId(tagId);
+    try {
+      if (removing) {
+        await removeCustomerTag({ conversationId: conversation.id, tagId });
+      } else {
+        await addCustomerTag({ conversationId: conversation.id, tagId });
+      }
+      await refreshConversationDetail(conversation.id);
+      toast.success(removing ? "已移除客户长期标签" : "已添加客户长期标签");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "更新客户长期标签失败");
+    } finally {
+      setPendingTagId(null);
+    }
+  }
+
+  return (
+    <section className="space-y-2 border-t pt-2">
+      <SectionHeading
+        action={
+          <TagSelector
+            mode="multiple"
+            value={selectedTagIds}
+            onChange={(value) => void updateTags(value)}
+            tags={availableTags}
+            pendingTagId={pendingTagId}
+            placeholder="编辑"
+            triggerText="编辑"
+            searchPlaceholder="搜索标准标签"
+            loadingText="加载标签中..."
+            emptyText="暂无可用标签"
+            align="end"
+            showSelectedBadges={false}
+            triggerVariant="ghost"
+            triggerSize="sm"
+            triggerClassName="h-7 w-auto shrink-0 justify-start gap-1 px-2 text-xs"
+            contentClassName="w-72"
+          />
+        }
+      >
+        客户长期标签
+      </SectionHeading>
+      {currentTags.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {currentTags.map((item) => (
+            <span
+              key={item.tagId}
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-[#dbe7f6] bg-[#f6f9ff] px-2 text-xs text-foreground"
+              title={item.source === "manual" ? "人工确认" : "24 小时知识进化"}
+            >
+              {item.name}
+              <button
+                type="button"
+                className="flex size-4 items-center justify-center text-muted-foreground hover:text-destructive"
+                disabled={pendingTagId !== null}
+                aria-label={`移除客户标签 ${item.name}`}
+                onClick={() =>
+                  void updateTags(selectedTagIds.filter((id) => id !== item.tagId))
+                }
+              >
+                <XIcon className="size-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">暂无客户长期标签</p>
+      )}
+    </section>
+  );
+}
+
 function CustomerBody({ conversation }: { conversation: AgentConversation }) {
   const customerId = conversation.customerId ?? 0;
 
@@ -574,6 +697,8 @@ function CustomerLinkedBody({ conversation, customerId }: CustomerLinkedBodyProp
       ) : null}
 
       <RelatedTicketsSection conversation={conversation} />
+
+      <CustomerLongTermTagSection conversation={conversation} />
 
       <ConversationTagSection conversation={conversation} />
 

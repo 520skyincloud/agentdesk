@@ -15,6 +15,10 @@ import (
 )
 
 func AIConfigAnyList(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -34,6 +38,10 @@ func AIConfigAnyList(ctx *gin.Context) {
 }
 
 func AIConfigAnyList_all(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -55,6 +63,10 @@ func AIConfigGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -69,6 +81,10 @@ func AIConfigGetBy(ctx *gin.Context) {
 }
 
 func AIConfigPostCreate(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigCreate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -89,6 +105,10 @@ func AIConfigPostCreate(ctx *gin.Context) {
 }
 
 func AIConfigPostUpdate(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -108,6 +128,10 @@ func AIConfigPostUpdate(ctx *gin.Context) {
 }
 
 func AIConfigPostDelete(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigDelete)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -127,6 +151,10 @@ func AIConfigPostDelete(ctx *gin.Context) {
 }
 
 func AIConfigPostUpdate_status(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -146,6 +174,10 @@ func AIConfigPostUpdate_status(ctx *gin.Context) {
 }
 
 func AIConfigPostUpdateSort(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	if _, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -597,6 +599,50 @@ func (s *wsService) PublishResyncRequired(topics []string, reason string) {
 	}))
 }
 
+func (s *wsService) PublishStoreModelCredentialChanged(storeID int64, revision int64, status string, changedAt time.Time) {
+	if storeID <= 0 || revision <= 0 {
+		return
+	}
+	topic := s.storeTopic(storeID)
+	event := s.newEvent(topic, RealtimeStoreModelCredentialChangedEvent{
+		Payload: RealtimeStoreModelCredentialChangedPayload{
+			StoreID: storeID, CredentialRevision: revision,
+			Status: strings.TrimSpace(status), ChangedAt: changedAt.Format(time.DateTime),
+		},
+	})
+	s.PublishToTopic(topic, event)
+}
+
+func (s *wsService) PublishStoreModelProfileChanged(storeID int64, revision int64, status string, changedAt time.Time) {
+	if storeID <= 0 || revision <= 0 {
+		return
+	}
+	topic := s.storeTopic(storeID)
+	event := s.newEvent(topic, RealtimeStoreModelProfileChangedEvent{
+		Payload: RealtimeStoreModelProfileChangedPayload{
+			StoreID: storeID, ProfileRevision: revision,
+			Status: strings.TrimSpace(status), ChangedAt: changedAt.Format(time.DateTime),
+		},
+	})
+	s.PublishToTopic(topic, event)
+}
+
+func (s *wsService) PublishCustomerTagChanged(conversationID, storeID, customerID int64, changedAt time.Time) {
+	if conversationID <= 0 || storeID <= 0 || customerID <= 0 {
+		return
+	}
+	topic := s.conversationTopic(conversationID)
+	event := s.newEvent(topic, RealtimeCustomerTagChangedEvent{
+		Payload: RealtimeCustomerTagChangedPayload{
+			ConversationID: conversationID,
+			StoreID:        storeID,
+			CustomerID:     customerID,
+			ChangedAt:      changedAt.Format(time.DateTime),
+		},
+	})
+	s.PublishToTopics([]string{topic, s.storeTopic(storeID)}, event)
+}
+
 func readStateMessageID(state *models.ConversationReadState) int64 {
 	if state == nil {
 		return 0
@@ -751,9 +797,26 @@ func (s *wsService) filterAllowedTopics(session *ClientSession, topics []string)
 		}
 		if conversationID, ok := parseConversationTopic(topic); ok && s.canSubscribeConversation(session, conversationID) {
 			ret = append(ret, topic)
+			continue
+		}
+		if storeID, ok := parseStoreTopic(topic); ok && s.canSubscribeStore(session, storeID) {
+			ret = append(ret, topic)
 		}
 	}
 	return ret
+}
+
+func (s *wsService) canSubscribeStore(session *ClientSession, storeID int64) bool {
+	if session == nil || session.Principal == nil || storeID <= 0 || session.Role != realtimeRoleAdmin {
+		return false
+	}
+	if slices.Contains(session.Principal.Roles, constants.RoleCodeSuperAdmin) {
+		return true
+	}
+	if !slices.Contains(session.Principal.Roles, constants.RoleCodeStoreStaff) {
+		return false
+	}
+	return slices.Contains(AgentTeamScopeService.Resolve(session.Principal).StoreIDs, storeID)
 }
 
 func (s *wsService) canSubscribeConversation(session *ClientSession, conversationID int64) bool {
@@ -829,6 +892,10 @@ func (s *wsService) conversationTopic(conversationID int64) string {
 	return realtimeTopicConversationPrefix + strconv.FormatInt(conversationID, 10)
 }
 
+func (s *wsService) storeTopic(storeID int64) string {
+	return realtimeTopicStorePrefix + strconv.FormatInt(storeID, 10)
+}
+
 func normalizeRealtimeTopics(topics []string) []string {
 	if len(topics) == 0 {
 		return nil
@@ -854,6 +921,18 @@ func parseConversationTopic(topic string) (int64, bool) {
 		return 0, false
 	}
 	value := strings.TrimPrefix(topic, realtimeTopicConversationPrefix)
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+func parseStoreTopic(topic string) (int64, bool) {
+	if !strings.HasPrefix(topic, realtimeTopicStorePrefix) {
+		return 0, false
+	}
+	value := strings.TrimPrefix(topic, realtimeTopicStorePrefix)
 	id, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || id <= 0 {
 		return 0, false

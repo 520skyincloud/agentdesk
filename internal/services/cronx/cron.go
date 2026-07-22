@@ -50,10 +50,24 @@ func Init() {
 		}
 	})
 
+	addFunc(c, "@every 10m", func() {
+		count := services.ConversationEvolutionService.ProcessDue(20)
+		if count > 0 {
+			slog.Info("conversation evolution tasks handled", "count", count)
+		}
+	})
+
 	addFunc(c, "@every 10s", func() {
 		count := services.FastGPTDatasetService.ProcessDue(10)
 		if count > 0 {
 			slog.Info("FastGPT dataset jobs handled", "count", count)
+		}
+	})
+
+	addFunc(c, "@every 10s", func() {
+		count := services.FastGPTProfileTemplateService.ProcessDue(10)
+		if count > 0 {
+			slog.Info("FastGPT profile template sync handled", "count", count)
 		}
 	})
 

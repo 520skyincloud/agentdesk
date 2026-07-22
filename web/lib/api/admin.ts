@@ -2382,6 +2382,56 @@ export type FastGPTModelProfileTestResult = {
   }>
 }
 
+export type FastGPTProfileTemplateCredential = {
+  provider: string
+  baseUrl: string
+  model: string
+  apiMode?: string
+}
+
+export type FastGPTProfileTemplateStoreSync = {
+  storeId: number
+  storeName: string
+  profileName: string
+  profileRevision: string
+  targetRevision: number
+  status: string
+  lastError: string
+  lastSyncedAt?: string | null
+}
+
+export type FastGPTProfileTemplate = {
+  id: number
+  name: string
+  revision: number
+  status: string
+  chat: FastGPTProfileTemplateCredential
+  asr: FastGPTProfileTemplateCredential
+  embedding: FastGPTProfileTemplateCredential
+  documentParser: FastGPTProfileTemplateCredential
+  vision: FastGPTProfileTemplateCredential
+  rerank: FastGPTProfileTemplateCredential
+  sync: {
+    total: number
+    pending: number
+    ready: number
+    failed: number
+    blocked: number
+  }
+  stores: FastGPTProfileTemplateStoreSync[]
+  updatedAt?: string
+}
+
+export type UpdateFastGPTProfileTemplatePayload = {
+  name: string
+  chat: FastGPTProfileTemplateCredential
+  asr: FastGPTProfileTemplateCredential
+  embedding: FastGPTProfileTemplateCredential
+  documentParser: FastGPTProfileTemplateCredential
+  vision: FastGPTProfileTemplateCredential
+  rerank: FastGPTProfileTemplateCredential
+}
+
 export function fetchFastGPTModelProfile(wxWorkInstanceId: number) {
   return request<FastGPTModelProfile | null>("/api/dashboard/knowledge-base/fastgpt/model_profile", {
     method: "POST",
@@ -2400,6 +2450,198 @@ export function updateFastGPTModelProfile(payload: FastGPTModelProfilePayload) {
   return request<{ profile: FastGPTModelProfile; boundDatasetCount: number }>("/api/dashboard/knowledge-base/fastgpt/update_model_profile", {
     method: "POST",
     body: JSON.stringify(payload),
+  })
+}
+
+export function fetchFastGPTProfileTemplate() {
+  return request<FastGPTProfileTemplate>("/api/dashboard/knowledge-base/fastgpt/profile_template", {
+    method: "POST",
+    body: JSON.stringify({}),
+  })
+}
+
+export function updateFastGPTProfileTemplate(payload: UpdateFastGPTProfileTemplatePayload) {
+  return request<FastGPTProfileTemplate>("/api/dashboard/knowledge-base/fastgpt/update_profile_template", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function syncFastGPTProfileTemplate() {
+  return request<FastGPTProfileTemplate>("/api/dashboard/knowledge-base/fastgpt/sync_profile_template", {
+    method: "POST",
+    body: JSON.stringify({}),
+  })
+}
+
+export type StoreModelCredential = {
+  storeId: number
+  storeName: string
+  profileName: string
+  profileRevision: number
+  profileStatus: string
+  hasKey: boolean
+  credentialRevision: number
+  credentialStatus: string
+  lastTestStatus: string
+  lastTestedAt?: string | null
+  lastTestLatencyMs: number
+  fastgptSyncStatus: string
+  fastgptLastSyncedAt?: string | null
+}
+
+export type StoreModelCredentialStoreOption = {
+  storeId: number
+  storeCode: string
+  storeName: string
+  companyId: number
+  hasKey: boolean
+  credentialRevision: number
+  credentialStatus: string
+}
+
+export type BillingTokenSummary = {
+  name: string
+  unlimitedQuota: boolean
+  totalGranted: number
+  totalUsed: number
+  totalAvailable: number
+  grantedCny: number
+  usedCny: number
+  availableCny: number
+  expiresAt: number
+}
+
+export type BillingUsageLog = {
+  id: number
+  createdAt: number
+  modelName: string
+  promptTokens: number
+  completionTokens: number
+  useTime: number
+  quota: number
+  costCny: number
+  requestId: string
+}
+
+export type BillingQuery = {
+  storeId: number
+  storeName: string
+  credentialRevision: number
+  credentialStatus: string
+  startDate: string
+  endDate: string
+  periodQuota: number
+  periodCostCny: number
+  periodPromptTokens: number
+  periodOutputTokens: number
+  queriedAt: string
+  summary: BillingTokenSummary
+  logs: BillingUsageLog[]
+}
+
+export function fetchStoreModelCredential(storeId = 0, signal?: AbortSignal) {
+  return request<StoreModelCredential>("/api/dashboard/store-model-credential/get", {
+    method: "POST",
+    body: JSON.stringify({ storeId }),
+    signal,
+  })
+}
+
+export function fetchStoreModelCredentialStores() {
+  return request<StoreModelCredentialStoreOption[]>("/api/dashboard/store-model-credential/stores", {
+    method: "POST",
+    body: JSON.stringify({}),
+  })
+}
+
+export function updateStoreModelCredential(storeId: number, apiKey: string) {
+  return request<StoreModelCredential & { changedAt: string }>("/api/dashboard/store-model-credential/update", {
+    method: "POST",
+    body: JSON.stringify({ storeId, apiKey }),
+  })
+}
+
+export function fetchBillingQuery(
+  storeId = 0,
+  startDate = "",
+  endDate = "",
+  signal?: AbortSignal,
+) {
+  return request<BillingQuery>("/api/dashboard/billing-query/get", {
+    method: "POST",
+    body: JSON.stringify({ storeId, startDate, endDate }),
+    signal,
+  })
+}
+
+export type ModelProfileSlot = {
+  id: number
+  usageCode: string
+  displayName: string
+  modelType: string
+  provider: string
+  modelName: string
+  apiMode: string
+  dimension: number
+  maxContextTokens: number
+  maxOutputTokens: number
+  timeoutMs: number
+  maxRetryCount: number
+  temperature: number
+  schemaVersion: string
+  promptTemplate: string
+  jsonSchema: string
+  enabled: boolean
+  sortNo: number
+}
+
+export type ModelProfileTemplate = {
+  id: number
+  name: string
+  revision: number
+  gatewayBaseUrl: string
+  customerTagEvolutionEnabled: boolean
+  customerTagEvolutionStoreIds: number[]
+  replyTagContextEnabled: boolean
+  status: string
+  slots: ModelProfileSlot[]
+  updatedAt?: string
+}
+
+export type UpdateModelProfileTemplatePayload = Omit<
+  ModelProfileTemplate,
+  "id" | "revision" | "status" | "updatedAt"
+>
+
+export type TestModelProfileSlotResult = {
+  storeId: number
+  usageCode: string
+  modelName: string
+  templateRevision: number
+  credentialRevision: number
+  status: string
+  latencyMs: number
+}
+
+export function fetchModelProfileTemplate() {
+  return request<ModelProfileTemplate>("/api/dashboard/model-profile-template/get", {
+    method: "POST",
+    body: JSON.stringify({}),
+  })
+}
+
+export function updateModelProfileTemplate(payload: UpdateModelProfileTemplatePayload) {
+  return request<ModelProfileTemplate>("/api/dashboard/model-profile-template/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function testModelProfileSlot(storeId: number, usageCode: string) {
+  return request<TestModelProfileSlotResult>("/api/dashboard/model-profile-template/test", {
+    method: "POST",
+    body: JSON.stringify({ storeId, usageCode }),
   })
 }
 
@@ -2924,8 +3166,16 @@ export function uploadAsset(file: File, prefix?: string) {
 
 export type Tag = {
   id: number
+  companyId: number
   parentId: number
   name: string
+  semanticKey: string
+  aliases: string
+  conflictGroup: string
+  aiEnabled: boolean
+  replyEnabled: boolean
+  applicableScene: string
+  mergedIntoTagId: number
   remark: string
   sortNo: number
   status: number
@@ -2935,8 +3185,16 @@ export type Tag = {
 
 export type TagTree = {
   id: number
+  companyId: number
   parentId: number
   name: string
+  semanticKey: string
+  aliases: string
+  conflictGroup: string
+  aiEnabled: boolean
+  replyEnabled: boolean
+  applicableScene: string
+  mergedIntoTagId: number
   remark: string
   sortNo: number
   status: number
@@ -2946,8 +3204,16 @@ export type TagTree = {
 }
 
 export type CreateTagPayload = {
+  companyId: number
   parentId: number
   name: string
+  semanticKey: string
+  aliases: string
+  conflictGroup: string
+  aiEnabled: boolean
+  replyEnabled: boolean
+  applicableScene: string
+  mergedIntoTagId: number
   remark: string
   status: number
 }

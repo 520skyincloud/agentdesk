@@ -34,7 +34,9 @@ func (s *agentTeamScopeService) Resolve(operator *dto.AuthPrincipal) ManagedData
 		return ManagedDataScope{Unrestricted: true}
 	}
 	scope := ManagedDataScope{}
+	expandCompanyStores := false
 	if slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) {
+		expandCompanyStores = true
 		teams := repositories.AgentTeamRepository.Find(sqls.DB(), sqls.NewCnd().Eq("leader_user_id", operator.UserID).Eq("status", enums.StatusOk))
 		for i := range teams {
 			scope.CompanyIDs = append(scope.CompanyIDs, utils.SplitInt64s(teams[i].CompanyScopeIDs)...)
@@ -49,7 +51,7 @@ func (s *agentTeamScopeService) Resolve(operator *dto.AuthPrincipal) ManagedData
 			scope.StoreIDs = appendPositive(scope.StoreIDs, bindings[i].StoreID)
 		}
 	}
-	scope.expand()
+	scope.expand(expandCompanyStores)
 	return scope
 }
 
@@ -89,11 +91,11 @@ func (s *agentTeamScopeService) ApplyWxWorkInstanceFilter(cnd *sqls.Cnd, operato
 	return cnd.Eq("id", -1)
 }
 
-func (scope *ManagedDataScope) expand() {
+func (scope *ManagedDataScope) expand(expandCompanyStores bool) {
 	scope.CompanyIDs = uniquePositive(scope.CompanyIDs)
 	scope.StoreIDs = uniquePositive(scope.StoreIDs)
 	scope.WxWorkInstanceIDs = uniquePositive(scope.WxWorkInstanceIDs)
-	if len(scope.CompanyIDs) > 0 {
+	if expandCompanyStores && len(scope.CompanyIDs) > 0 {
 		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().In("company_id", scope.CompanyIDs).Where("status <> ?", enums.StatusDeleted))
 		for i := range stores {
 			scope.StoreIDs = appendPositive(scope.StoreIDs, stores[i].ID)

@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,7 +11,9 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/securex"
 	"agent-desk/internal/services"
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -1617,14 +1621,14 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func TestResolveRuntimeIntentDetectAIConfigPrefersAccountOverride(t *testing.T) {
+func TestResolveRuntimeIntentDetectAIConfigUsesStoreCredentialAndIgnoresLegacyOverrides(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	fallback := models.AIConfig{ID: 1, Name: "reply", Provider: enums.AIProviderOpenAI, ModelType: enums.AIModelTypeLLM, ModelName: "reply-model"}
 	globalIntent := models.AIConfig{ID: 3, Name: "global intent", Provider: enums.AIProviderOpenAI, BaseURL: "https://api.example.com/v1", APIKey: "sk", ModelType: enums.AIModelTypeLLM, ModelName: "global-intent-model", Status: enums.StatusOk, IntentDetectEnabled: true, SortNo: 2}
 	if err := sqls.DB().Create(&globalIntent).Error; err != nil {
 		t.Fatalf("create global ai config: %v", err)
 	}
-	if err := sqls.DB().Create(&models.Store{ID: 5, CompanyID: 2, Name: "store", Status: enums.StatusOk}).Error; err != nil {
+	if err := sqls.DB().Create(&models.Store{ID: 5, CompanyID: 2, StoreCode: "intent-store-5", Name: "store", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
 	if err := sqls.DB().Create(&models.ConversationRouteState{ConversationID: 7, StoreID: 5, WxWorkInstanceID: 11}).Error; err != nil {
@@ -1644,18 +1648,66 @@ func TestResolveRuntimeIntentDetectAIConfigPrefersAccountOverride(t *testing.T) 
 	}).Error; err != nil {
 		t.Fatalf("create account model setting: %v", err)
 	}
-	got := resolveRuntimeIntentDetectAIConfig(RunInput{Conversation: models.Conversation{ID: 7}, AIConfig: fallback})
-	if got.ModelName != "account-intent-model" {
-		t.Fatalf("expected account override intent model, got %#v", got)
+	if err := sqls.DB().Create(&models.ModelProfileTemplate{
+		ID: 1, Name: "runtime template", Revision: 8,
+		GatewayBaseURL: "https://store-gateway.example.com/v1", Status: "active",
+	}).Error; err != nil {
+		t.Fatalf("create model profile template: %v", err)
+	}
+	if err := sqls.DB().Create(&models.ModelProfileSlot{
+		TemplateID: 1, UsageCode: services.ModelProfileUsageIntentDetectLLM,
+		DisplayName: "intent", ModelType: enums.AIModelTypeLLM,
+		Provider: string(enums.AIProviderOpenAI), ModelName: "store-intent-model",
+		APIMode: "chat_completions", TimeoutMS: 30000, Enabled: true,
+	}).Error; err != nil {
+		t.Fatalf("create intent model slot: %v", err)
+	}
+	const masterKeyRaw = "0123456789abcdef0123456789abcdef"
+	masterKey := base64.StdEncoding.EncodeToString([]byte(masterKeyRaw))
+	config.SetCurrent(&config.Config{StoreCredential: config.StoreCredentialConfig{MasterKey: masterKey}})
+	t.Cleanup(func() {
+		config.SetCurrent(&config.Config{})
+	})
+	cipher, err := securex.NewAESGCM(masterKey)
+	if err != nil {
+		t.Fatalf("create credential cipher: %v", err)
+	}
+	const revision int64 = 4
+	encryptedKey, nonce, err := cipher.Encrypt("sk-store-bound", []byte(fmt.Sprintf("store:%d:revision:%d", 5, revision)))
+	if err != nil {
+		t.Fatalf("encrypt credential: %v", err)
+	}
+	if err := sqls.DB().Create(&models.StoreModelCredential{
+		CompanyID: 2, StoreID: 5, EncryptedKey: encryptedKey, KeyNonce: nonce,
+		KeyFingerprint:     securex.Fingerprint("sk-store-bound"),
+		CredentialRevision: revision, Status: "active",
+	}).Error; err != nil {
+		t.Fatalf("create store credential: %v", err)
+	}
+	got, credentialRevision, err := resolveRuntimeIntentDetectAIConfigWithRevision(RunInput{
+		Conversation: models.Conversation{ID: 7},
+		AIConfig:     fallback,
+	})
+	if err != nil {
+		t.Fatalf("resolve intent model: %v", err)
+	}
+	if got.APIKey != "sk-store-bound" || got.ModelName != "store-intent-model" || got.BaseURL != "https://store-gateway.example.com/v1" {
+		t.Fatalf("expected store credential and template slot, got %#v", got)
+	}
+	if credentialRevision != revision {
+		t.Fatalf("expected credential revision %d, got %d", revision, credentialRevision)
 	}
 }
 
-func TestResolveRuntimeIntentDetectAIConfigFallsBack(t *testing.T) {
+func TestResolveRuntimeIntentDetectAIConfigFailsClosedWithoutStoreRoute(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	fallback := models.AIConfig{ID: 1, Name: "reply", Provider: enums.AIProviderOpenAI, ModelType: enums.AIModelTypeLLM, ModelName: "reply-model"}
-	got := resolveRuntimeIntentDetectAIConfig(RunInput{Conversation: models.Conversation{ID: 7}, AIConfig: fallback})
-	if got.ID != fallback.ID || got.ModelName != "reply-model" {
-		t.Fatalf("expected fallback model, got %#v", got)
+	got, _, err := resolveRuntimeIntentDetectAIConfigWithRevision(RunInput{Conversation: models.Conversation{ID: 7}, AIConfig: fallback})
+	if err == nil {
+		t.Fatalf("expected missing store route to fail closed, got %#v", got)
+	}
+	if got.ModelName != "" || got.APIKey != "" {
+		t.Fatalf("legacy fallback must not be selected, got %#v", got)
 	}
 }
 
@@ -1695,6 +1747,9 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 		&models.ConversationRouteState{},
 		&models.Message{},
 		&models.WxWorkProtocolInstance{},
+		&models.StoreModelCredential{},
+		&models.ModelProfileTemplate{},
+		&models.ModelProfileSlot{},
 		&models.WxWorkCustomerHandoffSetting{},
 		&models.KnowledgeResourceGroup{},
 		&models.KnowledgeResourceItem{},

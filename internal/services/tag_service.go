@@ -94,6 +94,9 @@ func (s *tagService) CreateTag(req request.CreateTagRequest, operator *dto.AuthP
 	if name == "" {
 		return nil, errorsx.InvalidParam("标签名称不能为空")
 	}
+	if runeCount := len([]rune(name)); runeCount < 1 || runeCount > 5 {
+		return nil, errorsx.InvalidParam("标签名称必须为 1～5 个字")
+	}
 
 	if req.ParentID > 0 {
 		parent := s.Get(req.ParentID)
@@ -108,11 +111,19 @@ func (s *tagService) CreateTag(req request.CreateTagRequest, operator *dto.AuthP
 	}
 
 	item := &models.Tag{
-		ParentID:    req.ParentID,
-		Name:        name,
-		Remark:      strings.TrimSpace(req.Remark),
-		Status:      enums.StatusOk,
-		AuditFields: utils.BuildAuditFields(operator),
+		CompanyID:       req.CompanyID,
+		ParentID:        req.ParentID,
+		Name:            name,
+		SemanticKey:     normalizeTagSemanticKey(req.SemanticKey, name),
+		Aliases:         strings.TrimSpace(req.Aliases),
+		ConflictGroup:   strings.TrimSpace(req.ConflictGroup),
+		AIEnabled:       req.AIEnabled,
+		ReplyEnabled:    req.ReplyEnabled,
+		ApplicableScene: strings.TrimSpace(req.ApplicableScene),
+		MergedIntoTagID: req.MergedIntoTagID,
+		Remark:          strings.TrimSpace(req.Remark),
+		Status:          enums.StatusOk,
+		AuditFields:     utils.BuildAuditFields(operator),
 	}
 
 	item.SortNo = s.NextSortNo(req.ParentID)
@@ -144,6 +155,9 @@ func (s *tagService) UpdateTag(req request.UpdateTagRequest, operator *dto.AuthP
 	if name == "" {
 		return errorsx.InvalidParam("标签名称不能为空")
 	}
+	if runeCount := len([]rune(name)); runeCount < 1 || runeCount > 5 {
+		return errorsx.InvalidParam("标签名称必须为 1～5 个字")
+	}
 
 	if req.ParentID > 0 {
 		if req.ParentID == req.ID {
@@ -161,13 +175,29 @@ func (s *tagService) UpdateTag(req request.UpdateTagRequest, operator *dto.AuthP
 	}
 
 	return s.Updates(req.ID, map[string]any{
-		"parent_id":        req.ParentID,
-		"name":             name,
-		"remark":           strings.TrimSpace(req.Remark),
-		"update_user_id":   operator.UserID,
-		"update_user_name": operator.Username,
-		"updated_at":       time.Now(),
+		"company_id":         req.CompanyID,
+		"parent_id":          req.ParentID,
+		"name":               name,
+		"semantic_key":       normalizeTagSemanticKey(req.SemanticKey, name),
+		"aliases":            strings.TrimSpace(req.Aliases),
+		"conflict_group":     strings.TrimSpace(req.ConflictGroup),
+		"ai_enabled":         req.AIEnabled,
+		"reply_enabled":      req.ReplyEnabled,
+		"applicable_scene":   strings.TrimSpace(req.ApplicableScene),
+		"merged_into_tag_id": req.MergedIntoTagID,
+		"remark":             strings.TrimSpace(req.Remark),
+		"update_user_id":     operator.UserID,
+		"update_user_name":   operator.Username,
+		"updated_at":         time.Now(),
 	})
+}
+
+func normalizeTagSemanticKey(value string, name string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value != "" {
+		return value
+	}
+	return "tag." + strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(name)), "_"))
 }
 
 func (s *tagService) UpdateSort(ids []int64) error {
@@ -195,6 +225,9 @@ func (s *tagService) DeleteTag(id int64) error {
 	}
 	if TicketTagService.Take("tag_id = ?", id) != nil {
 		return errorsx.InvalidParam("该标签已关联工单，无法删除")
+	}
+	if repositories.CustomerTagRelationRepository.TakeByTagID(sqls.DB(), id) != nil {
+		return errorsx.InvalidParam("该标签已关联客户长期标签，无法删除")
 	}
 
 	s.Delete(id)

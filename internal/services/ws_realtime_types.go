@@ -33,6 +33,7 @@ const (
 	realtimeTopicAdminPrefix        = "admin:"
 	realtimeTopicConversationPrefix = "conversation:"
 	realtimeTopicNotificationPrefix = "notification:"
+	realtimeTopicStorePrefix        = "store:"
 	realtimeTopicAdminAll           = "admin:all"
 )
 
@@ -118,6 +119,69 @@ func (RealtimePongEvent) EventPayload() RealtimeEventPayload {
 
 type RealtimeResyncRequiredPayload struct {
 	Reason string `json:"reason,omitempty"`
+}
+
+type RealtimeStoreModelCredentialChangedPayload struct {
+	StoreID            int64  `json:"storeId"`
+	CredentialRevision int64  `json:"credentialRevision"`
+	Status             string `json:"status"`
+	ChangedAt          string `json:"changedAt"`
+}
+
+func (RealtimeStoreModelCredentialChangedPayload) realtimeEventPayload() {}
+
+type RealtimeStoreModelCredentialChangedEvent struct {
+	Payload RealtimeStoreModelCredentialChangedPayload
+}
+
+func (RealtimeStoreModelCredentialChangedEvent) EventType() string {
+	return "store_model_credential.changed"
+}
+
+func (e RealtimeStoreModelCredentialChangedEvent) EventPayload() RealtimeEventPayload {
+	return e.Payload
+}
+
+type RealtimeStoreModelProfileChangedPayload struct {
+	StoreID         int64  `json:"storeId"`
+	ProfileRevision int64  `json:"profileRevision"`
+	Status          string `json:"status"`
+	ChangedAt       string `json:"changedAt"`
+}
+
+func (RealtimeStoreModelProfileChangedPayload) realtimeEventPayload() {}
+
+type RealtimeStoreModelProfileChangedEvent struct {
+	Payload RealtimeStoreModelProfileChangedPayload
+}
+
+func (RealtimeStoreModelProfileChangedEvent) EventType() string {
+	return "store_model_profile.changed"
+}
+
+func (e RealtimeStoreModelProfileChangedEvent) EventPayload() RealtimeEventPayload {
+	return e.Payload
+}
+
+type RealtimeCustomerTagChangedPayload struct {
+	ConversationID int64  `json:"conversationId"`
+	StoreID        int64  `json:"storeId"`
+	CustomerID     int64  `json:"customerId"`
+	ChangedAt      string `json:"changedAt"`
+}
+
+func (RealtimeCustomerTagChangedPayload) realtimeEventPayload() {}
+
+type RealtimeCustomerTagChangedEvent struct {
+	Payload RealtimeCustomerTagChangedPayload
+}
+
+func (RealtimeCustomerTagChangedEvent) EventType() string {
+	return "customer_tag.changed"
+}
+
+func (e RealtimeCustomerTagChangedEvent) EventPayload() RealtimeEventPayload {
+	return e.Payload
 }
 
 func (RealtimeResyncRequiredPayload) realtimeEventPayload() {}

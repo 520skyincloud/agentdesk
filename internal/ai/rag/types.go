@@ -1,5 +1,7 @@
 package rag
 
+import "encoding/json"
+
 type RetrieveRequest struct {
 	KnowledgeBaseIDs []int64
 	Query            string
@@ -33,10 +35,15 @@ type RerankRequest struct {
 
 type RerankResponse struct {
 	Results []struct {
-		Document       string  `json:"document"`
-		Index          int     `json:"index"`
-		RelevanceScore float64 `json:"relevance_score"`
+		Document       json.RawMessage `json:"document"`
+		Index          int             `json:"index"`
+		RelevanceScore float64         `json:"relevance_score"`
 	} `json:"results"`
+	Usage struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		TotalTokens      int64 `json:"total_tokens"`
+	} `json:"usage"`
 	Meta struct {
 		APIVersion struct {
 			Version string `json:"version"`
@@ -47,4 +54,10 @@ type RerankResponse struct {
 type RerankResult struct {
 	Index          int     `json:"index"`
 	RelevanceScore float64 `json:"relevanceScore"`
+}
+
+type RerankUsage struct {
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
 }

@@ -6,28 +6,33 @@ import (
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 	"time"
+
+	"github.com/mlogclub/simple/sqls"
 )
 
 func BuildCustomer(item *models.Customer) *response.CustomerResponse {
 	if item == nil {
 		return nil
 	}
-	return &response.CustomerResponse{
-		ID:             item.ID,
-		Name:           item.Name,
-		Avatar:         item.Avatar,
-		Gender:         item.Gender,
-		CompanyID:      item.CompanyID,
-		Company:        BuildCompany(services.CompanyService.Get(item.CompanyID)),
-		LastActiveAt:   utils.FormatTimePtr(item.LastActiveAt),
-		PrimaryMobile:  item.PrimaryMobile,
-		PrimaryEmail:   item.PrimaryEmail,
-		Status:         item.Status,
-		Remark:         item.Remark,
-		StoreRelations: BuildStoreCustomerRelationList(services.CustomerService.ListStoreRelations(item.ID)),
-		CreatedAt:      item.CreatedAt.Format(time.DateTime),
-		UpdatedAt:      item.UpdatedAt.Format(time.DateTime),
+	ret := &response.CustomerResponse{
+		ID:            item.ID,
+		Name:          item.Name,
+		Avatar:        item.Avatar,
+		Gender:        item.Gender,
+		CompanyID:     item.CompanyID,
+		LastActiveAt:  utils.FormatTimePtr(item.LastActiveAt),
+		PrimaryMobile: item.PrimaryMobile,
+		PrimaryEmail:  item.PrimaryEmail,
+		Status:        item.Status,
+		Remark:        item.Remark,
+		CreatedAt:     item.CreatedAt.Format(time.DateTime),
+		UpdatedAt:     item.UpdatedAt.Format(time.DateTime),
 	}
+	if sqls.DB() != nil {
+		ret.Company = BuildCompany(services.CompanyService.Get(item.CompanyID))
+		ret.StoreRelations = BuildStoreCustomerRelationList(services.CustomerService.ListStoreRelations(item.ID))
+	}
+	return ret
 }
 
 func BuildCustomerList(list []models.Customer) []response.CustomerResponse {

@@ -1,9 +1,9 @@
 package ai
 
 import (
+	"context"
 	"time"
 
-	"github.com/mlogclub/simple/sqls"
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 
@@ -11,8 +11,9 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/usagex"
-	"agent-desk/internal/repositories"
 )
+
+var ResolveConfigForContext func(context.Context, enums.AIModelType) (*models.AIConfig, error)
 
 func newOpenAIClient(config models.AIConfig) openai.Client {
 	timeout := 60 * time.Second
@@ -34,14 +35,9 @@ func newOpenAIClient(config models.AIConfig) openai.Client {
 	return openai.NewClient(opts...)
 }
 
-func NewOpenAIClientForService(config models.AIConfig) openai.Client {
-	return newOpenAIClient(config)
-}
-
-func GetEnabledAIConfig(modelType enums.AIModelType) (*models.AIConfig, error) {
-	item := repositories.AIConfigRepository.GetEnabled(sqls.DB(), modelType)
-	if item == nil {
-		return nil, errorsx.BusinessError(2005, "未配置可用的 AI 配置")
+func GetAIConfigForContext(ctx context.Context, modelType enums.AIModelType) (*models.AIConfig, error) {
+	if ResolveConfigForContext != nil {
+		return ResolveConfigForContext(ctx, modelType)
 	}
-	return item, nil
+	return nil, errorsx.BusinessError(2005, "模型调用缺少门店凭据解析器")
 }

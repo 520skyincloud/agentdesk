@@ -2323,7 +2323,8 @@
     "notifications": "Notifications",
     "changePassword": "Change Password",
     "signOut": "Sign Out",
-    "storeWorkbench": "Store Workbench"
+    "storeWorkbench": "Store Workbench",
+    "billingQuery": "Billing Query"
   },
   "theme": {
     "toggle": "Change theme",

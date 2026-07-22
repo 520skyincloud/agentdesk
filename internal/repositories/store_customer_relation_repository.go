@@ -5,6 +5,7 @@ import (
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var StoreCustomerRelationRepository = newStoreCustomerRelationRepository()
@@ -38,6 +39,10 @@ func (r *storeCustomerRelationRepository) Find(db *gorm.DB, cnd *sqls.Cnd) (list
 
 func (r *storeCustomerRelationRepository) Create(db *gorm.DB, t *models.StoreCustomerRelation) error {
 	return db.Create(t).Error
+}
+
+func (r *storeCustomerRelationRepository) CreateIfAbsent(db *gorm.DB, t *models.StoreCustomerRelation) error {
+	return db.Clauses(clause.OnConflict{DoNothing: true}).Create(t).Error
 }
 
 func (r *storeCustomerRelationRepository) Updates(db *gorm.DB, id int64, columns map[string]any) error {

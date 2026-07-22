@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/usagex"
 	svc "agent-desk/internal/services"
 )
 
@@ -24,18 +25,27 @@ func DebugRunSkill(ctx context.Context, req request.SkillDebugRunRequest) (*resp
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("AI Agent不存在或未启用")
 	}
-	aiConfig := svc.AIConfigService.Get(aiAgent.AIConfigID)
-	if aiConfig == nil {
-		return nil, errorsx.InvalidParam("AI Agent关联的AI配置不存在")
+	conversation := svc.ConversationService.Get(req.ConversationID)
+	if conversation == nil {
+		return nil, errorsx.InvalidParam("会话不存在")
 	}
-	var conversation *models.Conversation
-	if req.ConversationID > 0 {
-		if conversation = svc.ConversationService.Get(req.ConversationID); conversation == nil {
-			return nil, errorsx.InvalidParam("会话不存在")
-		}
-	} else {
-		conversation = &models.Conversation{ID: req.ConversationID, AIAgentID: req.AIAgentID}
+	if conversation.AIAgentID > 0 && conversation.AIAgentID != req.AIAgentID {
+		return nil, errorsx.InvalidParam("会话与 AI Agent 不匹配")
 	}
+	resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(
+		conversation.ID,
+		svc.StoreAIModelUsageReplyLLM,
+		aiAgent.AIConfigID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	aiAgent.AIConfigID = resolved.Config.ID
+	ctx = usagex.WithScope(ctx, usagex.Scope{
+		ConversationID:     conversation.ID,
+		CredentialRevision: resolved.CredentialRevision,
+		ModelSource:        resolved.Source,
+	})
 	message := models.Message{
 		ConversationID: req.ConversationID,
 		SenderType:     enums.IMSenderTypeCustomer,
@@ -46,7 +56,7 @@ func DebugRunSkill(ctx context.Context, req request.SkillDebugRunRequest) (*resp
 		Conversation: *conversation,
 		UserMessage:  message,
 		AIAgent:      *aiAgent,
-		AIConfig:     *aiConfig,
+		AIConfig:     resolved.Config,
 	})
 	if err != nil {
 		return buildSkillDebugRunResponse(req, summary, nil), err
@@ -58,10 +68,6 @@ func DebugResumeSkill(ctx context.Context, req request.SkillDebugResumeRequest) 
 	aiAgent := svc.AIAgentService.Get(req.AIAgentID)
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("AI Agent不存在或未启用")
-	}
-	aiConfig := svc.AIConfigService.Get(aiAgent.AIConfigID)
-	if aiConfig == nil {
-		return nil, errorsx.InvalidParam("AI Agent关联的AI配置不存在")
 	}
 	pendingInterrupt := svc.ConversationInterruptService.GetByCheckPointID(strings.TrimSpace(req.CheckPointID))
 	if pendingInterrupt == nil {
@@ -84,11 +90,25 @@ func DebugResumeSkill(ctx context.Context, req request.SkillDebugResumeRequest) 
 	if conversation.AIAgentID > 0 && conversation.AIAgentID != req.AIAgentID {
 		return nil, errorsx.InvalidParam("会话与 AI Agent 不匹配")
 	}
+	resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(
+		conversation.ID,
+		svc.StoreAIModelUsageReplyLLM,
+		aiAgent.AIConfigID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	aiAgent.AIConfigID = resolved.Config.ID
+	ctx = usagex.WithScope(ctx, usagex.Scope{
+		ConversationID:     conversation.ID,
+		CredentialRevision: resolved.CredentialRevision,
+		ModelSource:        resolved.Source,
+	})
 	resumeText := strings.TrimSpace(req.UserMessage)
 	summary, err := Service.Resume(ctx, applicationruntime.ResumeRequest{
 		Conversation: *conversation,
 		AIAgent:      *aiAgent,
-		AIConfig:     *aiConfig,
+		AIConfig:     resolved.Config,
 		CheckPointID: strings.TrimSpace(req.CheckPointID),
 		ResumeData: map[string]string{
 			strings.TrimSpace(pendingInterrupt.InterruptID): resumeText,

@@ -32,7 +32,7 @@ type llm struct{}
 var LLM = &llm{}
 
 func (s *llm) Chat(ctx context.Context, systemPrompt string, userPrompt string) (*ChatCompletionResult, error) {
-	config, err := GetEnabledAIConfig(enums.AIModelTypeLLM)
+	config, err := GetAIConfigForContext(ctx, enums.AIModelTypeLLM)
 	if err != nil {
 		return nil, err
 	}

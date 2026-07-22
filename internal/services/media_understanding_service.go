@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"agent-desk/internal/ai"
 	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
@@ -46,7 +45,7 @@ type upstreamModelUsage struct {
 	ReasoningTokens    int64
 }
 
-const visionConnectionTestImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9JPGcAAAAASUVORK5CYII="
+const visionConnectionTestImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAB0klEQVR4nAXBoQ6AIBRAUT/HbCabyWay+SWDMzGD6SUCMzkCiWRwJnYDyS/ynK4XBsEIo2CFSXDCLIiwCrugQhSSUIRH6PqFYcEsjAt2YVpwC/OCLKwL+4IuxIW0UBaeha7fGDbMxrhhN6YNtzFvyMa6sW/oRtxIG2Xj2eh6z+AxntFjPZPHeWaPeFbP7lFP9CRP8Tyerj8YDszBeGAPpgN3MB/IwXqwH+hBPEgH5eA56HplUIwyKlaZFKfMiiirsiuqRCUpRXmUrg8MARMYAzYwBVxgDkhgDewBDcRACpTAE+j6k+HEnIwn9mQ6cSfziZysJ/uJnsSTdFJOnpOuvxguzMV4YS+mC3cxX8jFerFf6EW8SBfl4rno+syQMZkxYzNTxmXmjGTWzJ7RTMykTMk8ma4vDAVTGAu2MBVcYS5IYS3sBS3EQiqUwlPo+pvhxtyMN/ZmunE3843crDf7jd7Em3RTbp6brn8ZXszL+GJfphf3Mr/Iy/qyv+hLfEkv5eV56frKUDGVsWIrU8VV5opU1spe0UqspEqpPJWubwwN0xgbtjE1XGNuSGNt7A1txEZqlMbT6PqP4cN8jB/2Y/pwH/OHfKwf+4d+xI/0UT6ejx/yfeAQHkqo/AAAAABJRU5ErkJggg=="
 
 // TestVisionConfig verifies the same OpenAI-compatible image path used by media understanding.
 func (s *mediaUnderstandingService) TestVisionConfig(ctx context.Context, config models.AIConfig) error {
@@ -242,7 +241,7 @@ func (s *mediaUnderstandingService) understandImage(ctx context.Context, message
 	startedAt := time.Now()
 	modelCtx, usageCapture := usagex.WithCapture(ctx)
 	text, usage, err := s.callOpenAICompatibleVisionWithUsage(modelCtx, resolved.Config, imageURL)
-	s.recordMediaModelUsage(message, resolved.Config, resolved.Source, "vision", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
+	s.recordMediaModelUsage(message, resolved.Config, resolved.Source, resolved.CredentialRevision, "vision", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
 	return text, err
 }
 
@@ -264,7 +263,7 @@ func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message
 		}
 		return "", err
 	}
-	config, err := ai.GetEnabledAIConfig(enums.AIModelTypeASR)
+	resolved, err := StoreAIModelSettingService.ResolveForMessage(message, StoreAIModelUsageASR)
 	if err != nil {
 		if protocolErr != nil {
 			return "", fmt.Errorf("企微语音翻译失败: %v；ASR 模型配置失败: %w", protocolErr, err)
@@ -273,8 +272,8 @@ func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message
 	}
 	startedAt := time.Now()
 	modelCtx, usageCapture := usagex.WithCapture(ctx)
-	text, usage, err := s.callOpenAICompatibleASRWithUsage(modelCtx, *config, payload.Filename, data)
-	s.recordMediaModelUsage(message, *config, StoreAIModelSourceGlobalDefault, "asr", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
+	text, usage, err := s.callOpenAICompatibleASRWithUsage(modelCtx, resolved.Config, payload.Filename, data)
+	s.recordMediaModelUsage(message, resolved.Config, resolved.Source, resolved.CredentialRevision, "asr", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
 	if err != nil && protocolErr != nil {
 		return "", fmt.Errorf("企微语音翻译失败: %v；ASR 调用失败: %w", protocolErr, err)
 	}
@@ -864,7 +863,7 @@ func jsonNumberToInt64(value any) int64 {
 	}
 }
 
-func (s *mediaUnderstandingService) recordMediaModelUsage(message *models.Message, config models.AIConfig, modelSource string, operationType string, usage *upstreamModelUsage, receipt *usagex.Receipt, latencyMS int64, callErr error) {
+func (s *mediaUnderstandingService) recordMediaModelUsage(message *models.Message, config models.AIConfig, modelSource string, credentialRevision int64, operationType string, usage *upstreamModelUsage, receipt *usagex.Receipt, latencyMS int64, callErr error) {
 	if message == nil {
 		return
 	}
@@ -873,13 +872,17 @@ func (s *mediaUnderstandingService) recordMediaModelUsage(message *models.Messag
 	metricSource := AIUsageMetricSourceProviderOperation
 	if callErr != nil {
 		status = "failed"
-		errorMessage = callErr.Error()
+		errorMessage = "model_call_failed"
+	}
+	stage := "media_vision"
+	if operationType == "asr" {
+		stage = "media_asr"
 	}
 	event := models.AIUsageEvent{
 		EventKey:       fmt.Sprintf("%s:media_understanding:%s", firstNonBlank(message.RequestID, fmt.Sprintf("message-%d", message.ID)), operationType),
 		ConversationID: message.ConversationID, MessageID: message.ID, RequestID: message.RequestID,
-		Stage: "media_understanding", Provider: string(config.Provider), Model: config.ModelName,
-		AIConfigID: config.ID, ModelSource: modelSource, OperationType: operationType,
+		Stage: stage, Provider: string(config.Provider), Model: config.ModelName,
+		AIConfigID: config.ID, ModelSource: modelSource, CredentialRevision: credentialRevision, OperationType: operationType,
 		MetricSource: metricSource, RequestCount: 1, LatencyMS: latencyMS, Status: status, ErrorMessage: errorMessage,
 	}
 	if usage != nil {

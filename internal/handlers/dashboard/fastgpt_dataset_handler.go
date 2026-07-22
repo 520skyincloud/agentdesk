@@ -166,6 +166,10 @@ func FastGPTDatasetPostDeleteDataset(ctx *gin.Context) {
 }
 
 func FastGPTDatasetPostModelProfile(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -185,6 +189,10 @@ func FastGPTDatasetPostModelProfile(ctx *gin.Context) {
 }
 
 func FastGPTDatasetPostTestModelProfile(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -204,6 +212,10 @@ func FastGPTDatasetPostTestModelProfile(ctx *gin.Context) {
 }
 
 func FastGPTDatasetPostUpdateModelProfile(ctx *gin.Context) {
+	if _, err := services.AuthService.RequireRole(ctx, constants.RoleCodeSuperAdmin); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
@@ -215,6 +227,53 @@ func FastGPTDatasetPostUpdateModelProfile(ctx *gin.Context) {
 		return
 	}
 	ret, err := services.FastGPTDatasetService.UpdateModelProfile(ctx.Request.Context(), req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, ret)
+}
+
+func FastGPTProfileTemplatePostGet(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigView)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	ret, err := services.FastGPTProfileTemplateService.Get(ctx.Request.Context(), operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, ret)
+}
+
+func FastGPTProfileTemplatePostUpdate(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.UpdateFastGPTProfileTemplateRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	ret, err := services.FastGPTProfileTemplateService.Update(ctx.Request.Context(), req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, ret)
+}
+
+func FastGPTProfileTemplatePostSync(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	ret, err := services.FastGPTProfileTemplateService.QueueAll(operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

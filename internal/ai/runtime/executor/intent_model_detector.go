@@ -136,7 +136,10 @@ func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history ada
 }
 
 func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
-	intentConfig := resolveRuntimeIntentDetectAIConfig(req)
+	intentConfig, credentialRevision, resolveErr := resolveRuntimeIntentDetectAIConfigWithRevision(req)
+	if resolveErr != nil {
+		return callbacks.IntentTraceData{}, resolveErr
+	}
 	if strings.TrimSpace(intentConfig.ModelName) == "" || strings.TrimSpace(string(intentConfig.Provider)) == "" {
 		return callbacks.IntentTraceData{}, fmt.Errorf("ai config unavailable")
 	}
@@ -157,20 +160,20 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	firstReceiptOffset := len(usageCapture.Receipts())
 	result, err := chatModel.Generate(intentCtx, messages)
 	if err != nil {
-		recordIntentModelUsage(req, intentConfig, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
+		recordIntentModelUsage(req, intentConfig, credentialRevision, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
 		return callbacks.IntentTraceData{}, err
 	}
-	recordIntentModelUsage(req, intentConfig, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
+	recordIntentModelUsage(req, intentConfig, credentialRevision, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
 	parsed, err := parseRuntimeIntentDetectJSON(result.Content)
 	if err != nil {
 		retryStartedAt := time.Now()
 		retryReceiptOffset := len(usageCapture.Receipts())
 		retry, retryErr := chatModel.Generate(intentCtx, append(messages, schema.SystemMessage("上一版 IntentDetect 输出不是合法 JSON。请重新输出严格 JSON。intentTasks 必须是数组，且是唯一事实来源；顶层 primaryIntent/needsKnowledge/needsResource/resourceActions 只能汇总 intentTasks。不要输出 Markdown、解释、注释或多余文本。")))
 		if retryErr != nil {
-			recordIntentModelUsage(req, intentConfig, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
+			recordIntentModelUsage(req, intentConfig, credentialRevision, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
 		}
-		recordIntentModelUsage(req, intentConfig, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
+		recordIntentModelUsage(req, intentConfig, credentialRevision, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
 		parsed, err = parseRuntimeIntentDetectJSON(retry.Content)
 		if err != nil {
 			return callbacks.IntentTraceData{}, err
@@ -199,7 +202,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	}, nil
 }
 
-func recordIntentModelUsage(req RunInput, aiConfig models.AIConfig, message *schema.Message, receipt *usagex.Receipt, attempt int, latencyMS int64, callErr error) {
+func recordIntentModelUsage(req RunInput, aiConfig models.AIConfig, credentialRevision int64, message *schema.Message, receipt *usagex.Receipt, attempt int, latencyMS int64, callErr error) {
 	requestID := strings.TrimSpace(req.UserMessage.RequestID)
 	if requestID == "" {
 		return
@@ -208,13 +211,13 @@ func recordIntentModelUsage(req RunInput, aiConfig models.AIConfig, message *sch
 	errorMessage := ""
 	if callErr != nil {
 		status = "failed"
-		errorMessage = callErr.Error()
+		errorMessage = "model_call_failed"
 	}
 	event := models.AIUsageEvent{
 		EventKey:       fmt.Sprintf("%s:intent_detect:%d", requestID, attempt),
 		ConversationID: req.Conversation.ID, MessageID: req.UserMessage.ID, RequestID: requestID,
 		Stage: "intent_detect", Provider: string(aiConfig.Provider), Model: aiConfig.ModelName,
-		AIConfigID: aiConfig.ID, ModelSource: "intent_model_resolver",
+		AIConfigID: aiConfig.ID, ModelSource: "intent_model_resolver", CredentialRevision: credentialRevision,
 		MetricSource: services.AIUsageMetricSourceProviderOperation,
 		LatencyMS:    latencyMS, Status: status, ErrorMessage: errorMessage,
 	}
@@ -276,27 +279,28 @@ func convertRuntimeIntentTasks(tasks []runtimeIntentTaskJSON) []callbacks.Intent
 }
 
 func resolveRuntimeIntentDetectAIConfig(req RunInput) models.AIConfig {
-	if sqls.DB() != nil && req.Conversation.ID > 0 {
-		if resolved, err := services.StoreAIModelSettingService.ResolveForConversation(req.Conversation.ID, services.StoreAIModelUsageIntentDetectLLM, 0); err == nil && resolved != nil {
-			return resolved.Config
-		}
+	config, _, err := resolveRuntimeIntentDetectAIConfigWithRevision(req)
+	if err != nil {
+		return models.AIConfig{}
 	}
-	if sqls.DB() != nil {
-		if resolved, err := services.StoreAIModelSettingService.Resolve(0, services.StoreAIModelUsageIntentDetectLLM); err == nil && resolved != nil {
-			return resolved.Config
-		}
-	}
-	return req.AIConfig
+	return config
 }
 
-func resolveRuntimeAIConfigByStoreUsage(req RunInput, usageCode string, legacyAgentConfigID int64) models.AIConfig {
+func resolveRuntimeIntentDetectAIConfigWithRevision(req RunInput) (models.AIConfig, int64, error) {
 	if sqls.DB() == nil {
-		return req.AIConfig
+		return models.AIConfig{}, 0, fmt.Errorf("database unavailable")
 	}
-	if resolved, err := services.StoreAIModelSettingService.ResolveForConversation(req.Conversation.ID, usageCode, legacyAgentConfigID); err == nil && resolved != nil {
-		return resolved.Config
+	if req.Conversation.ID <= 0 {
+		return models.AIConfig{}, 0, fmt.Errorf("conversation is required for intent model")
 	}
-	return req.AIConfig
+	resolved, err := services.StoreAIModelSettingService.ResolveForConversation(req.Conversation.ID, services.StoreAIModelUsageIntentDetectLLM, 0)
+	if err != nil {
+		return models.AIConfig{}, 0, err
+	}
+	if resolved == nil {
+		return models.AIConfig{}, 0, fmt.Errorf("intent model unavailable")
+	}
+	return resolved.Config, resolved.CredentialRevision, nil
 }
 
 func runtimeIntentDetectSystemPrompt() string {

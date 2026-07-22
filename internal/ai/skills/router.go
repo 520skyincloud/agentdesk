@@ -9,6 +9,7 @@ import (
 
 	"agent-desk/internal/ai"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/usagex"
 
 	"github.com/mlogclub/simple/common/strs"
 )
@@ -30,13 +31,26 @@ func routeSkillWithLLM(ctx context.Context, runtimeCtx RuntimeContext, candidate
 	}
 	userPrompt := buildSkillRoutePrompt(runtimeCtx.UserMessage, candidates)
 	startedAt := time.Now()
-	result, err := ai.LLM.ChatWithConfig(ctx, runtimeCtx.AIConfig, routeSkillSystemPrompt, userPrompt)
+	callCtx, capture := usagex.WithCapture(ctx)
+	result, err := ai.LLM.ChatWithConfig(callCtx, runtimeCtx.AIConfig, routeSkillSystemPrompt, userPrompt)
 	trace.LatencyMs = time.Since(startedAt).Milliseconds()
 	if err != nil {
+		ai.RecordModelUsage(callCtx, ai.ModelUsageRecord{
+			Stage: "skill_route", OperationType: "skill_route",
+			Config: runtimeCtx.AIConfig, LatencyMS: trace.LatencyMs,
+			Status: "failed", ErrorClass: "model_call_failed",
+			Receipt: lastSkillRouteReceipt(capture),
+		})
 		trace.Status = "route_error"
 		trace.Error = err.Error()
 		return nil, trace, err
 	}
+	ai.RecordModelUsage(callCtx, ai.ModelUsageRecord{
+		Stage: "skill_route", OperationType: "skill_route",
+		Config: runtimeCtx.AIConfig, PromptTokens: int64(result.PromptTokens),
+		CompletionTokens: int64(result.CompletionTokens), LatencyMS: trace.LatencyMs,
+		Status: "completed", Receipt: lastSkillRouteReceipt(capture),
+	})
 	decision := normalizeRouteDecision(result.Content)
 	trace.RawDecision = strings.TrimSpace(result.Content)
 	if decision == "" || decision == "NONE" {
@@ -53,6 +67,18 @@ func routeSkillWithLLM(ctx context.Context, runtimeCtx RuntimeContext, candidate
 	trace.Status = "invalid_decision"
 	trace.Error = fmt.Sprintf("invalid route decision: %s", decision)
 	return nil, trace, nil
+}
+
+func lastSkillRouteReceipt(capture *usagex.Capture) *usagex.Receipt {
+	if capture == nil {
+		return nil
+	}
+	receipts := capture.Receipts()
+	if len(receipts) == 0 {
+		return nil
+	}
+	receipt := receipts[len(receipts)-1]
+	return &receipt
 }
 
 func buildSkillRoutePrompt(userMessage string, candidates []models.SkillDefinition) string {

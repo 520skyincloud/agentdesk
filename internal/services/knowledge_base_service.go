@@ -19,6 +19,15 @@ import (
 
 var KnowledgeBaseService = newKnowledgeBaseService()
 
+const (
+	defaultKnowledgeBaseTopK           = 5
+	defaultKnowledgeBaseScoreThreshold = 0.2
+	defaultKnowledgeBaseRerankLimit    = 10
+	defaultKnowledgeBaseTargetTokens   = 300
+	defaultKnowledgeBaseMaxTokens      = 400
+	defaultKnowledgeBaseOverlapTokens  = 40
+)
+
 func newKnowledgeBaseService() *knowledgeBaseService {
 	return &knowledgeBaseService{}
 }
@@ -223,7 +232,7 @@ func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowled
 		item.ConnectionID = "platform"
 	}
 	if item.DefaultTopK == 0 {
-		item.DefaultTopK = 10
+		item.DefaultTopK = defaultKnowledgeBaseTopK
 	}
 	if item.KnowledgeType == "" {
 		item.KnowledgeType = string(enums.KnowledgeBaseTypeDocument)
@@ -232,22 +241,16 @@ func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowled
 		return nil, errorsx.InvalidParam("知识库类型不支持")
 	}
 	if item.DefaultScoreThreshold == 0 {
-		item.DefaultScoreThreshold = 0.2
+		item.DefaultScoreThreshold = defaultKnowledgeBaseScoreThreshold
 	}
 	if item.DefaultRerankLimit == 0 {
-		item.DefaultRerankLimit = 5
+		item.DefaultRerankLimit = defaultKnowledgeBaseRerankLimit
 	}
 	if item.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud) {
 		item.ChunkProvider = string(enums.KnowledgeChunkProviderFastGPT)
-		item.ChunkTargetTokens = 0
-		item.ChunkMaxTokens = 0
-		item.ChunkOverlapTokens = 0
-		if item.DefaultTopK == 0 {
-			item.DefaultTopK = 2
-		}
-		if item.DefaultRerankLimit == 0 {
-			item.DefaultRerankLimit = 0
-		}
+		item.ChunkTargetTokens = defaultKnowledgeBaseTargetTokens
+		item.ChunkMaxTokens = defaultKnowledgeBaseMaxTokens
+		item.ChunkOverlapTokens = defaultKnowledgeBaseOverlapTokens
 		if item.AnswerMode == 0 {
 			item.AnswerMode = int(enums.KnowledgeAnswerModeStrict)
 		}
@@ -268,16 +271,16 @@ func (s *knowledgeBaseService) buildKnowledgeBaseModel(req request.CreateKnowled
 		return nil, errorsx.InvalidParam("分块策略不支持")
 	}
 	if item.KnowledgeType != string(enums.KnowledgeBaseTypeFAQ) && item.ChunkTargetTokens == 0 {
-		item.ChunkTargetTokens = 300
+		item.ChunkTargetTokens = defaultKnowledgeBaseTargetTokens
 	}
 	if item.KnowledgeType != string(enums.KnowledgeBaseTypeFAQ) && item.ChunkMaxTokens == 0 {
-		item.ChunkMaxTokens = 400
+		item.ChunkMaxTokens = defaultKnowledgeBaseMaxTokens
 	}
 	if item.KnowledgeType != string(enums.KnowledgeBaseTypeFAQ) && item.ChunkMaxTokens < item.ChunkTargetTokens {
 		item.ChunkMaxTokens = item.ChunkTargetTokens
 	}
 	if item.KnowledgeType != string(enums.KnowledgeBaseTypeFAQ) && item.ChunkOverlapTokens == 0 {
-		item.ChunkOverlapTokens = 40
+		item.ChunkOverlapTokens = defaultKnowledgeBaseOverlapTokens
 	}
 	if item.AnswerMode == 0 {
 		item.AnswerMode = 1

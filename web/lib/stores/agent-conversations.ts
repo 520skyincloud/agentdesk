@@ -3,6 +3,7 @@
 import { create } from "zustand"
 
 import {
+  fetchAgentConversationDetail,
   fetchAgentConversations,
   fetchAgentMessages,
   markAgentMessageRead,
@@ -96,6 +97,7 @@ type AgentConversationsStore = {
     conversationId: number,
     tags: AgentConversation["tags"]
   ) => void
+  refreshConversationDetail: (conversationId: number) => Promise<void>
   loadConversations: () => Promise<void>
   selectConversation: (conversationId: number) => Promise<void>
   loadMessages: (conversationId: number, options?: LoadMessagesOptions) => Promise<void>
@@ -166,6 +168,18 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     }))
   },
 
+  refreshConversationDetail: async (conversationId) => {
+    if (conversationId <= 0) {
+      return
+    }
+    const detail = await fetchAgentConversationDetail(conversationId)
+    set((state) => ({
+      conversations: state.conversations.map((item) =>
+        item.id === conversationId ? { ...item, ...detail, id: item.id } : item
+      ),
+    }))
+  },
+
   loadConversations: async () => {
     const requestSeq = ++conversationsRequestSeq
     const store = get()
@@ -219,6 +233,7 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
           reset: true,
         })
       }
+      await get().refreshConversationDetail(nextSelectedId)
     } catch (error) {
       if (requestSeq === conversationsRequestSeq) {
         set({ conversationsLoading: false })
@@ -242,10 +257,13 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
       messagesLoadedConversationId: null,
     })
 
-    await get().loadMessages(conversationId, {
-      forceLoading: true,
-      reset: true,
-    })
+    await Promise.all([
+      get().loadMessages(conversationId, {
+        forceLoading: true,
+        reset: true,
+      }),
+      get().refreshConversationDetail(conversationId),
+    ])
   },
 
   loadMessages: async (conversationId, options = {}) => {
@@ -496,10 +514,13 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     const selectedConversationId = get().selectedConversationId
     const targetConversationId = conversationId ?? selectedConversationId
     if (targetConversationId && selectedConversationId === targetConversationId) {
-      await get().loadMessages(targetConversationId, {
-        forceLoading: false,
-        reset: false,
-      })
+      await Promise.all([
+        get().loadMessages(targetConversationId, {
+          forceLoading: false,
+          reset: false,
+        }),
+        get().refreshConversationDetail(targetConversationId),
+      ])
     }
   },
 

@@ -10,6 +10,8 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
+	"agent-desk/internal/pkg/enums"
+	fastgptapi "agent-desk/internal/pkg/fastgpt"
 )
 
 func TestRetrieveFastGPTMapsQAToRetrieveResultWithoutFAQFields(t *testing.T) {
@@ -57,5 +59,40 @@ func TestFastGPTEngineExtractsImagesWithoutLeakingURLsIntoModelContext(t *testin
 	}
 	if got := stripFastGPTImageURLs(answer); got != "从北门进入。" {
 		t.Fatalf("cleaned answer=%q", got)
+	}
+}
+
+func TestFastGPTEngineStripsImagesFromChunkQuestion(t *testing.T) {
+	result := buildFastGPTRetrieveResult(models.KnowledgeBase{ID: 7}, fastgptapi.SearchDatasetHit{
+		DataID:       "data-7",
+		CollectionID: "collection-7",
+		Question:     "从北门进入。\nhttps://assets.example.com/entrance.png",
+	})
+	if result.Content != "问题：从北门进入。" {
+		t.Fatalf("content=%q", result.Content)
+	}
+}
+
+func TestFetchFastGPTSyncSourceReadsImagesFromChunkQuestion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"code":200,"data":[{"id":"data-image-1","datasetId":"dataset-image-1","collectionId":"collection-image-1","sourceName":"guide.txt","q":"入口说明：https://assets.example.com/entrance.png","a":"","score":0.91}]}`)
+	}))
+	defer server.Close()
+	config.SetCurrent(&config.Config{FastGPT: config.FastGPTConfig{Enabled: true, BaseURL: server.URL, APIKey: "secret", TimeoutMS: 1000}})
+	t.Cleanup(func() { config.SetCurrent(&config.Config{}) })
+
+	source, err := FetchFastGPTSyncSource(context.Background(), models.KnowledgeBase{
+		ID:            7,
+		DatasetID:     "dataset-image-1",
+		KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud),
+	}, "入口在哪里")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.SourceRecordID != "data-image-1" || source.Description != "入口说明：" {
+		t.Fatalf("source=%#v", source)
+	}
+	if len(source.Resources) != 1 || source.Resources[0].SourceURL != "https://assets.example.com/entrance.png" {
+		t.Fatalf("resources=%#v", source.Resources)
 	}
 }

@@ -157,7 +157,7 @@ func resolveFastGPTTokenLimit(contextMaxTokens int) int {
 
 func buildFastGPTRetrieveResult(knowledgeBase models.KnowledgeBase, hit fastgptapi.SearchDatasetHit) RetrieveResult {
 	contentParts := make([]string, 0, 2)
-	if question := strings.TrimSpace(hit.Question); question != "" {
+	if question := stripFastGPTImageURLs(hit.Question); question != "" {
 		contentParts = append(contentParts, "问题："+question)
 	}
 	if answer := stripFastGPTImageURLs(hit.Answer); answer != "" {
@@ -198,14 +198,18 @@ func FetchFastGPTSyncSource(ctx context.Context, knowledgeBase models.KnowledgeB
 		return FastGPTSyncSource{}, err
 	}
 	for _, hit := range result.Hits {
-		resources := extractFastGPTImageResources(hit.Answer)
+		resources := extractFastGPTImageResources(strings.Join([]string{hit.Answer, hit.Question}, "\n"))
 		if strings.TrimSpace(hit.DataID) == "" || len(resources) == 0 {
 			continue
+		}
+		description := stripFastGPTImageURLs(hit.Answer)
+		if description == "" {
+			description = stripFastGPTImageURLs(hit.Question)
 		}
 		return FastGPTSyncSource{
 			SourceRecordID: strings.TrimSpace(hit.DataID),
 			Title:          firstFastGPTValue(hit.Question, hit.SourceName, knowledgeBase.Name),
-			Description:    stripFastGPTImageURLs(hit.Answer),
+			Description:    description,
 			Resources:      resources,
 		}, nil
 	}

@@ -3,12 +3,14 @@ package ai
 import (
 	"context"
 	"fmt"
+	"time"
 
 	openai "github.com/openai/openai-go/v3"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/usagex"
 )
 
 type EmbeddingResult struct {
@@ -23,7 +25,7 @@ type embedding struct{}
 var Embedding = &embedding{}
 
 func (s *embedding) GetModel(ctx context.Context) (*models.AIConfig, error) {
-	config, err := GetEnabledAIConfig(enums.AIModelTypeEmbedding)
+	config, err := GetAIConfigForContext(ctx, enums.AIModelTypeEmbedding)
 	if err != nil {
 		return nil, errorsx.BusinessError(2001, "未配置可用的 Embedding 模型")
 	}
@@ -41,6 +43,13 @@ func (s *embedding) GenerateEmbedding(ctx context.Context, text string) (*Embedd
 	}
 
 	return result, nil
+}
+
+func (s *embedding) GenerateEmbeddingWithConfig(ctx context.Context, config models.AIConfig, text string) (*EmbeddingResult, error) {
+	if text == "" {
+		return nil, errorsx.InvalidParam("文本内容不能为空")
+	}
+	return s.callEmbeddingAPIWithConfig(ctx, config, text)
 }
 
 func (s *embedding) GenerateBatchEmbeddings(ctx context.Context, texts []string) ([]EmbeddingResult, error) {
@@ -61,18 +70,30 @@ func (s *embedding) GenerateBatchEmbeddings(ctx context.Context, texts []string)
 }
 
 func (s *embedding) callEmbeddingAPI(ctx context.Context, text string) (*EmbeddingResult, error) {
-	config, err := GetEnabledAIConfig(enums.AIModelTypeEmbedding)
+	config, err := GetAIConfigForContext(ctx, enums.AIModelTypeEmbedding)
 	if err != nil {
 		return nil, err
 	}
-	client := newOpenAIClient(*config)
-	embeddingResp, err := client.Embeddings.New(ctx, openai.EmbeddingNewParams{
+	return s.callEmbeddingAPIWithConfig(ctx, *config, text)
+}
+
+func (s *embedding) callEmbeddingAPIWithConfig(ctx context.Context, config models.AIConfig, text string) (*EmbeddingResult, error) {
+	callCtx, capture := usagex.WithCapture(ctx)
+	startedAt := time.Now()
+	client := newOpenAIClient(config)
+	embeddingResp, err := client.Embeddings.New(callCtx, openai.EmbeddingNewParams{
 		Input: openai.EmbeddingNewParamsInputUnion{
 			OfString: openai.String(text),
 		},
 		Model: openai.EmbeddingModel(config.ModelName),
 	})
 	if err != nil {
+		RecordModelUsage(callCtx, ModelUsageRecord{
+			Stage: "embedding", OperationType: "embedding",
+			Config: config, LatencyMS: time.Since(startedAt).Milliseconds(),
+			Status: "failed", ErrorClass: "model_call_failed",
+			Receipt: lastCapturedReceipt(capture),
+		})
 		return nil, fmt.Errorf("failed to call embedding api: %w", err)
 	}
 
@@ -84,12 +105,31 @@ func (s *embedding) callEmbeddingAPI(ctx context.Context, text string) (*Embeddi
 		vector = append(vector, float32(item))
 	}
 
-	return &EmbeddingResult{
+	result := &EmbeddingResult{
 		Vector:     vector,
 		TokensUsed: int(embeddingResp.Usage.TotalTokens),
 		ModelName:  embeddingResp.Model,
 		Dimension:  len(vector),
-	}, nil
+	}
+	RecordModelUsage(callCtx, ModelUsageRecord{
+		Stage: "embedding", OperationType: "embedding",
+		Config: config, PromptTokens: int64(result.TokensUsed),
+		LatencyMS: time.Since(startedAt).Milliseconds(), Status: "completed",
+		Receipt: lastCapturedReceipt(capture),
+	})
+	return result, nil
+}
+
+func lastCapturedReceipt(capture *usagex.Capture) *usagex.Receipt {
+	if capture == nil {
+		return nil
+	}
+	receipts := capture.Receipts()
+	if len(receipts) == 0 {
+		return nil
+	}
+	receipt := receipts[len(receipts)-1]
+	return &receipt
 }
 
 func (s *embedding) GetDimension(ctx context.Context) (int, error) {

@@ -26,6 +26,8 @@ var Models = []any{
 	&EmailVerificationCode{},
 	&Asset{},
 	&Tag{},
+	&CustomerTagRelation{},
+	&CustomerTagChangeLog{},
 	&Conversation{},
 	&Store{},
 	&StoreStaffBinding{},
@@ -41,6 +43,8 @@ var Models = []any{
 	&ConversationRouteState{},
 	&AIManualResumeTask{},
 	&ConversationSessionSummary{},
+	&ConversationEvolutionState{},
+	&ConversationEvolutionRun{},
 	&MessageSyncLog{},
 	&ConversationAssignment{},
 	&ConversationTag{},
@@ -59,6 +63,7 @@ var Models = []any{
 	&AgentTeamSchedule{},
 	&AIConfig{},
 	&StoreAIModelSetting{},
+	&StoreModelCredential{},
 	&KnowledgeBase{},
 	&KnowledgeDocument{},
 	&KnowledgeFAQ{},
@@ -70,6 +75,9 @@ var Models = []any{
 	&KnowledgeResourceGroup{},
 	&KnowledgeResourceItem{},
 	&FastGPTStoreTenant{},
+	&FastGPTProfileTemplate{},
+	&ModelProfileTemplate{},
+	&ModelProfileSlot{},
 	&FastGPTUsageSyncState{},
 	&FastGPTDatasetJob{},
 	&SkillDefinition{},
@@ -391,12 +399,20 @@ type Asset struct {
 }
 
 type Tag struct {
-	ID       int64        `gorm:"primaryKey;autoIncrement"`
-	ParentID int64        `gorm:"type:bigint;not null;index"`
-	Name     string       `gorm:"type:varchar(50);not null;"`
-	Remark   string       `gorm:"type:text;"`
-	SortNo   int          `gorm:"type:int;not null;default:0"`
-	Status   enums.Status `gorm:"type:int;not null;default:0"`
+	ID              int64        `gorm:"primaryKey;autoIncrement"`
+	CompanyID       int64        `gorm:"type:bigint;not null;default:0;index"`
+	ParentID        int64        `gorm:"type:bigint;not null;index"`
+	Name            string       `gorm:"type:varchar(50);not null;"`
+	SemanticKey     string       `gorm:"type:varchar(128);not null;default:'';index"`
+	Aliases         string       `gorm:"type:text"`
+	ConflictGroup   string       `gorm:"type:varchar(80);not null;default:'';index"`
+	AIEnabled       bool         `gorm:"not null;default:true;index"`
+	ReplyEnabled    bool         `gorm:"not null;default:false;index"`
+	ApplicableScene string       `gorm:"type:varchar(255);not null;default:''"`
+	MergedIntoTagID int64        `gorm:"type:bigint;not null;default:0;index"`
+	Remark          string       `gorm:"type:text;"`
+	SortNo          int          `gorm:"type:int;not null;default:0"`
+	Status          enums.Status `gorm:"type:int;not null;default:0"`
 	AuditFields
 }
 
@@ -967,16 +983,16 @@ type KnowledgeBase struct {
 	FastGPTProfileID          string       `gorm:"type:varchar(128);not null;default:'';index"`        // FastGPTProfileID 为 FastGPT Dataset Model Profile 的非敏感标识。
 	FastGPTProfileName        string       `gorm:"type:varchar(200);not null;default:''"`              // FastGPTProfileName 仅供门店侧展示。
 	FastGPTProfileRevision    string       `gorm:"type:varchar(80);not null;default:''"`               // FastGPTProfileRevision 为 FastGPT 侧配置版本。
-	FastGPTProfileFingerprint string       `gorm:"type:varchar(128);not null;default:''"`              // FastGPTProfileFingerprint 用于判断配置是否变更，不保存密钥。
+	FastGPTProfileFingerprint string       `gorm:"type:varchar(255);not null;default:''"`              // FastGPTProfileFingerprint 用于判断配置是否变更，不保存密钥。
 	FastGPTProfileStatus      string       `gorm:"type:varchar(30);not null;default:'pending';index"`  // FastGPTProfileStatus 为 pending/ready/failed 等同步状态。
 	FastGPTProfileSyncedAt    *time.Time   `gorm:"type:datetime;index"`                                // FastGPTProfileSyncedAt 为最后一次成功同步时间。
 	Name                      string       `gorm:"type:varchar(100);not null;default:'';index"`        // Name 为知识库名称。
 	Description               string       `gorm:"type:text"`                                          // Description 为知识库描述。
 	KnowledgeType             string       `gorm:"type:varchar(20);not null;default:'document';index"` // KnowledgeType 为知识库类型：document/faq。
 	Status                    enums.Status `gorm:"type:int;not null;index"`                            // Status 为状态
-	DefaultTopK               int          `gorm:"type:int;not null;default:10"`                       // DefaultTopK 为默认召回数量。
-	DefaultScoreThreshold     float64      `gorm:"type:decimal(5,4);not null;default:0.5"`             // DefaultScoreThreshold 为默认相似度阈值。
-	DefaultRerankLimit        int          `gorm:"type:int;not null;default:5"`                        // DefaultRerankLimit 为默认重排后保留数量。
+	DefaultTopK               int          `gorm:"type:int;not null;default:5"`                        // DefaultTopK 为默认召回数量。
+	DefaultScoreThreshold     float64      `gorm:"type:decimal(5,4);not null;default:0.2"`             // DefaultScoreThreshold 为默认相似度阈值。
+	DefaultRerankLimit        int          `gorm:"type:int;not null;default:10"`                       // DefaultRerankLimit 为默认重排后保留数量。
 	ChunkProvider             string       `gorm:"type:varchar(30);not null;default:'structured'"`     // ChunkProvider 为知识库分块策略 provider。
 	ChunkTargetTokens         int          `gorm:"type:int;not null;default:300"`                      // ChunkTargetTokens 为目标 chunk token 数。
 	ChunkMaxTokens            int          `gorm:"type:int;not null;default:400"`                      // ChunkMaxTokens 为单 chunk 最大 token 数。

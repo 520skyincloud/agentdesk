@@ -20,6 +20,7 @@ type AIUsageEvent struct {
 	Model                  string     `gorm:"type:varchar(120);not null;default:'';index"`
 	AIConfigID             int64      `gorm:"type:bigint;not null;default:0;index"`
 	ModelSource            string     `gorm:"type:varchar(50);not null;default:'';index"`
+	CredentialRevision     int64      `gorm:"type:bigint;not null;default:0;index"`
 	UpstreamRequestID      string     `gorm:"type:varchar(191);not null;default:'';index"`
 	Gateway                string     `gorm:"type:varchar(40);not null;default:'';index"`
 	GatewayRequestID       string     `gorm:"type:varchar(191);not null;default:'';index"`

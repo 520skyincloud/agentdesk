@@ -73,3 +73,18 @@ func TestLoadAppliesNewAPIUsageEnvironment(t *testing.T) {
 		t.Fatalf("newAPIUsage=%#v", cfg.NewAPIUsage)
 	}
 }
+
+func TestLoadAppliesStoreCredentialMasterKeyEnvironment(t *testing.T) {
+	t.Setenv("AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY", "master-key-from-environment")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("server:\n  port: 8080\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StoreCredential.MasterKey != "master-key-from-environment" {
+		t.Fatal("store credential master key environment override was not applied")
+	}
+}

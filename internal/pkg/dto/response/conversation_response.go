@@ -7,6 +7,17 @@ type ConversationTagResponse struct {
 	Name string `json:"name"`
 }
 
+type CustomerTagResponse struct {
+	ID              int64   `json:"id"`
+	TagID           int64   `json:"tagId"`
+	Name            string  `json:"name"`
+	Source          string  `json:"source"`
+	Confidence      float64 `json:"confidence"`
+	EvidenceCount   int     `json:"evidenceCount"`
+	ManualProtected bool    `json:"manualProtected"`
+	UpdatedAt       string  `json:"updatedAt,omitempty"`
+}
+
 type ConversationParticipantResponse struct {
 	ID                    int64        `json:"id"`
 	ParticipantType       string       `json:"participantType"`
@@ -69,6 +80,7 @@ type ConversationResponse struct {
 	WxWorkExternalUserID      string                              `json:"wxWorkExternalUserId,omitempty"`
 	WxWorkEmployeeName        string                              `json:"wxWorkEmployeeName,omitempty"`
 	WxWorkEmployeeUserID      string                              `json:"wxWorkEmployeeUserId,omitempty"`
+	CustomerTags              []CustomerTagResponse               `json:"customerTags,omitempty"`
 }
 
 type ConversationDetailResponse struct {

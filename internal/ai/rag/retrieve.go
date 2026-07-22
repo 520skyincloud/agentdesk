@@ -41,6 +41,11 @@ func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) (
 	if !ok {
 		return nil, trace, nil
 	}
+	var err error
+	ctx, err = withKnowledgeModelScope(ctx, retrievableKnowledgeBases)
+	if err != nil {
+		return nil, trace, err
+	}
 
 	localKnowledgeBases, fastGPTKnowledgeBases := splitFastGPTKnowledgeBases(retrievableKnowledgeBases)
 	results := make([]RetrieveResult, 0)
@@ -164,6 +169,11 @@ func truncateForLog(text string, limit int) string {
 }
 
 func (s *retrieve) RetrieveWithRerank(ctx context.Context, req RetrieveRequest, rerankLimit int) ([]RetrieveResult, error) {
+	var err error
+	ctx, err = withKnowledgeModelScope(ctx, loadKnowledgeBasesForModelScope(req.KnowledgeBaseIDs))
+	if err != nil {
+		return nil, err
+	}
 	results, err := s.Retrieve(ctx, req)
 	if err != nil {
 		return nil, err
