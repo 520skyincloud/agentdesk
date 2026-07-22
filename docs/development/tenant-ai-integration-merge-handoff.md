@@ -1,6 +1,6 @@
 # Tenant AI Integration 唯一合并交接
 
-> 状态日期：2026-07-21
+> 状态日期：2026-07-22
 >
 > 唯一工作分支：codex/tenant-ai-integration
 >
@@ -23,13 +23,13 @@
 5. cmd/customer_audit_seed 只是历史命名的仿真命令，不表示仍有 customer-audit 开发分支。
 6. 不提交 docs/generated/、.codex/audits/、截图、临时数据库、密钥或本地配置。
 
-2026-07-20 最后一轮 push 前 fetch 的拓扑：
+2026-07-22 本轮交接更新前 fetch 的拓扑：
 
     origin/main                         e67e207  -> integration 祖先
     origin/codex/customer-audit         c706815  -> integration 祖先
-    origin/codex/tenant-ai-integration  926129f  -> 本轮 push 前远端基线
-    origin/codex/ai-billing             33b6d14  -> 与 integration 在 f2d2da4 后分叉
-    integration 最后一个代码提交        82abb92
+    origin/codex/tenant-ai-integration  886dea7  -> 本轮 push 前远端基线
+    origin/codex/ai-billing             4db7993  -> 与 integration 在 f2d2da4 后分叉
+    integration 最后一个代码提交        886dea7
 
 SHA 只是 push 前快照，不表示当前 PR 头仍停在这些提交。每次后续 push 或 merge 前仍必须重新执行 `git fetch origin --prune` 并复核。
 
@@ -188,7 +188,22 @@ DDL 继续由 AutoMigrate 完成；以上 DML 由 migration runner 幂等执行�
 
 ### 6.2 并行冲突
 
-codex/ai-billing 的历史变体使用 migration 60 处理企微人设。integration 已把该语义迁移为 62，为 60/61 的运营分析让位。合并时不得复制 ai-billing 的 000060_migrate_wxwork_reception_persona.go，也不得重编号已经进入 integration 的 60-65。
+codex/ai-billing 当前使用 migration 60-67，integration 已使用 60-65。两边相同编号的语义并不相同：
+
+| 版本 | integration | ai-billing |
+| --- | --- | --- |
+| 60 | 运营分析与质检权限 | 企微接待人设 |
+| 61 | 运营分析事实回填 | FastGPT Chat/ASR 模板回填 |
+| 62 | 企微接待人设 | FastGPT gateway 规范化 |
+| 63 | 退役 Company 运行范围 | 动态模型 Profile |
+| 64 | 退役模型派单 | 酒店客户标签种子 |
+| 65 | 客服回复与派单权限 | 修复酒店标签分类 |
+| 66 | 未使用 | 生产化客户标签 |
+| 67 | 未使用 | 退役旧会话标签 |
+
+integration 已按当前 Tenant、Store 和平台模型授权语义承接 ai-billing 60-63 的业务结果，不能再次复制这些 migration。最新标签工作若后续选择性吸收，必须在重新 fetch 全部活跃分支后使用未占用的新版本，并以 integration 现有表和数据为输入重写 64-67；不得重编号或删除已经进入 integration 的 60-65。
+
+integration 的 migration definition mismatch 校验、历史 migration archive/remap 支持、命令失败退出码和测试必须保留。不得用 ai-billing 当前 migration runner 整文件覆盖。
 
 创建任何后续 migration 前必须重新核对 origin/main、origin/codex/ai-billing 和其他活动分支。
 
@@ -216,7 +231,7 @@ Migration 64 只调整派单配置：
 
 ## 7. ai-billing 语义映射
 
-origin/codex/ai-billing 在共同基点 f2d2da4 后的提交已按当前租户和门店身份语义重做进入 integration：
+origin/codex/ai-billing 在共同基点 f2d2da4 后，前七个提交已按当前租户和门店身份语义重做进入 integration：
 
 | ai-billing | integration |
 | --- | --- |
@@ -229,6 +244,15 @@ origin/codex/ai-billing 在共同基点 f2d2da4 后的提交已按当前租户�
 | 33b6d14 store dataset model profiles | 3ff376e |
 
 这些不是 patch-equivalent 提交，因为 integration 同时加入 Tenant、StoreStaffBinding、权限、migration 62/63 和 Company 退役调整。后续审查应比较行为和测试，不应再次 cherry-pick 右侧已经承接的左侧提交。
+
+最新两个提交尚未吸收：
+
+| ai-billing | 状态 | 决策 |
+| --- | --- | --- |
+| 3538c8d store-scoped model credentials and tag evolution | 124 个文件，新增约 1.2 万行 | 禁止直接合并；模型凭据所有权与当前平台统一管理设计冲突 |
+| 4db7993 productionize customer tag workflows | 51 个文件，新增约 3600 行 | 禁止直接合并；需在 Tenant 标签契约上选择性重做 |
+
+完整冲突审计和后续吸收顺序见第 20 节。在该工作完成前，ai-billing 只作为代码与测试语义来源，不是可合并分支。
 
 ## 8. 丽斯未来仿真
 
@@ -341,8 +365,8 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
 
 1. git fetch origin --prune。
 2. 确认 origin/main 和 origin/codex/customer-audit 仍是 integration 祖先。
-3. 对 origin/codex/ai-billing 执行提交和行为对照；若只有第 7 节映射提交，不再吸收。
-4. 核对 migration 60-65 没有远端新冲突。
+3. 对 origin/codex/ai-billing 执行提交和行为对照；前七个映射提交不再吸收，最新 3538c8d/4db7993 按第 20 节选择性重做，禁止整分支 merge。
+4. 核对 integration 60-65 和 ai-billing 60-67 的语义及远端新编号；任何新 migration 必须使用重新核对后的未占用版本。
 5. 确认正式工作树只包含预期提交，无 docs/generated/、密钥和临时产物。
 6. 运行第 9.3 节全部门禁。
 7. push codex/tenant-ai-integration 并更新 PR #2。
@@ -367,6 +391,10 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
     internal/services/conversation_*
     internal/services/wx_work_protocol_instance_service.go
     internal/services/fastgpt_dataset_service.go
+    internal/services/store_ai_model_setting_service.go
+    internal/services/tag_service.go
+    internal/services/conversation_tag_service.go
+    internal/ai/runtime/executor/reply_tag_context.go
     web/lib/api/admin.ts
     web/lib/navigation.tsx
     web/messages/zh-CN.json
@@ -379,7 +407,11 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
 - 企微绑定是否仍只使用已有 User。
 - CompanyID 是否被重新带回运行时。
 - ai-billing migration 60 是否误覆盖 integration 60。
+- ai-billing migration 61-67 是否被原编号复制，或 migration runner 是否被降级。
 - 模型和计费字段语义是否被客服侧改写；只允许退役 `dispatch_decision_llm`，不能误删回复和意图模型用途。
+- StoreModelCredential 或门店 API Key 编辑是否绕过平台 AIConfig -> TenantAIModelGrant 授权链。
+- CustomerTagRelation、ChangeLog 和 Evolution 是否都带可信 TenantID，是否错误依赖已退役 CompanyID。
+- 现有 ConversationTag、TicketTag、租户完整性审计和历史筛选是否被无迁移删除。
 
 ## 13. 回滚边界
 
@@ -417,7 +449,7 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
 
 main 实际合并由仓库负责人决定；在合并前只能写“PR 已就绪”，不能写“已进入 main”。
 
-## 16. 2026-07-21 规则派单核心正确性加固（未提交）
+## 16. 2026-07-21 规则派单核心正确性加固（已完成）
 
 ### 16.1 本步目标与结果
 
@@ -458,7 +490,7 @@ main 实际合并由仓库负责人决定；在合并前只能写“PR 已就绪
 - `conversation_dispatch_service.go` 属于共享会话范围，但 ai-billing 当前未改该文件；后续提交前仍需再次 fetch 对照。
 - 本步为兼容查询和 service 排序修改，可按对应提交整体回滚；没有 DDL/DML，不需要数据库逆向操作。
 
-## 17. 2026-07-21 规则恢复、权限与实时工作台收口（未提交）
+## 17. 2026-07-21 规则恢复、权限与实时工作台收口（已完成）
 
 ### 17.1 目标与运行结果
 
@@ -608,5 +640,84 @@ ai-billing 与本批同时修改的共享文件仍为：
 ### 19.4 并行分支、合并与回滚
 
 - 开始前基线为 `codex/tenant-ai-integration@971c338`、`origin/codex/ai-billing@3538c8d`；提交前再次 fetch 后，`origin/codex/ai-billing` 已前进到 `4db7993`。本批四个命令代码文件未与该分支同文件修改；文档只更新唯一 integration 设计与交接，不恢复冻结的 customer-audit PR。
-- `ai-billing@4db7993` 新增客户标签生产化并使用 migration `64-67`，其中 `64/65` 与 integration 已有的“退役模型派单 / 同步客服回复权限”直接撞号；同时涉及 Tag model、权限、会话 DTO/API、AI 回复上下文和前端标签页面。该新增范围尚未完成语义吸收，不能整分支 merge 或直接 cherry-pick，PR #2 必须先完成逐项映射、迁移重编号和回归验证再合并 main。
+- `ai-billing@4db7993` 全分支使用 migration `60-67`；前七个提交的 60-63 语义已经在 integration 重做，最新客户标签范围使用 64-67，其中 64/65 与 integration 已有的“退役模型派单 / 同步客服回复权限”直接撞号。同时涉及 Tag model、权限、会话 DTO/API、AI 回复上下文和前端标签页面。该新增范围尚未完成语义吸收，不能整分支 merge 或直接 cherry-pick，PR #2 必须先完成逐项映射、迁移重写和回归验证再合并 main。
 - 本批可在规则派单提交之后独立合并。回滚只需停止保活进程并回滚上述命令代码；无需回退数据库结构或删除历史业务数据。若需恢复静态仿真基线，可重新执行同 batch Seed。
+
+## 20. 2026-07-22 最新 ai-billing 合并审计（仅记录，未合并）
+
+### 20.1 审计范围与结论
+
+- 审计基线：`codex/tenant-ai-integration@886dea7`、`origin/codex/ai-billing@4db7993`，共同祖先为 `f2d2da4`。
+- integration 相对共同祖先有 138 个提交，ai-billing 有 9 个提交；前七个已按第 7 节建立语义对应，当前只需继续审计 `3538c8d` 和 `4db7993`。
+- 结论是“禁止直接 merge、禁止整文件覆盖、禁止直接 cherry-pick”。本节只固定未来的选择性吸收契约，本次没有把任何 ai-billing 代码带入 PR #2。
+- 冻结的 `codex/customer-audit` 仍是 integration 祖先。该旧工作区遗留的未提交运营分析文件是 integration 已提交版本的旧态，不得再搬运覆盖；其中 `.codex/audits/` 仍是本地历史截图，不进入 Git。
+
+### 20.2 核心冲突矩阵
+
+| 范围 | ai-billing 当前实现 | integration 权威语义 | 处理决定 |
+| --- | --- | --- | --- |
+| 模型凭据 | `StoreModelCredential` 允许 store_staff 维护门店 API Key，并让运行时围绕门店凭据解析 | `AIConfig -> TenantAIModelGrant -> StoreAIModelSetting -> 企微员工号覆盖`；供应商密钥只由平台管理 | 不吸收门店凭据表、接口和租户页面；仅评估加密、指纹、候选测试/激活/回滚机制能否复用到平台 AIConfig |
+| 租户隔离 | 新模型主要使用 CompanyID/StoreID，缺少 TenantID | TenantID 是所有租户事实与查询的第一边界；Company 已退出运行时 | 新事实必须补 TenantID、租户唯一索引和完整性审计，禁止恢复 Company 路由 |
+| 权限 | 多处直接检查 superadmin/store_staff 角色 | 所有管理动作必须进入权限管理；账号只分配角色 | 新接口先定义可见 Permission，再由 Handler 校验权限、Service 校验数据范围；删除隐藏角色授权 |
+| Migration | 60-67 与 integration 60-65 发生编号和语义冲突 | integration 60-65 已成为权威且可能已执行 | 旧编号不复制；按当前数据契约重写新 migration，提交前再次核对全部远端 |
+| Migration 运行器 | 会移除 definition mismatch、历史 archive/remap、失败退出和相关测试 | integration runner 是当前发布安全底座 | 完整保留 integration 实现，只移植独立且幂等的数据变换 |
+| 客户标签 | 新建 CustomerTagRelation/ChangeLog/Evolution，并把 conversation.tag 改成客户标签；退役 ConversationTag | 已有 Tenant 范围 Tag、ConversationTag、TicketTag、筛选和完整性规则 | 先统一“标签目录、客户关系、会话快照”三种语义；兼容迁移完成前不删除 ConversationTag/TicketTag |
+| AI 回复上下文 | 将持久化客户标签接入回复上下文 | 回复运行时以真实代码和 reply-runtime-engine.md 为准 | 只选择性复用经知识可回答性约束的只读标签上下文，不改变回复提交、usage、Token 或计费公式 |
+| 使用证据 | 增加 credential revision 和通用模型 usage 槽位 | 现有 usage 由平台模型授权链和计费分支负责 | 可追加证据字段，但必须先与计费语义对齐；不得改价格、余额、聚合口径或历史事件 |
+
+明确缺少 TenantID 的新事实包括 `StoreModelCredential`、`CustomerTagRelation`、`CustomerTagChangeLog`、`ConversationEvolutionState`、`ConversationEvolutionRun`，以及该分支版本的 `AIUsageEvent`。仅依赖 StoreID 或写 `CompanyID=0` 不能替代租户边界。
+
+### 20.3 可复用与拒绝项
+
+可作为实现参考、但必须重写接线的部分：
+
+- AES-256-GCM、密钥指纹和不回显明文的测试。
+- 凭据候选 -> 测试 -> 激活 -> 回滚工作流及 credential revision 证据，但所有权应落在平台模型配置。
+- append-only 客户标签变更日志、确定性互斥组、证据消息和人工保护语义。
+- 受知识可回答性约束的标签上下文、迁移幂等测试和标签工作流测试。
+- 通用 usage 槽位与 revision 证据，但不改变计费公式和租户归集口径。
+
+明确拒绝直接吸收：
+
+- 门店员工编辑供应商 API Key、租户页面展示模型凭据或运行时绕过 TenantAIModelGrant。
+- 任何基于角色名的隐藏授权。
+- 新写 CompanyID 运行范围或用全局 `CompanyID=0` 标签目录混用多个租户。
+- 用 ai-billing 的 migration runner 覆盖 integration。
+- 无兼容映射删除 ConversationTag、TicketTag、历史标签关系或现有筛选接口。
+- 恢复模型派单、修改规则派单、修改 Token/usage/价格/余额和计费公式。
+
+### 20.4 后续选择性吸收顺序
+
+1. 先冻结标签产品语义：Tenant 标签目录、CustomerTagRelation 持久客户画像、ConversationTag 当次会话快照、TicketTag 工单分类各自承担什么职责。
+2. 定义 TenantID、唯一索引、父子关系、权限码、DTO 和兼容 API；这些共享契约先单独提交并通过 SQLite/MySQL 与 TenantIntegrityAudit。
+3. 模型凭据继续由平台 AIConfig 管理。需要候选测试/激活/回滚时升级现有 AIConfig，不新建租户或门店明文入口。
+4. 在现有 Tag/ConversationTag/TicketTag 上做可回滚迁移；CustomerTagRelation 与 ChangeLog 仅在现有模型无法表达稳定客户画像和审计历史时新增。
+5. 接入客户标签人工管理、冲突组和历史日志，再接会话 UI；所有接口进入权限管理并按 TenantID、客服组范围和当前操作者复核。
+6. 最后接只读 AI 回复标签上下文和 conversation evolution。模型输出先经过 schema、租户、标签目录、证据消息和人工保护校验，失败不能阻断正常回复。
+7. 计费负责人确认 usage/revision 字段后才追加证据；客服分支不改计费计算。
+8. 完成后更新本文件和 PR #2，再重新判断是否具备合并 main 条件。
+
+### 20.5 验证与回滚门禁
+
+选择性吸收完成后至少执行：
+
+    go test ./... -count=1
+    go vet ./...
+    pnpm --dir web typecheck
+    pnpm --dir web lint
+    cd web && node --test 所有 *.test.mjs
+    pnpm --dir web build
+    SQLite/MySQL 首次 migration + 重复 migration + 历史数据回填
+    TenantIntegrityAudit（双租户、跨租户负例、CompanyID=0 负例）
+    标签目录/关系/冲突组/人工保护/历史兼容回归
+    AI 回复、FastGPT、usage/Token/计费证据回归
+    规则派单、人工接管、会话记录、工单标签和运营分析回归
+    git diff --check
+
+回滚顺序必须是 UI/运行时接线 -> 新 API/Service -> 新事实写入。兼容表和历史标签关系在数据核验、导出和明确废弃窗口前不物理删除；已经执行的 migration 不通过删除记录或改旧版本号回滚。
+
+### 20.6 本次文档提交边界
+
+- 本次只更新唯一 integration 合并交接和 PR #2 中文说明，不改代码、model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、AI 回复、usage、Token 或计费。
+- 已执行 `git fetch origin --prune`、分支祖先/提交映射、两项新增提交统计、migration 60-67、模型/权限/标签/前端共享文件和现有 PR 状态核对。
+- 推送前只需执行文档差异审查与 `git diff --check`；代码全量门禁仍以第 18、19 节最近成功记录为准，未来吸收 ai-billing 后必须全部重跑。
