@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B7 已完成并验证；下一步为 B8 人工任务池适配
+> 状态：2026-07-23 产品决策已闭合，B0-B8 已完成并验证；下一步为 B9 行业标签实例、客户标签关系和 UI
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1217,9 +1217,23 @@ git diff --check
 - 回滚边界：B12/B14 清理旧代码和旧表前，可以整体回滚 `b272d9a`，且无 Schema 回滚；一旦 B8 或后续批次依赖新 Runtime，不允许只回滚 resolver 或恢复旧 AIConfig fallback。真实 NewAPI/FastGPT 联调、丽斯未来完整链路和 `8083` 发布仍属于 B13 门禁。
 - 后续边界：B8 只负责把 ai-billing 的 `need_human` 结果接入现有人工任务池并验证规则派单，不得引入 LLM 选人；客户标签写入、演化、页面与旧链物理删除分别留在 B9-B12/B14。
 
+### 25.9 2026-07-23 B8 AI 人工交接与现有规则派单适配
+
+- 代码提交：`5c11016cb42b17d49d377a076a024d314929da16`。AI 行为来源继续固定为 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架继续固定为 `origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：实施前和提交前均执行 `git fetch origin --prune`；两个只读来源与统一分支远端均未前移。本批没有整分支 merge、cherry-pick 或修改来源工作树。
+- 唯一人工入口：固定 AI Runtime 的 `need_human` 结果继续只调用 `ConversationHumanDispatchService`。AI 只提供转人工决定、原因和等待文案，不参与客服组、小组或客服选人；后续仍由现有 manual/rule 模式、排班、Presence、容量、公平债务、SLA、冷却和旧任务恢复决定是否及如何派发。
+- 并发与幂等：为单会话人工交接增加进程内分片锁，并与 MySQL 行锁、SQLite 写事务配合。会话、路由、转人工事件、运营排队事实和 `LastManualHandoffAt` 在同一事务中提交；同一标准化 Request ID 并发重试只产生一份转人工事件和一条客户等待文案。转人工确认的 pending action 改为原子 claim/consume，确认 token 和 ClientMsgID 对同一 Request ID 保持稳定。
+- 恢复任务：`AIManualResumeTaskService.Schedule` 锁定会话与路由并复用当前活动任务，不再因并发重试和不同随机 token 为同一会话建立多条等待恢复任务。Store、总部待接管和已分配路由的重复请求分别返回真实决定，不再统一误报为 team pool。
+- 规则派单：新增回归证明客服离席时任务持久停留在人工池，客服恢复 `idle` 后由既有 30 秒补偿扫描派出。修复无 Store/企微归属的总部网页会话范围边界：只有 Tenant 的默认客服组可承接该无范围路由；任何带 Store 或企微归属的路由仍必须命中客服组显式范围，普通组不能借默认逻辑越权。
+- 共享契约：本批只修改内部 service 和测试；没有新增或修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限码、WebSocket payload、前端页面、AI Prompt/Schema、模型调用、Token 或 Billing 口径。
+- 验证：`go test ./... -count=1`、`go vet ./...`、人工交接/派单/路由/超时/恢复定向回归以及新增并发场景的 `go test -race` 均通过；`gofmt` 和 `git diff --check` 通过。测试库补齐 `ServiceAnalyticsPolicy`，不再以缺表日志掩盖真实派单结果。
+- 并行影响与合并顺序：B8 必须位于 B7 `b272d9a` 之后，B9-B14 继续建立在 `5c11016` 之后。两个来源分支继续只读；本批不要求 rebase，也没有与来源新增同文件冲突。禁止把本提交单独回写到任一来源分支形成第二套人工交接实现。
+- 回滚边界：B9 之前可整体回滚 `5c11016`，不涉及 Schema 或数据迁移；回滚会同时失去并发幂等、确认原子性、恢复任务去重和无范围总部会话派发修复。异常时可以把客服组切为 manual，但不得恢复 LLM 选人或新增平行人工任务池。
+- 后续边界：B9 只建设固定行业标签的 Tenant 实例、Store 客户关系和管理 UI；B10 才启用静默演化 worker，B11 才完成回复上下文与批量灰度开关。本批没有提前写客户标签。
+
 ## 26. 用户最终 1-48 项决定追溯
 
-本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B8-B14 实施和验收证据。
+本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B9-B14 实施和验收证据。
 
 | 编号 | 最终解释 | 权威落点 |
 | --- | --- | --- |
