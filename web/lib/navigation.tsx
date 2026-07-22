@@ -325,12 +325,6 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <MessageSquareCodeIcon />,
         requiredPermission: "skillDefinition.view",
       },
-      {
-        titleKey: "nav.replyIntentConfigs",
-        url: "/dashboard/reply-intent-configs",
-        icon: <SlidersHorizontalIcon />,
-        requiredPermission: "aiConfig.view",
-      },
     ],
   },
   {
@@ -404,6 +398,12 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         titleKey: "nav.replyIntentProfiles",
         url: "/dashboard/reply-intent-profiles",
         icon: <BrainCircuitIcon />,
+        requiredPermission: "aiConfig.view",
+      },
+      {
+        titleKey: "nav.replyIntentConfigs",
+        url: "/dashboard/reply-intent-configs",
+        icon: <SlidersHorizontalIcon />,
         requiredPermission: "aiConfig.view",
       },
     ],

@@ -19,3 +19,14 @@ test("reply intent writes require a platform account and explicit AI config perm
   assert.match(pageSource, /rowActions=\{\s*canUpdate\s*\? \[/)
   assert.match(pageSource, /updateStatus: updateIntentStatusWithPermission/)
 })
+
+test("reply intent list omits all-option filters from the API query", () => {
+  assert.match(
+    pageSource,
+    /name: "intentProfileId"[^\n]*defaultValue: "all"[^\n]*allValue: "all"/
+  )
+  assert.match(
+    pageSource,
+    /name: "status"[^\n]*defaultValue: "all"[^\n]*allValue: "all"/
+  )
+})

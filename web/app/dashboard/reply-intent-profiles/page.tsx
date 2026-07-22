@@ -52,7 +52,7 @@ export default function ReplyIntentProfilesPage() {
         { name: "code", label: "行业编码", placeholder: "hotel", defaultValue: "", trim: true, className: "w-full sm:w-48" },
         { name: "name", label: "名称", placeholder: "酒店行业", defaultValue: "", trim: true, className: "w-full sm:w-56" },
         { name: "industryCode", label: "业务行业", placeholder: "hotel", defaultValue: "", trim: true, className: "w-full sm:w-44" },
-        { name: "status", label: "状态", placeholder: "全部", defaultValue: "all", type: "select", options: statusOptions, className: "w-full sm:w-36" },
+        { name: "status", label: "状态", placeholder: "全部", defaultValue: "all", allValue: "all", type: "select", options: statusOptions, className: "w-full sm:w-36" },
       ]}
       columns={[
         {

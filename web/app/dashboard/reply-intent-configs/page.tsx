@@ -124,7 +124,7 @@ export default function ReplyIntentConfigsPage() {
         { name: "intentProfileId", label: "意图行业", placeholder: "全部", defaultValue: "all", allValue: "all", type: "select", options: profileOptionsWithAll, className: "w-full sm:w-48" },
         { name: "code", label: "意图编码", placeholder: "如 hotel_info", defaultValue: "", trim: true, className: "w-full sm:w-56" },
         { name: "name", label: "意图名称", placeholder: "搜索名称", defaultValue: "", trim: true, className: "w-full sm:w-56" },
-        { name: "status", label: "状态", placeholder: "全部", defaultValue: "all", type: "select", options: statusOptions, className: "w-full sm:w-40" },
+        { name: "status", label: "状态", placeholder: "全部", defaultValue: "all", allValue: "all", type: "select", options: statusOptions, className: "w-full sm:w-40" },
       ]}
       columns={[
         {
