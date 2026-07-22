@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-22 产品决策已闭合，B0-B3 已完成并验证；B4 Store Credential 生命周期待实施
+> 状态：2026-07-22 产品决策已闭合，B0-B4 已完成并验证；下一步为 B5 Usage、NewAPI Billing Query 与页面
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1147,3 +1147,22 @@ git diff --check
 - 共享契约与并行影响：本批修改 Model Profile/Assignment model、repository、service、DTO、builder、显式路由、权限种子、Migration、`web/lib/api/admin.ts`、平台模型页面和接入公司操作；未改 Credential 密文生命周期、FastGPT、Usage/Billing、AI Reply Runtime、客户标签、规则派单或运营事实。两个来源分支保持只读。
 - 合并与回滚：B3 必须在 B4 Credential、B6 FastGPT 和 B7 Runtime 前合入，后端提交必须先于前端提交。Cleanup 前可整体回滚 B3 应用代码；新增 Profile/Slot/Assignment 表和 Migration 记录可以保留，但不得启用依赖新 resolver 的 Runtime。禁止仅回滚 Assignment active/pending 字段后继续运行 B4 及以后代码。
 - 后续边界：当前没有任何 Store 会因 B3 单独变成 ready；Credential 候选测试、二次确认、不可变审计、active 切换以及失败时保留旧 active revision 全部属于 B4。旧 AIConfig/Grant/StoreSetting 的路由和模型仅为 B12/B14 迁移清理保留，不得重新接回新链路。
+
+### 25.5 2026-07-22 B4 Store Credential、安全审批与不可变审计
+
+- 代码提交：后端安全、Migration 与测试为 `f9eb16ffededfd3571ebeabe6139f0f3715a4b8c`；平台、公司主管和门店员工复用前端为 `06f2b605cac1afdd3b16ee527ec12fdc651cb088`。AI 行为来源继续固定为 `4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架继续固定为 `1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：提交前执行 `git fetch origin --prune`；`origin/codex/tenant-ai-integration`、`origin/codex/ai-billing`、`origin/main` 和统一分支远端均未前移。Migration 070 在全部活跃远端引用中无重号。
+- 密钥保存：新增 AES-256-GCM 信封，密文、nonce、指纹、算法版本和 master key ID 分开保存；API Key 只在提交请求和调用边界短暂存在，model 增加 `json:"-"` 防误序列化，任何 DTO、日志、审计和页面只返回末六位掩码。启动配置强校验单一 NewAPI BaseURL 与 32-byte 加密主密钥，不读取旧 `AIConfig.APIKey`。
+- 候选生命周期：每个 Tenant + Store 只有一条 Credential 和 Policy。新 Key 先写 candidate revision，再以当前 pending/active Model Profile 的九个用途槽执行 NewAPI 验证，并同步 FastGPT；全部成功后通过 compare-and-swap 激活 Credential 与 Store Assignment。验证、同步或并发激活失败时清除失败 candidate 并继续使用旧 active revision，绝不覆盖可用配置。
+- 审批与敏感操作：平台管理员、公司主管和获准的门店员工共用同一 Service。提交、批准、拒绝、策略单改和批量修改均要求当前密码、显式二次确认和 Tenant/Store 数据范围；门店自助默认关闭，可由管理员按门店启用，并可要求公司主管审批。关闭自助会强制关闭审批开关。成功和失败均写 append-only 审计，包含操作者、来源角色、revision、Profile revision、指纹末六位、结果、错误类别和时间，不保存密钥。
+- API 与权限：新增 `/api/dashboard/store-model-credential/get|submit|submit-self|approve|reject|policy|batch-policy|audit` 显式路由，handler 只解析 DTO、校验权限并调用 Service。继续复用权限管理中的 `aiConfig.view/update` 和既有 Role -> Permission 派发；Tenant 与 Store 范围是权限之外不可突破的强制上限。公司主管只管理本 Tenant，门店员工只管理自己的唯一 Store，平台操作者必须显式选择目标 Tenant。
+- 运行时边界：`ModelCallResolverService` 现在只解密当前 ready Store 的 active Credential，并校验 Credential revision 与 active Assignment/Profile revision 一致；媒体理解等新链路使用该 resolver。旧 AIConfig resolver、Tenant 授权池、StoreSetting 和企微级密钥没有被接回。FastGPT 同步只更新当前 Tenant + Store 的 target/applied revision 和非敏感状态。
+- Store 建立：Migration 070 和新 Store/StoreStaffBinding 流程只创建 `unconfigured` Credential 与默认关闭的 Policy，不迁移旧明文 Key，不自动生成可调用凭据，也不因测试租户存在而放宽规则。
+- 前端：接入公司“门店模型指派”弹窗增加门店搜索、批量自助/审批策略、密码二次确认和逐店凭据入口；用户管理中的公司主管入口、门店工作台中的唯一 Store 入口复用同一 `StoreModelCredentialDialog`。组件只显示模型名、readiness、掩码、候选状态和不可变审计，不显示 Provider、BaseURL、Prompt、Schema 或明文 Key。
+- 数据库验证：SQLite 覆盖 Migration 070 fresh、历史 Store 初始化和幂等重跑；临时 MySQL 8.4 完成首次运行与幂等重跑，随后停止并删除临时容器。测试覆盖 Tenant/Store 唯一性、候选/active revision、错误保活、CAS 冲突和失败审计。
+- 代码验证：`go test ./... -count=1`、`go test -race ./internal/services -run 'TestStoreModelCredential' -count=1`、`go vet ./...`、`git diff --check` 和秘密边界检查通过。
+- 前端验证：`tsc --noEmit --incremental false`、143 项 `*.test.mjs`、ESLint 0 error/33 个既有 warning、SDK 构建和 `next build --webpack` 全部通过。
+- 浏览器验证：临时 `8085` 使用丽斯未来测试 Tenant 验证平台、公司主管和门店员工三种范围、密钥掩码、候选/审批状态以及桌面和移动弹窗滚动边界，控制台无 error/warn。密码策略补丁后又在 `1280x720` 复核，document 与 dialog 均无横向溢出；本次最后一次 `390x844` 重复检查因内置浏览器 viewport override 未实际改变 `innerWidth`，因此未把该次尝试计作新的移动截图证据，移动结论仍由补丁前真实检查、flex-wrap 布局、组件测试、typecheck 和生产构建共同支撑。
+- 共享契约与并行影响：本批修改 Credential model/repository/service/DTO/builder、Resolver、FastGPT Store 状态、Store 创建、Auth 范围、显式路由、Migration、配置、`web/lib/api` 和三处现有页面入口；未修改 Usage/Billing 口径、完整 AI Reply Runtime、客户标签、规则派单或运营事实。两个来源分支保持只读。
+- 合并与回滚：B4 必须在 B5 Billing、B6 FastGPT 完整重建和 B7 Runtime 前合入，`f9eb16f` 必须先于 `06f2b60`。Cleanup 前可回滚前端与调用入口；若回滚后端，新增 Credential/Policy/Audit 表可以保留，但禁止让 B5-B7 继续依赖已回滚的 resolver。已激活 Credential 不回显也不回迁旧 AIConfig；需要业务回退时只能显式提交新的 candidate 或恢复 cleanup 前整库备份。
+- 后续边界：B5 只在 active Store Credential 身份下实现 NewAPI Usage 查询、内部归因和对账，不做充值、扣费、套餐、发票或额度拦截。B6 将继续完成 FastGPT provision/upload/search/retry 的 Tenant + Store 重建，不能在 B4 的同步适配层停止。
