@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-22 产品决策已闭合，B0-B4 已完成并验证；下一步为 B5 Usage、NewAPI Billing Query 与页面
+> 状态：2026-07-22 产品决策已闭合，B0-B5 已完成并验证；下一步为 B6 FastGPT 重建与单向 Profile
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1166,3 +1166,21 @@ git diff --check
 - 共享契约与并行影响：本批修改 Credential model/repository/service/DTO/builder、Resolver、FastGPT Store 状态、Store 创建、Auth 范围、显式路由、Migration、配置、`web/lib/api` 和三处现有页面入口；未修改 Usage/Billing 口径、完整 AI Reply Runtime、客户标签、规则派单或运营事实。两个来源分支保持只读。
 - 合并与回滚：B4 必须在 B5 Billing、B6 FastGPT 完整重建和 B7 Runtime 前合入，`f9eb16f` 必须先于 `06f2b60`。Cleanup 前可回滚前端与调用入口；若回滚后端，新增 Credential/Policy/Audit 表可以保留，但禁止让 B5-B7 继续依赖已回滚的 resolver。已激活 Credential 不回显也不回迁旧 AIConfig；需要业务回退时只能显式提交新的 candidate 或恢复 cleanup 前整库备份。
 - 后续边界：B5 只在 active Store Credential 身份下实现 NewAPI Usage 查询、内部归因和对账，不做充值、扣费、套餐、发票或额度拦截。B6 将继续完成 FastGPT provision/upload/search/retry 的 Tenant + Store 重建，不能在 B4 的同步适配层停止。
+
+### 25.6 2026-07-22 B5 Usage、NewAPI Billing Query 与页面
+
+- 代码提交：后端查询、归因、权限 Migration 与测试为 `aad04ab2babe00156020675371fa65b6dd4bc51e`；统一账单工作区、导航和前端测试为 `78393901f1b45dc9a2eccf177e013f1565c80a98`。AI 行为来源继续固定为 `4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架继续固定为 `1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：提交前执行 `git fetch origin --prune`；`origin/codex/tenant-ai-integration`、`origin/codex/ai-billing`、`origin/main` 与统一分支远端均未前移。Migration 071 在全部活跃远端引用中无重号。
+- 官方账单：每家 Store 只使用自身 active `StoreModelCredential` 和已就绪 Model Profile 的统一 NewAPI Gateway 查询 `/api/status`、`/api/usage/token/` 与 `/api/log/token`。没有可用 Credential、九槽不完整或 revision 不一致时按门店返回明确失败，不借用平台、Tenant 或其他 Store 的 Key；单店失败不使整批查询失败。
+- 数据范围：同一 Service 强制 Platform、Tenant、Store 三层边界。平台管理员可跨 Tenant 筛选，公司主管只能查看本 Tenant，门店员工只能查看自己的唯一 Store；单次最多 50 家门店，日期按 `Asia/Shanghai` 且最多含首尾 366 天。权限继续使用 Role -> Permission 全局派发，新增可见的 `billing.view` 和 `billing.export`，默认只赋予 `super_admin/admin/tenant_admin/store_staff`。
+- 归因与对账：`AIUsageEvent` 在写入时补齐 Store 的 Profile revision、用途槽、Credential revision 与密钥指纹；`AIUsageGatewayCall` 的幂等键包含 Gateway + Tenant + Store + Request ID。官方调用与本地证据只按 `StoreID + Request ID` 精确匹配，不做时间窗口猜测；查询可回写非敏感对账元数据，但不修改原始调用事实。
+- 旧链退出：删除平台 `NewAPIUsage.AccessToken` 驱动的定时对账和 FastGPT 平台 Token 导入调用，避免无 Store 身份的账单污染。配置结构在 B12 与其他旧 AIConfig 运行链一起物理退出；B5 不提前破坏历史配置读取边界。托管 FastGPT 的 Store 级 Usage worker 继续保留，待 B6 重建。
+- API 与隐私：新增 `/api/dashboard/billing-query/options|get|export` 显式路由和独立 request/response DTO，不把 Billing 契约继续塞进旧 `admin_request.go` 或 `web/lib/api/admin.ts`。响应不含 API Key、密文、指纹、Token 名、Provider、BaseURL、Prompt 或 Schema；门店员工仅保留本 Store 官方额度、人民币金额、模型名、单次请求与 Request ID，本地归因和对账明细在 Service 返回前清空。
+- 页面：新增一个 `/dashboard/billing-query` 工作区，由平台、公司主管和门店员工按同一权限入口复用；Store 角色自动锁定自身门店。页面区分官方账单、本地归因和 Request ID 对账，提供公司、门店、日期、模型和 Request ID 筛选及 CSV 导出。租户与门店看不到模型基础设施字段；CSV 对所有外部名称和 Request ID 做公式注入防护。
+- 数据库验证：Migration 071 在 SQLite 与临时 MySQL 8.4 使用同一权限、角色绑定和幂等断言，均通过；临时 MySQL 容器和测试库已删除。B5 不新增业务表，只启用 B1 已建立的 Usage 字段和索引。
+- 代码验证：`go test ./... -count=1`、B5 聚焦 Go 测试、`go vet ./...`、`git diff --check` 和秘密扫描通过。新增 Handler 测试证明公司、门店、模型和 Request ID 不能形成 CSV 公式注入。
+- 前端验证：`tsc --noEmit --incremental false`、146 项 `*.test.mjs`、B5 文件聚焦 ESLint 和 `next build --webpack` 全部通过。直接运行 `pnpm typecheck` 时，pnpm 因集成工作树 `node_modules` 指向只读外部目录而尝试安装并触发 EPERM；使用同一依赖树直接运行 TypeScript 编译器通过，不属于产品代码失败。
+- 浏览器验证：使用临时 fresh SQLite 和隔离端口 `8086`，在 `1280x720` 与 `390x844` 验证平台无 ActiveTenant 进入、公司筛选、门店范围同步、官方/本地/对账三栏以及 Store 范围裁剪；移动端 `documentWidth/bodyWidth` 均为 390，无页面级横向溢出，控制台无 error/warn。临时后端、SQLite、配置和 MySQL 容器均已清理，未停止既有未知服务进程。
+- 共享契约与并行影响：本批修改 Usage repository/service、GatewayCall、Credential Billing 解密边界、显式路由、权限种子、Migration、导航和多语言资源；未修改 FastGPT Dataset/Profile 行为、完整 AI Reply Runtime、客户标签、规则派单或运营事实。两个来源分支保持只读。
+- 合并与回滚：`aad04ab` 必须先于 `7839390`，且 B5 必须在 B6 FastGPT 与 B7 Runtime 前合入。Cleanup 前可以先回滚前端入口，再整体回滚 B5 后端；新增权限和对账元数据可留库但不会被旧链调用。不得只恢复平台 Token 定时 worker，否则会重新产生无 Tenant/Store 归属账单。
+- 后续边界：B6 必须把 FastGPT provision、文件上传、Dataset 同步、检索、失败重试和 Store readiness 全部改成 Tenant + Store 单向 Profile；不能把 B4 的凭据同步适配或 B5 的账单查询误当成 FastGPT 重建完成。
