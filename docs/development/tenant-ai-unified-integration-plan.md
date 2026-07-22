@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B6 已完成并验证；下一步为 B7 AI Reply Runtime 完整移植
+> 状态：2026-07-23 产品决策已闭合，B0-B7 已完成并验证；下一步为 B8 人工任务池适配
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1202,9 +1202,24 @@ git diff --check
 - 合并与回滚：B6 依赖 B3 Profile、B4 Credential、B5 Usage，顺序必须是 `c6710dd -> 47ac9ae -> 8827989`；三者必须先于 B7。Cleanup 前可先回滚前端，再整体回滚 B6 后端；Migration 072 新增表和清理清单可留库但不得恢复 legacy transport。若已切换真实 Dataset，只能按清单恢复整库与远端资源，不能单独回写旧 remote ID。
 - 外部门禁与后续：真实 FastGPT 候选环境的 Team、Dataset、上传、索引、检索、Profile、Usage 和物理删除生命周期仍需专用 Integration Token，在 B13 灰度前执行，不计为本地 B6 验证。B7 必须以固定 ai-billing SHA 百分百移植 Reply Runtime，只增加 Tenant/Store/行业、单一 resolver 和现有人工任务池适配，不得改变 B6 FastGPT 事实源。
 
+### 25.8 2026-07-23 B7 AI Reply Runtime 完整移植
+
+- 代码提交：`b272d9a4a886c00e06cd352eab4676d4d5085d22`。AI 行为来源固定为 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架固定为 `origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：实施和提交前均执行 `git fetch origin --prune`；两个来源分支及统一分支远端没有前移。移植采用逐符号审计，没有整分支 merge、整文件覆盖或混合 cherry-pick。`reply_tag_context.go` 及其完整测试与固定 AI 来源的 Git object hash 一致。
+- 行为等价：完整保留 ai-billing 的 Prompt、Schema、IntentTasks、ReplyPlan、Answerability、Generate、Validate、Commit、Interrupt、Resume、Trace、知识门禁、多回复输出和失败语义。删除统一分支曾自行增加、但固定来源不存在的 ConversationMemory 24 小时扫描线程；B7 不引入新的模型调用或改写 Prompt/Schema。
+- 唯一模型调用：Reply、IntentDetect、Vision、ASR、转人工二次确认、人工通知摘要和 Runtime Debug 全部通过 `ModelCallResolverService` 解析当前 Tenant + Store 的 active Profile、精确用途槽和 active Credential。新增非持久化 `modelconfig.Config`，所有字段均禁止 JSON 序列化；Runtime 不再接收旧 `models.AIConfig` 作为生产调用事实，也不允许 Tenant、企微或平台 Key fallback。
+- Usage 与秘密边界：每次调用固定记录 Tenant、Store、Profile ID/revision、Usage slot、Credential revision、key fingerprint 及 NewAPI receipt。失败只保存稳定 `model_call_failed` 分类，不保存上游错误原文；API Key、Gateway、内部模型配置不会进入 API、Trace、日志或 JSON。测试通过真实 `httptest` NewAPI 调用证明图片、语音、转人工确认和人工摘要分别归入正确用途槽，并验证 ASR 失败不落上游错误内容。
+- 行业与标签上下文：IntentDetect 继续只从 `Conversation -> Tenant -> ReplyIntentProfile` 取得当前行业 Prompt、Schema 和分类。回复标签上下文按固定 AI 来源完整移植，只读取当前 Tenant + Store 已提交且启用的固定行业标签，Store 开关默认关闭；本批只补必要的只读候选查询，不提前完成 B9 标签管理 UI、B10 静默演化或 B11 批量开关。
+- 调试与前端：现有 Skill Runtime 调试继续使用“接待策略”语义，但强制绑定真实 `conversationId`，从该会话解析 Store Profile/Credential；没有恢复旧 AIConfig 选择器，也没有新增模型基础设施入口。现有会话工作台、企微接待/登录、Outbox、Manual Resume、WebSocket 和浏览器定位经来源对照及回归验证保持兼容。
+- 共享契约：本批修改 Runtime 内部请求类型、`usagex.Scope`、Usage 归因、模型 resolver、媒体/转人工服务和调试组件；没有新增或修改数据库 model、AutoMigrate、DML migration、HTTP DTO、公开 API、权限码或 WebSocket payload。规则派单和运营事实未改变，AI 仍只判断是否需要转人工。
+- 验证：`go test ./... -count=1`、`go test -race ./internal/ai/... ./internal/services/... ./internal/repositories/... -count=1`、`go vet ./...`、`pnpm typecheck`、`pnpm lint`、46 页面 `pnpm build`、`gofmt -d`、`git diff --check` 和秘密扫描全部通过。ESLint 为 0 error、33 个既有 warning。沙箱内首次全量测试因禁止 `httptest` 监听端口失败，允许本地监听后同一命令以退出码 0 完整通过，不计为代码回归。
+- 并行影响与合并顺序：本批是固定 ai-billing 行为在统一 Tenant/Store 架构上的唯一落点，两个来源分支继续只读。合并顺序必须保持 B1-B6 全部提交先于 `b272d9a`，B8-B14 再依次建立于该提交；禁止单独把本提交 cherry-pick 回来源分支形成第二套 Runtime。
+- 回滚边界：B12/B14 清理旧代码和旧表前，可以整体回滚 `b272d9a`，且无 Schema 回滚；一旦 B8 或后续批次依赖新 Runtime，不允许只回滚 resolver 或恢复旧 AIConfig fallback。真实 NewAPI/FastGPT 联调、丽斯未来完整链路和 `8083` 发布仍属于 B13 门禁。
+- 后续边界：B8 只负责把 ai-billing 的 `need_human` 结果接入现有人工任务池并验证规则派单，不得引入 LLM 选人；客户标签写入、演化、页面与旧链物理删除分别留在 B9-B12/B14。
+
 ## 26. 用户最终 1-48 项决定追溯
 
-本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B7-B14 实施和验收证据。
+本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B8-B14 实施和验收证据。
 
 | 编号 | 最终解释 | 权威落点 |
 | --- | --- | --- |
