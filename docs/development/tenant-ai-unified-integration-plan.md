@@ -1094,3 +1094,18 @@ git diff --check
 - 并行影响：`codex/tenant-ai-integration` 与 `codex/ai-billing` 从此仅作只读来源；后续每个 Batch 开始前重新 fetch 并核对来源是否前移，不再将任一来源分支单独合入 `main`。
 - 合并顺序：先提交 B0 文档证据，再实施 B1 最终 Schema/Migration 契约；任何运行时代码不得先于 B1-B4 的行业、Profile、Assignment 和 Credential 契约启用。
 - 回滚边界：B0 仅文档，可独立回滚，不影响运行代码、数据库或来源分支。
+
+### 25.2 2026-07-22 B1 最终 Schema 与 Migration 预检契约
+
+- 代码提交：`f024d174c9dc4b4a7da7d21c96459217059b5a0c`；AI 行为来源继续固定为 `4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架继续固定为 `1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：提交前执行 `git fetch origin --prune`；两个来源 SHA 均未前移，统一分支与远端无分叉。远端 Migration 最高编号为 `ai-billing:067`、`tenant-ai-integration:065`，本批未注册新编号。
+- Model/enum：新增行业标签模板与 Tenant 投影、九槽 Model Profile、Store Profile Assignment、Store 加密 Credential/策略/不可变审计、Store 客户标签关系/变更日志、会话静默演化状态/运行记录；扩展 Usage 和 FastGPT 的 Profile/Credential revision 归因字段。
+- Migration：在 `AutoMigrate` 之前增加只读 `Preflight`，未知版本或未知 remark 会阻止启动；已知历史重号仍进入原归档流程。fresh 库无 migration 表时直接放行，预检本身不改数据。
+- 生成注册：新最终模型已进入 generator；`AIConfig` 和 `ConversationTag` 已退出生成器。旧 `AIConfig/TenantAIModelGrant/StoreAIModelSetting/ConversationTag` 暂时仍在 `models.Models` 中，仅供后续 DML 迁移读取，禁止接入任何新运行链；B12 删除运行代码，B14 删除物理表。
+- 共享契约影响：本批修改 `models`、enum、AutoMigrate 注册和 migration 启动顺序；没有新增 DTO、API、WebSocket、权限或前端入口。现有规则派单、运营分析和 AI Runtime 行为未改变。
+- SQLite 验证：新模型 AutoMigrate、Profile/Slot/Assignment/Credential/行业模板/Tenant Tag/Store 客户标签/演化状态唯一约束、九槽完整性和无明文 Key 字段测试通过。
+- MySQL 验证：使用临时 MySQL 8.4 执行 `TestUnifiedAIModelsAutoMigrateMySQL` 通过，容器已停止并删除；未向仓库写入数据库或临时报告。
+- Go 验证：`go test ./... -count=1`、`go test ./internal/models ./internal/migration ./internal/bootstrap -count=1`、`go vet ./...` 和 `git diff --check` 全部通过。前端未修改，沿用 B0 的 TypeScript、136 个 `*.test.mjs` 和 ESLint 基线。
+- 合并顺序：B1 必须先于 B2 行业数据、B3 Resolver、B4 Credential 行为及所有 ai-billing Runtime 移植；B1 不应单独发布为业务功能。
+- 回滚边界：提交可独立回滚；已经 AutoMigrate 的新增表/列会留在数据库但当前无生产写入，不会被旧代码读取。禁止在完成 B12/B14 后单独回滚 B1。
+- 待后续验证：历史生产库完整升级、DML 回填、真实 NewAPI/FastGPT、旧 Schema Cleanup 和备份恢复分别属于 B2-B14，不能计入本批完成项。
