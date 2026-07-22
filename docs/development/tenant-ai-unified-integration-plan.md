@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-22 产品决策已闭合，B0-B5 已完成并验证；下一步为 B6 FastGPT 重建与单向 Profile
+> 状态：2026-07-23 产品决策已闭合，B0-B6 已完成并验证；下一步为 B7 AI Reply Runtime 完整移植
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1184,3 +1184,75 @@ git diff --check
 - 共享契约与并行影响：本批修改 Usage repository/service、GatewayCall、Credential Billing 解密边界、显式路由、权限种子、Migration、导航和多语言资源；未修改 FastGPT Dataset/Profile 行为、完整 AI Reply Runtime、客户标签、规则派单或运营事实。两个来源分支保持只读。
 - 合并与回滚：`aad04ab` 必须先于 `7839390`，且 B5 必须在 B6 FastGPT 与 B7 Runtime 前合入。Cleanup 前可以先回滚前端入口，再整体回滚 B5 后端；新增权限和对账元数据可留库但不会被旧链调用。不得只恢复平台 Token 定时 worker，否则会重新产生无 Tenant/Store 归属账单。
 - 后续边界：B6 必须把 FastGPT provision、文件上传、Dataset 同步、检索、失败重试和 Store readiness 全部改成 Tenant + Store 单向 Profile；不能把 B4 的凭据同步适配或 B5 的账单查询误当成 FastGPT 重建完成。
+
+### 25.7 2026-07-23 B6 FastGPT 重建、Store 知识事实源与单向 Profile
+
+- 代码提交：后端运行时、Migration 与测试为 `c6710dd7e63505d8eb0927122ea00fd1285edd48`；知识库和企微前端为 `47ac9ae1ab49b0cd755410827a9c854e144cfcfc`；移动端验收修复为 `882798974b0ace4dcf1847b9ac1769bf186f6602`。AI 行为来源固定为 `4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架固定为 `1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：实施前执行 `git fetch origin --prune`；`origin/main=e67e20721574b6d3298bb0a1c4749da02ff0b949`，两个来源分支均未前移。Migration 072 已与 main、Tenant、AI 和统一分支全部编号核对，无重号。
+- 唯一事实源：`Store.KnowledgeBaseID` 成为门店当前知识库唯一权威；一个 Store 同时只激活一个 Dataset。企微实例和会话路由中的 KnowledgeBaseID 仅为同事务投影，不再提供独立选择或模型配置入口。
+- 托管边界：FastGPT 只读取部署环境 `BaseURL + IntegrationToken`，所有操作必须通过 `ForStore(storeID)`。已删除旧 `/api/core/dataset/*` 直连、平台 FastGPT API Key 配置和 legacy transport；请求、响应、日志、错误、WebSocket 与数据库均不暴露 Integration Token、Store Key、密文、Provider URL 或完整指纹。
+- 单向 Profile：Store active Model Profile 与 active Credential 是唯一事实源；FastGPT Profile 只保存 target/applied revision 的派生状态。同步失败保留旧 applied revision，迟到任务无法覆盖新 target；RAG 在 Store、Assignment、Credential、Dataset 和 applied revision 任一不一致时失败关闭。
+- Dataset/任务：provision、上传/索引轮询和 Profile 同步改为 Tenant + Store 持久任务，包含 target 快照、租约、CAS、重试和安全错误分类；普通失败平方退避，第五次进入终态，target 变化立即终态。显式激活、Collection 删除和 Dataset 删除仍在远端成功后原子提交本地权威状态。
+- Usage 与检索：Usage 使用不可变 cursor-window Profile/Credential/Fingerprint 快照归因，`ProfileRevision` 统一为数值；事件先幂等落库再 CAS 推进 cursor，迟到失败不能回退新窗口。搜索 DTO 只允许 Dataset、查询和检索参数，返回 Dataset 不匹配即失败，不接受 Profile、密钥、URL 或任意请求头。
+- Migration 072：幂等收口可证明唯一的历史 Store/企微/会话知识投影；冲突直接阻止启动。旧远端 Dataset 建立 Tenant + Store 清理清单，同时排队 DatasetID 为空的全新 provision，绝不把旧 remote ID 冒充新资源；旧任务与 Usage 归因只能在完整可证明时回填。
+- 前端：现有知识库页升级为门店 FastGPT 工作区，支持 provision、就绪状态、文件任务、知识资源、安全检索结果和重新同步；企微页删除独立模型分配/Profile 弹窗，只保留 Store 绑定和只读托管状态。`8827989` 将移动端改为列表/详情全宽切换并限制调试侧栏宽度，桌面继续双栏。
+- 共享契约：本批修改 FastGPT/Knowledge model、repository、service、DTO、enum、显式路由、Migration、配置、`web/lib/api/admin.ts`、知识库页面和企微页面；未修改 WebSocket payload、完整 AI Reply Runtime、客户标签、规则派单、运营事实或计费口径。旧模型分配后端兼容对象当前无 UI/caller，必须在 B12/B14 按原子顺序清理，禁止提前删一半或重新接回。
+- 验证：`go test ./... -count=1`、`go vet ./...`、FastGPT repository/service race tests、146 项前端 Node tests、`pnpm typecheck`、ESLint 0 error/33 个既有 warning、46 页面 `pnpm build`、`docker compose config` 和 `git diff --check` 全部通过。Migration 072 已在 SQLite 与 MySQL 完成首次运行及幂等重跑。
+- 浏览器验收：fresh SQLite 隔离服务在 `1280px` 与 `390x844` 检查知识库和企微员工号页面；两页无横向溢出、无控件重叠、无旧模型分配/Profile 入口。移动端知识库列表与详情可双向切换，企微页筛选、表格和分页完整显示；隔离服务和临时 tab 已关闭，既有 `8083` 未停止或改库。
+- 合并与回滚：B6 依赖 B3 Profile、B4 Credential、B5 Usage，顺序必须是 `c6710dd -> 47ac9ae -> 8827989`；三者必须先于 B7。Cleanup 前可先回滚前端，再整体回滚 B6 后端；Migration 072 新增表和清理清单可留库但不得恢复 legacy transport。若已切换真实 Dataset，只能按清单恢复整库与远端资源，不能单独回写旧 remote ID。
+- 外部门禁与后续：真实 FastGPT 候选环境的 Team、Dataset、上传、索引、检索、Profile、Usage 和物理删除生命周期仍需专用 Integration Token，在 B13 灰度前执行，不计为本地 B6 验证。B7 必须以固定 ai-billing SHA 百分百移植 Reply Runtime，只增加 Tenant/Store/行业、单一 resolver 和现有人工任务池适配，不得改变 B6 FastGPT 事实源。
+
+## 26. 用户最终 1-48 项决定追溯
+
+本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B7-B14 实施和验收证据。
+
+| 编号 | 最终解释 | 权威落点 |
+| --- | --- | --- |
+| 1 | 建立第三个且唯一的统一集成分支，不在两个来源分支继续平行开发 | 1.1、19、20 |
+| 2 | Tenant 新架构是最终产品骨架和隔离根 | 1.1、4、19.2 |
+| 3 | 每批实施前 fetch 并吸收、审计 `ai-billing` 最新提交，再固定来源 SHA | 1.1、19.1、24 |
+| 4 | 行业能力完整并入统一分支，不保留平行行业实现 | 5、19.2、B2 |
+| 5 | Tenant 必须绑定唯一行业 Profile，意图识别由该行业决定 | 4.1、5.2、5.3 |
+| 6 | 平台允许维护多套 Model Profile，但 Store 同时只有一个 active Assignment | 6.3 |
+| 7 | 九个模型用途槽全部强制配置，缺槽不得发布或 fallback | 6.2、6.4 |
+| 8 | 模型由平台直接指派到 Store，不建立 Tenant 或企微第二层覆盖 | 6.3、6.5 |
+| 9 | 全系统只支持一个统一 NewAPI 网关 | 6.2、7、8 |
+| 10 | 所有模型用途统一走唯一 Resolver，失败必须显式关闭该 AI 路径 | 6.5、10.2 |
+| 11 | Tenant 和门店员工只看到模型名、revision 与就绪状态 | 6.3、8.3、15 |
+| 12 | 平台只录入已有 Key、不代用户创建；新 Store 默认无 Key；门店员工能否自助录入由管理员单店或批量开关 | 7.1、15.2、15.3 |
+| 13 | 一个 Store 只绑定一个本系统门店员工账号；该账号不是企微员工号 | 4.2 |
+| 14 | 门店自助凭据可以配置为直接测试或进入公司主管审批 | 7.2 |
+| 15 | 凭据变更至少要求密码复核、二次确认和不可变审计，可叠加公司主管审批 | 7.2、7.3 |
+| 16 | 活动 Store 必须来自已完成注册/审核的系统账号绑定，不产生无账号的活动门店 | 4.2 |
+| 17 | Store 停用、转移或删除不负责上游 NewAPI Key 的停用、旋转或删除 | 4.3 |
+| 18 | 门店员工可看本 Store 额度汇总、人民币金额、模型名、单次请求和 Request ID | 8.3、15.3 |
+| 19 | 公司主管可看全 Tenant 聚合和各 Store 明细；平台管理员可跨 Tenant 查看 | 8.3 |
+| 20 | Billing 只做 NewAPI 查询、本地归因、对账和导出，不做充值、扣费、套餐、发票或额度拦截 | 8.4 |
+| 21 | Usage、Trace 与 Billing 必须记录 Tenant、Store、Profile revision 和 Credential revision 归因 | 8.2 |
+| 22 | 删除租户模型授权池；凭据、模型就绪和账单按 Store 直接配置与展示 | 6.1、6.3、12 |
+| 23 | 平台、公司主管和门店员工复用同一 Credential/Billing 能力，由权限和数据范围裁剪 | 7、8.3、14.3、15 |
+| 24 | 普通平台 `admin` 获得权限后也能管理行业和 Model Profile | 5.5、14.1 |
+| 25 | 新能力继续进入现有权限管理和 Role -> Permission 派发，不设隐藏权限 | 14 |
+| 26 | 权限决定操作资格，Tenant/Store 数据范围始终是不可突破的强制上限 | 14.1、21.2 |
+| 27 | FastGPT 按上传方案和新 Store 模型事实源重新创建，不把旧本地 Profile 当事实源 | 9.1、9.3、B6 |
+| 28 | 新 Profile/Credential 同步失败时阻止切换并继续使用旧 active revision | 6.4、7.4、9.3 |
+| 29 | AI 回复运行时以实施前 `ai-billing` 最新版本为百分百行为权威 | 10.1、19.2、B7 |
+| 30 | 客户标签演化和回复标签上下文支持单店、批量及一键启停，并默认关闭 | 10.5、15.2 |
+| 31 | AI 只判断是否转人工；任务进入现有人工任务池并继续使用规则派单 | 10.3、13、B8 |
+| 32 | 客户标签演化、Prompt、Schema、状态机、失败语义和回复注入沿用上传方案 | 10、11 |
+| 33 | 标签按行业绑定，每个行业拥有独立固定目录，不能跨行业复用 | 5、11.1 |
+| 34 | Tenant 只可停用标签和设置显示别名，不能修改稳定 SemanticKey 或物理删除 | 11.2 |
+| 35 | Tenant 不得自建标签、分类、互斥和模型语义规则 | 11.2 |
+| 36 | 客户标签按 StoreCustomerRelation 独立；Tenant 客户详情必须按 Store 分组展示 | 11.3、15.4 |
+| 37 | Store 关系转移或合并时由公司主管明确选择保留来源、保留目标或清空重建 | 11.3 |
+| 38 | 标签只能来自固定行业目录；终端客户不能修改；Tenant 仅管理允许的开关、别名和策略 | 11.2、11.3 |
+| 39 | 旧模型、授权、StoreSetting 和 ConversationTag 代码/API/UI 全部删除，不留双运行链 | 12.1、12.3、B12 |
+| 40 | Tenant 可配置演化策略，单个 Store 客户关系最多 6 个有效标签 | 11.3、11.4 |
+| 41 | 保留 AutoMigrate、DML runner、历史归档和动态编号，但按最终架构重写迁移内容 | 18.2、B1-B14 |
+| 42 | 最终只有一套应用和一套 Schema；fresh/历史均需通过 SQLite 与 MySQL 验证 | 18.1、21.7 |
+| 43 | 生产预检发现未知 Migration、范围断链或不可证明回填时阻止启动并先修复 | 18.2、18.3、22.1 |
+| 44 | 旧 `AIConfig.APIKey` 和旧 Resolver 直接退出，不迁入或回退影响新配置 | 12、18.3、18.4 |
+| 45 | 新 Credential 永不回显明文，仅显示掩码；日志、Trace、API 和导出均不得泄密 | 7.3、18.4、21.3 |
+| 46 | 旧 AIConfig、Grant、StoreSetting、ConversationTag 表及专属列在停机门禁后物理删除 | 12.2、18.4、B14 |
+| 47 | 首个真实灰度租户继续使用“丽斯未来” | 2、22.2、B13 |
+| 48 | 最终服务端口继续使用 `8083` | 文档头、22.2、B13 |
