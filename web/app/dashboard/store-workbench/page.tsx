@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type ComponentType, type Rea
 import {
   BotIcon,
   Building2Icon,
+  KeyRoundIcon,
   LocateFixedIcon,
   MapPinIcon,
   RefreshCwIcon,
@@ -18,6 +19,7 @@ import { toast } from "sonner"
 
 import { StoreRoomPicker } from "./_components/store-room-picker"
 import { useAuth } from "@/components/auth-provider"
+import { StoreModelCredentialPanel } from "@/components/store-model-credential"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -248,6 +250,13 @@ export default function StoreWorkbenchPage() {
                   onChange={(event) => patch({ manualTimeoutMinutes: Number(event.target.value || 1) })}
                 />
               </Field>
+            </div>
+          </section>
+
+          <section className="rounded-lg border bg-card p-4">
+            <SectionTitle icon={KeyRoundIcon} title="模型与凭据" />
+            <div className="mt-4">
+              <StoreModelCredentialPanel mode="self" canUpdate={editable} />
             </div>
           </section>
 

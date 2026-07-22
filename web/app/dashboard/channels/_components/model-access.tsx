@@ -1,10 +1,11 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { BrainCircuitIcon, SearchIcon } from "lucide-react"
+import { BrainCircuitIcon, KeyRoundIcon, SearchIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { OptionCombobox } from "@/components/option-combobox"
+import { StoreModelCredentialDialog } from "@/components/store-model-credential"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -17,12 +18,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   batchAssignStoreModelProfile,
   fetchStoreModelProfileAssignments,
   type StoreModelProfileAssignments,
 } from "@/lib/api/admin"
 import type { AdminTenant } from "@/lib/api/tenant"
+import { batchUpdateStoreModelCredentialPolicy } from "@/lib/api/store-model-credential"
 
 type TenantModelAccessDialogProps = {
   open: boolean
@@ -51,12 +56,20 @@ export function TenantModelAccessDialog({
   const [profileId, setProfileId] = useState(0)
   const [selectedStoreIds, setSelectedStoreIds] = useState<Set<number>>(new Set())
   const [confirming, setConfirming] = useState(false)
+  const [policyConfirming, setPolicyConfirming] = useState(false)
+  const [policyPassword, setPolicyPassword] = useState("")
+  const [allowCredentialSelfService, setAllowCredentialSelfService] = useState(false)
+  const [requireSupervisorApproval, setRequireSupervisorApproval] = useState(false)
+  const [credentialStore, setCredentialStore] = useState<StoreModelProfileAssignments["stores"][number] | null>(null)
 
   useEffect(() => {
     if (!open || !tenant) return
     let cancelled = false
     setLoading(true)
     setConfirming(false)
+    setPolicyConfirming(false)
+    setPolicyPassword("")
+    setCredentialStore(null)
     setSelectedStoreIds(new Set())
     fetchStoreModelProfileAssignments(tenant.id)
       .then((next) => {
@@ -94,6 +107,8 @@ export function TenantModelAccessDialog({
 
   function setStoreSelected(storeId: number, selected: boolean) {
     setConfirming(false)
+    setPolicyConfirming(false)
+    setPolicyPassword("")
     setSelectedStoreIds((current) => {
       const next = new Set(current)
       if (selected) next.add(storeId)
@@ -104,6 +119,8 @@ export function TenantModelAccessDialog({
 
   function toggleFiltered(selected: boolean) {
     setConfirming(false)
+    setPolicyConfirming(false)
+    setPolicyPassword("")
     setSelectedStoreIds((current) => {
       const next = new Set(current)
       for (const store of filteredStores) {
@@ -140,6 +157,37 @@ export function TenantModelAccessDialog({
     }
   }
 
+  async function saveCredentialPolicy() {
+    if (!tenant || selectedStoreIds.size === 0 || !canUpdate) return
+    if (!policyConfirming) {
+      setPolicyConfirming(true)
+      setConfirming(false)
+      return
+    }
+    if (!policyPassword) {
+      toast.error("请输入当前账号密码")
+      return
+    }
+    setSaving(true)
+    try {
+      await batchUpdateStoreModelCredentialPolicy({
+        tenantId: tenant.id,
+        storeIds: [...selectedStoreIds],
+        allowCredentialSelfService,
+        requireSupervisorApproval,
+        currentPassword: policyPassword,
+        confirmed: true,
+      })
+      setPolicyConfirming(false)
+      setPolicyPassword("")
+      toast.success(`已更新 ${selectedStoreIds.size} 家门店的凭据策略`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "批量凭据策略更新失败")
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[88vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
@@ -171,6 +219,8 @@ export function TenantModelAccessDialog({
                   onChange={(value) => {
                     setProfileId(Number(value))
                     setConfirming(false)
+                    setPolicyConfirming(false)
+                    setPolicyPassword("")
                   }}
                 />
                 {selectedProfile ? (
@@ -210,9 +260,62 @@ export function TenantModelAccessDialog({
               </div>
             </div>
 
+            {canUpdate ? (
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-b px-6 py-3 text-sm">
+                <label className="flex items-center gap-2">
+                  <Switch
+                    checked={allowCredentialSelfService}
+                    onCheckedChange={(checked) => {
+                      setAllowCredentialSelfService(checked)
+                      if (!checked) setRequireSupervisorApproval(false)
+                      setPolicyConfirming(false)
+                      setPolicyPassword("")
+                    }}
+                  />
+                  门店员工自助填写
+                </label>
+                <label className="flex items-center gap-2">
+                  <Switch
+                    checked={requireSupervisorApproval}
+                    disabled={!allowCredentialSelfService}
+                    onCheckedChange={(checked) => {
+                      setRequireSupervisorApproval(checked)
+                      setPolicyConfirming(false)
+                      setPolicyPassword("")
+                    }}
+                  />
+                  提交后主管审批
+                </label>
+                {policyConfirming ? (
+                  <div className="flex min-w-56 flex-1 items-center gap-2 sm:max-w-xs">
+                    <Label htmlFor="batch-credential-policy-password" className="sr-only">当前账号密码</Label>
+                    <Input
+                      id="batch-credential-policy-password"
+                      type="password"
+                      autoComplete="current-password"
+                      value={policyPassword}
+                      placeholder="输入当前账号密码"
+                      disabled={saving}
+                      onChange={(event) => setPolicyPassword(event.target.value)}
+                    />
+                  </div>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="sm:ml-auto"
+                  disabled={saving || selectedStoreIds.size === 0}
+                  onClick={() => void saveCredentialPolicy()}
+                >
+                  {policyConfirming ? `确认应用到 ${selectedStoreIds.size} 家门店` : "应用凭据策略"}
+                </Button>
+              </div>
+            ) : null}
+
             <div className="min-h-0 flex-1 divide-y overflow-y-auto">
               {filteredStores.map((store) => (
-                <label key={store.storeId} className="grid cursor-pointer gap-3 px-6 py-3 hover:bg-muted/40 md:grid-cols-[28px_minmax(180px,1fr)_minmax(200px,1fr)_120px] md:items-center">
+                <div key={store.storeId} className="grid gap-3 px-6 py-3 hover:bg-muted/40 md:grid-cols-[28px_minmax(180px,1fr)_minmax(200px,1fr)_120px_36px] md:items-center">
                   <Checkbox
                     checked={selectedStoreIds.has(store.storeId)}
                     disabled={!canUpdate}
@@ -241,7 +344,17 @@ export function TenantModelAccessDialog({
                   <Badge variant={store.readinessStatus === "ready" ? "default" : "outline"}>
                     {readinessLabel(store.readinessStatus)}
                   </Badge>
-                </label>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={<Button type="button" variant="ghost" size="icon-sm" />}
+                      onClick={() => setCredentialStore(store)}
+                      aria-label={`管理 ${store.storeName} 的模型凭据`}
+                    >
+                      <KeyRoundIcon />
+                    </TooltipTrigger>
+                    <TooltipContent>模型凭据</TooltipContent>
+                  </Tooltip>
+                </div>
               ))}
               {filteredStores.length === 0 ? (
                 <div className="py-16 text-center text-sm text-muted-foreground">没有符合条件的门店</div>
@@ -267,6 +380,20 @@ export function TenantModelAccessDialog({
           ) : null}
         </DialogFooter>
       </DialogContent>
+      <StoreModelCredentialDialog
+        open={Boolean(credentialStore && tenant)}
+        tenantId={tenant?.id ?? 0}
+        storeId={credentialStore?.storeId ?? 0}
+        storeName={credentialStore?.storeName ?? ""}
+        canUpdate={canUpdate}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setCredentialStore(null)
+        }}
+        onChanged={() => {
+          if (!tenant) return
+          void fetchStoreModelProfileAssignments(tenant.id).then(setData).catch(() => undefined)
+        }}
+      />
     </Dialog>
   )
 }

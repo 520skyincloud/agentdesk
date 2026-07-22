@@ -62,6 +62,7 @@ import { InitialPasswordDialog } from "./_components/initial-password-dialog"
 import { RegistrationReviewPanel } from "./_components/registration-review"
 import { ResetPasswordDialogs } from "./_components/reset-password"
 import { WxWorkProtocolBindingDialog } from "@/components/wxwork-protocol/wxwork-protocol-binding-dialog"
+import { StoreModelCredentialDialog } from "@/components/store-model-credential"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
@@ -99,7 +100,9 @@ export default function DashboardUsersPage() {
   const canViewAgentTeams = permissions.has("agentTeam.view")
   const canUpdateAgentTeams = permissions.has("agentTeam.update")
   const canBindWxWork = permissions.has("channel.create") && permissions.has("user.view")
-  const hasUserRowActions = canUpdateUsers || canDeleteUsers || canAssignRoles || canBindWxWork
+  const canViewModelCredential = permissions.has("aiConfig.view")
+  const canUpdateModelCredential = permissions.has("aiConfig.update")
+  const hasUserRowActions = canUpdateUsers || canDeleteUsers || canAssignRoles || canBindWxWork || canViewModelCredential
   const [agentTeams, setAgentTeams] = useState<AdminAgentTeam[]>([])
   const [assigningTeamUserId, setAssigningTeamUserId] = useState<number | null>(null)
   const [creatingOpen, setCreatingOpen] = useState(false)
@@ -117,6 +120,7 @@ export default function DashboardUsersPage() {
   const [resettingUser, setResettingUser] = useState<AdminUser | null>(null)
   const [assigningRolesUser, setAssigningRolesUser] = useState<AdminUser | null>(null)
   const [bindingWxWorkUser, setBindingWxWorkUser] = useState<AdminUser | null>(null)
+  const [credentialUser, setCredentialUser] = useState<AdminUser | null>(null)
   const [assignRoleOptions, setAssignRoleOptions] = useState<AdminRole[]>([])
   const [assignRoleIds, setAssignRoleIds] = useState<number[]>([])
   const [assignRolesLoading, setAssignRolesLoading] = useState(false)
@@ -760,7 +764,8 @@ export default function DashboardUsersPage() {
                             </Button>
                           ) : null}
                           {item.manageable &&
-                          (canAssignRoles || canUpdateUsers || canDeleteUsers || canBindUserWxWork(item)) ? (
+                          (canAssignRoles || canUpdateUsers || canDeleteUsers || canBindUserWxWork(item) ||
+                            (canViewModelCredential && Boolean(item.storeStaff?.storeId))) ? (
                             <DropdownMenu>
                           <DropdownMenuTrigger
                             render={<Button variant="outline" size="icon-sm" />}
@@ -769,6 +774,12 @@ export default function DashboardUsersPage() {
                             <MoreHorizontalIcon />
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="w-40 min-w-40">
+                            {canViewModelCredential && item.storeStaff?.storeId ? (
+                              <DropdownMenuItem onClick={() => setCredentialUser(item)}>
+                                <KeyRoundIcon />
+                                模型凭据
+                              </DropdownMenuItem>
+                            ) : null}
                             {canBindUserWxWork(item) ? (
                               <DropdownMenuItem onClick={() => setBindingWxWorkUser(item)}>
                                 <QrCodeIcon />
@@ -901,6 +912,19 @@ export default function DashboardUsersPage() {
         }}
         onChanged={async () => {
           await list.loadData()
+        }}
+      />
+      <StoreModelCredentialDialog
+        open={Boolean(credentialUser?.storeStaff?.storeId && canViewModelCredential)}
+        tenantId={credentialUser?.tenantId ?? 0}
+        storeId={credentialUser?.storeStaff?.storeId ?? 0}
+        storeName={credentialUser?.storeStaff?.storeName ?? ""}
+        canUpdate={canUpdateModelCredential}
+        onOpenChange={(open) => {
+          if (!open) setCredentialUser(null)
+        }}
+        onChanged={() => {
+          void list.loadData()
         }}
       />
     </>
