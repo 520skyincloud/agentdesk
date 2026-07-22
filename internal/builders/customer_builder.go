@@ -8,9 +8,10 @@ import (
 )
 
 type CustomerBuildContext struct {
-	StoreRelationsByCustomerID map[int64][]models.StoreCustomerRelation
-	StoresByID                 map[int64]*models.Store
-	WxWorkInstancesByID        map[int64]*models.WxWorkProtocolInstance
+	StoreRelationsByCustomerID    map[int64][]models.StoreCustomerRelation
+	StoresByID                    map[int64]*models.Store
+	WxWorkInstancesByID           map[int64]*models.WxWorkProtocolInstance
+	CustomerTagsByStoreRelationID map[int64][]response.CustomerTagResponse
 }
 
 func BuildCustomer(item *models.Customer) *response.CustomerResponse {
@@ -87,10 +88,22 @@ func BuildStoreCustomerRelationWithContext(item *models.StoreCustomerRelation, c
 		VisitCount:         item.VisitCount,
 		Tags:               item.Tags,
 		StableNotes:        item.StableNotes,
+		CustomerTags:       customerTagsForStoreRelation(ctx, item.ID),
 		Status:             item.Status,
 		CreatedAt:          item.CreatedAt.Format(time.DateTime),
 		UpdatedAt:          item.UpdatedAt.Format(time.DateTime),
 	}
+}
+
+func customerTagsForStoreRelation(ctx *CustomerBuildContext, relationID int64) []response.CustomerTagResponse {
+	if ctx == nil || relationID <= 0 {
+		return []response.CustomerTagResponse{}
+	}
+	ret := ctx.CustomerTagsByStoreRelationID[relationID]
+	if ret == nil {
+		return []response.CustomerTagResponse{}
+	}
+	return ret
 }
 
 func BuildStoreCustomerRelationList(list []models.StoreCustomerRelation) []response.StoreCustomerRelationResponse {

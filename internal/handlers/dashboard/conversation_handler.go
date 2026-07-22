@@ -66,9 +66,12 @@ func ConversationAnyList(ctx *gin.Context) {
 	}
 
 	list, paging := services.ConversationService.FindPageByCnd(cnd)
+	customerTags := services.CustomerTagService.ListForConversations(list)
 	results := make([]response.ConversationResponse, 0, len(list))
 	for _, item := range list {
-		results = append(results, builders.BuildConversationWithLocale(&item, i18nx.Locale(ctx)))
+		result := builders.BuildConversationWithLocale(&item, i18nx.Locale(ctx))
+		result.CustomerTags = customerTags[item.ID]
+		results = append(results, result)
 	}
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
@@ -98,8 +101,11 @@ func ConversationAnyConversations(ctx *gin.Context) {
 	}
 
 	results := make([]response.ConversationResponse, 0, len(list))
+	customerTags := services.CustomerTagService.ListForConversations(list)
 	for _, item := range list {
-		results = append(results, builders.BuildConversationWithLocale(&item, i18nx.Locale(ctx)))
+		result := builders.BuildConversationWithLocale(&item, i18nx.Locale(ctx))
+		result.CustomerTags = customerTags[item.ID]
+		results = append(results, result)
 	}
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
 }
@@ -129,6 +135,7 @@ func ConversationGetBy(ctx *gin.Context) {
 		ConversationResponse: builders.BuildConversationWithLocale(item, i18nx.Locale(ctx)),
 		Participants:         builders.BuildParticipantResponses(id, item.TenantID),
 	}
+	detail.CustomerTags = services.CustomerTagService.ListForConversation(id)
 	httpx.WriteJSON(ctx, detail)
 }
 
@@ -430,6 +437,93 @@ func ConversationPostRemove_tag(ctx *gin.Context) {
 		return
 	}
 	if err := services.ConversationTagService.RemoveTag(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationGetCustomer_tag_options(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	conversationID, _ := params.GetInt64(ctx, "conversationId")
+	list, err := services.CustomerTagService.ListOptionsForConversation(conversationID, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildTagResponses(list))
+}
+
+func ConversationAnyCustomer_tag_change_log(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	conversationID, _ := params.GetInt64(ctx, "conversationId")
+	paging := params.GetPaging(ctx)
+	list, resultPaging, err := services.CustomerTagService.ListChangeLogsForConversation(
+		conversationID, paging.Page, paging.Limit, operator,
+	)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, &web.PageResult{Results: list, Page: resultPaging})
+}
+
+func ConversationPostCustomer_tag_add(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.AddCustomerTagRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.CustomerTagService.ManualAdd(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationPostCustomer_tag_remove(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.RemoveCustomerTagRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.CustomerTagService.ManualRemove(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationPostCustomer_tag_replace(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.ReplaceCustomerTagRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.CustomerTagService.ManualReplace(req, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

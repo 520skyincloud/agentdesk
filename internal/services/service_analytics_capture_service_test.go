@@ -362,7 +362,7 @@ func TestAgentPresenceConcurrentHeartbeatAndBreakKeepSingleActiveSession(t *test
 func setupServiceAnalyticsTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	testModels := []any{
-		&models.User{}, &models.Channel{}, &models.Tag{}, &models.Conversation{}, &models.ConversationRouteState{}, &models.Message{}, &models.ConversationAssignment{},
+		&models.Tenant{}, &models.User{}, &models.Channel{}, &models.Tag{}, &models.Conversation{}, &models.ConversationRouteState{}, &models.Message{}, &models.ConversationAssignment{},
 		&models.AgentProfile{}, &models.AgentTeam{}, &models.AgentTeamSquad{}, &models.AgentTeamSquadMember{},
 		&models.Store{}, &models.WxWorkProtocolInstance{}, &models.ConversationServiceSession{}, &models.ConversationResponseSpan{},
 		&models.AgentPresenceSession{}, &models.ServiceAnalyticsPolicy{},

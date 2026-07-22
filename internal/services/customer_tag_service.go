@@ -1,24 +1,45 @@
 package services
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
+	"agent-desk/internal/pkg/dto/request"
+	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
-const customerTagSourceManual = "manual"
+const (
+	customerTagRelationActive   = "active"
+	customerTagRelationInactive = "inactive"
+	customerTagSourceAI         = "ai"
+	customerTagSourceManual     = "manual"
+	maxActiveCustomerTags       = 6
+)
 
 var CustomerTagService = &customerTagService{}
 
 type customerTagService struct{}
+
+type CustomerTagOperation struct {
+	Op                 string
+	TagID              int64
+	Replaces           []int64
+	Confidence         float64
+	EvidenceMessageIDs []int64
+}
 
 type ReplyTagCandidate struct {
 	TagID           int64
@@ -31,6 +52,850 @@ type ReplyTagCandidate struct {
 	Confidence      float64
 	LastMatchedAt   *time.Time
 	SortNo          int
+}
+
+type customerTagScope struct {
+	Conversation *models.Conversation
+	Route        *models.ConversationRouteState
+	Relation     *models.StoreCustomerRelation
+	TenantID     int64
+	StoreID      int64
+	ProfileID    int64
+}
+
+func (s *customerTagService) ListForConversation(conversationID int64) []response.CustomerTagResponse {
+	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
+	if conversation == nil {
+		return nil
+	}
+	return s.ListForConversations([]models.Conversation{*conversation})[conversationID]
+}
+
+func (s *customerTagService) ListForConversations(conversations []models.Conversation) map[int64][]response.CustomerTagResponse {
+	ret := make(map[int64][]response.CustomerTagResponse, len(conversations))
+	byTenant := make(map[int64][]models.Conversation)
+	for i := range conversations {
+		item := conversations[i]
+		if item.ID > 0 && item.TenantID > 0 && item.CustomerID > 0 {
+			byTenant[item.TenantID] = append(byTenant[item.TenantID], item)
+		}
+	}
+	for tenantID, tenantConversations := range byTenant {
+		s.fillConversationTagsInTenant(ret, tenantID, tenantConversations)
+	}
+	return ret
+}
+
+func (s *customerTagService) fillConversationTagsInTenant(ret map[int64][]response.CustomerTagResponse, tenantID int64, conversations []models.Conversation) {
+	conversationIDs := make([]int64, 0, len(conversations))
+	customerIDs := make([]int64, 0, len(conversations))
+	conversationByID := make(map[int64]models.Conversation, len(conversations))
+	for i := range conversations {
+		conversationIDs = append(conversationIDs, conversations[i].ID)
+		customerIDs = append(customerIDs, conversations[i].CustomerID)
+		conversationByID[conversations[i].ID] = conversations[i]
+	}
+	routes := repositories.ConversationRouteStateRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		In("conversation_id", uniquePositive(conversationIDs)).
+		Where("store_id > ?", 0))
+	storeIDs := make([]int64, 0, len(routes))
+	routeByConversationID := make(map[int64]models.ConversationRouteState, len(routes))
+	for i := range routes {
+		conversation, ok := conversationByID[routes[i].ConversationID]
+		if !ok || conversation.TenantID != routes[i].TenantID {
+			continue
+		}
+		routeByConversationID[routes[i].ConversationID] = routes[i]
+		storeIDs = append(storeIDs, routes[i].StoreID)
+	}
+	if len(routeByConversationID) == 0 {
+		return
+	}
+	relations := repositories.StoreCustomerRelationRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		In("customer_id", uniquePositive(customerIDs)).
+		In("store_id", uniquePositive(storeIDs)).
+		Eq("status", enums.StatusOk))
+	type relationKey struct {
+		customerID int64
+		storeID    int64
+	}
+	relationByKey := make(map[relationKey]models.StoreCustomerRelation, len(relations))
+	relationIDs := make([]int64, 0, len(relations))
+	for i := range relations {
+		relationByKey[relationKey{customerID: relations[i].CustomerID, storeID: relations[i].StoreID}] = relations[i]
+		relationIDs = append(relationIDs, relations[i].ID)
+	}
+	if len(relationIDs) == 0 {
+		return
+	}
+	tagRelations, err := repositories.CustomerTagRelationRepository.FindActiveByStoreRelations(sqls.DB(), tenantID, relationIDs)
+	if err != nil || len(tagRelations) == 0 {
+		return
+	}
+	tagIDs := make([]int64, 0, len(tagRelations))
+	relationsByStoreRelationID := make(map[int64][]models.CustomerTagRelation)
+	for i := range tagRelations {
+		tagIDs = append(tagIDs, tagRelations[i].TagID)
+		relationsByStoreRelationID[tagRelations[i].StoreCustomerRelationID] = append(relationsByStoreRelationID[tagRelations[i].StoreCustomerRelationID], tagRelations[i])
+	}
+	tenant := repositories.TenantRepository.Get(sqls.DB(), tenantID)
+	if tenant == nil || tenant.IntentProfileID <= 0 {
+		return
+	}
+	tags := repositories.TagRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("intent_profile_id", tenant.IntentProfileID).
+		Eq("system_defined", true).
+		Where("template_definition_id IS NOT NULL").
+		Eq("status", enums.StatusOk).
+		In("id", uniquePositive(tagIDs)))
+	tagByID := make(map[int64]*models.Tag, len(tags))
+	for i := range tags {
+		tagByID[tags[i].ID] = &tags[i]
+	}
+	for conversationID, conversation := range conversationByID {
+		route, ok := routeByConversationID[conversationID]
+		if !ok {
+			continue
+		}
+		storeRelation, ok := relationByKey[relationKey{customerID: conversation.CustomerID, storeID: route.StoreID}]
+		if !ok {
+			continue
+		}
+		ret[conversationID] = buildCustomerTagResponses(relationsByStoreRelationID[storeRelation.ID], tagByID)
+	}
+}
+
+func (s *customerTagService) ListByStoreRelations(tenantID int64, storeRelations []models.StoreCustomerRelation) map[int64][]response.CustomerTagResponse {
+	ret := make(map[int64][]response.CustomerTagResponse, len(storeRelations))
+	tenant := repositories.TenantRepository.Get(sqls.DB(), tenantID)
+	if tenant == nil || tenant.IntentProfileID <= 0 {
+		return ret
+	}
+	relationIDs := make([]int64, 0, len(storeRelations))
+	for i := range storeRelations {
+		if storeRelations[i].TenantID == tenantID && storeRelations[i].ID > 0 {
+			relationIDs = append(relationIDs, storeRelations[i].ID)
+		}
+	}
+	relations, err := repositories.CustomerTagRelationRepository.FindActiveByStoreRelations(sqls.DB(), tenantID, uniquePositive(relationIDs))
+	if err != nil || len(relations) == 0 {
+		return ret
+	}
+	tagIDs := make([]int64, 0, len(relations))
+	relationsByID := make(map[int64][]models.CustomerTagRelation)
+	for i := range relations {
+		tagIDs = append(tagIDs, relations[i].TagID)
+		relationsByID[relations[i].StoreCustomerRelationID] = append(relationsByID[relations[i].StoreCustomerRelationID], relations[i])
+	}
+	tags := repositories.TagRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("intent_profile_id", tenant.IntentProfileID).
+		Eq("system_defined", true).
+		Where("template_definition_id IS NOT NULL").
+		Eq("status", enums.StatusOk).
+		In("id", uniquePositive(tagIDs)))
+	tagByID := make(map[int64]*models.Tag, len(tags))
+	for i := range tags {
+		tagByID[tags[i].ID] = &tags[i]
+	}
+	for relationID, items := range relationsByID {
+		ret[relationID] = buildCustomerTagResponses(items, tagByID)
+	}
+	return ret
+}
+
+func buildCustomerTagResponses(relations []models.CustomerTagRelation, tagByID map[int64]*models.Tag) []response.CustomerTagResponse {
+	ret := make([]response.CustomerTagResponse, 0, len(relations))
+	for i := range relations {
+		tag := tagByID[relations[i].TagID]
+		if tag == nil || tag.Status != enums.StatusOk {
+			continue
+		}
+		name := strings.TrimSpace(tag.DisplayAlias)
+		if name == "" {
+			name = tag.Name
+		}
+		ret = append(ret, response.CustomerTagResponse{
+			ID: relations[i].ID, TagID: tag.ID,
+			Name: utils.RepairMojibakeText(name), StandardName: utils.RepairMojibakeText(tag.Name),
+			SemanticKey: tag.SemanticKey, ConflictGroup: tag.ConflictGroup,
+			Source: relations[i].Source, Confidence: relations[i].Confidence,
+			EvidenceCount: relations[i].EvidenceCount, ManualProtected: relations[i].ManualProtected,
+			UpdatedAt: utils.FormatTime(relations[i].UpdatedAt),
+		})
+	}
+	return ret
+}
+
+func (s *customerTagService) ListOptionsForConversation(conversationID int64, operator *dto.AuthPrincipal) ([]models.Tag, error) {
+	scope, err := s.resolveConversationScope(sqls.DB(), conversationID, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireConversationAccess(scope, operator); err != nil {
+		return nil, err
+	}
+	all := repositories.TagRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", scope.TenantID).
+		Eq("intent_profile_id", scope.ProfileID).
+		Eq("system_defined", true).
+		Where("template_definition_id IS NOT NULL").
+		Asc("sort_no").Asc("id"))
+	parentIDs := make(map[int64]struct{}, len(all))
+	for i := range all {
+		if all[i].ParentID > 0 {
+			parentIDs[all[i].ParentID] = struct{}{}
+		}
+	}
+	ret := make([]models.Tag, 0, len(all))
+	for i := range all {
+		if all[i].ParentID == 0 {
+			continue
+		}
+		if _, isCategory := parentIDs[all[i].ID]; isCategory {
+			continue
+		}
+		ret = append(ret, all[i])
+	}
+	return ret, nil
+}
+
+func (s *customerTagService) ListChangeLogsForConversation(conversationID int64, page, limit int, operator *dto.AuthPrincipal) ([]response.CustomerTagChangeLogResponse, *sqls.Paging, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	scope, err := s.resolveConversationScope(sqls.DB(), conversationID, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.requireConversationAccess(scope, operator); err != nil {
+		return nil, nil, err
+	}
+	if scope.Relation == nil {
+		return []response.CustomerTagChangeLogResponse{}, &sqls.Paging{Page: page, Limit: limit}, nil
+	}
+	list, total, err := repositories.CustomerTagChangeLogRepository.FindPageByStoreRelation(
+		sqls.DB(), scope.TenantID, scope.StoreID, scope.Relation.ID, page, limit,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	tagNames := make(map[int64]string)
+	nameOf := func(tagID int64) string {
+		if tagID <= 0 {
+			return ""
+		}
+		if name, ok := tagNames[tagID]; ok {
+			return name
+		}
+		name := ""
+		if tag := repositories.TagRepository.GetInTenant(sqls.DB(), tagID, scope.TenantID); tag != nil {
+			name = strings.TrimSpace(tag.DisplayAlias)
+			if name == "" {
+				name = tag.Name
+			}
+			name = utils.RepairMojibakeText(name)
+		}
+		tagNames[tagID] = name
+		return name
+	}
+	ret := make([]response.CustomerTagChangeLogResponse, 0, len(list))
+	for i := range list {
+		evidence := make([]int64, 0)
+		_ = json.Unmarshal([]byte(list[i].EvidenceMessageIDs), &evidence)
+		if evidence == nil {
+			evidence = make([]int64, 0)
+		}
+		ret = append(ret, response.CustomerTagChangeLogResponse{
+			ID: list[i].ID, Action: list[i].Action,
+			OldTagID: list[i].OldTagID, OldTagName: nameOf(list[i].OldTagID),
+			NewTagID: list[i].NewTagID, NewTagName: nameOf(list[i].NewTagID),
+			EvidenceMessageIDs: evidence, Source: list[i].Source, Confidence: list[i].Confidence,
+			OperatorType: list[i].OperatorType, OperatorID: list[i].OperatorID,
+			OperatorName: list[i].OperatorName, CreatedAt: utils.FormatTime(list[i].CreatedAt),
+		})
+	}
+	return ret, &sqls.Paging{Page: page, Limit: limit, Total: total}, nil
+}
+
+func (s *customerTagService) ManualAdd(req request.AddCustomerTagRequest, operator *dto.AuthPrincipal) error {
+	scope, err := s.prepareManualScope(req.ConversationID, operator)
+	if err != nil {
+		return err
+	}
+	unlock := lockCustomerTags(scope.TenantID, scope.StoreID, scope.Conversation.CustomerID)
+	defer unlock()
+	changed := false
+	eventRelationID := scope.RelationID()
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedScope, err := s.resolveConversationScope(ctx.Tx, req.ConversationID, true)
+		if err != nil {
+			return err
+		}
+		if err := s.lockScopeRelation(ctx.Tx, lockedScope); err != nil {
+			return err
+		}
+		eventRelationID = lockedScope.Relation.ID
+		changed, err = s.manualAddDB(ctx.Tx, lockedScope, req.TagID, operator)
+		return err
+	})
+	if err == nil && changed {
+		WsService.PublishCustomerTagChanged(scope.Conversation, scope.StoreID, eventRelationID, time.Now())
+	}
+	return err
+}
+
+func (s *customerTagService) ManualRemove(req request.RemoveCustomerTagRequest, operator *dto.AuthPrincipal) error {
+	scope, err := s.prepareManualScope(req.ConversationID, operator)
+	if err != nil {
+		return err
+	}
+	unlock := lockCustomerTags(scope.TenantID, scope.StoreID, scope.Conversation.CustomerID)
+	defer unlock()
+	changed := false
+	eventRelationID := scope.RelationID()
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedScope, err := s.resolveConversationScope(ctx.Tx, req.ConversationID, false)
+		if err != nil {
+			return err
+		}
+		if lockedScope.Relation == nil {
+			return nil
+		}
+		if err := s.lockScopeRelation(ctx.Tx, lockedScope); err != nil {
+			return err
+		}
+		eventRelationID = lockedScope.Relation.ID
+		current, err := repositories.CustomerTagRelationRepository.GetByStoreRelationAndTagForUpdate(
+			ctx.Tx, lockedScope.TenantID, lockedScope.StoreID, lockedScope.Relation.ID, req.TagID,
+		)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.RelationStatus != customerTagRelationActive {
+			return nil
+		}
+		now := time.Now()
+		if err := repositories.CustomerTagRelationRepository.UpdatesInScope(ctx.Tx, current.ID, lockedScope.TenantID, lockedScope.StoreID, lockedScope.Relation.ID, map[string]any{
+			"source": customerTagSourceManual, "relation_status": customerTagRelationInactive,
+			"manual_protected": true, "inactivated_at": now, "updated_at": now,
+			"update_user_id": operator.UserID, "update_user_name": operator.Username,
+		}); err != nil {
+			return err
+		}
+		changed = true
+		return s.writeChangeLog(ctx.Tx, lockedScope, 0, "remove", current.TagID, 0, nil, customerTagSourceManual, 1, operator)
+	})
+	if err == nil && changed {
+		WsService.PublishCustomerTagChanged(scope.Conversation, scope.StoreID, eventRelationID, time.Now())
+	}
+	return err
+}
+
+func (s *customerTagService) ManualReplace(req request.ReplaceCustomerTagRequest, operator *dto.AuthPrincipal) error {
+	if req.OldTagID == req.NewTagID {
+		return errorsx.InvalidParam("新旧客户标签不能相同")
+	}
+	scope, err := s.prepareManualScope(req.ConversationID, operator)
+	if err != nil {
+		return err
+	}
+	unlock := lockCustomerTags(scope.TenantID, scope.StoreID, scope.Conversation.CustomerID)
+	defer unlock()
+	changed := false
+	eventRelationID := scope.RelationID()
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedScope, err := s.resolveConversationScope(ctx.Tx, req.ConversationID, true)
+		if err != nil {
+			return err
+		}
+		if err := s.lockScopeRelation(ctx.Tx, lockedScope); err != nil {
+			return err
+		}
+		eventRelationID = lockedScope.Relation.ID
+		oldTag, err := s.validateTagForScope(ctx.Tx, req.OldTagID, lockedScope, false)
+		if err != nil {
+			return err
+		}
+		newTag, err := s.validateTagForScope(ctx.Tx, req.NewTagID, lockedScope, false)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(oldTag.ConflictGroup) == "" || oldTag.ConflictGroup != newTag.ConflictGroup {
+			return errorsx.InvalidParam("只能替换同一互斥组内的客户标签")
+		}
+		old, err := repositories.CustomerTagRelationRepository.GetByStoreRelationAndTagForUpdate(
+			ctx.Tx, lockedScope.TenantID, lockedScope.StoreID, lockedScope.Relation.ID, req.OldTagID,
+		)
+		if err != nil {
+			return err
+		}
+		if old == nil || old.RelationStatus != customerTagRelationActive {
+			return errorsx.InvalidParam("待替换的客户标签不存在")
+		}
+		changed, err = s.manualAddDB(ctx.Tx, lockedScope, req.NewTagID, operator)
+		return err
+	})
+	if err == nil && changed {
+		WsService.PublishCustomerTagChanged(scope.Conversation, scope.StoreID, eventRelationID, time.Now())
+	}
+	return err
+}
+
+func (s *customerTagService) prepareManualScope(conversationID int64, operator *dto.AuthPrincipal) (*customerTagScope, error) {
+	if conversationID <= 0 {
+		return nil, errorsx.InvalidParam("会话不存在")
+	}
+	scope, err := s.resolveConversationScope(sqls.DB(), conversationID, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireConversationAccess(scope, operator); err != nil {
+		return nil, err
+	}
+	return scope, nil
+}
+
+func (scope *customerTagScope) RelationID() int64 {
+	if scope == nil || scope.Relation == nil {
+		return 0
+	}
+	return scope.Relation.ID
+}
+
+func (s *customerTagService) manualAddDB(db *gorm.DB, scope *customerTagScope, tagID int64, operator *dto.AuthPrincipal) (bool, error) {
+	tag, err := s.validateTagForScope(db, tagID, scope, false)
+	if err != nil {
+		return false, err
+	}
+	current, err := repositories.CustomerTagRelationRepository.GetByStoreRelationAndTagForUpdate(
+		db, scope.TenantID, scope.StoreID, scope.Relation.ID, tag.ID,
+	)
+	if err != nil {
+		return false, err
+	}
+	active, err := repositories.CustomerTagRelationRepository.FindActiveByStoreRelationForUpdate(db, scope.TenantID, scope.StoreID, scope.Relation.ID)
+	if err != nil {
+		return false, err
+	}
+	conflicts := s.findActiveConflictingRelations(db, active, tag, scope.TenantID)
+	wasActive := current != nil && current.RelationStatus == customerTagRelationActive
+	wasProtectedManual := wasActive && current.ManualProtected && current.Source == customerTagSourceManual
+	if wasProtectedManual && len(conflicts) == 0 {
+		return false, nil
+	}
+	now := time.Now()
+	for _, conflict := range conflicts {
+		if err := repositories.CustomerTagRelationRepository.UpdatesInScope(db, conflict.ID, scope.TenantID, scope.StoreID, scope.Relation.ID, map[string]any{
+			"source": customerTagSourceManual, "relation_status": customerTagRelationInactive,
+			"manual_protected": true, "inactivated_at": now, "updated_at": now,
+			"update_user_id": operator.UserID, "update_user_name": operator.Username,
+		}); err != nil {
+			return false, err
+		}
+	}
+	if !wasActive {
+		count, err := repositories.CustomerTagRelationRepository.CountActiveByStoreRelation(db, scope.TenantID, scope.StoreID, scope.Relation.ID)
+		if err != nil {
+			return false, err
+		}
+		if count >= maxActiveCustomerTags {
+			return false, errorsx.InvalidParam("每个门店客户最多保留6个有效标签")
+		}
+	}
+	if current != nil {
+		if err := repositories.CustomerTagRelationRepository.UpdatesInScope(db, current.ID, scope.TenantID, scope.StoreID, scope.Relation.ID, map[string]any{
+			"source": customerTagSourceManual, "relation_status": customerTagRelationActive,
+			"confidence": 1, "manual_protected": true, "last_matched_at": now,
+			"inactivated_at": nil, "updated_at": now,
+			"update_user_id": operator.UserID, "update_user_name": operator.Username,
+		}); err != nil {
+			return false, err
+		}
+	} else {
+		item := &models.CustomerTagRelation{
+			TenantID: scope.TenantID, StoreID: scope.StoreID,
+			CustomerID: scope.Conversation.CustomerID, StoreCustomerRelationID: scope.Relation.ID,
+			TagID: tag.ID, Source: customerTagSourceManual, RelationStatus: customerTagRelationActive,
+			Confidence: 1, EvidenceCount: 1, FirstMatchedAt: &now, LastMatchedAt: &now,
+			ManualProtected: true, AuditFields: utils.BuildAuditFields(operator),
+		}
+		if err := repositories.CustomerTagRelationRepository.Create(db, item); err != nil {
+			return false, err
+		}
+	}
+	if len(conflicts) > 0 {
+		for _, conflict := range conflicts {
+			if err := s.writeChangeLog(db, scope, 0, "replace", conflict.TagID, tag.ID, nil, customerTagSourceManual, 1, operator); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+	if err := s.writeChangeLog(db, scope, 0, "add", 0, tag.ID, nil, customerTagSourceManual, 1, operator); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *customerTagService) ApplyAI(conversationID, runID int64, operations []CustomerTagOperation) (bool, error) {
+	if len(operations) == 0 {
+		return false, nil
+	}
+	scope, err := s.resolveConversationScope(sqls.DB(), conversationID, false)
+	if err != nil {
+		return false, err
+	}
+	unlock := lockCustomerTags(scope.TenantID, scope.StoreID, scope.Conversation.CustomerID)
+	defer unlock()
+	changed := false
+	eventRelationID := scope.RelationID()
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedScope, err := s.resolveConversationScope(ctx.Tx, conversationID, true)
+		if err != nil {
+			return err
+		}
+		if err := s.lockScopeRelation(ctx.Tx, lockedScope); err != nil {
+			return err
+		}
+		eventRelationID = lockedScope.Relation.ID
+		for _, operation := range operations {
+			applied, err := s.applyAIOperation(ctx.Tx, lockedScope, runID, operation)
+			if err != nil {
+				return err
+			}
+			changed = changed || applied
+		}
+		return nil
+	})
+	if err == nil && changed {
+		WsService.PublishCustomerTagChanged(scope.Conversation, scope.StoreID, eventRelationID, time.Now())
+	}
+	return changed, err
+}
+
+func (s *customerTagService) applyAIOperation(db *gorm.DB, scope *customerTagScope, runID int64, operation CustomerTagOperation) (bool, error) {
+	operation.Op = strings.ToLower(strings.TrimSpace(operation.Op))
+	if operation.Confidence < 0 || operation.Confidence > 1 {
+		return false, errorsx.InvalidParam("客户标签置信度不合法")
+	}
+	tag, err := s.validateTagForScope(db, operation.TagID, scope, true)
+	if err != nil {
+		return false, err
+	}
+	current, err := repositories.CustomerTagRelationRepository.GetByStoreRelationAndTagForUpdate(
+		db, scope.TenantID, scope.StoreID, scope.Relation.ID, tag.ID,
+	)
+	if err != nil {
+		return false, err
+	}
+	active, err := repositories.CustomerTagRelationRepository.FindActiveByStoreRelationForUpdate(db, scope.TenantID, scope.StoreID, scope.Relation.ID)
+	if err != nil {
+		return false, err
+	}
+	now := time.Now()
+	switch operation.Op {
+	case "add", "refresh":
+		if current != nil && current.ManualProtected {
+			return false, nil
+		}
+		if len(s.findActiveConflictingRelations(db, active, tag, scope.TenantID)) > 0 {
+			return false, nil
+		}
+		if current != nil {
+			if current.RelationStatus != customerTagRelationActive {
+				count, err := repositories.CustomerTagRelationRepository.CountActiveByStoreRelation(db, scope.TenantID, scope.StoreID, scope.Relation.ID)
+				if err != nil {
+					return false, err
+				}
+				if count >= maxActiveCustomerTags {
+					return false, nil
+				}
+			}
+			if err := repositories.CustomerTagRelationRepository.UpdatesInScope(db, current.ID, scope.TenantID, scope.StoreID, scope.Relation.ID, map[string]any{
+				"source": customerTagSourceAI, "relation_status": customerTagRelationActive,
+				"confidence": operation.Confidence, "evidence_count": current.EvidenceCount + 1,
+				"last_matched_at": now, "last_evolution_run_id": runID,
+				"inactivated_at": nil, "updated_at": now,
+				"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+			}); err != nil {
+				return false, err
+			}
+			if err := s.writeChangeLog(db, scope, runID, "refresh", tag.ID, tag.ID, operation.EvidenceMessageIDs, customerTagSourceAI, operation.Confidence, nil); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+		count, err := repositories.CustomerTagRelationRepository.CountActiveByStoreRelation(db, scope.TenantID, scope.StoreID, scope.Relation.ID)
+		if err != nil {
+			return false, err
+		}
+		if count >= maxActiveCustomerTags {
+			return false, nil
+		}
+		item := &models.CustomerTagRelation{
+			TenantID: scope.TenantID, StoreID: scope.StoreID,
+			CustomerID: scope.Conversation.CustomerID, StoreCustomerRelationID: scope.Relation.ID,
+			TagID: tag.ID, Source: customerTagSourceAI, RelationStatus: customerTagRelationActive,
+			Confidence: operation.Confidence, EvidenceCount: 1,
+			FirstMatchedAt: &now, LastMatchedAt: &now, LastEvolutionRunID: runID,
+			AuditFields: utils.BuildAuditFields(nil),
+		}
+		if err := repositories.CustomerTagRelationRepository.Create(db, item); err != nil {
+			return false, err
+		}
+		if err := s.writeChangeLog(db, scope, runID, "add", 0, tag.ID, operation.EvidenceMessageIDs, customerTagSourceAI, operation.Confidence, nil); err != nil {
+			return false, err
+		}
+		return true, nil
+	case "remove":
+		if current == nil || current.RelationStatus != customerTagRelationActive || current.ManualProtected {
+			return false, nil
+		}
+		if err := repositories.CustomerTagRelationRepository.UpdatesInScope(db, current.ID, scope.TenantID, scope.StoreID, scope.Relation.ID, map[string]any{
+			"relation_status": customerTagRelationInactive, "inactivated_at": now,
+			"last_evolution_run_id": runID, "updated_at": now,
+			"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+		}); err != nil {
+			return false, err
+		}
+		if err := s.writeChangeLog(db, scope, runID, "remove", tag.ID, 0, operation.EvidenceMessageIDs, customerTagSourceAI, operation.Confidence, nil); err != nil {
+			return false, err
+		}
+		return true, nil
+	case "replace":
+		if current != nil && current.ManualProtected {
+			return false, nil
+		}
+		replaceIDs := make(map[int64]struct{}, len(operation.Replaces))
+		for _, oldTagID := range operation.Replaces {
+			if oldTagID > 0 {
+				replaceIDs[oldTagID] = struct{}{}
+			}
+		}
+		conflicts := s.findActiveConflictingRelations(db, active, tag, scope.TenantID)
+		if len(conflicts) == 0 || len(replaceIDs) != len(conflicts) {
+			return false, nil
+		}
+		for _, conflict := range conflicts {
+			if conflict.ManualProtected {
+				return false, nil
+			}
+			if _, ok := replaceIDs[conflict.TagID]; !ok {
+				return false, nil
+			}
+		}
+		if current == nil {
+			current = &models.CustomerTagRelation{
+				TenantID: scope.TenantID, StoreID: scope.StoreID,
+				CustomerID: scope.Conversation.CustomerID, StoreCustomerRelationID: scope.Relation.ID,
+				TagID: tag.ID, Source: customerTagSourceAI, RelationStatus: customerTagRelationActive,
+				Confidence: operation.Confidence, EvidenceCount: 1,
+				FirstMatchedAt: &now, LastMatchedAt: &now, LastEvolutionRunID: runID,
+				AuditFields: utils.BuildAuditFields(nil),
+			}
+			if err := repositories.CustomerTagRelationRepository.Create(db, current); err != nil {
+				return false, err
+			}
+		} else {
+			if err := repositories.CustomerTagRelationRepository.UpdatesInScope(db, current.ID, scope.TenantID, scope.StoreID, scope.Relation.ID, map[string]any{
+				"source": customerTagSourceAI, "relation_status": customerTagRelationActive,
+				"confidence": operation.Confidence, "evidence_count": current.EvidenceCount + 1,
+				"last_matched_at": now, "last_evolution_run_id": runID,
+				"inactivated_at": nil, "updated_at": now,
+				"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+			}); err != nil {
+				return false, err
+			}
+		}
+		for _, conflict := range conflicts {
+			if err := repositories.CustomerTagRelationRepository.UpdatesInScope(db, conflict.ID, scope.TenantID, scope.StoreID, scope.Relation.ID, map[string]any{
+				"relation_status": customerTagRelationInactive, "inactivated_at": now,
+				"last_evolution_run_id": runID, "updated_at": now,
+				"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+			}); err != nil {
+				return false, err
+			}
+			if err := s.writeChangeLog(db, scope, runID, "replace", conflict.TagID, tag.ID, operation.EvidenceMessageIDs, customerTagSourceAI, operation.Confidence, nil); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	default:
+		return false, errorsx.InvalidParam("客户标签操作不合法")
+	}
+}
+
+func (s *customerTagService) resolveConversationScope(db *gorm.DB, conversationID int64, createRelation bool) (*customerTagScope, error) {
+	conversation := repositories.ConversationRepository.Get(db, conversationID)
+	if conversation == nil || conversation.TenantID <= 0 || conversation.CustomerID <= 0 {
+		return nil, errorsx.InvalidParam("会话尚未关联有效客户")
+	}
+	if repositories.CustomerRepository.GetInTenant(db, conversation.CustomerID, conversation.TenantID) == nil {
+		return nil, errorsx.InvalidParam("会话客户不属于当前接入公司")
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, conversation.TenantID)
+	if route == nil || route.StoreID <= 0 {
+		return nil, errorsx.InvalidParam("会话尚未绑定门店")
+	}
+	store := repositories.StoreRepository.GetInTenant(db, route.StoreID, conversation.TenantID)
+	if store == nil || store.Status != enums.StatusOk {
+		return nil, errorsx.InvalidParam("门店不存在或已停用")
+	}
+	tenant := repositories.TenantRepository.Get(db, conversation.TenantID)
+	if tenant == nil || tenant.IntentProfileID <= 0 {
+		return nil, errorsx.InvalidParam("接入公司尚未绑定有效行业")
+	}
+	relation := repositories.StoreCustomerRelationRepository.TakeByCustomerAndStoreInTenant(
+		db, conversation.TenantID, conversation.CustomerID, route.StoreID,
+	)
+	if relation == nil && createRelation {
+		now := time.Now()
+		candidate := &models.StoreCustomerRelation{
+			TenantID: conversation.TenantID, CustomerID: conversation.CustomerID, StoreID: route.StoreID,
+			WxWorkInstanceID: route.WxWorkInstanceID, LastConversationID: conversation.ID,
+			LastActiveAt: &now, VisitCount: 1, Status: enums.StatusOk,
+			AuditFields: utils.BuildAuditFields(nil),
+		}
+		if err := repositories.StoreCustomerRelationRepository.CreateIfAbsent(db, candidate); err != nil {
+			return nil, err
+		}
+		relation = repositories.StoreCustomerRelationRepository.TakeByCustomerAndStoreInTenant(
+			db, conversation.TenantID, conversation.CustomerID, route.StoreID,
+		)
+		if relation == nil {
+			return nil, errorsx.BusinessError(5, "客户门店关系创建失败")
+		}
+	}
+	if relation != nil && (relation.TenantID != conversation.TenantID || relation.StoreID != route.StoreID || relation.CustomerID != conversation.CustomerID) {
+		return nil, errorsx.Forbidden("客户门店关系范围不一致")
+	}
+	return &customerTagScope{
+		Conversation: conversation, Route: route, Relation: relation,
+		TenantID: conversation.TenantID, StoreID: route.StoreID, ProfileID: tenant.IntentProfileID,
+	}, nil
+}
+
+func (s *customerTagService) lockScopeRelation(db *gorm.DB, scope *customerTagScope) error {
+	if scope == nil || scope.Relation == nil {
+		return errorsx.InvalidParam("客户门店关系不存在")
+	}
+	locked, err := repositories.StoreCustomerRelationRepository.GetForUpdateInTenant(db, scope.Relation.ID, scope.TenantID)
+	if err != nil {
+		return err
+	}
+	if locked == nil || locked.StoreID != scope.StoreID || locked.CustomerID != scope.Conversation.CustomerID || locked.Status != enums.StatusOk {
+		return errorsx.InvalidParam("客户门店关系不存在或已停用")
+	}
+	scope.Relation = locked
+	return nil
+}
+
+func (s *customerTagService) validateTagForScope(db *gorm.DB, tagID int64, scope *customerTagScope, requireAI bool) (*models.Tag, error) {
+	if scope == nil || scope.TenantID <= 0 || tagID <= 0 {
+		return nil, errorsx.InvalidParam("标签不存在或不可用")
+	}
+	tag := repositories.TagRepository.GetInTenant(db, tagID, scope.TenantID)
+	profileID := scope.ProfileID
+	if tag == nil || tag.Status != enums.StatusOk || tag.ParentID == 0 || !tag.SystemDefined || tag.TemplateDefinitionID == nil || tag.IntentProfileID != profileID {
+		return nil, errorsx.InvalidParam("标签不存在或不可用")
+	}
+	if repositories.TagRepository.Count(db, sqls.NewCnd().
+		Eq("tenant_id", scope.TenantID).
+		Eq("intent_profile_id", profileID).
+		Eq("parent_id", tag.ID)) > 0 {
+		return nil, errorsx.InvalidParam("标签分类不能直接用于客户画像")
+	}
+	if requireAI && !tag.AIEnabled {
+		return nil, errorsx.InvalidParam("标签未开放给AI使用")
+	}
+	if strings.TrimSpace(tag.SemanticKey) == "" {
+		return nil, errorsx.InvalidParam("标签缺少稳定语义标识")
+	}
+	return tag, nil
+}
+
+func (s *customerTagService) requireConversationAccess(scope *customerTagScope, operator *dto.AuthPrincipal) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if scope == nil || scope.Conversation == nil || scope.TenantID <= 0 || scope.StoreID <= 0 {
+		return errorsx.InvalidParam("会话门店范围不存在")
+	}
+	if operator.ActiveTenantID != scope.TenantID {
+		return errorsx.Forbidden("无权操作其他接入公司的客户标签")
+	}
+	if !AgentTeamScopeService.CanViewConversation(operator, scope.Conversation.ID) {
+		return errorsx.Forbidden("无权操作该门店客户标签")
+	}
+	return nil
+}
+
+func (s *customerTagService) writeChangeLog(db *gorm.DB, scope *customerTagScope, runID int64, action string, oldTagID, newTagID int64, evidence []int64, source string, confidence float64, operator *dto.AuthPrincipal) error {
+	operatorType := "system"
+	operatorID := constants.SystemAuditUserID
+	operatorName := constants.SystemAuditUserName
+	if operator != nil {
+		operatorType = "user"
+		operatorID = operator.UserID
+		operatorName = operator.Username
+	}
+	if evidence == nil {
+		evidence = make([]int64, 0)
+	}
+	evidence = uniquePositive(evidence)
+	rawEvidence, _ := json.Marshal(evidence)
+	return repositories.CustomerTagChangeLogRepository.Create(db, &models.CustomerTagChangeLog{
+		TenantID: scope.TenantID, StoreID: scope.StoreID, CustomerID: scope.Conversation.CustomerID,
+		StoreCustomerRelationID: scope.Relation.ID, ConversationID: scope.Conversation.ID,
+		EvolutionRunID: runID, Action: action, OldTagID: oldTagID, NewTagID: newTagID,
+		EvidenceMessageIDs: string(rawEvidence), Source: source, Confidence: confidence,
+		OperatorType: operatorType, OperatorID: operatorID, OperatorName: operatorName, CreatedAt: time.Now(),
+	})
+}
+
+func (s *customerTagService) findActiveConflictingRelations(db *gorm.DB, active []models.CustomerTagRelation, target *models.Tag, tenantID int64) []*models.CustomerTagRelation {
+	if target == nil || strings.TrimSpace(target.ConflictGroup) == "" {
+		return nil
+	}
+	tagIDs := make([]int64, 0, len(active))
+	for i := range active {
+		if active[i].TagID != target.ID {
+			tagIDs = append(tagIDs, active[i].TagID)
+		}
+	}
+	tags := repositories.TagRepository.Find(db, sqls.NewCnd().Eq("tenant_id", tenantID).In("id", uniquePositive(tagIDs)))
+	tagByID := make(map[int64]*models.Tag, len(tags))
+	for i := range tags {
+		tagByID[tags[i].ID] = &tags[i]
+	}
+	ret := make([]*models.CustomerTagRelation, 0)
+	for i := range active {
+		item := &active[i]
+		if item.TagID != target.ID && tagsCanReplace(tagByID[item.TagID], target) {
+			ret = append(ret, item)
+		}
+	}
+	return ret
+}
+
+func tagsCanReplace(oldTag, newTag *models.Tag) bool {
+	if oldTag == nil || newTag == nil {
+		return false
+	}
+	if strings.TrimSpace(oldTag.SemanticKey) != "" && oldTag.SemanticKey == newTag.SemanticKey {
+		return true
+	}
+	return strings.TrimSpace(oldTag.ConflictGroup) != "" && oldTag.ConflictGroup == newTag.ConflictGroup
 }
 
 func (s *customerTagService) SelectReplyTagCandidates(conversationID int64, orderedScenes []string, currentText string) ([]ReplyTagCandidate, error) {
@@ -52,29 +917,23 @@ func (s *customerTagService) SelectReplyTagCandidates(conversationID int64, orde
 	if policy == nil || policy.Status != enums.StatusOk || !policy.ReplyTagContextEnabled {
 		return nil, nil
 	}
-	storeRelation := repositories.StoreCustomerRelationRepository.TakeByCustomerAndStoreInTenant(
-		sqls.DB(), conversation.TenantID, conversation.CustomerID, route.StoreID,
-	)
+	storeRelation := repositories.StoreCustomerRelationRepository.TakeByCustomerAndStoreInTenant(sqls.DB(), conversation.TenantID, conversation.CustomerID, route.StoreID)
 	if storeRelation == nil || storeRelation.Status != enums.StatusOk {
 		return nil, nil
 	}
-
 	sceneOrder := make(map[string]int, len(orderedScenes))
 	for _, scene := range orderedScenes {
 		scene = strings.TrimSpace(scene)
-		if scene == "" {
-			continue
-		}
-		if _, exists := sceneOrder[scene]; !exists {
-			sceneOrder[scene] = len(sceneOrder)
+		if scene != "" {
+			if _, exists := sceneOrder[scene]; !exists {
+				sceneOrder[scene] = len(sceneOrder)
+			}
 		}
 	}
 	if len(sceneOrder) == 0 {
 		return nil, nil
 	}
-	relations, err := repositories.CustomerTagRelationRepository.FindActiveByStoreRelation(
-		sqls.DB(), conversation.TenantID, route.StoreID, storeRelation.ID,
-	)
+	relations, err := repositories.CustomerTagRelationRepository.FindActiveByStoreRelation(sqls.DB(), conversation.TenantID, route.StoreID, storeRelation.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +953,6 @@ func (s *customerTagService) SelectReplyTagCandidates(conversationID int64, orde
 			}
 		}
 	}
-
 	candidates := make([]ReplyTagCandidate, 0, len(relations))
 	for _, relation := range relations {
 		tag := tags[relation.TagID]

@@ -4,10 +4,12 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"log/slog"
+	"slices"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
+	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/openidentity"
@@ -33,9 +35,10 @@ type customerService struct {
 }
 
 type CustomerPresentationData struct {
-	StoreRelationsByCustomerID map[int64][]models.StoreCustomerRelation
-	StoresByID                 map[int64]*models.Store
-	WxWorkInstancesByID        map[int64]*models.WxWorkProtocolInstance
+	StoreRelationsByCustomerID    map[int64][]models.StoreCustomerRelation
+	StoresByID                    map[int64]*models.Store
+	WxWorkInstancesByID           map[int64]*models.WxWorkProtocolInstance
+	CustomerTagsByStoreRelationID map[int64][]response.CustomerTagResponse
 }
 
 func (s *customerService) Get(id int64) *models.Customer {
@@ -76,12 +79,16 @@ func (s *customerService) ListCustomers(req request.CustomerListRequest, operato
 	if tenantID <= 0 {
 		return []models.Customer{}, &sqls.Paging{Page: req.GetPage(), Limit: req.GetLimit(), Total: 0}
 	}
-	if err := s.newCustomerListQuery(req, tenantID).Distinct("c.*").Offset(req.Offset()).Order("c.id DESC").Limit(req.GetLimit()).Scan(&list).Error; err != nil {
+	scope := AgentTeamScopeService.Resolve(operator)
+	if !scope.Unrestricted && len(scope.StoreIDs) == 0 {
+		return []models.Customer{}, &sqls.Paging{Page: req.GetPage(), Limit: req.GetLimit(), Total: 0}
+	}
+	if err := s.newCustomerListQuery(req, tenantID, scope).Distinct("c.*").Offset(req.Offset()).Order("c.id DESC").Limit(req.GetLimit()).Scan(&list).Error; err != nil {
 		slog.Error("customer list scan failed", slog.Any("error", err))
 	}
 
 	var total int64
-	if err := s.newCustomerListQuery(req, tenantID).Distinct("c.id").Count(&total).Error; err != nil {
+	if err := s.newCustomerListQuery(req, tenantID, scope).Distinct("c.id").Count(&total).Error; err != nil {
 		slog.Error("customer list count failed", slog.Any("error", err))
 	}
 
@@ -93,23 +100,32 @@ func (s *customerService) ListCustomers(req request.CustomerListRequest, operato
 	return
 }
 
-func (s *customerService) newCustomerListQuery(req request.CustomerListRequest, tenantID int64) *gorm.DB {
+func (s *customerService) newCustomerListQuery(req request.CustomerListRequest, tenantID int64, scope ManagedDataScope) *gorm.DB {
 	deleted := int(enums.StatusDeleted)
 	tx := sqls.DB().
 		Table("t_customer AS c").
 		Joins("LEFT JOIN t_customer_contact AS cc ON cc.customer_id = c.id AND cc.tenant_id = c.tenant_id AND cc.status <> ?", deleted)
 
-	tx.Where("c.tenant_id = ? AND c.status <> ?", tenantID, enums.StatusDeleted)
+	tx = tx.Where("c.tenant_id = ? AND c.status <> ?", tenantID, enums.StatusDeleted)
+	if !scope.Unrestricted {
+		tx = tx.Where(`EXISTS (
+SELECT 1 FROM t_store_customer_relation AS scr
+WHERE scr.tenant_id = c.tenant_id
+  AND scr.customer_id = c.id
+  AND scr.store_id IN ?
+  AND scr.status <> ?
+)`, scope.StoreIDs, enums.StatusDeleted)
+	}
 
 	if req.Status != nil {
-		tx.Where("c.status = ?", *req.Status)
+		tx = tx.Where("c.status = ?", *req.Status)
 	}
 	if req.Gender != nil {
-		tx.Where("c.gender = ?", *req.Gender)
+		tx = tx.Where("c.gender = ?", *req.Gender)
 	}
 	if kw := strings.TrimSpace(req.Keyword); strs.IsNotBlank(kw) {
 		pat := "%" + kw + "%"
-		tx.Where(`(
+		tx = tx.Where(`(
 c.name LIKE ? OR
 c.primary_mobile LIKE ? OR
 c.primary_email LIKE ? OR
@@ -124,10 +140,19 @@ func (s *customerService) Count(cnd *sqls.Cnd) int64 {
 }
 
 func (s *customerService) LoadPresentationData(customers []models.Customer, includeStoreRelations bool) CustomerPresentationData {
+	return s.loadPresentationData(customers, includeStoreRelations, nil)
+}
+
+func (s *customerService) LoadPresentationDataForOperator(customers []models.Customer, includeStoreRelations bool, operator *dto.AuthPrincipal) CustomerPresentationData {
+	return s.loadPresentationData(customers, includeStoreRelations, operator)
+}
+
+func (s *customerService) loadPresentationData(customers []models.Customer, includeStoreRelations bool, operator *dto.AuthPrincipal) CustomerPresentationData {
 	data := CustomerPresentationData{
-		StoreRelationsByCustomerID: map[int64][]models.StoreCustomerRelation{},
-		StoresByID:                 map[int64]*models.Store{},
-		WxWorkInstancesByID:        map[int64]*models.WxWorkProtocolInstance{},
+		StoreRelationsByCustomerID:    map[int64][]models.StoreCustomerRelation{},
+		StoresByID:                    map[int64]*models.Store{},
+		WxWorkInstancesByID:           map[int64]*models.WxWorkProtocolInstance{},
+		CustomerTagsByStoreRelationID: map[int64][]response.CustomerTagResponse{},
 	}
 	if len(customers) == 0 {
 		return data
@@ -144,12 +169,26 @@ func (s *customerService) LoadPresentationData(customers []models.Customer, incl
 	if !includeStoreRelations || len(customerIDs) == 0 {
 		return data
 	}
-	relations := repositories.StoreCustomerRelationRepository.Find(sqls.DB(), sqls.NewCnd().
+	relationCnd := sqls.NewCnd().
 		In("customer_id", uniquePositive(customerIDs)).
 		In("tenant_id", tenantIDs).
 		NotEq("status", enums.StatusDeleted).
 		Desc("last_active_at").
-		Desc("id"))
+		Desc("id")
+	if operator != nil {
+		scope := AgentTeamScopeService.Resolve(operator)
+		if scope.TenantID <= 0 || !slices.Contains(tenantIDs, scope.TenantID) {
+			return data
+		}
+		relationCnd.Eq("tenant_id", scope.TenantID)
+		if !scope.Unrestricted {
+			if len(scope.StoreIDs) == 0 {
+				return data
+			}
+			relationCnd.In("store_id", scope.StoreIDs)
+		}
+	}
+	relations := repositories.StoreCustomerRelationRepository.Find(sqls.DB(), relationCnd)
 	storeIDs := make([]int64, 0, len(relations))
 	instanceIDs := make([]int64, 0, len(relations))
 	storeTenantByID := make(map[int64]int64, len(relations))
@@ -181,7 +220,34 @@ func (s *customerService) LoadPresentationData(customers []models.Customer, incl
 			}
 		}
 	}
+	relationsByTenant := make(map[int64][]models.StoreCustomerRelation)
+	for i := range relations {
+		relationsByTenant[relations[i].TenantID] = append(relationsByTenant[relations[i].TenantID], relations[i])
+	}
+	for tenantID, tenantRelations := range relationsByTenant {
+		for relationID, tags := range CustomerTagService.ListByStoreRelations(tenantID, tenantRelations) {
+			data.CustomerTagsByStoreRelationID[relationID] = tags
+		}
+	}
 	return data
+}
+
+func (s *customerService) CanAccessCustomer(operator *dto.AuthPrincipal, customerID int64) bool {
+	tenantID := customerTenantID(operator)
+	if customerID <= 0 || tenantID <= 0 || repositories.CustomerRepository.GetInTenant(sqls.DB(), customerID, tenantID) == nil {
+		return false
+	}
+	scope := AgentTeamScopeService.Resolve(operator)
+	if scope.Unrestricted {
+		return true
+	}
+	if len(scope.StoreIDs) == 0 {
+		return false
+	}
+	return repositories.StoreCustomerRelationRepository.Take(sqls.DB(),
+		"tenant_id = ? AND customer_id = ? AND store_id IN ? AND status <> ?",
+		tenantID, customerID, scope.StoreIDs, enums.StatusDeleted,
+	) != nil
 }
 
 func recordExpectedTenant(expected map[int64]int64, id, tenantID int64) {
@@ -355,6 +421,9 @@ func (s *customerService) UpdateCustomer(req request.UpdateCustomerRequest, oper
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
+	if !s.CanAccessCustomer(operator, req.ID) {
+		return errorsx.InvalidParam("客户不存在")
+	}
 	item := s.GetInTenant(req.ID, operator)
 	if item == nil {
 		return errorsx.InvalidParam("客户不存在")
@@ -384,6 +453,9 @@ func (s *customerService) UpdateCustomer(req request.UpdateCustomerRequest, oper
 }
 
 func (s *customerService) DeleteCustomer(id int64, operator dto.AuthPrincipal) error {
+	if !s.CanAccessCustomer(&operator, id) {
+		return errorsx.InvalidParam("客户不存在")
+	}
 	item := s.GetInTenant(id, &operator)
 	if item == nil {
 		return errorsx.InvalidParam("客户不存在")
@@ -415,6 +487,9 @@ func (s *customerService) UpdateStatus(id int64, status int, operator *dto.AuthP
 	if operator == nil {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
+	if !s.CanAccessCustomer(operator, id) {
+		return errorsx.InvalidParam("客户不存在")
+	}
 	item := s.GetInTenant(id, operator)
 	if item == nil {
 		return errorsx.InvalidParam("客户不存在")
@@ -444,6 +519,9 @@ func (s *customerService) SaveCustomerProfile(req request.SaveCustomerProfileReq
 		return nil, errorsx.InvalidParam("客户名称不能为空")
 	}
 	createMode := req.ID == nil || *req.ID <= 0
+	if !createMode && !s.CanAccessCustomer(operator, *req.ID) {
+		return nil, errorsx.InvalidParam("客户不存在")
+	}
 
 	var out *models.Customer
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {

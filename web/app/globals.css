@@ -272,7 +272,7 @@
   }
 
   .agentdesk-subtle-surface {
-    @apply border border-[#dbe7f6] bg-[#f6f9ff] shadow-[0_8px_24px_rgba(37,99,235,0.06)];
+    @apply border border-[#dbe7f6] bg-[#f6f9ff] shadow-[0_8px_24px_rgba(37,99,235,0.06)] dark:border-border dark:bg-muted/40 dark:shadow-none;
   }
 
   .agentdesk-soft-button {

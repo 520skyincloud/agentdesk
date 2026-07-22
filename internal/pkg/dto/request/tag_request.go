@@ -7,9 +7,10 @@ type TagListRequest struct {
 }
 
 type CreateTagRequest struct {
-	ParentID int64  `json:"parentId"`
-	Name     string `json:"name"`
-	Remark   string `json:"remark"`
+	ParentID     int64  `json:"parentId"`
+	Name         string `json:"name"`
+	DisplayAlias string `json:"displayAlias"`
+	Remark       string `json:"remark"`
 }
 
 type UpdateTagRequest struct {

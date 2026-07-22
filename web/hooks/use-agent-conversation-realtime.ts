@@ -177,6 +177,13 @@ export function useAgentConversationRealtime() {
             return
           }
 
+          if (eventType === "customer_tag.changed" && conversationId > 0) {
+            void store.refreshConversation(conversationId).catch((error) => {
+              toast.error(error instanceof Error ? error.message : t("conversation.syncCustomerTagsFailed"))
+            })
+            return
+          }
+
           if (eventType.startsWith("conversation.") && payload) {
             store.applyRealtimeConversationChanged(payload)
             if (shouldReloadConversationListForRealtimePatch(payload)) {

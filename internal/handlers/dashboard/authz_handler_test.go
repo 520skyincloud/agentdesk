@@ -569,6 +569,28 @@ func TestTicketAndTagListHandlersRequireActiveTenant(t *testing.T) {
 	}
 }
 
+func TestCustomerTagHandlersRequireExplicitPermission(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler func(*gin.Context)
+	}{
+		{name: "options", handler: ConversationGetCustomer_tag_options},
+		{name: "change log", handler: ConversationAnyCustomer_tag_change_log},
+		{name: "add", handler: ConversationPostCustomer_tag_add},
+		{name: "remove", handler: ConversationPostCustomer_tag_remove},
+		{name: "replace", handler: ConversationPostCustomer_tag_replace},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, `{}`, &dto.AuthPrincipal{
+				UserID: 24, Username: "customer-tag-without-permission", ActiveTenantID: 9,
+			})
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
 func TestTicketCreateWithInitialAssigneeRequiresAssignPermission(t *testing.T) {
 	tests := []struct {
 		name    string

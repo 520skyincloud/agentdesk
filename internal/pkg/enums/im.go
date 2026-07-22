@@ -279,6 +279,7 @@ const (
 	IMRealtimeEventConversationRead        = "conversation.read"
 	IMRealtimeEventNotificationCreated     = "notification.created"
 	IMRealtimeEventCustomerSessionRefresh  = "customer_session.refresh"
+	IMRealtimeEventCustomerTagChanged      = "customer_tag.changed"
 )
 
 const (

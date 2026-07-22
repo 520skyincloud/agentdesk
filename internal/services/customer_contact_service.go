@@ -86,6 +86,9 @@ func (s *customerContactService) FindActiveByCustomerID(customerID int64, operat
 	if customerID <= 0 || tenantID <= 0 {
 		return nil
 	}
+	if !CustomerService.CanAccessCustomer(operator, customerID) {
+		return nil
+	}
 	cnd := sqls.NewCnd().
 		Where("customer_id = ?", customerID).
 		Where("tenant_id = ?", tenantID).
@@ -369,7 +372,7 @@ func (s *customerContactService) CreateCustomerContact(req request.CreateCustome
 	if req.CustomerID <= 0 {
 		return nil, errorsx.InvalidParam("客户不存在")
 	}
-	if CustomerService.GetInTenant(req.CustomerID, operator) == nil {
+	if !CustomerService.CanAccessCustomer(operator, req.CustomerID) {
 		return nil, errorsx.InvalidParam("客户不存在")
 	}
 	ct := strings.TrimSpace(req.ContactType)
@@ -471,6 +474,9 @@ func (s *customerContactService) UpdateCustomerContact(req request.UpdateCustome
 	if current == nil {
 		return errorsx.InvalidParam("联系方式不存在")
 	}
+	if !CustomerService.CanAccessCustomer(operator, current.CustomerID) {
+		return errorsx.InvalidParam("联系方式不存在")
+	}
 	tenantID := current.TenantID
 	ct := strings.TrimSpace(req.ContactType)
 	if !enums.IsValidContactType(ct) {
@@ -531,6 +537,9 @@ func (s *customerContactService) DeleteCustomerContact(id int64, operator *dto.A
 	}
 	current := s.GetInTenant(id, operator)
 	if current == nil {
+		return errorsx.InvalidParam("联系方式不存在")
+	}
+	if !CustomerService.CanAccessCustomer(operator, current.CustomerID) {
 		return errorsx.InvalidParam("联系方式不存在")
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {

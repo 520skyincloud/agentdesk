@@ -6,7 +6,6 @@ import (
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
-	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 	"strings"
 	"time"
@@ -58,7 +57,15 @@ func (s *tagService) FindPageForOperator(cnd *sqls.Cnd, operator *dto.AuthPrinci
 	if err != nil {
 		return nil, nil, err
 	}
-	list, paging = repositories.TagRepository.FindPageByCnd(sqls.DB(), cnd.Eq("tenant_id", tenantID))
+	profile, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	list, paging = repositories.TagRepository.FindPageByCnd(sqls.DB(), cnd.
+		Eq("tenant_id", tenantID).
+		Eq("intent_profile_id", profile.ID).
+		Eq("system_defined", true).
+		Where("template_definition_id IS NOT NULL"))
 	return list, paging, nil
 }
 
@@ -99,43 +106,7 @@ func (s *tagService) FindByNameAndParentID(name string, parentID int64) *models.
 }
 
 func (s *tagService) CreateTag(req request.CreateTagRequest, operator *dto.AuthPrincipal) (*models.Tag, error) {
-	tenantID, err := requireActiveTenantID(operator, "标签")
-	if err != nil {
-		return nil, err
-	}
-
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		return nil, errorsx.InvalidParam("标签名称不能为空")
-	}
-
-	if req.ParentID > 0 {
-		parent := s.GetInTenant(req.ParentID, tenantID)
-		if parent == nil {
-			return nil, errorsx.InvalidParam("父标签不存在")
-		}
-	}
-
-	existing := s.FindOne(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("name", name).Eq("parent_id", req.ParentID))
-	if existing != nil {
-		return nil, errorsx.InvalidParam("同级下已存在相同名称的标签")
-	}
-
-	item := &models.Tag{
-		TenantID:    tenantID,
-		ParentID:    req.ParentID,
-		Name:        name,
-		Remark:      strings.TrimSpace(req.Remark),
-		Status:      enums.StatusOk,
-		AuditFields: utils.BuildAuditFields(operator),
-	}
-
-	item.SortNo = s.NextSortNoInTenant(req.ParentID, tenantID)
-	if err := s.Create(item); err != nil {
-		return nil, err
-	}
-
-	return item, nil
+	return nil, errorsx.Forbidden("客户标签由行业目录统一发布，不允许自行创建")
 }
 
 func (s *tagService) NextSortNo(parentID int64) int {
@@ -158,35 +129,27 @@ func (s *tagService) UpdateTag(req request.UpdateTagRequest, operator *dto.AuthP
 		return err
 	}
 
+	profile, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID)
+	if err != nil {
+		return err
+	}
 	item := s.GetInTenant(req.ID, tenantID)
-	if item == nil {
+	if !isCurrentIndustryTag(item, profile.ID) {
 		return errorsx.InvalidParam("标签不存在")
 	}
-
-	name := strings.TrimSpace(req.Name)
-	if name == "" {
-		return errorsx.InvalidParam("标签名称不能为空")
+	if item.ParentID == 0 || s.Count(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("intent_profile_id", profile.ID).
+		Eq("parent_id", item.ID)) > 0 {
+		return errorsx.InvalidParam("行业标签分类不允许设置显示别名")
 	}
-
-	if req.ParentID > 0 {
-		if req.ParentID == req.ID {
-			return errorsx.InvalidParam("不能将标签设为自己的子标签")
-		}
-		parent := s.GetInTenant(req.ParentID, tenantID)
-		if parent == nil {
-			return errorsx.InvalidParam("父标签不存在")
-		}
-	}
-
-	existing := s.FindOne(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("name", name).Eq("parent_id", req.ParentID))
-	if existing != nil && existing.ID != req.ID {
-		return errorsx.InvalidParam("同级下已存在相同名称的标签")
+	displayAlias := strings.TrimSpace(req.DisplayAlias)
+	if len([]rune(displayAlias)) > 80 {
+		return errorsx.InvalidParam("显示别名不能超过80个字符")
 	}
 
 	return repositories.TagRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
-		"parent_id":        req.ParentID,
-		"name":             name,
-		"remark":           strings.TrimSpace(req.Remark),
+		"display_alias":    displayAlias,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
 		"updated_at":       time.Now(),
@@ -194,49 +157,11 @@ func (s *tagService) UpdateTag(req request.UpdateTagRequest, operator *dto.AuthP
 }
 
 func (s *tagService) UpdateSort(ids []int64, operator *dto.AuthPrincipal) error {
-	tenantID, err := requireActiveTenantID(operator, "标签")
-	if err != nil {
-		return err
-	}
-	ids = normalizeTagIDs(ids)
-	if len(ids) == 0 {
-		return nil
-	}
-	items := repositories.TagRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).In("id", ids))
-	if len(items) != len(ids) {
-		return errorsx.InvalidParam("存在不属于当前接入公司的标签")
-	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		for i, id := range ids {
-			if err := repositories.TagRepository.UpdateColumnInTenant(ctx.Tx, id, tenantID, "sort_no", i+1); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	return errorsx.Forbidden("客户标签层级和排序由行业目录统一发布，不允许修改")
 }
 
 func (s *tagService) DeleteTag(id int64, operator *dto.AuthPrincipal) error {
-	tenantID, err := requireActiveTenantID(operator, "标签")
-	if err != nil {
-		return err
-	}
-	item := s.GetInTenant(id, tenantID)
-	if item == nil {
-		return errorsx.InvalidParam("标签不存在")
-	}
-
-	if s.Count(sqls.NewCnd().Eq("tenant_id", tenantID).Eq("parent_id", id)) > 0 {
-		return errorsx.InvalidParam("该标签下存在子标签，无法删除")
-	}
-	if ConversationTagService.Take("tenant_id = ? AND tag_id = ?", tenantID, id) != nil {
-		return errorsx.InvalidParam("该标签已关联会话，无法删除")
-	}
-	if TicketTagService.Take("tenant_id = ? AND tag_id = ?", tenantID, id) != nil {
-		return errorsx.InvalidParam("该标签已关联工单，无法删除")
-	}
-
-	return repositories.TagRepository.DeleteInTenant(sqls.DB(), id, tenantID)
+	return errorsx.Forbidden("客户标签由行业目录统一发布，不允许删除")
 }
 
 func (s *tagService) FindAll() []models.Tag {
@@ -247,7 +172,15 @@ func (s *tagService) FindAllInTenant(tenantID int64) []models.Tag {
 	if tenantID <= 0 {
 		return nil
 	}
-	return s.Find(sqls.NewCnd().Eq("tenant_id", tenantID).Asc("sort_no").Asc("id"))
+	tenant := repositories.TenantRepository.Get(sqls.DB(), tenantID)
+	if tenant == nil || tenant.IntentProfileID <= 0 {
+		return nil
+	}
+	return s.Find(sqls.NewCnd().Eq("tenant_id", tenantID).
+		Eq("intent_profile_id", tenant.IntentProfileID).
+		Eq("system_defined", true).
+		Where("template_definition_id IS NOT NULL").
+		Asc("parent_id").Asc("sort_no").Asc("id"))
 }
 
 func (s *tagService) FindAllForOperator(operator *dto.AuthPrincipal) ([]models.Tag, error) {
@@ -264,7 +197,11 @@ func (s *tagService) GetForOperator(id int64, operator *dto.AuthPrincipal) (*mod
 		return nil, err
 	}
 	item := s.GetInTenant(id, tenantID)
-	if item == nil {
+	profile, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if !isCurrentIndustryTag(item, profile.ID) {
 		return nil, errorsx.InvalidParam("标签不存在")
 	}
 	return item, nil
@@ -341,9 +278,19 @@ func (s *tagService) UpdateStatus(id int64, status int, operator *dto.AuthPrinci
 		return err
 	}
 
+	profile, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID)
+	if err != nil {
+		return err
+	}
 	item := s.GetInTenant(id, tenantID)
-	if item == nil {
+	if !isCurrentIndustryTag(item, profile.ID) {
 		return errorsx.InvalidParam("标签不存在")
+	}
+	if item.ParentID == 0 || s.Count(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("intent_profile_id", profile.ID).
+		Eq("parent_id", item.ID)) > 0 {
+		return errorsx.InvalidParam("行业标签分类不可停用")
 	}
 
 	if status != int(enums.StatusOk) && status != int(enums.StatusDisabled) {
@@ -357,4 +304,8 @@ func (s *tagService) UpdateStatus(id int64, status int, operator *dto.AuthPrinci
 		"update_user_name": operator.Username,
 		"updated_at":       now,
 	})
+}
+
+func isCurrentIndustryTag(item *models.Tag, intentProfileID int64) bool {
+	return item != nil && item.IntentProfileID == intentProfileID && item.SystemDefined && item.TemplateDefinitionID != nil
 }

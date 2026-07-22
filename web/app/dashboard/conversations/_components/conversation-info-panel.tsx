@@ -12,14 +12,17 @@ import { toast } from "sonner";
 import { type CustomerFormSavePayload } from "@/components/customer-form";
 import { CustomerFormDialog } from "@/components/customer-form-dialog";
 import { CustomerLinkOrCreateDialog } from "@/components/customer-link-or-create-dialog";
+import { CustomerTagHistoryDialog } from "@/components/customer-tag-history-dialog";
+import { CustomerTagBadges } from "@/components/customer-tag-badges";
 import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
+  fetchCustomerTagOptions,
   setAgentConversationAutoHandoffEnabled,
   type AgentConversation,
 } from "@/lib/api/agent";
-import { type TagTree, fetchTagsAll } from "@/lib/api/admin";
+import { type Tag } from "@/lib/api/admin";
 import { fetchTickets, type TicketItem } from "@/lib/api/ticket";
 import {
   fetchCustomer,
@@ -38,9 +41,8 @@ import { useAgentConversationsStore } from "@/lib/stores/agent-conversations";
 import { cn, formatDateTime, repairMojibakeText } from "@/lib/utils";
 import { useI18n } from "@/i18n/provider";
 import {
-  ConversationTagBadges,
-  ConversationTagPicker,
-} from "./conversation-tag-picker";
+  CustomerTagPicker,
+} from "./customer-tag-picker";
 import { TicketStatusBadge } from "../../tickets/_components/ticket-status-badge";
 
 function contactTypeLabel(
@@ -276,7 +278,7 @@ export function ConversationInfoPanel({
   );
 }
 
-function ConversationTagSection({
+function CustomerTagSection({
   conversation,
   permissions,
 }: {
@@ -284,14 +286,17 @@ function ConversationTagSection({
   permissions: ConversationInfoPermissions;
 }) {
   const t = useI18n();
-  const setConversationTags = useAgentConversationsStore(
-    (state) => state.setConversationTags,
+  const refreshConversation = useAgentConversationsStore(
+    (state) => state.refreshConversation,
   );
-  const [availableTags, setAvailableTags] = useState<TagTree[]>([]);
+  const [availableTags, setAvailableTags] = useState<Tag[]>([]);
   const [loading, setLoading] = useState(false);
+  const canManageCurrentStoreCustomer = permissions.canManageTags
+    && (conversation.customerId ?? 0) > 0
+    && (conversation.storeId ?? 0) > 0;
 
   useEffect(() => {
-    if (!permissions.canViewTags) {
+    if (!canManageCurrentStoreCustomer) {
       setAvailableTags([]);
       setLoading(false);
       return;
@@ -302,7 +307,7 @@ function ConversationTagSection({
     async function loadTags() {
       setLoading(true);
       try {
-        const data = await fetchTagsAll();
+        const data = await fetchCustomerTagOptions(conversation.id);
         if (!cancelled) {
           setAvailableTags(Array.isArray(data) ? data : []);
         }
@@ -322,32 +327,30 @@ function ConversationTagSection({
     return () => {
       cancelled = true;
     };
-  }, [permissions.canViewTags, t]);
+  }, [canManageCurrentStoreCustomer, conversation.id, t]);
 
   return (
     <section className="space-y-2 border-t pt-2">
       <SectionHeading
         action={
-          permissions.canManageTags ? (
-            <ConversationTagPicker
-              conversation={conversation}
-              availableTags={availableTags}
-              loading={loading}
-              onTagsChange={(tags) => {
-                setConversationTags(conversation.id, tags);
-              }}
-            />
+          canManageCurrentStoreCustomer ? (
+            <div className="flex items-center gap-1">
+              <CustomerTagHistoryDialog conversationId={conversation.id} />
+              <CustomerTagPicker
+                conversation={conversation}
+                availableTags={availableTags}
+                loading={loading}
+                onTagsChanged={() => refreshConversation(conversation.id)}
+              />
+            </div>
           ) : undefined
         }
       >
-        {t("conversation.conversationTags")}
+        {t("conversation.customerTags")}
       </SectionHeading>
-      <ConversationTagBadges
-        tags={conversation.tags}
-        availableTags={availableTags}
-      />
-      {!conversation.tags || conversation.tags.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{t("conversation.noConversationTags")}</p>
+      <CustomerTagBadges tags={conversation.customerTags} />
+      {!conversation.customerTags || conversation.customerTags.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{t("conversation.noCustomerTags")}</p>
       ) : null}
     </section>
   );
@@ -367,7 +370,7 @@ function CustomerBody({
       <div className="space-y-4">
         <SmartReplySection conversation={conversation} />
         <UnlinkedCustomerEmpty conversation={conversation} />
-        <ConversationTagSection conversation={conversation} permissions={permissions} />
+        <CustomerTagSection conversation={conversation} permissions={permissions} />
       </div>
     );
   }
@@ -376,7 +379,7 @@ function CustomerBody({
     return (
       <div className="space-y-4">
         <SmartReplySection conversation={conversation} />
-        <ConversationTagSection conversation={conversation} permissions={permissions} />
+        <CustomerTagSection conversation={conversation} permissions={permissions} />
       </div>
     );
   }
@@ -451,7 +454,7 @@ function CustomerLinkedBody({
     return (
       <div className="space-y-4">
         <MissingCustomerEmpty conversation={conversation} />
-        <ConversationTagSection conversation={conversation} permissions={permissions} />
+        <CustomerTagSection conversation={conversation} permissions={permissions} />
       </div>
     );
   }
@@ -468,7 +471,7 @@ function CustomerLinkedBody({
     <div className="space-y-4">
       <SmartReplySection conversation={conversation} />
       {isProfileEmpty ? (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-950 shadow-[0_8px_18px_rgba(245,158,11,0.08)] dark:text-amber-100">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-950 shadow-[0_8px_18px_rgba(245,158,11,0.08)] dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100 dark:shadow-none">
           {t("conversation.customerProfileEmpty")}
         </div>
       ) : null}
@@ -578,7 +581,7 @@ function CustomerLinkedBody({
         <RelatedTicketsSection conversation={conversation} />
       ) : null}
 
-      <ConversationTagSection conversation={conversation} permissions={permissions} />
+      <CustomerTagSection conversation={conversation} permissions={permissions} />
 
       {permissions.canUpdateCustomer ? (
         <CustomerFormDialog
@@ -656,7 +659,7 @@ function SmartReplySection({ conversation }: { conversation: AgentConversation }
         <DetailRow label="转人工" value={manualStatus} />
         <DetailRow label="人工超时" value={manualExpireText} />
         {hasAccountScopedCustomer ? (
-          <div className="flex items-center justify-between gap-3 border-t border-[#e5edf7] pt-2">
+          <div className="flex items-center justify-between gap-3 border-t border-border pt-2">
             <div className="min-w-0">
               <p className="text-sm text-foreground">自动转人工</p>
               <p className="mt-0.5 text-xs text-muted-foreground">仅当前企微员工号</p>

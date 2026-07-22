@@ -3143,8 +3143,17 @@ export function uploadAsset(file: File, prefix?: string) {
 
 export type Tag = {
   id: number
+  intentProfileId: number
+  templateDefinitionId: number
   parentId: number
   name: string
+  displayAlias: string
+  semanticKey: string
+  conflictGroup: string
+  applicableScene: string
+  aiEnabled: boolean
+  replyEnabled: boolean
+  systemDefined: boolean
   remark: string
   sortNo: number
   status: number
@@ -3154,8 +3163,17 @@ export type Tag = {
 
 export type TagTree = {
   id: number
+  intentProfileId: number
+  templateDefinitionId: number
   parentId: number
   name: string
+  displayAlias: string
+  semanticKey: string
+  conflictGroup: string
+  applicableScene: string
+  aiEnabled: boolean
+  replyEnabled: boolean
+  systemDefined: boolean
   remark: string
   sortNo: number
   status: number
@@ -3164,15 +3182,9 @@ export type TagTree = {
   children: TagTree[]
 }
 
-export type CreateTagPayload = {
-  parentId: number
-  name: string
-  remark: string
-  status: number
-}
-
-export type UpdateTagPayload = CreateTagPayload & {
+export type UpdateTagPayload = {
   id: number
+  displayAlias: string
 }
 
 export function fetchTags(query?: Record<string, string | number | undefined>) {
@@ -3189,31 +3201,10 @@ export function fetchTag(id: number) {
   return request<Tag>(`/api/dashboard/tag/${id}`)
 }
 
-export function createTag(payload: CreateTagPayload) {
-  return request<Tag>("/api/dashboard/tag/create", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
 export function updateTag(payload: UpdateTagPayload) {
   return request<void>("/api/dashboard/tag/update", {
     method: "POST",
     body: JSON.stringify(payload),
-  })
-}
-
-export function deleteTag(id: number) {
-  return request<void>("/api/dashboard/tag/delete", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  })
-}
-
-export function updateTagSort(ids: number[]) {
-  return request<void>("/api/dashboard/tag/update_sort", {
-    method: "POST",
-    body: JSON.stringify(ids),
   })
 }
 

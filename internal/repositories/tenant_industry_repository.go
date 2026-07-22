@@ -7,6 +7,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var IndustryTagDefinitionRepository = &industryTagDefinitionRepository{}
@@ -100,6 +101,42 @@ func (r *tenantIndustryChangeLogRepository) Create(db *gorm.DB, item *models.Ten
 
 type customerTagRelationRepository struct{}
 
+func (r *customerTagRelationRepository) GetByStoreRelationAndTag(
+	db *gorm.DB,
+	tenantID, storeID, storeCustomerRelationID, tagID int64,
+) (*models.CustomerTagRelation, error) {
+	ret := &models.CustomerTagRelation{}
+	err := db.Take(ret,
+		"tenant_id = ? AND store_id = ? AND store_customer_relation_id = ? AND tag_id = ?",
+		tenantID, storeID, storeCustomerRelationID, tagID,
+	).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
+func (r *customerTagRelationRepository) GetByStoreRelationAndTagForUpdate(
+	db *gorm.DB,
+	tenantID, storeID, storeCustomerRelationID, tagID int64,
+) (*models.CustomerTagRelation, error) {
+	ret := &models.CustomerTagRelation{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Take(ret,
+		"tenant_id = ? AND store_id = ? AND store_customer_relation_id = ? AND tag_id = ?",
+		tenantID, storeID, storeCustomerRelationID, tagID,
+	).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
 func (r *customerTagRelationRepository) FindActiveByTenantAndTagIDs(db *gorm.DB, tenantID int64, tagIDs []int64) ([]models.CustomerTagRelation, error) {
 	ret := make([]models.CustomerTagRelation, 0)
 	if len(tagIDs) == 0 {
@@ -119,6 +156,48 @@ func (r *customerTagRelationRepository) FindActiveByStoreRelation(db *gorm.DB, t
 	return ret, err
 }
 
+func (r *customerTagRelationRepository) FindActiveByStoreRelationForUpdate(db *gorm.DB, tenantID, storeID, storeCustomerRelationID int64) ([]models.CustomerTagRelation, error) {
+	ret := make([]models.CustomerTagRelation, 0)
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where(
+		"tenant_id = ? AND store_id = ? AND store_customer_relation_id = ? AND relation_status = ?",
+		tenantID, storeID, storeCustomerRelationID, "active",
+	).Order("id ASC").Find(&ret).Error
+	return ret, err
+}
+
+func (r *customerTagRelationRepository) FindActiveByStoreRelations(db *gorm.DB, tenantID int64, storeCustomerRelationIDs []int64) ([]models.CustomerTagRelation, error) {
+	ret := make([]models.CustomerTagRelation, 0)
+	if tenantID <= 0 || len(storeCustomerRelationIDs) == 0 {
+		return ret, nil
+	}
+	err := db.Where("tenant_id = ? AND store_customer_relation_id IN ? AND relation_status = ?", tenantID, storeCustomerRelationIDs, "active").
+		Order("store_customer_relation_id ASC, id ASC").Find(&ret).Error
+	return ret, err
+}
+
+func (r *customerTagRelationRepository) CountActiveByStoreRelation(db *gorm.DB, tenantID, storeID, storeCustomerRelationID int64) (int64, error) {
+	var count int64
+	err := db.Model(&models.CustomerTagRelation{}).Where(
+		"tenant_id = ? AND store_id = ? AND store_customer_relation_id = ? AND relation_status = ?",
+		tenantID, storeID, storeCustomerRelationID, "active",
+	).Count(&count).Error
+	return count, err
+}
+
+func (r *customerTagRelationRepository) Create(db *gorm.DB, item *models.CustomerTagRelation) error {
+	return db.Create(item).Error
+}
+
+func (r *customerTagRelationRepository) UpdatesInScope(
+	db *gorm.DB,
+	id, tenantID, storeID, storeCustomerRelationID int64,
+	columns map[string]any,
+) error {
+	return db.Model(&models.CustomerTagRelation{}).
+		Where("id = ? AND tenant_id = ? AND store_id = ? AND store_customer_relation_id = ?", id, tenantID, storeID, storeCustomerRelationID).
+		Updates(columns).Error
+}
+
 func (r *customerTagRelationRepository) Inactivate(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
 	return db.Model(&models.CustomerTagRelation{}).
 		Where("id = ? AND tenant_id = ? AND relation_status = ?", id, tenantID, "active").
@@ -129,4 +208,28 @@ type customerTagChangeLogRepository struct{}
 
 func (r *customerTagChangeLogRepository) Create(db *gorm.DB, item *models.CustomerTagChangeLog) error {
 	return db.Create(item).Error
+}
+
+func (r *customerTagChangeLogRepository) FindPageByStoreRelation(
+	db *gorm.DB,
+	tenantID, storeID, storeCustomerRelationID int64,
+	page, limit int,
+) ([]models.CustomerTagChangeLog, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	query := db.Model(&models.CustomerTagChangeLog{}).Where(
+		"tenant_id = ? AND store_id = ? AND store_customer_relation_id = ?",
+		tenantID, storeID, storeCustomerRelationID,
+	)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	ret := make([]models.CustomerTagChangeLog, 0)
+	err := query.Order("id DESC").Offset((page - 1) * limit).Limit(limit).Find(&ret).Error
+	return ret, total, err
 }

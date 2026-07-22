@@ -14,3 +14,10 @@ test("customer mutations follow explicit action permissions while detail remains
   assert.match(pageSource, /key: "detail"/)
   assert.match(pageSource, /\.\.\.\(canUpdate/)
 })
+
+test("customer detail keeps tags separated by Store relation", () => {
+  assert.match(pageSource, /relation\.customerTags/)
+  assert.match(pageSource, /<CustomerTagBadges tags=\{relation\.customerTags\}/)
+  assert.match(pageSource, /permissions\.has\("conversation\.tag"\)/)
+  assert.match(pageSource, /<CustomerTagHistoryDialog conversationId=\{relation\.lastConversationId\}/)
+})

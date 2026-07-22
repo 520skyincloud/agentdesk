@@ -3,6 +3,7 @@
 import { create } from "zustand"
 
 import {
+  fetchAgentConversationDetail,
   fetchAgentConversations,
   fetchAgentMessages,
   markAgentMessageRead,
@@ -114,10 +115,7 @@ type AgentConversationsStore = {
   setSelectedWxWorkInstanceId: (id: number | null) => void
   setRealtimeStatus: (status: RealtimeConnectionStatusValue) => void
   setTenantContext: (tenantId: number) => void
-  setConversationTags: (
-    conversationId: number,
-    tags: AgentConversation["tags"]
-  ) => void
+  refreshConversation: (conversationId: number) => Promise<void>
   loadConversations: () => Promise<void>
   selectConversation: (conversationId: number) => Promise<void>
   loadMessages: (conversationId: number, options?: LoadMessagesOptions) => Promise<void>
@@ -206,15 +204,12 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     })
   },
 
-  setConversationTags: (conversationId, tags) => {
+  refreshConversation: async (conversationId) => {
+    if (conversationId <= 0) return
+    const detail = await fetchAgentConversationDetail(conversationId)
     set((state) => ({
       conversations: state.conversations.map((item) =>
-        item.id === conversationId
-          ? {
-              ...item,
-              tags: tags && tags.length > 0 ? tags : [],
-            }
-          : item
+        item.id === conversationId ? { ...item, ...detail } : item
       ),
     }))
   },

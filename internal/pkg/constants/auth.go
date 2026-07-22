@@ -124,7 +124,7 @@ var (
 	PermissionConversationTransfer     = Permission{Name: "转接会话", Code: "conversation.transfer", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation-dispatch/transfer", SortNo: 440}
 	PermissionConversationClose        = Permission{Name: "关闭会话", Code: "conversation.close", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/close", SortNo: 450}
 	PermissionConversationSend         = Permission{Name: "发送会话消息", Code: "conversation.send", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/send_message", SortNo: 460}
-	PermissionConversationTag          = Permission{Name: "管理会话标签", Code: "conversation.tag", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/add_tag", SortNo: 470}
+	PermissionConversationTag          = Permission{Name: "管理门店客户标签", Code: "conversation.tag", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/customer_tag/add", SortNo: 470}
 	PermissionConversationHandover     = Permission{Name: "处理会话交接", Code: "conversation.handover", Type: "api", GroupName: "conversation", Method: "ANY", APIPath: "/api/dashboard/conversation-dispatch/list", SortNo: 480}
 	PermissionConversationRecycle      = Permission{Name: "回收会话", Code: "conversation.recycle", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation-dispatch/release", SortNo: 490}
 	PermissionConversationLinkCustomer = Permission{Name: "关联会话客户", Code: "conversation.linkCustomer", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/link_customer", SortNo: 495}
@@ -148,9 +148,9 @@ var (
 	PermissionQuickReplyDelete = Permission{Name: "删除快捷回复", Code: "quickReply.delete", Type: "api", GroupName: "quickReply", Method: "POST", APIPath: "/api/dashboard/quick-reply/delete", SortNo: 640}
 
 	// 标签相关权限
-	PermissionTagView   = Permission{Name: "查看标签", Code: "tag.view", Type: "api", GroupName: "tag", Method: "ANY", APIPath: "/api/dashboard/tag/list", SortNo: 550}
+	PermissionTagView   = Permission{Name: "查看行业标签目录", Code: "tag.view", Type: "api", GroupName: "tag", Method: "ANY", APIPath: "/api/dashboard/tag/list", SortNo: 550}
 	PermissionTagCreate = Permission{Name: "创建标签", Code: "tag.create", Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/create", SortNo: 560}
-	PermissionTagUpdate = Permission{Name: "更新标签", Code: "tag.update", Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/update", SortNo: 570}
+	PermissionTagUpdate = Permission{Name: "配置行业标签别名与状态", Code: "tag.update", Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/update", SortNo: 570}
 	PermissionTagDelete = Permission{Name: "删除标签", Code: "tag.delete", Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/delete", SortNo: 580}
 
 	// 接入渠道相关权限
@@ -306,9 +306,7 @@ var Permissions = []Permission{
 	PermissionQuickReplyUpdate,
 	PermissionQuickReplyDelete,
 	PermissionTagView,
-	PermissionTagCreate,
 	PermissionTagUpdate,
-	PermissionTagDelete,
 	PermissionChannelView,
 	PermissionChannelCreate,
 	PermissionChannelUpdate,
@@ -411,7 +409,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
-		PermissionTagView, PermissionTagCreate, PermissionTagUpdate, PermissionTagDelete,
+		PermissionTagView, PermissionTagUpdate,
 		PermissionChannelView, PermissionChannelCreate, PermissionChannelUpdate, PermissionChannelDelete,
 		PermissionCustomerView, PermissionCustomerCreate, PermissionCustomerUpdate, PermissionCustomerDelete,
 		PermissionAgentView, PermissionAgentCreate, PermissionAgentUpdate, PermissionAgentDelete, PermissionAgentUpdateStatus, PermissionAgentConfig,
@@ -443,7 +441,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
-		PermissionTagView, PermissionTagCreate, PermissionTagUpdate, PermissionTagDelete,
+		PermissionTagView, PermissionTagUpdate,
 		PermissionChannelView, PermissionChannelCreate, PermissionChannelUpdate, PermissionChannelDelete,
 		PermissionCustomerView, PermissionCustomerCreate, PermissionCustomerUpdate, PermissionCustomerDelete,
 		PermissionAgentView, PermissionAgentCreate, PermissionAgentUpdate, PermissionAgentDelete, PermissionAgentUpdateStatus, PermissionAgentConfig,
@@ -471,7 +469,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
-		PermissionTagView, PermissionTagCreate, PermissionTagUpdate, PermissionTagDelete,
+		PermissionTagView,
 		PermissionChannelView, PermissionChannelCreate, PermissionChannelUpdate,
 		PermissionCustomerView, PermissionCustomerCreate, PermissionCustomerUpdate,
 		PermissionAgentView, PermissionAgentUpdate,

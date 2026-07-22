@@ -1,13 +1,16 @@
 package services_test
 
 import (
+	"fmt"
 	"testing"
 
 	"agent-desk/internal/events"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/eventbus"
+	"agent-desk/internal/pkg/replyintent"
 	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
 
@@ -57,6 +60,8 @@ func TestSystemTicketCreationInheritsConversationTenant(t *testing.T) {
 
 func TestTicketAndTagRuntimeTenantIsolation(t *testing.T) {
 	setupTicketTestDB(t)
+	tagA := createFixedIndustryTagInTenant(t, 101)
+	tagB := createFixedIndustryTagInTenant(t, 202)
 
 	adminA := createTestOperatorInTenant(t, "tenant-a-admin", 101)
 	adminB := createTestOperatorInTenant(t, "tenant-b-admin", 202)
@@ -66,8 +71,6 @@ func TestTicketAndTagRuntimeTenantIsolation(t *testing.T) {
 	customerB := createTestCustomerInTenant(t, "tenant-b-customer", 202)
 	conversationA := createTestConversationInTenant(t, customerA, "tenant-a-conversation", 101)
 	conversationB := createTestConversationInTenant(t, customerB, "tenant-b-conversation", 202)
-	tagA := createTestTagInTenant(t, "tenant-a-tag", 101)
-	tagB := createTestTagInTenant(t, "tenant-b-tag", 202)
 
 	ticketA, err := services.TicketService.CreateTicket(request.CreateTicketRequest{
 		Title:             "A tenant ticket",
@@ -180,8 +183,18 @@ func TestTicketAndTagRuntimeTenantIsolation(t *testing.T) {
 	}
 
 	tagsA, _, err := services.TagService.FindPageForOperator(sqls.NewCnd().Page(1, 20), adminA)
-	if err != nil || len(tagsA) != 1 || tagsA[0].ID != tagA {
+	if err != nil {
 		t.Fatalf("tenant A tag list leaked: tags=%+v err=%v", tagsA, err)
+	}
+	foundTagA := false
+	for i := range tagsA {
+		if tagsA[i].TenantID != 101 || tagsA[i].ID == tagB {
+			t.Fatalf("tenant A tag list leaked: tags=%+v", tagsA)
+		}
+		foundTagA = foundTagA || tagsA[i].ID == tagA
+	}
+	if !foundTagA {
+		t.Fatalf("tenant A fixed tag %d missing from catalog: %+v", tagA, tagsA)
 	}
 	if _, err := services.TagService.GetForOperator(tagB, adminA); err == nil {
 		t.Fatal("tenant A must not read tenant B tag")
@@ -225,6 +238,44 @@ func TestTicketAndTagRuntimeTenantIsolation(t *testing.T) {
 	if summaryB := services.TicketService.GetSummary(adminB); summaryB.All != 1 || summaryB.Mine != 0 {
 		t.Fatalf("tenant B summary leaked: %+v", summaryB)
 	}
+}
+
+func createFixedIndustryTagInTenant(t *testing.T, tenantID int64) int64 {
+	t.Helper()
+	db := sqls.DB()
+	profile := repositories.ReplyIntentProfileRepository.Take(db, "code = ?", replyintent.DefaultHotelProfileCode)
+	if profile == nil {
+		t.Fatal("default hotel industry profile is missing")
+	}
+	tenant := &models.Tenant{
+		ID: tenantID, IntentProfileID: profile.ID,
+		TenantCode: fmt.Sprintf("ticket-tag-tenant-%d", tenantID),
+		LegalName:  fmt.Sprintf("工单标签测试公司%d", tenantID), ShortName: fmt.Sprintf("测试%d", tenantID),
+		RegistrationType: "test", RegistrationNo: fmt.Sprintf("ticket-tag-%d", tenantID),
+		Status: enums.StatusOk,
+	}
+	if err := db.Create(tenant).Error; err != nil {
+		t.Fatalf("create test tenant %d: %v", tenantID, err)
+	}
+	operator := &dto.AuthPrincipal{UserID: 1, Username: "test", ActiveTenantID: tenantID}
+	if err := services.TenantIndustryService.InitializeTenantDB(db, tenant, operator); err != nil {
+		t.Fatalf("initialize tenant %d industry: %v", tenantID, err)
+	}
+	tags := services.TagService.FindAllInTenant(tenantID)
+	parentIDs := make(map[int64]struct{}, len(tags))
+	for i := range tags {
+		if tags[i].ParentID > 0 {
+			parentIDs[tags[i].ParentID] = struct{}{}
+		}
+	}
+	for i := range tags {
+		_, isCategory := parentIDs[tags[i].ID]
+		if tags[i].ParentID > 0 && !isCategory {
+			return tags[i].ID
+		}
+	}
+	t.Fatalf("tenant %d has no fixed industry leaf tag", tenantID)
+	return 0
 }
 
 func assertTicketChildrenTenant(t *testing.T, ticketID, tenantID int64) {

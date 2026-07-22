@@ -12,21 +12,22 @@ test("conversation info auxiliary reads follow their explicit view permissions",
   assert.match(source, /canViewTickets: permissions\.has\("ticket\.view"\)/)
   assert.match(source, /canViewTags = permissions\.has\("tag\.view"\)/)
   assert.match(source, /if \(!permissions\.canViewCustomer\)/)
-  assert.match(source, /if \(!permissions\.canViewTags\)/)
   assert.match(source, /permissions\.canViewTickets \? \(/)
 })
 
 test("conversation info mutations follow customer and tag action permissions", () => {
   assert.match(source, /canUpdateCustomer: canViewCustomer && permissions\.has\("customer\.update"\)/)
   assert.match(source, /canManageTags: canViewTags && permissions\.has\("conversation\.tag"\)/)
-  assert.match(source, /permissions\.canManageTags \? \(/)
+  assert.match(source, /canManageCurrentStoreCustomer = permissions\.canManageTags/)
+  assert.match(source, /fetchCustomerTagOptions\(conversation\.id\)/)
   assert.match(source, /permissions\.canUpdateCustomer \? \(/)
   assert.match(source, /if \(!permissions\.canUpdateCustomer \|\| customerEditSaving\)/)
   assert.doesNotMatch(source, /company\.update|canUpdateCompany/)
 })
 
-test("assigned conversation tags stay visible without tag tree access", () => {
-  assert.match(source, /<ConversationTagBadges/)
-  assert.match(source, /tags=\{conversation\.tags\}/)
+test("Store customer tags stay visible without fixed-directory access", () => {
+  assert.match(source, /<CustomerTagBadges/)
+  assert.match(source, /tags=\{conversation\.customerTags\}/)
   assert.match(source, /availableTags=\{availableTags\}/)
+  assert.doesNotMatch(source, /conversation\.tags|ConversationTagPicker/)
 })

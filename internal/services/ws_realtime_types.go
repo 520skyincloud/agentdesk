@@ -285,6 +285,29 @@ func (e RealtimeCustomerSessionRefreshEvent) EventPayload() RealtimeEventPayload
 	return e.Payload
 }
 
+type RealtimeCustomerTagChangedPayload struct {
+	TenantID                int64  `json:"tenantId,omitempty"`
+	StoreID                 int64  `json:"storeId,omitempty"`
+	CustomerID              int64  `json:"customerId,omitempty"`
+	StoreCustomerRelationID int64  `json:"storeCustomerRelationId,omitempty"`
+	ConversationID          int64  `json:"conversationId,omitempty"`
+	UpdatedAt               string `json:"updatedAt,omitempty"`
+}
+
+func (RealtimeCustomerTagChangedPayload) realtimeEventPayload() {}
+
+type RealtimeCustomerTagChangedEvent struct {
+	Payload RealtimeCustomerTagChangedPayload
+}
+
+func (RealtimeCustomerTagChangedEvent) EventType() string {
+	return enums.IMRealtimeEventCustomerTagChanged
+}
+
+func (e RealtimeCustomerTagChangedEvent) EventPayload() RealtimeEventPayload {
+	return e.Payload
+}
+
 type realtimeClientMessage struct {
 	Type    string   `json:"type"`
 	Topics  []string `json:"topics,omitempty"`

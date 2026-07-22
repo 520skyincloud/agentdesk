@@ -4,17 +4,11 @@ import test from "node:test"
 
 const pageSource = await readFile(new URL("./page.tsx", import.meta.url), "utf8")
 
-test("tag mutations and drag sorting follow explicit action permissions", () => {
-  assert.match(pageSource, /permissions\.has\("tag\.create"\)/)
+test("fixed industry tags only expose alias and leaf status updates", () => {
   assert.match(pageSource, /permissions\.has\("tag\.update"\)/)
-  assert.match(pageSource, /permissions\.has\("tag\.delete"\)/)
-  assert.match(pageSource, /const showActions = canUpdate \|\| canDelete/)
-  assert.match(pageSource, /\{canCreate \? \(/)
-  assert.match(pageSource, /disabled=\{!canUpdate \|\| loading \|\| sorting\}/)
-  assert.match(pageSource, /if \(!canUpdate\)/)
-  assert.match(pageSource, /if \(!canDelete\)/)
-  assert.match(
-    pageSource,
-    /colSpan=\{4 \+ \(canUpdate \? 1 : 0\) \+ \(showActions \? 1 : 0\)\}/,
-  )
+  assert.match(pageSource, /item\.children\.length > 0/)
+  assert.match(pageSource, /updateTagStatus\(item\.id, nextStatus\)/)
+  assert.match(pageSource, /updateTag\(\{ id: editingItem\.id, displayAlias \}\)/)
+  assert.doesNotMatch(pageSource, /tag\.create|tag\.delete/)
+  assert.doesNotMatch(pageSource, /createTag|deleteTag|updateTagSort|DndContext|useSortable/)
 })

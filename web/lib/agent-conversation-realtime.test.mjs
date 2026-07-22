@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 import { shouldReloadConversationListForRealtimePatch } from "./agent-conversation-realtime.ts"
@@ -24,4 +25,13 @@ test("keeps local patching for message summary and unread-only changes", () => {
     }),
     false
   )
+})
+
+test("refreshes the affected conversation for Store customer-tag events", async () => {
+  const source = await readFile(
+    new URL("../hooks/use-agent-conversation-realtime.ts", import.meta.url),
+    "utf8",
+  )
+  assert.match(source, /eventType === "customer_tag\.changed"/)
+  assert.match(source, /store\.refreshConversation\(conversationId\)/)
 })

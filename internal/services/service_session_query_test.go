@@ -15,13 +15,23 @@ func TestServiceSessionListAndExportShareFilters(t *testing.T) {
 	db := setupServiceAnalyticsTestDB(t)
 	now := time.Date(2026, 7, 17, 14, 0, 0, 0, time.Local)
 	tenantID := int64(801)
+	intentProfileID := int64(8801)
+	categoryDefinitionID := int64(88011)
+	leafDefinitionID := int64(88012)
+	if err := db.Create(&models.Tenant{
+		ID: tenantID, IntentProfileID: intentProfileID,
+		TenantCode: "analytics-query-tenant", LegalName: "运营分析查询测试公司", ShortName: "分析测试",
+		RegistrationType: "test", RegistrationNo: "analytics-query-tenant", Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
 	channel := &models.Channel{TenantID: tenantID, Name: "官网客服", ChannelType: "web", ChannelID: "query-web", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(now)}
 	if err := db.Create(channel).Error; err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
 	for _, tag := range []*models.Tag{
-		{ID: 11, TenantID: tenantID, Name: "预订", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(now)},
-		{ID: 12, TenantID: tenantID, ParentID: 11, Name: "变更预订", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(now)},
+		{ID: 11, TenantID: tenantID, IntentProfileID: intentProfileID, TemplateDefinitionID: &categoryDefinitionID, SystemDefined: true, Name: "预订", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(now)},
+		{ID: 12, TenantID: tenantID, IntentProfileID: intentProfileID, TemplateDefinitionID: &leafDefinitionID, SystemDefined: true, ParentID: 11, Name: "变更预订", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(now)},
 	} {
 		if err := db.Create(tag).Error; err != nil {
 			t.Fatalf("create tag: %v", err)

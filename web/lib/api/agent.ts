@@ -1,4 +1,5 @@
 import { request } from "@/lib/api/client"
+import type { Tag } from "@/lib/api/admin"
 
 export type Paging = {
   page: number
@@ -17,9 +18,34 @@ export type CursorResult<T> = {
   hasMore: boolean
 }
 
-export type AgentConversationTag = {
+export type AgentCustomerTag = {
   id: number
+  tagId: number
   name: string
+  standardName: string
+  semanticKey: string
+  conflictGroup?: string
+  source: string
+  confidence: number
+  evidenceCount: number
+  manualProtected: boolean
+  updatedAt?: string
+}
+
+export type CustomerTagChangeLog = {
+  id: number
+  action: string
+  oldTagId: number
+  oldTagName?: string
+  newTagId: number
+  newTagName?: string
+  evidenceMessageIds: number[]
+  source: string
+  confidence: number
+  operatorType: string
+  operatorId: number
+  operatorName: string
+  createdAt: string
 }
 
 export type AgentConversationParticipant = {
@@ -81,7 +107,7 @@ export type AgentConversation = {
   wxWorkExternalUserId?: string
   wxWorkEmployeeName?: string
   wxWorkEmployeeUserId?: string
-  tags?: AgentConversationTag[]
+  customerTags?: AgentCustomerTag[]
   participants?: AgentConversationParticipant[]
 }
 
@@ -268,21 +294,51 @@ export function linkConversationToCustomer(payload: {
   })
 }
 
-export function addConversationTag(payload: {
+export function fetchCustomerTagOptions(conversationId: number) {
+  return request<Tag[]>(
+    `/api/dashboard/conversation/customer_tag/options?conversationId=${conversationId}`
+  )
+}
+
+export function fetchCustomerTagChangeLogs(
+  conversationId: number,
+  query?: { page?: number; limit?: number },
+) {
+  return request<PageResult<CustomerTagChangeLog>>(
+    `/api/dashboard/conversation/customer_tag/change_log${toQueryString({
+      conversationId,
+      page: query?.page,
+      limit: query?.limit,
+    })}`
+  )
+}
+
+export function addCustomerTag(payload: {
   conversationId: number
   tagId: number
 }) {
-  return request<void>("/api/dashboard/conversation/add_tag", {
+  return request<void>("/api/dashboard/conversation/customer_tag/add", {
     method: "POST",
     body: JSON.stringify(payload),
   })
 }
 
-export function removeConversationTag(payload: {
+export function removeCustomerTag(payload: {
   conversationId: number
   tagId: number
 }) {
-  return request<void>("/api/dashboard/conversation/remove_tag", {
+  return request<void>("/api/dashboard/conversation/customer_tag/remove", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function replaceCustomerTag(payload: {
+  conversationId: number
+  oldTagId: number
+  newTagId: number
+}) {
+  return request<void>("/api/dashboard/conversation/customer_tag/replace", {
     method: "POST",
     body: JSON.stringify(payload),
   })

@@ -10,15 +10,18 @@ func BuildTagResponse(item *models.Tag) response.TagResponse {
 	if item == nil {
 		return response.TagResponse{}
 	}
+	templateDefinitionID := int64(0)
+	if item.TemplateDefinitionID != nil {
+		templateDefinitionID = *item.TemplateDefinitionID
+	}
 	return response.TagResponse{
-		ID:        item.ID,
-		ParentID:  item.ParentID,
-		Name:      item.Name,
-		Remark:    item.Remark,
-		SortNo:    item.SortNo,
-		Status:    item.Status,
-		CreatedAt: item.CreatedAt.Format(time.DateTime),
-		UpdatedAt: item.UpdatedAt.Format(time.DateTime),
+		ID: item.ID, IntentProfileID: item.IntentProfileID, TemplateDefinitionID: templateDefinitionID,
+		ParentID: item.ParentID, Name: item.Name, DisplayAlias: item.DisplayAlias,
+		SemanticKey: item.SemanticKey, ConflictGroup: item.ConflictGroup,
+		ApplicableScene: item.ApplicableScene, AIEnabled: item.AIEnabled,
+		ReplyEnabled: item.ReplyEnabled, SystemDefined: item.SystemDefined,
+		Remark: item.Remark, SortNo: item.SortNo, Status: item.Status,
+		CreatedAt: item.CreatedAt.Format(time.DateTime), UpdatedAt: item.UpdatedAt.Format(time.DateTime),
 	}
 }
 
@@ -43,16 +46,19 @@ func BuildTagTreeResponses(list []models.Tag) []*response.TagTreeResponse {
 
 	for i := range list {
 		item := &list[i]
+		templateDefinitionID := int64(0)
+		if item.TemplateDefinitionID != nil {
+			templateDefinitionID = *item.TemplateDefinitionID
+		}
 		nodeMap[item.ID] = &response.TagTreeResponse{
-			ID:        item.ID,
-			ParentID:  item.ParentID,
-			Name:      item.Name,
-			Remark:    item.Remark,
-			SortNo:    item.SortNo,
-			Status:    item.Status,
-			CreatedAt: item.CreatedAt.Format(time.DateTime),
-			UpdatedAt: item.UpdatedAt.Format(time.DateTime),
-			Children:  make([]*response.TagTreeResponse, 0),
+			ID: item.ID, IntentProfileID: item.IntentProfileID, TemplateDefinitionID: templateDefinitionID,
+			ParentID: item.ParentID, Name: item.Name, DisplayAlias: item.DisplayAlias,
+			SemanticKey: item.SemanticKey, ConflictGroup: item.ConflictGroup,
+			ApplicableScene: item.ApplicableScene, AIEnabled: item.AIEnabled,
+			ReplyEnabled: item.ReplyEnabled, SystemDefined: item.SystemDefined,
+			Remark: item.Remark, SortNo: item.SortNo, Status: item.Status,
+			CreatedAt: item.CreatedAt.Format(time.DateTime), UpdatedAt: item.UpdatedAt.Format(time.DateTime),
+			Children: make([]*response.TagTreeResponse, 0),
 		}
 	}
 

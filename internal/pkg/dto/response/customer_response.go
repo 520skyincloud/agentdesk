@@ -18,18 +18,19 @@ type CustomerResponse struct {
 }
 
 type StoreCustomerRelationResponse struct {
-	ID                 int64        `json:"id"`
-	CustomerID         int64        `json:"customerId"`
-	StoreID            int64        `json:"storeId"`
-	StoreName          string       `json:"storeName"`
-	WxWorkInstanceID   int64        `json:"wxWorkInstanceId"`
-	WxWorkInstanceName string       `json:"wxWorkInstanceName"`
-	LastConversationID int64        `json:"lastConversationId"`
-	LastActiveAt       string       `json:"lastActiveAt"`
-	VisitCount         int          `json:"visitCount"`
-	Tags               string       `json:"tags"`
-	StableNotes        string       `json:"stableNotes"`
-	Status             enums.Status `json:"status"`
-	CreatedAt          string       `json:"createdAt"`
-	UpdatedAt          string       `json:"updatedAt"`
+	ID                 int64                 `json:"id"`
+	CustomerID         int64                 `json:"customerId"`
+	StoreID            int64                 `json:"storeId"`
+	StoreName          string                `json:"storeName"`
+	WxWorkInstanceID   int64                 `json:"wxWorkInstanceId"`
+	WxWorkInstanceName string                `json:"wxWorkInstanceName"`
+	LastConversationID int64                 `json:"lastConversationId"`
+	LastActiveAt       string                `json:"lastActiveAt"`
+	VisitCount         int                   `json:"visitCount"`
+	Tags               string                `json:"tags"`
+	StableNotes        string                `json:"stableNotes"`
+	CustomerTags       []CustomerTagResponse `json:"customerTags"`
+	Status             enums.Status          `json:"status"`
+	CreatedAt          string                `json:"createdAt"`
+	UpdatedAt          string                `json:"updatedAt"`
 }

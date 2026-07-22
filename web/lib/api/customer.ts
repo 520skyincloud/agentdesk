@@ -1,6 +1,7 @@
 import { request } from "@/lib/api/client"
 import type { PageResult } from "@/lib/api/admin"
 import type { ContactType } from "@/lib/generated/enums"
+import type { AgentCustomerTag } from "@/lib/api/agent"
 
 export type AdminCustomer = {
   id: number
@@ -29,6 +30,7 @@ export type StoreCustomerRelation = {
   visitCount: number
   tags: string
   stableNotes: string
+  customerTags: AgentCustomerTag[]
   status: number
   createdAt: string
   updatedAt: string

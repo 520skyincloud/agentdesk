@@ -53,6 +53,7 @@ type CommonTagSelectorProps = {
   selectedCountText?: (count: number) => string
   triggerText?: string
   pendingTagId?: number | null
+  isTagDisabled?: (tag: TagTree) => boolean
 }
 
 type MultipleTagSelectorProps = CommonTagSelectorProps & {
@@ -107,6 +108,7 @@ export function TagSelector(props: TagSelectorProps) {
     selectedCountText,
     triggerText,
     pendingTagId = null,
+    isTagDisabled,
   } = props
   const [query, setQuery] = useState("")
   const [collapsedIds, setCollapsedIds] = useState<Set<number>>(new Set())
@@ -131,8 +133,17 @@ export function TagSelector(props: TagSelectorProps) {
     }
     return {
       id: props.rootOption.value,
+      intentProfileId: 0,
+      templateDefinitionId: 0,
       parentId: 0,
       name: props.rootOption.label,
+      displayAlias: "",
+      semanticKey: "",
+      conflictGroup: "",
+      applicableScene: "",
+      aiEnabled: false,
+      replyEnabled: false,
+      systemDefined: false,
       remark: "",
       sortNo: 0,
       status: 0,
@@ -245,12 +256,13 @@ export function TagSelector(props: TagSelectorProps) {
                     const pending = pendingTagId === tag.id
                     const hasChildren = tag.children.length > 0
                     const collapsed = collapsedIds.has(tag.id)
+                    const optionDisabled = Boolean(isTagDisabled?.(tag)) && !checked
 
                     return (
                       <CommandItem
                         key={tag.id}
                         value={tag.searchableText}
-                        disabled={disabled || pendingTagId !== null}
+                        disabled={disabled || pendingTagId !== null || optionDisabled}
                         onSelect={() => handleSelect(tag.id)}
                         className={cn(
                           props.mode === "single" &&

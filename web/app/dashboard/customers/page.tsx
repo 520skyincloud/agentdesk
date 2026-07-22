@@ -4,6 +4,8 @@ import { BanIcon, CheckCircle2Icon, EyeIcon, MessageCircleIcon } from "lucide-re
 import { useMemo, useState } from "react";
 
 import { type CustomerFormSavePayload } from "@/components/customer-form";
+import { CustomerTagBadges } from "@/components/customer-tag-badges";
+import { CustomerTagHistoryDialog } from "@/components/customer-tag-history-dialog";
 import { useAuth } from "@/components/auth-provider";
 import {
   DashboardCrudPage,
@@ -49,6 +51,7 @@ export default function DashboardCustomersPage() {
   const canCreate = permissions.has("customer.create");
   const canUpdate = permissions.has("customer.update");
   const canDelete = permissions.has("customer.delete");
+  const canManageCustomerTags = permissions.has("conversation.tag");
   const [detailCustomer, setDetailCustomer] = useState<AdminCustomer | null>(null);
 
   const listStatusOptions = useMemo(
@@ -139,14 +142,14 @@ export default function DashboardCustomersPage() {
               {relations.slice(0, 2).map((relation) => (
                 <span
                   key={relation.id}
-                  className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-600"
+                  className="rounded-full border border-border bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground"
                   title={`员工号：${relation.wxWorkInstanceName || relation.wxWorkInstanceId || "-"}`}
                 >
                   {relation.storeName || `门店 ${relation.storeId}`} · {relation.visitCount}次
                 </span>
               ))}
               {relations.length > 2 ? (
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">
+                <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                   +{relations.length - 2}
                 </span>
               ) : null}
@@ -271,16 +274,16 @@ export default function DashboardCustomersPage() {
       }}
       />
       <Dialog open={!!detailCustomer} onOpenChange={(open) => !open && setDetailCustomer(null)}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-x-hidden overflow-y-auto sm:max-w-3xl">
+          <DialogHeader className="min-w-0">
             <DialogTitle>{detailCustomer?.name || "客户详情"}</DialogTitle>
-            <DialogDescription>同一自然客户在不同门店下保留独立关系和上下文。</DialogDescription>
+            <DialogDescription className="sr-only">客户门店关系与标签</DialogDescription>
           </DialogHeader>
           {detailCustomer ? (
-            <div className="space-y-5">
-              <div className="rounded-2xl border bg-slate-50/70 p-4">
+            <div className="min-w-0 space-y-5">
+              <div className="rounded-lg border bg-muted/40 p-4">
                 <div className="flex items-center gap-3">
-                  <div className="flex size-12 items-center justify-center overflow-hidden rounded-full bg-white text-sm font-semibold text-slate-600 ring-1 ring-slate-200">
+                  <div className="flex size-12 items-center justify-center overflow-hidden rounded-full bg-background text-sm font-semibold text-foreground ring-1 ring-border">
                     {detailCustomer.avatar ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={detailCustomer.avatar} alt="" className="size-full object-cover" />
@@ -290,12 +293,12 @@ export default function DashboardCustomersPage() {
                   </div>
                   <div className="min-w-0">
                     <div className="font-medium">{detailCustomer.name}</div>
-                    <div className="text-sm text-muted-foreground">
+                    <div className="break-all text-sm text-muted-foreground">
                       {detailCustomer.primaryMobile || "无手机号"} · {detailCustomer.primaryEmail || "无邮箱"}
                     </div>
                   </div>
                 </div>
-                {detailCustomer.remark ? <div className="mt-3 text-sm text-slate-600">{detailCustomer.remark}</div> : null}
+                {detailCustomer.remark ? <div className="mt-3 break-words text-sm text-muted-foreground">{detailCustomer.remark}</div> : null}
               </div>
               <div>
                 <div className="mb-2 text-sm font-medium">门店关系</div>
@@ -304,22 +307,33 @@ export default function DashboardCustomersPage() {
                     <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">暂无门店关系</div>
                   ) : (
                     detailCustomer.storeRelations?.map((relation) => (
-                      <div key={relation.id} className="flex items-center justify-between gap-3 rounded-xl border bg-white p-3 shadow-sm">
-                        <div className="min-w-0">
+                      <div key={relation.id} className="flex flex-col items-start justify-between gap-3 rounded-md border bg-card p-3 shadow-sm sm:flex-row">
+                        <div className="min-w-0 flex-1">
                           <div className="font-medium">{relation.storeName || `门店 ${relation.storeId}`}</div>
                           <div className="mt-1 text-xs text-muted-foreground">
                             员工号：{relation.wxWorkInstanceName || relation.wxWorkInstanceId || "-"} · 到访 {relation.visitCount} 次 · 最近 {relation.lastActiveAt || "-"}
                           </div>
-                          {relation.stableNotes ? <div className="mt-2 text-sm text-slate-600">{relation.stableNotes}</div> : null}
+                          {relation.stableNotes ? <div className="mt-2 break-words text-sm text-muted-foreground">{relation.stableNotes}</div> : null}
+                          <div className="mt-2">
+                            <CustomerTagBadges tags={relation.customerTags} />
+                            {!relation.customerTags?.length ? (
+                              <span className="text-xs text-muted-foreground">暂无门店客户标签</span>
+                            ) : null}
+                          </div>
                         </div>
-                        {relation.lastConversationId > 0 ? (
-                          <Button variant="outline" size="sm" className="rounded-xl">
-                            <a href={`/dashboard/conversations?conversationId=${relation.lastConversationId}`} className="inline-flex items-center gap-1.5">
-                              <MessageCircleIcon className="size-4" />
-                              会话
-                            </a>
-                          </Button>
-                        ) : null}
+                        <div className="flex shrink-0 self-end items-center gap-1 sm:self-start">
+                          {canManageCustomerTags && relation.lastConversationId > 0 ? (
+                            <CustomerTagHistoryDialog conversationId={relation.lastConversationId} triggerVariant="outline" />
+                          ) : null}
+                          {relation.lastConversationId > 0 ? (
+                            <Button variant="outline" size="sm">
+                              <a href={`/dashboard/conversations?conversationId=${relation.lastConversationId}`} className="inline-flex items-center gap-1.5">
+                                <MessageCircleIcon className="size-4" />
+                                会话
+                              </a>
+                            </Button>
+                          ) : null}
+                        </div>
                       </div>
                     ))
                   )}

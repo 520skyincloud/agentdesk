@@ -29,7 +29,7 @@ func CustomerContactAnyList(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("customerId 必填"))
 		return
 	}
-	if services.CustomerService.GetInTenant(customerID, operator) == nil {
+	if !services.CustomerService.CanAccessCustomer(operator, customerID) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("客户不存在"))
 		return
 	}

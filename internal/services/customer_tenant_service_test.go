@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
@@ -220,8 +221,8 @@ func setupCustomerTenantFixture(t *testing.T) customerTenantFixture {
 	})
 	fixture := customerTenantFixture{
 		db:     db,
-		adminA: &dto.AuthPrincipal{UserID: 9001, Username: "admin-a", ActiveTenantID: 101},
-		adminB: &dto.AuthPrincipal{UserID: 9002, Username: "admin-b", ActiveTenantID: 202},
+		adminA: &dto.AuthPrincipal{UserID: 9001, Username: "admin-a", ActiveTenantID: 101, Roles: []string{constants.RoleCodeTenantAdmin}},
+		adminB: &dto.AuthPrincipal{UserID: 9002, Username: "admin-b", ActiveTenantID: 202, Roles: []string{constants.RoleCodeTenantAdmin}},
 	}
 	return fixture
 }

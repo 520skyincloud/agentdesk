@@ -1,259 +1,130 @@
-"use client";
+"use client"
 
-import { useEffect, useMemo, useState } from "react";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { Controller, Resolver, useForm } from "react-hook-form";
-import { z } from "zod/v4";
+import { useEffect, useMemo, useState } from "react"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { type Resolver, useForm } from "react-hook-form"
+import { toast } from "sonner"
+import { z } from "zod/v4"
 
-import { ProjectDialog } from "@/components/project-dialog";
-import { TagSelector } from "@/components/tag-selector";
-import { Button } from "@/components/ui/button";
-import {
-  Field,
-  FieldContent,
-  FieldError,
-  FieldLabel,
-} from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  type CreateTagPayload,
-  fetchTag,
-  fetchTagsAll,
-  type Tag,
-  type TagTree,
-} from "@/lib/api/admin";
-import { useI18n } from "@/i18n/provider";
+import { ProjectDialog } from "@/components/project-dialog"
+import { Button } from "@/components/ui/button"
+import { Field, FieldContent, FieldError, FieldLabel } from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
+import { fetchTag, type Tag } from "@/lib/api/admin"
+import { useI18n } from "@/i18n/provider"
 
-type TagFormDialogProps = {
-  open: boolean;
-  saving: boolean;
-  itemId: number | null;
-  onOpenChange: (open: boolean) => void;
-  onSubmit: (payload: CreateTagPayload) => Promise<void>;
-};
-
-const emptyForm: EditForm = {
-  parentId: "0",
-  name: "",
-  remark: "",
-};
+type EditDialogProps = {
+  open: boolean
+  saving: boolean
+  itemId: number | null
+  onOpenChange: (open: boolean) => void
+  onSubmit: (displayAlias: string) => Promise<void>
+}
 
 type EditForm = {
-  parentId: string;
-  name: string;
-  remark: string;
-};
+  displayAlias: string
+}
 
-function buildForm(item: Tag | null): EditForm {
-  if (!item) {
-    return emptyForm;
+export function EditDialog(props: EditDialogProps) {
+  if (!props.open || !props.itemId) {
+    return null
   }
-
-  return {
-    parentId: String(item.parentId),
-    name: item.name,
-    remark: item.remark,
-  };
+  return <EditDialogBody key={props.itemId} {...props} itemId={props.itemId} />
 }
 
-function buildPayload(form: EditForm): CreateTagPayload {
-  return {
-    parentId: Number(form.parentId),
-    name: form.name.trim(),
-    remark: form.remark.trim(),
-    status: 0,
-  };
-}
-
-export function EditDialog({
+function EditDialogBody({
   open,
   saving,
   itemId,
   onOpenChange,
   onSubmit,
-}: TagFormDialogProps) {
-  if (!open) {
-    return null;
-  }
-
-  return (
-    <TagFormDialogBody
-      key={itemId ? `edit-${itemId}` : "create"}
-      open={open}
-      itemId={itemId}
-      saving={saving}
-      onOpenChange={onOpenChange}
-      onSubmit={onSubmit}
-    />
-  );
-}
-
-type TagFormDialogBodyProps = {
-  open: boolean;
-  saving: boolean;
-  itemId: number | null;
-  onOpenChange: (open: boolean) => void;
-  onSubmit: (payload: CreateTagPayload) => Promise<void>;
-};
-
-function TagFormDialogBody({
-  open,
-  saving,
-  itemId,
-  onOpenChange,
-  onSubmit,
-}: TagFormDialogBodyProps) {
-  const t = useI18n();
-  const formId = "tag-edit-form";
-  const [loading, setLoading] = useState(false);
-  const [parentTags, setParentTags] = useState<TagTree[]>([]);
-
-  const tagFormSchema = useMemo(
-    () =>
-      z.object({
-        parentId: z.string(),
-        name: z.string().trim().min(1, t("tag.nameRequired")),
-        remark: z.string(),
-      }),
+}: Omit<EditDialogProps, "itemId"> & { itemId: number }) {
+  const t = useI18n()
+  const formId = "tag-alias-edit-form"
+  const [loading, setLoading] = useState(true)
+  const [item, setItem] = useState<Tag | null>(null)
+  const schema = useMemo(
+    () => z.object({ displayAlias: z.string().trim().max(80, t("tag.aliasTooLong")) }),
     [t],
-  );
-  const editFormResolver = useMemo(
-    () => zodResolver(tagFormSchema as never) as Resolver<EditForm>,
-    [tagFormSchema],
-  );
+  )
   const form = useForm<EditForm>({
-    resolver: editFormResolver,
-    defaultValues: emptyForm,
-  });
-  const {
-    control,
-    handleSubmit,
-    reset,
-    register,
-    formState: { errors },
-  } = form;
+    resolver: zodResolver(schema as never) as Resolver<EditForm>,
+    defaultValues: { displayAlias: "" },
+  })
 
   useEffect(() => {
-    async function loadParentTags() {
-      try {
-        const data = await fetchTagsAll();
-        setParentTags(Array.isArray(data) ? data : []);
-      } catch (error) {
-        console.error("Failed to load parent tags:", error);
-      }
+    let cancelled = false
+    void fetchTag(itemId)
+      .then((data) => {
+        if (cancelled) return
+        setItem(data)
+        form.reset({ displayAlias: data.displayAlias ?? "" })
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setItem(null)
+          toast.error(error instanceof Error ? error.message : t("tag.loadFailed"))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
     }
-    void loadParentTags();
-  }, [itemId]);
-
-  useEffect(() => {
-    async function loadDetail() {
-      if (!itemId) {
-        reset(emptyForm);
-        return;
-      }
-      setLoading(true);
-      try {
-        const data = await fetchTag(itemId);
-        reset(buildForm(data));
-      } catch (error) {
-        console.error("Failed to load tag:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
-    void loadDetail();
-  }, [itemId, reset]);
-
-  async function onFormSubmit(values: EditForm) {
-    const payload = buildPayload(values);
-    await onSubmit(payload);
-  }
+  }, [form, itemId, t])
 
   return (
     <ProjectDialog
       open={open}
       onOpenChange={onOpenChange}
-      title={itemId ? t("tag.editTitle") : t("tag.createTitle")}
+      title={t("tag.editAlias")}
       size="md"
-      allowFullscreen
       footer={
         <>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={saving}
-          >
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             {t("tag.cancel")}
           </Button>
-          <Button type="submit" form={formId} disabled={saving || loading}>
-            {saving ? t("tag.saving") : itemId ? t("tag.save") : t("tag.create")}
+          <Button type="submit" form={formId} disabled={saving || loading || !item}>
+            {saving ? t("tag.saving") : t("tag.save")}
           </Button>
         </>
       }
     >
       {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <div className="text-muted-foreground">{t("tag.loadingDetail")}</div>
-        </div>
+        <div className="py-10 text-center text-sm text-muted-foreground">{t("tag.loadingDetail")}</div>
       ) : (
         <form
           id={formId}
-          onSubmit={handleSubmit(onFormSubmit)}
           className="space-y-4"
+          onSubmit={form.handleSubmit(async ({ displayAlias }) => onSubmit(displayAlias.trim()))}
         >
-          <Field data-invalid={!!errors.parentId}>
-            <FieldLabel htmlFor="tag-parent-id">{t("tag.parent")}</FieldLabel>
+          <Field>
+            <FieldLabel>{t("tag.standardName")}</FieldLabel>
             <FieldContent>
-              <Controller
-                control={control}
-                name="parentId"
-                render={({ field }) => (
-                  <TagSelector
-                    mode="single"
-                    value={Number(field.value)}
-                    onChange={(value) => field.onChange(String(value))}
-                    tags={parentTags}
-                    placeholder={t("tag.rootParent")}
-                    searchPlaceholder={t("tag.searchParent")}
-                    emptyText={t("tag.emptyParent")}
-                    disabled={saving}
-                    rootOption={{ value: 0, label: t("tag.rootParent") }}
-                    excludeIds={itemId ? [itemId] : undefined}
-                  />
-                )}
-              />
-              <FieldError errors={[errors.parentId]} />
+              <Input value={item?.name ?? ""} disabled />
             </FieldContent>
           </Field>
-          <Field data-invalid={!!errors.name}>
-            <FieldLabel htmlFor="tag-name">{t("tag.name")}</FieldLabel>
+          <Field>
+            <FieldLabel>{t("tag.semanticKey")}</FieldLabel>
+            <FieldContent>
+              <Input value={item?.semanticKey ?? ""} disabled className="font-mono text-xs" />
+            </FieldContent>
+          </Field>
+          <Field data-invalid={!!form.formState.errors.displayAlias}>
+            <FieldLabel htmlFor="tag-display-alias">{t("tag.displayAlias")}</FieldLabel>
             <FieldContent>
               <Input
-                id="tag-name"
-                placeholder={t("tag.namePlaceholder")}
-                aria-invalid={!!errors.name}
-                {...register("name")}
+                id="tag-display-alias"
+                placeholder={t("tag.displayAliasPlaceholder")}
+                aria-invalid={!!form.formState.errors.displayAlias}
+                {...form.register("displayAlias")}
               />
-              <FieldError errors={[errors.name]} />
-            </FieldContent>
-          </Field>
-          <Field data-invalid={!!errors.remark}>
-            <FieldLabel htmlFor="tag-remark">{t("tag.remark")}</FieldLabel>
-            <FieldContent>
-              <Textarea
-                id="tag-remark"
-                placeholder={t("tag.remarkPlaceholder")}
-                rows={3}
-                aria-invalid={!!errors.remark}
-                {...register("remark")}
-              />
-              <FieldError errors={[errors.remark]} />
+              <FieldError errors={[form.formState.errors.displayAlias]} />
             </FieldContent>
           </Field>
         </form>
       )}
     </ProjectDialog>
-  );
+  )
 }

@@ -599,6 +599,24 @@ func (s *wsService) PublishConversationChanged(conversation *models.Conversation
 	s.PublishToTopics(s.routeConversationTopics(conversation), event)
 }
 
+func (s *wsService) PublishCustomerTagChanged(conversation *models.Conversation, storeID, storeCustomerRelationID int64, updatedAt time.Time) {
+	if conversation == nil || conversation.TenantID <= 0 {
+		return
+	}
+	event := s.newEvent(s.adminTenantTopic(conversation.TenantID), RealtimeCustomerTagChangedEvent{
+		Payload: RealtimeCustomerTagChangedPayload{
+			TenantID: conversation.TenantID, StoreID: storeID, CustomerID: conversation.CustomerID,
+			StoreCustomerRelationID: storeCustomerRelationID, ConversationID: conversation.ID,
+			UpdatedAt: updatedAt.Format(time.RFC3339Nano),
+		},
+	})
+	topics := []string{s.adminTenantTopic(conversation.TenantID), s.dispatchTenantTopic(conversation.TenantID)}
+	if conversation.CurrentAssigneeID > 0 {
+		topics = append(topics, s.adminTopic(conversation.CurrentAssigneeID))
+	}
+	s.PublishToTopics(topics, event)
+}
+
 func (s *wsService) buildConversationRouteRealtimePayload(conversationID, tenantID int64) RealtimeConversationChangedPayload {
 	route := ConversationRouteService.GetByConversationIDInTenant(conversationID, tenantID)
 	if route == nil {

@@ -33,7 +33,7 @@ func CustomerPostList(ctx *gin.Context) {
 		return
 	}
 	list, paging := services.CustomerService.ListCustomers(req, operator)
-	presentation := services.CustomerService.LoadPresentationData(list, true)
+	presentation := services.CustomerService.LoadPresentationDataForOperator(list, true, operator)
 	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildCustomerListWithContext(list, buildCustomerContext(presentation)), Page: paging})
 }
 
@@ -51,12 +51,16 @@ func CustomerGetBy(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if !services.CustomerService.CanAccessCustomer(operator, id) {
+		httpx.WriteJSON(ctx, nil)
+		return
+	}
 	item := services.CustomerService.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		httpx.WriteJSON(ctx, nil)
 		return
 	}
-	ret := buildCustomerResponse(item)
+	ret := buildCustomerResponse(item, operator)
 	httpx.WriteJSON(ctx, &ret)
 }
 
@@ -74,12 +78,16 @@ func CustomerGetStore_relations(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
+	if !services.CustomerService.CanAccessCustomer(operator, id) {
+		httpx.WriteJSON(ctx, nil)
+		return
+	}
 	item := services.CustomerService.GetInTenant(id, operator)
 	if item == nil || item.Status == enums.StatusDeleted {
 		httpx.WriteJSON(ctx, nil)
 		return
 	}
-	presentation := services.CustomerService.LoadPresentationData([]models.Customer{*item}, true)
+	presentation := services.CustomerService.LoadPresentationDataForOperator([]models.Customer{*item}, true, operator)
 	buildContext := buildCustomerContext(presentation)
 	httpx.WriteJSON(ctx, builders.BuildStoreCustomerRelationListWithContext(presentation.StoreRelationsByCustomerID[id], buildContext))
 }
@@ -112,7 +120,7 @@ func CustomerPostSave_profile(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	ret := buildCustomerResponse(item)
+	ret := buildCustomerResponse(item, user)
 	httpx.WriteJSON(ctx, &ret)
 }
 
@@ -136,7 +144,7 @@ func CustomerPostCreate(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	ret := buildCustomerResponse(item)
+	ret := buildCustomerResponse(item, user)
 	httpx.WriteJSON(ctx, &ret)
 }
 
@@ -206,18 +214,19 @@ func CustomerPostUpdate_status(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
-func buildCustomerResponse(item *models.Customer) *response.CustomerResponse {
+func buildCustomerResponse(item *models.Customer, operator *dto.AuthPrincipal) *response.CustomerResponse {
 	if item == nil {
 		return nil
 	}
-	presentation := services.CustomerService.LoadPresentationData([]models.Customer{*item}, true)
+	presentation := services.CustomerService.LoadPresentationDataForOperator([]models.Customer{*item}, true, operator)
 	return builders.BuildCustomerWithContext(item, buildCustomerContext(presentation))
 }
 
 func buildCustomerContext(data services.CustomerPresentationData) *builders.CustomerBuildContext {
 	return &builders.CustomerBuildContext{
-		StoreRelationsByCustomerID: data.StoreRelationsByCustomerID,
-		StoresByID:                 data.StoresByID,
-		WxWorkInstancesByID:        data.WxWorkInstancesByID,
+		StoreRelationsByCustomerID:    data.StoreRelationsByCustomerID,
+		StoresByID:                    data.StoresByID,
+		WxWorkInstancesByID:           data.WxWorkInstancesByID,
+		CustomerTagsByStoreRelationID: data.CustomerTagsByStoreRelationID,
 	}
 }

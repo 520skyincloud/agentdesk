@@ -239,6 +239,11 @@ func registerDashboardTagRoutes(group *gin.RouterGroup) {
 
 func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.ConversationGetBy)
+	group.GET("/customer_tag/options", dashboard.ConversationGetCustomer_tag_options)
+	group.Any("/customer_tag/change_log", dashboard.ConversationAnyCustomer_tag_change_log)
+	group.POST("/customer_tag/add", dashboard.ConversationPostCustomer_tag_add)
+	group.POST("/customer_tag/remove", dashboard.ConversationPostCustomer_tag_remove)
+	group.POST("/customer_tag/replace", dashboard.ConversationPostCustomer_tag_replace)
 	group.POST("/add_tag", dashboard.ConversationPostAdd_tag)
 	group.POST("/assign", dashboard.ConversationPostAssign)
 	group.POST("/close", dashboard.ConversationPostClose)
