@@ -41,17 +41,13 @@ func (s *replyRunLogService) Write(input replyRunLogInput) {
 	}
 	traceData := buildAIReplyTraceData(input.Trace)
 	plannedAction, plannedToolCode, planReason := buildRunLogPlan(input.Summary)
-	aiConfigID := input.AIAgent.AIConfigID
-	if input.Trace != nil && input.Trace.AIConfigID > 0 {
-		aiConfigID = input.Trace.AIConfigID
-	}
 	logItem := &models.AgentRunLog{
 		TenantID:         input.Conversation.TenantID,
 		ConversationID:   input.Conversation.ID,
 		MessageID:        input.Message.ID,
 		RequestID:        input.Message.RequestID,
 		AIAgentID:        input.AIAgent.ID,
-		AIConfigID:       aiConfigID,
+		AIConfigID:       0,
 		UserMessage:      strings.TrimSpace(input.Question),
 		PlannedAction:    plannedAction,
 		PlannedSkillCode: strings.TrimSpace(summaryPlannedSkillCode(input.Summary)),

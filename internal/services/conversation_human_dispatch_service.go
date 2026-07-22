@@ -12,6 +12,7 @@ import (
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
@@ -577,30 +578,54 @@ func (s *conversationHumanDispatchService) buildAIHandoffConversationSummary(con
 	if conversation == nil || (strings.TrimSpace(reason) == "" && len(items) == 0) {
 		return ""
 	}
-	config, ok := s.resolveHandoffSummaryAIConfig(conversation)
+	resolved, ok := s.resolveHandoffSummaryModelCall(conversation)
 	if !ok {
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	result, err := ai.LLM.ChatWithConfig(ctx, config,
+	requestID := fmt.Sprintf("handoff-summary-%d-%d", conversation.ID, conversation.LastMessageID)
+	callCtx := usagex.WithScope(ctx, modelCallUsageScope(resolved, conversation.ID, conversation.LastMessageID, requestID))
+	callCtx, capture := usagex.WithCapture(callCtx)
+	startedAt := time.Now()
+	result, err := ai.LLM.ChatWithRuntimeConfig(callCtx, resolved.RuntimeConfig(),
 		"你是酒店门店值班群通知摘要助手。只输出一句中文摘要，给门店同事快速判断要处理什么。不要输出内部意图code、JSON、工具名、门店名称、会话ID；不要逐条复述聊天记录；不要说“AI”。",
 		buildHandoffSummaryPrompt(reason, items),
 	)
 	if err != nil {
+		recordResolvedModelCall(models.AIUsageEvent{
+			EventKey: requestID + ":handoff_summary", ConversationID: conversation.ID,
+			MessageID: conversation.LastMessageID, RequestID: requestID, Stage: "handoff_summary",
+			OperationType: "handoff_summary", MetricSource: AIUsageMetricSourceProviderOperation,
+			RequestCount: 1, LatencyMS: time.Since(startedAt).Milliseconds(),
+			Status: "failed", ErrorClass: "model_call_failed",
+		}, resolved, lastUsageReceipt(capture))
 		slog.Warn("build ai handoff summary failed", "conversation_id", conversation.ID, "error", err)
 		return ""
 	}
+	metricSource := AIUsageMetricSourceProviderOperation
+	if result.PromptTokens > 0 || result.CompletionTokens > 0 {
+		metricSource = AIUsageMetricSourceUpstreamActual
+	}
+	recordResolvedModelCall(models.AIUsageEvent{
+		EventKey: requestID + ":handoff_summary", ConversationID: conversation.ID,
+		MessageID: conversation.LastMessageID, RequestID: requestID, Stage: "handoff_summary",
+		OperationType: "handoff_summary", MetricSource: metricSource, RequestCount: 1,
+		PromptTokens: int64(result.PromptTokens), CompletionTokens: int64(result.CompletionTokens),
+		LatencyMS: time.Since(startedAt).Milliseconds(), Status: "completed",
+	}, resolved, lastUsageReceipt(capture))
 	return cleanHandoffAISummary(result.Content)
 }
 
-func (s *conversationHumanDispatchService) resolveHandoffSummaryAIConfig(conversation *models.Conversation) (models.AIConfig, bool) {
-	if conversation != nil {
-		if resolved, err := StoreAIModelSettingService.ResolveForConversation(conversation.ID, StoreAIModelUsageReplyLLM); err == nil && resolved != nil {
-			return resolved.Config, true
-		}
+func (s *conversationHumanDispatchService) resolveHandoffSummaryModelCall(conversation *models.Conversation) (*ModelCallConfig, bool) {
+	if conversation == nil || conversation.ID <= 0 {
+		return nil, false
 	}
-	return models.AIConfig{}, false
+	resolved, err := ModelCallResolverService.ResolveForConversation(conversation.ID, enums.ModelUsageSlotReplyLLM)
+	if err != nil || resolved == nil {
+		return nil, false
+	}
+	return resolved, true
 }
 
 func buildHandoffSummaryPrompt(reason string, items []handoffSummaryItem) string {

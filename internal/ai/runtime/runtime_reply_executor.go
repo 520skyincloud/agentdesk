@@ -10,6 +10,8 @@ import (
 	applicationruntime "agent-desk/internal/ai/application/runtime"
 	"agent-desk/internal/ai/runtime/graphs"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/pkg/utils"
 	svc "agent-desk/internal/services"
@@ -39,29 +41,23 @@ func newRuntimeReplyExecutor() *runtimeReplyExecutor {
 }
 
 func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInput) (*applicationruntime.Summary, error) {
-	resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(input.Conversation.ID, svc.StoreAIModelUsageReplyLLM)
+	resolved, err := svc.ModelCallResolverService.ResolveForConversation(input.Conversation.ID, enums.ModelUsageSlotReplyLLM)
 	if err != nil {
 		return nil, err
 	}
-	aiConfig := normalizeRuntimeReplyAIConfig(resolved.Config)
-	if input.Trace != nil {
-		input.Trace.AIConfigID = aiConfig.ID
-		input.Trace.ModelSource = resolved.Source
-		input.Trace.ModelSettingID = resolved.ModelSettingID
-		input.Trace.ConfiguredMaxOutputTokens = resolved.Config.MaxOutputTokens
-		input.Trace.EffectiveMaxOutputTokens = aiConfig.MaxOutputTokens
-	}
-	input.AIAgent.AIConfigID = aiConfig.ID
+	modelConfig := normalizeRuntimeReplyModelConfig(resolved.RuntimeConfig())
+	e.applyResolvedModelTrace(input.Trace, resolved, modelConfig)
+	input.AIAgent.AIConfigID = 0
 	runtimeStartedAt := time.Now()
 	runCtx, usageCapture := usagex.WithCapture(ctx)
-	runCtx = usagex.WithScope(runCtx, usagex.Scope{ConversationID: input.Conversation.ID, MessageID: input.Message.ID, RequestID: input.Message.RequestID})
+	runCtx = usagex.WithScope(runCtx, buildModelUsageScope(resolved, input.Conversation.ID, input.Message.ID, input.Message.RequestID))
 	summary, err := Service.Run(runCtx, applicationruntime.Request{
 		Conversation: input.Conversation,
 		UserMessage:  input.Message,
 		AIAgent:      input.AIAgent,
-		AIConfig:     aiConfig,
+		AIConfig:     modelConfig,
 	})
-	e.recordReplyModelUsage(input.Conversation, input.Message, aiConfig, resolved.Source, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
+	e.recordReplyModelUsage(input.Conversation, input.Message, modelConfig, resolved, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
 	if input.Trace != nil {
 		input.Trace.RuntimeLatencyMs = time.Since(runtimeStartedAt).Milliseconds()
 		e.fillTraceFromSummary(input.Trace, summary, err)
@@ -73,35 +69,29 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	if input.PendingInterrupt == nil {
 		return nil, fmt.Errorf("pending interrupt is required")
 	}
-	resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(input.Conversation.ID, svc.StoreAIModelUsageReplyLLM)
+	resolved, err := svc.ModelCallResolverService.ResolveForConversation(input.Conversation.ID, enums.ModelUsageSlotReplyLLM)
 	if err != nil {
 		return nil, err
 	}
-	aiConfig := normalizeRuntimeReplyAIConfig(resolved.Config)
-	if input.Trace != nil {
-		input.Trace.AIConfigID = aiConfig.ID
-		input.Trace.ModelSource = resolved.Source
-		input.Trace.ModelSettingID = resolved.ModelSettingID
-		input.Trace.ConfiguredMaxOutputTokens = resolved.Config.MaxOutputTokens
-		input.Trace.EffectiveMaxOutputTokens = aiConfig.MaxOutputTokens
-	}
-	input.AIAgent.AIConfigID = aiConfig.ID
+	modelConfig := normalizeRuntimeReplyModelConfig(resolved.RuntimeConfig())
+	e.applyResolvedModelTrace(input.Trace, resolved, modelConfig)
+	input.AIAgent.AIConfigID = 0
 	runtimeStartedAt := time.Now()
 	if input.Trace != nil {
 		input.Trace.ResumeSource = "pending_interrupt"
 	}
 	resumeCtx, usageCapture := usagex.WithCapture(ctx)
-	resumeCtx = usagex.WithScope(resumeCtx, usagex.Scope{ConversationID: input.Conversation.ID, MessageID: input.Message.ID, RequestID: input.Message.RequestID})
+	resumeCtx = usagex.WithScope(resumeCtx, buildModelUsageScope(resolved, input.Conversation.ID, input.Message.ID, input.Message.RequestID))
 	summary, err := Service.Resume(resumeCtx, applicationruntime.ResumeRequest{
 		Conversation: input.Conversation,
 		AIAgent:      input.AIAgent,
-		AIConfig:     aiConfig,
+		AIConfig:     modelConfig,
 		CheckPointID: strings.TrimSpace(input.PendingInterrupt.CheckPointID),
 		ResumeData: map[string]string{
 			strings.TrimSpace(input.PendingInterrupt.InterruptID): e.resumeMessageText(input.Message),
 		},
 	})
-	e.recordReplyModelUsage(input.Conversation, input.Message, aiConfig, resolved.Source, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
+	e.recordReplyModelUsage(input.Conversation, input.Message, modelConfig, resolved, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
 	if input.Trace != nil {
 		input.Trace.RuntimeLatencyMs = time.Since(runtimeStartedAt).Milliseconds()
 		e.fillTraceFromSummary(input.Trace, summary, err)
@@ -109,14 +99,14 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	return summary, err
 }
 
-func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Conversation, message models.Message, aiConfig models.AIConfig, modelSource string, summary *applicationruntime.Summary, receipts []usagex.Receipt, runErr error, latencyMS int64) {
+func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Conversation, message models.Message, modelConfig modelconfig.Config, resolved *svc.ModelCallConfig, summary *applicationruntime.Summary, receipts []usagex.Receipt, runErr error, latencyMS int64) {
 	requestID := strings.TrimSpace(message.RequestID)
 	if requestID == "" {
 		return
 	}
 	errorMessage := ""
 	if runErr != nil {
-		errorMessage = runErr.Error()
+		errorMessage = "model_call_failed"
 	}
 	runID := ""
 	if summary != nil {
@@ -130,11 +120,11 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 			event := models.AIUsageEvent{
 				EventKey:       fmt.Sprintf("%s:reply_generate:%s:failed", requestID, runID),
 				ConversationID: conversation.ID, MessageID: message.ID, RequestID: requestID,
-				Stage: "reply_generate", Provider: string(aiConfig.Provider), Model: aiConfig.ModelName,
-				AIConfigID: aiConfig.ID, ModelSource: modelSource,
+				Stage: "reply_generate", Provider: string(modelConfig.Provider), Model: modelConfig.ModelName,
 				MetricSource: svc.AIUsageMetricSourceProviderOperation,
-				LatencyMS:    latencyMS, Status: "failed", ErrorMessage: errorMessage,
+				LatencyMS:    latencyMS, Status: "failed", ErrorClass: errorMessage, ErrorMessage: errorMessage,
 			}
+			svc.AIUsageEventService.ApplyModelCallAttribution(&event, resolved)
 			applyReplyGatewayReceipt(&event, receiptAt(receipts, 0))
 			_ = svc.AIUsageEventService.Record(event)
 		}
@@ -144,13 +134,13 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 		event := models.AIUsageEvent{
 			EventKey:       fmt.Sprintf("%s:reply_generate:%s:%d", requestID, runID, index+1),
 			ConversationID: conversation.ID, MessageID: message.ID, RequestID: requestID,
-			Stage: "reply_generate", Provider: string(aiConfig.Provider), Model: aiConfig.ModelName,
-			AIConfigID: aiConfig.ID, ModelSource: modelSource,
+			Stage: "reply_generate", Provider: string(modelConfig.Provider), Model: modelConfig.ModelName,
 			PromptTokens: int64(usage.PromptTokens), CompletionTokens: int64(usage.CompletionTokens),
 			CachedPromptTokens: int64(usage.CachedPromptTokens), ReasoningTokens: int64(usage.ReasoningTokens),
 			MetricSource: svc.AIUsageMetricSourceUpstreamActual,
 			Status:       "completed",
 		}
+		svc.AIUsageEventService.ApplyModelCallAttribution(&event, resolved)
 		applyReplyGatewayReceipt(&event, receiptAt(receipts, index))
 		_ = svc.AIUsageEventService.Record(event)
 	}
@@ -158,11 +148,11 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 		event := models.AIUsageEvent{
 			EventKey:       fmt.Sprintf("%s:reply_generate:%s:failed", requestID, runID),
 			ConversationID: conversation.ID, MessageID: message.ID, RequestID: requestID,
-			Stage: "reply_generate", Provider: string(aiConfig.Provider), Model: aiConfig.ModelName,
-			AIConfigID: aiConfig.ID, ModelSource: modelSource,
+			Stage: "reply_generate", Provider: string(modelConfig.Provider), Model: modelConfig.ModelName,
 			MetricSource: svc.AIUsageMetricSourceProviderOperation,
-			LatencyMS:    latencyMS, Status: "failed", ErrorMessage: errorMessage,
+			LatencyMS:    latencyMS, Status: "failed", ErrorClass: errorMessage, ErrorMessage: errorMessage,
 		}
+		svc.AIUsageEventService.ApplyModelCallAttribution(&event, resolved)
 		applyReplyGatewayReceipt(&event, receiptAt(receipts, 0))
 		_ = svc.AIUsageEventService.Record(event)
 	}
@@ -189,11 +179,39 @@ func applyReplyGatewayReceipt(event *models.AIUsageEvent, receipt *usagex.Receip
 	}
 }
 
-func normalizeRuntimeReplyAIConfig(config models.AIConfig) models.AIConfig {
+func normalizeRuntimeReplyModelConfig(config modelconfig.Config) modelconfig.Config {
 	if config.MaxOutputTokens <= 0 || config.MaxOutputTokens > runtimeReplyMaxOutputTokens {
 		config.MaxOutputTokens = runtimeReplyMaxOutputTokens
 	}
 	return config
+}
+
+func (e *runtimeReplyExecutor) applyResolvedModelTrace(trace *aiReplyTraceData, resolved *svc.ModelCallConfig, config modelconfig.Config) {
+	if trace == nil || resolved == nil {
+		return
+	}
+	trace.StoreID = resolved.StoreID
+	trace.ModelProfileID = resolved.ProfileID
+	trace.ModelProfileRevision = resolved.ProfileRevision
+	trace.ModelSlotID = resolved.SlotID
+	trace.UsageSlot = string(resolved.UsageCode)
+	trace.CredentialRevision = resolved.CredentialRevision
+	trace.ModelSource = svc.AIModelSourceStoreProfile
+	trace.ConfiguredMaxOutputTokens = resolved.MaxOutputTokens
+	trace.EffectiveMaxOutputTokens = config.MaxOutputTokens
+}
+
+func buildModelUsageScope(resolved *svc.ModelCallConfig, conversationID, messageID int64, requestID string) usagex.Scope {
+	if resolved == nil {
+		return usagex.Scope{ConversationID: conversationID, MessageID: messageID, RequestID: requestID}
+	}
+	return usagex.Scope{
+		TenantID: resolved.TenantID, StoreID: resolved.StoreID,
+		ConversationID: conversationID, MessageID: messageID, RequestID: requestID,
+		ModelProfileID: resolved.ProfileID, ProfileRevision: resolved.ProfileRevision,
+		UsageSlot: string(resolved.UsageCode), CredentialRevision: resolved.CredentialRevision,
+		KeyFingerprint: resolved.KeyFingerprint, ModelSource: svc.AIModelSourceStoreProfile,
+	}
 }
 
 func (e *runtimeReplyExecutor) fillTraceFromSummary(trace *aiReplyTraceData, summary *applicationruntime.Summary, runErr error) {

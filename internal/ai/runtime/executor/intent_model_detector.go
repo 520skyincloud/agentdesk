@@ -11,13 +11,14 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/pkg/replyintent"
 	"agent-desk/internal/pkg/toolx"
 	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/schema"
-	"github.com/mlogclub/simple/sqls"
 )
 
 type runtimeIntentModelDetector interface {
@@ -136,13 +137,24 @@ func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history ada
 }
 
 func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
-	intentConfig := resolveRuntimeIntentDetectAIConfig(req)
+	resolved, err := resolveRuntimeIntentDetectModelCall(req)
+	if err != nil {
+		return callbacks.IntentTraceData{}, err
+	}
+	intentConfig := resolved.RuntimeConfig()
 	if strings.TrimSpace(intentConfig.ModelName) == "" || strings.TrimSpace(string(intentConfig.Provider)) == "" {
-		return callbacks.IntentTraceData{}, fmt.Errorf("ai config unavailable")
+		return callbacks.IntentTraceData{}, fmt.Errorf("intent model unavailable")
 	}
 	intentCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	intentCtx, usageCapture := usagex.WithCapture(intentCtx)
+	intentCtx = usagex.WithScope(intentCtx, usagex.Scope{
+		TenantID: resolved.TenantID, StoreID: resolved.StoreID,
+		ConversationID: req.Conversation.ID, MessageID: req.UserMessage.ID, RequestID: req.UserMessage.RequestID,
+		ModelProfileID: resolved.ProfileID, ProfileRevision: resolved.ProfileRevision,
+		UsageSlot: string(resolved.UsageCode), CredentialRevision: resolved.CredentialRevision,
+		KeyFingerprint: resolved.KeyFingerprint, ModelSource: services.AIModelSourceStoreProfile,
+	})
 	chatModel, err := factory.NewChatModelFactory().Build(intentCtx, intentConfig)
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
@@ -157,20 +169,20 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	firstReceiptOffset := len(usageCapture.Receipts())
 	result, err := chatModel.Generate(intentCtx, messages)
 	if err != nil {
-		recordIntentModelUsage(req, intentConfig, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
+		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
 		return callbacks.IntentTraceData{}, err
 	}
-	recordIntentModelUsage(req, intentConfig, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
+	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
 	parsed, err := parseRuntimeIntentDetectJSON(result.Content)
 	if err != nil {
 		retryStartedAt := time.Now()
 		retryReceiptOffset := len(usageCapture.Receipts())
 		retry, retryErr := chatModel.Generate(intentCtx, append(messages, schema.SystemMessage("上一版 IntentDetect 输出不是合法 JSON。请重新输出严格 JSON。intentTasks 必须是数组，且是唯一事实来源；顶层 primaryIntent/needsKnowledge/needsResource/resourceActions 只能汇总 intentTasks。不要输出 Markdown、解释、注释或多余文本。")))
 		if retryErr != nil {
-			recordIntentModelUsage(req, intentConfig, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
+			recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
 		}
-		recordIntentModelUsage(req, intentConfig, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
+		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
 		parsed, err = parseRuntimeIntentDetectJSON(retry.Content)
 		if err != nil {
 			return callbacks.IntentTraceData{}, err
@@ -199,7 +211,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	}, nil
 }
 
-func recordIntentModelUsage(req RunInput, aiConfig models.AIConfig, message *schema.Message, receipt *usagex.Receipt, attempt int, latencyMS int64, callErr error) {
+func recordIntentModelUsage(req RunInput, modelConfig modelconfig.Config, resolved *services.ModelCallConfig, message *schema.Message, receipt *usagex.Receipt, attempt int, latencyMS int64, callErr error) {
 	requestID := strings.TrimSpace(req.UserMessage.RequestID)
 	if requestID == "" {
 		return
@@ -208,16 +220,16 @@ func recordIntentModelUsage(req RunInput, aiConfig models.AIConfig, message *sch
 	errorMessage := ""
 	if callErr != nil {
 		status = "failed"
-		errorMessage = callErr.Error()
+		errorMessage = "model_call_failed"
 	}
 	event := models.AIUsageEvent{
 		EventKey:       fmt.Sprintf("%s:intent_detect:%d", requestID, attempt),
 		ConversationID: req.Conversation.ID, MessageID: req.UserMessage.ID, RequestID: requestID,
-		Stage: "intent_detect", Provider: string(aiConfig.Provider), Model: aiConfig.ModelName,
-		AIConfigID: aiConfig.ID, ModelSource: "intent_model_resolver",
+		Stage: "intent_detect", Provider: string(modelConfig.Provider), Model: modelConfig.ModelName,
 		MetricSource: services.AIUsageMetricSourceProviderOperation,
-		LatencyMS:    latencyMS, Status: status, ErrorMessage: errorMessage,
+		LatencyMS:    latencyMS, Status: status, ErrorClass: errorMessage, ErrorMessage: errorMessage,
 	}
+	services.AIUsageEventService.ApplyModelCallAttribution(&event, resolved)
 	if message != nil && message.ResponseMeta != nil && message.ResponseMeta.Usage != nil {
 		usage := message.ResponseMeta.Usage
 		event.PromptTokens = int64(usage.PromptTokens)
@@ -275,18 +287,11 @@ func convertRuntimeIntentTasks(tasks []runtimeIntentTaskJSON) []callbacks.Intent
 	return ret
 }
 
-func resolveRuntimeIntentDetectAIConfig(req RunInput) models.AIConfig {
-	if sqls.DB() != nil && req.Conversation.ID > 0 {
-		if resolved, err := services.StoreAIModelSettingService.ResolveForConversation(req.Conversation.ID, services.StoreAIModelUsageIntentDetectLLM); err == nil && resolved != nil {
-			return resolved.Config
-		}
+func resolveRuntimeIntentDetectModelCall(req RunInput) (*services.ModelCallConfig, error) {
+	if req.Conversation.ID <= 0 {
+		return nil, fmt.Errorf("conversation is required for intent model")
 	}
-	if sqls.DB() != nil {
-		if resolved, err := services.StoreAIModelSettingService.Resolve(0, services.StoreAIModelUsageIntentDetectLLM); err == nil && resolved != nil {
-			return resolved.Config
-		}
-	}
-	return req.AIConfig
+	return services.ModelCallResolverService.ResolveForConversation(req.Conversation.ID, enums.ModelUsageSlotIntentDetectLLM)
 }
 
 func runtimeIntentDetectSystemPrompt() string {

@@ -42,9 +42,12 @@ type TFunction = (key: string, values?: Record<string, string | number>) => stri
 
 function createDebugFormSchema(t: TFunction) {
   return z.object({
-  aiAgentId: z.string().trim().min(1, t("skillDefinition.agentRequired")),
-  conversationId: z.string().trim(),
-  userMessage: z.string().trim().min(1, t("skillDefinition.messageRequired")),
+    aiAgentId: z.string().trim().min(1, t("skillDefinition.agentRequired")),
+    conversationId: z
+      .string()
+      .trim()
+      .refine((value) => Number(value) > 0, "请输入绑定门店的真实 Conversation ID"),
+    userMessage: z.string().trim().min(1, t("skillDefinition.messageRequired")),
   })
 }
 

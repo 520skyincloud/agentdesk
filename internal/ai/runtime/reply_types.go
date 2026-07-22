@@ -4,9 +4,13 @@ import "encoding/json"
 
 type aiReplyTraceData struct {
 	Status                    string          `json:"status"`
-	AIConfigID                int64           `json:"aiConfigId,omitempty"`
+	StoreID                   int64           `json:"storeId,omitempty"`
+	ModelProfileID            int64           `json:"modelProfileId,omitempty"`
+	ModelProfileRevision      int64           `json:"modelProfileRevision,omitempty"`
+	ModelSlotID               int64           `json:"modelSlotId,omitempty"`
+	UsageSlot                 string          `json:"usageSlot,omitempty"`
+	CredentialRevision        int64           `json:"credentialRevision,omitempty"`
 	ModelSource               string          `json:"modelSource,omitempty"`
-	ModelSettingID            int64           `json:"modelSettingId,omitempty"`
 	ConfiguredMaxOutputTokens int             `json:"configuredMaxOutputTokens,omitempty"`
 	EffectiveMaxOutputTokens  int             `json:"effectiveMaxOutputTokens,omitempty"`
 	SettleMs                  int64           `json:"settleMs,omitempty"`

@@ -7,6 +7,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -16,6 +17,7 @@ const (
 	AIUsageMetricSourceUpstreamActual    = "upstream_actual"
 	AIUsageMetricSourceProviderOperation = "provider_operation"
 	AIUsageMetricSourceEstimatedOnly     = "estimated_only"
+	AIModelSourceStoreProfile            = "store_profile_assignment"
 )
 
 var AIUsageEventService = newAIUsageEventService()
@@ -23,6 +25,40 @@ var AIUsageEventService = newAIUsageEventService()
 type aiUsageEventService struct{}
 
 func newAIUsageEventService() *aiUsageEventService { return &aiUsageEventService{} }
+
+func (s *aiUsageEventService) ApplyModelCallAttribution(event *models.AIUsageEvent, resolved *ModelCallConfig) {
+	if event == nil || resolved == nil {
+		return
+	}
+	event.TenantID = resolved.TenantID
+	event.StoreID = resolved.StoreID
+	event.Provider = strings.TrimSpace(resolved.Provider)
+	event.Model = strings.TrimSpace(resolved.ModelName)
+	event.ModelProfileID = resolved.ProfileID
+	event.ModelProfileRevision = resolved.ProfileRevision
+	event.UsageSlot = string(resolved.UsageCode)
+	event.CredentialRevision = resolved.CredentialRevision
+	event.KeyFingerprint = strings.TrimSpace(resolved.KeyFingerprint)
+	event.ModelSource = AIModelSourceStoreProfile
+}
+
+func recordResolvedModelCall(event models.AIUsageEvent, resolved *ModelCallConfig, receipt *usagex.Receipt) {
+	if resolved == nil {
+		return
+	}
+	AIUsageEventService.ApplyModelCallAttribution(&event, resolved)
+	if receipt != nil {
+		event.Gateway = receipt.Gateway
+		event.GatewayRequestID = receipt.RequestID
+		event.GatewayUpstreamID = receipt.UpstreamRequestID
+		event.CallStartedAt = &receipt.StartedAt
+		event.CallFinishedAt = &receipt.FinishedAt
+		if receipt.LatencyMS() > 0 {
+			event.LatencyMS = receipt.LatencyMS()
+		}
+	}
+	_ = AIUsageEventService.Record(event)
+}
 
 // Record inserts once by EventKey. Existing events are never updated because
 // retries and corrections must remain separately auditable usage evidence.

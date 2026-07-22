@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/ai"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
@@ -244,26 +245,58 @@ func classifyHumanHandoffConfirmationWithModel(ctx context.Context, conversation
 	if text == "" {
 		return handoffConfirmationClassifyResult{Decision: humanHandoffConfirmationUnknown, Source: "empty"}
 	}
-	config, ok := resolveHandoffConfirmationAIConfig(conversation)
+	resolved, ok := resolveHandoffConfirmationModelCall(conversation)
 	if !ok {
 		return classifyHumanHandoffConfirmationWithFallback(text, "fallback:no_ai_config")
 	}
-	result, err := ai.LLM.ChatWithConfig(ctx, config, handoffConfirmationClassifySystemPrompt(), buildHandoffConfirmationClassifyUserPrompt(payload.Reason, text))
+	requestID := ""
+	if message != nil {
+		requestID = strings.TrimSpace(message.RequestID)
+	}
+	if requestID == "" {
+		requestID = fmt.Sprintf("handoff-classify-%d-%d", safeConversationID(conversation), safeMessageID(message))
+	}
+	callCtx := usagex.WithScope(ctx, modelCallUsageScope(resolved, safeConversationID(conversation), safeMessageID(message), requestID))
+	callCtx, capture := usagex.WithCapture(callCtx)
+	runtimeConfig := resolved.RuntimeConfig()
+	if runtimeConfig.MaxOutputTokens <= 0 || runtimeConfig.MaxOutputTokens > 120 {
+		runtimeConfig.MaxOutputTokens = 80
+	}
+	startedAt := time.Now()
+	result, err := ai.LLM.ChatWithRuntimeConfig(callCtx, runtimeConfig, handoffConfirmationClassifySystemPrompt(), buildHandoffConfirmationClassifyUserPrompt(payload.Reason, text))
 	if err != nil {
+		recordResolvedModelCall(models.AIUsageEvent{
+			EventKey: requestID + ":handoff_classify", ConversationID: safeConversationID(conversation),
+			MessageID: safeMessageID(message), RequestID: requestID, Stage: "handoff_classify",
+			OperationType: "handoff_classify", MetricSource: AIUsageMetricSourceProviderOperation,
+			RequestCount: 1, LatencyMS: time.Since(startedAt).Milliseconds(),
+			Status: "failed", ErrorClass: "model_call_failed",
+		}, resolved, lastUsageReceipt(capture))
 		slog.Warn("human handoff confirmation model classify failed",
 			"conversation_id", safeConversationID(conversation),
 			"message_id", safeMessageID(message),
-			"model", config.ModelName,
+			"model", resolved.ModelName,
 			"error", err,
 		)
 		return classifyHumanHandoffConfirmationWithFallback(text, "fallback:model_error")
 	}
+	metricSource := AIUsageMetricSourceProviderOperation
+	if result.PromptTokens > 0 || result.CompletionTokens > 0 {
+		metricSource = AIUsageMetricSourceUpstreamActual
+	}
+	recordResolvedModelCall(models.AIUsageEvent{
+		EventKey: requestID + ":handoff_classify", ConversationID: safeConversationID(conversation),
+		MessageID: safeMessageID(message), RequestID: requestID, Stage: "handoff_classify",
+		OperationType: "handoff_classify", MetricSource: metricSource, RequestCount: 1,
+		PromptTokens: int64(result.PromptTokens), CompletionTokens: int64(result.CompletionTokens),
+		LatencyMS: time.Since(startedAt).Milliseconds(), Status: "completed",
+	}, resolved, lastUsageReceipt(capture))
 	parsed, err := parseHandoffConfirmationClassifyJSON(result.Content)
 	if err != nil {
 		slog.Warn("human handoff confirmation model output parse failed",
 			"conversation_id", safeConversationID(conversation),
 			"message_id", safeMessageID(message),
-			"model", config.ModelName,
+			"model", resolved.ModelName,
 			"content", result.Content,
 			"error", err,
 		)
@@ -293,30 +326,15 @@ func classifyHumanHandoffConfirmationWithFallback(text string, source string) ha
 	}
 }
 
-func resolveHandoffConfirmationAIConfig(conversation *models.Conversation) (models.AIConfig, bool) {
-	if conversation == nil {
-		return models.AIConfig{}, false
+func resolveHandoffConfirmationModelCall(conversation *models.Conversation) (*ModelCallConfig, bool) {
+	if conversation == nil || conversation.ID <= 0 {
+		return nil, false
 	}
-	resolved, err := StoreAIModelSettingService.ResolveForConversation(conversation.ID, StoreAIModelUsageIntentDetectLLM)
+	resolved, err := ModelCallResolverService.ResolveForConversation(conversation.ID, enums.ModelUsageSlotIntentDetectLLM)
 	if err != nil || resolved == nil {
-		return models.AIConfig{}, false
+		return nil, false
 	}
-	config := resolved.Config
-	if !isUsableHandoffConfirmationAIConfig(&config) {
-		return models.AIConfig{}, false
-	}
-	if config.MaxOutputTokens <= 0 || config.MaxOutputTokens > 120 {
-		config.MaxOutputTokens = 80
-	}
-	return config, true
-}
-
-func isUsableHandoffConfirmationAIConfig(config *models.AIConfig) bool {
-	return config != nil &&
-		config.Status == enums.StatusOk &&
-		config.ModelType == enums.AIModelTypeLLM &&
-		strings.TrimSpace(config.ModelName) != "" &&
-		strings.TrimSpace(string(config.Provider)) != ""
+	return resolved, true
 }
 
 func handoffConfirmationClassifySystemPrompt() string {

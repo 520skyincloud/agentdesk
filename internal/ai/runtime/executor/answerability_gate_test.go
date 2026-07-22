@@ -12,6 +12,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/modelconfig"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -259,7 +260,7 @@ func newKnowledgePolicyRunInput(content string, knowledgeIDs string) RunInput {
 			FallbackMessage: "我暂时没有找到足够准确的信息。你可以补充更具体的问题，我再继续帮你查。",
 			AllowedMCPTools: "[]",
 		},
-		AIConfig: models.AIConfig{ModelName: "fake-model"},
+		AIConfig: modelconfig.Config{ModelName: "fake-model"},
 	}
 }
 
@@ -442,8 +443,11 @@ func TestBuildRunMessagesContinuesAgentFlowWhenNoContext(t *testing.T) {
 
 	messages := make([]*schema.Message, 0)
 	req := newKnowledgePolicyRunInput("早餐几点", "1")
-	appendRetrievedContext(context.Background(), req, hotelInfoIntent(), summary, nil, gate, &messages)
+	outcome := appendRetrievedContext(context.Background(), req, hotelInfoIntent(), summary, nil, gate, &messages)
 	messages = append(messages, schema.UserMessage(req.UserMessage.Content))
+	if outcome.AnswerabilityStatus != answerabilityStatusNoContext {
+		t.Fatalf("unexpected answerability status: %q", outcome.AnswerabilityStatus)
+	}
 
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
@@ -468,7 +472,10 @@ func TestAppendRetrievedContextKeepsSkippedRuntimeActionInstruction(t *testing.T
 		ShouldReply:       true,
 	}
 
-	appendRetrievedContext(context.Background(), newKnowledgePolicyRunInput("发一下酒店定位", ""), intent, &RunResult{}, nil, gate, &messages)
+	outcome := appendRetrievedContext(context.Background(), newKnowledgePolicyRunInput("发一下酒店定位", ""), intent, &RunResult{}, nil, gate, &messages)
+	if outcome.AnswerabilityStatus != answerabilityStatusSkipped {
+		t.Fatalf("unexpected answerability status: %q", outcome.AnswerabilityStatus)
+	}
 
 	if !messagesContainContent(messages, "酒店变量-定位/地址") {
 		t.Fatalf("expected hotel variable instruction in messages: %#v", messages)
@@ -680,8 +687,11 @@ func TestBuildRunMessagesInjectsRetrievedContextWhenHasContext(t *testing.T) {
 
 	messages := make([]*schema.Message, 0)
 	req := newKnowledgePolicyRunInput("早餐几点", "1")
-	appendRetrievedContext(context.Background(), req, hotelInfoIntent(), summary, nil, gate, &messages)
+	outcome := appendRetrievedContext(context.Background(), req, hotelInfoIntent(), summary, nil, gate, &messages)
 	messages = append(messages, schema.UserMessage(req.UserMessage.Content))
+	if outcome.AnswerabilityStatus != answerabilityStatusHasContext {
+		t.Fatalf("unexpected answerability status: %q", outcome.AnswerabilityStatus)
+	}
 
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no fallback, got %q", summary.ReplyText)
@@ -818,8 +828,11 @@ func TestBuildRunMessagesContinuesAgentFlowWhenRetrievalFails(t *testing.T) {
 
 	messages := make([]*schema.Message, 0)
 	req := newKnowledgePolicyRunInput("早餐几点", "1")
-	appendRetrievedContext(context.Background(), req, hotelInfoIntent(), summary, nil, gate, &messages)
+	outcome := appendRetrievedContext(context.Background(), req, hotelInfoIntent(), summary, nil, gate, &messages)
 	messages = append(messages, schema.UserMessage(req.UserMessage.Content))
+	if outcome.AnswerabilityStatus != answerabilityStatusUnanswerable {
+		t.Fatalf("unexpected answerability status: %q", outcome.AnswerabilityStatus)
+	}
 
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)

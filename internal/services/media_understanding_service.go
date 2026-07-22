@@ -20,6 +20,7 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/repositories"
 
@@ -49,8 +50,12 @@ const visionConnectionTestImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgA
 
 // TestVisionConfig verifies the same OpenAI-compatible image path used by media understanding.
 func (s *mediaUnderstandingService) TestVisionConfig(ctx context.Context, config models.AIConfig) error {
-	config.MaxOutputTokens = 32
-	content, err := s.callOpenAICompatibleVision(ctx, config, visionConnectionTestImage)
+	runtimeConfig := modelconfig.Config{
+		Provider: config.Provider, BaseURL: config.BaseURL, APIKey: config.APIKey,
+		APIMode: config.APIMode, ModelType: config.ModelType, ModelName: config.ModelName,
+		MaxOutputTokens: 32, TimeoutMS: config.TimeoutMS, MaxRetryCount: config.MaxRetryCount,
+	}
+	content, err := s.callOpenAICompatibleVision(ctx, runtimeConfig, visionConnectionTestImage)
 	if err != nil {
 		return err
 	}
@@ -233,15 +238,19 @@ func (s *mediaUnderstandingService) understandImage(ctx context.Context, message
 	if err != nil {
 		return "", err
 	}
-	resolved, err := StoreAIModelSettingService.ResolveForMessage(message, StoreAIModelUsageMediaUnderstanding)
+	resolved, err := ModelCallResolverService.ResolveForConversation(message.ConversationID, enums.ModelUsageSlotVision)
 	if err != nil {
 		return "", err
 	}
+	if resolved.TenantID != message.TenantID {
+		return "", fmt.Errorf("图片消息与模型调用租户范围不一致")
+	}
 	imageURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)
 	startedAt := time.Now()
-	modelCtx, usageCapture := usagex.WithCapture(ctx)
-	text, usage, err := s.callOpenAICompatibleVisionWithUsage(modelCtx, resolved.Config, imageURL)
-	s.recordMediaModelUsage(message, resolved.Config, resolved.Source, "vision", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
+	modelCtx := usagex.WithScope(ctx, modelCallUsageScope(resolved, message.ConversationID, message.ID, message.RequestID))
+	modelCtx, usageCapture := usagex.WithCapture(modelCtx)
+	text, usage, err := s.callOpenAICompatibleVisionWithUsage(modelCtx, resolved.RuntimeConfig(), imageURL)
+	s.recordMediaModelUsage(message, resolved, "vision", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
 	return text, err
 }
 
@@ -263,17 +272,21 @@ func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message
 		}
 		return "", err
 	}
-	resolved, err := StoreAIModelSettingService.ResolveForMessage(message, StoreAIModelUsageSpeechRecognition)
+	resolved, err := ModelCallResolverService.ResolveForConversation(message.ConversationID, enums.ModelUsageSlotASR)
 	if err != nil {
 		if protocolErr != nil {
 			return "", fmt.Errorf("企微语音翻译失败: %v；ASR 模型配置失败: %w", protocolErr, err)
 		}
 		return "", err
 	}
+	if resolved.TenantID != message.TenantID {
+		return "", fmt.Errorf("语音消息与模型调用租户范围不一致")
+	}
 	startedAt := time.Now()
-	modelCtx, usageCapture := usagex.WithCapture(ctx)
-	text, usage, err := s.callOpenAICompatibleASRWithUsage(modelCtx, resolved.Config, payload.Filename, data)
-	s.recordMediaModelUsage(message, resolved.Config, resolved.Source, "asr", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
+	modelCtx := usagex.WithScope(ctx, modelCallUsageScope(resolved, message.ConversationID, message.ID, message.RequestID))
+	modelCtx, usageCapture := usagex.WithCapture(modelCtx)
+	text, usage, err := s.callOpenAICompatibleASRWithUsage(modelCtx, resolved.RuntimeConfig(), payload.Filename, data)
+	s.recordMediaModelUsage(message, resolved, "asr", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
 	if err != nil && protocolErr != nil {
 		return "", fmt.Errorf("企微语音翻译失败: %v；ASR 调用失败: %w", protocolErr, err)
 	}
@@ -709,12 +722,12 @@ func detectMimeType(filename string, data []byte) string {
 	return "application/octet-stream"
 }
 
-func (s *mediaUnderstandingService) callOpenAICompatibleASR(ctx context.Context, config models.AIConfig, filename string, data []byte) (string, error) {
+func (s *mediaUnderstandingService) callOpenAICompatibleASR(ctx context.Context, config modelconfig.Config, filename string, data []byte) (string, error) {
 	text, _, err := s.callOpenAICompatibleASRWithUsage(ctx, config, filename, data)
 	return text, err
 }
 
-func (s *mediaUnderstandingService) callOpenAICompatibleASRWithUsage(ctx context.Context, config models.AIConfig, filename string, data []byte) (string, *upstreamModelUsage, error) {
+func (s *mediaUnderstandingService) callOpenAICompatibleASRWithUsage(ctx context.Context, config modelconfig.Config, filename string, data []byte) (string, *upstreamModelUsage, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	if baseURL == "" || strings.TrimSpace(config.APIKey) == "" || strings.TrimSpace(config.ModelName) == "" {
 		return "", nil, fmt.Errorf("ASR 模型配置不完整")
@@ -760,12 +773,12 @@ func (s *mediaUnderstandingService) callOpenAICompatibleASRWithUsage(ctx context
 	return "", usage, fmt.Errorf("ASR 返回中没有 text 字段")
 }
 
-func (s *mediaUnderstandingService) callOpenAICompatibleVision(ctx context.Context, config models.AIConfig, imageURL string) (string, error) {
+func (s *mediaUnderstandingService) callOpenAICompatibleVision(ctx context.Context, config modelconfig.Config, imageURL string) (string, error) {
 	text, _, err := s.callOpenAICompatibleVisionWithUsage(ctx, config, imageURL)
 	return text, err
 }
 
-func (s *mediaUnderstandingService) callOpenAICompatibleVisionWithUsage(ctx context.Context, config models.AIConfig, imageURL string) (string, *upstreamModelUsage, error) {
+func (s *mediaUnderstandingService) callOpenAICompatibleVisionWithUsage(ctx context.Context, config modelconfig.Config, imageURL string) (string, *upstreamModelUsage, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	if baseURL == "" || strings.TrimSpace(config.APIKey) == "" || strings.TrimSpace(config.ModelName) == "" {
 		return "", nil, fmt.Errorf("视觉/多模态模型配置不完整")
@@ -863,8 +876,8 @@ func jsonNumberToInt64(value any) int64 {
 	}
 }
 
-func (s *mediaUnderstandingService) recordMediaModelUsage(message *models.Message, config models.AIConfig, modelSource string, operationType string, usage *upstreamModelUsage, receipt *usagex.Receipt, latencyMS int64, callErr error) {
-	if message == nil {
+func (s *mediaUnderstandingService) recordMediaModelUsage(message *models.Message, resolved *ModelCallConfig, operationType string, usage *upstreamModelUsage, receipt *usagex.Receipt, latencyMS int64, callErr error) {
+	if message == nil || resolved == nil {
 		return
 	}
 	status := "completed"
@@ -872,14 +885,17 @@ func (s *mediaUnderstandingService) recordMediaModelUsage(message *models.Messag
 	metricSource := AIUsageMetricSourceProviderOperation
 	if callErr != nil {
 		status = "failed"
-		errorMessage = callErr.Error()
+		errorMessage = "model_call_failed"
+	}
+	stage := "media_vision"
+	if operationType == "asr" {
+		stage = "media_asr"
 	}
 	event := models.AIUsageEvent{
 		EventKey:       fmt.Sprintf("%s:media_understanding:%s", firstNonBlank(message.RequestID, fmt.Sprintf("message-%d", message.ID)), operationType),
 		ConversationID: message.ConversationID, MessageID: message.ID, RequestID: message.RequestID,
-		Stage: "media_understanding", Provider: string(config.Provider), Model: config.ModelName,
-		AIConfigID: config.ID, ModelSource: modelSource, OperationType: operationType,
-		MetricSource: metricSource, RequestCount: 1, LatencyMS: latencyMS, Status: status, ErrorMessage: errorMessage,
+		Stage: stage, OperationType: operationType, MetricSource: metricSource,
+		RequestCount: 1, LatencyMS: latencyMS, Status: status, ErrorClass: errorMessage,
 	}
 	if usage != nil {
 		event.UpstreamRequestID = usage.RequestID
@@ -891,17 +907,7 @@ func (s *mediaUnderstandingService) recordMediaModelUsage(message *models.Messag
 			event.MetricSource = AIUsageMetricSourceUpstreamActual
 		}
 	}
-	if receipt != nil {
-		event.Gateway = receipt.Gateway
-		event.GatewayRequestID = receipt.RequestID
-		event.GatewayUpstreamID = receipt.UpstreamRequestID
-		event.CallStartedAt = &receipt.StartedAt
-		event.CallFinishedAt = &receipt.FinishedAt
-		if receipt.LatencyMS() > 0 {
-			event.LatencyMS = receipt.LatencyMS()
-		}
-	}
-	_ = AIUsageEventService.Record(event)
+	recordResolvedModelCall(event, resolved, receipt)
 }
 
 func lastUsageReceipt(capture *usagex.Capture) *usagex.Receipt {

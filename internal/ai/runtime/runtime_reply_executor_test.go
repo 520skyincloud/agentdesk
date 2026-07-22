@@ -7,6 +7,7 @@ import (
 	"agent-desk/internal/ai/runtime/graphs"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/modelconfig"
 )
 
 func TestRuntimeReplyExecutorResumeMessageTextUsesMediaTranscript(t *testing.T) {
@@ -24,22 +25,22 @@ func TestRuntimeReplyExecutorResumeMessageTextUsesMediaTranscript(t *testing.T) 
 	}
 }
 
-func TestNormalizeRuntimeReplyAIConfigClampsLargeOutputBudget(t *testing.T) {
-	config := normalizeRuntimeReplyAIConfig(models.AIConfig{MaxOutputTokens: 64800})
+func TestNormalizeRuntimeReplyModelConfigClampsLargeOutputBudget(t *testing.T) {
+	config := normalizeRuntimeReplyModelConfig(modelconfig.Config{MaxOutputTokens: 64800})
 	if config.MaxOutputTokens != runtimeReplyMaxOutputTokens {
 		t.Fatalf("expected large reply output budget to clamp to %d, got %d", runtimeReplyMaxOutputTokens, config.MaxOutputTokens)
 	}
 }
 
-func TestNormalizeRuntimeReplyAIConfigKeepsLowerOutputBudget(t *testing.T) {
-	config := normalizeRuntimeReplyAIConfig(models.AIConfig{MaxOutputTokens: 320})
+func TestNormalizeRuntimeReplyModelConfigKeepsLowerOutputBudget(t *testing.T) {
+	config := normalizeRuntimeReplyModelConfig(modelconfig.Config{MaxOutputTokens: 320})
 	if config.MaxOutputTokens != 320 {
 		t.Fatalf("expected lower reply output budget to be preserved, got %d", config.MaxOutputTokens)
 	}
 }
 
-func TestNormalizeRuntimeReplyAIConfigSetsDefaultOutputBudget(t *testing.T) {
-	config := normalizeRuntimeReplyAIConfig(models.AIConfig{})
+func TestNormalizeRuntimeReplyModelConfigSetsDefaultOutputBudget(t *testing.T) {
+	config := normalizeRuntimeReplyModelConfig(modelconfig.Config{})
 	if config.MaxOutputTokens != runtimeReplyMaxOutputTokens {
 		t.Fatalf("expected empty reply output budget to default to %d, got %d", runtimeReplyMaxOutputTokens, config.MaxOutputTokens)
 	}

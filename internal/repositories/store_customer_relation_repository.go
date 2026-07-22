@@ -31,6 +31,17 @@ func (r *storeCustomerRelationRepository) Take(db *gorm.DB, where ...any) *model
 	return ret
 }
 
+func (r *storeCustomerRelationRepository) TakeByCustomerAndStoreInTenant(db *gorm.DB, tenantID, customerID, storeID int64) *models.StoreCustomerRelation {
+	if tenantID <= 0 || customerID <= 0 || storeID <= 0 {
+		return nil
+	}
+	ret := &models.StoreCustomerRelation{}
+	if err := db.Take(ret, "tenant_id = ? AND customer_id = ? AND store_id = ?", tenantID, customerID, storeID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
 func (r *storeCustomerRelationRepository) Find(db *gorm.DB, cnd *sqls.Cnd) (list []models.StoreCustomerRelation) {
 	cnd.Find(db, &list)
 	return

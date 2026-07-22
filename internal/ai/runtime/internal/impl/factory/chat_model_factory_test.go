@@ -3,11 +3,11 @@ package factory
 import (
 	"testing"
 
-	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/modelconfig"
 )
 
 func TestProviderExtraFieldsDisablesDeepSeekV4Thinking(t *testing.T) {
-	fields := providerExtraFields(models.AIConfig{
+	fields := providerExtraFields(modelconfig.Config{
 		BaseURL:   "https://api.deepseek.com/v1",
 		ModelName: "deepseek-v4-flash",
 	})
@@ -21,7 +21,7 @@ func TestProviderExtraFieldsDisablesDeepSeekV4Thinking(t *testing.T) {
 }
 
 func TestProviderExtraFieldsKeepsQwenThinkingDisabled(t *testing.T) {
-	fields := providerExtraFields(models.AIConfig{
+	fields := providerExtraFields(modelconfig.Config{
 		BaseURL:   "https://dashscope.aliyuncs.com/compatible-mode/v1",
 		ModelName: "qwen3-max",
 	})

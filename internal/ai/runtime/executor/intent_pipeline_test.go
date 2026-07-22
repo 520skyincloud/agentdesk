@@ -2,14 +2,23 @@ package executor
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/securex"
 	"agent-desk/internal/services"
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -1617,55 +1626,108 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func TestResolveRuntimeIntentDetectAIConfigPrefersAccountOverride(t *testing.T) {
-	setupRuntimeIntentConfigTestDB(t)
-	fallback := models.AIConfig{ID: 1, Name: "reply", Provider: enums.AIProviderOpenAI, ModelType: enums.AIModelTypeLLM, ModelName: "reply-model"}
-	globalIntent := models.AIConfig{ID: 3, Name: "global intent", Provider: enums.AIProviderOpenAI, BaseURL: "https://api.example.com/v1", APIKey: "sk", ModelType: enums.AIModelTypeLLM, ModelName: "global-intent-model", Status: enums.StatusOk, IntentDetectEnabled: true, SortNo: 2}
-	if err := sqls.DB().Create(&globalIntent).Error; err != nil {
-		t.Fatalf("create global ai config: %v", err)
+func TestResolveRuntimeIntentDetectModelCallUsesStoreProfileSlot(t *testing.T) {
+	db := setupRuntimeIntentConfigTestDB(t)
+	seedRuntimeIntentModelCallFixture(t, db)
+	resolved, err := resolveRuntimeIntentDetectModelCall(RunInput{Conversation: models.Conversation{ID: 7, TenantID: 1}})
+	if err != nil {
+		t.Fatalf("resolve intent model: %v", err)
 	}
-	tenant := models.Tenant{}
-	if err := sqls.DB().First(&tenant, 1).Error; err != nil {
-		t.Fatalf("load tenant: %v", err)
-	}
-	if err := sqls.DB().Create(&models.Store{ID: 5, TenantID: tenant.ID, Name: "store", Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	if err := sqls.DB().Create(&models.WxWorkProtocolInstance{ID: 11, TenantID: tenant.ID, StoreID: 5, Guid: "intent-account", Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create account: %v", err)
-	}
-	if err := sqls.DB().Create(&models.ConversationRouteState{TenantID: tenant.ID, ConversationID: 7, StoreID: 5, WxWorkInstanceID: 11}).Error; err != nil {
-		t.Fatalf("create route state: %v", err)
-	}
-	accountIntent := models.AIConfig{ID: 4, Name: "account intent", Provider: enums.AIProviderOpenAI, BaseURL: "https://account.example.com/v1", APIKey: "sk-account", ModelType: enums.AIModelTypeLLM, ModelName: "account-intent-model", Status: enums.StatusOk}
-	if err := sqls.DB().Create(&accountIntent).Error; err != nil {
-		t.Fatalf("create account model: %v", err)
-	}
-	if err := sqls.DB().Create(&models.TenantAIModelGrant{TenantID: tenant.ID, AIConfigID: accountIntent.ID, Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("grant account model: %v", err)
-	}
-	if err := sqls.DB().Create(&models.StoreAIModelSetting{
-		TenantID:         tenant.ID,
-		WxWorkInstanceID: 11,
-		UsageCode:        services.StoreAIModelUsageIntentDetectLLM,
-		AIConfigID:       accountIntent.ID,
-		Status:           enums.StatusOk,
-	}).Error; err != nil {
-		t.Fatalf("create account model setting: %v", err)
-	}
-	got := resolveRuntimeIntentDetectAIConfig(RunInput{Conversation: models.Conversation{ID: 7}, AIConfig: fallback})
-	if got.ModelName != "account-intent-model" {
-		t.Fatalf("expected account override intent model, got %#v", got)
+	if resolved.UsageCode != enums.ModelUsageSlotIntentDetectLLM || resolved.ModelName != "model-intent_detect_llm" || resolved.StoreID != 5 {
+		t.Fatalf("unexpected resolved intent model: %#v", resolved)
 	}
 }
 
-func TestResolveRuntimeIntentDetectAIConfigFallsBack(t *testing.T) {
+func TestResolveRuntimeIntentDetectModelCallRejectsMissingStoreAssignment(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
-	fallback := models.AIConfig{ID: 1, Name: "reply", Provider: enums.AIProviderOpenAI, ModelType: enums.AIModelTypeLLM, ModelName: "reply-model"}
-	got := resolveRuntimeIntentDetectAIConfig(RunInput{Conversation: models.Conversation{ID: 7}, AIConfig: fallback})
-	if got.ID != fallback.ID || got.ModelName != "reply-model" {
-		t.Fatalf("expected fallback model, got %#v", got)
+	if _, err := resolveRuntimeIntentDetectModelCall(RunInput{Conversation: models.Conversation{ID: 7, TenantID: 1}}); err == nil {
+		t.Fatal("missing Store assignment must not fall back to a reply or platform model")
 	}
+}
+
+func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
+	for _, scenario := range []struct {
+		name         string
+		invalidFirst bool
+		wantCalls    int32
+	}{
+		{name: "valid_first_attempt", wantCalls: 1},
+		{name: "invalid_then_retry", invalidFirst: true, wantCalls: 2},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			db := setupRuntimeIntentConfigTestDB(t)
+			var callCount atomic.Int32
+			var mu sync.Mutex
+			capturedMessages := make([][]map[string]any, 0, scenario.wantCalls)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer r.Body.Close()
+				var body struct {
+					Messages []map[string]any `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request: %v", err)
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				mu.Lock()
+				capturedMessages = append(capturedMessages, body.Messages)
+				mu.Unlock()
+				attempt := callCount.Add(1)
+				content := validIntentDetectGoldenJSON()
+				if scenario.invalidFirst && attempt == 1 {
+					content = "not-json"
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id": "chatcmpl-intent-golden", "object": "chat.completion", "created": time.Now().Unix(),
+					"model": "model-intent_detect_llm",
+					"choices": []map[string]any{{
+						"index": 0, "finish_reason": "stop",
+						"message": map[string]any{"role": "assistant", "content": content},
+					}},
+					"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+				})
+			}))
+			defer server.Close()
+
+			seedRuntimeIntentModelCallFixture(t, db)
+			if err := db.Model(&models.ModelProfileTemplate{}).
+				Where("code = ?", "intent-runtime").
+				Update("gateway_base_url", server.URL+"/v1").Error; err != nil {
+				t.Fatal(err)
+			}
+			result, err := (llmRuntimeIntentDetector{}).DetectRuntimeIntent(context.Background(), RunInput{
+				Conversation: models.Conversation{ID: 7, TenantID: 1},
+				UserMessage: models.Message{
+					ConversationID: 7, TenantID: 1, MessageType: enums.IMMessageTypeText, Content: "WiFi 密码多少",
+				},
+			}, adapter.HistoryBuildResult{}, nil)
+			if err != nil {
+				t.Fatalf("detect intent: %v", err)
+			}
+			if result.PrimaryIntent != "hotel_info" || result.SubIntent != "network_wifi" {
+				t.Fatalf("unexpected intent result: %#v", result)
+			}
+			if got := callCount.Load(); got != scenario.wantCalls {
+				t.Fatalf("model calls=%d want %d", got, scenario.wantCalls)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(capturedMessages) != int(scenario.wantCalls) || len(capturedMessages[0]) != 2 {
+				t.Fatalf("unexpected first-attempt messages: %#v", capturedMessages)
+			}
+			if capturedMessages[0][0]["role"] != "system" || capturedMessages[0][1]["role"] != "user" {
+				t.Fatalf("intent message order changed: %#v", capturedMessages[0])
+			}
+			if scenario.invalidFirst && len(capturedMessages[1]) != 3 {
+				t.Fatalf("retry must append exactly one repair instruction: %#v", capturedMessages[1])
+			}
+		})
+	}
+}
+
+func validIntentDetectGoldenJSON() string {
+	return `{"primaryIntent":"hotel_info","subIntent":"network_wifi","confidence":0.95,"needsKnowledge":true,"needsTool":false,"needsResource":false,"needsHumanRoute":false,"needsClarification":false,"resourceAction":"","resourceActions":[],"secondaryIntents":[],"intentTasks":[{"intent":"hotel_info","subIntent":"network_wifi","text":"WiFi 密码多少","needsKnowledge":true,"needsResource":false,"needsTool":false,"needsHumanRoute":false,"resourceAction":"","reason":"询问网络信息"}],"reason":"酒店网络信息咨询"}`
 }
 
 func seedRuntimeIntentConfig(t *testing.T, item models.ReplyIntentConfig) {
@@ -1710,6 +1772,10 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 		&models.WxWorkCustomerHandoffSetting{},
 		&models.KnowledgeResourceGroup{},
 		&models.KnowledgeResourceItem{},
+		&models.ModelProfileTemplate{},
+		&models.ModelProfileSlot{},
+		&models.StoreModelProfileAssignment{},
+		&models.StoreModelCredential{},
 	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}
@@ -1733,7 +1799,10 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("seed intent conversation: %v", err)
 	}
 	sqls.SetDB(db)
+	masterKey := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	config.SetCurrent(&config.Config{StoreCredential: config.StoreCredentialConfig{MasterKey: masterKey, MasterKeyID: "intent-runtime-test-key"}})
 	t.Cleanup(func() {
+		config.SetCurrent(&config.Config{})
 		sqls.SetDB(nil)
 		sqlDB, err := db.DB()
 		if err == nil {
@@ -1741,4 +1810,73 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 		}
 	})
 	return db
+}
+
+func seedRuntimeIntentModelCallFixture(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	now := time.Now()
+	store := &models.Store{ID: 5, TenantID: 1, StoreCode: "intent-store", Name: "Intent Store", Status: enums.StatusOk}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ConversationRouteState{TenantID: 1, ConversationID: 7, StoreID: store.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	profile := &models.ModelProfileTemplate{
+		Code: "intent-runtime", Name: "Intent Runtime", Revision: 3,
+		GatewayBaseURL: "https://newapi.example.com/v1", Status: enums.ModelProfileStatusActive,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	for index, spec := range services.RequiredModelUsageSlotSpecs() {
+		slot := &models.ModelProfileSlot{
+			TemplateID: profile.ID, UsageCode: spec.UsageCode, DisplayName: spec.DisplayName,
+			ModelType: spec.ExpectedModelType, Provider: "newapi", ModelName: "model-" + string(spec.UsageCode),
+			APIMode: spec.DefaultAPIMode, TimeoutMS: 5000, Enabled: true, SortNo: index + 1,
+			AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+		}
+		if slot.ModelType == enums.AIModelTypeLLM || slot.ModelType == enums.AIModelTypeVision {
+			slot.MaxContextTokens = 8192
+			slot.MaxOutputTokens = 512
+		}
+		if slot.ModelType == enums.AIModelTypeEmbedding {
+			slot.Dimension = 1536
+		}
+		if slot.UsageCode == enums.ModelUsageSlotCustomerTag {
+			slot.SchemaVersion = "customer_tag_evolution.v1"
+			slot.PromptTemplate = "Return valid JSON."
+			slot.JSONSchema = `{"type":"object"}`
+		}
+		if err := db.Create(slot).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&models.StoreModelProfileAssignment{
+		TenantID: 1, StoreID: store.ID, TemplateID: profile.ID, TemplateRevision: profile.Revision,
+		Status: enums.StoreModelAssignmentStatusReady, ReadinessStatus: "ready", AssignedAt: now,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	const apiKey = "intent-runtime-secret"
+	const revision int64 = 2
+	cipher, err := securex.NewAESGCM(config.Current().StoreCredential.MasterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, nonce, err := cipher.Encrypt(apiKey, []byte(fmt.Sprintf("tenant:%d:store:%d:revision:%d", 1, store.ID, revision)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.StoreModelCredential{
+		TenantID: 1, StoreID: store.ID, EncryptedKey: ciphertext, KeyNonce: nonce,
+		KeyFingerprint: securex.Fingerprint(apiKey), CipherVersion: securex.AESGCMCipherVersion,
+		MasterKeyID: config.Current().StoreCredential.MasterKeyID, CredentialRevision: revision,
+		Status:      enums.StoreCredentialStatusActive,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 }

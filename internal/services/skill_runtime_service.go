@@ -25,6 +25,9 @@ func (s *skillRuntimeService) DebugRun(ctx context.Context, req request.SkillDeb
 	if req.AIAgentID <= 0 {
 		return nil, errorsx.InvalidParam("接待策略不能为空")
 	}
+	if req.ConversationID <= 0 {
+		return nil, errorsx.InvalidParam("conversationId不能为空，模型调试必须绑定真实门店会话")
+	}
 	if strings.TrimSpace(req.SkillCode) == "" {
 		return nil, errorsx.InvalidParam("skillCode不能为空")
 	}
@@ -38,14 +41,12 @@ func (s *skillRuntimeService) DebugRun(ctx context.Context, req request.SkillDeb
 	if AIAgentService.GetByTenantID(req.AIAgentID, tenantID) == nil {
 		return nil, errorsx.InvalidParam("接待策略不存在或不属于当前公司")
 	}
-	if req.ConversationID > 0 {
-		conversation := ConversationService.GetByTenantID(req.ConversationID, tenantID)
-		if conversation == nil {
-			return nil, errorsx.InvalidParam("会话不存在或不属于当前公司")
-		}
-		if conversation.AIAgentID > 0 && conversation.AIAgentID != req.AIAgentID {
-			return nil, errorsx.InvalidParam("会话与接待策略不匹配")
-		}
+	conversation := ConversationService.GetByTenantID(req.ConversationID, tenantID)
+	if conversation == nil {
+		return nil, errorsx.InvalidParam("会话不存在或不属于当前公司")
+	}
+	if conversation.AIAgentID > 0 && conversation.AIAgentID != req.AIAgentID {
+		return nil, errorsx.InvalidParam("会话与接待策略不匹配")
 	}
 	if SkillDebugRunHook == nil {
 		return nil, fmt.Errorf("skill debug runner is not initialized")

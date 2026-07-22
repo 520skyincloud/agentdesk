@@ -5,6 +5,8 @@ import (
 
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/modelconfig"
+	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -45,6 +47,36 @@ type ModelCallConfig struct {
 var ModelCallResolverService = &modelCallResolverService{}
 
 type modelCallResolverService struct{}
+
+func (c ModelCallConfig) RuntimeConfig() modelconfig.Config {
+	return modelconfig.Config{
+		Provider:         enums.AIProviderOpenAI,
+		BaseURL:          c.GatewayBaseURL,
+		APIKey:           c.APIKey,
+		APIMode:          c.APIMode,
+		ModelType:        c.ModelType,
+		ModelName:        c.ModelName,
+		Dimension:        c.Dimension,
+		MaxContextTokens: c.MaxContextTokens,
+		MaxOutputTokens:  c.MaxOutputTokens,
+		TimeoutMS:        c.TimeoutMS,
+		MaxRetryCount:    c.MaxRetryCount,
+		Temperature:      c.Temperature,
+	}
+}
+
+func modelCallUsageScope(resolved *ModelCallConfig, conversationID, messageID int64, requestID string) usagex.Scope {
+	if resolved == nil {
+		return usagex.Scope{ConversationID: conversationID, MessageID: messageID, RequestID: strings.TrimSpace(requestID)}
+	}
+	return usagex.Scope{
+		TenantID: resolved.TenantID, StoreID: resolved.StoreID,
+		ConversationID: conversationID, MessageID: messageID, RequestID: strings.TrimSpace(requestID),
+		ModelProfileID: resolved.ProfileID, ProfileRevision: resolved.ProfileRevision,
+		UsageSlot: string(resolved.UsageCode), CredentialRevision: resolved.CredentialRevision,
+		KeyFingerprint: resolved.KeyFingerprint, ModelSource: AIModelSourceStoreProfile,
+	}
+}
 
 func (s *modelCallResolverService) ResolveForStore(storeID int64, usageCode enums.ModelUsageSlot) (*ModelCallConfig, error) {
 	store := repositories.StoreRepository.Get(sqls.DB(), storeID)

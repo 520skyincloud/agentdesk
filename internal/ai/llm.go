@@ -17,6 +17,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/pkg/usagex"
 )
 
@@ -40,8 +41,12 @@ func (s *llm) Chat(ctx context.Context, systemPrompt string, userPrompt string) 
 }
 
 func (s *llm) ChatWithConfig(ctx context.Context, config models.AIConfig, systemPrompt string, userPrompt string) (*ChatCompletionResult, error) {
+	return s.ChatWithRuntimeConfig(ctx, legacyRuntimeConfig(config), systemPrompt, userPrompt)
+}
+
+func (s *llm) ChatWithRuntimeConfig(ctx context.Context, config modelconfig.Config, systemPrompt string, userPrompt string) (*ChatCompletionResult, error) {
 	if strings.EqualFold(strings.TrimSpace(config.APIMode), "responses") {
-		return s.chatWithResponses(ctx, config, systemPrompt, userPrompt)
+		return s.chatWithRuntimeResponses(ctx, config, systemPrompt, userPrompt)
 	}
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, 2)
 	if strs.IsNotBlank(systemPrompt) {
@@ -70,7 +75,7 @@ func (s *llm) ChatWithConfig(ctx context.Context, config models.AIConfig, system
 	}
 	applyProviderSpecificChatParams(&params, config)
 
-	client := newOpenAIClient(config)
+	client := newOpenAIClientWithRuntimeConfig(config)
 	chatResp, err := client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call llm api (model=%s provider=%s system_chars=%d user_chars=%d max_output_tokens=%d): %w",
@@ -116,7 +121,7 @@ type llmResponsesResponse struct {
 	} `json:"usage"`
 }
 
-func (s *llm) chatWithResponses(ctx context.Context, config models.AIConfig, systemPrompt string, userPrompt string) (*ChatCompletionResult, error) {
+func (s *llm) chatWithRuntimeResponses(ctx context.Context, config modelconfig.Config, systemPrompt string, userPrompt string) (*ChatCompletionResult, error) {
 	body := llmResponsesRequest{
 		Model:        strings.TrimSpace(config.ModelName),
 		Instructions: strings.TrimSpace(systemPrompt),
@@ -203,7 +208,7 @@ func compactLLMResponseError(raw []byte) string {
 	return string(runes[:500]) + "..."
 }
 
-func applyProviderSpecificChatParams(params *openai.ChatCompletionNewParams, config models.AIConfig) {
+func applyProviderSpecificChatParams(params *openai.ChatCompletionNewParams, config modelconfig.Config) {
 	if params == nil {
 		return
 	}
@@ -219,13 +224,13 @@ func applyProviderSpecificChatParams(params *openai.ChatCompletionNewParams, con
 	}
 }
 
-func isDashScopeQwenThinkingModel(config models.AIConfig) bool {
+func isDashScopeQwenThinkingModel(config modelconfig.Config) bool {
 	baseURL := strings.ToLower(strings.TrimSpace(config.BaseURL))
 	modelName := strings.ToLower(strings.TrimSpace(config.ModelName))
 	return strings.Contains(baseURL, "dashscope.aliyuncs.com") && strings.HasPrefix(modelName, "qwen3")
 }
 
-func isDeepSeekV4ThinkingModel(config models.AIConfig) bool {
+func isDeepSeekV4ThinkingModel(config modelconfig.Config) bool {
 	baseURL := strings.ToLower(strings.TrimSpace(config.BaseURL))
 	modelName := strings.ToLower(strings.TrimSpace(config.ModelName))
 	return strings.Contains(baseURL, "api.deepseek.com") && strings.HasPrefix(modelName, "deepseek-v4")

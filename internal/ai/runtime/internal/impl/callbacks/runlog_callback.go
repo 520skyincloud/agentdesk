@@ -147,6 +147,12 @@ func (c *RuntimeTraceCollector) SetPipeline(normalize NormalizeTraceData, intent
 	c.Data.Pipeline.Validate = validate
 }
 
+func (c *RuntimeTraceCollector) SetGenerateTagContext(data ReplyTagContextTraceData) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Data.Pipeline.Generate.TagContext = data
+}
+
 func (c *RuntimeTraceCollector) SetActionLedger(data ActionLedgerTraceData) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

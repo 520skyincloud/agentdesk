@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"strings"
-	"sync"
 	"time"
 
 	"agent-desk/internal/models"
@@ -16,91 +15,11 @@ import (
 
 type conversationMemoryService struct{}
 
-const conversationMemoryIdleWindow = 24 * time.Hour
-const conversationMemoryScanInterval = time.Hour
 const targetConversationMemoryTokens = 40
 const maxConversationMemoryTokens = 300
 
-var conversationMemoryScannerOnce sync.Once
-
 func newConversationMemoryService() *conversationMemoryService {
-	service := &conversationMemoryService{}
-	conversationMemoryScannerOnce.Do(func() {
-		go service.RunIdleScanner()
-	})
-	return service
-}
-
-func (s *conversationMemoryService) RunIdleScanner() {
-	timer := time.NewTimer(2 * time.Minute)
-	defer timer.Stop()
-	for {
-		<-timer.C
-		s.ScanIdleConversations()
-		timer.Reset(conversationMemoryScanInterval)
-	}
-}
-
-func (s *conversationMemoryService) ScanIdleConversations() {
-	if sqls.DB() == nil {
-		return
-	}
-	latest := make([]models.Message, 0)
-	cutoff := time.Now().Add(-conversationMemoryIdleWindow)
-	err := sqls.DB().Raw(`
-	SELECT m.* FROM t_message m
-	JOIN (
-	  SELECT tenant_id, conversation_id, session_no, MAX(id) AS max_id
-	  FROM t_message
-	  GROUP BY tenant_id, conversation_id, session_no
-	) latest ON latest.max_id = m.id AND latest.tenant_id = m.tenant_id
-	LEFT JOIN t_conversation_session_summary s
-	  ON s.tenant_id = m.tenant_id
-	 AND s.conversation_id = m.conversation_id
- AND s.session_no = m.session_no
- AND s.last_message_id >= m.id
- AND s.status = ?
-WHERE COALESCE(m.sent_at, m.created_at) <= ?
-  AND s.id IS NULL
-ORDER BY m.id ASC
-LIMIT 50`, enums.StatusOk, cutoff).Scan(&latest).Error
-	if err != nil {
-		return
-	}
-	for _, message := range latest {
-		conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), message.ConversationID, message.TenantID)
-		if conversation == nil {
-			continue
-		}
-		_ = s.Update(*conversation, message)
-	}
-}
-
-func (s *conversationMemoryService) ScheduleUpdate(conversation models.Conversation, triggerMessage models.Message) {
-	if conversation.ID <= 0 || conversation.TenantID <= 0 || triggerMessage.ID <= 0 || triggerMessage.TenantID != conversation.TenantID {
-		return
-	}
-	go func() {
-		time.Sleep(conversationMemoryIdleWindow)
-		if !s.isStillIdle(conversation.ID, conversation.TenantID, triggerMessage.ID, triggerMessage.SessionNo) {
-			return
-		}
-		if err := s.Update(conversation, triggerMessage); err != nil {
-			return
-		}
-	}()
-}
-
-func (s *conversationMemoryService) isStillIdle(conversationID, tenantID, triggerMessageID int64, sessionNo int) bool {
-	if sessionNo <= 0 {
-		sessionNo = 1
-	}
-	latest := repositories.MessageRepository.FindOne(sqls.DB(), sqls.NewCnd().
-		Eq("tenant_id", tenantID).
-		Eq("conversation_id", conversationID).
-		Eq("session_no", sessionNo).
-		Desc("id"))
-	return latest != nil && latest.ID == triggerMessageID
+	return &conversationMemoryService{}
 }
 
 func (s *conversationMemoryService) Update(conversation models.Conversation, triggerMessage models.Message) error {

@@ -56,9 +56,17 @@ func (c *Capture) Receipts() []Receipt {
 type captureContextKey struct{}
 
 type Scope struct {
-	ConversationID int64
-	MessageID      int64
-	RequestID      string
+	TenantID           int64
+	StoreID            int64
+	ConversationID     int64
+	MessageID          int64
+	RequestID          string
+	ModelProfileID     int64
+	ProfileRevision    int64
+	UsageSlot          string
+	CredentialRevision int64
+	KeyFingerprint     string
+	ModelSource        string
 }
 
 type scopeContextKey struct{}

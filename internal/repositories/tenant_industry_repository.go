@@ -11,6 +11,7 @@ import (
 
 var IndustryTagDefinitionRepository = &industryTagDefinitionRepository{}
 var TenantCustomerTagPolicyRepository = &tenantCustomerTagPolicyRepository{}
+var StoreCustomerTagRuntimePolicyRepository = &storeCustomerTagRuntimePolicyRepository{}
 var TenantIndustryChangeLogRepository = &tenantIndustryChangeLogRepository{}
 var CustomerTagRelationRepository = &customerTagRelationRepository{}
 var CustomerTagChangeLogRepository = &customerTagChangeLogRepository{}
@@ -77,6 +78,20 @@ func (r *tenantCustomerTagPolicyRepository) UpdatesByTenant(db *gorm.DB, tenantI
 	return db.Model(&models.TenantCustomerTagPolicy{}).Where("tenant_id = ?", tenantID).Updates(columns).Error
 }
 
+type storeCustomerTagRuntimePolicyRepository struct{}
+
+func (r *storeCustomerTagRuntimePolicyRepository) GetByStore(db *gorm.DB, tenantID, storeID int64) (*models.StoreCustomerTagRuntimePolicy, error) {
+	ret := &models.StoreCustomerTagRuntimePolicy{}
+	err := db.Take(ret, "tenant_id = ? AND store_id = ?", tenantID, storeID).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
 type tenantIndustryChangeLogRepository struct{}
 
 func (r *tenantIndustryChangeLogRepository) Create(db *gorm.DB, item *models.TenantIndustryChangeLog) error {
@@ -92,6 +107,15 @@ func (r *customerTagRelationRepository) FindActiveByTenantAndTagIDs(db *gorm.DB,
 	}
 	err := db.Where("tenant_id = ? AND tag_id IN ? AND relation_status = ?", tenantID, tagIDs, "active").
 		Order("id ASC").Find(&ret).Error
+	return ret, err
+}
+
+func (r *customerTagRelationRepository) FindActiveByStoreRelation(db *gorm.DB, tenantID, storeID, storeCustomerRelationID int64) ([]models.CustomerTagRelation, error) {
+	ret := make([]models.CustomerTagRelation, 0)
+	err := db.Where(
+		"tenant_id = ? AND store_id = ? AND store_customer_relation_id = ? AND relation_status = ?",
+		tenantID, storeID, storeCustomerRelationID, "active",
+	).Order("id ASC").Find(&ret).Error
 	return ret, err
 }
 

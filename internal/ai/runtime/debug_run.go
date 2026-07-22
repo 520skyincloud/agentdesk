@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/usagex"
 	svc "agent-desk/internal/services"
 )
 
@@ -24,18 +25,22 @@ func DebugRunSkill(ctx context.Context, req request.SkillDebugRunRequest) (*resp
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("接待策略不存在或未启用")
 	}
-	var conversation *models.Conversation
-	if req.ConversationID > 0 {
-		if conversation = svc.ConversationService.Get(req.ConversationID); conversation == nil {
-			return nil, errorsx.InvalidParam("会话不存在")
-		}
-	} else {
-		conversation = &models.Conversation{TenantID: aiAgent.TenantID, AIAgentID: req.AIAgentID}
+	if req.ConversationID <= 0 {
+		return nil, errorsx.InvalidParam("conversationId不能为空，模型调试必须绑定真实门店会话")
 	}
-	aiConfig, err := resolveDebugRuntimeAIConfig(*aiAgent, conversation)
+	conversation := svc.ConversationService.Get(req.ConversationID)
+	if conversation == nil {
+		return nil, errorsx.InvalidParam("会话不存在")
+	}
+	if conversation.TenantID != aiAgent.TenantID || (conversation.AIAgentID > 0 && conversation.AIAgentID != req.AIAgentID) {
+		return nil, errorsx.InvalidParam("会话与接待策略不匹配")
+	}
+	resolved, err := resolveDebugRuntimeModelCall(conversation)
 	if err != nil {
 		return nil, err
 	}
+	aiAgent.AIConfigID = 0
+	ctx = usagex.WithScope(ctx, buildModelUsageScope(resolved, conversation.ID, 0, "debug_run"))
 	message := models.Message{
 		ConversationID: req.ConversationID,
 		SenderType:     enums.IMSenderTypeCustomer,
@@ -46,7 +51,7 @@ func DebugRunSkill(ctx context.Context, req request.SkillDebugRunRequest) (*resp
 		Conversation: *conversation,
 		UserMessage:  message,
 		AIAgent:      *aiAgent,
-		AIConfig:     *aiConfig,
+		AIConfig:     resolved.RuntimeConfig(),
 	})
 	if err != nil {
 		return buildSkillDebugRunResponse(req, summary, nil), err
@@ -80,15 +85,20 @@ func DebugResumeSkill(ctx context.Context, req request.SkillDebugResumeRequest) 
 	if conversation.AIAgentID > 0 && conversation.AIAgentID != req.AIAgentID {
 		return nil, errorsx.InvalidParam("会话与接待策略不匹配")
 	}
-	aiConfig, err := resolveDebugRuntimeAIConfig(*aiAgent, conversation)
+	if conversation.TenantID != aiAgent.TenantID {
+		return nil, errorsx.InvalidParam("会话与接待策略不匹配")
+	}
+	resolved, err := resolveDebugRuntimeModelCall(conversation)
 	if err != nil {
 		return nil, err
 	}
+	aiAgent.AIConfigID = 0
+	ctx = usagex.WithScope(ctx, buildModelUsageScope(resolved, conversation.ID, 0, "debug_resume"))
 	resumeText := strings.TrimSpace(req.UserMessage)
 	summary, err := Service.Resume(ctx, applicationruntime.ResumeRequest{
 		Conversation: *conversation,
 		AIAgent:      *aiAgent,
-		AIConfig:     *aiConfig,
+		AIConfig:     resolved.RuntimeConfig(),
 		CheckPointID: strings.TrimSpace(req.CheckPointID),
 		ResumeData: map[string]string{
 			strings.TrimSpace(pendingInterrupt.InterruptID): resumeText,
@@ -119,19 +129,11 @@ func DebugResumeSkill(ctx context.Context, req request.SkillDebugResumeRequest) 
 	return buildSkillDebugResumeResponse(req, summary, conversationID), nil
 }
 
-func resolveDebugRuntimeAIConfig(aiAgent models.AIAgent, conversation *models.Conversation) (*models.AIConfig, error) {
-	if conversation != nil && conversation.ID > 0 {
-		resolved, err := svc.StoreAIModelSettingService.ResolveForConversation(conversation.ID, svc.StoreAIModelUsageReplyLLM)
-		if err != nil {
-			return nil, err
-		}
-		return &resolved.Config, nil
+func resolveDebugRuntimeModelCall(conversation *models.Conversation) (*svc.ModelCallConfig, error) {
+	if conversation == nil || conversation.ID <= 0 {
+		return nil, errorsx.InvalidParam("模型调试必须绑定真实门店会话")
 	}
-	resolved, err := svc.StoreAIModelSettingService.ResolveForTenant(aiAgent.TenantID, 0, svc.StoreAIModelUsageReplyLLM)
-	if err != nil {
-		return nil, err
-	}
-	return &resolved.Config, nil
+	return svc.ModelCallResolverService.ResolveForConversation(conversation.ID, enums.ModelUsageSlotReplyLLM)
 }
 
 func buildSkillDebugRunResponse(req request.SkillDebugRunRequest, summary *applicationruntime.Summary, skill *models.SkillDefinition) *response.SkillDebugRunResponse {

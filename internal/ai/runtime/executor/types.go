@@ -3,13 +3,14 @@ package executor
 import (
 	"agent-desk/internal/ai/runtime/registry"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/modelconfig"
 )
 
 type RunInput struct {
 	Conversation models.Conversation
 	UserMessage  models.Message
 	AIAgent      models.AIAgent
-	AIConfig     models.AIConfig
+	AIConfig     modelconfig.Config
 	CheckPointID string
 	ToolSet      *registry.ToolSet
 }
@@ -17,7 +18,7 @@ type RunInput struct {
 type ResumeInput struct {
 	Conversation models.Conversation
 	AIAgent      models.AIAgent
-	AIConfig     models.AIConfig
+	AIConfig     modelconfig.Config
 	CheckPointID string
 	ResumeData   map[string]string
 	ToolSet      *registry.ToolSet

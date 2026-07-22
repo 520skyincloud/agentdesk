@@ -54,12 +54,14 @@ type answerabilityGateInput struct {
 }
 
 type answerabilityGateState struct {
-	Input          answerabilityGateInput
-	KnowledgeIDs   []int64
-	RetrieveResult *retrievers.KnowledgeRetrieveResult
-	Decision       knowledgeGuardDecision
-	SkipGate       bool
-	ErrorMessage   string
+	Input               answerabilityGateInput
+	KnowledgeIDs        []int64
+	RetrieveResult      *retrievers.KnowledgeRetrieveResult
+	Decision            knowledgeGuardDecision
+	SkipGate            bool
+	AnswerabilityStatus string
+	AnswerabilityReason string
+	ErrorMessage        string
 }
 
 func NewKnowledgeAnswerabilityGate() *KnowledgeAnswerabilityGate {
@@ -478,7 +480,7 @@ func buildHotelVariableInstruction(req RunInput, intent callbacks.IntentTraceDat
 func buildHotelVariableInstructionFromInstance(instance *models.WxWorkProtocolInstance, currentText string, intent callbacks.IntentTraceData) string {
 	resourceTypes := requestedHotelVariableResourceTypes(currentText, intent)
 	if len(resourceTypes) == 0 {
-		return "酒店变量：当前请求需要门店配置变量，但未识别到具体变量动作。模型只能追问一个关键点，不能编造电话、定位或小程序入口。"
+		return "酒店变量：当前请求需要门店账号变量，但未识别到具体变量动作。模型只能追问一个关键点，不能编造电话、定位或小程序入口。"
 	}
 	if intent.NeedsKnowledge {
 		return "酒店变量：本轮同时有酒店信息问题和变量请求。电话、定位、小程序等变量由 Commit 阶段按 resourceActions 单独发送真实消息；本阶段只回答停车、早餐、发票、入住流程等知识问题。不要写“定位发你/小程序发你/我这边发你/已经发了/点开就能”，也不要复述变量详情。"
@@ -878,7 +880,12 @@ func (s *answerabilityGateState) prependDecisionInstruction(instruction string) 
 }
 
 func (s *answerabilityGateState) recordAnswerabilityWithLatency(status string, reason string, err error, started time.Time) {
-	if s == nil || s.Input.Collector == nil {
+	if s == nil {
+		return
+	}
+	s.AnswerabilityStatus = strings.TrimSpace(status)
+	s.AnswerabilityReason = strings.TrimSpace(reason)
+	if s.Input.Collector == nil {
 		return
 	}
 	errorMessage := strings.TrimSpace(s.ErrorMessage)
@@ -886,8 +893,8 @@ func (s *answerabilityGateState) recordAnswerabilityWithLatency(status string, r
 		errorMessage = err.Error()
 	}
 	data := callbacks.AnswerabilityTraceData{
-		Status:       status,
-		Reason:       strings.TrimSpace(reason),
+		Status:       s.AnswerabilityStatus,
+		Reason:       s.AnswerabilityReason,
 		ErrorMessage: errorMessage,
 	}
 	if !started.IsZero() {

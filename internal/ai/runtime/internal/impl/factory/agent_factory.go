@@ -10,6 +10,7 @@ import (
 	"agent-desk/internal/ai/runtime/registry"
 	"agent-desk/internal/ai/runtime/tooling"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/modelconfig"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
@@ -33,7 +34,7 @@ type BuildCustomerServiceAgentInput struct {
 	// AIAgent 为当前运行的业务 Agent 配置，提供名称、描述、系统提示词等基础信息。
 	AIAgent models.AIAgent
 	// AIConfig 为模型配置，决定底层使用哪个 ChatModel。
-	AIConfig models.AIConfig
+	AIConfig modelconfig.Config
 	// InstructionToolDefinitions 用于生成 instruction 中的工具说明。
 	// 它描述“当前允许模型理解和使用的 MCP 工具范围”。
 	InstructionToolDefinitions []tooling.MCPToolDefinition

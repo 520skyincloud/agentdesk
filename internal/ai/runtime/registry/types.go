@@ -3,6 +3,7 @@ package registry
 import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/pkg/toolx"
 
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -11,7 +12,7 @@ import (
 type Context struct {
 	Conversation     models.Conversation
 	AIAgent          models.AIAgent
-	AIConfig         models.AIConfig
+	AIConfig         modelconfig.Config
 	UserMessage      models.Message
 	AllowedToolCodes []string
 }

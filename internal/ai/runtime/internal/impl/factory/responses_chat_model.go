@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/pkg/usagex"
 
 	"github.com/cloudwego/eino/components/model"
@@ -18,7 +18,7 @@ import (
 )
 
 type responsesChatModel struct {
-	config models.AIConfig
+	config modelconfig.Config
 	client *http.Client
 	tools  []*schema.ToolInfo
 }
@@ -62,7 +62,7 @@ type responsesResponse struct {
 	} `json:"usage"`
 }
 
-func newResponsesChatModel(aiConfig models.AIConfig) *responsesChatModel {
+func newResponsesChatModel(aiConfig modelconfig.Config) *responsesChatModel {
 	timeout := 60 * time.Second
 	if aiConfig.TimeoutMS > 0 {
 		timeout = time.Duration(aiConfig.TimeoutMS) * time.Millisecond

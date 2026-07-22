@@ -95,7 +95,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 			instructions = append(instructions, "入住流程问题要优先说明小程序/证件/订单核验等知识库写明的办理步骤；不要只反问到店了吗，也不要把它当作小程序变量发送请求。")
 		}
 	case "hotel_variable":
-		instructions = append(instructions, "当前门店配置变量只由 Commit 阶段读取和发送，不编造变量值。", "只提交本轮 resourceActions 明确需要的变量；Generate 阶段不要描述变量发送状态。")
+		instructions = append(instructions, "门店账号变量只由 Commit 阶段读取和发送，不编造变量值。", "只提交本轮 resourceActions 明确需要的变量；Generate 阶段不要描述变量发送状态。")
 		if intent.NeedsKnowledge {
 			instructions = append(instructions, "本轮同时包含酒店信息问题时，Generate 阶段只回答知识问题；变量消息由系统按 resourceActions 另行提交。")
 		}
@@ -180,9 +180,9 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 		goal = "基于当前门店知识库回答酒店信息问题"
 	case "hotel_variable":
 		if intent.NeedsKnowledge {
-			goal = "回答当前轮酒店信息问题，并按当前门店配置变量满足资源请求"
+			goal = "回答当前轮酒店信息问题，并按当前门店账号变量满足资源请求"
 		} else {
-			goal = "按当前门店配置变量满足用户请求"
+			goal = "按当前门店账号变量满足用户请求"
 		}
 	case "service_request":
 		goal = "给出自助路径或按策略引导人工，不承诺执行"

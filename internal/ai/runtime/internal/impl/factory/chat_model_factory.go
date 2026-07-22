@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/pkg/usagex"
 
 	openai "github.com/cloudwego/eino-ext/components/model/openai"
@@ -19,7 +19,7 @@ func NewChatModelFactory() *ChatModelFactory {
 	return &ChatModelFactory{}
 }
 
-func (f *ChatModelFactory) Build(ctx context.Context, aiConfig models.AIConfig) (model.ToolCallingChatModel, error) {
+func (f *ChatModelFactory) Build(ctx context.Context, aiConfig modelconfig.Config) (model.ToolCallingChatModel, error) {
 	if strings.EqualFold(strings.TrimSpace(aiConfig.APIMode), "responses") {
 		return newResponsesChatModel(aiConfig), nil
 	}
@@ -53,7 +53,7 @@ func isAzureOpenAIBaseURL(baseURL string) bool {
 	return strings.Contains(baseURL, ".openai.azure.com")
 }
 
-func providerExtraFields(aiConfig models.AIConfig) map[string]any {
+func providerExtraFields(aiConfig modelconfig.Config) map[string]any {
 	extraFields := map[string]any{}
 	if isDashScopeQwenThinkingModel(aiConfig) {
 		extraFields["enable_thinking"] = false
@@ -67,13 +67,13 @@ func providerExtraFields(aiConfig models.AIConfig) map[string]any {
 	return extraFields
 }
 
-func isDashScopeQwenThinkingModel(aiConfig models.AIConfig) bool {
+func isDashScopeQwenThinkingModel(aiConfig modelconfig.Config) bool {
 	baseURL := strings.ToLower(strings.TrimSpace(aiConfig.BaseURL))
 	modelName := strings.ToLower(strings.TrimSpace(aiConfig.ModelName))
 	return strings.Contains(baseURL, "dashscope.aliyuncs.com") && strings.HasPrefix(modelName, "qwen3")
 }
 
-func isDeepSeekV4ThinkingModel(aiConfig models.AIConfig) bool {
+func isDeepSeekV4ThinkingModel(aiConfig modelconfig.Config) bool {
 	baseURL := strings.ToLower(strings.TrimSpace(aiConfig.BaseURL))
 	modelName := strings.ToLower(strings.TrimSpace(aiConfig.ModelName))
 	return strings.Contains(baseURL, "api.deepseek.com") && strings.HasPrefix(modelName, "deepseek-v4")
