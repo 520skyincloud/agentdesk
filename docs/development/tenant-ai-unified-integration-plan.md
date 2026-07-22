@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B8 已完成并验证；下一步为 B9 行业标签实例、客户标签关系和 UI
+> 状态：2026-07-23 产品决策已闭合，B0-B9 已完成并验证；下一步为 B10 客户标签 Evolution worker
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1231,9 +1231,24 @@ git diff --check
 - 回滚边界：B9 之前可整体回滚 `5c11016`，不涉及 Schema 或数据迁移；回滚会同时失去并发幂等、确认原子性、恢复任务去重和无范围总部会话派发修复。异常时可以把客服组切为 manual，但不得恢复 LLM 选人或新增平行人工任务池。
 - 后续边界：B9 只建设固定行业标签的 Tenant 实例、Store 客户关系和管理 UI；B10 才启用静默演化 worker，B11 才完成回复上下文与批量灰度开关。本批没有提前写客户标签。
 
+### 25.10 2026-07-23 B9 固定行业标签、Store 客户标签关系和 UI
+
+- 代码提交：`478f9481e9a26564c6bb61cf4dbcdec47c971f43`。AI 行为来源继续固定为 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架继续固定为 `origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：提交前执行 `git fetch origin --prune`；两个只读来源与统一分支远端均未前移。`codex/customer-audit` 主工作树存在另一批未提交改动，本批没有读取为架构依据、暂存、覆盖或回退其中任何文件。
+- 固定目录：复用 B2 已发布的行业模板与 Tenant 投影；酒店行业继续是 4 类 31 个叶子标签。Tenant 只能启停叶子标签和设置显示别名，不能新建标签、修改层级/排序/稳定 `SemanticKey`/互斥组，也不能物理删除。列表只返回当前 Tenant 已绑定行业的固定目录。
+- Store 客户关系：客户画像唯一落在 `StoreCustomerRelation -> CustomerTagRelation`。同一自然客户在不同 Store 的标签完全独立；人工增加、移除、替换均强制 Tenant + Store + Customer 范围，单关系最多 6 个有效标签，并在事务内锁定关系处理互斥替换和并发写入。
+- 写入保护与审计：人工标签不能被 AI 反向覆盖；AI operation 只接受当前行业、当前 Tenant 已启用且允许 AI 使用的叶子标签及合法证据消息。所有 add/remove/replace/refresh 写入 append-only `CustomerTagChangeLog`，记录来源、操作者、证据消息、置信度和 evolution run，不保存模型原文。
+- API、权限与实时契约：在现有 Conversation 资源下新增 `customer_tag/options|change_log|add|remove|replace` 显式路由，复用 `conversation.tag` 全局权限；Migration 073 幂等退出自由标签 create/update/delete/sort 权限并同步现有角色。新增 `customer_tag.changed` WebSocket 事件，前端只刷新对应会话的 Store 客户标签，不建立平行会话标签缓存。
+- 页面：`/dashboard/tags` 原地升级为固定行业标签目录；客户详情按 Store 分组显示标签；会话工作台用 Store 客户标签选择器、历史记录和实时更新替换旧 ConversationTag picker。旧 ConversationTag 后端/API/model 暂只作为 B12/B14 清理输入存在，没有恢复到任何新运行链。
+- 浏览器验证：使用隔离的丽斯未来 MySQL 测试数据，在桌面深色主题、客户多门店详情、会话信息与标签选择器以及 `390x844` 移动视口完成验收；修复主题对比度、弹窗宽高、长邮箱和移动门店行布局，页面与弹窗均无横向溢出，WebSocket 正常且控制台无当前错误。
+- 验证：`go test ./... -count=1`、B9 定向 `go test -race`、`go vet ./...`、无增量 TypeScript 类型检查、全部 150 个前端 `*.test.mjs`、`pnpm lint`、`pnpm build:sdk`、`pnpm build` 和 `git diff --check` 全部通过。ESLint 为 0 error、33 个既有 warning；Migration 073 的 SQLite/MySQL 8.4 首次运行与幂等重跑通过。
+- 共享契约与合并顺序：本批修改 Tag/Customer/Conversation DTO、显式路由、权限、Migration、客户标签 service/repository、WebSocket payload、`web/lib/api`、会话/客户/标签页面和中英文资源；没有修改模型调用、Prompt/Schema、Token/Billing、FastGPT、人工任务池或规则派单语义。B9 必须位于 B8 `5c11016` 之后，B10-B14 继续建立在 `478f948` 之后。
+- 回滚边界：B10 之前可整体回滚 B9 应用提交；Migration 073 已同步的自由标签权限不会自动恢复，若产品回滚必须通过新的显式 DML migration 重新启用，禁止手工改库。客户标签关系与不可变日志可以保留但旧应用不会读取；不得恢复 ConversationTag picker 形成双链。
+- 后续边界：B10 才实现 due/lease/retry/new-message race 的 Evolution worker；B11 才完成回复标签上下文策略及单店、批量、一键开关；B12 删除旧 ConversationTag 和旧模型运行代码，B14 在停机门禁后物理清表。本批没有启动演化 worker，也没有把默认关闭策略改为开启。
+
 ## 26. 用户最终 1-48 项决定追溯
 
-本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B9-B14 实施和验收证据。
+本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B10-B14 实施和验收证据。
 
 | 编号 | 最终解释 | 权威落点 |
 | --- | --- | --- |
