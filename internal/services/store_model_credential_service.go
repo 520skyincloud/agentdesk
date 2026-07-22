@@ -584,8 +584,16 @@ func (s *storeModelCredentialService) activateCandidate(tenantID, storeID, revis
 }
 
 func (s *storeModelCredentialService) ResolveActive(tenantID, storeID int64) (*resolvedStoreModelCredential, error) {
+	return s.resolveActiveCredential(tenantID, storeID, true)
+}
+
+func (s *storeModelCredentialService) ResolveForBilling(tenantID, storeID int64) (*resolvedStoreModelCredential, error) {
+	return s.resolveActiveCredential(tenantID, storeID, false)
+}
+
+func (s *storeModelCredentialService) resolveActiveCredential(tenantID, storeID int64, requireActiveStore bool) (*resolvedStoreModelCredential, error) {
 	store := repositories.StoreRepository.GetInTenant(sqls.DB(), storeID, tenantID)
-	if store == nil || store.Status != enums.StatusOk {
+	if store == nil || store.Status == enums.StatusDeleted || (requireActiveStore && store.Status != enums.StatusOk) {
 		return nil, errorsx.BusinessError(2005, "当前门店已停用或不属于接入公司")
 	}
 	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), tenantID, storeID)

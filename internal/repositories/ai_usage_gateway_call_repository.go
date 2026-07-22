@@ -2,6 +2,8 @@ package repositories
 
 import (
 	"agent-desk/internal/models"
+	"strings"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -10,6 +12,15 @@ import (
 var AIUsageGatewayCallRepository = newAIUsageGatewayCallRepository()
 
 type aiUsageGatewayCallRepository struct{}
+
+type AIUsageGatewayEvidenceQuery struct {
+	TenantIDs []int64
+	StoreIDs  []int64
+	StartAt   time.Time
+	EndAt     time.Time
+	RequestID string
+	Limit     int
+}
 
 func newAIUsageGatewayCallRepository() *aiUsageGatewayCallRepository {
 	return &aiUsageGatewayCallRepository{}
@@ -42,4 +53,27 @@ func (r *aiUsageGatewayCallRepository) TakeByGatewayRequestID(db *gorm.DB, gatew
 		return nil
 	}
 	return item
+}
+
+func (r *aiUsageGatewayCallRepository) FindEvidence(db *gorm.DB, query AIUsageGatewayEvidenceQuery) (list []models.AIUsageGatewayCall) {
+	if db == nil || len(query.TenantIDs) == 0 || len(query.StoreIDs) == 0 {
+		return list
+	}
+	db = db.Model(&models.AIUsageGatewayCall{}).
+		Where("tenant_id IN ? AND store_id IN ?", query.TenantIDs, query.StoreIDs)
+	if !query.StartAt.IsZero() {
+		db = db.Where("started_at >= ?", query.StartAt)
+	}
+	if !query.EndAt.IsZero() {
+		db = db.Where("started_at < ?", query.EndAt)
+	}
+	if requestID := strings.TrimSpace(query.RequestID); requestID != "" {
+		db = db.Where("(gateway_request_id = ? OR upstream_request_id = ? OR local_request_id = ?)", requestID, requestID, requestID)
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 500
+	}
+	db.Order("started_at DESC").Order("id DESC").Limit(limit).Find(&list)
+	return list
 }

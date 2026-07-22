@@ -424,6 +424,12 @@ func registerDashboardStoreModelCredentialRoutes(group *gin.RouterGroup) {
 	group.POST("/batch_policy", dashboard.StoreModelCredentialPostPolicy)
 }
 
+func registerDashboardBillingQueryRoutes(group *gin.RouterGroup) {
+	group.POST("/options", dashboard.BillingQueryPostOptions)
+	group.POST("/get", dashboard.BillingQueryPostGet)
+	group.POST("/export", dashboard.BillingQueryPostExport)
+}
+
 func registerDashboardReplyIntentConfigRoutes(group *gin.RouterGroup) {
 	group.Any("/list", dashboard.ReplyIntentConfigAnyList)
 	group.GET("/:id", dashboard.ReplyIntentConfigGetBy)

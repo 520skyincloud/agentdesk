@@ -213,6 +213,8 @@ var (
 	PermissionAIConfigCreate = Permission{Name: "创建 AI 配置", Code: "aiConfig.create", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/create", SortNo: 1400}
 	PermissionAIConfigUpdate = Permission{Name: "管理模型方案、门店指派与凭据", Code: "aiConfig.update", Type: "api", Scope: PermissionScopeTenant, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/model-profile-template/update", SortNo: 1410}
 	PermissionAIConfigDelete = Permission{Name: "删除 AI 配置", Code: "aiConfig.delete", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/delete", SortNo: 1420}
+	PermissionBillingView    = Permission{Name: "查看门店模型账单与用量", Code: "billing.view", Type: "api", Scope: PermissionScopeTenant, GroupName: "billing", Method: "POST", APIPath: "/api/dashboard/billing-query/get", SortNo: 1430}
+	PermissionBillingExport  = Permission{Name: "导出门店模型账单与用量", Code: "billing.export", Type: "api", Scope: PermissionScopeTenant, GroupName: "billing", Method: "POST", APIPath: "/api/dashboard/billing-query/export", SortNo: 1440}
 
 	// 知识库相关权限
 	PermissionKnowledgeBaseView   = Permission{Name: "查看知识库", Code: "knowledgeBase.view", Type: "api", GroupName: "knowledgeBase", Method: "ANY", APIPath: "/api/dashboard/knowledge-base/list", SortNo: 1410}
@@ -342,6 +344,8 @@ var Permissions = []Permission{
 	PermissionAgentRunLogView,
 	PermissionAIConfigView,
 	PermissionAIConfigUpdate,
+	PermissionBillingView,
+	PermissionBillingExport,
 	PermissionKnowledgeBaseView,
 	PermissionKnowledgeBaseCreate,
 	PermissionKnowledgeBaseUpdate,
@@ -419,6 +423,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionAIAgentView,
 		PermissionAgentRunLogView,
 		PermissionAIConfigView, PermissionAIConfigUpdate,
+		PermissionBillingView, PermissionBillingExport,
 		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,
 		PermissionKnowledgeDocumentView, PermissionKnowledgeDocumentCreate, PermissionKnowledgeDocumentUpdate, PermissionKnowledgeDocumentDelete,
 		PermissionKnowledgeFAQView, PermissionKnowledgeFAQCreate, PermissionKnowledgeFAQUpdate, PermissionKnowledgeFAQDelete,
@@ -447,6 +452,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
 		PermissionAIAgentView,
 		PermissionAIConfigView, PermissionAIConfigUpdate,
+		PermissionBillingView, PermissionBillingExport,
 		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,
 		PermissionKnowledgeDocumentView, PermissionKnowledgeDocumentCreate, PermissionKnowledgeDocumentUpdate, PermissionKnowledgeDocumentDelete,
 		PermissionKnowledgeFAQView, PermissionKnowledgeFAQCreate, PermissionKnowledgeFAQUpdate, PermissionKnowledgeFAQDelete,
@@ -500,6 +506,7 @@ var RolePermissions = map[string][]Permission{
 	},
 	RoleCodeStoreStaff: {
 		PermissionStoreWorkbenchView, PermissionStoreWorkbenchUpdate,
+		PermissionBillingView, PermissionBillingExport,
 	},
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -65,10 +66,79 @@ func (s *aiUsageEventService) Record(event models.AIUsageEvent) error {
 			event.CompanyID = instance.CompanyID
 		}
 	}
+	s.enrichStoreModelAttribution(&event)
+	if event.RequestCount <= 0 && (event.Model != "" || event.GatewayRequestID != "") {
+		event.RequestCount = 1
+	}
 	if err := repositories.AIUsageEventRepository.CreateIfAbsent(sqls.DB(), &event); err != nil {
 		return err
 	}
 	return AIUsageGatewayCallService.RecordFromEvent(event)
+}
+
+func (s *aiUsageEventService) enrichStoreModelAttribution(event *models.AIUsageEvent) {
+	if event == nil || event.TenantID <= 0 || event.StoreID <= 0 {
+		return
+	}
+	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(sqls.DB(), event.TenantID, event.StoreID)
+	if assignment != nil && assignment.Status == enums.StoreModelAssignmentStatusReady && assignment.TemplateID > 0 && assignment.TemplateRevision > 0 {
+		template := repositories.ModelProfileTemplateRepository.Get(sqls.DB(), assignment.TemplateID)
+		if template != nil && template.Status == enums.ModelProfileStatusActive && template.Revision == assignment.TemplateRevision {
+			if event.ModelProfileID <= 0 {
+				event.ModelProfileID = template.ID
+			}
+			if event.ModelProfileRevision <= 0 {
+				event.ModelProfileRevision = template.Revision
+			}
+			usage := enums.ModelUsageSlot(strings.TrimSpace(event.UsageSlot))
+			if usage == "" {
+				usage = inferUsageSlot(*event)
+			}
+			if usage != "" {
+				if slot := repositories.ModelProfileSlotRepository.GetByUsage(sqls.DB(), template.ID, usage); slot != nil && slot.Enabled {
+					event.UsageSlot = string(slot.UsageCode)
+					if event.Model == "" {
+						event.Model = strings.TrimSpace(slot.ModelName)
+					}
+					if event.Provider == "" {
+						event.Provider = strings.TrimSpace(slot.Provider)
+					}
+				}
+			}
+		}
+	}
+	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), event.TenantID, event.StoreID)
+	if credential != nil && credential.Status == enums.StoreCredentialStatusActive && credential.CredentialRevision > 0 {
+		if event.CredentialRevision <= 0 {
+			event.CredentialRevision = credential.CredentialRevision
+		}
+		if event.KeyFingerprint == "" {
+			event.KeyFingerprint = strings.TrimSpace(credential.KeyFingerprint)
+		}
+	}
+}
+
+func inferUsageSlot(event models.AIUsageEvent) enums.ModelUsageSlot {
+	switch strings.TrimSpace(event.Stage) {
+	case "reply_generate":
+		return enums.ModelUsageSlotReplyLLM
+	case "intent_detect":
+		return enums.ModelUsageSlotIntentDetectLLM
+	case "memory_summary":
+		return enums.ModelUsageSlotMemorySummary
+	case "customer_tag", "customer_tag_evolution":
+		return enums.ModelUsageSlotCustomerTag
+	case "media_understanding":
+		switch strings.TrimSpace(event.OperationType) {
+		case "vision":
+			return enums.ModelUsageSlotVision
+		case "asr":
+			return enums.ModelUsageSlotASR
+		}
+	case "document_parse":
+		return enums.ModelUsageSlotDocumentParser
+	}
+	return ""
 }
 
 func (s *aiUsageEventService) resolveTenantID(event models.AIUsageEvent) (int64, error) {

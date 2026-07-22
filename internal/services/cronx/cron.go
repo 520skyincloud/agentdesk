@@ -62,14 +62,6 @@ func Init() {
 	})
 
 	addFunc(c, "@every 1m", func() {
-		count := services.AIUsageGatewayCallService.ReconcilePending(50)
-		if count > 0 {
-			slog.Info("AI usage gateway calls reconciled", "count", count)
-		}
-		fastGPTCount := services.AIUsageGatewayCallService.ImportFastGPTPlatformUsage()
-		if fastGPTCount > 0 {
-			slog.Info("FastGPT platform model usage imported", "count", fastGPTCount)
-		}
 		managedFastGPTCount := services.FastGPTUsageSyncService.ProcessDue(50)
 		if managedFastGPTCount > 0 {
 			slog.Info("FastGPT managed usage events imported", "count", managedFastGPTCount)
