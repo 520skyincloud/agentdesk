@@ -1437,6 +1437,16 @@ git diff --check
 - 共享与回滚：本批只修改 Credential service 的只读能力字段计算、对应测试和权威文档；不修改 model、AutoMigrate、DML migration、DTO 结构、enum、HTTP 路由、权限码、WebSocket、AI Prompt/Schema/调用次数、FastGPT 请求、Billing、人工任务池或规则派单。`813aa19` 可在 B14 前独立回滚且无数据回滚；回滚会重新产生能力显示与提交门禁不一致，不可作为生产方案。
 - 发布判定：本批没有解除既有外部阻断。FastGPT HTTPS、目标 MySQL 协议握手、迁移后最终 Store ID、统一环境 NewAPI 重录/异人审批、真实回复/转人工/规则派单/标签/账单和正式加密备份独立恢复仍未完成。B13 继续 `No-Go`；B14 虽已批准，但在 B13 全验收、停机、加密备份和独立恢复验证前不得执行，也不得扩大固定 7 表、5 列、4 索引白名单。
 
+### 25.26 2026-07-23 B13-M 部署拓扑、来源库与剩余秘密复核
+
+- Compose 拓扑：使用仓库外 16 项安全文件执行只读 `docker compose config`，确认统一候选会创建独立 `mysql`、`agent-desk` 服务及独立数据卷，应用固定发布 `8083`。当前 `zhixiweibao` 旧 Compose 项目仍占用 `8083` 并运行旧应用，直接启动统一候选会端口冲突；本批没有启动、停止或替换任何服务。
+- 当前旧库不是来源：只读查询正在运行的旧 MySQL，确认只有一个历史 Tenant、100 个测试 Store，Store ID 范围为 `101-200`，不存在来源 Store `3`，也没有新 Store Credential 表。现有模型验收 MySQL 的两个 AgentDesk 数据库均有最终表结构但 Store 数为零，同样不能作为“丽斯文旅 / 高铁南站店”的来源或目标证据。
+- 密钥清单闭合：16 项文件已覆盖当前启用能力所需的常驻应用变量，不需要再增加应用密钥。FastGPT Integration Token 已交付；当前缺的是同环境 HTTPS Base URL，不是第二个 Token。NewAPI 仍只需要一条 Store Key，且必须由实际持有人在统一页面提交。
+- 仍需受控交付：实际包含来源 Store `3` 的数据库端点或加密备份、对应的安全访问/解密材料，以及 B13/B14 正式备份加密材料尚未在当前机器可用。这些属于运维现场秘密，不进入聊天、Git、PR、Markdown 或命令行参数。
+- B14 密钥边界：`schema-cleanup prepare` 会在安全目录随机生成 HMAC 绑定的一次性操作令牌，用户不需要另行提供 HMAC Key。该自动生成能力不替代正式备份加密材料，也不解除 B13、停机和独立恢复门禁。
+- 共享影响：本轮只读检查 Docker 元数据和现有数据库中的非秘密身份/计数，并更新交接文档；未写数据库，未修改 model、migration、DTO、enum、API、权限、WebSocket、AI Runtime、Credential、FastGPT、Billing、人工池、规则派单或前端。来源分支继续没有前移。
+- 下一步：由数据保管人通过受控渠道提供真实来源库或加密备份位置，由 FastGPT 负责人提供同环境 HTTPS 地址；之后才能在隔离目标库迁移并按业务身份解析最终 Store ID。两项完成前 B13 继续 `No-Go`，不得切换 `8083` 或运行 B14 `prepare/execute`。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B13-B14 实施和验收证据。

@@ -331,3 +331,32 @@ docker compose --env-file "/absolute/secure/path/production.env" up -d --build
 B14 的固定白名单、三阶段命令、一次性令牌和失败恢复要求见
 [`docs/deployment/b14-schema-cleanup.md`](b14-schema-cleanup.md)。该工具可随发布镜像构建，但当前
 `No-Go` 未解除前只能运行 `inspect`，不得运行生产 `prepare` 或 `execute`。
+
+## 11. 当前交付结论与剩余现场材料
+
+2026-07-23 复核后，16 项常驻生产环境变量已经完整，不需要再增加第 17 个应用密钥。
+当前仍需补齐的材料必须按用途区分：
+
+| 材料 | 是否新密钥 | 交付方式 | 当前状态 |
+| --- | --- | --- | --- |
+| FastGPT 同环境 HTTPS Base URL | 否 | 负责人更新仓库外安全文件并重新固定摘要 | 当前只有 HTTP，生产门禁阻断 |
+| FastGPT Integration Token | 是 | 已在仓库外安全文件中，与 Base URL 成对使用 | 已交付，不得通过 HTTP 发送 |
+| pilot Store NewAPI API Key | 是 | 实际持有人登录统一系统，在门店凭据页面重新录入 | 尚未在统一环境提交 |
+| 来源数据库或其加密备份访问 | DSN/解密材料属于秘密 | 受控运维渠道；不得放入聊天、Git 或命令行参数 | 当前机器没有包含来源 Store `3` 的库 |
+| B13/B14 备份加密材料 | 是，运维级 | 备份负责人在仓库外生成、保管并完成独立恢复 | 尚未形成正式现场证据 |
+| B14 HMAC/一次性操作令牌 | 否，无需外部提供 | `schema-cleanup prepare` 在 `0700/0600` 安全目录现场随机生成 | 工具自动处理 |
+
+当前仓库外环境文件描述的是一套新的统一 Compose 栈：独立 `mysql` 与 `agent-desk`
+服务、独立数据卷、应用仍发布 `8083`。现有旧 Compose 栈已经占用 `8083`，因此不得直接
+运行新的 `docker compose up`；必须先按 B13 完成来源数据定位、加密备份、独立恢复和
+停机切换。
+
+当前机器的只读核验结果：
+
+- 正在运行的旧 `8083` 数据库只有 100 个测试 Store，ID 范围为 `101-200`，不存在
+  Store `3`，也没有新的 Store Credential 表，因此不是本次 pilot 来源库。
+- 现有模型验收 MySQL 中两个 AgentDesk 数据库的 Store 均为空，也不是来源库。
+- 来源 Store `3` 的数据库端点或加密备份位置仍需由实际保管人通过受控渠道交付。
+
+上述“来源库位置”和“FastGPT HTTPS 地址”是发布输入缺口，不应通过增加应用配置字段、
+恢复旧 AIConfig 或把测试库冒充来源库来规避。
