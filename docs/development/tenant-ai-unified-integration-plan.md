@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁、历史 MySQL 克隆升级、统一镜像隔离 MySQL API 冒烟、后台 worker 维护门禁、可执行三阶段 readiness 门禁、真实 FastGPT 会话检索证据门禁、发布游标快照和仓库外加密备份恢复验证门禁已完成；当前结论仍为发布 No-Go。上述工具的 SQLite/MySQL 工程证据已经通过，但丽斯未来真实备份恢复、全新部署秘密、Store NewAPI Key、FastGPT Integration Token 和单 Store 现场灰度证据尚未取得，禁止切换正式 `8083` 或进入 B14 物理清理。
+> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁、历史 MySQL 克隆升级、统一镜像隔离 MySQL API 冒烟、后台 worker 维护门禁、可执行三阶段 readiness 门禁、真实 FastGPT 会话检索证据门禁、发布游标快照和仓库外加密备份恢复验证门禁已完成；当前结论仍为发布 No-Go。16 项生产变量 handoff 已接收并通过权限、哈希、格式和无泄密检查，但 FastGPT 仍为公网 HTTP、目标 MySQL 不返回协议握手，最终 pilot Store 尚未解析且 NewAPI Key 尚未在统一环境重新提交；丽斯未来真实灰度和备份恢复证据均未完成，禁止切换正式 `8083` 或进入 B14 物理清理。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
