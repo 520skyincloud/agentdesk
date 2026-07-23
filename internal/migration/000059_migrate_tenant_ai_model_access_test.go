@@ -44,7 +44,7 @@ func TestMigrateTenantAIModelAccessRetiresLegacyModelAccess(t *testing.T) {
 		t.Fatalf("create config: %v", err)
 	}
 	legacy := &legacyStoreAIModelSetting{
-		CompanyID: company.ID, UsageCode: constants.AIModelUsageReplyLLM, AIConfigID: config.ID,
+		CompanyID: company.ID, UsageCode: string(enums.ModelUsageSlotReplyLLM), AIConfigID: config.ID,
 		Provider: config.Provider, BaseURL: config.BaseURL, APIKey: "copied-tenant-secret",
 		ModelType: config.ModelType, ModelName: config.ModelName, Status: enums.StatusOk,
 	}
@@ -52,7 +52,7 @@ func TestMigrateTenantAIModelAccessRetiresLegacyModelAccess(t *testing.T) {
 		t.Fatalf("create legacy setting: %v", err)
 	}
 	orphan := &legacyStoreAIModelSetting{
-		UsageCode: constants.AIModelUsageReplyLLM, Provider: enums.AIProviderOpenAI,
+		UsageCode: string(enums.ModelUsageSlotReplyLLM), Provider: enums.AIProviderOpenAI,
 		BaseURL: "https://orphan.example.com/v1", APIKey: "orphan-secret", APIMode: "responses",
 		ModelType: enums.AIModelTypeLLM, ModelName: "orphan-model", MaxContextTokens: 2048,
 		TimeoutMS: 10000, Remark: "orphan credentials", Status: enums.StatusOk,

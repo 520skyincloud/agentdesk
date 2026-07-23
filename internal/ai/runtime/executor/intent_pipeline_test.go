@@ -1646,6 +1646,7 @@ func TestResolveRuntimeIntentDetectModelCallRejectsMissingStoreAssignment(t *tes
 }
 
 func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
+	const generateOnlyPersona = "PERSONA_MUST_NOT_ENTER_INTENT_DETECT"
 	for _, scenario := range []struct {
 		name         string
 		invalidFirst bool
@@ -1701,6 +1702,7 @@ func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
 				UserMessage: models.Message{
 					ConversationID: 7, TenantID: 1, MessageType: enums.IMMessageTypeText, Content: "WiFi 密码多少",
 				},
+				AIAgent: models.AIAgent{SystemPrompt: generateOnlyPersona},
 			}, adapter.HistoryBuildResult{}, nil)
 			if err != nil {
 				t.Fatalf("detect intent: %v", err)
@@ -1718,6 +1720,13 @@ func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
 			}
 			if capturedMessages[0][0]["role"] != "system" || capturedMessages[0][1]["role"] != "user" {
 				t.Fatalf("intent message order changed: %#v", capturedMessages[0])
+			}
+			firstAttemptJSON, err := json.Marshal(capturedMessages[0])
+			if err != nil {
+				t.Fatalf("marshal captured intent messages: %v", err)
+			}
+			if strings.Contains(string(firstAttemptJSON), generateOnlyPersona) {
+				t.Fatalf("WxWork persona leaked into IntentDetect messages")
 			}
 			if scenario.invalidFirst && len(capturedMessages[1]) != 3 {
 				t.Fatalf("retry must append exactly one repair instruction: %#v", capturedMessages[1])
