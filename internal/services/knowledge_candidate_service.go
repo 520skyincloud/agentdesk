@@ -370,7 +370,7 @@ func (s *knowledgeCandidateService) qualityCheckOne(item *models.KnowledgeCandid
 	}
 	if containsAny(joined, []string{"送水", "拖鞋", "打扫", "维修", "叫醒", "行李", "已经安排", "已安排", "登记好了", "工单"}) {
 		decision = worseKnowledgeDecision(decision, "review")
-		reasons = append(reasons, "更像行动/工单类问题，不应直接沉淀成知识库 FAQ")
+		reasons = append(reasons, "更像行动/工单类问题，不应直接沉淀为知识条目")
 	}
 	if containsAny(joined, []string{"退款", "赔偿", "赔付", "投诉", "报警", "身份证", "手机号", "隐私", "房卡丢", "安全"}) {
 		decision = worseKnowledgeDecision(decision, "review")
@@ -663,7 +663,7 @@ func buildKnowledgeCandidateExtraction(messages []models.Message) knowledgeCandi
 	ret.Eligible = true
 	ret.Question = limitText(question, 300)
 	ret.Answer = limitText(answer, 1200)
-	ret.Summary = "人工语言回答解决了当前门店知识库未覆盖的问题，待审核后可沉淀为门店 FAQ。"
+	ret.Summary = "人工语言回答解决了当前门店知识库未覆盖的问题，待审核后可同步为 FastGPT 知识条目。"
 	ret.Evidence = strings.TrimSpace(evidence.String())
 	return ret
 }

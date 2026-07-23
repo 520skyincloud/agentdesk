@@ -7,6 +7,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 
+	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -231,6 +232,30 @@ func (r *tenantIndustryChangeLogRepository) Create(db *gorm.DB, item *models.Ten
 }
 
 type customerTagRelationRepository struct{}
+
+func (r *customerTagRelationRepository) ApplyConversationFilter(cnd *sqls.Cnd, tenantID int64, tagIDs []int64) *sqls.Cnd {
+	if cnd == nil || tenantID <= 0 || len(tagIDs) == 0 {
+		return cnd
+	}
+	return cnd.Where(`id IN (
+		SELECT route.conversation_id
+		FROM t_conversation_route_state AS route
+		JOIN t_conversation AS tagged_conversation
+			ON tagged_conversation.id = route.conversation_id
+			AND tagged_conversation.tenant_id = route.tenant_id
+		JOIN t_store_customer_relation AS store_customer
+			ON store_customer.tenant_id = tagged_conversation.tenant_id
+			AND store_customer.customer_id = tagged_conversation.customer_id
+			AND store_customer.store_id = route.store_id
+			AND store_customer.status = ?
+		JOIN t_customer_tag_relation AS customer_tag
+			ON customer_tag.tenant_id = store_customer.tenant_id
+			AND customer_tag.store_id = store_customer.store_id
+			AND customer_tag.store_customer_relation_id = store_customer.id
+			AND customer_tag.relation_status = ?
+		WHERE route.tenant_id = ? AND customer_tag.tag_id IN (?)
+	)`, enums.StatusOk, "active", tenantID, tagIDs)
+}
 
 func (r *customerTagRelationRepository) GetByStoreRelationAndTag(
 	db *gorm.DB,

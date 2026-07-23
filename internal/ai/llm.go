@@ -15,8 +15,6 @@ import (
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/shared"
 
-	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/pkg/usagex"
 )
@@ -31,18 +29,6 @@ type ChatCompletionResult struct {
 type llm struct{}
 
 var LLM = &llm{}
-
-func (s *llm) Chat(ctx context.Context, systemPrompt string, userPrompt string) (*ChatCompletionResult, error) {
-	config, err := GetEnabledAIConfig(enums.AIModelTypeLLM)
-	if err != nil {
-		return nil, err
-	}
-	return s.ChatWithConfig(ctx, *config, systemPrompt, userPrompt)
-}
-
-func (s *llm) ChatWithConfig(ctx context.Context, config models.AIConfig, systemPrompt string, userPrompt string) (*ChatCompletionResult, error) {
-	return s.ChatWithRuntimeConfig(ctx, legacyRuntimeConfig(config), systemPrompt, userPrompt)
-}
 
 func (s *llm) ChatWithRuntimeConfig(ctx context.Context, config modelconfig.Config, systemPrompt string, userPrompt string) (*ChatCompletionResult, error) {
 	if strings.EqualFold(strings.TrimSpace(config.APIMode), "responses") {

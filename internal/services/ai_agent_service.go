@@ -10,7 +10,7 @@ import (
 
 // AIAgentService exposes the read-only runtime strategy identity used by
 // channels, conversations and the reply runtime. Tenant model selection is
-// handled by StoreAIModelSettingService and is not owned by this service.
+// resolved from the Store's active Model Profile assignment and credential.
 var AIAgentService = &aIAgentService{}
 
 type aIAgentService struct{}

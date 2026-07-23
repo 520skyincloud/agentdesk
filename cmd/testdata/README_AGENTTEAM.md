@@ -6,7 +6,7 @@ Agent Team 初始化模块在 `cmd/testdata/agentteam/init.go` 中，用于创�
 
 ## 初始化过程
 
-该模块在 AI Agent 初始化**之前**调用，按照以下顺序初始化：
+该模块在接待策略初始化之前调用，按照以下顺序初始化：
 
 1. **客服组创建**
    - 名称：`默认客服组`
@@ -90,12 +90,14 @@ AuditFields{
 在 `cmd/testdata/main.go` 中的初始化顺序：
 
 ```
-1. aiconfig.Init()      // AI Configuration
-2. kb.Init()            // Knowledge Base
-3. agentteam.Init()     // Agent Team ← 客服组初始化
-4. aiagent.Init()       // AI Agent (可使用 TeamIDs 字段)
-5. widgetsite.Init()    // Widget Site
+1. skill.Init()         // Runtime skill definitions
+2. agentteam.Init()     // Agent Team <- 客服组初始化
+3. aiagent.Init()       // Reception strategy (uses TeamIDs/SkillIDs)
+4. channel.Init()       // Channel fixtures
+5. quickreply.Init()    // Quick replies
 ```
+
+该命令不再创建 AIConfig、旧本地知识库或自由标签。模型、门店凭据、行业标签和托管 FastGPT 测试数据应使用统一集成验收种子建立。
 
 ## 测试运行
 
@@ -113,22 +115,12 @@ go run cmd/testdata/main.go -config config/config.yaml -yes
 ```
 2026-03-25T10:30:45.123+08:00 INFO testdata initialization completed
   droppedTables=45
-  aiConfigSkipped=false
-  aiConfigFile=cmd/testdata/aiconfig/ai_config.local.yaml
-  aiConfigCreated=3
-  aiConfigUpdated=0
-  knowledgeBaseID=1
-  kbChaptersTotal=120
-  kbDocumentsCreated=120
-  kbDocumentsUpdated=0
   agentTeamCreated=true
-  agentTeamUsersCreated=2
-  agentTeamProfilesCreated=2
+  agentTeamUsersCreated=3
+  agentTeamProfilesCreated=3
   agentTeamUpdatesApplied=0
   aiAgentCreated=1
   aiAgentUpdated=0
-  widgetSiteCreated=2
-  widgetSiteUpdated=0
 ```
 
 ## 扩展说明

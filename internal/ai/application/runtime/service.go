@@ -33,7 +33,7 @@ func (s *Service) Run(ctx context.Context, req Request) (*Summary, error) {
 		Conversation: req.Conversation,
 		UserMessage:  req.UserMessage,
 		AIAgent:      req.AIAgent,
-		AIConfig:     req.AIConfig,
+		ModelConfig:  req.ModelConfig,
 		CheckPointID: req.CheckPointID,
 		ToolSet:      req.ToolSet,
 	})
@@ -52,7 +52,7 @@ func (s *Service) Resume(ctx context.Context, req ResumeRequest) (*Summary, erro
 	summary, err := s.runtime.ExecuteResume(ctx, executor.ResumeInput{
 		Conversation: req.Conversation,
 		AIAgent:      req.AIAgent,
-		AIConfig:     req.AIConfig,
+		ModelConfig:  req.ModelConfig,
 		CheckPointID: req.CheckPointID,
 		ResumeData:   req.ResumeData,
 		ToolSet:      req.ToolSet,

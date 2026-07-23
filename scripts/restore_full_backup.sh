@@ -29,7 +29,7 @@ if [[ -f "${BACKUP_DIR}/config/config.yaml" ]]; then
   cp "${BACKUP_DIR}/config/config.yaml" config/config.yaml
 fi
 
-docker compose up -d mysql qdrant
+docker compose up -d mysql
 
 echo "Waiting for MySQL..."
 for _ in {1..60}; do
@@ -44,7 +44,7 @@ if [[ -f "${BACKUP_DIR}/volumes/mysql-cs_ai_agent.sql.gz" ]]; then
   gunzip -c "${BACKUP_DIR}/volumes/mysql-cs_ai_agent.sql.gz" | docker compose exec -T mysql sh -lc 'mysql -uroot -pcs_ai_agent_root_password'
 fi
 
-docker compose stop agent-desk qdrant >/dev/null 2>&1 || true
+docker compose stop agent-desk >/dev/null 2>&1 || true
 
 restore_volume_tar() {
   local service="$1"
@@ -64,7 +64,6 @@ restore_volume_tar() {
   docker run --rm -v "${volume_name}":/target -v "$(dirname "${archive}")":/backup alpine:3.22 sh -lc "rm -rf /target/* /target/.[!.]* /target/..?* 2>/dev/null || true; cd /target && tar -xzf /backup/$(basename "${archive}")"
 }
 
-restore_volume_tar qdrant /qdrant/storage "${BACKUP_DIR}/volumes/qdrant-storage.tgz"
 restore_volume_tar agent-desk /app/data "${BACKUP_DIR}/volumes/agent-desk-data.tgz"
 
 if [[ -f "${BACKUP_DIR}/local/repo-data.tgz" ]]; then

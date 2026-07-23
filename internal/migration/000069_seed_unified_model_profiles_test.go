@@ -17,10 +17,19 @@ import (
 	"gorm.io/gorm/schema"
 )
 
+var legacyUnifiedModelPermissionSpecs = []constants.Permission{
+	{Name: "创建 AI 配置", Code: "aiConfig.create", Type: "api", Scope: constants.PermissionScopePlatform},
+	{Name: "删除 AI 配置", Code: "aiConfig.delete", Type: "api", Scope: constants.PermissionScopePlatform},
+	{Name: "查看租户模型授权", Code: "tenantModelGrant.view", Type: "api", Scope: constants.PermissionScopePlatform},
+	{Name: "更新租户模型授权", Code: "tenantModelGrant.update", Type: "api", Scope: constants.PermissionScopePlatform},
+	{Name: "查看租户账号模型分配", Code: "tenantModelAssignment.view", Type: "api", Scope: constants.PermissionScopePlatform},
+	{Name: "更新租户账号模型分配", Code: "tenantModelAssignment.update", Type: "api", Scope: constants.PermissionScopePlatform},
+}
+
 func TestMigrateUnifiedModelProfilesSeedsNineSlotsWithoutLegacySecret(t *testing.T) {
 	db := openUnifiedModelProfileMigrationDB(t)
 	legacyKey := "legacy-secret-must-not-migrate"
-	configs := []models.AIConfig{
+	configs := []legacyAIConfig{
 		{Name: "chat", Provider: enums.AIProviderOpenAI, BaseURL: "https://newapi.example.com/v1", APIKey: legacyKey, ModelType: enums.AIModelTypeLLM, ModelName: "chat-model", MaxContextTokens: 8192, MaxOutputTokens: 1024, TimeoutMS: 30000, Status: enums.StatusOk, SortNo: 10},
 		{Name: "intent", Provider: enums.AIProviderOpenAI, BaseURL: "https://newapi.example.com/v1", APIKey: legacyKey, ModelType: enums.AIModelTypeLLM, ModelName: "intent-model", MaxContextTokens: 8192, MaxOutputTokens: 1024, TimeoutMS: 30000, IntentDetectEnabled: true, Status: enums.StatusOk, SortNo: 20},
 		{Name: "vision", Provider: enums.AIProviderOpenAI, APIKey: legacyKey, ModelType: enums.AIModelTypeVision, ModelName: "vision-model", MaxContextTokens: 8192, MaxOutputTokens: 1024, Status: enums.StatusOk},
@@ -93,11 +102,7 @@ func TestMigrateUnifiedModelProfilesReusesPermissionsAndRetiresLegacyBindings(t 
 	if err := db.Create(legacyRole).Error; err != nil {
 		t.Fatal(err)
 	}
-	for _, spec := range []constants.Permission{
-		constants.PermissionAIConfigCreate, constants.PermissionAIConfigDelete,
-		constants.PermissionTenantModelGrantView, constants.PermissionTenantModelGrantUpdate,
-		constants.PermissionTenantModelAssignmentView, constants.PermissionTenantModelAssignmentUpdate,
-	} {
+	for _, spec := range legacyUnifiedModelPermissionSpecs {
 		permission := &models.Permission{
 			Name: spec.Name, Code: spec.Code, Type: spec.Type, Scope: spec.Scope,
 			GroupName: spec.GroupName, Method: spec.Method, APIPath: spec.APIPath,
@@ -137,11 +142,8 @@ func TestMigrateUnifiedModelProfilesReusesPermissionsAndRetiresLegacyBindings(t 
 			t.Fatalf("tenant admin permission %s count=%d", code, count)
 		}
 	}
-	for _, code := range []string{
-		constants.PermissionAIConfigCreate.Code, constants.PermissionAIConfigDelete.Code,
-		constants.PermissionTenantModelGrantView.Code, constants.PermissionTenantModelGrantUpdate.Code,
-		constants.PermissionTenantModelAssignmentView.Code, constants.PermissionTenantModelAssignmentUpdate.Code,
-	} {
+	for _, spec := range legacyUnifiedModelPermissionSpecs {
+		code := spec.Code
 		var permission models.Permission
 		if err := db.Where("code = ?", code).Take(&permission).Error; err != nil {
 			t.Fatal(err)
@@ -168,11 +170,8 @@ func TestMigrateUnifiedModelProfilesReusesPermissionsAndRetiresLegacyBindings(t 
 	if err = ensureRolePermissions(db, roles, permissions); err != nil {
 		t.Fatal(err)
 	}
-	for _, code := range []string{
-		constants.PermissionAIConfigCreate.Code, constants.PermissionAIConfigDelete.Code,
-		constants.PermissionTenantModelGrantView.Code, constants.PermissionTenantModelGrantUpdate.Code,
-		constants.PermissionTenantModelAssignmentView.Code, constants.PermissionTenantModelAssignmentUpdate.Code,
-	} {
+	for _, spec := range legacyUnifiedModelPermissionSpecs {
+		code := spec.Code
 		var permission models.Permission
 		if err = db.Where("code = ?", code).Take(&permission).Error; err != nil {
 			t.Fatal(err)
@@ -207,7 +206,7 @@ func TestMigrateUnifiedModelProfilesMySQL(t *testing.T) {
 	}
 	if err = db.AutoMigrate(
 		&models.Permission{}, &models.Role{}, &models.RolePermission{},
-		&models.AIConfig{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{},
+		&legacyAIConfig{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{},
 		&models.StoreModelCredential{},
 	); err != nil {
 		t.Fatalf("MySQL AutoMigrate() error=%v", err)
@@ -245,7 +244,7 @@ func openUnifiedModelProfileMigrationDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.Permission{}, &models.Role{}, &models.RolePermission{},
-		&models.AIConfig{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{},
+		&legacyAIConfig{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{},
 		&models.StoreModelCredential{},
 	); err != nil {
 		t.Fatalf("AutoMigrate() error=%v", err)

@@ -48,8 +48,6 @@ const PERMISSION_RESOURCE_LABELS: Record<string, { singular: string; plural: str
   aiConfig: { singular: "AI configuration", plural: "AI configurations" },
   billing: { singular: "model billing record", plural: "model billing records" },
   knowledgeBase: { singular: "knowledge base", plural: "knowledge bases" },
-  knowledgeDocument: { singular: "knowledge document", plural: "knowledge documents" },
-  knowledgeFAQ: { singular: "knowledge FAQ", plural: "knowledge FAQs" },
   skillDefinition: { singular: "Skill definition", plural: "Skill definitions" },
   mcp: { singular: "MCP tool", plural: "MCP tools" },
 }

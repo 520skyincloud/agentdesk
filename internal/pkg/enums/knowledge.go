@@ -1,37 +1,12 @@
 package enums
 
-type VectorDBType string
-
-const (
-	VectorDBTypeQdrant VectorDBType = "qdrant"
-)
-
-var vectorDBTypeLabelMap = map[VectorDBType]string{
-	VectorDBTypeQdrant: "Qdrant",
-}
-
-func GetVectorDBTypeLabel(dbType VectorDBType) string {
-	return vectorDBTypeLabelMap[dbType]
-}
-
-type KnowledgeDocumentContentType string
-
-const (
-	KnowledgeDocumentContentTypeHTML     KnowledgeDocumentContentType = "html"
-	KnowledgeDocumentContentTypeMarkdown KnowledgeDocumentContentType = "markdown"
-)
-
 type KnowledgeBaseType string
 
 const (
-	KnowledgeBaseTypeDocument     KnowledgeBaseType = "document"
-	KnowledgeBaseTypeFAQ          KnowledgeBaseType = "faq"
 	KnowledgeBaseTypeFastGPTCloud KnowledgeBaseType = "fastgpt_cloud"
 )
 
 var knowledgeBaseTypeLabelMap = map[KnowledgeBaseType]string{
-	KnowledgeBaseTypeDocument:     "文档知识库",
-	KnowledgeBaseTypeFAQ:          "FAQ知识库",
 	KnowledgeBaseTypeFastGPTCloud: "FastGPT云端知识库",
 }
 
@@ -39,84 +14,14 @@ func GetKnowledgeBaseTypeLabel(knowledgeType KnowledgeBaseType) string {
 	return knowledgeBaseTypeLabelMap[knowledgeType]
 }
 
-var knowledgeDocumentContentTypeLabelMap = map[KnowledgeDocumentContentType]string{
-	KnowledgeDocumentContentTypeHTML:     "HTML",
-	KnowledgeDocumentContentTypeMarkdown: "Markdown",
-}
-
-func GetKnowledgeDocumentContentTypeLabel(contentType KnowledgeDocumentContentType) string {
-	return knowledgeDocumentContentTypeLabelMap[contentType]
-}
-
-type KnowledgeDocumentIndexStatus string
-
-const (
-	KnowledgeDocumentIndexStatusPending KnowledgeDocumentIndexStatus = "pending"
-	KnowledgeDocumentIndexStatusIndexed KnowledgeDocumentIndexStatus = "indexed"
-	KnowledgeDocumentIndexStatusFailed  KnowledgeDocumentIndexStatus = "failed"
-)
-
-var KnowledgeDocumentIndexStatusValues = []KnowledgeDocumentIndexStatus{
-	KnowledgeDocumentIndexStatusPending,
-	KnowledgeDocumentIndexStatusIndexed,
-	KnowledgeDocumentIndexStatusFailed,
-}
-
-var knowledgeDocumentIndexStatusLabelMap = map[KnowledgeDocumentIndexStatus]string{
-	KnowledgeDocumentIndexStatusPending: "待索引",
-	KnowledgeDocumentIndexStatusIndexed: "已索引",
-	KnowledgeDocumentIndexStatusFailed:  "索引失败",
-}
-
-func GetKnowledgeDocumentIndexStatusLabel(status KnowledgeDocumentIndexStatus) string {
-	return knowledgeDocumentIndexStatusLabelMap[status]
-}
-
-func IsValidKnowledgeDocumentIndexStatus(status string) bool {
-	for _, item := range KnowledgeDocumentIndexStatusValues {
-		if string(item) == status {
-			return true
-		}
-	}
-	return false
-}
-
-type KnowledgeChunkType string
-
-const (
-	KnowledgeChunkTypeText  KnowledgeChunkType = "text"
-	KnowledgeChunkTypeFAQ   KnowledgeChunkType = "faq"
-	KnowledgeChunkTypeTable KnowledgeChunkType = "table"
-	KnowledgeChunkTypeCode  KnowledgeChunkType = "code"
-)
-
-var knowledgeChunkTypeLabelMap = map[KnowledgeChunkType]string{
-	KnowledgeChunkTypeText:  "文本",
-	KnowledgeChunkTypeFAQ:   "问答",
-	KnowledgeChunkTypeTable: "表格",
-	KnowledgeChunkTypeCode:  "代码",
-}
-
-func GetKnowledgeChunkTypeLabel(chunkType KnowledgeChunkType) string {
-	return knowledgeChunkTypeLabelMap[chunkType]
-}
-
 type KnowledgeChunkProvider string
 
 const (
-	KnowledgeChunkProviderFixed      KnowledgeChunkProvider = "fixed"
-	KnowledgeChunkProviderStructured KnowledgeChunkProvider = "structured"
-	KnowledgeChunkProviderFAQ        KnowledgeChunkProvider = "faq"
-	KnowledgeChunkProviderSemantic   KnowledgeChunkProvider = "semantic"
-	KnowledgeChunkProviderFastGPT    KnowledgeChunkProvider = "fastgpt_cloud"
+	KnowledgeChunkProviderFastGPT KnowledgeChunkProvider = "fastgpt_cloud"
 )
 
 var knowledgeChunkProviderLabelMap = map[KnowledgeChunkProvider]string{
-	KnowledgeChunkProviderFixed:      "固定长度",
-	KnowledgeChunkProviderStructured: "结构化分块",
-	KnowledgeChunkProviderFAQ:        "问答式分块",
-	KnowledgeChunkProviderSemantic:   "语义分块",
-	KnowledgeChunkProviderFastGPT:    "FastGPT云端",
+	KnowledgeChunkProviderFastGPT: "FastGPT云端",
 }
 
 func GetKnowledgeChunkProviderLabel(provider KnowledgeChunkProvider) string {
@@ -252,7 +157,7 @@ var knowledgeCandidateStatusLabelMap = map[KnowledgeCandidateStatus]string{
 	KnowledgeCandidateStatusApproved: "已通过",
 	KnowledgeCandidateStatusRejected: "已驳回",
 	KnowledgeCandidateStatusExported: "已导出",
-	KnowledgeCandidateStatusImported: "已导入知识库",
+	KnowledgeCandidateStatusImported: "已确认同步",
 }
 
 func GetKnowledgeCandidateStatusLabel(status KnowledgeCandidateStatus) string {

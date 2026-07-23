@@ -231,24 +231,21 @@ func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, query 
 		requestID = strings.TrimSpace(scope.RequestID)
 	}
 	if _, err := rag.RetrieveLog.CreateRetrieveLog(&rag.CreateRetrieveLogRequest{
-		KnowledgeBaseID:    result.KnowledgeBaseIDs[0],
-		SourceType:         inferRuntimeRetrieveSourceType(hits),
-		Channel:            string(enums.KnowledgeRetrieveChannelIM),
-		Scene:              string(enums.KnowledgeRetrieveSceneFirstResponse),
-		ConversationID:     scope.ConversationID,
-		MessageID:          scope.MessageID,
-		RequestID:          requestID,
-		Question:           query,
-		AnswerStatus:       answerStatus,
-		ChunkProvider:      runtimeRetrieveChunkProvider(result),
-		RerankEnabled:      false,
-		Hits:               hits,
-		UsedHits:           usedHits,
-		HitSourceRecordIDs: retrieveSourceRecordIDs(result.Hits),
-		UsedHitRankNos:     resolveUsedHitRankNos(result.Hits, result.ContextResults),
-		RetrieveMs:         retrieveMs,
-		LatencyMs:          retrieveMs,
-		ModelName:          "runtime-retriever",
+		KnowledgeBaseID: result.KnowledgeBaseIDs[0],
+		Channel:         string(enums.KnowledgeRetrieveChannelIM),
+		Scene:           string(enums.KnowledgeRetrieveSceneFirstResponse),
+		ConversationID:  scope.ConversationID,
+		MessageID:       scope.MessageID,
+		RequestID:       requestID,
+		Question:        query,
+		AnswerStatus:    answerStatus,
+		RerankEnabled:   false,
+		Hits:            hits,
+		UsedHits:        usedHits,
+		UsedHitRankNos:  resolveUsedHitRankNos(result.Hits, result.ContextResults),
+		RetrieveMs:      retrieveMs,
+		LatencyMs:       retrieveMs,
+		ModelName:       "runtime-retriever",
 	}, nil); err != nil {
 		slog.Warn("runtime knowledge retrieve log failed", "error", err)
 	}
@@ -262,54 +259,15 @@ func buildKnowledgeSearchResults(items []rag.RetrieveResult) []response.Knowledg
 			ChunkID:         item.ChunkID,
 			DocumentID:      item.DocumentID,
 			DocumentTitle:   item.DocumentTitle,
-			FaqID:           item.FaqID,
-			FaqQuestion:     item.FaqQuestion,
 			ChunkNo:         item.ChunkNo,
 			Title:           item.Title,
 			SectionPath:     item.SectionPath,
+			SourceRecordID:  item.SourceRecordID,
 			Content:         item.Content,
 			Score:           float64(item.Score),
 		})
 	}
 	return ret
-}
-
-func inferRuntimeRetrieveSourceType(hits []response.KnowledgeSearchResult) string {
-	if len(hits) == 0 {
-		return "local_vector"
-	}
-	fastGPT := false
-	local := false
-	for _, hit := range hits {
-		if isFastGPTRetrieveResult(hit) {
-			fastGPT = true
-		} else {
-			local = true
-		}
-	}
-	if fastGPT && local {
-		return "hybrid"
-	}
-	if fastGPT {
-		return "fastgpt"
-	}
-	return "local_vector"
-}
-
-func isFastGPTRetrieveResult(hit response.KnowledgeSearchResult) bool {
-	return strings.Contains(hit.SectionPath, "FastGPT知识库/") ||
-		strings.Contains(hit.SectionPath, "FastGPT云端知识库") ||
-		strings.Contains(hit.DocumentTitle, "FastGPT云端知识库")
-}
-
-func runtimeRetrieveChunkProvider(result *KnowledgeRetrieveResult) string {
-	if result == nil {
-		return "runtime"
-	}
-	if len(result.Hits) == 0 {
-		return "runtime_empty"
-	}
-	return inferRuntimeRetrieveSourceType(buildKnowledgeSearchResults(result.Hits))
 }
 
 func limitContextResults(results []rag.RetrieveResult, maxItems int) []rag.RetrieveResult {
@@ -456,20 +414,12 @@ func retrieveResultIdentity(item rag.RetrieveResult) string {
 		return "source:" + sourceRecordID
 	}
 	return strings.Join([]string{
-		"local",
+		"fastgpt",
 		fmt.Sprintf("%d", item.KnowledgeBaseID),
 		fmt.Sprintf("%d", item.DocumentID),
 		strings.TrimSpace(item.SectionPath),
 		fmt.Sprintf("%d", item.ChunkNo),
 	}, "|")
-}
-
-func retrieveSourceRecordIDs(items []rag.RetrieveResult) []string {
-	result := make([]string, 0, len(items))
-	for _, item := range items {
-		result = append(result, strings.TrimSpace(item.SourceRecordID))
-	}
-	return result
 }
 
 func resolveUsedHitRankNos(hits, usedHits []rag.RetrieveResult) []int {

@@ -87,9 +87,54 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 		http.MethodPost + " /api/dashboard/company/create",
 		http.MethodPost + " /api/dashboard/company/update",
 		http.MethodPost + " /api/dashboard/company/delete",
+		http.MethodGet + " /api/dashboard/ai-config/list",
+		http.MethodPost + " /api/dashboard/ai-config/create",
+		http.MethodPost + " /api/dashboard/tenant/model_access",
+		http.MethodPost + " /api/dashboard/tenant/update_model_access",
+		http.MethodPost + " /api/dashboard/wxwork-protocol-instance/model_assignments",
+		http.MethodPost + " /api/dashboard/wxwork-protocol-instance/update_model_assignments",
+		http.MethodPost + " /api/dashboard/conversation/add_tag",
+		http.MethodPost + " /api/dashboard/conversation/remove_tag",
+		http.MethodPost + " /api/dashboard/knowledge-base/create",
+		http.MethodPost + " /api/dashboard/knowledge-base/delete",
+		http.MethodPost + " /api/dashboard/knowledge-base/rebuild_index",
+		http.MethodGet + " /api/dashboard/knowledge-document/list",
+		http.MethodPost + " /api/dashboard/knowledge-document/create",
+		http.MethodGet + " /api/dashboard/knowledge-faq/list",
+		http.MethodPost + " /api/dashboard/knowledge-faq/create",
+		http.MethodPost + " /api/dashboard/knowledge-retrieve/build",
 	} {
 		if routes[route] {
-			t.Fatalf("retired customer-company route %s must not be registered", route)
+			t.Fatalf("retired route %s must not be registered", route)
+		}
+	}
+
+	retiredEndpoints := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/dashboard/ai-config/list"},
+		{http.MethodPost, "/api/dashboard/ai-config/create"},
+		{http.MethodPost, "/api/dashboard/tenant/model_access"},
+		{http.MethodPost, "/api/dashboard/tenant/update_model_access"},
+		{http.MethodPost, "/api/dashboard/wxwork-protocol-instance/model_assignments"},
+		{http.MethodPost, "/api/dashboard/wxwork-protocol-instance/update_model_assignments"},
+		{http.MethodPost, "/api/dashboard/conversation/add_tag"},
+		{http.MethodPost, "/api/dashboard/conversation/remove_tag"},
+		{http.MethodPost, "/api/dashboard/knowledge-base/create"},
+		{http.MethodPost, "/api/dashboard/knowledge-base/delete"},
+		{http.MethodPost, "/api/dashboard/knowledge-base/rebuild_index"},
+		{http.MethodGet, "/api/dashboard/knowledge-document/list"},
+		{http.MethodPost, "/api/dashboard/knowledge-document/create"},
+		{http.MethodGet, "/api/dashboard/knowledge-faq/list"},
+		{http.MethodPost, "/api/dashboard/knowledge-faq/create"},
+		{http.MethodPost, "/api/dashboard/knowledge-retrieve/build"},
+	}
+	for _, endpoint := range retiredEndpoints {
+		recorder := httptest.NewRecorder()
+		app.ServeHTTP(recorder, httptest.NewRequest(endpoint.method, endpoint.path, nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("retired endpoint %s %s status=%d want=%d", endpoint.method, endpoint.path, recorder.Code, http.StatusNotFound)
 		}
 	}
 }

@@ -68,7 +68,7 @@ function slotLimit(profile: ModelProfileTemplate, index: number) {
   return `${slot.timeoutMs} ms`
 }
 
-export default function DashboardAIConfigsPage() {
+export default function DashboardModelProfilesPage() {
   const { session } = useAuth()
   const permissions = useMemo(
     () => new Set(session?.permissions ?? []),

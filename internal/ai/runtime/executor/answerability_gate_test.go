@@ -260,7 +260,7 @@ func newKnowledgePolicyRunInput(content string, knowledgeIDs string) RunInput {
 			FallbackMessage: "我暂时没有找到足够准确的信息。你可以补充更具体的问题，我再继续帮你查。",
 			AllowedMCPTools: "[]",
 		},
-		AIConfig: modelconfig.Config{ModelName: "fake-model"},
+		ModelConfig: modelconfig.Config{ModelName: "fake-model"},
 	}
 }
 

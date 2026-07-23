@@ -234,11 +234,7 @@ func BuildServiceSession(item *models.ConversationServiceSession) response.Servi
 		ResolutionCode: item.ResolutionCode, CategoryCode: item.CategoryCode, SessionSummary: item.SessionSummary,
 		FactOrigin: string(item.FactOrigin), DataQuality: string(item.DataQuality),
 	}
-	_ = json.Unmarshal([]byte(item.TagIDsJSON), &ret.TagIDs)
 	_ = json.Unmarshal([]byte(item.EstimatedFieldsJSON), &ret.EstimatedFields)
-	if ret.TagIDs == nil {
-		ret.TagIDs = []int64{}
-	}
 	if ret.EstimatedFields == nil {
 		ret.EstimatedFields = []string{}
 	}

@@ -13,7 +13,7 @@ import (
 )
 
 func ModelProfileTemplatePostGet(ctx *gin.Context) {
-	operator, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigView)
+	operator, err := requirePlatformPermission(ctx, constants.PermissionAIConfigView)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -32,7 +32,7 @@ func ModelProfileTemplatePostGet(ctx *gin.Context) {
 }
 
 func ModelProfileTemplatePostCreate(ctx *gin.Context) {
-	operator, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigUpdate)
+	operator, err := requirePlatformPermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -51,7 +51,7 @@ func ModelProfileTemplatePostCreate(ctx *gin.Context) {
 }
 
 func ModelProfileTemplatePostUpdate(ctx *gin.Context) {
-	operator, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigUpdate)
+	operator, err := requirePlatformPermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -70,7 +70,7 @@ func ModelProfileTemplatePostUpdate(ctx *gin.Context) {
 }
 
 func ModelProfileTemplatePostTest(ctx *gin.Context) {
-	operator, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigUpdate)
+	operator, err := requirePlatformPermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -99,7 +99,7 @@ func ModelProfileTemplatePostTest(ctx *gin.Context) {
 }
 
 func ModelProfileTemplatePostPublish(ctx *gin.Context) {
-	operator, err := requireAIConfigPlatformAccess(ctx, constants.PermissionAIConfigUpdate)
+	operator, err := requirePlatformPermission(ctx, constants.PermissionAIConfigUpdate)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

@@ -32,7 +32,6 @@ type ServiceSessionQuery struct {
 	DataQuality      string
 	ResolutionCode   string
 	CategoryCode     string
-	TagID            int64
 	Keyword          string
 	QualityStatus    string
 	StartAt          *time.Time
@@ -58,24 +57,15 @@ func (s *serviceAnalyticsService) UpdateSessionAnnotation(req request.UpdateServ
 	if len(resolutionCode) > 50 || len(categoryCode) > 50 || len(summary) > 4000 {
 		return nil, errorsx.InvalidParam("解决状态、咨询分类或服务小记超出长度限制")
 	}
-	tagIDs := uniqueAnalyticsTagIDs(req.TagIDs)
-	for _, tagID := range tagIDs {
-		if repositories.TagRepository.GetInTenant(sqls.DB(), tagID, tenantID) == nil {
-			return nil, errorsx.InvalidParam("服务小记包含无效标签")
-		}
-	}
-	tagJSON, _ := json.Marshal(tagIDs)
 	oldPayload, _ := json.Marshal(map[string]any{
 		"resolutionCode": item.ResolutionCode,
 		"categoryCode":   item.CategoryCode,
 		"sessionSummary": item.SessionSummary,
-		"tagIds":         jsonInt64Slice(item.TagIDsJSON),
 	})
 	newPayload, _ := json.Marshal(map[string]any{
 		"resolutionCode": resolutionCode,
 		"categoryCode":   categoryCode,
 		"sessionSummary": summary,
-		"tagIds":         tagIDs,
 	})
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		current := repositories.ConversationServiceSessionRepository.GetInTenant(ctx.Tx, req.ID, tenantID)
@@ -88,7 +78,6 @@ func (s *serviceAnalyticsService) UpdateSessionAnnotation(req request.UpdateServ
 			"resolution_code":  resolutionCode,
 			"category_code":    categoryCode,
 			"session_summary":  summary,
-			"tag_ids_json":     string(tagJSON),
 			"updated_at":       now,
 			"update_user_id":   operator.UserID,
 			"update_user_name": operator.Username,
@@ -184,7 +173,6 @@ func (s *serviceAnalyticsService) buildServiceSessionCnd(query ServiceSessionQue
 		)`, enums.ResponseSpanStatusWaiting)
 	}
 	s.applyServiceSessionQualityFilter(cnd, strings.TrimSpace(query.QualityStatus))
-	s.applyServiceSessionTagFilter(cnd, tenantID, query.TagID)
 	s.applyServiceSessionKeywordFilter(cnd, tenantID, query.Keyword)
 	if query.SLABreached {
 		s.applyServiceSessionSLAFilter(cnd, tenantID, query.SLAReferenceTime)
@@ -222,25 +210,6 @@ func (s *serviceAnalyticsService) applyServiceSessionQualityFilter(cnd *sqls.Cnd
 	case "completed":
 		cnd.Where(fmt.Sprintf(eligibleAssignment, completedInspection), enums.IMSenderTypeAgent, enums.QualityInspectionStatusCompleted)
 	}
-}
-
-func (s *serviceAnalyticsService) applyServiceSessionTagFilter(cnd *sqls.Cnd, tenantID, tagID int64) {
-	if tagID <= 0 {
-		return
-	}
-	tagIDs := TagService.GetSelfAndDescendantIDsInTenant(tagID, tenantID)
-	if len(tagIDs) == 0 {
-		cnd.Eq("id", -1)
-		return
-	}
-	clauses := make([]string, 0, len(tagIDs))
-	args := make([]any, 0, len(tagIDs)*4)
-	for _, id := range tagIDs {
-		token := strconv.FormatInt(id, 10)
-		clauses = append(clauses, "(tag_ids_json = ? OR tag_ids_json LIKE ? OR tag_ids_json LIKE ? OR tag_ids_json LIKE ?)")
-		args = append(args, "["+token+"]", "["+token+",%", "%,"+token+",%", "%,"+token+"]")
-	}
-	cnd.Where("("+strings.Join(clauses, " OR ")+")", args...)
 }
 
 func (s *serviceAnalyticsService) applyServiceSessionKeywordFilter(cnd *sqls.Cnd, tenantID int64, keyword string) {
@@ -291,26 +260,4 @@ func normalizeServiceSessionPaging(page, limit int) (int, int) {
 		limit = 100
 	}
 	return page, limit
-}
-
-func uniqueAnalyticsTagIDs(values []int64) []int64 {
-	seen := make(map[int64]struct{}, len(values))
-	ret := make([]int64, 0, len(values))
-	for _, value := range values {
-		if value <= 0 {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		ret = append(ret, value)
-	}
-	return ret
-}
-
-func jsonInt64Slice(raw string) []int64 {
-	ret := []int64{}
-	_ = json.Unmarshal([]byte(raw), &ret)
-	return ret
 }

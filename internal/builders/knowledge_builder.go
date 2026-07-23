@@ -9,10 +9,8 @@ import (
 )
 
 func BuildKnowledgeBase(item *models.KnowledgeBase) response.KnowledgeBaseResponse {
-	remark := item.Remark
 	resourceAllowedHosts := make([]string, 0)
 	if item.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud) {
-		remark = ""
 		config := struct {
 			ResourceAllowedHosts []string `json:"resourceAllowedHosts"`
 		}{}
@@ -39,20 +37,13 @@ func BuildKnowledgeBase(item *models.KnowledgeBase) response.KnowledgeBaseRespon
 		FastGPTProfileStatus:   item.FastGPTProfileStatus,
 		Name:                   item.Name,
 		Description:            item.Description,
-		KnowledgeType:          item.KnowledgeType,
-		KnowledgeTypeName:      enums.GetKnowledgeBaseTypeLabel(enums.KnowledgeBaseType(item.KnowledgeType)),
 		Status:                 item.Status,
 		StatusName:             enums.GetStatusLabel(item.Status),
 		DefaultTopK:            item.DefaultTopK,
 		DefaultScoreThreshold:  item.DefaultScoreThreshold,
 		DefaultRerankLimit:     item.DefaultRerankLimit,
-		ChunkProvider:          item.ChunkProvider,
-		ChunkTargetTokens:      item.ChunkTargetTokens,
-		ChunkMaxTokens:         item.ChunkMaxTokens,
-		ChunkOverlapTokens:     item.ChunkOverlapTokens,
 		AnswerMode:             item.AnswerMode,
 		AnswerModeName:         enums.GetKnowledgeAnswerModeLabel(enums.KnowledgeAnswerMode(item.AnswerMode)),
-		Remark:                 remark,
 		ResourceAllowedHosts:   resourceAllowedHosts,
 		CreatedAt:              item.CreatedAt,
 		UpdatedAt:              item.UpdatedAt,
@@ -97,68 +88,6 @@ func BuildKnowledgeResourceGroup(item *models.KnowledgeResourceGroup, resourceIt
 	return ret
 }
 
-func BuildKnowledgeDocument(item *models.KnowledgeDocument) response.KnowledgeDocumentResponse {
-	return response.KnowledgeDocumentResponse{
-		ID:              item.ID,
-		KnowledgeBaseID: item.KnowledgeBaseID,
-		Title:           item.Title,
-		Status:          item.Status,
-		StatusName:      enums.GetStatusLabel(item.Status),
-		IndexStatus:     item.IndexStatus,
-		IndexStatusName: enums.GetKnowledgeDocumentIndexStatusLabel(item.IndexStatus),
-		IndexedAt:       item.IndexedAt,
-		IndexError:      item.IndexError,
-		ContentHash:     item.ContentHash,
-		ContentType:     item.ContentType,
-		Content:         item.Content,
-		CreatedAt:       item.CreatedAt,
-		UpdatedAt:       item.UpdatedAt,
-		CreateUserName:  item.CreateUserName,
-		UpdateUserName:  item.UpdateUserName,
-	}
-}
-
-func BuildKnowledgeDocumentList(item *models.KnowledgeDocument) response.KnowledgeDocumentListResponse {
-	return response.KnowledgeDocumentListResponse{
-		ID:              item.ID,
-		KnowledgeBaseID: item.KnowledgeBaseID,
-		Title:           item.Title,
-		Status:          item.Status,
-		StatusName:      enums.GetStatusLabel(item.Status),
-		IndexStatus:     item.IndexStatus,
-		IndexStatusName: enums.GetKnowledgeDocumentIndexStatusLabel(item.IndexStatus),
-		IndexedAt:       item.IndexedAt,
-		IndexError:      item.IndexError,
-		ContentHash:     item.ContentHash,
-		ContentType:     item.ContentType,
-		CreatedAt:       item.CreatedAt,
-		UpdatedAt:       item.UpdatedAt,
-		CreateUserName:  item.CreateUserName,
-		UpdateUserName:  item.UpdateUserName,
-	}
-}
-
-func BuildKnowledgeFAQ(item *models.KnowledgeFAQ) response.KnowledgeFAQResponse {
-	return response.KnowledgeFAQResponse{
-		ID:               item.ID,
-		KnowledgeBaseID:  item.KnowledgeBaseID,
-		Question:         item.Question,
-		Answer:           item.Answer,
-		SimilarQuestions: parseSimilarQuestions(item.SimilarQuestions),
-		Status:           item.Status,
-		StatusName:       enums.GetStatusLabel(item.Status),
-		IndexStatus:      item.IndexStatus,
-		IndexStatusName:  enums.GetKnowledgeDocumentIndexStatusLabel(item.IndexStatus),
-		IndexedAt:        item.IndexedAt,
-		IndexError:       item.IndexError,
-		Remark:           item.Remark,
-		CreatedAt:        item.CreatedAt,
-		UpdatedAt:        item.UpdatedAt,
-		CreateUserName:   item.CreateUserName,
-		UpdateUserName:   item.UpdateUserName,
-	}
-}
-
 func BuildKnowledgeCandidate(item *models.KnowledgeCandidate) response.KnowledgeCandidateResponse {
 	if item == nil {
 		return response.KnowledgeCandidateResponse{}
@@ -201,53 +130,46 @@ func BuildKnowledgeCandidateList(list []models.KnowledgeCandidate) []response.Kn
 
 func BuildKnowledgeRetrieveLog(item *models.KnowledgeRetrieveLog) response.KnowledgeRetrieveLogResponse {
 	return response.KnowledgeRetrieveLogResponse{
-		ID:                 item.ID,
-		KnowledgeBaseID:    item.KnowledgeBaseID,
-		SourceType:         item.SourceType,
-		SourceTypeName:     knowledgeRetrieveSourceTypeName(item.SourceType),
-		Channel:            item.Channel,
-		ChannelName:        enums.GetKnowledgeRetrieveChannelLabel(enums.KnowledgeRetrieveChannel(item.Channel)),
-		Scene:              item.Scene,
-		SceneName:          enums.GetKnowledgeRetrieveSceneLabel(enums.KnowledgeRetrieveScene(item.Scene)),
-		SessionID:          item.SessionID,
-		ConversationID:     item.ConversationID,
-		RequestID:          item.RequestID,
-		Question:           item.Question,
-		RewriteQuestion:    item.RewriteQuestion,
-		Answer:             item.Answer,
-		AnswerStatus:       item.AnswerStatus,
-		AnswerStatusName:   enums.GetKnowledgeAnswerStatusLabel(enums.KnowledgeAnswerStatus(item.AnswerStatus)),
-		HitCount:           item.HitCount,
-		TopScore:           item.TopScore,
-		ChunkProvider:      item.ChunkProvider,
-		ChunkTargetTokens:  item.ChunkTargetTokens,
-		ChunkMaxTokens:     item.ChunkMaxTokens,
-		ChunkOverlapTokens: item.ChunkOverlapTokens,
-		RerankEnabled:      item.RerankEnabled,
-		RerankLimit:        item.RerankLimit,
-		CitationCount:      item.CitationCount,
-		UsedChunkCount:     item.UsedChunkCount,
-		LatencyMs:          item.LatencyMs,
-		RetrieveMs:         item.RetrieveMs,
-		GenerateMs:         item.GenerateMs,
-		PromptTokens:       item.PromptTokens,
-		CompletionTokens:   item.CompletionTokens,
-		ModelName:          item.ModelName,
-		TraceData:          item.TraceData,
-		CreatedAt:          item.CreatedAt,
+		ID:               item.ID,
+		KnowledgeBaseID:  item.KnowledgeBaseID,
+		SourceType:       item.SourceType,
+		SourceTypeName:   knowledgeRetrieveSourceTypeName(item.SourceType),
+		Channel:          item.Channel,
+		ChannelName:      enums.GetKnowledgeRetrieveChannelLabel(enums.KnowledgeRetrieveChannel(item.Channel)),
+		Scene:            item.Scene,
+		SceneName:        enums.GetKnowledgeRetrieveSceneLabel(enums.KnowledgeRetrieveScene(item.Scene)),
+		SessionID:        item.SessionID,
+		ConversationID:   item.ConversationID,
+		RequestID:        item.RequestID,
+		Question:         item.Question,
+		RewriteQuestion:  item.RewriteQuestion,
+		Answer:           item.Answer,
+		AnswerStatus:     item.AnswerStatus,
+		AnswerStatusName: enums.GetKnowledgeAnswerStatusLabel(enums.KnowledgeAnswerStatus(item.AnswerStatus)),
+		HitCount:         item.HitCount,
+		TopScore:         item.TopScore,
+		ChunkProvider:    item.ChunkProvider,
+		RerankEnabled:    item.RerankEnabled,
+		RerankLimit:      item.RerankLimit,
+		CitationCount:    item.CitationCount,
+		UsedChunkCount:   item.UsedChunkCount,
+		LatencyMs:        item.LatencyMs,
+		RetrieveMs:       item.RetrieveMs,
+		GenerateMs:       item.GenerateMs,
+		PromptTokens:     item.PromptTokens,
+		CompletionTokens: item.CompletionTokens,
+		ModelName:        item.ModelName,
+		TraceData:        item.TraceData,
+		CreatedAt:        item.CreatedAt,
 	}
 }
 
 func knowledgeRetrieveSourceTypeName(sourceType string) string {
 	switch sourceType {
-	case "cloud_knowledge":
-		return "云端知识库"
-	case "hybrid":
-		return "本地+云端"
-	case "faq":
-		return "FAQ"
+	case "fastgpt", "cloud_knowledge":
+		return "托管 FastGPT"
 	default:
-		return "本地向量"
+		return "历史检索记录"
 	}
 }
 
@@ -265,7 +187,7 @@ func BuildKnowledgeRetrieveHitResponse(item *models.KnowledgeRetrieveHit) respon
 		Title:           item.Title,
 		SectionPath:     item.SectionPath,
 		ChunkType:       item.ChunkType,
-		ChunkTypeName:   enums.GetKnowledgeChunkTypeLabel(enums.KnowledgeChunkType(item.ChunkType)),
+		ChunkTypeName:   historicalKnowledgeChunkTypeName(item.ChunkType),
 		Provider:        item.Provider,
 		RankNo:          item.RankNo,
 		Score:           item.Score,
@@ -277,13 +199,17 @@ func BuildKnowledgeRetrieveHitResponse(item *models.KnowledgeRetrieveHit) respon
 	}
 }
 
-func parseSimilarQuestions(raw string) []string {
-	if raw == "" {
-		return []string{}
+func historicalKnowledgeChunkTypeName(chunkType string) string {
+	switch strings.TrimSpace(chunkType) {
+	case "text":
+		return "文本"
+	case "faq":
+		return "历史问答"
+	case "table":
+		return "表格"
+	case "code":
+		return "代码"
+	default:
+		return ""
 	}
-	var items []string
-	if err := json.Unmarshal([]byte(raw), &items); err != nil {
-		return []string{}
-	}
-	return items
 }

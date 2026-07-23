@@ -74,8 +74,8 @@ func serviceSessionQueryFromContext(ctx *gin.Context) services.ServiceSessionQue
 		AgentID: params.FormValueInt64Default(ctx, "assignedAgentId", 0), ChannelID: params.FormValueInt64Default(ctx, "channelId", 0),
 		StoreID: params.FormValueInt64Default(ctx, "storeId", 0), WxWorkInstanceID: params.FormValueInt64Default(ctx, "wxWorkInstanceId", 0),
 		DataQuality: params.FormValue(ctx, "dataQuality"), ResolutionCode: params.FormValue(ctx, "resolutionCode"),
-		CategoryCode: params.FormValue(ctx, "categoryCode"), TagID: params.FormValueInt64Default(ctx, "tagId", 0),
-		Keyword: params.FormValue(ctx, "keyword"), QualityStatus: params.FormValue(ctx, "qualityStatus"),
+		CategoryCode: params.FormValue(ctx, "categoryCode"),
+		Keyword:      params.FormValue(ctx, "keyword"), QualityStatus: params.FormValue(ctx, "qualityStatus"),
 	}
 	if value := params.GetTime(ctx, "startAt"); value != nil {
 		query.StartAt = value

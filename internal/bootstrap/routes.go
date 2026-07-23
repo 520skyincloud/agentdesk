@@ -169,9 +169,7 @@ func registerDashboardTenantRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.TenantGetBy)
 	group.POST("/create", dashboard.TenantPostCreate)
 	group.Any("/list", dashboard.TenantAnyList)
-	group.POST("/model_access", dashboard.TenantPostModelAccess)
 	group.POST("/update", dashboard.TenantPostUpdate)
-	group.POST("/update_model_access", dashboard.TenantPostUpdateModelAccess)
 	group.POST("/update_status", dashboard.TenantPostUpdateStatus)
 }
 
@@ -251,7 +249,6 @@ func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.POST("/customer_tag/add", dashboard.ConversationPostCustomer_tag_add)
 	group.POST("/customer_tag/remove", dashboard.ConversationPostCustomer_tag_remove)
 	group.POST("/customer_tag/replace", dashboard.ConversationPostCustomer_tag_replace)
-	group.POST("/add_tag", dashboard.ConversationPostAdd_tag)
 	group.POST("/assign", dashboard.ConversationPostAssign)
 	group.POST("/close", dashboard.ConversationPostClose)
 	group.Any("/conversations", dashboard.ConversationAnyConversations)
@@ -260,7 +257,6 @@ func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.Any("/message_list", dashboard.ConversationAnyMessage_list)
 	group.POST("/read", dashboard.ConversationPostRead)
 	group.POST("/recall_message", dashboard.ConversationPostRecall_message)
-	group.POST("/remove_tag", dashboard.ConversationPostRemove_tag)
 	group.POST("/send_message", dashboard.ConversationPostSend_message)
 	group.POST("/set_auto_handoff_enabled", dashboard.ConversationPostSet_auto_handoff_enabled)
 	group.POST("/transfer", dashboard.ConversationPostTransfer)
@@ -335,7 +331,6 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 	group.Any("/list", dashboard.WxWorkProtocolInstanceAnyList)
 	group.POST("/login_qrcode", dashboard.WxWorkProtocolInstancePostLogin_qrcode)
 	group.POST("/logout", dashboard.WxWorkProtocolInstancePostLogout)
-	group.POST("/model_assignments", dashboard.WxWorkProtocolInstancePostModelAssignments)
 	group.POST("/recover", dashboard.WxWorkProtocolInstancePostRecover)
 	group.POST("/resolve_login_binding", dashboard.WxWorkProtocolInstancePostResolve_login_binding)
 	group.POST("/room_list", dashboard.WxWorkProtocolInstancePostRoom_list)
@@ -351,7 +346,6 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 	group.POST("/sync_profile", dashboard.WxWorkProtocolInstancePostSync_profile)
 	group.POST("/update", dashboard.WxWorkProtocolInstancePostUpdate)
 	group.POST("/update_ai_settings", dashboard.WxWorkProtocolInstancePostUpdate_ai_settings)
-	group.POST("/update_model_assignments", dashboard.WxWorkProtocolInstancePostUpdateModelAssignments)
 	group.POST("/verify_login", dashboard.WxWorkProtocolInstancePostVerify_login)
 }
 
@@ -398,17 +392,6 @@ func registerDashboardAgentTeamScheduleRoutes(group *gin.RouterGroup) {
 
 func registerDashboardAIAgentRoutes(group *gin.RouterGroup) {
 	group.GET("/list_all", dashboard.AIAgentGetList_all)
-}
-
-func registerDashboardAIConfigRoutes(group *gin.RouterGroup) {
-	group.GET("/:id", dashboard.AIConfigGetBy)
-	group.POST("/create", dashboard.AIConfigPostCreate)
-	group.POST("/delete", dashboard.AIConfigPostDelete)
-	group.Any("/list", dashboard.AIConfigAnyList)
-	group.Any("/list_all", dashboard.AIConfigAnyList_all)
-	group.POST("/update", dashboard.AIConfigPostUpdate)
-	group.POST("/update_sort", dashboard.AIConfigPostUpdateSort)
-	group.POST("/update_status", dashboard.AIConfigPostUpdate_status)
 }
 
 func registerDashboardModelProfileTemplateRoutes(group *gin.RouterGroup) {
@@ -472,11 +455,8 @@ func registerDashboardStorageSettingRoutes(group *gin.RouterGroup) {
 
 func registerDashboardKnowledgeBaseRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.KnowledgeBaseGetBy)
-	group.POST("/create", dashboard.KnowledgeBasePostCreate)
-	group.POST("/delete", dashboard.KnowledgeBasePostDelete)
 	group.Any("/list", dashboard.KnowledgeBaseAnyList)
 	group.Any("/list_all", dashboard.KnowledgeBaseAnyList_all)
-	group.POST("/rebuild_index", dashboard.KnowledgeBasePostRebuild_index)
 	group.POST("/update", dashboard.KnowledgeBasePostUpdate)
 	group.POST("/update_sort", dashboard.KnowledgeBasePostUpdate_sort)
 	group.POST("/fastgpt/provision", dashboard.FastGPTDatasetPostProvision)
@@ -497,24 +477,7 @@ func registerDashboardKnowledgeResourceRoutes(group *gin.RouterGroup) {
 	group.POST("/delete", dashboard.KnowledgeResourcePostDelete)
 }
 
-func registerDashboardKnowledgeDocumentRoutes(group *gin.RouterGroup) {
-	group.GET("/:id", dashboard.KnowledgeDocumentGetBy)
-	group.POST("/create", dashboard.KnowledgeDocumentPostCreate)
-	group.POST("/delete", dashboard.KnowledgeDocumentPostDelete)
-	group.Any("/list", dashboard.KnowledgeDocumentAnyList)
-	group.POST("/update", dashboard.KnowledgeDocumentPostUpdate)
-}
-
-func registerDashboardKnowledgeFAQRoutes(group *gin.RouterGroup) {
-	group.GET("/:id", dashboard.KnowledgeFAQGetBy)
-	group.POST("/create", dashboard.KnowledgeFAQPostCreate)
-	group.POST("/delete", dashboard.KnowledgeFAQPostDelete)
-	group.Any("/list", dashboard.KnowledgeFAQAnyList)
-	group.POST("/update", dashboard.KnowledgeFAQPostUpdate)
-}
-
 func registerDashboardKnowledgeRetrieveRoutes(group *gin.RouterGroup) {
-	group.POST("/build", dashboard.KnowledgeRetrievePostBuild)
 	group.POST("/debug/answer", dashboard.KnowledgeRetrievePostDebugAnswer)
 	group.POST("/debug/search", dashboard.KnowledgeRetrievePostDebugSearch)
 }

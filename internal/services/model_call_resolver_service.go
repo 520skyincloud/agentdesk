@@ -78,6 +78,12 @@ func modelCallUsageScope(resolved *ModelCallConfig, conversationID, messageID in
 	}
 }
 
+// ModelCallUsageScope exposes the resolver attribution envelope to debug and
+// operational callers without exposing credential material.
+func ModelCallUsageScope(resolved *ModelCallConfig, conversationID, messageID int64, requestID string) usagex.Scope {
+	return modelCallUsageScope(resolved, conversationID, messageID, requestID)
+}
+
 func (s *modelCallResolverService) ResolveForStore(storeID int64, usageCode enums.ModelUsageSlot) (*ModelCallConfig, error) {
 	store := repositories.StoreRepository.Get(sqls.DB(), storeID)
 	if store == nil || store.Status != enums.StatusOk || store.TenantID <= 0 {

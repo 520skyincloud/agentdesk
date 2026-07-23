@@ -63,6 +63,10 @@ type customerTagScope struct {
 	ProfileID    int64
 }
 
+func (s *customerTagService) ApplyConversationFilter(cnd *sqls.Cnd, tenantID int64, tagIDs []int64) *sqls.Cnd {
+	return repositories.CustomerTagRelationRepository.ApplyConversationFilter(cnd, tenantID, uniquePositive(tagIDs))
+}
+
 func (s *customerTagService) ListForConversation(conversationID int64) []response.CustomerTagResponse {
 	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
 	if conversation == nil {
@@ -81,12 +85,12 @@ func (s *customerTagService) ListForConversations(conversations []models.Convers
 		}
 	}
 	for tenantID, tenantConversations := range byTenant {
-		s.fillConversationTagsInTenant(ret, tenantID, tenantConversations)
+		s.fillCustomerTagsInTenant(ret, tenantID, tenantConversations)
 	}
 	return ret
 }
 
-func (s *customerTagService) fillConversationTagsInTenant(ret map[int64][]response.CustomerTagResponse, tenantID int64, conversations []models.Conversation) {
+func (s *customerTagService) fillCustomerTagsInTenant(ret map[int64][]response.CustomerTagResponse, tenantID int64, conversations []models.Conversation) {
 	conversationIDs := make([]int64, 0, len(conversations))
 	customerIDs := make([]int64, 0, len(conversations))
 	conversationByID := make(map[int64]models.Conversation, len(conversations))

@@ -18,8 +18,7 @@ type InitResult struct {
 	Updated int
 }
 
-// Init 初始化 AI Agent 测试数据
-// 依赖于 AI Config 和 Knowledge Base 已初始化
+// Init 初始化接待策略测试数据。
 func Init() (*InitResult, error) {
 	result := &InitResult{}
 	tenant := repositories.TenantRepository.GetByTenantCode(sqls.DB(), constants.LegacyDefaultTenantCode)
@@ -27,15 +26,7 @@ func Init() (*InitResult, error) {
 		return result, fmt.Errorf("legacy default tenant not found")
 	}
 
-	aiConfigID, err := getDefaultAIConfigID()
-	if err != nil {
-		return result, fmt.Errorf("get default ai config id failed: %w", err)
-	}
-	if aiConfigID == 0 {
-		return result, fmt.Errorf("no default ai config found, please init ai config first")
-	}
-
-	knowledgeIDs, err := getDefaultKnowledgeIDs()
+	knowledgeIDs, err := getDefaultKnowledgeIDs(tenant.ID)
 	if err != nil {
 		return result, fmt.Errorf("get default knowledge ids failed: %w", err)
 	}
@@ -46,7 +37,7 @@ func Init() (*InitResult, error) {
 		return result, fmt.Errorf("get default skill ids failed: %w", err)
 	}
 
-	seedItems := buildSeedItems(tenant.ID, aiConfigID, knowledgeIDs, defaultTeamIDs, defaultSkillIDs)
+	seedItems := buildSeedItems(tenant.ID, knowledgeIDs, defaultTeamIDs, defaultSkillIDs)
 	for _, item := range seedItems {
 		itemCopy := item
 		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -73,7 +64,7 @@ func Init() (*InitResult, error) {
 	return result, nil
 }
 
-func buildSeedItems(tenantID, aiConfigID int64, knowledgeIDs []int64, defaultTeamIDs string, defaultSkillIDs string) []models.AIAgent {
+func buildSeedItems(tenantID int64, knowledgeIDs []int64, defaultTeamIDs string, defaultSkillIDs string) []models.AIAgent {
 	now := time.Now()
 	return []models.AIAgent{
 		{
@@ -81,7 +72,6 @@ func buildSeedItems(tenantID, aiConfigID int64, knowledgeIDs []int64, defaultTea
 			Name:        "测试AI客服",
 			Description: "本地测试 AI 客服 Agent",
 			Status:      enums.StatusOk,
-			AIConfigID:  aiConfigID,
 			ServiceMode: enums.IMConversationServiceModeAIFirst,
 			SystemPrompt: `你正在一个有明确工程约束的客服系统中工作。
 执行时必须严格遵守当前注入的 Agent 规则和技能规则。
@@ -110,23 +100,10 @@ func buildSeedItems(tenantID, aiConfigID int64, knowledgeIDs []int64, defaultTea
 	}
 }
 
-func getDefaultAIConfigID() (int64, error) {
-	aiConfig := repositories.AIConfigRepository.Take(
-		sqls.DB(),
-		"model_type = ? AND status = ?",
-		string(enums.AIModelTypeLLM),
-		enums.StatusOk,
-	)
-	if aiConfig == nil {
-		return 0, nil
-	}
-	return aiConfig.ID, nil
-}
-
-func getDefaultKnowledgeIDs() ([]int64, error) {
+func getDefaultKnowledgeIDs(tenantID int64) ([]int64, error) {
 	knowledges := repositories.KnowledgeBaseRepository.Find(
 		sqls.DB(),
-		sqls.NewCnd().Where("status = ?", enums.StatusOk),
+		sqls.NewCnd().Eq("tenant_id", tenantID).Eq("knowledge_type", string(enums.KnowledgeBaseTypeFastGPTCloud)).Eq("status", enums.StatusOk),
 	)
 	ids := make([]int64, 0, len(knowledges))
 	for _, knowledge := range knowledges {

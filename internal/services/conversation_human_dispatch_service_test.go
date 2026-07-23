@@ -967,7 +967,6 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		&models.AgentTeam{},
 		&models.AgentTeamSchedule{},
 		&models.AgentProfile{},
-		&models.AIConfig{},
 		&models.Store{},
 		&models.StoreStaffBinding{},
 		&models.WxWorkProtocolInstance{},

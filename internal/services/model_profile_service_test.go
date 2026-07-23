@@ -159,19 +159,9 @@ func TestStoreProfilePendingAssignmentPreservesActiveRevision(t *testing.T) {
 	}
 }
 
-func TestModelCallResolverNeverFallsBackToLegacyAIConfig(t *testing.T) {
+func TestModelCallResolverRequiresStoreProfileAndCredential(t *testing.T) {
 	db := setupModelProfileTestDB(t)
 	tenant, store := createModelProfileTenantAndStore(t, db)
-	legacy := &models.AIConfig{
-		Name: "legacy", Provider: enums.AIProviderOpenAI, BaseURL: "https://legacy.example.com/v1", APIKey: "legacy-key",
-		ModelType: enums.AIModelTypeLLM, ModelName: "legacy-model", Status: enums.StatusOk,
-	}
-	if err := db.Create(legacy).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&models.TenantAIModelGrant{TenantID: tenant.ID, AIConfigID: legacy.ID, Status: enums.StatusOk}).Error; err != nil {
-		t.Fatal(err)
-	}
 	if _, err := ModelCallResolverService.Resolve(tenant.ID, store.ID, enums.ModelUsageSlotReplyLLM); err == nil {
 		t.Fatal("resolver must fail without the sole Store Profile assignment")
 	}
@@ -211,9 +201,6 @@ func TestModelCallResolverNeverFallsBackToLegacyAIConfig(t *testing.T) {
 	if resolved.ProfileID != profile.ID || resolved.ModelName != "reply_llm-model" || resolved.CredentialRevision != 4 {
 		t.Fatalf("resolved=%#v", resolved)
 	}
-	if resolved.ModelName == legacy.ModelName || resolved.GatewayBaseURL == legacy.BaseURL {
-		t.Fatalf("legacy configuration leaked into resolver: %#v", resolved)
-	}
 	if err := db.Model(store).Update("status", enums.StatusDisabled).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -232,8 +219,7 @@ func setupModelProfileTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.Tenant{}, &models.Store{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{},
-		&models.StoreModelProfileAssignment{}, &models.StoreModelCredential{}, &models.AIConfig{},
-		&models.TenantAIModelGrant{}, &models.StoreAIModelSetting{}, &models.Conversation{}, &models.ConversationRouteState{},
+		&models.StoreModelProfileAssignment{}, &models.StoreModelCredential{}, &models.Conversation{}, &models.ConversationRouteState{},
 	); err != nil {
 		t.Fatalf("AutoMigrate() error=%v", err)
 	}

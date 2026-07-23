@@ -3,12 +3,9 @@ package main
 import (
 	"agent-desk/cmd/testdata/agentteam"
 	"agent-desk/cmd/testdata/aiagent"
-	"agent-desk/cmd/testdata/aiconfig"
 	"agent-desk/cmd/testdata/channel"
-	"agent-desk/cmd/testdata/kb"
 	"agent-desk/cmd/testdata/quickreply"
 	"agent-desk/cmd/testdata/skill"
-	"agent-desk/cmd/testdata/tag"
 	"agent-desk/internal/bootstrap"
 	"agent-desk/internal/pkg/config"
 	"flag"
@@ -62,28 +59,6 @@ func run() error {
 	}
 	slog.Info("run migrations success")
 
-	aiConfigResult, err := aiconfig.Init()
-	if err != nil {
-		return fmt.Errorf("init ai config failed: %w", err)
-	}
-	slog.Info("ai config init success", slog.Bool("skipped", aiConfigResult.Skipped),
-		slog.String("filePath", aiConfigResult.FilePath),
-		slog.Int("created", aiConfigResult.Created),
-		slog.Int("updated", aiConfigResult.Updated))
-
-	kbResult, err := kb.Init()
-	if err != nil {
-		return fmt.Errorf("init knowledge base failed: %w", err)
-	}
-	slog.Info("knowledge base init success",
-		slog.Int64("documentKnowledgeBaseID", kbResult.DocumentKnowledgeBaseID),
-		slog.Int("createdDocuments", kbResult.CreatedDocuments),
-		slog.Int("updatedDocuments", kbResult.UpdatedDocuments),
-		slog.Int64("faqKnowledgeBaseID", kbResult.FAQKnowledgeBaseID),
-		slog.Int("createdFAQs", kbResult.CreatedFAQs),
-		slog.Int("updatedFAQs", kbResult.UpdatedFAQs),
-	)
-
 	skillResult, err := skill.Init()
 	if err != nil {
 		return fmt.Errorf("init skill failed: %w", err)
@@ -111,11 +86,6 @@ func run() error {
 		return fmt.Errorf("init channel failed: %w", err)
 	}
 	slog.Info("channel init success", slog.Int("created", channelResult.Created), slog.Int("updated", channelResult.Updated))
-
-	if err := tag.Init(); err != nil {
-		slog.Error("init tag failed", "error", err)
-	}
-	slog.Info("tag init success")
 
 	if err := quickreply.Init(); err != nil {
 		return fmt.Errorf("init quick reply failed: %w", err)

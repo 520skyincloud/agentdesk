@@ -16,36 +16,6 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestBuildKnowledgeBaseModelUsesLowerDefaultScoreThreshold(t *testing.T) {
-	item, err := KnowledgeBaseService.buildKnowledgeBaseModel(request.CreateKnowledgeBaseRequest{}, 101)
-	if err != nil {
-		t.Fatalf("build knowledge base model failed: %v", err)
-	}
-	if item.DefaultScoreThreshold != 0.2 {
-		t.Fatalf("expected default score threshold 0.2, got %v", item.DefaultScoreThreshold)
-	}
-}
-
-func TestBuildKnowledgeBaseModelDoesNotRequireIntentProfile(t *testing.T) {
-	item, err := KnowledgeBaseService.buildKnowledgeBaseModel(request.CreateKnowledgeBaseRequest{Name: "独立门店 FastGPT"}, 101)
-	if err != nil {
-		t.Fatalf("knowledge base without industry profile should be valid: %v", err)
-	}
-	if item.IntentProfileID != 0 {
-		t.Fatalf("intent profile should remain optional, got %d", item.IntentProfileID)
-	}
-}
-
-func TestCreateKnowledgeBaseRejectsFastGPTOutsideProvisionFlow(t *testing.T) {
-	operator := &dto.AuthPrincipal{UserID: 9, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
-	_, err := KnowledgeBaseService.CreateKnowledgeBase(request.CreateKnowledgeBaseRequest{
-		Name: "绕过开通流程", KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud),
-	}, operator)
-	if err == nil || !strings.Contains(err.Error(), "开通流程") {
-		t.Fatalf("expected provision-only error, got %v", err)
-	}
-}
-
 func TestUpdateFastGPTKnowledgeBasePreservesStoreAuthority(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -76,13 +46,10 @@ func TestUpdateFastGPTKnowledgeBasePreservesStoreAuthority(t *testing.T) {
 	}
 	operator := &dto.AuthPrincipal{UserID: 9, Username: "admin", ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
 	err = KnowledgeBaseService.UpdateKnowledgeBase(request.UpdateKnowledgeBaseRequest{
-		ID: knowledgeBase.ID,
-		CreateKnowledgeBaseRequest: request.CreateKnowledgeBaseRequest{
-			Name: "更新后的知识库", Description: "仅更新展示和检索参数",
-			KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud), DefaultTopK: 8,
-			DefaultScoreThreshold: 0.3, DefaultRerankLimit: 6, AnswerMode: int(enums.KnowledgeAnswerModeStrict),
-			ResourceAllowedHosts: []string{"https://CDN.example.com/", "cdn.example.com"},
-		},
+		ID: knowledgeBase.ID, Name: "更新后的知识库", Description: "仅更新展示和检索参数",
+		DefaultTopK: 8, DefaultScoreThreshold: 0.3, DefaultRerankLimit: 6,
+		AnswerMode:           int(enums.KnowledgeAnswerModeStrict),
+		ResourceAllowedHosts: []string{"https://CDN.example.com/", "cdn.example.com"},
 	}, operator)
 	if err != nil {
 		t.Fatal(err)

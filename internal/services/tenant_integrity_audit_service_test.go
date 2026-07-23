@@ -23,17 +23,21 @@ func TestTenantIntegrityPoliciesCoverEveryRegisteredTenantModel(t *testing.T) {
 		t.Fatalf("build model metadata: %v", err)
 	}
 	policies := tenantIntegrityTablePolicies()
+	tenantModelCount := 0
 	for name, item := range metadata {
 		_, hasPolicy := policies[name]
 		if item.HasTenantID && !hasPolicy {
 			t.Errorf("TenantID model %s has no audit policy", name)
 		}
+		if item.HasTenantID {
+			tenantModelCount++
+		}
 		if !item.HasTenantID && hasPolicy {
 			t.Errorf("non-tenant model %s has a stale audit policy", name)
 		}
 	}
-	if len(policies) != 88 {
-		t.Fatalf("policy count = %d, want 88 explicit TenantID policies", len(policies))
+	if len(policies) != tenantModelCount {
+		t.Fatalf("policy count = %d, want one explicit policy for each of %d TenantID models", len(policies), tenantModelCount)
 	}
 }
 
@@ -96,11 +100,12 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	if report.Status != "passed" || report.HasViolations() {
 		t.Fatalf("clean fixture failed audit: %#v", report.Violations)
 	}
-	if report.RegisteredTenantModels != 88 || report.PolicyCount != 88 {
-		t.Fatalf("tenant model coverage = %d/%d, want 88/88", report.RegisteredTenantModels, report.PolicyCount)
+	expectedTenantModels := len(tenantIntegrityTablePolicies())
+	if report.RegisteredTenantModels != expectedTenantModels || report.PolicyCount != expectedTenantModels {
+		t.Fatalf("tenant model coverage = %d/%d, want %d/%d", report.RegisteredTenantModels, report.PolicyCount, expectedTenantModels, expectedTenantModels)
 	}
-	if report.RequiredTables != 104 || report.ConfiguredRelations != 259 {
-		t.Fatalf("audit schema coverage = %d tables/%d relations, want 104/259", report.RequiredTables, report.ConfiguredRelations)
+	if report.RequiredTables != 97 || report.ConfiguredRelations != 242 {
+		t.Fatalf("audit schema coverage = %d tables/%d relations, want 97/242", report.RequiredTables, report.ConfiguredRelations)
 	}
 	if report.CheckedTables != report.RequiredTables {
 		t.Fatalf("checked tables = %d, required = %d", report.CheckedTables, report.RequiredTables)

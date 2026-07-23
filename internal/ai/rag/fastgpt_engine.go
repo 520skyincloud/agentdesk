@@ -86,21 +86,7 @@ func validateManagedFastGPTReadiness(knowledgeBase models.KnowledgeBase) error {
 }
 
 func isFastGPTKnowledgeBase(knowledgeBase models.KnowledgeBase) bool {
-	return knowledgeBase.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud) ||
-		knowledgeBase.ChunkProvider == string(enums.KnowledgeChunkProviderFastGPT)
-}
-
-func splitFastGPTKnowledgeBases(knowledgeBases []models.KnowledgeBase) ([]models.KnowledgeBase, []models.KnowledgeBase) {
-	local := make([]models.KnowledgeBase, 0, len(knowledgeBases))
-	fastGPT := make([]models.KnowledgeBase, 0, len(knowledgeBases))
-	for _, knowledgeBase := range knowledgeBases {
-		if isFastGPTKnowledgeBase(knowledgeBase) {
-			fastGPT = append(fastGPT, knowledgeBase)
-			continue
-		}
-		local = append(local, knowledgeBase)
-	}
-	return local, fastGPT
+	return knowledgeBase.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud)
 }
 
 func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveRequest, knowledgeBases []models.KnowledgeBase) ([]RetrieveResult, int64, error) {
@@ -203,7 +189,6 @@ func buildFastGPTRetrieveResult(knowledgeBase models.KnowledgeBase, hit fastgpta
 		Content:         strings.Join(contentParts, "\n"),
 		SourceRecordID:  strings.TrimSpace(hit.DataID),
 		Score:           float32(hit.Score),
-		ChunkType:       string(enums.KnowledgeChunkTypeText),
 	}
 }
 

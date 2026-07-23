@@ -36,7 +36,7 @@ func (c *toolCatalog) resolveForRun(req Request) (*registry.ToolSet, error) {
 	return c.registry.Resolve(registry.Context{
 		Conversation:     req.Conversation,
 		AIAgent:          req.AIAgent,
-		AIConfig:         req.AIConfig,
+		ModelConfig:      req.ModelConfig,
 		UserMessage:      req.UserMessage,
 		AllowedToolCodes: c.parseAgentAllowedToolCodes(req.AIAgent),
 	})
@@ -46,7 +46,7 @@ func (c *toolCatalog) resolveForResume(req ResumeRequest) (*registry.ToolSet, er
 	return c.registry.Resolve(registry.Context{
 		Conversation:     req.Conversation,
 		AIAgent:          req.AIAgent,
-		AIConfig:         req.AIConfig,
+		ModelConfig:      req.ModelConfig,
 		AllowedToolCodes: c.parseAgentAllowedToolCodes(req.AIAgent),
 	})
 }

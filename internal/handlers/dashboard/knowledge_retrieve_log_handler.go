@@ -14,7 +14,7 @@ import (
 )
 
 func KnowledgeRetrieveLogAnyList(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentView)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -23,10 +23,8 @@ func KnowledgeRetrieveLogAnyList(ctx *gin.Context) {
 	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "knowledgeBaseId"},
 		params.QueryFilter{ParamName: "question", Op: params.Like},
-		params.QueryFilter{ParamName: "sourceType"},
 		params.QueryFilter{ParamName: "channel"},
 		params.QueryFilter{ParamName: "scene"},
-		params.QueryFilter{ParamName: "chunkProvider"},
 	).Desc("id")
 
 	if answerStatus, ok := params.GetInt64(ctx, "answerStatus"); ok && answerStatus > 0 {
@@ -55,7 +53,7 @@ func KnowledgeRetrieveLogGetBy(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeDocumentView)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseView)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

@@ -156,7 +156,7 @@ func setupEmailLifecycleTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.EmailVerificationCode{}, &models.User{}, &models.Role{}, &models.UserRole{}, &models.UserRoleChangeLog{},
-		&models.Store{}, &models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{}, &models.StoreAIModelSetting{},
+		&models.Store{}, &models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

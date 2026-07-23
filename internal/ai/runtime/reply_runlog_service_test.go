@@ -41,7 +41,7 @@ func TestReplyRunLogStoresRequestID(t *testing.T) {
 	now := time.Now()
 	conversation := models.Conversation{ID: 11, TenantID: 101, CustomerName: "runlog customer", Status: enums.IMConversationStatusAIServing, AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now}}
 	message := models.Message{ID: 22, TenantID: 101, ConversationID: conversation.ID, RequestID: "trace-123", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "hello", SentAt: &now, AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now}}
-	agent := models.AIAgent{ID: 33, TenantID: 101, Name: "runlog agent", AIConfigID: 44, Status: enums.StatusOk, AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now}}
+	agent := models.AIAgent{ID: 33, TenantID: 101, Name: "runlog agent", Status: enums.StatusOk, AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now}}
 	for _, item := range []any{&conversation, &message, &agent} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatalf("create run log parent %T: %v", item, err)

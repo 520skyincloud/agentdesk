@@ -215,23 +215,6 @@ func TestTicketAndTagRuntimeTenantIsolation(t *testing.T) {
 		t.Fatal("tenant A must not delete tenant B tag")
 	}
 
-	if err := services.ConversationTagService.AddTag(request.AddConversationTagRequest{ConversationID: conversationB, TagID: tagB}, adminB); err != nil {
-		t.Fatalf("add tenant B conversation tag: %v", err)
-	}
-	if err := services.ConversationTagService.AddTag(request.AddConversationTagRequest{ConversationID: conversationA, TagID: tagA}, adminA); err != nil {
-		t.Fatalf("add tenant A conversation tag: %v", err)
-	}
-	if err := services.ConversationTagService.AddTag(request.AddConversationTagRequest{ConversationID: conversationA, TagID: tagB}, adminA); err == nil {
-		t.Fatal("tenant A must not add tenant B tag to its conversation")
-	}
-	if err := services.ConversationTagService.RemoveTag(request.RemoveConversationTagRequest{ConversationID: conversationB, TagID: tagB}, adminA); err == nil {
-		t.Fatal("tenant A must not remove tenant B conversation tag")
-	}
-	relationB := repositories.ConversationTagRepository.FindOne(sqls.DB(), sqls.NewCnd().Eq("tenant_id", 202).Eq("conversation_id", conversationB).Eq("tag_id", tagB))
-	if relationB == nil {
-		t.Fatal("tenant B conversation tag was removed by tenant A")
-	}
-
 	if summaryA := services.TicketService.GetSummary(adminA); summaryA.All != 1 || summaryA.Mine != 0 {
 		t.Fatalf("tenant A summary leaked: %+v", summaryA)
 	}

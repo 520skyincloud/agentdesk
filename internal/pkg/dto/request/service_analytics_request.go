@@ -51,11 +51,10 @@ type SaveServiceAnalyticsPolicyRequest struct {
 }
 
 type UpdateServiceSessionAnnotationRequest struct {
-	ID             int64   `json:"id" validate:"required"`
-	ResolutionCode string  `json:"resolutionCode"`
-	CategoryCode   string  `json:"categoryCode"`
-	SessionSummary string  `json:"sessionSummary"`
-	TagIDs         []int64 `json:"tagIds"`
+	ID             int64  `json:"id" validate:"required"`
+	ResolutionCode string `json:"resolutionCode"`
+	CategoryCode   string `json:"categoryCode"`
+	SessionSummary string `json:"sessionSummary"`
 }
 
 type CreateQualitySamplingRequest struct {

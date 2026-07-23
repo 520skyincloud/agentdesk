@@ -64,6 +64,7 @@ func TestDashboardPresenceStaysActiveUntilLastUserSessionCloses(t *testing.T) {
 		t.Fatal("final disconnect must keep presence active during reconnect grace")
 	}
 	waitForPresenceEnded(t, db, operator.ActiveTenantID, operator.UserID)
+	waitForPresenceEndCompleted(t, service, operator.ActiveTenantID, operator.UserID)
 
 	rows := repositories.AgentPresenceSessionRepository.Find(db, sqls.NewCnd().
 		Eq("tenant_id", operator.ActiveTenantID).
@@ -132,6 +133,7 @@ func TestDashboardPresenceBreakSurvivesHeartbeatsAndCanRecover(t *testing.T) {
 	}
 	service.closeSession(second)
 	waitForPresenceEnded(t, db, operator.ActiveTenantID, operator.UserID)
+	waitForPresenceEndCompleted(t, service, operator.ActiveTenantID, operator.UserID)
 
 	rows := repositories.AgentPresenceSessionRepository.Find(db, sqls.NewCnd().
 		Eq("tenant_id", operator.ActiveTenantID).
@@ -179,6 +181,7 @@ func TestDashboardPresenceHeartbeatTimeoutKeepsOneRealtimeAgent(t *testing.T) {
 
 	service.closeSession(session)
 	waitForPresenceEnded(t, db, operator.ActiveTenantID, operator.UserID)
+	waitForPresenceEndCompleted(t, service, operator.ActiveTenantID, operator.UserID)
 }
 
 func TestDashboardPresenceReconnectCancelsPendingDisconnect(t *testing.T) {
@@ -205,6 +208,23 @@ func TestDashboardPresenceReconnectCancelsPendingDisconnect(t *testing.T) {
 
 	service.closeSession(replacement)
 	waitForPresenceEnded(t, db, operator.ActiveTenantID, operator.UserID)
+	waitForPresenceEndCompleted(t, service, operator.ActiveTenantID, operator.UserID)
+}
+
+func waitForPresenceEndCompleted(t *testing.T, service *wsService, tenantID, userID int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	key := dashboardPresenceKey{tenantID: tenantID, userID: userID}
+	for time.Now().Before(deadline) {
+		service.presenceEndMu.Lock()
+		_, pending := service.presenceEndTimers[key]
+		service.presenceEndMu.Unlock()
+		if !pending {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("scheduled presence end did not complete")
 }
 
 func createDashboardPresenceFixture(t *testing.T, db *gorm.DB, tenantID int64, at time.Time) *dto.AuthPrincipal {

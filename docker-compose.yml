@@ -19,15 +19,6 @@ services:
       timeout: 5s
       retries: 10
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    restart: unless-stopped
-    volumes:
-      - qdrant-data:/qdrant/storage
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-
   agent-desk:
     build:
       context: .
@@ -37,8 +28,6 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-      qdrant:
-        condition: service_started
     ports:
       - "8083:8083"
     volumes:
@@ -46,7 +35,7 @@ services:
       - ./docker/agent-desk.yaml:/app/config/config.yaml:ro
     environment:
       TZ: Asia/Shanghai
-      NO_PROXY: localhost,127.0.0.1,host.docker.internal,mysql,qdrant
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal,mysql
       AGENT_DESK_FASTGPT_ENABLED: ${AGENT_DESK_FASTGPT_ENABLED:-}
       AGENT_DESK_FASTGPT_BASE_URL: ${AGENT_DESK_FASTGPT_BASE_URL:-}
       AGENT_DESK_FASTGPT_INTEGRATION_TOKEN: ${AGENT_DESK_FASTGPT_INTEGRATION_TOKEN:-}
@@ -59,5 +48,4 @@ services:
 
 volumes:
   mysql-data:
-  qdrant-data:
   agent-desk-data:

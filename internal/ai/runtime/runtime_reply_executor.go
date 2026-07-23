@@ -47,7 +47,6 @@ func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInp
 	}
 	modelConfig := normalizeRuntimeReplyModelConfig(resolved.RuntimeConfig())
 	e.applyResolvedModelTrace(input.Trace, resolved, modelConfig)
-	input.AIAgent.AIConfigID = 0
 	runtimeStartedAt := time.Now()
 	runCtx, usageCapture := usagex.WithCapture(ctx)
 	runCtx = usagex.WithScope(runCtx, buildModelUsageScope(resolved, input.Conversation.ID, input.Message.ID, input.Message.RequestID))
@@ -55,7 +54,7 @@ func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInp
 		Conversation: input.Conversation,
 		UserMessage:  input.Message,
 		AIAgent:      input.AIAgent,
-		AIConfig:     modelConfig,
+		ModelConfig:  modelConfig,
 	})
 	e.recordReplyModelUsage(input.Conversation, input.Message, modelConfig, resolved, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
 	if input.Trace != nil {
@@ -75,7 +74,6 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	}
 	modelConfig := normalizeRuntimeReplyModelConfig(resolved.RuntimeConfig())
 	e.applyResolvedModelTrace(input.Trace, resolved, modelConfig)
-	input.AIAgent.AIConfigID = 0
 	runtimeStartedAt := time.Now()
 	if input.Trace != nil {
 		input.Trace.ResumeSource = "pending_interrupt"
@@ -85,7 +83,7 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	summary, err := Service.Resume(resumeCtx, applicationruntime.ResumeRequest{
 		Conversation: input.Conversation,
 		AIAgent:      input.AIAgent,
-		AIConfig:     modelConfig,
+		ModelConfig:  modelConfig,
 		CheckPointID: strings.TrimSpace(input.PendingInterrupt.CheckPointID),
 		ResumeData: map[string]string{
 			strings.TrimSpace(input.PendingInterrupt.InterruptID): e.resumeMessageText(input.Message),

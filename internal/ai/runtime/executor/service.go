@@ -37,16 +37,16 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	}
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.Data.RunID = summary.RunID
-	summary.ModelName = req.AIConfig.ModelName
-	collector.Data.Model.Provider = string(req.AIConfig.Provider)
-	collector.Data.Model.Name = req.AIConfig.ModelName
+	summary.ModelName = req.ModelConfig.ModelName
+	collector.Data.Model.Provider = string(req.ModelConfig.Provider)
+	collector.Data.Model.Name = req.ModelConfig.ModelName
 
 	checkPointID := resolveCheckPointID(req.CheckPointID, summary.RunID)
 	summary.CheckPointID = checkPointID
 	messages := buildRunMessages(ctx, req, summary, collector, s.answerabilityGate)
 	if summary.SkipReply {
 		summary.Status = "completed"
-		summary.ModelName = req.AIConfig.ModelName
+		summary.ModelName = req.ModelConfig.ModelName
 		collector.Data.Status = summary.Status
 		collector.Data.Output.FinishReason = "no_reply"
 		collector.Data.Pipeline.Generate.Status = "skipped"
@@ -67,7 +67,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 			return summary, err
 		}
 		summary.Status = "completed"
-		summary.ModelName = req.AIConfig.ModelName
+		summary.ModelName = req.ModelConfig.ModelName
 		collector.Data.Status = summary.Status
 		if isEmergencySafetyHandoff(collector.Data.Pipeline.Intent) {
 			collector.Data.Output.FinishReason = "intent_emergency_human_route_dispatched"
@@ -88,7 +88,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	}
 	if prepareHotelVariableDirectCommit(req, summary, collector) {
 		summary.Status = "completed"
-		summary.ModelName = req.AIConfig.ModelName
+		summary.ModelName = req.ModelConfig.ModelName
 		collector.Data.Status = summary.Status
 		collector.Data.Output.ReplyText = summary.ReplyText
 		collector.Data.Output.FinishReason = "hotel_variable_direct_commit"
@@ -118,7 +118,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 
 	agent, err := s.agentFactory.BuildCustomerServiceAgent(ctx, factory.BuildCustomerServiceAgentInput{
 		AIAgent:                    req.AIAgent,
-		AIConfig:                   req.AIConfig,
+		ModelConfig:                req.ModelConfig,
 		InstructionToolDefinitions: tooling.definitions,
 		DynamicMCPToolDefinitions:  tooling.definitions,
 		StaticTools:                tooling.staticTools,
@@ -150,7 +150,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	generateStartedAt := time.Now()
 	consumeAgentEvents(runner.Run(ctx, messages, buildRunOptions(checkPointID)...), summary, collector, tooling.toolDefsByModelName)
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
-	summary.ModelName = req.AIConfig.ModelName
+	summary.ModelName = req.ModelConfig.ModelName
 	enforceGeneratedReplyActionLedger(summary, collector)
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
@@ -304,12 +304,12 @@ func (s *Service) ExecuteResume(ctx context.Context, req ResumeInput) (*RunResul
 	summary.ToolCodes = append(summary.ToolCodes, tooling.toolCodes...)
 	collector.Data.Input.ToolCodes = append(collector.Data.Input.ToolCodes, summary.ToolCodes...)
 	collector.SetTooling(tooling.staticToolCodes, definitionToolCodes(tooling.definitions), len(tooling.definitions) > 0)
-	collector.Data.Model.Provider = string(req.AIConfig.Provider)
-	collector.Data.Model.Name = req.AIConfig.ModelName
+	collector.Data.Model.Provider = string(req.ModelConfig.Provider)
+	collector.Data.Model.Name = req.ModelConfig.ModelName
 
 	agent, err := s.agentFactory.BuildCustomerServiceAgent(ctx, factory.BuildCustomerServiceAgentInput{
 		AIAgent:                    req.AIAgent,
-		AIConfig:                   req.AIConfig,
+		ModelConfig:                req.ModelConfig,
 		InstructionToolDefinitions: tooling.definitions,
 		DynamicMCPToolDefinitions:  tooling.definitions,
 		StaticTools:                tooling.staticTools,
@@ -360,7 +360,7 @@ func (s *Service) ExecuteResume(ctx context.Context, req ResumeInput) (*RunResul
 	generateStartedAt := time.Now()
 	consumeAgentEvents(iter, summary, collector, tooling.toolDefsByModelName)
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
-	summary.ModelName = req.AIConfig.ModelName
+	summary.ModelName = req.ModelConfig.ModelName
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
 	collector.Data.Output.FinishReason = summary.Status

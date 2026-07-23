@@ -1758,12 +1758,9 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(
 		&models.ReplyIntentProfile{},
 		&models.ReplyIntentConfig{},
-		&models.AIConfig{},
 		&models.Tenant{},
-		&models.TenantAIModelGrant{},
 		&models.Asset{},
 		&models.Store{},
-		&models.StoreAIModelSetting{},
 		&models.Customer{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},

@@ -44,13 +44,6 @@ storage:
     private: false
     signedUrlExpireSeconds: 600
 
-vectorDB:
-  type: qdrant
-  host: qdrant
-  grpcPort: 6334
-  apiKey: ""
-  useTls: false
-
 mcp:
   enabled: true
   servers:

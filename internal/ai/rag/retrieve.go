@@ -3,11 +3,8 @@ package rag
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"sort"
 	"strings"
 
-	"agent-desk/internal/ai/rag/vectordb"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
@@ -41,49 +38,27 @@ func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) (
 	if !ok {
 		return nil, trace, nil
 	}
-	tenantID, err := resolveRetrievableKnowledgeBaseTenant(retrievableKnowledgeBases)
+	if _, err := resolveRetrievableKnowledgeBaseTenant(retrievableKnowledgeBases); err != nil {
+		return nil, trace, err
+	}
+	for _, knowledgeBase := range retrievableKnowledgeBases {
+		if !isFastGPTKnowledgeBase(knowledgeBase) {
+			return nil, trace, fmt.Errorf("knowledge retrieval only supports managed FastGPT datasets")
+		}
+	}
+	results, fastGPTMs, err := s.retrieveFastGPTKnowledge(ctx, req, retrievableKnowledgeBases)
+	trace.VectorSearchMs = fastGPTMs
 	if err != nil {
 		return nil, trace, err
 	}
-
-	localKnowledgeBases, fastGPTKnowledgeBases := splitFastGPTKnowledgeBases(retrievableKnowledgeBases)
-	results := make([]RetrieveResult, 0)
-	if len(localKnowledgeBases) > 0 {
-		searchResults, searchTrace, err := s.searchKnowledgeBaseVectors(ctx, req, localKnowledgeBases)
-		if err != nil {
-			applySearchTrace(trace, searchTrace)
-			return nil, trace, err
-		}
-		applySearchTrace(trace, searchTrace)
-		if len(searchResults) > 0 {
-			localResults, hydrateMs := s.hydrateRetrieveResults(searchResults, tenantID)
-			trace.HydrateMs = hydrateMs
-			results = append(results, localResults...)
+	trace.Providers = append(trace.Providers, enums.KnowledgeRetrievalModeFastGPT)
+	appendTraceDatasetIDs(trace, retrievableKnowledgeBases)
+	trace.RequestCount = int64(len(retrievableKnowledgeBases))
+	for _, knowledgeBase := range retrievableKnowledgeBases {
+		if knowledgeBase.DefaultRerankLimit > 0 {
+			trace.RerankCount++
 		}
 	}
-	if len(fastGPTKnowledgeBases) > 0 {
-		fastGPTResults, fastGPTMs, err := s.retrieveFastGPTKnowledge(ctx, req, fastGPTKnowledgeBases)
-		trace.VectorSearchMs += fastGPTMs
-		if err != nil && len(results) == 0 {
-			return nil, trace, err
-		}
-		results = append(results, fastGPTResults...)
-		trace.Providers = append(trace.Providers, enums.KnowledgeRetrievalModeFastGPT)
-		appendTraceDatasetIDs(trace, fastGPTKnowledgeBases)
-		trace.RequestCount += int64(len(fastGPTKnowledgeBases))
-		for _, knowledgeBase := range fastGPTKnowledgeBases {
-			if knowledgeBase.DefaultRerankLimit > 0 {
-				trace.RerankCount++
-			}
-		}
-	}
-	// FastGPT searchTest already returns the final mixed-recall order. Keep that
-	// order when it is the only provider; local or mixed-provider retrieval
-	// retains the existing score ordering.
-	if len(fastGPTKnowledgeBases) == 0 || len(localKnowledgeBases) > 0 {
-		sortRetrieveResults(results)
-	}
-
 	return results, trace, nil
 }
 
@@ -128,124 +103,16 @@ func appendTraceDatasetIDs(trace *RetrieveTrace, knowledgeBases []models.Knowled
 	}
 }
 
-func extractChunkType(payload vectordb.ChunkPayload) string {
-	if payload.ChunkType != "" {
-		return payload.ChunkType
-	}
-	return string(enums.KnowledgeChunkTypeText)
-}
-
-func (s *retrieve) logEmptySearchDiagnostics(ctx context.Context, provider vectordb.Provider, collectionName string, vector []float32, topK int, scoreThreshold float32, tenantID int64, knowledgeBaseIDs []int64, req RetrieveRequest) {
-	rawResults, err := provider.Search(ctx, &vectordb.SearchRequest{
-		CollectionName: collectionName,
-		Vector:         vector,
-		TopK:           topK,
-		ScoreThreshold: 0,
-		Filter: &vectordb.SearchFilter{
-			TenantID:         tenantID,
-			KnowledgeBaseIDs: knowledgeBaseIDs,
-		},
-	})
-	if err != nil {
-		slog.Warn("Knowledge retrieve diagnostics failed",
-			"knowledge_base_ids", fmt.Sprint(knowledgeBaseIDs),
-			"collection", collectionName,
-			"query", truncateForLog(req.Query, 80),
-			"score_threshold", scoreThreshold,
-			"error", err)
-		return
-	}
-	if len(rawResults) == 0 {
-		slog.Info("Knowledge retrieve returned no candidates even without threshold",
-			"knowledge_base_ids", fmt.Sprint(knowledgeBaseIDs),
-			"collection", collectionName,
-			"query", truncateForLog(req.Query, 80),
-			"score_threshold", scoreThreshold)
-		return
-	}
-
-	candidates := make([]string, 0, len(rawResults))
-	for _, item := range rawResults {
-		candidates = append(candidates, fmt.Sprintf("%s:%.4f", item.ID, item.Score))
-	}
-
-	slog.Info("Knowledge retrieve filtered all candidates by score threshold",
-		"knowledge_base_ids", fmt.Sprint(knowledgeBaseIDs),
-		"collection", collectionName,
-		"query", truncateForLog(req.Query, 80),
-		"score_threshold", scoreThreshold,
-		"top_candidates", strings.Join(candidates, ","))
-}
-
-func truncateForLog(text string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	runes := []rune(strings.TrimSpace(text))
-	if len(runes) <= limit {
-		return string(runes)
-	}
-	return string(runes[:limit]) + "..."
-}
-
 func (s *retrieve) RetrieveWithRerank(ctx context.Context, req RetrieveRequest, rerankLimit int) ([]RetrieveResult, error) {
 	results, err := s.Retrieve(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(results) <= rerankLimit {
+	if rerankLimit <= 0 || len(results) <= rerankLimit {
 		return results, nil
 	}
-
-	rerankedResults, err := s.rerank(ctx, req.Query, results, rerankLimit)
-	if err != nil {
-		slog.Warn("Rerank failed, returning original results", "error", err)
-		if len(results) > rerankLimit {
-			return results[:rerankLimit], nil
-		}
-		return results, nil
-	}
-
-	return rerankedResults, nil
-}
-
-func (s *retrieve) rerank(ctx context.Context, query string, results []RetrieveResult, limit int) ([]RetrieveResult, error) {
-	return Rerank.RerankResults(ctx, query, results, limit)
-}
-
-func sortRetrieveResults(results []RetrieveResult) {
-	if len(results) == 0 {
-		return
-	}
-	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Score == results[j].Score {
-			return results[i].KnowledgeBaseID < results[j].KnowledgeBaseID
-		}
-		return results[i].Score > results[j].Score
-	})
-}
-
-func (s *retrieve) GetKnowledgeBaseStats(ctx context.Context, knowledgeBaseID int64) (*KnowledgeBaseStats, error) {
-	knowledgeBase := repositories.KnowledgeBaseRepository.Get(sqls.DB(), knowledgeBaseID)
-	if knowledgeBase == nil {
-		return nil, fmt.Errorf("knowledge base not found")
-	}
-
-	documentCount := repositories.KnowledgeDocumentRepository.CountByKnowledgeBaseID(sqls.DB(), knowledgeBaseID)
-	chunkCount := repositories.KnowledgeChunkRepository.CountByKnowledgeBaseID(sqls.DB(), knowledgeBaseID)
-
-	publishedCount := repositories.KnowledgeDocumentRepository.Count(sqls.DB(), sqls.NewCnd().
-		Eq("knowledge_base_id", knowledgeBaseID).
-		Eq("status", enums.StatusOk))
-
-	return &KnowledgeBaseStats{
-		KnowledgeBaseID: knowledgeBaseID,
-		DocumentCount:   documentCount,
-		PublishedCount:  publishedCount,
-		ChunkCount:      chunkCount,
-		VectorCount:     int(chunkCount),
-	}, nil
+	return results[:rerankLimit], nil
 }
 
 func normalizeKnowledgeBaseIDs(ids []int64) []int64 {
@@ -307,12 +174,4 @@ func (s *retrieve) loadRetrievableKnowledgeBases(ids []int64) []models.Knowledge
 		}
 	}
 	return filtered
-}
-
-type KnowledgeBaseStats struct {
-	KnowledgeBaseID int64 `json:"knowledgeBaseId"`
-	DocumentCount   int64 `json:"documentCount"`
-	PublishedCount  int64 `json:"publishedCount"`
-	ChunkCount      int64 `json:"chunkCount"`
-	VectorCount     int   `json:"vectorCount"`
 }

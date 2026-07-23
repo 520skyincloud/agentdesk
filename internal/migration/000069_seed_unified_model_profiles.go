@@ -51,12 +51,12 @@ func syncUnifiedModelProfilePermissions(db *gorm.DB) error {
 		return err
 	}
 	retiredCodes := []string{
-		constants.PermissionAIConfigCreate.Code,
-		constants.PermissionAIConfigDelete.Code,
-		constants.PermissionTenantModelGrantView.Code,
-		constants.PermissionTenantModelGrantUpdate.Code,
-		constants.PermissionTenantModelAssignmentView.Code,
-		constants.PermissionTenantModelAssignmentUpdate.Code,
+		"aiConfig.create",
+		"aiConfig.delete",
+		"tenantModelGrant.view",
+		"tenantModelGrant.update",
+		"tenantModelAssignment.view",
+		"tenantModelAssignment.update",
 	}
 	var retired []models.Permission
 	if err := db.Where("code IN ?", retiredCodes).Find(&retired).Error; err != nil {
@@ -81,14 +81,14 @@ func syncUnifiedModelProfilePermissions(db *gorm.DB) error {
 }
 
 func seedDefaultUnifiedModelProfile(db *gorm.DB) error {
-	legacyConfigs := make([]models.AIConfig, 0)
-	if db.Migrator().HasTable(&models.AIConfig{}) {
+	legacyConfigs := make([]legacyAIConfig, 0)
+	if db.Migrator().HasTable(&legacyAIConfig{}) {
 		if err := db.Where("status = ?", enums.StatusOk).Order("sort_no DESC").Order("id DESC").Find(&legacyConfigs).Error; err != nil {
 			return err
 		}
 	}
-	byType := make(map[enums.AIModelType]models.AIConfig)
-	var intentConfig *models.AIConfig
+	byType := make(map[enums.AIModelType]legacyAIConfig)
+	var intentConfig *legacyAIConfig
 	for i := range legacyConfigs {
 		item := legacyConfigs[i]
 		if _, exists := byType[item.ModelType]; !exists {

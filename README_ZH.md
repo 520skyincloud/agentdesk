@@ -8,7 +8,7 @@
 
 ## 产品预览
 
-客户侧在线咨询、客服工作台、知识库、模型配置和 AI Agent 编排都在同一套系统中完成。
+租户接入、门店运营、客户会话、规则派单、托管知识和 AI 回复都在同一套系统中完成。
 
 ### 客户侧在线咨询
 
@@ -20,21 +20,11 @@
 
 ![客服工作台](screenshots/2.png)
 
-客服工作台支持会话列表、消息处理、AI 转人工、客服回复、会话标签、关联客户和工单信息查看，适合客服日常接待使用。
+客服工作台支持会话列表、消息处理、AI 转人工、客服回复、按门店隔离的客户标签、关联客户和工单信息查看，适合客服日常接待使用。
 
-### 知识库与 AI 配置
+### 托管知识与模型 Profile
 
-| 知识库 FAQ | AI Agent 配置 |
-| --- | --- |
-| ![知识库 FAQ](screenshots/4.png) | ![AI Agent 配置](screenshots/5.png) |
-
-知识库用于沉淀 FAQ、文档和可检索内容；AI Agent 可以绑定模型配置、知识库、Skills 和工具能力，形成面向具体客服场景的智能客服实例。
-
-### 模型配置
-
-![模型配置](screenshots/3.png)
-
-模型配置支持 OpenAI-compatible 接入方式，可分别配置大语言模型、向量模型和重排模型，并管理上下文、输出、超时、重试和启用状态。
+每家门店只使用一个托管 FastGPT 数据集。平台通过统一 NewAPI 网关发布完整九槽模型 Profile，并为门店指派一个生效 revision；门店凭据始终脱敏、按 revision 管理且可独立审计。
 
 ## 为什么选择它
 
@@ -43,14 +33,14 @@
 - **自然转人工**：当知识库不足、用户明确要求或流程需要人工确认时，进入人工接管。
 - **会话到工单闭环**：在线会话、客服接待、工单创建、状态流转和处理记录在同一套系统里完成。
 - **适合二次开发**：后端使用 Go，前端使用 Next.js，支持 Skills、MCP 和 OpenAI-compatible 模型接入。
-- **可私有化部署**：支持 SQLite / MySQL 和 Qdrant，适合本地体验、内网部署和企业自托管。
+- **可私有化部署**：支持 SQLite / MySQL、托管 FastGPT 知识服务和统一 NewAPI 网关，适合企业部署。
 
 ## 核心能力
 
-- **AI Agent 客服**：AI 优先回复，支持兜底、确认、工具调用和人工协同。
+- **AI 回复运行时**：行业意图识别、回复规划、知识检索、结果校验、确认、工具调用和人工协同统一由一套回复引擎完成。
 - **在线会话系统**：支持访客会话、消息收发、未读状态、会话分配、转接和关闭。
 - **客服工作台**：客服可接管会话、回复用户、转接同事、关联客户和创建工单。
-- **知识库 RAG**：支持知识库、文档、FAQ、切片、向量检索、检索日志和质量分析。
+- **托管知识库 RAG**：支持按租户和门店隔离的 FastGPT 数据集、文件同步、检索日志和可回答性分析。
 - **Answerability Gate**：判断检索内容是否足以支撑回答，不足时返回兜底提示并建议联系人工。
 - **工单系统**：支持从会话创建工单、分类、指派、状态流转、进展记录和闭环处理。
 - **客服组织管理**：支持客服档案、客服组、排班和自动分配能力。
@@ -78,13 +68,10 @@ docker compose up -d --build
 
 如需在官网或产品中嵌入客服入口，见 [Web Widget Integration](https://agent-desk.huabei.pro/zh/docs/integration/web-widget.html)。
 
-如需接入 OpenAI-compatible 模型供应商，见 [Model Provider Configuration](https://agent-desk.huabei.pro/zh/docs/config/model-provider.html)。
-
 Compose 默认会启动：
 
 - `agent-desk`：应用服务，端口 `8083`
 - `mysql`：MySQL 8.4，数据卷 `mysql-data`
-- `qdrant`：向量数据库，数据卷 `qdrant-data`，端口 `6333` / `6334`
 
 启动后访问：
 
@@ -107,7 +94,6 @@ Compose 默认会启动：
 - Go `1.26+`
 - Node.js `20+`
 - `pnpm`
-- Qdrant
 
 ### 准备配置
 
@@ -119,13 +105,7 @@ cp config/config.example.yaml config/config.yaml
 
 - SQLite：`data/app.db`
 - Backend：`http://127.0.0.1:8083`
-- Qdrant gRPC：`127.0.0.1:6334`
-
-如果本地还没有 Qdrant，可以用 Docker 启动：
-
-```bash
-docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-```
+- 托管 FastGPT 与 NewAPI 地址通过部署配置和密钥注入。
 
 安装前端依赖：
 
@@ -160,8 +140,8 @@ make web-dev
 - Backend：Golang + Gin + GORM + `github.com/mlogclub/simple`
 - Frontend：Next.js 16 + React 19 + shadcn/ui + Tailwind CSS
 - Database：SQLite / MySQL
-- Vector DB：Qdrant
-- AI：OpenAI-compatible LLM / Embedding + RAG + Skills + MCP
+- Knowledge Service：托管 FastGPT
+- AI：统一 NewAPI 网关 + OpenAI-compatible 模型 + RAG + Skills + MCP
 
 ## 项目结构
 
@@ -216,8 +196,8 @@ flowchart TD
     A[用户发起咨询<br/>Web 客服入口 / Open API] --> B[创建或匹配会话]
     B --> C[客户发送消息]
     C --> D[触发 AI Reply Runtime]
-    D --> E[加载会话历史 / AI 配置]
-    E --> F[按绑定知识库执行检索]
+    D --> E[加载会话历史 / 租户行业 / 门店模型 Profile]
+    E --> F[检索当前门店 FastGPT 数据集]
     F --> G{知识片段是否足以回答?}
     G -- 否 --> Z[返回知识库兜底提示<br/>并建议联系人工客服]
     G -- 是 --> H[准备 Skills / MCP Tools]
@@ -267,7 +247,7 @@ flowchart LR
 
 ## Docker 镜像
 
-如果只需要构建应用镜像，可以自行准备 MySQL 和 Qdrant，并挂载配置文件：
+如果只需要构建应用镜像，可以自行准备 MySQL 和已配置的外部 AI 服务，并挂载配置文件：
 
 ```bash
 docker build -t mlogclub/agent-desk .
@@ -277,7 +257,7 @@ docker run --rm -p 8083:8083 \
   mlogclub/agent-desk
 ```
 
-Compose 使用 [docker/agent-desk.yaml](docker/agent-desk.yaml) 作为容器内配置，应用会通过 Docker 内部服务名访问 `mysql` 和 `qdrant`。
+Compose 使用 [docker/agent-desk.yaml](docker/agent-desk.yaml) 作为容器内配置，应用通过 Docker 服务名访问 `mysql`，并通过配置地址连接 FastGPT/NewAPI。
 
 ## 开源定位
 

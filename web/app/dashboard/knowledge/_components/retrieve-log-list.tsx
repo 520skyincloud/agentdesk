@@ -59,32 +59,11 @@ function getAnswerStatusOptions(t: TFunction) {
   ]
 }
 
-function getProviderOptions(t: TFunction) {
-  return [
-    { value: "all", label: t("knowledge.allChunkProviders") },
-    { value: "fixed", label: t("knowledge.chunkFixed") },
-    { value: "structured", label: t("knowledge.chunkStructured") },
-    { value: "faq", label: t("knowledge.chunkFAQ") },
-    { value: "semantic", label: t("knowledge.chunkSemantic") },
-    { value: "fastgpt_cloud", label: t("knowledge.chunkFastGPTCloud") },
-  ]
-}
-
 function getRerankOptions(t: TFunction) {
   return [
     { value: "all", label: t("knowledge.allRerank") },
     { value: "1", label: t("knowledge.rerankEnabled") },
     { value: "0", label: t("knowledge.rerankDisabled") },
-  ]
-}
-
-function getSourceTypeOptions() {
-  return [
-    { value: "all", label: "全部来源" },
-    { value: "local_vector", label: "本地向量" },
-    { value: "cloud_knowledge", label: "云端知识库" },
-    { value: "hybrid", label: "本地+云端" },
-    { value: "faq", label: "FAQ" },
   ]
 }
 
@@ -129,9 +108,7 @@ export function RetrieveLogList({
   const channelOptions = useMemo(() => getChannelOptions(t), [t])
   const sceneOptions = useMemo(() => getSceneOptions(t), [t])
   const answerStatusOptions = useMemo(() => getAnswerStatusOptions(t), [t])
-  const providerOptions = useMemo(() => getProviderOptions(t), [t])
   const rerankOptions = useMemo(() => getRerankOptions(t), [t])
-  const sourceTypeOptions = useMemo(() => getSourceTypeOptions(), [])
 
   function handleOpenDetail(logId: number) {
     setSelectedLogId(logId)
@@ -173,15 +150,6 @@ export function RetrieveLogList({
               placeholder: t("knowledge.selectChannel"),
             },
             {
-              name: "sourceType",
-              label: "检索来源",
-              type: "select",
-              defaultValue: "all",
-              allValue: "all",
-              options: sourceTypeOptions,
-              placeholder: "检索来源",
-            },
-            {
               name: "scene",
               label: t("knowledge.selectScene"),
               type: "select",
@@ -199,15 +167,6 @@ export function RetrieveLogList({
               valueType: "number",
               options: answerStatusOptions,
               placeholder: t("knowledge.answerStatus"),
-            },
-            {
-              name: "chunkProvider",
-              label: t("knowledge.chunkStrategy"),
-              type: "select",
-              defaultValue: "all",
-              allValue: "all",
-              options: providerOptions,
-              placeholder: t("knowledge.chunkStrategy"),
             },
             {
               name: "rerankEnabled",
@@ -240,7 +199,7 @@ export function RetrieveLogList({
                           <div className="line-clamp-2 font-medium">{item.question || "-"}</div>
                           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                             <span>{channelLabel(item.channel, item.channelName, t)}</span>
-                            <span>{item.sourceTypeName || item.sourceType || "本地向量"}</span>
+                            <span>{item.sourceTypeName || "托管 FastGPT"}</span>
                             <span>{sceneLabel(item.scene, item.sceneName, t)}</span>
                             {item.knowledgeBaseName ? <span>{item.knowledgeBaseName}</span> : null}
                           </div>

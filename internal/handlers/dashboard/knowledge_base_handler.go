@@ -2,14 +2,12 @@ package dashboard
 
 import (
 	"agent-desk/internal/pkg/httpx"
-	"context"
-	"log/slog"
 
-	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/builders"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/services"
 
 	"agent-desk/internal/pkg/httpx/params"
@@ -28,15 +26,12 @@ func KnowledgeBaseAnyList(ctx *gin.Context) {
 	cnd := params.NewPagedSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
 		params.QueryFilter{ParamName: "name", Op: params.Like},
-	).Asc("sort_no").Desc("id")
+	).Eq("knowledge_type", string(enums.KnowledgeBaseTypeFastGPTCloud)).Asc("sort_no").Desc("id")
 	cnd = services.AgentTeamScopeService.ApplyKnowledgeBaseFilter(cnd, operator)
 	list, paging := services.KnowledgeBaseService.FindPageByCnd(cnd)
 	results := make([]response.KnowledgeBaseResponse, 0, len(list))
 	for _, item := range list {
-		docCount, faqCount := services.KnowledgeBaseService.CountContents(item.ID, operator)
 		resp := builders.BuildKnowledgeBase(&item)
-		resp.DocumentCount = docCount
-		resp.FAQCount = faqCount
 		results = append(results, resp)
 	}
 	httpx.WriteJSON(ctx, &web.PageResult{Results: results, Page: paging})
@@ -51,7 +46,7 @@ func KnowledgeBaseAnyList_all(ctx *gin.Context) {
 
 	cnd := params.NewSqlCnd(ctx,
 		params.QueryFilter{ParamName: "status"},
-	).Asc("sort_no").Desc("id")
+	).Eq("knowledge_type", string(enums.KnowledgeBaseTypeFastGPTCloud)).Asc("sort_no").Desc("id")
 	cnd = services.AgentTeamScopeService.ApplyKnowledgeBaseFilter(cnd, operator)
 	list := services.KnowledgeBaseService.Find(cnd)
 	results := make([]response.KnowledgeBaseResponse, 0, len(list))
@@ -74,33 +69,12 @@ func KnowledgeBaseGetBy(ctx *gin.Context) {
 	}
 
 	item := services.KnowledgeBaseService.GetForOperator(id, operator)
-	if item == nil {
+	if item == nil || item.KnowledgeType != string(enums.KnowledgeBaseTypeFastGPTCloud) {
 		httpx.WriteJSON(ctx, web.JsonErrorMsg("知识库不存在"))
 		return
 	}
 	resp := builders.BuildKnowledgeBase(item)
-	resp.DocumentCount, resp.FAQCount = services.KnowledgeBaseService.CountContents(item.ID, operator)
 	httpx.WriteJSON(ctx, resp)
-}
-
-func KnowledgeBasePostCreate(ctx *gin.Context) {
-	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseCreate)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-
-	req := request.CreateKnowledgeBaseRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	item, err := services.KnowledgeBaseService.CreateKnowledgeBase(req, user)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, builders.BuildKnowledgeBase(item))
 }
 
 func KnowledgeBasePostUpdate(ctx *gin.Context) {
@@ -122,27 +96,6 @@ func KnowledgeBasePostUpdate(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
-func KnowledgeBasePostDelete(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseDelete)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-
-	var req struct {
-		ID int64 `json:"id"`
-	}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	if err := services.KnowledgeBaseService.DeleteKnowledgeBase(req.ID, operator); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, nil)
-}
-
 func KnowledgeBasePostUpdate_sort(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
 	if err != nil {
@@ -158,36 +111,5 @@ func KnowledgeBasePostUpdate_sort(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	httpx.WriteJSON(ctx, nil)
-}
-
-func KnowledgeBasePostRebuild_index(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-
-	var req struct {
-		ID int64 `json:"id"`
-	}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-
-	knowledgeBase := services.KnowledgeBaseService.GetForOperator(req.ID, operator)
-	if knowledgeBase == nil {
-		httpx.WriteJSON(ctx, web.JsonErrorMsg("知识库不存在"))
-		return
-	}
-
-	go func() {
-		ctx := context.Background()
-		if err := rag.Index.RebuildKnowledgeBaseIndex(ctx, req.ID); err != nil {
-			slog.Error("Failed to rebuild knowledge base index", "knowledge_base_id", req.ID, "error", err)
-		}
-	}()
-
 	httpx.WriteJSON(ctx, nil)
 }

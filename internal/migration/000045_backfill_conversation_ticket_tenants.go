@@ -635,9 +635,11 @@ func backfillSharedTagTenants(
 	if err := tx.Order("id ASC").Find(&tags).Error; err != nil {
 		return err
 	}
-	var conversationTags []models.ConversationTag
-	if err := tx.Order("id ASC").Find(&conversationTags).Error; err != nil {
-		return err
+	var conversationTags []legacyConversationTag
+	if tx.Migrator().HasTable(&legacyConversationTag{}) {
+		if err := tx.Order("id ASC").Find(&conversationTags).Error; err != nil {
+			return err
+		}
 	}
 	var ticketTags []models.TicketTag
 	if err := tx.Order("id ASC").Find(&ticketTags).Error; err != nil {
@@ -753,7 +755,7 @@ func backfillSharedTagTenants(
 		if err := validateConversationDomainReference("conversation tag", item.ID, tenantID, "tag", item.TagID, tagTenants); err != nil {
 			return err
 		}
-		if err := assignConversationDomainTenant(tx, &models.ConversationTag{}, "conversation tag", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
+		if err := assignConversationDomainTenant(tx, &legacyConversationTag{}, "conversation tag", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
 			return err
 		}
 	}

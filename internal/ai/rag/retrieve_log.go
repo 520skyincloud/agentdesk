@@ -9,6 +9,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/response"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 
 	"github.com/google/uuid"
@@ -21,45 +22,38 @@ type retrieveLog struct {
 }
 
 type CreateRetrieveLogRequest struct {
-	TenantID           int64
-	KnowledgeBaseID    int64
-	SourceType         string
-	Channel            string
-	Scene              string
-	SessionID          string
-	ConversationID     int64
-	MessageID          int64
-	RequestID          string
-	Question           string
-	RewriteQuestion    string
-	Answer             string
-	AnswerStatus       int
-	ChunkProvider      string
-	ChunkTargetTokens  int
-	ChunkMaxTokens     int
-	ChunkOverlapTokens int
-	RerankEnabled      bool
-	RerankLimit        int
-	Hits               []response.KnowledgeSearchResult
-	UsedHits           []response.KnowledgeSearchResult
-	HitSourceRecordIDs []string
-	UsedHitRankNos     []int
-	Citations          []response.KnowledgeCitation
-	LatencyMs          int64
-	RetrieveMs         int64
-	GenerateMs         int64
-	PromptTokens       int
-	CompletionTokens   int
-	ModelName          string
+	TenantID         int64
+	KnowledgeBaseID  int64
+	Channel          string
+	Scene            string
+	SessionID        string
+	ConversationID   int64
+	MessageID        int64
+	RequestID        string
+	Question         string
+	RewriteQuestion  string
+	Answer           string
+	AnswerStatus     int
+	RerankEnabled    bool
+	RerankLimit      int
+	Hits             []response.KnowledgeSearchResult
+	UsedHits         []response.KnowledgeSearchResult
+	UsedHitRankNos   []int
+	Citations        []response.KnowledgeCitation
+	LatencyMs        int64
+	RetrieveMs       int64
+	GenerateMs       int64
+	PromptTokens     int
+	CompletionTokens int
+	ModelName        string
 }
 
 type retrieveTraceData struct {
-	Retrieve    retrieveTraceRetrieve    `json:"retrieve"`
-	Linkage     retrieveTraceLinkage     `json:"linkage"`
-	ChunkConfig retrieveTraceChunkConfig `json:"chunkConfig"`
-	Context     retrieveTraceContext     `json:"context"`
-	Hits        []retrieveTraceHit       `json:"hits,omitempty"`
-	Citations   []retrieveTraceCitation  `json:"citations"`
+	Retrieve  retrieveTraceRetrieve   `json:"retrieve"`
+	Linkage   retrieveTraceLinkage    `json:"linkage"`
+	Context   retrieveTraceContext    `json:"context"`
+	Hits      []retrieveTraceHit      `json:"hits,omitempty"`
+	Citations []retrieveTraceCitation `json:"citations"`
 }
 
 type retrieveTraceLinkage struct {
@@ -84,24 +78,13 @@ type retrieveTraceRetrieve struct {
 	CitationCount   int    `json:"citationCount"`
 }
 
-type retrieveTraceChunkConfig struct {
-	Provider      string `json:"provider"`
-	TargetTokens  int    `json:"targetTokens"`
-	MaxTokens     int    `json:"maxTokens"`
-	OverlapTokens int    `json:"overlapTokens"`
-}
-
 type retrieveTraceContext struct {
 	KnowledgeBaseIDs []int64  `json:"knowledgeBaseIds"`
-	DocumentIDs      []int64  `json:"documentIds"`
-	SectionPaths     []string `json:"sectionPaths"`
-	UsedChunkKeys    []string `json:"usedChunkKeys"`
+	SourceRecordIDs  []string `json:"sourceRecordIds"`
 }
 
 type retrieveTraceCitation struct {
-	DocumentID  int64  `json:"documentId"`
-	ChunkNo     int    `json:"chunkNo"`
-	SectionPath string `json:"sectionPath"`
+	SourceRecordID string `json:"sourceRecordId"`
 }
 
 func (s *retrieveLog) FindHitsByRetrieveLogID(retrieveLogID int64) []models.KnowledgeRetrieveHit {
@@ -134,36 +117,33 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 	traceData := buildRetrieveTraceData(req)
 
 	log := &models.KnowledgeRetrieveLog{
-		TenantID:           tenantID,
-		KnowledgeBaseID:    req.KnowledgeBaseID,
-		SourceType:         defaultRetrieveSourceType(req),
-		Channel:            req.Channel,
-		Scene:              req.Scene,
-		SessionID:          req.SessionID,
-		ConversationID:     req.ConversationID,
-		RequestID:          requestID,
-		Question:           req.Question,
-		RewriteQuestion:    req.RewriteQuestion,
-		Answer:             req.Answer,
-		AnswerStatus:       req.AnswerStatus,
-		HitCount:           len(req.Hits),
-		TopScore:           topScore,
-		ChunkProvider:      req.ChunkProvider,
-		ChunkTargetTokens:  req.ChunkTargetTokens,
-		ChunkMaxTokens:     req.ChunkMaxTokens,
-		ChunkOverlapTokens: req.ChunkOverlapTokens,
-		RerankEnabled:      req.RerankEnabled,
-		RerankLimit:        req.RerankLimit,
-		CitationCount:      len(req.Citations),
-		UsedChunkCount:     len(req.UsedHits),
-		LatencyMs:          req.LatencyMs,
-		RetrieveMs:         req.RetrieveMs,
-		GenerateMs:         req.GenerateMs,
-		PromptTokens:       req.PromptTokens,
-		CompletionTokens:   req.CompletionTokens,
-		ModelName:          req.ModelName,
-		TraceData:          traceData,
-		CreatedAt:          now,
+		TenantID:         tenantID,
+		KnowledgeBaseID:  req.KnowledgeBaseID,
+		SourceType:       "fastgpt",
+		Channel:          req.Channel,
+		Scene:            req.Scene,
+		SessionID:        req.SessionID,
+		ConversationID:   req.ConversationID,
+		RequestID:        requestID,
+		Question:         req.Question,
+		RewriteQuestion:  req.RewriteQuestion,
+		Answer:           req.Answer,
+		AnswerStatus:     req.AnswerStatus,
+		HitCount:         len(req.Hits),
+		TopScore:         topScore,
+		ChunkProvider:    string(enums.KnowledgeChunkProviderFastGPT),
+		RerankEnabled:    req.RerankEnabled,
+		RerankLimit:      req.RerankLimit,
+		CitationCount:    len(req.Citations),
+		UsedChunkCount:   len(req.UsedHits),
+		LatencyMs:        req.LatencyMs,
+		RetrieveMs:       req.RetrieveMs,
+		GenerateMs:       req.GenerateMs,
+		PromptTokens:     req.PromptTokens,
+		CompletionTokens: req.CompletionTokens,
+		ModelName:        req.ModelName,
+		TraceData:        traceData,
+		CreatedAt:        now,
 	}
 
 	usedHitKeys := make(map[string]struct{}, len(req.UsedHits))
@@ -198,13 +178,11 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 				ChunkID:         hit.ChunkID,
 				DocumentID:      hit.DocumentID,
 				DocumentTitle:   hit.DocumentTitle,
-				FaqID:           hit.FaqID,
-				FaqQuestion:     hit.FaqQuestion,
 				ChunkNo:         hit.ChunkNo,
 				Title:           hit.Title,
 				SectionPath:     hit.SectionPath,
 				ChunkType:       "",
-				Provider:        req.ChunkProvider,
+				Provider:        string(enums.KnowledgeChunkProviderFastGPT),
 				RankNo:          i + 1,
 				Score:           hit.Score,
 				RerankScore:     hit.RerankScore,
@@ -289,7 +267,7 @@ func resolveRetrieveLogTenant(req *CreateRetrieveLogRequest, operator *dto.AuthP
 func buildRetrieveTraceData(req *CreateRetrieveLogRequest) string {
 	trace := retrieveTraceData{
 		Retrieve: retrieveTraceRetrieve{
-			Provider:        req.ChunkProvider,
+			Provider:        string(enums.KnowledgeChunkProviderFastGPT),
 			RerankEnabled:   req.RerankEnabled,
 			RerankLimit:     req.RerankLimit,
 			RawHitCount:     len(req.Hits),
@@ -301,17 +279,9 @@ func buildRetrieveTraceData(req *CreateRetrieveLogRequest) string {
 			MessageID:      req.MessageID,
 			RequestID:      strings.TrimSpace(req.RequestID),
 		},
-		ChunkConfig: retrieveTraceChunkConfig{
-			Provider:      req.ChunkProvider,
-			TargetTokens:  req.ChunkTargetTokens,
-			MaxTokens:     req.ChunkMaxTokens,
-			OverlapTokens: req.ChunkOverlapTokens,
-		},
 		Context: retrieveTraceContext{
 			KnowledgeBaseIDs: distinctKnowledgeBaseIDs(req.UsedHits),
-			DocumentIDs:      distinctDocumentIDs(req.UsedHits),
-			SectionPaths:     distinctSectionPaths(req.UsedHits),
-			UsedChunkKeys:    buildUsedChunkKeys(req.UsedHits),
+			SourceRecordIDs:  distinctSourceRecordIDs(req.UsedHits),
 		},
 		Citations: buildTraceCitations(req.Citations),
 		Hits:      buildRetrieveTraceHits(req),
@@ -342,7 +312,7 @@ func buildRetrieveTraceHits(req *CreateRetrieveLogRequest) []retrieveTraceHit {
 			discardReason = "context_limit_or_duplicate"
 		}
 		result = append(result, retrieveTraceHit{
-			SourceRecordID: sourceRecordIDAt(req.HitSourceRecordIDs, index),
+			SourceRecordID: strings.TrimSpace(req.Hits[index].SourceRecordID),
 			RawRankNo:      rawRankNo,
 			ContextRankNo:  contextRankNo,
 			DiscardReason:  discardReason,
@@ -351,44 +321,14 @@ func buildRetrieveTraceHits(req *CreateRetrieveLogRequest) []retrieveTraceHit {
 	return result
 }
 
-func sourceRecordIDAt(items []string, index int) string {
-	if index < 0 || index >= len(items) {
-		return ""
-	}
-	return strings.TrimSpace(items[index])
-}
-
-func defaultRetrieveSourceType(req *CreateRetrieveLogRequest) string {
-	if req == nil {
-		return "local_vector"
-	}
-	if req.SourceType != "" {
-		return req.SourceType
-	}
-	if req.ChunkProvider == "fastgpt_cloud" {
-		return "fastgpt"
-	}
-	return "local_vector"
-}
-
 func buildTraceCitations(citations []response.KnowledgeCitation) []retrieveTraceCitation {
 	items := make([]retrieveTraceCitation, 0, len(citations))
 	for _, item := range citations {
 		items = append(items, retrieveTraceCitation{
-			DocumentID:  item.DocumentID,
-			ChunkNo:     item.ChunkNo,
-			SectionPath: item.SectionPath,
+			SourceRecordID: strings.TrimSpace(item.SourceRecordID),
 		})
 	}
 	return items
-}
-
-func buildUsedChunkKeys(hits []response.KnowledgeSearchResult) []string {
-	keys := make([]string, 0, len(hits))
-	for _, item := range hits {
-		keys = append(keys, buildKnowledgeSearchResultKey(item))
-	}
-	return keys
 }
 
 func distinctKnowledgeBaseIDs(hits []response.KnowledgeSearchResult) []int64 {
@@ -407,49 +347,33 @@ func distinctKnowledgeBaseIDs(hits []response.KnowledgeSearchResult) []int64 {
 	return ids
 }
 
-func distinctDocumentIDs(hits []response.KnowledgeSearchResult) []int64 {
-	seen := make(map[int64]struct{})
-	items := make([]int64, 0)
-	for _, item := range hits {
-		if item.DocumentID <= 0 {
-			continue
-		}
-		if _, ok := seen[item.DocumentID]; ok {
-			continue
-		}
-		seen[item.DocumentID] = struct{}{}
-		items = append(items, item.DocumentID)
-	}
-	return items
-}
-
-func distinctSectionPaths(hits []response.KnowledgeSearchResult) []string {
+func distinctSourceRecordIDs(hits []response.KnowledgeSearchResult) []string {
 	seen := make(map[string]struct{})
 	items := make([]string, 0)
 	for _, item := range hits {
-		sectionPath := item.SectionPath
-		if sectionPath == "" {
+		sourceRecordID := strings.TrimSpace(item.SourceRecordID)
+		if sourceRecordID == "" {
 			continue
 		}
-		if _, ok := seen[sectionPath]; ok {
+		if _, ok := seen[sourceRecordID]; ok {
 			continue
 		}
-		seen[sectionPath] = struct{}{}
-		items = append(items, sectionPath)
+		seen[sourceRecordID] = struct{}{}
+		items = append(items, sourceRecordID)
 	}
 	return items
 }
 
 func buildKnowledgeSearchResultKey(item response.KnowledgeSearchResult) string {
-	if item.FaqID > 0 {
-		return fmt.Sprintf("faq:%d|%d", item.FaqID, item.ChunkNo)
+	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
+		return "source:" + sourceRecordID
 	}
 	return fmt.Sprintf("%d|%s|%d", item.DocumentID, item.SectionPath, item.ChunkNo)
 }
 
 func buildKnowledgeCitationKey(item response.KnowledgeCitation) string {
-	if item.FaqID > 0 {
-		return fmt.Sprintf("faq:%d|%d", item.FaqID, item.ChunkNo)
+	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
+		return "source:" + sourceRecordID
 	}
 	return fmt.Sprintf("%d|%s|%d", item.DocumentID, item.SectionPath, item.ChunkNo)
 }

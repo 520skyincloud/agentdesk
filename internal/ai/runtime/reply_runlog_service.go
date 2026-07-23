@@ -47,7 +47,6 @@ func (s *replyRunLogService) Write(input replyRunLogInput) {
 		MessageID:        input.Message.ID,
 		RequestID:        input.Message.RequestID,
 		AIAgentID:        input.AIAgent.ID,
-		AIConfigID:       0,
 		UserMessage:      strings.TrimSpace(input.Question),
 		PlannedAction:    plannedAction,
 		PlannedSkillCode: strings.TrimSpace(summaryPlannedSkillCode(input.Summary)),

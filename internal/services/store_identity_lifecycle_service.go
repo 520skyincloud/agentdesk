@@ -12,7 +12,6 @@ import (
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
-	"gorm.io/gorm"
 )
 
 var StoreIdentityLifecycleService = newStoreIdentityLifecycleService()
@@ -162,9 +161,6 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 			return err
 		}
 		if replaced != nil {
-			if err := s.copyInstanceModelSettings(ctx.Tx, replaced, current, user, now); err != nil {
-				return err
-			}
 			if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, replaced.ID, current.TenantID, map[string]any{
 				"ai_reply_enabled":        false,
 				"status":                  enums.StatusDisabled,
@@ -184,31 +180,4 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 		return nil, err
 	}
 	return updated, nil
-}
-
-func (s *storeIdentityLifecycleService) copyInstanceModelSettings(db *gorm.DB, oldInstance, newInstance *models.WxWorkProtocolInstance, user *models.User, now time.Time) error {
-	if oldInstance == nil || newInstance == nil || oldInstance.TenantID <= 0 || oldInstance.TenantID != newInstance.TenantID {
-		return errorsx.InvalidParam("替换员工号的租户归属不一致")
-	}
-	settings := repositories.StoreAIModelSettingRepository.Find(db, sqls.NewCnd().Eq("wx_work_instance_id", oldInstance.ID).Where("status <> ?", enums.StatusDeleted))
-	for i := range settings {
-		setting := settings[i]
-		setting.ID = 0
-		setting.CompanyID = 0
-		setting.StoreID = newInstance.StoreID
-		setting.WxWorkInstanceID = newInstance.ID
-		setting.LastTestStatus = ""
-		setting.LastTestedAt = nil
-		setting.LastTestLatencyMS = 0
-		setting.CreatedAt = now
-		setting.CreateUserID = user.ID
-		setting.CreateUserName = user.Username
-		setting.UpdatedAt = now
-		setting.UpdateUserID = user.ID
-		setting.UpdateUserName = user.Username
-		if err := repositories.StoreAIModelSettingRepository.Create(db, &setting); err != nil {
-			return err
-		}
-	}
-	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/services"
 
 	"gorm.io/gorm"
 )
@@ -39,19 +40,7 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 	config.SetCurrent(&config.Config{Auth: config.AuthConfig{
 		InvitationEncryptionKey: base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
 	}})
-	if err := db.Create(&models.AIConfig{
-		Name:        "仿真测试复用模型",
-		Provider:    enums.AIProviderOpenAI,
-		BaseURL:     "https://example.invalid/v1",
-		APIKey:      "test-only-key",
-		ModelType:   enums.AIModelTypeLLM,
-		ModelName:   "test-only-model",
-		Status:      enums.StatusOk,
-		Remark:      "仿真测试模型配置，不用于生产",
-		AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
-	}).Error; err != nil {
-		t.Fatalf("create reusable test AI config: %v", err)
-	}
+	createLifecycleModelProfile(t, db)
 
 	batch := "fresh-lifecycle"
 	if err := seed(db, batch, defaultPassword); err != nil {
@@ -118,8 +107,10 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 		assertLifecycleRowCount(t, db, name, model, 0)
 	}
 	assertLifecycleScopedRowCount(t, db, "AI agents", &models.AIAgent{}, tenant.ID, 0)
-	assertLifecycleScopedRowCount(t, db, "model grants", &models.TenantAIModelGrant{}, tenant.ID, 0)
-	assertLifecycleScopedRowCount(t, db, "model assignments", &models.StoreAIModelSetting{}, tenant.ID, 0)
+	assertLifecycleScopedRowCount(t, db, "model profile assignments", &models.StoreModelProfileAssignment{}, tenant.ID, 0)
+	assertLifecycleScopedRowCount(t, db, "model credentials", &models.StoreModelCredential{}, tenant.ID, 0)
+	assertLifecycleScopedRowCount(t, db, "credential policies", &models.StoreCredentialPolicy{}, tenant.ID, 0)
+	assertLifecycleScopedRowCount(t, db, "credential audit logs", &models.StoreModelCredentialAuditLog{}, tenant.ID, 0)
 	assertLifecycleScopedRowCount(t, db, "quality templates", &models.QualityTemplate{}, tenant.ID, 0)
 	assertLifecycleScopedRowCount(t, db, "quality template items", &models.QualityTemplateItem{}, tenant.ID, 0)
 	assertLifecycleScopedRowCount(t, db, "analytics policies", &models.ServiceAnalyticsPolicy{}, tenant.ID, 0)
@@ -141,6 +132,44 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 	}
 
 	assertLifecycleSystemData(t, db)
+}
+
+func createLifecycleModelProfile(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	now := time.Now()
+	profile := &models.ModelProfileTemplate{
+		Code: "simulation", Name: "仿真测试九槽模型方案", Revision: 1,
+		GatewayBaseURL: "https://example.invalid/v1", Status: enums.ModelProfileStatusCandidate,
+		PublishedAt: &now, AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(profile).Error; err != nil {
+		t.Fatalf("create simulation model profile: %v", err)
+	}
+	slots := make([]models.ModelProfileSlot, 0, len(services.RequiredModelUsageSlotSpecs()))
+	for index, spec := range services.RequiredModelUsageSlotSpecs() {
+		slot := models.ModelProfileSlot{
+			TemplateID: profile.ID, UsageCode: spec.UsageCode, DisplayName: spec.DisplayName,
+			ModelType: spec.ExpectedModelType, Provider: "newapi", ModelName: "test-" + string(spec.UsageCode),
+			APIMode: spec.DefaultAPIMode, TimeoutMS: 30000, Enabled: true, SortNo: index + 1,
+			AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+		}
+		if slot.ModelType == enums.AIModelTypeLLM || slot.ModelType == enums.AIModelTypeVision {
+			slot.MaxContextTokens = 8192
+			slot.MaxOutputTokens = 1024
+		}
+		if slot.ModelType == enums.AIModelTypeEmbedding {
+			slot.Dimension = 1536
+		}
+		if slot.UsageCode == enums.ModelUsageSlotCustomerTag {
+			slot.SchemaVersion = "customer_tag_evolution.v1"
+			slot.PromptTemplate = "仅从允许的固定行业标签中提取长期客户偏好。"
+			slot.JSONSchema = `{"type":"object"}`
+		}
+		slots = append(slots, slot)
+	}
+	if err := db.Create(&slots).Error; err != nil {
+		t.Fatalf("create simulation model slots: %v", err)
+	}
 }
 
 func createLifecycleReportViewPreset(t *testing.T, db *gorm.DB, tenantID, userID int64, name string) models.ReportViewPreset {
@@ -301,8 +330,9 @@ func assertCompleteSimulationReport(t *testing.T, got report) {
 		t.Fatalf("customer relationship baseline changed: %+v", got)
 	}
 	if got.Tenant != 1 || got.TenantSupervisor != 1 || got.TenantInvitation != 1 || got.DefaultAgentTeam != 1 ||
-		got.AIAgent != 1 || !got.ModelConfigReused || got.TenantDefaultConfigName != "仿真测试复用模型" ||
-		got.RuleAgentTeams != 3 || got.AgentTeamSchedules != 3 || got.ActiveDispatchModelSettings != 0 {
+		got.AIAgent != 1 || !got.ModelProfileReady || got.ModelProfileName != "仿真测试九槽模型方案" ||
+		got.StoreModelAssignments != 100 || got.StoreModelCredentials != 100 || got.UnconfiguredCredentials != 100 || got.StoreCredentialPolicies != 100 ||
+		got.RuleAgentTeams != 3 || got.AgentTeamSchedules != 3 {
 		t.Fatalf("tenant/model foundation baseline changed: %+v", got)
 	}
 	if got.SimulatedConversations != 36 || got.SimulatedMessages != 135 || got.SimulatedAssignments != 21 ||

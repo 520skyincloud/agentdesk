@@ -45,7 +45,6 @@ type ConversationServiceSession struct {
 	CloseReason           string                          `gorm:"type:varchar(255);not null;default:''"`
 	ResolutionCode        string                          `gorm:"type:varchar(50);not null;default:'';index"`
 	CategoryCode          string                          `gorm:"type:varchar(50);not null;default:'';index"`
-	TagIDsJSON            string                          `gorm:"type:text"`
 	SessionSummary        string                          `gorm:"type:text"`
 	FactOrigin            enums.AnalyticsFactOrigin       `gorm:"type:varchar(20);not null;default:'runtime';index"`
 	DataQuality           enums.AnalyticsDataQuality      `gorm:"type:varchar(20);not null;default:'exact';index"`

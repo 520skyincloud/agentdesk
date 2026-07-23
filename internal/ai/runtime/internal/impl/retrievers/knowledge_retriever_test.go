@@ -6,7 +6,6 @@ import (
 
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 
 	"github.com/glebarez/sqlite"
@@ -14,13 +13,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
-
-func TestInferRuntimeRetrieveSourceTypeRecognizesFastGPTEngineResults(t *testing.T) {
-	hits := []response.KnowledgeSearchResult{{SectionPath: "FastGPT知识库/3/collection-1"}}
-	if got := inferRuntimeRetrieveSourceType(hits); got != "fastgpt" {
-		t.Fatalf("source type=%q", got)
-	}
-}
 
 func TestBuildRetrieverTraceItemsRecordsRawAndContextOrder(t *testing.T) {
 	hits := []rag.RetrieveResult{

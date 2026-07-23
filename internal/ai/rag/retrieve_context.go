@@ -99,9 +99,6 @@ func canMergeContextResult(left, right RetrieveResult) bool {
 	if strings.TrimSpace(left.SourceRecordID) != "" || strings.TrimSpace(right.SourceRecordID) != "" {
 		return false
 	}
-	if left.FaqID > 0 || right.FaqID > 0 {
-		return false
-	}
 	if left.DocumentID != right.DocumentID {
 		return false
 	}
@@ -117,9 +114,6 @@ func canMergeContextResult(left, right RetrieveResult) bool {
 func buildSectionKey(item RetrieveResult) string {
 	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
 		return "source:" + sourceRecordID
-	}
-	if item.FaqID > 0 {
-		return fmt.Sprintf("faq:%d", item.FaqID)
 	}
 	sectionPath := strings.TrimSpace(item.SectionPath)
 	if sectionPath != "" {
@@ -140,19 +134,12 @@ func buildContextUsageKey(item RetrieveResult) string {
 }
 
 func buildContextChunkText(item RetrieveResult) string {
-	if item.FaqID > 0 {
-		title := strings.TrimSpace(item.FaqQuestion)
-		if title == "" {
-			title = strings.TrimSpace(item.Title)
-		}
-		if title == "" {
-			title = fmt.Sprintf("FAQ#%d", item.FaqID)
-		}
-		return fmt.Sprintf("【FAQ：%s】\n%s\n\n", title, item.Content)
-	}
 	title := strings.TrimSpace(item.DocumentTitle)
 	if title == "" {
-		title = fmt.Sprintf("文档#%d", item.DocumentID)
+		title = strings.TrimSpace(item.Title)
+	}
+	if title == "" {
+		title = fmt.Sprintf("FastGPT知识条目#%s", strings.TrimSpace(item.SourceRecordID))
 	}
 	if item.SectionPath != "" {
 		return fmt.Sprintf("【文档：%s｜章节：%s】\n%s\n\n", title, item.SectionPath, item.Content)

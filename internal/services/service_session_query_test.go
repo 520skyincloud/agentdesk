@@ -16,8 +16,6 @@ func TestServiceSessionListAndExportShareFilters(t *testing.T) {
 	now := time.Date(2026, 7, 17, 14, 0, 0, 0, time.Local)
 	tenantID := int64(801)
 	intentProfileID := int64(8801)
-	categoryDefinitionID := int64(88011)
-	leafDefinitionID := int64(88012)
 	if err := db.Create(&models.Tenant{
 		ID: tenantID, IntentProfileID: intentProfileID,
 		TenantCode: "analytics-query-tenant", LegalName: "运营分析查询测试公司", ShortName: "分析测试",
@@ -28,14 +26,6 @@ func TestServiceSessionListAndExportShareFilters(t *testing.T) {
 	channel := &models.Channel{TenantID: tenantID, Name: "官网客服", ChannelType: "web", ChannelID: "query-web", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(now)}
 	if err := db.Create(channel).Error; err != nil {
 		t.Fatalf("create channel: %v", err)
-	}
-	for _, tag := range []*models.Tag{
-		{ID: 11, TenantID: tenantID, IntentProfileID: intentProfileID, TemplateDefinitionID: &categoryDefinitionID, SystemDefined: true, Name: "预订", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(now)},
-		{ID: 12, TenantID: tenantID, IntentProfileID: intentProfileID, TemplateDefinitionID: &leafDefinitionID, SystemDefined: true, ParentID: 11, Name: "变更预订", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(now)},
-	} {
-		if err := db.Create(tag).Error; err != nil {
-			t.Fatalf("create tag: %v", err)
-		}
 	}
 	if err := db.Create(&models.ServiceAnalyticsPolicy{
 		TenantID: tenantID, QueueTargetSeconds: 60, FirstResponseTargetSeconds: 120, ResponseTargetSeconds: 180,
@@ -51,24 +41,24 @@ func TestServiceSessionListAndExportShareFilters(t *testing.T) {
 		TenantID: tenantID, ConversationID: 80101, SessionNo: 1, ChannelID: channel.ID,
 		Status: enums.ServiceSessionStatusClosed, StartedAt: startedAt, QueueEnteredAt: &startedAt, AssignedAt: &assignedAt,
 		QueueSeconds: 90, HumanMessageCount: 2, ResolutionCode: "resolved", CategoryCode: "booking",
-		TagIDsJSON: "[12]", FactOrigin: enums.AnalyticsFactOriginRuntime, DataQuality: enums.AnalyticsDataQualityExact,
+		FactOrigin: enums.AnalyticsFactOriginRuntime, DataQuality: enums.AnalyticsDataQualityExact,
 		AuditFields: testAnalyticsAudit(startedAt),
 	}
-	lookalikeTag := &models.ConversationServiceSession{
+	nonMatchingCategory := &models.ConversationServiceSession{
 		TenantID: tenantID, ConversationID: 80102, SessionNo: 1, ChannelID: channel.ID,
 		Status: enums.ServiceSessionStatusClosed, StartedAt: startedAt.Add(time.Minute), QueueEnteredAt: &startedAt, AssignedAt: &assignedAt,
-		QueueSeconds: 90, HumanMessageCount: 1, ResolutionCode: "resolved", CategoryCode: "booking",
-		TagIDsJSON: "[112]", FactOrigin: enums.AnalyticsFactOriginRuntime, DataQuality: enums.AnalyticsDataQualityExact,
+		QueueSeconds: 90, HumanMessageCount: 1, ResolutionCode: "resolved", CategoryCode: "billing",
+		FactOrigin: enums.AnalyticsFactOriginRuntime, DataQuality: enums.AnalyticsDataQualityExact,
 		AuditFields: testAnalyticsAudit(startedAt),
 	}
 	foreign := &models.ConversationServiceSession{
 		TenantID: tenantID + 1, ConversationID: 80201, SessionNo: 1, ChannelID: channel.ID,
 		Status: enums.ServiceSessionStatusClosed, StartedAt: startedAt, AssignedAt: &assignedAt,
-		QueueSeconds: 90, ResolutionCode: "resolved", CategoryCode: "booking", TagIDsJSON: "[12]",
+		QueueSeconds: 90, ResolutionCode: "resolved", CategoryCode: "booking",
 		FactOrigin: enums.AnalyticsFactOriginRuntime, DataQuality: enums.AnalyticsDataQualityExact,
 		AuditFields: testAnalyticsAudit(startedAt),
 	}
-	for _, item := range []*models.ConversationServiceSession{matching, lookalikeTag, foreign} {
+	for _, item := range []*models.ConversationServiceSession{matching, nonMatchingCategory, foreign} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatalf("create service session: %v", err)
 		}
@@ -77,7 +67,7 @@ func TestServiceSessionListAndExportShareFilters(t *testing.T) {
 	startRange := now.Add(-2 * time.Hour)
 	endRange := now
 	query := ServiceSessionQuery{
-		Page: 1, Limit: 20, ChannelID: channel.ID, ResolutionCode: "resolved", CategoryCode: "booking", TagID: 11,
+		Page: 1, Limit: 20, ChannelID: channel.ID, ResolutionCode: "resolved", CategoryCode: "booking",
 		StartAt: &startRange, EndAt: &endRange, SLABreached: true, SLAReferenceTime: now,
 	}
 	operator := &dto.AuthPrincipal{UserID: 1, ActiveTenantID: tenantID, Roles: []string{constants.RoleCodeTenantAdmin}}
@@ -97,15 +87,6 @@ func TestServiceSessionListAndExportShareFilters(t *testing.T) {
 	}
 	if _, err := ServiceAnalyticsService.ExportSessions(ServiceSessionQuery{}, operator, 1); err == nil || !strings.Contains(err.Error(), "超过单次上限1条") {
 		t.Fatalf("export above limit should require narrower filters, err=%v", err)
-	}
-
-	query.TagID = 9999
-	list, paging, err = ServiceAnalyticsService.ListSessions(query, operator)
-	if err != nil {
-		t.Fatalf("list unknown tag: %v", err)
-	}
-	if paging.Total != 0 || len(list) != 0 {
-		t.Fatalf("unknown tag leaked sessions total=%d items=%+v", paging.Total, list)
 	}
 }
 

@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-func TestMigrateTenantAIModelAccessMovesLegacyCredentialsToPlatformReference(t *testing.T) {
+func TestMigrateTenantAIModelAccessRetiresLegacyModelAccess(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "tenant-model-migration.db")), &gorm.Config{
 		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
 	})
@@ -22,9 +22,13 @@ func TestMigrateTenantAIModelAccessMovesLegacyCredentialsToPlatformReference(t *
 	}
 	if err := db.AutoMigrate(
 		&models.Tenant{}, &models.Company{}, &models.Store{}, &models.WxWorkProtocolInstance{},
-		&models.AIConfig{}, &models.AgentTeam{}, &models.AIAgent{}, &models.TenantAIModelGrant{}, &models.StoreAIModelSetting{},
+		&legacyAIConfig{}, &models.AgentTeam{}, &models.AIAgent{},
+		&legacyTenantAIModelGrant{}, &legacyStoreAIModelSetting{},
 	); err != nil {
 		t.Fatalf("auto migrate: %v", err)
+	}
+	if err := db.Exec("ALTER TABLE t_ai_agent ADD COLUMN ai_config_id bigint NOT NULL DEFAULT 0").Error; err != nil {
+		t.Fatalf("add legacy agent binding: %v", err)
 	}
 
 	tenant := &models.Tenant{TenantCode: "legacy-model-tenant", LegalName: "Legacy Tenant", ShortName: "Legacy", RegistrationType: "credit_code", RegistrationNo: "LEGACY-MODEL-REG", Status: enums.StatusOk}
@@ -35,11 +39,11 @@ func TestMigrateTenantAIModelAccessMovesLegacyCredentialsToPlatformReference(t *
 	if err := db.Create(company).Error; err != nil {
 		t.Fatalf("create company: %v", err)
 	}
-	config := &models.AIConfig{Name: "Platform LLM", Provider: enums.AIProviderOpenAI, BaseURL: "https://platform.example.com/v1", APIKey: "platform-secret", ModelType: enums.AIModelTypeLLM, ModelName: "platform-model", Status: enums.StatusOk}
+	config := &legacyAIConfig{Name: "Platform LLM", Provider: enums.AIProviderOpenAI, BaseURL: "https://platform.example.com/v1", APIKey: "platform-secret", ModelType: enums.AIModelTypeLLM, ModelName: "platform-model", Status: enums.StatusOk}
 	if err := db.Create(config).Error; err != nil {
 		t.Fatalf("create config: %v", err)
 	}
-	legacy := &models.StoreAIModelSetting{
+	legacy := &legacyStoreAIModelSetting{
 		CompanyID: company.ID, UsageCode: constants.AIModelUsageReplyLLM, AIConfigID: config.ID,
 		Provider: config.Provider, BaseURL: config.BaseURL, APIKey: "copied-tenant-secret",
 		ModelType: config.ModelType, ModelName: config.ModelName, Status: enums.StatusOk,
@@ -47,7 +51,7 @@ func TestMigrateTenantAIModelAccessMovesLegacyCredentialsToPlatformReference(t *
 	if err := db.Create(legacy).Error; err != nil {
 		t.Fatalf("create legacy setting: %v", err)
 	}
-	orphan := &models.StoreAIModelSetting{
+	orphan := &legacyStoreAIModelSetting{
 		UsageCode: constants.AIModelUsageReplyLLM, Provider: enums.AIProviderOpenAI,
 		BaseURL: "https://orphan.example.com/v1", APIKey: "orphan-secret", APIMode: "responses",
 		ModelType: enums.AIModelTypeLLM, ModelName: "orphan-model", MaxContextTokens: 2048,
@@ -56,38 +60,53 @@ func TestMigrateTenantAIModelAccessMovesLegacyCredentialsToPlatformReference(t *
 	if err := db.Create(orphan).Error; err != nil {
 		t.Fatalf("create orphan legacy setting: %v", err)
 	}
-	unused := &models.StoreAIModelSetting{
+	unused := &legacyStoreAIModelSetting{
 		CompanyID: company.ID, UsageCode: "memory_summary_llm", AIConfigID: config.ID, Status: enums.StatusOk,
 	}
 	if err := db.Create(unused).Error; err != nil {
 		t.Fatalf("create unsupported legacy setting: %v", err)
 	}
-	if err := db.Create(&models.AIAgent{TenantID: tenant.ID, Name: "Legacy Agent", AIConfigID: config.ID, Status: enums.StatusOk}).Error; err != nil {
+	agent := &models.AIAgent{TenantID: tenant.ID, Name: "Legacy Agent", Status: enums.StatusOk}
+	if err := db.Create(agent).Error; err != nil {
 		t.Fatalf("create agent: %v", err)
+	}
+	if err := db.Model(&legacyAIAgentModelBinding{}).Where("id = ?", agent.ID).Update("ai_config_id", config.ID).Error; err != nil {
+		t.Fatalf("bind legacy agent config: %v", err)
 	}
 
 	if err := migrateTenantAIModelAccess(db); err != nil {
 		t.Fatalf("migrate tenant model access: %v", err)
 	}
+	if err := migrateTenantAIModelAccess(db); err != nil {
+		t.Fatalf("repeat tenant model access migration: %v", err)
+	}
 
-	var migrated models.StoreAIModelSetting
+	var retiredConfig legacyAIConfig
+	if err := db.First(&retiredConfig, config.ID).Error; err != nil {
+		t.Fatalf("load retired config: %v", err)
+	}
+	if retiredConfig.APIKey != "" {
+		t.Fatalf("legacy AI config key was not cleared")
+	}
+	if retiredConfig.ModelName != config.ModelName || retiredConfig.Status != enums.StatusOk {
+		t.Fatalf("non-secret legacy model metadata changed before profile seeding: %#v", retiredConfig)
+	}
+
+	var migrated legacyStoreAIModelSetting
 	if err := db.First(&migrated, legacy.ID).Error; err != nil {
 		t.Fatalf("load migrated setting: %v", err)
 	}
-	if migrated.TenantID != tenant.ID || migrated.CompanyID != 0 || migrated.AIConfigID != config.ID {
-		t.Fatalf("unexpected migrated scope: %#v", migrated)
+	if migrated.Status != enums.StatusDisabled || migrated.APIKey != "" || migrated.BaseURL != "" || migrated.Provider != "" || migrated.ModelName != "" || migrated.ConfigFingerprint != "" || migrated.Remark != "" {
+		t.Fatalf("legacy model setting remained callable: %#v", migrated)
 	}
-	if migrated.APIKey != "" || migrated.BaseURL != "" || migrated.ModelName != "" {
-		t.Fatalf("legacy credential copy was not cleared: %#v", migrated)
-	}
-	var migratedOrphan models.StoreAIModelSetting
+	var migratedOrphan legacyStoreAIModelSetting
 	if err := db.First(&migratedOrphan, orphan.ID).Error; err != nil {
 		t.Fatalf("load orphan setting: %v", err)
 	}
-	if migratedOrphan.Status != enums.StatusDisabled || migratedOrphan.APIKey != "" || migratedOrphan.BaseURL != "" || migratedOrphan.Provider != "" || migratedOrphan.ModelName != "" || migratedOrphan.MaxContextTokens != 0 || migratedOrphan.Remark != "" {
+	if migratedOrphan.Status != enums.StatusDisabled || migratedOrphan.APIKey != "" || migratedOrphan.BaseURL != "" || migratedOrphan.Provider != "" || migratedOrphan.ModelName != "" || migratedOrphan.ConfigFingerprint != "" || migratedOrphan.Remark != "" {
 		t.Fatalf("orphan legacy credentials were not cleared: %#v", migratedOrphan)
 	}
-	var migratedUnused models.StoreAIModelSetting
+	var migratedUnused legacyStoreAIModelSetting
 	if err := db.First(&migratedUnused, unused.ID).Error; err != nil {
 		t.Fatalf("load unsupported legacy setting: %v", err)
 	}
@@ -95,19 +114,16 @@ func TestMigrateTenantAIModelAccessMovesLegacyCredentialsToPlatformReference(t *
 		t.Fatalf("unsupported legacy usage remained active: %#v", migratedUnused)
 	}
 
-	var grant models.TenantAIModelGrant
-	if err := db.Where("tenant_id = ? AND ai_config_id = ? AND status = ?", tenant.ID, config.ID, enums.StatusOk).Take(&grant).Error; err != nil {
-		t.Fatalf("load model grant: %v", err)
+	var grant legacyTenantAIModelGrant
+	if err := db.Where("tenant_id = ? AND ai_config_id = ?", tenant.ID, config.ID).Take(&grant).Error; err == nil || err != gorm.ErrRecordNotFound {
+		t.Fatalf("legacy migration must not create a model grant: %v", err)
 	}
-	var intentDefault models.StoreAIModelSetting
-	if err := db.Where("tenant_id = ? AND wx_work_instance_id = 0 AND usage_code = ? AND status = ?", tenant.ID, constants.AIModelUsageIntentDetectLLM, enums.StatusOk).Take(&intentDefault).Error; err != nil {
-		t.Fatalf("load intent default: %v", err)
+	var binding legacyAIAgentModelBinding
+	if err := db.First(&binding, agent.ID).Error; err != nil {
+		t.Fatalf("load legacy agent binding: %v", err)
 	}
-	if intentDefault.AIConfigID != config.ID {
-		t.Fatalf("intent default config = %d, want %d", intentDefault.AIConfigID, config.ID)
-	}
-	if !db.Migrator().HasIndex(&models.StoreAIModelSetting{}, "uk_tenant_ai_model_scope_usage") {
-		t.Fatal("tenant model assignment unique index was not created")
+	if binding.AIConfigID != 0 {
+		t.Fatalf("legacy agent config reference=%d want=0", binding.AIConfigID)
 	}
 }
 

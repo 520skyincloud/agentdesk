@@ -251,7 +251,6 @@ type ServiceSessionResponse struct {
 	LastMessageAt         string   `json:"lastMessageAt,omitempty"`
 	ResolutionCode        string   `json:"resolutionCode"`
 	CategoryCode          string   `json:"categoryCode"`
-	TagIDs                []int64  `json:"tagIds"`
 	SessionSummary        string   `json:"sessionSummary"`
 	FactOrigin            string   `json:"factOrigin"`
 	DataQuality           string   `json:"dataQuality"`

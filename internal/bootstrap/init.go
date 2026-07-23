@@ -1,7 +1,6 @@
 package bootstrap
 
 import (
-	"agent-desk/internal/ai/rag/vectordb"
 	"agent-desk/internal/oidcclient"
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/logx"
@@ -35,11 +34,6 @@ func Init(configPath string) error {
 		slog.Error("init migrations failed", "error", err)
 		return err
 	}
-	if err := vectordb.Init(&cfg.VectorDB); err != nil {
-		slog.Error("init vector db failed", "error", err)
-		return err
-	}
-
 	// 启动任务调度器
 	cronx.Init()
 

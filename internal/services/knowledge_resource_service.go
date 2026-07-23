@@ -604,5 +604,5 @@ func assetIDsFromKnowledgeResourceItems(items []models.KnowledgeResourceItem) []
 }
 
 func isFastGPTKnowledgeBaseForResources(item *models.KnowledgeBase) bool {
-	return item != nil && (item.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud) || item.ChunkProvider == string(enums.KnowledgeChunkProviderFastGPT))
+	return item != nil && item.KnowledgeType == string(enums.KnowledgeBaseTypeFastGPTCloud)
 }

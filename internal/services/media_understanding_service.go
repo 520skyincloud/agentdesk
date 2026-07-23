@@ -48,23 +48,6 @@ type upstreamModelUsage struct {
 
 const visionConnectionTestImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAB0klEQVR4nAXBoQ6AIBRAUT/HbCabyWay+SWDMzGD6SUCMzkCiWRwJnYDyS/ynK4XBsEIo2CFSXDCLIiwCrugQhSSUIRH6PqFYcEsjAt2YVpwC/OCLKwL+4IuxIW0UBaeha7fGDbMxrhhN6YNtzFvyMa6sW/oRtxIG2Xj2eh6z+AxntFjPZPHeWaPeFbP7lFP9CRP8Tyerj8YDszBeGAPpgN3MB/IwXqwH+hBPEgH5eA56HplUIwyKlaZFKfMiiirsiuqRCUpRXmUrg8MARMYAzYwBVxgDkhgDewBDcRACpTAE+j6k+HEnIwn9mQ6cSfziZysJ/uJnsSTdFJOnpOuvxguzMV4YS+mC3cxX8jFerFf6EW8SBfl4rno+syQMZkxYzNTxmXmjGTWzJ7RTMykTMk8ma4vDAVTGAu2MBVcYS5IYS3sBS3EQiqUwlPo+pvhxtyMN/ZmunE3843crDf7jd7Em3RTbp6brn8ZXszL+GJfphf3Mr/Iy/qyv+hLfEkv5eV56frKUDGVsWIrU8VV5opU1spe0UqspEqpPJWubwwN0xgbtjE1XGNuSGNt7A1txEZqlMbT6PqP4cN8jB/2Y/pwH/OHfKwf+4d+xI/0UT6ejx/yfeAQHkqo/AAAAABJRU5ErkJggg=="
 
-// TestVisionConfig verifies the same OpenAI-compatible image path used by media understanding.
-func (s *mediaUnderstandingService) TestVisionConfig(ctx context.Context, config models.AIConfig) error {
-	runtimeConfig := modelconfig.Config{
-		Provider: config.Provider, BaseURL: config.BaseURL, APIKey: config.APIKey,
-		APIMode: config.APIMode, ModelType: config.ModelType, ModelName: config.ModelName,
-		MaxOutputTokens: 32, TimeoutMS: config.TimeoutMS, MaxRetryCount: config.MaxRetryCount,
-	}
-	content, err := s.callOpenAICompatibleVision(ctx, runtimeConfig, visionConnectionTestImage)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(content) == "" {
-		return fmt.Errorf("视觉模型返回为空")
-	}
-	return nil
-}
-
 type messageMediaPayload struct {
 	AssetID      string         `json:"assetId"`
 	Filename     string         `json:"filename"`

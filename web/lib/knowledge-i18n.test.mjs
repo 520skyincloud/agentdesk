@@ -35,10 +35,7 @@ const t = (key) =>
     "knowledge.answerNoAnswer": "No answer",
     "knowledge.answerFallback": "Fallback",
     "knowledge.answerBlocked": "Blocked",
-    "knowledge.chunkFixed": "Fixed length",
-    "knowledge.chunkStructured": "Structured chunks",
-    "knowledge.chunkFAQ": "Q&A chunks",
-    "knowledge.chunkSemantic": "Semantic chunks",
+    "knowledge.chunkFastGPTCloud": "Managed FastGPT",
   })[key] ?? key
 
 test("localizes knowledge retrieve enum labels from stable values", async () => {
@@ -52,5 +49,5 @@ test("localizes knowledge retrieve enum labels from stable values", async () => 
   assert.equal(getKnowledgeRetrieveChannelLabel("im", "\u5ba2\u670d\u4f1a\u8bdd", t), "Conversations")
   assert.equal(getKnowledgeRetrieveSceneLabel("first_response", "\u9996\u6b21\u56de\u590d", t), "First response")
   assert.equal(getKnowledgeAnswerStatusLabel(2, "\u65e0\u7b54\u6848", t), "No answer")
-  assert.equal(getKnowledgeChunkProviderLabel("semantic", t), "Semantic chunks")
+  assert.equal(getKnowledgeChunkProviderLabel("fastgpt_cloud", t), "Managed FastGPT")
 })

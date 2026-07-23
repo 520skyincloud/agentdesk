@@ -27,7 +27,7 @@ func TestInitializeStoreModelCredentialsIsIdempotentAndNeverMigratesLegacyKeys(t
 		t.Fatal(err)
 	}
 	legacySecret := "legacy-key-must-not-migrate"
-	if err := db.Create(&models.AIConfig{Name: "legacy", APIKey: legacySecret, Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&legacyAIConfig{Name: "legacy", APIKey: legacySecret, Status: enums.StatusOk}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,7 +116,7 @@ func openStoreModelCredentialMigrationSQLite(t *testing.T) *gorm.DB {
 
 func migrateStoreModelCredentialTables(db *gorm.DB) error {
 	return db.AutoMigrate(
-		&models.Store{}, &models.AIConfig{}, &models.StoreModelCredential{},
+		&models.Store{}, &legacyAIConfig{}, &models.StoreModelCredential{},
 		&models.StoreCredentialPolicy{}, &models.StoreModelCredentialAuditLog{},
 	)
 }

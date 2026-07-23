@@ -8,14 +8,12 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"agent-desk/internal/ai/rag/vectordb"
 	_ "agent-desk/internal/ai/runtime"
 	"agent-desk/internal/bootstrap"
 	"agent-desk/internal/models"
@@ -81,7 +79,12 @@ type record struct {
 	LatencyMs                 int64          `json:"latencyMs"`
 	RuntimeLatencyMs          int64          `json:"runtimeLatencyMs"`
 	GenerateLatencyMs         int64          `json:"generateLatencyMs"`
-	AIConfigID                int64          `json:"aiConfigId"`
+	StoreID                   int64          `json:"storeId"`
+	ModelProfileID            int64          `json:"modelProfileId"`
+	ModelProfileRevision      int64          `json:"modelProfileRevision"`
+	ModelSlotID               int64          `json:"modelSlotId"`
+	UsageSlot                 string         `json:"usageSlot"`
+	CredentialRevision        int64          `json:"credentialRevision"`
 	ModelSource               string         `json:"modelSource"`
 	ConfiguredMaxOutputTokens int            `json:"configuredMaxOutputTokens,omitempty"`
 	EffectiveMaxOutputTokens  int            `json:"effectiveMaxOutputTokens,omitempty"`
@@ -109,7 +112,12 @@ type record struct {
 
 type aiReplyTrace struct {
 	Status                    string          `json:"status"`
-	AIConfigID                int64           `json:"aiConfigId"`
+	StoreID                   int64           `json:"storeId"`
+	ModelProfileID            int64           `json:"modelProfileId"`
+	ModelProfileRevision      int64           `json:"modelProfileRevision"`
+	ModelSlotID               int64           `json:"modelSlotId"`
+	UsageSlot                 string          `json:"usageSlot"`
+	CredentialRevision        int64           `json:"credentialRevision"`
 	ModelSource               string          `json:"modelSource"`
 	RuntimeLatencyMs          int64           `json:"runtimeLatencyMs"`
 	ConfiguredMaxOutputTokens int             `json:"configuredMaxOutputTokens"`
@@ -281,7 +289,7 @@ func initRuntime(configPath string) error {
 	if err := bootstrap.InitMigrations(); err != nil {
 		return err
 	}
-	return vectordb.Init(&cfg.VectorDB)
+	return nil
 }
 
 func (r *runner) prepare() error {
@@ -722,16 +730,18 @@ func (r *runner) fillRecordFromRunLog(rec record, sc scenario, logItem *models.A
 	rec.Status = strings.TrimSpace(logItem.FinalStatus)
 	rec.FinalAction = strings.TrimSpace(logItem.FinalAction)
 	rec.LatencyMs = logItem.LatencyMs
-	rec.AIConfigID = logItem.AIConfigID
 	rec.ReplyText = strings.TrimSpace(logItem.ReplyText)
 	rec.ErrorMessage = strings.TrimSpace(logItem.ErrorMessage)
 
 	var trace aiReplyTrace
 	if err := json.Unmarshal([]byte(strings.TrimSpace(logItem.TraceData)), &trace); err == nil {
 		rec.RuntimeLatencyMs = trace.RuntimeLatencyMs
-		if trace.AIConfigID > 0 {
-			rec.AIConfigID = trace.AIConfigID
-		}
+		rec.StoreID = trace.StoreID
+		rec.ModelProfileID = trace.ModelProfileID
+		rec.ModelProfileRevision = trace.ModelProfileRevision
+		rec.ModelSlotID = trace.ModelSlotID
+		rec.UsageSlot = strings.TrimSpace(trace.UsageSlot)
+		rec.CredentialRevision = trace.CredentialRevision
 		rec.ModelSource = strings.TrimSpace(trace.ModelSource)
 		rec.ConfiguredMaxOutputTokens = trace.ConfiguredMaxOutputTokens
 		rec.EffectiveMaxOutputTokens = trace.EffectiveMaxOutputTokens
@@ -1430,28 +1440,6 @@ func (r *runner) checkHealth() map[string]string {
 			ret["mysql"] = "ok"
 		} else {
 			ret["mysql"] = err.Error()
-		}
-	}
-	cfg := config.Current()
-	qdrantHost := strings.TrimSpace(cfg.VectorDB.Host)
-	if qdrantHost == "" {
-		qdrantHost = "127.0.0.1"
-	}
-	scheme := "http"
-	if cfg.VectorDB.UseTLS {
-		scheme = "https"
-	}
-	url := fmt.Sprintf("%s://%s:6333/readyz", scheme, qdrantHost)
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		ret["qdrant"] = err.Error()
-	} else {
-		defer resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			ret["qdrant"] = "ok"
-		} else {
-			ret["qdrant"] = resp.Status
 		}
 	}
 	ret["agent-desk"] = "checked outside via docker health"

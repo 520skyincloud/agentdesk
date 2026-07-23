@@ -2,11 +2,6 @@ package response
 
 import "agent-desk/internal/pkg/enums"
 
-type ConversationTagResponse struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
-}
-
 type CustomerTagResponse struct {
 	ID              int64   `json:"id"`
 	TagID           int64   `json:"tagId"`

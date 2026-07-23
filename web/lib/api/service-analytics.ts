@@ -271,7 +271,6 @@ export type ServiceSession = {
   lastMessageAt?: string
   resolutionCode: string
   categoryCode: string
-  tagIds: number[]
   sessionSummary: string
   factOrigin: AnalyticsFactOrigin
   dataQuality: AnalyticsDataQuality
@@ -404,7 +403,6 @@ export function updateServiceSessionAnnotation(payload: {
   resolutionCode: string
   categoryCode: string
   sessionSummary: string
-  tagIds: number[]
 }) {
   return request<ServiceSession>("/api/dashboard/service-session/annotate", {
     method: "POST",

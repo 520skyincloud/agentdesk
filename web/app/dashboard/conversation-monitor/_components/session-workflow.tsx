@@ -11,7 +11,6 @@ import {
 import { toast } from "sonner"
 
 import { OptionCombobox } from "@/components/option-combobox"
-import { TagSelector } from "@/components/tag-selector"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -21,7 +20,6 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { fetchTagsAll, type TagTree } from "@/lib/api/admin"
 import {
   fetchQualityPool,
   fetchQualityTemplates,
@@ -140,7 +138,6 @@ export function SessionWorkflowDialog({
   open,
   session,
   canAnnotate,
-  canViewTags,
   canViewQuality,
   canManageQuality,
   canInviteEvaluation,
@@ -151,7 +148,6 @@ export function SessionWorkflowDialog({
   open: boolean
   session: ServiceSession | null
   canAnnotate: boolean
-  canViewTags: boolean
   canViewQuality: boolean
   canManageQuality: boolean
   canInviteEvaluation: boolean
@@ -172,8 +168,6 @@ export function SessionWorkflowDialog({
   const [resolutionCode, setResolutionCode] = useState("")
   const [categoryCode, setCategoryCode] = useState("")
   const [sessionSummary, setSessionSummary] = useState("")
-  const [tagIds, setTagIds] = useState<number[]>([])
-  const [tags, setTags] = useState<TagTree[]>([])
 
   const selectedEntry = pool.find((item) => String(item.assignmentId) === assignmentId)
   const selectedInspection = selectedEntry?.inspection
@@ -190,7 +184,6 @@ export function SessionWorkflowDialog({
     setResolutionCode(session.resolutionCode)
     setCategoryCode(session.categoryCode)
     setSessionSummary(session.sessionSummary)
-    setTagIds(session.tagIds)
     try {
       const [messageResult, poolResult, templateResult] = await Promise.all([
         fetchServiceSessionMessages(session.id, 1, 500),
@@ -216,14 +209,6 @@ export function SessionWorkflowDialog({
   }, [canViewQuality, open, session])
 
   useEffect(() => { void load() }, [load])
-
-  useEffect(() => {
-    if (!open || !session || !canViewTags) {
-      setTags([])
-      return
-    }
-    void fetchTagsAll().then(setTags).catch((error) => toast.error(error instanceof Error ? error.message : "标签加载失败"))
-  }, [canViewTags, open, session])
 
   function selectAssignment(value: string) {
     setAssignmentId(value)
@@ -252,7 +237,6 @@ export function SessionWorkflowDialog({
         resolutionCode,
         categoryCode,
         sessionSummary,
-        tagIds,
       })
       onUpdated(updated)
       toast.success("服务小记已保存")
@@ -330,7 +314,6 @@ export function SessionWorkflowDialog({
                 <div className="space-y-4">
                   <label className="space-y-1.5 text-sm">问题解决状态<OptionCombobox value={resolutionCode} placeholder="暂未标记" onChange={setResolutionCode} disabled={!canAnnotate} options={[{ value: "", label: "暂未标记" }, { value: "resolved", label: "已解决" }, { value: "follow_up", label: "需跟进" }, { value: "unresolved", label: "未解决" }]} /></label>
                   <label className="space-y-1.5 text-sm">咨询分类<Input value={categoryCode} disabled={!canAnnotate} maxLength={50} onChange={(event) => setCategoryCode(event.target.value)} placeholder="例如：预订变更" /></label>
-                  {canViewTags ? <label className="space-y-1.5 text-sm">会话标签<TagSelector mode="multiple" value={tagIds} onChange={setTagIds} tags={tags} disabled={!canAnnotate} placeholder="选择会话标签" searchPlaceholder="搜索标签路径" emptyText="暂无标签" /></label> : null}
                   <div className="grid grid-cols-2 gap-3 text-sm"><div className="border p-3"><div className="text-xs text-muted-foreground">排队</div><div className="mt-1 font-medium">{Math.round(session.queueSeconds)} 秒</div></div><div className="border p-3"><div className="text-xs text-muted-foreground">人工首响</div><div className="mt-1 font-medium">{Math.round(session.firstResponseSeconds)} 秒</div></div></div>
                   <div className="text-xs text-muted-foreground">数据质量：{session.dataQuality} · 来源：{session.factOrigin}{session.estimatedFields.length ? ` · 估算字段 ${session.estimatedFields.join("、")}` : ""}</div>
                 </div>

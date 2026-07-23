@@ -380,8 +380,8 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         requiredPermission: "tenant.view",
       },
       {
-        titleKey: "nav.aiConfigs",
-        url: "/dashboard/ai-configs",
+        titleKey: "nav.modelProfiles",
+        url: "/dashboard/model-profiles",
         icon: <BrainCircuitIcon />,
         requiredPermission: "aiConfig.view",
       },

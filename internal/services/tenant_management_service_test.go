@@ -47,7 +47,7 @@ func TestTenantServiceCreateTenantBuildsAtomicCompanyFoundation(t *testing.T) {
 		t.Fatalf("unexpected default agent team: %+v", result.DefaultAgentTeam)
 	}
 	internalAgent := repositories.AIAgentRepository.FindOne(db, sqls.NewCnd().Eq("tenant_id", result.Tenant.ID).Eq("status", enums.StatusOk))
-	if internalAgent == nil || internalAgent.AIConfigID != 0 || internalAgent.Name != "默认接待策略" {
+	if internalAgent == nil || internalAgent.Name != "默认接待策略" {
 		t.Fatalf("unexpected internal runtime identity: %+v", internalAgent)
 	}
 	if result.Invitation.TenantID != result.Tenant.ID || result.Invitation.Version != 1 || result.Invitation.Status != enums.StatusOk {

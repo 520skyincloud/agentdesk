@@ -28,11 +28,3 @@ func (s *retrieve) prepareRetrievableKnowledgeBases(req RetrieveRequest, trace *
 	}
 	return retrievableKnowledgeBases, knowledgeBaseIDs, true
 }
-
-func applySearchTrace(target *RetrieveTrace, source *RetrieveTrace) {
-	if target == nil || source == nil {
-		return
-	}
-	target.EmbeddingMs = source.EmbeddingMs
-	target.VectorSearchMs = source.VectorSearchMs
-}

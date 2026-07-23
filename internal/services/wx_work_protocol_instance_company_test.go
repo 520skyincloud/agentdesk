@@ -265,7 +265,6 @@ func setupWxWorkProtocolInstanceCompanyTestDB(t *testing.T) *gorm.DB {
 		&models.Role{},
 		&models.UserRole{},
 		&models.UserRoleChangeLog{},
-		&models.StoreAIModelSetting{},
 	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}

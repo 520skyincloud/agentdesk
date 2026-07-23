@@ -264,17 +264,16 @@ func TestSkillDefinitionWritesRejectTenantAccountEvenWithPlatformPermission(t *t
 	}
 }
 
-func TestAIConfigWritesRejectTenantAccountEvenWithPlatformPermission(t *testing.T) {
+func TestModelProfileWritesRejectTenantAccountEvenWithPlatformPermission(t *testing.T) {
 	tests := []struct {
 		name       string
 		permission string
 		handler    func(*gin.Context)
 	}{
-		{name: "create", permission: constants.PermissionAIConfigCreate.Code, handler: AIConfigPostCreate},
-		{name: "update", permission: constants.PermissionAIConfigUpdate.Code, handler: AIConfigPostUpdate},
-		{name: "update status", permission: constants.PermissionAIConfigUpdate.Code, handler: AIConfigPostUpdate_status},
-		{name: "update sort", permission: constants.PermissionAIConfigUpdate.Code, handler: AIConfigPostUpdateSort},
-		{name: "delete", permission: constants.PermissionAIConfigDelete.Code, handler: AIConfigPostDelete},
+		{name: "create", permission: constants.PermissionAIConfigUpdate.Code, handler: ModelProfileTemplatePostCreate},
+		{name: "update", permission: constants.PermissionAIConfigUpdate.Code, handler: ModelProfileTemplatePostUpdate},
+		{name: "test", permission: constants.PermissionAIConfigUpdate.Code, handler: ModelProfileTemplatePostTest},
+		{name: "publish", permission: constants.PermissionAIConfigUpdate.Code, handler: ModelProfileTemplatePostPublish},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -282,7 +281,7 @@ func TestAIConfigWritesRejectTenantAccountEvenWithPlatformPermission(t *testing.
 				UserID:            134,
 				TenantID:          9,
 				ActiveTenantID:    9,
-				Username:          "misconfigured-tenant-ai-config-editor",
+				Username:          "misconfigured-tenant-model-profile-editor",
 				IsPlatformAccount: false,
 				Permissions:       []string{tt.permission},
 			})

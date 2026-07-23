@@ -317,7 +317,7 @@ func appendUniqueRuntimeRetrieveResults(dst []rag.RetrieveResult, src []rag.Retr
 }
 
 func runtimeRetrieveResultKey(item rag.RetrieveResult) string {
-	return fmt.Sprintf("%d:%d:%d:%d:%s:%s", item.KnowledgeBaseID, item.DocumentID, item.ChunkID, item.FaqID, strings.TrimSpace(item.SourceRecordID), strings.TrimSpace(item.Content))
+	return fmt.Sprintf("%d:%d:%d:%s:%s", item.KnowledgeBaseID, item.DocumentID, item.ChunkID, strings.TrimSpace(item.SourceRecordID), strings.TrimSpace(item.Content))
 }
 
 func resolveRuntimeKnowledgeResources(req RunInput, result *retrievers.KnowledgeRetrieveResult) []callbacks.KnowledgeResourceTraceData {

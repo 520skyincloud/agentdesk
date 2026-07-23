@@ -358,10 +358,11 @@ func (s *wsService) schedulePresenceEnd(tenantID, userID int64, role string) {
 	if grace < 0 {
 		grace = 0
 	}
-	var timer *time.Timer
-	timer = time.AfterFunc(grace, func() {
-		s.finishScheduledPresenceEnd(key, timer, role)
+	timerReady := make(chan *time.Timer, 1)
+	timer := time.AfterFunc(grace, func() {
+		s.finishScheduledPresenceEnd(key, <-timerReady, role)
 	})
+	timerReady <- timer
 	s.presenceEndTimers[key] = timer
 }
 
@@ -371,8 +372,8 @@ func (s *wsService) finishScheduledPresenceEnd(key dashboardPresenceKey, timer *
 		s.presenceEndMu.Unlock()
 		return
 	}
-	delete(s.presenceEndTimers, key)
 	if s.manager.CountUserSessions(key.tenantID, key.userID) > 0 {
+		delete(s.presenceEndTimers, key)
 		s.presenceEndMu.Unlock()
 		return
 	}
@@ -383,6 +384,11 @@ func (s *wsService) finishScheduledPresenceEnd(key dashboardPresenceKey, timer *
 	if _, err := ConversationDispatchService.RecoverAssignmentsForAgent(key.tenantID, key.userID, 0); err != nil {
 		slog.Warn("recover assignments after realtime agent disconnect failed", "error", err, "tenantId", key.tenantID, "userId", key.userID)
 	}
+	s.presenceEndMu.Lock()
+	if s.presenceEndTimers[key] == timer {
+		delete(s.presenceEndTimers, key)
+	}
+	s.presenceEndMu.Unlock()
 }
 
 func (s *wsService) subscribeTopics(session *ClientSession, topics []string) []string {

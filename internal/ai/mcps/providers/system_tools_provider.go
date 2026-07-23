@@ -56,7 +56,6 @@ func (p *systemToolProvider) Register(server *mcp.Server) error {
 				"mcpPath":     "/api/mcp",
 				"port":        cfg.Server.Port,
 				"mcpEnabled":  cfg.MCP.Enabled,
-				"vectorDb":    cfg.VectorDB.Type,
 				"storageType": cfg.Storage.Default,
 			}, nil
 		},

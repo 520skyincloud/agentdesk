@@ -1312,7 +1312,6 @@ func deleteSimulationConversations(db *gorm.DB, batchMarker string, simulationTe
 		{&models.ConversationReadState{}},
 		{&models.ConversationParticipant{}},
 		{&models.ConversationAssignment{}},
-		{&models.ConversationTag{}},
 		{&models.ConversationEventLog{}},
 		{&models.Message{}},
 	}

@@ -1,31 +1,14 @@
 package request
 
-import "agent-desk/internal/pkg/enums"
-
-type CreateKnowledgeBaseRequest struct {
-	StoreID               int64    `json:"storeId"`
-	DatasetID             string   `json:"datasetId"`
-	DatasetName           string   `json:"datasetName"`
-	ConnectionID          string   `json:"connectionId"`
-	RetrievalMode         string   `json:"retrievalMode"`
+type UpdateKnowledgeBaseRequest struct {
+	ID                    int64    `json:"id"`
 	Name                  string   `json:"name"`
 	Description           string   `json:"description"`
-	KnowledgeType         string   `json:"knowledgeType"`
 	DefaultTopK           int      `json:"defaultTopK"`
 	DefaultScoreThreshold float64  `json:"defaultScoreThreshold"`
 	DefaultRerankLimit    int      `json:"defaultRerankLimit"`
-	ChunkProvider         string   `json:"chunkProvider"`
-	ChunkTargetTokens     int      `json:"chunkTargetTokens"`
-	ChunkMaxTokens        int      `json:"chunkMaxTokens"`
-	ChunkOverlapTokens    int      `json:"chunkOverlapTokens"`
 	AnswerMode            int      `json:"answerMode"`
-	Remark                string   `json:"remark"`
 	ResourceAllowedHosts  []string `json:"resourceAllowedHosts"`
-}
-
-type UpdateKnowledgeBaseRequest struct {
-	ID int64 `json:"id"`
-	CreateKnowledgeBaseRequest
 }
 
 type SyncKnowledgeResourceGroupRequest struct {
@@ -36,31 +19,6 @@ type SyncKnowledgeResourceGroupRequest struct {
 
 type DeleteKnowledgeResourceGroupRequest struct {
 	ID int64 `json:"id"`
-}
-
-type CreateKnowledgeDocumentRequest struct {
-	KnowledgeBaseID int64                              `json:"knowledgeBaseId"`
-	Title           string                             `json:"title"`
-	ContentType     enums.KnowledgeDocumentContentType `json:"contentType"`
-	Content         string                             `json:"content"`
-}
-
-type UpdateKnowledgeDocumentRequest struct {
-	ID int64 `json:"id"`
-	CreateKnowledgeDocumentRequest
-}
-
-type CreateKnowledgeFAQRequest struct {
-	KnowledgeBaseID  int64    `json:"knowledgeBaseId"`
-	Question         string   `json:"question"`
-	Answer           string   `json:"answer"`
-	SimilarQuestions []string `json:"similarQuestions"`
-	Remark           string   `json:"remark"`
-}
-
-type UpdateKnowledgeFAQRequest struct {
-	ID int64 `json:"id"`
-	CreateKnowledgeFAQRequest
 }
 
 type KnowledgeSearchRequest struct {

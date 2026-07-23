@@ -51,7 +51,7 @@ func ConversationAnyList(ctx *gin.Context) {
 			})
 			return
 		}
-		cnd.Where("id IN (SELECT conversation_id FROM t_conversation_tag WHERE tenant_id = ? AND tag_id IN (?))", tenantID, tagIDs)
+		cnd = services.CustomerTagService.ApplyConversationFilter(cnd, tenantID, tagIDs)
 	}
 	if agentTeamID, _ := params.GetInt64(ctx, "agentTeamId"); agentTeamID > 0 {
 		userIDs := services.AgentProfileService.GetUserIDsByTeamIDInTenant(agentTeamID, services.AgentTeamScopeService.ActiveTenantID(operator))
@@ -395,52 +395,6 @@ func ConversationPostUpload_attachment(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, builders.BuildAsset(item))
-}
-
-func ConversationPostAdd_tag(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-
-	req := request.AddConversationTagRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	if !services.AgentTeamScopeService.CanViewConversation(operator, req.ConversationID) {
-		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该会话"))
-		return
-	}
-	if err := services.ConversationTagService.AddTag(req, operator); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, nil)
-}
-
-func ConversationPostRemove_tag(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-
-	req := request.RemoveConversationTagRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	if !services.AgentTeamScopeService.CanViewConversation(operator, req.ConversationID) {
-		httpx.WriteJSON(ctx, web.JsonErrorMsg("无权访问该会话"))
-		return
-	}
-	if err := services.ConversationTagService.RemoveTag(req, operator); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, nil)
 }
 
 func ConversationGetCustomer_tag_options(ctx *gin.Context) {

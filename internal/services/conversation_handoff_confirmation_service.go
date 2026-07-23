@@ -273,7 +273,7 @@ func classifyHumanHandoffConfirmationWithModel(ctx context.Context, conversation
 	}
 	resolved, ok := resolveHandoffConfirmationModelCall(conversation)
 	if !ok {
-		return classifyHumanHandoffConfirmationWithFallback(text, "fallback:no_ai_config")
+		return classifyHumanHandoffConfirmationWithFallback(text, "fallback:model_unavailable")
 	}
 	requestID := ""
 	if message != nil {

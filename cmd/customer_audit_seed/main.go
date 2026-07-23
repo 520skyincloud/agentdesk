@@ -26,9 +26,8 @@ import (
 )
 
 const (
-	defaultBatch                  = "customer-audit-v1"
-	defaultPassword               = "123456"
-	retiredDispatchModelUsageCode = "dispatch_decision_llm"
+	defaultBatch    = "customer-audit-v1"
+	defaultPassword = "123456"
 
 	tenantLegalName = "丽斯未来酒店"
 	channelName     = "丽斯未来酒店测试企微员工号渠道"
@@ -58,7 +57,7 @@ type seedContext struct {
 	supervisor           *models.User
 	defaultTeam          *models.AgentTeam
 	invitation           *models.TenantInvitation
-	aiConfig             *models.AIConfig
+	modelProfile         *models.ModelProfileTemplate
 	aiAgent              *models.AIAgent
 	qualityTemplate      *models.QualityTemplate
 	qualityTemplateItems []models.QualityTemplateItem
@@ -73,73 +72,76 @@ type seedContext struct {
 }
 
 type seedOptions struct {
-	AIConfigID   int64
-	AIConfigName string
+	ModelProfileID   int64
+	ModelProfileCode string
 }
 
 type report struct {
-	Batch                       string `json:"batch"`
-	Marker                      string `json:"marker"`
-	Tenant                      int64  `json:"tenant"`
-	TenantSupervisor            int64  `json:"tenantSupervisor"`
-	TenantInvitation            int64  `json:"tenantInvitation"`
-	DefaultAgentTeam            int64  `json:"defaultAgentTeam"`
-	AIAgent                     int64  `json:"aiAgent"`
-	TenantDefaultConfigID       int64  `json:"tenantDefaultConfigId"`
-	TenantDefaultConfigName     string `json:"tenantDefaultConfigName"`
-	TenantDefaultModelName      string `json:"tenantDefaultModelName"`
-	ModelConfigReused           bool   `json:"modelConfigReused"`
-	ChannelAIAgentBound         bool   `json:"channelAiAgentBound"`
-	SimulationAIAgentBound      int64  `json:"simulationAiAgentBound"`
-	LegacyCompanyRows           int64  `json:"legacyCompanyRows"`
-	LegacyCompanyReferences     int64  `json:"legacyCompanyReferences"`
-	Channel                     int64  `json:"channel"`
-	Stores                      int64  `json:"stores"`
-	CSLeaders                   int64  `json:"csLeaders"`
-	CSUsers                     int64  `json:"csUsers"`
-	StoreStaffUsers             int64  `json:"storeStaffUsers"`
-	AgentTeams                  int64  `json:"agentTeams"`
-	RuleAgentTeams              int64  `json:"ruleAgentTeams"`
-	AgentTeamSchedules          int64  `json:"agentTeamSchedules"`
-	AgentProfiles               int64  `json:"agentProfiles"`
-	ActiveDispatchModelSettings int64  `json:"activeDispatchModelSettings"`
-	StoreStaffBindings          int64  `json:"storeStaffBindings"`
-	WxWorkInstances             int64  `json:"wxWorkInstances"`
-	Customers                   int64  `json:"customers"`
-	CustomerContacts            int64  `json:"customerContacts"`
-	CustomerIdentities          int64  `json:"customerIdentities"`
-	StoreCustomerRels           int64  `json:"storeCustomerRelations"`
-	SimulatedConversations      int64  `json:"simulatedConversations"`
-	SimulatedMessages           int64  `json:"simulatedMessages"`
-	SimulatedAssignments        int64  `json:"simulatedAssignments"`
-	SimulatedCurrentlyAssigned  int64  `json:"simulatedCurrentlyAssigned"`
-	SimulatedAssignedAgents     int64  `json:"simulatedAssignedAgents"`
-	SimulatedNeedReply          int64  `json:"simulatedNeedReply"`
-	SimulatedAIServing          int64  `json:"simulatedAiServing"`
-	SimulatedPending            int64  `json:"simulatedPending"`
-	SimulatedActive             int64  `json:"simulatedActive"`
-	SimulatedClosed             int64  `json:"simulatedClosed"`
-	ServiceSessions             int64  `json:"serviceSessions"`
-	ResponseSpans               int64  `json:"responseSpans"`
-	WaitingResponseSpans        int64  `json:"waitingResponseSpans"`
-	RepliedResponseSpans        int64  `json:"repliedResponseSpans"`
-	PresenceSessions            int64  `json:"presenceSessions"`
-	QualityTemplates            int64  `json:"qualityTemplates"`
-	QualityTemplateItems        int64  `json:"qualityTemplateItems"`
-	QualityInspections          int64  `json:"qualityInspections"`
-	CompletedInspections        int64  `json:"completedInspections"`
-	QualityInspectionItems      int64  `json:"qualityInspectionItems"`
-	Evaluations                 int64  `json:"evaluations"`
-	SubmittedEvaluations        int64  `json:"submittedEvaluations"`
-	DispatchDecisionLogs        int64  `json:"dispatchDecisionLogs"`
-	SelectedDispatchDecisions   int64  `json:"selectedDispatchDecisions"`
-	FallbackDispatchDecisions   int64  `json:"fallbackDispatchDecisions"`
-	FailedDispatchDecisions     int64  `json:"failedDispatchDecisions"`
-	OverrideDispatchDecisions   int64  `json:"overrideDispatchDecisions"`
-	AnalyticsPolicies           int64  `json:"analyticsPolicies"`
-	ExpectedCoreComplete        bool   `json:"expectedCoreComplete"`
-	ExpectedSimulationComplete  bool   `json:"expectedSimulationComplete"`
-	SimulationBaselineIntact    bool   `json:"simulationBaselineIntact"`
+	Batch                      string `json:"batch"`
+	Marker                     string `json:"marker"`
+	Tenant                     int64  `json:"tenant"`
+	TenantSupervisor           int64  `json:"tenantSupervisor"`
+	TenantInvitation           int64  `json:"tenantInvitation"`
+	DefaultAgentTeam           int64  `json:"defaultAgentTeam"`
+	AIAgent                    int64  `json:"aiAgent"`
+	ModelProfileID             int64  `json:"modelProfileId"`
+	ModelProfileName           string `json:"modelProfileName"`
+	ModelProfileRevision       int64  `json:"modelProfileRevision"`
+	ModelProfileReady          bool   `json:"modelProfileReady"`
+	StoreModelAssignments      int64  `json:"storeModelAssignments"`
+	StoreModelCredentials      int64  `json:"storeModelCredentials"`
+	UnconfiguredCredentials    int64  `json:"unconfiguredCredentials"`
+	StoreCredentialPolicies    int64  `json:"storeCredentialPolicies"`
+	ChannelAIAgentBound        bool   `json:"channelAiAgentBound"`
+	SimulationAIAgentBound     int64  `json:"simulationAiAgentBound"`
+	LegacyCompanyRows          int64  `json:"legacyCompanyRows"`
+	LegacyCompanyReferences    int64  `json:"legacyCompanyReferences"`
+	Channel                    int64  `json:"channel"`
+	Stores                     int64  `json:"stores"`
+	CSLeaders                  int64  `json:"csLeaders"`
+	CSUsers                    int64  `json:"csUsers"`
+	StoreStaffUsers            int64  `json:"storeStaffUsers"`
+	AgentTeams                 int64  `json:"agentTeams"`
+	RuleAgentTeams             int64  `json:"ruleAgentTeams"`
+	AgentTeamSchedules         int64  `json:"agentTeamSchedules"`
+	AgentProfiles              int64  `json:"agentProfiles"`
+	StoreStaffBindings         int64  `json:"storeStaffBindings"`
+	WxWorkInstances            int64  `json:"wxWorkInstances"`
+	Customers                  int64  `json:"customers"`
+	CustomerContacts           int64  `json:"customerContacts"`
+	CustomerIdentities         int64  `json:"customerIdentities"`
+	StoreCustomerRels          int64  `json:"storeCustomerRelations"`
+	SimulatedConversations     int64  `json:"simulatedConversations"`
+	SimulatedMessages          int64  `json:"simulatedMessages"`
+	SimulatedAssignments       int64  `json:"simulatedAssignments"`
+	SimulatedCurrentlyAssigned int64  `json:"simulatedCurrentlyAssigned"`
+	SimulatedAssignedAgents    int64  `json:"simulatedAssignedAgents"`
+	SimulatedNeedReply         int64  `json:"simulatedNeedReply"`
+	SimulatedAIServing         int64  `json:"simulatedAiServing"`
+	SimulatedPending           int64  `json:"simulatedPending"`
+	SimulatedActive            int64  `json:"simulatedActive"`
+	SimulatedClosed            int64  `json:"simulatedClosed"`
+	ServiceSessions            int64  `json:"serviceSessions"`
+	ResponseSpans              int64  `json:"responseSpans"`
+	WaitingResponseSpans       int64  `json:"waitingResponseSpans"`
+	RepliedResponseSpans       int64  `json:"repliedResponseSpans"`
+	PresenceSessions           int64  `json:"presenceSessions"`
+	QualityTemplates           int64  `json:"qualityTemplates"`
+	QualityTemplateItems       int64  `json:"qualityTemplateItems"`
+	QualityInspections         int64  `json:"qualityInspections"`
+	CompletedInspections       int64  `json:"completedInspections"`
+	QualityInspectionItems     int64  `json:"qualityInspectionItems"`
+	Evaluations                int64  `json:"evaluations"`
+	SubmittedEvaluations       int64  `json:"submittedEvaluations"`
+	DispatchDecisionLogs       int64  `json:"dispatchDecisionLogs"`
+	SelectedDispatchDecisions  int64  `json:"selectedDispatchDecisions"`
+	FallbackDispatchDecisions  int64  `json:"fallbackDispatchDecisions"`
+	FailedDispatchDecisions    int64  `json:"failedDispatchDecisions"`
+	OverrideDispatchDecisions  int64  `json:"overrideDispatchDecisions"`
+	AnalyticsPolicies          int64  `json:"analyticsPolicies"`
+	ExpectedCoreComplete       bool   `json:"expectedCoreComplete"`
+	ExpectedSimulationComplete bool   `json:"expectedSimulationComplete"`
+	SimulationBaselineIntact   bool   `json:"simulationBaselineIntact"`
 }
 
 func main() {
@@ -154,8 +156,8 @@ func run() error {
 	action := flag.String("action", "report", "action: seed, cleanup, report, keepalive")
 	batch := flag.String("batch", defaultBatch, "test data batch")
 	password := flag.String("password", defaultPassword, "test account password")
-	aiConfigID := flag.Int64("ai-config-id", 0, "existing enabled LLM AI config ID to reuse")
-	aiConfigName := flag.String("ai-config-name", "", "existing enabled LLM AI config name to reuse")
+	modelProfileID := flag.Int64("model-profile-id", 0, "published nine-slot model profile ID to assign")
+	modelProfileCode := flag.String("model-profile-code", "", "published nine-slot model profile code to assign")
 	keepaliveInterval := flag.Duration("keepalive-interval", defaultSimulationPresenceKeepaliveInterval, "simulation agent presence keepalive interval")
 	flag.Parse()
 
@@ -172,8 +174,8 @@ func run() error {
 	switch strings.ToLower(strings.TrimSpace(*action)) {
 	case "seed":
 		return seedWithOptions(db, normalizedBatch, strings.TrimSpace(*password), seedOptions{
-			AIConfigID:   *aiConfigID,
-			AIConfigName: strings.TrimSpace(*aiConfigName),
+			ModelProfileID:   *modelProfileID,
+			ModelProfileCode: strings.TrimSpace(*modelProfileCode),
 		})
 	case "cleanup":
 		return cleanup(db, normalizedBatch)
@@ -214,7 +216,7 @@ func seedWithOptions(db *gorm.DB, batch, password string, options seedOptions) e
 	if err != nil {
 		return fmt.Errorf("hash test password failed: %w", err)
 	}
-	aiConfig, err := resolveSeedAIConfig(db, options)
+	modelProfile, err := resolveSeedModelProfile(db, options)
 	if err != nil {
 		return err
 	}
@@ -233,7 +235,7 @@ func seedWithOptions(db *gorm.DB, batch, password string, options seedOptions) e
 		passwordHash: string(hash),
 		now:          time.Now(),
 		audit:        auditFields(),
-		aiConfig:     aiConfig,
+		modelProfile: modelProfile,
 	}
 
 	return sqls.WithTransaction(func(tx *sqls.TxContext) error {
@@ -248,6 +250,9 @@ func seedWithOptions(db *gorm.DB, batch, password string, options seedOptions) e
 			return err
 		}
 		if err := ctx.upsertStores(); err != nil {
+			return err
+		}
+		if err := ctx.upsertStoreModelAccess(); err != nil {
 			return err
 		}
 		if err := ctx.upsertUsers(); err != nil {
@@ -363,24 +368,30 @@ func ensureTestTenantInvitation(tenant *models.Tenant) error {
 	return nil
 }
 
-func resolveSeedAIConfig(db *gorm.DB, options seedOptions) (*models.AIConfig, error) {
-	var item *models.AIConfig
+func resolveSeedModelProfile(db *gorm.DB, options seedOptions) (*models.ModelProfileTemplate, error) {
+	var item *models.ModelProfileTemplate
 	switch {
-	case options.AIConfigID > 0:
-		item = repositories.AIConfigRepository.Get(db, options.AIConfigID)
-	case options.AIConfigName != "":
-		item = repositories.AIConfigRepository.Take(db, "name = ? AND model_type = ? AND status = ?", options.AIConfigName, enums.AIModelTypeLLM, enums.StatusOk)
+	case options.ModelProfileID > 0:
+		item = repositories.ModelProfileTemplateRepository.Get(db, options.ModelProfileID)
+	case options.ModelProfileCode != "":
+		item = repositories.ModelProfileTemplateRepository.FindOne(db, sqls.NewCnd().
+			Eq("code", strings.TrimSpace(options.ModelProfileCode)).
+			In("status", []enums.ModelProfileStatus{enums.ModelProfileStatusCandidate, enums.ModelProfileStatusActive}).
+			Desc("revision").Desc("id"))
 	default:
-		item = repositories.AIConfigRepository.GetEnabled(db, enums.AIModelTypeLLM)
+		item = repositories.ModelProfileTemplateRepository.FindOne(db, sqls.NewCnd().
+			In("status", []enums.ModelProfileStatus{enums.ModelProfileStatusCandidate, enums.ModelProfileStatusActive}).
+			Desc("revision").Desc("id"))
 	}
 	if item == nil {
-		return nil, fmt.Errorf("no reusable LLM model configuration found; configure one or pass --ai-config-id/--ai-config-name")
+		return nil, fmt.Errorf("no published nine-slot model profile found; publish one or pass --model-profile-id/--model-profile-code")
 	}
-	if item.Status != enums.StatusOk || item.ModelType != enums.AIModelTypeLLM {
-		return nil, fmt.Errorf("AI config %d (%s) must be an enabled LLM configuration", item.ID, item.Name)
+	if item.Status != enums.ModelProfileStatusCandidate && item.Status != enums.ModelProfileStatusActive {
+		return nil, fmt.Errorf("model profile %d (%s) must be candidate or active", item.ID, item.Name)
 	}
-	if strings.TrimSpace(item.ModelName) == "" || strings.TrimSpace(item.BaseURL) == "" {
-		return nil, fmt.Errorf("AI config %d (%s) is incomplete and cannot be reused", item.ID, item.Name)
+	slots := repositories.ModelProfileSlotRepository.FindByTemplateID(db, item.ID)
+	if issues := services.ValidateModelProfileForPublication(item, slots); len(issues) > 0 {
+		return nil, fmt.Errorf("model profile %d (%s) is not publishable: %s", item.ID, item.Name, issues[0].Message)
 	}
 	return item, nil
 }
@@ -469,17 +480,29 @@ func cleanup(db *gorm.DB, batch string) error {
 			{"agent team schedules", func() error {
 				return db.Where("remark LIKE ?", remarkPattern).Delete(&models.AgentTeamSchedule{}).Error
 			}},
-			{"tenant model assignments", func() error {
+			{"store model credential audit logs", func() error {
 				if tenantID <= 0 {
 					return nil
 				}
-				return db.Where("tenant_id = ?", tenantID).Delete(&models.StoreAIModelSetting{}).Error
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.StoreModelCredentialAuditLog{}).Error
 			}},
-			{"tenant model grants", func() error {
+			{"store model credentials", func() error {
 				if tenantID <= 0 {
 					return nil
 				}
-				return db.Where("tenant_id = ?", tenantID).Delete(&models.TenantAIModelGrant{}).Error
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.StoreModelCredential{}).Error
+			}},
+			{"store credential policies", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.StoreCredentialPolicy{}).Error
+			}},
+			{"store model profile assignments", func() error {
+				if tenantID <= 0 {
+					return nil
+				}
+				return db.Where("tenant_id = ?", tenantID).Delete(&models.StoreModelProfileAssignment{}).Error
 			}},
 			{"ai agent", func() error {
 				return db.Where("tenant_id = ? AND name = ?", tenantID, aiAgentName).Delete(&models.AIAgent{}).Error
@@ -563,17 +586,24 @@ func buildReport(db *gorm.DB, batch string) report {
 	if aiAgent != nil {
 		r.ChannelAIAgentBound = count(db, &models.Channel{}, "tenant_id = ? AND name = ? AND ai_agent_id = ?", tenantID, channelName, aiAgent.ID) == 1
 	}
-	defaultModel := repositories.StoreAIModelSettingRepository.Take(db,
-		"tenant_id = ? AND wx_work_instance_id = 0 AND usage_code = ? AND status = ?",
-		tenantID, constants.AIModelUsageReplyLLM, enums.StatusOk)
-	if defaultModel != nil {
-		r.TenantDefaultConfigID = defaultModel.AIConfigID
-		if aiConfig := repositories.AIConfigRepository.Get(db, defaultModel.AIConfigID); aiConfig != nil {
-			r.TenantDefaultConfigName = aiConfig.Name
-			r.TenantDefaultModelName = aiConfig.ModelName
-			r.ModelConfigReused = aiConfig.Status == enums.StatusOk && aiConfig.ModelType == enums.AIModelTypeLLM
+	assignments := repositories.StoreModelProfileAssignmentRepository.FindByTenant(db, tenantID)
+	if len(assignments) > 0 {
+		profileID := assignments[0].TemplateID
+		if profileID <= 0 {
+			profileID = assignments[0].PendingTemplateID
+		}
+		if profile := repositories.ModelProfileTemplateRepository.Get(db, profileID); profile != nil {
+			r.ModelProfileID = profile.ID
+			r.ModelProfileName = profile.Name
+			r.ModelProfileRevision = profile.Revision
+			r.ModelProfileReady = (profile.Status == enums.ModelProfileStatusCandidate || profile.Status == enums.ModelProfileStatusActive) &&
+				len(services.ValidateModelProfileForPublication(profile, repositories.ModelProfileSlotRepository.FindByTemplateID(db, profile.ID))) == 0
 		}
 	}
+	r.StoreModelAssignments = count(db, &models.StoreModelProfileAssignment{}, "tenant_id = ?", tenantID)
+	r.StoreModelCredentials = count(db, &models.StoreModelCredential{}, "tenant_id = ?", tenantID)
+	r.UnconfiguredCredentials = count(db, &models.StoreModelCredential{}, "tenant_id = ? AND status = ?", tenantID, enums.StoreCredentialStatusUnconfigured)
+	r.StoreCredentialPolicies = count(db, &models.StoreCredentialPolicy{}, "tenant_id = ? AND status = ?", tenantID, enums.StatusOk)
 	r.LegacyCompanyRows = count(db, &models.Company{}, "tenant_id = ?", tenantID)
 	r.LegacyCompanyReferences = count(db, &models.Store{}, "tenant_id = ? AND company_id <> 0", tenantID) +
 		count(db, &models.StoreStaffBinding{}, "tenant_id = ? AND company_id <> 0", tenantID) +
@@ -581,7 +611,6 @@ func buildReport(db *gorm.DB, batch string) report {
 		count(db, &models.Customer{}, "tenant_id = ? AND company_id <> 0", tenantID) +
 		count(db, &models.AgentTeam{}, "tenant_id = ? AND company_scope_ids <> ''", tenantID) +
 		count(db, &models.KnowledgeBase{}, "tenant_id = ? AND company_id <> 0", tenantID) +
-		count(db, &models.StoreAIModelSetting{}, "tenant_id = ? AND company_id <> 0", tenantID) +
 		count(db, &models.KnowledgeResourceGroup{}, "tenant_id = ? AND company_id <> 0", tenantID) +
 		count(db, &models.FastGPTStoreTenant{}, "tenant_id = ? AND company_id <> 0", tenantID) +
 		count(db, &models.FastGPTUsageSyncState{}, "tenant_id = ? AND company_id <> 0", tenantID) +
@@ -595,7 +624,6 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.RuleAgentTeams = count(db, &models.AgentTeam{}, "tenant_id = ? AND remark LIKE ? AND is_default = ? AND dispatch_mode = ?", tenantID, remarkPattern, false, enums.AgentTeamDispatchModeRule)
 	r.AgentTeamSchedules = count(db, &models.AgentTeamSchedule{}, "tenant_id = ? AND remark LIKE ? AND status = ? AND start_at <= ? AND end_at > ?", tenantID, remarkPattern, enums.StatusOk, time.Now(), time.Now())
 	r.AgentProfiles = count(db, &models.AgentProfile{}, "remark LIKE ? AND agent_code LIKE ?", remarkPattern, agentCodePrefix+"%")
-	r.ActiveDispatchModelSettings = count(db, &models.StoreAIModelSetting{}, "tenant_id = ? AND usage_code = ? AND status = ?", tenantID, retiredDispatchModelUsageCode, enums.StatusOk)
 	r.StoreStaffBindings = count(db, &models.StoreStaffBinding{}, "remark LIKE ?", remarkPattern)
 	r.WxWorkInstances = count(db, &models.WxWorkProtocolInstance{}, "remark LIKE ? AND guid LIKE ?", remarkPattern, wxWorkGUIDPrefix+"%")
 	r.Customers = count(db, &models.Customer{}, "remark LIKE ?", remarkPattern)
@@ -646,7 +674,11 @@ func buildReport(db *gorm.DB, batch string) report {
 		r.TenantInvitation == 1 &&
 		r.DefaultAgentTeam == 1 &&
 		r.AIAgent == 1 &&
-		r.ModelConfigReused &&
+		r.ModelProfileReady &&
+		r.StoreModelAssignments == 100 &&
+		r.StoreModelCredentials == 100 &&
+		r.UnconfiguredCredentials == 100 &&
+		r.StoreCredentialPolicies == 100 &&
 		r.ChannelAIAgentBound &&
 		r.LegacyCompanyRows == 0 &&
 		r.LegacyCompanyReferences == 0 &&
@@ -659,7 +691,6 @@ func buildReport(db *gorm.DB, batch string) report {
 		r.RuleAgentTeams == 3 &&
 		r.AgentTeamSchedules == 3 &&
 		r.AgentProfiles == 12 &&
-		r.ActiveDispatchModelSettings == 0 &&
 		r.StoreStaffBindings == 100 &&
 		r.WxWorkInstances == 100 &&
 		r.Customers == 500
@@ -873,6 +904,57 @@ func (ctx *seedContext) upsertStores() error {
 			return err
 		}
 		ctx.stores = append(ctx.stores, item)
+	}
+	return nil
+}
+
+func (ctx *seedContext) upsertStoreModelAccess() error {
+	if ctx.modelProfile == nil {
+		return fmt.Errorf("published model profile is missing")
+	}
+	operator := &dto.AuthPrincipal{
+		UserID: constants.SystemAuditUserID, Username: constants.SystemAuditUserName,
+		ActiveTenantID: ctx.tenant.ID, IsPlatformAccount: true,
+	}
+	for _, store := range ctx.stores {
+		if err := services.StoreModelCredentialService.EnsureStoreRecordsDB(ctx.db, store, operator); err != nil {
+			return fmt.Errorf("initialize model credential records for store %d: %w", store.ID, err)
+		}
+		assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(ctx.db, ctx.tenant.ID, store.ID)
+		if assignment == nil {
+			assignment = &models.StoreModelProfileAssignment{
+				TenantID: ctx.tenant.ID, StoreID: store.ID,
+				PendingTemplateID: ctx.modelProfile.ID, PendingTemplateRevision: ctx.modelProfile.Revision,
+				PendingRequestedAt: &ctx.now, PendingRequestedBy: operator.UserID, PendingRequestedByName: operator.Username,
+				Status: enums.StoreModelAssignmentStatusAssigned, ReadinessStatus: "pending",
+				AssignedAt: ctx.now, AssignedBy: operator.UserID, AssignedByName: operator.Username,
+				AuditFields: ctx.audit,
+			}
+			if err := repositories.StoreModelProfileAssignmentRepository.Create(ctx.db, assignment); err != nil {
+				return err
+			}
+			continue
+		}
+		updates := map[string]any{
+			"assigned_at": ctx.now, "assigned_by": operator.UserID, "assigned_by_name": operator.Username,
+			"updated_at": ctx.now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
+		}
+		if assignment.TemplateID == ctx.modelProfile.ID && assignment.TemplateRevision == ctx.modelProfile.Revision {
+			updates["pending_template_id"] = 0
+			updates["pending_template_revision"] = 0
+			updates["pending_requested_at"] = nil
+			updates["pending_requested_by"] = 0
+			updates["pending_requested_by_name"] = ""
+		} else {
+			updates["pending_template_id"] = ctx.modelProfile.ID
+			updates["pending_template_revision"] = ctx.modelProfile.Revision
+			updates["pending_requested_at"] = ctx.now
+			updates["pending_requested_by"] = operator.UserID
+			updates["pending_requested_by_name"] = operator.Username
+		}
+		if err := repositories.StoreModelProfileAssignmentRepository.Updates(ctx.db, assignment.ID, updates); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1142,9 +1224,6 @@ func (ctx *seedContext) upsertAgentTeamSchedules() error {
 }
 
 func (ctx *seedContext) upsertAIAgent() error {
-	if ctx.aiConfig == nil {
-		return fmt.Errorf("reusable AI configuration is missing")
-	}
 	teamIDs := make([]int64, 0, len(ctx.teams))
 	for _, team := range ctx.teams {
 		teamIDs = append(teamIDs, team.ID)
@@ -1154,7 +1233,6 @@ func (ctx *seedContext) upsertAIAgent() error {
 		"name":                  aiAgentName,
 		"description":           "丽斯未来酒店仿真测试接待策略，不用于生产服务",
 		"status":                enums.StatusOk,
-		"ai_config_id":          0,
 		"service_mode":          enums.IMConversationServiceModeAIFirst,
 		"system_prompt":         "你是丽斯未来酒店仿真测试客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
 		"welcome_message":       "您好，这里是丽斯未来酒店仿真测试客服，请问有什么可以帮您？",
@@ -1176,17 +1254,15 @@ func (ctx *seedContext) upsertAIAgent() error {
 		if err := repositories.AIAgentRepository.UpdatesInTenant(ctx.db, item.ID, ctx.tenant.ID, updates); err != nil {
 			return err
 		}
-		item.AIConfigID = 0
 		item.Name = aiAgentName
 		ctx.aiAgent = item
-		return ctx.ensureTenantModelAccess()
+		return nil
 	}
 	item = &models.AIAgent{
 		TenantID:            ctx.tenant.ID,
 		Name:                aiAgentName,
 		Description:         "丽斯未来酒店仿真测试接待策略，不用于生产服务",
 		Status:              enums.StatusOk,
-		AIConfigID:          0,
 		ServiceMode:         enums.IMConversationServiceModeAIFirst,
 		SystemPrompt:        "你是丽斯未来酒店仿真测试客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
 		WelcomeMessage:      "您好，这里是丽斯未来酒店仿真测试客服，请问有什么可以帮您？",
@@ -1201,53 +1277,7 @@ func (ctx *seedContext) upsertAIAgent() error {
 		return err
 	}
 	ctx.aiAgent = item
-	return ctx.ensureTenantModelAccess()
-}
-
-func (ctx *seedContext) ensureTenantModelAccess() error {
-	grant := repositories.TenantAIModelGrantRepository.Take(ctx.db,
-		"tenant_id = ? AND ai_config_id = ?", ctx.tenant.ID, ctx.aiConfig.ID)
-	if grant == nil {
-		grant = &models.TenantAIModelGrant{
-			TenantID: ctx.tenant.ID, AIConfigID: ctx.aiConfig.ID,
-			Status: enums.StatusOk, AuditFields: ctx.audit,
-		}
-		if err := repositories.TenantAIModelGrantRepository.Create(ctx.db, grant); err != nil {
-			return err
-		}
-	} else if err := repositories.TenantAIModelGrantRepository.Updates(ctx.db, grant.ID, map[string]any{
-		"status": enums.StatusOk, "updated_at": ctx.now,
-		"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
-	}); err != nil {
-		return err
-	}
-
-	for _, usageCode := range []string{constants.AIModelUsageReplyLLM, constants.AIModelUsageIntentDetectLLM} {
-		setting := repositories.StoreAIModelSettingRepository.Take(ctx.db,
-			"tenant_id = ? AND wx_work_instance_id = 0 AND usage_code = ?", ctx.tenant.ID, usageCode)
-		if setting == nil {
-			setting = &models.StoreAIModelSetting{
-				TenantID: ctx.tenant.ID, UsageCode: usageCode, AIConfigID: ctx.aiConfig.ID,
-				Status: enums.StatusOk, AuditFields: ctx.audit,
-			}
-			if err := repositories.StoreAIModelSettingRepository.Create(ctx.db, setting); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := repositories.StoreAIModelSettingRepository.Updates(ctx.db, setting.ID, map[string]any{
-			"company_id": 0, "store_id": 0, "ai_config_id": ctx.aiConfig.ID, "status": enums.StatusOk,
-			"updated_at": ctx.now, "update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
-		}); err != nil {
-			return err
-		}
-	}
-	return ctx.db.Model(&models.StoreAIModelSetting{}).
-		Where("tenant_id = ? AND usage_code = ? AND status <> ?", ctx.tenant.ID, retiredDispatchModelUsageCode, enums.StatusDeleted).
-		Updates(map[string]any{
-			"status": enums.StatusDeleted, "updated_at": ctx.now,
-			"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
-		}).Error
+	return nil
 }
 
 func (ctx *seedContext) upsertStoreBindingsAndInstances() error {

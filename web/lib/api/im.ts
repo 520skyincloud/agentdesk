@@ -16,12 +16,6 @@ export type PageResult<T> = {
   hasMore?: boolean
 }
 
-export type ImConversationTag = {
-  id: number
-  name: string
-  color: string
-}
-
 export type ImConversationParticipant = {
   id: number
   participantType: string
@@ -55,7 +49,6 @@ export type ImConversation = {
   agentLastReadSeqNo: number
   agentLastReadAt?: string
   closedAt?: string
-  tags?: ImConversationTag[]
   participants?: ImConversationParticipant[]
 }
 

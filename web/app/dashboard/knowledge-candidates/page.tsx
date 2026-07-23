@@ -56,7 +56,7 @@ const STATUS_OPTIONS = [
   { value: "approved", label: "已通过" },
   { value: "rejected", label: "已驳回" },
   { value: "exported", label: "已导出" },
-  { value: "imported", label: "已导入" },
+  { value: "imported", label: "已确认同步" },
 ]
 
 function statusBadgeVariant(status: string) {
@@ -386,10 +386,10 @@ export default function KnowledgeCandidatesPage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => void runAction(() => markKnowledgeCandidateImported(item.id), "已标记导入")}
+                      onClick={() => void runAction(() => markKnowledgeCandidateImported(item.id), "已确认同步")}
                     >
                       <FileCheckIcon />
-                      导入
+                      已同步
                     </Button>
                   </>
                 ) : null}

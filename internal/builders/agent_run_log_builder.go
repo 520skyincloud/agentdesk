@@ -19,7 +19,6 @@ func BuildAgentRunLog(item *models.AgentRunLog) response.AgentRunLogResponse {
 		MessageID:         item.MessageID,
 		RequestID:         item.RequestID,
 		AIAgentID:         item.AIAgentID,
-		AIConfigID:        item.AIConfigID,
 		UserMessage:       item.UserMessage,
 		PlannedAction:     item.PlannedAction,
 		PlannedSkillCode:  item.PlannedSkillCode,

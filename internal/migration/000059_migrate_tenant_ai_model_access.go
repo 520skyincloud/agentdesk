@@ -2,7 +2,6 @@ package migration
 
 import (
 	"strconv"
-	"strings"
 	"time"
 
 	"agent-desk/internal/models"
@@ -48,100 +47,44 @@ func removeRetiredAIAgentManagementPermissions(tx *gorm.DB) error {
 }
 
 func migrateTenantAIModelAccess(tx *gorm.DB) error {
-	for _, indexName := range []string{"uk_store_ai_model_usage", "uk_store_ai_model_scope_usage", "uk_company_ai_model_usage", "uk_tenant_ai_model_scope_usage"} {
-		if tx.Migrator().HasIndex(&models.StoreAIModelSetting{}, indexName) {
-			if err := tx.Migrator().DropIndex(&models.StoreAIModelSetting{}, indexName); err != nil {
-				return err
-			}
-		}
+	if tx == nil {
+		return nil
 	}
-
-	var settings []models.StoreAIModelSetting
-	if err := tx.Order("id DESC").Find(&settings).Error; err != nil {
-		return err
-	}
-	seenScopes := make(map[string]int64)
 	now := time.Now()
-	for i := range settings {
-		setting := &settings[i]
-		tenantID, storeID := resolveLegacyModelSettingTenant(tx, setting)
-		if tenantID <= 0 {
-			if err := repositories.StoreAIModelSettingRepository.Updates(tx, setting.ID, map[string]any{
-				"status":   enums.StatusDisabled,
-				"provider": "", "base_url": "", "api_key": "", "api_mode": "chat_completions",
-				"model_type": "", "model_name": "", "dimension": 0, "max_context_tokens": 0,
-				"max_output_tokens": 0, "timeout_ms": 30000, "max_retry_count": 0, "rpm_limit": 0, "tpm_limit": 0,
-				"config_fingerprint": "", "last_test_status": "", "last_tested_at": nil, "last_test_latency_ms": 0,
-				"remark": "", "updated_at": now,
-				"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
-			}); err != nil {
-				return err
-			}
-			continue
-		}
-		config := resolveLegacyModelSettingConfig(tx, setting)
-		configID := int64(0)
-		if config != nil {
-			configID = config.ID
-		}
-		spec, supportedUsage := constants.AIModelUsageSpecByCode(strings.TrimSpace(setting.UsageCode))
-		wxWorkInstanceID := setting.WxWorkInstanceID
-		if wxWorkInstanceID <= 0 {
-			storeID = 0
-		}
-		scopeKey := modelAssignmentScopeKey(tenantID, wxWorkInstanceID, setting.UsageCode)
-		if _, exists := seenScopes[scopeKey]; exists {
-			if err := repositories.StoreAIModelSettingRepository.Delete(tx, setting.ID); err != nil {
-				return err
-			}
-			continue
-		}
-		seenScopes[scopeKey] = setting.ID
-		status := setting.Status
-		if configID <= 0 || !supportedUsage || config.ModelType != spec.ExpectedType {
-			status = enums.StatusDisabled
-		}
-		if err := repositories.StoreAIModelSettingRepository.Updates(tx, setting.ID, map[string]any{
-			"tenant_id": tenantID, "company_id": 0, "store_id": storeID,
-			"wx_work_instance_id": wxWorkInstanceID, "ai_config_id": configID, "status": status,
-			"provider": "", "base_url": "", "api_key": "", "api_mode": "chat_completions",
-			"model_type": "", "model_name": "", "dimension": 0, "max_context_tokens": 0,
-			"max_output_tokens": 0, "timeout_ms": 30000, "max_retry_count": 0, "rpm_limit": 0, "tpm_limit": 0,
-			"config_fingerprint": "", "last_test_status": "", "last_tested_at": nil, "last_test_latency_ms": 0,
-			"updated_at": now, "update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
-		}); err != nil {
+	if tx.Migrator().HasTable(&legacyAIConfig{}) {
+		if err := tx.Model(&legacyAIConfig{}).Where("api_key <> ''").Updates(map[string]any{
+			"api_key": "", "updated_at": now,
+			"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+		}).Error; err != nil {
 			return err
 		}
-		if configID > 0 && status == enums.StatusOk {
-			if err := ensureTenantAIModelGrant(tx, tenantID, configID, now); err != nil {
-				return err
-			}
+	}
+	if tx.Migrator().HasTable(&legacyStoreAIModelSetting{}) {
+		if err := tx.Model(&legacyStoreAIModelSetting{}).Where("status <> ?", enums.StatusDeleted).Updates(map[string]any{
+			"status": enums.StatusDisabled, "provider": "", "base_url": "", "api_key": "",
+			"model_type": "", "model_name": "", "config_fingerprint": "", "remark": "",
+			"updated_at": now, "update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+		}).Error; err != nil {
+			return err
+		}
+	}
+	if tx.Migrator().HasTable(&legacyTenantAIModelGrant{}) {
+		if err := tx.Model(&legacyTenantAIModelGrant{}).Where("status <> ?", enums.StatusDeleted).Updates(map[string]any{
+			"status": enums.StatusDisabled, "updated_at": now,
+			"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+		}).Error; err != nil {
+			return err
+		}
+	}
+	if tx.Migrator().HasColumn("t_ai_agent", "ai_config_id") {
+		if err := tx.Table("t_ai_agent").Where("ai_config_id <> 0").Updates(map[string]any{
+			"ai_config_id": 0, "updated_at": now,
+			"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
+		}).Error; err != nil {
+			return err
 		}
 	}
 
-	var agents []models.AIAgent
-	if err := tx.Where("tenant_id > 0 AND ai_config_id > 0 AND status <> ?", enums.StatusDeleted).Order("id DESC").Find(&agents).Error; err != nil {
-		return err
-	}
-	for i := range agents {
-		agent := &agents[i]
-		config := repositories.AIConfigRepository.Get(tx, agent.AIConfigID)
-		if config == nil || config.Status != enums.StatusOk {
-			continue
-		}
-		if err := ensureTenantAIModelGrant(tx, agent.TenantID, config.ID, now); err != nil {
-			return err
-		}
-		if config.ModelType != enums.AIModelTypeLLM {
-			continue
-		}
-		if err := ensureTenantDefaultModelAssignment(tx, agent.TenantID, constants.AIModelUsageReplyLLM, config.ID, now); err != nil {
-			return err
-		}
-		if err := ensureTenantDefaultModelAssignment(tx, agent.TenantID, constants.AIModelUsageIntentDetectLLM, config.ID, now); err != nil {
-			return err
-		}
-	}
 	var tenants []models.Tenant
 	if err := tx.Where("status <> ?", enums.StatusDeleted).Order("id").Find(&tenants).Error; err != nil {
 		return err
@@ -165,91 +108,7 @@ func migrateTenantAIModelAccess(tx *gorm.DB) error {
 			return err
 		}
 	}
-
-	if !tx.Migrator().HasIndex(&models.StoreAIModelSetting{}, "uk_tenant_ai_model_scope_usage") {
-		if err := tx.Exec("CREATE UNIQUE INDEX uk_tenant_ai_model_scope_usage ON t_store_ai_model_setting (tenant_id, wx_work_instance_id, usage_code)").Error; err != nil {
-			return err
-		}
-	}
 	return nil
-}
-
-func resolveLegacyModelSettingTenant(tx *gorm.DB, setting *models.StoreAIModelSetting) (int64, int64) {
-	if setting == nil {
-		return 0, 0
-	}
-	if setting.WxWorkInstanceID > 0 {
-		if instance := repositories.WxWorkProtocolInstanceRepository.Get(tx, setting.WxWorkInstanceID); instance != nil {
-			return instance.TenantID, instance.StoreID
-		}
-	}
-	if setting.CompanyID > 0 {
-		if company := repositories.CompanyRepository.Get(tx, setting.CompanyID); company != nil {
-			return company.TenantID, 0
-		}
-	}
-	if setting.StoreID > 0 {
-		if store := repositories.StoreRepository.Get(tx, setting.StoreID); store != nil {
-			return store.TenantID, store.ID
-		}
-	}
-	return setting.TenantID, setting.StoreID
-}
-
-func resolveLegacyModelSettingConfig(tx *gorm.DB, setting *models.StoreAIModelSetting) *models.AIConfig {
-	if setting == nil {
-		return nil
-	}
-	if setting.AIConfigID > 0 {
-		if config := repositories.AIConfigRepository.Get(tx, setting.AIConfigID); config != nil {
-			return config
-		}
-	}
-	modelName := strings.TrimSpace(setting.ModelName)
-	if modelName == "" {
-		return nil
-	}
-	cnd := sqls.NewCnd().Eq("model_name", modelName).Where("status <> ?", enums.StatusDeleted)
-	if setting.Provider != "" {
-		cnd.Eq("provider", setting.Provider)
-	}
-	if strings.TrimSpace(setting.BaseURL) != "" {
-		cnd.Eq("base_url", strings.TrimSpace(setting.BaseURL))
-	}
-	return repositories.AIConfigRepository.FindOne(tx, cnd.Desc("id"))
-}
-
-func ensureTenantAIModelGrant(tx *gorm.DB, tenantID, aiConfigID int64, now time.Time) error {
-	grant := repositories.TenantAIModelGrantRepository.Take(tx, "tenant_id = ? AND ai_config_id = ?", tenantID, aiConfigID)
-	if grant != nil {
-		return repositories.TenantAIModelGrantRepository.Updates(tx, grant.ID, map[string]any{
-			"status": enums.StatusOk, "updated_at": now,
-			"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
-		})
-	}
-	return repositories.TenantAIModelGrantRepository.Create(tx, &models.TenantAIModelGrant{
-		TenantID: tenantID, AIConfigID: aiConfigID, Status: enums.StatusOk,
-		AuditFields: systemModelAuditFields(now),
-	})
-}
-
-func ensureTenantDefaultModelAssignment(tx *gorm.DB, tenantID int64, usageCode string, aiConfigID int64, now time.Time) error {
-	existing := repositories.StoreAIModelSettingRepository.Take(tx,
-		"tenant_id = ? AND wx_work_instance_id = 0 AND usage_code = ?",
-		tenantID, usageCode)
-	if existing != nil {
-		if existing.Status == enums.StatusOk && existing.AIConfigID > 0 {
-			return nil
-		}
-		return repositories.StoreAIModelSettingRepository.Updates(tx, existing.ID, map[string]any{
-			"ai_config_id": aiConfigID, "status": enums.StatusOk, "updated_at": now,
-			"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
-		})
-	}
-	return repositories.StoreAIModelSettingRepository.Create(tx, &models.StoreAIModelSetting{
-		TenantID: tenantID, UsageCode: usageCode, AIConfigID: aiConfigID, Status: enums.StatusOk,
-		AuditFields: systemModelAuditFields(now),
-	})
 }
 
 func systemModelAuditFields(now time.Time) models.AuditFields {
@@ -257,14 +116,4 @@ func systemModelAuditFields(now time.Time) models.AuditFields {
 		CreatedAt: now, CreateUserID: constants.SystemAuditUserID, CreateUserName: constants.SystemAuditUserName,
 		UpdatedAt: now, UpdateUserID: constants.SystemAuditUserID, UpdateUserName: constants.SystemAuditUserName,
 	}
-}
-
-func modelAssignmentScopeKey(tenantID, wxWorkInstanceID int64, usageCode string) string {
-	return strings.Join([]string{
-		fmtInt64(tenantID), fmtInt64(wxWorkInstanceID), strings.TrimSpace(usageCode),
-	}, ":")
-}
-
-func fmtInt64(value int64) string {
-	return strconv.FormatInt(value, 10)
 }

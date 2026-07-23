@@ -24,7 +24,6 @@ type AIUsageEvent struct {
 	UsageSlot              string     `gorm:"type:varchar(80);not null;default:'';index"`
 	CredentialRevision     int64      `gorm:"type:bigint;not null;default:0;index"`
 	KeyFingerprint         string     `gorm:"type:varchar(64);not null;default:'';index"`
-	AIConfigID             int64      `gorm:"type:bigint;not null;default:0;index"`
 	ModelSource            string     `gorm:"type:varchar(50);not null;default:'';index"`
 	UpstreamRequestID      string     `gorm:"type:varchar(191);not null;default:'';index"`
 	Gateway                string     `gorm:"type:varchar(40);not null;default:'';index"`

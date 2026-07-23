@@ -43,9 +43,15 @@ func retireLegacyCompanyStoreScopes(tx *gorm.DB) error {
 		{&models.WxWorkProtocolInstance{}, "tenant_id > 0 AND company_id <> 0 AND status <> ?", mergeMigrationColumns(audit, map[string]any{"company_id": 0})},
 		{&models.AgentTeam{}, "tenant_id > 0 AND company_scope_ids <> '' AND status <> ?", mergeMigrationColumns(audit, map[string]any{"company_scope_ids": ""})},
 		{&models.KnowledgeBase{}, "tenant_id > 0 AND store_id > 0 AND company_id <> 0 AND status <> ?", mergeMigrationColumns(audit, map[string]any{"company_id": 0})},
-		{&models.StoreAIModelSetting{}, "tenant_id > 0 AND (store_id > 0 OR wx_work_instance_id > 0) AND company_id <> 0 AND status <> ?", mergeMigrationColumns(audit, map[string]any{"company_id": 0})},
 	} {
 		if err := tx.Model(target.model).Where(target.where, enums.StatusDeleted).Updates(target.value).Error; err != nil {
+			return err
+		}
+	}
+	if tx.Migrator().HasTable(&legacyStoreAIModelSetting{}) {
+		if err := tx.Model(&legacyStoreAIModelSetting{}).
+			Where("tenant_id > 0 AND (store_id > 0 OR wx_work_instance_id > 0) AND company_id <> 0 AND status <> ?", enums.StatusDeleted).
+			Updates(mergeMigrationColumns(audit, map[string]any{"company_id": 0})).Error; err != nil {
 			return err
 		}
 	}

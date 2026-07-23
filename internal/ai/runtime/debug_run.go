@@ -39,7 +39,6 @@ func DebugRunSkill(ctx context.Context, req request.SkillDebugRunRequest) (*resp
 	if err != nil {
 		return nil, err
 	}
-	aiAgent.AIConfigID = 0
 	ctx = usagex.WithScope(ctx, buildModelUsageScope(resolved, conversation.ID, 0, "debug_run"))
 	message := models.Message{
 		ConversationID: req.ConversationID,
@@ -51,7 +50,7 @@ func DebugRunSkill(ctx context.Context, req request.SkillDebugRunRequest) (*resp
 		Conversation: *conversation,
 		UserMessage:  message,
 		AIAgent:      *aiAgent,
-		AIConfig:     resolved.RuntimeConfig(),
+		ModelConfig:  resolved.RuntimeConfig(),
 	})
 	if err != nil {
 		return buildSkillDebugRunResponse(req, summary, nil), err
@@ -92,13 +91,12 @@ func DebugResumeSkill(ctx context.Context, req request.SkillDebugResumeRequest) 
 	if err != nil {
 		return nil, err
 	}
-	aiAgent.AIConfigID = 0
 	ctx = usagex.WithScope(ctx, buildModelUsageScope(resolved, conversation.ID, 0, "debug_resume"))
 	resumeText := strings.TrimSpace(req.UserMessage)
 	summary, err := Service.Resume(ctx, applicationruntime.ResumeRequest{
 		Conversation: *conversation,
 		AIAgent:      *aiAgent,
-		AIConfig:     resolved.RuntimeConfig(),
+		ModelConfig:  resolved.RuntimeConfig(),
 		CheckPointID: strings.TrimSpace(req.CheckPointID),
 		ResumeData: map[string]string{
 			strings.TrimSpace(pendingInterrupt.InterruptID): resumeText,

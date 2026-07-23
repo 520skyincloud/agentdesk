@@ -10,7 +10,7 @@ type Request struct {
 	Conversation models.Conversation
 	UserMessage  models.Message
 	AIAgent      models.AIAgent
-	AIConfig     modelconfig.Config
+	ModelConfig  modelconfig.Config
 	CheckPointID string
 	ToolSet      *registry.ToolSet
 }
@@ -18,7 +18,7 @@ type Request struct {
 type ResumeRequest struct {
 	Conversation models.Conversation
 	AIAgent      models.AIAgent
-	AIConfig     modelconfig.Config
+	ModelConfig  modelconfig.Config
 	CheckPointID string
 	ResumeData   map[string]string
 	ToolSet      *registry.ToolSet

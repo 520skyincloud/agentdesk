@@ -201,18 +201,12 @@ var (
 	PermissionWxWorkDevicePoolSync   = Permission{Name: "同步平台企微设备池", Code: "wxworkDevicePool.sync", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/sync", SortNo: 1280}
 
 	// 接待策略只读选项权限。保留 aiAgent.view 编码以兼容历史角色和已签发 token。
-	PermissionAIAgentView                 = Permission{Name: "查看接待策略选项", Code: "aiAgent.view", Type: "api", GroupName: "runtimeStrategy", Method: "GET", APIPath: "/api/dashboard/ai-agent/list_all", SortNo: 1310}
-	PermissionTenantModelGrantView        = Permission{Name: "查看租户模型授权", Code: "tenantModelGrant.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenantModelGrant", Method: "POST", APIPath: "/api/dashboard/tenant/model_access", SortNo: 1350}
-	PermissionTenantModelGrantUpdate      = Permission{Name: "更新租户模型授权", Code: "tenantModelGrant.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenantModelGrant", Method: "POST", APIPath: "/api/dashboard/tenant/update_model_access", SortNo: 1360}
-	PermissionTenantModelAssignmentView   = Permission{Name: "查看租户账号模型分配", Code: "tenantModelAssignment.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenantModelAssignment", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-instance/model_assignments", SortNo: 1370}
-	PermissionTenantModelAssignmentUpdate = Permission{Name: "更新租户账号模型分配", Code: "tenantModelAssignment.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "tenantModelAssignment", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-instance/update_model_assignments", SortNo: 1380}
-	PermissionAgentRunLogView             = Permission{Name: "查看 AI 运行诊断", Code: "agentRunLog.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "agentRunLog", Method: "ANY", APIPath: "/api/dashboard/agent-run-log/list", SortNo: 1385}
+	PermissionAIAgentView     = Permission{Name: "查看接待策略选项", Code: "aiAgent.view", Type: "api", GroupName: "runtimeStrategy", Method: "GET", APIPath: "/api/dashboard/ai-agent/list_all", SortNo: 1310}
+	PermissionAgentRunLogView = Permission{Name: "查看 AI 运行诊断", Code: "agentRunLog.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "agentRunLog", Method: "ANY", APIPath: "/api/dashboard/agent-run-log/list", SortNo: 1385}
 
 	// AI 配置相关权限
 	PermissionAIConfigView   = Permission{Name: "查看模型方案与门店模型状态", Code: "aiConfig.view", Type: "api", Scope: PermissionScopeTenant, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/model-profile-template/get", SortNo: 1390}
-	PermissionAIConfigCreate = Permission{Name: "创建 AI 配置", Code: "aiConfig.create", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/create", SortNo: 1400}
 	PermissionAIConfigUpdate = Permission{Name: "管理模型方案、门店指派与凭据", Code: "aiConfig.update", Type: "api", Scope: PermissionScopeTenant, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/model-profile-template/update", SortNo: 1410}
-	PermissionAIConfigDelete = Permission{Name: "删除 AI 配置", Code: "aiConfig.delete", Type: "api", Scope: PermissionScopePlatform, GroupName: "aiConfig", Method: "POST", APIPath: "/api/dashboard/ai-config/delete", SortNo: 1420}
 	PermissionBillingView    = Permission{Name: "查看门店模型账单与用量", Code: "billing.view", Type: "api", Scope: PermissionScopeTenant, GroupName: "billing", Method: "POST", APIPath: "/api/dashboard/billing-query/get", SortNo: 1430}
 	PermissionBillingExport  = Permission{Name: "导出门店模型账单与用量", Code: "billing.export", Type: "api", Scope: PermissionScopeTenant, GroupName: "billing", Method: "POST", APIPath: "/api/dashboard/billing-query/export", SortNo: 1440}
 
@@ -221,16 +215,6 @@ var (
 	PermissionKnowledgeBaseCreate = Permission{Name: "创建知识库", Code: "knowledgeBase.create", Type: "api", GroupName: "knowledgeBase", Method: "POST", APIPath: "/api/dashboard/knowledge-base/create", SortNo: 1420}
 	PermissionKnowledgeBaseUpdate = Permission{Name: "更新知识库", Code: "knowledgeBase.update", Type: "api", GroupName: "knowledgeBase", Method: "POST", APIPath: "/api/dashboard/knowledge-base/update", SortNo: 1430}
 	PermissionKnowledgeBaseDelete = Permission{Name: "删除知识库", Code: "knowledgeBase.delete", Type: "api", GroupName: "knowledgeBase", Method: "POST", APIPath: "/api/dashboard/knowledge-base/delete", SortNo: 1440}
-
-	// 知识文档相关权限
-	PermissionKnowledgeDocumentView   = Permission{Name: "查看知识文档", Code: "knowledgeDocument.view", Type: "api", GroupName: "knowledgeDocument", Method: "ANY", APIPath: "/api/dashboard/knowledge-document/list", SortNo: 1510}
-	PermissionKnowledgeDocumentCreate = Permission{Name: "创建知识文档", Code: "knowledgeDocument.create", Type: "api", GroupName: "knowledgeDocument", Method: "POST", APIPath: "/api/dashboard/knowledge-document/create", SortNo: 1520}
-	PermissionKnowledgeDocumentUpdate = Permission{Name: "更新知识文档", Code: "knowledgeDocument.update", Type: "api", GroupName: "knowledgeDocument", Method: "POST", APIPath: "/api/dashboard/knowledge-document/update", SortNo: 1530}
-	PermissionKnowledgeDocumentDelete = Permission{Name: "删除知识文档", Code: "knowledgeDocument.delete", Type: "api", GroupName: "knowledgeDocument", Method: "POST", APIPath: "/api/dashboard/knowledge-document/delete", SortNo: 1540}
-	PermissionKnowledgeFAQView        = Permission{Name: "查看知识FAQ", Code: "knowledgeFAQ.view", Type: "api", GroupName: "knowledgeFAQ", Method: "ANY", APIPath: "/api/dashboard/knowledge-faq/list", SortNo: 1550}
-	PermissionKnowledgeFAQCreate      = Permission{Name: "创建知识FAQ", Code: "knowledgeFAQ.create", Type: "api", GroupName: "knowledgeFAQ", Method: "POST", APIPath: "/api/dashboard/knowledge-faq/create", SortNo: 1560}
-	PermissionKnowledgeFAQUpdate      = Permission{Name: "更新知识FAQ", Code: "knowledgeFAQ.update", Type: "api", GroupName: "knowledgeFAQ", Method: "POST", APIPath: "/api/dashboard/knowledge-faq/update", SortNo: 1570}
-	PermissionKnowledgeFAQDelete      = Permission{Name: "删除知识FAQ", Code: "knowledgeFAQ.delete", Type: "api", GroupName: "knowledgeFAQ", Method: "POST", APIPath: "/api/dashboard/knowledge-faq/delete", SortNo: 1580}
 
 	// Skill 定义相关权限
 	PermissionSkillDefinitionView   = Permission{Name: "查看技能定义", Code: "skillDefinition.view", Type: "api", GroupName: "skillDefinition", Method: "ANY", APIPath: "/api/dashboard/skill-definition/list", SortNo: 1610}
@@ -348,14 +332,6 @@ var Permissions = []Permission{
 	PermissionKnowledgeBaseCreate,
 	PermissionKnowledgeBaseUpdate,
 	PermissionKnowledgeBaseDelete,
-	PermissionKnowledgeDocumentView,
-	PermissionKnowledgeDocumentCreate,
-	PermissionKnowledgeDocumentUpdate,
-	PermissionKnowledgeDocumentDelete,
-	PermissionKnowledgeFAQView,
-	PermissionKnowledgeFAQCreate,
-	PermissionKnowledgeFAQUpdate,
-	PermissionKnowledgeFAQDelete,
 	PermissionSkillDefinitionView,
 	PermissionSkillDefinitionCreate,
 	PermissionSkillDefinitionUpdate,
@@ -423,8 +399,6 @@ var RolePermissions = map[string][]Permission{
 		PermissionAIConfigView, PermissionAIConfigUpdate,
 		PermissionBillingView, PermissionBillingExport,
 		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,
-		PermissionKnowledgeDocumentView, PermissionKnowledgeDocumentCreate, PermissionKnowledgeDocumentUpdate, PermissionKnowledgeDocumentDelete,
-		PermissionKnowledgeFAQView, PermissionKnowledgeFAQCreate, PermissionKnowledgeFAQUpdate, PermissionKnowledgeFAQDelete,
 		PermissionSkillDefinitionView, PermissionSkillDefinitionCreate, PermissionSkillDefinitionUpdate, PermissionSkillDefinitionDelete,
 		PermissionMCPView, PermissionMCPCall,
 	},
@@ -452,8 +426,6 @@ var RolePermissions = map[string][]Permission{
 		PermissionAIConfigView, PermissionAIConfigUpdate,
 		PermissionBillingView, PermissionBillingExport,
 		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,
-		PermissionKnowledgeDocumentView, PermissionKnowledgeDocumentCreate, PermissionKnowledgeDocumentUpdate, PermissionKnowledgeDocumentDelete,
-		PermissionKnowledgeFAQView, PermissionKnowledgeFAQCreate, PermissionKnowledgeFAQUpdate, PermissionKnowledgeFAQDelete,
 		PermissionSkillDefinitionView,
 	},
 	RoleCodeCsTeamLeader: {

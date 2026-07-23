@@ -154,7 +154,10 @@ func backfillKnowledgeBaseTenants(
 }
 
 func backfillKnowledgeDocumentTenants(tx *gorm.DB, validTenantIDs map[int64]struct{}, knowledgeBaseTenants map[int64]int64) (map[int64]int64, map[int64]int64, error) {
-	var list []models.KnowledgeDocument
+	if !tx.Migrator().HasTable(&legacyKnowledgeDocument{}) {
+		return map[int64]int64{}, map[int64]int64{}, nil
+	}
+	var list []legacyKnowledgeDocument
 	if err := tx.Order("id ASC").Find(&list).Error; err != nil {
 		return nil, nil, err
 	}
@@ -166,7 +169,7 @@ func backfillKnowledgeDocumentTenants(tx *gorm.DB, validTenantIDs map[int64]stru
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := assignConversationDomainTenant(tx, &models.KnowledgeDocument{}, "knowledge document", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
+		if err := assignConversationDomainTenant(tx, &legacyKnowledgeDocument{}, "knowledge document", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
 			return nil, nil, err
 		}
 		tenantIDs[item.ID] = tenantID
@@ -176,7 +179,10 @@ func backfillKnowledgeDocumentTenants(tx *gorm.DB, validTenantIDs map[int64]stru
 }
 
 func backfillKnowledgeFAQTenants(tx *gorm.DB, validTenantIDs map[int64]struct{}, knowledgeBaseTenants map[int64]int64) (map[int64]int64, map[int64]int64, error) {
-	var list []models.KnowledgeFAQ
+	if !tx.Migrator().HasTable(&legacyKnowledgeFAQ{}) {
+		return map[int64]int64{}, map[int64]int64{}, nil
+	}
+	var list []legacyKnowledgeFAQ
 	if err := tx.Order("id ASC").Find(&list).Error; err != nil {
 		return nil, nil, err
 	}
@@ -188,7 +194,7 @@ func backfillKnowledgeFAQTenants(tx *gorm.DB, validTenantIDs map[int64]struct{},
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := assignConversationDomainTenant(tx, &models.KnowledgeFAQ{}, "knowledge faq", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
+		if err := assignConversationDomainTenant(tx, &legacyKnowledgeFAQ{}, "knowledge faq", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
 			return nil, nil, err
 		}
 		tenantIDs[item.ID] = tenantID
@@ -202,7 +208,10 @@ func backfillKnowledgeChunkTenants(
 	validTenantIDs map[int64]struct{},
 	knowledgeBaseTenants, documentTenants, documentKnowledgeBases, faqTenants, faqKnowledgeBases map[int64]int64,
 ) (map[int64]int64, map[int64]int64, error) {
-	var list []models.KnowledgeChunk
+	if !tx.Migrator().HasTable(&legacyKnowledgeChunk{}) {
+		return map[int64]int64{}, map[int64]int64{}, nil
+	}
+	var list []legacyKnowledgeChunk
 	if err := tx.Order("id ASC").Find(&list).Error; err != nil {
 		return nil, nil, err
 	}
@@ -226,7 +235,7 @@ func backfillKnowledgeChunkTenants(
 		if item.FaqID > 0 && faqKnowledgeBases[item.FaqID] != item.KnowledgeBaseID {
 			return nil, nil, fmt.Errorf("knowledge chunk %d knowledge base %d conflicts with faq %d knowledge base %d", item.ID, item.KnowledgeBaseID, item.FaqID, faqKnowledgeBases[item.FaqID])
 		}
-		if err := assignConversationDomainTenant(tx, &models.KnowledgeChunk{}, "knowledge chunk", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
+		if err := assignConversationDomainTenant(tx, &legacyKnowledgeChunk{}, "knowledge chunk", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
 			return nil, nil, err
 		}
 		tenantIDs[item.ID] = tenantID
@@ -372,20 +381,25 @@ func backfillKnowledgeFeedbackTenants(tx *gorm.DB, validTenantIDs map[int64]stru
 }
 
 func markTenantKnowledgeIndexesPending(tx *gorm.DB) error {
-	if err := tx.Model(&models.KnowledgeDocument{}).
-		Where("tenant_id > ? AND status <> ? AND index_status <> ?", 0, enums.StatusDeleted, enums.KnowledgeDocumentIndexStatusPending).
-		Updates(map[string]any{
-			"index_status": enums.KnowledgeDocumentIndexStatusPending,
-			"indexed_at":   nil,
-			"index_error":  "",
-		}).Error; err != nil {
-		return err
+	if tx.Migrator().HasTable(&legacyKnowledgeDocument{}) {
+		if err := tx.Model(&legacyKnowledgeDocument{}).
+			Where("tenant_id > ? AND status <> ? AND index_status <> ?", 0, enums.StatusDeleted, legacyKnowledgeIndexStatusPending).
+			Updates(map[string]any{
+				"index_status": legacyKnowledgeIndexStatusPending,
+				"indexed_at":   nil,
+				"index_error":  "",
+			}).Error; err != nil {
+			return err
+		}
 	}
-	return tx.Model(&models.KnowledgeFAQ{}).
-		Where("tenant_id > ? AND status <> ? AND index_status <> ?", 0, enums.StatusDeleted, enums.KnowledgeDocumentIndexStatusPending).
-		Updates(map[string]any{
-			"index_status": enums.KnowledgeDocumentIndexStatusPending,
-			"indexed_at":   nil,
-			"index_error":  "",
-		}).Error
+	if tx.Migrator().HasTable(&legacyKnowledgeFAQ{}) {
+		return tx.Model(&legacyKnowledgeFAQ{}).
+			Where("tenant_id > ? AND status <> ? AND index_status <> ?", 0, enums.StatusDeleted, legacyKnowledgeIndexStatusPending).
+			Updates(map[string]any{
+				"index_status": legacyKnowledgeIndexStatusPending,
+				"indexed_at":   nil,
+				"index_error":  "",
+			}).Error
+	}
+	return nil
 }

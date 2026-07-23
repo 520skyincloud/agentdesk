@@ -89,6 +89,48 @@ func TestCustomerTagManualMutationsEnforceTenantAndStoreScope(t *testing.T) {
 	}
 }
 
+func TestCustomerTagConversationFilterUsesStoreScopedRelation(t *testing.T) {
+	fixture := setupCustomerTagMutationFixture(t)
+	storeATag := fixture.createLeafTag(t, 101, 1001, fixture.parentA.ID, "store-a.preference", "")
+	storeBTag := fixture.createLeafTag(t, 101, 1001, fixture.parentA.ID, "store-b.preference", "")
+	if err := CustomerTagService.ManualAdd(request.AddCustomerTagRequest{
+		ConversationID: fixture.conversationA.ID,
+		TagID:          storeATag.ID,
+	}, fixture.adminA); err != nil {
+		t.Fatal(err)
+	}
+	if err := CustomerTagService.ManualAdd(request.AddCustomerTagRequest{
+		ConversationID: fixture.conversationB.ID,
+		TagID:          storeBTag.ID,
+	}, fixture.adminA); err != nil {
+		t.Fatal(err)
+	}
+
+	list := repositories.ConversationRepository.Find(
+		fixture.db,
+		CustomerTagService.ApplyConversationFilter(
+			sqls.NewCnd().Eq("tenant_id", int64(101)).Asc("id"),
+			101,
+			[]int64{storeATag.ID},
+		),
+	)
+	if len(list) != 1 || list[0].ID != fixture.conversationA.ID {
+		t.Fatalf("Store A tag filter returned conversations %#v", list)
+	}
+
+	list = repositories.ConversationRepository.Find(
+		fixture.db,
+		CustomerTagService.ApplyConversationFilter(
+			sqls.NewCnd().Eq("tenant_id", int64(101)).Asc("id"),
+			101,
+			[]int64{storeATag.ID, storeBTag.ID},
+		),
+	)
+	if len(list) != 2 || list[0].ID != fixture.conversationA.ID || list[1].ID != fixture.conversationB.ID {
+		t.Fatalf("combined Store tag filter returned conversations %#v", list)
+	}
+}
+
 func TestCustomerTagSixLimitAndConflictReplacement(t *testing.T) {
 	fixture := setupCustomerTagMutationFixture(t)
 	tags := make([]models.Tag, 0, 8)

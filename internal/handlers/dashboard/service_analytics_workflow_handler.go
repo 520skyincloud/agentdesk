@@ -150,21 +150,17 @@ func ServiceSessionGetExport(ctx *gin.Context) {
 	writer := csv.NewWriter(ctx.Writer)
 	_ = writer.Write([]string{
 		"服务轮次ID", "会话ID", "轮次", "客户", "开始时间", "结束时间", "渠道", "门店", "企微员工号", "客服组", "客服",
-		"客户消息", "AI消息", "人工消息", "排队秒数", "人工首响秒数", "解决状态", "咨询分类", "标签ID", "服务小记", "数据质量",
+		"客户消息", "AI消息", "人工消息", "排队秒数", "人工首响秒数", "解决状态", "咨询分类", "服务小记", "数据质量",
 	})
 	for i := range items {
 		item := &items[i]
 		built := builders.BuildServiceSession(item)
-		tagIDs := make([]string, 0, len(built.TagIDs))
-		for _, tagID := range built.TagIDs {
-			tagIDs = append(tagIDs, strconv.FormatInt(tagID, 10))
-		}
 		_ = writer.Write([]string{
 			strconv.FormatInt(item.ID, 10), strconv.FormatInt(item.ConversationID, 10), strconv.Itoa(item.SessionNo), built.CustomerName,
 			item.StartedAt.Format(time.DateTime), formatCSVTime(item.EndedAt), built.ChannelName, built.StoreName, built.WxWorkEmployeeName,
 			built.AssignedTeamName, built.AssignedAgentName, strconv.Itoa(item.CustomerMessageCount), strconv.Itoa(item.AIMessageCount),
 			strconv.Itoa(item.HumanMessageCount), strconv.FormatInt(item.QueueSeconds, 10), strconv.FormatInt(item.FirstResponseSeconds, 10),
-			item.ResolutionCode, item.CategoryCode, strings.Join(tagIDs, ","), item.SessionSummary, string(item.DataQuality),
+			item.ResolutionCode, item.CategoryCode, item.SessionSummary, string(item.DataQuality),
 		})
 	}
 	writer.Flush()

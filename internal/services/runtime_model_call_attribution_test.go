@@ -111,8 +111,8 @@ func TestRuntimeAuxiliaryModelCallsUseFinalSlotsAndAttribution(t *testing.T) {
 		if event.UsageSlot != string(usageSlot) || event.CredentialRevision != credential.CredentialRevision || event.KeyFingerprint != credential.KeyFingerprint {
 			t.Fatalf("%s credential attribution mismatch: %#v", stage, event)
 		}
-		if event.AIConfigID != 0 || event.ModelSource != AIModelSourceStoreProfile {
-			t.Fatalf("%s used legacy model attribution: %#v", stage, event)
+		if event.ModelSource != AIModelSourceStoreProfile {
+			t.Fatalf("%s used an unexpected model source: %#v", stage, event)
 		}
 	}
 	var failedASR models.AIUsageEvent

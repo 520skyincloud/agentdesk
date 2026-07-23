@@ -18,7 +18,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestRetrieveFastGPTMapsQAToRetrieveResultWithoutFAQFields(t *testing.T) {
+func TestRetrieveFastGPTMapsQAToCurrentSourceIdentity(t *testing.T) {
 	requestedTokenLimit := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/integration/agent-desk/dataset/search" || r.Header.Get("X-Agent-Desk-Token") != "integration-secret" {
@@ -61,7 +61,7 @@ func TestRetrieveFastGPTMapsQAToRetrieveResultWithoutFAQFields(t *testing.T) {
 	if result.SourceRecordID != "data-1" || result.DocumentTitle != "南七.xlsx" || result.Title != "有剃须刀吗" {
 		t.Fatalf("result=%#v", result)
 	}
-	if result.FaqID != 0 || result.FaqQuestion != "" || result.Content != "问题：有剃须刀吗\n答案：前台自助柜可领取" {
+	if result.Content != "问题：有剃须刀吗\n答案：前台自助柜可领取" {
 		t.Fatalf("unexpected mapping=%#v", result)
 	}
 }

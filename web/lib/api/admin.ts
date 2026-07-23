@@ -115,12 +115,6 @@ export type AdminPermission = {
   sortNo: number
 }
 
-export type ConversationTag = {
-  id: number
-  name: string
-  color: string
-}
-
 export type ConversationParticipant = {
   id: number
   participantType: string
@@ -777,7 +771,6 @@ export type AgentRunLog = {
   conversationId: number
   messageId: number
   aiAgentId: number
-  aiConfigId: number
   userMessage: string
   plannedAction: string
   plannedSkillCode: string
@@ -2222,106 +2215,6 @@ export function generateAgentTeamScheduleBatch(payload: BatchAdminAgentTeamSched
   )
 }
 
-export type AIConfig = {
-  id: number
-  name: string
-  provider: string
-  baseUrl: string
-  hasApiKey: boolean
-  apiMode: string
-  modelType: string
-  modelName: string
-  dimension: number
-  maxContextTokens: number
-  maxOutputTokens: number
-  timeoutMs: number
-  maxRetryCount: number
-  rpmLimit: number
-  tpmLimit: number
-  intentDetectEnabled: boolean
-  status: number
-  sortNo: number
-  remark: string
-}
-
-export type CreateAIConfigPayload = {
-  name: string
-  provider: string
-  baseUrl: string
-  apiKey: string
-  apiMode: string
-  modelType: string
-  modelName: string
-  dimension: number
-  maxContextTokens: number
-  maxOutputTokens: number
-  timeoutMs: number
-  maxRetryCount: number
-  rpmLimit: number
-  tpmLimit: number
-  intentDetectEnabled: boolean
-  remark: string
-}
-
-export type UpdateAIConfigPayload = CreateAIConfigPayload & {
-  id: number
-}
-
-export function fetchAIConfigs(
-  query?: Record<string, string | number | undefined>
-) {
-  return request<PageResult<AIConfig>>(
-    `/api/dashboard/ai-config/list${toQueryString(query)}`
-  )
-}
-
-export function fetchAIConfig(id: number) {
-  return request<AIConfig>(`/api/dashboard/ai-config/${id}`)
-}
-
-export function fetchAIConfigsAll(
-  query?: Record<string, string | number | undefined>
-) {
-  return request<AIConfig[]>(
-    `/api/dashboard/ai-config/list_all${toQueryString(query)}`
-  )
-}
-
-export function createAIConfig(payload: CreateAIConfigPayload) {
-  return request<AIConfig>("/api/dashboard/ai-config/create", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function updateAIConfig(payload: UpdateAIConfigPayload) {
-  return request<void>("/api/dashboard/ai-config/update", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function deleteAIConfig(id: number) {
-  return request<void>("/api/dashboard/ai-config/delete", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  })
-}
-
-export function updateAIConfigStatus(id: number, status: number) {
-  return request<void>("/api/dashboard/ai-config/update_status", {
-    method: "POST",
-    body: JSON.stringify({ id, status }),
-  })
-}
-
-export function updateAIConfigSort(ids: number[]) {
-  return request<void>("/api/dashboard/ai-config/update_sort", {
-    method: "POST",
-    body: JSON.stringify(ids),
-  })
-}
-
 export type ModelProfileSlot = {
   id: number
   usageCode: string
@@ -2507,22 +2400,13 @@ export type KnowledgeBase = {
   fastgptProfileStatus: string
   name: string
   description: string
-  knowledgeType: string
-  knowledgeTypeName: string
   status: number
   statusName: string
   defaultTopK: number
   defaultScoreThreshold: number
   defaultRerankLimit: number
-  chunkProvider: string
-  chunkTargetTokens: number
-  chunkMaxTokens: number
-  chunkOverlapTokens: number
   answerMode: number
   answerModeName: string
-  documentCount: number
-  faqCount: number
-  remark: string
   resourceAllowedHosts: string[]
   createdAt: string
   updatedAt: string
@@ -2530,24 +2414,14 @@ export type KnowledgeBase = {
   updateUserName: string
 }
 
-export type CreateKnowledgeBasePayload = {
-  storeId?: number
-  datasetId?: string
-  datasetName?: string
-  connectionId?: string
+export type UpdateKnowledgeBasePayload = {
   name: string
   description: string
-  knowledgeType: string
   defaultTopK: number
   defaultScoreThreshold: number
   defaultRerankLimit: number
-  chunkProvider: string
-  chunkTargetTokens: number
-  chunkMaxTokens: number
-  chunkOverlapTokens: number
   answerMode: number
-  remark: string
-  resourceAllowedHosts?: string[]
+  resourceAllowedHosts: string[]
 }
 
 export type FastGPTCollection = {
@@ -2684,7 +2558,7 @@ export function resyncFastGPTStoreProfile(storeId: number) {
   })
 }
 
-export type UpdateKnowledgeBasePayload = CreateKnowledgeBasePayload & {
+export type UpdateKnowledgeBaseRequest = UpdateKnowledgeBasePayload & {
   id: number
 }
 
@@ -2722,58 +2596,15 @@ export type SyncKnowledgeResourceGroupPayload = {
   expectedSourceRecordId?: string
 }
 
-export type KnowledgeDocument = {
-  id: number
-  knowledgeBaseId: number
-  knowledgeBaseName?: string
-  title: string
-  contentType: string
-  content: string
-  status: number
-  statusName: string
-  indexStatus: string
-  indexStatusName: string
-  indexedAt?: string | null
-  indexError: string
-  contentHash: string
-  createdAt: string
-  updatedAt: string
-  createUserName: string
-  updateUserName: string
-}
-
-export type KnowledgeDocumentListItem = Omit<KnowledgeDocument, "content">
-
-export type KnowledgeFAQ = {
-  id: number
-  knowledgeBaseId: number
-  knowledgeBaseName?: string
-  question: string
-  answer: string
-  similarQuestions: string[]
-  status: number
-  statusName: string
-  indexStatus: string
-  indexStatusName: string
-  indexedAt?: string | null
-  indexError: string
-  remark: string
-  createdAt: string
-  updatedAt: string
-  createUserName: string
-  updateUserName: string
-}
-
 export type KnowledgeSearchResult = {
   knowledgeBaseId: number
   chunkId: number
   documentId: number
   documentTitle: string
-  faqId: number
-  faqQuestion: string
   chunkNo: number
   title: string
   sectionPath: string
+  sourceRecordId: string
   content: string
   score: number
   rerankScore?: number
@@ -2808,11 +2639,10 @@ export type KnowledgeAnswerResponse = {
 export type KnowledgeCitation = {
   documentId: number
   documentTitle: string
-  faqId: number
-  faqQuestion: string
   chunkNo: number
   title: string
   sectionPath: string
+  sourceRecordId: string
   snippet: string
   score: number
 }
@@ -2838,9 +2668,6 @@ export type KnowledgeRetrieveLog = {
   hitCount: number
   topScore: number
   chunkProvider: string
-  chunkTargetTokens: number
-  chunkMaxTokens: number
-  chunkOverlapTokens: number
   rerankEnabled: boolean
   rerankLimit: number
   citationCount: number
@@ -2890,7 +2717,6 @@ export type KnowledgeRetrieveLogListQuery = {
   channel?: string
   scene?: string
   answerStatus?: number
-  chunkProvider?: string
   rerankEnabled?: number
   page?: number
   limit?: number
@@ -2906,29 +2732,6 @@ export type KnowledgeSearchPayload = {
 
 export type KnowledgeAnswerPayload = KnowledgeSearchPayload & {
   answerMode?: number
-}
-
-export type CreateKnowledgeDocumentPayload = {
-  knowledgeBaseId: number
-  title: string
-  contentType: string
-  content: string
-}
-
-export type UpdateKnowledgeDocumentPayload = CreateKnowledgeDocumentPayload & {
-  id: number
-}
-
-export type CreateKnowledgeFAQPayload = {
-  knowledgeBaseId: number
-  question: string
-  answer: string
-  similarQuestions: string[]
-  remark: string
-}
-
-export type UpdateKnowledgeFAQPayload = CreateKnowledgeFAQPayload & {
-  id: number
 }
 
 export function fetchKnowledgeBases(
@@ -2951,24 +2754,10 @@ export function fetchKnowledgeBase(id: number) {
   return request<KnowledgeBase>(`/api/dashboard/knowledge-base/${id}`)
 }
 
-export function createKnowledgeBase(payload: CreateKnowledgeBasePayload) {
-  return request<KnowledgeBase>("/api/dashboard/knowledge-base/create", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function updateKnowledgeBase(payload: UpdateKnowledgeBasePayload) {
+export function updateKnowledgeBase(payload: UpdateKnowledgeBaseRequest) {
   return request<void>("/api/dashboard/knowledge-base/update", {
     method: "POST",
     body: JSON.stringify(payload),
-  })
-}
-
-export function deleteKnowledgeBase(id: number) {
-  return request<void>("/api/dashboard/knowledge-base/delete", {
-    method: "POST",
-    body: JSON.stringify({ id }),
   })
 }
 
@@ -2998,93 +2787,6 @@ export function updateKnowledgeBaseSort(ids: number[]) {
   return request<void>("/api/dashboard/knowledge-base/update_sort", {
     method: "POST",
     body: JSON.stringify(ids),
-  })
-}
-
-export function rebuildKnowledgeBaseIndex(id: number) {
-  return request<void>("/api/dashboard/knowledge-base/rebuild_index", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  })
-}
-
-export function fetchKnowledgeDocuments(
-  query?: Record<string, string | number | undefined>
-) {
-  return request<PageResult<KnowledgeDocumentListItem>>(
-    `/api/dashboard/knowledge-document/list${toQueryString(query)}`
-  )
-}
-
-export function fetchKnowledgeDocument(id: number) {
-  return request<KnowledgeDocument>(`/api/dashboard/knowledge-document/${id}`)
-}
-
-export function createKnowledgeDocument(payload: CreateKnowledgeDocumentPayload) {
-  return request<KnowledgeDocument>("/api/dashboard/knowledge-document/create", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function updateKnowledgeDocument(payload: UpdateKnowledgeDocumentPayload) {
-  return request<void>("/api/dashboard/knowledge-document/update", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function deleteKnowledgeDocument(id: number) {
-  return request<void>("/api/dashboard/knowledge-document/delete", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  })
-}
-
-export function buildKnowledgeDocumentIndex(documentId: number) {
-  return request<void>("/api/dashboard/knowledge-retrieve/build", {
-    method: "POST",
-    body: JSON.stringify({ documentId }),
-  })
-}
-
-export function fetchKnowledgeFAQs(
-  query?: Record<string, string | number | undefined>
-) {
-  return request<PageResult<KnowledgeFAQ>>(
-    `/api/dashboard/knowledge-faq/list${toQueryString(query)}`
-  )
-}
-
-export function fetchKnowledgeFAQ(id: number) {
-  return request<KnowledgeFAQ>(`/api/dashboard/knowledge-faq/${id}`)
-}
-
-export function createKnowledgeFAQ(payload: CreateKnowledgeFAQPayload) {
-  return request<KnowledgeFAQ>("/api/dashboard/knowledge-faq/create", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function updateKnowledgeFAQ(payload: UpdateKnowledgeFAQPayload) {
-  return request<void>("/api/dashboard/knowledge-faq/update", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function deleteKnowledgeFAQ(id: number) {
-  return request<void>("/api/dashboard/knowledge-faq/delete", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  })
-}
-
-export function buildKnowledgeFAQIndex(faqId: number) {
-  return request<void>("/api/dashboard/knowledge-retrieve/build", {
-    method: "POST",
-    body: JSON.stringify({ faqId }),
   })
 }
 

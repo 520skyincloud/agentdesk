@@ -123,7 +123,7 @@ func TestBackfillConversationAndTicketDomainTenantsCoversAllChildrenAndIsIdempot
 	if err := db.Create(standaloneTag).Error; err != nil {
 		t.Fatalf("create standalone tag: %v", err)
 	}
-	conversationTag := &models.ConversationTag{ConversationID: conversationA.ID, TagID: rootTag.ID, AuditFields: conversationTicketAuditFields()}
+	conversationTag := &legacyConversationTag{ConversationID: conversationA.ID, TagID: rootTag.ID, AuditFields: conversationTicketAuditFields()}
 	ticketTag := &models.TicketTag{TicketID: ticketA.ID, TagID: childTag.ID, AuditFields: conversationTicketAuditFields()}
 	if err := db.Create(conversationTag).Error; err != nil {
 		t.Fatalf("create conversation tag: %v", err)
@@ -170,7 +170,7 @@ func TestBackfillConversationAndTicketDomainTenantsCoversAllChildrenAndIsIdempot
 		{model: &models.TicketView{}, id: tenantView.ID},
 		{model: &models.Tag{}, id: rootTag.ID},
 		{model: &models.Tag{}, id: childTag.ID},
-		{model: &models.ConversationTag{}, id: conversationTag.ID},
+		{model: &legacyConversationTag{}, id: conversationTag.ID},
 		{model: &models.TicketTag{}, id: ticketTag.ID},
 	}
 	for _, item := range tenantAItems {
@@ -262,7 +262,7 @@ func TestBackfillConversationAndTicketDomainTenantsRejectsSharedTagAcrossTenants
 	if err := db.Create(tag).Error; err != nil {
 		t.Fatalf("create shared tag: %v", err)
 	}
-	if err := db.Create(&models.ConversationTag{ConversationID: conversationA.ID, TagID: tag.ID, AuditFields: conversationTicketAuditFields()}).Error; err != nil {
+	if err := db.Create(&legacyConversationTag{ConversationID: conversationA.ID, TagID: tag.ID, AuditFields: conversationTicketAuditFields()}).Error; err != nil {
 		t.Fatalf("create conversation tag: %v", err)
 	}
 	if err := db.Create(&models.TicketTag{TicketID: ticketB.ID, TagID: tag.ID, AuditFields: conversationTicketAuditFields()}).Error; err != nil {
@@ -367,7 +367,7 @@ func setupConversationTicketTenantBackfillDB(t *testing.T) *gorm.DB {
 		&models.WxWorkKFConversation{}, &models.WxWorkKFMessageRef{}, &models.ChannelMessageOutbox{},
 		&models.ConversationAssignment{}, &models.ConversationEventLog{}, &models.ConversationInterrupt{},
 		&models.Ticket{}, &models.TicketProgress{}, &models.TicketView{},
-		&models.Tag{}, &models.ConversationTag{}, &models.TicketTag{},
+		&models.Tag{}, &legacyConversationTag{}, &models.TicketTag{},
 	); err != nil {
 		t.Fatalf("migrate conversation and ticket tenant tables: %v", err)
 	}

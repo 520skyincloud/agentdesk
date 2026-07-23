@@ -15,6 +15,7 @@ import (
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/repositories"
 )
 
@@ -40,11 +41,10 @@ func (s *answer) DebugSearch(ctx context.Context, req request.KnowledgeSearchReq
 			ChunkID:         item.ChunkID,
 			DocumentID:      item.DocumentID,
 			DocumentTitle:   item.DocumentTitle,
-			FaqID:           item.FaqID,
-			FaqQuestion:     item.FaqQuestion,
 			ChunkNo:         item.ChunkNo,
 			Title:           item.Title,
 			SectionPath:     item.SectionPath,
+			SourceRecordID:  item.SourceRecordID,
 			Content:         item.Content,
 			Score:           float64(item.Score),
 		})
@@ -58,7 +58,7 @@ func (s *answer) DebugSearch(ctx context.Context, req request.KnowledgeSearchReq
 	}, nil
 }
 
-func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerRequest, aiConfig models.AIConfig, operator *dto.AuthPrincipal) (*response.KnowledgeAnswerResponse, error) {
+func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerRequest, runtimeConfig modelconfig.Config, operator *dto.AuthPrincipal) (*response.KnowledgeAnswerResponse, error) {
 	if strings.TrimSpace(req.Question) == "" {
 		return nil, errorsx.InvalidParam("问题不能为空")
 	}
@@ -91,11 +91,10 @@ func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerReq
 			ChunkID:         item.ChunkID,
 			DocumentID:      item.DocumentID,
 			DocumentTitle:   item.DocumentTitle,
-			FaqID:           item.FaqID,
-			FaqQuestion:     item.FaqQuestion,
 			ChunkNo:         item.ChunkNo,
 			Title:           item.Title,
 			SectionPath:     item.SectionPath,
+			SourceRecordID:  item.SourceRecordID,
 			Content:         item.Content,
 			Score:           score,
 		})
@@ -128,7 +127,7 @@ func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerReq
 		contextText := Retrieve.BuildContext(ctx, results, 4000)
 		systemPrompt := buildAnswerSystemPrompt(answerMode)
 		userPrompt := fmt.Sprintf("用户问题：%s\n\n参考资料：\n%s", req.Question, contextText)
-		llmResult, llmErr := ai.LLM.ChatWithConfig(ctx, aiConfig, systemPrompt, userPrompt)
+		llmResult, llmErr := ai.LLM.ChatWithRuntimeConfig(ctx, runtimeConfig, systemPrompt, userPrompt)
 		if llmErr != nil {
 			answerStatus = enums.KnowledgeAnswerStatusFallback
 			answer = buildFallbackAnswer(fallbackMode)
@@ -145,44 +144,31 @@ func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerReq
 	}
 	generateMs := time.Since(generateStartedAt).Milliseconds()
 	rerankLimit := 0
-	chunkProvider := ""
-	chunkTargetTokens := 0
-	chunkMaxTokens := 0
-	chunkOverlapTokens := 0
 	if knowledgeBase != nil {
 		rerankLimit = resolveRerankLimit(req.RerankLimit, knowledgeBase.DefaultRerankLimit)
-		chunkProvider = knowledgeBase.ChunkProvider
-		chunkTargetTokens = knowledgeBase.ChunkTargetTokens
-		chunkMaxTokens = knowledgeBase.ChunkMaxTokens
-		chunkOverlapTokens = knowledgeBase.ChunkOverlapTokens
 	}
 
 	logItem, err := RetrieveLog.CreateRetrieveLog(&CreateRetrieveLogRequest{
-		KnowledgeBaseID:    firstKnowledgeBaseID(req.KnowledgeBaseIDs),
-		SourceType:         inferRetrieveSourceType(hits),
-		Channel:            defaultRetrieveChannel(req.Channel),
-		Scene:              defaultRetrieveScene(req.Scene),
-		SessionID:          req.SessionID,
-		ConversationID:     req.ConversationID,
-		Question:           req.Question,
-		RewriteQuestion:    "",
-		Answer:             answer,
-		AnswerStatus:       int(answerStatus),
-		ChunkProvider:      chunkProvider,
-		ChunkTargetTokens:  chunkTargetTokens,
-		ChunkMaxTokens:     chunkMaxTokens,
-		ChunkOverlapTokens: chunkOverlapTokens,
-		RerankEnabled:      rerankLimit > 0,
-		RerankLimit:        rerankLimit,
-		Hits:               hits,
-		UsedHits:           contextResults,
-		Citations:          citations,
-		LatencyMs:          time.Since(startedAt).Milliseconds(),
-		RetrieveMs:         retrieveMs,
-		GenerateMs:         generateMs,
-		PromptTokens:       promptTokens,
-		CompletionTokens:   completionTokens,
-		ModelName:          modelName,
+		KnowledgeBaseID:  firstKnowledgeBaseID(req.KnowledgeBaseIDs),
+		Channel:          defaultRetrieveChannel(req.Channel),
+		Scene:            defaultRetrieveScene(req.Scene),
+		SessionID:        req.SessionID,
+		ConversationID:   req.ConversationID,
+		Question:         req.Question,
+		RewriteQuestion:  "",
+		Answer:           answer,
+		AnswerStatus:     int(answerStatus),
+		RerankEnabled:    rerankLimit > 0,
+		RerankLimit:      rerankLimit,
+		Hits:             hits,
+		UsedHits:         contextResults,
+		Citations:        citations,
+		LatencyMs:        time.Since(startedAt).Milliseconds(),
+		RetrieveMs:       retrieveMs,
+		GenerateMs:       generateMs,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		ModelName:        modelName,
 	}, operator)
 	if err != nil {
 		return nil, err
@@ -218,11 +204,10 @@ func buildContextHits(results []RetrieveResult) []response.KnowledgeSearchResult
 			ChunkID:         item.ChunkID,
 			DocumentID:      item.DocumentID,
 			DocumentTitle:   item.DocumentTitle,
-			FaqID:           item.FaqID,
-			FaqQuestion:     item.FaqQuestion,
 			ChunkNo:         item.ChunkNo,
 			Title:           item.Title,
 			SectionPath:     item.SectionPath,
+			SourceRecordID:  item.SourceRecordID,
 			Content:         item.Content,
 			Score:           float64(item.Score),
 		})
@@ -237,21 +222,23 @@ func buildKnowledgeCitations(hits []response.KnowledgeSearchResult, limit int) [
 	citations := make([]response.KnowledgeCitation, 0, limit)
 	seen := make(map[string]struct{})
 	for _, item := range hits {
-		key := fmt.Sprintf("%d|%d|%s|%d", item.DocumentID, item.FaqID, item.SectionPath, item.ChunkNo)
+		key := strings.TrimSpace(item.SourceRecordID)
+		if key == "" {
+			key = fmt.Sprintf("%d|%s|%d", item.DocumentID, item.SectionPath, item.ChunkNo)
+		}
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
 		citations = append(citations, response.KnowledgeCitation{
-			DocumentID:    item.DocumentID,
-			DocumentTitle: item.DocumentTitle,
-			FaqID:         item.FaqID,
-			FaqQuestion:   item.FaqQuestion,
-			ChunkNo:       item.ChunkNo,
-			Title:         item.Title,
-			SectionPath:   item.SectionPath,
-			Snippet:       truncateCitationSnippet(item.Content, 120),
-			Score:         item.Score,
+			DocumentID:     item.DocumentID,
+			DocumentTitle:  item.DocumentTitle,
+			ChunkNo:        item.ChunkNo,
+			Title:          item.Title,
+			SectionPath:    item.SectionPath,
+			SourceRecordID: item.SourceRecordID,
+			Snippet:        truncateCitationSnippet(item.Content, 120),
+			Score:          item.Score,
 		})
 		if len(citations) >= limit {
 			break
@@ -269,10 +256,6 @@ func truncateCitationSnippet(text string, limit int) string {
 		return string(runes)
 	}
 	return string(runes[:limit]) + "..."
-}
-
-func (s *answer) BuildDocumentIndex(ctx context.Context, documentID int64) error {
-	return Index.IndexDocumentByID(ctx, documentID)
 }
 
 func (s *answer) retrieve(req request.KnowledgeSearchRequest, ctx context.Context) ([]RetrieveResult, error) {
@@ -355,28 +338,6 @@ func firstKnowledgeBaseID(ids []int64) int64 {
 		return 0
 	}
 	return normalized[0]
-}
-
-func inferRetrieveSourceType(hits []response.KnowledgeSearchResult) string {
-	if len(hits) == 0 {
-		return "local_vector"
-	}
-	hasFastGPT := false
-	hasLocal := false
-	for _, hit := range hits {
-		if strings.Contains(hit.SectionPath, "FastGPT知识库/") || strings.Contains(hit.SectionPath, "FastGPT云端知识库") {
-			hasFastGPT = true
-		} else {
-			hasLocal = true
-		}
-	}
-	if hasFastGPT && hasLocal {
-		return "hybrid"
-	}
-	if hasFastGPT {
-		return "fastgpt"
-	}
-	return "local_vector"
 }
 
 func resolveRerankLimit(requestLimit int, defaultLimit int) int {

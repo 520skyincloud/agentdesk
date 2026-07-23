@@ -20,7 +20,6 @@ type Config struct {
 	NewAPIUsage        NewAPIUsageConfig        `yaml:"newAPIUsage"`
 	StoreCredential    StoreCredentialConfig    `yaml:"-"`
 	Storage            StorageConfig            `yaml:"storage"`
-	VectorDB           VectorDBConfig           `yaml:"vectorDB"`
 	MCP                MCPConfig                `yaml:"mcp"`
 	WxWork             WxWorkConfig             `yaml:"wxWork"`
 	OIDC               OIDCConfig               `yaml:"oidc"`
@@ -187,15 +186,6 @@ type OSSStorageConfig struct {
 	BaseURL         string `yaml:"baseUrl"`
 	Private         bool   `yaml:"private"`
 	SignedURLExpire int    `yaml:"signedUrlExpireSeconds"`
-}
-
-type VectorDBConfig struct {
-	Type     string `yaml:"type"`
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	APIKey   string `yaml:"apiKey"`
-	GrpcPort int    `yaml:"grpcPort"`
-	UseTLS   bool   `yaml:"useTls"`
 }
 
 type MCPConfig struct {

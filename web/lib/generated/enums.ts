@@ -356,13 +356,9 @@ export const KnowledgeAnswerStatusLabels: Record<KnowledgeAnswerStatus, string> 
 }
 
 export enum KnowledgeBaseType {
-  Document = "document",
-  FAQ = "faq",
   FastGPTCloud = "fastgpt_cloud",
 }
 export const KnowledgeBaseTypeLabels: Record<KnowledgeBaseType, string> = {
-  [KnowledgeBaseType.Document]: "文档知识库",
-  [KnowledgeBaseType.FAQ]: "FAQ知识库",
   [KnowledgeBaseType.FastGPTCloud]: "FastGPT云端知识库",
 }
 
@@ -389,55 +385,14 @@ export const KnowledgeCandidateStatusLabels: Record<KnowledgeCandidateStatus, st
   [KnowledgeCandidateStatus.Approved]: "已通过",
   [KnowledgeCandidateStatus.Rejected]: "已驳回",
   [KnowledgeCandidateStatus.Exported]: "已导出",
-  [KnowledgeCandidateStatus.Imported]: "已导入知识库",
+  [KnowledgeCandidateStatus.Imported]: "已确认同步",
 }
 
 export enum KnowledgeChunkProvider {
-  Fixed = "fixed",
-  Structured = "structured",
-  FAQ = "faq",
-  Semantic = "semantic",
   FastGPT = "fastgpt_cloud",
 }
 export const KnowledgeChunkProviderLabels: Record<KnowledgeChunkProvider, string> = {
-  [KnowledgeChunkProvider.Fixed]: "固定长度",
-  [KnowledgeChunkProvider.Structured]: "结构化分块",
-  [KnowledgeChunkProvider.FAQ]: "问答式分块",
-  [KnowledgeChunkProvider.Semantic]: "语义分块",
   [KnowledgeChunkProvider.FastGPT]: "FastGPT云端",
-}
-
-export enum KnowledgeChunkType {
-  Text = "text",
-  FAQ = "faq",
-  Table = "table",
-  Code = "code",
-}
-export const KnowledgeChunkTypeLabels: Record<KnowledgeChunkType, string> = {
-  [KnowledgeChunkType.Text]: "文本",
-  [KnowledgeChunkType.FAQ]: "问答",
-  [KnowledgeChunkType.Table]: "表格",
-  [KnowledgeChunkType.Code]: "代码",
-}
-
-export enum KnowledgeDocumentContentType {
-  HTML = "html",
-  Markdown = "markdown",
-}
-export const KnowledgeDocumentContentTypeLabels: Record<KnowledgeDocumentContentType, string> = {
-  [KnowledgeDocumentContentType.HTML]: "HTML",
-  [KnowledgeDocumentContentType.Markdown]: "Markdown",
-}
-
-export enum KnowledgeDocumentIndexStatus {
-  Pending = "pending",
-  Indexed = "indexed",
-  Failed = "failed",
-}
-export const KnowledgeDocumentIndexStatusLabels: Record<KnowledgeDocumentIndexStatus, string> = {
-  [KnowledgeDocumentIndexStatus.Pending]: "待索引",
-  [KnowledgeDocumentIndexStatus.Indexed]: "已索引",
-  [KnowledgeDocumentIndexStatus.Failed]: "索引失败",
 }
 
 export enum KnowledgeFeedbackType {
@@ -631,11 +586,4 @@ export const UserRegistrationSourceLabels: Record<UserRegistrationSource, string
   [UserRegistrationSource.LegacyMigration]: "历史迁移",
   [UserRegistrationSource.WxWork]: "企业微信登录",
   [UserRegistrationSource.OIDC]: "OIDC 登录",
-}
-
-export enum VectorDBType {
-  Qdrant = "qdrant",
-}
-export const VectorDBTypeLabels: Record<VectorDBType, string> = {
-  [VectorDBType.Qdrant]: "Qdrant",
 }

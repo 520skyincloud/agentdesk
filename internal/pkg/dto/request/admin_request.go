@@ -82,24 +82,3 @@ type AssignPermissionRequest struct {
 	RoleID        int64   `json:"roleId"`
 	PermissionIDs []int64 `json:"permissionIds"`
 }
-
-type CreateConversationTagRequest struct {
-	Name   string `json:"name"`
-	Color  string `json:"color"`
-	Status int    `json:"status"`
-	SortNo int    `json:"sortNo"`
-	Remark string `json:"remark"`
-}
-
-type UpdateConversationTagRequest struct {
-	ID     int64  `json:"id"`
-	Name   string `json:"name"`
-	Color  string `json:"color"`
-	Status int    `json:"status"`
-	SortNo int    `json:"sortNo"`
-	Remark string `json:"remark"`
-}
-
-type DeleteConversationTagRequest struct {
-	ID int64 `json:"id"`
-}

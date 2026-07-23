@@ -8,7 +8,7 @@ An open-source AI Agent customer support system with knowledge-based answers, hu
 
 ## Product Preview
 
-Customer chat, agent workspace, knowledge base, model configuration, and AI Agent orchestration are managed in one system.
+Tenant onboarding, store operations, customer conversations, rule-based dispatch, managed knowledge, and AI replies are managed in one system.
 
 ### Customer Chat
 
@@ -20,21 +20,11 @@ Customers can start a conversation from the web chat page. The AI Agent responds
 
 ![Agent Workspace](screenshots/2.png)
 
-The support workspace includes conversation lists, message handling, AI-to-human handoff, agent replies, conversation tags, linked customers, and ticket context for daily support work.
+The support workspace includes conversation lists, message handling, AI-to-human handoff, agent replies, store-scoped customer tags, linked customers, and ticket context for daily support work.
 
-### Knowledge Base and AI Agent Configuration
+### Managed Knowledge and Model Profiles
 
-| Knowledge Base FAQ | AI Agent Configuration |
-| --- | --- |
-| ![Knowledge Base FAQ](screenshots/4.png) | ![AI Agent Configuration](screenshots/5.png) |
-
-The knowledge base stores FAQs, documents, and retrievable content. AI Agents can be bound to model configurations, knowledge bases, Skills, and tools to create support agents for specific scenarios.
-
-### Model Configuration
-
-![Model Configuration](screenshots/3.png)
-
-Model configuration supports OpenAI-compatible providers. You can configure LLMs, embedding models, rerank models, context limits, output settings, timeout, retry behavior, and enablement state.
+Each store uses one managed FastGPT dataset. The platform publishes complete nine-slot model profiles through a unified NewAPI gateway and assigns one active profile revision to each store. Store credentials remain masked, revisioned, and independently auditable.
 
 ## Why Use It
 
@@ -43,14 +33,14 @@ Model configuration supports OpenAI-compatible providers. You can configure LLMs
 - **Natural human handoff**: Move to human agents when knowledge is insufficient, the user asks for help, or a workflow requires human confirmation.
 - **Conversation-to-ticket loop**: Online chat, support handling, ticket creation, status flow, and progress records stay in one system.
 - **Built for extension**: The backend uses Go, the frontend uses Next.js, and the runtime supports Skills, MCP, and OpenAI-compatible model access.
-- **Self-host friendly**: Supports SQLite / MySQL and Qdrant for local trials, intranet deployment, and enterprise self-hosting.
+- **Self-host friendly**: Supports SQLite / MySQL, a managed FastGPT knowledge service, and a unified NewAPI gateway for enterprise deployment.
 
 ## Core Capabilities
 
-- **AI Agent support**: AI replies first, with fallback, confirmation, tool calling, and human collaboration.
+- **AI reply runtime**: Industry-bound intent detection, planning, knowledge retrieval, validation, confirmation, tool calling, and human collaboration run through one reply engine.
 - **Online conversation system**: Visitor sessions, message send/receive, unread status, assignment, transfer, and close flows.
 - **Agent workspace**: Agents can take over conversations, reply to users, transfer teammates, link customers, and create tickets.
-- **Knowledge-base RAG**: Knowledge bases, documents, FAQs, chunking, vector retrieval, retrieval logs, and quality analysis.
+- **Managed knowledge RAG**: Tenant- and store-scoped FastGPT datasets, file synchronization, retrieval logs, and answerability analysis.
 - **Answerability Gate**: Checks whether retrieved content can support an answer; otherwise returns a fallback and recommends human support.
 - **Ticket system**: Create tickets from conversations, categorize, assign, move through status flows, record progress, and close the loop.
 - **Support organization management**: Agent profiles, teams, schedules, and automatic assignment.
@@ -78,13 +68,10 @@ For the full English setup guide, see [Docker Compose Quick Start](https://agent
 
 To embed customer support on your website, see [Web Widget Integration](https://agent-desk.huabei.pro/docs/integration/web-widget.html).
 
-To connect OpenAI-compatible model providers, see [Model Provider Configuration](https://agent-desk.huabei.pro/docs/config/model-provider.html).
-
 Compose starts:
 
 - `agent-desk`: application service on port `8083`
 - `mysql`: MySQL 8.4 with the `mysql-data` volume
-- `qdrant`: vector database with the `qdrant-data` volume, ports `6333` / `6334`
 
 After startup, open:
 
@@ -107,7 +94,6 @@ Default administrator account:
 - Go `1.26+`
 - Node.js `20+`
 - `pnpm`
-- Qdrant
 
 ### Prepare Configuration
 
@@ -119,13 +105,7 @@ The default configuration uses:
 
 - SQLite: `data/app.db`
 - Backend: `http://127.0.0.1:8083`
-- Qdrant gRPC: `127.0.0.1:6334`
-
-If Qdrant is not running locally, start it with Docker:
-
-```bash
-docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-```
+- Managed FastGPT and NewAPI endpoints are configured through deployment settings and secrets.
 
 Install frontend dependencies:
 
@@ -160,8 +140,8 @@ Default development URLs:
 - Backend: Golang + Gin + GORM + `github.com/mlogclub/simple`
 - Frontend: Next.js 16 + React 19 + shadcn/ui + Tailwind CSS
 - Database: SQLite / MySQL
-- Vector DB: Qdrant
-- AI: OpenAI-compatible LLM / Embedding + RAG + Skills + MCP
+- Knowledge service: Managed FastGPT
+- AI: Unified NewAPI gateway + OpenAI-compatible models + RAG + Skills + MCP
 
 ## Project Structure
 
@@ -216,8 +196,8 @@ flowchart TD
     A[User starts a support request<br/>Web support entry / Open API] --> B[Create or match a conversation]
     B --> C[Customer sends a message]
     C --> D[Trigger AI Reply Runtime]
-    D --> E[Load conversation history / AI configuration]
-    E --> F[Retrieve from bound knowledge bases]
+    D --> E[Load conversation history / tenant industry / store model profile]
+    E --> F[Retrieve from the store FastGPT dataset]
     F --> G{Are retrieved chunks enough to answer?}
     G -- No --> Z[Return knowledge fallback<br/>and recommend human support]
     G -- Yes --> H[Prepare Skills / MCP Tools]
@@ -267,7 +247,7 @@ flowchart LR
 
 ## Docker Image
 
-If you only need to build the application image, prepare MySQL and Qdrant yourself and mount a configuration file:
+If you only need to build the application image, prepare MySQL and the configured external AI services, then mount a configuration file:
 
 ```bash
 docker build -t mlogclub/agent-desk .
@@ -277,7 +257,7 @@ docker run --rm -p 8083:8083 \
   mlogclub/agent-desk
 ```
 
-Compose uses [docker/agent-desk.yaml](docker/agent-desk.yaml) as the in-container configuration. The application reaches `mysql` and `qdrant` through Docker service names.
+Compose uses [docker/agent-desk.yaml](docker/agent-desk.yaml) as the in-container configuration. The application reaches `mysql` through its Docker service name and connects to FastGPT/NewAPI through configured endpoints.
 
 ## Open-source Positioning
 

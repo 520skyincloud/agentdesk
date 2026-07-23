@@ -412,7 +412,7 @@ func TestCustomerTagEvolutionModelCallUsesResolvedAttribution(t *testing.T) {
 	if event.TenantID != fixture.tenant.ID || event.StoreID != fixture.store.ID ||
 		event.ModelProfileID != resolved.ProfileID || event.ModelProfileRevision != resolved.ProfileRevision ||
 		event.UsageSlot != string(enums.ModelUsageSlotCustomerTag) || event.CredentialRevision != resolved.CredentialRevision ||
-		event.KeyFingerprint != resolved.KeyFingerprint || event.AIConfigID != 0 || event.ModelSource != AIModelSourceStoreProfile {
+		event.KeyFingerprint != resolved.KeyFingerprint || event.ModelSource != AIModelSourceStoreProfile {
 		t.Fatalf("usage attribution=%#v", event)
 	}
 	if event.GatewayRequestID != "newapi-tag-1" || event.GatewayUpstreamID != "upstream-tag-1" || event.ErrorMessage != "" {

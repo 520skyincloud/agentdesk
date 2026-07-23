@@ -160,7 +160,7 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
                     <div className="text-xs font-medium text-muted-foreground">{t("knowledge.citationSources")}</div>
                     {answerResult.citations.map((citation) => (
                       <div
-                        key={`${citation.documentId}-${citation.chunkNo}-${citation.sectionPath}`}
+                        key={citation.sourceRecordId || `${citation.documentId}-${citation.chunkNo}-${citation.sectionPath}`}
                         className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30"
                       >
                         <div className="flex items-center justify-between gap-2">
@@ -170,7 +170,7 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
                           <Badge variant="outline">{citation.score.toFixed(4)}</Badge>
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          {citation.sectionPath || citation.title || `Chunk #${citation.chunkNo}`}
+                          {citation.sectionPath || citation.title || citation.sourceRecordId}
                         </div>
                         <div className="mt-2 text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
                           {citation.snippet}
@@ -193,7 +193,7 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
                   {t("knowledge.hitsSummary", { count: searchResult.hitCount, latency: searchResult.latencyMs })}
                 </div>
                 {searchResult.results.map((item) => (
-                  <div key={`${item.chunkId}-${item.documentId}`} className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
+                  <div key={item.sourceRecordId || `${item.chunkId}-${item.documentId}`} className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                     <div className="flex items-center justify-between gap-2">
                       <div className="truncate text-sm font-medium">
                         {getSearchResultLabel(item)}
@@ -201,7 +201,7 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
                       <Badge variant="outline">{item.score.toFixed(4)}</Badge>
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      {item.sectionPath || item.title || `Chunk #${item.chunkNo}`}
+                      {item.sectionPath || item.title || item.sourceRecordId}
                     </div>
                     <div className="mt-2 text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
                       {item.content}
@@ -218,19 +218,9 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
 }
 
 function getSearchResultLabel(item: {
-  faqQuestion?: string
-  faqId?: number
   documentTitle?: string
-  documentId?: number
+  title?: string
+  sourceRecordId?: string
 }) {
-  if (item.faqQuestion) {
-    return item.faqQuestion
-  }
-  if (item.documentTitle) {
-    return item.documentTitle
-  }
-  if (item.faqId && item.faqId > 0) {
-    return `FAQ ${item.faqId}`
-  }
-  return `Document ${item.documentId ?? 0}`
+  return item.documentTitle || item.title || item.sourceRecordId || "FastGPT 记录"
 }

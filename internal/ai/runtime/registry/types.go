@@ -12,7 +12,7 @@ import (
 type Context struct {
 	Conversation     models.Conversation
 	AIAgent          models.AIAgent
-	AIConfig         modelconfig.Config
+	ModelConfig      modelconfig.Config
 	UserMessage      models.Message
 	AllowedToolCodes []string
 }

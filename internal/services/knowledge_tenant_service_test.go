@@ -13,6 +13,7 @@ import (
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
+	fastgptapi "agent-desk/internal/pkg/fastgpt"
 	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
@@ -23,13 +24,20 @@ import (
 
 func TestKnowledgeRuntimeTenantIsolation(t *testing.T) {
 	db, adminA, adminB := setupKnowledgeTenantRuntimeDB(t)
-	baseA, err := KnowledgeBaseService.CreateKnowledgeBase(request.CreateKnowledgeBaseRequest{Name: "A knowledge"}, adminA)
-	if err != nil {
-		t.Fatalf("create tenant A knowledge base: %v", err)
+	storeA := &models.Store{TenantID: adminA.ActiveTenantID, StoreCode: "knowledge-runtime-store-a", Name: "A store", Status: enums.StatusOk}
+	storeB := &models.Store{TenantID: adminB.ActiveTenantID, StoreCode: "knowledge-runtime-store-b", Name: "B store", Status: enums.StatusOk}
+	for _, store := range []*models.Store{storeA, storeB} {
+		if err := db.Create(store).Error; err != nil {
+			t.Fatalf("create tenant store: %v", err)
+		}
 	}
-	baseB, err := KnowledgeBaseService.CreateKnowledgeBase(request.CreateKnowledgeBaseRequest{Name: "B knowledge"}, adminB)
-	if err != nil {
-		t.Fatalf("create tenant B knowledge base: %v", err)
+	baseA := createTenantFastGPTKnowledgeBase(t, db, adminA.ActiveTenantID, storeA.ID, "A knowledge", "dataset-a")
+	baseB := createTenantFastGPTKnowledgeBase(t, db, adminB.ActiveTenantID, storeB.ID, "B knowledge", "dataset-b")
+	if err := db.Model(storeA).Update("knowledge_base_id", baseA.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(storeB).Update("knowledge_base_id", baseB.ID).Error; err != nil {
+		t.Fatal(err)
 	}
 	if baseA.TenantID != adminA.ActiveTenantID || baseB.TenantID != adminB.ActiveTenantID {
 		t.Fatalf("knowledge bases missing tenant ownership: A=%+v B=%+v", baseA, baseB)
@@ -37,7 +45,7 @@ func TestKnowledgeRuntimeTenantIsolation(t *testing.T) {
 	if KnowledgeBaseService.GetForOperator(baseB.ID, adminA) != nil || KnowledgeBaseService.CanAccessKnowledgeBase(baseB.ID, adminA) {
 		t.Fatal("tenant A can access tenant B knowledge base")
 	}
-	if err := KnowledgeBaseService.UpdateKnowledgeBase(request.UpdateKnowledgeBaseRequest{ID: baseB.ID, CreateKnowledgeBaseRequest: request.CreateKnowledgeBaseRequest{Name: "cross tenant update"}}, adminA); err == nil {
+	if err := KnowledgeBaseService.UpdateKnowledgeBase(request.UpdateKnowledgeBaseRequest{ID: baseB.ID, Name: "cross tenant update"}, adminA); err == nil {
 		t.Fatal("tenant A updated tenant B knowledge base")
 	}
 	currentB := repositories.KnowledgeBaseRepository.GetInTenant(db, baseB.ID, adminB.ActiveTenantID)
@@ -45,11 +53,7 @@ func TestKnowledgeRuntimeTenantIsolation(t *testing.T) {
 		t.Fatalf("tenant B knowledge base changed: %+v", currentB)
 	}
 
-	storeA := &models.Store{TenantID: adminA.ActiveTenantID, StoreCode: "knowledge-runtime-store-a", Name: "A store", KnowledgeBaseID: baseA.ID, Status: enums.StatusOk}
 	conversationA := &models.Conversation{TenantID: adminA.ActiveTenantID, CustomerName: "A customer", Status: enums.IMConversationStatusActive, LastActiveAt: time.Now(), LastMessageAt: time.Now(), AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()}}
-	if err := db.Create(storeA).Error; err != nil {
-		t.Fatalf("create tenant A store: %v", err)
-	}
 	if err := db.Create(conversationA).Error; err != nil {
 		t.Fatalf("create tenant A conversation: %v", err)
 	}
@@ -97,13 +101,25 @@ func TestKnowledgeRuntimeTenantIsolation(t *testing.T) {
 	logItem, err := rag.RetrieveLog.CreateRetrieveLog(&rag.CreateRetrieveLogRequest{
 		KnowledgeBaseID: baseA.ID,
 		Question:        "tenant A retrieval",
-		Hits:            []response.KnowledgeSearchResult{{KnowledgeBaseID: baseA.ID, Content: "answer", Score: 0.9}},
+		Hits:            []response.KnowledgeSearchResult{{KnowledgeBaseID: baseA.ID, SourceRecordID: "fastgpt-record-a", Content: "answer", Score: 0.9}},
 	}, adminA)
 	if err != nil {
 		t.Fatalf("create tenant A retrieve log: %v", err)
 	}
 	if logItem.TenantID != adminA.ActiveTenantID {
 		t.Fatalf("retrieve log tenant=%d want=%d", logItem.TenantID, adminA.ActiveTenantID)
+	}
+	if logItem.SourceType != "fastgpt" ||
+		logItem.ChunkProvider != string(enums.KnowledgeChunkProviderFastGPT) ||
+		logItem.ChunkTargetTokens != 0 ||
+		logItem.ChunkMaxTokens != 0 ||
+		logItem.ChunkOverlapTokens != 0 {
+		t.Fatalf("new retrieve log kept legacy source or chunk settings: %#v", logItem)
+	}
+	if !strings.Contains(logItem.TraceData, `"sourceRecordId":"fastgpt-record-a"`) ||
+		strings.Contains(logItem.TraceData, `"documentIds"`) ||
+		strings.Contains(logItem.TraceData, `"usedChunkKeys"`) {
+		t.Fatalf("new retrieve trace did not use FastGPT source identity: %s", logItem.TraceData)
 	}
 	if KnowledgeRetrieveLogService.GetInTenant(logItem.ID, adminB.ActiveTenantID) != nil {
 		t.Fatal("tenant B can read tenant A retrieve log")
@@ -168,7 +184,7 @@ func setupKnowledgeTenantRuntimeDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal, 
 		&models.User{}, &models.Store{}, &models.Channel{}, &models.AIAgent{},
 		&models.AgentTeam{}, &models.AgentProfile{}, &models.AgentTeamSchedule{},
 		&models.Conversation{}, &models.Message{}, &models.ConversationRouteState{},
-		&models.KnowledgeBase{}, &models.KnowledgeDocument{}, &models.KnowledgeFAQ{}, &models.KnowledgeChunk{},
+		&models.KnowledgeBase{},
 		&models.KnowledgeCandidate{}, &models.KnowledgeRetrieveLog{}, &models.KnowledgeRetrieveHit{}, &models.KnowledgeFeedback{},
 		&models.SkillRunLog{},
 	); err != nil {
@@ -184,4 +200,19 @@ func setupKnowledgeTenantRuntimeDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal, 
 	adminA := &dto.AuthPrincipal{UserID: 101, TenantID: 101, ActiveTenantID: 101, Username: "tenant-a-admin", Roles: []string{constants.RoleCodeAdmin}}
 	adminB := &dto.AuthPrincipal{UserID: 202, TenantID: 202, ActiveTenantID: 202, Username: "tenant-b-admin", Roles: []string{constants.RoleCodeAdmin}}
 	return db, adminA, adminB
+}
+
+func createTenantFastGPTKnowledgeBase(t *testing.T, db *gorm.DB, tenantID, storeID int64, name, datasetID string) *models.KnowledgeBase {
+	t.Helper()
+	item := &models.KnowledgeBase{
+		TenantID: tenantID, StoreID: storeID, Name: name,
+		KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud), DatasetID: datasetID, DatasetName: name,
+		ConnectionID: fastgptapi.ManagedConnectionID, RetrievalMode: enums.KnowledgeRetrievalModeFastGPT,
+		ChunkProvider: string(enums.KnowledgeChunkProviderFastGPT), DefaultTopK: 10, DefaultScoreThreshold: 0.2,
+		DefaultRerankLimit: 10, AnswerMode: int(enums.KnowledgeAnswerModeStrict), Status: enums.StatusOk,
+	}
+	if err := db.Create(item).Error; err != nil {
+		t.Fatalf("create FastGPT knowledge base: %v", err)
+	}
+	return item
 }

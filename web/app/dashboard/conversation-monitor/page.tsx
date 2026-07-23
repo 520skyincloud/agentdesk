@@ -21,7 +21,6 @@ import { ConversationCloseDialog } from "@/components/conversation-actions/close
 import { ConversationTransferDialog } from "@/components/conversation-actions/transfer-dialog"
 import { ListPagination } from "@/components/list-pagination"
 import { OptionCombobox, type ComboboxOption } from "@/components/option-combobox"
-import { TagBadges, TagSelector } from "@/components/tag-selector"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -42,11 +41,9 @@ import {
   autoAssignConversationDispatch,
   fetchConversationDetail,
   fetchConversationMessages,
-  fetchTagsAll,
   markConversationRead,
   type AdminConversationDetail,
   type AdminMessage,
-  type TagTree,
 } from "@/lib/api/admin"
 import {
   createQualitySampling,
@@ -68,7 +65,7 @@ import { ConversationDetailDialog } from "./_components/detail"
 import { SessionWorkflowDialog } from "./_components/session-workflow"
 
 type QuickView = "all" | "open" | "human" | "waiting" | "sla_breached" | "quality_pending" | "quality_completed"
-type ColumnKey = "customer" | "status" | "source" | "agent" | "messages" | "response" | "resolution" | "tags" | "quality" | "started"
+type ColumnKey = "customer" | "status" | "source" | "agent" | "messages" | "response" | "resolution" | "quality" | "started"
 
 const columns: Array<{ key: ColumnKey; label: string }> = [
   { key: "customer", label: "客户 / 会话" },
@@ -78,7 +75,6 @@ const columns: Array<{ key: ColumnKey; label: string }> = [
   { key: "messages", label: "消息构成" },
   { key: "response", label: "响应" },
   { key: "resolution", label: "解决状态" },
-  { key: "tags", label: "标签" },
   { key: "quality", label: "数据质量" },
   { key: "started", label: "开始时间" },
 ]
@@ -122,7 +118,6 @@ export default function ConversationRecordsPage() {
   const canSample = permissions.has("qualitySampling.create")
   const canManageViews = permissions.has("reportViewPreset.manage")
   const canInviteEvaluation = permissions.has("conversationEvaluation.invite")
-  const canViewTags = permissions.has("tag.view")
   const canAssign = permissions.has("conversation.assign")
   const canTransfer = permissions.has("conversation.transfer")
   const canClose = permissions.has("conversation.close")
@@ -143,13 +138,11 @@ export default function ConversationRecordsPage() {
   const [wxWorkInstanceId, setWxWorkInstanceId] = useState("")
   const [dataQuality, setDataQuality] = useState("")
   const [resolutionCode, setResolutionCode] = useState("")
-  const [tagId, setTagId] = useState("")
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [dimensions, setDimensions] = useState<AnalyticsDimensions | null>(null)
-  const [tags, setTags] = useState<TagTree[]>([])
   const [result, setResult] = useState<PageResult<ServiceSession>>({ results: [], page: { page: 1, limit: 20, total: 0 } })
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnKey>>(() => new Set(columns.map((item) => item.key)))
   const [presets, setPresets] = useState<ReportViewPreset[]>([])
@@ -195,7 +188,6 @@ export default function ConversationRecordsPage() {
       ["dataQuality", setDataQuality],
       ["resolutionCode", setResolutionCode],
       ["categoryCode", (value) => { setCategoryCode(value); setCategoryCodeInput(value) }],
-      ["tagId", setTagId],
       ["conversationId", setConversationId],
     ]
     mappings.forEach(([key, update]) => {
@@ -216,14 +208,6 @@ export default function ConversationRecordsPage() {
     if (!canView) return
     void fetchServiceSessionDimensions().then(setDimensions).catch((error) => toast.error(error instanceof Error ? error.message : "筛选项加载失败"))
   }, [canView])
-
-  useEffect(() => {
-    if (!canViewTags) {
-      setTags([])
-      return
-    }
-    void fetchTagsAll().then(setTags).catch((error) => toast.error(error instanceof Error ? error.message : "标签加载失败"))
-  }, [canViewTags, authSession?.activeTenantId])
 
   useEffect(() => {
     if (!canManageViews || !urlFiltersReady) return
@@ -250,7 +234,6 @@ export default function ConversationRecordsPage() {
     dataQuality: dataQuality || undefined,
     resolutionCode: resolutionCode || undefined,
     categoryCode: categoryCode || undefined,
-    tagId: tagId || undefined,
     status: quickView === "open" ? "open" : undefined,
     humanOnly: quickView === "human" ? true : undefined,
     waitingReply: quickView === "waiting" ? true : undefined,
@@ -258,7 +241,7 @@ export default function ConversationRecordsPage() {
     qualityStatus: quickView === "quality_pending" ? "pending" : quickView === "quality_completed" ? "completed" : undefined,
     page,
     limit,
-  }), [agentId, categoryCode, channelId, conversationId, dataQuality, endAt, keyword, limit, page, quickView, resolutionCode, squadId, startAt, storeId, tagId, teamId, wxWorkInstanceId])
+  }), [agentId, categoryCode, channelId, conversationId, dataQuality, endAt, keyword, limit, page, quickView, resolutionCode, squadId, startAt, storeId, teamId, wxWorkInstanceId])
 
   const load = useCallback(async (refreshOnly = false) => {
     if (!canView || !urlFiltersReady) return
@@ -297,7 +280,7 @@ export default function ConversationRecordsPage() {
   }
 
   function currentFilters() {
-    return { keyword, conversationId, quickView, startAt, endAt, teamId, squadId, agentId, channelId, storeId, wxWorkInstanceId, dataQuality, resolutionCode, categoryCode, tagId }
+    return { keyword, conversationId, quickView, startAt, endAt, teamId, squadId, agentId, channelId, storeId, wxWorkInstanceId, dataQuality, resolutionCode, categoryCode }
   }
 
   function applyPreset(preset: ReportViewPreset) {
@@ -319,7 +302,6 @@ export default function ConversationRecordsPage() {
       setResolutionCode(filters.resolutionCode ?? "")
       setCategoryCode(filters.categoryCode ?? "")
       setCategoryCodeInput(filters.categoryCode ?? "")
-      setTagId(filters.tagId ?? "")
       const savedColumns = JSON.parse(preset.columnsJson || "[]") as ColumnKey[]
       if (savedColumns.length) setVisibleColumns(new Set(savedColumns))
       setPage(1)
@@ -517,11 +499,10 @@ export default function ConversationRecordsPage() {
         <label className="space-y-1 text-xs text-muted-foreground">数据质量<OptionCombobox value={dataQuality} options={[{ value: "", label: "全部质量" }, ...Object.values(AnalyticsDataQuality).map((value) => ({ value, label: AnalyticsDataQualityLabels[value] }))]} placeholder="全部质量" onChange={(value) => { setDataQuality(value); setPage(1) }} /></label>
       </section>
 
-      <form className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(16rem,2fr)_minmax(12rem,1fr)_minmax(11rem,1fr)_minmax(13rem,1fr)_auto]" onSubmit={(event) => { event.preventDefault(); setKeyword(keywordInput.trim()); setCategoryCode(categoryCodeInput.trim()); setPage(1) }}>
+      <form className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(16rem,2fr)_minmax(12rem,1fr)_minmax(11rem,1fr)_auto]" onSubmit={(event) => { event.preventDefault(); setKeyword(keywordInput.trim()); setCategoryCode(categoryCodeInput.trim()); setPage(1) }}>
         <div className="relative"><SearchIcon className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input className="pl-9" value={keywordInput} onChange={(event) => setKeywordInput(event.target.value)} placeholder="搜索客户姓名或会话编号" /></div>
         <Input value={categoryCodeInput} onChange={(event) => setCategoryCodeInput(event.target.value)} placeholder="咨询分类" />
         <OptionCombobox value={resolutionCode} options={[{ value: "", label: "全部解决状态" }, { value: "resolved", label: "已解决" }, { value: "follow_up", label: "需跟进" }, { value: "unresolved", label: "未解决" }]} placeholder="全部解决状态" onChange={(value) => { setResolutionCode(value); setPage(1) }} />
-        {canViewTags ? <TagSelector mode="single" value={Number(tagId) || 0} onChange={(value) => { setTagId(value > 0 ? String(value) : ""); setPage(1) }} tags={tags} placeholder="全部标签" searchPlaceholder="搜索标签路径" emptyText="暂无标签" rootOption={{ value: 0, label: "全部标签" }} /> : <div />}
         <Button type="submit">查询</Button>
       </form>
 
@@ -537,7 +518,6 @@ export default function ConversationRecordsPage() {
               {visibleColumns.has("messages") ? <TableCell><span className="text-muted-foreground">客</span> {item.customerMessageCount} · <span className="text-muted-foreground">AI</span> {item.aiMessageCount} · <span className="text-muted-foreground">人工</span> {item.humanMessageCount}</TableCell> : null}
               {visibleColumns.has("response") ? <TableCell><div>排队 {duration(item.queueSeconds)}</div><div className="text-xs text-muted-foreground">首响 {duration(item.firstResponseSeconds)}</div></TableCell> : null}
               {visibleColumns.has("resolution") ? <TableCell>{item.resolutionCode ? <Badge variant="outline">{item.resolutionCode}</Badge> : <span className="text-muted-foreground">未标记</span>}</TableCell> : null}
-              {visibleColumns.has("tags") ? <TableCell><TagBadges ids={item.tagIds} tags={tags} /></TableCell> : null}
               {visibleColumns.has("quality") ? <TableCell><Badge variant={item.dataQuality === AnalyticsDataQuality.Exact ? "secondary" : "outline"}>{AnalyticsDataQualityLabels[item.dataQuality]}</Badge></TableCell> : null}
               {visibleColumns.has("started") ? <TableCell>{formatDateTime(item.startedAt)}</TableCell> : null}
               <TableCell className="text-right" onClick={(event) => event.stopPropagation()}><DropdownMenu><DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" title="会话操作" />}><MoreHorizontalIcon /></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => openWorkflow(item)}><EyeIcon />记录详情</DropdownMenuItem><DropdownMenuItem onClick={() => { setSelectedSession(item); setLegacyOpen(true); void loadLegacy(item) }}><ShieldCheckIcon />完整会话详情</DropdownMenuItem></DropdownMenuContent></DropdownMenu></TableCell>
@@ -547,7 +527,7 @@ export default function ConversationRecordsPage() {
         <div className="border-t p-3"><ListPagination page={result.page.page} total={result.page.total} limit={result.page.limit} loading={loading || refreshing} onPageChange={setPage} onLimitChange={(value) => { setLimit(value); setPage(1) }} /></div>
       </section>
 
-      <SessionWorkflowDialog open={workflowOpen} session={selectedSession} canAnnotate={canAnnotate} canViewTags={canViewTags} canViewQuality={canQuality} canManageQuality={canManageQuality} canInviteEvaluation={canInviteEvaluation} onOpenChange={setWorkflowOpen} onOpenFullDetail={() => void openLegacy()} onUpdated={(updated) => { setSelectedSession(updated); setResult((current) => ({ ...current, results: current.results.map((item) => item.id === updated.id ? updated : item) })) }} />
+      <SessionWorkflowDialog open={workflowOpen} session={selectedSession} canAnnotate={canAnnotate} canViewQuality={canQuality} canManageQuality={canManageQuality} canInviteEvaluation={canInviteEvaluation} onOpenChange={setWorkflowOpen} onOpenFullDetail={() => void openLegacy()} onUpdated={(updated) => { setSelectedSession(updated); setResult((current) => ({ ...current, results: current.results.map((item) => item.id === updated.id ? updated : item) })) }} />
 
       <ConversationDetailDialog
         open={legacyOpen}

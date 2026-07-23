@@ -21,10 +21,6 @@ const ANSWER_STATUS_LABEL_KEYS: Record<number, string> = {
 }
 
 const PROVIDER_LABEL_KEYS: Record<string, string> = {
-  fixed: "knowledge.chunkFixed",
-  structured: "knowledge.chunkStructured",
-  faq: "knowledge.chunkFAQ",
-  semantic: "knowledge.chunkSemantic",
   fastgpt_cloud: "knowledge.chunkFastGPTCloud",
 }
 

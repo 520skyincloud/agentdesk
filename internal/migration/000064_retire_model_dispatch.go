@@ -35,13 +35,15 @@ func retireModelDispatch(tx *gorm.DB) error {
 		})).Error; err != nil {
 		return err
 	}
-	if err := tx.Model(&models.StoreAIModelSetting{}).
-		Where("usage_code = ? AND status <> ?", retiredDispatchModelUsageCode, enums.StatusDeleted).
-		Updates(mergeMigrationColumns(audit, map[string]any{
-			"status": enums.StatusDeleted,
-			"remark": "派单已改为确定性规则，该历史模型用途不再参与运行",
-		})).Error; err != nil {
-		return err
+	if tx.Migrator().HasTable(&legacyStoreAIModelSetting{}) {
+		if err := tx.Model(&legacyStoreAIModelSetting{}).
+			Where("usage_code = ? AND status <> ?", retiredDispatchModelUsageCode, enums.StatusDeleted).
+			Updates(mergeMigrationColumns(audit, map[string]any{
+				"status": enums.StatusDeleted,
+				"remark": "派单已改为确定性规则，该历史模型用途不再参与运行",
+			})).Error; err != nil {
+			return err
+		}
 	}
 	return tx.Model(&models.AgentProfile{}).
 		Where("auto_assign_enabled = ? AND max_concurrent_count <= ? AND status <> ?", true, 0, enums.StatusDeleted).

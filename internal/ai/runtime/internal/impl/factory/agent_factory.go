@@ -33,8 +33,8 @@ type AgentFactory struct {
 type BuildCustomerServiceAgentInput struct {
 	// AIAgent 为当前运行的业务 Agent 配置，提供名称、描述、系统提示词等基础信息。
 	AIAgent models.AIAgent
-	// AIConfig 为模型配置，决定底层使用哪个 ChatModel。
-	AIConfig modelconfig.Config
+	// ModelConfig 为瞬态模型调用配置，决定底层使用哪个 ChatModel。
+	ModelConfig modelconfig.Config
 	// InstructionToolDefinitions 用于生成 instruction 中的工具说明。
 	// 它描述“当前允许模型理解和使用的 MCP 工具范围”。
 	InstructionToolDefinitions []tooling.MCPToolDefinition
@@ -62,7 +62,7 @@ func NewAgentFactory() *AgentFactory {
 
 // BuildCustomerServiceAgent 根据装配输入构建客服 ChatModelAgent。
 func (f *AgentFactory) BuildCustomerServiceAgent(ctx context.Context, input BuildCustomerServiceAgentInput) (*agents.CustomerServiceAgent, error) {
-	chatModel, err := f.chatModelFactory.Build(ctx, input.AIConfig)
+	chatModel, err := f.chatModelFactory.Build(ctx, input.ModelConfig)
 	if err != nil {
 		return nil, err
 	}
