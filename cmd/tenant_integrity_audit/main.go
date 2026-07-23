@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,13 @@ type commandErrorOutput struct {
 	Error       string    `json:"error"`
 }
 
+type commandReleaseGateOutput struct {
+	Status      string                                 `json:"status"`
+	GeneratedAt time.Time                              `json:"generatedAt"`
+	Integrity   *services.TenantIntegrityAuditReport   `json:"integrity"`
+	Readiness   *services.TenantReleaseReadinessReport `json:"readiness"`
+}
+
 func main() {
 	os.Exit(execute(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -42,12 +50,30 @@ func execute(args []string, stdout, stderr io.Writer) int {
 	configPath := flags.String("config", "config/config.yaml", "path to config file")
 	sampleLimit := flags.Int("sample-limit", 20, "maximum sample record IDs per violation")
 	pretty := flags.Bool("pretty", false, "pretty-print JSON output")
+	readinessTenantID := flags.Int64("readiness-tenant-id", 0, "tenant ID for release-readiness audit")
+	readinessTenantCode := flags.String("readiness-tenant-code", "", "tenant code for release-readiness audit")
+	readinessStoreIDs := flags.String("readiness-store-ids", "", "comma-separated Store IDs; defaults to all active Tenant Stores")
+	readinessLevel := flags.String("readiness-level", string(services.TenantReleaseReadinessConfiguration), "release gate: configuration, pilot, or tag_gray")
+	readinessEvidenceStart := flags.String("readiness-evidence-start", "", "RFC3339 lower bound for pilot evidence")
 	if err := flags.Parse(args); err != nil {
 		writeCommandError(stdout, *pretty, err)
 		return exitError
 	}
 	if *sampleLimit <= 0 {
 		writeCommandError(stdout, *pretty, fmt.Errorf("sample-limit must be greater than zero"))
+		return exitError
+	}
+	readinessOptions, err := parseReadinessCommandOptions(
+		flags,
+		*readinessTenantID,
+		*readinessTenantCode,
+		*readinessStoreIDs,
+		*readinessLevel,
+		*readinessEvidenceStart,
+		*sampleLimit,
+	)
+	if err != nil {
+		writeCommandError(stdout, *pretty, err)
 		return exitError
 	}
 
@@ -75,25 +101,127 @@ func execute(args []string, stdout, stderr io.Writer) int {
 	defer sqlDB.Close()
 
 	var report *services.TenantIntegrityAuditReport
+	var readinessReport *services.TenantReleaseReadinessReport
 	err = db.Transaction(func(tx *gorm.DB) error {
 		var auditErr error
 		report, auditErr = services.TenantIntegrityAuditService.Audit(tx, services.TenantIntegrityAuditOptions{
 			SampleLimit: *sampleLimit,
 		})
+		if auditErr != nil || readinessOptions == nil {
+			return auditErr
+		}
+		readinessReport, auditErr = services.TenantReleaseReadinessService.Audit(tx, *readinessOptions)
 		return auditErr
 	}, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		writeCommandError(stdout, *pretty, fmt.Errorf("run tenant integrity audit failed: %w", err))
 		return exitError
 	}
-	if err := writeJSON(stdout, *pretty, report); err != nil {
+	output := any(report)
+	if readinessReport != nil {
+		status := "passed"
+		if report.HasViolations() || readinessReport.HasViolations() {
+			status = "failed"
+		}
+		output = commandReleaseGateOutput{
+			Status: status, GeneratedAt: time.Now().UTC(), Integrity: report, Readiness: readinessReport,
+		}
+	}
+	if err := writeJSON(stdout, *pretty, output); err != nil {
 		fmt.Fprintf(stderr, "write audit report failed: %v\n", err)
 		return exitError
 	}
-	if report.HasViolations() {
+	if report.HasViolations() || (readinessReport != nil && readinessReport.HasViolations()) {
 		return exitViolation
 	}
 	return exitPassed
+}
+
+func parseReadinessCommandOptions(
+	flags *flag.FlagSet,
+	tenantID int64,
+	tenantCode string,
+	rawStoreIDs string,
+	rawLevel string,
+	rawEvidenceStart string,
+	sampleLimit int,
+) (*services.TenantReleaseReadinessOptions, error) {
+	if !readinessCommandRequested(flags) {
+		return nil, nil
+	}
+	tenantCode = strings.TrimSpace(tenantCode)
+	if tenantID <= 0 && tenantCode == "" {
+		return nil, fmt.Errorf("readiness-tenant-id or readiness-tenant-code is required")
+	}
+	if tenantID > 0 && tenantCode != "" {
+		return nil, fmt.Errorf("readiness-tenant-id and readiness-tenant-code are mutually exclusive")
+	}
+	if tenantID < 0 {
+		return nil, fmt.Errorf("readiness-tenant-id must be positive")
+	}
+	level, err := services.ParseTenantReleaseReadinessLevel(rawLevel)
+	if err != nil {
+		return nil, err
+	}
+	storeIDs, err := parseReadinessStoreIDs(rawStoreIDs)
+	if err != nil {
+		return nil, err
+	}
+	var evidenceStart *time.Time
+	rawEvidenceStart = strings.TrimSpace(rawEvidenceStart)
+	if rawEvidenceStart != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, rawEvidenceStart)
+		if parseErr != nil {
+			return nil, fmt.Errorf("readiness-evidence-start must use RFC3339: %w", parseErr)
+		}
+		parsed = parsed.UTC()
+		evidenceStart = &parsed
+	}
+	if (level == services.TenantReleaseReadinessPilot || level == services.TenantReleaseReadinessTagGray) && evidenceStart == nil {
+		return nil, fmt.Errorf("readiness-evidence-start is required for pilot and tag_gray")
+	}
+	return &services.TenantReleaseReadinessOptions{
+		TenantID: tenantID, TenantCode: tenantCode, StoreIDs: storeIDs,
+		Level: level, EvidenceStart: evidenceStart, SampleLimit: sampleLimit,
+	}, nil
+}
+
+func readinessCommandRequested(flags *flag.FlagSet) bool {
+	if flags == nil {
+		return false
+	}
+	requested := false
+	flags.Visit(func(item *flag.Flag) {
+		if strings.HasPrefix(item.Name, "readiness-") {
+			requested = true
+		}
+	})
+	return requested
+}
+
+func parseReadinessStoreIDs(raw string) ([]int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	seen := make(map[int64]struct{})
+	ret := make([]int64, 0)
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			return nil, fmt.Errorf("readiness-store-ids contains an empty value")
+		}
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("readiness-store-ids must contain positive integers")
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ret = append(ret, id)
+	}
+	return ret, nil
 }
 
 func readOnlyDBConfig(cfg config.DBConfig) (config.DBConfig, error) {

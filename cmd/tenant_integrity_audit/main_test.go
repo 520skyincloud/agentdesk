@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-desk/internal/pkg/config"
@@ -94,6 +95,41 @@ func TestReadOnlyDBConfigForcesSQLiteReadOnlyMode(t *testing.T) {
 	}
 	if cfg.DSN != "file:"+path+"?_busy_timeout=1000&mode=ro" {
 		t.Fatalf("read-only DSN = %q", cfg.DSN)
+	}
+}
+
+func TestExecuteRejectsPilotReadinessWithoutEvidenceWindowBeforeOpeningDatabase(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := execute([]string{
+		"-config", filepath.Join(t.TempDir(), "missing.yaml"),
+		"-readiness-tenant-id", "5",
+		"-readiness-level", "pilot",
+	}, &stdout, &stderr)
+	if exitCode != exitError {
+		t.Fatalf("exit code = %d, want %d; stdout=%s stderr=%s", exitCode, exitError, stdout.String(), stderr.String())
+	}
+	var output commandErrorOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("decode command error output: %v; output=%s", err, stdout.String())
+	}
+	if !strings.Contains(output.Error, "readiness-evidence-start is required") {
+		t.Fatalf("unexpected command error: %#v", output)
+	}
+}
+
+func TestParseReadinessStoreIDsDeduplicatesAndRejectsInvalidValues(t *testing.T) {
+	ids, err := parseReadinessStoreIDs("5, 3,5")
+	if err != nil {
+		t.Fatalf("parse readiness Store IDs: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != 5 || ids[1] != 3 {
+		t.Fatalf("parsed readiness Store IDs=%v", ids)
+	}
+	for _, raw := range []string{"1,,2", "1,zero", "0", "-1"} {
+		if _, err := parseReadinessStoreIDs(raw); err == nil {
+			t.Fatalf("invalid readiness Store IDs %q were accepted", raw)
+		}
 	}
 }
 
