@@ -663,6 +663,7 @@ conversation_service_session.tag_ids_json
 - `aiConfig.create/delete` 的旧 CRUD 语义；
 - `tenantModelGrant.*`；
 - `tenantModelAssignment.*`；
+- `tag.create/delete` 的自由标签写入语义；
 - 旧 ConversationTag API 元数据。
 
 如现有角色已拥有 `conversation.tag` 或 `aiConfig.view/update`，Migration 保留 Permission ID 并更新名称/API 元数据，使其自动获得新语义；范围校验仍按角色和 Tenant/Store 执行。
@@ -1467,6 +1468,35 @@ git diff --check
 - 安全 handoff：仓库外安全副本继续为父目录 `0700`、文件 `0600`，16 项变量和冻结 SHA-256 `3e361155f473c520086bd3995732343f9540aa5a4bd044043cdab952120e2fa4` 未变化；本批没有读取、输出或提交变量值。FastGPT Token 仍不得通过当前 HTTP Base URL 发送。
 - 共享与回滚：生产改动只涉及 analytics repository 和 evaluation service 的并发语义；未修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential、FastGPT、Billing、人工任务池或规则派单。`ffd53d7` 无数据迁移，可在 B14 前代码回滚，但回滚会恢复评价竞态和不可信的跨数据库测试，不可作为生产方案。
 - 发布判定：工程复核没有解除 B13 外部阻断。pilot 仍为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 仅作定位，最终 ID 必须迁移后解析；NewAPI Key 仍由实际持有人在统一页面重录并由异人公司主管审批。B13 全验收、停机、加密备份和独立恢复验证前不得切换正式 `8083` 或运行 B14 `prepare/execute`，固定白名单不得扩大。
+
+### 25.29 2026-07-23 B13-P 部署变量复核与企微 Persona 边界
+
+- 代码提交：`56b4f81`。固定来源仍为 `origin/main@e67e207`、`origin/codex/tenant-ai-integration@1e8e95c` 和 `origin/codex/ai-billing@4db7993`，提交前复核均未前移。
+- 安全 handoff：消息临时附件已经失效，仓库外受控副本仍为父目录 `0700`、文件 `0600`；文件包含恰好 16 个非空且不重复的变量，SHA-256 仍为 `3e361155f473c520086bd3995732343f9540aa5a4bd044043cdab952120e2fa4`。只检查变量名、格式、强度和状态，不输出、提交或复制变量值。
+- 部署契约：邀请码密钥和 Store Credential 主密钥均满足 32 字节格式，客户会话与资产签名秘密满足强度要求，四类秘密互不相同；MySQL DSN 结构、FastGPT 开关、检索上限和正式 worker 开关均有效。唯一失败项仍是 FastGPT Base URL 使用 HTTP，生产校验必须拒绝启动，Integration Token 不得向该地址发送。Store NewAPI Key 不属于第 17 个环境变量，继续由实际持有人在统一凭据页重新提交。
+- Persona 结论：上传权威方案和固定 `ai-billing@4db7993` 均明确保留企微实例 Persona。`WxWorkProtocolInstance.PersonaPrompt` 只经 `AIAgent.SystemPrompt` 进入 Generate 的 `Agent 规则`，不是行业或 Model Profile Prompt，不参与 IntentDetect、九槽 Resolver、FastGPT、标签或人工派单。
+- 防回归：扩展 `TestRuntimeIntentDetectGoldenCallCountAndMessageOrder`，向 `RunInput.AIAgent.SystemPrompt` 注入仅供 Generate 使用的标记，并断言正常和 JSON 修复场景的 IntentDetect 消息均不含该标记；既有 instruction 测试继续证明 Agent 规则只在 Generate 装配时生效。
+- 旧链复核：全仓排除 migration-only 视图、历史测试和固定 Cleanup 后，只发现 `internal/pkg/constants/ai_model.go` 仍声明无调用者的 `employee_override`、`tenant_default`、`tenant_authorized_fallback` 和 `platform_default`。该死文件已删除；Migration 059 测试改用最终 `enums.ModelUsageSlotReplyLLM`，不再让旧 resolver 词汇存在于可编译生产源码。
+- 共享与回滚：本步修改运行时测试、历史 Migration 测试、权威设计说明、manifest 和实施记录，并删除无调用者旧常量文件；没有 model、AutoMigrate、DML migration 行为、DTO、enum、API、路由、权限、WebSocket、Prompt 内容、调用次数、Credential、Billing、FastGPT、人工任务池或规则派单变化。测试与文档可独立回滚；旧常量文件不得恢复，因为它只会重新制造第二套 resolver 语义。
+- 发布判定：本步不解除 B13 外部门禁。仍需生产 HTTPS FastGPT、可访问目标 MySQL/来源备份、迁移后按 Tenant/Store 名称解析最终 Store ID、真实 Key 重录及异人主管审批、pilot 全链证据和正式加密备份独立恢复验证；全部通过前禁止正式 `8083` 切换和 B14 `prepare/execute`。
+
+### 25.30 2026-07-23 B13-Q pilot 凭据提交者绑定门禁
+
+- 代码提交：`13b3b6d`。该提交只收紧 B13 只读证据判定，不写生产数据，也不改变 Credential 提交或审批状态机。
+- 审计发现：既有 pilot readiness 已要求唯一活动 Store 系统账号、`AllowCredentialSelfService=true`、`RequireSupervisorApproval=true`、提交日志含 `store_staff` 角色快照和异人 `tenant_admin` 审批，但提交日志没有与当前唯一活动绑定账号做 ID 等值校验。多角色非绑定账号或被人工污染的历史日志存在被误判为门店自助提交的空间。
+- 门禁收紧：Store 账号只读聚合增加满足“启用、已审核、未删除、占用标记一致且已分配客服组”的 `ActiveUserID`。pilot/tag_gray 只接受该 `ActiveUserID` 对当前 active Credential revision 的提交记录，再要求后续不同操作者、同 Tenant 公司主管角色的成功审批；角色字符串本身不再足以通过。
+- 回归覆盖：新增非绑定账号保留 `store_staff` 角色快照但替换提交者 ID 的反例，必须得到 `EVIDENCE_CREDENTIAL_SUPERVISOR_APPROVAL` 违规；恢复唯一绑定账号后既有异人审批证据继续通过。SQLite 普通与 `-race` 测试、临时 MySQL 8.4 隔离数据库均通过，临时数据库已清理。
+- 共享与回滚：本步只修改 readiness repository 聚合结构、只读 service 判定、测试、manifest 和实施记录；没有 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、Credential 写入/密文、FastGPT、Billing、AI Runtime、人工任务池或规则派单变化。该门禁可以在 B14 前独立回滚，但回滚会重新允许非绑定多角色账号证据通过，不可作为生产方案。
+- 发布判定：该修复只提高 B13 证据可信度，不生成真实 pilot 证据。仍必须在迁移后解析“丽斯文旅 / 高铁南站店”的最终 Store ID，由其唯一活动门店员工在统一页面重录真实 Key，并由不同公司主管审批；HTTPS FastGPT、真实全链灰度、正式停机、加密备份和独立恢复仍未完成，B14 `prepare/execute` 继续禁止。
+
+### 25.31 2026-07-23 B9/B13-R 固定行业标签运行契约收口
+
+- 代码提交：`9cf7003`。审计发现前端和方案已只允许叶子标签别名/启停，但后端仍注册 `/tag/create`、`/tag/delete`、`/tag/update_sort`，对应 Handler 和 Service 仅返回禁止，`UpdateTagRequest` 还嵌入旧名称、父级和备注字段。该状态虽不能成功修改数据，仍让已退役能力存在于真实路由和 API 契约中。
+- 运行链收口：物理删除三个 Gin 路由、Handler、旧 request DTO、禁止式 Service 方法以及运行时 `tag.create/tag.delete` 权限常量；`UpdateTagRequest` 只保留 `id + displayAlias`。查看目录、叶子显示别名、叶子启停和 Tenant/Store 标签策略均保持原入口与权限。
+- 历史审计保留：Migration 073 继续以 migration-private 稳定字符串识别 `tag.create/tag.delete`，幂等停用历史权限并删除角色绑定；它们不再进入 `AllPermissions` 或可编译运行时权限定义。旧数据库升级能力因此保留，但不能恢复成产品功能。
+- 验证：退役接口未注册且实测返回 404；标签、路由、权限和租户隔离定向测试通过；Migration 073 在 SQLite 和独立 MySQL 8.4 上通过幂等复验。随后 `go test ./... -count=1`、`go vet ./...`、完整 AI/services/repositories `-race`、149/149 前端契约测试、`pnpm typecheck`、SDK 构建和 45 页面生产构建通过；ESLint 为 0 error / 33 个既有 warning。manifest 保持 8 列，旧链扫描、秘密增量扫描和 `git diff --check` 通过。
+- 共享与回滚：本步有意删除 API、DTO 和旧权限常量，属于最终方案已经冻结的破坏性退役；没有 model、AutoMigrate Schema、DML 行为、enum、WebSocket、AI Runtime、Credential、FastGPT、Billing、人工任务池或规则派单变化，前端此前已无这些 caller。`9cf7003` 可在 B14 前代码回滚，但回滚会重新暴露废弃路由，不能作为最终发布版本。
+- 发布判定：代码与安全文件复核仍不替代现场证据。FastGPT Base URL 仍为 HTTP，来源库/加密备份仍未交付，pilot 最终 Store ID 尚未迁移解析，真实 Key 重录、异人主管审批、全链灰度、正式停机、加密备份及独立恢复均未完成，因此 B13 继续 `No-Go`。B14 固定 7 表、5 列、4 索引白名单未扩大，`prepare/execute` 继续禁止。
 
 ## 26. 用户最终 1-48 项决定追溯
 

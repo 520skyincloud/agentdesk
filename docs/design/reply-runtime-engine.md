@@ -62,6 +62,13 @@ fallback。新 candidate 测试、FastGPT 同步或 CAS 激活失败时继续使
 Prompt、JSON Schema 和启用的 `ReplyIntentConfig`；Company、Store、知识库和企微实例
 上的历史行业字段固定为零且不参与解析。
 
+`WxWorkProtocolInstance.PersonaPrompt` 是冻结 AI 来源保留的接待表达层配置，不是行业
+Prompt 或模型 Profile 配置。它只经运行时 `AIAgent.SystemPrompt` 进入 Generate 阶段的
+`Agent 规则`，用于调整当前企微实例的回复语气；IntentDetect 不读取它，且它不能改变
+行业 Prompt/Schema、意图类别、九槽、Provider、BaseURL、Credential、知识检索、标签或
+人工派单。租户可见的“接待人设”因此不等于租户可见模型 Prompt；平台行业和模型内部
+Prompt/Schema 仍不可向租户返回。
+
 当前阶段顺序为：
 
 ```text
@@ -88,6 +95,8 @@ Interrupt、Checkpoint、Resume 和 Trace 保持固定 AI 来源行为。Tenant 
   与来源 blob 完全一致；
 - IntentDetect 的系统 Prompt、用户 Prompt、严格 JSON 解析和修复提示未改写，正常响应
   只调用一次模型，首轮 JSON 非法时只追加一次修复调用；
+- golden 同时注入仅供 Generate 使用的企微 Persona 标记，并断言 IntentDetect 的系统
+  和用户消息均不包含该标记；
 - executor 主流程仅把旧 `AIConfig` 载体替换为唯一 Resolver 生成的瞬态
   `ModelConfig`，阶段顺序和生成/校验/提交行为未改变；
 - 行业解析、知识读取、历史消息和提交资源的差异只用于 Tenant/Store 强隔离以及
