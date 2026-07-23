@@ -68,7 +68,7 @@ docker compose config --quiet
 docker compose up -d --build
 ```
 
-Compose intentionally refuses to start without independent database, invitation, customer-session, asset-signing, and Store credential encryption secrets. Runtime backups and `.env` files must remain outside Git.
+Compose intentionally refuses to start without independent database, invitation, customer-session, asset-signing, and Store credential encryption secrets. Runtime backups and `.env` files must remain outside Git. See the [production secret and external credential runbook](docs/deployment/production-secrets.md) for exact formats, ownership, rotation limits, and the boundary between the FastGPT integration token and each Store's NewAPI key.
 
 The active service keeps `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`. Set it to `false` only for an isolated migration clone, restore rehearsal, or read-only preflight; this prevents the clone from dispatching conversations, protocol outbox records, FastGPT jobs, or other scheduled work.
 
@@ -267,7 +267,7 @@ docker run --rm -p 8083:8083 --env-file .env \
   mlogclub/agent-desk
 ```
 
-Compose uses [docker/agent-desk.yaml](docker/agent-desk.yaml) only for non-secret settings. All deployment secrets come from the ignored `.env` file or a production secret manager. NewAPI calls and billing queries use each Store's encrypted credential; there is no platform-wide NewAPI usage token.
+Compose uses [docker/agent-desk.yaml](docker/agent-desk.yaml) only for non-secret settings. All deployment secrets come from the ignored `.env` file or a production secret manager. NewAPI calls and billing queries use credentials submitted through each Store's credential workflow; Store keys never belong in `.env`, and there is no platform-wide NewAPI usage token.
 
 Never start a historical database clone with background workers enabled. Use `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=false` and isolate outbound network access until the clone has passed migration and readiness checks.
 

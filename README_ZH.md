@@ -68,7 +68,7 @@ docker compose config --quiet
 docker compose up -d --build
 ```
 
-Compose 会在数据库、邀请码、客户会话、文件签名或门店凭据加密密钥缺失时拒绝启动。运行备份与 `.env` 必须保存在 Git 仓库之外。
+Compose 会在数据库、邀请码、客户会话、文件签名或门店凭据加密密钥缺失时拒绝启动。运行备份与 `.env` 必须保存在 Git 仓库之外。变量格式、生成方式、保管责任、轮换限制以及 FastGPT Token 与门店 NewAPI Key 的区别，见[生产密钥与外部凭据交付手册](docs/deployment/production-secrets.md)。
 
 正式活动服务保持 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`。只有隔离的历史库迁移、恢复演练或只读预检实例才设置为 `false`，防止副本派发会话、消费协议 outbox、执行 FastGPT 任务或运行其他定时任务。
 
@@ -267,7 +267,7 @@ docker run --rm -p 8083:8083 --env-file .env \
   mlogclub/agent-desk
 ```
 
-Compose 仅使用 [docker/agent-desk.yaml](docker/agent-desk.yaml) 保存非敏感设置；所有部署秘密来自被忽略的 `.env` 或生产秘密管理器。NewAPI 调用与账单查询只使用各门店的加密凭据，不存在平台级 NewAPI 用量 Token。
+Compose 仅使用 [docker/agent-desk.yaml](docker/agent-desk.yaml) 保存非敏感设置；所有部署秘密来自被忽略的 `.env` 或生产秘密管理器。NewAPI 调用与账单查询只使用各门店通过凭据工作流提交的加密凭据，不存在平台级 NewAPI 用量 Token，也不得把门店 Key 写入 `.env`。
 
 禁止在后台 worker 开启时启动历史数据库副本。迁移和 readiness 预检必须设置 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=false`，并在完成验收前隔离外部网络。
 
