@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁、历史 MySQL 克隆升级、统一镜像隔离 MySQL API 冒烟、后台 worker 维护门禁和可执行三阶段 readiness 发布门禁已完成；当前结论仍为发布 No-Go，下一步是使用全新部署秘密、Store NewAPI Key 和 FastGPT Integration Token 完成丽斯未来单 Store 真实灰度并取得门禁证据。B12 全量 Go、服务层 race、前端、构建、旧链静态审计和 Migration 075 双数据库门禁均已通过。
+> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁、历史 MySQL 克隆升级、统一镜像隔离 MySQL API 冒烟、后台 worker 维护门禁、可执行三阶段 readiness 门禁和仓库外加密备份恢复验证门禁已完成；当前结论仍为发布 No-Go。恢复验证工具的 SQLite/MySQL 工程证据已经通过，但丽斯未来真实备份恢复、全新部署秘密、Store NewAPI Key、FastGPT Integration Token 和单 Store 现场灰度证据尚未取得，禁止切换正式 `8083` 或进入 B14 物理清理。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1343,6 +1343,19 @@ git diff --check
 - 验证：`go test -race ./internal/services ./internal/repositories ./cmd/tenant_integrity_audit -run 'TenantReleaseReadiness|TenantIntegrityAudit|ReadOnlyDBConfig|ParseReadiness|RejectsPilotReadiness' -count=1`、`go test ./... -count=1`、`go vet ./...`、MySQL 8.4 readiness 测试、`gofmt` 和 `git diff --check` 全部通过。沙箱内第一次全量测试只因禁止 `httptest` 监听临时端口失败，在允许本机临时监听后同一命令完整通过，不计为代码回归。
 - 共享契约与合并顺序：本批新增只读 repository/service/test，并扩展既有审计 CLI；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential 写入、FastGPT 写入、Billing 口径、人工任务池或规则派单算法。租户来源分支只拥有既有审计 CLI 基线，ai-billing 不修改本批文件；`d308c21` 必须位于 B13-E `4d33e2e` 之后，B14 只能建立在本门禁和全部真实证据通过之后。
 - 发布与回滚：本提交只增加只读诊断能力，可在 B14 前独立回滚，不产生 Schema 或业务数据回滚。当前丽斯未来真实 Profile、Credential、FastGPT、回复、转人工、派单、标签和账单证据尚未录入，仓库外加密备份与真实恢复演练也未完成，因此门禁工具完成不等于 B13 完成；发布结论继续保持 `No-Go`，禁止切换正式 `8083` 或执行 B14 七张旧表物理删除。
+
+### 25.18 2026-07-23 B13-G 可执行加密备份恢复验证门禁
+
+- 代码提交：`ed5953d06f8cc47e297b1d6200ee20e3c8f3e30b`。实施前执行 `git fetch origin`，固定来源仍为 `origin/main@e67e20721574b6d3298bb0a1c4749da02ff0b949`、`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563` 和 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`；统一分支远端为 `91098c4ca86a7b54807e83e99ebd682f7d612402`。三个来源均未前移，无需 rebase 或重新吸收行为。
+- 复用边界：继续扩展既有 `cmd/tenant_integrity_audit`，没有新增平行命令、页面、权限、业务表或发布状态。只有显式提供恢复参数时才进入恢复模式；原 Tenant 完整性与 readiness 参数、JSON 和退出码保持兼容。
+- 操作前置：恢复模式强制指定一个 Tenant readiness 范围、两份 `backgroundWorkers.enabled=false` 配置、仓库外绝对备份路径和预先固定的 SHA-256。全局 `AGENT_DESK_DB_DSN` 会被拒绝，MySQL 等秘密 DSN 只能通过成对的 `AGENT_DESK_RESTORE_AUDIT_SOURCE_DB_DSN` 与 `AGENT_DESK_RESTORE_AUDIT_RESTORED_DB_DSN` 注入，避免两份配置误指向同一库或把口令写进仓库。
+- 备份证据：备份必须是非符号链接、非空普通文件、group/other 无权限，并位于自动识别或显式指定的 Git 仓库根之外；只接受可识别的 age、ASCII-armored OpenPGP 或 OpenSSL salted 容器头，且实际 SHA-256 必须与恢复前记录完全一致。命令不保存、解密或恢复备份，解密与恢复仍由受控运维流程在隔离数据库完成。
+- 数据库证据：源库与恢复库分别在只读事务中执行，数据库类型必须一致、运行端点必须不同。每个 `t_` 应用表都对规范化 DDL、列、索引、外键/检查约束、表选项和触发器元数据形成 Schema 指纹；所有列值逐行流式哈希并用顺序无关的多重摘要形成数据指纹；`t_migration` 与 `t_migration_definition_archive` 另有独立指纹和失败计数。两库还必须分别通过完整 Tenant 一致性审计及同级 configuration/pilot/tag_gray readiness，任一失败均使顶层门禁失败。
+- 输出边界：JSON 只返回备份大小/格式/校验结果、数据库类型、表/行/Migration 计数、摘要和受限的不匹配表名；DSN、数据库端点、API Key、密文、nonce、Prompt、Schema、客户字段值和聊天正文均不输出。原始敏感列仅在本机流式哈希时短暂进入内存。
+- 双数据库验证：SQLite 自动化覆盖等价恢复、乱序数据、单字段变化、索引变化、同库伪装、仓库内明文备份、过宽权限、校验和错误和秘密输出扫描。端到端演练对全新统一 SQLite 进行真实 OpenSSL 加密与解密恢复，103 张应用表、677 行、70 条 Migration 的三类指纹完全一致，两库 Tenant 完整性均为 0 违规；fresh Tenant 因没有启用 Store 继续被 readiness 阻断，证明恢复通过不会绕过业务门禁。隔离 MySQL 8.4 使用两个独立临时库验证 DDL、索引、触发器元数据、数据和 Migration 指纹，同样通过；临时库和账号已删除，既有 `8083`、`8084` 与业务数据库未修改。
+- 验证：恢复/readiness 定向测试、对应 race 测试、`go test ./... -count=1`、`go vet ./...`、MySQL 8.4 双库测试、`gofmt` 和 `git diff --check` 均通过。没有 Web、DTO、路由或展示改动，因此不重复前端构建和浏览器视觉验收。
+- 共享与回滚：本批只新增只读 repository/service/test 并扩展 CLI；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential、FastGPT、Billing、人工任务池或规则派单。`ed5953d` 必须位于 B13-F `d308c21` 之后；可在 B14 前独立回滚且不产生数据库回滚。Tenant 来源只包含旧审计 CLI 基线，ai-billing 不包含本批文件；固定 SHA 后均无新增同文件提交，因此无需 rebase，但不得把本提交回写来源分支形成第二套门禁。
+- 发布判定：上述结果只证明恢复验证机制和隔离工程演练有效，不是丽斯未来生产备份恢复证据。现场仍必须先停 `8083` 与全部 worker，在受控存储生成真实加密备份、固定校验和、恢复到独立库，并以丽斯未来 `tag_gray` 证据窗口跑通本门禁；同时完成真实 NewAPI、FastGPT、回复、转人工、规则派单、标签和人民币账单对账。全部通过前 B13 仍为 `No-Go`，B14 七张旧表物理删除继续硬阻断。
 
 ## 26. 用户最终 1-48 项决定追溯
 
