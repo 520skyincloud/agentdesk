@@ -52,6 +52,10 @@ func assertTenantReleaseReadinessStages(t *testing.T, fixture *tenantReleaseRead
 
 	configuration := fixture.audit(t, TenantReleaseReadinessConfiguration, nil)
 	assertTenantReleaseReadinessPassed(t, configuration)
+	if len(configuration.SelectedStoreIDs) != 1 ||
+		configuration.SelectedStoreIDs[0] != fixture.store.ID {
+		t.Fatalf("readiness report did not bind the selected Store: %#v", configuration.SelectedStoreIDs)
+	}
 
 	evidenceStart := fixture.now.Add(-10 * time.Minute)
 	pilotWithoutEvidence := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)

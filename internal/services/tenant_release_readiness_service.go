@@ -81,6 +81,7 @@ type TenantReleaseReadinessReport struct {
 	EvidenceStart      *time.Time                           `json:"evidenceStart,omitempty"`
 	Tenant             TenantReleaseReadinessTenant         `json:"tenant"`
 	SelectedStoreCount int                                  `json:"selectedStoreCount"`
+	SelectedStoreIDs   []int64                              `json:"selectedStoreIds"`
 	RequiredCheckCount int                                  `json:"requiredCheckCount"`
 	PassedCheckCount   int                                  `json:"passedCheckCount"`
 	ReleaseCursor      TenantReleaseReadinessCursorSnapshot `json:"releaseCursor"`
@@ -125,6 +126,7 @@ func (s *tenantReleaseReadinessService) Audit(
 		Tenant: TenantReleaseReadinessTenant{
 			ID: options.TenantID, Code: options.TenantCode,
 		},
+		SelectedStoreIDs: []int64{},
 		ReleaseCursor: TenantReleaseReadinessCursorSnapshot{
 			MessageMaxID: cursor.MessageMaxID, MessageCount: cursor.MessageCount,
 			OutboxMaxID: cursor.OutboxMaxID, OutboxCount: cursor.OutboxCount,
@@ -230,6 +232,7 @@ func (s *tenantReleaseReadinessService) Audit(
 			knowledgeBaseIDs = append(knowledgeBaseIDs, stores[i].KnowledgeBaseID)
 		}
 	}
+	report.SelectedStoreIDs = append(report.SelectedStoreIDs, storeIDs...)
 
 	accountStates, err := repositories.TenantReleaseReadinessRepository.FindStoreAccountStates(db, tenant.ID, storeIDs)
 	if err != nil {

@@ -313,3 +313,7 @@ docker compose --env-file "/absolute/secure/path/production.env" up -d --build
 6. NewAPI Key 所有者在门店凭据页面提交 Key，完成九槽测试、FastGPT 同步和审批。
 7. 完成真实 FastGPT 检索、AI 回复、转人工、规则派单、行业标签、Request ID 人民币账单和备份恢复证据。
 8. 全部 readiness 通过前，不切换正式 `8083`，不执行 B14 物理删表。
+
+B14 的固定白名单、三阶段命令、一次性令牌和失败恢复要求见
+[`docs/deployment/b14-schema-cleanup.md`](b14-schema-cleanup.md)。该工具可随发布镜像构建，但当前
+`No-Go` 未解除前只能运行 `inspect`，不得运行生产 `prepare` 或 `execute`。

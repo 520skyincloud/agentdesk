@@ -89,6 +89,16 @@ func (r *TenantRestoreVerificationReport) HasViolations() bool {
 	return r != nil && len(r.Violations) > 0
 }
 
+func (s *tenantRestoreVerificationService) CaptureDatabaseSnapshot(
+	db *gorm.DB,
+) (DatabaseRestoreSnapshotSummary, error) {
+	snapshot, err := repositories.DatabaseRestoreAuditRepository.Capture(db)
+	if err != nil {
+		return DatabaseRestoreSnapshotSummary{}, err
+	}
+	return databaseRestoreSnapshotSummary(snapshot), nil
+}
+
 func (s *tenantRestoreVerificationService) Verify(
 	sourceDB *gorm.DB,
 	restoredDB *gorm.DB,

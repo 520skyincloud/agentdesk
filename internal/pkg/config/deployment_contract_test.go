@@ -101,6 +101,25 @@ func TestDeploymentTemplatesDeclareBackgroundWorkerMode(t *testing.T) {
 	}
 }
 
+func TestReleaseImageContainsAuditedMaintenanceBinaries(t *testing.T) {
+	root := repositoryRoot(t)
+	content, err := os.ReadFile(filepath.Join(root, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := string(content)
+	for _, required := range []string{
+		"./cmd/tenant_integrity_audit",
+		"./cmd/schema_cleanup",
+		"/app/tenant-integrity-audit",
+		"/app/schema-cleanup",
+	} {
+		if !strings.Contains(dockerfile, required) {
+			t.Fatalf("release image is missing maintenance binary contract %q", required)
+		}
+	}
+}
+
 func TestExampleEnvironmentLeavesSecretsBlank(t *testing.T) {
 	root := repositoryRoot(t)
 	values := readEnvFile(t, filepath.Join(root, ".env.example"))
