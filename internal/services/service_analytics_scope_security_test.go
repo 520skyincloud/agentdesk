@@ -59,7 +59,8 @@ func TestAnalyticsDirectAccessRequiresSourceAndAssignmentScope(t *testing.T) {
 		t.Helper()
 		conversation := &models.Conversation{
 			TenantID: tenantID, CustomerName: customerName, Status: enums.IMConversationStatusClosed,
-			CurrentTeamID: teamID, CurrentAssigneeID: agentID, AuditFields: testAnalyticsAudit(now),
+			CurrentTeamID: teamID, CurrentAssigneeID: agentID, LastMessageAt: now, LastActiveAt: now,
+			AuditFields: testAnalyticsAudit(now),
 		}
 		if err := db.Create(conversation).Error; err != nil {
 			t.Fatalf("create conversation: %v", err)

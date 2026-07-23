@@ -22,11 +22,7 @@ func TestConversationEvaluationConcurrentSubmitIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get sql db: %v", err)
 	}
-	if db.Dialector.Name() == "sqlite" {
-		sqlDB.SetMaxOpenConns(1)
-	} else {
-		sqlDB.SetMaxOpenConns(16)
-	}
+	sqlDB.SetMaxOpenConns(16)
 	now := time.Now().Truncate(time.Second)
 	tenant := &models.Tenant{
 		TenantCode: "evaluation-concurrency", LegalName: "评价并发测试公司", ShortName: "评价测试",

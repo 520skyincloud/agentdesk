@@ -67,7 +67,8 @@ func TestAnalyticsWorkflowListsRespectTenantTeamAndAgentScopes(t *testing.T) {
 		t.Helper()
 		conversation := &models.Conversation{
 			ID: conversationID, TenantID: tenantID, CustomerID: customerID, CustomerName: fmt.Sprintf("客户%d", customerID),
-			Status: enums.IMConversationStatusClosed, AuditFields: testAnalyticsAudit(now),
+			Status: enums.IMConversationStatusClosed, LastMessageAt: now, LastActiveAt: now,
+			AuditFields: testAnalyticsAudit(now),
 		}
 		if err := db.Create(conversation).Error; err != nil {
 			t.Fatalf("create conversation: %v", err)

@@ -2,7 +2,9 @@ package services
 
 import (
 	"os"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,13 +24,15 @@ import (
 	"gorm.io/gorm/schema"
 )
 
+var serviceAnalyticsTestDBSequence atomic.Uint64
+
 func TestServiceAnalyticsCaptureAndHumanOnlyQuality(t *testing.T) {
 	db := setupServiceAnalyticsTestDB(t)
 	tenantID := int64(101)
 	t0 := time.Date(2026, 7, 17, 9, 0, 0, 0, time.Local)
 	conversation := &models.Conversation{
 		TenantID: tenantID, CustomerID: 801, CustomerName: "测试客户", Status: enums.IMConversationStatusAIServing,
-		ServiceMode: enums.IMConversationServiceModeAIFirst, LastActiveAt: t0, AuditFields: testAnalyticsAudit(t0),
+		ServiceMode: enums.IMConversationServiceModeAIFirst, LastMessageAt: t0, LastActiveAt: t0, AuditFields: testAnalyticsAudit(t0),
 	}
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatalf("create conversation: %v", err)
@@ -166,7 +170,10 @@ func TestQualityInspectionRejectsAssignedButUnansweredSession(t *testing.T) {
 	db := setupServiceAnalyticsTestDB(t)
 	tenantID := int64(202)
 	now := time.Now()
-	conversation := &models.Conversation{TenantID: tenantID, CustomerName: "未回复客户", Status: enums.IMConversationStatusActive, AuditFields: testAnalyticsAudit(now)}
+	conversation := &models.Conversation{
+		TenantID: tenantID, CustomerName: "未回复客户", Status: enums.IMConversationStatusActive,
+		LastMessageAt: now, LastActiveAt: now, AuditFields: testAnalyticsAudit(now),
+	}
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}
@@ -203,7 +210,7 @@ func TestQueueEntryCapturesPendingTeamScope(t *testing.T) {
 		t.Helper()
 		conversation := &models.Conversation{
 			TenantID: tenantID, CustomerName: customerName, Status: enums.IMConversationStatusPending,
-			CurrentTeamID: teamID, LastActiveAt: now, AuditFields: testAnalyticsAudit(now),
+			CurrentTeamID: teamID, LastMessageAt: now, LastActiveAt: now, AuditFields: testAnalyticsAudit(now),
 		}
 		if err := db.Create(conversation).Error; err != nil {
 			t.Fatalf("create conversation: %v", err)
@@ -364,14 +371,16 @@ func setupServiceAnalyticsTestDB(t *testing.T) *gorm.DB {
 	testModels := []any{
 		&models.Tenant{}, &models.User{}, &models.Channel{}, &models.Tag{}, &models.Conversation{}, &models.ConversationRouteState{}, &models.Message{}, &models.ConversationAssignment{},
 		&models.AgentProfile{}, &models.AgentTeam{}, &models.AgentTeamSquad{}, &models.AgentTeamSquadMember{},
-		&models.Store{}, &models.WxWorkProtocolInstance{}, &models.ConversationServiceSession{}, &models.ConversationResponseSpan{},
+		&models.Store{}, &models.WxWorkProtocolInstance{}, &models.KnowledgeBase{},
+		&models.ConversationServiceSession{}, &models.ConversationResponseSpan{},
 		&models.AgentPresenceSession{}, &models.ServiceAnalyticsPolicy{},
 		&models.QualityTemplate{}, &models.QualityTemplateItem{}, &models.QualityInspection{}, &models.QualityInspectionItem{},
 		&models.QualitySamplingBatch{}, &models.QualitySamplingItem{}, &models.DispatchDecisionLog{},
 		&models.ConversationEvaluation{}, &models.ReportViewPreset{},
 	}
 	mysqlDSN := os.Getenv("AGENT_DESK_SERVICE_ANALYTICS_TEST_MYSQL_DSN")
-	var dialector gorm.Dialector = sqlite.Open("file:" + stringsForServiceAnalyticsTest(t.Name()) + "?mode=memory&cache=shared")
+	sqliteName := stringsForServiceAnalyticsTest(t.Name()) + "_" + strconv.FormatUint(serviceAnalyticsTestDBSequence.Add(1), 10)
+	var dialector gorm.Dialector = sqlite.Open("file:" + sqliteName + "?mode=memory&cache=shared")
 	if mysqlDSN != "" {
 		dialector = mysql.Open(mysqlDSN)
 	}
@@ -399,7 +408,12 @@ func setupServiceAnalyticsTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("auto migrate: %v", err)
 	}
 	sqls.SetDB(db)
-	t.Cleanup(func() { sqls.SetDB(nil) })
+	t.Cleanup(func() {
+		sqls.SetDB(nil)
+		if sqlDB, err := db.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
 	return db
 }
 

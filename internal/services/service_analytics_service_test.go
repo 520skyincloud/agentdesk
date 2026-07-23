@@ -173,7 +173,10 @@ func TestServiceAnalyticsUsesAssignmentSquadSnapshot(t *testing.T) {
 	if err := db.Create(&models.AgentTeamSquadMember{TenantID: tenantID, SquadID: currentSquad.ID, AgentProfileID: profile.ID, Status: enums.StatusOk, AuditFields: testAnalyticsAudit(t0)}).Error; err != nil {
 		t.Fatalf("create current squad membership: %v", err)
 	}
-	conversation := &models.Conversation{ID: 6101, TenantID: tenantID, CustomerName: "历史质检客户", Status: enums.IMConversationStatusClosed, AuditFields: testAnalyticsAudit(t0)}
+	conversation := &models.Conversation{
+		ID: 6101, TenantID: tenantID, CustomerName: "历史质检客户", Status: enums.IMConversationStatusClosed,
+		LastMessageAt: t0, LastActiveAt: t0, AuditFields: testAnalyticsAudit(t0),
+	}
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatalf("create historical conversation: %v", err)
 	}
@@ -273,7 +276,10 @@ func TestServiceAnalyticsQualityMetricsOnlyCountHumanReplyAssignments(t *testing
 	assignments := make([]models.ConversationAssignment, 4)
 	for i := range assignments {
 		conversationID := int64(6501 + i)
-		conversation := &models.Conversation{ID: conversationID, TenantID: tenantID, CustomerName: "质检客户", Status: enums.IMConversationStatusClosed, AuditFields: testAnalyticsAudit(t0)}
+		conversation := &models.Conversation{
+			ID: conversationID, TenantID: tenantID, CustomerName: "质检客户", Status: enums.IMConversationStatusClosed,
+			LastMessageAt: t0, LastActiveAt: t0, AuditFields: testAnalyticsAudit(t0),
+		}
 		if err := db.Create(conversation).Error; err != nil {
 			t.Fatalf("create quality conversation: %v", err)
 		}
@@ -451,7 +457,10 @@ func TestServiceAnalyticsPercentilesAndSourceQuality(t *testing.T) {
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create source instance: %v", err)
 	}
-	conversation := &models.Conversation{ID: 8101, TenantID: tenantID, CustomerName: "来源测试客户", Status: enums.IMConversationStatusClosed, AuditFields: testAnalyticsAudit(t0)}
+	conversation := &models.Conversation{
+		ID: 8101, TenantID: tenantID, CustomerName: "来源测试客户", Status: enums.IMConversationStatusClosed,
+		LastMessageAt: t0, LastActiveAt: t0, AuditFields: testAnalyticsAudit(t0),
+	}
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatalf("create source conversation: %v", err)
 	}

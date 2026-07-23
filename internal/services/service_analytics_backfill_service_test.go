@@ -22,7 +22,7 @@ func TestServiceAnalyticsBackfillIsIdempotentAndTenantScoped(t *testing.T) {
 
 	conversation := &models.Conversation{
 		TenantID: tenantID, CustomerID: 901, CustomerName: "历史客户", Status: enums.IMConversationStatusActive,
-		ServiceMode: enums.IMConversationServiceModeAIFirst, HandoffAt: &queueAt, LastActiveAt: repliedAt,
+		ServiceMode: enums.IMConversationServiceModeAIFirst, HandoffAt: &queueAt, LastMessageAt: repliedAt, LastActiveAt: repliedAt,
 		AuditFields: testAnalyticsAudit(t0),
 	}
 	if err := db.Create(conversation).Error; err != nil {
@@ -55,7 +55,10 @@ func TestServiceAnalyticsBackfillIsIdempotentAndTenantScoped(t *testing.T) {
 	_ = ai
 
 	createAnalyticsMessage(t, db, otherTenantID, conversation.ID, 1, 4, enums.IMSenderTypeCustomer, 0, "wrong-tenant-message", t0.Add(2*time.Second))
-	orphan := &models.Conversation{TenantID: 0, CustomerName: "平台遗留数据", Status: enums.IMConversationStatusClosed, AuditFields: testAnalyticsAudit(t0)}
+	orphan := &models.Conversation{
+		TenantID: 0, CustomerName: "平台遗留数据", Status: enums.IMConversationStatusClosed,
+		LastMessageAt: t0, LastActiveAt: t0, AuditFields: testAnalyticsAudit(t0),
+	}
 	if err := db.Create(orphan).Error; err != nil {
 		t.Fatalf("create unscoped conversation: %v", err)
 	}
@@ -110,7 +113,8 @@ func TestRecordCurrentAssignmentPreservesFirstAssignmentMetrics(t *testing.T) {
 
 	conversation := &models.Conversation{
 		TenantID: tenantID, CustomerName: "转派客户", Status: enums.IMConversationStatusPending,
-		ServiceMode: enums.IMConversationServiceModeHumanOnly, LastActiveAt: t0, AuditFields: testAnalyticsAudit(t0),
+		ServiceMode: enums.IMConversationServiceModeHumanOnly, LastMessageAt: t0, LastActiveAt: t0,
+		AuditFields: testAnalyticsAudit(t0),
 	}
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatalf("create conversation: %v", err)

@@ -173,9 +173,14 @@ func (s *conversationEvaluationService) Submit(req request.SubmitConversationEva
 	}
 	tags := uniqueEvaluationTags(req.TagCodes)
 	tagsJSON, _ := json.Marshal(tags)
+	unlock := lockConversationEvaluation(tokenHash)
+	defer unlock()
 	now := time.Now()
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		item := repositories.ConversationEvaluationRepository.TakeByTokenHash(ctx.Tx, tokenHash)
+		item, err := repositories.ConversationEvaluationRepository.TakeByTokenHashForUpdate(ctx.Tx, tokenHash)
+		if err != nil {
+			return err
+		}
 		if item == nil {
 			return invalidEvaluationTokenError()
 		}

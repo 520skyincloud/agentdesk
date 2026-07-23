@@ -1,6 +1,8 @@
 package repositories
 
 import (
+	"errors"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx/params"
@@ -361,6 +363,24 @@ func (r *conversationEvaluationRepository) TakeByTokenHash(db *gorm.DB, tokenHas
 		return nil
 	}
 	return ret
+}
+
+func (r *conversationEvaluationRepository) TakeByTokenHashForUpdate(db *gorm.DB, tokenHash string) (*models.ConversationEvaluation, error) {
+	if db == nil {
+		return nil, errors.New("database is required")
+	}
+	if tokenHash == "" {
+		return nil, nil
+	}
+	ret := &models.ConversationEvaluation{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where("token_hash = ?", tokenHash).Take(ret).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (r *conversationEvaluationRepository) TakePendingBySession(db *gorm.DB, tenantID, conversationID int64, sessionNo int) *models.ConversationEvaluation {
