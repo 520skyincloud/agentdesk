@@ -241,6 +241,8 @@ test("direct dashboard routes reuse navigation permissions and context", async (
     dashboardPathIsAccessible("/dashboard/channels", ["tenant.view"], tenantContext),
     false,
   )
+  assert.equal(dashboardPathIsAccessible("/dashboard/help", allPermissions, tenantContext), false)
+  assert.equal(dashboardPathIsAccessible("/dashboard/unregistered-module", allPermissions, tenantContext), false)
   assert.equal(firstAccessibleDashboardPath(["storeWorkbench.view"], tenantContext), "/dashboard/store-workbench")
 })
 

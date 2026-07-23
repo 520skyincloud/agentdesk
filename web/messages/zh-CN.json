@@ -613,19 +613,6 @@
     "noRiskTitle": "当前没有需要优先处理的风险项",
     "noRiskDescription": "首页将持续监控会话堆积、客服排班与 AI 配置异常"
   },
-  "placeholder": {
-    "nextSteps": "建议下一步",
-    "status": "状态",
-    "statusDescription": "当前模块已完成页面骨架，可直接接入真实 API、表单弹窗与列表查询。",
-    "nextPhase": "进入下一阶段开发"
-  },
-  "help": {
-    "title": "帮助中心骨架",
-    "description": "帮助中心用于沉淀产品说明、权限约定、渠道接入流程与常见问题。",
-    "step1": "汇总项目开发规范与后台使用说明。",
-    "step2": "补充第三方接入流程图和配置校验清单。",
-    "step3": "后续可接入 markdown 或文档中心能力。"
-  },
   "settings": {
     "title": "接入设置",
     "description": "管理当前公司的客户接入渠道。",

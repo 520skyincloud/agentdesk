@@ -161,7 +161,7 @@ export function dashboardPathIsAccessible(
   }
   const rule = findDashboardRouteAccessRule(pathname);
   if (!rule) {
-    return true;
+    return false;
   }
   if (!contextVisible(rule.context, context)) {
     return false;

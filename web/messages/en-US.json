@@ -613,19 +613,6 @@
     "noRiskTitle": "No high-priority risks right now",
     "noRiskDescription": "The dashboard will keep monitoring conversation backlogs, schedules, and AI configuration issues."
   },
-  "placeholder": {
-    "nextSteps": "Recommended Next Steps",
-    "status": "Status",
-    "statusDescription": "This module currently has a page scaffold. It is ready for real APIs, form dialogs, and list queries.",
-    "nextPhase": "Start Next Phase"
-  },
-  "help": {
-    "title": "Help Center Scaffold",
-    "description": "The help center will collect product guidance, permission rules, channel integration workflows, and FAQs.",
-    "step1": "Collect project development standards and admin usage guides.",
-    "step2": "Add third-party integration flows and configuration checklists.",
-    "step3": "Connect Markdown or a documentation center later."
-  },
   "settings": {
     "title": "Channel Settings",
     "description": "Manage customer access channels for the current company.",
