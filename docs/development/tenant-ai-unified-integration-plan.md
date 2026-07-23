@@ -1367,6 +1367,17 @@ git diff --check
 - 共享与回滚：本批只增强只读发布证据，不改变 FastGPT 检索写入、AI Reply Runtime、Credential、Billing、人工任务池、规则派单、客户标签或运营事实。`e5ad354` 必须位于 B13-G `ed5953d` 之后；B14 只能建立在本门禁和全部真实证据通过之后。Cleanup 前可整体回滚本提交且没有数据回滚，但回滚会重新允许没有真实 FastGPT 检索证据的 pilot 报告，不能作为生产发布方案。
 - 发布判定：工程门禁完成不代表现场证据完成。丽斯未来仍没有可用的真实 Store NewAPI Key、FastGPT Integration Token、已发布九槽 Profile、Store Assignment/active Credential/FastGPT Team/Dataset，也没有真实回复、转人工、确定性规则派单、标签灰度、Request ID 人民币账单对账和外部加密备份恢复证据。B13 继续为 `No-Go`，正式 `8083` 与 B14 物理清理保持硬阻断。
 
+### 25.20 2026-07-23 B13-I 生产密钥与外部凭据交付契约
+
+- 文档提交：`02a247e7483923d98118768fca17e3b8fc998ac8`。实施前执行 `git fetch origin`，固定来源仍为 `origin/main@e67e20721574b6d3298bb0a1c4749da02ff0b949`、`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563` 和 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，统一分支远端为 `cefe1c30e0a9db1b6653994b66877ac4e33248a6`。来源均未前移，本批不需要 rebase 或吸收新的行为提交。
+- 唯一手册：新增 `docs/deployment/production-secrets.md`，按真实 `ValidateProduction`、AES-GCM、Store Credential 和 FastGPT gateway 代码，把交付材料分成部署现场生成秘密、FastGPT 服务方签发的 Integration Token、门店 NewAPI Key 和可选集成凭据。`.env.example`、中英文 README 只增加权威链接与边界提示，不建立第二份变量表。
+- 核心边界：生产固定需要数据库 DSN、32 字节 Base64 邀请码密钥、独立客户会话/资产签名秘密、32 字节 Store Credential 主密钥及其非秘密 Key ID；FastGPT 灰度再要求 Base URL 与 Integration Token。门店 NewAPI Key 不属于 `.env`，只能由用户在 Store Credential 工作流提交；一条 Key 覆盖当前九个强制用途槽，禁止恢复平台 NewAPI Token、旧 `AIConfig.APIKey` 或九槽九 Key 的错误解释。
+- 安全与恢复：手册明确禁止在聊天、Git、PR、Issue、Markdown、日志或诊断报告中传递真实值；记录主密钥丢失会使全部 Store Credential 不可解密，且当前单主密钥运行时不支持直接轮换。邀请码、客户会话、资产签名、FastGPT Token 和门店 Key 分别给出轮换影响，避免把“改环境变量”误当作完整轮换。
+- 现场输入：下一步只需要用户确认丽斯未来 pilot Store 名称或 ID、是否允许门店凭据自助及是否需要主管审批；不得默认 Store `301`。FastGPT Base URL/Integration Token 必须通过受控部署渠道注入，NewAPI Key 必须由 Key 所有者通过凭据页面提交，不要求用户在本任务中向 Codex 发送真实值。
+- 验证：`go test ./internal/pkg/config/... -count=1` 通过；使用明确标为测试占位的独立变量执行 `docker compose config --quiet` 通过；文档和 README 无尾随空白，`git diff --check` 通过。没有创建真实 `.env`、没有读取或输出秘密，也没有停止或替换当前正式 `8083`。
+- 共享契约与回滚：本批只修改 `.env.example`、中英文 README 和部署/交接文档；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential 密文格式、FastGPT 调用、Billing 口径、人工任务池或规则派单。可在 B14 前整体回滚文档提交且无数据回滚，但生产发布不得回退到没有密钥保管与轮换说明的状态。
+- 发布判定：交付契约完成不等于真实密钥或现场证据已就绪。当前仍未安全注入全新部署秘密和 FastGPT Integration Token，也未确定 pilot Store、提交其 NewAPI Key、发布/指派九槽 Profile 或完成回复、转人工、派单、标签、账单与恢复证据；B13 继续为 `No-Go`，正式 `8083` 和 B14 物理删表保持阻断。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B13-B14 实施和验收证据。
