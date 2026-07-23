@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B10 已完成并验证；下一步为 B11 回复标签上下文与批量灰度开关
+> 状态：2026-07-23 产品决策已闭合，B0-B11 已完成；下一步为 B12 旧运行链全链删除。B11 定向竞态和完整 AI Runtime 竞态已通过，全量 services 竞态套件仍需在 B12 前切分定位，不计为全局通过。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1261,9 +1261,25 @@ git diff --check
 - 合并与回滚：B10 必须位于 B9 `478f948` 之后，B11-B14 继续建立在 `a23d62f` 之后。Cleanup 前可整体回滚 B10 代码提交；既有 State/Run 表可保留且无 worker 写入，B9 人工标签继续正常。运行异常时先关闭 Store Evolution 开关，不得恢复 Company 级标签、旧 ConversationTag worker、AIConfig 或无 Tenant/Store 的后台扫描。
 - 后续边界：B11 只补 Tenant 演化策略页面、Store 单个/批量/一键开关和固定来源回复标签上下文的最终门禁，不得再建第二个 worker、第二套标签状态或新增模型调用；B12 再全链删除旧 AIConfig/Grant/StoreSetting/ConversationTag 运行代码与页面。
 
+### 25.12 2026-07-23 B11 回复标签上下文策略与 Store 批量灰度
+
+- 代码提交：后端、Migration 与测试为 `02507f0bd1c5493beab51b666ea3de4306e6d5af`；前端工作区与页面测试为 `5f44ca46dc16ee9331d92ce744eac307930b05be`。AI 行为来源继续固定为 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架继续固定为 `origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：提交前执行 `git fetch origin --prune`；统一分支远端仍为 `bdb5586d88c178a7c98dbbdfa4ef991ce4cdb66c`，AI、Tenant 和 main 三个固定来源均未前移。B11 没有 merge、cherry-pick 或修改来源工作树。
+- 策略契约：在现有 `TenantCustomerTagPolicy` 上开放静默时间、最低置信度、每轮操作上限及两个新 Store 默认值；在 `StoreCustomerTagRuntimePolicy` 上提供演化和回复标签上下文两个独立开关。Store 新建、重新启用和 Migration 074 均按当前 Tenant 默认值实例化，已有 Store 不被策略保存动作隐式覆盖。
+- API 与权限：新增 `/api/dashboard/customer-tag/policy`、`policy/update`、`runtime/list` 和 `runtime/batch_toggle` 显式路由，支持单 Store、所选 Store 和当前 Tenant 全部 Store。继续复用全局权限派发制的 `tag.view`、`tag.update`，Handler 和 Service 同时强制 ActiveTenant 上限；没有隐藏权限、用户直绑权限、平行页面或跨 Tenant ID 容错。
+- 事务与并发：批量操作先锁定当前 Tenant 的 Store 和策略，再以 TenantID + StoreID 唯一键幂等 upsert；指定 Store 中混入外租户或已删除对象时整批拒绝。静默时间变化只重排仍有未处理消息的 Evolution state，不覆盖已完成游标；SQLite/MySQL repository SQL 使用同一 GORM 契约。
+- 回复门禁：`SelectReplyTagCandidates` 在读取标签前再次校验 Tenant、Store、Tenant 行业策略、Store 运行策略和标签行业一致性；回复开关关闭、策略缺失、行业不一致或 Store 停用时返回空上下文，不回退旧 ConversationTag、不新增模型调用，也不改变 Generate messages。AI 仍只判断转人工，不能选择客服。
+- 实时事件：新增 `customer_tag_runtime_policy.changed`，只发送 TenantID、受影响 StoreID、全量标记、两个开关值和时间；不发送 Prompt、Schema、客户正文、标签证据、Credential 或任何密钥。WebSocket 失败不回滚策略，也不触发模型回复重跑。
+- 页面：复用 `/dashboard/tags`，在原“行业标签”旁增加“运行策略”Tab。页面包含 Tenant 默认策略、门店搜索、状态/开关筛选、分页、逐店开关、所选门店批量操作和全部门店二次确认；无 `tag.update` 时完整降级为只读，不新增导航入口或页面职责。
+- 浏览器验收：隔离的丽斯未来测试环境完成单店、两家所选门店、全部门店和二次确认操作；搜索、组合筛选和分页状态正常。桌面与 `390x844` 移动视口无页面级横向溢出、控件重叠或文本截断。验收发现 Base UI `DropdownMenuLabel` 必须位于 `DropdownMenuGroup` 内，已修复并增加静态回归测试；修复后控制台无新增错误。最终已把丽斯未来四家门店两个开关全部恢复关闭，Tenant 策略恢复为 `24 小时 / 80% / 6`。
+- 验证：`go test ./... -count=1`、`go vet ./...`、154 个前端 `*.test.mjs`、`pnpm --dir web typecheck`、ESLint 0 error/33 个既有 warning、`build:sdk`、46 页面生产构建、`git diff --check`、SQLite/MySQL Migration 074 首次和幂等重跑均通过。提交后额外通过 B11 service/repository 定向 `-race`、完整 `internal/ai/... -race`、聚焦 Go 回归、聚焦 ESLint、无增量 TypeScript 和页面测试。
+- 全局竞态缺口：`go test -race ./internal/services/... -count=1 -timeout 15m` 在约 602 秒后以失败退出；输出包含大量既有 SQL/后台任务日志，但没有可确认的 `DATA RACE` 报告，且失败测试名被工具输出截断。该命令不得记为通过；B12 开始前必须按测试组切分定位并修复或明确证明为既有测试时序问题。B11 定向测试、完整 AI Runtime 和 repository 竞态均通过，因此不阻止两个 B11 原子提交，但阻止最终发布结论。
+- 共享契约与合并顺序：本批修改显式路由、权限元数据、Migration 074、DTO、repository、Store 生命周期、客户标签读取门禁、WebSocket enum/payload、`web/lib/api/admin.ts`、标签页面和中英文资源；未修改 Prompt/Schema、模型 resolver、Credential、Usage/Billing、FastGPT、人工任务池或规则派单语义。B11 必须位于 B10 `a23d62f` 之后，B12-B14 继续建立在 `5f44ca4` 之后。
+- 回滚边界：B12 前可先回滚前端 `5f44ca4`，再回滚后端 `02507f0`。Migration 074 已创建的 Store 策略行和权限元数据可以留库但旧应用不会读取；回滚应用前必须先关闭 Evolution 与 ReplyTagContext，禁止恢复旧 ConversationTag、第二套 worker 或 AIConfig fallback。隔离服务、临时配置、数据库和浏览器验收标签均已清理，未触碰既有 `8083` 数据服务。
+
 ## 26. 用户最终 1-48 项决定追溯
 
-本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B11-B14 实施和验收证据。
+本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B12-B14 实施和验收证据。
 
 | 编号 | 最终解释 | 权威落点 |
 | --- | --- | --- |
