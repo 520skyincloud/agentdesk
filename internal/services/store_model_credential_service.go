@@ -96,6 +96,8 @@ func (s *storeModelCredentialService) GetSelf(operator *dto.AuthPrincipal) (*Sto
 	data.CanSelfService = snapshot.Binding.Status == enums.StatusOk &&
 		snapshot.Binding.ActiveUserID != nil &&
 		*snapshot.Binding.ActiveUserID == operator.UserID &&
+		slices.Contains(operator.Roles, constants.RoleCodeStoreStaff) &&
+		slices.Contains(operator.Permissions, constants.PermissionStoreWorkbenchUpdate.Code) &&
 		data.Policy != nil &&
 		data.Policy.Status == enums.StatusOk &&
 		data.Policy.AllowCredentialSelfService

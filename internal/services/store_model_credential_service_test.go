@@ -335,6 +335,61 @@ func TestStoreModelCredentialSelfServiceApproval(t *testing.T) {
 	}
 }
 
+func TestStoreModelCredentialGetSelfReportsOnlyActualSelfServiceCapability(t *testing.T) {
+	fixture := setupStoreCredentialFixture(t)
+	service := newStoreModelCredentialService()
+	policy := repositories.StoreCredentialPolicyRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	if policy == nil {
+		t.Fatal("fixture policy is missing")
+	}
+	if err := repositories.StoreCredentialPolicyRepository.Updates(fixture.db, policy.ID, map[string]any{
+		"allow_credential_self_service": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := service.GetSelf(fixture.staff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !data.CanSelfService {
+		t.Fatal("uniquely bound store staff with update permission must see self-service as available")
+	}
+
+	readOnly := *fixture.staff
+	readOnly.Permissions = []string{constants.PermissionStoreWorkbenchView.Code}
+	data, err = service.GetSelf(&readOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.CanSelfService {
+		t.Fatal("store staff without update permission must not see self-service as available")
+	}
+
+	roleStripped := *fixture.staff
+	roleStripped.Roles = nil
+	data, err = service.GetSelf(&roleStripped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.CanSelfService {
+		t.Fatal("bound account without the store_staff role must not see self-service as available")
+	}
+
+	if err := fixture.db.Model(&models.StoreStaffBinding{}).
+		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
+		Update("active_user_id", nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	data, err = service.GetSelf(fixture.staff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.CanSelfService {
+		t.Fatal("binding without the unique active account occupation must not expose self-service")
+	}
+}
+
 func TestStoreModelCredentialFailedCandidatePreservesActive(t *testing.T) {
 	fixture := setupStoreCredentialFixture(t)
 	seedActiveStoreCredential(t, fixture, "sk-active", 3)
