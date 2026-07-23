@@ -82,6 +82,20 @@ Prompt、Schema、IntentTasks、ReplyPlan、Answerability、Generate、Validate�
 Interrupt、Checkpoint、Resume 和 Trace 保持固定 AI 来源行为。Tenant 适配只增加可信
 范围、唯一模型 resolver、Store FastGPT 和现有人工任务池端口，不在合并时改写模型行为。
 
+2026-07-23 对固定来源 SHA 的逐文件复核确认：
+
+- `intent_pipeline.go`、`generated_reply_validator.go` 和 `knowledge_guard.go`
+  与来源 blob 完全一致；
+- IntentDetect 的系统 Prompt、用户 Prompt、严格 JSON 解析和修复提示未改写，正常响应
+  只调用一次模型，首轮 JSON 非法时只追加一次修复调用；
+- executor 主流程仅把旧 `AIConfig` 载体替换为唯一 Resolver 生成的瞬态
+  `ModelConfig`，阶段顺序和生成/校验/提交行为未改变；
+- 行业解析、知识读取、历史消息和提交资源的差异只用于 Tenant/Store 强隔离以及
+  FastGPT-only 事实源，不恢复旧 fallback。
+
+上述调用次数和消息顺序由
+`TestRuntimeIntentDetectGoldenCallCountAndMessageOrder` 固定，不能在后续合并中静默漂移。
+
 ### 0.4 FastGPT 与客户标签
 
 知识检索只走托管 FastGPT。KnowledgeBase 必须属于当前 Tenant + Store，且其 Dataset、
@@ -122,7 +136,8 @@ Trace、日志或 API。
 
 - Tenant 行业、Store Assignment、九槽、Credential 或 FastGPT readiness 任一缺失时，
   不回退旧模型系统；需要人工的客户会话进入现有任务池。
-- 当前代码和隔离测试完成不代表生产发布完成。丽斯未来真实 NewAPI、FastGPT、
+- 当前代码和隔离测试完成不代表生产发布完成。“丽斯文旅 / 高铁南站店”真实
+  NewAPI、FastGPT、
   回复、转人工、规则派单、标签、账单及备份恢复证据以
   `docs/development/tenant-ai-unified-integration-plan.md` 的 B13/B14 门禁为准。
 - 旧 `AIConfig`、Grant、StoreSetting、ConversationTag 和本地知识链只允许出现在历史

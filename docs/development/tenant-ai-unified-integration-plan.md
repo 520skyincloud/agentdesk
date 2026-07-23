@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁、历史 MySQL 克隆升级、统一镜像隔离 MySQL API 冒烟、后台 worker 维护门禁、可执行三阶段 readiness 门禁、真实 FastGPT 会话检索证据门禁、发布游标快照和仓库外加密备份恢复验证门禁已完成；B14 固定白名单清理器、一次性操作门禁和 SQLite/MySQL 8.4 隔离演练已完成，但生产清理未执行。当前结论仍为发布 No-Go。16 项生产变量 handoff 已接收，仓库外本机副本已按 `0700/0600` 保存并通过哈希、格式和无泄密检查；pilot 业务身份已冻结为“丽斯文旅 / 高铁南站店”，但迁移后最终 Store ID 尚未从目标库解析。FastGPT 仍为公网 HTTP、目标 MySQL 不返回协议握手，NewAPI Key 尚未由实际持有人在统一环境重新提交；丽斯未来真实灰度和备份恢复证据均未完成，禁止切换正式 `8083` 或执行 B14 物理清理。
+> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁、历史 MySQL 克隆升级、统一镜像隔离 MySQL API 冒烟、后台 worker 维护门禁、可执行三阶段 readiness 门禁、真实 FastGPT 会话检索证据门禁、发布游标快照和仓库外加密备份恢复验证门禁已完成；B14 固定白名单清理器、一次性操作门禁和 SQLite/MySQL 8.4 隔离演练已完成，但生产清理未执行。当前结论仍为发布 No-Go。16 项生产变量 handoff 已接收，仓库外本机副本已按 `0700/0600` 保存并通过哈希、格式和无泄密检查；pilot 业务身份已冻结为“丽斯文旅 / 高铁南站店”，但迁移后最终 Store ID 尚未从目标库解析。FastGPT 仍为公网 HTTP、目标 MySQL 不返回协议握手，NewAPI Key 尚未由实际持有人在统一环境重新提交；“丽斯文旅 / 高铁南站店”真实灰度和备份恢复证据均未完成，禁止切换正式 `8083` 或执行 B14 物理清理。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -12,7 +12,7 @@
 >
 > 服务发布端口：`8083`
 >
-> 首个真实灰度租户：丽斯未来
+> 首个真实灰度对象：Tenant“丽斯文旅” / Store“高铁南站店”（“丽斯未来”仅保留为历史仿真名称）
 
 本文是 Tenant、行业、模型、门店凭据、FastGPT、AI 回复运行时、客户标签、计费、权限、页面、Migration、派单保护和发布回滚的唯一目标方案。本文描述的是最终目标，不表示代码已经实现。
 
@@ -80,7 +80,7 @@
 | Migration | 保留 integration 的 AutoMigrate、DML runner、历史归档、动态编号和失败门禁 |
 | 数据库 | 验证 SQLite 和 MySQL；fresh 与当前 integration 数据库最终得到同一套 Schema |
 | 旧表 | 旧模型和会话标签表退出代码后物理删除，不保留双运行链或回滚入口 |
-| 灰度 | 丽斯未来先验收；客户标签演化和回复标签上下文默认关闭，支持批量启停 |
+| 灰度 | 丽斯文旅 / 高铁南站店先验收；客户标签演化和回复标签上下文默认关闭，支持批量启停 |
 
 ## 3. 最终总体架构
 
@@ -496,7 +496,7 @@ Outbox 或 WebSocket 失败不能重新生成模型回复。Observe 只推进状
 - `ReplyTagContextEnabled` 默认关闭。
 - 开关按 Tenant + Store 生效。
 - 平台管理员和公司主管支持单个、批量选择、全部启用和全部停用。
-- 首次只对丽斯未来选定 Store 灰度，两个能力分开开启和回滚。
+- 首次只对“丽斯文旅 / 高铁南站店”灰度，两个能力分开开启和回滚。
 
 ## 11. 行业标签与 Store 客户画像
 
@@ -932,7 +932,7 @@ web/messages/en-US.json
 | B10 | Evolution worker | due/lease/retry/new-message race |
 | B11 | Reply 标签上下文和批量开关 | 无新增模型调用、Generate 门禁回归 |
 | B12 | 旧 API/UI/service/model 与本地知识链全链删除 | 静态搜索、旧接口 404、构建无旧页面 |
-| B13 | 丽斯未来真实 readiness 与灰度 | 8083、真实 NewAPI/FastGPT/回复/账单 |
+| B13 | 丽斯文旅 / 高铁南站店真实 readiness 与灰度 | 8083、真实 NewAPI/FastGPT/回复/账单 |
 | B14 | 停机 Schema Cleanup 与发布候选 | 备份恢复、SQLite/MySQL 最终 Schema 一致 |
 
 任何 Batch 最多三个单一目的提交；模型、迁移、后端行为、前端入口和破坏性删除不得混成一个不可审查提交。
@@ -1025,7 +1025,7 @@ git diff --check
 - SQLite/MySQL 任一最终 Schema 不一致；
 - 旧 resolver/API/UI 仍可达；
 - Schema Cleanup 备份未实际恢复验证；
-- 真实 NewAPI、FastGPT 和丽斯未来消息验收未完成。
+- 真实 NewAPI、FastGPT 和 pilot 消息验收未完成。
 
 ### 22.2 上线顺序
 
@@ -1034,7 +1034,7 @@ git diff --check
 3. 完成数据库和远端 FastGPT 状态备份。
 4. 执行 preflight、AutoMigrate、DML migration 和 readiness。
 5. 启动新应用但保持标签演化/回复上下文关闭。
-6. 丽斯未来单 Store 验证行业、九槽、Credential、FastGPT、回复、转人工、派单、Usage、账单和运营事实。
+6. 在“丽斯文旅 / 高铁南站店”验证行业、九槽、Credential、FastGPT、回复、转人工、派单、Usage、账单和运营事实。
 7. 扩大 ready Store 范围。
 8. 先批量灰度 ReplyTagContext，再独立灰度 Evolution。
 9. 验证稳定并确认无需旧版本回退后，停机执行 Schema Cleanup。
@@ -1065,7 +1065,7 @@ git diff --check
 - AI 失败和明确转人工只进入现有规则派单；
 - Billing 按 Store 官方查询、按 Tenant 聚合、平台可跨 Tenant；
 - SQLite/MySQL fresh 和历史升级得到同一最终 Schema；
-- 丽斯未来在 `8083` 完成真实 NewAPI、FastGPT、回复、派单、账单和标签灰度；
+- “丽斯文旅 / 高铁南站店”在 `8083` 完成真实 NewAPI、FastGPT、回复、派单、账单和标签灰度；
 - 全量测试、构建、浏览器、秘密扫描、备份恢复和 Schema Cleanup 证据齐全。
 
 在以上条件完成前，文档和 PR 只能写“正在集成”或“待验收”，不得写“已合并完成”。
@@ -1148,7 +1148,7 @@ git diff --check
 - 数据库验证：SQLite fresh/历史 Migration 069、幂等重跑、九槽约束、候选指派不覆盖 active、无旧密钥迁移和权限耐久测试通过；临时 MySQL 8.4 完成 Migration 069 首次运行与幂等验证，临时库和账号已删除。
 - 代码验证：`go test ./...`、`go vet ./...`、`git diff --check` 全部通过。沙箱内首次全量 Go 测试仅因既有 FastGPT `httptest` 无权监听随机端口失败；同一命令在允许本地监听的环境复跑通过，代码断言无失败。
 - 前端验证：`tsc --noEmit --incremental false`、B3 文件聚焦 ESLint、139 项 `*.test.mjs` 和 `next build --webpack` 全部通过。
-- 浏览器验证：使用临时 SQLite 和丽斯未来测试 Tenant，在 `1440x900` 与 `390x844` 验证九槽填写、结构校验、候选发布二次确认、门店批量 pending 指派和无 Credential 不误激活；页面无控制台 error/warn。临时服务已停止，未修改正式 `8083` 数据。
+- 浏览器验证：使用临时 SQLite 和历史仿真“丽斯未来”测试 Tenant，在 `1440x900` 与 `390x844` 验证九槽填写、结构校验、候选发布二次确认、门店批量 pending 指派和无 Credential 不误激活；页面无控制台 error/warn。临时服务已停止，未修改正式 `8083` 数据。
 - 共享契约与并行影响：本批修改 Model Profile/Assignment model、repository、service、DTO、builder、显式路由、权限种子、Migration、`web/lib/api/admin.ts`、平台模型页面和接入公司操作；未改 Credential 密文生命周期、FastGPT、Usage/Billing、AI Reply Runtime、客户标签、规则派单或运营事实。两个来源分支保持只读。
 - 合并与回滚：B3 必须在 B4 Credential、B6 FastGPT 和 B7 Runtime 前合入，后端提交必须先于前端提交。Cleanup 前可整体回滚 B3 应用代码；新增 Profile/Slot/Assignment 表和 Migration 记录可以保留，但不得启用依赖新 resolver 的 Runtime。禁止仅回滚 Assignment active/pending 字段后继续运行 B4 及以后代码。
 - 后续边界：当前没有任何 Store 会因 B3 单独变成 ready；Credential 候选测试、二次确认、不可变审计、active 切换以及失败时保留旧 active revision 全部属于 B4。旧 AIConfig/Grant/StoreSetting 的路由和模型仅为 B12/B14 迁移清理保留，不得重新接回新链路。
@@ -1167,7 +1167,7 @@ git diff --check
 - 数据库验证：SQLite 覆盖 Migration 070 fresh、历史 Store 初始化和幂等重跑；临时 MySQL 8.4 完成首次运行与幂等重跑，随后停止并删除临时容器。测试覆盖 Tenant/Store 唯一性、候选/active revision、错误保活、CAS 冲突和失败审计。
 - 代码验证：`go test ./... -count=1`、`go test -race ./internal/services -run 'TestStoreModelCredential' -count=1`、`go vet ./...`、`git diff --check` 和秘密边界检查通过。
 - 前端验证：`tsc --noEmit --incremental false`、143 项 `*.test.mjs`、ESLint 0 error/33 个既有 warning、SDK 构建和 `next build --webpack` 全部通过。
-- 浏览器验证：临时 `8085` 使用丽斯未来测试 Tenant 验证平台、公司主管和门店员工三种范围、密钥掩码、候选/审批状态以及桌面和移动弹窗滚动边界，控制台无 error/warn。密码策略补丁后又在 `1280x720` 复核，document 与 dialog 均无横向溢出；本次最后一次 `390x844` 重复检查因内置浏览器 viewport override 未实际改变 `innerWidth`，因此未把该次尝试计作新的移动截图证据，移动结论仍由补丁前真实检查、flex-wrap 布局、组件测试、typecheck 和生产构建共同支撑。
+- 浏览器验证：临时 `8085` 使用历史仿真“丽斯未来”测试 Tenant 验证平台、公司主管和门店员工三种范围、密钥掩码、候选/审批状态以及桌面和移动弹窗滚动边界，控制台无 error/warn。密码策略补丁后又在 `1280x720` 复核，document 与 dialog 均无横向溢出；本次最后一次 `390x844` 重复检查因内置浏览器 viewport override 未实际改变 `innerWidth`，因此未把该次尝试计作新的移动截图证据，移动结论仍由补丁前真实检查、flex-wrap 布局、组件测试、typecheck 和生产构建共同支撑。
 - 共享契约与并行影响：本批修改 Credential model/repository/service/DTO/builder、Resolver、FastGPT Store 状态、Store 创建、Auth 范围、显式路由、Migration、配置、`web/lib/api` 和三处现有页面入口；未修改 Usage/Billing 口径、完整 AI Reply Runtime、客户标签、规则派单或运营事实。两个来源分支保持只读。
 - 合并与回滚：B4 必须在 B5 Billing、B6 FastGPT 完整重建和 B7 Runtime 前合入，`f9eb16f` 必须先于 `06f2b60`。Cleanup 前可回滚前端与调用入口；若回滚后端，新增 Credential/Policy/Audit 表可以保留，但禁止让 B5-B7 继续依赖已回滚的 resolver。已激活 Credential 不回显也不回迁旧 AIConfig；需要业务回退时只能显式提交新的 candidate 或恢复 cleanup 前整库备份。
 - 后续边界：B5 只在 active Store Credential 身份下实现 NewAPI Usage 查询、内部归因和对账，不做充值、扣费、套餐、发票或额度拦截。B6 将继续完成 FastGPT provision/upload/search/retry 的 Tenant + Store 重建，不能在 B4 的同步适配层停止。
@@ -1219,7 +1219,7 @@ git diff --check
 - 共享契约：本批修改 Runtime 内部请求类型、`usagex.Scope`、Usage 归因、模型 resolver、媒体/转人工服务和调试组件；没有新增或修改数据库 model、AutoMigrate、DML migration、HTTP DTO、公开 API、权限码或 WebSocket payload。规则派单和运营事实未改变，AI 仍只判断是否需要转人工。
 - 验证：`go test ./... -count=1`、`go test -race ./internal/ai/... ./internal/services/... ./internal/repositories/... -count=1`、`go vet ./...`、`pnpm typecheck`、`pnpm lint`、46 页面 `pnpm build`、`gofmt -d`、`git diff --check` 和秘密扫描全部通过。ESLint 为 0 error、33 个既有 warning。沙箱内首次全量测试因禁止 `httptest` 监听端口失败，允许本地监听后同一命令以退出码 0 完整通过，不计为代码回归。
 - 并行影响与合并顺序：本批是固定 ai-billing 行为在统一 Tenant/Store 架构上的唯一落点，两个来源分支继续只读。合并顺序必须保持 B1-B6 全部提交先于 `b272d9a`，B8-B14 再依次建立于该提交；禁止单独把本提交 cherry-pick 回来源分支形成第二套 Runtime。
-- 回滚边界：B12/B14 清理旧代码和旧表前，可以整体回滚 `b272d9a`，且无 Schema 回滚；一旦 B8 或后续批次依赖新 Runtime，不允许只回滚 resolver 或恢复旧 AIConfig fallback。真实 NewAPI/FastGPT 联调、丽斯未来完整链路和 `8083` 发布仍属于 B13 门禁。
+- 回滚边界：B12/B14 清理旧代码和旧表前，可以整体回滚 `b272d9a`，且无 Schema 回滚；一旦 B8 或后续批次依赖新 Runtime，不允许只回滚 resolver 或恢复旧 AIConfig fallback。真实 NewAPI/FastGPT 联调、“丽斯文旅 / 高铁南站店”完整链路和 `8083` 发布仍属于 B13 门禁。
 - 后续边界：B8 只负责把 ai-billing 的 `need_human` 结果接入现有人工任务池并验证规则派单，不得引入 LLM 选人；客户标签写入、演化、页面与旧链物理删除分别留在 B9-B12/B14。
 
 ### 25.9 2026-07-23 B8 AI 人工交接与现有规则派单适配
@@ -1245,7 +1245,7 @@ git diff --check
 - 写入保护与审计：人工标签不能被 AI 反向覆盖；AI operation 只接受当前行业、当前 Tenant 已启用且允许 AI 使用的叶子标签及合法证据消息。所有 add/remove/replace/refresh 写入 append-only `CustomerTagChangeLog`，记录来源、操作者、证据消息、置信度和 evolution run，不保存模型原文。
 - API、权限与实时契约：在现有 Conversation 资源下新增 `customer_tag/options|change_log|add|remove|replace` 显式路由，复用 `conversation.tag` 全局权限；Migration 073 幂等退出自由标签 create/update/delete/sort 权限并同步现有角色。新增 `customer_tag.changed` WebSocket 事件，前端只刷新对应会话的 Store 客户标签，不建立平行会话标签缓存。
 - 页面：`/dashboard/tags` 原地升级为固定行业标签目录；客户详情按 Store 分组显示标签；会话工作台用 Store 客户标签选择器、历史记录和实时更新替换旧 ConversationTag picker。旧 ConversationTag 后端/API/model 暂只作为 B12/B14 清理输入存在，没有恢复到任何新运行链。
-- 浏览器验证：使用隔离的丽斯未来 MySQL 测试数据，在桌面深色主题、客户多门店详情、会话信息与标签选择器以及 `390x844` 移动视口完成验收；修复主题对比度、弹窗宽高、长邮箱和移动门店行布局，页面与弹窗均无横向溢出，WebSocket 正常且控制台无当前错误。
+- 浏览器验证：使用隔离的历史仿真“丽斯未来” MySQL 测试数据，在桌面深色主题、客户多门店详情、会话信息与标签选择器以及 `390x844` 移动视口完成验收；修复主题对比度、弹窗宽高、长邮箱和移动门店行布局，页面与弹窗均无横向溢出，WebSocket 正常且控制台无当前错误。
 - 验证：`go test ./... -count=1`、B9 定向 `go test -race`、`go vet ./...`、无增量 TypeScript 类型检查、全部 150 个前端 `*.test.mjs`、`pnpm lint`、`pnpm build:sdk`、`pnpm build` 和 `git diff --check` 全部通过。ESLint 为 0 error、33 个既有 warning；Migration 073 的 SQLite/MySQL 8.4 首次运行与幂等重跑通过。
 - 共享契约与合并顺序：本批修改 Tag/Customer/Conversation DTO、显式路由、权限、Migration、客户标签 service/repository、WebSocket payload、`web/lib/api`、会话/客户/标签页面和中英文资源；没有修改模型调用、Prompt/Schema、Token/Billing、FastGPT、人工任务池或规则派单语义。B9 必须位于 B8 `5c11016` 之后，B10-B14 继续建立在 `478f948` 之后。
 - 回滚边界：B10 之前可整体回滚 B9 应用提交；Migration 073 已同步的自由标签权限不会自动恢复，若产品回滚必须通过新的显式 DML migration 重新启用，禁止手工改库。客户标签关系与不可变日志可以保留但旧应用不会读取；不得恢复 ConversationTag picker 形成双链。
@@ -1262,7 +1262,7 @@ git diff --check
 - 竞态补强：相较固定 AI 来源，统一实现增加 Tenant/Store lease 范围和 checkpoint CAS。提前完成、重新排期、续租及失败落库均不能覆盖较新的 Observe；发现新消息时旧 run 进入 `superseded` 且只释放自己的 lease。Observe 的 SQLite/MySQL upsert 不依赖 `RowsAffected` 方言差异，先幂等插入再执行单调条件更新。
 - 共享契约：本批复用 B1 已存在的 `ConversationEvolutionState/Run`、B2/B9 标签策略与关系、B3/B4 Resolver/Credential、B5 Usage、B6 KnowledgeCandidate 和 B9 WebSocket 事件；没有新增或修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限码、WebSocket payload 或前端页面。AI 仍不参与人工选人，规则派单、回复 Prompt/Schema 和 Billing 口径未改变。
 - 验证：`go test ./... -count=1`、B10 定向测试、`go test -race ./internal/services ./internal/repositories -run 'ConversationEvolution|CustomerTagEvolution|CustomerTag' -count=1`、`go vet ./...` 和 `git diff --check` 通过。SQLite 覆盖观察单调性、Store 门禁、租约互斥、第五次失败终止、新消息/model-return race 和完整 resolver 调用；临时 MySQL 8.4 覆盖同一 Observe/due/claim/renew/release SQL，并完成统一 AI Schema AutoMigrate 首次及幂等重跑，容器随后删除。
-- 前端与外部验证：本批没有 Web 文件、公开接口或页面状态变化，因此不重复运行 TypeScript、构建或浏览器视觉验收；B9 页面仍只显示已提交标签，Evolution 默认关闭。真实丽斯未来 NewAPI/FastGPT、`8083` 灰度和账单对账仍属于 B13，不能用本地 `httptest` 代替。
+- 前端与外部验证：本批没有 Web 文件、公开接口或页面状态变化，因此不重复运行 TypeScript、构建或浏览器视觉验收；B9 页面仍只显示已提交标签，Evolution 默认关闭。“丽斯文旅 / 高铁南站店”真实 NewAPI/FastGPT、`8083` 灰度和账单对账仍属于 B13，不能用本地 `httptest` 代替。
 - 合并与回滚：B10 必须位于 B9 `478f948` 之后，B11-B14 继续建立在 `a23d62f` 之后。Cleanup 前可整体回滚 B10 代码提交；既有 State/Run 表可保留且无 worker 写入，B9 人工标签继续正常。运行异常时先关闭 Store Evolution 开关，不得恢复 Company 级标签、旧 ConversationTag worker、AIConfig 或无 Tenant/Store 的后台扫描。
 - 后续边界：B11 只补 Tenant 演化策略页面、Store 单个/批量/一键开关和固定来源回复标签上下文的最终门禁，不得再建第二个 worker、第二套标签状态或新增模型调用；B12 再全链删除旧 AIConfig/Grant/StoreSetting/ConversationTag 运行代码与页面。
 
@@ -1276,7 +1276,7 @@ git diff --check
 - 回复门禁：`SelectReplyTagCandidates` 在读取标签前再次校验 Tenant、Store、Tenant 行业策略、Store 运行策略和标签行业一致性；回复开关关闭、策略缺失、行业不一致或 Store 停用时返回空上下文，不回退旧 ConversationTag、不新增模型调用，也不改变 Generate messages。AI 仍只判断转人工，不能选择客服。
 - 实时事件：新增 `customer_tag_runtime_policy.changed`，只发送 TenantID、受影响 StoreID、全量标记、两个开关值和时间；不发送 Prompt、Schema、客户正文、标签证据、Credential 或任何密钥。WebSocket 失败不回滚策略，也不触发模型回复重跑。
 - 页面：复用 `/dashboard/tags`，在原“行业标签”旁增加“运行策略”Tab。页面包含 Tenant 默认策略、门店搜索、状态/开关筛选、分页、逐店开关、所选门店批量操作和全部门店二次确认；无 `tag.update` 时完整降级为只读，不新增导航入口或页面职责。
-- 浏览器验收：隔离的丽斯未来测试环境完成单店、两家所选门店、全部门店和二次确认操作；搜索、组合筛选和分页状态正常。桌面与 `390x844` 移动视口无页面级横向溢出、控件重叠或文本截断。验收发现 Base UI `DropdownMenuLabel` 必须位于 `DropdownMenuGroup` 内，已修复并增加静态回归测试；修复后控制台无新增错误。最终已把丽斯未来四家门店两个开关全部恢复关闭，Tenant 策略恢复为 `24 小时 / 80% / 6`。
+- 浏览器验收：隔离的历史仿真“丽斯未来”测试环境完成单店、两家所选门店、全部门店和二次确认操作；搜索、组合筛选和分页状态正常。桌面与 `390x844` 移动视口无页面级横向溢出、控件重叠或文本截断。验收发现 Base UI `DropdownMenuLabel` 必须位于 `DropdownMenuGroup` 内，已修复并增加静态回归测试；修复后控制台无新增错误。最终已把该仿真 Tenant 四家门店的两个开关全部恢复关闭，Tenant 策略恢复为 `24 小时 / 80% / 6`。
 - 验证：`go test ./... -count=1`、`go vet ./...`、154 个前端 `*.test.mjs`、`pnpm --dir web typecheck`、ESLint 0 error/33 个既有 warning、`build:sdk`、46 页面生产构建、`git diff --check`、SQLite/MySQL Migration 074 首次和幂等重跑均通过。提交后额外通过 B11 service/repository 定向 `-race`、完整 `internal/ai/... -race`、聚焦 Go 回归、聚焦 ESLint、无增量 TypeScript 和页面测试。
 - 全局竞态缺口：`go test -race ./internal/services/... -count=1 -timeout 15m` 在约 602 秒后以失败退出；输出包含大量既有 SQL/后台任务日志，但没有可确认的 `DATA RACE` 报告，且失败测试名被工具输出截断。该命令不得记为通过；B12 开始前必须按测试组切分定位并修复或明确证明为既有测试时序问题。B11 定向测试、完整 AI Runtime 和 repository 竞态均通过，因此不阻止两个 B11 原子提交，但阻止最终发布结论。
 - 共享契约与合并顺序：本批修改显式路由、权限元数据、Migration 074、DTO、repository、Store 生命周期、客户标签读取门禁、WebSocket enum/payload、`web/lib/api/admin.ts`、标签页面和中英文资源；未修改 Prompt/Schema、模型 resolver、Credential、Usage/Billing、FastGPT、人工任务池或规则派单语义。B11 必须位于 B10 `a23d62f` 之后，B12-B14 继续建立在 `5f44ca4` 之后。
@@ -1294,7 +1294,7 @@ git diff --check
 - 验证：`go test ./... -count=1`、`go vet ./...`、`go test -race ./internal/services/... -count=1 -timeout 30m`（`587.124s`）、全部 55 个前端 `*.test.mjs` 文件、无增量 TypeScript、ESLint `0 error / 33 warning`、SDK 构建、46 页面 Turbopack 生产构建、`docker compose config --quiet`、`gofmt -d` 和 `git diff --check` 全部通过。Migration 059/064/069/075 的 SQLite 场景及 Migration 075 MySQL 8.4 首次、幂等场景通过；旧 API 404、活动源码零引用、无 Qdrant/本地向量 caller 和无真实密钥新增均有静态或自动化证据。
 - 共享契约：本批修改 model registration、历史 migration 读取结构、显式路由、权限元数据、DTO、回复运行时配置命名、FastGPT-only 知识契约、`web/lib/api`、导航与中英文资源；没有修改九槽语义、Credential 加密、NewAPI 计费口径、AI 转人工判定、人工任务池、规则派单、公平债务或 Tenant/Store 隔离上限。
 - 合并与回滚：B12 必须位于 B11 `5f44ca4` 之后，B13-B14 继续建立在 `e6d738f` 之后。B14 前可整体回滚 B12 应用提交，但 Migration 059/075 已清空或禁用的旧秘密与权限不会自动恢复，禁止把旧链当生产 fallback；B14 后只能恢复 cleanup 前整库备份并整体回退发布，不能恢复任一旧表形成双运行链。
-- 后续边界：B13 只做丽斯未来在 `8083` 的真实 NewAPI Credential、九槽 readiness、FastGPT、完整回复、转人工规则派单、标签与账单对账；B14 才执行停机 Schema Cleanup、SQLite/MySQL 最终快照一致性、备份恢复演练和发布候选门禁。
+- 后续边界：B13 只做“丽斯文旅 / 高铁南站店”在 `8083` 的真实 NewAPI Credential、九槽 readiness、FastGPT、完整回复、转人工规则派单、标签与账单对账；B14 才执行停机 Schema Cleanup、SQLite/MySQL 最终快照一致性、备份恢复演练和发布候选门禁。
 
 ### 25.14 2026-07-23 B13-A 发布秘密与备份边界
 
@@ -1307,7 +1307,7 @@ git diff --check
 - 历史风险：提交删除只清理当前树，不会清除 Git 历史中的二进制业务备份和旧配置。旧企微凭据、数据库口令及任何历史密钥在真实 `8083` 灰度前必须完成旋转；仓库历史净化需单独协调所有协作者和远端，不允许在本集成分支擅自 force push。
 - 验证：`go test ./internal/pkg/config/... -count=1`、`go test ./... -count=1`、`go vet ./...`、带非敏感契约值的 `docker compose config --quiet`、`gofmt -d`、`git diff --check`、活动 `NewAPIUsage` 零引用和当前树秘密扫描全部通过。
 - 共享与回滚：本批修改共享 Config、Compose、部署模板和文档，但没有修改 model/migration/DTO/enum/API/WebSocket、AI Prompt/Schema/Runtime、Credential 密文、Billing 口径、FastGPT 资源、人工任务池或规则派单。B13 及 B14 必须建立在 `55b49b0` 之后；回滚该提交会重新允许明文 YAML 和敏感备份进入发布物，禁止作为生产回滚方案。
-- 剩余 B13：尚未把统一分支部署到 `8083`，也未完成丽斯未来真实 NewAPI Key、九槽 Profile、FastGPT Team/Dataset、回复、转人工、规则派单、标签和人民币账单对账。因此本节不能被解释为 B13 灰度完成；这些证据完成后才可进入 B14。
+- 剩余 B13：尚未把统一分支部署到 `8083`，也未完成“丽斯文旅 / 高铁南站店”真实 NewAPI Key、九槽 Profile、FastGPT Team/Dataset、回复、转人工、规则派单、标签和人民币账单对账。因此本节不能被解释为 B13 灰度完成；这些证据完成后才可进入 B14。
 
 ### 25.15 2026-07-23 B13-B/C/D 运行现状、克隆升级与 readiness 预检
 
@@ -1315,23 +1315,23 @@ git diff --check
 - 既有运行实例：当前 `8083` 仍是旧 Docker 应用及旧 Migration 39 测试库，100 个模拟 Store 的 `tenant_id=0`，不能原地部署统一应用；当前 `8084` 是只读来源分支 `codex/tenant-ai-integration@1e8e95c9` 及历史验收库 `agentdesk_integration_20260717_fresh`。本次没有停止服务、切换端口或修改这两个数据库。
 - 隔离升级演练：从 `8084` 历史验收库克隆出 `agentdesk_unified_b13_preflight_20260723`，只把既有 `integration_runtime` 账号授权到该克隆库。统一分支先执行 AutoMigrate/DML migration，再完整重复一次；Migration `69-75` 全部成功，第二次执行后 `retry_count=1`，证明定义核验和幂等重跑真实完成。
 - Tenant 完整性：在克隆库执行统一分支只读审计，注册 Tenant 模型 `82` 个、必需/检查表 `97` 张、配置/检查关系 `242` 条，违规 `0`。该结果证明历史库可以进入统一 Schema 的非破坏阶段，不代表旧表已执行 B14 Cleanup。
-- 丽斯未来现状：Tenant `5` 已绑定酒店行业 Profile `1`；100 个有效 Store 为 `301-400`，一店一系统门店员工账号和一企微实例的历史投影仍在。`standard` Model Profile revision `1` 已具备九个启用 Slot，但仍为 `draft`；Store Assignment 为 `0`，100 个 Store Credential 全为 `unconfigured`，FastGPT Store Team、KnowledgeBase、Usage 和客户标签关系均未建立。
+- 历史仿真“丽斯未来”克隆现状：Tenant `5` 已绑定酒店行业 Profile `1`；100 个有效 Store 为 `301-400`，一店一系统门店员工账号和一企微实例的历史投影仍在。`standard` Model Profile revision `1` 已具备九个启用 Slot，但仍为 `draft`；Store Assignment 为 `0`，100 个 Store Credential 全为 `unconfigured`，FastGPT Store Team、KnowledgeBase、Usage 和客户标签关系均未建立。该克隆不是当前真实 pilot。
 - 旧秘密边界：克隆库旧 `t_ai_config` 仍有 8 条历史明文 Key。它们只存在于待删除旧表，不注册运行模型、不参与 Resolver、不迁入新 Credential，也不得用于灰度；真实发布前必须旋转历史相关凭据，B14 在可恢复备份门禁后物理删除旧表。任何日志、API、文档或验收输出均不得显示旧值。
 - 发布判定：克隆升级与 Tenant 审计通过，但真实 readiness 明确不通过。禁止把 Profile 草稿直接视为发布态，也禁止从旧 AIConfig 复制 Key 来补齐状态。B13 只有在全新部署秘密、真实 Store NewAPI Key、FastGPT Integration Token、九槽发布、单 Store Assignment/Credential/FastGPT readiness、AI 回复、转人工、规则派单、行业标签和人民币账单对账全部通过后，才能解除 No-Go。
 - 共享与回滚：本预检只产生只读审计和隔离克隆，没有修改 model/migration/DTO/enum/API/WebSocket、权限、Prompt/Schema/Runtime、派单、计费口径或现有运行库。克隆库可直接销毁；`8083` 切换前仍须完成仓库外加密备份、校验和及真实恢复演练，B14 继续保持阻断。
-- 下一步顺序：先构建统一分支镜像并在隔离端口连接该克隆库完成启动、登录、权限和旧 API 404 冒烟；再由受控环境注入全新秘密并选择一个丽斯未来 pilot Store，发布九槽 Profile、指派 Store、录入并测试 Credential、创建 FastGPT Team/Dataset，最后逐项验收回复、人工池、规则派单、标签、Usage/Billing 和回滚证据。上述真实凭据未提供前，不修改正式 `8083`。
+- 当时下一步顺序：先构建统一分支镜像并在隔离端口连接该克隆库完成启动、登录、权限和旧 API 404 冒烟，再选择仿真 Store 联调。25.21 已用真实业务身份“丽斯文旅 / 高铁南站店”取代该仿真试点设想；正式验收必须按新身份重新解析 Store，发布九槽 Profile、指派 Store、录入并测试 Credential、创建 FastGPT Team/Dataset，最后逐项验收回复、人工池、规则派单、标签、Usage/Billing 和回滚证据。上述真实凭据未提供前，不修改正式 `8083`。
 
 ### 25.16 2026-07-23 B13-E 统一镜像、worker 门禁与隔离冒烟
 
 - 代码提交：`06e4324`。文档补录前再次 `git fetch origin`，固定来源仍为 `origin/main@e67e20721574b6d3298bb0a1c4749da02ff0b949`、`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563` 和 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，来源没有前移。
-- 统一镜像与 API 冒烟：统一 Docker 镜像完成 frozen pnpm 安装、SDK、Next.js TypeScript 与 46 个静态页面构建及 Linux Go 二进制构建。隔离 MySQL 实例使用临时平台账号登录并获得 109 项权限；Tenant 列表、丽斯未来 Tenant `5`、100 个 Store、酒店行业标签策略和九槽 Profile 目录均正确。Store `301` Credential 返回 `hasKey=false` 且不含秘密字段，跨 Tenant Store 请求被拒绝。
+- 统一镜像与 API 冒烟：统一 Docker 镜像完成 frozen pnpm 安装、SDK、Next.js TypeScript 与当时 46 个静态页面构建及 Linux Go 二进制构建。隔离 MySQL 实例使用临时平台账号登录并获得 109 项权限；Tenant 列表、历史仿真“丽斯未来” Tenant `5`、100 个 Store、酒店行业标签策略和九槽 Profile 目录均正确。Store `301` Credential 返回 `hasKey=false` 且不含秘密字段，跨 Tenant Store 请求被拒绝；该 ID 不用于真实 pilot。
 - 旧链不可达：隔离实例确认 AIConfig、Tenant Model Grant、Store Model Setting、ConversationTag、KnowledgeDocument 和 KnowledgeFAQ 六组退休 API 均返回 `404`；冒烟没有恢复旧模型、旧授权、旧标签或本地知识链。
 - 风险发现：首次历史克隆启动暴露 `cronx.Init()` 无条件启动，会立即消费 29 条历史协议 outbox 并尝试外部企微自动化。该行为不会破坏正式库，但会污染克隆演练及外部系统，因此原克隆不再作为有效验收证据，已撤销账号授权并物理删除。
 - worker 维护门禁：新增公开配置 `backgroundWorkers.enabled` 与环境变量 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED`。默认值保持 `true`，不改变活动服务行为；只有历史库迁移、恢复演练、readiness 或只读隔离实例显式设为 `false`。关闭时在 AutoMigrate/DML migration 后跳过全部 `cronx` worker，并记录不含秘密的 `background workers disabled` 日志。
 - 安全复验：全新 worker-safe 隔离实例持续观察超过两个派单周期和一百个 outbox 周期，没有协议 outbox、企微外呼、派单、FastGPT、Usage 或标签演化 worker 活动；根路径返回 HTTP `200`。正式 `8083` 必须保持 worker 开启，禁止把维护模式误作生产默认值。
 - 验证：`go test ./internal/pkg/config/... ./internal/bootstrap/... -count=1`、`go test ./... -count=1`、`go vet ./...`、统一 Docker production build、使用非秘密占位值的 `docker compose config --quiet`、`gofmt -d` 和 `git diff --check` 全部通过。首次沙箱全量测试仅因 `httptest` IPv6 临时监听受限失败，在允许本地临时监听后同一命令通过。
 - 清理与影响：两个临时应用容器、匿名卷、平台临时账号及角色关系、登录会话和日志、临时数据库账号及 token 文件均已删除；受污染克隆库已物理删除。既有 `8083`、`8084` 和来源数据库未修改。本批不改变 model、migration、DTO、enum、API、WebSocket、AI Runtime、Billing、权限、派单算法或业务状态语义。
-- 发布判定：B13 仍为 No-Go。切换 `8083` 前仍须注入全新真实部署秘密，取得一个丽斯未来 pilot Store NewAPI Key 与 FastGPT Integration Token，发布九槽 Profile，完成 Store Assignment、active Credential、FastGPT Team/Dataset/readiness、真实客户 AI 回复、进入现有人工任务池、确定性规则派单、标签灰度、NewAPI 人民币账单归因对账以及仓库外备份恢复演练。全部证据完成前不得进入 B14 物理删表。
+- 发布判定：B13 仍为 No-Go。切换 `8083` 前仍须在“丽斯文旅 / 高铁南站店”由实际持有人重新录入 NewAPI Key，使用已交付 Token 和待修复的同环境 HTTPS Base URL，发布九槽 Profile，完成 Store Assignment、active Credential、FastGPT Team/Dataset/readiness、真实客户 AI 回复、进入现有人工任务池、确定性规则派单、标签灰度、NewAPI 人民币账单归因对账以及仓库外备份恢复演练。全部证据完成前不得进入 B14 物理删表。
 
 ### 25.17 2026-07-23 B13-F 可执行三阶段 readiness 发布门禁
 
@@ -1342,7 +1342,7 @@ git diff --check
 - 双数据库验证：SQLite 配置、无真实证据阻断、完整 pilot、tag gray、未来证据窗口拒绝、样本上限和秘密输出扫描均有自动化覆盖。隔离 MySQL 8.4 首次运行发现 `usage` 别名触发保留字 1064，已改为 `usage_event` 并由 `AGENT_DESK_RELEASE_READINESS_TEST_MYSQL_DSN` 驱动的同一三阶段测试复验通过；临时容器、端口和测试库已删除，既有 `8083`、`8084` 及来源数据库未修改。
 - 验证：`go test -race ./internal/services ./internal/repositories ./cmd/tenant_integrity_audit -run 'TenantReleaseReadiness|TenantIntegrityAudit|ReadOnlyDBConfig|ParseReadiness|RejectsPilotReadiness' -count=1`、`go test ./... -count=1`、`go vet ./...`、MySQL 8.4 readiness 测试、`gofmt` 和 `git diff --check` 全部通过。沙箱内第一次全量测试只因禁止 `httptest` 监听临时端口失败，在允许本机临时监听后同一命令完整通过，不计为代码回归。
 - 共享契约与合并顺序：本批新增只读 repository/service/test，并扩展既有审计 CLI；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential 写入、FastGPT 写入、Billing 口径、人工任务池或规则派单算法。租户来源分支只拥有既有审计 CLI 基线，ai-billing 不修改本批文件；`d308c21` 必须位于 B13-E `4d33e2e` 之后，B14 只能建立在本门禁和全部真实证据通过之后。
-- 发布与回滚：本提交只增加只读诊断能力，可在 B14 前独立回滚，不产生 Schema 或业务数据回滚。当前丽斯未来真实 Profile、Credential、FastGPT、回复、转人工、派单、标签和账单证据尚未录入，仓库外加密备份与真实恢复演练也未完成，因此门禁工具完成不等于 B13 完成；发布结论继续保持 `No-Go`，禁止切换正式 `8083` 或执行 B14 七张旧表物理删除。
+- 发布与回滚：本提交只增加只读诊断能力，可在 B14 前独立回滚，不产生 Schema 或业务数据回滚。当前“丽斯文旅 / 高铁南站店”真实 Profile、Credential、FastGPT、回复、转人工、派单、标签和账单证据尚未录入，仓库外加密备份与真实恢复演练也未完成，因此门禁工具完成不等于 B13 完成；发布结论继续保持 `No-Go`，禁止切换正式 `8083` 或执行 B14 七张旧表物理删除。
 
 ### 25.18 2026-07-23 B13-G 可执行加密备份恢复验证门禁
 
@@ -1355,7 +1355,7 @@ git diff --check
 - 双数据库验证：SQLite 自动化覆盖等价恢复、乱序数据、单字段变化、索引变化、同库伪装、仓库内明文备份、过宽权限、校验和错误和秘密输出扫描。端到端演练对全新统一 SQLite 进行真实 OpenSSL 加密与解密恢复，103 张应用表、677 行、70 条 Migration 的三类指纹完全一致，两库 Tenant 完整性均为 0 违规；fresh Tenant 因没有启用 Store 继续被 readiness 阻断，证明恢复通过不会绕过业务门禁。隔离 MySQL 8.4 使用两个独立临时库验证 DDL、索引、触发器元数据、数据和 Migration 指纹，同样通过；临时库和账号已删除，既有 `8083`、`8084` 与业务数据库未修改。
 - 验证：恢复/readiness 定向测试、对应 race 测试、`go test ./... -count=1`、`go vet ./...`、MySQL 8.4 双库测试、`gofmt` 和 `git diff --check` 均通过。没有 Web、DTO、路由或展示改动，因此不重复前端构建和浏览器视觉验收。
 - 共享与回滚：本批只新增只读 repository/service/test 并扩展 CLI；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential、FastGPT、Billing、人工任务池或规则派单。`ed5953d` 必须位于 B13-F `d308c21` 之后；可在 B14 前独立回滚且不产生数据库回滚。Tenant 来源只包含旧审计 CLI 基线，ai-billing 不包含本批文件；固定 SHA 后均无新增同文件提交，因此无需 rebase，但不得把本提交回写来源分支形成第二套门禁。
-- 发布判定：上述结果只证明恢复验证机制和隔离工程演练有效，不是丽斯未来生产备份恢复证据。现场仍必须先停 `8083` 与全部 worker，在受控存储生成真实加密备份、固定校验和、恢复到独立库，并以丽斯未来 `tag_gray` 证据窗口跑通本门禁；同时完成真实 NewAPI、FastGPT、回复、转人工、规则派单、标签和人民币账单对账。全部通过前 B13 仍为 `No-Go`，B14 七张旧表物理删除继续硬阻断。
+- 发布判定：上述结果只证明恢复验证机制和隔离工程演练有效，不是“丽斯文旅 / 高铁南站店”生产备份恢复证据。现场仍必须先停 `8083` 与全部 worker，在受控存储生成真实加密备份、固定校验和、恢复到独立库，并以该 pilot 的 `tag_gray` 证据窗口跑通本门禁；同时完成真实 NewAPI、FastGPT、回复、转人工、规则派单、标签和人民币账单对账。全部通过前 B13 仍为 `No-Go`，B14 七张旧表物理删除继续硬阻断。
 
 ### 25.19 2026-07-23 B13-H 真实 FastGPT 会话证据与发布游标门禁
 
@@ -1365,7 +1365,7 @@ git diff --check
 - 发布游标：同一 readiness JSON 新增只读 `releaseCursor`，输出全库 `Message`、`ChannelMessageOutbox`、`ConversationAssignment` 的最大 ID 与总量，并额外输出未结 Outbox 和活动 Assignment 数量。该快照用于 22.2 停旧服务与 worker 前后复核；不输出 Tenant 列表、客户 ID、会话 ID、消息正文、Outbox payload、错误原文、DSN 或秘密。恢复模式的 source/restored readiness 各自携带同一格式快照，完整数据一致性仍由 B13-G 全表指纹负责。
 - 验证：SQLite 覆盖无证据阻断、完整 pilot/tag gray、检索日志缺失、旧 Profile revision、发布游标计数和 Outbox payload 不泄露；同一三阶段契约在隔离 MySQL 8.4 通过，专用临时库和账号随后删除。`go test -race ./internal/services ./internal/repositories -run TenantReleaseReadiness -count=1`、readiness/restore 组合定向测试、`go test ./... -count=1`、`go vet ./...`、`gofmt` 和 `git diff --check` 均通过。没有 Web、HTTP API、DTO、enum、权限、Migration、AutoMigrate 或 WebSocket 变化，因此不重复前端构建和浏览器视觉验收。
 - 共享与回滚：本批只增强只读发布证据，不改变 FastGPT 检索写入、AI Reply Runtime、Credential、Billing、人工任务池、规则派单、客户标签或运营事实。`e5ad354` 必须位于 B13-G `ed5953d` 之后；B14 只能建立在本门禁和全部真实证据通过之后。Cleanup 前可整体回滚本提交且没有数据回滚，但回滚会重新允许没有真实 FastGPT 检索证据的 pilot 报告，不能作为生产发布方案。
-- 发布判定：工程门禁完成不代表现场证据完成。丽斯未来仍没有可用的真实 Store NewAPI Key、FastGPT Integration Token、已发布九槽 Profile、Store Assignment/active Credential/FastGPT Team/Dataset，也没有真实回复、转人工、确定性规则派单、标签灰度、Request ID 人民币账单对账和外部加密备份恢复证据。B13 继续为 `No-Go`，正式 `8083` 与 B14 物理清理保持硬阻断。
+- 发布判定：工程门禁完成不代表现场证据完成。“丽斯文旅 / 高铁南站店”仍没有统一环境 active Store Credential、已发布九槽 Profile、Store Assignment/FastGPT Team/Dataset，也没有真实回复、转人工、确定性规则派单、标签灰度、Request ID 人民币账单对账和外部加密备份恢复证据。FastGPT Integration Token 已交付，但当前 HTTP Base URL 仍被生产门禁拒绝。B13 继续为 `No-Go`，正式 `8083` 与 B14 物理清理保持硬阻断。
 
 ### 25.20 2026-07-23 B13-I 生产密钥与外部凭据交付契约
 
@@ -1373,10 +1373,10 @@ git diff --check
 - 唯一手册：新增 `docs/deployment/production-secrets.md`，按真实 `ValidateProduction`、AES-GCM、Store Credential 和 FastGPT gateway 代码，把交付材料分成部署现场生成秘密、FastGPT 服务方签发的 Integration Token、门店 NewAPI Key 和可选集成凭据。`.env.example`、中英文 README 只增加权威链接与边界提示，不建立第二份变量表。
 - 核心边界：生产固定需要数据库 DSN、32 字节 Base64 邀请码密钥、独立客户会话/资产签名秘密、32 字节 Store Credential 主密钥及其非秘密 Key ID；FastGPT 灰度再要求 Base URL 与 Integration Token。门店 NewAPI Key 不属于 `.env`，只能由用户在 Store Credential 工作流提交；一条 Key 覆盖当前九个强制用途槽，禁止恢复平台 NewAPI Token、旧 `AIConfig.APIKey` 或九槽九 Key 的错误解释。
 - 安全与恢复：手册明确禁止在聊天、Git、PR、Issue、Markdown、日志或诊断报告中传递真实值；记录主密钥丢失会使全部 Store Credential 不可解密，且当前单主密钥运行时不支持直接轮换。邀请码、客户会话、资产签名、FastGPT Token 和门店 Key 分别给出轮换影响，避免把“改环境变量”误当作完整轮换。
-- 现场输入：下一步只需要用户确认丽斯未来 pilot Store 名称或 ID、是否允许门店凭据自助及是否需要主管审批；不得默认 Store `301`。FastGPT Base URL/Integration Token 必须通过受控部署渠道注入，NewAPI Key 必须由 Key 所有者通过凭据页面提交，不要求用户在本任务中向 Codex 发送真实值。
+- 现场输入：本节当时待确认的 pilot、门店凭据自助和主管审批问题已由 25.21 冻结为“丽斯文旅 / 高铁南站店”、`AllowCredentialSelfService=true` 和 `RequireSupervisorApproval=true`；仍不得默认 Store `301`。FastGPT Base URL/Integration Token 必须通过受控部署渠道注入，NewAPI Key 必须由 Key 所有者通过凭据页面提交，不要求用户在本任务中向 Codex 发送真实值。
 - 验证：`go test ./internal/pkg/config/... -count=1` 通过；使用明确标为测试占位的独立变量执行 `docker compose config --quiet` 通过；文档和 README 无尾随空白，`git diff --check` 通过。没有创建真实 `.env`、没有读取或输出秘密，也没有停止或替换当前正式 `8083`。
 - 共享契约与回滚：本批只修改 `.env.example`、中英文 README 和部署/交接文档；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential 密文格式、FastGPT 调用、Billing 口径、人工任务池或规则派单。可在 B14 前整体回滚文档提交且无数据回滚，但生产发布不得回退到没有密钥保管与轮换说明的状态。
-- 发布判定：交付契约完成不等于真实密钥或现场证据已就绪。当前仍未安全注入全新部署秘密和 FastGPT Integration Token，也未确定 pilot Store、提交其 NewAPI Key、发布/指派九槽 Profile 或完成回复、转人工、派单、标签、账单与恢复证据；B13 继续为 `No-Go`，正式 `8083` 和 B14 物理删表保持阻断。
+- 当时发布判定：交付契约完成不等于真实密钥或现场证据已就绪；本条记录的是 25.20 编写时状态，安全 handoff、pilot 和策略已由 25.21 以后记录取代。NewAPI 重录、九槽/Profile、回复、转人工、派单、标签、账单与恢复证据仍未完成；B13 继续为 `No-Go`，正式 `8083` 和 B14 物理删表保持阻断。
 
 ### 25.21 2026-07-23 B13-J 现场秘密交接、pilot 冻结与端点预检
 
@@ -1447,6 +1447,27 @@ git diff --check
 - 共享影响：本轮只读检查 Docker 元数据和现有数据库中的非秘密身份/计数，并更新交接文档；未写数据库，未修改 model、migration、DTO、enum、API、权限、WebSocket、AI Runtime、Credential、FastGPT、Billing、人工池、规则派单或前端。来源分支继续没有前移。
 - 下一步：由数据保管人通过受控渠道提供真实来源库或加密备份位置，由 FastGPT 负责人提供同环境 HTTPS 地址；之后才能在隔离目标库迁移并按业务身份解析最终 Store ID。两项完成前 B13 继续 `No-Go`，不得切换 `8083` 或运行 B14 `prepare/execute`。
 
+### 25.27 2026-07-23 B13-N pilot 冻结、运行时等价复核与后台路由收口
+
+- 来源与输入：本批开始前执行 `git fetch origin --prune`；来源继续固定为 `origin/main@e67e20721574b6d3298bb0a1c4749da02ff0b949`、`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563` 和 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，均未前移。B14 批准边界、pilot“丽斯文旅 / 高铁南站店”、来源 Store ID `3` 仅作定位、单店自助凭据、异人公司主管审批和统一环境重新录入 NewAPI Key 再次冻结。
+- 安全 handoff：当前执行账号仓库外安全副本仍为父目录 `0700`、文件 `0600`，16 项变量无空值或重复项，SHA-256 仍为 `3e361155f473c520086bd3995732343f9540aa5a4bd044043cdab952120e2fa4`，`docker compose --env-file <secure-file> config --quiet` 通过。消息临时路径和交付主机绝对路径不作为运行契约；仓库、日志和本文均不记录变量值。FastGPT Integration Token 已具备，但当前 Base URL 仍为 HTTP，禁止携带 Token 调用。
+- 回复运行时等价审计：对固定 AI 来源逐文件复核后，`intent_pipeline.go`、`generated_reply_validator.go` 和 `knowledge_guard.go` 的 Git blob 与来源完全一致；IntentDetect 的系统 Prompt、用户 Prompt、严格 JSON 解析和单次修复提示没有改写，正常响应一次调用、JSON 非法时最多增加一次修复调用。executor 的差异是旧 `AIConfig` 到唯一 Store Resolver 的载体替换、Tenant/Store 范围、FastGPT-only 知识和 Usage 归因，不改变 Normalize、Intent、Plan、Generate、Validate、Commit 或 Resume 顺序。`TestRuntimeIntentDetectGoldenCallCountAndMessageOrder` 固定上述调用次数和消息顺序。
+- 后台路由收口：代码提交 `f7d58b5` 将未登记的 `/dashboard/*` 直达路由从默认放行改为默认拒绝，并物理删除无导航、无权限、无 API 和无业务职责的 Help 占位页、专用占位组件及中英文占位文案。已登记导航、通知补充路由、登录回调和现有页面职责不变；未知模块与旧 Help 路由均由统一布局重定向到当前账号首个可访问页面。
+- 前端验证：全部 `*.test.mjs` 为 149/149 通过，`pnpm typecheck` 通过，ESLint 为 0 error / 33 个既有 warning，SDK 构建无差异，Next.js 生产构建通过并从 46 个静态页面收敛为 45 个。`git diff --check` 通过。
+- 共享与回滚：本批 Web 改动涉及共享导航和多语言资源，但未增加权限码、页面入口或 API；未修改 model、AutoMigrate、DML migration、DTO、enum、WebSocket、Prompt、Schema、模型调用次数、Credential、FastGPT 请求、Billing、人工任务池或规则派单。`f7d58b5` 可独立回滚且无数据回滚；回滚会重新暴露未登记路由的默认放行和无职责占位页，不可作为生产方案。
+- 发布判定：本轮复核没有解除外部阻断。仍需同环境 FastGPT HTTPS Base URL、真实来源库或加密备份及安全访问、迁移后业务身份解析、实际 Key 持有人页面重录、异人主管审批、真实回复/转人工/规则派单/标签/人民币账单和正式加密备份独立恢复证据。上述全部完成前 B13 保持 `No-Go`；B14 固定 7 表、5 列、4 索引白名单不得扩大，生产 `prepare/execute` 不得运行。
+
+### 25.28 2026-07-23 B13-O 运营分析双数据库复核与评价幂等收口
+
+- 来源与提交：开始及提交前均执行 `git fetch origin --prune`，固定来源仍为 `origin/main@e67e20721574b6d3298bb0a1c4749da02ff0b949`、`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563` 和 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，均未前移。代码提交 `ffd53d7` 只落在唯一统一分支，不回写来源分支。
+- MySQL 严格模式：运营分析夹具直接 `Create(Conversation)` 时遗漏真实创建链必填的 `LastMessageAt/LastActiveAt`，MySQL 8.4 严格模式正确拒绝零日期。生产 `ConversationService` 始终初始化两个时间，消息全部撤回后 `last_message_at` 仍允许 `NULL`；因此没有把生产字段改为指针或放宽 SQL mode，只让直接造库夹具遵守真实创建契约。
+- 评价幂等：并发满意度提交原先可能同时读到 `pending`，只有一个条件更新成功，其余请求被误报“评价链接无效或已过期”。Repository 现用 `FOR UPDATE` 锁定 token 行，Service 继续在既有事务中完成状态更新；SQLite 按项目既有模式增加 token 哈希分片进程锁。重复提交返回同一已提交事实，不新增状态、DTO、路由或权限。
+- 测试底座：运营分析模型集合补入范围解析真实依赖的 `KnowledgeBase`；SQLite 内存库每次使用唯一名称并在清理阶段关闭连接，避免 `-count` 重跑复用旧唯一键。会话夹具补齐时间快照但不改变运营指标、质检仅人工回复、Tenant/Store/组/个人数据范围或报表口径。
+- 双数据库证据：SQLite 并发评价连续 20 轮、MySQL 连续 10 轮通过；随后在五个独立 MySQL 8.4 数据库分别复验 capture/质检/在线状态、backfill、报表聚合、直接访问范围和评价/保存视图工作流，全部通过。临时数据库和临时测试账号均已删除。`go test ./... -count=1`、`go vet ./...` 以及 analytics/evaluation 定向 `go test -race` 通过，`gofmt` 与 `git diff --check` 通过。
+- 安全 handoff：仓库外安全副本继续为父目录 `0700`、文件 `0600`，16 项变量和冻结 SHA-256 `3e361155f473c520086bd3995732343f9540aa5a4bd044043cdab952120e2fa4` 未变化；本批没有读取、输出或提交变量值。FastGPT Token 仍不得通过当前 HTTP Base URL 发送。
+- 共享与回滚：生产改动只涉及 analytics repository 和 evaluation service 的并发语义；未修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential、FastGPT、Billing、人工任务池或规则派单。`ffd53d7` 无数据迁移，可在 B14 前代码回滚，但回滚会恢复评价竞态和不可信的跨数据库测试，不可作为生产方案。
+- 发布判定：工程复核没有解除 B13 外部阻断。pilot 仍为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 仅作定位，最终 ID 必须迁移后解析；NewAPI Key 仍由实际持有人在统一页面重录并由异人公司主管审批。B13 全验收、停机、加密备份和独立恢复验证前不得切换正式 `8083` 或运行 B14 `prepare/execute`，固定白名单不得扩大。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B13-B14 实施和验收证据。
@@ -1499,5 +1520,5 @@ git diff --check
 | 44 | 旧 `AIConfig.APIKey` 和旧 Resolver 直接退出，不迁入或回退影响新配置 | 12、18.3、18.4 |
 | 45 | 新 Credential 永不回显明文，仅显示掩码；日志、Trace、API 和导出均不得泄密 | 7.3、18.4、21.3 |
 | 46 | 旧 AIConfig、Grant、StoreSetting、ConversationTag 表及专属列在停机门禁后物理删除 | 12.2、18.4、B14 |
-| 47 | 首个真实灰度租户继续使用“丽斯未来” | 2、22.2、B13 |
+| 47 | 历史仿真名称“丽斯未来”只作追溯；当前首个真实灰度冻结为 Tenant“丽斯文旅” / Store“高铁南站店” | 2、22.2、25.21、B13 |
 | 48 | 最终服务端口继续使用 `8083` | 文档头、22.2、B13 |
