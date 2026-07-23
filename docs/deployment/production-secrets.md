@@ -124,7 +124,7 @@ cs_ai_agent:<AGENT_DESK_MYSQL_PASSWORD>@tcp(mysql:3306)/cs_ai_agent?charset=utf8
 /api/integration/agent-desk/usage/list
 ```
 
-Agent Desk 会在根地址后拼接上述路径。生产必须使用 HTTPS，并由 FastGPT 服务负责人确认 Tenant + Store 隔离、Team/Dataset 归属和 Usage cursor 契约。
+Agent Desk 会在根地址后拼接上述路径。生产必须使用 HTTPS，URL 不得内嵌账号或密码；生产配置预检会在连接数据库或启动 worker 前拒绝 HTTP。FastGPT 服务负责人还必须确认 Tenant + Store 隔离、Team/Dataset 归属和 Usage cursor 契约。
 
 ### 4.2 `AGENT_DESK_FASTGPT_INTEGRATION_TOKEN`
 
@@ -263,6 +263,15 @@ go test ./internal/pkg/config/... -count=1
 ```
 
 禁止运行 `docker compose config` 后把完整输出贴到聊天或 CI 日志，因为非 `--quiet` 模式会展开环境变量。
+
+也可以把生产环境文件保存在仓库外，避免在仓库根目录产生 `.env`。安全文件和父目录分别使用 `0600`、`0700`，并通过绝对路径显式传入：
+
+```bash
+docker compose --env-file "/absolute/secure/path/production.env" config --quiet
+docker compose --env-file "/absolute/secure/path/production.env" up -d --build
+```
+
+不得把仓库外安全文件复制进 Git 工作树，也不得在命令中逐项展开真实值。
 
 ### 8.2 生产秘密管理器
 

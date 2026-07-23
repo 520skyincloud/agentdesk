@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -392,7 +393,7 @@ func ValidateProduction(cfg *Config) error {
 	require(strings.TrimSpace(cfg.StoreCredential.MasterKeyID) != "", "AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID")
 
 	if cfg.FastGPT.Enabled {
-		require(strings.TrimSpace(cfg.FastGPT.BaseURL) != "", "AGENT_DESK_FASTGPT_BASE_URL")
+		require(validProductionHTTPSURL(cfg.FastGPT.BaseURL), "AGENT_DESK_FASTGPT_BASE_URL")
 		require(strings.TrimSpace(cfg.FastGPT.IntegrationToken) != "", "AGENT_DESK_FASTGPT_INTEGRATION_TOKEN")
 	}
 	if cfg.Email.Enabled {
@@ -442,6 +443,14 @@ func validBase64Key(value string) bool {
 
 func strongSecret(value string) bool {
 	return len([]byte(strings.TrimSpace(value))) >= 32
+}
+
+func validProductionHTTPSURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil &&
+		strings.EqualFold(parsed.Scheme, "https") &&
+		strings.TrimSpace(parsed.Host) != "" &&
+		parsed.User == nil
 }
 
 func applyFastGPTEnv(cfg *Config) error {

@@ -378,3 +378,33 @@ func TestLoadAcceptsCompleteProductionSecrets(t *testing.T) {
 		t.Fatalf("complete production configuration rejected: %v", err)
 	}
 }
+
+func TestLoadRequiresHTTPSForProductionFastGPT(t *testing.T) {
+	t.Setenv("AGENT_DESK_ENV", "production")
+	t.Setenv("AGENT_DESK_DB_DSN", "file:production.db")
+	t.Setenv("AGENT_DESK_INVITATION_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	t.Setenv("AGENT_DESK_CUSTOMER_SESSION_SECRET", "customer-session-secret-with-32-bytes")
+	t.Setenv("AGENT_DESK_ASSET_URL_SIGNING_SECRET", "asset-signing-secret-with-at-least-32")
+	t.Setenv("AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY", base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789")))
+	t.Setenv("AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID", "deployment-key-v1")
+	t.Setenv("AGENT_DESK_FASTGPT_ENABLED", "true")
+	t.Setenv("AGENT_DESK_FASTGPT_INTEGRATION_TOKEN", "integration-token")
+	t.Setenv("AGENT_DESK_FASTGPT_BASE_URL", "http://fastgpt.example.com")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("db:\n  type: sqlite\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "AGENT_DESK_FASTGPT_BASE_URL") {
+		t.Fatalf("insecure production FastGPT URL error=%v", err)
+	}
+	if strings.Contains(err.Error(), "http://fastgpt.example.com") {
+		t.Fatalf("production validation leaked the configured FastGPT URL: %v", err)
+	}
+
+	t.Setenv("AGENT_DESK_FASTGPT_BASE_URL", "https://fastgpt.example.com")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("HTTPS production FastGPT URL rejected: %v", err)
+	}
+}
