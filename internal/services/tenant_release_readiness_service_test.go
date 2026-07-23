@@ -189,6 +189,31 @@ func TestTenantReleaseReadinessRequiresUniqueStoreAccountAndSupervisorApprovalEv
 			"tenant_id = ? AND store_id = ? AND action = ?",
 			fixture.tenant.ID,
 			fixture.store.ID,
+			enums.CredentialAuditActionSubmit,
+		).
+		Update("operator_id", fixture.account.ID+2000).Error; err != nil {
+		t.Fatalf("replace Credential submitter: %v", err)
+	}
+	submitterReport := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
+	if !tenantReleaseReadinessHasViolation(submitterReport, "EVIDENCE_CREDENTIAL_SUPERVISOR_APPROVAL") {
+		t.Fatalf("pilot Credential not submitted by the active Store account must fail: %#v", submitterReport.Violations)
+	}
+	if err := fixture.db.Model(&models.StoreModelCredentialAuditLog{}).
+		Where(
+			"tenant_id = ? AND store_id = ? AND action = ?",
+			fixture.tenant.ID,
+			fixture.store.ID,
+			enums.CredentialAuditActionSubmit,
+		).
+		Update("operator_id", fixture.account.ID).Error; err != nil {
+		t.Fatalf("restore Credential submitter: %v", err)
+	}
+
+	if err := fixture.db.Model(&models.StoreModelCredentialAuditLog{}).
+		Where(
+			"tenant_id = ? AND store_id = ? AND action = ?",
+			fixture.tenant.ID,
+			fixture.store.ID,
 			enums.CredentialAuditActionApprove,
 		).
 		Update("operator_role", constants.RoleCodeAdmin).Error; err != nil {

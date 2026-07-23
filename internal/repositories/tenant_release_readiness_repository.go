@@ -18,6 +18,7 @@ func newTenantReleaseReadinessRepository() *tenantReleaseReadinessRepository {
 
 type TenantReleaseReadinessStoreAccountState struct {
 	StoreID            int64
+	ActiveUserID       int64
 	ActiveBindingCount int64
 	ReadyAccountCount  int64
 }
@@ -187,6 +188,16 @@ func (r *tenantReleaseReadinessRepository) FindStoreAccountStates(
 		Select(`
 			binding.store_id,
 			COUNT(binding.id) AS active_binding_count,
+			MAX(CASE
+				WHEN account.id IS NOT NULL
+					AND account.tenant_id = binding.tenant_id
+					AND account.status = ?
+					AND account.approval_status = ?
+					AND account.deleted_at IS NULL
+					AND binding.active_user_id = binding.user_id
+					AND binding.agent_team_id > 0
+				THEN binding.user_id ELSE 0
+			END) AS active_user_id,
 			SUM(CASE
 				WHEN account.id IS NOT NULL
 					AND account.tenant_id = binding.tenant_id
@@ -197,7 +208,12 @@ func (r *tenantReleaseReadinessRepository) FindStoreAccountStates(
 						AND binding.agent_team_id > 0
 				THEN 1 ELSE 0
 			END) AS ready_account_count
-		`, enums.StatusOk, enums.UserApprovalStatusApproved).
+		`,
+			enums.StatusOk,
+			enums.UserApprovalStatusApproved,
+			enums.StatusOk,
+			enums.UserApprovalStatusApproved,
+		).
 		Joins("LEFT JOIN t_user AS account ON account.id = binding.user_id").
 		Where("binding.tenant_id = ? AND binding.store_id IN ? AND binding.status = ?", tenantID, storeIDs, enums.StatusOk).
 		Group("binding.store_id").

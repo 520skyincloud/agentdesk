@@ -364,7 +364,7 @@ func (s *tenantReleaseReadinessService) Audit(
 		if auditErr != nil {
 			return nil, fmt.Errorf("read Store credential approval evidence failed: %w", auditErr)
 		}
-		approvalReady := tenantReleaseCredentialApprovalReadiness(approvalAudit)
+		approvalReady := tenantReleaseCredentialApprovalReadiness(approvalAudit, accountByStore)
 		approvalFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
 			credential, exists := credentialByStore[storeID]
 			if !exists || credential.CredentialRevision <= 0 {
@@ -571,6 +571,7 @@ type tenantReleaseCredentialSubmission struct {
 
 func tenantReleaseCredentialApprovalReadiness(
 	items []repositories.TenantReleaseReadinessCredentialAuditState,
+	accountByStore map[int64]repositories.TenantReleaseReadinessStoreAccountState,
 ) map[tenantReleaseCredentialRevisionKey]bool {
 	submissions := make(map[tenantReleaseCredentialRevisionKey][]tenantReleaseCredentialSubmission)
 	ret := make(map[tenantReleaseCredentialRevisionKey]bool)
@@ -581,7 +582,12 @@ func tenantReleaseCredentialApprovalReadiness(
 		key := tenantReleaseCredentialRevisionKey{StoreID: item.StoreID, Revision: item.ToRevision}
 		switch item.Action {
 		case enums.CredentialAuditActionSubmit:
-			if item.OperatorID <= 0 ||
+			account, accountReady := accountByStore[item.StoreID]
+			if !accountReady ||
+				account.ActiveBindingCount != 1 ||
+				account.ReadyAccountCount != 1 ||
+				account.ActiveUserID <= 0 ||
+				item.OperatorID != account.ActiveUserID ||
 				!tenantReleaseRoleSnapshotContains(item.OperatorRole, constants.RoleCodeStoreStaff) ||
 				(item.Result != enums.CredentialAuditResultPending && item.Result != enums.CredentialAuditResultSuccess) {
 				continue
