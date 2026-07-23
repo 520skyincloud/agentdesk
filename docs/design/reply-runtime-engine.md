@@ -132,9 +132,15 @@ Validate
   -> Message + Conversation cursor + EventLog transaction
   -> ServiceAnalyticsCapture
   -> ObserveCommittedMessage
+  -> idempotent ChannelMessageOutbox ensure
   -> WebSocket refresh/resync
-  -> ChannelMessageOutbox
 ```
+
+外部渠道的客服/AI消息在 Message 事务内写入内部 `OutboundChannelType` 投递意图，
+提交后按 `(channel_type, message_id)` 幂等确保 Outbox，再发布 WebSocket。相同
+`ClientMsgID` 重试只补建 Outbox，不重复运营事实、演化游标或模型调用；后台补偿也只
+扫描该字段非空的新消息。历史行默认空值，企微员工号人工自回显明确不写该字段，因此
+不会被当成待发送消息。
 
 Outbox 或 WebSocket 失败不能重跑模型。每次真实 provider 调用记录 Tenant、Store、
 Profile revision、Usage slot、Credential revision、RequestID 和 NewAPI receipt；

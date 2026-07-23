@@ -484,9 +484,15 @@ Validate
   -> Message + Conversation cursor + EventLog 事务提交
   -> ServiceAnalyticsCapture
   -> ObserveCommittedMessage 推进演化游标
-  -> ChannelMessageOutbox
+  -> 按持久投递意图幂等确保 ChannelMessageOutbox
   -> WebSocket 发布/重同步
 ```
+
+外部渠道的客服/AI消息在 Message 事务内持久化内部 `OutboundChannelType`，但 Outbox
+仍在事务提交后创建，不把外部发送动作并入消息事务。相同 `ClientMsgID` 命中既有消息
+时只补建缺失 Outbox；后台补偿只扫描该字段非空的消息，并以
+`channel_type + message_id` 唯一键幂等写入。历史消息默认空值，不做危险回填；企微员工
+自行回复形成的人工自回显也保持空值，禁止反向发送。
 
 Outbox 或 WebSocket 失败不能重新生成模型回复。Observe 只推进状态，不能在消息提交路径调用标签模型。
 
@@ -1497,6 +1503,17 @@ git diff --check
 - 验证：退役接口未注册且实测返回 404；标签、路由、权限和租户隔离定向测试通过；Migration 073 在 SQLite 和独立 MySQL 8.4 上通过幂等复验。随后 `go test ./... -count=1`、`go vet ./...`、完整 AI/services/repositories `-race`、149/149 前端契约测试、`pnpm typecheck`、SDK 构建和 45 页面生产构建通过；ESLint 为 0 error / 33 个既有 warning。manifest 保持 8 列，旧链扫描、秘密增量扫描和 `git diff --check` 通过。
 - 共享与回滚：本步有意删除 API、DTO 和旧权限常量，属于最终方案已经冻结的破坏性退役；没有 model、AutoMigrate Schema、DML 行为、enum、WebSocket、AI Runtime、Credential、FastGPT、Billing、人工任务池或规则派单变化，前端此前已无这些 caller。`9cf7003` 可在 B14 前代码回滚，但回滚会重新暴露废弃路由，不能作为最终发布版本。
 - 发布判定：代码与安全文件复核仍不替代现场证据。FastGPT Base URL 仍为 HTTP，来源库/加密备份仍未交付，pilot 最终 Store ID 尚未迁移解析，真实 Key 重录、异人主管审批、全链灰度、正式停机、加密备份及独立恢复均未完成，因此 B13 继续 `No-Go`。B14 固定 7 表、5 列、4 索引白名单未扩大，`prepare/execute` 继续禁止。
+
+### 25.32 2026-07-23 B7/B13-S 消息 Outbox 顺序与可靠性收口
+
+- 代码提交：`df5516b`。实施及提交前均执行 `git fetch origin --prune`，固定来源仍为 `origin/main@e67e20721574b6d3298bb0a1c4749da02ff0b949`、`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563` 和 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，均未前移。
+- 缺口：原消息链在 WebSocket 之后才创建 Outbox，创建失败仅记录日志；相同 `ClientMsgID` 命中既有消息时直接返回，无法补建 Outbox。AI欢迎语又走独立事务路径，没有进入 Outbox 和运营提交后处理，可能出现页面已见消息但渠道永远未发送。
+- 持久意图：`Message.OutboundChannelType` 只记录“该新消息确实应发往哪个外部渠道”，由 Message 事务内根据 Tenant 范围、渠道和支持的消息类型写入；Web、客户消息、历史行和 `CreateExternalAgentMessageWithoutOutbox` 企微员工自回显均为空。AutoMigrate 只新增兼容列和索引，不新增 DML Migration，也不回填旧消息，避免上线后补发历史回复。
+- 提交顺序：统一为 `Message/Conversation/EventLog transaction -> ServiceAnalyticsCapture -> ObserveCommittedMessage -> idempotent Outbox ensure -> WebSocket`。欢迎语复用同一提交后处理；相同 `ClientMsgID` 重试只确保 Outbox，不重复发布 WebSocket、运营事实、标签演化或模型调用。
+- 幂等与补偿：Outbox repository 以既有 `(channel_type, message_id)` 唯一键执行 SQLite/MySQL 兼容的 `CreateIfAbsent`。每 10 秒的后台补偿只查询有持久投递意图且缺 Outbox 的客服/AI消息，逐条复核 Tenant、Conversation、Channel 和消息类型后创建；旧消息和员工自回显不会进入扫描。
+- 验证：新增 SQLite/MySQL repository 契约，验证缺失查询、唯一冲突幂等和空意图排除；Service 回归覆盖正常发送、欢迎语、相同 ClientMsgID 补建、重复补偿和员工自回显排除。临时 MySQL 8.4 实跑后容器已删除；`go test ./... -count=1`、定向 `go test -race ./internal/services ./internal/repositories -run 'Message|Outbox|ConversationCreate' -count=1`、`go vet ./...`、`gofmt` 和 `git diff --check` 均通过。
+- 共享与回滚：本步修改共享 Message model、repository、Message/Conversation service 和 cron，但不改变 DTO、enum、HTTP API、权限、WebSocket payload、AI Prompt/Schema、模型调用次数、Credential、FastGPT、Billing、人工任务池或规则派单。代码可在 B14 前独立回滚；AutoMigrate 已创建的空默认列可保留，不会被旧代码读取。来源分支无同 SHA 后续修改，无需 rebase。
+- 发布判定：该修复只闭合消息可靠性代码缺口，不生成 pilot 现场证据。B13 仍需生产 HTTPS FastGPT、真实来源库迁移、最终 Store ID 解析、实际 Key 持有人重录、异人主管审批、完整灰度和正式加密备份独立恢复；全部通过前继续 `No-Go`，B14 固定白名单不扩大，`prepare/execute` 禁止运行。
 
 ## 26. 用户最终 1-48 项决定追溯
 
