@@ -19,6 +19,7 @@ import (
 
 func TestWxWorkProtocolRemoteSetupBindsExistingStoreStaffWithoutCreatingAccount(t *testing.T) {
 	db := setupWxWorkProtocolInstanceCompanyTestDB(t)
+	seedCustomerTagRuntimePolicyDefaults(t, db, 101)
 	sender := &captureEmailSender{}
 	originalEmailVerificationService := EmailVerificationService
 	EmailVerificationService = newEmailVerificationService(sender)
@@ -254,6 +255,8 @@ func setupWxWorkProtocolInstanceCompanyTestDB(t *testing.T) *gorm.DB {
 		&models.StoreStaffBinding{},
 		&models.StoreModelCredential{},
 		&models.StoreCredentialPolicy{},
+		&models.TenantCustomerTagPolicy{},
+		&models.StoreCustomerTagRuntimePolicy{},
 		&models.KnowledgeBase{},
 		&models.ConversationRouteState{},
 		&models.WxWorkProtocolDevicePoolInstance{},

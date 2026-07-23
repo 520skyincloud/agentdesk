@@ -143,6 +143,9 @@ func (s *storeStaffBindingService) prepareForUserDB(db *gorm.DB, tenantID, userI
 		if err := StoreModelCredentialService.EnsureStoreRecordsDB(db, store, operator); err != nil {
 			return nil, err
 		}
+		if err := CustomerTagRuntimePolicyService.EnsureStorePolicyDB(db, store, operator); err != nil {
+			return nil, err
+		}
 		return &preparedStoreStaffBinding{User: user, Store: store, Binding: binding}, nil
 	}
 	if storeName == "" {
@@ -164,6 +167,9 @@ func (s *storeStaffBindingService) prepareForUserDB(db *gorm.DB, tenantID, userI
 		return nil, err
 	}
 	if err := StoreModelCredentialService.EnsureStoreRecordsDB(db, store, operator); err != nil {
+		return nil, err
+	}
+	if err := CustomerTagRuntimePolicyService.EnsureStorePolicyDB(db, store, operator); err != nil {
 		return nil, err
 	}
 	binding := &models.StoreStaffBinding{

@@ -617,6 +617,29 @@ func (s *wsService) PublishCustomerTagChanged(conversation *models.Conversation,
 	s.PublishToTopics(topics, event)
 }
 
+func (s *wsService) PublishCustomerTagRuntimePolicyChanged(
+	tenantID int64,
+	storeIDs []int64,
+	allStores bool,
+	tenantPolicyChanged bool,
+	evolutionEnabled *bool,
+	replyEnabled *bool,
+	updatedAt time.Time,
+) {
+	if tenantID <= 0 {
+		return
+	}
+	event := s.newEvent(s.adminTenantTopic(tenantID), RealtimeCustomerTagRuntimePolicyChangedEvent{
+		Payload: RealtimeCustomerTagRuntimePolicyChangedPayload{
+			TenantID: tenantID, StoreIDs: uniquePositive(storeIDs), AllStores: allStores,
+			TenantPolicyChanged:         tenantPolicyChanged,
+			CustomerTagEvolutionEnabled: evolutionEnabled, ReplyTagContextEnabled: replyEnabled,
+			UpdatedAt: updatedAt.Format(time.RFC3339Nano),
+		},
+	})
+	s.PublishToTopics([]string{s.adminTenantTopic(tenantID)}, event)
+}
+
 func (s *wsService) buildConversationRouteRealtimePayload(conversationID, tenantID int64) RealtimeConversationChangedPayload {
 	route := ConversationRouteService.GetByConversationIDInTenant(conversationID, tenantID)
 	if route == nil {

@@ -148,9 +148,9 @@ var (
 	PermissionQuickReplyDelete = Permission{Name: "删除快捷回复", Code: "quickReply.delete", Type: "api", GroupName: "quickReply", Method: "POST", APIPath: "/api/dashboard/quick-reply/delete", SortNo: 640}
 
 	// 标签相关权限
-	PermissionTagView   = Permission{Name: "查看行业标签目录", Code: "tag.view", Type: "api", GroupName: "tag", Method: "ANY", APIPath: "/api/dashboard/tag/list", SortNo: 550}
+	PermissionTagView   = Permission{Name: "查看行业标签目录与策略", Code: "tag.view", Type: "api", GroupName: "tag", Method: "ANY", APIPath: "/api/dashboard/tag/list", SortNo: 550}
 	PermissionTagCreate = Permission{Name: "创建标签", Code: "tag.create", Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/create", SortNo: 560}
-	PermissionTagUpdate = Permission{Name: "配置行业标签别名与状态", Code: "tag.update", Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/update", SortNo: 570}
+	PermissionTagUpdate = Permission{Name: "配置行业标签与演化策略", Code: "tag.update", Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/customer-tag/policy/update", SortNo: 570}
 	PermissionTagDelete = Permission{Name: "删除标签", Code: "tag.delete", Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/delete", SortNo: 580}
 
 	// 接入渠道相关权限

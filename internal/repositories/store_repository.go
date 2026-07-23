@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
@@ -51,6 +52,28 @@ func (r *storeRepository) GetForUpdateInTenant(db *gorm.DB, id, tenantID int64) 
 		return nil, err
 	}
 	return item, nil
+}
+
+func (r *storeRepository) FindByIDsForUpdateInTenant(db *gorm.DB, tenantID int64, ids []int64) ([]models.Store, error) {
+	ret := make([]models.Store, 0)
+	if db == nil || tenantID <= 0 || len(ids) == 0 {
+		return ret, nil
+	}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("tenant_id = ? AND id IN ? AND status <> ?", tenantID, ids, enums.StatusDeleted).
+		Order("id ASC").Find(&ret).Error
+	return ret, err
+}
+
+func (r *storeRepository) FindAllForUpdateInTenant(db *gorm.DB, tenantID int64) ([]models.Store, error) {
+	ret := make([]models.Store, 0)
+	if db == nil || tenantID <= 0 {
+		return ret, nil
+	}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("tenant_id = ? AND status <> ?", tenantID, enums.StatusDeleted).
+		Order("id ASC").Find(&ret).Error
+	return ret, err
 }
 
 func (r *storeRepository) Take(db *gorm.DB, where ...any) *models.Store {

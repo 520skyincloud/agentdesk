@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"strings"
 	"time"
 
 	"agent-desk/internal/models"
@@ -71,6 +72,18 @@ func (r *tenantCustomerTagPolicyRepository) GetByTenant(db *gorm.DB, tenantID in
 	return ret
 }
 
+func (r *tenantCustomerTagPolicyRepository) GetByTenantForUpdate(db *gorm.DB, tenantID int64) (*models.TenantCustomerTagPolicy, error) {
+	ret := &models.TenantCustomerTagPolicy{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Take(ret, "tenant_id = ?", tenantID).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
 func (r *tenantCustomerTagPolicyRepository) Create(db *gorm.DB, item *models.TenantCustomerTagPolicy) error {
 	return db.Create(item).Error
 }
@@ -80,6 +93,27 @@ func (r *tenantCustomerTagPolicyRepository) UpdatesByTenant(db *gorm.DB, tenantI
 }
 
 type storeCustomerTagRuntimePolicyRepository struct{}
+
+type StoreCustomerTagRuntimePolicyListFilter struct {
+	Page             int
+	Limit            int
+	Keyword          string
+	StoreStatus      *enums.Status
+	EvolutionEnabled *bool
+	ReplyEnabled     *bool
+}
+
+type StoreCustomerTagRuntimePolicyListItem struct {
+	PolicyID                    int64
+	StoreID                     int64
+	StoreCode                   string
+	StoreName                   string
+	StoreStatus                 enums.Status
+	CustomerTagEvolutionEnabled bool
+	ReplyTagContextEnabled      bool
+	PolicyStatus                enums.Status
+	UpdatedAt                   *time.Time
+}
 
 func (r *storeCustomerTagRuntimePolicyRepository) GetByStore(db *gorm.DB, tenantID, storeID int64) (*models.StoreCustomerTagRuntimePolicy, error) {
 	ret := &models.StoreCustomerTagRuntimePolicy{}
@@ -91,6 +125,103 @@ func (r *storeCustomerTagRuntimePolicyRepository) GetByStore(db *gorm.DB, tenant
 		return nil, err
 	}
 	return ret, nil
+}
+
+func (r *storeCustomerTagRuntimePolicyRepository) GetByStoreForUpdate(db *gorm.DB, tenantID, storeID int64) (*models.StoreCustomerTagRuntimePolicy, error) {
+	ret := &models.StoreCustomerTagRuntimePolicy{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Take(ret, "tenant_id = ? AND store_id = ?", tenantID, storeID).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
+func (r *storeCustomerTagRuntimePolicyRepository) FindByStores(db *gorm.DB, tenantID int64, storeIDs []int64) ([]models.StoreCustomerTagRuntimePolicy, error) {
+	ret := make([]models.StoreCustomerTagRuntimePolicy, 0)
+	if tenantID <= 0 || len(storeIDs) == 0 {
+		return ret, nil
+	}
+	err := db.Where("tenant_id = ? AND store_id IN ?", tenantID, storeIDs).Order("store_id ASC").Find(&ret).Error
+	return ret, err
+}
+
+func (r *storeCustomerTagRuntimePolicyRepository) Create(db *gorm.DB, item *models.StoreCustomerTagRuntimePolicy) error {
+	return db.Create(item).Error
+}
+
+func (r *storeCustomerTagRuntimePolicyRepository) UpsertBatch(db *gorm.DB, items []models.StoreCustomerTagRuntimePolicy, updateColumns []string) error {
+	if len(items) == 0 {
+		return nil
+	}
+	return db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tenant_id"}, {Name: "store_id"}},
+		DoUpdates: clause.AssignmentColumns(updateColumns),
+	}).CreateInBatches(items, 100).Error
+}
+
+func (r *storeCustomerTagRuntimePolicyRepository) FindStorePage(
+	db *gorm.DB,
+	tenantID int64,
+	filter StoreCustomerTagRuntimePolicyListFilter,
+) ([]StoreCustomerTagRuntimePolicyListItem, int64, error) {
+	ret := make([]StoreCustomerTagRuntimePolicyListItem, 0)
+	if tenantID <= 0 {
+		return ret, 0, nil
+	}
+	if filter.Page < 1 {
+		filter.Page = 1
+	}
+	if filter.Limit < 1 {
+		filter.Limit = 20
+	}
+	if filter.Limit > 100 {
+		filter.Limit = 100
+	}
+	storeTable := db.NamingStrategy.TableName("Store")
+	policyTable := db.NamingStrategy.TableName("StoreCustomerTagRuntimePolicy")
+	query := db.Table(storeTable+" AS stores").
+		Joins("LEFT JOIN "+policyTable+" AS runtime_policy ON runtime_policy.tenant_id = stores.tenant_id AND runtime_policy.store_id = stores.id").
+		Where("stores.tenant_id = ? AND stores.status <> ?", tenantID, enums.StatusDeleted)
+	keyword := strings.TrimSpace(filter.Keyword)
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		query = query.Where("stores.name LIKE ? OR stores.store_code LIKE ?", like, like)
+	}
+	if filter.StoreStatus != nil {
+		query = query.Where("stores.status = ?", *filter.StoreStatus)
+	}
+	if filter.EvolutionEnabled != nil {
+		if *filter.EvolutionEnabled {
+			query = query.Where("runtime_policy.id IS NOT NULL AND runtime_policy.customer_tag_evolution_enabled = ?", true)
+		} else {
+			query = query.Where("runtime_policy.id IS NULL OR runtime_policy.customer_tag_evolution_enabled = ?", false)
+		}
+	}
+	if filter.ReplyEnabled != nil {
+		if *filter.ReplyEnabled {
+			query = query.Where("runtime_policy.id IS NOT NULL AND runtime_policy.reply_tag_context_enabled = ?", true)
+		} else {
+			query = query.Where("runtime_policy.id IS NULL OR runtime_policy.reply_tag_context_enabled = ?", false)
+		}
+	}
+	var total int64
+	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	err := query.Select(
+		"runtime_policy.id AS policy_id, stores.id AS store_id, stores.store_code AS store_code, stores.name AS store_name, " +
+			"stores.status AS store_status, runtime_policy.customer_tag_evolution_enabled AS customer_tag_evolution_enabled, " +
+			"runtime_policy.reply_tag_context_enabled AS reply_tag_context_enabled, runtime_policy.status AS policy_status, " +
+			"runtime_policy.updated_at AS updated_at",
+	).
+		Order("CASE WHEN stores.status = 0 THEN 0 ELSE 1 END ASC").
+		Order("stores.name ASC").Order("stores.id ASC").
+		Offset((filter.Page - 1) * filter.Limit).Limit(filter.Limit).
+		Scan(&ret).Error
+	return ret, total, err
 }
 
 type tenantIndustryChangeLogRepository struct{}

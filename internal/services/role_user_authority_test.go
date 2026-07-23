@@ -267,6 +267,7 @@ func TestAssignStoreStaffRoleCreatesOneStableStoreIdentity(t *testing.T) {
 	db := setupRoleAuthorityTestDB(t)
 	roles := seedAuthorityRoles(t, db)
 	tenantID := authorityLegacyTenantID(t, db)
+	seedCustomerTagRuntimePolicyDefaults(t, db, tenantID)
 	operatorUser := createAuthorityUser(t, db, "store_identity_admin")
 	operator := &dto.AuthPrincipal{
 		UserID: operatorUser.ID, Username: operatorUser.Username,
@@ -291,11 +292,18 @@ func TestAssignStoreStaffRoleCreatesOneStableStoreIdentity(t *testing.T) {
 	}
 	credential := repositories.StoreModelCredentialRepository.GetByStore(db, tenantID, store.ID)
 	policy := repositories.StoreCredentialPolicyRepository.GetByStore(db, tenantID, store.ID)
+	tagPolicy, err := repositories.StoreCustomerTagRuntimePolicyRepository.GetByStore(db, tenantID, store.ID)
+	if err != nil {
+		t.Fatalf("load new store customer tag policy: %v", err)
+	}
 	if credential == nil || credential.Status != enums.StoreCredentialStatusUnconfigured {
 		t.Fatalf("new store missing unconfigured credential: %+v", credential)
 	}
 	if policy == nil || policy.AllowCredentialSelfService || policy.RequireSupervisorApproval {
 		t.Fatalf("new store credential policy must default closed: %+v", policy)
+	}
+	if tagPolicy == nil || tagPolicy.CustomerTagEvolutionEnabled || tagPolicy.ReplyTagContextEnabled || tagPolicy.Status != enums.StatusOk {
+		t.Fatalf("new store customer tag runtime policy must default closed: %+v", tagPolicy)
 	}
 
 	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "丽斯未来测试门店（更新）", operator); err != nil {
@@ -939,6 +947,8 @@ func setupRoleAuthorityTestDB(t *testing.T) *gorm.DB {
 		&models.StoreStaffBinding{},
 		&models.StoreModelCredential{},
 		&models.StoreCredentialPolicy{},
+		&models.TenantCustomerTagPolicy{},
+		&models.StoreCustomerTagRuntimePolicy{},
 		&models.WxWorkProtocolInstance{},
 	); err != nil {
 		t.Fatalf("migrate role authority dependencies: %v", err)

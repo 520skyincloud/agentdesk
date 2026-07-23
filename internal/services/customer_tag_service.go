@@ -952,6 +952,14 @@ func (s *customerTagService) SelectReplyTagCandidates(conversationID int64, orde
 	if route == nil || route.StoreID <= 0 {
 		return nil, fmt.Errorf("reply tag context store scope is incomplete")
 	}
+	tenant := repositories.TenantRepository.Get(sqls.DB(), conversation.TenantID)
+	store := repositories.StoreRepository.GetInTenant(sqls.DB(), route.StoreID, conversation.TenantID)
+	tenantPolicy := repositories.TenantCustomerTagPolicyRepository.GetByTenant(sqls.DB(), conversation.TenantID)
+	if tenant == nil || tenant.Status != enums.StatusOk || tenant.IntentProfileID <= 0 ||
+		store == nil || store.Status != enums.StatusOk ||
+		tenantPolicy == nil || tenantPolicy.Status != enums.StatusOk || tenantPolicy.IntentProfileID != tenant.IntentProfileID {
+		return nil, nil
+	}
 	policy, err := repositories.StoreCustomerTagRuntimePolicyRepository.GetByStore(sqls.DB(), conversation.TenantID, route.StoreID)
 	if err != nil {
 		return nil, err
@@ -984,7 +992,7 @@ func (s *customerTagService) SelectReplyTagCandidates(conversationID int64, orde
 	mentionedConflictGroups := make(map[string]struct{})
 	for _, relation := range relations {
 		tag := repositories.TagRepository.GetInTenant(sqls.DB(), relation.TagID, conversation.TenantID)
-		if tag == nil || tag.Status != enums.StatusOk || !tag.SystemDefined || tag.TemplateDefinitionID == nil {
+		if tag == nil || tag.Status != enums.StatusOk || tag.IntentProfileID != tenantPolicy.IntentProfileID || !tag.SystemDefined || tag.TemplateDefinitionID == nil {
 			continue
 		}
 		tags[tag.ID] = tag

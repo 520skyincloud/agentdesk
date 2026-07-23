@@ -109,6 +109,44 @@ func TestTagUpdateSortRequiresUpdatePermission(t *testing.T) {
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
+func TestCustomerTagPolicyHandlersUseExistingTagPermissions(t *testing.T) {
+	writes := []struct {
+		name    string
+		handler func(*gin.Context)
+	}{
+		{name: "update tenant policy", handler: CustomerTagPostPolicy_update},
+		{name: "batch toggle Store policy", handler: CustomerTagPostRuntime_batch_toggle},
+	}
+	for _, tt := range writes {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, `{}`, &dto.AuthPrincipal{
+				UserID: 23, TenantID: 101, ActiveTenantID: 101, Username: "tag_policy_viewer",
+				Permissions: []string{constants.PermissionTagView.Code},
+			})
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+
+	reads := []struct {
+		name    string
+		handler func(*gin.Context)
+	}{
+		{name: "get tenant policy", handler: CustomerTagGetPolicy},
+		{name: "list Store policies", handler: CustomerTagAnyRuntime_list},
+	}
+	for _, tt := range reads {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
+				UserID: 24, TenantID: 101, ActiveTenantID: 101, Username: "tag_policy_writer",
+				Permissions: []string{constants.PermissionTagUpdate.Code},
+			})
+			tt.handler(ctx)
+			assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
+		})
+	}
+}
+
 func TestUserCreateWithRolesRequiresAssignRolePermission(t *testing.T) {
 	ctx, recorder := newAuthzHandlerTestContext(t, `{"username":"new_user","roleIds":[1]}`, &dto.AuthPrincipal{
 		UserID:      12,

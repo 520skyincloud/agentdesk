@@ -308,6 +308,30 @@ func (e RealtimeCustomerTagChangedEvent) EventPayload() RealtimeEventPayload {
 	return e.Payload
 }
 
+type RealtimeCustomerTagRuntimePolicyChangedPayload struct {
+	TenantID                    int64   `json:"tenantId,omitempty"`
+	StoreIDs                    []int64 `json:"storeIds,omitempty"`
+	AllStores                   bool    `json:"allStores,omitempty"`
+	TenantPolicyChanged         bool    `json:"tenantPolicyChanged,omitempty"`
+	CustomerTagEvolutionEnabled *bool   `json:"customerTagEvolutionEnabled,omitempty"`
+	ReplyTagContextEnabled      *bool   `json:"replyTagContextEnabled,omitempty"`
+	UpdatedAt                   string  `json:"updatedAt,omitempty"`
+}
+
+func (RealtimeCustomerTagRuntimePolicyChangedPayload) realtimeEventPayload() {}
+
+type RealtimeCustomerTagRuntimePolicyChangedEvent struct {
+	Payload RealtimeCustomerTagRuntimePolicyChangedPayload
+}
+
+func (RealtimeCustomerTagRuntimePolicyChangedEvent) EventType() string {
+	return enums.IMRealtimeEventCustomerTagPolicyChanged
+}
+
+func (e RealtimeCustomerTagRuntimePolicyChangedEvent) EventPayload() RealtimeEventPayload {
+	return e.Payload
+}
+
 type realtimeClientMessage struct {
 	Type    string   `json:"type"`
 	Topics  []string `json:"topics,omitempty"`

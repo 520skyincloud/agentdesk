@@ -99,6 +99,19 @@ func (r *conversationEvolutionStateRepository) FindDue(db *gorm.DB, now time.Tim
 	return ret, err
 }
 
+func (r *conversationEvolutionStateRepository) RequeuePendingByTenant(db *gorm.DB, tenantID int64, now time.Time) error {
+	if db == nil || tenantID <= 0 {
+		return nil
+	}
+	return db.Model(&models.ConversationEvolutionState{}).
+		Where("tenant_id = ? AND status = ? AND last_observed_message_id > last_evolved_message_id", tenantID, enums.StatusOk).
+		Where("next_retry_at IS NULL").
+		Updates(map[string]any{
+			"next_evolution_at": now,
+			"updated_at":        now,
+		}).Error
+}
+
 func (r *conversationEvolutionStateRepository) Claim(
 	db *gorm.DB,
 	id, tenantID int64,

@@ -220,6 +220,7 @@ func addRouter(app *gin.Engine) {
 	registerDashboardPermissionRoutes(dashboardGroup.Group("/permission"))
 	registerDashboardSessionRoutes(dashboardGroup.Group("/session"))
 	registerDashboardTagRoutes(dashboardGroup.Group("/tag"))
+	registerDashboardCustomerTagRoutes(dashboardGroup.Group("/customer-tag"))
 	registerDashboardConversationRoutes(dashboardGroup.Group("/conversation"))
 	registerDashboardConversationDispatchRoutes(dashboardGroup.Group("/conversation-dispatch"))
 	registerDashboardTicketRoutes(dashboardGroup.Group("/ticket"))

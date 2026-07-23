@@ -15,6 +15,15 @@ import (
 
 func TestSelectReplyTagCandidatesRequiresEnabledStorePolicyAndTenantScope(t *testing.T) {
 	db := setupReplyTagCandidateTestDB(t)
+	if err := db.Create(&models.Tenant{ID: 101, LegalName: "Tenant", IntentProfileID: 11, Status: enums.StatusOk}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.Store{ID: 91, TenantID: 101, StoreCode: "reply-store", Name: "Reply Store", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.TenantCustomerTagPolicy{TenantID: 101, IntentProfileID: 11, Status: enums.StatusOk}).Error; err != nil {
+		t.Fatal(err)
+	}
 	conversation := models.Conversation{ID: 71, TenantID: 101, CustomerID: 81, Status: enums.IMConversationStatusAIServing}
 	if err := db.Create(&conversation).Error; err != nil {
 		t.Fatal(err)
@@ -61,6 +70,19 @@ func TestSelectReplyTagCandidatesRequiresEnabledStorePolicyAndTenantScope(t *tes
 	if len(candidates) != 1 || candidates[0].TagID != 41 || candidates[0].SemanticKey != "room.quiet" {
 		t.Fatalf("unexpected enabled candidates: %#v", candidates)
 	}
+	if err := db.Model(&models.TenantCustomerTagPolicy{}).Where("tenant_id = ?", 101).Update("intent_profile_id", 12).Error; err != nil {
+		t.Fatal(err)
+	}
+	candidates, err = CustomerTagService.SelectReplyTagCandidates(71, []string{"room_assignment"}, "帮我安排一个合适房间")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("stale Tenant industry policy must close reply context: %#v", candidates)
+	}
+	if err := db.Model(&models.TenantCustomerTagPolicy{}).Where("tenant_id = ?", 101).Update("intent_profile_id", 11).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	if err := db.Create(&models.CustomerTagRelation{
 		TenantID: 202, StoreID: 191, CustomerID: 181, StoreCustomerRelationID: 161,
@@ -86,6 +108,7 @@ func setupReplyTagCandidateTestDB(t *testing.T) *gorm.DB {
 		t.Fatal(err)
 	}
 	if err := db.AutoMigrate(
+		&models.Tenant{}, &models.Store{}, &models.TenantCustomerTagPolicy{},
 		&models.Conversation{}, &models.ConversationRouteState{}, &models.StoreCustomerRelation{},
 		&models.StoreCustomerTagRuntimePolicy{}, &models.CustomerTagRelation{}, &models.Tag{},
 	); err != nil {

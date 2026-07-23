@@ -297,9 +297,12 @@ func setupWxWorkProtocolTenantDB(t *testing.T) *gorm.DB {
 		&models.Company{}, &models.User{}, &models.Role{}, &models.UserRole{}, &models.Store{}, &models.Channel{}, &models.StoreStaffBinding{},
 		&models.WxWorkProtocolInstance{}, &models.WxWorkProtocolDevicePoolInstance{},
 		&models.StoreModelCredential{}, &models.StoreCredentialPolicy{},
+		&models.TenantCustomerTagPolicy{}, &models.StoreCustomerTagRuntimePolicy{},
 	); err != nil {
 		t.Fatalf("migrate wxwork tenant models: %v", err)
 	}
+	seedCustomerTagRuntimePolicyDefaults(t, db, 101)
+	seedCustomerTagRuntimePolicyDefaults(t, db, 202)
 	sqls.SetDB(db)
 	t.Cleanup(func() { sqls.SetDB(nil) })
 	return db
