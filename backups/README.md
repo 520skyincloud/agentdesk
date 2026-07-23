@@ -45,6 +45,10 @@ The gate requires:
 - matching full application DDL, data, and Migration fingerprints;
 - passing Tenant integrity and the requested release-readiness level on both databases.
 
+For `pilot` and `tag_gray`, readiness also requires a current-revision FastGPT retrieval that is correlated to the same live customer conversation and subsequent successful AI reply. Configuration readiness, search-test calls, empty retrievals, stale revisions, or unrelated AI replies do not satisfy this evidence.
+
+Each readiness report includes a content-free `releaseCursor` snapshot with Message, Channel Outbox, and Assignment maximum IDs and counts, plus unsettled Outbox and active Assignment counts. Record the stopped source snapshot with the release evidence and compare it with the restored report; the report never includes message content, Outbox payloads, customer identifiers, DSNs, or secrets.
+
 The command opens both databases in read-only transactions and does not decrypt or restore the artifact. Stopping `8083` and all workers, creating the encrypted backup, restoring it into an isolated database, protecting decryption material, and deleting the rehearsal environment remain operator responsibilities.
 
 A passing restore report is necessary but not sufficient for B14. The real Lisi Future NewAPI, FastGPT, reply, handoff, deterministic dispatch, tag-gray, and RMB billing evidence must also pass before any destructive Schema Cleanup.

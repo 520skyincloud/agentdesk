@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁、历史 MySQL 克隆升级、统一镜像隔离 MySQL API 冒烟、后台 worker 维护门禁、可执行三阶段 readiness 门禁和仓库外加密备份恢复验证门禁已完成；当前结论仍为发布 No-Go。恢复验证工具的 SQLite/MySQL 工程证据已经通过，但丽斯未来真实备份恢复、全新部署秘密、Store NewAPI Key、FastGPT Integration Token 和单 Store 现场灰度证据尚未取得，禁止切换正式 `8083` 或进入 B14 物理清理。
+> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁、历史 MySQL 克隆升级、统一镜像隔离 MySQL API 冒烟、后台 worker 维护门禁、可执行三阶段 readiness 门禁、真实 FastGPT 会话检索证据门禁、发布游标快照和仓库外加密备份恢复验证门禁已完成；当前结论仍为发布 No-Go。上述工具的 SQLite/MySQL 工程证据已经通过，但丽斯未来真实备份恢复、全新部署秘密、Store NewAPI Key、FastGPT Integration Token 和单 Store 现场灰度证据尚未取得，禁止切换正式 `8083` 或进入 B14 物理清理。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1356,6 +1356,16 @@ git diff --check
 - 验证：恢复/readiness 定向测试、对应 race 测试、`go test ./... -count=1`、`go vet ./...`、MySQL 8.4 双库测试、`gofmt` 和 `git diff --check` 均通过。没有 Web、DTO、路由或展示改动，因此不重复前端构建和浏览器视觉验收。
 - 共享与回滚：本批只新增只读 repository/service/test 并扩展 CLI；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential、FastGPT、Billing、人工任务池或规则派单。`ed5953d` 必须位于 B13-F `d308c21` 之后；可在 B14 前独立回滚且不产生数据库回滚。Tenant 来源只包含旧审计 CLI 基线，ai-billing 不包含本批文件；固定 SHA 后均无新增同文件提交，因此无需 rebase，但不得把本提交回写来源分支形成第二套门禁。
 - 发布判定：上述结果只证明恢复验证机制和隔离工程演练有效，不是丽斯未来生产备份恢复证据。现场仍必须先停 `8083` 与全部 worker，在受控存储生成真实加密备份、固定校验和、恢复到独立库，并以丽斯未来 `tag_gray` 证据窗口跑通本门禁；同时完成真实 NewAPI、FastGPT、回复、转人工、规则派单、标签和人民币账单对账。全部通过前 B13 仍为 `No-Go`，B14 七张旧表物理删除继续硬阻断。
+
+### 25.19 2026-07-23 B13-H 真实 FastGPT 会话证据与发布游标门禁
+
+- 代码提交：`e5ad354`。实施前再次执行 `git fetch origin`，来源仍固定为 `origin/main@e67e20721574b6d3298bb0a1c4749da02ff0b949`、`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563` 和 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，三个来源均未前移。本批只继续扩展统一分支既有 readiness repository/service/test，不修改或回写任一来源分支。
+- 缺口与修正：B13-F 的 `pilot` 可以分别证明“存在 AI 回复”和“FastGPT 配置 ready”，但没有证明该回复链真的调用了 FastGPT。新门禁增加 `evidence.fastgpt_retrieval`：只接受证据窗口内当前 Tenant + Store 活动 KnowledgeBase、当前 Model Profile revision 和当前 Credential revision 的 `knowledge_retrieve` 不可变 Usage 事件，并要求 `provider=fastgpt`、真实请求计数、成功命中和上下文使用。
+- 现场关联：Usage 必须与同一 Request ID、同一会话、同一 KnowledgeBase 的 `KnowledgeRetrieveLog` 交叉匹配；日志必须来自 IM 首次回复场景、托管 FastGPT chunk provider，且至少一个命中实际进入上下文。同一会话还必须存在检索前的客户消息和检索后的成功 AI 消息。后台 `search_test`、配置 readiness、空命中、孤立日志、旧 revision、其他会话或只有最终 AI 回复均不能通过。
+- 发布游标：同一 readiness JSON 新增只读 `releaseCursor`，输出全库 `Message`、`ChannelMessageOutbox`、`ConversationAssignment` 的最大 ID 与总量，并额外输出未结 Outbox 和活动 Assignment 数量。该快照用于 22.2 停旧服务与 worker 前后复核；不输出 Tenant 列表、客户 ID、会话 ID、消息正文、Outbox payload、错误原文、DSN 或秘密。恢复模式的 source/restored readiness 各自携带同一格式快照，完整数据一致性仍由 B13-G 全表指纹负责。
+- 验证：SQLite 覆盖无证据阻断、完整 pilot/tag gray、检索日志缺失、旧 Profile revision、发布游标计数和 Outbox payload 不泄露；同一三阶段契约在隔离 MySQL 8.4 通过，专用临时库和账号随后删除。`go test -race ./internal/services ./internal/repositories -run TenantReleaseReadiness -count=1`、readiness/restore 组合定向测试、`go test ./... -count=1`、`go vet ./...`、`gofmt` 和 `git diff --check` 均通过。没有 Web、HTTP API、DTO、enum、权限、Migration、AutoMigrate 或 WebSocket 变化，因此不重复前端构建和浏览器视觉验收。
+- 共享与回滚：本批只增强只读发布证据，不改变 FastGPT 检索写入、AI Reply Runtime、Credential、Billing、人工任务池、规则派单、客户标签或运营事实。`e5ad354` 必须位于 B13-G `ed5953d` 之后；B14 只能建立在本门禁和全部真实证据通过之后。Cleanup 前可整体回滚本提交且没有数据回滚，但回滚会重新允许没有真实 FastGPT 检索证据的 pilot 报告，不能作为生产发布方案。
+- 发布判定：工程门禁完成不代表现场证据完成。丽斯未来仍没有可用的真实 Store NewAPI Key、FastGPT Integration Token、已发布九槽 Profile、Store Assignment/active Credential/FastGPT Team/Dataset，也没有真实回复、转人工、确定性规则派单、标签灰度、Request ID 人民币账单对账和外部加密备份恢复证据。B13 继续为 `No-Go`，正式 `8083` 与 B14 物理清理保持硬阻断。
 
 ## 26. 用户最终 1-48 项决定追溯
 
