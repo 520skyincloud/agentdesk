@@ -59,9 +59,30 @@ type TenantReleaseReadinessKnowledgeState struct {
 	Status                           enums.Status
 }
 
+type TenantReleaseReadinessCursorSnapshot struct {
+	MessageMaxID          int64
+	MessageCount          int64
+	OutboxMaxID           int64
+	OutboxCount           int64
+	UnsettledOutboxCount  int64
+	AssignmentMaxID       int64
+	AssignmentCount       int64
+	ActiveAssignmentCount int64
+}
+
 type TenantReleaseReadinessEvidenceFilter struct {
 	NewAPIGateway            string
 	SuccessfulUsageStatuses  []string
+	KnowledgeRetrieveStage   string
+	KnowledgeProvider        string
+	KnowledgeOperation       string
+	KnowledgeStatus          string
+	KnowledgeConnectionID    string
+	KnowledgeLogSourceType   string
+	KnowledgeChunkProvider   string
+	KnowledgeChannel         string
+	KnowledgeScene           string
+	KnowledgeAnswerStatus    int
 	AIHandoffContent         string
 	ReconcileStatus          string
 	ReconcileMatchStrategy   string
@@ -72,6 +93,7 @@ type TenantReleaseReadinessEvidenceFilter struct {
 type TenantReleaseReadinessEvidence struct {
 	StoreID                   int64
 	SuccessfulNewAPICallCount int64
+	FastGPTRetrievalCount     int64
 	CustomerAIReplyCount      int64
 	AIHandoffCount            int64
 	RuleAssignmentCount       int64
@@ -82,6 +104,63 @@ type TenantReleaseReadinessEvidence struct {
 type tenantReleaseReadinessCountRow struct {
 	StoreID int64
 	Count   int64
+}
+
+func (r *tenantReleaseReadinessRepository) FindCursorSnapshot(
+	db *gorm.DB,
+) (TenantReleaseReadinessCursorSnapshot, error) {
+	ret := TenantReleaseReadinessCursorSnapshot{}
+	if db == nil {
+		return ret, nil
+	}
+	messageCursor := struct {
+		MessageMaxID int64
+		MessageCount int64
+	}{}
+	if err := db.Table("t_message").
+		Select("COALESCE(MAX(id), 0) AS message_max_id, COUNT(*) AS message_count").
+		Scan(&messageCursor).Error; err != nil {
+		return TenantReleaseReadinessCursorSnapshot{}, err
+	}
+	ret.MessageMaxID = messageCursor.MessageMaxID
+	ret.MessageCount = messageCursor.MessageCount
+	outboxCursor := struct {
+		OutboxMaxID int64
+		OutboxCount int64
+	}{}
+	if err := db.Table("t_channel_message_outbox").
+		Select("COALESCE(MAX(id), 0) AS outbox_max_id, COUNT(*) AS outbox_count").
+		Scan(&outboxCursor).Error; err != nil {
+		return TenantReleaseReadinessCursorSnapshot{}, err
+	}
+	ret.OutboxMaxID = outboxCursor.OutboxMaxID
+	ret.OutboxCount = outboxCursor.OutboxCount
+	if err := db.Table("t_channel_message_outbox").
+		Where("send_status IN ?", []string{
+			string(enums.ChannelMessageOutboxStatusPending),
+			string(enums.ChannelMessageOutboxStatusSending),
+			string(enums.ChannelMessageOutboxStatusFailed),
+		}).
+		Count(&ret.UnsettledOutboxCount).Error; err != nil {
+		return TenantReleaseReadinessCursorSnapshot{}, err
+	}
+	assignmentCursor := struct {
+		AssignmentMaxID int64
+		AssignmentCount int64
+	}{}
+	if err := db.Table("t_conversation_assignment").
+		Select("COALESCE(MAX(id), 0) AS assignment_max_id, COUNT(*) AS assignment_count").
+		Scan(&assignmentCursor).Error; err != nil {
+		return TenantReleaseReadinessCursorSnapshot{}, err
+	}
+	ret.AssignmentMaxID = assignmentCursor.AssignmentMaxID
+	ret.AssignmentCount = assignmentCursor.AssignmentCount
+	if err := db.Table("t_conversation_assignment").
+		Where("status = ?", enums.IMAssignmentStatusActive).
+		Count(&ret.ActiveAssignmentCount).Error; err != nil {
+		return TenantReleaseReadinessCursorSnapshot{}, err
+	}
+	return ret, nil
 }
 
 func (r *tenantReleaseReadinessRepository) FindStoreAccountStates(
@@ -241,6 +320,60 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 				Where("usage_event.gateway = ? AND usage_event.gateway_request_id <> '' AND usage_event.status IN ?", filter.NewAPIGateway, filter.SuccessfulUsageStatuses).
 				Where("usage_event.model_profile_id = assignment.template_id AND usage_event.model_profile_revision = assignment.template_revision").
 				Where("usage_event.credential_revision = credential.credential_revision").
+				Group("usage_event.store_id"),
+		},
+		{
+			apply: func(item *TenantReleaseReadinessEvidence, count int64) {
+				item.FastGPTRetrievalCount = count
+			},
+			query: db.Table("t_ai_usage_event AS usage_event").
+				Select("usage_event.store_id, COUNT(*) AS count").
+				Joins("JOIN t_store AS store ON store.tenant_id = usage_event.tenant_id AND store.id = usage_event.store_id").
+				Joins("JOIN t_knowledge_base AS knowledge ON knowledge.tenant_id = usage_event.tenant_id AND knowledge.id = usage_event.knowledge_base_id AND knowledge.store_id = usage_event.store_id").
+				Joins("JOIN t_store_model_profile_assignment AS assignment ON assignment.tenant_id = usage_event.tenant_id AND assignment.store_id = usage_event.store_id").
+				Joins("JOIN t_store_model_credential AS credential ON credential.tenant_id = usage_event.tenant_id AND credential.store_id = usage_event.store_id").
+				Where("usage_event.tenant_id = ? AND usage_event.store_id IN ? AND usage_event.created_at >= ?", tenantID, storeIDs, start).
+				Where("usage_event.conversation_id > 0 AND usage_event.request_id <> '' AND usage_event.request_count > 0").
+				Where("usage_event.stage = ? AND usage_event.provider = ? AND usage_event.operation_type = ? AND usage_event.status = ?",
+					filter.KnowledgeRetrieveStage, filter.KnowledgeProvider, filter.KnowledgeOperation, filter.KnowledgeStatus).
+				Where("store.status = ? AND store.knowledge_base_id = knowledge.id", enums.StatusOk).
+				Where("knowledge.status = ? AND knowledge.connection_id = ?", enums.StatusOk, filter.KnowledgeConnectionID).
+				Where("usage_event.model_profile_id = assignment.template_id AND usage_event.model_profile_revision = assignment.template_revision").
+				Where("usage_event.credential_revision = credential.credential_revision").
+				Where(`EXISTS (
+					SELECT 1 FROM t_message AS customer_message
+					WHERE customer_message.tenant_id = usage_event.tenant_id
+						AND customer_message.conversation_id = usage_event.conversation_id
+						AND customer_message.sender_type = ?
+						AND customer_message.created_at >= ?
+						AND customer_message.created_at <= usage_event.created_at
+				)`, enums.IMSenderTypeCustomer, start).
+				Where(`EXISTS (
+					SELECT 1 FROM t_message AS ai_message
+					WHERE ai_message.tenant_id = usage_event.tenant_id
+						AND ai_message.conversation_id = usage_event.conversation_id
+						AND ai_message.sender_type = ?
+						AND ai_message.send_status IN ?
+						AND ai_message.created_at >= usage_event.created_at
+				)`, enums.IMSenderTypeAI, []enums.IMMessageStatus{
+					enums.IMMessageStatusSent, enums.IMMessageStatusDelivered, enums.IMMessageStatusRead,
+				}).
+				Where(`EXISTS (
+					SELECT 1 FROM t_knowledge_retrieve_log AS retrieve_log
+					WHERE retrieve_log.tenant_id = usage_event.tenant_id
+						AND retrieve_log.knowledge_base_id = usage_event.knowledge_base_id
+						AND retrieve_log.conversation_id = usage_event.conversation_id
+						AND retrieve_log.request_id = usage_event.request_id
+						AND retrieve_log.created_at >= ?
+						AND retrieve_log.source_type = ?
+						AND retrieve_log.chunk_provider = ?
+						AND retrieve_log.channel = ?
+						AND retrieve_log.scene = ?
+						AND retrieve_log.answer_status = ?
+						AND retrieve_log.hit_count > 0
+						AND retrieve_log.used_chunk_count > 0
+				)`, start, filter.KnowledgeLogSourceType, filter.KnowledgeChunkProvider,
+					filter.KnowledgeChannel, filter.KnowledgeScene, filter.KnowledgeAnswerStatus).
 				Group("usage_event.store_id"),
 		},
 		{

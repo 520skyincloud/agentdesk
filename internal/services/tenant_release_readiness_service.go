@@ -63,17 +63,29 @@ type TenantReleaseReadinessViolation struct {
 	Message        string  `json:"message"`
 }
 
+type TenantReleaseReadinessCursorSnapshot struct {
+	MessageMaxID          int64 `json:"messageMaxId"`
+	MessageCount          int64 `json:"messageCount"`
+	OutboxMaxID           int64 `json:"outboxMaxId"`
+	OutboxCount           int64 `json:"outboxCount"`
+	UnsettledOutboxCount  int64 `json:"unsettledOutboxCount"`
+	AssignmentMaxID       int64 `json:"assignmentMaxId"`
+	AssignmentCount       int64 `json:"assignmentCount"`
+	ActiveAssignmentCount int64 `json:"activeAssignmentCount"`
+}
+
 type TenantReleaseReadinessReport struct {
-	Status             string                            `json:"status"`
-	GeneratedAt        time.Time                         `json:"generatedAt"`
-	Level              TenantReleaseReadinessLevel       `json:"level"`
-	EvidenceStart      *time.Time                        `json:"evidenceStart,omitempty"`
-	Tenant             TenantReleaseReadinessTenant      `json:"tenant"`
-	SelectedStoreCount int                               `json:"selectedStoreCount"`
-	RequiredCheckCount int                               `json:"requiredCheckCount"`
-	PassedCheckCount   int                               `json:"passedCheckCount"`
-	Checks             []TenantReleaseReadinessCheck     `json:"checks"`
-	Violations         []TenantReleaseReadinessViolation `json:"violations"`
+	Status             string                               `json:"status"`
+	GeneratedAt        time.Time                            `json:"generatedAt"`
+	Level              TenantReleaseReadinessLevel          `json:"level"`
+	EvidenceStart      *time.Time                           `json:"evidenceStart,omitempty"`
+	Tenant             TenantReleaseReadinessTenant         `json:"tenant"`
+	SelectedStoreCount int                                  `json:"selectedStoreCount"`
+	RequiredCheckCount int                                  `json:"requiredCheckCount"`
+	PassedCheckCount   int                                  `json:"passedCheckCount"`
+	ReleaseCursor      TenantReleaseReadinessCursorSnapshot `json:"releaseCursor"`
+	Checks             []TenantReleaseReadinessCheck        `json:"checks"`
+	Violations         []TenantReleaseReadinessViolation    `json:"violations"`
 }
 
 func ParseTenantReleaseReadinessLevel(value string) (TenantReleaseReadinessLevel, error) {
@@ -101,6 +113,10 @@ func (s *tenantReleaseReadinessService) Audit(
 	if err != nil {
 		return nil, err
 	}
+	cursor, err := repositories.TenantReleaseReadinessRepository.FindCursorSnapshot(db)
+	if err != nil {
+		return nil, fmt.Errorf("capture release cursor failed: %w", err)
+	}
 	report := &TenantReleaseReadinessReport{
 		Status:        "passed",
 		GeneratedAt:   options.Now.UTC(),
@@ -109,8 +125,14 @@ func (s *tenantReleaseReadinessService) Audit(
 		Tenant: TenantReleaseReadinessTenant{
 			ID: options.TenantID, Code: options.TenantCode,
 		},
-		Checks:     []TenantReleaseReadinessCheck{},
-		Violations: []TenantReleaseReadinessViolation{},
+		ReleaseCursor: TenantReleaseReadinessCursorSnapshot{
+			MessageMaxID: cursor.MessageMaxID, MessageCount: cursor.MessageCount,
+			OutboxMaxID: cursor.OutboxMaxID, OutboxCount: cursor.OutboxCount,
+			UnsettledOutboxCount: cursor.UnsettledOutboxCount,
+			AssignmentMaxID:      cursor.AssignmentMaxID, AssignmentCount: cursor.AssignmentCount,
+			ActiveAssignmentCount: cursor.ActiveAssignmentCount,
+		},
+		Checks: []TenantReleaseReadinessCheck{}, Violations: []TenantReleaseReadinessViolation{},
 	}
 
 	tenant := s.findTenant(db, options)
@@ -403,6 +425,16 @@ func (s *tenantReleaseReadinessService) Audit(
 			repositories.TenantReleaseReadinessEvidenceFilter{
 				NewAPIGateway:            AIUsageGatewayNewAPI,
 				SuccessfulUsageStatuses:  []string{"completed", "success"},
+				KnowledgeRetrieveStage:   "knowledge_retrieve",
+				KnowledgeProvider:        enums.KnowledgeRetrievalModeFastGPT,
+				KnowledgeOperation:       "knowledge_retrieve",
+				KnowledgeStatus:          "completed",
+				KnowledgeConnectionID:    fastgptapi.ManagedConnectionID,
+				KnowledgeLogSourceType:   "fastgpt",
+				KnowledgeChunkProvider:   string(enums.KnowledgeChunkProviderFastGPT),
+				KnowledgeChannel:         string(enums.KnowledgeRetrieveChannelIM),
+				KnowledgeScene:           string(enums.KnowledgeRetrieveSceneFirstResponse),
+				KnowledgeAnswerStatus:    int(enums.KnowledgeAnswerStatusNormal),
 				AIHandoffContent:         "AI转人工",
 				ReconcileStatus:          AIUsageReconcileCompleted,
 				ReconcileMatchStrategy:   AIUsageMatchStrategyRequestID,
@@ -420,6 +452,14 @@ func (s *tenantReleaseReadinessService) Audit(
 			func(item repositories.TenantReleaseReadinessEvidence) bool { return item.SuccessfulNewAPICallCount > 0 },
 			options.SampleLimit,
 			"所选门店在证据窗口内没有当前 Profile/Credential revision 的成功 NewAPI 调用",
+		)
+		report.addEvidenceStoreCheck(
+			"evidence.fastgpt_retrieval",
+			storeIDs,
+			evidence,
+			func(item repositories.TenantReleaseReadinessEvidence) bool { return item.FastGPTRetrievalCount > 0 },
+			options.SampleLimit,
+			"所选门店在证据窗口内没有当前 Profile/Credential revision 的真实 FastGPT 会话检索与命中证据",
 		)
 		report.addEvidenceStoreCheck(
 			"evidence.customer_ai_reply",

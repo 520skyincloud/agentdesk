@@ -57,6 +57,7 @@ func assertTenantReleaseReadinessStages(t *testing.T, fixture *tenantReleaseRead
 	pilotWithoutEvidence := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
 	for _, code := range []string{
 		"EVIDENCE_NEWAPI_CALL",
+		"EVIDENCE_FASTGPT_RETRIEVAL",
 		"EVIDENCE_CUSTOMER_AI_REPLY",
 		"EVIDENCE_AI_HANDOFF",
 		"EVIDENCE_RULE_ASSIGNMENT",
@@ -143,6 +144,79 @@ func TestTenantReleaseReadinessRejectsFutureOrMissingPilotEvidenceWindow(t *test
 	}
 }
 
+func TestTenantReleaseReadinessFastGPTEvidenceMustMatchRuntimeLogAndCurrentRevision(t *testing.T) {
+	fixture := newTenantReleaseReadinessFixture(t)
+	evidenceStart := fixture.now.Add(-10 * time.Minute)
+	fixture.seedPilotEvidence(t, evidenceStart)
+
+	if err := fixture.db.Where("tenant_id = ? AND request_id = ?", fixture.tenant.ID, "pilot-fastgpt-request").
+		Delete(&models.KnowledgeRetrieveLog{}).Error; err != nil {
+		t.Fatalf("delete correlated FastGPT retrieve log: %v", err)
+	}
+	withoutLog := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
+	if !tenantReleaseReadinessHasViolation(withoutLog, "EVIDENCE_FASTGPT_RETRIEVAL") {
+		t.Fatalf("runtime usage without correlated retrieve log must fail: %#v", withoutLog.Violations)
+	}
+
+	if err := fixture.db.Create(&models.KnowledgeRetrieveLog{
+		TenantID: fixture.tenant.ID, KnowledgeBaseID: fixture.store.KnowledgeBaseID,
+		SourceType: "fastgpt", Channel: string(enums.KnowledgeRetrieveChannelIM),
+		Scene: string(enums.KnowledgeRetrieveSceneFirstResponse), ConversationID: fixture.conversation.ID,
+		RequestID: "pilot-fastgpt-request", AnswerStatus: int(enums.KnowledgeAnswerStatusNormal),
+		HitCount: 1, UsedChunkCount: 1, ChunkProvider: string(enums.KnowledgeChunkProviderFastGPT),
+		CreatedAt: fixture.now.Add(-time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("restore correlated FastGPT retrieve log: %v", err)
+	}
+	if err := fixture.db.Model(&models.AIUsageEvent{}).
+		Where("tenant_id = ? AND event_key = ?", fixture.tenant.ID, "pilot-fastgpt-usage").
+		Update("model_profile_revision", fixture.modelProfile.Revision+1).Error; err != nil {
+		t.Fatalf("make FastGPT usage revision stale: %v", err)
+	}
+	withStaleRevision := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
+	if !tenantReleaseReadinessHasViolation(withStaleRevision, "EVIDENCE_FASTGPT_RETRIEVAL") {
+		t.Fatalf("stale FastGPT usage revision must fail: %#v", withStaleRevision.Violations)
+	}
+
+	if err := fixture.db.Model(&models.AIUsageEvent{}).
+		Where("tenant_id = ? AND event_key = ?", fixture.tenant.ID, "pilot-fastgpt-usage").
+		Update("model_profile_revision", fixture.modelProfile.Revision).Error; err != nil {
+		t.Fatalf("restore FastGPT usage revision: %v", err)
+	}
+	assertTenantReleaseReadinessPassed(t, fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart))
+}
+
+func TestTenantReleaseReadinessCapturesReleaseCursorsWithoutPayloads(t *testing.T) {
+	fixture := newTenantReleaseReadinessFixture(t)
+	evidenceStart := fixture.now.Add(-10 * time.Minute)
+	fixture.seedPilotEvidence(t, evidenceStart)
+	if err := fixture.db.Create(&models.ChannelMessageOutbox{
+		TenantID: fixture.tenant.ID, ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ConversationID: fixture.conversation.ID, MessageID: 99,
+		Payload:     "outbox-payload-DO-NOT-PRINT",
+		SendStatus:  string(enums.ChannelMessageOutboxStatusPending),
+		AuditFields: tenantReleaseReadinessAuditFields(fixture.now),
+	}).Error; err != nil {
+		t.Fatalf("create release cursor Outbox: %v", err)
+	}
+
+	report := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
+	assertTenantReleaseReadinessPassed(t, report)
+	cursor := report.ReleaseCursor
+	if cursor.MessageMaxID <= 0 || cursor.MessageCount != 2 ||
+		cursor.OutboxMaxID <= 0 || cursor.OutboxCount != 1 || cursor.UnsettledOutboxCount != 1 ||
+		cursor.AssignmentMaxID <= 0 || cursor.AssignmentCount != 1 || cursor.ActiveAssignmentCount != 1 {
+		t.Fatalf("unexpected release cursor snapshot: %#v", cursor)
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal release cursor report: %v", err)
+	}
+	if strings.Contains(string(raw), "outbox-payload-DO-NOT-PRINT") {
+		t.Fatalf("release cursor report leaked Outbox payload: %s", raw)
+	}
+}
+
 func TestTenantReleaseReadinessSamplesOnlyConfiguredNumberOfStoreIDs(t *testing.T) {
 	fixture := newTenantReleaseReadinessFixture(t)
 	report, err := TenantReleaseReadinessService.Audit(fixture.db, TenantReleaseReadinessOptions{
@@ -222,6 +296,8 @@ func tenantReleaseReadinessModels() []any {
 		&models.Conversation{},
 		&models.ConversationRouteState{},
 		&models.Message{},
+		&models.ChannelMessageOutbox{},
+		&models.KnowledgeRetrieveLog{},
 		&models.ConversationEventLog{},
 		&models.ConversationAssignment{},
 		&models.AIUsageEvent{},
@@ -474,6 +550,28 @@ func (f *tenantReleaseReadinessFixture) seedPilotEvidence(t *testing.T, evidence
 		Status: "completed", CreatedAt: aiAt,
 	}).Error; err != nil {
 		t.Fatalf("create pilot NewAPI usage: %v", err)
+	}
+	retrieveRequestID := "pilot-fastgpt-request"
+	if err := f.db.Create(&models.KnowledgeRetrieveLog{
+		TenantID: f.tenant.ID, KnowledgeBaseID: f.store.KnowledgeBaseID,
+		SourceType: "fastgpt", Channel: string(enums.KnowledgeRetrieveChannelIM),
+		Scene: string(enums.KnowledgeRetrieveSceneFirstResponse), ConversationID: conversation.ID,
+		RequestID: retrieveRequestID, AnswerStatus: int(enums.KnowledgeAnswerStatusNormal),
+		HitCount: 1, UsedChunkCount: 1, ChunkProvider: string(enums.KnowledgeChunkProviderFastGPT),
+		CreatedAt: aiAt,
+	}).Error; err != nil {
+		t.Fatalf("create pilot FastGPT retrieve log: %v", err)
+	}
+	if err := f.db.Create(&models.AIUsageEvent{
+		TenantID: f.tenant.ID, EventKey: "pilot-fastgpt-usage", StoreID: f.store.ID,
+		ConversationID: conversation.ID, KnowledgeBaseID: f.store.KnowledgeBaseID,
+		RequestID: retrieveRequestID, Stage: "knowledge_retrieve", Provider: "fastgpt",
+		OperationType: "knowledge_retrieve", RequestCount: 1,
+		ModelProfileID: f.modelProfile.ID, ModelProfileRevision: f.modelProfile.Revision,
+		CredentialRevision: f.credential.CredentialRevision,
+		Status:             "completed", CreatedAt: aiAt,
+	}).Error; err != nil {
+		t.Fatalf("create pilot FastGPT usage: %v", err)
 	}
 	handoffAt := aiAt.Add(time.Minute)
 	if err := f.db.Create(&models.ConversationEventLog{
