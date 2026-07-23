@@ -1378,6 +1378,19 @@ git diff --check
 - 共享契约与回滚：本批只修改 `.env.example`、中英文 README 和部署/交接文档；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential 密文格式、FastGPT 调用、Billing 口径、人工任务池或规则派单。可在 B14 前整体回滚文档提交且无数据回滚，但生产发布不得回退到没有密钥保管与轮换说明的状态。
 - 发布判定：交付契约完成不等于真实密钥或现场证据已就绪。当前仍未安全注入全新部署秘密和 FastGPT Integration Token，也未确定 pilot Store、提交其 NewAPI Key、发布/指派九槽 Profile 或完成回复、转人工、派单、标签、账单与恢复证据；B13 继续为 `No-Go`，正式 `8083` 和 B14 物理删表保持阻断。
 
+### 25.21 2026-07-23 B13-J 现场秘密交接、pilot 冻结与端点预检
+
+- 用户批准边界：B14 七张旧表及专属列物理删除已经获得业务批准，但批准只在 B13 全部验收、正式停机、仓库外加密备份和独立恢复验证全部通过后生效。删除对象继续严格受 18.4、22.2 和 B14 固定白名单约束，不因本次批准新增表、列或扩大清理范围；上述任一前置未通过时不得执行。
+- pilot 身份：灰度对象冻结为 Tenant“丽斯文旅”下 Store“高铁南站店”。来源系统 Store ID `3` 只作为只读定位线索；统一迁移后必须用来源 Tenant + Store 业务身份和绑定关系重新解析最终 ID，不得在代码、Migration、配置、验收命令或文档操作步骤中硬编码 `3`，也不得默认使用 `301`。当前本机历史验收库没有该业务身份，不能拿同 ID 的测试门店替代。
+- 凭据策略：该 Store 最终设置 `AllowCredentialSelfService=true`，但只允许唯一 Store 绑定账号且同时拥有权限的门店员工提交；`RequireSupervisorApproval=true`，灰度阶段必须由不同于提交人的公司主管审批。权限仍只决定操作资格，Tenant + Store scope、唯一绑定和不同审批人继续作为服务端硬上限。
+- 来源 Credential 陈述：来源 Store `3` 被交接为 active credential revision `1`、九槽测试 `passed`、FastGPT sync `ready`，历史录入人为 `admin`。这只用于迁移后对照，不是统一环境的 active 证据；旧明文、密文、nonce 和 revision 均不迁移。最终 Store 解析后，实际 Key 持有人必须在统一凭据页面重新提交，由不同公司主管审批，并重新完成九槽、FastGPT 和 readiness 证据。
+- 秘密文件接收：收到 16 项生产变量的仓库外 handoff `unified-integration-20260723`，内容 SHA-256 与预先给定的 `3e361155f473c520086bd3995732343f9540aa5a4bd044043cdab952120e2fa4` 一致。微信临时附件副本实际为 `0644`，已先收紧为 `0600`；随后在当前执行账号的仓库外安全目录建立 `0700` 父目录和 `0600` 文件副本，副本哈希保持一致。仓库只记录 handoff ID、校验和和结果，不记录绝对秘密路径、变量值、长度、密文或 Token。
+- 无泄密结构检查：16 个变量名与部署契约一一匹配，无缺失、重复、额外变量、空值、占位值或秘密复用；两个 32 字节 Base64 密钥、独立会话/资产秘密、MySQL DSN、production/worker 开关和 FastGPT 开关格式均通过；`docker compose --env-file <secure-file> config --quiet` 通过。检查过程没有 `source` 文件、没有输出值，也没有把文件复制进 Git 工作树。
+- HTTPS 启动门禁：预检发现 handoff 中 FastGPT Base URL 使用 HTTP，DNS 指向公网地址；因此没有携带 Integration Token 发起任何 FastGPT 请求。提交 `c7e9022` 将生产 `ValidateProduction` 从“非空 URL”收紧为“无内嵌账号的 HTTPS URL”，错误只返回 `AGENT_DESK_FASTGPT_BASE_URL`。非生产环境保持原行为；部署手册同时增加仓库外 `--env-file` 操作方式。
+- 数据库阻断：handoff 中 MySQL DSN 语法、`parseTime=True`、DNS 和 TCP `3306` 可达性通过，但端点在五秒内不返回 MySQL 初始握手；只读审计在明文及仅诊断用 TLS 尝试中均收到 `unexpected EOF / driver: bad connection`，没有执行 SQL 或写入。可能原因包括端点/端口错误、代理不支持 MySQL 协议、来源 IP 白名单或上游网络策略，必须由数据库负责人核对；不得把本机其他历史库替换为该 DSN。
+- 共享契约与验证：代码批只修改共享 Config 生产预检及其测试，不修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential 密文、FastGPT 请求、Billing、人工任务池或规则派单。`go test`、`go test -race` 和 `go vet` 对 config/securex 均通过；真实 handoff 现在会在连接数据库前因 FastGPT HTTP 明确失败。
+- 下一门禁：FastGPT 负责人先提供同环境 HTTPS 根地址并更新安全文件/校验和；数据库负责人再恢复真实 MySQL 握手和只读访问。两项修复后重新运行唯一 Tenant audit/readiness，按“丽斯文旅 / 高铁南站店”解析最终 Store ID，再提交、审批和测试 NewAPI Key。此前 B13 保持 `No-Go`，不得部署正式 `8083`、不得把来源 Credential 视为已迁移，也不得执行 B14。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B13-B14 实施和验收证据。
