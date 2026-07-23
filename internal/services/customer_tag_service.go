@@ -263,6 +263,34 @@ func (s *customerTagService) ListOptionsForConversation(conversationID int64, op
 	return ret, nil
 }
 
+func (s *customerTagService) listAllowedAITags(db *gorm.DB, scope *customerTagScope) ([]models.Tag, error) {
+	if scope == nil || scope.TenantID <= 0 || scope.ProfileID <= 0 {
+		return nil, errorsx.InvalidParam("客户标签行业范围不存在")
+	}
+	all, err := repositories.TagRepository.FindByProfileInTenant(db, scope.TenantID, scope.ProfileID)
+	if err != nil {
+		return nil, err
+	}
+	parentIDs := make(map[int64]struct{}, len(all))
+	for i := range all {
+		if all[i].ParentID > 0 {
+			parentIDs[all[i].ParentID] = struct{}{}
+		}
+	}
+	ret := make([]models.Tag, 0, len(all))
+	for i := range all {
+		if all[i].Status != enums.StatusOk || all[i].ParentID == 0 || !all[i].AIEnabled ||
+			!all[i].SystemDefined || all[i].TemplateDefinitionID == nil || strings.TrimSpace(all[i].SemanticKey) == "" {
+			continue
+		}
+		if _, isCategory := parentIDs[all[i].ID]; isCategory {
+			continue
+		}
+		ret = append(ret, all[i])
+	}
+	return ret, nil
+}
+
 func (s *customerTagService) ListChangeLogsForConversation(conversationID int64, page, limit int, operator *dto.AuthPrincipal) ([]response.CustomerTagChangeLogResponse, *sqls.Paging, error) {
 	if page < 1 {
 		page = 1
@@ -568,19 +596,33 @@ func (s *customerTagService) ApplyAI(conversationID, runID int64, operations []C
 			return err
 		}
 		eventRelationID = lockedScope.Relation.ID
-		for _, operation := range operations {
-			applied, err := s.applyAIOperation(ctx.Tx, lockedScope, runID, operation)
-			if err != nil {
-				return err
-			}
-			changed = changed || applied
-		}
-		return nil
+		changed, err = s.applyAIOperationsDB(ctx.Tx, lockedScope, runID, operations)
+		return err
 	})
 	if err == nil && changed {
 		WsService.PublishCustomerTagChanged(scope.Conversation, scope.StoreID, eventRelationID, time.Now())
 	}
 	return changed, err
+}
+
+// applyAIOperationsDB is shared by the public mutation and the evolution
+// checkpoint transaction. The caller must already hold the Store customer
+// relation lock and the in-process customer-tag mutex.
+func (s *customerTagService) applyAIOperationsDB(
+	db *gorm.DB,
+	scope *customerTagScope,
+	runID int64,
+	operations []CustomerTagOperation,
+) (bool, error) {
+	changed := false
+	for i := range operations {
+		applied, err := s.applyAIOperation(db, scope, runID, operations[i])
+		if err != nil {
+			return false, err
+		}
+		changed = changed || applied
+	}
+	return changed, nil
 }
 
 func (s *customerTagService) applyAIOperation(db *gorm.DB, scope *customerTagScope, runID int64, operation CustomerTagOperation) (bool, error) {

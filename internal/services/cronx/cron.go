@@ -68,6 +68,13 @@ func Init() {
 		}
 	})
 
+	addFunc(c, "@every 1m", func() {
+		count := services.ConversationEvolutionService.ProcessDue(20)
+		if count > 0 {
+			slog.Info("customer tag evolution states handled", "count", count)
+		}
+	})
+
 	c.Start()
 }
 
