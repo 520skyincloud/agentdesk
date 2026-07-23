@@ -1,5 +1,133 @@
 # 回复 Runtime 引擎设计
 
+> 当前权威状态：本文顶部“当前统一运行时契约”描述
+> `codex/tenant-ai-unified-integration` 的生产链路，AI 行为来源固定为
+> `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`。
+> 文末 2026-06 至 2026-07-15 的评测与演进记录只用于追溯，其中出现的
+> `AIConfig`、旧独立 Agent 模型绑定、旧知识 ID 和历史测试会话均已退出当前模型解析，
+> 不得作为恢复旧接口、旧表或旧 fallback 的依据。
+
+## 0. 当前统一运行时契约（2026-07-23）
+
+### 0.1 入口与可信范围
+
+生产回复入口仍由 `internal/ai/runtime/reply_trigger_service.go` 负责批次、并发、
+Interrupt/Resume 和最终提交。运行时不接受前端传入的 Tenant、Store、行业或模型范围，
+而是从已经提交的业务事实逐层重建：
+
+```text
+Conversation + Message
+  -> Conversation.TenantID / CustomerID
+  -> Message.SessionNo / RequestID
+  -> Tenant-scoped ConversationRouteState
+  -> StoreID / WxWorkInstanceID
+  -> Tenant.IntentProfileID
+  -> Store active Model Profile Assignment
+  -> Store active Credential revision
+  -> Store KnowledgeBase / StoreCustomerRelation
+```
+
+同步请求、异步 worker、重试和 Resume 都必须重新验证父链。任何 Tenant、Store、
+WxWork、Customer、KnowledgeBase、Profile revision 或 Credential revision 冲突都要
+显式失败，不能信任全局主键唯一、`ActiveTenant` 前端状态或调用方拼出的 scope。
+
+### 0.2 唯一模型解析
+
+所有 Reply、IntentDetect、MemorySummary、CustomerTag、Vision、ASR、Embedding、
+Rerank 和 DocumentParser 调用统一通过
+`internal/services/model_call_resolver_service.go`：
+
+```text
+conversationId
+  -> Tenant + Store
+  -> ready StoreModelProfileAssignment
+  -> exact active ModelProfileTemplate revision
+  -> 9-slot publication validation
+  -> requested ModelProfileSlot
+  -> active StoreModelCredential
+  -> AES-GCM decrypt inside runtime boundary
+  -> non-persistent ModelCallConfig
+```
+
+不存在 Tenant 默认模型、企微覆盖、员工覆盖、平台默认 Key、旧 `AIConfigID` 或缺槽
+fallback。新 candidate 测试、FastGPT 同步或 CAS 激活失败时继续使用旧 active revision；
+首次配置失败时不伪造 AI 回复。
+
+`AIAgent` 仍是会话使用的内部接待策略身份，承载名称、基础指令、技能和接待模式。
+它不再选择 Provider、BaseURL、模型或 API Key，也没有独立的租户可配置模型页面。
+
+### 0.3 行业、Intent 与回复阶段
+
+行业唯一来自 `Tenant.IntentProfileID`。IntentDetect 只读取该已发布行业 Profile 的
+Prompt、JSON Schema 和启用的 `ReplyIntentConfig`；Company、Store、知识库和企微实例
+上的历史行业字段固定为零且不参与解析。
+
+当前阶段顺序为：
+
+```text
+Trigger/Batch
+  -> Normalize
+  -> IntentDetect
+  -> IntentPromptSelect
+  -> ContextBuild
+  -> FastGPT Retrieve / Rerank / Answerability
+  -> ReplyPlan / Tool / Resource / HumanRoute
+  -> Generate
+  -> Validate
+  -> Commit
+  -> Outbox / WebSocket
+```
+
+Prompt、Schema、IntentTasks、ReplyPlan、Answerability、Generate、Validate、
+Interrupt、Checkpoint、Resume 和 Trace 保持固定 AI 来源行为。Tenant 适配只增加可信
+范围、唯一模型 resolver、Store FastGPT 和现有人工任务池端口，不在合并时改写模型行为。
+
+### 0.4 FastGPT 与客户标签
+
+知识检索只走托管 FastGPT。KnowledgeBase 必须属于当前 Tenant + Store，且其 Dataset、
+Profile revision、Credential revision 和 readiness 与当前 Assignment 一致。本地
+`KnowledgeDocument`、`KnowledgeFAQ`、`KnowledgeChunk`、Qdrant 及本地向量 fallback
+已经退出运行链。
+
+回复标签上下文只读取当前 StoreCustomerRelation 已提交、当前行业、已启用且
+`ReplyEnabled` 的固定行业标签。它不进入 IntentDetect、检索 query、工具或人工路由，
+不新增模型调用；读取失败时 fail open，原 Generate messages 保持不变。
+`CustomerTagEvolutionEnabled` 与 `ReplyTagContextEnabled` 均默认关闭并分别灰度。
+
+### 0.5 人工交接、提交与计量
+
+AI 只决定是否需要人工、原因和客户等待文案。实际任务唯一通过
+`ConversationHumanDispatchService` 进入既有人工池，客服组、小组、排班、Presence、
+容量、公平债务、SLA、恢复、转派和释放继续由 manual/rule 派单处理。模型不得选人，
+同一 RequestID 重试不得重复建任务或重复发送等待文案。
+
+成功回复按以下边界提交：
+
+```text
+Validate
+  -> stable ClientMsgID
+  -> Message + Conversation cursor + EventLog transaction
+  -> ServiceAnalyticsCapture
+  -> ObserveCommittedMessage
+  -> WebSocket refresh/resync
+  -> ChannelMessageOutbox
+```
+
+Outbox 或 WebSocket 失败不能重跑模型。每次真实 provider 调用记录 Tenant、Store、
+Profile revision、Usage slot、Credential revision、RequestID 和 NewAPI receipt；
+Prompt、Response、客户正文、API Key、nonce、密文和完整 fingerprint 不进入 Usage、
+Trace、日志或 API。
+
+### 0.6 失败与发布边界
+
+- Tenant 行业、Store Assignment、九槽、Credential 或 FastGPT readiness 任一缺失时，
+  不回退旧模型系统；需要人工的客户会话进入现有任务池。
+- 当前代码和隔离测试完成不代表生产发布完成。丽斯未来真实 NewAPI、FastGPT、
+  回复、转人工、规则派单、标签、账单及备份恢复证据以
+  `docs/development/tenant-ai-unified-integration-plan.md` 的 B13/B14 门禁为准。
+- 旧 `AIConfig`、Grant、StoreSetting、ConversationTag 和本地知识链只允许出现在历史
+  DML migration、404 回归测试与受控 Schema Cleanup 中。
+
 目标：企微员工号回复必须同时满足“准、快、聪明、人味”。提示词只是表达层，不能承担全部决策。回复链路必须先经过 runtime 引擎做批次、意图、风险和覆盖率判断，再交给模型自然表达。
 
 ## 1. 回复质量公式
@@ -144,12 +272,18 @@ Normalize -> IntentDetect -> IntentPromptSelect -> ContextBuild -> Tool/Knowledg
 - 发送前文本改写 guard 已移除：回复正确性必须由 Reply Runtime Engine、知识检索和接待路由在模型生成前约束；模型生成后的链路只负责提交真实回复，不负责“拦截后改句子”。
 - 轻互动提示词改为结合上下文回复，不只回“哈哈/好的/嗯嗯”。
 
-## 4. 后续需要补齐
+## 4. 2026-06 历史待办（非当前统一集成完成判定）
+
+以下条目记录当时的产品优化方向，不表示当前统一分支仍缺少同名基础设施。
+是否继续实施必须先核对当前代码、统一集成方案和真实运行证据，不能据此恢复旧模型或
+旧知识链。
 
 - 账号/门店配置里补 WiFi 名称、密码、发票默认流程、用品领取点等结构化字段。
 - RunLog 中记录 Score 各项分值，用于后续 10 轮 × 20 场景自动压测。
 - 增加重复回复检测：同一会话同一批次相似回复只允许发一次。
 - 用真实历史对话集跑回放，输出错例、扣分项和下一轮规则修正。
+
+## 5. 历史演进记录（2026-06 至 2026-07-15，仅追溯）
 
 ### 2026-06-30 模型接口模式、缓存与上下文窗口
 
