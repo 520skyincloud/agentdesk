@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成；下一步为 B13 丽斯未来真实灰度。B12 全量 Go、服务层 race、前端、构建、旧链静态审计和 Migration 075 双数据库门禁均已通过。
+> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁已完成；下一步为丽斯未来数据 readiness 审计与 `8083` 真实灰度。B12 全量 Go、服务层 race、前端、构建、旧链静态审计和 Migration 075 双数据库门禁均已通过。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1295,6 +1295,19 @@ git diff --check
 - 共享契约：本批修改 model registration、历史 migration 读取结构、显式路由、权限元数据、DTO、回复运行时配置命名、FastGPT-only 知识契约、`web/lib/api`、导航与中英文资源；没有修改九槽语义、Credential 加密、NewAPI 计费口径、AI 转人工判定、人工任务池、规则派单、公平债务或 Tenant/Store 隔离上限。
 - 合并与回滚：B12 必须位于 B11 `5f44ca4` 之后，B13-B14 继续建立在 `e6d738f` 之后。B14 前可整体回滚 B12 应用提交，但 Migration 059/075 已清空或禁用的旧秘密与权限不会自动恢复，禁止把旧链当生产 fallback；B14 后只能恢复 cleanup 前整库备份并整体回退发布，不能恢复任一旧表形成双运行链。
 - 后续边界：B13 只做丽斯未来在 `8083` 的真实 NewAPI Credential、九槽 readiness、FastGPT、完整回复、转人工规则派单、标签与账单对账；B14 才执行停机 Schema Cleanup、SQLite/MySQL 最终快照一致性、备份恢复演练和发布候选门禁。
+
+### 25.14 2026-07-23 B13-A 发布秘密与备份边界
+
+- 代码提交：`55b49b0`。提交前执行 `git fetch origin --prune`；首次请求发生 GitHub TLS 中断，重试成功后确认 `origin/main@e67e20721574b6d3298bb0a1c4749da02ff0b949`、`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563`、`origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e` 和统一分支远端均未前移。
+- 旧配置退出：删除没有任何运行调用者的 `NewAPIUsageConfig`、`newAPIUsage` YAML、Compose 环境变量及对应测试。NewAPI 账单继续且只能由 B5 的 Store Credential 查询、内部归因与对账链负责，不恢复平台 AccessToken、UserID 或 FastGPT TokenName 汇总身份。
+- 秘密单向注入：数据库 DSN、公司邀请码密钥、客户会话签名、资产签名、Store Credential 主密钥、FastGPT Integration Token、SMTP、OIDC、OSS 和全局企微登录秘密均改为环境变量注入；对应 Config 字段使用 `yaml:"-"` 时，仓库 YAML 即使误填也不会加载。Model Profile 与 Store API Key 事实源、加密格式和调用行为不变。
+- 生产启动门禁：`AGENT_DESK_ENV=production` 时，配置在连接数据库、AutoMigrate 和启动 worker 之前验证 DSN、32 字节邀请码密钥、独立会话/资产密钥、有效 AES-256 Store Credential 主密钥及 Key ID；启用 FastGPT、邮件、OIDC、全局企微或 OSS 时同时验证其必需配置。错误只列环境变量名，不输出秘密值。
+- 部署模板：`docker/agent-desk.yaml` 只保留非敏感配置；Compose 固定 `8083`，通过必填变量阻止无密钥启动；新增仅含空值的 `.env.example`，README 明确 `.env` 权限与仓库外备份要求。自动化契约测试验证模板无运行秘密、核心变量为 Compose 必填、示例秘密为空、备份目录只有安全说明。
+- 敏感备份治理：从最终工作树删除 2026-06-30 的 MySQL/Qdrant/上传数据备份、真实部署快照、Codex rollout/thread 归档及两个仓库内恢复脚本；`backups/README.md` 改为仓库外加密备份规则，`.gitignore` 与 `.dockerignore` 阻止再次纳入运行备份或 `.env`。历史 `docs/development-handoff.md` 缩减为明确废弃说明。
+- 历史风险：提交删除只清理当前树，不会清除 Git 历史中的二进制业务备份和旧配置。旧企微凭据、数据库口令及任何历史密钥在真实 `8083` 灰度前必须完成旋转；仓库历史净化需单独协调所有协作者和远端，不允许在本集成分支擅自 force push。
+- 验证：`go test ./internal/pkg/config/... -count=1`、`go test ./... -count=1`、`go vet ./...`、带非敏感契约值的 `docker compose config --quiet`、`gofmt -d`、`git diff --check`、活动 `NewAPIUsage` 零引用和当前树秘密扫描全部通过。
+- 共享与回滚：本批修改共享 Config、Compose、部署模板和文档，但没有修改 model/migration/DTO/enum/API/WebSocket、AI Prompt/Schema/Runtime、Credential 密文、Billing 口径、FastGPT 资源、人工任务池或规则派单。B13 及 B14 必须建立在 `55b49b0` 之后；回滚该提交会重新允许明文 YAML 和敏感备份进入发布物，禁止作为生产回滚方案。
+- 剩余 B13：尚未把统一分支部署到 `8083`，也未完成丽斯未来真实 NewAPI Key、九槽 Profile、FastGPT Team/Dataset、回复、转人工、规则派单、标签和人民币账单对账。因此本节不能被解释为 B13 灰度完成；这些证据完成后才可进入 B14。
 
 ## 26. 用户最终 1-48 项决定追溯
 
