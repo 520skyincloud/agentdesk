@@ -61,8 +61,14 @@
 推荐先用 Docker Compose 体验完整服务：
 
 ```bash
+cp .env.example .env
+# 填完 .env 中所有必填空值，并限制文件访问权限。
+chmod 600 .env
+docker compose config --quiet
 docker compose up -d --build
 ```
+
+Compose 会在数据库、邀请码、客户会话、文件签名或门店凭据加密密钥缺失时拒绝启动。运行备份与 `.env` 必须保存在 Git 仓库之外。
 
 完整英文配置与排查说明见 [Docker Compose Quick Start](https://agent-desk.huabei.pro/zh/docs/getting-started/docker-compose.html)。
 
@@ -105,7 +111,8 @@ cp config/config.example.yaml config/config.yaml
 
 - SQLite：`data/app.db`
 - Backend：`http://127.0.0.1:8083`
-- 托管 FastGPT 与 NewAPI 地址通过部署配置和密钥注入。
+- 托管 FastGPT 使用部署配置和仅环境变量注入的 Integration Token。
+- NewAPI 模型 Profile 由平台管理员维护，每个门店使用自己的加密 API Key。
 
 安装前端依赖：
 
@@ -251,13 +258,14 @@ flowchart LR
 
 ```bash
 docker build -t mlogclub/agent-desk .
-docker run --rm -p 8083:8083 \
+docker run --rm -p 8083:8083 --env-file .env \
+  -e APP_ENV=production -e AGENT_DESK_ENV=production \
   -v $(pwd)/docker/agent-desk.yaml:/app/config/config.yaml:ro \
   -v agent-desk-data:/app/data \
   mlogclub/agent-desk
 ```
 
-Compose 使用 [docker/agent-desk.yaml](docker/agent-desk.yaml) 作为容器内配置，应用通过 Docker 服务名访问 `mysql`，并通过配置地址连接 FastGPT/NewAPI。
+Compose 仅使用 [docker/agent-desk.yaml](docker/agent-desk.yaml) 保存非敏感设置；所有部署秘密来自被忽略的 `.env` 或生产秘密管理器。NewAPI 调用与账单查询只使用各门店的加密凭据，不存在平台级 NewAPI 用量 Token。
 
 ## 开源定位
 

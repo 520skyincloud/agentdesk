@@ -3,6 +3,8 @@
 .idea
 .pnpm-store
 .env
+backups/*
+!backups/README.md
 
 data/
 config/config.yaml

@@ -12,6 +12,7 @@ server:
 
 db:
   type: sqlite
+  # MySQL 生产 DSN 通过 AGENT_DESK_DB_DSN 注入；SQLite 本地开发可保留此路径。
   dsn: file:./data/app.db?_busy_timeout=5000
   maxIdleConns: 5
   maxOpenConns: 20
@@ -27,9 +28,7 @@ auth:
   tokenTTLHours: 12
   maxFailedAttempts: 5
   credentialLockMinute: 15
-  # 公司邀请码 AES-256-GCM 密钥，填写 base64 编码的 32 字节随机值。生产环境优先通过
-  # AGENT_DESK_INVITATION_ENCRYPTION_KEY 注入，不得复用登录或客服会话密钥。
-  invitationEncryptionKey: ""
+  # 公司邀请码密钥只能通过 AGENT_DESK_INVITATION_ENCRYPTION_KEY 注入。
 
 tenantRegistration:
   # 多租户业务数据与非 HTTP 链路完成隔离验收前必须保持关闭。
@@ -42,7 +41,7 @@ email:
   host: ""
   port: 587
   username: ""
-  password: ""
+  # SMTP 密码只能通过 AGENT_DESK_EMAIL_PASSWORD 注入。
   from: ""
   fromName: "Agent Desk"
   # 可选：starttls / tls / plain。生产环境建议 starttls 或 tls。
@@ -59,19 +58,8 @@ fastGPT:
   # FastGPT 检索引擎的最大参考 token。默认 400，避免过量召回抬高回复模型成本。
   retrievalTokenLimit: 400
 
-# 可选：用于核对模型网关的真实消费日志。未配置时不影响模型调用和回复。
-newAPIUsage:
-  enabled: false
-  baseUrl: ""
-  accessToken: ""
-  userId: 0
-  timeoutMs: 5000
-  # FastGPT 内部模型统一使用的 New API token 名称，仅用于平台级用量归集。
-  fastGPTTokenName: ""
-
 customerSession:
-  # 客服会话 token 签名密钥。必须使用独立高强度随机字符串，不要复用渠道 userTokenSecret。
-  secret: ""
+  # 签名密钥只能通过 AGENT_DESK_CUSTOMER_SESSION_SECRET 注入。
   # 客服会话 token 默认有效期，单位分钟。
   ttlMinutes: 120
   # token 剩余有效期小于该值时自动续期，单位分钟。
@@ -80,8 +68,7 @@ customerSession:
 storage:
   default: local
   maxUploadSizeMB: 20
-  # 文件下载地址签名密钥。多租户环境必须配置独立高强度随机字符串。
-  assetURLSigningSecret: ""
+  # 文件下载签名密钥只能通过 AGENT_DESK_ASSET_URL_SIGNING_SECRET 注入。
   # 应用层签名下载地址有效期，默认 3600 秒。
   assetURLTTLSeconds: 3600
   local:
@@ -90,8 +77,7 @@ storage:
   oss:
     endpoint: ""
     bucket: ""
-    accessKeyId: ""
-    accessKeySecret: ""
+    # AccessKey 只能通过 AGENT_DESK_OSS_ACCESS_KEY_ID / AGENT_DESK_OSS_ACCESS_KEY_SECRET 注入。
     baseUrl: ""
     private: false
     signedUrlExpireSeconds: 600
@@ -111,11 +97,10 @@ oidc:
   # OIDC Provider issuer，例如 https://idp.example.com/realms/demo。
   issuer: ""
   clientId: ""
-  clientSecret: ""
+  # Client Secret 只能通过 AGENT_DESK_OIDC_CLIENT_SECRET 注入。
   # 必须与 OIDC Provider 后台登记的 redirect_uri 完全一致。
   redirectUrl: "http://127.0.0.1:8083/api/auth/oidc_callback"
-  # OIDC 登录 state 签名密钥；留空时退回使用 clientSecret。
-  stateSecret: ""
+  # State 密钥只能通过 AGENT_DESK_OIDC_STATE_SECRET 注入。
   scopes:
     - openid
     - profile
@@ -128,9 +113,7 @@ wxWork:
   # 企业微信公司 ID。
   # 例如：wwxxxxxxxxxxxxxxxx，来自企业微信管理后台。
   corpId: 
-  # 企业微信应用 Secret。
-  # 用于后端换取 access_token 和用户身份，必须保密。
-  corpSecret: ""
+  # 应用 Secret 只能通过 AGENT_DESK_WXWORK_CORP_SECRET 注入。
   # 企业微信自建应用 AgentID。
   # 网页授权 scope=snsapi_privateinfo 时会使用该字段。
   agentId: 
@@ -139,19 +122,7 @@ wxWork:
   # 例如：http://127.0.0.1:8083/api/auth/wxwork_callback
   # 线上环境应填写可被企业微信访问的正式域名，并确保域名已在企业微信后台配置。
   oauthRedirect: ""
-  # 企业微信登录 state 签名密钥。
-  # 用于防篡改、防重放校验，建议填写独立随机字符串。
-  # 若留空，代码会退回使用 corpSecret，但不建议这样做。
-  stateSecret: ""
-  # 企业微信回调解密私钥。
-  # 当前登录流程未使用，保留给消息回调等场景。
-  rsaPrivateKey: ""
-  # 企业微信回调 Token。
-  # 当前登录流程未使用，保留给消息回调等场景。
-  token: ""
-  # 企业微信消息加解密 EncodingAESKey。
-  # 当前登录流程未使用，保留给消息回调等场景。
-  encodingAESKey: ""
+  # State、RSA 私钥、回调 Token 与 EncodingAESKey 分别通过对应 AGENT_DESK_WXWORK_* 环境变量注入。
 
   notify:
     # 是否启用企业微信应用消息通知。

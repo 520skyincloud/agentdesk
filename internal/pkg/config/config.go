@@ -1,11 +1,15 @@
 package config
 
 import (
-	"agent-desk/internal/pkg/enums"
+	"encoding/base64"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
+
+	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/securex"
 
 	"gopkg.in/yaml.v3"
 )
@@ -17,7 +21,6 @@ type Config struct {
 	Auth               AuthConfig               `yaml:"auth"`
 	Email              EmailConfig              `yaml:"email"`
 	FastGPT            FastGPTConfig            `yaml:"fastGPT"`
-	NewAPIUsage        NewAPIUsageConfig        `yaml:"newAPIUsage"`
 	StoreCredential    StoreCredentialConfig    `yaml:"-"`
 	Storage            StorageConfig            `yaml:"storage"`
 	MCP                MCPConfig                `yaml:"mcp"`
@@ -32,7 +35,7 @@ type EmailConfig struct {
 	Host      string `yaml:"host"`
 	Port      int    `yaml:"port"`
 	Username  string `yaml:"username"`
-	Password  string `yaml:"password"`
+	Password  string `yaml:"-"`
 	From      string `yaml:"from"`
 	FromName  string `yaml:"fromName"`
 	TLSMode   string `yaml:"tlsMode"`
@@ -54,15 +57,6 @@ type FastGPTConfig struct {
 	TimeoutMS           int    `yaml:"timeoutMs"`
 	MaxRetries          int    `yaml:"maxRetries"`
 	RetrievalTokenLimit int    `yaml:"retrievalTokenLimit"`
-}
-
-type NewAPIUsageConfig struct {
-	Enabled          bool   `yaml:"enabled"`
-	BaseURL          string `yaml:"baseUrl"`
-	AccessToken      string `yaml:"accessToken"`
-	UserID           int64  `yaml:"userId"`
-	TimeoutMS        int    `yaml:"timeoutMs"`
-	FastGPTTokenName string `yaml:"fastGPTTokenName"`
 }
 
 // StoreCredentialConfig is loaded exclusively from deployment secrets.
@@ -118,7 +112,7 @@ type AuthConfig struct {
 	TokenTTLHours           int    `yaml:"tokenTTLHours"`
 	MaxFailedAttempts       int    `yaml:"maxFailedAttempts"`
 	CredentialLockMinute    int    `yaml:"credentialLockMinute"`
-	InvitationEncryptionKey string `yaml:"invitationEncryptionKey"`
+	InvitationEncryptionKey string `yaml:"-"`
 }
 
 type TenantRegistrationConfig struct {
@@ -126,7 +120,7 @@ type TenantRegistrationConfig struct {
 }
 
 type CustomerSessionConfig struct {
-	Secret                  string `yaml:"secret"`
+	Secret                  string `yaml:"-"`
 	TTLMinutes              int    `yaml:"ttlMinutes"`
 	RefreshThresholdMinutes int    `yaml:"refreshThresholdMinutes"`
 }
@@ -148,7 +142,7 @@ func (c CustomerSessionConfig) RefreshThreshold() int {
 type StorageConfig struct {
 	Default               enums.AssetProvider `yaml:"default"`
 	MaxUploadSizeMB       int64               `yaml:"maxUploadSizeMB"`
-	AssetURLSigningSecret string              `yaml:"assetURLSigningSecret"`
+	AssetURLSigningSecret string              `yaml:"-"`
 	AssetURLTTLSeconds    int                 `yaml:"assetURLTTLSeconds"`
 	Local                 LocalStorageConfig  `yaml:"local"`
 	OSS                   OSSStorageConfig    `yaml:"oss"`
@@ -181,8 +175,8 @@ type LocalStorageConfig struct {
 type OSSStorageConfig struct {
 	Endpoint        string `yaml:"endpoint"`
 	Bucket          string `yaml:"bucket"`
-	AccessKeyID     string `yaml:"accessKeyId"`
-	AccessKeySecret string `yaml:"accessKeySecret"`
+	AccessKeyID     string `yaml:"-"`
+	AccessKeySecret string `yaml:"-"`
 	BaseURL         string `yaml:"baseUrl"`
 	Private         bool   `yaml:"private"`
 	SignedURLExpire int    `yaml:"signedUrlExpireSeconds"`
@@ -204,9 +198,9 @@ type OIDCConfig struct {
 	Enabled      bool     `yaml:"enabled"`
 	Issuer       string   `yaml:"issuer"`
 	ClientID     string   `yaml:"clientId"`
-	ClientSecret string   `yaml:"clientSecret"`
+	ClientSecret string   `yaml:"-"`
 	RedirectURL  string   `yaml:"redirectUrl"`
-	StateSecret  string   `yaml:"stateSecret"`
+	StateSecret  string   `yaml:"-"`
 	Scopes       []string `yaml:"scopes"`
 }
 
@@ -225,7 +219,7 @@ type WxWorkConfig struct {
 	// CorpID 为企业微信公司 ID，例如 wwxxxxxxxxxxxxxxxx。
 	CorpID string `yaml:"corpId"`
 	// CorpSecret 为企业微信应用 Secret，用于换取 access_token。
-	CorpSecret string `yaml:"corpSecret"`
+	CorpSecret string `yaml:"-"`
 	// AgentID 为企业微信自建应用 AgentID。
 	AgentID string `yaml:"agentId"`
 	// OAuthRedirect 为企业微信网页授权回调地址。
@@ -233,16 +227,16 @@ type WxWorkConfig struct {
 	OAuthRedirect string `yaml:"oauthRedirect"`
 	// StateSecret 为登录 state 的签名密钥，用于防止篡改和重放。
 	// 建议填写独立随机字符串；留空时业务代码会退回使用 CorpSecret。
-	StateSecret string `yaml:"stateSecret"`
+	StateSecret string `yaml:"-"`
 	// RSAPrivateKey 为企业微信回调解密私钥。
 	// 当前登录流程未使用，保留给消息回调等场景。
-	RSAPrivateKey string `yaml:"rsaPrivateKey"`
+	RSAPrivateKey string `yaml:"-"`
 	// Token 为企业微信回调 Token。
 	// 当前登录流程未使用，保留给消息回调等场景。
-	Token string `yaml:"token"`
+	Token string `yaml:"-"`
 	// EncodingAESKey 为企业微信消息加解密密钥。
 	// 当前登录流程未使用，保留给消息回调等场景。
-	EncodingAESKey string `yaml:"encodingAESKey"`
+	EncodingAESKey string `yaml:"-"`
 	// Notify 为企业微信应用消息通知配置。
 	Notify WxWorkNotifyConfig `yaml:"notify"`
 }
@@ -257,11 +251,9 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, cfg); err != nil {
 		return nil, err
 	}
-	if invitationKey := strings.TrimSpace(os.Getenv("AGENT_DESK_INVITATION_ENCRYPTION_KEY")); invitationKey != "" {
-		cfg.Auth.InvitationEncryptionKey = invitationKey
-	}
-	if assetURLSigningSecret := strings.TrimSpace(os.Getenv("AGENT_DESK_ASSET_URL_SIGNING_SECRET")); assetURLSigningSecret != "" {
-		cfg.Storage.AssetURLSigningSecret = assetURLSigningSecret
+	applyDeploymentSecretEnv(cfg)
+	if dbDSN := strings.TrimSpace(os.Getenv("AGENT_DESK_DB_DSN")); dbDSN != "" {
+		cfg.DB.DSN = dbDSN
 	}
 	if enabledValue := strings.TrimSpace(os.Getenv("AGENT_DESK_TENANT_REGISTRATION_ENABLED")); enabledValue != "" {
 		enabled, parseErr := strconv.ParseBool(enabledValue)
@@ -273,11 +265,35 @@ func Load(path string) (*Config, error) {
 	if err := applyFastGPTEnv(cfg); err != nil {
 		return nil, err
 	}
-	if err := applyNewAPIUsageEnv(cfg); err != nil {
+	if err := applyOptionalFeatureEnv(cfg); err != nil {
 		return nil, err
 	}
 	applyStoreCredentialEnv(cfg)
+	if isProductionEnvironment() {
+		if err := ValidateProduction(cfg); err != nil {
+			return nil, err
+		}
+	}
 	return cfg, nil
+}
+
+func applyDeploymentSecretEnv(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.Auth.InvitationEncryptionKey = strings.TrimSpace(os.Getenv("AGENT_DESK_INVITATION_ENCRYPTION_KEY"))
+	cfg.CustomerSession.Secret = strings.TrimSpace(os.Getenv("AGENT_DESK_CUSTOMER_SESSION_SECRET"))
+	cfg.Storage.AssetURLSigningSecret = strings.TrimSpace(os.Getenv("AGENT_DESK_ASSET_URL_SIGNING_SECRET"))
+	cfg.Storage.OSS.AccessKeyID = strings.TrimSpace(os.Getenv("AGENT_DESK_OSS_ACCESS_KEY_ID"))
+	cfg.Storage.OSS.AccessKeySecret = strings.TrimSpace(os.Getenv("AGENT_DESK_OSS_ACCESS_KEY_SECRET"))
+	cfg.Email.Password = strings.TrimSpace(os.Getenv("AGENT_DESK_EMAIL_PASSWORD"))
+	cfg.OIDC.ClientSecret = strings.TrimSpace(os.Getenv("AGENT_DESK_OIDC_CLIENT_SECRET"))
+	cfg.OIDC.StateSecret = strings.TrimSpace(os.Getenv("AGENT_DESK_OIDC_STATE_SECRET"))
+	cfg.WxWork.CorpSecret = strings.TrimSpace(os.Getenv("AGENT_DESK_WXWORK_CORP_SECRET"))
+	cfg.WxWork.StateSecret = strings.TrimSpace(os.Getenv("AGENT_DESK_WXWORK_STATE_SECRET"))
+	cfg.WxWork.RSAPrivateKey = strings.TrimSpace(os.Getenv("AGENT_DESK_WXWORK_RSA_PRIVATE_KEY"))
+	cfg.WxWork.Token = strings.TrimSpace(os.Getenv("AGENT_DESK_WXWORK_TOKEN"))
+	cfg.WxWork.EncodingAESKey = strings.TrimSpace(os.Getenv("AGENT_DESK_WXWORK_ENCODING_AES_KEY"))
 }
 
 func applyStoreCredentialEnv(cfg *Config) {
@@ -288,34 +304,130 @@ func applyStoreCredentialEnv(cfg *Config) {
 	cfg.StoreCredential.MasterKeyID = strings.TrimSpace(os.Getenv("AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID"))
 }
 
-func applyNewAPIUsageEnv(cfg *Config) error {
+func applyOptionalFeatureEnv(cfg *Config) error {
 	if cfg == nil {
 		return nil
 	}
-	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_NEW_API_USAGE_ENABLED")); value != "" {
+	for _, item := range []struct {
+		name   string
+		target *bool
+	}{
+		{name: "AGENT_DESK_EMAIL_ENABLED", target: &cfg.Email.Enabled},
+		{name: "AGENT_DESK_OIDC_ENABLED", target: &cfg.OIDC.Enabled},
+		{name: "AGENT_DESK_WXWORK_ENABLED", target: &cfg.WxWork.Enabled},
+	} {
+		value := strings.TrimSpace(os.Getenv(item.name))
+		if value == "" {
+			continue
+		}
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
-			return fmt.Errorf("parse AGENT_DESK_NEW_API_USAGE_ENABLED: %w", err)
+			return fmt.Errorf("parse %s: %w", item.name, err)
 		}
-		cfg.NewAPIUsage.Enabled = enabled
+		*item.target = enabled
 	}
-	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_NEW_API_USAGE_BASE_URL")); value != "" {
-		cfg.NewAPIUsage.BaseURL = value
-	}
-	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_NEW_API_USAGE_ACCESS_TOKEN")); value != "" {
-		cfg.NewAPIUsage.AccessToken = value
-	}
-	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_NEW_API_USAGE_USER_ID")); value != "" {
-		userID, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			return fmt.Errorf("parse AGENT_DESK_NEW_API_USAGE_USER_ID: %w", err)
-		}
-		cfg.NewAPIUsage.UserID = userID
-	}
-	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_NEW_API_USAGE_FASTGPT_TOKEN_NAME")); value != "" {
-		cfg.NewAPIUsage.FastGPTTokenName = value
-	}
+	applyNonSecretEnvironment(cfg)
 	return nil
+}
+
+func applyNonSecretEnvironment(cfg *Config) {
+	for _, item := range []struct {
+		name   string
+		target *string
+	}{
+		{name: "AGENT_DESK_EMAIL_HOST", target: &cfg.Email.Host},
+		{name: "AGENT_DESK_EMAIL_USERNAME", target: &cfg.Email.Username},
+		{name: "AGENT_DESK_EMAIL_FROM", target: &cfg.Email.From},
+		{name: "AGENT_DESK_EMAIL_PUBLIC_URL", target: &cfg.Email.PublicURL},
+		{name: "AGENT_DESK_OIDC_ISSUER", target: &cfg.OIDC.Issuer},
+		{name: "AGENT_DESK_OIDC_CLIENT_ID", target: &cfg.OIDC.ClientID},
+		{name: "AGENT_DESK_OIDC_REDIRECT_URL", target: &cfg.OIDC.RedirectURL},
+		{name: "AGENT_DESK_WXWORK_CORP_ID", target: &cfg.WxWork.CorpID},
+		{name: "AGENT_DESK_WXWORK_AGENT_ID", target: &cfg.WxWork.AgentID},
+		{name: "AGENT_DESK_WXWORK_OAUTH_REDIRECT", target: &cfg.WxWork.OAuthRedirect},
+	} {
+		if value := strings.TrimSpace(os.Getenv(item.name)); value != "" {
+			*item.target = value
+		}
+	}
+}
+
+func isProductionEnvironment() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("AGENT_DESK_ENV")), "production")
+}
+
+// ValidateProduction rejects incomplete deployment secrets before any database
+// migration or background worker can start. Error messages only name variables;
+// they never include configured secret values.
+func ValidateProduction(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("production configuration is nil")
+	}
+	invalid := make([]string, 0)
+	require := func(ok bool, name string) {
+		if !ok {
+			invalid = append(invalid, name)
+		}
+	}
+	require(strings.TrimSpace(cfg.DB.DSN) != "", "AGENT_DESK_DB_DSN")
+	require(validBase64Key(cfg.Auth.InvitationEncryptionKey), "AGENT_DESK_INVITATION_ENCRYPTION_KEY")
+	require(strongSecret(cfg.CustomerSession.Secret), "AGENT_DESK_CUSTOMER_SESSION_SECRET")
+	require(strongSecret(cfg.Storage.AssetURLSigningSecret), "AGENT_DESK_ASSET_URL_SIGNING_SECRET")
+	_, credentialKeyErr := securex.NewAESGCM(cfg.StoreCredential.MasterKey)
+	require(credentialKeyErr == nil, "AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY")
+	require(strings.TrimSpace(cfg.StoreCredential.MasterKeyID) != "", "AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID")
+
+	if cfg.FastGPT.Enabled {
+		require(strings.TrimSpace(cfg.FastGPT.BaseURL) != "", "AGENT_DESK_FASTGPT_BASE_URL")
+		require(strings.TrimSpace(cfg.FastGPT.IntegrationToken) != "", "AGENT_DESK_FASTGPT_INTEGRATION_TOKEN")
+	}
+	if cfg.Email.Enabled {
+		require(strings.TrimSpace(cfg.Email.Host) != "", "AGENT_DESK_EMAIL_HOST")
+		require(strings.TrimSpace(cfg.Email.Username) != "", "AGENT_DESK_EMAIL_USERNAME")
+		require(strings.TrimSpace(cfg.Email.Password) != "", "AGENT_DESK_EMAIL_PASSWORD")
+		require(strings.TrimSpace(cfg.Email.From) != "", "AGENT_DESK_EMAIL_FROM")
+		require(strings.TrimSpace(cfg.Email.PublicURL) != "", "AGENT_DESK_EMAIL_PUBLIC_URL")
+	}
+	if cfg.OIDC.Enabled {
+		require(strings.TrimSpace(cfg.OIDC.Issuer) != "", "AGENT_DESK_OIDC_ISSUER")
+		require(strings.TrimSpace(cfg.OIDC.ClientID) != "", "AGENT_DESK_OIDC_CLIENT_ID")
+		require(strings.TrimSpace(cfg.OIDC.ClientSecret) != "", "AGENT_DESK_OIDC_CLIENT_SECRET")
+		require(strings.TrimSpace(cfg.OIDC.RedirectURL) != "", "AGENT_DESK_OIDC_REDIRECT_URL")
+		require(strongSecret(cfg.OIDC.StateSecret), "AGENT_DESK_OIDC_STATE_SECRET")
+	}
+	if cfg.WxWork.Enabled {
+		require(strings.TrimSpace(cfg.WxWork.CorpID) != "", "AGENT_DESK_WXWORK_CORP_ID")
+		require(strings.TrimSpace(cfg.WxWork.CorpSecret) != "", "AGENT_DESK_WXWORK_CORP_SECRET")
+		require(strings.TrimSpace(cfg.WxWork.AgentID) != "", "AGENT_DESK_WXWORK_AGENT_ID")
+		require(strings.TrimSpace(cfg.WxWork.OAuthRedirect) != "", "AGENT_DESK_WXWORK_OAUTH_REDIRECT")
+		require(strongSecret(cfg.WxWork.StateSecret), "AGENT_DESK_WXWORK_STATE_SECRET")
+	}
+	if cfg.Storage.Default == enums.AssetProviderOSS {
+		require(strings.TrimSpace(cfg.Storage.OSS.AccessKeyID) != "", "AGENT_DESK_OSS_ACCESS_KEY_ID")
+		require(strings.TrimSpace(cfg.Storage.OSS.AccessKeySecret) != "", "AGENT_DESK_OSS_ACCESS_KEY_SECRET")
+	}
+	if len(invalid) == 0 {
+		return nil
+	}
+	slices.Sort(invalid)
+	invalid = slices.Compact(invalid)
+	return fmt.Errorf("production configuration is incomplete or invalid: %s", strings.Join(invalid, ", "))
+}
+
+func validBase64Key(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(value)
+	}
+	return err == nil && len(decoded) == 32
+}
+
+func strongSecret(value string) bool {
+	return len([]byte(strings.TrimSpace(value))) >= 32
 }
 
 func applyFastGPTEnv(cfg *Config) error {

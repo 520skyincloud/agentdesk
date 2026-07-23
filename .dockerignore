@@ -15,6 +15,8 @@ qdrant
 __debug_bin*
 
 config/config.yaml
+.env
+backups
 
 node_modules
 .pnpm-store
@@ -27,7 +29,6 @@ web/tsconfig.tsbuildinfo
 web/next-env.d.ts
 web/.env*
 !web/.env.example
-
 
 
 

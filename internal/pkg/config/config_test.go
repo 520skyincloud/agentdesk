@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,22 +159,52 @@ func TestLoadIgnoresFastGPTIntegrationTokenInYAML(t *testing.T) {
 	}
 }
 
-func TestLoadAppliesNewAPIUsageEnvironment(t *testing.T) {
-	t.Setenv("AGENT_DESK_NEW_API_USAGE_ENABLED", "true")
-	t.Setenv("AGENT_DESK_NEW_API_USAGE_BASE_URL", "https://new-api.example.com")
-	t.Setenv("AGENT_DESK_NEW_API_USAGE_ACCESS_TOKEN", "access-token")
-	t.Setenv("AGENT_DESK_NEW_API_USAGE_USER_ID", "9")
-	t.Setenv("AGENT_DESK_NEW_API_USAGE_FASTGPT_TOKEN_NAME", "fastgpt-platform")
+func TestLoadAppliesDeploymentEnvironment(t *testing.T) {
+	values := map[string]string{
+		"AGENT_DESK_DB_DSN":                  "environment-dsn",
+		"AGENT_DESK_CUSTOMER_SESSION_SECRET": "customer-session-environment-secret",
+		"AGENT_DESK_EMAIL_PASSWORD":          "email-environment-secret",
+		"AGENT_DESK_OIDC_CLIENT_SECRET":      "oidc-client-environment-secret",
+		"AGENT_DESK_OIDC_STATE_SECRET":       "oidc-state-environment-secret",
+		"AGENT_DESK_OSS_ACCESS_KEY_ID":       "oss-environment-id",
+		"AGENT_DESK_OSS_ACCESS_KEY_SECRET":   "oss-environment-secret",
+		"AGENT_DESK_WXWORK_CORP_SECRET":      "wxwork-corp-environment-secret",
+		"AGENT_DESK_WXWORK_STATE_SECRET":     "wxwork-state-environment-secret",
+		"AGENT_DESK_WXWORK_RSA_PRIVATE_KEY":  "wxwork-rsa-environment-secret",
+		"AGENT_DESK_WXWORK_TOKEN":            "wxwork-token-environment-secret",
+		"AGENT_DESK_WXWORK_ENCODING_AES_KEY": "wxwork-aes-environment-secret",
+		"AGENT_DESK_WXWORK_CORP_ID":          "ww-environment",
+		"AGENT_DESK_WXWORK_AGENT_ID":         "1000008",
+		"AGENT_DESK_WXWORK_OAUTH_REDIRECT":   "https://console.example.com/wxwork",
+		"AGENT_DESK_WXWORK_ENABLED":          "true",
+		"AGENT_DESK_EMAIL_ENABLED":           "true",
+		"AGENT_DESK_OIDC_ENABLED":            "true",
+	}
+	for name, value := range values {
+		t.Setenv(name, value)
+	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("server:\n  port: 8080\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("db:\n  dsn: yaml-dsn\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.NewAPIUsage.Enabled || cfg.NewAPIUsage.BaseURL != "https://new-api.example.com" || cfg.NewAPIUsage.AccessToken != "access-token" || cfg.NewAPIUsage.UserID != 9 || cfg.NewAPIUsage.FastGPTTokenName != "fastgpt-platform" {
-		t.Fatalf("newAPIUsage=%#v", cfg.NewAPIUsage)
+	if cfg.DB.DSN != "environment-dsn" || cfg.CustomerSession.Secret != values["AGENT_DESK_CUSTOMER_SESSION_SECRET"] {
+		t.Fatalf("deployment environment was not applied")
+	}
+	if !cfg.Email.Enabled || cfg.Email.Password != values["AGENT_DESK_EMAIL_PASSWORD"] {
+		t.Fatalf("email environment was not applied")
+	}
+	if !cfg.OIDC.Enabled || cfg.OIDC.ClientSecret != values["AGENT_DESK_OIDC_CLIENT_SECRET"] || cfg.OIDC.StateSecret != values["AGENT_DESK_OIDC_STATE_SECRET"] {
+		t.Fatalf("OIDC environment was not applied")
+	}
+	if !cfg.WxWork.Enabled || cfg.WxWork.CorpSecret != values["AGENT_DESK_WXWORK_CORP_SECRET"] || cfg.WxWork.EncodingAESKey != values["AGENT_DESK_WXWORK_ENCODING_AES_KEY"] {
+		t.Fatalf("WxWork environment was not applied")
+	}
+	if cfg.Storage.OSS.AccessKeyID != values["AGENT_DESK_OSS_ACCESS_KEY_ID"] || cfg.Storage.OSS.AccessKeySecret != values["AGENT_DESK_OSS_ACCESS_KEY_SECRET"] {
+		t.Fatalf("OSS environment was not applied")
 	}
 }
 
@@ -208,5 +239,99 @@ func TestLoadDoesNotAcceptStoreCredentialSecretsFromYAML(t *testing.T) {
 	}
 	if cfg.StoreCredential.MasterKey != "" || cfg.StoreCredential.MasterKeyID != "" {
 		t.Fatalf("YAML secret unexpectedly loaded: %#v", cfg.StoreCredential)
+	}
+}
+
+func TestLoadDoesNotAcceptDeploymentSecretsFromYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte(`auth:
+  invitationEncryptionKey: yaml-invitation-secret
+customerSession:
+  secret: yaml-session-secret
+email:
+  password: yaml-email-secret
+storage:
+  assetURLSigningSecret: yaml-asset-secret
+  oss:
+    accessKeyId: yaml-oss-id
+    accessKeySecret: yaml-oss-secret
+oidc:
+  clientSecret: yaml-oidc-client-secret
+  stateSecret: yaml-oidc-state-secret
+wxWork:
+  corpSecret: yaml-wxwork-corp-secret
+  stateSecret: yaml-wxwork-state-secret
+  rsaPrivateKey: yaml-wxwork-rsa-secret
+  token: yaml-wxwork-token
+  encodingAESKey: yaml-wxwork-aes-secret
+`)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"invitation": cfg.Auth.InvitationEncryptionKey,
+		"session":    cfg.CustomerSession.Secret,
+		"email":      cfg.Email.Password,
+		"asset":      cfg.Storage.AssetURLSigningSecret,
+		"ossId":      cfg.Storage.OSS.AccessKeyID,
+		"ossSecret":  cfg.Storage.OSS.AccessKeySecret,
+		"oidcClient": cfg.OIDC.ClientSecret,
+		"oidcState":  cfg.OIDC.StateSecret,
+		"wxCorp":     cfg.WxWork.CorpSecret,
+		"wxState":    cfg.WxWork.StateSecret,
+		"wxRSA":      cfg.WxWork.RSAPrivateKey,
+		"wxToken":    cfg.WxWork.Token,
+		"wxAES":      cfg.WxWork.EncodingAESKey,
+	} {
+		if value != "" {
+			t.Fatalf("%s secret unexpectedly loaded from YAML", name)
+		}
+	}
+}
+
+func TestLoadRejectsIncompleteProductionSecretsBeforeStartup(t *testing.T) {
+	t.Setenv("AGENT_DESK_ENV", "production")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("db:\n  type: mysql\n  dsn: contains-private-dsn\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("incomplete production configuration must be rejected")
+	}
+	for _, name := range []string{
+		"AGENT_DESK_ASSET_URL_SIGNING_SECRET",
+		"AGENT_DESK_CUSTOMER_SESSION_SECRET",
+		"AGENT_DESK_INVITATION_ENCRYPTION_KEY",
+		"AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY",
+		"AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID",
+	} {
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("production validation error %q does not name %s", err, name)
+		}
+	}
+	if strings.Contains(err.Error(), "contains-private-dsn") {
+		t.Fatalf("production validation leaked a configured value: %v", err)
+	}
+}
+
+func TestLoadAcceptsCompleteProductionSecrets(t *testing.T) {
+	t.Setenv("AGENT_DESK_ENV", "production")
+	t.Setenv("AGENT_DESK_DB_DSN", "file:production.db")
+	t.Setenv("AGENT_DESK_INVITATION_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	t.Setenv("AGENT_DESK_CUSTOMER_SESSION_SECRET", "customer-session-secret-with-32-bytes")
+	t.Setenv("AGENT_DESK_ASSET_URL_SIGNING_SECRET", "asset-signing-secret-with-at-least-32")
+	t.Setenv("AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY", base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789")))
+	t.Setenv("AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID", "deployment-key-v1")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("db:\n  type: sqlite\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("complete production configuration rejected: %v", err)
 	}
 }

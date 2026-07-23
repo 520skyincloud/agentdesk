@@ -61,8 +61,14 @@ Each store uses one managed FastGPT dataset. The platform publishes complete nin
 The fastest way to try the full stack is Docker Compose:
 
 ```bash
+cp .env.example .env
+# Fill every required blank value in .env, then restrict access to the file.
+chmod 600 .env
+docker compose config --quiet
 docker compose up -d --build
 ```
+
+Compose intentionally refuses to start without independent database, invitation, customer-session, asset-signing, and Store credential encryption secrets. Runtime backups and `.env` files must remain outside Git.
 
 For the full English setup guide, see [Docker Compose Quick Start](https://agent-desk.huabei.pro/docs/getting-started/docker-compose.html).
 
@@ -105,7 +111,8 @@ The default configuration uses:
 
 - SQLite: `data/app.db`
 - Backend: `http://127.0.0.1:8083`
-- Managed FastGPT and NewAPI endpoints are configured through deployment settings and secrets.
+- Managed FastGPT uses deployment settings and an environment-only integration token.
+- NewAPI model profiles are managed by platform administrators; each Store supplies its own encrypted API key.
 
 Install frontend dependencies:
 
@@ -251,13 +258,14 @@ If you only need to build the application image, prepare MySQL and the configure
 
 ```bash
 docker build -t mlogclub/agent-desk .
-docker run --rm -p 8083:8083 \
+docker run --rm -p 8083:8083 --env-file .env \
+  -e APP_ENV=production -e AGENT_DESK_ENV=production \
   -v $(pwd)/docker/agent-desk.yaml:/app/config/config.yaml:ro \
   -v agent-desk-data:/app/data \
   mlogclub/agent-desk
 ```
 
-Compose uses [docker/agent-desk.yaml](docker/agent-desk.yaml) as the in-container configuration. The application reaches `mysql` through its Docker service name and connects to FastGPT/NewAPI through configured endpoints.
+Compose uses [docker/agent-desk.yaml](docker/agent-desk.yaml) only for non-secret settings. All deployment secrets come from the ignored `.env` file or a production secret manager. NewAPI calls and billing queries use each Store's encrypted credential; there is no platform-wide NewAPI usage token.
 
 ## Open-source Positioning
 

@@ -1,5 +1,6 @@
 server:
   port: 8083
+  trustedProxies: []
   cors:
     # 浏览器跨域白名单。生产部署时改为实际前端/嵌入站点域名。
     allowedOrigins:
@@ -8,7 +9,8 @@ server:
 
 db:
   type: mysql
-  dsn: cs_ai_agent:cs_ai_agent_password@tcp(mysql:3306)/cs_ai_agent?charset=utf8mb4&parseTime=True&multiStatements=true&loc=Local
+  # 生产 DSN 只能通过 AGENT_DESK_DB_DSN 注入。
+  dsn: ""
   maxIdleConns: 5
   maxOpenConns: 20
   connMaxIdleTimeSeconds: 300
@@ -24,22 +26,40 @@ auth:
   maxFailedAttempts: 5
   credentialLockMinute: 15
 
+tenantRegistration:
+  enabled: false
+
+email:
+  enabled: false
+  host: ""
+  port: 587
+  username: ""
+  from: ""
+  fromName: "Agent Desk"
+  tlsMode: starttls
+  publicUrl: ""
+
+fastGPT:
+  enabled: false
+  baseUrl: ""
+  timeoutMs: 15000
+  maxRetries: 1
+  retrievalTokenLimit: 400
+
 customerSession:
-  secret: replace-with-a-random-secret
   ttlMinutes: 120
   refreshThresholdMinutes: 30
 
 storage:
   default: local
   maxUploadSizeMB: 20
+  assetURLTTLSeconds: 3600
   local:
     root: /app/data/storage
     baseUrl: /storage
   oss:
     endpoint: ""
     bucket: ""
-    accessKeyId: ""
-    accessKeySecret: ""
     baseUrl: ""
     private: false
     signedUrlExpireSeconds: 600
@@ -53,16 +73,21 @@ mcp:
       timeoutMs: 15000
       headers: {}
 
+oidc:
+  enabled: false
+  issuer: ""
+  clientId: ""
+  redirectUrl: "http://127.0.0.1:8083/api/auth/oidc_callback"
+  scopes:
+    - openid
+    - profile
+    - email
+
 wxWork:
-  enabled: true
-  corpId: "wwc57e941f022df821"
-  corpSecret: "5rNc-HdguTc1jF8A-V5z0yN-tJw9BJypXW7lqO_pS84"
-  agentId: "1000002"
+  enabled: false
+  corpId: ""
+  agentId: ""
   oauthRedirect: ""
-  stateSecret: ""
-  rsaPrivateKey: ""
-  token: "vhkYL1zSCx7A0bU04u8HBwFj"
-  encodingAESKey: "vocgkInkSuZ14VJmnaFkT97oCOtcBiLDkBVznVfTjc7"
   notify:
     enabled: false
     toUsers: []
