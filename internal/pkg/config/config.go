@@ -28,6 +28,7 @@ type Config struct {
 	OIDC               OIDCConfig               `yaml:"oidc"`
 	CustomerSession    CustomerSessionConfig    `yaml:"customerSession"`
 	TenantRegistration TenantRegistrationConfig `yaml:"tenantRegistration"`
+	BackgroundWorkers  BackgroundWorkerConfig   `yaml:"backgroundWorkers"`
 }
 
 type EmailConfig struct {
@@ -116,6 +117,10 @@ type AuthConfig struct {
 }
 
 type TenantRegistrationConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+type BackgroundWorkerConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
 
@@ -247,7 +252,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	cfg := &Config{}
+	cfg := &Config{
+		BackgroundWorkers: BackgroundWorkerConfig{Enabled: true},
+	}
 	if err := yaml.Unmarshal(b, cfg); err != nil {
 		return nil, err
 	}
@@ -261,6 +268,13 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("parse AGENT_DESK_TENANT_REGISTRATION_ENABLED: %w", parseErr)
 		}
 		cfg.TenantRegistration.Enabled = enabled
+	}
+	if enabledValue := strings.TrimSpace(os.Getenv("AGENT_DESK_BACKGROUND_WORKERS_ENABLED")); enabledValue != "" {
+		enabled, parseErr := strconv.ParseBool(enabledValue)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse AGENT_DESK_BACKGROUND_WORKERS_ENABLED: %w", parseErr)
+		}
+		cfg.BackgroundWorkers.Enabled = enabled
 	}
 	if err := applyFastGPTEnv(cfg); err != nil {
 		return nil, err

@@ -98,6 +98,49 @@ func TestLoadOverridesTenantRegistrationFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadEnablesBackgroundWorkersByDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("{}\n"), 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.BackgroundWorkers.Enabled {
+		t.Fatal("BackgroundWorkers.Enabled=false want compatibility default true")
+	}
+}
+
+func TestLoadOverridesBackgroundWorkersFromEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("backgroundWorkers:\n  enabled: true\n"), 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	t.Setenv("AGENT_DESK_BACKGROUND_WORKERS_ENABLED", "false")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.BackgroundWorkers.Enabled {
+		t.Fatal("BackgroundWorkers.Enabled=true want environment override false")
+	}
+}
+
+func TestLoadRejectsInvalidBackgroundWorkersEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("{}\n"), 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	t.Setenv("AGENT_DESK_BACKGROUND_WORKERS_ENABLED", "sometimes")
+
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "AGENT_DESK_BACKGROUND_WORKERS_ENABLED") {
+		t.Fatalf("Load() error=%v want invalid environment error", err)
+	}
+}
+
 func TestLoadOverridesAssetURLSigningSecretFromEnvironment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("storage:\n  assetURLSigningSecret: yaml-secret\n"), 0600); err != nil {

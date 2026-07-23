@@ -35,6 +35,11 @@ tenantRegistration:
   # 生产环境也可通过 AGENT_DESK_TENANT_REGISTRATION_ENABLED 覆盖。
   enabled: false
 
+backgroundWorkers:
+  # 正常服务保持开启；历史库迁移、恢复演练和只读预检实例必须显式关闭。
+  # 可通过 AGENT_DESK_BACKGROUND_WORKERS_ENABLED 覆盖。
+  enabled: true
+
 email:
   # 邮箱验证码登录必须使用真实 SMTP；未配置时相关入口会明确不可用。
   enabled: false

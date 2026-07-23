@@ -34,8 +34,11 @@ func Init(configPath string) error {
 		slog.Error("init migrations failed", "error", err)
 		return err
 	}
-	// 启动任务调度器
-	cronx.Init()
+	if backgroundWorkersEnabled(cfg) {
+		cronx.Init()
+	} else {
+		slog.Info("background workers disabled")
+	}
 
 	wxwork.Init()
 	if err := oidcclient.Init(context.Background()); err != nil {
@@ -43,4 +46,8 @@ func Init(configPath string) error {
 		return err
 	}
 	return nil
+}
+
+func backgroundWorkersEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.BackgroundWorkers.Enabled
 }

@@ -29,6 +29,9 @@ auth:
 tenantRegistration:
   enabled: false
 
+backgroundWorkers:
+  enabled: true
+
 email:
   enabled: false
   host: ""

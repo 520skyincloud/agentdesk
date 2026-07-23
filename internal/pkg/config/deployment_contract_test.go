@@ -76,6 +76,31 @@ func TestComposeRequiresDeploymentSecrets(t *testing.T) {
 	}
 }
 
+func TestDeploymentTemplatesDeclareBackgroundWorkerMode(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relativePath := range []string{"config/config.example.yaml", "docker/agent-desk.yaml"} {
+		rootMap := readYAMLMap(t, filepath.Join(root, relativePath))
+		workers, ok := rootMap["backgroundWorkers"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s does not declare backgroundWorkers", relativePath)
+		}
+		enabled, ok := workers["enabled"].(bool)
+		if !ok || !enabled {
+			t.Fatalf("%s must enable background workers by default", relativePath)
+		}
+	}
+
+	compose := readYAMLMap(t, filepath.Join(root, "docker-compose.yml"))
+	if value := yamlPath(compose, "services", "agent-desk", "environment", "AGENT_DESK_BACKGROUND_WORKERS_ENABLED"); value != "${AGENT_DESK_BACKGROUND_WORKERS_ENABLED:-true}" {
+		t.Fatalf("compose background worker override=%q", value)
+	}
+
+	values := readEnvFile(t, filepath.Join(root, ".env.example"))
+	if value := values["AGENT_DESK_BACKGROUND_WORKERS_ENABLED"]; value != "true" {
+		t.Fatalf(".env.example background worker default=%q", value)
+	}
+}
+
 func TestExampleEnvironmentLeavesSecretsBlank(t *testing.T) {
 	root := repositoryRoot(t)
 	values := readEnvFile(t, filepath.Join(root, ".env.example"))

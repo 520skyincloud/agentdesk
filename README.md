@@ -70,6 +70,8 @@ docker compose up -d --build
 
 Compose intentionally refuses to start without independent database, invitation, customer-session, asset-signing, and Store credential encryption secrets. Runtime backups and `.env` files must remain outside Git.
 
+The active service keeps `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`. Set it to `false` only for an isolated migration clone, restore rehearsal, or read-only preflight; this prevents the clone from dispatching conversations, protocol outbox records, FastGPT jobs, or other scheduled work.
+
 For the full English setup guide, see [Docker Compose Quick Start](https://agent-desk.huabei.pro/docs/getting-started/docker-compose.html).
 
 To embed customer support on your website, see [Web Widget Integration](https://agent-desk.huabei.pro/docs/integration/web-widget.html).
@@ -266,6 +268,8 @@ docker run --rm -p 8083:8083 --env-file .env \
 ```
 
 Compose uses [docker/agent-desk.yaml](docker/agent-desk.yaml) only for non-secret settings. All deployment secrets come from the ignored `.env` file or a production secret manager. NewAPI calls and billing queries use each Store's encrypted credential; there is no platform-wide NewAPI usage token.
+
+Never start a historical database clone with background workers enabled. Use `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=false` and isolate outbound network access until the clone has passed migration and readiness checks.
 
 ## Open-source Positioning
 

@@ -70,6 +70,8 @@ docker compose up -d --build
 
 Compose 会在数据库、邀请码、客户会话、文件签名或门店凭据加密密钥缺失时拒绝启动。运行备份与 `.env` 必须保存在 Git 仓库之外。
 
+正式活动服务保持 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`。只有隔离的历史库迁移、恢复演练或只读预检实例才设置为 `false`，防止副本派发会话、消费协议 outbox、执行 FastGPT 任务或运行其他定时任务。
+
 完整英文配置与排查说明见 [Docker Compose Quick Start](https://agent-desk.huabei.pro/zh/docs/getting-started/docker-compose.html)。
 
 如需在官网或产品中嵌入客服入口，见 [Web Widget Integration](https://agent-desk.huabei.pro/zh/docs/integration/web-widget.html)。
@@ -266,6 +268,8 @@ docker run --rm -p 8083:8083 --env-file .env \
 ```
 
 Compose 仅使用 [docker/agent-desk.yaml](docker/agent-desk.yaml) 保存非敏感设置；所有部署秘密来自被忽略的 `.env` 或生产秘密管理器。NewAPI 调用与账单查询只使用各门店的加密凭据，不存在平台级 NewAPI 用量 Token。
+
+禁止在后台 worker 开启时启动历史数据库副本。迁移和 readiness 预检必须设置 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=false`，并在完成验收前隔离外部网络。
 
 ## 开源定位
 
