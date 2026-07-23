@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁、历史 MySQL 克隆升级、丽斯未来 readiness 审计、统一镜像隔离 MySQL API 冒烟和后台 worker 维护门禁已完成；当前结论仍为发布 No-Go，下一步是使用全新部署秘密、Store NewAPI Key 和 FastGPT Integration Token 完成单 Store 真实灰度。B12 全量 Go、服务层 race、前端、构建、旧链静态审计和 Migration 075 双数据库门禁均已通过。
+> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 发布秘密门禁、历史 MySQL 克隆升级、统一镜像隔离 MySQL API 冒烟、后台 worker 维护门禁和可执行三阶段 readiness 发布门禁已完成；当前结论仍为发布 No-Go，下一步是使用全新部署秘密、Store NewAPI Key 和 FastGPT Integration Token 完成丽斯未来单 Store 真实灰度并取得门禁证据。B12 全量 Go、服务层 race、前端、构建、旧链静态审计和 Migration 075 双数据库门禁均已通过。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1332,6 +1332,17 @@ git diff --check
 - 验证：`go test ./internal/pkg/config/... ./internal/bootstrap/... -count=1`、`go test ./... -count=1`、`go vet ./...`、统一 Docker production build、使用非秘密占位值的 `docker compose config --quiet`、`gofmt -d` 和 `git diff --check` 全部通过。首次沙箱全量测试仅因 `httptest` IPv6 临时监听受限失败，在允许本地临时监听后同一命令通过。
 - 清理与影响：两个临时应用容器、匿名卷、平台临时账号及角色关系、登录会话和日志、临时数据库账号及 token 文件均已删除；受污染克隆库已物理删除。既有 `8083`、`8084` 和来源数据库未修改。本批不改变 model、migration、DTO、enum、API、WebSocket、AI Runtime、Billing、权限、派单算法或业务状态语义。
 - 发布判定：B13 仍为 No-Go。切换 `8083` 前仍须注入全新真实部署秘密，取得一个丽斯未来 pilot Store NewAPI Key 与 FastGPT Integration Token，发布九槽 Profile，完成 Store Assignment、active Credential、FastGPT Team/Dataset/readiness、真实客户 AI 回复、进入现有人工任务池、确定性规则派单、标签灰度、NewAPI 人民币账单归因对账以及仓库外备份恢复演练。全部证据完成前不得进入 B14 物理删表。
+
+### 25.17 2026-07-23 B13-F 可执行三阶段 readiness 发布门禁
+
+- 代码提交：`d308c21a885da50ea2c6f65c00bd2dcafdb14fa6`。提交前执行 `git fetch origin --prune`；首次请求因 GitHub TLS 瞬时中断失败，确认 HTTPS 正常后重试成功。固定来源仍为 `origin/main@e67e20721574b6d3298bb0a1c4749da02ff0b949`、`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563` 和 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，统一分支远端实施前为 `4d33e2eb4df3b45d4526d61289ae73ad1a286b29`；来源均未前移，无需 rebase 或重新吸收行为。
+- 复用边界：在既有只读 `cmd/tenant_integrity_audit` 上增加发布 readiness，没有建立第二个审计命令、页面、权限或状态模型。未传任何 `--readiness-*` 参数时，原命令参数、JSON 结构、退出码和 Tenant 完整性审计行为保持不变；请求 readiness 时，完整性审计和 readiness 在同一只读事务中执行，任一违规均返回门禁失败。
+- 三阶段门禁：`configuration` 校验 Tenant 启用/核验/行业 Profile、固定行业标签策略与目录、启用 Store、唯一系统门店员工账号及客服组、active Model Profile Assignment、已发布九槽 Profile、已测试并同步的 active 加密 Credential、FastGPT Team/Dataset/Profile/Credential revision 和默认关闭的两个标签开关。`pilot` 在此基础上要求显式 RFC3339 证据窗口，并逐 Store 验证当前 revision 的成功 NewAPI 调用、客户消息后的真实 AI 回复、AI 转人工事件、承接该会话的确定性规则派单以及 Request ID 精确人民币账单对账。`tag_gray` 再要求两个 Store 标签开关开启，并存在 AI 客户标签变更的追加式审计证据。
+- 调用契约：使用 `--readiness-tenant-id` 或 `--readiness-tenant-code` 二选一定位 Tenant；`--readiness-store-ids` 可限制灰度 Store，留空时检查全部启用 Store；`pilot/tag_gray` 强制提供 `--readiness-evidence-start`。报告只输出 Tenant 摘要、检查状态、计数和受限 Store ID 样本，不输出 API Key、密文、nonce、完整指纹、Prompt、Schema、客户 ID、会话 ID或聊天正文。
+- 双数据库验证：SQLite 配置、无真实证据阻断、完整 pilot、tag gray、未来证据窗口拒绝、样本上限和秘密输出扫描均有自动化覆盖。隔离 MySQL 8.4 首次运行发现 `usage` 别名触发保留字 1064，已改为 `usage_event` 并由 `AGENT_DESK_RELEASE_READINESS_TEST_MYSQL_DSN` 驱动的同一三阶段测试复验通过；临时容器、端口和测试库已删除，既有 `8083`、`8084` 及来源数据库未修改。
+- 验证：`go test -race ./internal/services ./internal/repositories ./cmd/tenant_integrity_audit -run 'TenantReleaseReadiness|TenantIntegrityAudit|ReadOnlyDBConfig|ParseReadiness|RejectsPilotReadiness' -count=1`、`go test ./... -count=1`、`go vet ./...`、MySQL 8.4 readiness 测试、`gofmt` 和 `git diff --check` 全部通过。沙箱内第一次全量测试只因禁止 `httptest` 监听临时端口失败，在允许本机临时监听后同一命令完整通过，不计为代码回归。
+- 共享契约与合并顺序：本批新增只读 repository/service/test，并扩展既有审计 CLI；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential 写入、FastGPT 写入、Billing 口径、人工任务池或规则派单算法。租户来源分支只拥有既有审计 CLI 基线，ai-billing 不修改本批文件；`d308c21` 必须位于 B13-E `4d33e2e` 之后，B14 只能建立在本门禁和全部真实证据通过之后。
+- 发布与回滚：本提交只增加只读诊断能力，可在 B14 前独立回滚，不产生 Schema 或业务数据回滚。当前丽斯未来真实 Profile、Credential、FastGPT、回复、转人工、派单、标签和账单证据尚未录入，仓库外加密备份与真实恢复演练也未完成，因此门禁工具完成不等于 B13 完成；发布结论继续保持 `No-Go`，禁止切换正式 `8083` 或执行 B14 七张旧表物理删除。
 
 ## 26. 用户最终 1-48 项决定追溯
 
