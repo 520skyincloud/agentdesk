@@ -337,6 +337,38 @@ func (s *tenantReleaseReadinessService) Audit(
 		options.SampleLimit,
 		"门店缺少已测试、已同步 FastGPT 且已激活的加密 NewAPI Credential",
 	)
+	profileTestFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
+		assignment, assignmentExists := assignmentByStore[storeID]
+		credential, credentialExists := credentialByStore[storeID]
+		if !assignmentExists || !credentialExists ||
+			assignment.TemplateID <= 0 ||
+			assignment.TemplateRevision <= 0 ||
+			credential.CredentialRevision <= 0 {
+			return false
+		}
+		template := repositories.ModelProfileTemplateRepository.Get(db, assignment.TemplateID)
+		slots := repositories.ModelProfileSlotRepository.FindByTemplateID(db, assignment.TemplateID)
+		if template == nil || template.Revision != assignment.TemplateRevision {
+			return false
+		}
+		digest := modelProfileConfigurationDigest(template, slots)
+		return repositories.ModelProfileTestRunRepository.FindLatestPassedForStore(
+			db,
+			template.ID,
+			template.Revision,
+			tenant.ID,
+			storeID,
+			credential.CredentialRevision,
+			digest,
+		) != nil
+	})
+	report.addStoreCheck(
+		"store.model_profile_test_evidence",
+		storeIDs,
+		profileTestFailures,
+		options.SampleLimit,
+		"门店当前 Profile 配置摘要与 Credential revision 缺少不可变九槽通过证据",
+	)
 	if options.Level == TenantReleaseReadinessPilot || options.Level == TenantReleaseReadinessTagGray {
 		policies := repositories.StoreCredentialPolicyRepository.FindByTenant(db, tenant.ID)
 		policyByStore := make(map[int64]models.StoreCredentialPolicy, len(policies))

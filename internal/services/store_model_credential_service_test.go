@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
@@ -153,6 +155,8 @@ func TestStoreModelCredentialRequiresConfirmationPasswordAndTenantScope(t *testi
 		t.Fatalf("validator calls=%d fastgpt calls=%d", validator.callCount(), fastGPT.callCount())
 	}
 	assertCredentialAuditContainsNoSecret(t, fixture.db, base.APIKey)
+	assertModelProfileTestRunsContainNoSecret(t, fixture.db, base.APIKey)
+	assertLatestModelProfileTestRun(t, fixture.db, enums.ModelProfileTestStatusPassed, enums.ModelProfileTestCredentialSourceCandidate, 1)
 }
 
 func TestStoreModelCredentialPolicyRequiresPasswordForSingleAndBatch(t *testing.T) {
@@ -420,6 +424,179 @@ func TestStoreModelCredentialFailedCandidatePreservesActive(t *testing.T) {
 	if fastGPT.callCount() != 0 {
 		t.Fatalf("FastGPT must not run after model validation failure, calls=%d", fastGPT.callCount())
 	}
+	assertModelProfileTestRunsContainNoSecret(t, fixture.db, "sk-invalid-candidate")
+	assertLatestModelProfileTestRun(t, fixture.db, enums.ModelProfileTestStatusFailed, enums.ModelProfileTestCredentialSourceCandidate, 4)
+}
+
+func TestStoreModelProfileSwitchPreservesCredentialRevision(t *testing.T) {
+	fixture := setupStoreCredentialFixture(t)
+	assertStoreModelProfileSwitchPreservesCredentialRevision(t, fixture)
+}
+
+func TestStoreModelProfileSwitchMySQL(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("TEST_MYSQL_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_MYSQL_DSN is not configured")
+	}
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
+		Logger:         logger.Default.LogMode(logger.Silent),
+		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+	})
+	if err != nil {
+		t.Fatalf("open MySQL test database: %v", err)
+	}
+	resetStoreCredentialServiceTestTables(t, db)
+	fixture := setupStoreCredentialFixtureDB(t, db)
+	t.Cleanup(func() {
+		resetStoreCredentialServiceTestTables(t, db)
+	})
+	assertStoreModelProfileSwitchPreservesCredentialRevision(t, fixture)
+}
+
+func assertStoreModelProfileSwitchPreservesCredentialRevision(t *testing.T, fixture storeCredentialFixture) {
+	t.Helper()
+	seedActiveStoreCredential(t, fixture, "sk-active-profile-switch", 7)
+	candidate, _ := createStoreCredentialProfile(t, fixture.db, "profile-next", 2, enums.ModelProfileStatusCandidate)
+	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	if err := repositories.StoreModelProfileAssignmentRepository.Updates(fixture.db, assignment.ID, map[string]any{
+		"pending_template_id": candidate.ID, "pending_template_revision": candidate.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	validator := &storeCredentialValidatorStub{}
+	fastGPT := &storeCredentialFastGPTStub{}
+	service := &storeModelCredentialService{validator: validator, fastGPT: fastGPT}
+
+	data, err := service.ActivatePendingProfile(
+		context.Background(),
+		request.ActivatePendingStoreModelProfileRequest{
+			TenantID: fixture.tenant.ID, StoreID: fixture.store.ID,
+			TemplateID: candidate.ID, ConfirmRevision: candidate.Revision,
+			CurrentPassword: fixture.password, Confirmed: true,
+		},
+		fixture.manager,
+		StoreCredentialRequestMeta{RequestID: "profile-switch-success"},
+	)
+	if err != nil {
+		t.Fatalf("ActivatePendingProfile() error=%v", err)
+	}
+	if data.Credential == nil || data.Credential.CredentialRevision != 7 {
+		t.Fatalf("profile switch changed credential revision: %#v", data.Credential)
+	}
+	if data.Assignment == nil || data.Assignment.TemplateID != candidate.ID ||
+		data.Assignment.TemplateRevision != candidate.Revision || data.Assignment.PendingTemplateID != 0 {
+		t.Fatalf("profile switch did not activate candidate: %#v", data.Assignment)
+	}
+	if validator.callCount() != 1 || fastGPT.callCount() != 1 {
+		t.Fatalf("profile switch validator calls=%d FastGPT calls=%d", validator.callCount(), fastGPT.callCount())
+	}
+	assertModelProfileTestRunsContainNoSecret(t, fixture.db, "sk-active-profile-switch")
+	assertLatestModelProfileTestRun(t, fixture.db, enums.ModelProfileTestStatusPassed, enums.ModelProfileTestCredentialSourceActive, 7)
+}
+
+func TestStoreModelProfileSwitchFailuresPreserveActiveAssignment(t *testing.T) {
+	testCases := []struct {
+		name            string
+		validatorErr    error
+		fastGPTErrors   map[int]error
+		expectedFastGPT int
+	}{
+		{
+			name:            "validator",
+			validatorErr:    &storeCredentialValidationError{UsageCode: enums.ModelUsageSlotReplyLLM, Class: "credential_rejected"},
+			expectedFastGPT: 0,
+		},
+		{
+			name:            "fastgpt",
+			fastGPTErrors:   map[int]error{1: errors.New("candidate profile sync failed")},
+			expectedFastGPT: 2,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := setupStoreCredentialFixture(t)
+			seedActiveStoreCredential(t, fixture, "sk-active-profile-failure", 5)
+			activeID := fixture.profile.ID
+			candidate, _ := createStoreCredentialProfile(t, fixture.db, "profile-failure-"+testCase.name, 2, enums.ModelProfileStatusCandidate)
+			assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+			if err := repositories.StoreModelProfileAssignmentRepository.Updates(fixture.db, assignment.ID, map[string]any{
+				"pending_template_id": candidate.ID, "pending_template_revision": candidate.Revision,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			validator := &storeCredentialValidatorStub{err: testCase.validatorErr}
+			fastGPT := &storeCredentialFastGPTStub{errorsByCall: testCase.fastGPTErrors}
+			service := &storeModelCredentialService{validator: validator, fastGPT: fastGPT}
+
+			if _, err := service.ActivatePendingProfile(
+				context.Background(),
+				request.ActivatePendingStoreModelProfileRequest{
+					TenantID: fixture.tenant.ID, StoreID: fixture.store.ID,
+					TemplateID: candidate.ID, ConfirmRevision: candidate.Revision,
+					CurrentPassword: fixture.password, Confirmed: true,
+				},
+				fixture.manager,
+				StoreCredentialRequestMeta{RequestID: "profile-switch-" + testCase.name},
+			); err == nil {
+				t.Fatal("failed profile switch unexpectedly succeeded")
+			}
+			savedCredential := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+			if savedCredential == nil || savedCredential.CredentialRevision != 5 || savedCredential.Status != enums.StoreCredentialStatusActive {
+				t.Fatalf("failed profile switch changed active credential: %#v", savedCredential)
+			}
+			savedAssignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+			if savedAssignment == nil || savedAssignment.TemplateID != activeID || savedAssignment.TemplateRevision != fixture.profile.Revision {
+				t.Fatalf("failed profile switch replaced active assignment: %#v", savedAssignment)
+			}
+			if fastGPT.callCount() != testCase.expectedFastGPT {
+				t.Fatalf("FastGPT calls=%d want=%d", fastGPT.callCount(), testCase.expectedFastGPT)
+			}
+		})
+	}
+}
+
+func TestStoreModelProfileSwitchCASConflictRestoresOldFastGPT(t *testing.T) {
+	fixture := setupStoreCredentialFixture(t)
+	seedActiveStoreCredential(t, fixture, "sk-active-profile-cas", 6)
+	activeID := fixture.profile.ID
+	candidate, _ := createStoreCredentialProfile(t, fixture.db, "profile-cas", 2, enums.ModelProfileStatusCandidate)
+	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	if err := repositories.StoreModelProfileAssignmentRepository.Updates(fixture.db, assignment.ID, map[string]any{
+		"pending_template_id": candidate.ID, "pending_template_revision": candidate.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fastGPT := &storeCredentialFastGPTStub{}
+	fastGPT.onFirst = func() {
+		_ = repositories.StoreModelProfileAssignmentRepository.Updates(fixture.db, assignment.ID, map[string]any{
+			"pending_template_revision": candidate.Revision + 1,
+		})
+	}
+	service := &storeModelCredentialService{validator: &storeCredentialValidatorStub{}, fastGPT: fastGPT}
+
+	if _, err := service.ActivatePendingProfile(
+		context.Background(),
+		request.ActivatePendingStoreModelProfileRequest{
+			TenantID: fixture.tenant.ID, StoreID: fixture.store.ID,
+			TemplateID: candidate.ID, ConfirmRevision: candidate.Revision,
+			CurrentPassword: fixture.password, Confirmed: true,
+		},
+		fixture.manager,
+		StoreCredentialRequestMeta{RequestID: "profile-switch-cas"},
+	); err == nil {
+		t.Fatal("concurrent assignment change must prevent profile switch")
+	}
+	savedCredential := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	if savedCredential == nil || savedCredential.CredentialRevision != 6 || savedCredential.Status != enums.StoreCredentialStatusActive {
+		t.Fatalf("CAS conflict changed active credential: %#v", savedCredential)
+	}
+	savedAssignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	if savedAssignment == nil || savedAssignment.TemplateID != activeID || savedAssignment.TemplateRevision != fixture.profile.Revision {
+		t.Fatalf("CAS conflict replaced active assignment: %#v", savedAssignment)
+	}
+	if fastGPT.callCount() != 2 {
+		t.Fatalf("candidate sync and old FastGPT restore calls=%d want=2", fastGPT.callCount())
+	}
 }
 
 func TestStoreModelCredentialCASConflictRestoresOldFastGPTRevision(t *testing.T) {
@@ -637,13 +814,12 @@ func setupStoreCredentialFixture(t *testing.T) storeCredentialFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = db.AutoMigrate(
-		&models.Tenant{}, &models.User{}, &models.Store{}, &models.StoreStaffBinding{},
-		&models.AgentTeam{}, &models.WxWorkProtocolInstance{}, &models.KnowledgeBase{},
-		&models.ModelProfileTemplate{}, &models.ModelProfileSlot{}, &models.StoreModelProfileAssignment{},
-		&models.StoreModelCredential{}, &models.StoreCredentialPolicy{}, &models.StoreModelCredentialAuditLog{},
-		&models.FastGPTStoreTenant{},
-	); err != nil {
+	return setupStoreCredentialFixtureDB(t, db)
+}
+
+func setupStoreCredentialFixtureDB(t *testing.T, db *gorm.DB) storeCredentialFixture {
+	t.Helper()
+	if err := db.AutoMigrate(storeCredentialServiceTestModels()...); err != nil {
 		t.Fatal(err)
 	}
 	sqls.SetDB(db)
@@ -663,7 +839,7 @@ func setupStoreCredentialFixture(t *testing.T) storeCredentialFixture {
 		ShortName:  "测试公司",
 		Status:     enums.StatusOk,
 	}
-	if err = db.Create(tenant).Error; err != nil {
+	if err := db.Create(tenant).Error; err != nil {
 		t.Fatal(err)
 	}
 	password := "Password-123!"
@@ -671,10 +847,10 @@ func setupStoreCredentialFixture(t *testing.T) storeCredentialFixture {
 	approverUser := createStoreCredentialUser(t, db, tenant.ID, "credential-approver", password)
 	staffUser := createStoreCredentialUser(t, db, tenant.ID, "credential-staff", password)
 	store := &models.Store{TenantID: tenant.ID, StoreCode: "credential-store", Name: "凭据测试门店", Status: enums.StatusOk}
-	if err = db.Create(store).Error; err != nil {
+	if err := db.Create(store).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err = db.Create(&models.StoreStaffBinding{
+	if err := db.Create(&models.StoreStaffBinding{
 		TenantID: tenant.ID, UserID: staffUser.ID, ActiveUserID: positiveInt64Pointer(staffUser.ID),
 		StoreID: store.ID, Status: enums.StatusOk,
 	}).Error; err != nil {
@@ -688,7 +864,7 @@ func setupStoreCredentialFixture(t *testing.T) storeCredentialFixture {
 		Status: enums.StoreModelAssignmentStatusAssigned, ReadinessStatus: "pending",
 		AssignedAt: now,
 	}
-	if err = db.Create(assignment).Error; err != nil {
+	if err := db.Create(assignment).Error; err != nil {
 		t.Fatal(err)
 	}
 	service := newStoreModelCredentialService()
@@ -696,7 +872,7 @@ func setupStoreCredentialFixture(t *testing.T) storeCredentialFixture {
 		UserID: managerUser.ID, TenantID: tenant.ID, ActiveTenantID: tenant.ID, Username: managerUser.Username,
 		Roles: []string{constants.RoleCodeTenantAdmin}, Permissions: []string{constants.PermissionAIConfigView.Code, constants.PermissionAIConfigUpdate.Code},
 	}
-	if err = service.EnsureStoreRecordsDB(db, store, manager); err != nil {
+	if err := service.EnsureStoreRecordsDB(db, store, manager); err != nil {
 		t.Fatal(err)
 	}
 	return storeCredentialFixture{
@@ -710,6 +886,32 @@ func setupStoreCredentialFixture(t *testing.T) storeCredentialFixture {
 			UserID: staffUser.ID, TenantID: tenant.ID, ActiveTenantID: tenant.ID, Username: staffUser.Username,
 			Roles: []string{constants.RoleCodeStoreStaff}, Permissions: []string{constants.PermissionStoreWorkbenchView.Code, constants.PermissionStoreWorkbenchUpdate.Code},
 		},
+	}
+}
+
+func storeCredentialServiceTestModels() []any {
+	return []any{
+		&models.Tenant{}, &models.User{}, &models.Store{}, &models.StoreStaffBinding{},
+		&models.AgentTeam{}, &models.WxWorkProtocolInstance{}, &models.KnowledgeBase{},
+		&models.ModelProfileTemplate{}, &models.ModelProfileSlot{}, &models.ModelProfileTestRun{}, &models.StoreModelProfileAssignment{},
+		&models.StoreModelCredential{}, &models.StoreCredentialPolicy{}, &models.StoreModelCredentialAuditLog{},
+		&models.FastGPTStoreTenant{},
+	}
+}
+
+func resetStoreCredentialServiceTestTables(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Exec("SET FOREIGN_KEY_CHECKS = 0").Error; err != nil {
+		t.Fatalf("disable MySQL foreign key checks: %v", err)
+	}
+	modelsToDrop := storeCredentialServiceTestModels()
+	for index := len(modelsToDrop) - 1; index >= 0; index-- {
+		if err := db.Migrator().DropTable(modelsToDrop[index]); err != nil {
+			t.Fatalf("drop MySQL test table: %v", err)
+		}
+	}
+	if err := db.Exec("SET FOREIGN_KEY_CHECKS = 1").Error; err != nil {
+		t.Fatalf("enable MySQL foreign key checks: %v", err)
 	}
 }
 
@@ -818,6 +1020,51 @@ func assertCredentialAuditContainsNoSecret(t *testing.T, db *gorm.DB, secret str
 	body := string(raw)
 	if strings.Contains(body, secret) || strings.Contains(body, securex.Fingerprint(secret)) {
 		t.Fatalf("credential audit leaked secret material: %s", body)
+	}
+}
+
+func assertModelProfileTestRunsContainNoSecret(t *testing.T, db *gorm.DB, secret string) {
+	t.Helper()
+	var runs []models.ModelProfileTestRun
+	if err := db.Order("id ASC").Find(&runs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) == 0 {
+		t.Fatal("model profile test evidence is empty")
+	}
+	raw, err := json.Marshal(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for _, forbidden := range []string{
+		secret,
+		securex.Fingerprint(secret),
+		"encryptedKey",
+		"keyNonce",
+		"keyFingerprint",
+		"candidateEncryptedKey",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("model profile test evidence leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func assertLatestModelProfileTestRun(
+	t *testing.T,
+	db *gorm.DB,
+	status enums.ModelProfileTestStatus,
+	source enums.ModelProfileTestCredentialSource,
+	credentialRevision int64,
+) {
+	t.Helper()
+	var run models.ModelProfileTestRun
+	if err := db.Order("id DESC").First(&run).Error; err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != status || run.CredentialSource != source || run.CredentialRevision != credentialRevision {
+		t.Fatalf("unexpected latest model profile test run: %#v", run)
 	}
 }
 

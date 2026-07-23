@@ -358,6 +358,193 @@ func (s *storeModelCredentialService) Disable(req request.DecideStoreModelCreden
 	return s.getData(tenantID, req.StoreID, false)
 }
 
+func (s *storeModelCredentialService) ActivatePendingProfile(
+	ctx context.Context,
+	req request.ActivatePendingStoreModelProfileRequest,
+	operator *dto.AuthPrincipal,
+	meta StoreCredentialRequestMeta,
+) (*StoreModelCredentialData, error) {
+	if err := requireCredentialPermission(operator, constants.PermissionAIConfigUpdate.Code); err != nil {
+		return nil, err
+	}
+	tenantID, err := resolveCredentialManagerTenant(operator, req.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyCredentialSensitiveAction(operator, req.CurrentPassword, req.Confirmed); err != nil {
+		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionSwitchProfile, 0, "password_verification_failed")
+		return nil, err
+	}
+	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), tenantID, req.StoreID)
+	if credential == nil || credential.Status != enums.StoreCredentialStatusActive || credential.CredentialRevision <= 0 {
+		return nil, errorsx.InvalidParam("当前门店没有可用于切换方案的 active 凭据")
+	}
+	if liveCredentialCandidate(credential) {
+		return nil, errorsx.InvalidParam("当前存在进行中的凭据更新，请先完成或拒绝该申请")
+	}
+	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(sqls.DB(), tenantID, req.StoreID)
+	if assignment == nil ||
+		assignment.Status != enums.StoreModelAssignmentStatusReady ||
+		assignment.TemplateID <= 0 ||
+		assignment.TemplateRevision <= 0 ||
+		assignment.PendingTemplateID != req.TemplateID ||
+		assignment.PendingTemplateRevision != req.ConfirmRevision {
+		return nil, errorsx.InvalidParam("待切换模型方案已变化，请刷新后重试")
+	}
+	target, err := s.loadActivationTargetDB(sqls.DB(), tenantID, req.StoreID, req.TemplateID, req.ConfirmRevision)
+	if err != nil {
+		return nil, err
+	}
+	oldTarget, err := s.loadActiveTargetDB(sqls.DB(), tenantID, req.StoreID)
+	if err != nil {
+		return nil, errorsx.InvalidParam("当前 active 模型方案不可用")
+	}
+	if normalizeGatewayBaseURL(oldTarget.Template.GatewayBaseURL) != normalizeGatewayBaseURL(target.Template.GatewayBaseURL) {
+		return nil, errorsx.InvalidParam("待切换方案不使用当前统一 NewAPI 网关，禁止复用门店凭据")
+	}
+	activeCredential, err := s.ResolveActive(tenantID, req.StoreID)
+	if err != nil {
+		return nil, err
+	}
+	if activeCredential.Revision != credential.CredentialRevision ||
+		activeCredential.Fingerprint != credential.KeyFingerprint {
+		return nil, errorsx.InvalidParam("active 凭据 revision 已变化，请刷新后重试")
+	}
+	if err := s.appendAudit(
+		credential,
+		operator,
+		nil,
+		meta,
+		enums.CredentialAuditActionSwitchProfile,
+		enums.CredentialAuditResultPending,
+		credential.CredentialRevision,
+		credential.CredentialRevision,
+		target.Template.ID,
+		target.Template.Revision,
+		securex.FingerprintLast6(credential.KeyFingerprint),
+		"",
+	); err != nil {
+		return nil, errorsx.BusinessError(3001, "模型方案切换审计写入失败")
+	}
+	testStarted := time.Now()
+	testErr := s.validator.Validate(ctx, &target.Template, target.Slots, activeCredential.APIKey)
+	tenant := repositories.TenantRepository.Get(sqls.DB(), tenantID)
+	run, recordErr := recordModelProfileTestRun(
+		&target.Template,
+		target.Slots,
+		tenant,
+		&target.Store,
+		credential.CredentialRevision,
+		enums.ModelProfileTestCredentialSourceActive,
+		testErr,
+		testStarted,
+		operator,
+		meta,
+	)
+	if recordErr != nil {
+		_ = s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultFailure, credential.CredentialRevision, credential.CredentialRevision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.KeyFingerprint), "test_evidence_write_failed")
+		return nil, recordErr
+	}
+	if run.Status != enums.ModelProfileTestStatusPassed {
+		_ = s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultFailure, credential.CredentialRevision, credential.CredentialRevision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.KeyFingerprint), run.ErrorClass)
+		return nil, errorsx.BusinessError(5, run.ErrorMessage)
+	}
+	fastGPTStatus, err := s.fastGPT.Sync(
+		ctx,
+		*target,
+		activeCredential.APIKey,
+		activeCredential.Revision,
+		activeCredential.Fingerprint,
+	)
+	if err != nil {
+		s.restoreOldFastGPT(oldTarget, activeCredential, tenantID, req.StoreID, activeCredential.Revision)
+		_ = s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultFailure, credential.CredentialRevision, credential.CredentialRevision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.KeyFingerprint), "fastgpt_sync_failed")
+		return nil, errorsx.BusinessError(5, "FastGPT 模型配置同步失败，当前方案继续使用")
+	}
+	now := time.Now()
+	err = sqls.WithTransaction(func(tx *sqls.TxContext) error {
+		lockedCredential, err := repositories.StoreModelCredentialRepository.GetForUpdateByStore(tx.Tx, tenantID, req.StoreID)
+		if err != nil {
+			return err
+		}
+		if lockedCredential == nil ||
+			lockedCredential.Status != enums.StoreCredentialStatusActive ||
+			lockedCredential.CredentialRevision != credential.CredentialRevision ||
+			lockedCredential.KeyFingerprint != credential.KeyFingerprint ||
+			liveCredentialCandidate(lockedCredential) {
+			return errors.New("active credential changed during profile switch")
+		}
+		lockedAssignment, err := repositories.StoreModelProfileAssignmentRepository.GetForUpdateByStore(tx.Tx, tenantID, req.StoreID)
+		if err != nil {
+			return err
+		}
+		if lockedAssignment == nil ||
+			lockedAssignment.TemplateID != assignment.TemplateID ||
+			lockedAssignment.TemplateRevision != assignment.TemplateRevision ||
+			lockedAssignment.PendingTemplateID != target.Template.ID ||
+			lockedAssignment.PendingTemplateRevision != target.Template.Revision {
+			return errors.New("model profile assignment changed during switch")
+		}
+		lockedTemplate, err := repositories.ModelProfileTemplateRepository.GetForUpdate(tx.Tx, target.Template.ID)
+		if err != nil {
+			return err
+		}
+		if lockedTemplate == nil ||
+			lockedTemplate.Revision != target.Template.Revision ||
+			!slices.Contains([]enums.ModelProfileStatus{enums.ModelProfileStatusCandidate, enums.ModelProfileStatusActive}, lockedTemplate.Status) {
+			return errors.New("target model profile changed during switch")
+		}
+		if lockedTemplate.Status == enums.ModelProfileStatusCandidate {
+			if err := repositories.ModelProfileTemplateRepository.Updates(tx.Tx, lockedTemplate.ID, map[string]any{
+				"status": enums.ModelProfileStatusActive, "updated_at": now,
+				"update_user_id": operator.UserID, "update_user_name": operator.Username,
+			}); err != nil {
+				return err
+			}
+		}
+		if err := repositories.StoreModelProfileAssignmentRepository.Updates(tx.Tx, lockedAssignment.ID, map[string]any{
+			"template_id": lockedTemplate.ID, "template_revision": lockedTemplate.Revision,
+			"pending_template_id": 0, "pending_template_revision": 0, "pending_requested_at": nil,
+			"pending_requested_by": 0, "pending_requested_by_name": "",
+			"status": enums.StoreModelAssignmentStatusReady, "readiness_status": "ready",
+			"last_validated_at": now, "last_ready_at": now, "last_error_class": "", "last_error_message": "",
+			"updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
+		}); err != nil {
+			return err
+		}
+		if err := repositories.StoreModelCredentialRepository.Updates(tx.Tx, lockedCredential.ID, map[string]any{
+			"last_test_status": "passed", "last_tested_at": run.CreatedAt,
+			"last_test_latency_ms":      run.LatencyMS,
+			"last_fast_gpt_sync_status": fastGPTStatus, "last_fast_gpt_synced_at": now,
+			"last_error_class": "", "last_error_message": "",
+			"updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
+		}); err != nil {
+			return err
+		}
+		return s.appendAuditDB(
+			tx.Tx,
+			lockedCredential,
+			operator,
+			nil,
+			meta,
+			enums.CredentialAuditActionSwitchProfile,
+			enums.CredentialAuditResultSuccess,
+			lockedCredential.CredentialRevision,
+			lockedCredential.CredentialRevision,
+			lockedTemplate.ID,
+			lockedTemplate.Revision,
+			securex.FingerprintLast6(lockedCredential.KeyFingerprint),
+			"",
+		)
+	})
+	if err != nil {
+		s.restoreOldFastGPT(oldTarget, activeCredential, tenantID, req.StoreID, activeCredential.Revision)
+		_ = s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultFailure, credential.CredentialRevision, credential.CredentialRevision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.KeyFingerprint), "profile_switch_conflict")
+		return nil, errorsx.BusinessError(5, "模型方案切换冲突，当前方案继续使用")
+	}
+	return s.getData(tenantID, req.StoreID, false)
+}
+
 func (s *storeModelCredentialService) submit(ctx context.Context, tenantID, storeID int64, req request.SubmitStoreModelCredentialRequest, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta, selfService bool) (*StoreModelCredentialData, error) {
 	apiKey := strings.TrimSpace(req.APIKey)
 	if apiKey == "" {
@@ -486,16 +673,34 @@ func (s *storeModelCredentialService) processCandidate(ctx context.Context, tena
 		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionTest, "audit_write_failed", "凭据验证审计写入失败，旧版本继续使用")
 		return errorsx.BusinessError(5001, "凭据验证审计写入失败，旧版本继续使用")
 	}
-	if err := s.validator.Validate(ctx, &target.Template, target.Slots, apiKey); err != nil {
-		class, message := publicCredentialValidationFailure(err, target.Slots)
+	testErr := s.validator.Validate(ctx, &target.Template, target.Slots, apiKey)
+	tenant := repositories.TenantRepository.Get(sqls.DB(), tenantID)
+	testRun, evidenceErr := recordModelProfileTestRun(
+		&target.Template,
+		target.Slots,
+		tenant,
+		&target.Store,
+		revision,
+		enums.ModelProfileTestCredentialSourceCandidate,
+		testErr,
+		testStarted,
+		operator,
+		meta,
+	)
+	if evidenceErr != nil {
+		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionTest, "test_evidence_write_failed", "模型方案测试证据写入失败，旧版本继续使用")
+		return evidenceErr
+	}
+	if testErr != nil {
+		class, message := publicCredentialValidationFailure(testErr, target.Slots)
 		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionTest, class, message)
 		return errorsx.BusinessError(2005, message)
 	}
-	testedAt := time.Now()
+	testedAt := testRun.CreatedAt
 	if err := s.updateCandidateState(tenantID, storeID, revision, enums.StoreCredentialStatusTesting, map[string]any{
 		"candidate_status": enums.StoreCredentialStatusSyncing,
 		"last_test_status": "passed", "last_tested_at": testedAt,
-		"last_test_latency_ms": testedAt.Sub(testStarted).Milliseconds(),
+		"last_test_latency_ms": testRun.LatencyMS,
 		"last_error_class":     "", "last_error_message": "",
 	}); err != nil {
 		return err

@@ -13,10 +13,12 @@ import (
 
 var ModelProfileTemplateRepository = &modelProfileTemplateRepository{}
 var ModelProfileSlotRepository = &modelProfileSlotRepository{}
+var ModelProfileTestRunRepository = &modelProfileTestRunRepository{}
 var StoreModelProfileAssignmentRepository = &storeModelProfileAssignmentRepository{}
 
 type modelProfileTemplateRepository struct{}
 type modelProfileSlotRepository struct{}
+type modelProfileTestRunRepository struct{}
 type storeModelProfileAssignmentRepository struct{}
 
 func (r *modelProfileTemplateRepository) Get(db *gorm.DB, id int64) *models.ModelProfileTemplate {
@@ -116,6 +118,74 @@ func (r *modelProfileSlotRepository) ReplaceByTemplateID(db *gorm.DB, templateID
 		return nil
 	}
 	return db.Create(&list).Error
+}
+
+func (r *modelProfileTestRunRepository) Create(db *gorm.DB, item *models.ModelProfileTestRun) error {
+	if db == nil || item == nil {
+		return errors.New("model profile test run is required")
+	}
+	return db.Create(item).Error
+}
+
+func (r *modelProfileTestRunRepository) FindLatestByDigest(db *gorm.DB, templateID, revision int64, digest string) *models.ModelProfileTestRun {
+	if db == nil || templateID <= 0 || revision <= 0 || digest == "" {
+		return nil
+	}
+	item := &models.ModelProfileTestRun{}
+	if err := db.Where(
+		"template_id = ? AND template_revision = ? AND config_digest = ?",
+		templateID,
+		revision,
+		digest,
+	).Order("id DESC").Take(item).Error; err != nil {
+		return nil
+	}
+	return item
+}
+
+func (r *modelProfileTestRunRepository) FindLatestPassedByDigest(db *gorm.DB, templateID, revision int64, digest string) *models.ModelProfileTestRun {
+	if db == nil || templateID <= 0 || revision <= 0 || digest == "" {
+		return nil
+	}
+	item := &models.ModelProfileTestRun{}
+	if err := db.Where(
+		"template_id = ? AND template_revision = ? AND config_digest = ? AND status = ?",
+		templateID,
+		revision,
+		digest,
+		enums.ModelProfileTestStatusPassed,
+	).Order("id DESC").Take(item).Error; err != nil {
+		return nil
+	}
+	return item
+}
+
+func (r *modelProfileTestRunRepository) FindLatestPassedForStore(
+	db *gorm.DB,
+	templateID,
+	revision,
+	tenantID,
+	storeID,
+	credentialRevision int64,
+	digest string,
+) *models.ModelProfileTestRun {
+	if db == nil || templateID <= 0 || revision <= 0 || tenantID <= 0 || storeID <= 0 || credentialRevision <= 0 || digest == "" {
+		return nil
+	}
+	item := &models.ModelProfileTestRun{}
+	if err := db.Where(
+		"template_id = ? AND template_revision = ? AND tenant_id = ? AND store_id = ? AND credential_revision = ? AND config_digest = ? AND status = ?",
+		templateID,
+		revision,
+		tenantID,
+		storeID,
+		credentialRevision,
+		digest,
+		enums.ModelProfileTestStatusPassed,
+	).Order("id DESC").Take(item).Error; err != nil {
+		return nil
+	}
+	return item
 }
 
 func (r *storeModelProfileAssignmentRepository) GetByStore(db *gorm.DB, tenantID, storeID int64) *models.StoreModelProfileAssignment {

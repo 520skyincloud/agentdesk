@@ -36,6 +36,7 @@ test("credential API uses manager and self-service contracts", () => {
     "/api/dashboard/store-model-credential/update",
     "/api/dashboard/store-model-credential/approve",
     "/api/dashboard/store-model-credential/policy",
+    "/api/dashboard/store-model-profile/activate_pending",
     "/api/dashboard/store-workbench/model_credential",
     "/api/dashboard/store-workbench/model_credential/update",
   ]) {
@@ -67,4 +68,11 @@ test("browser response contract contains only masked credential metadata", () =>
   assert.match(credentialResponseSource, /keyMask: string/)
   assert.match(credentialResponseSource, /fingerprintLast6: string/)
   assert.match(componentSource, /type=\{showKey \? "text" : "password"\}/)
+})
+
+test("pending model profile switch reuses the sensitive action contract", () => {
+  assert.match(componentSource, /activatePendingStoreModelProfile/)
+  assert.match(componentSource, /sensitivePayloadReady\(false\)/)
+  assert.match(componentSource, /currentPassword,\s*confirmed/)
+  assert.match(componentSource, /验证并切换待选方案/)
 })

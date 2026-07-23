@@ -47,6 +47,12 @@ type ModelProfileRevisionActionRequest struct {
 	ConfirmRevision int64 `json:"confirmRevision"`
 }
 
+type TestModelProfileRequest struct {
+	ID       int64 `json:"id"`
+	TenantID int64 `json:"tenantId"`
+	StoreID  int64 `json:"storeId"`
+}
+
 type GetStoreModelProfileAssignmentsRequest struct {
 	TenantID int64 `json:"tenantId"`
 }
@@ -63,4 +69,13 @@ type BatchAssignStoreModelProfileRequest struct {
 	StoreIDs        []int64 `json:"storeIds"`
 	TemplateID      int64   `json:"templateId"`
 	ConfirmRevision int64   `json:"confirmRevision"`
+}
+
+type ActivatePendingStoreModelProfileRequest struct {
+	TenantID        int64  `json:"tenantId"`
+	StoreID         int64  `json:"storeId"`
+	TemplateID      int64  `json:"templateId"`
+	ConfirmRevision int64  `json:"confirmRevision"`
+	CurrentPassword string `json:"currentPassword"`
+	Confirmed       bool   `json:"confirmed"`
 }

@@ -10,6 +10,20 @@ const (
 	ModelProfileStatusDisabled  ModelProfileStatus = "disabled"
 )
 
+type ModelProfileTestStatus string
+
+const (
+	ModelProfileTestStatusPassed ModelProfileTestStatus = "passed"
+	ModelProfileTestStatusFailed ModelProfileTestStatus = "failed"
+)
+
+type ModelProfileTestCredentialSource string
+
+const (
+	ModelProfileTestCredentialSourceActive    ModelProfileTestCredentialSource = "active"
+	ModelProfileTestCredentialSourceCandidate ModelProfileTestCredentialSource = "candidate"
+)
+
 type ModelUsageSlot string
 
 const (
@@ -79,15 +93,16 @@ const (
 type CredentialAuditAction string
 
 const (
-	CredentialAuditActionConfigure    CredentialAuditAction = "configure"
-	CredentialAuditActionTest         CredentialAuditAction = "test"
-	CredentialAuditActionSubmit       CredentialAuditAction = "submit"
-	CredentialAuditActionApprove      CredentialAuditAction = "approve"
-	CredentialAuditActionReject       CredentialAuditAction = "reject"
-	CredentialAuditActionActivate     CredentialAuditAction = "activate"
-	CredentialAuditActionDisable      CredentialAuditAction = "disable"
-	CredentialAuditActionSyncFastGPT  CredentialAuditAction = "sync_fastgpt"
-	CredentialAuditActionPolicyUpdate CredentialAuditAction = "policy_update"
+	CredentialAuditActionConfigure     CredentialAuditAction = "configure"
+	CredentialAuditActionTest          CredentialAuditAction = "test"
+	CredentialAuditActionSubmit        CredentialAuditAction = "submit"
+	CredentialAuditActionApprove       CredentialAuditAction = "approve"
+	CredentialAuditActionReject        CredentialAuditAction = "reject"
+	CredentialAuditActionActivate      CredentialAuditAction = "activate"
+	CredentialAuditActionDisable       CredentialAuditAction = "disable"
+	CredentialAuditActionSyncFastGPT   CredentialAuditAction = "sync_fastgpt"
+	CredentialAuditActionSwitchProfile CredentialAuditAction = "switch_profile"
+	CredentialAuditActionPolicyUpdate  CredentialAuditAction = "policy_update"
 )
 
 type CredentialAuditResult string

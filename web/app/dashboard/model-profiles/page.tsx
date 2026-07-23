@@ -10,10 +10,12 @@ import {
   RefreshCwIcon,
   RocketIcon,
   ServerCogIcon,
+  TestTube2Icon,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
+import { OptionCombobox } from "@/components/option-combobox"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -84,12 +86,24 @@ export default function DashboardModelProfilesPage() {
   const [editingProfile, setEditingProfile] = useState<ModelProfileTemplate | null>(null)
   const [validation, setValidation] = useState<ModelProfileValidation | null>(null)
   const [publishTarget, setPublishTarget] = useState<ModelProfileTemplate | null>(null)
+  const [testTargetValue, setTestTargetValue] = useState("")
+  const [testing, setTesting] = useState(false)
 
   const load = useCallback(async (preferredId = 0) => {
     setLoading(true)
     try {
       const next = await fetchModelProfileCatalog()
       setCatalog(next)
+      setTestTargetValue((current) => {
+        const values = new Set(
+          next.testTargets.map((item) => `${item.tenantId}:${item.storeId}`),
+        )
+        return values.has(current)
+          ? current
+          : next.testTargets[0]
+            ? `${next.testTargets[0].tenantId}:${next.testTargets[0].storeId}`
+            : ""
+      })
       setSelectedId((current) => {
         const requested = preferredId || current
         return next.profiles.some((item) => item.id === requested)
@@ -111,6 +125,19 @@ export default function DashboardModelProfilesPage() {
     () => catalog?.profiles.find((item) => item.id === selectedId) ?? null,
     [catalog, selectedId],
   )
+  const selectedTestTarget = useMemo(
+    () =>
+      catalog?.testTargets.find(
+        (item) => `${item.tenantId}:${item.storeId}` === testTargetValue,
+      ) ?? null,
+    [catalog, testTargetValue],
+  )
+  const latestTest = validation?.testRun ?? selected?.latestTest ?? null
+  const publishNeedsTest = catalog?.testRequired ?? false
+  const hasUsableTestTarget = (catalog?.testTargets.length ?? 0) > 0
+  const currentConfigurationPassed =
+    latestTest?.status === "passed" &&
+    (validation?.configDigest ?? selected?.configDigest) === selected?.configDigest
 
   async function submitProfile(values: ModelProfileFormValues) {
     setSaving(true)
@@ -159,14 +186,30 @@ export default function DashboardModelProfilesPage() {
   }
 
   async function runValidation() {
-    if (!selected) return
+    if (!selected || !selectedTestTarget) {
+      toast.error("请选择一个已有 active 凭据的受控测试门店")
+      return
+    }
+    setTesting(true)
     try {
-      const result = await validateModelProfile(selected.id)
+      const result = await validateModelProfile(
+        selected.id,
+        selectedTestTarget.tenantId,
+        selectedTestTarget.storeId,
+      )
       setValidation(result)
-      if (result.status === "passed") toast.success("九槽结构校验通过")
-      else toast.error(`结构校验发现 ${result.issues.length} 项问题`)
+      if (result.status === "passed") {
+        toast.success("真实九槽测试通过")
+      } else if (result.issues.length > 0) {
+        toast.error(`结构校验发现 ${result.issues.length} 项问题`)
+      } else {
+        toast.error(result.testRun?.errorMessage || "真实九槽测试未通过")
+      }
+      await load(selected.id)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "结构校验失败")
+      toast.error(error instanceof Error ? error.message : "真实九槽测试失败")
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -270,7 +313,7 @@ export default function DashboardModelProfilesPage() {
                   </div>
                 </div>
                 {canUpdate ? (
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex max-w-xl flex-wrap items-center justify-end gap-2">
                     {selected.status === "draft" ? (
                     <Button
                       type="button"
@@ -290,12 +333,39 @@ export default function DashboardModelProfilesPage() {
                         新版本
                       </Button>
                     )}
-                    <Button type="button" variant="outline" size="sm" onClick={() => void runValidation()}>
-                      <CheckCircle2Icon />
-                      结构校验
+                    <OptionCombobox
+                      value={testTargetValue}
+                      options={(catalog?.testTargets ?? []).map((item) => ({
+                        value: `${item.tenantId}:${item.storeId}`,
+                        label: `${item.tenantName} / ${item.storeName} · K${item.credentialRevision}`,
+                      }))}
+                      placeholder="选择受控测试门店"
+                      disabled={testing || (catalog?.testTargets.length ?? 0) === 0}
+                      onChange={(value) => {
+                        setTestTargetValue(value)
+                        setValidation(null)
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={testing || !selectedTestTarget}
+                      onClick={() => void runValidation()}
+                    >
+                      <TestTube2Icon className={testing ? "animate-pulse" : ""} />
+                      {testing ? "测试中" : "真实九槽测试"}
                     </Button>
                     {selected.status === "draft" ? (
-                      <Button type="button" size="sm" onClick={() => setPublishTarget(selected)}>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={
+                          publishNeedsTest &&
+                          (!hasUsableTestTarget || !currentConfigurationPassed)
+                        }
+                        onClick={() => setPublishTarget(selected)}
+                      >
                         <RocketIcon />
                         提交候选
                       </Button>
@@ -303,6 +373,50 @@ export default function DashboardModelProfilesPage() {
                   </div>
                 ) : null}
               </div>
+
+              <section className="grid gap-3 border-b py-4 text-sm md:grid-cols-3">
+                <div>
+                  <div className="text-xs text-muted-foreground">当前配置摘要</div>
+                  <div className="mt-1 font-mono text-xs">{selected.configDigest.slice(0, 16) || "-"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">真实测试</div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <Badge
+                      variant={
+                        latestTest?.status === "passed"
+                          ? "default"
+                          : latestTest?.status === "failed"
+                            ? "destructive"
+                            : "outline"
+                      }
+                    >
+                      {latestTest?.status === "passed"
+                        ? "通过"
+                        : latestTest?.status === "failed"
+                          ? "失败"
+                          : "未测试"}
+                    </Badge>
+                    {latestTest ? (
+                      <span className="text-xs text-muted-foreground">
+                        {latestTest.tenantName} / {latestTest.storeName}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">测试凭据</div>
+                  <div className="mt-1 text-xs">
+                    {latestTest
+                      ? `K${latestTest.credentialRevision} · ${formatDateTime(latestTest.createdAt)} · ${latestTest.latencyMs} ms`
+                      : publishNeedsTest && !hasUsableTestTarget
+                        ? "已有 active 凭据，但测试门店未就绪"
+                        : publishNeedsTest
+                        ? "等待受控门店测试"
+                        : "首次启动候选由门店凭据激活流程补证"}
+                  </div>
+                </div>
+              </section>
 
               <div className="overflow-x-auto py-4">
                 <Table>
@@ -360,7 +474,7 @@ export default function DashboardModelProfilesPage() {
                     ) : (
                       <CircleAlertIcon className="size-4 text-destructive" />
                     )}
-                    <span>{validation.status === "passed" ? "结构校验通过" : "结构校验未通过"}</span>
+                    <span>{validation.status === "passed" ? "真实九槽测试通过" : "测试未通过"}</span>
                   </div>
                   {validation.issues.length ? (
                     <div className="divide-y border-y">
@@ -370,6 +484,14 @@ export default function DashboardModelProfilesPage() {
                           <span>{issue.message}</span>
                         </div>
                       ))}
+                    </div>
+                  ) : null}
+                  {validation.testRun?.status === "failed" ? (
+                    <div className="border-y py-3 text-sm text-destructive">
+                      {validation.testRun.failedUsageCode
+                        ? `${validation.testRun.failedUsageCode} · `
+                        : ""}
+                      {validation.testRun.errorMessage}
                     </div>
                   ) : null}
                 </section>
@@ -401,7 +523,9 @@ export default function DashboardModelProfilesPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="border-y py-3 text-sm">
-            九槽结构通过后进入候选状态。门店继续使用原生效版本，直至凭据和就绪校验完成。
+            {publishNeedsTest
+              ? "当前配置已通过受控门店真实九槽测试。提交后进入候选状态，门店继续使用原生效版本，直至凭据和就绪校验完成。"
+              : "当前没有 active 凭据测试门店。本次仅创建首次启动候选；任何门店激活前仍会强制执行九槽测试并写入不可变证据。"}
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setPublishTarget(null)}>取消</Button>

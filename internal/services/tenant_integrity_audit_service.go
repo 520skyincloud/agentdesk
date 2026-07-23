@@ -154,6 +154,7 @@ func tenantIntegrityTablePolicies() map[string]tenantIntegrityTablePolicy {
 		"AIUsageEvent":                    positive,
 		"AIUsageGatewayCall":              {AllowZeroCondition: "c.stage = 'fastgpt_internal_model' AND c.company_id = 0 AND c.store_id = 0 AND c.wx_work_instance_id = 0 AND c.conversation_id = 0 AND c.message_id = 0"},
 		"ConversationInterrupt":           {AllowZeroCondition: "c.conversation_id = 0 AND c.ai_agent_id = 0 AND c.source_message_id = 0 AND c.last_resume_message_id = 0"},
+		"ModelProfileTestRun":             positive,
 		"StoreModelProfileAssignment":     positive,
 		"StoreModelCredential":            positive,
 		"StoreCredentialPolicy":           positive,
@@ -387,6 +388,9 @@ func tenantIntegrityRelations() []tenantIntegrityRelation {
 		tenant("ConversationInterrupt", "source_message_id", "Message", false),
 		tenant("ConversationInterrupt", "last_resume_message_id", "Message", false),
 
+		global("ModelProfileTestRun", "template_id", "ModelProfileTemplate", true),
+		tenant("ModelProfileTestRun", "store_id", "Store", true),
+		tenantOrPlatform("ModelProfileTestRun", "operator_id", "User", false),
 		tenant("StoreModelProfileAssignment", "store_id", "Store", true),
 		global("StoreModelProfileAssignment", "template_id", "ModelProfileTemplate", true),
 		tenantOrPlatform("StoreModelProfileAssignment", "assigned_by", "User", false),

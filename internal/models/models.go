@@ -86,6 +86,7 @@ var Models = []any{
 	&AgentTeamSchedule{},
 	&ModelProfileTemplate{},
 	&ModelProfileSlot{},
+	&ModelProfileTestRun{},
 	&StoreModelProfileAssignment{},
 	&StoreModelCredential{},
 	&StoreCredentialPolicy{},

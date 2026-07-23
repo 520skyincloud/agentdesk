@@ -129,6 +129,21 @@ func TestTenantReleaseReadinessReportNeverContainsSecretOrCustomerEvidence(t *te
 	}
 }
 
+func TestTenantReleaseReadinessRequiresCurrentModelProfileTestEvidence(t *testing.T) {
+	fixture := newTenantReleaseReadinessFixture(t)
+	if err := fixture.db.Where(
+		"tenant_id = ? AND store_id = ?",
+		fixture.tenant.ID,
+		fixture.store.ID,
+	).Delete(&models.ModelProfileTestRun{}).Error; err != nil {
+		t.Fatalf("delete Model Profile test evidence: %v", err)
+	}
+	report := fixture.audit(t, TenantReleaseReadinessConfiguration, nil)
+	if !tenantReleaseReadinessHasViolation(report, "STORE_MODEL_PROFILE_TEST_EVIDENCE") {
+		t.Fatalf("readiness passed without current Model Profile test evidence: %#v", report.Violations)
+	}
+}
+
 func TestTenantReleaseReadinessRejectsFutureOrMissingPilotEvidenceWindow(t *testing.T) {
 	fixture := newTenantReleaseReadinessFixture(t)
 	_, err := TenantReleaseReadinessService.Audit(fixture.db, TenantReleaseReadinessOptions{
@@ -370,6 +385,7 @@ func tenantReleaseReadinessModels() []any {
 		&models.StoreCustomerTagRuntimePolicy{},
 		&models.ModelProfileTemplate{},
 		&models.ModelProfileSlot{},
+		&models.ModelProfileTestRun{},
 		&models.StoreModelProfileAssignment{},
 		&models.StoreModelCredential{},
 		&models.StoreCredentialPolicy{},
@@ -521,6 +537,19 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 	}
 	if err := db.Create(&credential).Error; err != nil {
 		t.Fatalf("create readiness Credential: %v", err)
+	}
+	if err := db.Create(&models.ModelProfileTestRun{
+		TemplateID: modelProfile.ID, TemplateRevision: modelProfile.Revision,
+		ConfigDigest: modelProfileConfigurationDigest(&modelProfile, slots),
+		TenantID:     tenant.ID, TenantName: tenant.ShortName,
+		StoreID: store.ID, StoreName: store.Name,
+		CredentialRevision: credential.CredentialRevision,
+		CredentialSource:   enums.ModelProfileTestCredentialSourceCandidate,
+		Status:             enums.ModelProfileTestStatusPassed,
+		OperatorID:         account.ID, OperatorName: account.Username,
+		CreatedAt: publishedAt,
+	}).Error; err != nil {
+		t.Fatalf("create readiness Model Profile test evidence: %v", err)
 	}
 	if err := db.Create(&models.StoreCredentialPolicy{
 		TenantID: tenant.ID, StoreID: store.ID,

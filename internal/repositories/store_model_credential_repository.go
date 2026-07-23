@@ -2,8 +2,10 @@ package repositories
 
 import (
 	"errors"
+	"fmt"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
@@ -17,6 +19,25 @@ var StoreModelCredentialAuditLogRepository = &storeModelCredentialAuditLogReposi
 type storeModelCredentialRepository struct{}
 type storeCredentialPolicyRepository struct{}
 type storeModelCredentialAuditLogRepository struct{}
+
+type ActiveStoreModelCredentialMetadata struct {
+	TenantID           int64
+	StoreID            int64
+	CredentialRevision int64
+}
+
+type UsableModelProfileTestTargetMetadata struct {
+	TenantID               int64
+	TenantShortName        string
+	TenantLegalName        string
+	StoreID                int64
+	StoreCode              string
+	StoreName              string
+	CredentialRevision     int64
+	ActiveTemplateID       int64
+	ActiveTemplateName     string
+	ActiveTemplateRevision int64
+}
 
 func (r *storeModelCredentialRepository) Get(db *gorm.DB, id int64) *models.StoreModelCredential {
 	if db == nil || id <= 0 {
@@ -61,6 +82,127 @@ func (r *storeModelCredentialRepository) FindByTenant(db *gorm.DB, tenantID int6
 	}
 	sqls.NewCnd().Eq("tenant_id", tenantID).Asc("store_id").Find(db, &list)
 	return list
+}
+
+func (r *storeModelCredentialRepository) FindUsableProfileTestTargets(db *gorm.DB, limit int) (list []UsableModelProfileTestTargetMetadata, err error) {
+	if db == nil {
+		return list, errors.New("database is required")
+	}
+	query := r.usableProfileTestTargetQuery(db).
+		Select(
+			"credential.tenant_id AS tenant_id, tenant.short_name AS tenant_short_name, tenant.legal_name AS tenant_legal_name, " +
+				"credential.store_id AS store_id, store.store_code AS store_code, store.name AS store_name, " +
+				"credential.credential_revision AS credential_revision, template.id AS active_template_id, " +
+				"template.name AS active_template_name, template.revision AS active_template_revision",
+		).
+		Order("credential.tenant_id ASC, credential.store_id ASC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	err = query.Scan(&list).Error
+	return list, err
+}
+
+func (r *storeModelCredentialRepository) FindActiveMetadataByStore(db *gorm.DB, tenantID, storeID int64) *ActiveStoreModelCredentialMetadata {
+	if db == nil || tenantID <= 0 || storeID <= 0 {
+		return nil
+	}
+	item := &ActiveStoreModelCredentialMetadata{}
+	result := db.Model(&models.StoreModelCredential{}).
+		Select("tenant_id, store_id, credential_revision").
+		Where(
+			"tenant_id = ? AND store_id = ? AND status = ? AND credential_revision > 0 AND encrypted_key <> ''",
+			tenantID,
+			storeID,
+			enums.StoreCredentialStatusActive,
+		).
+		Take(item)
+	if result.Error != nil {
+		return nil
+	}
+	return item
+}
+
+func (r *storeModelCredentialRepository) HasActive(db *gorm.DB) (bool, error) {
+	if db == nil {
+		return false, errors.New("database is required")
+	}
+	var row struct {
+		ID int64
+	}
+	err := db.Model(&models.StoreModelCredential{}).
+		Select("id").
+		Where(
+			"status = ? AND credential_revision > 0 AND encrypted_key <> ''",
+			enums.StoreCredentialStatusActive,
+		).
+		Order("id ASC").
+		Limit(1).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return row.ID > 0, nil
+}
+
+func (r *storeModelCredentialRepository) HasUsableProfileTestTarget(db *gorm.DB) (bool, error) {
+	if db == nil {
+		return false, errors.New("database is required")
+	}
+	var row struct {
+		ID int64
+	}
+	err := r.usableProfileTestTargetQuery(db).
+		Select("credential.id").
+		Order("credential.id ASC").
+		Limit(1).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return row.ID > 0, nil
+}
+
+func (r *storeModelCredentialRepository) usableProfileTestTargetQuery(db *gorm.DB) *gorm.DB {
+	credentialTable := db.NamingStrategy.TableName("StoreModelCredential")
+	storeTable := db.NamingStrategy.TableName("Store")
+	tenantTable := db.NamingStrategy.TableName("Tenant")
+	assignmentTable := db.NamingStrategy.TableName("StoreModelProfileAssignment")
+	templateTable := db.NamingStrategy.TableName("ModelProfileTemplate")
+	return db.Table(credentialTable+" AS credential").
+		Joins(fmt.Sprintf(
+			"JOIN %s AS store ON store.id = credential.store_id AND store.tenant_id = credential.tenant_id",
+			storeTable,
+		)).
+		Joins(fmt.Sprintf(
+			"JOIN %s AS tenant ON tenant.id = credential.tenant_id",
+			tenantTable,
+		)).
+		Joins(fmt.Sprintf(
+			"JOIN %s AS assignment ON assignment.tenant_id = credential.tenant_id AND assignment.store_id = credential.store_id",
+			assignmentTable,
+		)).
+		Joins(fmt.Sprintf(
+			"JOIN %s AS template ON template.id = assignment.template_id AND template.revision = assignment.template_revision",
+			templateTable,
+		)).
+		Where(
+			"credential.status = ? AND credential.credential_revision > 0 AND credential.encrypted_key <> ''",
+			enums.StoreCredentialStatusActive,
+		).
+		Where("store.status = ? AND tenant.status = ?", enums.StatusOk, enums.StatusOk).
+		Where(
+			"assignment.status = ? AND assignment.readiness_status = ? AND assignment.template_id > 0 AND assignment.template_revision > 0",
+			enums.StoreModelAssignmentStatusReady,
+			"ready",
+		).
+		Where("template.status = ?", enums.ModelProfileStatusActive)
 }
 
 func (r *storeModelCredentialRepository) Create(db *gorm.DB, item *models.StoreModelCredential) error {

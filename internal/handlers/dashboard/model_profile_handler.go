@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"strings"
+
 	"agent-desk/internal/builders"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
@@ -75,12 +77,17 @@ func ModelProfileTemplatePostTest(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	req := request.ModelProfileRevisionActionRequest{}
+	req := request.TestModelProfileRequest{}
 	if err = params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	data, err := services.ModelProfileService.Validate(req, operator)
+	data, err := services.ModelProfileService.Test(
+		ctx.Request.Context(),
+		req,
+		operator,
+		storeCredentialRequestMeta(ctx),
+	)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -90,11 +97,13 @@ func ModelProfileTemplatePostTest(ctx *gin.Context) {
 		issues = append(issues, response.ModelProfileValidationIssueResponse{UsageCode: string(issue.UsageCode), Message: issue.Message})
 	}
 	status := "passed"
-	if len(issues) > 0 {
+	if len(issues) > 0 || data.TestRun == nil || data.TestRun.Status != "passed" {
 		status = "failed"
 	}
 	httpx.WriteJSON(ctx, response.ModelProfileValidationResponse{
-		TemplateID: data.Template.ID, Revision: data.Template.Revision, Status: status, Issues: issues,
+		TemplateID: data.Template.ID, Revision: data.Template.Revision,
+		ConfigDigest: data.ConfigDigest, Status: status, Issues: issues,
+		TestRun: builders.BuildModelProfileTestRun(data.TestRun),
 	})
 }
 
@@ -172,17 +181,63 @@ func StoreModelProfilePostBatchAssign(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
+func StoreModelProfilePostActivatePending(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionAIConfigUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.ActivatePendingStoreModelProfileRequest{}
+	if err = params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	data, err := services.StoreModelCredentialService.ActivatePendingProfile(
+		ctx.Request.Context(),
+		req,
+		operator,
+		storeCredentialRequestMeta(ctx),
+	)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildStoreModelCredential(data))
+}
+
 func buildModelProfileCatalogResponse(data *services.ModelProfileCatalogData) response.ModelProfileCatalogResponse {
 	result := response.ModelProfileCatalogResponse{
 		Profiles:      make([]response.ModelProfileTemplateResponse, 0, len(data.Profiles)),
 		RequiredSlots: make([]response.ModelUsageSlotOptionResponse, 0, len(services.RequiredModelUsageSlotSpecs())),
+		TestTargets:   make([]response.ModelProfileTestTargetResponse, 0, len(data.TestTargets)),
+		TestRequired:  data.TestRequired,
 	}
 	for i := range data.Profiles {
-		result.Profiles = append(result.Profiles, builders.BuildModelProfileTemplate(&data.Profiles[i].Template, data.Profiles[i].Slots))
+		result.Profiles = append(result.Profiles, builders.BuildModelProfileTemplateWithTest(
+			&data.Profiles[i].Template,
+			data.Profiles[i].Slots,
+			data.Profiles[i].ConfigDigest,
+			data.Profiles[i].LatestTest,
+		))
 	}
 	for _, spec := range services.RequiredModelUsageSlotSpecs() {
 		result.RequiredSlots = append(result.RequiredSlots, response.ModelUsageSlotOptionResponse{
 			UsageCode: string(spec.UsageCode), DisplayName: spec.DisplayName, ExpectedModelType: string(spec.ExpectedModelType),
+		})
+	}
+	for i := range data.TestTargets {
+		target := &data.TestTargets[i]
+		tenantName := strings.TrimSpace(target.Tenant.ShortName)
+		if tenantName == "" {
+			tenantName = strings.TrimSpace(target.Tenant.LegalName)
+		}
+		result.TestTargets = append(result.TestTargets, response.ModelProfileTestTargetResponse{
+			TenantID:   target.Tenant.ID,
+			TenantName: tenantName,
+			StoreID:    target.Store.ID, StoreCode: target.Store.StoreCode, StoreName: target.Store.Name,
+			CredentialRevision: target.CredentialRevision,
+			ActiveTemplateID:   target.ActiveTemplateID, ActiveTemplateName: target.ActiveTemplateName,
+			ActiveTemplateRevision: target.ActiveTemplateRevision,
 		})
 	}
 	return result

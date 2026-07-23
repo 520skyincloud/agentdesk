@@ -197,7 +197,7 @@ func openUnifiedAISchemaDB(t *testing.T) *gorm.DB {
 
 func unifiedAIModelsForTest() []any {
 	return []any{
-		&ModelProfileTemplate{}, &ModelProfileSlot{}, &StoreModelProfileAssignment{},
+		&ModelProfileTemplate{}, &ModelProfileSlot{}, &ModelProfileTestRun{}, &StoreModelProfileAssignment{},
 		&StoreModelCredential{}, &StoreCredentialPolicy{}, &StoreModelCredentialAuditLog{},
 		&IndustryTagDefinition{}, &Tag{}, &TenantCustomerTagPolicy{}, &StoreCustomerTagRuntimePolicy{},
 		&CustomerTagRelation{}, &CustomerTagChangeLog{}, &ConversationEvolutionState{}, &ConversationEvolutionRun{},

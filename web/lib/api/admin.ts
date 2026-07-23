@@ -2246,6 +2246,8 @@ export type ModelProfileTemplate = {
   status: "draft" | "candidate" | "active" | "retired" | "disabled"
   publishedAt?: string | null
   publishedByName: string
+  configDigest: string
+  latestTest?: ModelProfileTestRun | null
   slots: ModelProfileSlot[]
   createdAt: string
   updatedAt: string
@@ -2260,6 +2262,8 @@ export type ModelUsageSlotOption = {
 export type ModelProfileCatalog = {
   profiles: ModelProfileTemplate[]
   requiredSlots: ModelUsageSlotOption[]
+  testTargets: ModelProfileTestTarget[]
+  testRequired: boolean
 }
 
 export type ModelProfileSlotPayload = Omit<ModelProfileSlot, "id">
@@ -2284,8 +2288,39 @@ export type UpdateModelProfilePayload = {
 export type ModelProfileValidation = {
   templateId: number
   revision: number
+  configDigest: string
   status: "passed" | "failed"
   issues: Array<{ usageCode: string; message: string }>
+  testRun?: ModelProfileTestRun | null
+}
+
+export type ModelProfileTestRun = {
+  id: number
+  tenantId: number
+  tenantName: string
+  storeId: number
+  storeName: string
+  credentialRevision: number
+  credentialSource: "active" | "candidate"
+  status: "passed" | "failed"
+  failedUsageCode: string
+  errorClass: string
+  errorMessage: string
+  latencyMs: number
+  operatorName: string
+  createdAt: string
+}
+
+export type ModelProfileTestTarget = {
+  tenantId: number
+  tenantName: string
+  storeId: number
+  storeCode: string
+  storeName: string
+  credentialRevision: number
+  activeTemplateId: number
+  activeTemplateName: string
+  activeTemplateRevision: number
 }
 
 export function fetchModelProfileCatalog(payload: { id?: number; code?: string } = {}) {
@@ -2309,10 +2344,10 @@ export function updateModelProfile(payload: UpdateModelProfilePayload) {
   })
 }
 
-export function validateModelProfile(id: number) {
+export function validateModelProfile(id: number, tenantId: number, storeId: number) {
   return request<ModelProfileValidation>("/api/dashboard/model-profile-template/test", {
     method: "POST",
-    body: JSON.stringify({ id }),
+    body: JSON.stringify({ id, tenantId, storeId }),
   })
 }
 

@@ -33,6 +33,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import {
+  activatePendingStoreModelProfile,
   approveStoreModelCredential,
   disableStoreModelCredential,
   fetchOwnStoreModelCredential,
@@ -85,6 +86,7 @@ const auditActionLabels: Record<string, string> = {
   reject: "拒绝",
   test: "连接验证",
   sync_fastgpt: "同步知识服务",
+  switch_profile: "切换模型方案",
   activate: "激活",
   disable: "停用",
   policy_update: "策略更新",
@@ -292,6 +294,32 @@ export function StoreModelCredentialPanel({
       await refreshAfter(next, "门店模型凭据已停用")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "停用门店模型凭据失败")
+      void load()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function activatePendingProfile() {
+    if (
+      !data ||
+      mode !== "manager" ||
+      !canUpdate ||
+      saving ||
+      data.pendingProfileId <= 0 ||
+      !sensitivePayloadReady(false)
+    ) return
+    setSaving(true)
+    try {
+      const next = await activatePendingStoreModelProfile(managerScope, {
+        templateId: data.pendingProfileId,
+        confirmRevision: data.pendingProfileRevision,
+        currentPassword,
+        confirmed,
+      })
+      await refreshAfter(next, "待选模型方案已验证并切换")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "模型方案切换失败，当前方案继续使用")
       void load()
     } finally {
       setSaving(false)
@@ -511,6 +539,21 @@ export function StoreModelCredentialPanel({
             <Button type="button" variant="outline" disabled={saving || !canUpdate} onClick={() => void disableCredential()}>
               <XCircleIcon className="size-4" />
               停用
+            </Button>
+          ) : null}
+          {mode === "manager" &&
+          data.hasKey &&
+          data.activeProfileId > 0 &&
+          data.pendingProfileId > 0 &&
+          !liveCandidate ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving || !canUpdate}
+              onClick={() => void activatePendingProfile()}
+            >
+              <RefreshCwIcon className="size-4" />
+              验证并切换待选方案
             </Button>
           ) : null}
           {mode === "manager" && pendingApproval ? (

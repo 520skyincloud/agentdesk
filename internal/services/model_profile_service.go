@@ -1,7 +1,10 @@
 package services
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -17,6 +20,7 @@ import (
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 const modelProfileProviderNewAPI = "newapi"
@@ -31,12 +35,16 @@ type ModelUsageSlotSpec struct {
 }
 
 type ModelProfileWithSlots struct {
-	Template models.ModelProfileTemplate
-	Slots    []models.ModelProfileSlot
+	Template     models.ModelProfileTemplate
+	Slots        []models.ModelProfileSlot
+	ConfigDigest string
+	LatestTest   *models.ModelProfileTestRun
 }
 
 type ModelProfileCatalogData struct {
-	Profiles []ModelProfileWithSlots
+	Profiles     []ModelProfileWithSlots
+	TestTargets  []ModelProfileTestTarget
+	TestRequired bool
 }
 
 type ModelProfileValidationIssue struct {
@@ -45,8 +53,19 @@ type ModelProfileValidationIssue struct {
 }
 
 type ModelProfileValidationData struct {
-	Template models.ModelProfileTemplate
-	Issues   []ModelProfileValidationIssue
+	Template     models.ModelProfileTemplate
+	ConfigDigest string
+	Issues       []ModelProfileValidationIssue
+	TestRun      *models.ModelProfileTestRun
+}
+
+type ModelProfileTestTarget struct {
+	Tenant                 models.Tenant
+	Store                  models.Store
+	CredentialRevision     int64
+	ActiveTemplateID       int64
+	ActiveTemplateName     string
+	ActiveTemplateRevision int64
 }
 
 type StoreModelProfileAssignmentItem struct {
@@ -61,11 +80,17 @@ type StoreModelProfileAssignmentsData struct {
 	Templates map[int64]models.ModelProfileTemplate
 }
 
-var ModelProfileService = &modelProfileService{}
+var ModelProfileService = newModelProfileService()
 var StoreModelProfileAssignmentService = &storeModelProfileAssignmentService{}
 
-type modelProfileService struct{}
+type modelProfileService struct {
+	validator storeCredentialSlotValidator
+}
 type storeModelProfileAssignmentService struct{}
+
+func newModelProfileService() *modelProfileService {
+	return &modelProfileService{validator: &newAPIStoreCredentialValidator{}}
+}
 
 func RequiredModelUsageSlotSpecs() []ModelUsageSlotSpec {
 	return []ModelUsageSlotSpec{
@@ -102,11 +127,23 @@ func (s *modelProfileService) GetCatalog(req request.GetModelProfileCatalogReque
 		cnd.Eq("code", code)
 	}
 	items := repositories.ModelProfileTemplateRepository.Find(sqls.DB(), cnd)
-	result := &ModelProfileCatalogData{Profiles: make([]ModelProfileWithSlots, 0, len(items))}
+	testRequired, err := repositories.StoreModelCredentialRepository.HasActive(sqls.DB())
+	if err != nil {
+		return nil, errorsx.BusinessError(3001, "无法读取模型方案真实测试门槛")
+	}
+	result := &ModelProfileCatalogData{
+		Profiles:     make([]ModelProfileWithSlots, 0, len(items)),
+		TestTargets:  s.findTestTargets(200),
+		TestRequired: testRequired,
+	}
 	for i := range items {
+		slots := repositories.ModelProfileSlotRepository.FindByTemplateID(sqls.DB(), items[i].ID)
+		digest := modelProfileConfigurationDigest(&items[i], slots)
 		result.Profiles = append(result.Profiles, ModelProfileWithSlots{
-			Template: items[i],
-			Slots:    repositories.ModelProfileSlotRepository.FindByTemplateID(sqls.DB(), items[i].ID),
+			Template:     items[i],
+			Slots:        slots,
+			ConfigDigest: digest,
+			LatestTest:   repositories.ModelProfileTestRunRepository.FindLatestByDigest(sqls.DB(), items[i].ID, items[i].Revision, digest),
 		})
 	}
 	return result, nil
@@ -241,7 +278,58 @@ func (s *modelProfileService) Validate(req request.ModelProfileRevisionActionReq
 		return nil, errorsx.InvalidParam("模型方案 revision 不存在")
 	}
 	slots := repositories.ModelProfileSlotRepository.FindByTemplateID(sqls.DB(), item.ID)
-	return &ModelProfileValidationData{Template: *item, Issues: ValidateModelProfileForPublication(item, slots)}, nil
+	return &ModelProfileValidationData{
+		Template:     *item,
+		ConfigDigest: modelProfileConfigurationDigest(item, slots),
+		Issues:       ValidateModelProfileForPublication(item, slots),
+	}, nil
+}
+
+func (s *modelProfileService) Test(
+	ctx context.Context,
+	req request.TestModelProfileRequest,
+	operator *dto.AuthPrincipal,
+	meta StoreCredentialRequestMeta,
+) (*ModelProfileValidationData, error) {
+	if err := requirePlatformModelProfileAccess(operator); err != nil {
+		return nil, err
+	}
+	item := repositories.ModelProfileTemplateRepository.Get(sqls.DB(), req.ID)
+	if item == nil {
+		return nil, errorsx.InvalidParam("模型方案 revision 不存在")
+	}
+	slots := repositories.ModelProfileSlotRepository.FindByTemplateID(sqls.DB(), item.ID)
+	data := &ModelProfileValidationData{
+		Template:     *item,
+		ConfigDigest: modelProfileConfigurationDigest(item, slots),
+		Issues:       ValidateModelProfileForPublication(item, slots),
+	}
+	if len(data.Issues) > 0 {
+		return data, nil
+	}
+	target, credential, err := s.loadTestTarget(req.TenantID, req.StoreID, item)
+	if err != nil {
+		return nil, err
+	}
+	startedAt := time.Now()
+	testErr := s.validator.Validate(ctx, item, slots, credential.APIKey)
+	run, recordErr := recordModelProfileTestRun(
+		item,
+		slots,
+		&target.Tenant,
+		&target.Store,
+		credential.Revision,
+		enums.ModelProfileTestCredentialSourceActive,
+		testErr,
+		startedAt,
+		operator,
+		meta,
+	)
+	if recordErr != nil {
+		return nil, recordErr
+	}
+	data.TestRun = run
+	return data, nil
 }
 
 func (s *modelProfileService) Publish(req request.ModelProfileRevisionActionRequest, operator *dto.AuthPrincipal) (*ModelProfileWithSlots, error) {
@@ -268,6 +356,20 @@ func (s *modelProfileService) Publish(req request.ModelProfileRevisionActionRequ
 		slots = repositories.ModelProfileSlotRepository.FindByTemplateID(ctx.Tx, current.ID)
 		if issues := ValidateModelProfileForPublication(current, slots); len(issues) > 0 {
 			return errorsx.InvalidParam(issues[0].Message)
+		}
+		digest := modelProfileConfigurationDigest(current, slots)
+		testRequired, err := repositories.StoreModelCredentialRepository.HasActive(ctx.Tx)
+		if err != nil {
+			return errorsx.BusinessError(3001, "无法确认模型方案真实测试门槛")
+		}
+		if testRequired &&
+			repositories.ModelProfileTestRunRepository.FindLatestPassedByDigest(
+				ctx.Tx,
+				current.ID,
+				current.Revision,
+				digest,
+			) == nil {
+			return errorsx.InvalidParam("当前配置尚未通过受控门店的真实九槽测试")
 		}
 		if err := repositories.ModelProfileTemplateRepository.Updates(ctx.Tx, current.ID, map[string]any{
 			"status": enums.ModelProfileStatusCandidate, "published_at": now,
@@ -529,6 +631,189 @@ func (s *storeModelProfileAssignmentService) assignBatch(tenantID int64, storeID
 		}
 		return nil
 	})
+}
+
+func (s *modelProfileService) findTestTargets(limit int) []ModelProfileTestTarget {
+	return s.findTestTargetsDB(sqls.DB(), limit)
+}
+
+func (s *modelProfileService) findTestTargetsDB(db *gorm.DB, limit int) []ModelProfileTestTarget {
+	targets, err := repositories.StoreModelCredentialRepository.FindUsableProfileTestTargets(db, limit)
+	if err != nil {
+		return nil
+	}
+	result := make([]ModelProfileTestTarget, 0, len(targets))
+	for i := range targets {
+		target := &targets[i]
+		result = append(result, ModelProfileTestTarget{
+			Tenant: models.Tenant{
+				ID:        target.TenantID,
+				ShortName: target.TenantShortName,
+				LegalName: target.TenantLegalName,
+			},
+			Store: models.Store{
+				ID:        target.StoreID,
+				TenantID:  target.TenantID,
+				StoreCode: target.StoreCode,
+				Name:      target.StoreName,
+			},
+			CredentialRevision:     target.CredentialRevision,
+			ActiveTemplateID:       target.ActiveTemplateID,
+			ActiveTemplateName:     target.ActiveTemplateName,
+			ActiveTemplateRevision: target.ActiveTemplateRevision,
+		})
+	}
+	return result
+}
+
+func (s *modelProfileService) buildTestTargetDB(
+	db *gorm.DB,
+	credential *repositories.ActiveStoreModelCredentialMetadata,
+) *ModelProfileTestTarget {
+	if db == nil || credential == nil {
+		return nil
+	}
+	store := repositories.StoreRepository.GetInTenant(db, credential.StoreID, credential.TenantID)
+	if store == nil || store.Status != enums.StatusOk {
+		return nil
+	}
+	tenant := repositories.TenantRepository.Get(db, credential.TenantID)
+	if tenant == nil || tenant.Status != enums.StatusOk {
+		return nil
+	}
+	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(db, credential.TenantID, credential.StoreID)
+	if assignment == nil ||
+		assignment.Status != enums.StoreModelAssignmentStatusReady ||
+		!strings.EqualFold(strings.TrimSpace(assignment.ReadinessStatus), "ready") ||
+		assignment.TemplateID <= 0 ||
+		assignment.TemplateRevision <= 0 {
+		return nil
+	}
+	template := repositories.ModelProfileTemplateRepository.Get(db, assignment.TemplateID)
+	if template == nil ||
+		template.Status != enums.ModelProfileStatusActive ||
+		template.Revision != assignment.TemplateRevision {
+		return nil
+	}
+	return &ModelProfileTestTarget{
+		Tenant:                 *tenant,
+		Store:                  *store,
+		CredentialRevision:     credential.CredentialRevision,
+		ActiveTemplateID:       template.ID,
+		ActiveTemplateName:     template.Name,
+		ActiveTemplateRevision: template.Revision,
+	}
+}
+
+func (s *modelProfileService) loadTestTarget(
+	tenantID,
+	storeID int64,
+	template *models.ModelProfileTemplate,
+) (*ModelProfileTestTarget, *resolvedStoreModelCredential, error) {
+	if tenantID <= 0 || storeID <= 0 {
+		return nil, nil, errorsx.InvalidParam("请选择一个已有 active 凭据的受控测试门店")
+	}
+	credentialMetadata := repositories.StoreModelCredentialRepository.FindActiveMetadataByStore(sqls.DB(), tenantID, storeID)
+	selected := s.buildTestTargetDB(sqls.DB(), credentialMetadata)
+	if selected == nil {
+		return nil, nil, errorsx.InvalidParam("测试门店没有可用的 active 凭据与模型方案")
+	}
+	activeTemplate := repositories.ModelProfileTemplateRepository.Get(sqls.DB(), selected.ActiveTemplateID)
+	if activeTemplate == nil ||
+		normalizeGatewayBaseURL(activeTemplate.GatewayBaseURL) != normalizeGatewayBaseURL(template.GatewayBaseURL) {
+		return nil, nil, errorsx.InvalidParam("测试门店当前方案不使用相同的统一 NewAPI 网关，禁止发送门店凭据")
+	}
+	credential, err := StoreModelCredentialService.ResolveActive(tenantID, storeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if credential.Revision != selected.CredentialRevision {
+		return nil, nil, errorsx.InvalidParam("测试门店凭据 revision 已变化，请刷新后重试")
+	}
+	return selected, credential, nil
+}
+
+func recordModelProfileTestRun(
+	template *models.ModelProfileTemplate,
+	slots []models.ModelProfileSlot,
+	tenant *models.Tenant,
+	store *models.Store,
+	credentialRevision int64,
+	credentialSource enums.ModelProfileTestCredentialSource,
+	testErr error,
+	startedAt time.Time,
+	operator *dto.AuthPrincipal,
+	meta StoreCredentialRequestMeta,
+) (*models.ModelProfileTestRun, error) {
+	if template == nil || tenant == nil || store == nil || credentialRevision <= 0 || operator == nil {
+		return nil, errorsx.BusinessError(3001, "模型方案测试证据上下文不完整")
+	}
+	completedAt := time.Now()
+	status := enums.ModelProfileTestStatusPassed
+	failedUsage := enums.ModelUsageSlot("")
+	errorClass := ""
+	errorMessage := ""
+	if testErr != nil {
+		status = enums.ModelProfileTestStatusFailed
+		errorClass, errorMessage = publicCredentialValidationFailure(testErr, slots)
+		var validationErr *storeCredentialValidationError
+		if errors.As(testErr, &validationErr) {
+			failedUsage = validationErr.UsageCode
+		}
+	}
+	item := &models.ModelProfileTestRun{
+		TemplateID: template.ID, TemplateRevision: template.Revision,
+		ConfigDigest: modelProfileConfigurationDigest(template, slots),
+		TenantID:     tenant.ID, StoreID: store.ID,
+		TenantName: firstNonBlank(tenant.ShortName, tenant.LegalName), StoreName: store.Name,
+		CredentialRevision: credentialRevision, CredentialSource: credentialSource,
+		Status: status, FailedUsageCode: failedUsage,
+		ErrorClass: errorClass, ErrorMessage: errorMessage,
+		RequestID:  trimCredentialAuditValue(meta.RequestID, 128),
+		ClientIP:   trimCredentialAuditValue(meta.ClientIP, 64),
+		LatencyMS:  completedAt.Sub(startedAt).Milliseconds(),
+		OperatorID: operator.UserID, OperatorName: trimCredentialAuditValue(operator.Username, 100),
+		CreatedAt: completedAt,
+	}
+	if err := repositories.ModelProfileTestRunRepository.Create(sqls.DB(), item); err != nil {
+		return nil, errorsx.BusinessError(3001, "模型方案测试证据写入失败")
+	}
+	return item, nil
+}
+
+func modelProfileConfigurationDigest(template *models.ModelProfileTemplate, slots []models.ModelProfileSlot) string {
+	if template == nil {
+		return ""
+	}
+	sortedSlots := append([]models.ModelProfileSlot(nil), slots...)
+	slices.SortFunc(sortedSlots, func(left, right models.ModelProfileSlot) int {
+		if left.UsageCode < right.UsageCode {
+			return -1
+		}
+		if left.UsageCode > right.UsageCode {
+			return 1
+		}
+		return left.SortNo - right.SortNo
+	})
+	payload := struct {
+		Code           string                            `json:"code"`
+		Name           string                            `json:"name"`
+		Description    string                            `json:"description"`
+		Revision       int64                             `json:"revision"`
+		GatewayBaseURL string                            `json:"gatewayBaseUrl"`
+		Slots          []request.ModelProfileSlotRequest `json:"slots"`
+	}{
+		Code: normalizeModelProfileCode(template.Code), Name: strings.TrimSpace(template.Name),
+		Description: strings.TrimSpace(template.Description), Revision: template.Revision,
+		GatewayBaseURL: normalizeGatewayBaseURL(template.GatewayBaseURL),
+		Slots:          modelSlotRequestsFromModels(sortedSlots),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", sum)
 }
 
 func requirePlatformModelProfileAccess(operator *dto.AuthPrincipal) error {

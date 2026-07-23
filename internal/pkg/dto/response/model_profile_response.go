@@ -24,23 +24,27 @@ type ModelProfileSlotResponse struct {
 }
 
 type ModelProfileTemplateResponse struct {
-	ID              int64                      `json:"id"`
-	Code            string                     `json:"code"`
-	Name            string                     `json:"name"`
-	Description     string                     `json:"description"`
-	Revision        int64                      `json:"revision"`
-	GatewayBaseURL  string                     `json:"gatewayBaseUrl"`
-	Status          string                     `json:"status"`
-	PublishedAt     *time.Time                 `json:"publishedAt"`
-	PublishedByName string                     `json:"publishedByName"`
-	Slots           []ModelProfileSlotResponse `json:"slots"`
-	CreatedAt       time.Time                  `json:"createdAt"`
-	UpdatedAt       time.Time                  `json:"updatedAt"`
+	ID              int64                        `json:"id"`
+	Code            string                       `json:"code"`
+	Name            string                       `json:"name"`
+	Description     string                       `json:"description"`
+	Revision        int64                        `json:"revision"`
+	GatewayBaseURL  string                       `json:"gatewayBaseUrl"`
+	Status          string                       `json:"status"`
+	PublishedAt     *time.Time                   `json:"publishedAt"`
+	PublishedByName string                       `json:"publishedByName"`
+	ConfigDigest    string                       `json:"configDigest"`
+	LatestTest      *ModelProfileTestRunResponse `json:"latestTest"`
+	Slots           []ModelProfileSlotResponse   `json:"slots"`
+	CreatedAt       time.Time                    `json:"createdAt"`
+	UpdatedAt       time.Time                    `json:"updatedAt"`
 }
 
 type ModelProfileCatalogResponse struct {
-	Profiles      []ModelProfileTemplateResponse `json:"profiles"`
-	RequiredSlots []ModelUsageSlotOptionResponse `json:"requiredSlots"`
+	Profiles      []ModelProfileTemplateResponse   `json:"profiles"`
+	RequiredSlots []ModelUsageSlotOptionResponse   `json:"requiredSlots"`
+	TestTargets   []ModelProfileTestTargetResponse `json:"testTargets"`
+	TestRequired  bool                             `json:"testRequired"`
 }
 
 type ModelUsageSlotOptionResponse struct {
@@ -55,10 +59,41 @@ type ModelProfileValidationIssueResponse struct {
 }
 
 type ModelProfileValidationResponse struct {
-	TemplateID int64                                 `json:"templateId"`
-	Revision   int64                                 `json:"revision"`
-	Status     string                                `json:"status"`
-	Issues     []ModelProfileValidationIssueResponse `json:"issues"`
+	TemplateID   int64                                 `json:"templateId"`
+	Revision     int64                                 `json:"revision"`
+	ConfigDigest string                                `json:"configDigest"`
+	Status       string                                `json:"status"`
+	Issues       []ModelProfileValidationIssueResponse `json:"issues"`
+	TestRun      *ModelProfileTestRunResponse          `json:"testRun"`
+}
+
+type ModelProfileTestRunResponse struct {
+	ID                 int64     `json:"id"`
+	TenantID           int64     `json:"tenantId"`
+	TenantName         string    `json:"tenantName"`
+	StoreID            int64     `json:"storeId"`
+	StoreName          string    `json:"storeName"`
+	CredentialRevision int64     `json:"credentialRevision"`
+	CredentialSource   string    `json:"credentialSource"`
+	Status             string    `json:"status"`
+	FailedUsageCode    string    `json:"failedUsageCode"`
+	ErrorClass         string    `json:"errorClass"`
+	ErrorMessage       string    `json:"errorMessage"`
+	LatencyMS          int64     `json:"latencyMs"`
+	OperatorName       string    `json:"operatorName"`
+	CreatedAt          time.Time `json:"createdAt"`
+}
+
+type ModelProfileTestTargetResponse struct {
+	TenantID               int64  `json:"tenantId"`
+	TenantName             string `json:"tenantName"`
+	StoreID                int64  `json:"storeId"`
+	StoreCode              string `json:"storeCode"`
+	StoreName              string `json:"storeName"`
+	CredentialRevision     int64  `json:"credentialRevision"`
+	ActiveTemplateID       int64  `json:"activeTemplateId"`
+	ActiveTemplateName     string `json:"activeTemplateName"`
+	ActiveTemplateRevision int64  `json:"activeTemplateRevision"`
 }
 
 type StoreModelProfileOptionResponse struct {

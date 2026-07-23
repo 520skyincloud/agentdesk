@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/securex"
+	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -88,6 +90,103 @@ func TestModelProfileRevisionBecomesImmutableCandidateAfterConfirmedPublish(t *t
 	}
 	if next.Template.Code != created.Template.Code || next.Template.Revision != 2 || next.Template.Status != enums.ModelProfileStatusDraft {
 		t.Fatalf("next revision=%#v", next.Template)
+	}
+}
+
+func TestModelProfileBootstrapExceptionRequiresNoActiveCredential(t *testing.T) {
+	db := setupModelProfileTestDB(t)
+	operator := modelProfilePlatformOperator()
+	created, err := ModelProfileService.Create(request.CreateModelProfileRequest{
+		Code: "bootstrap-guard", Name: "Bootstrap Guard",
+		GatewayBaseURL: "https://newapi.example.com/v1",
+		Slots:          completeModelProfileSlotRequestsForTest(),
+	}, operator)
+	if err != nil {
+		t.Fatalf("Create() error=%v", err)
+	}
+	tenant, store := createModelProfileTenantAndStore(t, db)
+	if err := db.Create(&models.StoreModelCredential{
+		TenantID: tenant.ID, StoreID: store.ID,
+		EncryptedKey: "existing-ciphertext", CredentialRevision: 1,
+		Status: enums.StoreCredentialStatusActive,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	catalog, err := ModelProfileService.GetCatalog(request.GetModelProfileCatalogRequest{}, operator)
+	if err != nil {
+		t.Fatalf("GetCatalog() error=%v", err)
+	}
+	if !catalog.TestRequired || len(catalog.TestTargets) != 0 {
+		t.Fatalf("active but unusable credential gate=%t targets=%d", catalog.TestRequired, len(catalog.TestTargets))
+	}
+	if _, err := ModelProfileService.Publish(
+		request.ModelProfileRevisionActionRequest{ID: created.Template.ID, ConfirmRevision: created.Template.Revision},
+		operator,
+	); err == nil || !strings.Contains(err.Error(), "真实九槽测试") {
+		t.Fatalf("active credential incorrectly used bootstrap exception, error=%v", err)
+	}
+}
+
+func TestModelProfileConfigurationEditInvalidatesPreviousTestEvidence(t *testing.T) {
+	fixture := setupStoreCredentialFixture(t)
+	seedActiveStoreCredential(t, fixture, "sk-active-profile-test", 3)
+	draft, _ := createStoreCredentialProfile(t, fixture.db, "profile-under-test", 1, enums.ModelProfileStatusDraft)
+	validator := &storeCredentialValidatorStub{}
+	service := &modelProfileService{validator: validator}
+
+	tested, err := service.Test(
+		context.Background(),
+		request.TestModelProfileRequest{ID: draft.ID, TenantID: fixture.tenant.ID, StoreID: fixture.store.ID},
+		modelProfilePlatformOperator(),
+		StoreCredentialRequestMeta{RequestID: "profile-test-before-edit"},
+	)
+	if err != nil {
+		t.Fatalf("Test() error=%v", err)
+	}
+	if tested.TestRun == nil || tested.TestRun.Status != enums.ModelProfileTestStatusPassed || validator.callCount() != 1 {
+		t.Fatalf("unexpected test evidence=%#v validator calls=%d", tested.TestRun, validator.callCount())
+	}
+	if err := repositories.ModelProfileTemplateRepository.Updates(fixture.db, draft.ID, map[string]any{
+		"description": "configuration changed after the passing test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	updated := repositories.ModelProfileTemplateRepository.Get(fixture.db, draft.ID)
+	updatedSlots := repositories.ModelProfileSlotRepository.FindByTemplateID(fixture.db, draft.ID)
+	if currentDigest := modelProfileConfigurationDigest(updated, updatedSlots); currentDigest == tested.TestRun.ConfigDigest {
+		t.Fatal("configuration edit did not change the evidence digest")
+	}
+	if _, err := service.Publish(
+		request.ModelProfileRevisionActionRequest{ID: draft.ID, ConfirmRevision: draft.Revision},
+		modelProfilePlatformOperator(),
+	); err == nil || !strings.Contains(err.Error(), "真实九槽测试") {
+		t.Fatalf("edited profile reused stale test evidence, error=%v", err)
+	}
+}
+
+func TestModelProfileCrossGatewayRejectedBeforeCredentialValidation(t *testing.T) {
+	fixture := setupStoreCredentialFixture(t)
+	seedActiveStoreCredential(t, fixture, "sk-cross-gateway", 2)
+	draft, _ := createStoreCredentialProfile(t, fixture.db, "cross-gateway", 1, enums.ModelProfileStatusDraft)
+	if err := repositories.ModelProfileTemplateRepository.Updates(fixture.db, draft.ID, map[string]any{
+		"gateway_base_url": "https://different-newapi.example.com/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	validator := &storeCredentialValidatorStub{}
+	service := &modelProfileService{validator: validator}
+
+	if _, err := service.Test(
+		context.Background(),
+		request.TestModelProfileRequest{ID: draft.ID, TenantID: fixture.tenant.ID, StoreID: fixture.store.ID},
+		modelProfilePlatformOperator(),
+		StoreCredentialRequestMeta{RequestID: "profile-test-cross-gateway"},
+	); err == nil || !strings.Contains(err.Error(), "相同的统一 NewAPI 网关") {
+		t.Fatalf("cross-gateway test error=%v", err)
+	}
+	if validator.callCount() != 0 {
+		t.Fatalf("credential reached validator before gateway rejection, calls=%d", validator.callCount())
 	}
 }
 
@@ -218,7 +317,7 @@ func setupModelProfileTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&models.Tenant{}, &models.Store{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{},
+		&models.Tenant{}, &models.Store{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{}, &models.ModelProfileTestRun{},
 		&models.StoreModelProfileAssignment{}, &models.StoreModelCredential{}, &models.Conversation{}, &models.ConversationRouteState{},
 	); err != nil {
 		t.Fatalf("AutoMigrate() error=%v", err)

@@ -77,6 +77,21 @@ export function updateStoreModelCredential(
   })
 }
 
+export function activatePendingStoreModelProfile(
+  scope: { tenantId: number; storeId: number },
+  payload: {
+    templateId: number
+    confirmRevision: number
+    currentPassword: string
+    confirmed: boolean
+  },
+) {
+  return request<StoreModelCredential>("/api/dashboard/store-model-profile/activate_pending", {
+    method: "POST",
+    body: JSON.stringify({ ...scope, ...payload }),
+  })
+}
+
 export function approveStoreModelCredential(
   scope: StoreModelCredentialScope,
   payload: { candidateRevision: number; currentPassword: string; confirmed: boolean },

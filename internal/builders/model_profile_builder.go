@@ -19,6 +19,32 @@ func BuildModelProfileTemplate(item *models.ModelProfileTemplate, slots []models
 	return result
 }
 
+func BuildModelProfileTemplateWithTest(
+	item *models.ModelProfileTemplate,
+	slots []models.ModelProfileSlot,
+	configDigest string,
+	latestTest *models.ModelProfileTestRun,
+) response.ModelProfileTemplateResponse {
+	result := BuildModelProfileTemplate(item, slots)
+	result.ConfigDigest = configDigest
+	result.LatestTest = BuildModelProfileTestRun(latestTest)
+	return result
+}
+
+func BuildModelProfileTestRun(item *models.ModelProfileTestRun) *response.ModelProfileTestRunResponse {
+	if item == nil {
+		return nil
+	}
+	return &response.ModelProfileTestRunResponse{
+		ID: item.ID, TenantID: item.TenantID, TenantName: item.TenantName,
+		StoreID: item.StoreID, StoreName: item.StoreName,
+		CredentialRevision: item.CredentialRevision, CredentialSource: string(item.CredentialSource),
+		Status: string(item.Status), FailedUsageCode: string(item.FailedUsageCode),
+		ErrorClass: item.ErrorClass, ErrorMessage: item.ErrorMessage,
+		LatencyMS: item.LatencyMS, OperatorName: item.OperatorName, CreatedAt: item.CreatedAt,
+	}
+}
+
 func BuildModelProfileSlot(item *models.ModelProfileSlot) response.ModelProfileSlotResponse {
 	return response.ModelProfileSlotResponse{
 		ID: item.ID, UsageCode: string(item.UsageCode), DisplayName: item.DisplayName,

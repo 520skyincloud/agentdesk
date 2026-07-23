@@ -403,6 +403,7 @@ func registerDashboardStoreModelProfileRoutes(group *gin.RouterGroup) {
 	group.POST("/get", dashboard.StoreModelProfilePostGet)
 	group.POST("/assign", dashboard.StoreModelProfilePostAssign)
 	group.POST("/batch_assign", dashboard.StoreModelProfilePostBatchAssign)
+	group.POST("/activate_pending", dashboard.StoreModelProfilePostActivatePending)
 }
 
 func registerDashboardStoreModelCredentialRoutes(group *gin.RouterGroup) {
