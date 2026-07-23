@@ -6,20 +6,9 @@ type TagListRequest struct {
 	Status   int    `json:"status"`
 }
 
-type CreateTagRequest struct {
-	ParentID     int64  `json:"parentId"`
-	Name         string `json:"name"`
-	DisplayAlias string `json:"displayAlias"`
-	Remark       string `json:"remark"`
-}
-
 type UpdateTagRequest struct {
-	ID int64 `json:"id"`
-	CreateTagRequest
-}
-
-type DeleteTagRequest struct {
-	ID int64 `json:"id"`
+	ID           int64  `json:"id"`
+	DisplayAlias string `json:"displayAlias"`
 }
 
 type UpdateTagStatusRequest struct {

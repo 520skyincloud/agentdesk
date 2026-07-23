@@ -67,27 +67,6 @@ func TagGetBy(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, &result)
 }
 
-func TagPostCreate(ctx *gin.Context) {
-	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagCreate)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-
-	req := request.CreateTagRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	item, err := services.TagService.CreateTag(req, user)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	result := builders.BuildTagResponse(item)
-	httpx.WriteJSON(ctx, &result)
-}
-
 func TagPostUpdate(ctx *gin.Context) {
 	user, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagUpdate)
 	if err != nil {
@@ -101,43 +80,6 @@ func TagPostUpdate(ctx *gin.Context) {
 		return
 	}
 	if err := services.TagService.UpdateTag(req, user); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, nil)
-}
-
-func TagPostDelete(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagDelete)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-
-	req := request.DeleteTagRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	if err := services.TagService.DeleteTag(req.ID, operator); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, nil)
-}
-
-func TagPostUpdate_sort(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionTagUpdate)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	var ids []int64
-	if err := params.ReadJSON(ctx, &ids); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	if err := services.TagService.UpdateSort(ids, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

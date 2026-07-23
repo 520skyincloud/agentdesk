@@ -54,9 +54,9 @@ func runSyncCustomerTagPermissionsScenario(t *testing.T, db *gorm.DB) {
 	now := time.Now()
 	legacySpecs := []constants.Permission{
 		constants.PermissionConversationTag,
-		constants.PermissionTagCreate,
+		{Name: "创建标签", Code: retiredTagCreatePermissionCode, Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/create", SortNo: 560},
 		constants.PermissionTagUpdate,
-		constants.PermissionTagDelete,
+		{Name: "删除标签", Code: retiredTagDeletePermissionCode, Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/delete", SortNo: 580},
 	}
 	legacyByCode := make(map[string]*models.Permission, len(legacySpecs))
 	for _, spec := range legacySpecs {
@@ -95,11 +95,11 @@ func runSyncCustomerTagPermissionsScenario(t *testing.T, db *gorm.DB) {
 		roleID       int64
 		permissionID int64
 	}{
-		{roles[constants.RoleCodeCsTeamLeader].ID, legacyByCode[constants.PermissionTagCreate.Code].ID},
+		{roles[constants.RoleCodeCsTeamLeader].ID, legacyByCode[retiredTagCreatePermissionCode].ID},
 		{roles[constants.RoleCodeCsTeamLeader].ID, legacyByCode[constants.PermissionTagUpdate.Code].ID},
-		{roles[constants.RoleCodeCsTeamLeader].ID, legacyByCode[constants.PermissionTagDelete.Code].ID},
-		{customRole.ID, legacyByCode[constants.PermissionTagCreate.Code].ID},
-		{customRole.ID, legacyByCode[constants.PermissionTagDelete.Code].ID},
+		{roles[constants.RoleCodeCsTeamLeader].ID, legacyByCode[retiredTagDeletePermissionCode].ID},
+		{customRole.ID, legacyByCode[retiredTagCreatePermissionCode].ID},
+		{customRole.ID, legacyByCode[retiredTagDeletePermissionCode].ID},
 	} {
 		if err := db.Create(&models.RolePermission{
 			RoleID: binding.roleID, PermissionID: binding.permissionID,
@@ -127,8 +127,8 @@ func runSyncCustomerTagPermissionsScenario(t *testing.T, db *gorm.DB) {
 	}
 
 	for code, wantName := range map[string]string{
-		constants.PermissionTagCreate.Code: "已废弃：创建自定义标签",
-		constants.PermissionTagDelete.Code: "已废弃：删除自定义标签",
+		retiredTagCreatePermissionCode: "已废弃：创建自定义标签",
+		retiredTagDeletePermissionCode: "已废弃：删除自定义标签",
 	} {
 		var permission models.Permission
 		if err := db.Where("code = ?", code).Take(&permission).Error; err != nil {
@@ -171,7 +171,7 @@ func runSyncCustomerTagPermissionsScenario(t *testing.T, db *gorm.DB) {
 	if err := ensureRolePermissions(db, roles, permissions); err != nil {
 		t.Fatal(err)
 	}
-	for _, code := range []string{constants.PermissionTagCreate.Code, constants.PermissionTagDelete.Code} {
+	for _, code := range []string{retiredTagCreatePermissionCode, retiredTagDeletePermissionCode} {
 		var permission models.Permission
 		if err := db.Where("code = ?", code).Take(&permission).Error; err != nil {
 			t.Fatal(err)

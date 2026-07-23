@@ -96,19 +96,6 @@ func TestMCPCatalogUsesAIAgentViewInsteadOfPlatformDebugPermission(t *testing.T)
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
-func TestTagUpdateSortRequiresUpdatePermission(t *testing.T) {
-	ctx, recorder := newAuthzHandlerTestContext(t, "[1]", &dto.AuthPrincipal{
-		UserID:         22,
-		TenantID:       101,
-		ActiveTenantID: 101,
-		Username:       "tag_viewer",
-		Permissions:    []string{constants.PermissionTagView.Code},
-	})
-
-	TagPostUpdate_sort(ctx)
-	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
-}
-
 func TestCustomerTagPolicyHandlersUseExistingTagPermissions(t *testing.T) {
 	writes := []struct {
 		name    string

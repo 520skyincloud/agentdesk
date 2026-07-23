@@ -226,12 +226,9 @@ func registerDashboardSessionRoutes(group *gin.RouterGroup) {
 
 func registerDashboardTagRoutes(group *gin.RouterGroup) {
 	group.GET("/:id", dashboard.TagGetBy)
-	group.POST("/create", dashboard.TagPostCreate)
-	group.POST("/delete", dashboard.TagPostDelete)
 	group.Any("/list", dashboard.TagAnyList)
 	group.GET("/list_all", dashboard.TagGetList_all)
 	group.POST("/update", dashboard.TagPostUpdate)
-	group.POST("/update_sort", dashboard.TagPostUpdate_sort)
 	group.POST("/update_status", dashboard.TagPostUpdate_status)
 }
 

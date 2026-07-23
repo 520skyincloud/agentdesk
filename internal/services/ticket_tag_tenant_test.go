@@ -199,20 +199,11 @@ func TestTicketAndTagRuntimeTenantIsolation(t *testing.T) {
 	if _, err := services.TagService.GetForOperator(tagB, adminA); err == nil {
 		t.Fatal("tenant A must not read tenant B tag")
 	}
-	if _, err := services.TagService.CreateTag(request.CreateTagRequest{ParentID: tagB, Name: "cross parent"}, adminA); err == nil {
-		t.Fatal("tenant A must not create below tenant B tag")
-	}
-	if err := services.TagService.UpdateTag(request.UpdateTagRequest{ID: tagB, CreateTagRequest: request.CreateTagRequest{Name: "cross update"}}, adminA); err == nil {
+	if err := services.TagService.UpdateTag(request.UpdateTagRequest{ID: tagB, DisplayAlias: "cross update"}, adminA); err == nil {
 		t.Fatal("tenant A must not update tenant B tag")
 	}
 	if err := services.TagService.UpdateStatus(tagB, int(enums.StatusDisabled), adminA); err == nil {
 		t.Fatal("tenant A must not change tenant B tag status")
-	}
-	if err := services.TagService.UpdateSort([]int64{tagB}, adminA); err == nil {
-		t.Fatal("tenant A must not reorder tenant B tag")
-	}
-	if err := services.TagService.DeleteTag(tagB, adminA); err == nil {
-		t.Fatal("tenant A must not delete tenant B tag")
 	}
 
 	if summaryA := services.TicketService.GetSummary(adminA); summaryA.All != 1 || summaryA.Mine != 0 {

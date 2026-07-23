@@ -24,10 +24,7 @@ func TestTagServiceOnlyAllowsAliasAndLeafStatusForCurrentIndustryCatalog(t *test
 	leaf := firstTenantIndustryLeafTag(t, db, created.Tenant.ID, created.Tenant.IntentProfileID)
 	original := *leaf
 	if err := TagService.UpdateTag(request.UpdateTagRequest{
-		ID: leaf.ID,
-		CreateTagRequest: request.CreateTagRequest{
-			ParentID: 0, Name: "试图修改标准名", DisplayAlias: "住店偏好", Remark: "试图修改语义",
-		},
+		ID: leaf.ID, DisplayAlias: "住店偏好",
 	}, operator); err != nil {
 		t.Fatalf("update display alias: %v", err)
 	}
@@ -57,19 +54,9 @@ func TestTagServiceOnlyAllowsAliasAndLeafStatusForCurrentIndustryCatalog(t *test
 		t.Fatal("industry tag category must not be disabled")
 	}
 	if err := TagService.UpdateTag(request.UpdateTagRequest{
-		ID: parent.ID, CreateTagRequest: request.CreateTagRequest{DisplayAlias: "越权分类别名"},
+		ID: parent.ID, DisplayAlias: "越权分类别名",
 	}, operator); err == nil {
 		t.Fatal("industry tag category must not accept a display alias")
-	}
-
-	if _, err := TagService.CreateTag(request.CreateTagRequest{Name: "租户自建标签"}, operator); err == nil {
-		t.Fatal("tenant must not create custom tags")
-	}
-	if err := TagService.DeleteTag(leaf.ID, operator); err == nil {
-		t.Fatal("tenant must not delete a fixed industry tag")
-	}
-	if err := TagService.UpdateSort([]int64{leaf.ID}, operator); err == nil {
-		t.Fatal("tenant must not reorder the fixed industry catalog")
 	}
 }
 
@@ -111,7 +98,7 @@ func TestTagServiceCatalogReadsExcludeLegacyAndOtherIndustryTags(t *testing.T) {
 	}
 
 	otherTenant := &dto.AuthPrincipal{UserID: 9103, ActiveTenantID: created.Tenant.ID + 999, Roles: []string{constants.RoleCodeTenantAdmin}}
-	if err := TagService.UpdateTag(request.UpdateTagRequest{ID: fixed.ID, CreateTagRequest: request.CreateTagRequest{DisplayAlias: "越权"}}, otherTenant); err == nil {
+	if err := TagService.UpdateTag(request.UpdateTagRequest{ID: fixed.ID, DisplayAlias: "越权"}, otherTenant); err == nil {
 		t.Fatal("another tenant scope updated a fixed tag")
 	}
 }

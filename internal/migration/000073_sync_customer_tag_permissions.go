@@ -12,7 +12,11 @@ import (
 	"gorm.io/gorm"
 )
 
-const syncCustomerTagPermissionsMigrationRemark = "replace legacy tag permissions with Store customer tag semantics"
+const (
+	syncCustomerTagPermissionsMigrationRemark = "replace legacy tag permissions with Store customer tag semantics"
+	retiredTagCreatePermissionCode            = "tag.create"
+	retiredTagDeletePermissionCode            = "tag.delete"
+)
 
 func init() {
 	register(73, syncCustomerTagPermissionsMigrationRemark, func() error {
@@ -35,10 +39,10 @@ func syncCustomerTagPermissions(db *gorm.DB) error {
 		}
 
 		retiredNames := map[string]string{
-			constants.PermissionTagCreate.Code: "已废弃：创建自定义标签",
-			constants.PermissionTagDelete.Code: "已废弃：删除自定义标签",
+			retiredTagCreatePermissionCode: "已废弃：创建自定义标签",
+			retiredTagDeletePermissionCode: "已废弃：删除自定义标签",
 		}
-		retiredCodes := []string{constants.PermissionTagCreate.Code, constants.PermissionTagDelete.Code}
+		retiredCodes := []string{retiredTagCreatePermissionCode, retiredTagDeletePermissionCode}
 		var retired []models.Permission
 		if err := tx.Where("code IN ?", retiredCodes).Find(&retired).Error; err != nil {
 			return err

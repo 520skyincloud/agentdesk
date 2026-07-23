@@ -105,10 +105,6 @@ func (s *tagService) FindByNameAndParentID(name string, parentID int64) *models.
 	return s.FindOne(sqls.NewCnd().Eq("name", name).Eq("parent_id", parentID))
 }
 
-func (s *tagService) CreateTag(req request.CreateTagRequest, operator *dto.AuthPrincipal) (*models.Tag, error) {
-	return nil, errorsx.Forbidden("客户标签由行业目录统一发布，不允许自行创建")
-}
-
 func (s *tagService) NextSortNo(parentID int64) int {
 	if temp := s.FindOne(sqls.NewCnd().Eq("parent_id", parentID).Desc("sort_no").Desc("id")); temp != nil {
 		return temp.SortNo + 1
@@ -154,14 +150,6 @@ func (s *tagService) UpdateTag(req request.UpdateTagRequest, operator *dto.AuthP
 		"update_user_name": operator.Username,
 		"updated_at":       time.Now(),
 	})
-}
-
-func (s *tagService) UpdateSort(ids []int64, operator *dto.AuthPrincipal) error {
-	return errorsx.Forbidden("客户标签层级和排序由行业目录统一发布，不允许修改")
-}
-
-func (s *tagService) DeleteTag(id int64, operator *dto.AuthPrincipal) error {
-	return errorsx.Forbidden("客户标签由行业目录统一发布，不允许删除")
 }
 
 func (s *tagService) FindAll() []models.Tag {
