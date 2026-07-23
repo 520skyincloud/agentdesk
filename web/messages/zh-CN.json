@@ -440,7 +440,10 @@
     "customerTagAction": {
       "add": "添加",
       "remove": "移除",
-      "replace": "替换"
+      "replace": "替换",
+      "reconcile_preserve_source": "关系处理：保留来源",
+      "reconcile_preserve_target": "关系处理：保留目标",
+      "reconcile_clear_rebuild": "关系处理：清空重建"
     },
     "history": "记录",
     "loadCustomerFailed": "加载客户信息失败",
@@ -985,7 +988,38 @@
     "processing": "处理中...",
     "enable": "启用",
     "disable": "禁用",
-    "delete": "删除"
+    "delete": "删除",
+    "reconcileAction": "处理标签关系",
+    "reconcileTitle": "门店客户标签关系处理",
+    "reconcileDescription": "为客户“{name}”选择来源与目标门店，并明确决定目标门店标签如何处理。",
+    "sourceStore": "来源门店",
+    "targetStore": "目标门店",
+    "selectSourceStore": "选择来源门店",
+    "selectTargetStore": "选择目标门店",
+    "sourcePreview": "来源标签",
+    "targetPreview": "目标当前标签",
+    "reconcileStrategy": "处理方式",
+    "reconcileStrategyLabel": {
+      "preserve_source": "保留来源",
+      "preserve_target": "保留目标",
+      "clear_rebuild": "清空重建"
+    },
+    "reconcileStrategyHelp": {
+      "preserve_source": "目标标签精确同步为来源标签，并转为人工保护。",
+      "preserve_target": "目标标签保持不变，仅记录本次主管决策。",
+      "clear_rebuild": "清空目标有效标签及人工保护，允许后续标签演化重新建立。"
+    },
+    "clearRebuildWarningTitle": "目标标签将被清空",
+    "clearRebuildWarningDescription": "此操作不会删除历史门店关系，但会清空目标关系的当前标签并解除人工保护。",
+    "reconcileConfirmation": "我已核对来源、目标及标签预览，并确认执行所选处理方式。",
+    "reconcileConfirm": "确认处理",
+    "reconcileSaving": "处理中...",
+    "reconcileSucceeded": "门店客户标签关系已处理",
+    "reconcileFailed": "处理门店客户标签关系失败",
+    "storeFallback": "门店 {id}",
+    "activeTagCount": "{count} 个有效标签",
+    "storeNotSelected": "尚未选择门店",
+    "noActiveTags": "暂无有效标签"
   },
   "customerLink": {
     "keywordRequired": "请输入关键词（姓名、手机、邮箱或联系方式等）",

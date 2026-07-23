@@ -92,3 +92,22 @@ type CustomerTagChangeLog struct {
 	OperatorName            string    `gorm:"type:varchar(100);not null;default:''"`
 	CreatedAt               time.Time `gorm:"type:datetime;not null;index"`
 }
+
+// StoreCustomerTagDecision is append-only evidence of the explicit
+// supervisor choice made when reconciling one customer's Store relations.
+type StoreCustomerTagDecision struct {
+	ID                     int64                                   `gorm:"primaryKey;autoIncrement"`
+	TenantID               int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	CustomerID             int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	SourceStoreID          int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	SourceStoreRelationID  int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	TargetStoreID          int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	TargetStoreRelationID  int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	Strategy               enums.StoreCustomerTagReconcileStrategy `gorm:"type:varchar(30);not null;default:'';index"`
+	SourceTagIDsJSON       string                                  `gorm:"type:text;not null"`
+	TargetBeforeTagIDsJSON string                                  `gorm:"type:text;not null"`
+	TargetAfterTagIDsJSON  string                                  `gorm:"type:text;not null"`
+	OperatorID             int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	OperatorName           string                                  `gorm:"type:varchar(100);not null;default:''"`
+	CreatedAt              time.Time                               `gorm:"type:datetime;not null;index"`
+}

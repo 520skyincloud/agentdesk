@@ -39,6 +39,7 @@ func main() {
 		codegen.GetGenerateStruct(&models.StoreCustomerTagRuntimePolicy{}),
 		codegen.GetGenerateStruct(&models.CustomerTagRelation{}),
 		codegen.GetGenerateStruct(&models.CustomerTagChangeLog{}),
+		codegen.GetGenerateStruct(&models.StoreCustomerTagDecision{}),
 		codegen.GetGenerateStruct(&models.ConversationEvolutionState{}),
 		codegen.GetGenerateStruct(&models.ConversationEvolutionRun{}),
 		codegen.GetGenerateStruct(&models.Conversation{}),

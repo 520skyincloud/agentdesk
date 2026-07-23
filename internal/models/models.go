@@ -37,6 +37,7 @@ var Models = []any{
 	&StoreCustomerTagRuntimePolicy{},
 	&CustomerTagRelation{},
 	&CustomerTagChangeLog{},
+	&StoreCustomerTagDecision{},
 	&ConversationEvolutionState{},
 	&ConversationEvolutionRun{},
 	&Conversation{},

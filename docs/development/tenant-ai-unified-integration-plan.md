@@ -1529,6 +1529,20 @@ git diff --check
 - 发布判定：pilot 继续冻结为“丽斯文旅 / 高铁南站店”。来源 Store ID `3` 只用于来源迁移定位，最终 Store ID 必须在目标 Tenant 数据迁移后按业务身份重新解析，禁止硬编码 `3` 或默认 `301`。`AllowCredentialSelfService=true` 只允许该 Store 唯一活动绑定且具备权限的门店员工录入；`RequireSupervisorApproval=true` 必须由同 Tenant、不同于提交人的公司主管审批。NewAPI Key 仍由实际持有人在统一页面重录，不通过聊天、环境变量或 migration 交付。
 - B14 边界：业务已批准物理删除，但执行仍严格依赖 B13 全部验收、正式停机、仓库外加密备份及独立恢复验证。白名单保持固定 `7 表、5 列、4 索引`，本批新增证据表不进入删除范围，任何条件未满足时均不得运行 `prepare/execute`。因此当前生产结论仍为 `No-Go`，正式端口继续保留 `8083` 且尚未切换。
 
+### 25.34 2026-07-24 B9 最终决定 37：Store 客户标签关系协调收口
+
+- 分支基线：开始及提交前均执行 `git fetch origin --prune`；固定来源仍为 `origin/main@e67e207`、`origin/codex/tenant-ai-integration@1e8e95c`、`origin/codex/ai-billing@4db7993`，统一分支远端基线为 `b2c9c12`，均未前移。本批只修改唯一 `codex/tenant-ai-unified-integration`，无需 rebase，也未回写任何来源分支。
+- 目标与复用边界：完成最终决定第 37 条“Store 关系转移或合并时由公司主管明确选择保留来源、保留目标或清空重建”。能力直接嵌入既有 `/dashboard/customers` 客户详情，复用 `StoreCustomerRelation`、固定行业 `Tag`、`CustomerTagRelation`、`CustomerTagChangeLog`、六标签上限、人工保护和既有标签变更 WebSocket；没有新增平行客户页、自由标签模型、ConversationTag 或第二套标签运行时。
+- 三种确定语义：`preserve_source` 将目标有效标签精确同步为来源集合并全部转为人工保护；`preserve_target` 不改目标标签但仍记录主管决策；`clear_rebuild` 清空目标有效标签并解除人工保护，使后续既有 Evolution 流程可重新建立。来源与目标必须是同 Tenant、同客户、不同 active Store 的有效关系，来源标签还必须属于当前 Tenant 行业固定目录；跨 Tenant、跨客户、停用 Store、损坏来源集合和超过六标签上限均在事务内拒绝。
+- 数据与并发：新增 append-only `StoreCustomerTagDecision`，保存 Tenant、客户、来源/目标 Store 与关系 ID、策略、来源/执行前/执行后标签 ID 快照、操作者和时间，不提供 update/delete CRUD。协调在 service 事务中按确定顺序锁定两条 Store 关系和标签行；SQLite 使用既有进程内 Store 分片锁补足并发语义，MySQL 使用行锁。标签变更、逐项 change log、决策主记录和最终集合校验原子提交，失败不留下半协调状态。
+- 分层、API 与权限：新增共享 enum、request/response DTO、纯 builder、repository 和显式 `POST /api/dashboard/customer/reconcile_store_relation_tags`；Handler 只解析请求、复用权限管理中已有的 `conversation.tag`（“管理门店客户标签”）并调用 service。平台账号必须先选择 active Tenant；Tenant 账号同时具备该权限且角色为 `tenant_admin` 公司主管才可执行，权限资格不能突破 Tenant 数据范围。没有新增隐藏权限，现有普通客服和门店员工只能查看其原有数据范围，不能确认协调方案。
+- 页面与防误操作：客户详情中的“处理标签关系”打开独立双门店选择弹窗，来源和目标选项显示当前有效标签数量，正文并排预览两侧标签，策略使用单选项；任一 Store 或策略变化都会清除确认勾选，未重新核对前提交按钮保持禁用。“清空重建”显示明确风险警示，提交成功后关闭内层弹窗、刷新原客户详情并显示结果通知。
+- 验证证据：SQLite 覆盖三种策略、主管/平台权限、Tenant/客户/Store 严格范围、损坏来源拒绝、清空后 AI 可重建和并发上限；相同契约在隔离 MySQL 8.4 上验证，AutoMigrate 也同时覆盖 SQLite/MySQL。完整性审计由 `98 表 / 245 关系` 更新为 `99 表 / 251 关系`。`go test ./... -count=1`、`go vet ./...`、聚焦 `-race`、152 项前端契约测试、`pnpm typecheck`、ESLint `0 error / 33 个既有 warning`、SDK 与 45 页面生产构建、`make enums`、`make generator` 和 `git diff --check` 均通过。
+- 浏览器证据：隔离 SQLite 服务在 `18084` 使用 Tenant 公司主管完成真实交互。选择来源 Store 的 2 个标签并以“保留来源”同步到另一 Store 后，页面刷新为相同 2 标签；数据库得到一条 `preserve_source` 决策以及 `remove/add/reconcile_preserve_source` 变更日志。策略变化和目标 Store 变化均会重置确认；“清空重建”风险提示可见。桌面及 `390x844` 视口无横向溢出、遮挡或不可达操作，浏览器控制台无错误；隔离服务和临时数据均已关闭并清理。
+- 生成器修复：实现期间发现 generator 将新模型误写为不存在的 `StoreCustomerRelationTagDecision`；已改为真实 `StoreCustomerTagDecision`，并删除 generator 产生但不应提交的无关 CRUD 文件。新决策模型已进入统一 Schema 和 Tenant 完整性测试矩阵，禁止恢复错误类型名或为 append-only 证据生成可写 CRUD。
+- 共享、合并与回滚：本批修改 model/AutoMigrate 注册、repository、service、handler、builder、request/response DTO、enum、显式路由、`web/lib/api`、客户详情 UI、多语言和完整性审计；没有 DML migration、权限种子、WebSocket payload、AI Prompt/Schema、模型调用、Credential、FastGPT、Billing、人工任务池或规则派单语义变化。必须整体合入唯一 `codex/tenant-ai-unified-integration` 分支；代码可在 B14 前整体回滚，新建 append-only 表可留存但旧应用不读取。不得只回滚决策证据而保留可变更 API，也不得回写 `customer-audit` 或来源分支形成第二套事实。
+- 生产边界复核：部署方再次确认 16 项 `production.env`、权限 `0600`、SHA-256 `3e361155f473c520086bd3995732343f9540aa5a4bd044043cdab952120e2fa4`，以及可用 FastGPT Base URL/Integration Token；本执行主机当前仍无法访问消息临时附件或 `/Users/openclaw/.../production.env`，因此不能把该声明写成独立复验通过。pilot 仍为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 只能迁移后重新解析；真实 NewAPI Key 仍由持有人在页面重录并接受异人公司主管审批。B13 全部验收、停机、加密备份和独立恢复验证前继续 `No-Go`；B14 已获业务批准但固定 `7 表、5 列、4 索引` 白名单不得扩大，本批新表绝不进入删除范围。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B13-B14 实施和验收证据。

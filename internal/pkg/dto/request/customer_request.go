@@ -1,5 +1,7 @@
 package request
 
+import "agent-desk/internal/pkg/enums"
+
 // CustomerListRequest 客户分页列表查询（POST /customer/list JSON Body）。
 type CustomerListRequest struct {
 	Page   int  `json:"page"`
@@ -50,6 +52,13 @@ type UpdateCustomerStatusRequest struct {
 	Status int   `json:"status"`
 }
 
+type ReconcileStoreCustomerRelationTagsRequest struct {
+	SourceStoreRelationID int64                                   `json:"sourceStoreRelationId"`
+	TargetStoreRelationID int64                                   `json:"targetStoreRelationId"`
+	Strategy              enums.StoreCustomerTagReconcileStrategy `json:"strategy"`
+	Confirmed             bool                                    `json:"confirmed"`
+}
+
 // CustomerProfileContactItem 保存客户档案时的联系方式行（无 id 表示新建）。
 type CustomerProfileContactItem struct {
 	ID           *int64 `json:"id,omitempty"`
@@ -61,9 +70,9 @@ type CustomerProfileContactItem struct {
 
 // SaveCustomerProfileRequest 客户主信息与联系方式一并保存（单事务）；id 为空或 0 表示新建客户。
 type SaveCustomerProfileRequest struct {
-	ID        *int64                       `json:"id,omitempty"`
-	Name      string                       `json:"name"`
-	Gender    int                          `json:"gender"`
-	Remark    string                       `json:"remark"`
-	Contacts  []CustomerProfileContactItem `json:"contacts"`
+	ID       *int64                       `json:"id,omitempty"`
+	Name     string                       `json:"name"`
+	Gender   int                          `json:"gender"`
+	Remark   string                       `json:"remark"`
+	Contacts []CustomerProfileContactItem `json:"contacts"`
 }

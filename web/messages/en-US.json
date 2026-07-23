@@ -440,7 +440,10 @@
     "customerTagAction": {
       "add": "Add",
       "remove": "Remove",
-      "replace": "Replace"
+      "replace": "Replace",
+      "reconcile_preserve_source": "Relation: preserve source",
+      "reconcile_preserve_target": "Relation: preserve target",
+      "reconcile_clear_rebuild": "Relation: clear and rebuild"
     },
     "history": "History",
     "loadCustomerFailed": "Could not load customer details.",
@@ -985,7 +988,38 @@
     "processing": "Working...",
     "enable": "Enable",
     "disable": "Disable",
-    "delete": "Delete"
+    "delete": "Delete",
+    "reconcileAction": "Reconcile Tags",
+    "reconcileTitle": "Reconcile Store Customer Tags",
+    "reconcileDescription": "Choose source and target Stores for “{name}”, then explicitly decide how the target tags should be handled.",
+    "sourceStore": "Source Store",
+    "targetStore": "Target Store",
+    "selectSourceStore": "Select source Store",
+    "selectTargetStore": "Select target Store",
+    "sourcePreview": "Source tags",
+    "targetPreview": "Current target tags",
+    "reconcileStrategy": "Strategy",
+    "reconcileStrategyLabel": {
+      "preserve_source": "Preserve Source",
+      "preserve_target": "Preserve Target",
+      "clear_rebuild": "Clear and Rebuild"
+    },
+    "reconcileStrategyHelp": {
+      "preserve_source": "Make the target tag set exactly match the source and protect it as a manual decision.",
+      "preserve_target": "Keep the target tags unchanged and record the supervisor decision.",
+      "clear_rebuild": "Clear active target tags and manual protection so later evolution can rebuild them."
+    },
+    "clearRebuildWarningTitle": "Target tags will be cleared",
+    "clearRebuildWarningDescription": "Store relation history remains intact, but current target tags and their manual protection will be cleared.",
+    "reconcileConfirmation": "I reviewed the source, target, and tag previews and confirm this strategy.",
+    "reconcileConfirm": "Confirm",
+    "reconcileSaving": "Processing...",
+    "reconcileSucceeded": "Store customer tags reconciled.",
+    "reconcileFailed": "Could not reconcile Store customer tags.",
+    "storeFallback": "Store {id}",
+    "activeTagCount": "{count} active tags",
+    "storeNotSelected": "No Store selected",
+    "noActiveTags": "No active tags"
   },
   "customerLink": {
     "keywordRequired": "Enter a keyword, such as a name, phone, email, or contact.",

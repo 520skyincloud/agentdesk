@@ -192,6 +192,7 @@ func registerDashboardCustomerRoutes(group *gin.RouterGroup) {
 	group.POST("/save_profile", dashboard.CustomerPostSave_profile)
 	group.POST("/update", dashboard.CustomerPostUpdate)
 	group.POST("/update_status", dashboard.CustomerPostUpdate_status)
+	group.POST("/reconcile_store_relation_tags", dashboard.CustomerPostReconcile_store_relation_tags)
 }
 
 func registerDashboardCustomerContactRoutes(group *gin.RouterGroup) {

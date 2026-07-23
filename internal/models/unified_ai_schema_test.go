@@ -200,7 +200,8 @@ func unifiedAIModelsForTest() []any {
 		&ModelProfileTemplate{}, &ModelProfileSlot{}, &ModelProfileTestRun{}, &StoreModelProfileAssignment{},
 		&StoreModelCredential{}, &StoreCredentialPolicy{}, &StoreModelCredentialAuditLog{},
 		&IndustryTagDefinition{}, &Tag{}, &TenantCustomerTagPolicy{}, &StoreCustomerTagRuntimePolicy{},
-		&CustomerTagRelation{}, &CustomerTagChangeLog{}, &ConversationEvolutionState{}, &ConversationEvolutionRun{},
+		&CustomerTagRelation{}, &CustomerTagChangeLog{}, &StoreCustomerTagDecision{},
+		&ConversationEvolutionState{}, &ConversationEvolutionRun{},
 	}
 }
 

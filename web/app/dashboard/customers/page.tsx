@@ -1,7 +1,8 @@
 "use client";
 
-import { BanIcon, CheckCircle2Icon, EyeIcon, MessageCircleIcon } from "lucide-react";
+import { BanIcon, CheckCircle2Icon, EyeIcon, GitMergeIcon, MessageCircleIcon } from "lucide-react";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import { type CustomerFormSavePayload } from "@/components/customer-form";
 import { CustomerTagBadges } from "@/components/customer-tag-badges";
@@ -24,14 +25,18 @@ import {
 } from "@/components/ui/dialog";
 import {
   deleteCustomer,
+  fetchCustomer,
   fetchCustomers,
+  reconcileStoreCustomerRelationTags,
   saveCustomerProfile,
   updateCustomerStatus,
   type AdminCustomer,
+  type ReconcileStoreCustomerRelationTagsPayload,
 } from "@/lib/api/customer";
 import { Gender, Status } from "@/lib/generated/enums";
 import { useI18n } from "@/i18n/provider";
 import { EditDialog } from "./_components/edit";
+import { StoreTagReconciliationDialog } from "./_components/store-tag-reconciliation-dialog";
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string;
 
@@ -52,7 +57,41 @@ export default function DashboardCustomersPage() {
   const canUpdate = permissions.has("customer.update");
   const canDelete = permissions.has("customer.delete");
   const canManageCustomerTags = permissions.has("conversation.tag");
+  const canReconcileStoreTags =
+    canManageCustomerTags &&
+    (session?.isPlatformAccount === true ||
+      session?.roles?.includes("tenant_admin") === true);
   const [detailCustomer, setDetailCustomer] = useState<AdminCustomer | null>(null);
+  const [reconcileOpen, setReconcileOpen] = useState(false);
+  const activeStoreRelations = useMemo(
+    () =>
+      (detailCustomer?.storeRelations ?? []).filter(
+        (relation) => relation.status === Status.Ok,
+      ),
+    [detailCustomer?.storeRelations],
+  );
+
+  async function handleReconcileStoreTags(
+    payload: ReconcileStoreCustomerRelationTagsPayload,
+  ) {
+    if (!detailCustomer) return false;
+    try {
+      await reconcileStoreCustomerRelationTags(payload);
+      const refreshed = await fetchCustomer(detailCustomer.id);
+      if (refreshed) {
+        setDetailCustomer(refreshed);
+      }
+      toast.success(t("customer.reconcileSucceeded"));
+      return true;
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("customer.reconcileFailed"),
+      );
+      return false;
+    }
+  }
 
   const listStatusOptions = useMemo(
     () => [
@@ -273,7 +312,15 @@ export default function DashboardCustomersPage() {
         deleted: (item) => t("customer.deleted", { name: item.name }),
       }}
       />
-      <Dialog open={!!detailCustomer} onOpenChange={(open) => !open && setDetailCustomer(null)}>
+      <Dialog
+        open={!!detailCustomer}
+        onOpenChange={(open) => {
+          if (!open) {
+            setReconcileOpen(false);
+            setDetailCustomer(null);
+          }
+        }}
+      >
         <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-x-hidden overflow-y-auto sm:max-w-3xl">
           <DialogHeader className="min-w-0">
             <DialogTitle>{detailCustomer?.name || "客户详情"}</DialogTitle>
@@ -301,7 +348,20 @@ export default function DashboardCustomersPage() {
                 {detailCustomer.remark ? <div className="mt-3 break-words text-sm text-muted-foreground">{detailCustomer.remark}</div> : null}
               </div>
               <div>
-                <div className="mb-2 text-sm font-medium">门店关系</div>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium">门店关系</div>
+                  {canReconcileStoreTags && activeStoreRelations.length >= 2 ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setReconcileOpen(true)}
+                    >
+                      <GitMergeIcon className="size-4" />
+                      {t("customer.reconcileAction")}
+                    </Button>
+                  ) : null}
+                </div>
                 <div className="space-y-2">
                   {(detailCustomer.storeRelations ?? []).length === 0 ? (
                     <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">暂无门店关系</div>
@@ -343,6 +403,13 @@ export default function DashboardCustomersPage() {
           ) : null}
         </DialogContent>
       </Dialog>
+      <StoreTagReconciliationDialog
+        open={reconcileOpen}
+        customerName={detailCustomer?.name ?? ""}
+        relations={activeStoreRelations}
+        onOpenChange={setReconcileOpen}
+        onSubmit={handleReconcileStoreTags}
+      />
     </>
   );
 }

@@ -321,6 +321,15 @@ func (r *customerTagRelationRepository) FindActiveByStoreRelationForUpdate(db *g
 	return ret, err
 }
 
+func (r *customerTagRelationRepository) FindByStoreRelationForUpdate(db *gorm.DB, tenantID, storeID, storeCustomerRelationID int64) ([]models.CustomerTagRelation, error) {
+	ret := make([]models.CustomerTagRelation, 0)
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where(
+		"tenant_id = ? AND store_id = ? AND store_customer_relation_id = ?",
+		tenantID, storeID, storeCustomerRelationID,
+	).Order("id ASC").Find(&ret).Error
+	return ret, err
+}
+
 func (r *customerTagRelationRepository) FindActiveByStoreRelations(db *gorm.DB, tenantID int64, storeCustomerRelationIDs []int64) ([]models.CustomerTagRelation, error) {
 	ret := make([]models.CustomerTagRelation, 0)
 	if tenantID <= 0 || len(storeCustomerRelationIDs) == 0 {

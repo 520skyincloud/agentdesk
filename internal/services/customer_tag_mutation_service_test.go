@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
@@ -322,27 +323,41 @@ func TestCustomerAndContactsHonorStoreDataScope(t *testing.T) {
 
 func setupCustomerTagMutationFixture(t *testing.T) *customerTagMutationFixture {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "customer-tag.db")), &gorm.Config{
-		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
-		Logger:         logger.Default.LogMode(logger.Silent),
-	})
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "customer-tag.db")), customerTagMutationGORMConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(
-		&models.Tenant{}, &models.Store{}, &models.StoreStaffBinding{},
-		&models.Customer{}, &models.CustomerContact{}, &models.Conversation{}, &models.ConversationRouteState{},
-		&models.StoreCustomerRelation{}, &models.Tag{}, &models.CustomerTagRelation{}, &models.CustomerTagChangeLog{},
-	); err != nil {
-		t.Fatal(err)
-	}
-	sqls.SetDB(db)
 	t.Cleanup(func() {
 		sqls.SetDB(nil)
 		if raw, dbErr := db.DB(); dbErr == nil {
 			_ = raw.Close()
 		}
 	})
+	return setupCustomerTagMutationFixtureWithDB(t, db)
+}
+
+func customerTagMutationGORMConfig() *gorm.Config {
+	return &gorm.Config{
+		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+		Logger:         logger.Default.LogMode(logger.Silent),
+	}
+}
+
+func customerTagMutationModels() []any {
+	return []any{
+		&models.Tenant{}, &models.Store{}, &models.StoreStaffBinding{},
+		&models.Customer{}, &models.CustomerContact{}, &models.Conversation{}, &models.ConversationRouteState{},
+		&models.StoreCustomerRelation{}, &models.Tag{}, &models.CustomerTagRelation{}, &models.CustomerTagChangeLog{},
+		&models.StoreCustomerTagDecision{},
+	}
+}
+
+func setupCustomerTagMutationFixtureWithDB(t *testing.T, db *gorm.DB) *customerTagMutationFixture {
+	t.Helper()
+	if err := db.AutoMigrate(customerTagMutationModels()...); err != nil {
+		t.Fatal(err)
+	}
+	sqls.SetDB(db)
 
 	tenants := []models.Tenant{
 		{ID: 101, IntentProfileID: 1001, TenantCode: "tag-tenant-a", LegalName: "标签租户 A", RegistrationType: "test", RegistrationNo: "tag-a", Status: enums.StatusOk},
@@ -366,10 +381,11 @@ func setupCustomerTagMutationFixture(t *testing.T) *customerTagMutationFixture {
 	if err := db.Create(&customers).Error; err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now()
 	conversations := []models.Conversation{
-		{ID: 10001, TenantID: 101, CustomerID: 31, CustomerName: customers[0].Name, Status: enums.IMConversationStatusAIServing},
-		{ID: 10002, TenantID: 101, CustomerID: 31, CustomerName: customers[0].Name, Status: enums.IMConversationStatusAIServing},
-		{ID: 20001, TenantID: 202, CustomerID: 32, CustomerName: customers[1].Name, Status: enums.IMConversationStatusAIServing},
+		{ID: 10001, TenantID: 101, CustomerID: 31, CustomerName: customers[0].Name, Status: enums.IMConversationStatusAIServing, LastMessageAt: now, LastActiveAt: now},
+		{ID: 10002, TenantID: 101, CustomerID: 31, CustomerName: customers[0].Name, Status: enums.IMConversationStatusAIServing, LastMessageAt: now, LastActiveAt: now},
+		{ID: 20001, TenantID: 202, CustomerID: 32, CustomerName: customers[1].Name, Status: enums.IMConversationStatusAIServing, LastMessageAt: now, LastActiveAt: now},
 	}
 	if err := db.Create(&conversations).Error; err != nil {
 		t.Fatal(err)

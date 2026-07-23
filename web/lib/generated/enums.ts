@@ -507,6 +507,17 @@ export const StatusLabels: Record<Status, string> = {
   [Status.Deleted]: "已删除",
 }
 
+export enum StoreCustomerTagReconcileStrategy {
+  PreserveSource = "preserve_source",
+  PreserveTarget = "preserve_target",
+  ClearRebuild = "clear_rebuild",
+}
+export const StoreCustomerTagReconcileStrategyLabels: Record<StoreCustomerTagReconcileStrategy, string> = {
+  [StoreCustomerTagReconcileStrategy.PreserveSource]: "保留来源门店标签",
+  [StoreCustomerTagReconcileStrategy.PreserveTarget]: "保留目标门店标签",
+  [StoreCustomerTagReconcileStrategy.ClearRebuild]: "清空目标标签后重建",
+}
+
 export enum TenantRegistrationAction {
   ValidateInvite = "validate_invite",
   Register = "register",

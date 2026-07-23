@@ -1,6 +1,9 @@
 import { request } from "@/lib/api/client"
 import type { PageResult } from "@/lib/api/admin"
-import type { ContactType } from "@/lib/generated/enums"
+import type {
+  ContactType,
+  StoreCustomerTagReconcileStrategy,
+} from "@/lib/generated/enums"
 import type { AgentCustomerTag } from "@/lib/api/agent"
 
 export type AdminCustomer = {
@@ -34,6 +37,30 @@ export type StoreCustomerRelation = {
   status: number
   createdAt: string
   updatedAt: string
+}
+
+export type StoreCustomerTagDecision = {
+  id: number
+  tenantId: number
+  customerId: number
+  sourceStoreId: number
+  sourceStoreRelationId: number
+  targetStoreId: number
+  targetStoreRelationId: number
+  strategy: StoreCustomerTagReconcileStrategy
+  sourceTagIds: number[]
+  targetBeforeTagIds: number[]
+  targetAfterTagIds: number[]
+  operatorId: number
+  operatorName: string
+  createdAt: string
+}
+
+export type ReconcileStoreCustomerRelationTagsPayload = {
+  sourceStoreRelationId: number
+  targetStoreRelationId: number
+  strategy: StoreCustomerTagReconcileStrategy
+  confirmed: boolean
 }
 
 export type CreateAdminCustomerPayload = {
@@ -124,4 +151,16 @@ export function deleteCustomer(id: number) {
     method: "POST",
     body: JSON.stringify({ id }),
   })
+}
+
+export function reconcileStoreCustomerRelationTags(
+  payload: ReconcileStoreCustomerRelationTagsPayload,
+) {
+  return request<StoreCustomerTagDecision>(
+    "/api/dashboard/customer/reconcile_store_relation_tags",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  )
 }

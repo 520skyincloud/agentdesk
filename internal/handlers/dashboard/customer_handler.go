@@ -214,6 +214,29 @@ func CustomerPostUpdate_status(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
+func CustomerPostReconcile_store_relation_tags(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.ReconcileStoreCustomerRelationTagsRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	decision, err := services.CustomerTagService.ReconcileStoreRelationTags(req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildStoreCustomerTagDecision(decision))
+}
+
 func buildCustomerResponse(item *models.Customer, operator *dto.AuthPrincipal) *response.CustomerResponse {
 	if item == nil {
 		return nil
