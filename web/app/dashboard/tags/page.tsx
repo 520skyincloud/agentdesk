@@ -22,6 +22,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
   TableBody,
@@ -40,6 +41,7 @@ import { updateTagTreeStatus } from "@/lib/tag-tree"
 import { cn } from "@/lib/utils"
 import { useI18n } from "@/i18n/provider"
 import { EditDialog } from "./_components/edit"
+import { CustomerTagRuntimePolicyPanel } from "./_components/runtime-policy"
 
 type TagNode = TagTree & {
   children: TagNode[]
@@ -195,7 +197,14 @@ export default function DashboardTagsPage() {
   return (
     <>
       <DashboardPage>
-        <DashboardToolbar
+        <Tabs defaultValue="catalog" className="space-y-4">
+          <TabsList variant="line">
+            <TabsTrigger value="catalog">{t("tag.catalogTab")}</TabsTrigger>
+            <TabsTrigger value="runtime">{t("tag.runtimeTab")}</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="catalog" className="space-y-4">
+            <DashboardToolbar
           actions={
             <>
               <Button variant="outline" onClick={() => void loadData()} disabled={loading}>
@@ -241,9 +250,9 @@ export default function DashboardTagsPage() {
             <SearchIcon />
             {t("tag.query")}
           </Button>
-        </DashboardToolbar>
+            </DashboardToolbar>
 
-        <DashboardTableShell>
+            <DashboardTableShell>
           <Table>
             <TableHeader className="bg-muted/40">
               <TableRow>
@@ -332,7 +341,13 @@ export default function DashboardTagsPage() {
               ) : null}
             </TableBody>
           </Table>
-        </DashboardTableShell>
+            </DashboardTableShell>
+          </TabsContent>
+
+          <TabsContent value="runtime">
+            <CustomerTagRuntimePolicyPanel canUpdate={canUpdate} />
+          </TabsContent>
+        </Tabs>
       </DashboardPage>
 
       <EditDialog

@@ -3214,3 +3214,73 @@ export function updateTagStatus(id: number, status: number) {
     body: JSON.stringify({ id, status }),
   })
 }
+
+export type CustomerTagPolicy = {
+  tenantId: number
+  intentProfileId: number
+  industryName: string
+  industryCode: string
+  quietPeriodMinutes: number
+  minimumConfidence: number
+  maxOperationsPerRun: number
+  evolutionDefaultEnabled: boolean
+  replyTagContextDefaultEnabled: boolean
+  updatedAt: string
+}
+
+export type StoreCustomerTagRuntimePolicy = {
+  storeId: number
+  storeCode: string
+  storeName: string
+  storeStatus: number
+  policyReady: boolean
+  customerTagEvolutionEnabled: boolean
+  replyTagContextEnabled: boolean
+  updatedAt: string
+}
+
+export type UpdateCustomerTagPolicyPayload = {
+  quietPeriodMinutes: number
+  minimumConfidence: number
+  maxOperationsPerRun: number
+  evolutionDefaultEnabled: boolean
+  replyTagContextDefaultEnabled: boolean
+}
+
+export type BatchToggleCustomerTagRuntimePayload = {
+  storeIds?: number[]
+  allStores?: boolean
+  customerTagEvolutionEnabled?: boolean
+  replyTagContextEnabled?: boolean
+}
+
+export function fetchCustomerTagPolicy() {
+  return request<CustomerTagPolicy>("/api/dashboard/customer-tag/policy")
+}
+
+export function updateCustomerTagPolicy(payload: UpdateCustomerTagPolicyPayload) {
+  return request<void>("/api/dashboard/customer-tag/policy/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchStoreCustomerTagRuntimePolicies(
+  query?: Record<string, string | number | undefined>
+) {
+  return request<PageResult<StoreCustomerTagRuntimePolicy>>(
+    `/api/dashboard/customer-tag/runtime/list${toQueryString(query)}`
+  )
+}
+
+export function batchToggleCustomerTagRuntime(
+  payload: BatchToggleCustomerTagRuntimePayload
+) {
+  return request<{ affectedStoreCount: number }>(
+    "/api/dashboard/customer-tag/runtime/batch_toggle",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }
+  )
+}
