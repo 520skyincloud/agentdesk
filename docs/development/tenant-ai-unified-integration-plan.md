@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B9 已完成并验证；下一步为 B10 客户标签 Evolution worker
+> 状态：2026-07-23 产品决策已闭合，B0-B10 已完成并验证；下一步为 B11 回复标签上下文与批量灰度开关
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1246,9 +1246,24 @@ git diff --check
 - 回滚边界：B10 之前可整体回滚 B9 应用提交；Migration 073 已同步的自由标签权限不会自动恢复，若产品回滚必须通过新的显式 DML migration 重新启用，禁止手工改库。客户标签关系与不可变日志可以保留但旧应用不会读取；不得恢复 ConversationTag picker 形成双链。
 - 后续边界：B10 才实现 due/lease/retry/new-message race 的 Evolution worker；B11 才完成回复标签上下文策略及单店、批量、一键开关；B12 删除旧 ConversationTag 和旧模型运行代码，B14 在停机门禁后物理清表。本批没有启动演化 worker，也没有把默认关闭策略改为开启。
 
+### 25.11 2026-07-23 B10 客户标签 Evolution worker
+
+- 代码提交：`a23d62f4afd2902dc3a922d485286118902fa507`。AI 行为来源继续固定为 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，Tenant 骨架继续固定为 `origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563`。
+- 来源复核：实施前和提交前执行 `git fetch origin --prune`；两个只读来源、`origin/main` 与统一分支均未前移。本批逐符号吸收 ai-billing 的输入、Prompt、严格输出 Schema、阈值、摘要、知识候选和标签操作，不整分支 merge、cherry-pick 或修改来源工作树。
+- 消息观察：所有通过统一消息提交链成功落库的消息，在运营事实采集之后调用 `ObserveCommittedMessage`。Observe 只解析已提交 Conversation -> Tenant -> Store -> StoreCustomerRelation，按 Tenant 静默策略单调推进 session 游标和 deadline；失败/撤回消息不进入，观察路径不解析模型、不调用 NewAPI，也不阻塞原消息提交。
+- worker 与范围：cron 每分钟扫描最多 20 个 due state；查询和执行均要求有效 Tenant 标签策略、Store 独立 Evolution 开关及当前行业一致。worker 使用持久 lease、owner CAS、续租和稳定错误分类；普通失败第五次进入终态，Credential/九槽 blocked 以封顶退避继续等待配置恢复，新消息会重置该 session 的失败状态。
+- 模型与计费：只通过 `ModelCallResolverService(customer_tag_llm)` 使用当前 Store active Profile 与 Credential。输入只包含当前 Tenant、Store、关系、增量消息、固定行业允许标签和压缩摘要；严格校验 `customer_tag_evolution.v1`、完整字段、证据消息、标签目录、长期性、操作上限及 `0.92/refresh 0.85` 与 Tenant 置信下限。每次调用独立记录 Tenant、Store、Profile revision、Credential revision、用途槽和 NewAPI receipt，不保存原始模型输出或上游错误正文。
+- 原子写入：最终 checkpoint 事务重新锁定 State、Run、Conversation 和 StoreCustomerRelation，并再次核对最新已提交消息、Store 开关、行业及关系父链。只有全部仍匹配时才复用 B9 AI mutation 写标签；标签关系、append-only ChangeLog、Run 完成和 State 游标完成同事务提交，人工保护、互斥规则和每客最多 6 个标签继续生效。
+- 竞态补强：相较固定 AI 来源，统一实现增加 Tenant/Store lease 范围和 checkpoint CAS。提前完成、重新排期、续租及失败落库均不能覆盖较新的 Observe；发现新消息时旧 run 进入 `superseded` 且只释放自己的 lease。Observe 的 SQLite/MySQL upsert 不依赖 `RowsAffected` 方言差异，先幂等插入再执行单调条件更新。
+- 共享契约：本批复用 B1 已存在的 `ConversationEvolutionState/Run`、B2/B9 标签策略与关系、B3/B4 Resolver/Credential、B5 Usage、B6 KnowledgeCandidate 和 B9 WebSocket 事件；没有新增或修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限码、WebSocket payload 或前端页面。AI 仍不参与人工选人，规则派单、回复 Prompt/Schema 和 Billing 口径未改变。
+- 验证：`go test ./... -count=1`、B10 定向测试、`go test -race ./internal/services ./internal/repositories -run 'ConversationEvolution|CustomerTagEvolution|CustomerTag' -count=1`、`go vet ./...` 和 `git diff --check` 通过。SQLite 覆盖观察单调性、Store 门禁、租约互斥、第五次失败终止、新消息/model-return race 和完整 resolver 调用；临时 MySQL 8.4 覆盖同一 Observe/due/claim/renew/release SQL，并完成统一 AI Schema AutoMigrate 首次及幂等重跑，容器随后删除。
+- 前端与外部验证：本批没有 Web 文件、公开接口或页面状态变化，因此不重复运行 TypeScript、构建或浏览器视觉验收；B9 页面仍只显示已提交标签，Evolution 默认关闭。真实丽斯未来 NewAPI/FastGPT、`8083` 灰度和账单对账仍属于 B13，不能用本地 `httptest` 代替。
+- 合并与回滚：B10 必须位于 B9 `478f948` 之后，B11-B14 继续建立在 `a23d62f` 之后。Cleanup 前可整体回滚 B10 代码提交；既有 State/Run 表可保留且无 worker 写入，B9 人工标签继续正常。运行异常时先关闭 Store Evolution 开关，不得恢复 Company 级标签、旧 ConversationTag worker、AIConfig 或无 Tenant/Store 的后台扫描。
+- 后续边界：B11 只补 Tenant 演化策略页面、Store 单个/批量/一键开关和固定来源回复标签上下文的最终门禁，不得再建第二个 worker、第二套标签状态或新增模型调用；B12 再全链删除旧 AIConfig/Grant/StoreSetting/ConversationTag 运行代码与页面。
+
 ## 26. 用户最终 1-48 项决定追溯
 
-本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B10-B14 实施和验收证据。
+本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B11-B14 实施和验收证据。
 
 | 编号 | 最终解释 | 权威落点 |
 | --- | --- | --- |
