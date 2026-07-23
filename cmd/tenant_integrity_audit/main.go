@@ -40,6 +40,26 @@ type commandReleaseGateOutput struct {
 	Readiness   *services.TenantReleaseReadinessReport `json:"readiness"`
 }
 
+type commandRestoreDatabaseOutput struct {
+	Integrity *services.TenantIntegrityAuditReport   `json:"integrity"`
+	Readiness *services.TenantReleaseReadinessReport `json:"readiness"`
+}
+
+type commandRestoreGateOutput struct {
+	Status              string                                    `json:"status"`
+	GeneratedAt         time.Time                                 `json:"generatedAt"`
+	RestoreVerification *services.TenantRestoreVerificationReport `json:"restoreVerification"`
+	Source              commandRestoreDatabaseOutput              `json:"source"`
+	Restored            commandRestoreDatabaseOutput              `json:"restored"`
+}
+
+type restoreCommandOptions struct {
+	ConfigPath           string
+	BackupArtifactPath   string
+	ExpectedBackupSHA256 string
+	RepositoryRoot       string
+}
+
 func main() {
 	os.Exit(execute(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -55,6 +75,10 @@ func execute(args []string, stdout, stderr io.Writer) int {
 	readinessStoreIDs := flags.String("readiness-store-ids", "", "comma-separated Store IDs; defaults to all active Tenant Stores")
 	readinessLevel := flags.String("readiness-level", string(services.TenantReleaseReadinessConfiguration), "release gate: configuration, pilot, or tag_gray")
 	readinessEvidenceStart := flags.String("readiness-evidence-start", "", "RFC3339 lower bound for pilot evidence")
+	restoreConfigPath := flags.String("restore-config", "", "path to isolated restored-database config")
+	backupArtifactPath := flags.String("backup-artifact", "", "absolute path to encrypted backup artifact outside the repository")
+	backupSHA256 := flags.String("backup-sha256", "", "pre-recorded SHA-256 of the encrypted backup artifact")
+	restoreRepositoryRoot := flags.String("restore-repository-root", "", "repository root used to enforce external backup storage; auto-detected by default")
 	if err := flags.Parse(args); err != nil {
 		writeCommandError(stdout, *pretty, err)
 		return exitError
@@ -76,26 +100,54 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		writeCommandError(stdout, *pretty, err)
 		return exitError
 	}
+	restoreOptions, err := parseRestoreCommandOptions(
+		flags,
+		*restoreConfigPath,
+		*backupArtifactPath,
+		*backupSHA256,
+		*restoreRepositoryRoot,
+		readinessOptions,
+	)
+	if err != nil {
+		writeCommandError(stdout, *pretty, err)
+		return exitError
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		writeCommandError(stdout, *pretty, fmt.Errorf("load config failed: %w", err))
 		return exitError
 	}
+	if restoreOptions != nil {
+		return executeRestoreVerification(
+			cfg,
+			*restoreOptions,
+			*readinessOptions,
+			*sampleLimit,
+			*pretty,
+			stdout,
+			stderr,
+		)
+	}
+	return executeTenantAudit(cfg, readinessOptions, *sampleLimit, *pretty, stdout, stderr)
+}
+
+func executeTenantAudit(
+	cfg *config.Config,
+	readinessOptions *services.TenantReleaseReadinessOptions,
+	sampleLimit int,
+	pretty bool,
+	stdout io.Writer,
+	stderr io.Writer,
+) int {
 	dbConfig, err := readOnlyDBConfig(cfg.DB)
 	if err != nil {
-		writeCommandError(stdout, *pretty, err)
+		writeCommandError(stdout, pretty, err)
 		return exitError
 	}
-	db, err := bootstrap.InitDB(dbConfig)
+	db, sqlDB, err := openAuditDatabase(dbConfig)
 	if err != nil {
-		writeCommandError(stdout, *pretty, fmt.Errorf("open audit database failed: %w", err))
-		return exitError
-	}
-	db.Logger = logger.Default.LogMode(logger.Silent)
-	sqlDB, err := db.DB()
-	if err != nil {
-		writeCommandError(stdout, *pretty, fmt.Errorf("access audit database failed: %w", err))
+		writeCommandError(stdout, pretty, fmt.Errorf("open audit database failed: %w", err))
 		return exitError
 	}
 	defer sqlDB.Close()
@@ -105,7 +157,7 @@ func execute(args []string, stdout, stderr io.Writer) int {
 	err = db.Transaction(func(tx *gorm.DB) error {
 		var auditErr error
 		report, auditErr = services.TenantIntegrityAuditService.Audit(tx, services.TenantIntegrityAuditOptions{
-			SampleLimit: *sampleLimit,
+			SampleLimit: sampleLimit,
 		})
 		if auditErr != nil || readinessOptions == nil {
 			return auditErr
@@ -114,7 +166,7 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		return auditErr
 	}, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		writeCommandError(stdout, *pretty, fmt.Errorf("run tenant integrity audit failed: %w", err))
+		writeCommandError(stdout, pretty, fmt.Errorf("run tenant integrity audit failed: %w", err))
 		return exitError
 	}
 	output := any(report)
@@ -127,7 +179,7 @@ func execute(args []string, stdout, stderr io.Writer) int {
 			Status: status, GeneratedAt: time.Now().UTC(), Integrity: report, Readiness: readinessReport,
 		}
 	}
-	if err := writeJSON(stdout, *pretty, output); err != nil {
+	if err := writeJSON(stdout, pretty, output); err != nil {
 		fmt.Fprintf(stderr, "write audit report failed: %v\n", err)
 		return exitError
 	}
@@ -135,6 +187,253 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		return exitViolation
 	}
 	return exitPassed
+}
+
+func executeRestoreVerification(
+	sourceConfig *config.Config,
+	options restoreCommandOptions,
+	readinessOptions services.TenantReleaseReadinessOptions,
+	sampleLimit int,
+	pretty bool,
+	stdout io.Writer,
+	stderr io.Writer,
+) int {
+	if strings.TrimSpace(os.Getenv("AGENT_DESK_DB_DSN")) != "" {
+		writeCommandError(
+			stdout,
+			pretty,
+			fmt.Errorf("AGENT_DESK_DB_DSN must be unset so source and restore configs resolve independent databases"),
+		)
+		return exitError
+	}
+	if sourceConfig.BackgroundWorkers.Enabled {
+		writeCommandError(stdout, pretty, fmt.Errorf("source audit config must set backgroundWorkers.enabled=false"))
+		return exitError
+	}
+	restoredConfig, err := config.Load(options.ConfigPath)
+	if err != nil {
+		writeCommandError(stdout, pretty, fmt.Errorf("load restore config failed: %w", err))
+		return exitError
+	}
+	if restoredConfig.BackgroundWorkers.Enabled {
+		writeCommandError(stdout, pretty, fmt.Errorf("restore audit config must set backgroundWorkers.enabled=false"))
+		return exitError
+	}
+	if err := applyRestoreAuditDSNOverrides(sourceConfig, restoredConfig); err != nil {
+		writeCommandError(stdout, pretty, err)
+		return exitError
+	}
+	if options.RepositoryRoot == "" {
+		options.RepositoryRoot, err = findRepositoryRoot()
+		if err != nil {
+			writeCommandError(stdout, pretty, err)
+			return exitError
+		}
+	}
+	sourceDBConfig, err := readOnlyDBConfig(sourceConfig.DB)
+	if err != nil {
+		writeCommandError(stdout, pretty, fmt.Errorf("prepare source audit database failed: %w", err))
+		return exitError
+	}
+	restoredDBConfig, err := readOnlyDBConfig(restoredConfig.DB)
+	if err != nil {
+		writeCommandError(stdout, pretty, fmt.Errorf("prepare restored audit database failed: %w", err))
+		return exitError
+	}
+	sourceDB, sourceSQLDB, err := openAuditDatabase(sourceDBConfig)
+	if err != nil {
+		writeCommandError(stdout, pretty, fmt.Errorf("open source audit database failed: %w", err))
+		return exitError
+	}
+	defer sourceSQLDB.Close()
+	restoredDB, restoredSQLDB, err := openAuditDatabase(restoredDBConfig)
+	if err != nil {
+		writeCommandError(stdout, pretty, fmt.Errorf("open restored audit database failed: %w", err))
+		return exitError
+	}
+	defer restoredSQLDB.Close()
+
+	var sourceIntegrity *services.TenantIntegrityAuditReport
+	var sourceReadiness *services.TenantReleaseReadinessReport
+	var restoredIntegrity *services.TenantIntegrityAuditReport
+	var restoredReadiness *services.TenantReleaseReadinessReport
+	var restoreVerification *services.TenantRestoreVerificationReport
+	err = sourceDB.Transaction(func(sourceTx *gorm.DB) error {
+		return restoredDB.Transaction(func(restoredTx *gorm.DB) error {
+			var auditErr error
+			sourceIntegrity, auditErr = services.TenantIntegrityAuditService.Audit(
+				sourceTx,
+				services.TenantIntegrityAuditOptions{SampleLimit: sampleLimit},
+			)
+			if auditErr != nil {
+				return auditErr
+			}
+			sourceReadiness, auditErr = services.TenantReleaseReadinessService.Audit(sourceTx, readinessOptions)
+			if auditErr != nil {
+				return auditErr
+			}
+			restoredIntegrity, auditErr = services.TenantIntegrityAuditService.Audit(
+				restoredTx,
+				services.TenantIntegrityAuditOptions{SampleLimit: sampleLimit},
+			)
+			if auditErr != nil {
+				return auditErr
+			}
+			restoredReadiness, auditErr = services.TenantReleaseReadinessService.Audit(restoredTx, readinessOptions)
+			if auditErr != nil {
+				return auditErr
+			}
+			restoreVerification, auditErr = services.TenantRestoreVerificationService.Verify(
+				sourceTx,
+				restoredTx,
+				services.TenantRestoreVerificationOptions{
+					BackupArtifactPath:   options.BackupArtifactPath,
+					ExpectedBackupSHA256: options.ExpectedBackupSHA256,
+					RepositoryRoot:       options.RepositoryRoot,
+					MismatchSampleLimit:  sampleLimit,
+				},
+			)
+			return auditErr
+		}, &sql.TxOptions{ReadOnly: true})
+	}, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		writeCommandError(stdout, pretty, fmt.Errorf("run restore verification failed: %w", err))
+		return exitError
+	}
+
+	failed := restoreVerification.HasViolations() ||
+		sourceIntegrity.HasViolations() ||
+		sourceReadiness.HasViolations() ||
+		restoredIntegrity.HasViolations() ||
+		restoredReadiness.HasViolations()
+	status := "passed"
+	if failed {
+		status = "failed"
+	}
+	output := commandRestoreGateOutput{
+		Status:              status,
+		GeneratedAt:         time.Now().UTC(),
+		RestoreVerification: restoreVerification,
+		Source: commandRestoreDatabaseOutput{
+			Integrity: sourceIntegrity,
+			Readiness: sourceReadiness,
+		},
+		Restored: commandRestoreDatabaseOutput{
+			Integrity: restoredIntegrity,
+			Readiness: restoredReadiness,
+		},
+	}
+	if err := writeJSON(stdout, pretty, output); err != nil {
+		fmt.Fprintf(stderr, "write restore verification report failed: %v\n", err)
+		return exitError
+	}
+	if failed {
+		return exitViolation
+	}
+	return exitPassed
+}
+
+func openAuditDatabase(cfg config.DBConfig) (*gorm.DB, *sql.DB, error) {
+	db, err := bootstrap.InitDB(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	db.Logger = logger.Default.LogMode(logger.Silent)
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, nil, err
+	}
+	return db, sqlDB, nil
+}
+
+func applyRestoreAuditDSNOverrides(sourceConfig, restoredConfig *config.Config) error {
+	if sourceConfig == nil || restoredConfig == nil {
+		return fmt.Errorf("restore audit database configs are required")
+	}
+	sourceDSN := strings.TrimSpace(os.Getenv("AGENT_DESK_RESTORE_AUDIT_SOURCE_DB_DSN"))
+	restoredDSN := strings.TrimSpace(os.Getenv("AGENT_DESK_RESTORE_AUDIT_RESTORED_DB_DSN"))
+	if (sourceDSN == "") != (restoredDSN == "") {
+		return fmt.Errorf(
+			"AGENT_DESK_RESTORE_AUDIT_SOURCE_DB_DSN and AGENT_DESK_RESTORE_AUDIT_RESTORED_DB_DSN must be set together",
+		)
+	}
+	if sourceDSN == "" {
+		return nil
+	}
+	sourceConfig.DB.DSN = sourceDSN
+	restoredConfig.DB.DSN = restoredDSN
+	return nil
+}
+
+func parseRestoreCommandOptions(
+	flags *flag.FlagSet,
+	configPath string,
+	backupArtifactPath string,
+	expectedBackupSHA256 string,
+	repositoryRoot string,
+	readinessOptions *services.TenantReleaseReadinessOptions,
+) (*restoreCommandOptions, error) {
+	if !restoreCommandRequested(flags) {
+		return nil, nil
+	}
+	configPath = strings.TrimSpace(configPath)
+	backupArtifactPath = strings.TrimSpace(backupArtifactPath)
+	expectedBackupSHA256 = strings.TrimSpace(expectedBackupSHA256)
+	repositoryRoot = strings.TrimSpace(repositoryRoot)
+	if configPath == "" {
+		return nil, fmt.Errorf("restore-config is required for restore verification")
+	}
+	if backupArtifactPath == "" {
+		return nil, fmt.Errorf("backup-artifact is required for restore verification")
+	}
+	if !filepath.IsAbs(backupArtifactPath) {
+		return nil, fmt.Errorf("backup-artifact must be an absolute path")
+	}
+	if expectedBackupSHA256 == "" {
+		return nil, fmt.Errorf("backup-sha256 is required for restore verification")
+	}
+	if readinessOptions == nil {
+		return nil, fmt.Errorf("readiness-tenant-id or readiness-tenant-code is required for restore verification")
+	}
+	return &restoreCommandOptions{
+		ConfigPath:           configPath,
+		BackupArtifactPath:   backupArtifactPath,
+		ExpectedBackupSHA256: expectedBackupSHA256,
+		RepositoryRoot:       repositoryRoot,
+	}, nil
+}
+
+func findRepositoryRoot() (string, error) {
+	current, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve current directory failed: %w", err)
+	}
+	for {
+		goModInfo, goModErr := os.Stat(filepath.Join(current, "go.mod"))
+		gitInfo, gitErr := os.Stat(filepath.Join(current, ".git"))
+		if goModErr == nil && !goModInfo.IsDir() && gitErr == nil && gitInfo != nil {
+			return current, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("restore-repository-root was not provided and repository root could not be detected")
+		}
+		current = parent
+	}
+}
+
+func restoreCommandRequested(flags *flag.FlagSet) bool {
+	if flags == nil {
+		return false
+	}
+	requested := false
+	flags.Visit(func(item *flag.Flag) {
+		switch item.Name {
+		case "restore-config", "backup-artifact", "backup-sha256", "restore-repository-root":
+			requested = true
+		}
+	})
+	return requested
 }
 
 func parseReadinessCommandOptions(

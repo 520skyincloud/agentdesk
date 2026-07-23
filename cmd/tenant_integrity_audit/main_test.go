@@ -133,6 +133,102 @@ func TestParseReadinessStoreIDsDeduplicatesAndRejectsInvalidValues(t *testing.T)
 	}
 }
 
+func TestExecuteRejectsPartialRestoreVerificationArgumentsBeforeOpeningDatabase(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "missing backup artifact",
+			args: []string{"-restore-config", "restore.yaml"},
+			want: "backup-artifact is required",
+		},
+		{
+			name: "relative backup artifact",
+			args: []string{
+				"-restore-config", "restore.yaml",
+				"-backup-artifact", "backup.age",
+				"-backup-sha256", strings.Repeat("0", 64),
+			},
+			want: "backup-artifact must be an absolute path",
+		},
+		{
+			name: "missing readiness tenant",
+			args: []string{
+				"-restore-config", "restore.yaml",
+				"-backup-artifact", filepath.Join(t.TempDir(), "backup.age"),
+				"-backup-sha256", strings.Repeat("0", 64),
+			},
+			want: "readiness-tenant-id or readiness-tenant-code is required",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			exitCode := execute(test.args, &stdout, &stderr)
+			if exitCode != exitError {
+				t.Fatalf("exit code=%d want=%d; stdout=%s stderr=%s", exitCode, exitError, stdout.String(), stderr.String())
+			}
+			var output commandErrorOutput
+			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+				t.Fatalf("decode command error: %v; output=%s", err, stdout.String())
+			}
+			if !strings.Contains(output.Error, test.want) {
+				t.Fatalf("command error=%q want substring %q", output.Error, test.want)
+			}
+		})
+	}
+}
+
+func TestExecuteRestoreVerificationRejectsGlobalDatabaseDSNOverride(t *testing.T) {
+	t.Setenv("AGENT_DESK_DB_DSN", "file:overridden.db")
+	configPath := filepath.Join(t.TempDir(), "source.yaml")
+	if err := os.WriteFile(
+		configPath,
+		[]byte("db:\n  type: sqlite\n  dsn: source.db\nbackgroundWorkers:\n  enabled: false\n"),
+		0o600,
+	); err != nil {
+		t.Fatalf("write source config: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := execute([]string{
+		"-config", configPath,
+		"-restore-config", filepath.Join(t.TempDir(), "restore.yaml"),
+		"-backup-artifact", filepath.Join(t.TempDir(), "backup.age"),
+		"-backup-sha256", strings.Repeat("0", 64),
+		"-readiness-tenant-id", "1",
+	}, &stdout, &stderr)
+	if exitCode != exitError {
+		t.Fatalf("exit code=%d want=%d; stdout=%s stderr=%s", exitCode, exitError, stdout.String(), stderr.String())
+	}
+	var output commandErrorOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("decode command error: %v; output=%s", err, stdout.String())
+	}
+	if !strings.Contains(output.Error, "AGENT_DESK_DB_DSN must be unset") {
+		t.Fatalf("unexpected command error: %#v", output)
+	}
+}
+
+func TestApplyRestoreAuditDSNOverridesRequiresPairAndKeepsSecretsOutOfConfigFiles(t *testing.T) {
+	source := &config.Config{DB: config.DBConfig{Type: "mysql", DSN: "source-placeholder"}}
+	restored := &config.Config{DB: config.DBConfig{Type: "mysql", DSN: "restored-placeholder"}}
+	t.Setenv("AGENT_DESK_RESTORE_AUDIT_SOURCE_DB_DSN", "source-secret-dsn")
+	if err := applyRestoreAuditDSNOverrides(source, restored); err == nil {
+		t.Fatal("single restore-audit DSN override was accepted")
+	}
+	t.Setenv("AGENT_DESK_RESTORE_AUDIT_RESTORED_DB_DSN", "restored-secret-dsn")
+	if err := applyRestoreAuditDSNOverrides(source, restored); err != nil {
+		t.Fatalf("apply paired restore-audit DSNs: %v", err)
+	}
+	if source.DB.DSN != "source-secret-dsn" || restored.DB.DSN != "restored-secret-dsn" {
+		t.Fatalf("restore-audit DSNs were not applied: source=%q restored=%q", source.DB.DSN, restored.DB.DSN)
+	}
+}
+
 func testDBConfig(dsn string) config.DBConfig {
 	return config.DBConfig{Type: "sqlite", DSN: dsn}
 }
