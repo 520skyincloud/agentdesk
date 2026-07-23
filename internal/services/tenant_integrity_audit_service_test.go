@@ -682,8 +682,8 @@ func TestTenantIntegrityAuditReportsDutyRoleAndSquadLeaderViolations(t *testing.
 	if err := db.Create(invalidStore).Error; err != nil {
 		t.Fatalf("create invalid duty store: %v", err)
 	}
-	validBinding := &models.StoreStaffBinding{TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID, StoreID: validStore.ID, AgentTeamID: validTeam.ID, Status: enums.StatusOk, AuditFields: audit}
-	invalidBinding := &models.StoreStaffBinding{TenantID: fixture.tenantA.ID, UserID: missingRoleUser.ID, StoreID: invalidStore.ID, AgentTeamID: invalidTeam.ID, Status: enums.StatusOk, AuditFields: audit}
+	validBinding := &models.StoreStaffBinding{TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID, ActiveUserID: positiveInt64Pointer(fixture.tenantUserA.ID), StoreID: validStore.ID, AgentTeamID: validTeam.ID, Status: enums.StatusOk, AuditFields: audit}
+	invalidBinding := &models.StoreStaffBinding{TenantID: fixture.tenantA.ID, UserID: missingRoleUser.ID, ActiveUserID: positiveInt64Pointer(missingRoleUser.ID), StoreID: invalidStore.ID, AgentTeamID: invalidTeam.ID, Status: enums.StatusOk, AuditFields: audit}
 	if err := db.Create(validBinding).Error; err != nil {
 		t.Fatalf("create valid store staff binding: %v", err)
 	}
@@ -710,6 +710,89 @@ func TestTenantIntegrityAuditReportsDutyRoleAndSquadLeaderViolations(t *testing.
 		if violation == nil || violation.Count != 1 || len(violation.SampleIDs) != 1 || violation.SampleIDs[0] != check.sampleID {
 			t.Errorf("duty semantic violation %s = %#v", check.code, violation)
 		}
+	}
+}
+
+func TestTenantIntegrityAuditReportsStoreStaffOwnershipViolations(t *testing.T) {
+	db := openTenantIntegrityTestDB(t, true)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	now := time.Now()
+	audit := tenantIntegrityTestAuditFields(now)
+
+	storeStaffRole := &models.Role{
+		Name: "Audit Store Staff Ownership", Code: constants.RoleCodeStoreStaff,
+		Scope: constants.RoleScopeTenant, Status: enums.StatusOk, AuditFields: audit,
+	}
+	if err := db.Create(storeStaffRole).Error; err != nil {
+		t.Fatalf("create store staff role: %v", err)
+	}
+
+	users := make([]models.User, 3)
+	stores := make([]models.Store, 4)
+	for index := range users {
+		users[index] = models.User{
+			TenantID: fixture.tenantA.ID, Username: fmt.Sprintf("audit-store-owner-%d", index+1),
+			Password: "x", Status: enums.StatusOk, AuditFields: audit,
+		}
+		if err := db.Create(&users[index]).Error; err != nil {
+			t.Fatalf("create store owner %d: %v", index+1, err)
+		}
+		if err := db.Create(&models.UserRole{UserID: users[index].ID, RoleID: storeStaffRole.ID, AuditFields: audit}).Error; err != nil {
+			t.Fatalf("assign store staff role %d: %v", index+1, err)
+		}
+	}
+	for index := range stores {
+		stores[index] = models.Store{
+			TenantID: fixture.tenantA.ID, StoreCode: fmt.Sprintf("audit-store-ownership-%d", index+1),
+			Name: fmt.Sprintf("Audit Store Ownership %d", index+1), Status: enums.StatusOk, AuditFields: audit,
+		}
+		if err := db.Create(&stores[index]).Error; err != nil {
+			t.Fatalf("create ownership store %d: %v", index+1, err)
+		}
+	}
+
+	activeMismatch := &models.StoreStaffBinding{
+		TenantID: fixture.tenantA.ID, UserID: users[0].ID, StoreID: stores[0].ID,
+		Status: enums.StatusOk, AuditFields: audit,
+	}
+	inactiveOccupied := &models.StoreStaffBinding{
+		TenantID: fixture.tenantA.ID, UserID: users[1].ID, ActiveUserID: positiveInt64Pointer(users[1].ID),
+		StoreID: stores[1].ID, Status: enums.StatusDisabled, AuditFields: audit,
+	}
+	duplicateBindings := []*models.StoreStaffBinding{
+		{
+			TenantID: fixture.tenantA.ID, UserID: users[2].ID, ActiveUserID: positiveInt64Pointer(users[2].ID),
+			StoreID: stores[2].ID, Status: enums.StatusOk, AuditFields: audit,
+		},
+		{
+			TenantID: fixture.tenantA.ID, UserID: users[2].ID, StoreID: stores[3].ID,
+			Status: enums.StatusDisabled, AuditFields: audit,
+		},
+	}
+	for _, binding := range append([]*models.StoreStaffBinding{activeMismatch, inactiveOccupied}, duplicateBindings...) {
+		if err := db.Create(binding).Error; err != nil {
+			t.Fatalf("create ownership violation binding: %v", err)
+		}
+	}
+
+	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 5})
+	if err != nil {
+		t.Fatalf("audit store staff ownership semantics: %v", err)
+	}
+	if violation := tenantIntegrityFindViolation(report, "STORE_STAFF_ACTIVE_OWNER_MISMATCH", "StoreStaffBinding.active_user_id"); violation == nil ||
+		violation.Count != 1 || len(violation.SampleIDs) != 1 || violation.SampleIDs[0] != activeMismatch.ID {
+		t.Fatalf("active owner mismatch violation = %#v", violation)
+	}
+	if violation := tenantIntegrityFindViolation(report, "STORE_STAFF_INACTIVE_OWNER_OCCUPIED", "StoreStaffBinding.active_user_id"); violation == nil ||
+		violation.Count != 1 || len(violation.SampleIDs) != 1 || violation.SampleIDs[0] != inactiveOccupied.ID {
+		t.Fatalf("inactive owner occupied violation = %#v", violation)
+	}
+	violation := tenantIntegrityFindViolation(report, "STORE_STAFF_ACCOUNT_MULTIPLE_BINDINGS", "StoreStaffBinding.user_id")
+	if violation == nil || violation.Count != 2 || len(violation.SampleIDs) != 2 {
+		t.Fatalf("multiple bindings violation = %#v", violation)
+	}
+	if violation.SampleIDs[0] != duplicateBindings[0].ID || violation.SampleIDs[1] != duplicateBindings[1].ID {
+		t.Fatalf("multiple bindings samples = %#v, want [%d %d]", violation.SampleIDs, duplicateBindings[0].ID, duplicateBindings[1].ID)
 	}
 }
 

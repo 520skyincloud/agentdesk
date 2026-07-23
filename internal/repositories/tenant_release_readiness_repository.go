@@ -33,6 +33,17 @@ type TenantReleaseReadinessCredentialState struct {
 	HasActiveEncryptedKey int64
 }
 
+type TenantReleaseReadinessCredentialAuditState struct {
+	ID           int64
+	StoreID      int64
+	ToRevision   int64
+	Action       enums.CredentialAuditAction
+	Result       enums.CredentialAuditResult
+	OperatorID   int64
+	OperatorRole string
+	ApproverID   int64
+}
+
 type TenantReleaseReadinessFastGPTState struct {
 	StoreID                   int64
 	HasTenantTeam             int64
@@ -180,9 +191,10 @@ func (r *tenantReleaseReadinessRepository) FindStoreAccountStates(
 				WHEN account.id IS NOT NULL
 					AND account.tenant_id = binding.tenant_id
 					AND account.status = ?
-					AND account.approval_status = ?
-					AND account.deleted_at IS NULL
-					AND binding.agent_team_id > 0
+						AND account.approval_status = ?
+						AND account.deleted_at IS NULL
+						AND binding.active_user_id = binding.user_id
+						AND binding.agent_team_id > 0
 				THEN 1 ELSE 0
 			END) AS ready_account_count
 		`, enums.StatusOk, enums.UserApprovalStatusApproved).
@@ -223,6 +235,40 @@ func (r *tenantReleaseReadinessRepository) FindCredentialStates(
 		`).
 		Where("tenant_id = ? AND store_id IN ?", tenantID, storeIDs).
 		Order("store_id ASC").
+		Scan(&ret).Error
+	return ret, err
+}
+
+func (r *tenantReleaseReadinessRepository) FindCredentialApprovalAuditStates(
+	db *gorm.DB,
+	tenantID int64,
+	storeIDs []int64,
+) ([]TenantReleaseReadinessCredentialAuditState, error) {
+	ret := make([]TenantReleaseReadinessCredentialAuditState, 0)
+	if db == nil || tenantID <= 0 || len(storeIDs) == 0 {
+		return ret, nil
+	}
+	err := db.Table("t_store_model_credential_audit_log").
+		Select(`
+			id,
+			store_id,
+			to_revision,
+			action,
+			result,
+			operator_id,
+			operator_role,
+			approver_id
+		`).
+		Where(
+			"tenant_id = ? AND store_id IN ? AND action IN ?",
+			tenantID,
+			storeIDs,
+			[]enums.CredentialAuditAction{
+				enums.CredentialAuditActionSubmit,
+				enums.CredentialAuditActionApprove,
+			},
+		).
+		Order("id ASC").
 		Scan(&ret).Error
 	return ret, err
 }

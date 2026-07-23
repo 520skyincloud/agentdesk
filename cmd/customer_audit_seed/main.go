@@ -1304,6 +1304,7 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 	updates := map[string]any{
 		"tenant_id":              ctx.tenant.ID,
 		"user_id":                staff.ID,
+		"active_user_id":         staff.ID,
 		"agent_team_id":          agentTeamID,
 		"company_id":             0,
 		"managed_mode":           constants.StoreManagedModeSemi,
@@ -1332,6 +1333,7 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 	item = &models.StoreStaffBinding{
 		TenantID:             ctx.tenant.ID,
 		UserID:               staff.ID,
+		ActiveUserID:         seedInt64Pointer(staff.ID),
 		AgentTeamID:          agentTeamID,
 		CompanyID:            0,
 		StoreID:              store.ID,
@@ -1346,6 +1348,11 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 		return nil, err
 	}
 	return item, nil
+}
+
+func seedInt64Pointer(value int64) *int64 {
+	ret := value
+	return &ret
 }
 
 func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, binding *models.StoreStaffBinding) (*models.WxWorkProtocolInstance, error) {

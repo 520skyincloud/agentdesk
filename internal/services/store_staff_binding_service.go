@@ -128,6 +128,7 @@ func (s *storeStaffBindingService) prepareForUserDB(db *gorm.DB, tenantID, userI
 		}
 		if err := repositories.StoreStaffBindingRepository.UpdatesInTenant(db, binding.ID, tenantID, map[string]any{
 			"company_id":       0,
+			"active_user_id":   user.ID,
 			"status":           enums.StatusOk,
 			"updated_at":       now,
 			"update_user_id":   auditUserID(operator),
@@ -139,6 +140,7 @@ func (s *storeStaffBindingService) prepareForUserDB(db *gorm.DB, tenantID, userI
 		store.CompanyID = 0
 		store.Status = enums.StatusOk
 		binding.CompanyID = 0
+		binding.ActiveUserID = positiveInt64Pointer(user.ID)
 		binding.Status = enums.StatusOk
 		if err := StoreModelCredentialService.EnsureStoreRecordsDB(db, store, operator); err != nil {
 			return nil, err
@@ -175,6 +177,7 @@ func (s *storeStaffBindingService) prepareForUserDB(db *gorm.DB, tenantID, userI
 	binding := &models.StoreStaffBinding{
 		TenantID:             tenantID,
 		UserID:               user.ID,
+		ActiveUserID:         positiveInt64Pointer(user.ID),
 		CompanyID:            0,
 		StoreID:              store.ID,
 		ManagedMode:          constants.StoreManagedModeSemi,
@@ -205,6 +208,7 @@ func (s *storeStaffBindingService) RetireForUserDB(db *gorm.DB, tenantID, userID
 		bindingIDs = append(bindingIDs, binding.ID)
 		affectedTeamIDs = appendPositive(affectedTeamIDs, binding.AgentTeamID)
 		if err := repositories.StoreStaffBindingRepository.UpdatesInTenant(db, binding.ID, tenantID, map[string]any{
+			"active_user_id":   nil,
 			"status":           enums.StatusDisabled,
 			"updated_at":       now,
 			"update_user_id":   auditUserID(operator),
@@ -423,6 +427,9 @@ func (s *storeStaffBindingService) validateBindingOwnerDB(db *gorm.DB, binding *
 	if binding == nil || binding.Status != enums.StatusOk || binding.TenantID <= 0 || binding.StoreID <= 0 || binding.UserID <= 0 {
 		return errorsx.InvalidParam("门店员工绑定不完整，请在用户管理重新绑定")
 	}
+	if binding.ActiveUserID == nil || *binding.ActiveUserID != binding.UserID {
+		return errorsx.InvalidParam("门店员工绑定缺少唯一账号占用标记，请在用户管理重新绑定")
+	}
 	user := repositories.UserRepository.GetInTenant(db, binding.UserID, binding.TenantID)
 	if user == nil || user.Status != enums.StatusOk || user.DeletedAt != nil {
 		return errorsx.InvalidParam("已分配门店员工号角色的系统账号不存在或已停用")
@@ -432,4 +439,12 @@ func (s *storeStaffBindingService) validateBindingOwnerDB(db *gorm.DB, binding *
 		return errorsx.InvalidParam("绑定账号未持有门店员工号角色")
 	}
 	return nil
+}
+
+func positiveInt64Pointer(value int64) *int64 {
+	if value <= 0 {
+		return nil
+	}
+	ret := value
+	return &ret
 }

@@ -115,7 +115,13 @@ func TestStoreWorkbenchUpdateRejectsUnsafeOrAmbiguousConfiguration(t *testing.T)
 	}
 
 	storeB := createStoreStaffTenantStore(t, db, 101, company.ID, "workbench-validation-store-b")
-	createStoreStaffTenantBinding(t, db, 101, user.ID, 0, company.ID, storeB.ID)
+	legacyDuplicate := &models.StoreStaffBinding{
+		TenantID: 101, UserID: user.ID, StoreID: storeB.ID,
+		CompanyID: company.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(legacyDuplicate).Error; err != nil {
+		t.Fatalf("create pre-migration duplicate binding: %v", err)
+	}
 	if _, err := StoreWorkbenchService.Current(operator); err == nil {
 		t.Fatal("multiple store bindings must fail closed")
 	}
@@ -127,7 +133,10 @@ func TestStoreWorkbenchCurrentReportsDisabledBinding(t *testing.T) {
 	user := createStoreStaffTenantUser(t, db, 101, "workbench-disabled-user")
 	store := createStoreStaffTenantStore(t, db, 101, company.ID, "workbench-disabled-store")
 	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, company.ID, store.ID)
-	if err := db.Model(&models.StoreStaffBinding{}).Where("id = ?", binding.ID).Update("status", enums.StatusDisabled).Error; err != nil {
+	if err := db.Model(&models.StoreStaffBinding{}).Where("id = ?", binding.ID).Updates(map[string]any{
+		"active_user_id": nil,
+		"status":         enums.StatusDisabled,
+	}).Error; err != nil {
 		t.Fatalf("disable binding: %v", err)
 	}
 	operator := &dto.AuthPrincipal{UserID: user.ID, ActiveTenantID: 101, Username: user.Username}

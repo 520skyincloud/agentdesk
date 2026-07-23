@@ -93,7 +93,12 @@ func (s *storeModelCredentialService) GetSelf(operator *dto.AuthPrincipal) (*Sto
 	if err != nil {
 		return nil, err
 	}
-	data.CanSelfService = snapshot.Binding.Status == enums.StatusOk && data.Policy != nil && data.Policy.Status == enums.StatusOk && data.Policy.AllowCredentialSelfService
+	data.CanSelfService = snapshot.Binding.Status == enums.StatusOk &&
+		snapshot.Binding.ActiveUserID != nil &&
+		*snapshot.Binding.ActiveUserID == operator.UserID &&
+		data.Policy != nil &&
+		data.Policy.Status == enums.StatusOk &&
+		data.Policy.AllowCredentialSelfService
 	return data, nil
 }
 
@@ -182,6 +187,15 @@ func (s *storeModelCredentialService) SubmitSelf(ctx context.Context, req reques
 	if snapshot.Binding == nil || snapshot.Store == nil || snapshot.Binding.Status != enums.StatusOk {
 		return nil, errorsx.Forbidden("当前门店员工绑定不可用")
 	}
+	if snapshot.Binding.UserID != operator.UserID {
+		return nil, errorsx.Forbidden("当前账号不是该门店唯一绑定的门店员工")
+	}
+	if snapshot.Binding.ActiveUserID == nil || *snapshot.Binding.ActiveUserID != operator.UserID {
+		return nil, errorsx.Forbidden("当前账号没有占用该门店的唯一活动绑定")
+	}
+	if !slices.Contains(operator.Roles, constants.RoleCodeStoreStaff) {
+		return nil, errorsx.Forbidden("当前账号未持有门店员工角色")
+	}
 	return s.submit(ctx, snapshot.TenantID, snapshot.Store.ID, req, operator, meta, true)
 }
 
@@ -193,11 +207,16 @@ func (s *storeModelCredentialService) Approve(ctx context.Context, req request.D
 	if err != nil {
 		return nil, err
 	}
+	if err := requireCredentialSupervisorApproval(operator, tenantID); err != nil {
+		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionApprove, req.CandidateRevision, "supervisor_role_required")
+		return nil, err
+	}
 	if err := verifyCredentialSensitiveAction(operator, req.CurrentPassword, req.Confirmed); err != nil {
 		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionApprove, req.CandidateRevision, "password_verification_failed")
 		return nil, err
 	}
 	now := time.Now()
+	selfApprovalAttempt := false
 	err = sqls.WithTransaction(func(tx *sqls.TxContext) error {
 		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByStore(tx.Tx, tenantID, req.StoreID)
 		if err != nil {
@@ -207,6 +226,7 @@ func (s *storeModelCredentialService) Approve(ctx context.Context, req request.D
 			return errorsx.InvalidParam("待审批凭据已变化，请刷新后重试")
 		}
 		if credential.CandidateRequestedBy == operator.UserID {
+			selfApprovalAttempt = true
 			return errorsx.Forbidden("凭据提交人不能审批自己的申请")
 		}
 		if err := repositories.StoreModelCredentialRepository.Updates(tx.Tx, credential.ID, map[string]any{
@@ -220,6 +240,9 @@ func (s *storeModelCredentialService) Approve(ctx context.Context, req request.D
 		return s.appendAuditDB(tx.Tx, credential, operator, operator, meta, enums.CredentialAuditActionApprove, enums.CredentialAuditResultSuccess, credential.CredentialRevision, credential.CandidateRevision, credential.CandidateProfileID, credential.CandidateProfileRevision, securex.FingerprintLast6(credential.CandidateKeyFingerprint), "")
 	})
 	if err != nil {
+		if selfApprovalAttempt {
+			s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionApprove, req.CandidateRevision, "self_approval_forbidden")
+		}
 		return nil, err
 	}
 	if err := s.processCandidate(ctx, tenantID, req.StoreID, req.CandidateRevision, operator, meta); err != nil {
@@ -236,11 +259,16 @@ func (s *storeModelCredentialService) Reject(req request.DecideStoreModelCredent
 	if err != nil {
 		return nil, err
 	}
+	if err := requireCredentialSupervisorApproval(operator, tenantID); err != nil {
+		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionReject, req.CandidateRevision, "supervisor_role_required")
+		return nil, err
+	}
 	if err := verifyCredentialSensitiveAction(operator, req.CurrentPassword, req.Confirmed); err != nil {
 		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionReject, req.CandidateRevision, "password_verification_failed")
 		return nil, err
 	}
 	now := time.Now()
+	selfApprovalAttempt := false
 	err = sqls.WithTransaction(func(tx *sqls.TxContext) error {
 		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByStore(tx.Tx, tenantID, req.StoreID)
 		if err != nil {
@@ -250,6 +278,7 @@ func (s *storeModelCredentialService) Reject(req request.DecideStoreModelCredent
 			return errorsx.InvalidParam("待审批凭据已变化，请刷新后重试")
 		}
 		if credential.CandidateRequestedBy == operator.UserID {
+			selfApprovalAttempt = true
 			return errorsx.Forbidden("凭据提交人不能审批自己的申请")
 		}
 		if err := repositories.StoreModelCredentialRepository.Updates(tx.Tx, credential.ID, map[string]any{
@@ -267,6 +296,9 @@ func (s *storeModelCredentialService) Reject(req request.DecideStoreModelCredent
 		return s.appendAuditDB(tx.Tx, credential, operator, operator, meta, enums.CredentialAuditActionReject, enums.CredentialAuditResultSuccess, credential.CredentialRevision, credential.CandidateRevision, credential.CandidateProfileID, credential.CandidateProfileRevision, securex.FingerprintLast6(credential.CandidateKeyFingerprint), "approval_rejected")
 	})
 	if err != nil {
+		if selfApprovalAttempt {
+			s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionReject, req.CandidateRevision, "self_approval_forbidden")
+		}
 		return nil, err
 	}
 	return s.getData(tenantID, req.StoreID, false)
@@ -834,6 +866,22 @@ func requireCredentialPermission(operator *dto.AuthPrincipal, permissionCode str
 	}
 	if !slices.Contains(operator.Permissions, permissionCode) {
 		return errorsx.Forbidden("无权限执行该操作")
+	}
+	return nil
+}
+
+func requireCredentialSupervisorApproval(operator *dto.AuthPrincipal, tenantID int64) error {
+	if operator == nil {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	operatorTenantID := operator.ActiveTenantID
+	if operatorTenantID <= 0 {
+		operatorTenantID = operator.TenantID
+	}
+	if operator.IsPlatformAccount ||
+		operatorTenantID != tenantID ||
+		!slices.Contains(operator.Roles, constants.RoleCodeTenantAdmin) {
+		return errorsx.Forbidden("门店员工自助凭据必须由当前接入公司的公司主管审批")
 	}
 	return nil
 }

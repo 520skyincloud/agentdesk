@@ -271,8 +271,13 @@ func createStoreStaffTenantStore(t *testing.T, db *gorm.DB, tenantID, companyID 
 
 func createStoreStaffTenantBinding(t *testing.T, db *gorm.DB, tenantID, userID, teamID, companyID, storeID int64) *models.StoreStaffBinding {
 	t.Helper()
+	var activeUserID *int64
+	if user := repositories.UserRepository.Get(db, userID); user != nil && user.TenantID == tenantID {
+		activeUserID = positiveInt64Pointer(userID)
+	}
 	item := &models.StoreStaffBinding{
-		TenantID: tenantID, UserID: userID, AgentTeamID: teamID, CompanyID: companyID, StoreID: storeID, Status: enums.StatusOk,
+		TenantID: tenantID, UserID: userID, ActiveUserID: activeUserID,
+		AgentTeamID: teamID, CompanyID: companyID, StoreID: storeID, Status: enums.StatusOk,
 	}
 	if err := db.Create(item).Error; err != nil {
 		t.Fatalf("create store staff binding: %v", err)

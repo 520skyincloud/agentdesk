@@ -272,7 +272,55 @@ func TestStoreModelCredentialSelfServiceApproval(t *testing.T) {
 		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID,
 		CandidateRevision: data.Credential.CandidateRevision, CurrentPassword: fixture.password, Confirmed: true,
 	}, &staffApprover, StoreCredentialRequestMeta{}); err == nil {
+		t.Fatal("non-supervisor must not approve a Store credential")
+	}
+	sameUserSupervisor := staffApprover
+	sameUserSupervisor.Roles = []string{constants.RoleCodeTenantAdmin}
+	if _, err := service.Approve(context.Background(), request.DecideStoreModelCredentialRequest{
+		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID,
+		CandidateRevision: data.Credential.CandidateRevision, CurrentPassword: fixture.password, Confirmed: true,
+	}, &sameUserSupervisor, StoreCredentialRequestMeta{}); err == nil {
 		t.Fatal("credential submitter must not approve their own request")
+	}
+	if _, err := service.Reject(request.DecideStoreModelCredentialRequest{
+		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID,
+		CandidateRevision: data.Credential.CandidateRevision, CurrentPassword: fixture.password, Confirmed: true,
+	}, &sameUserSupervisor, StoreCredentialRequestMeta{}); err == nil {
+		t.Fatal("credential submitter must not reject their own request")
+	}
+	for _, errorClass := range []string{"supervisor_role_required", "self_approval_forbidden"} {
+		var failedAuditCount int64
+		if err := fixture.db.Model(&models.StoreModelCredentialAuditLog{}).
+			Where(
+				"tenant_id = ? AND store_id = ? AND action = ? AND result = ? AND error_class = ?",
+				fixture.tenant.ID,
+				fixture.store.ID,
+				enums.CredentialAuditActionApprove,
+				enums.CredentialAuditResultFailure,
+				errorClass,
+			).
+			Count(&failedAuditCount).Error; err != nil {
+			t.Fatal(err)
+		}
+		if failedAuditCount != 1 {
+			t.Fatalf("failed approval audit %s count=%d want=1", errorClass, failedAuditCount)
+		}
+	}
+	var failedRejectAuditCount int64
+	if err := fixture.db.Model(&models.StoreModelCredentialAuditLog{}).
+		Where(
+			"tenant_id = ? AND store_id = ? AND action = ? AND result = ? AND error_class = ?",
+			fixture.tenant.ID,
+			fixture.store.ID,
+			enums.CredentialAuditActionReject,
+			enums.CredentialAuditResultFailure,
+			"self_approval_forbidden",
+		).
+		Count(&failedRejectAuditCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if failedRejectAuditCount != 1 {
+		t.Fatalf("failed rejection self-approval audit count=%d want=1", failedRejectAuditCount)
 	}
 
 	approved, err := service.Approve(context.Background(), request.DecideStoreModelCredentialRequest{
@@ -571,7 +619,10 @@ func setupStoreCredentialFixture(t *testing.T) storeCredentialFixture {
 	if err = db.Create(store).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err = db.Create(&models.StoreStaffBinding{TenantID: tenant.ID, UserID: staffUser.ID, StoreID: store.ID, Status: enums.StatusOk}).Error; err != nil {
+	if err = db.Create(&models.StoreStaffBinding{
+		TenantID: tenant.ID, UserID: staffUser.ID, ActiveUserID: positiveInt64Pointer(staffUser.ID),
+		StoreID: store.ID, Status: enums.StatusOk,
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	profile, slots := createStoreCredentialProfile(t, db, "standard", 1, enums.ModelProfileStatusCandidate)

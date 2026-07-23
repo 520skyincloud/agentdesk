@@ -74,7 +74,10 @@ func TestRemoteSetupEmailCodeVerifiesExistingStoreStaffAccount(t *testing.T) {
 	if err := db.Create(store).Error; err != nil {
 		t.Fatalf("create stable store: %v", err)
 	}
-	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, StoreID: store.ID, Status: enums.StatusOk}
+	binding := &models.StoreStaffBinding{
+		TenantID: 101, UserID: user.ID, ActiveUserID: positiveInt64Pointer(user.ID),
+		StoreID: store.ID, Status: enums.StatusOk,
+	}
 	if err := db.Create(binding).Error; err != nil {
 		t.Fatalf("create store staff binding: %v", err)
 	}

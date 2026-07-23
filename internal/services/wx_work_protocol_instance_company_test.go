@@ -177,7 +177,10 @@ func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing
 	if err := sqls.DB().Create(&models.Store{ID: 31, TenantID: 101, StoreCode: "store-sync", Name: "合肥南七店", KnowledgeBaseID: 202, Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, StoreID: 31, Status: enums.StatusOk}
+	binding := &models.StoreStaffBinding{
+		TenantID: 101, UserID: user.ID, ActiveUserID: positiveInt64Pointer(user.ID),
+		StoreID: 31, Status: enums.StatusOk,
+	}
 	if err := db.Create(binding).Error; err != nil {
 		t.Fatalf("create store staff binding: %v", err)
 	}

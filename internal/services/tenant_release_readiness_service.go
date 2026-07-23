@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
 	fastgptapi "agent-desk/internal/pkg/fastgpt"
 	"agent-desk/internal/repositories"
@@ -336,6 +337,52 @@ func (s *tenantReleaseReadinessService) Audit(
 		options.SampleLimit,
 		"门店缺少已测试、已同步 FastGPT 且已激活的加密 NewAPI Credential",
 	)
+	if options.Level == TenantReleaseReadinessPilot || options.Level == TenantReleaseReadinessTagGray {
+		policies := repositories.StoreCredentialPolicyRepository.FindByTenant(db, tenant.ID)
+		policyByStore := make(map[int64]models.StoreCredentialPolicy, len(policies))
+		for _, policy := range policies {
+			if _, selected := storeByID[policy.StoreID]; selected {
+				policyByStore[policy.StoreID] = policy
+			}
+		}
+		policyFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
+			policy, exists := policyByStore[storeID]
+			return exists &&
+				policy.Status == enums.StatusOk &&
+				policy.AllowCredentialSelfService &&
+				policy.RequireSupervisorApproval
+		})
+		report.addStoreCheck(
+			"store.credential_self_service_policy",
+			storeIDs,
+			policyFailures,
+			options.SampleLimit,
+			"真实灰度门店必须允许唯一门店员工自助录入，并强制公司主管异人审批",
+		)
+
+		approvalAudit, auditErr := repositories.TenantReleaseReadinessRepository.FindCredentialApprovalAuditStates(db, tenant.ID, storeIDs)
+		if auditErr != nil {
+			return nil, fmt.Errorf("read Store credential approval evidence failed: %w", auditErr)
+		}
+		approvalReady := tenantReleaseCredentialApprovalReadiness(approvalAudit)
+		approvalFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
+			credential, exists := credentialByStore[storeID]
+			if !exists || credential.CredentialRevision <= 0 {
+				return false
+			}
+			return approvalReady[tenantReleaseCredentialRevisionKey{
+				StoreID:  storeID,
+				Revision: credential.CredentialRevision,
+			}]
+		})
+		report.addStoreCheck(
+			"evidence.credential_supervisor_approval",
+			storeIDs,
+			approvalFailures,
+			options.SampleLimit,
+			"当前 active Credential revision 缺少门店员工提交及异人公司主管审批的不可变审计证据",
+		)
+	}
 
 	fastGPTStates, err := repositories.TenantReleaseReadinessRepository.FindFastGPTStates(db, tenant.ID, storeIDs)
 	if err != nil {
@@ -510,6 +557,63 @@ func (s *tenantReleaseReadinessService) Audit(
 
 	report.finalize()
 	return report, nil
+}
+
+type tenantReleaseCredentialRevisionKey struct {
+	StoreID  int64
+	Revision int64
+}
+
+type tenantReleaseCredentialSubmission struct {
+	AuditID    int64
+	OperatorID int64
+}
+
+func tenantReleaseCredentialApprovalReadiness(
+	items []repositories.TenantReleaseReadinessCredentialAuditState,
+) map[tenantReleaseCredentialRevisionKey]bool {
+	submissions := make(map[tenantReleaseCredentialRevisionKey][]tenantReleaseCredentialSubmission)
+	ret := make(map[tenantReleaseCredentialRevisionKey]bool)
+	for _, item := range items {
+		if item.StoreID <= 0 || item.ToRevision <= 0 {
+			continue
+		}
+		key := tenantReleaseCredentialRevisionKey{StoreID: item.StoreID, Revision: item.ToRevision}
+		switch item.Action {
+		case enums.CredentialAuditActionSubmit:
+			if item.OperatorID <= 0 ||
+				!tenantReleaseRoleSnapshotContains(item.OperatorRole, constants.RoleCodeStoreStaff) ||
+				(item.Result != enums.CredentialAuditResultPending && item.Result != enums.CredentialAuditResultSuccess) {
+				continue
+			}
+			submissions[key] = append(submissions[key], tenantReleaseCredentialSubmission{
+				AuditID: item.ID, OperatorID: item.OperatorID,
+			})
+		case enums.CredentialAuditActionApprove:
+			if item.Result != enums.CredentialAuditResultSuccess ||
+				item.OperatorID <= 0 ||
+				item.ApproverID != item.OperatorID ||
+				!tenantReleaseRoleSnapshotContains(item.OperatorRole, constants.RoleCodeTenantAdmin) {
+				continue
+			}
+			for _, submission := range submissions[key] {
+				if submission.AuditID < item.ID && submission.OperatorID != item.OperatorID {
+					ret[key] = true
+					break
+				}
+			}
+		}
+	}
+	return ret
+}
+
+func tenantReleaseRoleSnapshotContains(snapshot, roleCode string) bool {
+	for _, item := range strings.Split(snapshot, ",") {
+		if strings.TrimSpace(item) == roleCode {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeTenantReleaseReadinessOptions(options TenantReleaseReadinessOptions) (TenantReleaseReadinessOptions, error) {

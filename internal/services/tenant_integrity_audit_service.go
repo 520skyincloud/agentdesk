@@ -656,6 +656,44 @@ func (s *tenantIntegrityAuditService) auditAgentOrganizationSemantics(
 		return false
 	}
 
+	if available["StoreStaffBinding"] {
+		bindingTable := metadata["StoreStaffBinding"].Table
+		ready := true
+		for _, column := range []string{"user_id", "active_user_id", "status"} {
+			ready = requireColumn(
+				"StoreStaffBinding",
+				bindingTable,
+				column,
+				"门店员工唯一账号绑定审计所需列不存在",
+			) && ready
+		}
+		if ready {
+			if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+				Table: bindingTable, Alias: "c",
+				Where: "c.status = ? AND (c.user_id <= 0 OR c.active_user_id IS NULL OR c.active_user_id <> c.user_id)",
+				Args:  []any{enums.StatusOk}, IDExpr: "c.id",
+			}, sampleLimit, "STORE_STAFF_ACTIVE_OWNER_MISMATCH", "StoreStaffBinding.active_user_id", "启用门店绑定没有占用其唯一系统门店员工账号"); err != nil {
+				return err
+			}
+			if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+				Table: bindingTable, Alias: "c",
+				Where: "c.status <> ? AND c.active_user_id IS NOT NULL",
+				Args:  []any{enums.StatusOk}, IDExpr: "c.id",
+			}, sampleLimit, "STORE_STAFF_INACTIVE_OWNER_OCCUPIED", "StoreStaffBinding.active_user_id", "非启用门店绑定仍占用系统门店员工账号"); err != nil {
+				return err
+			}
+			if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+				Table: bindingTable, Alias: "c",
+				Where: "c.status <> ? AND c.user_id > 0 AND EXISTS (" +
+					"SELECT 1 FROM " + bindingTable + " AS duplicate " +
+					"WHERE duplicate.user_id = c.user_id AND duplicate.id <> c.id AND duplicate.status <> ?)",
+				Args: []any{enums.StatusDeleted, enums.StatusDeleted}, IDExpr: "c.id",
+			}, sampleLimit, "STORE_STAFF_ACCOUNT_MULTIPLE_BINDINGS", "StoreStaffBinding.user_id", "同一系统门店员工账号仍关联多条未软归档门店绑定"); err != nil {
+				return err
+			}
+		}
+	}
+
 	if available["AgentTeamSquadMember"] && available["AgentTeamSquad"] && available["AgentProfile"] {
 		memberTable := metadata["AgentTeamSquadMember"].Table
 		squadTable := metadata["AgentTeamSquad"].Table

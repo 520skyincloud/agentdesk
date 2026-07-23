@@ -566,8 +566,9 @@ type StoreStaffBinding struct {
 	ID                      int64        `gorm:"primaryKey;autoIncrement"`
 	TenantID                int64        `gorm:"type:bigint;not null;default:0;index"`
 	UserID                  int64        `gorm:"type:bigint;not null;default:0;index"`
-	AgentTeamID             int64        `gorm:"type:bigint;not null;default:0;index"` // AgentTeamID 为门店员工所属客服组，0 表示暂未分配。
-	CompanyID               int64        `gorm:"type:bigint;not null;default:0;index"` // CompanyID 为旧公司档案兼容字段；新写入固定为 0。
+	ActiveUserID            *int64       `gorm:"type:bigint;uniqueIndex:uk_store_staff_active_user" json:"-"` // ActiveUserID 仅在启用绑定中等于 UserID，用可空唯一键保证一账号一门店。
+	AgentTeamID             int64        `gorm:"type:bigint;not null;default:0;index"`                        // AgentTeamID 为门店员工所属客服组，0 表示暂未分配。
+	CompanyID               int64        `gorm:"type:bigint;not null;default:0;index"`                        // CompanyID 为旧公司档案兼容字段；新写入固定为 0。
 	StoreID                 int64        `gorm:"type:bigint;not null;default:0;uniqueIndex"`
 	ManagedMode             string       `gorm:"type:varchar(20);not null;default:'semi';index"`
 	ServiceHours            string       `gorm:"type:varchar(200);not null;default:''"`

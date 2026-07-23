@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
 	fastgptapi "agent-desk/internal/pkg/fastgpt"
 
@@ -145,6 +146,57 @@ func TestTenantReleaseReadinessRejectsFutureOrMissingPilotEvidenceWindow(t *test
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot be in the future") {
 		t.Fatalf("future evidence start error=%v", err)
+	}
+}
+
+func TestTenantReleaseReadinessRequiresUniqueStoreAccountAndSupervisorApprovalEvidence(t *testing.T) {
+	fixture := newTenantReleaseReadinessFixture(t)
+	evidenceStart := fixture.now.Add(-10 * time.Minute)
+	fixture.seedPilotEvidence(t, evidenceStart)
+
+	if err := fixture.db.Model(&models.StoreStaffBinding{}).
+		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
+		Update("active_user_id", nil).Error; err != nil {
+		t.Fatalf("clear active Store account ownership: %v", err)
+	}
+	accountReport := fixture.audit(t, TenantReleaseReadinessConfiguration, nil)
+	if !tenantReleaseReadinessHasViolation(accountReport, "STORE_SYSTEM_ACCOUNT") {
+		t.Fatalf("missing active account ownership marker must fail readiness: %#v", accountReport.Violations)
+	}
+	if err := fixture.db.Model(&models.StoreStaffBinding{}).
+		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
+		Update("active_user_id", fixture.account.ID).Error; err != nil {
+		t.Fatalf("restore active Store account ownership: %v", err)
+	}
+
+	if err := fixture.db.Model(&models.StoreCredentialPolicy{}).
+		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
+		Update("require_supervisor_approval", false).Error; err != nil {
+		t.Fatalf("disable supervisor approval policy: %v", err)
+	}
+	policyReport := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
+	if !tenantReleaseReadinessHasViolation(policyReport, "STORE_CREDENTIAL_SELF_SERVICE_POLICY") {
+		t.Fatalf("pilot without mandatory supervisor policy must fail: %#v", policyReport.Violations)
+	}
+	if err := fixture.db.Model(&models.StoreCredentialPolicy{}).
+		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
+		Update("require_supervisor_approval", true).Error; err != nil {
+		t.Fatalf("restore supervisor approval policy: %v", err)
+	}
+
+	if err := fixture.db.Model(&models.StoreModelCredentialAuditLog{}).
+		Where(
+			"tenant_id = ? AND store_id = ? AND action = ?",
+			fixture.tenant.ID,
+			fixture.store.ID,
+			enums.CredentialAuditActionApprove,
+		).
+		Update("operator_role", constants.RoleCodeAdmin).Error; err != nil {
+		t.Fatalf("replace supervisor role snapshot: %v", err)
+	}
+	approvalReport := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
+	if !tenantReleaseReadinessHasViolation(approvalReport, "EVIDENCE_CREDENTIAL_SUPERVISOR_APPROVAL") {
+		t.Fatalf("pilot without company-supervisor audit evidence must fail: %#v", approvalReport.Violations)
 	}
 }
 
@@ -295,6 +347,8 @@ func tenantReleaseReadinessModels() []any {
 		&models.ModelProfileSlot{},
 		&models.StoreModelProfileAssignment{},
 		&models.StoreModelCredential{},
+		&models.StoreCredentialPolicy{},
+		&models.StoreModelCredentialAuditLog{},
 		&models.FastGPTStoreTenant{},
 		&models.KnowledgeBase{},
 		&models.Conversation{},
@@ -404,7 +458,7 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 		t.Fatalf("create readiness Store: %v", err)
 	}
 	if err := db.Create(&models.StoreStaffBinding{
-		TenantID: tenant.ID, UserID: account.ID, StoreID: store.ID,
+		TenantID: tenant.ID, UserID: account.ID, ActiveUserID: positiveInt64Pointer(account.ID), StoreID: store.ID,
 		AgentTeamID: 1, Status: enums.StatusOk, AuditFields: audit,
 	}).Error; err != nil {
 		t.Fatalf("create readiness Store binding: %v", err)
@@ -442,6 +496,32 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 	}
 	if err := db.Create(&credential).Error; err != nil {
 		t.Fatalf("create readiness Credential: %v", err)
+	}
+	if err := db.Create(&models.StoreCredentialPolicy{
+		TenantID: tenant.ID, StoreID: store.ID,
+		AllowCredentialSelfService: true, RequireSupervisorApproval: true,
+		Status: enums.StatusOk, AuditFields: audit,
+	}).Error; err != nil {
+		t.Fatalf("create readiness Credential policy: %v", err)
+	}
+	if err := db.Create(&[]models.StoreModelCredentialAuditLog{
+		{
+			TenantID: tenant.ID, StoreID: store.ID, CredentialID: credential.ID,
+			Action: enums.CredentialAuditActionSubmit, Result: enums.CredentialAuditResultPending,
+			ToRevision: credential.CredentialRevision, OperatorID: account.ID,
+			OperatorName: account.Username, OperatorRole: constants.RoleCodeStoreStaff,
+			CreatedAt: publishedAt.Add(-2 * time.Minute),
+		},
+		{
+			TenantID: tenant.ID, StoreID: store.ID, CredentialID: credential.ID,
+			Action: enums.CredentialAuditActionApprove, Result: enums.CredentialAuditResultSuccess,
+			ToRevision: credential.CredentialRevision, OperatorID: account.ID + 1000,
+			OperatorName: "readiness-supervisor", OperatorRole: constants.RoleCodeTenantAdmin,
+			ApproverID: account.ID + 1000, ApproverName: "readiness-supervisor",
+			CreatedAt: publishedAt.Add(-time.Minute),
+		},
+	}).Error; err != nil {
+		t.Fatalf("create readiness Credential approval audit: %v", err)
 	}
 	knowledge := models.KnowledgeBase{
 		TenantID: tenant.ID, StoreID: store.ID,
