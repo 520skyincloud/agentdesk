@@ -40,6 +40,17 @@ func Init() {
 		}
 	})
 
+	addFunc(c, "@every 10s", func() {
+		count, err := services.ChannelMessageOutboxService.RepairMissingOutboundMessages(100)
+		if err != nil {
+			slog.Warn("repair missing channel message outbox failed", "repaired_count", count, "error", err)
+			return
+		}
+		if count > 0 {
+			slog.Info("missing channel message outbox repaired", "count", count)
+		}
+	})
+
 	addFunc(c, "@every 1s", func() {
 		count := services.AIManualResumeTaskService.ProcessDue(20)
 		if count > 0 {

@@ -387,6 +387,7 @@ func (s *messageService) createAIWelcomeMessage(ctx *sqls.TxContext, conversatio
 			UpdateUserName: operator.Username,
 		},
 	}
+	ChannelMessageOutboxService.PrepareOutboundMessage(ctx.Tx, conversation, message)
 	if err := repositories.MessageRepository.Create(ctx.Tx, message); err != nil {
 		return nil, err
 	}
@@ -496,6 +497,9 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	// 防抖，消息存在就不再发送了
 	if strs.IsNotBlank(clientMsgID) {
 		if existing := repositories.MessageRepository.GetByClientMsgIDInTenant(sqls.DB(), conversation.ID, conversation.TenantID, clientMsgID); existing != nil {
+			if !options.skipOutbound {
+				s.ensureCommittedOutboundMessage(conversation, existing)
+			}
 			return existing, nil
 		}
 	}
@@ -561,6 +565,9 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	}
 
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if !options.skipOutbound {
+			ChannelMessageOutboxService.PrepareOutboundMessage(ctx.Tx, conversation, message)
+		}
 		if err := repositories.MessageRepository.Create(ctx.Tx, message); err != nil {
 			return err
 		}
@@ -624,16 +631,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	if err != nil {
 		return nil, err
 	}
-	logServiceAnalyticsCaptureError("message", conversation.ID, ServiceAnalyticsCaptureService.RecordMessage(message))
-	ConversationEvolutionService.ObserveCommittedMessage(conversation, message)
-
-	// 处理websocket消息
-	WsService.PublishMessageCreated(conversation, message)
-	WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
-
-	if !options.skipOutbound && s.enqueueOutboundChannelMessage(conversation, message) && conversation.ChannelID > 0 && (message.SenderType == enums.IMSenderTypeAgent || message.SenderType == enums.IMSenderTypeAI) {
-		go WxWorkProtocolService.DispatchPendingOutbox(10)
-	}
+	s.publishCommittedMessage(conversation, message)
 
 	if senderType == enums.IMSenderTypeAgent {
 		markRouteMessage := ConversationRouteService.MarkAgentMessage
@@ -743,35 +741,33 @@ func isMediaUnderstandingMessage(messageType enums.IMMessageType) bool {
 	}
 }
 
-func (s *messageService) enqueueOutboundChannelMessage(conversation *models.Conversation, message *models.Message) bool {
-	if conversation == nil || message == nil || conversation.ChannelID <= 0 {
-		return false
+func (s *messageService) publishCommittedMessage(conversation *models.Conversation, message *models.Message) {
+	if conversation == nil || message == nil {
+		return
 	}
-	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), conversation.ChannelID, conversation.TenantID)
-	if channel == nil {
-		return false
+	logServiceAnalyticsCaptureError("message", conversation.ID, ServiceAnalyticsCaptureService.RecordMessage(message))
+	ConversationEvolutionService.ObserveCommittedMessage(conversation, message)
+	s.ensureCommittedOutboundMessage(conversation, message)
+	WsService.PublishMessageCreated(conversation, message)
+	WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
+}
+
+func (s *messageService) ensureCommittedOutboundMessage(conversation *models.Conversation, message *models.Message) {
+	if conversation == nil || message == nil || strings.TrimSpace(message.OutboundChannelType) == "" {
+		return
 	}
-	var err error
-	switch channel.ChannelType {
-	case enums.ChannelTypeWxWorkProtocol:
-		err = ChannelMessageOutboxService.EnqueueWxWorkProtocolMessage(conversation, message)
-	case enums.ChannelTypeWxWorkKF:
-		err = ChannelMessageOutboxService.EnqueueWxWorkKFMessage(conversation, message)
-	case enums.ChannelTypeWxWorkCLI:
-		err = ChannelMessageOutboxService.EnqueueWxWorkCLIMessage(conversation, message)
-	default:
-		return false
-	}
-	if err != nil {
-		slog.Error("enqueue outbound channel message failed",
-			"channel_type", channel.ChannelType,
+	if _, err := ChannelMessageOutboxService.EnsureMarkedOutboundMessage(conversation, message); err != nil {
+		slog.Error("ensure outbound channel message failed",
+			"channel_type", message.OutboundChannelType,
 			"conversation_id", conversation.ID,
 			"message_id", message.ID,
 			"error", err,
 		)
-		return false
+		return
 	}
-	return true
+	if message.OutboundChannelType == enums.ChannelTypeWxWorkProtocol {
+		go WxWorkProtocolService.DispatchPendingOutbox(10)
+	}
 }
 
 // handleReadState 根据发送者类型更新会话已读状态，并返回更新后的客服和客户未读消息数。

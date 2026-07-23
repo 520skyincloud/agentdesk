@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"fmt"
 	"time"
 
 	"agent-desk/internal/models"
@@ -98,6 +99,35 @@ func (r *messageRepository) FindOne(db *gorm.DB, cnd *sqls.Cnd) *models.Message 
 		return nil
 	}
 	return ret
+}
+
+func (r *messageRepository) FindMissingOutboundOutbox(db *gorm.DB, limit int) ([]models.Message, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	messageTable := db.NamingStrategy.TableName("Message")
+	outboxTable := db.NamingStrategy.TableName("ChannelMessageOutbox")
+	missingOutbox := fmt.Sprintf(
+		`NOT EXISTS (
+			SELECT 1 FROM %s AS outbox
+			WHERE outbox.tenant_id = message.tenant_id
+			  AND outbox.channel_type = message.outbound_channel_type
+			  AND outbox.message_id = message.id
+		)`,
+		outboxTable,
+	)
+	ret := make([]models.Message, 0)
+	err := db.Table(messageTable+" AS message").
+		Where("message.outbound_channel_type <> ''").
+		Where("message.sender_type IN ?", []enums.IMSenderType{
+			enums.IMSenderTypeAgent,
+			enums.IMSenderTypeAI,
+		}).
+		Where(missingOutbox).
+		Order("message.id ASC").
+		Limit(limit).
+		Find(&ret).Error
+	return ret, err
 }
 
 func (r *messageRepository) FindFirstAgentReplyAtForActiveAssignments(db *gorm.DB, tenantID int64, conversationIDs []int64) ([]ConversationFirstAgentReplyRow, error) {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/openidentity"
 
@@ -189,6 +190,170 @@ func TestConversationCreateCreatesAIWelcomeMessage(t *testing.T) {
 	}
 }
 
+func TestConversationCreatePersistsWelcomeOutboundIntentAndOutbox(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	if err := db.Create(&models.Channel{
+		ID:          12,
+		TenantID:    101,
+		Name:        "企微 CLI",
+		ChannelType: enums.ChannelTypeWxWorkCLI,
+		ChannelID:   "welcome-outbound",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create outbound channel: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "欢迎来到丽斯文旅")
+
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("welcome-outbound"), 12, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	var message models.Message
+	if err := db.Where("conversation_id = ?", conversation.ID).First(&message).Error; err != nil {
+		t.Fatalf("find welcome message: %v", err)
+	}
+	if message.OutboundChannelType != enums.ChannelTypeWxWorkCLI {
+		t.Fatalf("outbound channel type=%q want %q", message.OutboundChannelType, enums.ChannelTypeWxWorkCLI)
+	}
+	var outbox models.ChannelMessageOutbox
+	if err := db.Where("tenant_id = ? AND channel_type = ? AND message_id = ?", 101, enums.ChannelTypeWxWorkCLI, message.ID).First(&outbox).Error; err != nil {
+		t.Fatalf("find welcome outbox: %v", err)
+	}
+}
+
+func TestSendMessageClientMsgIDRetryRepairsMissingOutbox(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	if err := db.Create(&models.Channel{
+		ID:          12,
+		TenantID:    101,
+		Name:        "企微 CLI",
+		ChannelType: enums.ChannelTypeWxWorkCLI,
+		ChannelID:   "retry-outbound",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create outbound channel: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("retry-outbound"), 12, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	operator := &dto.AuthPrincipal{UserID: 1, Username: "system", ActiveTenantID: 101}
+	message, err := MessageService.SendAIMessageWithRequestID(
+		conversation.ID,
+		aiAgent.ID,
+		"stable-outbound-message",
+		enums.IMMessageTypeText,
+		"这是一条稳定回复",
+		"",
+		operator,
+		"request-outbound",
+	)
+	if err != nil {
+		t.Fatalf("send AI message: %v", err)
+	}
+	if message.OutboundChannelType != enums.ChannelTypeWxWorkCLI {
+		t.Fatalf("outbound channel type=%q want %q", message.OutboundChannelType, enums.ChannelTypeWxWorkCLI)
+	}
+	if err := db.Where("message_id = ?", message.ID).Delete(&models.ChannelMessageOutbox{}).Error; err != nil {
+		t.Fatalf("delete outbox to simulate post-commit loss: %v", err)
+	}
+
+	retried, err := MessageService.SendAIMessageWithRequestID(
+		conversation.ID,
+		aiAgent.ID,
+		"stable-outbound-message",
+		enums.IMMessageTypeText,
+		"这是一条稳定回复",
+		"",
+		operator,
+		"request-outbound-retry",
+	)
+	if err != nil {
+		t.Fatalf("retry AI message: %v", err)
+	}
+	if retried.ID != message.ID {
+		t.Fatalf("retry message id=%d want original %d", retried.ID, message.ID)
+	}
+	var messageCount int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ?", conversation.ID).Count(&messageCount).Error; err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if messageCount != 1 {
+		t.Fatalf("message count=%d want 1", messageCount)
+	}
+	var outboxCount int64
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("message_id = ?", message.ID).Count(&outboxCount).Error; err != nil {
+		t.Fatalf("count repaired outbox: %v", err)
+	}
+	if outboxCount != 1 {
+		t.Fatalf("outbox count=%d want 1", outboxCount)
+	}
+}
+
+func TestRepairMissingOutboundMessagesIsIdempotent(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	if err := db.Create(&models.Channel{
+		ID:          12,
+		TenantID:    101,
+		Name:        "企微 CLI",
+		ChannelType: enums.ChannelTypeWxWorkCLI,
+		ChannelID:   "repair-outbound",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create outbound channel: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("repair-outbound"), 12, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	message, err := MessageService.SendAIMessageWithRequestID(
+		conversation.ID,
+		aiAgent.ID,
+		"repair-outbound-message",
+		enums.IMMessageTypeText,
+		"等待补偿",
+		"",
+		&dto.AuthPrincipal{UserID: 1, Username: "system", ActiveTenantID: 101},
+		"request-repair",
+	)
+	if err != nil {
+		t.Fatalf("send AI message: %v", err)
+	}
+	if err := db.Where("message_id = ?", message.ID).Delete(&models.ChannelMessageOutbox{}).Error; err != nil {
+		t.Fatalf("delete outbox to simulate loss: %v", err)
+	}
+
+	repaired, err := ChannelMessageOutboxService.RepairMissingOutboundMessages(10)
+	if err != nil {
+		t.Fatalf("repair missing outbox: %v", err)
+	}
+	if repaired != 1 {
+		t.Fatalf("repaired=%d want 1", repaired)
+	}
+	repaired, err = ChannelMessageOutboxService.RepairMissingOutboundMessages(10)
+	if err != nil {
+		t.Fatalf("repeat repair missing outbox: %v", err)
+	}
+	if repaired != 0 {
+		t.Fatalf("repeat repaired=%d want 0", repaired)
+	}
+	var outboxCount int64
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("message_id = ?", message.ID).Count(&outboxCount).Error; err != nil {
+		t.Fatalf("count repaired outbox: %v", err)
+	}
+	if outboxCount != 1 {
+		t.Fatalf("outbox count=%d want 1", outboxCount)
+	}
+}
+
 func TestSendCustomerMessageStoresRequestIDOnMessageAndEvent(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	aiAgent := createWelcomeTestAIAgent(t, db, "")
@@ -264,6 +429,16 @@ func TestCreateExternalAgentMessageWithoutOutboxMarksStoreManualHandled(t *testi
 	}
 	if outboxCount != 0 {
 		t.Fatalf("expected self echo to avoid outbound outbox, got %d", outboxCount)
+	}
+	if message.OutboundChannelType != "" {
+		t.Fatalf("expected self echo to have no outbound intent, got %q", message.OutboundChannelType)
+	}
+	repaired, err := ChannelMessageOutboxService.RepairMissingOutboundMessages(10)
+	if err != nil {
+		t.Fatalf("repair missing outbox: %v", err)
+	}
+	if repaired != 0 {
+		t.Fatalf("expected self echo to stay excluded from repair, repaired=%d", repaired)
 	}
 }
 

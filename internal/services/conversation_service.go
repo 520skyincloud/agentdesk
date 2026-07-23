@@ -228,8 +228,7 @@ func (s *conversationService) createWithProfile(externalUser openidentity.Extern
 	WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationCreated)
 	if welcomeMessage != nil {
 		if updatedConversation := s.Get(conversation.ID); updatedConversation != nil {
-			WsService.PublishMessageCreated(updatedConversation, welcomeMessage)
-			WsService.PublishConversationChanged(updatedConversation, enums.IMRealtimeEventConversationUpdated)
+			MessageService.publishCommittedMessage(updatedConversation, welcomeMessage)
 		}
 	}
 

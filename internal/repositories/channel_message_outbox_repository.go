@@ -9,6 +9,7 @@ import (
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ChannelMessageOutboxRepository = newChannelMessageOutboxRepository()
@@ -93,6 +94,20 @@ func (r *channelMessageOutboxRepository) Count(db *gorm.DB, cnd *sqls.Cnd) int64
 func (r *channelMessageOutboxRepository) Create(db *gorm.DB, t *models.ChannelMessageOutbox) (err error) {
 	err = db.Create(t).Error
 	return
+}
+
+func (r *channelMessageOutboxRepository) CreateIfAbsent(db *gorm.DB, t *models.ChannelMessageOutbox) (bool, error) {
+	result := db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "channel_type"},
+			{Name: "message_id"},
+		},
+		DoNothing: true,
+	}).Create(t)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func (r *channelMessageOutboxRepository) Update(db *gorm.DB, t *models.ChannelMessageOutbox) (err error) {
