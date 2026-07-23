@@ -55,10 +55,11 @@ docker compose --env-file "/absolute/secure/production.env" run --rm --no-deps \
 先完成以下事实：
 
 1. 同一发布镜像的 B13 `tag_gray` 报告为 `passed`，报告明确包含迁移后重新解析的 pilot Store ID。
-2. 正式 `8083` 和全部 worker 已停止，配置中 `backgroundWorkers.enabled=false`。
-3. 加密备份位于仓库外、权限受限且已有预记录 SHA-256。
-4. 备份已经恢复到不同数据库端点；源库和恢复库的 Schema、数据及 migration 指纹完全一致。
-5. 当前源库仍与恢复报告中的备份源快照完全一致。
+2. 同一报告中的 `store.credential_self_service_policy` 和 `evidence.credential_supervisor_approval` 均通过，证明当前 active revision 来自唯一门店员工提交及异人公司主管审批。
+3. 正式 `8083` 和全部 worker 已停止，配置中 `backgroundWorkers.enabled=false`。
+4. 加密备份位于仓库外、权限受限且已有预记录 SHA-256。
+5. 备份已经恢复到不同数据库端点；源库和恢复库的 Schema、数据及 migration 指纹完全一致。
+6. 当前源库仍与恢复报告中的备份源快照完全一致。
 
 安全目录父级必须为 `0700`，报告和备份必须为 `0600`。`operation-dir` 必须位于 Git 仓库外且尚不存在。
 

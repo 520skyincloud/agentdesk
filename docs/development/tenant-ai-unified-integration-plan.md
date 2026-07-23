@@ -1414,6 +1414,18 @@ git diff --check
 - NewAPI 与发布顺序：NewAPI Key 不进入环境文件、聊天、Migration 或旧 Credential 搬运。最终 Store 解析后由实际 Key 持有人在统一门店凭据页面重新提交，再由不同公司主管审批并重跑九槽、FastGPT sync、真实回复、转人工、规则派单、行业标签、Request ID 人民币账单和恢复验收。上述证据完成前 B13 保持 `No-Go`，不得切换正式 `8083`，不得运行 B14 `prepare/execute`。
 - 共享影响：本轮只复核仓库外秘密元数据和外部端点，并更新合并交接文档；不修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、权限、WebSocket、AI Runtime、Credential、FastGPT 请求、Billing、人工任务池、规则派单或前端。来源分支未前移，无需 rebase；建议仍按统一分支现有 B0-B14 提交顺序审阅。
 
+### 25.24 2026-07-23 B13-K 唯一门店账号与异人凭据审批硬门禁
+
+- 代码提交：`88ae928527a266456e16e9eb263c041a55f7497c`。提交前再次执行 `git fetch origin --prune`；统一分支远端与本地基线均为 `e9e72f577d03ac8d5c1a078f65e9140d53ad0713`，固定来源仍为 `origin/main@e67e20721574b6d3298bb0a1c4749da02ff0b949`、`origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563` 和 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`。三个来源均未前移，无需 rebase，本批只落在唯一统一分支。
+- 一对一数据库约束：`StoreStaffBinding` 增加只在启用状态占用的可空 `ActiveUserID`，并以 `uk_store_staff_active_user` 保证一个系统门店员工账号最多占用一个活动 Store；停用、删除和历史归档时必须清空。Migration `76` 先清空旧占用，再按启用优先、ID 稳定排序保留一个绑定；重复绑定仅软归档，失效或跨 Tenant 账号的绑定被停用，其企微实例同步停用。迁移不物理删除业务数据，不硬编码来源 Store ID `3` 或默认 `301`，也没有扩大 B14 固定 7 表、5 列、4 索引白名单。
+- 运行时边界：新建、恢复、停用、用户角色生命周期、企微远程绑定、门店工作台和测试种子统一维护或校验占用标记。门店凭据自助提交同时要求当前 Store 唯一活动绑定、`store_staff` 角色、现有可见权限和 Tenant/Store 范围；仅持有权限但不占用该 Store 的账号不能录入。
+- 异人审批：自助候选的批准和拒绝只允许同 Tenant 的 `tenant_admin` 公司主管，平台账号、普通客服或门店员工均不能代替；提交人即使临时具备主管角色也不能处理自己的申请。角色不足、自审批和密码复核失败均写入不含秘密的 append-only 失败审计，自审批使用稳定错误分类 `self_approval_forbidden`，不会改变 candidate 或旧 active revision。
+- 发布门禁：configuration readiness 现在要求活动绑定的 `ActiveUserID == UserID`。pilot/tag_gray 额外要求 `AllowCredentialSelfService=true`、`RequireSupervisorApproval=true`，并从当前 active Credential revision 的不可变审计中证明先有 `store_staff` 提交，再有不同操作者、`ApproverID == OperatorID` 的 `tenant_admin` 成功审批。B14 使用的 `tag_gray` 报告因此不能由来源 revision、管理员直录或同人审批冒充。
+- 完整性审计：新增 `STORE_STAFF_ACTIVE_OWNER_MISMATCH`、`STORE_STAFF_INACTIVE_OWNER_OCCUPIED` 和 `STORE_STAFF_ACCOUNT_MULTIPLE_BINDINGS`，分别识别启用绑定缺占用、非启用绑定仍占用和同账号多条未归档绑定；原门店员工角色、Tenant、Store 和客服组关系审计继续生效。
+- 数据库与工程验证：Migration `76` 在 SQLite 和全新隔离 MySQL 8.4 上完成首次、幂等、软归档及可空唯一索引验证，临时 MySQL 容器已删除。`go test ./... -count=1`、`go vet ./...`、涉及 Credential/readiness/integrity/migration 的定向 race、前端 TypeScript、149 项前端测试、ESLint `0 error / 33` 个既有 warning、SDK、46 页面生产构建、仓库秘密扫描及仓库外安全文件的 `docker compose ... config --quiet` 均通过。
+- 共享契约与回滚：本批修改共享 model、AutoMigrate 索引、DML migration、Credential service、readiness repository/service 和审计测试；未修改 DTO、enum 值、HTTP 路由、权限码、WebSocket、AI Prompt/Schema/Runtime、FastGPT 请求、Billing、人工任务池、规则派单或前端页面。Migration `76` 一旦在目标库执行，旧应用不会维护 `ActiveUserID`，不得只回退应用；必须继续运行本提交或在受控停机和完整备份下整体修复 Schema/数据。B14 前仍可在未执行该迁移的环境整体回退本提交。
+- 当前判定：工程门禁完成不等于 B13 现场完成。FastGPT HTTPS、目标 MySQL 握手、最终 pilot Store 解析、实际 Key 持有人重录、真实九槽/FastGPT/回复/转人工/规则派单/标签/账单以及正式加密备份独立恢复证据仍未完成。B13 保持 `No-Go`，正式 `8083` 未切换，B14 `prepare/execute` 继续禁止。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B13-B14 实施和验收证据。

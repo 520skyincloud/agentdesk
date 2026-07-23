@@ -15,7 +15,20 @@
 
 用户不需要在聊天、Issue、PR、Markdown 或 Git 中提供任何真实密钥。真实值只能由授权人员写入目标环境的秘密管理器、权限为 `0600` 且被 Git 忽略的本地 `.env`，或通过门店凭据页面提交。
 
-当前灰度还需要用户确认一个**非秘密信息**：丽斯未来具体使用哪一家门店作为 pilot Store。不得默认选择 Store `301`。
+当前 pilot 已冻结为 Tenant“丽斯文旅”下的 Store“高铁南站店”。来源库 Store ID `3`
+只作迁移定位线索；统一库必须按 Tenant、Store 名称和绑定关系重新解析最终 Store ID，
+不得硬编码 `3`，也不得默认 `301`。
+
+该 Store 的策略也已冻结：
+
+- `AllowCredentialSelfService=true`：仅允许该 Store 唯一活动绑定、持有
+  `store_staff` 角色和对应权限的门店员工录入。
+- `RequireSupervisorApproval=true`：提交后必须由同 Tenant、不同于提交人的公司主管审批。
+
+16 项部署变量已通过仓库外安全文件完成结构、权限、校验和与 Compose 解析复核，但
+B13 仍为 `No-Go`：FastGPT 当前地址尚未满足生产 HTTPS 门禁，目标 MySQL 尚未返回
+有效协议握手，NewAPI Key 也必须由实际持有人在统一系统凭据页面重新录入。来源
+Credential revision、测试状态和同步状态只作迁移对照，不能替代统一环境的新审计证据。
 
 ## 2. 丽斯未来灰度最小清单
 
@@ -305,14 +318,15 @@ docker compose --env-file "/absolute/secure/path/production.env" up -d --build
 
 ## 10. B13 现场交付顺序
 
-1. 用户只确认 pilot Store 的名称或 ID，以及该 Store 是否允许凭据自助、是否需要主管审批。
-2. 平台运维在目标环境生成并保管部署秘密，不在聊天中传值。
-3. FastGPT 负责人通过受控渠道交付 Base URL 和 Integration Token。
-4. 启动隔离预检实例，验证生产配置门禁、登录、权限和旧 API `404`。
-5. 平台发布完整九槽 Model Profile，并指派给 pilot Store。
-6. NewAPI Key 所有者在门店凭据页面提交 Key，完成九槽测试、FastGPT 同步和审批。
-7. 完成真实 FastGPT 检索、AI 回复、转人工、规则派单、行业标签、Request ID 人民币账单和备份恢复证据。
-8. 全部 readiness 通过前，不切换正式 `8083`，不执行 B14 物理删表。
+1. 保持现有安全文件受限保管，不重新生成或替换已绑定现有密文的主密钥；只在受控渠道更新修复后的配置并重新固定校验和。
+2. FastGPT 负责人提供同环境 HTTPS Base URL；数据库负责人恢复目标 MySQL 协议握手和受控访问。
+3. 在隔离升级库按“丽斯文旅 / 高铁南站店”业务身份解析最终 Store ID，来源 ID `3` 不进入代码或默认参数。
+4. 为最终 Store 设置已冻结的自助录入和异人主管审批策略，并确认唯一活动门店员工账号。
+5. 平台发布完整九槽 Model Profile，并指派给最终 Store。
+6. NewAPI Key 实际持有人在门店凭据页面重新提交 Key，由不同公司主管审批，再完成九槽测试和 FastGPT 同步。
+7. 完成真实 FastGPT 检索、AI 回复、转人工、规则派单、行业标签及 Request ID 人民币账单证据。
+8. 停止正式 `8083` 和全部 worker，完成仓库外加密备份及独立恢复验证，并取得通过的 `tag_gray` 报告。
+9. 上述全部 readiness 通过前，不切换正式 `8083`，不执行 B14 `prepare` 或 `execute`。
 
 B14 的固定白名单、三阶段命令、一次性令牌和失败恢复要求见
 [`docs/deployment/b14-schema-cleanup.md`](b14-schema-cleanup.md)。该工具可随发布镜像构建，但当前
