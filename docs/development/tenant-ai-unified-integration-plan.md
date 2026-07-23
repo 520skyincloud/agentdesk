@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B11 已完成；下一步为 B12 旧运行链全链删除。B11 定向竞态和完整 AI Runtime 竞态已通过，全量 services 竞态套件仍需在 B12 前切分定位，不计为全局通过。
+> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成；下一步为 B13 丽斯未来真实灰度。B12 全量 Go、服务层 race、前端、构建、旧链静态审计和 Migration 075 双数据库门禁均已通过。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -584,6 +584,7 @@ Tenant 可配置静默时间、置信阈值和每轮操作上限；静默时间�
 - 租户默认模型、企微员工号模型覆盖和所有 fallback；
 - `StoreAIModelSetting` 活动模型分配；
 - `ConversationTag` 和运营分析 `TagIDsJSON` 会话标签；
+- `KnowledgeDocument`、`KnowledgeFAQ`、`KnowledgeChunk` 本地知识实体及其 Qdrant、分块、向量索引和本地检索 fallback；
 - 旧 `/conversation/add_tag`、`/conversation/remove_tag`；
 - 旧 AIConfigID 在 AIAgent、RunLog、Usage 和前端 DTO 中的活动语义；
 - 只服务上述概念的 repository、service、handler、builder、DTO、API caller、页面、组件、导航、文案和测试。
@@ -597,6 +598,9 @@ t_ai_config
 t_tenant_ai_model_grant
 t_store_ai_model_setting
 t_conversation_tag
+t_knowledge_document
+t_knowledge_faq
+t_knowledge_chunk
 conversation_service_session.tag_ids_json
 活动表中只属于旧 resolver 的 ai_config_id 列
 ```
@@ -828,7 +832,7 @@ POST /api/dashboard/customer-tag/runtime/batch_toggle
 4. 模型：建立默认 Profile 九槽、Store Assignment；不迁移旧 AIConfig APIKey。
 5. 凭据：新 StoreModelCredential 默认 unconfigured，由用户重新配置。
 6. FastGPT：按新 Profile 生成 target revision 并输出 readiness。
-7. 标签：按 Tenant 行业实例化固定目录；删除所有旧 ConversationTag/TagIDsJSON 数据，不迁移。
+7. 标签与知识：按 Tenant 行业实例化固定目录；删除所有旧 ConversationTag/TagIDsJSON 数据，不迁移；本地 Document/FAQ/Chunk 只作为历史升级输入，不迁入 FastGPT。
 8. Runtime：切换唯一 resolver、完整 AI Runtime 和新 API/UI。
 9. 静态证明：旧 caller、route、repository、model registration 和构建路由为零。
 10. 停机备份后执行独立 Schema Cleanup，物理删除旧表/列。
@@ -927,7 +931,7 @@ web/messages/en-US.json
 | B9 | 行业标签实例、客户标签关系和 UI | 固定目录、Store 隔离、人工保护、6 上限 |
 | B10 | Evolution worker | due/lease/retry/new-message race |
 | B11 | Reply 标签上下文和批量开关 | 无新增模型调用、Generate 门禁回归 |
-| B12 | 旧 API/UI/service/model 全链删除 | 静态搜索、旧接口 404、构建无旧页面 |
+| B12 | 旧 API/UI/service/model 与本地知识链全链删除 | 静态搜索、旧接口 404、构建无旧页面 |
 | B13 | 丽斯未来真实 readiness 与灰度 | 8083、真实 NewAPI/FastGPT/回复/账单 |
 | B14 | 停机 Schema Cleanup 与发布候选 | 备份恢复、SQLite/MySQL 最终 Schema 一致 |
 
@@ -1055,6 +1059,7 @@ git diff --check
 - 行业决定 IntentDetect Prompt、Schema、分类和固定标签目录；
 - Model Profile/九槽/Store Assignment/Store Credential 是唯一模型系统；
 - AIConfig、TenantAIModelGrant、StoreAIModelSetting、ConversationTag 代码和物理表均不存在；
+- 本地 KnowledgeDocument/KnowledgeFAQ/KnowledgeChunk、Qdrant 和本地向量 fallback 的活动代码与物理表均不存在；
 - FastGPT 和 AI Reply Runtime 与固定 ai-billing 最新基线一致；
 - 客户标签按 Store 隔离、每客最多 6 个、Tenant 只能开关和设置显示别名；
 - AI 失败和明确转人工只进入现有规则派单；
@@ -1139,7 +1144,7 @@ git diff --check
 - API 与数据暴露：平台 Profile API 返回网关、槽、Prompt 和 Schema，仅平台账号且拥有 `aiConfig.view/update` 才可调用；Store 指派 API 再按 ActiveTenant 强制 Tenant 上限。Tenant 和门店侧只得到方案名、模型名、revision、pending/active 与 readiness，不得到 Provider、BaseURL、Prompt、Schema 或密钥。未修改 WebSocket 契约。
 - 权限：继续复用全局权限派发制中的 `aiConfig.view` 与 `aiConfig.update`，不建立隐藏权限或用户直绑权限；平台内部方案管理额外校验平台账号，Tenant 操作强制限定当前 Tenant。旧 `aiConfig.create/delete`、`tenantModelGrant.*` 和 `tenantModelAssignment.*` 已从权限种子及平台默认角色移除。
 - Migration 069：幂等建立 `standard` 九槽 Profile，但只迁移可公开的网关、模型名和模型参数，绝不迁移旧 `AIConfig.APIKey`，也不自动创建 Store Credential。结构完整时仅提交为 candidate；同时禁用并解绑上述废弃权限。回归测试证明后续 `ensurePermissions/ensureRolePermissions` 不会重新启用或重新绑定废弃权限。
-- 前端：原 `/dashboard/ai-configs` 升级为平台九槽方案和 revision 工作区；“接入公司”三点菜单中的旧模型授权改为“门店模型指派”，支持门店搜索、筛选范围全选/取消、批量指派和二次确认。租户没有平台方案内部入口，空模型槽显示“待填写模型”，桌面和移动弹窗使用稳定宽度与滚动边界。
+- 前端：平台九槽方案和 revision 工作区统一使用 `/dashboard/model-profiles`；旧 `/dashboard/ai-configs` 不再作为页面入口。“接入公司”三点菜单中的旧模型授权改为“门店模型指派”，支持门店搜索、筛选范围全选/取消、批量指派和二次确认。租户没有平台方案内部入口，空模型槽显示“待填写模型”，桌面和移动弹窗使用稳定宽度与滚动边界。
 - 数据库验证：SQLite fresh/历史 Migration 069、幂等重跑、九槽约束、候选指派不覆盖 active、无旧密钥迁移和权限耐久测试通过；临时 MySQL 8.4 完成 Migration 069 首次运行与幂等验证，临时库和账号已删除。
 - 代码验证：`go test ./...`、`go vet ./...`、`git diff --check` 全部通过。沙箱内首次全量 Go 测试仅因既有 FastGPT `httptest` 无权监听随机端口失败；同一命令在允许本地监听的环境复跑通过，代码断言无失败。
 - 前端验证：`tsc --noEmit --incremental false`、B3 文件聚焦 ESLint、139 项 `*.test.mjs` 和 `next build --webpack` 全部通过。
@@ -1277,9 +1282,23 @@ git diff --check
 - 共享契约与合并顺序：本批修改显式路由、权限元数据、Migration 074、DTO、repository、Store 生命周期、客户标签读取门禁、WebSocket enum/payload、`web/lib/api/admin.ts`、标签页面和中英文资源；未修改 Prompt/Schema、模型 resolver、Credential、Usage/Billing、FastGPT、人工任务池或规则派单语义。B11 必须位于 B10 `a23d62f` 之后，B12-B14 继续建立在 `5f44ca4` 之后。
 - 回滚边界：B12 前可先回滚前端 `5f44ca4`，再回滚后端 `02507f0`。Migration 074 已创建的 Store 策略行和权限元数据可以留库但旧应用不会读取；回滚应用前必须先关闭 Evolution 与 ReplyTagContext，禁止恢复旧 ConversationTag、第二套 worker 或 AIConfig fallback。隔离服务、临时配置、数据库和浏览器验收标签均已清理，未触碰既有 `8083` 数据服务。
 
+### 25.13 2026-07-23 B12 旧运行链全链退出
+
+- 代码提交：`e6d738f85cdf5e6fee36901a220854da98d4d85e`。实施前、提交前均执行 `git fetch origin --prune`；Tenant 骨架仍固定为 `origin/codex/tenant-ai-integration@1e8e95c91307d01a556c83ed43ea500e553e4563`，AI 行为来源仍固定为 `origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`，`origin/main` 仍为 `e67e20721574b6d3298bb0a1c4749da02ff0b949`，三个来源均未前移。
+- 模型旧链：删除活动 `AIConfig`、`TenantAIModelGrant`、`StoreAIModelSetting`、旧 AIConfig adapter、repository/service/handler/builder/DTO/route/client/testdata 和全部 fallback；运行时瞬态配置统一命名为 `ModelConfig`，只由 Store Profile Assignment、active Credential 和唯一 Resolver 构造，不改变 B7 固定的 ai-billing Prompt、Schema、状态机或调用行为。
+- 标签旧链：删除 `ConversationTag` model/repository/service/API/DTO/页面 caller 和运营事实 `TagIDsJSON` 活动语义；旧 add/remove tag 接口真实 404。客户标签继续只由 B9 的 `StoreCustomerRelation`、行业固定目录、人工保护、互斥规则和每客 6 个上限承载。
+- 知识旧链：删除本地 `KnowledgeDocument/KnowledgeFAQ/KnowledgeChunk` 活动 model、CRUD、页面、分块、Qdrant、本地向量索引、rerank 和 fallback；知识页面只保留 Store 级托管 FastGPT Dataset/Profile/readiness、检索日志、反馈、知识候选和人工审核。历史 `KnowledgeRetrieveHit` 的 FAQ/Document 展示字段仅是已产生审计证据，不参与检索或回退。
+- Schema 边界：上述七张旧表已退出 `models.Models` 和运行时类型，仅在 `internal/migration/legacy_ai_models.go` 与 `legacy_knowledge_models.go` 以私有 migration-only 视图读取历史升级输入。B12 不执行破坏性 DDL；B14 停机备份后物理删除 `t_ai_config`、`t_tenant_ai_model_grant`、`t_store_ai_model_setting`、`t_conversation_tag`、`t_knowledge_document`、`t_knowledge_faq`、`t_knowledge_chunk` 及经 Schema 审计确认的专属旧列。
+- API、权限与页面：旧模型授权、企微模型覆盖、本地知识 CRUD 和会话标签路由全部注销；平台模型工作区迁至 `/dashboard/model-profiles`，`/dashboard/ai-configs` 不再构建。`aiConfig.view/update` 作为经确认的兼容权限码继续管理行业、Profile、Assignment 和 Credential；Migration 075 幂等禁用本地 Document/FAQ 权限并清除角色绑定。平台权限 helper 纳入 Handler 静态契约审计，不放宽平台账号、Tenant 或 Store 数据范围。
+- 合法保留：`AIAgent` 仍是渠道、会话、运行日志和人工交接真实引用的内部运行身份，不恢复旧独立“智能客服”产品或模型配置；`AgentRunLog` 仍由当前 Reply Runtime 写入且只向有权平台账号开放；历史派单统计值只读保留，不恢复模型选人。
+- 验证：`go test ./... -count=1`、`go vet ./...`、`go test -race ./internal/services/... -count=1 -timeout 30m`（`587.124s`）、全部 55 个前端 `*.test.mjs` 文件、无增量 TypeScript、ESLint `0 error / 33 warning`、SDK 构建、46 页面 Turbopack 生产构建、`docker compose config --quiet`、`gofmt -d` 和 `git diff --check` 全部通过。Migration 059/064/069/075 的 SQLite 场景及 Migration 075 MySQL 8.4 首次、幂等场景通过；旧 API 404、活动源码零引用、无 Qdrant/本地向量 caller 和无真实密钥新增均有静态或自动化证据。
+- 共享契约：本批修改 model registration、历史 migration 读取结构、显式路由、权限元数据、DTO、回复运行时配置命名、FastGPT-only 知识契约、`web/lib/api`、导航与中英文资源；没有修改九槽语义、Credential 加密、NewAPI 计费口径、AI 转人工判定、人工任务池、规则派单、公平债务或 Tenant/Store 隔离上限。
+- 合并与回滚：B12 必须位于 B11 `5f44ca4` 之后，B13-B14 继续建立在 `e6d738f` 之后。B14 前可整体回滚 B12 应用提交，但 Migration 059/075 已清空或禁用的旧秘密与权限不会自动恢复，禁止把旧链当生产 fallback；B14 后只能恢复 cleanup 前整库备份并整体回退发布，不能恢复任一旧表形成双运行链。
+- 后续边界：B13 只做丽斯未来在 `8083` 的真实 NewAPI Credential、九槽 readiness、FastGPT、完整回复、转人工规则派单、标签与账单对账；B14 才执行停机 Schema Cleanup、SQLite/MySQL 最终快照一致性、备份恢复演练和发布候选门禁。
+
 ## 26. 用户最终 1-48 项决定追溯
 
-本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B12-B14 实施和验收证据。
+本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B13-B14 实施和验收证据。
 
 | 编号 | 最终解释 | 权威落点 |
 | --- | --- | --- |
