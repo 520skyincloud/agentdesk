@@ -1552,6 +1552,15 @@ git diff --check
 - B14 约束：业务批准仍有效，但只有 B13 全部验收后才能执行；固定 `7 表、5 列、4 索引` 白名单不得扩大，`StoreCustomerTagDecision` 等统一新表不进入删除范围。延期期间禁止正式 `prepare/execute`。
 - 共享与回滚：本条只更新权威方案、生产秘密手册、manifest 和 PR 交接，不修改 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、AI Runtime、Credential、Billing、FastGPT、客户标签、人工任务池或规则派单。文档可以回滚，但不能借回滚删除生产门禁。
 
+### 25.36 2026-07-24 B13-U 统一 PR 合并 CI
+
+- 触发原因：Draft PR #3 在 GitHub 可判定无冲突，但仓库没有任何状态检查；`MERGEABLE` 只能证明 Git 合并图成立，不能证明第 21 节固定测试、前端构建、manifest 和交付物边界仍成立。
+- 实现：新增唯一 `.github/workflows/unified-integration-ci.yml`，只在面向 `main` 的 PR 和人工 `workflow_dispatch` 运行。`repository-contract` 校验完整 PR diff、manifest 固定 8 列/路径唯一、无受控环境文件/数据库/密钥文件和无新增 `docs/generated` 报告；Go job 执行全量测试与 vet；race 按 AI、services、repositories 三组并行；Web job 逐个执行 55 个 `*.test.mjs`，再执行 typecheck、lint、SDK 和生产构建。
+- 环境与确定性：Go 版本读取 `go.mod`，Node 固定 24，pnpm 固定本地已验证的 `11.9.0` 并使用 frozen lockfile。Go 测试仅创建最小未跟踪 SPA embed fixture，真实前端产物由独立 Web job 构建；不把构建目录提交到 Git。
+- 本地预检：`actionlint v1.7.7`、PR/人工触发两种 diff 基线、manifest 8 列与路径唯一、敏感产物规则、55 个前端契约文件、typecheck、SDK 和 45 页面生产构建均通过；ESLint 为 `0 error / 33 个既有 warning`。本批提交前一轮 AI/services/repositories 全量 race 已通过，GitHub 首次运行结果必须在推送后单独核对。
+- 秘密与现场边界：CI 权限只有 `contents: read`，不注入仓库或环境 secrets，不访问生产 NewAPI、FastGPT、MySQL、来源备份或 `8083`，不运行 Tenant 现场 readiness、迁移、部署或 B14。外部集成测试继续按既有环境变量显式 opt-in，CI 通过绝不解除 Draft / `No-Go`。
+- 共享与回滚：本批只新增 workflow 并更新权威方案与 manifest；没有 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、AI Runtime、Credential、Billing、FastGPT、标签、人工任务池或规则派单变化。CI 可独立回滚，不影响应用运行与数据库，但回滚后 PR 将重新失去自动合并质量门禁。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B13-B14 实施和验收证据。

@@ -1,0 +1,208 @@
+name: Unified Integration CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unified-integration-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-contract:
+    name: Repository contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check pull request diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+          else
+            base_sha="$(git merge-base origin/main HEAD)"
+          fi
+          git diff --check "${base_sha}...HEAD"
+
+      - name: Validate integration manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          awk -F '\t' '
+            NF != 8 {
+              printf "manifest row %d has %d columns\n", NR, NF
+              bad = 1
+            }
+            END { exit bad }
+          ' docs/development/integration-manifest.tsv
+          awk -F '\t' '
+            NR > 1 { count[$1]++ }
+            END {
+              for (path in count) {
+                if (count[path] > 1) {
+                  printf "duplicate manifest path: %s\n", path
+                  bad = 1
+                }
+              }
+              exit bad
+            }
+          ' docs/development/integration-manifest.tsv
+
+      - name: Reject tracked runtime artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          sensitive_files="$(
+            git ls-files |
+              grep -E '(^|/)(production\.env|[^/]+\.env|\.env(\..+)?|[^/]+\.(db|sqlite|sqlite3|pem|key|p12|pfx))$' |
+              grep -v -E '(^|/)\.env\.example$' ||
+              true
+          )"
+          if [[ -n "${sensitive_files}" ]]; then
+            printf 'tracked runtime or secret artifacts:\n%s\n' "${sensitive_files}"
+            exit 1
+          fi
+
+          generated_reports="$(
+            git ls-files docs/generated |
+              grep -v '^docs/generated/README\.md$' ||
+              true
+          )"
+          if [[ -n "${generated_reports}" ]]; then
+            printf 'unexpected generated reports:\n%s\n' "${generated_reports}"
+            exit 1
+          fi
+
+  go:
+    name: Go test and vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Prepare embedded SPA fixture
+        shell: bash
+        run: |
+          mkdir -p web/out
+          printf '<!doctype html><title>test fixture</title>\n' > web/out/index.html
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Run Go tests
+        run: go test ./... -count=1 -timeout 30m
+
+      - name: Run Go vet
+        run: go vet ./...
+
+  race:
+    name: Race (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: AI
+            package: ./internal/ai/...
+          - name: services
+            package: ./internal/services/...
+          - name: repositories
+            package: ./internal/repositories/...
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Prepare embedded SPA fixture
+        shell: bash
+        run: |
+          mkdir -p web/out
+          printf '<!doctype html><title>test fixture</title>\n' > web/out/index.html
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Run race suite
+        run: go test -race "${{ matrix.package }}" -count=1 -timeout 30m
+
+  web:
+    name: Web contracts and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Run frontend contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_count=0
+          while IFS= read -r -d '' test_file; do
+            node "${test_file}"
+            test_count=$((test_count + 1))
+          done < <(
+            find web -type f -name '*.test.mjs' \
+              -not -path 'web/node_modules/*' \
+              -print0 |
+              sort -z
+          )
+          if [[ "${test_count}" -eq 0 ]]; then
+            echo "no frontend contract tests found"
+            exit 1
+          fi
+          echo "executed ${test_count} frontend contract files"
+
+      - name: Run frontend typecheck
+        run: pnpm --dir web typecheck
+
+      - name: Run frontend lint
+        run: pnpm --dir web lint
+
+      - name: Build generated SDK
+        run: pnpm --dir web build:sdk
+
+      - name: Build production frontend
+        run: pnpm --dir web build
