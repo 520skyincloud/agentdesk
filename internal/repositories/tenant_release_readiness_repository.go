@@ -23,6 +23,12 @@ type TenantReleaseReadinessStoreAccountState struct {
 	ReadyAccountCount  int64
 }
 
+type TenantReleaseReadinessWxWorkProtocolState struct {
+	StoreID           int64
+	ActiveCount       int64
+	ReadyChannelCount int64
+}
+
 type TenantReleaseReadinessCredentialState struct {
 	StoreID               int64
 	CredentialRevision    int64
@@ -100,17 +106,21 @@ type TenantReleaseReadinessEvidenceFilter struct {
 	ReconcileMatchStrategy   string
 	ReconcileMatchConfidence string
 	AITagSource              string
+	WxWorkProtocolSource     string
+	WxWorkProtocolTarget     string
 }
 
 type TenantReleaseReadinessEvidence struct {
-	StoreID                   int64
-	SuccessfulNewAPICallCount int64
-	FastGPTRetrievalCount     int64
-	CustomerAIReplyCount      int64
-	AIHandoffCount            int64
-	RuleAssignmentCount       int64
-	ReconciledBillingCount    int64
-	AICustomerTagChangeCount  int64
+	StoreID                     int64
+	WxWorkProtocolInboundCount  int64
+	WxWorkProtocolOutboundCount int64
+	SuccessfulNewAPICallCount   int64
+	FastGPTRetrievalCount       int64
+	CustomerAIReplyCount        int64
+	AIHandoffCount              int64
+	RuleAssignmentCount         int64
+	ReconciledBillingCount      int64
+	AICustomerTagChangeCount    int64
 }
 
 type tenantReleaseReadinessCountRow struct {
@@ -218,6 +228,56 @@ func (r *tenantReleaseReadinessRepository) FindStoreAccountStates(
 		Where("binding.tenant_id = ? AND binding.store_id IN ? AND binding.status = ?", tenantID, storeIDs, enums.StatusOk).
 		Group("binding.store_id").
 		Order("binding.store_id ASC").
+		Scan(&ret).Error
+	return ret, err
+}
+
+func (r *tenantReleaseReadinessRepository) FindWxWorkProtocolStates(
+	db *gorm.DB,
+	tenantID int64,
+	storeIDs []int64,
+) ([]TenantReleaseReadinessWxWorkProtocolState, error) {
+	ret := make([]TenantReleaseReadinessWxWorkProtocolState, 0)
+	if db == nil || tenantID <= 0 || len(storeIDs) == 0 {
+		return ret, nil
+	}
+	err := db.Table("t_wx_work_protocol_instance AS instance").
+		Select(`
+			instance.store_id,
+			COUNT(instance.id) AS active_count,
+			SUM(CASE
+				WHEN instance.guid <> ''
+					AND instance.channel_id > 0
+					AND instance.store_staff_binding_id > 0
+					AND binding.id IS NOT NULL
+					AND binding.tenant_id = instance.tenant_id
+					AND binding.store_id = instance.store_id
+					AND binding.status = ?
+					AND binding.active_user_id = binding.user_id
+					AND binding.agent_team_id > 0
+					AND instance.agent_team_id = binding.agent_team_id
+					AND channel.id IS NOT NULL
+					AND channel.tenant_id = instance.tenant_id
+					AND channel.channel_type = ?
+					AND channel.status = ?
+					AND instance.health_status = 'online'
+				THEN 1 ELSE 0
+			END) AS ready_channel_count
+		`,
+			enums.StatusOk,
+			enums.ChannelTypeWxWorkProtocol,
+			enums.StatusOk,
+		).
+		Joins("LEFT JOIN t_store_staff_binding AS binding ON binding.id = instance.store_staff_binding_id").
+		Joins("LEFT JOIN t_channel AS channel ON channel.id = instance.channel_id").
+		Where(
+			"instance.tenant_id = ? AND instance.store_id IN ? AND instance.status = ? AND instance.replaced_by_instance_id = 0",
+			tenantID,
+			storeIDs,
+			enums.StatusOk,
+		).
+		Group("instance.store_id").
+		Order("instance.store_id ASC").
 		Scan(&ret).Error
 	return ret, err
 }
@@ -372,16 +432,121 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 	}{
 		{
 			apply: func(item *TenantReleaseReadinessEvidence, count int64) {
+				item.WxWorkProtocolInboundCount = count
+			},
+			query: db.Table("t_message_sync_log AS sync_log").
+				Select("route.store_id, COUNT(DISTINCT sync_log.id) AS count").
+				Joins("JOIN t_message AS customer_message ON customer_message.tenant_id = sync_log.tenant_id AND customer_message.id = sync_log.message_id AND customer_message.conversation_id = sync_log.conversation_id").
+				Joins("JOIN t_wx_work_kf_message_ref AS message_ref ON message_ref.tenant_id = sync_log.tenant_id AND message_ref.message_id = sync_log.message_id AND message_ref.conversation_id = sync_log.conversation_id").
+				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = sync_log.tenant_id AND route.conversation_id = sync_log.conversation_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
+				Where("sync_log.tenant_id = ? AND route.store_id IN ? AND sync_log.created_at >= ?", tenantID, storeIDs, start).
+				Where(
+					"sync_log.direction = ? AND sync_log.source = ? AND sync_log.target = ? AND sync_log.sync_status = ? AND sync_log.external_msg_id <> ''",
+					enums.MessageSyncDirectionWecomToAgentDesk,
+					filter.WxWorkProtocolSource,
+					filter.WxWorkProtocolTarget,
+					enums.MessageSyncStatusSuccess,
+				).
+				Where("customer_message.sender_type = ? AND customer_message.created_at >= ?", enums.IMSenderTypeCustomer, start).
+				Where(
+					"message_ref.direction = ? AND message_ref.send_status = ? AND message_ref.open_kf_id LIKE ? AND message_ref.status = ?",
+					enums.WxWorkKFMessageDirectionIn,
+					enums.WxWorkKFMessageSendStatusReceived,
+					"wx_protocol:%",
+					enums.StatusOk,
+				).
+				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Group("route.store_id"),
+		},
+		{
+			apply: func(item *TenantReleaseReadinessEvidence, count int64) {
+				item.WxWorkProtocolOutboundCount = count
+			},
+			query: db.Table("t_channel_message_outbox AS outbox").
+				Select("route.store_id, COUNT(DISTINCT outbox.id) AS count").
+				Joins("JOIN t_message AS ai_message ON ai_message.tenant_id = outbox.tenant_id AND ai_message.id = outbox.message_id AND ai_message.conversation_id = outbox.conversation_id").
+				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = outbox.tenant_id AND route.conversation_id = outbox.conversation_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
+				Joins("JOIN t_wx_work_kf_message_ref AS message_ref ON message_ref.tenant_id = outbox.tenant_id AND message_ref.message_id = outbox.message_id AND message_ref.conversation_id = outbox.conversation_id").
+				Where("outbox.tenant_id = ? AND route.store_id IN ? AND outbox.created_at >= ?", tenantID, storeIDs, start).
+				Where("outbox.channel_type = ? AND outbox.send_status = ? AND outbox.sent_at IS NOT NULL",
+					enums.ChannelTypeWxWorkProtocol, enums.ChannelMessageOutboxStatusSent).
+				Where("ai_message.sender_type = ? AND ai_message.created_at >= ?", enums.IMSenderTypeAI, start).
+				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where(
+					"message_ref.direction = ? AND message_ref.send_status = ? AND message_ref.open_kf_id LIKE ? AND message_ref.status = ?",
+					enums.WxWorkKFMessageDirectionOut,
+					enums.WxWorkKFMessageSendStatusSent,
+					"wx_protocol:%",
+					enums.StatusOk,
+				).
+				Where(`EXISTS (
+					SELECT 1
+					FROM t_message_sync_log AS inbound_log
+					JOIN t_message AS inbound_message
+						ON inbound_message.tenant_id = inbound_log.tenant_id
+						AND inbound_message.id = inbound_log.message_id
+						AND inbound_message.conversation_id = inbound_log.conversation_id
+					WHERE inbound_log.tenant_id = outbox.tenant_id
+						AND inbound_log.conversation_id = outbox.conversation_id
+						AND inbound_log.direction = ?
+						AND inbound_log.source = ?
+						AND inbound_log.target = ?
+						AND inbound_log.sync_status = ?
+						AND inbound_log.external_msg_id <> ''
+						AND inbound_log.created_at >= ?
+						AND inbound_message.created_at <= ai_message.created_at
+						AND inbound_message.sender_type = ?
+				)`,
+					enums.MessageSyncDirectionWecomToAgentDesk,
+					filter.WxWorkProtocolSource,
+					filter.WxWorkProtocolTarget,
+					enums.MessageSyncStatusSuccess,
+					start,
+					enums.IMSenderTypeCustomer,
+				).
+				Group("route.store_id"),
+		},
+		{
+			apply: func(item *TenantReleaseReadinessEvidence, count int64) {
 				item.SuccessfulNewAPICallCount = count
 			},
 			query: db.Table("t_ai_usage_event AS usage_event").
 				Select("usage_event.store_id, COUNT(*) AS count").
 				Joins("JOIN t_store_model_profile_assignment AS assignment ON assignment.tenant_id = usage_event.tenant_id AND assignment.store_id = usage_event.store_id").
 				Joins("JOIN t_store_model_credential AS credential ON credential.tenant_id = usage_event.tenant_id AND credential.store_id = usage_event.store_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = usage_event.tenant_id AND instance.id = usage_event.wx_work_instance_id AND instance.store_id = usage_event.store_id").
 				Where("usage_event.tenant_id = ? AND usage_event.store_id IN ? AND usage_event.created_at >= ?", tenantID, storeIDs, start).
 				Where("usage_event.gateway = ? AND usage_event.gateway_request_id <> '' AND usage_event.status IN ?", filter.NewAPIGateway, filter.SuccessfulUsageStatuses).
 				Where("usage_event.model_profile_id = assignment.template_id AND usage_event.model_profile_revision = assignment.template_revision").
 				Where("usage_event.credential_revision = credential.credential_revision").
+				Where("usage_event.conversation_id > 0 AND instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where(`EXISTS (
+					SELECT 1
+					FROM t_message_sync_log AS inbound_log
+					JOIN t_message AS inbound_message
+						ON inbound_message.tenant_id = inbound_log.tenant_id
+						AND inbound_message.id = inbound_log.message_id
+						AND inbound_message.conversation_id = inbound_log.conversation_id
+					WHERE inbound_log.tenant_id = usage_event.tenant_id
+						AND inbound_log.conversation_id = usage_event.conversation_id
+						AND inbound_log.direction = ?
+						AND inbound_log.source = ?
+						AND inbound_log.target = ?
+						AND inbound_log.sync_status = ?
+						AND inbound_log.external_msg_id <> ''
+						AND inbound_log.created_at >= ?
+						AND inbound_message.created_at <= usage_event.created_at
+						AND inbound_message.sender_type = ?
+				)`,
+					enums.MessageSyncDirectionWecomToAgentDesk,
+					filter.WxWorkProtocolSource,
+					filter.WxWorkProtocolTarget,
+					enums.MessageSyncStatusSuccess,
+					start,
+					enums.IMSenderTypeCustomer,
+				).
 				Group("usage_event.store_id"),
 		},
 		{
@@ -394,6 +559,7 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 				Joins("JOIN t_knowledge_base AS knowledge ON knowledge.tenant_id = usage_event.tenant_id AND knowledge.id = usage_event.knowledge_base_id AND knowledge.store_id = usage_event.store_id").
 				Joins("JOIN t_store_model_profile_assignment AS assignment ON assignment.tenant_id = usage_event.tenant_id AND assignment.store_id = usage_event.store_id").
 				Joins("JOIN t_store_model_credential AS credential ON credential.tenant_id = usage_event.tenant_id AND credential.store_id = usage_event.store_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = usage_event.tenant_id AND instance.id = usage_event.wx_work_instance_id AND instance.store_id = usage_event.store_id").
 				Where("usage_event.tenant_id = ? AND usage_event.store_id IN ? AND usage_event.created_at >= ?", tenantID, storeIDs, start).
 				Where("usage_event.conversation_id > 0 AND usage_event.request_id <> '' AND usage_event.request_count > 0").
 				Where("usage_event.stage = ? AND usage_event.provider = ? AND usage_event.operation_type = ? AND usage_event.status = ?",
@@ -402,24 +568,67 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 				Where("knowledge.status = ? AND knowledge.connection_id = ?", enums.StatusOk, filter.KnowledgeConnectionID).
 				Where("usage_event.model_profile_id = assignment.template_id AND usage_event.model_profile_revision = assignment.template_revision").
 				Where("usage_event.credential_revision = credential.credential_revision").
+				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
 				Where(`EXISTS (
-					SELECT 1 FROM t_message AS customer_message
-					WHERE customer_message.tenant_id = usage_event.tenant_id
-						AND customer_message.conversation_id = usage_event.conversation_id
-						AND customer_message.sender_type = ?
-						AND customer_message.created_at >= ?
-						AND customer_message.created_at <= usage_event.created_at
-				)`, enums.IMSenderTypeCustomer, start).
+						SELECT 1
+						FROM t_message_sync_log AS inbound_log
+						JOIN t_message AS customer_message
+							ON customer_message.tenant_id = inbound_log.tenant_id
+							AND customer_message.id = inbound_log.message_id
+							AND customer_message.conversation_id = inbound_log.conversation_id
+						WHERE inbound_log.tenant_id = usage_event.tenant_id
+							AND inbound_log.conversation_id = usage_event.conversation_id
+							AND inbound_log.direction = ?
+							AND inbound_log.source = ?
+							AND inbound_log.target = ?
+							AND inbound_log.sync_status = ?
+							AND inbound_log.external_msg_id <> ''
+							AND inbound_log.created_at >= ?
+							AND customer_message.created_at <= usage_event.created_at
+							AND customer_message.sender_type = ?
+					)`,
+					enums.MessageSyncDirectionWecomToAgentDesk,
+					filter.WxWorkProtocolSource,
+					filter.WxWorkProtocolTarget,
+					enums.MessageSyncStatusSuccess,
+					start,
+					enums.IMSenderTypeCustomer,
+				).
 				Where(`EXISTS (
-					SELECT 1 FROM t_message AS ai_message
-					WHERE ai_message.tenant_id = usage_event.tenant_id
-						AND ai_message.conversation_id = usage_event.conversation_id
-						AND ai_message.sender_type = ?
-						AND ai_message.send_status IN ?
-						AND ai_message.created_at >= usage_event.created_at
-				)`, enums.IMSenderTypeAI, []enums.IMMessageStatus{
-					enums.IMMessageStatusSent, enums.IMMessageStatusDelivered, enums.IMMessageStatusRead,
-				}).
+						SELECT 1
+						FROM t_message AS ai_message
+						JOIN t_channel_message_outbox AS outbox
+							ON outbox.tenant_id = ai_message.tenant_id
+							AND outbox.message_id = ai_message.id
+							AND outbox.conversation_id = ai_message.conversation_id
+						JOIN t_wx_work_kf_message_ref AS message_ref
+							ON message_ref.tenant_id = ai_message.tenant_id
+							AND message_ref.message_id = ai_message.id
+							AND message_ref.conversation_id = ai_message.conversation_id
+						WHERE ai_message.tenant_id = usage_event.tenant_id
+							AND ai_message.conversation_id = usage_event.conversation_id
+							AND ai_message.sender_type = ?
+							AND ai_message.send_status IN ?
+							AND ai_message.created_at >= usage_event.created_at
+							AND outbox.channel_type = ?
+							AND outbox.send_status = ?
+							AND outbox.sent_at IS NOT NULL
+							AND message_ref.direction = ?
+							AND message_ref.send_status = ?
+							AND message_ref.open_kf_id LIKE ?
+							AND message_ref.status = ?
+					)`,
+					enums.IMSenderTypeAI,
+					[]enums.IMMessageStatus{
+						enums.IMMessageStatusSent, enums.IMMessageStatusDelivered, enums.IMMessageStatusRead,
+					},
+					enums.ChannelTypeWxWorkProtocol,
+					enums.ChannelMessageOutboxStatusSent,
+					enums.WxWorkKFMessageDirectionOut,
+					enums.WxWorkKFMessageSendStatusSent,
+					"wx_protocol:%",
+					enums.StatusOk,
+				).
 				Where(`EXISTS (
 					SELECT 1 FROM t_knowledge_retrieve_log AS retrieve_log
 					WHERE retrieve_log.tenant_id = usage_event.tenant_id
@@ -445,18 +654,62 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 			query: db.Table("t_message AS message").
 				Select("route.store_id, COUNT(*) AS count").
 				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = message.tenant_id AND route.conversation_id = message.conversation_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
 				Where("message.tenant_id = ? AND route.store_id IN ? AND message.created_at >= ?", tenantID, storeIDs, start).
 				Where("message.sender_type = ? AND message.send_status IN ?", enums.IMSenderTypeAI, []enums.IMMessageStatus{
 					enums.IMMessageStatusSent, enums.IMMessageStatusDelivered, enums.IMMessageStatusRead,
 				}).
+				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
 				Where(`EXISTS (
-					SELECT 1 FROM t_message AS customer_message
-					WHERE customer_message.tenant_id = message.tenant_id
-						AND customer_message.conversation_id = message.conversation_id
-						AND customer_message.sender_type = ?
-						AND customer_message.created_at >= ?
-						AND customer_message.created_at <= message.created_at
-				)`, enums.IMSenderTypeCustomer, start).
+						SELECT 1
+						FROM t_message_sync_log AS inbound_log
+						JOIN t_message AS customer_message
+							ON customer_message.tenant_id = inbound_log.tenant_id
+							AND customer_message.id = inbound_log.message_id
+							AND customer_message.conversation_id = inbound_log.conversation_id
+						WHERE inbound_log.tenant_id = message.tenant_id
+							AND inbound_log.conversation_id = message.conversation_id
+							AND inbound_log.direction = ?
+							AND inbound_log.source = ?
+							AND inbound_log.target = ?
+							AND inbound_log.sync_status = ?
+							AND inbound_log.external_msg_id <> ''
+							AND inbound_log.created_at >= ?
+							AND customer_message.created_at <= message.created_at
+							AND customer_message.sender_type = ?
+					)`,
+					enums.MessageSyncDirectionWecomToAgentDesk,
+					filter.WxWorkProtocolSource,
+					filter.WxWorkProtocolTarget,
+					enums.MessageSyncStatusSuccess,
+					start,
+					enums.IMSenderTypeCustomer,
+				).
+				Where(`EXISTS (
+						SELECT 1
+						FROM t_channel_message_outbox AS outbox
+						JOIN t_wx_work_kf_message_ref AS message_ref
+							ON message_ref.tenant_id = outbox.tenant_id
+							AND message_ref.message_id = outbox.message_id
+							AND message_ref.conversation_id = outbox.conversation_id
+						WHERE outbox.tenant_id = message.tenant_id
+							AND outbox.conversation_id = message.conversation_id
+							AND outbox.message_id = message.id
+							AND outbox.channel_type = ?
+							AND outbox.send_status = ?
+							AND outbox.sent_at IS NOT NULL
+							AND message_ref.direction = ?
+							AND message_ref.send_status = ?
+							AND message_ref.open_kf_id LIKE ?
+							AND message_ref.status = ?
+					)`,
+					enums.ChannelTypeWxWorkProtocol,
+					enums.ChannelMessageOutboxStatusSent,
+					enums.WxWorkKFMessageDirectionOut,
+					enums.WxWorkKFMessageSendStatusSent,
+					"wx_protocol:%",
+					enums.StatusOk,
+				).
 				Group("route.store_id"),
 		},
 		{
@@ -466,8 +719,35 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 			query: db.Table("t_conversation_event_log AS event").
 				Select("route.store_id, COUNT(*) AS count").
 				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = event.tenant_id AND route.conversation_id = event.conversation_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
 				Where("event.tenant_id = ? AND route.store_id IN ? AND event.created_at >= ?", tenantID, storeIDs, start).
 				Where("event.event_type = ? AND event.operator_type = ? AND event.content = ?", enums.IMEventTypeTransfer, enums.IMSenderTypeAI, filter.AIHandoffContent).
+				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where(`EXISTS (
+						SELECT 1
+						FROM t_message_sync_log AS inbound_log
+						JOIN t_message AS customer_message
+							ON customer_message.tenant_id = inbound_log.tenant_id
+							AND customer_message.id = inbound_log.message_id
+							AND customer_message.conversation_id = inbound_log.conversation_id
+						WHERE inbound_log.tenant_id = event.tenant_id
+							AND inbound_log.conversation_id = event.conversation_id
+							AND inbound_log.direction = ?
+							AND inbound_log.source = ?
+							AND inbound_log.target = ?
+							AND inbound_log.sync_status = ?
+							AND inbound_log.external_msg_id <> ''
+							AND inbound_log.created_at >= ?
+							AND customer_message.created_at <= event.created_at
+							AND customer_message.sender_type = ?
+					)`,
+					enums.MessageSyncDirectionWecomToAgentDesk,
+					filter.WxWorkProtocolSource,
+					filter.WxWorkProtocolTarget,
+					enums.MessageSyncStatusSuccess,
+					start,
+					enums.IMSenderTypeCustomer,
+				).
 				Group("route.store_id"),
 		},
 		{
@@ -477,18 +757,45 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 			query: db.Table("t_conversation_assignment AS assignment").
 				Select("route.store_id, COUNT(*) AS count").
 				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = assignment.tenant_id AND route.conversation_id = assignment.conversation_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
 				Where("assignment.tenant_id = ? AND route.store_id IN ? AND assignment.created_at >= ?", tenantID, storeIDs, start).
 				Where("assignment.dispatch_mode = ? AND assignment.to_user_id > 0", enums.AgentTeamDispatchModeRule).
+				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
 				Where(`EXISTS (
-					SELECT 1 FROM t_conversation_event_log AS handoff
+						SELECT 1 FROM t_conversation_event_log AS handoff
 					WHERE handoff.tenant_id = assignment.tenant_id
 						AND handoff.conversation_id = assignment.conversation_id
 						AND handoff.event_type = ?
 						AND handoff.operator_type = ?
 						AND handoff.content = ?
 						AND handoff.created_at >= ?
-						AND handoff.created_at <= assignment.created_at
-				)`, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, filter.AIHandoffContent, start).
+							AND handoff.created_at <= assignment.created_at
+					)`, enums.IMEventTypeTransfer, enums.IMSenderTypeAI, filter.AIHandoffContent, start).
+				Where(`EXISTS (
+						SELECT 1
+						FROM t_message_sync_log AS inbound_log
+						JOIN t_message AS customer_message
+							ON customer_message.tenant_id = inbound_log.tenant_id
+							AND customer_message.id = inbound_log.message_id
+							AND customer_message.conversation_id = inbound_log.conversation_id
+						WHERE inbound_log.tenant_id = assignment.tenant_id
+							AND inbound_log.conversation_id = assignment.conversation_id
+							AND inbound_log.direction = ?
+							AND inbound_log.source = ?
+							AND inbound_log.target = ?
+							AND inbound_log.sync_status = ?
+							AND inbound_log.external_msg_id <> ''
+							AND inbound_log.created_at >= ?
+							AND customer_message.created_at <= assignment.created_at
+							AND customer_message.sender_type = ?
+					)`,
+					enums.MessageSyncDirectionWecomToAgentDesk,
+					filter.WxWorkProtocolSource,
+					filter.WxWorkProtocolTarget,
+					enums.MessageSyncStatusSuccess,
+					start,
+					enums.IMSenderTypeCustomer,
+				).
 				Group("route.store_id"),
 		},
 		{
@@ -499,6 +806,7 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 				Select("gateway_call.store_id, COUNT(*) AS count").
 				Joins("JOIN t_store_model_profile_assignment AS assignment ON assignment.tenant_id = gateway_call.tenant_id AND assignment.store_id = gateway_call.store_id").
 				Joins("JOIN t_store_model_credential AS credential ON credential.tenant_id = gateway_call.tenant_id AND credential.store_id = gateway_call.store_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = gateway_call.tenant_id AND instance.id = gateway_call.wx_work_instance_id AND instance.store_id = gateway_call.store_id").
 				Where("gateway_call.tenant_id = ? AND gateway_call.store_id IN ? AND gateway_call.created_at >= ?", tenantID, storeIDs, start).
 				Where("gateway_call.gateway = ? AND gateway_call.gateway_request_id <> ''", filter.NewAPIGateway).
 				Where("gateway_call.reconcile_status = ? AND gateway_call.match_strategy = ? AND gateway_call.match_confidence = ?",
@@ -506,6 +814,32 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 				Where("gateway_call.reconciled_at IS NOT NULL AND gateway_call.external_created_at IS NOT NULL AND gateway_call.external_model <> ''").
 				Where("gateway_call.model_profile_id = assignment.template_id AND gateway_call.model_profile_revision = assignment.template_revision").
 				Where("gateway_call.credential_revision = credential.credential_revision").
+				Where("gateway_call.conversation_id > 0 AND instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where(`EXISTS (
+						SELECT 1
+						FROM t_message_sync_log AS inbound_log
+						JOIN t_message AS customer_message
+							ON customer_message.tenant_id = inbound_log.tenant_id
+							AND customer_message.id = inbound_log.message_id
+							AND customer_message.conversation_id = inbound_log.conversation_id
+						WHERE inbound_log.tenant_id = gateway_call.tenant_id
+							AND inbound_log.conversation_id = gateway_call.conversation_id
+							AND inbound_log.direction = ?
+							AND inbound_log.source = ?
+							AND inbound_log.target = ?
+							AND inbound_log.sync_status = ?
+							AND inbound_log.external_msg_id <> ''
+							AND inbound_log.created_at >= ?
+							AND customer_message.created_at <= gateway_call.created_at
+							AND customer_message.sender_type = ?
+					)`,
+					enums.MessageSyncDirectionWecomToAgentDesk,
+					filter.WxWorkProtocolSource,
+					filter.WxWorkProtocolTarget,
+					enums.MessageSyncStatusSuccess,
+					start,
+					enums.IMSenderTypeCustomer,
+				).
 				Group("gateway_call.store_id"),
 		},
 		{
@@ -514,8 +848,36 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 			},
 			query: db.Table("t_customer_tag_change_log AS change_log").
 				Select("change_log.store_id, COUNT(*) AS count").
+				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = change_log.tenant_id AND route.conversation_id = change_log.conversation_id AND route.store_id = change_log.store_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
 				Where("change_log.tenant_id = ? AND change_log.store_id IN ? AND change_log.created_at >= ?", tenantID, storeIDs, start).
 				Where("change_log.source = ?", filter.AITagSource).
+				Where("change_log.conversation_id > 0 AND instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where(`EXISTS (
+						SELECT 1
+						FROM t_message_sync_log AS inbound_log
+						JOIN t_message AS customer_message
+							ON customer_message.tenant_id = inbound_log.tenant_id
+							AND customer_message.id = inbound_log.message_id
+							AND customer_message.conversation_id = inbound_log.conversation_id
+						WHERE inbound_log.tenant_id = change_log.tenant_id
+							AND inbound_log.conversation_id = change_log.conversation_id
+							AND inbound_log.direction = ?
+							AND inbound_log.source = ?
+							AND inbound_log.target = ?
+							AND inbound_log.sync_status = ?
+							AND inbound_log.external_msg_id <> ''
+							AND inbound_log.created_at >= ?
+							AND customer_message.created_at <= change_log.created_at
+							AND customer_message.sender_type = ?
+					)`,
+					enums.MessageSyncDirectionWecomToAgentDesk,
+					filter.WxWorkProtocolSource,
+					filter.WxWorkProtocolTarget,
+					enums.MessageSyncStatusSuccess,
+					start,
+					enums.IMSenderTypeCustomer,
+				).
 				Group("change_log.store_id"),
 		},
 	}

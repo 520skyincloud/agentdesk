@@ -255,6 +255,33 @@ func (s *tenantReleaseReadinessService) Audit(
 		"门店必须且只能绑定一个已审核、已启用并已分配客服组的系统门店员工账号",
 	)
 
+	wxWorkProtocolStates, err := repositories.TenantReleaseReadinessRepository.FindWxWorkProtocolStates(
+		db,
+		tenant.ID,
+		storeIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read Store WxWork protocol readiness failed: %w", err)
+	}
+	wxWorkProtocolByStore := make(
+		map[int64]repositories.TenantReleaseReadinessWxWorkProtocolState,
+		len(wxWorkProtocolStates),
+	)
+	for _, state := range wxWorkProtocolStates {
+		wxWorkProtocolByStore[state.StoreID] = state
+	}
+	wxWorkProtocolFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
+		state := wxWorkProtocolByStore[storeID]
+		return state.ActiveCount == 1 && state.ReadyChannelCount == 1
+	})
+	report.addStoreCheck(
+		"store.wxwork_protocol",
+		storeIDs,
+		wxWorkProtocolFailures,
+		options.SampleLimit,
+		"门店必须且只能有一个当前启用的企微员工号实例，并与当前门店员工绑定及启用的企微协议渠道一致",
+	)
+
 	assignments := repositories.StoreModelProfileAssignmentRepository.FindByTenant(db, tenant.ID)
 	assignmentByStore := make(map[int64]models.StoreModelProfileAssignment, len(assignments))
 	for _, assignment := range assignments {
@@ -522,11 +549,33 @@ func (s *tenantReleaseReadinessService) Audit(
 				ReconcileMatchStrategy:   AIUsageMatchStrategyRequestID,
 				ReconcileMatchConfidence: AIUsageMatchConfidenceExact,
 				AITagSource:              customerTagSourceAI,
+				WxWorkProtocolSource:     "wxwork_protocol",
+				WxWorkProtocolTarget:     "agentdesk",
 			},
 		)
 		if err != nil {
 			return nil, fmt.Errorf("read release evidence failed: %w", err)
 		}
+		report.addEvidenceStoreCheck(
+			"evidence.wxwork_protocol_inbound",
+			storeIDs,
+			evidence,
+			func(item repositories.TenantReleaseReadinessEvidence) bool {
+				return item.WxWorkProtocolInboundCount > 0
+			},
+			options.SampleLimit,
+			"所选门店在证据窗口内没有由真实企微员工号回调写入的客户消息",
+		)
+		report.addEvidenceStoreCheck(
+			"evidence.wxwork_protocol_outbound",
+			storeIDs,
+			evidence,
+			func(item repositories.TenantReleaseReadinessEvidence) bool {
+				return item.WxWorkProtocolOutboundCount > 0
+			},
+			options.SampleLimit,
+			"所选门店在证据窗口内没有经企微协议 Outbox 成功投递并落消息映射的 AI 回复",
+		)
 		report.addEvidenceStoreCheck(
 			"evidence.newapi_call",
 			storeIDs,

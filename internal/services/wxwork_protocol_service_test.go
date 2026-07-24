@@ -288,6 +288,124 @@ func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *tes
 	}
 }
 
+func TestWxWorkProtocolReceivesCustomerMessageWithConfiguredKnowledgeRecordsSuccessSyncLog(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	channel := &models.Channel{
+		TenantID:    101,
+		Name:        "企微员工号",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-protocol-configured-knowledge",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	store := &models.Store{
+		TenantID:    101,
+		StoreCode:   "configured-knowledge-store",
+		Name:        "已配置知识库门店",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	knowledgeBase := &models.KnowledgeBase{
+		TenantID:    101,
+		StoreID:     store.ID,
+		DatasetID:   "dataset-configured-knowledge",
+		Name:        "门店知识库",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(knowledgeBase).Error; err != nil {
+		t.Fatalf("create knowledge base: %v", err)
+	}
+	if err := db.Model(store).Update("knowledge_base_id", knowledgeBase.ID).Error; err != nil {
+		t.Fatalf("bind knowledge base to store: %v", err)
+	}
+	store.KnowledgeBaseID = knowledgeBase.ID
+	instance := &models.WxWorkProtocolInstance{
+		TenantID:        101,
+		Guid:            "guid-configured-knowledge",
+		ChannelID:       channel.ID,
+		EmployeeUserID:  "employee-configured",
+		EmployeeName:    "已配置员工号",
+		StoreID:         store.ID,
+		KnowledgeBaseID: knowledgeBase.ID,
+		AIReplyEnabled:  true,
+		Status:          enums.StatusOk,
+		AuditFields:     models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	customer := &models.Customer{
+		TenantID:    101,
+		Name:        "知识库门店客户",
+		Avatar:      "https://example.com/customer-avatar.jpg",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(customer).Error; err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	if err := db.Create(&models.CustomerIdentity{
+		TenantID:       101,
+		CustomerID:     customer.ID,
+		ExternalSource: enums.ExternalSourceWxWorkProtocol,
+		ExternalID:     "wxwork_protocol:guid-configured-knowledge:external-configured-customer",
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create customer identity: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{}
+	err := svc.handleChatMessage(instance, request.WxProtocolChatMsg{
+		ID:          "1009002",
+		Sender:      "external-configured-customer",
+		SenderName:  "知识库门店客户",
+		Receiver:    "employee-configured",
+		RoomID:      "0",
+		ContentType: wxProtocolMsgText,
+		MsgType:     wxProtocolMsgText,
+		Content:     "请问早餐几点开始？",
+		SendTime:    now.Unix(),
+	}, `{"id":"1009002","sender":"external-configured-customer","receiver":"employee-configured","roomid":"0","content":"请问早餐几点开始？","msg_type":2}`)
+	if err != nil {
+		t.Fatalf("handleChatMessage() error = %v", err)
+	}
+
+	externalMsgID := "wx_protocol:guid-configured-knowledge:1009002"
+	var messageRef models.WxWorkKFMessageRef
+	if err := db.Where("wx_msg_id = ?", externalMsgID).First(&messageRef).Error; err != nil {
+		t.Fatalf("expected inbound message reference: %v", err)
+	}
+	var syncLog models.MessageSyncLog
+	if err := db.Where("external_msg_id = ? AND sync_status = ?", externalMsgID, enums.MessageSyncStatusSuccess).First(&syncLog).Error; err != nil {
+		t.Fatalf("expected successful receive sync log: %v", err)
+	}
+	if syncLog.ConversationID != messageRef.ConversationID || syncLog.MessageID != messageRef.MessageID {
+		t.Fatalf("expected sync log and message reference to identify the same message, log=%+v ref=%+v", syncLog, messageRef)
+	}
+	if syncLog.Direction != enums.MessageSyncDirectionWecomToAgentDesk ||
+		syncLog.Source != "wxwork_protocol" ||
+		syncLog.Target != "agentdesk" ||
+		syncLog.ErrorMessage != "message received" {
+		t.Fatalf("unexpected successful receive sync log: %+v", syncLog)
+	}
+	state := ConversationRouteService.GetByConversationID(messageRef.ConversationID)
+	if state == nil ||
+		state.WxWorkInstanceID != instance.ID ||
+		state.StoreID != store.ID ||
+		state.KnowledgeBaseID != knowledgeBase.ID {
+		t.Fatalf("expected configured store route state, got %+v", state)
+	}
+}
+
 func TestWxWorkProtocolReferencedRecallMarksOriginalMessageRecalled(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()

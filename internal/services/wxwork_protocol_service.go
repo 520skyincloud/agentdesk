@@ -611,7 +611,29 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 	if created {
 		WxWorkProtocolDefaultResourceService.SendNewFriendWelcome(conversation, instance, "wx_welcome_"+strings.TrimPrefix(clientMsgID, "wx_protocol:"))
 	}
-	return s.createMessageRef(conversation.ID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
+	if err := s.createMessageRef(
+		conversation.ID,
+		message.ID,
+		instance,
+		externalID,
+		clientMsgID,
+		rawPayload,
+		enums.WxWorkKFMessageDirectionIn,
+		enums.WxWorkKFMessageSendStatusReceived,
+	); err != nil {
+		return err
+	}
+	return MessageSyncLogService.Create(
+		conversation.ID,
+		message.ID,
+		enums.MessageSyncDirectionWecomToAgentDesk,
+		"wxwork_protocol",
+		"agentdesk",
+		clientMsgID,
+		enums.MessageSyncStatusSuccess,
+		rawPayload,
+		"message received",
+	)
 }
 
 func (s *wxWorkProtocolService) inboundGroupRoomID(msg request.WxProtocolChatMsg) string {

@@ -61,6 +61,8 @@ func assertTenantReleaseReadinessStages(t *testing.T, fixture *tenantReleaseRead
 	evidenceStart := fixture.now.Add(-10 * time.Minute)
 	pilotWithoutEvidence := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
 	for _, code := range []string{
+		"EVIDENCE_WXWORK_PROTOCOL_INBOUND",
+		"EVIDENCE_WXWORK_PROTOCOL_OUTBOUND",
 		"EVIDENCE_NEWAPI_CALL",
 		"EVIDENCE_FASTGPT_RETRIEVAL",
 		"EVIDENCE_CUSTOMER_AI_REPLY",
@@ -168,6 +170,21 @@ func TestTenantReleaseReadinessRequiresUniqueStoreAccountAndSupervisorApprovalEv
 	fixture := newTenantReleaseReadinessFixture(t)
 	evidenceStart := fixture.now.Add(-10 * time.Minute)
 	fixture.seedPilotEvidence(t, evidenceStart)
+
+	if err := fixture.db.Model(&models.WxWorkProtocolInstance{}).
+		Where("id = ? AND tenant_id = ?", fixture.wxWork.ID, fixture.tenant.ID).
+		Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable WxWork protocol instance: %v", err)
+	}
+	wxWorkReport := fixture.audit(t, TenantReleaseReadinessConfiguration, nil)
+	if !tenantReleaseReadinessHasViolation(wxWorkReport, "STORE_WXWORK_PROTOCOL") {
+		t.Fatalf("configuration without an active WxWork protocol instance must fail: %#v", wxWorkReport.Violations)
+	}
+	if err := fixture.db.Model(&models.WxWorkProtocolInstance{}).
+		Where("id = ? AND tenant_id = ?", fixture.wxWork.ID, fixture.tenant.ID).
+		Update("status", enums.StatusOk).Error; err != nil {
+		t.Fatalf("restore WxWork protocol instance: %v", err)
+	}
 
 	if err := fixture.db.Model(&models.StoreStaffBinding{}).
 		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
@@ -282,6 +299,64 @@ func TestTenantReleaseReadinessFastGPTEvidenceMustMatchRuntimeLogAndCurrentRevis
 	assertTenantReleaseReadinessPassed(t, fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart))
 }
 
+func TestTenantReleaseReadinessRejectsDashboardSimulationEvidence(t *testing.T) {
+	fixture := newTenantReleaseReadinessFixture(t)
+	evidenceStart := fixture.now.Add(-10 * time.Minute)
+	fixture.seedPilotEvidence(t, evidenceStart)
+	assertTenantReleaseReadinessPassed(t, fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart))
+
+	if err := fixture.db.Where(
+		"tenant_id = ? AND conversation_id = ? AND direction = ?",
+		fixture.tenant.ID,
+		fixture.conversation.ID,
+		enums.WxWorkKFMessageDirectionIn,
+	).Delete(&models.WxWorkKFMessageRef{}).Error; err != nil {
+		t.Fatalf("delete real WxWork inbound message reference: %v", err)
+	}
+	withoutInboundRef := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
+	if !tenantReleaseReadinessHasViolation(withoutInboundRef, "EVIDENCE_WXWORK_PROTOCOL_INBOUND") {
+		t.Fatalf("sync log without inbound message reference must not satisfy real WxWork evidence: %#v", withoutInboundRef.Violations)
+	}
+
+	if err := fixture.db.Where(
+		"tenant_id = ? AND conversation_id = ?",
+		fixture.tenant.ID,
+		fixture.conversation.ID,
+	).Delete(&models.MessageSyncLog{}).Error; err != nil {
+		t.Fatalf("delete real WxWork inbound evidence: %v", err)
+	}
+	if err := fixture.db.Where(
+		"tenant_id = ? AND conversation_id = ?",
+		fixture.tenant.ID,
+		fixture.conversation.ID,
+	).Delete(&models.ChannelMessageOutbox{}).Error; err != nil {
+		t.Fatalf("delete real WxWork outbound evidence: %v", err)
+	}
+	if err := fixture.db.Where(
+		"tenant_id = ? AND conversation_id = ?",
+		fixture.tenant.ID,
+		fixture.conversation.ID,
+	).Delete(&models.WxWorkKFMessageRef{}).Error; err != nil {
+		t.Fatalf("delete real WxWork message references: %v", err)
+	}
+
+	report := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
+	for _, code := range []string{
+		"EVIDENCE_WXWORK_PROTOCOL_INBOUND",
+		"EVIDENCE_WXWORK_PROTOCOL_OUTBOUND",
+		"EVIDENCE_NEWAPI_CALL",
+		"EVIDENCE_FASTGPT_RETRIEVAL",
+		"EVIDENCE_CUSTOMER_AI_REPLY",
+		"EVIDENCE_AI_HANDOFF",
+		"EVIDENCE_RULE_ASSIGNMENT",
+		"EVIDENCE_BILLING_RECONCILED",
+	} {
+		if !tenantReleaseReadinessHasViolation(report, code) {
+			t.Fatalf("dashboard-only evidence must not satisfy %s: %#v", code, report.Violations)
+		}
+	}
+}
+
 func TestTenantReleaseReadinessCapturesReleaseCursorsWithoutPayloads(t *testing.T) {
 	fixture := newTenantReleaseReadinessFixture(t)
 	evidenceStart := fixture.now.Add(-10 * time.Minute)
@@ -300,7 +375,7 @@ func TestTenantReleaseReadinessCapturesReleaseCursorsWithoutPayloads(t *testing.
 	assertTenantReleaseReadinessPassed(t, report)
 	cursor := report.ReleaseCursor
 	if cursor.MessageMaxID <= 0 || cursor.MessageCount != 2 ||
-		cursor.OutboxMaxID <= 0 || cursor.OutboxCount != 1 || cursor.UnsettledOutboxCount != 1 ||
+		cursor.OutboxMaxID <= 0 || cursor.OutboxCount != 2 || cursor.UnsettledOutboxCount != 1 ||
 		cursor.AssignmentMaxID <= 0 || cursor.AssignmentCount != 1 || cursor.ActiveAssignmentCount != 1 {
 		t.Fatalf("unexpected release cursor snapshot: %#v", cursor)
 	}
@@ -343,6 +418,9 @@ type tenantReleaseReadinessFixture struct {
 	tenant       models.Tenant
 	store        models.Store
 	account      models.User
+	binding      models.StoreStaffBinding
+	channel      models.Channel
+	wxWork       models.WxWorkProtocolInstance
 	modelProfile models.ModelProfileTemplate
 	credential   models.StoreModelCredential
 	conversation models.Conversation
@@ -382,6 +460,8 @@ func tenantReleaseReadinessModels() []any {
 		&models.User{},
 		&models.Store{},
 		&models.StoreStaffBinding{},
+		&models.Channel{},
+		&models.WxWorkProtocolInstance{},
 		&models.StoreCustomerTagRuntimePolicy{},
 		&models.ModelProfileTemplate{},
 		&models.ModelProfileSlot{},
@@ -395,6 +475,8 @@ func tenantReleaseReadinessModels() []any {
 		&models.Conversation{},
 		&models.ConversationRouteState{},
 		&models.Message{},
+		&models.MessageSyncLog{},
+		&models.WxWorkKFMessageRef{},
 		&models.ChannelMessageOutbox{},
 		&models.KnowledgeRetrieveLog{},
 		&models.ConversationEventLog{},
@@ -498,11 +580,32 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 	if err := db.Create(&store).Error; err != nil {
 		t.Fatalf("create readiness Store: %v", err)
 	}
-	if err := db.Create(&models.StoreStaffBinding{
+	binding := models.StoreStaffBinding{
 		TenantID: tenant.ID, UserID: account.ID, ActiveUserID: positiveInt64Pointer(account.ID), StoreID: store.ID,
 		AgentTeamID: 1, Status: enums.StatusOk, AuditFields: audit,
-	}).Error; err != nil {
+	}
+	if err := db.Create(&binding).Error; err != nil {
 		t.Fatalf("create readiness Store binding: %v", err)
+	}
+	channel := models.Channel{
+		TenantID: tenant.ID, Name: "Readiness WxWork protocol",
+		ChannelType: enums.ChannelTypeWxWorkProtocol, ChannelID: "readiness-wxwork-protocol",
+		ConfigJSON: `{}`, Status: enums.StatusOk, AuditFields: audit,
+	}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatalf("create readiness WxWork protocol Channel: %v", err)
+	}
+	wxWork := models.WxWorkProtocolInstance{
+		TenantID: tenant.ID, AgentTeamID: binding.AgentTeamID,
+		Guid: "readiness-wxwork-guid", ChannelID: channel.ID,
+		EmployeeUserID: "168-readiness", EmployeeName: "Readiness WxWork",
+		StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		NotifyURL:    "https://readiness.example.com/api/third/wxwork-protocol/callback",
+		HealthStatus: "online", LastHeartbeatAt: &publishedAt,
+		Status: enums.StatusOk, AuditFields: audit,
+	}
+	if err := db.Create(&wxWork).Error; err != nil {
+		t.Fatalf("create readiness WxWork protocol instance: %v", err)
 	}
 	modelProfile := models.ModelProfileTemplate{
 		Code: "readiness-standard", Name: "Readiness standard",
@@ -617,6 +720,7 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 
 	return &tenantReleaseReadinessFixture{
 		db: db, now: now, tenant: tenant, store: store, account: account,
+		binding: binding, channel: channel, wxWork: wxWork,
 		modelProfile: modelProfile, credential: credential, leafTag: leafTag,
 	}
 }
@@ -651,7 +755,7 @@ func (f *tenantReleaseReadinessFixture) seedPilotEvidence(t *testing.T, evidence
 	f.conversation = conversation
 	if err := f.db.Create(&models.ConversationRouteState{
 		TenantID: f.tenant.ID, ConversationID: conversation.ID, StoreID: f.store.ID,
-		KnowledgeBaseID: f.store.KnowledgeBaseID, SessionNo: 1,
+		KnowledgeBaseID: f.store.KnowledgeBaseID, WxWorkInstanceID: f.wxWork.ID, SessionNo: 1,
 		RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai",
 		AuditFields: audit,
 	}).Error; err != nil {
@@ -672,16 +776,58 @@ func (f *tenantReleaseReadinessFixture) seedPilotEvidence(t *testing.T, evidence
 			TenantID: f.tenant.ID, ConversationID: conversation.ID, SessionNo: 1,
 			ClientMsgID: "pilot-ai", SenderType: enums.IMSenderTypeAI,
 			MessageType: enums.IMMessageTypeText, Content: "ai-content-DO-NOT-PRINT",
-			SeqNo: 2, SendStatus: enums.IMMessageStatusSent, AuditFields: aiAudit,
+			SeqNo: 2, SendStatus: enums.IMMessageStatusSent,
+			OutboundChannelType: enums.ChannelTypeWxWorkProtocol, AuditFields: aiAudit,
 		},
 	}
 	if err := f.db.Create(&messages).Error; err != nil {
 		t.Fatalf("create pilot messages: %v", err)
 	}
+	if err := f.db.Create(&models.MessageSyncLog{
+		TenantID: f.tenant.ID, ConversationID: conversation.ID, MessageID: messages[0].ID,
+		Direction: enums.MessageSyncDirectionWecomToAgentDesk,
+		Source:    "wxwork_protocol", Target: "agentdesk",
+		ExternalMsgID: "pilot-wxwork-inbound", SyncStatus: enums.MessageSyncStatusSuccess,
+		Payload: `{"notify_type":11010}`, AuditFields: customerAudit,
+	}).Error; err != nil {
+		t.Fatalf("create pilot WxWork inbound evidence: %v", err)
+	}
+	sentAt := aiAt
+	if err := f.db.Create(&models.ChannelMessageOutbox{
+		TenantID: f.tenant.ID, ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ConversationID: conversation.ID, MessageID: messages[1].ID,
+		SendStatus: string(enums.ChannelMessageOutboxStatusSent), SentAt: &sentAt,
+		AuditFields: aiAudit,
+	}).Error; err != nil {
+		t.Fatalf("create pilot WxWork outbound evidence: %v", err)
+	}
+	if err := f.db.Create(&[]models.WxWorkKFMessageRef{
+		{
+			TenantID: f.tenant.ID, ConversationID: conversation.ID, MessageID: messages[0].ID,
+			WxMsgID:        "wx_protocol:" + f.wxWork.Guid + ":pilot-inbound",
+			Direction:      string(enums.WxWorkKFMessageDirectionIn),
+			OpenKfID:       "wx_protocol:" + f.wxWork.Guid,
+			ExternalUserID: "788-readiness",
+			SendStatus:     string(enums.WxWorkKFMessageSendStatusReceived),
+			Status:         enums.StatusOk, AuditFields: customerAudit,
+		},
+		{
+			TenantID: f.tenant.ID, ConversationID: conversation.ID, MessageID: messages[1].ID,
+			WxMsgID:        "wx_protocol:" + f.wxWork.Guid + ":pilot-outbound",
+			Direction:      string(enums.WxWorkKFMessageDirectionOut),
+			OpenKfID:       "wx_protocol:" + f.wxWork.Guid,
+			ExternalUserID: "788-readiness",
+			SendStatus:     string(enums.WxWorkKFMessageSendStatusSent),
+			Status:         enums.StatusOk, AuditFields: aiAudit,
+		},
+	}).Error; err != nil {
+		t.Fatalf("create pilot WxWork message refs: %v", err)
+	}
 	if err := f.db.Create(&models.AIUsageEvent{
 		TenantID: f.tenant.ID, EventKey: "pilot-usage", StoreID: f.store.ID,
-		ConversationID: conversation.ID, RequestID: "local-pilot-request",
-		Stage: "generate", Model: "reply-model", ModelProfileID: f.modelProfile.ID,
+		WxWorkInstanceID: f.wxWork.ID, ConversationID: conversation.ID,
+		RequestID: "local-pilot-request",
+		Stage:     "generate", Model: "reply-model", ModelProfileID: f.modelProfile.ID,
 		ModelProfileRevision: f.modelProfile.Revision, UsageSlot: string(enums.ModelUsageSlotReplyLLM),
 		CredentialRevision: f.credential.CredentialRevision,
 		Gateway:            AIUsageGatewayNewAPI, GatewayRequestID: "gateway-pilot-request",
@@ -702,8 +848,9 @@ func (f *tenantReleaseReadinessFixture) seedPilotEvidence(t *testing.T, evidence
 	}
 	if err := f.db.Create(&models.AIUsageEvent{
 		TenantID: f.tenant.ID, EventKey: "pilot-fastgpt-usage", StoreID: f.store.ID,
-		ConversationID: conversation.ID, KnowledgeBaseID: f.store.KnowledgeBaseID,
-		RequestID: retrieveRequestID, Stage: "knowledge_retrieve", Provider: "fastgpt",
+		WxWorkInstanceID: f.wxWork.ID, ConversationID: conversation.ID,
+		KnowledgeBaseID: f.store.KnowledgeBaseID,
+		RequestID:       retrieveRequestID, Stage: "knowledge_retrieve", Provider: "fastgpt",
 		OperationType: "knowledge_retrieve", RequestCount: 1,
 		ModelProfileID: f.modelProfile.ID, ModelProfileRevision: f.modelProfile.Revision,
 		CredentialRevision: f.credential.CredentialRevision,
@@ -732,7 +879,7 @@ func (f *tenantReleaseReadinessFixture) seedPilotEvidence(t *testing.T, evidence
 	externalCreatedAt := aiAt
 	if err := f.db.Create(&models.AIUsageGatewayCall{
 		TenantID: f.tenant.ID, CallKey: "pilot-gateway-call", EventKey: "pilot-usage",
-		StoreID: f.store.ID, ConversationID: conversation.ID,
+		StoreID: f.store.ID, WxWorkInstanceID: f.wxWork.ID, ConversationID: conversation.ID,
 		LocalRequestID: "local-pilot-request", Stage: "generate",
 		ModelProfileID: f.modelProfile.ID, ModelProfileRevision: f.modelProfile.Revision,
 		UsageSlot:          string(enums.ModelUsageSlotReplyLLM),
