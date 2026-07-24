@@ -1573,6 +1573,20 @@ git diff --check
 - 共享与回滚：本批只修改用户创建抽屉、对应前端契约测试、权威方案和 manifest；没有 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、AI Runtime、Credential、Billing、FastGPT、标签、人工任务池、规则派单或企微协议字段变化。`tenant-ai-integration` 历史上修改过同两个前端文件，但来源 SHA 未前移，统一分支当前改动基于已吸收版本，无需 rebase；建议作为独立 UI 修复提交，回滚不需要数据回滚。
 - 发布判定：测试账号创建和实例列表同步只增加开发验收证据，不解除 B13 `No-Go`。FastGPT HTTPS、目标 MySQL、pilot 最终 Store、统一环境 NewAPI 重录/异人审批、真实企微消息收发、回复/转人工/规则派单/标签/账单以及正式备份独立恢复仍需现场完成；B14 固定 `7 表、5 列、4 索引` 白名单保持不变。
 
+### 25.38 2026-07-24 B13-W 真实企微消息证据门禁
+
+- 触发原因：原 pilot readiness 的 NewAPI、FastGPT、AI 回复、转人工、规则派单、账单和标签证据只按 Store/Conversation 聚合。网页模拟会话能够产生相似本地事实，因而不能单独证明业务从真实 `wxwork_protocol` 客户消息进入并经真实企微 Outbox 投递。
+- 配置门禁：每个待验 Store 必须且只能有一个当前启用、未被替换的 `WxWorkProtocolInstance`。该实例必须绑定当前唯一 `StoreStaffBinding`、与绑定客服组一致、使用启用的 `wxwork_protocol` Channel，并处于 `health_status=online`；任一条件不满足均由 `store.wxwork_protocol` 阻止 configuration readiness。
+- 入站证据：新增 `evidence.wxwork_protocol_inbound`。成功 `MessageSyncLog` 必须来自 `wxwork_protocol -> agentdesk`，关联同 Tenant/Conversation/Message 的客户消息、有效入站 `WxWorkKFMessageRef` 和当前 Store 的企微实例；仅有网页消息、手工同步日志、跨 Tenant/Store 数据或缺少消息引用均不能通过。
+- 出站证据：新增 `evidence.wxwork_protocol_outbound`。AI 消息必须同时存在 `ChannelMessageOutbox(channel_type=wxwork_protocol, send_status=sent, sent_at)` 与有效出站 `WxWorkKFMessageRef(direction=out, send_status=sent, open_kf_id=wx_protocol:*)`，且同一会话在证据窗口内已有真实企微客户入站。仅把本地消息标为 sent 不构成现场投递证据。
+- 关联证据收紧：NewAPI Usage、FastGPT 检索、AI 回复、AI 转人工、规则派单、NewAPI 账单对账和 AI 客户标签均必须绑定当前 Store 的有效企微实例，并能追溯到证据窗口内先发生的真实企微客户入站。FastGPT 仍额外要求当前 Store Dataset、检索日志和真实企微 AI 出站；没有改变任何模型、检索、计费、标签或派单运行行为。
+- 运行链修复：正常“门店知识库已配置”企微入站原先只写 `WxWorkKFMessageRef`，只有“知识库未配置”分支会写成功 `MessageSyncLog`。现统一为先成功创建消息引用，再写成功同步日志；引用失败时不会伪造成功日志。新增回归覆盖有效知识库正常分支，验证日志、消息引用、Conversation、Message、Store、KnowledgeBase 和企微实例为同一事实链。
+- 协议依据：本批重新核对 `https://wework.apifox.cn/llms.txt`、新消息回调、文本发送、实例状态及会话说明。仍使用 `notify_type=11010`、`/msg/send_text` 和协议 `conversation_id`，私聊 `S:`、群聊 `R:`；没有新增、猜测或改写任何协议请求字段、接口路径及旧企微 Hook/客服号能力。
+- 测试证据：SQLite 聚焦测试、Tenant 审计命令、repository 测试、`go test ./...`、`go vet ./...` 及 AI/services/repositories 三组完整 `-race` 均通过；独立临时 MySQL 8.4 使用同一 `TestTenantReleaseReadinessMySQL` 契约通过后已销毁。第一次全仓测试曾出现 services 共享全局 DB/异步测试串扰，随后的 services 单包诊断、全仓复跑和耗时约 11 分钟的完整 services race 均通过，没有发现本批稳定复现的回归。前端 55 个契约文件、typecheck、SDK 和 45 页面生产构建通过；lint 为 `0 error / 33 个既有 warning`。回归明确覆盖完整真实证据可通过、禁用实例阻断、缺入站引用阻断，以及删除同步日志、Outbox/消息引用后网页模拟数据不能满足各项 pilot 证据。
+- 代码提交：真实企微 readiness 与正常入站同步日志修复为 `a2b13d1`。提交基于 `fac4687`，固定来源 `origin/main@e67e207`、`origin/codex/tenant-ai-integration@1e8e95c`、`origin/codex/ai-billing@4db7993` 在实施前后均未前移。
+- 共享、合并与回滚：本批修改 readiness repository/service/test 与企微接收 service/test，并更新本方案和 manifest；没有 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限码、WebSocket、AI Prompt/Schema、Credential、Billing 口径、FastGPT 行为、标签算法、人工任务池或规则派单算法变化。必须随统一分支整体合入，不回写来源分支；应用代码可在 B14 前整体回滚且不需要数据回滚，但回滚会重新允许模拟会话冒充现场证据。
+- 现场边界：本批自动化只证明门禁能识别正确数据库事实，不是 B13 现场验收。现有两台真实实例仍已登录且未绑定，空闲可扫码实例为 0；没有强改真实实例、创建假实例或伪造回调。用户允许自行创建系统测试账号，但既有隔离 Tenant 的公司主管和唯一门店员工账号已足够验证权限，额外账号不能替代真实企微实例、NewAPI/FastGPT、账单和出站证据。正式 pilot、`8083`、加密备份、独立恢复与 B14 继续保持 `No-Go`。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B13-B14 实施和验收证据。
