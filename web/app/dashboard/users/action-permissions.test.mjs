@@ -70,3 +70,15 @@ test("user deletion warning distinguishes permanent removal from disabling", () 
   assert.match(zh.confirmDeleteDescription, /临时停用.*禁用/)
   assert.match(en.confirmDeleteDescription, /Disable.*temporary/i)
 })
+
+test("create user drawer keeps its actions reachable on bounded viewports", () => {
+  assert.match(createSource, /DrawerContent className="overflow-hidden md:min-w-2xl"/)
+  assert.doesNotMatch(createSource, /className="min-w-2xl overflow-hidden"/)
+  assert.match(createSource, /className="flex min-h-0 flex-1 flex-col"/)
+  assert.match(
+    createSource,
+    /className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pb-4"/,
+  )
+  assert.match(createSource, /DrawerFooter className="shrink-0 border-t"/)
+  assert.doesNotMatch(createSource, /className="flex h-full flex-col"/)
+})
