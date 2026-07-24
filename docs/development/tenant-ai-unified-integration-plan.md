@@ -1556,8 +1556,9 @@ git diff --check
 
 - 触发原因：Draft PR #3 在 GitHub 可判定无冲突，但仓库没有任何状态检查；`MERGEABLE` 只能证明 Git 合并图成立，不能证明第 21 节固定测试、前端构建、manifest 和交付物边界仍成立。
 - 实现：新增唯一 `.github/workflows/unified-integration-ci.yml`，只在面向 `main` 的 PR 和人工 `workflow_dispatch` 运行。`repository-contract` 校验完整 PR diff、manifest 固定 8 列/路径唯一、无受控环境文件/数据库/密钥文件和无新增 `docs/generated` 报告；Go job 执行全量测试与 vet；race 按 AI、services、repositories 三组并行；Web job 逐个执行 55 个 `*.test.mjs`，再执行 typecheck、lint、SDK 和生产构建。
-- 环境与确定性：Go 版本读取 `go.mod`，Node 固定 24，pnpm 固定本地已验证的 `11.9.0` 并使用 frozen lockfile。Go 测试仅创建最小未跟踪 SPA embed fixture，真实前端产物由独立 Web job 构建；不把构建目录提交到 Git。
-- 本地预检：`actionlint v1.7.7`、PR/人工触发两种 diff 基线、manifest 8 列与路径唯一、敏感产物规则、55 个前端契约文件、typecheck、SDK 和 45 页面生产构建均通过；ESLint 为 `0 error / 33 个既有 warning`。本批提交前一轮 AI/services/repositories 全量 race 已通过，GitHub 首次运行结果必须在推送后单独核对。
+- 环境与确定性：Go 版本读取 `go.mod`，Node 固定 24，pnpm 固定本地已验证的 `11.9.0` 并使用 frozen lockfile；checkout/setup-go/setup-node 使用官方 Node 24 的 `v7`，pnpm setup 使用 Node 24 的 `v6`，不保留已退役的 Node 20 Action。Go 测试仅创建最小未跟踪 SPA embed fixture，真实前端产物由独立 Web job 构建；不把构建目录提交到 Git。
+- 本地预检：`actionlint v1.7.7`、PR/人工触发两种 diff 基线、manifest 8 列与路径唯一、敏感产物规则、55 个前端契约文件、typecheck、SDK 和 45 页面生产构建均通过；ESLint 为 `0 error / 33 个既有 warning`。本批提交前一轮 AI/services/repositories 全量 race 已通过。
+- GitHub 基线：PR run `30059303642` 的 Repository contract、Go test/vet、Web contracts/build 和 AI/services/repositories 三组 race 全部通过。该轮唯一 annotation 是旧 `checkout@v4` 的 Node 20 运行器退役提示，因此后续提交统一升级到已核对为 Node 24 的官方 Action major；升级后的当前 Head 仍必须重新通过同一组检查。
 - 秘密与现场边界：CI 权限只有 `contents: read`，不注入仓库或环境 secrets，不访问生产 NewAPI、FastGPT、MySQL、来源备份或 `8083`，不运行 Tenant 现场 readiness、迁移、部署或 B14。外部集成测试继续按既有环境变量显式 opt-in，CI 通过绝不解除 Draft / `No-Go`。
 - 共享与回滚：本批只新增 workflow 并更新权威方案与 manifest；没有 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、AI Runtime、Credential、Billing、FastGPT、标签、人工任务池或规则派单变化。CI 可独立回滚，不影响应用运行与数据库，但回滚后 PR 将重新失去自动合并质量门禁。
 
