@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-23 产品决策已闭合，B0-B12 已完成，B13 工程门禁与 B14 固定白名单清理器已经实现，但生产 B13/B14 均未执行。当前结论仍为发布 `No-Go`。部署方声明 16 项生产变量、安全文件 `0600`、固定 SHA-256 以及可用 FastGPT Base URL/Integration Token 已就绪；本次继续开发的执行主机无法访问该安全文件，因此未独立复验变量值、HTTPS、Compose 或连通性。pilot 业务身份仍冻结为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 只作定位，迁移后最终 Store ID 尚未解析；NewAPI Key 尚未由实际持有人在统一环境重新提交。真实灰度、正式停机、加密备份和独立恢复证据完成前，禁止切换正式 `8083` 或执行 B14 物理清理。
+> 状态：2026-07-24 产品决策已闭合，B0-B12 已完成，B13 工程门禁与 B14 固定白名单清理器已经实现，但生产 B13/B14 均未执行。业务方已明确把当前主机无法完成的安全文件独立验证延期到正式部署前；延期不阻止代码评审或合并，也不视为验收通过。当前结论仍为发布 `No-Go`。部署方声明 16 项生产变量、安全文件 `0600`、固定 SHA-256 以及可用 FastGPT Base URL/Integration Token 已就绪；本次继续开发的执行主机无法访问该安全文件，因此未独立复验变量值、HTTPS、Compose 或连通性。pilot 业务身份仍冻结为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 只作定位，迁移后最终 Store ID 尚未解析；NewAPI Key 尚未由实际持有人在统一环境重新提交。真实灰度、正式停机、加密备份和独立恢复证据完成前，禁止切换正式 `8083` 或执行 B14 物理清理。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1542,6 +1542,15 @@ git diff --check
 - 生成器修复：实现期间发现 generator 将新模型误写为不存在的 `StoreCustomerRelationTagDecision`；已改为真实 `StoreCustomerTagDecision`，并删除 generator 产生但不应提交的无关 CRUD 文件。新决策模型已进入统一 Schema 和 Tenant 完整性测试矩阵，禁止恢复错误类型名或为 append-only 证据生成可写 CRUD。
 - 共享、合并与回滚：本批修改 model/AutoMigrate 注册、repository、service、handler、builder、request/response DTO、enum、显式路由、`web/lib/api`、客户详情 UI、多语言和完整性审计；没有 DML migration、权限种子、WebSocket payload、AI Prompt/Schema、模型调用、Credential、FastGPT、Billing、人工任务池或规则派单语义变化。必须整体合入唯一 `codex/tenant-ai-unified-integration` 分支；代码可在 B14 前整体回滚，新建 append-only 表可留存但旧应用不读取。不得只回滚决策证据而保留可变更 API，也不得回写 `customer-audit` 或来源分支形成第二套事实。
 - 生产边界复核：部署方再次确认 16 项 `production.env`、权限 `0600`、SHA-256 `3e361155f473c520086bd3995732343f9540aa5a4bd044043cdab952120e2fa4`，以及可用 FastGPT Base URL/Integration Token；本执行主机当前仍无法访问消息临时附件或 `/Users/openclaw/.../production.env`，因此不能把该声明写成独立复验通过。pilot 仍为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 只能迁移后重新解析；真实 NewAPI Key 仍由持有人在页面重录并接受异人公司主管审批。B13 全部验收、停机、加密备份和独立恢复验证前继续 `No-Go`；B14 已获业务批准但固定 `7 表、5 列、4 索引` 白名单不得扩大，本批新表绝不进入删除范围。
+
+### 25.35 2026-07-24 B13 生产环境独立验证延期
+
+- 用户决定：当前主机无法访问的 `production.env` 独立验证先延期，不再把安全文件可达性作为本次代码合并前置条件。本节只记录门禁时点变化，没有读取、复制、修改或提交任何真实秘密。
+- 合并影响：统一分支可以继续本地验证、代码评审和合并；源码、Schema、Migration、运行时、权限、页面和测试结果不依赖把生产变量写入仓库。PR 继续保持 Draft / `No-Go`，不得把“可合并”解释为“可发布”。
+- 延期边界：目标部署主机仍必须无回显验证受限普通文件、`0600`、恰好 16 项非空且不重复变量、冻结 SHA-256、Compose 解析、FastGPT HTTPS/鉴权和目标 MySQL 连通性。部署方声明只作交接线索，不升级为 readiness 证据。
+- 后续顺序：完成安全文件现场复验后，才继续来源库迁移、按“丽斯文旅 / 高铁南站店”重新解析最终 Store ID、实际 Key 持有人页面重录、异人公司主管审批、九槽/FastGPT/回复/转人工/规则派单/标签/账单灰度、正式停机、加密备份及独立恢复。
+- B14 约束：业务批准仍有效，但只有 B13 全部验收后才能执行；固定 `7 表、5 列、4 索引` 白名单不得扩大，`StoreCustomerTagDecision` 等统一新表不进入删除范围。延期期间禁止正式 `prepare/execute`。
+- 共享与回滚：本条只更新权威方案、生产秘密手册、manifest 和 PR 交接，不修改 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、AI Runtime、Credential、Billing、FastGPT、客户标签、人工任务池或规则派单。文档可以回滚，但不能借回滚删除生产门禁。
 
 ## 26. 用户最终 1-48 项决定追溯
 
