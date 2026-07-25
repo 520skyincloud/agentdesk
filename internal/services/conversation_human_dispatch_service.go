@@ -554,7 +554,15 @@ func (s *conversationHumanDispatchService) moveToTeamPoolWithRequestID(conversat
 }
 
 func (s *conversationHumanDispatchService) moveToGlobalPool(conversationID int64, operatorName string) error {
+	return s.moveToGlobalPoolWithReason(conversationID, "进入全局待接入", operatorName)
+}
+
+func (s *conversationHumanDispatchService) moveToGlobalPoolWithReason(conversationID int64, reason, operatorName string) error {
 	now := time.Now()
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "进入全局待接入"
+	}
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		conversation, err := requireConversationParent(ctx.Tx, conversationID)
 		if err != nil {
@@ -574,15 +582,16 @@ func (s *conversationHumanDispatchService) moveToGlobalPool(conversationID int64
 			"fromStatus": conversation.Status,
 			"toStatus":   enums.IMConversationStatusPending,
 			"decision":   string(HandoffDecisionGlobalPool),
+			"reason":     reason,
 		})); err != nil {
 			return err
 		}
-		_, err = ConversationRouteService.enterHQAgentDeskPendingWithDB(ctx.Tx, conversationID, "进入全局待接入", now)
+		_, err = ConversationRouteService.enterHQAgentDeskPendingWithDB(ctx.Tx, conversationID, reason, now)
 		return err
 	}); err != nil {
 		return err
 	}
-	s.notifyAgentDeskHandoff(conversationID, "进入全局待接入")
+	s.notifyAgentDeskHandoff(conversationID, reason)
 	ConversationDispatchService.ScheduleDispatch(conversationID)
 	return nil
 }

@@ -66,6 +66,71 @@ func TestWxWorkProtocolTextWithStaleVoiceTimeIsNotVoice(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolProfileUpdatesReadNestedPersonAndPreserveVID(t *testing.T) {
+	svc := &wxWorkProtocolService{}
+	updates := svc.profileUpdatesFromResponse(`{
+		"error_code": 0,
+		"error_message": "success",
+		"data": {
+			"persons": [{
+				"vid": 1688854374868249,
+				"info": {
+					"name": "企微测试员工",
+					"avatar": "https://example.test/avatar.png"
+				}
+			}]
+		}
+	}`)
+
+	if got := updates["employee_user_id"]; got != "1688854374868249" {
+		t.Fatalf("employee_user_id=%#v, want exact nested vid", got)
+	}
+	if got := updates["employee_name"]; got != "企微测试员工" {
+		t.Fatalf("employee_name=%#v", got)
+	}
+	if got := updates["employee_avatar"]; got != "https://example.test/avatar.png" {
+		t.Fatalf("employee_avatar=%#v", got)
+	}
+	if got := updates["health_status"]; got != "online" {
+		t.Fatalf("health_status=%#v", got)
+	}
+}
+
+func TestWxWorkProtocolLoginOtherDeviceKeepsInstanceOnline(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	instance := &models.WxWorkProtocolInstance{
+		TenantID:       101,
+		Guid:           "guid-login-other-device",
+		EmployeeUserID: "employee-1",
+		HealthStatus:   "online",
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	callbackAt := now.Add(time.Minute)
+	if err := WxWorkProtocolService.handleLoginOtherDevice(instance, `{"notify_type":11011}`, callbackAt); err != nil {
+		t.Fatalf("handleLoginOtherDevice() error = %v", err)
+	}
+
+	var current models.WxWorkProtocolInstance
+	if err := db.First(&current, instance.ID).Error; err != nil {
+		t.Fatalf("load instance: %v", err)
+	}
+	if current.HealthStatus != "online" {
+		t.Fatalf("health_status=%q, want online", current.HealthStatus)
+	}
+	if current.LastHeartbeatAt == nil || !current.LastHeartbeatAt.Equal(callbackAt) {
+		t.Fatalf("last_heartbeat_at=%v, want %v", current.LastHeartbeatAt, callbackAt)
+	}
+	if !strings.Contains(current.Remark, "协议未声明当前实例退出") {
+		t.Fatalf("unexpected remark: %q", current.Remark)
+	}
+}
+
 func TestWxWorkProtocolSkipsReferencedMutationMessage(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()
@@ -264,6 +329,10 @@ func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *tes
 	}
 	if state.RouteStatus != enums.ConversationRouteStatusHQAgentDeskPending || !state.NeedHumanFollowUp {
 		t.Fatalf("expected AI paused and dashboard attention enabled, got %+v", state)
+	}
+	currentConversation := ConversationService.Get(conversation.ID)
+	if currentConversation == nil || currentConversation.Status != enums.IMConversationStatusPending || currentConversation.CurrentAssigneeID != 0 {
+		t.Fatalf("expected conversation to enter the dispatch pool, got %+v", currentConversation)
 	}
 
 	var customerMessages int64

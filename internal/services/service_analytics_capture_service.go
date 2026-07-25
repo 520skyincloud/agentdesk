@@ -17,34 +17,58 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	serviceAnalyticsCaptureSQLiteRetryAttempts = 5
+	serviceAnalyticsCaptureSQLiteRetryDelay    = 20 * time.Millisecond
+)
+
+func retryServiceAnalyticsCapture(db *gorm.DB, operation func() error) error {
+	if operation == nil {
+		return nil
+	}
+	var err error
+	for attempt := 0; attempt < serviceAnalyticsCaptureSQLiteRetryAttempts; attempt++ {
+		err = operation()
+		if err == nil || db == nil || db.Dialector.Name() != "sqlite" || !isSQLiteDatabaseLockedError(err) {
+			return err
+		}
+		if attempt+1 < serviceAnalyticsCaptureSQLiteRetryAttempts {
+			time.Sleep(serviceAnalyticsCaptureSQLiteRetryDelay << attempt)
+		}
+	}
+	return err
+}
+
 func (s *serviceAnalyticsCaptureService) RecordMessage(message *models.Message) error {
 	if message == nil || message.ID <= 0 || message.TenantID <= 0 || message.ConversationID <= 0 {
 		return nil
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation := repositories.ConversationRepository.GetInTenant(ctx.Tx, message.ConversationID, message.TenantID)
-		if conversation == nil {
-			return nil
-		}
-		at := message.CreatedAt
-		if message.SentAt != nil {
-			at = *message.SentAt
-		}
-		session, err := s.ensureSessionDB(ctx.Tx, conversation, message.SessionNo, at)
-		if err != nil {
-			return err
-		}
-		if err := s.refreshMessageFactsDB(ctx.Tx, session, message, at); err != nil {
-			return err
-		}
-		switch message.SenderType {
-		case enums.IMSenderTypeCustomer:
-			return s.recordCustomerWaitingSpanDB(ctx.Tx, session, message, at)
-		case enums.IMSenderTypeAgent:
-			return s.recordHumanReplyDB(ctx.Tx, session, message, at)
-		default:
-			return nil
-		}
+	return retryServiceAnalyticsCapture(sqls.DB(), func() error {
+		return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			conversation := repositories.ConversationRepository.GetInTenant(ctx.Tx, message.ConversationID, message.TenantID)
+			if conversation == nil {
+				return nil
+			}
+			at := message.CreatedAt
+			if message.SentAt != nil {
+				at = *message.SentAt
+			}
+			session, err := s.ensureSessionDB(ctx.Tx, conversation, message.SessionNo, at)
+			if err != nil {
+				return err
+			}
+			if err := s.refreshMessageFactsDB(ctx.Tx, session, message, at); err != nil {
+				return err
+			}
+			switch message.SenderType {
+			case enums.IMSenderTypeCustomer:
+				return s.recordCustomerWaitingSpanDB(ctx.Tx, session, message, at)
+			case enums.IMSenderTypeAgent:
+				return s.recordHumanReplyDB(ctx.Tx, session, message, at)
+			default:
+				return nil
+			}
+		})
 	})
 }
 
@@ -53,8 +77,10 @@ func (s *serviceAnalyticsCaptureService) RecordQueueEntry(conversationID int64, 
 	if conversation == nil || conversation.TenantID <= 0 {
 		return nil
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		return s.recordQueueEntryDB(ctx.Tx, conversation, at)
+	return retryServiceAnalyticsCapture(sqls.DB(), func() error {
+		return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			return s.recordQueueEntryDB(ctx.Tx, conversation, at)
+		})
 	})
 }
 
@@ -105,76 +131,81 @@ func (s *serviceAnalyticsCaptureService) RecordCurrentAssignment(conversationID 
 	if conversation == nil || conversation.TenantID <= 0 {
 		return nil
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		assignment := repositories.ConversationAssignmentRepository.FindOne(ctx.Tx, sqls.NewCnd().
-			Eq("tenant_id", conversation.TenantID).
-			Eq("conversation_id", conversation.ID).
-			Eq("status", enums.IMAssignmentStatusActive).
-			Desc("id"))
-		if assignment == nil {
-			return nil
-		}
-		sessionNo := assignment.SessionNo
-		if sessionNo <= 0 {
-			sessionNo = currentSessionNoDB(ctx.Tx, conversation.ID, conversation.TenantID)
-		}
-		session, err := s.ensureSessionDB(ctx.Tx, conversation, sessionNo, assignment.CreatedAt)
-		if err != nil {
-			return err
-		}
-		profile := repositories.AgentProfileRepository.Take(ctx.Tx, "tenant_id = ? AND user_id = ?", conversation.TenantID, assignment.ToUserID)
-		teamID := conversation.CurrentTeamID
-		if profile != nil && profile.TeamID > 0 {
-			teamID = profile.TeamID
-		}
-		assignmentCount := repositories.ConversationAssignmentRepository.Count(ctx.Tx, sqls.NewCnd().
-			Eq("tenant_id", conversation.TenantID).
-			Eq("conversation_id", conversation.ID).
-			Eq("session_no", sessionNo))
-		transferCount := repositories.ConversationAssignmentRepository.Count(ctx.Tx, sqls.NewCnd().
-			Eq("tenant_id", conversation.TenantID).
-			Eq("conversation_id", conversation.ID).
-			Eq("session_no", sessionNo).
-			Eq("assign_type", string(enums.IMAssignmentTypeTransfer)))
-		updates := map[string]any{
-			"last_assignment_id": assignment.ID,
-			"assigned_team_id":   teamID,
-			"assigned_squad_id":  assignment.SquadID,
-			"assigned_agent_id":  assignment.ToUserID,
-			"assignment_count":   assignmentCount,
-			"transfer_count":     transferCount,
-			"updated_at":         assignment.CreatedAt,
-			"update_user_name":   "system",
-		}
-		if session.FirstAssignmentID <= 0 || session.AssignedAt == nil {
-			firstAssignment := repositories.ConversationAssignmentRepository.FindOne(ctx.Tx, sqls.NewCnd().
+	return retryServiceAnalyticsCapture(sqls.DB(), func() error {
+		return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			assignment := repositories.ConversationAssignmentRepository.FindOne(ctx.Tx, sqls.NewCnd().
+				Eq("tenant_id", conversation.TenantID).
+				Eq("conversation_id", conversation.ID).
+				Eq("status", enums.IMAssignmentStatusActive).
+				Desc("id"))
+			if assignment == nil {
+				return nil
+			}
+			sessionNo := assignment.SessionNo
+			if sessionNo <= 0 {
+				sessionNo = currentSessionNoDB(ctx.Tx, conversation.ID, conversation.TenantID)
+			}
+			session, err := s.ensureSessionDB(ctx.Tx, conversation, sessionNo, assignment.CreatedAt)
+			if err != nil {
+				return err
+			}
+			profile := repositories.AgentProfileRepository.Take(ctx.Tx, "tenant_id = ? AND user_id = ?", conversation.TenantID, assignment.ToUserID)
+			teamID := conversation.CurrentTeamID
+			if profile != nil && profile.TeamID > 0 {
+				teamID = profile.TeamID
+			}
+			assignmentCount := repositories.ConversationAssignmentRepository.Count(ctx.Tx, sqls.NewCnd().
+				Eq("tenant_id", conversation.TenantID).
+				Eq("conversation_id", conversation.ID).
+				Eq("session_no", sessionNo))
+			transferCount := repositories.ConversationAssignmentRepository.Count(ctx.Tx, sqls.NewCnd().
 				Eq("tenant_id", conversation.TenantID).
 				Eq("conversation_id", conversation.ID).
 				Eq("session_no", sessionNo).
-				Asc("created_at").Asc("id"))
-			if firstAssignment != nil {
-				updates["first_assignment_id"] = firstAssignment.ID
-				updates["assigned_at"] = firstAssignment.CreatedAt
-				if session.QueueEnteredAt != nil {
-					updates["queue_seconds"] = nonNegativeSeconds(*session.QueueEnteredAt, firstAssignment.CreatedAt)
+				Eq("assign_type", string(enums.IMAssignmentTypeTransfer)))
+			updates := map[string]any{
+				"last_assignment_id": assignment.ID,
+				"assigned_team_id":   teamID,
+				"assigned_squad_id":  assignment.SquadID,
+				"assigned_agent_id":  assignment.ToUserID,
+				"assignment_count":   assignmentCount,
+				"transfer_count":     transferCount,
+				"updated_at":         assignment.CreatedAt,
+				"update_user_name":   "system",
+			}
+			if session.FirstAssignmentID <= 0 || session.AssignedAt == nil {
+				firstAssignment := repositories.ConversationAssignmentRepository.FindOne(ctx.Tx, sqls.NewCnd().
+					Eq("tenant_id", conversation.TenantID).
+					Eq("conversation_id", conversation.ID).
+					Eq("session_no", sessionNo).
+					Asc("created_at").Asc("id"))
+				if firstAssignment != nil {
+					updates["first_assignment_id"] = firstAssignment.ID
+					updates["assigned_at"] = firstAssignment.CreatedAt
+					if session.QueueEnteredAt != nil {
+						updates["queue_seconds"] = nonNegativeSeconds(*session.QueueEnteredAt, firstAssignment.CreatedAt)
+					}
+					if session.FirstHumanReplyAt != nil {
+						updates["first_response_seconds"] = nonNegativeSeconds(firstAssignment.CreatedAt, *session.FirstHumanReplyAt)
+					}
 				}
 			}
-		}
-		if err := repositories.ConversationServiceSessionRepository.UpdatesInTenant(ctx.Tx, session.ID, session.TenantID, updates); err != nil {
-			return err
-		}
-		for _, span := range repositories.ConversationResponseSpanRepository.FindWaiting(ctx.Tx, session.TenantID, session.ConversationID, session.SessionNo) {
-			if err := repositories.ConversationResponseSpanRepository.UpdatesInTenant(ctx.Tx, span.ID, span.TenantID, map[string]any{
-				"assignment_id": assignment.ID,
-				"team_id":       teamID,
-				"squad_id":      assignment.SquadID,
-				"agent_id":      assignment.ToUserID,
-				"updated_at":    assignment.CreatedAt,
-			}); err != nil {
+			if err := repositories.ConversationServiceSessionRepository.UpdatesInTenant(ctx.Tx, session.ID, session.TenantID, updates); err != nil {
 				return err
 			}
-		}
-		return nil
+			for _, span := range repositories.ConversationResponseSpanRepository.FindWaiting(ctx.Tx, session.TenantID, session.ConversationID, session.SessionNo) {
+				if err := repositories.ConversationResponseSpanRepository.UpdatesInTenant(ctx.Tx, span.ID, span.TenantID, map[string]any{
+					"assignment_id": assignment.ID,
+					"team_id":       teamID,
+					"squad_id":      assignment.SquadID,
+					"agent_id":      assignment.ToUserID,
+					"updated_at":    assignment.CreatedAt,
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 	})
 }
 
@@ -183,68 +214,70 @@ func (s *serviceAnalyticsCaptureService) RecordDispatchDecision(conversationID, 
 	if conversation == nil || conversation.TenantID <= 0 || toUserID <= 0 {
 		return nil
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		assignmentType := enums.IMAssignmentTypeAssign
-		if strings.TrimSpace(assignType) == "transfer" {
-			assignmentType = enums.IMAssignmentTypeTransfer
-		}
-		assignment := repositories.ConversationAssignmentRepository.FindOne(ctx.Tx, sqls.NewCnd().
-			Eq("tenant_id", conversation.TenantID).
-			Eq("conversation_id", conversation.ID).
-			Eq("to_user_id", toUserID).
-			Eq("assign_type", string(assignmentType)).
-			Desc("id"))
-		if assignment == nil || repositories.DispatchDecisionLogRepository.TakeByAssignment(ctx.Tx, conversation.TenantID, assignment.ID) != nil {
-			return nil
-		}
-		decisionMode := string(assignment.DispatchMode)
-		if decisionMode == "" || (strings.TrimSpace(assignType) == "auto_assign" && assignment.DispatchMode == enums.AgentTeamDispatchModeManual) {
-			if strings.TrimSpace(assignType) == "auto_assign" {
-				decisionMode = string(enums.AgentTeamDispatchModeRule)
-			} else {
-				decisionMode = string(enums.AgentTeamDispatchModeManual)
+	return retryServiceAnalyticsCapture(sqls.DB(), func() error {
+		return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			assignmentType := enums.IMAssignmentTypeAssign
+			if strings.TrimSpace(assignType) == "transfer" {
+				assignmentType = enums.IMAssignmentTypeTransfer
 			}
-		}
-		status := enums.DispatchDecisionStatusSelected
-		if strings.TrimSpace(assignType) == "transfer" {
-			status = enums.DispatchDecisionStatusOverride
-		} else if strings.Contains(assignment.Reason, "降级") {
-			status = enums.DispatchDecisionStatusFallback
-		} else if strings.TrimSpace(assignType) != "auto_assign" {
-			prior := repositories.DispatchDecisionLogRepository.Find(ctx.Tx, sqls.NewCnd().
+			assignment := repositories.ConversationAssignmentRepository.FindOne(ctx.Tx, sqls.NewCnd().
 				Eq("tenant_id", conversation.TenantID).
 				Eq("conversation_id", conversation.ID).
-				Eq("session_no", normalizedSessionNo(assignment.SessionNo)).
-				Eq("assignment_id", 0).
-				In("status", []enums.DispatchDecisionStatus{enums.DispatchDecisionStatusFallback, enums.DispatchDecisionStatusFailed, enums.DispatchDecisionStatusStale}).
-				Desc("id").Limit(1))
-			if len(prior) > 0 {
-				status = enums.DispatchDecisionStatusOverride
+				Eq("to_user_id", toUserID).
+				Eq("assign_type", string(assignmentType)).
+				Desc("id"))
+			if assignment == nil || repositories.DispatchDecisionLogRepository.TakeByAssignment(ctx.Tx, conversation.TenantID, assignment.ID) != nil {
+				return nil
 			}
-		}
-		teamID := conversation.CurrentTeamID
-		if profile := repositories.AgentProfileRepository.Take(ctx.Tx, "tenant_id = ? AND user_id = ?", conversation.TenantID, toUserID); profile != nil {
-			teamID = profile.TeamID
-		}
-		return repositories.DispatchDecisionLogRepository.Create(ctx.Tx, &models.DispatchDecisionLog{
-			TenantID:              conversation.TenantID,
-			DecisionKey:           fmt.Sprintf("assignment:%d", assignment.ID),
-			ConversationID:        conversation.ID,
-			SessionNo:             assignment.SessionNo,
-			AssignmentID:          assignment.ID,
-			DecisionMode:          decisionMode,
-			Status:                status,
-			Trigger:               strings.TrimSpace(assignType),
-			CandidateUserIDsJSON:  fmt.Sprintf("[%d]", toUserID),
-			CandidateSnapshotJSON: fmt.Sprintf(`[{"userId":%d,"workloadWeight":%d}]`, toUserID, assignment.WorkloadWeight),
-			InputLastMessageID:    conversation.LastMessageID,
-			SelectedUserID:        toUserID,
-			SelectedTeamID:        teamID,
-			SelectedSquadID:       assignment.SquadID,
-			Reason:                strings.TrimSpace(reason),
-			OperatorID:            operatorID,
-			DecidedAt:             assignment.CreatedAt,
-			AuditFields:           utils.BuildAuditFields(nil),
+			decisionMode := string(assignment.DispatchMode)
+			if decisionMode == "" || (strings.TrimSpace(assignType) == "auto_assign" && assignment.DispatchMode == enums.AgentTeamDispatchModeManual) {
+				if strings.TrimSpace(assignType) == "auto_assign" {
+					decisionMode = string(enums.AgentTeamDispatchModeRule)
+				} else {
+					decisionMode = string(enums.AgentTeamDispatchModeManual)
+				}
+			}
+			status := enums.DispatchDecisionStatusSelected
+			if strings.TrimSpace(assignType) == "transfer" {
+				status = enums.DispatchDecisionStatusOverride
+			} else if strings.Contains(assignment.Reason, "降级") {
+				status = enums.DispatchDecisionStatusFallback
+			} else if strings.TrimSpace(assignType) != "auto_assign" {
+				prior := repositories.DispatchDecisionLogRepository.Find(ctx.Tx, sqls.NewCnd().
+					Eq("tenant_id", conversation.TenantID).
+					Eq("conversation_id", conversation.ID).
+					Eq("session_no", normalizedSessionNo(assignment.SessionNo)).
+					Eq("assignment_id", 0).
+					In("status", []enums.DispatchDecisionStatus{enums.DispatchDecisionStatusFallback, enums.DispatchDecisionStatusFailed, enums.DispatchDecisionStatusStale}).
+					Desc("id").Limit(1))
+				if len(prior) > 0 {
+					status = enums.DispatchDecisionStatusOverride
+				}
+			}
+			teamID := conversation.CurrentTeamID
+			if profile := repositories.AgentProfileRepository.Take(ctx.Tx, "tenant_id = ? AND user_id = ?", conversation.TenantID, toUserID); profile != nil {
+				teamID = profile.TeamID
+			}
+			return repositories.DispatchDecisionLogRepository.Create(ctx.Tx, &models.DispatchDecisionLog{
+				TenantID:              conversation.TenantID,
+				DecisionKey:           fmt.Sprintf("assignment:%d", assignment.ID),
+				ConversationID:        conversation.ID,
+				SessionNo:             assignment.SessionNo,
+				AssignmentID:          assignment.ID,
+				DecisionMode:          decisionMode,
+				Status:                status,
+				Trigger:               strings.TrimSpace(assignType),
+				CandidateUserIDsJSON:  fmt.Sprintf("[%d]", toUserID),
+				CandidateSnapshotJSON: fmt.Sprintf(`[{"userId":%d,"workloadWeight":%d}]`, toUserID, assignment.WorkloadWeight),
+				InputLastMessageID:    conversation.LastMessageID,
+				SelectedUserID:        toUserID,
+				SelectedTeamID:        teamID,
+				SelectedSquadID:       assignment.SquadID,
+				Reason:                strings.TrimSpace(reason),
+				OperatorID:            operatorID,
+				DecidedAt:             assignment.CreatedAt,
+				AuditFields:           utils.BuildAuditFields(nil),
+			})
 		})
 	})
 }
@@ -254,22 +287,24 @@ func (s *serviceAnalyticsCaptureService) RecordClose(conversationID int64, at ti
 	if conversation == nil || conversation.TenantID <= 0 {
 		return nil
 	}
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		sessionNo := currentSessionNoDB(ctx.Tx, conversation.ID, conversation.TenantID)
-		session, err := s.ensureSessionDB(ctx.Tx, conversation, sessionNo, at)
-		if err != nil {
-			return err
-		}
-		if err := repositories.ConversationServiceSessionRepository.UpdatesInTenant(ctx.Tx, session.ID, session.TenantID, map[string]any{
-			"status":           enums.ServiceSessionStatusClosed,
-			"ended_at":         at,
-			"close_reason":     reason,
-			"updated_at":       at,
-			"update_user_name": "system",
-		}); err != nil {
-			return err
-		}
-		return s.abandonWaitingSpansDB(ctx.Tx, session, at)
+	return retryServiceAnalyticsCapture(sqls.DB(), func() error {
+		return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			sessionNo := currentSessionNoDB(ctx.Tx, conversation.ID, conversation.TenantID)
+			session, err := s.ensureSessionDB(ctx.Tx, conversation, sessionNo, at)
+			if err != nil {
+				return err
+			}
+			if err := repositories.ConversationServiceSessionRepository.UpdatesInTenant(ctx.Tx, session.ID, session.TenantID, map[string]any{
+				"status":           enums.ServiceSessionStatusClosed,
+				"ended_at":         at,
+				"close_reason":     reason,
+				"updated_at":       at,
+				"update_user_name": "system",
+			}); err != nil {
+				return err
+			}
+			return s.abandonWaitingSpansDB(ctx.Tx, session, at)
+		})
 	})
 }
 

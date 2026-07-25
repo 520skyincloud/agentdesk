@@ -149,6 +149,46 @@ func TestWxWorkProtocolLoginClaimsOnlyUnownedInstance(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolLoginResumesDraftBeforeClaimingDevice(t *testing.T) {
+	db := setupWxWorkProtocolTenantDB(t)
+	operator := wxWorkProtocolTenantOperator(101, 1)
+	channel := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-resume-login")
+	user := createStoreStaffTenantUser(t, db, 101, "wxwork-resume-store-user")
+	store := createWxWorkProtocolTenantStore(t, db, 101, 0, "WX-RESUME")
+	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, 0, store.ID)
+	draft := &models.WxWorkProtocolInstance{
+		TenantID:            101,
+		Guid:                "resume-login-guid",
+		ChannelID:           channel.ID,
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
+		HealthStatus:        "login_qrcode",
+		Status:              enums.StatusDisabled,
+	}
+	if err := db.Create(draft).Error; err != nil {
+		t.Fatalf("create login draft: %v", err)
+	}
+
+	resumed, err := WxWorkProtocolInstanceService.CreateLoginInstance(request.StartWxWorkProtocolLoginRequest{
+		ChannelID:        channel.ID,
+		StoreStaffUserID: user.ID,
+		StoreName:        "续用二维码门店",
+	}, operator)
+	if err != nil {
+		t.Fatalf("resume login draft: %v", err)
+	}
+	if resumed.ID != draft.ID || resumed.Guid != draft.Guid {
+		t.Fatalf("resumed instance=%+v want draft id=%d guid=%q", resumed, draft.ID, draft.Guid)
+	}
+	var count int64
+	if err := db.Model(&models.WxWorkProtocolInstance{}).Count(&count).Error; err != nil {
+		t.Fatalf("count login instances: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("resume created %d login instances, want 1", count)
+	}
+}
+
 func TestWxWorkProtocolRemoteSetupRejectsForeignStoreStaffBeforeGUIDClaim(t *testing.T) {
 	db := setupWxWorkProtocolTenantDB(t)
 	adminA := wxWorkProtocolTenantOperator(101, 1)

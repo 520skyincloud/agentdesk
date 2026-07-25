@@ -386,6 +386,37 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 	if err != nil {
 		return nil, err
 	}
+	if binding := repositories.StoreStaffBindingRepository.TakeInTenant(
+		sqls.DB(),
+		tenantID,
+		"user_id = ? AND status <> ?",
+		req.StoreStaffUserID,
+		enums.StatusDeleted,
+	); binding != nil && s.activeInstanceForBindingDB(sqls.DB(), tenantID, binding.ID) != nil {
+		var resumed *models.WxWorkProtocolInstance
+		err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			prepared, prepareErr := StoreStaffBindingService.prepareForUserDB(ctx.Tx, tenantID, req.StoreStaffUserID, req.StoreName, operator)
+			if prepareErr != nil {
+				return prepareErr
+			}
+			current := s.activeInstanceForBindingDB(ctx.Tx, tenantID, prepared.Binding.ID)
+			if current == nil {
+				return nil
+			}
+			if current.HealthStatus != "login_qrcode" || strings.TrimSpace(current.EmployeeUserID) != "" {
+				return errorsx.InvalidParam("该系统账号已经绑定企微员工号，请使用更换登录员工号")
+			}
+			resumed = current
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if resumed != nil {
+			_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(resumed.Guid, resumed.ID)
+			return resumed, nil
+		}
+	}
 	now := time.Now()
 	guid := normalizeProtocolDeviceGUID(req.Guid)
 	if guid == "" {
@@ -404,6 +435,7 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 		if current := s.activeInstanceForBindingDB(ctx.Tx, tenantID, prepared.Binding.ID); current != nil {
 			if current.HealthStatus == "login_qrcode" && strings.TrimSpace(current.EmployeeUserID) == "" {
 				item = current
+				guid = current.Guid
 				return nil
 			}
 			return errorsx.InvalidParam("该系统账号已经绑定企微员工号，请使用更换登录员工号")

@@ -192,15 +192,42 @@ func (s *wxWorkProtocolDevicePoolService) ClaimAvailableGUID(channel *models.Cha
 		return "", errorsx.InvalidParam("请先在系统管理 > 实例池配置聚合智能后台账号并同步设备列表")
 	}
 	bound := WxWorkProtocolInstanceService.boundProtocolGUIDs()
-	candidates := repositories.WxWorkProtocolDevicePoolRepository.Find(sqls.DB(), sqls.NewCnd().Eq("status", enums.StatusOk).Eq("sync_status", "idle").Asc("id"))
+	candidates := repositories.WxWorkProtocolDevicePoolRepository.Find(sqls.DB(), sqls.NewCnd().Eq("status", enums.StatusOk).Asc("id"))
 	if len(candidates) == 0 {
-		return "", errorsx.InvalidParam("实例池暂无空闲实例，请先同步设备列表或初始化新实例")
+		return "", errorsx.InvalidParam("实例池暂无实例，请先同步设备列表或初始化新实例")
 	}
 	var lastErr string
+	onlineCount := 0
 	for _, candidate := range candidates {
 		guid := normalizeProtocolDeviceGUID(candidate.Guid)
 		if guid == "" || bound[guid] || candidate.BoundWxWorkProtocolInstanceID > 0 || devicePoolExpired(candidate.ExpiredAt, time.Now()) {
 			continue
+		}
+		if candidate.SyncStatus != "idle" {
+			raw, profileErr := WxWorkProtocolService.postJSON(cfg, "/user/get_profile", map[string]any{"guid": guid})
+			if profileErr == nil {
+				onlineCount++
+				_ = repositories.WxWorkProtocolDevicePoolRepository.Updates(sqls.DB(), candidate.ID, map[string]any{
+					"sync_status": "online",
+					"remark":      "账号资料接口确认当前实例在线，未进入扫码认领",
+					"updated_at":  time.Now(),
+				})
+				continue
+			}
+			if !protocolProfileResponseShowsOffline(raw) {
+				lastErr = profileErr.Error()
+				_ = repositories.WxWorkProtocolDevicePoolRepository.Updates(sqls.DB(), candidate.ID, map[string]any{
+					"sync_status": "unavailable",
+					"remark":      lastErr,
+					"updated_at":  time.Now(),
+				})
+				continue
+			}
+			_ = repositories.WxWorkProtocolDevicePoolRepository.Updates(sqls.DB(), candidate.ID, map[string]any{
+				"sync_status": "idle",
+				"remark":      "账号资料接口确认历史 UIN 对应实例已离线，可重新扫码绑定",
+				"updated_at":  time.Now(),
+			})
 		}
 		_, err := WxWorkProtocolService.postJSON(cfg, "/login/get_login_qrcode", map[string]any{
 			"guid":         guid,
@@ -219,7 +246,29 @@ func (s *wxWorkProtocolDevicePoolService) ClaimAvailableGUID(channel *models.Cha
 	if lastErr != "" {
 		return "", errorsx.InvalidParam("实例池未找到可扫码实例，最后一次探测错误：" + lastErr)
 	}
+	if onlineCount > 0 {
+		return "", errorsx.InvalidParam("实例池中的未绑定实例当前均已登录，请先准备离线实例再扫码")
+	}
 	return "", errorsx.InvalidParam("实例池里的空闲实例均已被本地绑定或已过期")
+}
+
+func protocolProfileResponseShowsOffline(raw string) bool {
+	root := struct {
+		ErrCode      int    `json:"err_code"`
+		ErrMsg       string `json:"err_msg"`
+		ErrorCode    int    `json:"error_code"`
+		ErrorMessage string `json:"error_message"`
+		Message      string `json:"message"`
+	}{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &root); err != nil {
+		return false
+	}
+	code := root.ErrCode
+	if code == 0 {
+		code = root.ErrorCode
+	}
+	message := strings.ToLower(firstNonBlank(root.ErrMsg, root.ErrorMessage, root.Message))
+	return code == 1002 && (strings.Contains(message, "offline") || strings.Contains(message, "-102") || strings.Contains(message, "离线"))
 }
 
 func (s *wxWorkProtocolDevicePoolService) BindGUIDToInstance(guid string, instanceID int64) error {

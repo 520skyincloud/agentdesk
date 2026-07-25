@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"sync"
@@ -79,9 +80,6 @@ func TestServiceAnalyticsCaptureAndHumanOnlyQuality(t *testing.T) {
 	if err := db.Model(conversation).Updates(map[string]any{"status": enums.IMConversationStatusActive, "current_assignee_id": user.ID, "current_team_id": team.ID}).Error; err != nil {
 		t.Fatalf("update conversation assignment: %v", err)
 	}
-	if err := ServiceAnalyticsCaptureService.RecordCurrentAssignment(conversation.ID); err != nil {
-		t.Fatalf("capture assignment: %v", err)
-	}
 	if err := ServiceAnalyticsCaptureService.RecordDispatchDecision(conversation.ID, user.ID, 0, "auto_assign", "自动分配"); err != nil {
 		t.Fatalf("capture dispatch decision: %v", err)
 	}
@@ -104,6 +102,9 @@ func TestServiceAnalyticsCaptureAndHumanOnlyQuality(t *testing.T) {
 	reply := createAnalyticsMessage(t, db, tenantID, conversation.ID, 1, 3, enums.IMSenderTypeAgent, user.ID, "agent-1", replyAt)
 	if err := ServiceAnalyticsCaptureService.RecordMessage(reply); err != nil {
 		t.Fatalf("capture agent message: %v", err)
+	}
+	if err := ServiceAnalyticsCaptureService.RecordCurrentAssignment(conversation.ID); err != nil {
+		t.Fatalf("capture delayed assignment: %v", err)
 	}
 	session := repositories.ConversationServiceSessionRepository.TakeByKey(db, tenantID, conversation.ID, 1)
 	if session == nil {
@@ -163,6 +164,24 @@ func TestServiceAnalyticsCaptureAndHumanOnlyQuality(t *testing.T) {
 		ID: inspection.Inspection.ID, AssignmentID: assignment.ID, TemplateID: template.Template.ID, Status: string(enums.QualityInspectionStatusCompleted), Items: items,
 	}, operator); err == nil {
 		t.Fatal("AI message must not be accepted as human quality evidence")
+	}
+}
+
+func TestServiceAnalyticsCaptureRetriesSQLiteBusy(t *testing.T) {
+	db := setupServiceAnalyticsTestDB(t)
+	attempts := 0
+	err := retryServiceAnalyticsCapture(db, func() error {
+		attempts++
+		if attempts < 3 {
+			return errors.New("database is locked (5) (SQLITE_BUSY)")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retryServiceAnalyticsCapture() error = %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts=%d, want 3", attempts)
 	}
 }
 

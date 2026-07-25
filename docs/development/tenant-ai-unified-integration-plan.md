@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-24 产品决策已闭合，B0-B12 已完成，B13 工程门禁与 B14 固定白名单清理器已经实现，但生产 B13/B14 均未执行。业务方已明确把当前主机无法完成的安全文件独立验证延期到正式部署前；延期不阻止代码评审或合并，也不视为验收通过。当前结论仍为发布 `No-Go`。部署方声明 16 项生产变量、安全文件 `0600`、固定 SHA-256 以及可用 FastGPT Base URL/Integration Token 已就绪；本次继续开发的执行主机无法访问该安全文件，因此未独立复验变量值、HTTPS、Compose 或连通性。pilot 业务身份仍冻结为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 只作定位，迁移后最终 Store ID 尚未解析；NewAPI Key 尚未由实际持有人在统一环境重新提交。真实灰度、正式停机、加密备份和独立恢复证据完成前，禁止切换正式 `8083` 或执行 B14 物理清理。
+> 状态：2026-07-25 产品决策已闭合，B0-B12 已完成，B13 工程门禁、真实企微证据门禁与 B14 固定白名单清理器已经实现。隔离 `18084`/临时 SQLite 环境已完成一次真实企微员工号扫码、真实客户入站、人工池、正式人工派单、人工回复、协议出站和超时恢复 AI 路由闭环；这只证明当前代码链可运行，不是生产 pilot 验收。生产 B13/B14 均未执行，当前结论仍为发布 `No-Go`。业务方已明确把当前主机无法完成的生产安全文件独立验证延期到正式部署前；延期不阻止代码评审或合并，也不视为验收通过。pilot 业务身份仍冻结为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 只作定位，迁移后最终 Store ID 尚未解析；NewAPI Key 尚未由实际持有人在统一环境重新提交。生产 NewAPI、FastGPT HTTPS、目标 MySQL、标签、账单、正式备份和独立恢复证据完成前，禁止切换正式 `8083` 或执行 B14 物理清理。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1595,6 +1595,20 @@ git diff --check
 - 下一步输入：真实联调必须先在目标 Tenant 通过现有接入设置创建并启用真实 `wxwork_protocol` Channel，由持有人在页面安全录入协议 `appKey/appSecret` 及经核对的协议地址；同时由协议平台初始化一台未登录、未绑定、未过期实例。若只能使用现有已登录实例，必须先由实例所有者明确指定 GUID 并批准其退出登录后受控重绑，不能由开发过程猜选或强改。敏感值不得通过聊天、Git、日志或本文交付。
 - GitHub 门禁：`fc198e2` 对应 PR #3 run `30084093942` 的 Repository contract、Go test/vet、AI race、services race、repositories race 和 Web contracts/build 六项均通过；其中 services race 在 GitHub runner 用时约 22 分钟，属于正常完成而非超时。PR 仍为 Draft 且 Git 判定可合并，但外部协议渠道、空闲真实实例、生产秘密复验、pilot 全链、备份恢复与 B14 未完成，因此发布状态仍是 `No-Go`。
 - 共享与回滚：本节只记录现场只读检查和失败前置校验，不修改 model、AutoMigrate、DML migration、DTO、enum、API、路由、权限、WebSocket、AI Runtime、Credential、Billing、FastGPT、标签、人工任务池、规则派单或企微协议字段。删除本节只会丢失交接证据，不能改变任何运行行为或解除生产门禁。
+
+### 25.40 2026-07-25 B13-Y 隔离环境真实企微人工闭环
+
+- 环境与身份：本轮继续使用独立 `18084` 服务和临时 SQLite，不访问或替换正式 `8083`。通过现有扫码流程将真实企微员工号“其风”绑定到测试 Tenant“企微联调测试”和 Store“企微接口联调测试门店”。本次数据库中的 Instance `1`、Tenant `2`、Store `2`、Conversation `1`、客服 User `5` 等自增 ID 只用于本地证据定位，不进入代码、Migration、生产映射或默认值。
+- 协议依据：重新核对 `https://wework.apifox.cn/llms.txt` 及实例状态文档 `doc-6333435.md`。回调 `11011` 只表示账号在其他设备登录，文档没有声明当前协议实例已经退出，因此继续保持 `health_status=online` 并记录告警；只有明确退出回调 `11004` 或 `/user/get_profile` 返回文档所示离线结果才作为离线证据。消息继续使用协议 `conversation_id`，外部联系人会话为 `S:` 前缀，没有恢复旧 Hook、企业微信客服号或其他协议字段。
+- 扫码与资料修复：再次点击生成二维码时优先续用当前门店员工尚未完成的 `login_qrcode` 草稿，避免重复认领设备。`/user/get_profile` 现在读取真实返回中的 `data.persons[0].vid/info`，并使用 `json.Decoder.UseNumber()` 保留大整数 VID 精度。实例池不再按历史 UIN 猜测设备可回收；非空闲设备必须经资料接口明确确认离线后才能重新进入扫码认领。
+- 入站与人工池修复：真实客户文本“你好”经 `wxwork_protocol` 回调进入 Conversation `1`、Message `1` 和有效入站 MessageRef。门店尚无知识库时，旧逻辑只修改 RouteState，Conversation 主状态仍不在派单池；现统一调用既有 `ConversationHumanDispatchService` 原子写会话状态、路由、事件和排队事实，再调度现有规则派单，不新增平行任务池或企微专属派单逻辑。
+- 人工服务闭环：通过正式管理接口把该会话人工派给测试客服 `wxwork_test_agent_0725`，生成 manual Assignment `1`；客服通过现有会话回复接口发送“企微联调回复成功 0725（系统测试）”，形成 Message `2`、`wxwork_protocol` Outbox `sent` 和出站 MessageRef `sent`，协议返回消息号。浏览器同一会话显示客户原文、人工回复、渠道“已发送”和当前测试公司范围。
+- 恢复闭环：人工空闲超时后，既有恢复服务释放 Assignment 并把路由恢复为 `AI_SERVING`，恢复通知形成 Message `3`、第二条 Outbox `sent` 和出站 MessageRef `sent`。该证据只证明恢复状态机和企微协议出站可运行，不代表 NewAPI 模型生成、FastGPT 检索、模型 usage、标签或账单已经验收。
+- 运营事实一致性：SQLite 真实回调、派单和回复的异步事件曾并发触发 `SQLITE_BUSY`。`ServiceAnalyticsCaptureService` 只对 SQLite 锁错误增加最多 5 次、20ms 起步的有限指数退避；MySQL 和其他错误立即返回。Assignment 捕获晚于人工回复时会基于已存在的 `FirstHumanReplyAt` 补算首响，最终 ServiceSession 与 ResponseSpan 均为 `runtime/exact`，ResponseSpan 正确关联 Assignment `1`、客服 User `5` 和人工回复 Message `2`。
+- 文件与共享契约：代码只修改 `conversation_human_dispatch_service.go`、`service_analytics_capture_service.go`、`wx_work_protocol_device_pool_service.go`、`wx_work_protocol_instance_service.go`、`wxwork_protocol_service.go` 及对应测试。没有 model、AutoMigrate、DML migration、DTO、enum、HTTP 路由、权限码、WebSocket payload、AI Prompt/Schema/Runtime、Credential、Billing、FastGPT、标签算法或规则派单算法变化。
+- 自动验证：企微资料解析、`11011`、设备离线回收、二维码草稿复用、无知识库入人工池、SQLite 锁重试和乱序事实补算定向测试通过；`go test ./... -count=1` 与 `go vet ./...` 全量通过。真实页面复核确认实例仍为 online，同一测试 Tenant 下的消息与状态可见。
+- 并行分支与合并：开始前已 `git fetch origin --prune`。`origin/codex/customer-audit@c706815` 是统一分支祖先；固定 `origin/codex/ai-billing@4db7993` 未前移。本轮与 AI 来源历史同名的文件为 `conversation_human_dispatch_service.go`、`wx_work_protocol_instance_service.go`、`wxwork_protocol_service.go` 及其测试，但统一分支已吸收来源语义；本轮必须按符号保留上述扫码、状态、资料、人工池与协议证据修复，禁止从来源分支整文件覆盖或重新 cherry-pick。旧 `tenant-ai-integration-merge-handoff.md` 继续冻结，本节与 `integration-manifest.tsv` 是当前合并交接增量。
+- 回滚与发布边界：应用改动在 B14 前可整批回滚且不需要数据库回滚；回滚会重新产生扫码重复认领、`11011` 假离线、真实 VID 精度丢失、无知识库会话不入池和 SQLite 运营事实丢写风险。当前真实闭环属于隔离测试租户，不能替代“丽斯文旅 / 高铁南站店”的最终 Store 解析、NewAPI Key 异人审批、九槽、FastGPT、AI 回复、行业标签、Request ID 人民币账单、目标 MySQL、加密备份和独立恢复。B13 继续 `No-Go`，B14 `prepare/execute` 继续禁止。
 
 ## 26. 用户最终 1-48 项决定追溯
 

@@ -483,8 +483,8 @@ func (s *wxWorkProtocolService) handleLogout(instance *models.WxWorkProtocolInst
 func (s *wxWorkProtocolService) handleLoginOtherDevice(instance *models.WxWorkProtocolInstance, rawPayload string, now time.Time) error {
 	slog.Warn("wxwork protocol account logged in on another device", "instance_id", instance.ID, "guid", instance.Guid)
 	return repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), instance.ID, map[string]any{
-		"health_status":     "login_other_device",
-		"remark":            "企微账号在其他设备登录，协议实例已停止接收新消息，请重新扫码登录或恢复实例",
+		"health_status":     "online",
+		"remark":            "企微账号在其他设备登录；协议未声明当前实例退出，继续以退出回调和实际消息状态为准",
 		"last_heartbeat_at": now,
 		"updated_at":        now,
 		"update_user_name":  wxWorkProtocolSystemOperatorName,
@@ -585,7 +585,13 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 		return err
 	}
 	if _, _, err := WxWorkProtocolInstanceService.RequireStoreKnowledge(instance); err != nil {
-		_, _ = ConversationRouteService.EnterHQAgentDeskPending(conversation.ID, "企微员工号未绑定门店或知识库", time.Now())
+		if routeErr := ConversationHumanDispatchService.moveToGlobalPoolWithReason(
+			conversation.ID,
+			"企微员工号未绑定门店或知识库",
+			wxWorkProtocolSystemOperatorName,
+		); routeErr != nil {
+			return routeErr
+		}
 		content, payload, buildErr := s.buildInboundMessageContent(instance, messageType, msg)
 		if buildErr != nil {
 			return buildErr
@@ -2352,27 +2358,47 @@ func (s *wxWorkProtocolService) callInstanceAPI(instanceID int64, path string, e
 
 func (s *wxWorkProtocolService) profileUpdatesFromResponse(response string) map[string]any {
 	root := map[string]any{}
-	if err := json.Unmarshal([]byte(response), &root); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(response))
+	decoder.UseNumber()
+	if err := decoder.Decode(&root); err != nil {
 		return nil
 	}
 	data := root
 	if nested, ok := root["data"].(map[string]any); ok {
 		data = nested
 	}
-	getString := func(keys ...string) string {
-		for _, key := range keys {
-			if value, ok := data[key]; ok {
-				text := strings.TrimSpace(fmt.Sprint(value))
-				if text != "" && text != "<nil>" {
-					return text
-				}
+
+	candidates := []map[string]any{data}
+	if persons, ok := data["persons"].([]any); ok {
+		for _, person := range persons {
+			if item, ok := person.(map[string]any); ok {
+				candidates = append(candidates, item)
 			}
 		}
-		return ""
 	}
-	employeeUserID := getString("username", "user_name", "userName", "user_id", "userId", "wxid")
-	employeeName := getString("real_name", "realName", "name", "nickname", "nickName", "alias")
-	employeeAvatar := getString("avatar", "avatar_url", "avatarUrl", "head_img", "headImg", "headimgurl", "head_url", "headUrl")
+
+	employeeUserID := ""
+	employeeName := ""
+	employeeAvatar := ""
+	for _, candidate := range candidates {
+		profile := candidate
+		if nested, ok := candidate["info"].(map[string]any); ok {
+			profile = nested
+		}
+		if employeeUserID == "" {
+			employeeUserID = firstNonBlank(
+				firstStringFromMap(candidate, "vid", "username", "user_name", "userName", "user_id", "userId", "wxid"),
+				firstStringFromMap(profile, "vid", "username", "user_name", "userName", "user_id", "userId", "wxid"),
+			)
+		}
+		if employeeName == "" {
+			employeeName = firstStringFromMap(profile, "real_name", "realName", "name", "nickname", "nickName", "alias")
+		}
+		if employeeAvatar == "" {
+			employeeAvatar = firstStringFromMap(profile, "avatar", "avatar_url", "avatarUrl", "head_img", "headImg", "headimgurl", "head_url", "headUrl")
+		}
+	}
+
 	updates := map[string]any{"health_status": "online"}
 	if employeeUserID != "" {
 		updates["employee_user_id"] = employeeUserID
