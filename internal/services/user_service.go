@@ -399,7 +399,7 @@ func (s *userService) ResetPassword(userID int64, operator *dto.AuthPrincipal) (
 	if err != nil {
 		return "", err
 	}
-	if err = s.changePassword(userID, password, operator); err != nil {
+	if err = s.changePassword(userID, password, true, operator); err != nil {
 		return "", err
 	}
 	return password, nil
@@ -409,7 +409,7 @@ func (s *userService) ChangeOwnPassword(password string, operator *dto.AuthPrinc
 	if operator == nil || operator.UserID <= 0 {
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
-	return s.changePassword(operator.UserID, password, operator)
+	return s.changePassword(operator.UserID, password, false, operator)
 }
 
 func (s *userService) AssignRoles(userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
@@ -796,7 +796,7 @@ func (s *userService) ensureCanManageUserDB(db *gorm.DB, operator *dto.AuthPrinc
 	return nil
 }
 
-func (s *userService) changePassword(userID int64, password string, operator *dto.AuthPrincipal) error {
+func (s *userService) changePassword(userID int64, password string, mustChangePassword bool, operator *dto.AuthPrincipal) error {
 	user := s.Get(userID)
 	if user == nil || user.DeletedAt != nil {
 		return errorsx.InvalidParam("用户不存在")
@@ -811,10 +811,11 @@ func (s *userService) changePassword(userID int64, password string, operator *dt
 	}
 	now := time.Now()
 	if err = s.Updates(userID, map[string]any{
-		"password":         string(passwordHash),
-		"update_user_id":   operator.UserID,
-		"update_user_name": operator.Username,
-		"updated_at":       now,
+		"password":             string(passwordHash),
+		"must_change_password": mustChangePassword,
+		"update_user_id":       operator.UserID,
+		"update_user_name":     operator.Username,
+		"updated_at":           now,
 	}); err != nil {
 		return err
 	}

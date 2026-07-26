@@ -339,6 +339,71 @@ func TestStoreModelCredentialSelfServiceApproval(t *testing.T) {
 	}
 }
 
+func TestStoreModelCredentialRejectedCandidateErasesSecretMaterial(t *testing.T) {
+	assertStoreModelCredentialRejectedCandidateErasesSecretMaterial(t, setupStoreCredentialFixture(t))
+}
+
+func TestStoreModelCredentialRejectedCandidateErasesSecretMaterialMySQL(t *testing.T) {
+	assertStoreModelCredentialRejectedCandidateErasesSecretMaterial(t, setupStoreCredentialMySQLFixture(t))
+}
+
+func assertStoreModelCredentialRejectedCandidateErasesSecretMaterial(t *testing.T, fixture storeCredentialFixture) {
+	t.Helper()
+	service := &storeModelCredentialService{
+		validator: &storeCredentialValidatorStub{},
+		fastGPT:   &storeCredentialFastGPTStub{},
+	}
+	policy := repositories.StoreCredentialPolicyRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	if err := repositories.StoreCredentialPolicyRepository.Updates(fixture.db, policy.ID, map[string]any{
+		"allow_credential_self_service": true, "require_supervisor_approval": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const candidateKey = "sk-rejected-candidate"
+	data, err := service.SubmitSelf(context.Background(), request.SubmitStoreModelCredentialRequest{
+		APIKey: candidateKey, CurrentPassword: fixture.password, Confirmed: true,
+	}, fixture.staff, StoreCredentialRequestMeta{RequestID: "req-rejected-candidate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.Credential == nil || data.Credential.CandidateEncryptedKey == "" {
+		t.Fatalf("pending candidate is missing encrypted material: %#v", data.Credential)
+	}
+	revision := data.Credential.CandidateRevision
+	if _, err := service.Reject(request.DecideStoreModelCredentialRequest{
+		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID,
+		CandidateRevision: revision, CurrentPassword: fixture.password, Confirmed: true,
+	}, fixture.approver, StoreCredentialRequestMeta{RequestID: "req-reject"}); err != nil {
+		t.Fatal(err)
+	}
+
+	credential := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	if credential == nil || credential.CandidateRevision != revision ||
+		credential.CandidateStatus != enums.StoreCredentialStatusFailed ||
+		credential.CandidateApprovalStatus != enums.CredentialApprovalStatusRejected {
+		t.Fatalf("unexpected rejected candidate state: %#v", credential)
+	}
+	if credential.CandidateEncryptedKey != "" || credential.CandidateKeyNonce != "" ||
+		credential.CandidateKeyFingerprint != "" || credential.CandidateCipherVersion != "" ||
+		credential.CandidateMasterKeyID != "" {
+		t.Fatalf("rejected candidate retained secret material: %#v", credential)
+	}
+	audit := &models.StoreModelCredentialAuditLog{}
+	if err := fixture.db.Where(
+		"tenant_id = ? AND store_id = ? AND action = ? AND result = ?",
+		fixture.tenant.ID,
+		fixture.store.ID,
+		enums.CredentialAuditActionReject,
+		enums.CredentialAuditResultSuccess,
+	).Take(audit).Error; err != nil {
+		t.Fatal(err)
+	}
+	if audit.FingerprintLast6 != securex.FingerprintLast6(securex.Fingerprint(candidateKey)) {
+		t.Fatalf("rejection audit lost immutable candidate evidence: %#v", audit)
+	}
+}
+
 func TestStoreModelCredentialGetSelfReportsOnlyActualSelfServiceCapability(t *testing.T) {
 	fixture := setupStoreCredentialFixture(t)
 	service := newStoreModelCredentialService()
@@ -395,7 +460,15 @@ func TestStoreModelCredentialGetSelfReportsOnlyActualSelfServiceCapability(t *te
 }
 
 func TestStoreModelCredentialFailedCandidatePreservesActive(t *testing.T) {
-	fixture := setupStoreCredentialFixture(t)
+	assertStoreModelCredentialFailedCandidatePreservesActive(t, setupStoreCredentialFixture(t))
+}
+
+func TestStoreModelCredentialFailedCandidatePreservesActiveMySQL(t *testing.T) {
+	assertStoreModelCredentialFailedCandidatePreservesActive(t, setupStoreCredentialMySQLFixture(t))
+}
+
+func assertStoreModelCredentialFailedCandidatePreservesActive(t *testing.T, fixture storeCredentialFixture) {
+	t.Helper()
 	seedActiveStoreCredential(t, fixture, "sk-active", 3)
 	validator := &storeCredentialValidatorStub{err: &storeCredentialValidationError{UsageCode: enums.ModelUsageSlotReplyLLM, Class: "credential_rejected"}}
 	fastGPT := &storeCredentialFastGPTStub{}
@@ -412,6 +485,11 @@ func TestStoreModelCredentialFailedCandidatePreservesActive(t *testing.T) {
 	if credential == nil || credential.CredentialRevision != 3 || credential.Status != enums.StoreCredentialStatusActive ||
 		credential.CandidateRevision != 4 || credential.CandidateStatus != enums.StoreCredentialStatusFailed {
 		t.Fatalf("failed candidate replaced active state: %#v", credential)
+	}
+	if credential.CandidateEncryptedKey != "" || credential.CandidateKeyNonce != "" ||
+		credential.CandidateKeyFingerprint != "" || credential.CandidateCipherVersion != "" ||
+		credential.CandidateMasterKeyID != "" {
+		t.Fatalf("failed candidate retained secret material: %#v", credential)
 	}
 	resolved, resolveErr := service.ResolveActive(fixture.tenant.ID, fixture.store.ID)
 	if resolveErr != nil || resolved.APIKey != "sk-active" {
@@ -815,6 +893,27 @@ func setupStoreCredentialFixture(t *testing.T) storeCredentialFixture {
 		t.Fatal(err)
 	}
 	return setupStoreCredentialFixtureDB(t, db)
+}
+
+func setupStoreCredentialMySQLFixture(t *testing.T) storeCredentialFixture {
+	t.Helper()
+	dsn := strings.TrimSpace(os.Getenv("TEST_MYSQL_DSN"))
+	if dsn == "" {
+		t.Skip("TEST_MYSQL_DSN is not configured")
+	}
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
+		Logger:         logger.Default.LogMode(logger.Silent),
+		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+	})
+	if err != nil {
+		t.Fatalf("open MySQL test database: %v", err)
+	}
+	resetStoreCredentialServiceTestTables(t, db)
+	fixture := setupStoreCredentialFixtureDB(t, db)
+	t.Cleanup(func() {
+		resetStoreCredentialServiceTestTables(t, db)
+	})
+	return fixture
 }
 
 func setupStoreCredentialFixtureDB(t *testing.T, db *gorm.DB) storeCredentialFixture {

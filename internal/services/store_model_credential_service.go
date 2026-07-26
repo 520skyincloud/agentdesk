@@ -287,6 +287,8 @@ func (s *storeModelCredentialService) Reject(req request.DecideStoreModelCredent
 			"candidate_approval_status": enums.CredentialApprovalStatusRejected,
 			"candidate_status":          enums.StoreCredentialStatusFailed,
 			"candidate_approved_by":     operator.UserID, "candidate_approved_at": now,
+			"candidate_encrypted_key": "", "candidate_key_nonce": "", "candidate_key_fingerprint": "",
+			"candidate_cipher_version": "", "candidate_master_key_id": "",
 			"last_error_class": "approval_rejected", "last_error_message": "公司主管已拒绝本次凭据更新",
 			"updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
 		}); err != nil {
@@ -990,7 +992,9 @@ func (s *storeModelCredentialService) failCandidate(tenantID, storeID, revision 
 			return err
 		}
 		if err := repositories.StoreModelCredentialRepository.Updates(tx.Tx, credential.ID, map[string]any{
-			"candidate_status": enums.StoreCredentialStatusFailed,
+			"candidate_status":        enums.StoreCredentialStatusFailed,
+			"candidate_encrypted_key": "", "candidate_key_nonce": "", "candidate_key_fingerprint": "",
+			"candidate_cipher_version": "", "candidate_master_key_id": "",
 			"last_test_status": func() string {
 				if action == enums.CredentialAuditActionTest {
 					return "failed"
