@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-25 产品决策已闭合，B0-B12 已完成，B13 工程门禁、真实企微证据门禁与 B14 固定白名单清理器已经实现。隔离 `18084`/临时 SQLite 环境已完成一次真实企微员工号扫码、真实客户入站、人工池、正式人工派单、人工回复、协议出站和超时恢复 AI 路由闭环；这只证明当前代码链可运行，不是生产 pilot 验收。生产 B13/B14 均未执行，当前结论仍为发布 `No-Go`。业务方已明确把当前主机无法完成的生产安全文件独立验证延期到正式部署前；延期不阻止代码评审或合并，也不视为验收通过。pilot 业务身份仍冻结为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 只作定位，迁移后最终 Store ID 尚未解析；NewAPI Key 尚未由实际持有人在统一环境重新提交。生产 NewAPI、FastGPT HTTPS、目标 MySQL、标签、账单、正式备份和独立恢复证据完成前，禁止切换正式 `8083` 或执行 B14 物理清理。
+> 状态：2026-07-26 产品决策已闭合，B0-B12 已完成，B13 工程门禁、真实企微证据门禁与 B14 固定白名单清理器已经实现。隔离 `18084`/临时 SQLite 环境已完成一次真实企微员工号扫码、真实客户入站、人工池、正式人工派单、人工回复、协议出站和超时恢复 AI 路由闭环；这只证明当前代码链可运行，不是生产 pilot 验收。交付方另提供了 HTTP 测试 NewAPI/FastGPT 的非生产实测材料：NewAPI 文本、多模态、文档解析、Embedding、Rerank 和人民币账单接口可用，FastGPT 托管知识检索可用，但 ASR 模型当前无可用渠道，两个服务均没有可用 HTTPS。生产 B13/B14 均未执行，当前结论仍为发布 `No-Go`。业务方已明确把当前主机无法完成的生产安全文件独立验证延期到正式部署前；延期不阻止代码评审或合并，也不视为验收通过。pilot 业务身份仍冻结为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 只作定位，迁移后最终 Store ID 尚未解析；聊天中交付的测试 Key 已暴露且没有经最终 Store 凭据流程提交，不能作为生产 active Credential。生产 HTTPS、ASR 九槽、目标 MySQL、真实 Credential/审批、标签、账单、正式备份和独立恢复证据完成前，禁止切换正式 `8083` 或执行 B14 物理清理。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -1609,6 +1609,18 @@ git diff --check
 - 自动验证：企微资料解析、`11011`、设备离线回收、二维码草稿复用、无知识库入人工池、SQLite 锁重试和乱序事实补算定向测试通过；`go test ./... -count=1` 与 `go vet ./...` 全量通过。真实页面复核确认实例仍为 online，同一测试 Tenant 下的消息与状态可见。
 - 并行分支与合并：开始前已 `git fetch origin --prune`。`origin/codex/customer-audit@c706815` 是统一分支祖先；固定 `origin/codex/ai-billing@4db7993` 未前移。本轮与 AI 来源历史同名的文件为 `conversation_human_dispatch_service.go`、`wx_work_protocol_instance_service.go`、`wxwork_protocol_service.go` 及其测试，但统一分支已吸收来源语义；本轮必须按符号保留上述扫码、状态、资料、人工池与协议证据修复，禁止从来源分支整文件覆盖或重新 cherry-pick。旧 `tenant-ai-integration-merge-handoff.md` 继续冻结，本节与 `integration-manifest.tsv` 是当前合并交接增量。
 - 回滚与发布边界：应用改动在 B14 前可整批回滚且不需要数据库回滚；回滚会重新产生扫码重复认领、`11011` 假离线、真实 VID 精度丢失、无知识库会话不入池和 SQLite 运营事实丢写风险。当前真实闭环属于隔离测试租户，不能替代“丽斯文旅 / 高铁南站店”的最终 Store 解析、NewAPI Key 异人审批、九槽、FastGPT、AI 回复、行业标签、Request ID 人民币账单、目标 MySQL、加密备份和独立恢复。B13 继续 `No-Go`，B14 `prepare/execute` 继续禁止。
+
+### 25.41 2026-07-26 B13-Z AI/NewAPI/FastGPT 测试环境交接复核
+
+- 来源与分支：本批开始前执行 `git fetch origin --prune`；统一分支仍为 `ad3192e`，固定 `origin/codex/ai-billing@4db7993`、`origin/codex/tenant-ai-integration@1e8e95c` 和 `origin/main@e67e207` 均未前移。AI/计费来源没有新提交需要吸收，不允许因本次配置交接整分支 merge、重新 cherry-pick 或覆盖统一分支中的 Tenant、规则派单和企微修复。
+- 安全处理：交付方在会话中明文提供了测试 NewAPI Key、FastGPT Legacy Key、Integration Token、Store Credential 主密钥和测试 MySQL 密码。统一仓库、PR、本文、本地配置和命令均未复制这些值；仓库文件扫描没有发现本批明文。所有会话中出现的凭据按已暴露测试凭据处理，只可在受控测试环境轮换后使用，禁止进入生产、Migration、日志、截图或验收报告。Legacy FastGPT Key 不属于最终运行契约，不迁移也不保存。
+- 独立无密钥复核：当前主机仅以无鉴权请求确认 NewAPI 和 FastGPT 的 HTTP 根地址均返回成功，HTTPS 端点均在 TLS 握手阶段失败；没有通过公网 HTTP 发送任何 Bearer Key 或 Integration Token。因此交付方的鉴权、模型调用、Dataset 和检索结果作为测试 handoff 记录，不能冒充本机独立鉴权或生产 HTTPS 证据。
+- NewAPI 测试事实：交付方报告文本 Chat、视觉 Chat、文档解析 Chat、Embedding 和 Rerank 均成功，四个文本用途槽共用同一模型与 `chat_completions` 模式；ASR 的 `audio_transcriptions` 返回 `model_not_found`，模型目录也没有目标 ASR 模型。该结果说明五类 API mode 可联调，但尚未形成统一环境绑定 Profile 摘要、最终 Store 和 Credential revision 的 append-only 九槽通过证据；ASR 恢复前九槽发布门禁必须失败。
+- 计费事实：交付方使用门店测试 Key 成功读取 NewAPI 状态、Token 额度和 Token 日志，报告币种为 CNY，且日志包含 Request ID、模型、输入/输出 Token、quota 和耗时。最终架构本来就由每个 Store 的 active Credential 直接查询官方接口；旧的全局 NewAPI Usage Access Token 和后台同步开关不属于统一运行链，保持为空/关闭不是缺口，也不得为此恢复平台共享 Token。
+- FastGPT 测试事实：交付方报告 Integration Token 鉴权、门店 Dataset/Profile/知识集合查询及混合召回、Embedding、Rerank 均成功，并提供一个含 758 条内容的既有测试知识集合和可命中的停车场问题。最终统一链只接受 Integration Token，不使用 Legacy Key；正式验收仍须在同环境 HTTPS 上由最终 Tenant/Store provision Team、Dataset 和 Profile，并产生与当前 Profile/Credential revision 匹配的真实检索与 AI 回复证据。
+- 配置与数据库缺口：测试 `.env` 被声明为 `0600` 并提供了摘要，但当前没有 `production.env`；Store Credential 主密钥版本号未配置，而生产 `ValidateProduction` 强制要求非空 `AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID`。测试 MySQL 仅在另一 Compose 内部网络开放，当前主机没有对应容器、宿主端口、来源备份或受控网络入口，因而不能据此迁移并解析“丽斯文旅 / 高铁南站店”的最终 Store ID。
+- 发布判定：本次交接闭合了“测试端点、候选模型名、API mode、计费响应和 FastGPT 测试知识是否存在”的信息缺口，但没有解除生产门禁。必须先轮换全部已暴露测试凭据、恢复 ASR 渠道、配置有效 HTTPS、在目标主机生成完整受限 `production.env` 和非秘密主密钥版本号、提供真实来源库/加密备份，再按业务身份解析最终 Store，由唯一绑定门店员工重新提交一条新 Store Key并由不同公司主管审批。之后才能生成九槽 TestRun、FastGPT sync、真实 AI 回复/转人工/规则派单/标签/人民币账单和备份恢复证据。
+- 共享、验证与回滚：本批只更新唯一权威合并文档和 PR 交接；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、路由、权限、WebSocket、AI Prompt/Schema/Runtime、Credential 密文、FastGPT 请求、Billing 口径、人工任务池、规则派单或前端。删除本节只会丢失测试 handoff 和安全边界，不改变运行行为；B13 继续 `No-Go`，B14 `prepare/execute` 继续禁止。
 
 ## 26. 用户最终 1-48 项决定追溯
 
