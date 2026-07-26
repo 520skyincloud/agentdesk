@@ -1614,13 +1614,27 @@ git diff --check
 
 - 来源与分支：本批开始前执行 `git fetch origin --prune`；统一分支仍为 `ad3192e`，固定 `origin/codex/ai-billing@4db7993`、`origin/codex/tenant-ai-integration@1e8e95c` 和 `origin/main@e67e207` 均未前移。AI/计费来源没有新提交需要吸收，不允许因本次配置交接整分支 merge、重新 cherry-pick 或覆盖统一分支中的 Tenant、规则派单和企微修复。
 - 安全处理：交付方在会话中明文提供了测试 NewAPI Key、FastGPT Legacy Key、Integration Token、Store Credential 主密钥和测试 MySQL 密码。统一仓库、PR、本文、本地配置和命令均未复制这些值；仓库文件扫描没有发现本批明文。所有会话中出现的凭据按已暴露测试凭据处理，只可在受控测试环境轮换后使用，禁止进入生产、Migration、日志、截图或验收报告。Legacy FastGPT Key 不属于最终运行契约，不迁移也不保存。
-- 独立无密钥复核：当前主机仅以无鉴权请求确认 NewAPI 和 FastGPT 的 HTTP 根地址均返回成功，HTTPS 端点均在 TLS 握手阶段失败；没有通过公网 HTTP 发送任何 Bearer Key 或 Integration Token。因此交付方的鉴权、模型调用、Dataset 和检索结果作为测试 handoff 记录，不能冒充本机独立鉴权或生产 HTTPS 证据。
+- 独立无密钥复核时点：在本节记录时，当前主机仅以无鉴权请求确认 NewAPI 和 FastGPT 的 HTTP 根地址均返回成功，HTTPS 端点均在 TLS 握手阶段失败；当时没有通过公网 HTTP 发送任何 Bearer Key 或 Integration Token。随后用户明确授权在隔离测试环境使用已交付测试凭据完成真实联调，后续事实以 25.42 为准；该授权不改变生产必须 HTTPS 和轮换已暴露测试凭据的门禁。
 - NewAPI 测试事实：交付方报告文本 Chat、视觉 Chat、文档解析 Chat、Embedding 和 Rerank 均成功，四个文本用途槽共用同一模型与 `chat_completions` 模式；ASR 的 `audio_transcriptions` 返回 `model_not_found`，模型目录也没有目标 ASR 模型。该结果说明五类 API mode 可联调，但尚未形成统一环境绑定 Profile 摘要、最终 Store 和 Credential revision 的 append-only 九槽通过证据；ASR 恢复前九槽发布门禁必须失败。
 - 计费事实：交付方使用门店测试 Key 成功读取 NewAPI 状态、Token 额度和 Token 日志，报告币种为 CNY，且日志包含 Request ID、模型、输入/输出 Token、quota 和耗时。最终架构本来就由每个 Store 的 active Credential 直接查询官方接口；旧的全局 NewAPI Usage Access Token 和后台同步开关不属于统一运行链，保持为空/关闭不是缺口，也不得为此恢复平台共享 Token。
 - FastGPT 测试事实：交付方报告 Integration Token 鉴权、门店 Dataset/Profile/知识集合查询及混合召回、Embedding、Rerank 均成功，并提供一个含 758 条内容的既有测试知识集合和可命中的停车场问题。最终统一链只接受 Integration Token，不使用 Legacy Key；正式验收仍须在同环境 HTTPS 上由最终 Tenant/Store provision Team、Dataset 和 Profile，并产生与当前 Profile/Credential revision 匹配的真实检索与 AI 回复证据。
 - 配置与数据库缺口：测试 `.env` 被声明为 `0600` 并提供了摘要，但当前没有 `production.env`；Store Credential 主密钥版本号未配置，而生产 `ValidateProduction` 强制要求非空 `AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID`。测试 MySQL 仅在另一 Compose 内部网络开放，当前主机没有对应容器、宿主端口、来源备份或受控网络入口，因而不能据此迁移并解析“丽斯文旅 / 高铁南站店”的最终 Store ID。
 - 发布判定：本次交接闭合了“测试端点、候选模型名、API mode、计费响应和 FastGPT 测试知识是否存在”的信息缺口，但没有解除生产门禁。必须先轮换全部已暴露测试凭据、恢复 ASR 渠道、配置有效 HTTPS、在目标主机生成完整受限 `production.env` 和非秘密主密钥版本号、提供真实来源库/加密备份，再按业务身份解析最终 Store，由唯一绑定门店员工重新提交一条新 Store Key并由不同公司主管审批。之后才能生成九槽 TestRun、FastGPT sync、真实 AI 回复/转人工/规则派单/标签/人民币账单和备份恢复证据。
 - 共享、验证与回滚：本批只更新唯一权威合并文档和 PR 交接；没有修改 model、AutoMigrate、DML migration、DTO、enum、HTTP API、路由、权限、WebSocket、AI Prompt/Schema/Runtime、Credential 密文、FastGPT 请求、Billing 口径、人工任务池、规则派单或前端。删除本节只会丢失测试 handoff 和安全边界，不改变运行行为；B13 继续 `No-Go`，B14 `prepare/execute` 继续禁止。
+
+### 25.42 2026-07-26 B13-AA FastGPT 托管联调、九槽失败关闭与凭据生命周期收口
+
+- 来源与环境：本批开始、提交前均执行 `git fetch origin --prune`。固定来源继续为 `origin/main@e67e207`、`origin/codex/tenant-ai-integration@1e8e95c` 和 `origin/codex/ai-billing@4db7993`，均未前移，不需要重新 merge、cherry-pick 或 rebase。所有现场动作只发生在隔离 `18084`、临时 SQLite 和测试 Tenant“企微联调测试”/Store“企微接口联调测试门店”；正式 `8083`、生产库和 pilot“丽斯文旅 / 高铁南站店”均未触碰。隔离库中的 Tenant/Store/User/Profile/Revision 自增 ID 只作本次证据定位，不进入代码、Migration 或生产映射。
+- 测试身份：继续复用该 Store 已存在的唯一活动门店员工账号、同 Tenant 公司主管和平台管理员，没有创建第二个门店员工账号。Store 自助策略已设置为 `AllowCredentialSelfService=true`、`RequireSupervisorApproval=true`，符合“唯一绑定门店员工提交、不同公司主管审批”的最终身份和数据范围契约。
+- FastGPT 托管生命周期：用户明确授权在当前 HTTP 测试环境使用已交付 Integration Token 后，本机真实完成 Store Team ensure、临时 Dataset 创建、文件上传与索引、混合召回以及临时 Dataset 清理；鉴权和 Store 范围接口均可工作，没有使用或保存 Legacy FastGPT Key。该结果取代 25.41 中“尚未传输 Token”的时点事实，但只证明测试 HTTP 链路和托管生命周期可用，不能替代生产 HTTPS、凭据轮换或最终 Store revision 证据。
+- 知识边界：远端既有 `seed-faq` 集合仍未绑定到当前测试 Store。最终契约只在九槽 Credential fully active 后为 Store 正式 provision Dataset/Profile；本次没有绕过该门禁、复制旧远端 Dataset 或把临时检索结果伪装成门店正式知识绑定。ASR 修复并激活 Credential 后，必须通过正式同步重新生成当前 Store 的受管资源和检索证据。
+- Profile 与 Credential：平台标准 Profile revision `1` 已配置完整九个用途槽并发布为 `candidate`，当前 Store 仅形成 pending Assignment。唯一门店员工在门店凭据页提交测试 NewAPI Key，不同公司主管完成批准；真实 validator 随后执行，文本、视觉、文档、Embedding 和 Rerank 可继续，但 ASR 槽因上游没有目标模型渠道而失败。系统保持 Credential `unconfigured/revision 0`、candidate `failed`、Assignment `blocked`，没有错误激活 Profile、Credential、FastGPT 或 AI Reply。
+- 失败候选秘密清理：现场失败暴露出 candidate revision 已失败后仍保留候选密文、nonce、完整指纹和主密钥版本元数据的问题。提交 `85693f54a4d70cd29422ce54da0ef6a8f334eeeb` 使 validator/FastGPT 失败及公司主管拒绝均在同一事务清空全部候选秘密材料，同时保留 candidate revision、失败分类、审批状态、旧 active revision 和仅末六位指纹的 append-only 审计。隔离库 candidate revision `2` 复核上述五类候选秘密字段长度均为 `0`；失败证据仍存在，不能通过清密文抹除审计。
+- 密码生命周期：现场管理员重置密码后，账号的 `must_change_password` 原本没有重新置为 `true`；用户自行修改密码后该标记又没有清除，导致敏感操作可能长期被 `VerifyCurrentPassword` 拒绝。同一提交现明确区分“管理员重置”和“本人改密”：前者强制首次改密，后者清除标记；回归测试证明临时密码不能执行 Credential 等敏感操作，用户完成本人改密后才恢复。
+- 跨数据库测试底座：提交 `ff37e890a9f373a26ee733aad7ba73ce0fe97b07` 为质检不可变夹具补齐生产创建链必填的会话时间，并让 SQLite busy 专用用例只在 SQLite 执行；它不改变会话模型、统计口径或重试实现。候选秘密清理新增 SQLite/MySQL 8.4 等价回归，覆盖拒绝清理、验证失败清理、旧 active 保活和不可变审计。
+- 验证：`go test ./... -count=1`、`go vet ./...`、相关 service 定向 `-race`、`git diff --check` 全部通过；临时 MySQL 8.4 中分别以独立数据库复验统一 Schema、9 个 DML migration、5 组 repository 契约、运营分析/质检、readiness、Profile 切换及候选秘密清理，全部通过，临时容器和数据库均已删除。Web 153 项契约测试、`pnpm typecheck`、SDK 与 45 页面生产构建通过；lint 为 `0 error / 33` 个既有 warning。
+- 共享、合并与回滚：生产代码只修改 `user_service.go` 和 `store_model_credential_service.go` 的既有状态更新；没有 model、AutoMigrate、DML migration、DTO、enum、HTTP API、路由、权限码、WebSocket、AI Prompt/Schema/调用次数、FastGPT 请求格式、Billing 口径、人工任务池、规则派单或前端行为变化。两个代码提交可在 B14 前独立回滚且不需要数据回滚，但回滚会恢复初始密码状态死锁或失败候选密文滞留风险，不可作为生产方案。
+- 发布判定：用户允许本轮暂不处理 ASR，不等于取消九槽强制发布门禁。当前测试 Store 没有 active Credential，`seed-faq` 没有正式 Store 绑定，AI Reply、行业标签和人民币账单也未形成该 revision 的真实证据。B13 继续 `No-Go`；正式 HTTPS、ASR、目标 MySQL、最终 pilot Store、实际持有人重录新 Key、异人审批、完整运行证据、加密备份和独立恢复全部通过前，不切换 `8083`，不运行 B14 `prepare/execute`，也不扩大固定 7 表、5 列、4 索引白名单。
 
 ## 26. 用户最终 1-48 项决定追溯
 
