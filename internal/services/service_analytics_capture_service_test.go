@@ -169,6 +169,9 @@ func TestServiceAnalyticsCaptureAndHumanOnlyQuality(t *testing.T) {
 
 func TestServiceAnalyticsCaptureRetriesSQLiteBusy(t *testing.T) {
 	db := setupServiceAnalyticsTestDB(t)
+	if db.Dialector.Name() != "sqlite" {
+		t.Skip("SQLite busy retry does not apply to other database drivers")
+	}
 	attempts := 0
 	err := retryServiceAnalyticsCapture(db, func() error {
 		attempts++

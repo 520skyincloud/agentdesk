@@ -30,7 +30,10 @@ func TestCompletedQualityInspectionIsImmutable(t *testing.T) {
 	if err := db.Create(&models.AgentProfile{TenantID: tenantID, UserID: agent.ID, TeamID: team.ID, AgentCode: "IMMUTABLE", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(now)}).Error; err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
-	conversation := &models.Conversation{ID: 9101, TenantID: tenantID, Status: enums.IMConversationStatusClosed, AuditFields: testAnalyticsAudit(now)}
+	conversation := &models.Conversation{
+		ID: 9101, TenantID: tenantID, Status: enums.IMConversationStatusClosed,
+		LastMessageAt: now, LastActiveAt: now, AuditFields: testAnalyticsAudit(now),
+	}
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}
