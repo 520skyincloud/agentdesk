@@ -2,7 +2,6 @@ package migration
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"agent-desk/internal/models"
@@ -50,61 +49,14 @@ func syncUnifiedModelProfilePermissions(db *gorm.DB) error {
 	if err := ensureRolePermissions(db, roles, permissions); err != nil {
 		return err
 	}
-	retiredCodes := []string{
-		"aiConfig.create",
-		"aiConfig.delete",
-		"tenantModelGrant.view",
-		"tenantModelGrant.update",
-		"tenantModelAssignment.view",
-		"tenantModelAssignment.update",
-	}
-	var retired []models.Permission
-	if err := db.Where("code IN ?", retiredCodes).Find(&retired).Error; err != nil {
-		return err
-	}
-	if len(retired) == 0 {
-		return nil
-	}
-	ids := make([]int64, 0, len(retired))
-	now := time.Now()
-	for _, permission := range retired {
-		ids = append(ids, permission.ID)
-		if err := repositories.PermissionRepository.Updates(db, permission.ID, map[string]any{
-			"name": "已废弃：" + permission.Name, "status": enums.StatusDisabled,
-			"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
-			"updated_at": now,
-		}); err != nil {
-			return err
-		}
-	}
-	return db.Where("permission_id IN ?", ids).Delete(&models.RolePermission{}).Error
+	return nil
 }
 
 func seedDefaultUnifiedModelProfile(db *gorm.DB) error {
-	legacyConfigs := make([]legacyAIConfig, 0)
-	if db.Migrator().HasTable(&legacyAIConfig{}) {
-		if err := db.Where("status = ?", enums.StatusOk).Order("sort_no DESC").Order("id DESC").Find(&legacyConfigs).Error; err != nil {
-			return err
-		}
-	}
-	byType := make(map[enums.AIModelType]legacyAIConfig)
-	var intentConfig *legacyAIConfig
-	for i := range legacyConfigs {
-		item := legacyConfigs[i]
-		if _, exists := byType[item.ModelType]; !exists {
-			byType[item.ModelType] = item
-		}
-		if item.ModelType == enums.AIModelTypeLLM && item.IntentDetectEnabled && intentConfig == nil {
-			copy := item
-			intentConfig = &copy
-		}
-	}
-	llm := byType[enums.AIModelTypeLLM]
-	gatewayBaseURL := strings.TrimRight(strings.TrimSpace(llm.BaseURL), "/")
 	now := time.Now()
 	template := &models.ModelProfileTemplate{
-		Code: "standard", Name: "平台标准九槽", Description: "统一集成迁移建立的 NewAPI 九槽模型方案，请完成结构校验与门店 readiness 后启用。",
-		Revision: 1, GatewayBaseURL: gatewayBaseURL, Status: enums.ModelProfileStatusDraft,
+		Code: "standard", Name: "平台标准九槽", Description: "统一架构建立的 NewAPI 九槽模型方案，请配置网关和九个模型用途后发布。",
+		Revision: 1, GatewayBaseURL: "", Status: enums.ModelProfileStatusDraft,
 		AuditFields: systemModelProfileAuditFields(now),
 	}
 	if err := repositories.ModelProfileTemplateRepository.Create(db, template); err != nil {
@@ -112,29 +64,11 @@ func seedDefaultUnifiedModelProfile(db *gorm.DB) error {
 	}
 	slots := make([]models.ModelProfileSlot, 0, len(services.RequiredModelUsageSlotSpecs()))
 	for index, spec := range services.RequiredModelUsageSlotSpecs() {
-		legacy := byType[spec.ExpectedModelType]
-		if spec.UsageCode == enums.ModelUsageSlotIntentDetectLLM && intentConfig != nil {
-			legacy = *intentConfig
-		}
-		if spec.UsageCode == enums.ModelUsageSlotDocumentParser {
-			legacy = llm
-		}
-		maxContextTokens := legacy.MaxContextTokens
-		maxOutputTokens := legacy.MaxOutputTokens
-		if spec.ExpectedModelType == enums.AIModelTypeLLM || spec.ExpectedModelType == enums.AIModelTypeVision {
-			if maxContextTokens <= 0 && strings.TrimSpace(legacy.ModelName) != "" {
-				maxContextTokens = 8192
-			}
-			if maxOutputTokens <= 0 && strings.TrimSpace(legacy.ModelName) != "" {
-				maxOutputTokens = 1024
-			}
-		}
 		slot := models.ModelProfileSlot{
 			TemplateID: template.ID, UsageCode: spec.UsageCode, DisplayName: spec.DisplayName,
-			ModelType: spec.ExpectedModelType, Provider: "newapi", ModelName: strings.TrimSpace(legacy.ModelName),
-			APIMode: spec.DefaultAPIMode, Dimension: legacy.Dimension,
-			MaxContextTokens: maxContextTokens, MaxOutputTokens: maxOutputTokens,
-			TimeoutMS: 30000, MaxRetryCount: legacy.MaxRetryCount, Enabled: true, SortNo: index + 1,
+			ModelType: spec.ExpectedModelType, Provider: "newapi", ModelName: "",
+			APIMode:   spec.DefaultAPIMode,
+			TimeoutMS: 30000, MaxRetryCount: 0, Enabled: true, SortNo: index + 1,
 			AuditFields: systemModelProfileAuditFields(now),
 		}
 		if spec.UsageCode == enums.ModelUsageSlotCustomerTag {

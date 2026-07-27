@@ -215,7 +215,7 @@ func CustomerPostUpdate_status(ctx *gin.Context) {
 }
 
 func CustomerPostReconcile_store_relation_tags(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTagManage)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

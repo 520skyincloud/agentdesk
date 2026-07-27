@@ -42,9 +42,7 @@ export default function ReplyIntentProfilesPage() {
     [session?.permissions],
   )
   const isPlatformAccount = Boolean(session?.isPlatformAccount)
-  const canCreate = isPlatformAccount && permissions.has("aiConfig.create")
-  const canUpdate = isPlatformAccount && permissions.has("aiConfig.update")
-  const canDelete = isPlatformAccount && permissions.has("aiConfig.delete")
+  const canManage = isPlatformAccount && permissions.has("aiConfig.update")
 
   return (
     <DashboardCrudPage<ReplyIntentProfile, CreateReplyIntentProfilePayload>
@@ -107,10 +105,10 @@ export default function ReplyIntentProfilesPage() {
       getItemId={(item) => item.id}
       createItem={createReplyIntentProfile}
       updateItem={(item, payload) => updateReplyIntentProfile({ id: item.id, ...payload })}
-      deleteItem={canDelete ? (item) => deleteReplyIntentProfile(item.id) : undefined}
-      showCreate={canCreate}
-      showEdit={canUpdate}
-      showActionsColumn={canUpdate || canDelete}
+      deleteItem={canManage ? (item) => deleteReplyIntentProfile(item.id) : undefined}
+      showCreate={canManage}
+      showEdit={canManage}
+      showActionsColumn={canManage}
       form={{
         fetchDetail: fetchReplyIntentProfile,
         fields: [
@@ -166,7 +164,7 @@ export default function ReplyIntentProfilesPage() {
         },
       }}
       rowActions={
-        canUpdate
+        canManage
           ? [
               createDashboardStatusToggleAction<ReplyIntentProfile, Status>({
                 icon: <RefreshCwIcon />,

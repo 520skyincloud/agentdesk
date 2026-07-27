@@ -124,7 +124,7 @@ var (
 	PermissionConversationTransfer     = Permission{Name: "转接会话", Code: "conversation.transfer", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation-dispatch/transfer", SortNo: 440}
 	PermissionConversationClose        = Permission{Name: "关闭会话", Code: "conversation.close", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/close", SortNo: 450}
 	PermissionConversationSend         = Permission{Name: "发送会话消息", Code: "conversation.send", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/send_message", SortNo: 460}
-	PermissionConversationTag          = Permission{Name: "管理门店客户标签", Code: "conversation.tag", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/customer_tag/add", SortNo: 470}
+	PermissionCustomerTagManage        = Permission{Name: "管理门店客户标签", Code: "conversation.tag", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/customer_tag/add", SortNo: 470}
 	PermissionConversationHandover     = Permission{Name: "处理会话交接", Code: "conversation.handover", Type: "api", GroupName: "conversation", Method: "ANY", APIPath: "/api/dashboard/conversation-dispatch/list", SortNo: 480}
 	PermissionConversationRecycle      = Permission{Name: "回收会话", Code: "conversation.recycle", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation-dispatch/release", SortNo: 490}
 	PermissionConversationLinkCustomer = Permission{Name: "关联会话客户", Code: "conversation.linkCustomer", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/link_customer", SortNo: 495}
@@ -271,7 +271,7 @@ var Permissions = []Permission{
 	PermissionConversationTransfer,
 	PermissionConversationClose,
 	PermissionConversationSend,
-	PermissionConversationTag,
+	PermissionCustomerTagManage,
 	PermissionConversationHandover,
 	PermissionConversationRecycle,
 	PermissionConversationLinkCustomer,
@@ -379,7 +379,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionConversationRecordView, PermissionConversationRecordAnnotate, PermissionConversationRecordExport,
 		PermissionQualityInspectionView, PermissionQualityInspectionManage, PermissionQualitySamplingCreate, PermissionQualityTemplateManage,
 		PermissionConversationEvaluationView, PermissionConversationEvaluationInvite, PermissionReportViewPresetManage, PermissionAgentPresenceUpdate,
-		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionConversationTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
+		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTagManage, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
@@ -409,7 +409,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionConversationRecordView, PermissionConversationRecordAnnotate, PermissionConversationRecordExport,
 		PermissionQualityInspectionView, PermissionQualityInspectionManage, PermissionQualitySamplingCreate, PermissionQualityTemplateManage,
 		PermissionConversationEvaluationView, PermissionConversationEvaluationInvite, PermissionReportViewPresetManage, PermissionAgentPresenceUpdate,
-		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionConversationTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
+		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTagManage, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
@@ -435,7 +435,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionConversationRecordView, PermissionConversationRecordAnnotate, PermissionConversationRecordExport,
 		PermissionQualityInspectionView, PermissionQualityInspectionManage, PermissionQualitySamplingCreate, PermissionQualityTemplateManage,
 		PermissionConversationEvaluationView, PermissionConversationEvaluationInvite, PermissionReportViewPresetManage, PermissionAgentPresenceUpdate,
-		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionConversationTag, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
+		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTagManage, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,

@@ -88,6 +88,45 @@ func TestRequiredModelUsageSlotsAreCompleteAndUnique(t *testing.T) {
 	}
 }
 
+func TestFreshUnifiedSchemaContainsNoRetiredAIKnowledgeOrConversationTagObjects(t *testing.T) {
+	db := openUnifiedAISchemaDB(t)
+	if err := db.AutoMigrate(Models...); err != nil {
+		t.Fatalf("AutoMigrate() error=%v", err)
+	}
+	assertFreshUnifiedSchemaNoRetiredObjects(t, db)
+}
+
+func assertFreshUnifiedSchemaNoRetiredObjects(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	for _, table := range []string{
+		"t_ai_config",
+		"t_tenant_ai_model_grant",
+		"t_store_ai_model_setting",
+		"t_conversation_tag",
+		"t_knowledge_document",
+		"t_knowledge_faq",
+		"t_knowledge_chunk",
+	} {
+		if db.Migrator().HasTable(table) {
+			t.Fatalf("retired table %s exists in the fresh unified schema", table)
+		}
+	}
+	for _, target := range []struct {
+		model  any
+		column string
+	}{
+		{&ConversationServiceSession{}, "tag_ids_json"},
+		{&AIAgent{}, "ai_config_id"},
+		{&AgentRunLog{}, "ai_config_id"},
+		{&AIUsageEvent{}, "ai_config_id"},
+		{&SkillRunLog{}, "ai_config_id"},
+	} {
+		if db.Migrator().HasColumn(target.model, target.column) {
+			t.Fatalf("retired column %s still exists on %T", target.column, target.model)
+		}
+	}
+}
+
 func TestUnifiedAIModelsAutoMigrateMySQL(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_MYSQL_DSN"))
 	if dsn == "" {
@@ -106,6 +145,12 @@ func TestUnifiedAIModelsAutoMigrateMySQL(t *testing.T) {
 	if err := db.AutoMigrate(unifiedAIModelsForTest()...); err != nil {
 		t.Fatalf("MySQL AutoMigrate() error=%v", err)
 	}
+	if err := db.AutoMigrate(
+		&ConversationServiceSession{}, &AIAgent{}, &AgentRunLog{}, &AIUsageEvent{}, &SkillRunLog{},
+	); err != nil {
+		t.Fatalf("MySQL active model AutoMigrate() error=%v", err)
+	}
+	assertFreshUnifiedSchemaNoRetiredObjects(t, db)
 }
 
 func TestUnifiedTagModelsEnforceIndustryAndStoreIsolation(t *testing.T) {

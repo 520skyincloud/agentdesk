@@ -123,11 +123,7 @@ func TestBackfillConversationAndTicketDomainTenantsCoversAllChildrenAndIsIdempot
 	if err := db.Create(standaloneTag).Error; err != nil {
 		t.Fatalf("create standalone tag: %v", err)
 	}
-	conversationTag := &legacyConversationTag{ConversationID: conversationA.ID, TagID: rootTag.ID, AuditFields: conversationTicketAuditFields()}
 	ticketTag := &models.TicketTag{TicketID: ticketA.ID, TagID: childTag.ID, AuditFields: conversationTicketAuditFields()}
-	if err := db.Create(conversationTag).Error; err != nil {
-		t.Fatalf("create conversation tag: %v", err)
-	}
 	if err := db.Create(ticketTag).Error; err != nil {
 		t.Fatalf("create ticket tag: %v", err)
 	}
@@ -170,7 +166,6 @@ func TestBackfillConversationAndTicketDomainTenantsCoversAllChildrenAndIsIdempot
 		{model: &models.TicketView{}, id: tenantView.ID},
 		{model: &models.Tag{}, id: rootTag.ID},
 		{model: &models.Tag{}, id: childTag.ID},
-		{model: &legacyConversationTag{}, id: conversationTag.ID},
 		{model: &models.TicketTag{}, id: ticketTag.ID},
 	}
 	for _, item := range tenantAItems {
@@ -253,27 +248,26 @@ func TestBackfillConversationAndTicketDomainTenantsRejectsSharedTagAcrossTenants
 	createConversationTicketTenant(t, db, constants.LegacyDefaultTenantCode)
 	tenantA := createConversationTicketTenant(t, db, "tag-conflict-a")
 	tenantB := createConversationTicketTenant(t, db, "tag-conflict-b")
-	channelA := createConversationTicketChannel(t, db, tenantA.ID, "tag-channel-a")
 	customerA := createConversationTicketCustomer(t, db, tenantA.ID, "tag-customer-a")
 	customerB := createConversationTicketCustomer(t, db, tenantB.ID, "tag-customer-b")
-	conversationA := createConversationTicketConversation(t, db, 0, channelA.ID, customerA.ID, 0, 0, "tag-conversation-a")
+	ticketA := createConversationTicketTicket(t, db, 0, "TAG-TICKET-A", customerA.ID, 0, 0)
 	ticketB := createConversationTicketTicket(t, db, 0, "TAG-TICKET-B", customerB.ID, 0, 0)
 	tag := &models.Tag{Name: "错误共享标签", Status: enums.StatusOk, AuditFields: conversationTicketAuditFields()}
 	if err := db.Create(tag).Error; err != nil {
 		t.Fatalf("create shared tag: %v", err)
 	}
-	if err := db.Create(&legacyConversationTag{ConversationID: conversationA.ID, TagID: tag.ID, AuditFields: conversationTicketAuditFields()}).Error; err != nil {
-		t.Fatalf("create conversation tag: %v", err)
+	if err := db.Create(&models.TicketTag{TicketID: ticketA.ID, TagID: tag.ID, AuditFields: conversationTicketAuditFields()}).Error; err != nil {
+		t.Fatalf("create first ticket tag: %v", err)
 	}
 	if err := db.Create(&models.TicketTag{TicketID: ticketB.ID, TagID: tag.ID, AuditFields: conversationTicketAuditFields()}).Error; err != nil {
-		t.Fatalf("create ticket tag: %v", err)
+		t.Fatalf("create second ticket tag: %v", err)
 	}
 
 	err := db.Transaction(backfillConversationAndTicketDomainTenants)
 	if err == nil || !strings.Contains(err.Error(), "tag component") {
 		t.Fatalf("backfill error=%v want shared tag conflict", err)
 	}
-	assertConversationTicketTenant(t, db, &models.Conversation{}, conversationA.ID, 0)
+	assertConversationTicketTenant(t, db, &models.Ticket{}, ticketA.ID, 0)
 	assertConversationTicketTenant(t, db, &models.Ticket{}, ticketB.ID, 0)
 	assertConversationTicketTenant(t, db, &models.Tag{}, tag.ID, 0)
 }
@@ -367,7 +361,7 @@ func setupConversationTicketTenantBackfillDB(t *testing.T) *gorm.DB {
 		&models.WxWorkKFConversation{}, &models.WxWorkKFMessageRef{}, &models.ChannelMessageOutbox{},
 		&models.ConversationAssignment{}, &models.ConversationEventLog{}, &models.ConversationInterrupt{},
 		&models.Ticket{}, &models.TicketProgress{}, &models.TicketView{},
-		&models.Tag{}, &legacyConversationTag{}, &models.TicketTag{},
+		&models.Tag{}, &models.TicketTag{},
 	); err != nil {
 		t.Fatalf("migrate conversation and ticket tenant tables: %v", err)
 	}

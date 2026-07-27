@@ -66,14 +66,12 @@ export default function ReplyIntentConfigsPage() {
     [session?.permissions],
   )
   const isPlatformAccount = Boolean(session?.isPlatformAccount)
-  const canCreate = isPlatformAccount && permissions.has("aiConfig.create")
-  const canUpdate = isPlatformAccount && permissions.has("aiConfig.update")
-  const canDelete = isPlatformAccount && permissions.has("aiConfig.delete")
+  const canManage = isPlatformAccount && permissions.has("aiConfig.update")
 
   async function createIntentWithPermission(
     payload: CreateReplyIntentConfigPayload,
   ) {
-    if (!canCreate) throw new Error("无权新增回复意图")
+    if (!canManage) throw new Error("无权新增回复意图")
     return createReplyIntentConfig(payload)
   }
 
@@ -81,12 +79,12 @@ export default function ReplyIntentConfigsPage() {
     item: ReplyIntentConfig,
     payload: CreateReplyIntentConfigPayload,
   ) {
-    if (!canUpdate) throw new Error("无权更新回复意图")
+    if (!canManage) throw new Error("无权更新回复意图")
     return updateReplyIntentConfig({ id: item.id, ...payload })
   }
 
   async function deleteIntentWithPermission(item: ReplyIntentConfig) {
-    if (!canDelete) throw new Error("无权删除回复意图")
+    if (!canManage) throw new Error("无权删除回复意图")
     return deleteReplyIntentConfig(item.id)
   }
 
@@ -94,7 +92,7 @@ export default function ReplyIntentConfigsPage() {
     item: ReplyIntentConfig,
     nextStatus: Status,
   ) {
-    if (!canUpdate) throw new Error("无权更新回复意图状态")
+    if (!canManage) throw new Error("无权更新回复意图状态")
     return updateReplyIntentConfig({ ...item, status: nextStatus })
   }
 
@@ -184,10 +182,10 @@ export default function ReplyIntentConfigsPage() {
       getItemId={(item) => item.id}
       createItem={createIntentWithPermission}
       updateItem={updateIntentWithPermission}
-      showCreate={canCreate}
-      showEdit={canUpdate}
-      deleteItem={canDelete ? deleteIntentWithPermission : undefined}
-      showActionsColumn={canUpdate || canDelete}
+      showCreate={canManage}
+      showEdit={canManage}
+      deleteItem={canManage ? deleteIntentWithPermission : undefined}
+      showActionsColumn={canManage}
       form={{
         fetchDetail: fetchReplyIntentConfig,
         fields: [
@@ -257,7 +255,7 @@ export default function ReplyIntentConfigsPage() {
         },
       }}
       rowActions={
-        canUpdate
+        canManage
           ? [
               createDashboardStatusToggleAction<ReplyIntentConfig, Status>({
                 icon: <RefreshCwIcon />,

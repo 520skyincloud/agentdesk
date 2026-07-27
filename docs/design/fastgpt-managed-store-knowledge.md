@@ -79,8 +79,8 @@ Store active ModelProfile revision
 
 ## 7. 迁移与上线门禁
 
-- Migration 072 将可证明唯一的历史投影收口到 `Store.KnowledgeBaseID`；多个冲突投影阻止启动。
-- 历史 Dataset 只在替换期临时保持 active。Migration 为其建立 `Tenant + Store + Team + Dataset` 清理清单并排队一个 `DatasetID` 为空的全新 provision 任务，绝不把旧 remote ID 填入新任务。
+- 当前部署只支持 fresh 数据库。Migration 072 只初始化当前 Schema 的 Store 投影、任务和 Usage 窗口，不读取旧本地知识表或旧远端 Dataset。
+- Tenant/Store 建立后通过受管 provision 新建 Team 和 Dataset；禁止把历史 remote ID 填入新任务。
 - 新 Dataset 的 Profile 先只提交到候选知识库，不修改 Store 当前 applied revision；完成上传、索引和检索验收后，启用操作才原子切换 Store、企微和会话路由，并把旧记录标记为可清理。
 - 非终态旧任务补齐当前 target；无法补齐或 target 已过期的任务标记失败。
 - 已应用 revision 可证明时回填 Usage cursor 归因；部分冲突归因阻止迁移，不静默覆盖。
@@ -88,12 +88,14 @@ Store active ModelProfile revision
 - 真实上线前必须完成受控 Store 的 Team、Dataset、上传、索引、检索、Profile 同步、Usage 和物理删除生命周期测试。
 - 旧远端 Dataset/Collection 不进入最终运行链；新资源验收后按 Tenant + Store + remote ID 清单受控清理。
 
-## 8. B12/B14 清理边界
+## 8. 退役链边界
 
-- B6 已注销 FastGPT 独立 Profile 写接口，删除企微模型/Profile 前端，并保证这些能力没有运行时 caller。
-- 旧租户模型授权、StoreSetting 和模型分配后端路由、权限及迁移读取模型仍暂留到 B12/B14，纯粹用于原子退出和历史升级，不属于 FastGPT 运行链。
-- B12 必须在同一批次删除旧 caller、路由、权限种子、service/repository 和前端 client；禁止在此前只删其中一层造成历史升级或编译断链。
-- B14 在停机、备份和预检通过后物理删除旧表及专属列；B6-B13 不得重新接入或写入这些兼容对象。
+- FastGPT 独立 Profile 写接口、企微模型/Profile 前端、旧租户模型授权、StoreSetting 和
+  模型分配后端链已经删除。
+- 当前 migration 不再读取旧 AIConfig、授权、本地 Document/FAQ/Chunk 或历史远端
+  Dataset；fresh Schema 也不创建这些表。
+- 旧接口必须保持 404，任何后续功能不得恢复兼容 caller、第二套 Profile 或本地检索
+  fallback。
 
 真实候选环境测试只允许显式开启：
 

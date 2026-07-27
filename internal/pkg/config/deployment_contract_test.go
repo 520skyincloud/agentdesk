@@ -101,7 +101,7 @@ func TestDeploymentTemplatesDeclareBackgroundWorkerMode(t *testing.T) {
 	}
 }
 
-func TestReleaseImageContainsAuditedMaintenanceBinaries(t *testing.T) {
+func TestReleaseImageContainsTenantIntegrityAuditBinary(t *testing.T) {
 	root := repositoryRoot(t)
 	content, err := os.ReadFile(filepath.Join(root, "Dockerfile"))
 	if err != nil {
@@ -110,13 +110,14 @@ func TestReleaseImageContainsAuditedMaintenanceBinaries(t *testing.T) {
 	dockerfile := string(content)
 	for _, required := range []string{
 		"./cmd/tenant_integrity_audit",
-		"./cmd/schema_cleanup",
 		"/app/tenant-integrity-audit",
-		"/app/schema-cleanup",
 	} {
 		if !strings.Contains(dockerfile, required) {
 			t.Fatalf("release image is missing maintenance binary contract %q", required)
 		}
+	}
+	if strings.Contains(dockerfile, "schema-cleanup") || strings.Contains(dockerfile, "cmd/schema_cleanup") {
+		t.Fatal("release image must not include the retired in-place legacy schema cleanup binary")
 	}
 }
 

@@ -48,13 +48,6 @@ func retireLegacyCompanyStoreScopes(tx *gorm.DB) error {
 			return err
 		}
 	}
-	if tx.Migrator().HasTable(&legacyStoreAIModelSetting{}) {
-		if err := tx.Model(&legacyStoreAIModelSetting{}).
-			Where("tenant_id > 0 AND (store_id > 0 OR wx_work_instance_id > 0) AND company_id <> 0 AND status <> ?", enums.StatusDeleted).
-			Updates(mergeMigrationColumns(audit, map[string]any{"company_id": 0})).Error; err != nil {
-			return err
-		}
-	}
 	if err := retireKnowledgeResourceCompanyScopes(tx, audit); err != nil {
 		return err
 	}

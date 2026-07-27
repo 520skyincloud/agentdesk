@@ -24,7 +24,7 @@ func TestRetireLegacyCompanyStoreScopesKeepsHistoryAndEnforcesBindingOwnership(t
 	if err := db.AutoMigrate(
 		&models.User{}, &models.Role{}, &models.UserRole{},
 		&models.Store{}, &models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{},
-		&models.Company{}, &models.AgentTeam{}, &models.KnowledgeBase{}, &legacyStoreAIModelSetting{},
+		&models.Company{}, &models.AgentTeam{}, &models.KnowledgeBase{},
 		&models.KnowledgeResourceGroup{}, &models.KnowledgeResourceItem{},
 		&models.FastGPTStoreTenant{}, &models.FastGPTUsageSyncState{}, &models.FastGPTDatasetJob{},
 		&models.ReplyIntentConfig{}, &models.Customer{}, &models.Permission{}, &models.RolePermission{},
@@ -92,7 +92,6 @@ func TestRetireLegacyCompanyStoreScopesKeepsHistoryAndEnforcesBindingOwnership(t
 
 	team := &models.AgentTeam{TenantID: 101, Name: "旧客服组", CompanyScopeIDs: "9", StoreScopeIDs: "1", Status: enums.StatusOk}
 	kb := &models.KnowledgeBase{TenantID: 101, Name: "旧门店知识库", StoreID: store.ID, CompanyID: 9, Status: enums.StatusOk}
-	setting := &legacyStoreAIModelSetting{TenantID: 101, UsageCode: "reply_llm", StoreID: store.ID, CompanyID: 9, Status: enums.StatusOk}
 	now := time.Now()
 	currentResource := &models.KnowledgeResourceGroup{
 		TenantID: 101, CompanyID: 0, StoreID: store.ID, KnowledgeBaseID: kb.ID,
@@ -120,7 +119,7 @@ func TestRetireLegacyCompanyStoreScopesKeepsHistoryAndEnforcesBindingOwnership(t
 	customer := &models.Customer{TenantID: 101, Name: "历史客户", CompanyID: 9, Status: enums.StatusOk}
 	permission := &models.Permission{Name: "查看客户企业", Code: "company.view", Type: "api", Status: enums.StatusOk}
 	for name, item := range map[string]any{
-		"team": team, "knowledge": kb, "model setting": setting,
+		"team": team, "knowledge": kb,
 		"intent": intent, "customer": customer, "permission": permission,
 	} {
 		if err := db.Create(item).Error; err != nil {
@@ -160,7 +159,6 @@ func TestRetireLegacyCompanyStoreScopesKeepsHistoryAndEnforcesBindingOwnership(t
 	assertLegacyCompanyFieldZero(t, db, "binding", &models.StoreStaffBinding{}, binding.ID)
 	assertLegacyCompanyFieldZero(t, db, "instance", &models.WxWorkProtocolInstance{}, instance.ID)
 	assertLegacyCompanyFieldZero(t, db, "knowledge", &models.KnowledgeBase{}, kb.ID)
-	assertLegacyCompanyFieldZero(t, db, "model setting", &legacyStoreAIModelSetting{}, setting.ID)
 	assertLegacyCompanyFieldZero(t, db, "fastgpt store", &models.FastGPTStoreTenant{}, fastGPTStore.ID)
 	assertLegacyCompanyFieldZero(t, db, "fastgpt sync", &models.FastGPTUsageSyncState{}, fastGPTSync.ID)
 	assertLegacyCompanyFieldZero(t, db, "fastgpt job", &models.FastGPTDatasetJob{}, fastGPTJob.ID)
@@ -262,8 +260,6 @@ func assertLegacyCompanyFieldZero(t *testing.T, db *gorm.DB, name string, item a
 	case *models.WxWorkProtocolInstance:
 		companyID = value.CompanyID
 	case *models.KnowledgeBase:
-		companyID = value.CompanyID
-	case *legacyStoreAIModelSetting:
 		companyID = value.CompanyID
 	case *models.KnowledgeResourceGroup:
 		companyID = value.CompanyID

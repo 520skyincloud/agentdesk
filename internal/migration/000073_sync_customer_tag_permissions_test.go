@@ -53,7 +53,7 @@ func runSyncCustomerTagPermissionsScenario(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	now := time.Now()
 	legacySpecs := []constants.Permission{
-		constants.PermissionConversationTag,
+		constants.PermissionCustomerTagManage,
 		{Name: "创建标签", Code: retiredTagCreatePermissionCode, Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/create", SortNo: 560},
 		constants.PermissionTagUpdate,
 		{Name: "删除标签", Code: retiredTagDeletePermissionCode, Type: "api", GroupName: "tag", Method: "POST", APIPath: "/api/dashboard/tag/delete", SortNo: 580},
@@ -62,7 +62,7 @@ func runSyncCustomerTagPermissionsScenario(t *testing.T, db *gorm.DB) {
 	for _, spec := range legacySpecs {
 		name := spec.Name
 		apiPath := spec.APIPath
-		if spec.Code == constants.PermissionConversationTag.Code {
+		if spec.Code == constants.PermissionCustomerTagManage.Code {
 			name = "管理会话标签"
 			apiPath = "/api/dashboard/conversation/add_tag"
 		}
@@ -77,7 +77,7 @@ func runSyncCustomerTagPermissionsScenario(t *testing.T, db *gorm.DB) {
 		}
 		legacyByCode[item.Code] = item
 	}
-	stableConversationPermissionID := legacyByCode[constants.PermissionConversationTag.Code].ID
+	stableConversationPermissionID := legacyByCode[constants.PermissionCustomerTagManage.Code].ID
 
 	roles, err := ensureRoles(db)
 	if err != nil {
@@ -116,12 +116,12 @@ func runSyncCustomerTagPermissionsScenario(t *testing.T, db *gorm.DB) {
 	}
 
 	var conversationPermission models.Permission
-	if err := db.Where("code = ?", constants.PermissionConversationTag.Code).Take(&conversationPermission).Error; err != nil {
+	if err := db.Where("code = ?", constants.PermissionCustomerTagManage.Code).Take(&conversationPermission).Error; err != nil {
 		t.Fatal(err)
 	}
 	if conversationPermission.ID != stableConversationPermissionID ||
-		conversationPermission.Name != constants.PermissionConversationTag.Name ||
-		conversationPermission.APIPath != constants.PermissionConversationTag.APIPath ||
+		conversationPermission.Name != constants.PermissionCustomerTagManage.Name ||
+		conversationPermission.APIPath != constants.PermissionCustomerTagManage.APIPath ||
 		conversationPermission.Status != enums.StatusOk {
 		t.Fatalf("stable customer-tag permission=%#v", conversationPermission)
 	}

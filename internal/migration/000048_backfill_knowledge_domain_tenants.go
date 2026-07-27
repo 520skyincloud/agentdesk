@@ -5,7 +5,6 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
-	"agent-desk/internal/pkg/enums"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
@@ -54,18 +53,6 @@ func backfillKnowledgeDomainTenants(tx *gorm.DB) error {
 	if err != nil {
 		return err
 	}
-	documentTenants, documentKnowledgeBases, err := backfillKnowledgeDocumentTenants(tx, validTenantIDs, knowledgeBaseTenants)
-	if err != nil {
-		return err
-	}
-	faqTenants, faqKnowledgeBases, err := backfillKnowledgeFAQTenants(tx, validTenantIDs, knowledgeBaseTenants)
-	if err != nil {
-		return err
-	}
-	chunkTenants, chunkKnowledgeBases, err := backfillKnowledgeChunkTenants(tx, validTenantIDs, knowledgeBaseTenants, documentTenants, documentKnowledgeBases, faqTenants, faqKnowledgeBases)
-	if err != nil {
-		return err
-	}
 	if err := backfillKnowledgeCandidateTenants(tx, legacyTenant.ID, validTenantIDs, knowledgeBaseTenants, storeTenants, conversationTenants, userTenants); err != nil {
 		return err
 	}
@@ -73,13 +60,10 @@ func backfillKnowledgeDomainTenants(tx *gorm.DB) error {
 	if err != nil {
 		return err
 	}
-	if err := backfillKnowledgeRetrieveHitTenants(tx, validTenantIDs, retrieveLogTenants, knowledgeBaseTenants, chunkTenants, chunkKnowledgeBases, documentTenants, documentKnowledgeBases, faqTenants, faqKnowledgeBases); err != nil {
+	if err := backfillKnowledgeRetrieveHitTenants(tx, validTenantIDs, retrieveLogTenants, knowledgeBaseTenants); err != nil {
 		return err
 	}
-	if err := backfillKnowledgeFeedbackTenants(tx, validTenantIDs, retrieveLogTenants); err != nil {
-		return err
-	}
-	return markTenantKnowledgeIndexesPending(tx)
+	return backfillKnowledgeFeedbackTenants(tx, validTenantIDs, retrieveLogTenants)
 }
 
 func backfillKnowledgeBaseTenants(
@@ -151,97 +135,6 @@ func backfillKnowledgeBaseTenants(
 		result[item.ID] = tenantID
 	}
 	return result, nil
-}
-
-func backfillKnowledgeDocumentTenants(tx *gorm.DB, validTenantIDs map[int64]struct{}, knowledgeBaseTenants map[int64]int64) (map[int64]int64, map[int64]int64, error) {
-	if !tx.Migrator().HasTable(&legacyKnowledgeDocument{}) {
-		return map[int64]int64{}, map[int64]int64{}, nil
-	}
-	var list []legacyKnowledgeDocument
-	if err := tx.Order("id ASC").Find(&list).Error; err != nil {
-		return nil, nil, err
-	}
-	tenantIDs := make(map[int64]int64, len(list))
-	knowledgeBaseIDs := make(map[int64]int64, len(list))
-	for i := range list {
-		item := &list[i]
-		tenantID, err := requiredConversationDomainParentTenant("knowledge document", item.ID, "knowledge base", item.KnowledgeBaseID, knowledgeBaseTenants)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := assignConversationDomainTenant(tx, &legacyKnowledgeDocument{}, "knowledge document", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
-			return nil, nil, err
-		}
-		tenantIDs[item.ID] = tenantID
-		knowledgeBaseIDs[item.ID] = item.KnowledgeBaseID
-	}
-	return tenantIDs, knowledgeBaseIDs, nil
-}
-
-func backfillKnowledgeFAQTenants(tx *gorm.DB, validTenantIDs map[int64]struct{}, knowledgeBaseTenants map[int64]int64) (map[int64]int64, map[int64]int64, error) {
-	if !tx.Migrator().HasTable(&legacyKnowledgeFAQ{}) {
-		return map[int64]int64{}, map[int64]int64{}, nil
-	}
-	var list []legacyKnowledgeFAQ
-	if err := tx.Order("id ASC").Find(&list).Error; err != nil {
-		return nil, nil, err
-	}
-	tenantIDs := make(map[int64]int64, len(list))
-	knowledgeBaseIDs := make(map[int64]int64, len(list))
-	for i := range list {
-		item := &list[i]
-		tenantID, err := requiredConversationDomainParentTenant("knowledge faq", item.ID, "knowledge base", item.KnowledgeBaseID, knowledgeBaseTenants)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := assignConversationDomainTenant(tx, &legacyKnowledgeFAQ{}, "knowledge faq", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
-			return nil, nil, err
-		}
-		tenantIDs[item.ID] = tenantID
-		knowledgeBaseIDs[item.ID] = item.KnowledgeBaseID
-	}
-	return tenantIDs, knowledgeBaseIDs, nil
-}
-
-func backfillKnowledgeChunkTenants(
-	tx *gorm.DB,
-	validTenantIDs map[int64]struct{},
-	knowledgeBaseTenants, documentTenants, documentKnowledgeBases, faqTenants, faqKnowledgeBases map[int64]int64,
-) (map[int64]int64, map[int64]int64, error) {
-	if !tx.Migrator().HasTable(&legacyKnowledgeChunk{}) {
-		return map[int64]int64{}, map[int64]int64{}, nil
-	}
-	var list []legacyKnowledgeChunk
-	if err := tx.Order("id ASC").Find(&list).Error; err != nil {
-		return nil, nil, err
-	}
-	tenantIDs := make(map[int64]int64, len(list))
-	knowledgeBaseIDs := make(map[int64]int64, len(list))
-	for i := range list {
-		item := &list[i]
-		tenantID, err := requiredConversationDomainParentTenant("knowledge chunk", item.ID, "knowledge base", item.KnowledgeBaseID, knowledgeBaseTenants)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := validateOptionalConversationDomainReference("knowledge chunk", item.ID, tenantID, "document", item.DocumentID, documentTenants); err != nil {
-			return nil, nil, err
-		}
-		if item.DocumentID > 0 && documentKnowledgeBases[item.DocumentID] != item.KnowledgeBaseID {
-			return nil, nil, fmt.Errorf("knowledge chunk %d knowledge base %d conflicts with document %d knowledge base %d", item.ID, item.KnowledgeBaseID, item.DocumentID, documentKnowledgeBases[item.DocumentID])
-		}
-		if err := validateOptionalConversationDomainReference("knowledge chunk", item.ID, tenantID, "faq", item.FaqID, faqTenants); err != nil {
-			return nil, nil, err
-		}
-		if item.FaqID > 0 && faqKnowledgeBases[item.FaqID] != item.KnowledgeBaseID {
-			return nil, nil, fmt.Errorf("knowledge chunk %d knowledge base %d conflicts with faq %d knowledge base %d", item.ID, item.KnowledgeBaseID, item.FaqID, faqKnowledgeBases[item.FaqID])
-		}
-		if err := assignConversationDomainTenant(tx, &legacyKnowledgeChunk{}, "knowledge chunk", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
-			return nil, nil, err
-		}
-		tenantIDs[item.ID] = tenantID
-		knowledgeBaseIDs[item.ID] = item.KnowledgeBaseID
-	}
-	return tenantIDs, knowledgeBaseIDs, nil
 }
 
 func backfillKnowledgeCandidateTenants(
@@ -330,7 +223,7 @@ func backfillKnowledgeRetrieveLogTenants(
 func backfillKnowledgeRetrieveHitTenants(
 	tx *gorm.DB,
 	validTenantIDs map[int64]struct{},
-	retrieveLogTenants, knowledgeBaseTenants, chunkTenants, chunkKnowledgeBases, documentTenants, documentKnowledgeBases, faqTenants, faqKnowledgeBases map[int64]int64,
+	retrieveLogTenants, knowledgeBaseTenants map[int64]int64,
 ) error {
 	var list []models.KnowledgeRetrieveHit
 	if err := tx.Order("id ASC").Find(&list).Error; err != nil {
@@ -342,18 +235,8 @@ func backfillKnowledgeRetrieveHitTenants(
 		if err != nil {
 			return err
 		}
-		for _, reference := range []struct {
-			name      string
-			id        int64
-			tenantIDs map[int64]int64
-			baseIDs   map[int64]int64
-		}{{"knowledge base", item.KnowledgeBaseID, knowledgeBaseTenants, nil}, {"chunk", item.ChunkID, chunkTenants, chunkKnowledgeBases}, {"document", item.DocumentID, documentTenants, documentKnowledgeBases}, {"faq", item.FaqID, faqTenants, faqKnowledgeBases}} {
-			if err := validateOptionalConversationDomainReference("knowledge retrieve hit", item.ID, tenantID, reference.name, reference.id, reference.tenantIDs); err != nil {
-				return err
-			}
-			if item.KnowledgeBaseID > 0 && reference.id > 0 && reference.baseIDs != nil && reference.baseIDs[reference.id] != item.KnowledgeBaseID {
-				return fmt.Errorf("knowledge retrieve hit %d knowledge base %d conflicts with %s %d knowledge base %d", item.ID, item.KnowledgeBaseID, reference.name, reference.id, reference.baseIDs[reference.id])
-			}
+		if err := validateOptionalConversationDomainReference("knowledge retrieve hit", item.ID, tenantID, "knowledge base", item.KnowledgeBaseID, knowledgeBaseTenants); err != nil {
+			return err
 		}
 		if err := assignConversationDomainTenant(tx, &models.KnowledgeRetrieveHit{}, "knowledge retrieve hit", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
 			return err
@@ -376,30 +259,6 @@ func backfillKnowledgeFeedbackTenants(tx *gorm.DB, validTenantIDs map[int64]stru
 		if err := assignConversationDomainTenant(tx, &models.KnowledgeFeedback{}, "knowledge feedback", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func markTenantKnowledgeIndexesPending(tx *gorm.DB) error {
-	if tx.Migrator().HasTable(&legacyKnowledgeDocument{}) {
-		if err := tx.Model(&legacyKnowledgeDocument{}).
-			Where("tenant_id > ? AND status <> ? AND index_status <> ?", 0, enums.StatusDeleted, legacyKnowledgeIndexStatusPending).
-			Updates(map[string]any{
-				"index_status": legacyKnowledgeIndexStatusPending,
-				"indexed_at":   nil,
-				"index_error":  "",
-			}).Error; err != nil {
-			return err
-		}
-	}
-	if tx.Migrator().HasTable(&legacyKnowledgeFAQ{}) {
-		return tx.Model(&legacyKnowledgeFAQ{}).
-			Where("tenant_id > ? AND status <> ? AND index_status <> ?", 0, enums.StatusDeleted, legacyKnowledgeIndexStatusPending).
-			Updates(map[string]any{
-				"index_status": legacyKnowledgeIndexStatusPending,
-				"indexed_at":   nil,
-				"index_error":  "",
-			}).Error
 	}
 	return nil
 }

@@ -151,12 +151,11 @@ Trace、日志或 API。
 
 - Tenant 行业、Store Assignment、九槽、Credential 或 FastGPT readiness 任一缺失时，
   不回退旧模型系统；需要人工的客户会话进入现有任务池。
-- 当前代码和隔离测试完成不代表生产发布完成。“丽斯文旅 / 高铁南站店”真实
-  NewAPI、FastGPT、
-  回复、转人工、规则派单、标签、账单及备份恢复证据以
-  `docs/development/tenant-ai-unified-integration-plan.md` 的 B13/B14 门禁为准。
-- 旧 `AIConfig`、Grant、StoreSetting、ConversationTag 和本地知识链只允许出现在历史
-  DML migration、404 回归测试与受控 Schema Cleanup 中。
+- 当前代码和隔离测试完成不代表生产发布完成。fresh 环境中新建测试 Tenant/Store 的
+  NewAPI、FastGPT、回复、转人工、规则派单、标签、账单和备份恢复证据以
+  `docs/development/tenant-ai-unified-integration-plan.md` 的发布门禁为准。
+- 旧 `AIConfig`、Grant、StoreSetting、ConversationTag 和本地知识链只允许出现在 Git
+  历史说明与 404/Schema 负契约测试中；当前 migration 和运行代码不得引用。
 
 目标：企微员工号回复必须同时满足“准、快、聪明、人味”。提示词只是表达层，不能承担全部决策。回复链路必须先经过 runtime 引擎做批次、意图、风险和覆盖率判断，再交给模型自然表达。
 

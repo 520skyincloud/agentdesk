@@ -43,22 +43,14 @@ func TestBackfillKnowledgeDomainTenantsCoversChildrenAndIsIdempotent(t *testing.
 	if err := db.Create(route).Error; err != nil {
 		t.Fatalf("create route: %v", err)
 	}
-	document := &legacyKnowledgeDocument{KnowledgeBaseID: baseA.ID, Title: "A document", ContentType: legacyKnowledgeContentTypeMarkdown, Status: enums.StatusOk, IndexStatus: legacyKnowledgeIndexStatusIndexed, AuditFields: knowledgeTenantAuditFields(userA.ID, userA.Username)}
-	faq := &legacyKnowledgeFAQ{KnowledgeBaseID: baseA.ID, Question: "A question", Answer: "A answer", Status: enums.StatusOk, IndexStatus: legacyKnowledgeIndexStatusIndexed, AuditFields: knowledgeTenantAuditFields(userA.ID, userA.Username)}
-	for _, item := range []any{document, faq} {
-		if err := db.Create(item).Error; err != nil {
-			t.Fatalf("create knowledge child %T: %v", item, err)
-		}
-	}
-	chunk := &legacyKnowledgeChunk{KnowledgeBaseID: baseA.ID, DocumentID: document.ID, ChunkNo: 1, Status: enums.StatusOk, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	candidate := &models.KnowledgeCandidate{StoreID: store.ID, KnowledgeBaseID: baseA.ID, ConversationID: conversation.ID, Question: "question", Status: enums.KnowledgeCandidateStatusPending, AuditFields: knowledgeTenantAuditFields(userA.ID, userA.Username)}
 	retrieveLog := &models.KnowledgeRetrieveLog{KnowledgeBaseID: baseA.ID, ConversationID: conversation.ID, Question: "question", CreatedAt: time.Now()}
-	for _, item := range []any{chunk, candidate, retrieveLog} {
+	for _, item := range []any{candidate, retrieveLog} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatalf("create knowledge child %T: %v", item, err)
 		}
 	}
-	hit := &models.KnowledgeRetrieveHit{RetrieveLogID: retrieveLog.ID, KnowledgeBaseID: baseA.ID, ChunkID: chunk.ID, DocumentID: document.ID, RankNo: 1, CreatedAt: time.Now()}
+	hit := &models.KnowledgeRetrieveHit{RetrieveLogID: retrieveLog.ID, KnowledgeBaseID: baseA.ID, RankNo: 1, CreatedAt: time.Now()}
 	feedback := &models.KnowledgeFeedback{RetrieveLogID: retrieveLog.ID, FeedbackType: 1, UserID: userA.ID, CreatedAt: time.Now()}
 	for _, item := range []any{hit, feedback} {
 		if err := db.Create(item).Error; err != nil {
@@ -76,17 +68,10 @@ func TestBackfillKnowledgeDomainTenantsCoversChildrenAndIsIdempotent(t *testing.
 	for _, item := range []struct {
 		model any
 		id    int64
-	}{{&models.KnowledgeBase{}, baseA.ID}, {&legacyKnowledgeDocument{}, document.ID}, {&legacyKnowledgeFAQ{}, faq.ID}, {&legacyKnowledgeChunk{}, chunk.ID}, {&models.KnowledgeCandidate{}, candidate.ID}, {&models.KnowledgeRetrieveLog{}, retrieveLog.ID}, {&models.KnowledgeRetrieveHit{}, hit.ID}, {&models.KnowledgeFeedback{}, feedback.ID}} {
+	}{{&models.KnowledgeBase{}, baseA.ID}, {&models.KnowledgeCandidate{}, candidate.ID}, {&models.KnowledgeRetrieveLog{}, retrieveLog.ID}, {&models.KnowledgeRetrieveHit{}, hit.ID}, {&models.KnowledgeFeedback{}, feedback.ID}} {
 		assertKnowledgeTenant(t, db, item.model, item.id, tenantA.ID)
 	}
 	assertKnowledgeTenant(t, db, &models.KnowledgeBase{}, legacyBase.ID, legacy.ID)
-	var indexedDocument legacyKnowledgeDocument
-	if err := db.Take(&indexedDocument, document.ID).Error; err != nil {
-		t.Fatalf("reload document: %v", err)
-	}
-	if indexedDocument.IndexStatus != legacyKnowledgeIndexStatusPending || indexedDocument.IndexedAt != nil {
-		t.Fatalf("document index state=%s indexedAt=%v want pending rebuild", indexedDocument.IndexStatus, indexedDocument.IndexedAt)
-	}
 }
 
 func TestBackfillKnowledgeDomainTenantsDoesNotCreateRetiredLocalKnowledgeTables(t *testing.T) {
@@ -108,9 +93,9 @@ func TestBackfillKnowledgeDomainTenantsDoesNotCreateRetiredLocalKnowledgeTables(
 	if err := db.Transaction(backfillKnowledgeDomainTenants); err != nil {
 		t.Fatalf("backfill fresh knowledge schema: %v", err)
 	}
-	for _, retired := range []any{&legacyKnowledgeDocument{}, &legacyKnowledgeFAQ{}, &legacyKnowledgeChunk{}} {
+	for _, retired := range []string{"t_knowledge_document", "t_knowledge_faq", "t_knowledge_chunk"} {
 		if db.Migrator().HasTable(retired) {
-			t.Fatalf("retired local knowledge table %T must not be created on a fresh database", retired)
+			t.Fatalf("retired local knowledge table %s must not be created on a fresh database", retired)
 		}
 	}
 }
@@ -149,16 +134,19 @@ func TestBackfillKnowledgeDomainTenantsRejectsChildConflictAndRollsBack(t *testi
 	if err := db.Create(base).Error; err != nil {
 		t.Fatalf("create knowledge base: %v", err)
 	}
-	document := &legacyKnowledgeDocument{TenantID: tenantB.ID, KnowledgeBaseID: base.ID, Title: "cross tenant", ContentType: legacyKnowledgeContentTypeMarkdown, Status: enums.StatusOk, IndexStatus: legacyKnowledgeIndexStatusPending, AuditFields: knowledgeTenantAuditFields(0, "system")}
-	if err := db.Create(document).Error; err != nil {
-		t.Fatalf("create knowledge document: %v", err)
+	candidate := &models.KnowledgeCandidate{
+		TenantID: tenantB.ID, KnowledgeBaseID: base.ID, Question: "cross tenant",
+		Status: enums.KnowledgeCandidateStatusPending, AuditFields: knowledgeTenantAuditFields(0, "system"),
+	}
+	if err := db.Create(candidate).Error; err != nil {
+		t.Fatalf("create knowledge candidate: %v", err)
 	}
 
 	err := db.Transaction(backfillKnowledgeDomainTenants)
-	if err == nil || !strings.Contains(err.Error(), "conflicts with resolved tenant") {
+	if err == nil || !strings.Contains(err.Error(), "conflicts with knowledge base") {
 		t.Fatalf("backfill error=%v want child tenant conflict", err)
 	}
-	assertKnowledgeTenant(t, db, &legacyKnowledgeDocument{}, document.ID, tenantB.ID)
+	assertKnowledgeTenant(t, db, &models.KnowledgeCandidate{}, candidate.ID, tenantB.ID)
 }
 
 func setupKnowledgeTenantBackfillDB(t *testing.T) *gorm.DB {
@@ -167,7 +155,7 @@ func setupKnowledgeTenantBackfillDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	modelsToMigrate := []any{&models.Tenant{}, &models.User{}, &models.Store{}, &models.WxWorkProtocolInstance{}, &models.Conversation{}, &models.ConversationRouteState{}, &models.KnowledgeBase{}, &legacyKnowledgeDocument{}, &legacyKnowledgeFAQ{}, &legacyKnowledgeChunk{}, &models.KnowledgeCandidate{}, &models.KnowledgeRetrieveLog{}, &models.KnowledgeRetrieveHit{}, &models.KnowledgeFeedback{}}
+	modelsToMigrate := []any{&models.Tenant{}, &models.User{}, &models.Store{}, &models.WxWorkProtocolInstance{}, &models.Conversation{}, &models.ConversationRouteState{}, &models.KnowledgeBase{}, &models.KnowledgeCandidate{}, &models.KnowledgeRetrieveLog{}, &models.KnowledgeRetrieveHit{}, &models.KnowledgeFeedback{}}
 	if err := db.AutoMigrate(modelsToMigrate...); err != nil {
 		t.Fatalf("auto migrate: %v", err)
 	}

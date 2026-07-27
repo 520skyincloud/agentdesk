@@ -125,7 +125,7 @@ func backfillConversationAndTicketDomainTenants(tx *gorm.DB) error {
 	if err := backfillTicketChildren(tx, legacyTenant.ID, validTenantIDs, ticketTenants, userTenants); err != nil {
 		return err
 	}
-	return backfillSharedTagTenants(tx, legacyTenant.ID, validTenantIDs, conversationTenants, ticketTenants)
+	return backfillSharedTagTenants(tx, legacyTenant.ID, validTenantIDs, ticketTenants)
 }
 
 func backfillConversationTenants(
@@ -628,18 +628,11 @@ func backfillSharedTagTenants(
 	tx *gorm.DB,
 	legacyTenantID int64,
 	validTenantIDs map[int64]struct{},
-	conversationTenants map[int64]int64,
 	ticketTenants map[int64]int64,
 ) error {
 	var tags []models.Tag
 	if err := tx.Order("id ASC").Find(&tags).Error; err != nil {
 		return err
-	}
-	var conversationTags []legacyConversationTag
-	if tx.Migrator().HasTable(&legacyConversationTag{}) {
-		if err := tx.Order("id ASC").Find(&conversationTags).Error; err != nil {
-			return err
-		}
 	}
 	var ticketTags []models.TicketTag
 	if err := tx.Order("id ASC").Find(&ticketTags).Error; err != nil {
@@ -681,25 +674,6 @@ func backfillSharedTagTenants(
 		}
 		if item.TenantID > 0 {
 			if err := resolver.merge("tag", item.ID, item.TenantID); err != nil {
-				return err
-			}
-		}
-	}
-	for i := range conversationTags {
-		item := conversationTags[i]
-		tenantID, err := requiredConversationDomainParentTenant("conversation tag", item.ID, "conversation", item.ConversationID, conversationTenants)
-		if err != nil {
-			return err
-		}
-		resolver, err := resolverForTag(item.TagID)
-		if err != nil {
-			return fmt.Errorf("conversation tag %d %w", item.ID, err)
-		}
-		if err := resolver.merge("conversation", item.ConversationID, tenantID); err != nil {
-			return err
-		}
-		if item.TenantID > 0 {
-			if err := resolver.merge("conversation tag", item.ID, item.TenantID); err != nil {
 				return err
 			}
 		}
@@ -748,16 +722,6 @@ func backfillSharedTagTenants(
 			return err
 		}
 		tagTenants[item.ID] = tenantID
-	}
-	for i := range conversationTags {
-		item := &conversationTags[i]
-		tenantID := conversationTenants[item.ConversationID]
-		if err := validateConversationDomainReference("conversation tag", item.ID, tenantID, "tag", item.TagID, tagTenants); err != nil {
-			return err
-		}
-		if err := assignConversationDomainTenant(tx, &legacyConversationTag{}, "conversation tag", item.ID, item.TenantID, tenantID, validTenantIDs); err != nil {
-			return err
-		}
 	}
 	for i := range ticketTags {
 		item := &ticketTags[i]

@@ -29,9 +29,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 	CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 	go build -v -trimpath -ldflags="-s -w" -o /out/agent-desk ./cmd/server \
 	&& CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-	go build -v -trimpath -ldflags="-s -w" -o /out/tenant-integrity-audit ./cmd/tenant_integrity_audit \
-	&& CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-	go build -v -trimpath -ldflags="-s -w" -o /out/schema-cleanup ./cmd/schema_cleanup
+	go build -v -trimpath -ldflags="-s -w" -o /out/tenant-integrity-audit ./cmd/tenant_integrity_audit
 
 FROM alpine:3.22 AS app
 WORKDIR /app
@@ -43,7 +41,6 @@ RUN apk add --no-cache ca-certificates tzdata wget \
 
 COPY --from=server-builder /out/agent-desk /app/agent-desk
 COPY --from=server-builder /out/tenant-integrity-audit /app/tenant-integrity-audit
-COPY --from=server-builder /out/schema-cleanup /app/schema-cleanup
 COPY config/config.example.yaml /app/config/config.example.yaml
 COPY config/config.example.yaml /app/config/config.yaml
 

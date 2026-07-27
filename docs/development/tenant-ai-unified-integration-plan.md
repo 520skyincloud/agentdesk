@@ -1,6 +1,6 @@
 # Tenant AI 统一集成最终权威方案
 
-> 状态：2026-07-26 产品决策已闭合，B0-B12 已完成，B13 工程门禁、真实企微证据门禁与 B14 固定白名单清理器已经实现。隔离 `18084`/临时 SQLite 环境已完成一次真实企微员工号扫码、真实客户入站、人工池、正式人工派单、人工回复、协议出站和超时恢复 AI 路由闭环；这只证明当前代码链可运行，不是生产 pilot 验收。交付方另提供了 HTTP 测试 NewAPI/FastGPT 的非生产实测材料：NewAPI 文本、多模态、文档解析、Embedding、Rerank 和人民币账单接口可用，FastGPT 托管知识检索可用，但 ASR 模型当前无可用渠道，两个服务均没有可用 HTTPS。生产 B13/B14 均未执行，当前结论仍为发布 `No-Go`。业务方已明确把当前主机无法完成的生产安全文件独立验证延期到正式部署前；延期不阻止代码评审或合并，也不视为验收通过。pilot 业务身份仍冻结为“丽斯文旅 / 高铁南站店”，来源 Store ID `3` 只作定位，迁移后最终 Store ID 尚未解析；聊天中交付的测试 Key 已暴露且没有经最终 Store 凭据流程提交，不能作为生产 active Credential。生产 HTTPS、ASR 九槽、目标 MySQL、真实 Credential/审批、标签、账单、正式备份和独立恢复证据完成前，禁止切换正式 `8083` 或执行 B14 物理清理。
+> 状态：2026-07-27 产品与代码合并范围已闭合。统一项目只支持由当前代码在空 SQLite/MySQL 上创建的全新数据库；历史租户、门店、会话、真实 Key 和来源 Store ID 不再是代码合并输入，也不再提供旧库原地升级或 B14 清表路径。旧代码与隔离 `18084` 数据已在仓库外完成可校验备份，旧 AIConfig、Grant、StoreSetting、ConversationTag 和本地知识兼容代码已从当前树删除。代码合并可以依靠 fresh 双数据库、自动化测试、构建和隔离页面验收完成；正式 `8083` 发布仍需在目标主机提供自己的安全环境变量、HTTPS FastGPT、门店 NewAPI Key，并完成真实渠道验收。
 >
 > 唯一实施分支：`codex/tenant-ai-unified-integration`
 >
@@ -12,7 +12,7 @@
 >
 > 服务发布端口：`8083`
 >
-> 首个真实灰度对象：Tenant“丽斯文旅” / Store“高铁南站店”（“丽斯未来”仅保留为历史仿真名称）
+> 数据原则：仓库和初始数据库不预置任何真实 Tenant/Store；部署后由平台通过现有产品流程创建
 
 本文是 Tenant、行业、模型、门店凭据、FastGPT、AI 回复运行时、客户标签、计费、权限、页面、Migration、派单保护和发布回滚的唯一目标方案。本文描述的是最终目标，不表示代码已经实现。
 
@@ -44,7 +44,7 @@
 本方案包含两项由用户明确确认的偏离：
 
 1. 不再只在 `codex/tenant-ai-integration` 开发，而是建立第三个唯一集成分支。
-2. 最终版本物理删除旧 `AIConfig`、`TenantAIModelGrant`、`StoreAIModelSetting`、`ConversationTag` 表和废弃字段。该操作不放入普通启动 AutoMigrate，而在停机维护、备份和预检后由独立破坏性 Schema Cleanup 执行。
+2. 最终版本不支持旧业务数据库原地升级。旧 `AIConfig`、`TenantAIModelGrant`、`StoreAIModelSetting`、`ConversationTag` 和本地知识表不进入当前 models、migration 或 fresh Schema；历史库只做仓库外备份归档。
 
 其余分层、权限、Tenant 隔离、SQLite/MySQL 兼容、显式路由、DTO、前端 API 封装和测试要求继续遵守 `AGENTS.md`。
 
@@ -77,10 +77,10 @@
 | 标签上限 | 每个 StoreCustomerRelation 最多 6 个有效标签 |
 | 会话标签 | 删除 ConversationTag 产品与数据；复用 `conversation.tag` 权限码管理客户标签 |
 | 派单 | 只保留 manual/rule，完整保留现有确定性公平派单和恢复机制 |
-| Migration | 保留 integration 的 AutoMigrate、DML runner、历史归档、动态编号和失败门禁 |
-| 数据库 | 验证 SQLite 和 MySQL；fresh 与当前 integration 数据库最终得到同一套 Schema |
-| 旧表 | 旧模型和会话标签表退出代码后物理删除，不保留双运行链或回滚入口 |
-| 灰度 | 丽斯文旅 / 高铁南站店先验收；客户标签演化和回复标签上下文默认关闭，支持批量启停 |
+| Migration | 保留 integration 的 AutoMigrate、DML runner、定义归档、动态编号和失败门禁，但只面向当前 fresh Schema |
+| 数据库 | SQLite 和 MySQL 均从空库创建同一套最终 Schema；不接收旧业务库作为启动目标 |
+| 旧表 | 旧模型、会话标签和本地知识表从代码与 fresh Schema 中彻底消失，不提供兼容或清理运行链 |
+| 灰度 | 新环境由平台新建测试 Tenant/Store；客户标签演化和回复标签上下文默认关闭，支持批量启停 |
 
 ## 3. 最终总体架构
 
@@ -502,7 +502,7 @@ Outbox 或 WebSocket 失败不能重新生成模型回复。Observe 只推进状
 - `ReplyTagContextEnabled` 默认关闭。
 - 开关按 Tenant + Store 生效。
 - 平台管理员和公司主管支持单个、批量选择、全部启用和全部停用。
-- 首次只对“丽斯文旅 / 高铁南站店”灰度，两个能力分开开启和回滚。
+- 首次只对 fresh 环境中新建的一家测试 Store 灰度，两个能力分开开启和回滚。
 
 ## 11. 行业标签与 Store 客户画像
 
@@ -595,9 +595,9 @@ Tenant 可配置静默时间、置信阈值和每轮操作上限；静默时间�
 - 旧 AIConfigID 在 AIAgent、RunLog、Usage 和前端 DTO 中的活动语义；
 - 只服务上述概念的 repository、service、handler、builder、DTO、API caller、页面、组件、导航、文案和测试。
 
-### 12.2 物理 Schema Cleanup
+### 12.2 Fresh Schema 负契约
 
-最终生产 Schema 删除：
+全新 SQLite/MySQL 初始化后不得创建：
 
 ```text
 t_ai_config
@@ -611,11 +611,12 @@ conversation_service_session.tag_ids_json
 活动表中只属于旧 resolver 的 ai_config_id 列
 ```
 
-实际表名和列名以实现时 GORM `TableName`/Schema 审计为准，禁止凭文档猜测执行 DROP。
+这些对象由 Schema 回归测试锁定为“不存在”。当前应用不包含读取、迁移或删除它们的
+代码，也不接受包含这些对象的历史业务库作为部署输入。
 
 保留 `TicketTag`，因为它属于工单分类，不是会话标签或客户画像。
 
-### 12.3 删除顺序
+### 12.3 代码删除顺序
 
 ```text
 前端 caller/UI
@@ -624,11 +625,12 @@ conversation_service_session.tag_ids_json
   -> service/repository
   -> runtime caller
   -> Models 注册
-  -> 只读预检与备份
-  -> 独立 Schema Cleanup
+  -> 旧表迁移视图和旧 DML migration
+  -> fresh Schema 负契约测试
 ```
 
-删除后旧接口必须真实返回 404，旧表和列在 SQLite/MySQL 最终 Schema 中均不存在。Git 历史和已经执行的 MigrationDefinitionArchive 只作为审计事实，不构成运行时残留。
+删除后旧接口必须真实返回 404，旧表和列在 SQLite/MySQL fresh Schema 中均不存在。Git
+历史和仓库外备份只用于审计与应急取证，不构成运行时兼容入口。
 
 ## 13. 规则派单保护边界
 
@@ -812,52 +814,39 @@ POST /api/dashboard/customer-tag/runtime/batch_toggle
 
 事件只包含刷新所需 ID、revision、status 和时间，不携带 Key、Prompt、Schema、客户正文或标签证据。
 
-## 18. Migration 与物理清理
+## 18. Migration 与全新数据库
 
 ### 18.1 唯一目标 Schema
 
-只支持两类输入并收口为同一最终 Schema：
-
-1. fresh SQLite/MySQL；
-2. 当前 `tenant-ai-integration` 历史 SQLite/MySQL。
-
-`ai-billing` 数据库不是生产升级来源，只移植代码和行为。最终不保留双 Schema、双 resolver 或兼容运行模式。
+唯一支持的输入是空 SQLite 或空 MySQL。`tenant-ai-integration`、`ai-billing` 及任何历史
+业务数据库都不是部署升级来源，只移植代码和行为。最终不保留双 Schema、双 resolver、
+兼容迁移模式或清表命令。
 
 ### 18.2 机制
 
 - DDL 新建字段/表仍优先由最终 `models.Models` 的 AutoMigrate 完成。
-- DML 回填、权限同步、行业/标签实例化和历史定义归档使用 integration runner。
-- Migration 编号在每个提交前 fetch 后动态选择，不预先锁死 68-75。
+- DML 初始化、权限同步、行业/标签实例化和定义归档使用 integration runner。
+- Migration 编号在每个提交前 fetch 后动态选择。
 - 保留 definition mismatch 检测、MigrationDefinitionArchive、失败阻止启动和幂等重跑测试。
-- 已执行历史 Migration 不改版本号、不伪造 remark、不删除审计记录。
+- 删除只服务旧表读取或旧库搬运的 migration；保留的 migration 只能依赖当前 models。
 
 ### 18.3 实施阶段
 
-1. 预检：未知 migration remark、Tenant/Store 断链、一 Store 多账号、重复唯一键、旧表存在性和 Key 字段计数。
-2. 扩展：AutoMigrate 新行业、Profile、Credential、Usage、Tag、Evolution 和 FastGPT 字段/表。
-3. 行业：给现有 Tenant 显式绑定酒店行业或输出 unresolved；没有可证明绑定时阻止启动。
-4. 模型：建立默认 Profile 九槽、Store Assignment；不迁移旧 AIConfig APIKey。
-5. 凭据：新 StoreModelCredential 默认 unconfigured，由用户重新配置。
-6. FastGPT：按新 Profile 生成 target revision 并输出 readiness。
-7. 标签与知识：按 Tenant 行业实例化固定目录；删除所有旧 ConversationTag/TagIDsJSON 数据，不迁移；本地 Document/FAQ/Chunk 只作为历史升级输入，不迁入 FastGPT。
-8. Runtime：切换唯一 resolver、完整 AI Runtime 和新 API/UI。
-9. 静态证明：旧 caller、route、repository、model registration 和构建路由为零。
-10. 停机备份后执行独立 Schema Cleanup，物理删除旧表/列。
-11. 重跑 preflight、完整性审计和 SQLite/MySQL Schema 快照对比。
+1. 目标环境建立空数据库，禁止把旧业务 DSN 指向新应用。
+2. AutoMigrate 创建行业、Profile、Credential、Usage、Tag、Evolution、FastGPT 和现有客服域 Schema。
+3. DML runner 初始化权限、角色、固定行业目录、标签模板和平台基础数据。
+4. Migration 77 仅为当前 Tenant 建立不带模型选择语义的内部 `AIAgent` 接待策略身份。
+5. 平台管理员通过产品流程创建 Tenant、Store、账号、Profile Assignment 和 Credential。
+6. FastGPT 按 Store 当前 Profile/Credential provision 受管资源并形成 readiness。
+7. 静态证明旧 caller、route、repository、model registration、migration 视图和构建路由为零。
+8. 重跑 migration、完整性审计和 SQLite/MySQL fresh Schema 快照对比。
 
-### 18.4 破坏性清理门禁
+### 18.4 历史数据边界
 
-由于用户明确要求不保留旧表，本步骤是对常规 AutoMigrate-only 规则的受控例外：
-
-- 只能由独立管理命令调用 GORM Migrator/数据库兼容 DDL；
-- 不能在普通 server 启动中自动执行；
-- 必须先停 `8083`、停止 worker、完成加密备份并验证可恢复；
-- 必须打印待删表/列、行数和非敏感引用计数，不打印 APIKey；
-- 必须要求显式环境确认和一次性操作令牌；
-- SQLite/MySQL 分别测试，禁止拼接未审计的方言 SQL；
-- 删除完成后回滚只能恢复整库备份，不能恢复旧应用继续生产。
-
-旧 AIConfig.APIKey 不进入日志、导出或新 Credential。它随旧表删除；新 Credential 永远只返回掩码。
+- 旧数据库和真实测试数据只允许保存在仓库外受限备份中，不复制进 Git、镜像或新数据库。
+- 当前应用不提供旧表扫描、旧 Key 搬运、任意 DDL 或 B14 操作入口。
+- 旧 `AIConfig.APIKey` 永不进入新 Credential；新 Key 只可由授权人重新提交且永不回显。
+- 需要查阅历史数据时只能在隔离恢复环境使用旧版本工具只读查看，不能连接当前生产应用。
 
 ## 19. 代码集成方法
 
@@ -927,7 +916,7 @@ web/messages/en-US.json
 | Batch | 原子目标 | 合入门禁 |
 | --- | --- | --- |
 | B0 | fetch、固定最新 ai-billing、manifest、双方基线 | 来源工作树不变，集成树干净 |
-| B1 | Migration runner 与最终 model 契约 | SQLite/MySQL AutoMigrate 和历史 runner 测试 |
+| B1 | Migration runner 与最终 model 契约 | SQLite/MySQL fresh AutoMigrate 和 runner 测试 |
 | B2 | Tenant 行业绑定、行业 Profile/分类、行业标签模板 | 无 Company/企微行业 override，未绑定行业不能开 AI |
 | B3 | Model Profile 九槽、Store Assignment、唯一 resolver 契约 | 九槽强校验，无 grant/default/fallback |
 | B4 | Store Credential、安全、审批和不可变审计 | 并发 rotation、失败保活、秘密扫描 |
@@ -939,10 +928,10 @@ web/messages/en-US.json
 | B10 | Evolution worker | due/lease/retry/new-message race |
 | B11 | Reply 标签上下文和批量开关 | 无新增模型调用、Generate 门禁回归 |
 | B12 | 旧 API/UI/service/model 与本地知识链全链删除 | 静态搜索、旧接口 404、构建无旧页面 |
-| B13 | 丽斯文旅 / 高铁南站店真实 readiness 与灰度 | 8083、真实 NewAPI/FastGPT/回复/账单 |
-| B14 | 停机 Schema Cleanup 与发布候选 | 备份恢复、SQLite/MySQL 最终 Schema 一致 |
+| B13 | fresh 部署 readiness 与新建测试 Tenant 灰度 | 8083、真实 NewAPI/FastGPT/回复/账单 |
 
-任何 Batch 最多三个单一目的提交；模型、迁移、后端行为、前端入口和破坏性删除不得混成一个不可审查提交。
+原 B14 旧库 Schema Cleanup 已于 2026-07-27 退役，不再是当前 Batch。任何 Batch 最多三个
+单一目的提交；模型、迁移、后端行为和前端入口不得混成一个不可审查提交。
 
 ## 21. 测试与验收
 
@@ -1012,9 +1001,9 @@ git diff --check
 | 输入 | SQLite | MySQL 8.x |
 | --- | --- | --- |
 | fresh | 最终 Schema + 重跑 | 最终 Schema + 重跑 |
-| tenant-ai-integration 历史库 | 升级 + cleanup + 重跑 | 升级 + cleanup + 重跑 |
 
-每格验证：Migration archive、权限 ID、Tenant 行业、Store 一对一、九槽、Credential、行业标签、唯一索引、旧表/列不存在和重复执行幂等。
+验证内容：Migration archive、权限 ID、Tenant 行业、Store 一对一、九槽、Credential、行业
+标签、唯一索引、旧表/列不存在和重复执行幂等。历史业务库不属于测试矩阵。
 
 ## 22. 发布、回滚与 No-Go
 
@@ -1031,30 +1020,29 @@ git diff --check
 - API Key 在任何输出中可见；
 - SQLite/MySQL 任一最终 Schema 不一致；
 - 旧 resolver/API/UI 仍可达；
-- Schema Cleanup 备份未实际恢复验证；
-- 真实 NewAPI、FastGPT 和 pilot 消息验收未完成。
+- 部署目标不是空数据库，或尝试从旧表搬运数据/Key；
+- 正式发布环境的 NewAPI、FastGPT 和真实消息验收未完成。
 
 ### 22.2 上线顺序
 
-1. 在生产脱敏副本演练完整升级、cleanup 和备份恢复。
-2. 停止旧 `8083` 和全部 worker，记录 Message/Outbox/Assignment 游标。
-3. 完成数据库和远端 FastGPT 状态备份。
-4. 执行 preflight、AutoMigrate、DML migration 和 readiness。
-5. 启动新应用但保持标签演化/回复上下文关闭。
-6. 在“丽斯文旅 / 高铁南站店”验证行业、九槽、Credential、FastGPT、回复、转人工、派单、Usage、账单和运营事实。
-7. 扩大 ready Store 范围。
-8. 先批量灰度 ReplyTagContext，再独立灰度 Evolution。
-9. 验证稳定并确认无需旧版本回退后，停机执行 Schema Cleanup。
-10. 用同一发布镜像重启 `8083`，完成最终全链验收。
+1. 归档现有环境；旧数据库只备份，不作为新应用 DSN。
+2. 在目标主机准备空 MySQL、仓库外秘密和同环境 HTTPS FastGPT。
+3. 用发布镜像执行 preflight、AutoMigrate、DML migration 和 fresh Schema 检查。
+4. 启动新应用但保持标签演化/回复上下文关闭。
+5. 通过平台页面新建测试 Tenant、Store、主管与唯一门店员工账号。
+6. 发布行业和九槽 Profile，录入 Store Credential，并 provision FastGPT。
+7. 验证企微、AI 回复、转人工、规则派单、Usage、账单和运营事实。
+8. 扩大 ready Store 范围，再分别灰度 ReplyTagContext 和 Evolution。
+9. 验收后将同一镜像和同一 fresh 数据库切换到正式 `8083`。
 
 ### 22.3 回滚边界
 
-- Cleanup 前：可回退新 UI/Runtime/Profile Assignment 应用提交，数据库新增表保留；不能恢复模型派单。
+- 发布前：代码可回退到统一分支上一个通过版本；数据库按当前统一 Schema 保留。
 - Credential：candidate 失败继续使用旧 active revision。
 - FastGPT：保持旧 applied revision和重试任务。
 - 标签：关闭 Evolution/ReplyTagContext，保留新客户标签关系和 ChangeLog。
 - 派单：异常时切 manual，不回退为模型派单。
-- Cleanup 后：旧表已物理删除，禁止启动依赖旧 AIConfig/Grant/Setting/ConversationTag 的应用。严重问题只能恢复 cleanup 前整库备份并回退整个发布，不允许新旧应用并行。
+- 严重问题：恢复本次 fresh 统一数据库的发布前备份并整体回退统一应用；旧业务库不能作为当前应用回滚目标。
 
 ## 23. 完成判定
 
@@ -1071,11 +1059,12 @@ git diff --check
 - 客户标签按 Store 隔离、每客最多 6 个、Tenant 只能开关和设置显示别名；
 - AI 失败和明确转人工只进入现有规则派单；
 - Billing 按 Store 官方查询、按 Tenant 聚合、平台可跨 Tenant；
-- SQLite/MySQL fresh 和历史升级得到同一最终 Schema；
-- “丽斯文旅 / 高铁南站店”在 `8083` 完成真实 NewAPI、FastGPT、回复、派单、账单和标签灰度；
-- 全量测试、构建、浏览器、秘密扫描、备份恢复和 Schema Cleanup 证据齐全。
+- SQLite/MySQL fresh 得到同一最终 Schema，旧表/列负契约通过；
+- 新建测试 Tenant/Store 在发布环境完成真实 NewAPI、FastGPT、回复、派单、账单和标签灰度；
+- 全量测试、构建、浏览器、秘密扫描和 fresh 部署证据齐全。
 
-在以上条件完成前，文档和 PR 只能写“正在集成”或“待验收”，不得写“已合并完成”。
+代码合并完成与正式发布验收分开判定：真实外部凭据和客户数据不是 PR 合并门禁，但没有
+完成上述现场验收时不得声称正式 `8083` 已发布。
 
 ## 24. 实施记录要求
 
@@ -1092,6 +1081,10 @@ git diff --check
 不得把临时报告写入 `docs/generated/`，不得提交数据库、截图、密钥、下载原稿或本地审计产物。
 
 ## 25. 实施记录
+
+> 本节 25.1-25.42 是按发生时间保存的审计记录，其中 B14、历史库升级、固定 pilot
+> 身份和来源 Store ID 等描述只代表当时决策。它们已被 25.43 的 fresh 数据库最终决定
+> 覆盖，不得再作为当前操作步骤、发布门禁或代码恢复依据。
 
 ### 25.1 2026-07-22 B0 来源固定与基线审计
 
@@ -1408,7 +1401,8 @@ git diff --check
 - Execute 门禁：prepare 在全新 `0700` 外部目录生成 HMAC 绑定的 `plan.json` 和 `0600` 随机令牌；默认 30 分钟失效。execute 必须再次验证环境、停机确认、证据文件哈希、数据库快照、pilot 身份、实时 readiness 和 Schema inventory，并要求精确确认短语。DDL 前先原子写 `consumed.json` 并擦除令牌内容，重放、计划篡改、证据变化或数据库变化均在删表前拒绝。
 - DDL 与失败边界：服务按 `models -> repositories -> services -> command` 边界实现；删表走 GORM Migrator，删列使用经过固定标识符校验且 SQLite/MySQL 共用的 GORM DDL。MySQL DDL 会自动提交，因此令牌消费后的任一失败都必须保持停机并恢复已验证整库备份，禁止直接重试；结果文件记录已执行步骤和清理前后短码，不记录秘密。
 - 验证：历史与 fresh SQLite 首次、幂等、额外索引、额外列、外键、视图、计划篡改、证据 pilot 错配、数据库变化和令牌重放场景通过；隔离 MySQL 8.4 首次清理和无关索引保留通过。`go test ./... -count=1`、定向 `-race`、`go vet ./...`、`docker compose --env-file <secure-file> config --quiet`、发布镜像完整构建和镜像内三个二进制可执行检查均通过。
-- 镜像与文档：发布镜像新增 `/app/tenant-integrity-audit` 和 `/app/schema-cleanup`，确保报告和清理来自同一源码状态；新增 `docs/deployment/b14-schema-cleanup.md` 作为唯一运行手册，并从生产秘密手册链接。没有改 model、AutoMigrate、DML migration、HTTP API、权限、WebSocket、AI Prompt/Schema/Runtime、Credential、FastGPT、Billing、人工任务池、规则派单或前端页面。
+- 当时镜像曾加入 Tenant audit 与 schema cleanup，并建立对应 B14 手册；这些对象已按
+  25.43 的 fresh 数据库最终决定从当前镜像、源码和文档中删除。本条只保留历史审计。
 - 当前判定：本批只完成 B14 工具和隔离演练，不是 B14 生产执行证据。FastGPT HTTPS、目标 MySQL 握手、最终 Store 解析、统一环境 NewAPI Key 重录/异人审批、真实回复/转人工/派单/标签/账单以及现场加密备份独立恢复仍未完成；B13 继续 `No-Go`，当前 `8083` 未替换，生产 `prepare/execute` 均未运行。
 
 ### 25.23 2026-07-23 生产 handoff 与外部端点复核
@@ -1636,9 +1630,58 @@ git diff --check
 - 共享、合并与回滚：生产代码只修改 `user_service.go` 和 `store_model_credential_service.go` 的既有状态更新；没有 model、AutoMigrate、DML migration、DTO、enum、HTTP API、路由、权限码、WebSocket、AI Prompt/Schema/调用次数、FastGPT 请求格式、Billing 口径、人工任务池、规则派单或前端行为变化。两个代码提交可在 B14 前独立回滚且不需要数据回滚，但回滚会恢复初始密码状态死锁或失败候选密文滞留风险，不可作为生产方案。
 - 发布判定：用户允许本轮暂不处理 ASR，不等于取消九槽强制发布门禁。当前测试 Store 没有 active Credential，`seed-faq` 没有正式 Store 绑定，AI Reply、行业标签和人民币账单也未形成该 revision 的真实证据。B13 继续 `No-Go`；正式 HTTPS、ASR、目标 MySQL、最终 pilot Store、实际持有人重录新 Key、异人审批、完整运行证据、加密备份和独立恢复全部通过前，不切换 `8083`，不运行 B14 `prepare/execute`，也不扩大固定 7 表、5 列、4 索引白名单。
 
+### 25.43 2026-07-27 Fresh 统一数据库与废弃链最终收口
+
+- 最终决定：真实 Tenant、Store、会话、来源 Store ID 和外部 Key 不再作为代码合并输入。
+  当前项目只支持由本版本在空 SQLite/MySQL 上创建的统一数据库；旧库不再原地升级，
+  也不提供 B14 Schema Cleanup。
+- 备份：删除前建立 Git tag
+  `backup/tenant-ai-unified-pre-cleanup-20260727-090407`，并在仓库外目录
+  `/Users/qifeng/Documents/agentdesk-backups/tenant-ai-unified-pre-cleanup-20260727-090407`
+  保存完整 `repository.bundle`、隔离 `18084` SQLite 和 `MANIFEST.md`。bundle SHA-256
+  为 `d6754656bccc1aec37a2d4383515b2b2e77baaaa7049aac9a95bb397f276ba72`，
+  SQLite SHA-256 为
+  `a08a9811bf52fb7f06e65fc0f7cd0aec8ffa7bce250702ae0d4871f7d3e7a16f`；
+  bundle verify 与 SQLite integrity check 均通过。正式 `8083` 未触碰。
+- 删除：移除 `cmd/schema_cleanup`、旧清理 repository/service/测试、镜像和 Makefile
+  入口；移除只服务旧 AIConfig/Grant/StoreSetting/ConversationTag、本地
+  Document/FAQ/Chunk 搬运的 migration 与 migration-only models；删除 B14 操作手册。
+- 迁移：保留的历史编号只承担当前 Schema 初始化、权限和业务基础数据 DML；Migration
+  45、48、63、64、69、70 已移除旧表读取。新增 Migration 77 为现有 Tenant 幂等建立
+  内部 `AIAgent` 接待策略身份，不恢复旧模型配置语义。
+- 权限：外部稳定权限码 `conversation.tag` 保留，但代码常量语义改为客户标签管理；
+  行业 Profile/分类的新增、编辑、删除统一由当前 `aiConfig.update` 控制，不再依赖已
+  退役的 `aiConfig.create/delete`。
+- Schema 门禁：fresh SQLite/MySQL 测试明确断言七张旧表、`tag_ids_json` 和旧
+  `ai_config_id` 专属列不存在。`AIAgent` 与 `AgentRunLog` 继续保留，因为它们分别是
+  当前接待策略身份与平台审计事实，不是旧“智能客服”配置模块。
+- 发布边界：代码、文档和 PR 可在无真实业务数据与外部 Key 的情况下完成验证和合并。
+  正式部署必须使用空数据库，由平台重新创建 Tenant/Store/账号，并在目标主机安全配置
+  HTTPS FastGPT 和 Store NewAPI Credential；旧数据库只允许隔离只读恢复。
+- 保留边界：`legacy-default` 仍是当前 OIDC 自动建号和通用账号权限链使用的身份兼容
+  Tenant，不是本次备份中的真实 Tenant/Store，也不依赖已退役 AI/知识表。本次没有把
+  它误判为旧 AI 数据后删除；若后续改为邀请或可信 Tenant 映射后再退出该身份，必须按
+  独立认证迁移审计登录、账号和角色数据范围。
+- 最终验证：`go test ./... -count=1 -timeout 30m`、`go vet ./...`、
+  `internal/ai/...`、`internal/services/...` 和 `internal/repositories/...` 的
+  `-race` 均通过，其中完整 service race 为 `672.734s`。55 个前端
+  `*.test.mjs` 文件、`pnpm --dir web typecheck`、ESLint `0 error / 33 warning`、
+  SDK 构建和 45 页面 Next.js 生产构建通过；统一 Linux/arm64 Docker 镜像构建及
+  使用一次性非生产变量的 `docker compose config --quiet` 通过。
+- 双数据库与页面验证：临时 MySQL 8.4 完成 full fresh AutoMigrate、全部当前 DML、
+  Migration 077 和幂等重跑；8 个 migration、4 个 repository、4 个 credential/tag
+  service、运营分析和 release readiness 的 MySQL 专项场景逐库通过，七张旧表和五处
+  旧列计数均为 0，临时容器随后销毁。隔离 `18084` 使用全新 SQLite 和纯模拟
+  “丽斯未来酒店”数据完成平台/租户切换、总览、会话、规则派单、会话记录、运营分析、
+  行业、标签、知识、账号、客服组织和门店模型凭据页面验收；100 家模拟门店的凭据均为
+  未配置，不包含真实 Key，浏览器仅有 WebSocket connected 信息日志，无错误。正式
+  `8083` 始终未修改。
+
 ## 26. 用户最终 1-48 项决定追溯
 
-本节按 2026-07-22 用户最后一次逐项答复编号冻结产品解释。它不是新的设计分支；如后续实现、旧文档或来源代码与本表冲突，以本表及前述对应章节为准。产品问题已经闭合，尚未闭合的只有 B13-B14 实施和验收证据。
+本节按 2026-07-22 用户逐项答复保留产品解释，并由 25.43 的 2026-07-27 fresh 数据库决定
+覆盖其中旧库升级、B14 和固定 pilot 身份。它不是新的设计分支；如旧记录与当前正文冲突，
+以当前正文和 25.43 为准。
 
 | 编号 | 最终解释 | 权威落点 |
 | --- | --- | --- |
@@ -1682,11 +1725,11 @@ git diff --check
 | 38 | 标签只能来自固定行业目录；终端客户不能修改；Tenant 仅管理允许的开关、别名和策略 | 11.2、11.3 |
 | 39 | 旧模型、授权、StoreSetting 和 ConversationTag 代码/API/UI 全部删除，不留双运行链 | 12.1、12.3、B12 |
 | 40 | Tenant 可配置演化策略，单个 Store 客户关系最多 6 个有效标签 | 11.3、11.4 |
-| 41 | 保留 AutoMigrate、DML runner、历史归档和动态编号，但按最终架构重写迁移内容 | 18.2、B1-B14 |
-| 42 | 最终只有一套应用和一套 Schema；fresh/历史均需通过 SQLite 与 MySQL 验证 | 18.1、21.7 |
+| 41 | 保留 AutoMigrate、DML runner、定义归档和动态编号，但 migration 只依赖当前 Schema | 18.2、25.43 |
+| 42 | 最终只有一套应用和一套 Schema；只验证 SQLite/MySQL fresh 初始化与幂等 | 18.1、21.7、25.43 |
 | 43 | 生产预检发现未知 Migration、范围断链或不可证明回填时阻止启动并先修复 | 18.2、18.3、22.1 |
 | 44 | 旧 `AIConfig.APIKey` 和旧 Resolver 直接退出，不迁入或回退影响新配置 | 12、18.3、18.4 |
 | 45 | 新 Credential 永不回显明文，仅显示掩码；日志、Trace、API 和导出均不得泄密 | 7.3、18.4、21.3 |
-| 46 | 旧 AIConfig、Grant、StoreSetting、ConversationTag 表及专属列在停机门禁后物理删除 | 12.2、18.4、B14 |
-| 47 | 历史仿真名称“丽斯未来”只作追溯；当前首个真实灰度冻结为 Tenant“丽斯文旅” / Store“高铁南站店” | 2、22.2、25.21、B13 |
+| 46 | 旧 AIConfig、Grant、StoreSetting、ConversationTag 表及专属列不进入 fresh Schema；旧库只归档 | 12.2、18.4、25.43 |
+| 47 | 历史仿真或 pilot 名称只作追溯；fresh 环境不预置真实 Tenant/Store | 文档头、22.2、25.43 |
 | 48 | 最终服务端口继续使用 `8083` | 文档头、22.2、B13 |

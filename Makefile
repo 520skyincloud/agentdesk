@@ -14,7 +14,7 @@ CONFIG ?= config/config.yaml
 
 .PHONY: all help build build-go build-linux release run run-go dev test check clean clean-web \
 	web-install web-dev web-build-spa ensure-spa build-spa web-build-ssr web-typecheck web-lint \
-	generator enums migration testdata tenant-integrity-audit schema-cleanup-inspect
+	generator enums migration testdata tenant-integrity-audit
 
 all: build
 
@@ -41,7 +41,6 @@ help:
 	@echo "  make migration            Run migration command"
 	@echo "  make testdata             Run testdata generator"
 	@echo "  make tenant-integrity-audit Run read-only tenant consistency audit"
-	@echo "  make schema-cleanup-inspect Run read-only B14 fixed-allowlist inventory"
 
 build: web-build-spa
 	@$(MAKE) build-go
@@ -134,6 +133,3 @@ testdata:
 
 tenant-integrity-audit:
 	@$(GO) run ./cmd/tenant_integrity_audit --config "$(CONFIG)" --pretty
-
-schema-cleanup-inspect:
-	@$(GO) run ./cmd/schema_cleanup --action inspect --config "$(CONFIG)" --pretty

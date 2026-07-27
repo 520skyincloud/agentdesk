@@ -398,7 +398,7 @@ func ConversationPostUpload_attachment(ctx *gin.Context) {
 }
 
 func ConversationGetCustomer_tag_options(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTagManage)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -413,7 +413,7 @@ func ConversationGetCustomer_tag_options(ctx *gin.Context) {
 }
 
 func ConversationAnyCustomer_tag_change_log(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTagManage)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -431,7 +431,7 @@ func ConversationAnyCustomer_tag_change_log(ctx *gin.Context) {
 }
 
 func ConversationPostCustomer_tag_add(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTagManage)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -449,7 +449,7 @@ func ConversationPostCustomer_tag_add(ctx *gin.Context) {
 }
 
 func ConversationPostCustomer_tag_remove(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTagManage)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -467,7 +467,7 @@ func ConversationPostCustomer_tag_remove(ctx *gin.Context) {
 }
 
 func ConversationPostCustomer_tag_replace(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationTag)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionCustomerTagManage)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

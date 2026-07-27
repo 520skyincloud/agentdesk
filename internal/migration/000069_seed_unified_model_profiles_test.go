@@ -4,7 +4,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
@@ -17,32 +16,8 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-var legacyUnifiedModelPermissionSpecs = []constants.Permission{
-	{Name: "创建 AI 配置", Code: "aiConfig.create", Type: "api", Scope: constants.PermissionScopePlatform},
-	{Name: "删除 AI 配置", Code: "aiConfig.delete", Type: "api", Scope: constants.PermissionScopePlatform},
-	{Name: "查看租户模型授权", Code: "tenantModelGrant.view", Type: "api", Scope: constants.PermissionScopePlatform},
-	{Name: "更新租户模型授权", Code: "tenantModelGrant.update", Type: "api", Scope: constants.PermissionScopePlatform},
-	{Name: "查看租户账号模型分配", Code: "tenantModelAssignment.view", Type: "api", Scope: constants.PermissionScopePlatform},
-	{Name: "更新租户账号模型分配", Code: "tenantModelAssignment.update", Type: "api", Scope: constants.PermissionScopePlatform},
-}
-
-func TestMigrateUnifiedModelProfilesSeedsNineSlotsWithoutLegacySecret(t *testing.T) {
+func TestMigrateUnifiedModelProfilesSeedsUnconfiguredNineSlotDraft(t *testing.T) {
 	db := openUnifiedModelProfileMigrationDB(t)
-	legacyKey := "legacy-secret-must-not-migrate"
-	configs := []legacyAIConfig{
-		{Name: "chat", Provider: enums.AIProviderOpenAI, BaseURL: "https://newapi.example.com/v1", APIKey: legacyKey, ModelType: enums.AIModelTypeLLM, ModelName: "chat-model", MaxContextTokens: 8192, MaxOutputTokens: 1024, TimeoutMS: 30000, Status: enums.StatusOk, SortNo: 10},
-		{Name: "intent", Provider: enums.AIProviderOpenAI, BaseURL: "https://newapi.example.com/v1", APIKey: legacyKey, ModelType: enums.AIModelTypeLLM, ModelName: "intent-model", MaxContextTokens: 8192, MaxOutputTokens: 1024, TimeoutMS: 30000, IntentDetectEnabled: true, Status: enums.StatusOk, SortNo: 20},
-		{Name: "vision", Provider: enums.AIProviderOpenAI, APIKey: legacyKey, ModelType: enums.AIModelTypeVision, ModelName: "vision-model", MaxContextTokens: 8192, MaxOutputTokens: 1024, Status: enums.StatusOk},
-		{Name: "asr", Provider: enums.AIProviderOpenAI, APIKey: legacyKey, ModelType: enums.AIModelTypeASR, ModelName: "asr-model", Status: enums.StatusOk},
-		{Name: "embedding", Provider: enums.AIProviderOpenAI, APIKey: legacyKey, ModelType: enums.AIModelTypeEmbedding, ModelName: "embedding-model", Dimension: 1024, Status: enums.StatusOk},
-		{Name: "rerank", Provider: enums.AIProviderOpenAI, APIKey: legacyKey, ModelType: enums.AIModelTypeRerank, ModelName: "rerank-model", Status: enums.StatusOk},
-	}
-	for i := range configs {
-		configs[i].AuditFields = models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	}
-	if err := db.Create(&configs).Error; err != nil {
-		t.Fatalf("create legacy configs: %v", err)
-	}
 
 	if err := migrateUnifiedModelProfiles(db); err != nil {
 		t.Fatalf("migrateUnifiedModelProfiles() error=%v", err)
@@ -51,7 +26,7 @@ func TestMigrateUnifiedModelProfilesSeedsNineSlotsWithoutLegacySecret(t *testing
 	if err := db.Where("code = ?", "standard").Take(&profile).Error; err != nil {
 		t.Fatalf("load profile: %v", err)
 	}
-	if profile.Status != enums.ModelProfileStatusCandidate || profile.GatewayBaseURL != "https://newapi.example.com/v1" {
+	if profile.Status != enums.ModelProfileStatusDraft || profile.GatewayBaseURL != "" {
 		t.Fatalf("profile=%#v", profile)
 	}
 	var slots []models.ModelProfileSlot
@@ -62,11 +37,8 @@ func TestMigrateUnifiedModelProfilesSeedsNineSlotsWithoutLegacySecret(t *testing
 		t.Fatalf("slot count=%d want=9", len(slots))
 	}
 	for _, slot := range slots {
-		if slot.Provider != "newapi" {
-			t.Fatalf("slot provider=%q", slot.Provider)
-		}
-		if slot.ModelName == legacyKey || slot.PromptTemplate == legacyKey || slot.JSONSchema == legacyKey {
-			t.Fatalf("legacy API key leaked into slot %#v", slot)
+		if slot.Provider != "newapi" || !slot.Enabled || slot.ModelName != "" {
+			t.Fatalf("slot must be an enabled, unconfigured NewAPI slot: %#v", slot)
 		}
 	}
 	var credentialCount int64
@@ -92,36 +64,12 @@ func TestMigrateUnifiedModelProfilesSeedsNineSlotsWithoutLegacySecret(t *testing
 	}
 }
 
-func TestMigrateUnifiedModelProfilesReusesPermissionsAndRetiresLegacyBindings(t *testing.T) {
+func TestMigrateUnifiedModelProfilesSyncsCurrentPermissions(t *testing.T) {
 	db := openUnifiedModelProfileMigrationDB(t)
-	legacyRole := &models.Role{
-		Name: "legacy platform admin", Code: "legacy_platform_admin", Scope: constants.RoleScopePlatform,
-		AuthorityLevel: constants.RoleAuthorityAdmin, Status: enums.StatusOk,
-		AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
-	}
-	if err := db.Create(legacyRole).Error; err != nil {
-		t.Fatal(err)
-	}
-	for _, spec := range legacyUnifiedModelPermissionSpecs {
-		permission := &models.Permission{
-			Name: spec.Name, Code: spec.Code, Type: spec.Type, Scope: spec.Scope,
-			GroupName: spec.GroupName, Method: spec.Method, APIPath: spec.APIPath,
-			Status: enums.StatusOk, IsBuiltin: true,
-			AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
-		}
-		if err := db.Create(permission).Error; err != nil {
-			t.Fatal(err)
-		}
-		if err := db.Create(&models.RolePermission{
-			RoleID: legacyRole.ID, PermissionID: permission.ID,
-			AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
-		}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err := migrateUnifiedModelProfiles(db); err != nil {
 		t.Fatal(err)
 	}
+
 	var tenantAdmin models.Role
 	if err := db.Where("code = ?", constants.RoleCodeTenantAdmin).Take(&tenantAdmin).Error; err != nil {
 		t.Fatal(err)
@@ -135,56 +83,13 @@ func TestMigrateUnifiedModelProfilesReusesPermissionsAndRetiresLegacyBindings(t 
 			t.Fatalf("permission %s=%#v", code, permission)
 		}
 		var count int64
-		if err := db.Model(&models.RolePermission{}).Where("role_id = ? AND permission_id = ?", tenantAdmin.ID, permission.ID).Count(&count).Error; err != nil {
+		if err := db.Model(&models.RolePermission{}).
+			Where("role_id = ? AND permission_id = ?", tenantAdmin.ID, permission.ID).
+			Count(&count).Error; err != nil {
 			t.Fatal(err)
 		}
 		if count != 1 {
 			t.Fatalf("tenant admin permission %s count=%d", code, count)
-		}
-	}
-	for _, spec := range legacyUnifiedModelPermissionSpecs {
-		code := spec.Code
-		var permission models.Permission
-		if err := db.Where("code = ?", code).Take(&permission).Error; err != nil {
-			t.Fatal(err)
-		}
-		if permission.Status != enums.StatusDisabled {
-			t.Fatalf("retired permission %s status=%v", code, permission.Status)
-		}
-		var count int64
-		if err := db.Model(&models.RolePermission{}).Where("permission_id = ?", permission.ID).Count(&count).Error; err != nil {
-			t.Fatal(err)
-		}
-		if count != 0 {
-			t.Fatalf("retired permission %s still has %d bindings", code, count)
-		}
-	}
-	permissions, err := ensurePermissions(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roles, err := ensureRoles(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = ensureRolePermissions(db, roles, permissions); err != nil {
-		t.Fatal(err)
-	}
-	for _, spec := range legacyUnifiedModelPermissionSpecs {
-		code := spec.Code
-		var permission models.Permission
-		if err = db.Where("code = ?", code).Take(&permission).Error; err != nil {
-			t.Fatal(err)
-		}
-		if permission.Status != enums.StatusDisabled {
-			t.Fatalf("retired permission %s was re-enabled by a later permission sync", code)
-		}
-		var count int64
-		if err = db.Model(&models.RolePermission{}).Where("permission_id = ?", permission.ID).Count(&count).Error; err != nil {
-			t.Fatal(err)
-		}
-		if count != 0 {
-			t.Fatalf("retired permission %s was rebound by a later permission sync", code)
 		}
 	}
 }
@@ -194,21 +99,11 @@ func TestMigrateUnifiedModelProfilesMySQL(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_MYSQL_DSN is not configured")
 	}
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-		NamingStrategy: schema.NamingStrategy{
-			TablePrefix:   "t_",
-			SingularTable: true,
-		},
-	})
+	db, err := gorm.Open(mysql.Open(dsn), unifiedModelProfileMigrationGORMConfig())
 	if err != nil {
 		t.Fatalf("open MySQL migration database: %v", err)
 	}
-	if err = db.AutoMigrate(
-		&models.Permission{}, &models.Role{}, &models.RolePermission{},
-		&legacyAIConfig{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{},
-		&models.StoreModelCredential{},
-	); err != nil {
+	if err = migrateUnifiedModelProfileTables(db); err != nil {
 		t.Fatalf("MySQL AutoMigrate() error=%v", err)
 	}
 	if err = migrateUnifiedModelProfiles(db); err != nil {
@@ -229,25 +124,37 @@ func TestMigrateUnifiedModelProfilesMySQL(t *testing.T) {
 	if err = db.Model(&models.StoreModelCredential{}).Count(&credentialCount).Error; err != nil {
 		t.Fatal(err)
 	}
-	if slotCount != 9 || credentialCount != 0 {
-		t.Fatalf("MySQL migration counts slots=%d credentials=%d", slotCount, credentialCount)
+	if profile.Status != enums.ModelProfileStatusDraft || slotCount != 9 || credentialCount != 0 {
+		t.Fatalf("MySQL migration profile=%s slots=%d credentials=%d", profile.Status, slotCount, credentialCount)
 	}
 }
 
 func openUnifiedModelProfileMigrationDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
-		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
-	})
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), unifiedModelProfileMigrationGORMConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(
-		&models.Permission{}, &models.Role{}, &models.RolePermission{},
-		&legacyAIConfig{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{},
-		&models.StoreModelCredential{},
-	); err != nil {
+	if err := migrateUnifiedModelProfileTables(db); err != nil {
 		t.Fatalf("AutoMigrate() error=%v", err)
 	}
 	return db
+}
+
+func migrateUnifiedModelProfileTables(db *gorm.DB) error {
+	return db.AutoMigrate(
+		&models.Permission{}, &models.Role{}, &models.RolePermission{},
+		&models.ModelProfileTemplate{}, &models.ModelProfileSlot{},
+		&models.StoreModelCredential{},
+	)
+}
+
+func unifiedModelProfileMigrationGORMConfig() *gorm.Config {
+	return &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+		NamingStrategy: schema.NamingStrategy{
+			TablePrefix:   "t_",
+			SingularTable: true,
+		},
+	}
 }

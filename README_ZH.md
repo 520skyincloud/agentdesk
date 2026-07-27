@@ -70,7 +70,7 @@ docker compose up -d --build
 
 Compose 会在数据库、邀请码、客户会话、文件签名或门店凭据加密密钥缺失时拒绝启动。运行备份与 `.env` 必须保存在 Git 仓库之外。变量格式、生成方式、保管责任、轮换限制以及 FastGPT Token 与门店 NewAPI Key 的区别，见[生产密钥与外部凭据交付手册](docs/deployment/production-secrets.md)。
 
-正式活动服务保持 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`。只有隔离的历史库迁移、恢复演练或只读预检实例才设置为 `false`，防止副本派发会话、消费协议 outbox、执行 FastGPT 任务或运行其他定时任务。
+正式活动服务保持 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`。当前版本必须从空 SQLite/MySQL 数据库启动。历史数据库只能在当前应用停止的隔离只读环境中恢复，不再是受支持的迁移输入。
 
 完整英文配置与排查说明见 [Docker Compose Quick Start](https://agent-desk.huabei.pro/zh/docs/getting-started/docker-compose.html)。
 
@@ -269,7 +269,7 @@ docker run --rm -p 8083:8083 --env-file .env \
 
 Compose 仅使用 [docker/agent-desk.yaml](docker/agent-desk.yaml) 保存非敏感设置；所有部署秘密来自被忽略的 `.env` 或生产秘密管理器。NewAPI 调用与账单查询只使用各门店通过凭据工作流提交的加密凭据，不存在平台级 NewAPI 用量 Token，也不得把门店 Key 写入 `.env`。
 
-禁止在后台 worker 开启时启动历史数据库副本。迁移和 readiness 预检必须设置 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=false`，并在完成验收前隔离外部网络。
+禁止把当前镜像连接到历史业务数据库。旧备份只能使用对应归档代码，在禁止外呼的隔离环境中恢复查看。
 
 ## 开源定位
 

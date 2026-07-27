@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-func TestInitializeStoreModelCredentialsIsIdempotentAndNeverMigratesLegacyKeys(t *testing.T) {
+func TestInitializeStoreModelCredentialsIsIdempotentAndStartsUnconfigured(t *testing.T) {
 	db := openStoreModelCredentialMigrationSQLite(t)
 	stores := []models.Store{
 		{TenantID: 101, StoreCode: "store-active", Name: "启用门店", Status: enums.StatusOk},
@@ -26,11 +26,6 @@ func TestInitializeStoreModelCredentialsIsIdempotentAndNeverMigratesLegacyKeys(t
 	if err := db.Create(&stores).Error; err != nil {
 		t.Fatal(err)
 	}
-	legacySecret := "legacy-key-must-not-migrate"
-	if err := db.Create(&legacyAIConfig{Name: "legacy", APIKey: legacySecret, Status: enums.StatusOk}).Error; err != nil {
-		t.Fatal(err)
-	}
-
 	for run := 0; run < 2; run++ {
 		if err := initializeStoreModelCredentials(db); err != nil {
 			t.Fatalf("run %d: %v", run+1, err)
@@ -48,9 +43,8 @@ func TestInitializeStoreModelCredentialsIsIdempotentAndNeverMigratesLegacyKeys(t
 		if credential.Status != enums.StoreCredentialStatusUnconfigured || credential.CredentialRevision != 0 {
 			t.Fatalf("unexpected credential state: %#v", credential)
 		}
-		if credential.EncryptedKey != "" || credential.CandidateEncryptedKey != "" ||
-			strings.Contains(credential.EncryptedKey, legacySecret) || strings.Contains(credential.CandidateEncryptedKey, legacySecret) {
-			t.Fatalf("legacy secret entered new credential: %#v", credential)
+		if credential.EncryptedKey != "" || credential.CandidateEncryptedKey != "" {
+			t.Fatalf("new credential must not contain encrypted key material: %#v", credential)
 		}
 	}
 
@@ -116,7 +110,7 @@ func openStoreModelCredentialMigrationSQLite(t *testing.T) *gorm.DB {
 
 func migrateStoreModelCredentialTables(db *gorm.DB) error {
 	return db.AutoMigrate(
-		&models.Store{}, &legacyAIConfig{}, &models.StoreModelCredential{},
+		&models.Store{}, &models.StoreModelCredential{},
 		&models.StoreCredentialPolicy{}, &models.StoreModelCredentialAuditLog{},
 	)
 }
