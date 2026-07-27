@@ -1717,6 +1717,44 @@ git diff --check
   使用 `8083`、空数据库及目标环境独立秘密，并在部署后完成真实企微、NewAPI、FastGPT
   与账单对账验收。
 
+### 25.46 2026-07-27 丽斯未来南七店 FastGPT 真实知识绑定
+
+- **环境与身份**：本轮继续使用隔离 `18084`、fresh SQLite 和现有统一分支，不触碰正式
+  `8083`。通过现有产品流程建立 Tenant“丽斯未来酒店”、公司主管、唯一门店员工及
+  Store“丽斯未来酒店合肥南七店”；本地自增 ID 仅用于该隔离实例，不进入代码、
+  Migration 或生产默认值。
+- **服务器核验**：使用用户单独交付的服务器访问凭据完成只读核验，确认 FastGPT
+  `externalStoreId=1` 已映射到独立 Store Team，且其受管 Dataset“合肥南七店”只属于
+  该 Team。Dataset 含 1 个可检索集合和 20,089 条已索引内容，来源文件为
+  `04-（丽斯南七店）.xlsx`。服务器密码、Integration Token、NewAPI Key 和其他秘密均未
+  写入仓库、本文、日志或截图。
+- **本地认领**：远端 Store Team 和 Dataset 已由此前受控迁移创建，本轮没有重复创建
+  Team、Dataset 或复制第二份知识数据。隔离库只补齐 `FastGPTStoreTenant`、
+  `KnowledgeBase` 和 `Store.KnowledgeBaseID` 投影；Connection 固定为
+  `agentdesk_integration`，企微实例和既有会话路由若存在则同步使用 Store 当前知识库。
+- **备份与回滚**：写入前使用 SQLite 在线备份生成
+  `/tmp/agentdesk-fresh-qa.before-nanqi-bind-20260727160840.db`，SHA-256 为
+  `12c51a64d0b34ed4602d1deada9ee63c47a70926887fe6dd4de2be6ee8ef007c`。
+  回滚只需停止隔离服务并恢复该备份；该临时备份不属于生产备份，也不提交 Git。
+- **真实检索证据**：通过当前项目知识库页面读取到 1 个文件、20,089 条索引内容，并以
+  “停车场入口在哪里？”完成 Store 范围检索。页面返回 12 条命中，包含“酒店停车场入口
+  位于昭潭路”“地下车库提供充电桩”等南七店专属答案；FastGPT Team 状态为 `active`，
+  Dataset 归属校验、Embedding 和 Rerank 链路均通过。
+- **凭据与 ASR 边界**：平台标准九槽 Profile revision 1、Store pending Assignment、
+  `AllowCredentialSelfService=true` 和 `RequireSupervisorApproval=true` 均保留。唯一门店
+  员工提交的候选 NewAPI Credential 仍等待异人公司主管审批；上游模型目录仍缺少 ASR
+  模型，因此本轮只认领并验证知识 Dataset，不伪造九槽 TestRun、active Credential、
+  applied Profile 或 AI Reply 就绪。页面明确显示 `pending` 和
+  `model_credential_pending_asr_deferred`。
+- **账号安全**：为执行后续异人审批，平台管理员通过现有“重置密码”流程重置尚未登录的
+  测试公司主管账号，账号随后完成强制本人改密。明文密码未进入仓库或本文，重置和改密均
+  保留既有会话撤销及审计语义。
+- **代码与合并影响**：本轮没有修改 model、repository、service、handler、DTO、enum、
+  HTTP 路由、权限、WebSocket、AI Runtime、Credential、Billing、FastGPT 协议或前端
+  代码；唯一 Git 变化是本节交接记录。代码合并不依赖该本地测试数据，fresh
+  SQLite/MySQL 初始化契约保持不变。正式发布仍须在目标环境重新创建业务对象、使用
+  HTTPS FastGPT、由实际 Key 持有人录入凭据并完成九槽、AI 回复、企微和账单验收。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户逐项答复保留产品解释，并由 25.44 的 2026-07-27 fresh 数据库决定
