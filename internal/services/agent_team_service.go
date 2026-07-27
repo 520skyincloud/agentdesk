@@ -286,7 +286,6 @@ func (s *agentTeamService) buildTeamModelDB(db *gorm.DB, id, tenantID int64, nam
 		TenantID:               tenantID,
 		Name:                   name,
 		LeaderUserID:           leaderUserID,
-		CompanyScopeIDs:        "",
 		StoreScopeIDs:          "",
 		WxWorkInstanceScopeIDs: "",
 		DispatchMode:           dispatchMode,
@@ -625,7 +624,6 @@ func (s *agentTeamService) syncTeamScopeFromAssignments(db *gorm.DB, teamID int6
 		userID, username = operator.UserID, operator.Username
 	}
 	columns := map[string]any{
-		"company_scope_ids":          "",
 		"store_scope_ids":            utils.JoinInt64s(uniquePositive(storeIDs)),
 		"wx_work_instance_scope_ids": utils.JoinInt64s(uniquePositive(instanceIDs)),
 		"updated_at":                 time.Now(),
@@ -636,71 +634,4 @@ func (s *agentTeamService) syncTeamScopeFromAssignments(db *gorm.DB, teamID int6
 		return repositories.AgentTeamRepository.Updates(db, teamID, columns)
 	}
 	return repositories.AgentTeamRepository.UpdatesInTenant(db, teamID, tenantID, columns)
-}
-
-func (s *agentTeamService) BackfillWxWorkInstanceBindings() error {
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		teams := repositories.AgentTeamRepository.Find(ctx.Tx, sqls.NewCnd().Where("status <> ?", enums.StatusDeleted).Asc("id"))
-		for i := range teams {
-			ids := utils.SplitInt64s(teams[i].WxWorkInstanceScopeIDs)
-			if len(ids) == 0 {
-				continue
-			}
-			if err := ctx.Tx.Model(&models.WxWorkProtocolInstance{}).
-				Where("id IN ? AND agent_team_id = ?", ids, 0).
-				Updates(map[string]any{"agent_team_id": teams[i].ID}).Error; err != nil {
-				return err
-			}
-		}
-		for i := range teams {
-			if err := s.syncTeamScopeFromAssignments(ctx.Tx, teams[i].ID, nil); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func (s *agentTeamService) BackfillStoreStaffAgentTeamBindings() error {
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		instances := repositories.WxWorkProtocolInstanceRepository.Find(ctx.Tx, sqls.NewCnd().Where("status <> ?", enums.StatusDeleted).Asc("id"))
-		for i := range instances {
-			instance := &instances[i]
-			var binding *models.StoreStaffBinding
-			if instance.StoreStaffBindingID > 0 {
-				binding = repositories.StoreStaffBindingRepository.Get(ctx.Tx, instance.StoreStaffBindingID)
-			}
-			if binding == nil && instance.StoreID > 0 {
-				binding = repositories.StoreStaffBindingRepository.Take(ctx.Tx, "store_id = ? AND status <> ?", instance.StoreID, enums.StatusDeleted)
-			}
-			if binding == nil {
-				continue
-			}
-			teamID := binding.AgentTeamID
-			if teamID <= 0 {
-				teamID = instance.AgentTeamID
-				if teamID > 0 {
-					if err := repositories.StoreStaffBindingRepository.Updates(ctx.Tx, binding.ID, map[string]any{"agent_team_id": teamID, "updated_at": time.Now()}); err != nil {
-						return err
-					}
-				}
-			}
-			if instance.StoreStaffBindingID != binding.ID || instance.AgentTeamID != teamID {
-				if err := repositories.WxWorkProtocolInstanceRepository.Updates(ctx.Tx, instance.ID, map[string]any{
-					"store_staff_binding_id": binding.ID,
-					"agent_team_id":          teamID,
-					"updated_at":             time.Now(),
-				}); err != nil {
-					return err
-				}
-			}
-		}
-		teams := repositories.AgentTeamRepository.Find(ctx.Tx, sqls.NewCnd().Where("status <> ?", enums.StatusDeleted).Asc("id"))
-		for i := range teams {
-			if err := s.syncTeamScopeFromAssignments(ctx.Tx, teams[i].ID, nil); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
 }

@@ -36,6 +36,7 @@ import {
   type BillingQueryResult,
   type BillingStoreOption,
 } from "@/lib/api/billing-query"
+import { useAIConfigurationRealtime } from "@/hooks/use-ai-configuration-realtime"
 import { cn, formatDateTime } from "@/lib/utils"
 
 const maximumSelectedStores = 50
@@ -330,6 +331,19 @@ export default function BillingQueryPage() {
   useEffect(() => {
     void load({ startDate: localDateInput(6), endDate: localDateInput() })
   }, [load])
+
+  useAIConfigurationRealtime((event) => {
+    if (
+      event.type !== "store_model_profile.changed" &&
+      event.type !== "store_model_credential.changed"
+    ) {
+      return
+    }
+    if (tenantId > 0 && event.tenantId > 0 && event.tenantId !== tenantId) return
+    if (storeIds.length > 0 && !storeIds.includes(event.storeId)) return
+    void fetchBillingQueryOptions().then(setOptions).catch(() => undefined)
+    void query()
+  }, canView)
 
   async function download() {
     if (!canExport) return

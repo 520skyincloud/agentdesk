@@ -161,6 +161,9 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	}
 	scope := resolveRuntimeIntentScope(req)
 	profile := resolveRuntimeIntentProfile(scope)
+	if profile == nil {
+		return callbacks.IntentTraceData{}, fmt.Errorf("published tenant industry profile unavailable")
+	}
 	messages := []*schema.Message{
 		schema.SystemMessage(runtimeIntentDetectSystemPromptForProfile(profile)),
 		schema.UserMessage(buildRuntimeIntentDetectUserPrompt(req, history, configs)),
@@ -357,7 +360,7 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	}
 	if len(configs) > 0 {
 		b.WriteString("\n\n启用的分类配置(用于理解分类含义，不要按关键词机械匹配):\n")
-		for _, cfg := range collapseIntentConfigsByScope(configs) {
+		for _, cfg := range normalizeIntentConfigs(configs) {
 			b.WriteString("- code=")
 			b.WriteString(canonicalIntentCode(cfg.Code))
 			b.WriteString(" name=")
@@ -783,7 +786,7 @@ func promptForModelDetectedIntent(intent callbacks.IntentTraceData, configs []mo
 
 func findIntentConfigByCode(configs []models.ReplyIntentConfig, code string) (models.ReplyIntentConfig, bool) {
 	code = canonicalIntentCode(code)
-	for _, item := range collapseIntentConfigsByScope(configs) {
+	for _, item := range normalizeIntentConfigs(configs) {
 		if canonicalIntentCode(item.Code) == code {
 			return item, true
 		}

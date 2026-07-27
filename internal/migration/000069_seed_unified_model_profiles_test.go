@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
 
 	"github.com/glebarez/sqlite"
@@ -64,36 +63,6 @@ func TestMigrateUnifiedModelProfilesSeedsUnconfiguredNineSlotDraft(t *testing.T)
 	}
 }
 
-func TestMigrateUnifiedModelProfilesSyncsCurrentPermissions(t *testing.T) {
-	db := openUnifiedModelProfileMigrationDB(t)
-	if err := migrateUnifiedModelProfiles(db); err != nil {
-		t.Fatal(err)
-	}
-
-	var tenantAdmin models.Role
-	if err := db.Where("code = ?", constants.RoleCodeTenantAdmin).Take(&tenantAdmin).Error; err != nil {
-		t.Fatal(err)
-	}
-	for _, code := range []string{constants.PermissionAIConfigView.Code, constants.PermissionAIConfigUpdate.Code} {
-		var permission models.Permission
-		if err := db.Where("code = ?", code).Take(&permission).Error; err != nil {
-			t.Fatal(err)
-		}
-		if permission.Scope != constants.PermissionScopeTenant || permission.Status != enums.StatusOk {
-			t.Fatalf("permission %s=%#v", code, permission)
-		}
-		var count int64
-		if err := db.Model(&models.RolePermission{}).
-			Where("role_id = ? AND permission_id = ?", tenantAdmin.ID, permission.ID).
-			Count(&count).Error; err != nil {
-			t.Fatal(err)
-		}
-		if count != 1 {
-			t.Fatalf("tenant admin permission %s count=%d", code, count)
-		}
-	}
-}
-
 func TestMigrateUnifiedModelProfilesMySQL(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_MYSQL_DSN"))
 	if dsn == "" {
@@ -143,7 +112,6 @@ func openUnifiedModelProfileMigrationDB(t *testing.T) *gorm.DB {
 
 func migrateUnifiedModelProfileTables(db *gorm.DB) error {
 	return db.AutoMigrate(
-		&models.Permission{}, &models.Role{}, &models.RolePermission{},
 		&models.ModelProfileTemplate{}, &models.ModelProfileSlot{},
 		&models.StoreModelCredential{},
 	)

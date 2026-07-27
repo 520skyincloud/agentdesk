@@ -214,7 +214,7 @@ func TestMergeRecentCustomerBurstMessageStartsAfterLastOutbound(t *testing.T) {
 		SeqNo:          2,
 		SenderType:     enums.IMSenderTypeAI,
 		MessageType:    enums.IMMessageTypeText,
-		Content:        "酒店定位：https://uri.amap.com/marker?position=117.263908,31.824097&name=丽斯未来酒店。",
+		Content:        "酒店定位：https://uri.amap.com/marker?position=117.263908,31.824097&name=合成验收酒店。",
 		SentAt:         &aiReplyAt,
 	}
 	currentAt := now.Add(4 * time.Second)

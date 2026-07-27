@@ -31,15 +31,13 @@ var responseSpanStatusLabelMap = map[ResponseSpanStatus]string{
 type AnalyticsFactOrigin string
 
 const (
-	AnalyticsFactOriginRuntime  AnalyticsFactOrigin = "runtime"
-	AnalyticsFactOriginBackfill AnalyticsFactOrigin = "backfill"
-	AnalyticsFactOriginRepair   AnalyticsFactOrigin = "repair"
+	AnalyticsFactOriginRuntime AnalyticsFactOrigin = "runtime"
+	AnalyticsFactOriginRepair  AnalyticsFactOrigin = "repair"
 )
 
 var analyticsFactOriginLabelMap = map[AnalyticsFactOrigin]string{
-	AnalyticsFactOriginRuntime:  "实时采集",
-	AnalyticsFactOriginBackfill: "历史回填",
-	AnalyticsFactOriginRepair:   "人工修复",
+	AnalyticsFactOriginRuntime: "实时采集",
+	AnalyticsFactOriginRepair:  "人工修复",
 }
 
 type AnalyticsDataQuality string

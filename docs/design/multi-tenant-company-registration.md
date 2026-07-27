@@ -1,314 +1,259 @@
 # 多租户公司、账号注册与数据隔离设计
 
-> 状态：当前权威设计
+> 状态：当前统一项目权威设计
 >
-> 更新时间：2026-07-20
+> 更新时间：2026-07-27
 >
-> 本文替代该文件此前的阶段性推演。历史方案可从 Git 记录追溯，不得继续以旧章节恢复“客户企业”、隐藏权限、企微自动注册或 Company 运行时层级。
+> 适用分支：`codex/tenant-ai-unified-integration`
+>
+> 数据基线：只支持由当前代码创建的全新 SQLite/MySQL，不支持旧库原地升级
 
-## 1. 产品边界
+## 1. 产品层级
 
-AgentDesk 是平台运营方提供给不同公司的 SaaS 客服系统。购买并使用系统的公司是 `Tenant`，每个 Tenant 的账号、门店、客户、会话、客服组织、知识库和运营数据必须隔离。
+AgentDesk 是平台运营方提供给不同公司的 SaaS 客服系统。购买并使用系统的公司是
+`Tenant`，也是业务数据唯一隔离根。Tenant 下直接管理门店 `Store`，不存在 Company
+或“客户企业 -> 门店”的中间层。
 
 ```text
 平台
-  -> Tenant A
-     -> 公司主管、客服、客服组长、持有 store_staff 角色的系统账号
-     -> 多家门店
-     -> 企微员工号、客户、会话、知识库、派单和统计
-  -> Tenant B
-     -> 完全独立的同类数据
+  -> Tenant
+     -> 公司主管、客服组长、客服、门店员工系统账号
+     -> Store
+        -> 唯一活动 store_staff 账号绑定
+        -> WxWorkProtocolInstance
+        -> 门店知识库与 Store Credential
+     -> 客户、会话、客服组织、派单、运营分析、人工质检
 ```
 
-租户公司下面只有门店，不再增加“客户企业 -> 门店”的中间层。一个获得 `store_staff` 角色的系统账号代表一家门店，具体实现见 `docs/design/wxwork-managed-store-scope-implementation.md`。
+- `User` 是登录 AgentDesk 的系统账号。
+- `store_staff` 是角色；获得该角色的账号代表一家稳定 Store。
+- `WxWorkProtocolInstance` 是实际企微员工号，只是 Store 的渠道身份。
+- Customer 主档归 Tenant；客户与不同门店的关系由 `StoreCustomerRelation` 分开表达。
+- Company 模型、字段、repository、接口、页面、权限和 migration 均不存在。
 
-## 2. 角色和管理边界
+## 2. 角色与权限
 
 ### 2.1 平台角色
 
-- `super_admin`：平台最高权限，管理全平台角色、权限、租户和模型接入。
-- `admin`：平台管理员，在自身权限范围内管理平台资源和租户。
+- `super_admin`：平台最高权限。
+- `admin`：按 Role 中实际权限管理平台资源和 Tenant。
 
-平台管理员负责：
+平台侧负责：
 
-- 创建 Tenant。
-- 创建该 Tenant 的首个公司主管账号。
-- 核验租户法定资料和唯一登记号。
-- 管理平台 AIConfig，并给 Tenant 授权可用模型。
-- 切换活动 Tenant 后按授权进入租户业务页面。
+- 创建、核验、停用和切换 Tenant。
+- 维护平台行业 Profile、意图分类和固定行业标签模板。
+- 维护 Model Profile、九个用途槽和 Store Profile 指派。
+- 跨 Tenant 查询获授权的运营、账单和审计信息。
+- 管理全局 Permission 目录和可管理 Role 的权限集合。
 
-平台管理员不负责租户后续日常账号注册、角色安排、客服组织或门店企微绑定。
+平台不替 Tenant 承担日常客服组织、排班、账号审核或门店运营。
 
-### 2.2 租户角色
+### 2.2 Tenant 角色
 
-- `tenant_admin`：公司主管，位于平台管理员之下、客服组长之上，管理本 Tenant 的全部业务资源和角色赋予。
-- `cs_team_leader`：客服组长，管理授权客服组、小组、排班、派单和团队运营范围。
-- `cs_user`：客服，处理分配给自己的会话和被授权的业务页面。
-- `store_staff`：门店员工号角色，账号代表一家门店并可绑定实际企微员工号。
+- `tenant_admin`：公司主管，管理本 Tenant 的账号、角色赋予、客服组织、门店、知识、
+  运营策略和获授权的敏感操作。
+- `cs_team_leader`：在负责客服组/小组范围内管理排班、派单和团队运营。
+- `cs_user`：处理本人被分配的会话，并查看权限允许的本人数据。
+- `store_staff`：在唯一 Store 范围内使用门店工作台，并按 Store policy 决定能否自行
+  录入模型凭据。
 
-账号只能被赋予已有角色，不能直接分配权限。权限只能先在权限管理中登记，再由管理员及以上角色给 Role 分配。
-
-## 3. Tenant 创建
-
-平台管理员在“接入公司”创建新 Tenant。最小资料包括：
-
-- 法定名称和简称。
-- 系统内唯一 TenantCode。
-- 登记类型和唯一登记号。
-- 业务联系人和联系方式。
-- 状态、核验状态和备注。
-- 首个公司主管账号资料。
-
-创建必须在一个事务内完成：
-
-1. 校验登记类型 + 登记号唯一。
-2. 创建 Tenant。
-3. 创建首个 `tenant_admin` User。
-4. 写入 UserRole。
-5. 创建默认综合客服组。
-6. 创建有效 TenantInvitation。
-7. 写入审计字段。
-
-任何一步失败全部回滚。平台不能创建第二个平行租户根，也不能把历史 Company 直接改成 Tenant。
-
-## 4. 公司邀请码
-
-每个 Tenant 维护一个当前有效的邀请码。数据库只保存邀请码密文或不可逆标识，不在日志和错误中输出明文。
-
-公司主管可以：
-
-- 查看当前邀请码。
-- 复制普通注册链接。
-- 生成已经带邀请码的邀请注册链接。
-- 轮换邀请码，使旧链接失效。
-
-邀请码只用于确定 TenantID，不包含角色、权限、客服组、门店或企微员工号信息。
-
-邀请码明文使用独立 AES-256-GCM 密钥加密。生产环境应通过 `AGENT_DESK_INVITATION_ENCRYPTION_KEY` 注入；缺少有效密钥时，租户创建、邀请码查看和轮换必须明确失败，不能降级为明文存储或使用固定默认密钥。日志、合并文档和测试报告都不得记录真实邀请码或密钥。
-
-## 5. 公开注册
-
-普通注册链接要求：
-
-- 用户名、昵称和密码等账号基础信息。
-- 公司邀请码。
-- 必要的验证码和安全校验。
-
-注册流程：
-
-```text
-提交注册
-  -> 验证邀请码和租户状态
-  -> 创建 Pending User，写入 TenantID
-  -> 记录 TenantRegistrationLog
-  -> 公司主管在用户管理审核
-  -> 通过时选择角色
-  -> 如选择 store_staff，必须填写门店名称
-  -> 角色和门店身份在同一事务提交
-```
-
-公开注册不能：
-
-- 自动成为公司主管、组长、客服或门店员工。
-- 根据邀请码隐藏赋权。
-- 调用企微 OAuth 创建账号。
-- 跨 Tenant 复用用户名、手机或邮箱。
-
-公开注册由 `tenantRegistration.enabled` 或对应环境变量显式控制，默认关闭。关闭时公司邀请码仍可由公司主管管理，但页面必须标明注册链接暂不可发送；启用前需要完成隔离验收、配置邀请码密钥和必要验证码/限流能力。
-
-## 6. 公司主管账号管理
-
-公司主管在用户管理拥有两种合法入口：
-
-1. **直接创建账号**：系统生成一次性初始密码，首次登录必须改密。
-2. **邀请注册**：发送带公司邀请码的注册链接，注册后由公司主管审核和分配角色。
-
-这两种方式都属于账号注册，不存在“开户”语义。
-
-用户管理统一展示：
-
-- 账号基础资料和状态。
-- 注册来源和审核状态。
-- 已分配角色。
-- 若为 `store_staff`，展示门店名称、企微员工号和客服组归属。
-- 公司主管有权限时可直接发起企微员工号绑定。
-
-公司主管只能管理本 Tenant 账号，且不能创建、分配或删除与自己同级或更高等级的角色。
-
-账号与门店身份生命周期统一由角色和账号状态驱动：首次分配 `store_staff` 时创建唯一 Store + StoreStaffBinding；移除该角色或停用账号时原子停用门店身份及相关企微实例；重新分配角色或启用账号时复用原 Store + Binding。为避免在协议登录已经失效时误发消息，企微实例不会随账号恢复而自动启用。
-
-## 7. 权限模型
-
-权限是全局目录，Role 是权限集合，User 只绑定 Role：
+权限关系固定为：
 
 ```text
 Permission -> RolePermission -> Role -> UserRole -> User
 ```
 
-所有新业务动作必须先审计现有权限；可复用时不得新增重复权限。确需新增时必须同时完成：
+User 不能直接获得隐藏权限。页面显隐、Handler 权限和 Service 数据范围必须同时生效；
+权限只决定操作资格，平台/Tenant/客服组/本人/Store 范围始终是不可突破的上限。
 
-- 后端权限常量。
-- 权限目录 migration。
-- 默认角色映射。
-- Handler `RequirePermission`。
-- Service 数据范围。
-- 前端导航和动作显隐。
-- 权限管理页面名称。
-- 直接请求和页面测试。
+## 3. Tenant 创建事务
 
-平台账号可以为 Role 分配权限；普通操作者只能给 User 分配自己有权分配的 Role。
+平台管理员在“接入公司”创建 Tenant，至少提供：
 
-## 8. 页面访问与数据范围
+- 法定名称、简称。
+- 登记类型和唯一法定登记号。
+- 业务联系人、联系方式、地址和备注。
+- 必选且已发布的行业 Profile。
+- 首个公司主管账号资料。
 
-页面是否显示由权限和上下文共同决定，不按角色名称写死：
+`TenantService.CreateTenant` 在同一事务完成：
 
-- 平台账号未选择 Tenant：只显示平台页面。
-- 平台账号选择活动 Tenant：显示平台页面和其权限允许的租户页面。
-- Tenant 账号：固定在自己的 Tenant，只显示租户页面。
-- 公司主管：本 Tenant 全局范围。
-- 客服组长：其负责客服组范围。
-- 客服：本人范围。
-- 门店员工号角色：自己的 StoreStaffBinding / Store 范围。
+1. 校验平台权限、行业 Profile 和法定登记号唯一性。
+2. 生成系统 TenantCode 和公司邀请码。
+3. 创建 Tenant，并把 `Tenant.IntentProfileID` 写为唯一行业来源。
+4. 投影该行业的固定标签目录和 Tenant 行业策略。
+5. 创建首个 `tenant_admin` User 与 UserRole。
+6. 创建默认“综合客服组”。
+7. 创建仅作内部接待策略身份的默认 `AIAgent`。
+8. 创建加密保存的有效 TenantInvitation。
 
-角色职责决定默认权限，但实际页面仍按权限判断。若客服需要查看“今日数据”，应给客服角色分配 `dashboard.view` 或对应分析权限，同时 Service 只返回本人数据；不能通过隐藏接口或角色特判绕开权限目录。
+任一步失败全部回滚。创建事务不生成 Store、企微实例、真实模型 Key 或测试业务数据。
 
-## 9. 租户隔离
+## 4. 邀请与注册
 
-### 9.1 写入
+### 4.1 公司邀请码
 
-- TenantID 只能从认证上下文、父对象或可信系统任务继承。
-- Request DTO 不接受调用方任意指定 TenantID。
-- 创建子资源前必须验证父资源属于同一 Tenant。
-- 平台管理员未选择活动 Tenant 时不得写租户业务数据。
-- 跨租户 ID 注入必须返回明确业务错误。
+- 邀请码只决定 TenantID，不携带角色、权限、客服组、Store 或企微身份。
+- 数据库保存不可逆摘要和受保护密文；日志、错误和审计不输出明文。
+- 公司主管可查看当前邀请码、生成带码注册链接和轮换邀请码。
+- 生产邀请密钥只能通过受限环境变量注入，缺失时敏感动作失败关闭。
 
-### 9.2 读取
+### 4.2 两种账号入口
 
-- Repository 提供 `GetInTenant`、`UpdatesInTenant` 等租户条件方法。
-- Service 统一添加 Tenant 和组织范围。
-- Handler 不能只校验权限后返回全租户 model。
-- 列表、详情、导出、统计、WebSocket 和异步任务必须使用同一范围。
+公司主管可以：
 
-### 9.3 异步与外部入口
+1. 直接创建本 Tenant 账号，系统生成一次性初始密码并强制首次改密。
+2. 发送邀请注册链接，注册账号进入待审核状态，再由公司主管审核和分配角色。
 
-以下入口同样必须能确定 TenantID：
+这两种都是账号注册，不使用“开户”语义。公开注册默认关闭；启用时必须完成验证码、
+限流、邀请码密钥和 Tenant 隔离配置。
 
-- 企微协议消息和回调。
-- 客户 Web 会话。
-- WebSocket 连接与事件。
-- 派单和超时任务。
-- 知识库同步和 FastGPT 任务。
-- AI usage、运行日志和网关调用证据。
-- 评价公开 Token。
+### 4.3 角色与 Store 创建
 
-无法从可信归属确定 TenantID 时必须拒绝，不得落入默认租户。
+邀请码和注册动作不自动赋权。只有审核或账号管理明确分配 `store_staff` 时，才要求门店
+名称，并在角色事务内调用 `StoreStaffBindingService`：
 
-## 10. 信息架构
+- 首次分配创建 1 个 Store、1 个活动 Binding。
+- 同一事务创建未配置 `StoreModelCredential`、Store Credential policy 和默认关闭的
+  客户标签运行策略。
+- 重新分配时复用原 Store/Binding，不创建第二家门店。
+- 移除角色或停用账号时清空活动占用并停用 Store、Binding 和相关企微实例。
+- 一个有效 User 最多占用一个活动 Store，数据库唯一索引与 Service 校验共同保证。
 
-### 平台管理
-
-- 接入公司：Tenant 列表、创建、状态、切换、模型授权。
-- 模型接入：平台 AIConfig 和供应商凭证。
-- 角色管理、权限管理、平台设置。
-
-### 租户管理
-
-- 总览与运营分析。
-- 会话、派单、会话记录、工单。
-- 客户管理。
-- 客服档案、客服小组、排班。
-- 用户管理、邀请注册和审核。
-- 企微员工号和门店工作台。
-- 知识库、标签、快捷回复等服务能力。
-
-历史 `/dashboard/companies` 不再是产品入口；“接入公司”只表示 Tenant 管理，不表示企微渠道或租户内门店。
-
-## 11. 客户、门店和会话
-
-- Customer 直接归属 Tenant。
-- Store 表示一个 `store_staff` 账号代表的门店。
-- StoreCustomerRelation 表示客户在某门店的业务关系。
-- WxWorkProtocolInstance 表示该门店实际接待客户的企微员工号。
-- ConversationRouteState 固化当前会话来源 Store、实例、知识库和人工路由。
-- AgentTeam 通过 StoreStaffBinding 纳管门店员工范围。
-
-Customer 不再绑定或展示历史 Company。客户公司名称等画像信息若未来需要，应作为客户档案字段或标签单独设计，不能恢复 Company 层级。
-
-## 12. 模型授权边界
-
-平台统一管理模型接入：
+## 5. Tenant、Store 与渠道
 
 ```text
-AIConfig（平台凭证）
-  -> TenantAIModelGrant（租户可用模型集合）
-  -> StoreAIModelSetting（租户默认用途配置）
-  -> WxWorkProtocolInstance 覆盖（只能选租户已授权模型）
+Tenant
+  -> StoreStaffBinding(UserID, ActiveUserID, StoreID)
+  -> Store
+  -> WxWorkProtocolInstance
+  -> ConversationRouteState
+  -> Customer / Conversation / KnowledgeBase
 ```
 
-Tenant 用户看不到供应商密钥。平台管理员进入活动 Tenant 且具有 `aiConfig.view/update` 时，才能查看和配置租户模型用途。
+- StoreID 由当前数据库创建链生成，禁止硬编码来源环境 ID。
+- 企微扫码、企微 OAuth 和绑定链接只能绑定既有 User/Store/Binding，不能隐式注册账号、
+  分配角色或创建第二个 Store。
+- 企业微信协议字段必须以 `https://wework.apifox.cn/llms.txt` 及其链接页面为唯一依据。
+- 消息发送使用文档规定的 `conversation_id`；单聊以 `S:` 开头，群聊以 `R:` 开头。
 
-本设计不修改 Token、usage、价格、余额和计费公式。CompanyID 仅保留旧证据，不参与授权解析。
+详细生命周期见
+`docs/design/wxwork-managed-store-scope-implementation.md`。
 
-## 13. 历史 Company 退役
+## 6. 行业、模型、知识与标签
 
-历史 Company 曾同时表示客户企业、门店上级公司和模型范围，已经与当前 Tenant + Store 语义冲突。现行处理是退役，不改名复用：
+### 6.1 行业
 
-- 保留 model/repository 供旧 migration、历史 usage 和审计读取。
-- 删除 Company Dashboard handler/service/builder/DTO/API。
-- 删除公司页面、详情页、选择器和导航。
-- 删除 `company.*` 权限。
-- Customer、Knowledge、ReplyIntent 等公开 DTO 不再暴露 Company。
-- 现行 Store、Binding、WxWork、门店知识库和门店模型设置 CompanyID 写 0。
-- AI 回复和意图匹配不再读取 Company。
+- `Tenant.IntentProfileID` 是唯一行业绑定。
+- Store、企微实例、知识库和会话不能覆盖行业。
+- 行业 Profile 决定 IntentDetect Prompt、JSON Schema、意图分类和标签模板。
+- Tenant 只能在允许范围内启停标签和设置显示别名，不能修改 SemanticKey 或物理删除。
 
-迁移细节见 migration 63 和门店身份设计文档。
+### 6.2 模型与凭据
 
-## 14. 完整性审计
+```text
+平台 ModelProfileTemplate + 9 个 ModelProfileSlot
+  -> StoreModelProfileAssignment
+  -> StoreModelCredential
+  -> ModelCallResolver
+```
 
-`TenantIntegrityAuditService` 必须覆盖所有注册且包含 TenantID 的模型，并验证关键父子关系。当前代码基线包含：
+- 平台维护 Profile 和单一 NewAPI 网关配置。
+- Store 只有一个 active Assignment，可有一个待验证的 pending revision。
+- 每个 Tenant + Store 只有一条 Credential 事实；默认无 Key。
+- 平台管理员和公司主管按权限录入；门店员工只有在 policy 允许且是该 Store 唯一活动绑定
+  时可自助录入。
+- 密钥加密保存、永不回显；候选需要密码复核、二次确认、真实九槽测试，并可要求不同
+  公司主管审批。
+- 验证或 FastGPT 同步失败时保留旧 active revision；首次配置失败时保持未就绪。
+- Tenant 用户只看到模型名、revision 和 readiness，不看到 Provider、BaseURL、Prompt、
+  Schema 或密钥。
 
-- 76 个显式 Tenant 模型策略。
-- 89 张必需表。
-- 207 条关系。
+不存在 AIConfig、Tenant 授权池、Tenant 默认模型、企微覆盖或平台共享 Key fallback。
 
-新增 TenantID 模型时，测试必须因缺少策略而失败，直到补齐明确策略和关系。FastGPTStoreTenant 与 FastGPTUsageSyncState 已纳入 Store、KnowledgeBase 和历史 Company 证据关系。
+### 6.3 FastGPT 与客户标签
 
-## 15. Migration 与发布
+- FastGPT Team、Dataset、Profile 和任务均绑定 Tenant + Store。
+- KnowledgeBase 必须属于相同 Tenant + Store，运行时只读取 applied revision。
+- 客户标签绑定 `StoreCustomerRelation`，同一客户在不同 Store 的标签相互独立。
+- 运营分析和人工回复质检只读取本版本运行时产生的 Tenant 事实，不跨租户聚合。
 
-- DDL 由 AutoMigrate 执行。
-- DML 修复使用单调 migration。
-- migration 版本提交前必须与 main 和所有活动分支核对。
-- 生产升级前先在可恢复的 MySQL 副本重复执行 migration 和完整性审计。
-- 历史数据只能确定性映射；冲突或孤儿数据必须中止或形成明确人工映射。
-- 不得把未知数据强制归入默认 Tenant。
+## 7. 页面信息架构
 
-## 16. 验收清单
+平台上下文：
 
-- 平台创建 Tenant 时只创建首个公司主管和默认租户基础数据。
-- 公司主管可直接创建账号或邀请注册。
+- 接入公司。
+- 行业 Profile、意图分类、行业标签模板。
+- Model Profile。
+- 角色、权限、平台设置。
+- 选择活动 Tenant 后按权限进入该 Tenant 的业务页面。
+
+Tenant 上下文：
+
+- 总览、运营分析。
+- 会话、规则派单、会话记录、工单。
+- 客户、知识库、客户标签。
+- 客服组、小组、排班、账号管理。
+- 企微员工号、门店工作台。
+- Store 模型凭据和账单入口只按权限与数据范围展示。
+
+`/dashboard/companies`、Company 详情和旧 AIConfig/授权池页面不是当前产品入口，路由和
+导航均应拒绝访问。
+
+## 8. 数据隔离规则
+
+### 8.1 请求与写入
+
+- TenantID 只能来自认证上下文或已验证父对象。
+- 普通 request DTO 不能用调用方提交的 TenantID 越过 ActiveTenant。
+- 创建或更新子资源前必须校验所有父对象属于同一 Tenant。
+- 平台账号未选择活动 Tenant 时不能写 Tenant 业务数据。
+- 跨 Tenant ID 注入必须显式失败。
+
+### 8.2 读取、导出与实时事件
+
+- Repository 使用 Tenant 条件方法；Service 同时裁剪组织/本人/Store 范围。
+- 列表、详情、统计、导出、WebSocket 与后台 worker 使用同一数据范围。
+- 异步任务必须持久化 TenantID/StoreID 并在领取、执行和提交时重新校验。
+- 外部回调无法从可信父链确定 Tenant 时拒绝处理，不落入默认 Tenant。
+
+### 8.3 OIDC fallback
+
+当前认证流程保留一个由 Migration 35 创建的 `legacy-default` OIDC fallback Tenant。
+它只用于当前通用 OIDC 自动建号兼容，不是业务示例 Tenant，不包含 Store、会话、Key 或
+历史客户数据，也不能作为跨租户默认归属。退出它必须作为独立认证迁移完成。
+
+## 9. Fresh 数据库契约
+
+- DDL 只由 `AutoMigrate(models.Models...)` 创建。
+- DML runner 只保留版本 `2/15/35/68/69`。
+- 新 Tenant 和 Store 的业务基础对象由当前创建 Service 原子建立。
+- 不提供历史 Tenant/Store/Company 回填、旧库升级或清表工具。
+- 当前 Schema 不包含 Company、AIConfig、Grant、StoreSetting、ConversationTag 和本地
+  Document/FAQ/Chunk。
+- 旧备份只能配套旧源码在隔离环境只读恢复。
+
+## 10. 验收不变量
+
+- 新 Tenant 原子得到行业投影、公司主管、默认客服组、邀请和内部接待策略。
 - 邀请码只绑定 Tenant，不赋角色。
-- 审核通过时只分配选择的 Role。
-- `store_staff` 必须填写门店名称并原子创建稳定门店身份。
-- 角色移除和账号停用必须原子停用 Store、Binding、企微实例和 AI 自动回复，恢复时不得创建重复门店身份或静默启用企微实例。
-- 企微 OAuth 和企微绑定不创建 User 或角色。
-- Tenant A 无法读取、修改、导出、统计或订阅 Tenant B 数据。
-- 公司主管、客服组长、客服和门店员工的数据范围符合职责。
-- 权限管理页能看到所有有效权限，不存在隐藏权限。
-- Company 页面、API、权限和运行时依赖已退役。
-- 丽斯未来仿真租户满足 1 Tenant、0 活跃旧 Company、100 Store、100 个持有 store_staff 角色的系统账号、100 Binding、100 企微实例、500 Customer，并保留预期会话和派单数据。
-- SQLite 和 MySQL 均可完成全新安装、重复 migration、Seed/report 和完整性审计。
+- `store_staff` 分配原子得到 1 Store、1 Binding、Credential/Policy 和标签策略。
+- 重复分配不新增 Store 或 Binding；一个 User 不得占用多个活动 Store。
+- 企微绑定不创建 User、Role、Store 或 Binding。
+- Tenant A 无法读取、修改、统计、导出或订阅 Tenant B 的数据。
+- 公司主管、组长、客服和门店员工的数据范围符合职责。
+- 所有操作权限都能在权限管理中查看并由 Role 分配。
+- Company 和旧模型/标签/知识链在代码、路由和 fresh Schema 中均不存在。
+- 空 SQLite 与空 MySQL 首次启动和幂等重跑得到同一业务契约。
 
-## 17. 关键验证命令
+关键验证：
 
 ```bash
+go test ./internal/migration ./cmd/migration -count=1
+go test ./internal/services -count=1
 go test ./... -count=1
 go vet ./...
 pnpm --dir web typecheck
 pnpm --dir web lint
-cd web && node --test $(rg --files -g '*.test.mjs')
 pnpm --dir web build
-
-go run ./cmd/customer_audit_seed --config <config> --action seed
-go run ./cmd/customer_audit_seed --config <config> --action report
-go run ./cmd/tenant_integrity_audit --config <config>
 ```

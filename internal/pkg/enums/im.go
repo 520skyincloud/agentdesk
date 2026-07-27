@@ -281,6 +281,9 @@ const (
 	IMRealtimeEventCustomerSessionRefresh   = "customer_session.refresh"
 	IMRealtimeEventCustomerTagChanged       = "customer_tag.changed"
 	IMRealtimeEventCustomerTagPolicyChanged = "customer_tag_runtime_policy.changed"
+	IMRealtimeEventStoreModelProfileChanged = "store_model_profile.changed"
+	IMRealtimeEventStoreCredentialChanged   = "store_model_credential.changed"
+	IMRealtimeEventFastGPTProfileChanged    = "fastgpt_profile.changed"
 )
 
 const (

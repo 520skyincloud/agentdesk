@@ -220,6 +220,9 @@ func (s *modelProfileService) Create(req request.CreateModelProfileRequest, oper
 	}); err != nil {
 		return nil, err
 	}
+	WsService.PublishStoreModelProfileChanged(
+		0, 0, template.ID, template.Revision, string(template.Status), template.UpdatedAt,
+	)
 	return &ModelProfileWithSlots{Template: *template, Slots: slots}, nil
 }
 
@@ -266,6 +269,9 @@ func (s *modelProfileService) Update(req request.UpdateModelProfileRequest, oper
 	updated.UpdatedAt = now
 	updated.UpdateUserID = operator.UserID
 	updated.UpdateUserName = operator.Username
+	WsService.PublishStoreModelProfileChanged(
+		0, 0, updated.ID, updated.Revision, string(updated.Status), updated.UpdatedAt,
+	)
 	return &ModelProfileWithSlots{Template: updated, Slots: slots}, nil
 }
 
@@ -388,6 +394,9 @@ func (s *modelProfileService) Publish(req request.ModelProfileRevisionActionRequ
 	item.PublishedBy = operator.UserID
 	item.PublishedByName = operator.Username
 	item.UpdatedAt = now
+	WsService.PublishStoreModelProfileChanged(
+		0, 0, item.ID, item.Revision, string(item.Status), item.UpdatedAt,
+	)
 	return &ModelProfileWithSlots{Template: item, Slots: slots}, nil
 }
 
@@ -569,7 +578,7 @@ func (s *storeModelProfileAssignmentService) assignBatch(tenantID int64, storeID
 		stores = append(stores, *store)
 	}
 	now := time.Now()
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		for _, store := range stores {
 			current, err := repositories.StoreModelProfileAssignmentRepository.GetForUpdateByStore(ctx.Tx, tenantID, store.ID)
 			if err != nil {
@@ -630,7 +639,20 @@ func (s *storeModelProfileAssignmentService) assignBatch(tenantID int64, storeID
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	for _, store := range stores {
+		WsService.PublishStoreModelProfileChanged(
+			tenantID,
+			store.ID,
+			template.ID,
+			template.Revision,
+			"pending",
+			now,
+		)
+	}
+	return nil
 }
 
 func (s *modelProfileService) findTestTargets(limit int) []ModelProfileTestTarget {

@@ -60,10 +60,10 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 			"能开专票不": {
 				KnowledgeBaseIDs: []int64{1},
 				Hits: []rag.RetrieveResult{
-					{KnowledgeBaseID: 1, ChunkID: 101, Title: "发票", Content: "可以开电子专票，退房后在小程序申请。", Score: 0.95},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-101", Title: "发票", Content: "可以开电子专票，退房后在小程序申请。", Score: 0.95},
 				},
 				ContextResults: []rag.RetrieveResult{
-					{KnowledgeBaseID: 1, ChunkID: 101, Title: "发票", Content: "可以开电子专票，退房后在小程序申请。", Score: 0.95},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-101", Title: "发票", Content: "可以开电子专票，退房后在小程序申请。", Score: 0.95},
 				},
 				ContextText: "可以开电子专票，退房后在小程序申请。",
 				AnswerMode:  enums.KnowledgeAnswerModeStrict,
@@ -71,10 +71,10 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 			"WiFi是哪个": {
 				KnowledgeBaseIDs: []int64{1},
 				Hits: []rag.RetrieveResult{
-					{KnowledgeBaseID: 1, ChunkID: 102, Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.93},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-102", Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.93},
 				},
 				ContextResults: []rag.RetrieveResult{
-					{KnowledgeBaseID: 1, ChunkID: 102, Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.93},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-102", Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.93},
 				},
 				ContextText: "WiFi 名称是 LISI，密码看房间桌牌。",
 				AnswerMode:  enums.KnowledgeAnswerModeStrict,
@@ -124,16 +124,16 @@ func TestKnowledgePolicyDoesNotLetSupplyFastPathHideMixedKnowledgeQuestions(t *t
 			"wifi和停车都发我一下": {
 				KnowledgeBaseIDs: []int64{1},
 				Hits: []rag.RetrieveResult{
-					{KnowledgeBaseID: 1, ChunkID: 199, Title: "错域", Content: "在公司介绍模式里，如果用户问早餐、停车这类门店服务，可以先说明这里主要回答公司、品牌、展厅、加盟和AI方案；具体门店服务再由现场工作人员确认。", Score: 0.98},
-					{KnowledgeBaseID: 1, ChunkID: 200, Title: "停车异常", Content: "车辆出场或闸口问题需要门店工作人员协助处理，请联系门店管家或前台。", Score: 0.96},
-					{KnowledgeBaseID: 1, ChunkID: 201, Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.94},
-					{KnowledgeBaseID: 1, ChunkID: 202, Title: "停车", Content: "门店有免费地上停车场。", Score: 0.91},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-199", Title: "错域", Content: "在公司介绍模式里，如果用户问早餐、停车这类门店服务，可以先说明这里主要回答公司、品牌、展厅、加盟和AI方案；具体门店服务再由现场工作人员确认。", Score: 0.98},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-200", Title: "停车异常", Content: "车辆出场或闸口问题需要门店工作人员协助处理，请联系门店管家或前台。", Score: 0.96},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-201", Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.94},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-202", Title: "停车", Content: "门店有免费地上停车场。", Score: 0.91},
 				},
 				ContextResults: []rag.RetrieveResult{
-					{KnowledgeBaseID: 1, ChunkID: 199, Title: "错域", Content: "在公司介绍模式里，如果用户问早餐、停车这类门店服务，可以先说明这里主要回答公司、品牌、展厅、加盟和AI方案；具体门店服务再由现场工作人员确认。", Score: 0.98},
-					{KnowledgeBaseID: 1, ChunkID: 200, Title: "停车异常", Content: "车辆出场或闸口问题需要门店工作人员协助处理，请联系门店管家或前台。", Score: 0.96},
-					{KnowledgeBaseID: 1, ChunkID: 201, Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.94},
-					{KnowledgeBaseID: 1, ChunkID: 202, Title: "停车", Content: "门店有免费地上停车场。", Score: 0.91},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-199", Title: "错域", Content: "在公司介绍模式里，如果用户问早餐、停车这类门店服务，可以先说明这里主要回答公司、品牌、展厅、加盟和AI方案；具体门店服务再由现场工作人员确认。", Score: 0.98},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-200", Title: "停车异常", Content: "车辆出场或闸口问题需要门店工作人员协助处理，请联系门店管家或前台。", Score: 0.96},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-201", Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.94},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-202", Title: "停车", Content: "门店有免费地上停车场。", Score: 0.91},
 				},
 				ContextText: "WiFi 名称是 LISI，密码看房间桌牌。\n门店有免费地上停车场。",
 				AnswerMode:  enums.KnowledgeAnswerModeStrict,
@@ -141,10 +141,10 @@ func TestKnowledgePolicyDoesNotLetSupplyFastPathHideMixedKnowledgeQuestions(t *t
 			"房间没纸巾": {
 				KnowledgeBaseIDs: []int64{1},
 				Hits: []rag.RetrieveResult{
-					{KnowledgeBaseID: 1, ChunkID: 203, Title: "用品", Content: "纸巾在1020对面的洗衣房，可以自取。", Score: 0.95},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-203", Title: "用品", Content: "纸巾在1020对面的洗衣房，可以自取。", Score: 0.95},
 				},
 				ContextResults: []rag.RetrieveResult{
-					{KnowledgeBaseID: 1, ChunkID: 203, Title: "用品", Content: "纸巾在1020对面的洗衣房，可以自取。", Score: 0.95},
+					{KnowledgeBaseID: 1, SourceRecordID: "test-203", Title: "用品", Content: "纸巾在1020对面的洗衣房，可以自取。", Score: 0.95},
 				},
 				ContextText: "纸巾在1020对面的洗衣房，可以自取。",
 				AnswerMode:  enums.KnowledgeAnswerModeStrict,
@@ -487,7 +487,7 @@ func TestAppendRetrievedContextKeepsSkippedRuntimeActionInstruction(t *testing.T
 
 func TestBuildLocationDirectReplyUsesCurrentAccountVariable(t *testing.T) {
 	reply := buildLocationDirectReply(&models.WxWorkProtocolInstance{
-		StoreNavigationName: "丽斯未来酒店合肥包河店",
+		StoreNavigationName: "合成验收酒店合肥包河店",
 		StoreAddress:        "安徽省合肥市包河大道100号",
 		StoreLongitude:      "117.263908",
 		StoreLatitude:       "31.824097",
@@ -502,7 +502,7 @@ func TestBuildLocationDirectReplyUsesCurrentAccountVariable(t *testing.T) {
 
 func TestBuildHotelVariableDirectReplyRoutesLocationIntent(t *testing.T) {
 	reply := buildHotelVariableDirectReply(&models.WxWorkProtocolInstance{
-		EmployeeName:   "丽斯未来酒店",
+		EmployeeName:   "合成验收酒店",
 		StoreAddress:   "安徽省合肥市包河大道100号",
 		StoreLongitude: "117.263908",
 		StoreLatitude:  "31.824097",
@@ -519,7 +519,7 @@ func TestBuildHotelVariableDirectReplyRoutesLocationIntent(t *testing.T) {
 
 func TestBuildHotelVariableDirectReplyDoesNotInferResourcesFromMergedText(t *testing.T) {
 	reply := buildHotelVariableDirectReply(&models.WxWorkProtocolInstance{
-		EmployeeName:              "丽斯未来酒店",
+		EmployeeName:              "合成验收酒店",
 		StoreAddress:              "安徽省合肥市包河大道100号",
 		StoreLongitude:            "117.263908",
 		StoreLatitude:             "31.824097",
@@ -545,10 +545,10 @@ func TestKnowledgePolicyKeepsHotelVariableInstructionWhenMixedKnowledgeRetrieves
 		result: &retrievers.KnowledgeRetrieveResult{
 			KnowledgeBaseIDs: []int64{1},
 			Hits: []rag.RetrieveResult{
-				{KnowledgeBaseID: 1, ChunkID: 101, Title: "停车", Content: "停车免费，地上停车场从繁华大道辅路进。", Score: 0.91},
+				{KnowledgeBaseID: 1, SourceRecordID: "test-101", Title: "停车", Content: "停车免费，地上停车场从繁华大道辅路进。", Score: 0.91},
 			},
 			ContextResults: []rag.RetrieveResult{
-				{KnowledgeBaseID: 1, ChunkID: 101, Title: "停车", Content: "停车免费，地上停车场从繁华大道辅路进。", Score: 0.91},
+				{KnowledgeBaseID: 1, SourceRecordID: "test-101", Title: "停车", Content: "停车免费，地上停车场从繁华大道辅路进。", Score: 0.91},
 			},
 			ContextText: "停车免费，地上停车场从繁华大道辅路进。",
 			AnswerMode:  enums.KnowledgeAnswerModeStrict,
@@ -608,7 +608,7 @@ func TestKnowledgePolicyEvaluateDoesNotFallbackWhenHitsHaveNoContextText(t *test
 		result: &retrievers.KnowledgeRetrieveResult{
 			KnowledgeBaseIDs: []int64{1},
 			Hits: []rag.RetrieveResult{
-				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "入住办理在小程序里。", Score: 0.2},
+				{KnowledgeBaseID: 1, SourceRecordID: "test-101", Content: "入住办理在小程序里。", Score: 0.2},
 			},
 		},
 	})
@@ -638,10 +638,10 @@ func TestKnowledgePolicyEvaluateInjectsGroundedInstructionAndContext(t *testing.
 		result: &retrievers.KnowledgeRetrieveResult{
 			KnowledgeBaseIDs: []int64{1},
 			Hits: []rag.RetrieveResult{
-				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "早餐时间是 7:00-9:30。", Score: 0.91},
+				{KnowledgeBaseID: 1, SourceRecordID: "test-101", Content: "早餐时间是 7:00-9:30。", Score: 0.91},
 			},
 			ContextResults: []rag.RetrieveResult{
-				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "早餐时间是 7:00-9:30。", Score: 0.91},
+				{KnowledgeBaseID: 1, SourceRecordID: "test-101", Content: "早餐时间是 7:00-9:30。", Score: 0.91},
 			},
 			ContextText: "知识库片段：早餐时间是 7:00-9:30。",
 			AnswerMode:  enums.KnowledgeAnswerModeStrict,
@@ -678,7 +678,7 @@ func TestBuildRunMessagesInjectsRetrievedContextWhenHasContext(t *testing.T) {
 		result: &retrievers.KnowledgeRetrieveResult{
 			KnowledgeBaseIDs: []int64{1},
 			Hits: []rag.RetrieveResult{
-				{KnowledgeBaseID: 1, DocumentID: 10, ChunkID: 101, Content: "早餐时间是 7:00-9:30。", Score: 0.91},
+				{KnowledgeBaseID: 1, SourceRecordID: "test-101", Content: "早餐时间是 7:00-9:30。", Score: 0.91},
 			},
 			ContextText: "知识库片段：早餐时间是 7:00-9:30。",
 			AnswerMode:  enums.KnowledgeAnswerModeStrict,

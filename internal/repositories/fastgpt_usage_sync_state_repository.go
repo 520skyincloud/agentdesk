@@ -54,7 +54,7 @@ func (r *fastGPTUsageSyncStateRepository) CompareAndSwap(db *gorm.DB, expected, 
 		Where("cursor = ? AND model_profile_id = ? AND profile_revision = ? AND credential_revision = ?", expected.Cursor, expected.ModelProfileID, expected.ProfileRevision, expected.CredentialRevision).
 		Where("key_fingerprint = ? AND fast_gpt_profile_id = ? AND fast_gpt_revision = ?", expected.KeyFingerprint, expected.FastGPTProfileID, expected.FastGPTRevision).
 		Updates(map[string]any{
-			"company_id": next.CompanyID, "store_id": next.StoreID, "tenant_team_id": next.TenantTeamID,
+			"store_id": next.StoreID, "tenant_team_id": next.TenantTeamID,
 			"cursor": next.Cursor, "model_profile_id": next.ModelProfileID, "profile_revision": next.ProfileRevision,
 			"credential_revision": next.CredentialRevision, "key_fingerprint": next.KeyFingerprint,
 			"fast_gpt_profile_id": next.FastGPTProfileID, "fast_gpt_revision": next.FastGPTRevision,

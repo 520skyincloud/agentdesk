@@ -2603,6 +2603,7 @@
     "wxworkDevicePool": "实例池",
     "replyIntentProfiles": "意图行业",
     "replyIntentConfigs": "意图分类",
+    "industryTagTemplates": "行业标签模板",
     "dashboardHome": "后台总览",
     "notifications": "通知中心",
     "changePassword": "修改密码",

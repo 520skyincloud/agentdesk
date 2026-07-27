@@ -10,10 +10,7 @@ type RetrieveRequest struct {
 
 type RetrieveResult struct {
 	KnowledgeBaseID int64   `json:"knowledgeBaseId"`
-	ChunkID         int64   `json:"chunkId"`
-	DocumentID      int64   `json:"documentId"`
 	DocumentTitle   string  `json:"documentTitle"`
-	ChunkNo         int     `json:"chunkNo"`
 	Title           string  `json:"title"`
 	SectionPath     string  `json:"sectionPath"`
 	Content         string  `json:"content"`

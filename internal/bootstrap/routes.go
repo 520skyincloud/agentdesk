@@ -438,6 +438,16 @@ func registerDashboardReplyIntentProfileRoutes(group *gin.RouterGroup) {
 	group.POST("/create", dashboard.ReplyIntentProfilePostCreate)
 	group.POST("/update", dashboard.ReplyIntentProfilePostUpdate)
 	group.POST("/delete", dashboard.ReplyIntentProfilePostDelete)
+	group.POST("/test", dashboard.ReplyIntentProfilePostTest)
+	group.POST("/publish", dashboard.ReplyIntentProfilePostPublish)
+}
+
+func registerDashboardIndustryTagDefinitionRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.IndustryTagDefinitionAnyList)
+	group.GET("/list_all", dashboard.IndustryTagDefinitionGetListAll)
+	group.GET("/:id", dashboard.IndustryTagDefinitionGetBy)
+	group.POST("/create", dashboard.IndustryTagDefinitionPostCreate)
+	group.POST("/update", dashboard.IndustryTagDefinitionPostUpdate)
 }
 
 func registerDashboardAssetRoutes(group *gin.RouterGroup) {

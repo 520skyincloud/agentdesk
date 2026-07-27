@@ -78,6 +78,7 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 		http.MethodGet + " /api/dashboard/quality-sampling/list",
 		http.MethodGet + " /api/dashboard/conversation-evaluation/list",
 		http.MethodGet + " /api/ws/dashboard",
+		http.MethodGet + " /api/ws/configuration",
 		http.MethodGet + " /api/ws/open",
 	}
 	for _, route := range expected {

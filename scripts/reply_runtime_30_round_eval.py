@@ -56,7 +56,7 @@ class Scenario:
 
 
 STORE_A = Store(
-    name="丽斯未来酒店·测试店",
+    name="合成验收酒店·测试店",
     phone="0571-88886666",
     location="浙江省杭州市测试路 88 号",
     mini_program="安心宿小程序 page=/pages/checkin/index?storeId=lis-test",
@@ -66,7 +66,7 @@ STORE_A = Store(
 )
 
 STORE_NO_LOCATION = Store(
-    name="丽斯未来酒店·新店",
+    name="合成验收酒店·新店",
     phone="0571-66668888",
     mini_program="安心宿小程序 page=/pages/checkin/index?storeId=lis-new",
     group_ready=True,

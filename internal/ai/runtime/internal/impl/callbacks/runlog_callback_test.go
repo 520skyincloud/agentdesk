@@ -6,8 +6,8 @@ func TestRuntimeTraceCollectorAddRetrieverItems(t *testing.T) {
 	collector := NewRuntimeTraceCollector()
 
 	collector.AddRetrieverItems([]RetrieverTraceItem{
-		{KnowledgeBaseID: 1, DocumentID: 10, DocumentTitle: "doc-1"},
-		{KnowledgeBaseID: 2, DocumentID: 20, DocumentTitle: "doc-2"},
+		{KnowledgeBaseID: 1, SourceRecordID: "record-1", DocumentTitle: "doc-1"},
+		{KnowledgeBaseID: 2, SourceRecordID: "record-2", DocumentTitle: "doc-2"},
 	})
 	collector.AddRetrieverItems(nil)
 

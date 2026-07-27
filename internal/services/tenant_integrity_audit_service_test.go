@@ -104,8 +104,8 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	if report.RegisteredTenantModels != expectedTenantModels || report.PolicyCount != expectedTenantModels {
 		t.Fatalf("tenant model coverage = %d/%d, want %d/%d", report.RegisteredTenantModels, report.PolicyCount, expectedTenantModels, expectedTenantModels)
 	}
-	if report.RequiredTables != 99 || report.ConfiguredRelations != 251 {
-		t.Fatalf("audit schema coverage = %d tables/%d relations, want 99/251", report.RequiredTables, report.ConfiguredRelations)
+	if report.RequiredTables != 97 || report.ConfiguredRelations != 234 {
+		t.Fatalf("audit schema coverage = %d tables/%d relations, want 97/234", report.RequiredTables, report.ConfiguredRelations)
 	}
 	if report.CheckedTables != report.RequiredTables {
 		t.Fatalf("checked tables = %d, required = %d", report.CheckedTables, report.RequiredTables)
@@ -130,19 +130,25 @@ func TestTenantIntegrityAuditReportsTenantRelationAndRoleViolations(t *testing.T
 			t.Fatalf("create negative tenant user: %v", err)
 		}
 	}
-	if err := db.Create(&models.Company{TenantID: 0, Name: "zero tenant company", Status: enums.StatusOk, AuditFields: audit}).Error; err != nil {
-		t.Fatalf("create zero tenant company: %v", err)
+	if err := db.Create(&models.Store{TenantID: 0, StoreCode: "zero-tenant-store", Name: "zero tenant store", Status: enums.StatusOk, AuditFields: audit}).Error; err != nil {
+		t.Fatalf("create zero tenant store: %v", err)
 	}
-	if err := db.Create(&models.Company{TenantID: 999999, Name: "unknown tenant company", Status: enums.StatusOk, AuditFields: audit}).Error; err != nil {
-		t.Fatalf("create unknown tenant company: %v", err)
+	if err := db.Create(&models.Store{TenantID: 999999, StoreCode: "unknown-tenant-store", Name: "unknown tenant store", Status: enums.StatusOk, AuditFields: audit}).Error; err != nil {
+		t.Fatalf("create unknown tenant store: %v", err)
 	}
-	companyA := &models.Company{TenantID: fixture.tenantA.ID, Name: "tenant A company", Status: enums.StatusOk, AuditFields: audit}
-	if err := db.Create(companyA).Error; err != nil {
-		t.Fatalf("create tenant A company: %v", err)
+	storeA := &models.Store{TenantID: fixture.tenantA.ID, StoreCode: "tenant-a-store", Name: "tenant A store", Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(storeA).Error; err != nil {
+		t.Fatalf("create tenant A store: %v", err)
 	}
-	mismatchCustomer := &models.Customer{TenantID: fixture.tenantB.ID, CompanyID: companyA.ID, Name: "mismatch customer", Status: enums.StatusOk, AuditFields: audit}
-	if err := db.Create(mismatchCustomer).Error; err != nil {
-		t.Fatalf("create mismatched customer: %v", err)
+	customerB := &models.Customer{TenantID: fixture.tenantB.ID, Name: "mismatch customer", Status: enums.StatusOk, AuditFields: audit}
+	if err := db.Create(customerB).Error; err != nil {
+		t.Fatalf("create tenant B customer: %v", err)
+	}
+	if err := db.Create(&models.StoreCustomerRelation{
+		TenantID: fixture.tenantB.ID, CustomerID: customerB.ID, StoreID: storeA.ID,
+		Status: enums.StatusOk, AuditFields: audit,
+	}).Error; err != nil {
+		t.Fatalf("create mismatched store customer relation: %v", err)
 	}
 	orphanIdentity := &models.CustomerIdentity{
 		TenantID: fixture.tenantA.ID, CustomerID: 987654, ExternalSource: enums.ExternalSourceGuest,
@@ -477,15 +483,16 @@ func TestTenantIntegrityAuditReportsMissingRequiredTable(t *testing.T) {
 func TestTenantIntegrityAuditReportsDuplicateTenantBusinessKeys(t *testing.T) {
 	db := openTenantIntegrityTestDB(t, true)
 	fixture := createCleanTenantIntegrityFixture(t, db)
-	if err := db.Migrator().DropIndex(&models.Company{}, "uk_company_tenant_name"); err != nil {
-		t.Fatalf("drop company tenant unique index: %v", err)
+	if err := db.Migrator().DropIndex(&models.Store{}, "uk_store_tenant_code"); err != nil {
+		t.Fatalf("drop store tenant unique index: %v", err)
 	}
 	audit := tenantIntegrityTestAuditFields(time.Now())
 	for i := 0; i < 2; i++ {
-		if err := db.Create(&models.Company{
-			TenantID: fixture.tenantA.ID, Name: "duplicate tenant company", Status: enums.StatusOk, AuditFields: audit,
+		if err := db.Create(&models.Store{
+			TenantID: fixture.tenantA.ID, StoreCode: "duplicate-tenant-store", Name: fmt.Sprintf("duplicate tenant store %d", i),
+			Status: enums.StatusOk, AuditFields: audit,
 		}).Error; err != nil {
-			t.Fatalf("create duplicate company %d: %v", i, err)
+			t.Fatalf("create duplicate store %d: %v", i, err)
 		}
 	}
 
@@ -493,9 +500,9 @@ func TestTenantIntegrityAuditReportsDuplicateTenantBusinessKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit duplicate business keys: %v", err)
 	}
-	violation := tenantIntegrityFindViolation(report, "DUPLICATE_TENANT_COMPANY_NAME", "Company.name")
+	violation := tenantIntegrityFindViolation(report, "DUPLICATE_TENANT_STORE_CODE", "Store.store_code")
 	if violation == nil {
-		t.Fatalf("duplicate company names were not reported: %#v", report.Violations)
+		t.Fatalf("duplicate store codes were not reported: %#v", report.Violations)
 	}
 	if violation.Count != 2 || len(violation.SampleIDs) != 1 {
 		t.Fatalf("duplicate violation count/samples = %d/%d, want 2/1", violation.Count, len(violation.SampleIDs))

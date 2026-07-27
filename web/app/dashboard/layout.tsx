@@ -50,6 +50,9 @@ export default function DashboardLayout({
       !routeAccessible &&
       !(pathname === "/dashboard" && !fallbackPath)
   )
+  const tenantContextKey = session
+    ? `${session.user.id}:${session.activeTenantId}`
+    : "anonymous"
 
   useEffect(() => {
     if (ready && !session && !isLoginRoute) {
@@ -101,7 +104,7 @@ export default function DashboardLayout({
         } as CSSProperties
       }
     >
-      <NotificationProvider>
+      <NotificationProvider key={tenantContextKey}>
         <AppSidebar variant="inset" />
         <SidebarInset className="overflow-hidden border border-[#dce7f4] bg-background shadow-[0_18px_48px_rgba(35,74,122,0.08)] dark:border-border/60 dark:shadow-none">
           <SiteHeader />

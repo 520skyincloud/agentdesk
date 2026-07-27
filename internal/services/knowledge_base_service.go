@@ -106,7 +106,7 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(req request.UpdateKnowledgeBa
 		return errorsx.Forbidden("无权限维护该知识库")
 	}
 	if current.KnowledgeType != string(enums.KnowledgeBaseTypeFastGPTCloud) {
-		return errorsx.InvalidParam("历史本地知识库已退出运行链，请使用门店 FastGPT 知识库开通流程")
+		return errorsx.InvalidParam("仅支持维护门店 FastGPT 知识库")
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {

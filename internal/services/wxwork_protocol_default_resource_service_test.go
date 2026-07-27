@@ -54,7 +54,7 @@ func TestAppendMiniProgramQueryKeepsExistingParams(t *testing.T) {
 	got := appendMiniProgramQuery("pages/order/index?scene=abc", map[string]string{
 		"storeId":   "123",
 		"storeCode": "HFNQ",
-		"storeName": "丽斯未来酒店（合肥南七店）",
+		"storeName": "合成验收酒店（合肥南七店）",
 	})
 	if !strings.HasPrefix(got, "pages/order/index?") {
 		t.Fatalf("unexpected path prefix: %s", got)
@@ -112,20 +112,20 @@ func TestBuildDefaultLocationMessageUsesStructuredPayload(t *testing.T) {
 	content, payload, err := WxWorkProtocolDefaultResourceService.BuildDefaultLocationMessage(&models.WxWorkProtocolInstance{
 		StoreLongitude:      "117.263908",
 		StoreLatitude:       "31.824097",
-		StoreNavigationName: "丽斯未来酒店",
+		StoreNavigationName: "合成验收酒店",
 		StoreAddress:        "九珑湾停车场入口",
 	})
 	if err != nil {
 		t.Fatalf("build location payload: %v", err)
 	}
-	if content != "丽斯未来酒店" {
+	if content != "合成验收酒店" {
 		t.Fatalf("unexpected content: %q", content)
 	}
 	var body map[string]any
 	if err := json.Unmarshal([]byte(payload), &body); err != nil {
 		t.Fatalf("payload is not json: %v", err)
 	}
-	if body["title"] != "丽斯未来酒店" {
+	if body["title"] != "合成验收酒店" {
 		t.Fatalf("unexpected title: %#v", body["title"])
 	}
 	if body["address"] != "九珑湾停车场入口" {

@@ -60,7 +60,6 @@ type DatabaseRestoreSnapshotSummary struct {
 	DataSHA256            string `json:"dataSha256"`
 	MigrationSHA256       string `json:"migrationSha256"`
 	MigrationRows         int64  `json:"migrationRows"`
-	MigrationArchiveRows  int64  `json:"migrationArchiveRows"`
 	FailedMigrationRows   int64  `json:"failedMigrationRows"`
 }
 
@@ -161,7 +160,7 @@ func (s *tenantRestoreVerificationService) Verify(
 		report.addViolation("DATA_FINGERPRINT_MISMATCH", "恢复库的全表数据指纹和源库不一致")
 	}
 	if !report.Comparison.MigrationMatches {
-		report.addViolation("MIGRATION_FINGERPRINT_MISMATCH", "恢复库的 Migration 与归档指纹和源库不一致")
+		report.addViolation("MIGRATION_FINGERPRINT_MISMATCH", "恢复库的 Migration 指纹和源库不一致")
 	}
 	if sourceSnapshot.FailedMigrationRows > 0 {
 		report.addViolation("SOURCE_FAILED_MIGRATION", "源库存在未成功的 Migration 记录")
@@ -178,9 +177,6 @@ func (s *tenantRestoreVerificationService) Verify(
 	} {
 		if _, ok := snapshot.value.Tables["t_migration"]; !ok {
 			report.addViolation("MISSING_MIGRATION_TABLE", snapshot.label+"缺少 t_migration")
-		}
-		if _, ok := snapshot.value.Tables["t_migration_definition_archive"]; !ok {
-			report.addViolation("MISSING_MIGRATION_ARCHIVE_TABLE", snapshot.label+"缺少 t_migration_definition_archive")
 		}
 	}
 	if report.HasViolations() {
@@ -381,7 +377,6 @@ func databaseRestoreSnapshotSummary(
 		DataSHA256:            snapshot.DataSHA256,
 		MigrationSHA256:       snapshot.MigrationSHA256,
 		MigrationRows:         snapshot.MigrationRows,
-		MigrationArchiveRows:  snapshot.MigrationArchiveRows,
 		FailedMigrationRows:   snapshot.FailedMigrationRows,
 	}
 }

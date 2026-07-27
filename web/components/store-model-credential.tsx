@@ -46,6 +46,7 @@ import {
   type StoreModelCredential,
   type StoreModelCredentialAudit,
 } from "@/lib/api/store-model-credential"
+import { useAIConfigurationRealtime } from "@/hooks/use-ai-configuration-realtime"
 import { formatDateTime } from "@/lib/utils"
 
 type CredentialMode = "manager" | "self"
@@ -207,8 +208,27 @@ export function StoreModelCredentialPanel({
   }, [managerScope, mode, storeId, tenantId])
 
   useEffect(() => {
+    setData(null)
+    setAudit([])
+    setNewKey("")
+    setCurrentPassword("")
+    setConfirmed(false)
+    setShowKey(false)
+    setAllowSelfService(false)
+    setRequireApproval(false)
     void load()
   }, [load])
+
+  useAIConfigurationRealtime((event) => {
+    const expectedTenantID = mode === "manager" ? tenantId : (data?.tenantId ?? 0)
+    const expectedStoreID = mode === "manager" ? storeId : (data?.storeId ?? 0)
+    if (
+      event.storeId === expectedStoreID &&
+      (expectedTenantID <= 0 || event.tenantId === expectedTenantID)
+    ) {
+      void load()
+    }
+  }, mode === "self" || (tenantId > 0 && storeId > 0))
 
   function resetSensitiveFields() {
     setNewKey("")

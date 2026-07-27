@@ -85,8 +85,8 @@ func prepareManagedFastGPTRetrieveTest(t *testing.T) models.KnowledgeBase {
 	}
 	knowledgeBase := models.KnowledgeBase{
 		ID: 41, TenantID: store.TenantID, StoreID: store.ID, Name: "南七知识库",
-		KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud), ChunkProvider: string(enums.KnowledgeChunkProviderFastGPT),
-		ConnectionID: fastgptapi.ManagedConnectionID, DatasetID: "dataset-1", Status: enums.StatusOk,
+		KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud),
+		ConnectionID:  fastgptapi.ManagedConnectionID, DatasetID: "dataset-1", Status: enums.StatusOk,
 		DefaultTopK: 5, DefaultScoreThreshold: 0.2, DefaultRerankLimit: 10, FastGPTProfileStatus: "ready",
 		FastGPTAppliedProfileID: 51, FastGPTAppliedProfileRevision: 2, FastGPTAppliedCredentialRevision: 3,
 	}

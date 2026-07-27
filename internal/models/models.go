@@ -8,14 +8,12 @@ import (
 // Models 注册所有需要迁移和代码生成的模型。
 var Models = []any{
 	&Migration{},
-	&MigrationDefinitionArchive{},
 	&User{},
 	&UserIdentity{},
 	&TenantIndustryChangeLog{},
 	&Tenant{},
 	&TenantInvitation{},
 	&TenantRegistrationLog{},
-	&Company{},
 	&Customer{},
 	&CustomerIdentity{},
 	&StoreCustomerRelation{},
@@ -102,7 +100,6 @@ var Models = []any{
 	&FastGPTStoreTenant{},
 	&FastGPTUsageSyncState{},
 	&FastGPTDatasetJob{},
-	&FastGPTRemoteResourceRetirement{},
 	&SkillDefinition{},
 	&SkillRunLog{},
 	&AgentRunLog{},
@@ -123,23 +120,6 @@ type Migration struct {
 	RetryCount int       `gorm:"type:int;not null;default:0"`
 	CreatedAt  time.Time `gorm:"type:datetime"`
 	UpdatedAt  time.Time `gorm:"type:datetime"`
-}
-
-// MigrationDefinitionArchive preserves superseded migration records whose
-// version numbers were reused by historical parallel branches.
-type MigrationDefinitionArchive struct {
-	ID                int64     `gorm:"primaryKey;autoIncrement"`
-	SourceMigrationID int64     `gorm:"type:bigint;not null;uniqueIndex"`
-	Version           int64     `gorm:"type:bigint;not null;index"`
-	Remark            string    `gorm:"type:text"`
-	Success           bool      `gorm:"not null;default:false"`
-	ErrorInfo         string    `gorm:"type:text"`
-	RetryCount        int       `gorm:"type:int;not null;default:0"`
-	OriginalCreatedAt time.Time `gorm:"type:datetime"`
-	OriginalUpdatedAt time.Time `gorm:"type:datetime"`
-	ReplacementRemark string    `gorm:"type:text"`
-	ArchiveReason     string    `gorm:"type:text"`
-	ArchivedAt        time.Time `gorm:"type:datetime;not null"`
 }
 
 // WxWorkProtocolDevicePoolInstance 记录聚合智能后台同步到本地的真实 XBot 实例池。
@@ -322,18 +302,6 @@ type UserIdentity struct {
 	AuditFields
 }
 
-// Company 是已退出运行链路的旧公司档案，仅保留历史迁移、审计和用量证据兼容。
-type Company struct {
-	ID              int64        `gorm:"primaryKey;autoIncrement"`
-	TenantID        int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_company_tenant_name,priority:1"`
-	Name            string       `gorm:"type:varchar(200);not null;uniqueIndex:uk_company_tenant_name,priority:2"`
-	Code            string       `gorm:"type:varchar(64);not null;index"`
-	IntentProfileID int64        `gorm:"type:bigint;not null;default:0;index"` // 迁移 63 清零；运行时不得读取。
-	Status          enums.Status `gorm:"type:int;not null;default:0"`
-	Remark          string       `gorm:"type:text"`
-	AuditFields
-}
-
 // Customer 客户主表。
 //
 //	用于存储客户稳定画像信息，不包含平台身份映射和多联系方式明细。
@@ -343,7 +311,6 @@ type Customer struct {
 	Name          string       `gorm:"type:varchar(100);not null;default:'';index"` // Name 为客户姓名或展示名称。
 	Avatar        string       `gorm:"type:varchar(1024);not null;default:''"`      // Avatar 为客户头像 URL，可由企微协议联系人资料同步。
 	Gender        enums.Gender `gorm:"type:int;not null;default:0;"`                // Gender 为性别：0未知 1男 2女。
-	CompanyID     int64        `gorm:"type:bigint;not null;default:0;index"`        // CompanyID 为旧公司档案证据；新写入固定为 0。
 	LastActiveAt  *time.Time   `gorm:"type:datetime;"`                              // LastActiveAt 为最近活跃时间。
 	PrimaryMobile string       `gorm:"type:varchar(32);not null;default:'';index"`  // PrimaryMobile 为主手机号（冗余展示字段）。
 	PrimaryEmail  string       `gorm:"type:varchar(100);not null;default:'';index"` // PrimaryEmail 为主邮箱（冗余展示字段）。
@@ -556,7 +523,6 @@ type Store struct {
 	StoreCode       string       `gorm:"type:varchar(64);not null;default:'';uniqueIndex:uk_store_tenant_code,priority:2"`
 	Name            string       `gorm:"type:varchar(120);not null;default:'';index"`
 	BrandName       string       `gorm:"type:varchar(120);not null;default:'';index"`
-	CompanyID       int64        `gorm:"type:bigint;not null;default:0;index"` // CompanyID 为旧公司档案兼容字段；新写入固定为 0。
 	KnowledgeBaseID int64        `gorm:"type:bigint;not null;default:0;index"`
 	Status          enums.Status `gorm:"type:int;not null;default:0;index"`
 	Remark          string       `gorm:"type:text"`
@@ -570,7 +536,6 @@ type StoreStaffBinding struct {
 	UserID                  int64        `gorm:"type:bigint;not null;default:0;index"`
 	ActiveUserID            *int64       `gorm:"type:bigint;uniqueIndex:uk_store_staff_active_user" json:"-"` // ActiveUserID 仅在启用绑定中等于 UserID，用可空唯一键保证一账号一门店。
 	AgentTeamID             int64        `gorm:"type:bigint;not null;default:0;index"`                        // AgentTeamID 为门店员工所属客服组，0 表示暂未分配。
-	CompanyID               int64        `gorm:"type:bigint;not null;default:0;index"`                        // CompanyID 为旧公司档案兼容字段；新写入固定为 0。
 	StoreID                 int64        `gorm:"type:bigint;not null;default:0;uniqueIndex"`
 	ManagedMode             string       `gorm:"type:varchar(20);not null;default:'semi';index"`
 	ServiceHours            string       `gorm:"type:varchar(200);not null;default:''"`
@@ -594,8 +559,6 @@ type WxWorkProtocolInstance struct {
 	EmployeeUserID                 string       `gorm:"type:varchar(128);not null;default:'';index"`
 	EmployeeName                   string       `gorm:"type:varchar(120);not null;default:''"`
 	EmployeeAvatar                 string       `gorm:"type:varchar(1024);not null;default:''"`
-	CompanyID                      int64        `gorm:"type:bigint;not null;default:0;index"` // CompanyID 为旧公司档案兼容字段；新写入固定为 0。
-	IntentProfileID                int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreID                        int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreStaffBindingID            int64        `gorm:"type:bigint;not null;default:0;index"`
 	StoreAddress                   string       `gorm:"type:varchar(500);not null;default:''"`
@@ -1020,7 +983,6 @@ type AgentTeam struct {
 	Name                   string                      `gorm:"type:varchar(100);not null;default:'';index"`    // Name 为客服组名称。
 	IsDefault              bool                        `gorm:"not null;default:false;index"`                   // IsDefault 表示该组是否为租户创建时生成的默认综合客服组。
 	LeaderUserID           int64                       `gorm:"type:bigint;not null;default:0;index"`           // LeaderUserID 为组长用户ID，0 表示暂未设置。
-	CompanyScopeIDs        string                      `gorm:"type:varchar(500);not null;default:''"`          // CompanyScopeIDs 为已停用的历史范围字段；新写入固定为空。
 	StoreScopeIDs          string                      `gorm:"type:varchar(500);not null;default:''"`          // StoreScopeIDs 为客服组可服务的门店ID，逗号分隔；为空表示不限制。
 	WxWorkInstanceScopeIDs string                      `gorm:"type:varchar(500);not null;default:''"`          // WxWorkInstanceScopeIDs 为客服组可服务的企微员工号实例ID，逗号分隔；为空表示不限制。
 	DispatchMode           enums.AgentTeamDispatchMode `gorm:"type:varchar(30);not null;default:'rule';index"` // DispatchMode 为客服组自动派单策略，默认保持规则均衡。
@@ -1071,13 +1033,10 @@ type AgentTeamSchedule struct {
 type KnowledgeBase struct {
 	ID                               int64        `gorm:"primaryKey;autoIncrement"`                                // ID 为知识库主键。
 	TenantID                         int64        `gorm:"type:bigint;not null;default:0;index"`                    // TenantID 为知识库所属接入公司。
-	IntentProfileID                  int64        `gorm:"type:bigint;not null;default:0;index"`                    // IntentProfileID 为旧数据兼容字段，不参与运行时知识库选择。
-	CompanyID                        int64        `gorm:"type:bigint;not null;default:0;index"`                    // CompanyID 为旧公司档案兼容字段；新门店知识库写入 0。
 	StoreID                          int64        `gorm:"type:bigint;not null;default:0;index"`                    // StoreID 为知识库所属内部稳定门店身份。
 	DatasetID                        string       `gorm:"type:varchar(128);not null;default:'';index"`             // DatasetID 为 FastGPT 数据集 ID。
 	DatasetName                      string       `gorm:"type:varchar(200);not null;default:''"`                   // DatasetName 为 FastGPT 数据集名称。
 	ConnectionID                     string       `gorm:"type:varchar(64);not null;default:'platform'"`            // ConnectionID 为平台 FastGPT 连接标识。
-	RetrievalMode                    string       `gorm:"type:varchar(20);not null;default:'fastgpt';index"`       // RetrievalMode 为兼容字段；生产检索统一使用 FastGPT 引擎。
 	FastGPTProfileID                 string       `gorm:"type:varchar(128);not null;default:'';index"`             // FastGPTProfileID 为 FastGPT Dataset Model Profile 的非敏感标识。
 	FastGPTProfileName               string       `gorm:"type:varchar(200);not null;default:''"`                   // FastGPTProfileName 仅供门店侧展示。
 	FastGPTProfileRevision           string       `gorm:"type:varchar(80);not null;default:''"`                    // FastGPTProfileRevision 为 FastGPT 侧配置版本。
@@ -1094,10 +1053,6 @@ type KnowledgeBase struct {
 	DefaultTopK                      int          `gorm:"type:int;not null;default:10"`                            // DefaultTopK 为默认召回数量。
 	DefaultScoreThreshold            float64      `gorm:"type:decimal(5,4);not null;default:0.5"`                  // DefaultScoreThreshold 为默认相似度阈值。
 	DefaultRerankLimit               int          `gorm:"type:int;not null;default:5"`                             // DefaultRerankLimit 为默认重排后保留数量。
-	ChunkProvider                    string       `gorm:"type:varchar(30);not null;default:'fastgpt_cloud'"`       // ChunkProvider 固定为托管 FastGPT。
-	ChunkTargetTokens                int          `gorm:"type:int;not null;default:0"`                             // ChunkTargetTokens 为旧检索审计兼容字段，新写入固定为 0。
-	ChunkMaxTokens                   int          `gorm:"type:int;not null;default:0"`                             // ChunkMaxTokens 为旧检索审计兼容字段，新写入固定为 0。
-	ChunkOverlapTokens               int          `gorm:"type:int;not null;default:0"`                             // ChunkOverlapTokens 为旧检索审计兼容字段，新写入固定为 0。
 	AnswerMode                       int          `gorm:"type:int;not null;default:1"`                             // AnswerMode 为回答模式：1严格知识库模式 2辅助解释模式。
 	SortNo                           int          `gorm:"type:int;not null;default:0;index"`                       // SortNo 为排序号，用于后台展示和知识库的人工排序管理。
 	Remark                           string       `gorm:"type:text"`                                               // Remark 为备注。
@@ -1107,21 +1062,18 @@ type KnowledgeBase struct {
 // KnowledgeResourceGroup maps one stable cloud knowledge source record to reusable Agent Desk assets.
 // Resources stay outside the language-model context and are sent only after a matching knowledge hit.
 type KnowledgeResourceGroup struct {
-	ID               int64        `gorm:"primaryKey;autoIncrement"`
-	TenantID         int64        `gorm:"type:bigint;not null;default:0;index"`
-	CompanyID        int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_knowledge_resource_group;uniqueIndex:uk_knowledge_resource_store_source;index"`
-	StoreID          int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_knowledge_resource_store_source;index"`
-	IntentProfileID  int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_knowledge_resource_group;index"`
-	KnowledgeBaseID  int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_knowledge_resource_group;uniqueIndex:uk_knowledge_resource_store_source;index"`
-	WxWorkInstanceID int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_knowledge_resource_group;index"`
-	SourceProvider   string       `gorm:"type:varchar(40);not null;default:'fastgpt_cloud';uniqueIndex:uk_knowledge_resource_group;uniqueIndex:uk_knowledge_resource_store_source;index"`
-	SourceRecordID   string       `gorm:"type:varchar(255);not null;default:'';uniqueIndex:uk_knowledge_resource_group;uniqueIndex:uk_knowledge_resource_store_source;index"`
-	Title            string       `gorm:"type:varchar(255);not null;default:''"`
-	Description      string       `gorm:"type:text"`
-	SourceHash       string       `gorm:"type:varchar(64);not null;default:'';index"`
-	Status           enums.Status `gorm:"type:int;not null;default:0;index"`
-	SortNo           int          `gorm:"type:int;not null;default:0;index"`
-	Remark           string       `gorm:"type:text"`
+	ID              int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID        int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_knowledge_resource_store_source,priority:1"`
+	StoreID         int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_knowledge_resource_store_source,priority:2"`
+	KnowledgeBaseID int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_knowledge_resource_store_source,priority:3"`
+	SourceProvider  string       `gorm:"type:varchar(40);not null;default:'fastgpt_cloud';index;uniqueIndex:uk_knowledge_resource_store_source,priority:4"`
+	SourceRecordID  string       `gorm:"type:varchar(255);not null;default:'';index;uniqueIndex:uk_knowledge_resource_store_source,priority:5"`
+	Title           string       `gorm:"type:varchar(255);not null;default:''"`
+	Description     string       `gorm:"type:text"`
+	SourceHash      string       `gorm:"type:varchar(64);not null;default:'';index"`
+	Status          enums.Status `gorm:"type:int;not null;default:0;index"`
+	SortNo          int          `gorm:"type:int;not null;default:0;index"`
+	Remark          string       `gorm:"type:text"`
 	AuditFields
 }
 
@@ -1169,61 +1121,53 @@ type KnowledgeCandidate struct {
 
 // KnowledgeRetrieveLog 检索日志表。
 type KnowledgeRetrieveLog struct {
-	ID                 int64     `gorm:"primaryKey;autoIncrement"`                          // ID 为日志主键。
-	TenantID           int64     `gorm:"type:bigint;not null;default:0;index"`              // TenantID 为本次检索所属接入公司。
-	KnowledgeBaseID    int64     `gorm:"type:bigint;not null;index"`                        // KnowledgeBaseID 为知识库ID。
-	SourceType         string    `gorm:"type:varchar(30);not null;default:'fastgpt';index"` // SourceType 为检索来源；新记录固定为 fastgpt，历史值只读保留。
-	Channel            string    `gorm:"type:varchar(30);not null;default:'';index"`        // Channel 为渠道：im会话, agent_assist坐席辅助, api开放接口, debug调试。
-	Scene              string    `gorm:"type:varchar(50);not null;default:'';index"`        // Scene 为场景：first_response首响, assist辅助, qa问答。
-	SessionID          string    `gorm:"type:varchar(64);not null;default:'';index"`        // SessionID 为会话ID。
-	ConversationID     int64     `gorm:"type:bigint;not null;default:0;index"`              // ConversationID 为会话ID。
-	RequestID          string    `gorm:"type:varchar(64);not null;default:'';index"`        // RequestID 为请求ID。
-	Question           string    `gorm:"type:text"`                                         // Question 为原始问题。
-	RewriteQuestion    string    `gorm:"type:text"`                                         // RewriteQuestion 为改写后问题。
-	Answer             string    `gorm:"type:text"`                                         // Answer 为生成的答案。
-	AnswerStatus       int       `gorm:"type:int;not null;default:1;index"`                 // AnswerStatus 为答案状态：1正常 2无答案 3兜底 4风控拦截。
-	HitCount           int       `gorm:"type:int;not null;default:0"`                       // HitCount 为命中数量。
-	TopScore           float64   `gorm:"type:decimal(5,4);not null;default:0"`              // TopScore 为最高相似度分数。
-	ChunkProvider      string    `gorm:"type:varchar(30);not null;default:'';index"`        // ChunkProvider 为检索提供方；新记录固定为托管 FastGPT。
-	ChunkTargetTokens  int       `gorm:"type:int;not null;default:0"`                       // ChunkTargetTokens 为历史检索审计字段，新记录固定为 0。
-	ChunkMaxTokens     int       `gorm:"type:int;not null;default:0"`                       // ChunkMaxTokens 为历史检索审计字段，新记录固定为 0。
-	ChunkOverlapTokens int       `gorm:"type:int;not null;default:0"`                       // ChunkOverlapTokens 为历史检索审计字段，新记录固定为 0。
-	RerankEnabled      bool      `gorm:"not null;default:false;index"`                      // RerankEnabled 是否启用 rerank。
-	RerankLimit        int       `gorm:"type:int;not null;default:0"`                       // RerankLimit 为 rerank 条数。
-	CitationCount      int       `gorm:"type:int;not null;default:0"`                       // CitationCount 为最终引用条数。
-	UsedChunkCount     int       `gorm:"type:int;not null;default:0"`                       // UsedChunkCount 为进入上下文的 chunk 数。
-	LatencyMs          int64     `gorm:"type:bigint;not null;default:0"`                    // LatencyMs 为总耗时毫秒。
-	RetrieveMs         int64     `gorm:"type:bigint;not null;default:0"`                    // RetrieveMs 为检索耗时毫秒。
-	GenerateMs         int64     `gorm:"type:bigint;not null;default:0"`                    // GenerateMs 为生成耗时毫秒。
-	PromptTokens       int       `gorm:"type:int;not null;default:0"`                       // PromptTokens 为prompt token数。
-	CompletionTokens   int       `gorm:"type:int;not null;default:0"`                       // CompletionTokens 为completion token数。
-	ModelName          string    `gorm:"type:varchar(100);not null;default:''"`             // ModelName 为使用的模型名称。
-	TraceData          string    `gorm:"type:text"`                                         // TraceData 为链路追踪数据JSON。
-	CreatedAt          time.Time `gorm:"type:datetime;not null;index"`
+	ID               int64     `gorm:"primaryKey;autoIncrement"`                          // ID 为日志主键。
+	TenantID         int64     `gorm:"type:bigint;not null;default:0;index"`              // TenantID 为本次检索所属接入公司。
+	KnowledgeBaseID  int64     `gorm:"type:bigint;not null;index"`                        // KnowledgeBaseID 为知识库ID。
+	SourceType       string    `gorm:"type:varchar(30);not null;default:'fastgpt';index"` // SourceType 为检索来源；新记录固定为 fastgpt，历史值只读保留。
+	Channel          string    `gorm:"type:varchar(30);not null;default:'';index"`        // Channel 为渠道：im会话, agent_assist坐席辅助, api开放接口, debug调试。
+	Scene            string    `gorm:"type:varchar(50);not null;default:'';index"`        // Scene 为场景：first_response首响, assist辅助, qa问答。
+	SessionID        string    `gorm:"type:varchar(64);not null;default:'';index"`        // SessionID 为会话ID。
+	ConversationID   int64     `gorm:"type:bigint;not null;default:0;index"`              // ConversationID 为会话ID。
+	RequestID        string    `gorm:"type:varchar(64);not null;default:'';index"`        // RequestID 为请求ID。
+	Question         string    `gorm:"type:text"`                                         // Question 为原始问题。
+	RewriteQuestion  string    `gorm:"type:text"`                                         // RewriteQuestion 为改写后问题。
+	Answer           string    `gorm:"type:text"`                                         // Answer 为生成的答案。
+	AnswerStatus     int       `gorm:"type:int;not null;default:1;index"`                 // AnswerStatus 为答案状态：1正常 2无答案 3兜底 4风控拦截。
+	HitCount         int       `gorm:"type:int;not null;default:0"`                       // HitCount 为命中数量。
+	TopScore         float64   `gorm:"type:decimal(5,4);not null;default:0"`              // TopScore 为最高相似度分数。
+	ChunkProvider    string    `gorm:"type:varchar(30);not null;default:'';index"`        // ChunkProvider 为检索提供方；新记录固定为托管 FastGPT。
+	RerankEnabled    bool      `gorm:"not null;default:false;index"`                      // RerankEnabled 是否启用 rerank。
+	RerankLimit      int       `gorm:"type:int;not null;default:0"`                       // RerankLimit 为 rerank 条数。
+	CitationCount    int       `gorm:"type:int;not null;default:0"`                       // CitationCount 为最终引用条数。
+	UsedChunkCount   int       `gorm:"type:int;not null;default:0"`                       // UsedChunkCount 为进入上下文的 chunk 数。
+	LatencyMs        int64     `gorm:"type:bigint;not null;default:0"`                    // LatencyMs 为总耗时毫秒。
+	RetrieveMs       int64     `gorm:"type:bigint;not null;default:0"`                    // RetrieveMs 为检索耗时毫秒。
+	GenerateMs       int64     `gorm:"type:bigint;not null;default:0"`                    // GenerateMs 为生成耗时毫秒。
+	PromptTokens     int       `gorm:"type:int;not null;default:0"`                       // PromptTokens 为prompt token数。
+	CompletionTokens int       `gorm:"type:int;not null;default:0"`                       // CompletionTokens 为completion token数。
+	ModelName        string    `gorm:"type:varchar(100);not null;default:''"`             // ModelName 为使用的模型名称。
+	TraceData        string    `gorm:"type:text"`                                         // TraceData 为链路追踪数据JSON。
+	CreatedAt        time.Time `gorm:"type:datetime;not null;index"`
 }
 
 // KnowledgeRetrieveHit 检索命中详情表。
 type KnowledgeRetrieveHit struct {
-	ID              int64     `gorm:"primaryKey;autoIncrement"`              // ID 为命中记录主键。
-	TenantID        int64     `gorm:"type:bigint;not null;default:0;index"`  // TenantID 继承所属检索日志。
-	RetrieveLogID   int64     `gorm:"type:bigint;not null;index"`            // RetrieveLogID 为检索日志ID。
-	KnowledgeBaseID int64     `gorm:"type:bigint;not null;default:0;index"`  // KnowledgeBaseID 为命中来源知识库ID。
-	ChunkID         int64     `gorm:"type:bigint;not null;index"`            // ChunkID 为切片ID。
-	DocumentID      int64     `gorm:"type:bigint;not null;index"`            // DocumentID 为文档ID。
-	DocumentTitle   string    `gorm:"type:varchar(255);not null;default:''"` // DocumentTitle 为文档标题。
-	FaqID           int64     `gorm:"type:bigint;not null;default:0;index"`  // FaqID 为 FAQ ID。
-	FaqQuestion     string    `gorm:"type:varchar(500);not null;default:''"` // FaqQuestion 为 FAQ 问题。
-	ChunkNo         int       `gorm:"type:int;not null;default:0"`           // ChunkNo 为切片序号。
-	Title           string    `gorm:"type:varchar(255);not null;default:''"` // Title 为切片标题。
-	SectionPath     string    `gorm:"type:text"`                             // SectionPath 为章节路径。
-	ChunkType       string    `gorm:"type:varchar(30);not null;default:''"`  // ChunkType 为切片类型。
-	Provider        string    `gorm:"type:varchar(30);not null;default:''"`  // Provider 为分块 provider。
-	RankNo          int       `gorm:"type:int;not null;default:0"`           // RankNo 为排名。
-	Score           float64   `gorm:"type:decimal(5,4);not null;default:0"`  // Score 为相似度分数。
-	RerankScore     float64   `gorm:"type:decimal(5,4);not null;default:0"`  // RerankScore 为重排分数。
-	UsedInAnswer    bool      `gorm:"not null;default:false"`                // UsedInAnswer 是否用于生成答案。
-	IsCitation      bool      `gorm:"not null;default:false"`                // IsCitation 是否作为引用返回。
-	Snippet         string    `gorm:"type:text"`                             // Snippet 为内容片段。
+	ID              int64     `gorm:"primaryKey;autoIncrement"`                    // ID 为命中记录主键。
+	TenantID        int64     `gorm:"type:bigint;not null;default:0;index"`        // TenantID 继承所属检索日志。
+	RetrieveLogID   int64     `gorm:"type:bigint;not null;index"`                  // RetrieveLogID 为检索日志ID。
+	KnowledgeBaseID int64     `gorm:"type:bigint;not null;default:0;index"`        // KnowledgeBaseID 为命中来源知识库ID。
+	SourceRecordID  string    `gorm:"type:varchar(255);not null;default:'';index"` // SourceRecordID 为 FastGPT 命中记录的稳定标识。
+	DocumentTitle   string    `gorm:"type:varchar(255);not null;default:''"`       // DocumentTitle 为文档标题。
+	Title           string    `gorm:"type:varchar(255);not null;default:''"`       // Title 为切片标题。
+	SectionPath     string    `gorm:"type:text"`                                   // SectionPath 为章节路径。
+	Provider        string    `gorm:"type:varchar(30);not null;default:''"`        // Provider 为分块 provider。
+	RankNo          int       `gorm:"type:int;not null;default:0"`                 // RankNo 为排名。
+	Score           float64   `gorm:"type:decimal(5,4);not null;default:0"`        // Score 为相似度分数。
+	RerankScore     float64   `gorm:"type:decimal(5,4);not null;default:0"`        // RerankScore 为重排分数。
+	UsedInAnswer    bool      `gorm:"not null;default:false"`                      // UsedInAnswer 是否用于生成答案。
+	IsCitation      bool      `gorm:"not null;default:false"`                      // IsCitation 是否作为引用返回。
+	Snippet         string    `gorm:"type:text"`                                   // Snippet 为内容片段。
 	CreatedAt       time.Time `gorm:"type:datetime;not null;index"`
 }
 
@@ -1326,14 +1270,10 @@ type ReplyIntentProfile struct {
 // ReplyIntentConfig stores editable intent detection and prompt-pack rules for the reply runtime.
 type ReplyIntentConfig struct {
 	ID                 int64        `gorm:"primaryKey;autoIncrement"`
-	Code               string       `gorm:"type:varchar(100);not null;uniqueIndex:uk_reply_intent_scope"`
+	Code               string       `gorm:"type:varchar(100);not null;uniqueIndex:uk_reply_intent_profile_code,priority:2"`
 	Name               string       `gorm:"type:varchar(120);not null;default:''"`
 	Description        string       `gorm:"type:text"`
-	IntentProfileID    int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`
-	ScopeType          string       `gorm:"type:varchar(30);not null;default:'global';uniqueIndex:uk_reply_intent_scope;index"` // Legacy migration field; runtime only accepts global.
-	CompanyID          int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`             // Legacy migration field; runtime requires zero.
-	StoreID            int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`             // Legacy migration field; runtime requires zero.
-	WxWorkInstanceID   int64        `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_reply_intent_scope;index"`             // Legacy migration field; runtime requires zero.
+	IntentProfileID    int64        `gorm:"type:bigint;not null;uniqueIndex:uk_reply_intent_profile_code,priority:1;index"`
 	Priority           int          `gorm:"type:int;not null;default:100;index"`
 	MatchMode          string       `gorm:"type:varchar(30);not null;default:'hybrid';index"`
 	Keywords           string       `gorm:"type:text"`

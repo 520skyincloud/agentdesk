@@ -4432,11 +4432,11 @@ git diff --check
 - 建议第 87/88 批后合并本批。响应字段是兼容新增，旧前端可忽略；新前端依赖后端返回 `expired` 以禁用复制，因此部署顺序优先后端再前端。
 - 回滚代码不会删除 AutoMigrate 新列，也不得删除 migration 58 记录或清空已回填到期值。可以回滚 UI/运行时接线并保留数据，但会恢复永久邀请码风险；公开注册应始终保持关闭直到重新完成验收。
 
-## 第 90 批：丽斯未来酒店测试租户接入与主线合并要求（2026-07-15）
+## 第 90 批：合成验收酒店测试租户接入与主线合并要求（2026-07-15）
 
 ### 实施结果
 
-- `cmd/customer_audit_seed` 不再把丽斯未来仿真数据挂到 `legacy-default`，而是通过现有 `TenantService.CreateTenant` 创建或复用独立测试租户。公司、主管、邀请码、默认综合客服组、3 个业务客服组、12 个客服、100 个门店员工、100 个门店/企微员工号、500 个客户及会话派单数据都继承该 TenantID。
+- `cmd/customer_audit_seed` 不再把合成验收仿真数据挂到 `legacy-default`，而是通过现有 `TenantService.CreateTenant` 创建或复用独立测试租户。公司、主管、邀请码、默认综合客服组、3 个业务客服组、12 个客服、100 个门店员工、100 个门店/企微员工号、500 个客户及会话派单数据都继承该 TenantID。
 - 租户简称、主管账号、内部接待策略、门店、员工、客户、渠道及备注均明确包含“测试”或“仿真测试，不用于生产”。`t_company` 继续作为 Store/StoreStaffBinding 需要的租户内运营公司锚点，不是第二个租户根。
 - seed 复用平台已有启用 LLM `AIConfig`，支持 `--ai-config-id`、`--ai-config-name` 或默认启用 LLM；它为租户建立 TenantAIModelGrant 和用途默认，并创建租户级内部 `AIAgent` 供 Channel/Conversation 保存稳定身份。100 个企微员工号只在租户授权池内继承默认或使用账号覆盖，不恢复已废弃的企微独立 Agent 字段。
 - AIConfig 是平台全局配置，seed 不复制、不改写、不输出 API Key。当前本地验收库从原 8083 环境安全复制 `deepseek / deepseek-v4-flash` 数据行后，以 `--ai-config-name deepseek` 建立授权和默认；密钥只存在本地数据库，不进入源码、文档、日志或 Git，`AIAgent.AIConfigID` 保持 0。
@@ -4448,7 +4448,7 @@ git diff --check
 - `/tmp/agentdesk-integration.db` 已在写入前备份到 `/tmp/agentdesk-integration.pre-lissi-20260715.db`；原 8083 Docker MySQL 只读查询，未执行 migration 或写操作。
 - seed report：独立租户 1、主管 1、有效邀请码 1、默认综合组 1、内部接待策略 1、租户模型授权与用途默认有效、业务组 3、客服档案 12、门店员工/企微实例 100、客户 500，核心与派单基线全部为 true。
 - tenant-integrity-audit：61 个 TenantID 模型、74 张必需表、153 条关系、0 违规。默认综合组负责人保持为空；公司主管不伪装成客服组长，3 个业务组各自绑定测试客服组长。
-- 浏览器：接入公司显示丽斯未来测试及 12 客服/100 门店/4 客服组，三点菜单可见多模型授权；用户管理共 116 个租户账号；渠道和 Skill 调试显示内部测试接待策略；客服档案显示 3 个业务组各 9 条待回复；派单页显示 9 待派发、12 待首响、6 处理中；客户页显示 500 条测试客户。租户主管看不到平台模型配置和运行日志。
+- 浏览器：接入公司显示合成验收测试及 12 客服/100 门店/4 客服组，三点菜单可见多模型授权；用户管理共 116 个租户账号；渠道和 Skill 调试显示内部测试接待策略；客服档案显示 3 个业务组各 9 条待回复；派单页显示 9 待派发、12 待首响、6 处理中；客户页显示 500 条测试客户。租户主管看不到平台模型配置和运行日志。
 
 ### 合并 main 的强制步骤
 
@@ -4460,7 +4460,7 @@ git diff --check
 6. 临时副本必须从 39 继续跑到当前最高 migration，随后执行 61/74/153 tenant-integrity-audit、关键租户隔离测试和业务抽样。确认 0 违规后，才制定生产维护窗口和同样的可回滚步骤。
 7. 部署顺序先后端模型/AutoMigrate/DML migration 与 API，再前端。公开注册继续保持 `tenantRegistration.enabled=false`；本批测试邀请码和测试账号不构成开放注册决定。
 8. AIConfig API Key、邀请码明文、测试密码、SQLite/MySQL 数据文件和 `/tmp` 配置禁止提交。生产模型配置由目标环境安全注入；seed 只按 ID/名称引用现有配置。
-9. 回滚代码不会回退 AutoMigrate 列和 migration 34-59 的数据写入。回滚前保留数据库备份、关闭公开注册并按批次制定数据回退；模型授权表和已清理凭据必须保留，不能把回滚实现为恢复旧租户 API Key 或 AIAgent 模型选择。丽斯未来仿真数据可用 seed cleanup 独立移除，但 cleanup 只允许作用于带对应 TEST_SEED marker 的测试租户。
+9. 回滚代码不会回退 AutoMigrate 列和 migration 34-59 的数据写入。回滚前保留数据库备份、关闭公开注册并按批次制定数据回退；模型授权表和已清理凭据必须保留，不能把回滚实现为恢复旧租户 API Key 或 AIAgent 模型选择。合成验收仿真数据可用 seed cleanup 独立移除，但 cleanup 只允许作用于带对应 TEST_SEED marker 的测试租户。
 
 ### 验证命令
 
@@ -4499,7 +4499,7 @@ git diff --check
 - 新权限 `tenantModelGrant.view/update`、`tenantModelAssignment.view/update` 均为 platform scope，已加入权限常量、角色默认权限和权限国际化。handler 还校验 `IsPlatformAccount`；账号分配接口同时要求平台管理员已进入目标租户上下文。
 - migration 59 删除 `aiAgent.create/update/delete` 及其角色关系，迁移历史 StoreAIModelSetting 凭据/模型快照为 AIConfig 引用、TenantGrant 和用途分配，无法确定租户的旧行禁用并清密钥；历史 AIAgent 模型绑定迁移为租户授权/默认后不再参与在线解析。
 - AutoMigrate 新增 `t_tenant_ai_model_grant`。完整性审计目标调整为 61 个 TenantID 模型、74 张必需表、153 条关系。migration 59 创建时已核对 `origin/main@e67e207`、`origin/codex/customer-audit@c706815`、`origin/codex/ai-billing@f2d2da4`，三条远端均无重复编号。
-- 丽斯未来 seed 现在显式创建 TenantGrant 与租户用途默认，AIAgent.AIConfigID 保持 0；可见内部名称改为“丽斯未来酒店仿真测试接待策略”。报告校验租户默认模型和授权，不再以智能客服页/AIAgent 模型字段作为成功依据。
+- 合成验收 seed 现在显式创建 TenantGrant 与租户用途默认，AIAgent.AIConfigID 保持 0；可见内部名称改为“合成验收酒店仿真测试接待策略”。报告校验租户默认模型和授权，不再以智能客服页/AIAgent 模型字段作为成功依据。
 
 ### 主要文件与共享风险
 
@@ -4553,7 +4553,7 @@ cmd/customer_audit_seed/main.go
 - 权限完全复用原全局权限派发制：模式设置使用 `agentTeam.update`，派单读取使用 `conversation.view`，组长动作使用 `conversation.handover`。
 - 现有客服组编辑弹窗增加三段式模式选择；现有派单页增加任务判断和实时公平负载信息，不新增智能派单页面。
 - 派单表格采用固定列宽、理由截断/换行和等待/操作列不换行；桌面列互不覆盖，移动端由现有 `DashboardTableShell` 在局部横向滚动，页面本身不被宽表撑开。
-- 丽斯未来测试租户三个业务客服组设为智能模式，并复用现有租户模型授权增加派单用途；默认综合组保持规则模式，Seed 不复制或输出模型密钥。
+- 合成验收测试租户三个业务客服组设为智能模式，并复用现有租户模型授权增加派单用途；默认综合组保持规则模式，Seed 不复制或输出模型密钥。
 
 ### 主要文件与共享风险
 
@@ -4585,5 +4585,5 @@ cmd/customer_audit_seed/main.go
 - 新增测试覆盖租户队列轮转、紧急任务排序、合法模型选择、严格 JSON、格式重试、规则降级、公平保护、过期结果、事务容量复核、完整班次负载快照、小组成员变化、释放任务实时调度、路由失败整体回滚、加权负载、本班累计权重和连续消息压力。
 - 新增路由回归测试覆盖“客户已等待 8 分钟后才派单”的场景，确认客服仍从派单时刻获得完整 10 分钟服务窗口。
 - 2026-07-16 最终通过：`go test ./... -count=1`、派单/转人工聚焦 `go test -race`、`go vet ./...`、`make enums`、前端 `pnpm typecheck`、目标 ESLint、`pnpm build` 和 `git diff --check`。桌面 `1440x900` 验证页面宽度 1440、表格单元格重叠数 0；移动端 `390x844` 验证页面宽度仍为 390，1152px 宽表格仅在 339px 容器内滚动，控制台无 warning/error。
-- 丽斯未来测试库真实运行证据：三个业务客服组为智能模式，三个有效整组排班；9 条待派会话在一次补偿扫描中全部完成派发，产生 9 条 `dispatch_decision` 成功 usage 记录，Assignment 保存智能模式、置信度、工作量权重、优先级和模型理由。该数据仅用于本地仿真，不提交数据库或密钥。
+- 合成验收测试库真实运行证据：三个业务客服组为智能模式，三个有效整组排班；9 条待派会话在一次补偿扫描中全部完成派发，产生 9 条 `dispatch_decision` 成功 usage 记录，Assignment 保存智能模式、置信度、工作量权重、优先级和模型理由。该数据仅用于本地仿真，不提交数据库或密钥。
 - 回滚边界：可单独回滚派单决策/负载 service、触发接线和页面，客服组模式退回 `rule` 后仍沿用既有规则派单；AutoMigrate 新列和历史 Assignment 快照应保留，不删除、不回填。不得回滚第 91 批 TenantGrant/StoreAIModelSetting/AIUsageEvent，也不得恢复旧 AIAgent 模型绑定、租户密钥编辑器或任何计费公式。

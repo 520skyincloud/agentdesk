@@ -110,11 +110,8 @@ func TestKnowledgeRuntimeTenantIsolation(t *testing.T) {
 		t.Fatalf("retrieve log tenant=%d want=%d", logItem.TenantID, adminA.ActiveTenantID)
 	}
 	if logItem.SourceType != "fastgpt" ||
-		logItem.ChunkProvider != string(enums.KnowledgeChunkProviderFastGPT) ||
-		logItem.ChunkTargetTokens != 0 ||
-		logItem.ChunkMaxTokens != 0 ||
-		logItem.ChunkOverlapTokens != 0 {
-		t.Fatalf("new retrieve log kept legacy source or chunk settings: %#v", logItem)
+		logItem.ChunkProvider != string(enums.KnowledgeChunkProviderFastGPT) {
+		t.Fatalf("new retrieve log did not record the managed FastGPT provider: %#v", logItem)
 	}
 	if !strings.Contains(logItem.TraceData, `"sourceRecordId":"fastgpt-record-a"`) ||
 		strings.Contains(logItem.TraceData, `"documentIds"`) ||
@@ -207,8 +204,7 @@ func createTenantFastGPTKnowledgeBase(t *testing.T, db *gorm.DB, tenantID, store
 	item := &models.KnowledgeBase{
 		TenantID: tenantID, StoreID: storeID, Name: name,
 		KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud), DatasetID: datasetID, DatasetName: name,
-		ConnectionID: fastgptapi.ManagedConnectionID, RetrievalMode: enums.KnowledgeRetrievalModeFastGPT,
-		ChunkProvider: string(enums.KnowledgeChunkProviderFastGPT), DefaultTopK: 10, DefaultScoreThreshold: 0.2,
+		ConnectionID: fastgptapi.ManagedConnectionID, DefaultTopK: 10, DefaultScoreThreshold: 0.2,
 		DefaultRerankLimit: 10, AnswerMode: int(enums.KnowledgeAnswerModeStrict), Status: enums.StatusOk,
 	}
 	if err := db.Create(item).Error; err != nil {

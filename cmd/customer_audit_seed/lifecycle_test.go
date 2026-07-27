@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -84,7 +85,6 @@ func TestFreshDatabaseSeedLifecycle(t *testing.T) {
 
 	for name, model := range map[string]any{
 		"invitations":              &models.TenantInvitation{},
-		"companies":                &models.Company{},
 		"agent teams":              &models.AgentTeam{},
 		"team schedules":           &models.AgentTeamSchedule{},
 		"agent profiles":           &models.AgentProfile{},
@@ -406,8 +406,18 @@ func assertLifecycleSystemData(t *testing.T, db *gorm.DB) {
 	if count != int64(len(roleCodes)) {
 		t.Fatalf("builtin role count=%d want=%d", count, len(roleCodes))
 	}
-	var migration models.Migration
-	if err := db.Where("version = ? AND success = ?", 54, true).Take(&migration).Error; err != nil {
-		t.Fatalf("migration 54 was not preserved: %v", err)
+	var migrations []models.Migration
+	if err := db.Order("version ASC").Find(&migrations).Error; err != nil {
+		t.Fatalf("load fresh initializers after cleanup: %v", err)
+	}
+	versions := make([]int64, 0, len(migrations))
+	for i := range migrations {
+		versions = append(versions, migrations[i].Version)
+		if !migrations[i].Success {
+			t.Fatalf("fresh initializer changed to failed after seed lifecycle: %+v", migrations[i])
+		}
+	}
+	if want := []int64{2, 15, 35, 68, 69}; !reflect.DeepEqual(versions, want) {
+		t.Fatalf("fresh initializer versions after seed lifecycle=%v want=%v", versions, want)
 	}
 }

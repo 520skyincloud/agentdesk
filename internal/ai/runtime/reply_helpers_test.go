@@ -59,7 +59,7 @@ func TestToRunLogFinalAction(t *testing.T) {
 }
 
 func TestRunLogFinalActionUsesStructuredResourceTrace(t *testing.T) {
-	summary := &applicationruntime.Summary{Status: "completed", ReplyText: "[位置] 丽斯未来酒店"}
+	summary := &applicationruntime.Summary{Status: "completed", ReplyText: "[位置] 合成验收酒店"}
 	trace := &aiReplyTraceData{FinalAction: "resource"}
 	if got := runLogFinalAction(summary, trace); got != "resource" {
 		t.Fatalf("expected resource final action, got %q", got)

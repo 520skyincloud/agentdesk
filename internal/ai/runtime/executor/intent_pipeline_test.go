@@ -1741,9 +1741,6 @@ func validIntentDetectGoldenJSON() string {
 
 func seedRuntimeIntentConfig(t *testing.T, item models.ReplyIntentConfig) {
 	t.Helper()
-	if item.ScopeType == "" {
-		item.ScopeType = "global"
-	}
 	if item.IntentProfileID == 0 {
 		profile := &models.ReplyIntentProfile{}
 		if err := sqls.DB().Where("code = ?", "hotel").First(profile).Error; err != nil {

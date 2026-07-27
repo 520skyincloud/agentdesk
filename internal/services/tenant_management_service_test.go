@@ -451,7 +451,7 @@ func setupTenantManagementTestDB(t *testing.T) (*gorm.DB, *dto.AuthPrincipal) {
 		t.Fatalf("create industry profile: %v", err)
 	}
 	if err := db.Create(&models.ReplyIntentConfig{
-		Code: "service", Name: "服务", IntentProfileID: profile.ID, ScopeType: "global",
+		Code: "service", Name: "服务", IntentProfileID: profile.ID,
 		Status: enums.StatusOk, AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}).Error; err != nil {
 		t.Fatalf("create industry intent: %v", err)

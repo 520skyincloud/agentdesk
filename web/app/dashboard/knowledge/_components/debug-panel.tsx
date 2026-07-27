@@ -160,7 +160,7 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
                     <div className="text-xs font-medium text-muted-foreground">{t("knowledge.citationSources")}</div>
                     {answerResult.citations.map((citation) => (
                       <div
-                        key={citation.sourceRecordId || `${citation.documentId}-${citation.chunkNo}-${citation.sectionPath}`}
+                        key={citation.sourceRecordId}
                         className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30"
                       >
                         <div className="flex items-center justify-between gap-2">
@@ -193,7 +193,7 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
                   {t("knowledge.hitsSummary", { count: searchResult.hitCount, latency: searchResult.latencyMs })}
                 </div>
                 {searchResult.results.map((item) => (
-                  <div key={item.sourceRecordId || `${item.chunkId}-${item.documentId}`} className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
+                  <div key={item.sourceRecordId} className="rounded-xl border border-[#dbe7f6] bg-[#f6f9ff] p-3 shadow-inner shadow-blue-100/30">
                     <div className="flex items-center justify-between gap-2">
                       <div className="truncate text-sm font-medium">
                         {getSearchResultLabel(item)}

@@ -94,7 +94,6 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 
 		if err := repositories.StoreRepository.UpdatesInTenant(ctx.Tx, store.ID, current.TenantID, map[string]any{
 			"name":             storeName,
-			"company_id":       0,
 			"updated_at":       now,
 			"update_user_id":   user.ID,
 			"update_user_name": user.Username,
@@ -102,7 +101,6 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 			return err
 		}
 		if err := repositories.StoreStaffBindingRepository.UpdatesInTenant(ctx.Tx, binding.ID, current.TenantID, map[string]any{
-			"company_id":                 0,
 			"managed_mode":               normalizeStoreManagedMode(req.ManagedMode),
 			"service_hours":              strings.TrimSpace(req.ServiceHours),
 			"store_room_conversation_id": normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
@@ -129,7 +127,6 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 		}
 		updates := map[string]any{
 			"employee_name":              utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
-			"company_id":                 0,
 			"store_id":                   store.ID,
 			"store_staff_binding_id":     binding.ID,
 			"store_address":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),

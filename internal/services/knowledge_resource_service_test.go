@@ -29,9 +29,9 @@ func setupKnowledgeResourceTestDB(t *testing.T) *gorm.DB {
 func TestResolveKnowledgeResourcesStaysWithinTenantStoreAndKnowledgeScopeAcrossAccountReplacement(t *testing.T) {
 	db := setupKnowledgeResourceTestDB(t)
 	for _, instance := range []models.WxWorkProtocolInstance{
-		{ID: 41, TenantID: 101, Guid: "old-account", CompanyID: 0, StoreID: 7, Status: enums.StatusOk},
-		{ID: 42, TenantID: 101, Guid: "replacement-account", CompanyID: 0, StoreID: 7, Status: enums.StatusOk},
-		{ID: 43, TenantID: 101, Guid: "other-store", CompanyID: 0, StoreID: 8, Status: enums.StatusOk},
+		{ID: 41, TenantID: 101, Guid: "old-account", StoreID: 7, Status: enums.StatusOk},
+		{ID: 42, TenantID: 101, Guid: "replacement-account", StoreID: 7, Status: enums.StatusOk},
+		{ID: 43, TenantID: 101, Guid: "other-store", StoreID: 8, Status: enums.StatusOk},
 	} {
 		if err := db.Create(&instance).Error; err != nil {
 			t.Fatalf("create instance: %v", err)
@@ -50,15 +50,12 @@ func TestResolveKnowledgeResourcesStaysWithinTenantStoreAndKnowledgeScopeAcrossA
 		t.Fatalf("create asset: %v", err)
 	}
 	group := &models.KnowledgeResourceGroup{
-		TenantID:         101,
-		CompanyID:        0,
-		StoreID:          7,
-		IntentProfileID:  0,
-		KnowledgeBaseID:  31,
-		WxWorkInstanceID: 0,
-		SourceProvider:   knowledgeResourceProviderFastGPT,
-		SourceRecordID:   "fastgpt-record-001",
-		Status:           enums.StatusOk,
+		TenantID:        101,
+		StoreID:         7,
+		KnowledgeBaseID: 31,
+		SourceProvider:  knowledgeResourceProviderFastGPT,
+		SourceRecordID:  "fastgpt-record-001",
+		Status:          enums.StatusOk,
 	}
 	if err := db.Create(group).Error; err != nil {
 		t.Fatalf("create resource group: %v", err)

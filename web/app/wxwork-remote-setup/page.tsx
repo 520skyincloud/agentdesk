@@ -349,7 +349,7 @@ function WxWorkRemoteSetupContent() {
                 门店：<span className="font-medium text-foreground">{repairMojibakeText(instance?.storeName || "") || "待补充"}</span>。本页不会注册新账号或分配角色。
               </div>
               <Field label="员工号显示名"><Input value={form.employeeName} onChange={(event) => setValue("employeeName", event.target.value)} placeholder="例如：吴朝伟" /></Field>
-              <Field label="门店名称"><Input value={form.storeName} onChange={(event) => setValue("storeName", event.target.value)} placeholder="例如：丽斯未来酒店杭州某某店" /></Field>
+              <Field label="门店名称"><Input value={form.storeName} onChange={(event) => setValue("storeName", event.target.value)} placeholder="例如：示例酒店杭州某某店" /></Field>
 			  <div className="md:col-span-2 rounded-2xl border border-[#dbe7f6] bg-[#f8fbff] p-4">
 					<label className="text-sm font-medium">系统账号登记邮箱</label>
 					<p className="mt-1 text-xs leading-5 text-muted-foreground">请输入该系统账号在用户管理中登记的邮箱。验证仅用于确认绑定操作，不会创建账号或改变角色。</p>

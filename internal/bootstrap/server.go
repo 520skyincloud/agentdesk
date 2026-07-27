@@ -197,6 +197,7 @@ func addRouter(app *gin.Engine) {
 	wsGroup := app.Group("/api/ws")
 	wsGroup.GET("/dashboard", middleware.AuthMiddleware, services.WsService.HandleDashboardWS)
 	wsGroup.GET("/dashboard/notification", middleware.AuthMiddleware, services.WsService.HandleDashboardNotificationWS)
+	wsGroup.GET("/configuration", middleware.AuthMiddleware, services.WsService.HandleConfigurationWS)
 	wsGroup.GET("/open", services.WsService.HandleOpenWS)
 
 	dashboardGroup := app.Group("/api/dashboard", middleware.AuthMiddleware)
@@ -239,6 +240,7 @@ func addRouter(app *gin.Engine) {
 	registerDashboardBillingQueryRoutes(dashboardGroup.Group("/billing-query"))
 	registerDashboardReplyIntentProfileRoutes(dashboardGroup.Group("/reply-intent-profile"))
 	registerDashboardReplyIntentConfigRoutes(dashboardGroup.Group("/reply-intent-config"))
+	registerDashboardIndustryTagDefinitionRoutes(dashboardGroup.Group("/industry-tag-definition"))
 	registerDashboardAssetRoutes(dashboardGroup.Group("/asset"))
 	registerDashboardStorageSettingRoutes(dashboardGroup.Group("/storage-setting"))
 	registerDashboardKnowledgeBaseRoutes(dashboardGroup.Group("/knowledge-base"))

@@ -273,16 +273,6 @@ func TestFastGPTKnowledgeBaseActivationProjectsToWholeStore(t *testing.T) {
 		t.Fatalf("set store default: %v", err)
 	}
 	seedReadyFastGPTStoreBinding(t, fixture, 1)
-	now := time.Now()
-	retirement := &models.FastGPTRemoteResourceRetirement{
-		TenantID: tenantID, StoreID: store.ID, LegacyKnowledgeBaseID: active.ID,
-		LegacyTeamID: fmt.Sprintf("team-%d", store.ID), LegacyDatasetID: active.DatasetID,
-		Status: enums.FastGPTRemoteRetirementAwaitingReplacement, Reason: "test_reprovision",
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(retirement).Error; err != nil {
-		t.Fatalf("create retirement: %v", err)
-	}
 	first := &models.WxWorkProtocolInstance{TenantID: tenantID, Guid: "gateway-instance-1", StoreID: store.ID, KnowledgeBaseID: active.ID, Status: enums.StatusOk}
 	second := &models.WxWorkProtocolInstance{TenantID: tenantID, Guid: "gateway-instance-2", StoreID: store.ID, KnowledgeBaseID: active.ID, Status: enums.StatusOk}
 	if err := db.Create(first).Error; err != nil {
@@ -307,15 +297,8 @@ func TestFastGPTKnowledgeBaseActivationProjectsToWholeStore(t *testing.T) {
 	if updatedStore == nil || updatedStore.KnowledgeBaseID != candidate.ID {
 		t.Fatalf("Store authoritative knowledge base did not switch: %#v", updatedStore)
 	}
-	if err := db.First(active, active.ID).Error; err != nil || active.Status != enums.StatusDeleted {
-		t.Fatalf("legacy knowledge base did not leave runtime: %#v err=%v", active, err)
-	}
-	if err := db.First(retirement, retirement.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if retirement.Status != enums.FastGPTRemoteRetirementReadyForCleanup || retirement.ReplacementKnowledgeBaseID != candidate.ID ||
-		retirement.ReplacementDatasetID != candidate.DatasetID || retirement.CutoverAt == nil {
-		t.Fatalf("retirement cutover=%#v", retirement)
+	if err := db.First(active, active.ID).Error; err != nil || active.Status != enums.StatusOk {
+		t.Fatalf("previous knowledge base should remain an explicit managed resource: %#v err=%v", active, err)
 	}
 }
 
@@ -413,7 +396,7 @@ func seedFastGPTDatasetRuntime(t *testing.T, fixture storeCredentialFixture) {
 	t.Helper()
 	if err := fixture.db.AutoMigrate(
 		&models.ReplyIntentProfile{}, &models.ReplyIntentConfig{}, &models.IndustryTagDefinition{},
-		&models.FastGPTDatasetJob{}, &models.FastGPTRemoteResourceRetirement{}, &models.ConversationRouteState{},
+		&models.FastGPTDatasetJob{}, &models.ConversationRouteState{},
 	); err != nil {
 		t.Fatalf("migrate FastGPT runtime fixture: %v", err)
 	}
@@ -427,7 +410,7 @@ func seedFastGPTDatasetRuntime(t *testing.T, fixture storeCredentialFixture) {
 		t.Fatalf("create industry profile: %v", err)
 	}
 	if err := fixture.db.Create(&models.ReplyIntentConfig{
-		Code: "general", Name: "通用咨询", IntentProfileID: profile.ID, ScopeType: "global", Status: enums.StatusOk,
+		Code: "general", Name: "通用咨询", IntentProfileID: profile.ID, Status: enums.StatusOk,
 	}).Error; err != nil {
 		t.Fatalf("create industry intent: %v", err)
 	}

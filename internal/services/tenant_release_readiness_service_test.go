@@ -506,7 +506,7 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 	}
 	if err := db.Create(&models.ReplyIntentConfig{
 		Code: "service_request", Name: "Service request", IntentProfileID: industry.ID,
-		ScopeType: "global", MatchMode: "hybrid", Status: enums.StatusOk, AuditFields: audit,
+		MatchMode: "hybrid", Status: enums.StatusOk, AuditFields: audit,
 	}).Error; err != nil {
 		t.Fatalf("create readiness intent config: %v", err)
 	}
@@ -683,7 +683,7 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 	knowledge := models.KnowledgeBase{
 		TenantID: tenant.ID, StoreID: store.ID,
 		DatasetID: "dataset-ready", DatasetName: "Ready dataset",
-		ConnectionID: fastgptapi.ManagedConnectionID, RetrievalMode: "fastgpt",
+		ConnectionID:     fastgptapi.ManagedConnectionID,
 		FastGPTProfileID: "profile-ready", FastGPTProfileRevision: "1",
 		FastGPTProfileStatus: "ready", FastGPTProfileSyncedAt: &publishedAt,
 		FastGPTAppliedProfileID:          modelProfile.ID,

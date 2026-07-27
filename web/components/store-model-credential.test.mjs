@@ -76,3 +76,16 @@ test("pending model profile switch reuses the sensitive action contract", () => 
   assert.match(componentSource, /currentPassword,\s*confirmed/)
   assert.match(componentSource, /验证并切换待选方案/)
 })
+
+test("credential scope changes clear the previous store snapshot and sensitive form state", () => {
+  for (const reset of [
+    "setData(null)",
+    "setAudit([])",
+    'setNewKey("")',
+    'setCurrentPassword("")',
+    "setConfirmed(false)",
+    "setShowKey(false)",
+  ]) {
+    assert.match(componentSource, new RegExp(reset.replace(/[()[\]]/g, "\\$&")))
+  }
+})

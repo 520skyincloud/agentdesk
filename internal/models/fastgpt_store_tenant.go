@@ -9,7 +9,6 @@ import "time"
 type FastGPTStoreTenant struct {
 	ID                        int64      `gorm:"primaryKey;autoIncrement"`
 	TenantID                  int64      `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_fastgpt_store_tenant,priority:1;index"`
-	CompanyID                 int64      `gorm:"type:bigint;not null;default:0;index"`
 	StoreID                   int64      `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_fastgpt_store_tenant,priority:2;index"`
 	TenantTeamID              string     `gorm:"type:varchar(128);not null;default:'';uniqueIndex"`
 	TenantTeamName            string     `gorm:"type:varchar(200);not null;default:''"`
@@ -32,7 +31,6 @@ type FastGPTStoreTenant struct {
 type FastGPTUsageSyncState struct {
 	ID                 int64      `gorm:"primaryKey;autoIncrement"`
 	TenantID           int64      `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_fastgpt_usage_sync_state,priority:1;index"`
-	CompanyID          int64      `gorm:"type:bigint;not null;default:0;index"`
 	StoreID            int64      `gorm:"type:bigint;not null;default:0;index"`
 	KnowledgeBaseID    int64      `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_fastgpt_usage_sync_state,priority:2;index"`
 	TenantTeamID       string     `gorm:"type:varchar(128);not null;default:'';index"`

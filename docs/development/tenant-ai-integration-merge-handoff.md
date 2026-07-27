@@ -169,7 +169,7 @@ Company 已从产品运行时退役：
 | 规则派单与恢复 | internal/services/conversation_dispatch_*_service.go |
 | 排班与临时人员 | internal/services/agent_team_schedule_service.go、web/app/dashboard/agent-team-schedules/* |
 | 运营事实、质检 | internal/models/service_analytics.go、internal/services/service_analytics_*_service.go |
-| 丽斯未来仿真 | cmd/customer_audit_seed/* |
+| 合成验收仿真 | cmd/customer_audit_seed/* |
 
 ## 6. Migration
 
@@ -254,7 +254,7 @@ origin/codex/ai-billing 在共同基点 f2d2da4 后，前七个提交已按当�
 
 完整冲突审计和后续吸收顺序见第 20 节。在该工作完成前，ai-billing 只作为代码与测试语义来源，不是可合并分支。
 
-## 8. 丽斯未来仿真
+## 8. 合成验收仿真
 
 ### 8.1 静态 Seed 基线
 
@@ -325,7 +325,7 @@ expectedCoreComplete=true、expectedSimulationComplete=true、simulationBaseline
 
 ### 9.2 浏览器
 
-平台管理员进入丽斯未来租户后已验证：
+平台管理员进入合成验收租户后已验证：
 
 - 接入公司显示客服 12、门店 100、客服组 4。
 - 用户管理共 116 个本租户账号；100 个门店员工均显示门店、企微和客服组。
@@ -357,7 +357,7 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
 
 - AGENT_DESK_INVITATION_ENCRYPTION_KEY 必须是独立的有效 AES-256-GCM 密钥；不得提交到 Git。
 - tenantRegistration.enabled 默认 false。启用前完成验证码、限流、邮箱/手机和隔离验收。
-- 丽斯未来 100 个企微实例是仿真数据，未连接真实协议设备时在线状态为 unknown 属于预期。
+- 合成验收 100 个企微实例是仿真数据，未连接真实协议设备时在线状态为 unknown 属于预期。
 - FastGPT 托管能力未配置时必须明确不可用，不能生成假 Dataset 或假模型测试结果。
 - 模型、Token 和计费配置由平台能力负责；规则派单不读取模型配置、不产生派单模型 usage，也不修改回复/意图模型契约。
 
@@ -423,7 +423,7 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
 | 分析事实 | 停止捕获并保留事实表 | 不反向控制会话运行时 |
 | 规则派单 | 把客服组改为 `manual` 并使用人工池 | 保留 Assignment/DecisionLog；不恢复模型派单 |
 | FastGPT/模型 | 撤销租户授权或禁用托管连接 | 不修改历史 usage 和计费证据 |
-| 仿真数据 | customer_audit_seed --action cleanup | 仅清理带专用标识的丽斯未来测试数据 |
+| 仿真数据 | customer_audit_seed --action cleanup | 仅清理带专用标识的合成验收测试数据 |
 
 ## 14. 不属于本次阻断
 
@@ -439,7 +439,7 @@ Go 测试中的 `httptest` 需要监听本地随机端口，TypeScript/Next.js �
 只有同时满足以下条件才能写“本次目标完成”：
 
 - 最终身份语义、账号入口和 Company 退役与真实代码一致。
-- 丽斯未来静态 Seed、动态运行和完整性审计均有证据。
+- 合成验收静态 Seed、动态运行和完整性审计均有证据。
 - 权威设计文档和本文件无旧开户/客户企业运行时语义。
 - 权威派单文档、页面和运行时只存在人工/规则两种模式，旧模型派单只作为历史审计说明。
 - 全量 Go、vet、前端 typecheck/lint/Node/build 和 diff 检查通过。
@@ -562,9 +562,9 @@ main 实际合并由仓库负责人决定；在合并前只能写“PR 已就绪
 
 第一次全仓测试和构建只因受限环境无法访问 Go 缓存、监听 `httptest` 本地端口和写入 `.next` 失败；使用相同命令在正常项目权限下重跑后全部通过，不属于代码失败。
 
-### 18.2 丽斯未来规则派单仿真
+### 18.2 合成验收规则派单仿真
 
-为避免把旧服务进程和动态运行后的历史仿真误当成新规则证据，先停止 09:12 启动的旧 `8084` 进程，再使用同一专用批次和既有平台模型配置 `deepseek`（AIConfig ID 7）幂等重建丽斯未来测试租户。重建后的静态报告为：
+为避免把旧服务进程和动态运行后的历史仿真误当成新规则证据，先停止 09:12 启动的旧 `8084` 进程，再使用同一专用批次和既有平台模型配置 `deepseek`（AIConfig ID 7）幂等重建合成验收测试租户。重建后的静态报告为：
 
 - 3 个业务客服组全部为 `rule`，3 个当前有效班次，12 名客服，0 个活跃派单模型设置。
 - 36 个会话、135 条消息、21 条历史/当前 Assignment；9 条待派、18 条当前已派、覆盖 12 名客服。
@@ -602,13 +602,13 @@ ai-billing 与本批同时修改的共享文件仍为：
 
 后续冲突解决必须保留本批的规则派单、恢复、旧 dispatch 删除和实时工作台，同时保留 ai-billing 的 AI 回复、FastGPT、模型 usage、Token 与计费行为。禁止整文件选边，禁止重新合并 `customer-audit`。
 
-## 19. 2026-07-22 丽斯未来测试客服在线保活（已完成）
+## 19. 2026-07-22 合成验收测试客服在线保活（已完成）
 
 ### 19.1 目标、诊断与边界
 
-- 用户完成排班后，12 名丽斯未来测试客服仍全部显示“当前未在线”。真实链路复核确认账号、客服档案、自动接单、并发、角色权限、客服组、班次和班次成员均已通过，唯一阻断是 Seed 的 `last_seen_at` 超过生产派单 3 分钟新鲜度。
+- 用户完成排班后，12 名合成验收测试客服仍全部显示“当前未在线”。真实链路复核确认账号、客服档案、自动接单、并发、角色权限、客服组、班次和班次成员均已通过，唯一阻断是 Seed 的 `last_seen_at` 超过生产派单 3 分钟新鲜度。
 - 生产规则保持不变：真实客服仍需工作台/WebSocket 心跳，排班不能自动等同在线，也不为 `simulation_seed` 增加生产特判。
-- 本批只让丽斯未来的 12 个固定仿真客服持续在线。作用范围必须同时满足固定测试租户注册身份、启用租户、当前 batch 标记、12 个固定测试用户名和同 batch 客服档案标记。
+- 本批只让合成验收的 12 个固定仿真客服持续在线。作用范围必须同时满足固定测试租户注册身份、启用租户、当前 batch 标记、12 个固定测试用户名和同 batch 客服档案标记。
 
 ### 19.2 实现与运行方式
 

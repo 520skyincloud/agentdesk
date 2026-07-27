@@ -44,6 +44,7 @@ import {
   type ModelProfileTemplate,
   type ModelProfileValidation,
 } from "@/lib/api/admin"
+import { useAIConfigurationRealtime } from "@/hooks/use-ai-configuration-realtime"
 import { formatDateTime } from "@/lib/utils"
 import { EditDialog, type ModelProfileFormValues } from "./_components/edit"
 
@@ -120,6 +121,15 @@ export default function DashboardModelProfilesPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useAIConfigurationRealtime((event) => {
+    if (
+      event.type === "store_model_profile.changed" ||
+      event.type === "store_model_credential.changed"
+    ) {
+      void load(event.profileId || selectedId)
+    }
+  }, Boolean(session?.isPlatformAccount) && permissions.has("aiConfig.view"))
 
   const selected = useMemo(
     () => catalog?.profiles.find((item) => item.id === selectedId) ?? null,

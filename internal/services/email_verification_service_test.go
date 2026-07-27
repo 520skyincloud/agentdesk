@@ -122,14 +122,14 @@ func TestRemoteSetupEmailCodeVerifiesExistingStoreStaffAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("complete remote setup: %v", err)
 	}
-	if updated.StoreID != store.ID || updated.StoreStaffBindingID != binding.ID || updated.CompanyID != 0 {
+	if updated.StoreID != store.ID || updated.StoreStaffBindingID != binding.ID {
 		t.Fatalf("stable store binding missing: %#v", updated)
 	}
 	if updated.AIReplyEnabled {
 		t.Fatal("AI must remain disabled until industry and dataset are ready")
 	}
 	currentBinding := repositories.StoreStaffBindingRepository.Get(db, updated.StoreStaffBindingID)
-	if currentBinding == nil || currentBinding.UserID != user.ID || currentBinding.StoreID != store.ID || currentBinding.CompanyID != 0 {
+	if currentBinding == nil || currentBinding.UserID != user.ID || currentBinding.StoreID != store.ID {
 		t.Fatalf("primary store user binding changed: %#v", currentBinding)
 	}
 	currentUser := repositories.UserRepository.Get(db, user.ID)

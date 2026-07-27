@@ -29,11 +29,11 @@ const (
 	defaultBatch    = "customer-audit-v1"
 	defaultPassword = "123456"
 
-	tenantLegalName = "丽斯未来酒店"
-	channelName     = "丽斯未来酒店测试企微员工号渠道"
-	aiAgentName     = "丽斯未来酒店仿真测试接待策略"
+	tenantLegalName = "合成验收酒店"
+	channelName     = "合成验收酒店测试企微员工号渠道"
+	aiAgentName     = "合成验收酒店仿真测试接待策略"
 
-	tenantShortName        = "丽斯未来测试"
+	tenantShortName        = "合成验收测试"
 	tenantRegistrationType = "simulation_test_id"
 	tenantRegistrationNo   = "LISSI-FUTURE-HOTEL-TEST-001"
 	tenantSupervisorName   = "test_customer_audit_tenant_admin"
@@ -94,8 +94,6 @@ type report struct {
 	StoreCredentialPolicies    int64  `json:"storeCredentialPolicies"`
 	ChannelAIAgentBound        bool   `json:"channelAiAgentBound"`
 	SimulationAIAgentBound     int64  `json:"simulationAiAgentBound"`
-	LegacyCompanyRows          int64  `json:"legacyCompanyRows"`
-	LegacyCompanyReferences    int64  `json:"legacyCompanyReferences"`
 	Channel                    int64  `json:"channel"`
 	Stores                     int64  `json:"stores"`
 	CSLeaders                  int64  `json:"csLeaders"`
@@ -285,7 +283,7 @@ func seedWithOptions(db *gorm.DB, batch, password string, options seedOptions) e
 		if err := ctx.upsertSimulationConversations(); err != nil {
 			return err
 		}
-		return ctx.retireLegacySimulationCompany()
+		return nil
 	})
 }
 
@@ -330,14 +328,14 @@ func ensureTestTenant(db *gorm.DB, batch string) (*models.Tenant, error) {
 		ShortName:        tenantShortName,
 		RegistrationType: tenantRegistrationType,
 		RegistrationNo:   tenantRegistrationNo,
-		ContactName:      "丽斯未来仿真测试联系人",
+		ContactName:      "合成验收仿真测试联系人",
 		ContactMobile:    "19900008848",
 		ContactEmail:     "lissi-simulation@example.invalid",
 		Address:          "仿真测试地址，不代表真实经营地址",
 		Remark:           fmt.Sprintf("%s 仿真测试租户，不用于生产", marker(batch)),
 		Supervisor: request.CreateTenantSupervisorRequest{
 			Username: tenantSupervisorName,
-			Nickname: "丽斯未来测试公司主管",
+			Nickname: "合成验收测试公司主管",
 			Mobile:   "19900008849",
 			Email:    "lissi-supervisor@example.invalid",
 		},
@@ -525,12 +523,6 @@ func cleanup(db *gorm.DB, batch string) error {
 			{"channel", func() error {
 				return db.Where("remark LIKE ? AND name = ?", remarkPattern, channelName).Delete(&models.Channel{}).Error
 			}},
-			{"legacy company", func() error {
-				if tenantID <= 0 {
-					return nil
-				}
-				return db.Where("tenant_id = ?", tenantID).Delete(&models.Company{}).Error
-			}},
 			{"tenant invitations", func() error {
 				if tenantID <= 0 {
 					return nil
@@ -604,17 +596,6 @@ func buildReport(db *gorm.DB, batch string) report {
 	r.StoreModelCredentials = count(db, &models.StoreModelCredential{}, "tenant_id = ?", tenantID)
 	r.UnconfiguredCredentials = count(db, &models.StoreModelCredential{}, "tenant_id = ? AND status = ?", tenantID, enums.StoreCredentialStatusUnconfigured)
 	r.StoreCredentialPolicies = count(db, &models.StoreCredentialPolicy{}, "tenant_id = ? AND status = ?", tenantID, enums.StatusOk)
-	r.LegacyCompanyRows = count(db, &models.Company{}, "tenant_id = ?", tenantID)
-	r.LegacyCompanyReferences = count(db, &models.Store{}, "tenant_id = ? AND company_id <> 0", tenantID) +
-		count(db, &models.StoreStaffBinding{}, "tenant_id = ? AND company_id <> 0", tenantID) +
-		count(db, &models.WxWorkProtocolInstance{}, "tenant_id = ? AND company_id <> 0", tenantID) +
-		count(db, &models.Customer{}, "tenant_id = ? AND company_id <> 0", tenantID) +
-		count(db, &models.AgentTeam{}, "tenant_id = ? AND company_scope_ids <> ''", tenantID) +
-		count(db, &models.KnowledgeBase{}, "tenant_id = ? AND company_id <> 0", tenantID) +
-		count(db, &models.KnowledgeResourceGroup{}, "tenant_id = ? AND company_id <> 0", tenantID) +
-		count(db, &models.FastGPTStoreTenant{}, "tenant_id = ? AND company_id <> 0", tenantID) +
-		count(db, &models.FastGPTUsageSyncState{}, "tenant_id = ? AND company_id <> 0", tenantID) +
-		count(db, &models.FastGPTDatasetJob{}, "tenant_id = ? AND company_id <> 0", tenantID)
 	r.Channel = count(db, &models.Channel{}, "remark LIKE ? AND name = ?", remarkPattern, channelName)
 	r.Stores = count(db, &models.Store{}, "remark LIKE ? AND store_code LIKE ?", remarkPattern, storeCodePrefix+"%")
 	r.CSLeaders = count(db, &models.User{}, "remark LIKE ? AND username LIKE ?", remarkPattern, usernamePrefix+"cs_leader_%")
@@ -680,8 +661,6 @@ func buildReport(db *gorm.DB, batch string) report {
 		r.UnconfiguredCredentials == 100 &&
 		r.StoreCredentialPolicies == 100 &&
 		r.ChannelAIAgentBound &&
-		r.LegacyCompanyRows == 0 &&
-		r.LegacyCompanyReferences == 0 &&
 		r.Channel == 1 &&
 		r.Stores == 100 &&
 		r.CSLeaders == 3 &&
@@ -759,7 +738,7 @@ func (ctx *seedContext) loadTenantFoundation() error {
 		return fmt.Errorf("load simulation tenant supervisor failed: %w", err)
 	}
 	if err := ctx.db.Model(supervisor).Updates(map[string]any{
-		"nickname":             "丽斯未来测试公司主管",
+		"nickname":             "合成验收测试公司主管",
 		"password":             ctx.passwordHash,
 		"must_change_password": false,
 		"approval_status":      enums.UserApprovalStatusApproved,
@@ -785,7 +764,7 @@ func (ctx *seedContext) loadTenantFoundation() error {
 		"leader_user_id":   0,
 		"dispatch_mode":    enums.AgentTeamDispatchModeRule,
 		"status":           enums.StatusOk,
-		"description":      "丽斯未来酒店仿真测试租户默认综合客服组",
+		"description":      "合成验收酒店仿真测试租户默认综合客服组",
 		"remark":           ctx.seedRemark("仿真测试默认综合客服组，不用于生产"),
 		"updated_at":       ctx.now,
 		"update_user_id":   constants.SystemAuditUserID,
@@ -869,7 +848,6 @@ func (ctx *seedContext) upsertStores() error {
 			"tenant_id":        ctx.tenant.ID,
 			"name":             name,
 			"brand_name":       tenantLegalName,
-			"company_id":       0,
 			"status":           enums.StatusOk,
 			"remark":           ctx.seedRemark("测试分门店"),
 			"updated_at":       ctx.now,
@@ -895,7 +873,6 @@ func (ctx *seedContext) upsertStores() error {
 			StoreCode:   code,
 			Name:        name,
 			BrandName:   tenantLegalName,
-			CompanyID:   0,
 			Status:      enums.StatusOk,
 			Remark:      ctx.seedRemark("测试分门店"),
 			AuditFields: ctx.audit,
@@ -1030,7 +1007,7 @@ func (ctx *seedContext) upsertUser(username, nickname string, roleID int64, rema
 			Username:           username,
 			Nickname:           nickname,
 			Password:           ctx.passwordHash,
-			RegistrationSource: enums.UserRegistrationSourceLegacyMigration,
+			RegistrationSource: enums.UserRegistrationSourceTenant,
 			ApprovalStatus:     enums.UserApprovalStatusApproved,
 			Status:             enums.StatusOk,
 			Remark:             ctx.seedRemark(remark),
@@ -1071,17 +1048,16 @@ func (ctx *seedContext) upsertTeams() error {
 		item := &models.AgentTeam{}
 		err := ctx.db.Where("tenant_id = ? AND name = ?", ctx.tenant.ID, teamName).Take(item).Error
 		updates := map[string]any{
-			"tenant_id":         ctx.tenant.ID,
-			"leader_user_id":    ctx.leaders[i-1].ID,
-			"company_scope_ids": "",
-			"store_scope_ids":   joinInt64s(storeIDs),
-			"dispatch_mode":     enums.AgentTeamDispatchModeRule,
-			"status":            enums.StatusOk,
-			"description":       fmt.Sprintf("负责%s测试门店%03d-%03d", tenantLegalName, ranges[i-1][0], ranges[i-1][1]),
-			"remark":            ctx.seedRemark("测试客服组"),
-			"updated_at":        ctx.now,
-			"update_user_id":    constants.SystemAuditUserID,
-			"update_user_name":  constants.SystemAuditUserName,
+			"tenant_id":        ctx.tenant.ID,
+			"leader_user_id":   ctx.leaders[i-1].ID,
+			"store_scope_ids":  joinInt64s(storeIDs),
+			"dispatch_mode":    enums.AgentTeamDispatchModeRule,
+			"status":           enums.StatusOk,
+			"description":      fmt.Sprintf("负责%s测试门店%03d-%03d", tenantLegalName, ranges[i-1][0], ranges[i-1][1]),
+			"remark":           ctx.seedRemark("测试客服组"),
+			"updated_at":       ctx.now,
+			"update_user_id":   constants.SystemAuditUserID,
+			"update_user_name": constants.SystemAuditUserName,
 		}
 		if err == nil {
 			if err := ctx.db.Model(item).Updates(updates).Error; err != nil {
@@ -1094,16 +1070,15 @@ func (ctx *seedContext) upsertTeams() error {
 			return err
 		}
 		item = &models.AgentTeam{
-			TenantID:        ctx.tenant.ID,
-			Name:            teamName,
-			LeaderUserID:    ctx.leaders[i-1].ID,
-			CompanyScopeIDs: "",
-			StoreScopeIDs:   joinInt64s(storeIDs),
-			DispatchMode:    enums.AgentTeamDispatchModeRule,
-			Status:          enums.StatusOk,
-			Description:     fmt.Sprintf("负责%s测试门店%03d-%03d", tenantLegalName, ranges[i-1][0], ranges[i-1][1]),
-			Remark:          ctx.seedRemark("测试客服组"),
-			AuditFields:     ctx.audit,
+			TenantID:      ctx.tenant.ID,
+			Name:          teamName,
+			LeaderUserID:  ctx.leaders[i-1].ID,
+			StoreScopeIDs: joinInt64s(storeIDs),
+			DispatchMode:  enums.AgentTeamDispatchModeRule,
+			Status:        enums.StatusOk,
+			Description:   fmt.Sprintf("负责%s测试门店%03d-%03d", tenantLegalName, ranges[i-1][0], ranges[i-1][1]),
+			Remark:        ctx.seedRemark("测试客服组"),
+			AuditFields:   ctx.audit,
 		}
 		if err := ctx.db.Create(item).Error; err != nil {
 			return err
@@ -1231,11 +1206,11 @@ func (ctx *seedContext) upsertAIAgent() error {
 	updates := map[string]any{
 		"tenant_id":             ctx.tenant.ID,
 		"name":                  aiAgentName,
-		"description":           "丽斯未来酒店仿真测试接待策略，不用于生产服务",
+		"description":           "合成验收酒店仿真测试接待策略，不用于生产服务",
 		"status":                enums.StatusOk,
 		"service_mode":          enums.IMConversationServiceModeAIFirst,
-		"system_prompt":         "你是丽斯未来酒店仿真测试客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
-		"welcome_message":       "您好，这里是丽斯未来酒店仿真测试客服，请问有什么可以帮您？",
+		"system_prompt":         "你是合成验收酒店仿真测试客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
+		"welcome_message":       "您好，这里是合成验收酒店仿真测试客服，请问有什么可以帮您？",
 		"reply_timeout_seconds": 180,
 		"team_ids":              joinInt64s(teamIDs),
 		"handoff_mode":          enums.AIAgentHandoffModeWaitPool,
@@ -1261,11 +1236,11 @@ func (ctx *seedContext) upsertAIAgent() error {
 	item = &models.AIAgent{
 		TenantID:            ctx.tenant.ID,
 		Name:                aiAgentName,
-		Description:         "丽斯未来酒店仿真测试接待策略，不用于生产服务",
+		Description:         "合成验收酒店仿真测试接待策略，不用于生产服务",
 		Status:              enums.StatusOk,
 		ServiceMode:         enums.IMConversationServiceModeAIFirst,
-		SystemPrompt:        "你是丽斯未来酒店仿真测试客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
-		WelcomeMessage:      "您好，这里是丽斯未来酒店仿真测试客服，请问有什么可以帮您？",
+		SystemPrompt:        "你是合成验收酒店仿真测试客服。当前数据仅用于测试客户咨询、AI 回复和人工派单链路，不代表真实酒店承诺。",
+		WelcomeMessage:      "您好，这里是合成验收酒店仿真测试客服，请问有什么可以帮您？",
 		ReplyTimeoutSeconds: 180,
 		TeamIDs:             joinInt64s(teamIDs),
 		HandoffMode:         enums.AIAgentHandoffModeWaitPool,
@@ -1306,7 +1281,6 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 		"user_id":                staff.ID,
 		"active_user_id":         staff.ID,
 		"agent_team_id":          agentTeamID,
-		"company_id":             0,
 		"managed_mode":           constants.StoreManagedModeSemi,
 		"fallback_to_hq":         true,
 		"manual_timeout_minutes": 10,
@@ -1335,7 +1309,6 @@ func (ctx *seedContext) upsertStoreStaffBinding(index int, store *models.Store, 
 		UserID:               staff.ID,
 		ActiveUserID:         seedInt64Pointer(staff.ID),
 		AgentTeamID:          agentTeamID,
-		CompanyID:            0,
 		StoreID:              store.ID,
 		ManagedMode:          constants.StoreManagedModeSemi,
 		FallbackToHQ:         true,
@@ -1367,7 +1340,6 @@ func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, bin
 		"channel_id":                         ctx.channel.ID,
 		"employee_user_id":                   employeeUserID,
 		"employee_name":                      "客服",
-		"company_id":                         0,
 		"store_id":                           store.ID,
 		"store_staff_binding_id":             binding.ID,
 		"store_navigation_name":              store.Name,
@@ -1411,7 +1383,6 @@ func (ctx *seedContext) upsertWxWorkInstance(index int, store *models.Store, bin
 		ChannelID:                 ctx.channel.ID,
 		EmployeeUserID:            employeeUserID,
 		EmployeeName:              "客服",
-		CompanyID:                 0,
 		StoreID:                   store.ID,
 		StoreStaffBindingID:       binding.ID,
 		StoreNavigationName:       store.Name,
@@ -1497,13 +1468,6 @@ func (ctx *seedContext) upsertCustomers() error {
 	return nil
 }
 
-func (ctx *seedContext) retireLegacySimulationCompany() error {
-	if ctx.tenant == nil || ctx.tenant.ID <= 0 {
-		return nil
-	}
-	return ctx.db.Where("tenant_id = ?", ctx.tenant.ID).Delete(&models.Company{}).Error
-}
-
 func (ctx *seedContext) upsertCustomer(index int) (*models.Customer, error) {
 	name := fmt.Sprintf("测试顾客%03d", index)
 	item := &models.Customer{}
@@ -1519,7 +1483,6 @@ func (ctx *seedContext) upsertCustomer(index int) (*models.Customer, error) {
 	updates := map[string]any{
 		"tenant_id":        ctx.tenant.ID,
 		"gender":           gender,
-		"company_id":       0,
 		"primary_mobile":   mobile,
 		"primary_email":    email,
 		"status":           enums.StatusOk,
@@ -1541,7 +1504,6 @@ func (ctx *seedContext) upsertCustomer(index int) (*models.Customer, error) {
 		TenantID:      ctx.tenant.ID,
 		Name:          name,
 		Gender:        gender,
-		CompanyID:     0,
 		PrimaryMobile: mobile,
 		PrimaryEmail:  email,
 		Status:        enums.StatusOk,

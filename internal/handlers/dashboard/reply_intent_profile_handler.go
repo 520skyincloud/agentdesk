@@ -97,3 +97,40 @@ func ReplyIntentProfilePostDelete(ctx *gin.Context) {
 	}
 	httpx.WriteJSON(ctx, nil)
 }
+
+func ReplyIntentProfilePostTest(ctx *gin.Context) {
+	if _, err := requirePlatformPermission(ctx, constants.PermissionAIConfigUpdate); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.TestReplyIntentProfileRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	result, err := services.ReplyIntentProfileService.TestReplyIntentProfile(req.ID)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, result)
+}
+
+func ReplyIntentProfilePostPublish(ctx *gin.Context) {
+	user, err := requirePlatformPermission(ctx, constants.PermissionAIConfigUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.PublishReplyIntentProfileRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item, err := services.ReplyIntentProfileService.PublishReplyIntentProfile(req, user)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildReplyIntentProfile(item))
+}

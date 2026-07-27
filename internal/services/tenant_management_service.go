@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"net/mail"
 	"regexp"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 type CreateTenantResult struct {
@@ -31,6 +33,39 @@ type CreateTenantResult struct {
 
 func (s *tenantService) FindSupervisors(tenantIDs []int64) (map[int64]*models.User, error) {
 	return repositories.UserRepository.FindTenantSupervisors(sqls.DB(), tenantIDs, constants.RoleCodeTenantAdmin)
+}
+
+// InitializeSystemTenantDB initializes the current authentication fallback
+// tenant without exposing the customer-facing Tenant creation workflow.
+func (s *tenantService) InitializeSystemTenantDB(db *gorm.DB, tenant *models.Tenant, profileID int64) error {
+	if tenant == nil || tenant.ID <= 0 {
+		return fmt.Errorf("system tenant is missing")
+	}
+	profile, err := TenantIndustryService.ValidateBindingProfileDB(db, profileID)
+	if err != nil {
+		return err
+	}
+	beforeID := tenant.IntentProfileID
+	if err := TenantIndustryService.syncTenantCatalogDB(db, tenant.ID, beforeID, profile.ID, nil); err != nil {
+		return err
+	}
+	if beforeID == profile.ID {
+		return nil
+	}
+	if err := repositories.TenantRepository.Updates(db, tenant.ID, map[string]any{
+		"intent_profile_id": profile.ID,
+		"update_user_id":    auditUserID(nil),
+		"update_user_name":  auditUsername(nil),
+		"updated_at":        time.Now(),
+	}); err != nil {
+		return err
+	}
+	return repositories.TenantIndustryChangeLogRepository.Create(db, &models.TenantIndustryChangeLog{
+		TenantID: tenant.ID, BeforeIntentProfileID: beforeID, AfterIntentProfileID: profile.ID,
+		AfterRevision: profile.Revision, Action: tenantIndustryActionSystemInitialize,
+		Reason: "系统租户初始化行业事实源", OperatorID: auditUserID(nil),
+		OperatorName: auditUsername(nil), CreatedAt: time.Now(),
+	})
 }
 
 func (s *tenantService) CreateTenant(req request.CreateTenantRequest, operator *dto.AuthPrincipal) (*CreateTenantResult, error) {

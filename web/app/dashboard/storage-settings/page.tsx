@@ -160,7 +160,7 @@ export default function StorageSettingsPage() {
               <Input disabled={!canUpdate} value={form.publicAssetBaseUrl} onChange={(event) => patch({ publicAssetBaseUrl: event.target.value })} />
             </Field>
             <Field label="私有化云存储 wecdn_web 地址">
-              <Input disabled={!canUpdate} value={form.wecdnBaseUrl} onChange={(event) => patch({ wecdnBaseUrl: event.target.value })} placeholder="http://112.124.109.106:34789" />
+              <Input disabled={!canUpdate} value={form.wecdnBaseUrl} onChange={(event) => patch({ wecdnBaseUrl: event.target.value })} placeholder="https://wecdn.example.com" />
             </Field>
             <Field label="本地存储目录">
               <Input disabled={!canUpdate} value={form.localRoot} onChange={(event) => patch({ localRoot: event.target.value })} />

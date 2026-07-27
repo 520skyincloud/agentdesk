@@ -18,7 +18,7 @@ func TestWxWorkProtocolLocationMessageIsNotVoice(t *testing.T) {
 		ContentType: 6,
 		Longitude:   117.281937,
 		Latitude:    31.716152,
-		Title:       "丽斯未来酒店(合肥滨湖时代广场店)",
+		Title:       "合成验收酒店(合肥滨湖时代广场店)",
 		Address:     "安徽省合肥市包河区西藏路1318号众悦广场1501",
 		Zoom:        15,
 	}

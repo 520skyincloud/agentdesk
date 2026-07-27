@@ -270,7 +270,7 @@ func setupAgentOrganizationTenantFixture(t *testing.T) agentOrganizationTenantFi
 		t.Fatalf("create user roles: %v", err)
 	}
 	storeStaffBinding := models.StoreStaffBinding{
-		TenantID: 202, UserID: fixture.userB.ID, AgentTeamID: fixture.teamB.ID, CompanyID: 202, StoreID: 2202, Status: enums.StatusOk,
+		TenantID: 202, UserID: fixture.userB.ID, AgentTeamID: fixture.teamB.ID, StoreID: 2202, Status: enums.StatusOk,
 	}
 	if err := db.Create(&storeStaffBinding).Error; err != nil {
 		t.Fatalf("create store staff binding: %v", err)

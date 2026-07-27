@@ -160,7 +160,6 @@ func setupCustomerServiceTestDB(t *testing.T) *gorm.DB {
 		}
 	})
 	if err := db.AutoMigrate(
-		&models.Company{},
 		&models.Customer{},
 		&models.CustomerIdentity{},
 		&models.Conversation{},

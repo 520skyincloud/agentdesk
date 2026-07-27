@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -256,10 +255,7 @@ func buildKnowledgeSearchResults(items []rag.RetrieveResult) []response.Knowledg
 	for _, item := range items {
 		ret = append(ret, response.KnowledgeSearchResult{
 			KnowledgeBaseID: item.KnowledgeBaseID,
-			ChunkID:         item.ChunkID,
-			DocumentID:      item.DocumentID,
 			DocumentTitle:   item.DocumentTitle,
-			ChunkNo:         item.ChunkNo,
 			Title:           item.Title,
 			SectionPath:     item.SectionPath,
 			SourceRecordID:  item.SourceRecordID,
@@ -395,7 +391,6 @@ func buildRetrieverTraceItems(queryPreview string, results, contextResults []rag
 		ret = append(ret, callbacks.RetrieverTraceItem{
 			Query:           queryPreview,
 			KnowledgeBaseID: item.KnowledgeBaseID,
-			DocumentID:      item.DocumentID,
 			DocumentTitle:   item.DocumentTitle,
 			SourceRecordID:  item.SourceRecordID,
 			RawRankNo:       index + 1,
@@ -410,16 +405,7 @@ func buildRetrieverTraceItems(queryPreview string, results, contextResults []rag
 }
 
 func retrieveResultIdentity(item rag.RetrieveResult) string {
-	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
-		return "source:" + sourceRecordID
-	}
-	return strings.Join([]string{
-		"fastgpt",
-		fmt.Sprintf("%d", item.KnowledgeBaseID),
-		fmt.Sprintf("%d", item.DocumentID),
-		strings.TrimSpace(item.SectionPath),
-		fmt.Sprintf("%d", item.ChunkNo),
-	}, "|")
+	return "source:" + strings.TrimSpace(item.SourceRecordID)
 }
 
 func resolveUsedHitRankNos(hits, usedHits []rag.RetrieveResult) []int {

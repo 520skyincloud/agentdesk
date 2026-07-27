@@ -308,8 +308,6 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		EmployeeName:                   utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
 		EmployeeAvatar:                 strings.TrimSpace(req.EmployeeAvatar),
 		AgentTeamID:                    binding.AgentTeamID,
-		CompanyID:                      0,
-		IntentProfileID:                0,
 		StoreID:                        storeID,
 		StoreStaffBindingID:            binding.ID,
 		StoreAddress:                   utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
@@ -451,7 +449,6 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 			if existing.TenantID == 0 {
 				claimed, claimErr := repositories.WxWorkProtocolInstanceRepository.ClaimTenant(ctx.Tx, existing.ID, tenantID, map[string]any{
 					"channel_id":             channel.ID,
-					"company_id":             0,
 					"store_id":               prepared.Store.ID,
 					"store_staff_binding_id": prepared.Binding.ID,
 					"agent_team_id":          prepared.Binding.AgentTeamID,
@@ -469,7 +466,6 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 				}
 			} else if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, existing.ID, tenantID, map[string]any{
 				"channel_id":             channel.ID,
-				"company_id":             0,
 				"store_id":               prepared.Store.ID,
 				"store_staff_binding_id": prepared.Binding.ID,
 				"agent_team_id":          prepared.Binding.AgentTeamID,
@@ -492,7 +488,6 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 			StoreID:                   prepared.Store.ID,
 			StoreStaffBindingID:       prepared.Binding.ID,
 			AIReplyEnabled:            false,
-			CompanyID:                 0,
 			PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
 			FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
 			ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
@@ -563,7 +558,6 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 			AgentTeamID:               prepared.Binding.AgentTeamID,
 			StoreID:                   prepared.Store.ID,
 			StoreStaffBindingID:       prepared.Binding.ID,
-			CompanyID:                 0,
 			AIReplyEnabled:            false,
 			PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
 			FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
@@ -649,8 +643,6 @@ func (s *wxWorkProtocolInstanceService) CreateReplacementRemoteSetup(req request
 		Guid:                           guid,
 		ChannelID:                      old.ChannelID,
 		AgentTeamID:                    binding.AgentTeamID,
-		CompanyID:                      0,
-		IntentProfileID:                0,
 		StoreID:                        binding.StoreID,
 		StoreStaffBindingID:            binding.ID,
 		ReplacesInstanceID:             old.ID,
@@ -824,7 +816,6 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	if storeName := utils.RepairMojibakeText(strings.TrimSpace(req.StoreName)); storeName != "" {
 		if err := repositories.StoreRepository.UpdatesInTenant(sqls.DB(), storeID, tenantID, map[string]any{
 			"name":             storeName,
-			"company_id":       0,
 			"updated_at":       time.Now(),
 			"update_user_id":   operator.UserID,
 			"update_user_name": operator.Username,
@@ -855,8 +846,6 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		"employee_user_id":                   strings.TrimSpace(req.EmployeeUserID),
 		"employee_name":                      utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
 		"employee_avatar":                    strings.TrimSpace(req.EmployeeAvatar),
-		"company_id":                         0,
-		"intent_profile_id":                  0,
 		"store_id":                           storeID,
 		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
 		"store_navigation_name":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
@@ -980,7 +969,6 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 	if storeName := utils.RepairMojibakeText(strings.TrimSpace(req.StoreName)); storeName != "" {
 		if err := repositories.StoreRepository.UpdatesInTenant(sqls.DB(), storeID, tenantID, map[string]any{
 			"name":             storeName,
-			"company_id":       0,
 			"updated_at":       time.Now(),
 			"update_user_id":   operator.UserID,
 			"update_user_name": operator.Username,
@@ -998,8 +986,6 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 		return err
 	}
 	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
-		"company_id":                         0,
-		"intent_profile_id":                  0,
 		"store_id":                           storeID,
 		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
 		"store_navigation_name":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
@@ -1096,33 +1082,6 @@ func (s *wxWorkProtocolInstanceService) updateStoreStaffBindingFromInstanceReque
 	})
 }
 
-// BackfillCompanyIDFromStore 仅供历史 migration 20 重放；migration 63 会将活跃运行数据重新清零。
-func (s *wxWorkProtocolInstanceService) BackfillCompanyIDFromStore() error {
-	now := time.Now()
-	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		items := repositories.WxWorkProtocolInstanceRepository.Find(ctx.Tx, sqls.NewCnd().
-			Eq("company_id", 0).
-			Gt("store_id", 0).
-			Where("status <> ?", enums.StatusDeleted).
-			Asc("id"))
-		for _, item := range items {
-			store := repositories.StoreRepository.Get(ctx.Tx, item.StoreID)
-			if store == nil || store.CompanyID <= 0 {
-				continue
-			}
-			if err := repositories.WxWorkProtocolInstanceRepository.Updates(ctx.Tx, item.ID, map[string]any{
-				"company_id":       store.CompanyID,
-				"updated_at":       now,
-				"update_user_id":   constants.SystemAuditUserID,
-				"update_user_name": constants.SystemAuditUserName,
-			}); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 func normalizeStoreManagedMode(value string) string {
 	switch strings.TrimSpace(value) {
 	case constants.StoreManagedModeFull:
@@ -1146,13 +1105,6 @@ func auditUsername(operator *dto.AuthPrincipal) string {
 		return constants.SystemAuditUserName
 	}
 	return operator.Username
-}
-
-// MigrateDedicatedAIAgents is intentionally a no-op. Older versions created a
-// hidden AIAgent per WeCom employee account; WeCom runtime now builds an
-// in-memory profile from the instance, store, and model settings instead.
-func (s *wxWorkProtocolInstanceService) MigrateDedicatedAIAgents() error {
-	return nil
 }
 
 func mergeWxWorkPersonaIntoSystemPrompt(systemPrompt string, personaPrompt string) string {

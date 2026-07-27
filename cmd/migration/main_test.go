@@ -5,9 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -29,17 +31,17 @@ func TestMigrationMainExitsNonzeroWhenAutoMigrateFails(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "duplicate.db")
 	db := openMigrationCommandTestDB(t, dbPath)
-	if err := db.AutoMigrate(&models.Company{}); err != nil {
-		t.Fatalf("create company schema: %v", err)
+	if err := db.AutoMigrate(&models.Store{}); err != nil {
+		t.Fatalf("create store schema: %v", err)
 	}
-	if err := db.Migrator().DropIndex(&models.Company{}, "uk_company_tenant_name"); err != nil {
-		t.Fatalf("drop company unique index: %v", err)
+	if err := db.Migrator().DropIndex(&models.Store{}, "uk_store_tenant_code"); err != nil {
+		t.Fatalf("drop store unique index: %v", err)
 	}
-	if err := db.Create(&[]models.Company{
-		{TenantID: 101, Name: "duplicate"},
-		{TenantID: 101, Name: "duplicate"},
+	if err := db.Create(&[]models.Store{
+		{TenantID: 101, StoreCode: "duplicate"},
+		{TenantID: 101, StoreCode: "duplicate"},
 	}).Error; err != nil {
-		t.Fatalf("seed duplicate companies: %v", err)
+		t.Fatalf("seed duplicate stores: %v", err)
 	}
 	closeMigrationCommandTestDB(t, db)
 	configPath := writeMigrationCommandConfig(t, dir, dbPath)
@@ -54,8 +56,8 @@ func TestMigrationMainExitsNonzeroWhenAutoMigrateFails(t *testing.T) {
 	verifyDB := openMigrationCommandTestDB(t, dbPath)
 	defer closeMigrationCommandTestDB(t, verifyDB)
 	var count int64
-	if err := verifyDB.Model(&models.Company{}).Where("tenant_id = ? AND name = ?", 101, "duplicate").Count(&count).Error; err != nil {
-		t.Fatalf("count duplicate companies: %v", err)
+	if err := verifyDB.Model(&models.Store{}).Where("tenant_id = ? AND store_code = ?", 101, "duplicate").Count(&count).Error; err != nil {
+		t.Fatalf("count duplicate stores: %v", err)
 	}
 	if count != 2 {
 		t.Fatalf("failed migration changed duplicate rows: %d", count)
@@ -77,8 +79,53 @@ func TestMigrationMainUsesExplicitConfigAndExitsZero(t *testing.T) {
 	if err := db.Model(&models.Migration{}).Where("success = ?", true).Count(&successful).Error; err != nil {
 		t.Fatalf("count successful migrations: %v", err)
 	}
-	if successful == 0 {
-		t.Fatal("explicit config database did not run migrations")
+	if successful != 5 {
+		t.Fatalf("successful fresh initializers=%d want=5", successful)
+	}
+	var migrations []models.Migration
+	if err := db.Order("version ASC").Find(&migrations).Error; err != nil {
+		t.Fatalf("load fresh initializer identities: %v", err)
+	}
+	versions := make([]int64, 0, len(migrations))
+	for i := range migrations {
+		versions = append(versions, migrations[i].Version)
+		if !migrations[i].Success {
+			t.Fatalf("initializer %d failed: %+v", migrations[i].Version, migrations[i])
+		}
+	}
+	if want := []int64{2, 15, 35, 68, 69}; !reflect.DeepEqual(versions, want) {
+		t.Fatalf("fresh initializer versions=%v want=%v", versions, want)
+	}
+
+	var admin models.User
+	if err := db.Where("username = ?", constants.BootstrapAdminUsername).Take(&admin).Error; err != nil {
+		t.Fatalf("load bootstrap administrator: %v", err)
+	}
+	var fallback models.Tenant
+	if err := db.Where("tenant_code = ?", constants.LegacyDefaultTenantCode).Take(&fallback).Error; err != nil {
+		t.Fatalf("load OIDC fallback tenant: %v", err)
+	}
+	if fallback.IntentProfileID <= 0 {
+		t.Fatal("OIDC fallback tenant has no initialized industry")
+	}
+	var tenantTagCount int64
+	if err := db.Model(&models.Tag{}).Where("tenant_id = ?", fallback.ID).Count(&tenantTagCount).Error; err != nil {
+		t.Fatalf("count fallback tenant tags: %v", err)
+	}
+	if tenantTagCount != 35 {
+		t.Fatalf("fallback tenant tag count=%d want=35", tenantTagCount)
+	}
+
+	var profile models.ModelProfileTemplate
+	if err := db.Where("code = ? AND revision = ?", "standard", 1).Take(&profile).Error; err != nil {
+		t.Fatalf("load default model profile: %v", err)
+	}
+	var slotCount int64
+	if err := db.Model(&models.ModelProfileSlot{}).Where("template_id = ?", profile.ID).Count(&slotCount).Error; err != nil {
+		t.Fatalf("count default model slots: %v", err)
+	}
+	if slotCount != 9 {
+		t.Fatalf("default model slot count=%d want=9", slotCount)
 	}
 }
 

@@ -39,10 +39,6 @@ func TestCustomerServiceEnforcesTenantContextAcrossCRUD(t *testing.T) {
 	if customerA.TenantID != fixture.adminA.ActiveTenantID || customerB.TenantID != fixture.adminB.ActiveTenantID {
 		t.Fatalf("unexpected customer tenants: A=%d B=%d", customerA.TenantID, customerB.TenantID)
 	}
-	if customerA.CompanyID != 0 || customerB.CompanyID != 0 {
-		t.Fatalf("new customers must not use legacy company scope: A=%d B=%d", customerA.CompanyID, customerB.CompanyID)
-	}
-
 	listA, paging := CustomerService.ListCustomers(request.CustomerListRequest{Page: 1, Limit: 20}, fixture.adminA)
 	if len(listA) != 1 || listA[0].ID != customerA.ID || paging.Total != 1 {
 		t.Fatalf("tenant A customers=%+v paging=%+v", listA, paging)
@@ -243,7 +239,7 @@ func ensureCustomerInTenant(t *testing.T, tenantID int64, external openidentity.
 func assertTenantBCustomerUnchanged(t *testing.T, fixture customerTenantFixture, original *models.Customer) {
 	t.Helper()
 	current := repositories.CustomerRepository.Get(fixture.db, original.ID)
-	if current == nil || current.TenantID != fixture.adminB.ActiveTenantID || current.Name != original.Name || current.Status != original.Status || current.CompanyID != original.CompanyID {
+	if current == nil || current.TenantID != fixture.adminB.ActiveTenantID || current.Name != original.Name || current.Status != original.Status {
 		t.Fatalf("tenant B customer changed: current=%+v original=%+v", current, original)
 	}
 }

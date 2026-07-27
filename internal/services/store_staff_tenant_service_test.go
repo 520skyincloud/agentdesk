@@ -1,7 +1,6 @@
 package services
 
 import (
-	"fmt"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -21,20 +20,18 @@ import (
 
 func TestStoreStaffAssignmentsAndWxWorkScopeStayInActiveTenant(t *testing.T) {
 	db := setupStoreStaffTenantDB(t)
-	companyA := createStoreStaffTenantCompany(t, db, 101, "租户A客户企业")
-	companyB := createStoreStaffTenantCompany(t, db, 202, "租户B客户企业")
 	teamA := createStoreStaffTenantTeam(t, db, 101, "租户A客服组")
 	teamB := createStoreStaffTenantTeam(t, db, 202, "租户B客服组")
 	userA := createStoreStaffTenantUser(t, db, 101, "tenant-a-store-staff")
 	userB := createStoreStaffTenantUser(t, db, 202, "tenant-b-store-staff")
-	storeA := createStoreStaffTenantStore(t, db, 101, companyA.ID, "tenant-a-store")
-	storeB := createStoreStaffTenantStore(t, db, 202, companyB.ID, "tenant-b-store")
-	storePolluted := createStoreStaffTenantStore(t, db, 202, companyB.ID, "tenant-b-polluted-store")
-	bindingA := createStoreStaffTenantBinding(t, db, 101, userA.ID, teamA.ID, companyA.ID, storeA.ID)
-	bindingB := createStoreStaffTenantBinding(t, db, 202, userB.ID, teamB.ID, companyB.ID, storeB.ID)
-	createStoreStaffTenantBinding(t, db, 202, userA.ID, teamB.ID, companyB.ID, storePolluted.ID)
-	instanceA := createStoreStaffTenantInstance(t, db, 101, "tenant-a-instance", teamA.ID, companyA.ID, storeA.ID, bindingA.ID)
-	instanceB := createStoreStaffTenantInstance(t, db, 202, "tenant-b-instance", teamB.ID, companyB.ID, storeB.ID, bindingB.ID)
+	storeA := createStoreStaffTenantStore(t, db, 101, "tenant-a-store")
+	storeB := createStoreStaffTenantStore(t, db, 202, "tenant-b-store")
+	storePolluted := createStoreStaffTenantStore(t, db, 202, "tenant-b-polluted-store")
+	bindingA := createStoreStaffTenantBinding(t, db, 101, userA.ID, teamA.ID, storeA.ID)
+	bindingB := createStoreStaffTenantBinding(t, db, 202, userB.ID, teamB.ID, storeB.ID)
+	createStoreStaffTenantBinding(t, db, 202, userA.ID, teamB.ID, storePolluted.ID)
+	instanceA := createStoreStaffTenantInstance(t, db, 101, "tenant-a-instance", teamA.ID, storeA.ID, bindingA.ID)
+	instanceB := createStoreStaffTenantInstance(t, db, 202, "tenant-b-instance", teamB.ID, storeB.ID, bindingB.ID)
 
 	assignments := StoreStaffBindingService.FindUserAssignments([]int64{userA.ID, userB.ID}, 101)
 	if len(assignments) != 1 {
@@ -64,8 +61,8 @@ func TestStoreStaffAssignmentsAndWxWorkScopeStayInActiveTenant(t *testing.T) {
 
 func TestEnsureStoreStaffBindingRequiresExistingStoreStaffAccount(t *testing.T) {
 	db := setupStoreStaffTenantDB(t)
-	store := createStoreStaffTenantStore(t, db, 101, 0, "ensure-binding-store")
-	instance := createStoreStaffTenantInstance(t, db, 101, "ensure-binding-instance", 0, 0, store.ID, 0)
+	store := createStoreStaffTenantStore(t, db, 101, "ensure-binding-store")
+	instance := createStoreStaffTenantInstance(t, db, 101, "ensure-binding-instance", 0, store.ID, 0)
 	wrongTenantOperator := &dto.AuthPrincipal{UserID: 2, Username: "tenant-b-admin", ActiveTenantID: 202}
 	if _, err := StoreStaffBindingService.EnsureForInstance(instance, wrongTenantOperator); err == nil {
 		t.Fatal("another tenant must not create a store staff binding")
@@ -79,12 +76,12 @@ func TestEnsureStoreStaffBindingRequiresExistingStoreStaffAccount(t *testing.T) 
 		t.Fatal("missing store staff account binding must not be created implicitly")
 	}
 	user := createStoreStaffTenantUser(t, db, 101, "ensure-binding-user")
-	existing := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, 0, store.ID)
+	existing := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, store.ID)
 	binding, err := StoreStaffBindingService.EnsureForInstance(instance, operator)
 	if err != nil {
 		t.Fatalf("ensure existing store staff binding: %v", err)
 	}
-	if binding.ID != existing.ID || binding.TenantID != 101 || binding.UserID != user.ID || binding.StoreID != store.ID || binding.CompanyID != 0 {
+	if binding.ID != existing.ID || binding.TenantID != 101 || binding.UserID != user.ID || binding.StoreID != store.ID {
 		t.Fatalf("unexpected canonical binding=%+v", binding)
 	}
 	updated := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, 101)
@@ -92,9 +89,9 @@ func TestEnsureStoreStaffBindingRequiresExistingStoreStaffAccount(t *testing.T) 
 		t.Fatalf("updated instance=%+v want binding %d", updated, binding.ID)
 	}
 
-	emptyOwnerStore := createStoreStaffTenantStore(t, db, 101, 0, "ensure-empty-owner-store")
-	emptyOwnerBinding := createStoreStaffTenantBinding(t, db, 101, 0, 0, 0, emptyOwnerStore.ID)
-	emptyOwnerInstance := createStoreStaffTenantInstance(t, db, 101, "ensure-empty-owner-instance", 0, 0, emptyOwnerStore.ID, emptyOwnerBinding.ID)
+	emptyOwnerStore := createStoreStaffTenantStore(t, db, 101, "ensure-empty-owner-store")
+	emptyOwnerBinding := createStoreStaffTenantBinding(t, db, 101, 0, 0, emptyOwnerStore.ID)
+	emptyOwnerInstance := createStoreStaffTenantInstance(t, db, 101, "ensure-empty-owner-instance", 0, emptyOwnerStore.ID, emptyOwnerBinding.ID)
 	if _, err := StoreStaffBindingService.EnsureForInstance(emptyOwnerInstance, operator); err == nil {
 		t.Fatal("binding without a registered user must be rejected")
 	}
@@ -102,12 +99,11 @@ func TestEnsureStoreStaffBindingRequiresExistingStoreStaffAccount(t *testing.T) 
 
 func TestEnsureStoreStaffBindingLocksCanonicalBindingBeforeTeam(t *testing.T) {
 	db := setupStoreStaffTenantDB(t)
-	company := createStoreStaffTenantCompany(t, db, 101, "同步锁测试客户企业")
 	team := createStoreStaffTenantTeam(t, db, 101, "同步锁测试客服组")
 	user := createStoreStaffTenantUser(t, db, 101, "ensure-lock-user")
-	store := createStoreStaffTenantStore(t, db, 101, company.ID, "ensure-lock-store")
-	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, team.ID, company.ID, store.ID)
-	instance := createStoreStaffTenantInstance(t, db, 101, "ensure-lock-instance", 0, company.ID, store.ID, 0)
+	store := createStoreStaffTenantStore(t, db, 101, "ensure-lock-store")
+	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, team.ID, store.ID)
+	instance := createStoreStaffTenantInstance(t, db, 101, "ensure-lock-instance", 0, store.ID, 0)
 	lockOrder := make([]string, 0, 2)
 	callbackName := "test:ensure-store-staff-binding-lock-order"
 	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
@@ -145,12 +141,11 @@ func TestEnsureStoreStaffBindingLocksCanonicalBindingBeforeTeam(t *testing.T) {
 
 func TestStoreDomainRepositoriesKeepTenantInFinalWritePredicate(t *testing.T) {
 	db := setupStoreStaffTenantDB(t)
-	companyB := createStoreStaffTenantCompany(t, db, 202, "最终条件客户企业")
 	teamB := createStoreStaffTenantTeam(t, db, 202, "最终条件客服组")
 	userB := createStoreStaffTenantUser(t, db, 202, "final-predicate-user")
-	storeB := createStoreStaffTenantStore(t, db, 202, companyB.ID, "final-predicate-store")
-	bindingB := createStoreStaffTenantBinding(t, db, 202, userB.ID, teamB.ID, companyB.ID, storeB.ID)
-	instanceB := createStoreStaffTenantInstance(t, db, 202, "final-predicate-instance", teamB.ID, companyB.ID, storeB.ID, bindingB.ID)
+	storeB := createStoreStaffTenantStore(t, db, 202, "final-predicate-store")
+	bindingB := createStoreStaffTenantBinding(t, db, 202, userB.ID, teamB.ID, storeB.ID)
+	instanceB := createStoreStaffTenantInstance(t, db, 202, "final-predicate-instance", teamB.ID, storeB.ID, bindingB.ID)
 
 	if err := repositories.StoreRepository.UpdatesInTenant(db, storeB.ID, 101, map[string]any{"name": "越权门店"}); err != nil {
 		t.Fatalf("scoped store update: %v", err)
@@ -176,34 +171,6 @@ func TestStoreDomainRepositoriesKeepTenantInFinalWritePredicate(t *testing.T) {
 	}
 }
 
-func TestLegacyStoreStaffBackfillsRemainAvailableBeforeTenantMigration(t *testing.T) {
-	db := setupStoreStaffTenantDB(t)
-	team := createStoreStaffTenantTeam(t, db, 101, "历史回填客服组")
-	store := createStoreStaffTenantStore(t, db, 0, 0, "legacy-backfill-store")
-	binding := createStoreStaffTenantBinding(t, db, 0, 0, 0, 0, store.ID)
-	instance := createStoreStaffTenantInstance(t, db, 0, "legacy-backfill-instance", 0, 0, store.ID, binding.ID)
-	if err := repositories.AgentTeamRepository.Updates(db, team.ID, map[string]any{
-		"wx_work_instance_scope_ids": fmt.Sprint(instance.ID),
-	}); err != nil {
-		t.Fatalf("seed legacy team scope: %v", err)
-	}
-
-	if err := AgentTeamService.BackfillWxWorkInstanceBindings(); err != nil {
-		t.Fatalf("backfill legacy wxwork team binding: %v", err)
-	}
-	afterInstance := repositories.WxWorkProtocolInstanceRepository.Get(db, instance.ID)
-	if afterInstance == nil || afterInstance.AgentTeamID != team.ID || afterInstance.TenantID != 0 {
-		t.Fatalf("legacy instance after migration 37 path=%+v", afterInstance)
-	}
-	if err := AgentTeamService.BackfillStoreStaffAgentTeamBindings(); err != nil {
-		t.Fatalf("backfill legacy store staff team binding: %v", err)
-	}
-	afterBinding := repositories.StoreStaffBindingRepository.Get(db, binding.ID)
-	if afterBinding == nil || afterBinding.AgentTeamID != team.ID || afterBinding.TenantID != 0 {
-		t.Fatalf("legacy binding after migration 38 path=%+v", afterBinding)
-	}
-}
-
 func setupStoreStaffTenantDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "store-staff-tenant.db")), &gorm.Config{
@@ -214,22 +181,13 @@ func setupStoreStaffTenantDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&models.Company{}, &models.User{}, &models.Role{}, &models.UserRole{}, &models.AgentTeam{}, &models.Store{},
+		&models.User{}, &models.Role{}, &models.UserRole{}, &models.AgentTeam{}, &models.Store{},
 		&models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{},
 	); err != nil {
 		t.Fatalf("migrate store staff tenant models: %v", err)
 	}
 	sqls.SetDB(db)
 	return db
-}
-
-func createStoreStaffTenantCompany(t *testing.T, db *gorm.DB, tenantID int64, name string) *models.Company {
-	t.Helper()
-	item := &models.Company{TenantID: tenantID, Name: name, Code: name, Status: enums.StatusOk}
-	if err := db.Create(item).Error; err != nil {
-		t.Fatalf("create company %s: %v", name, err)
-	}
-	return item
 }
 
 func createStoreStaffTenantTeam(t *testing.T, db *gorm.DB, tenantID int64, name string) *models.AgentTeam {
@@ -260,16 +218,16 @@ func createStoreStaffTenantUser(t *testing.T, db *gorm.DB, tenantID int64, usern
 	return item
 }
 
-func createStoreStaffTenantStore(t *testing.T, db *gorm.DB, tenantID, companyID int64, code string) *models.Store {
+func createStoreStaffTenantStore(t *testing.T, db *gorm.DB, tenantID int64, code string) *models.Store {
 	t.Helper()
-	item := &models.Store{TenantID: tenantID, StoreCode: code, Name: code, CompanyID: companyID, Status: enums.StatusOk}
+	item := &models.Store{TenantID: tenantID, StoreCode: code, Name: code, Status: enums.StatusOk}
 	if err := db.Create(item).Error; err != nil {
 		t.Fatalf("create store %s: %v", code, err)
 	}
 	return item
 }
 
-func createStoreStaffTenantBinding(t *testing.T, db *gorm.DB, tenantID, userID, teamID, companyID, storeID int64) *models.StoreStaffBinding {
+func createStoreStaffTenantBinding(t *testing.T, db *gorm.DB, tenantID, userID, teamID, storeID int64) *models.StoreStaffBinding {
 	t.Helper()
 	var activeUserID *int64
 	if user := repositories.UserRepository.Get(db, userID); user != nil && user.TenantID == tenantID {
@@ -277,7 +235,7 @@ func createStoreStaffTenantBinding(t *testing.T, db *gorm.DB, tenantID, userID, 
 	}
 	item := &models.StoreStaffBinding{
 		TenantID: tenantID, UserID: userID, ActiveUserID: activeUserID,
-		AgentTeamID: teamID, CompanyID: companyID, StoreID: storeID, Status: enums.StatusOk,
+		AgentTeamID: teamID, StoreID: storeID, Status: enums.StatusOk,
 	}
 	if err := db.Create(item).Error; err != nil {
 		t.Fatalf("create store staff binding: %v", err)
@@ -285,10 +243,10 @@ func createStoreStaffTenantBinding(t *testing.T, db *gorm.DB, tenantID, userID, 
 	return item
 }
 
-func createStoreStaffTenantInstance(t *testing.T, db *gorm.DB, tenantID int64, guid string, teamID, companyID, storeID, bindingID int64) *models.WxWorkProtocolInstance {
+func createStoreStaffTenantInstance(t *testing.T, db *gorm.DB, tenantID int64, guid string, teamID, storeID, bindingID int64) *models.WxWorkProtocolInstance {
 	t.Helper()
 	item := &models.WxWorkProtocolInstance{
-		TenantID: tenantID, Guid: guid, AgentTeamID: teamID, CompanyID: companyID, StoreID: storeID,
+		TenantID: tenantID, Guid: guid, AgentTeamID: teamID, StoreID: storeID,
 		StoreStaffBindingID: bindingID, Status: enums.StatusOk,
 	}
 	if err := db.Create(item).Error; err != nil {

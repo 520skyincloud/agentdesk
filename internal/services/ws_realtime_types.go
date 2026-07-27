@@ -22,9 +22,10 @@ const (
 )
 
 const (
-	realtimeRoleUser         = "user"
-	realtimeRoleAdmin        = "admin"
-	realtimeRoleNotification = "notification"
+	realtimeRoleUser          = "user"
+	realtimeRoleAdmin         = "admin"
+	realtimeRoleNotification  = "notification"
+	realtimeRoleConfiguration = "configuration"
 )
 
 const (
@@ -35,6 +36,8 @@ const (
 	realtimeTopicNotificationPrefix = "notification:"
 	realtimeTopicAdminTenantPrefix  = "admin:tenant:"
 	realtimeTopicDispatchPrefix     = "dispatch:tenant:"
+	realtimeTopicConfigTenantPrefix = "configuration:tenant:"
+	realtimeTopicConfigPlatform     = "configuration:platform"
 )
 
 type RealtimeEvent struct {
@@ -329,6 +332,30 @@ func (RealtimeCustomerTagRuntimePolicyChangedEvent) EventType() string {
 }
 
 func (e RealtimeCustomerTagRuntimePolicyChangedEvent) EventPayload() RealtimeEventPayload {
+	return e.Payload
+}
+
+type RealtimeAIConfigurationChangedPayload struct {
+	TenantID  int64  `json:"tenantId,omitempty"`
+	StoreID   int64  `json:"storeId,omitempty"`
+	ProfileID int64  `json:"profileId,omitempty"`
+	Revision  int64  `json:"revision,omitempty"`
+	Status    string `json:"status,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+}
+
+func (RealtimeAIConfigurationChangedPayload) realtimeEventPayload() {}
+
+type RealtimeAIConfigurationChangedEvent struct {
+	Type    string
+	Payload RealtimeAIConfigurationChangedPayload
+}
+
+func (e RealtimeAIConfigurationChangedEvent) EventType() string {
+	return e.Type
+}
+
+func (e RealtimeAIConfigurationChangedEvent) EventPayload() RealtimeEventPayload {
 	return e.Payload
 }
 

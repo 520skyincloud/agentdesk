@@ -421,6 +421,12 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <SlidersHorizontalIcon />,
         requiredPermission: "aiConfig.view",
       },
+      {
+        titleKey: "nav.industryTagTemplates",
+        url: "/dashboard/industry-tag-templates",
+        icon: <TagsIcon />,
+        requiredPermission: "aiConfig.view",
+      },
     ],
   },
 ];

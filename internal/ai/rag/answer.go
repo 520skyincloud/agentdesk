@@ -38,10 +38,7 @@ func (s *answer) DebugSearch(ctx context.Context, req request.KnowledgeSearchReq
 	for _, item := range results {
 		respResults = append(respResults, response.KnowledgeSearchResult{
 			KnowledgeBaseID: item.KnowledgeBaseID,
-			ChunkID:         item.ChunkID,
-			DocumentID:      item.DocumentID,
 			DocumentTitle:   item.DocumentTitle,
-			ChunkNo:         item.ChunkNo,
 			Title:           item.Title,
 			SectionPath:     item.SectionPath,
 			SourceRecordID:  item.SourceRecordID,
@@ -88,10 +85,7 @@ func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerReq
 		}
 		hits = append(hits, response.KnowledgeSearchResult{
 			KnowledgeBaseID: item.KnowledgeBaseID,
-			ChunkID:         item.ChunkID,
-			DocumentID:      item.DocumentID,
 			DocumentTitle:   item.DocumentTitle,
-			ChunkNo:         item.ChunkNo,
 			Title:           item.Title,
 			SectionPath:     item.SectionPath,
 			SourceRecordID:  item.SourceRecordID,
@@ -201,10 +195,7 @@ func buildContextHits(results []RetrieveResult) []response.KnowledgeSearchResult
 	for _, item := range results {
 		hits = append(hits, response.KnowledgeSearchResult{
 			KnowledgeBaseID: item.KnowledgeBaseID,
-			ChunkID:         item.ChunkID,
-			DocumentID:      item.DocumentID,
 			DocumentTitle:   item.DocumentTitle,
-			ChunkNo:         item.ChunkNo,
 			Title:           item.Title,
 			SectionPath:     item.SectionPath,
 			SourceRecordID:  item.SourceRecordID,
@@ -224,16 +215,14 @@ func buildKnowledgeCitations(hits []response.KnowledgeSearchResult, limit int) [
 	for _, item := range hits {
 		key := strings.TrimSpace(item.SourceRecordID)
 		if key == "" {
-			key = fmt.Sprintf("%d|%s|%d", item.DocumentID, item.SectionPath, item.ChunkNo)
+			continue
 		}
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
 		citations = append(citations, response.KnowledgeCitation{
-			DocumentID:     item.DocumentID,
 			DocumentTitle:  item.DocumentTitle,
-			ChunkNo:        item.ChunkNo,
 			Title:          item.Title,
 			SectionPath:    item.SectionPath,
 			SourceRecordID: item.SourceRecordID,

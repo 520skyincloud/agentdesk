@@ -47,7 +47,7 @@ function safeParseJSON(value: string) {
 
 type TFunction = (key: string, values?: Record<string, string | number>) => string
 
-function CitationList({ hits, sourceType, t }: { hits: KnowledgeRetrieveHit[]; sourceType: string; t: TFunction }) {
+function CitationList({ hits, t }: { hits: KnowledgeRetrieveHit[]; t: TFunction }) {
   const citations = hits.filter((item) => item.isCitation)
   if (citations.length === 0) {
     return <div className="text-sm text-muted-foreground">{t("knowledge.noCitations")}</div>
@@ -57,8 +57,8 @@ function CitationList({ hits, sourceType, t }: { hits: KnowledgeRetrieveHit[]; s
       {citations.map((item) => (
         <div key={item.id} className="agentdesk-subtle-surface rounded-xl p-3">
           <div className="flex items-center gap-2">
-            <span className="font-medium">{getHitSourceLabel(item, sourceType, t)}</span>
-            <Badge variant="outline">{sourceType === "fastgpt" ? `记录 #${item.rankNo}` : `Chunk #${item.chunkNo}`}</Badge>
+            <span className="font-medium">{getHitSourceLabel(item)}</span>
+            <Badge variant="outline">记录 #{item.rankNo}</Badge>
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
             {item.sectionPath || item.title || t("knowledge.unrecordedSection")}
@@ -204,7 +204,7 @@ export function RetrieveLogDetailDrawer({
 
               <section className="space-y-3">
                 <h3 className="text-sm font-semibold">{t("knowledge.citationSources")}</h3>
-                <CitationList hits={detail.hits} sourceType={detail.log.sourceType} t={t} />
+                <CitationList hits={detail.hits} t={t} />
               </section>
 
               <section className="space-y-3">
@@ -217,7 +217,7 @@ export function RetrieveLogDetailDrawer({
                     <div key={item.id} className="agentdesk-subtle-surface rounded-xl p-3">
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant="outline">#{item.rankNo}</Badge>
-                        <span className="font-medium">{getHitSourceLabel(item, detail.log.sourceType, t)}</span>
+                        <span className="font-medium">{getHitSourceLabel(item)}</span>
                         <Badge variant={item.usedInAnswer ? "default" : "secondary"}>
                           {item.usedInAnswer ? t("knowledge.usedInContext") : t("knowledge.notUsedInContext")}
                         </Badge>
@@ -225,7 +225,7 @@ export function RetrieveLogDetailDrawer({
                       </div>
                       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                         <span>{t("knowledge.section", { section: item.sectionPath || item.title || "-" })}</span>
-                        <span>{detail.log.sourceType === "fastgpt" ? `FastGPT 记录 #${item.rankNo}` : `Chunk #${item.chunkNo}`}</span>
+                        <span>FastGPT 记录 #{item.rankNo}</span>
                         <span>Provider：{item.provider || "-"}</span>
                         <span>Score：{item.score.toFixed(4)}</span>
                         <span>Rerank：{item.rerankScore ? item.rerankScore.toFixed(4) : "-"}</span>
@@ -257,21 +257,14 @@ export function RetrieveLogDetailDrawer({
   )
 }
 
-function getHitSourceLabel(item: KnowledgeRetrieveHit, sourceType: string, t: TFunction) {
-  const historical = sourceType !== "fastgpt" && sourceType !== "cloud_knowledge"
-  if (historical && item.faqQuestion) {
-    return item.faqQuestion
-  }
+function getHitSourceLabel(item: KnowledgeRetrieveHit) {
   if (item.documentTitle) {
     return item.documentTitle
   }
   if (item.title) {
     return item.title
   }
-  if (historical && item.faqId > 0) {
-    return `历史问答 #${item.faqId}`
-  }
-  return historical ? `${t("knowledge.document")} #${item.documentId}` : `FastGPT 记录 #${item.rankNo}`
+  return item.sourceRecordId || `FastGPT 记录 #${item.rankNo}`
 }
 
 function Metric({

@@ -17,21 +17,19 @@ var tenantVerificationStatusLabelMap = map[TenantVerificationStatus]string{
 type UserRegistrationSource string
 
 const (
-	UserRegistrationSourcePlatform        UserRegistrationSource = "platform_created"
-	UserRegistrationSourceTenant          UserRegistrationSource = "tenant_created"
-	UserRegistrationSourceInvitation      UserRegistrationSource = "invitation"
-	UserRegistrationSourceLegacyMigration UserRegistrationSource = "legacy_migration"
-	UserRegistrationSourceWxWork          UserRegistrationSource = "wxwork"
-	UserRegistrationSourceOIDC            UserRegistrationSource = "oidc"
+	UserRegistrationSourcePlatform   UserRegistrationSource = "platform_created"
+	UserRegistrationSourceTenant     UserRegistrationSource = "tenant_created"
+	UserRegistrationSourceInvitation UserRegistrationSource = "invitation"
+	UserRegistrationSourceWxWork     UserRegistrationSource = "wxwork"
+	UserRegistrationSourceOIDC       UserRegistrationSource = "oidc"
 )
 
 var userRegistrationSourceLabelMap = map[UserRegistrationSource]string{
-	UserRegistrationSourcePlatform:        "平台创建",
-	UserRegistrationSourceTenant:          "公司创建",
-	UserRegistrationSourceInvitation:      "邀请注册",
-	UserRegistrationSourceLegacyMigration: "历史迁移",
-	UserRegistrationSourceWxWork:          "企业微信登录",
-	UserRegistrationSourceOIDC:            "OIDC 登录",
+	UserRegistrationSourcePlatform:   "平台创建",
+	UserRegistrationSourceTenant:     "公司创建",
+	UserRegistrationSourceInvitation: "邀请注册",
+	UserRegistrationSourceWxWork:     "企业微信登录",
+	UserRegistrationSourceOIDC:       "OIDC 登录",
 }
 
 type UserApprovalStatus string

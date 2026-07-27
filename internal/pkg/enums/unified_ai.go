@@ -72,15 +72,6 @@ const (
 	StoreCredentialStatusDisabled        StoreCredentialStatus = "disabled"
 )
 
-type FastGPTRemoteRetirementStatus string
-
-const (
-	FastGPTRemoteRetirementAwaitingReplacement FastGPTRemoteRetirementStatus = "awaiting_replacement"
-	FastGPTRemoteRetirementReadyForCleanup     FastGPTRemoteRetirementStatus = "ready_for_cleanup"
-	FastGPTRemoteRetirementCleaned             FastGPTRemoteRetirementStatus = "cleaned"
-	FastGPTRemoteRetirementBlocked             FastGPTRemoteRetirementStatus = "blocked"
-)
-
 type CredentialApprovalStatus string
 
 const (

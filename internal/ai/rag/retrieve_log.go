@@ -175,13 +175,10 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 				TenantID:        tenantID,
 				RetrieveLogID:   log.ID,
 				KnowledgeBaseID: hit.KnowledgeBaseID,
-				ChunkID:         hit.ChunkID,
-				DocumentID:      hit.DocumentID,
+				SourceRecordID:  strings.TrimSpace(hit.SourceRecordID),
 				DocumentTitle:   hit.DocumentTitle,
-				ChunkNo:         hit.ChunkNo,
 				Title:           hit.Title,
 				SectionPath:     hit.SectionPath,
-				ChunkType:       "",
 				Provider:        string(enums.KnowledgeChunkProviderFastGPT),
 				RankNo:          i + 1,
 				Score:           hit.Score,
@@ -365,17 +362,11 @@ func distinctSourceRecordIDs(hits []response.KnowledgeSearchResult) []string {
 }
 
 func buildKnowledgeSearchResultKey(item response.KnowledgeSearchResult) string {
-	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
-		return "source:" + sourceRecordID
-	}
-	return fmt.Sprintf("%d|%s|%d", item.DocumentID, item.SectionPath, item.ChunkNo)
+	return "source:" + strings.TrimSpace(item.SourceRecordID)
 }
 
 func buildKnowledgeCitationKey(item response.KnowledgeCitation) string {
-	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
-		return "source:" + sourceRecordID
-	}
-	return fmt.Sprintf("%d|%s|%d", item.DocumentID, item.SectionPath, item.ChunkNo)
+	return "source:" + strings.TrimSpace(item.SourceRecordID)
 }
 
 func hasHitKey(items map[string]struct{}, key string) bool {

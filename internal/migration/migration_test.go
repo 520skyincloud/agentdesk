@@ -2,15 +2,14 @@ package migration
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/enums"
 
 	"github.com/glebarez/sqlite"
-	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
@@ -27,78 +26,11 @@ func TestValidateMigrationDefinitionRejectsReusedVersion(t *testing.T) {
 }
 
 func TestValidateMigrationDefinitionAcceptsMatchingIdentity(t *testing.T) {
-	stored := models.Migration{Version: 39, Remark: "backfill agent organization tenants", Success: true}
-	current := MigrationFunc{Version: 39, Remark: "backfill agent organization tenants"}
+	stored := models.Migration{Version: 68, Remark: seedIndustryCatalogMigrationRemark, Success: true}
+	current := MigrationFunc{Version: 68, Remark: seedIndustryCatalogMigrationRemark}
 
 	if err := validateMigrationDefinition(stored, current); err != nil {
 		t.Fatalf("validateMigrationDefinition() error=%v", err)
-	}
-}
-
-func TestValidateMigrationDefinitionAcceptsKnownHistoricalPredecessor(t *testing.T) {
-	stored := models.Migration{Version: 13, Remark: "normalize reply intent configs to seven categories", Success: true}
-	current := MigrationFunc{Version: 13, Remark: "normalize reply intent configs to five categories"}
-
-	if err := validateMigrationDefinition(stored, current); err != nil {
-		t.Fatalf("validateMigrationDefinition() error=%v", err)
-	}
-}
-
-func TestArchiveSupersededMigrationDefinitionsPreservesEvidence(t *testing.T) {
-	db := setupMigrationCompatibilityDB(t)
-	legacy := &models.Migration{
-		Version:    21,
-		Remark:     "backfill wxwork protocol instance agent team bindings",
-		Success:    true,
-		ErrorInfo:  "historical evidence",
-		RetryCount: 2,
-		CreatedAt:  time.Now().Add(-time.Hour),
-		UpdatedAt:  time.Now().Add(-30 * time.Minute),
-	}
-	if err := db.Create(legacy).Error; err != nil {
-		t.Fatalf("create legacy migration: %v", err)
-	}
-	if err := archiveSupersededMigrationDefinitions(db); err != nil {
-		t.Fatalf("archiveSupersededMigrationDefinitions() error=%v", err)
-	}
-	if err := archiveSupersededMigrationDefinitions(db); err != nil {
-		t.Fatalf("archiveSupersededMigrationDefinitions() second error=%v", err)
-	}
-
-	var activeCount int64
-	if err := db.Model(&models.Migration{}).Where("version = ?", legacy.Version).Count(&activeCount).Error; err != nil {
-		t.Fatalf("count active migrations: %v", err)
-	}
-	if activeCount != 0 {
-		t.Fatalf("active migration count=%d want 0", activeCount)
-	}
-	var archive models.MigrationDefinitionArchive
-	if err := db.Take(&archive, "source_migration_id = ?", legacy.ID).Error; err != nil {
-		t.Fatalf("load migration archive: %v", err)
-	}
-	if archive.Version != legacy.Version || archive.Remark != legacy.Remark || archive.Success != legacy.Success || archive.ErrorInfo != legacy.ErrorInfo || archive.RetryCount != legacy.RetryCount {
-		t.Fatalf("archive=%+v does not preserve legacy=%+v", archive, *legacy)
-	}
-	if archive.ReplacementRemark != migrationFuncs[21].Remark || archive.ArchiveReason == "" {
-		t.Fatalf("archive replacement metadata=%+v", archive)
-	}
-}
-
-func TestArchiveSupersededMigrationDefinitionsLeavesUnknownConflict(t *testing.T) {
-	db := setupMigrationCompatibilityDB(t)
-	unknown := &models.Migration{Version: 21, Remark: "unknown reused definition", Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	if err := db.Create(unknown).Error; err != nil {
-		t.Fatalf("create unknown migration: %v", err)
-	}
-	if err := archiveSupersededMigrationDefinitions(db); err != nil {
-		t.Fatalf("archiveSupersededMigrationDefinitions() error=%v", err)
-	}
-	var stored models.Migration
-	if err := db.Take(&stored, "id = ?", unknown.ID).Error; err != nil {
-		t.Fatalf("unknown migration must remain active: %v", err)
-	}
-	if err := validateMigrationDefinition(stored, migrationFuncs[21]); err == nil || !strings.Contains(err.Error(), "definition mismatch") {
-		t.Fatalf("validateMigrationDefinition() error=%v want definition mismatch", err)
 	}
 }
 
@@ -118,11 +50,10 @@ func TestPreflightAllowsFreshDatabaseWithoutMigrationTable(t *testing.T) {
 	}
 }
 
-func TestPreflightAcceptsMatchingAndKnownSupersededDefinitions(t *testing.T) {
+func TestPreflightAcceptsMatchingDefinition(t *testing.T) {
 	db := setupMigrationCompatibilityDB(t)
 	rows := []models.Migration{
-		{Version: 39, Remark: migrationFuncs[39].Remark, Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
-		{Version: 21, Remark: "sync customer service team leader permissions", Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Version: 68, Remark: migrationFuncs[68].Remark, Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
 	}
 	if err := db.Create(&rows).Error; err != nil {
 		t.Fatalf("create migration definitions: %v", err)
@@ -134,7 +65,8 @@ func TestPreflightAcceptsMatchingAndKnownSupersededDefinitions(t *testing.T) {
 
 func TestPreflightRejectsUnknownDefinitionBeforeSchemaMutation(t *testing.T) {
 	for _, fixture := range []models.Migration{
-		{Version: 39, Remark: "unknown parallel definition", Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Version: 68, Remark: "unknown parallel definition", Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{Version: 21, Remark: "retired industry migration", Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
 		{Version: 999, Remark: "future branch migration", Success: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
 	} {
 		t.Run(fixture.Remark, func(t *testing.T) {
@@ -149,29 +81,18 @@ func TestPreflightRejectsUnknownDefinitionBeforeSchemaMutation(t *testing.T) {
 	}
 }
 
-func TestCurrentIntentCleanupProducesFiveActiveCategories(t *testing.T) {
-	db := setupMigrationCompatibilityDB(t)
-	if err := db.AutoMigrate(&models.ReplyIntentConfig{}); err != nil {
-		t.Fatalf("migrate reply intent config: %v", err)
+func TestFreshOnlyMigrationBaselineContainsCurrentInitializers(t *testing.T) {
+	want := []int64{2, 15, 35, 68, 69}
+	if !reflect.DeepEqual(versions, want) {
+		t.Fatalf("registered migration versions=%v want=%v", versions, want)
 	}
-	previousDB := sqls.DB()
-	sqls.SetDB(db)
-	t.Cleanup(func() { sqls.SetDB(previousDB) })
-
-	if err := migrationFuncs[21].Fn(); err != nil {
-		t.Fatalf("run current migration 21: %v", err)
-	}
-	var active []models.ReplyIntentConfig
-	if err := db.Where("status = ?", enums.StatusOk).Order("code ASC").Find(&active).Error; err != nil {
-		t.Fatalf("load active reply intents: %v", err)
-	}
-	want := []string{"hotel_info", "hotel_variable", "human_complaint_risk", "interaction", "service_request"}
-	if len(active) != len(want) {
-		t.Fatalf("active intent count=%d want %d: %+v", len(active), len(want), active)
-	}
-	for i := range want {
-		if active[i].Code != want[i] {
-			t.Fatalf("active[%d].Code=%q want %q", i, active[i].Code, want[i])
+	for _, version := range versions {
+		item := migrationFuncs[version]
+		lowerRemark := strings.ToLower(item.Remark)
+		for _, retiredTerm := range []string{"backfill", "legacy", "retire", "remove old", "migrate existing"} {
+			if strings.Contains(lowerRemark, retiredTerm) {
+				t.Fatalf("fresh-only migration %d retains obsolete remark %q", version, item.Remark)
+			}
 		}
 	}
 }
@@ -188,7 +109,7 @@ func setupMigrationCompatibilityDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open migration compatibility db: %v", err)
 	}
-	if err := db.AutoMigrate(&models.Migration{}, &models.MigrationDefinitionArchive{}); err != nil {
+	if err := db.AutoMigrate(&models.Migration{}); err != nil {
 		t.Fatalf("migrate compatibility models: %v", err)
 	}
 	return db

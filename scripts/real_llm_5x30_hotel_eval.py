@@ -181,7 +181,7 @@ def build_turns() -> list[Turn]:
         for scene, msg, expected in batch:
             mode = "半托管"
             schedule = "总部时间" if batch_index % 2 else "门店时间"
-            extra = "门店：丽斯未来酒店（合肥南七店）。"
+            extra = "门店：合成验收酒店（合肥南七店）。"
             if "非托管" in scene:
                 mode = "非托管"
             if "无群" in scene:
@@ -193,7 +193,7 @@ def build_turns() -> list[Turn]:
     return turns[:150]
 
 
-SYSTEM_PROMPT = """你是丽斯未来酒店的微信客服，回复必须像真人前台同事，短、自然、能解决事。
+SYSTEM_PROMPT = """你是合成验收酒店的微信客服，回复必须像真人前台同事，短、自然、能解决事。
 
 必须遵守这条回复链路：
 1. 如果客户连续发多条，要合并理解，逐项覆盖，不能只答最后一句。

@@ -24,7 +24,7 @@ type tenantService struct {
 func (s *tenantService) LegacyTenantID(db *gorm.DB) (int64, error) {
 	tenant := repositories.TenantRepository.GetByTenantCode(db, constants.LegacyDefaultTenantCode)
 	if tenant == nil {
-		return 0, errorsx.BusinessError(1, "历史默认公司尚未初始化")
+		return 0, errorsx.BusinessError(1, "OIDC 兜底公司尚未初始化")
 	}
 	return tenant.ID, nil
 }

@@ -38,7 +38,6 @@ type DatabaseRestoreSnapshot struct {
 	DataSHA256            string
 	MigrationSHA256       string
 	MigrationRows         int64
-	MigrationArchiveRows  int64
 	FailedMigrationRows   int64
 	Tables                map[string]DatabaseRestoreTableSnapshot
 }
@@ -117,25 +116,19 @@ func (r *databaseRestoreAuditRepository) Capture(db *gorm.DB) (*DatabaseRestoreS
 	snapshot.SchemaSHA256 = hex.EncodeToString(schemaHasher.Sum(nil))
 	snapshot.DataSHA256 = hex.EncodeToString(dataHasher.Sum(nil))
 
+	const migrationTable = "t_migration"
 	migrationHasher := sha256.New()
-	for _, table := range []string{"t_migration", "t_migration_definition_archive"} {
-		tableSnapshot, ok := snapshot.Tables[table]
-		if !ok {
-			writeDatabaseRestoreHashField(migrationHasher, table)
-			writeDatabaseRestoreHashField(migrationHasher, "missing")
-			continue
-		}
-		writeDatabaseRestoreHashField(migrationHasher, table)
+	tableSnapshot, ok := snapshot.Tables[migrationTable]
+	if !ok {
+		writeDatabaseRestoreHashField(migrationHasher, migrationTable)
+		writeDatabaseRestoreHashField(migrationHasher, "missing")
+	} else {
+		writeDatabaseRestoreHashField(migrationHasher, migrationTable)
 		writeDatabaseRestoreHashField(migrationHasher, tableSnapshot.SchemaSHA256)
 		writeDatabaseRestoreHashField(migrationHasher, tableSnapshot.DataSHA256)
-		switch table {
-		case "t_migration":
-			snapshot.MigrationRows = tableSnapshot.RowCount
-			if err := db.Table(table).Where("success = ?", false).Count(&snapshot.FailedMigrationRows).Error; err != nil {
-				return nil, fmt.Errorf("count failed migration records failed: %w", err)
-			}
-		case "t_migration_definition_archive":
-			snapshot.MigrationArchiveRows = tableSnapshot.RowCount
+		snapshot.MigrationRows = tableSnapshot.RowCount
+		if err := db.Table(migrationTable).Where("success = ?", false).Count(&snapshot.FailedMigrationRows).Error; err != nil {
+			return nil, fmt.Errorf("count failed migration records failed: %w", err)
 		}
 	}
 	snapshot.MigrationSHA256 = hex.EncodeToString(migrationHasher.Sum(nil))

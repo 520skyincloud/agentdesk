@@ -105,7 +105,7 @@ func (v *newAPIStoreCredentialValidator) validateSlot(ctx context.Context, baseU
 func (v *newAPIStoreCredentialValidator) validateTextModel(ctx context.Context, baseURL string, slot models.ModelProfileSlot, apiKey string, documentParser bool) error {
 	prompt := "只回复 OK。"
 	if documentParser {
-		prompt = "从文本中提取酒店名称：丽斯未来酒店。只回复酒店名称。"
+		prompt = "从文本中提取酒店名称：合成验收酒店。只回复酒店名称。"
 	}
 	if strings.EqualFold(slot.APIMode, "responses") {
 		return v.doJSON(ctx, baseURL, "/responses", slot, apiKey, map[string]any{

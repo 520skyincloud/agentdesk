@@ -325,7 +325,7 @@ export function WxWorkProtocolBindingDialog({
               </label>
               <label className="space-y-2 text-sm font-medium">
                 <span>门店名称</span>
-                <Input value={storeName} onChange={(event) => setStoreName(event.target.value)} placeholder="例如：丽斯未来酒店杭州西湖店" />
+                <Input value={storeName} onChange={(event) => setStoreName(event.target.value)} placeholder="例如：示例酒店杭州西湖店" />
               </label>
               {channels.length > 1 ? (
                 <label className="space-y-2 text-sm font-medium sm:col-span-2">

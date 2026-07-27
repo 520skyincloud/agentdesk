@@ -514,7 +514,7 @@ func setupConversationEvolutionFixture(t *testing.T) *conversationEvolutionFixtu
 		t.Fatal(err)
 	}
 	tenant := &models.Tenant{
-		IntentProfileID: profile.ID, TenantCode: "tenant-" + dbName, LegalName: "丽斯未来测试公司", ShortName: "丽斯未来",
+		IntentProfileID: profile.ID, TenantCode: "tenant-" + dbName, LegalName: "合成验收测试公司", ShortName: "合成验收",
 		RegistrationType: "credit_code", RegistrationNo: "REG-" + dbName, Status: enums.StatusOk,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}

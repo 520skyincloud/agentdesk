@@ -16,9 +16,10 @@ func TestTenantRuntimeWritesStayBehindManagementService(t *testing.T) {
 	t.Parallel()
 	allowed := map[string]map[string]struct{}{
 		"tenant_management_service.go": {
-			"CreateTenant":       {},
-			"UpdateTenant":       {},
-			"UpdateTenantStatus": {},
+			"CreateTenant":             {},
+			"InitializeSystemTenantDB": {},
+			"UpdateTenant":             {},
+			"UpdateTenantStatus":       {},
 		},
 	}
 	assertRuntimeWritesStayBehindAllowedFunctions(t, "Tenant", isTenantMutationCall, allowed)

@@ -24,18 +24,6 @@ func (databaseRestoreMigrationFixture) TableName() string {
 	return "t_migration"
 }
 
-type databaseRestoreMigrationArchiveFixture struct {
-	ID                int64  `gorm:"primaryKey;autoIncrement"`
-	SourceMigrationID int64  `gorm:"type:bigint;not null;uniqueIndex"`
-	Version           int64  `gorm:"type:bigint;not null"`
-	Remark            string `gorm:"type:text;not null"`
-	Success           bool   `gorm:"not null"`
-}
-
-func (databaseRestoreMigrationArchiveFixture) TableName() string {
-	return "t_migration_definition_archive"
-}
-
 type databaseRestoreSecretFixture struct {
 	ID              int64  `gorm:"primaryKey;autoIncrement"`
 	TenantID        int64  `gorm:"type:bigint;not null;uniqueIndex:uk_restore_secret_tenant_key"`
@@ -234,13 +222,6 @@ func newDatabaseRestoreSQLiteFixtureWithValuesAndOrder(
 			remark TEXT NOT NULL,
 			success NUMERIC NOT NULL
 		)`,
-		`CREATE TABLE t_migration_definition_archive (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			source_migration_id INTEGER NOT NULL UNIQUE,
-			version INTEGER NOT NULL,
-			remark TEXT NOT NULL,
-			success NUMERIC NOT NULL
-		)`,
 		`CREATE TABLE t_restore_secret (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			tenant_id INTEGER NOT NULL,
@@ -283,7 +264,6 @@ func resetDatabaseRestoreMySQLFixture(t *testing.T, db *gorm.DB) {
 	dropDatabaseRestoreFixtureTables(t, db)
 	if err := db.AutoMigrate(
 		&databaseRestoreMigrationFixture{},
-		&databaseRestoreMigrationArchiveFixture{},
 		&databaseRestoreSecretFixture{},
 	); err != nil {
 		t.Fatalf("migrate MySQL restore fixture: %v", err)
@@ -307,7 +287,6 @@ func dropDatabaseRestoreFixtureTables(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	for _, table := range []any{
 		&databaseRestoreSecretFixture{},
-		&databaseRestoreMigrationArchiveFixture{},
 		&databaseRestoreMigrationFixture{},
 	} {
 		if err := db.Migrator().DropTable(table); err != nil {

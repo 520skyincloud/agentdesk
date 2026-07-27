@@ -92,6 +92,48 @@ func (s *wsService) HandleDashboardNotificationWS(ctx *gin.Context) {
 	}
 }
 
+func (s *wsService) HandleConfigurationWS(ctx *gin.Context) {
+	principal := AuthService.GetAuthPrincipal(ctx)
+	if principal == nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, web.JsonError(errorsx.Unauthorized("未登录或登录已过期")))
+		return
+	}
+	if !hasAnyRealtimeConfigurationPermission(principal) {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, web.JsonError(errorsx.Forbidden("无权限查看模型、凭据、知识库或账单配置")))
+		return
+	}
+	tenantID := principal.ActiveTenantID
+	if tenantID <= 0 {
+		tenantID = principal.TenantID
+	}
+	if tenantID <= 0 && !principal.IsPlatformAccount {
+		ctx.AbortWithStatusJSON(http.StatusForbidden, web.JsonError(errorsx.Forbidden("请先进入需要管理的接入公司")))
+		return
+	}
+	if err := s.upgradeConnection(ctx, principal, nil, realtimeRoleConfiguration, tenantID); err != nil {
+		slog.Error("upgrade configuration websocket failed", "error", err, "path", ctx.Request.URL.Path)
+		ctx.Abort()
+		return
+	}
+}
+
+func hasAnyRealtimeConfigurationPermission(principal *dto.AuthPrincipal) bool {
+	if principal == nil {
+		return false
+	}
+	for _, permission := range []string{
+		constants.PermissionAIConfigView.Code,
+		constants.PermissionStoreWorkbenchView.Code,
+		constants.PermissionKnowledgeBaseView.Code,
+		constants.PermissionBillingView.Code,
+	} {
+		if slices.Contains(principal.Permissions, permission) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *wsService) HandleOpenWS(ctx *gin.Context) {
 	channel := ChannelService.GetEnabledChannel(ctx)
 	if channel == nil {
@@ -646,6 +688,83 @@ func (s *wsService) PublishCustomerTagRuntimePolicyChanged(
 	s.PublishToTopics([]string{s.adminTenantTopic(tenantID)}, event)
 }
 
+func (s *wsService) PublishStoreModelProfileChanged(
+	tenantID, storeID, profileID, revision int64,
+	status string,
+	updatedAt time.Time,
+) {
+	s.publishAIConfigurationChanged(
+		enums.IMRealtimeEventStoreModelProfileChanged,
+		tenantID,
+		storeID,
+		profileID,
+		revision,
+		status,
+		updatedAt,
+	)
+}
+
+func (s *wsService) PublishStoreModelCredentialChanged(
+	tenantID, storeID, profileID, revision int64,
+	status string,
+	updatedAt time.Time,
+) {
+	s.publishAIConfigurationChanged(
+		enums.IMRealtimeEventStoreCredentialChanged,
+		tenantID,
+		storeID,
+		profileID,
+		revision,
+		status,
+		updatedAt,
+	)
+}
+
+func (s *wsService) PublishFastGPTProfileChanged(
+	tenantID, storeID, profileID, revision int64,
+	status string,
+	updatedAt time.Time,
+) {
+	s.publishAIConfigurationChanged(
+		enums.IMRealtimeEventFastGPTProfileChanged,
+		tenantID,
+		storeID,
+		profileID,
+		revision,
+		status,
+		updatedAt,
+	)
+}
+
+func (s *wsService) publishAIConfigurationChanged(
+	eventType string,
+	tenantID, storeID, profileID, revision int64,
+	status string,
+	updatedAt time.Time,
+) {
+	if profileID <= 0 && storeID <= 0 {
+		return
+	}
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	topic := realtimeTopicConfigPlatform
+	topics := []string{realtimeTopicConfigPlatform}
+	if tenantID > 0 {
+		topic = s.configurationTenantTopic(tenantID)
+		topics = append(topics, topic)
+	}
+	event := s.newEvent(topic, RealtimeAIConfigurationChangedEvent{
+		Type: eventType,
+		Payload: RealtimeAIConfigurationChangedPayload{
+			TenantID: tenantID, StoreID: storeID, ProfileID: profileID,
+			Revision: revision, Status: strings.TrimSpace(status),
+			UpdatedAt: updatedAt.Format(time.RFC3339Nano),
+		},
+	})
+	s.PublishToTopics(topics, event)
+}
+
 func (s *wsService) buildConversationRouteRealtimePayload(conversationID, tenantID int64) RealtimeConversationChangedPayload {
 	route := ConversationRouteService.GetByConversationIDInTenant(conversationID, tenantID)
 	if route == nil {
@@ -855,6 +974,17 @@ func (s *wsService) defaultTopics(session *ClientSession) []string {
 			return nil
 		}
 		return []string{s.notificationTopic(session.Principal.UserID)}
+	case realtimeRoleConfiguration:
+		if session.Principal == nil || session.Principal.UserID <= 0 {
+			return nil
+		}
+		if session.Principal.IsPlatformAccount {
+			return []string{realtimeTopicConfigPlatform}
+		}
+		if session.TenantID > 0 {
+			return []string{s.configurationTenantTopic(session.TenantID)}
+		}
+		return nil
 	case realtimeRoleAdmin:
 		if session.Principal == nil || session.Principal.UserID <= 0 || session.TenantID <= 0 {
 			return nil
@@ -883,6 +1013,10 @@ func (s *wsService) filterAllowedTopics(session *ClientSession, topics []string)
 	}
 	switch session.Role {
 	case realtimeRoleNotification:
+		if session.Principal == nil {
+			return nil
+		}
+	case realtimeRoleConfiguration:
 		if session.Principal == nil {
 			return nil
 		}
@@ -986,6 +1120,10 @@ func (s *wsService) adminTenantTopic(tenantID int64) string {
 
 func (s *wsService) dispatchTenantTopic(tenantID int64) string {
 	return realtimeTopicDispatchPrefix + strconv.FormatInt(tenantID, 10)
+}
+
+func (s *wsService) configurationTenantTopic(tenantID int64) string {
+	return realtimeTopicConfigTenantPrefix + strconv.FormatInt(tenantID, 10)
 }
 
 func (s *wsService) notificationTopic(userID int64) string {

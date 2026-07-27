@@ -21,11 +21,60 @@ var CustomerTagChangeLogRepository = &customerTagChangeLogRepository{}
 
 type industryTagDefinitionRepository struct{}
 
+func (r *industryTagDefinitionRepository) Get(db *gorm.DB, id int64) *models.IndustryTagDefinition {
+	ret := &models.IndustryTagDefinition{}
+	if err := db.Take(ret, "id = ?", id).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *industryTagDefinitionRepository) GetForUpdate(db *gorm.DB, id int64) (*models.IndustryTagDefinition, error) {
+	ret := &models.IndustryTagDefinition{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Take(ret, "id = ?", id).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
 func (r *industryTagDefinitionRepository) CountByProfile(db *gorm.DB, profileID int64) (int64, error) {
 	var count int64
 	err := db.Model(&models.IndustryTagDefinition{}).
 		Where("intent_profile_id = ?", profileID).
 		Count(&count).Error
+	return count, err
+}
+
+func (r *industryTagDefinitionRepository) FindByProfile(db *gorm.DB, profileID int64) ([]models.IndustryTagDefinition, error) {
+	ret := make([]models.IndustryTagDefinition, 0)
+	err := db.Where("intent_profile_id = ? AND status <> ?", profileID, enums.StatusDeleted).
+		Order("parent_id ASC, sort_no ASC, id ASC").Find(&ret).Error
+	return ret, err
+}
+
+func (r *industryTagDefinitionRepository) FindPageByCnd(db *gorm.DB, cnd *sqls.Cnd) (list []models.IndustryTagDefinition, paging *sqls.Paging) {
+	cnd.Find(db, &list)
+	paging = &sqls.Paging{
+		Page:  cnd.Paging.Page,
+		Limit: cnd.Paging.Limit,
+		Total: cnd.Count(db, &models.IndustryTagDefinition{}),
+	}
+	return
+}
+
+func (r *industryTagDefinitionRepository) CountChildren(db *gorm.DB, id int64, activeOnly bool) (int64, error) {
+	query := db.Model(&models.IndustryTagDefinition{}).Where("parent_id = ?", id)
+	if activeOnly {
+		query = query.Where("status = ?", enums.StatusOk)
+	} else {
+		query = query.Where("status <> ?", enums.StatusDeleted)
+	}
+	var count int64
+	err := query.Count(&count).Error
 	return count, err
 }
 

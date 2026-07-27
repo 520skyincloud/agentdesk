@@ -186,13 +186,6 @@ func newTenantRestoreVerificationSQLite(t *testing.T, path string) *gorm.DB {
 			remark TEXT NOT NULL,
 			success NUMERIC NOT NULL
 		)`,
-		`CREATE TABLE t_migration_definition_archive (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			source_migration_id INTEGER NOT NULL UNIQUE,
-			version INTEGER NOT NULL,
-			remark TEXT NOT NULL,
-			success NUMERIC NOT NULL
-		)`,
 		`CREATE TABLE t_restore_evidence (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			tenant_id INTEGER NOT NULL,

@@ -151,7 +151,7 @@ func (s *aiManualResumeTaskService) EnsureForTimeout(conversationID int64) bool 
 		if isConsumedHandoffConfirmationMessage(message) {
 			continue
 		}
-		_, err := s.Schedule(conversationID, message.ID, "legacy_"+s.NewHandoffToken())
+		_, err := s.Schedule(conversationID, message.ID, "recovered_"+s.NewHandoffToken())
 		return err == nil
 	}
 	return false

@@ -72,6 +72,7 @@ func (s *managedStoreCredentialFastGPTSynchronizer) Sync(ctx context.Context, ta
 	}); err != nil {
 		return storeCredentialFastGPTStatusFailed, &storeCredentialFastGPTSyncError{Class: "state_update_failed"}
 	}
+	publishFastGPTConfigurationState(target.Store.TenantID, target.Store.ID, now)
 
 	connector, err := NewManagedStoreFastGPTConnector()
 	if err != nil {
@@ -107,6 +108,7 @@ func (s *managedStoreCredentialFastGPTSynchronizer) markFailed(binding *models.F
 		"readiness_status": readinessStatus, "last_error": class, "updated_at": now,
 		"update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
 	})
+	publishFastGPTConfigurationState(tenantID, binding.StoreID, now)
 }
 
 func syncManagedStoreFastGPTProfile(ctx context.Context, connector *FastGPTConnector, target storeCredentialActivationTarget, apiKey, datasetID string) (*FastGPTModelProfile, string, error) {
@@ -146,9 +148,38 @@ func commitManagedStoreFastGPTProfile(target storeCredentialActivationTarget, cr
 		return errors.New("managed FastGPT profile commit target is invalid")
 	}
 	operator = operatorOrSystem(operator)
-	return sqls.WithTransaction(func(tx *sqls.TxContext) error {
+	if err := sqls.WithTransaction(func(tx *sqls.TxContext) error {
 		return commitManagedStoreFastGPTProfileDB(tx.Tx, target, credentialRevision, fingerprint, profile, knowledgeBaseID, operator, time.Now())
-	})
+	}); err != nil {
+		return err
+	}
+	publishFastGPTConfigurationState(target.Store.TenantID, target.Store.ID, time.Now())
+	return nil
+}
+
+func publishFastGPTConfigurationState(tenantID, storeID int64, updatedAt time.Time) {
+	if tenantID <= 0 || storeID <= 0 {
+		return
+	}
+	binding := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(sqls.DB(), storeID, tenantID)
+	if binding == nil {
+		WsService.PublishFastGPTProfileChanged(tenantID, storeID, 0, 0, "unconfigured", updatedAt)
+		return
+	}
+	profileID := binding.AppliedProfileID
+	revision := binding.AppliedProfileRevision
+	if binding.TargetProfileID > 0 {
+		profileID = binding.TargetProfileID
+		revision = binding.TargetProfileRevision
+	}
+	WsService.PublishFastGPTProfileChanged(
+		tenantID,
+		storeID,
+		profileID,
+		revision,
+		firstNonBlank(binding.ReadinessStatus, binding.Status),
+		updatedAt,
+	)
 }
 
 func commitManagedStoreFastGPTProfileDB(db *gorm.DB, target storeCredentialActivationTarget, credentialRevision int64, fingerprint string, profile *FastGPTModelProfile, knowledgeBaseID int64, operator *dto.AuthPrincipal, now time.Time) error {

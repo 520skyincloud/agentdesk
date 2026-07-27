@@ -32,12 +32,11 @@ func loadEnabledIntentConfigs(scope runtimeIntentScope) []models.ReplyIntentConf
 	}
 	err := db.Where("status = ?", enums.StatusOk).
 		Where("intent_profile_id = ?", scope.IntentProfileID).
-		Where("scope_type = ? AND company_id = 0 AND store_id = 0 AND wx_work_instance_id = 0", "global").
 		Order("priority DESC").Order("sort_no ASC").Order("id ASC").Find(&list).Error
 	if err != nil {
 		return nil
 	}
-	return collapseIntentConfigsByScope(list)
+	return normalizeIntentConfigs(list)
 }
 
 func promptTraceFromConfig(config models.ReplyIntentConfig, intent callbacks.IntentTraceData) callbacks.IntentPromptTraceData {
@@ -58,13 +57,10 @@ func promptTraceFromConfig(config models.ReplyIntentConfig, intent callbacks.Int
 	return callbacks.IntentPromptTraceData{PackName: intent.PrimaryIntent, Instructions: instructions}
 }
 
-func collapseIntentConfigsByScope(list []models.ReplyIntentConfig) []models.ReplyIntentConfig {
+func normalizeIntentConfigs(list []models.ReplyIntentConfig) []models.ReplyIntentConfig {
 	selected := make(map[string]models.ReplyIntentConfig, len(list))
 	order := make([]string, 0, len(list))
 	for _, item := range list {
-		if strings.TrimSpace(item.ScopeType) != "global" || item.CompanyID != 0 || item.StoreID != 0 || item.WxWorkInstanceID != 0 {
-			continue
-		}
 		code := strings.TrimSpace(item.Code)
 		if code == "" {
 			continue

@@ -43,8 +43,7 @@ import { Status, StatusLabels } from "@/lib/generated/enums"
 import { getBrowserCoordinates } from "@/lib/browser-geolocation"
 import { formatDateTime, repairMojibakeText } from "@/lib/utils"
 
-const CALLBACK_URL = "http://112.124.109.106:2332/api/third/wxwork-protocol/callback"
-const DEFAULT_WELCOME_MESSAGE = "您好，欢迎来到丽斯未来。自助入住可以在小程序里办理，需要门店定位的话我也可以发您。"
+const DEFAULT_WELCOME_MESSAGE = "您好，欢迎咨询。自助服务可以在小程序里办理，需要门店定位的话我也可以发您。"
 
 type WxWorkProtocolInstanceManagerProps = {
   layout?: "page" | "fragment"
@@ -510,7 +509,7 @@ function buildWelcomeInstanceUpdatePayload(instance: WelcomeCapableInstance, dra
     welcomeSendMiniProgram: draft.sendMiniProgram,
     welcomeAskLocation: draft.sendLocation,
     knowledgeBaseId: instance.knowledgeBaseId || 0,
-    notifyUrl: instance.notifyUrl || CALLBACK_URL,
+    notifyUrl: instance.notifyUrl || "",
     proxy: instance.proxy || "",
     bridgeId: instance.bridgeId || "",
     staffUserIds: instance.staffUserIds || "",
@@ -1073,12 +1072,12 @@ export function WxWorkProtocolInstanceManager({
             description: "这里显示的是通过协议扫码登录的门店企业微信员工号。账号头像、UserID、GUID、回调、代理和 Bridge 等技术信息由系统同步和维护，不再开放手动填写。",
 	          },
 	          { name: "employeeName", label: "员工号名称", type: "text", placeholder: "扫码同步后会自动带出，可手动改展示名" },
-	          { name: "storeName", label: "门店名称", type: "text", placeholder: "例如：丽斯未来酒店杭州某某店", description: "该名称来自绑定的系统账号所代表的门店。" },
+	          { name: "storeName", label: "门店名称", type: "text", placeholder: "例如：示例酒店杭州某某店", description: "该名称来自绑定的系统账号所代表的门店。" },
 	          { name: "storeId", label: "门店 ID", type: "custom", valueFromItem: (item) => item.storeId, render: () => null },
           { name: "storeLocationGuide", label: "门店定位说明", type: "custom", render: renderLocationGuide },
           { name: "storeAddress", label: "门店地址", type: "text", placeholder: "例如：上海市..." },
           { name: "storeContactPhone", label: "联系电话", type: "text", placeholder: "例如：0551-88888888 / 13800000000", description: "客户询问酒店电话时发送这个账号配置的电话变量，不从地址或备注里猜。" },
-          { name: "storeNavigationName", label: "导航名称", type: "text", placeholder: "例如：丽斯未来酒店某某店" },
+          { name: "storeNavigationName", label: "导航名称", type: "text", placeholder: "例如：示例酒店某某店" },
           { name: "storeLatitude", label: "门店纬度", type: "text", placeholder: "例如：31.230416" },
           { name: "storeLongitude", label: "门店经度", type: "text", placeholder: "例如：121.473701" },
           { name: "storeMapProvider", label: "坐标来源", type: "text", placeholder: "browser_geolocation / amap / tencent" },
@@ -1157,7 +1156,7 @@ export function WxWorkProtocolInstanceManager({
           welcomeSendMiniProgram: context.item?.welcomeSendMiniProgram ?? true,
           welcomeAskLocation: context.item?.welcomeAskLocation ?? true,
           knowledgeBaseId: context.item?.knowledgeBaseId || 0,
-          notifyUrl: context.item?.notifyUrl || CALLBACK_URL,
+          notifyUrl: context.item?.notifyUrl || "",
           proxy: context.item?.proxy || "",
           bridgeId: context.item?.bridgeId || "",
           staffUserIds: context.item?.staffUserIds || "",

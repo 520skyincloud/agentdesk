@@ -1,7 +1,9 @@
 package services
 
 import (
+	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +21,91 @@ func TestWsNotificationTopic(t *testing.T) {
 	svc := newWsService()
 	if got := svc.notificationTopic(123); got != "notification:123" {
 		t.Fatalf("expected notification:123, got %q", got)
+	}
+}
+
+func TestWsConfigurationTopicsRespectTenantAndPlatformScope(t *testing.T) {
+	svc := newWsService()
+	tenantPrincipal := &dto.AuthPrincipal{
+		UserID: 1, ActiveTenantID: 101,
+		Permissions: []string{constants.PermissionAIConfigView.Code},
+	}
+	tenantSession := &ClientSession{
+		TenantID: 101, Principal: tenantPrincipal, Role: realtimeRoleConfiguration,
+	}
+	tenantTopics := sliceToSet(svc.defaultTopics(tenantSession))
+	if _, ok := tenantTopics[svc.configurationTenantTopic(101)]; !ok {
+		t.Fatalf("tenant configuration topic missing: %+v", tenantTopics)
+	}
+	if _, ok := tenantTopics[realtimeTopicConfigPlatform]; ok {
+		t.Fatalf("tenant account received platform configuration topic: %+v", tenantTopics)
+	}
+
+	platformPrincipal := &dto.AuthPrincipal{
+		UserID: 2, ActiveTenantID: 101, IsPlatformAccount: true,
+		Permissions: []string{constants.PermissionAIConfigView.Code},
+	}
+	platformSession := &ClientSession{
+		TenantID: 101, Principal: platformPrincipal, Role: realtimeRoleConfiguration,
+	}
+	platformTopics := sliceToSet(svc.defaultTopics(platformSession))
+	if _, ok := platformTopics[svc.configurationTenantTopic(101)]; ok {
+		t.Fatalf("platform account must not subscribe twice through the tenant topic: %+v", platformTopics)
+	}
+	if _, ok := platformTopics[realtimeTopicConfigPlatform]; !ok {
+		t.Fatalf("platform configuration topic missing: %+v", platformTopics)
+	}
+}
+
+func TestWsConfigurationPermissionDoesNotDependOnConversationAccess(t *testing.T) {
+	for _, permission := range []string{
+		constants.PermissionAIConfigView.Code,
+		constants.PermissionStoreWorkbenchView.Code,
+		constants.PermissionKnowledgeBaseView.Code,
+		constants.PermissionBillingView.Code,
+	} {
+		principal := &dto.AuthPrincipal{UserID: 1, Permissions: []string{permission}}
+		if !hasAnyRealtimeConfigurationPermission(principal) {
+			t.Fatalf("permission %q should allow configuration realtime access", permission)
+		}
+	}
+	if hasAnyRealtimeConfigurationPermission(&dto.AuthPrincipal{
+		UserID: 1, Permissions: []string{constants.PermissionConversationView.Code},
+	}) {
+		t.Fatal("conversation-only permission must not allow configuration realtime access")
+	}
+}
+
+func TestWsAIConfigurationPayloadContainsNoSensitiveFields(t *testing.T) {
+	event := newWsService().newEvent(realtimeTopicConfigPlatform, RealtimeAIConfigurationChangedEvent{
+		Type: enums.IMRealtimeEventStoreCredentialChanged,
+		Payload: RealtimeAIConfigurationChangedPayload{
+			TenantID: 101, StoreID: 202, ProfileID: 303, Revision: 4,
+			Status: "active", UpdatedAt: time.Now().Format(time.RFC3339Nano),
+		},
+	})
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal configuration event: %v", err)
+	}
+	body := string(raw)
+	for _, expected := range []string{
+		`"type":"store_model_credential.changed"`,
+		`"tenantId":101`,
+		`"storeId":202`,
+		`"profileId":303`,
+		`"revision":4`,
+		`"status":"active"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("configuration event missing %s: %s", expected, body)
+		}
+	}
+	lower := strings.ToLower(body)
+	for _, forbidden := range []string{"apikey", "prompt", "schema", "cipher", "nonce", "fingerprint"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("configuration event leaked forbidden field %q: %s", forbidden, body)
+		}
 	}
 }
 

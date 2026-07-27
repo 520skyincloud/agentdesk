@@ -13,15 +13,13 @@ import (
 
 func TestStoreWorkbenchCurrentUsesOnlyCurrentUserAndTenant(t *testing.T) {
 	db := setupStoreStaffTenantDB(t)
-	companyA := createStoreStaffTenantCompany(t, db, 101, "workbench-company-a")
-	companyB := createStoreStaffTenantCompany(t, db, 202, "workbench-company-b")
 	teamA := createStoreStaffTenantTeam(t, db, 101, "workbench-team-a")
 	userA := createStoreStaffTenantUser(t, db, 101, "workbench-user-a")
-	storeA := createStoreStaffTenantStore(t, db, 101, companyA.ID, "workbench-store-a")
-	storeB := createStoreStaffTenantStore(t, db, 202, companyB.ID, "workbench-store-b")
-	bindingA := createStoreStaffTenantBinding(t, db, 101, userA.ID, teamA.ID, companyA.ID, storeA.ID)
-	createStoreStaffTenantBinding(t, db, 202, userA.ID, 0, companyB.ID, storeB.ID)
-	instanceA := createStoreStaffTenantInstance(t, db, 101, "workbench-instance-a", teamA.ID, companyA.ID, storeA.ID, bindingA.ID)
+	storeA := createStoreStaffTenantStore(t, db, 101, "workbench-store-a")
+	storeB := createStoreStaffTenantStore(t, db, 202, "workbench-store-b")
+	bindingA := createStoreStaffTenantBinding(t, db, 101, userA.ID, teamA.ID, storeA.ID)
+	createStoreStaffTenantBinding(t, db, 202, userA.ID, 0, storeB.ID)
+	instanceA := createStoreStaffTenantInstance(t, db, 101, "workbench-instance-a", teamA.ID, storeA.ID, bindingA.ID)
 
 	operator := &dto.AuthPrincipal{
 		UserID: userA.ID, TenantID: 101, ActiveTenantID: 101, ActiveTenantName: "租户A",
@@ -52,12 +50,11 @@ func TestStoreWorkbenchCurrentUsesOnlyCurrentUserAndTenant(t *testing.T) {
 
 func TestStoreWorkbenchUpdateSynchronizesBindingAndInstance(t *testing.T) {
 	db := setupStoreStaffTenantDB(t)
-	company := createStoreStaffTenantCompany(t, db, 101, "workbench-update-company")
 	team := createStoreStaffTenantTeam(t, db, 101, "workbench-update-team")
 	user := createStoreStaffTenantUser(t, db, 101, "workbench-update-user")
-	store := createStoreStaffTenantStore(t, db, 101, company.ID, "workbench-update-store")
-	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, team.ID, company.ID, store.ID)
-	instance := createStoreStaffTenantInstance(t, db, 101, "workbench-update-instance", team.ID, company.ID, store.ID, binding.ID)
+	store := createStoreStaffTenantStore(t, db, 101, "workbench-update-store")
+	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, team.ID, store.ID)
+	instance := createStoreStaffTenantInstance(t, db, 101, "workbench-update-instance", team.ID, store.ID, binding.ID)
 	operator := &dto.AuthPrincipal{UserID: user.ID, ActiveTenantID: 101, Username: user.Username}
 
 	updated, err := StoreWorkbenchService.UpdateCurrent(request.UpdateStoreWorkbenchRequest{
@@ -98,10 +95,9 @@ func TestStoreWorkbenchUpdateSynchronizesBindingAndInstance(t *testing.T) {
 
 func TestStoreWorkbenchUpdateRejectsUnsafeOrAmbiguousConfiguration(t *testing.T) {
 	db := setupStoreStaffTenantDB(t)
-	company := createStoreStaffTenantCompany(t, db, 101, "workbench-validation-company")
 	user := createStoreStaffTenantUser(t, db, 101, "workbench-validation-user")
-	storeA := createStoreStaffTenantStore(t, db, 101, company.ID, "workbench-validation-store-a")
-	bindingA := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, company.ID, storeA.ID)
+	storeA := createStoreStaffTenantStore(t, db, 101, "workbench-validation-store-a")
+	bindingA := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, storeA.ID)
 	operator := &dto.AuthPrincipal{UserID: user.ID, ActiveTenantID: 101, Username: user.Username}
 
 	_, err := StoreWorkbenchService.UpdateCurrent(request.UpdateStoreWorkbenchRequest{
@@ -114,10 +110,10 @@ func TestStoreWorkbenchUpdateRejectsUnsafeOrAmbiguousConfiguration(t *testing.T)
 		t.Fatalf("invalid update changed binding: %+v", current)
 	}
 
-	storeB := createStoreStaffTenantStore(t, db, 101, company.ID, "workbench-validation-store-b")
+	storeB := createStoreStaffTenantStore(t, db, 101, "workbench-validation-store-b")
 	legacyDuplicate := &models.StoreStaffBinding{
 		TenantID: 101, UserID: user.ID, StoreID: storeB.ID,
-		CompanyID: company.ID, Status: enums.StatusOk,
+		Status: enums.StatusOk,
 	}
 	if err := db.Create(legacyDuplicate).Error; err != nil {
 		t.Fatalf("create pre-migration duplicate binding: %v", err)
@@ -129,10 +125,9 @@ func TestStoreWorkbenchUpdateRejectsUnsafeOrAmbiguousConfiguration(t *testing.T)
 
 func TestStoreWorkbenchCurrentReportsDisabledBinding(t *testing.T) {
 	db := setupStoreStaffTenantDB(t)
-	company := createStoreStaffTenantCompany(t, db, 101, "workbench-disabled-company")
 	user := createStoreStaffTenantUser(t, db, 101, "workbench-disabled-user")
-	store := createStoreStaffTenantStore(t, db, 101, company.ID, "workbench-disabled-store")
-	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, company.ID, store.ID)
+	store := createStoreStaffTenantStore(t, db, 101, "workbench-disabled-store")
+	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, store.ID)
 	if err := db.Model(&models.StoreStaffBinding{}).Where("id = ?", binding.ID).Updates(map[string]any{
 		"active_user_id": nil,
 		"status":         enums.StatusDisabled,

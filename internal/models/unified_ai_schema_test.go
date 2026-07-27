@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,7 @@ func TestFreshUnifiedSchemaContainsNoRetiredAIKnowledgeOrConversationTagObjects(
 		t.Fatalf("AutoMigrate() error=%v", err)
 	}
 	assertFreshUnifiedSchemaNoRetiredObjects(t, db)
+	assertReplyIntentProfileCodeKey(t, db)
 }
 
 func assertFreshUnifiedSchemaNoRetiredObjects(t *testing.T, db *gorm.DB) {
@@ -106,6 +108,9 @@ func assertFreshUnifiedSchemaNoRetiredObjects(t *testing.T, db *gorm.DB) {
 		"t_knowledge_document",
 		"t_knowledge_faq",
 		"t_knowledge_chunk",
+		"t_migration_definition_archive",
+		"t_company",
+		"t_fast_gpt_remote_resource_retirement",
 	} {
 		if db.Migrator().HasTable(table) {
 			t.Fatalf("retired table %s exists in the fresh unified schema", table)
@@ -120,10 +125,53 @@ func assertFreshUnifiedSchemaNoRetiredObjects(t *testing.T, db *gorm.DB) {
 		{&AgentRunLog{}, "ai_config_id"},
 		{&AIUsageEvent{}, "ai_config_id"},
 		{&SkillRunLog{}, "ai_config_id"},
+		{&Store{}, "company_id"},
+		{&StoreStaffBinding{}, "company_id"},
+		{&WxWorkProtocolInstance{}, "company_id"},
+		{&Customer{}, "company_id"},
+		{&KnowledgeBase{}, "company_id"},
+		{&KnowledgeResourceGroup{}, "company_id"},
+		{&FastGPTStoreTenant{}, "company_id"},
+		{&FastGPTUsageSyncState{}, "company_id"},
+		{&FastGPTDatasetJob{}, "company_id"},
+		{&AIUsageEvent{}, "company_id"},
+		{&AIUsageGatewayCall{}, "company_id"},
+		{&AgentTeam{}, "company_scope_ids"},
+		{&WxWorkProtocolInstance{}, "intent_profile_id"},
+		{&KnowledgeBase{}, "intent_profile_id"},
+		{&KnowledgeBase{}, "retrieval_mode"},
+		{&KnowledgeBase{}, "chunk_provider"},
+		{&KnowledgeBase{}, "chunk_target_tokens"},
+		{&KnowledgeBase{}, "chunk_max_tokens"},
+		{&KnowledgeBase{}, "chunk_overlap_tokens"},
+		{&KnowledgeRetrieveLog{}, "chunk_target_tokens"},
+		{&KnowledgeRetrieveLog{}, "chunk_max_tokens"},
+		{&KnowledgeRetrieveLog{}, "chunk_overlap_tokens"},
+		{&KnowledgeRetrieveHit{}, "chunk_id"},
+		{&KnowledgeRetrieveHit{}, "document_id"},
+		{&KnowledgeRetrieveHit{}, "faq_id"},
+		{&KnowledgeRetrieveHit{}, "faq_question"},
+		{&KnowledgeRetrieveHit{}, "chunk_no"},
+		{&KnowledgeRetrieveHit{}, "chunk_type"},
+		{&KnowledgeResourceGroup{}, "intent_profile_id"},
+		{&KnowledgeResourceGroup{}, "wx_work_instance_id"},
+		{&ReplyIntentConfig{}, "scope_type"},
+		{&ReplyIntentConfig{}, "company_id"},
+		{&ReplyIntentConfig{}, "store_id"},
+		{&ReplyIntentConfig{}, "wx_work_instance_id"},
 	} {
 		if db.Migrator().HasColumn(target.model, target.column) {
 			t.Fatalf("retired column %s still exists on %T", target.column, target.model)
 		}
+	}
+	if !db.Migrator().HasColumn(&KnowledgeRetrieveHit{}, "source_record_id") {
+		t.Fatal("FastGPT source_record_id is missing from fresh knowledge retrieve hits")
+	}
+	if db.Migrator().HasIndex(&ReplyIntentConfig{}, "uk_reply_intent_scope") {
+		t.Fatal("retired reply intent scope index exists in the fresh unified schema")
+	}
+	if !db.Migrator().HasIndex(&ReplyIntentConfig{}, "uk_reply_intent_profile_code") {
+		t.Fatal("reply intent profile/code unique index is missing")
 	}
 }
 
@@ -147,10 +195,57 @@ func TestUnifiedAIModelsAutoMigrateMySQL(t *testing.T) {
 	}
 	if err := db.AutoMigrate(
 		&ConversationServiceSession{}, &AIAgent{}, &AgentRunLog{}, &AIUsageEvent{}, &SkillRunLog{},
+		&Store{}, &StoreStaffBinding{}, &Customer{}, &AgentTeam{}, &AIUsageGatewayCall{},
+		&WxWorkProtocolInstance{}, &KnowledgeBase{}, &KnowledgeResourceGroup{},
+		&KnowledgeRetrieveHit{},
+		&FastGPTStoreTenant{}, &FastGPTUsageSyncState{}, &FastGPTDatasetJob{},
+		&ReplyIntentProfile{}, &ReplyIntentConfig{},
 	); err != nil {
 		t.Fatalf("MySQL active model AutoMigrate() error=%v", err)
 	}
 	assertFreshUnifiedSchemaNoRetiredObjects(t, db)
+	assertReplyIntentProfileCodeKey(t, db)
+}
+
+func assertReplyIntentProfileCodeKey(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	firstProfile := &ReplyIntentProfile{
+		Code: "schema-industry-a-" + suffix,
+		Name: "Schema industry A", IndustryCode: "schema-a", Revision: 1,
+		Status: enums.StatusDisabled, AuditFields: schemaAuditFields(time.Now()),
+	}
+	secondProfile := &ReplyIntentProfile{
+		Code: "schema-industry-b-" + suffix,
+		Name: "Schema industry B", IndustryCode: "schema-b", Revision: 1,
+		Status: enums.StatusDisabled, AuditFields: schemaAuditFields(time.Now()),
+	}
+	if err := db.Create(firstProfile).Error; err != nil {
+		t.Fatalf("create first intent profile: %v", err)
+	}
+	if err := db.Create(secondProfile).Error; err != nil {
+		t.Fatalf("create second intent profile: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Where("intent_profile_id IN ?", []int64{firstProfile.ID, secondProfile.ID}).Delete(&ReplyIntentConfig{}).Error
+		_ = db.Where("id IN ?", []int64{firstProfile.ID, secondProfile.ID}).Delete(&ReplyIntentProfile{}).Error
+	})
+	first := &ReplyIntentConfig{
+		Code: "general", Name: "General", IntentProfileID: firstProfile.ID,
+		Status: enums.StatusOk, AuditFields: schemaAuditFields(time.Now()),
+	}
+	if err := db.Create(first).Error; err != nil {
+		t.Fatalf("create first profile intent: %v", err)
+	}
+	duplicate := *first
+	duplicate.ID = 0
+	assertDuplicateRejected(t, db.Create(&duplicate).Error, "reply intent code in one profile")
+	otherProfile := *first
+	otherProfile.ID = 0
+	otherProfile.IntentProfileID = secondProfile.ID
+	if err := db.Create(&otherProfile).Error; err != nil {
+		t.Fatalf("same reply intent code in another profile must be allowed: %v", err)
+	}
 }
 
 func TestUnifiedTagModelsEnforceIndustryAndStoreIsolation(t *testing.T) {

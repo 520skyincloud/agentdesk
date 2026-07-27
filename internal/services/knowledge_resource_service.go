@@ -231,9 +231,8 @@ func (s *knowledgeResourceService) ResolveForRuntime(wxWorkInstanceID, tenantID 
 		}
 		seenSource[key] = true
 		group := repositories.KnowledgeResourceGroupRepository.Take(sqls.DB(),
-			"tenant_id = ? AND company_id = ? AND store_id = ? AND knowledge_base_id = ? AND source_provider = ? AND source_record_id = ? AND status = ?",
+			"tenant_id = ? AND store_id = ? AND knowledge_base_id = ? AND source_provider = ? AND source_record_id = ? AND status = ?",
 			instance.TenantID,
-			0,
 			storeID,
 			source.KnowledgeBaseID,
 			knowledgeResourceProviderFastGPT,
@@ -283,9 +282,8 @@ func (s *knowledgeResourceService) persistSyncedResources(store *models.Store, k
 		return nil, errorsx.InvalidParam("门店与知识库不属于同一接入公司")
 	}
 	existing := repositories.KnowledgeResourceGroupRepository.Take(sqls.DB(),
-		"tenant_id = ? AND company_id = ? AND store_id = ? AND knowledge_base_id = ? AND source_provider = ? AND source_record_id = ?",
+		"tenant_id = ? AND store_id = ? AND knowledge_base_id = ? AND source_provider = ? AND source_record_id = ?",
 		store.TenantID,
-		0,
 		store.ID,
 		knowledgeBase.ID,
 		knowledgeResourceProviderFastGPT,
@@ -338,9 +336,7 @@ func (s *knowledgeResourceService) persistSyncedResources(store *models.Store, k
 		if group == nil {
 			group = &models.KnowledgeResourceGroup{
 				TenantID:        store.TenantID,
-				CompanyID:       0,
 				StoreID:         store.ID,
-				IntentProfileID: 0,
 				KnowledgeBaseID: knowledgeBase.ID,
 				SourceProvider:  knowledgeResourceProviderFastGPT,
 				SourceRecordID:  source.SourceRecordID,
@@ -355,16 +351,13 @@ func (s *knowledgeResourceService) persistSyncedResources(store *models.Store, k
 			}
 		} else {
 			if err := repositories.KnowledgeResourceGroupRepository.UpdatesInTenant(tx.Tx, group.ID, store.TenantID, map[string]any{
-				"company_id":          0,
-				"intent_profile_id":   0,
-				"wx_work_instance_id": 0,
-				"title":               source.Title,
-				"description":         source.Description,
-				"source_hash":         sourceHash,
-				"status":              enums.StatusOk,
-				"updated_at":          now,
-				"update_user_id":      operator.UserID,
-				"update_user_name":    operator.Username,
+				"title":            source.Title,
+				"description":      source.Description,
+				"source_hash":      sourceHash,
+				"status":           enums.StatusOk,
+				"updated_at":       now,
+				"update_user_id":   operator.UserID,
+				"update_user_name": operator.Username,
 			}); err != nil {
 				return err
 			}

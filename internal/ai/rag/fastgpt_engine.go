@@ -143,6 +143,9 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 			}
 			mapped := make([]RetrieveResult, 0, len(searchResult.Hits))
 			for _, hit := range searchResult.Hits {
+				if strings.TrimSpace(hit.DataID) == "" {
+					continue
+				}
 				mapped = append(mapped, buildFastGPTRetrieveResult(knowledgeBase, hit))
 			}
 			batches[index] = mapped

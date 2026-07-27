@@ -204,7 +204,7 @@ func TestConversationCreatePersistsWelcomeOutboundIntentAndOutbox(t *testing.T) 
 	}).Error; err != nil {
 		t.Fatalf("create outbound channel: %v", err)
 	}
-	aiAgent := createWelcomeTestAIAgent(t, db, "欢迎来到丽斯文旅")
+	aiAgent := createWelcomeTestAIAgent(t, db, "欢迎来到合成验收")
 
 	conversation, err := ConversationService.Create(welcomeTestExternalUser("welcome-outbound"), 12, aiAgent.ID)
 	if err != nil {

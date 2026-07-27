@@ -51,7 +51,7 @@ func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) (
 	if err != nil {
 		return nil, trace, err
 	}
-	trace.Providers = append(trace.Providers, enums.KnowledgeRetrievalModeFastGPT)
+	trace.Providers = append(trace.Providers, enums.KnowledgeProviderFastGPT)
 	appendTraceDatasetIDs(trace, retrievableKnowledgeBases)
 	trace.RequestCount = int64(len(retrievableKnowledgeBases))
 	for _, knowledgeBase := range retrievableKnowledgeBases {

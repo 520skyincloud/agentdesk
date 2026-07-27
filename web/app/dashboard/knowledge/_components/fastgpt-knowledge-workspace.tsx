@@ -15,6 +15,7 @@ import {
   type FastGPTStoreReadiness,
   type KnowledgeBase,
 } from "@/lib/api/admin"
+import { useAIConfigurationRealtime } from "@/hooks/use-ai-configuration-realtime"
 import { formatDateTime } from "@/lib/utils"
 import { FastGPTFilePanel } from "./fastgpt-file-panel"
 import { KnowledgeResourcePanel } from "./knowledge-resource-panel"
@@ -49,6 +50,12 @@ export function FastGPTKnowledgeWorkspace({ knowledgeBase, canUpdate, canDelete 
   useEffect(() => {
     void loadReadiness()
   }, [loadReadiness])
+
+  useAIConfigurationRealtime((event) => {
+    if (event.storeId === knowledgeBase.storeId) {
+      void loadReadiness()
+    }
+  }, knowledgeBase.storeId > 0)
 
   async function activate() {
     if (!canUpdate) return

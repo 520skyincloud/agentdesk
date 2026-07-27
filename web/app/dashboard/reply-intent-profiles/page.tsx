@@ -1,12 +1,12 @@
 "use client"
 
 import { useMemo } from "react"
-import { RefreshCwIcon } from "lucide-react"
+import { FlaskConicalIcon, UploadIcon } from "lucide-react"
+import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
 import {
   createDashboardStatusColumn,
-  createDashboardStatusToggleAction,
   DashboardCrudPage,
 } from "@/components/dashboard/crud"
 import { Badge } from "@/components/ui/badge"
@@ -15,19 +15,19 @@ import {
   deleteReplyIntentProfile,
   fetchReplyIntentProfile,
   fetchReplyIntentProfiles,
+  publishReplyIntentProfile,
+  testReplyIntentProfile,
   updateReplyIntentProfile,
   type CreateReplyIntentProfilePayload,
   type ReplyIntentProfile,
 } from "@/lib/api/admin"
-import { getEnumOptions } from "@/lib/enums"
-import { Status, StatusLabels } from "@/lib/generated/enums"
+import { Status } from "@/lib/generated/enums"
 import { formatDateTime } from "@/lib/utils"
 
 const statusOptions = [
   { value: "all", label: "全部" },
-  ...getEnumOptions(StatusLabels)
-    .filter((item) => Number(item.value) !== Status.Deleted)
-    .map((item) => ({ value: String(item.value), label: item.label })),
+  { value: String(Status.Ok), label: "已发布" },
+  { value: String(Status.Disabled), label: "草稿" },
 ]
 
 function trimPreview(value: string, max = 80) {
@@ -134,18 +134,17 @@ export default function ReplyIntentProfilesPage() {
             trim: true,
             description: "运行时会追加到总提示词后。字段设计要和代码解析结构兼容。",
           },
-          { name: "status", label: "状态", type: "select", defaultValue: String(Status.Disabled), valueType: "number", options: statusOptions.filter((item) => item.value !== "all"), required: true, valueFromItem: (item) => String(item.status), description: "新行业先保存为停用草稿；意图分类和固定标签目录完整后才能发布。" },
           { name: "sortNo", label: "排序", type: "number", defaultValue: "0", min: 0, step: 1, valueType: "number" },
           { name: "remark", label: "备注", type: "textarea", rows: 3, trim: true },
         ],
-        transformSubmitValues: (values) => ({
+        transformSubmitValues: (values, context) => ({
           code: String(values.code ?? ""),
           name: String(values.name ?? ""),
           industryCode: String(values.industryCode ?? ""),
           description: String(values.description ?? ""),
           intentDetectPrompt: String(values.intentDetectPrompt ?? ""),
           intentJsonSchema: String(values.intentJsonSchema ?? ""),
-          status: Number(values.status ?? Status.Ok),
+          status: context.item?.status ?? Status.Disabled,
           sortNo: Number(values.sortNo ?? 0),
           remark: String(values.remark ?? ""),
         }),
@@ -166,14 +165,41 @@ export default function ReplyIntentProfilesPage() {
       rowActions={
         canManage
           ? [
-              createDashboardStatusToggleAction<ReplyIntentProfile, Status>({
-                icon: <RefreshCwIcon />,
-                label: (item) => (item.status === Status.Ok ? "停用" : "发布"),
-                getNextStatus: (item) => (item.status === Status.Ok ? Status.Disabled : Status.Ok),
-                updateStatus: (item, nextStatus) => updateReplyIntentProfile({ ...item, status: nextStatus }),
-                successMessage: () => "状态已更新",
-                errorMessage: "状态更新失败",
-              }),
+              {
+                key: "test",
+                icon: <FlaskConicalIcon />,
+                label: "测试当前版本",
+                run: async ({ item }) => {
+                  const result = await testReplyIntentProfile(item.id)
+                  if (!result.valid) {
+                    toast.error(result.errors.join("；") || "行业测试未通过")
+                    return
+                  }
+                  toast.success(
+                    `Revision ${result.revision} 测试通过：${result.activeIntentCount} 个意图，${result.tagCategoryCount} 类 ${result.tagCount} 个标签`,
+                  )
+                  if (result.warnings.length > 0) {
+                    toast.warning(result.warnings.join("；"))
+                  }
+                },
+              },
+              {
+                key: "publish",
+                icon: <UploadIcon />,
+                label: "发布当前版本",
+                visible: (item) => item.status === Status.Disabled,
+                confirm: (item) => ({
+                  title: `发布 ${item.name}`,
+                  description: `确认发布 Revision ${item.revision}？发布前会重新执行完整结构校验。`,
+                  confirmText: "确认发布",
+                  cancelText: "取消",
+                }),
+                run: async ({ item, reload }) => {
+                  await publishReplyIntentProfile(item.id, item.revision)
+                  toast.success(`Revision ${item.revision} 已发布`)
+                  await reload()
+                },
+              },
             ]
           : []
       }

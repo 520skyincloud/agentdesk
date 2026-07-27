@@ -46,7 +46,6 @@ type GraphToolTraceItem struct {
 type RetrieverTraceItem struct {
 	Query           string  `json:"query,omitempty"`
 	KnowledgeBaseID int64   `json:"knowledgeBaseId,omitempty"`
-	DocumentID      int64   `json:"documentId,omitempty"`
 	DocumentTitle   string  `json:"documentTitle,omitempty"`
 	SourceRecordID  string  `json:"sourceRecordId,omitempty"`
 	RawRankNo       int     `json:"rawRankNo,omitempty"`
@@ -71,12 +70,11 @@ type RetrieverTraceSummary struct {
 }
 
 type AnswerabilityTraceData struct {
-	Status             string   `json:"status,omitempty"`
-	Reason             string   `json:"reason,omitempty"`
-	SupportingChunkIDs []string `json:"supportingChunkIds,omitempty"`
-	MissingInfo        []string `json:"missingInfo,omitempty"`
-	LatencyMs          int64    `json:"latencyMs,omitempty"`
-	ErrorMessage       string   `json:"errorMessage,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+	MissingInfo  []string `json:"missingInfo,omitempty"`
+	LatencyMs    int64    `json:"latencyMs,omitempty"`
+	ErrorMessage string   `json:"errorMessage,omitempty"`
 }
 
 type RetrieverPolicyTraceItem struct {

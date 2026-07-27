@@ -39,6 +39,23 @@ func retryServiceAnalyticsCapture(db *gorm.DB, operation func() error) error {
 	return err
 }
 
+func serviceAnalyticsMessageTime(message *models.Message) time.Time {
+	if message != nil && message.SentAt != nil {
+		return *message.SentAt
+	}
+	if message != nil {
+		return message.CreatedAt
+	}
+	return time.Time{}
+}
+
+func normalizedSessionNo(value int) int {
+	if value <= 0 {
+		return 1
+	}
+	return value
+}
+
 func (s *serviceAnalyticsCaptureService) RecordMessage(message *models.Message) error {
 	if message == nil || message.ID <= 0 || message.TenantID <= 0 || message.ConversationID <= 0 {
 		return nil

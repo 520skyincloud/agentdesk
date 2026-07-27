@@ -325,6 +325,51 @@ export type ReplyIntentProfile = {
   updateUserName: string
 }
 
+export type ReplyIntentProfileValidation = {
+  profileId: number
+  revision: number
+  valid: boolean
+  errors: string[]
+  warnings: string[]
+  activeIntentCount: number
+  tagCategoryCount: number
+  tagCount: number
+  conflictGroupCount: number
+}
+
+export type IndustryTagDefinition = {
+  id: number
+  intentProfileId: number
+  parentId: number
+  name: string
+  semanticKey: string
+  aliases: string
+  conflictGroup: string
+  applicableScene: string
+  aiEnabled: boolean
+  replyEnabled: boolean
+  definitionRevision: number
+  sortNo: number
+  status: number
+  createdAt: string
+  updatedAt: string
+  createUserName: string
+  updateUserName: string
+}
+
+export type CreateIndustryTagDefinitionPayload = Omit<
+  IndustryTagDefinition,
+  | "id"
+  | "definitionRevision"
+  | "createdAt"
+  | "updatedAt"
+  | "createUserName"
+  | "updateUserName"
+>
+
+export type UpdateIndustryTagDefinitionPayload =
+  CreateIndustryTagDefinitionPayload & { id: number }
+
 export type AdminChannel = {
   id: number
   channelType: string
@@ -1050,6 +1095,18 @@ export function createAdminWebSocketUrl() {
     "/api/ws/dashboard",
     session.accessToken,
     activeTenantId
+  )
+}
+
+export function createConfigurationWebSocketUrl() {
+  const session = readSession()
+  if (!session?.accessToken) {
+    throw new Error(translateCurrentMessage("api.authExpired"))
+  }
+  return createAuthenticatedWebSocketUrl(
+    "/api/ws/configuration",
+    session.accessToken,
+    readActiveTenantId(session)
   )
 }
 
@@ -1894,6 +1951,52 @@ export function deleteReplyIntentProfile(id: number) {
   })
 }
 
+export function testReplyIntentProfile(id: number) {
+  return request<ReplyIntentProfileValidation>("/api/dashboard/reply-intent-profile/test", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  })
+}
+
+export function publishReplyIntentProfile(id: number, revision: number) {
+  return request<ReplyIntentProfile>("/api/dashboard/reply-intent-profile/publish", {
+    method: "POST",
+    body: JSON.stringify({ id, revision, confirmRevision: true }),
+  })
+}
+
+export function fetchIndustryTagDefinitions(intentProfileId: number) {
+  return request<IndustryTagDefinition[]>(
+    `/api/dashboard/industry-tag-definition/list_all${toQueryString({ intentProfileId })}`
+  )
+}
+
+export function fetchIndustryTagDefinitionPage(
+  query?: Record<string, string | number | undefined>
+) {
+  return request<PageResult<IndustryTagDefinition>>(
+    `/api/dashboard/industry-tag-definition/list${toQueryString(query)}`
+  )
+}
+
+export function fetchIndustryTagDefinition(id: number) {
+  return request<IndustryTagDefinition>(`/api/dashboard/industry-tag-definition/${id}`)
+}
+
+export function createIndustryTagDefinition(payload: CreateIndustryTagDefinitionPayload) {
+  return request<IndustryTagDefinition>("/api/dashboard/industry-tag-definition/create", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateIndustryTagDefinition(payload: UpdateIndustryTagDefinitionPayload) {
+  return request<void>("/api/dashboard/industry-tag-definition/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export function fetchReplyIntentConfigs(query?: Record<string, string | number | undefined>) {
   return request<PageResult<ReplyIntentConfig>>(
     `/api/dashboard/reply-intent-config/list${toQueryString(query)}`
@@ -2633,10 +2736,7 @@ export type SyncKnowledgeResourceGroupPayload = {
 
 export type KnowledgeSearchResult = {
   knowledgeBaseId: number
-  chunkId: number
-  documentId: number
   documentTitle: string
-  chunkNo: number
   title: string
   sectionPath: string
   sourceRecordId: string
@@ -2672,9 +2772,7 @@ export type KnowledgeAnswerResponse = {
 }
 
 export type KnowledgeCitation = {
-  documentId: number
   documentTitle: string
-  chunkNo: number
   title: string
   sectionPath: string
   sourceRecordId: string
@@ -2721,16 +2819,10 @@ export type KnowledgeRetrieveHit = {
   id: number
   retrieveLogId: number
   knowledgeBaseId: number
-  chunkId: number
-  documentId: number
+  sourceRecordId: string
   documentTitle: string
-  faqId: number
-  faqQuestion: string
-  chunkNo: number
   title: string
   sectionPath: string
-  chunkType: string
-  chunkTypeName: string
   provider: string
   rankNo: number
   score: number

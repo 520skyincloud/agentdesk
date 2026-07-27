@@ -11,7 +11,6 @@ type KnowledgeBaseResponse struct {
 	DatasetID              string       `json:"datasetId"`
 	DatasetName            string       `json:"datasetName"`
 	ConnectionID           string       `json:"connectionId"`
-	RetrievalMode          string       `json:"retrievalMode"`
 	FastGPTProfileName     string       `json:"fastgptProfileName"`
 	FastGPTProfileRevision string       `json:"fastgptProfileRevision"`
 	FastGPTProfileStatus   string       `json:"fastgptProfileStatus"`
@@ -61,10 +60,7 @@ type KnowledgeResourceGroupResponse struct {
 
 type KnowledgeSearchResult struct {
 	KnowledgeBaseID int64   `json:"knowledgeBaseId"`
-	ChunkID         int64   `json:"chunkId"`
-	DocumentID      int64   `json:"documentId"`
 	DocumentTitle   string  `json:"documentTitle"`
-	ChunkNo         int     `json:"chunkNo"`
 	Title           string  `json:"title"`
 	SectionPath     string  `json:"sectionPath"`
 	SourceRecordID  string  `json:"sourceRecordId"`
@@ -100,9 +96,7 @@ type KnowledgeAnswerResponse struct {
 }
 
 type KnowledgeCitation struct {
-	DocumentID     int64   `json:"documentId"`
 	DocumentTitle  string  `json:"documentTitle"`
-	ChunkNo        int     `json:"chunkNo"`
 	Title          string  `json:"title"`
 	SectionPath    string  `json:"sectionPath"`
 	SourceRecordID string  `json:"sourceRecordId"`
@@ -149,16 +143,10 @@ type KnowledgeRetrieveHitResponse struct {
 	ID              int64     `json:"id"`
 	RetrieveLogID   int64     `json:"retrieveLogId"`
 	KnowledgeBaseID int64     `json:"knowledgeBaseId"`
-	ChunkID         int64     `json:"chunkId"`
-	DocumentID      int64     `json:"documentId"`
+	SourceRecordID  string    `json:"sourceRecordId"`
 	DocumentTitle   string    `json:"documentTitle"`
-	FaqID           int64     `json:"faqId"`
-	FaqQuestion     string    `json:"faqQuestion"`
-	ChunkNo         int       `json:"chunkNo"`
 	Title           string    `json:"title"`
 	SectionPath     string    `json:"sectionPath"`
-	ChunkType       string    `json:"chunkType"`
-	ChunkTypeName   string    `json:"chunkTypeName"`
 	Provider        string    `json:"provider"`
 	RankNo          int       `json:"rankNo"`
 	Score           float64   `json:"score"`

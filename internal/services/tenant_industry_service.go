@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -18,9 +17,9 @@ import (
 )
 
 const (
-	tenantIndustryActionCreate    = "create"
-	tenantIndustryActionChange    = "change"
-	tenantIndustryActionMigration = "migration"
+	tenantIndustryActionCreate           = "create"
+	tenantIndustryActionChange           = "change"
+	tenantIndustryActionSystemInitialize = "system_initialize"
 )
 
 var TenantIndustryService = &tenantIndustryService{}
@@ -68,8 +67,7 @@ func (s *tenantIndustryService) ValidateBindingProfileDB(db *gorm.DB, profileID 
 		return nil, errorsx.InvalidParam("所选行业的意图提示词或输出 Schema 尚未配置完整")
 	}
 	configs := repositories.ReplyIntentConfigRepository.Find(db, sqls.NewCnd().
-		Eq("intent_profile_id", profile.ID).
-		Eq("scope_type", "global").Eq("company_id", 0).Eq("store_id", 0).Eq("wx_work_instance_id", 0))
+		Eq("intent_profile_id", profile.ID))
 	if err := validateIndustryIntentConfigs(profile, configs); err != nil {
 		return nil, err
 	}
@@ -153,31 +151,6 @@ func (s *tenantIndustryService) ChangeTenantDB(db *gorm.DB, tenant *models.Tenan
 	})
 }
 
-// InitializeTenantForMigrationDB binds a historical Tenant after the catalog
-// has been seeded. It is only called by the numbered DML migration.
-func (s *tenantIndustryService) InitializeTenantForMigrationDB(db *gorm.DB, tenant *models.Tenant, profileID int64) error {
-	if tenant == nil || tenant.ID <= 0 {
-		return fmt.Errorf("historical tenant is missing")
-	}
-	profile, err := s.ValidateBindingProfileDB(db, profileID)
-	if err != nil {
-		return err
-	}
-	beforeID := tenant.IntentProfileID
-	if err := s.syncTenantCatalogDB(db, tenant.ID, beforeID, profile.ID, nil); err != nil {
-		return err
-	}
-	if beforeID == profile.ID {
-		return nil
-	}
-	return repositories.TenantIndustryChangeLogRepository.Create(db, &models.TenantIndustryChangeLog{
-		TenantID: tenant.ID, BeforeIntentProfileID: beforeID, AfterIntentProfileID: profile.ID,
-		AfterRevision: profile.Revision, Action: tenantIndustryActionMigration,
-		Reason: "统一行业事实源迁移", OperatorID: constants.SystemAuditUserID,
-		OperatorName: constants.SystemAuditUserName, CreatedAt: time.Now(),
-	})
-}
-
 func (s *tenantIndustryService) syncTenantCatalogDB(db *gorm.DB, tenantID, previousProfileID, profileID int64, operator *dto.AuthPrincipal) error {
 	if previousProfileID > 0 && previousProfileID != profileID {
 		if err := s.retireTenantCatalogDB(db, tenantID, previousProfileID, operator); err != nil {
@@ -201,12 +174,6 @@ func (s *tenantIndustryService) syncTenantCatalogDB(db *gorm.DB, tenantID, previ
 			}
 		}
 		item := repositories.TagRepository.TakeByTemplateInTenant(db, tenantID, definition.ID)
-		if item == nil {
-			legacy := repositories.TagRepository.TakeBySemanticKeyInTenant(db, tenantID, definition.SemanticKey)
-			if legacy != nil && legacy.TemplateDefinitionID == nil {
-				item = legacy
-			}
-		}
 		if item == nil {
 			templateID := definition.ID
 			item = &models.Tag{
@@ -310,13 +277,13 @@ func validateIndustryIntentConfigs(profile *models.ReplyIntentProfile, configs [
 	}
 	for i := range configs {
 		if configs[i].Status != enums.StatusOk {
-			return errorsx.InvalidParam("酒店行业五个固定意图分类必须全部启用")
+			continue
 		}
 		if _, ok := required[strings.TrimSpace(configs[i].Code)]; ok {
 			required[strings.TrimSpace(configs[i].Code)] = true
 		}
 	}
-	if len(configs) != len(required) {
+	if activeCount != len(required) {
 		return errorsx.InvalidParam("酒店行业只能启用五个固定意图分类")
 	}
 	for code, found := range required {

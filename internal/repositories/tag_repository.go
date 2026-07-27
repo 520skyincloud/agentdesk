@@ -45,14 +45,6 @@ func (r *tagRepository) TakeByTemplateInTenant(db *gorm.DB, tenantID, templateDe
 	return ret
 }
 
-func (r *tagRepository) TakeBySemanticKeyInTenant(db *gorm.DB, tenantID int64, semanticKey string) *models.Tag {
-	ret := &models.Tag{}
-	if err := db.Take(ret, "tenant_id = ? AND semantic_key = ?", tenantID, semanticKey).Error; err != nil {
-		return nil
-	}
-	return ret
-}
-
 func (r *tagRepository) FindByProfileInTenant(db *gorm.DB, tenantID, intentProfileID int64) ([]models.Tag, error) {
 	ret := make([]models.Tag, 0)
 	err := db.Where("tenant_id = ? AND intent_profile_id = ?", tenantID, intentProfileID).

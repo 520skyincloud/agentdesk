@@ -51,9 +51,7 @@ func normalizeContextResults(results []RetrieveResult) []RetrieveResult {
 	if len(results) == 0 {
 		return nil
 	}
-
-	merged := mergeAdjacentResults(results)
-	return dedupeSectionResults(merged)
+	return dedupeSectionResults(results)
 }
 
 func dedupeSectionResults(results []RetrieveResult) []RetrieveResult {
@@ -70,67 +68,12 @@ func dedupeSectionResults(results []RetrieveResult) []RetrieveResult {
 	return deduped
 }
 
-func mergeAdjacentResults(results []RetrieveResult) []RetrieveResult {
-	if len(results) == 0 {
-		return nil
-	}
-
-	merged := make([]RetrieveResult, 0, len(results))
-	for _, item := range results {
-		if len(merged) == 0 {
-			merged = append(merged, item)
-			continue
-		}
-
-		last := &merged[len(merged)-1]
-		if canMergeContextResult(*last, item) {
-			last.Content = strings.TrimSpace(last.Content + "\n" + item.Content)
-			if item.Score > last.Score {
-				last.Score = item.Score
-			}
-			continue
-		}
-		merged = append(merged, item)
-	}
-	return merged
-}
-
-func canMergeContextResult(left, right RetrieveResult) bool {
-	if strings.TrimSpace(left.SourceRecordID) != "" || strings.TrimSpace(right.SourceRecordID) != "" {
-		return false
-	}
-	if left.DocumentID != right.DocumentID {
-		return false
-	}
-	if left.SectionPath == "" || right.SectionPath == "" {
-		return false
-	}
-	if left.SectionPath != right.SectionPath {
-		return false
-	}
-	return right.ChunkNo == left.ChunkNo+1
-}
-
 func buildSectionKey(item RetrieveResult) string {
-	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
-		return "source:" + sourceRecordID
-	}
-	sectionPath := strings.TrimSpace(item.SectionPath)
-	if sectionPath != "" {
-		return fmt.Sprintf("%d|%s", item.DocumentID, sectionPath)
-	}
-	title := strings.TrimSpace(item.Title)
-	if title != "" {
-		return fmt.Sprintf("%d|%s", item.DocumentID, title)
-	}
-	return fmt.Sprintf("%d|chunk:%d", item.DocumentID, item.ChunkNo)
+	return "source:" + strings.TrimSpace(item.SourceRecordID)
 }
 
 func buildContextUsageKey(item RetrieveResult) string {
-	if sourceRecordID := strings.TrimSpace(item.SourceRecordID); sourceRecordID != "" {
-		return "source:" + sourceRecordID
-	}
-	return fmt.Sprintf("document:%d", item.DocumentID)
+	return "source:" + strings.TrimSpace(item.SourceRecordID)
 }
 
 func buildContextChunkText(item RetrieveResult) string {

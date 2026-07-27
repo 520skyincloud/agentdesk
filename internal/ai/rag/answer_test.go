@@ -91,22 +91,20 @@ func TestResolveDefaultRerankLimit(t *testing.T) {
 func TestBuildKnowledgeCitations(t *testing.T) {
 	hits := []response.KnowledgeSearchResult{
 		{
-			DocumentID:    11,
-			DocumentTitle: "退款手册",
-			ChunkNo:       0,
-			Title:         "退款说明",
-			SectionPath:   "售后 > 退款说明",
-			Content:       "退款申请提交后，预计1-3个工作日到账。",
-			Score:         0.91,
+			DocumentTitle:  "退款手册",
+			Title:          "退款说明",
+			SectionPath:    "售后 > 退款说明",
+			SourceRecordID: "refund-guide",
+			Content:        "退款申请提交后，预计1-3个工作日到账。",
+			Score:          0.91,
 		},
 		{
-			DocumentID:    11,
-			DocumentTitle: "退款手册",
-			ChunkNo:       0,
-			Title:         "退款说明",
-			SectionPath:   "售后 > 退款说明",
-			Content:       "重复内容",
-			Score:         0.89,
+			DocumentTitle:  "退款手册",
+			Title:          "退款说明",
+			SectionPath:    "售后 > 退款说明",
+			SourceRecordID: "refund-guide",
+			Content:        "重复内容",
+			Score:          0.89,
 		},
 	}
 
@@ -114,8 +112,8 @@ func TestBuildKnowledgeCitations(t *testing.T) {
 	if len(citations) != 1 {
 		t.Fatalf("expected 1 citation, got %d", len(citations))
 	}
-	if citations[0].DocumentID != 11 {
-		t.Fatalf("expected document id 11, got %d", citations[0].DocumentID)
+	if citations[0].SourceRecordID != "refund-guide" {
+		t.Fatalf("unexpected source record id: %q", citations[0].SourceRecordID)
 	}
 	if citations[0].SectionPath != "售后 > 退款说明" {
 		t.Fatalf("unexpected section path: %q", citations[0].SectionPath)

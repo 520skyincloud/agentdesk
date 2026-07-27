@@ -279,15 +279,15 @@ func TestAssignStoreStaffRoleCreatesOneStableStoreIdentity(t *testing.T) {
 	}
 	target.TenantID = tenantID
 
-	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "丽斯未来测试门店", operator); err != nil {
+	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "合成验收测试门店", operator); err != nil {
 		t.Fatalf("assign store staff role: %v", err)
 	}
 	binding := repositories.StoreStaffBindingRepository.TakeInTenant(db, tenantID, "user_id = ? AND status = ?", target.ID, enums.StatusOk)
-	if binding == nil || binding.CompanyID != 0 || binding.StoreID <= 0 {
+	if binding == nil || binding.StoreID <= 0 {
 		t.Fatalf("missing stable store binding: %+v", binding)
 	}
 	store := repositories.StoreRepository.GetInTenant(db, binding.StoreID, tenantID)
-	if store == nil || store.Name != "丽斯未来测试门店" || store.CompanyID != 0 {
+	if store == nil || store.Name != "合成验收测试门店" {
 		t.Fatalf("unexpected stable store: %+v", store)
 	}
 	credential := repositories.StoreModelCredentialRepository.GetByStore(db, tenantID, store.ID)
@@ -306,7 +306,7 @@ func TestAssignStoreStaffRoleCreatesOneStableStoreIdentity(t *testing.T) {
 		t.Fatalf("new store customer tag runtime policy must default closed: %+v", tagPolicy)
 	}
 
-	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "丽斯未来测试门店（更新）", operator); err != nil {
+	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "合成验收测试门店（更新）", operator); err != nil {
 		t.Fatalf("repeat store staff role assignment: %v", err)
 	}
 	var count int64
@@ -316,7 +316,7 @@ func TestAssignStoreStaffRoleCreatesOneStableStoreIdentity(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("active store binding count=%d want=1", count)
 	}
-	if current := repositories.StoreRepository.GetInTenant(db, store.ID, tenantID); current == nil || current.Name != "丽斯未来测试门店（更新）" {
+	if current := repositories.StoreRepository.GetInTenant(db, store.ID, tenantID); current == nil || current.Name != "合成验收测试门店（更新）" {
 		t.Fatalf("store identity name was not updated: %+v", current)
 	}
 	instance := &models.WxWorkProtocolInstance{
@@ -338,12 +338,12 @@ func TestAssignStoreStaffRoleCreatesOneStableStoreIdentity(t *testing.T) {
 	if retiredInstance == nil || retiredInstance.Status != enums.StatusDisabled || retiredInstance.AIReplyEnabled || retiredInstance.HealthStatus != "identity_disabled" {
 		t.Fatalf("removed role left wxwork runtime active: %+v", retiredInstance)
 	}
-	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "丽斯未来测试门店（恢复）", operator); err != nil {
+	if err := UserService.AssignRolesWithStoreName(target.ID, []int64{roles[constants.RoleCodeStoreStaff].ID}, "合成验收测试门店（恢复）", operator); err != nil {
 		t.Fatalf("restore store staff role: %v", err)
 	}
 	restoredBinding := repositories.StoreStaffBindingRepository.TakeInTenant(db, tenantID, "user_id = ? AND status = ?", target.ID, enums.StatusOk)
 	restoredStore := repositories.StoreRepository.GetInTenant(db, store.ID, tenantID)
-	if restoredBinding == nil || restoredBinding.ID != binding.ID || restoredStore == nil || restoredStore.ID != store.ID || restoredStore.Status != enums.StatusOk || restoredStore.Name != "丽斯未来测试门店（恢复）" {
+	if restoredBinding == nil || restoredBinding.ID != binding.ID || restoredStore == nil || restoredStore.ID != store.ID || restoredStore.Status != enums.StatusOk || restoredStore.Name != "合成验收测试门店（恢复）" {
 		t.Fatalf("restored role did not reuse stable identity: binding=%+v store=%+v", restoredBinding, restoredStore)
 	}
 	if current := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, tenantID); current == nil || current.Status != enums.StatusDisabled || current.AIReplyEnabled {
@@ -364,7 +364,7 @@ func TestAssignStoreStaffRoleCreatesOneStableStoreIdentity(t *testing.T) {
 	if current := repositories.StoreStaffBindingRepository.GetInTenant(db, binding.ID, tenantID); current == nil || current.Status != enums.StatusOk {
 		t.Fatalf("enabled account did not reuse binding: %+v", current)
 	}
-	if current := repositories.StoreRepository.GetInTenant(db, store.ID, tenantID); current == nil || current.Status != enums.StatusOk || current.Name != "丽斯未来测试门店（恢复）" {
+	if current := repositories.StoreRepository.GetInTenant(db, store.ID, tenantID); current == nil || current.Status != enums.StatusOk || current.Name != "合成验收测试门店（恢复）" {
 		t.Fatalf("enabled account did not reuse store: %+v", current)
 	}
 	if current := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, tenantID); current == nil || current.Status != enums.StatusDisabled || current.AIReplyEnabled {

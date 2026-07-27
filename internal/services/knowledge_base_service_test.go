@@ -34,7 +34,6 @@ func TestUpdateFastGPTKnowledgeBasePreservesStoreAuthority(t *testing.T) {
 	knowledgeBase := &models.KnowledgeBase{
 		TenantID: 101, StoreID: store.ID, Name: "门店知识库", KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud),
 		DatasetID: "dataset-stable", DatasetName: "远端数据集", ConnectionID: fastgptapi.ManagedConnectionID,
-		RetrievalMode: enums.KnowledgeRetrievalModeFastGPT, ChunkProvider: string(enums.KnowledgeChunkProviderFastGPT),
 		DefaultTopK: 5, DefaultScoreThreshold: 0.2, DefaultRerankLimit: 10, AnswerMode: int(enums.KnowledgeAnswerModeStrict),
 		Remark: `{"baseUrl":"legacy","resourceAllowedHosts":["old.example.com"]}`, Status: enums.StatusOk,
 	}
@@ -59,7 +58,7 @@ func TestUpdateFastGPTKnowledgeBasePreservesStoreAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	if updated.StoreID != store.ID || updated.DatasetID != "dataset-stable" || updated.DatasetName != "远端数据集" ||
-		updated.ConnectionID != fastgptapi.ManagedConnectionID || updated.ChunkProvider != string(enums.KnowledgeChunkProviderFastGPT) {
+		updated.ConnectionID != fastgptapi.ManagedConnectionID {
 		t.Fatalf("FastGPT authority was overwritten: %#v", updated)
 	}
 	if strings.Contains(updated.Remark, "baseUrl") || updated.Remark != `{"resourceAllowedHosts":["cdn.example.com"]}` {

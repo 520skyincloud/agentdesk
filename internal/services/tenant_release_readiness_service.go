@@ -535,7 +535,7 @@ func (s *tenantReleaseReadinessService) Audit(
 				NewAPIGateway:            AIUsageGatewayNewAPI,
 				SuccessfulUsageStatuses:  []string{"completed", "success"},
 				KnowledgeRetrieveStage:   "knowledge_retrieve",
-				KnowledgeProvider:        enums.KnowledgeRetrievalModeFastGPT,
+				KnowledgeProvider:        enums.KnowledgeProviderFastGPT,
 				KnowledgeOperation:       "knowledge_retrieve",
 				KnowledgeStatus:          "completed",
 				KnowledgeConnectionID:    fastgptapi.ManagedConnectionID,

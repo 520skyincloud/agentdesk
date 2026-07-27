@@ -22,7 +22,6 @@ func main() {
 		codegen.GetGenerateStruct(&models.User{}),
 		codegen.GetGenerateStruct(&models.UserIdentity{}),
 		codegen.GetGenerateStruct(&models.Tenant{}),
-		codegen.GetGenerateStruct(&models.Company{}),
 		codegen.GetGenerateStruct(&models.Customer{}),
 		codegen.GetGenerateStruct(&models.CustomerIdentity{}),
 		codegen.GetGenerateStruct(&models.CustomerContact{}),

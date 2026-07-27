@@ -11,7 +11,7 @@ import (
 )
 
 func TestFastGPTUsageEventMapsToImmutableBillingEvidence(t *testing.T) {
-	knowledgeBase := &models.KnowledgeBase{ID: 31, CompanyID: 7, StoreID: 9}
+	knowledgeBase := &models.KnowledgeBase{ID: 31, StoreID: 9}
 	tenant := &models.FastGPTStoreTenant{TenantTeamID: "team-abc"}
 	attribution := fastGPTUsageAttribution{
 		ModelProfileID: 17, ProfileRevision: 4, CredentialRevision: 3, KeyFingerprint: "fingerprint-3",
@@ -39,7 +39,7 @@ func TestFastGPTUsageEventMapsToImmutableBillingEvidence(t *testing.T) {
 }
 
 func TestFastGPTOperationUsageDoesNotPretendToBeModelTokens(t *testing.T) {
-	knowledgeBase := &models.KnowledgeBase{ID: 32, CompanyID: 7, StoreID: 9}
+	knowledgeBase := &models.KnowledgeBase{ID: 32, StoreID: 9}
 	tenant := &models.FastGPTStoreTenant{TenantTeamID: "team-abc"}
 	event := toFastGPTUsageEvent(knowledgeBase, tenant, fastGPTUsageAttribution{
 		ModelProfileID: 17, ProfileRevision: 4, CredentialRevision: 3, KeyFingerprint: "fingerprint-3",

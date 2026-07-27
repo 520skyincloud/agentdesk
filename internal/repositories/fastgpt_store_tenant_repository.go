@@ -74,7 +74,7 @@ func (r *fastGPTStoreTenantRepository) Save(db *gorm.DB, item *models.FastGPTSto
 	return db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "tenant_id"}, {Name: "store_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"company_id", "tenant_team_id", "tenant_team_name", "status", "last_synced_at", "last_error",
+			"tenant_team_id", "tenant_team_name", "status", "last_synced_at", "last_error",
 			"target_profile_id", "target_profile_revision", "applied_profile_id", "applied_profile_revision",
 			"target_credential_revision", "applied_credential_revision", "applied_key_fingerprint", "readiness_status",
 			"updated_at", "update_user_id", "update_user_name",

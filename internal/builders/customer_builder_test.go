@@ -11,7 +11,7 @@ import (
 func TestBuildCustomerUsesOnlyProvidedContext(t *testing.T) {
 	now := time.Date(2026, 7, 14, 10, 30, 0, 0, time.Local)
 	customer := &models.Customer{
-		ID: 1, Name: "测试客户", CompanyID: 2, Status: enums.StatusOk,
+		ID: 1, Name: "测试客户", Status: enums.StatusOk,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	relation := models.StoreCustomerRelation{

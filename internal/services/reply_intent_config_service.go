@@ -62,10 +62,6 @@ func (s *replyIntentConfigService) CreateReplyIntentConfig(req request.CreateRep
 			Name:               name,
 			Description:        strings.TrimSpace(req.Description),
 			IntentProfileID:    intentProfileID,
-			ScopeType:          "global",
-			CompanyID:          0,
-			StoreID:            0,
-			WxWorkInstanceID:   0,
 			Priority:           req.Priority,
 			MatchMode:          normalizeIntentMatchMode(req.MatchMode),
 			Keywords:           strings.TrimSpace(req.Keywords),
@@ -91,7 +87,7 @@ func (s *replyIntentConfigService) CreateReplyIntentConfig(req request.CreateRep
 		if err := repositories.ReplyIntentConfigRepository.Create(ctx.Tx, item); err != nil {
 			return err
 		}
-		return publishIntentProfileMutationDB(ctx.Tx, intentProfileID, operator)
+		return markIntentProfileDraftForMutationDB(ctx.Tx, intentProfileID, operator)
 	})
 	if err != nil {
 		return nil, err
@@ -128,10 +124,6 @@ func (s *replyIntentConfigService) UpdateReplyIntentConfig(req request.UpdateRep
 			"name":                  name,
 			"description":           strings.TrimSpace(req.Description),
 			"intent_profile_id":     intentProfileID,
-			"scope_type":            "global",
-			"company_id":            0,
-			"store_id":              0,
-			"wx_work_instance_id":   0,
 			"priority":              req.Priority,
 			"match_mode":            normalizeIntentMatchMode(req.MatchMode),
 			"keywords":              strings.TrimSpace(req.Keywords),
@@ -159,7 +151,7 @@ func (s *replyIntentConfigService) UpdateReplyIntentConfig(req request.UpdateRep
 			return err
 		}
 		for _, profileID := range sortedIntentProfileIDs(item.IntentProfileID, intentProfileID) {
-			if err := publishIntentProfileMutationDB(ctx.Tx, profileID, operator); err != nil {
+			if err := markIntentProfileDraftForMutationDB(ctx.Tx, profileID, operator); err != nil {
 				return err
 			}
 		}
@@ -182,7 +174,7 @@ func (s *replyIntentConfigService) DeleteReplyIntentConfig(id int64, operator *d
 		if err := repositories.ReplyIntentConfigRepository.Delete(ctx.Tx, id); err != nil {
 			return err
 		}
-		return publishIntentProfileMutationDB(ctx.Tx, item.IntentProfileID, operator)
+		return markIntentProfileDraftForMutationDB(ctx.Tx, item.IntentProfileID, operator)
 	})
 }
 
@@ -212,7 +204,7 @@ func requireIntentConfigProfileDB(db *gorm.DB, id int64) (int64, error) {
 	return id, nil
 }
 
-func publishIntentProfileMutationDB(db *gorm.DB, profileID int64, operator *dto.AuthPrincipal) error {
+func markIntentProfileDraftForMutationDB(db *gorm.DB, profileID int64, operator *dto.AuthPrincipal) error {
 	profile, err := repositories.ReplyIntentProfileRepository.GetForUpdate(db, profileID)
 	if err != nil {
 		return err
@@ -221,8 +213,12 @@ func publishIntentProfileMutationDB(db *gorm.DB, profileID int64, operator *dto.
 		return errorsx.InvalidParam("意图行业配置不存在")
 	}
 	if profile.Status == enums.StatusOk {
-		if _, err := TenantIndustryService.ValidateBindingProfileDB(db, profile.ID); err != nil {
+		tenantCount, err := repositories.TenantRepository.CountByIntentProfile(db, profile.ID)
+		if err != nil {
 			return err
+		}
+		if tenantCount > 0 {
+			return errorsx.InvalidParam("已绑定接入公司的发布行业不能原地修改分类，请新建行业 Profile 后切换")
 		}
 	}
 	revision := profile.Revision + 1
@@ -232,16 +228,12 @@ func publishIntentProfileMutationDB(db *gorm.DB, profileID int64, operator *dto.
 	now := time.Now()
 	updates := map[string]any{
 		"revision":         revision,
+		"status":           enums.StatusDisabled,
+		"published_at":     nil,
+		"published_by":     0,
 		"update_user_id":   operator.UserID,
 		"update_user_name": operator.Username,
 		"updated_at":       now,
-	}
-	if profile.Status == enums.StatusOk {
-		updates["published_at"] = now
-		updates["published_by"] = operator.UserID
-	} else {
-		updates["published_at"] = nil
-		updates["published_by"] = 0
 	}
 	if err := repositories.ReplyIntentProfileRepository.Updates(db, profile.ID, updates); err != nil {
 		return err

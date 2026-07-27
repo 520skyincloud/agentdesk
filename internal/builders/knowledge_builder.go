@@ -31,7 +31,6 @@ func BuildKnowledgeBase(item *models.KnowledgeBase) response.KnowledgeBaseRespon
 		DatasetID:              item.DatasetID,
 		DatasetName:            item.DatasetName,
 		ConnectionID:           item.ConnectionID,
-		RetrievalMode:          item.RetrievalMode,
 		FastGPTProfileName:     item.FastGPTProfileName,
 		FastGPTProfileRevision: item.FastGPTProfileRevision,
 		FastGPTProfileStatus:   item.FastGPTProfileStatus,
@@ -178,16 +177,10 @@ func BuildKnowledgeRetrieveHitResponse(item *models.KnowledgeRetrieveHit) respon
 		ID:              item.ID,
 		RetrieveLogID:   item.RetrieveLogID,
 		KnowledgeBaseID: item.KnowledgeBaseID,
-		ChunkID:         item.ChunkID,
-		DocumentID:      item.DocumentID,
+		SourceRecordID:  item.SourceRecordID,
 		DocumentTitle:   item.DocumentTitle,
-		FaqID:           item.FaqID,
-		FaqQuestion:     item.FaqQuestion,
-		ChunkNo:         item.ChunkNo,
 		Title:           item.Title,
 		SectionPath:     item.SectionPath,
-		ChunkType:       item.ChunkType,
-		ChunkTypeName:   historicalKnowledgeChunkTypeName(item.ChunkType),
 		Provider:        item.Provider,
 		RankNo:          item.RankNo,
 		Score:           item.Score,
@@ -196,20 +189,5 @@ func BuildKnowledgeRetrieveHitResponse(item *models.KnowledgeRetrieveHit) respon
 		IsCitation:      item.IsCitation,
 		Snippet:         item.Snippet,
 		CreatedAt:       item.CreatedAt,
-	}
-}
-
-func historicalKnowledgeChunkTypeName(chunkType string) string {
-	switch strings.TrimSpace(chunkType) {
-	case "text":
-		return "文本"
-	case "faq":
-		return "历史问答"
-	case "table":
-		return "表格"
-	case "code":
-		return "代码"
-	default:
-		return ""
 	}
 }

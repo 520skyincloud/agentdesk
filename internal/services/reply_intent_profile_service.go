@@ -1,12 +1,14 @@
 package services
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
+	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/httpx/params"
@@ -14,6 +16,7 @@ import (
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 var ReplyIntentProfileService = newReplyIntentProfileService()
@@ -55,12 +58,8 @@ func (s *replyIntentProfileService) CreateReplyIntentProfile(req request.CreateR
 	industryCode := strings.TrimSpace(req.IndustryCode)
 	prompt := strings.TrimSpace(req.IntentDetectPrompt)
 	schema := strings.TrimSpace(req.IntentJSONSchema)
-	status := normalizeReplyIntentProfileStatus(req.Status)
 	if code == "" || name == "" || industryCode == "" {
 		return nil, errorsx.InvalidParam("行业配置编码、业务行业编码和名称不能为空")
-	}
-	if status == enums.StatusOk {
-		return nil, errorsx.InvalidParam("新行业必须先保存为停用草稿，完成意图分类和标签目录后再发布")
 	}
 	if existing := repositories.ReplyIntentProfileRepository.Take(sqls.DB(), "code = ?", code); existing != nil {
 		return nil, errorsx.InvalidParam("行业编码已存在")
@@ -73,7 +72,7 @@ func (s *replyIntentProfileService) CreateReplyIntentProfile(req request.CreateR
 		IntentDetectPrompt: prompt,
 		IntentJSONSchema:   schema,
 		Revision:           1,
-		Status:             status,
+		Status:             enums.StatusDisabled,
 		SortNo:             req.SortNo,
 		Remark:             strings.TrimSpace(req.Remark),
 		AuditFields:        utils.BuildAuditFields(operator),
@@ -93,12 +92,8 @@ func (s *replyIntentProfileService) UpdateReplyIntentProfile(req request.UpdateR
 	industryCode := strings.TrimSpace(req.IndustryCode)
 	prompt := strings.TrimSpace(req.IntentDetectPrompt)
 	schema := strings.TrimSpace(req.IntentJSONSchema)
-	status := normalizeReplyIntentProfileStatus(req.Status)
 	if code == "" || name == "" || industryCode == "" {
 		return errorsx.InvalidParam("行业配置编码、业务行业编码和名称不能为空")
-	}
-	if status == enums.StatusOk && (prompt == "" || schema == "") {
-		return errorsx.InvalidParam("发布行业前必须配置独立的 IntentDetect 提示词和输出 Schema")
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		item, err := repositories.ReplyIntentProfileRepository.GetForUpdate(ctx.Tx, req.ID)
@@ -111,24 +106,36 @@ func (s *replyIntentProfileService) UpdateReplyIntentProfile(req request.UpdateR
 		if existing := repositories.ReplyIntentProfileRepository.Take(ctx.Tx, "code = ? AND id <> ?", code, req.ID); existing != nil {
 			return errorsx.InvalidParam("行业编码已存在")
 		}
+		if item.Status == enums.StatusDeleted {
+			return errorsx.InvalidParam("已删除的行业不能编辑")
+		}
+		if req.Status != item.Status {
+			return errorsx.InvalidParam("行业状态不能通过编辑修改，请使用独立发布动作")
+		}
 		tenantCount, err := repositories.TenantRepository.CountByIntentProfile(ctx.Tx, item.ID)
 		if err != nil {
 			return err
-		}
-		if tenantCount > 0 && (item.Code != code || item.IndustryCode != industryCode) {
-			return errorsx.InvalidParam("已绑定接入公司的行业不能修改稳定编码或业务行业编码")
-		}
-		if tenantCount > 0 && status != enums.StatusOk {
-			return errorsx.InvalidParam("该行业已被接入公司使用，请先切换这些公司的行业后再停用")
 		}
 		now := time.Now()
 		revision := item.Revision
 		if revision <= 0 {
 			revision = 1
 		}
-		definitionChanged := item.IndustryCode != industryCode || item.IntentDetectPrompt != prompt || item.IntentJSONSchema != schema
+		definitionChanged := item.Code != code || item.IndustryCode != industryCode ||
+			item.IntentDetectPrompt != prompt || item.IntentJSONSchema != schema
+		if tenantCount > 0 && definitionChanged {
+			return errorsx.InvalidParam("已绑定接入公司的发布行业不能原地修改运行语义，请新建行业 Profile 后切换")
+		}
 		if definitionChanged {
 			revision++
+		}
+		status := item.Status
+		var publishedAt any = item.PublishedAt
+		publishedBy := item.PublishedBy
+		if definitionChanged {
+			status = enums.StatusDisabled
+			publishedAt = nil
+			publishedBy = int64(0)
 		}
 		updates := map[string]any{
 			"code":                 code,
@@ -139,28 +146,16 @@ func (s *replyIntentProfileService) UpdateReplyIntentProfile(req request.UpdateR
 			"intent_json_schema":   schema,
 			"revision":             revision,
 			"status":               status,
+			"published_at":         publishedAt,
+			"published_by":         publishedBy,
 			"sort_no":              req.SortNo,
 			"remark":               strings.TrimSpace(req.Remark),
 			"update_user_id":       operator.UserID,
 			"update_user_name":     operator.Username,
 			"updated_at":           now,
 		}
-		if status == enums.StatusOk {
-			if item.PublishedAt == nil || definitionChanged || item.Status != enums.StatusOk {
-				updates["published_at"] = now
-				updates["published_by"] = operator.UserID
-			}
-		} else {
-			updates["published_at"] = nil
-			updates["published_by"] = 0
-		}
 		if err := repositories.ReplyIntentProfileRepository.Updates(ctx.Tx, req.ID, updates); err != nil {
 			return err
-		}
-		if status == enums.StatusOk {
-			if _, err := TenantIndustryService.ValidateBindingProfileDB(ctx.Tx, req.ID); err != nil {
-				return err
-			}
 		}
 		if definitionChanged {
 			return repositories.IndustryTagDefinitionRepository.UpdateRevisionByProfile(
@@ -169,6 +164,127 @@ func (s *replyIntentProfileService) UpdateReplyIntentProfile(req request.UpdateR
 		}
 		return nil
 	})
+}
+
+func (s *replyIntentProfileService) TestReplyIntentProfile(id int64) (*response.ReplyIntentProfileValidationResponse, error) {
+	if id <= 0 {
+		return nil, errorsx.InvalidParam("意图行业配置不存在")
+	}
+	item := repositories.ReplyIntentProfileRepository.Get(sqls.DB(), id)
+	if item == nil || item.Status == enums.StatusDeleted {
+		return nil, errorsx.InvalidParam("意图行业配置不存在")
+	}
+	return validateReplyIntentProfileDefinitionDB(sqls.DB(), item), nil
+}
+
+func (s *replyIntentProfileService) PublishReplyIntentProfile(
+	req request.PublishReplyIntentProfileRequest,
+	operator *dto.AuthPrincipal,
+) (*models.ReplyIntentProfile, error) {
+	if operator == nil {
+		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if !req.ConfirmRevision {
+		return nil, errorsx.InvalidParam("发布行业需要二次确认当前 revision")
+	}
+	var published *models.ReplyIntentProfile
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		item, err := repositories.ReplyIntentProfileRepository.GetForUpdate(ctx.Tx, req.ID)
+		if err != nil {
+			return err
+		}
+		if item == nil || item.Status == enums.StatusDeleted {
+			return errorsx.InvalidParam("意图行业配置不存在")
+		}
+		if item.Revision != req.Revision {
+			return errorsx.InvalidParam("行业 revision 已变化，请重新测试后发布")
+		}
+		result := validateReplyIntentProfileDefinitionDB(ctx.Tx, item)
+		if !result.Valid {
+			return errorsx.InvalidParam("行业测试未通过：" + strings.Join(result.Errors, "；"))
+		}
+		now := time.Now()
+		if err := repositories.ReplyIntentProfileRepository.Updates(ctx.Tx, item.ID, map[string]any{
+			"status":           enums.StatusOk,
+			"published_at":     now,
+			"published_by":     operator.UserID,
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+			"updated_at":       now,
+		}); err != nil {
+			return err
+		}
+		published = repositories.ReplyIntentProfileRepository.Get(ctx.Tx, item.ID)
+		if published == nil {
+			return fmt.Errorf("reload published intent profile %d", item.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return published, nil
+}
+
+func validateReplyIntentProfileDefinitionDB(db *gorm.DB, profile *models.ReplyIntentProfile) *response.ReplyIntentProfileValidationResponse {
+	result := &response.ReplyIntentProfileValidationResponse{
+		Errors:   make([]string, 0),
+		Warnings: make([]string, 0),
+	}
+	if profile == nil {
+		result.Errors = append(result.Errors, "行业 Profile 不存在")
+		return result
+	}
+	result.ProfileID = profile.ID
+	result.Revision = profile.Revision
+	if strings.TrimSpace(profile.Code) == "" || strings.TrimSpace(profile.IndustryCode) == "" {
+		result.Errors = append(result.Errors, "行业稳定编码和业务行业编码不能为空")
+	}
+	if strings.TrimSpace(profile.IntentDetectPrompt) == "" {
+		result.Errors = append(result.Errors, "IntentDetect 提示词不能为空")
+	}
+	schemaText := strings.TrimSpace(profile.IntentJSONSchema)
+	if schemaText == "" {
+		result.Errors = append(result.Errors, "IntentDetect 输出约束不能为空")
+	} else {
+		for _, field := range []string{"primaryIntent", "confidence", "intentTasks", "reason"} {
+			if !strings.Contains(schemaText, field) {
+				result.Warnings = append(result.Warnings, "输出约束未明确包含字段 "+field)
+			}
+		}
+	}
+	configs := repositories.ReplyIntentConfigRepository.Find(db, sqls.NewCnd().
+		Eq("intent_profile_id", profile.ID).Asc("sort_no").Asc("id"))
+	for i := range configs {
+		if configs[i].Status == enums.StatusOk {
+			result.ActiveIntentCount++
+		}
+	}
+	if err := validateIndustryIntentConfigs(profile, configs); err != nil {
+		result.Errors = append(result.Errors, err.Error())
+	}
+	definitions, err := repositories.IndustryTagDefinitionRepository.FindActiveByProfile(db, profile.ID)
+	if err != nil {
+		result.Errors = append(result.Errors, "读取行业标签目录失败")
+	} else {
+		conflicts := make(map[string]struct{})
+		for i := range definitions {
+			if definitions[i].ParentID == 0 {
+				result.TagCategoryCount++
+			} else {
+				result.TagCount++
+			}
+			if group := strings.TrimSpace(definitions[i].ConflictGroup); group != "" {
+				conflicts[group] = struct{}{}
+			}
+		}
+		result.ConflictGroupCount = len(conflicts)
+		if err := validateIndustryTagDefinitions(profile, definitions); err != nil {
+			result.Errors = append(result.Errors, err.Error())
+		}
+	}
+	result.Valid = len(result.Errors) == 0
+	return result
 }
 
 func (s *replyIntentProfileService) DeleteReplyIntentProfile(id int64) error {
@@ -199,11 +315,4 @@ func (s *replyIntentProfileService) DeleteReplyIntentProfile(id int64) error {
 		}
 		return repositories.ReplyIntentProfileRepository.Delete(ctx.Tx, id)
 	})
-}
-
-func normalizeReplyIntentProfileStatus(status enums.Status) enums.Status {
-	if status == enums.StatusDisabled {
-		return status
-	}
-	return enums.StatusOk
 }

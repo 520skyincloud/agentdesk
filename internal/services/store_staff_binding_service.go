@@ -118,7 +118,6 @@ func (s *storeStaffBindingService) prepareForUserDB(db *gorm.DB, tenantID, userI
 		}
 		if err := repositories.StoreRepository.UpdatesInTenant(db, store.ID, tenantID, map[string]any{
 			"name":             storeName,
-			"company_id":       0,
 			"status":           enums.StatusOk,
 			"updated_at":       now,
 			"update_user_id":   auditUserID(operator),
@@ -127,7 +126,6 @@ func (s *storeStaffBindingService) prepareForUserDB(db *gorm.DB, tenantID, userI
 			return nil, err
 		}
 		if err := repositories.StoreStaffBindingRepository.UpdatesInTenant(db, binding.ID, tenantID, map[string]any{
-			"company_id":       0,
 			"active_user_id":   user.ID,
 			"status":           enums.StatusOk,
 			"updated_at":       now,
@@ -137,9 +135,7 @@ func (s *storeStaffBindingService) prepareForUserDB(db *gorm.DB, tenantID, userI
 			return nil, err
 		}
 		store.Name = storeName
-		store.CompanyID = 0
 		store.Status = enums.StatusOk
-		binding.CompanyID = 0
 		binding.ActiveUserID = positiveInt64Pointer(user.ID)
 		binding.Status = enums.StatusOk
 		if err := StoreModelCredentialService.EnsureStoreRecordsDB(db, store, operator); err != nil {
@@ -158,7 +154,6 @@ func (s *storeStaffBindingService) prepareForUserDB(db *gorm.DB, tenantID, userI
 		TenantID:    tenantID,
 		StoreCode:   generateStoreIdentityCode(tenantID),
 		Name:        storeName,
-		CompanyID:   0,
 		Status:      enums.StatusOk,
 		Remark:      "门店员工号角色账号生成的稳定门店身份",
 		AuditFields: utils.BuildAuditFields(operator),
@@ -178,7 +173,6 @@ func (s *storeStaffBindingService) prepareForUserDB(db *gorm.DB, tenantID, userI
 		TenantID:             tenantID,
 		UserID:               user.ID,
 		ActiveUserID:         positiveInt64Pointer(user.ID),
-		CompanyID:            0,
 		StoreID:              store.ID,
 		ManagedMode:          constants.StoreManagedModeSemi,
 		FallbackToHQ:         true,

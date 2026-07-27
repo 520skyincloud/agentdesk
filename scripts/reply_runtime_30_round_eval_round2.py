@@ -30,7 +30,7 @@ from reply_runtime_30_round_eval import (  # noqa: E402
 
 
 STORE_NO_GROUP = Store(
-    name="丽斯未来酒店·半托管无群店",
+    name="合成验收酒店·半托管无群店",
     phone="0571-12345678",
     location="浙江省杭州市无群路 9 号",
     mini_program="安心宿小程序 page=/pages/checkin/index?storeId=no-group",

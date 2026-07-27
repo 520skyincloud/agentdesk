@@ -112,7 +112,7 @@ func setupWxWorkProtocolTenantHandlerDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.Tenant{}, &models.Company{}, &models.Store{}, &models.WxWorkProtocolInstance{}, &models.AIUsageEvent{}); err != nil {
+	if err := db.AutoMigrate(&models.Tenant{}, &models.Store{}, &models.WxWorkProtocolInstance{}, &models.AIUsageEvent{}); err != nil {
 		t.Fatalf("migrate wxwork instance: %v", err)
 	}
 	sqls.SetDB(db)

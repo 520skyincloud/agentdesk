@@ -14,7 +14,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const seedUnifiedModelProfilesMigrationRemark = "seed unified nine-slot model profiles and permissions"
+const seedUnifiedModelProfilesMigrationRemark = "seed unified nine-slot model profile"
 
 func init() {
 	register(69, seedUnifiedModelProfilesMigrationRemark, func() error {
@@ -27,29 +27,11 @@ func migrateUnifiedModelProfiles(db *gorm.DB) error {
 		return fmt.Errorf("unified model profile migration database is nil")
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
-		if err := syncUnifiedModelProfilePermissions(tx); err != nil {
-			return err
-		}
 		if repositories.ModelProfileTemplateRepository.GetLatestByCode(tx, "standard") != nil {
 			return nil
 		}
 		return seedDefaultUnifiedModelProfile(tx)
 	})
-}
-
-func syncUnifiedModelProfilePermissions(db *gorm.DB) error {
-	permissions, err := ensurePermissions(db)
-	if err != nil {
-		return err
-	}
-	roles, err := ensureRoles(db)
-	if err != nil {
-		return err
-	}
-	if err := ensureRolePermissions(db, roles, permissions); err != nil {
-		return err
-	}
-	return nil
 }
 
 func seedDefaultUnifiedModelProfile(db *gorm.DB) error {

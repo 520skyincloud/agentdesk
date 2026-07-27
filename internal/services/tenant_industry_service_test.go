@@ -187,49 +187,85 @@ func TestTenantIndustryBindingLocksTargetProfile(t *testing.T) {
 	}
 }
 
-func TestPublishedHotelIntentCatalogRejectsDestructiveMutationsAndAdvancesRevision(t *testing.T) {
+func TestPublishedHotelIntentCatalogUsesDraftValidationAndPreservesDisabledExtensions(t *testing.T) {
 	db, operator := setupTenantManagementTestDB(t)
 	profile, configs := seedStrictHotelIndustryProfile(t, db, 7100)
 	initialRevision := profile.Revision
 
-	if _, err := ReplyIntentConfigService.CreateReplyIntentConfig(request.CreateReplyIntentConfigRequest{
+	extension, err := ReplyIntentConfigService.CreateReplyIntentConfig(request.CreateReplyIntentConfigRequest{
 		Code: "sixth_intent", Name: "第六类", IntentProfileID: profile.ID, Status: enums.StatusOk,
-	}, operator); err == nil {
-		t.Fatal("expected a sixth hotel intent to be rejected")
+	}, operator)
+	if err != nil {
+		t.Fatalf("create draft hotel extension: %v", err)
 	}
-	assertHotelIntentMutationRolledBack(t, db, profile.ID, initialRevision, 5)
-	if _, err := ReplyIntentConfigService.CreateReplyIntentConfig(request.CreateReplyIntentConfigRequest{
-		Code: "disabled_sixth_intent", Name: "停用第六类", IntentProfileID: profile.ID, Status: enums.StatusDisabled,
-	}, operator); err == nil {
-		t.Fatal("expected a disabled sixth hotel intent to be rejected")
+	draft := loadTenantIndustryProfile(t, db, profile.ID)
+	if draft.Status != enums.StatusDisabled || draft.Revision != initialRevision+1 || draft.PublishedAt != nil {
+		t.Fatalf("hotel extension did not create a draft revision: %+v", draft)
 	}
-	assertHotelIntentMutationRolledBack(t, db, profile.ID, initialRevision, 5)
+	validation, err := ReplyIntentProfileService.TestReplyIntentProfile(profile.ID)
+	if err != nil {
+		t.Fatalf("test hotel draft with sixth active intent: %v", err)
+	}
+	if validation.Valid {
+		t.Fatalf("hotel draft with sixth active intent unexpectedly passed: %+v", validation)
+	}
 
-	disable := replyIntentConfigUpdateRequest(configs[0])
-	disable.Status = enums.StatusDisabled
-	if err := ReplyIntentConfigService.UpdateReplyIntentConfig(disable, operator); err == nil {
-		t.Fatal("expected disabling a required hotel intent to be rejected")
+	disableExtension := replyIntentConfigUpdateRequest(*extension)
+	disableExtension.Status = enums.StatusDisabled
+	if err := ReplyIntentConfigService.UpdateReplyIntentConfig(disableExtension, operator); err != nil {
+		t.Fatalf("disable draft hotel extension: %v", err)
 	}
-	assertHotelIntentMutationRolledBack(t, db, profile.ID, initialRevision, 5)
+	draft = loadTenantIndustryProfile(t, db, profile.ID)
+	validation, err = ReplyIntentProfileService.TestReplyIntentProfile(profile.ID)
+	if err != nil || !validation.Valid || validation.ActiveIntentCount != 5 {
+		t.Fatalf("hotel draft with disabled extension did not pass: result=%+v err=%v", validation, err)
+	}
+	if _, err := ReplyIntentProfileService.PublishReplyIntentProfile(request.PublishReplyIntentProfileRequest{
+		ID: draft.ID, Revision: draft.Revision, ConfirmRevision: true,
+	}, operator); err != nil {
+		t.Fatalf("publish hotel draft with disabled extension: %v", err)
+	}
 
-	if err := ReplyIntentConfigService.DeleteReplyIntentConfig(configs[1].ID, operator); err == nil {
-		t.Fatal("expected deleting a required hotel intent to be rejected")
+	disableRequired := replyIntentConfigUpdateRequest(configs[0])
+	disableRequired.Status = enums.StatusDisabled
+	if err := ReplyIntentConfigService.UpdateReplyIntentConfig(disableRequired, operator); err != nil {
+		t.Fatalf("create draft with disabled required hotel intent: %v", err)
 	}
-	assertHotelIntentMutationRolledBack(t, db, profile.ID, initialRevision, 5)
+	invalidDraft := loadTenantIndustryProfile(t, db, profile.ID)
+	if _, err := ReplyIntentProfileService.PublishReplyIntentProfile(request.PublishReplyIntentProfileRequest{
+		ID: invalidDraft.ID, Revision: invalidDraft.Revision, ConfirmRevision: true,
+	}, operator); err == nil {
+		t.Fatal("expected publishing a hotel catalog without all five required intents to fail")
+	}
 
 	valid := replyIntentConfigUpdateRequest(configs[0])
 	valid.Name = "酒店信息（已复核）"
 	valid.PromptPack = "只按当前门店知识回答。"
 	if err := ReplyIntentConfigService.UpdateReplyIntentConfig(valid, operator); err != nil {
-		t.Fatalf("update valid hotel intent: %v", err)
+		t.Fatalf("restore and update required hotel intent: %v", err)
 	}
 	reloaded := loadTenantIndustryProfile(t, db, profile.ID)
-	if reloaded.Revision != initialRevision+1 || reloaded.PublishedAt == nil || reloaded.PublishedBy != operator.UserID {
-		t.Fatalf("valid hotel intent update did not publish the next revision: %+v", reloaded)
+	published, err := ReplyIntentProfileService.PublishReplyIntentProfile(request.PublishReplyIntentProfileRequest{
+		ID: reloaded.ID, Revision: reloaded.Revision, ConfirmRevision: true,
+	}, operator)
+	if err != nil {
+		t.Fatalf("publish restored hotel intent catalog: %v", err)
+	}
+	if published.Status != enums.StatusOk || published.PublishedAt == nil || published.PublishedBy != operator.UserID {
+		t.Fatalf("valid hotel intent update did not publish the next revision: %+v", published)
+	}
+	var disabledExtensions int64
+	if err := db.Model(&models.ReplyIntentConfig{}).
+		Where("intent_profile_id = ? AND code = ? AND status = ?", profile.ID, extension.Code, enums.StatusDisabled).
+		Count(&disabledExtensions).Error; err != nil {
+		t.Fatalf("count disabled hotel extension: %v", err)
+	}
+	if disabledExtensions != 1 {
+		t.Fatalf("disabled hotel extension count = %d, want 1", disabledExtensions)
 	}
 	var staleDefinitions int64
 	if err := db.Model(&models.IndustryTagDefinition{}).
-		Where("intent_profile_id = ? AND definition_revision <> ?", profile.ID, reloaded.Revision).
+		Where("intent_profile_id = ? AND definition_revision <> ?", profile.ID, published.Revision).
 		Count(&staleDefinitions).Error; err != nil {
 		t.Fatalf("count stale industry tag definitions: %v", err)
 	}
@@ -295,7 +331,7 @@ func seedTenantIndustryProfile(t *testing.T, db *gorm.DB, id int64, code string)
 		t.Fatalf("create industry profile %s: %v", code, err)
 	}
 	if err := db.Create(&models.ReplyIntentConfig{
-		Code: "general", Name: "通用", IntentProfileID: profile.ID, ScopeType: "global", Status: enums.StatusOk,
+		Code: "general", Name: "通用", IntentProfileID: profile.ID, Status: enums.StatusOk,
 		AuditFields: tenantManagementAuditFields(now),
 	}).Error; err != nil {
 		t.Fatalf("create industry intent %s: %v", code, err)
@@ -332,7 +368,7 @@ func seedStrictHotelIndustryProfile(t *testing.T, db *gorm.DB, id int64) (*model
 	configs := make([]models.ReplyIntentConfig, 0, len(codes))
 	for i, code := range codes {
 		item := models.ReplyIntentConfig{
-			Code: code, Name: code, IntentProfileID: profile.ID, ScopeType: "global", Priority: 100 - i,
+			Code: code, Name: code, IntentProfileID: profile.ID, Priority: 100 - i,
 			MatchMode: "hybrid", Status: enums.StatusOk, AuditFields: tenantManagementAuditFields(now),
 		}
 		if err := db.Create(&item).Error; err != nil {

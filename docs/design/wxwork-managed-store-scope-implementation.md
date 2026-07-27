@@ -1,280 +1,238 @@
 # 企微员工号、门店身份与客服组范围实施设计
 
-> 状态：当前权威设计
+> 状态：当前统一项目权威设计
 >
-> 更新时间：2026-07-20
+> 更新时间：2026-07-27
 >
-> 企业微信员工号协议字段、类型和能力必须以 `https://wework.apifox.cn/llms.txt` 及其链接的接口页为唯一依据。本文只定义 AgentDesk 内部身份、绑定和管理边界。
+> 企业微信员工号协议唯一依据：
+> `https://wework.apifox.cn/llms.txt` 及其链接的具体接口页面
 
-## 1. 最终业务语义
+本文只定义 AgentDesk 内部 User、Store、企微实例、客服组、模型和知识范围。协议请求
+字段、类型、必填项、状态码和示例必须在开发前重新查阅官方接口页，禁止与企业微信 CLI、
+微信客服 API、个人微信协议或旧协议字段混用。
 
-一个租户公司可以经营多家门店，但系统不再维护租户公司与门店之间的第二套“客户企业”层级。门店身份由已有系统账号获得 `store_staff` 角色时建立。
+## 1. 身份模型
 
 ```text
-Tenant（购买并使用系统的租户公司）
-  -> User（公司主管创建或邀请注册的系统账号）
-  -> store_staff 角色
-  -> StoreStaffBinding（账号与门店身份的唯一关系）
-  -> Store（该账号代表的唯一门店）
-  -> WxWorkProtocolInstance（实际接待客户的企微员工号）
+Tenant
+  -> User + store_staff Role
+  -> StoreStaffBinding
+  -> Store
+  -> WxWorkProtocolInstance
   -> Customer / Conversation / KnowledgeBase / AgentTeam
 ```
 
-必须坚持以下表达：
+- User：登录 AgentDesk 的系统账号。
+- `store_staff`：User 的角色，不是独立账号类型。
+- StoreStaffBinding：User 与稳定 Store 的唯一关系。
+- Store：该门店员工系统账号代表的业务门店。
+- WxWorkProtocolInstance：该 Store 的实际企微渠道身份。
 
-- `User` 是登录 AgentDesk 的系统账号。
-- `store_staff` 是现有角色，不是新账号类型。
-- `Store` 是该角色账号代表的稳定门店业务身份。
-- `WxWorkProtocolInstance` 是实际企微员工号，只绑定已有门店身份。
-- 一个有效 `store_staff` 用户只对应一个有效 `StoreStaffBinding` 和一个 `Store`。
-- 一个持有 `store_staff` 角色的有效系统账号在当前产品阶段代表一家门店，没有更小的门店层级。
+一个有效 `store_staff` User 最多占用一个活动 Store。数据库使用
+`StoreStaffBinding.ActiveUserID` 的可空唯一索引保证这一点，Service 事务同时校验
+User、Role、Tenant、Store 和 Binding。
 
-禁止以下概念：
+Company 模型和 CompanyID 不存在。系统也不存在“门店账号开户”“邀请开户”或
+“客户企业 -> 门店”的第二层。
 
-- 独立“门店账号”实体或开户流程。
-- “邀请开户”“远程开户”“门店开户注册”等产品语义。
-- 企微扫码或企微 OAuth 自动创建 User、自动分配角色。
-- 邀请码自动赋予客服、组长或门店员工号角色。
-- 活跃运行链路继续使用历史 `Company` 作为租户内层级。
+## 2. 系统账号与 Store 生命周期
 
-## 2. 账号和门店身份生命周期
+### 2.1 创建或邀请账号
 
-### 2.1 公司主管创建账号
+公司主管可以直接创建本 Tenant User，或发送带 Tenant 邀请码的注册链接。邀请码只绑定
+Tenant，注册完成后仍需审核和显式分配 Role。
 
-公司主管在用户管理创建本租户账号，可同时选择角色。若角色集合包含 `store_staff`：
+若角色包含 `store_staff`：
 
-1. 前端必须显示并校验“门店名称”。
-2. 后端在同一个事务中创建 User、写 UserRole、创建 Store 和 StoreStaffBinding。
-3. Store、Binding 和 User 必须具有相同 `TenantID`。
-4. 新写入的历史兼容 `CompanyID` 固定为 `0`。
-5. 任一步失败，账号、角色和门店身份全部回滚。
+1. 必须填写门店名称。
+2. User/UserRole 与 Store/Binding 在同一业务事务内提交。
+3. Store、Binding、User 的 TenantID 必须一致。
+4. 同一事务建立未配置 Store Credential/Policy 和默认关闭的客户标签运行策略。
+5. 任一步失败全部回滚。
 
-### 2.2 邀请注册
+### 2.2 角色变更
 
-公司主管可以发送带租户邀请码的注册链接。邀请码只确定租户归属：
+- 首次分配 `store_staff` 创建 Store + Binding。
+- 重复分配或重新启用复用原 Store + Binding。
+- 已有多个 Binding、跨 Tenant User、缺 Role 或缺 Store 时拒绝继续。
+- 移除角色或停用 User 时清空 `ActiveUserID`，停用 Binding、Store 和相关企微实例。
+- 恢复 User 或 Role 不会静默重新启用已停用企微实例；必须重新确认真实协议状态。
 
-```text
-邀请注册链接
-  -> 用户提交基础账号资料和公司邀请码
-  -> User 进入待审核状态并绑定 TenantID
-  -> 公司主管审核
-  -> 审核通过时分配角色
-  -> 如选择 store_staff，同时填写门店名称并创建门店身份
-```
+Store 的历史 ID 只能由当前数据库生成，不能使用来源库 ID 或固定编号。
 
-邀请注册与企微绑定是两条独立链路。邀请注册创建系统账号；企微绑定只给已有账号关联实际企微员工号。
+### 2.3 删除与转移
 
-### 2.3 后续角色分配
+- Store/Binding/企微历史和审计事实不能因删除账号而物理抹除。
+- 仍有关联客服组、客服档案、进行中会话或运行任务时，必须先按现有依赖保护处理。
+- Store 停用、转移或删除只停止本系统使用 Store Credential，不负责上游 NewAPI Key
+  的停用、旋转或删除。
 
-给已有 User 分配 `store_staff` 时，`UserService.AssignRolesWithStoreName` 在角色事务内调用门店身份准备逻辑：
-
-- 首次分配要求门店名称并创建唯一 Store + Binding。
-- 重新分配角色时复用并恢复已有稳定 Store + Binding，不创建第二家门店。
-- 已有绑定但未再次填写门店名称时保留原名称。
-- 多个有效绑定属于历史数据错误，拒绝继续操作并要求先修复。
-- 移除 `store_staff` 时在同一事务内停用 Store、Binding 和相关企微实例，并关闭实例 AI 自动回复。
-
-### 2.4 账号状态和删除
-
-账号停用会撤销登录会话，并在同一事务内停用 Store、Binding 和相关企微实例。账号重新启用或重新获得 `store_staff` 角色时复用原 Store + Binding，不新建第二套身份；已经停用的企微实例不会被静默重新启用，必须由有权限的操作者确认实际登录状态后恢复。
-
-账号删除继续使用 UserService 的依赖保护：
-
-- 有未完成会话时不能删除客服账号。
-- 仍为客服组或客服小组组长时必须先更换组长。
-- 仍有关联客服档案时必须先处理客服档案。
-- 门店身份及企微实例的历史记录继续保留，删除动作不能物理抹掉审计证据。
-
-这些约束既避免角色、组织、企微和历史会话被静默拆断，也允许公司主管通过角色和账号状态完成可逆的日常停用。
-
-## 3. 企微员工号绑定
+## 3. 企微实例绑定
 
 ### 3.1 绑定前提
 
-企微员工号只能绑定满足以下条件的账号：
+目标系统账号必须：
 
 - 属于当前活动 Tenant。
-- User 已启用且审核通过。
-- 已持有启用的 `store_staff` 角色。
-- 已有唯一有效 StoreStaffBinding 和 Store。
-- 远程绑定时已登记可验证邮箱。
+- 已启用并完成必要审核/改密。
+- 持有启用的 `store_staff` Role。
+- 拥有唯一活动 StoreStaffBinding 和 Store。
+- 异地绑定时满足现有邮箱验证要求。
 
-不满足条件时，页面应提示公司主管先在用户管理创建或邀请注册账号并分配角色。
+不满足时，页面提示先完成账号与角色链，不能让扫码隐式补建身份。
 
-### 3.2 现场绑定
+### 3.2 现场扫码
 
-公司主管在用户管理或企微账号管理中选择已有、持有 `store_staff` 角色的系统账号，再启动协议扫码。扫码只负责：
+扫码只负责：
 
-- 获得真实企微员工号身份。
-- 建立 WxWorkProtocolInstance。
-- 写入现有 BindingID、StoreID 和 TenantID。
-- 同步门店名称、客服组缓存和后续运行配置。
+- 按官方协议获取真实企微身份。
+- 建立或更新 WxWorkProtocolInstance。
+- 写入已验证的 TenantID、StoreID 和 StoreStaffBindingID。
+- 同步 Store 展示资料、客服组缓存和当前运行配置。
 
 扫码不得创建 User、Role、UserRole、Store 或第二个 Binding。
 
-### 3.3 异地自助绑定
+### 3.3 异地绑定链接
 
-历史“远程开户链接”统一改为“企微员工号绑定链接”。公司主管先选择已有系统账号，系统生成一次绑定链接；门店人员用真实企微员工号扫码并以该系统账号登记邮箱完成验证。
-
-绑定链接已经锁定：
+“企微员工号绑定链接”在生成时锁定：
 
 - TenantID。
-- StoreStaffBindingID。
+- UserID。
 - StoreID。
-- 目标 UserID。
+- StoreStaffBindingID。
 
-绑定页可以补充门店展示资料，但不能注册系统账号、改变角色或切换租户归属。
+使用者只能完成目标企微实例绑定，不能切换 Tenant、注册系统账号、修改角色或更换 Store。
+链接必须有过期、使用状态和审计。
 
-### 3.4 企业微信 OAuth 登录
+### 3.4 OAuth 与替换
 
-企微 OAuth 登录只允许把企微身份关联到已存在、已启用、邮箱已验证的 User。查不到账号时明确提示联系公司主管创建账号或邀请注册，不执行隐式注册。
+- 企微 OAuth 只能关联已经存在、已启用且满足验证条件的 User。
+- 查不到账号时明确要求联系公司主管，不自动注册。
+- 更换企微实例复用相同 Store/Binding；新旧实例通过
+  `ReplacesInstanceID/ReplacedByInstanceID` 留下替换链。
+- 历史实例可保留审计，但同一渠道运行链只能使用当前有效实例。
 
-### 3.5 更换企微员工号
+## 4. 协议消息约束
 
-更换登录员工号继续复用同一个 StoreStaffBinding 和 Store：
+- 消息发送必须使用官方文档的 `conversation_id`。
+- 单聊联系人 ID 以 `S:` 开头，群 ID 以 `R:` 开头。
+- 文档没有说明的能力或字段不得实现成假功能；后端返回明确错误，页面标注协议暂不支持。
+- 实例 ID、会话 ID 等协议整数必须按文档精度处理，禁止经前端 Number 造成丢失。
+- 入站和出站必须从实例反查 Tenant + Store，不能信任调用方提交的范围。
+- 出站消息先提交 Message 和持久投递意图，再幂等确保 Outbox，最后发布 WebSocket。
 
-- 新实例通过 `ReplacesInstanceID` 指向旧实例。
-- 完成验证后禁用旧实例并记录 `ReplacedByInstanceID`。
-- 门店知识库、客服组归属和已授权模型范围继承现有门店身份。
-- 不创建新 User、Role、Store 或 Binding。
+## 5. 客服组与规则派单
 
-## 4. 客服组范围
+`StoreStaffBinding.AgentTeamID` 是门店员工所属综合客服组的事实源。
+`WxWorkProtocolInstance.AgentTeamID` 是同步缓存，只用于高频路由查询。
 
-`StoreStaffBinding.AgentTeamID` 是门店员工归属综合客服组的事实源。`WxWorkProtocolInstance.AgentTeamID` 只是为派单查询保留的同步缓存。
+两个入口复用同一能力：
 
-两个入口操作同一事实：
+- 用户管理：给单个门店员工选择客服组。
+- 客服组管理：批量选择多个门店员工。
 
-- 用户管理：给单个门店员工选择客服组或暂未分配。
-- 客服组编辑：双列筛选和批量选择多个门店员工。
+同一事务必须：
 
-保存后必须在同一事务中：
+1. 更新 Binding.AgentTeamID。
+2. 同步该 Binding 下当前企微实例的 AgentTeamID。
+3. 重建客服组实例范围缓存。
+4. 拒绝跨 Tenant User、Store、Binding、实例或客服组。
 
-1. 更新 StoreStaffBinding.AgentTeamID。
-2. 同步该 Binding 下 WxWorkProtocolInstance.AgentTeamID。
-3. 重建 AgentTeam 的企微实例范围缓存。
-4. 保证跨租户账号、门店和客服组不能互相绑定。
+门店员工账号不等于具体客服。人工任务先进入综合客服组，再按客服小组、排班、
+Presence、容量、公平债务、SLA 和恢复规则确定性派单。AI 不能直接选择客服。
 
-门店员工号不固定属于某个客服个人。人工任务进入所属综合客服组，再由排班、小组和派单规则分配给客服。
-
-## 5. 客户、会话和知识库关系
-
-客户主档只归属 Tenant。客户从哪个门店进入由 `StoreCustomerRelation`、ConversationRouteState 和 WxWorkProtocolInstance 共同表达：
+## 6. 客户、会话与知识
 
 ```text
-Customer
+Customer(TenantID)
   -> StoreCustomerRelation(StoreID, WxWorkInstanceID)
   -> ConversationRouteState(StoreID, WxWorkInstanceID, KnowledgeBaseID)
 ```
 
-因此：
+- Customer 主档归 Tenant。
+- 同一自然客户在不同 Store 有独立 StoreCustomerRelation 和客户标签。
+- ConversationRouteState 固化当前会话来源，回复、派单、知识和统计都从它恢复范围。
+- KnowledgeBase 必须属于同一 Tenant + Store。
+- “全部企微账号”显示全范围会话并标识来源；选择具体实例时只筛选该实例来源。
+- 不存在 Company 选择器、Company 过滤或 Company fallback。
 
-- Customer 不再选择或展示历史 Company。
-- “全部账号”下选择会话时保持全部会话上下文，并高亮来源企微员工号。
-- 点击具体企微员工号时只筛选该账号来源的客户会话。
-- 门店知识库通过 StoreID 归属，企微实例可绑定该门店自己的 KnowledgeBase。
-- 历史 CompanyID 不参与客户筛选、会话路由、知识选择或派单。
+## 7. 行业与模型边界
 
-## 6. AI 和模型边界
+### 7.1 行业
 
-模型访问链保持：
+- 行业唯一来自 `Tenant.IntentProfileID`。
+- Store、Binding、企微实例和知识库不能覆盖行业。
+- `WxWorkProtocolInstance.PersonaPrompt` 只影响 Generate 表达语气，不能改变行业
+  Intent Prompt/Schema、标签目录、模型或派单。
+
+### 7.2 模型
 
 ```text
-平台 AIConfig
-  -> TenantAIModelGrant
-  -> 租户默认 StoreAIModelSetting
-  -> 企微员工号 StoreAIModelSetting 覆盖
+StoreModelProfileAssignment
+  + StoreModelCredential
+  + Store FastGPT readiness
+  -> ModelCallResolver
 ```
 
-本设计不改变模型供应商、API Key、Token、usage 或计费语义。历史 CompanyID 仅可作为旧 usage 证据保留，不再作为模型授权或运行时选择条件。
+- Profile 和 Credential 都属于 Store，不属于 WxWorkProtocolInstance。
+- 企微页面只可展示 Store 的模型名、revision 和 readiness。
+- 租户侧不得看到 Provider、BaseURL、Prompt、Schema、密钥、nonce 或完整 fingerprint。
+- 没有 AIConfig、Tenant 授权池、Tenant 默认模型、企微覆盖和平台 Key fallback。
 
-回复意图配置使用：
+更换企微实例不会创建新 Profile、Credential、FastGPT Team 或 KnowledgeBase；这些事实
+继续跟随 Store。
 
-- 平台全局意图。
-- Store 范围意图。
-- WxWorkProtocolInstance 范围意图。
-- 企微实例显式绑定的行业 Profile。
+## 8. 页面职责
 
-迁移 63 禁用旧 Company 范围意图并清空旧 Company 默认行业 Profile。运行时不得再回退到 Company。
-
-## 7. 页面职责
-
-| 页面 | 职责 |
+| 页面 | 当前职责 |
 | --- | --- |
-| 接入公司 | 平台管理员创建、查看和切换 Tenant；不管理租户内门店 |
-| 用户管理 | 公司主管创建账号、邀请注册、审核、分配角色、填写门店名称、查看门店/企微/客服组归属 |
-| 客服档案 | 管理综合客服组、客服小组、排班和门店员工服务范围 |
-| 企微员工号 | 查看和维护已有门店身份绑定的真实企微实例 |
-| 门店工作台 | `store_staff` 用户维护自己门店允许维护的资料和托管配置 |
-| 会话 | 客服处理从企微员工号进入的客户会话，并识别来源门店 |
+| 接入公司 | 平台创建、查看和切换 Tenant |
+| 用户管理 | Tenant 账号创建、邀请、审核、角色和 Store 身份 |
+| 客服组织 | 综合客服组、小组、排班及门店员工组归属 |
+| 企微员工号 | 已有 Store 身份的扫码、状态、替换和渠道配置 |
+| 门店工作台 | `store_staff` 只管理自己 Store 允许的资料和策略 |
+| 会话 | 客服处理客户会话并查看来源 Store/企微实例 |
+| 知识库 | 当前 Tenant + Store 的 FastGPT 托管知识 |
+| 模型凭据/账单 | 复用 Store 能力并按权限与数据范围裁剪 |
 
-取消 `/dashboard/companies` 和 `/dashboard/company-detail`。这两个历史路由必须被前端守卫和后端路由共同拒绝。
+Company 页面、Company 详情、旧模型授权页和企微模型覆盖配置均不存在。
 
-## 8. 权限
+## 9. 权限与范围
 
-不新增平行权限体系：
-
-- `tenant.*`：平台租户公司管理和切换。
-- `tenantInvite.*`、`tenantRegistration.*`：邀请注册和审核。
-- `user.*`、`user.assignRole`：租户账号与角色分配。
-- `role.*`、`permission.*`：角色和权限目录。
-- `channel.*`：企微员工号读取、创建绑定、更新和删除。
-- `agentTeam.*`：门店员工客服组归属。
+- `tenant.*`：平台 Tenant 管理与切换。
+- `tenantInvite.*`、`tenantRegistration.*`：邀请、注册和审核。
+- `user.*`、`user.assignRole`：Tenant 账号与角色。
+- `channel.*`：企微实例管理。
+- `agentTeam.*`：客服组织与门店员工组归属。
 - `storeWorkbench.*`：门店工作台。
+- `storeModelCredential.*`、`billing.*`：Store 模型凭据与账单。
 
-迁移 63 删除 `company.view/create/update/delete` 及角色关系。页面显隐不能替代后端权限和 Tenant 范围校验。
+页面隐藏不能替代 Handler 权限和 Service Tenant/Store 范围校验。所有权限必须出现在权限
+管理中，通过 Role 分配。
 
-## 9. 历史 Company 兼容边界
+## 10. Fresh 数据库与验收
 
-`Company` 模型和 repository 暂时保留，仅用于：
+当前版本不提供 Company/CompanyID 迁移、历史 Store 回填或企微实例搬运。空 SQLite/MySQL
+由 AutoMigrate 创建当前 Schema；Store 和实例只能经当前产品链产生。
 
-- 已执行历史 migration 的重放与审计。
-- 旧 Customer 和 AI usage 证据追溯。
-- 生产升级前后的数据完整性检查。
+必须满足：
 
-现行代码必须满足：
-
-- 不注册 Company Dashboard API。
-- 不提供 Company request/response DTO、builder 或前端 API。
-- 不提供 Company 页面、选择器、导航或权限。
-- Store、Binding、WxWork、门店知识库和门店模型设置的新写入 CompanyID 为 0。
-- CompanyID 不参与运行时回复、路由、派单和知识选择。
-
-## 10. Migration 63
-
-`000063_retire_legacy_company_store_scopes.go` 执行以下幂等处理：
-
-1. 清空 Company.IntentProfileID。
-2. 清空 Store、StoreStaffBinding、WxWorkProtocolInstance、门店知识库、门店模型设置以及 FastGPT 门店运行表上的活跃 CompanyID。
-3. 清空客服组 CompanyScopeIDs。
-4. 禁用旧 Company 范围 ReplyIntentConfig。
-5. 删除 `company.*` 权限与 RolePermission 关系。
-6. 对无有效 User、无 `store_staff` 角色、跨租户或重复绑定的数据禁用 Binding 和 AI 回复。
-7. 只为已有、启用、已持有 `store_staff` 的租户 User 回填缺失的 Store + Binding。
-
-迁移不得创建 User、赋予角色或改变历史 Customer/AI usage Company 证据。
-
-## 11. 验收不变量
-
-- 新建系统账号并分配 `store_staff` 角色产生 1 User、1 UserRole、1 Store、1 Binding。
-- 缺门店名称时整个角色事务回滚。
-- 重复分配角色不新增 Store 或 Binding。
-- 移除角色或停用账号会停用 Store、Binding 和相关企微实例；恢复时复用原 Store + Binding，企微实例保持停用等待人工确认。
-- 企微 OAuth 和企微协议绑定都不新增 User 或 UserRole。
-- 邀请码只决定 TenantID。
-- 活跃 Store、Binding、WxWork、门店知识库和门店模型设置 CompanyID 为 0。
-- 一个有效 Binding 的 User 必须存在、启用、属于同一 Tenant 并持有 `store_staff`。
-- 一个有效 WxWork 实例必须绑定同租户的 Store 和 Binding。
-- 客服组双向绑定只写 Binding 事实并同步实例缓存。
-- 历史 Company 页面、API 和权限均不可访问。
-- 企微消息发送仍按协议使用 `conversation_id`，单聊 `S:`、群聊 `R:`。
+- 分配 `store_staff` 原子产生 1 Store、1 Binding 和默认 Store 配置。
+- 缺门店名称或任一范围冲突时事务回滚。
+- 一个 User 不能拥有多个活动 Store 占用。
+- 企微扫码/OAuth/绑定链接不新增 User、Role、Store 或 Binding。
+- 停用后恢复复用原 Store/Binding，企微实例不自动启用。
+- 有效实例必须绑定同 Tenant 的 Store 和 Binding。
+- 客服组批量操作只写 Binding 事实并同步实例缓存。
+- 消息发送继续使用协议 `conversation_id`，单聊 `S:`、群聊 `R:`。
+- 旧 Company 与旧模型链在代码、路由和 fresh Schema 中不存在。
 
 关键验证：
 
 ```bash
-go test ./internal/migration ./internal/services -count=1
+go test ./internal/services -run 'StoreStaff|WxWork|AgentTeam|Dispatch' -count=1
+go test ./internal/bootstrap ./internal/models ./internal/migration -count=1
 go test ./... -count=1
 pnpm --dir web typecheck
-pnpm --dir web lint
-cd web && node --test $(rg --files -g '*.test.mjs')
 pnpm --dir web build
 ```

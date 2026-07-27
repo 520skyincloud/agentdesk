@@ -443,7 +443,7 @@ func TestServiceAnalyticsPercentilesAndSourceQuality(t *testing.T) {
 	tenantID := int64(801)
 	team := &models.AgentTeam{TenantID: tenantID, Name: "来源分析组", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(t0)}
 	agent := &models.User{TenantID: tenantID, Username: "source-agent", Nickname: "来源客服", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(t0)}
-	store := &models.Store{TenantID: tenantID, StoreCode: "STORE-801", Name: "丽斯未来测试门店", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(t0)}
+	store := &models.Store{TenantID: tenantID, StoreCode: "STORE-801", Name: "合成验收测试门店", Status: enums.StatusOk, AuditFields: testAnalyticsAudit(t0)}
 	for _, item := range []any{team, agent, store} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatalf("create source fixture: %v", err)

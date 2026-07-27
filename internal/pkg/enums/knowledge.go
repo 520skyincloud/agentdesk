@@ -1,5 +1,7 @@
 package enums
 
+const KnowledgeProviderFastGPT = "fastgpt"
+
 type KnowledgeBaseType string
 
 const (

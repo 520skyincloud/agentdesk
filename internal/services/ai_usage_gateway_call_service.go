@@ -49,7 +49,6 @@ func (s *aiUsageGatewayCallService) RecordFromEvent(event models.AIUsageEvent) e
 		TenantID:             event.TenantID,
 		CallKey:              fmt.Sprintf("%s:%d:%d:%s", gateway, event.TenantID, event.StoreID, gatewayRequestID),
 		EventKey:             event.EventKey,
-		CompanyID:            event.CompanyID,
 		StoreID:              event.StoreID,
 		WxWorkInstanceID:     event.WxWorkInstanceID,
 		ConversationID:       event.ConversationID,

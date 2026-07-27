@@ -403,7 +403,6 @@ func (s *customerService) CreateCustomer(req request.CreateCustomerRequest, oper
 		TenantID:      tenantID,
 		Name:          name,
 		Gender:        enums.Gender(req.Gender),
-		CompanyID:     0,
 		PrimaryMobile: strings.TrimSpace(req.PrimaryMobile),
 		PrimaryEmail:  strings.TrimSpace(req.PrimaryEmail),
 		Status:        enums.StatusOk,
@@ -438,7 +437,6 @@ func (s *customerService) UpdateCustomer(req request.UpdateCustomerRequest, oper
 		if err := repositories.CustomerRepository.UpdatesInTenant(ctx.Tx, req.ID, item.TenantID, map[string]any{
 			"name":             name,
 			"gender":           req.Gender,
-			"company_id":       0,
 			"primary_mobile":   strings.TrimSpace(req.PrimaryMobile),
 			"primary_email":    strings.TrimSpace(req.PrimaryEmail),
 			"remark":           strings.TrimSpace(req.Remark),
@@ -531,7 +529,6 @@ func (s *customerService) SaveCustomerProfile(req request.SaveCustomerProfileReq
 				TenantID:      tenantID,
 				Name:          name,
 				Gender:        enums.Gender(req.Gender),
-				CompanyID:     0,
 				PrimaryMobile: "",
 				PrimaryEmail:  "",
 				Status:        enums.StatusOk,
@@ -553,7 +550,6 @@ func (s *customerService) SaveCustomerProfile(req request.SaveCustomerProfileReq
 			if err := repositories.CustomerRepository.UpdatesInTenant(ctx.Tx, customerID, tenantID, map[string]any{
 				"name":             name,
 				"gender":           req.Gender,
-				"company_id":       0,
 				"remark":           strings.TrimSpace(req.Remark),
 				"update_user_id":   operator.UserID,
 				"update_user_name": operator.Username,

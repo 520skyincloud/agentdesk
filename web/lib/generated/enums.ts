@@ -79,12 +79,10 @@ export const AnalyticsDataQualityLabels: Record<AnalyticsDataQuality, string> = 
 
 export enum AnalyticsFactOrigin {
   Runtime = "runtime",
-  Backfill = "backfill",
   Repair = "repair",
 }
 export const AnalyticsFactOriginLabels: Record<AnalyticsFactOrigin, string> = {
   [AnalyticsFactOrigin.Runtime]: "实时采集",
-  [AnalyticsFactOrigin.Backfill]: "历史回填",
   [AnalyticsFactOrigin.Repair]: "人工修复",
 }
 
@@ -586,7 +584,6 @@ export enum UserRegistrationSource {
   Platform = "platform_created",
   Tenant = "tenant_created",
   Invitation = "invitation",
-  LegacyMigration = "legacy_migration",
   WxWork = "wxwork",
   OIDC = "oidc",
 }
@@ -594,7 +591,6 @@ export const UserRegistrationSourceLabels: Record<UserRegistrationSource, string
   [UserRegistrationSource.Platform]: "平台创建",
   [UserRegistrationSource.Tenant]: "公司创建",
   [UserRegistrationSource.Invitation]: "邀请注册",
-  [UserRegistrationSource.LegacyMigration]: "历史迁移",
   [UserRegistrationSource.WxWork]: "企业微信登录",
   [UserRegistrationSource.OIDC]: "OIDC 登录",
 }

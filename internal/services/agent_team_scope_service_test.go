@@ -11,7 +11,6 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
-	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -47,17 +46,17 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	}
 	sqls.SetDB(db)
 
-	storeA := &models.Store{TenantID: 101, StoreCode: "scope-a", Name: "A门店", CompanyID: 1, Status: enums.StatusOk}
-	storeB := &models.Store{TenantID: 101, StoreCode: "scope-b", Name: "B门店", CompanyID: 1, Status: enums.StatusOk}
+	storeA := &models.Store{TenantID: 101, StoreCode: "scope-a", Name: "A门店", Status: enums.StatusOk}
+	storeB := &models.Store{TenantID: 101, StoreCode: "scope-b", Name: "B门店", Status: enums.StatusOk}
 	if err := db.Create(storeA).Error; err != nil {
 		t.Fatalf("create store A: %v", err)
 	}
 	if err := db.Create(storeB).Error; err != nil {
 		t.Fatalf("create store B: %v", err)
 	}
-	instanceA := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "scope-instance-a", CompanyID: 1, StoreID: storeA.ID, Status: enums.StatusOk}
-	instanceAOther := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "scope-instance-a-other", CompanyID: 1, StoreID: storeA.ID, Status: enums.StatusOk}
-	instanceB := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "scope-instance-b", CompanyID: 1, StoreID: storeB.ID, Status: enums.StatusOk}
+	instanceA := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "scope-instance-a", StoreID: storeA.ID, Status: enums.StatusOk}
+	instanceAOther := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "scope-instance-a-other", StoreID: storeA.ID, Status: enums.StatusOk}
+	instanceB := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "scope-instance-b", StoreID: storeB.ID, Status: enums.StatusOk}
 	if err := db.Create(instanceA).Error; err != nil {
 		t.Fatalf("create instance A: %v", err)
 	}
@@ -71,7 +70,6 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 		TenantID:               101,
 		Name:                   "A组",
 		LeaderUserID:           11,
-		CompanyScopeIDs:        "1",
 		StoreScopeIDs:          fmt.Sprint(storeA.ID),
 		WxWorkInstanceScopeIDs: fmt.Sprint(instanceA.ID),
 		Status:                 enums.StatusOk,
@@ -80,7 +78,6 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 		TenantID:               101,
 		Name:                   "B组",
 		LeaderUserID:           12,
-		CompanyScopeIDs:        "1",
 		StoreScopeIDs:          fmt.Sprint(storeB.ID),
 		WxWorkInstanceScopeIDs: fmt.Sprint(instanceB.ID),
 		Status:                 enums.StatusOk,
@@ -94,7 +91,7 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	if err := db.Create(&models.AgentProfile{TenantID: 101, UserID: 21, TeamID: teamA.ID, AgentCode: "A021", DisplayName: "客服A", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create agent profile: %v", err)
 	}
-	if err := db.Create(&models.StoreStaffBinding{TenantID: 101, UserID: 31, CompanyID: 1, StoreID: storeA.ID, Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.StoreStaffBinding{TenantID: 101, UserID: 31, StoreID: storeA.ID, Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create store staff binding: %v", err)
 	}
 	channel := &models.Channel{TenantID: 101, Name: "范围测试渠道", ChannelType: enums.ChannelTypeWxWorkProtocol, ChannelID: "scope-channel", Status: enums.StatusOk}
@@ -172,45 +169,6 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	pendingByTeam := ConversationDispatchWorkbenchService.PendingReplyCountsByTeam(agentA)
 	if pendingByTeam[teamA.ID] != 1 || pendingByTeam[teamB.ID] != 1 {
 		t.Fatalf("pending reply counts = %v, want team A=1 and team B=1", pendingByTeam)
-	}
-}
-
-func TestAgentTeamLegacyCompanyScopeDoesNotExpandRuntimeAccess(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
-		Logger:         logger.Default.LogMode(logger.Silent),
-		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
-	})
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	if err := db.AutoMigrate(&models.AgentTeam{}, &models.Store{}, &models.WxWorkProtocolInstance{}, &models.KnowledgeBase{}); err != nil {
-		t.Fatalf("migrate scope models: %v", err)
-	}
-	sqls.SetDB(db)
-	t.Cleanup(func() { sqls.SetDB(nil) })
-	team := &models.AgentTeam{
-		TenantID: 101, Name: "仅历史公司范围", LeaderUserID: 77, CompanyScopeIDs: "9", Status: enums.StatusOk,
-	}
-	if err := db.Create(team).Error; err != nil {
-		t.Fatalf("create team: %v", err)
-	}
-	store := &models.Store{TenantID: 101, StoreCode: "legacy-company-store", Name: "不应被继承", CompanyID: 9, Status: enums.StatusOk}
-	if err := db.Create(store).Error; err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	instance := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "legacy-company-instance", StoreID: store.ID, CompanyID: 9, Status: enums.StatusOk}
-	if err := db.Create(instance).Error; err != nil {
-		t.Fatalf("create instance: %v", err)
-	}
-
-	operator := &dto.AuthPrincipal{UserID: 77, ActiveTenantID: 101, Roles: []string{constants.RoleCodeCsTeamLeader}}
-	scope := AgentTeamScopeService.Resolve(operator)
-	if len(scope.StoreIDs) != 0 || len(scope.WxWorkInstanceIDs) != 0 || len(scope.KnowledgeBaseIDs) != 0 {
-		t.Fatalf("legacy company scope expanded runtime access: %+v", scope)
-	}
-	items := repositories.WxWorkProtocolInstanceRepository.Find(db, AgentTeamScopeService.ApplyWxWorkInstanceFilter(sqls.NewCnd(), operator))
-	if len(items) != 0 {
-		t.Fatalf("legacy company scope exposed instances: %+v", items)
 	}
 }
 
@@ -300,7 +258,7 @@ func TestBindStoreStaffUserMovesCanonicalTeamAndSyncsWxWork(t *testing.T) {
 	}
 	sqls.SetDB(db)
 
-	store := &models.Store{TenantID: 101, StoreCode: "BIND-001", Name: "绑定测试门店", CompanyID: 9, Status: enums.StatusOk}
+	store := &models.Store{TenantID: 101, StoreCode: "BIND-001", Name: "绑定测试门店", Status: enums.StatusOk}
 	if err := db.Create(store).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
@@ -323,11 +281,11 @@ func TestBindStoreStaffUserMovesCanonicalTeamAndSyncsWxWork(t *testing.T) {
 	if err := db.Create(teamB).Error; err != nil {
 		t.Fatalf("create team B: %v", err)
 	}
-	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, CompanyID: 9, StoreID: store.ID, Status: enums.StatusOk}
+	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, StoreID: store.ID, Status: enums.StatusOk}
 	if err := db.Create(binding).Error; err != nil {
 		t.Fatalf("create store staff binding: %v", err)
 	}
-	instance := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "binding-instance", CompanyID: 9, StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk}
+	instance := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "binding-instance", StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk}
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
@@ -369,7 +327,7 @@ func TestUpdateAgentTeamAcceptsLegacyWxWorkScopeWithoutSilentClear(t *testing.T)
 
 	role := &models.Role{Name: "门店员工", Code: constants.RoleCodeStoreStaff, Status: enums.StatusOk}
 	user := &models.User{TenantID: 101, Username: "legacy-scope-store-staff", Nickname: "旧范围门店员工", Status: enums.StatusOk}
-	store := &models.Store{TenantID: 101, StoreCode: "LEGACY-SCOPE", Name: "旧范围测试门店", CompanyID: 12, Status: enums.StatusOk}
+	store := &models.Store{TenantID: 101, StoreCode: "LEGACY-SCOPE", Name: "旧范围测试门店", Status: enums.StatusOk}
 	team := &models.AgentTeam{TenantID: 101, Name: "旧范围测试组", Status: enums.StatusOk}
 	for _, item := range []any{role, user, store, team} {
 		if err := db.Create(item).Error; err != nil {
@@ -379,11 +337,11 @@ func TestUpdateAgentTeamAcceptsLegacyWxWorkScopeWithoutSilentClear(t *testing.T)
 	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
 		t.Fatalf("create user role: %v", err)
 	}
-	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, CompanyID: store.CompanyID, StoreID: store.ID, Status: enums.StatusOk}
+	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, StoreID: store.ID, Status: enums.StatusOk}
 	if err := db.Create(binding).Error; err != nil {
 		t.Fatalf("create binding: %v", err)
 	}
-	instance := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "legacy-scope-instance", CompanyID: store.CompanyID, StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk}
+	instance := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "legacy-scope-instance", StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk}
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
@@ -440,7 +398,7 @@ func TestUpdateAgentTeamReplacesStoreStaffBindingsAndSyncsBothDirections(t *test
 		if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
 			t.Fatalf("create user role %d: %v", i, err)
 		}
-		store := &models.Store{TenantID: 101, StoreCode: fmt.Sprintf("BATCH-%03d", i), Name: fmt.Sprintf("批量门店%d", i), CompanyID: int64(i), Status: enums.StatusOk}
+		store := &models.Store{TenantID: 101, StoreCode: fmt.Sprintf("BATCH-%03d", i), Name: fmt.Sprintf("批量门店%d", i), Status: enums.StatusOk}
 		if err := db.Create(store).Error; err != nil {
 			t.Fatalf("create store %d: %v", i, err)
 		}
@@ -448,11 +406,11 @@ func TestUpdateAgentTeamReplacesStoreStaffBindingsAndSyncsBothDirections(t *test
 		if i == 2 {
 			initialTeamID = teamB.ID
 		}
-		binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, AgentTeamID: initialTeamID, CompanyID: int64(i), StoreID: store.ID, Status: enums.StatusOk}
+		binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, AgentTeamID: initialTeamID, StoreID: store.ID, Status: enums.StatusOk}
 		if err := db.Create(binding).Error; err != nil {
 			t.Fatalf("create binding %d: %v", i, err)
 		}
-		instance := &models.WxWorkProtocolInstance{TenantID: 101, Guid: fmt.Sprintf("batch-instance-%d", i), AgentTeamID: initialTeamID, CompanyID: int64(i), StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk}
+		instance := &models.WxWorkProtocolInstance{TenantID: 101, Guid: fmt.Sprintf("batch-instance-%d", i), AgentTeamID: initialTeamID, StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk}
 		if err := db.Create(instance).Error; err != nil {
 			t.Fatalf("create instance %d: %v", i, err)
 		}
@@ -624,7 +582,7 @@ func setupStoreStaffAssignmentLockFixture(t *testing.T) storeStaffAssignmentLock
 	user := &models.User{TenantID: 101, Username: "ordered-lock-store-staff", Status: enums.StatusOk}
 	teamA := &models.AgentTeam{TenantID: 101, Name: "有序锁A组", Status: enums.StatusOk}
 	teamB := &models.AgentTeam{TenantID: 101, Name: "有序锁B组", Status: enums.StatusOk}
-	store := &models.Store{TenantID: 101, StoreCode: "ORDERED-LOCK", Name: "有序锁门店", CompanyID: 9, Status: enums.StatusOk}
+	store := &models.Store{TenantID: 101, StoreCode: "ORDERED-LOCK", Name: "有序锁门店", Status: enums.StatusOk}
 	for _, item := range []any{role, user, teamA, teamB, store} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatalf("create assignment lock fixture: %v", err)
@@ -633,12 +591,12 @@ func setupStoreStaffAssignmentLockFixture(t *testing.T) storeStaffAssignmentLock
 	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
 		t.Fatalf("assign store staff role: %v", err)
 	}
-	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, AgentTeamID: teamB.ID, CompanyID: store.CompanyID, StoreID: store.ID, Status: enums.StatusOk}
+	binding := &models.StoreStaffBinding{TenantID: 101, UserID: user.ID, AgentTeamID: teamB.ID, StoreID: store.ID, Status: enums.StatusOk}
 	if err := db.Create(binding).Error; err != nil {
 		t.Fatalf("create assignment binding: %v", err)
 	}
 	instance := &models.WxWorkProtocolInstance{
-		TenantID: 101, Guid: "ordered-lock-instance", AgentTeamID: teamB.ID, CompanyID: store.CompanyID, StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk,
+		TenantID: 101, Guid: "ordered-lock-instance", AgentTeamID: teamB.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.StatusOk,
 	}
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create assignment instance: %v", err)

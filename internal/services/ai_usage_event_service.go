@@ -97,11 +97,6 @@ func (s *aiUsageEventService) Record(event models.AIUsageEvent) error {
 			}
 		}
 	}
-	if event.WxWorkInstanceID > 0 && event.CompanyID <= 0 {
-		if instance := WxWorkProtocolInstanceService.GetByTenantID(event.WxWorkInstanceID, tenantID); instance != nil {
-			event.CompanyID = instance.CompanyID
-		}
-	}
 	s.enrichStoreModelAttribution(&event)
 	if event.RequestCount <= 0 && (event.Model != "" || event.GatewayRequestID != "") {
 		event.RequestCount = 1
@@ -234,15 +229,6 @@ func (s *aiUsageEventService) resolveTenantID(event models.AIUsageEvent) (int64,
 			return 0, fmt.Errorf("AI usage store does not exist")
 		}
 		if err := merge("store", item.TenantID); err != nil {
-			return 0, err
-		}
-	}
-	if event.CompanyID > 0 {
-		item := repositories.CompanyRepository.Get(sqls.DB(), event.CompanyID)
-		if item == nil {
-			return 0, fmt.Errorf("AI usage company does not exist")
-		}
-		if err := merge("company", item.TenantID); err != nil {
 			return 0, err
 		}
 	}

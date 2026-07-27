@@ -8,7 +8,6 @@ type FastGPTDatasetJob struct {
 	ID                       int64      `gorm:"primaryKey;autoIncrement"`
 	TenantID                 int64      `gorm:"type:bigint;not null;default:0;index"`
 	TaskKey                  string     `gorm:"type:varchar(80);not null;uniqueIndex"`
-	CompanyID                int64      `gorm:"type:bigint;not null;default:0;index"`
 	StoreID                  int64      `gorm:"type:bigint;not null;default:0;index"`
 	KnowledgeBaseID          int64      `gorm:"type:bigint;not null;default:0;index"`
 	Action                   string     `gorm:"type:varchar(30);not null;index"`

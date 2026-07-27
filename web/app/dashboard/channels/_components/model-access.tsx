@@ -28,6 +28,7 @@ import {
 } from "@/lib/api/admin"
 import type { AdminTenant } from "@/lib/api/tenant"
 import { batchUpdateStoreModelCredentialPolicy } from "@/lib/api/store-model-credential"
+import { useAIConfigurationRealtime } from "@/hooks/use-ai-configuration-realtime"
 
 type TenantModelAccessDialogProps = {
   open: boolean
@@ -87,6 +88,19 @@ export function TenantModelAccessDialog({
       cancelled = true
     }
   }, [open, tenant])
+
+  useAIConfigurationRealtime((event) => {
+    if (!open || !tenant || (event.tenantId > 0 && event.tenantId !== tenant.id)) return
+    if (
+      event.type !== "store_model_profile.changed" &&
+      event.type !== "store_model_credential.changed"
+    ) {
+      return
+    }
+    void fetchStoreModelProfileAssignments(tenant.id)
+      .then(setData)
+      .catch(() => undefined)
+  }, open && Boolean(tenant))
 
   const selectedProfile = useMemo(
     () => data?.profiles.find((item) => item.templateId === profileId) ?? null,
