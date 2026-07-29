@@ -1995,6 +1995,66 @@ Migration 70 以及 Migration 72/76/77、固定 pilot、历史仿真数据及旧
   协议字段变化。应随统一分支整体合入；代码回滚不需要数据回滚，但会恢复错误的跨命名
   空间相等限制。
 
+### 25.53 2026-07-29 企业微信“联系我”失败诊断与恢复
+
+- **实施基线与文档**：从统一提交
+  `ff1d3735a609ca83e09cf6c3f84d6a939643b84e` 建立独立修复工作树；重新核对企业微信官方
+  “联系我管理”、服务商获取企业凭证、联系我小程序插件、企业授权信息和全局错误码文档。
+  请求继续固定为 `externalcontact/add_contact_way` 的 `type=1`、`scene=2`、单成员
+  `user` 和不超过 30 字节的不透明 `state`，不混入插件按钮参数。
+- **根因**：原 provider 将 HTTP 200 下的非零 `errcode` 压缩成只含数字的通用错误，
+  `provisionContactWay` 又把所有上游失败写成 `contact_way_api_failed`；授权主体、调用阶段、
+  官方 `errmsg` 和是否可重试均不可追踪。失败行会被同一 `scanEventId` 永久复用，corp
+  token 刷新使用全局锁且没有“只清除本授权主体旧版本”的条件，无法安全恢复当前失败。
+- **实现**：新增安全 provider error，统一保存 `stage/httpStatus/errcode/脱敏 errmsg`；
+  corp token 改为按 authorization 隔离加锁，数据库刷新前重新读取主体，并在 `40014` 或
+  `42001` 时仅条件清除本次实际使用的旧 token 密文，随后最多重试一次。联系码通过数据库
+  条件更新 claim，最多三次尝试；网络、429/5xx、系统繁忙和频控可有限重试，权限、授权、
+  永久码、成员及参数错误不循环。官方 config 已保存时只重试二维码下载/验码，不重复创建。
+- **数据与契约**：`ArrivalContactWay` 由 `AutoMigrate` 向后兼容增加失败阶段、HTTP 状态、
+  官方错误码、脱敏错误、可重试标记、尝试次数、内部 request ID、最近尝试和下次重试时间。
+  没有 DML migration、新环境变量、权限、路由、WebSocket、前端或小程序 DTO/枚举变化；
+  `arrival_scan_result.v2` 继续只返回真实可用二维码或 `available=false/mode=none`。
+- **恢复**：现有 5 分钟 Arrival maintenance 在清理前原子接管可重试失败；历史
+  `contact_way_api_failed + attempt_count=0` 只允许接管一次，用于取得真实官方错误。
+  `GET /status` 仍严格只读，不触发 claim、token、二维码或消息调用。
+- **安全日志**：失败日志只含内部 request、Store、authorization、contact way 记录 ID、
+  阶段、HTTP 状态、错误码和脱敏消息。URL、凭据字段、成员/客户/Corp/Suite 标识、长不透明
+  值、官方 hint 编号、来源 IP 和控制字符在写库与日志前统一删除；小程序响应不返回任何
+  诊断字段。`48002` 固定映射为 `contact_way_permission_denied`，官方错误码仍单独保留。
+- **自动化验证**：专项测试覆盖 HTTP 200 业务错误、真实 provider fake 的 corp token
+  失败落库、授权主体 token 隔离、失效 token 单次刷新、权限/授权/成员失败、真实
+  config/QR 保存、历史失败恢复、同事件重试、并发只创建一次、二维码重试不重复建官方
+  config、status 只读、SSRF 及日志/响应脱敏。SQLite AutoMigrate 锁定新增列；MySQL 测试
+  继续由 `TEST_MYSQL_DSN` 门禁执行。
+- **自动化结果**：`go test ./internal/services -count=1`、
+  `go test ./internal/bootstrap/... -count=1`、`go test ./... -count=1`、`go vet ./...`
+  和 `git diff --check` 全部通过。SQLite AutoMigrate 已自动验证；本机没有
+  `TEST_MYSQL_DSN`，MySQL 兼容性由生产 AutoMigrate 和真实表结构复检补充验证。
+- **生产部署**：部署前备份位于
+  `/opt/agentdesk/backups/contact-way-20260729-231049`，整库 dump 已在独立临时库恢复，
+  源库与恢复库均为 114 张表、7 条 Migration。最终源码 release 为
+  `/opt/agentdesk/releases/20260729-235842-contact-way-final/app`；最终镜像为
+  `sha256:c1be7f35b2ef0cba7117f5ca153f74468636d726ee329fe0f980de6db4c05b7e`，
+  后端二进制 SHA-256 为
+  `8ad05b9b2d8a049e1c1a2835bfdd5dabe2397887cb79e6955c6729c83c7d39a5`。
+  容器于 `2026-07-29 23:52:41 CST` 启动，状态 healthy、重启次数 0，公网登录页 200，
+  未签名指令回调按契约返回 400；`2026-07-29 23:55:22 CST` 的新 `suite_ticket`
+  已正常落库。
+- **真实结果**：维护任务真实接管 4 条历史失败，授权、成员上下文、suite/corp token 和
+  HTTP 请求均通过；`add_contact_way` 对 4 条请求均返回 HTTP 200、
+  `errcode=48002`、清洗后 `errmsg=api forbidden`，属于永久权限错误。数据库现统一保存
+  `contact_way_permission_denied`，尝试次数为 2、不可重试、待重试数 0，且没有任何
+  `config_id`，因此没有重复创建官方配置。代码诊断与恢复链已修复，但企业微信二维码尚未
+  成功；必须先在企业微信后台为第三方应用开放客户联系“配置联系我”能力，必要时按官方
+  要求重新授权，再以真实 `errcode=0` 完成最终扫码验收。
+- **并行与回滚**：本次不吸收或覆盖 `ai-billing`、`customer-audit`、旧
+  `tenant-ai-integration` 的同名历史文件，不改 AI、计费、派单、员工号协议或小程序。
+  最终脱敏补丁可回滚到
+  `mlogclub/agent-desk:rollback-contact-way-redaction-20260729-234933`，整项功能可回滚到
+  `mlogclub/agent-desk:rollback-contact-way-20260729-231049`；回滚保留 AutoMigrate 新列，
+  不执行破坏性 DDL。永久错误必须修正企业微信权限，不能通过放宽校验或伪造成功绕过。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户逐项答复保留产品解释，并由 25.44 的 2026-07-27 fresh 数据库决定

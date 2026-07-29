@@ -12,8 +12,11 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -138,6 +141,281 @@ func TestWeComProviderRefreshesTokensAndCreatesScene2ContactWay(t *testing.T) {
 		suite.SuiteAccessTokenCiphertext == "" ||
 		suite.SuiteAccessTokenCiphertext == "suite-access-token" {
 		t.Fatal("provider access tokens were not encrypted at rest")
+	}
+}
+
+func TestWeComProviderPreservesSanitizedBusinessError(t *testing.T) {
+	fixture := setupArrivalLinkTestFixture(t)
+	cacheCorpAccessToken(t, fixture, "cached-corp-token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if req.URL.Path != "/cgi-bin/externalcontact/add_contact_way" {
+			http.NotFound(w, req)
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"errcode":48002,
+			"errmsg":"api forbidden userid: member-a access_token: secret-token-value-012345678901234567890123456789 https://private.example/path?token=hidden"
+		}`))
+	}))
+	defer server.Close()
+	cfg := config.Current()
+	cfg.Arrival.WeComAPIBaseURL = server.URL
+	config.SetCurrent(&cfg)
+
+	authorization := repositories.ArrivalRepository.GetTenantAuthorization(
+		fixture.db,
+		fixture.authorization.ID,
+		fixture.tenantID,
+	)
+	_, err := newWeComProviderService().AddContactWay(
+		authorization,
+		fixture.memberUserID,
+		"opaque-error-state",
+	)
+	providerErr := asWeComProviderError(err)
+	if providerErr == nil ||
+		providerErr.Stage != weComStageAddContactWay ||
+		providerErr.HTTPStatus != http.StatusOK ||
+		providerErr.ErrCode != 48002 ||
+		providerErr.Retryable {
+		t.Fatalf("unexpected provider error: %#v", providerErr)
+	}
+	for _, forbidden := range []string{
+		fixture.memberUserID,
+		"secret-token-value",
+		"private.example",
+	} {
+		if strings.Contains(providerErr.ErrMsg, forbidden) || strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("provider error leaked %q: %#v", forbidden, providerErr)
+		}
+	}
+	if !strings.Contains(providerErr.ErrMsg, "api forbidden") {
+		t.Fatalf("sanitized provider message lost diagnosis: %q", providerErr.ErrMsg)
+	}
+}
+
+func TestWeComProviderRefreshesInvalidCorpTokenExactlyOnce(t *testing.T) {
+	fixture := setupArrivalLinkTestFixture(t)
+	cacheCorpAccessToken(t, fixture, "expired-corp-token")
+	cacheSuiteTicketAndPermanentCode(t, fixture)
+
+	var suiteTokenCalls int
+	var corpTokenCalls int
+	var addContactWayCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch req.URL.Path {
+		case "/cgi-bin/service/get_suite_token":
+			suiteTokenCalls++
+			_, _ = w.Write([]byte(`{"errcode":0,"suite_access_token":"suite-token-refreshed","expires_in":7200}`))
+		case "/cgi-bin/service/get_corp_token":
+			corpTokenCalls++
+			_, _ = w.Write([]byte(`{"errcode":0,"access_token":"corp-token-refreshed","expires_in":7200}`))
+		case "/cgi-bin/externalcontact/add_contact_way":
+			addContactWayCalls++
+			switch req.URL.Query().Get("access_token") {
+			case "expired-corp-token":
+				_, _ = w.Write([]byte(`{"errcode":40014,"errmsg":"invalid access_token"}`))
+			case "corp-token-refreshed":
+				_, _ = w.Write([]byte(`{"errcode":0,"config_id":"refreshed-config","qr_code":"https://wework.qpic.cn/refreshed.png"}`))
+			default:
+				_, _ = w.Write([]byte(`{"errcode":40014,"errmsg":"unexpected access_token"}`))
+			}
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer server.Close()
+	cfg := config.Current()
+	cfg.Arrival.WeComAPIBaseURL = server.URL
+	config.SetCurrent(&cfg)
+
+	authorization := repositories.ArrivalRepository.GetTenantAuthorization(
+		fixture.db,
+		fixture.authorization.ID,
+		fixture.tenantID,
+	)
+	result, err := newWeComProviderService().AddContactWay(
+		authorization,
+		fixture.memberUserID,
+		"opaque-refresh-state",
+	)
+	if err != nil {
+		t.Fatalf("refresh invalid corp token: %v", err)
+	}
+	if result.ConfigID != "refreshed-config" ||
+		suiteTokenCalls != 1 ||
+		corpTokenCalls != 1 ||
+		addContactWayCalls != 2 {
+		t.Fatalf(
+			"result=%#v suiteCalls=%d corpCalls=%d addCalls=%d",
+			result,
+			suiteTokenCalls,
+			corpTokenCalls,
+			addContactWayCalls,
+		)
+	}
+}
+
+func TestArrivalPersistsOfficialCorpTokenFailure(t *testing.T) {
+	fixture := setupArrivalLinkTestFixture(t)
+	cacheSuiteTicketAndPermanentCode(t, fixture)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch req.URL.Path {
+		case "/cgi-bin/service/get_suite_token":
+			_, _ = w.Write([]byte(`{"errcode":0,"suite_access_token":"suite-token-for-corp-failure","expires_in":7200}`))
+		case "/cgi-bin/service/get_corp_token":
+			_, _ = w.Write([]byte(`{
+				"errcode":40084,
+				"errmsg":"invalid permanent_code: secret-permanent-code-012345678901234567890123456789"
+			}`))
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer server.Close()
+	cfg := config.Current()
+	cfg.Arrival.WeComAPIBaseURL = server.URL
+	config.SetCurrent(&cfg)
+
+	service := &arrivalLinkService{
+		loginExchanger: &stubArrivalLoginExchanger{
+			result: &weChatCodeSessionResult{OpenID: "openid-a"},
+		},
+		contactWayCreator: newWeComProviderService(),
+		qrCodeBuilder: &stubArrivalQRCodeBuilder{
+			result: successfulArrivalQRCodeArtifact(),
+		},
+	}
+	req := arrivalContactWayTestRequest("official-corp-token-failure")
+	result, err := service.BootstrapWithRequestID(req, "official-corp-token-failure-request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ContactWay.Available {
+		t.Fatal("corp token failure returned fake contact way success")
+	}
+	contactWay := findArrivalContactWayByRequest(t, fixture, req)
+	if contactWay.FailureCode != "corp_token_failed" ||
+		contactWay.FailureStage != weComStageCorpToken ||
+		contactWay.ProviderErrorCode != 40084 ||
+		contactWay.ProviderHTTPStatus != http.StatusOK ||
+		contactWay.FailureRetryable {
+		t.Fatalf("official corp token failure diagnostics=%#v", contactWay)
+	}
+	if strings.Contains(contactWay.ProviderErrorMessage, "secret-permanent-code") {
+		t.Fatal("official corp token error leaked permanent code")
+	}
+}
+
+func TestWeComProviderCorpTokenCacheIsAuthorizationScoped(t *testing.T) {
+	fixture := setupArrivalLinkTestFixture(t)
+	cacheCorpAccessToken(t, fixture, "corp-token-a")
+	corpCiphertext, corpNonce, err := fixture.security.Encrypt("corp_id", "ww-arrival-corp-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	permanentCiphertext, permanentNonce, err := fixture.security.Encrypt("permanent_code", "permanent-code-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenCiphertext, tokenNonce, err := fixture.security.Encrypt("corp_access_token", "corp-token-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().Add(time.Hour)
+	authorizationB := &models.WeComTenantAuthorization{
+		TenantID:                  fixture.tenantID,
+		SuiteCredentialID:         fixture.authorization.SuiteCredentialID,
+		CorpIDCiphertext:          corpCiphertext,
+		CorpIDNonce:               corpNonce,
+		CorpIDFingerprint:         fixture.security.Fingerprint("corp_id", "ww-arrival-corp-b"),
+		CorpName:                  "测试企微主体 B",
+		PermanentCodeCiphertext:   permanentCiphertext,
+		PermanentCodeNonce:        permanentNonce,
+		CorpAccessTokenCiphertext: tokenCiphertext,
+		CorpAccessTokenNonce:      tokenNonce,
+		CorpAccessTokenExpiresAt:  &expiresAt,
+		AuthorizationStatus:       enums.WeComAuthorizationStatusActive,
+		AuditFields:               arrivalSystemAuditFields(time.Now()),
+	}
+	if err := repositories.ArrivalRepository.CreateTenantAuthorization(fixture.db, authorizationB); err != nil {
+		t.Fatal(err)
+	}
+	authorizationA := repositories.ArrivalRepository.GetTenantAuthorization(
+		fixture.db,
+		fixture.authorization.ID,
+		fixture.tenantID,
+	)
+	provider := newWeComProviderService()
+	tokenA, err := provider.GetCorpAccessToken(authorizationA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenB, err := provider.GetCorpAccessToken(authorizationB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokenA != "corp-token-a" || tokenB != "corp-token-b" {
+		t.Fatalf("authorization token cache crossed subjects: A=%q B=%q", tokenA, tokenB)
+	}
+}
+
+func cacheCorpAccessToken(t *testing.T, fixture arrivalLinkTestFixture, token string) {
+	t.Helper()
+	ciphertext, nonce, err := fixture.security.Encrypt("corp_access_token", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().Add(time.Hour)
+	if err := repositories.ArrivalRepository.UpdateTenantAuthorization(
+		fixture.db,
+		fixture.authorization.ID,
+		fixture.tenantID,
+		map[string]any{
+			"corp_access_token_ciphertext": ciphertext,
+			"corp_access_token_nonce":      nonce,
+			"corp_access_token_expires_at": expiresAt,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func cacheSuiteTicketAndPermanentCode(t *testing.T, fixture arrivalLinkTestFixture) {
+	t.Helper()
+	ticketCiphertext, ticketNonce, err := fixture.security.Encrypt("suite_ticket", "suite-ticket-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repositories.ArrivalRepository.UpdateSuiteCredential(
+		fixture.db,
+		fixture.authorization.SuiteCredentialID,
+		map[string]any{
+			"suite_ticket_ciphertext": ticketCiphertext,
+			"suite_ticket_nonce":      ticketNonce,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	permanentCiphertext, permanentNonce, err := fixture.security.Encrypt("permanent_code", "permanent-code-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repositories.ArrivalRepository.UpdateTenantAuthorization(
+		fixture.db,
+		fixture.authorization.ID,
+		fixture.tenantID,
+		map[string]any{
+			"permanent_code_ciphertext": permanentCiphertext,
+			"permanent_code_nonce":      permanentNonce,
+		},
+	); err != nil {
+		t.Fatal(err)
 	}
 }
 

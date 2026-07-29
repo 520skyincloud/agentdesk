@@ -35,10 +35,11 @@ func Init() {
 
 	addFunc(c, "@every 5m", func() {
 		result := services.ArrivalMaintenanceService.ProcessDue(50)
-		if result.CleanedContactWays > 0 || result.ReconciledBindings > 0 {
+		if result.CleanedContactWays > 0 || result.RetriedContactWays > 0 || result.ReconciledBindings > 0 {
 			slog.Info(
 				"arrival maintenance completed",
 				"cleaned_contact_ways", result.CleanedContactWays,
+				"retried_contact_ways", result.RetriedContactWays,
 				"reconciled_bindings", result.ReconciledBindings,
 			)
 		}

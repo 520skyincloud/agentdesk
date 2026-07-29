@@ -246,7 +246,8 @@ Arrival DDL 统一进入现有 `AutoMigrate`，不新增平行 migration 系统�
 - `WeComAuthorizationAttempt`：一次性授权 state 和预授权证据；
 - `ArrivalScanEvent`：扫码幂等、请求指纹、绑定和投递状态；
 - `ArrivalSession`：短期 status 会话，只保存 token hash；
-- `ArrivalContactWay`：官方 config、加密原始 URL、二维码材料、payload hash 和清理状态；
+- `ArrivalContactWay`：官方 config、加密原始 URL、二维码材料、payload hash、创建尝试、
+  安全诊断、受控重试和清理状态；
 - `ArrivalStoreBinding`：小程序身份与 Store 的唯一绑定，引用现有客户和会话；
 - `WeComProviderCallbackEvent`：回调幂等、防重放和处理状态；
 - `ArrivalAuditLog`：邀请、授权、绑定、二维码、禁用、清理和投递的安全审计。
@@ -262,10 +263,50 @@ Arrival DDL 统一进入现有 `AutoMigrate`，不新增平行 migration 系统�
 - 抢占后进程异常会落为 `failed/delivery_interrupted`，不会长期显示处理中；
 - 已发送事件按 Tenant、Store、身份和频控窗口判断，不跨门店限流；
 - `/status` 只返回原扫码投递结果，不补发；
-- 5 分钟维护任务清理过期二维码并重试待映射绑定；
+- 5 分钟维护任务先原子认领到期的临时联系码失败，再清理过期二维码并重试待映射绑定；
 - 授权撤销立即将连接失效、绑定降级、二维码过期，公开代理马上不可读；
 - 能合法调用官方删除时删除 config；授权已撤销而无法取 token 时清除本地二维码材料，
   保留“仅本地清理”审计，不伪装成官方删除成功。
+
+### 9.1 联系码失败诊断与受控恢复
+
+企业微信调用不能用 HTTP 200 代替业务成功。Provider 对每次调用同时检查 HTTP 状态、
+JSON 结构和 `errcode`，将错误收敛为安全结构：
+
+```text
+stage + httpStatus + errcode + sanitizedErrmsg + retryable
+```
+
+`ArrivalContactWay` 保存 `failure_stage`、`provider_http_status`、
+`provider_error_code`、`provider_error_message`、`failure_retryable`、
+`provision_attempt_count`、`last_provision_request_id`、
+`last_provision_attempt_at` 和 `next_provision_retry_at`。这些字段只用于服务端排障，
+不进入 `arrival_scan_result.v2`。
+
+错误信息在写库和结构化日志前统一删除官方 hint 编号、来源 IP、诊断 URL、凭据字段、身份
+字段、长不透明值和控制字符；日志只关联内部 request、Store、authorization 和 contact way
+记录 ID，不记录成员 UserID、CorpID、SuiteID、openid、external_userid、guid、
+`conversation_id` 或任何 token/密钥。
+
+重试规则固定为：
+
+- `40014`、`42001` 只清除当前授权主体中与本次请求匹配的旧 token 密文，刷新后立即重试
+  一次；不得清除另一个主体或并发请求刚写入的新 token；
+- 网络失败、HTTP 429/5xx、系统繁忙和频控错误可进入有限重试；
+- 权限不足、授权撤销、永久授权码无效、成员无效/未激活、参数错误和不可信二维码为永久
+  失败，不自动循环；
+- 官方 `48002` 固定落为 `contact_way_permission_denied`，同时保留
+  `provider_error_code=48002` 和清洗后的短消息，不再与一般 API 失败混淆；
+- 一个联系码最多三次创建尝试；失败通过数据库条件更新原子 claim，单进程扫码锁不是唯一
+  并发保护；
+- 历史 `contact_way_api_failed` 且尚未记录尝试次数的行只允许维护任务接管一次，以取得真实
+  官方错误；
+- 官方 `config_id` 和加密二维码引用一旦写入，后续只重试下载、校验和发布二维码，不再次
+  调用 `add_contact_way`；
+- 卡在 `provisioning` 超过十分钟的记录可被受控接管；过期记录不再创建新官方配置。
+
+corp access token 每个 authorization 独立缓存和加锁。刷新时重新读取该授权主体的数据库
+状态，禁止把服务商 Corp、授权企业 Corp、小程序 AppID 或其他 Tenant 的 token 混用。
 
 ## 10. 二维码安全
 
@@ -280,6 +321,10 @@ Arrival DDL 统一进入现有 `AutoMigrate`，不新增平行 migration 系统�
 7. 只有源 payload 与产物逐字一致才发布艺术码，否则保留真实官方原码或明确失败；
 8. 公开 URL 只含带签名的不透明资源 token，`.png` 只是路由兼容后缀；
 9. 授权、连接或二维码状态失效后，即使旧 URL 未过期也拒绝读取。
+
+本实现依据企业微信官方“联系我管理”“服务商获取企业凭证”“联系我小程序插件”和企业
+授权信息文档锁定请求：二维码模式只发送单个真实企业成员的 `user`，不混用插件按钮
+`scene=1` 参数；`state` 为不超过 30 字节的服务端不透明值。
 
 ## 11. 权限与页面
 
@@ -358,6 +403,11 @@ cd web && pnpm build
 - 已绑定二次扫码、频控、实例离线、发送失败和异常中断；
 - status 不登录、不建事件、不建码、不映射、不重发；
 - 回调签名、解密、幂等、防重放、token 刷新；
+- HTTP 200 业务错误、错误阶段/码/脱敏信息持久化、授权主体 token 隔离及失效 token
+  单次刷新；
+- 权限不足、授权撤销、成员缺失/不属于主体/未激活均为真实失败，不返回假二维码；
+- 历史失败恢复、同事件失败重试、并发原子 claim、二维码下载重试不重复创建官方 config；
+- 日志、数据库公开字段和小程序响应的敏感值扫描；
 - 授权完成一次性消费，授权撤销立即使连接、绑定和二维码失效；
 - Stage A 成功且 Stage B 不可用时固定 `legacy_unmapped + not_bound`；
 - Tenant/Store/实例/Customer/Conversation/`S:` 会话全链一致性；
@@ -375,6 +425,7 @@ MySQL 实机验证可以延期，但不能删除 `TEST_MYSQL_DSN` 验证入口�
 - 小程序登录交换、扫码幂等、短期会话和严格只读 status；
 - 服务商授权门户、指令/数据回调、token 缓存；
 - 官方 `scene=2` 联系码、艺术码验证、安全公开代理和清理；
+- 联系码官方错误诊断、按授权主体 token 刷新、有限重试和历史通用失败恢复；
 - 门店连接管理、邀请、验证、禁用、审计页面；
 - 复用现有员工号投递与 Outbox 的到店卡片路径；
 - Stage A 回调和默认关闭的 Stage B 桥；
@@ -411,3 +462,7 @@ MySQL 实机验证可以延期，但不能删除 `TEST_MYSQL_DSN` 验证入口�
 1. 运行回滚：设置 `AGENT_DESK_ARRIVAL_ENABLED=false`，停止公开小程序与服务商链；
 2. 代码回滚：回退 Arrival 独立提交；新表保留但不进入运行链，确认无生产数据后再另行审批
    数据清理。不得把删除 Arrival 表混入普通代码回滚。
+
+本次联系码诊断字段由 `AutoMigrate` 向后兼容增加，没有 DML migration 和新环境变量。
+代码回滚时保留新增列，不执行回退 DDL；部署后若官方仍返回永久错误，应先修正企业微信
+应用权限或成员配置，不得通过清空错误或伪造二维码绕过。

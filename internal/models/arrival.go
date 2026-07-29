@@ -154,6 +154,15 @@ type ArrivalContactWay struct {
 	Mode                     enums.ArrivalContactWayMode   `gorm:"type:varchar(30);not null;default:'none';index"`
 	ContactWayStatus         enums.ArrivalContactWayStatus `gorm:"type:varchar(30);not null;default:'provisioning';index"`
 	FailureCode              string                        `gorm:"type:varchar(80);not null;default:''"`
+	FailureStage             string                        `gorm:"type:varchar(80);not null;default:'';index"`
+	ProviderHTTPStatus       int                           `gorm:"type:int;not null;default:0"`
+	ProviderErrorCode        int                           `gorm:"type:int;not null;default:0;index"`
+	ProviderErrorMessage     string                        `gorm:"type:varchar(500);not null;default:''"`
+	FailureRetryable         bool                          `gorm:"type:int;not null;default:0;index"`
+	ProvisionAttemptCount    int                           `gorm:"type:int;not null;default:0"`
+	LastProvisionRequestID   string                        `gorm:"type:varchar(128);not null;default:'';index"`
+	LastProvisionAttemptAt   *time.Time                    `gorm:"type:datetime;index"`
+	NextProvisionRetryAt     *time.Time                    `gorm:"type:datetime;index"`
 	ExpiresAt                *time.Time                    `gorm:"type:datetime;index"`
 	CleanedAt                *time.Time                    `gorm:"type:datetime;index"`
 	Status                   enums.Status                  `gorm:"type:int;not null;default:0;index"`

@@ -23,9 +23,9 @@ import (
 var WeComProviderService = newWeComProviderService()
 
 type weComProviderService struct {
-	httpClient   *http.Client
-	suiteTokenMu sync.Mutex
-	corpTokenMu  sync.Mutex
+	httpClient     *http.Client
+	suiteTokenMu   sync.Mutex
+	corpTokenLocks sync.Map
 }
 
 func newWeComProviderService() *weComProviderService {
@@ -147,11 +147,11 @@ func (s *weComProviderService) GetSuiteAccessToken() (string, *models.WeComSuite
 	cfg := config.Current().Arrival
 	security, err := newArrivalSecurity()
 	if err != nil {
-		return "", nil, err
+		return "", nil, newWeComProviderError(weComStageSuiteToken, 0, 0, "企业微信凭据加密服务不可用", false)
 	}
 	suite := repositories.ArrivalRepository.FindSuiteCredential(sqls.DB(), strings.TrimSpace(cfg.WeComSuiteID))
 	if suite == nil || strings.TrimSpace(suite.SuiteTicketCiphertext) == "" {
-		return "", nil, fmt.Errorf("尚未收到企业微信 suite ticket")
+		return "", nil, newWeComProviderError(weComStageSuiteToken, 0, 0, "尚未收到企业微信 suite ticket", false)
 	}
 	now := time.Now()
 	if suite.SuiteAccessTokenExpiresAt != nil && suite.SuiteAccessTokenExpiresAt.After(now.Add(2*time.Minute)) && suite.SuiteAccessTokenCiphertext != "" {
@@ -162,7 +162,7 @@ func (s *weComProviderService) GetSuiteAccessToken() (string, *models.WeComSuite
 	}
 	ticket, err := security.Decrypt("suite_ticket", suite.SuiteTicketCiphertext, suite.SuiteTicketNonce)
 	if err != nil {
-		return "", nil, fmt.Errorf("企业微信 suite ticket 无法解密")
+		return "", nil, newWeComProviderError(weComStageSuiteToken, 0, 0, "企业微信 suite ticket 无法解密", false)
 	}
 	var response struct {
 		weComAPIResponse
@@ -177,7 +177,7 @@ func (s *weComProviderService) GetSuiteAccessToken() (string, *models.WeComSuite
 		return "", nil, err
 	}
 	if strings.TrimSpace(response.SuiteAccessToken) == "" {
-		return "", nil, fmt.Errorf("企业微信未返回 suite access token")
+		return "", nil, newWeComProviderError(weComStageSuiteToken, 0, 0, "企业微信未返回 suite access token", false)
 	}
 	expiresIn := response.ExpiresIn
 	if expiresIn <= 0 {
@@ -186,7 +186,7 @@ func (s *weComProviderService) GetSuiteAccessToken() (string, *models.WeComSuite
 	expiresAt := now.Add(time.Duration(expiresIn) * time.Second)
 	ciphertext, nonce, err := security.Encrypt("suite_access_token", response.SuiteAccessToken)
 	if err != nil {
-		return "", nil, fmt.Errorf("缓存企业微信 suite access token 失败")
+		return "", nil, newWeComProviderError(weComStageSuiteToken, 0, 0, "缓存企业微信 suite access token 失败", true)
 	}
 	if err := repositories.ArrivalRepository.UpdateSuiteCredential(sqls.DB(), suite.ID, map[string]any{
 		"suite_access_token_ciphertext": ciphertext,
@@ -195,7 +195,7 @@ func (s *weComProviderService) GetSuiteAccessToken() (string, *models.WeComSuite
 		"updated_at":                    now,
 		"update_user_name":              "arrival_provider",
 	}); err != nil {
-		return "", nil, err
+		return "", nil, newWeComProviderError(weComStageSuiteToken, 0, 0, "保存企业微信 suite access token 失败", true)
 	}
 	suite.SuiteAccessTokenCiphertext = ciphertext
 	suite.SuiteAccessTokenNonce = nonce
@@ -285,22 +285,29 @@ func (s *weComProviderService) GetAuthorizationInfo(corpID, permanentCode string
 }
 
 func (s *weComProviderService) GetCorpAccessToken(authorization *models.WeComTenantAuthorization) (string, error) {
-	if authorization == nil || authorization.AuthorizationStatus != enums.WeComAuthorizationStatusActive {
-		return "", fmt.Errorf("企业微信主体未授权")
+	if authorization == nil || authorization.ID <= 0 || authorization.TenantID <= 0 {
+		return "", newWeComProviderError(weComStageAuthorizationValidate, 0, 0, "企业微信主体授权不存在", false)
 	}
-	s.corpTokenMu.Lock()
-	defer s.corpTokenMu.Unlock()
+	lock := s.corpTokenLock(authorization.ID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	current := repositories.ArrivalRepository.GetTenantAuthorization(sqls.DB(), authorization.ID, authorization.TenantID)
+	if current == nil || current.AuthorizationStatus != enums.WeComAuthorizationStatusActive {
+		return "", newWeComProviderError(weComStageAuthorizationValidate, 0, 0, "企业微信主体未授权或已撤销", false)
+	}
 
 	security, err := newArrivalSecurity()
 	if err != nil {
-		return "", err
+		return "", newWeComProviderError(weComStageCorpToken, 0, 0, "企业微信凭据加密服务不可用", false)
 	}
 	now := time.Now()
-	if authorization.CorpAccessTokenExpiresAt != nil &&
-		authorization.CorpAccessTokenExpiresAt.After(now.Add(2*time.Minute)) &&
-		authorization.CorpAccessTokenCiphertext != "" {
-		token, decryptErr := security.Decrypt("corp_access_token", authorization.CorpAccessTokenCiphertext, authorization.CorpAccessTokenNonce)
+	if current.CorpAccessTokenExpiresAt != nil &&
+		current.CorpAccessTokenExpiresAt.After(now.Add(2*time.Minute)) &&
+		current.CorpAccessTokenCiphertext != "" {
+		token, decryptErr := security.Decrypt("corp_access_token", current.CorpAccessTokenCiphertext, current.CorpAccessTokenNonce)
 		if decryptErr == nil && strings.TrimSpace(token) != "" {
+			copyCorpAccessTokenCache(authorization, current)
 			return token, nil
 		}
 	}
@@ -308,13 +315,13 @@ func (s *weComProviderService) GetCorpAccessToken(authorization *models.WeComTen
 	if err != nil {
 		return "", err
 	}
-	corpID, err := security.Decrypt("corp_id", authorization.CorpIDCiphertext, authorization.CorpIDNonce)
+	corpID, err := security.Decrypt("corp_id", current.CorpIDCiphertext, current.CorpIDNonce)
 	if err != nil {
-		return "", fmt.Errorf("企业微信主体身份无法解密")
+		return "", newWeComProviderError(weComStageCorpToken, 0, 0, "企业微信主体身份无法解密", false)
 	}
-	permanentCode, err := security.Decrypt("permanent_code", authorization.PermanentCodeCiphertext, authorization.PermanentCodeNonce)
+	permanentCode, err := security.Decrypt("permanent_code", current.PermanentCodeCiphertext, current.PermanentCodeNonce)
 	if err != nil {
-		return "", fmt.Errorf("企业微信永久授权码无法解密")
+		return "", newWeComProviderError(weComStageCorpToken, 0, 0, "企业微信永久授权码无法解密", false)
 	}
 	query := url.Values{"suite_access_token": []string{suiteToken}}
 	var response struct {
@@ -329,7 +336,7 @@ func (s *weComProviderService) GetCorpAccessToken(authorization *models.WeComTen
 		return "", err
 	}
 	if strings.TrimSpace(response.AccessToken) == "" {
-		return "", fmt.Errorf("企业微信未返回企业 access token")
+		return "", newWeComProviderError(weComStageCorpToken, 0, 0, "企业微信未返回企业 access token", false)
 	}
 	expiresIn := response.ExpiresIn
 	if expiresIn <= 0 {
@@ -338,21 +345,37 @@ func (s *weComProviderService) GetCorpAccessToken(authorization *models.WeComTen
 	expiresAt := now.Add(time.Duration(expiresIn) * time.Second)
 	ciphertext, nonce, err := security.Encrypt("corp_access_token", response.AccessToken)
 	if err != nil {
-		return "", fmt.Errorf("缓存企业 access token 失败")
+		return "", newWeComProviderError(weComStageCorpToken, 0, 0, "缓存企业 access token 失败", true)
 	}
-	if err := repositories.ArrivalRepository.UpdateTenantAuthorization(sqls.DB(), authorization.ID, authorization.TenantID, map[string]any{
+	if err := repositories.ArrivalRepository.UpdateTenantAuthorization(sqls.DB(), current.ID, current.TenantID, map[string]any{
 		"corp_access_token_ciphertext": ciphertext,
 		"corp_access_token_nonce":      nonce,
 		"corp_access_token_expires_at": expiresAt,
 		"updated_at":                   now,
 		"update_user_name":             "arrival_provider",
 	}); err != nil {
-		return "", err
+		return "", newWeComProviderError(weComStageCorpToken, 0, 0, "保存企业 access token 失败", true)
 	}
-	authorization.CorpAccessTokenCiphertext = ciphertext
-	authorization.CorpAccessTokenNonce = nonce
-	authorization.CorpAccessTokenExpiresAt = &expiresAt
+	current.CorpAccessTokenCiphertext = ciphertext
+	current.CorpAccessTokenNonce = nonce
+	current.CorpAccessTokenExpiresAt = &expiresAt
+	copyCorpAccessTokenCache(authorization, current)
 	return response.AccessToken, nil
+}
+
+func (s *weComProviderService) corpTokenLock(authorizationID int64) *sync.Mutex {
+	value, _ := s.corpTokenLocks.LoadOrStore(authorizationID, &sync.Mutex{})
+	return value.(*sync.Mutex)
+}
+
+func copyCorpAccessTokenCache(target, source *models.WeComTenantAuthorization) {
+	if target == nil || source == nil {
+		return
+	}
+	target.AuthorizationStatus = source.AuthorizationStatus
+	target.CorpAccessTokenCiphertext = source.CorpAccessTokenCiphertext
+	target.CorpAccessTokenNonce = source.CorpAccessTokenNonce
+	target.CorpAccessTokenExpiresAt = source.CorpAccessTokenExpiresAt
 }
 
 func (s *weComProviderService) ListContactMembers(authorization *models.WeComTenantAuthorization) ([]string, error) {
@@ -378,13 +401,44 @@ func (s *weComProviderService) ListContactMembers(authorization *models.WeComTen
 }
 
 func (s *weComProviderService) AddContactWay(authorization *models.WeComTenantAuthorization, memberUserID, state string) (*weComContactWayResult, error) {
-	if len([]byte(strings.TrimSpace(state))) > 30 {
-		return nil, fmt.Errorf("联系我 state 超过企业微信限制")
+	memberUserID = strings.TrimSpace(memberUserID)
+	if memberUserID == "" {
+		return nil, newWeComProviderError(weComStageContactMemberValidate, 0, 0, "门店客户联系成员 UserID 缺失", false)
 	}
-	token, err := s.GetCorpAccessToken(authorization)
-	if err != nil {
-		return nil, err
+	state = strings.TrimSpace(state)
+	if state == "" || len([]byte(state)) > 30 {
+		return nil, newWeComProviderError(weComStageAddContactWay, 0, 0, "联系我 state 必须为 1 至 30 字节", false)
 	}
+	for attempt := 0; attempt < 2; attempt++ {
+		token, err := s.GetCorpAccessToken(authorization)
+		if err != nil {
+			return nil, err
+		}
+		usedCiphertext := authorization.CorpAccessTokenCiphertext
+		result, err := s.addContactWayWithToken(token, memberUserID, state)
+		if err == nil {
+			return result, nil
+		}
+		if attempt > 0 || !isWeComCorpAccessTokenError(err) {
+			return nil, err
+		}
+		if _, clearErr := repositories.ArrivalRepository.ClearCorpAccessTokenIfMatches(
+			sqls.DB(),
+			authorization.ID,
+			authorization.TenantID,
+			usedCiphertext,
+			time.Now(),
+		); clearErr != nil {
+			return nil, newWeComProviderError(weComStageCorpToken, 0, 0, "清除失效企业 access token 失败", true)
+		}
+		authorization.CorpAccessTokenCiphertext = ""
+		authorization.CorpAccessTokenNonce = ""
+		authorization.CorpAccessTokenExpiresAt = nil
+	}
+	return nil, newWeComProviderError(weComStageAddContactWay, 0, 0, "企业微信联系我创建失败", true)
+}
+
+func (s *weComProviderService) addContactWayWithToken(token, memberUserID, state string) (*weComContactWayResult, error) {
 	query := url.Values{"access_token": []string{token}}
 	var response struct {
 		weComAPIResponse
@@ -395,14 +449,14 @@ func (s *weComProviderService) AddContactWay(authorization *models.WeComTenantAu
 		"scene":       2,
 		"remark":      "门店到店管家",
 		"skip_verify": true,
-		"state":       strings.TrimSpace(state),
-		"user":        []string{strings.TrimSpace(memberUserID)},
+		"state":       state,
+		"user":        []string{memberUserID},
 	}, &response); err != nil {
 		return nil, err
 	}
 	result := response.weComContactWayResult
 	if strings.TrimSpace(result.ConfigID) == "" || strings.TrimSpace(result.QRCode) == "" {
-		return nil, fmt.Errorf("企业微信未返回真实联系二维码")
+		return nil, newWeComProviderError(weComStageAddContactWayResponse, 0, 0, "企业微信未返回真实联系二维码", false)
 	}
 	return &result, nil
 }
@@ -425,21 +479,23 @@ type weComAPIResponse struct {
 }
 
 func (s *weComProviderService) getWeComJSON(path string, query url.Values, target any) error {
+	stage := weComRequestStage(path)
 	endpoint := config.Current().Arrival.WeComBaseURL() + path
 	if len(query) > 0 {
 		endpoint += "?" + query.Encode()
 	}
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return fmt.Errorf("创建企业微信请求失败")
+		return newWeComProviderError(stage, 0, 0, "创建企业微信请求失败", false)
 	}
-	return s.doWeComRequest(req, target)
+	return s.doWeComRequest(req, target, stage)
 }
 
 func (s *weComProviderService) postWeComJSON(path string, query url.Values, body any, target any) error {
+	stage := weComRequestStage(path)
 	raw, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("构建企业微信请求失败")
+		return newWeComProviderError(stage, 0, 0, "构建企业微信请求失败", false)
 	}
 	endpoint := config.Current().Arrival.WeComBaseURL() + path
 	if len(query) > 0 {
@@ -447,27 +503,48 @@ func (s *weComProviderService) postWeComJSON(path string, query url.Values, body
 	}
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
-		return fmt.Errorf("创建企业微信请求失败")
+		return newWeComProviderError(stage, 0, 0, "创建企业微信请求失败", false)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return s.doWeComRequest(req, target)
+	return s.doWeComRequest(req, target, stage)
 }
 
-func (s *weComProviderService) doWeComRequest(req *http.Request, target any) error {
+func (s *weComProviderService) doWeComRequest(req *http.Request, target any, stage string) error {
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("企业微信服务暂不可用")
+		return newWeComProviderError(stage, 0, 0, "企业微信服务暂不可用", true)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if readErr != nil {
+		return newWeComProviderError(stage, resp.StatusCode, 0, "读取企业微信服务响应失败", true)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("企业微信服务返回异常状态")
+		apiResponse := &weComAPIResponse{}
+		_ = json.Unmarshal(body, apiResponse)
+		message := apiResponse.ErrMsg
+		if strings.TrimSpace(message) == "" {
+			message = "企业微信服务返回异常状态"
+		}
+		return newWeComProviderError(
+			stage,
+			resp.StatusCode,
+			apiResponse.ErrCode,
+			message,
+			isRetryableWeComError(apiResponse.ErrCode, resp.StatusCode),
+		)
 	}
 	if err := json.Unmarshal(body, target); err != nil {
-		return fmt.Errorf("企业微信服务响应无效")
+		return newWeComProviderError(stage, resp.StatusCode, 0, "企业微信服务响应无效", false)
 	}
 	if apiResponse := extractWeComAPIResponse(target); apiResponse != nil && apiResponse.ErrCode != 0 {
-		return fmt.Errorf("企业微信操作失败（错误码 %d）", apiResponse.ErrCode)
+		return newWeComProviderError(
+			stage,
+			resp.StatusCode,
+			apiResponse.ErrCode,
+			apiResponse.ErrMsg,
+			isRetryableWeComError(apiResponse.ErrCode, resp.StatusCode),
+		)
 	}
 	return nil
 }

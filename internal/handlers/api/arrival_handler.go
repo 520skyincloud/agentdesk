@@ -21,7 +21,7 @@ func ArrivalPostBootstrap(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	result, err := services.ArrivalLinkService.Bootstrap(req)
+	result, err := services.ArrivalLinkService.BootstrapWithRequestID(req, httpx.GetRequestID(ctx))
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

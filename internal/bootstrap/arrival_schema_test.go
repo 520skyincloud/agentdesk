@@ -74,6 +74,21 @@ func assertArrivalSchemaAutoMigrate(t *testing.T, db *gorm.DB) {
 			t.Errorf("arrival unique index %s for %T was not created", index.name, index.model)
 		}
 	}
+	for _, column := range []string{
+		"failure_stage",
+		"provider_http_status",
+		"provider_error_code",
+		"provider_error_message",
+		"failure_retryable",
+		"provision_attempt_count",
+		"last_provision_request_id",
+		"last_provision_attempt_at",
+		"next_provision_retry_at",
+	} {
+		if !db.Migrator().HasColumn(&models.ArrivalContactWay{}, column) {
+			t.Errorf("arrival contact way diagnostic column %s was not created", column)
+		}
+	}
 }
 
 func arrivalSchemaModels() []any {

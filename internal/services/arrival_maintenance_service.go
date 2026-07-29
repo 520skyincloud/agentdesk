@@ -9,6 +9,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -18,14 +19,19 @@ type arrivalContactWayProvider interface {
 	DeleteContactWay(authorization *models.WeComTenantAuthorization, configID string) error
 }
 
-var ArrivalMaintenanceService = &arrivalMaintenanceService{provider: WeComProviderService}
+var ArrivalMaintenanceService = &arrivalMaintenanceService{
+	provider:    WeComProviderService,
+	linkService: ArrivalLinkService,
+}
 
 type arrivalMaintenanceService struct {
-	provider arrivalContactWayProvider
+	provider    arrivalContactWayProvider
+	linkService *arrivalLinkService
 }
 
 type ArrivalMaintenanceResult struct {
 	CleanedContactWays int
+	RetriedContactWays int
 	ReconciledBindings int
 }
 
@@ -33,10 +39,44 @@ func (s *arrivalMaintenanceService) ProcessDue(limit int) ArrivalMaintenanceResu
 	if !config.Current().Arrival.Enabled {
 		return ArrivalMaintenanceResult{}
 	}
+	retried := s.RetryFailedContactWays(limit)
 	return ArrivalMaintenanceResult{
 		CleanedContactWays: s.CleanupExpiredContactWays(limit),
+		RetriedContactWays: retried,
 		ReconciledBindings: WeComProviderCallbackService.ReconcilePendingBindings(limit),
 	}
+}
+
+func (s *arrivalMaintenanceService) RetryFailedContactWays(limit int) int {
+	now := time.Now()
+	items := repositories.ArrivalRepository.FindContactWaysDueForProvision(
+		sqls.DB(),
+		now,
+		now.Add(-arrivalContactWayProvisionStaleAfter),
+		arrivalContactWayMaxProvisionAttempts,
+		limit,
+	)
+	retried := 0
+	for i := range items {
+		item := &items[i]
+		event := repositories.ArrivalRepository.GetScanEvent(sqls.DB(), item.ScanEventID, item.TenantID)
+		connection := repositories.ArrivalRepository.FindConnectionByStore(sqls.DB(), item.TenantID, item.StoreID)
+		if event == nil || connection == nil || connection.Status != enums.StatusOk ||
+			connection.ConnectionStatus != enums.ArrivalConnectionStatusActive {
+			continue
+		}
+		requestID := tracex.EnsureRequestID("")
+		linkService := s.linkService
+		if linkService == nil {
+			linkService = ArrivalLinkService
+		}
+		_, _ = linkService.retryContactWayProvision(event, connection, item, requestID)
+		current := repositories.ArrivalRepository.GetContactWay(sqls.DB(), item.ID, item.TenantID)
+		if current != nil && current.ProvisionAttemptCount > item.ProvisionAttemptCount {
+			retried++
+		}
+	}
+	return retried
 }
 
 func (s *arrivalMaintenanceService) CleanupExpiredContactWays(limit int) int {
@@ -99,6 +139,12 @@ func (s *arrivalMaintenanceService) cleanContactWayLocally(item *models.ArrivalC
 		"artwork_png_base64":          "",
 		"cleaned_at":                  now,
 		"failure_code":                "",
+		"failure_stage":               "",
+		"provider_http_status":        0,
+		"provider_error_code":         0,
+		"provider_error_message":      "",
+		"failure_retryable":           false,
+		"next_provision_retry_at":     nil,
 		"updated_at":                  now,
 		"update_user_name":            "arrival_maintenance",
 	}); err != nil {

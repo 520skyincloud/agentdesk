@@ -414,3 +414,134 @@ mlogclub/agent-desk:rollback-20260729-192300-arrival-cross-namespace-binding
 本次没有修改微信小程序、AI 回复引擎、企微员工号协议字段、权限、计费或派单。代码回滚
 不要求回滚已保存的映射数据，但会恢复错误的跨命名空间字符串相等限制，因此只应在明确
 接受成员绑定再次失败时使用。
+
+## 企业微信“联系我”失败诊断与受控恢复
+
+2026-07-29 从统一项目提交
+`ff1d3735a609ca83e09cf6c3f84d6a939643b84e` 建立独立修复工作树，并重新核对企业微信
+官方“联系我管理”、服务商获取企业凭证、联系我小程序插件、企业授权信息及全局错误码
+文档。请求仍严格使用 `externalcontact/add_contact_way` 的 `type=1`、`scene=2`、单个
+真实客户联系成员 UserID 和不超过 30 字节的不透明 `state`，没有混入小程序插件参数。
+
+本次修复内容：
+
+- HTTP 200 只有在 JSON 合法且 `errcode=0` 时才成功；失败结构保存调用阶段、HTTP 状态、
+  官方错误码、清洗后的短消息和是否可重试；
+- corp access token 缓存和锁按授权主体隔离；`40014/42001` 只条件清除本次实际使用的
+  旧 token 版本，最多刷新重试一次；
+- 同一扫码事件通过唯一记录和数据库原子 claim 防止并发重复创建，最多三次受控尝试；
+- 已有官方 `config_id` 时只重试二维码下载、验码和发布，不再次调用
+  `add_contact_way`；
+- 5 分钟维护任务只接管可重试失败、超时 provisioning，以及一次尚无诊断的历史通用失败；
+- `GET /status` 保持只读，小程序 V2 契约没有增加诊断字段或伪造成功；
+- 官方 hint 编号、来源 IP、诊断 URL、身份字段、凭据字段和长不透明值在写库与日志前
+  删除；`48002` 固定落为 `contact_way_permission_denied`。
+
+自动化验证全部通过：
+
+```text
+go test ./internal/services -count=1
+go test ./internal/bootstrap/... -count=1
+go test ./... -count=1
+go vet ./...
+git diff --check
+```
+
+本机没有 `TEST_MYSQL_DSN`，因此可选 MySQL 单测未执行；SQLite AutoMigrate 测试通过，
+生产 MySQL 启动后确认 9 个新增诊断列全部存在。
+
+部署前备份：
+
+```text
+/opt/agentdesk/backups/contact-way-20260729-231049
+```
+
+备份包含权限受限的生产环境文件、上一 release、上一镜像 ID、MySQL dump 和校验文件。
+MySQL dump 已恢复到独立临时库，源库与恢复库均为 114 张表、7 条 Migration；临时库随后
+删除。最终源码 release：
+
+```text
+/opt/agentdesk/releases/20260729-235842-contact-way-final/app
+```
+
+最终运行镜像：
+
+```text
+sha256:c1be7f35b2ef0cba7117f5ca153f74468636d726ee329fe0f980de6db4c05b7e
+```
+
+后端二进制 SHA-256：
+
+```text
+8ad05b9b2d8a049e1c1a2835bfdd5dabe2397887cb79e6955c6729c83c7d39a5
+```
+
+服务器只有约 3.6 GiB 内存且无 Swap，完整 Docker 构建的 Next.js 阶段持续占满内存并将
+负载推高，15 分钟后主动停止。由于本次没有任何前端改动，改为在本地从同一最终源码交叉
+编译 Linux amd64 静态后端，并覆盖到已备份生产镜像；原 `web/out`、运行配置和审计工具
+均未变化。该方式避免在低内存生产机继续执行无关前端构建，二进制哈希已在上传前后和
+容器内三次核对一致。
+
+首次重建时 Compose 因当前目录是符号链接而临时推断项目名为 `current`，创建了一套未
+接管流量的空容器和空卷，并因 `8083` 已被正式容器占用而失败。正式
+`agentdesk-agent-desk-1` 与生产 MySQL 始终健康；临时 `current-*` 容器、网络和空卷已
+全部删除。最终命令显式使用 `-p agentdesk --no-deps`，只重建应用容器：
+
+```text
+docker compose -p agentdesk --env-file /opt/agentdesk/shared/production.env \
+  up -d --force-recreate --no-deps agent-desk
+```
+
+部署结果：
+
+- 应用于 `2026-07-29 23:52:41 CST` 启动，镜像和二进制哈希均为上述值；
+- 应用 healthy、重启次数 0；生产 MySQL 保持原容器、原数据卷和 healthy；
+- 容器内 `AGENT_DESK_WECOM_AUTH_TYPE=1`，仍符合当前“安装测试”阶段；
+- 公网登录页返回 200；无合法签名参数的指令回调返回 400，没有假成功；
+- 重建后的新 `suite_ticket` 于 `2026-07-29 23:55:22 CST` 正常落库；
+- 启动后日志中 panic/fatal 数量为 0；
+- 9 个诊断列均已由 AutoMigrate 创建。
+
+真实企微复验发生于 `2026-07-29 23:38:09` 至 `23:38:10 CST`。维护任务接管 4 条历史
+`contact_way_api_failed + attempt_count=0` 记录；授权主体、客户联系成员上下文、suite
+token、corp token 和真实 HTTP 请求均已通过，4 次 `add_contact_way` 均返回：
+
+```text
+HTTP 200
+errcode 48002
+errmsg api forbidden
+retryable false
+```
+
+数据库现已把这 4 条记录统一收敛为
+`contact_way_permission_denied / add_contact_way / 48002 / api forbidden`，尝试次数
+为 2、待重试数 0；所有记录的 `config_id` 仍为空，因此没有重复创建官方联系码。历史
+诊断消息中的 hint、来源 IP 和 URL 已安全清洗，相关残留计数为 0。
+
+该结果证明 AgentDesk 的授权读取、token 获取、真实调用、诊断落库和受控恢复链已经工作，
+也证明当前剩余阻塞不是传输或重试代码，而是企业微信第三方应用权限。二维码成功仍需：
+
+1. 企业微信管理员在服务商第三方应用中开放客户联系“配置联系我”所需能力。
+2. 如果企业微信要求新增权限重新授权，使用全新授权流程完成，不直接改库。
+3. 发起一次全新真实扫码，确认 `add_contact_way errcode=0`。
+4. 确认保存真实 `config_id` 和加密二维码引用，bootstrap 返回
+   `available=true/mode=qr_code`。
+5. 重放同一 `scanEventId`，确认不产生第二个官方配置；确认 `GET /status` 不触发创建。
+
+在完成上述官方权限操作和真实 `errcode=0` 前，不得宣称“联系我二维码已完全修复”。
+
+脱敏补丁回滚镜像：
+
+```text
+mlogclub/agent-desk:rollback-contact-way-redaction-20260729-234933
+```
+
+整项功能回滚镜像：
+
+```text
+mlogclub/agent-desk:rollback-contact-way-20260729-231049
+```
+
+回滚只切换镜像并使用显式 `-p agentdesk --no-deps` 强制重建应用容器；新增列为兼容性诊断
+字段，不执行 DDL 删除。回滚后不得把已经确认的 `48002` 改为可重试，也不得通过手工写库
+伪造二维码成功。

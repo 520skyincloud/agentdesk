@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -23,6 +25,9 @@ import (
 const (
 	arrivalScanInputVersion  = "arrival_scan_input.v1"
 	arrivalScanResultVersion = "arrival_scan_result.v2"
+
+	arrivalContactWayMaxProvisionAttempts = 3
+	arrivalContactWayProvisionStaleAfter  = 10 * time.Minute
 )
 
 var ArrivalLinkService = &arrivalLinkService{}
@@ -72,6 +77,11 @@ func (s *arrivalLinkService) ValidateConfiguration() error {
 }
 
 func (s *arrivalLinkService) Bootstrap(req request.ArrivalBootstrapRequest) (*response.ArrivalScanResultResponse, error) {
+	return s.BootstrapWithRequestID(req, "")
+}
+
+func (s *arrivalLinkService) BootstrapWithRequestID(req request.ArrivalBootstrapRequest, requestID string) (*response.ArrivalScanResultResponse, error) {
+	requestID = tracex.EnsureRequestID(requestID)
 	if err := s.ValidateConfiguration(); err != nil {
 		return nil, err
 	}
@@ -111,6 +121,7 @@ func (s *arrivalLinkService) Bootstrap(req request.ArrivalBootstrapRequest) (*re
 		if existing.RequestFingerprint == "" || existing.RequestFingerprint != requestFingerprint {
 			return nil, errorsx.InvalidParam("扫码事件标识已被其他请求使用")
 		}
+		s.retryExistingContactWay(existing, requestID)
 		return s.buildResult(existing)
 	}
 	connection := repositories.ArrivalRepository.FindConnectionByScene(sqls.DB(), scene)
@@ -188,7 +199,7 @@ func (s *arrivalLinkService) Bootstrap(req request.ArrivalBootstrapRequest) (*re
 		s.deliverBoundEvent(event)
 	default:
 		if connection.ConnectionStatus == enums.ArrivalConnectionStatusActive {
-			_, _ = s.provisionContactWay(event, connection)
+			_, _ = s.provisionContactWay(event, connection, requestID)
 		}
 	}
 	return s.buildResult(event)
@@ -314,116 +325,408 @@ func (s *arrivalLinkService) ensureIdentity(tenantID int64, openID, unionID stri
 	return item, enums.ArrivalIdentityStatusCreated, nil
 }
 
-func (s *arrivalLinkService) provisionContactWay(event *models.ArrivalScanEvent, connection *models.StoreArrivalConnection) (*models.ArrivalContactWay, error) {
+func (s *arrivalLinkService) provisionContactWay(
+	event *models.ArrivalScanEvent,
+	connection *models.StoreArrivalConnection,
+	requestID string,
+) (*models.ArrivalContactWay, error) {
 	if event == nil || connection == nil {
 		return nil, fmt.Errorf("到店扫码上下文不存在")
 	}
 	if existing := repositories.ArrivalRepository.FindContactWayByScanEvent(sqls.DB(), event.ID); existing != nil {
-		return existing, nil
-	}
-	if connection.TenantAuthorizationID <= 0 || connection.WxWorkProtocolInstanceID <= 0 || connection.ContactMemberCiphertext == "" {
-		return nil, fmt.Errorf("门店尚未完成企微授权与成员绑定")
-	}
-	authorization := repositories.ArrivalRepository.GetTenantAuthorization(sqls.DB(), connection.TenantAuthorizationID, connection.TenantID)
-	if authorization == nil || authorization.AuthorizationStatus != enums.WeComAuthorizationStatusActive {
-		return nil, fmt.Errorf("门店企微主体授权不可用")
+		return s.retryContactWayProvision(event, connection, existing, requestID)
 	}
 	security, err := newArrivalSecurity()
 	if err != nil {
 		return nil, err
 	}
-	memberUserID, err := security.Decrypt("contact_member", connection.ContactMemberCiphertext, connection.ContactMemberNonce)
-	if err != nil || strings.TrimSpace(memberUserID) == "" {
-		return nil, fmt.Errorf("门店客户联系成员配置无效")
+	placeholderState, err := randomArrivalToken(16)
+	if err != nil {
+		return nil, err
 	}
-	placeholderState, _ := randomArrivalToken(16)
-	placeholderResource, _ := randomArrivalToken(16)
+	placeholderResource, err := randomArrivalToken(16)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
+	requestID = tracex.EnsureRequestID(requestID)
 	expiresAt := now.Add(time.Duration(config.Current().Arrival.ContactWayTTL()) * time.Minute)
 	contactWay := &models.ArrivalContactWay{
 		TenantID:                event.TenantID,
 		StoreID:                 event.StoreID,
 		ScanEventID:             event.ID,
-		TenantAuthorizationID:   authorization.ID,
+		TenantAuthorizationID:   connection.TenantAuthorizationID,
 		ContactStateHash:        security.Fingerprint("contact_state_placeholder", placeholderState),
 		PublicResourceTokenHash: security.Fingerprint("public_qr_placeholder", placeholderResource),
 		Mode:                    enums.ArrivalContactWayModeNone,
 		ContactWayStatus:        enums.ArrivalContactWayStatusProvisioning,
+		ProvisionAttemptCount:   1,
+		LastProvisionRequestID:  requestID,
+		LastProvisionAttemptAt:  &now,
 		ExpiresAt:               &expiresAt,
 		Status:                  enums.StatusOk,
 		AuditFields:             arrivalSystemAuditFields(now),
 	}
-	if err := repositories.ArrivalRepository.CreateContactWay(sqls.DB(), contactWay); err != nil {
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := repositories.ArrivalRepository.CreateContactWay(ctx.Tx, contactWay); err != nil {
+			return err
+		}
+		state := security.ContactState(contactWay.ID)
+		resourceToken := security.PublicResourceToken(contactWay.ID)
+		if err := repositories.ArrivalRepository.UpdateContactWay(ctx.Tx, contactWay.ID, contactWay.TenantID, map[string]any{
+			"contact_state_hash":         security.Fingerprint("contact_state", state),
+			"public_resource_token_hash": security.Fingerprint("public_qr_token", resourceToken),
+			"updated_at":                 now,
+			"update_user_name":           "arrival",
+		}); err != nil {
+			return err
+		}
+		return repositories.ArrivalRepository.UpdateScanEvent(ctx.Tx, event.ID, event.TenantID, map[string]any{
+			"contact_way_id":   contactWay.ID,
+			"updated_at":       now,
+			"update_user_name": "arrival",
+		})
+	})
+	if err != nil {
 		if existing := repositories.ArrivalRepository.FindContactWayByScanEvent(sqls.DB(), event.ID); existing != nil {
-			return existing, nil
+			return s.retryContactWayProvision(event, connection, existing, requestID)
 		}
 		return nil, err
 	}
-	state := security.ContactState(contactWay.ID)
-	resourceToken := security.PublicResourceToken(contactWay.ID)
-	if err := repositories.ArrivalRepository.UpdateContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID, map[string]any{
-		"contact_state_hash":         security.Fingerprint("contact_state", state),
-		"public_resource_token_hash": security.Fingerprint("public_qr_token", resourceToken),
-		"updated_at":                 now,
-		"update_user_name":           "arrival",
-	}); err != nil {
-		return nil, err
+	contactWay = repositories.ArrivalRepository.GetContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID)
+	if contactWay == nil {
+		return nil, fmt.Errorf("到店联系码记录不存在")
 	}
-	official, err := s.contactWayProvider().AddContactWay(authorization, memberUserID, state)
+	return s.executeContactWayProvision(event, connection, contactWay, requestID)
+}
+
+func (s *arrivalLinkService) retryExistingContactWay(event *models.ArrivalScanEvent, requestID string) {
+	if event == nil || s.currentBindingStatus(event) != enums.ArrivalBindingStatusUnbound {
+		return
+	}
+	contactWay := repositories.ArrivalRepository.FindContactWayByScanEvent(sqls.DB(), event.ID)
+	if contactWay == nil || contactWay.ContactWayStatus == enums.ArrivalContactWayStatusActive {
+		return
+	}
+	connection := repositories.ArrivalRepository.FindConnectionByStore(sqls.DB(), event.TenantID, event.StoreID)
+	if connection == nil || connection.Status != enums.StatusOk ||
+		connection.ConnectionStatus != enums.ArrivalConnectionStatusActive {
+		return
+	}
+	_, _ = s.retryContactWayProvision(event, connection, contactWay, requestID)
+}
+
+func (s *arrivalLinkService) retryContactWayProvision(
+	event *models.ArrivalScanEvent,
+	connection *models.StoreArrivalConnection,
+	contactWay *models.ArrivalContactWay,
+	requestID string,
+) (*models.ArrivalContactWay, error) {
+	if event == nil || connection == nil || contactWay == nil {
+		return contactWay, nil
+	}
+	if contactWay.ContactWayStatus == enums.ArrivalContactWayStatusActive {
+		return contactWay, nil
+	}
+	now := time.Now()
+	requestID = tracex.EnsureRequestID(requestID)
+	claimed, err := repositories.ArrivalRepository.TryClaimContactWayProvision(
+		sqls.DB(),
+		contactWay.ID,
+		contactWay.TenantID,
+		now,
+		now.Add(-arrivalContactWayProvisionStaleAfter),
+		requestID,
+		arrivalContactWayMaxProvisionAttempts,
+	)
 	if err != nil {
-		s.failContactWay(contactWay, "contact_way_api_failed")
-		return nil, err
+		return contactWay, err
 	}
-	qrCiphertext, qrNonce, err := security.Encrypt("contact_qr_url", official.QRCode)
+	if !claimed {
+		return repositories.ArrivalRepository.GetContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID), nil
+	}
+	claimedContactWay := repositories.ArrivalRepository.GetContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID)
+	if claimedContactWay == nil {
+		return nil, fmt.Errorf("到店联系码记录不存在")
+	}
+	return s.executeContactWayProvision(event, connection, claimedContactWay, requestID)
+}
+
+func (s *arrivalLinkService) executeContactWayProvision(
+	event *models.ArrivalScanEvent,
+	connection *models.StoreArrivalConnection,
+	contactWay *models.ArrivalContactWay,
+	requestID string,
+) (*models.ArrivalContactWay, error) {
+	authorization, memberUserID, err := s.resolveContactWayProvisioningContext(connection)
 	if err != nil {
-		s.failContactWay(contactWay, "contact_way_encrypt_failed")
+		s.failContactWay(contactWay, contactWayFailureCode(err, "contact_way_context_invalid"), requestID, err)
 		return nil, err
 	}
-	artifact, artifactErr := s.qrCodeArtifactBuilder().BuildArtifact(official.QRCode)
-	mode := enums.ArrivalContactWayModeQRCode
-	updates := map[string]any{
-		"config_id":                   strings.TrimSpace(official.ConfigID),
-		"original_qr_code_ciphertext": qrCiphertext,
-		"original_qr_code_nonce":      qrNonce,
-		"failure_code":                "",
-		"updated_at":                  time.Now(),
-		"update_user_name":            "arrival",
+	security, err := newArrivalSecurity()
+	if err != nil {
+		providerErr := newWeComProviderError(weComStageContactWayPersist, 0, 0, "到店联系码加密服务不可用", false)
+		s.failContactWay(contactWay, "contact_way_encrypt_failed", requestID, providerErr)
+		return nil, providerErr
 	}
-	if artifactErr != nil {
-		mode = enums.ArrivalContactWayModeNone
-		updates["contact_way_status"] = enums.ArrivalContactWayStatusFailed
-		updates["failure_code"] = "official_qr_cache_failed"
+
+	qrCodeURL := ""
+	if strings.TrimSpace(contactWay.ConfigID) != "" && strings.TrimSpace(contactWay.OriginalQRCodeCiphertext) != "" {
+		qrCodeURL, err = security.Decrypt(
+			"contact_qr_url",
+			contactWay.OriginalQRCodeCiphertext,
+			contactWay.OriginalQRCodeNonce,
+		)
+		if err != nil || strings.TrimSpace(qrCodeURL) == "" {
+			providerErr := newWeComProviderError(weComStageQRCodeArtifact, 0, 0, "已保存的企业微信二维码引用无法解密", false)
+			s.failContactWay(contactWay, "contact_way_qr_reference_invalid", requestID, providerErr)
+			return nil, providerErr
+		}
 	} else {
-		updates["contact_way_status"] = enums.ArrivalContactWayStatusActive
-		updates["original_png_base64"] = artifact.OriginalPNGBase64
-		updates["artwork_png_base64"] = artifact.PublishedPNGBase64
-		updates["source_payload_hash"] = artifact.PayloadHash
-		updates["published_payload_hash"] = artifact.PayloadHash
+		state := security.ContactState(contactWay.ID)
+		official, providerErr := s.contactWayProvider().AddContactWay(authorization, memberUserID, state)
+		if providerErr != nil {
+			s.failContactWay(contactWay, contactWayFailureCode(providerErr, "contact_way_api_failed"), requestID, providerErr)
+			return nil, providerErr
+		}
+		qrCodeURL = strings.TrimSpace(official.QRCode)
+		qrCiphertext, qrNonce, encryptErr := security.Encrypt("contact_qr_url", qrCodeURL)
+		if encryptErr != nil {
+			_ = repositories.ArrivalRepository.UpdateContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID, map[string]any{
+				"config_id":        strings.TrimSpace(official.ConfigID),
+				"updated_at":       time.Now(),
+				"update_user_name": "arrival",
+			})
+			providerErr = newWeComProviderError(weComStageContactWayPersist, 0, 0, "保存企业微信二维码引用失败", false)
+			s.failContactWay(contactWay, "contact_way_encrypt_failed", requestID, providerErr)
+			return nil, providerErr
+		}
+		if err := repositories.ArrivalRepository.UpdateContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID, map[string]any{
+			"config_id":                   strings.TrimSpace(official.ConfigID),
+			"original_qr_code_ciphertext": qrCiphertext,
+			"original_qr_code_nonce":      qrNonce,
+			"updated_at":                  time.Now(),
+			"update_user_name":            "arrival",
+		}); err != nil {
+			providerErr = newWeComProviderError(weComStageContactWayPersist, 0, 0, "保存企业微信联系码结果失败", false)
+			s.failContactWay(contactWay, "contact_way_persist_failed", requestID, providerErr)
+			return nil, providerErr
+		}
+		contactWay.ConfigID = strings.TrimSpace(official.ConfigID)
+		contactWay.OriginalQRCodeCiphertext = qrCiphertext
+		contactWay.OriginalQRCodeNonce = qrNonce
 	}
-	updates["mode"] = mode
-	if err := repositories.ArrivalRepository.UpdateContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID, updates); err != nil {
-		return nil, err
+
+	artifact, artifactErr := s.qrCodeArtifactBuilder().BuildArtifact(qrCodeURL)
+	if artifactErr != nil {
+		retryable := strings.Contains(artifactErr.Error(), "下载失败") ||
+			strings.Contains(artifactErr.Error(), "重定向次数过多")
+		providerErr := newWeComProviderError(
+			weComStageQRCodeArtifact,
+			0,
+			0,
+			artifactErr.Error(),
+			retryable,
+		)
+		s.failContactWay(contactWay, "official_qr_cache_failed", requestID, providerErr)
+		return nil, providerErr
 	}
-	if err := repositories.ArrivalRepository.UpdateScanEvent(sqls.DB(), event.ID, event.TenantID, map[string]any{
-		"contact_way_id":   contactWay.ID,
-		"updated_at":       time.Now(),
-		"update_user_name": "arrival",
+	now := time.Now()
+	if err := repositories.ArrivalRepository.UpdateContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID, map[string]any{
+		"original_png_base64":       artifact.OriginalPNGBase64,
+		"artwork_png_base64":        artifact.PublishedPNGBase64,
+		"source_payload_hash":       artifact.PayloadHash,
+		"published_payload_hash":    artifact.PayloadHash,
+		"mode":                      enums.ArrivalContactWayModeQRCode,
+		"contact_way_status":        enums.ArrivalContactWayStatusActive,
+		"failure_code":              "",
+		"failure_stage":             "",
+		"provider_http_status":      0,
+		"provider_error_code":       0,
+		"provider_error_message":    "",
+		"failure_retryable":         false,
+		"next_provision_retry_at":   nil,
+		"last_provision_request_id": requestID,
+		"updated_at":                now,
+		"update_user_name":          "arrival",
 	}); err != nil {
-		return nil, err
+		providerErr := newWeComProviderError(weComStageContactWayPersist, 0, 0, "激活企业微信联系码失败", false)
+		s.failContactWay(contactWay, "contact_way_persist_failed", requestID, providerErr)
+		return nil, providerErr
 	}
+	_ = repositories.ArrivalRepository.UpdateConnection(sqls.DB(), connection.ID, connection.TenantID, map[string]any{
+		"last_contact_provisioned_at": now,
+		"updated_at":                  now,
+		"update_user_name":            "arrival",
+	})
 	return repositories.ArrivalRepository.FindContactWayByScanEvent(sqls.DB(), event.ID), nil
 }
 
-func (s *arrivalLinkService) failContactWay(contactWay *models.ArrivalContactWay, code string) {
+func (s *arrivalLinkService) resolveContactWayProvisioningContext(
+	connection *models.StoreArrivalConnection,
+) (*models.WeComTenantAuthorization, string, error) {
+	if connection == nil || connection.TenantAuthorizationID <= 0 {
+		return nil, "", newWeComProviderError(
+			weComStageAuthorizationValidate,
+			0,
+			0,
+			"门店未绑定企业微信授权主体",
+			false,
+		)
+	}
+	if connection.WxWorkProtocolInstanceID <= 0 ||
+		strings.TrimSpace(connection.ContactMemberCiphertext) == "" ||
+		strings.TrimSpace(connection.ContactMemberNonce) == "" {
+		return nil, "", newWeComProviderError(
+			weComStageContactMemberValidate,
+			0,
+			0,
+			"门店客户联系成员配置缺失",
+			false,
+		)
+	}
+	authorization := repositories.ArrivalRepository.GetTenantAuthorization(
+		sqls.DB(),
+		connection.TenantAuthorizationID,
+		connection.TenantID,
+	)
+	if authorization == nil || authorization.AuthorizationStatus != enums.WeComAuthorizationStatusActive {
+		return nil, "", newWeComProviderError(
+			weComStageAuthorizationValidate,
+			0,
+			0,
+			"门店企业微信授权主体不可用或已撤销",
+			false,
+		)
+	}
+	security, err := newArrivalSecurity()
+	if err != nil {
+		return nil, "", newWeComProviderError(
+			weComStageContactMemberValidate,
+			0,
+			0,
+			"门店客户联系成员加密服务不可用",
+			false,
+		)
+	}
+	memberUserID, err := security.Decrypt(
+		"contact_member",
+		connection.ContactMemberCiphertext,
+		connection.ContactMemberNonce,
+	)
+	if err != nil || strings.TrimSpace(memberUserID) == "" {
+		return nil, "", newWeComProviderError(
+			weComStageContactMemberValidate,
+			0,
+			0,
+			"门店客户联系成员配置无效",
+			false,
+		)
+	}
+	return authorization, strings.TrimSpace(memberUserID), nil
+}
+
+func (s *arrivalLinkService) failContactWay(
+	contactWay *models.ArrivalContactWay,
+	failureCode, requestID string,
+	provisionErr error,
+) {
 	if contactWay == nil {
 		return
 	}
-	_ = repositories.ArrivalRepository.UpdateContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID, map[string]any{
-		"contact_way_status": enums.ArrivalContactWayStatusFailed,
-		"failure_code":       strings.TrimSpace(code),
-		"updated_at":         time.Now(),
-		"update_user_name":   "arrival",
+	requestID = tracex.EnsureRequestID(requestID)
+	providerErr := asWeComProviderError(provisionErr)
+	if providerErr == nil {
+		message := "到店联系码创建失败"
+		if provisionErr != nil {
+			message = provisionErr.Error()
+		}
+		providerErr = &weComProviderError{
+			Stage:     "contact_way_provision",
+			ErrMsg:    sanitizeWeComProviderMessage(message),
+			Retryable: false,
+		}
+	}
+	now := time.Now()
+	current := repositories.ArrivalRepository.GetContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID)
+	attemptCount := contactWay.ProvisionAttemptCount
+	if current != nil {
+		attemptCount = current.ProvisionAttemptCount
+	}
+	retryable := providerErr.Retryable && attemptCount < arrivalContactWayMaxProvisionAttempts
+	var nextRetryAt any
+	if retryable {
+		nextRetryAt = now.Add(arrivalContactWayRetryDelay(attemptCount))
+	}
+	persistErr := repositories.ArrivalRepository.UpdateContactWay(sqls.DB(), contactWay.ID, contactWay.TenantID, map[string]any{
+		"mode":                      enums.ArrivalContactWayModeNone,
+		"contact_way_status":        enums.ArrivalContactWayStatusFailed,
+		"failure_code":              strings.TrimSpace(failureCode),
+		"failure_stage":             normalizeWeComProviderStage(providerErr.Stage),
+		"provider_http_status":      providerErr.HTTPStatus,
+		"provider_error_code":       providerErr.ErrCode,
+		"provider_error_message":    sanitizeWeComProviderMessage(providerErr.ErrMsg),
+		"failure_retryable":         retryable,
+		"last_provision_request_id": requestID,
+		"next_provision_retry_at":   nextRetryAt,
+		"updated_at":                now,
+		"update_user_name":          "arrival",
 	})
+	slog.Error(
+		"arrival contact way provision failed",
+		"request_id", requestID,
+		"store_id", contactWay.StoreID,
+		"authorization_id", contactWay.TenantAuthorizationID,
+		"contact_way_id", contactWay.ID,
+		"stage", normalizeWeComProviderStage(providerErr.Stage),
+		"provider_http_status", providerErr.HTTPStatus,
+		"provider_error_code", providerErr.ErrCode,
+		"provider_error_message", sanitizeWeComProviderMessage(providerErr.ErrMsg),
+		"retryable", retryable,
+	)
+	if persistErr != nil {
+		slog.Error(
+			"persist arrival contact way failure diagnostics failed",
+			"request_id", requestID,
+			"store_id", contactWay.StoreID,
+			"authorization_id", contactWay.TenantAuthorizationID,
+			"contact_way_id", contactWay.ID,
+			"stage", weComStageContactWayPersist,
+		)
+	}
+}
+
+func contactWayFailureCode(err error, fallback string) string {
+	providerErr := asWeComProviderError(err)
+	if providerErr == nil {
+		return fallback
+	}
+	if providerErr.Stage == weComStageAddContactWay && providerErr.ErrCode == 48002 {
+		return "contact_way_permission_denied"
+	}
+	switch providerErr.Stage {
+	case weComStageAuthorizationValidate:
+		return "authorization_unavailable"
+	case weComStageContactMemberValidate:
+		return "contact_member_invalid"
+	case weComStageSuiteToken:
+		return "suite_token_failed"
+	case weComStageCorpToken:
+		return "corp_token_failed"
+	default:
+		return fallback
+	}
+}
+
+func arrivalContactWayRetryDelay(attemptCount int) time.Duration {
+	switch {
+	case attemptCount <= 1:
+		return time.Minute
+	case attemptCount == 2:
+		return 5 * time.Minute
+	default:
+		return 15 * time.Minute
+	}
 }
 
 func (s *arrivalLinkService) deliverBoundEvent(event *models.ArrivalScanEvent) {

@@ -96,6 +96,29 @@ func (r *arrivalRepository) UpdateTenantAuthorization(db *gorm.DB, id, tenantID 
 	return db.Model(&models.WeComTenantAuthorization{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(updates).Error
 }
 
+func (r *arrivalRepository) ClearCorpAccessTokenIfMatches(
+	db *gorm.DB,
+	id, tenantID int64,
+	expectedCiphertext string,
+	now time.Time,
+) (bool, error) {
+	result := db.Model(&models.WeComTenantAuthorization{}).
+		Where(
+			"id = ? AND tenant_id = ? AND corp_access_token_ciphertext = ?",
+			id,
+			tenantID,
+			expectedCiphertext,
+		).
+		Updates(map[string]any{
+			"corp_access_token_ciphertext": "",
+			"corp_access_token_nonce":      "",
+			"corp_access_token_expires_at": nil,
+			"updated_at":                   now,
+			"update_user_name":             "arrival_provider",
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
 func (r *arrivalRepository) FindTenantAuthorizations(db *gorm.DB, cnd *sqls.Cnd) []models.WeComTenantAuthorization {
 	ret := make([]models.WeComTenantAuthorization, 0)
 	cnd.Find(db, &ret)
@@ -318,9 +341,82 @@ func (r *arrivalRepository) UpdateContactWay(db *gorm.DB, id, tenantID int64, up
 	return db.Model(&models.ArrivalContactWay{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(updates).Error
 }
 
+func (r *arrivalRepository) TryClaimContactWayProvision(
+	db *gorm.DB,
+	id, tenantID int64,
+	now, staleBefore time.Time,
+	requestID string,
+	maxAttempts int,
+) (bool, error) {
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	result := db.Model(&models.ArrivalContactWay{}).
+		Where(
+			"id = ? AND tenant_id = ? AND status = ? AND provision_attempt_count < ? AND (expires_at IS NULL OR expires_at > ?)",
+			id,
+			tenantID,
+			enums.StatusOk,
+			maxAttempts,
+			now,
+		).
+		Where(
+			"(contact_way_status = ? AND ((failure_retryable = ? AND (next_provision_retry_at IS NULL OR next_provision_retry_at <= ?)) OR (failure_code = ? AND provision_attempt_count = 0))) OR (contact_way_status = ? AND (last_provision_attempt_at IS NULL OR last_provision_attempt_at <= ?))",
+			enums.ArrivalContactWayStatusFailed,
+			true,
+			now,
+			"contact_way_api_failed",
+			enums.ArrivalContactWayStatusProvisioning,
+			staleBefore,
+		).
+		Updates(map[string]any{
+			"contact_way_status":        enums.ArrivalContactWayStatusProvisioning,
+			"provision_attempt_count":   gorm.Expr("CASE WHEN provision_attempt_count < 1 THEN 2 ELSE provision_attempt_count + 1 END"),
+			"last_provision_request_id": requestID,
+			"last_provision_attempt_at": now,
+			"next_provision_retry_at":   nil,
+			"updated_at":                now,
+			"update_user_name":          "arrival",
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
 func (r *arrivalRepository) FindContactWays(db *gorm.DB, cnd *sqls.Cnd) []models.ArrivalContactWay {
 	ret := make([]models.ArrivalContactWay, 0)
 	cnd.Find(db, &ret)
+	return ret
+}
+
+func (r *arrivalRepository) FindContactWaysDueForProvision(
+	db *gorm.DB,
+	now, staleBefore time.Time,
+	maxAttempts, limit int,
+) []models.ArrivalContactWay {
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	ret := make([]models.ArrivalContactWay, 0)
+	db.Where(
+		"status = ? AND provision_attempt_count < ? AND (expires_at IS NULL OR expires_at > ?)",
+		enums.StatusOk,
+		maxAttempts,
+		now,
+	).
+		Where(
+			"(contact_way_status = ? AND ((failure_retryable = ? AND (next_provision_retry_at IS NULL OR next_provision_retry_at <= ?)) OR (failure_code = ? AND provision_attempt_count = 0))) OR (contact_way_status = ? AND (last_provision_attempt_at IS NULL OR last_provision_attempt_at <= ?))",
+			enums.ArrivalContactWayStatusFailed,
+			true,
+			now,
+			"contact_way_api_failed",
+			enums.ArrivalContactWayStatusProvisioning,
+			staleBefore,
+		).
+		Order("last_provision_attempt_at ASC, id ASC").
+		Limit(limit).
+		Find(&ret)
 	return ret
 }
 
