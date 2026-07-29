@@ -2,7 +2,9 @@
 .worktrees
 .idea
 .pnpm-store
-.env
+.env*
+!.env.example
+production.env
 backups/*
 !backups/README.md
 
@@ -23,3 +25,13 @@ docs/generated/*
 !docs/generated/README.md
 .wecom-cli-bridge-state.json
 web/out/
+
+# Runtime credentials, certificates, and local databases must never be
+# committed. Public development fixtures should use non-secret text formats.
+*.pem
+*.key
+*.p12
+*.pfx
+*.db
+*.sqlite
+*.sqlite3

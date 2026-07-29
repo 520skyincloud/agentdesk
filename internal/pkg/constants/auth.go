@@ -194,9 +194,15 @@ var (
 	PermissionStorageSettingUpdate = Permission{Name: "修改平台存储设置", Code: "storageSetting.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "storageSetting", Method: "POST", APIPath: "/api/dashboard/storage-setting/update", SortNo: 1250}
 
 	// 平台企微设备池相关权限
-	PermissionWxWorkDevicePoolView   = Permission{Name: "查看平台企微设备池", Code: "wxworkDevicePool.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "ANY", APIPath: "/api/dashboard/wxwork-protocol-device-pool/list", SortNo: 1260}
-	PermissionWxWorkDevicePoolUpdate = Permission{Name: "管理平台企微设备池", Code: "wxworkDevicePool.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/update_settings", SortNo: 1270}
-	PermissionWxWorkDevicePoolSync   = Permission{Name: "同步平台企微设备池", Code: "wxworkDevicePool.sync", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/sync", SortNo: 1280}
+	PermissionWxWorkDevicePoolView    = Permission{Name: "查看平台企微设备池", Code: "wxworkDevicePool.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "ANY", APIPath: "/api/dashboard/wxwork-protocol-device-pool/list", SortNo: 1260}
+	PermissionWxWorkDevicePoolUpdate  = Permission{Name: "管理平台企微设备池", Code: "wxworkDevicePool.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/update_settings", SortNo: 1270}
+	PermissionWxWorkDevicePoolSync    = Permission{Name: "同步平台企微设备池", Code: "wxworkDevicePool.sync", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/sync", SortNo: 1280}
+	PermissionWxWorkDevicePoolAdopt   = Permission{Name: "接入真实企微员工号", Code: "wxworkDevicePool.adopt", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/adopt", SortNo: 1275}
+	PermissionWxWorkDevicePoolRepair  = Permission{Name: "修复企微员工号漏消息", Code: "wxworkDevicePool.repair", Type: "api", Scope: PermissionScopePlatform, GroupName: "wxworkDevicePool", Method: "POST", APIPath: "/api/dashboard/wxwork-protocol-device-pool/repair_messages", SortNo: 1278}
+	PermissionArrivalConnectionView   = Permission{Name: "查看门店到店连接", Code: "arrivalConnection.view", Type: "api", Scope: PermissionScopeTenant, GroupName: "arrivalConnection", Method: "ANY", APIPath: "/api/dashboard/arrival-connection/list", SortNo: 1281}
+	PermissionArrivalConnectionManage = Permission{Name: "管理门店到店连接", Code: "arrivalConnection.manage", Type: "api", Scope: PermissionScopeTenant, GroupName: "arrivalConnection", Method: "POST", APIPath: "/api/dashboard/arrival-connection/verify", SortNo: 1282}
+	PermissionArrivalConnectionInvite = Permission{Name: "邀请门店授权到店连接", Code: "arrivalConnection.invite", Type: "api", Scope: PermissionScopeTenant, GroupName: "arrivalConnection", Method: "POST", APIPath: "/api/dashboard/arrival-connection/invitation/create", SortNo: 1283}
+	PermissionArrivalAuditView        = Permission{Name: "查看到店联动审计", Code: "arrivalAudit.view", Type: "api", Scope: PermissionScopeTenant, GroupName: "arrivalConnection", Method: "ANY", APIPath: "/api/dashboard/arrival-connection/audit/list", SortNo: 1284}
 
 	// 接待策略只读选项权限。保留 aiAgent.view 编码以兼容历史角色和已签发 token。
 	PermissionAIAgentView     = Permission{Name: "查看接待策略选项", Code: "aiAgent.view", Type: "api", GroupName: "runtimeStrategy", Method: "GET", APIPath: "/api/dashboard/ai-agent/list_all", SortNo: 1310}
@@ -320,6 +326,12 @@ var Permissions = []Permission{
 	PermissionWxWorkDevicePoolView,
 	PermissionWxWorkDevicePoolUpdate,
 	PermissionWxWorkDevicePoolSync,
+	PermissionWxWorkDevicePoolAdopt,
+	PermissionWxWorkDevicePoolRepair,
+	PermissionArrivalConnectionView,
+	PermissionArrivalConnectionManage,
+	PermissionArrivalConnectionInvite,
+	PermissionArrivalAuditView,
 	PermissionAIAgentView,
 	PermissionAgentRunLogView,
 	PermissionAIConfigView,
@@ -391,7 +403,8 @@ var RolePermissions = map[string][]Permission{
 		PermissionAgentTeamScheduleView, PermissionAgentTeamScheduleCreate, PermissionAgentTeamScheduleUpdate, PermissionAgentTeamScheduleDelete, PermissionAgentTeamScheduleBatchGenerate,
 		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
 		PermissionStorageSettingView, PermissionStorageSettingUpdate,
-		PermissionWxWorkDevicePoolView, PermissionWxWorkDevicePoolUpdate, PermissionWxWorkDevicePoolSync,
+		PermissionWxWorkDevicePoolView, PermissionWxWorkDevicePoolUpdate, PermissionWxWorkDevicePoolSync, PermissionWxWorkDevicePoolAdopt, PermissionWxWorkDevicePoolRepair,
+		PermissionArrivalConnectionView, PermissionArrivalConnectionManage, PermissionArrivalConnectionInvite, PermissionArrivalAuditView,
 		PermissionAIAgentView,
 		PermissionAgentRunLogView,
 		PermissionAIConfigView, PermissionAIConfigUpdate,
@@ -420,6 +433,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionAgentTeamView, PermissionAgentTeamCreate, PermissionAgentTeamUpdate, PermissionAgentTeamDelete,
 		PermissionAgentTeamScheduleView, PermissionAgentTeamScheduleCreate, PermissionAgentTeamScheduleUpdate, PermissionAgentTeamScheduleDelete, PermissionAgentTeamScheduleBatchGenerate,
 		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
+		PermissionArrivalConnectionView, PermissionArrivalConnectionManage, PermissionArrivalConnectionInvite, PermissionArrivalAuditView,
 		PermissionAIAgentView,
 		PermissionAIConfigView, PermissionAIConfigUpdate,
 		PermissionBillingView, PermissionBillingExport,
@@ -446,6 +460,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionAgentTeamView,
 		PermissionAgentTeamScheduleView, PermissionAgentTeamScheduleCreate, PermissionAgentTeamScheduleUpdate, PermissionAgentTeamScheduleDelete, PermissionAgentTeamScheduleBatchGenerate,
 		PermissionAssetView, PermissionAssetCreate, PermissionAssetDelete,
+		PermissionArrivalConnectionView, PermissionArrivalAuditView,
 		PermissionAIAgentView,
 		PermissionSkillDefinitionView,
 	},

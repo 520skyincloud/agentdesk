@@ -33,6 +33,7 @@ type sendMessageOptions struct {
 	skipOutbound                bool
 	skipOutboundMediaValidation bool
 	externalAgentReply          bool
+	systemOutbound              bool
 	eventContent                string
 }
 
@@ -194,6 +195,32 @@ func (s *messageService) CreateExternalAgentMessageWithoutOutbox(conversationID 
 		externalAgentReply:          true,
 		eventContent:                "企微员工号人工回复",
 	})
+}
+
+func (s *messageService) SendSystemOutboundMessage(conversationID int64, clientMsgID string, messageType enums.IMMessageType, content, payload, requestID string) (*models.Message, error) {
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if conversation.Status == enums.IMConversationStatusClosed {
+		return nil, errorsx.InvalidParam("会话已关闭")
+	}
+	return s.sendValidatedMessageWithOptions(
+		conversation,
+		enums.IMSenderTypeSystem,
+		0,
+		clientMsgID,
+		messageType,
+		content,
+		payload,
+		&dto.AuthPrincipal{Username: "arrival", Nickname: "到店联动"},
+		nil,
+		requestID,
+		sendMessageOptions{
+			systemOutbound: true,
+			eventContent:   "到店联动发送通知",
+		},
+	)
 }
 
 func (s *messageService) RecallAgentMessage(messageID int64, operator *dto.AuthPrincipal) (*models.Message, error) {
@@ -566,7 +593,11 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		if !options.skipOutbound {
-			ChannelMessageOutboxService.PrepareOutboundMessage(ctx.Tx, conversation, message)
+			if options.systemOutbound {
+				ChannelMessageOutboxService.PrepareSystemOutboundMessage(ctx.Tx, conversation, message)
+			} else {
+				ChannelMessageOutboxService.PrepareOutboundMessage(ctx.Tx, conversation, message)
+			}
 		}
 		if err := repositories.MessageRepository.Create(ctx.Tx, message); err != nil {
 			return err
@@ -773,7 +804,7 @@ func (s *messageService) ensureCommittedOutboundMessage(conversation *models.Con
 // handleReadState 根据发送者类型更新会话已读状态，并返回更新后的客服和客户未读消息数。
 func (s *messageService) handleReadState(ctx *sqls.TxContext, senderType enums.IMSenderType, conversation *models.Conversation, operator *dto.AuthPrincipal, message *models.Message, external *openidentity.ExternalUser) (agentUnreadCount int64, customerUnreadCount int64, err error) {
 	readStateType := senderType
-	if senderType == enums.IMSenderTypeAI {
+	if senderType == enums.IMSenderTypeAI || senderType == enums.IMSenderTypeSystem {
 		readStateType = enums.IMSenderTypeAgent
 	}
 	if readStateType == enums.IMSenderTypeAgent {
@@ -789,7 +820,7 @@ func (s *messageService) handleReadState(ctx *sqls.TxContext, senderType enums.I
 	if agentUnreadCount, err = ConversationReadStateService.CountUnreadMessages(ctx, conversation.ID, s.readSeqNo(agentReadState), enums.IMSenderTypeCustomer); err != nil {
 		return 0, 0, err
 	}
-	if customerUnreadCount, err = ConversationReadStateService.CountUnreadMessages(ctx, conversation.ID, s.readSeqNo(customerReadState), enums.IMSenderTypeAgent, enums.IMSenderTypeAI); err != nil {
+	if customerUnreadCount, err = ConversationReadStateService.CountUnreadMessages(ctx, conversation.ID, s.readSeqNo(customerReadState), enums.IMSenderTypeAgent, enums.IMSenderTypeAI, enums.IMSenderTypeSystem); err != nil {
 		return 0, 0, err
 	}
 	return agentUnreadCount, customerUnreadCount, nil

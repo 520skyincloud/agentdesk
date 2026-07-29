@@ -144,6 +144,23 @@ func (s *channelMessageOutboxService) PrepareOutboundMessage(db *gorm.DB, conver
 	message.OutboundChannelType = channel.ChannelType
 }
 
+func (s *channelMessageOutboxService) PrepareSystemOutboundMessage(db *gorm.DB, conversation *models.Conversation, message *models.Message) {
+	if message == nil {
+		return
+	}
+	message.OutboundChannelType = ""
+	if db == nil || conversation == nil || conversation.ChannelID <= 0 ||
+		message.SenderType != enums.IMSenderTypeSystem {
+		return
+	}
+	channel := repositories.ChannelRepository.GetInTenant(db, conversation.ChannelID, conversation.TenantID)
+	if channel == nil || channel.TenantID != conversation.TenantID ||
+		!supportsOutboundMessageType(channel.ChannelType, message.MessageType) {
+		return
+	}
+	message.OutboundChannelType = channel.ChannelType
+}
+
 func (s *channelMessageOutboxService) EnsureMarkedOutboundMessage(conversation *models.Conversation, message *models.Message) (bool, error) {
 	if message == nil || strings.TrimSpace(message.OutboundChannelType) == "" {
 		return false, nil

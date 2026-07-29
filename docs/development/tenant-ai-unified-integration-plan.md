@@ -1671,14 +1671,15 @@ git diff --check
 - **唯一数据库入口**：当前应用只接受空 SQLite 或空 MySQL。AutoMigrate 直接创建
   `models.Models` 当前 Schema；不存在旧库升级、旧表扫描、历史回填、兼容读取或
   Schema cleanup 模式。
-- **唯一 DML 集合**：runner 注册版本严格锁定为 `[2, 15, 35, 68, 69]`。分别初始化
+- **唯一 DML 集合**：runner 注册版本严格锁定为 `[2, 15, 35, 68, 69, 70, 71]`。分别初始化
   当前权限/角色/首个管理员、天气技能、OIDC fallback Tenant、权威行业意图与标签目录、
-  未配置九槽 Model Profile。任何其他版本都不属于当前应用。
+  未配置九槽 Model Profile、到店联动权限、企微真实实例接入与补漏权限及内置角色默认
+  关系。任何其他版本都不属于当前应用。
 - **当前创建链**：新 Tenant 通过 `TenantService.CreateTenant` 原子创建行业投影、首个
   公司主管、默认综合客服组、邀请和内部接待策略；新门店只在账号获得
   `store_staff` 角色时通过 `StoreStaffBindingService` 原子建立 Store、Binding、
   Credential/Policy 和客户标签运行策略。初始化器不扫描既有 Tenant 或 Store。
-- **Preflight**：只校验当前 `t_migration` 中的版本与 remark 是否和上述五个初始化器
+- **Preflight**：只校验当前 `t_migration` 中的版本与 remark 是否和上述七个初始化器
   一致；未知版本、同版本不同定义或失败记录直接阻止启动。代码和 Schema 中均不存在
   `MigrationDefinitionArchive`。
 - **废弃边界**：Company、AIConfig、TenantAIModelGrant、StoreAIModelSetting、
@@ -1694,8 +1695,8 @@ git diff --check
   会话的情况下完成代码验证。正式 `8083` 部署必须使用空数据库和目标环境自己的受限
   秘密，通过产品流程重新创建业务对象并完成外部渠道验收。
 
-本节覆盖正文和 25.1-25.43 中所有关于定义归档、旧库升级、B14、Migration 70/72/76/77、
-固定 pilot、历史仿真数据及旧表保留的相反描述。
+本节覆盖正文和 25.1-25.43 中所有关于定义归档、旧库升级、B14、旧方案中同号
+Migration 70 以及 Migration 72/76/77、固定 pilot、历史仿真数据及旧表保留的相反描述。
 
 ### 25.45 2026-07-27 最终收敛与交付验证
 
@@ -1705,8 +1706,10 @@ git diff --check
 - **前端**：全部 `*.test.mjs` 共 158 项通过，`pnpm typecheck`、SDK 构建、Next.js
   生产构建通过；ESLint 为 `0 error / 33 warning`，warning 均为既有规则提示。
 - **双数据库**：全新 SQLite 和临时 MySQL 8.4 均完成首次启动与二次启动；成功
-  Migration 始终精确为 `[2, 15, 35, 68, 69]`。退役表计数为 0，MySQL 遗留
-  `company_id` 列计数为 0；临时 MySQL 容器已删除。
+  Migration 在本次历史验收时为 `[2, 15, 35, 68, 69]`。退役表计数为 0，MySQL 遗留
+  `company_id` 列计数为 0；临时 MySQL 容器已删除。后续新增 Arrival permission
+  Migration `70` 的 SQLite 证据和 MySQL 延期边界见 25.47，本条不作为 `70` 的
+  MySQL 验收证据。
 - **页面**：隔离 `18084` 只使用 fresh SQLite、内建平台账号及当前初始化数据。接入公司、
   九槽模型方案、行业标签模板均正常加载；1280 宽无页面级横向溢出，控制台无错误，未创建
   真实 Tenant、Store、会话、企微实例、NewAPI Credential 或 FastGPT 资源。
@@ -1754,6 +1757,243 @@ git diff --check
   代码；唯一 Git 变化是本节交接记录。代码合并不依赖该本地测试数据，fresh
   SQLite/MySQL 初始化契约保持不变。正式发布仍须在目标环境重新创建业务对象、使用
   HTTPS FastGPT、由实际 Key 持有人录入凭据并完成九槽、AI 回复、企微和账单验收。
+
+### 25.47 2026-07-27 到店联动链接引擎 V2
+
+- **权威输入**：只采用用户提供的最新 `(1)` 三份 Arrival 方案；输入 SHA-256、冻结契约、
+  身份边界、数据模型和部署条件统一记录于
+  `docs/design/arrival-link-engine.md`，旧版同名方案不再参与实现判断。
+- **现有能力复用**：继续使用统一 Tenant/Store、唯一门店员工、WxWorkProtocolInstance、
+  Customer、Conversation、Message、Outbox、权限和完整性审计。不创建第二套客户、会话、
+  门店、员工实例、登录或消息发送系统，不修改 AI、NewAPI、FastGPT 和 Billing。
+- **新增领域**：增加小程序身份、Suite credential、Corp 授权、门店到店连接、一次性邀请、
+  授权 attempt、扫码事件、短期 session、联系码、门店客户绑定、回调事件和 Arrival 审计。
+  DDL 进入现有 AutoMigrate，全部 Tenant 关联进入完整性审计。
+- **冻结接口**：实现 `POST /api/miniprogram/arrival/bootstrap` 和严格只读
+  `GET /api/miniprogram/arrival/status`；请求固定 `arrival_scan_input.v1`，响应固定
+  `arrival_scan_result.v2`。公开二维码、服务商接入、企微双回调和管理后台路由均显式注册。
+- **绑定边界**：动态 contactState 只能完成 Stage A 的
+  `CorpID + 成员 UserID + external_userid` 官方关系确认。公开员工号协议尚未证明
+  `external_userid ↔ user_id/vid`，因此 Stage B bridge 默认关闭；Stage A 成功固定
+  `legacy_unmapped + not_bound`，禁止昵称、头像、手机号、时间邻近或 UnionID 假设。
+- **二维码**：调用官方 `add_contact_way(type=1, scene=2)`，限制 HTTPS 来源、防 SSRF，
+  解码真实 payload、生成透明艺术码并反向逐字验码；只有一致时发布。公开资源使用签名
+  token，授权撤销后立即不可读；清理任务区分官方删除与本地材料清除，不伪造成功。
+- **幂等与投递**：同一 `scanEventId` 只允许原 schema、scene、loginCode 指纹重试；
+  数据库条件抢占避免多进程重复投递，异常中断落明确失败。发送只复用现有员工号 service
+  和已验证真实 `S:` 会话；status 不登录、不建事件、不建码、不映射、不补发。
+- **页面与权限**：新增 `/dashboard/arrival-connections` 管理连接、邀请、验证、禁用和
+  审计，新增 `/wecom/provider/settings` 供受邀请的门店企微管理员完成官方授权与成员选择。
+  `arrivalConnection.view/manage/invite` 和 `arrivalAudit.view` 均进入现有权限管理；
+  DML migration `70` 只幂等同步这四项及内置角色默认关系，确保已有数据库升级后入口可见，
+  不覆盖自定义角色和其他权限关系。
+- **配置与安全**：Arrival 默认关闭；正式启用必须具备 `weibao.omnireva.com` 有效 HTTPS、
+  小程序 AppSecret、Suite secret、回调材料和三套独立安全密钥。秘密只能由环境注入，
+  生产预检拒绝 HTTP、IP、localhost、弱密钥和缺失配置。
+- **验证边界**：Arrival service、回调、二维码和导航测试已经建立；合并前必须重跑整库
+  Go 测试、vet、前端 typecheck/lint/build 和敏感字段扫描。MySQL 实机矩阵按用户决定延期，
+  保留 `TEST_MYSQL_DSN` 入口并明确不能声称双数据库已经验收。
+- **上线阻塞**：真实企业微信服务商注册/审核、回调域名、小程序合法域名、跨 Corp 授权
+  撤销验收以及确定性的 Stage B 协议桥仍需外部条件。桥未验收前只能上线首次联系二维码
+  和关系待同步状态，不能宣称再次扫码发卡闭环完成。
+- **回滚**：先关闭 `AGENT_DESK_ARRIVAL_ENABLED` 停止运行链，再回退 Arrival 独立提交；
+  新表数据清理必须另行审批，不能混入普通代码回滚。
+
+### 25.48 2026-07-28 企微员工号真实协议接入
+
+- **协议事实源**：实现只依据 `wework.apifox.cn` 的员工号协议文档：
+  `doc-7013959.md` 接收回调、`api-276643986.md` 设置通知地址和
+  `api-276644145.md` 消息补漏。发送继续使用 `conversation_id`，单聊固定 `S:`、群聊固定
+  `R:`；没有把企业微信服务商回调、微信客服、个人微信或旧协议字段混入员工号运行链。
+- **现有能力复用**：继续使用既有实例池、`WxWorkProtocolInstance`、Tenant、Store、
+  唯一门店员工绑定、Channel、Customer、Conversation、Message、MessageMapping、
+  SyncLog、Outbox 和 WebSocket。不创建第二套实例、客户、会话、消息或登录体系。
+- **真实实例接入**：平台管理员只能接管实例池中已登录、未过期且尚未绑定的真实实例。
+  服务端通过认证后台读取 Provider 应用材料，再调用真实 `user/get_profile` 验证 GUID；
+  成功后创建或复用 Tenant 范围的 `wxwork_protocol` Channel，并绑定既有唯一门店员工。
+  重试同一目标保持幂等，跨 Tenant、已被其他门店接管或状态不可用均明确拒绝。
+- **独立回调**：接入时通过真实 `client/set_notify_url` 给该 GUID 设置
+  `https://<public-host>/api/third/wxp?t=<token>`。短路径只缩短 `notify_url` 字符串，不改变
+  文档规定的 `guid + notify_url` 请求体、回调 JSON 或实例身份；原
+  `/api/third/wxwork-protocol/callback?token=...` 继续由同一 Handler 兼容。每个 Channel
+  使用 32 字节随机值生成的 43 字符回调 token，服务端常量时间比较；Channel 查询接口不返回
+  `appKey`、`appSecret` 或回调 token，更新非秘密字段时保留已有秘密。
+- **回调 HTTP 契约**：仅接受 POST。请求体错误返回 `400`，回调 token 缺失或错误返回
+  `401`，未知或停用实例返回 `404`，业务失败返回 `500`，真实处理成功才返回
+  `200 success`。未知回调不再创建 `tenant_id=0` 的临时实例。失败日志只记录 method、
+  stage、requestId、notifyType 和 HTTP status，不记录凭据、身份值、完整密文或正文。
+- **消息一致性**：回调 `data.seq` 按字符串保存检查点，发现可证明的前向缺口才记录缺口
+  范围。后台“补漏”只在缺口存在时调用已废弃且受频控的 `sync/sync_msg`，请求固定真实
+  `guid`、非零 `sync_key` 和有界 `limit`，不允许常态轮询或无缺口重放。
+- **双向消息**：客户首条入站和员工在企微原生客户端先发出的消息都能建立或复用
+  Tenant/Store 范围 Conversation、映射和 Message；员工自发消息标记为渠道已发送，不再
+  进入 Outbox 形成回声发送。AgentDesk 主动回复继续复用既有 Outbox 和协议发送路径。
+- **权限和页面**：在现有 `/dashboard/wxwork-device-pool` 增加“接入门店”“重试接入”
+  和“补漏”，没有新增平行管理页。平台权限新增 `wxworkDevicePool.adopt` 和
+  `wxworkDevicePool.repair`；DML migration `71` 只幂等同步这两项及内置角色关系，不覆盖
+  自定义角色。
+- **验证**：回调 `400/401/404/500/200`、禁止 tenant-zero、在线接入、HTTPS 通知、
+  幂等/跨 Tenant、秘密不回显、员工先发、无回声、序号缺口和有界补漏均有自动化测试。
+  合并前整库 Go test、vet、前端 159 项行为测试、typecheck 和生产 build 已通过。
+- **部署门禁**：发布前必须备份 MySQL 与当前 release；反向代理不得把回调 query token
+  写入 access log。发布后必须在目标环境重新同步实例池并接管真实在线 GUID，随后以真实
+  单聊完成“客户入站、AgentDesk 出站、企微原生员工出站、重复回调幂等、非法回调非
+  2xx”验收。未观察到真实双向消息前只能称代码就绪，不能称生产已接通。
+- **边界**：群消息目前明确跳过。只有先完成群客户身份、群 Conversation 归属和 Store
+  数据范围设计后才能启用，禁止直接把 `R:` 事件塞入单聊客户模型。
+
+### 25.49 2026-07-28 企微员工号短回调生产部署
+
+- **文档复核**：部署前重新读取 `https://wework.apifox.cn/llms.txt`、
+  `api-276643986.md`、`doc-7013959.md`、`api-276644145.md` 和
+  `api-276644016.md`。当前实现继续严格使用 `client/set_notify_url` 的 `guid +
+  notify_url`、回调的 `guid + notify_type + data.seq`、仅缺口场景下非零
+  `sync_key` 的有界 `sync_msg`，以及发送消息的 `conversation_id`；没有增加文档外协议字段。
+- **真实根因**：首次接入时 `/user/get_profile`、Tenant/Store/门店员工绑定及业务实例创建
+  均已成功，失败发生在 Provider 保存 `notify_url` 时，真实上游返回 MySQL
+  `Error 1406 (22001): Data too long for column 'callback_url'`。原完整路径为 112
+  字节；这不是实例到期、已被其他应用占用、登录冲突或 AgentDesk 回调解码失败。
+- **修复**：保留原 32 字节随机回调 token，不降低熵；新增复用同一 Handler 的
+  `/api/third/wxp?t=...`，Handler 依次读取短参数 `t`、兼容参数 `token` 和既有 Header。
+  生产最终 URL 为 87 字节，旧完整路径继续兼容。Nginx 对新旧两个精确回调 location 均
+  `access_log off`，避免 query token 进入访问日志。
+- **备份与发布**：切换前备份位于
+  `/opt/agentdesk/backups/20260728-181618-wxwork-short-callback`，包含当前 release 和
+  MySQL dump；dump 已独立恢复验证为 114 张表、7 条 Migration 后删除临时库。回滚镜像为
+  `mlogclub/agent-desk:rollback-20260728-181618-wxwork-short-callback`。当前 release 为
+  `/opt/agentdesk/releases/20260728-181618-wxwork-short-callback/app`，运行镜像配置 ID
+  为 `sha256:87cbf365ddd29db859fe02e9a615e0a7dea894c9159afdd781da288a90f53eed`。
+- **真实接入结果**：生产应用和 MySQL 均为 healthy，应用重启数为 0；真实
+  `/user/get_profile` 通过，真实 `client/set_notify_url` 返回成功。实例池记录 `2` 保持
+  绑定业务实例 `1` 并从 `callback_error` 恢复为 `bound`；业务实例仍属于 Tenant `2`、
+  Store `1` 且为 `online`。再次同步实例池返回 2 条记录、1 条已绑定，未登出、抢占或重建
+  真实实例。
+- **验证**：最新短路径变更后 `go test ./...`、`go vet ./...` 和 `git diff --check`
+  全部通过；公开短路径和兼容路径的非法 POST 均返回 `400`，结构化日志只记录 method、
+  stage、requestId、notifyType 和状态码。生产页面
+  `https://weibao.omnireva.com/dashboard/conversations/` 返回 `200`。
+- **未完成证据**：设置真实通知地址后尚未收到一条新的客户私聊，因此当前可称“真实实例、
+  资料接口和通知地址已接通”，不能称“消息端到端已经验收”。完成口径仍是同一真实
+  `S:` 会话观察到客户入站、AgentDesk 回复到达企微、企微原生员工回复回流、重复回调不
+  重复入库；无 `data.seq` 缺口时不得为了制造证据调用已废弃的 `sync_msg`。
+- **并行分支与回滚**：本次短路径只改第三方路由、同一回调 Handler、通知 URL 构造及测试，
+  不改 model、Migration、DTO、enum、WebSocket、AI、FastGPT、NewAPI、Billing、派单或
+  Arrival。任务开始时 `git fetch origin` 因 GitHub 连接超时未成功，未覆盖本地工作树；
+  后续 push 前必须重新 fetch 并核对同文件修改。
+
+### 25.50 2026-07-29 企业微信授权类型请求契约修复
+
+- **根因与契约**：`set_session_info.session_info.auth_type` 原实现为 `[]int{0}`，实际请求
+  因而是 JSON 数组。本次用强类型请求 DTO 收敛为整数，配置值只允许 `0` 或 `1`，不再以
+  `map[string]any` 隐式决定请求结构。
+- **环境边界**：新增 `AGENT_DESK_WECOM_AUTH_TYPE`。测试环境默认 `1`；本节记录的初始
+  版本曾在生产启用 Arrival 时固定要求 `0`，导致企业微信“安装测试”阶段无法使用。该限制
+  已由 25.51 修正为按应用阶段显式选择合法整数 `1/0`。Compose 只透传该变量，不新增
+  数据库配置、第二套授权状态或页面设置。
+- **state 安全**：所有授权 state 在获取 suite token 前必须满足
+  `^[A-Za-z0-9]{1,128}$`。系统生成 state 改为 32 字节 CSPRNG 后 hex 编码的 64 位字符串，
+  不再使用可能产生 `-` 或 `_` 的 Base64URL 表达；URL 使用已经验证的原始值，不静默修剪。
+- **自动化测试**：请求体测试分别截获测试授权 `1` 和正式授权 `0`，使用
+  `json.Decoder.UseNumber` 证明 `auth_type` 是 JSON number，并锁定顶层和
+  `session_info` 字段集合。非法 state、非法授权类型和随机 state 生成契约均有回归测试。
+  `go test ./... -count=1`、`go vet ./...`、`git diff --check` 通过。
+- **部署**：当前 release 为
+  `/opt/agentdesk/releases/20260729-144925-wecom-auth-type/app`，运行镜像配置 ID 为
+  `sha256:04df2ede2dfe3548142c6fe1c035adbe62a96ec0cfee5111c3eaa6808811839c`。
+  切换前备份恢复验证为 114 张表、7 条 Migration；回滚镜像为
+  `mlogclub/agent-desk:rollback-20260729-144925-wecom-auth-type`。
+- **线上证据**：应用和 MySQL 均 healthy、重启数均为 0；生产 env 和容器内授权类型唯一
+  为 `0`；当前 release、上传源码归档和镜像文件系统均不存在旧
+  `"auth_type": []int{0}`；HTTPS 与公网 `8083` 登录页均为 HTTP 200。
+- **影响与边界**：不改 model、Migration、repository、handler、DTO、enum、HTTP 路由、
+  WebSocket、权限、前端、员工号协议、AI、FastGPT、NewAPI、Billing 或派单。并行分支只需
+  在合并 Arrival service/config/Compose 同文件时保留本契约。当前不把代码和部署通过描述
+  成企业微信正式安装授权已完成，真实安装仍需单独发起并观察官方结果。
+
+### 25.51 2026-07-29 企业微信安装测试授权阶段修复与真实跳转验收
+
+- **阶段语义**：`AGENT_DESK_WECOM_AUTH_TYPE` 是企业微信第三方应用阶段配置，不是运行
+  环境类型。安装测试固定为整数 `1`，正式发布后固定为整数 `0`；生产预检接受这两个合法
+  阶段值并拒绝其他值。当前线上仍处于“安装测试”，因此仓库外
+  `/opt/agentdesk/shared/production.env` 和容器内实际值均为 `1`。正式发布后必须改回
+  `0` 并强制重建容器。
+- **请求与 URL 契约**：`set_session_info` 继续使用强类型 DTO，请求体只有
+  `pre_auth_code` 与单字段 `session_info`，`auth_type=1/0` 均为 JSON number。授权
+  `state` 必须满足 `^[A-Za-z0-9]{1,128}$`，生成值为 64 位十六进制。授权地址固定为
+  `https://open.work.weixin.qq.com/3rdapp/install`；`redirect_uri` 只编码一次，解码后
+  精确等于
+  `https://weibao.omnireva.com/api/wecom/provider/authorization/callback`。
+- **自动化证据**：配置测试覆盖安装测试 `1`、正式 `0` 与非法值；请求契约测试使用
+  `json.Decoder.UseNumber` 锁定 JSON number 和字段集合；URL 测试锁定 host、path、
+  单次编码回调和安全 state。`go test ./internal/pkg/config ./internal/services
+  -run 'WeComProvider|WeComAuthType|RandomWeCom' -count=1`、`go test ./... -count=1`、
+  `go vet ./...` 和 `git diff --check` 均通过。
+- **发布与恢复**：release 为
+  `/opt/agentdesk/releases/20260729-161037-wecom-install-test/app`，镜像配置 ID 为
+  `sha256:59c9a205a8ea55cb63c4bf0acb1f27fe7878cabccc4a05c5bae48fc81dfd6a94`。
+  备份 `/opt/agentdesk/backups/20260729-161037-wecom-install-test` 已独立恢复验证
+  114 张表、7 条 Migration；回滚镜像为
+  `mlogclub/agent-desk:rollback-20260729-161037-wecom-install-test`。
+- **线上运行证据**：应用容器于 `2026-07-29 16:16:49`（Asia/Shanghai）启动，
+  `healthy` 且重启数为 `0`；强制重建后 `2026-07-29 16:24:54` 收到新的
+  `suite_ticket`，状态 `processed`。两个服务商回调和授权完成回调仍可达，非法探测未
+  返回假成功。
+- **真实新邀请**：在丽斯未来 Tenant 的合肥南七 Store 从“到店联动”创建了全新一次性
+  邀请，未复用旧邀请、预授权码或 state。新邀请真实跳转到
+  `open.work.weixin.qq.com/3rdapp/install`，页面标题为“企业微信”，没有停留在
+  AgentDesk 的 `redirect_uri` 不一致错误页。企业管理员最终确认必须由用户本人操作；
+  在授权完成回调、Corp 授权记录和连接校验完成前，不宣称安装授权已完成。
+- **凭证轮换**：此前截图暴露的 SuiteSecret、回调 Token 与 EncodingAESKey 必须在本次
+  管理员确认安装后，于同一维护窗口原子轮换企业微信后台和仓库外生产环境；强制重建后
+  复验两类回调、新 `suite_ticket` 和全新邀请，再废止旧值。当前运行时没有双凭据并行，
+  因此任何一侧失败都必须双侧回滚，禁止把新值写入聊天、截图、日志、Git 或数据库。
+- **并行分支与影响**：`origin/codex/ai-billing` 同时修改
+  `internal/pkg/config/config.go`、`internal/pkg/config/config_test.go` 和
+  `docker-compose.yml`。合并时必须保留本节 `0/1` 阶段语义、默认安装测试值与强制重建
+  规则，不得恢复“生产固定 0”的旧预检。本次没有 model、AutoMigrate、DML Migration、
+  DTO、enum、HTTP/WebSocket、权限、微信小程序、AI 回复引擎、企微员工号协议、Billing、
+  FastGPT、派单或后台页面行为变化。
+
+### 25.52 2026-07-29 到店联动成员跨命名空间绑定修复
+
+- **根因**：`CompleteConnection` 和后续 `verifyConnection` 把官方
+  `externalcontact/get_follow_user_list` 返回的成员 UserID 与员工号登录资料中的
+  `WxWorkProtocolInstance.EmployeeUserID` 当成同一命名空间并强制字符串相等；
+  `ProviderOptions` 还曾按该相等关系自动套用姓名。员工号协议只保证其自身资料语义，
+  没有保证这些字段与企业微信官方客户联系成员 UserID 相同。
+- **修复语义**：管理员分别选择官方成员和当前门店员工实例，点击完成即构成
+  `operator_confirmed_cross_namespace` 人工确认映射。`StoreArrivalConnection` 独立保存
+  官方成员密文、nonce、指纹及员工实例 ID，不覆盖或回填 `EmployeeUserID`，也不以姓名
+  自动匹配。该配置不证明客户 `external_userid ↔ protocol user_id/vid`，Stage B bridge
+  继续保持原确定性门禁。
+- **安全与事务**：仍校验 active authorization、未过期且属于当前 attempt 的选择令牌、
+  成员仍在实时 `follow_user` 列表、实例 Tenant/Store/可用状态和连接记录。连接激活、
+  邀请停用、attempt 停用及安全审计仍在同一事务；审计只增加非敏感 `mappingMode`，不写
+  原始成员 ID、EmployeeUserID、guid、`conversation_id`、永久授权码或 token。
+- **页面语义**：成员列表不再通过跨命名空间 ID 推断员工姓名，绑定标题改为“请确认客户
+  联系成员与门店员工实例属于同一位员工”，明确这是管理员确认，不宣传为系统自动识别。
+- **自动化验证**：覆盖 ID 不同和相同均成功、成员已失效、跨 Tenant、跨 Store、实例停用
+  或删除、伪造/过期/其他 attempt 选择令牌、两侧标识独立持久化、连接 active、邀请与
+  attempt 同事务停用、`EmployeeUserID` 不变、审计与响应不泄密，以及审计失败时全事务
+  回滚。`go test ./internal/services -count=1`、`go test ./... -count=1`、
+  `go vet ./...`、`pnpm typecheck` 和 `git diff --check` 均通过。
+- **生产发布与真实绑定**：最终 release 为
+  `/opt/agentdesk/releases/20260729-195400-arrival-cross-namespace-binding-resume/app`，
+  镜像配置 ID 为
+  `sha256:7dc951d1e6a27523124783618f321742ebaf60ececdc2850a6f05e41df96d035`。
+  容器于 `2026-07-29 19:57:53`（Asia/Shanghai）启动，当前 healthy、重启数为 0；
+  `2026-07-29 20:05:01` 新 `suite_ticket` 处理成功。生产审计显示恢复流程实际重复创建
+  并完成了两条复用现有 active 授权的替代邀请，与只创建一次的操作预期不一致；两条均已
+  使用并停用，对应 attempt 均完成并停用，当前有效邀请为 0，且未重新发起安装授权。
+  “合肥南七”连接已由 `pending_binding` 变为 `active`，授权主体仍为 active；官方成员
+  加密材料与员工实例 ID 独立存在，`EmployeeUserID` 绑定前后哈希一致，最新审计仅记录
+  `mappingMode=operator_confirmed_cross_namespace`。最近校验时间为
+  `2026-07-29 21:04:12`；绑定后日志复检未发现 panic/fatal、原始身份标识或凭据字段。
+- **共享与回滚**：生产逻辑只修改 Arrival connection service，页面只修改双语文案，并
+  新增同包 service 测试；没有 model、AutoMigrate、DML Migration、repository、DTO、
+  enum、HTTP/WebSocket、权限、小程序契约、AI、FastGPT、NewAPI、Billing、派单或员工号
+  协议字段变化。应随统一分支整体合入；代码回滚不需要数据回滚，但会恢复错误的跨命名
+  空间相等限制。
 
 ## 26. 用户最终 1-48 项决定追溯
 
@@ -1803,7 +2043,7 @@ git diff --check
 | 38 | 标签只能来自固定行业目录；终端客户不能修改；Tenant 仅管理允许的开关、别名和策略 | 11.2、11.3 |
 | 39 | 旧模型、授权、StoreSetting 和 ConversationTag 代码/API/UI 全部删除，不留双运行链 | 12.1、12.3、B12 |
 | 40 | Tenant 可配置演化策略，单个 Store 客户关系最多 6 个有效标签 | 11.3、11.4 |
-| 41 | 保留 AutoMigrate 和 DML runner；按最终 fresh 决定取消定义归档，DML 固定为五个当前初始化器 | 18.2、25.44 |
+| 41 | 保留 AutoMigrate 和 DML runner；按最终 fresh 决定取消定义归档，DML 固定为七个当前初始化器 | 18.2、25.44、25.48 |
 | 42 | 最终只有一套应用和一套 Schema；只验证 SQLite/MySQL fresh 初始化与幂等 | 18.1、21.7、25.44 |
 | 43 | 生产预检发现未知 Migration、范围断链或不可证明回填时阻止启动并先修复 | 18.2、18.3、22.1 |
 | 44 | 旧 `AIConfig.APIKey` 和旧 Resolver 直接退出，不迁入或回退影响新配置 | 12、18.3、18.4 |

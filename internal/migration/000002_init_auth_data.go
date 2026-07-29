@@ -2,6 +2,7 @@ package migration
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
@@ -38,10 +39,14 @@ func init() {
 }
 
 func ensurePermissions(tx *gorm.DB) (map[string]*models.Permission, error) {
-	permissions := make(map[string]*models.Permission, len(constants.Permissions))
+	return ensurePermissionSpecs(tx, constants.Permissions)
+}
+
+func ensurePermissionSpecs(tx *gorm.DB, specs []constants.Permission) (map[string]*models.Permission, error) {
+	permissions := make(map[string]*models.Permission, len(specs))
 	now := time.Now()
 
-	for _, spec := range constants.Permissions {
+	for _, spec := range specs {
 		permission := repositories.PermissionRepository.FindOne(tx, sqls.NewCnd().Eq("code", spec.Code))
 		if permission == nil {
 			permission = &models.Permission{
@@ -144,15 +149,36 @@ func ensureRoles(tx *gorm.DB) (map[string]*models.Role, error) {
 }
 
 func ensureRolePermissions(tx *gorm.DB, roles map[string]*models.Role, permissions map[string]*models.Permission) error {
+	return ensureRolePermissionsByCode(tx, roles, permissions, nil)
+}
+
+func ensureRolePermissionsByCode(
+	tx *gorm.DB,
+	roles map[string]*models.Role,
+	permissions map[string]*models.Permission,
+	permissionCodes map[string]struct{},
+) error {
 	now := time.Now()
 
 	for roleCode, rolePermissions := range constants.RolePermissions {
+		filteredPermissions := make([]constants.Permission, 0, len(rolePermissions))
+		for _, permissionSpec := range rolePermissions {
+			if permissionCodes != nil {
+				if _, ok := permissionCodes[permissionSpec.Code]; !ok {
+					continue
+				}
+			}
+			filteredPermissions = append(filteredPermissions, permissionSpec)
+		}
+		if len(filteredPermissions) == 0 {
+			continue
+		}
 		role := roles[roleCode]
 		if role == nil {
 			return errors.New("builtin role not found: " + roleCode)
 		}
 
-		for _, permissionSpec := range rolePermissions {
+		for _, permissionSpec := range filteredPermissions {
 			permission := permissions[permissionSpec.Code]
 			if permission == nil {
 				return errors.New("builtin permission not found: " + permissionSpec.Code)
@@ -193,6 +219,14 @@ func ensureBootstrapAdmin(tx *gorm.DB, superAdminRole *models.Role) error {
 	username := constants.BootstrapAdminUsername
 	nickname := constants.BootstrapAdminNickname
 	password := constants.BootstrapAdminPassword
+	if cfg, ok := config.LookupCurrent(); ok {
+		if value := strings.TrimSpace(cfg.BootstrapAdmin.Username); value != "" {
+			username = value
+		}
+		if value := strings.TrimSpace(cfg.BootstrapAdmin.Password); value != "" {
+			password = value
+		}
+	}
 
 	if strings.TrimSpace(password) == "" {
 		password = "ChangeMe123!"

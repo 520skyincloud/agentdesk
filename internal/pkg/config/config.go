@@ -20,6 +20,7 @@ type Config struct {
 	DB                 DBConfig                 `yaml:"db"`
 	Logger             LoggerConfig             `yaml:"logger"`
 	Auth               AuthConfig               `yaml:"auth"`
+	BootstrapAdmin     BootstrapAdminConfig     `yaml:"-"`
 	Email              EmailConfig              `yaml:"email"`
 	FastGPT            FastGPTConfig            `yaml:"fastGPT"`
 	StoreCredential    StoreCredentialConfig    `yaml:"-"`
@@ -30,6 +31,7 @@ type Config struct {
 	CustomerSession    CustomerSessionConfig    `yaml:"customerSession"`
 	TenantRegistration TenantRegistrationConfig `yaml:"tenantRegistration"`
 	BackgroundWorkers  BackgroundWorkerConfig   `yaml:"backgroundWorkers"`
+	Arrival            ArrivalConfig            `yaml:"arrival"`
 }
 
 type EmailConfig struct {
@@ -117,12 +119,84 @@ type AuthConfig struct {
 	InvitationEncryptionKey string `yaml:"-"`
 }
 
+// BootstrapAdminConfig is environment-only and is consumed by the fresh
+// database initializer. It must never be loaded from repository YAML.
+type BootstrapAdminConfig struct {
+	Username string `yaml:"-"`
+	Password string `yaml:"-"`
+}
+
 type TenantRegistrationConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
 
 type BackgroundWorkerConfig struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+type ArrivalConfig struct {
+	Enabled                     bool     `yaml:"enabled"`
+	PublicBaseURL               string   `yaml:"publicBaseUrl"`
+	MiniProgramAppID            string   `yaml:"miniProgramAppId"`
+	MiniProgramAppSecret        string   `yaml:"-"`
+	SessionSecret               string   `yaml:"-"`
+	IdentityHMACKey             string   `yaml:"-"`
+	DataMasterKey               string   `yaml:"-"`
+	DataMasterKeyID             string   `yaml:"-"`
+	WeComSuiteID                string   `yaml:"weComSuiteId"`
+	WeComSuiteSecret            string   `yaml:"-"`
+	WeComProviderCallbackToken  string   `yaml:"-"`
+	WeComProviderEncodingAESKey string   `yaml:"-"`
+	WeComAuthType               int      `yaml:"-"`
+	WeChatAPIBaseURL            string   `yaml:"weChatApiBaseUrl"`
+	WeComAPIBaseURL             string   `yaml:"weComApiBaseUrl"`
+	QRCodeAllowedHostSuffixes   []string `yaml:"qrCodeAllowedHostSuffixes"`
+	SessionTTLMinutes           int      `yaml:"sessionTtlMinutes"`
+	InvitationTTLMinutes        int      `yaml:"invitationTtlMinutes"`
+	ContactWayTTLMinutes        int      `yaml:"contactWayTtlMinutes"`
+	DeliveryRateLimitSeconds    int      `yaml:"deliveryRateLimitSeconds"`
+}
+
+func (c ArrivalConfig) SessionTTL() int {
+	if c.SessionTTLMinutes <= 0 {
+		return 30
+	}
+	return c.SessionTTLMinutes
+}
+
+func (c ArrivalConfig) InvitationTTL() int {
+	if c.InvitationTTLMinutes <= 0 {
+		return 1440
+	}
+	return c.InvitationTTLMinutes
+}
+
+func (c ArrivalConfig) ContactWayTTL() int {
+	if c.ContactWayTTLMinutes <= 0 {
+		return 1440
+	}
+	return c.ContactWayTTLMinutes
+}
+
+func (c ArrivalConfig) DeliveryRateLimit() int {
+	if c.DeliveryRateLimitSeconds <= 0 {
+		return 60
+	}
+	return c.DeliveryRateLimitSeconds
+}
+
+func (c ArrivalConfig) WeChatBaseURL() string {
+	if value := strings.TrimRight(strings.TrimSpace(c.WeChatAPIBaseURL), "/"); value != "" {
+		return value
+	}
+	return "https://api.weixin.qq.com"
+}
+
+func (c ArrivalConfig) WeComBaseURL() string {
+	if value := strings.TrimRight(strings.TrimSpace(c.WeComAPIBaseURL), "/"); value != "" {
+		return value
+	}
+	return "https://qyapi.weixin.qq.com"
 }
 
 type CustomerSessionConfig struct {
@@ -255,6 +329,7 @@ func Load(path string) (*Config, error) {
 
 	cfg := &Config{
 		BackgroundWorkers: BackgroundWorkerConfig{Enabled: true},
+		Arrival:           ArrivalConfig{WeComAuthType: 1},
 	}
 	if err := yaml.Unmarshal(b, cfg); err != nil {
 		return nil, err
@@ -297,6 +372,8 @@ func applyDeploymentSecretEnv(cfg *Config) {
 		return
 	}
 	cfg.Auth.InvitationEncryptionKey = strings.TrimSpace(os.Getenv("AGENT_DESK_INVITATION_ENCRYPTION_KEY"))
+	cfg.BootstrapAdmin.Username = strings.TrimSpace(os.Getenv("AGENT_DESK_BOOTSTRAP_ADMIN_USERNAME"))
+	cfg.BootstrapAdmin.Password = strings.TrimSpace(os.Getenv("AGENT_DESK_BOOTSTRAP_ADMIN_PASSWORD"))
 	cfg.CustomerSession.Secret = strings.TrimSpace(os.Getenv("AGENT_DESK_CUSTOMER_SESSION_SECRET"))
 	cfg.Storage.AssetURLSigningSecret = strings.TrimSpace(os.Getenv("AGENT_DESK_ASSET_URL_SIGNING_SECRET"))
 	cfg.Storage.OSS.AccessKeyID = strings.TrimSpace(os.Getenv("AGENT_DESK_OSS_ACCESS_KEY_ID"))
@@ -309,6 +386,14 @@ func applyDeploymentSecretEnv(cfg *Config) {
 	cfg.WxWork.RSAPrivateKey = strings.TrimSpace(os.Getenv("AGENT_DESK_WXWORK_RSA_PRIVATE_KEY"))
 	cfg.WxWork.Token = strings.TrimSpace(os.Getenv("AGENT_DESK_WXWORK_TOKEN"))
 	cfg.WxWork.EncodingAESKey = strings.TrimSpace(os.Getenv("AGENT_DESK_WXWORK_ENCODING_AES_KEY"))
+	cfg.Arrival.MiniProgramAppSecret = strings.TrimSpace(os.Getenv("AGENT_DESK_MINIPROGRAM_APP_SECRET"))
+	cfg.Arrival.SessionSecret = strings.TrimSpace(os.Getenv("AGENT_DESK_ARRIVAL_SESSION_SECRET"))
+	cfg.Arrival.IdentityHMACKey = strings.TrimSpace(os.Getenv("AGENT_DESK_ARRIVAL_IDENTITY_HMAC_KEY"))
+	cfg.Arrival.DataMasterKey = strings.TrimSpace(os.Getenv("AGENT_DESK_ARRIVAL_DATA_MASTER_KEY"))
+	cfg.Arrival.DataMasterKeyID = strings.TrimSpace(os.Getenv("AGENT_DESK_ARRIVAL_DATA_MASTER_KEY_ID"))
+	cfg.Arrival.WeComSuiteSecret = strings.TrimSpace(os.Getenv("AGENT_DESK_WECOM_SUITE_SECRET"))
+	cfg.Arrival.WeComProviderCallbackToken = strings.TrimSpace(os.Getenv("AGENT_DESK_WECOM_PROVIDER_CALLBACK_TOKEN"))
+	cfg.Arrival.WeComProviderEncodingAESKey = strings.TrimSpace(os.Getenv("AGENT_DESK_WECOM_PROVIDER_ENCODING_AES_KEY"))
 }
 
 func applyStoreCredentialEnv(cfg *Config) {
@@ -330,6 +415,7 @@ func applyOptionalFeatureEnv(cfg *Config) error {
 		{name: "AGENT_DESK_EMAIL_ENABLED", target: &cfg.Email.Enabled},
 		{name: "AGENT_DESK_OIDC_ENABLED", target: &cfg.OIDC.Enabled},
 		{name: "AGENT_DESK_WXWORK_ENABLED", target: &cfg.WxWork.Enabled},
+		{name: "AGENT_DESK_ARRIVAL_ENABLED", target: &cfg.Arrival.Enabled},
 	} {
 		value := strings.TrimSpace(os.Getenv(item.name))
 		if value == "" {
@@ -342,7 +428,7 @@ func applyOptionalFeatureEnv(cfg *Config) error {
 		*item.target = enabled
 	}
 	applyNonSecretEnvironment(cfg)
-	return nil
+	return applyArrivalEnvironment(cfg)
 }
 
 func applyNonSecretEnvironment(cfg *Config) {
@@ -360,11 +446,63 @@ func applyNonSecretEnvironment(cfg *Config) {
 		{name: "AGENT_DESK_WXWORK_CORP_ID", target: &cfg.WxWork.CorpID},
 		{name: "AGENT_DESK_WXWORK_AGENT_ID", target: &cfg.WxWork.AgentID},
 		{name: "AGENT_DESK_WXWORK_OAUTH_REDIRECT", target: &cfg.WxWork.OAuthRedirect},
+		{name: "AGENT_DESK_ARRIVAL_PUBLIC_BASE_URL", target: &cfg.Arrival.PublicBaseURL},
+		{name: "AGENT_DESK_MINIPROGRAM_APP_ID", target: &cfg.Arrival.MiniProgramAppID},
+		{name: "AGENT_DESK_WECOM_SUITE_ID", target: &cfg.Arrival.WeComSuiteID},
+		{name: "AGENT_DESK_ARRIVAL_WECHAT_API_BASE_URL", target: &cfg.Arrival.WeChatAPIBaseURL},
+		{name: "AGENT_DESK_ARRIVAL_WECOM_API_BASE_URL", target: &cfg.Arrival.WeComAPIBaseURL},
 	} {
 		if value := strings.TrimSpace(os.Getenv(item.name)); value != "" {
 			*item.target = value
 		}
 	}
+}
+
+func applyArrivalEnvironment(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_WECOM_AUTH_TYPE")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || (parsed != 0 && parsed != 1) {
+			return fmt.Errorf("parse AGENT_DESK_WECOM_AUTH_TYPE: value must be 0 or 1")
+		}
+		cfg.Arrival.WeComAuthType = parsed
+	}
+	for _, item := range []struct {
+		name   string
+		target *int
+	}{
+		{name: "AGENT_DESK_ARRIVAL_SESSION_TTL_MINUTES", target: &cfg.Arrival.SessionTTLMinutes},
+		{name: "AGENT_DESK_ARRIVAL_INVITATION_TTL_MINUTES", target: &cfg.Arrival.InvitationTTLMinutes},
+		{name: "AGENT_DESK_ARRIVAL_CONTACT_WAY_TTL_MINUTES", target: &cfg.Arrival.ContactWayTTLMinutes},
+		{name: "AGENT_DESK_ARRIVAL_DELIVERY_RATE_LIMIT_SECONDS", target: &cfg.Arrival.DeliveryRateLimitSeconds},
+	} {
+		value := strings.TrimSpace(os.Getenv(item.name))
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			return fmt.Errorf("parse %s: value must be a positive integer", item.name)
+		}
+		*item.target = parsed
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_ARRIVAL_QR_ALLOWED_HOST_SUFFIXES")); value != "" {
+		cfg.Arrival.QRCodeAllowedHostSuffixes = splitNonEmptyCSV(value)
+	}
+	return nil
+}
+
+func splitNonEmptyCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if item := strings.TrimSpace(part); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func isProductionEnvironment() bool {
@@ -421,12 +559,38 @@ func ValidateProduction(cfg *Config) error {
 		require(strings.TrimSpace(cfg.Storage.OSS.AccessKeyID) != "", "AGENT_DESK_OSS_ACCESS_KEY_ID")
 		require(strings.TrimSpace(cfg.Storage.OSS.AccessKeySecret) != "", "AGENT_DESK_OSS_ACCESS_KEY_SECRET")
 	}
+	if cfg.Arrival.Enabled {
+		require(validProductionHTTPSURL(cfg.Arrival.PublicBaseURL), "AGENT_DESK_ARRIVAL_PUBLIC_BASE_URL")
+		require(strings.TrimSpace(cfg.Arrival.MiniProgramAppID) != "", "AGENT_DESK_MINIPROGRAM_APP_ID")
+		require(strings.TrimSpace(cfg.Arrival.MiniProgramAppSecret) != "", "AGENT_DESK_MINIPROGRAM_APP_SECRET")
+		require(strongSecret(cfg.Arrival.SessionSecret), "AGENT_DESK_ARRIVAL_SESSION_SECRET")
+		require(strongSecret(cfg.Arrival.IdentityHMACKey), "AGENT_DESK_ARRIVAL_IDENTITY_HMAC_KEY")
+		_, arrivalKeyErr := securex.NewAESGCM(cfg.Arrival.DataMasterKey)
+		require(arrivalKeyErr == nil, "AGENT_DESK_ARRIVAL_DATA_MASTER_KEY")
+		require(strings.TrimSpace(cfg.Arrival.DataMasterKeyID) != "", "AGENT_DESK_ARRIVAL_DATA_MASTER_KEY_ID")
+		require(strings.TrimSpace(cfg.Arrival.WeComSuiteID) != "", "AGENT_DESK_WECOM_SUITE_ID")
+		require(strings.TrimSpace(cfg.Arrival.WeComSuiteSecret) != "", "AGENT_DESK_WECOM_SUITE_SECRET")
+		require(strongSecret(cfg.Arrival.WeComProviderCallbackToken), "AGENT_DESK_WECOM_PROVIDER_CALLBACK_TOKEN")
+		require(validWeComEncodingAESKey(cfg.Arrival.WeComProviderEncodingAESKey), "AGENT_DESK_WECOM_PROVIDER_ENCODING_AES_KEY")
+		require(cfg.Arrival.WeComAuthType == 0 || cfg.Arrival.WeComAuthType == 1, "AGENT_DESK_WECOM_AUTH_TYPE")
+		require(validProductionHTTPSURL(cfg.Arrival.WeChatBaseURL()), "AGENT_DESK_ARRIVAL_WECHAT_API_BASE_URL")
+		require(validProductionHTTPSURL(cfg.Arrival.WeComBaseURL()), "AGENT_DESK_ARRIVAL_WECOM_API_BASE_URL")
+	}
 	if len(invalid) == 0 {
 		return nil
 	}
 	slices.Sort(invalid)
 	invalid = slices.Compact(invalid)
 	return fmt.Errorf("production configuration is incomplete or invalid: %s", strings.Join(invalid, ", "))
+}
+
+func validWeComEncodingAESKey(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 43 {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value + "=")
+	return err == nil && len(decoded) == 32
 }
 
 func validBase64Key(value string) bool {

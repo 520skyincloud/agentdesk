@@ -1,122 +1,130 @@
-# AgentDesk
+# Weibao（知悉微宝）
 
-English | [简体中文](README_ZH.md)
+简体中文 | [English](README_EN.md)
 
-An open-source AI Agent customer support system with knowledge-based answers, human handoff, ticket workflows, and self-hosted deployment.
+面向多租户与多门店场景的 AI Agent 客服系统，支持知识库问答、规则派单、人工接管、
+运营审计、企微员工号、到店联动、模型计费归因和私有化部署。
 
-> Built for teams that need online support, knowledge-base Q&A, human collaboration, and service tracking in one system. It is not just an LLM inside a chat box; it is an AI Helpdesk foundation designed around real support operations.
+> 面向需要同时处理在线咨询、知识库问答、人工协同和服务跟踪的团队。它不是把 LLM 接进聊天框，而是一套围绕客服场景设计的 AI Helpdesk 基础系统。
 
-## Product Preview
+## 产品预览
 
-Tenant onboarding, store operations, customer conversations, rule-based dispatch, managed knowledge, and AI replies are managed in one system.
+租户接入、门店运营、客户会话、规则派单、托管知识和 AI 回复都在同一套系统中完成。
 
-### Customer Chat
+### 客户侧在线咨询
 
-![Customer Chat](screenshots/1.png)
+![客户侧在线咨询](screenshots/1.png)
 
-Customers can start a conversation from the web chat page. The AI Agent responds first with knowledge-grounded answers. When the user explicitly asks for a human, the system can start a handoff confirmation flow.
+客户可以在 Web 聊天页中直接发起咨询。AI Agent 会先接待，基于知识库回答问题；当用户明确要求人工介入时，会触发转人工确认流程。
 
-### Agent Workspace
+### 客服工作台
 
-![Agent Workspace](screenshots/2.png)
+![客服工作台](screenshots/2.png)
 
-The support workspace includes conversation lists, message handling, AI-to-human handoff, agent replies, store-scoped customer tags, linked customers, and ticket context for daily support work.
+客服工作台支持会话列表、消息处理、AI 转人工、客服回复、按门店隔离的客户标签、关联客户和工单信息查看，适合客服日常接待使用。
 
-### Managed Knowledge and Model Profiles
+### 托管知识与模型 Profile
 
-Each store uses one managed FastGPT dataset. The platform publishes complete nine-slot model profiles through a unified NewAPI gateway and assigns one active profile revision to each store. Store credentials remain masked, revisioned, and independently auditable.
+每家门店只使用一个托管 FastGPT 数据集。平台通过统一 NewAPI 网关发布完整九槽模型 Profile，并为门店指派一个生效 revision；门店凭据始终脱敏、按 revision 管理且可独立审计。
 
-## Why Use It
+## 为什么选择它
 
-- **AI-first support**: Let AI Agents handle common questions, standard procedures, and knowledge-base answers first.
-- **Knowledge-constrained replies**: Use RAG and the Answerability Gate to decide whether retrieved knowledge is strong enough to answer, reducing unsupported responses.
-- **Natural human handoff**: Move to human agents when knowledge is insufficient, the user asks for help, or a workflow requires human confirmation.
-- **Conversation-to-ticket loop**: Online chat, support handling, ticket creation, status flow, and progress records stay in one system.
-- **Built for extension**: The backend uses Go, the frontend uses Next.js, and the runtime supports Skills, MCP, and OpenAI-compatible model access.
-- **Self-host friendly**: Supports SQLite / MySQL, a managed FastGPT knowledge service, and a unified NewAPI gateway for enterprise deployment.
+- **AI 先接待**：让 AI Agent 优先处理常见问题、标准流程和知识库问答。
+- **知识约束回答**：通过 RAG 和 Answerability Gate 判断知识片段是否足以回答，减少超出知识库范围的乱答。
+- **自然转人工**：当知识库不足、用户明确要求或流程需要人工确认时，进入人工接管。
+- **会话到工单闭环**：在线会话、客服接待、工单创建、状态流转和处理记录在同一套系统里完成。
+- **适合二次开发**：后端使用 Go，前端使用 Next.js，支持 Skills、MCP 和 OpenAI-compatible 模型接入。
+- **可私有化部署**：支持 SQLite / MySQL、托管 FastGPT 知识服务和统一 NewAPI 网关，适合企业部署。
 
-## Core Capabilities
+## 核心能力
 
-- **AI reply runtime**: Industry-bound intent detection, planning, knowledge retrieval, validation, confirmation, tool calling, and human collaboration run through one reply engine.
-- **Online conversation system**: Visitor sessions, message send/receive, unread status, assignment, transfer, and close flows.
-- **Agent workspace**: Agents can take over conversations, reply to users, transfer teammates, link customers, and create tickets.
-- **Managed knowledge RAG**: Tenant- and store-scoped FastGPT datasets, file synchronization, retrieval logs, and answerability analysis.
-- **Answerability Gate**: Checks whether retrieved content can support an answer; otherwise returns a fallback and recommends human support.
-- **Ticket system**: Create tickets from conversations, categorize, assign, move through status flows, record progress, and close the loop.
-- **Support organization management**: Agent profiles, teams, schedules, and automatic assignment.
-- **AI extensibility**: Skills, MCP debugging, and external tool integration.
-- **Multiple entry points**: Admin dashboard, agent workspace, customer-facing web pages, and embeddable SDK.
+- **AI 回复运行时**：行业意图识别、回复规划、知识检索、结果校验、确认、工具调用和人工协同统一由一套回复引擎完成。
+- **在线会话系统**：支持访客会话、消息收发、未读状态、会话分配、转接和关闭。
+- **客服工作台**：客服可接管会话、回复用户、转接同事、关联客户和创建工单。
+- **托管知识库 RAG**：支持按租户和门店隔离的 FastGPT 数据集、文件同步、检索日志和可回答性分析。
+- **Answerability Gate**：判断检索内容是否足以支撑回答，不足时返回兜底提示并建议联系人工。
+- **工单系统**：支持从会话创建工单、分类、指派、状态流转、进展记录和闭环处理。
+- **客服组织管理**：支持客服档案、客服组、排班和自动分配能力。
+- **AI 扩展能力**：支持 Skills、MCP 调试和外部工具接入。
+- **多入口接入**：提供管理后台、客服工作台、客户侧 Web 页面和嵌入式 SDK。
 
-## Use Cases
+## 适用场景
 
-- Website live support
-- SaaS product support
-- AI + human hybrid support
-- Internal enterprise service desk
-- After-sales service, incident reporting, complaints, and operations support
-- Support teams that need knowledge-base Q&A with human collaboration
+- 官网在线客服
+- SaaS 产品支持
+- AI + 人工混合接待
+- 企业内部服务台
+- 售后、报障、投诉和运营支持
+- 需要知识库问答与人工协同的客服团队
 
-## Quick Start
+## 快速开始
 
-The fastest way to try the full stack is Docker Compose:
+推荐先用 Docker Compose 体验完整服务：
 
 ```bash
 cp .env.example .env
-# Fill every required blank value in .env, then restrict access to the file.
+# 填完 .env 中所有必填空值，并限制文件访问权限。
 chmod 600 .env
 docker compose config --quiet
 docker compose up -d --build
 ```
 
-Compose intentionally refuses to start without independent database, invitation, customer-session, asset-signing, and Store credential encryption secrets. Runtime backups and `.env` files must remain outside Git. See the [production secret and external credential runbook](docs/deployment/production-secrets.md) for exact formats, ownership, rotation limits, and the boundary between the FastGPT integration token and each Store's NewAPI key.
+Compose 会在数据库、邀请码、客户会话、文件签名或门店凭据加密密钥缺失时拒绝启动。运行备份与 `.env` 必须保存在 Git 仓库之外。变量格式、生成方式、保管责任、轮换限制以及 FastGPT Token 与门店 NewAPI Key 的区别，见[生产密钥与外部凭据交付手册](docs/deployment/production-secrets.md)。
 
-The active service keeps `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`. The current release must start from an empty SQLite/MySQL database. Historical databases may only be restored in an isolated, read-only environment with this application stopped; they are not supported migration inputs.
+正式活动服务保持 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`。当前版本必须从空 SQLite/MySQL 数据库启动。历史数据库只能在当前应用停止的隔离只读环境中恢复，不再是受支持的迁移输入。
 
-For the full English setup guide, see [Docker Compose Quick Start](https://agent-desk.huabei.pro/docs/getting-started/docker-compose.html).
+生产主机、HTTPS、备份、升级、回滚和外部服务配置见
+[完整部署手册](docs/deployment/deployment-guide.md)。
 
-To embed customer support on your website, see [Web Widget Integration](https://agent-desk.huabei.pro/docs/integration/web-widget.html).
+如需在官网或产品中嵌入客服入口，见 [Web Widget Integration](https://agent-desk.huabei.pro/zh/docs/integration/web-widget.html)。
 
-Compose starts:
+Compose 默认会启动：
 
-- `agent-desk`: application service on port `8083`
-- `mysql`: MySQL 8.4 with the `mysql-data` volume
+- `agent-desk`：应用服务，端口 `8083`
+- `mysql`：MySQL 8.4，数据卷 `mysql-data`
 
-After startup, open:
+启动后访问：
 
-- Admin dashboard: `http://localhost:8083/dashboard`
-- Agent workspace: `http://localhost:8083/dashboard/conversations`
-- Customer web integration demo: `http://localhost:8083/support/demo`
-- Customer chat page: `http://localhost:8083/support/chat`
+- 管理后台：`http://localhost:8083/dashboard`
+- 客服工作台：`http://localhost:8083/dashboard/conversations`
+- 客户侧 Web 接入示例：`http://localhost:8083/support/demo`
+- 客户侧聊天页：`http://localhost:8083/support/chat`
 
-Default administrator account:
+初始超级管理员只在 fresh 数据库首次初始化时创建，用户名和密码分别由
+`AGENT_DESK_BOOTSTRAP_ADMIN_USERNAME`、`AGENT_DESK_BOOTSTRAP_ADMIN_PASSWORD`
+从部署环境注入。公网或团队环境不得依赖源码中的兜底凭据。
 
-- Username: `admin`
-- Password: `ChangeMe123!`
+更多入口：
 
-> Before exposing the system to the public internet or a team environment, change the default administrator password and configure independent authentication, session, and model secrets.
+- [文档索引](docs/README.md)
+- [完整部署手册](docs/deployment/deployment-guide.md)
+- [生产密钥与外部凭据手册](docs/deployment/production-secrets.md)
+- [统一集成权威方案](docs/development/tenant-ai-unified-integration-plan.md)
+- [安全说明](SECURITY.md)
+- [贡献指南](CONTRIBUTING.md)
 
-## Local Development
+## 本地开发
 
-### Requirements
+### 环境要求
 
 - Go `1.26+`
 - Node.js `20+`
 - `pnpm`
 
-### Prepare Configuration
+### 准备配置
 
 ```bash
 cp config/config.example.yaml config/config.yaml
 ```
 
-The default configuration uses:
+默认配置使用：
 
-- SQLite: `data/app.db`
-- Backend: `http://127.0.0.1:8083`
-- Managed FastGPT uses deployment settings and an environment-only integration token.
-- NewAPI model profiles are managed by platform administrators; each Store supplies its own encrypted API key.
+- SQLite：`data/app.db`
+- Backend：`http://127.0.0.1:8083`
+- 托管 FastGPT 使用部署配置和仅环境变量注入的 Integration Token。
+- NewAPI 模型 Profile 由平台管理员维护，每个门店使用自己的加密 API Key。
 
-Install frontend dependencies:
+安装前端依赖：
 
 ```bash
 cd web
@@ -124,139 +132,139 @@ pnpm install
 cd ..
 ```
 
-Start backend and frontend development servers together:
+同时启动后端和前端开发服务：
 
 ```bash
 make dev
 ```
 
-Or start them separately:
+或分别启动：
 
 ```bash
 make run-go
 make web-dev
 ```
 
-Default development URLs:
+开发环境默认入口：
 
-- Admin dashboard: `http://localhost:3000/dashboard`
-- Agent workspace: `http://localhost:3000/dashboard/conversations`
-- Customer web integration demo: `http://localhost:3000/support/demo`
-- Customer chat page: `http://localhost:3000/support/chat`
+- 管理后台：`http://localhost:3000/dashboard`
+- 客服工作台：`http://localhost:3000/dashboard/conversations`
+- 客户侧 Web 接入示例：`http://localhost:3000/support/demo`
+- 客户侧聊天页：`http://localhost:3000/support/chat`
 
-## Tech Stack
+## 技术栈
 
-- Backend: Golang + Gin + GORM + `github.com/mlogclub/simple`
-- Frontend: Next.js 16 + React 19 + shadcn/ui + Tailwind CSS
-- Database: SQLite / MySQL
-- Knowledge service: Managed FastGPT
-- AI: Unified NewAPI gateway + OpenAI-compatible models + RAG + Skills + MCP
+- Backend：Golang + Gin + GORM + `github.com/mlogclub/simple`
+- Frontend：Next.js 16 + React 19 + shadcn/ui + Tailwind CSS
+- Database：SQLite / MySQL
+- Knowledge Service：托管 FastGPT
+- AI：统一 NewAPI 网关 + OpenAI-compatible 模型 + RAG + Skills + MCP
 
-## Project Structure
+## 项目结构
 
 ```text
 .
 ├── cmd/                    # server / migration / generator / testdata
 ├── internal/
-│   ├── bootstrap/          # startup, routes, database, and migration initialization
-│   ├── builders/           # model / aggregate result to response DTO mapping
+│   ├── bootstrap/          # 启动、路由、数据库和迁移初始化
+│   ├── builders/           # model / 聚合结果到 response DTO 的映射
 │   ├── handlers/           # dashboard / api / third HTTP handlers
 │   ├── middleware/         # Gin middleware
-│   ├── migration/          # idempotent data migrations
+│   ├── migration/          # 幂等数据迁移
 │   ├── models/             # GORM models
-│   ├── repositories/       # data access layer
-│   ├── services/           # business orchestration and transaction boundaries
+│   ├── repositories/       # 数据访问层
+│   ├── services/           # 业务编排和事务边界
 │   ├── ai/                 # LLM / RAG / Runtime / Skills / MCP
-│   └── pkg/                # config / dto / enums / httpx / utils and shared packages
-├── web/                    # Next.js frontend project
-│   ├── app/dashboard/      # admin dashboard and agent workspace
-│   ├── app/support/        # customer integration and chat pages
-│   ├── components/         # React components
-│   ├── lib/                # API client, SDK source, and utilities
-│   └── public/sdk/         # built embeddable SDK
-├── config/                 # configuration files
-├── docker/                 # Docker configuration
-└── docs/                   # documentation site
+│   └── pkg/                # config / dto / enums / httpx / utils 等基础包
+├── web/                    # Next.js 前端工程
+│   ├── app/dashboard/      # 管理后台与客服工作台
+│   ├── app/support/        # 客户侧接入和聊天页面
+│   ├── components/         # React 组件
+│   ├── lib/                # API client、SDK 源码和工具函数
+│   └── public/sdk/         # 构建后的嵌入式 SDK
+├── config/                 # 配置文件
+├── docker/                 # Docker 配置
+└── docs/                   # 项目文档
 ```
 
-## Common Commands
+## 常用命令
 
 ```bash
-make dev            # start backend and frontend development servers
-make run            # build the frontend SPA, then start the backend
-make run-go         # start the backend and ensure the SPA has been built
-make web-dev        # start the frontend development server
-make build          # build the frontend SPA and current-platform Go binary
-make build-linux    # build the linux/amd64 binary
-make release        # build common release binaries
-make web-build-spa  # build the web static SPA and embeddable SDK
-make test           # run Go tests after ensuring the SPA is built
-make check          # run Go tests, frontend typecheck, and lint
-make generator      # run code generation
-make enums          # generate frontend enums
-make migration      # run migrations
-make testdata       # initialize demo/test data
+make dev            # 同时启动后端和前端开发服务
+make run            # 构建前端 SPA 后启动后端
+make run-go         # 启动后端，自动确保 SPA 已构建
+make web-dev        # 启动前端开发服务
+make build          # 构建前端 SPA 和当前平台 Go 二进制
+make build-linux    # 构建 linux/amd64 二进制
+make release        # 构建常用平台二进制
+make web-build-spa  # 构建 web 静态 SPA 和嵌入式 SDK
+make test           # 运行 Go 测试，自动确保 SPA 已构建
+make check          # 运行 Go 测试、前端 typecheck 和 lint
+make generator      # 执行代码生成
+make enums          # 生成前端枚举
+make migration      # 执行 migration
+make testdata       # 初始化演示/测试数据
 ```
 
-## AI Agent Workflow
+## AI Agent 工作流
 
 ```mermaid
 flowchart TD
-    A[User starts a support request<br/>Web support entry / Open API] --> B[Create or match a conversation]
-    B --> C[Customer sends a message]
-    C --> D[Trigger AI Reply Runtime]
-    D --> E[Load conversation history / tenant industry / store model profile]
-    E --> F[Retrieve from the store FastGPT dataset]
-    F --> G{Are retrieved chunks enough to answer?}
-    G -- No --> Z[Return knowledge fallback<br/>and recommend human support]
-    G -- Yes --> H[Prepare Skills / MCP Tools]
-    H --> I[Pass trusted knowledge context to the Agent]
-    I --> J{Direct reply?}
-    J -- Yes --> K[LLM generates a knowledge-grounded reply]
-    J -- No --> N{Call Graph / MCP Tool?}
-    N -- Yes --> O[Run Skill / Graph / MCP Tool]
-    O --> P{Need user confirmation?}
-    P -- No --> I
-    P -- Yes --> Q[Ask the user to confirm]
-    Q --> R{Confirmation result}
-    R -- Confirm handoff --> S[Move conversation to human handoff pool]
-    S --> T[Automatic or manual assignment]
-    T --> U[Agent workspace takeover]
-    U --> V{Need ticket tracking?}
-    V -- Yes --> W[Create or link a ticket]
-    V -- No --> X[Human agent continues handling]
+    A[用户发起咨询<br/>Web 客服入口 / Open API] --> B[创建或匹配会话]
+    B --> C[客户发送消息]
+    C --> D[触发 AI Reply Runtime]
+    D --> E[加载会话历史 / 租户行业 / 门店模型 Profile]
+    E --> F[检索当前门店 FastGPT 数据集]
+    F --> G{知识片段是否足以回答?}
+    G -- 否 --> Z[返回知识库兜底提示<br/>并建议联系人工客服]
+    G -- 是 --> H[准备 Skills / MCP Tools]
+    H --> I[将可信知识上下文交给 Agent]
+    I --> J{直接回复?}
+    J -- 是 --> K[LLM 基于知识生成回复并返回用户]
+    J -- 否 --> N{是否调用 Graph / MCP Tool?}
+    N -- 是 --> O[执行 Skill / Graph / MCP Tool]
+    O --> P{需要用户确认?}
+    P -- 否 --> I
+    P -- 是 --> Q[向用户发起确认]
+    Q --> R{用户确认结果}
+    R -- 确认转人工 --> S[会话转人工并进入待接入池]
+    S --> T[自动分配或人工分配]
+    T --> U[客服工作台接管]
+    U --> V{是否需要工单跟踪?}
+    V -- 是 --> W[创建或关联工单]
+    V -- 否 --> X[人工继续处理]
     W --> X
-    X --> Y[Resolve and close]
-    R -- Confirm ticket --> AA[Create a ticket from the current conversation]
+    X --> Y[问题解决并关闭]
+    R -- 确认建单 --> AA[从当前会话创建工单]
     AA --> I
-    R -- Cancel --> K
-    N -- No --> K
+    R -- 取消 --> K
+    N -- 否 --> K
 ```
 
-## Support Loop
+## 业务闭环
 
 ```mermaid
 flowchart LR
-    A[Customer request] --> B[AI Agent handles first]
-    B --> C{Can the knowledge base answer?}
-    C -- Yes --> D[AI replies with trusted knowledge]
-    C -- No --> E[Fallback / recommend human support]
-    D --> F{Need a human?}
-    E --> G[Human takeover]
-    F -- No --> H[Conversation ends or data is retained]
-    F -- Yes --> G
-    G --> I[Agent workspace handles the case]
-    I --> J{Need follow-up tracking?}
-    J -- Yes --> K[Create / link a ticket]
-    J -- No --> L[Resolve directly]
-    K --> M[Ticket status flow and progress records]
-    M --> N[Complete]
+    A[客户咨询] --> B[AI Agent 接待]
+    B --> C{知识库可回答?}
+    C -- 是 --> D[AI 基于可信知识回复]
+    C -- 否 --> E[兜底提示 / 建议人工]
+    D --> F{是否需要人工?}
+    E --> G[人工接管]
+    F -- 否 --> H[会话结束或沉淀数据]
+    F -- 是 --> G
+    G --> I[客服工作台处理]
+    I --> J{是否需要跟踪?}
+    J -- 是 --> K[创建 / 关联工单]
+    J -- 否 --> L[直接解决]
+    K --> M[工单流转与进展记录]
+    M --> N[处理完成]
     L --> N
 ```
 
-## Docker Image
+## Docker 镜像
 
-If you only need to build the application image, prepare MySQL and the configured external AI services, then mount a configuration file:
+如果只需要构建应用镜像，可以自行准备 MySQL 和已配置的外部 AI 服务，并挂载配置文件：
 
 ```bash
 docker build -t mlogclub/agent-desk .
@@ -267,17 +275,17 @@ docker run --rm -p 8083:8083 --env-file .env \
   mlogclub/agent-desk
 ```
 
-Compose uses [docker/agent-desk.yaml](docker/agent-desk.yaml) only for non-secret settings. All deployment secrets come from the ignored `.env` file or a production secret manager. NewAPI calls and billing queries use credentials submitted through each Store's credential workflow; Store keys never belong in `.env`, and there is no platform-wide NewAPI usage token.
+Compose 仅使用 [docker/agent-desk.yaml](docker/agent-desk.yaml) 保存非敏感设置；所有部署秘密来自被忽略的 `.env` 或生产秘密管理器。NewAPI 调用与账单查询只使用各门店通过凭据工作流提交的加密凭据，不存在平台级 NewAPI 用量 Token，也不得把门店 Key 写入 `.env`。
 
-Do not connect this image to a historical business database. Restore old backups only with the matching archived code in an isolated, outbound-blocked environment.
+禁止把当前镜像连接到历史业务数据库。旧备份只能使用对应归档代码，在禁止外呼的隔离环境中恢复查看。
 
-## Open-source Positioning
+## 开源定位
 
-`AgentDesk` is useful as an open-source foundation for:
+`AgentDesk` 适合作为以下方向的开源基础项目：
 
-- AI customer support systems
-- AI Helpdesk / AI Support Platform projects
-- RAG answerability + human handoff implementation references
-- Enterprise AI Agent application frameworks
+- AI 客服系统
+- AI Helpdesk / AI Support Platform
+- RAG 可回答性判定 + Human Handoff 的落地样板
+- 面向企业场景的 AI Agent 应用框架
 
-If you are looking for a customer support system centered on AI Agents rather than a simple LLM chat box, this project is designed for that purpose.
+如果你在寻找一个以 AI Agent 为中心，而不是仅仅把 LLM 嵌进聊天框的客服系统，这个项目就是为此设计的。

@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"encoding/json"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
@@ -194,6 +196,20 @@ func buildChannelResponse(item *models.Channel) response.ChannelResponse {
 	ret := response.BuildChannelResponse(item)
 	if item == nil {
 		return ret
+	}
+	if item.ChannelType == enums.ChannelTypeWxWorkProtocol {
+		if cfg, err := services.ChannelService.ParseWxWorkProtocolChannelConfig(item.ConfigJSON); err == nil {
+			cfg.AppKey = ""
+			cfg.AppSecret = ""
+			cfg.CallbackToken = ""
+			if configJSON, err := json.Marshal(cfg); err == nil {
+				ret.ConfigJSON = string(configJSON)
+			} else {
+				ret.ConfigJSON = ""
+			}
+		} else {
+			ret.ConfigJSON = ""
+		}
 	}
 	if aiAgent := services.AIAgentService.GetByTenantID(item.AIAgentID, item.TenantID); aiAgent != nil {
 		ret.AIAgentName = aiAgent.Name

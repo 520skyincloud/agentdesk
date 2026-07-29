@@ -2,10 +2,13 @@ package services
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"mime"
 	"net/http"
 	"net/url"
@@ -75,47 +78,91 @@ type wxWorkProtocolService struct {
 	adapter    WxWorkProtocolAdapter
 }
 
-func (s *wxWorkProtocolService) HandleCallback(req request.WxWorkProtocolCallbackRequest, raw string) error {
+type WxWorkProtocolCallbackError struct {
+	Status int
+	Stage  string
+	Err    error
+}
+
+func (e *WxWorkProtocolCallbackError) Error() string {
+	if e == nil || e.Err == nil {
+		return "企微协议回调失败"
+	}
+	return e.Err.Error()
+}
+
+func (e *WxWorkProtocolCallbackError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func WxWorkProtocolCallbackErrorStatus(err error) (int, string) {
+	var callbackErr *WxWorkProtocolCallbackError
+	if errors.As(err, &callbackErr) {
+		return callbackErr.Status, callbackErr.Stage
+	}
+	return http.StatusInternalServerError, "process"
+}
+
+func wxWorkProtocolCallbackError(status int, stage string, err error) error {
+	return &WxWorkProtocolCallbackError{Status: status, Stage: stage, Err: err}
+}
+
+func (s *wxWorkProtocolService) HandleCallback(req request.WxWorkProtocolCallbackRequest, raw, callbackToken string) error {
+	guid := strings.TrimSpace(req.Guid)
+	if guid == "" {
+		return wxWorkProtocolCallbackError(http.StatusBadRequest, "validate_guid", errorsx.InvalidParam("企微协议回调缺少 GUID"))
+	}
+	instance := WxWorkProtocolInstanceService.Take("guid = ?", guid)
+	if instance == nil || instance.TenantID <= 0 || instance.Status != enums.StatusOk {
+		return wxWorkProtocolCallbackError(http.StatusNotFound, "resolve_instance", errorsx.InvalidParam("企微员工号实例不存在或未启用"))
+	}
+	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), instance.ChannelID, instance.TenantID)
+	if channel == nil || channel.Status != enums.StatusOk || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
+		return wxWorkProtocolCallbackError(http.StatusNotFound, "resolve_channel", errorsx.InvalidParam("企微协议渠道不存在或未启用"))
+	}
+	cfg, err := ChannelService.ParseWxWorkProtocolChannelConfig(channel.ConfigJSON)
+	if err != nil || strings.TrimSpace(cfg.CallbackToken) == "" {
+		return wxWorkProtocolCallbackError(http.StatusInternalServerError, "load_callback_token", errorsx.BusinessError(1, "企微协议回调令牌配置不完整"))
+	}
+	expectedToken := strings.TrimSpace(cfg.CallbackToken)
+	actualToken := strings.TrimSpace(callbackToken)
+	if len(actualToken) != len(expectedToken) || subtle.ConstantTimeCompare([]byte(actualToken), []byte(expectedToken)) != 1 {
+		return wxWorkProtocolCallbackError(http.StatusUnauthorized, "authenticate", errorsx.Unauthorized("企微协议回调鉴权失败"))
+	}
 	externalMsgID := strings.TrimSpace(req.Guid)
-	_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", externalMsgID, enums.MessageSyncStatusPending, raw, fmt.Sprintf("notify_type=%d", req.NotifyType))
-	instance := WxWorkProtocolInstanceService.Take("guid = ?", strings.TrimSpace(req.Guid))
-	if instance == nil && req.NotifyType == wxProtocolNotifyUserLogin {
-		var err error
-		instance, err = WxWorkProtocolInstanceService.CreatePendingFromLogin(strings.TrimSpace(req.Guid), req.Data)
-		if err != nil {
-			return err
-		}
-	}
-	if instance == nil || instance.Status != enums.StatusOk {
-		return errorsx.InvalidParam("企微员工号实例不存在或未启用")
-	}
+	_ = MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", externalMsgID, enums.MessageSyncStatusPending, raw, fmt.Sprintf("notify_type=%d", req.NotifyType))
 	now := time.Now()
+	var handleErr error
 	switch req.NotifyType {
 	case wxProtocolNotifyUserLogin, wxProtocolNotifyUserLoginAlt:
-		return s.handleLogin(instance, req.Data, now)
+		handleErr = s.handleLogin(instance, req.Data, now)
 	case wxProtocolNotifyUserLogout, wxProtocolNotifyUserLogoutAlt:
-		return s.handleLogout(instance, req.Data, now)
+		handleErr = s.handleLogout(instance, req.Data, now)
 	case wxProtocolNotifyLoginOtherDevice:
-		return s.handleLoginOtherDevice(instance, raw, now)
+		handleErr = s.handleLoginOtherDevice(instance, raw, now)
 	case wxProtocolNotifyNewMsg, wxProtocolNotifyNewMsgAlt:
-		return s.handleMessage(instance, req.Data, raw)
+		handleErr = s.handleMessage(instance, req.Data, raw)
 	case wxProtocolNotifyBatchNewMsg, wxProtocolNotifyBatchNewMsgAlt:
-		return s.handleBatchMessages(instance, req.Data, raw)
+		handleErr = s.handleBatchMessages(instance, req.Data, raw)
 	case wxProtocolNotifyFriendApply:
 		if instance.AutoAcceptFriendRequest {
 			go s.runContactAutomationCallback(instance.ID, req.NotifyType)
 		}
-		return nil
 	case wxProtocolNotifyFriendChange:
 		if instance.WelcomeEnabled {
 			go s.runContactAutomationCallback(instance.ID, req.NotifyType)
 		}
-		return nil
 	default:
-		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", externalMsgID, enums.MessageSyncStatusSkipped, raw, fmt.Sprintf("skip notify_type=%d", req.NotifyType))
-		slog.Info("skip wxwork protocol callback", "guid", req.Guid, "notify_type", req.NotifyType)
-		return nil
+		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", externalMsgID, enums.MessageSyncStatusSkipped, raw, fmt.Sprintf("skip notify_type=%d", req.NotifyType))
+		slog.Info("skip wxwork protocol callback", "notify_type", req.NotifyType)
 	}
+	if handleErr != nil {
+		return wxWorkProtocolCallbackError(http.StatusInternalServerError, "process", handleErr)
+	}
+	return nil
 }
 
 func (s *wxWorkProtocolService) runContactAutomationCallback(instanceID int64, notifyType int) {
@@ -146,6 +193,48 @@ func (s *wxWorkProtocolService) DispatchPendingOutbox(limit int) int {
 		count++
 	}
 	return count
+}
+
+func (s *wxWorkProtocolService) SendArrivalCard(conversationID, instanceID int64, clientMsgID string) (enums.ArrivalDeliveryStatus, error) {
+	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
+	if conversation == nil {
+		return enums.ArrivalDeliveryStatusFailed, errorsx.InvalidParam("到店通知会话不存在")
+	}
+	route := ConversationRouteService.GetByConversationIDInTenant(conversation.ID, conversation.TenantID)
+	if route == nil || route.WxWorkInstanceID != instanceID {
+		return enums.ArrivalDeliveryStatusFailed, errorsx.InvalidParam("到店通知实例与会话不匹配")
+	}
+	instance := WxWorkProtocolInstanceService.GetByTenantID(instanceID, conversation.TenantID)
+	if instance == nil || instance.Status != enums.StatusOk ||
+		!strings.EqualFold(strings.TrimSpace(instance.HealthStatus), "online") {
+		return enums.ArrivalDeliveryStatusInstanceOffline, nil
+	}
+	message, err := MessageService.SendSystemOutboundMessage(
+		conversation.ID,
+		strings.TrimSpace(clientMsgID),
+		enums.IMMessageTypeText,
+		"欢迎到店。如需协助，请直接在本会话留言。",
+		"",
+		strings.TrimSpace(clientMsgID),
+	)
+	if err != nil {
+		return enums.ArrivalDeliveryStatusFailed, err
+	}
+	outbox := ChannelMessageOutboxService.GetByMessageIDInTenant(enums.ChannelTypeWxWorkProtocol, message.ID, conversation.TenantID)
+	if outbox == nil {
+		return enums.ArrivalDeliveryStatusFailed, errorsx.BusinessError(66, "到店通知投递任务未创建")
+	}
+	if outbox.SendStatus == string(enums.ChannelMessageOutboxStatusSent) {
+		return enums.ArrivalDeliveryStatusSent, nil
+	}
+	if err := s.dispatchOutbox(*outbox); err != nil {
+		return enums.ArrivalDeliveryStatusFailed, err
+	}
+	outbox = ChannelMessageOutboxService.GetInTenant(outbox.ID, conversation.TenantID)
+	if outbox != nil && outbox.SendStatus == string(enums.ChannelMessageOutboxStatusSent) {
+		return enums.ArrivalDeliveryStatusSent, nil
+	}
+	return enums.ArrivalDeliveryStatusFailed, errorsx.BusinessError(66, "到店通知未完成投递")
 }
 
 func (s *wxWorkProtocolService) SetNotifyURL(instanceID int64, notifyURL string) error {
@@ -496,7 +585,10 @@ func (s *wxWorkProtocolService) handleMessage(instance *models.WxWorkProtocolIns
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return errorsx.InvalidParam("企微协议消息格式不合法")
 	}
-	return s.handleChatMessage(instance, msg, rawPayload)
+	if err := s.handleChatMessage(instance, msg, rawPayload); err != nil {
+		return err
+	}
+	return s.advanceMessageSyncSequence(instance.ID, msg.Seq)
 }
 
 func (s *wxWorkProtocolService) handleBatchMessages(instance *models.WxWorkProtocolInstance, raw json.RawMessage, rawPayload string) error {
@@ -527,8 +619,55 @@ func (s *wxWorkProtocolService) handleBatchMessages(instance *models.WxWorkProto
 		if err := s.handleChatMessage(instance, list[i], string(itemRaw)); err != nil {
 			return err
 		}
+		if err := s.advanceMessageSyncSequence(instance.ID, list[i].Seq); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (s *wxWorkProtocolService) advanceMessageSyncSequence(instanceID int64, sequence string) error {
+	sequence = strings.TrimSpace(sequence)
+	if instanceID <= 0 || sequence == "" {
+		return nil
+	}
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		instance := repositories.WxWorkProtocolInstanceRepository.GetForUpdate(ctx.Tx, instanceID)
+		if instance == nil || instance.TenantID <= 0 || instance.Status != enums.StatusOk {
+			return errorsx.InvalidParam("企微员工号消息检查点实例不存在或未启用")
+		}
+		current := strings.TrimSpace(instance.MessageSyncSeq)
+		now := time.Now()
+		updates := map[string]any{
+			"message_sync_updated_at": now,
+			"updated_at":              now,
+			"update_user_name":        wxWorkProtocolSystemOperatorName,
+		}
+		if current == "" {
+			updates["message_sync_seq"] = sequence
+			return repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, instance.ID, instance.TenantID, updates)
+		}
+		currentNumber, currentNumeric := new(big.Int).SetString(current, 10)
+		nextNumber, nextNumeric := new(big.Int).SetString(sequence, 10)
+		if !currentNumeric || !nextNumeric || currentNumber.Sign() <= 0 || nextNumber.Sign() <= 0 {
+			if current != sequence {
+				updates["message_sync_seq"] = sequence
+			}
+			return repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, instance.ID, instance.TenantID, updates)
+		}
+		if nextNumber.Cmp(currentNumber) <= 0 {
+			return nil
+		}
+		updates["message_sync_seq"] = sequence
+		expected := new(big.Int).Add(new(big.Int).Set(currentNumber), big.NewInt(1))
+		if nextNumber.Cmp(expected) > 0 && strings.TrimSpace(instance.MessageGapFromSeq) == "" {
+			gapEnd := new(big.Int).Sub(new(big.Int).Set(nextNumber), big.NewInt(1))
+			updates["message_gap_from_seq"] = expected.String()
+			updates["message_gap_to_seq"] = gapEnd.String()
+			updates["message_gap_detected_at"] = now
+		}
+		return repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, instance.ID, instance.TenantID, updates)
+	})
 }
 
 func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, rawPayload string) error {
@@ -540,37 +679,38 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 	}
 	if msg.IsReferencedMessageMutation() {
 		reason := fmt.Sprintf("referenced message mutation referid=%s msg_type=%d content_type=%d", msg.ReferIDText(), msg.MsgType, msg.ContentType)
-		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, reason)
+		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, reason)
 		return nil
 	}
 	if existing := WxWorkKFMessageRefService.GetByWxMsgIDInTenant(clientMsgID, instance.TenantID); existing != nil {
 		if s.canRepairEmployeeOutgoingEcho(instance, msg, existing, messageType) {
-			if handled := s.handleEmployeeOutgoingEcho(instance, msg, rawPayload, clientMsgID, messageType); handled {
-				return nil
+			if handled, err := s.handleEmployeeOutgoingEcho(instance, msg, rawPayload, clientMsgID, messageType); handled || err != nil {
+				return err
 			}
 		}
-		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "duplicate message")
+		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "duplicate message")
 		return nil
 	}
 	if strings.TrimSpace(msg.Content) == "" && messageType == "" {
-		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "empty content")
+		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "empty content")
 		return nil
 	}
 	if messageType == "" {
-		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, fmt.Sprintf("unsupported msg_type=%d", msg.MsgType))
+		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, fmt.Sprintf("unsupported msg_type=%d", msg.MsgType))
 		return nil
 	}
 	if s.isEmployeeOutgoing(instance, msg) {
-		if handled := s.handleEmployeeOutgoingEcho(instance, msg, rawPayload, clientMsgID, messageType); handled {
-			return nil
+		if handled, err := s.handleEmployeeOutgoingEcho(instance, msg, rawPayload, clientMsgID, messageType); handled || err != nil {
+			return err
 		}
-		_ = s.createEchoMessageRef(instance, msg, rawPayload, clientMsgID)
-		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "self echo")
-		return nil
+		if err := s.createEchoMessageRef(instance, msg, rawPayload, clientMsgID); err != nil {
+			return err
+		}
+		return MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "self echo")
 	}
 	if roomID := s.inboundGroupRoomID(msg); roomID != "" {
 		reason := fmt.Sprintf("skip inbound group message room_id=%s", roomID)
-		_ = MessageSyncLogService.Create(0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, reason)
+		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, reason)
 		return nil
 	}
 	externalID := s.externalConversationID(instance, msg)
@@ -2554,33 +2694,48 @@ func (s *wxWorkProtocolService) canRepairEmployeeOutgoingEcho(instance *models.W
 	return s.isEmployeeOutgoing(instance, msg)
 }
 
-func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, rawPayload string, clientMsgID string, messageType enums.IMMessageType) bool {
+func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, rawPayload string, clientMsgID string, messageType enums.IMMessageType) (bool, error) {
 	if strings.TrimSpace(msg.Chatroom) != "" {
-		return false
+		return false, nil
 	}
 	externalID := s.externalConversationID(instance, msg)
 	if externalID == "" {
-		return false
+		return false, nil
 	}
 	mapping := s.findProtocolConversationMapping(instance, msg, externalID)
-	if mapping == nil || mapping.ConversationID <= 0 {
-		return false
+	var conversationID int64
+	if mapping != nil {
+		conversationID = mapping.ConversationID
+	}
+	if conversationID <= 0 {
+		conversation, _, err := s.ensureConversation(instance, msg, externalID, rawPayload)
+		if err != nil {
+			return true, err
+		}
+		if err := s.ensureRouteState(conversation.ID, instance); err != nil {
+			return true, err
+		}
+		conversationID = conversation.ID
 	}
 	content, payload, err := s.buildInboundMessageContent(instance, messageType, msg)
 	if err != nil {
-		_ = s.createMessageRef(mapping.ConversationID, 0, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusFailed)
-		_ = MessageSyncLogService.Create(mapping.ConversationID, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
-		return true
+		_ = s.createMessageRef(conversationID, 0, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusFailed)
+		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
+		return true, err
 	}
-	message, err := MessageService.CreateExternalAgentMessageWithoutOutbox(mapping.ConversationID, clientMsgID, messageType, content, payload, "wx_protocol_self_echo")
+	message, err := MessageService.CreateExternalAgentMessageWithoutOutbox(conversationID, clientMsgID, messageType, content, payload, "wx_protocol_self_echo")
 	if err != nil {
-		_ = s.createMessageRef(mapping.ConversationID, 0, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusFailed)
-		_ = MessageSyncLogService.Create(mapping.ConversationID, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
-		return true
+		_ = s.createMessageRef(conversationID, 0, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusFailed)
+		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
+		return true, err
 	}
-	_ = s.createMessageRef(mapping.ConversationID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent)
-	_ = MessageSyncLogService.Create(mapping.ConversationID, message.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "self echo synced")
-	return true
+	if err := s.createMessageRef(conversationID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent); err != nil {
+		return true, err
+	}
+	if err := MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, message.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "self echo synced"); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func (s *wxWorkProtocolService) findProtocolConversationMapping(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, externalID string) *models.WxWorkKFConversation {

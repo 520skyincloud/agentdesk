@@ -15,6 +15,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/schema v1.4.1
 	github.com/gorilla/websocket v1.5.1
+	github.com/liyue201/goqr v0.0.0-20200803022322-df443203d4ea
 	github.com/microcosm-cc/bluemonday v1.0.26
 	github.com/mlogclub/codegen v1.0.3
 	github.com/mlogclub/simple v1.2.40
@@ -25,6 +26,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/silenceper/wechat/v2 v2.1.12
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cast v1.6.0
 	github.com/wk8/go-ordered-map/v2 v2.1.8
 	golang.org/x/crypto v0.49.0

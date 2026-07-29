@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -19,22 +20,25 @@ import (
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
+	"github.com/mlogclub/simple/common/strs"
 	"github.com/mlogclub/simple/sqls"
 	"github.com/spf13/cast"
 	"gorm.io/gorm"
 )
 
 var WxWorkProtocolDevicePoolService = newWxWorkProtocolDevicePoolService()
+var wxWorkProtocolGatewayURL = "https://chat-api.juhebot.com/open/GuidRequest"
 
 const (
-	wxWorkDevicePoolConfigGroup         = "wxwork_protocol_device_pool"
-	wxWorkDevicePoolConfigAdminBaseURL  = "wxwork_protocol_device_pool.admin_base_url"
-	wxWorkDevicePoolConfigUsername      = "wxwork_protocol_device_pool.username"
-	wxWorkDevicePoolConfigPassword      = "wxwork_protocol_device_pool.password"
-	wxWorkDevicePoolConfigToken         = "wxwork_protocol_device_pool.token"
-	wxWorkDevicePoolConfigTokenExpire   = "wxwork_protocol_device_pool.token_expire_at"
-	defaultWxWorkDevicePoolAdminBaseURL = "https://chat-api.juhebot.com"
-	wxWorkDevicePoolTemporaryHoldTTL    = 30 * time.Minute
+	wxWorkDevicePoolConfigGroup           = "wxwork_protocol_device_pool"
+	wxWorkDevicePoolConfigAdminBaseURL    = "wxwork_protocol_device_pool.admin_base_url"
+	wxWorkDevicePoolConfigCallbackBaseURL = "wxwork_protocol_device_pool.callback_base_url"
+	wxWorkDevicePoolConfigUsername        = "wxwork_protocol_device_pool.username"
+	wxWorkDevicePoolConfigPassword        = "wxwork_protocol_device_pool.password"
+	wxWorkDevicePoolConfigToken           = "wxwork_protocol_device_pool.token"
+	wxWorkDevicePoolConfigTokenExpire     = "wxwork_protocol_device_pool.token_expire_at"
+	defaultWxWorkDevicePoolAdminBaseURL   = "https://chat-api.juhebot.com"
+	wxWorkDevicePoolTemporaryHoldTTL      = 30 * time.Minute
 )
 
 func newWxWorkProtocolDevicePoolService() *wxWorkProtocolDevicePoolService {
@@ -46,11 +50,17 @@ type wxWorkProtocolDevicePoolService struct {
 }
 
 type wxWorkDevicePoolSettings struct {
-	AdminBaseURL string
-	Username     string
-	Password     string
-	Token        string
-	TokenExpire  *time.Time
+	AdminBaseURL    string
+	CallbackBaseURL string
+	Username        string
+	Password        string
+	Token           string
+	TokenExpire     *time.Time
+}
+
+type wxWorkProtocolProviderCredential struct {
+	AppKey    string
+	AppSecret string
 }
 
 type wxWorkAdminListInstanceItem struct {
@@ -84,11 +94,12 @@ func (s *wxWorkProtocolDevicePoolService) FindPageByParams(params *params.QueryP
 func (s *wxWorkProtocolDevicePoolService) Settings() response.WxWorkProtocolDevicePoolSettingsResponse {
 	settings := s.loadSettings()
 	return response.WxWorkProtocolDevicePoolSettingsResponse{
-		AdminBaseURL:  settings.AdminBaseURL,
-		Username:      settings.Username,
-		PasswordSet:   strings.TrimSpace(settings.Password) != "",
-		TokenSet:      strings.TrimSpace(settings.Token) != "",
-		TokenExpireAt: settings.TokenExpire,
+		AdminBaseURL:    settings.AdminBaseURL,
+		CallbackBaseURL: settings.CallbackBaseURL,
+		Username:        settings.Username,
+		PasswordSet:     strings.TrimSpace(settings.Password) != "",
+		TokenSet:        strings.TrimSpace(settings.Token) != "",
+		TokenExpireAt:   settings.TokenExpire,
 	}
 }
 
@@ -97,11 +108,18 @@ func (s *wxWorkProtocolDevicePoolService) UpdateSettings(req request.UpdateWxWor
 		return errorsx.Unauthorized("未登录或登录已过期")
 	}
 	baseURL := normalizeDevicePoolAdminBaseURL(req.AdminBaseURL)
+	callbackBaseURL, err := normalizeWxWorkProtocolCallbackBaseURL(req.CallbackBaseURL)
+	if err != nil {
+		return err
+	}
 	username := strings.TrimSpace(req.Username)
 	if username == "" {
 		return errorsx.InvalidParam("聚合智能后台账号不能为空")
 	}
 	if err := s.upsertConfig(wxWorkDevicePoolConfigAdminBaseURL, baseURL, "聚合智能后台 API 地址", "用于同步 XBot 实例池", operator); err != nil {
+		return err
+	}
+	if err := s.upsertConfig(wxWorkDevicePoolConfigCallbackBaseURL, callbackBaseURL, "企微协议公开回调地址", "真实员工号消息回调使用的 HTTPS 公网地址", operator); err != nil {
 		return err
 	}
 	if err := s.upsertConfig(wxWorkDevicePoolConfigUsername, username, "聚合智能后台账号", "用于登录后台同步实例池", operator); err != nil {
@@ -177,6 +195,268 @@ func (s *wxWorkProtocolDevicePoolService) Sync(operator *dto.AuthPrincipal) (*re
 		return nil, err
 	}
 	return s.syncSummary(), nil
+}
+
+func (s *wxWorkProtocolDevicePoolService) AdoptionOptions(operator *dto.AuthPrincipal) ([]response.WxWorkProtocolAdoptionOptionResponse, error) {
+	if operator == nil || !operator.IsPlatformAccount {
+		return nil, errorsx.Forbidden("只有平台账号可以接入真实企微员工号")
+	}
+	bindings := repositories.StoreStaffBindingRepository.Find(
+		sqls.DB(),
+		sqls.NewCnd().Eq("status", enums.StatusOk).Asc("tenant_id").Asc("store_id").Asc("id"),
+	)
+	result := make([]response.WxWorkProtocolAdoptionOptionResponse, 0, len(bindings))
+	for i := range bindings {
+		binding := &bindings[i]
+		if binding.TenantID <= 0 || binding.StoreID <= 0 || binding.UserID <= 0 {
+			continue
+		}
+		tenant := repositories.TenantRepository.Get(sqls.DB(), binding.TenantID)
+		store := repositories.StoreRepository.GetInTenant(sqls.DB(), binding.StoreID, binding.TenantID)
+		user := repositories.UserRepository.GetInTenant(sqls.DB(), binding.UserID, binding.TenantID)
+		if tenant == nil || tenant.Status != enums.StatusOk || store == nil || store.Status != enums.StatusOk ||
+			user == nil || user.Status != enums.StatusOk || user.DeletedAt != nil {
+			continue
+		}
+		result = append(result, response.WxWorkProtocolAdoptionOptionResponse{
+			TenantID:            tenant.ID,
+			TenantName:          firstNonBlank(tenant.ShortName, tenant.LegalName, tenant.TenantCode),
+			StoreID:             store.ID,
+			StoreName:           firstNonBlank(store.Name, store.StoreCode),
+			StoreStaffBindingID: binding.ID,
+			StoreStaffUserID:    user.ID,
+			StoreStaffUserName:  firstNonBlank(user.Nickname, user.Username),
+		})
+	}
+	return result, nil
+}
+
+func (s *wxWorkProtocolDevicePoolService) Adopt(req request.AdoptWxWorkProtocolDevicePoolRequest, operator *dto.AuthPrincipal) (*response.WxWorkProtocolAdoptionResponse, error) {
+	if operator == nil || !operator.IsPlatformAccount {
+		return nil, errorsx.Forbidden("只有平台账号可以接入真实企微员工号")
+	}
+	if req.DevicePoolID <= 0 || req.TenantID <= 0 || req.StoreStaffBindingID <= 0 {
+		return nil, errorsx.InvalidParam("请选择真实实例和门店员工号")
+	}
+	settings := s.loadSettings()
+	callbackBaseURL, err := normalizeWxWorkProtocolCallbackBaseURL(settings.CallbackBaseURL)
+	if err != nil || callbackBaseURL == "" {
+		return nil, errorsx.InvalidParam("请先配置有效的 HTTPS 企微协议公开回调地址")
+	}
+	pool := repositories.WxWorkProtocolDevicePoolRepository.Get(sqls.DB(), req.DevicePoolID)
+	if err := validateAdoptableDevicePoolInstance(pool, time.Now()); err != nil {
+		return nil, err
+	}
+
+	credential, err := s.fetchProviderCredential(operator)
+	if err != nil {
+		return nil, err
+	}
+	probeConfig := &dto.WxWorkProtocolChannelConfig{
+		AppKey:        credential.AppKey,
+		AppSecret:     credential.AppSecret,
+		BaseURL:       wxWorkProtocolGatewayURL,
+		DevicePoolURL: settings.AdminBaseURL,
+	}
+	profileRaw, err := WxWorkProtocolService.postJSON(probeConfig, "/user/get_profile", map[string]any{"guid": pool.Guid})
+	if err != nil {
+		return nil, errorsx.InvalidParam("真实企微实例当前未通过账号资料接口验证，请确认实例在线")
+	}
+	profileUpdates := WxWorkProtocolService.profileUpdatesFromResponse(profileRaw)
+
+	var instance *models.WxWorkProtocolInstance
+	var store *models.Store
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedPool := repositories.WxWorkProtocolDevicePoolRepository.GetForUpdate(ctx.Tx, req.DevicePoolID)
+		if err := validateAdoptableDevicePoolInstance(lockedPool, time.Now()); err != nil {
+			return err
+		}
+		binding, err := repositories.StoreStaffBindingRepository.GetForUpdateInTenant(ctx.Tx, req.StoreStaffBindingID, req.TenantID)
+		if err != nil {
+			return err
+		}
+		if binding == nil || binding.Status != enums.StatusOk || binding.StoreID <= 0 || binding.UserID <= 0 {
+			return errorsx.InvalidParam("门店员工号绑定不存在或已停用")
+		}
+		tenant := repositories.TenantRepository.Get(ctx.Tx, req.TenantID)
+		store = repositories.StoreRepository.GetInTenant(ctx.Tx, binding.StoreID, req.TenantID)
+		user := repositories.UserRepository.GetInTenant(ctx.Tx, binding.UserID, req.TenantID)
+		if tenant == nil || tenant.Status != enums.StatusOk || store == nil || store.Status != enums.StatusOk ||
+			user == nil || user.Status != enums.StatusOk || user.DeletedAt != nil {
+			return errorsx.InvalidParam("接入公司、门店或门店员工账号不存在或已停用")
+		}
+
+		if lockedPool.BoundWxWorkProtocolInstanceID > 0 {
+			existing := repositories.WxWorkProtocolInstanceRepository.GetForUpdate(ctx.Tx, lockedPool.BoundWxWorkProtocolInstanceID)
+			if existing == nil || existing.Status == enums.StatusDeleted {
+				return errorsx.InvalidParam("实例池绑定记录异常，请先重新同步实例池")
+			}
+			if existing.TenantID != req.TenantID || existing.StoreStaffBindingID != binding.ID || existing.Guid != lockedPool.Guid {
+				return errorsx.InvalidParam("真实企微实例已绑定到其他接入公司或门店")
+			}
+			instance = existing
+			return nil
+		}
+		if existing := repositories.WxWorkProtocolInstanceRepository.Take(
+			ctx.Tx,
+			"guid = ? AND status <> ?",
+			lockedPool.Guid,
+			enums.StatusDeleted,
+		); existing != nil {
+			if existing.TenantID != req.TenantID || existing.StoreStaffBindingID != binding.ID {
+				return errorsx.InvalidParam("真实企微实例已绑定到其他接入公司或门店")
+			}
+			instance = existing
+			return repositories.WxWorkProtocolDevicePoolRepository.Updates(ctx.Tx, lockedPool.ID, map[string]any{
+				"bound_wx_work_protocol_instance_id": existing.ID,
+				"sync_status":                        "bound",
+				"updated_at":                         time.Now(),
+				"update_user_id":                     operator.UserID,
+				"update_user_name":                   operator.Username,
+			})
+		}
+		if existing := repositories.WxWorkProtocolInstanceRepository.Take(
+			ctx.Tx,
+			"(store_staff_binding_id = ? OR (tenant_id = ? AND store_id = ?)) AND status <> ?",
+			binding.ID,
+			req.TenantID,
+			binding.StoreID,
+			enums.StatusDeleted,
+		); existing != nil {
+			return errorsx.InvalidParam("该门店已绑定其他企微员工号实例")
+		}
+
+		channel, err := s.ensureTenantProtocolChannel(ctx.Tx, tenant, credential, settings, operator)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		instance = &models.WxWorkProtocolInstance{
+			TenantID:                  req.TenantID,
+			AgentTeamID:               binding.AgentTeamID,
+			Guid:                      lockedPool.Guid,
+			ChannelID:                 channel.ID,
+			StoreID:                   binding.StoreID,
+			StoreStaffBindingID:       binding.ID,
+			KnowledgeBaseID:           store.KnowledgeBaseID,
+			ServiceHours:              binding.ServiceHours,
+			StoreRoomConversationID:   binding.StoreRoomConversationID,
+			StoreRoomNotifyEnabled:    binding.StoreRoomNotifyEnabled,
+			StoreRoomAtList:           binding.StoreRoomAtList,
+			FallbackToHQ:              binding.FallbackToHQ,
+			ManualTimeoutMinutes:      normalizeManualTimeoutMinutes(binding.ManualTimeoutMinutes),
+			AIReplyEnabled:            true,
+			WelcomeEnabled:            true,
+			WelcomeSendMiniProgram:    true,
+			WelcomeAskLocation:        true,
+			PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
+			ContextMaxMessages:        30,
+			ContextMaxTokens:          8000,
+			ContextCompressionEnabled: true,
+			HealthStatus:              "online",
+			LastHeartbeatAt:           &now,
+			Status:                    enums.StatusOk,
+			Remark:                    "由平台实例池接入真实企微员工号",
+			AuditFields:               utils.BuildAuditFields(operator),
+		}
+		applyProtocolProfileUpdates(instance, profileUpdates)
+		instance.CreatedAt = now
+		instance.UpdatedAt = now
+		if err := repositories.WxWorkProtocolInstanceRepository.Create(ctx.Tx, instance); err != nil {
+			return err
+		}
+		return repositories.WxWorkProtocolDevicePoolRepository.Updates(ctx.Tx, lockedPool.ID, map[string]any{
+			"bound_wx_work_protocol_instance_id": instance.ID,
+			"sync_status":                        "bound",
+			"remark":                             "已接入 AgentDesk，正在配置真实消息回调",
+			"updated_at":                         now,
+			"update_user_id":                     operator.UserID,
+			"update_user_name":                   operator.Username,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	if instance == nil || store == nil {
+		return nil, errorsx.BusinessError(1, "真实企微实例接入结果不完整")
+	}
+	callbackURL, err := buildWxWorkProtocolCallbackURL(callbackBaseURL, instance.ChannelID)
+	if err != nil {
+		return nil, err
+	}
+	if err := WxWorkProtocolService.SetNotifyURL(instance.ID, callbackURL); err != nil {
+		_ = repositories.WxWorkProtocolDevicePoolRepository.Updates(sqls.DB(), req.DevicePoolID, map[string]any{
+			"sync_status": "callback_error",
+			"remark":      "门店绑定已完成，真实消息回调配置失败，可重试接入",
+			"updated_at":  time.Now(),
+		})
+		return nil, fmt.Errorf("门店绑定已完成，但配置真实消息回调失败: %w", err)
+	}
+	_ = repositories.WxWorkProtocolDevicePoolRepository.Updates(sqls.DB(), req.DevicePoolID, map[string]any{
+		"sync_status": "bound",
+		"remark":      "真实企微员工号已接入，消息回调已配置",
+		"updated_at":  time.Now(),
+	})
+	return &response.WxWorkProtocolAdoptionResponse{
+		DevicePoolID:        req.DevicePoolID,
+		InstanceID:          instance.ID,
+		TenantID:            instance.TenantID,
+		StoreID:             instance.StoreID,
+		StoreStaffBindingID: instance.StoreStaffBindingID,
+		EmployeeName:        firstNonBlank(instance.EmployeeName, instance.EmployeeUserID),
+		StoreName:           store.Name,
+		NotifyConfigured:    true,
+	}, nil
+}
+
+func (s *wxWorkProtocolDevicePoolService) RepairMessages(req request.RepairWxWorkProtocolMessagesRequest, operator *dto.AuthPrincipal) (*response.WxWorkProtocolRepairResponse, error) {
+	if operator == nil || !operator.IsPlatformAccount {
+		return nil, errorsx.Forbidden("只有平台账号可以修复企微员工号漏消息")
+	}
+	pool := repositories.WxWorkProtocolDevicePoolRepository.Get(sqls.DB(), req.ID)
+	if pool == nil || pool.BoundWxWorkProtocolInstanceID <= 0 {
+		return nil, errorsx.InvalidParam("实例池记录未绑定企微员工号")
+	}
+	instance := repositories.WxWorkProtocolInstanceRepository.Get(sqls.DB(), pool.BoundWxWorkProtocolInstanceID)
+	if instance == nil || instance.TenantID <= 0 || instance.Status != enums.StatusOk {
+		return nil, errorsx.InvalidParam("企微员工号实例不存在或未启用")
+	}
+	syncKey := strings.TrimSpace(instance.MessageGapFromSeq)
+	if syncKey == "" || syncKey == "0" {
+		return nil, errorsx.InvalidParam("当前没有可修复的消息序列缺口")
+	}
+	if instance.MessageRepairLastAt != nil && time.Since(*instance.MessageRepairLastAt) < time.Minute {
+		return nil, errorsx.InvalidParam("补漏接口受协议限频，请一分钟后再试")
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	now := time.Now()
+	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), instance.ID, instance.TenantID, map[string]any{
+		"message_repair_last_at":    now,
+		"message_repair_last_error": "",
+		"updated_at":                now,
+		"update_user_id":            operator.UserID,
+		"update_user_name":          operator.Username,
+	}); err != nil {
+		return nil, err
+	}
+	_, err := WxWorkProtocolService.callInstanceAPI(instance.ID, "/sync/sync_msg", map[string]any{
+		"sync_key": syncKey,
+		"limit":    limit,
+	}, nil)
+	if err != nil {
+		_ = repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), instance.ID, instance.TenantID, map[string]any{
+			"message_repair_last_error": "协议补漏请求失败",
+			"updated_at":                time.Now(),
+		})
+		return nil, err
+	}
+	return &response.WxWorkProtocolRepairResponse{InstanceID: instance.ID, SyncKey: syncKey, Limit: limit}, nil
 }
 
 func (s *wxWorkProtocolDevicePoolService) ClaimAvailableGUID(channel *models.Channel) (string, error) {
@@ -433,6 +713,8 @@ func (s *wxWorkProtocolDevicePoolService) loadSettings() wxWorkDevicePoolSetting
 		switch item.ConfigKey {
 		case wxWorkDevicePoolConfigAdminBaseURL:
 			settings.AdminBaseURL = normalizeDevicePoolAdminBaseURL(item.ConfigValue)
+		case wxWorkDevicePoolConfigCallbackBaseURL:
+			settings.CallbackBaseURL = strings.TrimRight(strings.TrimSpace(item.ConfigValue), "/")
 		case wxWorkDevicePoolConfigUsername:
 			settings.Username = strings.TrimSpace(item.ConfigValue)
 		case wxWorkDevicePoolConfigPassword:
@@ -515,6 +797,174 @@ func normalizeDevicePoolAdminBaseURL(value string) string {
 		return defaultWxWorkDevicePoolAdminBaseURL
 	}
 	return value
+}
+
+func normalizeWxWorkProtocolCallbackBaseURL(value string) (string, error) {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errorsx.InvalidParam("企微协议公开回调地址必须是无账号、参数和片段的 HTTPS 公网地址")
+	}
+	return value, nil
+}
+
+func validateAdoptableDevicePoolInstance(item *models.WxWorkProtocolDevicePoolInstance, now time.Time) error {
+	if item == nil || item.Status != enums.StatusOk {
+		return errorsx.InvalidParam("实例池记录不存在或已停用")
+	}
+	if strings.TrimSpace(item.Guid) == "" {
+		return errorsx.InvalidParam("实例池记录缺少 GUID")
+	}
+	if devicePoolExpired(item.ExpiredAt, now) {
+		return errorsx.InvalidParam("真实企微实例已过期")
+	}
+	if item.BoundWxWorkProtocolInstanceID > 0 {
+		return nil
+	}
+	status := strings.ToLower(strings.TrimSpace(item.SyncStatus))
+	if strings.TrimSpace(item.Uin) == "" && status != "online" {
+		return errorsx.InvalidParam("只能接入已登录且在线的真实企微实例")
+	}
+	if status == "offline" || status == "unavailable" || status == "expired" {
+		return errorsx.InvalidParam("真实企微实例当前不可用")
+	}
+	return nil
+}
+
+func (s *wxWorkProtocolDevicePoolService) fetchProviderCredential(operator *dto.AuthPrincipal) (*wxWorkProtocolProviderCredential, error) {
+	token, settings, err := s.ensureAdminToken(operator)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.postAdminJSON(settings.AdminBaseURL, "/admin/GetOpenApp", token, map[string]any{})
+	if err != nil {
+		return nil, errorsx.BusinessError(1, "读取企微协议应用凭据失败")
+	}
+	root := map[string]any{}
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil, errorsx.BusinessError(1, "企微协议应用凭据响应格式不合法")
+	}
+	data, _ := root["data"].(map[string]any)
+	app, _ := data["app"].(map[string]any)
+	credential := &wxWorkProtocolProviderCredential{
+		AppKey:    strings.TrimSpace(cast.ToString(app["app_key"])),
+		AppSecret: strings.TrimSpace(cast.ToString(app["app_secret"])),
+	}
+	if credential.AppKey == "" || credential.AppSecret == "" {
+		return nil, errorsx.BusinessError(1, "企微协议应用凭据未配置完整")
+	}
+	return credential, nil
+}
+
+func (s *wxWorkProtocolDevicePoolService) ensureTenantProtocolChannel(
+	db *gorm.DB,
+	tenant *models.Tenant,
+	credential *wxWorkProtocolProviderCredential,
+	settings wxWorkDevicePoolSettings,
+	operator *dto.AuthPrincipal,
+) (*models.Channel, error) {
+	if db == nil || tenant == nil || tenant.ID <= 0 || credential == nil {
+		return nil, errorsx.InvalidParam("创建企微协议渠道缺少接入公司或应用凭据")
+	}
+	channel := repositories.ChannelRepository.Take(
+		db,
+		"tenant_id = ? AND channel_type = ? AND status <> ?",
+		tenant.ID,
+		enums.ChannelTypeWxWorkProtocol,
+		enums.StatusDeleted,
+	)
+	cfg := &dto.WxWorkProtocolChannelConfig{
+		BaseURL:       wxWorkProtocolGatewayURL,
+		DevicePoolURL: settings.AdminBaseURL,
+	}
+	if channel != nil {
+		parsed, err := ChannelService.ParseWxWorkProtocolChannelConfig(channel.ConfigJSON)
+		if err != nil {
+			return nil, errorsx.InvalidParam("现有企微协议渠道配置不合法")
+		}
+		cfg = parsed
+	}
+	cfg.AppKey = credential.AppKey
+	cfg.AppSecret = credential.AppSecret
+	cfg.DevicePoolURL = settings.AdminBaseURL
+	if cfg.CallbackToken == "" {
+		secret, err := generateUserTokenSecret()
+		if err != nil {
+			return nil, err
+		}
+		cfg.CallbackToken = secret
+	}
+	if cfg.PublicAssetBaseURL == "" {
+		cfg.PublicAssetBaseURL = settings.CallbackBaseURL
+	}
+	configJSON, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	if channel != nil {
+		if err := repositories.ChannelRepository.UpdatesInTenant(db, channel.ID, tenant.ID, map[string]any{
+			"name":             firstNonBlank(channel.Name, "企微员工号协议"),
+			"config_json":      string(configJSON),
+			"status":           enums.StatusOk,
+			"updated_at":       now,
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+		}); err != nil {
+			return nil, err
+		}
+		channel.ConfigJSON = string(configJSON)
+		channel.Status = enums.StatusOk
+		return channel, nil
+	}
+	channel = &models.Channel{
+		TenantID:    tenant.ID,
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   strs.UUID(),
+		Name:        "企微员工号协议",
+		ConfigJSON:  string(configJSON),
+		Status:      enums.StatusOk,
+		Remark:      "由平台真实实例池自动创建",
+		AuditFields: utils.BuildAuditFields(operator),
+	}
+	channel.CreatedAt = now
+	channel.UpdatedAt = now
+	if err := repositories.ChannelRepository.Create(db, channel); err != nil {
+		return nil, err
+	}
+	return channel, nil
+}
+
+func applyProtocolProfileUpdates(instance *models.WxWorkProtocolInstance, updates map[string]any) {
+	if instance == nil {
+		return
+	}
+	if value := strings.TrimSpace(cast.ToString(updates["employee_user_id"])); value != "" {
+		instance.EmployeeUserID = value
+	}
+	if value := strings.TrimSpace(cast.ToString(updates["employee_name"])); value != "" {
+		instance.EmployeeName = utils.RepairMojibakeText(value)
+	}
+	if value := strings.TrimSpace(cast.ToString(updates["employee_avatar"])); value != "" {
+		instance.EmployeeAvatar = value
+	}
+}
+
+func buildWxWorkProtocolCallbackURL(baseURL string, channelID int64) (string, error) {
+	channel := repositories.ChannelRepository.Get(sqls.DB(), channelID)
+	if channel == nil || channel.Status != enums.StatusOk || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
+		return "", errorsx.InvalidParam("企微协议渠道不存在或未启用")
+	}
+	cfg, err := ChannelService.ParseWxWorkProtocolChannelConfig(channel.ConfigJSON)
+	if err != nil || strings.TrimSpace(cfg.CallbackToken) == "" {
+		return "", errorsx.InvalidParam("企微协议渠道缺少回调令牌")
+	}
+	return strings.TrimRight(baseURL, "/") +
+		"/api/third/wxp?t=" +
+		url.QueryEscape(cfg.CallbackToken), nil
 }
 
 func unixSecondsPtr(value int64) *time.Time {

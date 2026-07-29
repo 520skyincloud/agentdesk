@@ -1,27 +1,41 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { RefreshCwIcon, SaveIcon, ServerCogIcon } from "lucide-react"
+import { CableIcon, Loader2Icon, RefreshCwIcon, SaveIcon, ServerCogIcon, WrenchIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
+import { OptionCombobox } from "@/components/option-combobox"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
+  adoptWxWorkProtocolDevice,
   fetchWxWorkProtocolDevicePool,
   fetchWxWorkProtocolDevicePoolSettings,
+  fetchWxWorkProtocolAdoptionOptions,
+  repairWxWorkProtocolMessages,
   syncWxWorkProtocolDevicePool,
   updateWxWorkProtocolDevicePoolSettings,
   type WxWorkProtocolDevicePoolInstance,
   type WxWorkProtocolDevicePoolSettings,
+  type WxWorkProtocolAdoptionOption,
 } from "@/lib/api/admin"
 import { formatDateTime } from "@/lib/utils"
 
 const defaultSettings: WxWorkProtocolDevicePoolSettings = {
   adminBaseUrl: "https://chat-api.juhebot.com",
+  callbackBaseUrl: "",
   username: "",
   passwordSet: false,
   tokenSet: false,
@@ -36,6 +50,11 @@ export default function WxWorkDevicePoolPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [adoptTarget, setAdoptTarget] = useState<WxWorkProtocolDevicePoolInstance | null>(null)
+  const [adoptionOptions, setAdoptionOptions] = useState<WxWorkProtocolAdoptionOption[]>([])
+  const [selectedBindingId, setSelectedBindingId] = useState("")
+  const [adopting, setAdopting] = useState(false)
+  const [repairingId, setRepairingId] = useState(0)
   const permissions = useMemo(
     () => new Set(session?.permissions ?? []),
     [session?.permissions],
@@ -43,6 +62,8 @@ export default function WxWorkDevicePoolPage() {
   const isPlatformAccount = session?.isPlatformAccount === true
   const canUpdate = isPlatformAccount && permissions.has("wxworkDevicePool.update")
   const canSync = isPlatformAccount && permissions.has("wxworkDevicePool.sync")
+  const canAdopt = isPlatformAccount && permissions.has("wxworkDevicePool.adopt")
+  const canRepair = isPlatformAccount && permissions.has("wxworkDevicePool.repair")
 
   const stats = useMemo(() => {
     const idle = items.filter((item) => item.syncStatus === "idle" && item.boundWxWorkProtocolInstanceId <= 0).length
@@ -79,6 +100,7 @@ export default function WxWorkDevicePoolPage() {
     try {
       const saved = await updateWxWorkProtocolDevicePoolSettings({
         adminBaseUrl: settings.adminBaseUrl,
+        callbackBaseUrl: settings.callbackBaseUrl,
         username: settings.username,
         password,
       })
@@ -89,6 +111,60 @@ export default function WxWorkDevicePoolPage() {
       toast.error(error instanceof Error ? error.message : "保存失败")
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function openAdoption(item: WxWorkProtocolDevicePoolInstance) {
+    if (!canAdopt) return
+    setAdoptTarget(item)
+    setSelectedBindingId("")
+    try {
+      const options = await fetchWxWorkProtocolAdoptionOptions()
+      setAdoptionOptions(options)
+      if (options.length === 1) {
+        setSelectedBindingId(String(options[0].storeStaffBindingId))
+      }
+    } catch (error) {
+      setAdoptTarget(null)
+      toast.error(error instanceof Error ? error.message : "加载门店员工号失败")
+    }
+  }
+
+  async function handleAdopt() {
+    if (!adoptTarget || adopting) return
+    const option = adoptionOptions.find((item) => String(item.storeStaffBindingId) === selectedBindingId)
+    if (!option) {
+      toast.error("请选择门店员工号")
+      return
+    }
+    setAdopting(true)
+    try {
+      const result = await adoptWxWorkProtocolDevice({
+        devicePoolId: adoptTarget.id,
+        tenantId: option.tenantId,
+        storeStaffBindingId: option.storeStaffBindingId,
+      })
+      toast.success(`${result.storeName} 已接入真实企微员工号`)
+      setAdoptTarget(null)
+      await load()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "接入失败")
+    } finally {
+      setAdopting(false)
+    }
+  }
+
+  async function handleRepair(item: WxWorkProtocolDevicePoolInstance) {
+    if (!canRepair || repairingId > 0) return
+    setRepairingId(item.id)
+    try {
+      await repairWxWorkProtocolMessages(item.id)
+      toast.success("补漏请求已提交，返回消息将按正常回调去重入库")
+      await load()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "补漏请求失败")
+    } finally {
+      setRepairingId(0)
     }
   }
 
@@ -135,14 +211,14 @@ export default function WxWorkDevicePoolPage() {
         </div>
       </div>
 
-      <section className="agentdesk-surface rounded-2xl p-4">
+      <section className="agentdesk-surface rounded-md p-4">
         <div className="grid gap-4 lg:grid-cols-[1.3fr_0.7fr]">
           <div>
             <h2 className="text-base font-medium">聚合智能后台账号</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               凭据只保存在运行时数据库，读取配置时不会返回密码明文。这里登录的是后台实例管理接口，不是员工号消息协议接口。
             </p>
-            <div className="mt-4 grid gap-4 md:grid-cols-3">
+            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <Field label="后台 API 地址">
                 <Input disabled={!canUpdate} value={settings.adminBaseUrl} onChange={(event) => setSettings((current) => ({ ...current, adminBaseUrl: event.target.value }))} />
               </Field>
@@ -151,6 +227,9 @@ export default function WxWorkDevicePoolPage() {
               </Field>
               <Field label={settings.passwordSet ? "密码（已设置）" : "密码"}>
                 <Input disabled={!canUpdate} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={settings.passwordSet ? "留空表示不修改" : "请输入密码"} />
+              </Field>
+              <Field label="HTTPS 公开回调地址">
+                <Input disabled={!canUpdate} value={settings.callbackBaseUrl} onChange={(event) => setSettings((current) => ({ ...current, callbackBaseUrl: event.target.value }))} placeholder="https://weibao.example.com" />
               </Field>
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -173,7 +252,7 @@ export default function WxWorkDevicePoolPage() {
         </div>
       </section>
 
-      <section className="agentdesk-surface min-h-0 flex-1 overflow-hidden rounded-2xl p-4">
+      <section className="agentdesk-surface min-h-0 flex-1 overflow-hidden rounded-md p-4">
         <div className="mb-3 flex items-center justify-between">
           <div>
             <h2 className="text-base font-medium">实例列表</h2>
@@ -193,12 +272,14 @@ export default function WxWorkDevicePoolPage() {
                 <TableHead>Bridge</TableHead>
                 <TableHead>到期时间</TableHead>
                 <TableHead>最近同步</TableHead>
+                <TableHead>消息序列</TableHead>
+                <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {items.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-28 text-center text-muted-foreground">
+                  <TableCell colSpan={10} className="h-28 text-center text-muted-foreground">
                     暂无实例。保存账号后点击“同步实例”。
                   </TableCell>
                 </TableRow>
@@ -224,6 +305,32 @@ export default function WxWorkDevicePoolPage() {
                     <TableCell className="max-w-[180px] truncate font-mono text-xs">{item.bridgeId || "-"}</TableCell>
                     <TableCell>{formatDateTime(item.expiredAt)}</TableCell>
                     <TableCell>{formatDateTime(item.lastSyncedAt)}</TableCell>
+                    <TableCell className="min-w-[150px]">
+                      {item.messageGapFromSeq ? (
+                        <div className="space-y-1 text-xs">
+                          <Badge variant="destructive">缺口</Badge>
+                          <div className="font-mono">{item.messageGapFromSeq} - {item.messageGapToSeq}</div>
+                        </div>
+                      ) : (
+                        <span className="font-mono text-xs text-muted-foreground">{item.messageSyncSeq || "-"}</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="min-w-[160px] text-right">
+                      <div className="flex justify-end gap-2">
+                        {canRepair && item.messageGapFromSeq ? (
+                          <Button size="sm" variant="outline" disabled={repairingId > 0} onClick={() => void handleRepair(item)}>
+                            {repairingId === item.id ? <Loader2Icon className="animate-spin" /> : <WrenchIcon />}
+                            补漏
+                          </Button>
+                        ) : null}
+                        {canAdopt && item.adoptable ? (
+                          <Button size="sm" onClick={() => void openAdoption(item)}>
+                            <CableIcon />
+                            {item.boundWxWorkProtocolInstanceId > 0 ? "重试接入" : "接入门店"}
+                          </Button>
+                        ) : null}
+                      </div>
+                    </TableCell>
                   </TableRow>
                 ))
               )}
@@ -231,6 +338,35 @@ export default function WxWorkDevicePoolPage() {
           </Table>
         </div>
       </section>
+      <Dialog open={Boolean(adoptTarget)} onOpenChange={(open) => {
+        if (!open && !adopting) setAdoptTarget(null)
+      }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>接入真实企微员工号</DialogTitle>
+            <DialogDescription>{adoptTarget?.seatName || "已登录实例"}</DialogDescription>
+          </DialogHeader>
+          <Field label="租户 / 门店 / 门店员工号">
+            <OptionCombobox
+              value={selectedBindingId}
+              options={adoptionOptions.map((item) => ({
+                value: String(item.storeStaffBindingId),
+                label: `${item.tenantName} / ${item.storeName} / ${item.storeStaffUserName}`,
+              }))}
+              placeholder="选择门店员工号"
+              searchPlaceholder="搜索公司、门店或账号"
+              onChange={setSelectedBindingId}
+            />
+          </Field>
+          <DialogFooter>
+            <Button variant="outline" disabled={adopting} onClick={() => setAdoptTarget(null)}>取消</Button>
+            <Button disabled={adopting || !selectedBindingId} onClick={() => void handleAdopt()}>
+              {adopting ? <Loader2Icon className="animate-spin" /> : <CableIcon />}
+              {adopting ? "接入中" : "确认接入"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

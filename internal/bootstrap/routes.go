@@ -48,6 +48,15 @@ func registerThirdWxWorkProtocolRoutes(group *gin.RouterGroup) {
 	group.Any("/callback", third.WxWorkProtocolAnyCallback)
 }
 
+func registerThirdWxWorkProtocolShortRoutes(group *gin.RouterGroup) {
+	group.Any("/wxp", third.WxWorkProtocolAnyCallback)
+}
+
+func registerThirdWeComProviderRoutes(group *gin.RouterGroup) {
+	group.Any("/command-callback", third.WeComProviderCommandCallback)
+	group.Any("/data-callback", third.WeComProviderDataCallback)
+}
+
 func registerApiCustomerRoutes(group *gin.RouterGroup) {
 	group.POST("/session_exchange", api.CustomerPostSession_exchange)
 }
@@ -70,6 +79,20 @@ func registerApiMiniprogramRoutes(group *gin.RouterGroup) {
 	group.POST("/session/start", api.MiniprogramPostSessionStart)
 	group.POST("/message/send", api.MiniprogramPostMessageSend)
 	group.GET("/message/list", api.MiniprogramGetMessageList)
+}
+
+func registerApiArrivalRoutes(group *gin.RouterGroup) {
+	group.POST("/bootstrap", api.ArrivalPostBootstrap)
+	group.GET("/status", api.ArrivalGetStatus)
+	group.GET("/contact-way/:resourceToken", api.ArrivalGetContactWayQRCode)
+}
+
+func registerApiWeComProviderRoutes(group *gin.RouterGroup) {
+	group.GET("/invitation", api.WeComProviderGetInvitation)
+	group.POST("/authorization/begin", api.WeComProviderPostAuthorizationBegin)
+	group.GET("/authorization/callback", api.WeComProviderGetAuthorizationCallback)
+	group.GET("/options", api.WeComProviderGetOptions)
+	group.POST("/connection/complete", api.WeComProviderPostComplete)
 }
 
 func registerApiConversationEvaluationRoutes(group *gin.RouterGroup) {
@@ -148,6 +171,15 @@ func registerDashboardStoreWorkbenchRoutes(group *gin.RouterGroup) {
 	group.POST("/room_list", dashboard.StoreWorkbenchPostRoom_list)
 	group.POST("/room_member_list", dashboard.StoreWorkbenchPostRoom_member_list)
 	group.POST("/update", dashboard.StoreWorkbenchPostUpdate)
+}
+
+func registerDashboardArrivalConnectionRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.ArrivalConnectionAnyList)
+	group.GET("/authorization/options", dashboard.ArrivalConnectionGetAuthorizationOptions)
+	group.POST("/invitation/create", dashboard.ArrivalConnectionPostCreateInvitation)
+	group.POST("/verify", dashboard.ArrivalConnectionPostVerify)
+	group.POST("/disable", dashboard.ArrivalConnectionPostDisable)
+	group.Any("/audit/list", dashboard.ArrivalConnectionAnyAuditList)
 }
 
 func registerDashboardUserRoutes(group *gin.RouterGroup) {
@@ -350,8 +382,11 @@ func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
 func registerDashboardWxWorkProtocolDevicePoolRoutes(group *gin.RouterGroup) {
 	group.Any("/list", dashboard.WxWorkProtocolDevicePoolAnyList)
 	group.GET("/settings", dashboard.WxWorkProtocolDevicePoolGetSettings)
+	group.GET("/adoption_options", dashboard.WxWorkProtocolDevicePoolGetAdoption_options)
 	group.POST("/update_settings", dashboard.WxWorkProtocolDevicePoolPostUpdate_settings)
 	group.POST("/sync", dashboard.WxWorkProtocolDevicePoolPostSync)
+	group.POST("/adopt", dashboard.WxWorkProtocolDevicePoolPostAdopt)
+	group.POST("/repair_messages", dashboard.WxWorkProtocolDevicePoolPostRepair_messages)
 }
 
 func registerDashboardAgentRoutes(group *gin.RouterGroup) {

@@ -35,6 +35,8 @@ SQLite/MySQL，由平台通过产品流程重新创建 Tenant、Store、主管�
 | MySQL 应用账号密码 | 是 | 平台运维现场生成 | `AGENT_DESK_MYSQL_PASSWORD` | 是 |
 | MySQL root 密码 | 是 | 平台运维现场生成 | `AGENT_DESK_MYSQL_ROOT_PASSWORD` | 使用 Compose 内置 MySQL 时是 |
 | MySQL DSN | 是，包含应用密码 | 平台运维按数据库信息组装 | `AGENT_DESK_DB_DSN` | 是 |
+| 初始超级管理员用户名 | 否 | 平台运维指定 | `AGENT_DESK_BOOTSTRAP_ADMIN_USERNAME` | fresh 初始化时是 |
+| 初始超级管理员密码 | 是 | 平台运维受控注入 | `AGENT_DESK_BOOTSTRAP_ADMIN_PASSWORD` | fresh 初始化时是 |
 | 邀请码 AES 密钥 | 是 | 平台运维现场生成 | `AGENT_DESK_INVITATION_ENCRYPTION_KEY` | 是 |
 | 客户会话签名秘密 | 是 | 平台运维现场生成 | `AGENT_DESK_CUSTOMER_SESSION_SECRET` | 是 |
 | 资产 URL 签名秘密 | 是 | 平台运维现场生成 | `AGENT_DESK_ASSET_URL_SIGNING_SECRET` | 是 |
@@ -56,7 +58,20 @@ AGENT_DESK_FASTGPT_RETRIEVAL_TOKEN_LIMIT=400
 
 ## 3. 部署必需秘密
 
-### 3.1 MySQL
+### 3.1 初始超级管理员
+
+fresh 数据库第一次执行 Migration 2 时，可通过以下环境变量指定平台超级管理员：
+
+```text
+AGENT_DESK_BOOTSTRAP_ADMIN_USERNAME
+AGENT_DESK_BOOTSTRAP_ADMIN_PASSWORD
+```
+
+二者只从进程环境读取，不接受 YAML 配置，也不得写入源码、Migration、镜像层或交接文档。
+密码进入数据库前使用 bcrypt 哈希，接口和日志不得返回明文。变量只控制尚未执行 Migration 2
+的 fresh 数据库；不会在重启时覆盖已经存在的管理员账号或密码。
+
+### 3.2 MySQL
 
 使用当前 `docker-compose.yml` 内置 MySQL 时必须准备：
 
@@ -79,7 +94,7 @@ cs_ai_agent:<AGENT_DESK_MYSQL_PASSWORD>@tcp(mysql:3306)/cs_ai_agent?charset=utf8
 
 如果使用外部 MySQL，`AGENT_DESK_DB_DSN` 仍必需；Compose 内置 MySQL 的两个初始化密码是否使用，由实际部署编排决定。DSN 不得写入 YAML、命令行参数、诊断报告或 Git。
 
-### 3.2 `AGENT_DESK_INVITATION_ENCRYPTION_KEY`
+### 3.3 `AGENT_DESK_INVITATION_ENCRYPTION_KEY`
 
 - 格式：**恰好 32 个随机字节，再用标准 Base64 编码**。
 - 生成命令：`openssl rand -base64 32`。
@@ -88,7 +103,7 @@ cs_ai_agent:<AGENT_DESK_MYSQL_PASSWORD>@tcp(mysql:3306)/cs_ai_agent?charset=utf8
 - 丢失后果：现有邀请码密文无法正常查看；不能直接换值后继续使用旧密文。
 - 轮换边界：必须先设计邀请码重加密或统一失效并重新生成流程，不能只改环境变量。
 
-### 3.3 `AGENT_DESK_CUSTOMER_SESSION_SECRET`
+### 3.4 `AGENT_DESK_CUSTOMER_SESSION_SECRET`
 
 - 格式：至少 32 字节；建议生成 48 个随机字节后 Base64 编码。
 - 生成命令：`openssl rand -base64 48`。
@@ -96,7 +111,7 @@ cs_ai_agent:<AGENT_DESK_MYSQL_PASSWORD>@tcp(mysql:3306)/cs_ai_agent?charset=utf8
 - 轮换后果：已有客户会话会失效，需要重新建立会话。
 - 禁止：与邀请码密钥或资产签名秘密相同。
 
-### 3.4 `AGENT_DESK_ASSET_URL_SIGNING_SECRET`
+### 3.5 `AGENT_DESK_ASSET_URL_SIGNING_SECRET`
 
 - 格式：至少 32 字节；建议生成 48 个随机字节后 Base64 编码。
 - 生成命令：`openssl rand -base64 48`。
@@ -104,7 +119,7 @@ cs_ai_agent:<AGENT_DESK_MYSQL_PASSWORD>@tcp(mysql:3306)/cs_ai_agent?charset=utf8
 - 轮换后果：尚未过期的旧签名 URL 会立即失效。
 - 禁止：与客户会话秘密或其他密钥相同。
 
-### 3.5 `AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY`
+### 3.6 `AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY`
 
 - 格式：**恰好 32 个随机字节**；部署模板统一使用 Base64。
 - 生成命令：`openssl rand -base64 32`。
@@ -114,7 +129,7 @@ cs_ai_agent:<AGENT_DESK_MYSQL_PASSWORD>@tcp(mysql:3306)/cs_ai_agent?charset=utf8
 - 丢失后果：数据库中的全部门店模型凭据不可解密，只能恢复主密钥备份或要求各门店重新提交 Key。
 - 当前轮换限制：运行时只接受当前 `MasterKeyID` 对应的一把主密钥，没有多密钥 keyring。禁止直接替换；轮换必须先实现并演练显式重加密迁移。
 
-### 3.6 `AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID`
+### 3.7 `AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID`
 
 - 这不是秘密，是主密钥的不可混淆版本标识。
 - 示例格式：`store-credential-2026-07-v1`。
@@ -238,6 +253,60 @@ Endpoint、Bucket、Base URL 等非秘密配置继续放在部署 YAML；Access 
 - `AGENT_DESK_WXWORK_ENCODING_AES_KEY`
 
 这组配置是平台企业微信登录/通知身份，不是 Store 的企业微信员工号协议凭据。后者必须继续按 `wework.apifox.cn` 协议和现有账号绑定流程管理，禁止混用。
+
+### 6.5 到店联动与企业微信服务商
+
+到店联动默认关闭。只有企业微信第三方应用审核、正式 HTTPS 域名、小程序合法域名和真实
+回调验收都完成后，才能设置：
+
+```text
+AGENT_DESK_ARRIVAL_ENABLED=true
+AGENT_DESK_ARRIVAL_PUBLIC_BASE_URL=https://weibao.omnireva.com
+AGENT_DESK_WECOM_AUTH_TYPE=<1 during installation testing; 0 after formal publication>
+```
+
+必须由秘密管理设施独立生成或注入：
+
+- `AGENT_DESK_MINIPROGRAM_APP_SECRET`
+- `AGENT_DESK_ARRIVAL_SESSION_SECRET`
+- `AGENT_DESK_ARRIVAL_IDENTITY_HMAC_KEY`
+- `AGENT_DESK_ARRIVAL_DATA_MASTER_KEY`
+- `AGENT_DESK_WECOM_SUITE_SECRET`
+- `AGENT_DESK_WECOM_PROVIDER_CALLBACK_TOKEN`
+- `AGENT_DESK_WECOM_PROVIDER_ENCODING_AES_KEY`
+
+`AGENT_DESK_WECOM_AUTH_TYPE` 是非秘密的企业微信应用阶段配置：企业微信后台处于“安装测试”
+阶段时固定为 `1`，正式发布后固定为 `0`。应用只接受这两个整数；其他值会阻止启动。切换
+阶段必须修改仓库外生产环境文件并强制重建应用容器，普通 restart 不会重新加载环境变量。
+
+其中 `AGENT_DESK_ARRIVAL_DATA_MASTER_KEY` 是独立的 32 字节 base64 主密钥，用于小程序身份、
+CorpID、永久授权码、企业 token、外部联系人和协议会话等 Arrival 数据；不得复用 Store
+模型凭据主密钥。`AGENT_DESK_ARRIVAL_DATA_MASTER_KEY_ID` 是非秘密标识，但必须明确配置，
+用于后续轮换和审计。
+
+以下属于非秘密部署配置：
+
+- `AGENT_DESK_MINIPROGRAM_APP_ID`
+- `AGENT_DESK_WECOM_SUITE_ID`
+- `AGENT_DESK_ARRIVAL_WECHAT_API_BASE_URL`
+- `AGENT_DESK_ARRIVAL_WECOM_API_BASE_URL`
+- `AGENT_DESK_ARRIVAL_QR_ALLOWED_HOST_SUFFIXES`
+- session、邀请、联系码和投递频控时长
+
+生产预检要求公开地址和两类上游 API 均为有效 HTTPS，拒绝 IP、localhost 和明文 HTTP。
+二维码来源白名单只能包含经确认的企业微信官方资源域名，不能加入通配公网域或用户输入。
+
+企业微信服务商后台按以下固定路径配置：
+
+```text
+数据回调 URL：https://weibao.omnireva.com/api/third/wecom/provider/data-callback
+指令回调 URL：https://weibao.omnireva.com/api/third/wecom/provider/command-callback
+应用设置 URL：https://weibao.omnireva.com/wecom/provider/settings
+```
+
+回调 Token、EncodingAESKey、suite secret、小程序 AppSecret、suite ticket、永久授权码和访问
+token 不得进入 URL、前端、普通日志、审计明细或文档。完整运行边界见
+`docs/design/arrival-link-engine.md`。
 
 ## 7. 明确不需要、禁止复用的旧凭据
 

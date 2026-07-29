@@ -12,3 +12,10 @@ func Current() Config {
 	}
 	return *current
 }
+
+func LookupCurrent() (Config, bool) {
+	if current == nil {
+		return Config{}, false
+	}
+	return *current, true
+}

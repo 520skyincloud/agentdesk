@@ -141,3 +141,20 @@ wxWork:
     enableDuplicateCheck: true
     # 重复消息检查时间窗口，单位秒。
     duplicateCheckInterval: 1800
+
+arrival:
+  # 到店联动只能在正式 HTTPS 域名、服务商回调和小程序域名均配置后启用。
+  enabled: false
+  publicBaseUrl: ""
+  miniProgramAppId: ""
+  weComSuiteId: ""
+  weChatApiBaseUrl: "https://api.weixin.qq.com"
+  weComApiBaseUrl: "https://qyapi.weixin.qq.com"
+  qrCodeAllowedHostSuffixes:
+    - wework.qpic.cn
+    - wwcdn.weixin.qq.com
+    - work.weixin.qq.com
+  sessionTtlMinutes: 30
+  invitationTtlMinutes: 1440
+  contactWayTtlMinutes: 1440
+  deliveryRateLimitSeconds: 60

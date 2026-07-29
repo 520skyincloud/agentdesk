@@ -55,6 +55,7 @@ const allPermissions = [
   "channel.view",
   "agent.view",
   "agentTeamSchedule.view",
+  "arrivalConnection.view",
   "aiAgent.view",
   "knowledgeBase.view",
   "quickReply.view",
@@ -217,6 +218,41 @@ test("store workbench uses its own permission instead of channel access", async 
   assert.equal(itemUrls(withWorkbench).includes("/dashboard/store-workbench"), true)
   assert.equal(itemUrls(withChannelOnly).includes("/dashboard/store-workbench"), false)
   assert.equal(itemUrls(withChannelOnly).includes("/dashboard/wxwork-protocol-instances"), true)
+})
+
+test("arrival linking is tenant-scoped and uses its explicit permission", async () => {
+  const { filterDashboardNavForSession, dashboardPathIsAccessible } = await loadNavigation()
+  const tenantContext = { isPlatformAccount: false, hasActiveTenant: true }
+  const platformContext = { isPlatformAccount: true, hasActiveTenant: false }
+
+  assert.equal(
+    itemUrls(
+      filterDashboardNavForSession(["arrivalConnection.view"], tenantContext),
+    ).includes("/dashboard/arrival-connections"),
+    true,
+  )
+  assert.equal(
+    itemUrls(
+      filterDashboardNavForSession(["channel.view"], tenantContext),
+    ).includes("/dashboard/arrival-connections"),
+    false,
+  )
+  assert.equal(
+    dashboardPathIsAccessible(
+      "/dashboard/arrival-connections",
+      ["arrivalConnection.view"],
+      tenantContext,
+    ),
+    true,
+  )
+  assert.equal(
+    dashboardPathIsAccessible(
+      "/dashboard/arrival-connections",
+      ["arrivalConnection.view"],
+      platformContext,
+    ),
+    false,
+  )
 })
 
 test("direct dashboard routes reuse navigation permissions and context", async () => {

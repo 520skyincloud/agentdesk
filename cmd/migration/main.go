@@ -29,6 +29,7 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config failed: %w", err)
 	}
+	config.SetCurrent(cfg)
 	logx.Init(logx.Config{
 		Level:     cfg.Logger.Level,
 		Format:    cfg.Logger.Format,

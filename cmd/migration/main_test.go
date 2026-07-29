@@ -12,6 +12,7 @@ import (
 	"agent-desk/internal/pkg/constants"
 
 	"github.com/glebarez/sqlite"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
@@ -65,10 +66,18 @@ func TestMigrationMainExitsNonzeroWhenAutoMigrateFails(t *testing.T) {
 }
 
 func TestMigrationMainUsesExplicitConfigAndExitsZero(t *testing.T) {
+	const (
+		bootstrapUsername = "deployment-bootstrap-admin"
+		bootstrapPassword = "DeploymentPassword123!"
+	)
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "success.db")
 	configPath := writeMigrationCommandConfig(t, dir, dbPath)
 	command := migrationMainHelperCommand(t, configPath)
+	command.Env = append(command.Env,
+		"AGENT_DESK_BOOTSTRAP_ADMIN_USERNAME="+bootstrapUsername,
+		"AGENT_DESK_BOOTSTRAP_ADMIN_PASSWORD="+bootstrapPassword,
+	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("migration command failed: %v\n%s", err, output)
 	}
@@ -79,8 +88,8 @@ func TestMigrationMainUsesExplicitConfigAndExitsZero(t *testing.T) {
 	if err := db.Model(&models.Migration{}).Where("success = ?", true).Count(&successful).Error; err != nil {
 		t.Fatalf("count successful migrations: %v", err)
 	}
-	if successful != 5 {
-		t.Fatalf("successful fresh initializers=%d want=5", successful)
+	if successful != 7 {
+		t.Fatalf("successful fresh initializers=%d want=7", successful)
 	}
 	var migrations []models.Migration
 	if err := db.Order("version ASC").Find(&migrations).Error; err != nil {
@@ -93,13 +102,16 @@ func TestMigrationMainUsesExplicitConfigAndExitsZero(t *testing.T) {
 			t.Fatalf("initializer %d failed: %+v", migrations[i].Version, migrations[i])
 		}
 	}
-	if want := []int64{2, 15, 35, 68, 69}; !reflect.DeepEqual(versions, want) {
+	if want := []int64{2, 15, 35, 68, 69, 70, 71}; !reflect.DeepEqual(versions, want) {
 		t.Fatalf("fresh initializer versions=%v want=%v", versions, want)
 	}
 
 	var admin models.User
-	if err := db.Where("username = ?", constants.BootstrapAdminUsername).Take(&admin).Error; err != nil {
+	if err := db.Where("username = ?", bootstrapUsername).Take(&admin).Error; err != nil {
 		t.Fatalf("load bootstrap administrator: %v", err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(admin.Password), []byte(bootstrapPassword)); err != nil {
+		t.Fatalf("bootstrap administrator password mismatch: %v", err)
 	}
 	var fallback models.Tenant
 	if err := db.Where("tenant_code = ?", constants.LegacyDefaultTenantCode).Take(&fallback).Error; err != nil {

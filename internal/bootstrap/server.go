@@ -191,6 +191,8 @@ func addRouter(app *gin.Engine) {
 	registerApiConversationRoutes(apiGroup.Group("/conversation", middleware.ExternalUserMiddleware))
 	registerApiMessageRoutes(apiGroup.Group("/message", middleware.ExternalUserMiddleware))
 	registerApiMiniprogramRoutes(apiGroup.Group("/miniprogram"))
+	registerApiArrivalRoutes(apiGroup.Group("/miniprogram/arrival"))
+	registerApiWeComProviderRoutes(apiGroup.Group("/wecom/provider"))
 	registerApiConversationEvaluationRoutes(apiGroup.Group("/evaluation"))
 	registerApiWxWorkProtocolRemoteSetupRoutes(apiGroup.Group("/wxwork-protocol-remote-setup"))
 
@@ -211,6 +213,7 @@ func addRouter(app *gin.Engine) {
 	registerDashboardAgentPresenceRoutes(dashboardGroup.Group("/agent-presence"))
 	registerDashboardConversationEvaluationRoutes(dashboardGroup.Group("/conversation-evaluation"))
 	registerDashboardStoreWorkbenchRoutes(dashboardGroup.Group("/store-workbench"))
+	registerDashboardArrivalConnectionRoutes(dashboardGroup.Group("/arrival-connection"))
 	registerDashboardUserRoutes(dashboardGroup.Group("/user"))
 	registerDashboardTenantRoutes(dashboardGroup.Group("/tenant"))
 	registerDashboardTenantInvitationRoutes(dashboardGroup.Group("/tenant-invitation"))
@@ -256,6 +259,8 @@ func addRouter(app *gin.Engine) {
 	registerThirdWechatRoutes(thirdGroup.Group("/wechat"))
 	registerThirdWxWorkCLIRoutes(thirdGroup.Group("/wecom-cli"))
 	registerThirdWxWorkProtocolRoutes(thirdGroup.Group("/wxwork-protocol"))
+	registerThirdWxWorkProtocolShortRoutes(thirdGroup)
+	registerThirdWeComProviderRoutes(thirdGroup.Group("/wecom/provider"))
 }
 
 func configureTrustedProxies(app *gin.Engine, trustedProxies []string) error {

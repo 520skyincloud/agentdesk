@@ -28,6 +28,7 @@ type wxWorkProtocolContactAutomationService struct {
 type wxWorkProtocolContactRecord struct {
 	Seq         string `json:"seq"`
 	UserID      string `json:"user_id"`
+	UnionID     string `json:"unionid"`
 	Name        string `json:"name"`
 	CorpID      string `json:"corp_id"`
 	Flag        int    `json:"flag"`

@@ -512,6 +512,7 @@ export type WxWorkProtocolRoomMemberOption = {
 
 export type WxWorkProtocolDevicePoolSettings = {
   adminBaseUrl: string
+  callbackBaseUrl: string
   username: string
   passwordSet: boolean
   tokenSet: boolean
@@ -535,6 +536,13 @@ export type WxWorkProtocolDevicePoolInstance = {
   boundEmployeeName: string
   boundStoreName: string
   available: boolean
+  adoptable: boolean
+  messageSyncSeq: string
+  messageGapFromSeq: string
+  messageGapToSeq: string
+  messageGapDetectedAt?: string | null
+  messageRepairLastAt?: string | null
+  messageRepairLastError: string
   status: number
   remark: string
   createdAt: string
@@ -545,6 +553,33 @@ export type WxWorkProtocolDevicePoolSyncResult = {
   syncedCount: number
   idleCount: number
   boundCount: number
+}
+
+export type WxWorkProtocolAdoptionOption = {
+  tenantId: number
+  tenantName: string
+  storeId: number
+  storeName: string
+  storeStaffBindingId: number
+  storeStaffUserId: number
+  storeStaffUserName: string
+}
+
+export type WxWorkProtocolAdoptionResult = {
+  devicePoolId: number
+  instanceId: number
+  tenantId: number
+  storeId: number
+  storeStaffBindingId: number
+  employeeName: string
+  storeName: string
+  notifyConfigured: boolean
+}
+
+export type WxWorkProtocolRepairResult = {
+  instanceId: number
+  syncKey: string
+  limit: number
 }
 
 export type StartWxWorkProtocolLoginResult = {
@@ -1447,6 +1482,7 @@ export function fetchWxWorkProtocolDevicePoolSettings() {
 
 export function updateWxWorkProtocolDevicePoolSettings(payload: {
   adminBaseUrl: string
+  callbackBaseUrl: string
   username: string
   password?: string
 }) {
@@ -1459,6 +1495,30 @@ export function updateWxWorkProtocolDevicePoolSettings(payload: {
 export function syncWxWorkProtocolDevicePool() {
   return request<WxWorkProtocolDevicePoolSyncResult>("/api/dashboard/wxwork-protocol-device-pool/sync", {
     method: "POST",
+  })
+}
+
+export function fetchWxWorkProtocolAdoptionOptions() {
+  return request<WxWorkProtocolAdoptionOption[]>(
+    "/api/dashboard/wxwork-protocol-device-pool/adoption_options"
+  )
+}
+
+export function adoptWxWorkProtocolDevice(payload: {
+  devicePoolId: number
+  tenantId: number
+  storeStaffBindingId: number
+}) {
+  return request<WxWorkProtocolAdoptionResult>("/api/dashboard/wxwork-protocol-device-pool/adopt", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function repairWxWorkProtocolMessages(id: number, limit = 100) {
+  return request<WxWorkProtocolRepairResult>("/api/dashboard/wxwork-protocol-device-pool/repair_messages", {
+    method: "POST",
+    body: JSON.stringify({ id, limit }),
   })
 }
 

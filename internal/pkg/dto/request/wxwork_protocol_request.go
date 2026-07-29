@@ -13,6 +13,7 @@ type WxWorkProtocolCallbackRequest struct {
 }
 
 type WxProtocolChatMsg struct {
+	Seq            string                 `json:"seq"`
 	FromUsername   string                 `json:"from_username"`
 	ToUsername     string                 `json:"to_username"`
 	ChatroomSender string                 `json:"chatroom_sender"`

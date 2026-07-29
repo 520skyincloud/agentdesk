@@ -97,3 +97,19 @@ wxWork:
     safe: false
     enableDuplicateCheck: true
     duplicateCheckInterval: 1800
+
+arrival:
+  enabled: false
+  publicBaseUrl: ""
+  miniProgramAppId: ""
+  weComSuiteId: ""
+  weChatApiBaseUrl: "https://api.weixin.qq.com"
+  weComApiBaseUrl: "https://qyapi.weixin.qq.com"
+  qrCodeAllowedHostSuffixes:
+    - wework.qpic.cn
+    - wwcdn.weixin.qq.com
+    - work.weixin.qq.com
+  sessionTtlMinutes: 30
+  invitationTtlMinutes: 1440
+  contactWayTtlMinutes: 1440
+  deliveryRateLimitSeconds: 60

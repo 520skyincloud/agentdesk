@@ -6,6 +6,7 @@ import (
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var WxWorkProtocolDevicePoolRepository = newWxWorkProtocolDevicePoolRepository()
@@ -15,6 +16,14 @@ func newWxWorkProtocolDevicePoolRepository() *wxWorkProtocolDevicePoolRepository
 }
 
 type wxWorkProtocolDevicePoolRepository struct{}
+
+func (r *wxWorkProtocolDevicePoolRepository) GetForUpdate(db *gorm.DB, id int64) *models.WxWorkProtocolDevicePoolInstance {
+	ret := &models.WxWorkProtocolDevicePoolInstance{}
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ?", id).Error; err != nil {
+		return nil
+	}
+	return ret
+}
 
 func (r *wxWorkProtocolDevicePoolRepository) Get(db *gorm.DB, id int64) *models.WxWorkProtocolDevicePoolInstance {
 	ret := &models.WxWorkProtocolDevicePoolInstance{}

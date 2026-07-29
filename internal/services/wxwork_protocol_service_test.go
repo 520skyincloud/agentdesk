@@ -668,6 +668,112 @@ func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolEmployeeOutgoingFirstMessageCreatesConversation(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	store := &models.Store{
+		TenantID:  101,
+		StoreCode: "outgoing-first-store",
+		Name:      "企微首发门店",
+		Status:    enums.StatusOk,
+		AuditFields: models.AuditFields{
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	channel := &models.Channel{
+		TenantID:    101,
+		Name:        "企微员工号",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-outgoing-first",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID:       101,
+		Guid:           "guid-outgoing-first",
+		ChannelID:      channel.ID,
+		EmployeeUserID: "employee-first",
+		StoreID:        store.ID,
+		HealthStatus:   "online",
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+
+	err := WxWorkProtocolService.handleChatMessage(instance, request.WxProtocolChatMsg{
+		Seq:         "100",
+		ID:          "outgoing-first-message",
+		Sender:      instance.EmployeeUserID,
+		Receiver:    "external-first-customer",
+		RoomID:      "0",
+		MsgType:     wxProtocolMsgText,
+		ContentType: wxProtocolMsgText,
+		Content:     "您好，我先联系您",
+		SendTime:    now.Unix(),
+	}, `{"id":"outgoing-first-message","content":"您好，我先联系您"}`)
+	if err != nil {
+		t.Fatalf("handle outgoing-first message: %v", err)
+	}
+
+	mapping := WxWorkProtocolService.findProtocolConversationMapping(instance, request.WxProtocolChatMsg{
+		Sender:   instance.EmployeeUserID,
+		Receiver: "external-first-customer",
+	}, "external-first-customer")
+	if mapping == nil || mapping.ConversationID <= 0 {
+		t.Fatalf("outgoing-first message did not create conversation mapping: %+v", mapping)
+	}
+	var messages []models.Message
+	if err := db.Where("conversation_id = ? AND sender_type = ?", mapping.ConversationID, enums.IMSenderTypeAgent).Find(&messages).Error; err != nil {
+		t.Fatalf("find external agent message: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "您好，我先联系您" {
+		t.Fatalf("unexpected external agent messages: %+v", messages)
+	}
+	var outboxCount int64
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("message_id = ?", messages[0].ID).Count(&outboxCount).Error; err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if outboxCount != 0 {
+		t.Fatalf("employee native echo must not create outbound loop, got %d outbox rows", outboxCount)
+	}
+}
+
+func TestWxWorkProtocolMessageSequenceDetectsGapAndKeepsHighestCheckpoint(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	instance := &models.WxWorkProtocolInstance{
+		TenantID:     101,
+		Guid:         "guid-sequence",
+		HealthStatus: "online",
+		Status:       enums.StatusOk,
+		AuditFields:  models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	for _, sequence := range []string{"100", "103", "102", "103"} {
+		if err := WxWorkProtocolService.advanceMessageSyncSequence(instance.ID, sequence); err != nil {
+			t.Fatalf("advance sequence %s: %v", sequence, err)
+		}
+	}
+	current := WxWorkProtocolInstanceService.Get(instance.ID)
+	if current == nil {
+		t.Fatal("sequence instance missing")
+	}
+	if current.MessageSyncSeq != "103" || current.MessageGapFromSeq != "101" || current.MessageGapToSeq != "102" || current.MessageGapDetectedAt == nil {
+		t.Fatalf("unexpected sequence checkpoint: %+v", current)
+	}
+}
+
 func TestPrepareOutboundMiniProgramMediaKeepsExistingCoverCredentials(t *testing.T) {
 	svc := &wxWorkProtocolService{}
 	message := &models.Message{Payload: `{"username":"gh_7370f8f46fc0@app","file_id":"cover-file-id","aes_key":"cover-aes-key","md5":"cover-md5","size":20810,"appicon":"http://example.com/icon.png"}`}

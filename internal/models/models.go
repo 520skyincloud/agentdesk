@@ -43,6 +43,18 @@ var Models = []any{
 	&StoreStaffBinding{},
 	&WxWorkProtocolDevicePoolInstance{},
 	&WxWorkProtocolInstance{},
+	&MiniProgramIdentity{},
+	&WeComSuiteCredential{},
+	&WeComTenantAuthorization{},
+	&StoreArrivalConnection{},
+	&StoreArrivalInvitation{},
+	&WeComAuthorizationAttempt{},
+	&ArrivalScanEvent{},
+	&ArrivalSession{},
+	&ArrivalContactWay{},
+	&ArrivalStoreBinding{},
+	&WeComProviderCallbackEvent{},
+	&ArrivalAuditLog{},
 	&ConversationParticipant{},
 	&ConversationReadState{},
 	&Message{},
@@ -592,6 +604,13 @@ type WxWorkProtocolInstance struct {
 	AutoAcceptFriendRemarkTemplate string       `gorm:"type:varchar(500);not null;default:''"`
 	FriendRequestSyncSeq           string       `gorm:"type:varchar(64);not null;default:''"`
 	ContactSyncSeq                 string       `gorm:"type:varchar(64);not null;default:''"`
+	MessageSyncSeq                 string       `gorm:"type:varchar(64);not null;default:'';index"`
+	MessageSyncUpdatedAt           *time.Time   `gorm:"type:datetime;index"`
+	MessageGapFromSeq              string       `gorm:"type:varchar(64);not null;default:'';index"`
+	MessageGapToSeq                string       `gorm:"type:varchar(64);not null;default:''"`
+	MessageGapDetectedAt           *time.Time   `gorm:"type:datetime;index"`
+	MessageRepairLastAt            *time.Time   `gorm:"type:datetime;index"`
+	MessageRepairLastError         string       `gorm:"type:varchar(500);not null;default:''"`
 	ContactAutomationLastAt        *time.Time   `gorm:"type:datetime;index"`
 	ContactAutomationLastError     string       `gorm:"type:varchar(500);not null;default:''"`
 	ContextMaxMessages             int          `gorm:"type:int;not null;default:30"`

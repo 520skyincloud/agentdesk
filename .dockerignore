@@ -15,8 +15,18 @@ qdrant
 __debug_bin*
 
 config/config.yaml
-.env
+.env*
+!.env.example
+production.env
 backups
+
+*.pem
+*.key
+*.p12
+*.pfx
+*.db
+*.sqlite
+*.sqlite3
 
 node_modules
 .pnpm-store
@@ -29,7 +39,6 @@ web/tsconfig.tsbuildinfo
 web/next-env.d.ts
 web/.env*
 !web/.env.example
-
 
 
 

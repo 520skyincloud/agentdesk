@@ -579,6 +579,33 @@ func (s *channelService) buildChannelModel(id, tenantID int64, req request.Creat
 		if err != nil {
 			return nil, errorsx.InvalidParam("企微协议渠道配置不合法")
 		}
+		if id > 0 {
+			current := repositories.ChannelRepository.GetInTenant(sqls.DB(), id, tenantID)
+			if current != nil {
+				currentCfg, parseErr := s.ParseWxWorkProtocolChannelConfig(current.ConfigJSON)
+				if parseErr != nil {
+					return nil, errorsx.InvalidParam("现有企微协议渠道配置不合法")
+				}
+				if cfg.AppKey == "" {
+					cfg.AppKey = currentCfg.AppKey
+				}
+				if cfg.AppSecret == "" {
+					cfg.AppSecret = currentCfg.AppSecret
+				}
+				if cfg.CallbackToken == "" {
+					cfg.CallbackToken = currentCfg.CallbackToken
+				}
+				if cfg.DevicePoolURL == "" {
+					cfg.DevicePoolURL = currentCfg.DevicePoolURL
+				}
+				if cfg.WECDNBaseURL == "" {
+					cfg.WECDNBaseURL = currentCfg.WECDNBaseURL
+				}
+				if cfg.PublicAssetBaseURL == "" {
+					cfg.PublicAssetBaseURL = currentCfg.PublicAssetBaseURL
+				}
+			}
+		}
 		if cfg.AppKey == "" || cfg.AppSecret == "" {
 			return nil, errorsx.InvalidParam("企微协议渠道配置缺少 appKey 或 appSecret")
 		}

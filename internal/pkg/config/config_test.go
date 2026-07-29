@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -79,6 +80,30 @@ func TestLoadOverridesInvitationEncryptionKeyFromEnvironment(t *testing.T) {
 	}
 	if cfg.Auth.InvitationEncryptionKey != "environment-key" {
 		t.Fatalf("InvitationEncryptionKey=%q want environment override", cfg.Auth.InvitationEncryptionKey)
+	}
+}
+
+func TestLoadReadsBootstrapAdminOnlyFromEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte(`bootstrapAdmin:
+  username: ignored-yaml-admin
+  password: ignored-yaml-password
+`)
+	if err := os.WriteFile(path, content, 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	t.Setenv("AGENT_DESK_BOOTSTRAP_ADMIN_USERNAME", "environment-admin")
+	t.Setenv("AGENT_DESK_BOOTSTRAP_ADMIN_PASSWORD", "environment-password")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.BootstrapAdmin.Username != "environment-admin" {
+		t.Fatalf("BootstrapAdmin.Username=%q want environment override", cfg.BootstrapAdmin.Username)
+	}
+	if cfg.BootstrapAdmin.Password != "environment-password" {
+		t.Fatal("BootstrapAdmin.Password did not use environment override")
 	}
 }
 
@@ -166,6 +191,70 @@ func TestLoadRejectsInvalidTenantRegistrationEnvironment(t *testing.T) {
 
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "AGENT_DESK_TENANT_REGISTRATION_ENABLED") {
 		t.Fatalf("Load() error=%v want invalid environment error", err)
+	}
+}
+
+func TestLoadDefaultsAndOverridesWeComAuthType(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_DESK_WECOM_AUTH_TYPE", "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Arrival.WeComAuthType != 1 {
+		t.Fatalf("default WeComAuthType=%d want 1", cfg.Arrival.WeComAuthType)
+	}
+
+	t.Setenv("AGENT_DESK_WECOM_AUTH_TYPE", "0")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Arrival.WeComAuthType != 0 {
+		t.Fatalf("environment WeComAuthType=%d want 0", cfg.Arrival.WeComAuthType)
+	}
+}
+
+func TestLoadRejectsInvalidWeComAuthType(t *testing.T) {
+	for _, value := range []string{"-1", "2", "all"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("AGENT_DESK_WECOM_AUTH_TYPE", value)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "AGENT_DESK_WECOM_AUTH_TYPE") {
+				t.Fatalf("Load() error=%v want auth type validation", err)
+			}
+		})
+	}
+}
+
+func TestValidateProductionSupportsWeComInstallTestAndFormalAuthTypes(t *testing.T) {
+	for _, authType := range []int{1, 0} {
+		t.Run(strconv.Itoa(authType), func(t *testing.T) {
+			cfg := &Config{Arrival: ArrivalConfig{Enabled: true, WeComAuthType: authType}}
+			err := ValidateProduction(cfg)
+			if err == nil {
+				t.Fatal("incomplete production config unexpectedly passed")
+			}
+			if strings.Contains(err.Error(), "AGENT_DESK_WECOM_AUTH_TYPE") {
+				t.Fatalf("production auth type %d rejected: %v", authType, err)
+			}
+		})
+	}
+
+	for _, authType := range []int{-1, 2} {
+		t.Run("invalid_"+strconv.Itoa(authType), func(t *testing.T) {
+			cfg := &Config{Arrival: ArrivalConfig{Enabled: true, WeComAuthType: authType}}
+			err := ValidateProduction(cfg)
+			if err == nil || !strings.Contains(err.Error(), "AGENT_DESK_WECOM_AUTH_TYPE") {
+				t.Fatalf("ValidateProduction() error=%v want auth type failure", err)
+			}
+		})
 	}
 }
 
