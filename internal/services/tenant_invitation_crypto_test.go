@@ -30,7 +30,13 @@ func TestTenantInvitationCryptoRoundTripAndAuthentication(t *testing.T) {
 		t.Fatalf("plaintext = %q, want %q", plaintext, normalizeTenantInvitationCode(code))
 	}
 
-	tampered := ciphertext[:len(ciphertext)-1] + "A"
+	parts := strings.SplitN(ciphertext, ".", 2)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode ciphertext payload: %v", err)
+	}
+	payload[len(payload)-1] ^= 0x01
+	tampered := parts[0] + "." + base64.RawURLEncoding.EncodeToString(payload)
 	if _, err := decryptTenantInvitationCode(tampered, key); err == nil {
 		t.Fatal("tampered invitation ciphertext must be rejected")
 	}
