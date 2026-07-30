@@ -411,3 +411,35 @@ git diff --check                               通过
 
 回滚只需切换到本次部署前镜像并强制重建 `agent-desk`；新增 DTO 字段不落库，无 DDL 回滚。
 回滚后原始错误泄露和过期实例重复扫码问题会重新出现，因此不得长期回滚到旧镜像。
+
+### 14.1 生产部署与真实复验
+
+2026-07-31 已将本节修复部署到 `https://weibao.omnireva.com`。部署基线与回滚证据如下：
+
+```text
+代码提交：e8fdf355359c2899d865901b7aab01b2c4869149
+源码归档 SHA-256：5f95f2be991ce3834a96f253c92502adc002049a52914789592ed0b53d4d4fbc
+发布目录：/opt/agentdesk/releases/20260730-2356-wxwork-expiry-guard/app
+部署前备份：/opt/agentdesk/backups/20260730-2356-wxwork-expiry-guard
+回滚镜像：mlogclub/agent-desk:rollback-20260730-2356-wxwork-expiry-guard
+新镜像：sha256:3de4e968bba6e5d5fe4c771419ea13f69ac5e1b7c06ad85f277b7470d4802d03
+镜像创建时间：2026-07-30 23:58:53 +08:00
+应用容器启动时间：2026-07-31 00:01:41 +08:00
+```
+
+部署时原子切换 `/opt/agentdesk/current`，使用 `--force-recreate --no-deps agent-desk`
+只重建应用容器；MySQL 容器未重启，部署后应用和 MySQL 均为 `healthy`。公网员工号页面
+返回 HTTP 200，启动日志未发现 migration、数据库连接或应用启动错误。
+
+使用生产管理员登录“丽斯未来”后刷新 `/dashboard/wxwork-protocol-instances/`，真实复验
+结果为：
+
+1. “黄奇峰 / 合肥南七”显示红色“实例已过期”；
+2. 展示安全提示“该企微员工号实例已过期，请先续费或更换有效实例”；
+3. 操作菜单只有“接待人设”“欢迎语设置”“更换登录员工号”和“删除”，不再出现
+   “扫码重新登录”；
+4. 页面未再显示 `err_code/err_msg/data`、`raw` 或完整供应商响应；
+5. 既有 GUID、门店绑定、员工身份、AI 托管状态和在线事实均未改写。
+
+本修复不会把已过期供应商实例伪装成可登录状态。该实例恢复使用仍需在实例提供方完成
+续费，或者通过现有“更换登录员工号”流程绑定有效实例。
