@@ -233,6 +233,42 @@ func TestLoadRejectsInvalidWeComAuthType(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsAndOverridesArrivalContactProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_DESK_ARRIVAL_CONTACT_PROVIDER", "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Arrival.ContactProviderMode(); got != "contact_way" {
+		t.Fatalf("default arrival contact provider=%q want contact_way", got)
+	}
+
+	t.Setenv("AGENT_DESK_ARRIVAL_CONTACT_PROVIDER", "customer_acquisition")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Arrival.ContactProviderMode(); got != "customer_acquisition" {
+		t.Fatalf("arrival contact provider=%q want customer_acquisition", got)
+	}
+}
+
+func TestLoadRejectsInvalidArrivalContactProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_DESK_ARRIVAL_CONTACT_PROVIDER", "automatic-fallback")
+	if _, err := Load(path); err == nil ||
+		!strings.Contains(err.Error(), "AGENT_DESK_ARRIVAL_CONTACT_PROVIDER") {
+		t.Fatalf("Load() error=%v want contact provider validation", err)
+	}
+}
+
 func TestValidateProductionSupportsWeComInstallTestAndFormalAuthTypes(t *testing.T) {
 	for _, authType := range []int{1, 0} {
 		t.Run(strconv.Itoa(authType), func(t *testing.T) {

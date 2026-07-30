@@ -32,7 +32,8 @@ const (
 var ArrivalQRCodeService = newArrivalQRCodeService()
 
 type arrivalQRCodeService struct {
-	httpClient *http.Client
+	httpClient             *http.Client
+	payloadArtworkRenderer func(string) (image.Image, error)
 }
 
 type arrivalQRCodeArtifact struct {
@@ -43,7 +44,9 @@ type arrivalQRCodeArtifact struct {
 }
 
 func newArrivalQRCodeService() *arrivalQRCodeService {
-	service := &arrivalQRCodeService{}
+	service := &arrivalQRCodeService{
+		payloadArtworkRenderer: renderArrivalPayloadQRCode,
+	}
 	service.httpClient = &http.Client{
 		Timeout: 15 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -54,6 +57,59 @@ func newArrivalQRCodeService() *arrivalQRCodeService {
 		},
 	}
 	return service
+}
+
+func (s *arrivalQRCodeService) BuildPayloadArtifact(payload string) (*arrivalQRCodeArtifact, error) {
+	payload = strings.TrimSpace(payload)
+	if payload == "" || len([]byte(payload)) > 4096 {
+		return nil, fmt.Errorf("企业微信获客链接内容无效")
+	}
+	remoteURL, err := url.Parse(payload)
+	if err != nil || s.validateRemoteURL(remoteURL) != nil {
+		return nil, fmt.Errorf("企业微信获客链接地址不受信任")
+	}
+	code, err := qrcode.New(payload, qrcode.Highest)
+	if err != nil {
+		return nil, fmt.Errorf("生成标准获客二维码失败")
+	}
+	standardPNG, err := code.PNG(arrivalQRCanvasSize)
+	if err != nil {
+		return nil, fmt.Errorf("生成标准获客二维码失败")
+	}
+	standardImage, _, err := image.Decode(bytes.NewReader(standardPNG))
+	if err != nil {
+		return nil, fmt.Errorf("标准获客二维码无法解析")
+	}
+	decoded, err := decodeSingleQRCodePayload(standardImage)
+	if err != nil || string(decoded) != payload {
+		return nil, fmt.Errorf("标准获客二维码内容校验失败")
+	}
+	sum := sha256.Sum256([]byte(payload))
+	artifact := &arrivalQRCodeArtifact{
+		OriginalPNGBase64:  base64.StdEncoding.EncodeToString(standardPNG),
+		PublishedPNGBase64: base64.StdEncoding.EncodeToString(standardPNG),
+		PayloadHash:        hex.EncodeToString(sum[:]),
+		ArtworkVerified:    false,
+	}
+	renderer := s.payloadArtworkRenderer
+	if renderer == nil {
+		renderer = renderArrivalPayloadQRCode
+	}
+	artwork, err := renderer(payload)
+	if err != nil || artwork == nil {
+		return artifact, nil
+	}
+	decodedArtwork, err := decodeSingleQRCodePayload(compositeArrivalQRForVerification(artwork))
+	if err != nil || string(decodedArtwork) != payload {
+		return artifact, nil
+	}
+	var output bytes.Buffer
+	if err := png.Encode(&output, artwork); err != nil {
+		return artifact, nil
+	}
+	artifact.PublishedPNGBase64 = base64.StdEncoding.EncodeToString(output.Bytes())
+	artifact.ArtworkVerified = true
+	return artifact, nil
 }
 
 func (s *arrivalQRCodeService) BuildArtifact(qrCodeURL string) (*arrivalQRCodeArtifact, error) {
@@ -175,6 +231,16 @@ func renderArrivalFlowQRCode(payload string, source image.Image) (*image.NRGBA, 
 	draw.Draw(canvas, patch.Inset(-padding), image.NewUniform(color.White), image.Point{}, draw.Src)
 	scaleImageNearest(canvas.SubImage(patch).(*image.NRGBA), source, crop)
 	return canvas, nil
+}
+
+func renderArrivalPayloadQRCode(payload string) (image.Image, error) {
+	code, err := qrcode.New(payload, qrcode.Highest)
+	if err != nil {
+		return nil, err
+	}
+	code.BackgroundColor = color.NRGBA{R: 255, G: 255, B: 255, A: 0}
+	code.ForegroundColor = color.NRGBA{R: 22, G: 31, B: 45, A: 255}
+	return code.Image(arrivalQRCanvasSize), nil
 }
 
 func compositeArrivalQRForVerification(img image.Image) image.Image {

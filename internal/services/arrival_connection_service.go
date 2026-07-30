@@ -619,6 +619,8 @@ func (s *arrivalConnectionService) verifyConnection(connectionID, tenantID int64
 	}
 	result := &response.ArrivalConnectionVerificationResponse{
 		ConnectionStatus: string(connection.ConnectionStatus),
+		ProviderMode:     string(config.Current().Arrival.ContactProviderMode()),
+		ProviderOK:       true,
 		ErrorCode:        "",
 	}
 	authorization := repositories.ArrivalRepository.GetTenantAuthorization(sqls.DB(), connection.TenantAuthorizationID, tenantID)
@@ -644,6 +646,18 @@ func (s *arrivalConnectionService) verifyConnection(connectionID, tenantID int64
 	case !result.InstanceOK:
 		result.ErrorCode = "instance_mismatch"
 	}
+	if result.ErrorCode == "" &&
+		config.Current().Arrival.ContactProviderMode() == enums.ArrivalContactProviderModeCustomerAcquisition {
+		quota, preflightErr := ArrivalAcquisitionService.Preflight(authorization)
+		if quota != nil {
+			result.QuotaTotal = quota.Total
+			result.QuotaBalance = quota.Balance
+		}
+		if preflightErr != nil {
+			result.ProviderOK = false
+			result.ErrorCode = acquisitionFailureCode(preflightErr, "acquisition_link_verify_failed")
+		}
+	}
 	now := time.Now()
 	status := enums.ArrivalConnectionStatusActive
 	if result.ErrorCode != "" {
@@ -668,6 +682,10 @@ func (s *arrivalConnectionService) verifyConnection(connectionID, tenantID int64
 		"authorizationOK": result.AuthorizationOK,
 		"memberOK":        result.MemberOK,
 		"instanceOK":      result.InstanceOK,
+		"providerMode":    result.ProviderMode,
+		"providerOK":      result.ProviderOK,
+		"quotaTotal":      result.QuotaTotal,
+		"quotaBalance":    result.QuotaBalance,
 		"errorCode":       result.ErrorCode,
 	})
 	return result, nil
@@ -681,6 +699,7 @@ func (s *arrivalConnectionService) buildConnectionResponse(store *models.Store, 
 		StoreName:        strings.TrimSpace(store.Name),
 		BrandName:        strings.TrimSpace(store.BrandName),
 		ConnectionStatus: string(enums.ArrivalConnectionStatusPendingAuthorization),
+		ContactProvider:  string(config.Current().Arrival.ContactProviderMode()),
 	}
 	if connection == nil {
 		return result
@@ -696,6 +715,23 @@ func (s *arrivalConnectionService) buildConnectionResponse(store *models.Store, 
 	if authorization := repositories.ArrivalRepository.GetTenantAuthorization(sqls.DB(), connection.TenantAuthorizationID, connection.TenantID); authorization != nil {
 		result.AuthorizationStatus = string(authorization.AuthorizationStatus)
 		result.AuthorizedCorpName = strings.TrimSpace(authorization.CorpName)
+	}
+	if result.ContactProvider == string(enums.ArrivalContactProviderModeCustomerAcquisition) &&
+		connection.TenantAuthorizationID > 0 &&
+		strings.TrimSpace(connection.ContactMemberFingerprint) != "" {
+		if link := repositories.ArrivalRepository.FindAcquisitionLink(
+			sqls.DB(),
+			connection.TenantID,
+			connection.TenantAuthorizationID,
+			connection.StoreID,
+			connection.ContactMemberFingerprint,
+		); link != nil {
+			result.AcquisitionLinkStatus = string(link.LinkStatus)
+			result.AcquisitionQuotaTotal = link.QuotaTotal
+			result.AcquisitionQuotaBalance = link.QuotaBalance
+			result.AcquisitionFailureCode = strings.TrimSpace(link.FailureCode)
+			result.AcquisitionLastVerifiedAt = link.LastVerifiedAt
+		}
 	}
 	if instance := WxWorkProtocolInstanceService.GetByTenantID(connection.WxWorkProtocolInstanceID, connection.TenantID); instance != nil {
 		result.WxWorkProtocolAccountName = strings.TrimSpace(instance.EmployeeName)

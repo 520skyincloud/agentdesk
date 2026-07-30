@@ -233,6 +233,7 @@ AGENT_DESK_ARRIVAL_ENABLED=true
 AGENT_DESK_ARRIVAL_PUBLIC_BASE_URL=https://weibao.example.com
 AGENT_DESK_MINIPROGRAM_APP_ID=<小程序 AppID>
 AGENT_DESK_WECOM_SUITE_ID=<第三方应用 SuiteID>
+AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition
 ```
 
 秘密值只从环境注入，详见 `.env.example`。企业微信服务商后台使用：
@@ -267,6 +268,18 @@ docker compose \
 
 成员绑定由管理员分别选择官方客户联系成员和当前 Store 的员工实例进行人工确认。两个系统
 的成员标识属于不同命名空间，不得强制字符串相等，也不得按姓名自动绑定。
+
+生产到店二维码使用企业微信获客助手。启用前必须在第三方应用中保存“获客助手权限”，
+并让当前测试企业重新授权，使新权限进入授权范围。部署后先在到店联动页面执行连接验证：
+
+1. 真实额度接口返回成功且剩余额度大于零；
+2. 第一次未绑定扫码创建或复用单成员获客链接；
+3. 二维码可解码，且页面只暴露受控 PNG 资源 URL；
+4. 客户添加成员后由回调或补偿对账精确写入门店关系；
+5. 未完成员工号协议会话映射时保持 `legacy_unmapped`，不得伪造二次扫码发卡成功。
+
+旧 `contact_way` 仅作为显式回滚 Provider 保留。禁止因为获客权限、额度或链接创建失败
+自动降级。切换 Provider 后必须使用 `--force-recreate` 重建应用容器。
 
 ## 11. 企微员工号协议
 

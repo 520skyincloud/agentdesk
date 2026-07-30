@@ -1,8 +1,8 @@
 package bootstrap
 
 import (
-	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +32,7 @@ func TestArrivalSchemaAutoMigrateMySQL(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_MYSQL_DSN is not configured")
 	}
-	prefix := fmt.Sprintf("arrival_schema_%d_", time.Now().UnixNano())
+	prefix := "as_" + strconv.FormatInt(time.Now().UnixNano(), 36) + "_"
 	db, err := gorm.Open(mysql.Open(dsn), arrivalSchemaGORMConfig(prefix))
 	if err != nil {
 		t.Fatalf("open MySQL: %v", err)
@@ -68,6 +68,7 @@ func assertArrivalSchemaAutoMigrate(t *testing.T, db *gorm.DB) {
 	}{
 		{&models.MiniProgramIdentity{}, "uk_arrival_identity"},
 		{&models.WeComTenantAuthorization{}, "uk_arrival_corp_auth"},
+		{&models.ArrivalAcquisitionLink{}, "uk_arrival_acquisition_link"},
 		{&models.ArrivalStoreBinding{}, "uk_arrival_store_binding"},
 	} {
 		if !db.Migrator().HasIndex(index.model, index.name) {
@@ -89,6 +90,22 @@ func assertArrivalSchemaAutoMigrate(t *testing.T, db *gorm.DB) {
 			t.Errorf("arrival contact way diagnostic column %s was not created", column)
 		}
 	}
+	for _, column := range []string{
+		"provider_link_id",
+		"provider_link_url_ciphertext",
+		"provider_link_url_nonce",
+		"link_status",
+		"quota_total",
+		"quota_balance",
+		"last_verified_at",
+		"last_customer_sync_at",
+		"failure_stage",
+		"provider_error_code",
+	} {
+		if !db.Migrator().HasColumn(&models.ArrivalAcquisitionLink{}, column) {
+			t.Errorf("arrival acquisition link column %s was not created", column)
+		}
+	}
 }
 
 func arrivalSchemaModels() []any {
@@ -102,6 +119,7 @@ func arrivalSchemaModels() []any {
 		&models.ArrivalScanEvent{},
 		&models.ArrivalSession{},
 		&models.ArrivalContactWay{},
+		&models.ArrivalAcquisitionLink{},
 		&models.ArrivalStoreBinding{},
 		&models.WeComProviderCallbackEvent{},
 		&models.ArrivalAuditLog{},

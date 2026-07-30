@@ -545,3 +545,105 @@ mlogclub/agent-desk:rollback-contact-way-20260729-231049
 回滚只切换镜像并使用显式 `-p agentdesk --no-deps` 强制重建应用容器；新增列为兼容性诊断
 字段，不执行 DDL 删除。回滚后不得把已经确认的 `48002` 改为可重试，也不得通过手工写库
 伪造二维码成功。
+
+## 企业微信获客助手到店链接引擎
+
+2026-07-30 最终发布目录：
+
+```text
+/opt/agentdesk/releases/20260730-1218-customer-acquisition/app
+```
+
+最终运行镜像：
+
+```text
+sha256:bf31cfd7145fbcc61af733c4420c2d80c9607342f47cc546bb246a28e6d31a98
+```
+
+本次将到店二维码生产主链从 `externalcontact/add_contact_way` 切换为企业微信获客助手，
+新增真实额度预检、单成员获客链接创建与复用、链接详情恢复、客户分页对账、加密 URL
+保存、不透明 `customer_channel`、标准/艺术二维码反向解码校验以及回调与补偿任务共用的
+客户关系确认事务。旧 `contact_way` 只保留兼容和显式回滚，不会因权限、额度或创建失败
+自动降级。小程序公开契约、AI 回复引擎、员工号协议和客户身份模型均未修改。
+
+部署前验证：
+
+```text
+go test ./...                                  通过
+go vet ./...                                   通过
+pnpm typecheck                                 通过
+pnpm lint                                      0 error，33 条项目既有 warning
+next build --webpack                           通过，48 个静态页面
+git diff --check                               通过
+MySQL 8.4 隔离库 AutoMigrate + 镜像健康检查   通过
+```
+
+MySQL 兼容验证使用生产同版本数据库的隔离临时库。最终镜像真实执行 AutoMigrate 后，
+`t_arrival_acquisition_link` 的字段、类型和三列唯一索引均存在；验证完成后临时容器和
+临时库已删除，没有接触生产业务数据。
+
+切换前备份：
+
+```text
+/opt/agentdesk/backups/20260730-1221-customer-acquisition
+```
+
+备份包含权限为 `0600` 的生产环境文件和通过 gzip 完整性检查的 MySQL dump。dump
+SHA-256：
+
+```text
+e450e66618ba9a950cea699577daecee850bafab10c1f29d3439c9d3308bea36
+```
+
+部署前镜像固定为：
+
+```text
+mlogclub/agent-desk:rollback-20260730-1218
+sha256:c1be7f35b2ef0cba7117f5ca153f74468636d726ee329fe0f980de6db4c05b7e
+```
+
+服务器只有约 3.6 GiB 内存且没有常驻 Swap。首次过时源码构建在 Next.js 阶段长时间
+阻塞后被停止，当前线上容器未受影响。最终构建临时启用 4 GiB swap，完整 Docker
+多阶段构建在约 85 秒内完成；新镜像生成后关闭 swap 并删除临时文件，没有写入
+`/etc/fstab`。
+
+使用以下方式原地重建应用容器，MySQL 容器和数据卷未重建：
+
+```text
+docker compose --project-name agentdesk \
+  --env-file /opt/agentdesk/shared/production.env \
+  up -d --force-recreate agent-desk
+```
+
+部署结果：
+
+- 应用容器于 `2026-07-30 12:28:14`（Asia/Shanghai）启动并进入 `healthy`；
+- 容器实际镜像为最终摘要，实际
+  `AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition`；
+- 公网 `/` 与 `/dashboard/` 返回 HTTP 200；
+- 无签名参数的指令回调按契约返回 HTTP 400，没有假成功；
+- 启动后日志未发现 panic、fatal 或 error；
+- `2026-07-30 12:35:44` 收到新 `suite_ticket`，数据库状态为 `processed`；
+- README 已替换为当前知悉微宝“客服运营总览”和“客服运营报表”页面截图，不再引用
+  旧“贝壳AGENT”截图；截图不包含客户消息、凭据、租户内部 ID 或企微成员标识。
+
+`2026-07-30 12:42:22` 从到店联动页面执行真实获客助手预检。授权、官方客户联系成员和
+员工实例校验均通过，但 Provider 返回：
+
+```text
+acquisition_permission_denied
+```
+
+审计结果为 `providerOK=false`，额度字段保持 `0`，连接状态按真实结果标记为异常。该值
+不是“真实额度为零”，而是当前企业授权尚未包含获客助手权限。系统没有创建获客链接、
+没有生成二维码、没有自动降级到旧 Provider，也没有写库伪造成功。
+
+剩余人工步骤：
+
+1. 测试企业重新授权第三方应用，使服务商后台已保存的“获客助手权限”进入企业授权范围。
+2. 在到店联动页再次执行“校验连接”，确认返回真实 `quotaTotal/quotaBalance`。
+3. 发起一次新的小程序首次扫码，确认创建或复用真实单成员获客链接并返回可解码二维码。
+4. 由客户主动扫码添加成员，确认回调或补偿对账形成精确门店关系。
+5. 再次扫码，确认不再显示二维码，并由现有员工号会话真实投递到店卡片。
+
+上述五步完成前，不得宣称企业微信获客助手全链路已经验收。

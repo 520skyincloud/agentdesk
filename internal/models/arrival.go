@@ -137,35 +137,68 @@ type ArrivalSession struct {
 }
 
 type ArrivalContactWay struct {
-	ID                       int64                         `gorm:"primaryKey;autoIncrement"`
-	TenantID                 int64                         `gorm:"type:bigint;not null;index"`
-	StoreID                  int64                         `gorm:"type:bigint;not null;index"`
-	ScanEventID              int64                         `gorm:"type:bigint;not null;uniqueIndex"`
-	TenantAuthorizationID    int64                         `gorm:"type:bigint;not null;index"`
-	ContactStateHash         string                        `gorm:"type:varchar(64);not null;uniqueIndex"`
-	ConfigID                 string                        `gorm:"type:varchar(191);not null;default:'';index"`
-	OriginalQRCodeCiphertext string                        `gorm:"type:text"`
-	OriginalQRCodeNonce      string                        `gorm:"type:varchar(128);not null;default:''"`
-	OriginalPNGBase64        string                        `gorm:"type:text"`
-	PublicResourceTokenHash  string                        `gorm:"type:varchar(64);not null;default:'';uniqueIndex"`
-	ArtworkPNGBase64         string                        `gorm:"type:text"`
-	SourcePayloadHash        string                        `gorm:"type:varchar(64);not null;default:''"`
-	PublishedPayloadHash     string                        `gorm:"type:varchar(64);not null;default:''"`
-	Mode                     enums.ArrivalContactWayMode   `gorm:"type:varchar(30);not null;default:'none';index"`
-	ContactWayStatus         enums.ArrivalContactWayStatus `gorm:"type:varchar(30);not null;default:'provisioning';index"`
-	FailureCode              string                        `gorm:"type:varchar(80);not null;default:''"`
-	FailureStage             string                        `gorm:"type:varchar(80);not null;default:'';index"`
-	ProviderHTTPStatus       int                           `gorm:"type:int;not null;default:0"`
-	ProviderErrorCode        int                           `gorm:"type:int;not null;default:0;index"`
-	ProviderErrorMessage     string                        `gorm:"type:varchar(500);not null;default:''"`
-	FailureRetryable         bool                          `gorm:"type:int;not null;default:0;index"`
-	ProvisionAttemptCount    int                           `gorm:"type:int;not null;default:0"`
-	LastProvisionRequestID   string                        `gorm:"type:varchar(128);not null;default:'';index"`
-	LastProvisionAttemptAt   *time.Time                    `gorm:"type:datetime;index"`
-	NextProvisionRetryAt     *time.Time                    `gorm:"type:datetime;index"`
-	ExpiresAt                *time.Time                    `gorm:"type:datetime;index"`
-	CleanedAt                *time.Time                    `gorm:"type:datetime;index"`
-	Status                   enums.Status                  `gorm:"type:int;not null;default:0;index"`
+	ID                       int64                            `gorm:"primaryKey;autoIncrement"`
+	TenantID                 int64                            `gorm:"type:bigint;not null;index"`
+	StoreID                  int64                            `gorm:"type:bigint;not null;index"`
+	ScanEventID              int64                            `gorm:"type:bigint;not null;uniqueIndex"`
+	TenantAuthorizationID    int64                            `gorm:"type:bigint;not null;index"`
+	ProviderMode             enums.ArrivalContactProviderMode `gorm:"type:varchar(40);not null;default:'contact_way';index"`
+	AcquisitionLinkID        int64                            `gorm:"type:bigint;not null;default:0;index"`
+	ContactStateHash         string                           `gorm:"type:varchar(64);not null;uniqueIndex"`
+	ConfigID                 string                           `gorm:"type:varchar(191);not null;default:'';index"`
+	OriginalQRCodeCiphertext string                           `gorm:"type:text"`
+	OriginalQRCodeNonce      string                           `gorm:"type:varchar(128);not null;default:''"`
+	OriginalPNGBase64        string                           `gorm:"type:text"`
+	PublicResourceTokenHash  string                           `gorm:"type:varchar(64);not null;default:'';uniqueIndex"`
+	ArtworkPNGBase64         string                           `gorm:"type:text"`
+	SourcePayloadHash        string                           `gorm:"type:varchar(64);not null;default:''"`
+	PublishedPayloadHash     string                           `gorm:"type:varchar(64);not null;default:''"`
+	Mode                     enums.ArrivalContactWayMode      `gorm:"type:varchar(30);not null;default:'none';index"`
+	ContactWayStatus         enums.ArrivalContactWayStatus    `gorm:"type:varchar(30);not null;default:'provisioning';index"`
+	FailureCode              string                           `gorm:"type:varchar(80);not null;default:''"`
+	FailureStage             string                           `gorm:"type:varchar(80);not null;default:'';index"`
+	ProviderHTTPStatus       int                              `gorm:"type:int;not null;default:0"`
+	ProviderErrorCode        int                              `gorm:"type:int;not null;default:0;index"`
+	ProviderErrorMessage     string                           `gorm:"type:varchar(500);not null;default:''"`
+	FailureRetryable         bool                             `gorm:"type:int;not null;default:0;index"`
+	ProvisionAttemptCount    int                              `gorm:"type:int;not null;default:0"`
+	LastProvisionRequestID   string                           `gorm:"type:varchar(128);not null;default:'';index"`
+	LastProvisionAttemptAt   *time.Time                       `gorm:"type:datetime;index"`
+	NextProvisionRetryAt     *time.Time                       `gorm:"type:datetime;index"`
+	ExpiresAt                *time.Time                       `gorm:"type:datetime;index"`
+	CleanedAt                *time.Time                       `gorm:"type:datetime;index"`
+	Status                   enums.Status                     `gorm:"type:int;not null;default:0;index"`
+	AuditFields
+}
+
+// ArrivalAcquisitionLink stores one reusable WeCom customer-acquisition link
+// for one authorization, store, and explicitly bound contact member.
+type ArrivalAcquisitionLink struct {
+	ID                        int64                              `gorm:"primaryKey;autoIncrement"`
+	TenantID                  int64                              `gorm:"type:bigint;not null;index"`
+	TenantAuthorizationID     int64                              `gorm:"type:bigint;not null;index;uniqueIndex:uk_arrival_acquisition_link,priority:1"`
+	StoreID                   int64                              `gorm:"type:bigint;not null;index;uniqueIndex:uk_arrival_acquisition_link,priority:2"`
+	ContactMemberFingerprint  string                             `gorm:"type:varchar(64);not null;index;uniqueIndex:uk_arrival_acquisition_link,priority:3"`
+	ProviderLinkID            string                             `gorm:"type:varchar(191);not null;default:'';index"`
+	ProviderLinkURLCiphertext string                             `gorm:"type:text"`
+	ProviderLinkURLNonce      string                             `gorm:"type:varchar(128);not null;default:''"`
+	ProviderCreateTime        int64                              `gorm:"type:bigint;not null;default:0"`
+	LinkStatus                enums.ArrivalAcquisitionLinkStatus `gorm:"type:varchar(30);not null;default:'provisioning';index"`
+	QuotaTotal                int64                              `gorm:"type:bigint;not null;default:0"`
+	QuotaBalance              int64                              `gorm:"type:bigint;not null;default:0"`
+	LastVerifiedAt            *time.Time                         `gorm:"type:datetime;index"`
+	LastCustomerSyncAt        *time.Time                         `gorm:"type:datetime;index"`
+	FailureCode               string                             `gorm:"type:varchar(80);not null;default:''"`
+	FailureStage              string                             `gorm:"type:varchar(80);not null;default:'';index"`
+	ProviderHTTPStatus        int                                `gorm:"type:int;not null;default:0"`
+	ProviderErrorCode         int                                `gorm:"type:int;not null;default:0;index"`
+	ProviderErrorMessage      string                             `gorm:"type:varchar(500);not null;default:''"`
+	FailureRetryable          bool                               `gorm:"type:int;not null;default:0;index"`
+	ProvisionAttemptCount     int                                `gorm:"type:int;not null;default:0"`
+	LastProvisionRequestID    string                             `gorm:"type:varchar(128);not null;default:'';index"`
+	LastProvisionAttemptAt    *time.Time                         `gorm:"type:datetime;index"`
+	NextProvisionRetryAt      *time.Time                         `gorm:"type:datetime;index"`
+	Status                    enums.Status                       `gorm:"type:int;not null;default:0;index"`
 	AuditFields
 }
 

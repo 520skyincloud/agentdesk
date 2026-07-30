@@ -41,6 +41,22 @@ const (
 	ArrivalContactWayModeNone         ArrivalContactWayMode = "none"
 )
 
+type ArrivalContactProviderMode string
+
+const (
+	ArrivalContactProviderModeContactWay          ArrivalContactProviderMode = "contact_way"
+	ArrivalContactProviderModeCustomerAcquisition ArrivalContactProviderMode = "customer_acquisition"
+)
+
+type ArrivalAcquisitionLinkStatus string
+
+const (
+	ArrivalAcquisitionLinkStatusProvisioning ArrivalAcquisitionLinkStatus = "provisioning"
+	ArrivalAcquisitionLinkStatusActive       ArrivalAcquisitionLinkStatus = "active"
+	ArrivalAcquisitionLinkStatusFailed       ArrivalAcquisitionLinkStatus = "failed"
+	ArrivalAcquisitionLinkStatusDisabled     ArrivalAcquisitionLinkStatus = "disabled"
+)
+
 type ArrivalConnectionStatus string
 
 const (

@@ -263,6 +263,7 @@ Endpoint、Bucket、Base URL 等非秘密配置继续放在部署 YAML；Access 
 AGENT_DESK_ARRIVAL_ENABLED=true
 AGENT_DESK_ARRIVAL_PUBLIC_BASE_URL=https://weibao.omnireva.com
 AGENT_DESK_WECOM_AUTH_TYPE=<1 during installation testing; 0 after formal publication>
+AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition
 ```
 
 必须由秘密管理设施独立生成或注入：
@@ -288,6 +289,7 @@ CorpID、永久授权码、企业 token、外部联系人和协议会话等 Arri
 
 - `AGENT_DESK_MINIPROGRAM_APP_ID`
 - `AGENT_DESK_WECOM_SUITE_ID`
+- `AGENT_DESK_ARRIVAL_CONTACT_PROVIDER`
 - `AGENT_DESK_ARRIVAL_WECHAT_API_BASE_URL`
 - `AGENT_DESK_ARRIVAL_WECOM_API_BASE_URL`
 - `AGENT_DESK_ARRIVAL_QR_ALLOWED_HOST_SUFFIXES`
@@ -295,6 +297,8 @@ CorpID、永久授权码、企业 token、外部联系人和协议会话等 Arri
 
 生产预检要求公开地址和两类上游 API 均为有效 HTTPS，拒绝 IP、localhost 和明文 HTTP。
 二维码来源白名单只能包含经确认的企业微信官方资源域名，不能加入通配公网域或用户输入。
+Provider 只允许 `customer_acquisition` 或 `contact_way`。生产主链显式使用前者；后者只供
+已有数据兼容和人工回滚，禁止根据企业微信错误自动切换。
 
 企业微信服务商后台按以下固定路径配置：
 

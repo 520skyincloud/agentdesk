@@ -45,6 +45,12 @@ type ArrivalConnectionResponse struct {
 	LastErrorCode             string     `json:"lastErrorCode"`
 	RecentScanCount           int64      `json:"recentScanCount"`
 	RecentBoundCount          int64      `json:"recentBoundCount"`
+	ContactProvider           string     `json:"contactProvider"`
+	AcquisitionLinkStatus     string     `json:"acquisitionLinkStatus"`
+	AcquisitionQuotaTotal     int64      `json:"acquisitionQuotaTotal"`
+	AcquisitionQuotaBalance   int64      `json:"acquisitionQuotaBalance"`
+	AcquisitionFailureCode    string     `json:"acquisitionFailureCode"`
+	AcquisitionLastVerifiedAt *time.Time `json:"acquisitionLastVerifiedAt,omitempty"`
 	UpdatedAt                 time.Time  `json:"updatedAt"`
 }
 
@@ -98,6 +104,10 @@ type ArrivalConnectionVerificationResponse struct {
 	AuthorizationOK  bool   `json:"authorizationOk"`
 	MemberOK         bool   `json:"memberOk"`
 	InstanceOK       bool   `json:"instanceOk"`
+	ProviderMode     string `json:"providerMode"`
+	ProviderOK       bool   `json:"providerOk"`
+	QuotaTotal       int64  `json:"quotaTotal"`
+	QuotaBalance     int64  `json:"quotaBalance"`
 	ErrorCode        string `json:"errorCode"`
 }
 

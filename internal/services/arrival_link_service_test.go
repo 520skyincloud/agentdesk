@@ -648,6 +648,7 @@ func setupArrivalLinkTestFixture(t *testing.T) arrivalLinkTestFixture {
 		&models.ArrivalScanEvent{},
 		&models.ArrivalSession{},
 		&models.ArrivalContactWay{},
+		&models.ArrivalAcquisitionLink{},
 		&models.ArrivalStoreBinding{},
 		&models.WeComProviderCallbackEvent{},
 		&models.ArrivalAuditLog{},

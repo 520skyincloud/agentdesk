@@ -87,6 +87,13 @@ func (s *arrivalSecurity) ContactState(contactWayID int64) string {
 	return payload + "." + signature
 }
 
+func (s *arrivalSecurity) AcquisitionContactState(contactWayID int64) string {
+	mac := hmac.New(sha256.New, s.sessionKey)
+	_, _ = mac.Write([]byte("acquisition_contact_state:" + strconv.FormatInt(contactWayID, 10)))
+	sum := mac.Sum(nil)
+	return "acq" + hex.EncodeToString(sum[:24])
+}
+
 func (s *arrivalSecurity) PublicResourceToken(contactWayID int64) string {
 	payload := "qr2." + strconv.FormatInt(contactWayID, 10)
 	mac := hmac.New(sha256.New, s.sessionKey)

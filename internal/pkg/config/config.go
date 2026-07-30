@@ -148,6 +148,7 @@ type ArrivalConfig struct {
 	WeComProviderCallbackToken  string   `yaml:"-"`
 	WeComProviderEncodingAESKey string   `yaml:"-"`
 	WeComAuthType               int      `yaml:"-"`
+	ContactProvider             string   `yaml:"contactProvider"`
 	WeChatAPIBaseURL            string   `yaml:"weChatApiBaseUrl"`
 	WeComAPIBaseURL             string   `yaml:"weComApiBaseUrl"`
 	QRCodeAllowedHostSuffixes   []string `yaml:"qrCodeAllowedHostSuffixes"`
@@ -183,6 +184,24 @@ func (c ArrivalConfig) DeliveryRateLimit() int {
 		return 60
 	}
 	return c.DeliveryRateLimitSeconds
+}
+
+func (c ArrivalConfig) ContactProviderMode() enums.ArrivalContactProviderMode {
+	switch strings.TrimSpace(strings.ToLower(c.ContactProvider)) {
+	case string(enums.ArrivalContactProviderModeCustomerAcquisition):
+		return enums.ArrivalContactProviderModeCustomerAcquisition
+	default:
+		return enums.ArrivalContactProviderModeContactWay
+	}
+}
+
+func (c ArrivalConfig) HasValidContactProvider() bool {
+	switch strings.TrimSpace(strings.ToLower(c.ContactProvider)) {
+	case "", string(enums.ArrivalContactProviderModeContactWay), string(enums.ArrivalContactProviderModeCustomerAcquisition):
+		return true
+	default:
+		return false
+	}
 }
 
 func (c ArrivalConfig) WeChatBaseURL() string {
@@ -449,6 +468,7 @@ func applyNonSecretEnvironment(cfg *Config) {
 		{name: "AGENT_DESK_ARRIVAL_PUBLIC_BASE_URL", target: &cfg.Arrival.PublicBaseURL},
 		{name: "AGENT_DESK_MINIPROGRAM_APP_ID", target: &cfg.Arrival.MiniProgramAppID},
 		{name: "AGENT_DESK_WECOM_SUITE_ID", target: &cfg.Arrival.WeComSuiteID},
+		{name: "AGENT_DESK_ARRIVAL_CONTACT_PROVIDER", target: &cfg.Arrival.ContactProvider},
 		{name: "AGENT_DESK_ARRIVAL_WECHAT_API_BASE_URL", target: &cfg.Arrival.WeChatAPIBaseURL},
 		{name: "AGENT_DESK_ARRIVAL_WECOM_API_BASE_URL", target: &cfg.Arrival.WeComAPIBaseURL},
 	} {
@@ -461,6 +481,11 @@ func applyNonSecretEnvironment(cfg *Config) {
 func applyArrivalEnvironment(cfg *Config) error {
 	if cfg == nil {
 		return nil
+	}
+	if !cfg.Arrival.HasValidContactProvider() {
+		return fmt.Errorf(
+			"parse AGENT_DESK_ARRIVAL_CONTACT_PROVIDER: value must be contact_way or customer_acquisition",
+		)
 	}
 	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_WECOM_AUTH_TYPE")); value != "" {
 		parsed, err := strconv.Atoi(value)
@@ -573,6 +598,7 @@ func ValidateProduction(cfg *Config) error {
 		require(strongSecret(cfg.Arrival.WeComProviderCallbackToken), "AGENT_DESK_WECOM_PROVIDER_CALLBACK_TOKEN")
 		require(validWeComEncodingAESKey(cfg.Arrival.WeComProviderEncodingAESKey), "AGENT_DESK_WECOM_PROVIDER_ENCODING_AES_KEY")
 		require(cfg.Arrival.WeComAuthType == 0 || cfg.Arrival.WeComAuthType == 1, "AGENT_DESK_WECOM_AUTH_TYPE")
+		require(cfg.Arrival.HasValidContactProvider(), "AGENT_DESK_ARRIVAL_CONTACT_PROVIDER")
 		require(validProductionHTTPSURL(cfg.Arrival.WeChatBaseURL()), "AGENT_DESK_ARRIVAL_WECHAT_API_BASE_URL")
 		require(validProductionHTTPSURL(cfg.Arrival.WeComBaseURL()), "AGENT_DESK_ARRIVAL_WECOM_API_BASE_URL")
 	}

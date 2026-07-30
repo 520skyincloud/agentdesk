@@ -1,8 +1,8 @@
 # 到店联动链接引擎 V2
 
 > 状态：AgentDesk 当前权威设计与实现说明
-> 日期：2026-07-27
-> 分支：`codex/tenant-ai-unified-integration`
+> 日期：2026-07-30
+> 分支：`codex/customer-acquisition-link-engine`
 > 外部契约：`arrival_scan_input.v1` / `arrival_scan_result.v2`
 
 ## 1. 输入基线
@@ -14,16 +14,18 @@
 | `arrival-qr-v2-design-package (1).zip` | `4c193ecbcd953de1cdd5f491c5e18b21bfe10a7fc475c4f9e8429aba6076f69c` |
 | `agentdesk-arrival-link-engine-development-prompt (1).md` | `205d2a53bb2fbcd04f1beba5c95772a91cf1851cd9ee40d15a8a42f9f3f37162` |
 | `wxwork-conversation-binding-verification (1).md` | `11486e27374be3b7daf9476594552da74562f07fdac58978a23006ffe8430b82` |
+| `agentdesk-customer-acquisition-link-engine-upgrade-prompt.md` | `5ab6e7b8092676b9f099f55a79711d7c41c7f071e471b2fbed2d11dcc6ad7e96` |
 
-旧版同名文件不参与本次判断。企业微信员工号协议仍只以
+最新升级方案要求生产到店主链改用企业微信“获客助手”，旧 `contact_way` 只保留兼容、
+审计和显式回滚。企业微信员工号协议仍只以
 `https://wework.apifox.cn/llms.txt` 及其链接的具体接口页为依据。
 
 ## 2. 产品目标与边界
 
 到店联动解决两件事：
 
-1. 客户首次扫描门店小程序码时，页面显示由 AgentDesk 自动创建的真实企业微信
-   “联系我”二维码。
+1. 客户首次扫描门店小程序码时，页面显示由 AgentDesk 从真实企业微信获客链接生成并
+   反向验码的二维码。
 2. 客户和该门店员工号会话已经完成确定性绑定后，再次扫码可向该门店的真实企微单聊
    会话发送到店卡片。
 
@@ -51,7 +53,9 @@ WxWorkProtocolInstance 或登录身份体系，不查询订单、房号或手机
 | 小程序身份 | 新增 | `MiniProgramIdentity`，真实标识加密存储、指纹查找 |
 | 服务商主体授权 | 新增 | Suite ticket、永久授权、企业 token 与授权回调 |
 | 门店到店连接 | 新增 | Store、Corp、客户联系成员、员工实例的唯一连接 |
-| 联系我二维码 | 新增 | 官方 `scene=2` 创建、安全下载、解码、艺术码生成、反向验码与公开代理 |
+| 获客助手链接 | 新增 | 官方额度、单成员链接创建/详情、加密复用和客户分页对账 |
+| 到店二维码 | 扩展 | 真实获客链接追加逐次扫码状态、标准/艺术码反向验码与公开代理 |
+| 旧联系我二维码 | 保留兼容 | `contact_way` 只能由显式配置启用，不因错误自动降级 |
 | 扫码幂等与短会话 | 新增 | `ArrivalScanEvent`、`ArrivalSession` |
 | 到店客户绑定 | 新增关系，不复制客户域 | `ArrivalStoreBinding` 只引用现有 Customer/Conversation |
 | 管理页面 | 新增必要入口 | `/dashboard/arrival-connections` 与 `/wecom/provider/settings` |
@@ -65,7 +69,8 @@ flowchart LR
     API --> LOGIN["微信登录交换"]
     API --> ARRIVAL["ArrivalLinkService"]
     ARRIVAL --> STORE["Tenant / Store"]
-    ARRIVAL --> CONTACT["企业微信服务商与联系我"]
+    ARRIVAL --> CONTACT["企业微信服务商与获客助手"]
+    CONTACT --> LINK["门店可复用获客链接"]
     ARRIVAL --> BINDING["ArrivalStoreBinding"]
     BINDING --> CUSTOMER["现有 Customer / Conversation"]
     BINDING --> INSTANCE["现有员工实例发送 Service"]
@@ -109,9 +114,15 @@ Stage B 确定性桥门禁。
 
 ### 5.1 Stage A：官方关系确认
 
-未绑定扫码生成独立、不透明 `contactState`，创建官方
-`add_contact_way(type=1, scene=2)` 联系码。客户主动添加成员后，官方回调使用
-`State + CorpID + UserID + ExternalUserID` 精确命中本次扫码和门店。
+生产模式下，一个“授权主体 + 门店 + 已确认客户联系成员”只创建并复用一个官方获客
+链接。每次未绑定扫码仍生成独立 `ArrivalScanEvent`，并从服务端 HMAC 生成固定长度、
+仅含 ASCII 字母数字且不携带顺序 ID 的 `customer_channel`。同一扫码重试复用原状态，
+不同扫码得到不同状态。
+
+客户主动扫码添加成员后，优先由官方 `add_external_contact` 数据回调确认关系；五分钟
+维护任务同时通过获客客户分页接口进行补偿对账。两条路径均使用
+`customer_channel/state + link + authorization + store + member` 精确命中本次扫码，
+并复用同一关系确认事务。未命中完整映射的数据不会猜测归属。
 
 Stage A 成功只表示：
 
@@ -247,7 +258,10 @@ Arrival DDL 统一进入现有 `AutoMigrate`，不新增平行 migration 系统�
 - `ArrivalScanEvent`：扫码幂等、请求指纹、绑定和投递状态；
 - `ArrivalSession`：短期 status 会话，只保存 token hash；
 - `ArrivalContactWay`：官方 config、加密原始 URL、二维码材料、payload hash、创建尝试、
-  安全诊断、受控重试和清理状态；
+  安全诊断、受控重试和清理状态；通过 `provider_mode` 明确区分 Provider，通过
+  `acquisition_link_id` 引用获客链接，获客 `link_id` 不写入旧 `config_id`；
+- `ArrivalAcquisitionLink`：一个授权主体、门店和成员一个可复用链接；只保存官方
+  `link_id`、加密 URL、成员指纹、链接状态、额度快照、最近验证/对账时间和脱敏故障；
 - `ArrivalStoreBinding`：小程序身份与 Store 的唯一绑定，引用现有客户和会话；
 - `WeComProviderCallbackEvent`：回调幂等、防重放和处理状态；
 - `ArrivalAuditLog`：邀请、授权、绑定、二维码、禁用、清理和投递的安全审计。
@@ -263,12 +277,13 @@ Arrival DDL 统一进入现有 `AutoMigrate`，不新增平行 migration 系统�
 - 抢占后进程异常会落为 `failed/delivery_interrupted`，不会长期显示处理中；
 - 已发送事件按 Tenant、Store、身份和频控窗口判断，不跨门店限流；
 - `/status` 只返回原扫码投递结果，不补发；
-- 5 分钟维护任务先原子认领到期的临时联系码失败，再清理过期二维码并重试待映射绑定；
+- 5 分钟维护任务先原子认领到期的临时二维码失败，再清理过期二维码、重试待映射绑定，
+  并对 active 获客链接执行受控客户分页对账；
 - 授权撤销立即将连接失效、绑定降级、二维码过期，公开代理马上不可读；
 - 能合法调用官方删除时删除 config；授权已撤销而无法取 token 时清除本地二维码材料，
   保留“仅本地清理”审计，不伪装成官方删除成功。
 
-### 9.1 联系码失败诊断与受控恢复
+### 9.1 Provider 失败诊断与受控恢复
 
 企业微信调用不能用 HTTP 200 代替业务成功。Provider 对每次调用同时检查 HTTP 状态、
 JSON 结构和 `errcode`，将错误收敛为安全结构：
@@ -277,7 +292,7 @@ JSON 结构和 `errcode`，将错误收敛为安全结构：
 stage + httpStatus + errcode + sanitizedErrmsg + retryable
 ```
 
-`ArrivalContactWay` 保存 `failure_stage`、`provider_http_status`、
+`ArrivalContactWay` 和 `ArrivalAcquisitionLink` 保存 `failure_stage`、`provider_http_status`、
 `provider_error_code`、`provider_error_message`、`failure_retryable`、
 `provision_attempt_count`、`last_provision_request_id`、
 `last_provision_attempt_at` 和 `next_provision_retry_at`。这些字段只用于服务端排障，
@@ -295,10 +310,13 @@ stage + httpStatus + errcode + sanitizedErrmsg + retryable
 - 网络失败、HTTP 429/5xx、系统繁忙和频控错误可进入有限重试；
 - 权限不足、授权撤销、永久授权码无效、成员无效/未激活、参数错误和不可信二维码为永久
   失败，不自动循环；
-- 官方 `48002` 固定落为 `contact_way_permission_denied`，同时保留
-  `provider_error_code=48002` 和清洗后的短消息，不再与一般 API 失败混淆；
+- 旧 Provider 的官方 `48002` 固定落为 `contact_way_permission_denied`；获客助手额度
+  预检或链接创建返回 `48002` 时固定落为 `acquisition_permission_denied`；
+- 获客额度为零固定落为 `acquisition_quota_exhausted`，不得返回假二维码；
 - 一个联系码最多三次创建尝试；失败通过数据库条件更新原子 claim，单进程扫码锁不是唯一
   并发保护；
+- 一个获客链接最多三次创建尝试；数据库唯一索引和条件 claim 保证并发扫码不会重复创建
+  官方链接；
 - 历史 `contact_way_api_failed` 且尚未记录尝试次数的行只允许维护任务接管一次，以取得真实
   官方错误；
 - 官方 `config_id` 和加密二维码引用一旦写入，后续只重试下载、校验和发布二维码，不再次
@@ -310,21 +328,21 @@ corp access token 每个 authorization 独立缓存和加锁。刷新时重新�
 
 ## 10. 二维码安全
 
-二维码主链是企业微信官方 `add_contact_way(type=1, scene=2)`：
+生产二维码主链是企业微信获客助手：
 
 1. 从授权企业取得短期 corp access token；
-2. 使用唯一真实成员 UserID 和不透明 state 创建联系码；
-3. 限制下载协议为 HTTPS、来源域名白名单、重定向、大小和 MIME，防止 SSRF；
-4. 解码官方二维码真实 payload；
-5. 用成熟 Go QR 库按高纠错等级生成透明 PNG；
-6. 在浅色背景上反向解码；
-7. 只有源 payload 与产物逐字一致才发布艺术码，否则保留真实官方原码或明确失败；
+2. 先查询真实获客额度，再使用唯一真实成员 UserID 创建或复用单成员链接；
+3. 校验官方链接详情的 `link_id`、HTTPS URL 和唯一成员范围；
+4. 对链接 URL 加密存储，并为本次扫码追加不透明 `customer_channel`；
+5. 用成熟 Go QR 库按高纠错等级生成标准码，再尝试生成艺术码；
+6. 在浅色背景上反向解码，只有 payload 与输入链接逐字一致才发布艺术码；
+7. 艺术码验证失败自动回退为已验证的标准二维码；
 8. 公开 URL 只含带签名的不透明资源 token，`.png` 只是路由兼容后缀；
 9. 授权、连接或二维码状态失效后，即使旧 URL 未过期也拒绝读取。
 
-本实现依据企业微信官方“联系我管理”“服务商获取企业凭证”“联系我小程序插件”和企业
-授权信息文档锁定请求：二维码模式只发送单个真实企业成员的 `user`，不混用插件按钮
-`scene=1` 参数；`state` 为不超过 30 字节的服务端不透明值。
+当前旧 `contact_way` 实现及其数据不删除；只有
+`AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=contact_way` 时才进入该链路。系统禁止因获客
+权限、额度或链接失败而偷偷切换 Provider。
 
 ## 11. 权限与页面
 
@@ -365,10 +383,13 @@ AGENT_DESK_WECOM_SUITE_ID=<suite id>
 AGENT_DESK_WECOM_SUITE_SECRET=<secret>
 AGENT_DESK_WECOM_PROVIDER_CALLBACK_TOKEN=<strong callback token>
 AGENT_DESK_WECOM_PROVIDER_ENCODING_AES_KEY=<43-character key>
+AGENT_DESK_WECOM_AUTH_TYPE=1
+AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition
 ```
 
 非秘密参数包括微信/企微官方 API 地址、二维码来源白名单及 session、邀请、联系码、频控
-时长。生产预检会拒绝 HTTP、IP、localhost、无效密钥或缺失配置。
+时长。`AGENT_DESK_WECOM_AUTH_TYPE=1` 只适用于安装测试，应用正式发布后必须改为 `0`。
+生产预检会拒绝 HTTP、IP、localhost、无效密钥、非法 Provider 或缺失配置。
 
 企业微信服务商后台：
 
@@ -405,6 +426,11 @@ cd web && pnpm build
 - 回调签名、解密、幂等、防重放、token 刷新；
 - HTTP 200 业务错误、错误阶段/码/脱敏信息持久化、授权主体 token 隔离及失效 token
   单次刷新；
+- 获客额度成功、`48002`、额度耗尽、单成员请求体和客户列表分页；
+- 同授权/门店/成员链接复用、跨门店隔离、并发不重复创建；
+- 同一扫码状态稳定、不同扫码状态不同，状态只含字母数字且不暴露顺序 ID；
+- 获客 URL 加密、标准/艺术二维码逐字解码验证和艺术码失败回退；
+- 客户列表精确归因、未完成协议映射保持 `legacy_unmapped`；
 - 权限不足、授权撤销、成员缺失/不属于主体/未激活均为真实失败，不返回假二维码；
 - 历史失败恢复、同事件失败重试、并发原子 claim、二维码下载重试不重复创建官方 config；
 - 日志、数据库公开字段和小程序响应的敏感值扫描；
@@ -424,24 +450,27 @@ MySQL 实机验证可以延期，但不能删除 `TEST_MYSQL_DSN` 验证入口�
 - AgentDesk V2 API、数据模型、Tenant 完整性审计和权限；
 - 小程序登录交换、扫码幂等、短期会话和严格只读 status；
 - 服务商授权门户、指令/数据回调、token 缓存；
-- 官方 `scene=2` 联系码、艺术码验证、安全公开代理和清理；
+- 获客助手额度、单成员链接创建/详情、加密复用、客户分页对账与失败诊断；
+- 逐次扫码 `customer_channel`、标准/艺术码验证、安全公开代理和清理；
+- 旧 `contact_way` 的显式兼容与回滚，不做错误自动降级；
 - 联系码官方错误诊断、按授权主体 token 刷新、有限重试和历史通用失败恢复；
 - 门店连接管理、邀请、验证、禁用、审计页面；
 - 复用现有员工号投递与 Outbox 的到店卡片路径；
 - Stage A 回调和默认关闭的 Stage B 桥；
 - 主要 service、回调、二维码和导航自动化测试。
 
-上线前仍需外部完成：
+线上完整验收仍需：
 
-1. 注册并审核真实企业微信第三方应用/服务商能力；
-2. 安全提供 suite secret、回调材料和小程序 AppSecret；
-3. 为 `weibao.omnireva.com` 配置有效 HTTPS、反向代理和小程序合法域名；
-4. 用至少两个不同 CorpID 验证授权隔离、撤销和成员变更；
+1. 当前测试企业重新授权第三方应用，使新获客助手权限进入授权范围；
+2. 真实额度预检通过并创建/复用门店获客链接；
+3. 使用真实小程序首次扫码并确认二维码可识别；
+4. 客户主动添加成员并确认 AgentDesk 精确写入门店关系；
 5. 获得协议提供方正式、可文档化的
    `external_userid ↔ protocol user_id/vid` 桥并完成端到端验收；
-6. 在 Stage B 验收前保持桥关闭，只上线首次联系二维码和
+6. 在 Stage B 验收前保持桥关闭，只上线首次获客二维码和
    `legacy_unmapped` 状态，不宣称再次扫码发卡闭环完成；
-7. 补做 MySQL 验证后再进入生产发布。
+7. 再次扫码确认不显示二维码且真实员工号会话收到到店卡片；
+8. 补做 MySQL 实机验证。
 
 ## 15. 合并与回滚
 
@@ -463,6 +492,8 @@ MySQL 实机验证可以延期，但不能删除 `TEST_MYSQL_DSN` 验证入口�
 2. 代码回滚：回退 Arrival 独立提交；新表保留但不进入运行链，确认无生产数据后再另行审批
    数据清理。不得把删除 Arrival 表混入普通代码回滚。
 
-本次联系码诊断字段由 `AutoMigrate` 向后兼容增加，没有 DML migration 和新环境变量。
-代码回滚时保留新增列，不执行回退 DDL；部署后若官方仍返回永久错误，应先修正企业微信
-应用权限或成员配置，不得通过清空错误或伪造二维码绕过。
+本次 `ArrivalAcquisitionLink` 表与 Provider 字段由 `AutoMigrate` 向后兼容增加，没有
+DML migration。运行回滚优先把 `AGENT_DESK_ARRIVAL_CONTACT_PROVIDER` 显式改为
+`contact_way` 并强制重建容器；代码回滚时保留新增表列，不执行回退 DDL。部署后若官方
+仍返回永久错误，应先修正企业微信应用权限、重新授权或检查成员配置，不得通过清空错误、
+写入假 `link_id` 或伪造二维码绕过。

@@ -170,7 +170,8 @@ export default function ArrivalConnectionsPage() {
     item.connectionStatus.startsWith("pending_")
   ).length
   const abnormalCount = rows.filter((item) =>
-    ["invalid", "disabled"].includes(item.connectionStatus)
+    ["invalid", "disabled"].includes(item.connectionStatus) ||
+    item.acquisitionLinkStatus === "failed"
   ).length
 
   return (
@@ -283,7 +284,9 @@ export default function ArrivalConnectionsPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t("arrivalConnection.store")}</TableHead>
-                      <TableHead>{t("arrivalConnection.status")}</TableHead>
+                      <TableHead>
+                        {t("arrivalConnection.connectionAndLinkStatus")}
+                      </TableHead>
                       <TableHead>{t("arrivalConnection.corp")}</TableHead>
                       <TableHead>{t("arrivalConnection.instance")}</TableHead>
                       <TableHead>{t("arrivalConnection.recentActivity")}</TableHead>
@@ -313,6 +316,7 @@ export default function ArrivalConnectionsPage() {
                               {item.lastErrorCode}
                             </div>
                           ) : null}
+                          <ContactProviderSummary item={item} />
                         </TableCell>
                         <TableCell>
                           <div className="max-w-44 truncate">
@@ -351,7 +355,16 @@ export default function ArrivalConnectionsPage() {
                           </div>
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                          {formatDateTime(item.lastVerifiedAt)}
+                          <div>{formatDateTime(item.lastVerifiedAt)}</div>
+                          {item.acquisitionLastVerifiedAt ? (
+                            <div className="mt-1 text-xs">
+                              {t("arrivalConnection.providerVerifiedAt", {
+                                time: formatDateTime(
+                                  item.acquisitionLastVerifiedAt
+                                ),
+                              })}
+                            </div>
+                          ) : null}
                         </TableCell>
                         <TableCell className="text-right">
                           <DropdownMenu>
@@ -474,6 +487,51 @@ function Metric({
       >
         {value}
       </div>
+    </div>
+  )
+}
+
+function ContactProviderSummary({ item }: { item: ArrivalConnection }) {
+  const t = useI18n()
+  const isAcquisition = item.contactProvider === "customer_acquisition"
+  const status = item.acquisitionLinkStatus
+
+  return (
+    <div className="mt-2 flex max-w-56 flex-col items-start gap-1">
+      <Badge variant="outline" className="font-normal">
+        {isAcquisition
+          ? t("arrivalConnection.providerCustomerAcquisition")
+          : t("arrivalConnection.providerContactWay")}
+      </Badge>
+      {isAcquisition ? (
+        <>
+          <span
+            className={cn(
+              "text-xs text-muted-foreground",
+              status === "active" && "text-emerald-700 dark:text-emerald-400",
+              status === "failed" && "text-destructive"
+            )}
+          >
+            {status
+              ? t(`arrivalConnection.acquisitionStatus.${status}`)
+              : t("arrivalConnection.acquisitionPendingFirstScan")}
+          </span>
+          {item.acquisitionQuotaTotal > 0 ||
+          item.acquisitionQuotaBalance > 0 ? (
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {t("arrivalConnection.acquisitionQuota", {
+                balance: item.acquisitionQuotaBalance,
+                total: item.acquisitionQuotaTotal,
+              })}
+            </span>
+          ) : null}
+          {item.acquisitionFailureCode ? (
+            <span className="max-w-56 truncate text-xs text-destructive">
+              {item.acquisitionFailureCode}
+            </span>
+          ) : null}
+        </>
+      ) : null}
     </div>
   )
 }

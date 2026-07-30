@@ -15,6 +15,10 @@ const (
 	weComStageContactMemberValidate = "contact_member_validate"
 	weComStageAddContactWay         = "add_contact_way"
 	weComStageAddContactWayResponse = "add_contact_way_response"
+	weComStageAcquisitionQuota      = "customer_acquisition_quota"
+	weComStageAcquisitionCreate     = "customer_acquisition_create_link"
+	weComStageAcquisitionGet        = "customer_acquisition_get"
+	weComStageAcquisitionCustomer   = "customer_acquisition_customer"
 	weComStageQRCodeArtifact        = "qr_code_artifact"
 	weComStageContactWayPersist     = "contact_way_persist"
 )
@@ -149,6 +153,14 @@ func weComRequestStage(path string) string {
 		return weComStageCorpToken
 	case "/cgi-bin/externalcontact/add_contact_way":
 		return weComStageAddContactWay
+	case "/cgi-bin/externalcontact/customer_acquisition_quota":
+		return weComStageAcquisitionQuota
+	case "/cgi-bin/externalcontact/customer_acquisition/create_link":
+		return weComStageAcquisitionCreate
+	case "/cgi-bin/externalcontact/customer_acquisition/get":
+		return weComStageAcquisitionGet
+	case "/cgi-bin/externalcontact/customer_acquisition/customer":
+		return weComStageAcquisitionCustomer
 	default:
 		trimmed := strings.Trim(strings.TrimSpace(path), "/")
 		if trimmed == "" {

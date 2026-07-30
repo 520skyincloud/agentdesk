@@ -44,6 +44,10 @@ type arrivalQRCodeArtifactBuilder interface {
 	BuildArtifact(qrCodeURL string) (*arrivalQRCodeArtifact, error)
 }
 
+type arrivalPayloadQRCodeArtifactBuilder interface {
+	BuildPayloadArtifact(payload string) (*arrivalQRCodeArtifact, error)
+}
+
 type arrivalCardSender interface {
 	SendArrivalCard(conversationID, instanceID int64, clientMsgID string) (enums.ArrivalDeliveryStatus, error)
 }
@@ -53,6 +57,8 @@ type arrivalLinkService struct {
 	loginExchanger    arrivalMiniProgramLoginExchanger
 	contactWayCreator arrivalContactWayCreator
 	qrCodeBuilder     arrivalQRCodeArtifactBuilder
+	payloadQRBuilder  arrivalPayloadQRCodeArtifactBuilder
+	acquisition       *arrivalAcquisitionService
 	cardSender        arrivalCardSender
 }
 
@@ -252,6 +258,20 @@ func (s *arrivalLinkService) PublicQRCode(resourceToken string) ([]byte, error) 
 		(contactWay.ExpiresAt != nil && !contactWay.ExpiresAt.After(time.Now())) {
 		return nil, errorsx.InvalidParam("二维码资源不存在或已失效")
 	}
+	if contactWayProviderMode(contactWay) == enums.ArrivalContactProviderModeCustomerAcquisition {
+		link := repositories.ArrivalRepository.GetAcquisitionLink(
+			sqls.DB(),
+			contactWay.AcquisitionLinkID,
+			contactWay.TenantID,
+		)
+		if link == nil ||
+			link.Status != enums.StatusOk ||
+			link.LinkStatus != enums.ArrivalAcquisitionLinkStatusActive ||
+			link.StoreID != contactWay.StoreID ||
+			link.TenantAuthorizationID != contactWay.TenantAuthorizationID {
+			return nil, errorsx.InvalidParam("二维码资源不存在或已失效")
+		}
+	}
 	encoded := strings.TrimSpace(contactWay.ArtworkPNGBase64)
 	if encoded == "" {
 		encoded = strings.TrimSpace(contactWay.OriginalPNGBase64)
@@ -356,6 +376,7 @@ func (s *arrivalLinkService) provisionContactWay(
 		StoreID:                 event.StoreID,
 		ScanEventID:             event.ID,
 		TenantAuthorizationID:   connection.TenantAuthorizationID,
+		ProviderMode:            config.Current().Arrival.ContactProviderMode(),
 		ContactStateHash:        security.Fingerprint("contact_state_placeholder", placeholderState),
 		PublicResourceTokenHash: security.Fingerprint("public_qr_placeholder", placeholderResource),
 		Mode:                    enums.ArrivalContactWayModeNone,
@@ -371,7 +392,7 @@ func (s *arrivalLinkService) provisionContactWay(
 		if err := repositories.ArrivalRepository.CreateContactWay(ctx.Tx, contactWay); err != nil {
 			return err
 		}
-		state := security.ContactState(contactWay.ID)
+		state := contactStateForProvider(security, contactWay)
 		resourceToken := security.PublicResourceToken(contactWay.ID)
 		if err := repositories.ArrivalRepository.UpdateContactWay(ctx.Tx, contactWay.ID, contactWay.TenantID, map[string]any{
 			"contact_state_hash":         security.Fingerprint("contact_state", state),
@@ -458,6 +479,9 @@ func (s *arrivalLinkService) executeContactWayProvision(
 	contactWay *models.ArrivalContactWay,
 	requestID string,
 ) (*models.ArrivalContactWay, error) {
+	if contactWayProviderMode(contactWay) == enums.ArrivalContactProviderModeCustomerAcquisition {
+		return s.executeAcquisitionContactProvision(event, connection, contactWay, requestID)
+	}
 	authorization, memberUserID, err := s.resolveContactWayProvisioningContext(connection)
 	if err != nil {
 		s.failContactWay(contactWay, contactWayFailureCode(err, "contact_way_context_invalid"), requestID, err)
@@ -483,7 +507,7 @@ func (s *arrivalLinkService) executeContactWayProvision(
 			return nil, providerErr
 		}
 	} else {
-		state := security.ContactState(contactWay.ID)
+		state := contactStateForProvider(security, contactWay)
 		official, providerErr := s.contactWayProvider().AddContactWay(authorization, memberUserID, state)
 		if providerErr != nil {
 			s.failContactWay(contactWay, contactWayFailureCode(providerErr, "contact_way_api_failed"), requestID, providerErr)
@@ -559,6 +583,182 @@ func (s *arrivalLinkService) executeContactWayProvision(
 		"updated_at":                  now,
 		"update_user_name":            "arrival",
 	})
+	return repositories.ArrivalRepository.FindContactWayByScanEvent(sqls.DB(), event.ID), nil
+}
+
+func (s *arrivalLinkService) executeAcquisitionContactProvision(
+	event *models.ArrivalScanEvent,
+	connection *models.StoreArrivalConnection,
+	contactWay *models.ArrivalContactWay,
+	requestID string,
+) (*models.ArrivalContactWay, error) {
+	authorization, memberUserID, err := s.resolveContactWayProvisioningContext(connection)
+	if err != nil {
+		s.failContactWay(
+			contactWay,
+			acquisitionFailureCode(err, "acquisition_link_invalid"),
+			requestID,
+			err,
+		)
+		return nil, err
+	}
+	security, err := newArrivalSecurity()
+	if err != nil {
+		providerErr := newWeComProviderError(
+			weComStageContactWayPersist,
+			0,
+			0,
+			"到店联动加密服务不可用",
+			false,
+		)
+		s.failContactWay(contactWay, "acquisition_link_invalid", requestID, providerErr)
+		return nil, providerErr
+	}
+
+	customerLinkURL := ""
+	if contactWay.AcquisitionLinkID > 0 && strings.TrimSpace(contactWay.OriginalQRCodeCiphertext) != "" {
+		customerLinkURL, err = security.Decrypt(
+			"contact_qr_url",
+			contactWay.OriginalQRCodeCiphertext,
+			contactWay.OriginalQRCodeNonce,
+		)
+		if err != nil || strings.TrimSpace(customerLinkURL) == "" {
+			providerErr := newWeComProviderError(
+				weComStageQRCodeArtifact,
+				0,
+				0,
+				"已保存的企业微信获客二维码引用无法解密",
+				false,
+			)
+			s.failContactWay(contactWay, "acquisition_link_invalid", requestID, providerErr)
+			return nil, providerErr
+		}
+	} else {
+		acquisitionLink, baseLinkURL, ensureErr := s.acquisitionLinkService().EnsureLink(
+			connection,
+			authorization,
+			memberUserID,
+			requestID,
+		)
+		if ensureErr != nil {
+			s.failContactWay(
+				contactWay,
+				acquisitionFailureCode(ensureErr, "acquisition_link_create_failed"),
+				requestID,
+				ensureErr,
+			)
+			return nil, ensureErr
+		}
+		state := contactStateForProvider(security, contactWay)
+		customerLinkURL, err = appendAcquisitionCustomerChannel(baseLinkURL, state)
+		if err != nil {
+			providerErr := newWeComProviderError(
+				weComStageAcquisitionGet,
+				0,
+				0,
+				err.Error(),
+				false,
+			)
+			s.failContactWay(contactWay, "acquisition_link_invalid", requestID, providerErr)
+			return nil, providerErr
+		}
+		ciphertext, nonce, encryptErr := security.Encrypt("contact_qr_url", customerLinkURL)
+		if encryptErr != nil {
+			providerErr := newWeComProviderError(
+				weComStageContactWayPersist,
+				0,
+				0,
+				"保存企业微信获客二维码引用失败",
+				false,
+			)
+			s.failContactWay(contactWay, "acquisition_link_invalid", requestID, providerErr)
+			return nil, providerErr
+		}
+		if err := repositories.ArrivalRepository.UpdateContactWay(
+			sqls.DB(),
+			contactWay.ID,
+			contactWay.TenantID,
+			map[string]any{
+				"provider_mode":               enums.ArrivalContactProviderModeCustomerAcquisition,
+				"acquisition_link_id":         acquisitionLink.ID,
+				"original_qr_code_ciphertext": ciphertext,
+				"original_qr_code_nonce":      nonce,
+				"updated_at":                  time.Now(),
+				"update_user_name":            "arrival",
+			},
+		); err != nil {
+			providerErr := newWeComProviderError(
+				weComStageContactWayPersist,
+				0,
+				0,
+				"保存企业微信获客二维码结果失败",
+				false,
+			)
+			s.failContactWay(contactWay, "acquisition_link_create_failed", requestID, providerErr)
+			return nil, providerErr
+		}
+		contactWay.ProviderMode = enums.ArrivalContactProviderModeCustomerAcquisition
+		contactWay.AcquisitionLinkID = acquisitionLink.ID
+		contactWay.OriginalQRCodeCiphertext = ciphertext
+		contactWay.OriginalQRCodeNonce = nonce
+	}
+
+	artifact, artifactErr := s.payloadQRCodeArtifactBuilder().BuildPayloadArtifact(customerLinkURL)
+	if artifactErr != nil {
+		providerErr := newWeComProviderError(
+			weComStageQRCodeArtifact,
+			0,
+			0,
+			artifactErr.Error(),
+			false,
+		)
+		s.failContactWay(contactWay, "acquisition_link_invalid", requestID, providerErr)
+		return nil, providerErr
+	}
+	now := time.Now()
+	if err := repositories.ArrivalRepository.UpdateContactWay(
+		sqls.DB(),
+		contactWay.ID,
+		contactWay.TenantID,
+		map[string]any{
+			"original_png_base64":       artifact.OriginalPNGBase64,
+			"artwork_png_base64":        artifact.PublishedPNGBase64,
+			"source_payload_hash":       artifact.PayloadHash,
+			"published_payload_hash":    artifact.PayloadHash,
+			"mode":                      enums.ArrivalContactWayModeQRCode,
+			"contact_way_status":        enums.ArrivalContactWayStatusActive,
+			"failure_code":              "",
+			"failure_stage":             "",
+			"provider_http_status":      0,
+			"provider_error_code":       0,
+			"provider_error_message":    "",
+			"failure_retryable":         false,
+			"next_provision_retry_at":   nil,
+			"last_provision_request_id": requestID,
+			"updated_at":                now,
+			"update_user_name":          "arrival",
+		},
+	); err != nil {
+		providerErr := newWeComProviderError(
+			weComStageContactWayPersist,
+			0,
+			0,
+			"激活企业微信获客二维码失败",
+			false,
+		)
+		s.failContactWay(contactWay, "acquisition_link_create_failed", requestID, providerErr)
+		return nil, providerErr
+	}
+	_ = repositories.ArrivalRepository.UpdateConnection(
+		sqls.DB(),
+		connection.ID,
+		connection.TenantID,
+		map[string]any{
+			"last_contact_provisioned_at": now,
+			"updated_at":                  now,
+			"update_user_name":            "arrival",
+		},
+	)
 	return repositories.ArrivalRepository.FindContactWayByScanEvent(sqls.DB(), event.ID), nil
 }
 
@@ -678,6 +878,7 @@ func (s *arrivalLinkService) failContactWay(
 		"store_id", contactWay.StoreID,
 		"authorization_id", contactWay.TenantAuthorizationID,
 		"contact_way_id", contactWay.ID,
+		"provider_mode", contactWayProviderMode(contactWay),
 		"stage", normalizeWeComProviderStage(providerErr.Stage),
 		"provider_http_status", providerErr.HTTPStatus,
 		"provider_error_code", providerErr.ErrCode,
@@ -991,6 +1192,45 @@ func (s *arrivalLinkService) qrCodeArtifactBuilder() arrivalQRCodeArtifactBuilde
 		return s.qrCodeBuilder
 	}
 	return ArrivalQRCodeService
+}
+
+func (s *arrivalLinkService) payloadQRCodeArtifactBuilder() arrivalPayloadQRCodeArtifactBuilder {
+	if s.payloadQRBuilder != nil {
+		return s.payloadQRBuilder
+	}
+	return ArrivalQRCodeService
+}
+
+func (s *arrivalLinkService) acquisitionLinkService() *arrivalAcquisitionService {
+	if s.acquisition != nil {
+		return s.acquisition
+	}
+	return ArrivalAcquisitionService
+}
+
+func contactWayProviderMode(contactWay *models.ArrivalContactWay) enums.ArrivalContactProviderMode {
+	if contactWay != nil {
+		switch contactWay.ProviderMode {
+		case enums.ArrivalContactProviderModeCustomerAcquisition:
+			return enums.ArrivalContactProviderModeCustomerAcquisition
+		case enums.ArrivalContactProviderModeContactWay:
+			return enums.ArrivalContactProviderModeContactWay
+		}
+	}
+	return config.Current().Arrival.ContactProviderMode()
+}
+
+func contactStateForProvider(
+	security *arrivalSecurity,
+	contactWay *models.ArrivalContactWay,
+) string {
+	if security == nil || contactWay == nil {
+		return ""
+	}
+	if contactWayProviderMode(contactWay) == enums.ArrivalContactProviderModeCustomerAcquisition {
+		return security.AcquisitionContactState(contactWay.ID)
+	}
+	return security.ContactState(contactWay.ID)
 }
 
 func (s *arrivalLinkService) arrivalCardSender() arrivalCardSender {

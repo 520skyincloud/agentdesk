@@ -341,6 +341,94 @@ func (r *arrivalRepository) UpdateContactWay(db *gorm.DB, id, tenantID int64, up
 	return db.Model(&models.ArrivalContactWay{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(updates).Error
 }
 
+func (r *arrivalRepository) FindAcquisitionLink(
+	db *gorm.DB,
+	tenantID, authorizationID, storeID int64,
+	memberFingerprint string,
+) *models.ArrivalAcquisitionLink {
+	ret := &models.ArrivalAcquisitionLink{}
+	if err := db.Take(
+		ret,
+		"tenant_id = ? AND tenant_authorization_id = ? AND store_id = ? AND contact_member_fingerprint = ?",
+		tenantID,
+		authorizationID,
+		storeID,
+		memberFingerprint,
+	).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *arrivalRepository) GetAcquisitionLink(db *gorm.DB, id, tenantID int64) *models.ArrivalAcquisitionLink {
+	ret := &models.ArrivalAcquisitionLink{}
+	if err := db.Take(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *arrivalRepository) CreateAcquisitionLinkIfAbsent(db *gorm.DB, item *models.ArrivalAcquisitionLink) (bool, error) {
+	result := db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "tenant_authorization_id"},
+			{Name: "store_id"},
+			{Name: "contact_member_fingerprint"},
+		},
+		DoNothing: true,
+	}).Create(item)
+	return result.RowsAffected == 1, result.Error
+}
+
+func (r *arrivalRepository) UpdateAcquisitionLink(db *gorm.DB, id, tenantID int64, updates map[string]any) error {
+	return db.Model(&models.ArrivalAcquisitionLink{}).
+		Where("id = ? AND tenant_id = ?", id, tenantID).
+		Updates(updates).Error
+}
+
+func (r *arrivalRepository) TryClaimAcquisitionLinkProvision(
+	db *gorm.DB,
+	id, tenantID int64,
+	now, staleBefore time.Time,
+	requestID string,
+	maxAttempts int,
+) (bool, error) {
+	result := db.Model(&models.ArrivalAcquisitionLink{}).
+		Where("id = ? AND tenant_id = ? AND status = ?", id, tenantID, enums.StatusOk).
+		Where("provision_attempt_count < ?", maxAttempts).
+		Where(
+			"(link_status = ? AND last_provision_attempt_at < ?) OR "+
+				"(link_status = ? AND failure_retryable = ? AND (next_provision_retry_at IS NULL OR next_provision_retry_at <= ?))",
+			enums.ArrivalAcquisitionLinkStatusProvisioning,
+			staleBefore,
+			enums.ArrivalAcquisitionLinkStatusFailed,
+			true,
+			now,
+		).
+		Updates(map[string]any{
+			"link_status":               enums.ArrivalAcquisitionLinkStatusProvisioning,
+			"provision_attempt_count":   gorm.Expr("provision_attempt_count + 1"),
+			"last_provision_request_id": requestID,
+			"last_provision_attempt_at": now,
+			"next_provision_retry_at":   nil,
+			"updated_at":                now,
+			"update_user_name":          "arrival",
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+func (r *arrivalRepository) FindAcquisitionLinksForSync(db *gorm.DB, limit int) []models.ArrivalAcquisitionLink {
+	if limit <= 0 {
+		limit = 50
+	}
+	var list []models.ArrivalAcquisitionLink
+	_ = db.Where("status = ? AND link_status = ?", enums.StatusOk, enums.ArrivalAcquisitionLinkStatusActive).
+		Order("COALESCE(last_customer_sync_at, created_at) ASC").
+		Limit(limit).
+		Find(&list).Error
+	return list
+}
+
 func (r *arrivalRepository) TryClaimContactWayProvision(
 	db *gorm.DB,
 	id, tenantID int64,

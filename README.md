@@ -3,7 +3,7 @@
 简体中文 | [English](README_EN.md)
 
 面向多租户与多门店场景的 AI Agent 客服系统，支持知识库问答、规则派单、人工接管、
-运营审计、企微员工号、到店联动、模型计费归因和私有化部署。
+运营审计、企微员工号、企业微信获客助手到店联动、模型计费归因和私有化部署。
 
 > 面向需要同时处理在线咨询、知识库问答、人工协同和服务跟踪的团队。它不是把 LLM 接进聊天框，而是一套围绕客服场景设计的 AI Helpdesk 基础系统。
 
@@ -11,17 +11,19 @@
 
 租户接入、门店运营、客户会话、规则派单、托管知识和 AI 回复都在同一套系统中完成。
 
-### 客户侧在线咨询
+### 客服运营总览
 
-![客户侧在线咨询](screenshots/1.png)
+![知悉微宝客服运营总览](screenshots/dashboard-overview.jpg)
 
-客户可以在 Web 聊天页中直接发起咨询。AI Agent 会先接待，基于知识库回答问题；当用户明确要求人工介入时，会触发转人工确认流程。
+总览将实时排队、SLA 告警、人工处理、AI 接待、客服在线状态和今日累计分开呈现，
+并按当前账号的数据范围提供会话、派单与客服组织的钻取入口。
 
-### 客服工作台
+### 运营分析
 
-![客服工作台](screenshots/2.png)
+![知悉微宝客服运营报表](screenshots/service-analytics.jpg)
 
-客服工作台支持会话列表、消息处理、AI 转人工、客服回复、按门店隔离的客户标签、关联客户和工单信息查看，适合客服日常接待使用。
+运营报表统一承载服务总览、响应效率、客服表现、质检与满意度、派单质量和来源分析，
+支持按日期、客服组织、门店、企微员工号与数据质量筛选。
 
 ### 托管知识与模型 Profile
 
@@ -45,6 +47,8 @@
 - **Answerability Gate**：判断检索内容是否足以支撑回答，不足时返回兜底提示并建议联系人工。
 - **工单系统**：支持从会话创建工单、分类、指派、状态流转、进展记录和闭环处理。
 - **客服组织管理**：支持客服档案、客服组、排班和自动分配能力。
+- **企微到店联动**：门店复用真实获客助手链接，每次扫码使用独立不透明渠道状态；官方
+  回调与补偿对账完成门店关系确认，已绑定客户可进入员工号到店卡片投递链。
 - **AI 扩展能力**：支持 Skills、MCP 调试和外部工具接入。
 - **多入口接入**：提供管理后台、客服工作台、客户侧 Web 页面和嵌入式 SDK。
 
@@ -70,6 +74,11 @@ docker compose up -d --build
 ```
 
 Compose 会在数据库、邀请码、客户会话、文件签名或门店凭据加密密钥缺失时拒绝启动。运行备份与 `.env` 必须保存在 Git 仓库之外。变量格式、生成方式、保管责任、轮换限制以及 FastGPT Token 与门店 NewAPI Key 的区别，见[生产密钥与外部凭据交付手册](docs/deployment/production-secrets.md)。
+
+启用企业微信到店联动时，生产主链必须显式配置
+`AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition`。旧 `contact_way` 只用于
+兼容和人工回滚，系统不会在权限、额度或链接失败时自动降级。完整授权、回调、获客额度、
+二维码和客户归因验收见[到店联动链接引擎](docs/design/arrival-link-engine.md)。
 
 正式活动服务保持 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`。当前版本必须从空 SQLite/MySQL 数据库启动。历史数据库只能在当前应用停止的隔离只读环境中恢复，不再是受支持的迁移输入。
 
@@ -100,6 +109,7 @@ Compose 默认会启动：
 - [完整部署手册](docs/deployment/deployment-guide.md)
 - [生产密钥与外部凭据手册](docs/deployment/production-secrets.md)
 - [统一集成权威方案](docs/development/tenant-ai-unified-integration-plan.md)
+- [企业微信获客助手到店链接引擎](docs/design/arrival-link-engine.md)
 - [安全说明](SECURITY.md)
 - [贡献指南](CONTRIBUTING.md)
 

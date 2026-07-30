@@ -245,23 +245,68 @@ func (s *weComProviderCallbackService) confirmOfficialRelationship(payload *weCo
 	if contactWay == nil || contactWay.Status != enums.StatusOk {
 		return fmt.Errorf("企业微信客户关系回调未命中到店扫码事件")
 	}
-	scanEvent := repositories.ArrivalRepository.GetScanEvent(sqls.DB(), contactWay.ScanEventID, contactWay.TenantID)
-	connection := repositories.ArrivalRepository.FindConnectionByStore(sqls.DB(), contactWay.TenantID, contactWay.StoreID)
 	authorization := repositories.ArrivalRepository.GetTenantAuthorization(sqls.DB(), contactWay.TenantAuthorizationID, contactWay.TenantID)
-	if scanEvent == nil || connection == nil || authorization == nil ||
-		connection.ID <= 0 || connection.TenantAuthorizationID != authorization.ID ||
-		connection.WxWorkProtocolInstanceID <= 0 ||
-		authorization.AuthorizationStatus != enums.WeComAuthorizationStatusActive {
-		return fmt.Errorf("到店扫码关联的企微授权或员工实例不可用")
-	}
-	expectedMember, err := security.Decrypt("contact_member", connection.ContactMemberCiphertext, connection.ContactMemberNonce)
-	if err != nil || strings.TrimSpace(expectedMember) != memberUserID {
-		return fmt.Errorf("企业微信客户关系成员与门店配置不一致")
+	if authorization == nil || authorization.AuthorizationStatus != enums.WeComAuthorizationStatusActive {
+		return fmt.Errorf("到店扫码关联的企微授权不可用")
 	}
 	expectedCorpID, err := security.Decrypt("corp_id", authorization.CorpIDCiphertext, authorization.CorpIDNonce)
 	if err != nil || strings.TrimSpace(expectedCorpID) == "" ||
 		strings.TrimSpace(firstNonBlank(payload.AuthCorpID, payload.ToUserName)) != strings.TrimSpace(expectedCorpID) {
 		return fmt.Errorf("企业微信客户关系主体与门店授权不一致")
+	}
+	return s.confirmOfficialRelationshipForContactWay(
+		contactWay,
+		externalUserID,
+		memberUserID,
+		arrivalSafeEvidenceHash("official_relationship", callbackEvent.EventHash),
+		callbackEvent,
+	)
+}
+
+func (s *weComProviderCallbackService) confirmOfficialRelationshipForContactWay(
+	contactWay *models.ArrivalContactWay,
+	externalUserID, memberUserID, evidenceHash string,
+	callbackEvent *models.WeComProviderCallbackEvent,
+) error {
+	if contactWay == nil ||
+		strings.TrimSpace(externalUserID) == "" ||
+		strings.TrimSpace(memberUserID) == "" ||
+		strings.TrimSpace(evidenceHash) == "" {
+		return fmt.Errorf("企业微信客户关系缺少确定性关联字段")
+	}
+	scanEvent := repositories.ArrivalRepository.GetScanEvent(sqls.DB(), contactWay.ScanEventID, contactWay.TenantID)
+	connection := repositories.ArrivalRepository.FindConnectionByStore(sqls.DB(), contactWay.TenantID, contactWay.StoreID)
+	authorization := repositories.ArrivalRepository.GetTenantAuthorization(sqls.DB(), contactWay.TenantAuthorizationID, contactWay.TenantID)
+	if scanEvent == nil || connection == nil || authorization == nil ||
+		connection.ID <= 0 ||
+		connection.TenantAuthorizationID != authorization.ID ||
+		connection.WxWorkProtocolInstanceID <= 0 ||
+		authorization.AuthorizationStatus != enums.WeComAuthorizationStatusActive {
+		return fmt.Errorf("到店扫码关联的企微授权或员工实例不可用")
+	}
+	security, err := newArrivalSecurity()
+	if err != nil {
+		return err
+	}
+	expectedMember, err := security.Decrypt("contact_member", connection.ContactMemberCiphertext, connection.ContactMemberNonce)
+	if err != nil || strings.TrimSpace(expectedMember) != strings.TrimSpace(memberUserID) {
+		return fmt.Errorf("企业微信客户关系成员与门店配置不一致")
+	}
+	if contactWayProviderMode(contactWay) == enums.ArrivalContactProviderModeCustomerAcquisition {
+		link := repositories.ArrivalRepository.GetAcquisitionLink(
+			sqls.DB(),
+			contactWay.AcquisitionLinkID,
+			contactWay.TenantID,
+		)
+		if link == nil ||
+			link.Status != enums.StatusOk ||
+			link.LinkStatus != enums.ArrivalAcquisitionLinkStatusActive ||
+			link.TenantAuthorizationID != authorization.ID ||
+			link.StoreID != contactWay.StoreID ||
+			link.ContactMemberFingerprint != connection.ContactMemberFingerprint ||
+			link.ContactMemberFingerprint != security.Fingerprint("contact_member", memberUserID) {
+			return fmt.Errorf("企业微信获客链接与门店成员范围不一致")
+		}
 	}
 	externalCiphertext, externalNonce, err := security.Encrypt("external_user_id", externalUserID)
 	if err != nil {
@@ -289,7 +334,7 @@ func (s *weComProviderCallbackService) confirmOfficialRelationship(payload *weCo
 				WxWorkProtocolInstanceID:  connection.WxWorkProtocolInstanceID,
 				OfficialRelationStatus:    enums.ArrivalOfficialRelationStatusConfirmed,
 				BindingStatus:             enums.ArrivalBindingStatusLegacyUnmapped,
-				EvidenceHash:              arrivalSafeEvidenceHash("official_relationship", callbackEvent.EventHash),
+				EvidenceHash:              evidenceHash,
 				OfficialRelationshipAt:    &now,
 				Status:                    enums.StatusOk,
 				AuditFields:               arrivalSystemAuditFields(now),
@@ -312,7 +357,7 @@ func (s *weComProviderCallbackService) confirmOfficialRelationship(payload *weCo
 				"wx_work_protocol_instance_id": connection.WxWorkProtocolInstanceID,
 				"official_relation_status":     enums.ArrivalOfficialRelationStatusConfirmed,
 				"binding_status":               enums.ArrivalBindingStatusLegacyUnmapped,
-				"evidence_hash":                arrivalSafeEvidenceHash("official_relationship", callbackEvent.EventHash),
+				"evidence_hash":                evidenceHash,
 				"official_relationship_at":     now,
 				"status":                       enums.StatusOk,
 				"updated_at":                   now,
@@ -338,12 +383,15 @@ func (s *weComProviderCallbackService) confirmOfficialRelationship(payload *weCo
 		}); err != nil {
 			return err
 		}
-		return repositories.ArrivalRepository.UpdateCallbackEvent(ctx.Tx, callbackEvent.ID, map[string]any{
-			"tenant_id":        scanEvent.TenantID,
-			"store_id":         scanEvent.StoreID,
-			"updated_at":       now,
-			"update_user_name": "arrival_provider",
-		})
+		if callbackEvent != nil && callbackEvent.ID > 0 {
+			return repositories.ArrivalRepository.UpdateCallbackEvent(ctx.Tx, callbackEvent.ID, map[string]any{
+				"tenant_id":        scanEvent.TenantID,
+				"store_id":         scanEvent.StoreID,
+				"updated_at":       now,
+				"update_user_name": "arrival_provider",
+			})
+		}
+		return nil
 	})
 	if err != nil {
 		return err

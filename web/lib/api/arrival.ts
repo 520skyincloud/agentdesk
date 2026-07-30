@@ -28,6 +28,12 @@ export type ArrivalConnection = {
   lastErrorCode: string
   recentScanCount: number
   recentBoundCount: number
+  contactProvider: string
+  acquisitionLinkStatus: string
+  acquisitionQuotaTotal: number
+  acquisitionQuotaBalance: number
+  acquisitionFailureCode: string
+  acquisitionLastVerifiedAt?: string
   updatedAt?: string
 }
 
@@ -47,6 +53,10 @@ export type ArrivalConnectionVerification = {
   authorizationOk: boolean
   memberOk: boolean
   instanceOk: boolean
+  providerMode: string
+  providerOk: boolean
+  quotaTotal: number
+  quotaBalance: number
   errorCode: string
 }
 

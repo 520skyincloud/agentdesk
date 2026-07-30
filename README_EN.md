@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | English
 
-An open-source AI Agent customer support system with knowledge-based answers, human handoff, ticket workflows, and self-hosted deployment.
+An open-source, multi-tenant AI Agent customer support system with knowledge-grounded replies, rule-based dispatch, human handoff, WeCom customer-acquisition arrival flows, billing attribution, and self-hosted deployment.
 
 > Built for teams that need online support, knowledge-base Q&A, human collaboration, and service tracking in one system. It is not just an LLM inside a chat box; it is an AI Helpdesk foundation designed around real support operations.
 
@@ -10,17 +10,20 @@ An open-source AI Agent customer support system with knowledge-based answers, hu
 
 Tenant onboarding, store operations, customer conversations, rule-based dispatch, managed knowledge, and AI replies are managed in one system.
 
-### Customer Chat
+### Support Operations Overview
 
-![Customer Chat](screenshots/1.png)
+![Weibao support operations overview](screenshots/dashboard-overview.jpg)
 
-Customers can start a conversation from the web chat page. The AI Agent responds first with knowledge-grounded answers. When the user explicitly asks for a human, the system can start a handoff confirmation flow.
+The overview separates live queues, SLA alerts, human handling, AI handling, agent presence,
+and daily totals, with drill-down links constrained by the current account's data scope.
 
-### Agent Workspace
+### Service Analytics
 
-![Agent Workspace](screenshots/2.png)
+![Weibao service analytics](screenshots/service-analytics.jpg)
 
-The support workspace includes conversation lists, message handling, AI-to-human handoff, agent replies, store-scoped customer tags, linked customers, and ticket context for daily support work.
+The report combines service overview, response efficiency, agent performance, quality and
+satisfaction, dispatch quality, and source analysis with date, organization, store, WeCom
+employee account, and data-quality filters.
 
 ### Managed Knowledge and Model Profiles
 
@@ -44,6 +47,9 @@ Each store uses one managed FastGPT dataset. The platform publishes complete nin
 - **Answerability Gate**: Checks whether retrieved content can support an answer; otherwise returns a fallback and recommends human support.
 - **Ticket system**: Create tickets from conversations, categorize, assign, move through status flows, record progress, and close the loop.
 - **Support organization management**: Agent profiles, teams, schedules, and automatic assignment.
+- **WeCom arrival flow**: Reuses one real customer-acquisition link per store and member, adds a
+  separate opaque channel state to each scan, reconciles official customer events, and routes
+  already-bound visits through the existing employee-account delivery path.
 - **AI extensibility**: Skills, MCP debugging, and external tool integration.
 - **Multiple entry points**: Admin dashboard, agent workspace, customer-facing web pages, and embeddable SDK.
 
@@ -69,6 +75,13 @@ docker compose up -d --build
 ```
 
 Compose intentionally refuses to start without independent database, invitation, customer-session, asset-signing, and Store credential encryption secrets. Runtime backups and `.env` files must remain outside Git. See the [production secret and external credential runbook](docs/deployment/production-secrets.md) for exact formats, ownership, rotation limits, and the boundary between the FastGPT integration token and each Store's NewAPI key.
+
+For the WeCom arrival flow, production must explicitly set
+`AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition`. The legacy `contact_way` provider
+is retained only for compatibility and operator-controlled rollback; permission, quota, or link
+errors never trigger an automatic downgrade. See the
+[arrival link engine design](docs/design/arrival-link-engine.md) for authorization, callback,
+quota, QR, reconciliation, and acceptance gates.
 
 The active service keeps `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`. The current release must start from an empty SQLite/MySQL database. Historical databases may only be restored in an isolated, read-only environment with this application stopped; they are not supported migration inputs.
 

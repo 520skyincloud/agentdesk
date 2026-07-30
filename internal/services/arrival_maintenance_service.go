@@ -30,9 +30,10 @@ type arrivalMaintenanceService struct {
 }
 
 type ArrivalMaintenanceResult struct {
-	CleanedContactWays int
-	RetriedContactWays int
-	ReconciledBindings int
+	CleanedContactWays             int
+	RetriedContactWays             int
+	ReconciledBindings             int
+	ReconciledAcquisitionCustomers int
 }
 
 func (s *arrivalMaintenanceService) ProcessDue(limit int) ArrivalMaintenanceResult {
@@ -41,9 +42,10 @@ func (s *arrivalMaintenanceService) ProcessDue(limit int) ArrivalMaintenanceResu
 	}
 	retried := s.RetryFailedContactWays(limit)
 	return ArrivalMaintenanceResult{
-		CleanedContactWays: s.CleanupExpiredContactWays(limit),
-		RetriedContactWays: retried,
-		ReconciledBindings: WeComProviderCallbackService.ReconcilePendingBindings(limit),
+		CleanedContactWays:             s.CleanupExpiredContactWays(limit),
+		RetriedContactWays:             retried,
+		ReconciledBindings:             WeComProviderCallbackService.ReconcilePendingBindings(limit),
+		ReconciledAcquisitionCustomers: ArrivalAcquisitionService.ReconcileCustomers(limit),
 	}
 }
 
