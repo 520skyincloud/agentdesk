@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input"
 import {
   checkWxWorkProtocolLoginQrcode,
   getWxWorkProtocolLoginQrcode,
+  recoverWxWorkProtocolInstance,
   syncWxWorkProtocolProfile,
   verifyWxWorkProtocolLogin,
   type WxWorkProtocolInstance,
@@ -43,6 +44,28 @@ const pendingLoginStatus: WxWorkProtocolLoginStatus = {
   statusCode: 0,
   requiresCode: false,
   message: "等待企微员工号扫码",
+}
+
+const loginRuntimeRetryIntervalMs = 3000
+const loginRuntimeMaxAttempts = 10
+
+function isLoginRuntimeUnavailable(error: unknown) {
+  return (
+    error instanceof Error &&
+    /(?:err_code[=:]\s*1014|\b1014\b)/i.test(error.message)
+  )
+}
+
+function loginRuntimeUnavailableError() {
+  return new Error(
+    "企微员工号登录环境仍未启动。请确认该有效实例的异地登录器在线后重试。"
+  )
+}
+
+function waitForLoginRuntime() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, loginRuntimeRetryIntervalMs)
+  })
 }
 
 function qrCodeSource(value: string) {
@@ -80,6 +103,7 @@ export function WxWorkProtocolDeviceLoginDialog({
   const checkingRef = useRef(false)
   const completedRef = useRef(false)
   const autoStartedInstanceRef = useRef(0)
+  const preparedInstanceRef = useRef(0)
   const requestSequenceRef = useRef(0)
   const onChangedRef = useRef(onChanged)
 
@@ -104,9 +128,50 @@ export function WxWorkProtocolDeviceLoginDialog({
     setStatus(null)
     setCode("")
     try {
-      const result = await getWxWorkProtocolLoginQrcode(instanceId)
+      if (
+        instance?.healthStatus !== "online" &&
+        preparedInstanceRef.current !== instanceId
+      ) {
+        setStatus({
+          status: "pending",
+          statusCode: 0,
+          requiresCode: false,
+          message: "正在启动企微员工号登录环境",
+        })
+        try {
+          await recoverWxWorkProtocolInstance(instanceId)
+        } catch (error) {
+          if (!isLoginRuntimeUnavailable(error)) throw error
+        }
+        preparedInstanceRef.current = instanceId
+      }
+
+      let result: WxWorkProtocolLoginQRCodeResult | null = null
+      for (let attempt = 1; attempt <= loginRuntimeMaxAttempts; attempt += 1) {
+        try {
+          result = await getWxWorkProtocolLoginQrcode(instanceId)
+          break
+        } catch (error) {
+          if (
+            !isLoginRuntimeUnavailable(error) ||
+            attempt === loginRuntimeMaxAttempts
+          ) {
+            throw isLoginRuntimeUnavailable(error)
+              ? loginRuntimeUnavailableError()
+              : error
+          }
+          if (requestSequence !== requestSequenceRef.current) return
+          setStatus({
+            status: "pending",
+            statusCode: 0,
+            requiresCode: false,
+            message: "登录环境正在启动，稍后自动重试",
+          })
+          await waitForLoginRuntime()
+        }
+      }
       if (requestSequence !== requestSequenceRef.current) return
-      if (!result.qrcode.trim()) {
+      if (!result?.qrcode.trim()) {
         throw new Error("企微员工号协议未返回可展示的登录二维码")
       }
       setQRCode(result)
@@ -127,11 +192,12 @@ export function WxWorkProtocolDeviceLoginDialog({
         setGenerating(false)
       }
     }
-  }, [instanceId])
+  }, [instance?.healthStatus, instanceId])
 
   useEffect(() => {
     if (!open) {
       autoStartedInstanceRef.current = 0
+      preparedInstanceRef.current = 0
       requestSequenceRef.current += 1
       setQRCode(null)
       setStatus(null)
