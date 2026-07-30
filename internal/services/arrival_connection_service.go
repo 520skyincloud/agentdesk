@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-desk/internal/models"
@@ -25,7 +26,9 @@ const (
 
 var ArrivalConnectionService = &arrivalConnectionService{}
 
-type arrivalConnectionService struct{}
+type arrivalConnectionService struct {
+	providerUpdateMu sync.Mutex
+}
 
 func (s *arrivalConnectionService) ListConnections(cnd *sqls.Cnd, operator *dto.AuthPrincipal) ([]response.ArrivalConnectionResponse, *sqls.Paging, error) {
 	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
@@ -66,6 +69,230 @@ func (s *arrivalConnectionService) ListAuthorizations(operator *dto.AuthPrincipa
 	return results, nil
 }
 
+func (s *arrivalConnectionService) ListProtocolInstances(
+	storeID int64,
+	operator *dto.AuthPrincipal,
+) ([]response.ArrivalProtocolInstanceOptionResponse, error) {
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return nil, errorsx.Forbidden("请先进入需要管理的接入公司")
+	}
+	store := repositories.StoreRepository.GetInTenant(sqls.DB(), storeID, tenantID)
+	if store == nil || store.Status == enums.StatusDeleted {
+		return nil, errorsx.InvalidParam("门店不存在")
+	}
+	items := repositories.WxWorkProtocolInstanceRepository.Find(
+		sqls.DB(),
+		sqls.NewCnd().
+			Eq("tenant_id", tenantID).
+			Eq("store_id", storeID).
+			Where("status <> ?", enums.StatusDeleted).
+			Asc("id"),
+	)
+	results := make([]response.ArrivalProtocolInstanceOptionResponse, 0, len(items))
+	for i := range items {
+		results = append(results, response.ArrivalProtocolInstanceOptionResponse{
+			ID:           items[i].ID,
+			Name:         firstNonBlank(strings.TrimSpace(items[i].EmployeeName), "企微员工号"),
+			HealthStatus: strings.TrimSpace(items[i].HealthStatus),
+			StoreID:      items[i].StoreID,
+		})
+	}
+	return results, nil
+}
+
+func (s *arrivalConnectionService) UpdateProvider(
+	req request.UpdateArrivalConnectionProviderRequest,
+	operator *dto.AuthPrincipal,
+) (*response.ArrivalConnectionResponse, error) {
+	if operator == nil {
+		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	store := repositories.StoreRepository.GetInTenant(sqls.DB(), req.StoreID, tenantID)
+	if store == nil || store.Status == enums.StatusDeleted {
+		return nil, errorsx.InvalidParam("门店不存在")
+	}
+	mode, err := parseArrivalProviderMode(req.ContactProvider)
+	if err != nil {
+		return nil, err
+	}
+	var instance *models.WxWorkProtocolInstance
+	if req.WxWorkProtocolInstanceID > 0 {
+		instance = repositories.WxWorkProtocolInstanceRepository.GetInTenant(
+			sqls.DB(),
+			req.WxWorkProtocolInstanceID,
+			tenantID,
+		)
+		if instance == nil || instance.Status == enums.StatusDeleted || instance.StoreID != store.ID {
+			return nil, errorsx.InvalidParam("所选企微员工号实例不属于当前门店")
+		}
+	}
+	plugID := strings.TrimSpace(req.StaticContactPlugID)
+	if mode == enums.ArrivalContactProviderModeStaticPluginTicket {
+		if plugID == "" || len(plugID) > 191 || strings.ContainsAny(plugID, " \t\r\n") {
+			return nil, errorsx.InvalidParam("请填写企业微信后台生成的真实 plugId")
+		}
+		if instance == nil || instance.Status != enums.StatusOk {
+			return nil, errorsx.InvalidParam("请选择当前门店可用的企微员工号实例")
+		}
+		if _, _, err := buildStoredArrivalBindingCardPayload(instance, 1); err != nil {
+			return nil, errorsx.InvalidParam(err.Error())
+		}
+	} else {
+		plugID = ""
+	}
+	s.providerUpdateMu.Lock()
+	defer s.providerUpdateMu.Unlock()
+
+	now := time.Now()
+	var connection *models.StoreArrivalConnection
+	var revokedTicketCount int64
+	var validationErr error
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedStore, lockErr := repositories.StoreRepository.GetForUpdateInTenant(ctx.Tx, store.ID, tenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if lockedStore == nil || lockedStore.Status == enums.StatusDeleted {
+			validationErr = errorsx.InvalidParam("门店不存在")
+			return validationErr
+		}
+		store = lockedStore
+
+		if req.WxWorkProtocolInstanceID > 0 {
+			instance = repositories.WxWorkProtocolInstanceRepository.GetForUpdateInTenant(
+				ctx.Tx,
+				req.WxWorkProtocolInstanceID,
+				tenantID,
+			)
+			if instance == nil || instance.Status == enums.StatusDeleted || instance.StoreID != store.ID {
+				validationErr = errorsx.InvalidParam("所选企微员工号实例不属于当前门店")
+				return validationErr
+			}
+		}
+		if mode == enums.ArrivalContactProviderModeStaticPluginTicket {
+			if instance == nil || instance.Status != enums.StatusOk {
+				validationErr = errorsx.InvalidParam("请选择当前门店可用的企微员工号实例")
+				return validationErr
+			}
+			if _, _, cardErr := buildStoredArrivalBindingCardPayload(instance, 1); cardErr != nil {
+				validationErr = errorsx.InvalidParam(cardErr.Error())
+				return validationErr
+			}
+			candidates, findErr := repositories.ArrivalRepository.FindActiveStaticConnectionsByInstanceForUpdate(
+				ctx.Tx,
+				tenantID,
+				instance.ID,
+			)
+			if findErr != nil {
+				return findErr
+			}
+			for i := range candidates {
+				if candidates[i].StoreID != store.ID {
+					validationErr = errorsx.InvalidParam("该企微员工号实例已映射其他静态到店门店")
+					return validationErr
+				}
+			}
+		}
+
+		connection = repositories.ArrivalRepository.FindConnectionByStore(ctx.Tx, tenantID, store.ID)
+		if connection == nil {
+			scene, sceneErr := s.generateStoreScene()
+			if sceneErr != nil {
+				return sceneErr
+			}
+			connection = &models.StoreArrivalConnection{
+				TenantID:            tenantID,
+				StoreID:             store.ID,
+				StoreScene:          scene,
+				ContactProviderMode: mode,
+				ConnectionStatus:    enums.ArrivalConnectionStatusPendingAuthorization,
+				Status:              enums.StatusOk,
+				AuditFields: models.AuditFields{
+					CreatedAt:      now,
+					CreateUserID:   operator.UserID,
+					CreateUserName: operator.Username,
+					UpdatedAt:      now,
+					UpdateUserID:   operator.UserID,
+					UpdateUserName: operator.Username,
+				},
+			}
+			if err := repositories.ArrivalRepository.CreateConnection(ctx.Tx, connection); err != nil {
+				return err
+			}
+		}
+		revokedTicketCount, err = repositories.ArrivalRepository.RevokePendingBindingTicketsByStore(
+			ctx.Tx,
+			tenantID,
+			store.ID,
+			now,
+		)
+		if err != nil {
+			return err
+		}
+		connectionStatus := enums.ArrivalConnectionStatusPendingAuthorization
+		if mode == enums.ArrivalContactProviderModeStaticPluginTicket {
+			connectionStatus = enums.ArrivalConnectionStatusActive
+		} else if connection.TenantAuthorizationID > 0 {
+			connectionStatus = enums.ArrivalConnectionStatusPendingBinding
+			effectiveInstanceID := connection.WxWorkProtocolInstanceID
+			if instance != nil {
+				effectiveInstanceID = instance.ID
+			}
+			if strings.TrimSpace(connection.ContactMemberFingerprint) != "" && effectiveInstanceID > 0 {
+				connectionStatus = enums.ArrivalConnectionStatusActive
+			}
+		}
+		updates := map[string]any{
+			"contact_provider_mode":        mode,
+			"static_contact_plug_id":       plugID,
+			"connection_status":            connectionStatus,
+			"last_verification_error_code": "",
+			"status":                       enums.StatusOk,
+			"updated_at":                   now,
+			"update_user_id":               operator.UserID,
+			"update_user_name":             operator.Username,
+		}
+		if instance != nil {
+			updates["wx_work_protocol_instance_id"] = instance.ID
+		}
+		if err := repositories.ArrivalRepository.UpdateConnection(
+			ctx.Tx,
+			connection.ID,
+			tenantID,
+			updates,
+		); err != nil {
+			return err
+		}
+		return s.createAuditLog(
+			ctx.Tx,
+			tenantID,
+			store.ID,
+			"connection.provider_update",
+			"StoreArrivalConnection",
+			connection.ID,
+			"success",
+			operator,
+			map[string]any{
+				"providerMode":       mode,
+				"instanceSet":        instance != nil,
+				"plugIdSet":          plugID != "",
+				"revokedTicketCount": revokedTicketCount,
+			},
+		)
+	})
+	if err != nil {
+		if validationErr != nil {
+			return nil, validationErr
+		}
+		return nil, errorsx.BusinessError(71, "保存门店到店模式失败")
+	}
+	connection = repositories.ArrivalRepository.FindConnectionByStore(sqls.DB(), tenantID, store.ID)
+	result := s.buildConnectionResponse(store, connection)
+	return &result, nil
+}
+
 func (s *arrivalConnectionService) CreateInvitation(req request.CreateArrivalInvitationRequest, operator *dto.AuthPrincipal) (*response.ArrivalInvitationResponse, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")
@@ -77,6 +304,10 @@ func (s *arrivalConnectionService) CreateInvitation(req request.CreateArrivalInv
 	store := repositories.StoreRepository.GetInTenant(sqls.DB(), req.StoreID, tenantID)
 	if store == nil || store.Status == enums.StatusDeleted {
 		return nil, errorsx.InvalidParam("门店不存在")
+	}
+	if connection := repositories.ArrivalRepository.FindConnectionByStore(sqls.DB(), tenantID, store.ID); connection != nil &&
+		arrivalProviderModeForConnection(connection) == enums.ArrivalContactProviderModeStaticPluginTicket {
+		return nil, errorsx.InvalidParam("静态联系我模式无需创建企微服务商授权邀请")
 	}
 	var authorization *models.WeComTenantAuthorization
 	if req.TenantAuthorizationID > 0 {
@@ -519,16 +750,6 @@ func (s *arrivalConnectionService) DisableConnection(req request.DisableArrivalC
 		return errorsx.InvalidParam("门店到店连接不存在")
 	}
 	now := time.Now()
-	if err := repositories.ArrivalRepository.UpdateConnection(sqls.DB(), connection.ID, tenantID, map[string]any{
-		"connection_status":            enums.ArrivalConnectionStatusDisabled,
-		"status":                       enums.StatusDisabled,
-		"last_verification_error_code": "disabled_by_operator",
-		"updated_at":                   now,
-		"update_user_id":               operator.UserID,
-		"update_user_name":             operator.Username,
-	}); err != nil {
-		return errorsx.BusinessError(71, "停用门店到店连接失败")
-	}
 	contactWays := repositories.ArrivalRepository.FindContactWays(sqls.DB(), sqls.NewCnd().
 		Eq("tenant_id", tenantID).
 		Eq("store_id", connection.StoreID).
@@ -537,17 +758,69 @@ func (s *arrivalConnectionService) DisableConnection(req request.DisableArrivalC
 			enums.ArrivalContactWayStatusExpired,
 			enums.ArrivalContactWayStatusFailed,
 		}))
+	var revokedTicketCount int64
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := repositories.ArrivalRepository.UpdateConnection(ctx.Tx, connection.ID, tenantID, map[string]any{
+			"connection_status":            enums.ArrivalConnectionStatusDisabled,
+			"status":                       enums.StatusDisabled,
+			"last_verification_error_code": "disabled_by_operator",
+			"updated_at":                   now,
+			"update_user_id":               operator.UserID,
+			"update_user_name":             operator.Username,
+		}); err != nil {
+			return err
+		}
+		var err error
+		revokedTicketCount, err = repositories.ArrivalRepository.RevokePendingBindingTicketsByStore(
+			ctx.Tx,
+			tenantID,
+			connection.StoreID,
+			now,
+		)
+		if err != nil {
+			return err
+		}
+		return s.createAuditLog(
+			ctx.Tx,
+			tenantID,
+			connection.StoreID,
+			"connection.disable",
+			"StoreArrivalConnection",
+			connection.ID,
+			"success",
+			operator,
+			map[string]any{
+				"reasonProvided":        strings.TrimSpace(req.Reason) != "",
+				"cleanupRequestedCount": len(contactWays),
+				"revokedTicketCount":    revokedTicketCount,
+			},
+		)
+	}); err != nil {
+		return errorsx.BusinessError(71, "停用门店到店连接失败")
+	}
 	cleanedCount := 0
 	for i := range contactWays {
 		if ArrivalMaintenanceService.cleanupContactWay(&contactWays[i], now) {
 			cleanedCount++
 		}
 	}
-	return s.createAuditLog(sqls.DB(), tenantID, connection.StoreID, "connection.disable", "StoreArrivalConnection", connection.ID, "success", operator, map[string]any{
-		"reasonProvided":        strings.TrimSpace(req.Reason) != "",
-		"cleanupRequestedCount": len(contactWays),
-		"cleanedCount":          cleanedCount,
-	})
+	if cleanedCount < len(contactWays) {
+		_ = s.createAuditLog(
+			sqls.DB(),
+			tenantID,
+			connection.StoreID,
+			"connection.disable_cleanup",
+			"StoreArrivalConnection",
+			connection.ID,
+			"partial",
+			operator,
+			map[string]any{
+				"cleanupRequestedCount": len(contactWays),
+				"cleanedCount":          cleanedCount,
+			},
+		)
+	}
+	return nil
 }
 
 func (s *arrivalConnectionService) AuditLogs(cnd *sqls.Cnd, operator *dto.AuthPrincipal) ([]response.ArrivalAuditLogResponse, *sqls.Paging, error) {
@@ -617,11 +890,15 @@ func (s *arrivalConnectionService) verifyConnection(connectionID, tenantID int64
 	if connection == nil {
 		return nil, errorsx.InvalidParam("门店到店连接不存在")
 	}
+	providerMode := arrivalProviderModeForConnection(connection)
 	result := &response.ArrivalConnectionVerificationResponse{
 		ConnectionStatus: string(connection.ConnectionStatus),
-		ProviderMode:     string(config.Current().Arrival.ContactProviderMode()),
+		ProviderMode:     string(providerMode),
 		ProviderOK:       true,
 		ErrorCode:        "",
+	}
+	if providerMode == enums.ArrivalContactProviderModeStaticPluginTicket {
+		return s.verifyStaticConnection(connection, operator, result)
 	}
 	authorization := repositories.ArrivalRepository.GetTenantAuthorization(sqls.DB(), connection.TenantAuthorizationID, tenantID)
 	result.AuthorizationOK = authorization != nil && authorization.AuthorizationStatus == enums.WeComAuthorizationStatusActive
@@ -647,7 +924,7 @@ func (s *arrivalConnectionService) verifyConnection(connectionID, tenantID int64
 		result.ErrorCode = "instance_mismatch"
 	}
 	if result.ErrorCode == "" &&
-		config.Current().Arrival.ContactProviderMode() == enums.ArrivalContactProviderModeCustomerAcquisition {
+		providerMode == enums.ArrivalContactProviderModeCustomerAcquisition {
 		quota, preflightErr := ArrivalAcquisitionService.Preflight(authorization)
 		if quota != nil {
 			result.QuotaTotal = quota.Total
@@ -691,6 +968,87 @@ func (s *arrivalConnectionService) verifyConnection(connectionID, tenantID int64
 	return result, nil
 }
 
+func (s *arrivalConnectionService) verifyStaticConnection(
+	connection *models.StoreArrivalConnection,
+	operator *dto.AuthPrincipal,
+	result *response.ArrivalConnectionVerificationResponse,
+) (*response.ArrivalConnectionVerificationResponse, error) {
+	if connection == nil || result == nil {
+		return nil, errorsx.InvalidParam("门店到店连接不存在")
+	}
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(
+		sqls.DB(),
+		connection.WxWorkProtocolInstanceID,
+		connection.TenantID,
+	)
+	result.AuthorizationOK = false
+	result.MemberOK = false
+	result.InstanceOK = instance != nil &&
+		instance.Status == enums.StatusOk &&
+		instance.StoreID == connection.StoreID
+	plugID := strings.TrimSpace(connection.StaticContactPlugID)
+	switch {
+	case plugID == "" || len(plugID) > 191 || strings.ContainsAny(plugID, " \t\r\n"):
+		result.ProviderOK = false
+		result.ErrorCode = "static_plug_id_invalid"
+	case !result.InstanceOK:
+		result.ProviderOK = false
+		result.ErrorCode = "instance_mismatch"
+	default:
+		connections := ArrivalBindingTicketService.staticConnectionsForInstance(instance)
+		if len(connections) != 1 || connections[0].StoreID != connection.StoreID {
+			result.ProviderOK = false
+			result.ErrorCode = "static_store_mapping_ambiguous"
+		} else if _, _, err := buildStoredArrivalBindingCardPayload(instance, 1); err != nil {
+			result.ProviderOK = false
+			result.ErrorCode = "static_card_template_invalid"
+		}
+	}
+	now := time.Now()
+	status := enums.ArrivalConnectionStatusActive
+	if result.ErrorCode != "" {
+		status = enums.ArrivalConnectionStatusInvalid
+	}
+	updates := map[string]any{
+		"connection_status":            status,
+		"last_verified_at":             now,
+		"last_verification_error_code": result.ErrorCode,
+		"updated_at":                   now,
+		"update_user_name":             "arrival_verifier",
+	}
+	if operator != nil {
+		updates["update_user_id"] = operator.UserID
+		updates["update_user_name"] = operator.Username
+	}
+	if err := repositories.ArrivalRepository.UpdateConnection(
+		sqls.DB(),
+		connection.ID,
+		connection.TenantID,
+		updates,
+	); err != nil {
+		return nil, errorsx.BusinessError(72, "保存门店连接验证结果失败")
+	}
+	result.ConnectionStatus = string(status)
+	_ = s.createAuditLog(
+		sqls.DB(),
+		connection.TenantID,
+		connection.StoreID,
+		"connection.verify",
+		"StoreArrivalConnection",
+		connection.ID,
+		map[bool]string{true: "success", false: "failed"}[result.ErrorCode == ""],
+		operator,
+		map[string]any{
+			"authorizationRequired": false,
+			"instanceOK":            result.InstanceOK,
+			"providerMode":          result.ProviderMode,
+			"providerOK":            result.ProviderOK,
+			"errorCode":             result.ErrorCode,
+		},
+	)
+	return result, nil
+}
+
 func (s *arrivalConnectionService) buildConnectionResponse(store *models.Store, connection *models.StoreArrivalConnection) response.ArrivalConnectionResponse {
 	result := response.ArrivalConnectionResponse{
 		StoreID:          store.ID,
@@ -707,6 +1065,8 @@ func (s *arrivalConnectionService) buildConnectionResponse(store *models.Store, 
 	result.ID = connection.ID
 	result.Scene = strings.TrimSpace(connection.StoreScene)
 	result.ConnectionStatus = string(connection.ConnectionStatus)
+	result.ContactProvider = string(arrivalProviderModeForConnection(connection))
+	result.StaticContactPlugID = strings.TrimSpace(connection.StaticContactPlugID)
 	result.ContactMemberConfigured = strings.TrimSpace(connection.ContactMemberCiphertext) != ""
 	result.WxWorkProtocolInstanceID = connection.WxWorkProtocolInstanceID
 	result.LastVerifiedAt = connection.LastVerifiedAt
@@ -799,4 +1159,17 @@ func containsTrimmed(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func parseArrivalProviderMode(value string) (enums.ArrivalContactProviderMode, error) {
+	switch enums.ArrivalContactProviderMode(strings.TrimSpace(strings.ToLower(value))) {
+	case enums.ArrivalContactProviderModeContactWay:
+		return enums.ArrivalContactProviderModeContactWay, nil
+	case enums.ArrivalContactProviderModeCustomerAcquisition:
+		return enums.ArrivalContactProviderModeCustomerAcquisition, nil
+	case enums.ArrivalContactProviderModeStaticPluginTicket:
+		return enums.ArrivalContactProviderModeStaticPluginTicket, nil
+	default:
+		return "", errorsx.InvalidParam("不支持的到店联系模式")
+	}
 }

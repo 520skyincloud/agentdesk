@@ -283,6 +283,28 @@ func ConversationPostSend_message(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, builders.BuildMessageWithLocale(item, i18nx.Locale(ctx)))
 }
 
+func ConversationPostSend_arrival_binding_card(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationSend)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.SendArrivalBindingCardRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.ArrivalBindingTicketService.SendBindingCardForConversation(
+		req.ConversationID,
+		operator,
+		httpx.GetRequestID(ctx),
+	); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
 func ConversationPostRecall_message(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationSend)
 	if err != nil {

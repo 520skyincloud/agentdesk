@@ -64,20 +64,39 @@ type arrivalLinkService struct {
 
 func (s *arrivalLinkService) ValidateConfiguration() error {
 	cfg := config.Current().Arrival
+	if err := validateArrivalCommonConfiguration(cfg); err != nil {
+		return err
+	}
+	return validateArrivalProviderConfiguration(cfg, cfg.ContactProviderMode())
+}
+
+func validateArrivalCommonConfiguration(cfg config.ArrivalConfig) error {
 	if !cfg.Enabled {
 		return errorsx.BusinessError(60, "到店联动功能尚未启用")
 	}
 	if strings.TrimSpace(cfg.PublicBaseURL) == "" ||
 		strings.TrimSpace(cfg.MiniProgramAppID) == "" ||
-		strings.TrimSpace(cfg.MiniProgramAppSecret) == "" ||
-		strings.TrimSpace(cfg.WeComSuiteID) == "" ||
-		strings.TrimSpace(cfg.WeComSuiteSecret) == "" ||
-		strings.TrimSpace(cfg.WeComProviderCallbackToken) == "" ||
-		strings.TrimSpace(cfg.WeComProviderEncodingAESKey) == "" {
+		strings.TrimSpace(cfg.MiniProgramAppSecret) == "" {
 		return errorsx.BusinessError(61, "到店联动服务配置不完整")
 	}
 	if _, err := newArrivalSecurity(); err != nil {
 		return errorsx.BusinessError(61, err.Error())
+	}
+	return nil
+}
+
+func validateArrivalProviderConfiguration(
+	cfg config.ArrivalConfig,
+	mode enums.ArrivalContactProviderMode,
+) error {
+	if mode == enums.ArrivalContactProviderModeStaticPluginTicket {
+		return nil
+	}
+	if strings.TrimSpace(cfg.WeComSuiteID) == "" ||
+		strings.TrimSpace(cfg.WeComSuiteSecret) == "" ||
+		strings.TrimSpace(cfg.WeComProviderCallbackToken) == "" ||
+		strings.TrimSpace(cfg.WeComProviderEncodingAESKey) == "" {
+		return errorsx.BusinessError(61, "到店联动服务配置不完整")
 	}
 	return nil
 }
@@ -88,7 +107,7 @@ func (s *arrivalLinkService) Bootstrap(req request.ArrivalBootstrapRequest) (*re
 
 func (s *arrivalLinkService) BootstrapWithRequestID(req request.ArrivalBootstrapRequest, requestID string) (*response.ArrivalScanResultResponse, error) {
 	requestID = tracex.EnsureRequestID(requestID)
-	if err := s.ValidateConfiguration(); err != nil {
+	if err := validateArrivalCommonConfiguration(config.Current().Arrival); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(req.SchemaVersion) != arrivalScanInputVersion {
@@ -134,6 +153,12 @@ func (s *arrivalLinkService) BootstrapWithRequestID(req request.ArrivalBootstrap
 	if connection == nil || connection.Status != enums.StatusOk ||
 		connection.ConnectionStatus != enums.ArrivalConnectionStatusActive {
 		return nil, errorsx.InvalidParam("门店 scene 不存在或已停用")
+	}
+	if err := validateArrivalProviderConfiguration(
+		config.Current().Arrival,
+		arrivalProviderModeForConnection(connection),
+	); err != nil {
+		return nil, err
 	}
 	store := repositories.StoreRepository.GetInTenant(sqls.DB(), connection.StoreID, connection.TenantID)
 	if store == nil || store.Status != enums.StatusOk {
@@ -212,7 +237,7 @@ func (s *arrivalLinkService) BootstrapWithRequestID(req request.ArrivalBootstrap
 }
 
 func (s *arrivalLinkService) Status(sessionToken string) (*response.ArrivalScanResultResponse, error) {
-	if err := s.ValidateConfiguration(); err != nil {
+	if err := validateArrivalCommonConfiguration(config.Current().Arrival); err != nil {
 		return nil, err
 	}
 	security, err := newArrivalSecurity()
@@ -239,7 +264,7 @@ func (s *arrivalLinkService) Status(sessionToken string) (*response.ArrivalScanR
 }
 
 func (s *arrivalLinkService) PublicQRCode(resourceToken string) ([]byte, error) {
-	if err := s.ValidateConfiguration(); err != nil {
+	if err := validateArrivalCommonConfiguration(config.Current().Arrival); err != nil {
 		return nil, err
 	}
 	security, err := newArrivalSecurity()
@@ -376,7 +401,7 @@ func (s *arrivalLinkService) provisionContactWay(
 		StoreID:                 event.StoreID,
 		ScanEventID:             event.ID,
 		TenantAuthorizationID:   connection.TenantAuthorizationID,
-		ProviderMode:            config.Current().Arrival.ContactProviderMode(),
+		ProviderMode:            arrivalProviderModeForConnection(connection),
 		ContactStateHash:        security.Fingerprint("contact_state_placeholder", placeholderState),
 		PublicResourceTokenHash: security.Fingerprint("public_qr_placeholder", placeholderResource),
 		Mode:                    enums.ArrivalContactWayModeNone,
@@ -434,6 +459,12 @@ func (s *arrivalLinkService) retryExistingContactWay(event *models.ArrivalScanEv
 		connection.ConnectionStatus != enums.ArrivalConnectionStatusActive {
 		return
 	}
+	if validateArrivalProviderConfiguration(
+		config.Current().Arrival,
+		arrivalProviderModeForConnection(connection),
+	) != nil {
+		return
+	}
 	_, _ = s.retryContactWayProvision(event, connection, contactWay, requestID)
 }
 
@@ -479,7 +510,10 @@ func (s *arrivalLinkService) executeContactWayProvision(
 	contactWay *models.ArrivalContactWay,
 	requestID string,
 ) (*models.ArrivalContactWay, error) {
-	if contactWayProviderMode(contactWay) == enums.ArrivalContactProviderModeCustomerAcquisition {
+	switch contactWayProviderMode(contactWay) {
+	case enums.ArrivalContactProviderModeStaticPluginTicket:
+		return s.executeStaticPluginContactProvision(event, connection, contactWay, requestID)
+	case enums.ArrivalContactProviderModeCustomerAcquisition:
 		return s.executeAcquisitionContactProvision(event, connection, contactWay, requestID)
 	}
 	authorization, memberUserID, err := s.resolveContactWayProvisioningContext(connection)
@@ -583,6 +617,71 @@ func (s *arrivalLinkService) executeContactWayProvision(
 		"updated_at":                  now,
 		"update_user_name":            "arrival",
 	})
+	return repositories.ArrivalRepository.FindContactWayByScanEvent(sqls.DB(), event.ID), nil
+}
+
+func (s *arrivalLinkService) executeStaticPluginContactProvision(
+	event *models.ArrivalScanEvent,
+	connection *models.StoreArrivalConnection,
+	contactWay *models.ArrivalContactWay,
+	requestID string,
+) (*models.ArrivalContactWay, error) {
+	if event == nil || connection == nil || contactWay == nil {
+		return nil, fmt.Errorf("到店扫码上下文不存在")
+	}
+	plugID := strings.TrimSpace(connection.StaticContactPlugID)
+	if plugID == "" || len(plugID) > 191 || strings.ContainsAny(plugID, " \t\r\n") {
+		err := errorsx.InvalidParam("门店静态 plugId 未配置或格式无效")
+		s.failContactWay(contactWay, "static_plug_id_invalid", requestID, err)
+		return nil, err
+	}
+	instance := WxWorkProtocolInstanceService.GetByTenantID(
+		connection.WxWorkProtocolInstanceID,
+		connection.TenantID,
+	)
+	if instance == nil || instance.Status != enums.StatusOk || instance.StoreID != connection.StoreID {
+		err := errorsx.InvalidParam("门店企微员工号实例不可用")
+		s.failContactWay(contactWay, "static_instance_invalid", requestID, err)
+		return nil, err
+	}
+	if _, _, err := WxWorkProtocolDefaultResourceService.BuildDefaultMiniProgramMessage(instance); err != nil {
+		s.failContactWay(contactWay, "static_card_template_invalid", requestID, err)
+		return nil, err
+	}
+	now := time.Now()
+	if err := repositories.ArrivalRepository.UpdateContactWay(
+		sqls.DB(),
+		contactWay.ID,
+		contactWay.TenantID,
+		map[string]any{
+			"provider_mode":             enums.ArrivalContactProviderModeStaticPluginTicket,
+			"config_id":                 plugID,
+			"mode":                      enums.ArrivalContactWayModePluginButton,
+			"contact_way_status":        enums.ArrivalContactWayStatusActive,
+			"failure_code":              "",
+			"failure_stage":             "",
+			"provider_http_status":      0,
+			"provider_error_code":       0,
+			"provider_error_message":    "",
+			"failure_retryable":         false,
+			"next_provision_retry_at":   nil,
+			"last_provision_request_id": tracex.EnsureRequestID(requestID),
+			"updated_at":                now,
+			"update_user_name":          "arrival",
+		},
+	); err != nil {
+		return nil, err
+	}
+	_ = repositories.ArrivalRepository.UpdateConnection(
+		sqls.DB(),
+		connection.ID,
+		connection.TenantID,
+		map[string]any{
+			"last_contact_provisioned_at": now,
+			"updated_at":                  now,
+			"update_user_name":            "arrival",
+		},
+	)
 	return repositories.ArrivalRepository.FindContactWayByScanEvent(sqls.DB(), event.ID), nil
 }
 
@@ -1080,6 +1179,9 @@ func (s *arrivalLinkService) bindingStatusForContext(tenantID, storeID int64, bi
 		binding.OfficialRelationStatus == enums.ArrivalOfficialRelationStatusRevoked {
 		return enums.ArrivalBindingStatusUnbound
 	}
+	if binding.BindingProofType == enums.ArrivalBindingProofTypeCardTicket {
+		return s.bindingStatusForCardTicket(tenantID, storeID, binding)
+	}
 	if binding.OfficialRelationStatus != enums.ArrivalOfficialRelationStatusConfirmed {
 		return enums.ArrivalBindingStatusUnbound
 	}
@@ -1173,6 +1275,78 @@ func (s *arrivalLinkService) bindingStatusForContext(tenantID, storeID int64, bi
 	return enums.ArrivalBindingStatusLegacyUnmapped
 }
 
+func (s *arrivalLinkService) bindingStatusForCardTicket(
+	tenantID, storeID int64,
+	binding *models.ArrivalStoreBinding,
+) enums.ArrivalBindingStatus {
+	if binding == nil ||
+		binding.BindingStatus != enums.ArrivalBindingStatusBound ||
+		binding.BindingTicketID <= 0 ||
+		binding.MiniProgramIdentityID <= 0 ||
+		binding.WxWorkProtocolInstanceID <= 0 ||
+		binding.CustomerID <= 0 ||
+		binding.ConversationID <= 0 {
+		return enums.ArrivalBindingStatusLegacyUnmapped
+	}
+	ticket := repositories.ArrivalRepository.GetBindingTicket(
+		sqls.DB(),
+		binding.BindingTicketID,
+		tenantID,
+	)
+	if ticket == nil ||
+		ticket.Status != enums.StatusOk ||
+		ticket.TicketStatus != enums.ArrivalBindingTicketStatusConsumed ||
+		ticket.ConsumedMiniProgramIdentityID != binding.MiniProgramIdentityID ||
+		!arrivalBindingMatchesTicket(binding, ticket) {
+		return enums.ArrivalBindingStatusLegacyUnmapped
+	}
+	connection := repositories.ArrivalRepository.FindConnectionByStore(sqls.DB(), tenantID, storeID)
+	if connection == nil ||
+		connection.Status != enums.StatusOk ||
+		connection.ConnectionStatus != enums.ArrivalConnectionStatusActive ||
+		arrivalProviderModeForConnection(connection) != enums.ArrivalContactProviderModeStaticPluginTicket ||
+		connection.WxWorkProtocolInstanceID != binding.WxWorkProtocolInstanceID {
+		return enums.ArrivalBindingStatusLegacyUnmapped
+	}
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(
+		sqls.DB(),
+		binding.WxWorkProtocolInstanceID,
+		tenantID,
+	)
+	customer := repositories.CustomerRepository.GetInTenant(sqls.DB(), binding.CustomerID, tenantID)
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), binding.ConversationID, tenantID)
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(
+		sqls.DB(),
+		binding.ConversationID,
+		tenantID,
+	)
+	mapping := repositories.WxWorkKFConversationRepository.FindOne(
+		sqls.DB(),
+		sqls.NewCnd().
+			Eq("tenant_id", tenantID).
+			Eq("conversation_id", binding.ConversationID).
+			Eq("status", enums.StatusOk),
+	)
+	protocolConversationID := WxWorkProtocolService.protocolConversationID(mapping)
+	if instance == nil ||
+		instance.Status != enums.StatusOk ||
+		instance.StoreID != storeID ||
+		customer == nil ||
+		customer.Status == enums.StatusDeleted ||
+		conversation == nil ||
+		conversation.Status == enums.IMConversationStatusClosed ||
+		conversation.CustomerID != binding.CustomerID ||
+		route == nil ||
+		route.RouteStatus == enums.ConversationRouteStatusClosed ||
+		route.StoreID != storeID ||
+		route.WxWorkInstanceID != binding.WxWorkProtocolInstanceID ||
+		!strings.HasPrefix(protocolConversationID, "S:") ||
+		strings.TrimSpace(strings.TrimPrefix(protocolConversationID, "S:")) == "" {
+		return enums.ArrivalBindingStatusLegacyUnmapped
+	}
+	return enums.ArrivalBindingStatusBound
+}
+
 func (s *arrivalLinkService) miniProgramLoginExchanger() arrivalMiniProgramLoginExchanger {
 	if s.loginExchanger != nil {
 		return s.loginExchanger
@@ -1213,8 +1387,22 @@ func contactWayProviderMode(contactWay *models.ArrivalContactWay) enums.ArrivalC
 		switch contactWay.ProviderMode {
 		case enums.ArrivalContactProviderModeCustomerAcquisition:
 			return enums.ArrivalContactProviderModeCustomerAcquisition
+		case enums.ArrivalContactProviderModeStaticPluginTicket:
+			return enums.ArrivalContactProviderModeStaticPluginTicket
 		case enums.ArrivalContactProviderModeContactWay:
 			return enums.ArrivalContactProviderModeContactWay
+		}
+	}
+	return config.Current().Arrival.ContactProviderMode()
+}
+
+func arrivalProviderModeForConnection(connection *models.StoreArrivalConnection) enums.ArrivalContactProviderMode {
+	if connection != nil {
+		switch connection.ContactProviderMode {
+		case enums.ArrivalContactProviderModeContactWay,
+			enums.ArrivalContactProviderModeCustomerAcquisition,
+			enums.ArrivalContactProviderModeStaticPluginTicket:
+			return connection.ContactProviderMode
 		}
 	}
 	return config.Current().Arrival.ContactProviderMode()

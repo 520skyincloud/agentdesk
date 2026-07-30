@@ -54,6 +54,7 @@ var Models = []any{
 	&ArrivalContactWay{},
 	&ArrivalAcquisitionLink{},
 	&ArrivalStoreBinding{},
+	&ArrivalBindingTicket{},
 	&WeComProviderCallbackEvent{},
 	&ArrivalAuditLog{},
 	&ConversationParticipant{},

@@ -33,8 +33,8 @@
 
 - `development/integration-manifest.tsv`：统一集成文件归属、禁止项、验证命令和完成状态。
 - `development/tenant-ai-unified-integration-plan.md`：当前统一架构和决策追溯。
-- `development/customer-acquisition-link-engine-handoff.md`：企业微信获客助手到店主链的实现、
-  配置、验证、合并和回滚交接。
+- `development/customer-acquisition-link-engine-handoff.md`：到店联动三 Provider、静态
+  会话绑定、配置、验证、合并和回滚交接。
 - `development/tenant-company-acceptance.md`：租户与门店账号验收。
 
 ## 历史材料

@@ -1,4 +1,4 @@
-# 到店联动链接引擎 V2
+# 到店联动链接引擎 V2（三 Provider）
 
 > 状态：AgentDesk 当前权威设计与实现说明
 > 日期：2026-07-30
@@ -15,19 +15,24 @@
 | `agentdesk-arrival-link-engine-development-prompt (1).md` | `205d2a53bb2fbcd04f1beba5c95772a91cf1851cd9ee40d15a8a42f9f3f37162` |
 | `wxwork-conversation-binding-verification (1).md` | `11486e27374be3b7daf9476594552da74562f07fdac58978a23006ffe8430b82` |
 | `agentdesk-customer-acquisition-link-engine-upgrade-prompt.md` | `5ab6e7b8092676b9f099f55a79711d7c41c7f071e471b2fbed2d11dcc6ad7e96` |
+| `agentdesk-static-plugid-bind-ticket-upgrade-prompt.md` | `e9ce63f3ca819ee707379a1abe60467959d1a3ac5027c0b3454f24827e223ac5` |
 
-最新升级方案要求生产到店主链改用企业微信“获客助手”，旧 `contact_way` 只保留兼容、
-审计和显式回滚。企业微信员工号协议仍只以
+最新升级方案在原 `customer_acquisition`、`contact_way` 基础上增加
+`static_plugin_ticket`。新模式使用门店真实 `plugId` 完成主动加好友，再通过真实员工号
+单聊发送一次性绑定卡片；旧两种模式继续保留兼容和显式回滚，三者之间不自动降级。
+企业微信员工号协议仍只以
 `https://wework.apifox.cn/llms.txt` 及其链接的具体接口页为依据。
 
 ## 2. 产品目标与边界
 
 到店联动解决两件事：
 
-1. 客户首次扫描门店小程序码时，页面显示由 AgentDesk 从真实企业微信获客链接生成并
-   反向验码的二维码。
-2. 客户和该门店员工号会话已经完成确定性绑定后，再次扫码可向该门店的真实企微单聊
-   会话发送到店卡片。
+1. 客户首次扫描门店小程序码时，按门店 Provider 返回真实获客二维码、旧联系我二维码，
+   或企业微信官方联系我组件所需的真实 `plugId`。
+2. 静态模式下，客户添加真实员工后由员工号真实单聊发送 `bindTicket` 小程序卡片，客户
+   点击后把小程序身份、门店、员工实例和该真实会话精确绑定。
+3. 客户和该门店员工号会话完成确定性绑定后，再次扫码只向保存的真实企微单聊发送到店
+   卡片。
 
 本次不修改小程序源码，不改 AI 回复引擎，不新增 Customer、Conversation、Store、
 WxWorkProtocolInstance 或登录身份体系，不查询订单、房号或手机号，不猜测客户身份。
@@ -56,6 +61,8 @@ WxWorkProtocolInstance 或登录身份体系，不查询订单、房号或手机
 | 获客助手链接 | 新增 | 官方额度、单成员链接创建/详情、加密复用和客户分页对账 |
 | 到店二维码 | 扩展 | 真实获客链接追加逐次扫码状态、标准/艺术码反向验码与公开代理 |
 | 旧联系我二维码 | 保留兼容 | `contact_way` 只能由显式配置启用，不因错误自动降级 |
+| 静态联系我组件 | 新增 | `static_plugin_ticket` 返回门店真实 `plugId`，不调用服务商创建链接 API |
+| 会话绑定票据 | 新增 | `ArrivalBindingTicket` 与 `card_ticket` 证明复用真实 Message/Outbox |
 | 扫码幂等与短会话 | 新增 | `ArrivalScanEvent`、`ArrivalSession` |
 | 到店客户绑定 | 新增关系，不复制客户域 | `ArrivalStoreBinding` 只引用现有 Customer/Conversation |
 | 管理页面 | 新增必要入口 | `/dashboard/arrival-connections` 与 `/wecom/provider/settings` |
@@ -69,9 +76,14 @@ flowchart LR
     API --> LOGIN["微信登录交换"]
     API --> ARRIVAL["ArrivalLinkService"]
     ARRIVAL --> STORE["Tenant / Store"]
-    ARRIVAL --> CONTACT["企业微信服务商与获客助手"]
+    ARRIVAL --> MODE{"门店 Provider"}
+    MODE --> CONTACT["企业微信服务商与获客助手"]
+    MODE --> PLUGIN["静态真实 plugId"]
     CONTACT --> LINK["门店可复用获客链接"]
+    PLUGIN --> REALCHAT["真实员工号单聊"]
+    REALCHAT --> TICKET["bindTicket 小程序卡片"]
     ARRIVAL --> BINDING["ArrivalStoreBinding"]
+    TICKET --> BINDING
     BINDING --> CUSTOMER["现有 Customer / Conversation"]
     BINDING --> INSTANCE["现有员工实例发送 Service"]
     PORTAL["门店授权设置页"] --> CONNECT["ArrivalConnectionService"]
@@ -114,7 +126,7 @@ Stage B 确定性桥门禁。
 
 ### 5.1 Stage A：官方关系确认
 
-生产模式下，一个“授权主体 + 门店 + 已确认客户联系成员”只创建并复用一个官方获客
+`customer_acquisition` 模式下，一个“授权主体 + 门店 + 已确认客户联系成员”只创建并复用一个官方获客
 链接。每次未绑定扫码仍生成独立 `ArrivalScanEvent`，并从服务端 HMAC 生成固定长度、
 仅含 ASCII 字母数字且不携带顺序 ID 的 `customer_channel`。同一扫码重试复用原状态，
 不同扫码得到不同状态。
@@ -164,6 +176,38 @@ deliveryStatus = not_bound
 `external_userid ↔ protocol user_id/vid` 接口，因此
 `ArrivalProtocolBindingBridge` 默认不可用。不得为了跑通演示开启猜测映射。
 
+### 5.3 静态模式：真实会话卡片绑定
+
+`static_plugin_ticket` 不进入 Stage A/Stage B 的服务商身份转换。管理员在现有到店连接页
+为门店显式选择：
+
+```text
+真实 plugId + 当前 Tenant/Store 的可用 WxWorkProtocolInstance
+```
+
+同一员工实例只能对应一个用于新好友自动卡片的 active 静态门店。保存配置时在同一事务中
+锁定 Store、员工实例和活动连接后检查唯一性；多进程由数据库行锁串行，SQLite 由写事务与
+进程配置锁共同保护。事件侧如果仍发现多个候选，禁止按昵称、头像、时间或顺序猜测，不发
+卡并写入不含身份明文的审计。
+
+首次未绑定扫码只创建本地 `plugin_button` 联系记录并返回真实 `plugId`，不调用 Suite、
+`add_contact_way` 或获客链接 API。真实新好友会话出现后：
+
+1. 按真实 `Conversation + Customer + WxWorkProtocolInstance + Store` 创建或复用 pending
+   `ArrivalBindingTicket`；
+2. 数据库只保存 HMAC 摘要和内部引用，不保存票据原文；
+3. Message/Outbox 只保存内部 ticket ID，员工号实际发送前才在内存副本中物化
+   `pages/arrival/index?bindTicket=<opaque>`；
+4. 客户点击卡片后重新 `wx.login` 并调用 `/api/miniprogram/arrival/bind`；
+5. 事务内锁定票据和原 `ArrivalStoreBinding`，要求同一身份在该门店有近期真实扫码；
+6. 成功写入 `BindingProofType=card_ticket`，不伪造官方关系、授权主体或
+   `external_userid`。
+
+票据由至少 32 字节随机源派生，使用无填充 Base64URL 和 HMAC，支持 pending、consumed、
+expired、revoked。已消费票据只有原小程序身份重复打开时幂等成功；其他身份、其他会话或
+其他门店固定冲突。系统消息只有显式 `outbound_channel_type` 标记时才进入 Outbox 补漏；
+上游错误即使回显 `page_path`，持久化 `last_error` 前也会删除票据。
+
 ## 6. 多门店基数
 
 绑定唯一键为：
@@ -172,9 +216,9 @@ deliveryStatus = not_bound
 miniProgramIdentityId + storeId
 ```
 
-同一小程序身份可以分别绑定多个门店；每条绑定固定自己的 Corp、成员、员工实例、
-Customer、Conversation 和 `S:conversation_id`。任何读取、校验、投递都同时校验
-Tenant、Store 和实例，A 店扫码不能命中 B 店会话。
+同一小程序身份可以分别绑定多个门店；每条绑定固定自己的 Provider 证明、员工实例、
+Customer、Conversation 和真实 `S:conversation_id`。服务商模式还固定 Corp 与成员。
+任何读取、校验、投递都同时校验 Tenant、Store 和实例，A 店扫码不能命中 B 店会话。
 
 ## 7. 冻结 HTTP 契约
 
@@ -183,6 +227,7 @@ Tenant、Store 和实例，A 店扫码不能命中 B 店会话。
 | Method | Path | 行为 |
 | --- | --- | --- |
 | `POST` | `/api/miniprogram/arrival/bootstrap` | 校验 schema、真实登录交换、扫码幂等、查绑定；首次未绑定才创建联系码，已绑定且首次处理才投递 |
+| `POST` | `/api/miniprogram/arrival/bind` | 用 `wx.login code + bindTicket` 消费静态会话票据并建立 `card_ticket` 绑定 |
 | `GET` | `/api/miniprogram/arrival/status` | 使用短期 Bearer token 读取同一份 V2 结果 |
 | `GET` | `/api/miniprogram/arrival/contact-way/:resourceToken` | 只返回验签成功且 active 的真实 PNG 资源 |
 
@@ -208,6 +253,33 @@ contactWay.mode: qr_code | plugin_button | none
 
 `status` 是严格只读接口：不调用微信登录、不创建扫码事件、不创建二维码、不尝试映射、
 不发送卡片。
+
+绑定请求与成功数据固定为：
+
+```json
+{
+  "schemaVersion": "arrival_bind_input.v1",
+  "loginCode": "fresh wx.login code",
+  "bindTicket": "opaque Base64URL ticket"
+}
+```
+
+```json
+{
+  "schemaVersion": "arrival_bind_result.v1",
+  "bindingStatus": "bound",
+  "store": {
+    "name": "真实门店",
+    "brandName": "真实品牌",
+    "address": "真实地址",
+    "phone": "真实电话"
+  }
+}
+```
+
+固定错误码为 `1000` 格式/版本、`2062` 登录 code、`2066` 无效票据、`2067` 过期、
+`2068` 撤销、`2069` 身份/会话冲突、`2070` 缺少近期扫码、`2071` 门店/实例/会话暂不可用。
+响应永不返回票据、openid/unionid、客户标识、guid、`conversation_id` 或任何 secret。
 
 ### 7.2 门店服务商接入
 
@@ -236,13 +308,17 @@ GET 用于 URL 验证；事件回调必须验签、解密、校验 suite/corp、
 ```text
 /api/dashboard/arrival-connection/list
 /api/dashboard/arrival-connection/authorization/options
+/api/dashboard/arrival-connection/provider/update
+/api/dashboard/arrival-connection/protocol-instance/options
 /api/dashboard/arrival-connection/invitation/create
 /api/dashboard/arrival-connection/verify
 /api/dashboard/arrival-connection/disable
 /api/dashboard/arrival-connection/audit/list
+/api/dashboard/conversation/send_arrival_binding_card
 ```
 
-所有接口先做显式权限检查，再强制 Tenant 上下文和数据范围。
+所有接口先做显式权限检查，再强制 Tenant 上下文和数据范围。最后一个动作供存量好友使用：
+管理员只能从已有真实会话发送独立票据卡片，门店归属不唯一时拒绝发送。
 
 ## 8. 数据模型
 
@@ -252,7 +328,8 @@ Arrival DDL 统一进入现有 `AutoMigrate`，不新增平行 migration 系统�
 - `MiniProgramIdentity`：Tenant 内小程序身份，openid/unionid 加密，HMAC 指纹查找；
 - `WeComSuiteCredential`：suite ticket 与 suite token 加密缓存；
 - `WeComTenantAuthorization`：Tenant 内 Corp 授权、永久码、企业 token 与授权范围；
-- `StoreArrivalConnection`：一店一连接，绑定授权主体、成员和员工实例；
+- `StoreArrivalConnection`：一店一连接；按模式保存授权主体/成员，或静态真实 `plugId`，
+  并统一引用员工实例；
 - `StoreArrivalInvitation`：限定 Tenant/Store 的一次性邀请；
 - `WeComAuthorizationAttempt`：一次性授权 state 和预授权证据；
 - `ArrivalScanEvent`：扫码幂等、请求指纹、绑定和投递状态；
@@ -262,7 +339,10 @@ Arrival DDL 统一进入现有 `AutoMigrate`，不新增平行 migration 系统�
   `acquisition_link_id` 引用获客链接，获客 `link_id` 不写入旧 `config_id`；
 - `ArrivalAcquisitionLink`：一个授权主体、门店和成员一个可复用链接；只保存官方
   `link_id`、加密 URL、成员指纹、链接状态、额度快照、最近验证/对账时间和脱敏故障；
-- `ArrivalStoreBinding`：小程序身份与 Store 的唯一绑定，引用现有客户和会话；
+- `ArrivalStoreBinding`：小程序身份与 Store 的唯一绑定，引用现有客户和会话；通过
+  `provider_callback` 或 `card_ticket` 区分证明来源；
+- `ArrivalBindingTicket`：真实员工号会话的一次性绑定证明，只保存 ticket HMAC、状态、
+  TTL、消费身份和 Message/Outbox 内部引用；
 - `WeComProviderCallbackEvent`：回调幂等、防重放和处理状态；
 - `ArrivalAuditLog`：邀请、授权、绑定、二维码、禁用、清理和投递的安全审计。
 
@@ -273,6 +353,13 @@ Arrival DDL 统一进入现有 `AutoMigrate`，不新增平行 migration 系统�
 - `scanEventId` 只保存 HMAC hash；相同 ID 仅允许原
   `schemaVersion + scene + loginCode` 指纹重试，其他请求拒绝；
 - 同一事件的联系码使用唯一 `ScanEventID`，并发只创建一个可发布结果；
+- 静态 Provider 保存时事务内锁定 Store 和员工实例，禁止一个实例映射多个 active 静态
+  门店；
+- 同一真实会话只复用一个未过期 pending 票据；Provider 切换、连接停用和维护任务分别
+  撤销或过期票据；
+- 绑定事务锁定票据和 `ArrivalStoreBinding`，同身份同门店只能绑定一个真实会话；
+- 绑定卡片 Message 提交后即使进程在创建 Outbox 前中断，带显式渠道标记的 system 消息
+  也会被现有补漏任务恢复，普通系统消息不进入外部投递；
 - 投递先通过数据库条件更新抢占，避免多进程重复发送；
 - 抢占后进程异常会落为 `failed/delivery_interrupted`，不会长期显示处理中；
 - 已发送事件按 Tenant、Store、身份和频控窗口判断，不跨门店限流；
@@ -326,9 +413,9 @@ stage + httpStatus + errcode + sanitizedErrmsg + retryable
 corp access token 每个 authorization 独立缓存和加锁。刷新时重新读取该授权主体的数据库
 状态，禁止把服务商 Corp、授权企业 Corp、小程序 AppID 或其他 Tenant 的 token 混用。
 
-## 10. 二维码安全
+## 10. 服务商二维码安全
 
-生产二维码主链是企业微信获客助手：
+`customer_acquisition` 的二维码链是企业微信获客助手：
 
 1. 从授权企业取得短期 corp access token；
 2. 先查询真实获客额度，再使用唯一真实成员 UserID 创建或复用单成员链接；
@@ -368,7 +455,7 @@ arrivalAudit.view
 
 ## 12. 配置与部署
 
-正式启用前必须配置：
+三种模式共同配置：
 
 ```text
 AGENT_DESK_ARRIVAL_ENABLED=true
@@ -379,6 +466,24 @@ AGENT_DESK_ARRIVAL_SESSION_SECRET=<independent strong secret>
 AGENT_DESK_ARRIVAL_IDENTITY_HMAC_KEY=<independent strong secret>
 AGENT_DESK_ARRIVAL_DATA_MASTER_KEY=<32-byte base64 key>
 AGENT_DESK_ARRIVAL_DATA_MASTER_KEY_ID=<non-secret key id>
+AGENT_DESK_ARRIVAL_BIND_TICKET_TTL_MINUTES=30
+AGENT_DESK_ARRIVAL_BIND_PENDING_SCAN_WINDOW_MINUTES=30
+AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=<explicit provider>
+```
+
+静态模式：
+
+```text
+AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=static_plugin_ticket
+```
+
+此模式不要求 SuiteID、SuiteSecret、回调 Token、EncodingAESKey、永久授权码、企业 token、
+客户联系回调、`add_contact_way` 或获客链接权限。每个启用门店仍必须在管理页真实配置
+`scene + plugId + WxWorkProtocolInstance`，员工实例必须有可发送的小程序卡片模板。
+
+服务商模式还必须配置：
+
+```text
 AGENT_DESK_WECOM_SUITE_ID=<suite id>
 AGENT_DESK_WECOM_SUITE_SECRET=<secret>
 AGENT_DESK_WECOM_PROVIDER_CALLBACK_TOKEN=<strong callback token>
@@ -387,11 +492,12 @@ AGENT_DESK_WECOM_AUTH_TYPE=1
 AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition
 ```
 
-非秘密参数包括微信/企微官方 API 地址、二维码来源白名单及 session、邀请、联系码、频控
-时长。`AGENT_DESK_WECOM_AUTH_TYPE=1` 只适用于安装测试，应用正式发布后必须改为 `0`。
-生产预检会拒绝 HTTP、IP、localhost、无效密钥、非法 Provider 或缺失配置。
+也可显式选择 `contact_way` 兼容模式。`AGENT_DESK_WECOM_AUTH_TYPE=1` 只适用于安装测试，
+应用正式发布后必须改为 `0`。生产预检会按 Provider 校验，拒绝 HTTP、IP、localhost、
+无效密钥、非法 Provider 或该模式实际需要的缺失配置，但不会要求静态模式伪造 Suite
+凭据。
 
-企业微信服务商后台：
+只有服务商模式需要配置企业微信服务商后台：
 
 ```text
 安装完成回调域名：weibao.omnireva.com
@@ -438,6 +544,12 @@ cd web && pnpm build
 - Stage A 成功且 Stage B 不可用时固定 `legacy_unmapped + not_bound`；
 - Tenant/Store/实例/Customer/Conversation/`S:` 会话全链一致性；
 - 同一身份多门店不串店；
+- 静态模式无 Suite 配置仍启动，旧模式无 Suite 明确失败；
+- 静态首次扫码只返回真实 `plugin_button + plugId`，不调用服务商 API；
+- 票据只保存摘要、固定错误码、幂等消费、跨身份/会话冲突和近期扫码门禁；
+- 绑定卡片系统消息 Outbox 补漏、临时物化与失败信息票据脱敏；
+- 一个员工实例多 active 静态门店时拒绝配置和自动发送；
+- 新好友自动卡片与存量会话人工发卡；
 - SQLite 与 MySQL 等价。
 
 MySQL 实机验证可以延期，但不能删除 `TEST_MYSQL_DSN` 验证入口，也不能把 SQLite 通过
@@ -453,13 +565,16 @@ MySQL 实机验证可以延期，但不能删除 `TEST_MYSQL_DSN` 验证入口�
 - 获客助手额度、单成员链接创建/详情、加密复用、客户分页对账与失败诊断；
 - 逐次扫码 `customer_channel`、标准/艺术码验证、安全公开代理和清理；
 - 旧 `contact_way` 的显式兼容与回滚，不做错误自动降级；
+- `static_plugin_ticket`、门店真实 `plugId + 员工实例` 配置和无 Suite 运行；
+- `ArrivalBindingTicket`、`card_ticket` 绑定事务、固定错误码和二次扫码定向投递；
+- 新好友自动绑定卡片、存量会话人工发卡、Outbox 崩溃补漏和票据脱敏；
 - 联系码官方错误诊断、按授权主体 token 刷新、有限重试和历史通用失败恢复；
 - 门店连接管理、邀请、验证、禁用、审计页面；
 - 复用现有员工号投递与 Outbox 的到店卡片路径；
 - Stage A 回调和默认关闭的 Stage B 桥；
 - 主要 service、回调、二维码和导航自动化测试。
 
-线上完整验收仍需：
+服务商 `customer_acquisition` 线上完整验收仍需：
 
 1. 当前测试企业重新授权第三方应用，使新获客助手权限进入授权范围；
 2. 真实额度预检通过并创建/复用门店获客链接；
@@ -471,6 +586,18 @@ MySQL 实机验证可以延期，但不能删除 `TEST_MYSQL_DSN` 验证入口�
    `legacy_unmapped` 状态，不宣称再次扫码发卡闭环完成；
 7. 再次扫码确认不显示二维码且真实员工号会话收到到店卡片；
 8. 补做 MySQL 实机验证。
+
+静态 `static_plugin_ticket` 仍需独立完成真实门店验收：
+
+1. 为一个试点门店录入企业微信后台真实 `plugId` 并选择唯一员工实例；
+2. 用从未添加过该员工的真实微信首次扫码，确认官方联系我组件可用；
+3. 主动添加后确认 AgentDesk 获得真实 Customer、Conversation 和 `S:` 单聊；
+4. 确认员工号发送的小程序绑定卡片可打开，bind 返回 `bound`；
+5. 再次扫描同一门店码，确认只向原真实会话发送到店卡片；
+6. 验证 `-3006`、存量好友和歧义门店都不被伪装成 bound；
+7. 在 Suite 全空环境验证静态链仍可工作，并补做 MySQL 实机测试。
+
+以上真机步骤尚未执行，因此当前只能声明代码和自动化已完成，不能声明生产闭环已验收。
 
 ## 15. 合并与回滚
 
@@ -492,8 +619,9 @@ MySQL 实机验证可以延期，但不能删除 `TEST_MYSQL_DSN` 验证入口�
 2. 代码回滚：回退 Arrival 独立提交；新表保留但不进入运行链，确认无生产数据后再另行审批
    数据清理。不得把删除 Arrival 表混入普通代码回滚。
 
-本次 `ArrivalAcquisitionLink` 表与 Provider 字段由 `AutoMigrate` 向后兼容增加，没有
-DML migration。运行回滚优先把 `AGENT_DESK_ARRIVAL_CONTACT_PROVIDER` 显式改为
-`contact_way` 并强制重建容器；代码回滚时保留新增表列，不执行回退 DDL。部署后若官方
-仍返回永久错误，应先修正企业微信应用权限、重新授权或检查成员配置，不得通过清空错误、
-写入假 `link_id` 或伪造二维码绕过。
+本次 `ArrivalAcquisitionLink`、`ArrivalBindingTicket` 表与 Provider/绑定证明字段由
+`AutoMigrate` 向后兼容增加，没有 DML migration。运行回滚必须显式选择已经验收且配置
+完整的 `customer_acquisition` 或 `contact_way` 并强制重建容器；三种 Provider 不会因
+错误自动切换。代码回滚时保留新增表列，不执行回退 DDL。部署后若官方仍返回永久错误，
+应修正应用权限、授权、真实 `plugId` 或员工实例配置，不得通过清空错误、写入假 link/
+plugId 或伪造二维码绕过。

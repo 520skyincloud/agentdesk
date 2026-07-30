@@ -6,6 +6,7 @@ import (
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/pkg/httpx/params"
 	"agent-desk/internal/services"
@@ -53,6 +54,52 @@ func ArrivalConnectionGetAuthorizationOptions(ctx *gin.Context) {
 		return
 	}
 	httpx.WriteJSON(ctx, results)
+}
+
+func ArrivalConnectionGetProtocolInstanceOptions(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionArrivalConnectionManage)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	storeID, ok := params.GetInt64(ctx, "storeId")
+	if !ok || storeID <= 0 {
+		httpx.WriteJSON(ctx, errorsx.InvalidParam("门店不能为空"))
+		return
+	}
+	results, err := services.ArrivalConnectionService.ListProtocolInstances(storeID, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, results)
+}
+
+func ArrivalConnectionPostUpdateProvider(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionArrivalConnectionManage)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err = services.AuthService.RequireTenantContext(ctx); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.UpdateArrivalConnectionProviderRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	result, err := services.ArrivalConnectionService.UpdateProvider(req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, result)
 }
 
 func ArrivalConnectionPostCreateInvitation(ctx *gin.Context) {

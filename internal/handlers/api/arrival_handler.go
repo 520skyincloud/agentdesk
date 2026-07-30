@@ -29,6 +29,20 @@ func ArrivalPostBootstrap(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, result)
 }
 
+func ArrivalPostBind(ctx *gin.Context) {
+	req := request.ArrivalBindRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	result, err := services.ArrivalBindingTicketService.Bind(req, httpx.GetRequestID(ctx))
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, result)
+}
+
 func ArrivalGetStatus(ctx *gin.Context) {
 	authorization := strings.TrimSpace(ctx.GetHeader("Authorization"))
 	if len(authorization) < len("Bearer ") || !strings.EqualFold(authorization[:len("Bearer ")], "Bearer ") {

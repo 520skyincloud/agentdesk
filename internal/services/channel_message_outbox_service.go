@@ -279,9 +279,12 @@ func (s *channelMessageOutboxService) ensureExternalMessage(db *gorm.DB, channel
 		}
 		return false, nil
 	}
-	if message.SenderType != enums.IMSenderTypeAgent && message.SenderType != enums.IMSenderTypeAI {
+	allowedSender := message.SenderType == enums.IMSenderTypeAgent ||
+		message.SenderType == enums.IMSenderTypeAI ||
+		(requireMarker && message.SenderType == enums.IMSenderTypeSystem)
+	if !allowedSender {
 		if requireMarker {
-			return false, errorsx.InvalidParam("仅客服或 AI 消息允许渠道投递")
+			return false, errorsx.InvalidParam("消息发送人不允许当前渠道投递")
 		}
 		return false, nil
 	}

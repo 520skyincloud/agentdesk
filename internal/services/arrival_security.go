@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -145,6 +146,43 @@ func (s *arrivalSecurity) ParseSessionToken(token string, now time.Time) (int64,
 		return 0, time.Time{}, fmt.Errorf("到店会话令牌已过期")
 	}
 	return sessionID, expiresAt, nil
+}
+
+func (s *arrivalSecurity) BindingTicket(ticketID int64, tokenEntropyHash string) (string, error) {
+	entropy, err := hex.DecodeString(strings.TrimSpace(tokenEntropyHash))
+	if err != nil || ticketID <= 0 || len(entropy) != sha256.Size {
+		return "", fmt.Errorf("到店绑定票据上下文无效")
+	}
+	payload := make([]byte, 8+sha256.Size)
+	binary.BigEndian.PutUint64(payload[:8], uint64(ticketID))
+	copy(payload[8:], entropy)
+	mac := hmac.New(sha256.New, s.sessionKey)
+	_, _ = mac.Write([]byte("arrival_bind_ticket"))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write(payload)
+	raw := append(payload, mac.Sum(nil)...)
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func (s *arrivalSecurity) ParseBindingTicket(token string) (int64, string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
+	if err != nil || len(raw) != 8+sha256.Size+sha256.Size {
+		return 0, "", fmt.Errorf("到店绑定票据无效")
+	}
+	payload := raw[:8+sha256.Size]
+	actualMAC := raw[8+sha256.Size:]
+	expectedMAC := hmac.New(sha256.New, s.sessionKey)
+	_, _ = expectedMAC.Write([]byte("arrival_bind_ticket"))
+	_, _ = expectedMAC.Write([]byte{0})
+	_, _ = expectedMAC.Write(payload)
+	if !hmac.Equal(actualMAC, expectedMAC.Sum(nil)) {
+		return 0, "", fmt.Errorf("到店绑定票据无效")
+	}
+	ticketID := int64(binary.BigEndian.Uint64(payload[:8]))
+	if ticketID <= 0 {
+		return 0, "", fmt.Errorf("到店绑定票据无效")
+	}
+	return ticketID, hex.EncodeToString(payload[8:]), nil
 }
 
 type arrivalSelectionTokenPayload struct {

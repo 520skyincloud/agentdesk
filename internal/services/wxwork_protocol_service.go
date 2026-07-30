@@ -152,7 +152,7 @@ func (s *wxWorkProtocolService) HandleCallback(req request.WxWorkProtocolCallbac
 			go s.runContactAutomationCallback(instance.ID, req.NotifyType)
 		}
 	case wxProtocolNotifyFriendChange:
-		if instance.WelcomeEnabled {
+		if WxWorkProtocolContactAutomationService.ShouldProcessNewContacts(instance) {
 			go s.runContactAutomationCallback(instance.ID, req.NotifyType)
 		}
 	default:
@@ -1562,12 +1562,21 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	if !claimed {
 		return nil
 	}
-	if err := s.prepareOutboundMessageMedia(cfg, instance, message); err != nil {
-		return s.markOutboxFailed(outbox, err.Error())
-	}
-	resp, err := s.adapter.SendMessage(cfg, instance, protocolConversationID, message)
+	dispatchMessage, transientPayload, err := ArrivalBindingTicketService.MaterializeOutboundMessage(message)
 	if err != nil {
-		return s.markOutboxFailed(outbox, err.Error())
+		return s.markOutboxFailed(outbox, redactArrivalBindingTicketError(nil, err.Error()))
+	}
+	if transientPayload {
+		err = s.prepareTransientOutboundMessageMedia(cfg, instance, dispatchMessage)
+	} else {
+		err = s.prepareOutboundMessageMedia(cfg, instance, dispatchMessage)
+	}
+	if err != nil {
+		return s.markOutboxFailed(outbox, redactArrivalBindingTicketError(dispatchMessage, err.Error()))
+	}
+	resp, err := s.adapter.SendMessage(cfg, instance, protocolConversationID, dispatchMessage)
+	if err != nil {
+		return s.markOutboxFailed(outbox, redactArrivalBindingTicketError(dispatchMessage, err.Error()))
 	}
 	now := time.Now()
 	if err := ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, outbox.TenantID, map[string]any{
@@ -1579,7 +1588,11 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 		return err
 	}
 	wxMsgID := s.sentMessageID(instance.Guid, resp, outbox.ID)
-	_ = s.createMessageRef(conversation.ID, message.ID, instance, strings.TrimSpace(mapping.ExternalUserID), wxMsgID, resp, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent)
+	messageRefPayload := resp
+	if transientPayload {
+		messageRefPayload = redactArrivalBindingTicketError(dispatchMessage, resp)
+	}
+	_ = s.createMessageRef(conversation.ID, message.ID, instance, strings.TrimSpace(mapping.ExternalUserID), wxMsgID, messageRefPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent)
 	if message.SenderType == enums.IMSenderTypeAI {
 		go s.reportConversationReadAfterAIReply(instance.ID, protocolConversationID, conversation.ID, message.ID)
 	}
@@ -1958,7 +1971,34 @@ func (s *wxWorkProtocolService) prepareOutboundMessageMedia(cfg *dto.WxWorkProto
 	return nil
 }
 
-func (s *wxWorkProtocolService) prepareOutboundMiniProgramMedia(cfg *dto.WxWorkProtocolChannelConfig, instance *models.WxWorkProtocolInstance, message *models.Message) error {
+func (s *wxWorkProtocolService) prepareTransientOutboundMessageMedia(
+	cfg *dto.WxWorkProtocolChannelConfig,
+	instance *models.WxWorkProtocolInstance,
+	message *models.Message,
+) error {
+	if message == nil {
+		return errorsx.InvalidParam("消息不存在")
+	}
+	if message.MessageType == enums.IMMessageTypeMiniProgram {
+		return s.prepareOutboundMiniProgramMediaWithPersistence(cfg, instance, message, false)
+	}
+	return s.prepareOutboundMessageMedia(cfg, instance, message)
+}
+
+func (s *wxWorkProtocolService) prepareOutboundMiniProgramMedia(
+	cfg *dto.WxWorkProtocolChannelConfig,
+	instance *models.WxWorkProtocolInstance,
+	message *models.Message,
+) error {
+	return s.prepareOutboundMiniProgramMediaWithPersistence(cfg, instance, message, true)
+}
+
+func (s *wxWorkProtocolService) prepareOutboundMiniProgramMediaWithPersistence(
+	cfg *dto.WxWorkProtocolChannelConfig,
+	instance *models.WxWorkProtocolInstance,
+	message *models.Message,
+	persist bool,
+) error {
 	body, err := wxProtocolRichPayload(message.Payload)
 	if err != nil {
 		return err
@@ -2005,12 +2045,14 @@ func (s *wxWorkProtocolService) prepareOutboundMiniProgramMedia(cfg *dto.WxWorkP
 	body["wecdn_uploaded_by_guid"] = strings.TrimSpace(instance.Guid)
 	body["wxMedia"] = wxProtocolMediaPayloadMap(media)
 	payloadBytes, _ := json.Marshal(body)
-	now := time.Now()
-	if err := repositories.MessageRepository.UpdatesInTenant(sqls.DB(), message.ID, message.TenantID, map[string]any{
-		"payload":    string(payloadBytes),
-		"updated_at": now,
-	}); err != nil {
-		return err
+	if persist {
+		now := time.Now()
+		if err := repositories.MessageRepository.UpdatesInTenant(sqls.DB(), message.ID, message.TenantID, map[string]any{
+			"payload":    string(payloadBytes),
+			"updated_at": now,
+		}); err != nil {
+			return err
+		}
 	}
 	message.Payload = string(payloadBytes)
 	return nil
@@ -2401,7 +2443,7 @@ func (s *wxWorkProtocolService) markOutboxFailed(outbox models.ChannelMessageOut
 		"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
 		"retry_count":   retryCount,
 		"next_retry_at": now.Add(time.Minute),
-		"last_error":    strings.TrimSpace(reason),
+		"last_error":    redactArrivalBindingTicketError(nil, reason),
 		"updated_at":    now,
 	})
 }

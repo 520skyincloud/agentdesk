@@ -1,15 +1,16 @@
-# 企业微信获客助手到店链接引擎交接
+# 到店联动三 Provider 与静态会话绑定交接
 
-> 状态：代码实现完成，生产真实验收结果以部署记录为准
+> 状态：代码与自动化实现完成；静态模式真机闭环尚未验收
 > 日期：2026-07-30
 > 分支：`codex/customer-acquisition-link-engine`
 > 基线：`weibao/main`
 
 ## 1. 目标
 
-将到店联动的生产二维码主链从企业微信 `add_contact_way` 切换为获客助手，同时保持
-`arrival_scan_input.v1` 与 `arrival_scan_result.v2` 小程序契约不变。旧 Provider 保留
-数据兼容和显式回滚，不允许因错误自动降级。
+在现有 `customer_acquisition`、`contact_way` 上新增
+`static_plugin_ticket`。静态模式首次扫码返回门店真实 `plugId`，客户主动添加真实员工
+后，由员工号真实单聊发送一次性 `bindTicket` 小程序卡片完成精确绑定。旧 Provider 保留
+数据兼容和显式回滚，三种模式不允许因错误自动降级。
 
 本次不修改微信小程序、AI 回复引擎、企微员工号协议或客户身份模型。
 
@@ -24,7 +25,14 @@
 - 官方回调和五分钟补偿对账复用同一门店关系确认事务；
 - 已绑定二次扫码继续复用原员工号投递、频控和失败状态；
 - 管理页在现有到店连接列表展示 Provider、链接状态、额度与故障码；
-- 新模型和三条外键关系进入 Tenant 完整性审计。
+- 新模型和新增外键关系进入 Tenant 完整性审计；
+- 门店连接新增真实 `staticContactPlugId` 和员工实例映射，管理入口仍为原到店连接页；
+- 增加 `ArrivalBindingTicket` 和 `ArrivalStoreBinding.BindingProofType=card_ticket`；
+- 增加 `/api/miniprogram/arrival/bind`，固定对齐 `2062/2066-2071` 错误码；
+- 新好友真实会话自动发绑定卡片，存量好友从原会话工作台人工发卡；
+- Message/Outbox 只保存内部 ticket ID，发送前临时物化票据，失败信息持久化前脱敏；
+- Provider 切换、连接停用撤销 pending 票据，维护任务过期超时票据；
+- 静态模式解除 Suite、永久授权码、客户联系回调和官方创建链接 API 运行依赖。
 
 ## 3. 数据与接口
 
@@ -32,21 +40,62 @@ DDL 继续由 `AutoMigrate` 执行，无 DML migration。新增表：
 
 ```text
 ArrivalAcquisitionLink
+ArrivalBindingTicket
 ```
 
-唯一约束：
+关键唯一约束：
 
 ```text
-tenantAuthorizationId + storeId + contactMemberFingerprint
+ArrivalAcquisitionLink:
+  tenantAuthorizationId + storeId + contactMemberFingerprint
+ArrivalBindingTicket:
+  ticketHash
+  tokenEntropyHash
 ```
 
 敏感字段：
 
 - 官方链接 URL 只保存 ciphertext + nonce；
 - 客户、成员和扫码状态只保存现有密文或 HMAC 指纹；
+- 绑定票据原文不落库、Message、Outbox、审计或普通日志；
 - Provider 错误只保存阶段、HTTP 状态、错误码、清洗后短消息和重试属性。
 
-小程序公开接口、字段和枚举没有变化。管理接口只扩展内部 DTO：
+原 bootstrap/status 契约保持不变，新增：
+
+```text
+POST /api/miniprogram/arrival/bind
+POST /api/dashboard/arrival-connection/provider/update
+GET  /api/dashboard/arrival-connection/protocol-instance/options
+POST /api/dashboard/conversation/send_arrival_binding_card
+```
+
+bind 请求与成功数据：
+
+```json
+{
+  "schemaVersion": "arrival_bind_input.v1",
+  "loginCode": "fresh wx.login code",
+  "bindTicket": "opaque ticket"
+}
+```
+
+```json
+{
+  "schemaVersion": "arrival_bind_result.v1",
+  "bindingStatus": "bound",
+  "store": {
+    "name": "门店名",
+    "brandName": "品牌名",
+    "address": "门店地址",
+    "phone": "门店电话"
+  }
+}
+```
+
+外层保持统一 `JsonResult`；响应禁止返回票据、openid/unionid、客户标识、guid、
+`conversation_id`、sessionToken 或 secret。
+
+管理 DTO 扩展：
 
 ```text
 contactProvider
@@ -55,27 +104,61 @@ acquisitionQuotaTotal
 acquisitionQuotaBalance
 acquisitionFailureCode
 acquisitionLastVerifiedAt
+staticContactPlugId
+wxWorkProtocolInstanceId
 ```
 
 ## 4. 配置
 
-新增非秘密环境变量：
+Provider 必须显式配置。新静态主链：
 
 ```text
-AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition
+AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=static_plugin_ticket
+AGENT_DESK_ARRIVAL_BIND_TICKET_TTL_MINUTES=30
+AGENT_DESK_ARRIVAL_BIND_PENDING_SCAN_WINDOW_MINUTES=30
 ```
 
-允许值仅为：
+允许值为：
 
 ```text
+static_plugin_ticket
 customer_acquisition
 contact_way
 ```
 
-生产环境必须显式设置，非法值会阻止配置加载。企业微信仍处于安装测试阶段时
-`AGENT_DESK_WECOM_AUTH_TYPE=1`，正式发布后改为 `0`，每次切换都必须强制重建容器。
+生产环境必须显式设置，非法值会阻止配置加载。静态模式只要求 Arrival 公共 HTTPS、
+小程序 AppID/AppSecret、会话/HMAC/数据加密密钥、门店真实 `scene + plugId` 和可用员工
+实例；不要求 Suite 配置。另两种服务商模式仍要求完整 Suite 与回调配置。企业微信仍处于
+安装测试阶段时 `AGENT_DESK_WECOM_AUTH_TYPE=1`，正式发布后改为 `0`，每次切换都必须
+强制重建容器。
 
-## 5. 错误与恢复
+## 5. 三种 Provider 的运行差异
+
+| Provider | 首次未绑定扫码 | 绑定证据 | Suite 运行依赖 |
+| --- | --- | --- | --- |
+| `static_plugin_ticket` | 返回本地 `plugin_button + plugId` | 真实会话 `card_ticket` | 无 |
+| `customer_acquisition` | 创建/复用官方获客链接二维码 | provider callback/补偿对账，Stage B 仍需确定性桥 | 有 |
+| `contact_way` | 调用旧 `add_contact_way` 返回二维码 | provider callback，Stage B 仍需确定性桥 | 有 |
+
+静态模式不调用 `add_contact_way`、获客链接 API、客户联系回调或
+`external_userid/unionid` 转换。服务商模式也不会自动切到静态模式。
+
+## 6. 门店配置与客户流程
+
+配置一个真实静态门店：
+
+1. 在 `/dashboard/arrival-connections` 找到目标门店，不新建平行门店或连接；
+2. 联系模式选择“静态联系我 + 卡片绑定”；
+3. 录入企业微信后台生成的真实 `plugId`，禁止从二维码或员工 ID 推导；
+4. 选择当前 Tenant、Store 下状态可用且已配置小程序卡片模板的员工实例；
+5. 保存后连接为 active；若实例已被其他 active 静态门店使用则拒绝；
+6. 小程序继续使用该连接既有的不透明 `scene`。
+
+新好友：扫码返回 plugId，客户主动添加员工，真实会话出现后自动发独立绑定卡片，客户
+点击并 bind 后建立 `card_ticket` 绑定。存量好友不会再产生新好友事件，只能在会话工作台
+确认门店归属后点击“发送到店绑定卡片”；门店归属不确定时禁止批量猜测。
+
+## 7. 错误与恢复
 
 获客链固定错误码：
 
@@ -95,7 +178,24 @@ acquisition_member_unavailable
 官方创建成功后先持久化真实 `link_id`，再读取详情并激活；详情校验暂时失败时，后续
 重试只恢复同一官方链接，不会再次调用创建接口。
 
-## 6. 权限
+静态 bind 固定错误码：
+
+```text
+1000 格式或 schema
+2062 wx.login code 无效
+2066 票据无效
+2067 票据过期
+2068 票据撤销
+2069 身份、门店或会话冲突
+2070 缺少同身份同门店的近期扫码
+2071 门店、员工实例或真实会话暂不可用
+```
+
+同一员工实例只能有一个 active 静态门店。保存时事务内锁 Store 和实例；运行中若发现
+歧义，不猜测、不发卡。绑定卡片是显式标记的 system outbound 消息，异常中断后由现有
+Outbox 补漏恢复；普通 system 消息不进入外部投递。
+
+## 8. 权限
 
 没有新增平行权限。管理操作继续复用：
 
@@ -108,7 +208,7 @@ arrivalAudit.view
 
 Tenant 与 Store 数据范围仍是强制上限。
 
-## 7. 验证
+## 9. 验证
 
 自动化覆盖：
 
@@ -119,7 +219,33 @@ Tenant 与 Store 数据范围仍是强制上限。
 - 标准/艺术二维码逐字解码和回退；
 - 精确客户归因、`legacy_unmapped`、已绑定重扫、实例离线和频控；
 - 敏感值不进入日志、错误或持久化诊断；
-- SQLite AutoMigrate 和 Tenant 完整性审计。
+- SQLite AutoMigrate 和 Tenant 完整性审计；
+- 静态模式无 Suite 配置、首次扫码 plugId 和服务商零调用；
+- ticket HMAC/TTL、原文不落库、重复消费、跨身份/会话冲突及固定错误码；
+- 新好友无欢迎内容时仍发绑定卡片，存量会话人工发卡；
+- `card_ticket` 二次扫码只投递原真实会话，A/B 门店不串店；
+- system 消息 Outbox 补漏和上游错误票据脱敏；
+- Provider 切换/连接停用撤销和维护任务过期。
+
+2026-07-30 本分支最终检查结果：
+
+```text
+gofmt -l <本次修改的 Go 文件>              通过（无输出）
+go test ./...                              通过
+go vet ./...                               通过
+git diff --check                           通过
+web: ./node_modules/.bin/tsc --noEmit      通过
+web: ./node_modules/.bin/eslint .          通过（0 error，33 个项目既有 warning）
+web: ./node_modules/.bin/next build --webpack
+                                             通过（48 个页面）
+SQLite Arrival AutoMigrate                 通过且二次执行幂等
+敏感信息模式扫描                           未发现真实密钥或 bindTicket 明文落库
+```
+
+`pnpm typecheck` 在该临时工作树中被共享 `node_modules` 校验器阻止，并尝试联网重装依赖；
+因此改用同一已安装依赖中的 `tsc --noEmit` 完成等价类型检查。默认 Turbopack 构建也会因
+`node_modules` 符号链接指向工作树外而失败，最终使用项目支持的 Webpack 生产构建完成
+验证。这两项均属于临时工作树依赖布局限制，不是 TypeScript 或页面构建错误。
 
 MySQL 测试入口为：
 
@@ -128,13 +254,14 @@ TEST_MYSQL_DSN='<isolated test database dsn>' \
 go test ./internal/bootstrap -run TestArrivalSchemaAutoMigrateMySQL -count=1
 ```
 
-不得把未配置 `TEST_MYSQL_DSN` 的跳过结果描述为 MySQL 已验收。2026-07-30 部署前另使用
-生产同版本 MySQL 8.4 创建隔离临时库，并让最终镜像真实启动执行 AutoMigrate。应用健康
-检查通过，`t_arrival_acquisition_link` 的全部字段及
+不得把未配置 `TEST_MYSQL_DSN` 的跳过结果描述为 MySQL 已验收。2026-07-30 获客助手版本
+曾使用生产同版本 MySQL 8.4 隔离临时库执行 AutoMigrate，应用健康检查通过，
+`t_arrival_acquisition_link` 的全部字段及
 `tenant_authorization_id + store_id + contact_member_fingerprint` 唯一索引均已核对，
-随后删除临时容器和临时库。
+随后删除临时容器和临时库。新静态版本的 `t_arrival_binding_ticket` 尚未执行 MySQL 实机
+迁移，因此不能沿用前次结果宣称新表已完成 MySQL 验收。
 
-## 8. 并行分支影响
+## 10. 并行分支影响
 
 共享文件包括 models 注册、Arrival repository/service、配置、管理 DTO、页面、双语资源、
 Compose 和 Tenant 完整性审计。合并其他分支时必须保留双方新增项，禁止整文件覆盖。
@@ -142,9 +269,9 @@ Compose 和 Tenant 完整性审计。合并其他分支时必须保留双方新�
 本次没有改变 AI Runtime、NewAPI、FastGPT、计费、行业意图、客户标签、派单、WebSocket
 或员工号协议契约。后续 rebase 前仍应检查上述共享文件是否被 `main` 更新。
 
-## 9. 生产验收
+## 11. 生产验收
 
-只有以下真实步骤完成后才能宣称闭环：
+`customer_acquisition` 只有以下真实步骤完成后才能宣称闭环：
 
 1. 测试企业重新授权并获得获客助手权限；
 2. 额度预检成功；
@@ -173,16 +300,29 @@ quotaBalance=0
 只有返回成功并得到真实额度，才继续首次扫码、客户添加和二次扫码验收。因此上述真实
 验收步骤 2 至 5 目前均未完成。
 
-## 10. 回滚
+`static_plugin_ticket` 只有以下真实步骤完成后才能宣称闭环：
+
+1. 在到店连接页为试点门店录入企业微信后台真实 `plugId`，并选择该门店唯一员工实例；
+2. 使用从未添加该员工的真实微信首次扫码并点击官方联系我组件；
+3. 确认员工号侧形成真实 Customer、Conversation 和 `S:` 单聊；
+4. 点击员工号发出的小程序绑定卡片并确认 bind 返回 bound；
+5. 第二次扫同一门店码，确认卡片只投递到第 3 步的原会话；
+6. 验证存量好友用会话工作台人工发卡，`-3006` 不被视为已绑定；
+7. 在 Suite 配置为空时重复静态链路，并完成 MySQL 新表实机验证。
+
+当前未取得试点门店真实 `plugId` 并完成上述真机步骤，静态生产闭环未验收。
+
+## 12. 回滚
 
 运行回滚：
 
 ```text
-AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=contact_way
+AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=<已验收的 customer_acquisition 或 contact_way>
 ```
 
 修改仓库外生产环境文件后，以同一 Compose project 强制重建 `agent-desk`。代码回滚只回退
-本功能提交；新表与新增列保留，不执行破坏性 DDL。清理生产数据需要独立审批和恢复验证。
+本功能提交；`ArrivalBindingTicket` 等新表与新增列保留，不执行破坏性 DDL。清理生产数据
+需要独立审批和恢复验证。
 
 本次部署前镜像固定为：
 

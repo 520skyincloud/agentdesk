@@ -9,6 +9,7 @@ import {
   Loader2Icon,
   RefreshCwIcon,
   SearchIcon,
+  Settings2Icon,
   ShieldCheckIcon,
   UnplugIcon,
 } from "lucide-react"
@@ -54,12 +55,15 @@ import {
   fetchArrivalAuditLogs,
   fetchArrivalAuthorizationOptions,
   fetchArrivalConnections,
+  fetchArrivalProtocolInstanceOptions,
+  updateArrivalConnectionProvider,
   verifyArrivalConnection,
   type ArrivalAuditLog,
   type ArrivalAuthorizationOption,
   type ArrivalConnection,
   type ArrivalInvitation,
   type ArrivalPageResult,
+  type ArrivalProtocolInstanceOption,
 } from "@/lib/api/arrival"
 import { cn, formatDateTime } from "@/lib/utils"
 
@@ -90,6 +94,8 @@ export default function ArrivalConnectionsPage() {
   const [inviteTarget, setInviteTarget] =
     useState<ArrivalConnection | null>(null)
   const [disableTarget, setDisableTarget] =
+    useState<ArrivalConnection | null>(null)
+  const [providerTarget, setProviderTarget] =
     useState<ArrivalConnection | null>(null)
 
   const load = useCallback(async () => {
@@ -389,7 +395,17 @@ export default function ArrivalConnectionsPage() {
                               )}
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-44">
-                              {canInvite ? (
+                              {canManage ? (
+                                <DropdownMenuItem
+                                  onClick={() => setProviderTarget(item)}
+                                >
+                                  <Settings2Icon />
+                                  {t("arrivalConnection.configureProvider")}
+                                </DropdownMenuItem>
+                              ) : null}
+                              {canInvite &&
+                              item.contactProvider !==
+                                "static_plugin_ticket" ? (
                                 <DropdownMenuItem
                                   onClick={() => setInviteTarget(item)}
                                 >
@@ -453,6 +469,14 @@ export default function ArrivalConnectionsPage() {
         onOpenChange={(open) => !open && setInviteTarget(null)}
         onCreated={() => void load()}
       />
+      <ProviderDialog
+        target={providerTarget}
+        onOpenChange={(open) => !open && setProviderTarget(null)}
+        onSaved={() => {
+          setProviderTarget(null)
+          void load()
+        }}
+      />
       <DisableDialog
         target={disableTarget}
         onOpenChange={(open) => !open && setDisableTarget(null)}
@@ -494,15 +518,25 @@ function Metric({
 function ContactProviderSummary({ item }: { item: ArrivalConnection }) {
   const t = useI18n()
   const isAcquisition = item.contactProvider === "customer_acquisition"
+  const isStatic = item.contactProvider === "static_plugin_ticket"
   const status = item.acquisitionLinkStatus
 
   return (
     <div className="mt-2 flex max-w-56 flex-col items-start gap-1">
       <Badge variant="outline" className="font-normal">
-        {isAcquisition
-          ? t("arrivalConnection.providerCustomerAcquisition")
-          : t("arrivalConnection.providerContactWay")}
+        {isStatic
+          ? t("arrivalConnection.providerStaticPluginTicket")
+          : isAcquisition
+            ? t("arrivalConnection.providerCustomerAcquisition")
+            : t("arrivalConnection.providerContactWay")}
       </Badge>
+      {isStatic ? (
+        <span className="max-w-56 truncate text-xs text-muted-foreground">
+          {item.staticContactPlugId
+            ? t("arrivalConnection.staticPlugIdConfigured")
+            : t("arrivalConnection.staticPlugIdMissing")}
+        </span>
+      ) : null}
       {isAcquisition ? (
         <>
           <span
@@ -533,6 +567,182 @@ function ContactProviderSummary({ item }: { item: ArrivalConnection }) {
         </>
       ) : null}
     </div>
+  )
+}
+
+function ProviderDialog({
+  target,
+  onOpenChange,
+  onSaved,
+}: {
+  target: ArrivalConnection | null
+  onOpenChange: (open: boolean) => void
+  onSaved: () => void
+}) {
+  const t = useI18n()
+  const [provider, setProvider] = useState("contact_way")
+  const [plugId, setPlugId] = useState("")
+  const [instanceId, setInstanceId] = useState("")
+  const [instances, setInstances] = useState<
+    ArrivalProtocolInstanceOption[]
+  >([])
+  const [loadingInstances, setLoadingInstances] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const isStatic = provider === "static_plugin_ticket"
+
+  useEffect(() => {
+    if (!target) return
+    setProvider(target.contactProvider || "contact_way")
+    setPlugId(target.staticContactPlugId || "")
+    setInstanceId(
+      target.wxWorkProtocolInstanceId
+        ? String(target.wxWorkProtocolInstanceId)
+        : ""
+    )
+    setInstances([])
+    setLoadingInstances(true)
+    void fetchArrivalProtocolInstanceOptions(target.storeId)
+      .then(setInstances)
+      .catch((error) =>
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : t("arrivalConnection.loadInstancesFailed")
+        )
+      )
+      .finally(() => setLoadingInstances(false))
+  }, [t, target])
+
+  async function save() {
+    if (!target || saving) return
+    if (isStatic && (!plugId.trim() || !Number(instanceId))) {
+      toast.error(t("arrivalConnection.staticConfigurationRequired"))
+      return
+    }
+    setSaving(true)
+    try {
+      await updateArrivalConnectionProvider({
+        storeId: target.storeId,
+        contactProvider: provider,
+        staticContactPlugId: isStatic ? plugId.trim() : undefined,
+        wxWorkProtocolInstanceId: Number(instanceId) || undefined,
+      })
+      toast.success(t("arrivalConnection.providerSaved"))
+      onSaved()
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("arrivalConnection.providerSaveFailed")
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={Boolean(target)} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{t("arrivalConnection.providerTitle")}</DialogTitle>
+          <DialogDescription>{target?.storeName ?? "-"}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>{t("arrivalConnection.providerMode")}</Label>
+            <OptionCombobox
+              value={provider}
+              placeholder={t("arrivalConnection.providerMode")}
+              options={[
+                {
+                  value: "static_plugin_ticket",
+                  label: t(
+                    "arrivalConnection.providerStaticPluginTicket"
+                  ),
+                },
+                {
+                  value: "customer_acquisition",
+                  label: t(
+                    "arrivalConnection.providerCustomerAcquisition"
+                  ),
+                },
+                {
+                  value: "contact_way",
+                  label: t("arrivalConnection.providerContactWay"),
+                },
+              ]}
+              onChange={setProvider}
+            />
+          </div>
+          {isStatic ? (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="arrival-static-plug-id">
+                  {t("arrivalConnection.staticPlugId")}
+                </Label>
+                <Input
+                  id="arrival-static-plug-id"
+                  value={plugId}
+                  maxLength={191}
+                  autoComplete="off"
+                  placeholder={t(
+                    "arrivalConnection.staticPlugIdPlaceholder"
+                  )}
+                  onChange={(event) => setPlugId(event.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("arrivalConnection.staticPlugIdHint")}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>{t("arrivalConnection.protocolInstance")}</Label>
+                <OptionCombobox
+                  value={instanceId}
+                  disabled={loadingInstances}
+                  placeholder={
+                    loadingInstances
+                      ? t("common.loading")
+                      : t("arrivalConnection.selectProtocolInstance")
+                  }
+                  options={instances.map((item) => ({
+                    value: String(item.id),
+                    label: `${item.name} · ${
+                      item.healthStatus ||
+                      t("arrivalConnection.healthUnknown")
+                    }`,
+                  }))}
+                  onChange={setInstanceId}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("arrivalConnection.staticBindingHint")}
+                </p>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {t("arrivalConnection.providerAuthorizationHint")}
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            disabled={saving}
+            onClick={() => onOpenChange(false)}
+          >
+            {t("common.cancel")}
+          </Button>
+          <Button disabled={saving} onClick={() => void save()}>
+            {saving ? (
+              <Loader2Icon className="animate-spin" />
+            ) : (
+              <Settings2Icon />
+            )}
+            {t("common.save")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

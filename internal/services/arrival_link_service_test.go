@@ -80,13 +80,22 @@ func (s *stubArrivalQRCodeBuilder) BuildArtifact(string) (*arrivalQRCodeArtifact
 }
 
 type stubArrivalCardSender struct {
-	status enums.ArrivalDeliveryStatus
-	err    error
-	calls  int
+	status             enums.ArrivalDeliveryStatus
+	err                error
+	calls              int
+	lastConversationID int64
+	lastInstanceID     int64
+	lastClientMsgID    string
 }
 
-func (s *stubArrivalCardSender) SendArrivalCard(int64, int64, string) (enums.ArrivalDeliveryStatus, error) {
+func (s *stubArrivalCardSender) SendArrivalCard(
+	conversationID, instanceID int64,
+	clientMsgID string,
+) (enums.ArrivalDeliveryStatus, error) {
 	s.calls++
+	s.lastConversationID = conversationID
+	s.lastInstanceID = instanceID
+	s.lastClientMsgID = clientMsgID
 	return s.status, s.err
 }
 
@@ -639,6 +648,7 @@ func setupArrivalLinkTestFixture(t *testing.T) arrivalLinkTestFixture {
 		&models.Customer{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
+		&models.WxWorkKFConversation{},
 		&models.MiniProgramIdentity{},
 		&models.WeComSuiteCredential{},
 		&models.WeComTenantAuthorization{},
@@ -650,6 +660,7 @@ func setupArrivalLinkTestFixture(t *testing.T) arrivalLinkTestFixture {
 		&models.ArrivalContactWay{},
 		&models.ArrivalAcquisitionLink{},
 		&models.ArrivalStoreBinding{},
+		&models.ArrivalBindingTicket{},
 		&models.WeComProviderCallbackEvent{},
 		&models.ArrivalAuditLog{},
 	); err != nil {

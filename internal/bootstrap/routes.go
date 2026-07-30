@@ -83,6 +83,7 @@ func registerApiMiniprogramRoutes(group *gin.RouterGroup) {
 
 func registerApiArrivalRoutes(group *gin.RouterGroup) {
 	group.POST("/bootstrap", api.ArrivalPostBootstrap)
+	group.POST("/bind", api.ArrivalPostBind)
 	group.GET("/status", api.ArrivalGetStatus)
 	group.GET("/contact-way/:resourceToken", api.ArrivalGetContactWayQRCode)
 }
@@ -176,6 +177,8 @@ func registerDashboardStoreWorkbenchRoutes(group *gin.RouterGroup) {
 func registerDashboardArrivalConnectionRoutes(group *gin.RouterGroup) {
 	group.Any("/list", dashboard.ArrivalConnectionAnyList)
 	group.GET("/authorization/options", dashboard.ArrivalConnectionGetAuthorizationOptions)
+	group.GET("/protocol-instance/options", dashboard.ArrivalConnectionGetProtocolInstanceOptions)
+	group.POST("/provider/update", dashboard.ArrivalConnectionPostUpdateProvider)
 	group.POST("/invitation/create", dashboard.ArrivalConnectionPostCreateInvitation)
 	group.POST("/verify", dashboard.ArrivalConnectionPostVerify)
 	group.POST("/disable", dashboard.ArrivalConnectionPostDisable)
@@ -287,6 +290,7 @@ func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.Any("/message_list", dashboard.ConversationAnyMessage_list)
 	group.POST("/read", dashboard.ConversationPostRead)
 	group.POST("/recall_message", dashboard.ConversationPostRecall_message)
+	group.POST("/send_arrival_binding_card", dashboard.ConversationPostSend_arrival_binding_card)
 	group.POST("/send_message", dashboard.ConversationPostSend_message)
 	group.POST("/set_auto_handoff_enabled", dashboard.ConversationPostSet_auto_handoff_enabled)
 	group.POST("/transfer", dashboard.ConversationPostTransfer)

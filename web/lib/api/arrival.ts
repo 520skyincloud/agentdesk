@@ -29,6 +29,7 @@ export type ArrivalConnection = {
   recentScanCount: number
   recentBoundCount: number
   contactProvider: string
+  staticContactPlugId: string
   acquisitionLinkStatus: string
   acquisitionQuotaTotal: number
   acquisitionQuotaBalance: number
@@ -41,6 +42,13 @@ export type ArrivalAuthorizationOption = {
   id: number
   corpName: string
   status: string
+}
+
+export type ArrivalProtocolInstanceOption = {
+  id: number
+  name: string
+  healthStatus: string
+  storeId: number
 }
 
 export type ArrivalInvitation = {
@@ -133,6 +141,27 @@ export function fetchArrivalAuthorizationOptions() {
   )
 }
 
+export function fetchArrivalProtocolInstanceOptions(storeId: number) {
+  return request<ArrivalProtocolInstanceOption[]>(
+    `/api/dashboard/arrival-connection/protocol-instance/options${queryString({ storeId })}`
+  )
+}
+
+export function updateArrivalConnectionProvider(payload: {
+  storeId: number
+  contactProvider: string
+  staticContactPlugId?: string
+  wxWorkProtocolInstanceId?: number
+}) {
+  return request<ArrivalConnection>(
+    "/api/dashboard/arrival-connection/provider/update",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }
+  )
+}
+
 export function createArrivalInvitation(payload: {
   storeId: number
   tenantAuthorizationId?: number
@@ -161,6 +190,16 @@ export function disableArrivalConnection(connectionId: number, reason: string) {
     method: "POST",
     body: JSON.stringify({ connectionId, reason }),
   })
+}
+
+export function sendArrivalBindingCard(conversationId: number) {
+  return request<void>(
+    "/api/dashboard/conversation/send_arrival_binding_card",
+    {
+      method: "POST",
+      body: JSON.stringify({ conversationId }),
+    }
+  )
 }
 
 export function fetchArrivalAuditLogs(values: {

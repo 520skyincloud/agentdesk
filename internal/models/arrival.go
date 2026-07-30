@@ -63,20 +63,22 @@ type WeComTenantAuthorization struct {
 // StoreArrivalConnection binds a real store to an authorized corporation,
 // one contact member, and one existing protocol instance.
 type StoreArrivalConnection struct {
-	ID                        int64                         `gorm:"primaryKey;autoIncrement"`
-	TenantID                  int64                         `gorm:"type:bigint;not null;index"`
-	StoreID                   int64                         `gorm:"type:bigint;not null;uniqueIndex"`
-	StoreScene                string                        `gorm:"type:varchar(64);not null;uniqueIndex"`
-	TenantAuthorizationID     int64                         `gorm:"type:bigint;not null;default:0;index"`
-	ContactMemberCiphertext   string                        `gorm:"type:text"`
-	ContactMemberNonce        string                        `gorm:"type:varchar(128);not null;default:''"`
-	ContactMemberFingerprint  string                        `gorm:"type:varchar(64);not null;default:'';index"`
-	WxWorkProtocolInstanceID  int64                         `gorm:"type:bigint;not null;default:0;index"`
-	ConnectionStatus          enums.ArrivalConnectionStatus `gorm:"type:varchar(40);not null;default:'pending_authorization';index"`
-	LastVerifiedAt            *time.Time                    `gorm:"type:datetime;index"`
-	LastVerificationErrorCode string                        `gorm:"type:varchar(80);not null;default:''"`
-	LastContactProvisionedAt  *time.Time                    `gorm:"type:datetime;index"`
-	Status                    enums.Status                  `gorm:"type:int;not null;default:0;index"`
+	ID                        int64                            `gorm:"primaryKey;autoIncrement"`
+	TenantID                  int64                            `gorm:"type:bigint;not null;index"`
+	StoreID                   int64                            `gorm:"type:bigint;not null;uniqueIndex"`
+	StoreScene                string                           `gorm:"type:varchar(64);not null;uniqueIndex"`
+	ContactProviderMode       enums.ArrivalContactProviderMode `gorm:"type:varchar(40);not null;default:'';index"`
+	StaticContactPlugID       string                           `gorm:"type:varchar(191);not null;default:''"`
+	TenantAuthorizationID     int64                            `gorm:"type:bigint;not null;default:0;index"`
+	ContactMemberCiphertext   string                           `gorm:"type:text"`
+	ContactMemberNonce        string                           `gorm:"type:varchar(128);not null;default:''"`
+	ContactMemberFingerprint  string                           `gorm:"type:varchar(64);not null;default:'';index"`
+	WxWorkProtocolInstanceID  int64                            `gorm:"type:bigint;not null;default:0;index"`
+	ConnectionStatus          enums.ArrivalConnectionStatus    `gorm:"type:varchar(40);not null;default:'pending_authorization';index"`
+	LastVerifiedAt            *time.Time                       `gorm:"type:datetime;index"`
+	LastVerificationErrorCode string                           `gorm:"type:varchar(80);not null;default:''"`
+	LastContactProvisionedAt  *time.Time                       `gorm:"type:datetime;index"`
+	Status                    enums.Status                     `gorm:"type:int;not null;default:0;index"`
 	AuditFields
 }
 
@@ -221,11 +223,35 @@ type ArrivalStoreBinding struct {
 	ProtocolConversationNonce       string                              `gorm:"type:varchar(128);not null;default:''"`
 	ProtocolConversationFingerprint string                              `gorm:"type:varchar(64);not null;default:'';index"`
 	OfficialRelationStatus          enums.ArrivalOfficialRelationStatus `gorm:"type:varchar(40);not null;default:'unconfirmed';index"`
+	BindingProofType                enums.ArrivalBindingProofType       `gorm:"type:varchar(40);not null;default:'provider_callback';index"`
+	BindingTicketID                 int64                               `gorm:"type:bigint;not null;default:0;index"`
 	BindingStatus                   enums.ArrivalBindingStatus          `gorm:"type:varchar(30);not null;default:'unbound';index"`
 	EvidenceHash                    string                              `gorm:"type:varchar(64);not null;default:''"`
 	OfficialRelationshipAt          *time.Time                          `gorm:"type:datetime;index"`
 	ProtocolMappedAt                *time.Time                          `gorm:"type:datetime;index"`
 	Status                          enums.Status                        `gorm:"type:int;not null;default:0;index"`
+	AuditFields
+}
+
+// ArrivalBindingTicket links one real protocol conversation to one
+// mini-program identity without persisting the opaque ticket itself.
+type ArrivalBindingTicket struct {
+	ID                            int64                            `gorm:"primaryKey;autoIncrement"`
+	TenantID                      int64                            `gorm:"type:bigint;not null;index;index:idx_arrival_binding_ticket_conversation,priority:1"`
+	StoreID                       int64                            `gorm:"type:bigint;not null;index"`
+	WxWorkProtocolInstanceID      int64                            `gorm:"type:bigint;not null;index"`
+	CustomerID                    int64                            `gorm:"type:bigint;not null;index"`
+	ConversationID                int64                            `gorm:"type:bigint;not null;index;index:idx_arrival_binding_ticket_conversation,priority:2"`
+	TicketHash                    string                           `gorm:"type:varchar(64);not null;uniqueIndex"`
+	TokenEntropyHash              string                           `gorm:"type:varchar(64);not null;uniqueIndex"`
+	TicketStatus                  enums.ArrivalBindingTicketStatus `gorm:"type:varchar(30);not null;default:'pending';index;index:idx_arrival_binding_ticket_conversation,priority:3"`
+	ExpiresAt                     time.Time                        `gorm:"type:datetime;not null;index"`
+	ConsumedAt                    *time.Time                       `gorm:"type:datetime;index"`
+	ConsumedMiniProgramIdentityID int64                            `gorm:"type:bigint;not null;default:0;index"`
+	RevokedAt                     *time.Time                       `gorm:"type:datetime;index"`
+	MessageID                     int64                            `gorm:"type:bigint;not null;default:0;index"`
+	OutboxID                      int64                            `gorm:"type:bigint;not null;default:0;index"`
+	Status                        enums.Status                     `gorm:"type:int;not null;default:0;index"`
 	AuditFields
 }
 

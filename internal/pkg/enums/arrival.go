@@ -46,6 +46,23 @@ type ArrivalContactProviderMode string
 const (
 	ArrivalContactProviderModeContactWay          ArrivalContactProviderMode = "contact_way"
 	ArrivalContactProviderModeCustomerAcquisition ArrivalContactProviderMode = "customer_acquisition"
+	ArrivalContactProviderModeStaticPluginTicket  ArrivalContactProviderMode = "static_plugin_ticket"
+)
+
+type ArrivalBindingProofType string
+
+const (
+	ArrivalBindingProofTypeProviderCallback ArrivalBindingProofType = "provider_callback"
+	ArrivalBindingProofTypeCardTicket       ArrivalBindingProofType = "card_ticket"
+)
+
+type ArrivalBindingTicketStatus string
+
+const (
+	ArrivalBindingTicketStatusPending  ArrivalBindingTicketStatus = "pending"
+	ArrivalBindingTicketStatusConsumed ArrivalBindingTicketStatus = "consumed"
+	ArrivalBindingTicketStatusExpired  ArrivalBindingTicketStatus = "expired"
+	ArrivalBindingTicketStatusRevoked  ArrivalBindingTicketStatus = "revoked"
 )
 
 type ArrivalAcquisitionLinkStatus string

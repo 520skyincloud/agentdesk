@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | English
 
-An open-source, multi-tenant AI Agent customer support system with knowledge-grounded replies, rule-based dispatch, human handoff, WeCom customer-acquisition arrival flows, billing attribution, and self-hosted deployment.
+An open-source, multi-tenant AI Agent customer support system with knowledge-grounded replies, rule-based dispatch, human handoff, WeCom arrival flows, billing attribution, and self-hosted deployment.
 
 > Built for teams that need online support, knowledge-base Q&A, human collaboration, and service tracking in one system. It is not just an LLM inside a chat box; it is an AI Helpdesk foundation designed around real support operations.
 
@@ -47,9 +47,9 @@ Each store uses one managed FastGPT dataset. The platform publishes complete nin
 - **Answerability Gate**: Checks whether retrieved content can support an answer; otherwise returns a fallback and recommends human support.
 - **Ticket system**: Create tickets from conversations, categorize, assign, move through status flows, record progress, and close the loop.
 - **Support organization management**: Agent profiles, teams, schedules, and automatic assignment.
-- **WeCom arrival flow**: Reuses one real customer-acquisition link per store and member, adds a
-  separate opaque channel state to each scan, reconciles official customer events, and routes
-  already-bound visits through the existing employee-account delivery path.
+- **WeCom arrival flow**: Supports explicit static `plugId + conversation bindTicket`,
+  customer-acquisition, and legacy contact-way modes. Static mode binds from a real employee
+  account conversation and routes later scans only to that original conversation.
 - **AI extensibility**: Skills, MCP debugging, and external tool integration.
 - **Multiple entry points**: Admin dashboard, agent workspace, customer-facing web pages, and embeddable SDK.
 
@@ -76,12 +76,12 @@ docker compose up -d --build
 
 Compose intentionally refuses to start without independent database, invitation, customer-session, asset-signing, and Store credential encryption secrets. Runtime backups and `.env` files must remain outside Git. See the [production secret and external credential runbook](docs/deployment/production-secrets.md) for exact formats, ownership, rotation limits, and the boundary between the FastGPT integration token and each Store's NewAPI key.
 
-For the WeCom arrival flow, production must explicitly set
-`AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition`. The legacy `contact_way` provider
-is retained only for compatibility and operator-controlled rollback; permission, quota, or link
-errors never trigger an automatic downgrade. See the
-[arrival link engine design](docs/design/arrival-link-engine.md) for authorization, callback,
-quota, QR, reconciliation, and acceptance gates.
+The WeCom arrival flow requires an explicit provider. The new static path uses
+`AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=static_plugin_ticket` plus one real `plugId` and one
+employee-account instance per Store, with no Suite runtime dependency. `customer_acquisition`
+and `contact_way` remain available, and errors never trigger an automatic mode switch. See the
+[arrival link engine design](docs/design/arrival-link-engine.md) for binding, authorization,
+QR, reconciliation, and acceptance gates.
 
 The active service keeps `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`. The current release must start from an empty SQLite/MySQL database. Historical databases may only be restored in an isolated, read-only environment with this application stopped; they are not supported migration inputs.
 

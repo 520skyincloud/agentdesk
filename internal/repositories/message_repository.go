@@ -122,6 +122,7 @@ func (r *messageRepository) FindMissingOutboundOutbox(db *gorm.DB, limit int) ([
 		Where("message.sender_type IN ?", []enums.IMSenderType{
 			enums.IMSenderTypeAgent,
 			enums.IMSenderTypeAI,
+			enums.IMSenderTypeSystem,
 		}).
 		Where(missingOutbox).
 		Order("message.id ASC").

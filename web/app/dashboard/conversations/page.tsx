@@ -12,6 +12,7 @@ import {
   MoreHorizontalIcon,
   QrCodeIcon,
   SearchIcon,
+  SendIcon,
   SettingsIcon,
   X,
 } from "lucide-react";
@@ -49,6 +50,7 @@ import {
   fetchWxWorkProtocolInstances,
   type WxWorkProtocolInstance,
 } from "@/lib/api/admin";
+import { sendArrivalBindingCard } from "@/lib/api/arrival";
 import {
   fetchCurrentAgentPresence,
   updateAgentPresence,
@@ -108,6 +110,8 @@ export default function ConversationsPage() {
   const [createTicketOpen, setCreateTicketOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [scanLoginOpen, setScanLoginOpen] = useState(false);
+  const [sendingArrivalBindingCard, setSendingArrivalBindingCard] =
+    useState(false);
   const instancesRequestSeqRef = useRef(0);
   const [instances, setInstances] = useState<WxWorkProtocolInstance[]>([]);
   const [accountKeyword, setAccountKeyword] = useState("");
@@ -130,7 +134,12 @@ export default function ConversationsPage() {
   const canManageWxWorkAccounts = canUpdateWxWorkAccounts || canDeleteWxWorkAccounts;
   const canTransferConversation = permissions.has("conversation.transfer");
   const canCloseConversation = permissions.has("conversation.close");
-  const canUseConversationActions = canCreateTicket || canTransferConversation || canCloseConversation;
+  const canSendArrivalBindingCard = permissions.has("conversation.send");
+  const canUseConversationActions =
+    canCreateTicket ||
+    canTransferConversation ||
+    canCloseConversation ||
+    canSendArrivalBindingCard;
   const canUpdatePresence = permissions.has("agentPresence.update");
   const isSupportAgent = session?.roles?.includes("cs_user") ?? false;
 
@@ -287,6 +296,24 @@ export default function ConversationsPage() {
       forceLoading: false,
       reset: false,
     });
+  }
+
+  async function handleSendArrivalBindingCard() {
+    if (!conversation || sendingArrivalBindingCard) return;
+    setSendingArrivalBindingCard(true);
+    try {
+      await sendArrivalBindingCard(conversation.id);
+      toast.success(t("conversation.arrivalBindingCardSent"));
+      await handleConversationChanged(conversation.id);
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("conversation.arrivalBindingCardFailed"),
+      );
+    } finally {
+      setSendingArrivalBindingCard(false);
+    }
   }
 
   useAgentConversationRealtime();
@@ -668,6 +695,17 @@ export default function ConversationsPage() {
                 <MoreHorizontalIcon className="size-4" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-44 min-w-44">
+                {canSendArrivalBindingCard ? (
+                  <DropdownMenuItem
+                    onClick={() => void handleSendArrivalBindingCard()}
+                    disabled={!conversation || sendingArrivalBindingCard}
+                  >
+                    <SendIcon />
+                    {sendingArrivalBindingCard
+                      ? t("conversation.sendingArrivalBindingCard")
+                      : t("conversation.sendArrivalBindingCard")}
+                  </DropdownMenuItem>
+                ) : null}
                 {canCreateTicket ? (
                   <DropdownMenuItem
                     onClick={() => setCreateTicketOpen(true)}

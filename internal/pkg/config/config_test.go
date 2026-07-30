@@ -255,6 +255,21 @@ func TestLoadDefaultsAndOverridesArrivalContactProvider(t *testing.T) {
 	if got := cfg.Arrival.ContactProviderMode(); got != "customer_acquisition" {
 		t.Fatalf("arrival contact provider=%q want customer_acquisition", got)
 	}
+
+	t.Setenv("AGENT_DESK_ARRIVAL_CONTACT_PROVIDER", "static_plugin_ticket")
+	t.Setenv("AGENT_DESK_ARRIVAL_BIND_TICKET_TTL_MINUTES", "45")
+	t.Setenv("AGENT_DESK_ARRIVAL_BIND_PENDING_SCAN_WINDOW_MINUTES", "20")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Arrival.ContactProviderMode(); got != "static_plugin_ticket" {
+		t.Fatalf("arrival contact provider=%q want static_plugin_ticket", got)
+	}
+	if cfg.Arrival.BindTicketTTL() != 45 ||
+		cfg.Arrival.BindPendingScanWindow() != 20 {
+		t.Fatalf("arrival bind timings=%d/%d want=45/20", cfg.Arrival.BindTicketTTL(), cfg.Arrival.BindPendingScanWindow())
+	}
 }
 
 func TestLoadRejectsInvalidArrivalContactProvider(t *testing.T) {
@@ -291,6 +306,46 @@ func TestValidateProductionSupportsWeComInstallTestAndFormalAuthTypes(t *testing
 				t.Fatalf("ValidateProduction() error=%v want auth type failure", err)
 			}
 		})
+	}
+}
+
+func TestValidateProductionStaticArrivalDoesNotRequireWeComSuite(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))
+	cfg := &Config{
+		DB: DBConfig{DSN: "production-dsn"},
+		Auth: AuthConfig{
+			InvitationEncryptionKey: key,
+		},
+		CustomerSession: CustomerSessionConfig{
+			Secret: strings.Repeat("s", 32),
+		},
+		Storage: StorageConfig{
+			AssetURLSigningSecret: strings.Repeat("a", 32),
+		},
+		StoreCredential: StoreCredentialConfig{
+			MasterKey:   key,
+			MasterKeyID: "store-key-v1",
+		},
+		Arrival: ArrivalConfig{
+			Enabled:              true,
+			PublicBaseURL:        "https://weibao.example.test",
+			MiniProgramAppID:     "wx-arrival-test",
+			MiniProgramAppSecret: "mini-program-secret",
+			SessionSecret:        strings.Repeat("t", 32),
+			IdentityHMACKey:      strings.Repeat("h", 32),
+			DataMasterKey:        key,
+			DataMasterKeyID:      "arrival-key-v1",
+			ContactProvider:      "static_plugin_ticket",
+			WeChatAPIBaseURL:     "https://api.weixin.qq.com",
+		},
+	}
+	if err := ValidateProduction(cfg); err != nil {
+		t.Fatalf("static arrival production config rejected without Suite: %v", err)
+	}
+	cfg.Arrival.ContactProvider = "contact_way"
+	if err := ValidateProduction(cfg); err == nil ||
+		!strings.Contains(err.Error(), "AGENT_DESK_WECOM_SUITE_ID") {
+		t.Fatalf("legacy arrival config without Suite error=%v", err)
 	}
 }
 

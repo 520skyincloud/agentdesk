@@ -26,6 +26,12 @@ type ArrivalScanResultResponse struct {
 	ContactWay     ArrivalContactWayResponse `json:"contactWay"`
 }
 
+type ArrivalBindResultResponse struct {
+	SchemaVersion string               `json:"schemaVersion"`
+	BindingStatus string               `json:"bindingStatus"`
+	Store         ArrivalStoreResponse `json:"store"`
+}
+
 type ArrivalConnectionResponse struct {
 	ID                        int64      `json:"id"`
 	TenantID                  int64      `json:"tenantId"`
@@ -46,12 +52,20 @@ type ArrivalConnectionResponse struct {
 	RecentScanCount           int64      `json:"recentScanCount"`
 	RecentBoundCount          int64      `json:"recentBoundCount"`
 	ContactProvider           string     `json:"contactProvider"`
+	StaticContactPlugID       string     `json:"staticContactPlugId"`
 	AcquisitionLinkStatus     string     `json:"acquisitionLinkStatus"`
 	AcquisitionQuotaTotal     int64      `json:"acquisitionQuotaTotal"`
 	AcquisitionQuotaBalance   int64      `json:"acquisitionQuotaBalance"`
 	AcquisitionFailureCode    string     `json:"acquisitionFailureCode"`
 	AcquisitionLastVerifiedAt *time.Time `json:"acquisitionLastVerifiedAt,omitempty"`
 	UpdatedAt                 time.Time  `json:"updatedAt"`
+}
+
+type ArrivalProtocolInstanceOptionResponse struct {
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	HealthStatus string `json:"healthStatus"`
+	StoreID      int64  `json:"storeId"`
 }
 
 type ArrivalInvitationResponse struct {

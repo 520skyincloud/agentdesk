@@ -135,27 +135,29 @@ type BackgroundWorkerConfig struct {
 }
 
 type ArrivalConfig struct {
-	Enabled                     bool     `yaml:"enabled"`
-	PublicBaseURL               string   `yaml:"publicBaseUrl"`
-	MiniProgramAppID            string   `yaml:"miniProgramAppId"`
-	MiniProgramAppSecret        string   `yaml:"-"`
-	SessionSecret               string   `yaml:"-"`
-	IdentityHMACKey             string   `yaml:"-"`
-	DataMasterKey               string   `yaml:"-"`
-	DataMasterKeyID             string   `yaml:"-"`
-	WeComSuiteID                string   `yaml:"weComSuiteId"`
-	WeComSuiteSecret            string   `yaml:"-"`
-	WeComProviderCallbackToken  string   `yaml:"-"`
-	WeComProviderEncodingAESKey string   `yaml:"-"`
-	WeComAuthType               int      `yaml:"-"`
-	ContactProvider             string   `yaml:"contactProvider"`
-	WeChatAPIBaseURL            string   `yaml:"weChatApiBaseUrl"`
-	WeComAPIBaseURL             string   `yaml:"weComApiBaseUrl"`
-	QRCodeAllowedHostSuffixes   []string `yaml:"qrCodeAllowedHostSuffixes"`
-	SessionTTLMinutes           int      `yaml:"sessionTtlMinutes"`
-	InvitationTTLMinutes        int      `yaml:"invitationTtlMinutes"`
-	ContactWayTTLMinutes        int      `yaml:"contactWayTtlMinutes"`
-	DeliveryRateLimitSeconds    int      `yaml:"deliveryRateLimitSeconds"`
+	Enabled                      bool     `yaml:"enabled"`
+	PublicBaseURL                string   `yaml:"publicBaseUrl"`
+	MiniProgramAppID             string   `yaml:"miniProgramAppId"`
+	MiniProgramAppSecret         string   `yaml:"-"`
+	SessionSecret                string   `yaml:"-"`
+	IdentityHMACKey              string   `yaml:"-"`
+	DataMasterKey                string   `yaml:"-"`
+	DataMasterKeyID              string   `yaml:"-"`
+	WeComSuiteID                 string   `yaml:"weComSuiteId"`
+	WeComSuiteSecret             string   `yaml:"-"`
+	WeComProviderCallbackToken   string   `yaml:"-"`
+	WeComProviderEncodingAESKey  string   `yaml:"-"`
+	WeComAuthType                int      `yaml:"-"`
+	ContactProvider              string   `yaml:"contactProvider"`
+	WeChatAPIBaseURL             string   `yaml:"weChatApiBaseUrl"`
+	WeComAPIBaseURL              string   `yaml:"weComApiBaseUrl"`
+	QRCodeAllowedHostSuffixes    []string `yaml:"qrCodeAllowedHostSuffixes"`
+	SessionTTLMinutes            int      `yaml:"sessionTtlMinutes"`
+	InvitationTTLMinutes         int      `yaml:"invitationTtlMinutes"`
+	ContactWayTTLMinutes         int      `yaml:"contactWayTtlMinutes"`
+	DeliveryRateLimitSeconds     int      `yaml:"deliveryRateLimitSeconds"`
+	BindTicketTTLMinutes         int      `yaml:"bindTicketTtlMinutes"`
+	BindPendingScanWindowMinutes int      `yaml:"bindPendingScanWindowMinutes"`
 }
 
 func (c ArrivalConfig) SessionTTL() int {
@@ -186,10 +188,26 @@ func (c ArrivalConfig) DeliveryRateLimit() int {
 	return c.DeliveryRateLimitSeconds
 }
 
+func (c ArrivalConfig) BindTicketTTL() int {
+	if c.BindTicketTTLMinutes <= 0 {
+		return 30
+	}
+	return c.BindTicketTTLMinutes
+}
+
+func (c ArrivalConfig) BindPendingScanWindow() int {
+	if c.BindPendingScanWindowMinutes <= 0 {
+		return 30
+	}
+	return c.BindPendingScanWindowMinutes
+}
+
 func (c ArrivalConfig) ContactProviderMode() enums.ArrivalContactProviderMode {
 	switch strings.TrimSpace(strings.ToLower(c.ContactProvider)) {
 	case string(enums.ArrivalContactProviderModeCustomerAcquisition):
 		return enums.ArrivalContactProviderModeCustomerAcquisition
+	case string(enums.ArrivalContactProviderModeStaticPluginTicket):
+		return enums.ArrivalContactProviderModeStaticPluginTicket
 	default:
 		return enums.ArrivalContactProviderModeContactWay
 	}
@@ -197,7 +215,10 @@ func (c ArrivalConfig) ContactProviderMode() enums.ArrivalContactProviderMode {
 
 func (c ArrivalConfig) HasValidContactProvider() bool {
 	switch strings.TrimSpace(strings.ToLower(c.ContactProvider)) {
-	case "", string(enums.ArrivalContactProviderModeContactWay), string(enums.ArrivalContactProviderModeCustomerAcquisition):
+	case "",
+		string(enums.ArrivalContactProviderModeContactWay),
+		string(enums.ArrivalContactProviderModeCustomerAcquisition),
+		string(enums.ArrivalContactProviderModeStaticPluginTicket):
 		return true
 	default:
 		return false
@@ -484,7 +505,7 @@ func applyArrivalEnvironment(cfg *Config) error {
 	}
 	if !cfg.Arrival.HasValidContactProvider() {
 		return fmt.Errorf(
-			"parse AGENT_DESK_ARRIVAL_CONTACT_PROVIDER: value must be contact_way or customer_acquisition",
+			"parse AGENT_DESK_ARRIVAL_CONTACT_PROVIDER: value must be contact_way, customer_acquisition, or static_plugin_ticket",
 		)
 	}
 	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_WECOM_AUTH_TYPE")); value != "" {
@@ -502,6 +523,8 @@ func applyArrivalEnvironment(cfg *Config) error {
 		{name: "AGENT_DESK_ARRIVAL_INVITATION_TTL_MINUTES", target: &cfg.Arrival.InvitationTTLMinutes},
 		{name: "AGENT_DESK_ARRIVAL_CONTACT_WAY_TTL_MINUTES", target: &cfg.Arrival.ContactWayTTLMinutes},
 		{name: "AGENT_DESK_ARRIVAL_DELIVERY_RATE_LIMIT_SECONDS", target: &cfg.Arrival.DeliveryRateLimitSeconds},
+		{name: "AGENT_DESK_ARRIVAL_BIND_TICKET_TTL_MINUTES", target: &cfg.Arrival.BindTicketTTLMinutes},
+		{name: "AGENT_DESK_ARRIVAL_BIND_PENDING_SCAN_WINDOW_MINUTES", target: &cfg.Arrival.BindPendingScanWindowMinutes},
 	} {
 		value := strings.TrimSpace(os.Getenv(item.name))
 		if value == "" {
@@ -593,14 +616,16 @@ func ValidateProduction(cfg *Config) error {
 		_, arrivalKeyErr := securex.NewAESGCM(cfg.Arrival.DataMasterKey)
 		require(arrivalKeyErr == nil, "AGENT_DESK_ARRIVAL_DATA_MASTER_KEY")
 		require(strings.TrimSpace(cfg.Arrival.DataMasterKeyID) != "", "AGENT_DESK_ARRIVAL_DATA_MASTER_KEY_ID")
-		require(strings.TrimSpace(cfg.Arrival.WeComSuiteID) != "", "AGENT_DESK_WECOM_SUITE_ID")
-		require(strings.TrimSpace(cfg.Arrival.WeComSuiteSecret) != "", "AGENT_DESK_WECOM_SUITE_SECRET")
-		require(strongSecret(cfg.Arrival.WeComProviderCallbackToken), "AGENT_DESK_WECOM_PROVIDER_CALLBACK_TOKEN")
-		require(validWeComEncodingAESKey(cfg.Arrival.WeComProviderEncodingAESKey), "AGENT_DESK_WECOM_PROVIDER_ENCODING_AES_KEY")
-		require(cfg.Arrival.WeComAuthType == 0 || cfg.Arrival.WeComAuthType == 1, "AGENT_DESK_WECOM_AUTH_TYPE")
 		require(cfg.Arrival.HasValidContactProvider(), "AGENT_DESK_ARRIVAL_CONTACT_PROVIDER")
 		require(validProductionHTTPSURL(cfg.Arrival.WeChatBaseURL()), "AGENT_DESK_ARRIVAL_WECHAT_API_BASE_URL")
-		require(validProductionHTTPSURL(cfg.Arrival.WeComBaseURL()), "AGENT_DESK_ARRIVAL_WECOM_API_BASE_URL")
+		if cfg.Arrival.ContactProviderMode() != enums.ArrivalContactProviderModeStaticPluginTicket {
+			require(strings.TrimSpace(cfg.Arrival.WeComSuiteID) != "", "AGENT_DESK_WECOM_SUITE_ID")
+			require(strings.TrimSpace(cfg.Arrival.WeComSuiteSecret) != "", "AGENT_DESK_WECOM_SUITE_SECRET")
+			require(strongSecret(cfg.Arrival.WeComProviderCallbackToken), "AGENT_DESK_WECOM_PROVIDER_CALLBACK_TOKEN")
+			require(validWeComEncodingAESKey(cfg.Arrival.WeComProviderEncodingAESKey), "AGENT_DESK_WECOM_PROVIDER_ENCODING_AES_KEY")
+			require(cfg.Arrival.WeComAuthType == 0 || cfg.Arrival.WeComAuthType == 1, "AGENT_DESK_WECOM_AUTH_TYPE")
+			require(validProductionHTTPSURL(cfg.Arrival.WeComBaseURL()), "AGENT_DESK_ARRIVAL_WECOM_API_BASE_URL")
+		}
 	}
 	if len(invalid) == 0 {
 		return nil

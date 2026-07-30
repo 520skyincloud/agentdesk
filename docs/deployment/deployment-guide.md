@@ -232,11 +232,18 @@ AGENT_DESK_FASTGPT_INTEGRATION_TOKEN=<由 FastGPT 集成服务签发>
 AGENT_DESK_ARRIVAL_ENABLED=true
 AGENT_DESK_ARRIVAL_PUBLIC_BASE_URL=https://weibao.example.com
 AGENT_DESK_MINIPROGRAM_APP_ID=<小程序 AppID>
-AGENT_DESK_WECOM_SUITE_ID=<第三方应用 SuiteID>
-AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition
+AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=static_plugin_ticket
+AGENT_DESK_ARRIVAL_BIND_TICKET_TTL_MINUTES=30
+AGENT_DESK_ARRIVAL_BIND_PENDING_SCAN_WINDOW_MINUTES=30
 ```
 
-秘密值只从环境注入，详见 `.env.example`。企业微信服务商后台使用：
+静态模式还需要小程序 AppSecret、Arrival 会话/HMAC/数据加密密钥，并在到店连接页为每个
+门店录入企业微信后台真实 `plugId` 和唯一员工实例。它不要求 Suite、永久授权码、客户联系
+回调或官方创建链接权限。
+
+选择 `customer_acquisition` 或 `contact_way` 时，另行配置
+`AGENT_DESK_WECOM_SUITE_ID` 及完整服务商秘密。秘密值只从环境注入，详见
+`.env.example`。服务商模式的企业微信后台使用：
 
 ```text
 数据回调：https://weibao.example.com/api/third/wecom/provider/data-callback
@@ -245,7 +252,7 @@ AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition
 授权回调：https://weibao.example.com/api/wecom/provider/authorization/callback
 ```
 
-应用处于企业微信“安装测试”阶段时：
+服务商应用处于企业微信“安装测试”阶段时：
 
 ```text
 AGENT_DESK_WECOM_AUTH_TYPE=1
@@ -266,10 +273,10 @@ docker compose \
   up -d --force-recreate agent-desk
 ```
 
-成员绑定由管理员分别选择官方客户联系成员和当前 Store 的员工实例进行人工确认。两个系统
-的成员标识属于不同命名空间，不得强制字符串相等，也不得按姓名自动绑定。
+服务商成员绑定由管理员分别选择官方客户联系成员和当前 Store 的员工实例进行人工确认。
+两个系统的成员标识属于不同命名空间，不得强制字符串相等，也不得按姓名自动绑定。
 
-生产到店二维码使用企业微信获客助手。启用前必须在第三方应用中保存“获客助手权限”，
+`customer_acquisition` 使用企业微信获客助手。启用前必须在第三方应用中保存“获客助手权限”，
 并让当前测试企业重新授权，使新权限进入授权范围。部署后先在到店联动页面执行连接验证：
 
 1. 真实额度接口返回成功且剩余额度大于零；
@@ -278,8 +285,10 @@ docker compose \
 4. 客户添加成员后由回调或补偿对账精确写入门店关系；
 5. 未完成员工号协议会话映射时保持 `legacy_unmapped`，不得伪造二次扫码发卡成功。
 
-旧 `contact_way` 仅作为显式回滚 Provider 保留。禁止因为获客权限、额度或链接创建失败
-自动降级。切换 Provider 后必须使用 `--force-recreate` 重建应用容器。
+`static_plugin_ticket` 真机验收必须使用新微信：首次扫码返回真实插件配置、客户主动添加
+员工、真实单聊收到绑定卡片、bind 成功、二次扫码只投递原会话。`-3006` 和存量好友不
+视为已绑定，后者从会话工作台人工发卡。三种 Provider 禁止因权限、额度或发送错误自动
+切换。切换 Provider 后必须使用 `--force-recreate` 重建应用容器。
 
 ## 11. 企微员工号协议
 

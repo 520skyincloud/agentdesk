@@ -256,27 +256,32 @@ Endpoint、Bucket、Base URL 等非秘密配置继续放在部署 YAML；Access 
 
 ### 6.5 到店联动与企业微信服务商
 
-到店联动默认关闭。只有企业微信第三方应用审核、正式 HTTPS 域名、小程序合法域名和真实
-回调验收都完成后，才能设置：
+到店联动默认关闭。只有正式 HTTPS 域名、小程序合法域名，以及所选 Provider 的真实前置
+条件都完成后，才能设置：
 
 ```text
 AGENT_DESK_ARRIVAL_ENABLED=true
 AGENT_DESK_ARRIVAL_PUBLIC_BASE_URL=https://weibao.omnireva.com
-AGENT_DESK_WECOM_AUTH_TYPE=<1 during installation testing; 0 after formal publication>
-AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=customer_acquisition
+AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=static_plugin_ticket
+AGENT_DESK_ARRIVAL_BIND_TICKET_TTL_MINUTES=30
+AGENT_DESK_ARRIVAL_BIND_PENDING_SCAN_WINDOW_MINUTES=30
 ```
 
-必须由秘密管理设施独立生成或注入：
+三种模式都必须由秘密管理设施独立生成或注入：
 
 - `AGENT_DESK_MINIPROGRAM_APP_SECRET`
 - `AGENT_DESK_ARRIVAL_SESSION_SECRET`
 - `AGENT_DESK_ARRIVAL_IDENTITY_HMAC_KEY`
 - `AGENT_DESK_ARRIVAL_DATA_MASTER_KEY`
+
+只有 `customer_acquisition`、`contact_way` 服务商模式需要：
+
+- `AGENT_DESK_WECOM_AUTH_TYPE=<1 during installation testing; 0 after formal publication>`
 - `AGENT_DESK_WECOM_SUITE_SECRET`
 - `AGENT_DESK_WECOM_PROVIDER_CALLBACK_TOKEN`
 - `AGENT_DESK_WECOM_PROVIDER_ENCODING_AES_KEY`
 
-`AGENT_DESK_WECOM_AUTH_TYPE` 是非秘密的企业微信应用阶段配置：企业微信后台处于“安装测试”
+`AGENT_DESK_WECOM_AUTH_TYPE` 是服务商模式的非秘密企业微信应用阶段配置：企业微信后台处于“安装测试”
 阶段时固定为 `1`，正式发布后固定为 `0`。应用只接受这两个整数；其他值会阻止启动。切换
 阶段必须修改仓库外生产环境文件并强制重建应用容器，普通 restart 不会重新加载环境变量。
 
@@ -288,19 +293,22 @@ CorpID、永久授权码、企业 token、外部联系人和协议会话等 Arri
 以下属于非秘密部署配置：
 
 - `AGENT_DESK_MINIPROGRAM_APP_ID`
-- `AGENT_DESK_WECOM_SUITE_ID`
 - `AGENT_DESK_ARRIVAL_CONTACT_PROVIDER`
 - `AGENT_DESK_ARRIVAL_WECHAT_API_BASE_URL`
-- `AGENT_DESK_ARRIVAL_WECOM_API_BASE_URL`
-- `AGENT_DESK_ARRIVAL_QR_ALLOWED_HOST_SUFFIXES`
 - session、邀请、联系码和投递频控时长
 
-生产预检要求公开地址和两类上游 API 均为有效 HTTPS，拒绝 IP、localhost 和明文 HTTP。
-二维码来源白名单只能包含经确认的企业微信官方资源域名，不能加入通配公网域或用户输入。
-Provider 只允许 `customer_acquisition` 或 `contact_way`。生产主链显式使用前者；后者只供
-已有数据兼容和人工回滚，禁止根据企业微信错误自动切换。
+服务商模式另需非秘密的 `AGENT_DESK_WECOM_SUITE_ID`、
+`AGENT_DESK_ARRIVAL_WECOM_API_BASE_URL` 和
+`AGENT_DESK_ARRIVAL_QR_ALLOWED_HOST_SUFFIXES`。
 
-企业微信服务商后台按以下固定路径配置：
+生产预检要求公开地址及当前模式实际使用的上游 API 为有效 HTTPS，拒绝 IP、localhost
+和明文 HTTP。
+二维码来源白名单只能包含经确认的企业微信官方资源域名，不能加入通配公网域或用户输入。
+Provider 只允许 `static_plugin_ticket`、`customer_acquisition` 或 `contact_way`。静态
+模式只要求每店真实 `plugId` 和唯一员工实例，不要求 Suite 配置；另两种模式继续要求
+完整服务商配置。禁止根据企业微信错误自动切换 Provider。
+
+服务商模式的企业微信后台按以下固定路径配置：
 
 ```text
 数据回调 URL：https://weibao.omnireva.com/api/third/wecom/provider/data-callback

@@ -87,13 +87,30 @@ func runChannelMessageOutboxRepositoryContract(t *testing.T, db *gorm.DB) {
 	if err := db.Create(unmarked).Error; err != nil {
 		t.Fatalf("create unmarked message: %v", err)
 	}
+	systemMessage := &models.Message{
+		TenantID:            101,
+		ConversationID:      201,
+		SessionNo:           1,
+		ClientMsgID:         "outbox-contract-system",
+		SenderType:          enums.IMSenderTypeSystem,
+		MessageType:         enums.IMMessageTypeMiniProgram,
+		Content:             "binding card",
+		SeqNo:               3,
+		SendStatus:          enums.IMMessageStatusSent,
+		OutboundChannelType: enums.ChannelTypeWxWorkCLI,
+		SentAt:              &now,
+		AuditFields:         models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(systemMessage).Error; err != nil {
+		t.Fatalf("create marked system message: %v", err)
+	}
 
 	missing, err := MessageRepository.FindMissingOutboundOutbox(db, 10)
 	if err != nil {
 		t.Fatalf("find missing outbox: %v", err)
 	}
-	if len(missing) != 1 || missing[0].ID != message.ID {
-		t.Fatalf("missing messages=%+v want only %d", missing, message.ID)
+	if len(missing) != 2 || missing[0].ID != message.ID || missing[1].ID != systemMessage.ID {
+		t.Fatalf("missing messages=%+v want %d and %d", missing, message.ID, systemMessage.ID)
 	}
 
 	candidate := models.ChannelMessageOutbox{
@@ -126,8 +143,23 @@ func runChannelMessageOutboxRepositoryContract(t *testing.T, db *gorm.DB) {
 	if err != nil {
 		t.Fatalf("find missing outbox after insert: %v", err)
 	}
+	if len(missing) != 1 || missing[0].ID != systemMessage.ID {
+		t.Fatalf("missing messages after first insert=%+v want only %d", missing, systemMessage.ID)
+	}
+	systemOutbox := candidate
+	systemOutbox.ID = 0
+	systemOutbox.MessageID = systemMessage.ID
+	systemOutbox.Payload = `{"messageId":2}`
+	created, err = ChannelMessageOutboxRepository.CreateIfAbsent(db, &systemOutbox)
+	if err != nil || !created {
+		t.Fatalf("create system outbox: created=%v err=%v", created, err)
+	}
+	missing, err = MessageRepository.FindMissingOutboundOutbox(db, 10)
+	if err != nil {
+		t.Fatalf("find missing outbox after system insert: %v", err)
+	}
 	if len(missing) != 0 {
-		t.Fatalf("missing messages after insert=%+v want none", missing)
+		t.Fatalf("missing messages after all inserts=%+v want none", missing)
 	}
 }
 

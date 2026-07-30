@@ -147,6 +147,76 @@ func (r *arrivalRepository) FindConnectionByStore(db *gorm.DB, tenantID, storeID
 	return ret
 }
 
+func (r *arrivalRepository) FindActiveStaticConnectionsByInstance(db *gorm.DB, tenantID, instanceID int64) []models.StoreArrivalConnection {
+	ret := make([]models.StoreArrivalConnection, 0)
+	if db == nil || tenantID <= 0 || instanceID <= 0 {
+		return ret
+	}
+	db.Where(
+		"tenant_id = ? AND wx_work_protocol_instance_id = ? AND contact_provider_mode = ? AND connection_status = ? AND status = ?",
+		tenantID,
+		instanceID,
+		enums.ArrivalContactProviderModeStaticPluginTicket,
+		enums.ArrivalConnectionStatusActive,
+		enums.StatusOk,
+	).Order("id ASC").Find(&ret)
+	return ret
+}
+
+func (r *arrivalRepository) FindActiveStaticConnectionsByInstanceForUpdate(
+	db *gorm.DB,
+	tenantID, instanceID int64,
+) ([]models.StoreArrivalConnection, error) {
+	ret := make([]models.StoreArrivalConnection, 0)
+	if db == nil || tenantID <= 0 || instanceID <= 0 {
+		return ret, nil
+	}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where(
+			"tenant_id = ? AND wx_work_protocol_instance_id = ? AND contact_provider_mode = ? AND connection_status = ? AND status = ?",
+			tenantID,
+			instanceID,
+			enums.ArrivalContactProviderModeStaticPluginTicket,
+			enums.ArrivalConnectionStatusActive,
+			enums.StatusOk,
+		).
+		Order("id ASC").
+		Find(&ret).Error
+	return ret, err
+}
+
+func (r *arrivalRepository) FindActiveConnectionsByInstance(db *gorm.DB, tenantID, instanceID int64) []models.StoreArrivalConnection {
+	ret := make([]models.StoreArrivalConnection, 0)
+	if db == nil || tenantID <= 0 || instanceID <= 0 {
+		return ret
+	}
+	db.Where(
+		"tenant_id = ? AND wx_work_protocol_instance_id = ? AND connection_status = ? AND status = ?",
+		tenantID,
+		instanceID,
+		enums.ArrivalConnectionStatusActive,
+		enums.StatusOk,
+	).Order("id ASC").Find(&ret)
+	return ret
+}
+
+func (r *arrivalRepository) FindActiveStaticConnectionInstanceIDs(db *gorm.DB) []int64 {
+	ret := make([]int64, 0)
+	if db == nil {
+		return ret
+	}
+	db.Model(&models.StoreArrivalConnection{}).
+		Where(
+			"contact_provider_mode = ? AND connection_status = ? AND status = ? AND wx_work_protocol_instance_id > 0",
+			enums.ArrivalContactProviderModeStaticPluginTicket,
+			enums.ArrivalConnectionStatusActive,
+			enums.StatusOk,
+		).
+		Distinct().
+		Pluck("wx_work_protocol_instance_id", &ret)
+	return ret
+}
+
 func (r *arrivalRepository) GetConnection(db *gorm.DB, id, tenantID int64) *models.StoreArrivalConnection {
 	ret := &models.StoreArrivalConnection{}
 	if err := db.Take(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
@@ -244,6 +314,24 @@ func (r *arrivalRepository) FindRecentSentScanEvent(db *gorm.DB, tenantID, store
 		"tenant_id = ? AND store_id = ? AND mini_program_identity_id = ? AND delivery_status = ? AND delivery_completed_at >= ?",
 		tenantID, storeID, identityID, "sent", after,
 	).Order("delivery_completed_at DESC").Take(ret).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *arrivalRepository) FindRecentScanEvent(db *gorm.DB, tenantID, storeID, identityID int64, after time.Time) *models.ArrivalScanEvent {
+	ret := &models.ArrivalScanEvent{}
+	if db == nil || tenantID <= 0 || storeID <= 0 || identityID <= 0 {
+		return nil
+	}
+	if err := db.Where(
+		"tenant_id = ? AND store_id = ? AND mini_program_identity_id = ? AND status = ? AND created_at >= ?",
+		tenantID,
+		storeID,
+		identityID,
+		enums.StatusOk,
+		after,
+	).Order("created_at DESC, id DESC").Take(ret).Error; err != nil {
 		return nil
 	}
 	return ret
@@ -534,6 +622,23 @@ func (r *arrivalRepository) FindBinding(db *gorm.DB, tenantID, identityID, store
 	return ret
 }
 
+func (r *arrivalRepository) FindBindingForUpdate(db *gorm.DB, tenantID, identityID, storeID int64) (*models.ArrivalStoreBinding, error) {
+	if db == nil || tenantID <= 0 || identityID <= 0 || storeID <= 0 {
+		return nil, nil
+	}
+	ret := &models.ArrivalStoreBinding{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Take(ret, "tenant_id = ? AND mini_program_identity_id = ? AND store_id = ?", tenantID, identityID, storeID).
+		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
 func (r *arrivalRepository) GetBinding(db *gorm.DB, id, tenantID int64) *models.ArrivalStoreBinding {
 	ret := &models.ArrivalStoreBinding{}
 	if err := db.Take(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
@@ -557,6 +662,125 @@ func (r *arrivalRepository) FindBindingsByOfficialIdentity(db *gorm.DB, tenantID
 		tenantID, authorizationID, externalFingerprint, memberFingerprint,
 	).Find(&ret)
 	return ret
+}
+
+func (r *arrivalRepository) GetBindingTicket(db *gorm.DB, id, tenantID int64) *models.ArrivalBindingTicket {
+	ret := &models.ArrivalBindingTicket{}
+	if db == nil || id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	if err := db.Take(ret, "id = ? AND tenant_id = ?", id, tenantID).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *arrivalRepository) GetBindingTicketByID(db *gorm.DB, id int64) *models.ArrivalBindingTicket {
+	ret := &models.ArrivalBindingTicket{}
+	if db == nil || id <= 0 {
+		return nil
+	}
+	if err := db.Take(ret, "id = ?", id).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *arrivalRepository) FindBindingTicketByHashForUpdate(db *gorm.DB, ticketHash string) (*models.ArrivalBindingTicket, error) {
+	if db == nil || ticketHash == "" {
+		return nil, nil
+	}
+	ret := &models.ArrivalBindingTicket{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Take(ret, "ticket_hash = ?", ticketHash).
+		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
+func (r *arrivalRepository) FindPendingBindingTicketByConversation(
+	db *gorm.DB,
+	tenantID, conversationID int64,
+	now time.Time,
+) *models.ArrivalBindingTicket {
+	ret := &models.ArrivalBindingTicket{}
+	if db == nil || tenantID <= 0 || conversationID <= 0 {
+		return nil
+	}
+	if err := db.Where(
+		"tenant_id = ? AND conversation_id = ? AND ticket_status = ? AND expires_at > ? AND status = ?",
+		tenantID,
+		conversationID,
+		enums.ArrivalBindingTicketStatusPending,
+		now,
+		enums.StatusOk,
+	).Order("id DESC").Take(ret).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *arrivalRepository) CreateBindingTicket(db *gorm.DB, item *models.ArrivalBindingTicket) error {
+	return db.Create(item).Error
+}
+
+func (r *arrivalRepository) UpdateBindingTicket(db *gorm.DB, id, tenantID int64, updates map[string]any) error {
+	return db.Model(&models.ArrivalBindingTicket{}).
+		Where("id = ? AND tenant_id = ?", id, tenantID).
+		Updates(updates).
+		Error
+}
+
+func (r *arrivalRepository) RevokePendingBindingTicketsByStore(
+	db *gorm.DB,
+	tenantID, storeID int64,
+	now time.Time,
+) (int64, error) {
+	if db == nil || tenantID <= 0 || storeID <= 0 {
+		return 0, nil
+	}
+	result := db.Model(&models.ArrivalBindingTicket{}).
+		Where(
+			"tenant_id = ? AND store_id = ? AND ticket_status = ? AND status = ?",
+			tenantID,
+			storeID,
+			enums.ArrivalBindingTicketStatusPending,
+			enums.StatusOk,
+		).
+		Updates(map[string]any{
+			"ticket_status":    enums.ArrivalBindingTicketStatusRevoked,
+			"revoked_at":       now,
+			"updated_at":       now,
+			"update_user_name": "arrival",
+		})
+	return result.RowsAffected, result.Error
+}
+
+func (r *arrivalRepository) ExpirePendingBindingTickets(
+	db *gorm.DB,
+	now time.Time,
+) (int64, error) {
+	if db == nil {
+		return 0, nil
+	}
+	result := db.Model(&models.ArrivalBindingTicket{}).
+		Where(
+			"ticket_status = ? AND expires_at <= ? AND status = ?",
+			enums.ArrivalBindingTicketStatusPending,
+			now,
+			enums.StatusOk,
+		).
+		Updates(map[string]any{
+			"ticket_status":    enums.ArrivalBindingTicketStatusExpired,
+			"updated_at":       now,
+			"update_user_name": "arrival_maintenance",
+		})
+	return result.RowsAffected, result.Error
 }
 
 func (r *arrivalRepository) CreateCallbackEventIfAbsent(db *gorm.DB, item *models.WeComProviderCallbackEvent) (bool, error) {

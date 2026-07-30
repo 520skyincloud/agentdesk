@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -49,11 +50,22 @@ func (s *wxWorkProtocolContactAutomationService) Scan(limit int) int {
 	if limit <= 0 {
 		limit = 20
 	}
-	items := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().
-		Eq("status", enums.StatusOk).
-		Where("(auto_accept_friend_request = ? OR welcome_enabled = ?)", true, true).
-		Asc("id").
-		Limit(limit))
+	cnd := sqls.NewCnd().Eq("status", enums.StatusOk)
+	staticInstanceIDs := repositories.ArrivalRepository.FindActiveStaticConnectionInstanceIDs(sqls.DB())
+	if len(staticInstanceIDs) > 0 {
+		cnd.Where(
+			"(auto_accept_friend_request = ? OR welcome_enabled = ? OR id IN (?))",
+			true,
+			true,
+			staticInstanceIDs,
+		)
+	} else {
+		cnd.Where("(auto_accept_friend_request = ? OR welcome_enabled = ?)", true, true)
+	}
+	items := repositories.WxWorkProtocolInstanceRepository.Find(
+		sqls.DB(),
+		cnd.Asc("id").Limit(limit),
+	)
 	handled := 0
 	for i := range items {
 		if err := s.withInstanceLock(items[i].ID, func() error {
@@ -82,11 +94,19 @@ func (s *wxWorkProtocolContactAutomationService) HandleFriendApply(instanceID in
 // HandleFriendChange 在联系人增量变更回调后立即发送已配置的欢迎语。
 func (s *wxWorkProtocolContactAutomationService) HandleFriendChange(instanceID int64) error {
 	return s.handleCallback(instanceID, func(instance *models.WxWorkProtocolInstance) error {
-		if !instance.WelcomeEnabled {
+		if !s.ShouldProcessNewContacts(instance) {
 			return nil
 		}
 		return s.sendWelcomeForNewContacts(instance)
 	})
+}
+
+func (s *wxWorkProtocolContactAutomationService) ShouldProcessNewContacts(
+	instance *models.WxWorkProtocolInstance,
+) bool {
+	return instance != nil &&
+		(instance.WelcomeEnabled && hasWxWorkWelcomeContent(instance) ||
+			ArrivalBindingTicketService.HasActiveStaticConnection(instance.ID))
 }
 
 func (s *wxWorkProtocolContactAutomationService) handleCallback(instanceID int64, handler func(*models.WxWorkProtocolInstance) error) error {
@@ -118,7 +138,7 @@ func (s *wxWorkProtocolContactAutomationService) scanInstance(instance *models.W
 			return err
 		}
 	}
-	if instance.WelcomeEnabled {
+	if s.ShouldProcessNewContacts(instance) {
 		if err := s.sendWelcomeForNewContacts(instance); err != nil {
 			return err
 		}
@@ -154,7 +174,7 @@ func (s *wxWorkProtocolContactAutomationService) autoAcceptPending(instance *mod
 			return err
 		}
 		existingContacts[userID] = true
-		if instance.WelcomeEnabled {
+		if s.ShouldProcessNewContacts(instance) {
 			if err := s.sendWelcome(instance, item, "wx_friend_accept_"+strings.TrimSpace(item.Seq)); err != nil {
 				return fmt.Errorf("发送新好友欢迎语失败: %w", err)
 			}
@@ -196,9 +216,10 @@ func (s *wxWorkProtocolContactAutomationService) sendWelcomeForNewContacts(insta
 }
 
 func (s *wxWorkProtocolContactAutomationService) sendWelcome(instance *models.WxWorkProtocolInstance, contact wxWorkProtocolContactRecord, requestID string) error {
-	if instance == nil || !instance.WelcomeEnabled || !hasWxWorkWelcomeContent(instance) {
+	if instance == nil || !s.ShouldProcessNewContacts(instance) {
 		return nil
 	}
+	sendConfiguredWelcome := instance.WelcomeEnabled && hasWxWorkWelcomeContent(instance)
 	msg := request.WxProtocolChatMsg{
 		FromUsername: strings.TrimSpace(contact.UserID),
 		ToUsername:   strings.TrimSpace(instance.EmployeeUserID),
@@ -207,18 +228,51 @@ func (s *wxWorkProtocolContactAutomationService) sendWelcome(instance *models.Wx
 		Desc:         strings.TrimSpace(contact.Name),
 		SenderName:   strings.TrimSpace(contact.Name),
 	}
-	if mapping := WxWorkProtocolService.findProtocolConversationMapping(instance, msg, contact.UserID); mapping != nil {
-		return nil
+	mapping := WxWorkProtocolService.findProtocolConversationMapping(instance, msg, contact.UserID)
+	mappingExisted := mapping != nil
+	var conversation *models.Conversation
+	if mapping != nil {
+		conversation = repositories.ConversationRepository.GetInTenant(
+			sqls.DB(),
+			mapping.ConversationID,
+			instance.TenantID,
+		)
 	}
-	raw, _ := json.Marshal(contact)
-	conversation, _, err := WxWorkProtocolService.ensureConversation(instance, msg, contact.UserID, string(raw))
-	if err != nil {
-		return err
+	if conversation == nil {
+		raw, _ := json.Marshal(contact)
+		var err error
+		conversation, _, err = WxWorkProtocolService.ensureConversation(
+			instance,
+			msg,
+			contact.UserID,
+			string(raw),
+		)
+		if err != nil {
+			return err
+		}
+		mappingExisted = false
 	}
 	if err := WxWorkProtocolService.ensureRouteState(conversation.ID, instance); err != nil {
 		return err
 	}
-	return WxWorkProtocolDefaultResourceService.SendNewFriendWelcome(conversation, instance, requestID)
+	var sendErrors []error
+	if sendConfiguredWelcome && !mappingExisted {
+		if err := WxWorkProtocolDefaultResourceService.SendNewFriendWelcome(
+			conversation,
+			instance,
+			requestID,
+		); err != nil {
+			sendErrors = append(sendErrors, err)
+		}
+	}
+	if err := ArrivalBindingTicketService.SendBindingCardForNewContact(
+		conversation,
+		instance,
+		requestID,
+	); err != nil {
+		sendErrors = append(sendErrors, err)
+	}
+	return errors.Join(sendErrors...)
 }
 
 func (s *wxWorkProtocolContactAutomationService) loadAllContactIDs(instance *models.WxWorkProtocolInstance) (map[string]bool, error) {

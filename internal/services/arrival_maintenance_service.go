@@ -32,6 +32,7 @@ type arrivalMaintenanceService struct {
 type ArrivalMaintenanceResult struct {
 	CleanedContactWays             int
 	RetriedContactWays             int
+	ExpiredBindingTickets          int
 	ReconciledBindings             int
 	ReconciledAcquisitionCustomers int
 }
@@ -41,9 +42,17 @@ func (s *arrivalMaintenanceService) ProcessDue(limit int) ArrivalMaintenanceResu
 		return ArrivalMaintenanceResult{}
 	}
 	retried := s.RetryFailedContactWays(limit)
+	expiredTickets, err := repositories.ArrivalRepository.ExpirePendingBindingTickets(
+		sqls.DB(),
+		time.Now(),
+	)
+	if err != nil {
+		slog.Warn("expire arrival binding tickets failed", "error", err)
+	}
 	return ArrivalMaintenanceResult{
 		CleanedContactWays:             s.CleanupExpiredContactWays(limit),
 		RetriedContactWays:             retried,
+		ExpiredBindingTickets:          int(expiredTickets),
 		ReconciledBindings:             WeComProviderCallbackService.ReconcilePendingBindings(limit),
 		ReconciledAcquisitionCustomers: ArrivalAcquisitionService.ReconcileCustomers(limit),
 	}
@@ -96,6 +105,9 @@ func (s *arrivalMaintenanceService) CleanupExpiredContactWays(limit int) int {
 func (s *arrivalMaintenanceService) cleanupContactWay(item *models.ArrivalContactWay, now time.Time) bool {
 	if item == nil {
 		return false
+	}
+	if contactWayProviderMode(item) == enums.ArrivalContactProviderModeStaticPluginTicket {
+		return s.cleanContactWayLocally(item, now, "static_plugin_snapshot")
 	}
 	authorization := repositories.ArrivalRepository.GetTenantAuthorization(
 		sqls.DB(),

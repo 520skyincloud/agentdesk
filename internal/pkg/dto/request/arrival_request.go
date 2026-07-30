@@ -7,9 +7,26 @@ type ArrivalBootstrapRequest struct {
 	ScanEventID   string `json:"scanEventId" binding:"required"`
 }
 
+type ArrivalBindRequest struct {
+	SchemaVersion string `json:"schemaVersion" binding:"required"`
+	LoginCode     string `json:"loginCode" binding:"required"`
+	BindTicket    string `json:"bindTicket" binding:"required"`
+}
+
 type CreateArrivalInvitationRequest struct {
 	StoreID               int64 `json:"storeId" binding:"required"`
 	TenantAuthorizationID int64 `json:"tenantAuthorizationId"`
+}
+
+type UpdateArrivalConnectionProviderRequest struct {
+	StoreID                  int64  `json:"storeId" binding:"required"`
+	ContactProvider          string `json:"contactProvider" binding:"required"`
+	StaticContactPlugID      string `json:"staticContactPlugId"`
+	WxWorkProtocolInstanceID int64  `json:"wxWorkProtocolInstanceId"`
+}
+
+type SendArrivalBindingCardRequest struct {
+	ConversationID int64 `json:"conversationId" binding:"required"`
 }
 
 type DisableArrivalConnectionRequest struct {

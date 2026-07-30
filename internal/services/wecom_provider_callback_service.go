@@ -333,6 +333,7 @@ func (s *weComProviderCallbackService) confirmOfficialRelationshipForContactWay(
 				ContactMemberFingerprint:  security.Fingerprint("contact_member", memberUserID),
 				WxWorkProtocolInstanceID:  connection.WxWorkProtocolInstanceID,
 				OfficialRelationStatus:    enums.ArrivalOfficialRelationStatusConfirmed,
+				BindingProofType:          enums.ArrivalBindingProofTypeProviderCallback,
 				BindingStatus:             enums.ArrivalBindingStatusLegacyUnmapped,
 				EvidenceHash:              evidenceHash,
 				OfficialRelationshipAt:    &now,
@@ -356,6 +357,8 @@ func (s *weComProviderCallbackService) confirmOfficialRelationshipForContactWay(
 				"contact_member_fingerprint":   security.Fingerprint("contact_member", memberUserID),
 				"wx_work_protocol_instance_id": connection.WxWorkProtocolInstanceID,
 				"official_relation_status":     enums.ArrivalOfficialRelationStatusConfirmed,
+				"binding_proof_type":           enums.ArrivalBindingProofTypeProviderCallback,
+				"binding_ticket_id":            0,
 				"binding_status":               enums.ArrivalBindingStatusLegacyUnmapped,
 				"evidence_hash":                evidenceHash,
 				"official_relationship_at":     now,
@@ -374,6 +377,7 @@ func (s *weComProviderCallbackService) confirmOfficialRelationshipForContactWay(
 			binding.WxWorkProtocolInstanceID = connection.WxWorkProtocolInstanceID
 			binding.TenantAuthorizationID = authorization.ID
 			binding.OfficialRelationStatus = enums.ArrivalOfficialRelationStatusConfirmed
+			binding.BindingProofType = enums.ArrivalBindingProofTypeProviderCallback
 		}
 		if err := repositories.ArrivalRepository.UpdateScanEvent(ctx.Tx, scanEvent.ID, scanEvent.TenantID, map[string]any{
 			"binding_status":   enums.ArrivalBindingStatusLegacyUnmapped,
@@ -495,6 +499,8 @@ func (s *weComProviderCallbackService) reconcileBinding(bindingID, tenantID int6
 			"protocol_conversation_ciphertext":  protocolCiphertext,
 			"protocol_conversation_nonce":       protocolNonce,
 			"protocol_conversation_fingerprint": security.Fingerprint("protocol_conversation_id", protocolConversationID),
+			"binding_proof_type":                enums.ArrivalBindingProofTypeProviderCallback,
+			"binding_ticket_id":                 0,
 			"binding_status":                    enums.ArrivalBindingStatusBound,
 			"protocol_mapped_at":                now,
 			"evidence_hash":                     arrivalSafeEvidenceHash(binding.EvidenceHash, "protocol_mapped", resolution.EvidenceType, resolution.EvidenceDigest, strconv.FormatInt(conversation.ID, 10)),

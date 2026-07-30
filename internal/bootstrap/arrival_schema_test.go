@@ -70,6 +70,7 @@ func assertArrivalSchemaAutoMigrate(t *testing.T, db *gorm.DB) {
 		{&models.WeComTenantAuthorization{}, "uk_arrival_corp_auth"},
 		{&models.ArrivalAcquisitionLink{}, "uk_arrival_acquisition_link"},
 		{&models.ArrivalStoreBinding{}, "uk_arrival_store_binding"},
+		{&models.ArrivalBindingTicket{}, "idx_arrival_binding_ticket_conversation"},
 	} {
 		if !db.Migrator().HasIndex(index.model, index.name) {
 			t.Errorf("arrival unique index %s for %T was not created", index.name, index.model)
@@ -88,6 +89,22 @@ func assertArrivalSchemaAutoMigrate(t *testing.T, db *gorm.DB) {
 	} {
 		if !db.Migrator().HasColumn(&models.ArrivalContactWay{}, column) {
 			t.Errorf("arrival contact way diagnostic column %s was not created", column)
+		}
+	}
+	for _, column := range []string{
+		"contact_provider_mode",
+		"static_contact_plug_id",
+	} {
+		if !db.Migrator().HasColumn(&models.StoreArrivalConnection{}, column) {
+			t.Errorf("arrival connection column %s was not created", column)
+		}
+	}
+	for _, column := range []string{
+		"binding_proof_type",
+		"binding_ticket_id",
+	} {
+		if !db.Migrator().HasColumn(&models.ArrivalStoreBinding{}, column) {
+			t.Errorf("arrival binding column %s was not created", column)
 		}
 	}
 	for _, column := range []string{
@@ -121,6 +138,7 @@ func arrivalSchemaModels() []any {
 		&models.ArrivalContactWay{},
 		&models.ArrivalAcquisitionLink{},
 		&models.ArrivalStoreBinding{},
+		&models.ArrivalBindingTicket{},
 		&models.WeComProviderCallbackEvent{},
 		&models.ArrivalAuditLog{},
 	}
