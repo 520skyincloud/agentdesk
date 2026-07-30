@@ -330,3 +330,33 @@ AGENT_DESK_ARRIVAL_CONTACT_PROVIDER=<已验收的 customer_acquisition 或 conta
 mlogclub/agent-desk:rollback-20260730-1218
 sha256:c1be7f35b2ef0cba7117f5ca153f74468636d726ee329fe0f980de6db4c05b7e
 ```
+
+## 13. 已绑定员工号设备重新登录
+
+2026-07-30 补回已绑定但离线实例的设备登录入口。该流程不是到店 `plugId`、获客链接或
+客户“联系我”链路，也不会创建第二个员工身份：
+
+1. 在现有员工号实例菜单点击“扫码重新登录”；
+2. 后端使用当前实例 ID 和真实 GUID 调用 `/login/get_login_qrcode`；
+3. 页面每三秒调用 `/login/check_login_qrcode`；
+4. 协议返回 `QRCODE_REQUIRE_VERIFY(10)` 时展示数字确认码输入框；
+5. 确认码通过 `/login/verify_login_qrcode` 提交；
+6. 登录成功后同步当前实例资料并刷新列表。
+
+后台 `POST /api/dashboard/wxwork-protocol-instance/login_qrcode` 的 `data` 从协议原始字符串
+收敛为：
+
+```json
+{
+  "qrcode": "<可展示的二维码>",
+  "qrcodeContent": "<协议返回的二维码内容>"
+}
+```
+
+仓库内原先没有该接口的页面调用者；初次绑定和远程开户仍使用各自现有接口。响应不再向
+浏览器暴露协议原始响应或内部登录 key。生成二维码要求 `channel.update`，查询和提交确认码
+仍执行当前 Tenant/Store 的实例访问校验。没有新增权限、模型、表、字段或 migration。
+
+新增测试覆盖二维码响应裁剪、缺失二维码拒绝、离线实例入口、三秒轮询、状态 10 的确认码
+输入与提交，以及复用当前实例而不创建新身份。真机验收必须由员工本人扫码并填写企微端
+显示的确认码；完成前不得宣称设备已重新在线。

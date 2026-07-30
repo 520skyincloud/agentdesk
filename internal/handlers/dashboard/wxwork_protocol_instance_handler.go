@@ -279,7 +279,12 @@ func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
 		return
 	}
 	services.WxWorkProtocolService.ResetLoginVerificationAttempts(req.ID)
-	httpx.WriteJSON(ctx, resp)
+	result, err := buildWxWorkProtocolLoginQRCodeResponse(resp)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, result)
 }
 
 func WxWorkProtocolInstancePostCreate_remote_setup(ctx *gin.Context) {
@@ -692,6 +697,17 @@ func parseWxWorkProtocolLoginQRCode(raw string) (string, string, string) {
 		data = nested
 	}
 	return firstString(data, "qrcode", "qr_code", "qrCode"), firstString(data, "qrcode_content", "qrcodeContent", "qr_code_content", "qrCodeContent"), firstString(data, "key")
+}
+
+func buildWxWorkProtocolLoginQRCodeResponse(raw string) (*response.WxWorkProtocolLoginQRCodeResponse, error) {
+	qrcode, qrcodeContent, _ := parseWxWorkProtocolLoginQRCode(raw)
+	if strings.TrimSpace(qrcode) == "" {
+		return nil, errorsx.BusinessError(0, "企微员工号协议未返回可展示的登录二维码")
+	}
+	return &response.WxWorkProtocolLoginQRCodeResponse{
+		QRCode:        qrcode,
+		QRCodeContent: qrcodeContent,
+	}, nil
 }
 
 func parseWxWorkProtocolRoomOptions(raw string) []response.WxWorkProtocolRoomOptionResponse {

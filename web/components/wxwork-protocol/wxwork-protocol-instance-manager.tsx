@@ -6,6 +6,7 @@ import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
 import { WxWorkProtocolBindingDialog } from "@/components/wxwork-protocol/wxwork-protocol-binding-dialog"
+import { WxWorkProtocolDeviceLoginDialog } from "@/components/wxwork-protocol/wxwork-protocol-device-login-dialog"
 import {
   createDashboardStatusColumn,
   DashboardCrudPage,
@@ -664,6 +665,8 @@ export function WxWorkProtocolInstanceManager({
   const [receptionSettingsSaving, setReceptionSettingsSaving] = useState(false)
   const [locatingStoreCoordinates, setLocatingStoreCoordinates] = useState(false)
   const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
+  const [deviceLoginInstance, setDeviceLoginInstance] =
+    useState<WxWorkProtocolInstance | null>(null)
   const permissionSet = useMemo(() => new Set(session?.permissions ?? []), [session?.permissions])
   const canViewChannels = permissionSet.has("channel.view")
   const canCreateChannels = canViewChannels && permissionSet.has("channel.create")
@@ -872,6 +875,16 @@ export function WxWorkProtocolInstanceManager({
     })
   }
   if (canUpdateChannels) {
+    rowActions.push({
+      key: "deviceLogin",
+      label: "扫码重新登录",
+      icon: <QrCodeIcon className="size-4" />,
+      visible: (item) =>
+        item.status !== Status.Deleted &&
+        item.healthStatus !== "online" &&
+        Boolean(item.guid.trim()),
+      run: ({ item }) => setDeviceLoginInstance(item),
+    })
     rowActions.push({
       key: "replaceLogin",
       label: "更换登录员工号",
@@ -1235,6 +1248,14 @@ export function WxWorkProtocolInstanceManager({
     <WxWorkProtocolBindingDialog
       open={canCreateChannels && canViewUsers && bindingDialogOpen}
       onOpenChange={setBindingDialogOpen}
+      onChanged={() => notifyChanged()}
+    />
+    <WxWorkProtocolDeviceLoginDialog
+      open={canUpdateChannels && Boolean(deviceLoginInstance)}
+      instance={deviceLoginInstance}
+      onOpenChange={(open) => {
+        if (!open) setDeviceLoginInstance(null)
+      }}
       onChanged={() => notifyChanged()}
     />
     </>

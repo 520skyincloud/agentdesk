@@ -597,6 +597,11 @@ export type WxWorkProtocolRemoteLoginQRCodeResult = {
   qrcodeContent?: string
 }
 
+export type WxWorkProtocolLoginQRCodeResult = {
+  qrcode: string
+  qrcodeContent: string
+}
+
 export type WxWorkProtocolLoginStatus = {
   status: "pending" | "scanned" | "verification_required" | "success" | "refused" | "expired" | "failed"
   statusCode: number
@@ -1316,7 +1321,7 @@ export function updateWxWorkProtocolAISettings(payload: UpdateWxWorkProtocolAISe
 }
 
 export function getWxWorkProtocolLoginQrcode(id: number) {
-  return request<string>("/api/dashboard/wxwork-protocol-instance/login_qrcode", {
+  return request<WxWorkProtocolLoginQRCodeResult>("/api/dashboard/wxwork-protocol-instance/login_qrcode", {
     method: "POST",
     body: JSON.stringify({ id }),
   })

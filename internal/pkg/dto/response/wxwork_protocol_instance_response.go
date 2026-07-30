@@ -90,6 +90,11 @@ type StartWxWorkProtocolLoginResponse struct {
 	Key           string                         `json:"key"`
 }
 
+type WxWorkProtocolLoginQRCodeResponse struct {
+	QRCode        string `json:"qrcode"`
+	QRCodeContent string `json:"qrcodeContent"`
+}
+
 type WxWorkProtocolLoginStatusResponse struct {
 	Status       string `json:"status"`
 	StatusCode   int    `json:"statusCode"`
