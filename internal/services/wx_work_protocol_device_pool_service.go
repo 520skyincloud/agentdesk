@@ -49,6 +49,13 @@ type wxWorkProtocolDevicePoolService struct {
 	httpClient *http.Client
 }
 
+type WxWorkProtocolLoginAvailability struct {
+	ExpiresAt *time.Time
+	Expired   bool
+	Available bool
+	Reason    string
+}
+
 type wxWorkDevicePoolSettings struct {
 	AdminBaseURL    string
 	CallbackBaseURL string
@@ -81,6 +88,37 @@ func (s *wxWorkProtocolDevicePoolService) Get(id int64) *models.WxWorkProtocolDe
 		return nil
 	}
 	return repositories.WxWorkProtocolDevicePoolRepository.Get(sqls.DB(), id)
+}
+
+func (s *wxWorkProtocolDevicePoolService) LoginAvailability(instance *models.WxWorkProtocolInstance, now time.Time) WxWorkProtocolLoginAvailability {
+	ret := WxWorkProtocolLoginAvailability{Available: true}
+	if instance == nil || instance.ID <= 0 {
+		return ret
+	}
+	pool := repositories.WxWorkProtocolDevicePoolRepository.Take(
+		sqls.DB(),
+		"bound_wx_work_protocol_instance_id = ?",
+		instance.ID,
+	)
+	if pool == nil && strings.TrimSpace(instance.Guid) != "" {
+		pool = repositories.WxWorkProtocolDevicePoolRepository.Take(
+			sqls.DB(),
+			"guid = ?",
+			strings.TrimSpace(instance.Guid),
+		)
+	}
+	if pool == nil {
+		return ret
+	}
+	ret.ExpiresAt = pool.ExpiredAt
+	ret.Expired = devicePoolExpired(pool.ExpiredAt, now) ||
+		strings.EqualFold(strings.TrimSpace(pool.SyncStatus), "expired") ||
+		strings.EqualFold(strings.TrimSpace(pool.State), "expired")
+	if ret.Expired {
+		ret.Available = false
+		ret.Reason = wxWorkProtocolSeatExpiredMessage
+	}
+	return ret
 }
 
 func (s *wxWorkProtocolDevicePoolService) FindPageByCnd(cnd *sqls.Cnd) ([]models.WxWorkProtocolDevicePoolInstance, *sqls.Paging) {
@@ -1025,5 +1063,5 @@ func wxWorkProtocolInstanceBlocksDevicePool(instance models.WxWorkProtocolInstan
 }
 
 func devicePoolExpired(expiredAt *time.Time, now time.Time) bool {
-	return expiredAt != nil && expiredAt.Before(now)
+	return expiredAt != nil && !expiredAt.After(now)
 }

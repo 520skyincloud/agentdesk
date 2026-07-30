@@ -2,14 +2,189 @@ package services
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+
+	"gorm.io/gorm"
 )
+
+func TestWxWorkProtocolPostJSONReturnsSafeBusinessErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		response   string
+		want       string
+		forbidden  []string
+		statusCode int
+	}{
+		{
+			name:       "expired seat",
+			response:   `{"err_code":9003,"err_msg":"坐席已过期","data":{"guid":"private-guid"}}`,
+			want:       wxWorkProtocolSeatExpiredMessage,
+			forbidden:  []string{"raw=", "err_code", "private-guid", `{"`},
+			statusCode: http.StatusOK,
+		},
+		{
+			name:       "unknown provider error",
+			response:   `{"err_code":7001,"err_msg":"provider detail private-guid","data":{"guid":"private-guid"}}`,
+			want:       "错误码 7001",
+			forbidden:  []string{"raw=", "err_code", "provider detail", "private-guid", `{"`},
+			statusCode: http.StatusOK,
+		},
+		{
+			name:       "http error body",
+			response:   `{"detail":"private upstream response"}`,
+			want:       "HTTP 503",
+			forbidden:  []string{"raw=", "private upstream response", `{"`},
+			statusCode: http.StatusServiceUnavailable,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.statusCode)
+				_, _ = w.Write([]byte(test.response))
+			}))
+			defer server.Close()
+
+			svc := &wxWorkProtocolService{httpClient: server.Client()}
+			_, err := svc.postJSON(&dto.WxWorkProtocolChannelConfig{
+				AppKey:    "test-app-key",
+				AppSecret: "test-app-secret",
+				BaseURL:   server.URL,
+			}, "/login/get_login_qrcode", map[string]any{
+				"guid":         "request-guid",
+				"verify_login": false,
+			})
+			if err == nil {
+				t.Fatal("postJSON() error = nil, want safe business error")
+			}
+			message := err.Error()
+			if !strings.Contains(message, test.want) {
+				t.Fatalf("postJSON() error = %q, want %q", message, test.want)
+			}
+			for _, forbidden := range test.forbidden {
+				if strings.Contains(message, forbidden) {
+					t.Fatalf("postJSON() leaked %q in error %q", forbidden, message)
+				}
+			}
+		})
+	}
+}
+
+func TestWxWorkProtocolLoginRejectsExpiredDeviceBeforeProviderCall(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	if err := db.AutoMigrate(&models.WxWorkProtocolDevicePoolInstance{}); err != nil {
+		t.Fatalf("migrate device pool: %v", err)
+	}
+	var providerCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		providerCalls++
+		_, _ = w.Write([]byte(`{"err_code":0,"data":{"qrcode":"unused"}}`))
+	}))
+	defer server.Close()
+
+	instance := createWxWorkProtocolLoginTestInstance(t, db, server.URL)
+	expiredAt := time.Now().Add(-time.Minute)
+	if err := db.Create(&models.WxWorkProtocolDevicePoolInstance{
+		Guid:                          instance.Guid,
+		ExpiredAt:                     &expiredAt,
+		SyncStatus:                    "expired",
+		BoundWxWorkProtocolInstanceID: instance.ID,
+		Status:                        enums.StatusOk,
+		AuditFields:                   models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}).Error; err != nil {
+		t.Fatalf("create expired device pool instance: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{httpClient: server.Client()}
+	for name, action := range map[string]func(int64) (string, error){
+		"get login qrcode": svc.GetLoginQRCode,
+		"restore client":   svc.RestoreClient,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := action(instance.ID); err == nil || !strings.Contains(err.Error(), wxWorkProtocolSeatExpiredMessage) {
+				t.Fatalf("%s error = %v, want expired instance error", name, err)
+			}
+		})
+	}
+	if providerCalls != 0 {
+		t.Fatalf("provider calls = %d, want 0 for expired instance", providerCalls)
+	}
+}
+
+func TestWxWorkProtocolLoginAllowsUnexpiredDevice(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	if err := db.AutoMigrate(&models.WxWorkProtocolDevicePoolInstance{}); err != nil {
+		t.Fatalf("migrate device pool: %v", err)
+	}
+	var providerCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		providerCalls++
+		_, _ = w.Write([]byte(`{"err_code":0,"data":{"qrcode":"base64-image"}}`))
+	}))
+	defer server.Close()
+
+	instance := createWxWorkProtocolLoginTestInstance(t, db, server.URL)
+	expiresAt := time.Now().Add(time.Hour)
+	if err := db.Create(&models.WxWorkProtocolDevicePoolInstance{
+		Guid:                          instance.Guid,
+		ExpiredAt:                     &expiresAt,
+		SyncStatus:                    "offline",
+		BoundWxWorkProtocolInstanceID: instance.ID,
+		Status:                        enums.StatusOk,
+		AuditFields:                   models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}).Error; err != nil {
+		t.Fatalf("create active device pool instance: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{httpClient: server.Client()}
+	response, err := svc.GetLoginQRCode(instance.ID)
+	if err != nil {
+		t.Fatalf("GetLoginQRCode() error = %v", err)
+	}
+	if providerCalls != 1 || !strings.Contains(response, "base64-image") {
+		t.Fatalf("provider calls = %d, response = %q", providerCalls, response)
+	}
+}
+
+func createWxWorkProtocolLoginTestInstance(t *testing.T, db *gorm.DB, baseURL string) *models.WxWorkProtocolInstance {
+	t.Helper()
+	now := time.Now()
+	channel := &models.Channel{
+		TenantID:    101,
+		Name:        "企微员工号测试渠道",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-protocol-login-test",
+		ConfigJSON:  `{"appKey":"test-app-key","appSecret":"test-app-secret","baseUrl":"` + baseURL + `"}`,
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID:     101,
+		ChannelID:    channel.ID,
+		Guid:         "wxwork-login-test-guid-" + strings.NewReplacer("/", "-").Replace(t.Name()),
+		HealthStatus: "offline",
+		Status:       enums.StatusOk,
+		AuditFields:  models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create protocol instance: %v", err)
+	}
+	return instance
+}
 
 func TestWxWorkProtocolLocationMessageIsNotVoice(t *testing.T) {
 	msg := request.WxProtocolChatMsg{

@@ -481,6 +481,10 @@ export type WxWorkProtocolInstance = {
   knowledgeProvisionStatus?: string
   knowledgeProvisionError?: string
   healthStatus: string
+  protocolExpiresAt?: string | null
+  protocolExpired: boolean
+  loginAvailable: boolean
+  loginUnavailableReason: string
   lastHeartbeatAt?: string | null
   status: number
   remark: string

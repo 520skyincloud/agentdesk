@@ -15,7 +15,17 @@ test("existing offline instances expose the device login flow", () => {
   assert.match(managerSource, /key: "deviceLogin"/)
   assert.match(managerSource, /label: "扫码重新登录"/)
   assert.match(managerSource, /item\.healthStatus !== "online"/)
+  assert.match(managerSource, /item\.loginAvailable !== false/)
+  assert.match(managerSource, /!item\.protocolExpired/)
   assert.match(managerSource, /<WxWorkProtocolDeviceLoginDialog/)
+})
+
+test("expired instances cannot start the device login flow", () => {
+  assert.match(componentSource, /instance\?\.protocolExpired/)
+  assert.match(componentSource, /instance\?\.loginAvailable === false/)
+  assert.match(componentSource, /instance\.loginUnavailableReason/)
+  assert.match(componentSource, /请先续费或更换有效实例/)
+  assert.match(managerSource, /实例已过期/)
 })
 
 test("device login polls protocol status and handles verification code", () => {

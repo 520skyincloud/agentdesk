@@ -121,6 +121,20 @@ export function WxWorkProtocolDeviceLoginDialog({
 
   const generateQRCode = useCallback(async () => {
     if (!instanceId) return
+    if (instance?.protocolExpired || instance?.loginAvailable === false) {
+      const message =
+        instance.loginUnavailableReason ||
+        "该企微员工号实例已过期，请先续费或更换有效实例"
+      setQRCode(null)
+      setStatus({
+        status: "failed",
+        statusCode: -1,
+        requiresCode: false,
+        message,
+      })
+      toast.error(message)
+      return
+    }
     const requestSequence = ++requestSequenceRef.current
     completedRef.current = false
     setGenerating(true)
@@ -192,7 +206,13 @@ export function WxWorkProtocolDeviceLoginDialog({
         setGenerating(false)
       }
     }
-  }, [instance?.healthStatus, instanceId])
+  }, [
+    instance?.healthStatus,
+    instance?.loginAvailable,
+    instance?.loginUnavailableReason,
+    instance?.protocolExpired,
+    instanceId,
+  ])
 
   useEffect(() => {
     if (!open) {

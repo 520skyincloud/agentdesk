@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"agent-desk/internal/builders"
 	"agent-desk/internal/models"
@@ -668,6 +669,11 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance, op
 	ret.CustomerCount = stats.CustomerCount
 	ret.ManualAttentionCount = stats.ManualAttentionCount
 	ret.UrgentManualAttentionCount = stats.UrgentManualAttentionCount
+	loginAvailability := services.WxWorkProtocolDevicePoolService.LoginAvailability(item, time.Now())
+	ret.ProtocolExpiresAt = loginAvailability.ExpiresAt
+	ret.ProtocolExpired = loginAvailability.Expired
+	ret.LoginAvailable = loginAvailability.Available
+	ret.LoginUnavailableReason = loginAvailability.Reason
 	return ret
 }
 

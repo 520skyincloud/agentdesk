@@ -882,6 +882,8 @@ export function WxWorkProtocolInstanceManager({
       visible: (item) =>
         item.status !== Status.Deleted &&
         item.healthStatus !== "online" &&
+        item.loginAvailable !== false &&
+        !item.protocolExpired &&
         Boolean(item.guid.trim()),
       run: ({ item }) => setDeviceLoginInstance(item),
     })
@@ -1010,9 +1012,15 @@ export function WxWorkProtocolInstanceManager({
           label: "在线状态",
           render: (item) => (
             <div className="space-y-1">
-              <Badge variant={healthBadgeVariant(item.healthStatus)}>{item.healthStatus || "unknown"}</Badge>
+              <Badge variant={item.protocolExpired ? "destructive" : healthBadgeVariant(item.healthStatus)}>
+                {item.protocolExpired ? "实例已过期" : item.healthStatus || "unknown"}
+              </Badge>
               <div className="text-xs text-muted-foreground">
-                {item.lastHeartbeatAt ? formatDateTime(item.lastHeartbeatAt) : "-"}
+                {item.protocolExpired
+                  ? item.loginUnavailableReason || "请先续费或更换有效实例"
+                  : item.lastHeartbeatAt
+                    ? formatDateTime(item.lastHeartbeatAt)
+                    : "-"}
               </div>
             </div>
           ),

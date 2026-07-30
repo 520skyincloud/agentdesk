@@ -73,6 +73,10 @@ type WxWorkProtocolInstanceResponse struct {
 	KnowledgeProvisionStatus       string       `json:"knowledgeProvisionStatus"`
 	KnowledgeProvisionError        string       `json:"knowledgeProvisionError"`
 	HealthStatus                   string       `json:"healthStatus"`
+	ProtocolExpiresAt              *time.Time   `json:"protocolExpiresAt"`
+	ProtocolExpired                bool         `json:"protocolExpired"`
+	LoginAvailable                 bool         `json:"loginAvailable"`
+	LoginUnavailableReason         string       `json:"loginUnavailableReason"`
 	LastHeartbeatAt                *time.Time   `json:"lastHeartbeatAt"`
 	Status                         enums.Status `json:"status"`
 	Remark                         string       `json:"remark"`
@@ -178,6 +182,7 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		RemoteSetupExpiresAt:           item.RemoteSetupExpiresAt,
 		RemoteSetupSubmittedAt:         item.RemoteSetupSubmittedAt,
 		HealthStatus:                   item.HealthStatus,
+		LoginAvailable:                 true,
 		LastHeartbeatAt:                item.LastHeartbeatAt,
 		Status:                         item.Status,
 		Remark:                         utils.RepairMojibakeText(item.Remark),

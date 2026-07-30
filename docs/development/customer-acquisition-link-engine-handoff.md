@@ -369,3 +369,45 @@ sha256:c1be7f35b2ef0cba7117f5ca153f74468636d726ee329fe0f980de6db4c05b7e
 生产镜像中的 Web 构建固定使用 `next build --webpack`。默认 Turbopack 在当前 4 GiB 部署
 主机上会耗尽可用内存并长期停在编译阶段；Webpack 已在同一提交上完成 48 个页面的生产
 构建验证。该调整只影响构建器选择，不改变页面路由或运行时接口契约。
+
+## 14. 过期员工号错误脱敏与登录门禁
+
+2026-07-30 修复已绑定员工号扫码入口把协议原始错误响应直接显示给浏览器的问题。根因是
+`postJSON` 和 `postWECDNJSON` 在业务错误后拼接了完整 `raw`，同时扫码与恢复动作没有在
+调用供应商前核对本地实例池有效期。因此真实 `9003` 会显示 `err_code/err_msg/data` 原始
+JSON，已过期实例仍可重复发起无效请求。
+
+当前规则为：
+
+1. `9003` 统一返回“该企微员工号实例已过期，请先续费或更换有效实例”；
+2. `1014` 保留安全错误码和“异地登录器未启动”的可操作提示，供现有启动重试逻辑识别；
+3. 其他协议业务错误只返回错误码，HTTP 错误只返回状态码，不返回供应商消息或响应体；
+4. 原始响应仅作为 service 内部返回值供既有 `1002/-102 offline` 实例池判别使用，不进入
+   error，也不由 handler 返回给浏览器；
+5. `GetLoginQRCode` 和 `RestoreClient` 在供应商调用前检查绑定设备池的 `ExpiredAt`、
+   `SyncStatus` 和 `State`；确认过期时供应商调用次数为零；
+6. 实例列表增加 `protocolExpiresAt`、`protocolExpired`、`loginAvailable` 和
+   `loginUnavailableReason` 展示字段；过期实例显示红色“实例已过期”，不再显示
+   “扫码重新登录”，仍保留已有“更换登录员工号”路径；
+7. 不修改 GUID、员工身份、实例绑定、在线状态或数据库事实，不通过写库伪造续费或可用。
+
+本次没有新增表、字段、权限、路由或 migration，不影响小程序、到店联动、AI 回复引擎、
+企微第三方应用授权及消息协议。DTO 仅向后兼容新增展示字段；并行分支合并时应保留
+`WxWorkProtocolInstanceResponse` 和 `web/lib/api/admin.ts` 的四个字段，禁止整文件覆盖。
+
+发布前验证：
+
+```text
+企业微信员工号协议文档                         已核对恢复实例、获取/检查登录二维码契约
+新增错误脱敏与过期门禁 service 测试           通过
+全部企微员工号相关 service 测试                通过
+go test ./internal/services/...                通过
+go test ./internal/handlers/dashboard/...      通过
+go test ./... -count=1                         通过
+Web 设备登录 Node 回归测试                     5/5 通过
+web: ./node_modules/.bin/tsc --noEmit          通过
+git diff --check                               通过
+```
+
+回滚只需切换到本次部署前镜像并强制重建 `agent-desk`；新增 DTO 字段不落库，无 DDL 回滚。
+回滚后原始错误泄露和过期实例重复扫码问题会重新出现，因此不得长期回滚到旧镜像。

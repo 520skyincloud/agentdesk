@@ -32,6 +32,8 @@ import (
 
 const wxWorkProtocolSystemOperatorName = "wxwork_protocol"
 
+const wxWorkProtocolSeatExpiredMessage = "该企微员工号实例已过期，请先续费或更换有效实例"
+
 const (
 	wxProtocolNotifyUserLogin        = 1003
 	wxProtocolNotifyUserLogout       = 1004
@@ -265,6 +267,9 @@ func (s *wxWorkProtocolService) SetNotifyURL(instanceID int64, notifyURL string)
 }
 
 func (s *wxWorkProtocolService) GetLoginQRCode(instanceID int64) (string, error) {
+	if err := s.ensureLoginAvailable(instanceID); err != nil {
+		return "", err
+	}
 	return s.callInstanceAPI(instanceID, "/login/get_login_qrcode", map[string]any{"verify_login": false}, nil)
 }
 
@@ -343,6 +348,9 @@ func (s *wxWorkProtocolService) StopClient(instanceID int64) (string, error) {
 }
 
 func (s *wxWorkProtocolService) RestoreClient(instanceID int64) (string, error) {
+	if err := s.ensureLoginAvailable(instanceID); err != nil {
+		return "", err
+	}
 	return s.callInstanceAPI(instanceID, "/client/restore_client", map[string]any{
 		"proxy":            "",
 		"bridge":           "",
@@ -2471,10 +2479,10 @@ func (s *wxWorkProtocolService) postJSON(cfg *dto.WxWorkProtocolChannelConfig, p
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return string(respBody), fmt.Errorf("企微协议接口返回HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return string(respBody), errorsx.BusinessError(1, fmt.Sprintf("企微员工号服务请求失败（HTTP %d）", resp.StatusCode))
 	}
 	if err := s.checkProtocolResponse(respBody); err != nil {
-		return string(respBody), fmt.Errorf("%w; raw=%s", err, strings.TrimSpace(string(respBody)))
+		return string(respBody), err
 	}
 	return string(respBody), nil
 }
@@ -2501,12 +2509,24 @@ func (s *wxWorkProtocolService) postWECDNJSON(cfg *dto.WxWorkProtocolChannelConf
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return string(respBody), fmt.Errorf("企微私有化云存储接口返回HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return string(respBody), errorsx.BusinessError(1, fmt.Sprintf("企微私有化云存储请求失败（HTTP %d）", resp.StatusCode))
 	}
 	if err := checkGenericBusinessResponse(respBody); err != nil {
-		return string(respBody), fmt.Errorf("%w; raw=%s", err, strings.TrimSpace(string(respBody)))
+		return string(respBody), err
 	}
 	return string(respBody), nil
+}
+
+func (s *wxWorkProtocolService) ensureLoginAvailable(instanceID int64) error {
+	instance := WxWorkProtocolInstanceService.Get(instanceID)
+	if instance == nil || instance.Status == enums.StatusDeleted {
+		return errorsx.InvalidParam("企微员工号实例不存在")
+	}
+	availability := WxWorkProtocolDevicePoolService.LoginAvailability(instance, time.Now())
+	if availability.Available {
+		return nil
+	}
+	return errorsx.InvalidParam(availability.Reason)
 }
 
 func (s *wxWorkProtocolService) callInstanceAPI(instanceID int64, path string, extra map[string]any, after func(instance *models.WxWorkProtocolInstance, response string) error) (string, error) {
@@ -2646,30 +2666,26 @@ func checkGenericBusinessResponse(respBody []byte) error {
 		return nil
 	}
 	if resp.ErrCode != nil && *resp.ErrCode != 0 {
-		msg := strings.TrimSpace(resp.ErrMsg)
-		if msg == "" {
-			msg = strings.TrimSpace(resp.Message)
-		}
-		return fmt.Errorf("企微协议接口返回错误 err_code=%d: %s", *resp.ErrCode, msg)
+		return safeWxWorkProtocolBusinessError(*resp.ErrCode)
 	}
 	if resp.ErrorCode != nil && *resp.ErrorCode != 0 {
-		msg := strings.TrimSpace(resp.ErrorMessage)
-		if msg == "" {
-			msg = strings.TrimSpace(resp.Message)
-		}
-		return fmt.Errorf("企微协议接口返回错误 error_code=%d: %s", *resp.ErrorCode, msg)
+		return safeWxWorkProtocolBusinessError(*resp.ErrorCode)
 	}
 	if resp.Success != nil && !*resp.Success {
-		msg := strings.TrimSpace(resp.Message)
-		if msg == "" {
-			msg = strings.TrimSpace(resp.ErrMsg)
-		}
-		if msg == "" {
-			msg = strings.TrimSpace(resp.ErrorMessage)
-		}
-		return fmt.Errorf("企微协议接口返回失败: %s", msg)
+		return errorsx.BusinessError(1, "企微员工号服务返回失败")
 	}
 	return nil
+}
+
+func safeWxWorkProtocolBusinessError(code int) error {
+	switch code {
+	case 9003:
+		return errorsx.InvalidParam(wxWorkProtocolSeatExpiredMessage)
+	case 1014:
+		return errorsx.BusinessError(1, "企微员工号登录环境未启动，请确认有效实例的异地登录器在线后重试（错误码 1014）")
+	default:
+		return errorsx.BusinessError(1, fmt.Sprintf("企微员工号服务暂时不可用（错误码 %d）", code))
+	}
 }
 
 func parseWECDNMediaResponse(raw string) (request.WxProtocolMediaPayload, error) {
