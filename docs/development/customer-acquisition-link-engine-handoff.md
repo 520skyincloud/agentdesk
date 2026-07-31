@@ -463,28 +463,28 @@ POST /login/get_login_qrcode
 `restore` 或其他未在接口文档声明的字段。独立的 `set_proxy`、`restore_client` 运维动作
 不属于登录状态机，不能作为扫码前置条件。
 
-生产数据中存在一个旧流程遗留的 `disabled + recovering` 实例。该实例尚无
-`EmployeeUserID`，没有形成真实员工身份或会话，因此允许原门店员工绑定继续复用同一
-实例和 GUID，并在取码时收敛为 `login_qrcode`。兼容规则严格限定为：
+生产数据中存在一个旧流程遗留的 `disabled + recovering` 替换草稿。该记录的
+`ReplacesInstanceID` 指向已过期旧员工实例，因此必须继续通过现有“更换登录员工号”生成
+的替换绑定页完成，不能伪装成从未绑定过员工号的首次绑定。替换页复用原草稿和 GUID，
+直接获取二维码；供应商接受取码请求后把草稿生命周期收敛为 `login_qrcode`。只有协议检查
+真实返回成功后，页面才同步员工资料；原实例的停用与 `ReplacedByInstanceID` 写入仍由现有
+替换完成事务处理。
 
-1. 实例仍属于当前 Tenant、Store 和 `StoreStaffBinding`；
-2. 实例未删除且设备池有效期允许登录；
-3. `HealthStatus` 仅为 `login_qrcode` 或 `recovering`；
-4. `EmployeeUserID` 必须为空；
-5. 已有员工身份的 `recovering` 实例不得作为新扫码草稿复用；
-6. 供应商接受二维码请求后才将生命周期记录为 `login_qrcode`；
-7. 只有协议检查真实返回成功后才写入 `enabled + online` 和员工资料。
+首次绑定入口继续只允许没有已绑定员工实例的系统账号，或恢复自身
+`HealthStatus=login_qrcode` 且没有 `EmployeeUserID` 的首次绑定草稿。不得把
+`recovering` 替换草稿放进首次绑定选择器，否则同一 `StoreStaffBinding` 的旧实例与替换
+实例会形成两个互相冲突的入口。
 
-后端 service 和前端绑定弹窗均覆盖该兼容规则。新增测试覆盖旧 `recovering` 空草稿恢复、
-已有员工身份拒绝复用、取码成功后的生命周期，以及前端仅在缺少员工身份时重新展示草稿。
-本次没有新增 model、migration、DTO、enum、权限、路由或 WebSocket 契约，不修改 AI、
-计费、小程序、企业微信第三方应用授权或消息协议。
+新增 service 测试覆盖取码成功后的 `login_qrcode` 生命周期；既有契约测试继续覆盖三个
+入口均不传代理、每 3 秒轮询及仅状态 `10` 展示确认码。本次没有新增 model、migration、
+DTO、enum、权限、路由或 WebSocket 契约，不修改 AI、计费、小程序、企业微信第三方应用
+授权或消息协议。
 
 验证结果：
 
 ```text
 go test ./...                                  通过
-前端 Node 契约测试                            170/170 通过
+前端 Node 契约测试                            全部通过
 pnpm typecheck                                 通过
 pnpm lint                                      0 error，33 条既有 warning
 pnpm build                                     通过，48 个页面

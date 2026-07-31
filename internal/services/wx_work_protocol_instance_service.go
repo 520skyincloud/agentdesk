@@ -49,18 +49,6 @@ func (s *wxWorkProtocolInstanceService) activeInstanceForBindingDB(db *gorm.DB, 
 	)
 }
 
-func isResumableWxWorkProtocolLoginDraft(item *models.WxWorkProtocolInstance) bool {
-	if item == nil || strings.TrimSpace(item.EmployeeUserID) != "" {
-		return false
-	}
-	switch strings.TrimSpace(item.HealthStatus) {
-	case "login_qrcode", "recovering":
-		return true
-	default:
-		return false
-	}
-}
-
 const DefaultWxWorkProtocolPersonaPrompt = `你是线上酒店接待，说话简短、自然、像正常微信聊天。
 不要用客服模板，不要加固定结尾，不要用“亲”“为您”“这边”“～”。
 能确定就直接答；需要真实动作时先收集一个最关键字段或进入接待路由，没工具或路由结果前别表达动作已执行或后续有人处理。
@@ -413,19 +401,8 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 			if current == nil {
 				return nil
 			}
-			if !isResumableWxWorkProtocolLoginDraft(current) {
+			if current.HealthStatus != "login_qrcode" || strings.TrimSpace(current.EmployeeUserID) != "" {
 				return errorsx.InvalidParam("该系统账号已经绑定企微员工号，请使用更换登录员工号")
-			}
-			if current.HealthStatus != "login_qrcode" {
-				if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, current.ID, tenantID, map[string]any{
-					"health_status":    "login_qrcode",
-					"updated_at":       time.Now(),
-					"update_user_id":   operator.UserID,
-					"update_user_name": operator.Username,
-				}); err != nil {
-					return err
-				}
-				current.HealthStatus = "login_qrcode"
 			}
 			resumed = current
 			return nil
@@ -454,18 +431,7 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 			return err
 		}
 		if current := s.activeInstanceForBindingDB(ctx.Tx, tenantID, prepared.Binding.ID); current != nil {
-			if isResumableWxWorkProtocolLoginDraft(current) {
-				if current.HealthStatus != "login_qrcode" {
-					if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, current.ID, tenantID, map[string]any{
-						"health_status":    "login_qrcode",
-						"updated_at":       now,
-						"update_user_id":   operator.UserID,
-						"update_user_name": operator.Username,
-					}); err != nil {
-						return err
-					}
-					current.HealthStatus = "login_qrcode"
-				}
+			if current.HealthStatus == "login_qrcode" && strings.TrimSpace(current.EmployeeUserID) == "" {
 				item = current
 				guid = current.Guid
 				return nil

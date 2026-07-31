@@ -57,9 +57,7 @@ function isStoreStaff(user: AdminUser) {
 
 function canResumeBinding(user: AdminUser) {
   if (!user.storeStaff?.wxWorkInstanceId) return true
-  const healthStatus = user.storeStaff.wxWorkHealthStatus || ""
-  if (["login_qrcode", "remote_setup"].includes(healthStatus)) return true
-  return healthStatus === "recovering" && !(user.storeStaff.wxWorkEmployeeId || "").trim()
+  return ["login_qrcode", "remote_setup"].includes(user.storeStaff.wxWorkHealthStatus || "")
 }
 
 function userLabel(user: AdminUser) {
