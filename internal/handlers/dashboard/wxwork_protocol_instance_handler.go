@@ -118,19 +118,24 @@ func WxWorkProtocolInstancePostStart_login(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	raw, err := services.WxWorkProtocolService.GetLoginQRCode(item.ID)
+	raw, err := services.WxWorkProtocolService.PrepareLoginQRCode(item.ID, req.Proxy)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	services.WxWorkProtocolService.ResetLoginVerificationAttempts(item.ID)
-	qrcode, qrcodeContent, key := parseWxWorkProtocolLoginQRCode(raw)
+	qrcode, qrcodeContent, _ := parseWxWorkProtocolLoginQRCode(raw)
+	if strings.TrimSpace(qrcode) == "" {
+		httpx.WriteJSON(ctx, errorsx.BusinessError(0, "企微员工号协议未返回可展示的登录二维码"))
+		return
+	}
+	if refreshed := services.WxWorkProtocolInstanceService.GetInTenant(item.ID, operator); refreshed != nil {
+		item = refreshed
+	}
 	httpx.WriteJSON(ctx, response.StartWxWorkProtocolLoginResponse{
 		Instance:      buildWxWorkProtocolInstanceResponse(item, operator),
-		RawResponse:   raw,
 		QRCode:        qrcode,
 		QRCodeContent: qrcodeContent,
-		Key:           key,
 	})
 }
 
@@ -266,7 +271,7 @@ func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	req := request.WxWorkProtocolInstanceActionRequest{}
+	req := request.PrepareWxWorkProtocolLoginRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -274,7 +279,7 @@ func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
 	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
-	resp, err := services.WxWorkProtocolService.GetLoginQRCode(req.ID)
+	resp, err := services.WxWorkProtocolService.PrepareLoginQRCode(req.ID, req.Proxy)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -387,7 +392,25 @@ func WxWorkProtocolInstancePostVerify_login(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostRecover(ctx *gin.Context) {
-	writeWxWorkProtocolActionResponse(ctx, services.WxWorkProtocolService.RestoreClient)
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.PrepareWxWorkProtocolLoginRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
+		return
+	}
+	resp, err := services.WxWorkProtocolService.RestoreClientWithProxy(req.ID, req.Proxy)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, resp)
 }
 
 func WxWorkProtocolInstancePostStop(ctx *gin.Context) {

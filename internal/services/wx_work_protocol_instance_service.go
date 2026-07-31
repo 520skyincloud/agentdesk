@@ -861,7 +861,6 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		"welcome_ask_location":               req.WelcomeAskLocation,
 		"knowledge_base_id":                  knowledgeBaseID,
 		"notify_url":                         strings.TrimSpace(req.NotifyURL),
-		"proxy":                              strings.TrimSpace(req.Proxy),
 		"bridge_id":                          strings.TrimSpace(req.BridgeID),
 		"staff_user_ids":                     strings.TrimSpace(req.StaffUserIDs),
 		"service_hours":                      strings.TrimSpace(req.ServiceHours),

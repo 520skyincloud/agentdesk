@@ -647,3 +647,49 @@ acquisition_permission_denied
 5. 再次扫码，确认不再显示二维码，并由现有员工号会话真实投递到店卡片。
 
 上述五步完成前，不得宣称企业微信获客助手全链路已经验收。
+
+## 企微员工号异地登录环境修复
+
+2026-07-31 按聚合智能官方登录流程修复 `1014`。原实现虽然在二维码前调用
+`/client/restore_client`，但把 `proxy` 固定为空字符串；设备池认领还会提前调用
+`/login/get_login_qrcode`，从而把“登录环境未启动”误判为实例不可用。
+
+修复后的统一链路为：
+
+```text
+扫码设备启动聚合聊天本地代理
+  -> AgentDesk 校验并提交代理
+  -> POST /client/restore_client
+  -> 有界等待运行环境
+  -> POST /login/get_login_qrcode
+  -> POST /login/check_login_qrcode
+  -> 状态 10 时 POST /login/verify_login_qrcode
+```
+
+现场绑定、已有实例重新登录和公开远程绑定页均使用该链路。完整代理只在服务端保存和发送
+给供应商，不回显到浏览器；普通实例编辑不会再意外清空代理。二维码和状态响应已移除供应商
+原文与内部 key。
+
+聚合智能 API 应用的全局事件回调按用户提供的供应商环境配置为：
+
+```text
+http://112.124.109.106:2332/api/third/wxwork-protocol/callback
+```
+
+该环境级地址与 AgentDesk 每实例 `set_notify_url`、扫码设备异地代理是三套不同概念。
+本次没有把该 IP 硬编码进代码。部署前探测已确认地址可达，但只有供应商真实登录/消息事件
+成功回传后，才能标记端到端验收完成。
+
+部署前验证：
+
+```text
+go test ./...                                  通过
+node --test web/**/*.test.mjs                  168 项通过
+tsc --noEmit                                   通过
+eslint .                                       0 error，33 条项目既有 warning
+next build --webpack                           通过，48 个静态页面
+git diff --check                               通过
+```
+
+本节的最终 release 目录、镜像摘要、容器启动时间、全局回调测试和真实扫码结果在生产部署后
+补录；在此之前不得宣称线上 `1014` 已修复。

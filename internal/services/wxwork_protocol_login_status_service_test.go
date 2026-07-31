@@ -1,6 +1,10 @@
 package services
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestParseWxWorkProtocolLoginStatusOfficialCodes(t *testing.T) {
 	tests := []struct {
@@ -32,6 +36,17 @@ func TestParseWxWorkProtocolLoginStatusDoesNotGuessFromContains(t *testing.T) {
 	got := parseWxWorkProtocolLoginStatus(`{"data":{"status":"login is still pending"}}`)
 	if got.Status != "pending" {
 		t.Fatalf("expected pending, got %q", got.Status)
+	}
+}
+
+func TestParseWxWorkProtocolLoginStatusDoesNotExposeProviderResponse(t *testing.T) {
+	result := parseWxWorkProtocolLoginStatus(`{"data":{"status":10,"key":"must-not-return"}}`)
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal login status: %v", err)
+	}
+	if strings.Contains(string(encoded), "must-not-return") || strings.Contains(string(encoded), "rawResponse") {
+		t.Fatalf("login status leaked provider response: %s", encoded)
 	}
 }
 

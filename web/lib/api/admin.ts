@@ -456,6 +456,7 @@ export type WxWorkProtocolInstance = {
   urgentManualAttentionCount: number
   notifyUrl: string
   proxy: string
+  proxyConfigured: boolean
   bridgeId: string
   staffUserIds: string
   managedMode: string
@@ -588,15 +589,12 @@ export type WxWorkProtocolRepairResult = {
 
 export type StartWxWorkProtocolLoginResult = {
   instance: WxWorkProtocolInstance
-  rawResponse: string
   qrcode: string
   qrcodeContent: string
-  key: string
 }
 
 export type WxWorkProtocolRemoteLoginQRCodeResult = {
   instanceId: number
-  rawResponse: string
   qrcode?: string
   qrcodeContent?: string
 }
@@ -611,7 +609,6 @@ export type WxWorkProtocolLoginStatus = {
   statusCode: number
   requiresCode: boolean
   message: string
-  rawResponse?: string
 }
 
 export type CreateWxWorkProtocolInstancePayload = {
@@ -1193,6 +1190,7 @@ export function startWxWorkProtocolLogin(payload: {
   channelId?: number
   storeStaffUserId: number
   storeName: string
+  proxy: string
 }) {
   return request<StartWxWorkProtocolLoginResult>("/api/dashboard/wxwork-protocol-instance/start_login", {
     method: "POST",
@@ -1200,6 +1198,7 @@ export function startWxWorkProtocolLogin(payload: {
       channelId: payload.channelId ?? 0,
       storeStaffUserId: payload.storeStaffUserId,
       storeName: payload.storeName,
+      proxy: payload.proxy,
     }),
   })
 }
@@ -1324,10 +1323,10 @@ export function updateWxWorkProtocolAISettings(payload: UpdateWxWorkProtocolAISe
   })
 }
 
-export function getWxWorkProtocolLoginQrcode(id: number) {
+export function getWxWorkProtocolLoginQrcode(id: number, proxy?: string) {
   return request<WxWorkProtocolLoginQRCodeResult>("/api/dashboard/wxwork-protocol-instance/login_qrcode", {
     method: "POST",
-    body: JSON.stringify({ id }),
+    body: JSON.stringify({ id, ...(proxy ? { proxy } : {}) }),
   })
 }
 
@@ -1380,11 +1379,11 @@ export function verifyWxWorkProtocolRemoteSetupEmail(payload: { token: string; e
   })
 }
 
-export function getWxWorkProtocolRemoteSetupLoginQrcode(token: string) {
+export function getWxWorkProtocolRemoteSetupLoginQrcode(token: string, proxy?: string) {
   return request<WxWorkProtocolRemoteLoginQRCodeResult>("/api/wxwork-protocol-remote-setup/login_qrcode", {
     method: "POST",
     skipAuth: true,
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ token, ...(proxy ? { proxy } : {}) }),
   })
 }
 
@@ -1418,10 +1417,10 @@ export function verifyWxWorkProtocolLogin(id: number, code: string) {
   })
 }
 
-export function recoverWxWorkProtocolInstance(id: number) {
+export function recoverWxWorkProtocolInstance(id: number, proxy?: string) {
   return request<string>("/api/dashboard/wxwork-protocol-instance/recover", {
     method: "POST",
-    body: JSON.stringify({ id }),
+    body: JSON.stringify({ id, ...(proxy ? { proxy } : {}) }),
   })
 }
 

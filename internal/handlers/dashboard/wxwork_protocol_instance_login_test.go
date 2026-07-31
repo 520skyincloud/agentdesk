@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"agent-desk/internal/pkg/dto/response"
 )
 
 func TestBuildWxWorkProtocolLoginQRCodeResponse(t *testing.T) {
@@ -33,5 +35,22 @@ func TestBuildWxWorkProtocolLoginQRCodeResponse(t *testing.T) {
 func TestBuildWxWorkProtocolLoginQRCodeResponseRejectsMissingImage(t *testing.T) {
 	if _, err := buildWxWorkProtocolLoginQRCodeResponse(`{"err_code":0,"data":{"status":0}}`); err == nil {
 		t.Fatal("missing qrcode should be rejected")
+	}
+}
+
+func TestStartWxWorkProtocolLoginResponseDoesNotExposeProviderFields(t *testing.T) {
+	result := response.StartWxWorkProtocolLoginResponse{
+		QRCode:        "base64-image",
+		QRCodeContent: "https://wx.work.weixin.qq.com/login",
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	body := string(encoded)
+	for _, forbidden := range []string{"rawResponse", `"key"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("start login response leaked %q: %s", forbidden, body)
+		}
 	}
 }

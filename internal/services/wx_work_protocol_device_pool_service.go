@@ -521,40 +521,32 @@ func (s *wxWorkProtocolDevicePoolService) ClaimAvailableGUID(channel *models.Cha
 		if guid == "" || bound[guid] || candidate.BoundWxWorkProtocolInstanceID > 0 || devicePoolExpired(candidate.ExpiredAt, time.Now()) {
 			continue
 		}
-		if candidate.SyncStatus != "idle" {
-			raw, profileErr := WxWorkProtocolService.postJSON(cfg, "/user/get_profile", map[string]any{"guid": guid})
-			if profileErr == nil {
-				onlineCount++
-				_ = repositories.WxWorkProtocolDevicePoolRepository.Updates(sqls.DB(), candidate.ID, map[string]any{
-					"sync_status": "online",
-					"remark":      "账号资料接口确认当前实例在线，未进入扫码认领",
-					"updated_at":  time.Now(),
-				})
-				continue
-			}
-			if !protocolProfileResponseShowsOffline(raw) {
-				lastErr = profileErr.Error()
-				_ = repositories.WxWorkProtocolDevicePoolRepository.Updates(sqls.DB(), candidate.ID, map[string]any{
-					"sync_status": "unavailable",
-					"remark":      lastErr,
-					"updated_at":  time.Now(),
-				})
-				continue
+		if candidate.SyncStatus == "idle" {
+			return guid, nil
+		}
+		raw, profileErr := WxWorkProtocolService.postJSON(cfg, "/user/get_profile", map[string]any{"guid": guid})
+		if profileErr == nil {
+			onlineCount++
+			_ = repositories.WxWorkProtocolDevicePoolRepository.Updates(sqls.DB(), candidate.ID, map[string]any{
+				"sync_status": "online",
+				"remark":      "账号资料接口确认当前实例在线，未进入扫码认领",
+				"updated_at":  time.Now(),
+			})
+			continue
+		}
+		if protocolProfileResponseShowsOffline(raw) || wxWorkProtocolResponseErrorCode(raw) == 1014 {
+			remark := "账号资料接口确认实例离线，可在认领后配置异地代理并扫码"
+			if wxWorkProtocolResponseErrorCode(raw) == 1014 {
+				remark = "实例有效但登录环境未启动，可在认领后配置异地代理并扫码"
 			}
 			_ = repositories.WxWorkProtocolDevicePoolRepository.Updates(sqls.DB(), candidate.ID, map[string]any{
 				"sync_status": "idle",
-				"remark":      "账号资料接口确认历史 UIN 对应实例已离线，可重新扫码绑定",
+				"remark":      remark,
 				"updated_at":  time.Now(),
 			})
-		}
-		_, err := WxWorkProtocolService.postJSON(cfg, "/login/get_login_qrcode", map[string]any{
-			"guid":         guid,
-			"verify_login": false,
-		})
-		if err == nil {
 			return guid, nil
 		}
-		lastErr = err.Error()
+		lastErr = profileErr.Error()
 		_ = repositories.WxWorkProtocolDevicePoolRepository.Updates(sqls.DB(), candidate.ID, map[string]any{
 			"sync_status": "unavailable",
 			"remark":      lastErr,

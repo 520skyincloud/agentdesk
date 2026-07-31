@@ -5,6 +5,7 @@ import { CheckCircle2Icon, CopyIcon, LocateFixedIcon, QrCodeIcon, RefreshCwIcon 
 import { useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 
+import { WxWorkProtocolLoginProxyField } from "@/components/wxwork-protocol/wxwork-protocol-login-proxy-field"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
@@ -81,6 +82,7 @@ function WxWorkRemoteSetupContent() {
   const [checking, setChecking] = useState(false)
   const [loginStatus, setLoginStatus] = useState<WxWorkProtocolLoginStatus | null>(null)
   const [loginCode, setLoginCode] = useState("")
+  const [loginProxy, setLoginProxy] = useState("")
   const [loginVerifying, setLoginVerifying] = useState(false)
   const [emailCode, setEmailCode] = useState("")
   const [emailVerificationToken, setEmailVerificationToken] = useState("")
@@ -132,7 +134,7 @@ function WxWorkRemoteSetupContent() {
     if (!value) return ""
     if (value.startsWith("data:image")) return value
     if (value.startsWith("http://") || value.startsWith("https://")) return value
-    return value
+    return `data:image/png;base64,${value}`
   }, [qrcode])
 
   function setValue<K extends keyof FormState>(key: K, value: FormState[K]) {
@@ -141,8 +143,15 @@ function WxWorkRemoteSetupContent() {
 
   async function getLoginQRCode() {
     if (!token) return
+    if (!loginProxy.trim() && !instance?.proxyConfigured) {
+      toast.error("请先填写扫码设备上的异地登录代理地址")
+      return
+    }
     try {
-      const data = await getWxWorkProtocolRemoteSetupLoginQrcode(token)
+      const data = await getWxWorkProtocolRemoteSetupLoginQrcode(
+        token,
+        loginProxy.trim() || undefined
+      )
       setQrcode(data)
       setLoginStatus(null)
       setLoginCode("")
@@ -291,6 +300,13 @@ function WxWorkRemoteSetupContent() {
               </div>
               <QrCodeIcon className="size-5 text-muted-foreground" />
             </div>
+            <div className="mt-4">
+              <WxWorkProtocolLoginProxyField
+                value={loginProxy}
+                configured={instance?.proxyConfigured}
+                onChange={setLoginProxy}
+              />
+            </div>
             <div className="mt-4 flex min-h-64 items-center justify-center rounded-2xl border border-dashed border-[#cbd8ea] bg-[#f8fafc] p-4">
               {qrcodeImage ? (
                 qrcodeImage.startsWith("http") || qrcodeImage.startsWith("data:image") ? (
@@ -304,9 +320,14 @@ function WxWorkRemoteSetupContent() {
               )}
             </div>
             <div className="mt-4 grid gap-2">
-              <Button type="button" className="rounded-xl" onClick={() => void getLoginQRCode()}>
+              <Button
+                type="button"
+                className="rounded-xl"
+                onClick={() => void getLoginQRCode()}
+                disabled={!loginProxy.trim() && !instance?.proxyConfigured}
+              >
                 <QrCodeIcon className="size-4" />
-                获取登录二维码
+                设置代理并获取登录二维码
               </Button>
               <Button type="button" variant="outline" className="rounded-xl" onClick={() => void checkLogin()} disabled={checking}>
                 <RefreshCwIcon className={checking ? "size-4 animate-spin" : "size-4"} />

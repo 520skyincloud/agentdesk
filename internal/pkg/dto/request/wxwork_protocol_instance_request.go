@@ -52,10 +52,11 @@ type UpdateWxWorkProtocolInstanceRequest struct {
 }
 
 type StartWxWorkProtocolLoginRequest struct {
-	ChannelID        int64  `json:"channelId"`
-	Guid             string `json:"guid"`
-	StoreStaffUserID int64  `json:"storeStaffUserId"`
-	StoreName        string `json:"storeName"`
+	ChannelID        int64   `json:"channelId"`
+	Guid             string  `json:"guid"`
+	StoreStaffUserID int64   `json:"storeStaffUserId"`
+	StoreName        string  `json:"storeName"`
+	Proxy            *string `json:"proxy"`
 }
 
 type ResolveWxWorkProtocolLoginBindingRequest struct {
@@ -197,6 +198,11 @@ type WxWorkProtocolSetProxyRequest struct {
 	Proxy string `json:"proxy"`
 }
 
+type PrepareWxWorkProtocolLoginRequest struct {
+	ID    int64   `json:"id"`
+	Proxy *string `json:"proxy"`
+}
+
 type CheckWxWorkProtocolLoginQRCodeRequest struct {
 	ID     int64  `json:"id"`
 	QrCode string `json:"qrcode"`
@@ -211,6 +217,11 @@ type VerifyWxWorkProtocolLoginRequest struct {
 type VerifyWxWorkProtocolRemoteLoginRequest struct {
 	Token string `json:"token"`
 	Code  string `json:"code"`
+}
+
+type PrepareWxWorkProtocolRemoteLoginRequest struct {
+	Token string  `json:"token"`
+	Proxy *string `json:"proxy"`
 }
 
 type AcceptWxWorkProtocolFriendRequest struct {

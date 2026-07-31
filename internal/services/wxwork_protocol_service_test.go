@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
+	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
 
 	"gorm.io/gorm"
@@ -154,6 +155,130 @@ func TestWxWorkProtocolLoginAllowsUnexpiredDevice(t *testing.T) {
 	}
 	if providerCalls != 1 || !strings.Contains(response, "base64-image") {
 		t.Fatalf("provider calls = %d, response = %q", providerCalls, response)
+	}
+}
+
+func TestPrepareLoginQRCodeUsesDocumentedProxyRestoreContract(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	type providerCall struct {
+		Path string
+		Data map[string]any
+	}
+	calls := make([]providerCall, 0, 4)
+	qrcodeCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Path string         `json:"path"`
+			Data map[string]any `json:"data"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode protocol request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		calls = append(calls, providerCall{Path: payload.Path, Data: payload.Data})
+		w.Header().Set("Content-Type", "application/json")
+		switch payload.Path {
+		case "/client/restore_client":
+			_, _ = w.Write([]byte(`{"err_code":0,"data":{}}`))
+		case "/login/get_login_qrcode":
+			qrcodeCalls++
+			if qrcodeCalls == 1 {
+				_, _ = w.Write([]byte(`{"err_code":1014,"err_msg":"runtime not started"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"err_code":0,"data":{"qrcode":"base64-image"}}`))
+		default:
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	instance := createWxWorkProtocolLoginTestInstance(t, db, server.URL)
+	proxy := "socks5://proxy.example.test:1080"
+	svc := &wxWorkProtocolService{
+		httpClient:                server.Client(),
+		loginRuntimeRetryAttempts: 2,
+	}
+	raw, err := svc.PrepareLoginQRCode(instance.ID, &proxy)
+	if err != nil {
+		t.Fatalf("PrepareLoginQRCode() error = %v", err)
+	}
+	if !strings.Contains(raw, "base64-image") {
+		t.Fatalf("PrepareLoginQRCode() response = %q", raw)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("provider calls = %#v, want restore then two qrcode attempts", calls)
+	}
+	restore := calls[0]
+	if restore.Path != "/client/restore_client" {
+		t.Fatalf("first provider path = %q", restore.Path)
+	}
+	if restore.Data["guid"] != instance.Guid || restore.Data["proxy"] != proxy || restore.Data["bridge"] != "" {
+		t.Fatalf("unexpected restore identity or proxy fields: %#v", restore.Data)
+	}
+	for key, want := range map[string]bool{
+		"sync_history_msg": true,
+		"force_online":     false,
+		"auto_start":       true,
+	} {
+		got, ok := restore.Data[key].(bool)
+		if !ok || got != want {
+			t.Fatalf("restore field %s = %#v, want bool %v", key, restore.Data[key], want)
+		}
+	}
+	updated := WxWorkProtocolInstanceService.Get(instance.ID)
+	if updated == nil || updated.Proxy != proxy || updated.HealthStatus != "recovering" {
+		t.Fatalf("restored instance = %#v", updated)
+	}
+
+	if _, err := svc.RestoreClientWithProxy(instance.ID, nil); err != nil {
+		t.Fatalf("RestoreClientWithProxy(saved proxy) error = %v", err)
+	}
+	last := calls[len(calls)-1]
+	if last.Path != "/client/restore_client" || last.Data["proxy"] != proxy {
+		t.Fatalf("saved proxy was not reused: %#v", last)
+	}
+}
+
+func TestNormalizeWxWorkProtocolLoginProxy(t *testing.T) {
+	for _, value := range []string{
+		"http://proxy.example.test:8080",
+		"socks4://proxy.example.test:1080",
+		"socks5://proxy.example.test:1080",
+	} {
+		if got, err := normalizeWxWorkProtocolLoginProxy(value, true); err != nil || got != value {
+			t.Fatalf("normalize proxy %q = %q, %v", value, got, err)
+		}
+	}
+	for _, value := range []string{
+		"",
+		"https://proxy.example.test:443",
+		"ftp://proxy.example.test:21",
+		"http://",
+		"http://proxy.example.test:8080/path?token=value",
+	} {
+		if _, err := normalizeWxWorkProtocolLoginProxy(value, true); err == nil {
+			t.Fatalf("normalize proxy %q error = nil", value)
+		}
+	}
+	if got, err := normalizeWxWorkProtocolLoginProxy("", false); err != nil || got != "" {
+		t.Fatalf("optional empty proxy = %q, %v", got, err)
+	}
+}
+
+func TestWxWorkProtocolInstanceResponseHidesSavedProxy(t *testing.T) {
+	item := &models.WxWorkProtocolInstance{Proxy: "socks5://user:password@proxy.example.test:1080"}
+	result := response.BuildWxWorkProtocolInstanceResponse(item)
+	if result.Proxy != "" || !result.ProxyConfigured {
+		t.Fatalf("proxy response = %#v", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if strings.Contains(string(encoded), "user:password") {
+		t.Fatalf("instance response leaked proxy credentials: %s", encoded)
 	}
 }
 

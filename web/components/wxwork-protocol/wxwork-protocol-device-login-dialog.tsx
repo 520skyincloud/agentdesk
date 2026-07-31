@@ -10,6 +10,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 
+import { WxWorkProtocolLoginProxyField } from "@/components/wxwork-protocol/wxwork-protocol-login-proxy-field"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -23,7 +24,6 @@ import { Input } from "@/components/ui/input"
 import {
   checkWxWorkProtocolLoginQrcode,
   getWxWorkProtocolLoginQrcode,
-  recoverWxWorkProtocolInstance,
   syncWxWorkProtocolProfile,
   verifyWxWorkProtocolLogin,
   type WxWorkProtocolInstance,
@@ -44,28 +44,6 @@ const pendingLoginStatus: WxWorkProtocolLoginStatus = {
   statusCode: 0,
   requiresCode: false,
   message: "等待企微员工号扫码",
-}
-
-const loginRuntimeRetryIntervalMs = 3000
-const loginRuntimeMaxAttempts = 10
-
-function isLoginRuntimeUnavailable(error: unknown) {
-  return (
-    error instanceof Error &&
-    /(?:err_code[=:]\s*1014|\b1014\b)/i.test(error.message)
-  )
-}
-
-function loginRuntimeUnavailableError() {
-  return new Error(
-    "企微员工号登录环境仍未启动。请确认该有效实例的异地登录器在线后重试。"
-  )
-}
-
-function waitForLoginRuntime() {
-  return new Promise<void>((resolve) => {
-    window.setTimeout(resolve, loginRuntimeRetryIntervalMs)
-  })
 }
 
 function qrCodeSource(value: string) {
@@ -98,12 +76,11 @@ export function WxWorkProtocolDeviceLoginDialog({
     useState<WxWorkProtocolLoginQRCodeResult | null>(null)
   const [status, setStatus] = useState<WxWorkProtocolLoginStatus | null>(null)
   const [code, setCode] = useState("")
+  const [proxy, setProxy] = useState("")
   const [generating, setGenerating] = useState(false)
   const [verifying, setVerifying] = useState(false)
   const checkingRef = useRef(false)
   const completedRef = useRef(false)
-  const autoStartedInstanceRef = useRef(0)
-  const preparedInstanceRef = useRef(0)
   const requestSequenceRef = useRef(0)
   const onChangedRef = useRef(onChanged)
 
@@ -136,54 +113,34 @@ export function WxWorkProtocolDeviceLoginDialog({
       return
     }
     const requestSequence = ++requestSequenceRef.current
+    const normalizedProxy = proxy.trim()
+    if (!normalizedProxy && !instance?.proxyConfigured) {
+      const message = "请先填写扫码设备上的异地登录代理地址"
+      setStatus({
+        status: "failed",
+        statusCode: -1,
+        requiresCode: false,
+        message,
+      })
+      toast.error(message)
+      return
+    }
     completedRef.current = false
     setGenerating(true)
     setQRCode(null)
     setStatus(null)
     setCode("")
     try {
-      if (
-        instance?.healthStatus !== "online" &&
-        preparedInstanceRef.current !== instanceId
-      ) {
-        setStatus({
-          status: "pending",
-          statusCode: 0,
-          requiresCode: false,
-          message: "正在启动企微员工号登录环境",
-        })
-        try {
-          await recoverWxWorkProtocolInstance(instanceId)
-        } catch (error) {
-          if (!isLoginRuntimeUnavailable(error)) throw error
-        }
-        preparedInstanceRef.current = instanceId
-      }
-
-      let result: WxWorkProtocolLoginQRCodeResult | null = null
-      for (let attempt = 1; attempt <= loginRuntimeMaxAttempts; attempt += 1) {
-        try {
-          result = await getWxWorkProtocolLoginQrcode(instanceId)
-          break
-        } catch (error) {
-          if (
-            !isLoginRuntimeUnavailable(error) ||
-            attempt === loginRuntimeMaxAttempts
-          ) {
-            throw isLoginRuntimeUnavailable(error)
-              ? loginRuntimeUnavailableError()
-              : error
-          }
-          if (requestSequence !== requestSequenceRef.current) return
-          setStatus({
-            status: "pending",
-            statusCode: 0,
-            requiresCode: false,
-            message: "登录环境正在启动，稍后自动重试",
-          })
-          await waitForLoginRuntime()
-        }
-      }
+      setStatus({
+        status: "pending",
+        statusCode: 0,
+        requiresCode: false,
+        message: "正在设置代理并启动登录环境",
+      })
+      const result = await getWxWorkProtocolLoginQrcode(
+        instanceId,
+        normalizedProxy || undefined
+      )
       if (requestSequence !== requestSequenceRef.current) return
       if (!result?.qrcode.trim()) {
         throw new Error("企微员工号协议未返回可展示的登录二维码")
@@ -207,27 +164,35 @@ export function WxWorkProtocolDeviceLoginDialog({
       }
     }
   }, [
-    instance?.healthStatus,
     instance?.loginAvailable,
     instance?.loginUnavailableReason,
+    instance?.proxyConfigured,
     instance?.protocolExpired,
     instanceId,
+    proxy,
   ])
 
   useEffect(() => {
     if (!open) {
-      autoStartedInstanceRef.current = 0
-      preparedInstanceRef.current = 0
       requestSequenceRef.current += 1
       setQRCode(null)
       setStatus(null)
       setCode("")
+      setProxy("")
       return
     }
-    if (!instanceId || autoStartedInstanceRef.current === instanceId) return
-    autoStartedInstanceRef.current = instanceId
-    void generateQRCode()
-  }, [generateQRCode, instanceId, open])
+    setQRCode(null)
+    setCode("")
+    setProxy("")
+    setStatus({
+      status: "pending",
+      statusCode: 0,
+      requiresCode: false,
+      message: instance?.proxyConfigured
+        ? "已保存异地代理，点击下方按钮启动登录"
+        : "请填写异地登录代理后启动",
+    })
+  }, [instance?.proxyConfigured, instanceId, open])
 
   useEffect(() => {
     if (
@@ -365,6 +330,13 @@ export function WxWorkProtocolDeviceLoginDialog({
           </div>
 
           <div className="flex min-w-0 flex-col gap-3">
+            <WxWorkProtocolLoginProxyField
+              value={proxy}
+              configured={instance?.proxyConfigured}
+              disabled={generating || verifying}
+              onChange={setProxy}
+            />
+
             <div
               className="rounded-lg border px-4 py-3"
               aria-live="polite"
@@ -431,10 +403,14 @@ export function WxWorkProtocolDeviceLoginDialog({
               variant="outline"
               className="mt-auto w-full"
               onClick={() => void generateQRCode()}
-              disabled={generating || verifying}
+              disabled={
+                generating ||
+                verifying ||
+                (!proxy.trim() && !instance?.proxyConfigured)
+              }
             >
               <RefreshCwIcon className={generating ? "animate-spin" : ""} />
-              重新生成二维码
+              {qrcode ? "重新生成二维码" : "设置代理并生成二维码"}
             </Button>
           </div>
         </div>

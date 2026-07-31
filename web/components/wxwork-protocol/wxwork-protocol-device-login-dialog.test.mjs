@@ -37,17 +37,17 @@ test("device login polls protocol status and handles verification code", () => {
   assert.match(componentSource, /syncWxWorkProtocolProfile/)
 })
 
-test("offline device login starts the documented runtime before requesting a qrcode", () => {
-  assert.match(componentSource, /recoverWxWorkProtocolInstance\(instanceId\)/)
-  assert.match(componentSource, /getWxWorkProtocolLoginQrcode\(instanceId\)/)
-  assert.match(componentSource, /loginRuntimeMaxAttempts = 10/)
-  assert.match(componentSource, /loginRuntimeRetryIntervalMs = 3000/)
-  assert.match(componentSource, /登录环境正在启动，稍后自动重试/)
-  assert.match(componentSource, /异地登录器在线后重试/)
+test("offline device login submits the documented proxy before requesting a qrcode", () => {
+  assert.match(componentSource, /WxWorkProtocolLoginProxyField/)
+  assert.match(componentSource, /instance\?\.proxyConfigured/)
+  assert.match(componentSource, /getWxWorkProtocolLoginQrcode\(\s*instanceId,\s*normalizedProxy \|\| undefined\s*\)/)
+  assert.match(componentSource, /正在设置代理并启动登录环境/)
+  assert.doesNotMatch(componentSource, /recoverWxWorkProtocolInstance/)
+  assert.doesNotMatch(componentSource, /loginRuntimeMaxAttempts/)
 })
 
 test("device login reuses the selected instance instead of creating an identity", () => {
-  assert.match(componentSource, /getWxWorkProtocolLoginQrcode\(instanceId\)/)
+  assert.match(componentSource, /getWxWorkProtocolLoginQrcode/)
   assert.doesNotMatch(componentSource, /startWxWorkProtocolLogin/)
   assert.doesNotMatch(componentSource, /createWxWorkProtocolRemoteSetup/)
 })

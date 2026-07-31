@@ -2,10 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/httpx"
 	"agent-desk/internal/pkg/httpx/params"
 	"agent-desk/internal/pkg/utils"
@@ -107,7 +109,7 @@ func WxWorkProtocolRemoteSetupPostVerifyEmail(ctx *gin.Context) {
 }
 
 func WxWorkProtocolRemoteSetupPostLoginQrcode(ctx *gin.Context) {
-	req := request.WxWorkProtocolRemoteSetupTokenRequest{}
+	req := request.PrepareWxWorkProtocolRemoteLoginRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -117,13 +119,18 @@ func WxWorkProtocolRemoteSetupPostLoginQrcode(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	resp, err := services.WxWorkProtocolService.GetLoginQRCode(item.ID)
+	resp, err := services.WxWorkProtocolService.PrepareLoginQRCode(item.ID, req.Proxy)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
 	services.WxWorkProtocolService.ResetLoginVerificationAttempts(item.ID)
-	httpx.WriteJSON(ctx, buildRemoteLoginQRCodeResponse(item.ID, resp))
+	result, err := buildRemoteLoginQRCodeResponse(item.ID, resp)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, result)
 }
 
 func WxWorkProtocolRemoteSetupPostCheckLogin(ctx *gin.Context) {
@@ -164,11 +171,11 @@ func WxWorkProtocolRemoteSetupPostVerifyLogin(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, resp)
 }
 
-func buildRemoteLoginQRCodeResponse(instanceID int64, raw string) map[string]any {
-	ret := map[string]any{"instanceId": instanceID, "rawResponse": raw}
+func buildRemoteLoginQRCodeResponse(instanceID int64, raw string) (map[string]any, error) {
+	ret := map[string]any{"instanceId": instanceID}
 	root := map[string]any{}
 	if err := json.Unmarshal([]byte(raw), &root); err != nil {
-		return ret
+		return nil, errorsx.BusinessError(0, "企微员工号协议未返回可展示的登录二维码")
 	}
 	data := root
 	if nested, ok := root["data"].(map[string]any); ok {
@@ -186,5 +193,9 @@ func buildRemoteLoginQRCodeResponse(instanceID int64, raw string) map[string]any
 			break
 		}
 	}
-	return ret
+	qrcode, _ := ret["qrcode"].(string)
+	if strings.TrimSpace(qrcode) == "" {
+		return nil, errorsx.BusinessError(0, "企微员工号协议未返回可展示的登录二维码")
+	}
+	return ret, nil
 }

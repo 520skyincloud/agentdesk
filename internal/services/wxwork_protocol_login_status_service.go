@@ -95,9 +95,8 @@ func claimWxWorkLoginVerificationAttempt(instanceID int64) bool {
 
 func parseWxWorkProtocolLoginStatus(raw string) *response.WxWorkProtocolLoginStatusResponse {
 	result := &response.WxWorkProtocolLoginStatusResponse{
-		Status:      "pending",
-		Message:     "等待扫码",
-		RawResponse: raw,
+		Status:  "pending",
+		Message: "等待扫码",
 	}
 	value, ok := decodeWxWorkProtocolLoginResponse(raw)
 	if !ok {

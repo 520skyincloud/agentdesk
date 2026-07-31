@@ -1,6 +1,7 @@
 package response
 
 import (
+	"strings"
 	"time"
 
 	"agent-desk/internal/models"
@@ -47,6 +48,7 @@ type WxWorkProtocolInstanceResponse struct {
 	UrgentManualAttentionCount     int64        `json:"urgentManualAttentionCount"`
 	NotifyURL                      string       `json:"notifyUrl"`
 	Proxy                          string       `json:"proxy"`
+	ProxyConfigured                bool         `json:"proxyConfigured"`
 	BridgeID                       string       `json:"bridgeId"`
 	StaffUserIDs                   string       `json:"staffUserIds"`
 	ServiceHours                   string       `json:"serviceHours"`
@@ -88,10 +90,8 @@ type WxWorkProtocolInstanceResponse struct {
 
 type StartWxWorkProtocolLoginResponse struct {
 	Instance      WxWorkProtocolInstanceResponse `json:"instance"`
-	RawResponse   string                         `json:"rawResponse"`
 	QRCode        string                         `json:"qrcode"`
 	QRCodeContent string                         `json:"qrcodeContent"`
-	Key           string                         `json:"key"`
 }
 
 type WxWorkProtocolLoginQRCodeResponse struct {
@@ -104,7 +104,6 @@ type WxWorkProtocolLoginStatusResponse struct {
 	StatusCode   int    `json:"statusCode"`
 	RequiresCode bool   `json:"requiresCode"`
 	Message      string `json:"message"`
-	RawResponse  string `json:"rawResponse,omitempty"`
 }
 
 type WxWorkProtocolRoomOptionResponse struct {
@@ -158,7 +157,8 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		WelcomeAskLocation:             item.WelcomeAskLocation,
 		KnowledgeBaseID:                item.KnowledgeBaseID,
 		NotifyURL:                      item.NotifyURL,
-		Proxy:                          item.Proxy,
+		Proxy:                          "",
+		ProxyConfigured:                strings.TrimSpace(item.Proxy) != "",
 		BridgeID:                       item.BridgeID,
 		StaffUserIDs:                   item.StaffUserIDs,
 		ServiceHours:                   item.ServiceHours,

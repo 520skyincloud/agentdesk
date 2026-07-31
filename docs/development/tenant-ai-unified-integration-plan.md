@@ -2055,6 +2055,45 @@ Migration 70 以及 Migration 72/76/77、固定 pilot、历史仿真数据及旧
   `mlogclub/agent-desk:rollback-contact-way-20260729-231049`；回滚保留 AutoMigrate 新列，
   不执行破坏性 DDL。永久错误必须修正企业微信权限，不能通过放宽校验或伪造成功绕过。
 
+### 25.54 2026-07-31 企微员工号异地登录环境与二维码链路修复
+
+本节唯一协议依据为 `https://wework.apifox.cn/llms.txt`、其链接的
+`/client/restore_client`、`/login/get_login_qrcode`、
+`/login/check_login_qrcode`、`/login/verify_login_qrcode` 页面，以及聚合智能登录流程
+文档。云端 AgentDesk 不运行供应商浏览器插件，扫码人必须先在自己的设备启动“聚合聊天
+本地代理”，再把代理地址交给 AgentDesk。
+
+冻结运行顺序：
+
+1. 选择一个真实、未过期、未绑定且未登录的 GUID；认领阶段不调用二维码接口。
+2. AgentDesk 校验代理只允许 `http://`、`socks4://` 或 `socks5://`。
+3. 调用 `/client/restore_client`，请求体严格包含 `guid`、`proxy`、空 `bridge`、
+   布尔 `sync_history_msg=true`、`force_online=false`、`auto_start=true`。
+4. 恢复成功后才调用 `/login/get_login_qrcode`；仅对真实 `1014` 做有界等待。
+5. 扫码状态 `10` 继续使用现有确认码接口，成功后再同步员工资料。
+
+`1014` 的语义是登录运行环境尚未建立，不是 GUID 过期或设备永久不可用。设备池因此不再
+用“能否立即取得二维码”作为认领条件，也不得因 `1014` 写入永久不可用状态。`9003`
+仍代表实例过期并继续阻止登录。
+
+现场绑定、已有实例重新登录和公开远程绑定页共用同一准备能力。代理可在服务端安全复用，
+但完整地址不返回浏览器；响应只给出 `proxyConfigured`。登录二维码响应不再包含供应商
+原文、内部 key 或完整代理。普通实例编辑不再覆盖登录代理，代理只由登录准备或独立
+`set_proxy` 动作维护。
+
+供应商 API 应用的环境级全局事件回调为：
+
+```text
+http://112.124.109.106:2332/api/third/wxwork-protocol/callback
+```
+
+该地址是供应商控制台配置，不是扫码端代理，也不替代 AgentDesk 每实例带鉴权 token 的
+`set_notify_url` 地址；三者不得互相回填。代码不硬编码该环境地址。当前已确认端点可达，
+真实登录和消息事件回传仍以部署后的供应商事件为最终验收证据。
+
+本次不新增 model、migration、身份、权限或页面入口，不修改 AI、小程序、企业微信第三方
+应用授权和 GUID 语义。回滚只需切换部署前应用镜像；数据库字段无需回滚。
+
 ## 26. 用户最终 1-48 项决定追溯
 
 本节按 2026-07-22 用户逐项答复保留产品解释，并由 25.44 的 2026-07-27 fresh 数据库决定
