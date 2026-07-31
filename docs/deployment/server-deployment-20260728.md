@@ -702,6 +702,53 @@ image:   sha256:497adb38064faea0f3d87e7ab4d6cc994fdfb7b25b8e695463757b3e0e522878
 start:   2026-07-31 09:52:00 Asia/Shanghai
 ```
 
-直接链路的新 commit、备份目录、release、镜像摘要、容器启动时间、页面检查和真实二维码
-结果必须在本次生产部署后补录。完成这些记录前，不得宣称线上已经修复。截图中明文展示过
-供应商应用 Secret，完成链路核验后仍必须在供应商控制台轮换，并与服务器配置原子同步。
+最终部署证据：
+
+```text
+代码提交：3ecb6093fd0ce1e80c5bd1383cffd8f44678badb
+源码归档 SHA-256：808867fa34e03d1ac08f7b395b24d8c389c67de34b4f0ccd80400ead797eca5a
+发布目录：/opt/agentdesk/releases/20260731-1245-wxwork-direct-login-final/app
+部署前备份：/opt/agentdesk/backups/20260731-1245-wxwork-direct-login-final
+MySQL dump SHA-256：e2dddda9d4e9d6b53181143d2b4751e8afac8ed0f2bd4d0655eecc930fb45244
+回滚镜像：mlogclub/agent-desk:rollback-20260731-1245-wxwork-direct-login-final
+回滚镜像摘要：sha256:101388ae8790def0325d7277fd328a048cf1accdc9871ca912ec7928ee3a8025
+最终镜像摘要：sha256:bdedcf14030b5b6b9e3f9b8f72a363a88d08ea8f4087ff74bc72f6332727de07
+镜像创建时间：2026-07-31 12:46:31 +08:00
+应用容器启动时间：2026-07-31 12:46:53 +08:00
+```
+
+部署前备份包含权限为 `0600` 的生产环境文件和通过 gzip 完整性检查的 MySQL dump。发布
+使用 Compose project `agentdesk` 和 `--force-recreate --no-deps agent-desk`，只重建
+应用容器；MySQL 容器启动时间仍为 `2026-07-28 10:09:43 +08:00`。最终应用与 MySQL
+均为 `healthy`，本机 `8083` 和公网员工号页面均返回 HTTP 200，启动日志没有
+panic、fatal、migration 或数据库连接错误。
+
+生产复验没有直接修改数据库或伪造协议结果。通过现有“更换登录员工号”入口复用了旧流程
+留下的替换草稿，真实调用供应商后确认：
+
+```text
+replacement draft reused: true
+qrcode present: true
+check status: pending
+status code: 0
+requires code: false
+message: 等待扫码
+```
+
+取码成功后草稿状态由旧 `recovering` 收敛为 `login_qrcode`，`EmployeeUserID` 仍为空且
+实例仍为 disabled，符合“员工本人扫码成功前不得启用”的边界。生产 `.tsx` 页面已确认
+不存在“异地登录代理”或“设置代理并获取登录二维码”文案。首次绑定入口没有接管该替换
+草稿；原实例停用和替换关系写入仍由既有替换完成事务负责。
+
+剩余真机步骤必须由员工本人完成：
+
+1. 刷新员工号实例页，通过旧实例的“更换登录员工号”打开现有替换绑定页；
+2. 点击“获取登录二维码”并使用目标企微员工号扫码；
+3. 若供应商返回 `QRCODE_REQUIRE_VERIFY(10)`，确认页面自动出现确认码输入并由本人填写；
+4. 确认协议返回成功、员工资料同步，并完成替换页后续验证；
+5. 确认新实例变为 enabled + online、旧实例写入 `ReplacedByInstanceID`，再做真实消息回调
+   和收发验收。
+
+上述步骤完成前，当前结论仅为“直接二维码链路已部署且真实取码成功”，不宣称员工号已经
+登录。截图中明文展示过供应商应用 Secret，完成链路核验后仍必须在供应商控制台轮换，并与
+服务器配置原子同步。

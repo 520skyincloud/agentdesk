@@ -484,12 +484,15 @@ DTO、enum、权限、路由或 WebSocket 契约，不修改 AI、计费、小�
 
 ```text
 go test ./...                                  通过
-前端 Node 契约测试                            全部通过
+前端 Node 契约测试                            169/169 通过
 pnpm typecheck                                 通过
 pnpm lint                                      0 error，33 条既有 warning
 pnpm build                                     通过，48 个页面
 git diff --check                               通过
 ```
 
-生产 release、镜像摘要、容器启动时间、真实二维码和状态 `10` 确认码结果在部署后记录。
-员工本人完成扫码前，不得把实例标记为已登录。
+最终 commit `3ecb6093fd0ce1e80c5bd1383cffd8f44678badb` 已部署到
+`/opt/agentdesk/releases/20260731-1245-wxwork-direct-login-final/app`，生产镜像为
+`sha256:bdedcf14030b5b6b9e3f9b8f72a363a88d08ea8f4087ff74bc72f6332727de07`。
+真实替换绑定请求已返回非空二维码，首次检查为 `pending / statusCode=0 / 等待扫码`。
+状态 `10` 确认码和登录成功仍待员工本人扫码触发；完成前不得把实例标记为已登录。

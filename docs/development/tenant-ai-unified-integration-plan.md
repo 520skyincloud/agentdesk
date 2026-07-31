@@ -2093,8 +2093,16 @@ token 的 `set_notify_url` 地址；三者不得互相回填。代码不硬编�
 
 历史 commit `39ff075` 曾错误地把代理和 `restore_client` 作为二维码前置条件，并于
 2026-07-31 09:52 部署；该判断与官方登录接口契约不符，现已明确废止，不再作为产品或部署
-依据。直接登录修复的最终 commit、release、镜像摘要、启动时间和真实二维码结果在生产部署
-完成后补录；在此之前不得宣称线上已经修复。
+依据。最终修复 commit 为 `3ecb6093fd0ce1e80c5bd1383cffd8f44678badb`，生产 release 为
+`/opt/agentdesk/releases/20260731-1245-wxwork-direct-login-final/app`，镜像摘要为
+`sha256:bdedcf14030b5b6b9e3f9b8f72a363a88d08ea8f4087ff74bc72f6332727de07`。
+应用于 2026-07-31 12:46:53（Asia/Shanghai）启动并进入 healthy，MySQL 未重启。
+
+生产通过现有替换绑定页复用旧替换草稿，真实获得非空二维码，首次检查返回
+`pending / statusCode=0 / requiresCode=false / 等待扫码`。取码后草稿收敛为
+`login_qrcode`，仍无 `EmployeeUserID` 且保持 disabled；页面源码已确认没有代理输入。
+因此当前只证明直接取码和轮询链路已上线，不证明员工本人已经扫码。状态 10 确认码输入、
+登录成功、替换事务完成、回调和真实收发仍需员工本人继续验收。
 
 本次不新增 model、migration、身份、权限或页面入口，不修改 AI、小程序、企业微信第三方
 应用授权和 GUID 语义。回滚只需切换部署前应用镜像；数据库字段无需回滚。
