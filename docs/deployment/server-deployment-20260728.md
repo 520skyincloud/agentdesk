@@ -648,27 +648,27 @@ acquisition_permission_denied
 
 上述五步完成前，不得宣称企业微信获客助手全链路已经验收。
 
-## 企微员工号异地登录环境修复
+## 企微员工号登录二维码直接链路修复
 
-2026-07-31 按聚合智能官方登录流程修复 `1014`。原实现虽然在二维码前调用
-`/client/restore_client`，但把 `proxy` 固定为空字符串；设备池认领还会提前调用
-`/login/get_login_qrcode`，从而把“登录环境未启动”误判为实例不可用。
+2026-07-31 复核 `https://wework.apifox.cn/llms.txt` 及其登录接口页面后确认：获取登录
+二维码不要求用户填写代理，也不要求预先调用 `/client/restore_client`。此前 commit
+`39ff075` 引入的“异地登录代理 -> restore -> 重试二维码”链路属于错误判断，已废止。
 
 修复后的统一链路为：
 
 ```text
-扫码设备启动聚合聊天本地代理
-  -> AgentDesk 校验并提交代理
-  -> POST /client/restore_client
-  -> 有界等待运行环境
-  -> POST /login/get_login_qrcode
-  -> POST /login/check_login_qrcode
-  -> 状态 10 时 POST /login/verify_login_qrcode
+POST /login/get_login_qrcode
+  -> 前端展示真实二维码
+  -> 每 3 秒 POST /login/check_login_qrcode
+  -> 仅状态 QRCODE_REQUIRE_VERIFY(10) 展示确认码输入
+  -> POST /login/verify_login_qrcode
+  -> 官方成功后同步员工资料与在线状态
 ```
 
-现场绑定、已有实例重新登录和公开远程绑定页均使用该链路。完整代理只在服务端保存和发送
-给供应商，不回显到浏览器；普通实例编辑不会再意外清空代理。二维码和状态响应已移除供应商
-原文与内部 key。
+`get_login_qrcode` 请求只发送 `guid` 与布尔 `verify_login=false`；`check_login_qrcode`
+只发送 `guid`；`verify_login_qrcode` 只发送 `guid` 与用户输入的 `code`。现场绑定、已有
+实例重新登录和公开远程绑定页均不再展示、接收或发送代理，也不会在登录前 recover/restore。
+二维码和状态响应继续移除供应商原文与内部 key，空二维码明确失败。
 
 聚合智能 API 应用的全局事件回调按用户提供的供应商环境配置为：
 
@@ -676,74 +676,32 @@ acquisition_permission_denied
 http://112.124.109.106:2332/api/third/wxwork-protocol/callback
 ```
 
-该环境级地址与 AgentDesk 每实例 `set_notify_url`、扫码设备异地代理是三套不同概念。
-本次没有把该 IP 硬编码进代码。部署前探测已确认地址可达，但只有供应商真实登录/消息事件
-成功回传后，才能标记端到端验收完成。
+该环境级地址、AgentDesk 每实例 `set_notify_url` 和登录二维码接口是三套不同概念。本次
+没有把该 IP 硬编码进代码。部署前探测已确认地址可达，但只有供应商真实登录/消息事件成功
+回传后，才能标记端到端验收完成。
 
-部署前验证：
-
-```text
-go test ./...                                  通过
-node --test web/**/*.test.mjs                  168 项通过
-tsc --noEmit                                   通过
-eslint .                                       0 error，33 条项目既有 warning
-next build --webpack                           通过，48 个静态页面
-git diff --check                               通过
-```
-
-生产部署于 2026-07-31 完成。切换前备份为：
+当前直接链路部署前必须验证：
 
 ```text
-/opt/agentdesk/backups/20260731-0945-wxwork-login-proxy
+gofmt -w <修改的 Go 文件>
+go test ./internal/services ./internal/handlers/api ./internal/handlers/dashboard
+go test ./...
+node --test web/**/*.test.mjs
+pnpm typecheck
+pnpm lint
+pnpm build
+git diff --check
 ```
 
-其中 MySQL dump 已通过 `gzip -t`，SHA-256 为：
+历史错误版本的审计记录保留如下，仅用于追溯和回滚，不得继续部署：
 
 ```text
-ec633e9af02a69984fd2489aa9658d5717e02c79d809b8a8efe048b863acc9e4
+commit:  39ff075
+release: /opt/agentdesk/releases/20260731-0947-wxwork-login-proxy/app
+image:   sha256:497adb38064faea0f3d87e7ab4d6cc994fdfb7b25b8e695463757b3e0e522878
+start:   2026-07-31 09:52:00 Asia/Shanghai
 ```
 
-源码归档 SHA-256 为：
-
-```text
-d45c83b73e923b712aa2ea10deccebf91b487874840319ddb87b33bd3a7bd75d
-```
-
-部署前应用镜像保留为：
-
-```text
-mlogclub/agent-desk:rollback-wxwork-login-20260731-0945
-sha256:3de4e968bba6e5d5fe4c771419ea13f69ac5e1b7c06ad85f277b7470d4802d03
-```
-
-新 release 与镜像为：
-
-```text
-/opt/agentdesk/releases/20260731-0947-wxwork-login-proxy/app
-mlogclub/agent-desk:39ff075
-sha256:497adb38064faea0f3d87e7ab4d6cc994fdfb7b25b8e695463757b3e0e522878
-```
-
-`/opt/agentdesk/current` 已原子切换到上述 release。应用容器使用
-`--force-recreate --no-deps agent-desk` 重建，于
-`2026-07-31 09:52:00`（Asia/Shanghai）启动并进入 `healthy`；MySQL 容器保持原容器
-运行，未重建。公网首页、登录页和企微员工号页面均返回 HTTP 200，员工号列表 API 正常，
-启动后日志未发现 panic、fatal 或 error。构建时临时启用的 4 GiB swap 已关闭并删除，
-没有写入 `/etc/fstab`。
-
-全局回调探测必须按真实结果解释：
-
-- 对用户指定地址发送无身份空 POST，返回 `HTTP 200`，正文为统一 JSON 失败结果；
-- 对当前生产 `https://weibao.omnireva.com/api/third/wxwork-protocol/callback` 发送同一空
-  POST，按新 Handler 契约返回 `HTTP 400`；
-- 指定地址响应头显示 Python `BaseHTTP` 服务，因此它不是当前生产 Handler 的透明直连；
-  可能是旧 AgentDesk 或会改写状态码的中转，未取得该服务器只读核验授权前不作进一步
-  推断；
-- 供应商控制台是否已经点击“保存”，以及真实登录/消息事件最终落到哪个数据库，仍需通过
-  一条真实供应商回调和两端 request ID/业务记录核对。
-
-因此当前可以确认“新登录链路已部署”，但不能宣称 `1014` 真实扫码已经通过，也不能宣称
-上述全局回调已经与当前生产实例端到端打通。现有“黄奇峰”实例已过期，不能用于本次登录
-验收；下一步必须使用真实未过期 GUID，在扫码设备启动聚合聊天本地代理后，通过新表单提交
-代理并由用户本人扫码、按需输入验证码。截图中明文展示过供应商应用 Secret，完成链路核验
-后必须在供应商控制台轮换，并与服务器配置原子同步。
+直接链路的新 commit、备份目录、release、镜像摘要、容器启动时间、页面检查和真实二维码
+结果必须在本次生产部署后补录。完成这些记录前，不得宣称线上已经修复。截图中明文展示过
+供应商应用 Secret，完成链路核验后仍必须在供应商控制台轮换，并与服务器配置原子同步。

@@ -1,11 +1,10 @@
 "use client"
 
-import { Suspense, useEffect, useMemo, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { CheckCircle2Icon, CopyIcon, LocateFixedIcon, QrCodeIcon, RefreshCwIcon } from "lucide-react"
 import { useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 
-import { WxWorkProtocolLoginProxyField } from "@/components/wxwork-protocol/wxwork-protocol-login-proxy-field"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
@@ -82,8 +81,9 @@ function WxWorkRemoteSetupContent() {
   const [checking, setChecking] = useState(false)
   const [loginStatus, setLoginStatus] = useState<WxWorkProtocolLoginStatus | null>(null)
   const [loginCode, setLoginCode] = useState("")
-  const [loginProxy, setLoginProxy] = useState("")
   const [loginVerifying, setLoginVerifying] = useState(false)
+  const loginCheckInFlightRef = useRef(false)
+  const loginCompletedRef = useRef(false)
   const [emailCode, setEmailCode] = useState("")
   const [emailVerificationToken, setEmailVerificationToken] = useState("")
   const [emailSending, setEmailSending] = useState(false)
@@ -94,12 +94,7 @@ function WxWorkRemoteSetupContent() {
     setToken(searchParams.get("token") || "")
   }, [searchParams])
 
-  useEffect(() => {
-    if (!token) return
-    void loadRemoteSetup(token)
-  }, [token])
-
-  async function loadRemoteSetup(nextToken: string) {
+  const loadRemoteSetup = useCallback(async (nextToken: string) => {
     setLoading(true)
     try {
       const data = await fetchWxWorkProtocolRemoteSetup(nextToken)
@@ -127,7 +122,12 @@ function WxWorkRemoteSetupContent() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!token) return
+    void loadRemoteSetup(token)
+  }, [loadRemoteSetup, token])
 
   const qrcodeImage = useMemo(() => {
     const value = qrcode?.qrcode || qrcode?.qrcodeContent || ""
@@ -143,40 +143,60 @@ function WxWorkRemoteSetupContent() {
 
   async function getLoginQRCode() {
     if (!token) return
-    if (!loginProxy.trim() && !instance?.proxyConfigured) {
-      toast.error("请先填写扫码设备上的异地登录代理地址")
-      return
-    }
     try {
-      const data = await getWxWorkProtocolRemoteSetupLoginQrcode(
-        token,
-        loginProxy.trim() || undefined
-      )
+      const data = await getWxWorkProtocolRemoteSetupLoginQrcode(token)
       setQrcode(data)
       setLoginStatus(null)
       setLoginCode("")
+      loginCompletedRef.current = false
       toast.success("已获取登录二维码")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "获取二维码失败")
     }
   }
 
-  async function checkLogin() {
-    if (!token) return
-    setChecking(true)
+  const loadLoginStatus = useCallback(async (showFeedback: boolean) => {
+    if (!token || loginCheckInFlightRef.current) return
+    loginCheckInFlightRef.current = true
+    if (showFeedback) setChecking(true)
     try {
       const status = await checkWxWorkProtocolRemoteSetupLogin(token)
       setLoginStatus(status)
-      if (status.status === "success") {
+      if (status.status === "success" && !loginCompletedRef.current) {
+        loginCompletedRef.current = true
         toast.success("员工号登录成功")
         await loadRemoteSetup(token)
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "检查扫码状态失败")
+      if (showFeedback) {
+        toast.error(error instanceof Error ? error.message : "检查扫码状态失败")
+      }
     } finally {
-      setChecking(false)
+      loginCheckInFlightRef.current = false
+      if (showFeedback) setChecking(false)
     }
+  }, [loadRemoteSetup, token])
+
+  async function checkLogin() {
+    await loadLoginStatus(true)
   }
+
+  useEffect(() => {
+    if (
+      !token ||
+      !qrcode ||
+      loginStatus?.requiresCode ||
+      loginStatus?.status === "success" ||
+      loginStatus?.status === "failed" ||
+      loginStatus?.status === "refused" ||
+      loginStatus?.status === "expired"
+    ) {
+      return
+    }
+    const timer = window.setInterval(() => void loadLoginStatus(false), 3000)
+    void loadLoginStatus(false)
+    return () => window.clearInterval(timer)
+  }, [loadLoginStatus, loginStatus?.requiresCode, loginStatus?.status, qrcode, token])
 
   async function verifyLogin() {
     if (!token || !loginCode.trim()) {
@@ -300,13 +320,6 @@ function WxWorkRemoteSetupContent() {
               </div>
               <QrCodeIcon className="size-5 text-muted-foreground" />
             </div>
-            <div className="mt-4">
-              <WxWorkProtocolLoginProxyField
-                value={loginProxy}
-                configured={instance?.proxyConfigured}
-                onChange={setLoginProxy}
-              />
-            </div>
             <div className="mt-4 flex min-h-64 items-center justify-center rounded-2xl border border-dashed border-[#cbd8ea] bg-[#f8fafc] p-4">
               {qrcodeImage ? (
                 qrcodeImage.startsWith("http") || qrcodeImage.startsWith("data:image") ? (
@@ -320,14 +333,9 @@ function WxWorkRemoteSetupContent() {
               )}
             </div>
             <div className="mt-4 grid gap-2">
-              <Button
-                type="button"
-                className="rounded-xl"
-                onClick={() => void getLoginQRCode()}
-                disabled={!loginProxy.trim() && !instance?.proxyConfigured}
-              >
+              <Button type="button" className="rounded-xl" onClick={() => void getLoginQRCode()}>
                 <QrCodeIcon className="size-4" />
-                设置代理并获取登录二维码
+                获取登录二维码
               </Button>
               <Button type="button" variant="outline" className="rounded-xl" onClick={() => void checkLogin()} disabled={checking}>
                 <RefreshCwIcon className={checking ? "size-4 animate-spin" : "size-4"} />

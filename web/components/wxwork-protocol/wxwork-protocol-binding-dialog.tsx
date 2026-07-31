@@ -14,7 +14,6 @@ import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
 import { OptionCombobox } from "@/components/option-combobox"
-import { WxWorkProtocolLoginProxyField } from "@/components/wxwork-protocol/wxwork-protocol-login-proxy-field"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -97,7 +96,6 @@ export function WxWorkProtocolBindingDialog({
   const [loginResult, setLoginResult] = useState<StartWxWorkProtocolLoginResult | null>(null)
   const [loginStatus, setLoginStatus] = useState<WxWorkProtocolLoginStatus | null>(null)
   const [loginCode, setLoginCode] = useState("")
-  const [loginProxy, setLoginProxy] = useState("")
   const [verifying, setVerifying] = useState(false)
   const [remoteURL, setRemoteURL] = useState("")
   const checkingRef = useRef(false)
@@ -122,7 +120,6 @@ export function WxWorkProtocolBindingDialog({
     setLoginResult(null)
     setLoginStatus(null)
     setLoginCode("")
-    setLoginProxy("")
     setRemoteURL("")
     completedRef.current = false
     Promise.all([
@@ -193,7 +190,6 @@ export function WxWorkProtocolBindingDialog({
     setStoreName(repairMojibakeText(next?.storeStaff?.storeName || next?.nickname || ""))
     setLoginResult(null)
     setLoginStatus(null)
-    setLoginProxy("")
     setRemoteURL("")
     completedRef.current = false
   }
@@ -216,10 +212,6 @@ export function WxWorkProtocolBindingDialog({
 
   async function startOnsiteBinding() {
     if (!validateSelection()) return
-    if (!loginProxy.trim()) {
-      toast.error("请先填写扫码设备上的异地登录代理地址")
-      return
-    }
     setStarting(true)
     setLoginStatus(null)
     setLoginCode("")
@@ -229,7 +221,6 @@ export function WxWorkProtocolBindingDialog({
         channelId: Number(channelId),
         storeStaffUserId: Number(userId),
         storeName: storeName.trim(),
-        proxy: loginProxy.trim(),
       })
       setLoginResult(result)
       setLoginStatus({
@@ -364,11 +355,6 @@ export function WxWorkProtocolBindingDialog({
               </TabsList>
 
               <TabsContent value="onsite" className="mt-4 space-y-4">
-                <WxWorkProtocolLoginProxyField
-                  value={loginProxy}
-                  disabled={starting || verifying}
-                  onChange={setLoginProxy}
-                />
                 <div className="grid gap-4 sm:grid-cols-[240px_1fr]">
                   <div className="flex aspect-square items-center justify-center rounded-lg border bg-muted/30 p-4">
                     {qrSource ? (
@@ -400,7 +386,7 @@ export function WxWorkProtocolBindingDialog({
                         </Button>
                       </div>
                     ) : null}
-                    <Button className="w-full" onClick={() => void startOnsiteBinding()} disabled={starting || !loginProxy.trim()}>
+                    <Button className="w-full" onClick={() => void startOnsiteBinding()} disabled={starting}>
                       {starting ? <LoaderCircleIcon className="animate-spin" /> : loginResult ? <RefreshCwIcon /> : <QrCodeIcon />}
                       {starting ? "生成中" : loginResult ? "重新生成二维码" : "生成登录二维码"}
                     </Button>

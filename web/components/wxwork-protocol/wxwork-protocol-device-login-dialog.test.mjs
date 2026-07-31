@@ -37,11 +37,11 @@ test("device login polls protocol status and handles verification code", () => {
   assert.match(componentSource, /syncWxWorkProtocolProfile/)
 })
 
-test("offline device login submits the documented proxy before requesting a qrcode", () => {
-  assert.match(componentSource, /WxWorkProtocolLoginProxyField/)
-  assert.match(componentSource, /instance\?\.proxyConfigured/)
-  assert.match(componentSource, /getWxWorkProtocolLoginQrcode\(\s*instanceId,\s*normalizedProxy \|\| undefined\s*\)/)
-  assert.match(componentSource, /正在设置代理并启动登录环境/)
+test("device login directly requests the documented qrcode endpoint", () => {
+  assert.match(componentSource, /getWxWorkProtocolLoginQrcode\(instanceId\)/)
+  assert.match(componentSource, /正在获取企微员工号登录二维码/)
+  assert.doesNotMatch(componentSource, /WxWorkProtocolLoginProxyField/)
+  assert.doesNotMatch(componentSource, /proxyConfigured/)
   assert.doesNotMatch(componentSource, /recoverWxWorkProtocolInstance/)
   assert.doesNotMatch(componentSource, /loginRuntimeMaxAttempts/)
 })

@@ -1,7 +1,6 @@
 package response
 
 import (
-	"strings"
 	"time"
 
 	"agent-desk/internal/models"
@@ -48,7 +47,6 @@ type WxWorkProtocolInstanceResponse struct {
 	UrgentManualAttentionCount     int64        `json:"urgentManualAttentionCount"`
 	NotifyURL                      string       `json:"notifyUrl"`
 	Proxy                          string       `json:"proxy"`
-	ProxyConfigured                bool         `json:"proxyConfigured"`
 	BridgeID                       string       `json:"bridgeId"`
 	StaffUserIDs                   string       `json:"staffUserIds"`
 	ServiceHours                   string       `json:"serviceHours"`
@@ -158,7 +156,6 @@ func BuildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance) Wx
 		KnowledgeBaseID:                item.KnowledgeBaseID,
 		NotifyURL:                      item.NotifyURL,
 		Proxy:                          "",
-		ProxyConfigured:                strings.TrimSpace(item.Proxy) != "",
 		BridgeID:                       item.BridgeID,
 		StaffUserIDs:                   item.StaffUserIDs,
 		ServiceHours:                   item.ServiceHours,

@@ -456,7 +456,6 @@ export type WxWorkProtocolInstance = {
   urgentManualAttentionCount: number
   notifyUrl: string
   proxy: string
-  proxyConfigured: boolean
   bridgeId: string
   staffUserIds: string
   managedMode: string
@@ -1190,7 +1189,6 @@ export function startWxWorkProtocolLogin(payload: {
   channelId?: number
   storeStaffUserId: number
   storeName: string
-  proxy: string
 }) {
   return request<StartWxWorkProtocolLoginResult>("/api/dashboard/wxwork-protocol-instance/start_login", {
     method: "POST",
@@ -1198,7 +1196,6 @@ export function startWxWorkProtocolLogin(payload: {
       channelId: payload.channelId ?? 0,
       storeStaffUserId: payload.storeStaffUserId,
       storeName: payload.storeName,
-      proxy: payload.proxy,
     }),
   })
 }
@@ -1323,10 +1320,10 @@ export function updateWxWorkProtocolAISettings(payload: UpdateWxWorkProtocolAISe
   })
 }
 
-export function getWxWorkProtocolLoginQrcode(id: number, proxy?: string) {
+export function getWxWorkProtocolLoginQrcode(id: number) {
   return request<WxWorkProtocolLoginQRCodeResult>("/api/dashboard/wxwork-protocol-instance/login_qrcode", {
     method: "POST",
-    body: JSON.stringify({ id, ...(proxy ? { proxy } : {}) }),
+    body: JSON.stringify({ id }),
   })
 }
 
@@ -1379,11 +1376,11 @@ export function verifyWxWorkProtocolRemoteSetupEmail(payload: { token: string; e
   })
 }
 
-export function getWxWorkProtocolRemoteSetupLoginQrcode(token: string, proxy?: string) {
+export function getWxWorkProtocolRemoteSetupLoginQrcode(token: string) {
   return request<WxWorkProtocolRemoteLoginQRCodeResult>("/api/wxwork-protocol-remote-setup/login_qrcode", {
     method: "POST",
     skipAuth: true,
-    body: JSON.stringify({ token, ...(proxy ? { proxy } : {}) }),
+    body: JSON.stringify({ token }),
   })
 }
 
@@ -1417,10 +1414,10 @@ export function verifyWxWorkProtocolLogin(id: number, code: string) {
   })
 }
 
-export function recoverWxWorkProtocolInstance(id: number, proxy?: string) {
+export function recoverWxWorkProtocolInstance(id: number) {
   return request<string>("/api/dashboard/wxwork-protocol-instance/recover", {
     method: "POST",
-    body: JSON.stringify({ id, ...(proxy ? { proxy } : {}) }),
+    body: JSON.stringify({ id }),
   })
 }
 

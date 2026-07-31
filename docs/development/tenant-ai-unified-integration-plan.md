@@ -2055,31 +2055,31 @@ Migration 70 以及 Migration 72/76/77、固定 pilot、历史仿真数据及旧
   `mlogclub/agent-desk:rollback-contact-way-20260729-231049`；回滚保留 AutoMigrate 新列，
   不执行破坏性 DDL。永久错误必须修正企业微信权限，不能通过放宽校验或伪造成功绕过。
 
-### 25.54 2026-07-31 企微员工号异地登录环境与二维码链路修复
+### 25.54 2026-07-31 企微员工号登录二维码直接链路
 
-本节唯一协议依据为 `https://wework.apifox.cn/llms.txt`、其链接的
-`/client/restore_client`、`/login/get_login_qrcode`、
-`/login/check_login_qrcode`、`/login/verify_login_qrcode` 页面，以及聚合智能登录流程
-文档。云端 AgentDesk 不运行供应商浏览器插件，扫码人必须先在自己的设备启动“聚合聊天
-本地代理”，再把代理地址交给 AgentDesk。
+本节唯一协议依据为 `https://wework.apifox.cn/llms.txt` 及其链接的
+`/login/get_login_qrcode`、`/login/check_login_qrcode`、
+`/login/verify_login_qrcode` 页面。官方登录二维码链路没有要求用户填写代理，也没有要求
+在获取二维码前调用 `/client/restore_client`。
 
 冻结运行顺序：
 
-1. 选择一个真实、未过期、未绑定且未登录的 GUID；认领阶段不调用二维码接口。
-2. AgentDesk 校验代理只允许 `http://`、`socks4://` 或 `socks5://`。
-3. 调用 `/client/restore_client`，请求体严格包含 `guid`、`proxy`、空 `bridge`、
-   布尔 `sync_history_msg=true`、`force_online=false`、`auto_start=true`。
-4. 恢复成功后才调用 `/login/get_login_qrcode`；仅对真实 `1014` 做有界等待。
-5. 扫码状态 `10` 继续使用现有确认码接口，成功后再同步员工资料。
+1. 选择真实、未过期、属于当前租户和门店且可登录的 GUID。
+2. 直接调用 `/login/get_login_qrcode`，请求体仅包含 `guid` 和布尔
+   `verify_login=false`。
+3. 前端展示真实二维码并每 3 秒调用 `/login/check_login_qrcode`；请求体仅包含 `guid`。
+4. 只有官方状态 `QRCODE_REQUIRE_VERIFY(10)` 才展示确认码输入。
+5. 用户提交确认码后调用 `/login/verify_login_qrcode`，请求体仅包含 `guid` 和 `code`。
+6. 官方返回成功后再同步员工资料和实例在线状态，不允许伪造成功。
 
-`1014` 的语义是登录运行环境尚未建立，不是 GUID 过期或设备永久不可用。设备池因此不再
-用“能否立即取得二维码”作为认领条件，也不得因 `1014` 写入永久不可用状态。`9003`
-仍代表实例过期并继续阻止登录。
+现场绑定、已有实例重新登录和公开远程绑定页复用同一状态机。三个入口均不收集或发送代理，
+也不在登录前调用 recover/restore。登录二维码和状态响应继续移除供应商原文与内部 key；
+二维码为空时明确失败。独立 `set_proxy` 运维动作和历史 `Proxy` 数据字段不进入本登录链路，
+本次不扩大删除范围。
 
-现场绑定、已有实例重新登录和公开远程绑定页共用同一准备能力。代理可在服务端安全复用，
-但完整地址不返回浏览器；响应只给出 `proxyConfigured`。登录二维码响应不再包含供应商
-原文、内部 key 或完整代理。普通实例编辑不再覆盖登录代理，代理只由登录准备或独立
-`set_proxy` 动作维护。
+设备池在资料接口确认历史实例离线或返回 `1014` 后，调用官方二维码接口直接验证该 GUID
+真实可用于扫码认领；过期、已绑定或在线实例继续排除。这里不推断 `1014` 的业务原因，
+也不得把它猜测为“用户未提供代理”或通过自动 restore 和重试掩盖真实结果。
 
 供应商 API 应用的环境级全局事件回调为：
 
@@ -2087,23 +2087,14 @@ Migration 70 以及 Migration 72/76/77、固定 pilot、历史仿真数据及旧
 http://112.124.109.106:2332/api/third/wxwork-protocol/callback
 ```
 
-该地址是供应商控制台配置，不是扫码端代理，也不替代 AgentDesk 每实例带鉴权 token 的
-`set_notify_url` 地址；三者不得互相回填。代码不硬编码该环境地址。当前已确认端点可达，
+该地址是供应商控制台配置，不是员工号登录二维码接口，也不替代 AgentDesk 每实例带鉴权
+token 的 `set_notify_url` 地址；三者不得互相回填。代码不硬编码该环境地址。当前已确认端点可达，
 真实登录和消息事件回传仍以部署后的供应商事件为最终验收证据。
 
-2026-07-31 已部署 commit `39ff075`：
-
-```text
-release: /opt/agentdesk/releases/20260731-0947-wxwork-login-proxy/app
-image:   sha256:497adb38064faea0f3d87e7ab4d6cc994fdfb7b25b8e695463757b3e0e522878
-start:   2026-07-31 09:52:00 Asia/Shanghai
-```
-
-应用容器健康，MySQL 未重建，公网页面和员工号列表 API 正常。指定全局回调与当前生产
-回调对无效空 POST 的响应状态和服务端标识不同，不能据此认定它已透明转发到当前生产
-容器；在真实供应商事件完成 request ID 与业务记录对账前，状态保持
-`deployed-real-scan-and-global-callback-E2E-pending`。当前唯一实例已经过期，真实扫码验收
-必须换用有效 GUID，并由扫码设备先启动聚合聊天本地代理。
+历史 commit `39ff075` 曾错误地把代理和 `restore_client` 作为二维码前置条件，并于
+2026-07-31 09:52 部署；该判断与官方登录接口契约不符，现已明确废止，不再作为产品或部署
+依据。直接登录修复的最终 commit、release、镜像摘要、启动时间和真实二维码结果在生产部署
+完成后补录；在此之前不得宣称线上已经修复。
 
 本次不新增 model、migration、身份、权限或页面入口，不修改 AI、小程序、企业微信第三方
 应用授权和 GUID 语义。回滚只需切换部署前应用镜像；数据库字段无需回滚。

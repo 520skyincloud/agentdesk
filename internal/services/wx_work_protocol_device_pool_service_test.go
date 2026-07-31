@@ -41,11 +41,11 @@ func TestProtocolProfileResponseShowsOffline(t *testing.T) {
 	}
 }
 
-func TestClaimAvailableGUIDReclaimsRuntimeNotStartedInstanceWithoutQRCodeProbe(t *testing.T) {
+func TestClaimAvailableGUIDUsesDirectQRCodeProbeWhenProfileRuntimeIsUnavailable(t *testing.T) {
 	db := setupWxWorkProtocolDevicePoolTestDB(t)
 	const (
-		onlineGUID     = "11111111-1111-1111-1111-111111111111"
-		preparableGUID = "22222222-2222-2222-2222-222222222222"
+		onlineGUID  = "11111111-1111-1111-1111-111111111111"
+		offlineGUID = "22222222-2222-2222-2222-222222222222"
 	)
 
 	var mu sync.Mutex
@@ -76,8 +76,10 @@ func TestClaimAvailableGUIDReclaimsRuntimeNotStartedInstanceWithoutQRCodeProbe(t
 		switch {
 		case payload.Path == "/user/get_profile" && payload.Data.GUID == onlineGUID:
 			_, _ = w.Write([]byte(`{"err_code":0,"err_msg":"success","data":{"persons":[{"vid":"online-user"}]}}`))
-		case payload.Path == "/user/get_profile" && payload.Data.GUID == preparableGUID:
+		case payload.Path == "/user/get_profile" && payload.Data.GUID == offlineGUID:
 			_, _ = w.Write([]byte(`{"err_code":1014,"err_msg":"runtime not started","data":null}`))
+		case payload.Path == "/login/get_login_qrcode" && payload.Data.GUID == offlineGUID:
+			_, _ = w.Write([]byte(`{"err_code":0,"err_msg":"success","data":{"qrcode_base64":"test-qrcode"}}`))
 		default:
 			http.Error(w, "unexpected protocol request", http.StatusBadRequest)
 		}
@@ -127,7 +129,7 @@ func TestClaimAvailableGUIDReclaimsRuntimeNotStartedInstanceWithoutQRCodeProbe(t
 			ExpiredAt: &expiredAt, Status: enums.StatusOk,
 		},
 		{
-			Guid: preparableGUID, Uin: "stale-offline-uin", SyncStatus: "unavailable",
+			Guid: offlineGUID, Uin: "stale-offline-uin", SyncStatus: "online",
 			ExpiredAt: &expiredAt, Status: enums.StatusOk,
 		},
 	} {
@@ -142,28 +144,26 @@ func TestClaimAvailableGUIDReclaimsRuntimeNotStartedInstanceWithoutQRCodeProbe(t
 	if err != nil {
 		t.Fatalf("ClaimAvailableGUID() error = %v", err)
 	}
-	if guid != preparableGUID {
-		t.Fatalf("ClaimAvailableGUID() = %q, want %q", guid, preparableGUID)
+	if guid != offlineGUID {
+		t.Fatalf("ClaimAvailableGUID() = %q, want %q", guid, offlineGUID)
 	}
 
 	online := repositories.WxWorkProtocolDevicePoolRepository.Take(db, "guid = ?", onlineGUID)
-	preparable := repositories.WxWorkProtocolDevicePoolRepository.Take(db, "guid = ?", preparableGUID)
+	offline := repositories.WxWorkProtocolDevicePoolRepository.Take(db, "guid = ?", offlineGUID)
 	if online == nil || online.SyncStatus != "online" {
 		t.Fatalf("online instance should remain unavailable for扫码: %#v", online)
 	}
-	if preparable == nil || preparable.SyncStatus != "idle" {
-		t.Fatalf("runtime-not-started instance should become idle: %#v", preparable)
+	if offline == nil || offline.SyncStatus != "idle" {
+		t.Fatalf("qrcode-verified instance should become idle: %#v", offline)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 2 {
-		t.Fatalf("expected profile probes without an early qrcode call, got %#v", calls)
+	if len(calls) != 3 {
+		t.Fatalf("expected two profile probes and one qrcode call, got %#v", calls)
 	}
-	for _, call := range calls {
-		if call.Path == "/login/get_login_qrcode" {
-			t.Fatalf("device claim must not request a qrcode before proxy preparation: %#v", calls)
-		}
+	if calls[2].Path != "/login/get_login_qrcode" || calls[2].GUID != offlineGUID {
+		t.Fatalf("qrcode must directly validate the profile-unavailable instance: %#v", calls)
 	}
 }
 

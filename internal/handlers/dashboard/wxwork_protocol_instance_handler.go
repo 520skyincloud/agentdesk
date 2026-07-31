@@ -118,7 +118,7 @@ func WxWorkProtocolInstancePostStart_login(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	raw, err := services.WxWorkProtocolService.PrepareLoginQRCode(item.ID, req.Proxy)
+	raw, err := services.WxWorkProtocolService.GetLoginQRCode(item.ID)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -271,7 +271,7 @@ func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	req := request.PrepareWxWorkProtocolLoginRequest{}
+	req := request.WxWorkProtocolInstanceActionRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -279,7 +279,7 @@ func WxWorkProtocolInstancePostLogin_qrcode(ctx *gin.Context) {
 	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
-	resp, err := services.WxWorkProtocolService.PrepareLoginQRCode(req.ID, req.Proxy)
+	resp, err := services.WxWorkProtocolService.GetLoginQRCode(req.ID)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -392,25 +392,7 @@ func WxWorkProtocolInstancePostVerify_login(ctx *gin.Context) {
 }
 
 func WxWorkProtocolInstancePostRecover(ctx *gin.Context) {
-	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionChannelUpdate)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	req := request.PrepareWxWorkProtocolLoginRequest{}
-	if err := params.ReadJSON(ctx, &req); err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
-		return
-	}
-	resp, err := services.WxWorkProtocolService.RestoreClientWithProxy(req.ID, req.Proxy)
-	if err != nil {
-		httpx.WriteJSON(ctx, err)
-		return
-	}
-	httpx.WriteJSON(ctx, resp)
+	writeWxWorkProtocolActionResponse(ctx, services.WxWorkProtocolService.RestoreClient)
 }
 
 func WxWorkProtocolInstancePostStop(ctx *gin.Context) {

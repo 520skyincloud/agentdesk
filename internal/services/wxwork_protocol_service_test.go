@@ -129,8 +129,21 @@ func TestWxWorkProtocolLoginAllowsUnexpiredDevice(t *testing.T) {
 		t.Fatalf("migrate device pool: %v", err)
 	}
 	var providerCalls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var providerPath string
+	var providerData map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		providerCalls++
+		var payload struct {
+			Path string         `json:"path"`
+			Data map[string]any `json:"data"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode protocol request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		providerPath = payload.Path
+		providerData = payload.Data
 		_, _ = w.Write([]byte(`{"err_code":0,"data":{"qrcode":"base64-image"}}`))
 	}))
 	defer server.Close()
@@ -156,16 +169,30 @@ func TestWxWorkProtocolLoginAllowsUnexpiredDevice(t *testing.T) {
 	if providerCalls != 1 || !strings.Contains(response, "base64-image") {
 		t.Fatalf("provider calls = %d, response = %q", providerCalls, response)
 	}
+	if providerPath != "/login/get_login_qrcode" {
+		t.Fatalf("provider path = %q, want direct qrcode endpoint", providerPath)
+	}
+	if providerData["guid"] != instance.Guid {
+		t.Fatalf("provider guid = %#v, want %q", providerData["guid"], instance.Guid)
+	}
+	verifyLogin, ok := providerData["verify_login"].(bool)
+	if !ok || verifyLogin {
+		t.Fatalf("verify_login = %#v, want false boolean", providerData["verify_login"])
+	}
+	for _, forbidden := range []string{"proxy", "bridge", "sync_history_msg", "force_online", "auto_start"} {
+		if _, exists := providerData[forbidden]; exists {
+			t.Fatalf("direct qrcode request contains restore field %q: %#v", forbidden, providerData)
+		}
+	}
 }
 
-func TestPrepareLoginQRCodeUsesDocumentedProxyRestoreContract(t *testing.T) {
+func TestWxWorkProtocolLoginStatusRequestContracts(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	type providerCall struct {
 		Path string
 		Data map[string]any
 	}
-	calls := make([]providerCall, 0, 4)
-	qrcodeCalls := 0
+	calls := make([]providerCall, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
 			Path string         `json:"path"`
@@ -179,15 +206,10 @@ func TestPrepareLoginQRCodeUsesDocumentedProxyRestoreContract(t *testing.T) {
 		calls = append(calls, providerCall{Path: payload.Path, Data: payload.Data})
 		w.Header().Set("Content-Type", "application/json")
 		switch payload.Path {
-		case "/client/restore_client":
-			_, _ = w.Write([]byte(`{"err_code":0,"data":{}}`))
-		case "/login/get_login_qrcode":
-			qrcodeCalls++
-			if qrcodeCalls == 1 {
-				_, _ = w.Write([]byte(`{"err_code":1014,"err_msg":"runtime not started"}`))
-				return
-			}
-			_, _ = w.Write([]byte(`{"err_code":0,"data":{"qrcode":"base64-image"}}`))
+		case "/login/check_login_qrcode":
+			_, _ = w.Write([]byte(`{"err_code":0,"data":{"status":10}}`))
+		case "/login/verify_login_qrcode":
+			_, _ = w.Write([]byte(`{"err_code":0,"data":{"status":2}}`))
 		default:
 			http.Error(w, "unexpected path", http.StatusBadRequest)
 		}
@@ -195,82 +217,40 @@ func TestPrepareLoginQRCodeUsesDocumentedProxyRestoreContract(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	instance := createWxWorkProtocolLoginTestInstance(t, db, server.URL)
-	proxy := "socks5://proxy.example.test:1080"
-	svc := &wxWorkProtocolService{
-		httpClient:                server.Client(),
-		loginRuntimeRetryAttempts: 2,
-	}
-	raw, err := svc.PrepareLoginQRCode(instance.ID, &proxy)
+	svc := &wxWorkProtocolService{httpClient: server.Client()}
+	svc.ResetLoginVerificationAttempts(instance.ID)
+
+	status, err := svc.CheckLoginQRCodeStatus(instance.ID)
 	if err != nil {
-		t.Fatalf("PrepareLoginQRCode() error = %v", err)
+		t.Fatalf("CheckLoginQRCodeStatus() error = %v", err)
 	}
-	if !strings.Contains(raw, "base64-image") {
-		t.Fatalf("PrepareLoginQRCode() response = %q", raw)
+	if !status.RequiresCode || status.StatusCode != 10 {
+		t.Fatalf("check status = %#v, want verification required", status)
 	}
-	if len(calls) != 3 {
-		t.Fatalf("provider calls = %#v, want restore then two qrcode attempts", calls)
+	status, err = svc.VerifyLoginQRCodeStatus(instance.ID, "123456")
+	if err != nil {
+		t.Fatalf("VerifyLoginQRCodeStatus() error = %v", err)
 	}
-	restore := calls[0]
-	if restore.Path != "/client/restore_client" {
-		t.Fatalf("first provider path = %q", restore.Path)
-	}
-	if restore.Data["guid"] != instance.Guid || restore.Data["proxy"] != proxy || restore.Data["bridge"] != "" {
-		t.Fatalf("unexpected restore identity or proxy fields: %#v", restore.Data)
-	}
-	for key, want := range map[string]bool{
-		"sync_history_msg": true,
-		"force_online":     false,
-		"auto_start":       true,
-	} {
-		got, ok := restore.Data[key].(bool)
-		if !ok || got != want {
-			t.Fatalf("restore field %s = %#v, want bool %v", key, restore.Data[key], want)
-		}
-	}
-	updated := WxWorkProtocolInstanceService.Get(instance.ID)
-	if updated == nil || updated.Proxy != proxy || updated.HealthStatus != "recovering" {
-		t.Fatalf("restored instance = %#v", updated)
+	if status.Status != "success" {
+		t.Fatalf("verify status = %#v, want success", status)
 	}
 
-	if _, err := svc.RestoreClientWithProxy(instance.ID, nil); err != nil {
-		t.Fatalf("RestoreClientWithProxy(saved proxy) error = %v", err)
+	if len(calls) != 2 {
+		t.Fatalf("provider calls = %#v, want check then verify", calls)
 	}
-	last := calls[len(calls)-1]
-	if last.Path != "/client/restore_client" || last.Data["proxy"] != proxy {
-		t.Fatalf("saved proxy was not reused: %#v", last)
+	if calls[0].Path != "/login/check_login_qrcode" || len(calls[0].Data) != 1 || calls[0].Data["guid"] != instance.Guid {
+		t.Fatalf("check request contract = %#v", calls[0])
 	}
-}
-
-func TestNormalizeWxWorkProtocolLoginProxy(t *testing.T) {
-	for _, value := range []string{
-		"http://proxy.example.test:8080",
-		"socks4://proxy.example.test:1080",
-		"socks5://proxy.example.test:1080",
-	} {
-		if got, err := normalizeWxWorkProtocolLoginProxy(value, true); err != nil || got != value {
-			t.Fatalf("normalize proxy %q = %q, %v", value, got, err)
-		}
-	}
-	for _, value := range []string{
-		"",
-		"https://proxy.example.test:443",
-		"ftp://proxy.example.test:21",
-		"http://",
-		"http://proxy.example.test:8080/path?token=value",
-	} {
-		if _, err := normalizeWxWorkProtocolLoginProxy(value, true); err == nil {
-			t.Fatalf("normalize proxy %q error = nil", value)
-		}
-	}
-	if got, err := normalizeWxWorkProtocolLoginProxy("", false); err != nil || got != "" {
-		t.Fatalf("optional empty proxy = %q, %v", got, err)
+	if calls[1].Path != "/login/verify_login_qrcode" || len(calls[1].Data) != 2 ||
+		calls[1].Data["guid"] != instance.Guid || calls[1].Data["code"] != "123456" {
+		t.Fatalf("verify request contract = %#v", calls[1])
 	}
 }
 
 func TestWxWorkProtocolInstanceResponseHidesSavedProxy(t *testing.T) {
 	item := &models.WxWorkProtocolInstance{Proxy: "socks5://user:password@proxy.example.test:1080"}
 	result := response.BuildWxWorkProtocolInstanceResponse(item)
-	if result.Proxy != "" || !result.ProxyConfigured {
+	if result.Proxy != "" {
 		t.Fatalf("proxy response = %#v", result)
 	}
 	encoded, err := json.Marshal(result)

@@ -35,11 +35,6 @@ const wxWorkProtocolSystemOperatorName = "wxwork_protocol"
 const wxWorkProtocolSeatExpiredMessage = "该企微员工号实例已过期，请先续费或更换有效实例"
 
 const (
-	wxWorkProtocolLoginRuntimeRetryAttempts = 10
-	wxWorkProtocolLoginRuntimeRetryDelay    = time.Second
-)
-
-const (
 	wxProtocolNotifyUserLogin        = 1003
 	wxProtocolNotifyUserLogout       = 1004
 	wxProtocolNotifyUserLoginAlt     = 11003
@@ -75,20 +70,14 @@ var wxProtocolURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
 var WxWorkProtocolService = newWxWorkProtocolService()
 
 func newWxWorkProtocolService() *wxWorkProtocolService {
-	svc := &wxWorkProtocolService{
-		httpClient:                &http.Client{Timeout: 45 * time.Second},
-		loginRuntimeRetryAttempts: wxWorkProtocolLoginRuntimeRetryAttempts,
-		loginRuntimeRetryDelay:    wxWorkProtocolLoginRuntimeRetryDelay,
-	}
+	svc := &wxWorkProtocolService{httpClient: &http.Client{Timeout: 45 * time.Second}}
 	svc.adapter = newDefaultWxWorkProtocolAdapter(svc)
 	return svc
 }
 
 type wxWorkProtocolService struct {
-	httpClient                *http.Client
-	adapter                   WxWorkProtocolAdapter
-	loginRuntimeRetryAttempts int
-	loginRuntimeRetryDelay    time.Duration
+	httpClient *http.Client
+	adapter    WxWorkProtocolAdapter
 }
 
 type WxWorkProtocolCallbackError struct {
@@ -359,27 +348,11 @@ func (s *wxWorkProtocolService) StopClient(instanceID int64) (string, error) {
 }
 
 func (s *wxWorkProtocolService) RestoreClient(instanceID int64) (string, error) {
-	return s.RestoreClientWithProxy(instanceID, nil)
-}
-
-func (s *wxWorkProtocolService) RestoreClientWithProxy(instanceID int64, proxyOverride *string) (string, error) {
 	if err := s.ensureLoginAvailable(instanceID); err != nil {
 		return "", err
 	}
-	instance := WxWorkProtocolInstanceService.Get(instanceID)
-	if instance == nil || instance.Status == enums.StatusDeleted {
-		return "", errorsx.InvalidParam("企微员工号实例不存在")
-	}
-	proxy := instance.Proxy
-	if proxyOverride != nil {
-		proxy = *proxyOverride
-	}
-	proxy, err := normalizeWxWorkProtocolLoginProxy(proxy, true)
-	if err != nil {
-		return "", err
-	}
 	return s.callInstanceAPI(instanceID, "/client/restore_client", map[string]any{
-		"proxy":            proxy,
+		"proxy":            "",
 		"bridge":           "",
 		"sync_history_msg": true,
 		"force_online":     false,
@@ -387,45 +360,14 @@ func (s *wxWorkProtocolService) RestoreClientWithProxy(instanceID int64, proxyOv
 	}, func(instance *models.WxWorkProtocolInstance, _ string) error {
 		return repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), instance.ID, map[string]any{
 			"health_status":    "recovering",
-			"proxy":            proxy,
 			"updated_at":       time.Now(),
 			"update_user_name": wxWorkProtocolSystemOperatorName,
 		})
 	})
 }
 
-func (s *wxWorkProtocolService) PrepareLoginQRCode(instanceID int64, proxyOverride *string) (string, error) {
-	if _, err := s.RestoreClientWithProxy(instanceID, proxyOverride); err != nil {
-		return "", err
-	}
-	attempts := s.loginRuntimeRetryAttempts
-	if attempts <= 0 {
-		attempts = 1
-	}
-	var lastRaw string
-	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
-		raw, err := s.GetLoginQRCode(instanceID)
-		if err == nil {
-			return raw, nil
-		}
-		lastRaw, lastErr = raw, err
-		if wxWorkProtocolResponseErrorCode(raw) != 1014 {
-			return raw, err
-		}
-		if attempt+1 < attempts && s.loginRuntimeRetryDelay > 0 {
-			time.Sleep(s.loginRuntimeRetryDelay)
-		}
-	}
-	return lastRaw, lastErr
-}
-
 func (s *wxWorkProtocolService) SetProxy(instanceID int64, proxy string) (string, error) {
-	var err error
-	proxy, err = normalizeWxWorkProtocolLoginProxy(proxy, false)
-	if err != nil {
-		return "", err
-	}
+	proxy = strings.TrimSpace(proxy)
 	return s.callInstanceAPI(instanceID, "/client/set_proxy", map[string]any{"proxy": proxy}, func(instance *models.WxWorkProtocolInstance, _ string) error {
 		return repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), instance.ID, map[string]any{
 			"proxy":            proxy,
@@ -433,32 +375,6 @@ func (s *wxWorkProtocolService) SetProxy(instanceID int64, proxy string) (string
 			"update_user_name": wxWorkProtocolSystemOperatorName,
 		})
 	})
-}
-
-func normalizeWxWorkProtocolLoginProxy(value string, required bool) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		if required {
-			return "", errorsx.InvalidParam("请先填写扫码设备上聚合聊天本地代理提供的地址")
-		}
-		return "", nil
-	}
-	if len(value) > 500 || strings.ContainsAny(value, "\r\n\t") {
-		return "", errorsx.InvalidParam("异地登录代理地址不合法")
-	}
-	parsed, err := url.ParseRequestURI(value)
-	if err != nil || parsed.Host == "" {
-		return "", errorsx.InvalidParam("异地登录代理地址不合法")
-	}
-	switch strings.ToLower(parsed.Scheme) {
-	case "http", "socks4", "socks5":
-	default:
-		return "", errorsx.InvalidParam("异地登录代理仅支持 http、socks4 或 socks5")
-	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errorsx.InvalidParam("异地登录代理地址不能包含参数或片段")
-	}
-	return value, nil
 }
 
 func (s *wxWorkProtocolService) SyncFriendRequests(instanceID int64) (string, error) {
@@ -2783,7 +2699,7 @@ func safeWxWorkProtocolBusinessError(code int) error {
 	case 9003:
 		return errorsx.InvalidParam(wxWorkProtocolSeatExpiredMessage)
 	case 1014:
-		return errorsx.BusinessError(1, "企微员工号登录环境未启动，请确认扫码设备上的聚合聊天本地代理已启动，且填写的代理地址可从服务器访问后重试（错误码 1014）")
+		return errorsx.BusinessError(1, "企微员工号登录环境未启动，请确认该有效实例可用后重试（错误码 1014）")
 	default:
 		return errorsx.BusinessError(1, fmt.Sprintf("企微员工号服务暂时不可用（错误码 %d）", code))
 	}

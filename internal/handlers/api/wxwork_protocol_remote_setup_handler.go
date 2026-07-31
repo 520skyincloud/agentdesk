@@ -109,7 +109,7 @@ func WxWorkProtocolRemoteSetupPostVerifyEmail(ctx *gin.Context) {
 }
 
 func WxWorkProtocolRemoteSetupPostLoginQrcode(ctx *gin.Context) {
-	req := request.PrepareWxWorkProtocolRemoteLoginRequest{}
+	req := request.WxWorkProtocolRemoteSetupTokenRequest{}
 	if err := params.ReadJSON(ctx, &req); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
@@ -119,7 +119,7 @@ func WxWorkProtocolRemoteSetupPostLoginQrcode(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	resp, err := services.WxWorkProtocolService.PrepareLoginQRCode(item.ID, req.Proxy)
+	resp, err := services.WxWorkProtocolService.GetLoginQRCode(item.ID)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
