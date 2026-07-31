@@ -518,3 +518,31 @@ model 或 migration。历史系统卡片的数据库方向本来正确，部署�
 
 回滚只需回退本次前端提交并重新构建应用镜像。回滚不会改变消息事实，但系统出站卡片会
 再次被错误显示在客户侧。
+
+### 16.1 生产部署与真实复验
+
+2026-07-31 已将提交 `84ceea3` 部署到 `https://weibao.omnireva.com`：
+
+```text
+发布目录：/opt/agentdesk/releases/20260731-1515-system-message-direction/app
+生产镜像：sha256:64dacd9f62131aa73923cb9fe7601f5311cb2a76b23d1d03be521194bcb89aac
+镜像 revision：84ceea3
+应用容器启动时间：2026-07-31 16:19:17 +08:00
+回滚镜像：mlogclub/agent-desk:rollback-20260731-1515-system-message-direction
+回滚镜像摘要：sha256:bdedcf14030b5b6b9e3f9b8f72a363a88d08ea8f4087ff74bc72f6332727de07
+```
+
+部署后 AgentDesk 与 MySQL 均为 `healthy`，本机 HTTP 和公网 HTTPS 健康检查均返回
+HTTP 200。MySQL 未重建，部署没有新增第二套数据库卷。
+
+使用生产管理员进入 `/dashboard/conversations/`，选择包含历史到店联动小程序卡片的
+真实会话后确认：
+
+1. 历史小程序卡片位于客服侧；
+2. 发送方显示“到店联动”，徽标显示“系统”；
+3. 三条历史卡片均显示真实“已发送”状态；
+4. 同一会话中的客户文本仍位于客户侧；
+5. 页面刷新后规则立即生效，无需修改或重放历史消息。
+
+因此本次问题已确认是前端展示方向错误，生产消息事实、企微协议发送方向和历史数据均未
+发生改变。
