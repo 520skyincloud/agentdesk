@@ -184,6 +184,10 @@ func TestWxWorkProtocolLoginAllowsUnexpiredDevice(t *testing.T) {
 			t.Fatalf("direct qrcode request contains restore field %q: %#v", forbidden, providerData)
 		}
 	}
+	current := WxWorkProtocolInstanceService.Get(instance.ID)
+	if current == nil || current.HealthStatus != "login_qrcode" {
+		t.Fatalf("instance health status = %#v, want login_qrcode after provider accepts qrcode request", current)
+	}
 }
 
 func TestWxWorkProtocolLoginStatusRequestContracts(t *testing.T) {

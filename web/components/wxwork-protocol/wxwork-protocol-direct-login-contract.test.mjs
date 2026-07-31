@@ -51,6 +51,11 @@ test("all login entry points retain status-10 verification handling", () => {
   assert.match(remoteSetupSource, /window\.setInterval\(\(\) => void loadLoginStatus\(false\), 3000\)/)
 })
 
+test("legacy recovering drafts can only resume before an employee identity exists", () => {
+  assert.match(bindingSource, /healthStatus === "recovering"/)
+  assert.match(bindingSource, /!\(user\.storeStaff\.wxWorkEmployeeId \|\| ""\)\.trim\(\)/)
+})
+
 test("browser login contracts do not expose provider raw responses or keys", () => {
   assert.doesNotMatch(apiSource, /rawResponse/)
   assert.doesNotMatch(apiSource, /^\s+key: string$/m)

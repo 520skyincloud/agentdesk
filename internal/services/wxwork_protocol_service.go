@@ -270,7 +270,13 @@ func (s *wxWorkProtocolService) GetLoginQRCode(instanceID int64) (string, error)
 	if err := s.ensureLoginAvailable(instanceID); err != nil {
 		return "", err
 	}
-	return s.callInstanceAPI(instanceID, "/login/get_login_qrcode", map[string]any{"verify_login": false}, nil)
+	return s.callInstanceAPI(instanceID, "/login/get_login_qrcode", map[string]any{"verify_login": false}, func(instance *models.WxWorkProtocolInstance, _ string) error {
+		return repositories.WxWorkProtocolInstanceRepository.Updates(sqls.DB(), instance.ID, map[string]any{
+			"health_status":    "login_qrcode",
+			"updated_at":       time.Now(),
+			"update_user_name": wxWorkProtocolSystemOperatorName,
+		})
+	})
 }
 
 func (s *wxWorkProtocolService) CheckLoginQRCode(instanceID int64) (string, error) {

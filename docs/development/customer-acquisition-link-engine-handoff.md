@@ -443,3 +443,53 @@ git diff --check                               通过
 
 本修复不会把已过期供应商实例伪装成可登录状态。该实例恢复使用仍需在实例提供方完成
 续费，或者通过现有“更换登录员工号”流程绑定有效实例。
+
+## 15. 企微员工号直接二维码登录收敛
+
+2026-07-31 以 `https://wework.apifox.cn/llms.txt` 及其链接的登录接口为唯一协议依据，
+对照 `origin/wxwork-protocol-agentdesk` 后确认：第 13 节记录的“先
+`/client/restore_client`、等待异地登录器、再重试取码”属于已废止历史实现，不再是当前
+产品链路。当前三个登录入口统一直接调用：
+
+```text
+POST /login/get_login_qrcode
+  -> 每 3 秒 POST /login/check_login_qrcode
+  -> 仅 status=10 时展示确认码输入
+  -> POST /login/verify_login_qrcode
+```
+
+获取二维码请求只包含 `guid` 和布尔 `verify_login=false`；检查请求只包含 `guid`；确认码
+请求只包含 `guid` 和 `code`。页面不收集代理，登录请求不携带 `proxy`、`bridge`、
+`restore` 或其他未在接口文档声明的字段。独立的 `set_proxy`、`restore_client` 运维动作
+不属于登录状态机，不能作为扫码前置条件。
+
+生产数据中存在一个旧流程遗留的 `disabled + recovering` 实例。该实例尚无
+`EmployeeUserID`，没有形成真实员工身份或会话，因此允许原门店员工绑定继续复用同一
+实例和 GUID，并在取码时收敛为 `login_qrcode`。兼容规则严格限定为：
+
+1. 实例仍属于当前 Tenant、Store 和 `StoreStaffBinding`；
+2. 实例未删除且设备池有效期允许登录；
+3. `HealthStatus` 仅为 `login_qrcode` 或 `recovering`；
+4. `EmployeeUserID` 必须为空；
+5. 已有员工身份的 `recovering` 实例不得作为新扫码草稿复用；
+6. 供应商接受二维码请求后才将生命周期记录为 `login_qrcode`；
+7. 只有协议检查真实返回成功后才写入 `enabled + online` 和员工资料。
+
+后端 service 和前端绑定弹窗均覆盖该兼容规则。新增测试覆盖旧 `recovering` 空草稿恢复、
+已有员工身份拒绝复用、取码成功后的生命周期，以及前端仅在缺少员工身份时重新展示草稿。
+本次没有新增 model、migration、DTO、enum、权限、路由或 WebSocket 契约，不修改 AI、
+计费、小程序、企业微信第三方应用授权或消息协议。
+
+验证结果：
+
+```text
+go test ./...                                  通过
+前端 Node 契约测试                            170/170 通过
+pnpm typecheck                                 通过
+pnpm lint                                      0 error，33 条既有 warning
+pnpm build                                     通过，48 个页面
+git diff --check                               通过
+```
+
+生产 release、镜像摘要、容器启动时间、真实二维码和状态 `10` 确认码结果在部署后记录。
+员工本人完成扫码前，不得把实例标记为已登录。

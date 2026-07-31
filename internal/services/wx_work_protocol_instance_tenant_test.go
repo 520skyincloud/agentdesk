@@ -189,6 +189,53 @@ func TestWxWorkProtocolLoginResumesDraftBeforeClaimingDevice(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolLoginResumesLegacyRecoveringDraftWithoutEmployeeIdentity(t *testing.T) {
+	db := setupWxWorkProtocolTenantDB(t)
+	operator := wxWorkProtocolTenantOperator(101, 1)
+	channel := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-resume-recovering-login")
+	user := createStoreStaffTenantUser(t, db, 101, "wxwork-resume-recovering-user")
+	store := createWxWorkProtocolTenantStore(t, db, 101, "WX-RESUME-RECOVERING")
+	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, store.ID)
+	draft := &models.WxWorkProtocolInstance{
+		TenantID:            101,
+		Guid:                "resume-recovering-login-guid",
+		ChannelID:           channel.ID,
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
+		HealthStatus:        "recovering",
+		Status:              enums.StatusDisabled,
+	}
+	if err := db.Create(draft).Error; err != nil {
+		t.Fatalf("create legacy recovering draft: %v", err)
+	}
+
+	resumed, err := WxWorkProtocolInstanceService.CreateLoginInstance(request.StartWxWorkProtocolLoginRequest{
+		ChannelID:        channel.ID,
+		StoreStaffUserID: user.ID,
+		StoreName:        "恢复旧扫码草稿门店",
+	}, operator)
+	if err != nil {
+		t.Fatalf("resume legacy recovering draft: %v", err)
+	}
+	if resumed.ID != draft.ID || resumed.Guid != draft.Guid || resumed.HealthStatus != "login_qrcode" {
+		t.Fatalf("resumed instance=%+v want draft id=%d guid=%q health=login_qrcode", resumed, draft.ID, draft.Guid)
+	}
+
+	if err := db.Model(&models.WxWorkProtocolInstance{}).Where("id = ?", draft.ID).Updates(map[string]any{
+		"employee_user_id": "existing-employee",
+		"health_status":    "recovering",
+	}).Error; err != nil {
+		t.Fatalf("mark recovering instance as logged in: %v", err)
+	}
+	if _, err := WxWorkProtocolInstanceService.CreateLoginInstance(request.StartWxWorkProtocolLoginRequest{
+		ChannelID:        channel.ID,
+		StoreStaffUserID: user.ID,
+		StoreName:        "不得复用已有身份门店",
+	}, operator); err == nil {
+		t.Fatal("recovering instance with an employee identity must not be reused as a login draft")
+	}
+}
+
 func TestWxWorkProtocolRemoteSetupRejectsForeignStoreStaffBeforeGUIDClaim(t *testing.T) {
 	db := setupWxWorkProtocolTenantDB(t)
 	adminA := wxWorkProtocolTenantOperator(101, 1)
