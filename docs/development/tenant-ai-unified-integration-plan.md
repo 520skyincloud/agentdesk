@@ -2091,6 +2091,20 @@ http://112.124.109.106:2332/api/third/wxwork-protocol/callback
 `set_notify_url` 地址；三者不得互相回填。代码不硬编码该环境地址。当前已确认端点可达，
 真实登录和消息事件回传仍以部署后的供应商事件为最终验收证据。
 
+2026-07-31 已部署 commit `39ff075`：
+
+```text
+release: /opt/agentdesk/releases/20260731-0947-wxwork-login-proxy/app
+image:   sha256:497adb38064faea0f3d87e7ab4d6cc994fdfb7b25b8e695463757b3e0e522878
+start:   2026-07-31 09:52:00 Asia/Shanghai
+```
+
+应用容器健康，MySQL 未重建，公网页面和员工号列表 API 正常。指定全局回调与当前生产
+回调对无效空 POST 的响应状态和服务端标识不同，不能据此认定它已透明转发到当前生产
+容器；在真实供应商事件完成 request ID 与业务记录对账前，状态保持
+`deployed-real-scan-and-global-callback-E2E-pending`。当前唯一实例已经过期，真实扫码验收
+必须换用有效 GUID，并由扫码设备先启动聚合聊天本地代理。
+
 本次不新增 model、migration、身份、权限或页面入口，不修改 AI、小程序、企业微信第三方
 应用授权和 GUID 语义。回滚只需切换部署前应用镜像；数据库字段无需回滚。
 
