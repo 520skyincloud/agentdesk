@@ -397,6 +397,8 @@
     "sendAttachmentFailed": "Could not send the attachment.",
     "customerSender": "Customer",
     "agentSender": "Agent",
+    "systemSender": "Arrival Automation",
+    "systemBadge": "System",
     "messageRecalledHtml": "This message was recalled.",
     "messageRecalled": "Recalled",
     "customerRead": "Read by customer",

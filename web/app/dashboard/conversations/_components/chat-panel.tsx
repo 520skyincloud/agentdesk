@@ -724,7 +724,8 @@ const MessageItem = memo(
     const { open: openImageLightbox } = useImageLightbox();
     const isCustomer = message.senderType === "customer";
     const isAi = message.senderType === "ai";
-    const isAgentSide = message.senderType === "agent" || isAi;
+    const isSystem = message.senderType === "system";
+    const isAgentSide = message.senderType === "agent" || isAi || isSystem;
     const isRecalled = Boolean(message.recalledAt) || message.sendStatus === 6;
     const serviceEvent = parseServiceEvent(message.payload);
     if (serviceEvent.startsWith("manual_ai_resumed_")) {
@@ -741,8 +742,16 @@ const MessageItem = memo(
       ? repairMojibakeText(message.senderName) || t("conversation.customerSender")
       : isAi
         ? "AI"
-        : repairMojibakeText(message.senderName) || t("conversation.agentSender");
-    const senderBadge = isAi ? "AI回复" : isAgentSide ? "人工" : "客户";
+        : isSystem
+          ? t("conversation.systemSender")
+          : repairMojibakeText(message.senderName) || t("conversation.agentSender");
+    const senderBadge = isAi
+      ? "AI回复"
+      : isSystem
+        ? t("conversation.systemBadge")
+        : isAgentSide
+          ? "人工"
+          : "客户";
     const sendStatusLabel = isAgentSide && !isRecalled ? IMMessageStatusLabels[message.sendStatus as keyof typeof IMMessageStatusLabels] : "";
     const sendSourceLabel = !isAi && isAgentSide ? message.sendSourceLabel?.trim() : "";
     const senderBadgeClassName = isAi

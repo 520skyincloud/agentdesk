@@ -397,6 +397,8 @@
     "sendAttachmentFailed": "发送附件失败",
     "customerSender": "客户",
     "agentSender": "客服",
+    "systemSender": "到店联动",
+    "systemBadge": "系统",
     "messageRecalledHtml": "该消息已撤回",
     "messageRecalled": "已撤回",
     "customerRead": "客户已读",
