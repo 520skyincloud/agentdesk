@@ -61,6 +61,16 @@ func TestFastGPTAdoptManagedDatasetBindsExistingStoreKnowledge(t *testing.T) {
 	fixture := setupStoreCredentialFixture(t)
 	migrateFastGPTAdoptionFixture(t, fixture.db)
 	const datasetID = "dataset-nanqi"
+	rawProfileFingerprint := strings.Join([]string{
+		"embedding:" + strings.Repeat("e", 64),
+		"documentParser:" + strings.Repeat("d", 64),
+		"vision:" + strings.Repeat("v", 64),
+		"rerank:" + strings.Repeat("r", 64),
+	}, ",")
+	if len(rawProfileFingerprint) <= 128 {
+		t.Fatal("test profile fingerprint must exceed the persistence column width")
+	}
+	expectedProfileFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(rawProfileFingerprint)))
 	configureFastGPTAdoptionServer(t, fixture.store.ID, datasetID, adoptFastGPTDatasetScenario{
 		datasetName: "合肥南七店", collectionCount: 1, dataAmount: 20089, includeSearchHit: true,
 	})
@@ -92,6 +102,7 @@ func TestFastGPTAdoptManagedDatasetBindsExistingStoreKnowledge(t *testing.T) {
 	}
 	if knowledgeBase == nil || knowledgeBase.StoreID != fixture.store.ID || knowledgeBase.DatasetID != datasetID ||
 		knowledgeBase.ConnectionID != fastgptapi.ManagedConnectionID || knowledgeBase.FastGPTProfileID != "profile-nanqi" ||
+		knowledgeBase.FastGPTProfileFingerprint != expectedProfileFingerprint || len(knowledgeBase.FastGPTProfileFingerprint) != 64 ||
 		knowledgeBase.FastGPTProfileStatus != "configured" || knowledgeBase.FastGPTAppliedProfileID != 0 ||
 		knowledgeBase.FastGPTAppliedCredentialRevision != 0 {
 		t.Fatalf("unexpected adopted knowledge base: %#v", knowledgeBase)
@@ -258,7 +269,11 @@ func configureFastGPTAdoptionServer(t *testing.T, storeID int64, datasetID strin
 			}
 			data = map[string]any{
 				"datasetId": datasetID, "datasetModelProfileId": "profile-nanqi", "profileName": "门店知识库模型模板",
-				"profileRevision": 5, "profileStatus": profileStatus, "fingerprint": map[string]string{"embedding": "embedding-v4", "rerank": "rerank-v1"},
+				"profileRevision": 5, "profileStatus": profileStatus,
+				"fingerprint": map[string]string{
+					"embedding": strings.Repeat("e", 64), "documentParser": strings.Repeat("d", 64),
+					"vision": strings.Repeat("v", 64), "rerank": strings.Repeat("r", 64),
+				},
 			}
 		case "/api/integration/agent-desk/dataset/search":
 			hits := make([]map[string]any, 0, 1)

@@ -362,6 +362,7 @@ pnpm --dir web build
 - API：在现有知识库资源增加 `POST /api/dashboard/knowledge-base/fastgpt/adopt`，沿用知识库创建权限和 ActiveTenant/Store 数据范围；请求必须提供 Store、Dataset、准确名称和验收问题。
 - 远端门禁：通过统一 FastGPT Integration Token 和 Store scope 依次校验 Dataset 归属与名称、非空且完成索引的集合、`configured/ready` Profile，以及指定问题至少一个真实检索命中。
 - 本地事务：锁定 Store，幂等创建或复用 KnowledgeBase，更新 Store 唯一知识库引用和该 Store 的 ConversationRouteState，并创建唯一、已完成的 `adopt_dataset` 持久任务；任一步失败全部回滚。
+- 生产验收约束：FastGPT 返回的多槽 Profile fingerprint 长度不固定，接入前统一规范化为 64 位 SHA-256 后再持久化；该值只用于变更比较，不保存原始槽指纹，也不需要扩大数据库列宽。
 - 运行边界：接入只证明已有知识可浏览和检索，不写 StoreModelCredential、模型 Assignment 或 FastGPT applied revision，不把本地 AI 回复运行时标记为 ready。
 - 数据与共享契约：新增向后兼容的 request/response DTO 和显式路由；无 model、AutoMigrate、DML migration、enum、WebSocket payload、计费、ASR、企微协议或前端页面变化。
 - 测试：覆盖成功绑定、重复收敛、名称不一致、空集合、索引未完成、Profile 不可用、无检索命中和跨 Store Dataset 拒绝，并确认失败不产生本地写入、成功不伪造模型凭据状态。

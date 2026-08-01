@@ -169,7 +169,7 @@ func (s *fastGPTDatasetService) AdoptManagedDataset(
 					TenantID: store.TenantID, StoreID: store.ID,
 					DatasetID: datasetID, DatasetName: dataset.Name, ConnectionID: fastgptapi.ManagedConnectionID,
 					FastGPTProfileID: profile.ProfileID, FastGPTProfileName: profile.ProfileName,
-					FastGPTProfileRevision: profile.ProfileRevision, FastGPTProfileFingerprint: profile.Fingerprint,
+					FastGPTProfileRevision: profile.ProfileRevision, FastGPTProfileFingerprint: fastGPTSnapshotFingerprint(profile.Fingerprint),
 					FastGPTProfileStatus: profile.ProfileStatus, FastGPTProfileSyncedAt: &now,
 					Name: dataset.Name, Description: "接入已有 FastGPT 门店托管知识库",
 					KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud), Status: enums.StatusOk,
@@ -226,6 +226,14 @@ func (s *fastGPTDatasetService) AdoptManagedDataset(
 		CollectionCount: len(collections), DataAmount: dataAmount,
 		ProfileStatus: profile.ProfileStatus,
 	}, nil
+}
+
+func fastGPTSnapshotFingerprint(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
 }
 
 func (s *fastGPTDatasetService) enqueueDefaultDataset(store *models.Store, bindingID int64, name string) (*models.FastGPTDatasetJob, error) {
