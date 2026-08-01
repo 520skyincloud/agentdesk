@@ -25,6 +25,7 @@ import (
 
 const (
 	fastGPTJobActionCreateDataset = "create_dataset"
+	fastGPTJobActionAdoptDataset  = "adopt_dataset"
 	fastGPTJobActionUploadFile    = "upload_file"
 	fastGPTJobActionSyncProfile   = "sync_profile"
 	fastGPTJobStatusPending       = "pending"
@@ -66,6 +67,165 @@ func (s *fastGPTDatasetService) EnqueueDefaultDataset(storeID, bindingID int64, 
 func (s *fastGPTDatasetService) EnqueueDefaultDatasetForRemoteSetup(storeID, tenantID, bindingID int64, name string) (*models.FastGPTDatasetJob, error) {
 	store := StoreService.GetInTenant(storeID, tenantID)
 	return s.enqueueDefaultDataset(store, bindingID, name)
+}
+
+// AdoptManagedDataset attaches a pre-existing Dataset that the FastGPT
+// integration has already proven belongs to this Store's managed Team. It is
+// a recovery/import path and does not claim that the Store model credential is
+// ready; normal runtime readiness checks remain unchanged.
+func (s *fastGPTDatasetService) AdoptManagedDataset(
+	ctx context.Context,
+	storeID int64,
+	datasetID string,
+	expectedDatasetName string,
+	verificationQuery string,
+	operator *dto.AuthPrincipal,
+) (*response.AdoptFastGPTDatasetResponse, error) {
+	store, err := s.requireStoreAccess(storeID, operator)
+	if err != nil {
+		return nil, err
+	}
+	datasetID = strings.TrimSpace(datasetID)
+	expectedDatasetName = strings.TrimSpace(expectedDatasetName)
+	verificationQuery = strings.TrimSpace(verificationQuery)
+	if datasetID == "" || expectedDatasetName == "" || verificationQuery == "" {
+		return nil, errorsx.InvalidParam("请提供已有 FastGPT 数据集、准确名称和验收问题")
+	}
+	connector, err := NewManagedStoreFastGPTConnector()
+	if err != nil {
+		return nil, err
+	}
+	connector = connector.ForStore(store.ID)
+	dataset, err := connector.GetDataset(ctx, datasetID)
+	if err != nil {
+		return nil, publicFastGPTError(err)
+	}
+	if dataset == nil || strings.TrimSpace(dataset.ID) != datasetID || strings.TrimSpace(dataset.Name) != expectedDatasetName {
+		return nil, errorsx.InvalidParam("FastGPT 数据集名称或门店归属校验失败")
+	}
+	collections, err := connector.ListCollections(ctx, datasetID)
+	if err != nil {
+		return nil, publicFastGPTError(err)
+	}
+	dataAmount := 0
+	trainingAmount := 0
+	for _, collection := range collections {
+		dataAmount += collection.DataAmount
+		trainingAmount += collection.TrainingAmount
+	}
+	if len(collections) == 0 || dataAmount <= 0 {
+		return nil, errorsx.InvalidParam("FastGPT 数据集没有可接入的知识内容")
+	}
+	if trainingAmount > 0 {
+		return nil, errorsx.InvalidParam("FastGPT 数据集仍在索引，请完成后重试")
+	}
+	profile, err := connector.GetDatasetProfileSnapshot(ctx, datasetID)
+	if err != nil {
+		return nil, publicFastGPTError(err)
+	}
+	if profile == nil || strings.TrimSpace(profile.ProfileID) == "" || strings.TrimSpace(profile.ProfileRevision) == "" {
+		return nil, errorsx.InvalidParam("FastGPT 数据集缺少可验证的模型配置")
+	}
+	profileStatus := strings.ToLower(strings.TrimSpace(profile.ProfileStatus))
+	if profileStatus != "configured" && profileStatus != "ready" {
+		return nil, errorsx.InvalidParam("FastGPT 数据集模型配置尚未就绪")
+	}
+	searchResult, err := connector.SearchTest(ctx, datasetID, verificationQuery)
+	if err != nil {
+		return nil, publicFastGPTError(err)
+	}
+	if searchResult == nil || len(searchResult.Hits) == 0 {
+		return nil, errorsx.InvalidParam("FastGPT 数据集尚未产生可检索结果")
+	}
+
+	now := time.Now()
+	var knowledgeBase *models.KnowledgeBase
+	if err := sqls.WithTransaction(func(tx *sqls.TxContext) error {
+		lockedStore, err := repositories.StoreRepository.GetForUpdateInTenant(tx.Tx, store.ID, store.TenantID)
+		if err != nil {
+			return err
+		}
+		if lockedStore == nil || lockedStore.Status != enums.StatusOk {
+			return errorsx.InvalidParam("门店不存在、已停用或归属已变化")
+		}
+		if lockedStore.KnowledgeBaseID > 0 {
+			current := repositories.KnowledgeBaseRepository.GetInTenant(tx.Tx, lockedStore.KnowledgeBaseID, store.TenantID)
+			if current == nil || current.StoreID != store.ID || current.DatasetID != datasetID ||
+				current.ConnectionID != fastgptapi.ManagedConnectionID || current.Status != enums.StatusOk {
+				return errorsx.InvalidParam("门店已有其他启用知识库，不能接入该 FastGPT 数据集")
+			}
+			knowledgeBase = current
+		} else {
+			knowledgeBase = repositories.KnowledgeBaseRepository.FindOne(tx.Tx, sqls.NewCnd().
+				Eq("tenant_id", store.TenantID).Eq("store_id", store.ID).Eq("dataset_id", datasetID))
+			if knowledgeBase != nil && knowledgeBase.Status != enums.StatusOk {
+				return errorsx.InvalidParam("该 FastGPT 数据集存在已停用的历史接入记录")
+			}
+			if knowledgeBase != nil && knowledgeBase.ConnectionID != fastgptapi.ManagedConnectionID {
+				return errorsx.InvalidParam("该知识库不是门店 FastGPT 托管连接")
+			}
+			if knowledgeBase == nil {
+				knowledgeBase = &models.KnowledgeBase{
+					TenantID: store.TenantID, StoreID: store.ID,
+					DatasetID: datasetID, DatasetName: dataset.Name, ConnectionID: fastgptapi.ManagedConnectionID,
+					FastGPTProfileID: profile.ProfileID, FastGPTProfileName: profile.ProfileName,
+					FastGPTProfileRevision: profile.ProfileRevision, FastGPTProfileFingerprint: profile.Fingerprint,
+					FastGPTProfileStatus: profile.ProfileStatus, FastGPTProfileSyncedAt: &now,
+					Name: dataset.Name, Description: "接入已有 FastGPT 门店托管知识库",
+					KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud), Status: enums.StatusOk,
+					DefaultTopK: 10, DefaultScoreThreshold: 0.2, DefaultRerankLimit: 5,
+					AnswerMode: int(enums.KnowledgeAnswerModeStrict),
+					AuditFields: models.AuditFields{
+						CreatedAt: now, CreateUserID: operator.UserID, CreateUserName: operator.Username,
+						UpdatedAt: now, UpdateUserID: operator.UserID, UpdateUserName: operator.Username,
+					},
+				}
+				if err := repositories.KnowledgeBaseRepository.Create(tx.Tx, knowledgeBase); err != nil {
+					return err
+				}
+			}
+		}
+		if err := repositories.StoreRepository.UpdatesInTenant(tx.Tx, store.ID, store.TenantID, map[string]any{
+			"knowledge_base_id": knowledgeBase.ID, "updated_at": now,
+			"update_user_id": operator.UserID, "update_user_name": operator.Username,
+		}); err != nil {
+			return err
+		}
+		if err := repositories.ConversationRouteStateRepository.UpdateKnowledgeBaseByStoreInTenant(
+			tx.Tx, store.ID, knowledgeBase.ID, store.TenantID, now, operator.Username,
+		); err != nil {
+			return err
+		}
+		taskSum := sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%s", store.TenantID, store.ID, datasetID)))
+		taskKey := fmt.Sprintf("fastgpt-adopt-%x", taskSum[:16])
+		existingJob := repositories.FastGPTDatasetJobRepository.Take(tx.Tx, "tenant_id = ? AND task_key = ?", store.TenantID, taskKey)
+		if existingJob != nil {
+			if existingJob.StoreID != store.ID || existingJob.KnowledgeBaseID != knowledgeBase.ID || existingJob.DatasetID != datasetID ||
+				existingJob.Action != fastGPTJobActionAdoptDataset || existingJob.Status != fastGPTJobStatusReady || existingJob.CompletedAt == nil {
+				return errorsx.InvalidParam("FastGPT 数据集历史接入任务状态不一致")
+			}
+		} else {
+			completedAt := now
+			job := &models.FastGPTDatasetJob{
+				TenantID: store.TenantID, TaskKey: taskKey, StoreID: store.ID,
+				KnowledgeBaseID: knowledgeBase.ID, Action: fastGPTJobActionAdoptDataset,
+				Status: fastGPTJobStatusReady, DatasetID: datasetID, Filename: dataset.Name,
+				CompletedAt: &completedAt, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := repositories.FastGPTDatasetJobRepository.Create(tx.Tx, job); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	publishFastGPTConfigurationState(store.TenantID, store.ID, now)
+	return &response.AdoptFastGPTDatasetResponse{
+		KnowledgeBaseID: knowledgeBase.ID, Name: knowledgeBase.Name,
+		CollectionCount: len(collections), DataAmount: dataAmount,
+		ProfileStatus: profile.ProfileStatus,
+	}, nil
 }
 
 func (s *fastGPTDatasetService) enqueueDefaultDataset(store *models.Store, bindingID int64, name string) (*models.FastGPTDatasetJob, error) {

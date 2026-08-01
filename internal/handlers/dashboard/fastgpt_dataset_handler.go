@@ -30,6 +30,27 @@ func FastGPTDatasetPostProvision(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, map[string]any{"jobId": job.ID, "status": job.Status})
 }
 
+func FastGPTDatasetPostAdopt(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseCreate)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.AdoptFastGPTDatasetRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	result, err := services.FastGPTDatasetService.AdoptManagedDataset(
+		ctx.Request.Context(), req.StoreID, req.DatasetID, req.ExpectedDatasetName, req.VerificationQuery, operator,
+	)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, result)
+}
+
 func FastGPTDatasetPostUpload(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionKnowledgeBaseUpdate)
 	if err != nil {

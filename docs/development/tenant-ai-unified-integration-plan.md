@@ -355,3 +355,16 @@ pnpm --dir web build
 - 并行影响：同时触及 `ai-billing` 与 `customer-audit` 的共享契约，统一分支是唯一后续基线。
 - 本轮额外修复：未完成验证的替换草稿不再进入到店实例候选、联系人扫描批次、AI 行业切换计数或入站会话创建；已完成替换的测试夹具显式写入验证时间。
 - 已验证：服务层全量测试通过；最终发布仍须完成本文第 12、13 节全矩阵与生产证据。
+
+### 2026-08-01 合肥南七已有 FastGPT 数据集受控接入
+
+- 目标：将 FastGPT 中已经归属合肥南七 Store managed Team 的既有数据集接入 AgentDesk，不复制数据集，不直接写数据库伪造状态，也不受当前 ASR 槽缺失阻塞。
+- API：在现有知识库资源增加 `POST /api/dashboard/knowledge-base/fastgpt/adopt`，沿用知识库创建权限和 ActiveTenant/Store 数据范围；请求必须提供 Store、Dataset、准确名称和验收问题。
+- 远端门禁：通过统一 FastGPT Integration Token 和 Store scope 依次校验 Dataset 归属与名称、非空且完成索引的集合、`configured/ready` Profile，以及指定问题至少一个真实检索命中。
+- 本地事务：锁定 Store，幂等创建或复用 KnowledgeBase，更新 Store 唯一知识库引用和该 Store 的 ConversationRouteState，并创建唯一、已完成的 `adopt_dataset` 持久任务；任一步失败全部回滚。
+- 运行边界：接入只证明已有知识可浏览和检索，不写 StoreModelCredential、模型 Assignment 或 FastGPT applied revision，不把本地 AI 回复运行时标记为 ready。
+- 数据与共享契约：新增向后兼容的 request/response DTO 和显式路由；无 model、AutoMigrate、DML migration、enum、WebSocket payload、计费、ASR、企微协议或前端页面变化。
+- 测试：覆盖成功绑定、重复收敛、名称不一致、空集合、索引未完成、Profile 不可用、无检索命中和跨 Store Dataset 拒绝，并确认失败不产生本地写入、成功不伪造模型凭据状态。
+- 并行影响：`origin/codex/ai-billing@4db7993` 在这些 FastGPT 文件上存在历史差异，但其语义已吸收进统一分支，不得整文件覆盖；`origin/codex/customer-audit@c706815` 无本次同文件改动。发布顺序仍以本统一分支提交为唯一基线。
+- 回滚：部署前可回滚本提交；已经完成真实接入后，回滚代码不会删除 KnowledgeBase 或远端 Dataset。需要解除绑定时必须走现有受权限保护的知识库删除/停用流程，禁止手工删表或改 Store 外键。
+- 工程验证：`go test ./internal/services/... ./internal/handlers/dashboard/...`、`go test ./internal/bootstrap/...`、`go test ./...` 和 `git diff --check` 全部通过。

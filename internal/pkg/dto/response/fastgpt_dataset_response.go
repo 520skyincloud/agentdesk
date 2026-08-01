@@ -32,6 +32,14 @@ type FastGPTCollectionResponse struct {
 	Forbid         bool   `json:"forbid"`
 }
 
+type AdoptFastGPTDatasetResponse struct {
+	KnowledgeBaseID int64  `json:"knowledgeBaseId"`
+	Name            string `json:"name"`
+	CollectionCount int    `json:"collectionCount"`
+	DataAmount      int    `json:"dataAmount"`
+	ProfileStatus   string `json:"profileStatus"`
+}
+
 type FastGPTStoreReadinessResponse struct {
 	StoreID                    int64      `json:"storeId"`
 	KnowledgeBaseID            int64      `json:"knowledgeBaseId"`

@@ -520,6 +520,7 @@ func registerDashboardKnowledgeBaseRoutes(group *gin.RouterGroup) {
 	group.POST("/update", dashboard.KnowledgeBasePostUpdate)
 	group.POST("/update_sort", dashboard.KnowledgeBasePostUpdate_sort)
 	group.POST("/fastgpt/provision", dashboard.FastGPTDatasetPostProvision)
+	group.POST("/fastgpt/adopt", dashboard.FastGPTDatasetPostAdopt)
 	group.POST("/fastgpt/upload", dashboard.FastGPTDatasetPostUpload)
 	group.POST("/fastgpt/collections", dashboard.FastGPTDatasetPostCollections)
 	group.POST("/fastgpt/jobs", dashboard.FastGPTDatasetPostJobs)

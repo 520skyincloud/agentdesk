@@ -6,6 +6,13 @@ type ProvisionFastGPTDatasetRequest struct {
 	Name                string `json:"name"`
 }
 
+type AdoptFastGPTDatasetRequest struct {
+	StoreID             int64  `json:"storeId"`
+	DatasetID           string `json:"datasetId"`
+	ExpectedDatasetName string `json:"expectedDatasetName"`
+	VerificationQuery   string `json:"verificationQuery"`
+}
+
 type FastGPTDatasetActionRequest struct {
 	KnowledgeBaseID int64  `json:"knowledgeBaseId"`
 	CollectionID    string `json:"collectionId"`

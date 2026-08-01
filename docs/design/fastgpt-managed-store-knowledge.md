@@ -52,7 +52,7 @@ Store active Profile
 ## 4. Dataset 与持久任务
 
 - Team 以 externalStoreId 幂等确保。
-- Dataset 只通过门店知识库 provision 流程创建。
+- Dataset 默认只通过门店知识库 provision 流程创建。受控恢复场景可接入同一 Store managed Team 下的已有 Dataset，但必须由 FastGPT 集成接口同时校验 externalStoreId、datasetId、准确名称、可用 Profile、集合索引和指定验收问题的真实检索结果；不得通过数据库直接填写 DatasetID。
 - provision、上传、索引轮询和 Profile 同步进入带 Tenant、Store、TargetBinding 和 revision 快照的持久任务。
 - worker 通过租约和 compare-and-swap 领取；租约过期可接管，任务不能并发完成两次。
 - target 与当前事实不一致时终止，不继续调用远端。

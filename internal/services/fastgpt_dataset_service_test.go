@@ -1,14 +1,19 @@
 package services
 
 import (
+	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
@@ -40,6 +45,246 @@ func TestFastGPTReadinessRequiresActiveTenant(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "接入公司") {
 		t.Fatalf("FastGPT readiness without active tenant must fail, err=%v", err)
 	}
+}
+
+type adoptFastGPTDatasetScenario struct {
+	datasetName      string
+	collectionCount  int
+	dataAmount       int
+	trainingAmount   int
+	includeSearchHit bool
+	profileStatus    string
+	rejectDataset    bool
+}
+
+func TestFastGPTAdoptManagedDatasetBindsExistingStoreKnowledge(t *testing.T) {
+	fixture := setupStoreCredentialFixture(t)
+	migrateFastGPTAdoptionFixture(t, fixture.db)
+	const datasetID = "dataset-nanqi"
+	configureFastGPTAdoptionServer(t, fixture.store.ID, datasetID, adoptFastGPTDatasetScenario{
+		datasetName: "合肥南七店", collectionCount: 1, dataAmount: 20089, includeSearchHit: true,
+	})
+	route := &models.ConversationRouteState{
+		TenantID: fixture.tenant.ID, ConversationID: 88001, StoreID: fixture.store.ID,
+	}
+	if err := fixture.db.Create(route).Error; err != nil {
+		t.Fatalf("create conversation route: %v", err)
+	}
+
+	result, err := FastGPTDatasetService.AdoptManagedDataset(
+		context.Background(), fixture.store.ID, datasetID, "合肥南七店", "停车场在哪里？", fixture.manager,
+	)
+	if err != nil {
+		t.Fatalf("adopt managed Dataset: %v", err)
+	}
+	if result.KnowledgeBaseID <= 0 || result.Name != "合肥南七店" || result.CollectionCount != 1 || result.DataAmount != 20089 || result.ProfileStatus != "configured" {
+		t.Fatalf("unexpected adoption result: %#v", result)
+	}
+
+	updatedStore := repositories.StoreRepository.GetInTenant(fixture.db, fixture.store.ID, fixture.tenant.ID)
+	knowledgeBase := repositories.KnowledgeBaseRepository.GetInTenant(fixture.db, result.KnowledgeBaseID, fixture.tenant.ID)
+	updatedRoute := repositories.ConversationRouteStateRepository.GetInTenant(fixture.db, route.ID, fixture.tenant.ID)
+	job := repositories.FastGPTDatasetJobRepository.Take(
+		fixture.db, "tenant_id = ? AND store_id = ? AND action = ?", fixture.tenant.ID, fixture.store.ID, fastGPTJobActionAdoptDataset,
+	)
+	if updatedStore == nil || updatedStore.KnowledgeBaseID != result.KnowledgeBaseID {
+		t.Fatalf("Store was not bound to adopted knowledge base: %#v", updatedStore)
+	}
+	if knowledgeBase == nil || knowledgeBase.StoreID != fixture.store.ID || knowledgeBase.DatasetID != datasetID ||
+		knowledgeBase.ConnectionID != fastgptapi.ManagedConnectionID || knowledgeBase.FastGPTProfileID != "profile-nanqi" ||
+		knowledgeBase.FastGPTProfileStatus != "configured" || knowledgeBase.FastGPTAppliedProfileID != 0 ||
+		knowledgeBase.FastGPTAppliedCredentialRevision != 0 {
+		t.Fatalf("unexpected adopted knowledge base: %#v", knowledgeBase)
+	}
+	if updatedRoute == nil || updatedRoute.KnowledgeBaseID != knowledgeBase.ID {
+		t.Fatalf("conversation route was not projected to adopted knowledge base: %#v", updatedRoute)
+	}
+	if job == nil || job.KnowledgeBaseID != knowledgeBase.ID || job.DatasetID != datasetID ||
+		job.Status != fastGPTJobStatusReady || job.CompletedAt == nil || job.LastError != "" {
+		t.Fatalf("adoption audit job is incomplete: %#v", job)
+	}
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(
+		fixture.db, fixture.tenant.ID, fixture.store.ID, fixture.binding.ID,
+	)
+	if credential == nil || credential.Status != enums.StoreCredentialStatusUnconfigured || credential.CredentialRevision != 0 {
+		t.Fatalf("Dataset adoption must not fabricate local credential readiness: %#v", credential)
+	}
+	storeTenant := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(fixture.db, fixture.store.ID, fixture.tenant.ID)
+	if storeTenant != nil && (storeTenant.ReadinessStatus == "ready" || storeTenant.AppliedProfileRevision > 0 || storeTenant.AppliedCredentialRevision > 0) {
+		t.Fatalf("Dataset adoption must not fabricate FastGPT runtime readiness: %#v", storeTenant)
+	}
+
+	lateRoute := &models.ConversationRouteState{
+		TenantID: fixture.tenant.ID, ConversationID: 88002, StoreID: fixture.store.ID,
+	}
+	if err := fixture.db.Create(lateRoute).Error; err != nil {
+		t.Fatalf("create late conversation route: %v", err)
+	}
+	repeated, err := FastGPTDatasetService.AdoptManagedDataset(
+		context.Background(), fixture.store.ID, datasetID, "合肥南七店", "停车场在哪里？", fixture.manager,
+	)
+	if err != nil || repeated.KnowledgeBaseID != knowledgeBase.ID {
+		t.Fatalf("idempotent adoption = %#v, %v", repeated, err)
+	}
+	var knowledgeBaseCount int64
+	var jobCount int64
+	if err := fixture.db.Model(&models.KnowledgeBase{}).
+		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
+		Count(&knowledgeBaseCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.FastGPTDatasetJob{}).
+		Where("tenant_id = ? AND store_id = ? AND action = ?", fixture.tenant.ID, fixture.store.ID, fastGPTJobActionAdoptDataset).
+		Count(&jobCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if knowledgeBaseCount != 1 || jobCount != 1 {
+		t.Fatalf("idempotent adoption duplicated records: knowledgeBases=%d jobs=%d", knowledgeBaseCount, jobCount)
+	}
+	lateRoute = repositories.ConversationRouteStateRepository.GetInTenant(fixture.db, lateRoute.ID, fixture.tenant.ID)
+	if lateRoute == nil || lateRoute.KnowledgeBaseID != knowledgeBase.ID {
+		t.Fatalf("idempotent adoption did not converge a late route: %#v", lateRoute)
+	}
+}
+
+func TestFastGPTAdoptManagedDatasetRejectsUnverifiedRemoteState(t *testing.T) {
+	tests := []struct {
+		name         string
+		expectedName string
+		scenario     adoptFastGPTDatasetScenario
+	}{
+		{
+			name: "name mismatch", expectedName: "其他门店",
+			scenario: adoptFastGPTDatasetScenario{datasetName: "合肥南七店", collectionCount: 1, dataAmount: 20, includeSearchHit: true},
+		},
+		{
+			name: "empty collections", expectedName: "合肥南七店",
+			scenario: adoptFastGPTDatasetScenario{datasetName: "合肥南七店"},
+		},
+		{
+			name: "training pending", expectedName: "合肥南七店",
+			scenario: adoptFastGPTDatasetScenario{datasetName: "合肥南七店", collectionCount: 1, dataAmount: 20, trainingAmount: 1, includeSearchHit: true},
+		},
+		{
+			name: "no search hit", expectedName: "合肥南七店",
+			scenario: adoptFastGPTDatasetScenario{datasetName: "合肥南七店", collectionCount: 1, dataAmount: 20},
+		},
+		{
+			name: "Profile not ready", expectedName: "合肥南七店",
+			scenario: adoptFastGPTDatasetScenario{datasetName: "合肥南七店", collectionCount: 1, dataAmount: 20, includeSearchHit: true, profileStatus: "failed"},
+		},
+		{
+			name: "Dataset belongs to another Store", expectedName: "合肥南七店",
+			scenario: adoptFastGPTDatasetScenario{datasetName: "合肥南七店", rejectDataset: true},
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := setupStoreCredentialFixture(t)
+			migrateFastGPTAdoptionFixture(t, fixture.db)
+			const datasetID = "dataset-unverified"
+			configureFastGPTAdoptionServer(t, fixture.store.ID, datasetID, testCase.scenario)
+			if _, err := FastGPTDatasetService.AdoptManagedDataset(
+				context.Background(), fixture.store.ID, datasetID, testCase.expectedName, "停车场在哪里？", fixture.manager,
+			); err == nil {
+				t.Fatal("unverified remote Dataset was adopted")
+			}
+			var knowledgeBaseCount int64
+			var jobCount int64
+			if err := fixture.db.Model(&models.KnowledgeBase{}).Count(&knowledgeBaseCount).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := fixture.db.Model(&models.FastGPTDatasetJob{}).Count(&jobCount).Error; err != nil {
+				t.Fatal(err)
+			}
+			updatedStore := repositories.StoreRepository.GetInTenant(fixture.db, fixture.store.ID, fixture.tenant.ID)
+			if knowledgeBaseCount != 0 || jobCount != 0 || updatedStore == nil || updatedStore.KnowledgeBaseID != 0 {
+				t.Fatalf("failed adoption changed local state: knowledgeBases=%d jobs=%d store=%#v", knowledgeBaseCount, jobCount, updatedStore)
+			}
+		})
+	}
+}
+
+func migrateFastGPTAdoptionFixture(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.AutoMigrate(&models.FastGPTDatasetJob{}, &models.ConversationRouteState{}); err != nil {
+		t.Fatalf("migrate FastGPT adoption fixture: %v", err)
+	}
+}
+
+func configureFastGPTAdoptionServer(t *testing.T, storeID int64, datasetID string, scenario adoptFastGPTDatasetScenario) {
+	t.Helper()
+	previous := config.Current()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("X-Agent-Desk-Token") != "fastgpt-adoption-test" || r.Header.Get("Authorization") != "" {
+			t.Errorf("unexpected FastGPT authentication headers")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		payload := map[string]any{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode FastGPT request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if payload["externalStoreId"] != fmt.Sprint(storeID) || payload["datasetId"] != datasetID {
+			t.Errorf("unexpected FastGPT Store scope: %#v", payload)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if r.URL.Path == "/api/integration/agent-desk/dataset/detail" && scenario.rejectDataset {
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": http.StatusForbidden, "message": "dataset outside Store Team"})
+			return
+		}
+		var data any
+		switch r.URL.Path {
+		case "/api/integration/agent-desk/dataset/detail":
+			data = map[string]any{"datasetId": datasetID, "datasetName": scenario.datasetName}
+		case "/api/integration/agent-desk/dataset/collections":
+			collections := make([]map[string]any, 0, scenario.collectionCount)
+			for index := 0; index < scenario.collectionCount; index++ {
+				collections = append(collections, map[string]any{
+					"collectionId": fmt.Sprintf("collection-%d", index+1), "name": "南七资料",
+					"type": "file", "dataAmount": scenario.dataAmount, "trainingAmount": scenario.trainingAmount,
+				})
+			}
+			data = map[string]any{"collections": collections}
+		case "/api/integration/agent-desk/dataset/profile":
+			profileStatus := scenario.profileStatus
+			if profileStatus == "" {
+				profileStatus = "configured"
+			}
+			data = map[string]any{
+				"datasetId": datasetID, "datasetModelProfileId": "profile-nanqi", "profileName": "门店知识库模型模板",
+				"profileRevision": 5, "profileStatus": profileStatus, "fingerprint": map[string]string{"embedding": "embedding-v4", "rerank": "rerank-v1"},
+			}
+		case "/api/integration/agent-desk/dataset/search":
+			hits := make([]map[string]any, 0, 1)
+			if scenario.includeSearchHit {
+				hits = append(hits, map[string]any{
+					"id": "data-1", "datasetId": datasetID, "collectionId": "collection-1",
+					"sourceName": "南七资料", "q": "停车场在哪里？", "a": "请从昭潭路入口进入。", "score": 0.91,
+				})
+			}
+			data = hits
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": http.StatusNotFound, "message": "not found"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": http.StatusOK, "data": data})
+	}))
+	configured := previous
+	configured.FastGPT = config.FastGPTConfig{
+		Enabled: true, BaseURL: server.URL, IntegrationToken: "fastgpt-adoption-test", TimeoutMS: 5000,
+	}
+	config.SetCurrent(&configured)
+	t.Cleanup(func() {
+		server.Close()
+		config.SetCurrent(&previous)
+	})
 }
 
 func TestFastGPTFailedDatasetJobCanBeRetried(t *testing.T) {
