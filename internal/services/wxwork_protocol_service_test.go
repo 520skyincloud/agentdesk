@@ -242,6 +242,64 @@ func TestWxWorkProtocolLoginAllowsUnexpiredDevice(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolLoginKeepsOnlineDeviceOnline(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	if err := db.AutoMigrate(&models.WxWorkProtocolDevicePoolInstance{}); err != nil {
+		t.Fatalf("migrate device pool: %v", err)
+	}
+	var providerData map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Path string         `json:"path"`
+			Data map[string]any `json:"data"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode protocol request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if payload.Path != "/login/get_login_qrcode" {
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
+		}
+		providerData = payload.Data
+		_, _ = w.Write([]byte(`{"err_code":0,"data":{"qrcode":"base64-image"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	instance := createWxWorkProtocolLoginTestInstance(t, db, server.URL)
+	if err := db.Model(instance).Update("health_status", "online").Error; err != nil {
+		t.Fatalf("mark protocol instance online: %v", err)
+	}
+	expiresAt := time.Now().Add(time.Hour)
+	if err := db.Create(&models.WxWorkProtocolDevicePoolInstance{
+		Guid:                          instance.Guid,
+		ExpiredAt:                     &expiresAt,
+		SyncStatus:                    "online",
+		BoundWxWorkProtocolInstanceID: instance.ID,
+		Status:                        enums.StatusOk,
+		AuditFields:                   models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}).Error; err != nil {
+		t.Fatalf("create active device pool instance: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{httpClient: server.Client()}
+	if _, err := svc.GetLoginQRCode(instance.ID); err != nil {
+		t.Fatalf("GetLoginQRCode() error = %v", err)
+	}
+	if providerData["guid"] != instance.Guid {
+		t.Fatalf("provider guid = %#v, want %q", providerData["guid"], instance.Guid)
+	}
+	verifyLogin, ok := providerData["verify_login"].(bool)
+	if !ok || verifyLogin {
+		t.Fatalf("verify_login = %#v, want false boolean", providerData["verify_login"])
+	}
+	current := WxWorkProtocolInstanceService.Get(instance.ID)
+	if current == nil || current.HealthStatus != "online" {
+		t.Fatalf("instance health status = %#v, want online while relogin is pending", current)
+	}
+}
+
 func TestWxWorkProtocolLoginStatusRequestContracts(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	type providerCall struct {

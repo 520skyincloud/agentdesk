@@ -824,7 +824,6 @@ export function WxWorkProtocolInstanceManager({
       icon: <QrCodeIcon className="size-4" />,
       visible: (item) =>
         item.status !== Status.Deleted &&
-        item.healthStatus !== "online" &&
         item.loginAvailable !== false &&
         !item.protocolExpired &&
         Boolean(item.guid.trim()),

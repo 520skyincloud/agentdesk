@@ -10,13 +10,19 @@ const managerSource = readFileSync(
   new URL("./wxwork-protocol-instance-manager.tsx", import.meta.url),
   "utf8"
 )
+const deviceLoginActionSource = managerSource.slice(
+  managerSource.indexOf('key: "deviceLogin"'),
+  managerSource.indexOf('key: "replaceLogin"')
+)
 
-test("existing offline instances expose the device login flow", () => {
-  assert.match(managerSource, /key: "deviceLogin"/)
-  assert.match(managerSource, /label: "扫码重新登录"/)
-  assert.match(managerSource, /item\.healthStatus !== "online"/)
-  assert.match(managerSource, /item\.loginAvailable !== false/)
-  assert.match(managerSource, /!item\.protocolExpired/)
+test("valid online and offline instances expose the device login flow", () => {
+  assert.match(deviceLoginActionSource, /key: "deviceLogin"/)
+  assert.match(deviceLoginActionSource, /label: "扫码重新登录"/)
+  assert.doesNotMatch(deviceLoginActionSource, /healthStatus/)
+  assert.match(deviceLoginActionSource, /item\.status !== Status\.Deleted/)
+  assert.match(deviceLoginActionSource, /item\.loginAvailable !== false/)
+  assert.match(deviceLoginActionSource, /!item\.protocolExpired/)
+  assert.match(deviceLoginActionSource, /Boolean\(item\.guid\.trim\(\)\)/)
   assert.match(managerSource, /<WxWorkProtocolDeviceLoginDialog/)
 })
 
