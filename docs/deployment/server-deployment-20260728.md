@@ -752,3 +752,36 @@ message: 等待扫码
 上述步骤完成前，当前结论仅为“直接二维码链路已部署且真实取码成功”，不宣称员工号已经
 登录。截图中明文展示过供应商应用 Secret，完成链路核验后仍必须在供应商控制台轮换，并与
 服务器配置原子同步。
+
+## 在线员工号扫码重新登录入口生产修复
+
+2026-08-01 已将有效在线实例的既有“扫码重新登录”入口恢复到生产环境。发布事实如下：
+
+```text
+代码提交：29e5e2d24d98807782d3feb63546fa1e3dc42d96
+源码归档 SHA-256：79ceec8f9d027f34393ee53ec89f6b549886805f02f6f0e51f3e743e61f218f5
+发布目录：/opt/agentdesk/releases/20260801-182746-wxwork-online-relogin/app
+部署前备份：/opt/agentdesk/backups/20260801-182746-wxwork-online-relogin
+回滚镜像：mlogclub/agent-desk:rollback-20260801-182746-wxwork-online-relogin
+回滚镜像摘要：sha256:7b3064f2498d3abc498c8e9d205e18b15f637c1a2d6b8fcecbd761539b8a2ea2
+生产镜像：sha256:f34c331fec08c273d978346d2112b61728ad2d94afa8cea317f0db04226d388c
+镜像创建时间：2026-08-01 18:32:06 +08:00
+应用容器启动时间：2026-08-01 18:33:23 +08:00
+```
+
+部署使用 Compose project `agentdesk`，原子切换 `/opt/agentdesk/current` 后执行
+`--force-recreate --no-deps agent-desk`。应用容器为 `healthy`，服务器本机和公网 HTTPS
+均返回 HTTP 200；MySQL 容器未重建，仍保持原数据卷和健康状态。
+
+在生产管理员的“丽斯未来”公司上下文刷新 `/dashboard/wxwork-protocol-instances/` 后，
+真实复验结果为：
+
+1. 有效实例“其风”继续显示 `online`，操作菜单已经出现“扫码重新登录”；
+2. 已过期实例“黄奇峰”继续显示过期提示，操作菜单没有“扫码重新登录”；
+3. 复验只检查菜单可见性，没有请求新二维码、扫码或改写任何实例登录状态；
+4. 取码后的状态保持规则已由自动化测试覆盖：在线实例保持 `online`，非在线实例进入
+   `login_qrcode`，状态 `10` 的确认码链路保持原样。
+
+启动日志另有一条与本次发布无关的 FastGPT usage sync MySQL `cursor` 条件语法告警；应用
+健康检查、员工号页面和本次入口均不受影响。本次按强制边界未修改 AI、FastGPT 或计费
+代码，应在对应功能任务中单独修复并回归。
