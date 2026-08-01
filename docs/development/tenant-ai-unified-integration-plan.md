@@ -369,3 +369,4 @@ pnpm --dir web build
 - 并行影响：`origin/codex/ai-billing@4db7993` 在这些 FastGPT 文件上存在历史差异，但其语义已吸收进统一分支，不得整文件覆盖；`origin/codex/customer-audit@c706815` 无本次同文件改动。发布顺序仍以本统一分支提交为唯一基线。
 - 回滚：部署前可回滚本提交；已经完成真实接入后，回滚代码不会删除 KnowledgeBase 或远端 Dataset。需要解除绑定时必须走现有受权限保护的知识库删除/停用流程，禁止手工删表或改 Store 外键。
 - 工程验证：`go test ./internal/services/... ./internal/handlers/dashboard/...`、`go test ./internal/bootstrap/...`、`go test ./...` 和 `git diff --check` 全部通过。
+- 生产验收（2026-08-01）：运行提交 `10ba7db`，release 为 `/opt/agentdesk/releases/20260801-181002-nanqi-fingerprint/app`，镜像摘要为 `sha256:7b3064f2498d3abc498c8e9d205e18b15f637c1a2d6b8fcecbd761539b8a2ea2`。合肥南七店接入成功，远端返回 1 个集合、20089 条内容；KnowledgeBase、Store 外键、`adopt_dataset` 任务和既有 ConversationRouteState 全部一致。验收问题命中 12 条并包含昭潭路入口资料；门店凭据和 AI runtime 继续保持未配置，未伪造 ready 状态。容器健康、重启数为 0，公网页面和认证选项接口均为 HTTP 200，部署后日志未发现错误或敏感配置字段。
