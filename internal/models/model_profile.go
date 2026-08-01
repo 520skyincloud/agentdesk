@@ -50,26 +50,27 @@ type ModelProfileSlot struct {
 // configuration was exercised against all nine slots with a Store credential.
 // It contains no credential material or fingerprint.
 type ModelProfileTestRun struct {
-	ID                 int64                                  `gorm:"primaryKey;autoIncrement"`
-	TemplateID         int64                                  `gorm:"type:bigint;not null;default:0;index;index:idx_model_profile_test_evidence,priority:1"`
-	TemplateRevision   int64                                  `gorm:"type:bigint;not null;default:0;index;index:idx_model_profile_test_evidence,priority:2"`
-	ConfigDigest       string                                 `gorm:"type:varchar(64);not null;default:'';index;index:idx_model_profile_test_evidence,priority:3"`
-	TenantID           int64                                  `gorm:"type:bigint;not null;default:0;index;index:idx_model_profile_test_target,priority:1"`
-	StoreID            int64                                  `gorm:"type:bigint;not null;default:0;index;index:idx_model_profile_test_target,priority:2"`
-	TenantName         string                                 `gorm:"type:varchar(160);not null;default:''"`
-	StoreName          string                                 `gorm:"type:varchar(160);not null;default:''"`
-	CredentialRevision int64                                  `gorm:"type:bigint;not null;default:0;index"`
-	CredentialSource   enums.ModelProfileTestCredentialSource `gorm:"type:varchar(30);not null;default:'';index"`
-	Status             enums.ModelProfileTestStatus           `gorm:"type:varchar(30);not null;default:'';index;index:idx_model_profile_test_evidence,priority:4"`
-	FailedUsageCode    enums.ModelUsageSlot                   `gorm:"type:varchar(80);not null;default:'';index"`
-	ErrorClass         string                                 `gorm:"type:varchar(80);not null;default:'';index"`
-	ErrorMessage       string                                 `gorm:"type:text"`
-	RequestID          string                                 `gorm:"type:varchar(128);not null;default:'';index"`
-	ClientIP           string                                 `gorm:"type:varchar(64);not null;default:''"`
-	LatencyMS          int64                                  `gorm:"type:bigint;not null;default:0"`
-	OperatorID         int64                                  `gorm:"type:bigint;not null;default:0;index"`
-	OperatorName       string                                 `gorm:"type:varchar(100);not null;default:''"`
-	CreatedAt          time.Time                              `gorm:"type:datetime;not null;index"`
+	ID                  int64                                  `gorm:"primaryKey;autoIncrement"`
+	TemplateID          int64                                  `gorm:"type:bigint;not null;default:0;index;index:idx_model_profile_test_evidence,priority:1"`
+	TemplateRevision    int64                                  `gorm:"type:bigint;not null;default:0;index;index:idx_model_profile_test_evidence,priority:2"`
+	ConfigDigest        string                                 `gorm:"type:varchar(64);not null;default:'';index;index:idx_model_profile_test_evidence,priority:3"`
+	TenantID            int64                                  `gorm:"type:bigint;not null;default:0;index;index:idx_model_profile_test_target,priority:1"`
+	StoreID             int64                                  `gorm:"type:bigint;not null;default:0;index;index:idx_model_profile_test_target,priority:2"`
+	StoreStaffBindingID int64                                  `gorm:"type:bigint;not null;default:0;index;index:idx_model_profile_test_target,priority:3"`
+	TenantName          string                                 `gorm:"type:varchar(160);not null;default:''"`
+	StoreName           string                                 `gorm:"type:varchar(160);not null;default:''"`
+	CredentialRevision  int64                                  `gorm:"type:bigint;not null;default:0;index"`
+	CredentialSource    enums.ModelProfileTestCredentialSource `gorm:"type:varchar(30);not null;default:'';index"`
+	Status              enums.ModelProfileTestStatus           `gorm:"type:varchar(30);not null;default:'';index;index:idx_model_profile_test_evidence,priority:4"`
+	FailedUsageCode     enums.ModelUsageSlot                   `gorm:"type:varchar(80);not null;default:'';index"`
+	ErrorClass          string                                 `gorm:"type:varchar(80);not null;default:'';index"`
+	ErrorMessage        string                                 `gorm:"type:text"`
+	RequestID           string                                 `gorm:"type:varchar(128);not null;default:'';index"`
+	ClientIP            string                                 `gorm:"type:varchar(64);not null;default:''"`
+	LatencyMS           int64                                  `gorm:"type:bigint;not null;default:0"`
+	OperatorID          int64                                  `gorm:"type:bigint;not null;default:0;index"`
+	OperatorName        string                                 `gorm:"type:varchar(100);not null;default:''"`
+	CreatedAt           time.Time                              `gorm:"type:datetime;not null;index"`
 }
 
 // StoreModelProfileAssignment is the sole Store-to-profile binding.

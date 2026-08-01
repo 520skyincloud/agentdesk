@@ -210,7 +210,7 @@ func (s *conversationEvolutionService) processClaimedState(state *models.Convers
 		return
 	}
 
-	resolved, err := ModelCallResolverService.Resolve(state.TenantID, state.StoreID, enums.ModelUsageSlotCustomerTag)
+	resolved, err := ModelCallResolverService.ResolveForConversation(state.ConversationID, enums.ModelUsageSlotCustomerTag)
 	if err != nil || resolved == nil {
 		s.failClaim(state, owner, run, "store_credential_or_tag_slot_unavailable", true, false)
 		return

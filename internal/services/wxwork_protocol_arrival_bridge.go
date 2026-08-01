@@ -6,12 +6,11 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto/request"
-	"agent-desk/internal/pkg/enums"
 )
 
 func (s *wxWorkProtocolService) EnsureArrivalConversation(instanceID int64, protocolUserID, displayName, evidence string) (*models.Conversation, string, error) {
 	instance := WxWorkProtocolInstanceService.Get(instanceID)
-	if instance == nil || instance.Status != enums.StatusOk {
+	if !isActivatedCurrentWxWorkProtocolInstance(instance) {
 		return nil, "", fmt.Errorf("企微员工号实例不存在或未启用")
 	}
 	protocolUserID = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(protocolUserID), "S:"))

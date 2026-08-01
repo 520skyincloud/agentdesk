@@ -62,6 +62,8 @@ type ModelProfileValidationData struct {
 type ModelProfileTestTarget struct {
 	Tenant                 models.Tenant
 	Store                  models.Store
+	StoreStaffBindingID    int64
+	StoreStaffAccountName  string
 	CredentialRevision     int64
 	ActiveTemplateID       int64
 	ActiveTemplateName     string
@@ -69,8 +71,15 @@ type ModelProfileTestTarget struct {
 }
 
 type StoreModelProfileAssignmentItem struct {
-	Store      models.Store
-	Assignment *models.StoreModelProfileAssignment
+	Store              models.Store
+	Assignment         *models.StoreModelProfileAssignment
+	CredentialBindings []StoreModelCredentialBinding
+}
+
+type StoreModelCredentialBinding struct {
+	ID          int64
+	UserID      int64
+	AccountName string
 }
 
 type StoreModelProfileAssignmentsData struct {
@@ -313,7 +322,7 @@ func (s *modelProfileService) Test(
 	if len(data.Issues) > 0 {
 		return data, nil
 	}
-	target, credential, err := s.loadTestTarget(req.TenantID, req.StoreID, item)
+	target, credential, err := s.loadTestTarget(req.TenantID, req.StoreID, req.StoreStaffBindingID, item)
 	if err != nil {
 		return nil, err
 	}
@@ -324,6 +333,7 @@ func (s *modelProfileService) Test(
 		slots,
 		&target.Tenant,
 		&target.Store,
+		target.StoreStaffBindingID,
 		credential.Revision,
 		enums.ModelProfileTestCredentialSourceActive,
 		testErr,
@@ -505,6 +515,41 @@ func (s *storeModelProfileAssignmentService) List(req request.GetStoreModelProfi
 	for _, item := range assignments {
 		assignmentByStore[item.StoreID] = item
 	}
+	bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("status", enums.StatusOk).
+		Where("active_user_id IS NOT NULL").
+		Asc("store_id").Asc("id"))
+	userIDs := make([]int64, 0, len(bindings))
+	seenUserIDs := make(map[int64]struct{}, len(bindings))
+	for i := range bindings {
+		if bindings[i].UserID <= 0 {
+			continue
+		}
+		if _, exists := seenUserIDs[bindings[i].UserID]; exists {
+			continue
+		}
+		seenUserIDs[bindings[i].UserID] = struct{}{}
+		userIDs = append(userIDs, bindings[i].UserID)
+	}
+	usersByID := make(map[int64]models.User, len(userIDs))
+	for _, user := range repositories.UserRepository.FindByIdsInTenant(sqls.DB(), userIDs, tenantID) {
+		usersByID[user.ID] = user
+	}
+	bindingsByStore := make(map[int64][]StoreModelCredentialBinding)
+	for i := range bindings {
+		user, exists := usersByID[bindings[i].UserID]
+		if !exists || user.Status != enums.StatusOk {
+			continue
+		}
+		accountName := strings.TrimSpace(user.Nickname)
+		if accountName == "" {
+			accountName = strings.TrimSpace(user.Username)
+		}
+		bindingsByStore[bindings[i].StoreID] = append(bindingsByStore[bindings[i].StoreID], StoreModelCredentialBinding{
+			ID: bindings[i].ID, UserID: user.ID, AccountName: accountName,
+		})
+	}
 	profiles := repositories.ModelProfileTemplateRepository.Find(sqls.DB(), sqls.NewCnd().In("status", []enums.ModelProfileStatus{
 		enums.ModelProfileStatusCandidate, enums.ModelProfileStatusActive,
 	}).Asc("name").Desc("revision"))
@@ -521,7 +566,9 @@ func (s *storeModelProfileAssignmentService) List(req request.GetStoreModelProfi
 		result.Templates[profiles[i].ID] = profiles[i]
 	}
 	for i := range stores {
-		entry := StoreModelProfileAssignmentItem{Store: stores[i]}
+		entry := StoreModelProfileAssignmentItem{
+			Store: stores[i], CredentialBindings: bindingsByStore[stores[i].ID],
+		}
 		if assignment, exists := assignmentByStore[stores[i].ID]; exists {
 			copy := assignment
 			entry.Assignment = &copy
@@ -679,6 +726,8 @@ func (s *modelProfileService) findTestTargetsDB(db *gorm.DB, limit int) []ModelP
 				StoreCode: target.StoreCode,
 				Name:      target.StoreName,
 			},
+			StoreStaffBindingID:    target.StoreStaffBindingID,
+			StoreStaffAccountName:  modelProfileTestBindingAccountName(db, target.StoreStaffBindingID),
 			CredentialRevision:     target.CredentialRevision,
 			ActiveTemplateID:       target.ActiveTemplateID,
 			ActiveTemplateName:     target.ActiveTemplateName,
@@ -720,6 +769,8 @@ func (s *modelProfileService) buildTestTargetDB(
 	return &ModelProfileTestTarget{
 		Tenant:                 *tenant,
 		Store:                  *store,
+		StoreStaffBindingID:    credential.StoreStaffBindingID,
+		StoreStaffAccountName:  modelProfileTestBindingAccountName(db, credential.StoreStaffBindingID),
 		CredentialRevision:     credential.CredentialRevision,
 		ActiveTemplateID:       template.ID,
 		ActiveTemplateName:     template.Name,
@@ -728,14 +779,13 @@ func (s *modelProfileService) buildTestTargetDB(
 }
 
 func (s *modelProfileService) loadTestTarget(
-	tenantID,
-	storeID int64,
+	tenantID, storeID, storeStaffBindingID int64,
 	template *models.ModelProfileTemplate,
 ) (*ModelProfileTestTarget, *resolvedStoreModelCredential, error) {
-	if tenantID <= 0 || storeID <= 0 {
+	if tenantID <= 0 || storeID <= 0 || storeStaffBindingID <= 0 {
 		return nil, nil, errorsx.InvalidParam("请选择一个已有 active 凭据的受控测试门店")
 	}
-	credentialMetadata := repositories.StoreModelCredentialRepository.FindActiveMetadataByStore(sqls.DB(), tenantID, storeID)
+	credentialMetadata := repositories.StoreModelCredentialRepository.FindActiveMetadataByBinding(sqls.DB(), tenantID, storeID, storeStaffBindingID)
 	selected := s.buildTestTargetDB(sqls.DB(), credentialMetadata)
 	if selected == nil {
 		return nil, nil, errorsx.InvalidParam("测试门店没有可用的 active 凭据与模型方案")
@@ -745,7 +795,7 @@ func (s *modelProfileService) loadTestTarget(
 		normalizeGatewayBaseURL(activeTemplate.GatewayBaseURL) != normalizeGatewayBaseURL(template.GatewayBaseURL) {
 		return nil, nil, errorsx.InvalidParam("测试门店当前方案不使用相同的统一 NewAPI 网关，禁止发送门店凭据")
 	}
-	credential, err := StoreModelCredentialService.ResolveActive(tenantID, storeID)
+	credential, err := StoreModelCredentialService.ResolveActiveForBinding(tenantID, storeID, storeStaffBindingID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -755,11 +805,25 @@ func (s *modelProfileService) loadTestTarget(
 	return selected, credential, nil
 }
 
+func modelProfileTestBindingAccountName(db *gorm.DB, bindingID int64) string {
+	fallback := fmt.Sprintf("门店员工号 #%d", bindingID)
+	binding := repositories.StoreStaffBindingRepository.Get(db, bindingID)
+	if binding == nil {
+		return fallback
+	}
+	user := repositories.UserRepository.Get(db, binding.UserID)
+	if user == nil {
+		return fallback
+	}
+	return firstNonBlank(strings.TrimSpace(user.Nickname), strings.TrimSpace(user.Username), fallback)
+}
+
 func recordModelProfileTestRun(
 	template *models.ModelProfileTemplate,
 	slots []models.ModelProfileSlot,
 	tenant *models.Tenant,
 	store *models.Store,
+	storeStaffBindingID int64,
 	credentialRevision int64,
 	credentialSource enums.ModelProfileTestCredentialSource,
 	testErr error,
@@ -767,7 +831,7 @@ func recordModelProfileTestRun(
 	operator *dto.AuthPrincipal,
 	meta StoreCredentialRequestMeta,
 ) (*models.ModelProfileTestRun, error) {
-	if template == nil || tenant == nil || store == nil || credentialRevision <= 0 || operator == nil {
+	if template == nil || tenant == nil || store == nil || storeStaffBindingID <= 0 || credentialRevision <= 0 || operator == nil {
 		return nil, errorsx.BusinessError(3001, "模型方案测试证据上下文不完整")
 	}
 	completedAt := time.Now()
@@ -786,7 +850,7 @@ func recordModelProfileTestRun(
 	item := &models.ModelProfileTestRun{
 		TemplateID: template.ID, TemplateRevision: template.Revision,
 		ConfigDigest: modelProfileConfigurationDigest(template, slots),
-		TenantID:     tenant.ID, StoreID: store.ID,
+		TenantID:     tenant.ID, StoreID: store.ID, StoreStaffBindingID: storeStaffBindingID,
 		TenantName: firstNonBlank(tenant.ShortName, tenant.LegalName), StoreName: store.Name,
 		CredentialRevision: credentialRevision, CredentialSource: credentialSource,
 		Status: status, FailedUsageCode: failedUsage,

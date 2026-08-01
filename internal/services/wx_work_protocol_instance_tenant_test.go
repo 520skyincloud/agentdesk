@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-desk/internal/models"
@@ -84,6 +85,47 @@ func TestWxWorkProtocolInstanceCRUDStaysInActiveTenant(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolInstanceEmployeeIdentityCannotBeChangedInPlace(t *testing.T) {
+	db := setupWxWorkProtocolTenantDB(t)
+	operator := wxWorkProtocolTenantOperator(101, 1)
+	channel := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-identity-lock")
+	user := createStoreStaffTenantUser(t, db, 101, "wxwork-identity-user")
+	store := createWxWorkProtocolTenantStore(t, db, 101, "WX-IDENTITY")
+	createStoreStaffTenantBinding(t, db, 101, user.ID, 0, store.ID)
+	instance, err := WxWorkProtocolInstanceService.CreateInstance(request.CreateWxWorkProtocolInstanceRequest{
+		Guid: "identity-lock-guid", ChannelID: channel.ID, StoreStaffUserID: user.ID,
+		EmployeeUserID: "employee-original", EmployeeName: "原员工", Status: int(enums.StatusOk),
+	}, operator)
+	if err != nil {
+		t.Fatalf("create identity-lock instance: %v", err)
+	}
+
+	update := request.UpdateWxWorkProtocolInstanceRequest{
+		ID: instance.ID,
+		CreateWxWorkProtocolInstanceRequest: request.CreateWxWorkProtocolInstanceRequest{
+			Guid: instance.Guid, ChannelID: channel.ID, StoreStaffUserID: user.ID,
+			EmployeeUserID: "employee-replacement", EmployeeName: "新员工", Status: int(enums.StatusOk),
+		},
+	}
+	if err := WxWorkProtocolInstanceService.UpdateInstance(update, operator); err == nil || !strings.Contains(err.Error(), "更换企微账号流程") {
+		t.Fatalf("in-place EmployeeUserID mutation error=%v", err)
+	}
+	current := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, 101)
+	if current == nil || current.EmployeeUserID != "employee-original" || current.EmployeeName != "原员工" {
+		t.Fatalf("rejected identity mutation changed instance: %+v", current)
+	}
+
+	update.EmployeeUserID = "employee-original"
+	update.EmployeeName = "展示名可修改"
+	if err := WxWorkProtocolInstanceService.UpdateInstance(update, operator); err != nil {
+		t.Fatalf("update display name with stable identity: %v", err)
+	}
+	current = repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, 101)
+	if current == nil || current.EmployeeUserID != "employee-original" || current.EmployeeName != "展示名可修改" {
+		t.Fatalf("stable identity display update mismatch: %+v", current)
+	}
+}
+
 func TestWxWorkProtocolInstanceCreateRollsBackWhenBindingSyncFails(t *testing.T) {
 	db := setupWxWorkProtocolTenantDB(t)
 	operator := wxWorkProtocolTenantOperator(101, 1)
@@ -119,6 +161,8 @@ func TestWxWorkProtocolLoginClaimsOnlyUnownedInstance(t *testing.T) {
 	adminA := wxWorkProtocolTenantOperator(101, 1)
 	channelA := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-claim-a")
 	userA := createStoreStaffTenantUser(t, db, 101, "wxwork-claim-store-user")
+	storeA := createWxWorkProtocolTenantStore(t, db, 101, "WX-CLAIM")
+	createStoreStaffTenantBinding(t, db, 101, userA.ID, 0, storeA.ID)
 
 	pending, err := WxWorkProtocolInstanceService.CreatePendingFromLogin("claimable-guid", json.RawMessage(`{}`))
 	if err != nil {
@@ -186,6 +230,83 @@ func TestWxWorkProtocolLoginResumesDraftBeforeClaimingDevice(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("resume created %d login instances, want 1", count)
+	}
+}
+
+func TestWxWorkProtocolCurrentInstanceWinsOverReplacementDraft(t *testing.T) {
+	db := setupWxWorkProtocolTenantDB(t)
+	operator := wxWorkProtocolTenantOperator(101, 1)
+	channel := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-current-before-draft")
+	user := createStoreStaffTenantUser(t, db, 101, "wxwork-current-before-draft-user")
+	store := createWxWorkProtocolTenantStore(t, db, 101, "WX-CURRENT-DRAFT")
+	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, store.ID)
+	current := &models.WxWorkProtocolInstance{
+		TenantID: 101, Guid: "wxwork-current-guid", ChannelID: channel.ID,
+		StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		EmployeeUserID: "current-employee", HealthStatus: "online", Status: enums.StatusOk,
+	}
+	if err := db.Create(current).Error; err != nil {
+		t.Fatalf("create current instance: %v", err)
+	}
+	draft := &models.WxWorkProtocolInstance{
+		TenantID: 101, Guid: "wxwork-replacement-draft-guid", ChannelID: channel.ID,
+		StoreID: store.ID, StoreStaffBindingID: binding.ID, ReplacesInstanceID: current.ID,
+		EmployeeUserID: "replacement-pending-employee",
+		HealthStatus:   "online", Status: enums.StatusOk,
+	}
+	if err := db.Create(draft).Error; err != nil {
+		t.Fatalf("create replacement draft: %v", err)
+	}
+
+	if got, err := WxWorkProtocolInstanceService.activeInstanceForBindingDB(db, 101, binding.ID); err != nil || got == nil || got.ID != current.ID {
+		t.Fatalf("active instance=%+v, want current %d", got, current.ID)
+	}
+	if got, err := WxWorkProtocolInstanceService.bindingInstanceReservationDB(db, 101, binding.ID); err != nil || got == nil || got.ID != current.ID {
+		t.Fatalf("binding reservation=%+v, want current %d", got, current.ID)
+	}
+	if _, err := WxWorkProtocolInstanceService.CreateLoginInstance(request.StartWxWorkProtocolLoginRequest{
+		ChannelID: channel.ID, Guid: "should-not-be-claimed", StoreStaffUserID: user.ID,
+	}, operator); err == nil {
+		t.Fatal("replacement draft shadowed the current instance and allowed another login")
+	}
+}
+
+func TestWxWorkProtocolBindingFailsClosedOnDuplicateCurrentInstances(t *testing.T) {
+	db := setupWxWorkProtocolTenantDB(t)
+	operator := wxWorkProtocolTenantOperator(101, 1)
+	channel := createWxWorkProtocolTenantChannel(t, db, 101, "wxwork-duplicate-current")
+	user := createStoreStaffTenantUser(t, db, 101, "wxwork-duplicate-current-user")
+	store := createWxWorkProtocolTenantStore(t, db, 101, "WX-DUPLICATE-CURRENT")
+	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, store.ID)
+	for _, guid := range []string{"wxwork-duplicate-current-a", "wxwork-duplicate-current-b"} {
+		if err := db.Create(&models.WxWorkProtocolInstance{
+			TenantID: 101, Guid: guid, ChannelID: channel.ID,
+			StoreID: store.ID, StoreStaffBindingID: binding.ID,
+			EmployeeUserID: guid, HealthStatus: "online", Status: enums.StatusOk,
+		}).Error; err != nil {
+			t.Fatalf("create duplicate current instance %q: %v", guid, err)
+		}
+	}
+
+	if got, err := WxWorkProtocolInstanceService.activeInstanceForBindingDB(db, 101, binding.ID); err == nil || got != nil {
+		t.Fatalf("duplicate current instances returned instance=%+v error=%v", got, err)
+	}
+	if got, err := WxWorkProtocolInstanceService.bindingInstanceReservationDB(db, 101, binding.ID); err == nil || got != nil {
+		t.Fatalf("duplicate current reservations returned instance=%+v error=%v", got, err)
+	}
+	if _, err := WxWorkProtocolInstanceService.CreateLoginInstance(request.StartWxWorkProtocolLoginRequest{
+		ChannelID: channel.ID, Guid: "wxwork-duplicate-current-c", StoreStaffUserID: user.ID,
+	}, operator); err == nil || !strings.Contains(err.Error(), "多个当前企微实例") {
+		t.Fatalf("duplicate current instances did not block another login: %v", err)
+	}
+	var count int64
+	if err := db.Model(&models.WxWorkProtocolInstance{}).
+		Where("tenant_id = ? AND store_staff_binding_id = ?", 101, binding.ID).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count duplicate current instances: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("blocked login changed current instance count to %d", count)
 	}
 }
 
@@ -324,6 +445,26 @@ func TestWxWorkProtocolRepositoryFinalPredicatesProtectTenant(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolAIEnabledCountUsesActivatedCurrentInstancesOnly(t *testing.T) {
+	db := setupWxWorkProtocolTenantDB(t)
+	items := []models.WxWorkProtocolInstance{
+		{TenantID: 101, Guid: "ai-count-replaced", AIReplyEnabled: true, ReplacedByInstanceID: 9001, Status: enums.StatusDisabled},
+		{TenantID: 101, Guid: "ai-count-unverified-draft", AIReplyEnabled: true, ReplacesInstanceID: 9001, Status: enums.StatusOk},
+		{TenantID: 101, Guid: "ai-count-current", AIReplyEnabled: true, Status: enums.StatusOk},
+		{TenantID: 202, Guid: "ai-count-other-tenant", AIReplyEnabled: true, Status: enums.StatusOk},
+	}
+	if err := db.Create(&items).Error; err != nil {
+		t.Fatalf("create AI count fixtures: %v", err)
+	}
+	count, err := repositories.WxWorkProtocolInstanceRepository.CountAIEnabledInTenant(db, 101)
+	if err != nil {
+		t.Fatalf("count current AI instances: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one activated current AI instance, got %d", count)
+	}
+}
+
 func setupWxWorkProtocolTenantDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "wxwork-tenant.db")), &gorm.Config{
@@ -336,6 +477,7 @@ func setupWxWorkProtocolTenantDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(
 		&models.User{}, &models.Role{}, &models.UserRole{}, &models.Store{}, &models.Channel{}, &models.StoreStaffBinding{},
 		&models.WxWorkProtocolInstance{}, &models.WxWorkProtocolDevicePoolInstance{},
+		&models.ConversationRouteState{},
 		&models.StoreModelCredential{}, &models.StoreCredentialPolicy{},
 		&models.TenantCustomerTagPolicy{}, &models.StoreCustomerTagRuntimePolicy{},
 	); err != nil {

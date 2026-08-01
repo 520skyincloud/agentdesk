@@ -271,7 +271,7 @@ func (s *tenantRegistrationService) Review(req request.ReviewTenantRegistrationR
 			return nil, errorsx.InvalidParam("拒绝注册时必须填写原因")
 		}
 	}
-	fingerprint := reviewRequestFingerprint(req.UserID, decision, roleIDs, strings.TrimSpace(req.StoreName), remark, operator)
+	fingerprint := reviewRequestFingerprint(req.UserID, decision, roleIDs, req.StoreID, remark, operator)
 	if existing := repositories.TenantRegistrationLogRepository.GetByRequestID(sqls.DB(), meta.RequestID); existing != nil {
 		if existing.Action != enums.TenantRegistrationActionReview || existing.RequestFingerprint != fingerprint {
 			return nil, errorsx.InvalidParam("请求标识已被其他操作使用")
@@ -321,7 +321,7 @@ func (s *tenantRegistrationService) Review(req request.ReviewTenantRegistrationR
 		}
 		if decision == enums.TenantRegistrationReviewDecisionApprove {
 			current.Status = userStatus
-			if err := UserService.syncStoreIdentityForRoleStateDB(ctx.Tx, current, req.StoreName, operator, false); err != nil {
+			if err := UserService.syncStoreIdentityForRoleStateDB(ctx.Tx, current, req.StoreID, operator, false); err != nil {
 				return err
 			}
 		}
@@ -495,16 +495,16 @@ func registrationRequestFingerprint(req *normalizedPublicRegistration) (string, 
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
-func reviewRequestFingerprint(userID int64, decision enums.TenantRegistrationReviewDecision, roleIDs []int64, storeName, remark string, operator *dto.AuthPrincipal) string {
+func reviewRequestFingerprint(userID int64, decision enums.TenantRegistrationReviewDecision, roleIDs []int64, storeID int64, remark string, operator *dto.AuthPrincipal) string {
 	payload, _ := json.Marshal(struct {
 		TenantID   int64                                  `json:"tenantId"`
 		UserID     int64                                  `json:"userId"`
 		Decision   enums.TenantRegistrationReviewDecision `json:"decision"`
 		RoleIDs    []int64                                `json:"roleIds"`
-		StoreName  string                                 `json:"storeName"`
+		StoreID    int64                                  `json:"storeId"`
 		Remark     string                                 `json:"remark"`
 		OperatorID int64                                  `json:"operatorId"`
-	}{operator.ActiveTenantID, userID, decision, roleIDs, storeName, remark, operator.UserID})
+	}{operator.ActiveTenantID, userID, decision, roleIDs, storeID, remark, operator.UserID})
 	sum := sha256.Sum256(append([]byte("tenant-registration-review-v1\x00"), payload...))
 	return hex.EncodeToString(sum[:])
 }

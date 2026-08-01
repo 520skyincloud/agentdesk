@@ -68,20 +68,21 @@ type ModelProfileValidationResponse struct {
 }
 
 type ModelProfileTestRunResponse struct {
-	ID                 int64     `json:"id"`
-	TenantID           int64     `json:"tenantId"`
-	TenantName         string    `json:"tenantName"`
-	StoreID            int64     `json:"storeId"`
-	StoreName          string    `json:"storeName"`
-	CredentialRevision int64     `json:"credentialRevision"`
-	CredentialSource   string    `json:"credentialSource"`
-	Status             string    `json:"status"`
-	FailedUsageCode    string    `json:"failedUsageCode"`
-	ErrorClass         string    `json:"errorClass"`
-	ErrorMessage       string    `json:"errorMessage"`
-	LatencyMS          int64     `json:"latencyMs"`
-	OperatorName       string    `json:"operatorName"`
-	CreatedAt          time.Time `json:"createdAt"`
+	ID                  int64     `json:"id"`
+	TenantID            int64     `json:"tenantId"`
+	TenantName          string    `json:"tenantName"`
+	StoreID             int64     `json:"storeId"`
+	StoreName           string    `json:"storeName"`
+	StoreStaffBindingID int64     `json:"storeStaffBindingId"`
+	CredentialRevision  int64     `json:"credentialRevision"`
+	CredentialSource    string    `json:"credentialSource"`
+	Status              string    `json:"status"`
+	FailedUsageCode     string    `json:"failedUsageCode"`
+	ErrorClass          string    `json:"errorClass"`
+	ErrorMessage        string    `json:"errorMessage"`
+	LatencyMS           int64     `json:"latencyMs"`
+	OperatorName        string    `json:"operatorName"`
+	CreatedAt           time.Time `json:"createdAt"`
 }
 
 type ModelProfileTestTargetResponse struct {
@@ -90,6 +91,8 @@ type ModelProfileTestTargetResponse struct {
 	StoreID                int64  `json:"storeId"`
 	StoreCode              string `json:"storeCode"`
 	StoreName              string `json:"storeName"`
+	StoreStaffBindingID    int64  `json:"storeStaffBindingId"`
+	StoreStaffAccountName  string `json:"storeStaffAccountName"`
 	CredentialRevision     int64  `json:"credentialRevision"`
 	ActiveTemplateID       int64  `json:"activeTemplateId"`
 	ActiveTemplateName     string `json:"activeTemplateName"`
@@ -106,23 +109,30 @@ type StoreModelProfileOptionResponse struct {
 }
 
 type StoreModelProfileAssignmentResponse struct {
-	TenantID                int64      `json:"tenantId"`
-	StoreID                 int64      `json:"storeId"`
-	StoreCode               string     `json:"storeCode"`
-	StoreName               string     `json:"storeName"`
-	AssignmentID            int64      `json:"assignmentId"`
-	Status                  string     `json:"status"`
-	ReadinessStatus         string     `json:"readinessStatus"`
-	ActiveTemplateID        int64      `json:"activeTemplateId"`
-	ActiveTemplateName      string     `json:"activeTemplateName"`
-	ActiveTemplateRevision  int64      `json:"activeTemplateRevision"`
-	PendingTemplateID       int64      `json:"pendingTemplateId"`
-	PendingTemplateName     string     `json:"pendingTemplateName"`
-	PendingTemplateRevision int64      `json:"pendingTemplateRevision"`
-	PendingRequestedAt      *time.Time `json:"pendingRequestedAt"`
-	LastValidatedAt         *time.Time `json:"lastValidatedAt"`
-	LastReadyAt             *time.Time `json:"lastReadyAt"`
-	LastErrorMessage        string     `json:"lastErrorMessage"`
+	TenantID                int64                                 `json:"tenantId"`
+	StoreID                 int64                                 `json:"storeId"`
+	StoreCode               string                                `json:"storeCode"`
+	StoreName               string                                `json:"storeName"`
+	AssignmentID            int64                                 `json:"assignmentId"`
+	Status                  string                                `json:"status"`
+	ReadinessStatus         string                                `json:"readinessStatus"`
+	ActiveTemplateID        int64                                 `json:"activeTemplateId"`
+	ActiveTemplateName      string                                `json:"activeTemplateName"`
+	ActiveTemplateRevision  int64                                 `json:"activeTemplateRevision"`
+	PendingTemplateID       int64                                 `json:"pendingTemplateId"`
+	PendingTemplateName     string                                `json:"pendingTemplateName"`
+	PendingTemplateRevision int64                                 `json:"pendingTemplateRevision"`
+	PendingRequestedAt      *time.Time                            `json:"pendingRequestedAt"`
+	LastValidatedAt         *time.Time                            `json:"lastValidatedAt"`
+	LastReadyAt             *time.Time                            `json:"lastReadyAt"`
+	LastErrorMessage        string                                `json:"lastErrorMessage"`
+	CredentialBindings      []StoreModelCredentialBindingResponse `json:"credentialBindings"`
+}
+
+type StoreModelCredentialBindingResponse struct {
+	ID          int64  `json:"id"`
+	UserID      int64  `json:"userId"`
+	AccountName string `json:"accountName"`
 }
 
 type StoreModelProfileAssignmentsResponse struct {

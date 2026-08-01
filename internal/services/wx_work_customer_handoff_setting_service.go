@@ -21,10 +21,10 @@ func newWxWorkCustomerHandoffSettingService() *wxWorkCustomerHandoffSettingServi
 	return &wxWorkCustomerHandoffSettingService{}
 }
 
-// IsAutoHandoffEnabled returns the account-scoped customer preference.
+// IsAutoHandoffEnabled returns the Store-staff-binding-scoped customer preference.
 // Missing settings intentionally default to enabled, preserving current behavior.
-func (s *wxWorkCustomerHandoffSettingService) IsAutoHandoffEnabled(customerID, wxWorkInstanceID int64) bool {
-	if customerID <= 0 || wxWorkInstanceID <= 0 {
+func (s *wxWorkCustomerHandoffSettingService) IsAutoHandoffEnabled(customerID, storeStaffBindingID int64) bool {
+	if customerID <= 0 || storeStaffBindingID <= 0 {
 		return true
 	}
 	tenantID := int64(0)
@@ -32,21 +32,21 @@ func (s *wxWorkCustomerHandoffSettingService) IsAutoHandoffEnabled(customerID, w
 	if customer != nil {
 		tenantID = customer.TenantID
 	}
-	instance := repositories.WxWorkProtocolInstanceRepository.Get(sqls.DB(), wxWorkInstanceID)
-	if instance == nil || instance.TenantID <= 0 {
+	binding := repositories.StoreStaffBindingRepository.Get(sqls.DB(), storeStaffBindingID)
+	if binding == nil || binding.TenantID <= 0 {
 		return true
 	}
-	if tenantID > 0 && tenantID != instance.TenantID {
+	if tenantID > 0 && tenantID != binding.TenantID {
 		return true
 	}
-	return s.IsAutoHandoffEnabledInTenant(customerID, wxWorkInstanceID, instance.TenantID)
+	return s.IsAutoHandoffEnabledInTenant(customerID, storeStaffBindingID, binding.TenantID)
 }
 
-func (s *wxWorkCustomerHandoffSettingService) IsAutoHandoffEnabledInTenant(customerID, wxWorkInstanceID, tenantID int64) bool {
-	if customerID <= 0 || wxWorkInstanceID <= 0 || tenantID <= 0 {
+func (s *wxWorkCustomerHandoffSettingService) IsAutoHandoffEnabledInTenant(customerID, storeStaffBindingID, tenantID int64) bool {
+	if customerID <= 0 || storeStaffBindingID <= 0 || tenantID <= 0 {
 		return true
 	}
-	setting := repositories.WxWorkCustomerHandoffSettingRepository.Take(sqls.DB(), "tenant_id = ? AND customer_id = ? AND wx_work_instance_id = ?", tenantID, customerID, wxWorkInstanceID)
+	setting := repositories.WxWorkCustomerHandoffSettingRepository.Take(sqls.DB(), "tenant_id = ? AND customer_id = ? AND store_staff_binding_id = ?", tenantID, customerID, storeStaffBindingID)
 	return setting == nil || setting.AutoHandoffEnabled
 }
 
@@ -55,11 +55,7 @@ func (s *wxWorkCustomerHandoffSettingService) IsAutoHandoffEnabledForConversatio
 	if conversation == nil {
 		return true
 	}
-	route := ConversationRouteService.GetByConversationIDInTenant(conversationID, conversation.TenantID)
-	if route == nil {
-		return true
-	}
-	return s.IsAutoHandoffEnabledInTenant(conversation.CustomerID, route.WxWorkInstanceID, conversation.TenantID)
+	return s.IsAutoHandoffEnabledInTenant(conversation.CustomerID, conversation.StoreStaffBindingID, conversation.TenantID)
 }
 
 func (s *wxWorkCustomerHandoffSettingService) SetForConversation(conversationID int64, enabled bool, operator *dto.AuthPrincipal) error {
@@ -75,19 +71,24 @@ func (s *wxWorkCustomerHandoffSettingService) SetForConversation(conversationID 
 		if conversation == nil {
 			return errorsx.InvalidParam("会话不存在")
 		}
-		route := repositories.ConversationRouteStateRepository.Take(ctx.Tx, "conversation_id = ? AND tenant_id = ?", conversationID, tenantID)
-		if conversation.CustomerID <= 0 || route == nil || route.WxWorkInstanceID <= 0 {
-			return errorsx.InvalidParam("当前会话未绑定可设置的企微客户账号")
+		if conversation.CustomerID <= 0 || conversation.StoreStaffBindingID <= 0 {
+			return errorsx.InvalidParam("当前会话未绑定可设置的门店员工号")
 		}
+		binding := repositories.StoreStaffBindingRepository.GetInTenant(ctx.Tx, conversation.StoreStaffBindingID, tenantID)
+		if binding == nil || binding.Status == enums.StatusDeleted || binding.StoreID != conversation.StoreID {
+			return errorsx.InvalidParam("当前会话门店员工号归属无效")
+		}
+		route := repositories.ConversationRouteStateRepository.Take(ctx.Tx, "conversation_id = ? AND tenant_id = ?", conversationID, tenantID)
 		now := time.Now()
-		setting := repositories.WxWorkCustomerHandoffSettingRepository.Take(ctx.Tx, "tenant_id = ? AND customer_id = ? AND wx_work_instance_id = ?", tenantID, conversation.CustomerID, route.WxWorkInstanceID)
+		setting := repositories.WxWorkCustomerHandoffSettingRepository.Take(ctx.Tx, "tenant_id = ? AND customer_id = ? AND store_staff_binding_id = ?", tenantID, conversation.CustomerID, binding.ID)
 		if setting == nil {
+			bindingID := binding.ID
 			setting = &models.WxWorkCustomerHandoffSetting{
-				TenantID:           tenantID,
-				CustomerID:         conversation.CustomerID,
-				WxWorkInstanceID:   route.WxWorkInstanceID,
-				AutoHandoffEnabled: enabled,
-				AuditFields:        utils.BuildAuditFields(operator),
+				TenantID:            tenantID,
+				CustomerID:          conversation.CustomerID,
+				StoreStaffBindingID: &bindingID,
+				AutoHandoffEnabled:  enabled,
+				AuditFields:         utils.BuildAuditFields(operator),
 			}
 			if err := repositories.WxWorkCustomerHandoffSettingRepository.Create(ctx.Tx, setting); err != nil {
 				return err
@@ -101,7 +102,7 @@ func (s *wxWorkCustomerHandoffSettingService) SetForConversation(conversationID 
 			return err
 		}
 
-		if !enabled && route.PendingAction == string(enums.ConversationPendingActionHumanHandoff) {
+		if !enabled && route != nil && route.PendingAction == string(enums.ConversationPendingActionHumanHandoff) {
 			if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, route.ID, tenantID, map[string]any{
 				"pending_action":           "",
 				"pending_action_payload":   "",
@@ -114,14 +115,14 @@ func (s *wxWorkCustomerHandoffSettingService) SetForConversation(conversationID 
 			}
 		}
 
-		content := "已允许该客户在当前企微员工号下自动转人工"
+		content := "已允许该客户在当前门店员工号下自动转人工"
 		if !enabled {
-			content = "已禁止该客户在当前企微员工号下自动转人工"
+			content = "已禁止该客户在当前门店员工号下自动转人工"
 		}
 		return ConversationEventLogService.CreateEvent(ctx, conversationID, enums.IMEventTypeTransfer, enums.IMSenderTypeAgent, operator.UserID, content, ConversationService.buildEventPayload(map[string]any{
-			"action":             "set_customer_auto_handoff",
-			"autoHandoffEnabled": enabled,
-			"wxWorkInstanceId":   route.WxWorkInstanceID,
+			"action":              "set_customer_auto_handoff",
+			"autoHandoffEnabled":  enabled,
+			"storeStaffBindingId": binding.ID,
 		}))
 	})
 }

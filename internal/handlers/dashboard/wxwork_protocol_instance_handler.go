@@ -647,6 +647,13 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance, op
 	if store := services.StoreService.GetInTenant(item.StoreID, operator.ActiveTenantID); store != nil {
 		ret.StoreCode = store.StoreCode
 		ret.StoreName = utils.RepairMojibakeText(store.Name)
+		ret.StoreAddress = utils.RepairMojibakeText(store.Address)
+		ret.StoreNavigationName = utils.RepairMojibakeText(store.NavigationName)
+		ret.StoreLongitude = store.Longitude
+		ret.StoreLatitude = store.Latitude
+		ret.StoreMapProvider = store.MapProvider
+		ret.StoreContactPhone = utils.RepairMojibakeText(store.ContactPhone)
+		ret.KnowledgeBaseID = store.KnowledgeBaseID
 	}
 	if tenant := services.TenantService.Get(item.TenantID); tenant != nil {
 		profiles := services.TenantIndustryService.FindProfilesByIDs([]int64{tenant.IntentProfileID})
@@ -656,6 +663,12 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance, op
 	}
 	if runtime := services.StoreStaffBindingService.ResolveForInstance(item); runtime.ManagedMode != "" {
 		ret.ManagedMode = runtime.ManagedMode
+		ret.ServiceHours = runtime.ServiceHours
+		ret.StoreRoomConversationID = runtime.StoreRoomConversationID
+		ret.StoreRoomNotifyEnabled = runtime.StoreRoomNotifyEnabled
+		ret.StoreRoomAtList = runtime.StoreRoomAtList
+		ret.FallbackToHQ = runtime.FallbackToHQ
+		ret.ManualTimeoutMinutes = runtime.ManualTimeoutMinutes
 		if runtime.BindingID > 0 {
 			ret.StoreStaffBindingID = runtime.BindingID
 		}
@@ -664,7 +677,7 @@ func buildWxWorkProtocolInstanceResponse(item *models.WxWorkProtocolInstance, op
 			ret.StoreStaffUserName = utils.RepairMojibakeText(user.Nickname)
 		}
 	}
-	if knowledgeBase := services.KnowledgeBaseService.GetInTenant(item.KnowledgeBaseID, operator.ActiveTenantID); knowledgeBase != nil {
+	if knowledgeBase := services.KnowledgeBaseService.GetInTenant(ret.KnowledgeBaseID, operator.ActiveTenantID); knowledgeBase != nil {
 		ret.KnowledgeBaseName = utils.RepairMojibakeText(knowledgeBase.Name)
 	}
 	if asset := services.AssetService.GetByAssetID(item.WelcomeImageAssetID); asset != nil {

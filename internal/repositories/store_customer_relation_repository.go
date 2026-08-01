@@ -43,6 +43,22 @@ func (r *storeCustomerRelationRepository) TakeByCustomerAndStoreInTenant(db *gor
 	return ret
 }
 
+func (r *storeCustomerRelationRepository) GetForUpdateByCustomerAndStoreInTenant(db *gorm.DB, tenantID, customerID, storeID int64) (*models.StoreCustomerRelation, error) {
+	if db == nil || tenantID <= 0 || customerID <= 0 || storeID <= 0 {
+		return nil, nil
+	}
+	ret := &models.StoreCustomerRelation{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Take(ret, "tenant_id = ? AND customer_id = ? AND store_id = ?", tenantID, customerID, storeID).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
 func (r *storeCustomerRelationRepository) GetInTenant(db *gorm.DB, id, tenantID int64) (*models.StoreCustomerRelation, error) {
 	if id <= 0 || tenantID <= 0 {
 		return nil, nil

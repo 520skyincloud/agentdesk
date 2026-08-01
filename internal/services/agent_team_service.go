@@ -316,14 +316,8 @@ func (s *agentTeamService) resolveRequestedStoreStaffUserIDsDB(db *gorm.DB, tena
 	userIDs := make([]int64, 0, len(instances))
 	for i := range instances {
 		instance := &instances[i]
-		var binding *models.StoreStaffBinding
-		if instance.StoreStaffBindingID > 0 {
-			binding = repositories.StoreStaffBindingRepository.GetInTenant(db, instance.StoreStaffBindingID, tenantID)
-		}
-		if (binding == nil || binding.Status != enums.StatusOk) && instance.StoreID > 0 {
-			binding = repositories.StoreStaffBindingRepository.TakeInTenant(db, tenantID, "store_id = ? AND status = ?", instance.StoreID, enums.StatusOk)
-		}
-		if binding == nil || binding.UserID <= 0 {
+		binding := repositories.StoreStaffBindingRepository.GetInTenant(db, instance.StoreStaffBindingID, tenantID)
+		if binding == nil || binding.Status != enums.StatusOk || binding.UserID <= 0 || binding.StoreID != instance.StoreID {
 			return nil, false, errorsx.InvalidParam("所选企微员工号未关联门店员工，无法加入客服组")
 		}
 		userIDs = append(userIDs, binding.UserID)

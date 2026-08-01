@@ -15,6 +15,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
@@ -26,20 +27,23 @@ import (
 )
 
 type arrivalLinkTestFixture struct {
-	db            *gorm.DB
-	security      *arrivalSecurity
-	tenantID      int64
-	store         *models.Store
-	identity      *models.MiniProgramIdentity
-	authorization *models.WeComTenantAuthorization
-	connection    *models.StoreArrivalConnection
-	scanEvent     *models.ArrivalScanEvent
-	sessionToken  string
-	contactWay    *models.ArrivalContactWay
-	contactState  string
-	corpID        string
-	memberUserID  string
-	externalID    string
+	db                *gorm.DB
+	security          *arrivalSecurity
+	tenantID          int64
+	store             *models.Store
+	storeStaffUser    *models.User
+	storeStaffBinding *models.StoreStaffBinding
+	instance          *models.WxWorkProtocolInstance
+	identity          *models.MiniProgramIdentity
+	authorization     *models.WeComTenantAuthorization
+	connection        *models.StoreArrivalConnection
+	scanEvent         *models.ArrivalScanEvent
+	sessionToken      string
+	contactWay        *models.ArrivalContactWay
+	contactState      string
+	corpID            string
+	memberUserID      string
+	externalID        string
 }
 
 type retryingArrivalContactWayProvider struct {
@@ -643,7 +647,11 @@ func setupArrivalLinkTestFixture(t *testing.T) arrivalLinkTestFixture {
 		t.Fatalf("open arrival test database: %v", err)
 	}
 	if err := db.AutoMigrate(
+		&models.User{},
+		&models.Role{},
+		&models.UserRole{},
 		&models.Store{},
+		&models.StoreStaffBinding{},
 		&models.WxWorkProtocolInstance{},
 		&models.Customer{},
 		&models.Conversation{},
@@ -709,6 +717,65 @@ func setupArrivalLinkTestFixture(t *testing.T) arrivalLinkTestFixture {
 	if err := db.Create(store).Error; err != nil {
 		t.Fatalf("create arrival store: %v", err)
 	}
+	storeStaffRole := &models.Role{
+		Name:           "门店员工",
+		Code:           constants.RoleCodeStoreStaff,
+		Scope:          constants.RoleScopeTenant,
+		AuthorityLevel: constants.RoleAuthorityMember,
+		Status:         enums.StatusOk,
+		IsSystem:       true,
+		AuditFields:    audit,
+	}
+	if err := db.Create(storeStaffRole).Error; err != nil {
+		t.Fatalf("create Store staff role: %v", err)
+	}
+	storeStaffUser := &models.User{
+		TenantID:    tenantID,
+		Username:    "arrival-store-staff",
+		Nickname:    "到店测试门店员工",
+		Status:      enums.StatusOk,
+		AuditFields: audit,
+	}
+	if err := db.Create(storeStaffUser).Error; err != nil {
+		t.Fatalf("create Store staff user: %v", err)
+	}
+	if err := db.Create(&models.UserRole{
+		UserID:      storeStaffUser.ID,
+		RoleID:      storeStaffRole.ID,
+		AuditFields: audit,
+	}).Error; err != nil {
+		t.Fatalf("assign Store staff role: %v", err)
+	}
+	storeStaffBinding := &models.StoreStaffBinding{
+		TenantID:             tenantID,
+		UserID:               storeStaffUser.ID,
+		ActiveUserID:         positiveInt64Pointer(storeStaffUser.ID),
+		StoreID:              store.ID,
+		ManagedMode:          constants.StoreManagedModeSemi,
+		FallbackToHQ:         true,
+		ManualTimeoutMinutes: DefaultManualTimeoutMinutes,
+		Status:               enums.StatusOk,
+		AuditFields:          audit,
+	}
+	if err := db.Create(storeStaffBinding).Error; err != nil {
+		t.Fatalf("create Store staff binding: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		ID:                  9001,
+		TenantID:            tenantID,
+		Guid:                "arrival-instance-guid",
+		ChannelID:           701,
+		EmployeeUserID:      "arrival-protocol-user",
+		EmployeeName:        "到店测试员工",
+		StoreID:             store.ID,
+		StoreStaffBindingID: storeStaffBinding.ID,
+		HealthStatus:        "online",
+		Status:              enums.StatusOk,
+		AuditFields:         audit,
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create arrival protocol instance: %v", err)
+	}
 	identity := &models.MiniProgramIdentity{
 		TenantID:          tenantID,
 		AppID:             "wx-arrival-test",
@@ -757,12 +824,13 @@ func setupArrivalLinkTestFixture(t *testing.T) arrivalLinkTestFixture {
 	connection := &models.StoreArrivalConnection{
 		TenantID:                 tenantID,
 		StoreID:                  store.ID,
+		StoreStaffBindingID:      storeStaffBinding.ID,
 		StoreScene:               "arr-test-a",
 		TenantAuthorizationID:    authorization.ID,
 		ContactMemberCiphertext:  memberCiphertext,
 		ContactMemberNonce:       memberNonce,
 		ContactMemberFingerprint: security.Fingerprint("contact_member", memberUserID),
-		WxWorkProtocolInstanceID: 9001,
+		WxWorkProtocolInstanceID: instance.ID,
 		ConnectionStatus:         enums.ArrivalConnectionStatusActive,
 		Status:                   enums.StatusOk,
 		AuditFields:              audit,
@@ -830,20 +898,23 @@ func setupArrivalLinkTestFixture(t *testing.T) arrivalLinkTestFixture {
 		t.Fatalf("finalize contact state: %v", err)
 	}
 	return arrivalLinkTestFixture{
-		db:            db,
-		security:      security,
-		tenantID:      tenantID,
-		store:         store,
-		identity:      identity,
-		authorization: authorization,
-		connection:    connection,
-		scanEvent:     scanEvent,
-		sessionToken:  sessionToken,
-		contactWay:    contactWay,
-		contactState:  contactState,
-		corpID:        corpID,
-		memberUserID:  memberUserID,
-		externalID:    "external-customer-a",
+		db:                db,
+		security:          security,
+		tenantID:          tenantID,
+		store:             store,
+		storeStaffUser:    storeStaffUser,
+		storeStaffBinding: storeStaffBinding,
+		instance:          instance,
+		identity:          identity,
+		authorization:     authorization,
+		connection:        connection,
+		scanEvent:         scanEvent,
+		sessionToken:      sessionToken,
+		contactWay:        contactWay,
+		contactState:      contactState,
+		corpID:            corpID,
+		memberUserID:      memberUserID,
+		externalID:        "external-customer-a",
 	}
 }
 
@@ -907,19 +978,23 @@ func createArrivalSiblingStoreBinding(t *testing.T, fixture arrivalLinkTestFixtu
 func createBoundArrivalBinding(t *testing.T, fixture arrivalLinkTestFixture, health string) *models.ArrivalStoreBinding {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
-	instance := &models.WxWorkProtocolInstance{
-		ID:             fixture.connection.WxWorkProtocolInstanceID,
-		TenantID:       fixture.tenantID,
-		Guid:           "arrival-instance-guid",
-		EmployeeUserID: fixture.memberUserID,
-		EmployeeName:   "到店测试员工",
-		StoreID:        fixture.store.ID,
-		HealthStatus:   health,
-		Status:         enums.StatusOk,
-		AuditFields:    arrivalSystemAuditFields(now),
+	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(
+		fixture.db,
+		fixture.instance.ID,
+		fixture.tenantID,
+		map[string]any{
+			"employee_user_id": fixture.memberUserID,
+			"employee_name":    "到店测试员工",
+			"health_status":    health,
+			"status":           enums.StatusOk,
+			"updated_at":       now,
+		},
+	); err != nil {
+		t.Fatalf("update arrival protocol instance: %v", err)
 	}
-	if err := fixture.db.Create(instance).Error; err != nil {
-		t.Fatalf("create arrival protocol instance: %v", err)
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(fixture.db, fixture.instance.ID, fixture.tenantID)
+	if instance == nil {
+		t.Fatal("arrival protocol instance missing")
 	}
 	customer := &models.Customer{
 		ID:          7001,
@@ -931,24 +1006,31 @@ func createBoundArrivalBinding(t *testing.T, fixture arrivalLinkTestFixture, hea
 	if err := fixture.db.Create(customer).Error; err != nil {
 		t.Fatalf("create arrival customer: %v", err)
 	}
+	threadKey := buildStoreConversationThreadKey(fixture.tenantID, fixture.store.ID, customer.ID, fixture.storeStaffBinding.ID)
 	conversation := &models.Conversation{
-		ID:           8001,
-		TenantID:     fixture.tenantID,
-		CustomerID:   customer.ID,
-		CustomerName: customer.Name,
-		Status:       enums.IMConversationStatusAIServing,
-		ServiceMode:  enums.IMConversationServiceModeAIOnly,
-		AuditFields:  arrivalSystemAuditFields(now),
+		ID:                  8001,
+		TenantID:            fixture.tenantID,
+		StoreID:             fixture.store.ID,
+		StoreStaffBindingID: fixture.storeStaffBinding.ID,
+		ThreadKey:           &threadKey,
+		ChannelID:           instance.ChannelID,
+		CustomerID:          customer.ID,
+		CustomerName:        customer.Name,
+		Status:              enums.IMConversationStatusAIServing,
+		ServiceMode:         enums.IMConversationServiceModeAIOnly,
+		AuditFields:         arrivalSystemAuditFields(now),
 	}
 	if err := fixture.db.Create(conversation).Error; err != nil {
 		t.Fatalf("create arrival conversation: %v", err)
 	}
 	route := &models.ConversationRouteState{
-		TenantID:         fixture.tenantID,
-		ConversationID:   conversation.ID,
-		StoreID:          fixture.store.ID,
-		WxWorkInstanceID: instance.ID,
-		AuditFields:      arrivalSystemAuditFields(now),
+		TenantID:            fixture.tenantID,
+		ConversationID:      conversation.ID,
+		StoreID:             fixture.store.ID,
+		StoreStaffBindingID: fixture.storeStaffBinding.ID,
+		WxWorkInstanceID:    instance.ID,
+		SessionNo:           1,
+		AuditFields:         arrivalSystemAuditFields(now),
 	}
 	if err := fixture.db.Create(route).Error; err != nil {
 		t.Fatalf("create arrival conversation route: %v", err)
@@ -969,6 +1051,7 @@ func createBoundArrivalBinding(t *testing.T, fixture arrivalLinkTestFixture, hea
 	binding := &models.ArrivalStoreBinding{
 		TenantID:                       fixture.tenantID,
 		StoreID:                        fixture.store.ID,
+		StoreStaffBindingID:            fixture.storeStaffBinding.ID,
 		MiniProgramIdentityID:          fixture.identity.ID,
 		TenantAuthorizationID:          fixture.authorization.ID,
 		ExternalUserIDCiphertext:       externalCiphertext,

@@ -73,7 +73,7 @@ func prepareManagedFastGPTRetrieveTest(t *testing.T) models.KnowledgeBase {
 		t.Fatal(err)
 	}
 	if err := db.AutoMigrate(
-		&models.Store{}, &models.KnowledgeBase{}, &models.StoreModelProfileAssignment{},
+		&models.Store{}, &models.StoreStaffBinding{}, &models.KnowledgeBase{}, &models.StoreModelProfileAssignment{},
 		&models.StoreModelCredential{}, &models.FastGPTStoreTenant{},
 	); err != nil {
 		t.Fatal(err)
@@ -83,12 +83,19 @@ func prepareManagedFastGPTRetrieveTest(t *testing.T) models.KnowledgeBase {
 	if err := db.Create(store).Error; err != nil {
 		t.Fatal(err)
 	}
+	storeStaffBinding := &models.StoreStaffBinding{
+		TenantID: store.TenantID, StoreID: store.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(storeStaffBinding).Error; err != nil {
+		t.Fatal(err)
+	}
 	knowledgeBase := models.KnowledgeBase{
 		ID: 41, TenantID: store.TenantID, StoreID: store.ID, Name: "南七知识库",
 		KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud),
 		ConnectionID:  fastgptapi.ManagedConnectionID, DatasetID: "dataset-1", Status: enums.StatusOk,
 		DefaultTopK: 5, DefaultScoreThreshold: 0.2, DefaultRerankLimit: 10, FastGPTProfileStatus: "ready",
-		FastGPTAppliedProfileID: 51, FastGPTAppliedProfileRevision: 2, FastGPTAppliedCredentialRevision: 3,
+		FastGPTAppliedProfileID: 51, FastGPTAppliedProfileRevision: 2,
+		FastGPTAppliedStoreStaffBindingID: storeStaffBinding.ID, FastGPTAppliedCredentialRevision: 3,
 	}
 	if err := db.Create(&knowledgeBase).Error; err != nil {
 		t.Fatal(err)
@@ -101,13 +108,13 @@ func prepareManagedFastGPTRetrieveTest(t *testing.T) models.KnowledgeBase {
 		Status: enums.StoreModelAssignmentStatusReady, ReadinessStatus: "ready",
 	}
 	credential := &models.StoreModelCredential{
-		TenantID: store.TenantID, StoreID: store.ID, CredentialRevision: 3,
+		TenantID: store.TenantID, StoreID: store.ID, StoreStaffBindingID: storeStaffBinding.ID, CredentialRevision: 3,
 		Status: enums.StoreCredentialStatusActive,
 	}
 	binding := &models.FastGPTStoreTenant{
 		TenantID: store.TenantID, StoreID: store.ID, TenantTeamID: "team-31", Status: "active", ReadinessStatus: "ready",
 		AppliedProfileID: assignment.TemplateID, AppliedProfileRevision: assignment.TemplateRevision,
-		AppliedCredentialRevision: credential.CredentialRevision,
+		AppliedStoreStaffBindingID: storeStaffBinding.ID, AppliedCredentialRevision: credential.CredentialRevision,
 	}
 	if err := db.Create(assignment).Error; err != nil {
 		t.Fatal(err)

@@ -30,17 +30,17 @@ func (r *wxWorkCustomerHandoffSettingRepository) Create(db *gorm.DB, item *model
 	// A map keeps an explicit false from being omitted by GORM's default:true
 	// handling. The setting is semantically unsafe if false silently becomes true.
 	return db.Model(&models.WxWorkCustomerHandoffSetting{}).Create(map[string]any{
-		"tenant_id":            item.TenantID,
-		"customer_id":          item.CustomerID,
-		"wx_work_instance_id":  item.WxWorkInstanceID,
-		"auto_handoff_enabled": item.AutoHandoffEnabled,
-		"remark":               item.Remark,
-		"created_at":           item.CreatedAt,
-		"create_user_id":       item.CreateUserID,
-		"create_user_name":     item.CreateUserName,
-		"updated_at":           item.UpdatedAt,
-		"update_user_id":       item.UpdateUserID,
-		"update_user_name":     item.UpdateUserName,
+		"tenant_id":              item.TenantID,
+		"customer_id":            item.CustomerID,
+		"store_staff_binding_id": item.StoreStaffBindingID,
+		"auto_handoff_enabled":   item.AutoHandoffEnabled,
+		"remark":                 item.Remark,
+		"created_at":             item.CreatedAt,
+		"create_user_id":         item.CreateUserID,
+		"create_user_name":       item.CreateUserName,
+		"updated_at":             item.UpdatedAt,
+		"update_user_id":         item.UpdateUserID,
+		"update_user_name":       item.UpdateUserName,
 	}).Error
 }
 

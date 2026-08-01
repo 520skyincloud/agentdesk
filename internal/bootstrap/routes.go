@@ -174,6 +174,15 @@ func registerDashboardStoreWorkbenchRoutes(group *gin.RouterGroup) {
 	group.POST("/update", dashboard.StoreWorkbenchPostUpdate)
 }
 
+func registerDashboardStoreRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.StoreAnyList)
+	group.GET("/options", dashboard.StoreGetOptions)
+	group.GET("/:id", dashboard.StoreGetBy)
+	group.POST("/create", dashboard.StorePostCreate)
+	group.POST("/update", dashboard.StorePostUpdate)
+	group.POST("/update_status", dashboard.StorePostUpdateStatus)
+}
+
 func registerDashboardArrivalConnectionRoutes(group *gin.RouterGroup) {
 	group.Any("/list", dashboard.ArrivalConnectionAnyList)
 	group.GET("/authorization/options", dashboard.ArrivalConnectionGetAuthorizationOptions)
@@ -285,6 +294,9 @@ func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.POST("/assign", dashboard.ConversationPostAssign)
 	group.POST("/close", dashboard.ConversationPostClose)
 	group.Any("/conversations", dashboard.ConversationAnyConversations)
+	group.POST("/inherit", dashboard.ConversationPostInherit)
+	group.POST("/inherit/preview", dashboard.ConversationPostInheritPreview)
+	group.POST("/inherit/batch", dashboard.ConversationPostInheritBatch)
 	group.POST("/link_customer", dashboard.ConversationPostLink_customer)
 	group.Any("/list", dashboard.ConversationAnyList)
 	group.Any("/message_list", dashboard.ConversationAnyMessage_list)

@@ -81,21 +81,22 @@ func (s *arrivalConnectionService) ListProtocolInstances(
 	if store == nil || store.Status == enums.StatusDeleted {
 		return nil, errorsx.InvalidParam("门店不存在")
 	}
-	items := repositories.WxWorkProtocolInstanceRepository.Find(
+	items := repositories.WxWorkProtocolInstanceRepository.FindActivatedCurrent(
 		sqls.DB(),
 		sqls.NewCnd().
 			Eq("tenant_id", tenantID).
 			Eq("store_id", storeID).
-			Where("status <> ?", enums.StatusDeleted).
 			Asc("id"),
 	)
 	results := make([]response.ArrivalProtocolInstanceOptionResponse, 0, len(items))
 	for i := range items {
 		results = append(results, response.ArrivalProtocolInstanceOptionResponse{
-			ID:           items[i].ID,
-			Name:         firstNonBlank(strings.TrimSpace(items[i].EmployeeName), "企微员工号"),
-			HealthStatus: strings.TrimSpace(items[i].HealthStatus),
-			StoreID:      items[i].StoreID,
+			ID:                    items[i].ID,
+			Name:                  firstNonBlank(strings.TrimSpace(items[i].EmployeeName), "企微员工号"),
+			HealthStatus:          strings.TrimSpace(items[i].HealthStatus),
+			StoreID:               items[i].StoreID,
+			StoreStaffBindingID:   items[i].StoreStaffBindingID,
+			StoreStaffAccountName: arrivalStoreStaffAccountNameDB(sqls.DB(), tenantID, items[i].StoreStaffBindingID),
 		})
 	}
 	return results, nil
@@ -117,16 +118,14 @@ func (s *arrivalConnectionService) UpdateProvider(
 	if err != nil {
 		return nil, err
 	}
+	var selectedScope *arrivalStoreStaffScope
 	var instance *models.WxWorkProtocolInstance
 	if req.WxWorkProtocolInstanceID > 0 {
-		instance = repositories.WxWorkProtocolInstanceRepository.GetInTenant(
-			sqls.DB(),
-			req.WxWorkProtocolInstanceID,
-			tenantID,
-		)
-		if instance == nil || instance.Status == enums.StatusDeleted || instance.StoreID != store.ID {
-			return nil, errorsx.InvalidParam("所选企微员工号实例不属于当前门店")
+		selectedScope, err = resolveArrivalSelectedInstanceDB(sqls.DB(), tenantID, store.ID, req.WxWorkProtocolInstanceID, false)
+		if err != nil {
+			return nil, err
 		}
+		instance = selectedScope.Instance
 	}
 	plugID := strings.TrimSpace(req.StaticContactPlugID)
 	if mode == enums.ArrivalContactProviderModeStaticPluginTicket {
@@ -161,15 +160,12 @@ func (s *arrivalConnectionService) UpdateProvider(
 		store = lockedStore
 
 		if req.WxWorkProtocolInstanceID > 0 {
-			instance = repositories.WxWorkProtocolInstanceRepository.GetForUpdateInTenant(
-				ctx.Tx,
-				req.WxWorkProtocolInstanceID,
-				tenantID,
-			)
-			if instance == nil || instance.Status == enums.StatusDeleted || instance.StoreID != store.ID {
-				validationErr = errorsx.InvalidParam("所选企微员工号实例不属于当前门店")
+			selectedScope, err = resolveArrivalSelectedInstanceDB(ctx.Tx, tenantID, store.ID, req.WxWorkProtocolInstanceID, true)
+			if err != nil {
+				validationErr = err
 				return validationErr
 			}
+			instance = selectedScope.Instance
 		}
 		if mode == enums.ArrivalContactProviderModeStaticPluginTicket {
 			if instance == nil || instance.Status != enums.StatusOk {
@@ -180,10 +176,10 @@ func (s *arrivalConnectionService) UpdateProvider(
 				validationErr = errorsx.InvalidParam(cardErr.Error())
 				return validationErr
 			}
-			candidates, findErr := repositories.ArrivalRepository.FindActiveStaticConnectionsByInstanceForUpdate(
+			candidates, findErr := repositories.ArrivalRepository.FindActiveStaticConnectionsByBindingForUpdate(
 				ctx.Tx,
 				tenantID,
-				instance.ID,
+				selectedScope.Binding.ID,
 			)
 			if findErr != nil {
 				return findErr
@@ -236,11 +232,11 @@ func (s *arrivalConnectionService) UpdateProvider(
 			connectionStatus = enums.ArrivalConnectionStatusActive
 		} else if connection.TenantAuthorizationID > 0 {
 			connectionStatus = enums.ArrivalConnectionStatusPendingBinding
-			effectiveInstanceID := connection.WxWorkProtocolInstanceID
-			if instance != nil {
-				effectiveInstanceID = instance.ID
+			effectiveBindingID := connection.StoreStaffBindingID
+			if selectedScope != nil {
+				effectiveBindingID = selectedScope.Binding.ID
 			}
-			if strings.TrimSpace(connection.ContactMemberFingerprint) != "" && effectiveInstanceID > 0 {
+			if strings.TrimSpace(connection.ContactMemberFingerprint) != "" && effectiveBindingID > 0 {
 				connectionStatus = enums.ArrivalConnectionStatusActive
 			}
 		}
@@ -255,6 +251,7 @@ func (s *arrivalConnectionService) UpdateProvider(
 			"update_user_name":             operator.Username,
 		}
 		if instance != nil {
+			updates["store_staff_binding_id"] = selectedScope.Binding.ID
 			updates["wx_work_protocol_instance_id"] = instance.ID
 		}
 		if err := repositories.ArrivalRepository.UpdateConnection(
@@ -614,10 +611,9 @@ func (s *arrivalConnectionService) ProviderOptions(rawState string) (*response.A
 	if err != nil {
 		return nil, errorsx.BusinessError(70, err.Error())
 	}
-	instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().
+	instances := repositories.WxWorkProtocolInstanceRepository.FindActivatedCurrent(sqls.DB(), sqls.NewCnd().
 		Eq("tenant_id", attempt.TenantID).
 		Eq("store_id", attempt.StoreID).
-		Where("status <> ?", enums.StatusDeleted).
 		Asc("id"))
 	security, err := newArrivalSecurity()
 	if err != nil {
@@ -626,10 +622,12 @@ func (s *arrivalConnectionService) ProviderOptions(rawState string) (*response.A
 	instanceResponses := make([]response.ArrivalProviderInstanceOptionResponse, 0, len(instances))
 	for i := range instances {
 		instanceResponses = append(instanceResponses, response.ArrivalProviderInstanceOptionResponse{
-			ID:           instances[i].ID,
-			Name:         firstNonBlank(instances[i].EmployeeName, "企微员工号"),
-			HealthStatus: strings.TrimSpace(instances[i].HealthStatus),
-			BoundStoreID: instances[i].StoreID,
+			ID:                    instances[i].ID,
+			Name:                  firstNonBlank(instances[i].EmployeeName, "企微员工号"),
+			HealthStatus:          strings.TrimSpace(instances[i].HealthStatus),
+			BoundStoreID:          instances[i].StoreID,
+			StoreStaffBindingID:   instances[i].StoreStaffBindingID,
+			StoreStaffAccountName: arrivalStoreStaffAccountNameDB(sqls.DB(), attempt.TenantID, instances[i].StoreStaffBindingID),
 		})
 	}
 	memberResponses := make([]response.ArrivalProviderOptionResponse, 0, len(memberIDs))
@@ -677,10 +675,17 @@ func (s *arrivalConnectionService) CompleteConnection(req request.CompleteArriva
 	if err != nil || !containsTrimmed(eligibleMembers, memberUserID) {
 		return nil, errorsx.InvalidParam("所选客户联系成员已不可用")
 	}
-	instance := WxWorkProtocolInstanceService.GetByTenantID(req.WxWorkProtocolInstanceID, attempt.TenantID)
-	if instance == nil || instance.Status != enums.StatusOk || instance.StoreID != attempt.StoreID {
-		return nil, errorsx.InvalidParam("所选企微员工号实例不属于当前门店")
+	selectedScope, err := resolveArrivalSelectedInstanceDB(
+		sqls.DB(),
+		attempt.TenantID,
+		attempt.StoreID,
+		req.WxWorkProtocolInstanceID,
+		false,
+	)
+	if err != nil {
+		return nil, err
 	}
+	instance := selectedScope.Instance
 	memberCiphertext, memberNonce, err := security.Encrypt("contact_member", memberUserID)
 	if err != nil {
 		return nil, errorsx.BusinessError(70, "保存客户联系成员失败")
@@ -691,11 +696,23 @@ func (s *arrivalConnectionService) CompleteConnection(req request.CompleteArriva
 	}
 	now := time.Now()
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedScope, lockErr := resolveArrivalSelectedInstanceDB(
+			ctx.Tx,
+			attempt.TenantID,
+			attempt.StoreID,
+			req.WxWorkProtocolInstanceID,
+			true,
+		)
+		if lockErr != nil {
+			return lockErr
+		}
+		instance = lockedScope.Instance
 		if err := repositories.ArrivalRepository.UpdateConnection(ctx.Tx, connection.ID, connection.TenantID, map[string]any{
 			"tenant_authorization_id":      authorization.ID,
 			"contact_member_ciphertext":    memberCiphertext,
 			"contact_member_nonce":         memberNonce,
 			"contact_member_fingerprint":   security.Fingerprint("contact_member", memberUserID),
+			"store_staff_binding_id":       lockedScope.Binding.ID,
 			"wx_work_protocol_instance_id": instance.ID,
 			"connection_status":            enums.ArrivalConnectionStatusActive,
 			"last_verified_at":             now,
@@ -911,10 +928,14 @@ func (s *arrivalConnectionService) verifyConnection(connectionID, tenantID int64
 		strings.TrimSpace(connection.ContactMemberFingerprint) != "" &&
 		securityErr == nil &&
 		security.Fingerprint("contact_member", memberUserID) == connection.ContactMemberFingerprint
-	instance := WxWorkProtocolInstanceService.GetByTenantID(connection.WxWorkProtocolInstanceID, tenantID)
-	result.InstanceOK = instance != nil &&
-		instance.Status == enums.StatusOk &&
-		instance.StoreID == connection.StoreID
+	scope, scopeErr := resolveArrivalStoreStaffScopeDB(
+		sqls.DB(),
+		connection.TenantID,
+		connection.StoreID,
+		connection.StoreStaffBindingID,
+		false,
+	)
+	result.InstanceOK = scopeErr == nil && scope != nil && scope.Instance != nil
 	switch {
 	case !result.AuthorizationOK:
 		result.ErrorCode = "authorization_unavailable"
@@ -976,16 +997,20 @@ func (s *arrivalConnectionService) verifyStaticConnection(
 	if connection == nil || result == nil {
 		return nil, errorsx.InvalidParam("门店到店连接不存在")
 	}
-	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(
+	scope, scopeErr := resolveArrivalStoreStaffScopeDB(
 		sqls.DB(),
-		connection.WxWorkProtocolInstanceID,
 		connection.TenantID,
+		connection.StoreID,
+		connection.StoreStaffBindingID,
+		false,
 	)
+	var instance *models.WxWorkProtocolInstance
+	if scope != nil {
+		instance = scope.Instance
+	}
 	result.AuthorizationOK = false
 	result.MemberOK = false
-	result.InstanceOK = instance != nil &&
-		instance.Status == enums.StatusOk &&
-		instance.StoreID == connection.StoreID
+	result.InstanceOK = scopeErr == nil && instance != nil
 	plugID := strings.TrimSpace(connection.StaticContactPlugID)
 	switch {
 	case plugID == "" || len(plugID) > 191 || strings.ContainsAny(plugID, " \t\r\n"):
@@ -1068,6 +1093,8 @@ func (s *arrivalConnectionService) buildConnectionResponse(store *models.Store, 
 	result.ContactProvider = string(arrivalProviderModeForConnection(connection))
 	result.StaticContactPlugID = strings.TrimSpace(connection.StaticContactPlugID)
 	result.ContactMemberConfigured = strings.TrimSpace(connection.ContactMemberCiphertext) != ""
+	result.StoreStaffBindingID = connection.StoreStaffBindingID
+	result.StoreStaffAccountName = arrivalStoreStaffAccountNameDB(sqls.DB(), connection.TenantID, connection.StoreStaffBindingID)
 	result.WxWorkProtocolInstanceID = connection.WxWorkProtocolInstanceID
 	result.LastVerifiedAt = connection.LastVerifiedAt
 	result.LastErrorCode = strings.TrimSpace(connection.LastVerificationErrorCode)
@@ -1093,7 +1120,20 @@ func (s *arrivalConnectionService) buildConnectionResponse(store *models.Store, 
 			result.AcquisitionLastVerifiedAt = link.LastVerifiedAt
 		}
 	}
-	if instance := WxWorkProtocolInstanceService.GetByTenantID(connection.WxWorkProtocolInstanceID, connection.TenantID); instance != nil {
+	var instance *models.WxWorkProtocolInstance
+	if scope, err := resolveArrivalStoreStaffScopeDB(
+		sqls.DB(),
+		connection.TenantID,
+		connection.StoreID,
+		connection.StoreStaffBindingID,
+		false,
+	); err == nil && scope != nil {
+		instance = scope.Instance
+		result.WxWorkProtocolInstanceID = scope.Instance.ID
+	} else {
+		instance = WxWorkProtocolInstanceService.GetByTenantID(connection.WxWorkProtocolInstanceID, connection.TenantID)
+	}
+	if instance != nil {
 		result.WxWorkProtocolAccountName = strings.TrimSpace(instance.EmployeeName)
 		result.WxWorkProtocolHealth = strings.TrimSpace(instance.HealthStatus)
 	}

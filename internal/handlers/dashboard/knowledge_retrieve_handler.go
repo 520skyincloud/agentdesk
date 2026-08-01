@@ -59,12 +59,13 @@ func KnowledgeRetrievePostDebugAnswer(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	var resolved *services.ModelCallConfig
-	if req.ConversationID > 0 {
-		resolved, err = services.ModelCallResolverService.ResolveForConversation(req.ConversationID, enums.ModelUsageSlotReplyLLM)
-	} else {
-		resolved, err = services.ModelCallResolverService.Resolve(operator.ActiveTenantID, storeID, enums.ModelUsageSlotReplyLLM)
-	}
+	resolved, err := services.ModelCallResolverService.ResolveForKnowledgeDebug(
+		operator.ActiveTenantID,
+		storeID,
+		req.ConversationID,
+		req.StoreStaffBindingID,
+		enums.ModelUsageSlotReplyLLM,
+	)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

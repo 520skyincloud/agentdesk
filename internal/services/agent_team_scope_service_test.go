@@ -360,6 +360,25 @@ func TestUpdateAgentTeamAcceptsLegacyWxWorkScopeWithoutSilentClear(t *testing.T)
 	}
 }
 
+func TestAgentTeamLegacyInstanceScopeRejectsMissingExactBinding(t *testing.T) {
+	db := setupStoreStaffTenantDB(t)
+	user := createStoreStaffTenantUser(t, db, 101, "legacy-unbound-instance-user")
+	store := createStoreStaffTenantStore(t, db, 101, "legacy-unbound-instance-store")
+	createStoreStaffTenantBinding(t, db, 101, user.ID, 0, store.ID)
+	legacyInstance := &models.WxWorkProtocolInstance{
+		TenantID: 101, Guid: "legacy-unbound-instance", StoreID: store.ID,
+		StoreStaffBindingID: 0, Status: enums.StatusOk,
+	}
+	if err := db.Create(legacyInstance).Error; err != nil {
+		t.Fatalf("create legacy unbound instance: %v", err)
+	}
+
+	userIDs, provided, err := AgentTeamService.resolveRequestedStoreStaffUserIDsDB(db, 101, nil, []int64{legacyInstance.ID})
+	if err == nil || len(userIDs) != 0 {
+		t.Fatalf("legacy instance borrowed Store binding: users=%v provided=%v err=%v", userIDs, provided, err)
+	}
+}
+
 func TestUpdateAgentTeamReplacesStoreStaffBindingsAndSyncsBothDirections(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
@@ -735,13 +754,16 @@ func TestStoreStaffScopeIncludesEveryKnowledgeBaseOwnedByStore(t *testing.T) {
 	if err := db.Create(second).Error; err != nil {
 		t.Fatalf("create second knowledge base: %v", err)
 	}
-	if err := db.Create(&models.WxWorkProtocolInstance{TenantID: tenantID, Guid: "scope-instance", StoreID: store.ID, KnowledgeBaseID: first.ID, Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.WxWorkProtocolInstance{TenantID: tenantID, Guid: "scope-instance", StoreID: store.ID, KnowledgeBaseID: 999999, Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
 
 	scope := AgentTeamScopeService.Resolve(&dto.AuthPrincipal{UserID: 77, ActiveTenantID: tenantID, Roles: []string{constants.RoleCodeStoreStaff}})
 	if !testContainsInt64(scope.KnowledgeBaseIDs, first.ID) || !testContainsInt64(scope.KnowledgeBaseIDs, second.ID) {
 		t.Fatalf("store staff cannot see every store knowledge base: %#v", scope.KnowledgeBaseIDs)
+	}
+	if testContainsInt64(scope.KnowledgeBaseIDs, 999999) {
+		t.Fatalf("legacy instance knowledge-base copy leaked into scope: %#v", scope.KnowledgeBaseIDs)
 	}
 }
 

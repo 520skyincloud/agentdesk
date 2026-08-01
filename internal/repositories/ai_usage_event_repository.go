@@ -14,13 +14,14 @@ var AIUsageEventRepository = newAIUsageEventRepository()
 type aiUsageEventRepository struct{}
 
 type AIUsageEvidenceQuery struct {
-	TenantIDs []int64
-	StoreIDs  []int64
-	StartAt   time.Time
-	EndAt     time.Time
-	ModelName string
-	RequestID string
-	Limit     int
+	TenantIDs            []int64
+	StoreIDs             []int64
+	StoreStaffBindingIDs []int64
+	StartAt              time.Time
+	EndAt                time.Time
+	ModelName            string
+	RequestID            string
+	Limit                int
 }
 
 type AIUsageEvidenceAggregate struct {
@@ -76,6 +77,9 @@ func (r *aiUsageEventRepository) AggregateEvidence(db *gorm.DB, query AIUsageEvi
 
 func applyAIUsageEvidenceFilters(db *gorm.DB, query AIUsageEvidenceQuery) *gorm.DB {
 	db = db.Where("tenant_id IN ? AND store_id IN ?", query.TenantIDs, query.StoreIDs)
+	if len(query.StoreStaffBindingIDs) > 0 {
+		db = db.Where("store_staff_binding_id IN ?", query.StoreStaffBindingIDs)
+	}
 	if !query.StartAt.IsZero() {
 		db = db.Where("created_at >= ?", query.StartAt)
 	}

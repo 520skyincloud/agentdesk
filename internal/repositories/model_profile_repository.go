@@ -160,25 +160,27 @@ func (r *modelProfileTestRunRepository) FindLatestPassedByDigest(db *gorm.DB, te
 	return item
 }
 
-func (r *modelProfileTestRunRepository) FindLatestPassedForStore(
+func (r *modelProfileTestRunRepository) FindLatestPassedForBinding(
 	db *gorm.DB,
 	templateID,
 	revision,
 	tenantID,
 	storeID,
+	storeStaffBindingID,
 	credentialRevision int64,
 	digest string,
 ) *models.ModelProfileTestRun {
-	if db == nil || templateID <= 0 || revision <= 0 || tenantID <= 0 || storeID <= 0 || credentialRevision <= 0 || digest == "" {
+	if db == nil || templateID <= 0 || revision <= 0 || tenantID <= 0 || storeID <= 0 || storeStaffBindingID <= 0 || credentialRevision <= 0 || digest == "" {
 		return nil
 	}
 	item := &models.ModelProfileTestRun{}
 	if err := db.Where(
-		"template_id = ? AND template_revision = ? AND tenant_id = ? AND store_id = ? AND credential_revision = ? AND config_digest = ? AND status = ?",
+		"template_id = ? AND template_revision = ? AND tenant_id = ? AND store_id = ? AND store_staff_binding_id = ? AND credential_revision = ? AND config_digest = ? AND status = ?",
 		templateID,
 		revision,
 		tenantID,
 		storeID,
+		storeStaffBindingID,
 		credentialRevision,
 		digest,
 		enums.ModelProfileTestStatusPassed,

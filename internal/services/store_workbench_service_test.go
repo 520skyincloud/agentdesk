@@ -48,7 +48,7 @@ func TestStoreWorkbenchCurrentUsesOnlyCurrentUserAndTenant(t *testing.T) {
 	}
 }
 
-func TestStoreWorkbenchUpdateSynchronizesBindingAndInstance(t *testing.T) {
+func TestStoreWorkbenchUpdateUsesBindingWithoutMutatingInstanceProjection(t *testing.T) {
 	db := setupStoreStaffTenantDB(t)
 	team := createStoreStaffTenantTeam(t, db, 101, "workbench-update-team")
 	user := createStoreStaffTenantUser(t, db, 101, "workbench-update-user")
@@ -85,11 +85,15 @@ func TestStoreWorkbenchUpdateSynchronizesBindingAndInstance(t *testing.T) {
 		t.Fatalf("binding after update = %+v", currentBinding)
 	}
 	currentInstance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, instance.ID, 101)
-	if currentInstance == nil || currentInstance.StoreAddress != "上海市测试路 1 号" || currentInstance.StoreLongitude != "121.473701" || currentInstance.StoreLatitude != "31.230416" {
-		t.Fatalf("instance after update = %+v", currentInstance)
+	currentStore := repositories.StoreRepository.GetInTenant(db, store.ID, 101)
+	if currentStore == nil || currentStore.Address != "上海市测试路 1 号" || currentStore.Longitude != "121.473701" || currentStore.Latitude != "31.230416" {
+		t.Fatalf("store after update = %+v", currentStore)
 	}
-	if currentInstance.StoreRoomConversationID != "R:room-100" || currentInstance.StoreRoomAtList != "staff-1,0" || currentInstance.FallbackToHQ {
-		t.Fatalf("instance runtime after update = %+v", currentInstance)
+	if currentInstance == nil || currentInstance.StoreAddress != "" || currentInstance.StoreLongitude != "" || currentInstance.StoreLatitude != "" {
+		t.Fatalf("stable store profile must not be duplicated onto instance: %+v", currentInstance)
+	}
+	if currentInstance.StoreRoomConversationID != "" || currentInstance.StoreRoomAtList != "" || !currentInstance.FallbackToHQ {
+		t.Fatalf("legacy instance runtime projection was unexpectedly rewritten: %+v", currentInstance)
 	}
 }
 
@@ -141,5 +145,39 @@ func TestStoreWorkbenchCurrentReportsDisabledBinding(t *testing.T) {
 	}
 	if _, err := StoreWorkbenchService.UpdateCurrent(request.UpdateStoreWorkbenchRequest{ManagedMode: constants.StoreManagedModeFull, ManualTimeoutMinutes: 10}, operator); err == nil {
 		t.Fatal("disabled binding update must fail")
+	}
+}
+
+func TestStoreWorkbenchAndAssignmentPreferCurrentInstanceOverReplacementDraft(t *testing.T) {
+	db := setupStoreStaffTenantDB(t)
+	user := createStoreStaffTenantUser(t, db, 101, "workbench-replacement-user")
+	store := createStoreStaffTenantStore(t, db, 101, "workbench-replacement-store")
+	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, store.ID)
+	current := createStoreStaffTenantInstance(t, db, 101, "workbench-current-instance", 0, store.ID, binding.ID)
+	current.EmployeeName = "当前企微账号"
+	current.HealthStatus = "online"
+	if err := db.Model(current).Updates(map[string]any{"employee_name": current.EmployeeName, "health_status": current.HealthStatus}).Error; err != nil {
+		t.Fatalf("update current instance: %v", err)
+	}
+	draft := &models.WxWorkProtocolInstance{
+		TenantID: 101, Guid: "workbench-replacement-draft", StoreID: store.ID,
+		StoreStaffBindingID: binding.ID, ReplacesInstanceID: current.ID,
+		EmployeeName: "替换草稿", HealthStatus: "remote_setup", Status: enums.StatusDisabled,
+	}
+	if err := db.Create(draft).Error; err != nil {
+		t.Fatalf("create replacement draft: %v", err)
+	}
+
+	operator := &dto.AuthPrincipal{UserID: user.ID, ActiveTenantID: 101, Username: user.Username}
+	snapshot, err := StoreWorkbenchService.Current(operator)
+	if err != nil {
+		t.Fatalf("current workbench: %v", err)
+	}
+	if snapshot.WxWorkInstance == nil || snapshot.WxWorkInstance.ID != current.ID {
+		t.Fatalf("workbench selected instance %+v, want current %d instead of draft %d", snapshot.WxWorkInstance, current.ID, draft.ID)
+	}
+	assignment := StoreStaffBindingService.FindUserAssignments([]int64{user.ID}, 101)[user.ID]
+	if assignment.WxWorkInstanceID != current.ID || assignment.WxWorkEmployeeName != current.EmployeeName || assignment.WxWorkHealthStatus != "online" {
+		t.Fatalf("assignment selected replacement draft or lost current evidence: %+v", assignment)
 	}
 }

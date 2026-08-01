@@ -34,16 +34,17 @@ type KnowledgeSearchRequest struct {
 }
 
 type KnowledgeAnswerRequest struct {
-	KnowledgeBaseIDs []int64 `json:"knowledgeBaseIds"`
-	Question         string  `json:"question"`
-	TopK             int     `json:"topK"`
-	ScoreThreshold   float64 `json:"scoreThreshold"`
-	RerankLimit      int     `json:"rerankLimit"`
-	Channel          string  `json:"channel"`
-	Scene            string  `json:"scene"`
-	SessionID        string  `json:"sessionId"`
-	ConversationID   int64   `json:"conversationId"`
-	AnswerMode       int     `json:"answerMode"`
+	KnowledgeBaseIDs    []int64 `json:"knowledgeBaseIds"`
+	Question            string  `json:"question"`
+	TopK                int     `json:"topK"`
+	ScoreThreshold      float64 `json:"scoreThreshold"`
+	RerankLimit         int     `json:"rerankLimit"`
+	Channel             string  `json:"channel"`
+	Scene               string  `json:"scene"`
+	SessionID           string  `json:"sessionId"`
+	ConversationID      int64   `json:"conversationId"`
+	StoreStaffBindingID int64   `json:"storeStaffBindingId"`
+	AnswerMode          int     `json:"answerMode"`
 }
 
 type CreateKnowledgeFeedbackRequest struct {

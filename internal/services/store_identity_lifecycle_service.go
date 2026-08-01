@@ -1,6 +1,8 @@
 package services
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,13 +63,12 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 		if store == nil || store.Status == enums.StatusDeleted {
 			return errorsx.InvalidParam("门店身份不存在或已删除")
 		}
-		knowledgeBaseID, err := WxWorkProtocolInstanceService.resolveStoreKnowledgeBaseIDDB(ctx.Tx, current.TenantID, store.ID)
-		if err != nil {
+		if _, err := WxWorkProtocolInstanceService.resolveStoreKnowledgeBaseIDDB(ctx.Tx, current.TenantID, store.ID); err != nil {
 			return err
 		}
-		storeName := utils.RepairMojibakeText(strings.TrimSpace(firstNonBlank(req.StoreName, store.Name)))
+		storeName := utils.RepairMojibakeText(strings.TrimSpace(store.Name))
 		if storeName == "" {
-			return errorsx.InvalidParam("请填写门店名称")
+			return errorsx.InvalidParam("所选门店名称不能为空，请先由有权限的管理员完善门店资料")
 		}
 		var replaced *models.WxWorkProtocolInstance
 		if current.ReplacesInstanceID > 0 {
@@ -92,14 +93,6 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 			return err
 		}
 
-		if err := repositories.StoreRepository.UpdatesInTenant(ctx.Tx, store.ID, current.TenantID, map[string]any{
-			"name":             storeName,
-			"updated_at":       now,
-			"update_user_id":   user.ID,
-			"update_user_name": user.Username,
-		}); err != nil {
-			return err
-		}
 		if err := repositories.StoreStaffBindingRepository.UpdatesInTenant(ctx.Tx, binding.ID, current.TenantID, map[string]any{
 			"managed_mode":               normalizeStoreManagedMode(req.ManagedMode),
 			"service_hours":              strings.TrimSpace(req.ServiceHours),
@@ -129,21 +122,8 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 			"employee_name":              utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
 			"store_id":                   store.ID,
 			"store_staff_binding_id":     binding.ID,
-			"store_address":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
-			"store_navigation_name":      utils.RepairMojibakeText(firstNonBlank(strings.TrimSpace(req.StoreNavigationName), storeName)),
-			"store_longitude":            strings.TrimSpace(req.StoreLongitude),
-			"store_latitude":             strings.TrimSpace(req.StoreLatitude),
-			"store_map_provider":         strings.TrimSpace(req.StoreMapProvider),
-			"store_contact_phone":        utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
-			"knowledge_base_id":          knowledgeBaseID,
-			"service_hours":              strings.TrimSpace(req.ServiceHours),
 			"front_desk_mode":            normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
 			"front_desk_hours":           normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),
-			"store_room_conversation_id": normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
-			"store_room_notify_enabled":  req.StoreRoomNotifyEnabled,
-			"store_room_at_list":         normalizeWxWorkAtList(req.StoreRoomAtList),
-			"fallback_to_hq":             req.FallbackToHQ,
-			"manual_timeout_minutes":     normalizeManualTimeoutMinutes(req.ManualTimeoutMinutes),
 			"auto_accept_friend_request": req.AutoAcceptFriendRequest,
 			"ai_reply_enabled":           aiReplyEnabled,
 			"remote_setup_submitted_at":  now,
@@ -169,6 +149,9 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 			}); err != nil {
 				return err
 			}
+			if err := s.syncArrivalInstanceReplacementDB(ctx, replaced, current, binding, user, now); err != nil {
+				return err
+			}
 		}
 		updated = repositories.WxWorkProtocolInstanceRepository.GetInTenant(ctx.Tx, current.ID, current.TenantID)
 		return nil
@@ -177,4 +160,99 @@ func (s *storeIdentityLifecycleService) CompleteBindingSetup(instance *models.Wx
 		return nil, err
 	}
 	return updated, nil
+}
+
+func (s *storeIdentityLifecycleService) syncArrivalInstanceReplacementDB(
+	ctx *sqls.TxContext,
+	replaced, replacement *models.WxWorkProtocolInstance,
+	binding *models.StoreStaffBinding,
+	operator *models.User,
+	now time.Time,
+) error {
+	if ctx == nil || ctx.Tx == nil || replaced == nil || replacement == nil || binding == nil || operator == nil {
+		return errorsx.InvalidParam("企微员工号替换上下文不完整")
+	}
+	if replaced.TenantID != replacement.TenantID || replaced.StoreID != replacement.StoreID ||
+		replaced.StoreStaffBindingID != binding.ID || replacement.StoreStaffBindingID != binding.ID ||
+		binding.StoreID != replacement.StoreID {
+		return errorsx.InvalidParam("企微员工号替换范围不一致")
+	}
+	requestID := "wxwork_instance_replacement_" + strconv.FormatInt(replacement.ID, 10)
+	detail, err := json.Marshal(map[string]any{
+		"mappingMode":           "same_store_staff_binding_instance_replacement",
+		"storeStaffBindingId":   binding.ID,
+		"previousInstanceId":    replaced.ID,
+		"replacementInstanceId": replacement.ID,
+		"protocolMappingReset":  true,
+	})
+	if err != nil {
+		return err
+	}
+	connections, err := repositories.ArrivalRepository.FindConnectionsByBindingInstanceForUpdate(
+		ctx.Tx,
+		replacement.TenantID,
+		replacement.StoreID,
+		binding.ID,
+		replaced.ID,
+	)
+	if err != nil {
+		return err
+	}
+	for i := range connections {
+		if err := repositories.ArrivalRepository.UpdateConnection(ctx.Tx, connections[i].ID, connections[i].TenantID, map[string]any{
+			"wx_work_protocol_instance_id": replacement.ID,
+			"updated_at":                   now,
+			"update_user_id":               operator.ID,
+			"update_user_name":             operator.Username,
+		}); err != nil {
+			return err
+		}
+		if err := repositories.ArrivalRepository.CreateAuditLog(ctx.Tx, &models.ArrivalAuditLog{
+			TenantID: replacement.TenantID, StoreID: replacement.StoreID,
+			Action: "wxwork_instance_replacement", EntityType: "store_arrival_connection", EntityID: connections[i].ID,
+			Result: "success", RequestID: requestID, DetailJSON: string(detail),
+			OperatorID: operator.ID, OperatorName: operator.Username, CreatedAt: now,
+		}); err != nil {
+			return err
+		}
+	}
+	arrivalBindings, err := repositories.ArrivalRepository.FindBindingsByBindingInstanceForUpdate(
+		ctx.Tx,
+		replacement.TenantID,
+		replacement.StoreID,
+		binding.ID,
+		replaced.ID,
+	)
+	if err != nil {
+		return err
+	}
+	for i := range arrivalBindings {
+		item := &arrivalBindings[i]
+		updates := map[string]any{
+			"wx_work_protocol_instance_id":      replacement.ID,
+			"protocol_conversation_ciphertext":  "",
+			"protocol_conversation_nonce":       "",
+			"protocol_conversation_fingerprint": "",
+			"protocol_mapped_at":                nil,
+			"evidence_hash":                     arrivalSafeEvidenceHash(item.EvidenceHash, "wxwork_instance_replacement", strconv.FormatInt(replaced.ID, 10), strconv.FormatInt(replacement.ID, 10)),
+			"updated_at":                        now,
+			"update_user_id":                    operator.ID,
+			"update_user_name":                  operator.Username,
+		}
+		if item.BindingProofType == enums.ArrivalBindingProofTypeProviderCallback {
+			updates["binding_status"] = enums.ArrivalBindingStatusLegacyUnmapped
+		}
+		if err := repositories.ArrivalRepository.UpdateBinding(ctx.Tx, item.ID, item.TenantID, updates); err != nil {
+			return err
+		}
+		if err := repositories.ArrivalRepository.CreateAuditLog(ctx.Tx, &models.ArrivalAuditLog{
+			TenantID: replacement.TenantID, StoreID: replacement.StoreID,
+			Action: "wxwork_instance_replacement", EntityType: "arrival_store_binding", EntityID: item.ID,
+			Result: "success", RequestID: requestID, DetailJSON: string(detail),
+			OperatorID: operator.ID, OperatorName: operator.Username, CreatedAt: now,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

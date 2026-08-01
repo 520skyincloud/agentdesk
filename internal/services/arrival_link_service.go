@@ -635,15 +635,19 @@ func (s *arrivalLinkService) executeStaticPluginContactProvision(
 		s.failContactWay(contactWay, "static_plug_id_invalid", requestID, err)
 		return nil, err
 	}
-	instance := WxWorkProtocolInstanceService.GetByTenantID(
-		connection.WxWorkProtocolInstanceID,
+	scope, scopeErr := resolveArrivalStoreStaffScopeDB(
+		sqls.DB(),
 		connection.TenantID,
+		connection.StoreID,
+		connection.StoreStaffBindingID,
+		false,
 	)
-	if instance == nil || instance.Status != enums.StatusOk || instance.StoreID != connection.StoreID {
+	if scopeErr != nil || scope == nil || scope.Instance == nil {
 		err := errorsx.InvalidParam("门店企微员工号实例不可用")
 		s.failContactWay(contactWay, "static_instance_invalid", requestID, err)
 		return nil, err
 	}
+	instance := scope.Instance
 	if _, _, err := WxWorkProtocolDefaultResourceService.BuildDefaultMiniProgramMessage(instance); err != nil {
 		s.failContactWay(contactWay, "static_card_template_invalid", requestID, err)
 		return nil, err
@@ -873,7 +877,7 @@ func (s *arrivalLinkService) resolveContactWayProvisioningContext(
 			false,
 		)
 	}
-	if connection.WxWorkProtocolInstanceID <= 0 ||
+	if connection.StoreStaffBindingID <= 0 ||
 		strings.TrimSpace(connection.ContactMemberCiphertext) == "" ||
 		strings.TrimSpace(connection.ContactMemberNonce) == "" {
 		return nil, "", newWeComProviderError(
@@ -895,6 +899,21 @@ func (s *arrivalLinkService) resolveContactWayProvisioningContext(
 			0,
 			0,
 			"门店企业微信授权主体不可用或已撤销",
+			false,
+		)
+	}
+	if _, err := resolveArrivalStoreStaffScopeDB(
+		sqls.DB(),
+		connection.TenantID,
+		connection.StoreID,
+		connection.StoreStaffBindingID,
+		false,
+	); err != nil {
+		return nil, "", newWeComProviderError(
+			weComStageContactMemberValidate,
+			0,
+			0,
+			"门店员工号当前企微实例不可用",
 			false,
 		)
 	}
@@ -1056,8 +1075,9 @@ func (s *arrivalLinkService) deliverBoundEvent(event *models.ArrivalScanEvent) {
 		})
 		return
 	}
-	instance := WxWorkProtocolInstanceService.GetByTenantID(binding.WxWorkProtocolInstanceID, event.TenantID)
-	if instance == nil || instance.Status != enums.StatusOk || !strings.EqualFold(strings.TrimSpace(instance.HealthStatus), "online") {
+	runtimeScope, scopeErr := resolveArrivalBoundConversationDB(sqls.DB(), binding, true)
+	if scopeErr != nil || runtimeScope == nil || runtimeScope.StoreStaff == nil || runtimeScope.StoreStaff.Instance == nil ||
+		!strings.EqualFold(strings.TrimSpace(runtimeScope.StoreStaff.Instance.HealthStatus), "online") {
 		_ = repositories.ArrivalRepository.UpdateScanEvent(sqls.DB(), event.ID, event.TenantID, map[string]any{
 			"delivery_status":       enums.ArrivalDeliveryStatusInstanceOffline,
 			"delivery_attempted_at": now,
@@ -1068,9 +1088,10 @@ func (s *arrivalLinkService) deliverBoundEvent(event *models.ArrivalScanEvent) {
 		})
 		return
 	}
+	instance := runtimeScope.StoreStaff.Instance
 	status, sendErr := s.arrivalCardSender().SendArrivalCard(
-		binding.ConversationID,
-		binding.WxWorkProtocolInstanceID,
+		runtimeScope.Conversation.ID,
+		instance.ID,
 		"arrival_scan_"+strconv.FormatInt(event.ID, 10),
 	)
 	completedAt := time.Now()
@@ -1121,14 +1142,9 @@ func (s *arrivalLinkService) buildResult(event *models.ArrivalScanEvent) (*respo
 		Store: response.ArrivalStoreResponse{
 			Name:      strings.TrimSpace(store.Name),
 			BrandName: strings.TrimSpace(store.BrandName),
+			Address:   strings.TrimSpace(store.Address),
+			Phone:     strings.TrimSpace(store.ContactPhone),
 		},
-	}
-	connection := repositories.ArrivalRepository.FindConnectionByStore(sqls.DB(), event.TenantID, event.StoreID)
-	if connection != nil && connection.WxWorkProtocolInstanceID > 0 {
-		if instance := WxWorkProtocolInstanceService.GetByTenantID(connection.WxWorkProtocolInstanceID, event.TenantID); instance != nil {
-			result.Store.Address = strings.TrimSpace(instance.StoreAddress)
-			result.Store.Phone = strings.TrimSpace(instance.StoreContactPhone)
-		}
 	}
 	if bindingStatus == enums.ArrivalBindingStatusBound {
 		return result, nil
@@ -1190,8 +1206,7 @@ func (s *arrivalLinkService) bindingStatusForContext(tenantID, storeID int64, bi
 		connection.ConnectionStatus != enums.ArrivalConnectionStatusActive ||
 		connection.TenantAuthorizationID <= 0 ||
 		connection.TenantAuthorizationID != binding.TenantAuthorizationID ||
-		connection.WxWorkProtocolInstanceID <= 0 ||
-		connection.WxWorkProtocolInstanceID != binding.WxWorkProtocolInstanceID {
+		connection.StoreStaffBindingID <= 0 {
 		return enums.ArrivalBindingStatusUnbound
 	}
 	authorization := repositories.ArrivalRepository.GetTenantAuthorization(
@@ -1212,7 +1227,7 @@ func (s *arrivalLinkService) bindingStatusForContext(tenantID, storeID int64, bi
 		strings.TrimSpace(binding.ContactMemberFingerprint) != "" &&
 		binding.CustomerID > 0 &&
 		binding.ConversationID > 0 &&
-		binding.WxWorkProtocolInstanceID > 0 &&
+		binding.StoreStaffBindingID > 0 &&
 		strings.TrimSpace(binding.ProtocolConversationCiphertext) != "" &&
 		strings.TrimSpace(binding.ProtocolConversationNonce) != "" &&
 		strings.TrimSpace(binding.ProtocolConversationFingerprint) != "" &&
@@ -1242,20 +1257,12 @@ func (s *arrivalLinkService) bindingStatusForContext(tenantID, storeID int64, bi
 			binding.ContactMemberFingerprint != connection.ContactMemberFingerprint {
 			return enums.ArrivalBindingStatusLegacyUnmapped
 		}
-		instance := WxWorkProtocolInstanceService.GetByTenantID(binding.WxWorkProtocolInstanceID, tenantID)
 		customer := repositories.CustomerRepository.GetInTenant(sqls.DB(), binding.CustomerID, tenantID)
-		conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), binding.ConversationID, tenantID)
-		route := ConversationRouteService.GetByConversationIDInTenant(binding.ConversationID, tenantID)
-		if instance == nil ||
-			instance.Status != enums.StatusOk ||
-			instance.StoreID != storeID ||
+		runtimeScope, scopeErr := resolveArrivalBoundConversationDB(sqls.DB(), binding, true)
+		if scopeErr != nil || runtimeScope == nil ||
 			customer == nil ||
 			customer.Status == enums.StatusDeleted ||
-			conversation == nil ||
-			conversation.CustomerID != binding.CustomerID ||
-			route == nil ||
-			route.StoreID != storeID ||
-			route.WxWorkInstanceID != binding.WxWorkProtocolInstanceID {
+			runtimeScope.Conversation.CustomerID != binding.CustomerID {
 			return enums.ArrivalBindingStatusLegacyUnmapped
 		}
 		conversationID, err := security.Decrypt(
@@ -1283,7 +1290,7 @@ func (s *arrivalLinkService) bindingStatusForCardTicket(
 		binding.BindingStatus != enums.ArrivalBindingStatusBound ||
 		binding.BindingTicketID <= 0 ||
 		binding.MiniProgramIdentityID <= 0 ||
-		binding.WxWorkProtocolInstanceID <= 0 ||
+		binding.StoreStaffBindingID <= 0 ||
 		binding.CustomerID <= 0 ||
 		binding.ConversationID <= 0 {
 		return enums.ArrivalBindingStatusLegacyUnmapped
@@ -1297,29 +1304,18 @@ func (s *arrivalLinkService) bindingStatusForCardTicket(
 		ticket.Status != enums.StatusOk ||
 		ticket.TicketStatus != enums.ArrivalBindingTicketStatusConsumed ||
 		ticket.ConsumedMiniProgramIdentityID != binding.MiniProgramIdentityID ||
-		!arrivalBindingMatchesTicket(binding, ticket) {
+		!arrivalBindingMatchesTicketDB(sqls.DB(), binding, ticket) {
 		return enums.ArrivalBindingStatusLegacyUnmapped
 	}
 	connection := repositories.ArrivalRepository.FindConnectionByStore(sqls.DB(), tenantID, storeID)
 	if connection == nil ||
 		connection.Status != enums.StatusOk ||
 		connection.ConnectionStatus != enums.ArrivalConnectionStatusActive ||
-		arrivalProviderModeForConnection(connection) != enums.ArrivalContactProviderModeStaticPluginTicket ||
-		connection.WxWorkProtocolInstanceID != binding.WxWorkProtocolInstanceID {
+		arrivalProviderModeForConnection(connection) != enums.ArrivalContactProviderModeStaticPluginTicket {
 		return enums.ArrivalBindingStatusLegacyUnmapped
 	}
-	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(
-		sqls.DB(),
-		binding.WxWorkProtocolInstanceID,
-		tenantID,
-	)
 	customer := repositories.CustomerRepository.GetInTenant(sqls.DB(), binding.CustomerID, tenantID)
-	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), binding.ConversationID, tenantID)
-	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(
-		sqls.DB(),
-		binding.ConversationID,
-		tenantID,
-	)
+	runtimeScope, scopeErr := resolveArrivalBoundConversationDB(sqls.DB(), binding, true)
 	mapping := repositories.WxWorkKFConversationRepository.FindOne(
 		sqls.DB(),
 		sqls.NewCnd().
@@ -1328,18 +1324,10 @@ func (s *arrivalLinkService) bindingStatusForCardTicket(
 			Eq("status", enums.StatusOk),
 	)
 	protocolConversationID := WxWorkProtocolService.protocolConversationID(mapping)
-	if instance == nil ||
-		instance.Status != enums.StatusOk ||
-		instance.StoreID != storeID ||
+	if scopeErr != nil || runtimeScope == nil ||
 		customer == nil ||
 		customer.Status == enums.StatusDeleted ||
-		conversation == nil ||
-		conversation.Status == enums.IMConversationStatusClosed ||
-		conversation.CustomerID != binding.CustomerID ||
-		route == nil ||
-		route.RouteStatus == enums.ConversationRouteStatusClosed ||
-		route.StoreID != storeID ||
-		route.WxWorkInstanceID != binding.WxWorkProtocolInstanceID ||
+		runtimeScope.Conversation.CustomerID != binding.CustomerID ||
 		!strings.HasPrefix(protocolConversationID, "S:") ||
 		strings.TrimSpace(strings.TrimPrefix(protocolConversationID, "S:")) == "" {
 		return enums.ArrivalBindingStatusLegacyUnmapped

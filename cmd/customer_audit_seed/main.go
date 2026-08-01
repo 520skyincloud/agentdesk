@@ -250,9 +250,6 @@ func seedWithOptions(db *gorm.DB, batch, password string, options seedOptions) e
 		if err := ctx.upsertStores(); err != nil {
 			return err
 		}
-		if err := ctx.upsertStoreModelAccess(); err != nil {
-			return err
-		}
 		if err := ctx.upsertUsers(); err != nil {
 			return err
 		}
@@ -272,6 +269,9 @@ func seedWithOptions(db *gorm.DB, batch, password string, options seedOptions) e
 			return err
 		}
 		if err := ctx.upsertStoreBindingsAndInstances(); err != nil {
+			return err
+		}
+		if err := ctx.upsertStoreModelAccess(); err != nil {
 			return err
 		}
 		if err := ctx.syncTeamWxWorkInstanceScopes(); err != nil {

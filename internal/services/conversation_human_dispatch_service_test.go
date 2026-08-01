@@ -1205,7 +1205,12 @@ func createHumanDispatchStoreRoomRuntime(t *testing.T, db *gorm.DB, conversation
 	if err := db.Create(&instance).Error; err != nil {
 		t.Fatalf("create wxwork protocol instance error = %v", err)
 	}
-	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationID, StoreID: binding.StoreID, WxWorkInstanceID: instance.ID, RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai", SessionNo: 1}).Error; err != nil {
+	if err := db.Model(&models.Conversation{}).Where("id = ? AND tenant_id = ?", conversationID, int64(101)).Updates(map[string]any{
+		"store_id": binding.StoreID, "store_staff_binding_id": binding.ID,
+	}).Error; err != nil {
+		t.Fatalf("scope conversation to Store staff binding: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationID, StoreID: binding.StoreID, StoreStaffBindingID: binding.ID, WxWorkInstanceID: instance.ID, RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai", SessionNo: 1}).Error; err != nil {
 		t.Fatalf("create conversation route state error = %v", err)
 	}
 }

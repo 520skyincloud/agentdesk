@@ -22,7 +22,10 @@ import (
 	"gorm.io/gorm"
 )
 
-const storeCredentialKeyMask = "************"
+const (
+	storeCredentialKeyMask              = "************"
+	storeBindingCredentialCipherVersion = securex.AESGCMCipherVersion + "-binding-v1"
+)
 
 var StoreModelCredentialService = newStoreModelCredentialService()
 
@@ -32,15 +35,17 @@ type StoreCredentialRequestMeta struct {
 }
 
 type StoreModelCredentialData struct {
-	Store           models.Store
-	Credential      *models.StoreModelCredential
-	Policy          *models.StoreCredentialPolicy
-	Assignment      *models.StoreModelProfileAssignment
-	ActiveTemplate  *models.ModelProfileTemplate
-	ActiveSlots     []models.ModelProfileSlot
-	PendingTemplate *models.ModelProfileTemplate
-	PendingSlots    []models.ModelProfileSlot
-	CanSelfService  bool
+	Store              models.Store
+	Binding            *models.StoreStaffBinding
+	BindingAccountName string
+	Credential         *models.StoreModelCredential
+	Policy             *models.StoreCredentialPolicy
+	Assignment         *models.StoreModelProfileAssignment
+	ActiveTemplate     *models.ModelProfileTemplate
+	ActiveSlots        []models.ModelProfileSlot
+	PendingTemplate    *models.ModelProfileTemplate
+	PendingSlots       []models.ModelProfileSlot
+	CanSelfService     bool
 }
 
 type StoreModelCredentialAuditData struct {
@@ -48,11 +53,19 @@ type StoreModelCredentialAuditData struct {
 }
 
 type resolvedStoreModelCredential struct {
-	TenantID    int64
-	StoreID     int64
-	APIKey      string
-	Revision    int64
-	Fingerprint string
+	TenantID            int64
+	StoreID             int64
+	StoreStaffBindingID int64
+	APIKey              string
+	Revision            int64
+	Fingerprint         string
+}
+
+type storeProfileActivationCredential struct {
+	Binding    models.StoreStaffBinding
+	Credential models.StoreModelCredential
+	Resolved   *resolvedStoreModelCredential
+	TestRun    *models.ModelProfileTestRun
 }
 
 type storeModelCredentialService struct {
@@ -75,7 +88,7 @@ func (s *storeModelCredentialService) GetManager(req request.GetStoreModelCreden
 	if err != nil {
 		return nil, err
 	}
-	return s.getData(tenantID, req.StoreID, false)
+	return s.getData(tenantID, req.StoreID, req.StoreStaffBindingID, false)
 }
 
 func (s *storeModelCredentialService) GetSelf(operator *dto.AuthPrincipal) (*StoreModelCredentialData, error) {
@@ -89,7 +102,7 @@ func (s *storeModelCredentialService) GetSelf(operator *dto.AuthPrincipal) (*Sto
 	if snapshot.Binding == nil || snapshot.Store == nil {
 		return nil, errorsx.InvalidParam("当前账号尚未绑定门店")
 	}
-	data, err := s.getData(snapshot.TenantID, snapshot.Store.ID, false)
+	data, err := s.getData(snapshot.TenantID, snapshot.Store.ID, snapshot.Binding.ID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -112,10 +125,13 @@ func (s *storeModelCredentialService) GetAudit(req request.GetStoreModelCredenti
 	if err != nil {
 		return nil, err
 	}
+	if _, err := s.requireStoreStaffCredentialScopeDB(sqls.DB(), tenantID, req.StoreID, req.StoreStaffBindingID, false); err != nil {
+		return nil, err
+	}
 	if store := repositories.StoreRepository.GetInTenant(sqls.DB(), req.StoreID, tenantID); store == nil {
 		return nil, errorsx.InvalidParam("门店不存在或不属于当前接入公司")
 	}
-	return &StoreModelCredentialAuditData{Items: repositories.StoreModelCredentialAuditLogRepository.FindLatestByStore(sqls.DB(), tenantID, req.StoreID, req.Limit)}, nil
+	return &StoreModelCredentialAuditData{Items: repositories.StoreModelCredentialAuditLogRepository.FindLatestByBinding(sqls.DB(), tenantID, req.StoreID, req.StoreStaffBindingID, req.Limit)}, nil
 }
 
 func (s *storeModelCredentialService) UpdatePolicy(req request.UpdateStoreCredentialPolicyRequest, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta) error {
@@ -132,7 +148,7 @@ func (s *storeModelCredentialService) UpdatePolicy(req request.UpdateStoreCreden
 	}
 	if err := verifyCredentialSensitiveAction(operator, req.CurrentPassword, req.Confirmed); err != nil {
 		for _, storeID := range storeIDs {
-			s.recordFailedSensitiveAction(tenantID, storeID, operator, meta, enums.CredentialAuditActionPolicyUpdate, 0, "password_verification_failed")
+			s.recordFailedSensitiveStorePolicyAction(tenantID, storeID, operator, meta, "password_verification_failed")
 		}
 		return err
 	}
@@ -147,7 +163,7 @@ func (s *storeModelCredentialService) UpdatePolicy(req request.UpdateStoreCreden
 			if store == nil || store.Status == enums.StatusDeleted {
 				return errorsx.InvalidParam(fmt.Sprintf("门店 %d 不存在或不属于当前接入公司", storeID))
 			}
-			credential, policy, err := s.ensureStoreRecordsDB(ctx.Tx, store, operator, now)
+			_, policy, err := s.ensureStoreRecordsDB(ctx.Tx, store, operator, now)
 			if err != nil {
 				return err
 			}
@@ -159,7 +175,7 @@ func (s *storeModelCredentialService) UpdatePolicy(req request.UpdateStoreCreden
 			}); err != nil {
 				return err
 			}
-			if err := s.appendAuditDB(ctx.Tx, credential, operator, nil, meta, enums.CredentialAuditActionPolicyUpdate, enums.CredentialAuditResultSuccess, credential.CredentialRevision, credential.CredentialRevision, 0, 0, "", ""); err != nil {
+			if err := s.appendStorePolicyAuditDB(ctx.Tx, store.TenantID, store.ID, operator, meta, enums.CredentialAuditResultSuccess, ""); err != nil {
 				return err
 			}
 		}
@@ -168,7 +184,7 @@ func (s *storeModelCredentialService) UpdatePolicy(req request.UpdateStoreCreden
 		return err
 	}
 	for _, storeID := range storeIDs {
-		s.publishConfigurationState(tenantID, storeID, now)
+		s.publishConfigurationState(tenantID, storeID, 0, now)
 	}
 	return nil
 }
@@ -181,7 +197,7 @@ func (s *storeModelCredentialService) SubmitManager(ctx context.Context, req req
 	if err != nil {
 		return nil, err
 	}
-	return s.submit(ctx, tenantID, req.StoreID, req, operator, meta, false)
+	return s.submit(ctx, tenantID, req.StoreID, req.StoreStaffBindingID, req, operator, meta, false)
 }
 
 func (s *storeModelCredentialService) SubmitSelf(ctx context.Context, req request.SubmitStoreModelCredentialRequest, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta) (*StoreModelCredentialData, error) {
@@ -196,15 +212,15 @@ func (s *storeModelCredentialService) SubmitSelf(ctx context.Context, req reques
 		return nil, errorsx.Forbidden("当前门店员工绑定不可用")
 	}
 	if snapshot.Binding.UserID != operator.UserID {
-		return nil, errorsx.Forbidden("当前账号不是该门店唯一绑定的门店员工")
+		return nil, errorsx.Forbidden("当前账号不是该门店员工号的绑定账号")
 	}
 	if snapshot.Binding.ActiveUserID == nil || *snapshot.Binding.ActiveUserID != operator.UserID {
-		return nil, errorsx.Forbidden("当前账号没有占用该门店的唯一活动绑定")
+		return nil, errorsx.Forbidden("当前账号没有有效的门店员工号绑定")
 	}
 	if !slices.Contains(operator.Roles, constants.RoleCodeStoreStaff) {
 		return nil, errorsx.Forbidden("当前账号未持有门店员工角色")
 	}
-	return s.submit(ctx, snapshot.TenantID, snapshot.Store.ID, req, operator, meta, true)
+	return s.submit(ctx, snapshot.TenantID, snapshot.Store.ID, snapshot.Binding.ID, req, operator, meta, true)
 }
 
 func (s *storeModelCredentialService) Approve(ctx context.Context, req request.DecideStoreModelCredentialRequest, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta) (*StoreModelCredentialData, error) {
@@ -215,18 +231,23 @@ func (s *storeModelCredentialService) Approve(ctx context.Context, req request.D
 	if err != nil {
 		return nil, err
 	}
+	binding, err := s.requireStoreStaffCredentialScopeDB(sqls.DB(), tenantID, req.StoreID, req.StoreStaffBindingID, true)
+	if err != nil {
+		return nil, err
+	}
+	bindingID := binding.ID
 	if err := requireCredentialSupervisorApproval(operator, tenantID); err != nil {
-		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionApprove, req.CandidateRevision, "supervisor_role_required")
+		s.recordFailedSensitiveAction(tenantID, req.StoreID, bindingID, operator, meta, enums.CredentialAuditActionApprove, req.CandidateRevision, "supervisor_role_required")
 		return nil, err
 	}
 	if err := verifyCredentialSensitiveAction(operator, req.CurrentPassword, req.Confirmed); err != nil {
-		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionApprove, req.CandidateRevision, "password_verification_failed")
+		s.recordFailedSensitiveAction(tenantID, req.StoreID, bindingID, operator, meta, enums.CredentialAuditActionApprove, req.CandidateRevision, "password_verification_failed")
 		return nil, err
 	}
 	now := time.Now()
 	selfApprovalAttempt := false
 	err = sqls.WithTransaction(func(tx *sqls.TxContext) error {
-		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByStore(tx.Tx, tenantID, req.StoreID)
+		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByBinding(tx.Tx, tenantID, req.StoreID, bindingID)
 		if err != nil {
 			return err
 		}
@@ -249,15 +270,15 @@ func (s *storeModelCredentialService) Approve(ctx context.Context, req request.D
 	})
 	if err != nil {
 		if selfApprovalAttempt {
-			s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionApprove, req.CandidateRevision, "self_approval_forbidden")
+			s.recordFailedSensitiveAction(tenantID, req.StoreID, bindingID, operator, meta, enums.CredentialAuditActionApprove, req.CandidateRevision, "self_approval_forbidden")
 		}
 		return nil, err
 	}
-	s.publishConfigurationState(tenantID, req.StoreID, now)
-	if err := s.processCandidate(ctx, tenantID, req.StoreID, req.CandidateRevision, operator, meta); err != nil {
+	s.publishConfigurationState(tenantID, req.StoreID, bindingID, now)
+	if err := s.processCandidate(ctx, tenantID, req.StoreID, bindingID, req.CandidateRevision, operator, meta); err != nil {
 		return nil, err
 	}
-	return s.getData(tenantID, req.StoreID, false)
+	return s.getData(tenantID, req.StoreID, bindingID, false)
 }
 
 func (s *storeModelCredentialService) Reject(req request.DecideStoreModelCredentialRequest, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta) (*StoreModelCredentialData, error) {
@@ -268,18 +289,23 @@ func (s *storeModelCredentialService) Reject(req request.DecideStoreModelCredent
 	if err != nil {
 		return nil, err
 	}
+	binding, err := s.requireStoreStaffCredentialScopeDB(sqls.DB(), tenantID, req.StoreID, req.StoreStaffBindingID, false)
+	if err != nil {
+		return nil, err
+	}
+	bindingID := binding.ID
 	if err := requireCredentialSupervisorApproval(operator, tenantID); err != nil {
-		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionReject, req.CandidateRevision, "supervisor_role_required")
+		s.recordFailedSensitiveAction(tenantID, req.StoreID, bindingID, operator, meta, enums.CredentialAuditActionReject, req.CandidateRevision, "supervisor_role_required")
 		return nil, err
 	}
 	if err := verifyCredentialSensitiveAction(operator, req.CurrentPassword, req.Confirmed); err != nil {
-		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionReject, req.CandidateRevision, "password_verification_failed")
+		s.recordFailedSensitiveAction(tenantID, req.StoreID, bindingID, operator, meta, enums.CredentialAuditActionReject, req.CandidateRevision, "password_verification_failed")
 		return nil, err
 	}
 	now := time.Now()
 	selfApprovalAttempt := false
 	err = sqls.WithTransaction(func(tx *sqls.TxContext) error {
-		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByStore(tx.Tx, tenantID, req.StoreID)
+		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByBinding(tx.Tx, tenantID, req.StoreID, bindingID)
 		if err != nil {
 			return err
 		}
@@ -308,12 +334,12 @@ func (s *storeModelCredentialService) Reject(req request.DecideStoreModelCredent
 	})
 	if err != nil {
 		if selfApprovalAttempt {
-			s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionReject, req.CandidateRevision, "self_approval_forbidden")
+			s.recordFailedSensitiveAction(tenantID, req.StoreID, bindingID, operator, meta, enums.CredentialAuditActionReject, req.CandidateRevision, "self_approval_forbidden")
 		}
 		return nil, err
 	}
-	s.publishConfigurationState(tenantID, req.StoreID, now)
-	return s.getData(tenantID, req.StoreID, false)
+	s.publishConfigurationState(tenantID, req.StoreID, bindingID, now)
+	return s.getData(tenantID, req.StoreID, bindingID, false)
 }
 
 func (s *storeModelCredentialService) Disable(req request.DecideStoreModelCredentialRequest, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta) (*StoreModelCredentialData, error) {
@@ -324,13 +350,18 @@ func (s *storeModelCredentialService) Disable(req request.DecideStoreModelCreden
 	if err != nil {
 		return nil, err
 	}
+	binding, err := s.requireStoreStaffCredentialScopeDB(sqls.DB(), tenantID, req.StoreID, req.StoreStaffBindingID, false)
+	if err != nil {
+		return nil, err
+	}
+	bindingID := binding.ID
 	if err := verifyCredentialSensitiveAction(operator, req.CurrentPassword, req.Confirmed); err != nil {
-		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionDisable, 0, "password_verification_failed")
+		s.recordFailedSensitiveAction(tenantID, req.StoreID, bindingID, operator, meta, enums.CredentialAuditActionDisable, 0, "password_verification_failed")
 		return nil, err
 	}
 	now := time.Now()
 	err = sqls.WithTransaction(func(tx *sqls.TxContext) error {
-		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByStore(tx.Tx, tenantID, req.StoreID)
+		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByBinding(tx.Tx, tenantID, req.StoreID, bindingID)
 		if err != nil {
 			return err
 		}
@@ -346,27 +377,13 @@ func (s *storeModelCredentialService) Disable(req request.DecideStoreModelCreden
 		}); err != nil {
 			return err
 		}
-		assignment, err := repositories.StoreModelProfileAssignmentRepository.GetForUpdateByStore(tx.Tx, tenantID, req.StoreID)
-		if err != nil {
-			return err
-		}
-		if assignment != nil {
-			if err := repositories.StoreModelProfileAssignmentRepository.Updates(tx.Tx, assignment.ID, map[string]any{
-				"status": enums.StoreModelAssignmentStatusBlocked, "readiness_status": "blocked",
-				"last_error_class": "credential_disabled", "last_error_message": "门店模型凭据已停用",
-				"last_validated_at": now, "updated_at": now,
-				"update_user_id": operator.UserID, "update_user_name": operator.Username,
-			}); err != nil {
-				return err
-			}
-		}
 		return s.appendAuditDB(tx.Tx, credential, operator, nil, meta, enums.CredentialAuditActionDisable, enums.CredentialAuditResultSuccess, credential.CredentialRevision, credential.CredentialRevision, 0, 0, securex.FingerprintLast6(credential.KeyFingerprint), "")
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.publishConfigurationState(tenantID, req.StoreID, now)
-	return s.getData(tenantID, req.StoreID, false)
+	s.publishConfigurationState(tenantID, req.StoreID, bindingID, now)
+	return s.getData(tenantID, req.StoreID, bindingID, false)
 }
 
 func (s *storeModelCredentialService) ActivatePendingProfile(
@@ -382,16 +399,14 @@ func (s *storeModelCredentialService) ActivatePendingProfile(
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyCredentialSensitiveAction(operator, req.CurrentPassword, req.Confirmed); err != nil {
-		s.recordFailedSensitiveAction(tenantID, req.StoreID, operator, meta, enums.CredentialAuditActionSwitchProfile, 0, "password_verification_failed")
+	ownerBinding, err := s.requireStoreStaffCredentialScopeDB(sqls.DB(), tenantID, req.StoreID, req.StoreStaffBindingID, true)
+	if err != nil {
 		return nil, err
 	}
-	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), tenantID, req.StoreID)
-	if credential == nil || credential.Status != enums.StoreCredentialStatusActive || credential.CredentialRevision <= 0 {
-		return nil, errorsx.InvalidParam("当前门店没有可用于切换方案的 active 凭据")
-	}
-	if liveCredentialCandidate(credential) {
-		return nil, errorsx.InvalidParam("当前存在进行中的凭据更新，请先完成或拒绝该申请")
+	ownerBindingID := ownerBinding.ID
+	if err := verifyCredentialSensitiveAction(operator, req.CurrentPassword, req.Confirmed); err != nil {
+		s.recordFailedSensitiveAction(tenantID, req.StoreID, ownerBindingID, operator, meta, enums.CredentialAuditActionSwitchProfile, 0, "password_verification_failed")
+		return nil, err
 	}
 	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(sqls.DB(), tenantID, req.StoreID)
 	if assignment == nil ||
@@ -406,6 +421,7 @@ func (s *storeModelCredentialService) ActivatePendingProfile(
 	if err != nil {
 		return nil, err
 	}
+	target.StoreStaffBindingID = ownerBindingID
 	oldTarget, err := s.loadActiveTargetDB(sqls.DB(), tenantID, req.StoreID)
 	if err != nil {
 		return nil, errorsx.InvalidParam("当前 active 模型方案不可用")
@@ -413,77 +429,103 @@ func (s *storeModelCredentialService) ActivatePendingProfile(
 	if normalizeGatewayBaseURL(oldTarget.Template.GatewayBaseURL) != normalizeGatewayBaseURL(target.Template.GatewayBaseURL) {
 		return nil, errorsx.InvalidParam("待切换方案不使用当前统一 NewAPI 网关，禁止复用门店凭据")
 	}
-	activeCredential, err := s.ResolveActive(tenantID, req.StoreID)
+	credentials, err := s.loadProfileActivationCredentials(tenantID, req.StoreID, ownerBindingID)
 	if err != nil {
 		return nil, err
 	}
-	if activeCredential.Revision != credential.CredentialRevision ||
-		activeCredential.Fingerprint != credential.KeyFingerprint {
-		return nil, errorsx.InvalidParam("active 凭据 revision 已变化，请刷新后重试")
+	ownerCredential := profileActivationCredentialByBinding(credentials, ownerBindingID)
+	if ownerCredential == nil {
+		return nil, errorsx.InvalidParam("FastGPT 凭据 owner 已变化，请刷新后重试")
 	}
-	if err := s.appendAudit(
-		credential,
-		operator,
-		nil,
-		meta,
-		enums.CredentialAuditActionSwitchProfile,
-		enums.CredentialAuditResultPending,
-		credential.CredentialRevision,
-		credential.CredentialRevision,
-		target.Template.ID,
-		target.Template.Revision,
-		securex.FingerprintLast6(credential.KeyFingerprint),
-		"",
-	); err != nil {
-		return nil, errorsx.BusinessError(3001, "模型方案切换审计写入失败")
+	oldOwnerBindingID := ownerBindingID
+	if target.Store.KnowledgeBaseID > 0 {
+		if state := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(sqls.DB(), req.StoreID, tenantID); state != nil {
+			oldOwnerBindingID = firstPositiveInt64(state.AppliedStoreStaffBindingID, state.TargetStoreStaffBindingID, ownerBindingID)
+		}
 	}
-	testStarted := time.Now()
-	testErr := s.validator.Validate(ctx, &target.Template, target.Slots, activeCredential.APIKey)
+	oldCredential := profileActivationCredentialByBinding(credentials, oldOwnerBindingID)
+	if oldCredential == nil {
+		return nil, errorsx.InvalidParam("当前 FastGPT 凭据 owner 已停用，无法安全切换模型方案")
+	}
+	oldTarget.StoreStaffBindingID = oldOwnerBindingID
+	for i := range credentials {
+		credential := &credentials[i].Credential
+		if err := s.appendAudit(
+			credential, operator, nil, meta,
+			enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultPending,
+			credential.CredentialRevision, credential.CredentialRevision,
+			target.Template.ID, target.Template.Revision,
+			securex.FingerprintLast6(credential.KeyFingerprint), "",
+		); err != nil {
+			return nil, errorsx.BusinessError(3001, "模型方案切换审计写入失败")
+		}
+	}
 	tenant := repositories.TenantRepository.Get(sqls.DB(), tenantID)
-	run, recordErr := recordModelProfileTestRun(
-		&target.Template,
-		target.Slots,
-		tenant,
-		&target.Store,
-		credential.CredentialRevision,
-		enums.ModelProfileTestCredentialSourceActive,
-		testErr,
-		testStarted,
-		operator,
-		meta,
-	)
-	if recordErr != nil {
-		_ = s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultFailure, credential.CredentialRevision, credential.CredentialRevision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.KeyFingerprint), "test_evidence_write_failed")
-		return nil, recordErr
+	if tenant == nil {
+		s.appendProfileSwitchFailureAudits(credentials, operator, meta, target, "tenant_unavailable")
+		return nil, errorsx.BusinessError(3001, "模型方案测试接入公司上下文不可用")
 	}
-	if run.Status != enums.ModelProfileTestStatusPassed {
-		_ = s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultFailure, credential.CredentialRevision, credential.CredentialRevision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.KeyFingerprint), run.ErrorClass)
-		return nil, errorsx.BusinessError(5, run.ErrorMessage)
+	validationFailed := false
+	validationMessage := "门店员工号模型凭据验证未通过"
+	for i := range credentials {
+		testStarted := time.Now()
+		testErr := s.validator.Validate(ctx, &target.Template, target.Slots, credentials[i].Resolved.APIKey)
+		run, recordErr := recordModelProfileTestRun(
+			&target.Template, target.Slots, tenant, &target.Store,
+			credentials[i].Binding.ID, credentials[i].Credential.CredentialRevision,
+			enums.ModelProfileTestCredentialSourceActive, testErr, testStarted, operator, meta,
+		)
+		if recordErr != nil {
+			s.appendProfileSwitchFailureAudits(credentials, operator, meta, target, "test_evidence_write_failed")
+			return nil, recordErr
+		}
+		credentials[i].TestRun = run
+		if run.Status != enums.ModelProfileTestStatusPassed {
+			validationFailed = true
+			if strings.TrimSpace(run.ErrorMessage) != "" {
+				validationMessage = run.ErrorMessage
+			}
+		}
 	}
-	fastGPTStatus, err := s.fastGPT.Sync(
+	if validationFailed {
+		for i := range credentials {
+			class := "peer_binding_validation_failed"
+			if credentials[i].TestRun != nil && credentials[i].TestRun.Status != enums.ModelProfileTestStatusPassed {
+				class = credentials[i].TestRun.ErrorClass
+			}
+			credential := &credentials[i].Credential
+			_ = s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultFailure, credential.CredentialRevision, credential.CredentialRevision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.KeyFingerprint), class)
+		}
+		return nil, errorsx.BusinessError(5, validationMessage)
+	}
+	fastGPTStatus, err := s.fastGPT.SyncOwner(
 		ctx,
 		*target,
-		activeCredential.APIKey,
-		activeCredential.Revision,
-		activeCredential.Fingerprint,
+		ownerCredential.Resolved.APIKey,
+		ownerCredential.Resolved.Revision,
+		ownerCredential.Resolved.Fingerprint,
 	)
 	if err != nil {
-		s.restoreOldFastGPT(oldTarget, activeCredential, tenantID, req.StoreID, activeCredential.Revision)
-		_ = s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultFailure, credential.CredentialRevision, credential.CredentialRevision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.KeyFingerprint), "fastgpt_sync_failed")
+		s.restoreOldFastGPT(oldTarget, oldCredential.Resolved, tenantID, req.StoreID, ownerBindingID, ownerCredential.Credential.CredentialRevision)
+		s.appendProfileSwitchFailureAudits(credentials, operator, meta, target, "fastgpt_sync_failed")
 		return nil, errorsx.BusinessError(5, "FastGPT 模型配置同步失败，当前方案继续使用")
 	}
 	now := time.Now()
 	err = sqls.WithTransaction(func(tx *sqls.TxContext) error {
-		lockedCredential, err := repositories.StoreModelCredentialRepository.GetForUpdateByStore(tx.Tx, tenantID, req.StoreID)
-		if err != nil {
-			return err
-		}
-		if lockedCredential == nil ||
-			lockedCredential.Status != enums.StoreCredentialStatusActive ||
-			lockedCredential.CredentialRevision != credential.CredentialRevision ||
-			lockedCredential.KeyFingerprint != credential.KeyFingerprint ||
-			liveCredentialCandidate(lockedCredential) {
-			return errors.New("active credential changed during profile switch")
+		lockedCredentials := make([]*models.StoreModelCredential, len(credentials))
+		for i := range credentials {
+			lockedCredential, lockErr := repositories.StoreModelCredentialRepository.GetForUpdateByBinding(tx.Tx, tenantID, req.StoreID, credentials[i].Binding.ID)
+			if lockErr != nil {
+				return lockErr
+			}
+			if lockedCredential == nil || lockedCredential.ID != credentials[i].Credential.ID ||
+				lockedCredential.Status != enums.StoreCredentialStatusActive ||
+				lockedCredential.CredentialRevision != credentials[i].Credential.CredentialRevision ||
+				lockedCredential.KeyFingerprint != credentials[i].Credential.KeyFingerprint ||
+				liveCredentialCandidate(lockedCredential) {
+				return errors.New("active credential changed during profile switch")
+			}
+			lockedCredentials[i] = lockedCredential
 		}
 		lockedAssignment, err := repositories.StoreModelProfileAssignmentRepository.GetForUpdateByStore(tx.Tx, tenantID, req.StoreID)
 		if err != nil {
@@ -523,41 +565,103 @@ func (s *storeModelCredentialService) ActivatePendingProfile(
 		}); err != nil {
 			return err
 		}
-		if err := repositories.StoreModelCredentialRepository.Updates(tx.Tx, lockedCredential.ID, map[string]any{
-			"last_test_status": "passed", "last_tested_at": run.CreatedAt,
-			"last_test_latency_ms":      run.LatencyMS,
-			"last_fast_gpt_sync_status": fastGPTStatus, "last_fast_gpt_synced_at": now,
-			"last_error_class": "", "last_error_message": "",
-			"updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
-		}); err != nil {
-			return err
+		for i := range lockedCredentials {
+			columns := map[string]any{
+				"last_test_status": "passed", "last_tested_at": credentials[i].TestRun.CreatedAt,
+				"last_test_latency_ms": credentials[i].TestRun.LatencyMS,
+				"last_error_class":     "", "last_error_message": "",
+				"updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
+			}
+			if lockedCredentials[i].StoreStaffBindingID == ownerBindingID {
+				columns["last_fast_gpt_sync_status"] = fastGPTStatus
+				columns["last_fast_gpt_synced_at"] = now
+			}
+			if err := repositories.StoreModelCredentialRepository.Updates(tx.Tx, lockedCredentials[i].ID, columns); err != nil {
+				return err
+			}
+			if err := s.appendAuditDB(
+				tx.Tx, lockedCredentials[i], operator, nil, meta,
+				enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultSuccess,
+				lockedCredentials[i].CredentialRevision, lockedCredentials[i].CredentialRevision,
+				lockedTemplate.ID, lockedTemplate.Revision,
+				securex.FingerprintLast6(lockedCredentials[i].KeyFingerprint), "",
+			); err != nil {
+				return err
+			}
 		}
-		return s.appendAuditDB(
-			tx.Tx,
-			lockedCredential,
-			operator,
-			nil,
-			meta,
-			enums.CredentialAuditActionSwitchProfile,
-			enums.CredentialAuditResultSuccess,
-			lockedCredential.CredentialRevision,
-			lockedCredential.CredentialRevision,
-			lockedTemplate.ID,
-			lockedTemplate.Revision,
-			securex.FingerprintLast6(lockedCredential.KeyFingerprint),
-			"",
-		)
+		return nil
 	})
 	if err != nil {
-		s.restoreOldFastGPT(oldTarget, activeCredential, tenantID, req.StoreID, activeCredential.Revision)
-		_ = s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultFailure, credential.CredentialRevision, credential.CredentialRevision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.KeyFingerprint), "profile_switch_conflict")
+		s.restoreOldFastGPT(oldTarget, oldCredential.Resolved, tenantID, req.StoreID, ownerBindingID, ownerCredential.Credential.CredentialRevision)
+		s.appendProfileSwitchFailureAudits(credentials, operator, meta, target, "profile_switch_conflict")
 		return nil, errorsx.BusinessError(5, "模型方案切换冲突，当前方案继续使用")
 	}
-	s.publishConfigurationState(tenantID, req.StoreID, now)
-	return s.getData(tenantID, req.StoreID, false)
+	for i := range credentials {
+		s.publishConfigurationState(tenantID, req.StoreID, credentials[i].Binding.ID, now)
+	}
+	return s.getData(tenantID, req.StoreID, ownerBindingID, false)
 }
 
-func (s *storeModelCredentialService) submit(ctx context.Context, tenantID, storeID int64, req request.SubmitStoreModelCredentialRequest, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta, selfService bool) (*StoreModelCredentialData, error) {
+func (s *storeModelCredentialService) loadProfileActivationCredentials(tenantID, storeID, ownerBindingID int64) ([]storeProfileActivationCredential, error) {
+	bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("store_id", storeID).
+		Eq("status", enums.StatusOk).
+		Where("active_user_id IS NOT NULL").
+		Asc("id"))
+	if len(bindings) == 0 {
+		return nil, errorsx.InvalidParam("当前门店没有有效的门店员工绑定")
+	}
+	ret := make([]storeProfileActivationCredential, 0, len(bindings))
+	ownerFound := false
+	for i := range bindings {
+		binding := bindings[i]
+		if binding.ID == ownerBindingID {
+			ownerFound = true
+		}
+		credential := repositories.StoreModelCredentialRepository.GetByBinding(sqls.DB(), tenantID, storeID, binding.ID)
+		if credential == nil || credential.Status != enums.StoreCredentialStatusActive || credential.CredentialRevision <= 0 ||
+			strings.TrimSpace(credential.EncryptedKey) == "" || strings.TrimSpace(credential.KeyNonce) == "" {
+			return nil, errorsx.InvalidParam("门店存在尚未配置 active NewAPI 凭据的员工号")
+		}
+		if liveCredentialCandidate(credential) {
+			return nil, errorsx.InvalidParam("门店员工号存在进行中的凭据更新，请先完成或拒绝该申请")
+		}
+		resolved, err := s.ResolveActiveForBinding(tenantID, storeID, binding.ID)
+		if err != nil {
+			return nil, err
+		}
+		if resolved.Revision != credential.CredentialRevision || resolved.Fingerprint != credential.KeyFingerprint {
+			return nil, errorsx.InvalidParam("门店员工号 active 凭据 revision 已变化，请刷新后重试")
+		}
+		ret = append(ret, storeProfileActivationCredential{Binding: binding, Credential: *credential, Resolved: resolved})
+	}
+	if !ownerFound {
+		return nil, errorsx.InvalidParam("所选 FastGPT 凭据 owner 已停用或归属已变化")
+	}
+	return ret, nil
+}
+
+func profileActivationCredentialByBinding(credentials []storeProfileActivationCredential, bindingID int64) *storeProfileActivationCredential {
+	for i := range credentials {
+		if credentials[i].Binding.ID == bindingID {
+			return &credentials[i]
+		}
+	}
+	return nil
+}
+
+func (s *storeModelCredentialService) appendProfileSwitchFailureAudits(credentials []storeProfileActivationCredential, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta, target *storeCredentialActivationTarget, class string) {
+	if target == nil {
+		return
+	}
+	for i := range credentials {
+		credential := &credentials[i].Credential
+		_ = s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSwitchProfile, enums.CredentialAuditResultFailure, credential.CredentialRevision, credential.CredentialRevision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.KeyFingerprint), class)
+	}
+}
+
+func (s *storeModelCredentialService) submit(ctx context.Context, tenantID, storeID, bindingID int64, req request.SubmitStoreModelCredentialRequest, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta, selfService bool) (*StoreModelCredentialData, error) {
 	apiKey := strings.TrimSpace(req.APIKey)
 	if apiKey == "" {
 		return nil, errorsx.InvalidParam("请输入新的 NewAPI API Key")
@@ -565,8 +669,13 @@ func (s *storeModelCredentialService) submit(ctx context.Context, tenantID, stor
 	if len(apiKey) > 4096 {
 		return nil, errorsx.InvalidParam("NewAPI API Key 长度不合法")
 	}
+	binding, err := s.requireStoreStaffCredentialScopeDB(sqls.DB(), tenantID, storeID, bindingID, true)
+	if err != nil {
+		return nil, err
+	}
+	bindingID = binding.ID
 	if err := verifyCredentialSensitiveAction(operator, req.CurrentPassword, req.Confirmed); err != nil {
-		s.recordFailedSensitiveAction(tenantID, storeID, operator, meta, enums.CredentialAuditActionConfigure, 0, "password_verification_failed")
+		s.recordFailedSensitiveAction(tenantID, storeID, bindingID, operator, meta, enums.CredentialAuditActionConfigure, 0, "password_verification_failed")
 		return nil, err
 	}
 	cipher, masterKeyID, err := s.cipher()
@@ -584,17 +693,25 @@ func (s *storeModelCredentialService) submit(ctx context.Context, tenantID, stor
 		if store == nil || store.Status != enums.StatusOk {
 			return errorsx.InvalidParam("门店不存在、已停用或不属于当前接入公司")
 		}
-		credential, policy, err := s.ensureStoreRecordsDB(tx.Tx, store, operator, now)
+		lockedBinding, err := repositories.StoreStaffBindingRepository.GetForUpdateInTenant(tx.Tx, bindingID, tenantID)
 		if err != nil {
 			return err
 		}
-		credential, err = repositories.StoreModelCredentialRepository.GetForUpdateByStore(tx.Tx, tenantID, storeID)
+		if lockedBinding == nil || lockedBinding.StoreID != storeID || lockedBinding.Status != enums.StatusOk || lockedBinding.ActiveUserID == nil {
+			return errorsx.InvalidParam("门店员工绑定不存在、已停用或归属已变化")
+		}
+		credential, err := s.ensureBindingCredentialDB(tx.Tx, store, lockedBinding, operator, now)
+		if err != nil {
+			return err
+		}
+		credential, err = repositories.StoreModelCredentialRepository.GetForUpdateByBinding(tx.Tx, tenantID, storeID, bindingID)
 		if err != nil {
 			return err
 		}
 		if liveCredentialCandidate(credential) {
 			return errorsx.InvalidParam("当前门店已有进行中的凭据更新")
 		}
+		var policy *models.StoreCredentialPolicy
 		if selfService {
 			policy, err = repositories.StoreCredentialPolicyRepository.GetForUpdateByStore(tx.Tx, tenantID, storeID)
 			if err != nil {
@@ -608,11 +725,12 @@ func (s *storeModelCredentialService) submit(ctx context.Context, tenantID, stor
 		if err != nil {
 			return err
 		}
+		target.StoreStaffBindingID = bindingID
 		revision = credential.CredentialRevision + 1
 		if credential.CandidateRevision >= revision {
 			revision = credential.CandidateRevision + 1
 		}
-		ciphertext, nonce, err := cipher.Encrypt(apiKey, storeCredentialAAD(tenantID, storeID, revision))
+		ciphertext, nonce, err := cipher.Encrypt(apiKey, storeBindingCredentialAAD(tenantID, storeID, bindingID, revision))
 		if err != nil {
 			return errorsx.BusinessError(5001, "门店模型凭据加密失败")
 		}
@@ -625,7 +743,7 @@ func (s *storeModelCredentialService) submit(ctx context.Context, tenantID, stor
 		fingerprint := securex.Fingerprint(apiKey)
 		if err := repositories.StoreModelCredentialRepository.Updates(tx.Tx, credential.ID, map[string]any{
 			"candidate_encrypted_key": ciphertext, "candidate_key_nonce": nonce,
-			"candidate_key_fingerprint": fingerprint, "candidate_cipher_version": securex.AESGCMCipherVersion,
+			"candidate_key_fingerprint": fingerprint, "candidate_cipher_version": storeBindingCredentialCipherVersion,
 			"candidate_master_key_id": masterKeyID, "candidate_revision": revision,
 			"candidate_profile_id": target.Template.ID, "candidate_profile_revision": target.Template.Revision,
 			"candidate_status": candidateStatus, "candidate_approval_status": approvalStatus,
@@ -651,39 +769,43 @@ func (s *storeModelCredentialService) submit(ctx context.Context, tenantID, stor
 	if err != nil {
 		return nil, err
 	}
-	s.publishConfigurationState(tenantID, storeID, now)
+	s.publishConfigurationState(tenantID, storeID, bindingID, now)
 	if approvalStatus != enums.CredentialApprovalStatusPending {
-		if err := s.processCandidate(ctx, tenantID, storeID, revision, operator, meta); err != nil {
+		if err := s.processCandidate(ctx, tenantID, storeID, bindingID, revision, operator, meta); err != nil {
 			return nil, err
 		}
 	}
-	data, err := s.getData(tenantID, storeID, false)
+	data, err := s.getData(tenantID, storeID, bindingID, false)
 	if err == nil && selfService {
 		data.CanSelfService = true
 	}
 	return data, err
 }
 
-func (s *storeModelCredentialService) processCandidate(ctx context.Context, tenantID, storeID, revision int64, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta) error {
-	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), tenantID, storeID)
+func (s *storeModelCredentialService) processCandidate(ctx context.Context, tenantID, storeID, bindingID, revision int64, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta) error {
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(sqls.DB(), tenantID, storeID, bindingID)
 	if credential == nil || credential.CandidateRevision != revision || credential.CandidateStatus != enums.StoreCredentialStatusTesting || credential.CandidateApprovalStatus == enums.CredentialApprovalStatusPending {
 		return errorsx.InvalidParam("待验证凭据已变化，请刷新后重试")
 	}
 	apiKey, err := s.decryptCandidate(credential)
 	if err != nil {
-		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionTest, "candidate_decrypt_failed", "候选凭据无法解密，旧版本继续使用")
+		s.failCandidate(tenantID, storeID, bindingID, revision, operator, meta, enums.CredentialAuditActionTest, "candidate_decrypt_failed", "候选凭据无法解密，旧版本继续使用")
 		return errorsx.BusinessError(5001, "候选凭据无法解密，旧版本继续使用")
 	}
 	target, err := s.loadActivationTargetDB(sqls.DB(), tenantID, storeID, credential.CandidateProfileID, credential.CandidateProfileRevision)
 	if err != nil {
-		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionTest, "profile_assignment_changed", "门店模型指派已变化，旧版本继续使用")
+		s.failCandidate(tenantID, storeID, bindingID, revision, operator, meta, enums.CredentialAuditActionTest, "profile_assignment_changed", "门店模型指派已变化，旧版本继续使用")
 		return errorsx.BusinessError(2005, "门店模型指派已变化，旧版本继续使用")
 	}
-	oldCredential, _ := s.ResolveActive(tenantID, storeID)
+	target.StoreStaffBindingID = bindingID
+	oldCredential, _ := s.ResolveActiveForBinding(tenantID, storeID, bindingID)
 	oldTarget, _ := s.loadActiveTargetDB(sqls.DB(), tenantID, storeID)
+	if oldTarget != nil {
+		oldTarget.StoreStaffBindingID = bindingID
+	}
 	testStarted := time.Now()
 	if err := s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionTest, enums.CredentialAuditResultPending, credential.CredentialRevision, revision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.CandidateKeyFingerprint), ""); err != nil {
-		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionTest, "audit_write_failed", "凭据验证审计写入失败，旧版本继续使用")
+		s.failCandidate(tenantID, storeID, bindingID, revision, operator, meta, enums.CredentialAuditActionTest, "audit_write_failed", "凭据验证审计写入失败，旧版本继续使用")
 		return errorsx.BusinessError(5001, "凭据验证审计写入失败，旧版本继续使用")
 	}
 	testErr := s.validator.Validate(ctx, &target.Template, target.Slots, apiKey)
@@ -693,6 +815,7 @@ func (s *storeModelCredentialService) processCandidate(ctx context.Context, tena
 		target.Slots,
 		tenant,
 		&target.Store,
+		bindingID,
 		revision,
 		enums.ModelProfileTestCredentialSourceCandidate,
 		testErr,
@@ -701,16 +824,16 @@ func (s *storeModelCredentialService) processCandidate(ctx context.Context, tena
 		meta,
 	)
 	if evidenceErr != nil {
-		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionTest, "test_evidence_write_failed", "模型方案测试证据写入失败，旧版本继续使用")
+		s.failCandidate(tenantID, storeID, bindingID, revision, operator, meta, enums.CredentialAuditActionTest, "test_evidence_write_failed", "模型方案测试证据写入失败，旧版本继续使用")
 		return evidenceErr
 	}
 	if testErr != nil {
 		class, message := publicCredentialValidationFailure(testErr, target.Slots)
-		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionTest, class, message)
+		s.failCandidate(tenantID, storeID, bindingID, revision, operator, meta, enums.CredentialAuditActionTest, class, message)
 		return errorsx.BusinessError(2005, message)
 	}
 	testedAt := testRun.CreatedAt
-	if err := s.updateCandidateState(tenantID, storeID, revision, enums.StoreCredentialStatusTesting, map[string]any{
+	if err := s.updateCandidateState(tenantID, storeID, bindingID, revision, enums.StoreCredentialStatusTesting, map[string]any{
 		"candidate_status": enums.StoreCredentialStatusSyncing,
 		"last_test_status": "passed", "last_tested_at": testedAt,
 		"last_test_latency_ms": testRun.LatencyMS,
@@ -719,65 +842,65 @@ func (s *storeModelCredentialService) processCandidate(ctx context.Context, tena
 		return err
 	}
 	if err := s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionTest, enums.CredentialAuditResultSuccess, credential.CredentialRevision, revision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.CandidateKeyFingerprint), ""); err != nil {
-		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionTest, "audit_write_failed", "凭据验证结果审计写入失败，旧版本继续使用")
+		s.failCandidate(tenantID, storeID, bindingID, revision, operator, meta, enums.CredentialAuditActionTest, "audit_write_failed", "凭据验证结果审计写入失败，旧版本继续使用")
 		return errorsx.BusinessError(5001, "凭据验证结果审计写入失败，旧版本继续使用")
 	}
 	if err := s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSyncFastGPT, enums.CredentialAuditResultPending, credential.CredentialRevision, revision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.CandidateKeyFingerprint), ""); err != nil {
-		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionSyncFastGPT, "audit_write_failed", "FastGPT 同步审计写入失败，旧版本继续使用")
+		s.failCandidate(tenantID, storeID, bindingID, revision, operator, meta, enums.CredentialAuditActionSyncFastGPT, "audit_write_failed", "FastGPT 同步审计写入失败，旧版本继续使用")
 		return errorsx.BusinessError(5001, "FastGPT 同步审计写入失败，旧版本继续使用")
 	}
 	fastGPTStatus, err := s.fastGPT.Sync(ctx, *target, apiKey, revision, credential.CandidateKeyFingerprint)
 	if err != nil {
-		s.restoreOldFastGPT(oldTarget, oldCredential, tenantID, storeID, revision)
-		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionSyncFastGPT, "fastgpt_sync_failed", "FastGPT 模型配置同步失败，旧版本继续使用")
+		s.restoreOldFastGPT(oldTarget, oldCredential, tenantID, storeID, bindingID, revision)
+		s.failCandidate(tenantID, storeID, bindingID, revision, operator, meta, enums.CredentialAuditActionSyncFastGPT, "fastgpt_sync_failed", "FastGPT 模型配置同步失败，旧版本继续使用")
 		return errorsx.BusinessError(2005, "FastGPT 模型配置同步失败，旧版本继续使用")
 	}
 	syncedAt := time.Now()
-	if err := s.updateCandidateState(tenantID, storeID, revision, enums.StoreCredentialStatusSyncing, map[string]any{
+	if err := s.updateCandidateState(tenantID, storeID, bindingID, revision, enums.StoreCredentialStatusSyncing, map[string]any{
 		"candidate_status":          enums.StoreCredentialStatusReady,
 		"last_fast_gpt_sync_status": fastGPTStatus, "last_fast_gpt_synced_at": syncedAt,
 		"last_error_class": "", "last_error_message": "",
 	}); err != nil {
-		s.restoreOldFastGPT(oldTarget, oldCredential, tenantID, storeID, revision)
+		s.restoreOldFastGPT(oldTarget, oldCredential, tenantID, storeID, bindingID, revision)
 		return err
 	}
 	if err := s.appendAudit(credential, operator, nil, meta, enums.CredentialAuditActionSyncFastGPT, enums.CredentialAuditResultSuccess, credential.CredentialRevision, revision, target.Template.ID, target.Template.Revision, securex.FingerprintLast6(credential.CandidateKeyFingerprint), ""); err != nil {
-		s.restoreOldFastGPT(oldTarget, oldCredential, tenantID, storeID, revision)
-		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionSyncFastGPT, "audit_write_failed", "FastGPT 同步结果审计写入失败，旧版本继续使用")
+		s.restoreOldFastGPT(oldTarget, oldCredential, tenantID, storeID, bindingID, revision)
+		s.failCandidate(tenantID, storeID, bindingID, revision, operator, meta, enums.CredentialAuditActionSyncFastGPT, "audit_write_failed", "FastGPT 同步结果审计写入失败，旧版本继续使用")
 		return errorsx.BusinessError(5001, "FastGPT 同步结果审计写入失败，旧版本继续使用")
 	}
-	if err := s.activateCandidate(tenantID, storeID, revision, operator, meta); err != nil {
-		s.restoreOldFastGPT(oldTarget, oldCredential, tenantID, storeID, revision)
-		s.failCandidate(tenantID, storeID, revision, operator, meta, enums.CredentialAuditActionActivate, "activation_conflict", "凭据切换冲突，旧版本继续使用")
+	if err := s.activateCandidate(tenantID, storeID, bindingID, revision, operator, meta); err != nil {
+		s.restoreOldFastGPT(oldTarget, oldCredential, tenantID, storeID, bindingID, revision)
+		s.failCandidate(tenantID, storeID, bindingID, revision, operator, meta, enums.CredentialAuditActionActivate, "activation_conflict", "凭据切换冲突，旧版本继续使用")
 		return errorsx.BusinessError(2005, "凭据切换冲突，旧版本继续使用")
 	}
 	return nil
 }
 
-func (s *storeModelCredentialService) restoreOldFastGPT(oldTarget *storeCredentialActivationTarget, oldCredential *resolvedStoreModelCredential, tenantID, storeID, candidateRevision int64) {
+func (s *storeModelCredentialService) restoreOldFastGPT(oldTarget *storeCredentialActivationTarget, oldCredential *resolvedStoreModelCredential, tenantID, storeID, bindingID, candidateRevision int64) {
 	restored := false
 	if oldCredential != nil && oldTarget != nil {
-		_, err := s.fastGPT.Sync(context.Background(), *oldTarget, oldCredential.APIKey, oldCredential.Revision, oldCredential.Fingerprint)
+		_, err := s.fastGPT.SyncOwner(context.Background(), *oldTarget, oldCredential.APIKey, oldCredential.Revision, oldCredential.Fingerprint)
 		restored = err == nil
 	}
 	if !restored {
-		s.markFastGPTActivationFailed(tenantID, storeID, candidateRevision)
+		s.markFastGPTActivationFailed(tenantID, storeID, bindingID, candidateRevision)
 	}
 }
 
-func (s *storeModelCredentialService) markFastGPTActivationFailed(tenantID, storeID, revision int64) {
+func (s *storeModelCredentialService) markFastGPTActivationFailed(tenantID, storeID, bindingID, revision int64) {
 	now := time.Now()
-	_ = repositories.FastGPTStoreTenantRepository.MarkActivationFailedIfAppliedRevision(sqls.DB(), tenantID, storeID, revision, map[string]any{
+	_ = repositories.FastGPTStoreTenantRepository.MarkActivationFailedIfAppliedRevision(sqls.DB(), tenantID, storeID, bindingID, revision, map[string]any{
 		"readiness_status": "failed", "last_error": "credential_activation_conflict",
 		"updated_at": now, "update_user_id": constants.SystemAuditUserID, "update_user_name": constants.SystemAuditUserName,
 	})
 	publishFastGPTConfigurationState(tenantID, storeID, now)
 }
 
-func (s *storeModelCredentialService) activateCandidate(tenantID, storeID, revision int64, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta) error {
+func (s *storeModelCredentialService) activateCandidate(tenantID, storeID, bindingID, revision int64, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta) error {
 	now := time.Now()
 	if err := sqls.WithTransaction(func(tx *sqls.TxContext) error {
-		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByStore(tx.Tx, tenantID, storeID)
+		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByBinding(tx.Tx, tenantID, storeID, bindingID)
 		if err != nil {
 			return err
 		}
@@ -836,36 +959,44 @@ func (s *storeModelCredentialService) activateCandidate(tenantID, storeID, revis
 	}); err != nil {
 		return err
 	}
-	s.publishConfigurationState(tenantID, storeID, now)
+	s.publishConfigurationState(tenantID, storeID, bindingID, now)
 	return nil
 }
 
-func (s *storeModelCredentialService) ResolveActive(tenantID, storeID int64) (*resolvedStoreModelCredential, error) {
-	return s.resolveActiveCredential(tenantID, storeID, true)
+func (s *storeModelCredentialService) ResolveActiveForBinding(tenantID, storeID, bindingID int64) (*resolvedStoreModelCredential, error) {
+	return s.resolveActiveCredential(tenantID, storeID, bindingID, true)
 }
 
-func (s *storeModelCredentialService) ResolveForBilling(tenantID, storeID int64) (*resolvedStoreModelCredential, error) {
-	return s.resolveActiveCredential(tenantID, storeID, false)
+func (s *storeModelCredentialService) ResolveForBillingBinding(tenantID, storeID, bindingID int64) (*resolvedStoreModelCredential, error) {
+	return s.resolveActiveCredential(tenantID, storeID, bindingID, false)
 }
 
-func (s *storeModelCredentialService) resolveActiveCredential(tenantID, storeID int64, requireActiveStore bool) (*resolvedStoreModelCredential, error) {
+func (s *storeModelCredentialService) resolveActiveCredential(tenantID, storeID, bindingID int64, requireActiveStore bool) (*resolvedStoreModelCredential, error) {
 	store := repositories.StoreRepository.GetInTenant(sqls.DB(), storeID, tenantID)
 	if store == nil || store.Status == enums.StatusDeleted || (requireActiveStore && store.Status != enums.StatusOk) {
 		return nil, errorsx.BusinessError(2005, "当前门店已停用或不属于接入公司")
 	}
-	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), tenantID, storeID)
-	if credential == nil || credential.Status != enums.StoreCredentialStatusActive || credential.CredentialRevision <= 0 || strings.TrimSpace(credential.EncryptedKey) == "" {
-		return nil, errorsx.BusinessError(2005, "当前门店尚未配置可用的 NewAPI API Key")
+	binding, err := s.requireStoreStaffCredentialScopeDB(sqls.DB(), tenantID, storeID, bindingID, requireActiveStore)
+	if err != nil {
+		return nil, err
+	}
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(sqls.DB(), tenantID, storeID, binding.ID)
+	credentialStatusAllowed := credential != nil && credential.Status == enums.StoreCredentialStatusActive
+	if !requireActiveStore && credential != nil && credential.Status == enums.StoreCredentialStatusDisabled {
+		credentialStatusAllowed = true
+	}
+	if credential == nil || !credentialStatusAllowed || credential.CredentialRevision <= 0 || strings.TrimSpace(credential.EncryptedKey) == "" {
+		return nil, errorsx.BusinessError(2005, "当前门店员工号尚未配置可用的 NewAPI API Key")
 	}
 	cipher, masterKeyID, err := s.cipher()
-	if err != nil || credential.CipherVersion != securex.AESGCMCipherVersion || credential.MasterKeyID != masterKeyID {
+	if err != nil || !supportedStoreCredentialCipherVersion(credential.CipherVersion) || credential.MasterKeyID != masterKeyID {
 		return nil, errorsx.BusinessError(5001, "门店模型凭据加密配置不匹配")
 	}
-	apiKey, err := cipher.Decrypt(credential.EncryptedKey, credential.KeyNonce, storeCredentialAAD(tenantID, storeID, credential.CredentialRevision))
+	apiKey, err := cipher.Decrypt(credential.EncryptedKey, credential.KeyNonce, storeCredentialAADForVersion(credential.CipherVersion, tenantID, storeID, binding.ID, credential.CredentialRevision))
 	if err != nil {
 		return nil, errorsx.BusinessError(5001, "门店模型凭据解密失败")
 	}
-	return &resolvedStoreModelCredential{TenantID: tenantID, StoreID: storeID, APIKey: apiKey, Revision: credential.CredentialRevision, Fingerprint: credential.KeyFingerprint}, nil
+	return &resolvedStoreModelCredential{TenantID: tenantID, StoreID: storeID, StoreStaffBindingID: binding.ID, APIKey: apiKey, Revision: credential.CredentialRevision, Fingerprint: credential.KeyFingerprint}, nil
 }
 
 func (s *storeModelCredentialService) decryptCandidate(credential *models.StoreModelCredential) (string, error) {
@@ -873,10 +1004,14 @@ func (s *storeModelCredentialService) decryptCandidate(credential *models.StoreM
 		return "", errors.New("candidate is unavailable")
 	}
 	cipher, masterKeyID, err := s.cipher()
-	if err != nil || credential.CandidateCipherVersion != securex.AESGCMCipherVersion || credential.CandidateMasterKeyID != masterKeyID {
+	if err != nil || !supportedStoreCredentialCipherVersion(credential.CandidateCipherVersion) || credential.CandidateMasterKeyID != masterKeyID {
 		return "", errors.New("candidate cipher does not match deployment key")
 	}
-	return cipher.Decrypt(credential.CandidateEncryptedKey, credential.CandidateKeyNonce, storeCredentialAAD(credential.TenantID, credential.StoreID, credential.CandidateRevision))
+	return cipher.Decrypt(
+		credential.CandidateEncryptedKey,
+		credential.CandidateKeyNonce,
+		storeCredentialAADForVersion(credential.CandidateCipherVersion, credential.TenantID, credential.StoreID, credential.StoreStaffBindingID, credential.CandidateRevision),
+	)
 }
 
 func (s *storeModelCredentialService) cipher() (*securex.AESGCM, string, error) {
@@ -897,18 +1032,19 @@ func (s *storeModelCredentialService) EnsureStoreRecordsDB(db *gorm.DB, store *m
 	return err
 }
 
-func (s *storeModelCredentialService) ensureStoreRecordsDB(db *gorm.DB, store *models.Store, operator *dto.AuthPrincipal, now time.Time) (*models.StoreModelCredential, *models.StoreCredentialPolicy, error) {
-	credential := repositories.StoreModelCredentialRepository.GetByStore(db, store.TenantID, store.ID)
-	if credential == nil {
-		credential = &models.StoreModelCredential{
-			TenantID: store.TenantID, StoreID: store.ID, Status: enums.StoreCredentialStatusUnconfigured,
-			CandidateApprovalStatus: enums.CredentialApprovalStatusNotRequired,
-			AuditFields:             modelProfileAuditFields(operatorOrSystem(operator), now),
-		}
-		if err := repositories.StoreModelCredentialRepository.Create(db, credential); err != nil {
-			return nil, nil, err
-		}
+func (s *storeModelCredentialService) EnsureBindingRecordDB(db *gorm.DB, binding *models.StoreStaffBinding, operator *dto.AuthPrincipal) error {
+	if binding == nil {
+		return errors.New("store staff binding is required")
 	}
+	store := repositories.StoreRepository.GetInTenant(db, binding.StoreID, binding.TenantID)
+	if store == nil || store.Status == enums.StatusDeleted {
+		return errors.New("store staff binding store is unavailable")
+	}
+	_, err := s.ensureBindingCredentialDB(db, store, binding, operator, time.Now())
+	return err
+}
+
+func (s *storeModelCredentialService) ensureStoreRecordsDB(db *gorm.DB, store *models.Store, operator *dto.AuthPrincipal, now time.Time) ([]models.StoreModelCredential, *models.StoreCredentialPolicy, error) {
 	policy := repositories.StoreCredentialPolicyRepository.GetByStore(db, store.TenantID, store.ID)
 	if policy == nil {
 		policy = &models.StoreCredentialPolicy{
@@ -919,19 +1055,55 @@ func (s *storeModelCredentialService) ensureStoreRecordsDB(db *gorm.DB, store *m
 			return nil, nil, err
 		}
 	}
-	return credential, policy, nil
+	bindings := repositories.StoreStaffBindingRepository.Find(db, sqls.NewCnd().
+		Eq("tenant_id", store.TenantID).
+		Eq("store_id", store.ID).
+		Where("status <> ?", enums.StatusDeleted).
+		Asc("id"))
+	for i := range bindings {
+		if _, err := s.ensureBindingCredentialDB(db, store, &bindings[i], operator, now); err != nil {
+			return nil, nil, err
+		}
+	}
+	return repositories.StoreModelCredentialRepository.FindByStore(db, store.TenantID, store.ID), policy, nil
 }
 
-func (s *storeModelCredentialService) getData(tenantID, storeID int64, canSelfService bool) (*StoreModelCredentialData, error) {
+func (s *storeModelCredentialService) ensureBindingCredentialDB(db *gorm.DB, store *models.Store, binding *models.StoreStaffBinding, operator *dto.AuthPrincipal, now time.Time) (*models.StoreModelCredential, error) {
+	if db == nil || store == nil || binding == nil || binding.TenantID != store.TenantID || binding.StoreID != store.ID || binding.ID <= 0 {
+		return nil, errors.New("store staff credential scope is invalid")
+	}
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(db, store.TenantID, store.ID, binding.ID)
+	if credential != nil {
+		return credential, nil
+	}
+	credential = &models.StoreModelCredential{
+		TenantID: store.TenantID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		Status: enums.StoreCredentialStatusUnconfigured, CandidateApprovalStatus: enums.CredentialApprovalStatusNotRequired,
+		AuditFields: modelProfileAuditFields(operatorOrSystem(operator), now),
+	}
+	if err := repositories.StoreModelCredentialRepository.Create(db, credential); err != nil {
+		return nil, err
+	}
+	return credential, nil
+}
+
+func (s *storeModelCredentialService) getData(tenantID, storeID, bindingID int64, canSelfService bool) (*StoreModelCredentialData, error) {
 	store := repositories.StoreRepository.GetInTenant(sqls.DB(), storeID, tenantID)
 	if store == nil || store.Status == enums.StatusDeleted {
 		return nil, errorsx.InvalidParam("门店不存在或不属于当前接入公司")
 	}
+	binding, err := s.requireStoreStaffCredentialScopeDB(sqls.DB(), tenantID, storeID, bindingID, false)
+	if err != nil {
+		return nil, err
+	}
 	data := &StoreModelCredentialData{
-		Store: *store, Credential: repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), tenantID, storeID),
+		Store: *store, Binding: binding, Credential: repositories.StoreModelCredentialRepository.GetByBinding(sqls.DB(), tenantID, storeID, binding.ID),
 		Policy:         repositories.StoreCredentialPolicyRepository.GetByStore(sqls.DB(), tenantID, storeID),
 		Assignment:     repositories.StoreModelProfileAssignmentRepository.GetByStore(sqls.DB(), tenantID, storeID),
 		CanSelfService: canSelfService,
+	}
+	if user := repositories.UserRepository.Get(sqls.DB(), binding.UserID); user != nil {
+		data.BindingAccountName = firstNonBlank(strings.TrimSpace(user.Nickname), strings.TrimSpace(user.Username))
 	}
 	if data.Assignment != nil {
 		if data.Assignment.TemplateID > 0 {
@@ -946,11 +1118,11 @@ func (s *storeModelCredentialService) getData(tenantID, storeID int64, canSelfSe
 	return data, nil
 }
 
-func (s *storeModelCredentialService) publishConfigurationState(tenantID, storeID int64, updatedAt time.Time) {
+func (s *storeModelCredentialService) publishConfigurationState(tenantID, storeID, bindingID int64, updatedAt time.Time) {
 	if tenantID <= 0 || storeID <= 0 {
 		return
 	}
-	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), tenantID, storeID)
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(sqls.DB(), tenantID, storeID, bindingID)
 	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(sqls.DB(), tenantID, storeID)
 
 	if credential != nil {
@@ -1037,10 +1209,10 @@ func (s *storeModelCredentialService) loadActiveTargetDB(db *gorm.DB, tenantID, 
 	return &storeCredentialActivationTarget{Store: *store, Assignment: *assignment, Template: *template, Slots: repositories.ModelProfileSlotRepository.FindByTemplateID(db, template.ID)}, nil
 }
 
-func (s *storeModelCredentialService) updateCandidateState(tenantID, storeID, revision int64, expectedStatus enums.StoreCredentialStatus, updates map[string]any) error {
+func (s *storeModelCredentialService) updateCandidateState(tenantID, storeID, bindingID, revision int64, expectedStatus enums.StoreCredentialStatus, updates map[string]any) error {
 	updates["updated_at"] = time.Now()
 	result := sqls.DB().Model(&models.StoreModelCredential{}).
-		Where("tenant_id = ? AND store_id = ? AND candidate_revision = ? AND candidate_status = ?", tenantID, storeID, revision, expectedStatus).
+		Where("tenant_id = ? AND store_id = ? AND store_staff_binding_id = ? AND candidate_revision = ? AND candidate_status = ?", tenantID, storeID, bindingID, revision, expectedStatus).
 		Updates(updates)
 	if result.Error != nil {
 		return result.Error
@@ -1048,14 +1220,14 @@ func (s *storeModelCredentialService) updateCandidateState(tenantID, storeID, re
 	if result.RowsAffected != 1 {
 		return errors.New("candidate changed during processing")
 	}
-	s.publishConfigurationState(tenantID, storeID, time.Now())
+	s.publishConfigurationState(tenantID, storeID, bindingID, time.Now())
 	return nil
 }
 
-func (s *storeModelCredentialService) failCandidate(tenantID, storeID, revision int64, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta, action enums.CredentialAuditAction, class, message string) {
+func (s *storeModelCredentialService) failCandidate(tenantID, storeID, bindingID, revision int64, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta, action enums.CredentialAuditAction, class, message string) {
 	now := time.Now()
 	if err := sqls.WithTransaction(func(tx *sqls.TxContext) error {
-		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByStore(tx.Tx, tenantID, storeID)
+		credential, err := repositories.StoreModelCredentialRepository.GetForUpdateByBinding(tx.Tx, tenantID, storeID, bindingID)
 		if err != nil || credential == nil || credential.CandidateRevision != revision {
 			return err
 		}
@@ -1085,7 +1257,7 @@ func (s *storeModelCredentialService) failCandidate(tenantID, storeID, revision 
 		}
 		return s.appendAuditDB(tx.Tx, credential, operator, nil, meta, action, enums.CredentialAuditResultFailure, credential.CredentialRevision, revision, credential.CandidateProfileID, credential.CandidateProfileRevision, securex.FingerprintLast6(credential.CandidateKeyFingerprint), class)
 	}); err == nil {
-		s.publishConfigurationState(tenantID, storeID, now)
+		s.publishConfigurationState(tenantID, storeID, bindingID, now)
 	}
 }
 
@@ -1117,7 +1289,7 @@ func (s *storeModelCredentialService) appendAuditDB(db *gorm.DB, credential *mod
 		return errors.New("credential audit context is required")
 	}
 	item := &models.StoreModelCredentialAuditLog{
-		TenantID: credential.TenantID, StoreID: credential.StoreID, CredentialID: credential.ID,
+		TenantID: credential.TenantID, StoreID: credential.StoreID, StoreStaffBindingID: credential.StoreStaffBindingID, CredentialID: credential.ID,
 		RequestID: trimCredentialAuditValue(meta.RequestID, 128), Action: action, Result: result,
 		FromRevision: fromRevision, ToRevision: toRevision, ProfileID: profileID, ProfileRevision: profileRevision,
 		FingerprintLast6: trimCredentialAuditValue(fingerprintLast6, 6),
@@ -1133,12 +1305,72 @@ func (s *storeModelCredentialService) appendAuditDB(db *gorm.DB, credential *mod
 	return repositories.StoreModelCredentialAuditLogRepository.Create(db, item)
 }
 
-func (s *storeModelCredentialService) recordFailedSensitiveAction(tenantID, storeID int64, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta, action enums.CredentialAuditAction, revision int64, class string) {
-	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), tenantID, storeID)
+func (s *storeModelCredentialService) appendStorePolicyAuditDB(db *gorm.DB, tenantID, storeID int64, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta, result enums.CredentialAuditResult, errorClass string) error {
+	if db == nil || tenantID <= 0 || storeID <= 0 || operator == nil {
+		return errors.New("store credential policy audit context is required")
+	}
+	item := &models.StoreModelCredentialAuditLog{
+		TenantID: tenantID, StoreID: storeID,
+		RequestID: trimCredentialAuditValue(meta.RequestID, 128),
+		Action:    enums.CredentialAuditActionPolicyUpdate, Result: result,
+		OperatorID: operator.UserID, OperatorName: trimCredentialAuditValue(operator.Username, 100),
+		OperatorRole: trimCredentialAuditValue(strings.Join(operator.Roles, ","), 100),
+		ErrorClass:   trimCredentialAuditValue(errorClass, 80), ClientIP: trimCredentialAuditValue(meta.ClientIP, 64),
+		CreatedAt: time.Now(),
+	}
+	return repositories.StoreModelCredentialAuditLogRepository.Create(db, item)
+}
+
+func (s *storeModelCredentialService) recordFailedSensitiveAction(tenantID, storeID, bindingID int64, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta, action enums.CredentialAuditAction, revision int64, class string) {
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(sqls.DB(), tenantID, storeID, bindingID)
 	if credential == nil || operator == nil {
 		return
 	}
 	_ = s.appendAudit(credential, operator, nil, meta, action, enums.CredentialAuditResultFailure, credential.CredentialRevision, revision, credential.CandidateProfileID, credential.CandidateProfileRevision, "", class)
+}
+
+func (s *storeModelCredentialService) recordFailedSensitiveStorePolicyAction(tenantID, storeID int64, operator *dto.AuthPrincipal, meta StoreCredentialRequestMeta, class string) {
+	if operator == nil {
+		return
+	}
+	_ = s.appendStorePolicyAuditDB(sqls.DB(), tenantID, storeID, operator, meta, enums.CredentialAuditResultFailure, class)
+}
+
+func (s *storeModelCredentialService) requireStoreStaffCredentialScopeDB(db *gorm.DB, tenantID, storeID, requestedBindingID int64, requireActive bool) (*models.StoreStaffBinding, error) {
+	if db == nil || tenantID <= 0 || storeID <= 0 {
+		return nil, errorsx.InvalidParam("门店员工凭据范围不完整")
+	}
+	if requestedBindingID > 0 {
+		binding := repositories.StoreStaffBindingRepository.GetInTenant(db, requestedBindingID, tenantID)
+		if binding == nil || binding.StoreID != storeID || binding.Status == enums.StatusDeleted {
+			return nil, errorsx.InvalidParam("门店员工绑定不存在或不属于所选门店")
+		}
+		if requireActive && (binding.Status != enums.StatusOk || binding.ActiveUserID == nil || *binding.ActiveUserID <= 0) {
+			return nil, errorsx.InvalidParam("门店员工绑定已停用或未分配活动账号")
+		}
+		return binding, nil
+	}
+	bindings := repositories.StoreStaffBindingRepository.Find(db, sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("store_id", storeID).
+		Where("status <> ?", enums.StatusDeleted).
+		Asc("id"))
+	if requireActive {
+		active := bindings[:0]
+		for i := range bindings {
+			if bindings[i].Status == enums.StatusOk && bindings[i].ActiveUserID != nil && *bindings[i].ActiveUserID > 0 {
+				active = append(active, bindings[i])
+			}
+		}
+		bindings = active
+	}
+	if len(bindings) == 0 {
+		return nil, errorsx.InvalidParam("所选门店尚未绑定可用的门店员工号")
+	}
+	if len(bindings) > 1 {
+		return nil, errorsx.InvalidParam("所选门店存在多个门店员工号，请明确选择需要使用的账号")
+	}
+	return &bindings[0], nil
 }
 
 func requireCredentialPermission(operator *dto.AuthPrincipal, permissionCode string) error {
@@ -1221,6 +1453,21 @@ func assignmentMatchesCandidate(assignment *models.StoreModelProfileAssignment, 
 
 func storeCredentialAAD(tenantID, storeID, revision int64) []byte {
 	return []byte(fmt.Sprintf("tenant:%d:store:%d:revision:%d", tenantID, storeID, revision))
+}
+
+func storeBindingCredentialAAD(tenantID, storeID, bindingID, revision int64) []byte {
+	return []byte(fmt.Sprintf("tenant:%d:store:%d:binding:%d:revision:%d", tenantID, storeID, bindingID, revision))
+}
+
+func supportedStoreCredentialCipherVersion(version string) bool {
+	return version == securex.AESGCMCipherVersion || version == storeBindingCredentialCipherVersion
+}
+
+func storeCredentialAADForVersion(version string, tenantID, storeID, bindingID, revision int64) []byte {
+	if version == storeBindingCredentialCipherVersion {
+		return storeBindingCredentialAAD(tenantID, storeID, bindingID, revision)
+	}
+	return storeCredentialAAD(tenantID, storeID, revision)
 }
 
 func publicCredentialValidationFailure(err error, slots []models.ModelProfileSlot) (string, string) {

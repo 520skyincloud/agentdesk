@@ -278,28 +278,39 @@ func (scope *ManagedDataScope) expand() {
 	}
 	scope.StoreIDs = uniquePositive(scope.StoreIDs)
 	scope.WxWorkInstanceIDs = uniquePositive(scope.WxWorkInstanceIDs)
+	if len(scope.WxWorkInstanceIDs) > 0 {
+		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().
+			Eq("tenant_id", scope.TenantID).
+			In("id", scope.WxWorkInstanceIDs).
+			Where("status <> ?", enums.StatusDeleted))
+		for i := range instances {
+			scope.StoreIDs = appendPositive(scope.StoreIDs, instances[i].StoreID)
+		}
+		scope.StoreIDs = uniquePositive(scope.StoreIDs)
+	}
 	if len(scope.StoreIDs) > 0 {
-		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", scope.TenantID).In("id", scope.StoreIDs).Where("status <> ?", enums.StatusDeleted))
+		stores := repositories.StoreRepository.Find(sqls.DB(), sqls.NewCnd().
+			Eq("tenant_id", scope.TenantID).
+			In("id", scope.StoreIDs).
+			Where("status <> ?", enums.StatusDeleted))
 		for i := range stores {
 			scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, stores[i].KnowledgeBaseID)
 		}
 		if len(scope.WxWorkInstanceIDs) == 0 {
-			instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", scope.TenantID).In("store_id", scope.StoreIDs).Where("status <> ?", enums.StatusDeleted))
+			instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().
+				Eq("tenant_id", scope.TenantID).
+				In("store_id", scope.StoreIDs).
+				Where("status <> ?", enums.StatusDeleted))
 			for i := range instances {
 				scope.WxWorkInstanceIDs = appendPositive(scope.WxWorkInstanceIDs, instances[i].ID)
-				scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, instances[i].KnowledgeBaseID)
 			}
 		}
-		knowledgeBases := repositories.KnowledgeBaseRepository.Find(sqls.DB(), sqls.NewCnd().In("store_id", scope.StoreIDs).Where("status <> ?", enums.StatusDeleted))
+		knowledgeBases := repositories.KnowledgeBaseRepository.Find(sqls.DB(), sqls.NewCnd().
+			Eq("tenant_id", scope.TenantID).
+			In("store_id", scope.StoreIDs).
+			Where("status <> ?", enums.StatusDeleted))
 		for i := range knowledgeBases {
 			scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, knowledgeBases[i].ID)
-		}
-	}
-	if len(scope.WxWorkInstanceIDs) > 0 {
-		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", scope.TenantID).In("id", scope.WxWorkInstanceIDs).Where("status <> ?", enums.StatusDeleted))
-		for i := range instances {
-			scope.StoreIDs = appendPositive(scope.StoreIDs, instances[i].StoreID)
-			scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, instances[i].KnowledgeBaseID)
 		}
 	}
 	scope.StoreIDs = uniquePositive(scope.StoreIDs)

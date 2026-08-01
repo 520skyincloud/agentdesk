@@ -1,8 +1,9 @@
 package request
 
 type ProvisionFastGPTDatasetRequest struct {
-	StoreID int64  `json:"storeId"`
-	Name    string `json:"name"`
+	StoreID             int64  `json:"storeId"`
+	StoreStaffBindingID int64  `json:"storeStaffBindingId"`
+	Name                string `json:"name"`
 }
 
 type FastGPTDatasetActionRequest struct {

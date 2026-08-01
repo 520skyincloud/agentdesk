@@ -212,6 +212,7 @@ func addRouter(app *gin.Engine) {
 	registerDashboardReportViewPresetRoutes(dashboardGroup.Group("/report-view-preset"))
 	registerDashboardAgentPresenceRoutes(dashboardGroup.Group("/agent-presence"))
 	registerDashboardConversationEvaluationRoutes(dashboardGroup.Group("/conversation-evaluation"))
+	registerDashboardStoreRoutes(dashboardGroup.Group("/store"))
 	registerDashboardStoreWorkbenchRoutes(dashboardGroup.Group("/store-workbench"))
 	registerDashboardArrivalConnectionRoutes(dashboardGroup.Group("/arrival-connection"))
 	registerDashboardUserRoutes(dashboardGroup.Group("/user"))

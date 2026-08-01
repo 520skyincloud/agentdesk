@@ -29,6 +29,7 @@ type conversationEvolutionFixture struct {
 	tenant       *models.Tenant
 	profile      *models.ReplyIntentProfile
 	store        *models.Store
+	binding      *models.StoreStaffBinding
 	customer     *models.Customer
 	conversation *models.Conversation
 	route        *models.ConversationRouteState
@@ -420,7 +421,7 @@ func TestCustomerTagEvolutionModelCallUsesResolvedAttribution(t *testing.T) {
 	}
 }
 
-func TestConversationEvolutionProcessDueUsesStoreResolverAndCompletes(t *testing.T) {
+func TestConversationEvolutionProcessDueUsesConversationBindingAndCompletes(t *testing.T) {
 	fixture := setupConversationEvolutionFixture(t)
 	message := createEvolutionMessage(t, fixture, enums.IMSenderTypeCustomer, "我每次都喜欢安静房间", time.Now().Add(-2*time.Hour))
 	var requestCount atomic.Int64
@@ -445,6 +446,38 @@ func TestConversationEvolutionProcessDueUsesStoreResolverAndCompletes(t *testing
 	}))
 	defer server.Close()
 	seedEvolutionStoreModelRuntime(t, fixture, server.URL+"/v1", "sk-evolution-store")
+	otherStaff := &models.User{TenantID: fixture.tenant.ID, Username: "evolution-other-staff", Nickname: "另一门店员工", Status: enums.StatusOk}
+	if err := fixture.db.Create(otherStaff).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherBinding := &models.StoreStaffBinding{
+		TenantID: fixture.tenant.ID, UserID: otherStaff.ID, ActiveUserID: positiveInt64Pointer(otherStaff.ID),
+		StoreID: fixture.store.ID, Status: enums.StatusOk,
+	}
+	if err := fixture.db.Create(otherBinding).Error; err != nil {
+		t.Fatal(err)
+	}
+	masterKey := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	cipher, err := securex.NewAESGCM(masterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherEncryptedKey, otherNonce, err := cipher.Encrypt("sk-evolution-other", storeBindingCredentialAAD(
+		fixture.tenant.ID, fixture.store.ID, otherBinding.ID, 1,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCredential := &models.StoreModelCredential{
+		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, StoreStaffBindingID: otherBinding.ID,
+		EncryptedKey: otherEncryptedKey, KeyNonce: otherNonce, KeyFingerprint: securex.Fingerprint("sk-evolution-other"),
+		CipherVersion: storeBindingCredentialCipherVersion, MasterKeyID: "evolution-test-master",
+		CredentialRevision: 1, Status: enums.StoreCredentialStatusActive,
+		AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}
+	if err := fixture.db.Create(otherCredential).Error; err != nil {
+		t.Fatal(err)
+	}
 	ConversationEvolutionService.ObserveCommittedMessage(fixture.conversation, message)
 
 	if processed := ConversationEvolutionService.ProcessDue(20); processed != 1 {
@@ -488,7 +521,7 @@ func setupConversationEvolutionFixture(t *testing.T) *conversationEvolutionFixtu
 		t.Fatal(err)
 	}
 	if err := db.AutoMigrate(
-		&models.Tenant{}, &models.ReplyIntentProfile{}, &models.Store{}, &models.Customer{},
+		&models.Tenant{}, &models.User{}, &models.ReplyIntentProfile{}, &models.Store{}, &models.StoreStaffBinding{}, &models.Customer{},
 		&models.Conversation{}, &models.ConversationRouteState{}, &models.StoreCustomerRelation{}, &models.Message{},
 		&models.ConversationSessionSummary{}, &models.TenantCustomerTagPolicy{}, &models.StoreCustomerTagRuntimePolicy{},
 		&models.Tag{}, &models.CustomerTagRelation{}, &models.CustomerTagChangeLog{},
@@ -528,6 +561,16 @@ func setupConversationEvolutionFixture(t *testing.T) *conversationEvolutionFixtu
 	if err := db.Create(store).Error; err != nil {
 		t.Fatal(err)
 	}
+	staff := &models.User{TenantID: tenant.ID, Username: "evolution-staff", Nickname: "演化测试员工", Status: enums.StatusOk}
+	if err := db.Create(staff).Error; err != nil {
+		t.Fatal(err)
+	}
+	binding := &models.StoreStaffBinding{
+		TenantID: tenant.ID, UserID: staff.ID, ActiveUserID: positiveInt64Pointer(staff.ID), StoreID: store.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatal(err)
+	}
 	customer := &models.Customer{
 		TenantID: tenant.ID, Name: "测试客户", Status: enums.StatusOk,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
@@ -536,7 +579,7 @@ func setupConversationEvolutionFixture(t *testing.T) *conversationEvolutionFixtu
 		t.Fatal(err)
 	}
 	conversation := &models.Conversation{
-		TenantID: tenant.ID, CustomerID: customer.ID, CustomerName: customer.Name,
+		TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID, CustomerID: customer.ID, CustomerName: customer.Name,
 		Status: enums.IMConversationStatusAIServing, ServiceMode: enums.IMConversationServiceModeAIFirst,
 		LastMessageAt: now, LastActiveAt: now,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
@@ -545,7 +588,7 @@ func setupConversationEvolutionFixture(t *testing.T) *conversationEvolutionFixtu
 		t.Fatal(err)
 	}
 	route := &models.ConversationRouteState{
-		TenantID: tenant.ID, ConversationID: conversation.ID, StoreID: store.ID, SessionNo: 1,
+		TenantID: tenant.ID, ConversationID: conversation.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID, SessionNo: 1,
 		RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai",
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
@@ -595,7 +638,7 @@ func setupConversationEvolutionFixture(t *testing.T) *conversationEvolutionFixtu
 		t.Fatal(err)
 	}
 	return &conversationEvolutionFixture{
-		db: db, tenant: tenant, profile: profile, store: store, customer: customer,
+		db: db, tenant: tenant, profile: profile, store: store, binding: binding, customer: customer,
 		conversation: conversation, route: route, relation: relation, tag: tag,
 		policy: policy, storePolicy: storePolicy,
 	}
@@ -749,14 +792,14 @@ func seedEvolutionStoreModelRuntime(
 		t.Fatal(err)
 	}
 	const credentialRevision int64 = 2
-	encryptedKey, nonce, err := cipher.Encrypt(apiKey, storeCredentialAAD(fixture.tenant.ID, fixture.store.ID, credentialRevision))
+	encryptedKey, nonce, err := cipher.Encrypt(apiKey, storeBindingCredentialAAD(fixture.tenant.ID, fixture.store.ID, fixture.binding.ID, credentialRevision))
 	if err != nil {
 		t.Fatal(err)
 	}
 	credential := &models.StoreModelCredential{
-		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID,
+		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, StoreStaffBindingID: fixture.binding.ID,
 		EncryptedKey: encryptedKey, KeyNonce: nonce, KeyFingerprint: securex.Fingerprint(apiKey),
-		CipherVersion: securex.AESGCMCipherVersion, MasterKeyID: "evolution-test-master",
+		CipherVersion: storeBindingCredentialCipherVersion, MasterKeyID: "evolution-test-master",
 		CredentialRevision: credentialRevision, Status: enums.StoreCredentialStatusActive,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}

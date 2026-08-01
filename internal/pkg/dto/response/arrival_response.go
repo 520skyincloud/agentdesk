@@ -44,6 +44,8 @@ type ArrivalConnectionResponse struct {
 	AuthorizationStatus       string     `json:"authorizationStatus"`
 	AuthorizedCorpName        string     `json:"authorizedCorpName"`
 	ContactMemberConfigured   bool       `json:"contactMemberConfigured"`
+	StoreStaffBindingID       int64      `json:"storeStaffBindingId"`
+	StoreStaffAccountName     string     `json:"storeStaffAccountName"`
 	WxWorkProtocolInstanceID  int64      `json:"wxWorkProtocolInstanceId"`
 	WxWorkProtocolAccountName string     `json:"wxWorkProtocolAccountName"`
 	WxWorkProtocolHealth      string     `json:"wxWorkProtocolHealth"`
@@ -62,10 +64,12 @@ type ArrivalConnectionResponse struct {
 }
 
 type ArrivalProtocolInstanceOptionResponse struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	HealthStatus string `json:"healthStatus"`
-	StoreID      int64  `json:"storeId"`
+	ID                    int64  `json:"id"`
+	Name                  string `json:"name"`
+	HealthStatus          string `json:"healthStatus"`
+	StoreID               int64  `json:"storeId"`
+	StoreStaffBindingID   int64  `json:"storeStaffBindingId"`
+	StoreStaffAccountName string `json:"storeStaffAccountName"`
 }
 
 type ArrivalInvitationResponse struct {
@@ -94,10 +98,12 @@ type ArrivalProviderOptionResponse struct {
 }
 
 type ArrivalProviderInstanceOptionResponse struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	HealthStatus string `json:"healthStatus"`
-	BoundStoreID int64  `json:"boundStoreId"`
+	ID                    int64  `json:"id"`
+	Name                  string `json:"name"`
+	HealthStatus          string `json:"healthStatus"`
+	BoundStoreID          int64  `json:"boundStoreId"`
+	StoreStaffBindingID   int64  `json:"storeStaffBindingId"`
+	StoreStaffAccountName string `json:"storeStaffAccountName"`
 }
 
 type ArrivalProviderOptionsResponse struct {

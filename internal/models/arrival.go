@@ -66,6 +66,7 @@ type StoreArrivalConnection struct {
 	ID                        int64                            `gorm:"primaryKey;autoIncrement"`
 	TenantID                  int64                            `gorm:"type:bigint;not null;index"`
 	StoreID                   int64                            `gorm:"type:bigint;not null;uniqueIndex"`
+	StoreStaffBindingID       int64                            `gorm:"type:bigint;not null;default:0;index"`
 	StoreScene                string                           `gorm:"type:varchar(64);not null;uniqueIndex"`
 	ContactProviderMode       enums.ArrivalContactProviderMode `gorm:"type:varchar(40);not null;default:'';index"`
 	StaticContactPlugID       string                           `gorm:"type:varchar(191);not null;default:''"`
@@ -208,6 +209,7 @@ type ArrivalStoreBinding struct {
 	ID                              int64                               `gorm:"primaryKey;autoIncrement"`
 	TenantID                        int64                               `gorm:"type:bigint;not null;index"`
 	StoreID                         int64                               `gorm:"type:bigint;not null;index;uniqueIndex:uk_arrival_store_binding,priority:2"`
+	StoreStaffBindingID             int64                               `gorm:"type:bigint;not null;default:0;index"`
 	MiniProgramIdentityID           int64                               `gorm:"type:bigint;not null;index;uniqueIndex:uk_arrival_store_binding,priority:1"`
 	TenantAuthorizationID           int64                               `gorm:"type:bigint;not null;default:0;index"`
 	ExternalUserIDCiphertext        string                              `gorm:"type:text"`
@@ -239,6 +241,7 @@ type ArrivalBindingTicket struct {
 	ID                            int64                            `gorm:"primaryKey;autoIncrement"`
 	TenantID                      int64                            `gorm:"type:bigint;not null;index;index:idx_arrival_binding_ticket_conversation,priority:1"`
 	StoreID                       int64                            `gorm:"type:bigint;not null;index"`
+	StoreStaffBindingID           int64                            `gorm:"type:bigint;not null;default:0;index"`
 	WxWorkProtocolInstanceID      int64                            `gorm:"type:bigint;not null;index"`
 	CustomerID                    int64                            `gorm:"type:bigint;not null;index"`
 	ConversationID                int64                            `gorm:"type:bigint;not null;index;index:idx_arrival_binding_ticket_conversation,priority:2"`

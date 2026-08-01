@@ -117,6 +117,9 @@ var (
 	// 门店工作台相关权限
 	PermissionStoreWorkbenchView   = Permission{Name: "查看门店工作台", Code: "storeWorkbench.view", Type: "api", GroupName: "storeWorkbench", Method: "GET", APIPath: "/api/dashboard/store-workbench/current", SortNo: 407}
 	PermissionStoreWorkbenchUpdate = Permission{Name: "更新门店工作台", Code: "storeWorkbench.update", Type: "api", GroupName: "storeWorkbench", Method: "POST", APIPath: "/api/dashboard/store-workbench/update", SortNo: 408}
+	PermissionStoreView            = Permission{Name: "查看门店", Code: "store.view", Type: "api", Scope: PermissionScopeTenant, GroupName: "store", Method: "ANY", APIPath: "/api/dashboard/store/list", SortNo: 421}
+	PermissionStoreCreate          = Permission{Name: "创建门店", Code: "store.create", Type: "api", Scope: PermissionScopeTenant, GroupName: "store", Method: "POST", APIPath: "/api/dashboard/store/create", SortNo: 422}
+	PermissionStoreUpdate          = Permission{Name: "更新门店资料与状态", Code: "store.update", Type: "api", Scope: PermissionScopeTenant, GroupName: "store", Method: "POST", APIPath: "/api/dashboard/store/update", SortNo: 423}
 
 	// 客服会话相关权限
 	PermissionConversationView         = Permission{Name: "查看会话", Code: "conversation.view", Type: "api", GroupName: "conversation", Method: "ANY", APIPath: "/api/dashboard/conversation/list", SortNo: 410}
@@ -128,6 +131,8 @@ var (
 	PermissionConversationHandover     = Permission{Name: "处理会话交接", Code: "conversation.handover", Type: "api", GroupName: "conversation", Method: "ANY", APIPath: "/api/dashboard/conversation-dispatch/list", SortNo: 480}
 	PermissionConversationRecycle      = Permission{Name: "回收会话", Code: "conversation.recycle", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation-dispatch/release", SortNo: 490}
 	PermissionConversationLinkCustomer = Permission{Name: "关联会话客户", Code: "conversation.linkCustomer", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/link_customer", SortNo: 495}
+	PermissionConversationRelatedView  = Permission{Name: "查看关联及继承会话", Code: "conversation.relatedView", Type: "api", GroupName: "conversation", Method: "GET", APIPath: "/api/dashboard/conversation/:id", SortNo: 496}
+	PermissionConversationInherit      = Permission{Name: "安排门店员工号会话继承", Code: "conversation.inherit", Type: "api", GroupName: "conversation", Method: "POST", APIPath: "/api/dashboard/conversation/inherit", SortNo: 497}
 
 	// 工单相关权限
 	PermissionTicketView         = Permission{Name: "查看工单", Code: "ticket.view", Type: "api", GroupName: "ticket", Method: "ANY", APIPath: "/api/dashboard/ticket/list", SortNo: 500}
@@ -272,6 +277,9 @@ var Permissions = []Permission{
 	PermissionAgentPresenceUpdate,
 	PermissionStoreWorkbenchView,
 	PermissionStoreWorkbenchUpdate,
+	PermissionStoreView,
+	PermissionStoreCreate,
+	PermissionStoreUpdate,
 	PermissionConversationView,
 	PermissionConversationAssign,
 	PermissionConversationTransfer,
@@ -281,6 +289,8 @@ var Permissions = []Permission{
 	PermissionConversationHandover,
 	PermissionConversationRecycle,
 	PermissionConversationLinkCustomer,
+	PermissionConversationRelatedView,
+	PermissionConversationInherit,
 	PermissionTicketView,
 	PermissionTicketCreate,
 	PermissionTicketUpdate,
@@ -391,7 +401,8 @@ var RolePermissions = map[string][]Permission{
 		PermissionConversationRecordView, PermissionConversationRecordAnnotate, PermissionConversationRecordExport,
 		PermissionQualityInspectionView, PermissionQualityInspectionManage, PermissionQualitySamplingCreate, PermissionQualityTemplateManage,
 		PermissionConversationEvaluationView, PermissionConversationEvaluationInvite, PermissionReportViewPresetManage, PermissionAgentPresenceUpdate,
-		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTagManage, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
+		PermissionStoreView, PermissionStoreCreate, PermissionStoreUpdate,
+		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTagManage, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer, PermissionConversationRelatedView, PermissionConversationInherit,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
@@ -422,7 +433,8 @@ var RolePermissions = map[string][]Permission{
 		PermissionConversationRecordView, PermissionConversationRecordAnnotate, PermissionConversationRecordExport,
 		PermissionQualityInspectionView, PermissionQualityInspectionManage, PermissionQualitySamplingCreate, PermissionQualityTemplateManage,
 		PermissionConversationEvaluationView, PermissionConversationEvaluationInvite, PermissionReportViewPresetManage, PermissionAgentPresenceUpdate,
-		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTagManage, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
+		PermissionStoreView, PermissionStoreCreate, PermissionStoreUpdate,
+		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTagManage, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer, PermissionConversationRelatedView, PermissionConversationInherit,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,
@@ -449,7 +461,8 @@ var RolePermissions = map[string][]Permission{
 		PermissionConversationRecordView, PermissionConversationRecordAnnotate, PermissionConversationRecordExport,
 		PermissionQualityInspectionView, PermissionQualityInspectionManage, PermissionQualitySamplingCreate, PermissionQualityTemplateManage,
 		PermissionConversationEvaluationView, PermissionConversationEvaluationInvite, PermissionReportViewPresetManage, PermissionAgentPresenceUpdate,
-		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTagManage, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer,
+		PermissionStoreView,
+		PermissionConversationView, PermissionConversationAssign, PermissionConversationTransfer, PermissionConversationClose, PermissionConversationSend, PermissionCustomerTagManage, PermissionConversationHandover, PermissionConversationRecycle, PermissionConversationLinkCustomer, PermissionConversationRelatedView, PermissionConversationInherit,
 		PermissionTicketView, PermissionTicketCreate, PermissionTicketUpdate, PermissionTicketAssign, PermissionTicketChangeStatus, PermissionTicketProgress,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView, PermissionQuickReplyCreate, PermissionQuickReplyUpdate, PermissionQuickReplyDelete,

@@ -355,13 +355,12 @@ func (s *wxWorkProtocolDevicePoolService) Adopt(req request.AdoptWxWorkProtocolD
 		}
 		if existing := repositories.WxWorkProtocolInstanceRepository.Take(
 			ctx.Tx,
-			"(store_staff_binding_id = ? OR (tenant_id = ? AND store_id = ?)) AND status <> ?",
-			binding.ID,
+			"tenant_id = ? AND store_staff_binding_id = ? AND replaced_by_instance_id = 0 AND status <> ?",
 			req.TenantID,
-			binding.StoreID,
+			binding.ID,
 			enums.StatusDeleted,
 		); existing != nil {
-			return errorsx.InvalidParam("该门店已绑定其他企微员工号实例")
+			return errorsx.InvalidParam("该门店员工号已绑定当前企微实例")
 		}
 
 		channel, err := s.ensureTenantProtocolChannel(ctx.Tx, tenant, credential, settings, operator)
@@ -376,13 +375,6 @@ func (s *wxWorkProtocolDevicePoolService) Adopt(req request.AdoptWxWorkProtocolD
 			ChannelID:                 channel.ID,
 			StoreID:                   binding.StoreID,
 			StoreStaffBindingID:       binding.ID,
-			KnowledgeBaseID:           store.KnowledgeBaseID,
-			ServiceHours:              binding.ServiceHours,
-			StoreRoomConversationID:   binding.StoreRoomConversationID,
-			StoreRoomNotifyEnabled:    binding.StoreRoomNotifyEnabled,
-			StoreRoomAtList:           binding.StoreRoomAtList,
-			FallbackToHQ:              binding.FallbackToHQ,
-			ManualTimeoutMinutes:      normalizeManualTimeoutMinutes(binding.ManualTimeoutMinutes),
 			AIReplyEnabled:            true,
 			WelcomeEnabled:            true,
 			WelcomeSendMiniProgram:    true,

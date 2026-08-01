@@ -55,7 +55,7 @@ type arrivalBindingTicketService struct {
 
 func (s *arrivalBindingTicketService) HasActiveStaticConnection(instanceID int64) bool {
 	instance := WxWorkProtocolInstanceService.Get(instanceID)
-	if instance == nil || instance.Status != enums.StatusOk {
+	if !isActivatedCurrentWxWorkProtocolInstance(instance) || instance.StoreStaffBindingID <= 0 {
 		return false
 	}
 	return len(s.staticConnectionsForInstance(instance)) > 0
@@ -100,16 +100,22 @@ func (s *arrivalBindingTicketService) SendBindingCardForConversation(
 		conversation.ID,
 		conversation.TenantID,
 	)
-	if route == nil || route.StoreID <= 0 || route.WxWorkInstanceID <= 0 {
+	if route == nil || route.StoreID <= 0 || route.StoreStaffBindingID <= 0 || route.WxWorkInstanceID <= 0 {
 		return errorsx.BusinessError(71, "会话无法确定唯一门店和企微员工号实例")
 	}
-	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(
+	scope, err := resolveArrivalStoreStaffScopeDB(
 		sqls.DB(),
-		route.WxWorkInstanceID,
 		conversation.TenantID,
+		route.StoreID,
+		route.StoreStaffBindingID,
+		false,
 	)
-	if instance == nil {
-		return errorsx.BusinessError(71, "会话企微员工号实例不可用")
+	if err != nil {
+		return err
+	}
+	instance := scope.Instance
+	if instance.ID != route.WxWorkInstanceID {
+		return errorsx.BusinessError(71, "会话尚未切换到门店员工号的当前企微实例")
 	}
 	connection, err := s.uniqueStaticConnectionForInstance(instance)
 	if err != nil {
@@ -117,7 +123,7 @@ func (s *arrivalBindingTicketService) SendBindingCardForConversation(
 	}
 	if connection == nil ||
 		connection.StoreID != route.StoreID ||
-		connection.WxWorkProtocolInstanceID != route.WxWorkInstanceID {
+		connection.StoreStaffBindingID != route.StoreStaffBindingID {
 		return errorsx.BusinessError(71, "会话门店未配置静态联系我绑定")
 	}
 	return s.ensureAndSendBindingCard(conversation, instance, connection, requestID)
@@ -176,9 +182,10 @@ func (s *arrivalBindingTicketService) Bind(
 	}()
 
 	var (
-		store         *models.Store
-		committedErr  error
-		boundIdentity *models.MiniProgramIdentity
+		store             *models.Store
+		committedErr      error
+		boundIdentity     *models.MiniProgramIdentity
+		currentInstanceID int64
 	)
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		ticket, findErr := repositories.ArrivalRepository.FindBindingTicketByHashForUpdate(ctx.Tx, ticketHash)
@@ -217,7 +224,7 @@ func (s *arrivalBindingTicketService) Bind(
 			if bindingErr != nil {
 				return bindingErr
 			}
-			if !arrivalBindingMatchesTicket(binding, ticket) {
+			if !arrivalBindingMatchesTicketDB(ctx.Tx, binding, ticket) {
 				return errorsx.BusinessError(69, "到店绑定关系与票据不一致")
 			}
 			return nil
@@ -244,9 +251,11 @@ func (s *arrivalBindingTicketService) Bind(
 			committedErr = errorsx.BusinessError(67, "到店绑定票据已过期")
 			return nil
 		}
-		if err := s.validateTicketContext(ctx.Tx, ticket); err != nil {
-			return err
+		ticketContext, contextErr := s.validateTicketContext(ctx.Tx, ticket)
+		if contextErr != nil {
+			return contextErr
 		}
+		currentInstanceID = ticketContext.StoreStaff.Instance.ID
 		if repositories.ArrivalRepository.FindRecentScanEvent(
 			ctx.Tx,
 			ticket.TenantID,
@@ -267,7 +276,7 @@ func (s *arrivalBindingTicketService) Bind(
 		}
 		if binding != nil &&
 			binding.BindingStatus == enums.ArrivalBindingStatusBound &&
-			!arrivalBindingMatchesTicket(binding, ticket) {
+			!arrivalBindingMatchesTicketDB(ctx.Tx, binding, ticket) {
 			return errorsx.BusinessError(69, "该身份已绑定当前门店的其他会话")
 		}
 		evidenceHash := security.Fingerprint(
@@ -283,8 +292,9 @@ func (s *arrivalBindingTicketService) Bind(
 			binding = &models.ArrivalStoreBinding{
 				TenantID:                 ticket.TenantID,
 				StoreID:                  ticket.StoreID,
+				StoreStaffBindingID:      ticket.StoreStaffBindingID,
 				MiniProgramIdentityID:    boundIdentity.ID,
-				WxWorkProtocolInstanceID: ticket.WxWorkProtocolInstanceID,
+				WxWorkProtocolInstanceID: currentInstanceID,
 				CustomerID:               ticket.CustomerID,
 				ConversationID:           ticket.ConversationID,
 				OfficialRelationStatus:   enums.ArrivalOfficialRelationStatusUnconfirmed,
@@ -312,7 +322,8 @@ func (s *arrivalBindingTicketService) Bind(
 					"contact_member_ciphertext":         "",
 					"contact_member_nonce":              "",
 					"contact_member_fingerprint":        "",
-					"wx_work_protocol_instance_id":      ticket.WxWorkProtocolInstanceID,
+					"store_staff_binding_id":            ticket.StoreStaffBindingID,
+					"wx_work_protocol_instance_id":      currentInstanceID,
 					"customer_id":                       ticket.CustomerID,
 					"conversation_id":                   ticket.ConversationID,
 					"protocol_conversation_ciphertext":  "",
@@ -374,20 +385,8 @@ func (s *arrivalBindingTicketService) Bind(
 	storeResponse := response.ArrivalStoreResponse{
 		Name:      strings.TrimSpace(store.Name),
 		BrandName: strings.TrimSpace(store.BrandName),
-	}
-	if connection := repositories.ArrivalRepository.FindConnectionByStore(
-		sqls.DB(),
-		boundIdentity.TenantID,
-		store.ID,
-	); connection != nil {
-		if instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(
-			sqls.DB(),
-			connection.WxWorkProtocolInstanceID,
-			boundIdentity.TenantID,
-		); instance != nil {
-			storeResponse.Address = strings.TrimSpace(instance.StoreAddress)
-			storeResponse.Phone = strings.TrimSpace(instance.StoreContactPhone)
-		}
+		Address:   strings.TrimSpace(store.Address),
+		Phone:     strings.TrimSpace(store.ContactPhone),
 	}
 	return &response.ArrivalBindResultResponse{
 		SchemaVersion: arrivalBindResultVersion,
@@ -537,6 +536,7 @@ func (s *arrivalBindingTicketService) ensurePendingTicket(
 		)
 		if existing != nil &&
 			existing.StoreID == connection.StoreID &&
+			existing.StoreStaffBindingID == conversation.StoreStaffBindingID &&
 			existing.WxWorkProtocolInstanceID == instance.ID &&
 			existing.CustomerID == conversation.CustomerID {
 			ticket = existing
@@ -565,6 +565,7 @@ func (s *arrivalBindingTicketService) ensurePendingTicket(
 		ticket = &models.ArrivalBindingTicket{
 			TenantID:                 conversation.TenantID,
 			StoreID:                  connection.StoreID,
+			StoreStaffBindingID:      conversation.StoreStaffBindingID,
 			WxWorkProtocolInstanceID: instance.ID,
 			CustomerID:               conversation.CustomerID,
 			ConversationID:           conversation.ID,
@@ -600,16 +601,18 @@ func (s *arrivalBindingTicketService) ensurePendingTicket(
 func (s *arrivalBindingTicketService) validateTicketContext(
 	db *gorm.DB,
 	ticket *models.ArrivalBindingTicket,
-) error {
-	if ticket == nil {
-		return errorsx.BusinessError(66, "到店绑定票据无效")
+) (*arrivalBoundConversationScope, error) {
+	if ticket == nil || ticket.TenantID <= 0 || ticket.StoreID <= 0 ||
+		ticket.StoreStaffBindingID <= 0 || ticket.WxWorkProtocolInstanceID <= 0 ||
+		ticket.CustomerID <= 0 || ticket.ConversationID <= 0 {
+		return nil, errorsx.BusinessError(66, "到店绑定票据无效")
 	}
 	connection := repositories.ArrivalRepository.FindConnectionByStore(
 		db,
 		ticket.TenantID,
 		ticket.StoreID,
 	)
-	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(
+	issuedByInstance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(
 		db,
 		ticket.WxWorkProtocolInstanceID,
 		ticket.TenantID,
@@ -619,10 +622,46 @@ func (s *arrivalBindingTicketService) validateTicketContext(
 		ticket.ConversationID,
 		ticket.TenantID,
 	)
-	if conversation == nil || conversation.CustomerID != ticket.CustomerID {
-		return errorsx.BusinessError(71, "真实会话暂不可用")
+	store := repositories.StoreRepository.GetInTenant(db, ticket.StoreID, ticket.TenantID)
+	if connection == nil || connection.Status != enums.StatusOk ||
+		connection.ConnectionStatus != enums.ArrivalConnectionStatusActive ||
+		arrivalProviderModeForConnection(connection) != enums.ArrivalContactProviderModeStaticPluginTicket ||
+		connection.StoreStaffBindingID != ticket.StoreStaffBindingID ||
+		store == nil || store.Status != enums.StatusOk ||
+		issuedByInstance == nil || issuedByInstance.StoreID != ticket.StoreID ||
+		issuedByInstance.StoreStaffBindingID != ticket.StoreStaffBindingID ||
+		conversation == nil || conversation.StoreID != ticket.StoreID ||
+		conversation.StoreStaffBindingID != ticket.StoreStaffBindingID ||
+		conversation.CustomerID != ticket.CustomerID ||
+		conversation.Status == enums.IMConversationStatusClosed {
+		return nil, errorsx.BusinessError(71, "真实会话暂不可用")
 	}
-	return s.validateCardContext(db, conversation, instance, connection)
+	storeStaff, err := resolveArrivalStoreStaffScopeDB(
+		db,
+		ticket.TenantID,
+		ticket.StoreID,
+		ticket.StoreStaffBindingID,
+		false,
+	)
+	if err != nil {
+		return nil, errorsx.BusinessError(71, "真实会话暂不可用")
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(
+		db,
+		conversation.ID,
+		conversation.TenantID,
+	)
+	if route == nil || route.RouteStatus == enums.ConversationRouteStatusClosed ||
+		route.StoreID != ticket.StoreID ||
+		route.StoreStaffBindingID != ticket.StoreStaffBindingID ||
+		route.WxWorkInstanceID != storeStaff.Instance.ID {
+		return nil, errorsx.BusinessError(71, "真实会话暂不可用")
+	}
+	return &arrivalBoundConversationScope{
+		StoreStaff:   storeStaff,
+		Conversation: conversation,
+		Route:        route,
+	}, nil
 }
 
 func (s *arrivalBindingTicketService) validateCardContext(
@@ -640,12 +679,25 @@ func (s *arrivalBindingTicketService) validateCardContext(
 		connection.TenantID != conversation.TenantID ||
 		instance.TenantID != conversation.TenantID ||
 		connection.StoreID != instance.StoreID ||
-		connection.WxWorkProtocolInstanceID != instance.ID ||
+		connection.StoreID != conversation.StoreID ||
+		connection.StoreStaffBindingID <= 0 ||
+		connection.StoreStaffBindingID != instance.StoreStaffBindingID ||
+		connection.StoreStaffBindingID != conversation.StoreStaffBindingID ||
 		arrivalProviderModeForConnection(connection) != enums.ArrivalContactProviderModeStaticPluginTicket ||
 		connection.ConnectionStatus != enums.ArrivalConnectionStatusActive ||
 		connection.Status != enums.StatusOk ||
-		instance.Status != enums.StatusOk {
+		!isActivatedCurrentWxWorkProtocolInstance(instance) {
 		return errorsx.BusinessError(71, "门店、员工实例或会话暂不可用")
+	}
+	scope, err := resolveArrivalStoreStaffScopeDB(
+		db,
+		conversation.TenantID,
+		connection.StoreID,
+		connection.StoreStaffBindingID,
+		false,
+	)
+	if err != nil || scope.Instance.ID != instance.ID {
+		return errorsx.BusinessError(71, "门店员工号当前企微实例与会话路由不一致")
 	}
 	store := repositories.StoreRepository.GetInTenant(db, connection.StoreID, connection.TenantID)
 	customer := repositories.CustomerRepository.GetInTenant(db, conversation.CustomerID, conversation.TenantID)
@@ -670,6 +722,7 @@ func (s *arrivalBindingTicketService) validateCardContext(
 		route == nil ||
 		route.RouteStatus == enums.ConversationRouteStatusClosed ||
 		route.StoreID != connection.StoreID ||
+		route.StoreStaffBindingID != connection.StoreStaffBindingID ||
 		route.WxWorkInstanceID != instance.ID ||
 		!strings.HasPrefix(protocolConversationID, "S:") ||
 		strings.TrimSpace(strings.TrimPrefix(protocolConversationID, "S:")) == "" {
@@ -684,13 +737,24 @@ func (s *arrivalBindingTicketService) validateCardContext(
 func (s *arrivalBindingTicketService) staticConnectionsForInstance(
 	instance *models.WxWorkProtocolInstance,
 ) []models.StoreArrivalConnection {
-	if instance == nil {
+	if instance == nil || instance.TenantID <= 0 || instance.StoreID <= 0 || instance.StoreStaffBindingID <= 0 ||
+		!isActivatedCurrentWxWorkProtocolInstance(instance) {
 		return nil
 	}
-	candidates := repositories.ArrivalRepository.FindActiveConnectionsByInstance(
+	scope, err := resolveArrivalStoreStaffScopeDB(
 		sqls.DB(),
 		instance.TenantID,
-		instance.ID,
+		instance.StoreID,
+		instance.StoreStaffBindingID,
+		false,
+	)
+	if err != nil || scope.Instance.ID != instance.ID {
+		return nil
+	}
+	candidates := repositories.ArrivalRepository.FindActiveConnectionsByBinding(
+		sqls.DB(),
+		instance.TenantID,
+		instance.StoreStaffBindingID,
 	)
 	result := make([]models.StoreArrivalConnection, 0, len(candidates))
 	for i := range candidates {
@@ -825,21 +889,45 @@ func redactArrivalBindingTicketError(message *models.Message, reason string) str
 	return reason
 }
 
-func arrivalBindingMatchesTicket(
+func arrivalBindingMatchesTicketDB(
+	db *gorm.DB,
 	binding *models.ArrivalStoreBinding,
 	ticket *models.ArrivalBindingTicket,
 ) bool {
-	return binding != nil &&
-		ticket != nil &&
-		binding.Status == enums.StatusOk &&
-		binding.BindingStatus == enums.ArrivalBindingStatusBound &&
-		binding.BindingProofType == enums.ArrivalBindingProofTypeCardTicket &&
-		binding.BindingTicketID == ticket.ID &&
-		binding.TenantID == ticket.TenantID &&
-		binding.StoreID == ticket.StoreID &&
-		binding.WxWorkProtocolInstanceID == ticket.WxWorkProtocolInstanceID &&
-		binding.CustomerID == ticket.CustomerID &&
-		binding.ConversationID == ticket.ConversationID
+	if db == nil || binding == nil || ticket == nil ||
+		binding.Status != enums.StatusOk ||
+		binding.BindingStatus != enums.ArrivalBindingStatusBound ||
+		binding.BindingProofType != enums.ArrivalBindingProofTypeCardTicket ||
+		binding.BindingTicketID != ticket.ID ||
+		binding.TenantID != ticket.TenantID ||
+		binding.StoreID != ticket.StoreID ||
+		binding.CustomerID != ticket.CustomerID {
+		return false
+	}
+	if binding.StoreStaffBindingID == ticket.StoreStaffBindingID && binding.ConversationID == ticket.ConversationID {
+		return true
+	}
+	// The ticket stays immutable issuance evidence; only an explicit linear
+	// conversation inheritance can move the current binding away from it.
+	current := repositories.ConversationRepository.GetInTenant(db, binding.ConversationID, binding.TenantID)
+	source := repositories.ConversationRepository.GetInTenant(db, ticket.ConversationID, ticket.TenantID)
+	if current == nil || source == nil ||
+		current.StoreID != binding.StoreID || current.CustomerID != binding.CustomerID ||
+		current.StoreStaffBindingID != binding.StoreStaffBindingID ||
+		source.StoreID != ticket.StoreID || source.CustomerID != ticket.CustomerID ||
+		source.StoreStaffBindingID != ticket.StoreStaffBindingID {
+		return false
+	}
+	links, err := repositories.ConversationContinuityLinkRepository.FindPredecessorChain(db, binding.TenantID, current.ID, conversationHistoryMaxSegments)
+	if err != nil {
+		return false
+	}
+	for i := range links {
+		if links[i].PredecessorConversationID == source.ID {
+			return true
+		}
+	}
+	return false
 }
 
 func int64FromAny(value any) int64 {

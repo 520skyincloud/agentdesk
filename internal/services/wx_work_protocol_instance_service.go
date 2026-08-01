@@ -39,14 +39,56 @@ type WxWorkProtocolInstanceStats struct {
 	UrgentManualAttentionCount int64
 }
 
-func (s *wxWorkProtocolInstanceService) activeInstanceForBindingDB(db *gorm.DB, tenantID, bindingID int64) *models.WxWorkProtocolInstance {
-	if tenantID <= 0 || bindingID <= 0 {
-		return nil
+func isActivatedCurrentWxWorkProtocolInstance(instance *models.WxWorkProtocolInstance) bool {
+	return instance != nil &&
+		instance.Status == enums.StatusOk &&
+		instance.ReplacedByInstanceID == 0 &&
+		(instance.ReplacesInstanceID == 0 || instance.RemoteSetupSubmittedAt != nil)
+}
+
+func (s *wxWorkProtocolInstanceService) activeInstanceForBindingDB(db *gorm.DB, tenantID, bindingID int64) (*models.WxWorkProtocolInstance, error) {
+	if db == nil || tenantID <= 0 || bindingID <= 0 {
+		return nil, nil
 	}
-	return repositories.WxWorkProtocolInstanceRepository.Take(db,
-		"tenant_id = ? AND store_staff_binding_id = ? AND replaced_by_instance_id = 0 AND status <> ?",
-		tenantID, bindingID, enums.StatusDeleted,
+	instances, err := repositories.WxWorkProtocolInstanceRepository.FindCurrentByStoreStaffBindingInTenant(
+		db,
+		tenantID,
+		bindingID,
+		false,
 	)
+	if err != nil {
+		return nil, err
+	}
+	if len(instances) == 0 {
+		return nil, nil
+	}
+	if len(instances) != 1 {
+		return nil, errorsx.BusinessError(71, "门店员工号存在多个当前企微实例，请先修复实例状态")
+	}
+	return &instances[0], nil
+}
+
+// bindingInstanceReservationDB keeps unfinished first-login setup resumable,
+// while always preferring the real current instance over a replacement draft.
+func (s *wxWorkProtocolInstanceService) bindingInstanceReservationDB(db *gorm.DB, tenantID, bindingID int64) (*models.WxWorkProtocolInstance, error) {
+	current, err := s.activeInstanceForBindingDB(db, tenantID, bindingID)
+	if err != nil || current != nil {
+		return current, err
+	}
+	if db == nil || tenantID <= 0 || bindingID <= 0 {
+		return nil, nil
+	}
+	items, err := repositories.WxWorkProtocolInstanceRepository.FindReservationCandidatesByStoreStaffBindingInTenant(db, tenantID, bindingID)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	if len(items) != 1 {
+		return nil, errorsx.BusinessError(71, "门店员工号存在多个未完成的企微实例，请先修复实例状态")
+	}
+	return &items[0], nil
 }
 
 const DefaultWxWorkProtocolPersonaPrompt = `你是线上酒店接待，说话简短、自然、像正常微信聊天。
@@ -106,7 +148,7 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgentForConversation(conve
 	if route == nil || route.WxWorkInstanceID <= 0 {
 		return models.AIAgent{}, false
 	}
-	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), route.WxWorkInstanceID, conversation.TenantID)
+	instance := repositories.WxWorkProtocolInstanceRepository.GetActivatedCurrentInTenant(sqls.DB(), route.WxWorkInstanceID, conversation.TenantID)
 	if instance == nil || !instance.AIReplyEnabled {
 		return models.AIAgent{}, false
 	}
@@ -184,7 +226,6 @@ func (s *wxWorkProtocolInstanceService) CreatePendingFromLogin(guid string, raw 
 		EmployeeName:              employeeName,
 		EmployeeAvatar:            employeeAvatar,
 		AIReplyEnabled:            true,
-		ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
 		PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
 		FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
 		ContextMaxMessages:        DefaultConversationContextMaxMessages,
@@ -287,8 +328,7 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 			return nil, err
 		}
 	}
-	knowledgeBaseID, err := s.validateBinding(tenantID, req.ChannelID, storeID)
-	if err != nil {
+	if _, err := s.validateBinding(tenantID, req.ChannelID, storeID); err != nil {
 		return nil, err
 	}
 	welcomeImageAssetID, err := validateWxWorkWelcomeImageAsset(req.WelcomeImageAssetID, tenantID)
@@ -310,31 +350,18 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		AgentTeamID:                    binding.AgentTeamID,
 		StoreID:                        storeID,
 		StoreStaffBindingID:            binding.ID,
-		StoreAddress:                   utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
-		StoreNavigationName:            utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
-		StoreLongitude:                 strings.TrimSpace(req.StoreLongitude),
-		StoreLatitude:                  strings.TrimSpace(req.StoreLatitude),
-		StoreMapProvider:               strings.TrimSpace(req.StoreMapProvider),
-		StoreContactPhone:              utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
 		DefaultMiniProgramPayload:      normalizeWxWorkJSONText(req.DefaultMiniProgramPayload),
 		WelcomeEnabled:                 req.WelcomeEnabled,
 		WelcomeMessage:                 normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
 		WelcomeImageAssetID:            welcomeImageAssetID,
 		WelcomeSendMiniProgram:         req.WelcomeSendMiniProgram,
 		WelcomeAskLocation:             req.WelcomeAskLocation,
-		KnowledgeBaseID:                knowledgeBaseID,
 		NotifyURL:                      strings.TrimSpace(req.NotifyURL),
 		Proxy:                          strings.TrimSpace(req.Proxy),
 		BridgeID:                       strings.TrimSpace(req.BridgeID),
 		StaffUserIDs:                   strings.TrimSpace(req.StaffUserIDs),
-		ServiceHours:                   strings.TrimSpace(req.ServiceHours),
 		FrontDeskMode:                  normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
 		FrontDeskHours:                 normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),
-		StoreRoomConversationID:        normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
-		StoreRoomNotifyEnabled:         req.StoreRoomNotifyEnabled,
-		StoreRoomAtList:                normalizeWxWorkAtList(req.StoreRoomAtList),
-		FallbackToHQ:                   req.FallbackToHQ,
-		ManualTimeoutMinutes:           normalizeManualTimeoutMinutes(req.ManualTimeoutMinutes),
 		AIReplyEnabled:                 req.AIReplyEnabled,
 		PersonaPrompt:                  normalizeWxWorkPersonaPrompt(req.PersonaPrompt),
 		AutoAcceptFriendRequest:        req.AutoAcceptFriendRequest,
@@ -360,7 +387,11 @@ func (s *wxWorkProtocolInstanceService) CreateInstance(req request.CreateWxWorkP
 		if err := StoreStaffBindingService.validateBindingOwnerDB(ctx.Tx, lockedBinding); err != nil {
 			return err
 		}
-		if current := s.activeInstanceForBindingDB(ctx.Tx, tenantID, lockedBinding.ID); current != nil {
+		current, reservationErr := s.bindingInstanceReservationDB(ctx.Tx, tenantID, lockedBinding.ID)
+		if reservationErr != nil {
+			return reservationErr
+		}
+		if current != nil {
 			return errorsx.InvalidParam("该系统账号已经绑定企微员工号，请使用更换登录员工号")
 		}
 		item.AgentTeamID = lockedBinding.AgentTeamID
@@ -390,29 +421,38 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 		"user_id = ? AND status <> ?",
 		req.StoreStaffUserID,
 		enums.StatusDeleted,
-	); binding != nil && s.activeInstanceForBindingDB(sqls.DB(), tenantID, binding.ID) != nil {
-		var resumed *models.WxWorkProtocolInstance
-		err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-			prepared, prepareErr := StoreStaffBindingService.prepareForUserDB(ctx.Tx, tenantID, req.StoreStaffUserID, req.StoreName, operator)
-			if prepareErr != nil {
-				return prepareErr
-			}
-			current := s.activeInstanceForBindingDB(ctx.Tx, tenantID, prepared.Binding.ID)
-			if current == nil {
-				return nil
-			}
-			if current.HealthStatus != "login_qrcode" || strings.TrimSpace(current.EmployeeUserID) != "" {
-				return errorsx.InvalidParam("该系统账号已经绑定企微员工号，请使用更换登录员工号")
-			}
-			resumed = current
-			return nil
-		})
-		if err != nil {
-			return nil, err
+	); binding != nil {
+		reservation, reservationErr := s.bindingInstanceReservationDB(sqls.DB(), tenantID, binding.ID)
+		if reservationErr != nil {
+			return nil, reservationErr
 		}
-		if resumed != nil {
-			_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(resumed.Guid, resumed.ID)
-			return resumed, nil
+		if reservation != nil {
+			var resumed *models.WxWorkProtocolInstance
+			err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+				prepared, prepareErr := StoreStaffBindingService.prepareForUserDB(ctx.Tx, tenantID, req.StoreStaffUserID, 0, operator)
+				if prepareErr != nil {
+					return prepareErr
+				}
+				current, currentErr := s.bindingInstanceReservationDB(ctx.Tx, tenantID, prepared.Binding.ID)
+				if currentErr != nil {
+					return currentErr
+				}
+				if current == nil {
+					return nil
+				}
+				if current.HealthStatus != "login_qrcode" || strings.TrimSpace(current.EmployeeUserID) != "" {
+					return errorsx.InvalidParam("该系统账号已经绑定企微员工号，请使用更换登录员工号")
+				}
+				resumed = current
+				return nil
+			})
+			if err != nil {
+				return nil, err
+			}
+			if resumed != nil {
+				_ = WxWorkProtocolDevicePoolService.BindGUIDToInstance(resumed.Guid, resumed.ID)
+				return resumed, nil
+			}
 		}
 	}
 	now := time.Now()
@@ -426,11 +466,15 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 	}
 	var item *models.WxWorkProtocolInstance
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		prepared, err := StoreStaffBindingService.prepareForUserDB(ctx.Tx, tenantID, req.StoreStaffUserID, req.StoreName, operator)
+		prepared, err := StoreStaffBindingService.prepareForUserDB(ctx.Tx, tenantID, req.StoreStaffUserID, 0, operator)
 		if err != nil {
 			return err
 		}
-		if current := s.activeInstanceForBindingDB(ctx.Tx, tenantID, prepared.Binding.ID); current != nil {
+		current, reservationErr := s.bindingInstanceReservationDB(ctx.Tx, tenantID, prepared.Binding.ID)
+		if reservationErr != nil {
+			return reservationErr
+		}
+		if current != nil {
 			if current.HealthStatus == "login_qrcode" && strings.TrimSpace(current.EmployeeUserID) == "" {
 				item = current
 				guid = current.Guid
@@ -490,7 +534,6 @@ func (s *wxWorkProtocolInstanceService) CreateLoginInstance(req request.StartWxW
 			AIReplyEnabled:            false,
 			PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
 			FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
-			ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
 			ContextMaxMessages:        DefaultConversationContextMaxMessages,
 			ContextMaxTokens:          DefaultConversationContextMaxTokens,
 			ContextCompressionEnabled: true,
@@ -533,14 +576,18 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 	}
 	var item *models.WxWorkProtocolInstance
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		prepared, err := StoreStaffBindingService.prepareForUserDB(ctx.Tx, tenantID, req.StoreStaffUserID, req.StoreName, operator)
+		prepared, err := StoreStaffBindingService.prepareForUserDB(ctx.Tx, tenantID, req.StoreStaffUserID, 0, operator)
 		if err != nil {
 			return err
 		}
 		if prepared.User.Email == nil || strings.TrimSpace(*prepared.User.Email) == "" {
 			return errorsx.InvalidParam("该系统账号尚未填写邮箱，无法发送绑定验证")
 		}
-		if current := s.activeInstanceForBindingDB(ctx.Tx, tenantID, prepared.Binding.ID); current != nil {
+		current, reservationErr := s.bindingInstanceReservationDB(ctx.Tx, tenantID, prepared.Binding.ID)
+		if reservationErr != nil {
+			return reservationErr
+		}
+		if current != nil {
 			if current.HealthStatus == "remote_setup" && current.RemoteSetupSubmittedAt == nil && (current.RemoteSetupExpiresAt == nil || current.RemoteSetupExpiresAt.After(now)) {
 				item = current
 				return nil
@@ -561,7 +608,6 @@ func (s *wxWorkProtocolInstanceService) CreateRemoteSetupInstance(req request.Cr
 			AIReplyEnabled:            false,
 			PersonaPrompt:             DefaultWxWorkProtocolPersonaPrompt,
 			FrontDeskMode:             wxWorkFrontDeskModeUnmanned,
-			ManualTimeoutMinutes:      DefaultManualTimeoutMinutes,
 			ContextMaxMessages:        DefaultConversationContextMaxMessages,
 			ContextMaxTokens:          DefaultConversationContextMaxTokens,
 			ContextCompressionEnabled: true,
@@ -632,8 +678,7 @@ func (s *wxWorkProtocolInstanceService) CreateReplacementRemoteSetup(req request
 	if existing := s.Take("guid = ? AND status <> ?", guid, enums.StatusDeleted); existing != nil {
 		return nil, errorsx.InvalidParam("该协议设备 GUID 已绑定到其他员工号")
 	}
-	knowledgeBaseID, err := s.resolveStoreKnowledgeBaseIDDB(sqls.DB(), tenantID, binding.StoreID)
-	if err != nil {
+	if _, err := s.resolveStoreKnowledgeBaseIDDB(sqls.DB(), tenantID, binding.StoreID); err != nil {
 		return nil, err
 	}
 	now := time.Now()
@@ -646,30 +691,17 @@ func (s *wxWorkProtocolInstanceService) CreateReplacementRemoteSetup(req request
 		StoreID:                        binding.StoreID,
 		StoreStaffBindingID:            binding.ID,
 		ReplacesInstanceID:             old.ID,
-		StoreAddress:                   old.StoreAddress,
-		StoreNavigationName:            old.StoreNavigationName,
-		StoreLongitude:                 old.StoreLongitude,
-		StoreLatitude:                  old.StoreLatitude,
-		StoreMapProvider:               old.StoreMapProvider,
-		StoreContactPhone:              old.StoreContactPhone,
 		DefaultMiniProgramPayload:      old.DefaultMiniProgramPayload,
 		WelcomeEnabled:                 old.WelcomeEnabled,
 		WelcomeMessage:                 old.WelcomeMessage,
 		WelcomeImageAssetID:            old.WelcomeImageAssetID,
 		WelcomeSendMiniProgram:         old.WelcomeSendMiniProgram,
 		WelcomeAskLocation:             old.WelcomeAskLocation,
-		KnowledgeBaseID:                knowledgeBaseID,
 		Proxy:                          old.Proxy,
 		BridgeID:                       old.BridgeID,
 		StaffUserIDs:                   old.StaffUserIDs,
-		ServiceHours:                   old.ServiceHours,
 		FrontDeskMode:                  normalizeWxWorkFrontDeskMode(old.FrontDeskMode),
 		FrontDeskHours:                 normalizeWxWorkFrontDeskHours(old.FrontDeskMode, old.FrontDeskHours),
-		StoreRoomConversationID:        old.StoreRoomConversationID,
-		StoreRoomNotifyEnabled:         old.StoreRoomNotifyEnabled,
-		StoreRoomAtList:                old.StoreRoomAtList,
-		FallbackToHQ:                   old.FallbackToHQ,
-		ManualTimeoutMinutes:           old.ManualTimeoutMinutes,
 		AIReplyEnabled:                 false,
 		PersonaPrompt:                  old.PersonaPrompt,
 		AutoAcceptFriendRequest:        old.AutoAcceptFriendRequest,
@@ -781,8 +813,9 @@ func (s *wxWorkProtocolInstanceService) UpdateRemoteSetup(req request.UpdateWxWo
 	if err := s.syncRouteStateBindingFromInstance(updated, "remote_store_setup"); err != nil {
 		return err
 	}
-	if updated.StoreID > 0 && updated.KnowledgeBaseID <= 0 {
-		if _, err := FastGPTDatasetService.EnqueueDefaultDatasetForRemoteSetup(updated.StoreID, updated.TenantID, firstNonBlank(req.StoreName, req.EmployeeName)); err != nil {
+	if store := repositories.StoreRepository.GetInTenant(sqls.DB(), updated.StoreID, updated.TenantID); store != nil && store.KnowledgeBaseID <= 0 {
+		storeName := store.Name
+		if _, err := FastGPTDatasetService.EnqueueDefaultDatasetForRemoteSetup(updated.StoreID, updated.TenantID, updated.StoreStaffBindingID, storeName); err != nil {
 			slog.Warn("enqueue FastGPT dataset after remote setup failed", "instanceId", updated.ID, "storeId", updated.StoreID, "error", err)
 		}
 	}
@@ -802,6 +835,10 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	if guid == "" {
 		return errorsx.InvalidParam("guid 不能为空")
 	}
+	employeeUserID := strings.TrimSpace(req.EmployeeUserID)
+	if currentEmployeeUserID := strings.TrimSpace(current.EmployeeUserID); currentEmployeeUserID != "" && employeeUserID != currentEmployeeUserID {
+		return errorsx.InvalidParam("已绑定的企微员工身份不可直接修改，请使用更换企微账号流程")
+	}
 	if existing := s.Take("guid = ? AND id <> ?", guid, req.ID); existing != nil {
 		return errorsx.InvalidParam("guid 已存在")
 	}
@@ -813,23 +850,12 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		return err
 	}
 	storeID := binding.StoreID
-	if storeName := utils.RepairMojibakeText(strings.TrimSpace(req.StoreName)); storeName != "" {
-		if err := repositories.StoreRepository.UpdatesInTenant(sqls.DB(), storeID, tenantID, map[string]any{
-			"name":             storeName,
-			"updated_at":       time.Now(),
-			"update_user_id":   operator.UserID,
-			"update_user_name": operator.Username,
-		}); err != nil {
-			return err
-		}
-	}
 	if req.AIReplyEnabled {
 		if _, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID); err != nil {
 			return err
 		}
 	}
-	knowledgeBaseID, err := s.validateBinding(tenantID, req.ChannelID, storeID)
-	if err != nil {
+	if _, err := s.validateBinding(tenantID, req.ChannelID, storeID); err != nil {
 		return err
 	}
 	welcomeImageAssetID, err := validateWxWorkWelcomeImageAsset(req.WelcomeImageAssetID, tenantID)
@@ -840,53 +866,62 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 	if status != enums.StatusOk && status != enums.StatusDisabled {
 		status = current.Status
 	}
-	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
-		"guid":                               guid,
-		"channel_id":                         req.ChannelID,
-		"employee_user_id":                   strings.TrimSpace(req.EmployeeUserID),
-		"employee_name":                      utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
-		"employee_avatar":                    strings.TrimSpace(req.EmployeeAvatar),
-		"store_id":                           storeID,
-		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
-		"store_navigation_name":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
-		"store_longitude":                    strings.TrimSpace(req.StoreLongitude),
-		"store_latitude":                     strings.TrimSpace(req.StoreLatitude),
-		"store_map_provider":                 strings.TrimSpace(req.StoreMapProvider),
-		"store_contact_phone":                utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
-		"default_mini_program_payload":       normalizeWxWorkJSONText(req.DefaultMiniProgramPayload),
-		"welcome_enabled":                    req.WelcomeEnabled,
-		"welcome_message":                    normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
-		"welcome_image_asset_id":             welcomeImageAssetID,
-		"welcome_send_mini_program":          req.WelcomeSendMiniProgram,
-		"welcome_ask_location":               req.WelcomeAskLocation,
-		"knowledge_base_id":                  knowledgeBaseID,
-		"notify_url":                         strings.TrimSpace(req.NotifyURL),
-		"bridge_id":                          strings.TrimSpace(req.BridgeID),
-		"staff_user_ids":                     strings.TrimSpace(req.StaffUserIDs),
-		"service_hours":                      strings.TrimSpace(req.ServiceHours),
-		"front_desk_mode":                    normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
-		"front_desk_hours":                   normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),
-		"store_room_conversation_id":         normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
-		"store_room_notify_enabled":          req.StoreRoomNotifyEnabled,
-		"store_room_at_list":                 normalizeWxWorkAtList(req.StoreRoomAtList),
-		"fallback_to_hq":                     req.FallbackToHQ,
-		"manual_timeout_minutes":             normalizeManualTimeoutMinutes(req.ManualTimeoutMinutes),
-		"ai_reply_enabled":                   req.AIReplyEnabled,
-		"persona_prompt":                     normalizeWxWorkPersonaPrompt(req.PersonaPrompt),
-		"auto_accept_friend_request":         req.AutoAcceptFriendRequest,
-		"auto_accept_friend_remark_template": strings.TrimSpace(req.AutoAcceptFriendRemarkTemplate),
-		"context_max_messages":               normalizeContextMaxMessages(req.ContextMaxMessages),
-		"context_max_tokens":                 normalizeContextMaxTokens(req.ContextMaxTokens),
-		"context_compression_enabled":        normalizeContextCompressionEnabled(req.ContextCompressionEnabled, req.ContextMaxMessages, req.ContextMaxTokens),
-		"status":                             status,
-		"remark":                             strings.TrimSpace(req.Remark),
-		"updated_at":                         time.Now(),
-		"update_user_id":                     operator.UserID,
-		"update_user_name":                   operator.Username,
+	var updated *models.WxWorkProtocolInstance
+	now := time.Now()
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedBinding, err := repositories.StoreStaffBindingRepository.GetForUpdateInTenant(ctx.Tx, binding.ID, tenantID)
+		if err != nil {
+			return err
+		}
+		if lockedBinding == nil || lockedBinding.Status != enums.StatusOk || lockedBinding.StoreID != storeID {
+			return errorsx.InvalidParam("门店员工绑定已变化，请刷新后重试")
+		}
+		if err := StoreStaffBindingService.validateBindingOwnerDB(ctx.Tx, lockedBinding); err != nil {
+			return err
+		}
+		if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, req.ID, tenantID, map[string]any{
+			"guid":                               guid,
+			"channel_id":                         req.ChannelID,
+			"employee_user_id":                   employeeUserID,
+			"employee_name":                      utils.RepairMojibakeText(strings.TrimSpace(req.EmployeeName)),
+			"employee_avatar":                    strings.TrimSpace(req.EmployeeAvatar),
+			"store_id":                           storeID,
+			"store_staff_binding_id":             lockedBinding.ID,
+			"agent_team_id":                      lockedBinding.AgentTeamID,
+			"default_mini_program_payload":       normalizeWxWorkJSONText(req.DefaultMiniProgramPayload),
+			"welcome_enabled":                    req.WelcomeEnabled,
+			"welcome_message":                    normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
+			"welcome_image_asset_id":             welcomeImageAssetID,
+			"welcome_send_mini_program":          req.WelcomeSendMiniProgram,
+			"welcome_ask_location":               req.WelcomeAskLocation,
+			"notify_url":                         strings.TrimSpace(req.NotifyURL),
+			"bridge_id":                          strings.TrimSpace(req.BridgeID),
+			"staff_user_ids":                     strings.TrimSpace(req.StaffUserIDs),
+			"front_desk_mode":                    normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
+			"front_desk_hours":                   normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),
+			"ai_reply_enabled":                   req.AIReplyEnabled,
+			"persona_prompt":                     normalizeWxWorkPersonaPrompt(req.PersonaPrompt),
+			"auto_accept_friend_request":         req.AutoAcceptFriendRequest,
+			"auto_accept_friend_remark_template": strings.TrimSpace(req.AutoAcceptFriendRemarkTemplate),
+			"context_max_messages":               normalizeContextMaxMessages(req.ContextMaxMessages),
+			"context_max_tokens":                 normalizeContextMaxTokens(req.ContextMaxTokens),
+			"context_compression_enabled":        normalizeContextCompressionEnabled(req.ContextCompressionEnabled, req.ContextMaxMessages, req.ContextMaxTokens),
+			"status":                             status,
+			"remark":                             strings.TrimSpace(req.Remark),
+			"updated_at":                         now,
+			"update_user_id":                     operator.UserID,
+			"update_user_name":                   operator.Username,
+		}); err != nil {
+			return err
+		}
+		if err := s.updateStoreStaffBindingFromInstanceRequestDB(ctx.Tx, lockedBinding, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator); err != nil {
+			return err
+		}
+		updated = repositories.WxWorkProtocolInstanceRepository.GetInTenant(ctx.Tx, req.ID, tenantID)
+		return nil
 	}); err != nil {
 		return err
 	}
-	updated := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), req.ID, tenantID)
 	if updated == nil {
 		return nil
 	}
@@ -896,9 +931,6 @@ func (s *wxWorkProtocolInstanceService) UpdateInstance(req request.UpdateWxWorkP
 		}
 	}
 	if err := s.syncRouteStateBindingFromInstance(updated, operator.Username); err != nil {
-		return err
-	}
-	if err := s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator); err != nil {
 		return err
 	}
 	return nil
@@ -965,68 +997,66 @@ func (s *wxWorkProtocolInstanceService) UpdateAISettings(req request.UpdateWxWor
 		return err
 	}
 	storeID := binding.StoreID
-	if storeName := utils.RepairMojibakeText(strings.TrimSpace(req.StoreName)); storeName != "" {
-		if err := repositories.StoreRepository.UpdatesInTenant(sqls.DB(), storeID, tenantID, map[string]any{
-			"name":             storeName,
-			"updated_at":       time.Now(),
-			"update_user_id":   operator.UserID,
-			"update_user_name": operator.Username,
-		}); err != nil {
-			return err
-		}
-	}
 	if req.AIReplyEnabled {
 		if _, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID); err != nil {
 			return err
 		}
 	}
-	knowledgeBaseID, err := s.validateBinding(tenantID, instance.ChannelID, storeID)
-	if err != nil {
+	if _, err := s.validateBinding(tenantID, instance.ChannelID, storeID); err != nil {
 		return err
 	}
-	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), req.ID, tenantID, map[string]any{
-		"store_id":                           storeID,
-		"store_address":                      utils.RepairMojibakeText(strings.TrimSpace(req.StoreAddress)),
-		"store_navigation_name":              utils.RepairMojibakeText(strings.TrimSpace(req.StoreNavigationName)),
-		"store_longitude":                    strings.TrimSpace(req.StoreLongitude),
-		"store_latitude":                     strings.TrimSpace(req.StoreLatitude),
-		"store_map_provider":                 strings.TrimSpace(req.StoreMapProvider),
-		"store_contact_phone":                utils.RepairMojibakeText(strings.TrimSpace(req.StoreContactPhone)),
-		"default_mini_program_payload":       normalizeWxWorkJSONText(req.DefaultMiniProgramPayload),
-		"welcome_message":                    normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
-		"welcome_send_mini_program":          req.WelcomeSendMiniProgram,
-		"welcome_ask_location":               req.WelcomeAskLocation,
-		"knowledge_base_id":                  knowledgeBaseID,
-		"staff_user_ids":                     strings.TrimSpace(req.StaffUserIDs),
-		"service_hours":                      strings.TrimSpace(req.ServiceHours),
-		"front_desk_mode":                    normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
-		"front_desk_hours":                   normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),
-		"store_room_conversation_id":         normalizeWxWorkRoomConversationID(req.StoreRoomConversationID),
-		"store_room_notify_enabled":          req.StoreRoomNotifyEnabled,
-		"store_room_at_list":                 normalizeWxWorkAtList(req.StoreRoomAtList),
-		"fallback_to_hq":                     req.FallbackToHQ,
-		"manual_timeout_minutes":             normalizeManualTimeoutMinutes(req.ManualTimeoutMinutes),
-		"ai_reply_enabled":                   req.AIReplyEnabled,
-		"persona_prompt":                     normalizeWxWorkPersonaPrompt(req.PersonaPrompt),
-		"auto_accept_friend_request":         req.AutoAcceptFriendRequest,
-		"auto_accept_friend_remark_template": strings.TrimSpace(req.AutoAcceptFriendRemarkTemplate),
-		"context_max_messages":               normalizeContextMaxMessages(req.ContextMaxMessages),
-		"context_max_tokens":                 normalizeContextMaxTokens(req.ContextMaxTokens),
-		"context_compression_enabled":        normalizeContextCompressionEnabled(req.ContextCompressionEnabled, req.ContextMaxMessages, req.ContextMaxTokens),
-		"updated_at":                         time.Now(),
-		"update_user_id":                     operator.UserID,
-		"update_user_name":                   operator.Username,
+	var updated *models.WxWorkProtocolInstance
+	now := time.Now()
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedBinding, err := repositories.StoreStaffBindingRepository.GetForUpdateInTenant(ctx.Tx, binding.ID, tenantID)
+		if err != nil {
+			return err
+		}
+		if lockedBinding == nil || lockedBinding.Status != enums.StatusOk || lockedBinding.StoreID != storeID {
+			return errorsx.InvalidParam("门店员工绑定已变化，请刷新后重试")
+		}
+		if err := StoreStaffBindingService.validateBindingOwnerDB(ctx.Tx, lockedBinding); err != nil {
+			return err
+		}
+		if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, req.ID, tenantID, map[string]any{
+			"store_id":                           storeID,
+			"store_staff_binding_id":             lockedBinding.ID,
+			"agent_team_id":                      lockedBinding.AgentTeamID,
+			"default_mini_program_payload":       normalizeWxWorkJSONText(req.DefaultMiniProgramPayload),
+			"welcome_message":                    normalizeWxWorkWelcomeMessage(req.WelcomeMessage),
+			"welcome_send_mini_program":          req.WelcomeSendMiniProgram,
+			"welcome_ask_location":               req.WelcomeAskLocation,
+			"staff_user_ids":                     strings.TrimSpace(req.StaffUserIDs),
+			"front_desk_mode":                    normalizeWxWorkFrontDeskMode(req.FrontDeskMode),
+			"front_desk_hours":                   normalizeWxWorkFrontDeskHours(req.FrontDeskMode, req.FrontDeskHours),
+			"ai_reply_enabled":                   req.AIReplyEnabled,
+			"persona_prompt":                     normalizeWxWorkPersonaPrompt(req.PersonaPrompt),
+			"auto_accept_friend_request":         req.AutoAcceptFriendRequest,
+			"auto_accept_friend_remark_template": strings.TrimSpace(req.AutoAcceptFriendRemarkTemplate),
+			"context_max_messages":               normalizeContextMaxMessages(req.ContextMaxMessages),
+			"context_max_tokens":                 normalizeContextMaxTokens(req.ContextMaxTokens),
+			"context_compression_enabled":        normalizeContextCompressionEnabled(req.ContextCompressionEnabled, req.ContextMaxMessages, req.ContextMaxTokens),
+			"updated_at":                         now,
+			"update_user_id":                     operator.UserID,
+			"update_user_name":                   operator.Username,
+		}); err != nil {
+			return err
+		}
+		if err := s.updateStoreStaffBindingFromInstanceRequestDB(ctx.Tx, lockedBinding, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator); err != nil {
+			return err
+		}
+		updated = repositories.WxWorkProtocolInstanceRepository.GetInTenant(ctx.Tx, req.ID, tenantID)
+		return nil
 	}); err != nil {
 		return err
 	}
-	updated := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), req.ID, tenantID)
 	if updated == nil {
 		return nil
 	}
 	if err := s.syncRouteStateBindingFromInstance(updated, operator.Username); err != nil {
 		return err
 	}
-	return s.syncStoreStaffBindingFromInstanceRequest(updated, req.ManagedMode, req.ServiceHours, req.StoreRoomConversationID, req.StoreRoomNotifyEnabled, req.StoreRoomAtList, req.FallbackToHQ, req.ManualTimeoutMinutes, operator)
+	return nil
 }
 
 func (s *wxWorkProtocolInstanceService) syncRouteStateBindingFromInstance(instance *models.WxWorkProtocolInstance, operatorName string) error {
@@ -1040,25 +1070,7 @@ func (s *wxWorkProtocolInstanceService) syncRouteStateBindingFromInstance(instan
 	if err != nil {
 		return err
 	}
-	if instance.KnowledgeBaseID != knowledgeBaseID {
-		if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(sqls.DB(), instance.ID, instance.TenantID, map[string]any{
-			"knowledge_base_id": knowledgeBaseID, "updated_at": time.Now(), "update_user_name": operatorName,
-		}); err != nil {
-			return err
-		}
-	}
 	return repositories.ConversationRouteStateRepository.UpdateBindingByWxWorkInstance(sqls.DB(), instance.ID, instance.TenantID, instance.StoreID, knowledgeBaseID, time.Now(), operatorName)
-}
-
-func (s *wxWorkProtocolInstanceService) syncStoreStaffBindingFromInstanceRequest(instance *models.WxWorkProtocolInstance, managedMode string, serviceHours string, roomConversationID string, roomNotifyEnabled bool, roomAtList string, fallbackToHQ bool, manualTimeoutMinutes int, operator *dto.AuthPrincipal) error {
-	if instance == nil || instance.StoreID <= 0 {
-		return nil
-	}
-	binding, err := StoreStaffBindingService.EnsureForInstance(instance, operator)
-	if err != nil {
-		return err
-	}
-	return s.updateStoreStaffBindingFromInstanceRequestDB(sqls.DB(), binding, managedMode, serviceHours, roomConversationID, roomNotifyEnabled, roomAtList, fallbackToHQ, manualTimeoutMinutes, operator)
 }
 
 func (s *wxWorkProtocolInstanceService) updateStoreStaffBindingFromInstanceRequestDB(db *gorm.DB, binding *models.StoreStaffBinding, managedMode string, serviceHours string, roomConversationID string, roomNotifyEnabled bool, roomAtList string, fallbackToHQ bool, manualTimeoutMinutes int, operator *dto.AuthPrincipal) error {
@@ -1562,8 +1574,17 @@ func (s *wxWorkProtocolInstanceService) DeleteInstance(id int64, operator *dto.A
 }
 
 func (s *wxWorkProtocolInstanceService) RequireStoreKnowledge(instance *models.WxWorkProtocolInstance) (int64, int64, error) {
-	if instance == nil || instance.Status != enums.StatusOk || instance.StoreID <= 0 {
+	if !isActivatedCurrentWxWorkProtocolInstance(instance) || instance.StoreID <= 0 || instance.StoreStaffBindingID <= 0 {
 		return 0, 0, errorsx.InvalidParam("企微员工号未配置有效门店")
+	}
+	store := repositories.StoreRepository.GetInTenant(sqls.DB(), instance.StoreID, instance.TenantID)
+	if store == nil || store.Status != enums.StatusOk {
+		return 0, 0, errorsx.InvalidParam("当前门店已停用或不属于接入公司")
+	}
+	binding := repositories.StoreStaffBindingRepository.GetInTenant(sqls.DB(), instance.StoreStaffBindingID, instance.TenantID)
+	if binding == nil || binding.Status != enums.StatusOk || binding.StoreID != store.ID ||
+		binding.ActiveUserID == nil || *binding.ActiveUserID <= 0 {
+		return 0, 0, errorsx.InvalidParam("当前门店员工号已停用或归属已变化")
 	}
 	knowledgeBaseID, err := s.resolveStoreKnowledgeBaseIDDB(sqls.DB(), instance.TenantID, instance.StoreID)
 	if err != nil || knowledgeBaseID <= 0 {
@@ -1584,8 +1605,8 @@ func (s *wxWorkProtocolInstanceService) resolveStoreKnowledgeBaseIDDB(db *gorm.D
 		return 0, errorsx.InvalidParam("门店不存在")
 	}
 	store := repositories.StoreRepository.GetInTenant(db, storeID, tenantID)
-	if store == nil || store.Status == enums.StatusDeleted {
-		return 0, errorsx.InvalidParam("门店不存在")
+	if store == nil || store.Status != enums.StatusOk {
+		return 0, errorsx.InvalidParam("门店不存在或已停用")
 	}
 	if store.KnowledgeBaseID <= 0 {
 		return 0, nil

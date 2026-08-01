@@ -133,11 +133,8 @@ func resolveRuntimeIntentScope(req RunInput) runtimeIntentScope {
 		scope.StoreID = state.StoreID
 		scope.WxWorkInstanceID = state.WxWorkInstanceID
 	}
-	if scope.WxWorkInstanceID > 0 {
-		instance := repositories.WxWorkProtocolInstanceRepository.Get(db, scope.WxWorkInstanceID)
-		if scope.TenantID > 0 {
-			instance = repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, scope.WxWorkInstanceID, scope.TenantID)
-		}
+	if scope.WxWorkInstanceID > 0 && scope.TenantID > 0 {
+		instance := repositories.WxWorkProtocolInstanceRepository.GetActivatedCurrentInTenant(db, scope.WxWorkInstanceID, scope.TenantID)
 		if instance != nil {
 			if scope.StoreID <= 0 {
 				scope.StoreID = instance.StoreID

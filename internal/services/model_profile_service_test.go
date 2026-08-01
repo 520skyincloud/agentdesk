@@ -137,7 +137,7 @@ func TestModelProfileConfigurationEditInvalidatesPreviousTestEvidence(t *testing
 
 	tested, err := service.Test(
 		context.Background(),
-		request.TestModelProfileRequest{ID: draft.ID, TenantID: fixture.tenant.ID, StoreID: fixture.store.ID},
+		request.TestModelProfileRequest{ID: draft.ID, TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, StoreStaffBindingID: fixture.binding.ID},
 		modelProfilePlatformOperator(),
 		StoreCredentialRequestMeta{RequestID: "profile-test-before-edit"},
 	)
@@ -179,7 +179,7 @@ func TestModelProfileCrossGatewayRejectedBeforeCredentialValidation(t *testing.T
 
 	if _, err := service.Test(
 		context.Background(),
-		request.TestModelProfileRequest{ID: draft.ID, TenantID: fixture.tenant.ID, StoreID: fixture.store.ID},
+		request.TestModelProfileRequest{ID: draft.ID, TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, StoreStaffBindingID: fixture.binding.ID},
 		modelProfilePlatformOperator(),
 		StoreCredentialRequestMeta{RequestID: "profile-test-cross-gateway"},
 	); err == nil || !strings.Contains(err.Error(), "相同的统一 NewAPI 网关") {
@@ -258,10 +258,45 @@ func TestStoreProfilePendingAssignmentPreservesActiveRevision(t *testing.T) {
 	}
 }
 
+func TestStoreModelProfileListIncludesAllActiveCredentialBindings(t *testing.T) {
+	db := setupModelProfileTestDB(t)
+	tenant, store := createModelProfileTenantAndStore(t, db)
+	secondUser := &models.User{
+		TenantID: tenant.ID, Username: "second-staff-" + strings.ToLower(t.Name()),
+		Nickname: "Second Store Staff", Status: enums.StatusOk,
+	}
+	if err := db.Create(secondUser).Error; err != nil {
+		t.Fatal(err)
+	}
+	secondBinding := &models.StoreStaffBinding{
+		TenantID: tenant.ID, UserID: secondUser.ID, ActiveUserID: positiveInt64Pointer(secondUser.ID),
+		StoreID: store.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(secondBinding).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := StoreModelProfileAssignmentService.List(
+		request.GetStoreModelProfileAssignmentsRequest{TenantID: tenant.ID},
+		modelProfilePlatformOperator(),
+	)
+	if err != nil {
+		t.Fatalf("List() error=%v", err)
+	}
+	if len(data.Stores) != 1 || len(data.Stores[0].CredentialBindings) != 2 {
+		t.Fatalf("credential bindings=%#v", data.Stores)
+	}
+	if data.Stores[0].CredentialBindings[0].AccountName != "Store Staff" ||
+		data.Stores[0].CredentialBindings[1].AccountName != "Second Store Staff" {
+		t.Fatalf("credential binding labels=%#v", data.Stores[0].CredentialBindings)
+	}
+}
+
 func TestModelCallResolverRequiresStoreProfileAndCredential(t *testing.T) {
 	db := setupModelProfileTestDB(t)
 	tenant, store := createModelProfileTenantAndStore(t, db)
-	if _, err := ModelCallResolverService.Resolve(tenant.ID, store.ID, enums.ModelUsageSlotReplyLLM); err == nil {
+	binding := modelProfileTestBinding(t, db, tenant.ID, store.ID)
+	if _, err := ModelCallResolverService.ResolveForBinding(tenant.ID, store.ID, binding.ID, enums.ModelUsageSlotReplyLLM); err == nil {
 		t.Fatal("resolver must fail without the sole Store Profile assignment")
 	}
 
@@ -276,24 +311,24 @@ func TestModelCallResolverRequiresStoreProfileAndCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	credential := &models.StoreModelCredential{
-		TenantID: tenant.ID, StoreID: store.ID, CredentialRevision: 4, Status: enums.StoreCredentialStatusActive,
+		TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID, CredentialRevision: 4, Status: enums.StoreCredentialStatusActive,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	cipher, cipherErr := securex.NewAESGCM(config.Current().StoreCredential.MasterKey)
 	if cipherErr != nil {
 		t.Fatal(cipherErr)
 	}
-	credential.EncryptedKey, credential.KeyNonce, cipherErr = cipher.Encrypt("new-runtime-key", storeCredentialAAD(tenant.ID, store.ID, credential.CredentialRevision))
+	credential.EncryptedKey, credential.KeyNonce, cipherErr = cipher.Encrypt("new-runtime-key", storeBindingCredentialAAD(tenant.ID, store.ID, binding.ID, credential.CredentialRevision))
 	if cipherErr != nil {
 		t.Fatal(cipherErr)
 	}
 	credential.KeyFingerprint = securex.Fingerprint("new-runtime-key")
-	credential.CipherVersion = securex.AESGCMCipherVersion
+	credential.CipherVersion = storeBindingCredentialCipherVersion
 	credential.MasterKeyID = config.Current().StoreCredential.MasterKeyID
 	if err := db.Create(credential).Error; err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := ModelCallResolverService.Resolve(tenant.ID, store.ID, enums.ModelUsageSlotReplyLLM)
+	resolved, err := ModelCallResolverService.ResolveForBinding(tenant.ID, store.ID, binding.ID, enums.ModelUsageSlotReplyLLM)
 	if err != nil {
 		t.Fatalf("Resolve() error=%v", err)
 	}
@@ -303,8 +338,93 @@ func TestModelCallResolverRequiresStoreProfileAndCredential(t *testing.T) {
 	if err := db.Model(store).Update("status", enums.StatusDisabled).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ModelCallResolverService.Resolve(tenant.ID, store.ID, enums.ModelUsageSlotReplyLLM); err == nil {
+	if _, err := ModelCallResolverService.ResolveForBinding(tenant.ID, store.ID, binding.ID, enums.ModelUsageSlotReplyLLM); err == nil {
 		t.Fatal("disabled Store must not resolve an active model credential")
+	}
+}
+
+func TestModelCallResolverKnowledgeDebugRequiresExactBinding(t *testing.T) {
+	db := setupModelProfileTestDB(t)
+	tenant, store := createModelProfileTenantAndStore(t, db)
+	binding := modelProfileTestBinding(t, db, tenant.ID, store.ID)
+	now := time.Now()
+	profile := createPersistedModelProfileForTest(t, db, "knowledge-debug", 1, enums.ModelProfileStatusActive)
+	if err := db.Create(&models.StoreModelProfileAssignment{
+		TenantID: tenant.ID, StoreID: store.ID, TemplateID: profile.ID, TemplateRevision: profile.Revision,
+		Status: enums.StoreModelAssignmentStatusReady, ReadinessStatus: "ready", AssignedAt: now,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	credential := &models.StoreModelCredential{
+		TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		CredentialRevision: 7, Status: enums.StoreCredentialStatusActive,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	cipher, err := securex.NewAESGCM(config.Current().StoreCredential.MasterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential.EncryptedKey, credential.KeyNonce, err = cipher.Encrypt(
+		"knowledge-debug-key",
+		storeBindingCredentialAAD(tenant.ID, store.ID, binding.ID, credential.CredentialRevision),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential.KeyFingerprint = securex.Fingerprint("knowledge-debug-key")
+	credential.CipherVersion = storeBindingCredentialCipherVersion
+	credential.MasterKeyID = config.Current().StoreCredential.MasterKeyID
+	if err := db.Create(credential).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	secondUser := &models.User{
+		TenantID: tenant.ID, Username: "knowledge-debug-second-" + strings.ToLower(t.Name()),
+		Nickname: "Second Store Staff", Status: enums.StatusOk,
+	}
+	if err := db.Create(secondUser).Error; err != nil {
+		t.Fatal(err)
+	}
+	secondBinding := &models.StoreStaffBinding{
+		TenantID: tenant.ID, UserID: secondUser.ID, ActiveUserID: positiveInt64Pointer(secondUser.ID),
+		StoreID: store.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(secondBinding).Error; err != nil {
+		t.Fatal(err)
+	}
+	conversation := &models.Conversation{
+		TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		CustomerID: 991, CustomerName: "Knowledge Debug Customer", Status: enums.IMConversationStatusPending,
+	}
+	if err := db.Create(conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		TenantID: tenant.ID, ConversationID: conversation.ID, StoreID: store.ID,
+		StoreStaffBindingID: binding.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ModelCallResolverService.ResolveForKnowledgeDebug(
+		tenant.ID, store.ID, 0, 0, enums.ModelUsageSlotReplyLLM,
+	); err == nil {
+		t.Fatal("standalone knowledge debug without a Store staff binding must fail")
+	}
+	if _, err := ModelCallResolverService.ResolveForKnowledgeDebug(
+		tenant.ID, store.ID, conversation.ID, secondBinding.ID, enums.ModelUsageSlotReplyLLM,
+	); err == nil {
+		t.Fatal("conversation and selected Store staff binding mismatch must fail")
+	}
+	resolved, err := ModelCallResolverService.ResolveForKnowledgeDebug(
+		tenant.ID, store.ID, conversation.ID, binding.ID, enums.ModelUsageSlotReplyLLM,
+	)
+	if err != nil {
+		t.Fatalf("matching knowledge debug binding rejected: %v", err)
+	}
+	if resolved.StoreStaffBindingID != binding.ID || resolved.CredentialID != credential.ID || resolved.CredentialRevision != 7 {
+		t.Fatalf("knowledge debug resolved wrong credential: %#v", resolved)
 	}
 }
 
@@ -317,7 +437,7 @@ func setupModelProfileTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	if err := db.AutoMigrate(
-		&models.Tenant{}, &models.Store{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{}, &models.ModelProfileTestRun{},
+		&models.Tenant{}, &models.User{}, &models.Store{}, &models.StoreStaffBinding{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{}, &models.ModelProfileTestRun{},
 		&models.StoreModelProfileAssignment{}, &models.StoreModelCredential{}, &models.Conversation{}, &models.ConversationRouteState{},
 	); err != nil {
 		t.Fatalf("AutoMigrate() error=%v", err)
@@ -352,7 +472,26 @@ func createModelProfileTenantAndStore(t *testing.T, db *gorm.DB) (*models.Tenant
 	if err := db.Create(store).Error; err != nil {
 		t.Fatal(err)
 	}
+	user := &models.User{TenantID: tenant.ID, Username: "staff-" + strings.ToLower(t.Name()), Nickname: "Store Staff", Status: enums.StatusOk}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	binding := &models.StoreStaffBinding{
+		TenantID: tenant.ID, UserID: user.ID, ActiveUserID: positiveInt64Pointer(user.ID), StoreID: store.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatal(err)
+	}
 	return tenant, store
+}
+
+func modelProfileTestBinding(t *testing.T, db *gorm.DB, tenantID, storeID int64) *models.StoreStaffBinding {
+	t.Helper()
+	binding := repositories.StoreStaffBindingRepository.TakeInTenant(db, tenantID, "store_id = ? AND status = ?", storeID, enums.StatusOk)
+	if binding == nil {
+		t.Fatal("model profile test binding is missing")
+	}
+	return binding
 }
 
 func createPersistedModelProfileForTest(t *testing.T, db *gorm.DB, code string, revision int64, status enums.ModelProfileStatus) *models.ModelProfileTemplate {

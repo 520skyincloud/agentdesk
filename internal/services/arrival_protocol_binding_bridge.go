@@ -12,6 +12,7 @@ type ArrivalProtocolBindingBridge interface {
 type ArrivalProtocolBindingRequest struct {
 	TenantID                     int64
 	StoreID                      int64
+	StoreStaffBindingID          int64
 	TenantAuthorizationID        int64
 	WxWorkProtocolInstanceID     int64
 	CorpID                       string

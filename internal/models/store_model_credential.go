@@ -7,11 +7,12 @@ import (
 )
 
 // StoreModelCredential stores one active and at most one candidate encrypted
-// NewAPI credential for a Tenant + Store. Secret material is never returned.
+// NewAPI credential for a Store staff binding. Secret material is never returned.
 type StoreModelCredential struct {
 	ID                       int64                          `gorm:"primaryKey;autoIncrement"`
-	TenantID                 int64                          `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_model_credential,priority:1"`
-	StoreID                  int64                          `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_model_credential,priority:2"`
+	TenantID                 int64                          `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_staff_model_credential,priority:1"`
+	StoreID                  int64                          `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_staff_model_credential,priority:2"`
+	StoreStaffBindingID      int64                          `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_staff_model_credential,priority:3"`
 	EncryptedKey             string                         `gorm:"type:text" json:"-"`
 	KeyNonce                 string                         `gorm:"type:varchar(255);not null;default:''" json:"-"`
 	KeyFingerprint           string                         `gorm:"type:varchar(64);not null;default:'';index" json:"-"`
@@ -58,24 +59,25 @@ type StoreCredentialPolicy struct {
 // StoreModelCredentialAuditLog is append-only and contains no secret value,
 // ciphertext, nonce, or complete fingerprint.
 type StoreModelCredentialAuditLog struct {
-	ID               int64                       `gorm:"primaryKey;autoIncrement"`
-	TenantID         int64                       `gorm:"type:bigint;not null;default:0;index"`
-	StoreID          int64                       `gorm:"type:bigint;not null;default:0;index"`
-	CredentialID     int64                       `gorm:"type:bigint;not null;default:0;index"`
-	RequestID        string                      `gorm:"type:varchar(128);not null;default:'';index"`
-	Action           enums.CredentialAuditAction `gorm:"type:varchar(30);not null;default:'';index"`
-	Result           enums.CredentialAuditResult `gorm:"type:varchar(30);not null;default:'';index"`
-	FromRevision     int64                       `gorm:"type:bigint;not null;default:0"`
-	ToRevision       int64                       `gorm:"type:bigint;not null;default:0"`
-	ProfileID        int64                       `gorm:"type:bigint;not null;default:0;index"`
-	ProfileRevision  int64                       `gorm:"type:bigint;not null;default:0;index"`
-	FingerprintLast6 string                      `gorm:"type:varchar(6);not null;default:''"`
-	OperatorID       int64                       `gorm:"type:bigint;not null;default:0;index"`
-	OperatorName     string                      `gorm:"type:varchar(100);not null;default:''"`
-	OperatorRole     string                      `gorm:"type:varchar(100);not null;default:''"`
-	ApproverID       int64                       `gorm:"type:bigint;not null;default:0;index"`
-	ApproverName     string                      `gorm:"type:varchar(100);not null;default:''"`
-	ErrorClass       string                      `gorm:"type:varchar(80);not null;default:'';index"`
-	ClientIP         string                      `gorm:"type:varchar(64);not null;default:''"`
-	CreatedAt        time.Time                   `gorm:"type:datetime;not null;index"`
+	ID                  int64                       `gorm:"primaryKey;autoIncrement"`
+	TenantID            int64                       `gorm:"type:bigint;not null;default:0;index"`
+	StoreID             int64                       `gorm:"type:bigint;not null;default:0;index"`
+	StoreStaffBindingID int64                       `gorm:"type:bigint;not null;default:0;index"`
+	CredentialID        int64                       `gorm:"type:bigint;not null;default:0;index"`
+	RequestID           string                      `gorm:"type:varchar(128);not null;default:'';index"`
+	Action              enums.CredentialAuditAction `gorm:"type:varchar(30);not null;default:'';index"`
+	Result              enums.CredentialAuditResult `gorm:"type:varchar(30);not null;default:'';index"`
+	FromRevision        int64                       `gorm:"type:bigint;not null;default:0"`
+	ToRevision          int64                       `gorm:"type:bigint;not null;default:0"`
+	ProfileID           int64                       `gorm:"type:bigint;not null;default:0;index"`
+	ProfileRevision     int64                       `gorm:"type:bigint;not null;default:0;index"`
+	FingerprintLast6    string                      `gorm:"type:varchar(6);not null;default:''"`
+	OperatorID          int64                       `gorm:"type:bigint;not null;default:0;index"`
+	OperatorName        string                      `gorm:"type:varchar(100);not null;default:''"`
+	OperatorRole        string                      `gorm:"type:varchar(100);not null;default:''"`
+	ApproverID          int64                       `gorm:"type:bigint;not null;default:0;index"`
+	ApproverName        string                      `gorm:"type:varchar(100);not null;default:''"`
+	ErrorClass          string                      `gorm:"type:varchar(80);not null;default:'';index"`
+	ClientIP            string                      `gorm:"type:varchar(64);not null;default:''"`
+	CreatedAt           time.Time                   `gorm:"type:datetime;not null;index"`
 }

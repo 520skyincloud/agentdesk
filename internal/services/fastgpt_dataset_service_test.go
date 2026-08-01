@@ -20,6 +20,15 @@ import (
 	"gorm.io/gorm"
 )
 
+func storeCredentialFixtureBindingID(t *testing.T, fixture storeCredentialFixture) int64 {
+	t.Helper()
+	binding := repositories.StoreStaffBindingRepository.TakeInTenant(fixture.db, fixture.tenant.ID, "store_id = ? AND status = ?", fixture.store.ID, enums.StatusOk)
+	if binding == nil {
+		t.Fatal("store credential fixture binding is missing")
+	}
+	return binding.ID
+}
+
 func TestFastGPTReadinessRequiresActiveTenant(t *testing.T) {
 	operator := &dto.AuthPrincipal{
 		UserID: 1,
@@ -51,7 +60,7 @@ func TestFastGPTFailedDatasetJobCanBeRetried(t *testing.T) {
 		t.Fatalf("create failed job: %v", err)
 	}
 
-	retried, err := FastGPTDatasetService.enqueueDefaultDataset(store, store.Name)
+	retried, err := FastGPTDatasetService.enqueueDefaultDataset(store, storeCredentialFixtureBindingID(t, fixture), store.Name)
 	if err != nil {
 		t.Fatalf("retry failed job: %v", err)
 	}
@@ -65,11 +74,12 @@ func TestFastGPTDatasetJobsAllowMultipleKnowledgeBasesForOneStore(t *testing.T) 
 	seedFastGPTDatasetRuntime(t, fixture)
 	db := fixture.db
 	store := fixture.store
-	first, err := FastGPTDatasetService.enqueueDefaultDataset(store, "前厅资料")
+	bindingID := storeCredentialFixtureBindingID(t, fixture)
+	first, err := FastGPTDatasetService.enqueueDefaultDataset(store, bindingID, "前厅资料")
 	if err != nil {
 		t.Fatalf("enqueue first knowledge base: %v", err)
 	}
-	second, err := FastGPTDatasetService.enqueueDefaultDataset(store, "房间设施资料")
+	second, err := FastGPTDatasetService.enqueueDefaultDataset(store, bindingID, "房间设施资料")
 	if err != nil {
 		t.Fatalf("enqueue second knowledge base: %v", err)
 	}
@@ -187,7 +197,7 @@ func TestFastGPTProfileCASCannotCrossTenant(t *testing.T) {
 	seedFastGPTDatasetRuntime(t, fixture)
 	seedReadyFastGPTStoreBinding(t, fixture, 1)
 	updated, err := repositories.FastGPTStoreTenantRepository.ApplyTargetRevisions(
-		fixture.db, fixture.tenant.ID+999, fixture.store.ID, fixture.profile.ID, fixture.profile.Revision, 1,
+		fixture.db, fixture.tenant.ID+999, fixture.store.ID, storeCredentialFixtureBindingID(t, fixture), fixture.profile.ID, fixture.profile.Revision, 1,
 		map[string]any{"applied_profile_revision": fixture.profile.Revision + 99},
 	)
 	if err != nil || updated {
@@ -227,14 +237,19 @@ func TestFastGPTStoreBindingCreateIfAbsentPreservesAppliedRevision(t *testing.T)
 func TestFastGPTCommitTargetRecheckRejectsCredentialRace(t *testing.T) {
 	fixture := setupStoreCredentialFixture(t)
 	seedFastGPTDatasetRuntime(t, fixture)
-	target, credential, err := FastGPTDatasetService.resolveJobTarget(fixture.tenant.ID, fixture.store.ID)
+	target, credential, err := FastGPTDatasetService.resolveJobTarget(fixture.tenant.ID, fixture.store.ID, storeCredentialFixtureBindingID(t, fixture))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := requireCurrentFastGPTJobTargetDB(fixture.db, *target, credential); err != nil {
 		t.Fatalf("current target rejected: %v", err)
 	}
-	current := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	current := repositories.StoreModelCredentialRepository.GetByBinding(
+		fixture.db,
+		fixture.tenant.ID,
+		fixture.store.ID,
+		storeCredentialFixtureBindingID(t, fixture),
+	)
 	if err := repositories.StoreModelCredentialRepository.Updates(fixture.db, current.ID, map[string]any{
 		"credential_revision": current.CredentialRevision + 1, "key_fingerprint": "rotated",
 	}); err != nil {
@@ -255,13 +270,13 @@ func TestFastGPTKnowledgeBaseActivationProjectsToWholeStore(t *testing.T) {
 		TenantID: tenantID, StoreID: store.ID, DatasetID: "dataset-active", Name: "当前库",
 		ConnectionID: fastgptapi.ManagedConnectionID, FastGPTProfileStatus: "ready",
 		FastGPTAppliedProfileID: fixture.profile.ID, FastGPTAppliedProfileRevision: fixture.profile.Revision,
-		FastGPTAppliedCredentialRevision: 1, Status: enums.StatusOk,
+		FastGPTAppliedStoreStaffBindingID: fixture.binding.ID, FastGPTAppliedCredentialRevision: 1, Status: enums.StatusOk,
 	}
 	candidate := &models.KnowledgeBase{
 		TenantID: tenantID, StoreID: store.ID, DatasetID: "dataset-next", Name: "新库",
 		ConnectionID: fastgptapi.ManagedConnectionID, FastGPTProfileStatus: "ready",
 		FastGPTAppliedProfileID: fixture.profile.ID, FastGPTAppliedProfileRevision: fixture.profile.Revision,
-		FastGPTAppliedCredentialRevision: 1, Status: enums.StatusOk,
+		FastGPTAppliedStoreStaffBindingID: fixture.binding.ID, FastGPTAppliedCredentialRevision: 1, Status: enums.StatusOk,
 	}
 	if err := db.Create(active).Error; err != nil {
 		t.Fatalf("create active knowledge base: %v", err)
@@ -273,8 +288,8 @@ func TestFastGPTKnowledgeBaseActivationProjectsToWholeStore(t *testing.T) {
 		t.Fatalf("set store default: %v", err)
 	}
 	seedReadyFastGPTStoreBinding(t, fixture, 1)
-	first := &models.WxWorkProtocolInstance{TenantID: tenantID, Guid: "gateway-instance-1", StoreID: store.ID, KnowledgeBaseID: active.ID, Status: enums.StatusOk}
-	second := &models.WxWorkProtocolInstance{TenantID: tenantID, Guid: "gateway-instance-2", StoreID: store.ID, KnowledgeBaseID: active.ID, Status: enums.StatusOk}
+	first := &models.WxWorkProtocolInstance{TenantID: tenantID, Guid: "gateway-instance-1", StoreID: store.ID, StoreStaffBindingID: fixture.binding.ID, KnowledgeBaseID: active.ID, Status: enums.StatusOk}
+	second := &models.WxWorkProtocolInstance{TenantID: tenantID, Guid: "gateway-instance-2", StoreID: store.ID, StoreStaffBindingID: fixture.binding.ID, KnowledgeBaseID: active.ID, Status: enums.StatusOk}
 	if err := db.Create(first).Error; err != nil {
 		t.Fatalf("create first instance: %v", err)
 	}
@@ -285,17 +300,14 @@ func TestFastGPTKnowledgeBaseActivationProjectsToWholeStore(t *testing.T) {
 	if err := FastGPTDatasetService.ActivateKnowledgeBase(store.ID, candidate.ID, fixture.manager); err != nil {
 		t.Fatalf("activate knowledge base: %v", err)
 	}
-	updatedFirst := WxWorkProtocolInstanceService.Get(first.ID)
-	updatedSecond := WxWorkProtocolInstanceService.Get(second.ID)
 	updatedStore := StoreService.Get(store.ID)
-	if updatedFirst == nil || updatedFirst.KnowledgeBaseID != candidate.ID {
-		t.Fatalf("first instance did not switch: %#v", updatedFirst)
-	}
-	if updatedSecond == nil || updatedSecond.KnowledgeBaseID != candidate.ID {
-		t.Fatalf("second instance did not receive Store projection: %#v", updatedSecond)
-	}
 	if updatedStore == nil || updatedStore.KnowledgeBaseID != candidate.ID {
 		t.Fatalf("Store authoritative knowledge base did not switch: %#v", updatedStore)
+	}
+	updatedFirst := WxWorkProtocolInstanceService.Get(first.ID)
+	updatedSecond := WxWorkProtocolInstanceService.Get(second.ID)
+	if updatedFirst == nil || updatedFirst.KnowledgeBaseID != active.ID || updatedSecond == nil || updatedSecond.KnowledgeBaseID != active.ID {
+		t.Fatalf("legacy instance projections must remain outside the Store knowledge runtime: first=%#v second=%#v", updatedFirst, updatedSecond)
 	}
 	if err := db.First(active, active.ID).Error; err != nil || active.Status != enums.StatusOk {
 		t.Fatalf("previous knowledge base should remain an explicit managed resource: %#v err=%v", active, err)
@@ -329,7 +341,8 @@ func TestFastGPTProfileCommitUpdatesOnlySelectedKnowledgeBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	credential, err := StoreModelCredentialService.ResolveActive(fixture.tenant.ID, fixture.store.ID)
+	target.StoreStaffBindingID = fixture.binding.ID
+	credential, err := StoreModelCredentialService.ResolveActiveForBinding(fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,6 +456,7 @@ func seedReadyFastGPTStoreBinding(t *testing.T, fixture storeCredentialFixture, 
 			TenantTeamName: fixture.store.Name, Status: "active", ReadinessStatus: "ready",
 			TargetProfileID: fixture.profile.ID, TargetProfileRevision: fixture.profile.Revision,
 			AppliedProfileID: fixture.profile.ID, AppliedProfileRevision: fixture.profile.Revision,
+			TargetStoreStaffBindingID: fixture.binding.ID, AppliedStoreStaffBindingID: fixture.binding.ID,
 			TargetCredentialRevision: credentialRevision, AppliedCredentialRevision: credentialRevision,
 			AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 		}
@@ -455,6 +469,7 @@ func seedReadyFastGPTStoreBinding(t *testing.T, fixture storeCredentialFixture, 
 		"status": "active", "readiness_status": "ready",
 		"target_profile_id": fixture.profile.ID, "target_profile_revision": fixture.profile.Revision,
 		"applied_profile_id": fixture.profile.ID, "applied_profile_revision": fixture.profile.Revision,
+		"target_store_staff_binding_id": fixture.binding.ID, "applied_store_staff_binding_id": fixture.binding.ID,
 		"target_credential_revision": credentialRevision, "applied_credential_revision": credentialRevision,
 		"updated_at": now,
 	}); err != nil {
@@ -583,11 +598,11 @@ func TestFinalizeFastGPTDatasetDeletionClearsOnlyBoundInstances(t *testing.T) {
 	if updatedStore == nil || updatedStore.KnowledgeBaseID != 0 {
 		t.Fatalf("store retained deleted knowledge base: %#v", updatedStore)
 	}
-	if updatedBound == nil || updatedBound.KnowledgeBaseID != 0 {
-		t.Fatalf("bound instance retained deleted knowledge base: %#v", updatedBound)
+	if updatedBound == nil || updatedBound.KnowledgeBaseID != deleting.ID {
+		t.Fatalf("legacy bound instance projection was unexpectedly rewritten: %#v", updatedBound)
 	}
-	if updatedRetained == nil || updatedRetained.KnowledgeBaseID != 0 {
-		t.Fatalf("Store projection retained a conflicting knowledge base: %#v", updatedRetained)
+	if updatedRetained == nil || updatedRetained.KnowledgeBaseID != other.ID {
+		t.Fatalf("unrelated legacy instance projection was unexpectedly rewritten: %#v", updatedRetained)
 	}
 	updatedBoundRoute := repositories.ConversationRouteStateRepository.Get(db, boundRoute.ID)
 	updatedRetainedRoute := repositories.ConversationRouteStateRepository.Get(db, retainedRoute.ID)

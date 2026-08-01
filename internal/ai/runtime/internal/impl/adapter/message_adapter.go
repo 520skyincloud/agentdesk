@@ -13,6 +13,7 @@ import (
 )
 
 const defaultHistoryLimit = 15
+const maxStoreCustomerMemoryRunes = 1200
 
 type HistoryBuildResult struct {
 	Messages        []*schema.Message
@@ -76,10 +77,7 @@ func configuredHistoryLimit(conversationID, tenantID int64) int {
 	if state == nil || state.WxWorkInstanceID <= 0 {
 		return defaultHistoryLimit
 	}
-	instance := repositories.WxWorkProtocolInstanceRepository.Get(sqls.DB(), state.WxWorkInstanceID)
-	if tenantID > 0 {
-		instance = repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), state.WxWorkInstanceID, tenantID)
-	}
+	instance := repositories.WxWorkProtocolInstanceRepository.GetActivatedCurrentInTenant(sqls.DB(), state.WxWorkInstanceID, tenantID)
 	if instance == nil || instance.ContextMaxMessages <= 0 {
 		return defaultHistoryLimit
 	}
@@ -93,7 +91,7 @@ func configuredHistoryLimit(conversationID, tenantID int64) int {
 }
 
 func buildConversationMemoryMessage(conversationID, tenantID int64, sessionNo int, beforeMessageID int64) (*schema.Message, string, int) {
-	if conversationID <= 0 || sessionNo <= 0 || beforeMessageID <= 0 {
+	if conversationID <= 0 || sessionNo <= 0 {
 		return nil, "", 0
 	}
 	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
@@ -101,6 +99,14 @@ func buildConversationMemoryMessage(conversationID, tenantID int64, sessionNo in
 		conversation = repositories.ConversationRepository.GetInTenant(sqls.DB(), conversationID, tenantID)
 	}
 	storeID, instanceID := resolveConversationStoreScope(conversationID, tenantID)
+	if conversation != nil && conversation.TenantID > 0 && conversation.CustomerID > 0 && storeID > 0 {
+		if message, source, count := buildStoreCustomerMemoryMessage(conversation, storeID, instanceID, sessionNo, beforeMessageID); message != nil {
+			return message, source, count
+		}
+	}
+	if beforeMessageID <= 0 {
+		return nil, "", 0
+	}
 	cnd := sqls.NewCnd().
 		Eq("conversation_id", conversationID).
 		Eq("session_no", sessionNo).
@@ -127,7 +133,105 @@ func buildConversationMemoryMessage(conversationID, tenantID int64, sessionNo in
 	return nil, "", 0
 }
 
+func buildStoreCustomerMemoryMessage(
+	conversation *models.Conversation,
+	storeID, instanceID int64,
+	sessionNo int,
+	beforeMessageID int64,
+) (*schema.Message, string, int) {
+	if conversation == nil || conversation.TenantID <= 0 || conversation.CustomerID <= 0 || storeID <= 0 {
+		return nil, "", 0
+	}
+	parts := make([]string, 0, 8)
+	seen := make(map[string]struct{})
+	messageCount := 0
+	if relation := repositories.StoreCustomerRelationRepository.TakeByCustomerAndStoreInTenant(
+		sqls.DB(), conversation.TenantID, conversation.CustomerID, storeID,
+	); relation != nil {
+		parts = appendBoundedStoreMemoryPart(parts, seen, "门店客户稳定备注："+strings.TrimSpace(relation.StableNotes))
+	}
+
+	summaries := repositories.ConversationSessionSummaryRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", conversation.TenantID).
+		Eq("store_id", storeID).
+		Eq("customer_id", conversation.CustomerID).
+		Eq("status", enums.StatusOk).
+		Desc("last_message_id").
+		Desc("id").
+		Limit(12))
+	for i := range summaries {
+		summary := &summaries[i]
+		if summary.ConversationID == conversation.ID && summary.SessionNo == sessionNo {
+			continue
+		}
+		body := buildSummaryMemoryBody(summary)
+		if body == "" {
+			continue
+		}
+		parts = appendBoundedStoreMemoryPart(parts, seen, "同门店历史会话记忆："+body)
+		messageCount += summary.MessageCount
+	}
+
+	if beforeMessageID > 0 {
+		current := repositories.ConversationSessionSummaryRepository.FindOne(sqls.DB(), sqls.NewCnd().
+			Eq("tenant_id", conversation.TenantID).
+			Eq("conversation_id", conversation.ID).
+			Eq("session_no", sessionNo).
+			Eq("store_id", storeID).
+			Eq("customer_id", conversation.CustomerID).
+			Eq("wx_work_instance_id", instanceID).
+			Eq("status", enums.StatusOk).
+			Desc("last_message_id").
+			Desc("id"))
+		if current != nil {
+			parts = appendBoundedStoreMemoryPart(parts, seen, "本会话压缩记忆："+buildSummaryMemoryBody(current))
+			messageCount += current.MessageCount
+		}
+	}
+	if len(parts) == 0 {
+		return nil, "", 0
+	}
+	content := "以下是该客户在当前门店的历史记忆，只用于承接上下文；不同门店的数据不得混用，原始消息仍以数据库为准：\n" + strings.Join(parts, "\n")
+	return schema.SystemMessage(content), "store_customer_memory", messageCount
+}
+
+func appendBoundedStoreMemoryPart(parts []string, seen map[string]struct{}, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return parts
+	}
+	if _, exists := seen[value]; exists {
+		return parts
+	}
+	used := 0
+	for _, part := range parts {
+		used += len([]rune(part)) + 1
+	}
+	remaining := maxStoreCustomerMemoryRunes - used
+	if remaining <= 0 {
+		return parts
+	}
+	runes := []rune(value)
+	if len(runes) > remaining {
+		runes = runes[:remaining]
+		value = strings.TrimSpace(string(runes))
+	}
+	if value == "" {
+		return parts
+	}
+	seen[value] = struct{}{}
+	return append(parts, value)
+}
+
 func buildSummaryMemoryText(summary *models.ConversationSessionSummary) string {
+	body := buildSummaryMemoryBody(summary)
+	if body == "" {
+		return ""
+	}
+	return "以下是本会话更早消息的压缩记忆，只用于承接上下文；原始消息仍以数据库为准，不能把未完成动作说成已完成：\n" + body
+}
+
+func buildSummaryMemoryBody(summary *models.ConversationSessionSummary) string {
 	if summary == nil {
 		return ""
 	}
@@ -147,7 +251,7 @@ func buildSummaryMemoryText(summary *models.ConversationSessionSummary) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "以下是本会话更早消息的压缩记忆，只用于承接上下文；原始消息仍以数据库为准，不能把未完成动作说成已完成：\n" + strings.Join(parts, "\n")
+	return strings.Join(parts, "\n")
 }
 
 func currentSessionNo(currentMessageID, tenantID int64) int {

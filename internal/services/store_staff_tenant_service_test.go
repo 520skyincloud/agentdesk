@@ -77,6 +77,10 @@ func TestEnsureStoreStaffBindingRequiresExistingStoreStaffAccount(t *testing.T) 
 	}
 	user := createStoreStaffTenantUser(t, db, 101, "ensure-binding-user")
 	existing := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, store.ID)
+	if err := db.Model(&models.WxWorkProtocolInstance{}).Where("id = ?", instance.ID).Update("store_staff_binding_id", existing.ID).Error; err != nil {
+		t.Fatalf("assign explicit store staff binding: %v", err)
+	}
+	instance.StoreStaffBindingID = existing.ID
 	binding, err := StoreStaffBindingService.EnsureForInstance(instance, operator)
 	if err != nil {
 		t.Fatalf("ensure existing store staff binding: %v", err)
@@ -103,7 +107,7 @@ func TestEnsureStoreStaffBindingLocksCanonicalBindingBeforeTeam(t *testing.T) {
 	user := createStoreStaffTenantUser(t, db, 101, "ensure-lock-user")
 	store := createStoreStaffTenantStore(t, db, 101, "ensure-lock-store")
 	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, team.ID, store.ID)
-	instance := createStoreStaffTenantInstance(t, db, 101, "ensure-lock-instance", 0, store.ID, 0)
+	instance := createStoreStaffTenantInstance(t, db, 101, "ensure-lock-instance", 0, store.ID, binding.ID)
 	lockOrder := make([]string, 0, 2)
 	callbackName := "test:ensure-store-staff-binding-lock-order"
 	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {

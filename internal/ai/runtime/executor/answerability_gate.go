@@ -768,10 +768,15 @@ func findRuntimeWxWorkInstance(req RunInput) *models.WxWorkProtocolInstance {
 	if route == nil || route.WxWorkInstanceID <= 0 {
 		return nil
 	}
-	if req.Conversation.TenantID > 0 {
-		return repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, route.WxWorkInstanceID, req.Conversation.TenantID)
+	if req.Conversation.TenantID <= 0 {
+		return nil
 	}
-	return repositories.WxWorkProtocolInstanceRepository.Get(db, route.WxWorkInstanceID)
+	instance := repositories.WxWorkProtocolInstanceRepository.GetActivatedCurrentInTenant(db, route.WxWorkInstanceID, req.Conversation.TenantID)
+	runtimeInstance, err := services.StoreService.HydrateRuntimeInstanceDB(db, instance)
+	if err != nil {
+		return nil
+	}
+	return runtimeInstance
 }
 
 func extractRuntimeStorePhone(instance *models.WxWorkProtocolInstance) string {

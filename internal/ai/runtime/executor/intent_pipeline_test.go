@@ -1767,6 +1767,8 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 		&models.Tenant{},
 		&models.Asset{},
 		&models.Store{},
+		&models.StoreStaffBinding{},
+		&models.User{},
 		&models.Customer{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
@@ -1822,7 +1824,26 @@ func seedRuntimeIntentModelCallFixture(t *testing.T, db *gorm.DB) {
 	if err := db.Create(store).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.ConversationRouteState{TenantID: 1, ConversationID: 7, StoreID: store.ID}).Error; err != nil {
+	user := &models.User{TenantID: 1, Username: "intent-store-owner", Password: "test", Status: enums.StatusOk}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	activeUserID := user.ID
+	binding := &models.StoreStaffBinding{
+		TenantID: 1, UserID: user.ID, ActiveUserID: &activeUserID,
+		StoreID: store.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.Conversation{}).Where("id = ?", 7).Updates(map[string]any{
+		"store_id": store.ID, "store_staff_binding_id": binding.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		TenantID: 1, ConversationID: 7, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	profile := &models.ModelProfileTemplate{
@@ -1874,7 +1895,8 @@ func seedRuntimeIntentModelCallFixture(t *testing.T, db *gorm.DB) {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.StoreModelCredential{
-		TenantID: 1, StoreID: store.ID, EncryptedKey: ciphertext, KeyNonce: nonce,
+		TenantID: 1, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		EncryptedKey: ciphertext, KeyNonce: nonce,
 		KeyFingerprint: securex.Fingerprint(apiKey), CipherVersion: securex.AESGCMCipherVersion,
 		MasterKeyID: config.Current().StoreCredential.MasterKeyID, CredentialRevision: revision,
 		Status:      enums.StoreCredentialStatusActive,

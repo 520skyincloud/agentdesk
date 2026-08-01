@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"agent-desk/internal/models"
@@ -109,6 +110,22 @@ func (r *conversationRepository) GetForUpdateInTenant(db *gorm.DB, id, tenantID 
 	return ret, nil
 }
 
+func (r *conversationRepository) GetForUpdateByThreadKeyInTenant(db *gorm.DB, tenantID int64, threadKey string) (*models.Conversation, error) {
+	if db == nil || tenantID <= 0 || strings.TrimSpace(threadKey) == "" {
+		return nil, nil
+	}
+	ret := &models.Conversation{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		First(ret, "tenant_id = ? AND thread_key = ?", tenantID, strings.TrimSpace(threadKey)).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
 func (r *conversationRepository) Take(db *gorm.DB, where ...interface{}) *models.Conversation {
 	ret := &models.Conversation{}
 	if err := db.Take(ret, where...).Error; err != nil {
@@ -120,6 +137,21 @@ func (r *conversationRepository) Take(db *gorm.DB, where ...interface{}) *models
 func (r *conversationRepository) Find(db *gorm.DB, cnd *sqls.Cnd) (list []models.Conversation) {
 	cnd.Find(db, &list)
 	return
+}
+
+func (r *conversationRepository) FindByStoreStaffBindingInTenant(db *gorm.DB, tenantID, storeID, bindingID int64, forUpdate bool) ([]models.Conversation, error) {
+	list := make([]models.Conversation, 0)
+	if db == nil || tenantID <= 0 || storeID <= 0 || bindingID <= 0 {
+		return list, nil
+	}
+	query := db.Where("tenant_id = ? AND store_id = ? AND store_staff_binding_id = ?", tenantID, storeID, bindingID)
+	if forUpdate {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.Order("id ASC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
 }
 
 func (r *conversationRepository) FindOne(db *gorm.DB, cnd *sqls.Cnd) *models.Conversation {
@@ -194,8 +226,8 @@ func (r *conversationRepository) FindPendingUnassignedForTeam(db *gorm.DB, tenan
 		return db.Table("t_conversation AS c").
 			Select("DISTINCT c.*").
 			Joins("LEFT JOIN t_conversation_route_state AS route ON route.conversation_id = c.id AND route.tenant_id = c.tenant_id").
-			Joins("LEFT JOIN t_wx_work_protocol_instance AS instance ON instance.id = route.wx_work_instance_id AND instance.tenant_id = c.tenant_id").
-			Joins("LEFT JOIN t_store_staff_binding AS binding ON binding.store_id = route.store_id AND binding.tenant_id = c.tenant_id AND binding.status = ?", enums.StatusOk).
+			Joins("LEFT JOIN t_wx_work_protocol_instance AS instance ON instance.id = route.wx_work_instance_id AND instance.tenant_id = c.tenant_id AND instance.store_id = route.store_id AND instance.store_staff_binding_id = route.store_staff_binding_id").
+			Joins("LEFT JOIN t_store_staff_binding AS binding ON binding.id = route.store_staff_binding_id AND binding.store_id = route.store_id AND binding.tenant_id = c.tenant_id AND binding.status = ?", enums.StatusOk).
 			Where("c.tenant_id = ? AND c.status = ? AND c.current_assignee_id = ?", tenantID, enums.IMConversationStatusPending, 0).
 			Where("c.current_team_id = ? OR instance.agent_team_id = ? OR binding.agent_team_id = ?", teamID, teamID, teamID)
 	}, "c.id",
@@ -216,15 +248,18 @@ func (r *conversationRepository) FindPendingUnassignedForTeam(db *gorm.DB, tenan
 		seenIDs = append(seenIDs, conversation.ID)
 	}
 	fallback, err := findPendingConversationWindow(func() *gorm.DB {
-		query := db.Model(&models.Conversation{}).
-			Where("tenant_id = ? AND status = ? AND current_assignee_id = ? AND current_team_id = ?", tenantID, enums.IMConversationStatusPending, 0, 0)
+		query := db.Table("t_conversation AS c").
+			Select("c.*").
+			Joins("LEFT JOIN t_conversation_route_state AS route ON route.conversation_id = c.id AND route.tenant_id = c.tenant_id").
+			Where("c.tenant_id = ? AND c.status = ? AND c.current_assignee_id = ? AND c.current_team_id = ?", tenantID, enums.IMConversationStatusPending, 0, 0).
+			Where("route.id IS NULL OR (route.store_id = 0 AND route.store_staff_binding_id = 0 AND route.wx_work_instance_id = 0)")
 		if len(seenIDs) > 0 {
-			query = query.Where("id NOT IN ?", seenIDs)
+			query = query.Where("c.id NOT IN ?", seenIDs)
 		}
 		return query
-	}, "id",
-		"priority DESC, CASE WHEN handoff_at IS NULL THEN created_at ELSE handoff_at END ASC, id ASC",
-		"CASE WHEN handoff_at IS NULL THEN created_at ELSE handoff_at END ASC, id ASC",
+	}, "c.id",
+		"c.priority DESC, CASE WHEN c.handoff_at IS NULL THEN c.created_at ELSE c.handoff_at END ASC, c.id ASC",
+		"CASE WHEN c.handoff_at IS NULL THEN c.created_at ELSE c.handoff_at END ASC, c.id ASC",
 		limit-len(ret),
 	)
 	if err != nil {

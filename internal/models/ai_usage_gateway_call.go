@@ -11,6 +11,7 @@ type AIUsageGatewayCall struct {
 	CallKey                  string     `gorm:"type:varchar(191);not null;uniqueIndex"`
 	EventKey                 string     `gorm:"type:varchar(191);not null;default:'';index"`
 	StoreID                  int64      `gorm:"type:bigint;not null;default:0;index"`
+	StoreStaffBindingID      int64      `gorm:"type:bigint;not null;default:0;index"`
 	WxWorkInstanceID         int64      `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID           int64      `gorm:"type:bigint;not null;default:0;index"`
 	MessageID                int64      `gorm:"type:bigint;not null;default:0;index"`

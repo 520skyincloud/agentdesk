@@ -14,12 +14,13 @@ var AIUsageGatewayCallRepository = newAIUsageGatewayCallRepository()
 type aiUsageGatewayCallRepository struct{}
 
 type AIUsageGatewayEvidenceQuery struct {
-	TenantIDs []int64
-	StoreIDs  []int64
-	StartAt   time.Time
-	EndAt     time.Time
-	RequestID string
-	Limit     int
+	TenantIDs            []int64
+	StoreIDs             []int64
+	StoreStaffBindingIDs []int64
+	StartAt              time.Time
+	EndAt                time.Time
+	RequestID            string
+	Limit                int
 }
 
 func newAIUsageGatewayCallRepository() *aiUsageGatewayCallRepository {
@@ -61,6 +62,9 @@ func (r *aiUsageGatewayCallRepository) FindEvidence(db *gorm.DB, query AIUsageGa
 	}
 	db = db.Model(&models.AIUsageGatewayCall{}).
 		Where("tenant_id IN ? AND store_id IN ?", query.TenantIDs, query.StoreIDs)
+	if len(query.StoreStaffBindingIDs) > 0 {
+		db = db.Where("store_staff_binding_id IN ?", query.StoreStaffBindingIDs)
+	}
 	if !query.StartAt.IsZero() {
 		db = db.Where("started_at >= ?", query.StartAt)
 	}

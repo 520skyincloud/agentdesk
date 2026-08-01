@@ -120,8 +120,18 @@ func TestWxWorkWelcomeImageCreatesStructuredImageMessage(t *testing.T) {
 	if err := db.Create(asset).Error; err != nil {
 		t.Fatalf("create asset: %v", err)
 	}
+	store := &models.Store{TenantID: 101, StoreCode: "welcome-image-store", Name: "欢迎语测试门店", Status: enums.StatusOk}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	binding := &models.StoreStaffBinding{TenantID: store.TenantID, StoreID: store.ID, Status: enums.StatusOk}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create store staff binding: %v", err)
+	}
 	instance := &models.WxWorkProtocolInstance{
-		TenantID:            101,
+		TenantID:            store.TenantID,
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
 		WelcomeEnabled:      true,
 		WelcomeImageAssetID: asset.AssetID,
 		Status:              enums.StatusOk,
@@ -198,6 +208,60 @@ func TestWxWorkContactAutomationTreatsZeroSeqAsInitialBaseline(t *testing.T) {
 	}
 	if conversationCount != 0 {
 		t.Fatalf("historical contacts must not receive welcome messages, conversations=%d", conversationCount)
+	}
+}
+
+func TestWxWorkContactAutomationScanDoesNotSpendLimitOnUnverifiedReplacementDraft(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var requestBody struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode protocol request: %v", err)
+		}
+		if requestBody.Path != "/contact/sync_contact" {
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error_code":0,"error_message":"ok","data":{"last_seq":"9","contact_list":[]}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	configJSON, _ := json.Marshal(map[string]any{"baseUrl": server.URL, "appKey": "key", "appSecret": "secret"})
+	channel := &models.Channel{
+		Name: "替换草稿批次测试", ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID: "wxwork-contact-draft-limit", ConfigJSON: string(configJSON), Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	draft := &models.WxWorkProtocolInstance{
+		Guid: "contact-draft-first", ChannelID: channel.ID, ReplacesInstanceID: 999,
+		WelcomeEnabled: true, WelcomeMessage: "draft", Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	current := &models.WxWorkProtocolInstance{
+		Guid: "contact-current-second", ChannelID: channel.ID, WelcomeEnabled: true,
+		WelcomeMessage: "current", ContactSyncSeq: "0", Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(draft).Error; err != nil {
+		t.Fatalf("create replacement draft: %v", err)
+	}
+	if err := db.Create(current).Error; err != nil {
+		t.Fatalf("create current instance: %v", err)
+	}
+
+	if count := WxWorkProtocolContactAutomationService.Scan(1); count != 1 {
+		t.Fatalf("expected one activated instance handled, got %d", count)
+	}
+	updated := WxWorkProtocolInstanceService.Get(current.ID)
+	if updated == nil || updated.ContactSyncSeq != "9" {
+		t.Fatalf("unverified replacement draft spent the scan limit: %+v", updated)
 	}
 }
 

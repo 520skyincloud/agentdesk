@@ -12,7 +12,6 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto/request"
-	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -50,19 +49,19 @@ func (s *wxWorkProtocolContactAutomationService) Scan(limit int) int {
 	if limit <= 0 {
 		limit = 20
 	}
-	cnd := sqls.NewCnd().Eq("status", enums.StatusOk)
-	staticInstanceIDs := repositories.ArrivalRepository.FindActiveStaticConnectionInstanceIDs(sqls.DB())
-	if len(staticInstanceIDs) > 0 {
+	cnd := sqls.NewCnd()
+	staticBindingIDs := repositories.ArrivalRepository.FindActiveStaticConnectionBindingIDs(sqls.DB())
+	if len(staticBindingIDs) > 0 {
 		cnd.Where(
-			"(auto_accept_friend_request = ? OR welcome_enabled = ? OR id IN (?))",
+			"(auto_accept_friend_request = ? OR welcome_enabled = ? OR store_staff_binding_id IN (?))",
 			true,
 			true,
-			staticInstanceIDs,
+			staticBindingIDs,
 		)
 	} else {
 		cnd.Where("(auto_accept_friend_request = ? OR welcome_enabled = ?)", true, true)
 	}
-	items := repositories.WxWorkProtocolInstanceRepository.Find(
+	items := repositories.WxWorkProtocolInstanceRepository.FindActivatedCurrent(
 		sqls.DB(),
 		cnd.Asc("id").Limit(limit),
 	)
@@ -104,7 +103,7 @@ func (s *wxWorkProtocolContactAutomationService) HandleFriendChange(instanceID i
 func (s *wxWorkProtocolContactAutomationService) ShouldProcessNewContacts(
 	instance *models.WxWorkProtocolInstance,
 ) bool {
-	return instance != nil &&
+	return isActivatedCurrentWxWorkProtocolInstance(instance) &&
 		(instance.WelcomeEnabled && hasWxWorkWelcomeContent(instance) ||
 			ArrivalBindingTicketService.HasActiveStaticConnection(instance.ID))
 }
@@ -112,7 +111,7 @@ func (s *wxWorkProtocolContactAutomationService) ShouldProcessNewContacts(
 func (s *wxWorkProtocolContactAutomationService) handleCallback(instanceID int64, handler func(*models.WxWorkProtocolInstance) error) error {
 	err := s.withInstanceLock(instanceID, func() error {
 		instance := WxWorkProtocolInstanceService.Get(instanceID)
-		if instance == nil || instance.Status != enums.StatusOk {
+		if !isActivatedCurrentWxWorkProtocolInstance(instance) {
 			return nil
 		}
 		return handler(instance)
@@ -130,7 +129,7 @@ func (s *wxWorkProtocolContactAutomationService) withInstanceLock(instanceID int
 }
 
 func (s *wxWorkProtocolContactAutomationService) scanInstance(instance *models.WxWorkProtocolInstance) error {
-	if instance == nil || instance.Status != enums.StatusOk {
+	if !isActivatedCurrentWxWorkProtocolInstance(instance) {
 		return nil
 	}
 	if instance.AutoAcceptFriendRequest {
@@ -340,6 +339,9 @@ func (s *wxWorkProtocolContactAutomationService) recordResult(instanceID int64, 
 func hasWxWorkWelcomeContent(instance *models.WxWorkProtocolInstance) bool {
 	if instance == nil {
 		return false
+	}
+	if runtimeInstance, err := StoreService.HydrateRuntimeInstanceDB(sqls.DB(), instance); err == nil {
+		instance = runtimeInstance
 	}
 	return strings.TrimSpace(instance.WelcomeMessage) != "" ||
 		strings.TrimSpace(instance.WelcomeImageAssetID) != "" ||

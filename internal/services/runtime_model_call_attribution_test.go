@@ -153,6 +153,7 @@ func assertRuntimeModelCallSlot(t *testing.T, resolved *ModelCallConfig, usageSl
 func seedRuntimeModelAttributionFixture(t *testing.T, db *gorm.DB, gatewayURL string) (*models.Tenant, *models.Store, *models.ModelProfileTemplate, *models.StoreModelCredential, *models.Conversation, *models.Message) {
 	t.Helper()
 	tenant, store := createModelProfileTenantAndStore(t, db)
+	binding := modelProfileTestBinding(t, db, tenant.ID, store.ID)
 	profile := createPersistedModelProfileForTest(t, db, "runtime-attribution", 7, enums.ModelProfileStatusActive)
 	if err := db.Model(profile).Update("gateway_base_url", gatewayURL).Error; err != nil {
 		t.Fatal(err)
@@ -173,13 +174,13 @@ func seedRuntimeModelAttributionFixture(t *testing.T, db *gorm.DB, gatewayURL st
 	if err != nil {
 		t.Fatal(err)
 	}
-	ciphertext, nonce, err := cipher.Encrypt(apiKey, storeCredentialAAD(tenant.ID, store.ID, credentialRevision))
+	ciphertext, nonce, err := cipher.Encrypt(apiKey, storeBindingCredentialAAD(tenant.ID, store.ID, binding.ID, credentialRevision))
 	if err != nil {
 		t.Fatal(err)
 	}
 	credential := &models.StoreModelCredential{
-		TenantID: tenant.ID, StoreID: store.ID, EncryptedKey: ciphertext, KeyNonce: nonce,
-		KeyFingerprint: securex.Fingerprint(apiKey), CipherVersion: securex.AESGCMCipherVersion,
+		TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID, EncryptedKey: ciphertext, KeyNonce: nonce,
+		KeyFingerprint: securex.Fingerprint(apiKey), CipherVersion: storeBindingCredentialCipherVersion,
 		MasterKeyID: config.Current().StoreCredential.MasterKeyID, CredentialRevision: credentialRevision,
 		Status:      enums.StoreCredentialStatusActive,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
@@ -189,14 +190,14 @@ func seedRuntimeModelAttributionFixture(t *testing.T, db *gorm.DB, gatewayURL st
 	}
 
 	conversation := &models.Conversation{
-		TenantID: tenant.ID, Status: enums.IMConversationStatusAIServing, ServiceMode: enums.IMConversationServiceModeAIFirst,
+		TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID, Status: enums.IMConversationStatusAIServing, ServiceMode: enums.IMConversationServiceModeAIFirst,
 		LastMessageAt: now, LastActiveAt: now, AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&models.ConversationRouteState{
-		TenantID: tenant.ID, ConversationID: conversation.ID, StoreID: store.ID,
+		TenantID: tenant.ID, ConversationID: conversation.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
 		RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai",
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}).Error; err != nil {

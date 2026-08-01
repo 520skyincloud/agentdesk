@@ -55,27 +55,27 @@ func (s *fastGPTDatasetService) LatestJobByStore(storeID, tenantID int64) *model
 	return &items[0]
 }
 
-func (s *fastGPTDatasetService) EnqueueDefaultDataset(storeID int64, name string, operator *dto.AuthPrincipal) (*models.FastGPTDatasetJob, error) {
+func (s *fastGPTDatasetService) EnqueueDefaultDataset(storeID, bindingID int64, name string, operator *dto.AuthPrincipal) (*models.FastGPTDatasetJob, error) {
 	store, err := s.requireStoreAccess(storeID, operator)
 	if err != nil {
 		return nil, err
 	}
-	return s.enqueueDefaultDataset(store, name)
+	return s.enqueueDefaultDataset(store, bindingID, name)
 }
 
-func (s *fastGPTDatasetService) EnqueueDefaultDatasetForRemoteSetup(storeID, tenantID int64, name string) (*models.FastGPTDatasetJob, error) {
+func (s *fastGPTDatasetService) EnqueueDefaultDatasetForRemoteSetup(storeID, tenantID, bindingID int64, name string) (*models.FastGPTDatasetJob, error) {
 	store := StoreService.GetInTenant(storeID, tenantID)
-	return s.enqueueDefaultDataset(store, name)
+	return s.enqueueDefaultDataset(store, bindingID, name)
 }
 
-func (s *fastGPTDatasetService) enqueueDefaultDataset(store *models.Store, name string) (*models.FastGPTDatasetJob, error) {
+func (s *fastGPTDatasetService) enqueueDefaultDataset(store *models.Store, bindingID int64, name string) (*models.FastGPTDatasetJob, error) {
 	if store == nil || store.Status == enums.StatusDeleted {
 		return nil, errorsx.InvalidParam("门店不存在")
 	}
 	if store.TenantID <= 0 {
 		return nil, errorsx.InvalidParam("门店缺少接入公司归属")
 	}
-	target, credential, err := s.resolveJobTarget(store.TenantID, store.ID)
+	target, credential, err := s.resolveJobTarget(store.TenantID, store.ID, bindingID)
 	if err != nil {
 		return nil, err
 	}
@@ -89,17 +89,18 @@ func (s *fastGPTDatasetService) enqueueDefaultDataset(store *models.Store, name 
 		if existing.Status == fastGPTJobStatusFailed {
 			now := time.Now()
 			if err := repositories.FastGPTDatasetJobRepository.UpdatesInTenant(sqls.DB(), existing.ID, store.TenantID, map[string]any{
-				"status":                     fastGPTJobStatusPending,
-				"attempt_count":              0,
-				"next_retry_at":              now,
-				"started_at":                 nil,
-				"completed_at":               nil,
-				"last_error":                 "",
-				"last_error_class":           "",
-				"target_profile_id":          target.Template.ID,
-				"target_profile_revision":    target.Template.Revision,
-				"target_credential_revision": credential.Revision,
-				"lease_owner":                "", "lease_expires_at": nil,
+				"status":                        fastGPTJobStatusPending,
+				"attempt_count":                 0,
+				"next_retry_at":                 now,
+				"started_at":                    nil,
+				"completed_at":                  nil,
+				"last_error":                    "",
+				"last_error_class":              "",
+				"target_profile_id":             target.Template.ID,
+				"target_profile_revision":       target.Template.Revision,
+				"target_store_staff_binding_id": credential.StoreStaffBindingID,
+				"target_credential_revision":    credential.Revision,
+				"lease_owner":                   "", "lease_expires_at": nil,
 				"updated_at": now,
 			}); err != nil {
 				return nil, err
@@ -113,29 +114,31 @@ func (s *fastGPTDatasetService) enqueueDefaultDataset(store *models.Store, name 
 			existing.LastErrorClass = ""
 			existing.TargetProfileID = target.Template.ID
 			existing.TargetProfileRevision = target.Template.Revision
+			existing.TargetStoreStaffBindingID = credential.StoreStaffBindingID
 			existing.TargetCredentialRevision = credential.Revision
 			existing.LeaseOwner = ""
 			existing.LeaseExpiresAt = nil
 			existing.UpdatedAt = now
 		}
-		if existing.TargetProfileID != target.Template.ID || existing.TargetProfileRevision != target.Template.Revision || existing.TargetCredentialRevision != credential.Revision {
+		if existing.TargetStoreStaffBindingID != credential.StoreStaffBindingID || existing.TargetProfileID != target.Template.ID || existing.TargetProfileRevision != target.Template.Revision || existing.TargetCredentialRevision != credential.Revision {
 			return nil, errorsx.InvalidParam("已有 FastGPT 任务的模型目标已变化，请等待旧任务结束后重试")
 		}
 		return existing, nil
 	}
 	now := time.Now()
 	job := &models.FastGPTDatasetJob{
-		TenantID:                 store.TenantID,
-		TaskKey:                  taskKey,
-		StoreID:                  store.ID,
-		Action:                   fastGPTJobActionCreateDataset,
-		Status:                   fastGPTJobStatusPending,
-		Filename:                 name,
-		TargetProfileID:          target.Template.ID,
-		TargetProfileRevision:    target.Template.Revision,
-		TargetCredentialRevision: credential.Revision,
-		CreatedAt:                now,
-		UpdatedAt:                now,
+		TenantID:                  store.TenantID,
+		TaskKey:                   taskKey,
+		StoreID:                   store.ID,
+		TargetStoreStaffBindingID: credential.StoreStaffBindingID,
+		Action:                    fastGPTJobActionCreateDataset,
+		Status:                    fastGPTJobStatusPending,
+		Filename:                  name,
+		TargetProfileID:           target.Template.ID,
+		TargetProfileRevision:     target.Template.Revision,
+		TargetCredentialRevision:  credential.Revision,
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
 	}
 	if err := repositories.FastGPTDatasetJobRepository.Create(sqls.DB(), job); err != nil {
 		return nil, err
@@ -155,7 +158,7 @@ func (s *fastGPTDatasetService) EnqueueUpload(knowledgeBaseID int64, file *multi
 	if _, err := s.requireStoreAccess(knowledgeBase.StoreID, operator); err != nil {
 		return nil, err
 	}
-	target, credential, err := s.resolveJobTarget(knowledgeBase.TenantID, knowledgeBase.StoreID)
+	target, credential, err := s.resolveJobTarget(knowledgeBase.TenantID, knowledgeBase.StoreID, knowledgeBase.FastGPTAppliedStoreStaffBindingID)
 	if err != nil {
 		return nil, err
 	}
@@ -168,20 +171,21 @@ func (s *fastGPTDatasetService) EnqueueUpload(knowledgeBaseID int64, file *multi
 	}
 	now := time.Now()
 	job := &models.FastGPTDatasetJob{
-		TenantID:                 knowledgeBase.TenantID,
-		TaskKey:                  "fastgpt-upload-" + strings.ReplaceAll(uuid.NewString(), "-", ""),
-		StoreID:                  knowledgeBase.StoreID,
-		KnowledgeBaseID:          knowledgeBase.ID,
-		Action:                   fastGPTJobActionUploadFile,
-		Status:                   fastGPTJobStatusPending,
-		DatasetID:                knowledgeBase.DatasetID,
-		Filename:                 file.Filename,
-		TemporaryAssetID:         asset.AssetID,
-		TargetProfileID:          target.Template.ID,
-		TargetProfileRevision:    target.Template.Revision,
-		TargetCredentialRevision: credential.Revision,
-		CreatedAt:                now,
-		UpdatedAt:                now,
+		TenantID:                  knowledgeBase.TenantID,
+		TaskKey:                   "fastgpt-upload-" + strings.ReplaceAll(uuid.NewString(), "-", ""),
+		StoreID:                   knowledgeBase.StoreID,
+		TargetStoreStaffBindingID: credential.StoreStaffBindingID,
+		KnowledgeBaseID:           knowledgeBase.ID,
+		Action:                    fastGPTJobActionUploadFile,
+		Status:                    fastGPTJobStatusPending,
+		DatasetID:                 knowledgeBase.DatasetID,
+		Filename:                  file.Filename,
+		TemporaryAssetID:          asset.AssetID,
+		TargetProfileID:           target.Template.ID,
+		TargetProfileRevision:     target.Template.Revision,
+		TargetCredentialRevision:  credential.Revision,
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
 	}
 	if err := repositories.FastGPTDatasetJobRepository.Create(sqls.DB(), job); err != nil {
 		_ = AssetService.DeleteTemporaryAsset(asset.AssetID, knowledgeBase.TenantID)
@@ -195,7 +199,11 @@ func (s *fastGPTDatasetService) EnqueueProfileSync(storeID int64, operator *dto.
 	if err != nil {
 		return nil, err
 	}
-	target, credential, err := s.resolveJobTarget(store.TenantID, store.ID)
+	bindingID := int64(0)
+	if state := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(sqls.DB(), store.ID, store.TenantID); state != nil {
+		bindingID = firstPositiveInt64(state.TargetStoreStaffBindingID, state.AppliedStoreStaffBindingID)
+	}
+	target, credential, err := s.resolveJobTarget(store.TenantID, store.ID, bindingID)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +218,8 @@ func (s *fastGPTDatasetService) EnqueueProfileSync(storeID int64, operator *dto.
 	job := &models.FastGPTDatasetJob{
 		TenantID: store.TenantID, TaskKey: "fastgpt-profile-sync-" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 		StoreID: store.ID, KnowledgeBaseID: knowledgeBase.ID, DatasetID: knowledgeBase.DatasetID,
-		Action: fastGPTJobActionSyncProfile, Status: fastGPTJobStatusPending,
+		TargetStoreStaffBindingID: credential.StoreStaffBindingID,
+		Action:                    fastGPTJobActionSyncProfile, Status: fastGPTJobStatusPending,
 		Filename: knowledgeBase.Name, TargetProfileID: target.Template.ID,
 		TargetProfileRevision: target.Template.Revision, TargetCredentialRevision: credential.Revision,
 		CreatedAt: now, UpdatedAt: now,
@@ -378,9 +387,6 @@ func (s *fastGPTDatasetService) createDataset(ctx context.Context, connector *Fa
 			}); err != nil {
 				return err
 			}
-			if err := repositories.WxWorkProtocolInstanceRepository.UpdateKnowledgeBaseByStoreInTenant(tx.Tx, store.ID, knowledgeBase.ID, job.TenantID, now, "fastgpt_dataset_job"); err != nil {
-				return err
-			}
 			if err := repositories.ConversationRouteStateRepository.UpdateKnowledgeBaseByStoreInTenant(tx.Tx, store.ID, knowledgeBase.ID, job.TenantID, now, "fastgpt_dataset_job"); err != nil {
 				return err
 			}
@@ -416,7 +422,8 @@ func (s *fastGPTDatasetService) ensureStoreTenant(ctx context.Context, connector
 				TenantTeamID: tenant.TeamID, TenantTeamName: firstNonBlank(tenant.TeamName, store.Name),
 				Status:          firstNonBlank(tenant.Status, "active"),
 				TargetProfileID: target.Template.ID, TargetProfileRevision: target.Template.Revision,
-				TargetCredentialRevision: credential.Revision, ReadinessStatus: "syncing",
+				TargetStoreStaffBindingID: credential.StoreStaffBindingID,
+				TargetCredentialRevision:  credential.Revision, ReadinessStatus: "syncing",
 				LastSyncedAt: &now, LastError: "",
 				AuditFields: models.AuditFields{CreatedAt: now, CreateUserName: "fastgpt_integration", UpdatedAt: now, UpdateUserName: "fastgpt_integration"},
 			}
@@ -440,7 +447,8 @@ func (s *fastGPTDatasetService) ensureStoreTenant(ctx context.Context, connector
 			"tenant_team_id": tenant.TeamID, "tenant_team_name": firstNonBlank(tenant.TeamName, store.Name),
 			"status": firstNonBlank(tenant.Status, "active"), "target_profile_id": target.Template.ID,
 			"target_profile_revision": target.Template.Revision, "target_credential_revision": credential.Revision,
-			"readiness_status": readiness, "last_synced_at": now, "last_error": "", "updated_at": now,
+			"target_store_staff_binding_id": credential.StoreStaffBindingID,
+			"readiness_status":              readiness, "last_synced_at": now, "last_error": "", "updated_at": now,
 			"update_user_name": "fastgpt_integration",
 		})
 	})
@@ -464,7 +472,12 @@ func (s *fastGPTDatasetService) ActivateKnowledgeBase(storeID, knowledgeBaseID i
 	if knowledgeBase == nil || knowledgeBase.Status != enums.StatusOk || knowledgeBase.StoreID != store.ID || knowledgeBase.DatasetID == "" || knowledgeBase.ConnectionID != fastgptapi.ManagedConnectionID {
 		return errorsx.InvalidParam("只能启用当前门店已完成配置的 FastGPT 知识库")
 	}
-	target, credential, err := s.resolveJobTarget(tenantID, store.ID)
+	state := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(sqls.DB(), store.ID, tenantID)
+	bindingID := knowledgeBase.FastGPTAppliedStoreStaffBindingID
+	if bindingID <= 0 && state != nil {
+		bindingID = firstPositiveInt64(state.TargetStoreStaffBindingID, state.AppliedStoreStaffBindingID)
+	}
+	target, credential, err := s.resolveJobTarget(tenantID, store.ID, bindingID)
 	if err != nil {
 		return err
 	}
@@ -480,10 +493,11 @@ func (s *fastGPTDatasetService) ActivateKnowledgeBase(storeID, knowledgeBaseID i
 			return errors.New("FastGPT store disappeared during activation")
 		}
 		updated, err := repositories.FastGPTStoreTenantRepository.ApplyTargetRevisions(
-			tx.Tx, tenantID, store.ID, target.Template.ID, target.Template.Revision, credential.Revision,
+			tx.Tx, tenantID, store.ID, credential.StoreStaffBindingID, target.Template.ID, target.Template.Revision, credential.Revision,
 			map[string]any{
 				"applied_profile_id": target.Template.ID, "applied_profile_revision": target.Template.Revision,
-				"applied_credential_revision": credential.Revision, "applied_key_fingerprint": credential.Fingerprint,
+				"applied_store_staff_binding_id": credential.StoreStaffBindingID,
+				"applied_credential_revision":    credential.Revision, "applied_key_fingerprint": credential.Fingerprint,
 				"readiness_status": "ready", "last_synced_at": now, "last_error": "", "updated_at": now,
 				"update_user_id": operator.UserID, "update_user_name": operator.Username,
 			},
@@ -500,9 +514,6 @@ func (s *fastGPTDatasetService) ActivateKnowledgeBase(storeID, knowledgeBaseID i
 		}); err != nil {
 			return err
 		}
-		if err := repositories.WxWorkProtocolInstanceRepository.UpdateKnowledgeBaseByStoreInTenant(tx.Tx, store.ID, knowledgeBase.ID, tenantID, now, operator.Username); err != nil {
-			return err
-		}
 		if err := repositories.ConversationRouteStateRepository.UpdateKnowledgeBaseByStoreInTenant(tx.Tx, store.ID, knowledgeBase.ID, tenantID, now, operator.Username); err != nil {
 			return err
 		}
@@ -514,7 +525,7 @@ func (s *fastGPTDatasetService) ActivateKnowledgeBase(storeID, knowledgeBaseID i
 	return nil
 }
 
-func (s *fastGPTDatasetService) resolveJobTarget(tenantID, storeID int64) (*storeCredentialActivationTarget, *resolvedStoreModelCredential, error) {
+func (s *fastGPTDatasetService) resolveJobTarget(tenantID, storeID, bindingID int64) (*storeCredentialActivationTarget, *resolvedStoreModelCredential, error) {
 	if _, err := TenantIndustryService.ResolveTenantProfileDB(sqls.DB(), tenantID); err != nil {
 		return nil, nil, err
 	}
@@ -530,7 +541,12 @@ func (s *fastGPTDatasetService) resolveJobTarget(tenantID, storeID int64) (*stor
 	if issues := ValidateModelProfileForPublication(&target.Template, target.Slots); len(issues) > 0 {
 		return nil, nil, errorsx.BusinessError(2005, "门店 active 模型方案九槽不完整")
 	}
-	credential, err := StoreModelCredentialService.ResolveActive(tenantID, storeID)
+	binding, err := StoreModelCredentialService.requireStoreStaffCredentialScopeDB(sqls.DB(), tenantID, storeID, bindingID, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	target.StoreStaffBindingID = binding.ID
+	credential, err := StoreModelCredentialService.ResolveActiveForBinding(tenantID, storeID, binding.ID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -538,14 +554,14 @@ func (s *fastGPTDatasetService) resolveJobTarget(tenantID, storeID int64) (*stor
 }
 
 func (s *fastGPTDatasetService) resolveClaimedJobTarget(job *models.FastGPTDatasetJob) (*storeCredentialActivationTarget, *resolvedStoreModelCredential, error) {
-	if job == nil || job.TenantID <= 0 || job.StoreID <= 0 || job.TargetProfileID <= 0 || job.TargetProfileRevision <= 0 || job.TargetCredentialRevision <= 0 {
+	if job == nil || job.TenantID <= 0 || job.StoreID <= 0 || job.TargetStoreStaffBindingID <= 0 || job.TargetProfileID <= 0 || job.TargetProfileRevision <= 0 || job.TargetCredentialRevision <= 0 {
 		return nil, nil, errFastGPTJobTargetChanged
 	}
-	target, credential, err := s.resolveJobTarget(job.TenantID, job.StoreID)
+	target, credential, err := s.resolveJobTarget(job.TenantID, job.StoreID, job.TargetStoreStaffBindingID)
 	if err != nil {
 		return nil, nil, err
 	}
-	if target.Template.ID != job.TargetProfileID || target.Template.Revision != job.TargetProfileRevision || credential.Revision != job.TargetCredentialRevision {
+	if credential.StoreStaffBindingID != job.TargetStoreStaffBindingID || target.Template.ID != job.TargetProfileID || target.Template.Revision != job.TargetProfileRevision || credential.Revision != job.TargetCredentialRevision {
 		return nil, nil, errFastGPTJobTargetChanged
 	}
 	return target, credential, nil
@@ -561,6 +577,7 @@ func (s *fastGPTDatasetService) requireAppliedTarget(knowledgeBase *models.Knowl
 	binding := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(sqls.DB(), target.Store.ID, target.Store.TenantID)
 	if binding == nil || binding.Status != "active" || binding.ReadinessStatus != "ready" ||
 		binding.AppliedProfileID != target.Template.ID || binding.AppliedProfileRevision != target.Template.Revision ||
+		binding.AppliedStoreStaffBindingID != credential.StoreStaffBindingID ||
 		binding.AppliedCredentialRevision != credential.Revision {
 		return errorsx.BusinessError(2005, "门店 FastGPT Profile 尚未同步到 active revision")
 	}
@@ -571,6 +588,7 @@ func (s *fastGPTDatasetService) requireDatasetTarget(knowledgeBase *models.Knowl
 	if knowledgeBase == nil || target == nil || credential == nil || knowledgeBase.TenantID != target.Store.TenantID || knowledgeBase.StoreID != target.Store.ID ||
 		knowledgeBase.ConnectionID != fastgptapi.ManagedConnectionID || knowledgeBase.FastGPTProfileStatus != "ready" ||
 		knowledgeBase.FastGPTAppliedProfileID != target.Template.ID || knowledgeBase.FastGPTAppliedProfileRevision != target.Template.Revision ||
+		knowledgeBase.FastGPTAppliedStoreStaffBindingID != credential.StoreStaffBindingID ||
 		knowledgeBase.FastGPTAppliedCredentialRevision != credential.Revision {
 		return errorsx.BusinessError(2005, "门店 FastGPT 知识库尚未就绪")
 	}
@@ -622,11 +640,12 @@ func requireCurrentFastGPTJobTargetDB(db *gorm.DB, target storeCredentialActivat
 	if db == nil || credential == nil || target.Store.TenantID <= 0 || target.Store.ID <= 0 {
 		return errFastGPTJobTargetChanged
 	}
-	currentCredential, err := repositories.StoreModelCredentialRepository.GetForUpdateByStore(db, target.Store.TenantID, target.Store.ID)
+	currentCredential, err := repositories.StoreModelCredentialRepository.GetForUpdateByBinding(db, target.Store.TenantID, target.Store.ID, credential.StoreStaffBindingID)
 	if err != nil {
 		return err
 	}
 	if currentCredential == nil || currentCredential.Status != enums.StoreCredentialStatusActive ||
+		currentCredential.StoreStaffBindingID != target.StoreStaffBindingID ||
 		currentCredential.CredentialRevision != credential.Revision || currentCredential.KeyFingerprint != credential.Fingerprint {
 		return errFastGPTJobTargetChanged
 	}
@@ -692,7 +711,7 @@ func (s *fastGPTDatasetService) recordJobUsage(job *models.FastGPTDatasetJob, op
 	_ = AIUsageEventService.Record(models.AIUsageEvent{
 		TenantID: job.TenantID,
 		EventKey: fmt.Sprintf("fastgpt-job:%s:%s:%d", job.TaskKey, operationType, job.AttemptCount),
-		StoreID:  job.StoreID, KnowledgeBaseID: job.KnowledgeBaseID,
+		StoreID:  job.StoreID, StoreStaffBindingID: job.TargetStoreStaffBindingID, KnowledgeBaseID: job.KnowledgeBaseID,
 		ModelProfileID: job.TargetProfileID, ModelProfileRevision: job.TargetProfileRevision,
 		CredentialRevision: job.TargetCredentialRevision,
 		Stage:              "knowledge_manage", Provider: "fastgpt", OperationType: operationType,
@@ -806,6 +825,8 @@ func (s *fastGPTDatasetService) GetReadiness(storeID int64, operator *dto.AuthPr
 	ret.TargetProfileRevision = binding.TargetProfileRevision
 	ret.AppliedProfileID = binding.AppliedProfileID
 	ret.AppliedProfileRevision = binding.AppliedProfileRevision
+	ret.TargetStoreStaffBindingID = binding.TargetStoreStaffBindingID
+	ret.AppliedStoreStaffBindingID = binding.AppliedStoreStaffBindingID
 	ret.TargetCredentialRevision = binding.TargetCredentialRevision
 	ret.AppliedCredentialRevision = binding.AppliedCredentialRevision
 	ret.LastSyncedAt = binding.LastSyncedAt
@@ -974,12 +995,9 @@ func (s *fastGPTDatasetService) finalizeDatasetDeletion(kb *models.KnowledgeBase
 			}); err != nil {
 				return err
 			}
-			if err := repositories.WxWorkProtocolInstanceRepository.UpdateKnowledgeBaseByStoreInTenant(tx.Tx, store.ID, 0, kb.TenantID, now, operatorName); err != nil {
-				return err
-			}
 			return repositories.ConversationRouteStateRepository.UpdateKnowledgeBaseByStoreInTenant(tx.Tx, store.ID, 0, kb.TenantID, now, operatorName)
 		}
-		return repositories.WxWorkProtocolInstanceRepository.ClearKnowledgeBaseByIDInTenant(tx.Tx, kb.ID, kb.TenantID, now, operatorName)
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -1026,7 +1044,8 @@ func (s *fastGPTDatasetService) requireStoreAccess(storeID int64, operator *dto.
 func buildFastGPTJobResponse(job *models.FastGPTDatasetJob) response.FastGPTDatasetJobResponse {
 	return response.FastGPTDatasetJobResponse{
 		ID: job.ID, StoreID: job.StoreID, KnowledgeBaseID: job.KnowledgeBaseID, Action: job.Action, Status: job.Status,
-		DatasetID: job.DatasetID, CollectionID: job.CollectionID, Filename: job.Filename, AttemptCount: job.AttemptCount,
+		TargetStoreStaffBindingID: job.TargetStoreStaffBindingID,
+		DatasetID:                 job.DatasetID, CollectionID: job.CollectionID, Filename: job.Filename, AttemptCount: job.AttemptCount,
 		TargetProfileID: job.TargetProfileID, TargetProfileRevision: job.TargetProfileRevision,
 		TargetCredentialRevision: job.TargetCredentialRevision, NextRetryAt: job.NextRetryAt,
 		LastError: job.LastError, LastErrorClass: job.LastErrorClass, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,

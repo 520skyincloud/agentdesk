@@ -57,7 +57,7 @@ func TestBillingQuerySeparatesOfficialLocalAndExactReconciliation(t *testing.T) 
 	occurredAt := time.Date(2026, time.July, 22, 10, 30, 0, 0, location)
 
 	event := &models.AIUsageEvent{
-		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, EventKey: "billing-event-match",
+		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, StoreStaffBindingID: fixture.binding.ID, EventKey: "billing-event-match",
 		RequestID: "local-request", Gateway: AIUsageGatewayNewAPI, GatewayRequestID: "req-match",
 		Stage: "reply_generate", Model: "model-reply_llm", ModelProfileID: fixture.profile.ID,
 		ModelProfileRevision: fixture.profile.Revision, UsageSlot: "reply_llm", CredentialRevision: 1,
@@ -68,12 +68,12 @@ func TestBillingQuerySeparatesOfficialLocalAndExactReconciliation(t *testing.T) 
 	}
 	for _, call := range []models.AIUsageGatewayCall{
 		{
-			TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, CallKey: "newapi:match", EventKey: event.EventKey,
+			TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, StoreStaffBindingID: fixture.binding.ID, CallKey: "newapi:match", EventKey: event.EventKey,
 			Gateway: AIUsageGatewayNewAPI, GatewayRequestID: "req-match", StartedAt: occurredAt, FinishedAt: occurredAt.Add(time.Second),
 			ReconcileStatus: AIUsageReconcilePending, CreatedAt: occurredAt, UpdatedAt: occurredAt,
 		},
 		{
-			TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, CallKey: "newapi:local-only",
+			TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, StoreStaffBindingID: fixture.binding.ID, CallKey: "newapi:local-only",
 			Gateway: AIUsageGatewayNewAPI, GatewayRequestID: "req-local-only", StartedAt: occurredAt.Add(time.Minute), FinishedAt: occurredAt.Add(time.Minute + time.Second),
 			ReconcileStatus: AIUsageReconcilePending, CreatedAt: occurredAt, UpdatedAt: occurredAt,
 		},
@@ -162,6 +162,9 @@ func TestBillingQueryAllowsPartialStoreFailure(t *testing.T) {
 	}
 	if result.Official.Aggregate.StoreCount != 2 || result.Official.Aggregate.SuccessfulStores != 1 || result.Official.Aggregate.FailedStores != 1 {
 		t.Fatalf("partial store aggregate=%#v", result.Official.Aggregate)
+	}
+	if result.Official.Aggregate.CredentialAccountCount != 1 || result.Official.Aggregate.SuccessfulCredentialAccounts != 1 || result.Official.Aggregate.FailedCredentialAccounts != 0 {
+		t.Fatalf("partial credential-account aggregate=%#v", result.Official.Aggregate)
 	}
 	if len(result.Official.Stores) != 2 {
 		t.Fatalf("official stores=%d", len(result.Official.Stores))

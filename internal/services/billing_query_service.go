@@ -60,15 +60,18 @@ type billingDateRange struct {
 }
 
 type billingAccessScope struct {
-	Mode     string
-	TenantID int64
-	StoreID  int64
-	Platform bool
+	Mode                string
+	TenantID            int64
+	StoreID             int64
+	StoreStaffBindingID int64
+	Platform            bool
 }
 
 type billingStoreTarget struct {
-	Tenant models.Tenant
-	Store  models.Store
+	Tenant             models.Tenant
+	Store              models.Store
+	Binding            models.StoreStaffBinding
+	BindingAccountName string
 }
 
 type billingStoreAccess struct {
@@ -111,7 +114,7 @@ func (s *billingQueryService) Options(operator *dto.AuthPrincipal) (*response.Bi
 	tenantByID := make(map[int64]models.Tenant, len(tenants))
 	ret := &response.BillingQueryOptionsResponse{
 		ScopeMode: scope.Mode, CanFilterTenants: scope.Platform,
-		DefaultTenantID: scope.TenantID, DefaultStoreID: scope.StoreID,
+		DefaultTenantID: scope.TenantID, DefaultStoreID: scope.StoreID, DefaultStoreStaffBindingID: scope.StoreStaffBindingID,
 		Tenants: make([]response.BillingTenantOptionResponse, 0, len(tenants)),
 		Stores:  make([]response.BillingStoreOptionResponse, 0, len(stores)),
 	}
@@ -173,13 +176,20 @@ func (s *billingQueryService) query(ctx context.Context, req request.BillingQuer
 	if len(stores) > billingMaxStoresPerQuery {
 		return nil, errorsx.InvalidParam(fmt.Sprintf("单次最多查询 %d 个门店，请先选择接入公司或具体门店", billingMaxStoresPerQuery))
 	}
-	targets, tenantIDs, storeIDs, tenantByID, storeByID := s.buildTargets(stores)
+	targets, tenantIDs, storeIDs, bindingIDs, tenantByID, storeByID, accountByBinding, err := s.buildTargets(stores, scope, req.StoreStaffBindingIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(targets) == 0 {
+		return nil, errorsx.InvalidParam("当前数据范围内没有可查询的门店员工号")
+	}
 	officialResults := s.queryOfficial(ctx, targets, dateRange, req)
 	trimOfficialDetails(officialResults, limit)
 
 	evidenceQuery := repositories.AIUsageEvidenceQuery{
 		TenantIDs: tenantIDs, StoreIDs: storeIDs,
-		StartAt: dateRange.StartAt, EndAt: dateRange.EndExclusive,
+		StoreStaffBindingIDs: bindingIDs,
+		StartAt:              dateRange.StartAt, EndAt: dateRange.EndExclusive,
 		ModelName: strings.TrimSpace(req.ModelName), RequestID: strings.TrimSpace(req.RequestID), Limit: limit + 1,
 	}
 	localAggregate := repositories.AIUsageEventRepository.AggregateEvidence(sqls.DB(), evidenceQuery)
@@ -205,14 +215,22 @@ func (s *billingQueryService) query(ctx context.Context, req request.BillingQuer
 		result.TenantID = tenantIDs[0]
 		result.TenantName = billingTenantName(tenantByID[tenantIDs[0]])
 	}
+	storeReady := make(map[int64]bool, len(stores))
+	storeSeen := make(map[int64]struct{}, len(stores))
 	for i := range officialResults {
 		item := officialResults[i].Store
 		result.Official.Stores = append(result.Official.Stores, item)
-		result.Official.Aggregate.StoreCount++
+		storeSeen[item.StoreID] = struct{}{}
+		if item.StoreStaffBindingID > 0 {
+			result.Official.Aggregate.CredentialAccountCount++
+		}
 		if item.Status == billingOfficialStatusReady {
-			result.Official.Aggregate.SuccessfulStores++
-		} else {
-			result.Official.Aggregate.FailedStores++
+			storeReady[item.StoreID] = true
+			if item.StoreStaffBindingID > 0 {
+				result.Official.Aggregate.SuccessfulCredentialAccounts++
+			}
+		} else if item.StoreStaffBindingID > 0 {
+			result.Official.Aggregate.FailedCredentialAccounts++
 		}
 		result.Official.Aggregate.LogCount += item.PeriodLogCount
 		result.Official.Aggregate.PeriodQuota += item.PeriodQuota
@@ -220,10 +238,18 @@ func (s *billingQueryService) query(ctx context.Context, req request.BillingQuer
 		result.Official.Aggregate.PeriodPromptTokens += item.PeriodPromptTokens
 		result.Official.Aggregate.PeriodOutputTokens += item.PeriodOutputTokens
 	}
-	for i := range localEvents {
-		result.Local.Events = append(result.Local.Events, buildBillingLocalEvent(localEvents[i], tenantByID, storeByID))
+	result.Official.Aggregate.StoreCount = len(storeSeen)
+	for storeID := range storeSeen {
+		if storeReady[storeID] {
+			result.Official.Aggregate.SuccessfulStores++
+		} else {
+			result.Official.Aggregate.FailedStores++
+		}
 	}
-	result.Reconciliation = s.reconcile(officialResults, evidenceQuery, tenantByID, storeByID, limit)
+	for i := range localEvents {
+		result.Local.Events = append(result.Local.Events, buildBillingLocalEvent(localEvents[i], tenantByID, storeByID, accountByBinding))
+	}
+	result.Reconciliation = s.reconcile(officialResults, evidenceQuery, tenantByID, storeByID, accountByBinding, limit)
 	restrictStoreBillingEvidence(scope, result)
 	return result, nil
 }
@@ -285,11 +311,22 @@ func (s *billingQueryService) findScopeStores(scope billingAccessScope, requeste
 	return stores, nil
 }
 
-func (s *billingQueryService) buildTargets(stores []models.Store) ([]billingStoreTarget, []int64, []int64, map[int64]models.Tenant, map[int64]models.Store) {
+func (s *billingQueryService) buildTargets(
+	stores []models.Store,
+	scope billingAccessScope,
+	requestedBindingIDs []int64,
+) ([]billingStoreTarget, []int64, []int64, []int64, map[int64]models.Tenant, map[int64]models.Store, map[int64]string, error) {
+	requestedBindingIDs = normalizeBillingIDs(requestedBindingIDs)
+	requestedBindings := make(map[int64]struct{}, len(requestedBindingIDs))
+	for _, bindingID := range requestedBindingIDs {
+		requestedBindings[bindingID] = struct{}{}
+	}
 	tenantIDs := make([]int64, 0)
 	storeIDs := make([]int64, 0, len(stores))
+	bindingIDs := make([]int64, 0)
 	tenantByID := make(map[int64]models.Tenant)
 	storeByID := make(map[int64]models.Store, len(stores))
+	accountByBinding := make(map[int64]string)
 	tenantSeen := make(map[int64]struct{})
 	targets := make([]billingStoreTarget, 0, len(stores))
 	for i := range stores {
@@ -307,10 +344,51 @@ func (s *billingQueryService) buildTargets(stores []models.Store) ([]billingStor
 		}
 		storeIDs = append(storeIDs, store.ID)
 		storeByID[store.ID] = store
-		targets = append(targets, billingStoreTarget{Tenant: tenant, Store: store})
+		bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().
+			Eq("tenant_id", store.TenantID).
+			Eq("store_id", store.ID).
+			Where("status <> ?", enums.StatusDeleted).
+			Asc("id"))
+		matchedBindings := 0
+		for j := range bindings {
+			binding := bindings[j]
+			if scope.Mode == "store" && binding.ID != scope.StoreStaffBindingID {
+				continue
+			}
+			if len(requestedBindings) > 0 {
+				if _, ok := requestedBindings[binding.ID]; !ok {
+					continue
+				}
+			}
+			accountName := fmt.Sprintf("门店员工号 #%d", binding.ID)
+			if user := repositories.UserRepository.Get(sqls.DB(), binding.UserID); user != nil {
+				accountName = firstNonBlank(strings.TrimSpace(user.Nickname), strings.TrimSpace(user.Username), accountName)
+			}
+			bindingIDs = append(bindingIDs, binding.ID)
+			accountByBinding[binding.ID] = accountName
+			targets = append(targets, billingStoreTarget{Tenant: tenant, Store: store, Binding: binding, BindingAccountName: accountName})
+			matchedBindings++
+		}
+		if matchedBindings == 0 && len(requestedBindings) == 0 && scope.Mode != "store" {
+			targets = append(targets, billingStoreTarget{
+				Tenant: tenant, Store: store, BindingAccountName: "未绑定门店员工号",
+			})
+		}
+	}
+	if len(requestedBindings) > 0 {
+		found := make(map[int64]struct{}, len(bindingIDs))
+		for _, bindingID := range bindingIDs {
+			found[bindingID] = struct{}{}
+		}
+		for _, bindingID := range requestedBindingIDs {
+			if _, ok := found[bindingID]; !ok {
+				return nil, nil, nil, nil, nil, nil, nil, errorsx.Forbidden("所选门店员工号不存在或超出当前数据范围")
+			}
+		}
 	}
 	sort.Slice(tenantIDs, func(i, j int) bool { return tenantIDs[i] < tenantIDs[j] })
-	return targets, tenantIDs, storeIDs, tenantByID, storeByID
+	sort.Slice(bindingIDs, func(i, j int) bool { return bindingIDs[i] < bindingIDs[j] })
+	return targets, tenantIDs, storeIDs, bindingIDs, tenantByID, storeByID, accountByBinding, nil
 }
 
 func (s *billingQueryService) buildStoreOption(store models.Store, tenant models.Tenant) response.BillingStoreOptionResponse {
@@ -318,9 +396,15 @@ func (s *billingQueryService) buildStoreOption(store models.Store, tenant models
 		TenantID: store.TenantID, TenantName: billingTenantName(tenant), StoreID: store.ID, StoreCode: store.StoreCode, StoreName: store.Name,
 		ModelNames: []string{},
 	}
-	if credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), store.TenantID, store.ID); credential != nil {
-		ret.CredentialStatus = string(credential.Status)
-		ret.CredentialRevision = credential.CredentialRevision
+	bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", store.TenantID).Eq("store_id", store.ID).Where("status <> ?", enums.StatusDeleted))
+	ret.BindingCount = len(bindings)
+	credentials := repositories.StoreModelCredentialRepository.FindByStore(sqls.DB(), store.TenantID, store.ID)
+	if len(credentials) == 1 {
+		ret.CredentialStatus = string(credentials[0].Status)
+		ret.CredentialRevision = credentials[0].CredentialRevision
+	} else if len(credentials) > 1 {
+		ret.CredentialStatus = "multiple"
 	}
 	if assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(sqls.DB(), store.TenantID, store.ID); assignment != nil {
 		ret.ModelProfileRevision = assignment.TemplateRevision
@@ -379,6 +463,7 @@ func (s *billingQueryService) queryOfficialStore(ctx context.Context, target bil
 		Store: response.BillingOfficialStoreResponse{
 			TenantID: target.Store.TenantID, TenantName: billingTenantName(target.Tenant),
 			StoreID: target.Store.ID, StoreCode: target.Store.StoreCode, StoreName: target.Store.Name,
+			StoreStaffBindingID: target.Binding.ID, StoreStaffAccountName: target.BindingAccountName,
 			CredentialRevision: access.Credential.Revision, ModelProfileRevision: access.ProfileRevision,
 			ModelNames: access.ModelNames, Status: billingOfficialStatusReady,
 			Logs: []response.BillingOfficialUsageLogResponse{},
@@ -411,7 +496,7 @@ func (s *billingQueryService) queryOfficialStore(ctx context.Context, target bil
 		ret.Store.PeriodQuota += item.Quota
 		ret.Store.PeriodPromptTokens += item.PromptTokens
 		ret.Store.PeriodOutputTokens += item.CompletionTokens
-		ret.Store.Logs = append(ret.Store.Logs, buildOfficialUsageLog(target.Store, item, settings))
+		ret.Store.Logs = append(ret.Store.Logs, buildOfficialUsageLog(target, item, settings))
 	}
 	ret.Store.PeriodCostCNY = billingQuotaCNY(ret.Store.PeriodQuota, settings)
 	return ret
@@ -430,9 +515,9 @@ func (s *billingQueryService) loadStoreBillingAccess(target billingStoreTarget) 
 	if issues := ValidateModelProfileForPublication(template, slots); len(issues) > 0 {
 		return nil, "model_profile_incomplete", "门店当前模型方案九槽不完整"
 	}
-	credential, err := StoreModelCredentialService.ResolveForBilling(target.Store.TenantID, target.Store.ID)
+	credential, err := StoreModelCredentialService.ResolveForBillingBinding(target.Store.TenantID, target.Store.ID, target.Binding.ID)
 	if err != nil {
-		return nil, "credential_unavailable", "门店尚未配置可用的 NewAPI API Key"
+		return nil, "credential_unavailable", "门店员工号尚未配置可用的 NewAPI API Key"
 	}
 	timeoutMS := 10000
 	for i := range slots {
@@ -449,10 +534,10 @@ func (s *billingQueryService) loadStoreBillingAccess(target billingStoreTarget) 
 	}, "", ""
 }
 
-func (s *billingQueryService) reconcile(official []billingOfficialResult, eventQuery repositories.AIUsageEvidenceQuery, tenantByID map[int64]models.Tenant, storeByID map[int64]models.Store, limit int) response.BillingReconciliationResponse {
+func (s *billingQueryService) reconcile(official []billingOfficialResult, eventQuery repositories.AIUsageEvidenceQuery, tenantByID map[int64]models.Tenant, storeByID map[int64]models.Store, accountByBinding map[int64]string, limit int) response.BillingReconciliationResponse {
 	query := repositories.AIUsageGatewayEvidenceQuery{
 		TenantIDs: eventQuery.TenantIDs, StoreIDs: eventQuery.StoreIDs, StartAt: eventQuery.StartAt, EndAt: eventQuery.EndAt,
-		RequestID: eventQuery.RequestID, Limit: billingMaxReconcileEvidence + 1,
+		StoreStaffBindingIDs: eventQuery.StoreStaffBindingIDs, RequestID: eventQuery.RequestID, Limit: billingMaxReconcileEvidence + 1,
 	}
 	calls := repositories.AIUsageGatewayCallRepository.FindEvidence(sqls.DB(), query)
 	truncated := len(calls) > billingMaxReconcileEvidence
@@ -461,13 +546,13 @@ func (s *billingQueryService) reconcile(official []billingOfficialResult, eventQ
 	}
 	modelEvents := repositories.AIUsageEventRepository.FindEvidence(sqls.DB(), repositories.AIUsageEvidenceQuery{
 		TenantIDs: eventQuery.TenantIDs, StoreIDs: eventQuery.StoreIDs, StartAt: eventQuery.StartAt, EndAt: eventQuery.EndAt,
-		ModelName: eventQuery.ModelName, RequestID: eventQuery.RequestID, Limit: billingMaxReconcileEvidence,
+		StoreStaffBindingIDs: eventQuery.StoreStaffBindingIDs, ModelName: eventQuery.ModelName, RequestID: eventQuery.RequestID, Limit: billingMaxReconcileEvidence,
 	})
 	eventByRequest := make(map[string]models.AIUsageEvent, len(modelEvents))
 	for i := range modelEvents {
 		requestID := strings.TrimSpace(modelEvents[i].GatewayRequestID)
 		if requestID != "" {
-			eventByRequest[billingRequestKey(modelEvents[i].StoreID, requestID)] = modelEvents[i]
+			eventByRequest[billingRequestKey(modelEvents[i].StoreID, modelEvents[i].StoreStaffBindingID, requestID)] = modelEvents[i]
 		}
 	}
 	callByRequest := make(map[string]*models.AIUsageGatewayCall, len(calls))
@@ -477,11 +562,11 @@ func (s *billingQueryService) reconcile(official []billingOfficialResult, eventQ
 			continue
 		}
 		if eventQuery.ModelName != "" {
-			if _, ok := eventByRequest[billingRequestKey(calls[i].StoreID, requestID)]; !ok {
+			if _, ok := eventByRequest[billingRequestKey(calls[i].StoreID, calls[i].StoreStaffBindingID, requestID)]; !ok {
 				continue
 			}
 		}
-		callByRequest[billingRequestKey(calls[i].StoreID, requestID)] = &calls[i]
+		callByRequest[billingRequestKey(calls[i].StoreID, calls[i].StoreStaffBindingID, requestID)] = &calls[i]
 	}
 	ret := response.BillingReconciliationResponse{Items: []response.BillingReconciliationItemResponse{}, Truncated: truncated}
 	matched := make(map[int64]struct{})
@@ -498,13 +583,14 @@ func (s *billingQueryService) reconcile(official []billingOfficialResult, eventQ
 			store := storeByID[official[i].Store.StoreID]
 			item := response.BillingReconciliationItemResponse{
 				StoreID: store.ID, StoreName: store.Name, RequestID: requestID,
+				StoreStaffBindingID: official[i].Store.StoreStaffBindingID, StoreStaffAccountName: official[i].Store.StoreStaffAccountName,
 				Status: billingReconcileOfficialOnly, OfficialModel: log.ModelName,
 				OfficialTokens:  log.PromptTokens + log.CompletionTokens,
 				OfficialCostCNY: billingQuotaCNY(log.Quota, official[i].Settings),
 			}
 			officialAt := time.Unix(log.CreatedAt, 0)
 			item.OfficialAt = &officialAt
-			key := billingRequestKey(store.ID, requestID)
+			key := billingRequestKey(store.ID, official[i].Store.StoreStaffBindingID, requestID)
 			if call := callByRequest[key]; call != nil {
 				item.Status = billingReconcileMatched
 				item.LocalAt = &call.StartedAt
@@ -544,10 +630,11 @@ func (s *billingQueryService) reconcile(official []billingOfficialResult, eventQ
 		ret.LocalOnlyCount++
 		item := response.BillingReconciliationItemResponse{
 			StoreID: call.StoreID, StoreName: storeByID[call.StoreID].Name,
+			StoreStaffBindingID: call.StoreStaffBindingID, StoreStaffAccountName: accountByBinding[call.StoreStaffBindingID],
 			RequestID: strings.TrimSpace(call.GatewayRequestID), Status: billingReconcileLocalOnly,
 			LocalAt: &call.StartedAt, LocalTokens: call.ExternalPromptTokens + call.ExternalCompletionTokens,
 		}
-		if event, ok := eventByRequest[billingRequestKey(call.StoreID, call.GatewayRequestID)]; ok {
+		if event, ok := eventByRequest[billingRequestKey(call.StoreID, call.StoreStaffBindingID, call.GatewayRequestID)]; ok {
 			item.LocalModel = event.Model
 			item.LocalTokens = event.PromptTokens + event.CompletionTokens
 		}
@@ -582,7 +669,7 @@ func resolveBillingAccessScope(operator *dto.AuthPrincipal) (billingAccessScope,
 		if snapshot.Binding == nil || snapshot.Store == nil {
 			return billingAccessScope{}, errorsx.Forbidden("当前账号尚未绑定门店")
 		}
-		return billingAccessScope{Mode: "store", TenantID: snapshot.TenantID, StoreID: snapshot.Store.ID}, nil
+		return billingAccessScope{Mode: "store", TenantID: snapshot.TenantID, StoreID: snapshot.Store.ID, StoreStaffBindingID: snapshot.Binding.ID}, nil
 	}
 	if operator.IsPlatformAccount {
 		return billingAccessScope{Mode: "platform", TenantID: operator.ActiveTenantID, Platform: true}, nil
@@ -642,24 +729,27 @@ func failedBillingOfficialResult(target billingStoreTarget, class, message strin
 	return billingOfficialResult{Store: response.BillingOfficialStoreResponse{
 		TenantID: target.Store.TenantID, TenantName: billingTenantName(target.Tenant),
 		StoreID: target.Store.ID, StoreCode: target.Store.StoreCode, StoreName: target.Store.Name,
+		StoreStaffBindingID: target.Binding.ID, StoreStaffAccountName: target.BindingAccountName,
 		Status: billingOfficialStatusFailed, ErrorClass: class, ErrorMessage: message,
 		ModelNames: []string{}, Logs: []response.BillingOfficialUsageLogResponse{},
 	}}
 }
 
-func buildOfficialUsageLog(store models.Store, item newapi.TokenUsageLog, settings *newapi.TokenBillingSettings) response.BillingOfficialUsageLogResponse {
+func buildOfficialUsageLog(target billingStoreTarget, item newapi.TokenUsageLog, settings *newapi.TokenBillingSettings) response.BillingOfficialUsageLogResponse {
 	return response.BillingOfficialUsageLogResponse{
-		StoreID: store.ID, StoreName: store.Name, ID: item.ID, CreatedAt: item.CreatedAt,
+		StoreID: target.Store.ID, StoreName: target.Store.Name, StoreStaffBindingID: target.Binding.ID, StoreStaffAccountName: target.BindingAccountName,
+		ID: item.ID, CreatedAt: item.CreatedAt,
 		ModelName: strings.TrimSpace(item.ModelName), PromptTokens: item.PromptTokens, CompletionTokens: item.CompletionTokens,
 		UseTime: item.UseTime, Quota: item.Quota, CostCNY: billingQuotaCNY(item.Quota, settings), RequestID: strings.TrimSpace(item.RequestID),
 	}
 }
 
-func buildBillingLocalEvent(item models.AIUsageEvent, tenantByID map[int64]models.Tenant, storeByID map[int64]models.Store) response.BillingLocalUsageEventResponse {
+func buildBillingLocalEvent(item models.AIUsageEvent, tenantByID map[int64]models.Tenant, storeByID map[int64]models.Store, accountByBinding map[int64]string) response.BillingLocalUsageEventResponse {
 	requestID := firstNonBlank(item.GatewayRequestID, item.UpstreamRequestID, item.RequestID)
 	return response.BillingLocalUsageEventResponse{
 		ID: item.ID, TenantID: item.TenantID, TenantName: billingTenantName(tenantByID[item.TenantID]),
 		StoreID: item.StoreID, StoreName: storeByID[item.StoreID].Name, RequestID: requestID,
+		StoreStaffBindingID: item.StoreStaffBindingID, StoreStaffAccountName: accountByBinding[item.StoreStaffBindingID],
 		Stage: item.Stage, OperationType: item.OperationType, ModelName: item.Model,
 		ModelProfileRevision: item.ModelProfileRevision, UsageSlot: item.UsageSlot, CredentialRevision: item.CredentialRevision,
 		PromptTokens: item.PromptTokens, CompletionTokens: item.CompletionTokens, CachedPromptTokens: item.CachedPromptTokens,
@@ -748,8 +838,8 @@ func normalizeBillingIDs(values []int64) []int64 {
 	return ret
 }
 
-func billingRequestKey(storeID int64, requestID string) string {
-	return fmt.Sprintf("%d:%s", storeID, strings.TrimSpace(requestID))
+func billingRequestKey(storeID, bindingID int64, requestID string) string {
+	return fmt.Sprintf("%d:%d:%s", storeID, bindingID, strings.TrimSpace(requestID))
 }
 
 func billingReconciliationTime(item response.BillingReconciliationItemResponse) time.Time {

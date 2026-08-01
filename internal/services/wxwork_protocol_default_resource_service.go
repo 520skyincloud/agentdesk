@@ -26,9 +26,14 @@ var WxWorkProtocolDefaultResourceService = &wxWorkProtocolDefaultResourceService
 type wxWorkProtocolDefaultResourceService struct{}
 
 func (s *wxWorkProtocolDefaultResourceService) SendNewFriendWelcome(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) error {
-	if conversation == nil || instance == nil || instance.Status != enums.StatusOk || !instance.WelcomeEnabled {
+	if conversation == nil || !isActivatedCurrentWxWorkProtocolInstance(instance) || !instance.WelcomeEnabled {
 		return nil
 	}
+	runtimeInstance, err := StoreService.HydrateRuntimeInstanceDB(sqls.DB(), instance)
+	if err != nil {
+		return err
+	}
+	instance = runtimeInstance
 	var sendErrors []error
 	requestID = tracex.NormalizeRequestID(requestID)
 	if message := strings.TrimSpace(instance.WelcomeMessage); message != "" {

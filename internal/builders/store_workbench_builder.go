@@ -38,6 +38,11 @@ func BuildStoreWorkbench(snapshot *services.StoreWorkbenchSnapshot) *response.St
 		ret.StoreCode = snapshot.Store.StoreCode
 		ret.StoreName = snapshot.Store.Name
 		ret.BrandName = snapshot.Store.BrandName
+		ret.StoreAddress = snapshot.Store.Address
+		ret.StoreNavigationName = snapshot.Store.NavigationName
+		ret.StoreLongitude = snapshot.Store.Longitude
+		ret.StoreLatitude = snapshot.Store.Latitude
+		ret.StoreMapProvider = snapshot.Store.MapProvider
 	}
 	if snapshot.AgentTeam != nil {
 		ret.AgentTeamName = snapshot.AgentTeam.Name
@@ -57,14 +62,6 @@ func BuildStoreWorkbench(snapshot *services.StoreWorkbenchSnapshot) *response.St
 			ret.WxWorkLastHeartbeatAt = instance.LastHeartbeatAt.Format("2006-01-02 15:04:05")
 		}
 		ret.AIReplyEnabled = instance.AIReplyEnabled
-		ret.StoreAddress = instance.StoreAddress
-		ret.StoreNavigationName = instance.StoreNavigationName
-		ret.StoreLongitude = instance.StoreLongitude
-		ret.StoreLatitude = instance.StoreLatitude
-		ret.StoreMapProvider = instance.StoreMapProvider
-		if ret.KnowledgeBaseID == 0 {
-			ret.KnowledgeBaseID = instance.KnowledgeBaseID
-		}
 	}
 	return ret
 }

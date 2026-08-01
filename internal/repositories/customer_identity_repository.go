@@ -1,6 +1,8 @@
 package repositories
 
 import (
+	"errors"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/mlogclub/simple/common/strs"
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var CustomerIdentityRepository = newCustomerIdentityRepository()
@@ -51,6 +54,22 @@ func (r *customerIdentityRepository) GetByInTenant(db *gorm.DB, tenantID int64, 
 		return nil
 	}
 	return r.Take(db, "tenant_id = ? AND external_source = ? AND external_id = ?", tenantID, externalSource, externalID)
+}
+
+func (r *customerIdentityRepository) GetByForUpdateInTenant(db *gorm.DB, tenantID int64, externalSource enums.ExternalSource, externalID string) (*models.CustomerIdentity, error) {
+	if db == nil || tenantID <= 0 || strs.IsAnyBlank(string(externalSource), externalID) {
+		return nil, nil
+	}
+	ret := &models.CustomerIdentity{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Take(ret, "tenant_id = ? AND external_source = ? AND external_id = ?", tenantID, externalSource, externalID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (r *customerIdentityRepository) FindByCustomerID(db *gorm.DB, customerID int64) []models.CustomerIdentity {
@@ -123,6 +142,10 @@ func (r *customerIdentityRepository) Update(db *gorm.DB, t *models.CustomerIdent
 func (r *customerIdentityRepository) Updates(db *gorm.DB, id int64, columns map[string]interface{}) (err error) {
 	err = db.Model(&models.CustomerIdentity{}).Where("id = ?", id).Updates(columns).Error
 	return
+}
+
+func (r *customerIdentityRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.CustomerIdentity{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
 }
 
 func (r *customerIdentityRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {

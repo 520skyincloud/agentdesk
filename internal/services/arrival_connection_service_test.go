@@ -288,6 +288,20 @@ func TestArrivalProviderOptionsDoNotAutoMatchCrossNamespaceIDs(t *testing.T) {
 		[]string{"official-contact-member"},
 		"official-contact-member",
 	)
+	draft := &models.WxWorkProtocolInstance{
+		TenantID:            fixture.tenantID,
+		Guid:                "arrival-unverified-replacement",
+		ChannelID:           fixture.instance.ChannelID,
+		EmployeeName:        "未完成验证的替换草稿",
+		StoreID:             fixture.store.ID,
+		StoreStaffBindingID: fixture.instance.StoreStaffBindingID,
+		ReplacesInstanceID:  fixture.instance.ID,
+		HealthStatus:        "online",
+		Status:              enums.StatusOk,
+	}
+	if err := fixture.db.Create(draft).Error; err != nil {
+		t.Fatalf("create unverified replacement draft: %v", err)
+	}
 	options, err := ArrivalConnectionService.ProviderOptions(fixture.state)
 	if err != nil {
 		t.Fatalf("ProviderOptions() error=%v", err)
@@ -295,8 +309,8 @@ func TestArrivalProviderOptionsDoNotAutoMatchCrossNamespaceIDs(t *testing.T) {
 	if len(options.Members) != 1 || options.Members[0].Label != "可用客户联系成员 1" {
 		t.Fatalf("official member label inferred from protocol profile: %#v", options.Members)
 	}
-	if len(options.Instances) != 1 || options.Instances[0].Name != "黄奇峰" {
-		t.Fatalf("protocol instance display name missing: %#v", options.Instances)
+	if len(options.Instances) != 1 || options.Instances[0].ID != fixture.instance.ID || options.Instances[0].Name != "黄奇峰" {
+		t.Fatalf("provider options included an unverified replacement draft: %#v", options.Instances)
 	}
 }
 
@@ -351,19 +365,25 @@ func setupArrivalConnectionCompletionFixture(
 	if err := base.db.Create(attempt).Error; err != nil {
 		t.Fatalf("create completion attempt: %v", err)
 	}
-	instance := &models.WxWorkProtocolInstance{
-		TenantID:                base.tenantID,
-		Guid:                    "completion-instance-guid",
-		EmployeeUserID:          employeeUserID,
-		EmployeeName:            "黄奇峰",
-		StoreID:                 base.store.ID,
-		StoreRoomConversationID: "S:completion-room-conversation",
-		HealthStatus:            "online",
-		Status:                  enums.StatusOk,
-		AuditFields:             arrivalSystemAuditFields(now),
+	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(
+		base.db,
+		base.instance.ID,
+		base.tenantID,
+		map[string]any{
+			"guid":                       "completion-instance-guid",
+			"employee_user_id":           employeeUserID,
+			"employee_name":              "黄奇峰",
+			"store_room_conversation_id": "S:completion-room-conversation",
+			"health_status":              "online",
+			"status":                     enums.StatusOk,
+			"updated_at":                 now,
+		},
+	); err != nil {
+		t.Fatalf("update completion protocol instance: %v", err)
 	}
-	if err := base.db.Create(instance).Error; err != nil {
-		t.Fatalf("create completion protocol instance: %v", err)
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(base.db, base.instance.ID, base.tenantID)
+	if instance == nil {
+		t.Fatal("completion protocol instance missing")
 	}
 
 	accessTokenCiphertext, accessTokenNonce, err := base.security.Encrypt(

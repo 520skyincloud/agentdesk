@@ -22,7 +22,7 @@ func FastGPTDatasetPostProvision(ctx *gin.Context) {
 		httpx.WriteJSON(ctx, err)
 		return
 	}
-	job, err := services.FastGPTDatasetService.EnqueueDefaultDataset(req.StoreID, req.Name, operator)
+	job, err := services.FastGPTDatasetService.EnqueueDefaultDataset(req.StoreID, req.StoreStaffBindingID, req.Name, operator)
 	if err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

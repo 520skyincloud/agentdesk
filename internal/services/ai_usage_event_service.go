@@ -32,6 +32,7 @@ func (s *aiUsageEventService) ApplyModelCallAttribution(event *models.AIUsageEve
 	}
 	event.TenantID = resolved.TenantID
 	event.StoreID = resolved.StoreID
+	event.StoreStaffBindingID = resolved.StoreStaffBindingID
 	event.Provider = strings.TrimSpace(resolved.Provider)
 	event.Model = strings.TrimSpace(resolved.ModelName)
 	event.ModelProfileID = resolved.ProfileID
@@ -87,7 +88,7 @@ func (s *aiUsageEventService) Record(event models.AIUsageEvent) error {
 		return err
 	}
 	event.TenantID = tenantID
-	if event.ConversationID > 0 && (event.StoreID <= 0 || event.WxWorkInstanceID <= 0) {
+	if event.ConversationID > 0 && (event.StoreID <= 0 || event.StoreStaffBindingID <= 0 || event.WxWorkInstanceID <= 0) {
 		if route := ConversationRouteService.GetByConversationIDInTenant(event.ConversationID, tenantID); route != nil {
 			if event.StoreID <= 0 {
 				event.StoreID = route.StoreID
@@ -95,7 +96,13 @@ func (s *aiUsageEventService) Record(event models.AIUsageEvent) error {
 			if event.WxWorkInstanceID <= 0 {
 				event.WxWorkInstanceID = route.WxWorkInstanceID
 			}
+			if event.StoreStaffBindingID <= 0 {
+				event.StoreStaffBindingID = route.StoreStaffBindingID
+			}
 		}
+	}
+	if err := s.validateStoreBindingScope(event); err != nil {
+		return err
 	}
 	s.enrichStoreModelAttribution(&event)
 	if event.RequestCount <= 0 && (event.Model != "" || event.GatewayRequestID != "") {
@@ -105,6 +112,42 @@ func (s *aiUsageEventService) Record(event models.AIUsageEvent) error {
 		return err
 	}
 	return AIUsageGatewayCallService.RecordFromEvent(event)
+}
+
+func (s *aiUsageEventService) validateStoreBindingScope(event models.AIUsageEvent) error {
+	if event.StoreID <= 0 {
+		if event.StoreStaffBindingID > 0 {
+			return fmt.Errorf("AI usage binding has no store scope")
+		}
+		return nil
+	}
+	if event.StoreStaffBindingID <= 0 {
+		return fmt.Errorf("AI usage store scope has no staff binding")
+	}
+	binding := repositories.StoreStaffBindingRepository.GetInTenant(sqls.DB(), event.StoreStaffBindingID, event.TenantID)
+	if binding == nil || binding.StoreID != event.StoreID {
+		return fmt.Errorf("AI usage staff binding does not belong to the store")
+	}
+	if event.ConversationID > 0 {
+		conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), event.ConversationID, event.TenantID)
+		if conversation == nil || (conversation.StoreID > 0 && conversation.StoreID != event.StoreID) ||
+			(conversation.StoreStaffBindingID > 0 && conversation.StoreStaffBindingID != event.StoreStaffBindingID) {
+			return fmt.Errorf("AI usage conversation store scope mismatch")
+		}
+	}
+	if event.WxWorkInstanceID > 0 {
+		instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), event.WxWorkInstanceID, event.TenantID)
+		if instance == nil || instance.StoreID != event.StoreID || instance.StoreStaffBindingID != event.StoreStaffBindingID {
+			return fmt.Errorf("AI usage WeCom instance store scope mismatch")
+		}
+	}
+	if event.KnowledgeBaseID > 0 {
+		knowledgeBase := repositories.KnowledgeBaseRepository.GetInTenant(sqls.DB(), event.KnowledgeBaseID, event.TenantID)
+		if knowledgeBase == nil || knowledgeBase.StoreID != event.StoreID {
+			return fmt.Errorf("AI usage knowledge base store scope mismatch")
+		}
+	}
+	return nil
 }
 
 func (s *aiUsageEventService) enrichStoreModelAttribution(event *models.AIUsageEvent) {
@@ -138,7 +181,7 @@ func (s *aiUsageEventService) enrichStoreModelAttribution(event *models.AIUsageE
 			}
 		}
 	}
-	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), event.TenantID, event.StoreID)
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(sqls.DB(), event.TenantID, event.StoreID, event.StoreStaffBindingID)
 	if credential != nil && credential.Status == enums.StoreCredentialStatusActive && credential.CredentialRevision > 0 {
 		if event.CredentialRevision <= 0 {
 			event.CredentialRevision = credential.CredentialRevision

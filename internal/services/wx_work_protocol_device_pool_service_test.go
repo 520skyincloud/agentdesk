@@ -303,6 +303,45 @@ func TestAdoptOnlineDevicePoolInstanceCreatesTenantBindingAndHTTPSCallback(t *te
 	if instanceCount != 1 {
 		t.Fatalf("idempotent adoption created %d instances", instanceCount)
 	}
+	secondUser := &models.User{TenantID: tenant.ID, Username: "store-user-2", Nickname: "门店员工二", Status: enums.StatusOk, AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now}}
+	if err := db.Create(secondUser).Error; err != nil {
+		t.Fatalf("create second store user: %v", err)
+	}
+	secondActiveUserID := secondUser.ID
+	secondBinding := &models.StoreStaffBinding{
+		TenantID: tenant.ID, UserID: secondUser.ID, ActiveUserID: &secondActiveUserID, StoreID: store.ID,
+		FallbackToHQ: true, ManualTimeoutMinutes: 10, Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(secondBinding).Error; err != nil {
+		t.Fatalf("create second binding in same store: %v", err)
+	}
+	secondPool := &models.WxWorkProtocolDevicePoolInstance{
+		Guid: "44444444-4444-4444-4444-444444444444", Uin: "second-online-uin", SyncStatus: "online",
+		ExpiredAt: &expiredAt, Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(secondPool).Error; err != nil {
+		t.Fatalf("create second device pool row: %v", err)
+	}
+	secondResult, err := WxWorkProtocolDevicePoolService.Adopt(request.AdoptWxWorkProtocolDevicePoolRequest{
+		DevicePoolID: secondPool.ID, TenantID: tenant.ID, StoreStaffBindingID: secondBinding.ID,
+	}, operator)
+	if err != nil {
+		t.Fatalf("adopt second binding in same store: %v", err)
+	}
+	if secondResult == nil || secondResult.StoreID != store.ID || secondResult.StoreStaffBindingID != secondBinding.ID {
+		t.Fatalf("unexpected second adoption result: %+v", secondResult)
+	}
+	var currentStoreInstances int64
+	if err := db.Model(&models.WxWorkProtocolInstance{}).
+		Where("tenant_id = ? AND store_id = ? AND replaced_by_instance_id = 0 AND status <> ?", tenant.ID, store.ID, enums.StatusDeleted).
+		Count(&currentStoreInstances).Error; err != nil {
+		t.Fatalf("count current Store instances: %v", err)
+	}
+	if currentStoreInstances != 2 {
+		t.Fatalf("same Store current instances=%d, want 2 for two bindings", currentStoreInstances)
+	}
 	if _, err := WxWorkProtocolDevicePoolService.Adopt(request.AdoptWxWorkProtocolDevicePoolRequest{
 		DevicePoolID: pool.ID, TenantID: tenant.ID + 1, StoreStaffBindingID: binding.ID,
 	}, operator); err == nil {

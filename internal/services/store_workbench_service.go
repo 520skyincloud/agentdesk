@@ -62,10 +62,26 @@ func (s *storeWorkbenchService) Current(operator *dto.AuthPrincipal) (*StoreWork
 	if len(bindings) == 0 {
 		return snapshot, nil
 	}
-	if len(bindings) > 1 {
+	var binding *models.StoreStaffBinding
+	for i := range bindings {
+		candidate := &bindings[i]
+		if candidate.Status != enums.StatusOk {
+			continue
+		}
+		if candidate.ActiveUserID == nil || *candidate.ActiveUserID != operator.UserID {
+			return nil, errorsx.InvalidParam("当前账号存在未正确激活的门店绑定，请联系公司主管修正后再使用门店工作台")
+		}
+		if binding != nil {
+			return nil, errorsx.InvalidParam("当前账号关联了多个活动门店，请联系公司主管修正后再使用门店工作台")
+		}
+		binding = candidate
+	}
+	if binding == nil && len(bindings) == 1 {
+		binding = &bindings[0]
+	}
+	if binding == nil {
 		return nil, errorsx.InvalidParam("当前账号关联了多个门店，请联系公司主管修正后再使用门店工作台")
 	}
-	binding := &bindings[0]
 	snapshot.Binding = binding
 	snapshot.Runtime = StoreStaffBindingService.runtimeConfigFromBinding(binding)
 
@@ -80,24 +96,12 @@ func (s *storeWorkbenchService) Current(operator *dto.AuthPrincipal) (*StoreWork
 		snapshot.AgentTeam = repositories.AgentTeamRepository.GetInTenant(sqls.DB(), binding.AgentTeamID, operator.ActiveTenantID)
 	}
 
-	instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().
-		Eq("tenant_id", operator.ActiveTenantID).
-		Eq("store_staff_binding_id", binding.ID).
-		Where("status <> ?", enums.StatusDeleted).
-		Asc("id"))
-	if len(instances) == 0 {
-		instances = repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().
-			Eq("tenant_id", operator.ActiveTenantID).
-			Eq("store_id", binding.StoreID).
-			Eq("store_staff_binding_id", 0).
-			Where("status <> ?", enums.StatusDeleted).
-			Asc("id"))
+	instance, err := WxWorkProtocolInstanceService.bindingInstanceReservationDB(sqls.DB(), operator.ActiveTenantID, binding.ID)
+	if err != nil {
+		return nil, err
 	}
-	if len(instances) > 1 {
-		return nil, errorsx.InvalidParam("当前门店关联了多个企微员工号，请联系公司主管修正后再使用门店工作台")
-	}
-	if len(instances) == 1 {
-		snapshot.WxWorkInstance = &instances[0]
+	if instance != nil {
+		snapshot.WxWorkInstance = instance
 		snapshot.Runtime = StoreStaffBindingService.ResolveForInstance(snapshot.WxWorkInstance)
 	}
 
@@ -174,25 +178,19 @@ func (s *storeWorkbenchService) UpdateCurrent(req request.UpdateStoreWorkbenchRe
 		}); err != nil {
 			return err
 		}
-		if snapshot.WxWorkInstance == nil {
-			return nil
+		if err := repositories.StoreRepository.UpdatesInTenant(ctx.Tx, snapshot.Store.ID, snapshot.TenantID, map[string]any{
+			"address":          storeAddress,
+			"navigation_name":  storeNavigationName,
+			"longitude":        storeLongitude,
+			"latitude":         storeLatitude,
+			"map_provider":     storeMapProvider,
+			"updated_at":       now,
+			"update_user_id":   operator.UserID,
+			"update_user_name": operator.Username,
+		}); err != nil {
+			return err
 		}
-		return repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(ctx.Tx, snapshot.WxWorkInstance.ID, snapshot.TenantID, map[string]any{
-			"service_hours":              serviceHours,
-			"store_room_conversation_id": roomConversationID,
-			"store_room_notify_enabled":  req.StoreRoomNotifyEnabled,
-			"store_room_at_list":         roomAtList,
-			"fallback_to_hq":             fallbackToHQ,
-			"manual_timeout_minutes":     req.ManualTimeoutMinutes,
-			"store_address":              storeAddress,
-			"store_navigation_name":      storeNavigationName,
-			"store_longitude":            storeLongitude,
-			"store_latitude":             storeLatitude,
-			"store_map_provider":         storeMapProvider,
-			"updated_at":                 now,
-			"update_user_id":             operator.UserID,
-			"update_user_name":           operator.Username,
-		})
+		return nil
 	}); err != nil {
 		return nil, err
 	}

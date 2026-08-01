@@ -47,6 +47,8 @@ func BuildConversationWithLocale(item *models.Conversation, locale string) respo
 		ClosedAt:                  utils.FormatTimePtr(item.ClosedAt),
 		ClosedBy:                  item.ClosedBy,
 		CloseReason:               item.CloseReason,
+		StoreID:                   item.StoreID,
+		StoreStaffBindingID:       item.StoreStaffBindingID,
 	}
 	if identity := services.ConversationService.GetConversationExternalIdentity(item); identity != nil {
 		ret.CustomerOnline = services.WsService.IsGuestOnline(item.TenantID, identity.ExternalID)
@@ -94,11 +96,14 @@ func buildConversationRouteFields(ret *response.ConversationResponse, item *mode
 	ret.RouteTarget = route.RouteTarget
 	ret.HandoffReason = sanitizeVisibleHandoffReason(utils.RepairMojibakeText(route.HandoffReason))
 	ret.NeedHumanFollowUp = route.NeedHumanFollowUp
-	ret.AutoHandoffEnabled = services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledInTenant(item.CustomerID, route.WxWorkInstanceID, item.TenantID)
+	ret.AutoHandoffEnabled = services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledInTenant(item.CustomerID, item.StoreStaffBindingID, item.TenantID)
 	ret.ManualExpireAt = utils.FormatTimePtr(route.ManualExpireAt)
 	ret.ManualAttention = buildConversationManualAttention(route, ret.ManualExpireAt)
 	ret.StoreID = route.StoreID
+	ret.StoreStaffBindingID = route.StoreStaffBindingID
 	ret.WxWorkInstanceID = route.WxWorkInstanceID
+	ret.CurrentSessionNo = route.SessionNo
+	ret.WxWorkReplyReady, ret.WxWorkReplyStatus = services.WxWorkProtocolService.ConversationReplyReadiness(item)
 	if route.WxWorkInstanceID > 0 {
 		if mapping := services.WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", item.TenantID).Eq("conversation_id", item.ID)); mapping != nil {
 			ret.WxWorkExternalUserID = mapping.ExternalUserID
@@ -123,6 +128,65 @@ func buildConversationRouteFields(ret *response.ConversationResponse, item *mode
 			}
 		}
 	}
+}
+
+func BuildConversationChannelSessions(list []models.ConversationChannelSession) []response.ConversationChannelSessionResponse {
+	ret := make([]response.ConversationChannelSessionResponse, 0, len(list))
+	for i := range list {
+		item := &list[i]
+		ret = append(ret, response.ConversationChannelSessionResponse{
+			SessionNo:                 item.SessionNo,
+			StoreID:                   item.StoreID,
+			StoreStaffBindingID:       item.StoreStaffBindingID,
+			WxWorkInstanceID:          item.WxWorkInstanceID,
+			ChannelID:                 item.ChannelID,
+			StartReason:               item.StartReason,
+			StoreStaffDisplayName:     utils.RepairMojibakeText(item.StoreStaffDisplayName),
+			WxWorkEmployeeDisplayName: utils.RepairMojibakeText(item.WxWorkEmployeeDisplayName),
+			StartedAt:                 item.StartedAt,
+			EndedAt:                   item.EndedAt,
+			Status:                    item.Status,
+		})
+	}
+	return ret
+}
+
+func BuildConversationHistorySegments(list []services.ConversationHistorySegment) []response.ConversationHistorySegmentResponse {
+	ret := make([]response.ConversationHistorySegmentResponse, 0, len(list))
+	for i := range list {
+		item := &list[i]
+		ret = append(ret, response.ConversationHistorySegmentResponse{
+			Index:                     item.Index,
+			ConversationID:            item.ConversationID,
+			SessionNo:                 item.SessionNo,
+			StoreID:                   item.StoreID,
+			StoreStaffBindingID:       item.StoreStaffBindingID,
+			WxWorkInstanceID:          item.WxWorkInstanceID,
+			ChannelID:                 item.ChannelID,
+			StartReason:               item.StartReason,
+			StoreStaffDisplayName:     utils.RepairMojibakeText(item.StoreStaffDisplayName),
+			WxWorkEmployeeDisplayName: utils.RepairMojibakeText(item.WxWorkEmployeeDisplayName),
+			StartedAt:                 item.StartedAt,
+			EndedAt:                   item.EndedAt,
+			Status:                    item.Status,
+			InheritedHistory:          item.InheritedHistory,
+			CurrentConversation:       item.CurrentConversation,
+		})
+	}
+	return ret
+}
+
+func BuildConversationContinuityLinks(list []models.ConversationContinuityLink) []response.ConversationContinuityLinkResponse {
+	ret := make([]response.ConversationContinuityLinkResponse, 0, len(list))
+	for i := range list {
+		ret = append(ret, response.ConversationContinuityLinkResponse{
+			PredecessorConversationID: list[i].PredecessorConversationID,
+			SuccessorConversationID:   list[i].SuccessorConversationID,
+			Reason:                    utils.RepairMojibakeText(list[i].Reason),
+			CreatedAt:                 utils.FormatTime(list[i].CreatedAt),
+		})
+	}
+	return ret
 }
 
 func buildConversationManualAttention(route *models.ConversationRouteState, manualExpireAt string) response.ConversationManualAttentionResponse {
@@ -274,6 +338,41 @@ func BuildMessagesWithLocale(list []models.Message, locale string) []response.Me
 	return ret
 }
 
+func BuildConversationHistoryMessagesWithLocale(list []services.ConversationHistoryMessage, locale string) []response.MessageResponse {
+	if len(list) == 0 {
+		return nil
+	}
+	messages := make([]models.Message, 0, len(list))
+	for i := range list {
+		messages = append(messages, list[i].Message)
+	}
+	aiSenderNames, userSenderNames := collectMessageSenderNameMaps(messages)
+	agentProfiles := collectAgentProfilesByMessages(messages)
+	type readStatePair struct {
+		agent    *models.ConversationReadState
+		customer *models.ConversationReadState
+	}
+	readStates := make(map[int64]readStatePair)
+	ret := make([]response.MessageResponse, 0, len(list))
+	for i := range list {
+		item := &list[i]
+		states, ok := readStates[item.Message.ConversationID]
+		if !ok {
+			states.agent, states.customer = services.ConversationReadStateService.GetConversationReadStates(item.Message.ConversationID)
+			readStates[item.Message.ConversationID] = states
+		}
+		built := BuildMessageWithReadStatesAndLocale(
+			&item.Message, states.agent, states.customer,
+			aiSenderNames, userSenderNames, agentProfiles, locale,
+		)
+		segmentIndex := item.SegmentIndex
+		built.HistorySegmentIndex = &segmentIndex
+		built.InheritedHistory = item.InheritedHistory
+		ret = append(ret, built)
+	}
+	return ret
+}
+
 func BuildMessage(item *models.Message) response.MessageResponse {
 	return BuildMessageWithLocale(item, i18nx.LocaleZhCN)
 }
@@ -293,6 +392,7 @@ func BuildMessageWithReadStatesAndLocale(item *models.Message, agentReadState, c
 		ID:              item.ID,
 		ConversationID:  item.ConversationID,
 		SessionNo:       item.SessionNo,
+		HistoricalOnly:  item.HistoricalOnly,
 		RequestID:       item.RequestID,
 		ClientMsgID:     item.ClientMsgID,
 		SenderType:      item.SenderType,

@@ -1,10 +1,11 @@
 package repositories
 
 import (
+	"errors"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/httpx/params"
-	"time"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
@@ -38,6 +39,11 @@ func newWxWorkProtocolInstanceRepository() *wxWorkProtocolInstanceRepository {
 
 type wxWorkProtocolInstanceRepository struct{}
 
+const (
+	wxWorkProtocolCurrentInstanceCondition        = "replaced_by_instance_id = 0 AND (replaces_instance_id = 0 OR remote_setup_submitted_at IS NOT NULL)"
+	wxWorkProtocolCurrentInstanceAliasedCondition = "instance.replaced_by_instance_id = 0 AND (instance.replaces_instance_id = 0 OR instance.remote_setup_submitted_at IS NOT NULL)"
+)
+
 func (r *wxWorkProtocolInstanceRepository) Get(db *gorm.DB, id int64) *models.WxWorkProtocolInstance {
 	ret := &models.WxWorkProtocolInstance{}
 	if err := db.First(ret, "id = ?", id).Error; err != nil {
@@ -55,6 +61,79 @@ func (r *wxWorkProtocolInstanceRepository) GetInTenant(db *gorm.DB, id, tenantID
 		return nil
 	}
 	return ret
+}
+
+func (r *wxWorkProtocolInstanceRepository) GetActivatedCurrentInTenant(db *gorm.DB, id, tenantID int64) *models.WxWorkProtocolInstance {
+	if db == nil || id <= 0 || tenantID <= 0 {
+		return nil
+	}
+	ret := &models.WxWorkProtocolInstance{}
+	if err := db.First(
+		ret,
+		"id = ? AND tenant_id = ? AND status = ? AND "+wxWorkProtocolCurrentInstanceCondition,
+		id,
+		tenantID,
+		enums.StatusOk,
+	).Error; err != nil {
+		return nil
+	}
+	return ret
+}
+
+func (r *wxWorkProtocolInstanceRepository) FindCurrentByStoreStaffBindingInTenant(
+	db *gorm.DB,
+	tenantID, bindingID int64,
+	forUpdate bool,
+) ([]models.WxWorkProtocolInstance, error) {
+	ret := make([]models.WxWorkProtocolInstance, 0, 1)
+	if db == nil || tenantID <= 0 || bindingID <= 0 {
+		return ret, nil
+	}
+	query := db.Where(
+		"tenant_id = ? AND store_staff_binding_id = ? AND status = ? AND "+wxWorkProtocolCurrentInstanceCondition,
+		tenantID,
+		bindingID,
+		enums.StatusOk,
+	).Order("id DESC")
+	if forUpdate {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.Find(&ret).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	return ret, nil
+}
+
+func (r *wxWorkProtocolInstanceRepository) FindActivatedCurrent(
+	db *gorm.DB,
+	cnd *sqls.Cnd,
+) []models.WxWorkProtocolInstance {
+	if db == nil {
+		return []models.WxWorkProtocolInstance{}
+	}
+	if cnd == nil {
+		cnd = sqls.NewCnd()
+	}
+	return r.Find(db, cnd.
+		Eq("status", enums.StatusOk).
+		Where(wxWorkProtocolCurrentInstanceCondition))
+}
+
+func (r *wxWorkProtocolInstanceRepository) FindReservationCandidatesByStoreStaffBindingInTenant(
+	db *gorm.DB,
+	tenantID, bindingID int64,
+) ([]models.WxWorkProtocolInstance, error) {
+	ret := make([]models.WxWorkProtocolInstance, 0, 1)
+	if db == nil || tenantID <= 0 || bindingID <= 0 {
+		return ret, nil
+	}
+	err := db.Where(
+		"tenant_id = ? AND store_staff_binding_id = ? AND replaced_by_instance_id = 0 AND status <> ?",
+		tenantID,
+		bindingID,
+		enums.StatusDeleted,
+	).Order("id DESC").Find(&ret).Error
+	return ret, err
 }
 
 func (r *wxWorkProtocolInstanceRepository) Take(db *gorm.DB, where ...any) *models.WxWorkProtocolInstance {
@@ -106,39 +185,14 @@ func (r *wxWorkProtocolInstanceRepository) CountAIEnabledInTenant(db *gorm.DB, t
 	}
 	var count int64
 	err := db.Model(&models.WxWorkProtocolInstance{}).
-		Where("tenant_id = ? AND ai_reply_enabled = ? AND status <> ?", tenantID, true, enums.StatusDeleted).
+		Where(
+			"tenant_id = ? AND ai_reply_enabled = ? AND status = ? AND "+wxWorkProtocolCurrentInstanceCondition,
+			tenantID,
+			true,
+			enums.StatusOk,
+		).
 		Count(&count).Error
 	return count, err
-}
-
-func (r *wxWorkProtocolInstanceRepository) UpdateKnowledgeBaseByStore(db *gorm.DB, storeID, knowledgeBaseID int64, now time.Time, operatorName string) error {
-	return db.Model(&models.WxWorkProtocolInstance{}).
-		Where("store_id = ? AND status <> ?", storeID, enums.StatusDeleted).
-		Updates(map[string]any{"knowledge_base_id": knowledgeBaseID, "updated_at": now, "update_user_name": operatorName}).Error
-}
-
-func (r *wxWorkProtocolInstanceRepository) UpdateKnowledgeBaseByStoreInTenant(db *gorm.DB, storeID, knowledgeBaseID, tenantID int64, now time.Time, operatorName string) error {
-	if storeID <= 0 || tenantID <= 0 {
-		return nil
-	}
-	return db.Model(&models.WxWorkProtocolInstance{}).
-		Where("store_id = ? AND tenant_id = ? AND status <> ?", storeID, tenantID, enums.StatusDeleted).
-		Updates(map[string]any{"knowledge_base_id": knowledgeBaseID, "updated_at": now, "update_user_name": operatorName}).Error
-}
-
-func (r *wxWorkProtocolInstanceRepository) ClearKnowledgeBaseByID(db *gorm.DB, knowledgeBaseID int64, now time.Time, operatorName string) error {
-	return db.Model(&models.WxWorkProtocolInstance{}).
-		Where("knowledge_base_id = ? AND status <> ?", knowledgeBaseID, enums.StatusDeleted).
-		Updates(map[string]any{"knowledge_base_id": 0, "updated_at": now, "update_user_name": operatorName}).Error
-}
-
-func (r *wxWorkProtocolInstanceRepository) ClearKnowledgeBaseByIDInTenant(db *gorm.DB, knowledgeBaseID, tenantID int64, now time.Time, operatorName string) error {
-	if knowledgeBaseID <= 0 || tenantID <= 0 {
-		return nil
-	}
-	return db.Model(&models.WxWorkProtocolInstance{}).
-		Where("knowledge_base_id = ? AND tenant_id = ? AND status <> ?", knowledgeBaseID, tenantID, enums.StatusDeleted).
-		Updates(map[string]any{"knowledge_base_id": 0, "updated_at": now, "update_user_name": operatorName}).Error
 }
 
 func (r *wxWorkProtocolInstanceRepository) Create(db *gorm.DB, t *models.WxWorkProtocolInstance) error {

@@ -208,11 +208,16 @@ func (s *conversationDispatchService) resolveDispatchTeamIDsDB(db *gorm.DB, conv
 	if route != nil && route.TenantID == conversation.TenantID {
 		if route.WxWorkInstanceID > 0 {
 			if instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, route.WxWorkInstanceID, conversation.TenantID); instance != nil {
-				appendTeam(instance.AgentTeamID)
+				storeMatches := route.StoreID <= 0 || instance.StoreID == route.StoreID
+				bindingMatches := route.StoreStaffBindingID <= 0 || instance.StoreStaffBindingID == route.StoreStaffBindingID
+				if storeMatches && bindingMatches {
+					appendTeam(instance.AgentTeamID)
+				}
 			}
 		}
-		if route.StoreID > 0 {
-			if binding := repositories.StoreStaffBindingRepository.TakeInTenant(db, conversation.TenantID, "store_id = ? AND status = ?", route.StoreID, enums.StatusOk); binding != nil {
+		if route.StoreStaffBindingID > 0 {
+			if binding := repositories.StoreStaffBindingRepository.GetInTenant(db, route.StoreStaffBindingID, conversation.TenantID); binding != nil &&
+				binding.Status == enums.StatusOk && (route.StoreID <= 0 || binding.StoreID == route.StoreID) {
 				appendTeam(binding.AgentTeamID)
 			}
 		}

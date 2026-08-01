@@ -309,10 +309,17 @@ func (s *replyCommitService) resolveWxWorkInstance(conversationID, tenantID int6
 	if route == nil || route.WxWorkInstanceID <= 0 {
 		return nil
 	}
+	var instance *models.WxWorkProtocolInstance
 	if tenantID > 0 {
-		return svc.WxWorkProtocolInstanceService.GetByTenantID(route.WxWorkInstanceID, tenantID)
+		instance = svc.WxWorkProtocolInstanceService.GetByTenantID(route.WxWorkInstanceID, tenantID)
+	} else {
+		instance = svc.WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
 	}
-	return svc.WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
+	runtimeInstance, err := svc.StoreService.HydrateRuntimeInstanceDB(sqls.DB(), instance)
+	if err != nil {
+		return nil
+	}
+	return runtimeInstance
 }
 
 func structuredVariableResourceTypeFromTrace(trace *aiReplyTraceData) string {

@@ -353,6 +353,7 @@ func (s *conversationHumanDispatchService) markStoreRoomHandoff(conversationID i
 	if err != nil || !claimed {
 		return claimed, err
 	}
+	s.publishHandoffState(conversationID)
 	s.notifyStoreRoomHandoff(conversationID, trimmedReason)
 	return true, nil
 }
@@ -427,9 +428,16 @@ func (s *conversationHumanDispatchService) markHQAgentDeskHandoff(conversationID
 	if err != nil || !claimed {
 		return claimed, err
 	}
+	s.publishHandoffState(conversationID)
 	s.notifyAgentDeskHandoff(conversationID, trimmedReason)
 	ConversationDispatchService.ScheduleDispatch(conversationID)
 	return true, nil
+}
+
+func (s *conversationHumanDispatchService) publishHandoffState(conversationID int64) {
+	if conversation := ConversationService.Get(conversationID); conversation != nil {
+		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
+	}
 }
 
 func (s *conversationHumanDispatchService) recordHandoff(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, now time.Time) (bool, error) {

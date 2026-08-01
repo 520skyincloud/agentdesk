@@ -1,6 +1,9 @@
 package response
 
-import "agent-desk/internal/pkg/enums"
+import (
+	"agent-desk/internal/pkg/enums"
+	"time"
+)
 
 type CustomerTagResponse struct {
 	ID              int64   `json:"id"`
@@ -90,7 +93,11 @@ type ConversationResponse struct {
 	ManualAttention           ConversationManualAttentionResponse `json:"manualAttention"`
 	StoreID                   int64                               `json:"storeId,omitempty"`
 	StoreName                 string                              `json:"storeName,omitempty"`
+	StoreStaffBindingID       int64                               `json:"storeStaffBindingId,omitempty"`
 	WxWorkInstanceID          int64                               `json:"wxWorkInstanceId,omitempty"`
+	CurrentSessionNo          int                                 `json:"currentSessionNo,omitempty"`
+	WxWorkReplyReady          bool                                `json:"wxWorkReplyReady"`
+	WxWorkReplyStatus         string                              `json:"wxWorkReplyStatus,omitempty"`
 	WxWorkExternalUserID      string                              `json:"wxWorkExternalUserId,omitempty"`
 	WxWorkEmployeeName        string                              `json:"wxWorkEmployeeName,omitempty"`
 	WxWorkEmployeeUserID      string                              `json:"wxWorkEmployeeUserId,omitempty"`
@@ -99,5 +106,80 @@ type ConversationResponse struct {
 
 type ConversationDetailResponse struct {
 	ConversationResponse
-	Participants []ConversationParticipantResponse `json:"participants,omitempty"`
+	Participants         []ConversationParticipantResponse    `json:"participants,omitempty"`
+	ChannelSessions      []ConversationChannelSessionResponse `json:"channelSessions,omitempty"`
+	HistorySegments      []ConversationHistorySegmentResponse `json:"historySegments,omitempty"`
+	RelatedConversations []ConversationResponse               `json:"relatedConversations,omitempty"`
+	ContinuityLinks      []ConversationContinuityLinkResponse `json:"continuityLinks,omitempty"`
+}
+
+type ConversationHistorySegmentResponse struct {
+	Index                     int          `json:"index"`
+	ConversationID            int64        `json:"conversationId"`
+	SessionNo                 int          `json:"sessionNo"`
+	StoreID                   int64        `json:"storeId"`
+	StoreStaffBindingID       int64        `json:"storeStaffBindingId"`
+	WxWorkInstanceID          int64        `json:"wxWorkInstanceId"`
+	ChannelID                 int64        `json:"channelId"`
+	StartReason               string       `json:"startReason"`
+	StoreStaffDisplayName     string       `json:"storeStaffDisplayName"`
+	WxWorkEmployeeDisplayName string       `json:"wxWorkEmployeeDisplayName"`
+	StartedAt                 time.Time    `json:"startedAt"`
+	EndedAt                   *time.Time   `json:"endedAt,omitempty"`
+	Status                    enums.Status `json:"status"`
+	InheritedHistory          bool         `json:"inheritedHistory"`
+	CurrentConversation       bool         `json:"currentConversation"`
+}
+
+type ConversationContinuityLinkResponse struct {
+	PredecessorConversationID int64  `json:"predecessorConversationId"`
+	SuccessorConversationID   int64  `json:"successorConversationId"`
+	Reason                    string `json:"reason"`
+	CreatedAt                 string `json:"createdAt"`
+}
+
+type ConversationChannelSessionResponse struct {
+	SessionNo                 int          `json:"sessionNo"`
+	StoreID                   int64        `json:"storeId"`
+	StoreStaffBindingID       int64        `json:"storeStaffBindingId"`
+	WxWorkInstanceID          int64        `json:"wxWorkInstanceId"`
+	ChannelID                 int64        `json:"channelId"`
+	StartReason               string       `json:"startReason"`
+	StoreStaffDisplayName     string       `json:"storeStaffDisplayName"`
+	WxWorkEmployeeDisplayName string       `json:"wxWorkEmployeeDisplayName"`
+	StartedAt                 time.Time    `json:"startedAt"`
+	EndedAt                   *time.Time   `json:"endedAt,omitempty"`
+	Status                    enums.Status `json:"status"`
+}
+
+type StoreConversationInheritancePreviewResponse struct {
+	SourceStoreStaffBindingID int64                                             `json:"sourceStoreStaffBindingId"`
+	TargetStoreStaffBindingID int64                                             `json:"targetStoreStaffBindingId"`
+	TargetWxWorkInstanceID    int64                                             `json:"targetWxWorkInstanceId"`
+	StoreID                   int64                                             `json:"storeId"`
+	StoreName                 string                                            `json:"storeName"`
+	PreviewVersion            string                                            `json:"previewVersion"`
+	EligibleCount             int                                               `json:"eligibleCount"`
+	LinkedExistingCount       int                                               `json:"linkedExistingCount"`
+	ConflictCount             int                                               `json:"conflictCount"`
+	Items                     []StoreConversationInheritancePreviewItemResponse `json:"items"`
+}
+
+type StoreConversationInheritancePreviewItemResponse struct {
+	ConversationID       int64  `json:"conversationId"`
+	CustomerID           int64  `json:"customerId"`
+	CustomerName         string `json:"customerName"`
+	LastMessageAt        string `json:"lastMessageAt,omitempty"`
+	CurrentSessionNo     int    `json:"currentSessionNo"`
+	Eligible             bool   `json:"eligible"`
+	ResolutionMode       string `json:"resolutionMode"`
+	TargetConversationID int64  `json:"targetConversationId,omitempty"`
+	ConflictReason       string `json:"conflictReason,omitempty"`
+}
+
+type BatchStoreConversationInheritanceResponse struct {
+	InheritedCount  int64   `json:"inheritedCount"`
+	CreatedCount    int64   `json:"createdCount"`
+	LinkedCount     int64   `json:"linkedCount"`
+	ConversationIDs []int64 `json:"conversationIds"`
 }

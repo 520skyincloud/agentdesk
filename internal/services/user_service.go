@@ -204,7 +204,7 @@ func (s *userService) createManagedUserDB(db *gorm.DB, req request.CreateUserReq
 	if err = s.assignInitialUserRolesDB(db, user.ID, roleIDs, operator); err != nil {
 		return nil, "", err
 	}
-	if err = s.syncStoreIdentityForRoleStateDB(db, user, req.StoreName, operator, false); err != nil {
+	if err = s.syncStoreIdentityForRoleStateDB(db, user, req.StoreID, operator, false); err != nil {
 		return nil, "", err
 	}
 	return user, plain, nil
@@ -374,7 +374,7 @@ func (s *userService) UpdateStatus(id int64, status int, operator *dto.AuthPrinc
 			return nil
 		}
 		if current.Status == enums.StatusOk {
-			return s.syncStoreIdentityForRoleStateDB(ctx.Tx, current, "", operator, false)
+			return s.syncStoreIdentityForRoleStateDB(ctx.Tx, current, 0, operator, false)
 		}
 		return StoreStaffBindingService.RetireForUserDB(ctx.Tx, current.TenantID, current.ID, operator)
 	}); err != nil {
@@ -413,10 +413,10 @@ func (s *userService) ChangeOwnPassword(password string, operator *dto.AuthPrinc
 }
 
 func (s *userService) AssignRoles(userID int64, roleIDs []int64, operator *dto.AuthPrincipal) error {
-	return s.AssignRolesWithStoreName(userID, roleIDs, "", operator)
+	return s.AssignRolesWithStoreID(userID, roleIDs, 0, operator)
 }
 
-func (s *userService) AssignRolesWithStoreName(userID int64, roleIDs []int64, storeName string, operator *dto.AuthPrincipal) error {
+func (s *userService) AssignRolesWithStoreID(userID int64, roleIDs []int64, storeID int64, operator *dto.AuthPrincipal) error {
 	user := s.GetInScope(userID, operator)
 	if user == nil || user.DeletedAt != nil {
 		return errorsx.InvalidParam("用户不存在")
@@ -435,7 +435,7 @@ func (s *userService) AssignRolesWithStoreName(userID int64, roleIDs []int64, st
 		if err != nil {
 			return err
 		}
-		return s.syncStoreIdentityForRoleStateDB(ctx.Tx, current, storeName, operator, hadStoreStaffRole)
+		return s.syncStoreIdentityForRoleStateDB(ctx.Tx, current, storeID, operator, hadStoreStaffRole)
 	}); err != nil {
 		return err
 	}
@@ -461,7 +461,7 @@ func (s *userService) dispatchTeamIDsForUser(tenantID, userID int64) []int64 {
 	return uniquePositive(teamIDs)
 }
 
-func (s *userService) syncStoreIdentityForRoleStateDB(db *gorm.DB, user *models.User, storeName string, operator *dto.AuthPrincipal, retireIfMissing bool) error {
+func (s *userService) syncStoreIdentityForRoleStateDB(db *gorm.DB, user *models.User, storeID int64, operator *dto.AuthPrincipal, retireIfMissing bool) error {
 	if user == nil || user.TenantID <= 0 {
 		return nil
 	}
@@ -476,17 +476,24 @@ func (s *userService) syncStoreIdentityForRoleStateDB(db *gorm.DB, user *models.
 	if err != nil {
 		return err
 	}
-	if len(bindings) > 1 {
-		return errorsx.InvalidParam("该账号存在多个门店绑定，请先修复历史数据")
+	activeCount := 0
+	var activeBinding *models.StoreStaffBinding
+	for i := range bindings {
+		if bindings[i].Status == enums.StatusOk && bindings[i].ActiveUserID != nil && *bindings[i].ActiveUserID == user.ID {
+			activeCount++
+			activeBinding = &bindings[i]
+		}
 	}
-	storeName = strings.TrimSpace(storeName)
-	if len(bindings) == 1 && bindings[0].Status == enums.StatusOk && storeName == "" {
-		return StoreStaffBindingService.validateBindingOwnerDB(db, &bindings[0])
+	if activeCount > 1 {
+		return errorsx.InvalidParam("该账号存在多个活动门店绑定，请先修复历史数据")
 	}
-	if len(bindings) == 0 && storeName == "" {
-		return errorsx.InvalidParam("分配门店员工号角色时必须填写门店名称")
+	if activeBinding != nil && storeID == 0 {
+		return StoreStaffBindingService.validateBindingOwnerDB(db, activeBinding)
 	}
-	_, err = StoreStaffBindingService.prepareForUserDB(db, user.TenantID, user.ID, storeName, operator)
+	if activeBinding == nil && storeID == 0 && len(bindings) != 1 {
+		return errorsx.InvalidParam("分配门店员工号角色时必须选择已有门店")
+	}
+	_, err = StoreStaffBindingService.prepareForUserDB(db, user.TenantID, user.ID, storeID, operator)
 	return err
 }
 

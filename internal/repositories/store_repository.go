@@ -20,6 +20,11 @@ func newStoreRepository() *storeRepository {
 
 type storeRepository struct{}
 
+type StoreRelationCount struct {
+	StoreID int64
+	Count   int64
+}
+
 func (r *storeRepository) Get(db *gorm.DB, id int64) *models.Store {
 	ret := &models.Store{}
 	if err := db.First(ret, "id = ?", id).Error; err != nil {
@@ -110,4 +115,40 @@ func (r *storeRepository) Updates(db *gorm.DB, id int64, columns map[string]any)
 
 func (r *storeRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
 	return db.Model(&models.Store{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}
+
+func (r *storeRepository) CountActiveBindingsByStoreIDs(db *gorm.DB, tenantID int64, storeIDs []int64) map[int64]int64 {
+	result := make(map[int64]int64)
+	if db == nil || tenantID <= 0 || len(storeIDs) == 0 {
+		return result
+	}
+	var rows []StoreRelationCount
+	if err := db.Model(&models.StoreStaffBinding{}).
+		Select("store_id, COUNT(*) AS count").
+		Where("tenant_id = ? AND store_id IN ? AND status = ?", tenantID, storeIDs, enums.StatusOk).
+		Group("store_id").Scan(&rows).Error; err != nil {
+		return result
+	}
+	for _, row := range rows {
+		result[row.StoreID] = row.Count
+	}
+	return result
+}
+
+func (r *storeRepository) CountCurrentInstancesByStoreIDs(db *gorm.DB, tenantID int64, storeIDs []int64) map[int64]int64 {
+	result := make(map[int64]int64)
+	if db == nil || tenantID <= 0 || len(storeIDs) == 0 {
+		return result
+	}
+	var rows []StoreRelationCount
+	if err := db.Model(&models.WxWorkProtocolInstance{}).
+		Select("store_id, COUNT(*) AS count").
+		Where("tenant_id = ? AND store_id IN ? AND status = ? AND "+wxWorkProtocolCurrentInstanceCondition, tenantID, storeIDs, enums.StatusOk).
+		Group("store_id").Scan(&rows).Error; err != nil {
+		return result
+	}
+	for _, row := range rows {
+		result[row.StoreID] = row.Count
+	}
+	return result
 }

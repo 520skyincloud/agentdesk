@@ -39,6 +39,8 @@ var Models = []any{
 	&ConversationEvolutionState{},
 	&ConversationEvolutionRun{},
 	&Conversation{},
+	&ConversationChannelSession{},
+	&ConversationContinuityLink{},
 	&Store{},
 	&StoreStaffBinding{},
 	&WxWorkProtocolDevicePoolInstance{},
@@ -336,12 +338,12 @@ type Customer struct {
 // CustomerIdentity 客户第三方身份映射表。
 type CustomerIdentity struct {
 	ID             int64                `gorm:"primaryKey;autoIncrement"`
-	TenantID       int64                `gorm:"type:bigint;not null;default:0;index"`
-	CustomerID     int64                `gorm:"type:bigint;not null;uniqueIndex:uk_customer_external"`                    // 为所属客户ID。
-	ExternalSource enums.ExternalSource `gorm:"type:varchar(30);uniqueIndex:uk_customer_external"`                        // 为外部身份来源
-	ExternalID     string               `gorm:"type:varchar(128);index:idx_external_id;uniqueIndex:uk_customer_external"` // 为平台侧用户唯一ID，与访客 ExternalID 对齐。
-	RawProfile     string               `gorm:"type:text"`                                                                // 为第三方原始资料JSON。
-	Status         enums.Status         `gorm:"type:int;not null;default:0;index"`                                        // 为映射状态。
+	TenantID       int64                `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_customer_external,priority:1"`
+	CustomerID     int64                `gorm:"type:bigint;not null;index"`                                                          // 为所属客户ID。
+	ExternalSource enums.ExternalSource `gorm:"type:varchar(30);uniqueIndex:uk_customer_external,priority:2"`                        // 为外部身份来源
+	ExternalID     string               `gorm:"type:varchar(128);index:idx_external_id;uniqueIndex:uk_customer_external,priority:3"` // 为平台侧用户唯一ID，与访客 ExternalID 对齐。
+	RawProfile     string               `gorm:"type:text"`                                                                           // 为第三方原始资料JSON。
+	Status         enums.Status         `gorm:"type:int;not null;default:0;index"`                                                   // 为映射状态。
 	AuditFields
 }
 
@@ -361,15 +363,15 @@ type StoreCustomerRelation struct {
 	AuditFields
 }
 
-// WxWorkCustomerHandoffSetting 保存客户在单个企微员工号下的自动转人工偏好。
-// 同一自然客户在不同企微员工号下的设置必须独立，避免跨门店互相影响。
+// WxWorkCustomerHandoffSetting 保存客户在单个门店员工号绑定下的自动转人工偏好。
+// 企微实例替换不改变该偏好，不同门店员工号之间仍保持独立。
 type WxWorkCustomerHandoffSetting struct {
-	ID                 int64  `gorm:"primaryKey;autoIncrement"`
-	TenantID           int64  `gorm:"type:bigint;not null;default:0;index"`
-	CustomerID         int64  `gorm:"type:bigint;not null;index;uniqueIndex:uk_customer_wxwork_handoff_setting"`
-	WxWorkInstanceID   int64  `gorm:"type:bigint;not null;index;uniqueIndex:uk_customer_wxwork_handoff_setting"`
-	AutoHandoffEnabled bool   `gorm:"not null;default:true"`
-	Remark             string `gorm:"type:varchar(255);not null;default:''"`
+	ID                  int64  `gorm:"primaryKey;autoIncrement"`
+	TenantID            int64  `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_customer_store_staff_handoff_setting,priority:1"`
+	CustomerID          int64  `gorm:"type:bigint;not null;index;uniqueIndex:uk_customer_store_staff_handoff_setting,priority:2"`
+	StoreStaffBindingID *int64 `gorm:"type:bigint;index;uniqueIndex:uk_customer_store_staff_handoff_setting,priority:3"`
+	AutoHandoffEnabled  bool   `gorm:"not null;default:true"`
+	Remark              string `gorm:"type:varchar(255);not null;default:''"`
 	AuditFields
 }
 
@@ -503,54 +505,98 @@ type Tag struct {
 
 // Conversation 客服会话。
 type Conversation struct {
-	ID                  int64                           `gorm:"primaryKey;autoIncrement"`                    // ID 为会话主键。
-	TenantID            int64                           `gorm:"type:bigint;not null;default:0;index"`        // TenantID 为会话所属接入公司，从 Channel 与 Customer 共同确定。
-	AIAgentID           int64                           `gorm:"type:bigint;not null;default:0;index"`        // AIAgentID 为当前会话绑定的 AI Agent ID。
-	ChannelID           int64                           `gorm:"type:bigint;not null;default:0;index"`        // ChannelID 为该会话来源接入渠道ID。
-	CustomerID          int64                           `gorm:"type:bigint;not null;default:0;index"`        // CustomerID 为会话所属客户 ID。
-	CustomerName        string                          `gorm:"type:varchar(100);not null;default:'';index"` // CustomerName 为客户名称冗余字段，用于列表展示和搜索。
-	Status              enums.IMConversationStatus      `gorm:"type:int;not null;default:1;index"`           // Status 为会话状态，如待接入、处理中、已关闭。
-	ServiceMode         enums.IMConversationServiceMode `gorm:"type:int;not null;default:3;index"`           // ServiceMode 为服务模式，如仅AI、仅人工、AI优先人工接管。
-	Priority            int                             `gorm:"type:int;not null;default:0;index"`           // Priority 为会话优先级。
-	DispatchWeight      int                             `gorm:"type:int;not null;default:1"`                 // DispatchWeight 为规则派单使用的当前人工工作量权重，1 表示普通任务。
-	CurrentAssigneeID   int64                           `gorm:"type:bigint;not null;default:0;index"`        // CurrentAssigneeID 为当前接待客服ID。
-	CurrentTeamID       int64                           `gorm:"type:bigint;not null;default:0;index"`        // CurrentTeamID 为当前处理客服组ID。
-	LastMessageID       int64                           `gorm:"type:bigint;not null;default:0;index"`        // LastMessageID 为最后一条消息ID。
-	LastMessageAt       time.Time                       `gorm:"type:datetime;index"`                         // LastMessageAt 为最后消息时间。
-	LastActiveAt        time.Time                       `gorm:"type:datetime;index"`                         // LastActiveAt 为会话最近活跃时间。
-	LastMessageSummary  string                          `gorm:"type:varchar(255);not null;default:''"`       // LastMessageSummary 为最后一条消息摘要。
-	CustomerUnreadCount int                             `gorm:"type:int;not null;default:0"`                 // CustomerUnreadCount 为用户侧未读数。
-	AgentUnreadCount    int                             `gorm:"type:int;not null;default:0"`                 // AgentUnreadCount 为客服侧未读数。
-	HandoffAt           *time.Time                      `gorm:"type:datetime;index"`                         // HandoffAt 为最近一次转人工时间。
-	HandoffReason       string                          `gorm:"type:varchar(255);not null;default:''"`       // HandoffReason 为最近一次转人工原因。
-	AIReplyRounds       int                             `gorm:"type:int;not null;default:0"`                 // AIReplyRounds 为当前会话内 AI 已成功回复次数。
-	ClosedAt            *time.Time                      `gorm:"type:datetime;index"`                         // ClosedAt 为会话关闭时间。
-	ClosedBy            int64                           `gorm:"type:bigint;not null;default:0;index"`        // ClosedBy 为关闭人用户ID，访客关闭时写0。
-	CloseReason         string                          `gorm:"type:varchar(255);not null;default:''"`       // CloseReason 为关闭原因。
+	ID                  int64                           `gorm:"primaryKey;autoIncrement"`                                          // ID 为会话主键。
+	TenantID            int64                           `gorm:"type:bigint;not null;default:0;index"`                              // TenantID 为会话所属接入公司，从 Channel 与 Customer 共同确定。
+	StoreID             int64                           `gorm:"type:bigint;not null;default:0;index"`                              // StoreID 为会话不可跨越的稳定门店范围。
+	StoreStaffBindingID int64                           `gorm:"type:bigint;not null;default:0;index"`                              // StoreStaffBindingID 为当前承接该会话的门店员工号绑定。
+	ThreadKey           *string                         `gorm:"type:varchar(191);uniqueIndex:uk_conversation_thread_key" json:"-"` // ThreadKey 保证同一门店员工号下客户会话唯一；非门店渠道保持 NULL。
+	AIAgentID           int64                           `gorm:"type:bigint;not null;default:0;index"`                              // AIAgentID 为当前会话绑定的 AI Agent ID。
+	ChannelID           int64                           `gorm:"type:bigint;not null;default:0;index"`                              // ChannelID 为该会话来源接入渠道ID。
+	CustomerID          int64                           `gorm:"type:bigint;not null;default:0;index"`                              // CustomerID 为会话所属客户 ID。
+	CustomerName        string                          `gorm:"type:varchar(100);not null;default:'';index"`                       // CustomerName 为客户名称冗余字段，用于列表展示和搜索。
+	Status              enums.IMConversationStatus      `gorm:"type:int;not null;default:1;index"`                                 // Status 为会话状态，如待接入、处理中、已关闭。
+	ServiceMode         enums.IMConversationServiceMode `gorm:"type:int;not null;default:3;index"`                                 // ServiceMode 为服务模式，如仅AI、仅人工、AI优先人工接管。
+	Priority            int                             `gorm:"type:int;not null;default:0;index"`                                 // Priority 为会话优先级。
+	DispatchWeight      int                             `gorm:"type:int;not null;default:1"`                                       // DispatchWeight 为规则派单使用的当前人工工作量权重，1 表示普通任务。
+	CurrentAssigneeID   int64                           `gorm:"type:bigint;not null;default:0;index"`                              // CurrentAssigneeID 为当前接待客服ID。
+	CurrentTeamID       int64                           `gorm:"type:bigint;not null;default:0;index"`                              // CurrentTeamID 为当前处理客服组ID。
+	LastMessageID       int64                           `gorm:"type:bigint;not null;default:0;index"`                              // LastMessageID 为最后一条消息ID。
+	LastMessageAt       time.Time                       `gorm:"type:datetime;index"`                                               // LastMessageAt 为最后消息时间。
+	LastActiveAt        time.Time                       `gorm:"type:datetime;index"`                                               // LastActiveAt 为会话最近活跃时间。
+	LastMessageSummary  string                          `gorm:"type:varchar(255);not null;default:''"`                             // LastMessageSummary 为最后一条消息摘要。
+	CustomerUnreadCount int                             `gorm:"type:int;not null;default:0"`                                       // CustomerUnreadCount 为用户侧未读数。
+	AgentUnreadCount    int                             `gorm:"type:int;not null;default:0"`                                       // AgentUnreadCount 为客服侧未读数。
+	HandoffAt           *time.Time                      `gorm:"type:datetime;index"`                                               // HandoffAt 为最近一次转人工时间。
+	HandoffReason       string                          `gorm:"type:varchar(255);not null;default:''"`                             // HandoffReason 为最近一次转人工原因。
+	AIReplyRounds       int                             `gorm:"type:int;not null;default:0"`                                       // AIReplyRounds 为当前会话内 AI 已成功回复次数。
+	ClosedAt            *time.Time                      `gorm:"type:datetime;index"`                                               // ClosedAt 为会话关闭时间。
+	ClosedBy            int64                           `gorm:"type:bigint;not null;default:0;index"`                              // ClosedBy 为关闭人用户ID，访客关闭时写0。
+	CloseReason         string                          `gorm:"type:varchar(255);not null;default:''"`                             // CloseReason 为关闭原因。
 	AuditFields
 }
 
-// Store 是门店员工号角色账号对应的稳定门店身份，企微实例与门店知识库都挂在这里。
+// ConversationChannelSession 固化一次会话轮次使用的门店员工号与企微实例。
+// 当前路由可以变化，历史消息来源不得通过当前实例反推。
+type ConversationChannelSession struct {
+	ID                        int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID                  int64        `gorm:"type:bigint;not null;default:0;index"`
+	ConversationID            int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_conversation_channel_session,priority:1"`
+	SessionNo                 int          `gorm:"type:int;not null;default:1;index;uniqueIndex:uk_conversation_channel_session,priority:2"`
+	StoreID                   int64        `gorm:"type:bigint;not null;default:0;index"`
+	StoreStaffBindingID       int64        `gorm:"type:bigint;not null;default:0;index"`
+	WxWorkInstanceID          int64        `gorm:"type:bigint;not null;default:0;index"`
+	ChannelID                 int64        `gorm:"type:bigint;not null;default:0;index"`
+	StartReason               string       `gorm:"type:varchar(50);not null;default:'';index"`
+	StoreStaffDisplayName     string       `gorm:"type:varchar(120);not null;default:''"`
+	WxWorkEmployeeDisplayName string       `gorm:"type:varchar(120);not null;default:''"`
+	StartedAt                 time.Time    `gorm:"type:datetime;not null;index"`
+	EndedAt                   *time.Time   `gorm:"type:datetime;index"`
+	Status                    enums.Status `gorm:"type:int;not null;default:0;index"`
+	AuditFields
+}
+
+// ConversationContinuityLink preserves an explicit handoff between two
+// physical conversations. Messages stay on their original conversation; the
+// link only defines the predecessor/successor reading lineage.
+type ConversationContinuityLink struct {
+	ID                        int64        `gorm:"primaryKey;autoIncrement"`
+	TenantID                  int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_conversation_continuity_predecessor,priority:1;uniqueIndex:uk_conversation_continuity_successor,priority:1"`
+	StoreID                   int64        `gorm:"type:bigint;not null;default:0;index"`
+	CustomerID                int64        `gorm:"type:bigint;not null;default:0;index"`
+	PredecessorConversationID int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_conversation_continuity_predecessor,priority:2"`
+	SuccessorConversationID   int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_conversation_continuity_successor,priority:2"`
+	Reason                    string       `gorm:"type:varchar(255);not null;default:''"`
+	Status                    enums.Status `gorm:"type:int;not null;default:0;index"`
+	AuditFields
+}
+
+// Store 是租户内稳定、独立的门店业务身份；多个门店员工号可以绑定同一门店。
 type Store struct {
 	ID              int64        `gorm:"primaryKey;autoIncrement"`
 	TenantID        int64        `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_store_tenant_code,priority:1"`
 	StoreCode       string       `gorm:"type:varchar(64);not null;default:'';uniqueIndex:uk_store_tenant_code,priority:2"`
 	Name            string       `gorm:"type:varchar(120);not null;default:'';index"`
 	BrandName       string       `gorm:"type:varchar(120);not null;default:'';index"`
+	Address         string       `gorm:"type:varchar(500);not null;default:''"`
+	NavigationName  string       `gorm:"type:varchar(200);not null;default:''"`
+	Longitude       string       `gorm:"type:varchar(50);not null;default:''"`
+	Latitude        string       `gorm:"type:varchar(50);not null;default:''"`
+	MapProvider     string       `gorm:"type:varchar(50);not null;default:''"`
+	ContactPhone    string       `gorm:"type:varchar(120);not null;default:''"`
 	KnowledgeBaseID int64        `gorm:"type:bigint;not null;default:0;index"`
 	Status          enums.Status `gorm:"type:int;not null;default:0;index"`
 	Remark          string       `gorm:"type:text"`
 	AuditFields
 }
 
-// StoreStaffBinding 把已有门店员工号角色账号与稳定门店身份唯一绑定。
+// StoreStaffBinding 把一个已有门店员工号角色账号绑定到稳定门店身份。
 type StoreStaffBinding struct {
 	ID                      int64        `gorm:"primaryKey;autoIncrement"`
-	TenantID                int64        `gorm:"type:bigint;not null;default:0;index"`
+	TenantID                int64        `gorm:"type:bigint;not null;default:0;index;index:idx_store_staff_tenant_store,priority:1"`
 	UserID                  int64        `gorm:"type:bigint;not null;default:0;index"`
 	ActiveUserID            *int64       `gorm:"type:bigint;uniqueIndex:uk_store_staff_active_user" json:"-"` // ActiveUserID 仅在启用绑定中等于 UserID，用可空唯一键保证一账号一门店。
 	AgentTeamID             int64        `gorm:"type:bigint;not null;default:0;index"`                        // AgentTeamID 为门店员工所属客服组，0 表示暂未分配。
-	StoreID                 int64        `gorm:"type:bigint;not null;default:0;uniqueIndex"`
+	StoreID                 int64        `gorm:"type:bigint;not null;default:0;index;index:idx_store_staff_tenant_store,priority:2"`
 	ManagedMode             string       `gorm:"type:varchar(20);not null;default:'semi';index"`
 	ServiceHours            string       `gorm:"type:varchar(200);not null;default:''"`
 	StoreRoomConversationID string       `gorm:"type:varchar(128);not null;default:'';index"`
@@ -563,7 +609,7 @@ type StoreStaffBinding struct {
 	AuditFields
 }
 
-// WxWorkProtocolInstance 记录一个门店企微员工号实例及其唯一门店/知识库绑定。
+// WxWorkProtocolInstance 记录一次企微员工号协议登录身份及运行状态。
 type WxWorkProtocolInstance struct {
 	ID                             int64        `gorm:"primaryKey;autoIncrement"`
 	TenantID                       int64        `gorm:"type:bigint;not null;default:0;index"`
@@ -637,6 +683,7 @@ type ConversationRouteState struct {
 	TenantID              int64                         `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID        int64                         `gorm:"type:bigint;not null;uniqueIndex"`
 	StoreID               int64                         `gorm:"type:bigint;not null;default:0;index"`
+	StoreStaffBindingID   int64                         `gorm:"type:bigint;not null;default:0;index"`
 	KnowledgeBaseID       int64                         `gorm:"type:bigint;not null;default:0;index"`
 	WxWorkInstanceID      int64                         `gorm:"type:bigint;not null;default:0;index"`
 	RouteStatus           enums.ConversationRouteStatus `gorm:"type:varchar(40);not null;default:'AI_SERVING';index"`
@@ -754,6 +801,7 @@ type Message struct {
 	TenantID            int64                 `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID      int64                 `gorm:"type:bigint;not null;index;uniqueIndex:uk_conversation_seq;uniqueIndex:uk_conversation_client_msg"`
 	SessionNo           int                   `gorm:"type:int;not null;default:1;index"`
+	HistoricalOnly      bool                  `gorm:"not null;default:false;index"`
 	RequestID           string                `gorm:"type:varchar(128);not null;default:'';index"`
 	ClientMsgID         string                `gorm:"type:varchar(128);not null;default:'';uniqueIndex:uk_conversation_client_msg"`
 	SenderType          enums.IMSenderType    `gorm:"type:varchar(30);not null;default:'';index"`
@@ -1052,31 +1100,32 @@ type AgentTeamSchedule struct {
 
 // KnowledgeBase 知识库主表。
 type KnowledgeBase struct {
-	ID                               int64        `gorm:"primaryKey;autoIncrement"`                                // ID 为知识库主键。
-	TenantID                         int64        `gorm:"type:bigint;not null;default:0;index"`                    // TenantID 为知识库所属接入公司。
-	StoreID                          int64        `gorm:"type:bigint;not null;default:0;index"`                    // StoreID 为知识库所属内部稳定门店身份。
-	DatasetID                        string       `gorm:"type:varchar(128);not null;default:'';index"`             // DatasetID 为 FastGPT 数据集 ID。
-	DatasetName                      string       `gorm:"type:varchar(200);not null;default:''"`                   // DatasetName 为 FastGPT 数据集名称。
-	ConnectionID                     string       `gorm:"type:varchar(64);not null;default:'platform'"`            // ConnectionID 为平台 FastGPT 连接标识。
-	FastGPTProfileID                 string       `gorm:"type:varchar(128);not null;default:'';index"`             // FastGPTProfileID 为 FastGPT Dataset Model Profile 的非敏感标识。
-	FastGPTProfileName               string       `gorm:"type:varchar(200);not null;default:''"`                   // FastGPTProfileName 仅供门店侧展示。
-	FastGPTProfileRevision           string       `gorm:"type:varchar(80);not null;default:''"`                    // FastGPTProfileRevision 为 FastGPT 侧配置版本。
-	FastGPTProfileFingerprint        string       `gorm:"type:varchar(128);not null;default:''"`                   // FastGPTProfileFingerprint 用于判断配置是否变更，不保存密钥。
-	FastGPTProfileStatus             string       `gorm:"type:varchar(30);not null;default:'pending';index"`       // FastGPTProfileStatus 为 pending/ready/failed 等同步状态。
-	FastGPTProfileSyncedAt           *time.Time   `gorm:"type:datetime;index"`                                     // FastGPTProfileSyncedAt 为最后一次成功同步时间。
-	FastGPTAppliedProfileID          int64        `gorm:"type:bigint;not null;default:0;index"`                    // FastGPTAppliedProfileID 为该 Dataset 已实际应用的平台模型方案。
-	FastGPTAppliedProfileRevision    int64        `gorm:"type:bigint;not null;default:0;index"`                    // FastGPTAppliedProfileRevision 为该 Dataset 已实际应用的平台方案 revision。
-	FastGPTAppliedCredentialRevision int64        `gorm:"type:bigint;not null;default:0;index"`                    // FastGPTAppliedCredentialRevision 为该 Dataset 已实际应用的门店凭据 revision。
-	Name                             string       `gorm:"type:varchar(100);not null;default:'';index"`             // Name 为知识库名称。
-	Description                      string       `gorm:"type:text"`                                               // Description 为知识库描述。
-	KnowledgeType                    string       `gorm:"type:varchar(20);not null;default:'fastgpt_cloud';index"` // KnowledgeType 固定为托管 FastGPT。
-	Status                           enums.Status `gorm:"type:int;not null;index"`                                 // Status 为状态
-	DefaultTopK                      int          `gorm:"type:int;not null;default:10"`                            // DefaultTopK 为默认召回数量。
-	DefaultScoreThreshold            float64      `gorm:"type:decimal(5,4);not null;default:0.5"`                  // DefaultScoreThreshold 为默认相似度阈值。
-	DefaultRerankLimit               int          `gorm:"type:int;not null;default:5"`                             // DefaultRerankLimit 为默认重排后保留数量。
-	AnswerMode                       int          `gorm:"type:int;not null;default:1"`                             // AnswerMode 为回答模式：1严格知识库模式 2辅助解释模式。
-	SortNo                           int          `gorm:"type:int;not null;default:0;index"`                       // SortNo 为排序号，用于后台展示和知识库的人工排序管理。
-	Remark                           string       `gorm:"type:text"`                                               // Remark 为备注。
+	ID                                int64        `gorm:"primaryKey;autoIncrement"`                                // ID 为知识库主键。
+	TenantID                          int64        `gorm:"type:bigint;not null;default:0;index"`                    // TenantID 为知识库所属接入公司。
+	StoreID                           int64        `gorm:"type:bigint;not null;default:0;index"`                    // StoreID 为知识库所属内部稳定门店身份。
+	DatasetID                         string       `gorm:"type:varchar(128);not null;default:'';index"`             // DatasetID 为 FastGPT 数据集 ID。
+	DatasetName                       string       `gorm:"type:varchar(200);not null;default:''"`                   // DatasetName 为 FastGPT 数据集名称。
+	ConnectionID                      string       `gorm:"type:varchar(64);not null;default:'platform'"`            // ConnectionID 为平台 FastGPT 连接标识。
+	FastGPTProfileID                  string       `gorm:"type:varchar(128);not null;default:'';index"`             // FastGPTProfileID 为 FastGPT Dataset Model Profile 的非敏感标识。
+	FastGPTProfileName                string       `gorm:"type:varchar(200);not null;default:''"`                   // FastGPTProfileName 仅供门店侧展示。
+	FastGPTProfileRevision            string       `gorm:"type:varchar(80);not null;default:''"`                    // FastGPTProfileRevision 为 FastGPT 侧配置版本。
+	FastGPTProfileFingerprint         string       `gorm:"type:varchar(128);not null;default:''"`                   // FastGPTProfileFingerprint 用于判断配置是否变更，不保存密钥。
+	FastGPTProfileStatus              string       `gorm:"type:varchar(30);not null;default:'pending';index"`       // FastGPTProfileStatus 为 pending/ready/failed 等同步状态。
+	FastGPTProfileSyncedAt            *time.Time   `gorm:"type:datetime;index"`                                     // FastGPTProfileSyncedAt 为最后一次成功同步时间。
+	FastGPTAppliedProfileID           int64        `gorm:"type:bigint;not null;default:0;index"`                    // FastGPTAppliedProfileID 为该 Dataset 已实际应用的平台模型方案。
+	FastGPTAppliedProfileRevision     int64        `gorm:"type:bigint;not null;default:0;index"`                    // FastGPTAppliedProfileRevision 为该 Dataset 已实际应用的平台方案 revision。
+	FastGPTAppliedStoreStaffBindingID int64        `gorm:"type:bigint;not null;default:0;index"`                    // FastGPTAppliedStoreStaffBindingID 为该 Dataset 模型调用归属的门店员工号绑定。
+	FastGPTAppliedCredentialRevision  int64        `gorm:"type:bigint;not null;default:0;index"`                    // FastGPTAppliedCredentialRevision 为该 Dataset 已实际应用的门店凭据 revision。
+	Name                              string       `gorm:"type:varchar(100);not null;default:'';index"`             // Name 为知识库名称。
+	Description                       string       `gorm:"type:text"`                                               // Description 为知识库描述。
+	KnowledgeType                     string       `gorm:"type:varchar(20);not null;default:'fastgpt_cloud';index"` // KnowledgeType 固定为托管 FastGPT。
+	Status                            enums.Status `gorm:"type:int;not null;index"`                                 // Status 为状态
+	DefaultTopK                       int          `gorm:"type:int;not null;default:10"`                            // DefaultTopK 为默认召回数量。
+	DefaultScoreThreshold             float64      `gorm:"type:decimal(5,4);not null;default:0.5"`                  // DefaultScoreThreshold 为默认相似度阈值。
+	DefaultRerankLimit                int          `gorm:"type:int;not null;default:5"`                             // DefaultRerankLimit 为默认重排后保留数量。
+	AnswerMode                        int          `gorm:"type:int;not null;default:1"`                             // AnswerMode 为回答模式：1严格知识库模式 2辅助解释模式。
+	SortNo                            int          `gorm:"type:int;not null;default:0;index"`                       // SortNo 为排序号，用于后台展示和知识库的人工排序管理。
+	Remark                            string       `gorm:"type:text"`                                               // Remark 为备注。
 	AuditFields
 }
 

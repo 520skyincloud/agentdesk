@@ -17,20 +17,22 @@ func newTenantReleaseReadinessRepository() *tenantReleaseReadinessRepository {
 }
 
 type TenantReleaseReadinessStoreAccountState struct {
-	StoreID            int64
-	ActiveUserID       int64
-	ActiveBindingCount int64
-	ReadyAccountCount  int64
+	StoreID             int64
+	StoreStaffBindingID int64
+	UserID              int64
+	AccountReady        int64
 }
 
 type TenantReleaseReadinessWxWorkProtocolState struct {
-	StoreID           int64
-	ActiveCount       int64
-	ReadyChannelCount int64
+	StoreID             int64
+	StoreStaffBindingID int64
+	ActiveCount         int64
+	ReadyChannelCount   int64
 }
 
 type TenantReleaseReadinessCredentialState struct {
 	StoreID               int64
+	StoreStaffBindingID   int64
 	CredentialRevision    int64
 	Status                enums.StoreCredentialStatus
 	LastTestStatus        string
@@ -41,40 +43,44 @@ type TenantReleaseReadinessCredentialState struct {
 }
 
 type TenantReleaseReadinessCredentialAuditState struct {
-	ID           int64
-	StoreID      int64
-	ToRevision   int64
-	Action       enums.CredentialAuditAction
-	Result       enums.CredentialAuditResult
-	OperatorID   int64
-	OperatorRole string
-	ApproverID   int64
+	ID                  int64
+	StoreID             int64
+	StoreStaffBindingID int64
+	ToRevision          int64
+	Action              enums.CredentialAuditAction
+	Result              enums.CredentialAuditResult
+	OperatorID          int64
+	OperatorRole        string
+	ApproverID          int64
 }
 
 type TenantReleaseReadinessFastGPTState struct {
-	StoreID                   int64
-	HasTenantTeam             int64
-	Status                    string
-	TargetProfileID           int64
-	TargetProfileRevision     int64
-	AppliedProfileID          int64
-	AppliedProfileRevision    int64
-	TargetCredentialRevision  int64
-	AppliedCredentialRevision int64
-	ReadinessStatus           string
-	LastSyncedAt              *time.Time
+	StoreID                    int64
+	HasTenantTeam              int64
+	Status                     string
+	TargetProfileID            int64
+	TargetProfileRevision      int64
+	AppliedProfileID           int64
+	AppliedProfileRevision     int64
+	TargetStoreStaffBindingID  int64
+	AppliedStoreStaffBindingID int64
+	TargetCredentialRevision   int64
+	AppliedCredentialRevision  int64
+	ReadinessStatus            string
+	LastSyncedAt               *time.Time
 }
 
 type TenantReleaseReadinessKnowledgeState struct {
-	KnowledgeBaseID                  int64
-	StoreID                          int64
-	DatasetReady                     int64
-	ConnectionID                     string
-	FastGPTProfileReady              int64
-	FastGPTAppliedProfileID          int64
-	FastGPTAppliedProfileRevision    int64
-	FastGPTAppliedCredentialRevision int64
-	Status                           enums.Status
+	KnowledgeBaseID                   int64
+	StoreID                           int64
+	DatasetReady                      int64
+	ConnectionID                      string
+	FastGPTProfileReady               int64
+	FastGPTAppliedProfileID           int64
+	FastGPTAppliedProfileRevision     int64
+	FastGPTAppliedStoreStaffBindingID int64
+	FastGPTAppliedCredentialRevision  int64
+	Status                            enums.Status
 }
 
 type TenantReleaseReadinessCursorSnapshot struct {
@@ -197,8 +203,9 @@ func (r *tenantReleaseReadinessRepository) FindStoreAccountStates(
 	err := db.Table("t_store_staff_binding AS binding").
 		Select(`
 			binding.store_id,
-			COUNT(binding.id) AS active_binding_count,
-			MAX(CASE
+			binding.id AS store_staff_binding_id,
+			binding.user_id,
+			CASE
 				WHEN account.id IS NOT NULL
 					AND account.tenant_id = binding.tenant_id
 					AND account.status = ?
@@ -206,28 +213,15 @@ func (r *tenantReleaseReadinessRepository) FindStoreAccountStates(
 					AND account.deleted_at IS NULL
 					AND binding.active_user_id = binding.user_id
 					AND binding.agent_team_id > 0
-				THEN binding.user_id ELSE 0
-			END) AS active_user_id,
-			SUM(CASE
-				WHEN account.id IS NOT NULL
-					AND account.tenant_id = binding.tenant_id
-					AND account.status = ?
-						AND account.approval_status = ?
-						AND account.deleted_at IS NULL
-						AND binding.active_user_id = binding.user_id
-						AND binding.agent_team_id > 0
 				THEN 1 ELSE 0
-			END) AS ready_account_count
+			END AS account_ready
 		`,
-			enums.StatusOk,
-			enums.UserApprovalStatusApproved,
 			enums.StatusOk,
 			enums.UserApprovalStatusApproved,
 		).
 		Joins("LEFT JOIN t_user AS account ON account.id = binding.user_id").
 		Where("binding.tenant_id = ? AND binding.store_id IN ? AND binding.status = ?", tenantID, storeIDs, enums.StatusOk).
-		Group("binding.store_id").
-		Order("binding.store_id ASC").
+		Order("binding.store_id ASC, binding.id ASC").
 		Scan(&ret).Error
 	return ret, err
 }
@@ -244,6 +238,7 @@ func (r *tenantReleaseReadinessRepository) FindWxWorkProtocolStates(
 	err := db.Table("t_wx_work_protocol_instance AS instance").
 		Select(`
 			instance.store_id,
+			instance.store_staff_binding_id,
 			COUNT(instance.id) AS active_count,
 			SUM(CASE
 				WHEN instance.guid <> ''
@@ -271,13 +266,13 @@ func (r *tenantReleaseReadinessRepository) FindWxWorkProtocolStates(
 		Joins("LEFT JOIN t_store_staff_binding AS binding ON binding.id = instance.store_staff_binding_id").
 		Joins("LEFT JOIN t_channel AS channel ON channel.id = instance.channel_id").
 		Where(
-			"instance.tenant_id = ? AND instance.store_id IN ? AND instance.status = ? AND instance.replaced_by_instance_id = 0",
+			"instance.tenant_id = ? AND instance.store_id IN ? AND instance.status = ? AND "+wxWorkProtocolCurrentInstanceAliasedCondition,
 			tenantID,
 			storeIDs,
 			enums.StatusOk,
 		).
-		Group("instance.store_id").
-		Order("instance.store_id ASC").
+		Group("instance.store_id, instance.store_staff_binding_id").
+		Order("instance.store_id ASC, instance.store_staff_binding_id ASC").
 		Scan(&ret).Error
 	return ret, err
 }
@@ -294,6 +289,7 @@ func (r *tenantReleaseReadinessRepository) FindCredentialStates(
 	err := db.Table("t_store_model_credential").
 		Select(`
 			store_id,
+			store_staff_binding_id,
 			credential_revision,
 			status,
 			last_test_status,
@@ -328,6 +324,7 @@ func (r *tenantReleaseReadinessRepository) FindCredentialApprovalAuditStates(
 		Select(`
 			id,
 			store_id,
+			store_staff_binding_id,
 			to_revision,
 			action,
 			result,
@@ -367,6 +364,8 @@ func (r *tenantReleaseReadinessRepository) FindFastGPTStates(
 			target_profile_revision,
 			applied_profile_id,
 			applied_profile_revision,
+			target_store_staff_binding_id,
+			applied_store_staff_binding_id,
 			target_credential_revision,
 			applied_credential_revision,
 			readiness_status,
@@ -402,6 +401,7 @@ func (r *tenantReleaseReadinessRepository) FindKnowledgeStates(
 			END AS fast_gpt_profile_ready,
 			fast_gpt_applied_profile_id,
 			fast_gpt_applied_profile_revision,
+			fast_gpt_applied_store_staff_binding_id,
 			fast_gpt_applied_credential_revision,
 			status
 		`).
@@ -439,7 +439,7 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 				Joins("JOIN t_message AS customer_message ON customer_message.tenant_id = sync_log.tenant_id AND customer_message.id = sync_log.message_id AND customer_message.conversation_id = sync_log.conversation_id").
 				Joins("JOIN t_wx_work_kf_message_ref AS message_ref ON message_ref.tenant_id = sync_log.tenant_id AND message_ref.message_id = sync_log.message_id AND message_ref.conversation_id = sync_log.conversation_id").
 				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = sync_log.tenant_id AND route.conversation_id = sync_log.conversation_id").
-				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id AND instance.store_staff_binding_id = route.store_staff_binding_id").
 				Where("sync_log.tenant_id = ? AND route.store_id IN ? AND sync_log.created_at >= ?", tenantID, storeIDs, start).
 				Where(
 					"sync_log.direction = ? AND sync_log.source = ? AND sync_log.target = ? AND sync_log.sync_status = ? AND sync_log.external_msg_id <> ''",
@@ -456,7 +456,7 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 					"wx_protocol:%",
 					enums.StatusOk,
 				).
-				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where("instance.status = ? AND "+wxWorkProtocolCurrentInstanceAliasedCondition, enums.StatusOk).
 				Group("route.store_id"),
 		},
 		{
@@ -467,13 +467,13 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 				Select("route.store_id, COUNT(DISTINCT outbox.id) AS count").
 				Joins("JOIN t_message AS ai_message ON ai_message.tenant_id = outbox.tenant_id AND ai_message.id = outbox.message_id AND ai_message.conversation_id = outbox.conversation_id").
 				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = outbox.tenant_id AND route.conversation_id = outbox.conversation_id").
-				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id AND instance.store_staff_binding_id = route.store_staff_binding_id").
 				Joins("JOIN t_wx_work_kf_message_ref AS message_ref ON message_ref.tenant_id = outbox.tenant_id AND message_ref.message_id = outbox.message_id AND message_ref.conversation_id = outbox.conversation_id").
 				Where("outbox.tenant_id = ? AND route.store_id IN ? AND outbox.created_at >= ?", tenantID, storeIDs, start).
 				Where("outbox.channel_type = ? AND outbox.send_status = ? AND outbox.sent_at IS NOT NULL",
 					enums.ChannelTypeWxWorkProtocol, enums.ChannelMessageOutboxStatusSent).
 				Where("ai_message.sender_type = ? AND ai_message.created_at >= ?", enums.IMSenderTypeAI, start).
-				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where("instance.status = ? AND "+wxWorkProtocolCurrentInstanceAliasedCondition, enums.StatusOk).
 				Where(
 					"message_ref.direction = ? AND message_ref.send_status = ? AND message_ref.open_kf_id LIKE ? AND message_ref.status = ?",
 					enums.WxWorkKFMessageDirectionOut,
@@ -515,13 +515,13 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 			query: db.Table("t_ai_usage_event AS usage_event").
 				Select("usage_event.store_id, COUNT(*) AS count").
 				Joins("JOIN t_store_model_profile_assignment AS assignment ON assignment.tenant_id = usage_event.tenant_id AND assignment.store_id = usage_event.store_id").
-				Joins("JOIN t_store_model_credential AS credential ON credential.tenant_id = usage_event.tenant_id AND credential.store_id = usage_event.store_id").
-				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = usage_event.tenant_id AND instance.id = usage_event.wx_work_instance_id AND instance.store_id = usage_event.store_id").
+				Joins("JOIN t_store_model_credential AS credential ON credential.tenant_id = usage_event.tenant_id AND credential.store_id = usage_event.store_id AND credential.store_staff_binding_id = usage_event.store_staff_binding_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = usage_event.tenant_id AND instance.id = usage_event.wx_work_instance_id AND instance.store_id = usage_event.store_id AND instance.store_staff_binding_id = usage_event.store_staff_binding_id").
 				Where("usage_event.tenant_id = ? AND usage_event.store_id IN ? AND usage_event.created_at >= ?", tenantID, storeIDs, start).
 				Where("usage_event.gateway = ? AND usage_event.gateway_request_id <> '' AND usage_event.status IN ?", filter.NewAPIGateway, filter.SuccessfulUsageStatuses).
 				Where("usage_event.model_profile_id = assignment.template_id AND usage_event.model_profile_revision = assignment.template_revision").
 				Where("usage_event.credential_revision = credential.credential_revision").
-				Where("usage_event.conversation_id > 0 AND instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where("usage_event.conversation_id > 0 AND instance.status = ? AND "+wxWorkProtocolCurrentInstanceAliasedCondition, enums.StatusOk).
 				Where(`EXISTS (
 					SELECT 1
 					FROM t_message_sync_log AS inbound_log
@@ -558,8 +558,8 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 				Joins("JOIN t_store AS store ON store.tenant_id = usage_event.tenant_id AND store.id = usage_event.store_id").
 				Joins("JOIN t_knowledge_base AS knowledge ON knowledge.tenant_id = usage_event.tenant_id AND knowledge.id = usage_event.knowledge_base_id AND knowledge.store_id = usage_event.store_id").
 				Joins("JOIN t_store_model_profile_assignment AS assignment ON assignment.tenant_id = usage_event.tenant_id AND assignment.store_id = usage_event.store_id").
-				Joins("JOIN t_store_model_credential AS credential ON credential.tenant_id = usage_event.tenant_id AND credential.store_id = usage_event.store_id").
-				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = usage_event.tenant_id AND instance.id = usage_event.wx_work_instance_id AND instance.store_id = usage_event.store_id").
+				Joins("JOIN t_store_model_credential AS credential ON credential.tenant_id = usage_event.tenant_id AND credential.store_id = usage_event.store_id AND credential.store_staff_binding_id = usage_event.store_staff_binding_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = usage_event.tenant_id AND instance.id = usage_event.wx_work_instance_id AND instance.store_id = usage_event.store_id AND instance.store_staff_binding_id = usage_event.store_staff_binding_id").
 				Where("usage_event.tenant_id = ? AND usage_event.store_id IN ? AND usage_event.created_at >= ?", tenantID, storeIDs, start).
 				Where("usage_event.conversation_id > 0 AND usage_event.request_id <> '' AND usage_event.request_count > 0").
 				Where("usage_event.stage = ? AND usage_event.provider = ? AND usage_event.operation_type = ? AND usage_event.status = ?",
@@ -568,7 +568,7 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 				Where("knowledge.status = ? AND knowledge.connection_id = ?", enums.StatusOk, filter.KnowledgeConnectionID).
 				Where("usage_event.model_profile_id = assignment.template_id AND usage_event.model_profile_revision = assignment.template_revision").
 				Where("usage_event.credential_revision = credential.credential_revision").
-				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where("instance.status = ? AND "+wxWorkProtocolCurrentInstanceAliasedCondition, enums.StatusOk).
 				Where(`EXISTS (
 						SELECT 1
 						FROM t_message_sync_log AS inbound_log
@@ -654,12 +654,12 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 			query: db.Table("t_message AS message").
 				Select("route.store_id, COUNT(*) AS count").
 				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = message.tenant_id AND route.conversation_id = message.conversation_id").
-				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id AND instance.store_staff_binding_id = route.store_staff_binding_id").
 				Where("message.tenant_id = ? AND route.store_id IN ? AND message.created_at >= ?", tenantID, storeIDs, start).
 				Where("message.sender_type = ? AND message.send_status IN ?", enums.IMSenderTypeAI, []enums.IMMessageStatus{
 					enums.IMMessageStatusSent, enums.IMMessageStatusDelivered, enums.IMMessageStatusRead,
 				}).
-				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where("instance.status = ? AND "+wxWorkProtocolCurrentInstanceAliasedCondition, enums.StatusOk).
 				Where(`EXISTS (
 						SELECT 1
 						FROM t_message_sync_log AS inbound_log
@@ -719,10 +719,10 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 			query: db.Table("t_conversation_event_log AS event").
 				Select("route.store_id, COUNT(*) AS count").
 				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = event.tenant_id AND route.conversation_id = event.conversation_id").
-				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id AND instance.store_staff_binding_id = route.store_staff_binding_id").
 				Where("event.tenant_id = ? AND route.store_id IN ? AND event.created_at >= ?", tenantID, storeIDs, start).
 				Where("event.event_type = ? AND event.operator_type = ? AND event.content = ?", enums.IMEventTypeTransfer, enums.IMSenderTypeAI, filter.AIHandoffContent).
-				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where("instance.status = ? AND "+wxWorkProtocolCurrentInstanceAliasedCondition, enums.StatusOk).
 				Where(`EXISTS (
 						SELECT 1
 						FROM t_message_sync_log AS inbound_log
@@ -757,10 +757,10 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 			query: db.Table("t_conversation_assignment AS assignment").
 				Select("route.store_id, COUNT(*) AS count").
 				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = assignment.tenant_id AND route.conversation_id = assignment.conversation_id").
-				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id AND instance.store_staff_binding_id = route.store_staff_binding_id").
 				Where("assignment.tenant_id = ? AND route.store_id IN ? AND assignment.created_at >= ?", tenantID, storeIDs, start).
 				Where("assignment.dispatch_mode = ? AND assignment.to_user_id > 0", enums.AgentTeamDispatchModeRule).
-				Where("instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where("instance.status = ? AND "+wxWorkProtocolCurrentInstanceAliasedCondition, enums.StatusOk).
 				Where(`EXISTS (
 						SELECT 1 FROM t_conversation_event_log AS handoff
 					WHERE handoff.tenant_id = assignment.tenant_id
@@ -805,8 +805,8 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 			query: db.Table("t_ai_usage_gateway_call AS gateway_call").
 				Select("gateway_call.store_id, COUNT(*) AS count").
 				Joins("JOIN t_store_model_profile_assignment AS assignment ON assignment.tenant_id = gateway_call.tenant_id AND assignment.store_id = gateway_call.store_id").
-				Joins("JOIN t_store_model_credential AS credential ON credential.tenant_id = gateway_call.tenant_id AND credential.store_id = gateway_call.store_id").
-				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = gateway_call.tenant_id AND instance.id = gateway_call.wx_work_instance_id AND instance.store_id = gateway_call.store_id").
+				Joins("JOIN t_store_model_credential AS credential ON credential.tenant_id = gateway_call.tenant_id AND credential.store_id = gateway_call.store_id AND credential.store_staff_binding_id = gateway_call.store_staff_binding_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = gateway_call.tenant_id AND instance.id = gateway_call.wx_work_instance_id AND instance.store_id = gateway_call.store_id AND instance.store_staff_binding_id = gateway_call.store_staff_binding_id").
 				Where("gateway_call.tenant_id = ? AND gateway_call.store_id IN ? AND gateway_call.created_at >= ?", tenantID, storeIDs, start).
 				Where("gateway_call.gateway = ? AND gateway_call.gateway_request_id <> ''", filter.NewAPIGateway).
 				Where("gateway_call.reconcile_status = ? AND gateway_call.match_strategy = ? AND gateway_call.match_confidence = ?",
@@ -814,7 +814,7 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 				Where("gateway_call.reconciled_at IS NOT NULL AND gateway_call.external_created_at IS NOT NULL AND gateway_call.external_model <> ''").
 				Where("gateway_call.model_profile_id = assignment.template_id AND gateway_call.model_profile_revision = assignment.template_revision").
 				Where("gateway_call.credential_revision = credential.credential_revision").
-				Where("gateway_call.conversation_id > 0 AND instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where("gateway_call.conversation_id > 0 AND instance.status = ? AND "+wxWorkProtocolCurrentInstanceAliasedCondition, enums.StatusOk).
 				Where(`EXISTS (
 						SELECT 1
 						FROM t_message_sync_log AS inbound_log
@@ -849,10 +849,10 @@ func (r *tenantReleaseReadinessRepository) FindEvidence(
 			query: db.Table("t_customer_tag_change_log AS change_log").
 				Select("change_log.store_id, COUNT(*) AS count").
 				Joins("JOIN t_conversation_route_state AS route ON route.tenant_id = change_log.tenant_id AND route.conversation_id = change_log.conversation_id AND route.store_id = change_log.store_id").
-				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id").
+				Joins("JOIN t_wx_work_protocol_instance AS instance ON instance.tenant_id = route.tenant_id AND instance.id = route.wx_work_instance_id AND instance.store_id = route.store_id AND instance.store_staff_binding_id = route.store_staff_binding_id").
 				Where("change_log.tenant_id = ? AND change_log.store_id IN ? AND change_log.created_at >= ?", tenantID, storeIDs, start).
 				Where("change_log.source = ?", filter.AITagSource).
-				Where("change_log.conversation_id > 0 AND instance.status = ? AND instance.replaced_by_instance_id = 0", enums.StatusOk).
+				Where("change_log.conversation_id > 0 AND instance.status = ? AND "+wxWorkProtocolCurrentInstanceAliasedCondition, enums.StatusOk).
 				Where(`EXISTS (
 						SELECT 1
 						FROM t_message_sync_log AS inbound_log

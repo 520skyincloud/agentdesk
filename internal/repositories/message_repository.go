@@ -273,6 +273,43 @@ func (r *messageRepository) Count(db *gorm.DB, cnd *sqls.Cnd) int64 {
 	return cnd.Count(db, &models.Message{})
 }
 
+func (r *messageRepository) CountByConversationSessionInTenant(db *gorm.DB, tenantID, conversationID int64, sessionNo int) (int64, error) {
+	if db == nil || tenantID <= 0 || conversationID <= 0 || sessionNo <= 0 {
+		return 0, nil
+	}
+	var count int64
+	err := db.Model(&models.Message{}).
+		Where("tenant_id = ? AND conversation_id = ? AND session_no = ?", tenantID, conversationID, sessionNo).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *messageRepository) FindHistorySegmentBefore(
+	db *gorm.DB,
+	tenantID, conversationID int64,
+	sessionNo int,
+	beforeMessageID int64,
+	limit int,
+	senderType, messageType string,
+) ([]models.Message, error) {
+	list := make([]models.Message, 0)
+	if db == nil || tenantID <= 0 || conversationID <= 0 || sessionNo <= 0 || limit <= 0 {
+		return list, nil
+	}
+	query := db.Where("tenant_id = ? AND conversation_id = ? AND session_no = ?", tenantID, conversationID, sessionNo)
+	if beforeMessageID > 0 {
+		query = query.Where("id < ?", beforeMessageID)
+	}
+	if senderType != "" {
+		query = query.Where("sender_type = ?", senderType)
+	}
+	if messageType != "" {
+		query = query.Where("message_type = ?", messageType)
+	}
+	err := query.Order("id DESC").Limit(limit).Find(&list).Error
+	return list, err
+}
+
 func (r *messageRepository) Create(db *gorm.DB, t *models.Message) (err error) {
 	err = db.Create(t).Error
 	return

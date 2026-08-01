@@ -27,14 +27,16 @@ const (
 )
 
 type storeCredentialActivationTarget struct {
-	Store      models.Store
-	Assignment models.StoreModelProfileAssignment
-	Template   models.ModelProfileTemplate
-	Slots      []models.ModelProfileSlot
+	Store               models.Store
+	StoreStaffBindingID int64
+	Assignment          models.StoreModelProfileAssignment
+	Template            models.ModelProfileTemplate
+	Slots               []models.ModelProfileSlot
 }
 
 type storeCredentialFastGPTSynchronizer interface {
 	Sync(context.Context, storeCredentialActivationTarget, string, int64, string) (string, error)
+	SyncOwner(context.Context, storeCredentialActivationTarget, string, int64, string) (string, error)
 }
 
 type managedStoreCredentialFastGPTSynchronizer struct{}
@@ -48,6 +50,14 @@ func (e *storeCredentialFastGPTSyncError) Error() string {
 }
 
 func (s *managedStoreCredentialFastGPTSynchronizer) Sync(ctx context.Context, target storeCredentialActivationTarget, apiKey string, credentialRevision int64, fingerprint string) (string, error) {
+	return s.sync(ctx, target, apiKey, credentialRevision, fingerprint, false)
+}
+
+func (s *managedStoreCredentialFastGPTSynchronizer) SyncOwner(ctx context.Context, target storeCredentialActivationTarget, apiKey string, credentialRevision int64, fingerprint string) (string, error) {
+	return s.sync(ctx, target, apiKey, credentialRevision, fingerprint, true)
+}
+
+func (s *managedStoreCredentialFastGPTSynchronizer) sync(ctx context.Context, target storeCredentialActivationTarget, apiKey string, credentialRevision int64, fingerprint string, replaceOwner bool) (string, error) {
 	if target.Store.KnowledgeBaseID <= 0 {
 		return storeCredentialFastGPTStatusNotRequired, nil
 	}
@@ -60,6 +70,16 @@ func (s *managedStoreCredentialFastGPTSynchronizer) Sync(ctx context.Context, ta
 	if binding == nil {
 		return storeCredentialFastGPTStatusFailed, &storeCredentialFastGPTSyncError{Class: "store_tenant_missing"}
 	}
+	if target.StoreStaffBindingID <= 0 {
+		return storeCredentialFastGPTStatusFailed, &storeCredentialFastGPTSyncError{Class: "credential_binding_missing"}
+	}
+	ownerBindingID := binding.TargetStoreStaffBindingID
+	if ownerBindingID <= 0 {
+		ownerBindingID = binding.AppliedStoreStaffBindingID
+	}
+	if ownerBindingID > 0 && ownerBindingID != target.StoreStaffBindingID && !replaceOwner {
+		return storeCredentialFastGPTStatusNotRequired, nil
+	}
 	now := time.Now()
 	readinessStatus := "syncing"
 	if binding.AppliedProfileID > 0 && binding.AppliedProfileRevision > 0 && binding.AppliedCredentialRevision > 0 {
@@ -67,7 +87,8 @@ func (s *managedStoreCredentialFastGPTSynchronizer) Sync(ctx context.Context, ta
 	}
 	if err := repositories.FastGPTStoreTenantRepository.UpdatesInTenant(sqls.DB(), binding.ID, target.Store.TenantID, map[string]any{
 		"target_profile_id": target.Template.ID, "target_profile_revision": target.Template.Revision,
-		"target_credential_revision": credentialRevision, "readiness_status": readinessStatus,
+		"target_store_staff_binding_id": target.StoreStaffBindingID,
+		"target_credential_revision":    credentialRevision, "readiness_status": readinessStatus,
 		"last_error": "", "updated_at": now, "update_user_name": "store_model_credential",
 	}); err != nil {
 		return storeCredentialFastGPTStatusFailed, &storeCredentialFastGPTSyncError{Class: "state_update_failed"}
@@ -144,7 +165,7 @@ func syncManagedStoreFastGPTProfile(ctx context.Context, connector *FastGPTConne
 
 func commitManagedStoreFastGPTProfile(target storeCredentialActivationTarget, credentialRevision int64, fingerprint string, profile *FastGPTModelProfile, knowledgeBaseID int64, operator *dto.AuthPrincipal) error {
 	if target.Store.TenantID <= 0 || target.Store.ID <= 0 || target.Template.ID <= 0 || target.Template.Revision <= 0 ||
-		credentialRevision <= 0 || profile == nil || strings.TrimSpace(profile.ID) == "" || knowledgeBaseID <= 0 {
+		target.StoreStaffBindingID <= 0 || credentialRevision <= 0 || profile == nil || strings.TrimSpace(profile.ID) == "" || knowledgeBaseID <= 0 {
 		return errors.New("managed FastGPT profile commit target is invalid")
 	}
 	operator = operatorOrSystem(operator)
@@ -191,9 +212,10 @@ func commitManagedStoreFastGPTProfileDB(db *gorm.DB, target storeCredentialActiv
 		strings.TrimSpace(knowledgeBase.ConnectionID) != fastgptapi.ManagedConnectionID {
 		return errors.New("managed FastGPT profile knowledge base is invalid")
 	}
-	updated, err := repositories.FastGPTStoreTenantRepository.ApplyTargetRevisions(db, target.Store.TenantID, target.Store.ID, target.Template.ID, target.Template.Revision, credentialRevision, map[string]any{
+	updated, err := repositories.FastGPTStoreTenantRepository.ApplyTargetRevisions(db, target.Store.TenantID, target.Store.ID, target.StoreStaffBindingID, target.Template.ID, target.Template.Revision, credentialRevision, map[string]any{
 		"applied_profile_id": target.Template.ID, "applied_profile_revision": target.Template.Revision,
-		"applied_credential_revision": credentialRevision, "applied_key_fingerprint": fingerprint,
+		"applied_store_staff_binding_id": target.StoreStaffBindingID,
+		"applied_credential_revision":    credentialRevision, "applied_key_fingerprint": fingerprint,
 		"readiness_status": "ready", "last_synced_at": now, "last_error": "", "updated_at": now,
 		"update_user_id": operator.UserID, "update_user_name": operator.Username,
 	})
@@ -240,12 +262,13 @@ func fastGPTProfileSnapshotColumns(profile *FastGPTModelProfile, target storeCre
 		"fast_gpt_profile_id": profile.ID, "fast_gpt_profile_name": profile.Name,
 		"fast_gpt_profile_revision":    strconv.FormatInt(profile.Revision, 10),
 		"fast_gpt_profile_fingerprint": fingerprint, "fast_gpt_profile_status": "ready",
-		"fast_gpt_profile_synced_at":           now,
-		"fast_gpt_applied_profile_id":          target.Template.ID,
-		"fast_gpt_applied_profile_revision":    target.Template.Revision,
-		"fast_gpt_applied_credential_revision": credentialRevision,
-		"updated_at":                           now,
-		"update_user_id":                       operator.UserID, "update_user_name": operator.Username,
+		"fast_gpt_profile_synced_at":              now,
+		"fast_gpt_applied_profile_id":             target.Template.ID,
+		"fast_gpt_applied_profile_revision":       target.Template.Revision,
+		"fast_gpt_applied_store_staff_binding_id": target.StoreStaffBindingID,
+		"fast_gpt_applied_credential_revision":    credentialRevision,
+		"updated_at":                              now,
+		"update_user_id":                          operator.UserID, "update_user_name": operator.Username,
 	}
 }
 

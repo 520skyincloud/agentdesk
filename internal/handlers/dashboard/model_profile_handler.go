@@ -235,6 +235,7 @@ func buildModelProfileCatalogResponse(data *services.ModelProfileCatalogData) re
 			TenantID:   target.Tenant.ID,
 			TenantName: tenantName,
 			StoreID:    target.Store.ID, StoreCode: target.Store.StoreCode, StoreName: target.Store.Name,
+			StoreStaffBindingID: target.StoreStaffBindingID, StoreStaffAccountName: target.StoreStaffAccountName,
 			CredentialRevision: target.CredentialRevision,
 			ActiveTemplateID:   target.ActiveTemplateID, ActiveTemplateName: target.ActiveTemplateName,
 			ActiveTemplateRevision: target.ActiveTemplateRevision,
@@ -253,9 +254,16 @@ func buildStoreModelProfileAssignmentsResponse(data *services.StoreModelProfileA
 		result.Profiles = append(result.Profiles, builders.BuildStoreModelProfileOption(&data.Profiles[i].Template, data.Profiles[i].Slots))
 	}
 	for i := range data.Stores {
-		result.Stores = append(result.Stores, builders.BuildStoreModelProfileAssignment(
+		item := builders.BuildStoreModelProfileAssignment(
 			&data.Stores[i].Store, data.Stores[i].Assignment, data.Templates,
-		))
+		)
+		item.CredentialBindings = make([]response.StoreModelCredentialBindingResponse, 0, len(data.Stores[i].CredentialBindings))
+		for _, binding := range data.Stores[i].CredentialBindings {
+			item.CredentialBindings = append(item.CredentialBindings, response.StoreModelCredentialBindingResponse{
+				ID: binding.ID, UserID: binding.UserID, AccountName: binding.AccountName,
+			})
+		}
+		result.Stores = append(result.Stores, item)
 	}
 	return result
 }

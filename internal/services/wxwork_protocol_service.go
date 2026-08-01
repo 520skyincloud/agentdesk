@@ -28,11 +28,19 @@ import (
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 const wxWorkProtocolSystemOperatorName = "wxwork_protocol"
 
 const wxWorkProtocolSeatExpiredMessage = "该企微员工号实例已过期，请先续费或更换有效实例"
+
+const (
+	wxWorkReplyStatusReady                = "ready"
+	wxWorkReplyStatusWaitingTargetMessage = "waiting_target_message"
+	wxWorkReplyStatusUnavailable          = "unavailable"
+	wxWorkReplyStatusNotApplicable        = "not_applicable"
+)
 
 const (
 	wxProtocolNotifyUserLogin        = 1003
@@ -118,7 +126,11 @@ func (s *wxWorkProtocolService) HandleCallback(req request.WxWorkProtocolCallbac
 		return wxWorkProtocolCallbackError(http.StatusBadRequest, "validate_guid", errorsx.InvalidParam("企微协议回调缺少 GUID"))
 	}
 	instance := WxWorkProtocolInstanceService.Take("guid = ?", guid)
-	if instance == nil || instance.TenantID <= 0 || instance.Status != enums.StatusOk {
+	if instance == nil || instance.TenantID <= 0 {
+		return wxWorkProtocolCallbackError(http.StatusNotFound, "resolve_instance", errorsx.InvalidParam("企微员工号实例不存在或未启用"))
+	}
+	historicalInstance := instance.Status == enums.StatusDisabled && instance.ReplacedByInstanceID > 0
+	if instance.Status != enums.StatusOk && !historicalInstance {
 		return wxWorkProtocolCallbackError(http.StatusNotFound, "resolve_instance", errorsx.InvalidParam("企微员工号实例不存在或未启用"))
 	}
 	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), instance.ChannelID, instance.TenantID)
@@ -136,6 +148,22 @@ func (s *wxWorkProtocolService) HandleCallback(req request.WxWorkProtocolCallbac
 	}
 	externalMsgID := strings.TrimSpace(req.Guid)
 	_ = MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", externalMsgID, enums.MessageSyncStatusPending, raw, fmt.Sprintf("notify_type=%d", req.NotifyType))
+	if historicalInstance {
+		var historicalErr error
+		switch req.NotifyType {
+		case wxProtocolNotifyNewMsg, wxProtocolNotifyNewMsgAlt:
+			historicalErr = s.handleHistoricalMessage(instance, req.Data, raw)
+		case wxProtocolNotifyBatchNewMsg, wxProtocolNotifyBatchNewMsgAlt:
+			historicalErr = s.handleHistoricalBatchMessages(instance, req.Data, raw)
+		default:
+			_ = MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", externalMsgID, enums.MessageSyncStatusSkipped, raw, fmt.Sprintf("replaced instance skipped notify_type=%d", req.NotifyType))
+			return nil
+		}
+		if historicalErr != nil {
+			return wxWorkProtocolCallbackError(http.StatusInternalServerError, "archive_replaced_instance_message", historicalErr)
+		}
+		return nil
+	}
 	now := time.Now()
 	var handleErr error
 	switch req.NotifyType {
@@ -207,7 +235,7 @@ func (s *wxWorkProtocolService) SendArrivalCard(conversationID, instanceID int64
 		return enums.ArrivalDeliveryStatusFailed, errorsx.InvalidParam("到店通知实例与会话不匹配")
 	}
 	instance := WxWorkProtocolInstanceService.GetByTenantID(instanceID, conversation.TenantID)
-	if instance == nil || instance.Status != enums.StatusOk ||
+	if !isActivatedCurrentWxWorkProtocolInstance(instance) ||
 		!strings.EqualFold(strings.TrimSpace(instance.HealthStatus), "online") {
 		return enums.ArrivalDeliveryStatusInstanceOffline, nil
 	}
@@ -504,8 +532,8 @@ func (s *wxWorkProtocolService) SyncRoomInfo(instanceID int64, roomID string, ve
 
 func (s *wxWorkProtocolService) InviteRoomMember(instanceID int64, roomID string, userList []string) error {
 	instance := WxWorkProtocolInstanceService.Get(instanceID)
-	if instance == nil || instance.Status != enums.StatusOk {
-		return errorsx.InvalidParam("企微员工号实例不存在或未启用")
+	if !isActivatedCurrentWxWorkProtocolInstance(instance) {
+		return errorsx.InvalidParam("企微员工号实例不存在、未完成替换验证或未启用")
 	}
 	channel := ChannelService.Get(instance.ChannelID)
 	if channel == nil || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
@@ -606,27 +634,9 @@ func (s *wxWorkProtocolService) handleMessage(instance *models.WxWorkProtocolIns
 }
 
 func (s *wxWorkProtocolService) handleBatchMessages(instance *models.WxWorkProtocolInstance, raw json.RawMessage, rawPayload string) error {
-	var list []request.WxProtocolChatMsg
-	if err := json.Unmarshal(raw, &list); err != nil {
-		wrapper := struct {
-			List     []request.WxProtocolChatMsg `json:"list"`
-			Messages []request.WxProtocolChatMsg `json:"messages"`
-			Msgs     []request.WxProtocolChatMsg `json:"msgs"`
-			Items    []request.WxProtocolChatMsg `json:"items"`
-		}{}
-		if err2 := json.Unmarshal(raw, &wrapper); err2 != nil {
-			return errorsx.InvalidParam("微信协议批量消息格式不合法")
-		}
-		list = wrapper.List
-		if len(list) == 0 {
-			list = wrapper.Messages
-		}
-		if len(list) == 0 {
-			list = wrapper.Msgs
-		}
-		if len(list) == 0 {
-			list = wrapper.Items
-		}
+	list, err := parseWxWorkProtocolMessageBatch(raw)
+	if err != nil {
+		return err
 	}
 	for i := range list {
 		itemRaw, _ := json.Marshal(list[i])
@@ -640,6 +650,56 @@ func (s *wxWorkProtocolService) handleBatchMessages(instance *models.WxWorkProto
 	return nil
 }
 
+func (s *wxWorkProtocolService) handleHistoricalMessage(instance *models.WxWorkProtocolInstance, raw json.RawMessage, rawPayload string) error {
+	msg := request.WxProtocolChatMsg{}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return errorsx.InvalidParam("企微协议历史消息格式不合法")
+	}
+	if err := s.handleHistoricalChatMessage(instance, msg, rawPayload); err != nil {
+		return err
+	}
+	return s.advanceMessageSyncSequence(instance.ID, msg.Seq)
+}
+
+func (s *wxWorkProtocolService) handleHistoricalBatchMessages(instance *models.WxWorkProtocolInstance, raw json.RawMessage, rawPayload string) error {
+	list, err := parseWxWorkProtocolMessageBatch(raw)
+	if err != nil {
+		return err
+	}
+	for i := range list {
+		itemRaw, _ := json.Marshal(list[i])
+		if err := s.handleHistoricalChatMessage(instance, list[i], string(itemRaw)); err != nil {
+			return err
+		}
+		if err := s.advanceMessageSyncSequence(instance.ID, list[i].Seq); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseWxWorkProtocolMessageBatch(raw json.RawMessage) ([]request.WxProtocolChatMsg, error) {
+	var list []request.WxProtocolChatMsg
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return list, nil
+	}
+	wrapper := struct {
+		List     []request.WxProtocolChatMsg `json:"list"`
+		Messages []request.WxProtocolChatMsg `json:"messages"`
+		Msgs     []request.WxProtocolChatMsg `json:"msgs"`
+		Items    []request.WxProtocolChatMsg `json:"items"`
+	}{}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, errorsx.InvalidParam("企微协议批量消息格式不合法")
+	}
+	for _, candidate := range [][]request.WxProtocolChatMsg{wrapper.List, wrapper.Messages, wrapper.Msgs, wrapper.Items} {
+		if len(candidate) > 0 {
+			return candidate, nil
+		}
+	}
+	return []request.WxProtocolChatMsg{}, nil
+}
+
 func (s *wxWorkProtocolService) advanceMessageSyncSequence(instanceID int64, sequence string) error {
 	sequence = strings.TrimSpace(sequence)
 	if instanceID <= 0 || sequence == "" {
@@ -647,7 +707,7 @@ func (s *wxWorkProtocolService) advanceMessageSyncSequence(instanceID int64, seq
 	}
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		instance := repositories.WxWorkProtocolInstanceRepository.GetForUpdate(ctx.Tx, instanceID)
-		if instance == nil || instance.TenantID <= 0 || instance.Status != enums.StatusOk {
+		if instance == nil || instance.TenantID <= 0 || (instance.Status != enums.StatusOk && !(instance.Status == enums.StatusDisabled && instance.ReplacedByInstanceID > 0)) {
 			return errorsx.InvalidParam("企微员工号消息检查点实例不存在或未启用")
 		}
 		current := strings.TrimSpace(instance.MessageSyncSeq)
@@ -684,7 +744,80 @@ func (s *wxWorkProtocolService) advanceMessageSyncSequence(instanceID int64, seq
 	})
 }
 
+func (s *wxWorkProtocolService) handleHistoricalChatMessage(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, rawPayload string) error {
+	if instance == nil || instance.Status != enums.StatusDisabled || instance.ReplacedByInstanceID <= 0 {
+		return errorsx.InvalidParam("历史消息实例不是已被替换实例")
+	}
+	msg.Normalize()
+	clientMsgID := s.clientMessageID(instance.Guid, msg)
+	messageType := s.resolveInboundMessageType(msg)
+	if existing := WxWorkKFMessageRefService.GetByWxMsgIDInTenant(clientMsgID, instance.TenantID); existing != nil {
+		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, existing.ConversationID, existing.MessageID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "duplicate replaced-instance message")
+		return nil
+	}
+	if msg.IsReferencedMessageMutation() || s.isEmployeeOutgoing(instance, msg) || s.inboundGroupRoomID(msg) != "" || messageType == "" {
+		return MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "replaced-instance callback is not an archivable customer message")
+	}
+	externalID := s.externalConversationID(instance, msg)
+	if strings.TrimSpace(externalID) == "" {
+		return errorsx.InvalidParam("已替换实例历史消息缺少客户标识")
+	}
+	external := s.externalUser(instance, msg, externalID)
+	identity := repositories.CustomerIdentityRepository.GetByInTenant(
+		sqls.DB(), instance.TenantID, external.ExternalSource, external.ExternalID,
+	)
+	if identity == nil || identity.Status != enums.StatusOk || identity.CustomerID <= 0 {
+		return errorsx.InvalidParam("已替换实例历史消息无法解析原客户身份")
+	}
+	threadKey := buildStoreConversationThreadKey(instance.TenantID, instance.StoreID, identity.CustomerID, instance.StoreStaffBindingID)
+	conversation := repositories.ConversationRepository.FindOne(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", instance.TenantID).
+		Eq("thread_key", threadKey))
+	if conversation == nil || conversation.StoreID != instance.StoreID || conversation.StoreStaffBindingID != instance.StoreStaffBindingID || conversation.CustomerID != identity.CustomerID {
+		return errorsx.InvalidParam("已替换实例历史消息无法定位原会话")
+	}
+	session := repositories.ConversationChannelSessionRepository.TakeByConversationInstance(
+		sqls.DB(), instance.TenantID, conversation.ID, instance.ID,
+	)
+	if session == nil || session.StoreID != instance.StoreID || session.StoreStaffBindingID != instance.StoreStaffBindingID {
+		return errorsx.InvalidParam("已替换实例历史消息无法定位原会话段")
+	}
+	content, payload, err := s.buildInboundMessageContent(instance, messageType, msg)
+	if err != nil {
+		return err
+	}
+	message, err := MessageService.PersistHistoricalCustomerMessageInSession(
+		conversation.ID, clientMsgID, messageType, content, payload, external,
+		session.SessionNo, wxWorkProtocolMessageSentAt(msg),
+	)
+	if err != nil {
+		return err
+	}
+	if err := s.createMessageRef(conversation.ID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived); err != nil {
+		return err
+	}
+	return MessageSyncLogService.CreateInTenant(instance.TenantID, conversation.ID, message.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "replaced-instance message archived as history")
+}
+
+func wxWorkProtocolMessageSentAt(msg request.WxProtocolChatMsg) time.Time {
+	timestamp := msg.CreateTime
+	if timestamp > 1_000_000_000_000 {
+		timestamp /= 1000
+	}
+	if timestamp <= 0 {
+		return time.Now()
+	}
+	value := time.Unix(timestamp, 0)
+	if value.Before(time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)) || value.After(time.Now().Add(24*time.Hour)) {
+		return time.Now()
+	}
+	return value
+}
+
 func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, rawPayload string) error {
+	if !isActivatedCurrentWxWorkProtocolInstance(instance) {
+		return errorsx.InvalidParam("企微员工号实例未完成替换验证，不能接管会话消息")
+	}
 	msg.Normalize()
 	clientMsgID := s.clientMessageID(instance.Guid, msg)
 	messageType := s.resolveInboundMessageType(msg)
@@ -735,7 +868,8 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 	if err != nil {
 		return err
 	}
-	if err := s.ensureRouteState(conversation.ID, instance); err != nil {
+	sessionNo, err := ConversationChannelSessionService.PrepareInbound(conversation.ID, instance, time.Now())
+	if err != nil {
 		return err
 	}
 	if _, _, err := WxWorkProtocolInstanceService.RequireStoreKnowledge(instance); err != nil {
@@ -750,7 +884,7 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 		if buildErr != nil {
 			return buildErr
 		}
-		message, sendErr := MessageService.SendCustomerMessage(conversation.ID, clientMsgID, messageType, content, payload, s.externalUser(instance, msg, externalID))
+		message, sendErr := MessageService.SendCustomerMessageInSession(conversation.ID, clientMsgID, messageType, content, payload, s.externalUser(instance, msg, externalID), sessionNo)
 		if sendErr != nil {
 			return sendErr
 		}
@@ -763,7 +897,7 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 	if err != nil {
 		return err
 	}
-	message, err := MessageService.SendCustomerMessage(conversation.ID, clientMsgID, messageType, content, payload, s.externalUser(instance, msg, externalID))
+	message, err := MessageService.SendCustomerMessageInSession(conversation.ID, clientMsgID, messageType, content, payload, s.externalUser(instance, msg, externalID), sessionNo)
 	if err != nil {
 		return err
 	}
@@ -1562,8 +1696,11 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 		return s.markOutboxFailed(outbox, "企微协议实例绑定不存在")
 	}
 	instance := WxWorkProtocolInstanceService.GetByTenantID(route.WxWorkInstanceID, conversation.TenantID)
-	if instance == nil || instance.Status != enums.StatusOk {
+	if !isActivatedCurrentWxWorkProtocolInstance(instance) {
 		return s.markOutboxFailed(outbox, "企微协议实例不存在或未启用")
+	}
+	if !s.protocolMappingMatchesInstance(mapping, instance, conversation) {
+		return s.markOutboxFailed(outbox, "新企微实例尚未建立该客户的有效会话映射")
 	}
 	protocolConversationID := s.protocolConversationID(mapping)
 	if protocolConversationID == "" {
@@ -1651,8 +1788,15 @@ func (s *wxWorkProtocolService) dispatchStoreRoomNoticeOutbox(outbox models.Chan
 		return s.markOutboxFailed(outbox, "门店群提醒会话不存在或租户不一致")
 	}
 	instance := WxWorkProtocolInstanceService.GetByTenantID(payload.WxWorkInstanceID, conversation.TenantID)
-	if instance == nil || instance.Status != enums.StatusOk {
+	if !isActivatedCurrentWxWorkProtocolInstance(instance) {
 		return s.markOutboxFailed(outbox, "企微协议实例不存在或未启用")
+	}
+	store := repositories.StoreRepository.GetInTenant(sqls.DB(), instance.StoreID, conversation.TenantID)
+	binding := repositories.StoreStaffBindingRepository.GetInTenant(sqls.DB(), instance.StoreStaffBindingID, conversation.TenantID)
+	if store == nil || store.Status != enums.StatusOk || binding == nil || binding.Status != enums.StatusOk ||
+		binding.StoreID != store.ID || binding.ActiveUserID == nil || *binding.ActiveUserID != binding.UserID ||
+		conversation.StoreID != store.ID || conversation.StoreStaffBindingID != binding.ID {
+		return s.markOutboxFailed(outbox, "门店或门店员工绑定不存在或已停用")
 	}
 	channel := repositories.ChannelRepository.GetInTenant(sqls.DB(), instance.ChannelID, conversation.TenantID)
 	if channel == nil || channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
@@ -1854,6 +1998,72 @@ func (s *wxWorkProtocolService) protocolConversationID(mapping *models.WxWorkKFC
 		return "R:" + externalID
 	}
 	return "S:" + externalID
+}
+
+func (s *wxWorkProtocolService) ConversationReplyReadiness(conversation *models.Conversation) (bool, string) {
+	return s.conversationReplyReadinessDB(sqls.DB(), conversation)
+}
+
+func (s *wxWorkProtocolService) RequireConversationOutboundRoute(db *gorm.DB, conversation *models.Conversation) error {
+	ready, status := s.conversationReplyReadinessDB(db, conversation)
+	if ready || status == wxWorkReplyStatusNotApplicable {
+		return nil
+	}
+	if status == wxWorkReplyStatusWaitingTargetMessage {
+		return errorsx.BusinessError(67, "历史会话已继承；请先让目标企微员工号收到该客户的新消息，再进行回复")
+	}
+	return errorsx.BusinessError(67, "企微员工号回复线路当前不可用")
+}
+
+func (s *wxWorkProtocolService) conversationReplyReadinessDB(db *gorm.DB, conversation *models.Conversation) (bool, string) {
+	if db == nil || conversation == nil || conversation.TenantID <= 0 || conversation.ChannelID <= 0 {
+		return false, wxWorkReplyStatusUnavailable
+	}
+	channel := repositories.ChannelRepository.GetInTenant(db, conversation.ChannelID, conversation.TenantID)
+	if channel == nil || channel.Status != enums.StatusOk {
+		return false, wxWorkReplyStatusUnavailable
+	}
+	if channel.ChannelType != enums.ChannelTypeWxWorkProtocol {
+		return true, wxWorkReplyStatusNotApplicable
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversation.ID, conversation.TenantID)
+	if route == nil || route.WxWorkInstanceID <= 0 || route.StoreID != conversation.StoreID || route.StoreStaffBindingID != conversation.StoreStaffBindingID {
+		return false, wxWorkReplyStatusUnavailable
+	}
+	store := repositories.StoreRepository.GetInTenant(db, conversation.StoreID, conversation.TenantID)
+	if store == nil || store.Status != enums.StatusOk {
+		return false, wxWorkReplyStatusUnavailable
+	}
+	binding := repositories.StoreStaffBindingRepository.GetInTenant(db, conversation.StoreStaffBindingID, conversation.TenantID)
+	if binding == nil || binding.Status != enums.StatusOk || binding.StoreID != conversation.StoreID ||
+		binding.ActiveUserID == nil || *binding.ActiveUserID != binding.UserID {
+		return false, wxWorkReplyStatusUnavailable
+	}
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(db, route.WxWorkInstanceID, conversation.TenantID)
+	if !isActivatedCurrentWxWorkProtocolInstance(instance) ||
+		instance.ChannelID != conversation.ChannelID || instance.StoreID != conversation.StoreID ||
+		instance.StoreStaffBindingID != conversation.StoreStaffBindingID {
+		return false, wxWorkReplyStatusUnavailable
+	}
+	mapping := repositories.WxWorkKFConversationRepository.FindOne(db, sqls.NewCnd().
+		Eq("tenant_id", conversation.TenantID).
+		Eq("conversation_id", conversation.ID))
+	if !s.protocolMappingMatchesInstance(mapping, instance, conversation) {
+		return false, wxWorkReplyStatusWaitingTargetMessage
+	}
+	return true, wxWorkReplyStatusReady
+}
+
+func (s *wxWorkProtocolService) protocolMappingMatchesInstance(mapping *models.WxWorkKFConversation, instance *models.WxWorkProtocolInstance, conversation *models.Conversation) bool {
+	if mapping == nil || instance == nil || conversation == nil || mapping.Status != enums.StatusOk ||
+		mapping.TenantID != conversation.TenantID || mapping.ConversationID != conversation.ID ||
+		mapping.ChannelID != instance.ChannelID || conversation.ChannelID != instance.ChannelID ||
+		s.protocolConversationID(mapping) == "" {
+		return false
+	}
+	prefix := "wx_protocol:" + strings.TrimSpace(instance.Guid)
+	openKfID := strings.TrimSpace(mapping.OpenKfID)
+	return prefix != "wx_protocol:" && (openKfID == prefix || strings.HasPrefix(openKfID, prefix+":"))
 }
 
 func (s *wxWorkProtocolService) protocolConversationIDFromMessage(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg) string {
@@ -2330,46 +2540,35 @@ func (s *wxWorkProtocolService) sentMessageID(guid string, raw string, outboxID 
 }
 
 func (s *wxWorkProtocolService) ensureConversation(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, externalID string, rawPayload string) (*models.Conversation, bool, error) {
+	if instance == nil || instance.TenantID <= 0 || instance.StoreID <= 0 || instance.StoreStaffBindingID <= 0 {
+		return nil, false, errorsx.InvalidParam("企微员工号缺少门店员工号范围")
+	}
 	openKfID := s.mappingOpenKfID(instance, msg)
 	if mapping := WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", instance.TenantID).Eq("channel_id", instance.ChannelID).Eq("open_kf_id", openKfID).Eq("external_user_id", externalID).Eq("status", enums.StatusOk)); mapping != nil {
 		if conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), mapping.ConversationID, instance.TenantID); conversation != nil {
-			return conversation, false, nil
+			if conversation.StoreID == instance.StoreID && conversation.StoreStaffBindingID == instance.StoreStaffBindingID {
+				return conversation, false, nil
+			}
 		}
 	}
 	external := s.externalUser(instance, msg, externalID)
 	runtimeAIAgent := WxWorkProtocolInstanceService.BuildRuntimeAIAgent(instance)
-	conversation, err := ConversationService.CreateWithRuntimeProfileWithoutWelcome(external, instance.ChannelID, runtimeAIAgent)
+	conversation, created, err := ConversationService.CreateStoreScopedWithRuntimeProfileWithoutWelcome(external, instance.ChannelID, runtimeAIAgent, StoreConversationScope{
+		StoreID:             instance.StoreID,
+		StoreStaffBindingID: instance.StoreStaffBindingID,
+	})
 	if err != nil {
 		return nil, false, err
 	}
 	if err := s.upsertConversationMapping(instance, conversation.ID, msg, externalID, rawPayload); err != nil {
 		return nil, false, err
 	}
-	return conversation, true, nil
+	return conversation, created, nil
 }
 
 func (s *wxWorkProtocolService) ensureRouteState(conversationID int64, instance *models.WxWorkProtocolInstance) error {
-	if instance == nil || instance.Status != enums.StatusOk {
-		return errorsx.InvalidParam("企微员工号实例不存在或已停用")
-	}
-	state, err := ConversationRouteService.Ensure(conversationID)
-	if err != nil {
-		return err
-	}
-	if state.TenantID != instance.TenantID {
-		return errorsx.InvalidParam("会话路由与企微员工号接入公司不一致")
-	}
-	knowledgeBaseID, err := WxWorkProtocolInstanceService.resolveStoreKnowledgeBaseIDDB(sqls.DB(), instance.TenantID, instance.StoreID)
-	if err != nil {
-		return err
-	}
-	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
-		"store_id":            instance.StoreID,
-		"knowledge_base_id":   knowledgeBaseID,
-		"wx_work_instance_id": instance.ID,
-		"updated_at":          time.Now(),
-		"update_user_name":    wxWorkProtocolSystemOperatorName,
-	})
+	_, err := ConversationChannelSessionService.PrepareInbound(conversationID, instance, time.Now())
+	return err
 }
 
 func (s *wxWorkProtocolService) upsertConversationMapping(instance *models.WxWorkProtocolInstance, conversationID int64, msg request.WxProtocolChatMsg, externalID string, rawPayload string) error {
@@ -2387,7 +2586,19 @@ func (s *wxWorkProtocolService) upsertConversationMapping(instance *models.WxWor
 			"updated_at":       now,
 		})
 	}
+	if existing := WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", instance.TenantID).Eq("conversation_id", conversationID)); existing != nil {
+		return WxWorkKFConversationService.UpdatesInTenant(existing.ID, instance.TenantID, map[string]any{
+			"channel_id":       channelID,
+			"open_kf_id":       openKfID,
+			"external_user_id": externalID,
+			"session_status":   string(enums.WxWorkKFSessionStatusActive),
+			"raw_profile":      rawPayload,
+			"status":           enums.StatusOk,
+			"updated_at":       now,
+		})
+	}
 	return WxWorkKFConversationService.Create(&models.WxWorkKFConversation{
+		TenantID:       instance.TenantID,
 		ConversationID: conversationID,
 		ChannelID:      channelID,
 		OpenKfID:       openKfID,
@@ -2786,17 +2997,21 @@ func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWo
 	mapping := s.findProtocolConversationMapping(instance, msg, externalID)
 	var conversationID int64
 	if mapping != nil {
-		conversationID = mapping.ConversationID
+		if conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), mapping.ConversationID, instance.TenantID); conversation != nil &&
+			conversation.StoreID == instance.StoreID && conversation.StoreStaffBindingID == instance.StoreStaffBindingID {
+			conversationID = mapping.ConversationID
+		}
 	}
 	if conversationID <= 0 {
 		conversation, _, err := s.ensureConversation(instance, msg, externalID, rawPayload)
 		if err != nil {
 			return true, err
 		}
-		if err := s.ensureRouteState(conversation.ID, instance); err != nil {
-			return true, err
-		}
 		conversationID = conversation.ID
+	}
+	sessionNo, err := ConversationChannelSessionService.PrepareInbound(conversationID, instance, time.Now())
+	if err != nil {
+		return true, err
 	}
 	content, payload, err := s.buildInboundMessageContent(instance, messageType, msg)
 	if err != nil {
@@ -2804,7 +3019,7 @@ func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWo
 		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
 		return true, err
 	}
-	message, err := MessageService.CreateExternalAgentMessageWithoutOutbox(conversationID, clientMsgID, messageType, content, payload, "wx_protocol_self_echo")
+	message, err := MessageService.CreateExternalAgentMessageWithoutOutboxInSession(conversationID, clientMsgID, messageType, content, payload, "wx_protocol_self_echo", sessionNo)
 	if err != nil {
 		_ = s.createMessageRef(conversationID, 0, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusFailed)
 		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
@@ -2835,7 +3050,7 @@ func (s *wxWorkProtocolService) findProtocolConversationMapping(instance *models
 			return mapping
 		}
 	}
-	return WxWorkKFConversationService.FindOne(sqls.NewCnd().Eq("tenant_id", instance.TenantID).Eq("channel_id", instance.ChannelID).Eq("external_user_id", externalID).Eq("status", enums.StatusOk))
+	return nil
 }
 
 func (s *wxWorkProtocolService) externalConversationID(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg) string {
@@ -2881,9 +3096,13 @@ func (s *wxWorkProtocolService) externalUser(instance *models.WxWorkProtocolInst
 	}
 	return openidentity.ExternalUser{
 		ExternalSource: enums.ExternalSourceWxWorkProtocol,
-		ExternalID:     fmt.Sprintf("wxwork_protocol:%s:%s", strings.TrimSpace(instance.Guid), strings.TrimSpace(externalID)),
+		ExternalID:     canonicalWxWorkProtocolExternalID(externalID),
 		ExternalName:   name,
 	}
+}
+
+func canonicalWxWorkProtocolExternalID(externalID string) string {
+	return "wxwork_protocol:" + strings.TrimSpace(externalID)
 }
 
 func (s *wxWorkProtocolService) mappingOpenKfID(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg) string {

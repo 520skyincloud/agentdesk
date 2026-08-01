@@ -5,6 +5,8 @@ import "time"
 type StoreModelCredentialResponse struct {
 	TenantID                   int64      `json:"tenantId"`
 	StoreID                    int64      `json:"storeId"`
+	StoreStaffBindingID        int64      `json:"storeStaffBindingId"`
+	StoreStaffAccountName      string     `json:"storeStaffAccountName"`
 	StoreCode                  string     `json:"storeCode"`
 	StoreName                  string     `json:"storeName"`
 	ActiveProfileID            int64      `json:"activeProfileId"`

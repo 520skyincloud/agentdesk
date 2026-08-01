@@ -3,12 +3,13 @@ package response
 import "time"
 
 type BillingQueryOptionsResponse struct {
-	ScopeMode        string                        `json:"scopeMode"`
-	CanFilterTenants bool                          `json:"canFilterTenants"`
-	DefaultTenantID  int64                         `json:"defaultTenantId"`
-	DefaultStoreID   int64                         `json:"defaultStoreId"`
-	Tenants          []BillingTenantOptionResponse `json:"tenants"`
-	Stores           []BillingStoreOptionResponse  `json:"stores"`
+	ScopeMode                  string                        `json:"scopeMode"`
+	CanFilterTenants           bool                          `json:"canFilterTenants"`
+	DefaultTenantID            int64                         `json:"defaultTenantId"`
+	DefaultStoreID             int64                         `json:"defaultStoreId"`
+	DefaultStoreStaffBindingID int64                         `json:"defaultStoreStaffBindingId"`
+	Tenants                    []BillingTenantOptionResponse `json:"tenants"`
+	Stores                     []BillingStoreOptionResponse  `json:"stores"`
 }
 
 type BillingTenantOptionResponse struct {
@@ -23,6 +24,7 @@ type BillingStoreOptionResponse struct {
 	StoreID              int64    `json:"storeId"`
 	StoreCode            string   `json:"storeCode"`
 	StoreName            string   `json:"storeName"`
+	BindingCount         int      `json:"bindingCount"`
 	CredentialStatus     string   `json:"credentialStatus"`
 	CredentialRevision   int64    `json:"credentialRevision"`
 	ModelProfileRevision int64    `json:"modelProfileRevision"`
@@ -41,50 +43,57 @@ type BillingTokenSummaryResponse struct {
 }
 
 type BillingOfficialUsageLogResponse struct {
-	StoreID          int64   `json:"storeId"`
-	StoreName        string  `json:"storeName"`
-	ID               int64   `json:"id"`
-	CreatedAt        int64   `json:"createdAt"`
-	ModelName        string  `json:"modelName"`
-	PromptTokens     int64   `json:"promptTokens"`
-	CompletionTokens int64   `json:"completionTokens"`
-	UseTime          int64   `json:"useTime"`
-	Quota            int64   `json:"quota"`
-	CostCNY          float64 `json:"costCny"`
-	RequestID        string  `json:"requestId"`
+	StoreID               int64   `json:"storeId"`
+	StoreName             string  `json:"storeName"`
+	StoreStaffBindingID   int64   `json:"storeStaffBindingId"`
+	StoreStaffAccountName string  `json:"storeStaffAccountName"`
+	ID                    int64   `json:"id"`
+	CreatedAt             int64   `json:"createdAt"`
+	ModelName             string  `json:"modelName"`
+	PromptTokens          int64   `json:"promptTokens"`
+	CompletionTokens      int64   `json:"completionTokens"`
+	UseTime               int64   `json:"useTime"`
+	Quota                 int64   `json:"quota"`
+	CostCNY               float64 `json:"costCny"`
+	RequestID             string  `json:"requestId"`
 }
 
 type BillingOfficialStoreResponse struct {
-	TenantID             int64                             `json:"tenantId"`
-	TenantName           string                            `json:"tenantName"`
-	StoreID              int64                             `json:"storeId"`
-	StoreCode            string                            `json:"storeCode"`
-	StoreName            string                            `json:"storeName"`
-	CredentialRevision   int64                             `json:"credentialRevision"`
-	ModelProfileRevision int64                             `json:"modelProfileRevision"`
-	ModelNames           []string                          `json:"modelNames"`
-	Status               string                            `json:"status"`
-	ErrorClass           string                            `json:"errorClass"`
-	ErrorMessage         string                            `json:"errorMessage"`
-	Truncated            bool                              `json:"truncated"`
-	PeriodLogCount       int                               `json:"periodLogCount"`
-	PeriodQuota          int64                             `json:"periodQuota"`
-	PeriodCostCNY        float64                           `json:"periodCostCny"`
-	PeriodPromptTokens   int64                             `json:"periodPromptTokens"`
-	PeriodOutputTokens   int64                             `json:"periodOutputTokens"`
-	Summary              BillingTokenSummaryResponse       `json:"summary"`
-	Logs                 []BillingOfficialUsageLogResponse `json:"logs"`
+	TenantID              int64                             `json:"tenantId"`
+	TenantName            string                            `json:"tenantName"`
+	StoreID               int64                             `json:"storeId"`
+	StoreCode             string                            `json:"storeCode"`
+	StoreName             string                            `json:"storeName"`
+	StoreStaffBindingID   int64                             `json:"storeStaffBindingId"`
+	StoreStaffAccountName string                            `json:"storeStaffAccountName"`
+	CredentialRevision    int64                             `json:"credentialRevision"`
+	ModelProfileRevision  int64                             `json:"modelProfileRevision"`
+	ModelNames            []string                          `json:"modelNames"`
+	Status                string                            `json:"status"`
+	ErrorClass            string                            `json:"errorClass"`
+	ErrorMessage          string                            `json:"errorMessage"`
+	Truncated             bool                              `json:"truncated"`
+	PeriodLogCount        int                               `json:"periodLogCount"`
+	PeriodQuota           int64                             `json:"periodQuota"`
+	PeriodCostCNY         float64                           `json:"periodCostCny"`
+	PeriodPromptTokens    int64                             `json:"periodPromptTokens"`
+	PeriodOutputTokens    int64                             `json:"periodOutputTokens"`
+	Summary               BillingTokenSummaryResponse       `json:"summary"`
+	Logs                  []BillingOfficialUsageLogResponse `json:"logs"`
 }
 
 type BillingOfficialAggregateResponse struct {
-	StoreCount         int     `json:"storeCount"`
-	SuccessfulStores   int     `json:"successfulStores"`
-	FailedStores       int     `json:"failedStores"`
-	LogCount           int     `json:"logCount"`
-	PeriodQuota        int64   `json:"periodQuota"`
-	PeriodCostCNY      float64 `json:"periodCostCny"`
-	PeriodPromptTokens int64   `json:"periodPromptTokens"`
-	PeriodOutputTokens int64   `json:"periodOutputTokens"`
+	StoreCount                   int     `json:"storeCount"`
+	SuccessfulStores             int     `json:"successfulStores"`
+	FailedStores                 int     `json:"failedStores"`
+	CredentialAccountCount       int     `json:"credentialAccountCount"`
+	SuccessfulCredentialAccounts int     `json:"successfulCredentialAccounts"`
+	FailedCredentialAccounts     int     `json:"failedCredentialAccounts"`
+	LogCount                     int     `json:"logCount"`
+	PeriodQuota                  int64   `json:"periodQuota"`
+	PeriodCostCNY                float64 `json:"periodCostCny"`
+	PeriodPromptTokens           int64   `json:"periodPromptTokens"`
+	PeriodOutputTokens           int64   `json:"periodOutputTokens"`
 }
 
 type BillingOfficialSectionResponse struct {
@@ -93,25 +102,27 @@ type BillingOfficialSectionResponse struct {
 }
 
 type BillingLocalUsageEventResponse struct {
-	ID                   int64     `json:"id"`
-	TenantID             int64     `json:"tenantId"`
-	TenantName           string    `json:"tenantName"`
-	StoreID              int64     `json:"storeId"`
-	StoreName            string    `json:"storeName"`
-	RequestID            string    `json:"requestId"`
-	Stage                string    `json:"stage"`
-	OperationType        string    `json:"operationType"`
-	ModelName            string    `json:"modelName"`
-	ModelProfileRevision int64     `json:"modelProfileRevision"`
-	UsageSlot            string    `json:"usageSlot"`
-	CredentialRevision   int64     `json:"credentialRevision"`
-	PromptTokens         int64     `json:"promptTokens"`
-	CompletionTokens     int64     `json:"completionTokens"`
-	CachedPromptTokens   int64     `json:"cachedPromptTokens"`
-	LatencyMS            int64     `json:"latencyMs"`
-	Status               string    `json:"status"`
-	ErrorClass           string    `json:"errorClass"`
-	CreatedAt            time.Time `json:"createdAt"`
+	ID                    int64     `json:"id"`
+	TenantID              int64     `json:"tenantId"`
+	TenantName            string    `json:"tenantName"`
+	StoreID               int64     `json:"storeId"`
+	StoreName             string    `json:"storeName"`
+	StoreStaffBindingID   int64     `json:"storeStaffBindingId"`
+	StoreStaffAccountName string    `json:"storeStaffAccountName"`
+	RequestID             string    `json:"requestId"`
+	Stage                 string    `json:"stage"`
+	OperationType         string    `json:"operationType"`
+	ModelName             string    `json:"modelName"`
+	ModelProfileRevision  int64     `json:"modelProfileRevision"`
+	UsageSlot             string    `json:"usageSlot"`
+	CredentialRevision    int64     `json:"credentialRevision"`
+	PromptTokens          int64     `json:"promptTokens"`
+	CompletionTokens      int64     `json:"completionTokens"`
+	CachedPromptTokens    int64     `json:"cachedPromptTokens"`
+	LatencyMS             int64     `json:"latencyMs"`
+	Status                string    `json:"status"`
+	ErrorClass            string    `json:"errorClass"`
+	CreatedAt             time.Time `json:"createdAt"`
 }
 
 type BillingLocalAggregateResponse struct {
@@ -130,17 +141,19 @@ type BillingLocalSectionResponse struct {
 }
 
 type BillingReconciliationItemResponse struct {
-	StoreID         int64      `json:"storeId"`
-	StoreName       string     `json:"storeName"`
-	RequestID       string     `json:"requestId"`
-	Status          string     `json:"status"`
-	OfficialModel   string     `json:"officialModel"`
-	LocalModel      string     `json:"localModel"`
-	OfficialTokens  int64      `json:"officialTokens"`
-	LocalTokens     int64      `json:"localTokens"`
-	OfficialCostCNY float64    `json:"officialCostCny"`
-	OfficialAt      *time.Time `json:"officialAt"`
-	LocalAt         *time.Time `json:"localAt"`
+	StoreID               int64      `json:"storeId"`
+	StoreName             string     `json:"storeName"`
+	StoreStaffBindingID   int64      `json:"storeStaffBindingId"`
+	StoreStaffAccountName string     `json:"storeStaffAccountName"`
+	RequestID             string     `json:"requestId"`
+	Status                string     `json:"status"`
+	OfficialModel         string     `json:"officialModel"`
+	LocalModel            string     `json:"localModel"`
+	OfficialTokens        int64      `json:"officialTokens"`
+	LocalTokens           int64      `json:"localTokens"`
+	OfficialCostCNY       float64    `json:"officialCostCny"`
+	OfficialAt            *time.Time `json:"officialAt"`
+	LocalAt               *time.Time `json:"localAt"`
 }
 
 type BillingReconciliationResponse struct {

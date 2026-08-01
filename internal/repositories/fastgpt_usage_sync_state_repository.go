@@ -51,11 +51,12 @@ func (r *fastGPTUsageSyncStateRepository) CompareAndSwap(db *gorm.DB, expected, 
 	result := db.Model(&models.FastGPTUsageSyncState{}).
 		Where("id = ? AND tenant_id = ? AND knowledge_base_id = ?", expected.ID, expected.TenantID, expected.KnowledgeBaseID).
 		Where("store_id = ? AND tenant_team_id = ?", expected.StoreID, expected.TenantTeamID).
-		Where("cursor = ? AND model_profile_id = ? AND profile_revision = ? AND credential_revision = ?", expected.Cursor, expected.ModelProfileID, expected.ProfileRevision, expected.CredentialRevision).
+		Where("cursor = ? AND store_staff_binding_id = ? AND model_profile_id = ? AND profile_revision = ? AND credential_revision = ?", expected.Cursor, expected.StoreStaffBindingID, expected.ModelProfileID, expected.ProfileRevision, expected.CredentialRevision).
 		Where("key_fingerprint = ? AND fast_gpt_profile_id = ? AND fast_gpt_revision = ?", expected.KeyFingerprint, expected.FastGPTProfileID, expected.FastGPTRevision).
 		Updates(map[string]any{
 			"store_id": next.StoreID, "tenant_team_id": next.TenantTeamID,
-			"cursor": next.Cursor, "model_profile_id": next.ModelProfileID, "profile_revision": next.ProfileRevision,
+			"store_staff_binding_id": next.StoreStaffBindingID,
+			"cursor":                 next.Cursor, "model_profile_id": next.ModelProfileID, "profile_revision": next.ProfileRevision,
 			"credential_revision": next.CredentialRevision, "key_fingerprint": next.KeyFingerprint,
 			"fast_gpt_profile_id": next.FastGPTProfileID, "fast_gpt_revision": next.FastGPTRevision,
 			"last_synced_at": next.LastSyncedAt, "last_error": next.LastError, "updated_at": next.UpdatedAt,
@@ -79,7 +80,7 @@ func (r *fastGPTUsageSyncStateRepository) SaveFailure(db *gorm.DB, item *models.
 	result := db.Model(&models.FastGPTUsageSyncState{}).
 		Where("id = ? AND tenant_id = ? AND knowledge_base_id = ?", item.ID, item.TenantID, item.KnowledgeBaseID).
 		Where("store_id = ? AND tenant_team_id = ?", item.StoreID, item.TenantTeamID).
-		Where("cursor = ? AND model_profile_id = ? AND profile_revision = ? AND credential_revision = ?", item.Cursor, item.ModelProfileID, item.ProfileRevision, item.CredentialRevision).
+		Where("cursor = ? AND store_staff_binding_id = ? AND model_profile_id = ? AND profile_revision = ? AND credential_revision = ?", item.Cursor, item.StoreStaffBindingID, item.ModelProfileID, item.ProfileRevision, item.CredentialRevision).
 		Where("key_fingerprint = ? AND fast_gpt_profile_id = ? AND fast_gpt_revision = ?", item.KeyFingerprint, item.FastGPTProfileID, item.FastGPTRevision).
 		Where("updated_at = ?", item.UpdatedAt).
 		Updates(map[string]any{"last_error": errorClass, "updated_at": updatedAt})

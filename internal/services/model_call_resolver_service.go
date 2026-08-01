@@ -16,32 +16,33 @@ import (
 // resolver. B4 attaches decrypted credential material inside the runtime
 // boundary; API responses must never serialize this type.
 type ModelCallConfig struct {
-	TenantID           int64
-	StoreID            int64
-	AssignmentID       int64
-	ProfileID          int64
-	ProfileCode        string
-	ProfileRevision    int64
-	SlotID             int64
-	UsageCode          enums.ModelUsageSlot
-	Provider           string
-	GatewayBaseURL     string `json:"-"`
-	APIMode            string
-	ModelType          enums.AIModelType
-	ModelName          string
-	Dimension          int
-	MaxContextTokens   int
-	MaxOutputTokens    int
-	TimeoutMS          int
-	MaxRetryCount      int
-	Temperature        float64
-	SchemaVersion      string
-	PromptTemplate     string `json:"-"`
-	JSONSchema         string `json:"-"`
-	CredentialID       int64
-	CredentialRevision int64
-	APIKey             string `json:"-"`
-	KeyFingerprint     string `json:"-"`
+	TenantID            int64
+	StoreID             int64
+	StoreStaffBindingID int64
+	AssignmentID        int64
+	ProfileID           int64
+	ProfileCode         string
+	ProfileRevision     int64
+	SlotID              int64
+	UsageCode           enums.ModelUsageSlot
+	Provider            string
+	GatewayBaseURL      string `json:"-"`
+	APIMode             string
+	ModelType           enums.AIModelType
+	ModelName           string
+	Dimension           int
+	MaxContextTokens    int
+	MaxOutputTokens     int
+	TimeoutMS           int
+	MaxRetryCount       int
+	Temperature         float64
+	SchemaVersion       string
+	PromptTemplate      string `json:"-"`
+	JSONSchema          string `json:"-"`
+	CredentialID        int64
+	CredentialRevision  int64
+	APIKey              string `json:"-"`
+	KeyFingerprint      string `json:"-"`
 }
 
 var ModelCallResolverService = &modelCallResolverService{}
@@ -70,7 +71,7 @@ func modelCallUsageScope(resolved *ModelCallConfig, conversationID, messageID in
 		return usagex.Scope{ConversationID: conversationID, MessageID: messageID, RequestID: strings.TrimSpace(requestID)}
 	}
 	return usagex.Scope{
-		TenantID: resolved.TenantID, StoreID: resolved.StoreID,
+		TenantID: resolved.TenantID, StoreID: resolved.StoreID, StoreStaffBindingID: resolved.StoreStaffBindingID,
 		ConversationID: conversationID, MessageID: messageID, RequestID: strings.TrimSpace(requestID),
 		ModelProfileID: resolved.ProfileID, ProfileRevision: resolved.ProfileRevision,
 		UsageSlot: string(resolved.UsageCode), CredentialRevision: resolved.CredentialRevision,
@@ -84,27 +85,50 @@ func ModelCallUsageScope(resolved *ModelCallConfig, conversationID, messageID in
 	return modelCallUsageScope(resolved, conversationID, messageID, requestID)
 }
 
-func (s *modelCallResolverService) ResolveForStore(storeID int64, usageCode enums.ModelUsageSlot) (*ModelCallConfig, error) {
-	store := repositories.StoreRepository.Get(sqls.DB(), storeID)
-	if store == nil || store.Status != enums.StatusOk || store.TenantID <= 0 {
-		return nil, errorsx.InvalidParam("门店不存在或缺少接入公司归属")
-	}
-	return s.Resolve(store.TenantID, store.ID, usageCode)
-}
-
 func (s *modelCallResolverService) ResolveForConversation(conversationID int64, usageCode enums.ModelUsageSlot) (*ModelCallConfig, error) {
 	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
 	if conversation == nil || conversation.TenantID <= 0 {
 		return nil, errorsx.InvalidParam("会话不存在或缺少接入公司归属")
 	}
 	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
-	if route == nil || route.StoreID <= 0 {
-		return nil, errorsx.BusinessError(5, "会话尚未绑定门店，不能解析模型")
+	if route == nil || route.StoreID <= 0 || route.StoreStaffBindingID <= 0 {
+		return nil, errorsx.BusinessError(5, "会话尚未绑定门店员工号，不能解析模型")
 	}
-	return s.Resolve(conversation.TenantID, route.StoreID, usageCode)
+	return s.ResolveForBinding(conversation.TenantID, route.StoreID, route.StoreStaffBindingID, usageCode)
 }
 
-func (s *modelCallResolverService) Resolve(tenantID, storeID int64, usageCode enums.ModelUsageSlot) (*ModelCallConfig, error) {
+// ResolveForKnowledgeDebug keeps credential selection deterministic for both
+// conversation-backed and standalone knowledge tests.
+func (s *modelCallResolverService) ResolveForKnowledgeDebug(
+	tenantID, storeID, conversationID, selectedBindingID int64,
+	usageCode enums.ModelUsageSlot,
+) (*ModelCallConfig, error) {
+	if conversationID > 0 {
+		resolved, err := s.ResolveForConversation(conversationID, usageCode)
+		if err != nil {
+			return nil, err
+		}
+		if tenantID > 0 && resolved.TenantID != tenantID {
+			return nil, errorsx.InvalidParam("会话不属于当前接入公司")
+		}
+		if storeID > 0 && resolved.StoreID != storeID {
+			return nil, errorsx.InvalidParam("会话与知识库不属于同一门店")
+		}
+		if selectedBindingID > 0 && resolved.StoreStaffBindingID != selectedBindingID {
+			return nil, errorsx.InvalidParam("所选门店员工号与会话归属不一致")
+		}
+		return resolved, nil
+	}
+	if tenantID <= 0 || storeID <= 0 {
+		return nil, errorsx.InvalidParam("知识调试缺少接入公司或门店范围")
+	}
+	if selectedBindingID <= 0 {
+		return nil, errorsx.InvalidParam("请选择用于知识调试的门店员工号")
+	}
+	return s.ResolveForBinding(tenantID, storeID, selectedBindingID, usageCode)
+}
+
+func (s *modelCallResolverService) ResolveForBinding(tenantID, storeID, bindingID int64, usageCode enums.ModelUsageSlot) (*ModelCallConfig, error) {
 	spec, known := modelUsageSlotSpecByCode(usageCode)
 	if !known {
 		return nil, errorsx.InvalidParam("模型用途不合法")
@@ -129,12 +153,16 @@ func (s *modelCallResolverService) Resolve(tenantID, storeID int64, usageCode en
 	if slot == nil || !slot.Enabled || slot.ModelType != spec.ExpectedModelType || !strings.EqualFold(slot.Provider, modelProfileProviderNewAPI) {
 		return nil, errorsx.BusinessError(5, "门店当前模型用途不可用")
 	}
-	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), tenantID, storeID)
+	binding, err := StoreModelCredentialService.requireStoreStaffCredentialScopeDB(sqls.DB(), tenantID, storeID, bindingID, true)
+	if err != nil {
+		return nil, err
+	}
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(sqls.DB(), tenantID, storeID, binding.ID)
 	if credential == nil || credential.Status != enums.StoreCredentialStatusActive || credential.CredentialRevision <= 0 ||
 		strings.TrimSpace(credential.EncryptedKey) == "" || strings.TrimSpace(credential.KeyNonce) == "" {
 		return nil, errorsx.BusinessError(5, "门店 NewAPI 凭据尚未激活")
 	}
-	resolvedCredential, err := StoreModelCredentialService.ResolveActive(tenantID, storeID)
+	resolvedCredential, err := StoreModelCredentialService.ResolveActiveForBinding(tenantID, storeID, binding.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +170,7 @@ func (s *modelCallResolverService) Resolve(tenantID, storeID int64, usageCode en
 		return nil, errorsx.BusinessError(5, "门店 NewAPI 凭据正在切换，请稍后重试")
 	}
 	return &ModelCallConfig{
-		TenantID: tenantID, StoreID: storeID, AssignmentID: assignment.ID,
+		TenantID: tenantID, StoreID: storeID, StoreStaffBindingID: binding.ID, AssignmentID: assignment.ID,
 		ProfileID: template.ID, ProfileCode: template.Code, ProfileRevision: template.Revision,
 		SlotID: slot.ID, UsageCode: slot.UsageCode, Provider: slot.Provider,
 		GatewayBaseURL: template.GatewayBaseURL, APIMode: slot.APIMode,

@@ -21,9 +21,10 @@ type storeCredentialPolicyRepository struct{}
 type storeModelCredentialAuditLogRepository struct{}
 
 type ActiveStoreModelCredentialMetadata struct {
-	TenantID           int64
-	StoreID            int64
-	CredentialRevision int64
+	TenantID            int64
+	StoreID             int64
+	StoreStaffBindingID int64
+	CredentialRevision  int64
 }
 
 type UsableModelProfileTestTargetMetadata struct {
@@ -31,6 +32,7 @@ type UsableModelProfileTestTargetMetadata struct {
 	TenantShortName        string
 	TenantLegalName        string
 	StoreID                int64
+	StoreStaffBindingID    int64
 	StoreCode              string
 	StoreName              string
 	CredentialRevision     int64
@@ -50,23 +52,32 @@ func (r *storeModelCredentialRepository) Get(db *gorm.DB, id int64) *models.Stor
 	return item
 }
 
-func (r *storeModelCredentialRepository) GetByStore(db *gorm.DB, tenantID, storeID int64) *models.StoreModelCredential {
-	if db == nil || tenantID <= 0 || storeID <= 0 {
+func (r *storeModelCredentialRepository) GetByBinding(db *gorm.DB, tenantID, storeID, bindingID int64) *models.StoreModelCredential {
+	if db == nil || tenantID <= 0 || storeID <= 0 || bindingID <= 0 {
 		return nil
 	}
 	item := &models.StoreModelCredential{}
-	if err := db.Take(item, "tenant_id = ? AND store_id = ?", tenantID, storeID).Error; err != nil {
+	if err := db.Take(item, "tenant_id = ? AND store_id = ? AND store_staff_binding_id = ?", tenantID, storeID, bindingID).Error; err != nil {
 		return nil
 	}
 	return item
 }
 
-func (r *storeModelCredentialRepository) GetForUpdateByStore(db *gorm.DB, tenantID, storeID int64) (*models.StoreModelCredential, error) {
+func (r *storeModelCredentialRepository) FindByStore(db *gorm.DB, tenantID, storeID int64) (list []models.StoreModelCredential) {
 	if db == nil || tenantID <= 0 || storeID <= 0 {
-		return nil, errors.New("store model credential scope is required")
+		return list
+	}
+	db.Where("tenant_id = ? AND store_id = ?", tenantID, storeID).Order("store_staff_binding_id ASC, id ASC").Find(&list)
+	return list
+}
+
+func (r *storeModelCredentialRepository) GetForUpdateByBinding(db *gorm.DB, tenantID, storeID, bindingID int64) (*models.StoreModelCredential, error) {
+	if db == nil || tenantID <= 0 || storeID <= 0 || bindingID <= 0 {
+		return nil, errors.New("store staff model credential scope is required")
 	}
 	item := &models.StoreModelCredential{}
-	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Take(item, "tenant_id = ? AND store_id = ?", tenantID, storeID).Error
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Take(item,
+		"tenant_id = ? AND store_id = ? AND store_staff_binding_id = ?", tenantID, storeID, bindingID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -91,11 +102,11 @@ func (r *storeModelCredentialRepository) FindUsableProfileTestTargets(db *gorm.D
 	query := r.usableProfileTestTargetQuery(db).
 		Select(
 			"credential.tenant_id AS tenant_id, tenant.short_name AS tenant_short_name, tenant.legal_name AS tenant_legal_name, " +
-				"credential.store_id AS store_id, store.store_code AS store_code, store.name AS store_name, " +
+				"credential.store_id AS store_id, credential.store_staff_binding_id AS store_staff_binding_id, store.store_code AS store_code, store.name AS store_name, " +
 				"credential.credential_revision AS credential_revision, template.id AS active_template_id, " +
 				"template.name AS active_template_name, template.revision AS active_template_revision",
 		).
-		Order("credential.tenant_id ASC, credential.store_id ASC")
+		Order("credential.tenant_id ASC, credential.store_id ASC, credential.store_staff_binding_id ASC")
 	if limit > 0 {
 		query = query.Limit(limit)
 	}
@@ -103,18 +114,16 @@ func (r *storeModelCredentialRepository) FindUsableProfileTestTargets(db *gorm.D
 	return list, err
 }
 
-func (r *storeModelCredentialRepository) FindActiveMetadataByStore(db *gorm.DB, tenantID, storeID int64) *ActiveStoreModelCredentialMetadata {
-	if db == nil || tenantID <= 0 || storeID <= 0 {
+func (r *storeModelCredentialRepository) FindActiveMetadataByBinding(db *gorm.DB, tenantID, storeID, bindingID int64) *ActiveStoreModelCredentialMetadata {
+	if db == nil || tenantID <= 0 || storeID <= 0 || bindingID <= 0 {
 		return nil
 	}
 	item := &ActiveStoreModelCredentialMetadata{}
 	result := db.Model(&models.StoreModelCredential{}).
-		Select("tenant_id, store_id, credential_revision").
+		Select("tenant_id, store_id, store_staff_binding_id, credential_revision").
 		Where(
-			"tenant_id = ? AND store_id = ? AND status = ? AND credential_revision > 0 AND encrypted_key <> ''",
-			tenantID,
-			storeID,
-			enums.StoreCredentialStatusActive,
+			"tenant_id = ? AND store_id = ? AND store_staff_binding_id = ? AND status = ? AND credential_revision > 0 AND encrypted_key <> ''",
+			tenantID, storeID, bindingID, enums.StoreCredentialStatusActive,
 		).
 		Take(item)
 	if result.Error != nil {
@@ -282,5 +291,17 @@ func (r *storeModelCredentialAuditLogRepository) FindLatestByStore(db *gorm.DB, 
 		limit = 50
 	}
 	db.Where("tenant_id = ? AND store_id = ?", tenantID, storeID).Order("id DESC").Limit(limit).Find(&list)
+	return list
+}
+
+func (r *storeModelCredentialAuditLogRepository) FindLatestByBinding(db *gorm.DB, tenantID, storeID, bindingID int64, limit int) (list []models.StoreModelCredentialAuditLog) {
+	if db == nil || tenantID <= 0 || storeID <= 0 || bindingID <= 0 {
+		return list
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	db.Where("tenant_id = ? AND store_id = ? AND store_staff_binding_id = ?", tenantID, storeID, bindingID).
+		Order("id DESC").Limit(limit).Find(&list)
 	return list
 }

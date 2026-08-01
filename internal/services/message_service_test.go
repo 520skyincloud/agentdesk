@@ -64,10 +64,16 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		}
 	})
 	if err := db.AutoMigrate(
+		&models.User{},
+		&models.Role{},
+		&models.UserRole{},
+		&models.AgentTeam{},
 		&models.AIAgent{},
 		&models.Channel{},
 		&models.ChannelMessageOutbox{},
 		&models.Store{},
+		&models.StoreStaffBinding{},
+		&models.StoreCustomerRelation{},
 		&models.KnowledgeBase{},
 		&models.WxWorkProtocolInstance{},
 		&models.Customer{},
@@ -75,6 +81,8 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		&models.WxWorkCustomerHandoffSetting{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
+		&models.ConversationChannelSession{},
+		&models.ConversationContinuityLink{},
 		&models.ConversationParticipant{},
 		&models.ConversationReadState{},
 		&models.ConversationEventLog{},

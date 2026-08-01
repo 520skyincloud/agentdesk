@@ -11,14 +11,14 @@ type RevokeUserSessionsRequest struct {
 }
 
 type CreateUserRequest struct {
-	Username  string  `json:"username"`
-	Nickname  string  `json:"nickname"`
-	StoreName string  `json:"storeName"`
-	Avatar    string  `json:"avatar"`
-	Mobile    *string `json:"mobile"`
-	Email     *string `json:"email"`
-	Remark    string  `json:"remark"`
-	RoleIDs   []int64 `json:"roleIds"`
+	Username string  `json:"username"`
+	Nickname string  `json:"nickname"`
+	StoreID  int64   `json:"storeId"`
+	Avatar   string  `json:"avatar"`
+	Mobile   *string `json:"mobile"`
+	Email    *string `json:"email"`
+	Remark   string  `json:"remark"`
+	RoleIDs  []int64 `json:"roleIds"`
 }
 
 type UpdateUserRequest struct {
@@ -44,9 +44,9 @@ type ChangePasswordRequest struct {
 }
 
 type AssignRoleRequest struct {
-	UserID    int64   `json:"userId"`
-	RoleIDs   []int64 `json:"roleIds"`
-	StoreName string  `json:"storeName"`
+	UserID  int64   `json:"userId"`
+	RoleIDs []int64 `json:"roleIds"`
+	StoreID int64   `json:"storeId"`
 }
 
 type BindStoreStaffAgentTeamRequest struct {

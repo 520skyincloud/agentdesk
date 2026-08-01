@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
@@ -16,6 +17,57 @@ import (
 
 	"gorm.io/gorm"
 )
+
+func createWxWorkProtocolTestBinding(t *testing.T, db *gorm.DB, store *models.Store, suffix string) *models.StoreStaffBinding {
+	t.Helper()
+	if store == nil || store.ID <= 0 || store.TenantID <= 0 {
+		t.Fatal("test store is required")
+	}
+	now := time.Now()
+	role := &models.Role{
+		Name:           "门店员工",
+		Code:           constants.RoleCodeStoreStaff,
+		Scope:          constants.RoleScopeTenant,
+		AuthorityLevel: constants.RoleAuthorityMember,
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Where("code = ?", role.Code).FirstOrCreate(role).Error; err != nil {
+		t.Fatalf("create store staff role: %v", err)
+	}
+	user := &models.User{
+		TenantID:    store.TenantID,
+		Username:    "protocol-test-staff-" + suffix,
+		Nickname:    "测试门店员工",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("create store staff user: %v", err)
+	}
+	if err := db.Create(&models.UserRole{
+		UserID:      user.ID,
+		RoleID:      role.ID,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("assign store staff role: %v", err)
+	}
+	activeUserID := user.ID
+	binding := &models.StoreStaffBinding{
+		TenantID:             store.TenantID,
+		UserID:               user.ID,
+		ActiveUserID:         &activeUserID,
+		StoreID:              store.ID,
+		FallbackToHQ:         true,
+		ManualTimeoutMinutes: DefaultManualTimeoutMinutes,
+		Status:               enums.StatusOk,
+		AuditFields:          models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create store staff binding: %v", err)
+	}
+	return binding
+}
 
 func TestWxWorkProtocolPostJSONReturnsSafeBusinessErrors(t *testing.T) {
 	tests := []struct {
@@ -542,17 +594,20 @@ func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *tes
 	if err := db.Create(store).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
+	binding := createWxWorkProtocolTestBinding(t, db, store, "knowledge-pending")
 	instance := &models.WxWorkProtocolInstance{
-		TenantID:        101,
-		Guid:            "guid-new-account",
-		ChannelID:       channel.ID,
-		EmployeeUserID:  "employee-new",
-		EmployeeName:    "新员工号",
-		StoreID:         store.ID,
-		KnowledgeBaseID: 0,
-		AIReplyEnabled:  true,
-		Status:          enums.StatusOk,
-		AuditFields:     models.AuditFields{CreatedAt: now, UpdatedAt: now},
+		TenantID:            101,
+		Guid:                "guid-new-account",
+		ChannelID:           channel.ID,
+		EmployeeUserID:      "employee-new",
+		EmployeeName:        "新员工号",
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
+		KnowledgeBaseID:     0,
+		AIReplyEnabled:      true,
+		HealthStatus:        "online",
+		Status:              enums.StatusOk,
+		AuditFields:         models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
@@ -571,7 +626,7 @@ func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *tes
 		TenantID:       101,
 		CustomerID:     customer.ID,
 		ExternalSource: enums.ExternalSourceWxWorkProtocol,
-		ExternalID:     "wxwork_protocol:guid-new-account:external-new-customer",
+		ExternalID:     "wxwork_protocol:external-new-customer",
 		Status:         enums.StatusOk,
 		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}).Error; err != nil {
@@ -680,17 +735,20 @@ func TestWxWorkProtocolReceivesCustomerMessageWithConfiguredKnowledgeRecordsSucc
 		t.Fatalf("bind knowledge base to store: %v", err)
 	}
 	store.KnowledgeBaseID = knowledgeBase.ID
+	binding := createWxWorkProtocolTestBinding(t, db, store, "configured-knowledge")
 	instance := &models.WxWorkProtocolInstance{
-		TenantID:        101,
-		Guid:            "guid-configured-knowledge",
-		ChannelID:       channel.ID,
-		EmployeeUserID:  "employee-configured",
-		EmployeeName:    "已配置员工号",
-		StoreID:         store.ID,
-		KnowledgeBaseID: knowledgeBase.ID,
-		AIReplyEnabled:  true,
-		Status:          enums.StatusOk,
-		AuditFields:     models.AuditFields{CreatedAt: now, UpdatedAt: now},
+		TenantID:            101,
+		Guid:                "guid-configured-knowledge",
+		ChannelID:           channel.ID,
+		EmployeeUserID:      "employee-configured",
+		EmployeeName:        "已配置员工号",
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
+		KnowledgeBaseID:     knowledgeBase.ID,
+		AIReplyEnabled:      true,
+		HealthStatus:        "online",
+		Status:              enums.StatusOk,
+		AuditFields:         models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
@@ -709,7 +767,7 @@ func TestWxWorkProtocolReceivesCustomerMessageWithConfiguredKnowledgeRecordsSucc
 		TenantID:       101,
 		CustomerID:     customer.ID,
 		ExternalSource: enums.ExternalSourceWxWorkProtocol,
-		ExternalID:     "wxwork_protocol:guid-configured-knowledge:external-configured-customer",
+		ExternalID:     "wxwork_protocol:external-configured-customer",
 		Status:         enums.StatusOk,
 		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}).Error; err != nil {
@@ -876,22 +934,40 @@ func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
 	if err := db.Create(channel).Error; err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
-	aiAgent := createWelcomeTestAIAgent(t, db, "")
-	external := welcomeTestExternalUser("external-user-1")
-	conversation, err := ConversationService.Create(external, channel.ID, aiAgent.ID)
-	if err != nil {
-		t.Fatalf("create conversation: %v", err)
+	store := &models.Store{
+		TenantID:    101,
+		StoreCode:   "employee-echo-store",
+		Name:        "员工回复测试门店",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	binding := createWxWorkProtocolTestBinding(t, db, store, "employee-echo")
 	instance := &models.WxWorkProtocolInstance{
-		TenantID:       101,
-		Guid:           "guid-1",
-		ChannelID:      channel.ID,
-		EmployeeUserID: "employee-1",
-		Status:         enums.StatusOk,
-		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+		TenantID:            101,
+		Guid:                "guid-1",
+		ChannelID:           channel.ID,
+		EmployeeUserID:      "employee-1",
+		EmployeeName:        "回复测试员工",
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
+		HealthStatus:        "online",
+		Status:              enums.StatusOk,
+		AuditFields:         models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	external := welcomeTestExternalUser("external-user-1")
+	conversation, _, err := ConversationService.CreateStoreScopedWithRuntimeProfileWithoutWelcome(external, channel.ID, *aiAgent, StoreConversationScope{
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
+	})
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
 	}
 	if err := db.Create(&models.WxWorkKFConversation{
 		TenantID:       101,
@@ -979,15 +1055,17 @@ func TestWxWorkProtocolEmployeeOutgoingFirstMessageCreatesConversation(t *testin
 	if err := db.Create(channel).Error; err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
+	binding := createWxWorkProtocolTestBinding(t, db, store, "outgoing-first")
 	instance := &models.WxWorkProtocolInstance{
-		TenantID:       101,
-		Guid:           "guid-outgoing-first",
-		ChannelID:      channel.ID,
-		EmployeeUserID: "employee-first",
-		StoreID:        store.ID,
-		HealthStatus:   "online",
-		Status:         enums.StatusOk,
-		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+		TenantID:            101,
+		Guid:                "guid-outgoing-first",
+		ChannelID:           channel.ID,
+		EmployeeUserID:      "employee-first",
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
+		HealthStatus:        "online",
+		Status:              enums.StatusOk,
+		AuditFields:         models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)

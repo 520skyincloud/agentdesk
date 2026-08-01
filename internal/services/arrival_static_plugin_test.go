@@ -9,6 +9,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
@@ -629,6 +630,7 @@ func TestArrivalBindingTicketRejectsConversationConflictAndAmbiguousStore(t *tes
 	secondConnection := &models.StoreArrivalConnection{
 		TenantID:                 fixture.tenantID,
 		StoreID:                  secondStore.ID,
+		StoreStaffBindingID:      fixture.storeStaffBinding.ID,
 		StoreScene:               "arr-ambiguous",
 		ContactProviderMode:      enums.ArrivalContactProviderModeStaticPluginTicket,
 		StaticContactPlugID:      "plug-ambiguous",
@@ -679,12 +681,48 @@ func TestArrivalCardTicketBindingsRemainIsolatedAcrossStores(t *testing.T) {
 	if err := fixture.db.Create(storeB).Error; err != nil {
 		t.Fatal(err)
 	}
+	storeStaffUserB := &models.User{
+		TenantID:    fixture.tenantID,
+		Username:    "arrival-store-staff-b",
+		Nickname:    "到店测试门店员工 B",
+		Status:      enums.StatusOk,
+		AuditFields: arrivalSystemAuditFields(now),
+	}
+	if err := fixture.db.Create(storeStaffUserB).Error; err != nil {
+		t.Fatal(err)
+	}
+	storeStaffRole := repositories.RoleRepository.GetByCode(fixture.db, constants.RoleCodeStoreStaff)
+	if storeStaffRole == nil {
+		t.Fatal("Store staff role missing")
+	}
+	if err := fixture.db.Create(&models.UserRole{
+		UserID:      storeStaffUserB.ID,
+		RoleID:      storeStaffRole.ID,
+		AuditFields: arrivalSystemAuditFields(now),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	storeStaffBindingB := &models.StoreStaffBinding{
+		TenantID:             fixture.tenantID,
+		UserID:               storeStaffUserB.ID,
+		ActiveUserID:         positiveInt64Pointer(storeStaffUserB.ID),
+		StoreID:              storeB.ID,
+		ManagedMode:          constants.StoreManagedModeSemi,
+		FallbackToHQ:         true,
+		ManualTimeoutMinutes: DefaultManualTimeoutMinutes,
+		Status:               enums.StatusOk,
+		AuditFields:          arrivalSystemAuditFields(now),
+	}
+	if err := fixture.db.Create(storeStaffBindingB).Error; err != nil {
+		t.Fatal(err)
+	}
 	instanceB := &models.WxWorkProtocolInstance{
 		TenantID:                  fixture.tenantID,
 		Guid:                      "static-arrival-guid-b",
 		ChannelID:                 fixture.instance.ChannelID,
 		EmployeeName:              "静态到店员工 B",
 		StoreID:                   storeB.ID,
+		StoreStaffBindingID:       storeStaffBindingB.ID,
 		DefaultMiniProgramPayload: fixture.instance.DefaultMiniProgramPayload,
 		HealthStatus:              "online",
 		Status:                    enums.StatusOk,
@@ -696,6 +734,7 @@ func TestArrivalCardTicketBindingsRemainIsolatedAcrossStores(t *testing.T) {
 	connectionB := &models.StoreArrivalConnection{
 		TenantID:                 fixture.tenantID,
 		StoreID:                  storeB.ID,
+		StoreStaffBindingID:      storeStaffBindingB.ID,
 		StoreScene:               "arr-test-b",
 		ContactProviderMode:      enums.ArrivalContactProviderModeStaticPluginTicket,
 		StaticContactPlugID:      "plug-real-arrival-b",
@@ -724,6 +763,9 @@ func TestArrivalCardTicketBindingsRemainIsolatedAcrossStores(t *testing.T) {
 	}
 	baseB := fixture.arrivalLinkTestFixture
 	baseB.store = storeB
+	baseB.storeStaffUser = storeStaffUserB
+	baseB.storeStaffBinding = storeStaffBindingB
+	baseB.instance = instanceB
 	baseB.connection = connectionB
 	fixtureB := fixture
 	fixtureB.arrivalLinkTestFixture = baseB
@@ -1142,14 +1184,7 @@ func configureStaticArrivalConnection(
 	fixture arrivalLinkTestFixture,
 ) *models.WxWorkProtocolInstance {
 	t.Helper()
-	instance := &models.WxWorkProtocolInstance{
-		ID:           fixture.connection.WxWorkProtocolInstanceID,
-		TenantID:     fixture.tenantID,
-		Guid:         "static-arrival-guid",
-		ChannelID:    701,
-		EmployeeName: "静态到店员工",
-		StoreID:      fixture.store.ID,
-		DefaultMiniProgramPayload: `{
+	defaultPayload := `{
 			"username":"gh_arrival_test",
 			"appid":"wx-old-template",
 			"appname":"知悉微宝",
@@ -1157,13 +1192,26 @@ func configureStaticArrivalConnection(
 			"thumb_url":"https://example.test/cover.png",
 			"title":"连接门店服务",
 			"page_path":"pages/index/index"
-		}`,
-		HealthStatus: "online",
-		Status:       enums.StatusOk,
-		AuditFields:  arrivalSystemAuditFields(time.Now()),
+		}`
+	if err := repositories.WxWorkProtocolInstanceRepository.UpdatesInTenant(
+		fixture.db,
+		fixture.instance.ID,
+		fixture.tenantID,
+		map[string]any{
+			"guid":                         "static-arrival-guid",
+			"channel_id":                   701,
+			"employee_name":                "静态到店员工",
+			"default_mini_program_payload": defaultPayload,
+			"health_status":                "online",
+			"status":                       enums.StatusOk,
+			"updated_at":                   time.Now(),
+		},
+	); err != nil {
+		t.Fatalf("update static protocol instance: %v", err)
 	}
-	if err := fixture.db.Create(instance).Error; err != nil {
-		t.Fatalf("create static protocol instance: %v", err)
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(fixture.db, fixture.instance.ID, fixture.tenantID)
+	if instance == nil {
+		t.Fatal("static protocol instance missing")
 	}
 	if err := repositories.ArrivalRepository.UpdateConnection(
 		fixture.db,
@@ -1210,26 +1258,32 @@ func createStaticProtocolConversation(
 		t.Fatal(err)
 	}
 	conversation := &models.Conversation{
-		TenantID:      fixture.tenantID,
-		ChannelID:     fixture.instance.ChannelID,
-		CustomerID:    customer.ID,
-		CustomerName:  customerName,
-		Status:        enums.IMConversationStatusActive,
-		ServiceMode:   enums.IMConversationServiceModeAIFirst,
-		LastMessageAt: now,
-		LastActiveAt:  now,
-		AuditFields:   arrivalSystemAuditFields(now),
+		TenantID:            fixture.tenantID,
+		StoreID:             fixture.store.ID,
+		StoreStaffBindingID: fixture.storeStaffBinding.ID,
+		ChannelID:           fixture.instance.ChannelID,
+		CustomerID:          customer.ID,
+		CustomerName:        customerName,
+		Status:              enums.IMConversationStatusActive,
+		ServiceMode:         enums.IMConversationServiceModeAIFirst,
+		LastMessageAt:       now,
+		LastActiveAt:        now,
+		AuditFields:         arrivalSystemAuditFields(now),
 	}
+	threadKey := buildStoreConversationThreadKey(fixture.tenantID, fixture.store.ID, customer.ID, fixture.storeStaffBinding.ID)
+	conversation.ThreadKey = &threadKey
 	if err := fixture.db.Create(conversation).Error; err != nil {
 		t.Fatal(err)
 	}
 	route := &models.ConversationRouteState{
-		TenantID:         fixture.tenantID,
-		ConversationID:   conversation.ID,
-		StoreID:          fixture.store.ID,
-		WxWorkInstanceID: fixture.instance.ID,
-		RouteStatus:      enums.ConversationRouteStatusAIServing,
-		AuditFields:      arrivalSystemAuditFields(now),
+		TenantID:            fixture.tenantID,
+		ConversationID:      conversation.ID,
+		StoreID:             fixture.store.ID,
+		StoreStaffBindingID: fixture.storeStaffBinding.ID,
+		WxWorkInstanceID:    fixture.instance.ID,
+		RouteStatus:         enums.ConversationRouteStatusAIServing,
+		SessionNo:           1,
+		AuditFields:         arrivalSystemAuditFields(now),
 	}
 	if err := fixture.db.Create(route).Error; err != nil {
 		t.Fatal(err)

@@ -34,6 +34,7 @@ type sendMessageOptions struct {
 	skipOutboundMediaValidation bool
 	externalAgentReply          bool
 	systemOutbound              bool
+	sessionNo                   int
 	eventContent                string
 }
 
@@ -178,6 +179,10 @@ func (s *messageService) SendAgentMessageWithRequestID(conversationID int64, req
 }
 
 func (s *messageService) CreateExternalAgentMessageWithoutOutbox(conversationID int64, clientMsgID string, messageType enums.IMMessageType, content, payload string, requestID string) (*models.Message, error) {
+	return s.CreateExternalAgentMessageWithoutOutboxInSession(conversationID, clientMsgID, messageType, content, payload, requestID, 0)
+}
+
+func (s *messageService) CreateExternalAgentMessageWithoutOutboxInSession(conversationID int64, clientMsgID string, messageType enums.IMMessageType, content, payload string, requestID string, sessionNo int) (*models.Message, error) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return nil, errorsx.InvalidParam("会话不存在")
@@ -193,6 +198,7 @@ func (s *messageService) CreateExternalAgentMessageWithoutOutbox(conversationID 
 		skipOutbound:                true,
 		skipOutboundMediaValidation: true,
 		externalAgentReply:          true,
+		sessionNo:                   sessionNo,
 		eventContent:                "企微员工号人工回复",
 	})
 }
@@ -473,6 +479,107 @@ func (s *messageService) SendCustomerMessage(conversationID int64, clientMsgID s
 	return s.SendCustomerMessageWithRequestID(conversationID, clientMsgID, messageType, content, payload, external, "")
 }
 
+func (s *messageService) SendCustomerMessageInSession(conversationID int64, clientMsgID string, messageType enums.IMMessageType, content, payload string, external openidentity.ExternalUser, sessionNo int) (*models.Message, error) {
+	if sessionNo <= 0 {
+		return nil, errorsx.InvalidParam("企微入站消息缺少有效会话段")
+	}
+	if strings.TrimSpace(external.ExternalID) == "" {
+		return nil, errorsx.Unauthorized("外部用户标识不能为空")
+	}
+	if strs.IsBlank(string(messageType)) {
+		messageType = enums.IMMessageTypeText
+	}
+	conversation, err := s.ValidateConversationSender(conversationID, enums.IMSenderTypeCustomer, nil, &external)
+	if err != nil {
+		return nil, err
+	}
+	return s.sendValidatedMessageWithOptions(conversation, enums.IMSenderTypeCustomer, 0, clientMsgID, messageType, content, payload, nil, &external, "", sendMessageOptions{sessionNo: sessionNo})
+}
+
+func (s *messageService) PersistHistoricalCustomerMessageInSession(
+	conversationID int64,
+	clientMsgID string,
+	messageType enums.IMMessageType,
+	content, payload string,
+	external openidentity.ExternalUser,
+	sessionNo int,
+	sentAt time.Time,
+) (*models.Message, error) {
+	if conversationID <= 0 || sessionNo <= 0 {
+		return nil, errorsx.InvalidParam("历史消息缺少有效会话或会话段")
+	}
+	clientMsgID = strings.TrimSpace(clientMsgID)
+	if clientMsgID == "" || strings.TrimSpace(external.ExternalID) == "" {
+		return nil, errorsx.InvalidParam("历史消息缺少稳定外部标识")
+	}
+	if strs.IsBlank(string(messageType)) {
+		messageType = enums.IMMessageTypeText
+	}
+	conversation, err := requireConversationParent(sqls.DB(), conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if !ConversationService.IsCustomerConversationOwner(conversation, external) {
+		return nil, errorsx.Forbidden("历史消息客户身份与原会话不一致")
+	}
+	session := repositories.ConversationChannelSessionRepository.TakeByConversationSession(
+		sqls.DB(), conversation.TenantID, conversation.ID, sessionNo,
+	)
+	if session == nil || session.StoreID != conversation.StoreID || session.StoreStaffBindingID != conversation.StoreStaffBindingID {
+		return nil, errorsx.InvalidParam("历史消息会话段与原会话范围不一致")
+	}
+	content, payload, _, err = s.normalizeMessageContent(conversation.ID, messageType, content, payload)
+	if err != nil {
+		return nil, err
+	}
+	if strs.IsBlank(content) && strs.IsBlank(payload) {
+		return nil, errorsx.InvalidParam("历史消息内容不能为空")
+	}
+	now := time.Now()
+	if sentAt.IsZero() {
+		sentAt = now
+	}
+	var result *models.Message
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedConversation, lockErr := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
+		if lockErr != nil {
+			return lockErr
+		}
+		if lockedConversation == nil || lockedConversation.StoreID != conversation.StoreID || lockedConversation.StoreStaffBindingID != conversation.StoreStaffBindingID || lockedConversation.CustomerID != conversation.CustomerID {
+			return errorsx.InvalidParam("历史消息原会话范围已变化")
+		}
+		lockedSession, lockErr := repositories.ConversationChannelSessionRepository.GetForUpdateByConversationSession(ctx.Tx, conversation.TenantID, conversation.ID, sessionNo)
+		if lockErr != nil {
+			return lockErr
+		}
+		if lockedSession == nil || lockedSession.StoreID != conversation.StoreID || lockedSession.StoreStaffBindingID != conversation.StoreStaffBindingID {
+			return errorsx.InvalidParam("历史消息原会话段已变化")
+		}
+		if existing := repositories.MessageRepository.GetByClientMsgIDInTenant(ctx.Tx, conversation.ID, conversation.TenantID, clientMsgID); existing != nil {
+			result = existing
+			return nil
+		}
+		message := &models.Message{
+			TenantID: conversation.TenantID, ConversationID: conversation.ID,
+			SessionNo: sessionNo, HistoricalOnly: true, ClientMsgID: clientMsgID,
+			SenderType: enums.IMSenderTypeCustomer, MessageType: messageType,
+			Content: content, Payload: payload,
+			SeqNo:      repositories.MessageRepository.NextSeqNoInTenant(ctx.Tx, conversation.ID, conversation.TenantID),
+			SendStatus: enums.IMMessageStatusSent, SentAt: &sentAt,
+			AuditFields: models.AuditFields{
+				CreatedAt: now, CreateUserName: displayExternalName(&external),
+				UpdatedAt: now, UpdateUserName: displayExternalName(&external),
+			},
+		}
+		if createErr := repositories.MessageRepository.Create(ctx.Tx, message); createErr != nil {
+			return createErr
+		}
+		result = message
+		return nil
+	})
+	return result, err
+}
+
 func (s *messageService) SendCustomerMessageWithRequestID(conversationID int64, clientMsgID string, messageType enums.IMMessageType, content, payload string, external openidentity.ExternalUser, requestID string) (*models.Message, error) {
 	ext := external
 	return s.sendMessage(conversationID, enums.IMSenderTypeCustomer, 0, clientMsgID, messageType, content, payload, nil, &ext, requestID)
@@ -530,6 +637,11 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 			return existing, nil
 		}
 	}
+	if !options.skipOutbound && senderType != enums.IMSenderTypeCustomer {
+		if err := WxWorkProtocolService.RequireConversationOutboundRoute(sqls.DB(), conversation); err != nil {
+			return nil, err
+		}
+	}
 
 	var (
 		now           = time.Now()
@@ -539,7 +651,9 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		nextSeq       = repositories.MessageRepository.NextSeqNoInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
 		sessionNo     = ConversationRouteService.CurrentSessionNo(conversation.ID)
 	)
-	if senderType == enums.IMSenderTypeCustomer {
+	if options.sessionNo > 0 {
+		sessionNo = options.sessionNo
+	} else if senderType == enums.IMSenderTypeCustomer {
 		if nextSessionNo, sessionErr := ConversationRouteService.EnsureActiveSessionForCustomerMessage(conversation, now); sessionErr == nil {
 			sessionNo = nextSessionNo
 		} else {

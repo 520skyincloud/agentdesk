@@ -37,6 +37,8 @@ func TestWxWorkProtocolRemoteSetupBindsExistingStoreStaffWithoutCreatingAccount(
 	if err := db.Create(&models.UserRole{UserID: user.ID, RoleID: role.ID}).Error; err != nil {
 		t.Fatalf("assign store staff role: %v", err)
 	}
+	store := createStoreStaffTenantStore(t, db, 101, "合成验收酒店测试门店")
+	binding := createStoreStaffTenantBinding(t, db, 101, user.ID, 0, store.ID)
 	if err := db.Create(&models.Channel{ID: 22, TenantID: 101, ChannelType: enums.ChannelTypeWxWorkProtocol, Name: "协议渠道", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
@@ -54,7 +56,7 @@ func TestWxWorkProtocolRemoteSetupBindsExistingStoreStaffWithoutCreatingAccount(
 	if err != nil {
 		t.Fatalf("CreateRemoteSetupInstance() error = %v", err)
 	}
-	if instance.TenantID != 101 || instance.StoreID <= 0 || instance.StoreStaffBindingID <= 0 {
+	if instance.TenantID != 101 || instance.StoreID != store.ID || instance.StoreStaffBindingID != binding.ID {
 		t.Fatalf("expected tenant/store/binding, got %#v", instance)
 	}
 	if _, err := EmailVerificationService.SendCode(context.Background(), EmailVerificationPurposeRemoteSetup, "owner@example.com", instance.RemoteSetupToken, "127.0.0.1", "test"); err != nil {
@@ -85,16 +87,16 @@ func TestWxWorkProtocolRemoteSetupBindsExistingStoreStaffWithoutCreatingAccount(
 	if updated.StoreID != instance.StoreID || updated.StoreStaffBindingID != instance.StoreStaffBindingID {
 		t.Fatalf("stable store binding changed during completion: %#v", updated)
 	}
-	store := StoreService.Get(updated.StoreID)
-	if store == nil {
-		t.Fatalf("expected generated store")
+	currentStore := StoreService.Get(updated.StoreID)
+	if currentStore == nil {
+		t.Fatalf("expected selected store")
 	}
-	if store.TenantID != 101 || store.Name != "合成验收酒店测试门店" {
-		t.Fatalf("unexpected generated store: %#v", store)
+	if currentStore.TenantID != 101 || currentStore.ID != store.ID || currentStore.Name != "合成验收酒店测试门店" {
+		t.Fatalf("unexpected selected store: %#v", currentStore)
 	}
-	binding := StoreStaffBindingService.GetInTenant(updated.StoreStaffBindingID, 101)
-	if binding == nil || binding.UserID != user.ID || binding.StoreID != store.ID {
-		t.Fatalf("unexpected store staff binding: %#v", binding)
+	currentBinding := StoreStaffBindingService.GetInTenant(updated.StoreStaffBindingID, 101)
+	if currentBinding == nil || currentBinding.ID != binding.ID || currentBinding.UserID != user.ID || currentBinding.StoreID != store.ID {
+		t.Fatalf("unexpected store staff binding: %#v", currentBinding)
 	}
 	verifiedUser := UserService.GetByTenantID(user.ID, 101)
 	if verifiedUser == nil || verifiedUser.EmailVerifiedAt == nil {
@@ -174,15 +176,21 @@ func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing
 		t.Fatalf("create new knowledge base: %v", err)
 	}
 	if err := sqls.DB().Create(&models.WxWorkProtocolInstance{
-		ID:                  7,
-		TenantID:            101,
-		Guid:                "guid-route-sync",
-		ChannelID:           22,
-		EmployeeName:        "吴朝伟",
-		StoreID:             31,
-		StoreStaffBindingID: binding.ID,
-		KnowledgeBaseID:     101,
-		Status:              enums.StatusOk,
+		ID:                      7,
+		TenantID:                101,
+		Guid:                    "guid-route-sync",
+		ChannelID:               22,
+		EmployeeName:            "吴朝伟",
+		StoreID:                 31,
+		StoreStaffBindingID:     binding.ID,
+		KnowledgeBaseID:         101,
+		ServiceHours:            "legacy-hours",
+		StoreRoomConversationID: "R:legacy-room",
+		StoreRoomNotifyEnabled:  false,
+		StoreRoomAtList:         "legacy-user",
+		FallbackToHQ:            true,
+		ManualTimeoutMinutes:    7,
+		Status:                  enums.StatusOk,
 	}).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
@@ -200,10 +208,17 @@ func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing
 	}
 
 	if err := WxWorkProtocolInstanceService.UpdateAISettings(request.UpdateWxWorkProtocolAISettingsRequest{
-		ID:              7,
-		AIReplyEnabled:  true,
-		StoreID:         31,
-		KnowledgeBaseID: 202,
+		ID:                      7,
+		AIReplyEnabled:          true,
+		StoreID:                 31,
+		KnowledgeBaseID:         202,
+		ManagedMode:             constants.StoreManagedModeFull,
+		ServiceHours:            "08:00-22:00",
+		StoreRoomConversationID: "R:new-room",
+		StoreRoomNotifyEnabled:  true,
+		StoreRoomAtList:         "new-user",
+		FallbackToHQ:            false,
+		ManualTimeoutMinutes:    18,
 	}, operator); err != nil {
 		t.Fatalf("UpdateAISettings() error = %v", err)
 	}
@@ -217,6 +232,110 @@ func TestWxWorkProtocolAISettingsSyncsExistingRouteStateKnowledgeBase(t *testing
 	}
 	if state.UpdateUserName != "admin" {
 		t.Fatalf("expected route state audit user admin, got %q", state.UpdateUserName)
+	}
+	currentBinding := StoreStaffBindingService.GetInTenant(binding.ID, 101)
+	if currentBinding == nil || currentBinding.ManagedMode != constants.StoreManagedModeFull || currentBinding.ServiceHours != "08:00-22:00" ||
+		currentBinding.StoreRoomConversationID != "R:new-room" || !currentBinding.StoreRoomNotifyEnabled || currentBinding.StoreRoomAtList != "new-user" ||
+		currentBinding.FallbackToHQ || currentBinding.ManualTimeoutMinutes != 18 {
+		t.Fatalf("binding runtime facts were not updated: %#v", currentBinding)
+	}
+	currentInstance := WxWorkProtocolInstanceService.GetByTenantID(7, 101)
+	if currentInstance == nil || currentInstance.ServiceHours != "legacy-hours" || currentInstance.StoreRoomConversationID != "R:legacy-room" ||
+		currentInstance.StoreRoomNotifyEnabled || currentInstance.StoreRoomAtList != "legacy-user" || !currentInstance.FallbackToHQ || currentInstance.ManualTimeoutMinutes != 7 {
+		t.Fatalf("legacy instance runtime projection was unexpectedly rewritten: %#v", currentInstance)
+	}
+}
+
+func TestStoreRuntimeProjectionUsesIndependentStoreWithoutMutatingInstance(t *testing.T) {
+	db := setupWxWorkProtocolInstanceStoreTestDB(t)
+	store := &models.Store{
+		TenantID: 101, StoreCode: "runtime-store", Name: "运行时门店",
+		Address: "新地址", NavigationName: "新导航名", Longitude: "117.1", Latitude: "31.8",
+		MapProvider: "amap", ContactPhone: "0551-12345678", KnowledgeBaseID: 88,
+		Status: enums.StatusOk,
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create runtime Store: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID: 101, StoreID: store.ID,
+		StoreAddress: "旧地址", StoreNavigationName: "旧导航名",
+		StoreLongitude: "1", StoreLatitude: "2", StoreMapProvider: "legacy",
+		StoreContactPhone: "旧电话", KnowledgeBaseID: 7,
+	}
+
+	runtimeInstance, err := StoreService.HydrateRuntimeInstanceDB(db, instance)
+	if err != nil {
+		t.Fatalf("HydrateRuntimeInstanceDB() error = %v", err)
+	}
+	if runtimeInstance.StoreAddress != store.Address ||
+		runtimeInstance.StoreNavigationName != store.NavigationName ||
+		runtimeInstance.StoreLongitude != store.Longitude ||
+		runtimeInstance.StoreLatitude != store.Latitude ||
+		runtimeInstance.StoreMapProvider != store.MapProvider ||
+		runtimeInstance.StoreContactPhone != store.ContactPhone ||
+		runtimeInstance.KnowledgeBaseID != store.KnowledgeBaseID {
+		t.Fatalf("runtime Store projection mismatch: %#v", runtimeInstance)
+	}
+	if instance.StoreAddress != "旧地址" || instance.KnowledgeBaseID != 7 {
+		t.Fatalf("runtime projection mutated persisted instance snapshot: %#v", instance)
+	}
+	if err := db.Model(&models.Store{}).Where("id = ?", store.ID).
+		Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable runtime Store: %v", err)
+	}
+	if _, err := StoreService.HydrateRuntimeInstanceDB(db, instance); err == nil {
+		t.Fatalf("disabled Store must not supply runtime facts")
+	}
+}
+
+func TestRequireStoreKnowledgeRejectsDisabledStoreOrBinding(t *testing.T) {
+	db := setupWxWorkProtocolInstanceStoreTestDB(t)
+	user := &models.User{TenantID: 101, Username: "runtime-knowledge-owner", Password: "test", Status: enums.StatusOk}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("create runtime owner: %v", err)
+	}
+	store := &models.Store{
+		TenantID: 101, StoreCode: "runtime-knowledge", Name: "运行时知识门店",
+		KnowledgeBaseID: 88, Status: enums.StatusOk,
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create runtime Store: %v", err)
+	}
+	if err := db.Create(&models.KnowledgeBase{
+		ID: 88, TenantID: 101, StoreID: store.ID, Name: "运行时知识库", Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create runtime knowledge base: %v", err)
+	}
+	binding := &models.StoreStaffBinding{
+		TenantID: 101, UserID: user.ID, ActiveUserID: positiveInt64Pointer(user.ID),
+		StoreID: store.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create runtime binding: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID: 101, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		Status: enums.StatusOk,
+	}
+
+	if gotStoreID, gotKnowledgeID, err := WxWorkProtocolInstanceService.RequireStoreKnowledge(instance); err != nil || gotStoreID != store.ID || gotKnowledgeID != 88 {
+		t.Fatalf("active runtime knowledge = (%d,%d,%v)", gotStoreID, gotKnowledgeID, err)
+	}
+	if err := db.Model(&models.StoreStaffBinding{}).Where("id = ?", binding.ID).Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable binding: %v", err)
+	}
+	if _, _, err := WxWorkProtocolInstanceService.RequireStoreKnowledge(instance); err == nil {
+		t.Fatal("disabled Store staff binding must not use Store knowledge")
+	}
+	if err := db.Model(&models.StoreStaffBinding{}).Where("id = ?", binding.ID).Update("status", enums.StatusOk).Error; err != nil {
+		t.Fatalf("restore binding: %v", err)
+	}
+	if err := db.Model(&models.Store{}).Where("id = ?", store.ID).Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable Store: %v", err)
+	}
+	if _, _, err := WxWorkProtocolInstanceService.RequireStoreKnowledge(instance); err == nil {
+		t.Fatal("disabled Store must not use Store knowledge")
 	}
 }
 

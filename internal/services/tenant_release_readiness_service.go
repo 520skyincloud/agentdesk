@@ -239,20 +239,30 @@ func (s *tenantReleaseReadinessService) Audit(
 	if err != nil {
 		return nil, fmt.Errorf("read Store account readiness failed: %w", err)
 	}
-	accountByStore := make(map[int64]repositories.TenantReleaseReadinessStoreAccountState, len(accountStates))
+	accountByBinding := make(map[int64]repositories.TenantReleaseReadinessStoreAccountState, len(accountStates))
+	accountsByStore := make(map[int64][]repositories.TenantReleaseReadinessStoreAccountState, len(storeIDs))
 	for _, state := range accountStates {
-		accountByStore[state.StoreID] = state
+		accountByBinding[state.StoreStaffBindingID] = state
+		accountsByStore[state.StoreID] = append(accountsByStore[state.StoreID], state)
 	}
 	accountFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
-		state := accountByStore[storeID]
-		return state.ActiveBindingCount == 1 && state.ReadyAccountCount == 1
+		accounts := accountsByStore[storeID]
+		if len(accounts) == 0 {
+			return false
+		}
+		for _, account := range accounts {
+			if account.StoreStaffBindingID <= 0 || account.UserID <= 0 || account.AccountReady != 1 {
+				return false
+			}
+		}
+		return true
 	})
 	report.addStoreCheck(
 		"store.system_account",
 		storeIDs,
 		accountFailures,
 		options.SampleLimit,
-		"门店必须且只能绑定一个已审核、已启用并已分配客服组的系统门店员工账号",
+		"门店至少需要一个有效员工号，且每个有效绑定都必须对应已审核、已启用并已分配客服组的账号",
 	)
 
 	wxWorkProtocolStates, err := repositories.TenantReleaseReadinessRepository.FindWxWorkProtocolStates(
@@ -263,23 +273,40 @@ func (s *tenantReleaseReadinessService) Audit(
 	if err != nil {
 		return nil, fmt.Errorf("read Store WxWork protocol readiness failed: %w", err)
 	}
-	wxWorkProtocolByStore := make(
+	wxWorkProtocolByBinding := make(
 		map[int64]repositories.TenantReleaseReadinessWxWorkProtocolState,
 		len(wxWorkProtocolStates),
 	)
 	for _, state := range wxWorkProtocolStates {
-		wxWorkProtocolByStore[state.StoreID] = state
+		wxWorkProtocolByBinding[state.StoreStaffBindingID] = state
 	}
 	wxWorkProtocolFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
-		state := wxWorkProtocolByStore[storeID]
-		return state.ActiveCount == 1 && state.ReadyChannelCount == 1
+		accounts := accountsByStore[storeID]
+		if len(accounts) == 0 {
+			return false
+		}
+		for _, account := range accounts {
+			state, exists := wxWorkProtocolByBinding[account.StoreStaffBindingID]
+			if !exists || state.StoreID != storeID || state.ActiveCount != 1 || state.ReadyChannelCount != 1 {
+				return false
+			}
+		}
+		for _, state := range wxWorkProtocolStates {
+			if state.StoreID != storeID {
+				continue
+			}
+			if account, exists := accountByBinding[state.StoreStaffBindingID]; !exists || account.StoreID != storeID {
+				return false
+			}
+		}
+		return true
 	})
 	report.addStoreCheck(
 		"store.wxwork_protocol",
 		storeIDs,
 		wxWorkProtocolFailures,
 		options.SampleLimit,
-		"门店必须且只能有一个当前启用的企微员工号实例，并与当前门店员工绑定及启用的企微协议渠道一致",
+		"每个有效门店员工绑定必须且只能有一个当前在线企微实例，且不得存在重复或孤立实例",
 	)
 
 	assignments := repositories.StoreModelProfileAssignmentRepository.FindByTenant(db, tenant.ID)
@@ -342,35 +369,41 @@ func (s *tenantReleaseReadinessService) Audit(
 	if err != nil {
 		return nil, fmt.Errorf("read Store credential readiness failed: %w", err)
 	}
-	credentialByStore := make(map[int64]repositories.TenantReleaseReadinessCredentialState, len(credentialStates))
+	credentialByBinding := make(map[int64]repositories.TenantReleaseReadinessCredentialState, len(credentialStates))
 	for _, state := range credentialStates {
-		credentialByStore[state.StoreID] = state
+		credentialByBinding[state.StoreStaffBindingID] = state
 	}
 	credentialFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
-		state, exists := credentialByStore[storeID]
-		return exists &&
-			state.Status == enums.StoreCredentialStatusActive &&
-			state.CredentialRevision > 0 &&
-			state.HasActiveEncryptedKey == 1 &&
-			strings.EqualFold(strings.TrimSpace(state.LastTestStatus), "passed") &&
-			state.LastTestedAt != nil &&
-			strings.EqualFold(strings.TrimSpace(state.LastFastGPTSyncStatus), storeCredentialFastGPTStatusReady) &&
-			state.LastFastGPTSyncedAt != nil
+		accounts := accountsByStore[storeID]
+		if len(accounts) == 0 {
+			return false
+		}
+		for _, account := range accounts {
+			state, exists := credentialByBinding[account.StoreStaffBindingID]
+			if !exists || state.StoreID != storeID ||
+				state.Status != enums.StoreCredentialStatusActive ||
+				state.CredentialRevision <= 0 ||
+				state.HasActiveEncryptedKey != 1 ||
+				!strings.EqualFold(strings.TrimSpace(state.LastTestStatus), "passed") ||
+				state.LastTestedAt == nil {
+				return false
+			}
+		}
+		return true
 	})
 	report.addStoreCheck(
 		"store.credential",
 		storeIDs,
 		credentialFailures,
 		options.SampleLimit,
-		"门店缺少已测试、已同步 FastGPT 且已激活的加密 NewAPI Credential",
+		"门店每个有效员工绑定都必须拥有已测试且已激活的加密 NewAPI Credential",
 	)
 	profileTestFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
 		assignment, assignmentExists := assignmentByStore[storeID]
-		credential, credentialExists := credentialByStore[storeID]
-		if !assignmentExists || !credentialExists ||
+		accounts := accountsByStore[storeID]
+		if !assignmentExists || len(accounts) == 0 ||
 			assignment.TemplateID <= 0 ||
-			assignment.TemplateRevision <= 0 ||
-			credential.CredentialRevision <= 0 {
+			assignment.TemplateRevision <= 0 {
 			return false
 		}
 		template := repositories.ModelProfileTemplateRepository.Get(db, assignment.TemplateID)
@@ -379,22 +412,30 @@ func (s *tenantReleaseReadinessService) Audit(
 			return false
 		}
 		digest := modelProfileConfigurationDigest(template, slots)
-		return repositories.ModelProfileTestRunRepository.FindLatestPassedForStore(
-			db,
-			template.ID,
-			template.Revision,
-			tenant.ID,
-			storeID,
-			credential.CredentialRevision,
-			digest,
-		) != nil
+		for _, account := range accounts {
+			credential, exists := credentialByBinding[account.StoreStaffBindingID]
+			if !exists || credential.CredentialRevision <= 0 ||
+				repositories.ModelProfileTestRunRepository.FindLatestPassedForBinding(
+					db,
+					template.ID,
+					template.Revision,
+					tenant.ID,
+					storeID,
+					account.StoreStaffBindingID,
+					credential.CredentialRevision,
+					digest,
+				) == nil {
+				return false
+			}
+		}
+		return true
 	})
 	report.addStoreCheck(
 		"store.model_profile_test_evidence",
 		storeIDs,
 		profileTestFailures,
 		options.SampleLimit,
-		"门店当前 Profile 配置摘要与 Credential revision 缺少不可变九槽通过证据",
+		"门店当前 Profile 配置摘要与任一有效员工号 Credential revision 缺少不可变九槽通过证据",
 	)
 	if options.Level == TenantReleaseReadinessPilot || options.Level == TenantReleaseReadinessTagGray {
 		policies := repositories.StoreCredentialPolicyRepository.FindByTenant(db, tenant.ID)
@@ -416,23 +457,29 @@ func (s *tenantReleaseReadinessService) Audit(
 			storeIDs,
 			policyFailures,
 			options.SampleLimit,
-			"真实灰度门店必须允许唯一门店员工自助录入，并强制公司主管异人审批",
+			"真实灰度门店必须允许有权限的绑定员工录入自身凭据，并强制公司主管异人审批",
 		)
 
 		approvalAudit, auditErr := repositories.TenantReleaseReadinessRepository.FindCredentialApprovalAuditStates(db, tenant.ID, storeIDs)
 		if auditErr != nil {
 			return nil, fmt.Errorf("read Store credential approval evidence failed: %w", auditErr)
 		}
-		approvalReady := tenantReleaseCredentialApprovalReadiness(approvalAudit, accountByStore)
+		approvalReady := tenantReleaseCredentialApprovalReadiness(approvalAudit, accountByBinding)
 		approvalFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
-			credential, exists := credentialByStore[storeID]
-			if !exists || credential.CredentialRevision <= 0 {
+			accounts := accountsByStore[storeID]
+			if len(accounts) == 0 {
 				return false
 			}
-			return approvalReady[tenantReleaseCredentialRevisionKey{
-				StoreID:  storeID,
-				Revision: credential.CredentialRevision,
-			}]
+			for _, account := range accounts {
+				credential, exists := credentialByBinding[account.StoreStaffBindingID]
+				if !exists || credential.CredentialRevision <= 0 || !approvalReady[tenantReleaseCredentialRevisionKey{
+					StoreID: storeID, StoreStaffBindingID: account.StoreStaffBindingID,
+					Revision: credential.CredentialRevision,
+				}] {
+					return false
+				}
+			}
+			return true
 		})
 		report.addStoreCheck(
 			"evidence.credential_supervisor_approval",
@@ -466,13 +513,20 @@ func (s *tenantReleaseReadinessService) Audit(
 	fastGPTFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
 		store := storeByID[storeID]
 		assignment, assignmentExists := assignmentByStore[storeID]
-		credential, credentialExists := credentialByStore[storeID]
 		fastGPT, fastGPTExists := fastGPTByStore[storeID]
 		knowledge, knowledgeExists := knowledgeByID[store.KnowledgeBaseID]
+		ownerBindingID := fastGPT.AppliedStoreStaffBindingID
+		ownerAccount, ownerAccountExists := accountByBinding[ownerBindingID]
+		credential, credentialExists := credentialByBinding[ownerBindingID]
 		return assignmentExists &&
 			credentialExists &&
 			fastGPTExists &&
 			knowledgeExists &&
+			ownerBindingID > 0 &&
+			ownerAccountExists &&
+			ownerAccount.StoreID == storeID &&
+			ownerAccount.AccountReady == 1 &&
+			fastGPT.TargetStoreStaffBindingID == ownerBindingID &&
 			store.KnowledgeBaseID > 0 &&
 			knowledge.StoreID == storeID &&
 			knowledge.Status == enums.StatusOk &&
@@ -481,7 +535,10 @@ func (s *tenantReleaseReadinessService) Audit(
 			knowledge.FastGPTProfileReady == 1 &&
 			knowledge.FastGPTAppliedProfileID == assignment.TemplateID &&
 			knowledge.FastGPTAppliedProfileRevision == assignment.TemplateRevision &&
+			knowledge.FastGPTAppliedStoreStaffBindingID == ownerBindingID &&
 			knowledge.FastGPTAppliedCredentialRevision == credential.CredentialRevision &&
+			strings.EqualFold(strings.TrimSpace(credential.LastFastGPTSyncStatus), storeCredentialFastGPTStatusReady) &&
+			credential.LastFastGPTSyncedAt != nil &&
 			fastGPT.HasTenantTeam == 1 &&
 			strings.EqualFold(strings.TrimSpace(fastGPT.Status), "active") &&
 			strings.EqualFold(strings.TrimSpace(fastGPT.ReadinessStatus), "ready") &&
@@ -498,7 +555,7 @@ func (s *tenantReleaseReadinessService) Audit(
 		storeIDs,
 		fastGPTFailures,
 		options.SampleLimit,
-		"门店 FastGPT Team、Dataset 或已应用 Profile/Credential revision 未达到 ready",
+		"门店 FastGPT Team、Dataset、凭据所有者或已应用 Profile/Credential revision 未达到 ready",
 	)
 
 	runtimePolicies, err := repositories.StoreCustomerTagRuntimePolicyRepository.FindByStores(db, tenant.ID, storeIDs)
@@ -641,8 +698,9 @@ func (s *tenantReleaseReadinessService) Audit(
 }
 
 type tenantReleaseCredentialRevisionKey struct {
-	StoreID  int64
-	Revision int64
+	StoreID             int64
+	StoreStaffBindingID int64
+	Revision            int64
 }
 
 type tenantReleaseCredentialSubmission struct {
@@ -652,23 +710,25 @@ type tenantReleaseCredentialSubmission struct {
 
 func tenantReleaseCredentialApprovalReadiness(
 	items []repositories.TenantReleaseReadinessCredentialAuditState,
-	accountByStore map[int64]repositories.TenantReleaseReadinessStoreAccountState,
+	accountByBinding map[int64]repositories.TenantReleaseReadinessStoreAccountState,
 ) map[tenantReleaseCredentialRevisionKey]bool {
 	submissions := make(map[tenantReleaseCredentialRevisionKey][]tenantReleaseCredentialSubmission)
 	ret := make(map[tenantReleaseCredentialRevisionKey]bool)
 	for _, item := range items {
-		if item.StoreID <= 0 || item.ToRevision <= 0 {
+		if item.StoreID <= 0 || item.StoreStaffBindingID <= 0 || item.ToRevision <= 0 {
 			continue
 		}
-		key := tenantReleaseCredentialRevisionKey{StoreID: item.StoreID, Revision: item.ToRevision}
+		key := tenantReleaseCredentialRevisionKey{
+			StoreID: item.StoreID, StoreStaffBindingID: item.StoreStaffBindingID, Revision: item.ToRevision,
+		}
 		switch item.Action {
 		case enums.CredentialAuditActionSubmit:
-			account, accountReady := accountByStore[item.StoreID]
+			account, accountReady := accountByBinding[item.StoreStaffBindingID]
 			if !accountReady ||
-				account.ActiveBindingCount != 1 ||
-				account.ReadyAccountCount != 1 ||
-				account.ActiveUserID <= 0 ||
-				item.OperatorID != account.ActiveUserID ||
+				account.StoreID != item.StoreID ||
+				account.AccountReady != 1 ||
+				account.UserID <= 0 ||
+				item.OperatorID != account.UserID ||
 				!tenantReleaseRoleSnapshotContains(item.OperatorRole, constants.RoleCodeStoreStaff) ||
 				(item.Result != enums.CredentialAuditResultPending && item.Result != enums.CredentialAuditResultSuccess) {
 				continue

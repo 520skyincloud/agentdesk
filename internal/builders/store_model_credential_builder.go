@@ -15,14 +15,21 @@ func BuildStoreModelCredential(data *services.StoreModelCredentialData) *respons
 		return nil
 	}
 	ret := &response.StoreModelCredentialResponse{
-		TenantID:          data.Store.TenantID,
-		StoreID:           data.Store.ID,
-		StoreCode:         data.Store.StoreCode,
-		StoreName:         data.Store.Name,
-		CredentialStatus:  string(enums.StoreCredentialStatusUnconfigured),
-		ActiveModelNames:  storeCredentialModelNames(data.ActiveSlots),
-		PendingModelNames: storeCredentialModelNames(data.PendingSlots),
-		CanSelfService:    data.CanSelfService,
+		TenantID: data.Store.TenantID,
+		StoreID:  data.Store.ID,
+		StoreStaffBindingID: func() int64 {
+			if data.Binding == nil {
+				return 0
+			}
+			return data.Binding.ID
+		}(),
+		StoreStaffAccountName: data.BindingAccountName,
+		StoreCode:             data.Store.StoreCode,
+		StoreName:             data.Store.Name,
+		CredentialStatus:      string(enums.StoreCredentialStatusUnconfigured),
+		ActiveModelNames:      storeCredentialModelNames(data.ActiveSlots),
+		PendingModelNames:     storeCredentialModelNames(data.PendingSlots),
+		CanSelfService:        data.CanSelfService,
 	}
 	if data.Assignment != nil {
 		ret.ActiveProfileID = data.Assignment.TemplateID

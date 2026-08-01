@@ -12,6 +12,7 @@ import (
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
 	fastgptapi "agent-desk/internal/pkg/fastgpt"
+	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
@@ -146,6 +147,32 @@ func TestTenantReleaseReadinessRequiresCurrentModelProfileTestEvidence(t *testin
 	}
 }
 
+func TestTenantReleaseReadinessIgnoresPendingReplacementDraft(t *testing.T) {
+	fixture := newTenantReleaseReadinessFixture(t)
+	draft := models.WxWorkProtocolInstance{
+		TenantID: fixture.tenant.ID, Guid: "release-readiness-pending-replacement",
+		ChannelID: fixture.channel.ID, AgentTeamID: fixture.binding.AgentTeamID,
+		StoreID: fixture.store.ID, StoreStaffBindingID: fixture.binding.ID,
+		EmployeeUserID: "pending-replacement", EmployeeName: "Pending replacement",
+		ReplacesInstanceID: fixture.wxWork.ID, HealthStatus: "online", Status: enums.StatusOk,
+		AuditFields: tenantReleaseReadinessAuditFields(fixture.now),
+	}
+	if err := fixture.db.Create(&draft).Error; err != nil {
+		t.Fatalf("create pending replacement draft: %v", err)
+	}
+
+	report := fixture.audit(t, TenantReleaseReadinessConfiguration, nil)
+	assertTenantReleaseReadinessPassed(t, report)
+	instanceCounts := repositories.StoreRepository.CountCurrentInstancesByStoreIDs(
+		fixture.db,
+		fixture.tenant.ID,
+		[]int64{fixture.store.ID},
+	)
+	if instanceCounts[fixture.store.ID] != 1 {
+		t.Fatalf("pending replacement counted as current instance: %v", instanceCounts)
+	}
+}
+
 func TestTenantReleaseReadinessRejectsFutureOrMissingPilotEvidenceWindow(t *testing.T) {
 	fixture := newTenantReleaseReadinessFixture(t)
 	_, err := TenantReleaseReadinessService.Audit(fixture.db, TenantReleaseReadinessOptions{
@@ -166,7 +193,7 @@ func TestTenantReleaseReadinessRejectsFutureOrMissingPilotEvidenceWindow(t *test
 	}
 }
 
-func TestTenantReleaseReadinessRequiresUniqueStoreAccountAndSupervisorApprovalEvidence(t *testing.T) {
+func TestTenantReleaseReadinessRequiresReadyStoreBindingAndSupervisorApprovalEvidence(t *testing.T) {
 	fixture := newTenantReleaseReadinessFixture(t)
 	evidenceStart := fixture.now.Add(-10 * time.Minute)
 	fixture.seedPilotEvidence(t, evidenceStart)
@@ -254,6 +281,127 @@ func TestTenantReleaseReadinessRequiresUniqueStoreAccountAndSupervisorApprovalEv
 	approvalReport := fixture.audit(t, TenantReleaseReadinessPilot, &evidenceStart)
 	if !tenantReleaseReadinessHasViolation(approvalReport, "EVIDENCE_CREDENTIAL_SUPERVISOR_APPROVAL") {
 		t.Fatalf("pilot without company-supervisor audit evidence must fail: %#v", approvalReport.Violations)
+	}
+}
+
+func TestTenantReleaseReadinessSupportsMultipleReadyStoreBindings(t *testing.T) {
+	fixture := newTenantReleaseReadinessFixture(t)
+	second := fixture.seedReadyStoreBinding(t, "second")
+
+	assertTenantReleaseReadinessPassed(t, fixture.audit(t, TenantReleaseReadinessConfiguration, nil))
+
+	if err := fixture.db.Where("store_staff_binding_id = ?", second.binding.ID).
+		Delete(&models.ModelProfileTestRun{}).Error; err != nil {
+		t.Fatalf("delete second binding Profile evidence: %v", err)
+	}
+	missingEvidence := fixture.audit(t, TenantReleaseReadinessConfiguration, nil)
+	if !tenantReleaseReadinessHasViolation(missingEvidence, "STORE_MODEL_PROFILE_TEST_EVIDENCE") {
+		t.Fatalf("every active binding must have its own Profile evidence: %#v", missingEvidence.Violations)
+	}
+	second.seedProfileEvidence(t, fixture)
+
+	duplicate := second.instance
+	duplicate.ID = 0
+	duplicate.Guid = "readiness-wxwork-guid-second-duplicate"
+	duplicate.EmployeeUserID = "168-readiness-second-duplicate"
+	duplicate.ReplacesInstanceID = 0
+	duplicate.ReplacedByInstanceID = 0
+	if err := fixture.db.Create(&duplicate).Error; err != nil {
+		t.Fatalf("create duplicate current WxWork instance: %v", err)
+	}
+	duplicateReport := fixture.audit(t, TenantReleaseReadinessConfiguration, nil)
+	if !tenantReleaseReadinessHasViolation(duplicateReport, "STORE_WXWORK_PROTOCOL") {
+		t.Fatalf("two current instances for one binding must fail: %#v", duplicateReport.Violations)
+	}
+	if err := fixture.db.Model(&models.WxWorkProtocolInstance{}).Where("id = ?", duplicate.ID).
+		Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable duplicate current WxWork instance: %v", err)
+	}
+
+	orphan := second.instance
+	orphan.ID = 0
+	orphan.Guid = "readiness-wxwork-guid-orphan"
+	orphan.EmployeeUserID = "168-readiness-orphan"
+	orphan.StoreStaffBindingID = second.binding.ID + 100000
+	orphan.ReplacesInstanceID = 0
+	orphan.ReplacedByInstanceID = 0
+	if err := fixture.db.Create(&orphan).Error; err != nil {
+		t.Fatalf("create orphan current WxWork instance: %v", err)
+	}
+	orphanReport := fixture.audit(t, TenantReleaseReadinessConfiguration, nil)
+	if !tenantReleaseReadinessHasViolation(orphanReport, "STORE_WXWORK_PROTOCOL") {
+		t.Fatalf("orphan current instance must fail: %#v", orphanReport.Violations)
+	}
+}
+
+func TestTenantReleaseReadinessEvidenceIsScopedToOneStoreStaffBinding(t *testing.T) {
+	fixture := newTenantReleaseReadinessFixture(t)
+	evidenceStart := fixture.now.Add(-10 * time.Minute)
+	fixture.seedPilotEvidence(t, evidenceStart)
+	second := fixture.seedReadyStoreBinding(t, "evidence-scope")
+
+	evidence, err := repositories.TenantReleaseReadinessRepository.FindEvidence(
+		fixture.db,
+		fixture.tenant.ID,
+		[]int64{fixture.store.ID},
+		evidenceStart,
+		tenantReleaseReadinessEvidenceFilterForTest(),
+	)
+	if err != nil {
+		t.Fatalf("read binding-scoped release evidence: %v", err)
+	}
+	item := evidence[fixture.store.ID]
+	if item.SuccessfulNewAPICallCount != 1 || item.FastGPTRetrievalCount != 1 || item.ReconciledBillingCount != 1 {
+		t.Fatalf("second binding duplicated first binding evidence: %+v", item)
+	}
+
+	if err := fixture.db.Model(&models.AIUsageEvent{}).
+		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
+		Update("store_staff_binding_id", second.binding.ID).Error; err != nil {
+		t.Fatalf("move usage evidence to mismatched binding: %v", err)
+	}
+	if err := fixture.db.Model(&models.AIUsageGatewayCall{}).
+		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
+		Update("store_staff_binding_id", second.binding.ID).Error; err != nil {
+		t.Fatalf("move billing evidence to mismatched binding: %v", err)
+	}
+	evidence, err = repositories.TenantReleaseReadinessRepository.FindEvidence(
+		fixture.db,
+		fixture.tenant.ID,
+		[]int64{fixture.store.ID},
+		evidenceStart,
+		tenantReleaseReadinessEvidenceFilterForTest(),
+	)
+	if err != nil {
+		t.Fatalf("read mismatched binding release evidence: %v", err)
+	}
+	item = evidence[fixture.store.ID]
+	if item.SuccessfulNewAPICallCount != 0 || item.FastGPTRetrievalCount != 0 || item.ReconciledBillingCount != 0 {
+		t.Fatalf("evidence borrowed a credential or instance from another binding: %+v", item)
+	}
+}
+
+func tenantReleaseReadinessEvidenceFilterForTest() repositories.TenantReleaseReadinessEvidenceFilter {
+	return repositories.TenantReleaseReadinessEvidenceFilter{
+		NewAPIGateway:            AIUsageGatewayNewAPI,
+		SuccessfulUsageStatuses:  []string{"completed", "success"},
+		KnowledgeRetrieveStage:   "knowledge_retrieve",
+		KnowledgeProvider:        enums.KnowledgeProviderFastGPT,
+		KnowledgeOperation:       "knowledge_retrieve",
+		KnowledgeStatus:          "completed",
+		KnowledgeConnectionID:    fastgptapi.ManagedConnectionID,
+		KnowledgeLogSourceType:   "fastgpt",
+		KnowledgeChunkProvider:   string(enums.KnowledgeChunkProviderFastGPT),
+		KnowledgeChannel:         string(enums.KnowledgeRetrieveChannelIM),
+		KnowledgeScene:           string(enums.KnowledgeRetrieveSceneFirstResponse),
+		KnowledgeAnswerStatus:    int(enums.KnowledgeAnswerStatusNormal),
+		AIHandoffContent:         "AI转人工",
+		ReconcileStatus:          AIUsageReconcileCompleted,
+		ReconcileMatchStrategy:   AIUsageMatchStrategyRequestID,
+		ReconcileMatchConfidence: AIUsageMatchConfidenceExact,
+		AITagSource:              customerTagSourceAI,
+		WxWorkProtocolSource:     "wxwork_protocol",
+		WxWorkProtocolTarget:     "agentdesk",
 	}
 }
 
@@ -425,6 +573,89 @@ type tenantReleaseReadinessFixture struct {
 	credential   models.StoreModelCredential
 	conversation models.Conversation
 	leafTag      models.Tag
+}
+
+type tenantReleaseReadinessBindingFixture struct {
+	account    models.User
+	binding    models.StoreStaffBinding
+	instance   models.WxWorkProtocolInstance
+	credential models.StoreModelCredential
+}
+
+func (f *tenantReleaseReadinessFixture) seedReadyStoreBinding(
+	t *testing.T,
+	suffix string,
+) *tenantReleaseReadinessBindingFixture {
+	t.Helper()
+	audit := tenantReleaseReadinessAuditFields(f.now)
+	readyAt := f.now.Add(-time.Hour)
+	account := models.User{
+		TenantID: f.tenant.ID, Username: "release-readiness-" + suffix,
+		Nickname: "Readiness " + suffix, Password: "hash",
+		ApprovalStatus: enums.UserApprovalStatusApproved, ApprovedAt: &readyAt,
+		Status: enums.StatusOk, AuditFields: audit,
+	}
+	if err := f.db.Create(&account).Error; err != nil {
+		t.Fatalf("create %s Store account: %v", suffix, err)
+	}
+	binding := models.StoreStaffBinding{
+		TenantID: f.tenant.ID, UserID: account.ID, ActiveUserID: positiveInt64Pointer(account.ID),
+		StoreID: f.store.ID, AgentTeamID: f.binding.AgentTeamID,
+		Status: enums.StatusOk, AuditFields: audit,
+	}
+	if err := f.db.Create(&binding).Error; err != nil {
+		t.Fatalf("create %s Store binding: %v", suffix, err)
+	}
+	instance := models.WxWorkProtocolInstance{
+		TenantID: f.tenant.ID, AgentTeamID: binding.AgentTeamID,
+		Guid: "readiness-wxwork-guid-" + suffix, ChannelID: f.channel.ID,
+		EmployeeUserID: "168-readiness-" + suffix, EmployeeName: "Readiness " + suffix,
+		StoreID: f.store.ID, StoreStaffBindingID: binding.ID,
+		NotifyURL:    "https://readiness.example.com/api/third/wxwork-protocol/callback",
+		HealthStatus: "online", LastHeartbeatAt: &readyAt,
+		Status: enums.StatusOk, AuditFields: audit,
+	}
+	if err := f.db.Create(&instance).Error; err != nil {
+		t.Fatalf("create %s WxWork instance: %v", suffix, err)
+	}
+	credential := models.StoreModelCredential{
+		TenantID: f.tenant.ID, StoreID: f.store.ID, StoreStaffBindingID: binding.ID,
+		EncryptedKey: "ciphertext-DO-NOT-PRINT", KeyNonce: "nonce-DO-NOT-PRINT",
+		KeyFingerprint: "fingerprint-DO-NOT-PRINT-" + suffix, CipherVersion: "aes-gcm-v1",
+		MasterKeyID: "release-key", CredentialRevision: 1,
+		Status:         enums.StoreCredentialStatusActive,
+		LastTestStatus: "passed", LastTestedAt: &readyAt, AuditFields: audit,
+	}
+	if err := f.db.Create(&credential).Error; err != nil {
+		t.Fatalf("create %s Credential: %v", suffix, err)
+	}
+	ret := &tenantReleaseReadinessBindingFixture{
+		account: account, binding: binding, instance: instance, credential: credential,
+	}
+	ret.seedProfileEvidence(t, f)
+	return ret
+}
+
+func (f *tenantReleaseReadinessBindingFixture) seedProfileEvidence(
+	t *testing.T,
+	fixture *tenantReleaseReadinessFixture,
+) {
+	t.Helper()
+	slots := repositories.ModelProfileSlotRepository.FindByTemplateID(fixture.db, fixture.modelProfile.ID)
+	run := models.ModelProfileTestRun{
+		TemplateID: fixture.modelProfile.ID, TemplateRevision: fixture.modelProfile.Revision,
+		ConfigDigest: modelProfileConfigurationDigest(&fixture.modelProfile, slots),
+		TenantID:     fixture.tenant.ID, TenantName: fixture.tenant.ShortName,
+		StoreID: fixture.store.ID, StoreStaffBindingID: f.binding.ID, StoreName: fixture.store.Name,
+		CredentialRevision: f.credential.CredentialRevision,
+		CredentialSource:   enums.ModelProfileTestCredentialSourceCandidate,
+		Status:             enums.ModelProfileTestStatusPassed,
+		OperatorID:         f.account.ID, OperatorName: f.account.Username,
+		CreatedAt: fixture.now.Add(-time.Hour),
+	}
+	if err := fixture.db.Create(&run).Error; err != nil {
+		t.Fatalf("create Profile evidence for binding %d: %v", f.binding.ID, err)
+	}
 }
 
 func newTenantReleaseReadinessFixture(t *testing.T) *tenantReleaseReadinessFixture {
@@ -629,7 +860,7 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 		t.Fatalf("create readiness Model Profile assignment: %v", err)
 	}
 	credential := models.StoreModelCredential{
-		TenantID: tenant.ID, StoreID: store.ID,
+		TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
 		EncryptedKey: "ciphertext-DO-NOT-PRINT", KeyNonce: "nonce-DO-NOT-PRINT",
 		KeyFingerprint: "fingerprint-DO-NOT-PRINT", CipherVersion: "aes-gcm-v1",
 		MasterKeyID: "release-key", CredentialRevision: 1,
@@ -645,7 +876,7 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 		TemplateID: modelProfile.ID, TemplateRevision: modelProfile.Revision,
 		ConfigDigest: modelProfileConfigurationDigest(&modelProfile, slots),
 		TenantID:     tenant.ID, TenantName: tenant.ShortName,
-		StoreID: store.ID, StoreName: store.Name,
+		StoreID: store.ID, StoreStaffBindingID: binding.ID, StoreName: store.Name,
 		CredentialRevision: credential.CredentialRevision,
 		CredentialSource:   enums.ModelProfileTestCredentialSourceCandidate,
 		Status:             enums.ModelProfileTestStatusPassed,
@@ -663,14 +894,14 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 	}
 	if err := db.Create(&[]models.StoreModelCredentialAuditLog{
 		{
-			TenantID: tenant.ID, StoreID: store.ID, CredentialID: credential.ID,
+			TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID, CredentialID: credential.ID,
 			Action: enums.CredentialAuditActionSubmit, Result: enums.CredentialAuditResultPending,
 			ToRevision: credential.CredentialRevision, OperatorID: account.ID,
 			OperatorName: account.Username, OperatorRole: constants.RoleCodeStoreStaff,
 			CreatedAt: publishedAt.Add(-2 * time.Minute),
 		},
 		{
-			TenantID: tenant.ID, StoreID: store.ID, CredentialID: credential.ID,
+			TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID, CredentialID: credential.ID,
 			Action: enums.CredentialAuditActionApprove, Result: enums.CredentialAuditResultSuccess,
 			ToRevision: credential.CredentialRevision, OperatorID: account.ID + 1000,
 			OperatorName: "readiness-supervisor", OperatorRole: constants.RoleCodeTenantAdmin,
@@ -686,10 +917,11 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 		ConnectionID:     fastgptapi.ManagedConnectionID,
 		FastGPTProfileID: "profile-ready", FastGPTProfileRevision: "1",
 		FastGPTProfileStatus: "ready", FastGPTProfileSyncedAt: &publishedAt,
-		FastGPTAppliedProfileID:          modelProfile.ID,
-		FastGPTAppliedProfileRevision:    modelProfile.Revision,
-		FastGPTAppliedCredentialRevision: credential.CredentialRevision,
-		Name:                             "Readiness knowledge", KnowledgeType: "fastgpt_cloud",
+		FastGPTAppliedProfileID:           modelProfile.ID,
+		FastGPTAppliedProfileRevision:     modelProfile.Revision,
+		FastGPTAppliedStoreStaffBindingID: binding.ID,
+		FastGPTAppliedCredentialRevision:  credential.CredentialRevision,
+		Name:                              "Readiness knowledge", KnowledgeType: "fastgpt_cloud",
 		Status: enums.StatusOk, AuditFields: audit,
 	}
 	if err := db.Create(&knowledge).Error; err != nil {
@@ -705,6 +937,7 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 		TenantTeamID: "team-ready", TenantTeamName: "Ready team", Status: "active",
 		TargetProfileID: modelProfile.ID, TargetProfileRevision: modelProfile.Revision,
 		AppliedProfileID: modelProfile.ID, AppliedProfileRevision: modelProfile.Revision,
+		TargetStoreStaffBindingID: binding.ID, AppliedStoreStaffBindingID: binding.ID,
 		TargetCredentialRevision:  credential.CredentialRevision,
 		AppliedCredentialRevision: credential.CredentialRevision,
 		AppliedKeyFingerprint:     "fastgpt-fingerprint-DO-NOT-PRINT",
@@ -745,17 +978,21 @@ func (f *tenantReleaseReadinessFixture) seedPilotEvidence(t *testing.T, evidence
 	t.Helper()
 	audit := tenantReleaseReadinessAuditFields(f.now)
 	conversation := models.Conversation{
-		TenantID: f.tenant.ID, CustomerID: 99, CustomerName: "customer-content-DO-NOT-PRINT",
+		TenantID: f.tenant.ID, StoreID: f.store.ID, StoreStaffBindingID: f.binding.ID,
+		CustomerID: 99, CustomerName: "customer-content-DO-NOT-PRINT",
 		Status: enums.IMConversationStatusAIServing, ServiceMode: enums.IMConversationServiceModeAIFirst,
 		LastMessageAt: f.now, LastActiveAt: f.now, AuditFields: audit,
 	}
+	threadKey := buildStoreConversationThreadKey(f.tenant.ID, f.store.ID, conversation.CustomerID, f.binding.ID)
+	conversation.ThreadKey = &threadKey
 	if err := f.db.Create(&conversation).Error; err != nil {
 		t.Fatalf("create pilot Conversation: %v", err)
 	}
 	f.conversation = conversation
 	if err := f.db.Create(&models.ConversationRouteState{
 		TenantID: f.tenant.ID, ConversationID: conversation.ID, StoreID: f.store.ID,
-		KnowledgeBaseID: f.store.KnowledgeBaseID, WxWorkInstanceID: f.wxWork.ID, SessionNo: 1,
+		StoreStaffBindingID: f.binding.ID, KnowledgeBaseID: f.store.KnowledgeBaseID,
+		WxWorkInstanceID: f.wxWork.ID, SessionNo: 1,
 		RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai",
 		AuditFields: audit,
 	}).Error; err != nil {
@@ -825,7 +1062,7 @@ func (f *tenantReleaseReadinessFixture) seedPilotEvidence(t *testing.T, evidence
 	}
 	if err := f.db.Create(&models.AIUsageEvent{
 		TenantID: f.tenant.ID, EventKey: "pilot-usage", StoreID: f.store.ID,
-		WxWorkInstanceID: f.wxWork.ID, ConversationID: conversation.ID,
+		StoreStaffBindingID: f.binding.ID, WxWorkInstanceID: f.wxWork.ID, ConversationID: conversation.ID,
 		RequestID: "local-pilot-request",
 		Stage:     "generate", Model: "reply-model", ModelProfileID: f.modelProfile.ID,
 		ModelProfileRevision: f.modelProfile.Revision, UsageSlot: string(enums.ModelUsageSlotReplyLLM),
@@ -848,7 +1085,7 @@ func (f *tenantReleaseReadinessFixture) seedPilotEvidence(t *testing.T, evidence
 	}
 	if err := f.db.Create(&models.AIUsageEvent{
 		TenantID: f.tenant.ID, EventKey: "pilot-fastgpt-usage", StoreID: f.store.ID,
-		WxWorkInstanceID: f.wxWork.ID, ConversationID: conversation.ID,
+		StoreStaffBindingID: f.binding.ID, WxWorkInstanceID: f.wxWork.ID, ConversationID: conversation.ID,
 		KnowledgeBaseID: f.store.KnowledgeBaseID,
 		RequestID:       retrieveRequestID, Stage: "knowledge_retrieve", Provider: "fastgpt",
 		OperationType: "knowledge_retrieve", RequestCount: 1,
@@ -879,7 +1116,8 @@ func (f *tenantReleaseReadinessFixture) seedPilotEvidence(t *testing.T, evidence
 	externalCreatedAt := aiAt
 	if err := f.db.Create(&models.AIUsageGatewayCall{
 		TenantID: f.tenant.ID, CallKey: "pilot-gateway-call", EventKey: "pilot-usage",
-		StoreID: f.store.ID, WxWorkInstanceID: f.wxWork.ID, ConversationID: conversation.ID,
+		StoreID: f.store.ID, StoreStaffBindingID: f.binding.ID,
+		WxWorkInstanceID: f.wxWork.ID, ConversationID: conversation.ID,
 		LocalRequestID: "local-pilot-request", Stage: "generate",
 		ModelProfileID: f.modelProfile.ID, ModelProfileRevision: f.modelProfile.Revision,
 		UsageSlot:          string(enums.ModelUsageSlotReplyLLM),

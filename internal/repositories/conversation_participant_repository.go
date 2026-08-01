@@ -1,12 +1,16 @@
 package repositories
 
 import (
+	"errors"
+
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ConversationParticipantRepository = newConversationParticipantRepository()
@@ -32,6 +36,22 @@ func (r *conversationParticipantRepository) Take(db *gorm.DB, where ...interface
 		return nil
 	}
 	return ret
+}
+
+func (r *conversationParticipantRepository) GetCustomerForUpdateInTenant(db *gorm.DB, tenantID, conversationID int64) (*models.ConversationParticipant, error) {
+	if db == nil || tenantID <= 0 || conversationID <= 0 {
+		return nil, nil
+	}
+	ret := &models.ConversationParticipant{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Take(ret, "tenant_id = ? AND conversation_id = ? AND participant_type = ? AND status = ?", tenantID, conversationID, enums.IMParticipantTypeCustomer, enums.StatusOk).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (r *conversationParticipantRepository) Find(db *gorm.DB, cnd *sqls.Cnd) (list []models.ConversationParticipant) {
@@ -90,6 +110,12 @@ func (r *conversationParticipantRepository) Update(db *gorm.DB, t *models.Conver
 func (r *conversationParticipantRepository) Updates(db *gorm.DB, id int64, columns map[string]interface{}) (err error) {
 	err = db.Model(&models.ConversationParticipant{}).Where("id = ?", id).Updates(columns).Error
 	return
+}
+
+func (r *conversationParticipantRepository) UpdatesInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.ConversationParticipant{}).
+		Where("id = ? AND tenant_id = ?", id, tenantID).
+		Updates(columns).Error
 }
 
 func (r *conversationParticipantRepository) UpdateColumn(db *gorm.DB, id int64, name string, value interface{}) (err error) {

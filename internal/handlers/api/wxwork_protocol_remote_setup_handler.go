@@ -27,6 +27,13 @@ func WxWorkProtocolRemoteSetupGetByToken(ctx *gin.Context) {
 	if store := services.StoreService.GetInTenant(ret.StoreID, item.TenantID); store != nil {
 		ret.StoreCode = store.StoreCode
 		ret.StoreName = utils.RepairMojibakeText(store.Name)
+		ret.StoreAddress = utils.RepairMojibakeText(store.Address)
+		ret.StoreNavigationName = utils.RepairMojibakeText(store.NavigationName)
+		ret.StoreLongitude = store.Longitude
+		ret.StoreLatitude = store.Latitude
+		ret.StoreMapProvider = store.MapProvider
+		ret.StoreContactPhone = utils.RepairMojibakeText(store.ContactPhone)
+		ret.KnowledgeBaseID = store.KnowledgeBaseID
 	}
 	if binding := services.StoreStaffBindingService.GetInTenant(ret.StoreStaffBindingID, item.TenantID); binding != nil {
 		ret.StoreStaffUserID = binding.UserID
@@ -34,6 +41,14 @@ func WxWorkProtocolRemoteSetupGetByToken(ctx *gin.Context) {
 			ret.StoreStaffUserName = utils.RepairMojibakeText(user.Nickname)
 		}
 	}
+	runtime := services.StoreStaffBindingService.ResolveForInstance(item)
+	ret.ManagedMode = runtime.ManagedMode
+	ret.ServiceHours = runtime.ServiceHours
+	ret.StoreRoomConversationID = runtime.StoreRoomConversationID
+	ret.StoreRoomNotifyEnabled = runtime.StoreRoomNotifyEnabled
+	ret.StoreRoomAtList = runtime.StoreRoomAtList
+	ret.FallbackToHQ = runtime.FallbackToHQ
+	ret.ManualTimeoutMinutes = runtime.ManualTimeoutMinutes
 	if job := services.FastGPTDatasetService.LatestJobByStore(ret.StoreID, item.TenantID); job != nil {
 		ret.KnowledgeProvisionStatus = job.Status
 		ret.KnowledgeProvisionError = utils.RepairMojibakeText(job.LastError)

@@ -67,3 +67,23 @@ type LinkConversationCustomerRequest struct {
 	ConversationID int64 `json:"conversationId"`
 	CustomerID     int64 `json:"customerId"`
 }
+
+type InheritStoreConversationRequest struct {
+	ConversationID            int64  `json:"conversationId"`
+	TargetStoreStaffBindingID int64  `json:"targetStoreStaffBindingId"`
+	TargetWxWorkInstanceID    int64  `json:"targetWxWorkInstanceId"`
+	Reason                    string `json:"reason"`
+}
+
+type PreviewStoreConversationInheritanceRequest struct {
+	SourceStoreStaffBindingID int64 `json:"sourceStoreStaffBindingId"`
+	TargetStoreStaffBindingID int64 `json:"targetStoreStaffBindingId"`
+	TargetWxWorkInstanceID    int64 `json:"targetWxWorkInstanceId"`
+}
+
+type BatchInheritStoreConversationsRequest struct {
+	PreviewStoreConversationInheritanceRequest
+	ConversationIDs []int64 `json:"conversationIds"`
+	PreviewVersion  string  `json:"previewVersion"`
+	Reason          string  `json:"reason"`
+}

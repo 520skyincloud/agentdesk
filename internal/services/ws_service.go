@@ -511,6 +511,7 @@ func (s *wsService) buildRealtimeMessage(item *models.Message) response.MessageR
 	ret := response.MessageResponse{
 		ID:              item.ID,
 		ConversationID:  item.ConversationID,
+		SessionNo:       item.SessionNo,
 		RequestID:       item.RequestID,
 		ClientMsgID:     item.ClientMsgID,
 		SenderType:      item.SenderType,

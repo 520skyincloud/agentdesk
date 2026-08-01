@@ -280,9 +280,19 @@ func (s *weComProviderCallbackService) confirmOfficialRelationshipForContactWay(
 	if scanEvent == nil || connection == nil || authorization == nil ||
 		connection.ID <= 0 ||
 		connection.TenantAuthorizationID != authorization.ID ||
-		connection.WxWorkProtocolInstanceID <= 0 ||
+		connection.StoreStaffBindingID <= 0 ||
 		authorization.AuthorizationStatus != enums.WeComAuthorizationStatusActive {
 		return fmt.Errorf("到店扫码关联的企微授权或员工实例不可用")
+	}
+	runtimeScope, err := resolveArrivalStoreStaffScopeDB(
+		sqls.DB(),
+		connection.TenantID,
+		connection.StoreID,
+		connection.StoreStaffBindingID,
+		false,
+	)
+	if err != nil {
+		return fmt.Errorf("到店扫码关联的门店员工号不可用: %w", err)
 	}
 	security, err := newArrivalSecurity()
 	if err != nil {
@@ -323,6 +333,7 @@ func (s *weComProviderCallbackService) confirmOfficialRelationshipForContactWay(
 			binding = &models.ArrivalStoreBinding{
 				TenantID:                  scanEvent.TenantID,
 				StoreID:                   scanEvent.StoreID,
+				StoreStaffBindingID:       connection.StoreStaffBindingID,
 				MiniProgramIdentityID:     scanEvent.MiniProgramIdentityID,
 				TenantAuthorizationID:     authorization.ID,
 				ExternalUserIDCiphertext:  externalCiphertext,
@@ -331,7 +342,7 @@ func (s *weComProviderCallbackService) confirmOfficialRelationshipForContactWay(
 				ContactMemberCiphertext:   memberCiphertext,
 				ContactMemberNonce:        memberNonce,
 				ContactMemberFingerprint:  security.Fingerprint("contact_member", memberUserID),
-				WxWorkProtocolInstanceID:  connection.WxWorkProtocolInstanceID,
+				WxWorkProtocolInstanceID:  runtimeScope.Instance.ID,
 				OfficialRelationStatus:    enums.ArrivalOfficialRelationStatusConfirmed,
 				BindingProofType:          enums.ArrivalBindingProofTypeProviderCallback,
 				BindingStatus:             enums.ArrivalBindingStatusLegacyUnmapped,
@@ -347,6 +358,9 @@ func (s *weComProviderCallbackService) confirmOfficialRelationshipForContactWay(
 			if binding.TenantAuthorizationID != 0 && binding.TenantAuthorizationID != authorization.ID {
 				return fmt.Errorf("到店身份已绑定其他企微主体")
 			}
+			if binding.StoreStaffBindingID != 0 && binding.StoreStaffBindingID != connection.StoreStaffBindingID {
+				return fmt.Errorf("到店身份已绑定当前门店的其他门店员工号")
+			}
 			if err := repositories.ArrivalRepository.UpdateBinding(ctx.Tx, binding.ID, binding.TenantID, map[string]any{
 				"tenant_authorization_id":      authorization.ID,
 				"external_user_id_ciphertext":  externalCiphertext,
@@ -355,7 +369,8 @@ func (s *weComProviderCallbackService) confirmOfficialRelationshipForContactWay(
 				"contact_member_ciphertext":    memberCiphertext,
 				"contact_member_nonce":         memberNonce,
 				"contact_member_fingerprint":   security.Fingerprint("contact_member", memberUserID),
-				"wx_work_protocol_instance_id": connection.WxWorkProtocolInstanceID,
+				"store_staff_binding_id":       connection.StoreStaffBindingID,
+				"wx_work_protocol_instance_id": runtimeScope.Instance.ID,
 				"official_relation_status":     enums.ArrivalOfficialRelationStatusConfirmed,
 				"binding_proof_type":           enums.ArrivalBindingProofTypeProviderCallback,
 				"binding_ticket_id":            0,
@@ -374,7 +389,8 @@ func (s *weComProviderCallbackService) confirmOfficialRelationshipForContactWay(
 			binding.ExternalUserIDFingerprint = security.Fingerprint("external_user_id", externalUserID)
 			binding.ContactMemberCiphertext = memberCiphertext
 			binding.ContactMemberNonce = memberNonce
-			binding.WxWorkProtocolInstanceID = connection.WxWorkProtocolInstanceID
+			binding.StoreStaffBindingID = connection.StoreStaffBindingID
+			binding.WxWorkProtocolInstanceID = runtimeScope.Instance.ID
 			binding.TenantAuthorizationID = authorization.ID
 			binding.OfficialRelationStatus = enums.ArrivalOfficialRelationStatusConfirmed
 			binding.BindingProofType = enums.ArrivalBindingProofTypeProviderCallback
@@ -431,8 +447,18 @@ func (s *weComProviderCallbackService) reconcileBinding(bindingID, tenantID int6
 	if authorization == nil || connection == nil ||
 		binding.OfficialRelationStatus != enums.ArrivalOfficialRelationStatusConfirmed ||
 		authorization.AuthorizationStatus != enums.WeComAuthorizationStatusActive ||
-		connection.WxWorkProtocolInstanceID != binding.WxWorkProtocolInstanceID {
+		connection.StoreStaffBindingID <= 0 {
 		return false, fmt.Errorf("到店绑定上下文不完整")
+	}
+	runtimeScope, err := resolveArrivalStoreStaffScopeDB(
+		sqls.DB(),
+		binding.TenantID,
+		binding.StoreID,
+		binding.StoreStaffBindingID,
+		false,
+	)
+	if err != nil {
+		return false, err
 	}
 	security, err := newArrivalSecurity()
 	if err != nil {
@@ -454,7 +480,8 @@ func (s *weComProviderCallbackService) reconcileBinding(bindingID, tenantID int6
 		TenantID:                     binding.TenantID,
 		StoreID:                      binding.StoreID,
 		TenantAuthorizationID:        binding.TenantAuthorizationID,
-		WxWorkProtocolInstanceID:     binding.WxWorkProtocolInstanceID,
+		StoreStaffBindingID:          binding.StoreStaffBindingID,
+		WxWorkProtocolInstanceID:     runtimeScope.Instance.ID,
 		CorpID:                       corpID,
 		ContactMemberUserID:          memberUserID,
 		ExternalUserID:               externalUserID,
@@ -466,7 +493,7 @@ func (s *weComProviderCallbackService) reconcileBinding(bindingID, tenantID int6
 	if resolution == nil {
 		return false, nil
 	}
-	if resolution.WxWorkProtocolInstanceID != binding.WxWorkProtocolInstanceID ||
+	if resolution.WxWorkProtocolInstanceID != runtimeScope.Instance.ID ||
 		strings.TrimSpace(resolution.CorpID) != strings.TrimSpace(corpID) ||
 		strings.TrimSpace(resolution.ExternalUserID) != strings.TrimSpace(externalUserID) ||
 		strings.TrimSpace(resolution.ProtocolUserID) == "" ||
@@ -475,7 +502,7 @@ func (s *weComProviderCallbackService) reconcileBinding(bindingID, tenantID int6
 		return false, fmt.Errorf("到店协议桥返回的确定性证据不完整或上下文不一致")
 	}
 	conversation, protocolConversationID, err := WxWorkProtocolService.EnsureArrivalConversation(
-		binding.WxWorkProtocolInstanceID,
+		runtimeScope.Instance.ID,
 		resolution.ProtocolUserID,
 		resolution.DisplayName,
 		arrivalSafeEvidenceHash("arrival_binding", binding.EvidenceHash, resolution.EvidenceType, resolution.EvidenceDigest),
@@ -484,7 +511,8 @@ func (s *weComProviderCallbackService) reconcileBinding(bindingID, tenantID int6
 		return false, err
 	}
 	route := ConversationRouteService.GetByConversationIDInTenant(conversation.ID, tenantID)
-	if route == nil || route.WxWorkInstanceID != binding.WxWorkProtocolInstanceID || route.StoreID != binding.StoreID {
+	if route == nil || route.WxWorkInstanceID != runtimeScope.Instance.ID ||
+		route.StoreID != binding.StoreID || route.StoreStaffBindingID != binding.StoreStaffBindingID {
 		return false, fmt.Errorf("到店会话路由未绑定目标门店员工实例")
 	}
 	protocolCiphertext, protocolNonce, err := security.Encrypt("protocol_conversation_id", protocolConversationID)
@@ -494,6 +522,7 @@ func (s *weComProviderCallbackService) reconcileBinding(bindingID, tenantID int6
 	now := time.Now()
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		if err := repositories.ArrivalRepository.UpdateBinding(ctx.Tx, binding.ID, binding.TenantID, map[string]any{
+			"wx_work_protocol_instance_id":      runtimeScope.Instance.ID,
 			"customer_id":                       conversation.CustomerID,
 			"conversation_id":                   conversation.ID,
 			"protocol_conversation_ciphertext":  protocolCiphertext,

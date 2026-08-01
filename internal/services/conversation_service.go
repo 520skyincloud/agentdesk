@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"agent-desk/internal/events"
@@ -32,6 +33,11 @@ func newConversationService() *conversationService {
 }
 
 type conversationService struct {
+}
+
+type StoreConversationScope struct {
+	StoreID             int64
+	StoreStaffBindingID int64
 }
 
 func (s *conversationService) Get(id int64) *models.Conversation {
@@ -136,7 +142,17 @@ func (s *conversationService) CreateWithoutWelcome(externalUser openidentity.Ext
 }
 
 func (s *conversationService) CreateWithRuntimeProfileWithoutWelcome(externalUser openidentity.ExternalUser, channelID int64, aiAgent models.AIAgent) (*models.Conversation, error) {
-	return s.createWithProfile(externalUser, channelID, aiAgent, false)
+	conversation, _, err := s.createWithProfile(externalUser, channelID, aiAgent, false, nil)
+	return conversation, err
+}
+
+func (s *conversationService) CreateStoreScopedWithRuntimeProfileWithoutWelcome(
+	externalUser openidentity.ExternalUser,
+	channelID int64,
+	aiAgent models.AIAgent,
+	scope StoreConversationScope,
+) (*models.Conversation, bool, error) {
+	return s.createWithProfile(externalUser, channelID, aiAgent, false, &scope)
 }
 
 func (s *conversationService) create(externalUser openidentity.ExternalUser, channelID, aiAgentID int64, createWelcome bool) (*models.Conversation, error) {
@@ -148,12 +164,19 @@ func (s *conversationService) create(externalUser openidentity.ExternalUser, cha
 	if aiAgent == nil || aiAgent.Status != enums.StatusOk {
 		return nil, errorsx.InvalidParam("接待策略不存在")
 	}
-	return s.createWithProfile(externalUser, channelID, *aiAgent, createWelcome)
+	conversation, _, err := s.createWithProfile(externalUser, channelID, *aiAgent, createWelcome, nil)
+	return conversation, err
 }
 
-func (s *conversationService) createWithProfile(externalUser openidentity.ExternalUser, channelID int64, aiAgent models.AIAgent, createWelcome bool) (*models.Conversation, error) {
+func (s *conversationService) createWithProfile(
+	externalUser openidentity.ExternalUser,
+	channelID int64,
+	aiAgent models.AIAgent,
+	createWelcome bool,
+	storeScope *StoreConversationScope,
+) (*models.Conversation, bool, error) {
 	if aiAgent.Status != enums.StatusOk {
-		return nil, errorsx.InvalidParam("接待策略不存在")
+		return nil, false, errorsx.InvalidParam("接待策略不存在")
 	}
 	var conversation *models.Conversation
 	var welcomeMessage *models.Message
@@ -166,40 +189,69 @@ func (s *conversationService) createWithProfile(externalUser openidentity.Extern
 		if aiAgent.TenantID != channel.TenantID {
 			return errorsx.InvalidParam("接待策略不属于接入渠道所在公司")
 		}
+		if storeScope != nil {
+			if err := s.validateStoreConversationScope(ctx.Tx, channel.TenantID, *storeScope); err != nil {
+				return err
+			}
+		}
 		customerID, err := CustomerService.EnsureExternalCustomer(ctx, channel.TenantID, externalUser)
 		if err != nil {
 			return err
 		}
 		customerName := s.getCustomerName(ctx.Tx, customerID, channel.TenantID)
-		if existing := s.getLatestNotFinishedByCustomerID(ctx.Tx, customerID, channel.TenantID); existing != nil {
+		var existing *models.Conversation
+		var threadKey *string
+		if storeScope != nil {
+			value := buildStoreConversationThreadKey(channel.TenantID, storeScope.StoreID, customerID, storeScope.StoreStaffBindingID)
+			threadKey = &value
+			existing = repositories.ConversationRepository.Take(ctx.Tx, "tenant_id = ? AND thread_key = ?", channel.TenantID, value)
+		} else {
+			existing = s.getLatestNotFinishedByCustomerID(ctx.Tx, customerID, channel.TenantID)
+		}
+		if existing != nil {
 			conversation = existing
+			updates := map[string]any{}
 			if customerName != "" && existing.CustomerName != customerName {
-				if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, existing.ID, channel.TenantID, map[string]any{
-					"customer_name": customerName,
-					"updated_at":    time.Now(),
-				}); err != nil {
+				updates["customer_name"] = customerName
+				conversation.CustomerName = customerName
+			}
+			if storeScope != nil {
+				if existing.StoreID != storeScope.StoreID || existing.StoreStaffBindingID != storeScope.StoreStaffBindingID {
+					return errorsx.InvalidParam("门店会话线程范围不一致")
+				}
+				if existing.ChannelID != channelID {
+					updates["channel_id"] = channelID
+					conversation.ChannelID = channelID
+				}
+			}
+			if len(updates) > 0 {
+				updates["updated_at"] = time.Now()
+				updates["update_user_name"] = "system"
+				if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, existing.ID, channel.TenantID, updates); err != nil {
 					return err
 				}
-				conversation.CustomerName = customerName
 			}
 			return nil
 		}
 		created = true
 		now := time.Now()
 		conversation = &models.Conversation{
-			TenantID:          channel.TenantID,
-			AIAgentID:         aiAgent.ID,
-			ChannelID:         channelID,
-			CustomerID:        customerID,
-			CustomerName:      customerName,
-			Status:            s.resolveInitialStatus(aiAgent.ServiceMode),
-			ServiceMode:       aiAgent.ServiceMode,
-			Priority:          0,
-			CurrentAssigneeID: 0,
-			CurrentTeamID:     0,
-			LastMessageAt:     now,
-			LastActiveAt:      now,
-			AuditFields:       utils.BuildAuditFields(nil),
+			TenantID:      channel.TenantID,
+			ThreadKey:     threadKey,
+			AIAgentID:     aiAgent.ID,
+			ChannelID:     channelID,
+			CustomerID:    customerID,
+			CustomerName:  customerName,
+			Status:        s.resolveInitialStatus(aiAgent.ServiceMode),
+			ServiceMode:   aiAgent.ServiceMode,
+			Priority:      0,
+			LastMessageAt: now,
+			LastActiveAt:  now,
+			AuditFields:   utils.BuildAuditFields(nil),
+		}
+		if storeScope != nil {
+			conversation.StoreID = storeScope.StoreID
+			conversation.StoreStaffBindingID = storeScope.StoreStaffBindingID
 		}
 		if err := ctx.Tx.Create(conversation).Error; err != nil {
 			return err
@@ -215,13 +267,13 @@ func (s *conversationService) createWithProfile(externalUser openidentity.Extern
 		}
 		return err
 	}); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if conversation == nil {
-		return nil, errorsx.BusinessError(1, "创建会话失败")
+		return nil, false, errorsx.BusinessError(1, "创建会话失败")
 	}
 	if !created {
-		return conversation, nil
+		return conversation, false, nil
 	}
 
 	// 推送会话创建事件
@@ -234,10 +286,29 @@ func (s *conversationService) createWithProfile(externalUser openidentity.Extern
 
 	if aiAgent.ServiceMode == enums.IMConversationServiceModeHumanOnly {
 		if _, err := ConversationHumanDispatchService.ApplyHumanOnlyCreate(conversation.ID, aiAgent); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
-	return s.Get(conversation.ID), nil
+	return s.Get(conversation.ID), true, nil
+}
+
+func (s *conversationService) validateStoreConversationScope(db *gorm.DB, tenantID int64, scope StoreConversationScope) error {
+	if scope.StoreID <= 0 || scope.StoreStaffBindingID <= 0 {
+		return errorsx.InvalidParam("企微员工号缺少门店或门店员工号绑定")
+	}
+	store := repositories.StoreRepository.GetInTenant(db, scope.StoreID, tenantID)
+	if store == nil || store.Status != enums.StatusOk {
+		return errorsx.InvalidParam("企微员工号所属门店不存在或已停用")
+	}
+	binding := repositories.StoreStaffBindingRepository.GetInTenant(db, scope.StoreStaffBindingID, tenantID)
+	if binding == nil || binding.Status != enums.StatusOk || binding.StoreID != scope.StoreID {
+		return errorsx.InvalidParam("企微员工号缺少有效门店员工号绑定")
+	}
+	return StoreStaffBindingService.validateBindingOwnerDB(db, binding)
+}
+
+func buildStoreConversationThreadKey(tenantID, storeID, customerID, storeStaffBindingID int64) string {
+	return fmt.Sprintf("store:%d:%d:%d:%d", tenantID, storeID, customerID, storeStaffBindingID)
 }
 
 func (s *conversationService) AssignConversation(req request.AssignConversationRequest, operator *dto.AuthPrincipal) error {
@@ -919,6 +990,82 @@ func (s *conversationService) buildEventPayload(payload map[string]any) string {
 	return string(data)
 }
 
+func (s *conversationService) InheritStoreConversation(req request.InheritStoreConversationRequest, operator *dto.AuthPrincipal, requestID string) (*models.Conversation, error) {
+	if operator == nil || operator.UserID <= 0 {
+		return nil, errorsx.Unauthorized("未登录或登录已过期")
+	}
+	if req.ConversationID <= 0 || req.TargetStoreStaffBindingID <= 0 || req.TargetWxWorkInstanceID <= 0 {
+		return nil, errorsx.InvalidParam("请选择会话、目标门店员工号和企微实例")
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		return nil, errorsx.InvalidParam("请填写会话继承原因")
+	}
+	if len([]rune(reason)) > 255 {
+		return nil, errorsx.InvalidParam("会话继承原因不能超过255个字符")
+	}
+	if !AgentTeamScopeService.CanViewConversation(operator, req.ConversationID) {
+		return nil, errorsx.Forbidden("无权限安排该会话继承")
+	}
+	if !AgentTeamScopeService.CanViewWxWorkInstance(operator, req.TargetWxWorkInstanceID) {
+		return nil, errorsx.Forbidden("目标企微实例超出当前数据范围")
+	}
+
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	current := repositories.ConversationRepository.GetInTenant(sqls.DB(), req.ConversationID, tenantID)
+	if current == nil {
+		return nil, errorsx.InvalidParam("会话不存在")
+	}
+	resultConversationID := int64(0)
+	affectedConversationIDs := map[int64]struct{}{req.ConversationID: {}}
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		_, target, err := s.lockStoreConversationInheritanceBindingsDB(
+			ctx.Tx,
+			tenantID,
+			current.StoreStaffBindingID,
+			req.TargetStoreStaffBindingID,
+			req.TargetWxWorkInstanceID,
+		)
+		if err != nil {
+			return err
+		}
+		conversation, err := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, req.ConversationID, tenantID)
+		if err != nil {
+			return err
+		}
+		if conversation == nil {
+			return errorsx.InvalidParam("会话不存在")
+		}
+		if conversation.StoreID != current.StoreID {
+			return errorsx.InvalidParam("会话门店归属已变化，请刷新后重试")
+		}
+		if conversation.StoreStaffBindingID != current.StoreStaffBindingID {
+			return errorsx.InvalidParam("会话门店员工号归属已变化，请刷新后重试")
+		}
+		inheritance, err := s.inheritStoreConversationDB(ctx, conversation, target, reason, operator, requestID)
+		if err != nil {
+			return err
+		}
+		resultConversationID = inheritance.ConversationID
+		affectedConversationIDs[inheritance.ConversationID] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	var updated *models.Conversation
+	for conversationID := range affectedConversationIDs {
+		item := repositories.ConversationRepository.GetInTenant(sqls.DB(), conversationID, tenantID)
+		if item != nil {
+			WsService.PublishConversationChanged(item, enums.IMRealtimeEventConversationUpdated)
+			if conversationID == resultConversationID {
+				updated = item
+			}
+		}
+	}
+	return updated, nil
+}
+
 // LinkConversationCustomer 将会话绑定到指定客户。
 func (s *conversationService) LinkConversationCustomer(conversationID, customerID int64, operator *dto.AuthPrincipal) error {
 	if operator == nil {
@@ -926,6 +1073,9 @@ func (s *conversationService) LinkConversationCustomer(conversationID, customerI
 	}
 	if conversationID <= 0 || customerID <= 0 {
 		return errorsx.InvalidParam("参数不合法")
+	}
+	if !AgentTeamScopeService.CanViewConversation(operator, conversationID) {
+		return errorsx.Forbidden("无权限关联该会话")
 	}
 	cust := CustomerService.GetInTenant(customerID, operator)
 	if cust == nil || cust.Status == enums.StatusDeleted {
@@ -943,18 +1093,125 @@ func (s *conversationService) LinkConversationCustomer(conversationID, customerI
 	}
 
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		current := repositories.ConversationRepository.GetInTenant(ctx.Tx, conversationID, conv.TenantID)
+		current, err := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, conversationID, conv.TenantID)
+		if err != nil {
+			return err
+		}
 		if current == nil {
 			return errorsx.InvalidParam("会话不存在")
 		}
+		channel := repositories.ChannelRepository.GetInTenant(ctx.Tx, current.ChannelID, current.TenantID)
+		if channel == nil {
+			return errorsx.InvalidParam("会话接入渠道不存在")
+		}
+		externalSource := externalSourceForChannelType(channel.ChannelType)
+		if strings.TrimSpace(string(externalSource)) == "" {
+			return errorsx.InvalidParam("当前渠道不支持人工关联客户身份")
+		}
+		participant, err := repositories.ConversationParticipantRepository.GetCustomerForUpdateInTenant(ctx.Tx, current.TenantID, current.ID)
+		if err != nil {
+			return err
+		}
+		externalID := ""
+		if participant != nil {
+			externalID = strings.TrimSpace(participant.ExternalParticipantID)
+		}
+		if externalID == "" {
+			return errorsx.InvalidParam("会话缺少可核验的外部客户身份")
+		}
+		identity, err := repositories.CustomerIdentityRepository.GetByForUpdateInTenant(ctx.Tx, current.TenantID, externalSource, externalID)
+		if err != nil {
+			return err
+		}
+		if identity != nil && identity.CustomerID != current.CustomerID && identity.CustomerID != customerID {
+			return errorsx.InvalidParam("该外部身份已关联其他客户，请先核对客户身份")
+		}
+
+		var threadKey *string
+		if current.StoreID > 0 || current.StoreStaffBindingID > 0 || current.ThreadKey != nil {
+			if current.StoreID <= 0 || current.StoreStaffBindingID <= 0 {
+				return errorsx.InvalidParam("会话门店线程范围不完整")
+			}
+			value := buildStoreConversationThreadKey(current.TenantID, current.StoreID, customerID, current.StoreStaffBindingID)
+			conflict, err := repositories.ConversationRepository.GetForUpdateByThreadKeyInTenant(ctx.Tx, current.TenantID, value)
+			if err != nil {
+				return err
+			}
+			if conflict != nil && conflict.ID != current.ID {
+				return errorsx.InvalidParam("目标客户在当前门店员工号下已有独立会话，不能直接合并")
+			}
+			threadKey = &value
+		}
 		now := time.Now()
-		return repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conv.TenantID, map[string]any{
+		updates := map[string]any{
 			"customer_id":      customerID,
 			"customer_name":    strings.TrimSpace(cust.Name),
 			"update_user_id":   operator.UserID,
 			"update_user_name": operator.Username,
 			"updated_at":       now,
-		})
+		}
+		if threadKey != nil {
+			updates["thread_key"] = *threadKey
+		}
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conv.TenantID, updates); err != nil {
+			return err
+		}
+		if participant != nil && participant.ParticipantID != customerID {
+			if err := repositories.ConversationParticipantRepository.UpdatesInTenant(ctx.Tx, participant.ID, current.TenantID, map[string]any{
+				"participant_id":   customerID,
+				"updated_at":       now,
+				"update_user_id":   operator.UserID,
+				"update_user_name": operator.Username,
+			}); err != nil {
+				return err
+			}
+		}
+		if identity == nil {
+			if err := repositories.CustomerIdentityRepository.Create(ctx.Tx, &models.CustomerIdentity{
+				TenantID:       current.TenantID,
+				CustomerID:     customerID,
+				ExternalSource: externalSource,
+				ExternalID:     externalID,
+				Status:         enums.StatusOk,
+				AuditFields:    utils.BuildAuditFields(operator),
+			}); err != nil {
+				return err
+			}
+		} else if identity.CustomerID != customerID || identity.Status != enums.StatusOk {
+			if err := repositories.CustomerIdentityRepository.UpdatesInTenant(ctx.Tx, identity.ID, current.TenantID, map[string]any{
+				"customer_id":      customerID,
+				"status":           enums.StatusOk,
+				"update_user_id":   operator.UserID,
+				"update_user_name": operator.Username,
+				"updated_at":       now,
+			}); err != nil {
+				return err
+			}
+		}
+		if current.StoreID > 0 {
+			instanceID := int64(0)
+			if route, routeErr := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, current.ID, current.TenantID); routeErr != nil {
+				return routeErr
+			} else if route != nil {
+				instanceID = route.WxWorkInstanceID
+			}
+			if err := s.moveStoreCustomerRelationDB(ctx.Tx, current, customerID, instanceID, now, operator); err != nil {
+				return err
+			}
+		}
+		return ConversationEventLogService.CreateEvent(
+			ctx,
+			current.ID,
+			enums.IMEventTypeRouteChange,
+			enums.IMSenderTypeAgent,
+			operator.UserID,
+			"人工确认会话客户身份关联",
+			s.buildEventPayload(map[string]any{
+				"mappingMode":        "operator_confirmed_cross_namespace",
+				"previousCustomerId": current.CustomerID,
+				"targetCustomerId":   customerID,
+			}),
+		)
 	})
 	if err != nil {
 		return err
@@ -991,11 +1248,77 @@ func externalSourceForChannelType(channelType string) enums.ExternalSource {
 	switch strings.TrimSpace(channelType) {
 	case enums.ChannelTypeWxWorkKF:
 		return enums.ExternalSourceWxWorkKF
+	case enums.ChannelTypeWxWorkProtocol:
+		return enums.ExternalSourceWxWorkProtocol
 	case enums.ChannelTypeWeb:
 		return enums.ExternalSourceGuest
 	default:
 		return ""
 	}
+}
+
+func (s *conversationService) touchStoreCustomerRelationDB(db *gorm.DB, conversation *models.Conversation, customerID, wxWorkInstanceID int64, now time.Time, operator *dto.AuthPrincipal) error {
+	if db == nil || conversation == nil || conversation.TenantID <= 0 || conversation.StoreID <= 0 || customerID <= 0 {
+		return errorsx.InvalidParam("门店客户关系范围不完整")
+	}
+	relation, err := repositories.StoreCustomerRelationRepository.GetForUpdateByCustomerAndStoreInTenant(db, conversation.TenantID, customerID, conversation.StoreID)
+	if err != nil {
+		return err
+	}
+	if relation == nil {
+		return repositories.StoreCustomerRelationRepository.Create(db, &models.StoreCustomerRelation{
+			TenantID:           conversation.TenantID,
+			CustomerID:         customerID,
+			StoreID:            conversation.StoreID,
+			WxWorkInstanceID:   wxWorkInstanceID,
+			LastConversationID: conversation.ID,
+			LastActiveAt:       &now,
+			Status:             enums.StatusOk,
+			AuditFields:        utils.BuildAuditFields(operator),
+		})
+	}
+	return repositories.StoreCustomerRelationRepository.UpdatesInTenant(db, relation.ID, conversation.TenantID, map[string]any{
+		"wx_work_instance_id":  wxWorkInstanceID,
+		"last_conversation_id": conversation.ID,
+		"last_active_at":       now,
+		"status":               enums.StatusOk,
+		"update_user_id":       auditUserID(operator),
+		"update_user_name":     auditUsername(operator),
+		"updated_at":           now,
+	})
+}
+
+func (s *conversationService) moveStoreCustomerRelationDB(db *gorm.DB, conversation *models.Conversation, targetCustomerID, wxWorkInstanceID int64, now time.Time, operator *dto.AuthPrincipal) error {
+	if conversation == nil || conversation.CustomerID == targetCustomerID {
+		return s.touchStoreCustomerRelationDB(db, conversation, targetCustomerID, wxWorkInstanceID, now, operator)
+	}
+	customerIDs := []int64{conversation.CustomerID, targetCustomerID}
+	if customerIDs[0] > customerIDs[1] {
+		customerIDs[0], customerIDs[1] = customerIDs[1], customerIDs[0]
+	}
+	locked := make(map[int64]*models.StoreCustomerRelation, 2)
+	for _, customerID := range customerIDs {
+		relation, err := repositories.StoreCustomerRelationRepository.GetForUpdateByCustomerAndStoreInTenant(db, conversation.TenantID, customerID, conversation.StoreID)
+		if err != nil {
+			return err
+		}
+		locked[customerID] = relation
+	}
+	source := locked[conversation.CustomerID]
+	target := locked[targetCustomerID]
+	if target == nil && source != nil {
+		return repositories.StoreCustomerRelationRepository.UpdatesInTenant(db, source.ID, conversation.TenantID, map[string]any{
+			"customer_id":          targetCustomerID,
+			"wx_work_instance_id":  wxWorkInstanceID,
+			"last_conversation_id": conversation.ID,
+			"last_active_at":       now,
+			"status":               enums.StatusOk,
+			"update_user_id":       auditUserID(operator),
+			"update_user_name":     auditUsername(operator),
+			"updated_at":           now,
+		})
+	}
+	return s.touchStoreCustomerRelationDB(db, conversation, targetCustomerID, wxWorkInstanceID, now, operator)
 }
 
 func (s *conversationService) canLinkConversationCustomer(conv *models.Conversation, operator *dto.AuthPrincipal) bool {

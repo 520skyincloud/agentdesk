@@ -37,7 +37,7 @@ func BuildModelProfileTestRun(item *models.ModelProfileTestRun) *response.ModelP
 	}
 	return &response.ModelProfileTestRunResponse{
 		ID: item.ID, TenantID: item.TenantID, TenantName: item.TenantName,
-		StoreID: item.StoreID, StoreName: item.StoreName,
+		StoreID: item.StoreID, StoreName: item.StoreName, StoreStaffBindingID: item.StoreStaffBindingID,
 		CredentialRevision: item.CredentialRevision, CredentialSource: string(item.CredentialSource),
 		Status: string(item.Status), FailedUsageCode: string(item.FailedUsageCode),
 		ErrorClass: item.ErrorClass, ErrorMessage: item.ErrorMessage,

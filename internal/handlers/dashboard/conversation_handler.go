@@ -16,7 +16,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/mlogclub/simple/common/strs"
 	"github.com/mlogclub/simple/web"
-	"github.com/spf13/cast"
 )
 
 func ConversationAnyList(ctx *gin.Context) {
@@ -131,12 +130,96 @@ func ConversationGetBy(ctx *gin.Context) {
 		return
 	}
 
+	canViewRelated := services.AuthService.HasPermission(ctx, constants.PermissionConversationRelatedView.Code)
+	canViewHistory := false
+	if canViewRelated {
+		canViewHistory, err = services.ConversationHistoryService.CanViewLineage(item, operator)
+		if err != nil {
+			httpx.WriteJSON(ctx, err)
+			return
+		}
+	}
+	historySegments, err := services.ConversationHistoryService.ListCurrentSegments(item)
+	if canViewHistory {
+		historySegments, err = services.ConversationHistoryService.ListSegments(item)
+	}
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
 	detail := response.ConversationDetailResponse{
 		ConversationResponse: builders.BuildConversationWithLocale(item, i18nx.Locale(ctx)),
 		Participants:         builders.BuildParticipantResponses(id, item.TenantID),
+		ChannelSessions:      builders.BuildConversationChannelSessions(services.ConversationChannelSessionService.ListInTenant(id, item.TenantID)),
+		HistorySegments:      builders.BuildConversationHistorySegments(historySegments),
+	}
+	if canViewRelated {
+		detail.ContinuityLinks = builders.BuildConversationContinuityLinks(services.ConversationService.ListConversationContinuityLinks(item, operator))
+		related := services.ConversationService.ListRelatedStoreConversations(item, operator)
+		detail.RelatedConversations = make([]response.ConversationResponse, 0, len(related))
+		for i := range related {
+			detail.RelatedConversations = append(detail.RelatedConversations, builders.BuildConversationWithLocale(&related[i], i18nx.Locale(ctx)))
+		}
 	}
 	detail.CustomerTags = services.CustomerTagService.ListForConversation(id)
 	httpx.WriteJSON(ctx, detail)
+}
+
+func ConversationPostInherit(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationInherit)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.InheritStoreConversationRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	item, err := services.ConversationService.InheritStoreConversation(req, operator, httpx.GetRequestID(ctx))
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildConversationWithLocale(item, i18nx.Locale(ctx)))
+}
+
+func ConversationPostInheritPreview(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationInherit)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.PreviewStoreConversationInheritanceRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	result, err := services.ConversationService.PreviewStoreConversationInheritance(req, operator)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, result)
+}
+
+func ConversationPostInheritBatch(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationInherit)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.BatchInheritStoreConversationsRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	result, err := services.ConversationService.BatchInheritStoreConversations(req, operator, httpx.GetRequestID(ctx))
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, result)
 }
 
 func ConversationAnyMessage_list(ctx *gin.Context) {
@@ -150,7 +233,8 @@ func ConversationAnyMessage_list(ctx *gin.Context) {
 		conversationID, _ = params.GetInt64(ctx, "conversationId")
 		senderType, _     = params.Get(ctx, "senderType")
 		messageType, _    = params.Get(ctx, "messageType")
-		cursor, _         = params.GetInt64(ctx, "cursor")
+		cursorText, _     = params.Get(ctx, "cursor")
+		includeHistory, _ = params.Get(ctx, "includeHistory")
 		limit, _          = params.GetInt(ctx, "limit")
 	)
 	if !services.AgentTeamScopeService.CanViewConversation(operator, conversationID) {
@@ -158,12 +242,38 @@ func ConversationAnyMessage_list(ctx *gin.Context) {
 		return
 	}
 
+	if (includeHistory == "1" || strings.EqualFold(includeHistory, "true")) &&
+		services.AuthService.HasPermission(ctx, constants.PermissionConversationRelatedView.Code) {
+		conversation := services.ConversationService.Get(conversationID)
+		if conversation == nil {
+			httpx.WriteJSON(ctx, web.JsonErrorMsg("会话不存在"))
+			return
+		}
+		canViewHistory, scopeErr := services.ConversationHistoryService.CanViewLineage(conversation, operator)
+		if scopeErr != nil {
+			httpx.WriteJSON(ctx, scopeErr)
+			return
+		}
+		if canViewHistory {
+			list, nextCursor, hasMore, historyErr := services.ConversationHistoryService.ListMessages(
+				conversation, cursorText, limit, senderType, messageType,
+			)
+			if historyErr != nil {
+				httpx.WriteJSON(ctx, historyErr)
+				return
+			}
+			results := builders.BuildConversationHistoryMessagesWithLocale(list, i18nx.Locale(ctx))
+			httpx.WriteJSON(ctx, httpx.CursorData(results, nextCursor, hasMore))
+			return
+		}
+	}
+
+	cursor, _ := strconv.ParseInt(strings.TrimSpace(cursorText), 10, 64)
 	list, nextCursor, hasMore := services.MessageService.FindByConversationIDCursor(
 		conversationID, cursor, limit, senderType, messageType,
 	)
 	results := builders.BuildMessagesWithLocale(list, i18nx.Locale(ctx))
-
-	httpx.WriteJSON(ctx, httpx.CursorData(results, cast.ToString(nextCursor), hasMore))
+	httpx.WriteJSON(ctx, httpx.CursorData(results, strconv.FormatInt(nextCursor, 10), hasMore))
 }
 
 func ConversationPostAssign(ctx *gin.Context) {

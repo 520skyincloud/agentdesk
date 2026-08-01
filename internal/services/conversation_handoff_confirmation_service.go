@@ -145,7 +145,7 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 	if state == nil || state.PendingAction != string(enums.ConversationPendingActionHumanHandoff) {
 		return false, nil
 	}
-	if !WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledInTenant(conversation.CustomerID, state.WxWorkInstanceID, conversation.TenantID) {
+	if !WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledInTenant(conversation.CustomerID, conversation.StoreStaffBindingID, conversation.TenantID) {
 		_ = ConversationRouteService.ClearPendingAction(conversation.ID)
 		return false, nil
 	}

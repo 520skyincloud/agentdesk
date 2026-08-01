@@ -13,7 +13,13 @@ func InitMigrations() error {
 	if err := migration.Preflight(sqls.DB()); err != nil {
 		return err
 	}
+	if err := normalizeStoreContinuitySchema(sqls.DB()); err != nil {
+		return err
+	}
 	if err := sqls.DB().AutoMigrate(models.Models...); err != nil {
+		return err
+	}
+	if err := validateStoreContinuityIndexes(sqls.DB()); err != nil {
 		return err
 	}
 	if err := validateTenantScopedUniqueIndexes(sqls.DB()); err != nil {

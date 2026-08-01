@@ -71,14 +71,23 @@ func validateManagedFastGPTReadiness(knowledgeBase models.KnowledgeBase) error {
 		return fmt.Errorf("managed FastGPT knowledge base is not active for the store")
 	}
 	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(sqls.DB(), knowledgeBase.TenantID, knowledgeBase.StoreID)
-	credential := repositories.StoreModelCredentialRepository.GetByStore(sqls.DB(), knowledgeBase.TenantID, knowledgeBase.StoreID)
 	binding := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(sqls.DB(), knowledgeBase.StoreID, knowledgeBase.TenantID)
+	if binding == nil || binding.AppliedStoreStaffBindingID <= 0 {
+		return fmt.Errorf("managed FastGPT profile is not ready")
+	}
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(
+		sqls.DB(),
+		knowledgeBase.TenantID,
+		knowledgeBase.StoreID,
+		binding.AppliedStoreStaffBindingID,
+	)
 	if assignment == nil || assignment.Status != enums.StoreModelAssignmentStatusReady || assignment.TemplateID <= 0 || assignment.TemplateRevision <= 0 ||
 		credential == nil || credential.Status != enums.StoreCredentialStatusActive || credential.CredentialRevision <= 0 ||
-		binding == nil || binding.Status != "active" || binding.ReadinessStatus != "ready" ||
+		binding.Status != "active" || binding.ReadinessStatus != "ready" ||
 		binding.AppliedProfileID != assignment.TemplateID || binding.AppliedProfileRevision != assignment.TemplateRevision ||
 		binding.AppliedCredentialRevision != credential.CredentialRevision || knowledgeBase.FastGPTProfileStatus != "ready" ||
 		knowledgeBase.FastGPTAppliedProfileID != assignment.TemplateID || knowledgeBase.FastGPTAppliedProfileRevision != assignment.TemplateRevision ||
+		knowledgeBase.FastGPTAppliedStoreStaffBindingID != binding.AppliedStoreStaffBindingID ||
 		knowledgeBase.FastGPTAppliedCredentialRevision != credential.CredentialRevision {
 		return fmt.Errorf("managed FastGPT profile is not ready")
 	}

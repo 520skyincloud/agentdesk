@@ -21,9 +21,9 @@ type RegisterTenantUserRequest struct {
 }
 
 type ReviewTenantRegistrationRequest struct {
-	UserID    int64                                  `json:"userId"`
-	Decision  enums.TenantRegistrationReviewDecision `json:"decision"`
-	RoleIDs   []int64                                `json:"roleIds"`
-	StoreName string                                 `json:"storeName"`
-	Remark    string                                 `json:"remark"`
+	UserID   int64                                  `json:"userId"`
+	Decision enums.TenantRegistrationReviewDecision `json:"decision"`
+	RoleIDs  []int64                                `json:"roleIds"`
+	StoreID  int64                                  `json:"storeId"`
+	Remark   string                                 `json:"remark"`
 }

@@ -24,12 +24,13 @@ var FastGPTUsageSyncService = newFastGPTUsageSyncService()
 type fastGPTUsageSyncService struct{}
 
 type fastGPTUsageAttribution struct {
-	ModelProfileID     int64
-	ProfileRevision    int64
-	CredentialRevision int64
-	KeyFingerprint     string
-	FastGPTProfileID   string
-	FastGPTRevision    string
+	StoreStaffBindingID int64
+	ModelProfileID      int64
+	ProfileRevision     int64
+	CredentialRevision  int64
+	KeyFingerprint      string
+	FastGPTProfileID    string
+	FastGPTRevision     string
 }
 
 func newFastGPTUsageSyncService() *fastGPTUsageSyncService { return &fastGPTUsageSyncService{} }
@@ -75,7 +76,7 @@ func (s *fastGPTUsageSyncService) SyncKnowledgeBase(knowledgeBaseID int64) error
 		s.saveFailure(knowledgeBase, "knowledge_base_not_authoritative")
 		return fmt.Errorf("managed FastGPT knowledge base is not the Store authority")
 	}
-	target, credential, err := FastGPTDatasetService.resolveJobTarget(knowledgeBase.TenantID, knowledgeBase.StoreID)
+	target, credential, err := FastGPTDatasetService.resolveJobTarget(knowledgeBase.TenantID, knowledgeBase.StoreID, knowledgeBase.FastGPTAppliedStoreStaffBindingID)
 	if err != nil {
 		s.saveFailure(knowledgeBase, "model_target_unavailable")
 		return err
@@ -157,7 +158,11 @@ func (s *fastGPTUsageSyncService) SyncKnowledgeBase(knowledgeBaseID int64) error
 	// Another worker advanced this opaque cursor window first. Usage events are
 	// immutable and idempotent, so losing the CAS is a successful no-op.
 	current := repositories.FastGPTUsageSyncStateRepository.GetByKnowledgeBaseIDInTenant(sqls.DB(), knowledgeBase.ID, knowledgeBase.TenantID)
-	if current == nil || current.StoreID != knowledgeBase.StoreID || strings.TrimSpace(current.TenantTeamID) != tenant.TenantTeamID {
+	if current == nil || current.StoreID != knowledgeBase.StoreID || strings.TrimSpace(current.TenantTeamID) != tenant.TenantTeamID ||
+		current.StoreStaffBindingID != expected.StoreStaffBindingID || current.ModelProfileID != expected.ModelProfileID ||
+		current.ProfileRevision != expected.ProfileRevision || current.CredentialRevision != expected.CredentialRevision ||
+		current.KeyFingerprint != expected.KeyFingerprint || current.FastGPTProfileID != expected.FastGPTProfileID ||
+		current.FastGPTRevision != expected.FastGPTRevision {
 		return fmt.Errorf("managed FastGPT usage cursor changed outside its Store scope")
 	}
 	return nil
@@ -251,6 +256,7 @@ func toFastGPTUsageEvent(knowledgeBase *models.KnowledgeBase, tenant *models.Fas
 		TenantID:             knowledgeBase.TenantID,
 		EventKey:             fmt.Sprintf("fastgpt:%s:%s", tenant.TenantTeamID, item.ExternalEventID),
 		StoreID:              knowledgeBase.StoreID,
+		StoreStaffBindingID:  attribution.StoreStaffBindingID,
 		KnowledgeBaseID:      knowledgeBase.ID,
 		RequestID:            item.RequestID,
 		Stage:                firstNonBlank(item.Stage, "knowledge_operation"),
@@ -281,27 +287,30 @@ func toFastGPTUsageEvent(knowledgeBase *models.KnowledgeBase, tenant *models.Fas
 }
 
 func fastGPTAttributionFromAppliedTarget(knowledgeBase *models.KnowledgeBase, tenant *models.FastGPTStoreTenant) (fastGPTUsageAttribution, error) {
-	if knowledgeBase == nil || tenant == nil || tenant.AppliedProfileID <= 0 || tenant.AppliedProfileRevision <= 0 ||
+	if knowledgeBase == nil || tenant == nil || tenant.AppliedStoreStaffBindingID <= 0 || tenant.AppliedProfileID <= 0 || tenant.AppliedProfileRevision <= 0 ||
 		tenant.AppliedCredentialRevision <= 0 || strings.TrimSpace(tenant.AppliedKeyFingerprint) == "" ||
 		strings.TrimSpace(knowledgeBase.FastGPTProfileID) == "" || strings.TrimSpace(knowledgeBase.FastGPTProfileRevision) == "" ||
 		knowledgeBase.FastGPTAppliedProfileID != tenant.AppliedProfileID || knowledgeBase.FastGPTAppliedProfileRevision != tenant.AppliedProfileRevision ||
+		knowledgeBase.FastGPTAppliedStoreStaffBindingID != tenant.AppliedStoreStaffBindingID ||
 		knowledgeBase.FastGPTAppliedCredentialRevision != tenant.AppliedCredentialRevision {
 		return fastGPTUsageAttribution{}, fmt.Errorf("managed FastGPT applied attribution is incomplete")
 	}
 	return fastGPTUsageAttribution{
-		ModelProfileID: tenant.AppliedProfileID, ProfileRevision: tenant.AppliedProfileRevision,
+		StoreStaffBindingID: tenant.AppliedStoreStaffBindingID,
+		ModelProfileID:      tenant.AppliedProfileID, ProfileRevision: tenant.AppliedProfileRevision,
 		CredentialRevision: tenant.AppliedCredentialRevision, KeyFingerprint: tenant.AppliedKeyFingerprint,
 		FastGPTProfileID: knowledgeBase.FastGPTProfileID, FastGPTRevision: knowledgeBase.FastGPTProfileRevision,
 	}, nil
 }
 
 func fastGPTAttributionFromSyncState(state *models.FastGPTUsageSyncState) (fastGPTUsageAttribution, error) {
-	if state == nil || state.ModelProfileID <= 0 || state.ProfileRevision <= 0 || state.CredentialRevision <= 0 ||
+	if state == nil || state.StoreStaffBindingID <= 0 || state.ModelProfileID <= 0 || state.ProfileRevision <= 0 || state.CredentialRevision <= 0 ||
 		strings.TrimSpace(state.KeyFingerprint) == "" || strings.TrimSpace(state.FastGPTProfileID) == "" || strings.TrimSpace(state.FastGPTRevision) == "" {
 		return fastGPTUsageAttribution{}, fmt.Errorf("managed FastGPT usage cursor attribution is incomplete")
 	}
 	return fastGPTUsageAttribution{
-		ModelProfileID: state.ModelProfileID, ProfileRevision: state.ProfileRevision,
+		StoreStaffBindingID: state.StoreStaffBindingID,
+		ModelProfileID:      state.ModelProfileID, ProfileRevision: state.ProfileRevision,
 		CredentialRevision: state.CredentialRevision, KeyFingerprint: state.KeyFingerprint,
 		FastGPTProfileID: state.FastGPTProfileID, FastGPTRevision: state.FastGPTRevision,
 	}, nil
@@ -312,6 +321,7 @@ func applyFastGPTUsageAttribution(state *models.FastGPTUsageSyncState, attributi
 		return
 	}
 	state.ModelProfileID = attribution.ModelProfileID
+	state.StoreStaffBindingID = attribution.StoreStaffBindingID
 	state.ProfileRevision = attribution.ProfileRevision
 	state.CredentialRevision = attribution.CredentialRevision
 	state.KeyFingerprint = attribution.KeyFingerprint
@@ -320,7 +330,7 @@ func applyFastGPTUsageAttribution(state *models.FastGPTUsageSyncState, attributi
 }
 
 func fastGPTUsageAttributionIsEmpty(state *models.FastGPTUsageSyncState) bool {
-	return state != nil && state.ModelProfileID == 0 && state.ProfileRevision == 0 && state.CredentialRevision == 0 &&
+	return state != nil && state.StoreStaffBindingID == 0 && state.ModelProfileID == 0 && state.ProfileRevision == 0 && state.CredentialRevision == 0 &&
 		strings.TrimSpace(state.KeyFingerprint) == "" && strings.TrimSpace(state.FastGPTProfileID) == "" && strings.TrimSpace(state.FastGPTRevision) == ""
 }
 

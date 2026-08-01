@@ -148,20 +148,34 @@ func TestKnowledgeResourceTraceBuildsOrderedImageCommitMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.Asset{}, &models.WxWorkProtocolInstance{}, &models.ConversationRouteState{}); err != nil {
+	if err := db.AutoMigrate(&models.Asset{}, &models.Store{}, &models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{}, &models.ConversationRouteState{}); err != nil {
 		t.Fatalf("migrate sqlite: %v", err)
 	}
 	sqls.SetDB(db)
-	instance := &models.WxWorkProtocolInstance{ID: 7, Guid: "knowledge-resource-guid", Status: enums.StatusOk}
+	store := &models.Store{TenantID: 3, StoreCode: "knowledge-resource-store", Name: "知识资源门店", Status: enums.StatusOk}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	binding := &models.StoreStaffBinding{TenantID: store.TenantID, StoreID: store.ID, Status: enums.StatusOk}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create store staff binding: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		ID: 7, TenantID: store.TenantID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		Guid: "knowledge-resource-guid", Status: enums.StatusOk,
+	}
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
-	if err := db.Create(&models.ConversationRouteState{ConversationID: 99, WxWorkInstanceID: instance.ID}).Error; err != nil {
+	if err := db.Create(&models.ConversationRouteState{
+		TenantID: store.TenantID, ConversationID: 99, StoreID: store.ID,
+		StoreStaffBindingID: binding.ID, WxWorkInstanceID: instance.ID,
+	}).Error; err != nil {
 		t.Fatalf("create route: %v", err)
 	}
 	for _, asset := range []*models.Asset{
-		{AssetID: "knowledge-image-1", Provider: enums.AssetProviderLocal, StorageKey: "knowledge-resources/3/7/one.png", Filename: "one.png", MimeType: "image/png", Status: enums.AssetStatusSuccess},
-		{AssetID: "knowledge-image-2", Provider: enums.AssetProviderLocal, StorageKey: "knowledge-resources/3/7/two.png", Filename: "two.png", MimeType: "image/png", Status: enums.AssetStatusSuccess},
+		{TenantID: store.TenantID, AssetID: "knowledge-image-1", Provider: enums.AssetProviderLocal, StorageKey: "knowledge-resources/3/7/one.png", Filename: "one.png", MimeType: "image/png", Status: enums.AssetStatusSuccess},
+		{TenantID: store.TenantID, AssetID: "knowledge-image-2", Provider: enums.AssetProviderLocal, StorageKey: "knowledge-resources/3/7/two.png", Filename: "two.png", MimeType: "image/png", Status: enums.AssetStatusSuccess},
 	} {
 		if err := db.Create(asset).Error; err != nil {
 			t.Fatalf("create asset: %v", err)
@@ -179,7 +193,7 @@ func TestKnowledgeResourceTraceBuildsOrderedImageCommitMessages(t *testing.T) {
 		t.Fatal("knowledge image resources must be treated as structured commit actions")
 	}
 	replies := service.buildKnowledgeResourceReplies(replyCommitInput{
-		Conversation: models.Conversation{ID: 99},
+		Conversation: models.Conversation{ID: 99, TenantID: store.TenantID, StoreID: store.ID, StoreStaffBindingID: binding.ID},
 		Trace:        trace,
 	})
 	if len(replies) != 2 {

@@ -1,16 +1,18 @@
 package request
 
 type GetStoreModelCredentialRequest struct {
-	TenantID int64 `json:"tenantId"`
-	StoreID  int64 `json:"storeId"`
+	TenantID            int64 `json:"tenantId"`
+	StoreID             int64 `json:"storeId"`
+	StoreStaffBindingID int64 `json:"storeStaffBindingId"`
 }
 
 type SubmitStoreModelCredentialRequest struct {
-	TenantID        int64  `json:"tenantId"`
-	StoreID         int64  `json:"storeId"`
-	APIKey          string `json:"apiKey"`
-	CurrentPassword string `json:"currentPassword"`
-	Confirmed       bool   `json:"confirmed"`
+	TenantID            int64  `json:"tenantId"`
+	StoreID             int64  `json:"storeId"`
+	StoreStaffBindingID int64  `json:"storeStaffBindingId"`
+	APIKey              string `json:"apiKey"`
+	CurrentPassword     string `json:"currentPassword"`
+	Confirmed           bool   `json:"confirmed"`
 }
 
 type SubmitSelfStoreModelCredentialRequest struct {
@@ -20,11 +22,12 @@ type SubmitSelfStoreModelCredentialRequest struct {
 }
 
 type DecideStoreModelCredentialRequest struct {
-	TenantID          int64  `json:"tenantId"`
-	StoreID           int64  `json:"storeId"`
-	CandidateRevision int64  `json:"candidateRevision"`
-	CurrentPassword   string `json:"currentPassword"`
-	Confirmed         bool   `json:"confirmed"`
+	TenantID            int64  `json:"tenantId"`
+	StoreID             int64  `json:"storeId"`
+	StoreStaffBindingID int64  `json:"storeStaffBindingId"`
+	CandidateRevision   int64  `json:"candidateRevision"`
+	CurrentPassword     string `json:"currentPassword"`
+	Confirmed           bool   `json:"confirmed"`
 }
 
 type UpdateStoreCredentialPolicyRequest struct {
@@ -37,7 +40,8 @@ type UpdateStoreCredentialPolicyRequest struct {
 }
 
 type GetStoreModelCredentialAuditRequest struct {
-	TenantID int64 `json:"tenantId"`
-	StoreID  int64 `json:"storeId"`
-	Limit    int   `json:"limit"`
+	TenantID            int64 `json:"tenantId"`
+	StoreID             int64 `json:"storeId"`
+	StoreStaffBindingID int64 `json:"storeStaffBindingId"`
+	Limit               int   `json:"limit"`
 }

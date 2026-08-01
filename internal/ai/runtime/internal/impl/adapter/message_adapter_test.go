@@ -44,6 +44,70 @@ func TestBuildHistoryMessagesOnlyUsesMessagesBeforeCurrent(t *testing.T) {
 	}
 }
 
+func TestBuildHistoryMessagesUsesOnlySameStoreCustomerMemory(t *testing.T) {
+	db := setupAdapterHistoryTestDB(t)
+	now := time.Now()
+	tenantID := int64(101)
+	storeID := int64(201)
+	customerID := int64(301)
+	current := &models.Conversation{
+		TenantID: tenantID, StoreID: storeID, StoreStaffBindingID: 401,
+		CustomerID: customerID, CustomerName: "当前客户", Status: enums.IMConversationStatusAIServing,
+	}
+	if err := db.Create(current).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		TenantID: tenantID, ConversationID: current.ID, StoreID: storeID,
+		StoreStaffBindingID: current.StoreStaffBindingID, WxWorkInstanceID: 501, SessionNo: 1,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.StoreCustomerRelation{
+		TenantID: tenantID, StoreID: storeID, CustomerID: customerID,
+		StableNotes: "偏好高楼层", Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	summaries := []models.ConversationSessionSummary{
+		{
+			TenantID: tenantID, ConversationID: current.ID + 1, SessionNo: 1, StoreID: storeID,
+			CustomerID: customerID, StableFacts: "需要安静房间", MessageCount: 6, LastMessageID: 61, Status: enums.StatusOk,
+		},
+		{
+			TenantID: tenantID, ConversationID: current.ID + 2, SessionNo: 1, StoreID: storeID + 1,
+			CustomerID: customerID, StableFacts: "其他门店专属信息", MessageCount: 4, LastMessageID: 62, Status: enums.StatusOk,
+		},
+		{
+			TenantID: tenantID, ConversationID: current.ID + 3, SessionNo: 1, StoreID: storeID,
+			CustomerID: customerID + 1, StableFacts: "其他客户专属信息", MessageCount: 5, LastMessageID: 63, Status: enums.StatusOk,
+		},
+	}
+	if err := db.Create(&summaries).Error; err != nil {
+		t.Fatal(err)
+	}
+	currentMessage := &models.Message{
+		TenantID: tenantID, ConversationID: current.ID, SessionNo: 1,
+		ClientMsgID: "store-memory-current", SenderType: enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText, Content: "这次想订房", SeqNo: 1, SentAt: ptrAdapterTime(now),
+	}
+	if err := db.Create(currentMessage).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	history := BuildHistoryMessages(current.ID, currentMessage.ID, tenantID, 10)
+	if history.MemoryMessage == nil || history.MemorySource != "store_customer_memory" {
+		t.Fatalf("store customer memory missing: %#v", history)
+	}
+	memory := history.MemoryMessage.Content
+	if !strings.Contains(memory, "偏好高楼层") || !strings.Contains(memory, "需要安静房间") {
+		t.Fatalf("same Store customer memory not loaded: %q", memory)
+	}
+	if strings.Contains(memory, "其他门店专属信息") || strings.Contains(memory, "其他客户专属信息") {
+		t.Fatalf("cross-scope memory leaked: %q", memory)
+	}
+}
+
 func setupAdapterHistoryTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dbName := "adapter_history_test_" + strings.NewReplacer("/", "_").Replace(t.Name())
@@ -60,7 +124,13 @@ func setupAdapterHistoryTestDB(t *testing.T) *gorm.DB {
 	t.Cleanup(func() {
 		_ = sqlDB.Close()
 	})
-	if err := db.AutoMigrate(&models.Message{}, &models.Conversation{}, &models.ConversationRouteState{}, &models.ConversationSessionSummary{}); err != nil {
+	if err := db.AutoMigrate(
+		&models.Message{},
+		&models.Conversation{},
+		&models.ConversationRouteState{},
+		&models.ConversationSessionSummary{},
+		&models.StoreCustomerRelation{},
+	); err != nil {
 		t.Fatalf("migrate tables: %v", err)
 	}
 	sqls.SetDB(db)

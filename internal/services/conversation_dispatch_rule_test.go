@@ -146,6 +146,65 @@ func TestPendingTeamRepositoryScanIsBoundedAndIncludesExplicitRoute(t *testing.T
 	}
 }
 
+func TestPendingTeamRepositoryScopesSameStoreByExactBinding(t *testing.T) {
+	db := setupConversationDispatchSquadTestDB(t)
+	teamA := &models.AgentTeam{ID: 7, TenantID: 101, Name: "同店A组", Status: enums.StatusOk}
+	teamB := &models.AgentTeam{ID: 8, TenantID: 101, Name: "同店B组", Status: enums.StatusOk}
+	if err := db.Create([]*models.AgentTeam{teamA, teamB}).Error; err != nil {
+		t.Fatalf("create same-store teams: %v", err)
+	}
+	bindingA := &models.StoreStaffBinding{TenantID: 101, StoreID: 88, AgentTeamID: teamA.ID, Status: enums.StatusOk}
+	bindingB := &models.StoreStaffBinding{TenantID: 101, StoreID: 88, AgentTeamID: teamB.ID, Status: enums.StatusOk}
+	if err := db.Create([]*models.StoreStaffBinding{bindingA, bindingB}).Error; err != nil {
+		t.Fatalf("create same-store bindings: %v", err)
+	}
+	instanceA := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "same-store-a", StoreID: 88, StoreStaffBindingID: bindingA.ID, AgentTeamID: teamA.ID, Status: enums.StatusOk}
+	instanceB := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "same-store-b", StoreID: 88, StoreStaffBindingID: bindingB.ID, AgentTeamID: teamB.ID, Status: enums.StatusOk}
+	if err := db.Create([]*models.WxWorkProtocolInstance{instanceA, instanceB}).Error; err != nil {
+		t.Fatalf("create same-store instances: %v", err)
+	}
+	conversationA := &models.Conversation{TenantID: 101, StoreID: 88, StoreStaffBindingID: bindingA.ID, Status: enums.IMConversationStatusPending, Priority: 10}
+	conversationB := &models.Conversation{TenantID: 101, StoreID: 88, StoreStaffBindingID: bindingB.ID, Status: enums.IMConversationStatusPending, Priority: 20}
+	if err := db.Create([]*models.Conversation{conversationA, conversationB}).Error; err != nil {
+		t.Fatalf("create same-store conversations: %v", err)
+	}
+	routeA := &models.ConversationRouteState{TenantID: 101, ConversationID: conversationA.ID, StoreID: 88, StoreStaffBindingID: bindingA.ID, WxWorkInstanceID: instanceA.ID}
+	routeB := &models.ConversationRouteState{TenantID: 101, ConversationID: conversationB.ID, StoreID: 88, StoreStaffBindingID: bindingB.ID, WxWorkInstanceID: instanceB.ID}
+	if err := db.Create([]*models.ConversationRouteState{routeA, routeB}).Error; err != nil {
+		t.Fatalf("create same-store routes: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		teamID int64
+		wantID int64
+		notID  int64
+	}{
+		{name: "binding A", teamID: teamA.ID, wantID: conversationA.ID, notID: conversationB.ID},
+		{name: "binding B", teamID: teamB.ID, wantID: conversationB.ID, notID: conversationA.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := repositories.ConversationRepository.FindPendingUnassignedForTeam(db, 101, tc.teamID, 10)
+			if err != nil {
+				t.Fatalf("find pending conversations: %v", err)
+			}
+			if !conversationListContains(got, tc.wantID) || conversationListContains(got, tc.notID) {
+				t.Fatalf("team %d pending conversations = %+v, want only binding conversation %d", tc.teamID, got, tc.wantID)
+			}
+		})
+	}
+
+	resolved := ConversationDispatchService.resolveDispatchTeamIDsDB(db, conversationA, routeA)
+	if len(resolved) != 1 || resolved[0] != teamA.ID {
+		t.Fatalf("dispatch team resolution = %v, want exact binding team %d", resolved, teamA.ID)
+	}
+	routeA.WxWorkInstanceID = instanceB.ID
+	resolved = ConversationDispatchService.resolveDispatchTeamIDsDB(db, conversationA, routeA)
+	if len(resolved) != 1 || resolved[0] != teamA.ID {
+		t.Fatalf("mismatched instance lent another binding team: %v", resolved)
+	}
+}
+
 func TestPendingRepositoryWindowsAlwaysIncludeOldestTask(t *testing.T) {
 	t.Run("tenant", func(t *testing.T) {
 		db := setupConversationDispatchSquadTestDB(t)

@@ -71,12 +71,22 @@ type storeCredentialFastGPTStub struct {
 	err          error
 	errorsByCall map[int]error
 	calls        int
+	bindingIDs   []int64
 	onFirst      func()
 }
 
-func (s *storeCredentialFastGPTStub) Sync(_ context.Context, _ storeCredentialActivationTarget, _ string, _ int64, _ string) (string, error) {
+func (s *storeCredentialFastGPTStub) Sync(ctx context.Context, target storeCredentialActivationTarget, apiKey string, revision int64, fingerprint string) (string, error) {
+	return s.sync(ctx, target, apiKey, revision, fingerprint)
+}
+
+func (s *storeCredentialFastGPTStub) SyncOwner(ctx context.Context, target storeCredentialActivationTarget, apiKey string, revision int64, fingerprint string) (string, error) {
+	return s.sync(ctx, target, apiKey, revision, fingerprint)
+}
+
+func (s *storeCredentialFastGPTStub) sync(_ context.Context, target storeCredentialActivationTarget, _ string, _ int64, _ string) (string, error) {
 	s.mu.Lock()
 	s.calls++
+	s.bindingIDs = append(s.bindingIDs, target.StoreStaffBindingID)
 	call := s.calls
 	onFirst := s.onFirst
 	err := s.err
@@ -99,10 +109,17 @@ func (s *storeCredentialFastGPTStub) callCount() int {
 	return s.calls
 }
 
+func (s *storeCredentialFastGPTStub) syncedBindingIDs() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64(nil), s.bindingIDs...)
+}
+
 type storeCredentialFixture struct {
 	db       *gorm.DB
 	tenant   *models.Tenant
 	store    *models.Store
+	binding  *models.StoreStaffBinding
 	manager  *dto.AuthPrincipal
 	approver *dto.AuthPrincipal
 	staff    *dto.AuthPrincipal
@@ -144,7 +161,7 @@ func TestStoreModelCredentialRequiresConfirmationPasswordAndTenantScope(t *testi
 	if data.Credential == nil || data.Credential.Status != enums.StoreCredentialStatusActive || data.Credential.CredentialRevision != 1 {
 		t.Fatalf("credential was not activated: %#v", data.Credential)
 	}
-	resolved, err := service.ResolveActive(fixture.tenant.ID, fixture.store.ID)
+	resolved, err := service.ResolveActiveForBinding(fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +395,7 @@ func assertStoreModelCredentialRejectedCandidateErasesSecretMaterial(t *testing.
 		t.Fatal(err)
 	}
 
-	credential := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(fixture.db, fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 	if credential == nil || credential.CandidateRevision != revision ||
 		credential.CandidateStatus != enums.StoreCredentialStatusFailed ||
 		credential.CandidateApprovalStatus != enums.CredentialApprovalStatusRejected {
@@ -447,7 +464,10 @@ func TestStoreModelCredentialGetSelfReportsOnlyActualSelfServiceCapability(t *te
 
 	if err := fixture.db.Model(&models.StoreStaffBinding{}).
 		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
-		Update("active_user_id", nil).Error; err != nil {
+		Updates(map[string]any{
+			"active_user_id": nil,
+			"status":         enums.StatusDisabled,
+		}).Error; err != nil {
 		t.Fatal(err)
 	}
 	data, err = service.GetSelf(fixture.staff)
@@ -481,7 +501,7 @@ func assertStoreModelCredentialFailedCandidatePreservesActive(t *testing.T, fixt
 	if err == nil {
 		t.Fatal("invalid candidate must fail")
 	}
-	credential := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(fixture.db, fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 	if credential == nil || credential.CredentialRevision != 3 || credential.Status != enums.StoreCredentialStatusActive ||
 		credential.CandidateRevision != 4 || credential.CandidateStatus != enums.StoreCredentialStatusFailed {
 		t.Fatalf("failed candidate replaced active state: %#v", credential)
@@ -491,7 +511,7 @@ func assertStoreModelCredentialFailedCandidatePreservesActive(t *testing.T, fixt
 		credential.CandidateMasterKeyID != "" {
 		t.Fatalf("failed candidate retained secret material: %#v", credential)
 	}
-	resolved, resolveErr := service.ResolveActive(fixture.tenant.ID, fixture.store.ID)
+	resolved, resolveErr := service.ResolveActiveForBinding(fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 	if resolveErr != nil || resolved.APIKey != "sk-active" {
 		t.Fatalf("active credential was not preserved: %#v err=%v", resolved, resolveErr)
 	}
@@ -572,6 +592,101 @@ func assertStoreModelProfileSwitchPreservesCredentialRevision(t *testing.T, fixt
 	assertLatestModelProfileTestRun(t, fixture.db, enums.ModelProfileTestStatusPassed, enums.ModelProfileTestCredentialSourceActive, 7)
 }
 
+func TestStoreModelProfileSwitchValidatesEveryBindingAndUsesExplicitFastGPTOwner(t *testing.T) {
+	fixture := setupStoreCredentialFixture(t)
+	seedActiveStoreCredential(t, fixture, "sk-first-binding", 3)
+	secondBinding := seedAdditionalActiveStoreCredential(t, fixture, "credential-profile-owner", "sk-second-binding", 4)
+	candidate, _ := createStoreCredentialProfile(t, fixture.db, "profile-multi-binding", 2, enums.ModelProfileStatusCandidate)
+	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	if err := repositories.StoreModelProfileAssignmentRepository.Updates(fixture.db, assignment.ID, map[string]any{
+		"pending_template_id": candidate.ID, "pending_template_revision": candidate.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	validator := &storeCredentialValidatorStub{}
+	fastGPT := &storeCredentialFastGPTStub{}
+	service := &storeModelCredentialService{validator: validator, fastGPT: fastGPT}
+	requestID := "profile-switch-multi-binding"
+	data, err := service.ActivatePendingProfile(context.Background(), request.ActivatePendingStoreModelProfileRequest{
+		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, StoreStaffBindingID: secondBinding.ID,
+		TemplateID: candidate.ID, ConfirmRevision: candidate.Revision,
+		CurrentPassword: fixture.password, Confirmed: true,
+	}, fixture.manager, StoreCredentialRequestMeta{RequestID: requestID})
+	if err != nil {
+		t.Fatalf("activate multi-binding profile: %v", err)
+	}
+	if data.Binding == nil || data.Binding.ID != secondBinding.ID || data.Credential == nil || data.Credential.StoreStaffBindingID != secondBinding.ID {
+		t.Fatalf("activation response did not retain explicit owner: %#v", data)
+	}
+	if validator.callCount() != 2 || fastGPT.callCount() != 1 {
+		t.Fatalf("validator calls=%d want=2, FastGPT calls=%d want=1", validator.callCount(), fastGPT.callCount())
+	}
+	if bindingIDs := fastGPT.syncedBindingIDs(); len(bindingIDs) != 1 || bindingIDs[0] != secondBinding.ID {
+		t.Fatalf("FastGPT owner bindings=%v want [%d]", bindingIDs, secondBinding.ID)
+	}
+	var runs []models.ModelProfileTestRun
+	if err := fixture.db.Where("template_id = ? AND template_revision = ?", candidate.ID, candidate.Revision).Order("store_staff_binding_id ASC").Find(&runs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 || runs[0].StoreStaffBindingID != fixture.binding.ID || runs[1].StoreStaffBindingID != secondBinding.ID {
+		t.Fatalf("profile test runs=%#v", runs)
+	}
+	for _, result := range []enums.CredentialAuditResult{enums.CredentialAuditResultPending, enums.CredentialAuditResultSuccess} {
+		var count int64
+		if err := fixture.db.Model(&models.StoreModelCredentialAuditLog{}).
+			Where("request_id = ? AND action = ? AND result = ?", requestID, enums.CredentialAuditActionSwitchProfile, result).
+			Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		if count != 2 {
+			t.Fatalf("profile switch %s audit count=%d want=2", result, count)
+		}
+	}
+	firstCredential := repositories.StoreModelCredentialRepository.GetByBinding(fixture.db, fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
+	secondCredential := repositories.StoreModelCredentialRepository.GetByBinding(fixture.db, fixture.tenant.ID, fixture.store.ID, secondBinding.ID)
+	if firstCredential == nil || secondCredential == nil || firstCredential.LastTestStatus != "passed" || secondCredential.LastTestStatus != "passed" {
+		t.Fatalf("binding readiness was not committed: first=%#v second=%#v", firstCredential, secondCredential)
+	}
+	if firstCredential.LastFastGPTSyncStatus != "" || secondCredential.LastFastGPTSyncStatus != storeCredentialFastGPTStatusNotRequired {
+		t.Fatalf("FastGPT status must only be written to owner: first=%q second=%q", firstCredential.LastFastGPTSyncStatus, secondCredential.LastFastGPTSyncStatus)
+	}
+}
+
+func TestStoreModelProfileSwitchRejectsAnyActiveBindingWithoutCredential(t *testing.T) {
+	fixture := setupStoreCredentialFixture(t)
+	seedActiveStoreCredential(t, fixture, "sk-ready-binding", 3)
+	secondUser := createStoreCredentialUser(t, fixture.db, fixture.tenant.ID, "credential-unconfigured-staff", fixture.password)
+	secondBinding := &models.StoreStaffBinding{
+		TenantID: fixture.tenant.ID, UserID: secondUser.ID, ActiveUserID: positiveInt64Pointer(secondUser.ID),
+		StoreID: fixture.store.ID, Status: enums.StatusOk,
+	}
+	if err := fixture.db.Create(secondBinding).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := &storeModelCredentialService{validator: &storeCredentialValidatorStub{}, fastGPT: &storeCredentialFastGPTStub{}}
+	if err := service.EnsureBindingRecordDB(fixture.db, secondBinding, fixture.manager); err != nil {
+		t.Fatal(err)
+	}
+	candidate, _ := createStoreCredentialProfile(t, fixture.db, "profile-missing-binding-key", 2, enums.ModelProfileStatusCandidate)
+	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	if err := repositories.StoreModelProfileAssignmentRepository.Updates(fixture.db, assignment.ID, map[string]any{
+		"pending_template_id": candidate.ID, "pending_template_revision": candidate.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ActivatePendingProfile(context.Background(), request.ActivatePendingStoreModelProfileRequest{
+		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, StoreStaffBindingID: fixture.binding.ID,
+		TemplateID: candidate.ID, ConfirmRevision: candidate.Revision,
+		CurrentPassword: fixture.password, Confirmed: true,
+	}, fixture.manager, StoreCredentialRequestMeta{RequestID: "profile-switch-missing-binding-key"}); err == nil {
+		t.Fatal("profile switch succeeded while an active binding had no credential")
+	}
+	saved := repositories.StoreModelProfileAssignmentRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	if saved == nil || saved.TemplateID != fixture.profile.ID || saved.TemplateRevision != fixture.profile.Revision {
+		t.Fatalf("failed readiness check changed active assignment: %#v", saved)
+	}
+}
+
 func TestStoreModelProfileSwitchFailuresPreserveActiveAssignment(t *testing.T) {
 	testCases := []struct {
 		name            string
@@ -618,7 +733,7 @@ func TestStoreModelProfileSwitchFailuresPreserveActiveAssignment(t *testing.T) {
 			); err == nil {
 				t.Fatal("failed profile switch unexpectedly succeeded")
 			}
-			savedCredential := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+			savedCredential := repositories.StoreModelCredentialRepository.GetByBinding(fixture.db, fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 			if savedCredential == nil || savedCredential.CredentialRevision != 5 || savedCredential.Status != enums.StoreCredentialStatusActive {
 				t.Fatalf("failed profile switch changed active credential: %#v", savedCredential)
 			}
@@ -664,7 +779,7 @@ func TestStoreModelProfileSwitchCASConflictRestoresOldFastGPT(t *testing.T) {
 	); err == nil {
 		t.Fatal("concurrent assignment change must prevent profile switch")
 	}
-	savedCredential := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	savedCredential := repositories.StoreModelCredentialRepository.GetByBinding(fixture.db, fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 	if savedCredential == nil || savedCredential.CredentialRevision != 6 || savedCredential.Status != enums.StoreCredentialStatusActive {
 		t.Fatalf("CAS conflict changed active credential: %#v", savedCredential)
 	}
@@ -702,7 +817,7 @@ func TestStoreModelCredentialCASConflictRestoresOldFastGPTRevision(t *testing.T)
 	if err == nil {
 		t.Fatal("changed assignment must prevent activation")
 	}
-	credential := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(fixture.db, fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 	if credential == nil || credential.CredentialRevision != 1 || credential.Status != enums.StoreCredentialStatusActive || credential.CandidateStatus != enums.StoreCredentialStatusFailed {
 		t.Fatalf("CAS conflict damaged active credential: %#v", credential)
 	}
@@ -727,11 +842,11 @@ func TestStoreModelCredentialFastGPTFailureRestoresOldRevision(t *testing.T) {
 	if fastGPT.callCount() != 2 {
 		t.Fatalf("candidate sync and old revision restore calls=%d want=2", fastGPT.callCount())
 	}
-	credential := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(fixture.db, fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 	if credential == nil || credential.CredentialRevision != 1 || credential.Status != enums.StoreCredentialStatusActive || credential.CandidateStatus != enums.StoreCredentialStatusFailed {
 		t.Fatalf("FastGPT failure damaged active credential: %#v", credential)
 	}
-	resolved, resolveErr := service.ResolveActive(fixture.tenant.ID, fixture.store.ID)
+	resolved, resolveErr := service.ResolveActiveForBinding(fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 	if resolveErr != nil || resolved.APIKey != "sk-active" {
 		t.Fatalf("old active credential was not preserved: %#v err=%v", resolved, resolveErr)
 	}
@@ -770,12 +885,13 @@ func TestStoreModelCredentialConcurrentCandidateSubmissionAllowsOne(t *testing.T
 	}
 }
 
-func TestStoreModelCredentialDisableBlocksAssignment(t *testing.T) {
+func TestStoreModelCredentialDisableOnlyBlocksSelectedBinding(t *testing.T) {
 	fixture := setupStoreCredentialFixture(t)
 	seedActiveStoreCredential(t, fixture, "sk-active", 2)
 	service := &storeModelCredentialService{validator: &storeCredentialValidatorStub{}, fastGPT: &storeCredentialFastGPTStub{}}
+	secondBinding := seedAdditionalActiveStoreCredential(t, fixture, "credential-second-staff", "sk-second-active", 1)
 	data, err := service.Disable(request.DecideStoreModelCredentialRequest{
-		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID,
+		TenantID: fixture.tenant.ID, StoreID: fixture.store.ID, StoreStaffBindingID: fixture.binding.ID,
 		CurrentPassword: fixture.password, Confirmed: true,
 	}, fixture.manager, StoreCredentialRequestMeta{RequestID: "req-disable"})
 	if err != nil {
@@ -785,8 +901,18 @@ func TestStoreModelCredentialDisableBlocksAssignment(t *testing.T) {
 		t.Fatalf("credential was not disabled: %#v", data.Credential)
 	}
 	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
-	if assignment == nil || assignment.Status != enums.StoreModelAssignmentStatusBlocked || assignment.ReadinessStatus != "blocked" || assignment.LastErrorClass != "credential_disabled" {
-		t.Fatalf("assignment remained ready after credential disable: %#v", assignment)
+	if assignment == nil || assignment.Status != enums.StoreModelAssignmentStatusReady || assignment.ReadinessStatus != "ready" {
+		t.Fatalf("Store profile assignment must remain ready for other bindings: %#v", assignment)
+	}
+	if _, err := service.ResolveActiveForBinding(fixture.tenant.ID, fixture.store.ID, fixture.binding.ID); err == nil {
+		t.Fatal("disabled binding still resolved a model credential")
+	}
+	resolvedSecond, err := service.ResolveActiveForBinding(fixture.tenant.ID, fixture.store.ID, secondBinding.ID)
+	if err != nil {
+		t.Fatalf("other binding stopped resolving after first credential was disabled: %v", err)
+	}
+	if resolvedSecond.APIKey != "sk-second-active" || resolvedSecond.StoreStaffBindingID != secondBinding.ID {
+		t.Fatalf("resolved second credential=%#v", resolvedSecond)
 	}
 }
 
@@ -949,10 +1075,11 @@ func setupStoreCredentialFixtureDB(t *testing.T, db *gorm.DB) storeCredentialFix
 	if err := db.Create(store).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.StoreStaffBinding{
+	binding := &models.StoreStaffBinding{
 		TenantID: tenant.ID, UserID: staffUser.ID, ActiveUserID: positiveInt64Pointer(staffUser.ID),
 		StoreID: store.ID, Status: enums.StatusOk,
-	}).Error; err != nil {
+	}
+	if err := db.Create(binding).Error; err != nil {
 		t.Fatal(err)
 	}
 	profile, slots := createStoreCredentialProfile(t, db, "standard", 1, enums.ModelProfileStatusCandidate)
@@ -975,7 +1102,7 @@ func setupStoreCredentialFixtureDB(t *testing.T, db *gorm.DB) storeCredentialFix
 		t.Fatal(err)
 	}
 	return storeCredentialFixture{
-		db: db, tenant: tenant, store: store, profile: profile, slots: slots, password: password,
+		db: db, tenant: tenant, store: store, binding: binding, profile: profile, slots: slots, password: password,
 		manager: manager,
 		approver: &dto.AuthPrincipal{
 			UserID: approverUser.ID, TenantID: tenant.ID, ActiveTenantID: tenant.ID, Username: approverUser.Username,
@@ -1074,17 +1201,17 @@ func seedActiveStoreCredential(t *testing.T, fixture storeCredentialFixture, api
 	if err != nil {
 		t.Fatal(err)
 	}
-	ciphertext, nonce, err := cipher.Encrypt(apiKey, storeCredentialAAD(fixture.tenant.ID, fixture.store.ID, revision))
+	ciphertext, nonce, err := cipher.Encrypt(apiKey, storeBindingCredentialAAD(fixture.tenant.ID, fixture.store.ID, fixture.binding.ID, revision))
 	if err != nil {
 		t.Fatal(err)
 	}
-	credential := repositories.StoreModelCredentialRepository.GetByStore(fixture.db, fixture.tenant.ID, fixture.store.ID)
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(fixture.db, fixture.tenant.ID, fixture.store.ID, fixture.binding.ID)
 	if credential == nil {
 		t.Fatal("credential is missing")
 	}
 	if err = repositories.StoreModelCredentialRepository.Updates(fixture.db, credential.ID, map[string]any{
 		"encrypted_key": ciphertext, "key_nonce": nonce, "key_fingerprint": securex.Fingerprint(apiKey),
-		"cipher_version": securex.AESGCMCipherVersion, "master_key_id": config.Current().StoreCredential.MasterKeyID,
+		"cipher_version": storeBindingCredentialCipherVersion, "master_key_id": config.Current().StoreCredential.MasterKeyID,
 		"credential_revision": revision, "status": enums.StoreCredentialStatusActive,
 	}); err != nil {
 		t.Fatal(err)
@@ -1101,6 +1228,42 @@ func seedActiveStoreCredential(t *testing.T, fixture storeCredentialFixture, api
 		t.Fatal(err)
 	}
 	fixture.profile.Status = enums.ModelProfileStatusActive
+}
+
+func seedAdditionalActiveStoreCredential(t *testing.T, fixture storeCredentialFixture, username, apiKey string, revision int64) *models.StoreStaffBinding {
+	t.Helper()
+	user := createStoreCredentialUser(t, fixture.db, fixture.tenant.ID, username, fixture.password)
+	binding := &models.StoreStaffBinding{
+		TenantID: fixture.tenant.ID, UserID: user.ID, ActiveUserID: positiveInt64Pointer(user.ID),
+		StoreID: fixture.store.ID, Status: enums.StatusOk,
+	}
+	if err := fixture.db.Create(binding).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := newStoreModelCredentialService()
+	if err := service.EnsureBindingRecordDB(fixture.db, binding, fixture.manager); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := securex.NewAESGCM(config.Current().StoreCredential.MasterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, nonce, err := cipher.Encrypt(apiKey, storeBindingCredentialAAD(fixture.tenant.ID, fixture.store.ID, binding.ID, revision))
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := repositories.StoreModelCredentialRepository.GetByBinding(fixture.db, fixture.tenant.ID, fixture.store.ID, binding.ID)
+	if credential == nil {
+		t.Fatal("additional binding credential is missing")
+	}
+	if err := repositories.StoreModelCredentialRepository.Updates(fixture.db, credential.ID, map[string]any{
+		"encrypted_key": ciphertext, "key_nonce": nonce, "key_fingerprint": securex.Fingerprint(apiKey),
+		"cipher_version": storeBindingCredentialCipherVersion, "master_key_id": config.Current().StoreCredential.MasterKeyID,
+		"credential_revision": revision, "status": enums.StoreCredentialStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return binding
 }
 
 func assertCredentialAuditContainsNoSecret(t *testing.T, db *gorm.DB, secret string) {

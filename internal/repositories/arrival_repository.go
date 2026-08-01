@@ -147,15 +147,15 @@ func (r *arrivalRepository) FindConnectionByStore(db *gorm.DB, tenantID, storeID
 	return ret
 }
 
-func (r *arrivalRepository) FindActiveStaticConnectionsByInstance(db *gorm.DB, tenantID, instanceID int64) []models.StoreArrivalConnection {
+func (r *arrivalRepository) FindActiveStaticConnectionsByBinding(db *gorm.DB, tenantID, bindingID int64) []models.StoreArrivalConnection {
 	ret := make([]models.StoreArrivalConnection, 0)
-	if db == nil || tenantID <= 0 || instanceID <= 0 {
+	if db == nil || tenantID <= 0 || bindingID <= 0 {
 		return ret
 	}
 	db.Where(
-		"tenant_id = ? AND wx_work_protocol_instance_id = ? AND contact_provider_mode = ? AND connection_status = ? AND status = ?",
+		"tenant_id = ? AND store_staff_binding_id = ? AND contact_provider_mode = ? AND connection_status = ? AND status = ?",
 		tenantID,
-		instanceID,
+		bindingID,
 		enums.ArrivalContactProviderModeStaticPluginTicket,
 		enums.ArrivalConnectionStatusActive,
 		enums.StatusOk,
@@ -163,19 +163,19 @@ func (r *arrivalRepository) FindActiveStaticConnectionsByInstance(db *gorm.DB, t
 	return ret
 }
 
-func (r *arrivalRepository) FindActiveStaticConnectionsByInstanceForUpdate(
+func (r *arrivalRepository) FindActiveStaticConnectionsByBindingForUpdate(
 	db *gorm.DB,
-	tenantID, instanceID int64,
+	tenantID, bindingID int64,
 ) ([]models.StoreArrivalConnection, error) {
 	ret := make([]models.StoreArrivalConnection, 0)
-	if db == nil || tenantID <= 0 || instanceID <= 0 {
+	if db == nil || tenantID <= 0 || bindingID <= 0 {
 		return ret, nil
 	}
 	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where(
-			"tenant_id = ? AND wx_work_protocol_instance_id = ? AND contact_provider_mode = ? AND connection_status = ? AND status = ?",
+			"tenant_id = ? AND store_staff_binding_id = ? AND contact_provider_mode = ? AND connection_status = ? AND status = ?",
 			tenantID,
-			instanceID,
+			bindingID,
 			enums.ArrivalContactProviderModeStaticPluginTicket,
 			enums.ArrivalConnectionStatusActive,
 			enums.StatusOk,
@@ -185,35 +185,54 @@ func (r *arrivalRepository) FindActiveStaticConnectionsByInstanceForUpdate(
 	return ret, err
 }
 
-func (r *arrivalRepository) FindActiveConnectionsByInstance(db *gorm.DB, tenantID, instanceID int64) []models.StoreArrivalConnection {
+func (r *arrivalRepository) FindActiveConnectionsByBinding(db *gorm.DB, tenantID, bindingID int64) []models.StoreArrivalConnection {
 	ret := make([]models.StoreArrivalConnection, 0)
-	if db == nil || tenantID <= 0 || instanceID <= 0 {
+	if db == nil || tenantID <= 0 || bindingID <= 0 {
 		return ret
 	}
 	db.Where(
-		"tenant_id = ? AND wx_work_protocol_instance_id = ? AND connection_status = ? AND status = ?",
+		"tenant_id = ? AND store_staff_binding_id = ? AND connection_status = ? AND status = ?",
 		tenantID,
-		instanceID,
+		bindingID,
 		enums.ArrivalConnectionStatusActive,
 		enums.StatusOk,
 	).Order("id ASC").Find(&ret)
 	return ret
 }
 
-func (r *arrivalRepository) FindActiveStaticConnectionInstanceIDs(db *gorm.DB) []int64 {
+func (r *arrivalRepository) FindConnectionsByBindingInstanceForUpdate(
+	db *gorm.DB,
+	tenantID, storeID, bindingID, instanceID int64,
+) ([]models.StoreArrivalConnection, error) {
+	ret := make([]models.StoreArrivalConnection, 0)
+	if db == nil || tenantID <= 0 || storeID <= 0 || bindingID <= 0 || instanceID <= 0 {
+		return ret, nil
+	}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where(
+		"tenant_id = ? AND store_id = ? AND store_staff_binding_id = ? AND wx_work_protocol_instance_id = ? AND status <> ?",
+		tenantID,
+		storeID,
+		bindingID,
+		instanceID,
+		enums.StatusDeleted,
+	).Order("id ASC").Find(&ret).Error
+	return ret, err
+}
+
+func (r *arrivalRepository) FindActiveStaticConnectionBindingIDs(db *gorm.DB) []int64 {
 	ret := make([]int64, 0)
 	if db == nil {
 		return ret
 	}
 	db.Model(&models.StoreArrivalConnection{}).
 		Where(
-			"contact_provider_mode = ? AND connection_status = ? AND status = ? AND wx_work_protocol_instance_id > 0",
+			"contact_provider_mode = ? AND connection_status = ? AND status = ? AND store_staff_binding_id > 0",
 			enums.ArrivalContactProviderModeStaticPluginTicket,
 			enums.ArrivalConnectionStatusActive,
 			enums.StatusOk,
 		).
 		Distinct().
-		Pluck("wx_work_protocol_instance_id", &ret)
+		Pluck("store_staff_binding_id", &ret)
 	return ret
 }
 
@@ -637,6 +656,45 @@ func (r *arrivalRepository) FindBindingForUpdate(db *gorm.DB, tenantID, identity
 		return nil, err
 	}
 	return ret, nil
+}
+
+func (r *arrivalRepository) FindBindingsByConversationForUpdate(
+	db *gorm.DB,
+	tenantID, storeID, customerID, storeStaffBindingID, conversationID int64,
+) ([]models.ArrivalStoreBinding, error) {
+	ret := make([]models.ArrivalStoreBinding, 0)
+	if db == nil || tenantID <= 0 || storeID <= 0 || customerID <= 0 || storeStaffBindingID <= 0 || conversationID <= 0 {
+		return ret, nil
+	}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where(
+		"tenant_id = ? AND store_id = ? AND customer_id = ? AND store_staff_binding_id = ? AND conversation_id = ? AND status <> ?",
+		tenantID,
+		storeID,
+		customerID,
+		storeStaffBindingID,
+		conversationID,
+		enums.StatusDeleted,
+	).Order("id ASC").Find(&ret).Error
+	return ret, err
+}
+
+func (r *arrivalRepository) FindBindingsByBindingInstanceForUpdate(
+	db *gorm.DB,
+	tenantID, storeID, bindingID, instanceID int64,
+) ([]models.ArrivalStoreBinding, error) {
+	ret := make([]models.ArrivalStoreBinding, 0)
+	if db == nil || tenantID <= 0 || storeID <= 0 || bindingID <= 0 || instanceID <= 0 {
+		return ret, nil
+	}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Where(
+		"tenant_id = ? AND store_id = ? AND store_staff_binding_id = ? AND wx_work_protocol_instance_id = ? AND status <> ?",
+		tenantID,
+		storeID,
+		bindingID,
+		instanceID,
+		enums.StatusDeleted,
+	).Order("id ASC").Find(&ret).Error
+	return ret, err
 }
 
 func (r *arrivalRepository) GetBinding(db *gorm.DB, id, tenantID int64) *models.ArrivalStoreBinding {
