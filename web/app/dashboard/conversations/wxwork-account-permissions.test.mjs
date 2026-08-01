@@ -65,7 +65,7 @@ test("binding dialog only links an existing store staff role account", () => {
   assert.match(bindingDialogSource, /permissionSet\.has\("channel\.create"\) && permissionSet\.has\("user\.view"\)/)
   assert.match(bindingDialogSource, /fetchUsersAll\(\{ roleCode: "store_staff", status: Status\.Ok \}\)/)
   assert.match(bindingDialogSource, /storeStaffUserId: Number\(userId\)/)
-  assert.match(bindingDialogSource, /该账号代表一家门店/)
+  assert.match(bindingDialogSource, /门店归属以系统员工号的 Store ID 为准/)
   assert.doesNotMatch(bindingDialogSource, /邀请开户|远程开户|createUser|assignUserRoles/)
 })
 

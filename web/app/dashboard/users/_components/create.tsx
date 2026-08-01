@@ -33,6 +33,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { StoreOptionCombobox } from "@/components/store-option-combobox"
 
 type CreateUserDrawerProps = {
   open: boolean
@@ -45,7 +46,7 @@ type CreateUserDrawerProps = {
 type CreateForm = {
   username: string
   nickname: string
-  storeName: string
+  storeId: number
   avatar: string
   mobile: string
   email: string
@@ -56,7 +57,7 @@ type CreateForm = {
 const emptyForm: CreateForm = {
   username: "",
   nickname: "",
-  storeName: "",
+  storeId: 0,
   avatar: "",
   mobile: "",
   email: "",
@@ -73,7 +74,7 @@ function buildPayload(form: CreateForm): CreateAdminUserPayload {
   return {
     username: form.username.trim(),
     nickname: form.nickname.trim(),
-    storeName: form.storeName.trim(),
+    storeId: form.storeId,
     avatar: form.avatar.trim(),
     mobile: toNullableString(form.mobile),
     email: toNullableString(form.email),
@@ -127,7 +128,7 @@ function CreateUserDrawerBody({
       z.object({
         username: z.string().trim().min(1, t("user.usernameRequired")),
         nickname: z.string().trim(),
-        storeName: z.string().trim(),
+        storeId: z.number().int().nonnegative(),
         avatar: z
           .string()
           .trim()
@@ -212,8 +213,8 @@ function CreateUserDrawerBody({
   }, [locale, roleKeyword, roles])
 
   async function onFormSubmit(values: CreateForm) {
-    if (assigningStoreStaff && !values.storeName.trim()) {
-      setError("storeName", { message: t("user.storeNameRequired") })
+    if (assigningStoreStaff && values.storeId <= 0) {
+      setError("storeId", { message: t("user.storeNameRequired") })
       return
     }
     const payload = buildPayload(values)
@@ -398,16 +399,20 @@ function CreateUserDrawerBody({
             </FieldContent>
           </Field> : null}
           {assigningStoreStaff ? (
-            <Field data-invalid={!!errors.storeName}>
-              <FieldLabel htmlFor="create-store-name">{t("user.storeName")}</FieldLabel>
+            <Field data-invalid={!!errors.storeId}>
+              <FieldLabel>{t("user.storeName")}</FieldLabel>
               <FieldContent>
-                <Input
-                  id="create-store-name"
-                  placeholder={t("user.storeNamePlaceholder")}
-                  aria-invalid={!!errors.storeName}
-                  {...register("storeName")}
+                <Controller
+                  control={control}
+                  name="storeId"
+                  render={({ field }) => (
+                    <StoreOptionCombobox
+                      value={field.value}
+                      onChange={field.onChange}
+                    />
+                  )}
                 />
-                <FieldError errors={[errors.storeName]} />
+                <FieldError errors={[errors.storeId]} />
               </FieldContent>
             </Field>
           ) : null}

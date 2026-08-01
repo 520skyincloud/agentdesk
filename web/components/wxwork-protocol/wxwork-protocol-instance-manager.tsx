@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { CopyIcon, LocateFixedIcon, MapPinIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
+import { CopyIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
@@ -41,7 +41,6 @@ import {
 import { deleteAsset } from "@/lib/api/asset"
 import { getEnumOptions } from "@/lib/enums"
 import { Status, StatusLabels } from "@/lib/generated/enums"
-import { getBrowserCoordinates } from "@/lib/browser-geolocation"
 import { formatDateTime, repairMojibakeText } from "@/lib/utils"
 
 const DEFAULT_WELCOME_MESSAGE = "您好，欢迎咨询。自助服务可以在小程序里办理，需要门店定位的话我也可以发您。"
@@ -663,8 +662,7 @@ export function WxWorkProtocolInstanceManager({
     frontDeskHours: "",
   })
   const [receptionSettingsSaving, setReceptionSettingsSaving] = useState(false)
-  const [locatingStoreCoordinates, setLocatingStoreCoordinates] = useState(false)
-  const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
+	const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
   const [deviceLoginInstance, setDeviceLoginInstance] =
     useState<WxWorkProtocolInstance | null>(null)
   const permissionSet = useMemo(() => new Set(session?.permissions ?? []), [session?.permissions])
@@ -795,61 +793,6 @@ export function WxWorkProtocolInstanceManager({
     } finally {
       setWelcomeSettingsSaving(false)
     }
-  }
-
-  function renderGeoPicker(context: {
-    setValue: (name: string, value: string) => void
-  }) {
-    return (
-      <div className="agentdesk-subtle-surface rounded-xl p-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-sm leading-6 text-muted-foreground">
-            门店在现场打开后台时，可用浏览器定位自动填入经纬度；定位不可用时请从地图复制坐标手动填写。地址名称仍建议人工核对。
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="agentdesk-soft-button h-9 rounded-lg"
-            disabled={locatingStoreCoordinates}
-            onClick={async () => {
-              setLocatingStoreCoordinates(true)
-              try {
-                const coordinates = await getBrowserCoordinates()
-                context.setValue("storeLatitude", coordinates.latitude.toFixed(6))
-                context.setValue("storeLongitude", coordinates.longitude.toFixed(6))
-                context.setValue("storeMapProvider", "browser_geolocation")
-                toast.success(`已填入当前坐标（精度约 ${Math.round(coordinates.accuracy)} 米），请确认是否为门店位置`)
-              } catch (error) {
-                toast.error(error instanceof Error ? error.message : "获取坐标失败，请手动填写经纬度")
-              } finally {
-                setLocatingStoreCoordinates(false)
-              }
-            }}
-          >
-            {locatingStoreCoordinates ? <RotateCwIcon className="size-4 animate-spin" /> : <LocateFixedIcon className="size-4" />}
-            {locatingStoreCoordinates ? "正在定位" : "一键获取当前坐标"}
-          </Button>
-        </div>
-      </div>
-    )
-  }
-
-  function renderLocationGuide() {
-    return (
-      <div className="agentdesk-subtle-surface rounded-xl border border-[#edf1f7] p-3">
-        <div className="flex items-start gap-3">
-          <div className="agentdesk-icon-tile mt-0.5">
-            <MapPinIcon className="size-4" />
-          </div>
-          <div className="space-y-1 text-sm leading-6 text-muted-foreground">
-            <div className="font-medium text-foreground">门店定位绑定</div>
-            <div>客户说“发定位 / 怎么走 / 酒店在哪”时，系统会直接发送这里绑定的定位消息，不进大模型瞎编。</div>
-            <div>请在门店现场使用“一键获取当前坐标”，或从地图复制经纬度手动填写；客户发送的定位不会改写这里的门店坐标。</div>
-          </div>
-        </div>
-      </div>
-    )
   }
 
   function renderStoreRoomPicker(context: {
@@ -1093,21 +1036,12 @@ export function WxWorkProtocolInstanceManager({
             description: "这里显示的是通过协议扫码登录的门店企业微信员工号。账号头像、UserID、GUID、回调、代理和 Bridge 等技术信息由系统同步和维护，不再开放手动填写。",
 	          },
 	          { name: "employeeName", label: "员工号名称", type: "text", placeholder: "扫码同步后会自动带出，可手动改展示名" },
-	          { name: "storeName", label: "门店名称", type: "text", placeholder: "例如：示例酒店杭州某某店", description: "该名称来自绑定的系统账号所代表的门店。" },
-	          { name: "storeId", label: "门店 ID", type: "custom", valueFromItem: (item) => item.storeId, render: () => null },
-          { name: "storeLocationGuide", label: "门店定位说明", type: "custom", render: renderLocationGuide },
-          { name: "storeAddress", label: "门店地址", type: "text", placeholder: "例如：上海市..." },
-          { name: "storeContactPhone", label: "联系电话", type: "text", placeholder: "例如：0551-88888888 / 13800000000", description: "客户询问酒店电话时发送这个账号配置的电话变量，不从地址或备注里猜。" },
-          { name: "storeNavigationName", label: "导航名称", type: "text", placeholder: "例如：示例酒店某某店" },
-          { name: "storeLatitude", label: "门店纬度", type: "text", placeholder: "例如：31.230416" },
-          { name: "storeLongitude", label: "门店经度", type: "text", placeholder: "例如：121.473701" },
-          { name: "storeMapProvider", label: "坐标来源", type: "text", placeholder: "browser_geolocation / amap / tencent" },
-          { name: "storeGeoPicker", label: "门店坐标", type: "custom", render: renderGeoPicker },
+		          { name: "storeId", label: "门店 ID", type: "custom", valueFromItem: (item) => item.storeId, render: () => null },
           {
             name: "resourceBindingSection",
             label: "资源绑定",
             type: "section",
-            description: "知识库由所属门店统一管理并自动同步到企微账号；电话、定位、小程序等接待变量仍来自当前账号。",
+		    description: "门店名称、电话、定位和知识库统一由门店管理维护；本页只维护当前企微实例的小程序、欢迎语和接待开关。",
           },
           {
             name: "manualRouteSection",
@@ -1122,7 +1056,7 @@ export function WxWorkProtocolInstanceManager({
             required: true,
             defaultValue: "semi",
             options: managedModeOptions,
-            description: "这个策略绑定到已分配门店员工号角色的系统账号上；该账号代表一家门店，再绑定实际使用的企微员工号。",
+		    description: "这个策略属于当前门店员工号绑定；同一门店可以有多个员工号，每个员工号各自连接一个当前企微实例。",
           },
           { name: "serviceHours", label: "门店自行接待时段", type: "text", placeholder: "例如：09:00-22:00；半托管模式按此时段通知门店群" },
           { name: "storeRoomNotifyEnabled", label: "启用门店群通知", type: "switch" },
@@ -1163,13 +1097,13 @@ export function WxWorkProtocolInstanceManager({
 	          employeeAvatar: context.item?.employeeAvatar || "",
 	          storeStaffUserId: context.item?.storeStaffUserId || 0,
 	          storeId: Number(values.storeId || 0),
-	          storeName: String(values.storeName || context.item?.storeName || values.employeeName || ""),
-	          storeAddress: String(values.storeAddress || ""),
-          storeContactPhone: String(values.storeContactPhone || ""),
-          storeNavigationName: String(values.storeNavigationName || ""),
-          storeLatitude: String(values.storeLatitude || ""),
-          storeLongitude: String(values.storeLongitude || ""),
-          storeMapProvider: String(values.storeMapProvider || ""),
+		  storeName: context.item?.storeName || "",
+		  storeAddress: context.item?.storeAddress || "",
+		  storeContactPhone: context.item?.storeContactPhone || "",
+		  storeNavigationName: context.item?.storeNavigationName || "",
+		  storeLatitude: context.item?.storeLatitude || "",
+		  storeLongitude: context.item?.storeLongitude || "",
+		  storeMapProvider: context.item?.storeMapProvider || "",
           defaultMiniProgramPayload: context.item?.defaultMiniProgramPayload || "",
           welcomeEnabled: (context.item as WelcomeCapableInstance | undefined)?.welcomeEnabled ?? true,
           welcomeMessage: context.item?.welcomeMessage || DEFAULT_WELCOME_MESSAGE,

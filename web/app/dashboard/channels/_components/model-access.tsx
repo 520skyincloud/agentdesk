@@ -17,6 +17,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -61,7 +67,10 @@ export function TenantModelAccessDialog({
   const [policyPassword, setPolicyPassword] = useState("")
   const [allowCredentialSelfService, setAllowCredentialSelfService] = useState(false)
   const [requireSupervisorApproval, setRequireSupervisorApproval] = useState(false)
-  const [credentialStore, setCredentialStore] = useState<StoreModelProfileAssignments["stores"][number] | null>(null)
+  const [credentialTarget, setCredentialTarget] = useState<{
+    store: StoreModelProfileAssignments["stores"][number]
+    binding: StoreModelProfileAssignments["stores"][number]["credentialBindings"][number]
+  } | null>(null)
 
   useEffect(() => {
     if (!open || !tenant) return
@@ -70,7 +79,7 @@ export function TenantModelAccessDialog({
     setConfirming(false)
     setPolicyConfirming(false)
     setPolicyPassword("")
-    setCredentialStore(null)
+    setCredentialTarget(null)
     setSelectedStoreIds(new Set())
     fetchStoreModelProfileAssignments(tenant.id)
       .then((next) => {
@@ -329,7 +338,7 @@ export function TenantModelAccessDialog({
 
             <div className="min-h-0 flex-1 divide-y overflow-y-auto">
               {filteredStores.map((store) => (
-                <div key={store.storeId} className="grid gap-3 px-6 py-3 hover:bg-muted/40 md:grid-cols-[28px_minmax(180px,1fr)_minmax(200px,1fr)_120px_36px] md:items-center">
+                <div key={store.storeId} className="grid gap-3 px-6 py-3 hover:bg-muted/40 md:grid-cols-[28px_minmax(180px,1fr)_minmax(200px,1fr)_120px_minmax(108px,150px)] md:items-center">
                   <Checkbox
                     checked={selectedStoreIds.has(store.storeId)}
                     disabled={!canUpdate}
@@ -358,16 +367,38 @@ export function TenantModelAccessDialog({
                   <Badge variant={store.readinessStatus === "ready" ? "default" : "outline"}>
                     {readinessLabel(store.readinessStatus)}
                   </Badge>
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={<Button type="button" variant="ghost" size="icon-sm" />}
-                      onClick={() => setCredentialStore(store)}
-                      aria-label={`管理 ${store.storeName} 的模型凭据`}
-                    >
-                      <KeyRoundIcon />
-                    </TooltipTrigger>
-                    <TooltipContent>模型凭据</TooltipContent>
-                  </Tooltip>
+                  {store.credentialBindings.length > 0 ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        render={<Button type="button" variant="ghost" size="sm" />}
+                        aria-label={`选择 ${store.storeName} 的门店员工号凭据`}
+                      >
+                        <KeyRoundIcon />
+                        凭据 {store.credentialBindings.length}
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="min-w-52">
+                        {store.credentialBindings.map((binding) => (
+                          <DropdownMenuItem
+                            key={binding.id}
+                            onClick={() => setCredentialTarget({ store, binding })}
+                          >
+                            <KeyRoundIcon />
+                            {binding.accountName || `门店员工号 #${binding.id}`}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={<Button type="button" variant="ghost" size="sm" disabled />}
+                      >
+                        <KeyRoundIcon />
+                        暂无员工号
+                      </TooltipTrigger>
+                      <TooltipContent>请先为门店绑定可用的门店员工号</TooltipContent>
+                    </Tooltip>
+                  )}
                 </div>
               ))}
               {filteredStores.length === 0 ? (
@@ -395,13 +426,18 @@ export function TenantModelAccessDialog({
         </DialogFooter>
       </DialogContent>
       <StoreModelCredentialDialog
-        open={Boolean(credentialStore && tenant)}
+        open={Boolean(credentialTarget && tenant)}
         tenantId={tenant?.id ?? 0}
-        storeId={credentialStore?.storeId ?? 0}
-        storeName={credentialStore?.storeName ?? ""}
+        storeId={credentialTarget?.store.storeId ?? 0}
+        storeStaffBindingId={credentialTarget?.binding.id ?? 0}
+        storeName={
+          credentialTarget
+            ? `${credentialTarget.store.storeName} · ${credentialTarget.binding.accountName}`
+            : ""
+        }
         canUpdate={canUpdate}
         onOpenChange={(nextOpen) => {
-          if (!nextOpen) setCredentialStore(null)
+          if (!nextOpen) setCredentialTarget(null)
         }}
         onChanged={() => {
           if (!tenant) return

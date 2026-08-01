@@ -55,6 +55,7 @@ type StoreModelCredentialPanelProps = {
   mode: CredentialMode
   tenantId?: number
   storeId?: number
+  storeStaffBindingId?: number
   canUpdate: boolean
   onChanged?: (data: StoreModelCredential) => void
 }
@@ -63,6 +64,7 @@ type StoreModelCredentialDialogProps = {
   open: boolean
   tenantId: number
   storeId: number
+  storeStaffBindingId: number
   storeName: string
   canUpdate: boolean
   onOpenChange: (open: boolean) => void
@@ -123,6 +125,7 @@ export function StoreModelCredentialDialog({
   open,
   tenantId,
   storeId,
+  storeStaffBindingId,
   storeName,
   canUpdate,
   onOpenChange,
@@ -136,7 +139,7 @@ export function StoreModelCredentialDialog({
             <KeyRoundIcon className="size-5" />
             门店模型与凭据
           </DialogTitle>
-          <DialogDescription>{storeName || `门店 #${storeId}`}</DialogDescription>
+          <DialogDescription>{storeName || `门店 #${storeId}`} · 独立员工号凭据</DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           {open ? (
@@ -144,6 +147,7 @@ export function StoreModelCredentialDialog({
               mode="manager"
               tenantId={tenantId}
               storeId={storeId}
+              storeStaffBindingId={storeStaffBindingId}
               canUpdate={canUpdate}
               onChanged={onChanged}
             />
@@ -158,6 +162,7 @@ export function StoreModelCredentialPanel({
   mode,
   tenantId = 0,
   storeId = 0,
+  storeStaffBindingId = 0,
   canUpdate,
   onChanged,
 }: StoreModelCredentialPanelProps) {
@@ -173,12 +178,17 @@ export function StoreModelCredentialPanel({
   const [requireApproval, setRequireApproval] = useState(false)
 
   const managerScope = useMemo(
-    () => ({ tenantId, storeId }),
-    [tenantId, storeId],
+    () => ({ tenantId, storeId, storeStaffBindingId }),
+    [tenantId, storeId, storeStaffBindingId],
   )
 
   const load = useCallback(async () => {
-    if (mode === "manager" && (tenantId <= 0 || storeId <= 0)) {
+    if (
+      mode === "manager" &&
+      (managerScope.tenantId <= 0 ||
+        managerScope.storeId <= 0 ||
+        managerScope.storeStaffBindingId <= 0)
+    ) {
       setLoading(false)
       return
     }
@@ -205,7 +215,7 @@ export function StoreModelCredentialPanel({
     } finally {
       setLoading(false)
     }
-  }, [managerScope, mode, storeId, tenantId])
+  }, [managerScope, mode])
 
   useEffect(() => {
     setData(null)

@@ -21,6 +21,7 @@ import {
 } from "@/components/dashboard/list"
 import { ListPagination } from "@/components/list-pagination"
 import { OptionCombobox } from "@/components/option-combobox"
+import { StoreOptionCombobox } from "@/components/store-option-combobox"
 import { useAppLocale, useI18n } from "@/i18n/provider"
 import { fetchRoleListAll, type AdminRole } from "@/lib/api/admin"
 import {
@@ -356,7 +357,7 @@ function RegistrationReviewDrawerBody({
   const [roles, setRoles] = useState<AdminRole[]>([])
   const [roleKeyword, setRoleKeyword] = useState("")
   const [selectedRoleIds, setSelectedRoleIds] = useState<number[]>([])
-  const [storeName, setStoreName] = useState("")
+  const [storeId, setStoreId] = useState(0)
   const [remark, setRemark] = useState("")
   const [saving, setSaving] = useState(false)
   const requestRef = useRef<{ fingerprint: string; requestId: string } | null>(null)
@@ -437,7 +438,7 @@ function RegistrationReviewDrawerBody({
       toast.error(t("tenantRegistration.roleRequired"))
       return
     }
-    if (approving && assigningStoreStaff && !storeName.trim()) {
+    if (approving && assigningStoreStaff && storeId <= 0) {
       toast.error(t("tenantRegistration.storeNameRequired"))
       return
     }
@@ -449,7 +450,7 @@ function RegistrationReviewDrawerBody({
       userId: target.record.userId,
       decision: target.decision,
       roleIds: approving ? selectedRoleIds : [],
-      storeName: approving && assigningStoreStaff ? storeName.trim() : "",
+      storeId: approving && assigningStoreStaff ? storeId : 0,
       remark: normalizedRemark,
     }
     setSaving(true)
@@ -557,14 +558,12 @@ function RegistrationReviewDrawerBody({
             </div>
             {assigningStoreStaff ? (
               <div className="space-y-2">
-                <label htmlFor="registration-store-name" className="text-sm font-medium">
+                <label className="text-sm font-medium">
                   {t("tenantRegistration.storeName")}
                 </label>
-                <Input
-                  id="registration-store-name"
-                  value={storeName}
-                  onChange={(event) => setStoreName(event.target.value)}
-                  placeholder={t("tenantRegistration.storeNamePlaceholder")}
+                <StoreOptionCombobox
+                  value={storeId}
+                  onChange={setStoreId}
                 />
               </div>
             ) : null}

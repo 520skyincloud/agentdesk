@@ -1,7 +1,9 @@
 "use client";
 import {
+  HistoryIcon,
   Link2Icon,
   MailIcon,
+  MessagesSquareIcon,
   PencilIcon,
   PhoneIcon,
   UserRoundIcon,
@@ -271,9 +273,134 @@ export function ConversationInfoPanel({
         ) : (
           <div className="space-y-4 py-3">
             <CustomerBody conversation={conversation} permissions={permissions} />
+            <ConversationContinuitySection conversation={conversation} />
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ConversationContinuitySection({
+  conversation,
+}: {
+  conversation: AgentConversation;
+}) {
+  const selectConversation = useAgentConversationsStore(
+    (state) => state.selectConversation,
+  );
+  const sessions = conversation.channelSessions ?? [];
+  const related = conversation.relatedConversations ?? [];
+  const continuityLinks = conversation.continuityLinks ?? [];
+
+  if (sessions.length === 0 && related.length === 0 && continuityLinks.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-4 border-t pt-3">
+      {continuityLinks.length > 0 ? (
+        <section className="space-y-2">
+          <SectionHeading>会话继承</SectionHeading>
+          <div className="divide-y rounded-md border border-border">
+            {continuityLinks.map((link) => {
+              const isPredecessor = link.predecessorConversationId === conversation.id;
+              const targetConversationId = isPredecessor
+                ? link.successorConversationId
+                : link.predecessorConversationId;
+              return (
+                <button
+                  key={`${link.predecessorConversationId}-${link.successorConversationId}`}
+                  type="button"
+                  className="flex w-full items-start gap-2.5 px-2.5 py-2 text-left hover:bg-muted/50"
+                  onClick={() => void selectConversation(targetConversationId)}
+                >
+                  <Link2Icon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-medium text-foreground">
+                      {isPredecessor ? "已由后续会话继续接待" : "查看继承的历史会话"}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                      {repairMojibakeText(link.reason) || `会话 #${targetConversationId}`}
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                      {formatDateTime(link.createdAt)}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
+      {sessions.length > 0 ? (
+        <section className="space-y-2">
+          <SectionHeading>服务轮次</SectionHeading>
+          <div className="space-y-2">
+            {sessions.map((session) => (
+              <div
+                key={session.sessionNo}
+                className="flex items-start gap-2.5 rounded-md border border-border px-2.5 py-2"
+              >
+                <HistoryIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-medium text-foreground">
+                      第 {session.sessionNo} 段
+                    </span>
+                    {session.sessionNo === conversation.currentSessionNo ? (
+                      <span className="text-primary">当前</span>
+                    ) : null}
+                  </div>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {[
+                      repairMojibakeText(session.storeStaffDisplayName),
+                      repairMojibakeText(session.wxWorkEmployeeDisplayName),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ") || "历史服务账号"}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                    {formatDateTime(session.startedAt)}
+                    {session.endedAt ? ` - ${formatDateTime(session.endedAt)}` : ""}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {related.length > 0 ? (
+        <section className="space-y-2">
+          <SectionHeading>同门店关联会话</SectionHeading>
+          <div className="divide-y rounded-md border border-border">
+            {related.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className="flex w-full items-start gap-2.5 px-2.5 py-2 text-left hover:bg-muted/50"
+                onClick={() => void selectConversation(item.id)}
+              >
+                <MessagesSquareIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-medium text-foreground">
+                    {repairMojibakeText(item.wxWorkEmployeeName) ||
+                      `门店员工号会话 #${item.id}`}
+                  </span>
+                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                    {repairMojibakeText(item.lastMessageSummary) || "暂无消息摘要"}
+                  </span>
+                  <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                    {formatDateTime(item.lastActiveAt || item.lastMessageAt)}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

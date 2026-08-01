@@ -24,6 +24,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { StoreOptionCombobox } from "@/components/store-option-combobox"
 import { Status } from "@/lib/generated/enums"
 import { useAppLocale, useI18n } from "@/i18n/provider"
 import { getRoleDisplayName } from "@/lib/role-i18n"
@@ -37,12 +38,12 @@ type AssignRolesDrawerProps = {
   roles: AdminRole[]
   selectedRoleIds: number[]
   onOpenChange: (open: boolean) => void
-  onSubmit: (roleIds: number[], storeName: string) => Promise<void>
+  onSubmit: (roleIds: number[], storeId: number) => Promise<void>
 }
 
 const assignRolesSchema = z.object({
   roleIds: z.array(z.number().int().positive()),
-  storeName: z.string().trim(),
+  storeId: z.number().int().nonnegative(),
 })
 
 type AssignRolesForm = z.infer<typeof assignRolesSchema>
@@ -53,10 +54,10 @@ const assignRolesResolver = zodResolver(assignRolesSchema as never) as Resolver<
   z.output<typeof assignRolesSchema>
 >
 
-function buildForm(selectedRoleIds: number[], storeName: string): AssignRolesForm {
+function buildForm(selectedRoleIds: number[], storeId: number): AssignRolesForm {
   return {
     roleIds: selectedRoleIds,
-    storeName,
+    storeId,
   }
 }
 
@@ -95,7 +96,7 @@ type AssignRolesDrawerBodyProps = {
   roles: AdminRole[]
   selectedRoleIds: number[]
   onOpenChange: (open: boolean) => void
-  onSubmit: (roleIds: number[], storeName: string) => Promise<void>
+  onSubmit: (roleIds: number[], storeId: number) => Promise<void>
 }
 
 function AssignRolesDrawerBody({
@@ -116,12 +117,11 @@ function AssignRolesDrawerBody({
     z.output<typeof assignRolesSchema>
   >({
     resolver: assignRolesResolver,
-    defaultValues: buildForm(selectedRoleIds, item?.storeStaff?.storeName || ""),
+    defaultValues: buildForm(selectedRoleIds, item?.storeStaff?.storeId || 0),
   })
   const {
     control,
     handleSubmit,
-    register,
     reset,
     setError,
     formState: { errors },
@@ -134,8 +134,8 @@ function AssignRolesDrawerBody({
   )
 
   useEffect(() => {
-    reset(buildForm(selectedRoleIds, item?.storeStaff?.storeName || ""))
-  }, [item?.storeStaff?.storeName, reset, selectedRoleIds])
+    reset(buildForm(selectedRoleIds, item?.storeStaff?.storeId || 0))
+  }, [item?.storeStaff?.storeId, reset, selectedRoleIds])
 
   const roleMap = useMemo(
     () => new Map(roles.map((role) => [role.id, role])),
@@ -143,11 +143,11 @@ function AssignRolesDrawerBody({
   )
 
   async function onFormSubmit(values: AssignRolesForm) {
-    if (assigningStoreStaff && !values.storeName.trim()) {
-      setError("storeName", { message: t("user.storeNameRequired") })
+    if (assigningStoreStaff && values.storeId <= 0) {
+      setError("storeId", { message: t("user.storeNameRequired") })
       return
     }
-    await onSubmit(values.roleIds, values.storeName.trim())
+    await onSubmit(values.roleIds, assigningStoreStaff ? values.storeId : 0)
   }
 
   return (
@@ -347,16 +347,20 @@ function AssignRolesDrawerBody({
           />
           {assigningStoreStaff ? (
             <div className="px-4 pb-4">
-              <Field data-invalid={!!errors.storeName}>
-                <FieldLabel htmlFor="assign-store-name">{t("user.storeName")}</FieldLabel>
+              <Field data-invalid={!!errors.storeId}>
+                <FieldLabel>{t("user.storeName")}</FieldLabel>
                 <FieldContent>
-                  <Input
-                    id="assign-store-name"
-                    placeholder={t("user.storeNamePlaceholder")}
-                    aria-invalid={!!errors.storeName}
-                    {...register("storeName")}
+                  <Controller
+                    control={control}
+                    name="storeId"
+                    render={({ field }) => (
+                      <StoreOptionCombobox
+                        value={field.value}
+                        onChange={field.onChange}
+                      />
+                    )}
                   />
-                  <FieldError errors={[errors.storeName]} />
+                  <FieldError errors={[errors.storeId]} />
                 </FieldContent>
               </Field>
             </div>

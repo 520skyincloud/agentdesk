@@ -89,7 +89,6 @@ export function WxWorkProtocolBindingDialog({
   const [users, setUsers] = useState<AdminUser[]>([])
   const [channelId, setChannelId] = useState("0")
   const [userId, setUserId] = useState("0")
-  const [storeName, setStoreName] = useState("")
   const [loading, setLoading] = useState(false)
   const [mode, setMode] = useState<"onsite" | "remote">("onsite")
   const [starting, setStarting] = useState(false)
@@ -134,7 +133,6 @@ export function WxWorkProtocolBindingDialog({
         const firstUser = bindableUsers[0] || null
         setChannelId(String(channelPage.results[0]?.id || 0))
         setUserId(String(firstUser?.id || 0))
-        setStoreName(repairMojibakeText(firstUser?.storeStaff?.storeName || firstUser?.nickname || ""))
       })
       .catch((error) => toast.error(error instanceof Error ? error.message : "加载绑定选项失败"))
       .finally(() => {
@@ -182,12 +180,10 @@ export function WxWorkProtocolBindingDialog({
       disposed = true
       window.clearInterval(timer)
     }
-  }, [canUpdate, loginResult?.instance.id, open])
+  }, [canUpdate, loginResult?.instance, open])
 
   function selectUser(value: string) {
     setUserId(value)
-    const next = users.find((item) => item.id === Number(value))
-    setStoreName(repairMojibakeText(next?.storeStaff?.storeName || next?.nickname || ""))
     setLoginResult(null)
     setLoginStatus(null)
     setRemoteURL("")
@@ -199,8 +195,8 @@ export function WxWorkProtocolBindingDialog({
       toast.error("请选择已有系统账号")
       return false
     }
-    if (!storeName.trim()) {
-      toast.error("请填写门店名称")
+    if (!selectedUser?.storeStaff?.storeId || !selectedUser.storeStaff.bindingId) {
+      toast.error("该门店员工号尚未绑定有效门店")
       return false
     }
     if (!Number(channelId)) {
@@ -220,7 +216,6 @@ export function WxWorkProtocolBindingDialog({
       const result = await startWxWorkProtocolLogin({
         channelId: Number(channelId),
         storeStaffUserId: Number(userId),
-        storeName: storeName.trim(),
       })
       setLoginResult(result)
       setLoginStatus({
@@ -268,7 +263,6 @@ export function WxWorkProtocolBindingDialog({
       const item = await createWxWorkProtocolRemoteSetup({
         channelId: Number(channelId),
         storeStaffUserId: Number(userId),
-        storeName: storeName.trim(),
         remark: "企微员工号绑定链接",
       })
       const url = item.remoteSetupUrl || `${window.location.origin}/wxwork-remote-setup?token=${encodeURIComponent(item.remoteSetupToken || "")}`
@@ -296,7 +290,7 @@ export function WxWorkProtocolBindingDialog({
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>绑定企微员工号</DialogTitle>
-          <DialogDescription>先选择已分配门店员工号角色的系统账号；该账号代表一家门店，再绑定实际使用的企微员工号。</DialogDescription>
+          <DialogDescription>选择已经绑定门店的系统员工号，再绑定其实际使用的企微账号。门店归属以系统员工号的 Store ID 为准。</DialogDescription>
         </DialogHeader>
 
         {loading ? (
@@ -310,7 +304,7 @@ export function WxWorkProtocolBindingDialog({
           </div>
         ) : (
           <div className="space-y-5">
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4">
               <label className="space-y-2 text-sm font-medium">
                 <span>已有系统账号</span>
                 <OptionCombobox
@@ -323,12 +317,8 @@ export function WxWorkProtocolBindingDialog({
                   emptyText="没有匹配账号"
                 />
               </label>
-              <label className="space-y-2 text-sm font-medium">
-                <span>门店名称</span>
-                <Input value={storeName} onChange={(event) => setStoreName(event.target.value)} placeholder="例如：示例酒店杭州西湖店" />
-              </label>
               {channels.length > 1 ? (
-                <label className="space-y-2 text-sm font-medium sm:col-span-2">
+                <label className="space-y-2 text-sm font-medium">
                   <span>企微协议渠道</span>
                   <OptionCombobox
                     value={channelId}

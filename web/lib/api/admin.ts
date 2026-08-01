@@ -63,7 +63,7 @@ export type UpdateAdminUserPayload = {
 export type CreateAdminUserPayload = {
   username: string
   nickname: string
-  storeName: string
+  storeId: number
   avatar: string
   mobile: string | null
   email: string | null
@@ -1188,14 +1188,14 @@ export function createWxWorkProtocolInstance(payload: CreateWxWorkProtocolInstan
 export function startWxWorkProtocolLogin(payload: {
   channelId?: number
   storeStaffUserId: number
-  storeName: string
+  storeName?: string
 }) {
   return request<StartWxWorkProtocolLoginResult>("/api/dashboard/wxwork-protocol-instance/start_login", {
     method: "POST",
     body: JSON.stringify({
       channelId: payload.channelId ?? 0,
       storeStaffUserId: payload.storeStaffUserId,
-      storeName: payload.storeName,
+      storeName: payload.storeName ?? "",
     }),
   })
 }
@@ -1210,7 +1210,7 @@ export function resolveWxWorkProtocolLoginBinding(channelId?: number, guid?: str
 export function createWxWorkProtocolRemoteSetup(payload: {
   channelId?: number
   storeStaffUserId: number
-  storeName: string
+  storeName?: string
   remark?: string
 }) {
   return request<WxWorkProtocolInstance>("/api/dashboard/wxwork-protocol-instance/create_remote_setup", {
@@ -1218,7 +1218,7 @@ export function createWxWorkProtocolRemoteSetup(payload: {
     body: JSON.stringify({
       channelId: payload.channelId ?? 0,
       storeStaffUserId: payload.storeStaffUserId,
-      storeName: payload.storeName,
+      storeName: payload.storeName ?? "",
       remark: payload.remark ?? "",
     }),
   })
@@ -1600,7 +1600,7 @@ export function createUser(payload: CreateAdminUserPayload) {
     body: JSON.stringify({
       username: payload.username,
       nickname: payload.nickname,
-      storeName: payload.storeName,
+      storeId: payload.storeId,
       avatar: payload.avatar,
       mobile: payload.mobile,
       email: payload.email,
@@ -1659,10 +1659,10 @@ export function changeSelfPassword(password: string) {
   })
 }
 
-export function assignUserRoles(userId: number, roleIds: number[], storeName: string) {
+export function assignUserRoles(userId: number, roleIds: number[], storeId: number) {
   return request<void>("/api/dashboard/user/assign_role", {
     method: "POST",
-    body: JSON.stringify({ userId, roleIds, storeName }),
+    body: JSON.stringify({ userId, roleIds, storeId }),
   })
 }
 
@@ -2468,6 +2468,7 @@ export type ModelProfileTestRun = {
   tenantName: string
   storeId: number
   storeName: string
+  storeStaffBindingId: number
   credentialRevision: number
   credentialSource: "active" | "candidate"
   status: "passed" | "failed"
@@ -2485,6 +2486,8 @@ export type ModelProfileTestTarget = {
   storeId: number
   storeCode: string
   storeName: string
+  storeStaffBindingId: number
+  storeStaffAccountName: string
   credentialRevision: number
   activeTemplateId: number
   activeTemplateName: string
@@ -2512,10 +2515,15 @@ export function updateModelProfile(payload: UpdateModelProfilePayload) {
   })
 }
 
-export function validateModelProfile(id: number, tenantId: number, storeId: number) {
+export function validateModelProfile(
+  id: number,
+  tenantId: number,
+  storeId: number,
+  storeStaffBindingId: number,
+) {
   return request<ModelProfileValidation>("/api/dashboard/model-profile-template/test", {
     method: "POST",
-    body: JSON.stringify({ id, tenantId, storeId }),
+    body: JSON.stringify({ id, tenantId, storeId, storeStaffBindingId }),
   })
 }
 
@@ -2553,6 +2561,11 @@ export type StoreModelProfileAssignment = {
   lastValidatedAt?: string | null
   lastReadyAt?: string | null
   lastErrorMessage: string
+  credentialBindings: Array<{
+    id: number
+    userId: number
+    accountName: string
+  }>
 }
 
 export type StoreModelProfileAssignments = {
@@ -2665,6 +2678,7 @@ export type FastGPTDatasetJob = {
   targetProfileId: number
   targetProfileRevision: number
   targetCredentialRevision: number
+  targetStoreStaffBindingId: number
   nextRetryAt?: string | null
   lastError: string
   lastErrorClass: string
@@ -2682,16 +2696,18 @@ export type FastGPTStoreReadiness = {
   targetProfileRevision: number
   appliedProfileId: number
   appliedProfileRevision: number
+  targetStoreStaffBindingId: number
+  appliedStoreStaffBindingId: number
   targetCredentialRevision: number
   appliedCredentialRevision: number
   lastSyncedAt?: string | null
   lastErrorClass: string
 }
 
-export function provisionFastGPTDataset(storeId: number, name: string) {
+export function provisionFastGPTDataset(storeId: number, storeStaffBindingId: number, name: string) {
   return request<{ jobId: number; status: string }>("/api/dashboard/knowledge-base/fastgpt/provision", {
     method: "POST",
-    body: JSON.stringify({ storeId, name }),
+    body: JSON.stringify({ storeId, storeStaffBindingId, name }),
   })
 }
 
@@ -2924,7 +2940,10 @@ export type KnowledgeSearchPayload = {
 
 export type KnowledgeAnswerPayload = KnowledgeSearchPayload & {
   answerMode?: number
-}
+} & (
+  | { conversationId: number; storeStaffBindingId?: number }
+  | { conversationId?: undefined; storeStaffBindingId: number }
+)
 
 export function fetchKnowledgeBases(
   query?: Record<string, string | number | undefined>

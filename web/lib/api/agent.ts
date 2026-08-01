@@ -103,21 +103,59 @@ export type AgentConversation = {
   manualAttention?: AgentConversationManualAttention
   storeId?: number
   storeName?: string
+  storeStaffBindingId?: number
   wxWorkInstanceId?: number
+  currentSessionNo?: number
+  wxWorkReplyReady: boolean
+  wxWorkReplyStatus?: "ready" | "waiting_target_message" | "unavailable" | "not_applicable" | string
   wxWorkExternalUserId?: string
   wxWorkEmployeeName?: string
   wxWorkEmployeeUserId?: string
   customerTags?: AgentCustomerTag[]
   participants?: AgentConversationParticipant[]
+  channelSessions?: ConversationChannelSession[]
+  historySegments?: ConversationHistorySegment[]
+  relatedConversations?: AgentConversation[]
+  continuityLinks?: ConversationContinuityLink[]
 }
 
-export type AgentConversationDetail = AgentConversation & {
-  participants?: AgentConversationParticipant[]
+export type AgentConversationDetail = AgentConversation
+
+export type ConversationChannelSession = {
+  sessionNo: number
+  storeId: number
+  storeStaffBindingId: number
+  wxWorkInstanceId: number
+  channelId: number
+  startReason: string
+  storeStaffDisplayName: string
+  wxWorkEmployeeDisplayName: string
+  startedAt: string
+  endedAt?: string
+  status: number
+}
+
+export type ConversationHistorySegment = ConversationChannelSession & {
+  index: number
+  conversationId: number
+  inheritedHistory: boolean
+  currentConversation: boolean
+}
+
+export type ConversationContinuityLink = {
+  predecessorConversationId: number
+  successorConversationId: number
+  reason: string
+  createdAt: string
 }
 
 export type AgentMessage = {
   id: number
   conversationId: number
+  sessionNo: number
+  historySegmentIndex?: number
+  inheritedHistory: boolean
+  historicalOnly: boolean
   clientMsgId?: string
   senderType: string
   senderId: number
@@ -139,6 +177,38 @@ export type AgentMessage = {
   agentReadAt?: string
   recalledAt?: string
   quotedMessageId?: number
+}
+
+export type StoreConversationInheritancePreviewItem = {
+  conversationId: number
+  customerId: number
+  customerName: string
+  lastMessageAt?: string
+  currentSessionNo: number
+  eligible: boolean
+  resolutionMode: "create_successor" | "link_existing" | string
+  targetConversationId?: number
+  conflictReason?: string
+}
+
+export type StoreConversationInheritancePreview = {
+  sourceStoreStaffBindingId: number
+  targetStoreStaffBindingId: number
+  targetWxWorkInstanceId: number
+  storeId: number
+  storeName: string
+  previewVersion: string
+  eligibleCount: number
+  linkedExistingCount: number
+  conflictCount: number
+  items: StoreConversationInheritancePreviewItem[]
+}
+
+export type BatchStoreConversationInheritanceResult = {
+  inheritedCount: number
+  createdCount: number
+  linkedCount: number
+  conversationIds: number[]
 }
 
 export type AgentAsset = {
@@ -292,6 +362,49 @@ export function linkConversationToCustomer(payload: {
     method: "POST",
     body: JSON.stringify(payload),
   })
+}
+
+export function inheritStoreConversation(payload: {
+  conversationId: number
+  targetStoreStaffBindingId: number
+  targetWxWorkInstanceId: number
+  reason: string
+}) {
+  return request<AgentConversation>("/api/dashboard/conversation/inherit", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function previewStoreConversationInheritance(payload: {
+  sourceStoreStaffBindingId: number
+  targetStoreStaffBindingId: number
+  targetWxWorkInstanceId: number
+}) {
+  return request<StoreConversationInheritancePreview>(
+    "/api/dashboard/conversation/inherit/preview",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }
+  )
+}
+
+export function batchInheritStoreConversations(payload: {
+  sourceStoreStaffBindingId: number
+  targetStoreStaffBindingId: number
+  targetWxWorkInstanceId: number
+  conversationIds: number[]
+  previewVersion: string
+  reason: string
+}) {
+  return request<BatchStoreConversationInheritanceResult>(
+    "/api/dashboard/conversation/inherit/batch",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }
+  )
 }
 
 export function fetchCustomerTagOptions(conversationId: number) {

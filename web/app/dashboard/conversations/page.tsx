@@ -21,6 +21,7 @@ import { toast } from "sonner";
 
 import { ConversationCloseDialog } from "@/components/conversation-actions/close-dialog";
 import { ConversationTransferDialog } from "@/components/conversation-actions/transfer-dialog";
+import { ConversationInheritanceDialog } from "@/components/conversation-inheritance-dialog";
 import { useAuth } from "@/components/auth-provider";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -106,6 +107,7 @@ export default function ConversationsPage() {
   const [mobileCustomerSheetOpen, setMobileCustomerSheetOpen] = useState(false);
   const [detailSheetOpen, setDetailSheetOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
+  const [inheritOpen, setInheritOpen] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
   const [createTicketOpen, setCreateTicketOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
@@ -133,11 +135,13 @@ export default function ConversationsPage() {
   const canDeleteWxWorkAccounts = canViewWxWorkAccounts && permissions.has("channel.delete");
   const canManageWxWorkAccounts = canUpdateWxWorkAccounts || canDeleteWxWorkAccounts;
   const canTransferConversation = permissions.has("conversation.transfer");
+  const canInheritConversation = permissions.has("conversation.inherit");
   const canCloseConversation = permissions.has("conversation.close");
   const canSendArrivalBindingCard = permissions.has("conversation.send");
   const canUseConversationActions =
     canCreateTicket ||
     canTransferConversation ||
+    canInheritConversation ||
     canCloseConversation ||
     canSendArrivalBindingCard;
   const canUpdatePresence = permissions.has("agentPresence.update");
@@ -724,6 +728,18 @@ export default function ConversationsPage() {
                     {t("conversation.transferConversation")}
                   </DropdownMenuItem>
                 ) : null}
+                {canInheritConversation ? (
+                  <DropdownMenuItem
+                    onClick={() => setInheritOpen(true)}
+                    disabled={
+                      !conversation?.storeId ||
+                      !conversation.storeStaffBindingId
+                    }
+                  >
+                    <ArrowRightLeftIcon />
+                    安排会话继承
+                  </DropdownMenuItem>
+                ) : null}
                 {canCloseConversation ? (
                   <DropdownMenuItem
                     onClick={() => setCloseOpen(true)}
@@ -848,6 +864,21 @@ export default function ConversationsPage() {
         canManageTags={canViewTags}
         onSuccess={() => {
           setCreateTicketOpen(false);
+        }}
+      />
+      <ConversationInheritanceDialog
+        open={Boolean(
+          inheritOpen &&
+            canInheritConversation &&
+            conversation?.storeId &&
+            conversation.storeStaffBindingId
+        )}
+        sourceStoreId={conversation?.storeId ?? 0}
+        sourceStoreStaffBindingId={conversation?.storeStaffBindingId ?? 0}
+        conversationId={conversation?.id}
+        onOpenChange={setInheritOpen}
+        onSuccess={async () => {
+          await loadConversations()
         }}
       />
 

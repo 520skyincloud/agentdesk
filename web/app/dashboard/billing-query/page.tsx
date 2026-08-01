@@ -207,7 +207,7 @@ function OfficialStoreTable({ stores }: { stores: BillingOfficialStore[] }) {
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>接入公司 / 门店</TableHead>
+		  <TableHead>接入公司 / 门店 / 门店员工账号</TableHead>
           <TableHead>模型</TableHead>
           <TableHead>状态</TableHead>
           <TableHead className="text-right">期间请求</TableHead>
@@ -219,10 +219,11 @@ function OfficialStoreTable({ stores }: { stores: BillingOfficialStore[] }) {
       </TableHeader>
       <TableBody>
         {stores.map((store) => (
-          <TableRow key={`${store.tenantId}-${store.storeId}`}>
+		  <TableRow key={`${store.tenantId}-${store.storeId}-${store.storeStaffBindingId}`}>
             <TableCell>
               <div className="font-medium">{store.storeName}</div>
               <div className="text-xs text-muted-foreground">{store.tenantName} · {store.storeCode}</div>
+			  <div className="text-xs text-muted-foreground">{store.storeStaffAccountName || "未绑定门店员工号"}</div>
             </TableCell>
             <TableCell className="max-w-72 whitespace-normal">
               <span className="line-clamp-2">{store.modelNames.join(" / ") || "-"}</span>
@@ -464,10 +465,10 @@ export default function BillingQueryPage() {
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <Metric title="期间官方金额" value={cny(result?.official.aggregate.periodCostCny ?? 0)} detail={`${integer(result?.official.aggregate.logCount ?? 0)} 次官方调用`} icon={<CircleDollarSignIcon />} tone="green" />
-        <Metric title="当前可用额度" value={hasUnlimited ? "不限" : cny(availableCny)} detail={`${integer(result?.official.aggregate.successfulStores ?? 0)} 家门店可查询`} icon={<WalletCardsIcon />} tone="blue" />
+		<Metric title="当前可用额度" value={hasUnlimited ? "不限" : cny(availableCny)} detail={`${integer(result?.official.aggregate.successfulCredentialAccounts ?? 0)} 个门店员工账号可查询`} icon={<WalletCardsIcon />} tone="blue" />
         <Metric title="本地请求" value={integer(result?.local.aggregate.requestCount ?? 0)} detail={`失败 ${integer(result?.local.aggregate.failedCount ?? 0)}`} icon={<Rows3Icon />} tone="zinc" />
         <Metric title="Request ID 匹配率" value={percent(result?.reconciliation.matchRate ?? 0)} detail={`精确匹配 ${integer(result?.reconciliation.matchedCount ?? 0)}`} icon={<GaugeIcon />} tone="amber" />
-        <Metric title="门店查询异常" value={integer(result?.official.aggregate.failedStores ?? 0)} detail={`共 ${integer(result?.official.aggregate.storeCount ?? 0)} 家门店`} icon={<CircleAlertIcon />} tone={(result?.official.aggregate.failedStores ?? 0) > 0 ? "rose" : "green"} />
+		<Metric title="账号查询异常" value={integer(result?.official.aggregate.failedCredentialAccounts ?? 0)} detail={`${integer(result?.official.aggregate.credentialAccountCount ?? 0)} 个账号 · ${integer(result?.official.aggregate.failedStores ?? 0)} 家门店未就绪`} icon={<CircleAlertIcon />} tone={(result?.official.aggregate.failedStores ?? 0) > 0 ? "rose" : "green"} />
       </div>
 
       <Tabs defaultValue="official" className="gap-4">
@@ -479,14 +480,14 @@ export default function BillingQueryPage() {
           </TabsList>
         )}
         <TabsContent value="official" className="space-y-4">
-          <Section title="门店额度与期间汇总" meta={result ? `查询于 ${formatDateTime(result.queriedAt)}` : undefined}>
+		  <Section title="门店员工账号额度与期间汇总" meta={result ? `覆盖 ${result.official.aggregate.storeCount} 家门店 · 查询于 ${formatDateTime(result.queriedAt)}` : undefined}>
             <OfficialStoreTable stores={result?.official.stores ?? []} />
           </Section>
           <Section title="官方单次请求" meta={officialLogs.some((item) => item.requestId === "") ? "部分上游记录缺少 Request ID" : undefined}>
             <Table>
               <TableHeader><TableRow><TableHead>时间</TableHead><TableHead>接入公司 / 门店</TableHead><TableHead>模型</TableHead><TableHead className="text-right">输入 / 输出</TableHead><TableHead className="text-right">耗时</TableHead><TableHead className="text-right">人民币金额</TableHead><TableHead>Request ID</TableHead></TableRow></TableHeader>
               <TableBody>
-                {officialLogs.map((item) => <TableRow key={`${item.storeId}-${item.id}`}><TableCell>{unixTime(item.createdAt)}</TableCell><TableCell><div className="font-medium">{item.storeName}</div><div className="text-xs text-muted-foreground">{item.tenantName}</div></TableCell><TableCell>{item.modelName || "-"}</TableCell><TableCell className="text-right tabular-nums">{integer(item.promptTokens)} / {integer(item.completionTokens)}</TableCell><TableCell className="text-right tabular-nums">{elapsed(item.useTime)}</TableCell><TableCell className="text-right font-medium tabular-nums">{cny(item.costCny)}</TableCell><TableCell className="max-w-72 font-mono text-xs whitespace-normal break-all">{item.requestId || "-"}</TableCell></TableRow>)}
+				{officialLogs.map((item) => <TableRow key={`${item.storeId}-${item.storeStaffBindingId}-${item.id}`}><TableCell>{unixTime(item.createdAt)}</TableCell><TableCell><div className="font-medium">{item.storeName}</div><div className="text-xs text-muted-foreground">{item.tenantName} · {item.storeStaffAccountName || "未绑定门店员工号"}</div></TableCell><TableCell>{item.modelName || "-"}</TableCell><TableCell className="text-right tabular-nums">{integer(item.promptTokens)} / {integer(item.completionTokens)}</TableCell><TableCell className="text-right tabular-nums">{elapsed(item.useTime)}</TableCell><TableCell className="text-right font-medium tabular-nums">{cny(item.costCny)}</TableCell><TableCell className="max-w-72 font-mono text-xs whitespace-normal break-all">{item.requestId || "-"}</TableCell></TableRow>)}
                 {officialLogs.length === 0 ? <TableRow><TableCell colSpan={7} className="h-28 text-center text-muted-foreground">当前范围没有官方调用明细</TableCell></TableRow> : null}
               </TableBody>
             </Table>
@@ -498,7 +499,7 @@ export default function BillingQueryPage() {
             <Table>
               <TableHeader><TableRow><TableHead>时间</TableHead><TableHead>接入公司 / 门店</TableHead><TableHead>阶段 / 用途</TableHead><TableHead>模型</TableHead><TableHead className="text-right">输入 / 输出 / 缓存</TableHead><TableHead className="text-right">延迟</TableHead><TableHead>状态</TableHead><TableHead>Request ID</TableHead></TableRow></TableHeader>
               <TableBody>
-                {(result?.local.events ?? []).map((item) => <TableRow key={item.id}><TableCell>{formatDateTime(item.createdAt)}</TableCell><TableCell><div className="font-medium">{item.storeName}</div><div className="text-xs text-muted-foreground">{item.tenantName}</div></TableCell><TableCell><div>{item.stage || "-"}</div><div className="font-mono text-xs text-muted-foreground">{item.usageSlot || item.operationType || "-"}</div></TableCell><TableCell>{item.modelName || "-"}</TableCell><TableCell className="text-right tabular-nums">{integer(item.promptTokens)} / {integer(item.completionTokens)} / {integer(item.cachedPromptTokens)}</TableCell><TableCell className="text-right tabular-nums">{integer(item.latencyMs)} ms</TableCell><TableCell>{statusBadge(item.status)}{item.errorClass ? <div className="mt-1 text-xs text-destructive">{item.errorClass}</div> : null}</TableCell><TableCell className="max-w-72 font-mono text-xs whitespace-normal break-all">{item.requestId || "-"}</TableCell></TableRow>)}
+				{(result?.local.events ?? []).map((item) => <TableRow key={item.id}><TableCell>{formatDateTime(item.createdAt)}</TableCell><TableCell><div className="font-medium">{item.storeName}</div><div className="text-xs text-muted-foreground">{item.tenantName} · {item.storeStaffAccountName || "未绑定门店员工号"}</div></TableCell><TableCell><div>{item.stage || "-"}</div><div className="font-mono text-xs text-muted-foreground">{item.usageSlot || item.operationType || "-"}</div></TableCell><TableCell>{item.modelName || "-"}</TableCell><TableCell className="text-right tabular-nums">{integer(item.promptTokens)} / {integer(item.completionTokens)} / {integer(item.cachedPromptTokens)}</TableCell><TableCell className="text-right tabular-nums">{integer(item.latencyMs)} ms</TableCell><TableCell>{statusBadge(item.status)}{item.errorClass ? <div className="mt-1 text-xs text-destructive">{item.errorClass}</div> : null}</TableCell><TableCell className="max-w-72 font-mono text-xs whitespace-normal break-all">{item.requestId || "-"}</TableCell></TableRow>)}
                 {(result?.local.events.length ?? 0) === 0 ? <TableRow><TableCell colSpan={8} className="h-28 text-center text-muted-foreground">当前范围没有本地调用证据</TableCell></TableRow> : null}
               </TableBody>
             </Table>
@@ -516,7 +517,7 @@ export default function BillingQueryPage() {
             <Table>
               <TableHeader><TableRow><TableHead>时间</TableHead><TableHead>门店</TableHead><TableHead>状态</TableHead><TableHead>官方 / 本地模型</TableHead><TableHead className="text-right">官方 / 本地 Token</TableHead><TableHead className="text-right">官方金额</TableHead><TableHead>Request ID</TableHead></TableRow></TableHeader>
               <TableBody>
-                {(result?.reconciliation.items ?? []).map((item, index) => <TableRow key={`${item.storeId}-${item.requestId}-${index}`}><TableCell>{formatDateTime(item.officialAt || item.localAt || "")}</TableCell><TableCell>{item.storeName}</TableCell><TableCell>{statusBadge(item.status)}</TableCell><TableCell><div>{item.officialModel || "-"}</div><div className="text-xs text-muted-foreground">{item.localModel || "-"}</div></TableCell><TableCell className="text-right tabular-nums">{integer(item.officialTokens)} / {integer(item.localTokens)}</TableCell><TableCell className="text-right font-medium tabular-nums">{cny(item.officialCostCny)}</TableCell><TableCell className="max-w-72 font-mono text-xs whitespace-normal break-all">{item.requestId || "-"}</TableCell></TableRow>)}
+				{(result?.reconciliation.items ?? []).map((item, index) => <TableRow key={`${item.storeId}-${item.storeStaffBindingId}-${item.requestId}-${index}`}><TableCell>{formatDateTime(item.officialAt || item.localAt || "")}</TableCell><TableCell><div>{item.storeName}</div><div className="text-xs text-muted-foreground">{item.storeStaffAccountName || "未绑定门店员工号"}</div></TableCell><TableCell>{statusBadge(item.status)}</TableCell><TableCell><div>{item.officialModel || "-"}</div><div className="text-xs text-muted-foreground">{item.localModel || "-"}</div></TableCell><TableCell className="text-right tabular-nums">{integer(item.officialTokens)} / {integer(item.localTokens)}</TableCell><TableCell className="text-right font-medium tabular-nums">{cny(item.officialCostCny)}</TableCell><TableCell className="max-w-72 font-mono text-xs whitespace-normal break-all">{item.requestId || "-"}</TableCell></TableRow>)}
                 {(result?.reconciliation.items.length ?? 0) === 0 ? <TableRow><TableCell colSpan={7} className="h-28 text-center text-muted-foreground">当前范围没有可对账记录</TableCell></TableRow> : null}
               </TableBody>
             </Table>

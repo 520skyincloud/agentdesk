@@ -18,7 +18,7 @@ import {
 } from "@/lib/api/admin"
 
 type FormValues = {
-  storeId: string
+	storeStaffBindingId: string
   name: string
 }
 
@@ -29,24 +29,24 @@ type FastGPTProvisionDialogProps = {
 }
 
 const formSchema = z.object({
-  storeId: z.string().trim().refine((value) => Number(value) > 0, "请选择门店员工号"),
+	storeStaffBindingId: z.string().trim().refine((value) => Number(value) > 0, "请选择门店员工号"),
   name: z.string().trim().min(1, "请填写知识库名称").max(100, "知识库名称不能超过 100 个字符"),
 })
 
 function buildStoreOptions(instances: WxWorkProtocolInstance[]) {
-  const byStore = new Map<number, { value: string; label: string }>()
-  for (const instance of instances) {
-    if (instance.storeId <= 0 || byStore.has(instance.storeId)) {
+	const byBinding = new Map<number, { value: string; label: string }>()
+	for (const instance of instances) {
+		if (instance.storeId <= 0 || instance.storeStaffBindingId <= 0 || byBinding.has(instance.storeStaffBindingId)) {
       continue
     }
     const storeName = instance.storeName.trim() || instance.employeeName.trim() || `门店 ${instance.storeId}`
     const employeeName = instance.employeeName.trim()
-    byStore.set(instance.storeId, {
-      value: String(instance.storeId),
+		byBinding.set(instance.storeStaffBindingId, {
+			value: String(instance.storeStaffBindingId),
       label: employeeName && employeeName !== storeName ? `${storeName} (${employeeName})` : storeName,
     })
   }
-  return [...byStore.values()]
+	return [...byBinding.values()]
 }
 
 export function FastGPTProvisionDialog({ open, onOpenChange, onProvisioned }: FastGPTProvisionDialogProps) {
@@ -57,7 +57,7 @@ export function FastGPTProvisionDialog({ open, onOpenChange, onProvisioned }: Fa
   const resolver = useMemo(() => zodResolver(formSchema) as Resolver<FormValues>, [])
   const form = useForm<FormValues>({
     resolver,
-    defaultValues: { storeId: "", name: "" },
+		defaultValues: { storeStaffBindingId: "", name: "" },
   })
   const { control, handleSubmit, register, reset, setError, formState: { errors } } = form
 
@@ -90,14 +90,19 @@ export function FastGPTProvisionDialog({ open, onOpenChange, onProvisioned }: Fa
 
   useEffect(() => {
     if (open) {
-      reset({ storeId: "", name: "" })
+		reset({ storeStaffBindingId: "", name: "" })
     }
   }, [open, reset])
 
-  async function submit(values: FormValues) {
-    setSubmitting(true)
-    try {
-      await provisionFastGPTDataset(Number(values.storeId), values.name.trim())
+	async function submit(values: FormValues) {
+		setSubmitting(true)
+		try {
+			const bindingId = Number(values.storeStaffBindingId)
+			const selected = instances.find((instance) => instance.storeStaffBindingId === bindingId)
+			if (!selected || selected.storeId <= 0) {
+				throw new Error("所选门店员工号归属已变化，请刷新后重试")
+			}
+			await provisionFastGPTDataset(selected.storeId, bindingId, values.name.trim())
       await onProvisioned()
       toast.success("已提交 FastGPT 知识库创建任务")
       onOpenChange(false)
@@ -134,12 +139,12 @@ export function FastGPTProvisionDialog({ open, onOpenChange, onProvisioned }: Fa
       )}
     >
       <form id="fastgpt-provision-form" className="space-y-4" onSubmit={handleSubmit(submit)}>
-        <Field data-invalid={Boolean(errors.storeId)}>
+		<Field data-invalid={Boolean(errors.storeStaffBindingId)}>
           <FieldLabel htmlFor="fastgpt-store">门店员工号</FieldLabel>
           <FieldContent>
             <Controller
               control={control}
-              name="storeId"
+				name="storeStaffBindingId"
               render={({ field }) => (
                 <OptionCombobox
                   value={field.value}
@@ -151,7 +156,7 @@ export function FastGPTProvisionDialog({ open, onOpenChange, onProvisioned }: Fa
                 />
               )}
             />
-            <FieldError errors={[errors.storeId]} />
+			<FieldError errors={[errors.storeStaffBindingId]} />
           </FieldContent>
         </Field>
         <Field data-invalid={Boolean(errors.name)}>

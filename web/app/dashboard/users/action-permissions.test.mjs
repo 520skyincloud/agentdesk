@@ -35,7 +35,7 @@ test("account actions use existing user permissions and function guards", () => 
 })
 
 test("accounts receive roles only and never direct permissions", () => {
-  assert.match(pageSource, /assignUserRoles\(assigningRolesUser\.id, roleIds, storeName\)/)
+  assert.match(pageSource, /assignUserRoles\(assigningRolesUser\.id, roleIds, storeId\)/)
   assert.match(createSource, /roleIds: canAssignRoles \? payload\.roleIds : \[\]/)
   assert.doesNotMatch(pageSource, /assignRolePermissions|assignUserPermissions|permissionIds/)
   assert.doesNotMatch(createSource, /assignRolePermissions|assignUserPermissions|permissionIds/)

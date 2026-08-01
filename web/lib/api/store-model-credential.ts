@@ -3,6 +3,8 @@ import { request } from "@/lib/api/client"
 export type StoreModelCredential = {
   tenantId: number
   storeId: number
+  storeStaffBindingId: number
+  storeStaffAccountName: string
   storeCode: string
   storeName: string
   activeProfileId: number
@@ -58,6 +60,7 @@ export type StoreModelCredentialAudit = {
 export type StoreModelCredentialScope = {
   tenantId: number
   storeId: number
+  storeStaffBindingId: number
 }
 
 export function fetchStoreModelCredential(scope: StoreModelCredentialScope) {

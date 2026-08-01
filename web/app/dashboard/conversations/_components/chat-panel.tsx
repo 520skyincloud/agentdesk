@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { ConversationTransferDialog } from "@/components/conversation-actions/transfer-dialog";
@@ -27,6 +27,7 @@ import { useIsLgUp } from "@/hooks/use-lg-media";
 import {
   assignAgentConversation,
   type AgentMessage,
+  type ConversationHistorySegment,
 } from "@/lib/api/agent";
 import {
   inviteWxWorkProtocolRoomMember,
@@ -109,8 +110,12 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   const manualAttention = conversation?.manualAttention;
   const hasManualStatus = Boolean(manualAttention && manualAttention.level !== "none");
   const aiReplyEnabled = wxWorkInstance?.aiReplyEnabled !== false;
+  const replyRouteUnavailable =
+    conversation?.wxWorkReplyStatus === "waiting_target_message" ||
+    conversation?.wxWorkReplyStatus === "unavailable";
   const canAgentReply =
     !isClosedConversation &&
+    !replyRouteUnavailable &&
     (isStoreWecomManual ||
       routeStatus === "HQ_AGENTDESK_SERVING" ||
       (isAIServing && !aiReplyEnabled));
@@ -132,6 +137,10 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
           : "border-border bg-background text-muted-foreground";
   const editorDisabledReason = !conversation
     ? "请选择一个会话"
+    : conversation.wxWorkReplyStatus === "waiting_target_message"
+      ? "新企微账号尚未收到该客户消息，暂时无法取得真实会话标识"
+      : conversation.wxWorkReplyStatus === "unavailable"
+        ? "当前企微账号或会话路由不可用，请检查员工号实例状态"
     : manualAttention?.dot
       ? `${manualAttention.label || "待人工"}，AI 暂停回复。`
       : manualAttention?.level === "serving"
@@ -451,6 +460,13 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
           {manualStatusNotice}
         </div>
       ) : null}
+      {replyRouteUnavailable ? (
+        <div className="mx-auto mb-4 max-w-2xl rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-200">
+          {conversation.wxWorkReplyStatus === "waiting_target_message"
+            ? "已保留全部历史消息。请等待客户先向当前企微账号发送一条消息，再继续回复。"
+            : "当前企微实例或会话路由不可用，发送功能已暂停。"}
+        </div>
+      ) : null}
       <div ref={messagesContentRef} className="flex flex-col">
         {!loading && messages.length > 0 && messagesHasMore ? (
           <div className="mb-4 flex justify-center">
@@ -471,19 +487,45 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
             {t("conversation.loading")}
           </div>
         ) : messages.length > 0 ? (
-          messages.map((message) => (
-            <MessageItem
-              key={message.id}
-              message={message}
-              customerAvatar={conversation.customerAvatar}
-              onImageSettled={handleImageSettled}
-              canRecall={message.senderType === "agent" && message.senderId === currentUserId}
-              recalling={recallingMessageId === message.id}
-              onRecall={async (messageId) => {
-                await recallMessage(messageId);
-              }}
-            />
-          ))
+          messages.map((message, index) => {
+            const sessionNo = message.sessionNo > 0 ? message.sessionNo : 1;
+            const session = findMessageHistorySegment(
+              message,
+              conversation.historySegments,
+            );
+            const segmentIndex = session?.index ?? message.historySegmentIndex ?? 0;
+            const previousSegment = index > 0
+              ? findMessageHistorySegment(messages[index - 1], conversation.historySegments)
+              : undefined;
+            const previousSegmentIndex = previousSegment?.index ??
+              (index > 0 ? messages[index - 1].historySegmentIndex ?? 0 : 0);
+            const showSessionDivider =
+              (index > 0 && segmentIndex !== previousSegmentIndex) ||
+              (index === 0 && !messagesHasMore && segmentIndex > 0);
+            return (
+              <Fragment key={`${message.conversationId}:${message.id}`}>
+                {showSessionDivider ? (
+                  <ConversationSessionDivider sessionNo={sessionNo} session={session} />
+                ) : null}
+                <MessageItem
+                  message={message}
+                  customerAvatar={conversation.customerAvatar}
+                  onImageSettled={handleImageSettled}
+                  canRecall={
+                    message.conversationId === conversation.id &&
+                    !message.inheritedHistory &&
+                    !message.historicalOnly &&
+                    message.senderType === "agent" &&
+                    message.senderId === currentUserId
+                  }
+                  recalling={recallingMessageId === message.id}
+                  onRecall={async (messageId) => {
+                    await recallMessage(messageId);
+                  }}
+                />
+              </Fragment>
+            );
+          })
         ) : (
           <div className="py-8 text-center text-sm text-muted-foreground">
             {t("conversation.emptyMessages")}
@@ -688,6 +730,63 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   );
 }
 
+function ConversationSessionDivider({
+  sessionNo,
+  session,
+}: {
+  sessionNo: number;
+  session?: ConversationHistorySegment;
+}) {
+  const reason = session?.startReason;
+  const label =
+    reason === "manual_inheritance"
+      ? "以上为历史消息，已由主管安排会话继承"
+      : reason === "instance_changed"
+        ? "以上为历史消息，已更换企微账号"
+        : "以上为历史消息，本次服务从这里开始";
+  const account = [
+    repairMojibakeText(session?.storeStaffDisplayName),
+    repairMojibakeText(session?.wxWorkEmployeeDisplayName),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <div className="my-5 flex items-center gap-3" role="separator">
+      <div className="h-px flex-1 bg-border" />
+      <div className="max-w-[70%] text-center text-xs text-muted-foreground">
+        <div>{label}</div>
+        <div className="mt-0.5 truncate text-[11px]">
+          {account || `服务段 ${sessionNo}`}
+          {session?.startedAt ? ` · ${formatDateTime(session.startedAt)}` : ""}
+        </div>
+      </div>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+function findMessageHistorySegment(
+  message: AgentMessage,
+  segments?: ConversationHistorySegment[],
+) {
+  if (!segments?.length) {
+    return undefined;
+  }
+  if (message.historySegmentIndex !== undefined) {
+    const exact = segments.find((item) => item.index === message.historySegmentIndex);
+    if (exact) {
+      return exact;
+    }
+  }
+  return segments.find(
+    (item) =>
+      item.currentConversation &&
+      item.conversationId === message.conversationId &&
+      item.sessionNo === (message.sessionNo > 0 ? message.sessionNo : 1),
+  );
+}
+
 function getProtocolRoomID(externalUserId?: string) {
   const value = (externalUserId ?? "").trim();
   if (!value) {
@@ -824,6 +923,7 @@ const MessageItem = memo(
                     {sendSourceLabel}
                   </span>
                 ) : null}
+                {message.historicalOnly ? <span>历史归档</span> : null}
                 {isRecalled ? <span>{t("conversation.messageRecalled")}</span> : null}
                 {sendStatusLabel ? <span>{sendStatusLabel}</span> : null}
                 {showRecallAction ? (
@@ -882,6 +982,7 @@ const MessageItem = memo(
               </div>
               <div className="mt-1 flex items-center gap-2 text-[11px] text-[#8b95a5]">
                 <span>{formatDateTime(message.sentAt || "")}</span>
+                {message.historicalOnly ? <span>历史归档</span> : null}
                 {isRecalled ? <span>{t("conversation.messageRecalled")}</span> : null}
               </div>
             </div>

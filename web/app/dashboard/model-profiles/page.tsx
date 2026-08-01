@@ -97,12 +97,14 @@ export default function DashboardModelProfilesPage() {
       setCatalog(next)
       setTestTargetValue((current) => {
         const values = new Set(
-          next.testTargets.map((item) => `${item.tenantId}:${item.storeId}`),
+          next.testTargets.map(
+            (item) => `${item.tenantId}:${item.storeId}:${item.storeStaffBindingId}`,
+          ),
         )
         return values.has(current)
           ? current
           : next.testTargets[0]
-            ? `${next.testTargets[0].tenantId}:${next.testTargets[0].storeId}`
+            ? `${next.testTargets[0].tenantId}:${next.testTargets[0].storeId}:${next.testTargets[0].storeStaffBindingId}`
             : ""
       })
       setSelectedId((current) => {
@@ -138,7 +140,9 @@ export default function DashboardModelProfilesPage() {
   const selectedTestTarget = useMemo(
     () =>
       catalog?.testTargets.find(
-        (item) => `${item.tenantId}:${item.storeId}` === testTargetValue,
+        (item) =>
+          `${item.tenantId}:${item.storeId}:${item.storeStaffBindingId}` ===
+          testTargetValue,
       ) ?? null,
     [catalog, testTargetValue],
   )
@@ -206,6 +210,7 @@ export default function DashboardModelProfilesPage() {
         selected.id,
         selectedTestTarget.tenantId,
         selectedTestTarget.storeId,
+        selectedTestTarget.storeStaffBindingId,
       )
       setValidation(result)
       if (result.status === "passed") {
@@ -346,8 +351,8 @@ export default function DashboardModelProfilesPage() {
                     <OptionCombobox
                       value={testTargetValue}
                       options={(catalog?.testTargets ?? []).map((item) => ({
-                        value: `${item.tenantId}:${item.storeId}`,
-                        label: `${item.tenantName} / ${item.storeName} · K${item.credentialRevision}`,
+                        value: `${item.tenantId}:${item.storeId}:${item.storeStaffBindingId}`,
+                        label: `${item.tenantName} / ${item.storeName} / ${item.storeStaffAccountName} · K${item.credentialRevision}`,
                       }))}
                       placeholder="选择受控测试门店"
                       disabled={testing || (catalog?.testTargets.length ?? 0) === 0}

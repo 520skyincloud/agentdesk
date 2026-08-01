@@ -275,6 +275,12 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
     context: "tenant",
     items: [
       {
+        titleKey: "nav.stores",
+        url: "/dashboard/stores",
+        icon: <Building2Icon />,
+        requiredPermission: "store.view",
+      },
+      {
         titleKey: "nav.storeWorkbench",
         url: "/dashboard/store-workbench",
         icon: <HomeIcon />,

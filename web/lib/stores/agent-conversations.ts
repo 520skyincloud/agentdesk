@@ -17,11 +17,12 @@ import {
 } from "@/lib/api/agent"
 import type { RealtimeConnectionStatusValue } from "@/components/realtime-connection-status"
 import {
-  cursorFromLoadedImMessages,
-  hasMoreAfterLatestImMessageMerge,
-  mergeImMessagesByIdAsc,
-  parseImMessageCursorId,
+  mergeImMessage,
 } from "@/lib/im-message-merge"
+import {
+  findCurrentConversationReadTarget,
+  mergeMessagesPreservingOrder,
+} from "@/lib/ordered-message-merge"
 import {
   markMessagesReadToSeqNo,
   patchConversationList,
@@ -266,11 +267,17 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
         return
       }
 
+      const detailPromise = get().refreshConversation(nextSelectedId)
       if (selectionChanged || get().messagesLoadedConversationId === null) {
-        await get().loadMessages(nextSelectedId, {
-          forceLoading: true,
-          reset: true,
-        })
+        await Promise.all([
+          detailPromise,
+          get().loadMessages(nextSelectedId, {
+            forceLoading: true,
+            reset: true,
+          }),
+        ])
+      } else {
+        await detailPromise
       }
     } catch (error) {
       if (requestSeq === conversationsRequestSeq) {
@@ -290,6 +297,7 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
       ) {
         set({ selectedWxWorkInstanceId: selectedConversation.wxWorkInstanceId })
       }
+      await get().refreshConversation(conversationId)
       return
     }
 
@@ -306,10 +314,13 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
       messagesLoadedConversationId: null,
     })
 
-    await get().loadMessages(conversationId, {
-      forceLoading: true,
-      reset: true,
-    })
+    await Promise.all([
+      get().refreshConversation(conversationId),
+      get().loadMessages(conversationId, {
+        forceLoading: true,
+        reset: true,
+      }),
+    ])
   },
 
   loadMessages: async (conversationId, options = {}) => {
@@ -334,6 +345,7 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     try {
       const data = await fetchAgentMessages({
         conversationId,
+        includeHistory: 1,
         limit: 50,
       })
 
@@ -350,8 +362,7 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
         messages: list,
         messagesLoading: false,
         messagesLoadedConversationId: conversationId,
-        messagesCursor:
-          cursorFromLoadedImMessages(list) || (data.cursor ?? ""),
+        messagesCursor: data.cursor ?? "",
         messagesHasMore: Boolean(data.hasMore),
       })
     } catch (error) {
@@ -367,8 +378,9 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     if (!conversationId || get().messagesLoadingMore || !get().messagesHasMore) {
       return
     }
-    const cursorId = parseImMessageCursorId(get().messagesCursor)
-    if (cursorId <= 0) {
+    const cursor = get().messagesCursor.trim()
+    if (!cursor) {
+      set({ messagesHasMore: false })
       return
     }
 
@@ -376,7 +388,8 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     try {
       const data = await fetchAgentMessages({
         conversationId,
-        cursor: cursorId,
+        cursor,
+        includeHistory: 1,
         limit: 50,
       })
       if (get().selectedConversationId !== conversationId) {
@@ -384,12 +397,15 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
       }
       const incoming = ensureArray(data.results)
       set((state) => {
-        const merged = mergeImMessagesByIdAsc(state.messages, incoming)
+        const merged = mergeMessagesPreservingOrder(
+          state.messages,
+          incoming,
+          "prepend",
+          mergeImMessage,
+        )
         return {
           messages: merged,
-          messagesCursor:
-            cursorFromLoadedImMessages(merged) ||
-            (data.cursor ?? state.messagesCursor),
+          messagesCursor: data.cursor ?? "",
           messagesHasMore: Boolean(data.hasMore),
           messagesLoadingMore: false,
         }
@@ -407,6 +423,7 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     try {
       const data = await fetchAgentMessages({
         conversationId,
+        includeHistory: 1,
         limit: 50,
       })
       if (get().selectedConversationId !== conversationId) {
@@ -417,18 +434,17 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
         return
       }
       set((state) => {
-        const merged = mergeImMessagesByIdAsc(state.messages, batch)
+        const merged = mergeMessagesPreservingOrder(
+          state.messages,
+          batch,
+          "append",
+          mergeImMessage,
+        )
+        const hadMessages = state.messages.length > 0
         return {
           messages: merged,
-          messagesCursor:
-            cursorFromLoadedImMessages(merged) ||
-            (data.cursor ?? state.messagesCursor),
-          messagesHasMore: hasMoreAfterLatestImMessageMerge({
-            previousMessages: state.messages,
-            previousHasMore: state.messagesHasMore,
-            merged,
-            apiHasMore: Boolean(data.hasMore),
-          }),
+          messagesCursor: hadMessages ? state.messagesCursor : (data.cursor ?? ""),
+          messagesHasMore: hadMessages ? state.messagesHasMore : Boolean(data.hasMore),
         }
       })
     } catch {
@@ -440,8 +456,11 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     const store = get()
     const conversationId = store.selectedConversationId
     const conversation = store.conversations.find((item) => item.id === conversationId)
-    const lastMessage = store.messages.at(-1)
-    if (!conversationId || !conversation || !lastMessage) {
+    if (!conversationId || !conversation) {
+      return
+    }
+    const lastMessage = findCurrentConversationReadTarget(store.messages, conversationId)
+    if (!lastMessage) {
       return
     }
     if (
@@ -464,7 +483,7 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
         return {
           readingMessageId: 0,
           messages: current.messages.map((item) => {
-            if (item.seqNo > lastMessage.seqNo) {
+            if (item.conversationId !== conversationId || item.seqNo > lastMessage.seqNo) {
               return item
             }
             return item.agentRead ? item : { ...item, agentRead: true }
@@ -491,7 +510,7 @@ export const useAgentConversationsStore = create<AgentConversationsStore>((set, 
     set((state) => {
       const isSelected = state.selectedConversationId === message.conversationId
       const nextMessages = isSelected
-        ? mergeImMessagesByIdAsc(state.messages, [message])
+        ? mergeMessagesPreservingOrder(state.messages, [message], "append", mergeImMessage)
         : state.messages
       return {
         messages: nextMessages,

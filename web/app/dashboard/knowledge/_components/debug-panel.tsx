@@ -23,9 +23,10 @@ import { useAuth } from "@/components/auth-provider";
 
 type DebugPanelProps = {
   knowledgeBaseId: number | null;
+  storeStaffBindingId: number | null;
 };
 
-export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
+export function DebugPanel({ knowledgeBaseId, storeStaffBindingId }: DebugPanelProps) {
   const t = useI18n();
   const { session } = useAuth();
   const showModelDiagnostics = Boolean(session?.isPlatformAccount);
@@ -47,7 +48,6 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
       toast.error(t("knowledge.debugQuestionRequired"));
       return;
     }
-
     setSearching(true);
     try {
       const data = await debugKnowledgeSearch({
@@ -75,6 +75,10 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
       toast.error(t("knowledge.debugQuestionRequired"));
       return;
     }
+    if (!storeStaffBindingId) {
+      toast.error("请选择用于知识调试的门店员工号");
+      return;
+    }
 
     setAnswering(true);
     try {
@@ -84,6 +88,7 @@ export function DebugPanel({ knowledgeBaseId }: DebugPanelProps) {
         topK: Number(topK) || undefined,
         scoreThreshold: Number(scoreThreshold) || undefined,
         rerankLimit: Number(rerankLimit) || undefined,
+        storeStaffBindingId,
       });
       setAnswerResult(data);
       toast.success(t("knowledge.answerCompleted", {

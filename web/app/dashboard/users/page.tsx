@@ -2,6 +2,7 @@
 
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react"
 import {
+  ArrowRightLeftIcon,
   Building2Icon,
   ClipboardCheckIcon,
   KeyRoundIcon,
@@ -63,6 +64,7 @@ import { RegistrationReviewPanel } from "./_components/registration-review"
 import { ResetPasswordDialogs } from "./_components/reset-password"
 import { WxWorkProtocolBindingDialog } from "@/components/wxwork-protocol/wxwork-protocol-binding-dialog"
 import { StoreModelCredentialDialog } from "@/components/store-model-credential"
+import { ConversationInheritanceDialog } from "@/components/conversation-inheritance-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
@@ -102,7 +104,8 @@ export default function DashboardUsersPage() {
   const canBindWxWork = permissions.has("channel.create") && permissions.has("user.view")
   const canViewModelCredential = permissions.has("aiConfig.view")
   const canUpdateModelCredential = permissions.has("aiConfig.update")
-  const hasUserRowActions = canUpdateUsers || canDeleteUsers || canAssignRoles || canBindWxWork || canViewModelCredential
+  const canInheritConversation = permissions.has("conversation.inherit")
+  const hasUserRowActions = canUpdateUsers || canDeleteUsers || canAssignRoles || canBindWxWork || canViewModelCredential || canInheritConversation
   const [agentTeams, setAgentTeams] = useState<AdminAgentTeam[]>([])
   const [assigningTeamUserId, setAssigningTeamUserId] = useState<number | null>(null)
   const [creatingOpen, setCreatingOpen] = useState(false)
@@ -121,6 +124,7 @@ export default function DashboardUsersPage() {
   const [assigningRolesUser, setAssigningRolesUser] = useState<AdminUser | null>(null)
   const [bindingWxWorkUser, setBindingWxWorkUser] = useState<AdminUser | null>(null)
   const [credentialUser, setCredentialUser] = useState<AdminUser | null>(null)
+  const [handoffUser, setHandoffUser] = useState<AdminUser | null>(null)
   const [assignRoleOptions, setAssignRoleOptions] = useState<AdminRole[]>([])
   const [assignRoleIds, setAssignRoleIds] = useState<number[]>([])
   const [assignRolesLoading, setAssignRolesLoading] = useState(false)
@@ -338,7 +342,7 @@ export default function DashboardUsersPage() {
     }
   }
 
-  async function handleAssignRoles(roleIds: number[], storeName: string) {
+  async function handleAssignRoles(roleIds: number[], storeId: number) {
     if (
       !canAssignRoles ||
       !assigningRolesUser?.manageable ||
@@ -349,7 +353,7 @@ export default function DashboardUsersPage() {
 
     setSavingRoles(true)
     try {
-      await assignUserRoles(assigningRolesUser.id, roleIds, storeName)
+      await assignUserRoles(assigningRolesUser.id, roleIds, storeId)
       toast.success(t("user.rolesUpdated", { username: assigningRolesUser.username }))
       setAssigningRolesUser(null)
       setAssignRoleOptions([])
@@ -765,7 +769,8 @@ export default function DashboardUsersPage() {
                           ) : null}
                           {item.manageable &&
                           (canAssignRoles || canUpdateUsers || canDeleteUsers || canBindUserWxWork(item) ||
-                            (canViewModelCredential && Boolean(item.storeStaff?.storeId))) ? (
+                            (canViewModelCredential && Boolean(item.storeStaff?.storeId)) ||
+                            (canInheritConversation && Boolean(item.storeStaff?.bindingId && item.storeStaff?.storeId))) ? (
                             <DropdownMenu>
                           <DropdownMenuTrigger
                             render={<Button variant="outline" size="icon-sm" />}
@@ -784,6 +789,12 @@ export default function DashboardUsersPage() {
                               <DropdownMenuItem onClick={() => setBindingWxWorkUser(item)}>
                                 <QrCodeIcon />
                                 {item.storeStaff?.wxWorkInstanceId ? "继续企微绑定" : "绑定企微员工号"}
+                              </DropdownMenuItem>
+                            ) : null}
+                            {canInheritConversation && item.storeStaff?.bindingId && item.storeStaff?.storeId ? (
+                              <DropdownMenuItem onClick={() => setHandoffUser(item)}>
+                                <ArrowRightLeftIcon />
+                                批量会话交接
                               </DropdownMenuItem>
                             ) : null}
                             {canAssignRoles ? (
@@ -918,6 +929,7 @@ export default function DashboardUsersPage() {
         open={Boolean(credentialUser?.storeStaff?.storeId && canViewModelCredential)}
         tenantId={credentialUser?.tenantId ?? 0}
         storeId={credentialUser?.storeStaff?.storeId ?? 0}
+        storeStaffBindingId={credentialUser?.storeStaff?.bindingId ?? 0}
         storeName={credentialUser?.storeStaff?.storeName ?? ""}
         canUpdate={canUpdateModelCredential}
         onOpenChange={(open) => {
@@ -925,6 +937,22 @@ export default function DashboardUsersPage() {
         }}
         onChanged={() => {
           void list.loadData()
+        }}
+      />
+      <ConversationInheritanceDialog
+        open={Boolean(
+          handoffUser?.storeStaff?.storeId &&
+            handoffUser.storeStaff.bindingId &&
+            canInheritConversation
+        )}
+        sourceStoreId={handoffUser?.storeStaff?.storeId ?? 0}
+        sourceStoreStaffBindingId={handoffUser?.storeStaff?.bindingId ?? 0}
+        onOpenChange={(open) => {
+          if (!open) setHandoffUser(null)
+        }}
+        onSuccess={async () => {
+          setHandoffUser(null)
+          await list.loadData()
         }}
       />
     </>

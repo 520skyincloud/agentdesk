@@ -22,6 +22,7 @@ export type BillingStoreOption = {
   storeId: number
   storeCode: string
   storeName: string
+  bindingCount: number
   credentialStatus: string
   credentialRevision: number
   modelProfileRevision: number
@@ -33,6 +34,7 @@ export type BillingQueryOptions = {
   canFilterTenants: boolean
   defaultTenantId: number
   defaultStoreId: number
+  defaultStoreStaffBindingId: number
   tenants: BillingTenantOption[]
   stores: BillingStoreOption[]
 }
@@ -51,6 +53,8 @@ export type BillingTokenSummary = {
 export type BillingOfficialUsageLog = {
   storeId: number
   storeName: string
+  storeStaffBindingId: number
+  storeStaffAccountName: string
   id: number
   createdAt: number
   modelName: string
@@ -68,6 +72,8 @@ export type BillingOfficialStore = {
   storeId: number
   storeCode: string
   storeName: string
+  storeStaffBindingId: number
+  storeStaffAccountName: string
   credentialRevision: number
   modelProfileRevision: number
   modelNames: string[]
@@ -90,6 +96,8 @@ export type BillingLocalUsageEvent = {
   tenantName: string
   storeId: number
   storeName: string
+  storeStaffBindingId: number
+  storeStaffAccountName: string
   requestId: string
   stage: string
   operationType: string
@@ -109,6 +117,8 @@ export type BillingLocalUsageEvent = {
 export type BillingReconciliationItem = {
   storeId: number
   storeName: string
+  storeStaffBindingId: number
+  storeStaffAccountName: string
   requestId: string
   status: "matched" | "official_only" | "local_only"
   officialModel: string
@@ -133,6 +143,9 @@ export type BillingQueryResult = {
       storeCount: number
       successfulStores: number
       failedStores: number
+      credentialAccountCount: number
+      successfulCredentialAccounts: number
+      failedCredentialAccounts: number
       logCount: number
       periodQuota: number
       periodCostCny: number
