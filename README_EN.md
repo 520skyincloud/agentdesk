@@ -125,7 +125,7 @@ The default configuration uses:
 - SQLite: `data/app.db`
 - Backend: `http://127.0.0.1:8083`
 - Managed FastGPT uses deployment settings and an environment-only integration token.
-- NewAPI model profiles are managed by platform administrators; each Store supplies its own encrypted API key.
+- NewAPI model profiles are Store-owned and managed by authorized administrators; each AI-enabled Store staff binding supplies its own encrypted API key and billing attribution.
 
 Install frontend dependencies:
 

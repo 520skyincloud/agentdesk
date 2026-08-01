@@ -7,28 +7,33 @@
 
 ## 1. 结论
 
-fresh 统一环境上线需要三类材料，不能互相替代：
+统一环境上线需要三类材料，不能互相替代：
 
 1. **部署现场生成并保管的秘密**：数据库口令、邀请码密钥、会话签名密钥、资产签名密钥、门店模型凭据加密主密钥。
 2. **FastGPT 服务方签发的平台集成凭据**：FastGPT Base URL 和 Integration Token。
-3. **NewAPI 服务方签发的门店凭据**：为 fresh 环境中新建的测试 Store 准备一条 NewAPI API Key。
+3. **NewAPI 服务方签发的员工绑定凭据**：为 pilot Store 中每个启用 AI 的 `StoreStaffBinding` 分别准备一条 NewAPI API Key。
 
 用户不需要在聊天、Issue、PR、Markdown 或 Git 中提供任何真实密钥。真实值只能由授权人员写入目标环境的秘密管理器、权限为 `0600` 且被 Git 忽略的本地 `.env`，或通过门店凭据页面提交。
 
-代码合并不需要任何真实 Tenant、Store、来源数据库或外部 Key。正式部署必须使用空
-SQLite/MySQL，由平台通过产品流程重新创建 Tenant、Store、主管和唯一门店员工账号。
-数据库生成的 ID 只能由当前环境解析，禁止硬编码历史 Store ID。
+代码合并不需要任何真实 Tenant、Store、来源数据库或外部 Key。正式部署既支持 fresh
+SQLite/MySQL，也支持从已经执行到已知 Migration 版本的现有数据库受控升级。旧库升级必须
+先完成 B13：停写、加密仓库外备份、下载到独立位置、恢复到独立 MySQL、在恢复库运行
+AutoMigrate 与 Migration 72，并核对记录数量和关键关系。任何存在歧义的 Store、Binding、
+实例、会话或 Credential 归属都会阻止迁移，禁止猜测或硬编码历史 Store ID。
 
-测试 Store 的 Credential 策略由部署方在页面设置。启用
-`AllowCredentialSelfService=true` 时，仅允许该 Store 唯一活动绑定且持有权限的
-`store_staff` 录入；启用 `RequireSupervisorApproval=true` 时，必须由同 Tenant、
-不同于提交人的公司主管审批。
+测试 Store 的 Credential 策略由部署方在页面设置。一个 Store 可以有多个活动
+`StoreStaffBinding`，每个 Binding 独立保存 Credential revision 和计费归因。启用
+`AllowCredentialSelfService=true` 时，仅允许该 Binding 当前唯一绑定且持有权限的
+`store_staff` 为自己的 Binding 录入；启用 `RequireSupervisorApproval=true` 时，必须由
+同 Tenant、不同于提交人的公司主管审批。
 
 历史交付过的环境文件摘要、测试 HTTP 端点和测试 Key 只作安全事件追溯，不能作为当前
 部署输入。目标主机必须重新生成或受控注入全部秘密，验证权限、HTTPS、Compose 解析和
-外部连通性。旧 Key、密文、nonce、revision 和真实业务数据均不迁移。
+外部连通性。旧 `AIConfig.APIKey` 等退出运行链的明文不得迁移；现有统一 Credential 密文、
+nonce、revision 和真实业务数据则必须在 B13 恢复演练中原样保全，并由 Migration 72 按确定
+证据归属到 Binding。
 
-## 2. Fresh 测试 Store 灰度最小清单
+## 2. pilot Store 灰度最小清单
 
 | 项目 | 是否秘密 | 由谁产生 | 放置位置 | 当前是否必需 |
 | --- | --- | --- | --- | --- |
@@ -44,7 +49,7 @@ SQLite/MySQL，由平台通过产品流程重新创建 Tenant、Store、主管�
 | Store Credential 主密钥版本号 | 否 | 平台运维命名 | `AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID` | 是 |
 | FastGPT Base URL | 否，但不对租户展示 | FastGPT 服务负责人提供 | `AGENT_DESK_FASTGPT_BASE_URL` | AI/FastGPT 灰度时是 |
 | FastGPT Integration Token | 是 | FastGPT 服务负责人签发 | `AGENT_DESK_FASTGPT_INTEGRATION_TOKEN` | AI/FastGPT 灰度时是 |
-| pilot Store NewAPI API Key | 是 | NewAPI 账号所有者提供 | 门店凭据页面/API，不进 `.env` | AI/NewAPI 灰度时是 |
+| pilot Binding NewAPI API Key | 是 | NewAPI 账号所有者提供 | 员工绑定凭据页面/API，不进 `.env` | 对每个启用 AI 的 Binding 是 |
 
 除上述项目外，还需设置：
 
@@ -123,8 +128,8 @@ cs_ai_agent:<AGENT_DESK_MYSQL_PASSWORD>@tcp(mysql:3306)/cs_ai_agent?charset=utf8
 
 - 格式：**恰好 32 个随机字节**；部署模板统一使用 Base64。
 - 生成命令：`openssl rand -base64 32`。
-- 用途：使用 AES-256-GCM 加密所有门店的 NewAPI API Key。
-- AAD 绑定：Tenant、Store 和 Credential revision；密文不能跨门店或跨 revision 搬用。
+- 用途：使用 AES-256-GCM 加密所有门店员工绑定的 NewAPI API Key。
+- AAD 绑定：Tenant、Store、StoreStaffBinding 和 Credential revision；密文不能跨租户、门店、Binding 或 revision 搬用。
 - 保管级别：最高。密钥必须在数据库备份之外另行加密备份，并限制为最少授权人员可访问。
 - 丢失后果：数据库中的全部门店模型凭据不可解密，只能恢复主密钥备份或要求各门店重新提交 Key。
 - 当前轮换限制：运行时只接受当前 `MasterKeyID` 对应的一把主密钥，没有多密钥 keyring。禁止直接替换；轮换必须先实现并演练显式重加密迁移。
@@ -163,11 +168,14 @@ Agent Desk 会在根地址后拼接上述路径。生产必须使用 HTTPS，URL
 
 FastGPT Base URL 与 Integration Token 必须成对来自同一环境。测试环境 Token 不能用于生产地址，生产 Token 也不能用于生命周期测试 Store。
 
-## 5. pilot Store NewAPI API Key
+## 5. pilot Binding NewAPI API Key
 
-### 5.1 只需要一条门店 Key
+### 5.1 每个启用 AI 的 Binding 一条 Key
 
-当前系统只支持一个统一 NewAPI 网关。一个 Store 提交一条已有的 NewAPI API Key，该 Key 必须能够调用当前 active Model Profile 的全部九个用途槽：
+当前系统只支持一个统一 NewAPI 网关。Store 负责行业、知识、标签、记忆和 active Model
+Profile；`StoreStaffBinding` 负责 NewAPI Credential、模型调用证据和账单归因。每个启用 AI
+的 Binding 提交一条已有的 NewAPI API Key，该 Key 必须能够调用 Store 当前 active Model
+Profile 的全部九个用途槽：
 
 1. Reply
 2. Intent Detect
@@ -179,15 +187,19 @@ FastGPT Base URL 与 Integration Token 必须成对来自同一环境。测试�
 8. Rerank
 9. Document Parser
 
-转人工二次确认复用 Intent Detect，人工通知摘要复用 Reply，不形成新的模型槽。不需要为九个槽分别提供九条 Key，也不存在平台级 NewAPI 用量 Token、租户授权池或企微账号独立 Key。
+转人工二次确认复用 Intent Detect，人工通知摘要复用 Reply，不形成新的模型槽。同一个
+Binding 不需要为九个槽分别提供九条 Key；同一 Store 的不同 Binding 不能共用数据库中的
+Credential 记录。Credential 也不直接属于可替换的企微实例，因此同一 Binding 更换企微账号
+时继续使用原 Credential。系统不存在平台级 NewAPI 用量 Token或租户授权池。
 
 ### 5.2 Key 的提交位置
 
-NewAPI Key **不能写入 `.env`**，也不能由 Codex、脚本或 Migration 从旧 `AIConfig.APIKey` 复制。必须在选定 pilot Store 的凭据工作流中提交：
+NewAPI Key **不能写入 `.env`**，也不能由 Codex、脚本或 Migration 从旧 `AIConfig.APIKey`
+复制。必须在选定 pilot Store 的 Binding 凭据工作流中提交：
 
-- 平台管理员或获得对应权限的管理员，可在“接入公司 -> 模型接入”中为门店录入。
+- 平台管理员或获得对应权限的管理员，可在“接入公司 -> 模型接入”中为指定 Binding 录入。
 - 公司主管可按 Tenant 数据范围管理。
-- 门店员工只有在 `AllowCredentialSelfService=true` 时才能自行录入。
+- 门店员工只有在 `AllowCredentialSelfService=true` 时才能为自己的活动 Binding 自行录入。
 - 开启 `RequireSupervisorApproval=true` 时，门店自助提交必须由不同的公司主管审批。
 
 每次配置、审批、拒绝或停用都要求当前账号密码、显式二次确认和不可变审计。候选 Key 会先测试九槽并同步 FastGPT；全部成功后才切换为 active。失败时保留旧 active revision，不允许半切换。
@@ -387,7 +399,8 @@ docker compose --env-file "/absolute/secure/path/production.env" up -d --build
 - `production.env`、真实 Key 和客户数据不属于源码或 PR 交付物；缺少它们不阻止代码评审、测试和合并。
 - 文件权限、变量完整性、Compose 解析、FastGPT HTTPS/鉴权和目标数据库连通性只能在实际部署主机验证。
 - 未完成现场验证时不得切换正式 `8083`、启动生产 worker 或宣称生产验收完成。
-- 目标数据库必须为空库；当前发布不支持旧库升级，也没有 B14 Schema Cleanup。
+- fresh 与已知历史库受控升级均受支持；历史库必须先通过 B13 加密备份、独立恢复和 Migration 72 演练。
+- B14 物理删除是独立操作，只能在 B13 全部验收后按已批准白名单执行，当前部署不得顺带扩大删除范围。
 - 真实变量值和 NewAPI Key 不因延期改由聊天、Git、PR、Markdown、Migration 或命令行参数交付。NewAPI Key 仍由实际持有人在统一门店凭据页面重新录入。
 
 ## 9. 轮换和事故处理
@@ -405,22 +418,27 @@ docker compose --env-file "/absolute/secure/path/production.env" up -d --build
 
 任何密钥疑似泄露时，先停止相关新写入或外呼，保留不可变审计，再按上表轮换。不得通过删除审计、修改历史 revision 或恢复旧 Key 来“消除”事故。
 
-## 10. Fresh 现场交付顺序
+## 10. 现场交付顺序
 
 1. 在目标主机生成或受控注入安全文件，确认父目录 `0700`、文件 `0600`，且不回显变量值。
 2. 运行不展开秘密的 Compose 与生产配置预检，确认 FastGPT Base URL 为同环境 HTTPS、
-   Integration Token 成对，目标 MySQL 可连接且业务 Schema 为空。
-3. 归档旧环境并停止占用正式 `8083` 的旧应用；旧数据库不连接新镜像。
-4. 启动统一镜像，让 AutoMigrate 与 DML runner 从空库建立最终 Schema 和基础权限数据。
-5. 登录平台，通过现有页面新建测试 Tenant、Store、公司主管和唯一门店员工账号。
+   Integration Token 成对，目标 MySQL 可连接且 Migration 历史属于受支持基线。
+3. fresh 环境可直接启动统一镜像；历史环境必须先停写并完成 B13 加密备份、异机保存、独立
+   MySQL 恢复及新镜像迁移演练，核对通过后再进入维护窗口。
+4. 为当前生产镜像建立可回滚标签，停止旧应用和 worker，再以同一安全环境文件
+   `--force-recreate` 启动统一镜像，让 AutoMigrate 与 DML runner 完成 Schema 与 DML 升级。
+5. 登录平台，确认原 Tenant、Store、用户、Binding、企微实例、客户、会话和消息均保留；
+   fresh 环境则通过现有页面分别创建 Store 和用户，再显式建立一个 Store 到多个 Binding。
 6. 配置 Store 自助录入/主管审批策略，发布完整九槽 Model Profile 并指派给 Store。
-7. NewAPI Key 实际持有人在门店凭据页面提交 Key；需要审批时由不同公司主管批准。
-8. 完成九槽测试、FastGPT provision/sync、真实检索、AI 回复、转人工、规则派单、行业
+7. NewAPI Key 实际持有人在指定 Binding 的凭据页面提交 Key；需要审批时由不同公司主管批准。
+8. 完成多 Binding、同 Binding 更换企微账号自动分段、跨 Binding 人工继承、九槽测试、
+   FastGPT provision/sync、真实检索、AI 回复、转人工、规则派单、行业
    标签及 Request ID 人民币账单证据。
-9. 验证当前统一数据库备份与恢复后，才切换正式 `8083` 并启动生产 worker。
+9. 确认健康检查、Migration 72、企业微信回调和 worker 正常后切换正式 `8083`；保留 B13
+   备份和旧镜像直到观察期结束。
 
-当前镜像不包含 `schema-cleanup`，也没有旧库升级命令。目标数据库不是空库时应停止部署，
-由负责人另建空库，不能通过恢复兼容代码或手工删表绕过。
+B14 只负责已批准旧表的物理删除，不属于常规启动或 Migration 72。只有 B13 全部验收、停机、
+加密备份和独立恢复验证通过后才能单独执行；不得通过手工删表或扩大白名单绕过门禁。
 
 ## 11. 当前交付结论与剩余现场材料
 
@@ -428,12 +446,13 @@ docker compose --env-file "/absolute/secure/path/production.env" up -d --build
 
 | 材料 | 是否秘密 | 交付方式 |
 | --- | --- | --- |
-| fresh SQLite/MySQL 目标 | DSN 是秘密 | 目标主机秘密管理器或 `0600` 环境文件 |
+| fresh 或受支持历史 SQLite/MySQL 目标 | DSN 是秘密 | 目标主机秘密管理器或 `0600` 环境文件 |
 | FastGPT 同环境 HTTPS Base URL | 否 | 部署配置 |
 | FastGPT Integration Token | 是 | 目标主机秘密管理器或 `0600` 环境文件 |
-| 测试 Store NewAPI API Key | 是 | 实际持有人在门店凭据页面录入 |
+| 测试 Binding NewAPI API Key | 是 | 实际持有人在指定 Binding 凭据页面录入 |
 | 当前统一数据库备份材料 | 是，运维级 | 仓库外生成、保管并恢复演练 |
 
-旧来源数据库、历史 Store ID、旧 Credential revision、旧 Key 和 B14 操作令牌均不再需要。
-历史测试 HTTP 地址与聊天中出现过的 Key 应视为已暴露并轮换，不能写入新环境。正式现场
-验证未完成只影响发布结论，不影响当前统一代码完成评审和合并。
+旧 `AIConfig.APIKey`、历史测试 HTTP 地址与聊天中出现过的 Key 应视为已暴露并轮换，不能
+写入新环境。现有业务库中的 Store ID、Binding、统一 Credential revision 和会话历史属于
+受保护业务数据，必须由迁移基于当前环境事实解析和保留，不能人工重编号。正式现场验证未完成
+只影响发布结论，不影响当前统一代码完成评审和合并。

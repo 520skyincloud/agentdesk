@@ -1,13 +1,14 @@
 # 知悉微宝完整部署手册
 
-本文说明如何从空数据库部署当前 `main` 版本，涵盖 Docker Compose、HTTPS、外部服务、
-备份、升级、回滚和验收。所有示例使用占位域名 `weibao.example.com`，不得把示例值原样
-用于生产。
+本文说明如何部署或受控升级当前 `main` 版本，涵盖 Docker Compose、HTTPS、外部服务、
+Migration 72、备份恢复、回滚和验收。所有示例使用占位域名 `weibao.example.com`，不得把
+示例值原样用于生产。
 
 ## 1. 部署边界
 
 - 当前版本支持 SQLite 和 MySQL，生产推荐 MySQL 8.4。
-- 当前版本只支持从 fresh 空数据库初始化，不支持直接连接历史业务库升级。
+- 当前版本支持 fresh 初始化，也支持具有已知 Migration 历史且通过预检的业务库受控升级。
+- 历史库升级必须先在独立恢复库运行 Migration 72；未知历史、模糊归属或索引异常时拒绝发布。
 - `.env`、`production.env`、数据库、备份、证书、私钥和外部服务 Token 不属于源码。
 - 门店 NewAPI Key 只能通过门店凭据页面录入，不得写入环境文件或 Git。
 - 活动服务必须保持 `AGENT_DESK_BACKGROUND_WORKERS_ENABLED=true`。
@@ -73,7 +74,7 @@ openssl rand -base64 48
 分别用于 MySQL 应用密码、MySQL root 密码、邀请码加密密钥、门店凭据加密主密钥、
 客户会话秘密和资产 URL 签名秘密。禁止把同一随机值复用于多个变量。
 
-fresh 初始化还必须设置：
+fresh 初始化还必须设置；已有数据库升级不会使用这些变量覆盖现有管理员：
 
 ```text
 AGENT_DESK_BOOTSTRAP_ADMIN_USERNAME=<初始超级管理员用户名>
@@ -200,7 +201,7 @@ server {
 4. 登录 `/dashboard/login/`。
 5. 立即创建日常管理员账号，按最小权限分配角色。
 6. 初始超级管理员密码只用于受控初始化和恢复，不用于日常共享。
-7. 创建 Tenant、Store、公司主管和唯一门店员工账号。
+7. 创建 Tenant 和独立 Store，再创建公司主管及一个或多个门店员工账号并选择已有 Store。
 
 初始管理员变量不会在重启时覆盖已有账号。不得通过直接写数据库伪造注册、授权或连接成功。
 
@@ -238,7 +239,8 @@ AGENT_DESK_ARRIVAL_BIND_PENDING_SCAN_WINDOW_MINUTES=30
 ```
 
 静态模式还需要小程序 AppSecret、Arrival 会话/HMAC/数据加密密钥，并在到店连接页为每个
-门店录入企业微信后台真实 `plugId` 和唯一员工实例。它不要求 Suite、永久授权码、客户联系
+门店录入企业微信后台真实 `plugId` 和选定的已激活员工实例。一个 Store 可有多个员工号，
+但一条到店连接必须明确选中一个 StoreStaffBinding 和其当前实例。它不要求 Suite、永久授权码、客户联系
 回调或官方创建链接权限。
 
 选择 `customer_acquisition` 或 `contact_way` 时，另行配置
@@ -302,9 +304,10 @@ docker compose \
 - 只有出现可证明的序号缺口时才允许执行受限补漏；
 - 不得把企业微信服务商、微信客服、个人微信或旧协议字段混入员工号运行链。
 
-## 12. 备份
+## 12. 加密备份与独立恢复
 
-备份数据库：
+升级前先停止应用写入和 worker，再备份数据库。下面示例先生成权限为 `0600` 的压缩文件；
+生产必须立即使用组织批准的加密工具加密，删除未加密中间文件，并把加密副本传离生产主机：
 
 ```bash
 backup_dir="/opt/weibao/backups/$(date +%Y%m%d-%H%M%S)"
@@ -316,6 +319,7 @@ docker compose \
   'MYSQL_PWD="$MYSQL_PASSWORD" mysqldump --single-transaction -u"$MYSQL_USER" "$MYSQL_DATABASE"' \
   | gzip > "$backup_dir/mysql.sql.gz"
 chmod 0600 "$backup_dir/mysql.sql.gz"
+sha256sum "$backup_dir/mysql.sql.gz"
 ```
 
 备份本地资产卷：
@@ -328,21 +332,29 @@ docker run --rm \
   tar -czf "/backup/agent-desk-data-$(date +%Y%m%d-%H%M%S).tgz" -C /source .
 ```
 
-数据库备份、资产备份和加密主密钥必须分别保管。只生成备份文件不算完成，必须定期恢复到
-隔离环境并验证表数量、Migration、管理员登录和关键数据可读性。
+数据库备份、资产备份、环境文件和凭据加密主密钥必须分别保管。不得把未加密 SQL 长期
+留在生产主机。只生成备份文件不算完成，发布前必须把加密副本恢复到独立 MySQL，并验证：
+
+1. 备份 SHA-256 与离机副本一致；
+2. 恢复前后 Tenant、Store、Binding、实例、Customer、Conversation、Message、Usage 和 Arrival 数量一致；
+3. 新镜像成功执行索引规范化、AutoMigrate 和 Migration 72；
+4. ThreadKey、会话段、凭据 Binding 归属和到店 Binding 归属无冲突；
+5. 管理员登录、门店读取、历史会话和关键外部配置可用。
 
 ## 13. 升级
 
 推荐每次发布使用独立目录和不可变镜像标签：
 
-1. 拉取目标 commit，并记录 commit SHA。
-2. 运行完整测试和配置校验。
-3. 备份数据库、资产卷和仓库外环境文件。
-4. 为当前镜像添加回滚标签。
-5. 构建新镜像，不覆盖旧回滚标签。
-6. 使用 `up -d --force-recreate agent-desk` 切换应用。
-7. 检查 Migration、健康状态、重启次数、登录和关键回调。
-8. 验收通过后再清理旧 release。
+1. 拉取目标 commit，记录 commit SHA、来源分支和共享契约差异。
+2. 运行完整 Go、Web、SQLite/MySQL 测试和配置校验。
+3. 停止写入和 worker，备份数据库、资产卷、仓库外环境文件及相关密钥代际。
+4. 下载加密备份并在独立 MySQL 恢复，运行新镜像和 Migration 72。
+5. 比较数量、关键关系和迁移日志；任何模糊归属先修复来源后重新备份。
+6. 为当前镜像添加不可变回滚标签，构建新镜像且不覆盖旧标签。
+7. 使用 `up -d --force-recreate agent-desk` 切换应用。
+8. 检查 Migration、健康状态、重启次数、登录、企微回调和 worker。
+9. 真实验收一店多账号、会话连续性、派单、知识、标签、账单及到店联动。
+10. 验收通过后再清理旧 release；旧 Schema 的物理清理另行审批执行。
 
 不要直接在运行目录执行不可追溯的源码覆盖。生产发布记录至少包含 commit、镜像摘要、
 启动时间、Migration、备份位置、验证结果和回滚边界。
@@ -362,8 +374,10 @@ docker run --rm \
 
 - 应用与 MySQL 均为 healthy，重启次数为 0；
 - 管理后台和客服工作台可登录；
-- fresh Migration 全部成功；
-- 超级管理员、Tenant、Store、公司主管和门店员工范围正确；
+- fresh 或受控升级 Migration 全部成功，Migration 72 记录唯一且幂等；
+- 超级管理员、Tenant、独立 Store、公司主管和一店多门店员工范围正确；
+- 同 Binding 更换企微复用逻辑会话并新建服务段；不同 Binding 会话独立且可人工继承；
+- 未完成验证的替换草稿未进入消息、到店、联系人自动化、AI 或 readiness；
 - 规则派单不依赖大模型选人；
 - AI 回复、FastGPT、NewAPI 九槽和账单归因按启用范围通过；
 - 企微员工号入站、出站和回调幂等通过；
@@ -378,7 +392,7 @@ docker run --rm \
 ### 容器反复重启
 
 先检查 `docker compose ps` 和应用日志。常见原因是生产必填秘密为空、格式不合法、数据库
-DSN 错误、数据库不是 fresh 基线或外部 HTTPS 配置无效。
+DSN 错误、Migration 历史未知、旧索引定义异常、Migration 72 归属不唯一或外部 HTTPS 配置无效。
 
 ### 页面能打开但登录失败
 

@@ -126,18 +126,22 @@
 - `ReportViewPreset`：用户个人筛选、列和排序。
 - `DispatchDecisionLog`：规则派单候选快照、结果、失败、降级和人工覆盖证据。
 
-## 5. Fresh-only 采集边界
+## 5. 历史数据与采集边界
 
-当前统一项目不读取历史业务库，也不执行运营事实自动回填：
+当前统一项目支持从已知 Migration 基线受控升级，并完整保留 Customer、Conversation、
+Message、Assignment 和 Presence 等已有业务记录；但不会根据缺失事件猜测生成运营事实：
 
 - `FactOrigin` 只允许 `runtime` 或明确的人工 `repair`。
 - 新消息、进人工池、分配、转派、人工回复、关闭和 Presence 变化在当前运行链实时采集。
-- 不存在 Migration 60/61、service analytics backfill service 或历史仿真 Seed 作为发布依赖。
+- Migration 72 只负责确定性的 Store、Binding、实例、会话连续性与凭据归属，不根据姓名、
+  时间接近或其他弱证据补造历史运营事件。
 - `estimated/incomplete` 数据质量值保留用于明确修复或采集异常标识，不代表系统会猜测
   旧历史事实。
-- fresh 数据库上线前没有历史报表；上线后随真实业务逐步积累。
+- fresh 数据库上线前没有历史报表；受控升级库只展示已经真实采集或明确标记为人工 repair
+  的事实，缺少事实的历史区间保持 incomplete。
 
-旧备份若需查看，必须配套旧源码在隔离环境只读恢复，不能连接当前应用后补写事实。
+未知 Migration 历史的旧备份仍需配套旧源码在隔离环境只读恢复，不能直接连接当前应用后
+补写事实。受支持历史库必须先完成加密备份、独立恢复和新镜像迁移演练。
 
 ## 6. 指标口径
 
