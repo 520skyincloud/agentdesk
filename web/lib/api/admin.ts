@@ -437,6 +437,9 @@ export type WxWorkProtocolInstance = {
   storeStaffBindingId: number
   storeStaffUserId: number
   storeStaffUserName: string
+  replacesInstanceId: number
+  replacedByInstanceId: number
+  replacedAt?: string | null
   storeCode: string
   storeName: string
   storeAddress: string

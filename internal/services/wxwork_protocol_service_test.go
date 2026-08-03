@@ -69,6 +69,61 @@ func createWxWorkProtocolTestBinding(t *testing.T, db *gorm.DB, store *models.St
 	return binding
 }
 
+func TestWxWorkProtocolCallbackRejectsPendingReplacementMessageWithFailedAudit(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	const callbackToken = "pending-replacement-callback-token"
+	channel := &models.Channel{
+		TenantID:    101,
+		Name:        "企微员工号替换回调测试渠道",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-protocol-pending-replacement-callback",
+		ConfigJSON:  `{"appKey":"test-app-key","appSecret":"test-app-secret","callbackToken":"` + callbackToken + `"}`,
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create callback channel: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID:           101,
+		Guid:               "pending-replacement-callback-guid",
+		ChannelID:          channel.ID,
+		ReplacesInstanceID: 9001,
+		HealthStatus:       "online",
+		Status:             enums.StatusOk,
+		AuditFields:        models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create pending replacement instance: %v", err)
+	}
+
+	raw := `{"guid":"pending-replacement-callback-guid","notify_type":11010,"data":{}}`
+	err := WxWorkProtocolService.HandleCallback(request.WxWorkProtocolCallbackRequest{
+		Guid:       instance.Guid,
+		NotifyType: wxProtocolNotifyNewMsgAlt,
+		Data:       json.RawMessage(`{}`),
+	}, raw, callbackToken)
+	if err == nil {
+		t.Fatal("pending replacement message callback unexpectedly succeeded")
+	}
+	status, stage := WxWorkProtocolCallbackErrorStatus(err)
+	if status != http.StatusConflict || stage != "replacement_pending_verification" {
+		t.Fatalf("callback status=%d stage=%q, want 409 replacement_pending_verification", status, stage)
+	}
+
+	var logs []models.MessageSyncLog
+	if err := db.Where("tenant_id = ? AND source = ?", instance.TenantID, "wxwork_protocol").Find(&logs).Error; err != nil {
+		t.Fatalf("find callback sync logs: %v", err)
+	}
+	if len(logs) != 1 || logs[0].SyncStatus != enums.MessageSyncStatusFailed || logs[0].ErrorMessage != "replacement setup pending verification" {
+		t.Fatalf("unexpected callback sync logs: %+v", logs)
+	}
+	if strings.Contains(logs[0].ErrorMessage, instance.Guid) {
+		t.Fatalf("callback audit leaked instance identifier: %q", logs[0].ErrorMessage)
+	}
+}
+
 func TestWxWorkProtocolPostJSONReturnsSafeBusinessErrors(t *testing.T) {
 	tests := []struct {
 		name       string

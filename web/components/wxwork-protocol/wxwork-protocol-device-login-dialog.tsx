@@ -82,6 +82,9 @@ export function WxWorkProtocolDeviceLoginDialog({
   const autoStartedInstanceRef = useRef(0)
   const requestSequenceRef = useRef(0)
   const onChangedRef = useRef(onChanged)
+  const pendingReplacement =
+    (instance?.replacesInstanceId ?? 0) > 0 &&
+    !instance?.remoteSetupSubmittedAt
 
   useEffect(() => {
     onChangedRef.current = onChanged
@@ -92,8 +95,24 @@ export function WxWorkProtocolDeviceLoginDialog({
     completedRef.current = true
     await syncWxWorkProtocolProfile(instanceId).catch(() => "")
     await onChangedRef.current?.()
-    toast.success("企微员工号已登录")
-  }, [instanceId])
+    toast.success(
+      pendingReplacement
+        ? "扫码登录完成，请继续完成更换验证"
+        : "企微员工号已登录"
+    )
+  }, [instanceId, pendingReplacement])
+
+  function continueReplacementSetup() {
+    const token = instance?.remoteSetupToken?.trim()
+    if (!token) {
+      toast.error("更换验证链接不存在，请从原员工号重新生成")
+      return
+    }
+    const url =
+      instance?.remoteSetupUrl ||
+      `${window.location.origin}/wxwork-remote-setup?token=${encodeURIComponent(token)}`
+    window.open(url, "_blank", "noopener,noreferrer")
+  }
 
   const generateQRCode = useCallback(async () => {
     if (!instanceId) return
@@ -378,6 +397,11 @@ export function WxWorkProtocolDeviceLoginDialog({
         </div>
 
         <DialogFooter>
+          {pendingReplacement && status?.status === "success" ? (
+            <Button onClick={continueReplacementSetup}>
+              继续完成更换
+            </Button>
+          ) : null}
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             {status?.status === "success" ? "完成" : "取消登录"}
           </Button>

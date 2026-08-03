@@ -14,16 +14,30 @@ const deviceLoginActionSource = managerSource.slice(
   managerSource.indexOf('key: "deviceLogin"'),
   managerSource.indexOf('key: "replaceLogin"')
 )
+const continueReplacementActionSource = managerSource.slice(
+  managerSource.indexOf('key: "continueReplacement"'),
+  managerSource.indexOf('key: "deviceLogin"')
+)
 
 test("valid online and offline instances expose the device login flow", () => {
   assert.match(deviceLoginActionSource, /key: "deviceLogin"/)
   assert.match(deviceLoginActionSource, /label: "扫码重新登录"/)
   assert.doesNotMatch(deviceLoginActionSource, /healthStatus/)
   assert.match(deviceLoginActionSource, /item\.status !== Status\.Deleted/)
+  assert.match(deviceLoginActionSource, /!isPendingReplacement\(item\)/)
   assert.match(deviceLoginActionSource, /item\.loginAvailable !== false/)
   assert.match(deviceLoginActionSource, /!item\.protocolExpired/)
   assert.match(deviceLoginActionSource, /Boolean\(item\.guid\.trim\(\)\)/)
   assert.match(managerSource, /<WxWorkProtocolDeviceLoginDialog/)
+})
+
+test("pending replacement drafts resume verification instead of ordinary relogin", () => {
+  assert.match(continueReplacementActionSource, /label: "继续完成更换"/)
+  assert.match(continueReplacementActionSource, /isPendingReplacement\(item\)/)
+  assert.match(managerSource, /window\.open\(url, "_blank", "noopener,noreferrer"\)/)
+  assert.match(managerSource, /尚未完成邮箱验证，不接管消息/)
+  assert.match(componentSource, /扫码登录完成，请继续完成更换验证/)
+  assert.match(componentSource, /继续完成更换/)
 })
 
 test("expired instances cannot start the device login flow", () => {

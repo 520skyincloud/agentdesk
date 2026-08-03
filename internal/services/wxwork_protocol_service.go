@@ -147,6 +147,25 @@ func (s *wxWorkProtocolService) HandleCallback(req request.WxWorkProtocolCallbac
 		return wxWorkProtocolCallbackError(http.StatusUnauthorized, "authenticate", errorsx.Unauthorized("企微协议回调鉴权失败"))
 	}
 	externalMsgID := strings.TrimSpace(req.Guid)
+	if isWxWorkProtocolMessageNotification(req.NotifyType) && isPendingWxWorkProtocolReplacement(instance) {
+		_ = MessageSyncLogService.CreateInTenant(
+			instance.TenantID,
+			0,
+			0,
+			enums.MessageSyncDirectionWecomToAgentDesk,
+			"wxwork_protocol",
+			"agentdesk",
+			externalMsgID,
+			enums.MessageSyncStatusFailed,
+			raw,
+			"replacement setup pending verification",
+		)
+		return wxWorkProtocolCallbackError(
+			http.StatusConflict,
+			"replacement_pending_verification",
+			errorsx.BusinessError(67, "企微员工号替换尚未完成验证，不能接管会话消息"),
+		)
+	}
 	_ = MessageSyncLogService.CreateInTenant(instance.TenantID, 0, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", externalMsgID, enums.MessageSyncStatusPending, raw, fmt.Sprintf("notify_type=%d", req.NotifyType))
 	if historicalInstance {
 		var historicalErr error
@@ -193,6 +212,19 @@ func (s *wxWorkProtocolService) HandleCallback(req request.WxWorkProtocolCallbac
 		return wxWorkProtocolCallbackError(http.StatusInternalServerError, "process", handleErr)
 	}
 	return nil
+}
+
+func isWxWorkProtocolMessageNotification(notifyType int) bool {
+	switch notifyType {
+	case wxProtocolNotifyNewMsg, wxProtocolNotifyBatchNewMsg, wxProtocolNotifyNewMsgAlt, wxProtocolNotifyBatchNewMsgAlt:
+		return true
+	default:
+		return false
+	}
+}
+
+func isPendingWxWorkProtocolReplacement(instance *models.WxWorkProtocolInstance) bool {
+	return instance != nil && instance.ReplacesInstanceID > 0 && instance.RemoteSetupSubmittedAt == nil
 }
 
 func (s *wxWorkProtocolService) runContactAutomationCallback(instanceID int64, notifyType int) {

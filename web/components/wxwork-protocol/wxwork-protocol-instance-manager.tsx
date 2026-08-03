@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { CopyIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
+import { CopyIcon, ExternalLinkIcon, MessageSquareTextIcon, PlusIcon, QrCodeIcon, RotateCwIcon, UploadIcon, UserRoundCogIcon, UsersRoundIcon, XIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { useAuth } from "@/components/auth-provider"
@@ -85,6 +85,10 @@ function getStatusLabel(status: Status) {
   if (status === Status.Disabled) return "禁用"
   if (status === Status.Deleted) return "已删除"
   return "启用"
+}
+
+function isPendingReplacement(item: WxWorkProtocolInstance) {
+  return item.replacesInstanceId > 0 && !item.remoteSetupSubmittedAt
 }
 
 function healthBadgeVariant(healthStatus: string) {
@@ -733,6 +737,16 @@ export function WxWorkProtocolInstanceManager({
     notifyChanged()
   }
 
+  function continueReplacementSetup(item: WxWorkProtocolInstance) {
+    const token = item.remoteSetupToken?.trim()
+    if (!token) {
+      toast.error("更换验证链接不存在，请从原员工号重新生成")
+      return
+    }
+    const url = item.remoteSetupUrl || `${window.location.origin}/wxwork-remote-setup?token=${encodeURIComponent(token)}`
+    window.open(url, "_blank", "noopener,noreferrer")
+  }
+
   function openWelcomeSettings(item: WxWorkProtocolInstance) {
     const extended = item as WelcomeCapableInstance
     const welcomeImageAssetId = extended.welcomeImageAssetId || ""
@@ -819,11 +833,19 @@ export function WxWorkProtocolInstanceManager({
   }
   if (canUpdateChannels) {
     rowActions.push({
+      key: "continueReplacement",
+      label: "继续完成更换",
+      icon: <ExternalLinkIcon className="size-4" />,
+      visible: (item) => isPendingReplacement(item),
+      run: ({ item }) => continueReplacementSetup(item),
+    })
+    rowActions.push({
       key: "deviceLogin",
       label: "扫码重新登录",
       icon: <QrCodeIcon className="size-4" />,
       visible: (item) =>
         item.status !== Status.Deleted &&
+        !isPendingReplacement(item) &&
         item.loginAvailable !== false &&
         !item.protocolExpired &&
         Boolean(item.guid.trim()),
@@ -833,6 +855,10 @@ export function WxWorkProtocolInstanceManager({
       key: "replaceLogin",
       label: "更换登录员工号",
       icon: <QrCodeIcon className="size-4" />,
+      visible: (item) =>
+        item.status === Status.Ok &&
+        item.replacedByInstanceId === 0 &&
+        !isPendingReplacement(item),
       confirm: (item) => ({
         title: "更换登录员工号",
         description: `会生成独立替换链接。${repairMojibakeText(item.employeeName) || "当前员工号"} 会继续工作，直到新员工号扫码并通过原门店主邮箱验证后才停用。`,
@@ -954,12 +980,14 @@ export function WxWorkProtocolInstanceManager({
           label: "在线状态",
           render: (item) => (
             <div className="space-y-1">
-              <Badge variant={item.protocolExpired ? "destructive" : healthBadgeVariant(item.healthStatus)}>
-                {item.protocolExpired ? "实例已过期" : item.healthStatus || "unknown"}
+              <Badge variant={item.protocolExpired ? "destructive" : isPendingReplacement(item) ? "outline" : healthBadgeVariant(item.healthStatus)}>
+                {item.protocolExpired ? "实例已过期" : isPendingReplacement(item) ? "待完成更换" : item.healthStatus || "unknown"}
               </Badge>
               <div className="text-xs text-muted-foreground">
                 {item.protocolExpired
                   ? item.loginUnavailableReason || "请先续费或更换有效实例"
+                  : isPendingReplacement(item)
+                    ? "尚未完成邮箱验证，不接管消息"
                   : item.lastHeartbeatAt
                     ? formatDateTime(item.lastHeartbeatAt)
                     : "-"}
