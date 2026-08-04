@@ -35,6 +35,13 @@
 - 每个可提交步骤完成后必须记录：是否影响并行分支、是否需要 rebase、建议合并顺序、同文件修改和字段/状态语义冲突。提交应便于 review、回滚和 cherry-pick。
 - 禁止使用 `git reset --hard`、`git checkout -- .`、`git add .` 和 `git push --force`；不得回退或覆盖其他开发者的工作。
 
+### 1.3.1 GitHub 主线交付
+
+- 正式交付仓库为 `520skyincloud/weibao`，默认交付分支为 `main`。
+- 除非用户明确指定其他分支，完成开发和验证后必须将最终提交直接推送到 `weibao/main`；临时或并行分支只能用于隔离开发，不能作为最终交付终点。
+- 推送主线前必须确认所有待交付分支已被目标提交包含，主线只能快进或通过普通合并更新，禁止强制推送。
+- `origin` 作为上游协作仓库默认只执行 fetch 和差异核对；未经用户明确要求，不得向 `origin` 推送。
+
 ## 1.4 文档权威与历史资料
 
 - 最终目标架构以 `docs/development/tenant-ai-unified-integration-plan.md` 为准。AI 回复运行时在移植前以固定的 `origin/codex/ai-billing` 最新 SHA 为行为来源；移植后以真实代码和同步更新后的 `docs/design/reply-runtime-engine.md` 为准。代码与目标文档冲突时不得擅自选择一边，必须先核对当前实施 Batch 和来源 SHA。
