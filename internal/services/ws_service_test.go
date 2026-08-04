@@ -231,6 +231,75 @@ func TestWsTenantTopicsAndConversationSubscriptionIsolation(t *testing.T) {
 	}
 }
 
+func TestWsStoreStaffTopicsAreBindingScoped(t *testing.T) {
+	db := setupStoreStaffTenantDB(t)
+	if err := db.AutoMigrate(&models.Conversation{}, &models.ConversationRouteState{}); err != nil {
+		t.Fatalf("migrate conversation fixtures: %v", err)
+	}
+	store := createStoreStaffTenantStore(t, db, 101, "ws-binding-store")
+	staffA := createStoreStaffTenantUser(t, db, 101, "ws-store-staff-a")
+	staffB := createStoreStaffTenantUser(t, db, 101, "ws-store-staff-b")
+	bindingA := createStoreStaffTenantBinding(t, db, 101, staffA.ID, 0, store.ID)
+	bindingB := createStoreStaffTenantBinding(t, db, 101, staffB.ID, 0, store.ID)
+	conversationA := &models.Conversation{
+		TenantID: 101, StoreID: store.ID, StoreStaffBindingID: bindingA.ID,
+		Status: enums.IMConversationStatusAIServing, LastActiveAt: time.Now(), LastMessageAt: time.Now(),
+	}
+	conversationB := &models.Conversation{
+		TenantID: 101, StoreID: store.ID, StoreStaffBindingID: bindingB.ID,
+		Status: enums.IMConversationStatusAIServing, LastActiveAt: time.Now(), LastMessageAt: time.Now(),
+	}
+	if err := db.Create(conversationA).Error; err != nil {
+		t.Fatalf("create binding A conversation: %v", err)
+	}
+	if err := db.Create(conversationB).Error; err != nil {
+		t.Fatalf("create binding B conversation: %v", err)
+	}
+	for _, route := range []*models.ConversationRouteState{
+		{TenantID: 101, ConversationID: conversationA.ID, StoreID: store.ID, StoreStaffBindingID: bindingA.ID},
+		{TenantID: 101, ConversationID: conversationB.ID, StoreID: store.ID, StoreStaffBindingID: bindingB.ID},
+	} {
+		if err := db.Create(route).Error; err != nil {
+			t.Fatalf("create conversation route: %v", err)
+		}
+	}
+
+	principal := &dto.AuthPrincipal{
+		UserID: staffA.ID, ActiveTenantID: 101,
+		Roles:       []string{constants.RoleCodeStoreStaff},
+		Permissions: []string{constants.PermissionConversationView.Code},
+	}
+	svc := newWsService()
+	session := &ClientSession{TenantID: 101, Principal: principal, Role: realtimeRoleAdmin}
+	defaultTopics := sliceToSet(svc.defaultTopics(session))
+	if _, ok := defaultTopics[svc.storeStaffBindingTopic(bindingA.ID)]; !ok {
+		t.Fatalf("own binding topic missing: %+v", defaultTopics)
+	}
+	for _, forbidden := range []string{
+		svc.storeStaffBindingTopic(bindingB.ID),
+		svc.adminTenantTopic(101),
+		svc.adminTopic(staffA.ID),
+	} {
+		if _, ok := defaultTopics[forbidden]; ok {
+			t.Fatalf("store staff received forbidden topic %q: %+v", forbidden, defaultTopics)
+		}
+	}
+	if !svc.canSubscribeConversation(session, conversationA.ID) {
+		t.Fatal("store staff should subscribe to its binding conversation")
+	}
+	if svc.canSubscribeConversation(session, conversationB.ID) {
+		t.Fatal("store staff must not subscribe to another binding conversation")
+	}
+	ownedRouteTopics := sliceToSet(svc.routeConversationTopics(conversationA))
+	if _, ok := ownedRouteTopics[svc.storeStaffBindingTopic(bindingA.ID)]; !ok {
+		t.Fatalf("own conversation route missing binding topic: %+v", ownedRouteTopics)
+	}
+	otherRouteTopics := sliceToSet(svc.routeConversationTopics(conversationB))
+	if _, ok := otherRouteTopics[svc.storeStaffBindingTopic(bindingA.ID)]; ok {
+		t.Fatalf("other conversation routed to binding A: %+v", otherRouteTopics)
+	}
+}
+
 func TestWsNotificationCreatedEventType(t *testing.T) {
 	event := RealtimeNotificationCreatedEvent{
 		Payload: RealtimeNotificationCreatedPayload{

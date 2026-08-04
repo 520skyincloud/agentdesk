@@ -57,9 +57,15 @@ import {
   updateAgentPresence,
   type AgentPresence,
 } from "@/lib/api/service-analytics";
+import {
+  fetchStoreWorkbench,
+  type StoreWorkbenchData,
+} from "@/lib/api/store-workbench";
 import { AgentPresenceStatus, AgentPresenceStatusLabels } from "@/lib/generated/enums";
 import {
+  agentConversationFilterOptions,
   agentConversationSelectors,
+  type AgentConversationFilterKey,
   useAgentConversationsStore,
 } from "@/lib/stores/agent-conversations";
 import { repairMojibakeText } from "@/lib/utils";
@@ -67,6 +73,7 @@ import { CreateTicketFromConversationDialog } from "../tickets/_components/creat
 import { ChatPanel } from "./_components/chat-panel";
 import { ConversationInfoPanel } from "./_components/conversation-info-panel";
 import { ConversationList } from "./_components/conversation-list";
+import { StoreStaffConversationIdentity } from "./_components/store-staff-conversation-identity";
 
 const workbenchIconButtonClassName =
   "size-8 rounded-lg border border-transparent bg-background/80 text-muted-foreground shadow-none hover:border-border hover:bg-background hover:text-primary";
@@ -122,14 +129,23 @@ export default function ConversationsPage() {
   const [presenceUpdating, setPresenceUpdating] = useState(false);
   const [breakDialogOpen, setBreakDialogOpen] = useState(false);
   const [breakReason, setBreakReason] = useState("用餐");
+  const [storeStaffWorkspace, setStoreStaffWorkspace] = useState<StoreWorkbenchData | null>(null);
+  const [storeStaffWorkspaceLoading, setStoreStaffWorkspaceLoading] = useState(false);
   const permissions = useMemo(
     () => new Set(session?.permissions ?? []),
     [session?.permissions],
   );
+  const roles = session?.roles ?? [];
+  const isStoreStaff = Boolean(
+    roles.includes("store_staff") &&
+      !roles.some((role) =>
+        ["super_admin", "admin", "tenant_admin", "cs_team_leader", "cs_user"].includes(role),
+      ),
+  );
   const canCreateTicket = permissions.has("ticket.create");
   const canAssignTicket = permissions.has("ticket.assign") && permissions.has("agent.view");
   const canViewTags = permissions.has("tag.view");
-  const canViewWxWorkAccounts = permissions.has("channel.view");
+  const canViewWxWorkAccounts = !isStoreStaff && permissions.has("channel.view");
   const canCreateWxWorkAccounts = canViewWxWorkAccounts && permissions.has("channel.create") && permissions.has("user.view");
   const canUpdateWxWorkAccounts = canViewWxWorkAccounts && permissions.has("channel.update");
   const canDeleteWxWorkAccounts = canViewWxWorkAccounts && permissions.has("channel.delete");
@@ -145,7 +161,41 @@ export default function ConversationsPage() {
     canCloseConversation ||
     canSendArrivalBindingCard;
   const canUpdatePresence = permissions.has("agentPresence.update");
-  const isSupportAgent = session?.roles?.includes("cs_user") ?? false;
+  const isSupportAgent = roles.includes("cs_user");
+
+  useEffect(() => {
+    if (isStoreStaff && conversationFilter === "my_attention") {
+      setConversationFilter("all_open");
+    }
+  }, [conversationFilter, isStoreStaff, setConversationFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isStoreStaff || activeTenantId <= 0 || !permissions.has("storeWorkbench.view")) {
+      setStoreStaffWorkspace(null);
+      setStoreStaffWorkspaceLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+    setStoreStaffWorkspaceLoading(true);
+    void fetchStoreWorkbench()
+      .then((data) => {
+        if (!cancelled) setStoreStaffWorkspace(data);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setStoreStaffWorkspace(null);
+          toast.error(error instanceof Error ? error.message : "加载门店员工号失败");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setStoreStaffWorkspaceLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTenantId, isStoreStaff, permissions]);
 
   useEffect(() => {
     if (!canUpdatePresence || activeTenantId <= 0) {
@@ -322,7 +372,7 @@ export default function ConversationsPage() {
 
   useAgentConversationRealtime();
 
-  const selectConversationMode = (mode: "all_open" | "my_attention") => {
+  const selectConversationMode = (mode: AgentConversationFilterKey) => {
     setConversationFilter(mode);
     void loadConversations();
   };
@@ -338,6 +388,14 @@ export default function ConversationsPage() {
 
   const renderConversationSidebar = (opts?: { onListAfterSelect?: () => void }) => (
     <div className="flex h-full min-h-0 flex-1 bg-inherit">
+      {isStoreStaff ? (
+        <StoreStaffConversationIdentity
+          data={storeStaffWorkspace}
+          loading={storeStaffWorkspaceLoading}
+          customerCount={accountCustomerCount}
+          manualAttentionCount={manualAttentionCount}
+        />
+      ) : (
       <div className="flex w-72 shrink-0 flex-col border-r border-border bg-background/95 xl:w-80">
         <div className="border-b border-border bg-background/95 px-4 py-4">
           <div className="flex items-center justify-between gap-2">
@@ -499,7 +557,17 @@ export default function ConversationsPage() {
           ) : null}
         </div>
       </div>
+      )}
       <div className="flex min-w-0 flex-1 flex-col bg-background/95">
+        {isStoreStaff ? (
+          <StoreStaffConversationIdentity
+            variant="compact"
+            data={storeStaffWorkspace}
+            loading={storeStaffWorkspaceLoading}
+            customerCount={accountCustomerCount}
+            manualAttentionCount={manualAttentionCount}
+          />
+        ) : null}
         <div className="border-b border-border bg-background/95 px-4 py-4">
           {canManageWxWorkAccounts ? (
             <Button
@@ -512,7 +580,18 @@ export default function ConversationsPage() {
               管理会话入口
             </Button>
           ) : null}
-          {isSupportAgent ? (
+          {isStoreStaff ? (
+            <OptionCombobox
+              value={conversationFilter}
+              options={agentConversationFilterOptions
+                .filter((item) => item.value !== "my_attention")
+                .map((item) => ({ value: item.value, label: t(item.labelKey) }))}
+              placeholder="选择会话范围"
+              searchPlaceholder="搜索会话范围"
+              triggerClassName="mb-3 h-9 w-full rounded-md px-3 text-xs"
+              onChange={(value) => selectConversationMode(value as AgentConversationFilterKey)}
+            />
+          ) : isSupportAgent ? (
             <div className="mb-3 grid grid-cols-2 rounded-md bg-muted p-1" role="group" aria-label={t("conversation.viewMode")}>
               <button
                 type="button"
@@ -559,6 +638,8 @@ export default function ConversationsPage() {
             <div className="truncate text-sm font-semibold text-foreground">
               {showingMyAttention
                 ? t("conversation.myPendingReplies")
+                : isStoreStaff
+                  ? "我的会话"
                 : selectedInstance
                 ? repairMojibakeText(selectedInstance.storeName) || repairMojibakeText(selectedInstance.employeeName) || selectedInstance.guid
                 : "全部员工号"}
@@ -768,6 +849,8 @@ export default function ConversationsPage() {
         <div className="flex h-full min-h-0 overflow-hidden rounded-lg bg-muted/40 ring-1 ring-inset ring-border">
         <ChatPanel
           wxWorkInstance={conversationInstance}
+          aiReplyEnabled={isStoreStaff ? storeStaffWorkspace?.aiReplyEnabled : conversationInstance?.aiReplyEnabled}
+          canToggleAIReply={canUpdateWxWorkAccounts}
           onWxWorkInstanceUpdated={handleInstanceUpdated}
         />
         </div>

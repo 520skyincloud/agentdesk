@@ -502,6 +502,7 @@ var RolePermissions = map[string][]Permission{
 	},
 	RoleCodeStoreStaff: {
 		PermissionStoreWorkbenchView, PermissionStoreWorkbenchUpdate,
+		PermissionConversationView, PermissionConversationSend,
 		PermissionBillingView, PermissionBillingExport,
 	},
 }

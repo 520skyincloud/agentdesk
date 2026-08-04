@@ -48,10 +48,17 @@ const EMPTY_AGENT_MESSAGES: AgentMessage[] = [];
 
 type ChatPanelProps = {
   wxWorkInstance?: WxWorkProtocolInstance | null;
+  aiReplyEnabled?: boolean;
+  canToggleAIReply?: boolean;
   onWxWorkInstanceUpdated?: (instance: WxWorkProtocolInstance) => void;
 };
 
-export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanelProps) {
+export function ChatPanel({
+  wxWorkInstance,
+  aiReplyEnabled: aiReplyEnabledOverride,
+  canToggleAIReply = true,
+  onWxWorkInstanceUpdated,
+}: ChatPanelProps) {
   const t = useI18n();
   const conversation = useAgentConversationsStore(
     agentConversationSelectors.selectedConversation,
@@ -109,7 +116,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   const isAIServing = !routeStatus || routeStatus === "AI_SERVING" || routeStatus === "AI_FALLBACK";
   const manualAttention = conversation?.manualAttention;
   const hasManualStatus = Boolean(manualAttention && manualAttention.level !== "none");
-  const aiReplyEnabled = wxWorkInstance?.aiReplyEnabled !== false;
+  const aiReplyEnabled = aiReplyEnabledOverride ?? wxWorkInstance?.aiReplyEnabled !== false;
   const replyRouteUnavailable =
     conversation?.wxWorkReplyStatus === "waiting_target_message" ||
     conversation?.wxWorkReplyStatus === "unavailable";
@@ -382,7 +389,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
   };
 
   const handleToggleAIReply = async (enabled: boolean) => {
-    if (!wxWorkInstance || savingAIReply) {
+    if (!canToggleAIReply || !wxWorkInstance || savingAIReply) {
       return;
     }
     setSavingAIReply(true);
@@ -566,7 +573,7 @@ export function ChatPanel({ wxWorkInstance, onWxWorkInstanceUpdated }: ChatPanel
               aiReplyEnabled={aiReplyEnabled}
               canAgentReply={canAgentReply}
               disabledReason={editorDisabledReason}
-              aiReplyToggleDisabled={!wxWorkInstance || savingAIReply}
+              aiReplyToggleDisabled={!canToggleAIReply || !wxWorkInstance || savingAIReply}
               onToggleAIReply={handleToggleAIReply}
               onSend={handleSend}
               onUploadImage={async (file) => {

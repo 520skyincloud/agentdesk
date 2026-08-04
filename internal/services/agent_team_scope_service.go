@@ -22,11 +22,13 @@ type agentTeamScopeService struct{}
 func newAgentTeamScopeService() *agentTeamScopeService { return &agentTeamScopeService{} }
 
 type ManagedDataScope struct {
-	TenantID          int64
-	Unrestricted      bool
-	StoreIDs          []int64
-	WxWorkInstanceIDs []int64
-	KnowledgeBaseIDs  []int64
+	TenantID             int64
+	Unrestricted         bool
+	StoreStaffScoped     bool
+	StoreIDs             []int64
+	StoreStaffBindingIDs []int64
+	WxWorkInstanceIDs    []int64
+	KnowledgeBaseIDs     []int64
 }
 
 func (s *agentTeamScopeService) Resolve(operator *dto.AuthPrincipal) ManagedDataScope {
@@ -53,9 +55,15 @@ func (s *agentTeamScopeService) Resolve(operator *dto.AuthPrincipal) ManagedData
 			}
 		}
 	}
-	if slices.Contains(operator.Roles, constants.RoleCodeStoreStaff) {
-		bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().Eq("tenant_id", tenantID).Eq("user_id", operator.UserID).Eq("status", enums.StatusOk))
+	if s.IsStoreStaffScoped(operator) {
+		scope.StoreStaffScoped = true
+		bindings := repositories.StoreStaffBindingRepository.Find(sqls.DB(), sqls.NewCnd().
+			Eq("tenant_id", tenantID).
+			Eq("user_id", operator.UserID).
+			Eq("active_user_id", operator.UserID).
+			Eq("status", enums.StatusOk))
 		for i := range bindings {
+			scope.StoreStaffBindingIDs = appendPositive(scope.StoreStaffBindingIDs, bindings[i].ID)
 			scope.StoreIDs = appendPositive(scope.StoreIDs, bindings[i].StoreID)
 		}
 	}
@@ -67,6 +75,14 @@ func (s *agentTeamScopeService) IsAdmin(operator *dto.AuthPrincipal) bool {
 	return operator != nil && (slices.Contains(operator.Roles, constants.RoleCodeSuperAdmin) ||
 		slices.Contains(operator.Roles, constants.RoleCodeAdmin) ||
 		slices.Contains(operator.Roles, constants.RoleCodeTenantAdmin))
+}
+
+func (s *agentTeamScopeService) IsStoreStaffScoped(operator *dto.AuthPrincipal) bool {
+	return operator != nil &&
+		slices.Contains(operator.Roles, constants.RoleCodeStoreStaff) &&
+		!slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader) &&
+		!slices.Contains(operator.Roles, constants.RoleCodeCsUser) &&
+		!s.IsAdmin(operator)
 }
 
 func (s *agentTeamScopeService) ActiveTenantID(operator *dto.AuthPrincipal) int64 {
@@ -206,6 +222,14 @@ func (s *agentTeamScopeService) ApplyWxWorkInstanceFilter(cnd *sqls.Cnd, operato
 	if scope.Unrestricted {
 		return cnd
 	}
+	if scope.StoreStaffScoped {
+		if len(scope.StoreStaffBindingIDs) == 0 || len(scope.StoreIDs) == 0 {
+			return cnd.Eq("id", -1)
+		}
+		return cnd.
+			In("store_staff_binding_id", scope.StoreStaffBindingIDs).
+			In("store_id", scope.StoreIDs)
+	}
 	if len(scope.WxWorkInstanceIDs) > 0 {
 		return cnd.In("id", scope.WxWorkInstanceIDs)
 	}
@@ -224,6 +248,20 @@ func (s *agentTeamScopeService) ApplyConversationFilter(cnd *sqls.Cnd, operator 
 	scope := s.Resolve(operator)
 	if scope.Unrestricted {
 		return cnd
+	}
+	if scope.StoreStaffScoped {
+		if len(scope.StoreStaffBindingIDs) == 0 {
+			return cnd.Eq("id", -1)
+		}
+		return cnd.
+			In("store_staff_binding_id", scope.StoreStaffBindingIDs).
+			Where(`EXISTS (
+				SELECT 1 FROM t_conversation_route_state AS scoped_route
+				WHERE scoped_route.tenant_id = ?
+					AND scoped_route.conversation_id = t_conversation.id
+					AND scoped_route.store_id = t_conversation.store_id
+					AND scoped_route.store_staff_binding_id = t_conversation.store_staff_binding_id
+			)`, tenantID)
 	}
 	if len(scope.WxWorkInstanceIDs) > 0 {
 		return cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE tenant_id = ? AND wx_work_instance_id IN (?))", tenantID, scope.WxWorkInstanceIDs)
@@ -249,11 +287,18 @@ func (s *agentTeamScopeService) CanViewConversation(operator *dto.AuthPrincipal,
 	if s.IsAdmin(operator) {
 		return true
 	}
+	scope := s.Resolve(operator)
 	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, tenantID)
 	if route == nil {
 		return false
 	}
-	scope := s.Resolve(operator)
+	if scope.StoreStaffScoped {
+		return conversation.StoreID > 0 &&
+			conversation.StoreStaffBindingID > 0 &&
+			containsInt64(scope.StoreStaffBindingIDs, conversation.StoreStaffBindingID) &&
+			route.StoreID == conversation.StoreID &&
+			route.StoreStaffBindingID == conversation.StoreStaffBindingID
+	}
 	if len(scope.WxWorkInstanceIDs) > 0 {
 		return containsInt64(scope.WxWorkInstanceIDs, route.WxWorkInstanceID)
 	}
@@ -265,10 +310,15 @@ func (s *agentTeamScopeService) CanViewWxWorkInstance(operator *dto.AuthPrincipa
 		return false
 	}
 	tenantID := s.ActiveTenantID(operator)
-	if repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), instanceID, tenantID) == nil {
+	instance := repositories.WxWorkProtocolInstanceRepository.GetInTenant(sqls.DB(), instanceID, tenantID)
+	if instance == nil {
 		return false
 	}
 	scope := s.Resolve(operator)
+	if scope.StoreStaffScoped {
+		return containsInt64(scope.StoreStaffBindingIDs, instance.StoreStaffBindingID) &&
+			containsInt64(scope.StoreIDs, instance.StoreID)
+	}
 	return scope.Unrestricted || containsInt64(scope.WxWorkInstanceIDs, instanceID)
 }
 
@@ -277,7 +327,19 @@ func (scope *ManagedDataScope) expand() {
 		return
 	}
 	scope.StoreIDs = uniquePositive(scope.StoreIDs)
+	scope.StoreStaffBindingIDs = uniquePositive(scope.StoreStaffBindingIDs)
 	scope.WxWorkInstanceIDs = uniquePositive(scope.WxWorkInstanceIDs)
+	if scope.StoreStaffScoped && len(scope.StoreStaffBindingIDs) > 0 && len(scope.StoreIDs) > 0 {
+		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().
+			Eq("tenant_id", scope.TenantID).
+			In("store_staff_binding_id", scope.StoreStaffBindingIDs).
+			In("store_id", scope.StoreIDs).
+			Where("status <> ?", enums.StatusDeleted))
+		for i := range instances {
+			scope.WxWorkInstanceIDs = appendPositive(scope.WxWorkInstanceIDs, instances[i].ID)
+		}
+		scope.WxWorkInstanceIDs = uniquePositive(scope.WxWorkInstanceIDs)
+	}
 	if len(scope.WxWorkInstanceIDs) > 0 {
 		instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().
 			Eq("tenant_id", scope.TenantID).
@@ -296,7 +358,7 @@ func (scope *ManagedDataScope) expand() {
 		for i := range stores {
 			scope.KnowledgeBaseIDs = appendPositive(scope.KnowledgeBaseIDs, stores[i].KnowledgeBaseID)
 		}
-		if len(scope.WxWorkInstanceIDs) == 0 {
+		if !scope.StoreStaffScoped && len(scope.WxWorkInstanceIDs) == 0 {
 			instances := repositories.WxWorkProtocolInstanceRepository.Find(sqls.DB(), sqls.NewCnd().
 				Eq("tenant_id", scope.TenantID).
 				In("store_id", scope.StoreIDs).

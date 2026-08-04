@@ -3,6 +3,14 @@ import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 const pageSource = await readFile(new URL("./page.tsx", import.meta.url), "utf8")
+const storeStaffIdentitySource = await readFile(
+  new URL("./_components/store-staff-conversation-identity.tsx", import.meta.url),
+  "utf8",
+)
+const chatPanelSource = await readFile(
+  new URL("./_components/chat-panel.tsx", import.meta.url),
+  "utf8",
+)
 const managerSource = await readFile(
   new URL("../../../components/wxwork-protocol/wxwork-protocol-instance-manager.tsx", import.meta.url),
   "utf8",
@@ -17,12 +25,31 @@ const remoteBindingSource = await readFile(
 )
 
 test("conversation workbench preserves all conversations while gating account navigation", () => {
-  assert.match(pageSource, /canViewWxWorkAccounts = permissions\.has\("channel\.view"\)/)
+  assert.match(pageSource, /roles\.includes\("store_staff"\)/)
+  assert.match(pageSource, /\["super_admin", "admin", "tenant_admin", "cs_team_leader", "cs_user"\]\.includes\(role\)/)
+  assert.match(pageSource, /canViewWxWorkAccounts = !isStoreStaff && permissions\.has\("channel\.view"\)/)
   assert.match(pageSource, /if \(!canViewWxWorkAccounts\) \{[\s\S]*setInstances\(\[\]\)/)
   assert.match(pageSource, /setSelectedWxWorkInstanceId\(null\)/)
   assert.match(pageSource, /if \(!canViewWxWorkAccounts\) \{[\s\S]*return conversations\.reduce/)
   assert.match(pageSource, />全部账号</)
   assert.match(pageSource, /canViewWxWorkAccounts && filteredInstances\.length === 0/)
+})
+
+test("store staff conversation mode uses the current binding workbench instead of the tenant account pool", () => {
+  assert.match(pageSource, /fetchStoreWorkbench\(\)/)
+  assert.match(pageSource, /<StoreStaffConversationIdentity/)
+  assert.match(pageSource, /data=\{storeStaffWorkspace\}/)
+  assert.match(pageSource, /variant="compact"/)
+  assert.match(pageSource, /conversationFilter === "my_attention"[\s\S]*setConversationFilter\("all_open"\)/)
+  assert.match(pageSource, /agentConversationFilterOptions[\s\S]*item\.value !== "my_attention"/)
+  assert.match(pageSource, /aiReplyEnabled=\{isStoreStaff \? storeStaffWorkspace\?\.aiReplyEnabled/)
+  assert.match(storeStaffIdentitySource, /我的企微账号/)
+  assert.match(storeStaffIdentitySource, /wxWorkHealthStatus/)
+  assert.match(storeStaffIdentitySource, /storeCode/)
+  assert.match(storeStaffIdentitySource, /variant = "sidebar"/)
+  assert.match(storeStaffIdentitySource, /lg:hidden/)
+  assert.match(chatPanelSource, /canToggleAIReply = true/)
+  assert.match(chatPanelSource, /aiReplyToggleDisabled=\{!canToggleAIReply \|\| !wxWorkInstance \|\| savingAIReply\}/)
 })
 
 test("conversation workbench separates account creation from account management", () => {

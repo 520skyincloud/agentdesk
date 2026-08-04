@@ -186,7 +186,7 @@ func setupStoreStaffTenantDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.User{}, &models.Role{}, &models.UserRole{}, &models.AgentTeam{}, &models.Store{},
-		&models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{},
+		&models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{}, &models.KnowledgeBase{},
 	); err != nil {
 		t.Fatalf("migrate store staff tenant models: %v", err)
 	}

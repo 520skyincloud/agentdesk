@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -36,6 +37,7 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 		&models.AgentTeam{},
 		&models.AgentProfile{},
 		&models.StoreStaffBinding{},
+		&models.KnowledgeBase{},
 		&models.Channel{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
@@ -91,8 +93,30 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	if err := db.Create(&models.AgentProfile{TenantID: 101, UserID: 21, TeamID: teamA.ID, AgentCode: "A021", DisplayName: "客服A", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create agent profile: %v", err)
 	}
-	if err := db.Create(&models.StoreStaffBinding{TenantID: 101, UserID: 31, StoreID: storeA.ID, Status: enums.StatusOk}).Error; err != nil {
+	storeStaffUserID := int64(31)
+	storeStaffBinding := &models.StoreStaffBinding{TenantID: 101, UserID: storeStaffUserID, ActiveUserID: &storeStaffUserID, StoreID: storeA.ID, Status: enums.StatusOk}
+	if err := db.Create(storeStaffBinding).Error; err != nil {
 		t.Fatalf("create store staff binding: %v", err)
+	}
+	otherStoreStaffUserID := int64(32)
+	otherStoreStaffBinding := &models.StoreStaffBinding{TenantID: 101, UserID: otherStoreStaffUserID, ActiveUserID: &otherStoreStaffUserID, StoreID: storeA.ID, Status: enums.StatusOk}
+	if err := db.Create(otherStoreStaffBinding).Error; err != nil {
+		t.Fatalf("create other store staff binding: %v", err)
+	}
+	if err := db.Model(&models.WxWorkProtocolInstance{}).Where("id = ?", instanceA.ID).Update("store_staff_binding_id", storeStaffBinding.ID).Error; err != nil {
+		t.Fatalf("bind instance A: %v", err)
+	}
+	instanceA.StoreStaffBindingID = storeStaffBinding.ID
+	if err := db.Model(&models.WxWorkProtocolInstance{}).Where("id = ?", instanceAOther.ID).Update("store_staff_binding_id", otherStoreStaffBinding.ID).Error; err != nil {
+		t.Fatalf("bind other instance in store A: %v", err)
+	}
+	instanceAOther.StoreStaffBindingID = otherStoreStaffBinding.ID
+	instanceStoreMismatch := &models.WxWorkProtocolInstance{
+		TenantID: 101, Guid: "scope-instance-store-mismatch", StoreID: storeB.ID,
+		StoreStaffBindingID: storeStaffBinding.ID, Status: enums.StatusOk,
+	}
+	if err := db.Create(instanceStoreMismatch).Error; err != nil {
+		t.Fatalf("create store-mismatched instance: %v", err)
 	}
 	channel := &models.Channel{TenantID: 101, Name: "范围测试渠道", ChannelType: enums.ChannelTypeWxWorkProtocol, ChannelID: "scope-channel", Status: enums.StatusOk}
 	if err := db.Create(channel).Error; err != nil {
@@ -100,9 +124,10 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	}
 
 	now := time.Now()
-	conversationA := &models.Conversation{TenantID: 101, ChannelID: channel.ID, CustomerName: "客户A", Status: enums.IMConversationStatusActive, CurrentAssigneeID: 21, LastActiveAt: now.Add(-time.Minute), LastMessageAt: now.Add(-time.Minute)}
+	conversationA := &models.Conversation{TenantID: 101, StoreID: storeA.ID, StoreStaffBindingID: storeStaffBinding.ID, ChannelID: channel.ID, CustomerName: "客户A", Status: enums.IMConversationStatusActive, CurrentAssigneeID: 21, LastActiveAt: now.Add(-time.Minute), LastMessageAt: now.Add(-time.Minute)}
 	conversationB := &models.Conversation{TenantID: 101, ChannelID: channel.ID, CustomerName: "客户B", Status: enums.IMConversationStatusActive, CurrentAssigneeID: 22, LastActiveAt: now, LastMessageAt: now}
-	conversationAOther := &models.Conversation{TenantID: 101, ChannelID: channel.ID, CustomerName: "客户A-其他员工号", Status: enums.IMConversationStatusActive, LastActiveAt: now, LastMessageAt: now}
+	conversationAOther := &models.Conversation{TenantID: 101, StoreID: storeA.ID, StoreStaffBindingID: otherStoreStaffBinding.ID, ChannelID: channel.ID, CustomerName: "客户A-其他员工号", Status: enums.IMConversationStatusActive, LastActiveAt: now, LastMessageAt: now}
+	closedConversationA := &models.Conversation{TenantID: 101, StoreID: storeA.ID, StoreStaffBindingID: storeStaffBinding.ID, ChannelID: channel.ID, CustomerName: "客户A-历史", Status: enums.IMConversationStatusClosed, CurrentAssigneeID: 999, LastActiveAt: now.Add(-2 * time.Hour), LastMessageAt: now.Add(-2 * time.Hour)}
 	if err := db.Create(conversationA).Error; err != nil {
 		t.Fatalf("create conversation A: %v", err)
 	}
@@ -112,25 +137,34 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	if err := db.Create(conversationAOther).Error; err != nil {
 		t.Fatalf("create conversation from other instance in store A: %v", err)
 	}
-	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationA.ID, StoreID: storeA.ID, WxWorkInstanceID: instanceA.ID, NeedHumanFollowUp: true}).Error; err != nil {
+	if err := db.Create(closedConversationA).Error; err != nil {
+		t.Fatalf("create closed conversation for binding A: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationA.ID, StoreID: storeA.ID, StoreStaffBindingID: storeStaffBinding.ID, WxWorkInstanceID: instanceA.ID, NeedHumanFollowUp: true}).Error; err != nil {
 		t.Fatalf("create route A: %v", err)
 	}
 	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationB.ID, StoreID: storeB.ID, WxWorkInstanceID: instanceB.ID, NeedHumanFollowUp: true}).Error; err != nil {
 		t.Fatalf("create route B: %v", err)
 	}
-	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationAOther.ID, StoreID: storeA.ID, WxWorkInstanceID: instanceAOther.ID}).Error; err != nil {
+	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationAOther.ID, StoreID: storeA.ID, StoreStaffBindingID: otherStoreStaffBinding.ID, WxWorkInstanceID: instanceAOther.ID}).Error; err != nil {
 		t.Fatalf("create route for other instance in store A: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: closedConversationA.ID, StoreID: storeA.ID, StoreStaffBindingID: storeStaffBinding.ID, WxWorkInstanceID: instanceA.ID}).Error; err != nil {
+		t.Fatalf("create route for closed binding A conversation: %v", err)
 	}
 
 	admin := &dto.AuthPrincipal{UserID: 1, ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
 	leaderA := &dto.AuthPrincipal{UserID: 11, ActiveTenantID: 101, Roles: []string{constants.RoleCodeCsTeamLeader}}
 	agentA := &dto.AuthPrincipal{UserID: 21, ActiveTenantID: 101, Roles: []string{constants.RoleCodeCsUser}}
-	storeStaffA := &dto.AuthPrincipal{UserID: 31, ActiveTenantID: 101, Roles: []string{constants.RoleCodeStoreStaff}}
+	storeStaffA := &dto.AuthPrincipal{UserID: storeStaffUserID, ActiveTenantID: 101, Roles: []string{constants.RoleCodeStoreStaff}}
+	otherStoreStaffA := &dto.AuthPrincipal{UserID: otherStoreStaffUserID, ActiveTenantID: 101, Roles: []string{constants.RoleCodeStoreStaff}}
+	hybridLeaderA := &dto.AuthPrincipal{UserID: 11, ActiveTenantID: 101, Roles: []string{constants.RoleCodeCsTeamLeader, constants.RoleCodeStoreStaff}}
 	for name, principal := range map[string]*dto.AuthPrincipal{
-		"admin":       admin,
-		"leader":      leaderA,
-		"agent":       agentA,
-		"store staff": storeStaffA,
+		"admin":         admin,
+		"leader":        leaderA,
+		"hybrid leader": hybridLeaderA,
+		"agent":         agentA,
+		"store staff":   storeStaffA,
 	} {
 		if !AgentTeamScopeService.CanViewConversation(principal, conversationA.ID) {
 			t.Fatalf("%s should see conversation A", name)
@@ -145,12 +179,58 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	if AgentTeamScopeService.CanViewConversation(agentA, conversationAOther.ID) {
 		t.Fatal("agent must not see an unbound account just because it belongs to the same store")
 	}
-	if !AgentTeamScopeService.CanViewConversation(storeStaffA, conversationAOther.ID) {
-		t.Fatal("store staff should see every account in the bound store")
+	if AgentTeamScopeService.CanViewConversation(storeStaffA, conversationAOther.ID) {
+		t.Fatal("store staff must not see another staff binding in the same store")
 	}
 	if AgentTeamScopeService.CanViewConversation(storeStaffA, conversationB.ID) {
 		t.Fatal("store staff must not see conversations from another store")
 	}
+	if AgentTeamScopeService.Resolve(hybridLeaderA).StoreStaffScoped {
+		t.Fatal("adding the store staff role must not narrow an existing team leader scope")
+	}
+	if !AgentTeamScopeService.CanViewWxWorkInstance(storeStaffA, instanceA.ID) {
+		t.Fatal("store staff should see the protocol instance attached to its binding")
+	}
+	if AgentTeamScopeService.CanViewWxWorkInstance(storeStaffA, instanceAOther.ID) {
+		t.Fatal("store staff must not see another binding's protocol instance in the same store")
+	}
+	if AgentTeamScopeService.CanViewWxWorkInstance(storeStaffA, instanceStoreMismatch.ID) {
+		t.Fatal("store staff must not see a protocol instance whose store does not match the binding")
+	}
+	storeStaffInstances := repositories.WxWorkProtocolInstanceRepository.Find(db,
+		AgentTeamScopeService.ApplyWxWorkInstanceFilter(sqls.NewCnd().Asc("id"), storeStaffA))
+	if len(storeStaffInstances) != 1 || storeStaffInstances[0].ID != instanceA.ID {
+		t.Fatalf("store staff instances = %+v, want only binding/store-matched instance %d", storeStaffInstances, instanceA.ID)
+	}
+	if err := db.Model(&models.ConversationRouteState{}).
+		Where("conversation_id = ? AND tenant_id = ?", conversationA.ID, int64(101)).
+		Update("route_status", enums.ConversationRouteStatusStoreWecomManual).Error; err != nil {
+		t.Fatalf("enter binding A store manual route: %v", err)
+	}
+	if err := db.Model(&models.Conversation{}).
+		Where("id = ? AND tenant_id = ?", conversationA.ID, int64(101)).
+		Update("current_assignee_id", 0).Error; err != nil {
+		t.Fatalf("release binding A conversation from HQ assignment: %v", err)
+	}
+	conversationA.CurrentAssigneeID = 0
+	if !MessageService.canSendStoreManualAgentMessage(conversationA, storeStaffA) {
+		t.Fatal("store staff should reply to the store manual conversation owned by its binding")
+	}
+	if MessageService.canSendStoreManualAgentMessage(conversationA, otherStoreStaffA) {
+		t.Fatal("store staff must not reply to another binding's conversation in the same store")
+	}
+	if _, err := MessageService.ValidateConversationSender(conversationA.ID, enums.IMSenderTypeAgent, storeStaffA, nil); err != nil {
+		t.Fatalf("validate own binding store manual reply: %v", err)
+	}
+	if _, err := MessageService.ValidateConversationSender(conversationA.ID, enums.IMSenderTypeAgent, otherStoreStaffA, nil); err == nil {
+		t.Fatal("another store staff binding unexpectedly passed sender validation")
+	}
+	if err := db.Model(&models.Conversation{}).
+		Where("id = ? AND tenant_id = ?", conversationA.ID, int64(101)).
+		Update("current_assignee_id", int64(21)).Error; err != nil {
+		t.Fatalf("restore binding A HQ assignment: %v", err)
+	}
+	conversationA.CurrentAssigneeID = 21
 
 	list, _, err := ConversationService.ListConversations(agentA, request.AgentConversationFilterAllOpen, "", 0, &sqls.Paging{Page: 1, Limit: 20})
 	if err != nil {
@@ -158,6 +238,27 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].ID != conversationA.ID {
 		t.Fatalf("scoped conversations = %+v, want only conversation %d", list, conversationA.ID)
+	}
+	storeStaffList, _, err := ConversationService.ListConversations(storeStaffA, request.AgentConversationFilterAllOpen, "", 0, &sqls.Paging{Page: 1, Limit: 20})
+	if err != nil {
+		t.Fatalf("list store staff conversations: %v", err)
+	}
+	if len(storeStaffList) != 1 || storeStaffList[0].ID != conversationA.ID {
+		t.Fatalf("store staff conversations = %+v, want only binding conversation %d", storeStaffList, conversationA.ID)
+	}
+	forgedInstanceList, _, err := ConversationService.ListConversations(storeStaffA, request.AgentConversationFilterAllOpen, "", instanceAOther.ID, &sqls.Paging{Page: 1, Limit: 20})
+	if err != nil {
+		t.Fatalf("list with forged instance filter: %v", err)
+	}
+	if len(forgedInstanceList) != 0 {
+		t.Fatalf("forged instance filter leaked conversations: %+v", forgedInstanceList)
+	}
+	closedStoreStaffList, _, err := ConversationService.ListConversations(storeStaffA, request.AgentConversationFilterClosed, "", 0, &sqls.Paging{Page: 1, Limit: 20})
+	if err != nil {
+		t.Fatalf("list closed store staff conversations: %v", err)
+	}
+	if len(closedStoreStaffList) != 1 || closedStoreStaffList[0].ID != closedConversationA.ID {
+		t.Fatalf("closed store staff conversations = %+v, want binding history %d", closedStoreStaffList, closedConversationA.ID)
 	}
 	attention, _, err := ConversationService.ListConversations(agentA, request.AgentConversationFilterMyAttention, "", instanceB.ID, &sqls.Paging{Page: 1, Limit: 20})
 	if err != nil {
@@ -743,7 +844,8 @@ func TestStoreStaffScopeIncludesEveryKnowledgeBaseOwnedByStore(t *testing.T) {
 	if err := db.Create(store).Error; err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	if err := db.Create(&models.StoreStaffBinding{TenantID: tenantID, UserID: 77, StoreID: store.ID, Status: enums.StatusOk}).Error; err != nil {
+	storeStaffUserID := int64(77)
+	if err := db.Create(&models.StoreStaffBinding{TenantID: tenantID, UserID: storeStaffUserID, ActiveUserID: &storeStaffUserID, StoreID: store.ID, Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create binding: %v", err)
 	}
 	first := &models.KnowledgeBase{TenantID: tenantID, StoreID: store.ID, DatasetID: "dataset-1", Name: "当前库", Status: enums.StatusOk}

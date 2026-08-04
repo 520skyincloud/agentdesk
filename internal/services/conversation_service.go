@@ -71,6 +71,7 @@ func (s *conversationService) ListConversations(operator *dto.AuthPrincipal, fil
 	if tenantID <= 0 {
 		return nil, nil, errorsx.Forbidden("请先进入需要管理会话的接入公司")
 	}
+	storeStaffScoped := AgentTeamScopeService.Resolve(operator).StoreStaffScoped
 	cnd := sqls.NewCnd().Page(paging.Page, paging.Limit)
 
 	if strs.IsNotBlank(keyword) {
@@ -92,11 +93,17 @@ func (s *conversationService) ListConversations(operator *dto.AuthPrincipal, fil
 	case request.AgentConversationFilterMine:
 		cnd.Eq("current_assignee_id", operator.UserID).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterActive:
-		cnd.Eq("current_assignee_id", operator.UserID).Eq("status", enums.IMConversationStatusActive).Desc("last_active_at").Desc("id")
+		if !storeStaffScoped {
+			cnd.Eq("current_assignee_id", operator.UserID)
+		}
+		cnd.Eq("status", enums.IMConversationStatusActive).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterPending:
 		cnd.Eq("current_assignee_id", 0).Eq("status", enums.IMConversationStatusPending).Asc("last_active_at").Desc("id")
 	case request.AgentConversationFilterClosed:
-		cnd.Eq("current_assignee_id", operator.UserID).Eq("status", enums.IMConversationStatusClosed).Desc("last_active_at").Desc("id")
+		if !storeStaffScoped {
+			cnd.Eq("current_assignee_id", operator.UserID)
+		}
+		cnd.Eq("status", enums.IMConversationStatusClosed).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterMyAttention:
 		if !slices.Contains(operator.Roles, constants.RoleCodeCsUser) {
 			return nil, nil, errorsx.Forbidden("只有客服账号可以查看我的待回复")

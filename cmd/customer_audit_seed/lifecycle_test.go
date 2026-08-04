@@ -417,7 +417,7 @@ func assertLifecycleSystemData(t *testing.T, db *gorm.DB) {
 			t.Fatalf("fresh initializer changed to failed after seed lifecycle: %+v", migrations[i])
 		}
 	}
-	if want := []int64{2, 15, 35, 68, 69, 70, 71, 72}; !reflect.DeepEqual(versions, want) {
+	if want := []int64{2, 15, 35, 68, 69, 70, 71, 72, 74}; !reflect.DeepEqual(versions, want) {
 		t.Fatalf("fresh initializer versions after seed lifecycle=%v want=%v", versions, want)
 	}
 }

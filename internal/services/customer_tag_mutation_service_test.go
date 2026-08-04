@@ -374,6 +374,15 @@ func setupCustomerTagMutationFixtureWithDB(t *testing.T, db *gorm.DB) *customerT
 	if err := db.Create(&stores).Error; err != nil {
 		t.Fatal(err)
 	}
+	storeAStaffUserID := int64(7001)
+	storeBStaffUserID := int64(7002)
+	bindings := []models.StoreStaffBinding{
+		{TenantID: 101, UserID: storeAStaffUserID, ActiveUserID: &storeAStaffUserID, StoreID: stores[0].ID, Status: enums.StatusOk},
+		{TenantID: 101, UserID: storeBStaffUserID, ActiveUserID: &storeBStaffUserID, StoreID: stores[1].ID, Status: enums.StatusOk},
+	}
+	if err := db.Create(&bindings).Error; err != nil {
+		t.Fatal(err)
+	}
 	customers := []models.Customer{
 		{ID: 31, TenantID: 101, Name: "同一自然客户", Status: enums.StatusOk},
 		{ID: 32, TenantID: 202, Name: "其他租户客户", Status: enums.StatusOk},
@@ -383,16 +392,16 @@ func setupCustomerTagMutationFixtureWithDB(t *testing.T, db *gorm.DB) *customerT
 	}
 	now := time.Now()
 	conversations := []models.Conversation{
-		{ID: 10001, TenantID: 101, CustomerID: 31, CustomerName: customers[0].Name, Status: enums.IMConversationStatusAIServing, LastMessageAt: now, LastActiveAt: now},
-		{ID: 10002, TenantID: 101, CustomerID: 31, CustomerName: customers[0].Name, Status: enums.IMConversationStatusAIServing, LastMessageAt: now, LastActiveAt: now},
+		{ID: 10001, TenantID: 101, StoreID: stores[0].ID, StoreStaffBindingID: bindings[0].ID, CustomerID: 31, CustomerName: customers[0].Name, Status: enums.IMConversationStatusAIServing, LastMessageAt: now, LastActiveAt: now},
+		{ID: 10002, TenantID: 101, StoreID: stores[1].ID, StoreStaffBindingID: bindings[1].ID, CustomerID: 31, CustomerName: customers[0].Name, Status: enums.IMConversationStatusAIServing, LastMessageAt: now, LastActiveAt: now},
 		{ID: 20001, TenantID: 202, CustomerID: 32, CustomerName: customers[1].Name, Status: enums.IMConversationStatusAIServing, LastMessageAt: now, LastActiveAt: now},
 	}
 	if err := db.Create(&conversations).Error; err != nil {
 		t.Fatal(err)
 	}
 	routes := []models.ConversationRouteState{
-		{TenantID: 101, ConversationID: conversations[0].ID, StoreID: stores[0].ID},
-		{TenantID: 101, ConversationID: conversations[1].ID, StoreID: stores[1].ID},
+		{TenantID: 101, ConversationID: conversations[0].ID, StoreID: stores[0].ID, StoreStaffBindingID: bindings[0].ID},
+		{TenantID: 101, ConversationID: conversations[1].ID, StoreID: stores[1].ID, StoreStaffBindingID: bindings[1].ID},
 		{TenantID: 202, ConversationID: conversations[2].ID, StoreID: stores[2].ID},
 	}
 	if err := db.Create(&routes).Error; err != nil {
@@ -406,15 +415,11 @@ func setupCustomerTagMutationFixtureWithDB(t *testing.T, db *gorm.DB) *customerT
 	if err := db.Create(&relations).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&models.StoreStaffBinding{TenantID: 101, UserID: 7001, StoreID: stores[0].ID, Status: enums.StatusOk}).Error; err != nil {
-		t.Fatal(err)
-	}
-
 	fixture := &customerTagMutationFixture{
 		db:            db,
 		adminA:        &dto.AuthPrincipal{UserID: 5001, Username: "tenant-admin-a", ActiveTenantID: 101, Roles: []string{constants.RoleCodeTenantAdmin}},
 		adminB:        &dto.AuthPrincipal{UserID: 5002, Username: "tenant-admin-b", ActiveTenantID: 202, Roles: []string{constants.RoleCodeTenantAdmin}},
-		storeAStaff:   &dto.AuthPrincipal{UserID: 7001, Username: "store-a", ActiveTenantID: 101, Roles: []string{constants.RoleCodeStoreStaff}},
+		storeAStaff:   &dto.AuthPrincipal{UserID: storeAStaffUserID, Username: "store-a", ActiveTenantID: 101, Roles: []string{constants.RoleCodeStoreStaff}},
 		conversationA: conversations[0], conversationB: conversations[1], conversationOtherTenant: conversations[2],
 		relationA: relations[0], relationB: relations[1], nextTagID: 100000,
 	}

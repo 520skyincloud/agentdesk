@@ -280,6 +280,13 @@ test("direct dashboard routes reuse navigation permissions and context", async (
   assert.equal(dashboardPathIsAccessible("/dashboard/help", allPermissions, tenantContext), false)
   assert.equal(dashboardPathIsAccessible("/dashboard/unregistered-module", allPermissions, tenantContext), false)
   assert.equal(firstAccessibleDashboardPath(["storeWorkbench.view"], tenantContext), "/dashboard/store-workbench")
+  assert.equal(
+    firstAccessibleDashboardPath(
+      ["storeWorkbench.view", "conversation.view", "billing.view"],
+      tenantContext,
+    ),
+    "/dashboard/conversations",
+  )
 })
 
 test("tenant page guard follows the same navigation context contract", async () => {

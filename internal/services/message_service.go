@@ -2,6 +2,7 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -1089,6 +1090,9 @@ func (s *messageService) canSendStoreManualAgentMessage(conversation *models.Con
 	}
 	if ConversationService.isAdmin(operator) {
 		return true
+	}
+	if slices.Contains(operator.Roles, constants.RoleCodeStoreStaff) {
+		return AgentTeamScopeService.CanViewConversation(operator, conversation.ID)
 	}
 	profile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ? AND status = ?", conversation.TenantID, operator.UserID, enums.StatusOk)
 	return AgentProfileService.ProfileCanServeRoute(profile, route)

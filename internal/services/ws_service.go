@@ -640,6 +640,7 @@ func (s *wsService) PublishConversationChanged(conversation *models.Conversation
 			ManualAttention:           routePayload.ManualAttention,
 			StoreID:                   routePayload.StoreID,
 			StoreName:                 routePayload.StoreName,
+			StoreStaffBindingID:       routePayload.StoreStaffBindingID,
 			WxWorkInstanceID:          routePayload.WxWorkInstanceID,
 			WxWorkEmployeeName:        routePayload.WxWorkEmployeeName,
 			WxWorkEmployeeUserID:      routePayload.WxWorkEmployeeUserID,
@@ -660,6 +661,9 @@ func (s *wsService) PublishCustomerTagChanged(conversation *models.Conversation,
 		},
 	})
 	topics := []string{s.adminTenantTopic(conversation.TenantID), s.dispatchTenantTopic(conversation.TenantID)}
+	if topic := s.storeStaffBindingTopicForConversation(conversation); topic != "" {
+		topics = append(topics, topic)
+	}
 	if conversation.CurrentAssigneeID > 0 {
 		topics = append(topics, s.adminTopic(conversation.CurrentAssigneeID))
 	}
@@ -772,14 +776,15 @@ func (s *wsService) buildConversationRouteRealtimePayload(conversationID, tenant
 		return RealtimeConversationChangedPayload{}
 	}
 	payload := RealtimeConversationChangedPayload{
-		RouteStatus:       route.RouteStatus,
-		RouteStatusLabel:  enums.GetConversationRouteStatusLabel(route.RouteStatus),
-		RouteTarget:       route.RouteTarget,
-		HandoffReason:     utils.RepairMojibakeText(route.HandoffReason),
-		NeedHumanFollowUp: route.NeedHumanFollowUp,
-		ManualExpireAt:    utils.FormatTimePtr(route.ManualExpireAt),
-		StoreID:           route.StoreID,
-		WxWorkInstanceID:  route.WxWorkInstanceID,
+		RouteStatus:         route.RouteStatus,
+		RouteStatusLabel:    enums.GetConversationRouteStatusLabel(route.RouteStatus),
+		RouteTarget:         route.RouteTarget,
+		HandoffReason:       utils.RepairMojibakeText(route.HandoffReason),
+		NeedHumanFollowUp:   route.NeedHumanFollowUp,
+		ManualExpireAt:      utils.FormatTimePtr(route.ManualExpireAt),
+		StoreID:             route.StoreID,
+		StoreStaffBindingID: route.StoreStaffBindingID,
+		WxWorkInstanceID:    route.WxWorkInstanceID,
 	}
 	payload.ManualAttention = buildRealtimeManualAttention(route, payload.ManualExpireAt)
 	if route.StoreID > 0 {
@@ -958,6 +963,9 @@ func (s *wsService) routeConversationTopics(conversation *models.Conversation) [
 	} else if conversation.TenantID > 0 {
 		topics = append(topics, s.adminTenantTopic(conversation.TenantID))
 	}
+	if topic := s.storeStaffBindingTopicForConversation(conversation); topic != "" {
+		topics = append(topics, topic)
+	}
 	if conversation.TenantID > 0 {
 		topics = append(topics, s.dispatchTenantTopic(conversation.TenantID))
 	}
@@ -989,6 +997,14 @@ func (s *wsService) defaultTopics(session *ClientSession) []string {
 	case realtimeRoleAdmin:
 		if session.Principal == nil || session.Principal.UserID <= 0 || session.TenantID <= 0 {
 			return nil
+		}
+		scope := AgentTeamScopeService.Resolve(session.Principal)
+		if scope.StoreStaffScoped {
+			topics := make([]string, 0, len(scope.StoreStaffBindingIDs))
+			for _, bindingID := range scope.StoreStaffBindingIDs {
+				topics = append(topics, s.storeStaffBindingTopic(bindingID))
+			}
+			return normalizeRealtimeTopics(topics)
 		}
 		topics := []string{s.adminTopic(session.Principal.UserID), s.adminTenantTopic(session.TenantID)}
 		if slices.Contains(session.Principal.Permissions, constants.PermissionConversationHandover.Code) {
@@ -1117,6 +1133,24 @@ func (s *wsService) adminTopic(userID int64) string {
 
 func (s *wsService) adminTenantTopic(tenantID int64) string {
 	return realtimeTopicAdminTenantPrefix + strconv.FormatInt(tenantID, 10)
+}
+
+func (s *wsService) storeStaffBindingTopic(bindingID int64) string {
+	if bindingID <= 0 {
+		return ""
+	}
+	return realtimeTopicStoreStaffPrefix + strconv.FormatInt(bindingID, 10)
+}
+
+func (s *wsService) storeStaffBindingTopicForConversation(conversation *models.Conversation) string {
+	if conversation == nil || conversation.TenantID <= 0 || conversation.StoreID <= 0 || conversation.StoreStaffBindingID <= 0 {
+		return ""
+	}
+	route := ConversationRouteService.GetByConversationIDInTenant(conversation.ID, conversation.TenantID)
+	if route == nil || route.StoreID != conversation.StoreID || route.StoreStaffBindingID != conversation.StoreStaffBindingID {
+		return ""
+	}
+	return s.storeStaffBindingTopic(conversation.StoreStaffBindingID)
 }
 
 func (s *wsService) dispatchTenantTopic(tenantID int64) string {

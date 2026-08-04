@@ -35,6 +35,7 @@ const (
 	realtimeTopicConversationPrefix = "conversation:"
 	realtimeTopicNotificationPrefix = "notification:"
 	realtimeTopicAdminTenantPrefix  = "admin:tenant:"
+	realtimeTopicStoreStaffPrefix   = "admin:store-staff-binding:"
 	realtimeTopicDispatchPrefix     = "dispatch:tenant:"
 	realtimeTopicConfigTenantPrefix = "configuration:tenant:"
 	realtimeTopicConfigPlatform     = "configuration:platform"
@@ -231,6 +232,7 @@ type RealtimeConversationChangedPayload struct {
 	ManualAttention           response.ConversationManualAttentionResponse `json:"manualAttention,omitempty"`
 	StoreID                   int64                                        `json:"storeId,omitempty"`
 	StoreName                 string                                       `json:"storeName,omitempty"`
+	StoreStaffBindingID       int64                                        `json:"storeStaffBindingId,omitempty"`
 	WxWorkInstanceID          int64                                        `json:"wxWorkInstanceId,omitempty"`
 	WxWorkEmployeeName        string                                       `json:"wxWorkEmployeeName,omitempty"`
 	WxWorkEmployeeUserID      string                                       `json:"wxWorkEmployeeUserId,omitempty"`

@@ -18,3 +18,21 @@ func TestBuiltinTenantRolesDoNotReceivePlatformPermissions(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreStaffRoleIncludesOwnConversationWorkspacePermissions(t *testing.T) {
+	permissions := RolePermissions[RoleCodeStoreStaff]
+	want := map[string]bool{
+		PermissionConversationView.Code: false,
+		PermissionConversationSend.Code: false,
+	}
+	for _, permission := range permissions {
+		if _, ok := want[permission.Code]; ok {
+			want[permission.Code] = true
+		}
+	}
+	for permissionCode, found := range want {
+		if !found {
+			t.Fatalf("store staff role missing permission %s", permissionCode)
+		}
+	}
+}
