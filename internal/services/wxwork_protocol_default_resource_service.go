@@ -49,7 +49,7 @@ func (s *wxWorkProtocolDefaultResourceService) SendNewFriendWelcome(conversation
 			sendErrors = append(sendErrors, err)
 		}
 	}
-	if instance.WelcomeSendMiniProgram && strings.TrimSpace(instance.DefaultMiniProgramPayload) != "" {
+	if s.shouldSendDefaultWelcomeMiniProgram(instance) {
 		if err := s.sendDefaultMiniProgram(conversation, instance, requestID); err != nil {
 			slog.Warn("send wxwork welcome mini program failed", "conversation_id", conversation.ID, "instance_id", instance.ID, "error", err)
 			sendErrors = append(sendErrors, err)
@@ -62,6 +62,13 @@ func (s *wxWorkProtocolDefaultResourceService) SendNewFriendWelcome(conversation
 		}
 	}
 	return errors.Join(sendErrors...)
+}
+
+func (s *wxWorkProtocolDefaultResourceService) shouldSendDefaultWelcomeMiniProgram(instance *models.WxWorkProtocolInstance) bool {
+	if instance == nil || !instance.WelcomeSendMiniProgram || strings.TrimSpace(instance.DefaultMiniProgramPayload) == "" {
+		return false
+	}
+	return !ArrivalBindingTicketService.HasActiveStaticConnection(instance.ID)
 }
 
 func (s *wxWorkProtocolDefaultResourceService) sendWelcomeImage(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, assetID string, requestID string) error {

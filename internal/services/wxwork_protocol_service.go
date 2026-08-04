@@ -938,7 +938,19 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 	}
 	s.scheduleWxWorkContactProfileSync(instance, conversation, externalID)
 	if created {
-		WxWorkProtocolDefaultResourceService.SendNewFriendWelcome(conversation, instance, "wx_welcome_"+strings.TrimPrefix(clientMsgID, "wx_protocol:"))
+		if err := WxWorkProtocolContactAutomationService.sendNewContactResources(
+			conversation,
+			instance,
+			"wx_welcome_"+strings.TrimPrefix(clientMsgID, "wx_protocol:"),
+			created,
+		); err != nil {
+			slog.Warn(
+				"send wxwork new contact resources failed",
+				"conversation_id", conversation.ID,
+				"instance_id", instance.ID,
+				"error", err,
+			)
+		}
 	}
 	if err := s.createMessageRef(
 		conversation.ID,

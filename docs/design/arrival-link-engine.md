@@ -355,14 +355,19 @@ Arrival DDL 统一进入现有 `AutoMigrate`，不新增平行 migration 系统�
 - 同一事件的联系码使用唯一 `ScanEventID`，并发只创建一个可发布结果；
 - 静态 Provider 保存时事务内锁定 Store 和员工实例，禁止一个实例映射多个 active 静态
   门店；
-- 同一真实会话只复用一个未过期 pending 票据；Provider 切换、连接停用和维护任务分别
-  撤销或过期票据；
+- 自动首联卡的资格只来自“本次真实创建了该联系人会话”；联系人增量同步发现已有映射时，
+  无论旧票据是 pending、expired、consumed 还是 revoked，都不得自动创建或重发绑定卡；
+- 同一真实会话只复用一个未过期 pending 票据；该规则只解决已经获准的首次发送或显式人工
+  发送动作内幂等，不能把票据过期解释成自动重发许可。Provider 切换、连接停用和维护任务
+  分别撤销或过期票据；
 - 绑定事务锁定票据和 `ArrivalStoreBinding`，同身份同门店只能绑定一个真实会话；
 - 绑定卡片 Message 提交后即使进程在创建 Outbox 前中断，带显式渠道标记的 system 消息
   也会被现有补漏任务恢复，普通系统消息不进入外部投递；
 - 投递先通过数据库条件更新抢占，避免多进程重复发送；
 - 抢占后进程异常会落为 `failed/delivery_interrupted`，不会长期显示处理中；
 - 已发送事件按 Tenant、Store、身份和频控窗口判断，不跨门店限流；
+- 已绑定客户真实再次扫码继续创建独立 `ArrivalScanEvent`，使用 `arrival_scan_<eventID>`
+  投递原会话；它与联系人同步的 `arrival_bind_ticket_<ticketID>` 首联链路严格分离；
 - `/status` 只返回原扫码投递结果，不补发；
 - 5 分钟维护任务先原子认领到期的临时二维码失败，再清理过期二维码、重试待映射绑定，
   并对 active 获客链接执行受控客户分页对账；

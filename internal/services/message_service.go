@@ -631,6 +631,11 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	// 防抖，消息存在就不再发送了
 	if strs.IsNotBlank(clientMsgID) {
 		if existing := repositories.MessageRepository.GetByClientMsgIDInTenant(sqls.DB(), conversation.ID, conversation.TenantID, clientMsgID); existing != nil {
+			if senderType == enums.IMSenderTypeCustomer {
+				if _, _, err := AIReplyJobService.EnsureForMessage(existing.ID); err != nil {
+					return nil, err
+				}
+			}
 			if !options.skipOutbound {
 				s.ensureCommittedOutboundMessage(conversation, existing)
 			}
@@ -645,7 +650,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 
 	var (
 		now           = time.Now()
-		traceID       = tracex.NormalizeRequestID(requestID)
+		traceID       = tracex.EnsureRequestID(requestID)
 		auditUserID   = int64(0)
 		auditUserName = ""
 		nextSeq       = repositories.MessageRepository.NextSeqNoInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
@@ -715,6 +720,11 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		}
 		if err := repositories.MessageRepository.Create(ctx.Tx, message); err != nil {
 			return err
+		}
+		if senderType == enums.IMSenderTypeCustomer {
+			if _, _, err := AIReplyJobService.EnqueueForMessageDB(ctx.Tx, conversation, message); err != nil {
+				return err
+			}
 		}
 
 		// 处理已读、维度
@@ -835,20 +845,6 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 			if routeState.RouteStatus == enums.ConversationRouteStatusAIServing {
 				AIManualResumeTaskService.CancelActive(conversation.ID, "new customer message is handled by the normal AI path")
 			}
-		}
-		if isMediaUnderstandingMessage(message.MessageType) {
-			if mediaMessageAlreadyUnderstood(*message) {
-				MediaUnderstandingService.triggerAIForUnderstoodMedia(message)
-			} else {
-				MediaUnderstandingService.UnderstandInboundMessageAsync(message.ID)
-			}
-			return message, err
-		}
-		if !shouldTriggerAIReply(message.MessageType) {
-			return message, err
-		}
-		if TriggerAIReplyAsyncHook != nil {
-			TriggerAIReplyAsyncHook(*conversation, *message)
 		}
 	}
 	return message, err

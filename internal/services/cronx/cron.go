@@ -74,6 +74,24 @@ func Init() {
 		}
 	})
 
+	addFunc(c, "@every 1s", func() {
+		count := services.AIReplyJobService.ProcessDue(4)
+		if count > 0 {
+			slog.Info("AI reply jobs handled", "count", count)
+		}
+	})
+
+	addFunc(c, "@every 1m", func() {
+		count, err := services.AIReplyJobService.RepairMissingRecent(100)
+		if err != nil {
+			slog.Warn("repair missing AI reply jobs failed", "repaired_count", count, "error_class", "database_error")
+			return
+		}
+		if count > 0 {
+			slog.Info("missing AI reply jobs repaired", "count", count)
+		}
+	})
+
 	addFunc(c, "@every 1m", func() {
 		count := services.ManualSessionTimeoutService.ScanAndRestoreExpired(50)
 		if count > 0 {

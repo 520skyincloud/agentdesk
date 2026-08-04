@@ -921,6 +921,9 @@ func TestRuntimePipelineWifiIntentUsesKnowledgePrompt(t *testing.T) {
 	if !plan.Intent.NeedsKnowledge {
 		t.Fatal("expected WiFi intent to need knowledge")
 	}
+	if plan.Intent.NeedsResource || plan.Intent.ResourceAction != "" || len(plan.Intent.ResourceActions) != 0 {
+		t.Fatalf("knowledge-only WiFi intent must not request Store resources, got %#v", plan.Intent)
+	}
 	if plan.Prompt == "" || !strings.Contains(plan.Prompt, "网络问题") || !strings.Contains(plan.Prompt, "禁止承诺排查") {
 		t.Fatalf("expected WiFi prompt pack, got %q", plan.Prompt)
 	}
@@ -955,6 +958,12 @@ func TestRuntimePipelineStoreResourceIntents(t *testing.T) {
 		}
 		if !plan.Intent.NeedsResource {
 			t.Fatalf("%q expected resource", tc.text)
+		}
+		if len(plan.Intent.ResourceActions) != 1 || plan.Intent.ResourceActions[0] != tc.resourceAction {
+			t.Fatalf("%q must request only %s, got %#v", tc.text, tc.resourceAction, plan.Intent.ResourceActions)
+		}
+		if plan.Intent.NeedsKnowledge {
+			t.Fatalf("%q is a pure Store variable request and must not query knowledge", tc.text)
 		}
 	}
 }
@@ -1735,6 +1744,18 @@ func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
 	}
 }
 
+func TestRuntimeIntentDetectTimeoutUsesModelSlotConfiguration(t *testing.T) {
+	if got := runtimeIntentDetectTimeout(30000); got != 30*time.Second {
+		t.Fatalf("configured intent timeout=%s want=30s", got)
+	}
+	if got := runtimeIntentDetectTimeout(0); got != 60*time.Second {
+		t.Fatalf("default intent timeout=%s want=60s", got)
+	}
+	if runtimeIntentDetectTimeout(30000) <= 12*time.Second {
+		t.Fatal("model slot timeout must not be truncated by the former 12s limit")
+	}
+}
+
 func validIntentDetectGoldenJSON() string {
 	return `{"primaryIntent":"hotel_info","subIntent":"network_wifi","confidence":0.95,"needsKnowledge":true,"needsTool":false,"needsResource":false,"needsHumanRoute":false,"needsClarification":false,"resourceAction":"","resourceActions":[],"secondaryIntents":[],"intentTasks":[{"intent":"hotel_info","subIntent":"network_wifi","text":"WiFi 密码多少","needsKnowledge":true,"needsResource":false,"needsTool":false,"needsHumanRoute":false,"resourceAction":"","reason":"询问网络信息"}],"reason":"酒店网络信息咨询"}`
 }
@@ -1841,8 +1862,17 @@ func seedRuntimeIntentModelCallFixture(t *testing.T, db *gorm.DB) {
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID: 1, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		Guid: "intent-runtime-instance", AIReplyEnabled: true, Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Create(&models.ConversationRouteState{
 		TenantID: 1, ConversationID: 7, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		WxWorkInstanceID: instance.ID,
 	}).Error; err != nil {
 		t.Fatal(err)
 	}

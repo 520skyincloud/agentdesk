@@ -200,16 +200,7 @@ func (e *runtimeReplyExecutor) applyResolvedModelTrace(trace *aiReplyTraceData, 
 }
 
 func buildModelUsageScope(resolved *svc.ModelCallConfig, conversationID, messageID int64, requestID string) usagex.Scope {
-	if resolved == nil {
-		return usagex.Scope{ConversationID: conversationID, MessageID: messageID, RequestID: requestID}
-	}
-	return usagex.Scope{
-		TenantID: resolved.TenantID, StoreID: resolved.StoreID,
-		ConversationID: conversationID, MessageID: messageID, RequestID: requestID,
-		ModelProfileID: resolved.ProfileID, ProfileRevision: resolved.ProfileRevision,
-		UsageSlot: string(resolved.UsageCode), CredentialRevision: resolved.CredentialRevision,
-		KeyFingerprint: resolved.KeyFingerprint, ModelSource: svc.AIModelSourceStoreProfile,
-	}
+	return svc.ModelCallUsageScope(resolved, conversationID, messageID, requestID)
 }
 
 func (e *runtimeReplyExecutor) fillTraceFromSummary(trace *aiReplyTraceData, summary *applicationruntime.Summary, runErr error) {

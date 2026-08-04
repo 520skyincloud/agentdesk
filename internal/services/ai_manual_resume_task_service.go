@@ -396,8 +396,12 @@ func (s *aiManualResumeTaskService) processOne(task models.AIManualResumeTask, n
 	messageCopy := *message
 	messageCopy.RequestID = requestID
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	err = TriggerAIReplySyncHook(ctx, *conversation, messageCopy)
+	result, triggerErr := TriggerAIReplySyncHook(ctx, *conversation, messageCopy)
 	cancel()
+	err = triggerErr
+	if err == nil && result.Status != AIReplyExecutionStatusCompleted {
+		err = fmt.Errorf("AI runtime did not complete manual resume: %s", result.ReasonCode)
+	}
 	if err == nil {
 		if reply := MessageService.FindOne(sqls.NewCnd().
 			Eq("tenant_id", current.TenantID).

@@ -366,8 +366,12 @@ func TestArrivalBindingTicketUpdatesExistingUnboundBinding(t *testing.T) {
 
 func TestWxWorkNewContactAutomationUsesStaticBindingTicketWithoutWelcome(t *testing.T) {
 	fixture := setupStaticArrivalBindingFixture(t)
-	fixture.instance.WelcomeEnabled = false
-	if err := fixture.db.Model(fixture.instance).Update("welcome_enabled", false).Error; err != nil {
+	fixture.instance.WelcomeEnabled = true
+	fixture.instance.WelcomeSendMiniProgram = true
+	if err := fixture.db.Model(fixture.instance).Updates(map[string]any{
+		"welcome_enabled":           true,
+		"welcome_send_mini_program": true,
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if !WxWorkProtocolContactAutomationService.ShouldProcessNewContacts(
@@ -380,11 +384,15 @@ func TestWxWorkNewContactAutomationUsesStaticBindingTicketWithoutWelcome(t *test
 	t.Cleanup(func() {
 		ArrivalBindingTicketService.messageSender = previousSender
 	})
+	if WxWorkProtocolDefaultResourceService.shouldSendDefaultWelcomeMiniProgram(fixture.instance) {
+		t.Fatal("static arrival connection must replace the generic welcome mini program")
+	}
 	for i := 0; i < 2; i++ {
-		if err := ArrivalBindingTicketService.SendBindingCardForNewContact(
+		if err := WxWorkProtocolContactAutomationService.sendNewContactResources(
 			fixture.conversation,
 			fixture.instance,
 			"request-new-contact",
+			i == 0,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -398,13 +406,89 @@ func TestWxWorkNewContactAutomationUsesStaticBindingTicketWithoutWelcome(t *test
 		t.Fatal(err)
 	}
 	if len(tickets) != 1 ||
-		len(fixture.sender.clientMsgIDs) != 2 ||
-		fixture.sender.clientMsgIDs[0] != fixture.sender.clientMsgIDs[1] {
+		len(fixture.sender.clientMsgIDs) != 1 ||
+		!strings.HasPrefix(fixture.sender.clientMsgIDs[0], "arrival_bind_ticket_") {
 		t.Fatalf(
-			"duplicate new-contact event was not idempotent: tickets=%d clientMsgIDs=%v",
+			"existing conversation was not suppressed: tickets=%d clientMsgIDs=%v",
 			len(tickets),
 			fixture.sender.clientMsgIDs,
 		)
+	}
+}
+
+func TestWxWorkExistingContactChangeDoesNotReissueExpiredBindingTicket(t *testing.T) {
+	fixture := setupStaticArrivalBindingFixture(t)
+	if err := fixture.db.AutoMigrate(&models.ConversationChannelSession{}); err != nil {
+		t.Fatal(err)
+	}
+	previousSender := ArrivalBindingTicketService.messageSender
+	ArrivalBindingTicketService.messageSender = fixture.sender
+	t.Cleanup(func() {
+		ArrivalBindingTicketService.messageSender = previousSender
+	})
+
+	if err := ArrivalBindingTicketService.ensureAndSendBindingCard(
+		fixture.conversation,
+		fixture.instance,
+		fixture.connection,
+		"request-initial-binding-card",
+	); err != nil {
+		t.Fatal(err)
+	}
+	ticket := repositories.ArrivalRepository.FindPendingBindingTicketByConversation(
+		fixture.db,
+		fixture.tenantID,
+		fixture.conversation.ID,
+		time.Now(),
+	)
+	if ticket == nil {
+		t.Fatal("initial binding ticket missing")
+	}
+	now := time.Now()
+	if err := repositories.ArrivalRepository.UpdateBindingTicket(
+		fixture.db,
+		ticket.ID,
+		ticket.TenantID,
+		map[string]any{
+			"ticket_status":    enums.ArrivalBindingTicketStatusExpired,
+			"expires_at":       now.Add(-time.Minute),
+			"updated_at":       now,
+			"update_user_name": "test",
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	fixture.sender.calls = 0
+	fixture.sender.clientMsgID = ""
+	fixture.sender.clientMsgIDs = nil
+	if err := WxWorkProtocolContactAutomationService.sendWelcome(
+		fixture.instance,
+		wxWorkProtocolContactRecord{
+			Seq:     "contact-change-after-expiry",
+			UserID:  "S:arrival-contact-a",
+			Name:    "客户 A",
+			Flag:    0,
+			AddTime: now.Unix(),
+		},
+		"wx_contact_welcome_contact-change-after-expiry",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.sender.calls != 0 {
+		t.Fatalf("existing contact change reissued binding card: clientMsgIDs=%v", fixture.sender.clientMsgIDs)
+	}
+	var tickets []models.ArrivalBindingTicket
+	if err := fixture.db.Where(
+		"tenant_id = ? AND conversation_id = ?",
+		fixture.tenantID,
+		fixture.conversation.ID,
+	).Order("id ASC").Find(&tickets).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets) != 1 || tickets[0].ID != ticket.ID ||
+		tickets[0].TicketStatus != enums.ArrivalBindingTicketStatusExpired {
+		t.Fatalf("existing contact change created or mutated a ticket: %#v", tickets)
 	}
 }
 

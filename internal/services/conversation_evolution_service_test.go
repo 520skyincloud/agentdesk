@@ -527,7 +527,7 @@ func setupConversationEvolutionFixture(t *testing.T) *conversationEvolutionFixtu
 		&models.Tag{}, &models.CustomerTagRelation{}, &models.CustomerTagChangeLog{},
 		&models.ConversationEvolutionState{}, &models.ConversationEvolutionRun{},
 		&models.ModelProfileTemplate{}, &models.ModelProfileSlot{}, &models.StoreModelProfileAssignment{},
-		&models.StoreModelCredential{}, &models.AIUsageEvent{}, &models.AIUsageGatewayCall{},
+		&models.StoreModelCredential{}, &models.AIUsageEvent{}, &models.AIUsageGatewayCall{}, &models.WxWorkProtocolInstance{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -587,9 +587,17 @@ func setupConversationEvolutionFixture(t *testing.T) *conversationEvolutionFixtu
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatal(err)
 	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		Guid: "evolution-instance-" + dbName, AIReplyEnabled: true, Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatal(err)
+	}
 	route := &models.ConversationRouteState{
 		TenantID: tenant.ID, ConversationID: conversation.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID, SessionNo: 1,
-		RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai",
+		WxWorkInstanceID: instance.ID, RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai",
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	if err := db.Create(route).Error; err != nil {

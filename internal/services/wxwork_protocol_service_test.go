@@ -746,12 +746,6 @@ func TestWxWorkProtocolReceivesCustomerMessageBeforeKnowledgeIsConfigured(t *tes
 		t.Fatalf("create customer identity: %v", err)
 	}
 
-	previousHook := TriggerAIReplyAsyncHook
-	TriggerAIReplyAsyncHook = nil
-	t.Cleanup(func() {
-		TriggerAIReplyAsyncHook = previousHook
-	})
-
 	svc := &wxWorkProtocolService{}
 	err := svc.handleChatMessage(instance, request.WxProtocolChatMsg{
 		ID:          "1009001",
@@ -962,12 +956,6 @@ func TestWxWorkProtocolReferencedRecallMarksOriginalMessageRecalled(t *testing.T
 	if err := db.Create(instance).Error; err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
-
-	previousHook := TriggerAIReplyAsyncHook
-	TriggerAIReplyAsyncHook = nil
-	t.Cleanup(func() {
-		TriggerAIReplyAsyncHook = previousHook
-	})
 
 	originalWxMsgID := "wx_protocol:guid-recall:1003262"
 	message, err := MessageService.SendCustomerMessageWithRequestID(conversation.ID, originalWxMsgID, enums.IMMessageTypeText, "你好", "", external, "incoming-1003262")

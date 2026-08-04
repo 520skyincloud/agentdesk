@@ -90,9 +90,28 @@ func (s *modelCallResolverService) ResolveForConversation(conversationID int64, 
 	if conversation == nil || conversation.TenantID <= 0 {
 		return nil, errorsx.InvalidParam("会话不存在或缺少接入公司归属")
 	}
+	if conversation.StoreID <= 0 || conversation.StoreStaffBindingID <= 0 {
+		return nil, errorsx.BusinessError(5, "会话尚未绑定有效门店员工号，不能解析模型")
+	}
 	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
-	if route == nil || route.StoreID <= 0 || route.StoreStaffBindingID <= 0 {
+	if route == nil || route.TenantID != conversation.TenantID || route.StoreID <= 0 || route.StoreStaffBindingID <= 0 || route.WxWorkInstanceID <= 0 {
 		return nil, errorsx.BusinessError(5, "会话尚未绑定门店员工号，不能解析模型")
+	}
+	if route.StoreID != conversation.StoreID || route.StoreStaffBindingID != conversation.StoreStaffBindingID {
+		return nil, errorsx.BusinessError(5, "会话与当前门店员工号范围不一致，不能解析模型")
+	}
+	instance, err := WxWorkProtocolInstanceService.activeInstanceForBindingDB(
+		sqls.DB(),
+		conversation.TenantID,
+		conversation.StoreStaffBindingID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if instance == nil || instance.ID != route.WxWorkInstanceID ||
+		instance.TenantID != conversation.TenantID || instance.StoreID != conversation.StoreID ||
+		instance.StoreStaffBindingID != conversation.StoreStaffBindingID {
+		return nil, errorsx.BusinessError(5, "会话未指向当前有效企微员工号实例，不能解析模型")
 	}
 	return s.ResolveForBinding(conversation.TenantID, route.StoreID, route.StoreStaffBindingID, usageCode)
 }

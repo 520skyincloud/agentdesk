@@ -24,7 +24,6 @@ import (
 	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/repositories"
 
-	"github.com/mlogclub/simple/common/strs"
 	"github.com/mlogclub/simple/sqls"
 )
 
@@ -60,17 +59,6 @@ type messageMediaPayload struct {
 	WxMedia      map[string]any `json:"wxMedia,omitempty"`
 }
 
-func (s *mediaUnderstandingService) UnderstandInboundMessageAsync(messageID int64) {
-	if messageID <= 0 {
-		return
-	}
-	go func() {
-		if err := s.UnderstandInboundMessage(context.Background(), messageID); err != nil {
-			slog.Warn("understand inbound media failed", "message_id", messageID, "error", err)
-		}
-	}()
-}
-
 func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context, messageID int64) error {
 	message := repositories.MessageRepository.Get(sqls.DB(), messageID)
 	if message == nil || message.SenderType != enums.IMSenderTypeCustomer {
@@ -84,7 +72,6 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 		return s.markMediaUnderstanding(message, nil, "failed", "媒体 payload 解析失败: "+err.Error())
 	}
 	if strings.TrimSpace(payload.MediaText) != "" || payload.MediaStatus == "understood" {
-		s.triggerAIForUnderstoodMedia(message)
 		return nil
 	}
 	if payload.MediaStatus == "failed" || payload.MediaStatus == "empty" {
@@ -126,35 +113,7 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 		WsService.PublishMessageUpdated(conversation, updated)
 		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
 	}
-	if updated != nil && conversation != nil && TriggerAIReplyAsyncHook != nil && s.canTriggerAIForMedia(conversation.ID, conversation.TenantID) {
-		if followUp := s.latestCustomerFollowUp(*updated); followUp != nil {
-			TriggerAIReplyAsyncHook(*conversation, *followUp)
-		} else if s.mediaUnderstandingShouldTriggerAI(*updated) {
-			TriggerAIReplyAsyncHook(*conversation, *updated)
-		}
-	}
 	return nil
-}
-
-func (s *mediaUnderstandingService) triggerAIForUnderstoodMedia(message *models.Message) {
-	if message == nil || TriggerAIReplyAsyncHook == nil {
-		return
-	}
-	updated := repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)
-	if updated == nil {
-		updated = message
-	}
-	conversation := ConversationService.GetByTenantID(updated.ConversationID, updated.TenantID)
-	if conversation == nil || !s.canTriggerAIForMedia(conversation.ID, conversation.TenantID) {
-		return
-	}
-	if followUp := s.latestCustomerFollowUp(*updated); followUp != nil {
-		TriggerAIReplyAsyncHook(*conversation, *followUp)
-		return
-	}
-	if s.mediaUnderstandingShouldTriggerAI(*updated) {
-		TriggerAIReplyAsyncHook(*conversation, *updated)
-	}
 }
 
 func (s *mediaUnderstandingService) latestCustomerFollowUp(mediaMessage models.Message) *models.Message {
@@ -943,7 +902,7 @@ func (s *mediaUnderstandingService) sendVoiceTranscriptionFailedReply(message *m
 	_, err := MessageService.SendAIMessageWithRequestID(
 		conversation.ID,
 		conversation.AIAgentID,
-		"voice_transcription_failed_"+strs.UUID(),
+		fmt.Sprintf("voice_transcription_failed_%d", message.ID),
 		enums.IMMessageTypeText,
 		"这条语音我没听清，方便打字发我一下吗？",
 		"",

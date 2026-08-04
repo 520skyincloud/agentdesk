@@ -218,7 +218,6 @@ func (s *wxWorkProtocolContactAutomationService) sendWelcome(instance *models.Wx
 	if instance == nil || !s.ShouldProcessNewContacts(instance) {
 		return nil
 	}
-	sendConfiguredWelcome := instance.WelcomeEnabled && hasWxWorkWelcomeContent(instance)
 	msg := request.WxProtocolChatMsg{
 		FromUsername: strings.TrimSpace(contact.UserID),
 		ToUsername:   strings.TrimSpace(instance.EmployeeUserID),
@@ -228,8 +227,8 @@ func (s *wxWorkProtocolContactAutomationService) sendWelcome(instance *models.Wx
 		SenderName:   strings.TrimSpace(contact.Name),
 	}
 	mapping := WxWorkProtocolService.findProtocolConversationMapping(instance, msg, contact.UserID)
-	mappingExisted := mapping != nil
 	var conversation *models.Conversation
+	conversationCreated := false
 	if mapping != nil {
 		conversation = repositories.ConversationRepository.GetInTenant(
 			sqls.DB(),
@@ -240,7 +239,7 @@ func (s *wxWorkProtocolContactAutomationService) sendWelcome(instance *models.Wx
 	if conversation == nil {
 		raw, _ := json.Marshal(contact)
 		var err error
-		conversation, _, err = WxWorkProtocolService.ensureConversation(
+		conversation, conversationCreated, err = WxWorkProtocolService.ensureConversation(
 			instance,
 			msg,
 			contact.UserID,
@@ -249,20 +248,34 @@ func (s *wxWorkProtocolContactAutomationService) sendWelcome(instance *models.Wx
 		if err != nil {
 			return err
 		}
-		mappingExisted = false
 	}
 	if err := WxWorkProtocolService.ensureRouteState(conversation.ID, instance); err != nil {
 		return err
 	}
+	return s.sendNewContactResources(
+		conversation,
+		instance,
+		requestID,
+		conversationCreated,
+	)
+}
+
+func (s *wxWorkProtocolContactAutomationService) sendNewContactResources(
+	conversation *models.Conversation,
+	instance *models.WxWorkProtocolInstance,
+	requestID string,
+	conversationCreated bool,
+) error {
+	if !conversationCreated {
+		return nil
+	}
 	var sendErrors []error
-	if sendConfiguredWelcome && !mappingExisted {
-		if err := WxWorkProtocolDefaultResourceService.SendNewFriendWelcome(
-			conversation,
-			instance,
-			requestID,
-		); err != nil {
-			sendErrors = append(sendErrors, err)
-		}
+	if err := WxWorkProtocolDefaultResourceService.SendNewFriendWelcome(
+		conversation,
+		instance,
+		requestID,
+	); err != nil {
+		sendErrors = append(sendErrors, err)
 	}
 	if err := ArrivalBindingTicketService.SendBindingCardForNewContact(
 		conversation,

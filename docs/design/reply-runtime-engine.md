@@ -2,7 +2,7 @@
 
 > 状态：当前统一项目权威设计
 >
-> 更新时间：2026-07-27
+> 更新时间：2026-08-03
 >
 > 适用分支：`codex/tenant-ai-unified-integration`
 >
@@ -30,11 +30,11 @@
 Store、行业或模型范围，而从已提交业务事实逐层恢复：
 
 ```text
-Conversation + Message
+AIReplyJob -> Conversation + Message
   -> Conversation.TenantID / CustomerID
   -> Message.SessionNo / RequestID
   -> Tenant-scoped ConversationRouteState
-  -> StoreID / WxWorkInstanceID
+  -> StoreID / StoreStaffBindingID / WxWorkInstanceID
   -> Tenant.IntentProfileID
   -> Store active Model Profile Assignment
   -> Store active Credential revision
@@ -43,6 +43,10 @@ Conversation + Message
 
 同步调用、异步 worker、重试和 Resume 都必须重新验证父链。Tenant、Store、WxWork、
 Customer、KnowledgeBase、Profile revision 或 Credential revision 任一冲突都显式失败。
+
+Conversation、Route、当前有效企微实例的 TenantID、StoreID、StoreStaffBindingID 必须完全
+一致，且 Route 必须指向该 Binding 唯一的当前有效实例。草稿、停用、删除、已被替换或历史
+实例不能解析模型；范围冲突时不得向 NewAPI 或 FastGPT 发起请求。
 
 ## 3. 唯一模型解析
 
@@ -54,7 +58,7 @@ conversationId
   -> Tenant + Store
   -> ready StoreModelProfileAssignment
   -> 精确 active ModelProfileTemplate revision
-  -> 九槽发布校验
+  -> 九槽发布校验（ASR 可显式停用，其余八槽强制启用）
   -> 指定 ModelProfileSlot
   -> active StoreModelCredential
   -> 运行边界内 AES-GCM 解密
@@ -93,6 +97,10 @@ IntentDetect，也不能改变行业、意图分类、九槽、Credential、知�
 IntentDetect 正常只调用一次模型；首轮严格 JSON 解析失败时最多追加一次修复调用。调用
 次数和消息顺序由 `TestRuntimeIntentDetectGoldenCallCountAndMessageOrder` 固定。
 
+IntentDetect 的单次调用超时必须读取当前意图模型槽的 `TimeoutMS`；槽未配置超时时使用
+60 秒默认值。禁止在 Runtime 内再叠加短于模型槽配置的固定上限。上游 Context 取消、任务
+租约丢失和会话状态变化仍可提前取消调用。
+
 ## 5. 阶段编排
 
 ```text
@@ -120,8 +128,39 @@ Trigger / Batch
 - Validate：验证依据、动作账本、敏感承诺和输出结构。
 - Commit：以稳定 ClientMsgID 幂等提交。
 
+`provide_location` 是回复计划中的定位资源动作：只有 Store 已配置导航名、地址和有效经纬度
+时，才通过企微协议定位消息接口提交 `location`。新联系人欢迎小程序和到店绑定票据只属于
+首联资源编排，不得作为定位动作的 fallback，也不得因为客户询问位置而发送小程序。
+
 Tenant 适配只增加可信范围、唯一 Resolver、Store FastGPT 和现有人工任务池端口，不改写
 固定 AI 来源中的 Normalize/Intent/Plan/Generate/Validate 行为。
+
+### 5.1 持久触发与恢复
+
+客户文本、HTML、图片、语音和附件与 `AIReplyJob` 在同一 Message 事务内提交。任务写入
+失败时消息事务回滚，由企微入站幂等重试；重复 `ClientMsgID` 只补齐缺失任务。历史导入、
+AI、人工、系统、撤回和失败消息不创建任务。
+
+`AIReplyJob` 只保存 Tenant、Conversation、Message、Session、Store、Binding、RequestID、
+触发类型和受控状态，不保存正文、Prompt、模型输出、密钥、完整指纹或上游错误原文。唯一键
+为 `TenantID + ConversationID + MessageID`，状态为：
+
+```text
+pending -> processing -> completed | skipped | superseded | expired | failed
+                     \-> retry -> processing
+```
+
+- `cronx` 每秒 Claim，单进程最多并发 4 个任务。
+- CAS 租约为 90 秒，每 30 秒续租；租约丢失立即取消 Context，Commit 前再次校验租约和业务范围。
+- 模型执行最多 4 次，失败退避依次为 15 秒、1 分钟、3 分钟。
+- 任务创建 15 分钟后仍是最新消息且无人回复时，不再调用模型，使用稳定请求键进入现有人工任务池。
+- 最近 15 分钟补偿扫描只补非历史、未撤回、可触发且缺任务的客户消息，不扫描旧历史。
+- 新消息、Session 变化或已有回复使任务 `superseded`；关闭、撤回、AI 关闭或人工接待使任务 `skipped`；范围损坏使任务 `failed` 且不得派单。
+- 已存在稳定 AI 回复或成功 RunLog 时直接收敛，Outbox 失败只重试投递，不重跑模型。
+
+禁止恢复 `TriggerAIReplyAsyncHook`、媒体理解完成后的第二条异步触发路径或任何裸 goroutine
+回复入口。Runtime 对 worker 返回 `completed`、`skipped`、`superseded`、`deferred` 四种
+结构化结果；媒体等待只能返回 `deferred`。
 
 ## 6. 批次与媒体
 
@@ -134,6 +173,12 @@ Tenant 适配只增加可信范围、唯一 Resolver、Store FastGPT 和现有�
 - 后续文本改问 WiFi、发票、定位等业务问题时，以文本业务意图为主。
 
 媒体理解使用当前 Store 精确用途槽，不得调用平台默认模型。
+
+企微首联资源由统一编排入口发送。存在有效静态到店连接时，到店绑定票据替代普通欢迎
+小程序；首条客户消息和联系人同步发生竞争时，只有本次真实创建会话的一方可以发送
+`arrival_bind_ticket_<ticketID>`。已有会话的联系人变更不自动发卡，票据过期也不恢复资格；
+后台显式发卡和真实再次扫码继续走各自独立链路。欢迎资源是否发送不能改变客户消息的
+IntentDetect 与定位动作。
 
 ## 7. FastGPT 知识
 
@@ -199,6 +244,7 @@ Validate
 - 外部客服/AI消息在 Message 事务内写入 `OutboundChannelType` 持久投递意图。
 - 提交后按 `(channel_type, message_id)` 幂等确保 Outbox。
 - 相同 ClientMsgID 重试只补建 Outbox，不重复模型、运营事实或标签演化。
+- AIReplyJob 在模型执行前和 Commit 前重新读取 Session、Route、Binding、实例、AI 开关和接待状态。
 - 后台补偿只扫描明确有持久投递意图且缺 Outbox 的新消息。
 - 历史空意图行和企微员工人工自回显不会被误发。
 - Outbox 或 WebSocket 失败不能重跑模型。
@@ -218,7 +264,7 @@ Usage、Trace、日志或 API。Trace 只保存受控结构化阶段证据和脱
 ## 12. 失败关闭
 
 - Tenant 行业缺失：阻止 AI。
-- Store Assignment 或九槽不完整：阻止 AI。
+- Store Assignment 或必需模型槽不完整：阻止 AI；ASR 停用时仅语音转写能力不可用。
 - Credential 未激活、revision 不一致或解密失败：阻止 AI。
 - FastGPT 未就绪：知识路径失败关闭，不读取本地 fallback。
 - 任一父链跨 Tenant/Store：拒绝执行。
@@ -237,6 +283,8 @@ Usage、Trace、日志或 API。Trace 只保存受控结构化阶段证据和脱
 - 标签开关关闭时 Generate 上下文不增加标签。
 - need_human 只进现有任务池，规则派单不调用模型。
 - ClientMsgID 重试不重复模型、消息、任务或运营事实。
+- Message 与 AIReplyJob 原子提交，进程重启、租约回收和补偿扫描不丢回复任务。
+- 知识问题不产生门店资源动作；定位只提交 location；小程序只由明确资源任务或独立首联/扫码链触发。
 - Outbox 在 WebSocket 前形成可靠投递事实。
 - SQLite/MySQL fresh Schema 均不包含旧 AIConfig/Grant/StoreSetting/ConversationTag/
   本地知识表与专属列。
@@ -250,3 +298,22 @@ go test -race ./internal/ai/... ./internal/services -run 'Runtime|Reply|Intent|H
 go test ./... -count=1
 go vet ./...
 ```
+
+## 14. 核心保护区
+
+以下路径共同构成稳定回复协议，普通客服、审计、派单或页面需求不得直接改变其阶段顺序、
+Intent JSON、动作字段、幂等键或模型归因：
+
+- `internal/pkg/replyintent/defaults.go`
+- `internal/ai/runtime/executor/`
+- `internal/ai/runtime/reply_trigger_service.go`
+- `internal/ai/runtime/runtime_reply_executor.go`
+- `internal/ai/runtime/reply_commit_service.go`
+- `internal/ai/runtime/conversation_memory_service.go`
+- `internal/ai/rag/`
+- `internal/services/model_call_resolver_service.go`
+- `internal/services/ai_reply_job_service.go`
+- `internal/services/message_service.go` 中的入站消息与任务原子提交边界
+
+确需变更时，必须先说明字段兼容、模型调用次数、Usage/计费、知识范围、动作提交、人工任务和
+Outbox 的影响，并运行本文第 13 节回归；外围业务优先通过适配器和向后兼容字段扩展。

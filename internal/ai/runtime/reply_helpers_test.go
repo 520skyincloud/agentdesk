@@ -140,6 +140,75 @@ func TestStructuredVariableResourceTypesFromTraceIncludesPhone(t *testing.T) {
 	}
 }
 
+func TestStructuredVariableCommitDoesNotTurnKnowledgeOrLocationIntoMiniProgram(t *testing.T) {
+	dbName := "runtime_structured_action_boundary_" + strings.NewReplacer("/", "_").Replace(t.Name())
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{
+		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Store{}, &models.StoreStaffBinding{}, &models.WxWorkProtocolInstance{}, &models.ConversationRouteState{}); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	sqls.SetDB(db)
+	t.Cleanup(func() {
+		sqls.SetDB(nil)
+		if raw, dbErr := db.DB(); dbErr == nil {
+			_ = raw.Close()
+		}
+	})
+	store := &models.Store{
+		TenantID: 9, StoreCode: "structured-action-store", Name: "结构化动作门店",
+		Address: "测试路 1 号", NavigationName: "结构化动作门店", Longitude: "117.263900", Latitude: "31.824091",
+		Status: enums.StatusOk,
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	binding := &models.StoreStaffBinding{TenantID: store.TenantID, StoreID: store.ID, Status: enums.StatusOk}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create binding: %v", err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID: store.TenantID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		Guid: "structured-action-instance", DefaultMiniProgramPayload: `{"title":"入住小程序","appid":"wx-test"}`,
+		Status: enums.StatusOk,
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	const conversationID int64 = 101
+	if err := db.Create(&models.ConversationRouteState{
+		TenantID: store.TenantID, ConversationID: conversationID, StoreID: store.ID,
+		StoreStaffBindingID: binding.ID, WxWorkInstanceID: instance.ID,
+	}).Error; err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	service := newReplyCommitService()
+	input := replyCommitInput{Conversation: models.Conversation{
+		ID: conversationID, TenantID: store.TenantID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+	}}
+
+	input.Trace = &aiReplyTraceData{Runtime: json.RawMessage(`{
+		"pipeline":{"intent":{"primaryIntent":"hotel_info","needsKnowledge":true,"needsResource":false,"resourceAction":"","resourceActions":[]}}
+	}`)}
+	if replies := service.buildStructuredVariableReplies(input); len(replies) != 0 {
+		t.Fatalf("knowledge-only reply prepared an unrelated Store resource: %#v", replies)
+	}
+
+	input.Trace = &aiReplyTraceData{Runtime: json.RawMessage(`{
+		"pipeline":{"intent":{"primaryIntent":"hotel_variable","needsKnowledge":false,"needsResource":true,"resourceAction":"provide_location","resourceActions":["provide_location"]}}
+	}`)}
+	replies := service.buildStructuredVariableReplies(input)
+	if len(replies) != 1 || replies[0].ResourceType != "location" || replies[0].MessageType != enums.IMMessageTypeLocation {
+		t.Fatalf("location intent must prepare exactly one location message, got %#v", replies)
+	}
+	if strings.Contains(replies[0].Payload, "wx-test") {
+		t.Fatalf("location payload leaked mini-program configuration: %s", replies[0].Payload)
+	}
+}
+
 func TestKnowledgeResourceTraceBuildsOrderedImageCommitMessages(t *testing.T) {
 	dbName := "runtime_knowledge_resource_commit_" + strings.NewReplacer("/", "_").Replace(t.Name())
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{

@@ -9,10 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"agent-desk/internal/events"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/eventbus"
 	"agent-desk/internal/pkg/openidentity"
 	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
@@ -758,11 +760,11 @@ func TestManualSessionTimeoutRequeuesLatestCustomerMessageAfterManualRoute(t *te
 	defer func() { services.TriggerAIReplySyncHook = previousHook }()
 	triggeredMessageID := int64(0)
 	triggeredContent := ""
-	services.TriggerAIReplySyncHook = func(_ context.Context, conversation models.Conversation, message models.Message) error {
+	services.TriggerAIReplySyncHook = func(_ context.Context, conversation models.Conversation, message models.Message) (services.AIReplyExecutionResult, error) {
 		triggeredMessageID = message.ID
 		triggeredContent = message.Content
 		_, err := services.MessageService.SendAIMessageWithRequestID(conversation.ID, aiAgent.ID, "resume-test-reply", enums.IMMessageTypeText, "我继续帮你处理电视问题。", "", &dto.AuthPrincipal{Username: "AI"}, message.RequestID)
-		return err
+		return services.AIReplyExecutionResult{Status: services.AIReplyExecutionStatusCompleted, ReasonCode: "test_completed"}, err
 	}
 
 	setRouteManualExpireAt(t, db, conversation.ID, time.Now().Add(-time.Minute))
@@ -948,6 +950,7 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open sqlite error = %v", err)
 	}
 	t.Cleanup(func() {
+		eventbus.WaitAsync[events.ConversationAssignedEvent]()
 		sqlDB, err := db.DB()
 		if err == nil {
 			_ = sqlDB.Close()

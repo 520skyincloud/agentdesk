@@ -145,16 +145,15 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if strings.TrimSpace(intentConfig.ModelName) == "" || strings.TrimSpace(string(intentConfig.Provider)) == "" {
 		return callbacks.IntentTraceData{}, fmt.Errorf("intent model unavailable")
 	}
-	intentCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	intentCtx, cancel := context.WithTimeout(ctx, runtimeIntentDetectTimeout(intentConfig.TimeoutMS))
 	defer cancel()
 	intentCtx, usageCapture := usagex.WithCapture(intentCtx)
-	intentCtx = usagex.WithScope(intentCtx, usagex.Scope{
-		TenantID: resolved.TenantID, StoreID: resolved.StoreID,
-		ConversationID: req.Conversation.ID, MessageID: req.UserMessage.ID, RequestID: req.UserMessage.RequestID,
-		ModelProfileID: resolved.ProfileID, ProfileRevision: resolved.ProfileRevision,
-		UsageSlot: string(resolved.UsageCode), CredentialRevision: resolved.CredentialRevision,
-		KeyFingerprint: resolved.KeyFingerprint, ModelSource: services.AIModelSourceStoreProfile,
-	})
+	intentCtx = usagex.WithScope(intentCtx, services.ModelCallUsageScope(
+		resolved,
+		req.Conversation.ID,
+		req.UserMessage.ID,
+		req.UserMessage.RequestID,
+	))
 	chatModel, err := factory.NewChatModelFactory().Build(intentCtx, intentConfig)
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
@@ -212,6 +211,13 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		HumanRoutePolicy:     parsed.SubIntent,
 		Reason:               strings.TrimSpace("model IntentDetect JSON: " + parsed.Reason),
 	}, nil
+}
+
+func runtimeIntentDetectTimeout(timeoutMS int) time.Duration {
+	if timeoutMS > 0 {
+		return time.Duration(timeoutMS) * time.Millisecond
+	}
+	return 60 * time.Second
 }
 
 func recordIntentModelUsage(req RunInput, modelConfig modelconfig.Config, resolved *services.ModelCallConfig, message *schema.Message, receipt *usagex.Receipt, attempt int, latencyMS int64, callErr error) {

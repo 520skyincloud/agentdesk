@@ -818,3 +818,152 @@ MySQL dump SHA-256：8e674f0d15480344c00b1c12858e8c4a50219419d76811c13e02a59e522
 消息和会话均成功落库；随后使用现有协议消息补偿能力恢复验证期间遗漏的消息。在用户完成
 邮箱验证和真实复验前，结论只到“接入线路正常、阻塞状态已定位且恢复入口已部署”，不宣称
 该替换实例已经激活或客户消息已经恢复。
+
+## 南七模型方案与 FastGPT Team 映射生产修复
+
+2026-08-03 修复“已有 FastGPT Dataset 已采用但本地没有 Store Team 映射”，并完成南七
+门店模型凭据真实激活。发布事实：
+
+```text
+发布目录：/opt/agentdesk/releases/20260803-154831-fastgpt-team-fix/app
+部署前备份：/opt/agentdesk/backups/20260803-154831-fastgpt-team-fix
+回滚镜像：mlogclub/agent-desk:rollback-20260803-154831-fastgpt-team-fix
+回滚镜像摘要：sha256:078877d336abeb02da9ac9b4914f7dfa1424539d5db76b8910deacc8b039cf04
+生产镜像摘要：sha256:f664a3221944e40aa53c4376df9ea84e9d707cc34d5cd080f824d836dc9b7cce
+服务二进制 SHA-256：a68b462cbc9b688d3b38f3c2f7d47affddec0b760fbd57b9753592812f9e005e
+应用容器启动时间：2026-08-03T07:53:18.694212386Z
+```
+
+本次在本机完成 Linux amd64 交叉编译，服务器只基于已固定的回滚镜像替换服务二进制，
+没有再次执行 Go 或 Next.js 源码构建。切换继续使用 Compose project `agentdesk` 和
+`--force-recreate --no-deps agent-desk`，MySQL 容器及数据卷未重建。新容器为 healthy，
+重启数为 0，本机与公网 HTTPS 返回 HTTP 200，部署后启动/运行错误和明文 Key 模式日志
+命中均为 0。
+
+代码行为：受控采用已有 Dataset 时，仍先完成门店归属、名称、集合索引、模型快照和真实
+检索校验；全部通过后调用 FastGPT `tenant/ensure`，并在原采用事务内创建或更新非敏感
+`FastGPTStoreTenant`。新映射保持 `unconfigured`，重复采用不覆盖已有 Target/Applied
+Profile、Binding、Credential revision、指纹或 readiness。任一远端验证失败时不写本地
+Team 映射。
+
+生产业务验收全部通过正常页面和受权限保护的 API 完成，没有直接写数据库：
+
+1. 重新采用合肥南七店既有 Dataset，返回 1 个集合、20089 条内容；页面显示 FastGPT
+   Team `active`，凭据激活前 readiness 保持 `unconfigured`；
+2. “合肥南七 / 门店员工1”重新提交 NewAPI Key，八个启用槽真实请求全部通过，FastGPT
+   模型同步成功；模型方案 r1、凭据 r2 和 Team 最终均为 ready；
+3. 回复、意图、摘要、客户标签使用 `deepseek-v4-pro`，视觉与文档解析使用
+   `qwen3.5-flash`，Embedding 使用 `text-embedding-v4`，Rerank 使用
+   `qwen3-vl-rerank`；ASR 未配置且停用，系统没有 TTS 槽；
+4. 以“停车场在哪里？”执行真实知识库检索，710 ms 命中 12 条，结果包含昭潭路停车入口、
+   免费停车和地下车库充电桩等南七资料；
+5. 首次失败候选保留在不可修改审计中，因此成功 revision 为 r2；禁止将审计历史改写为
+   r1，也禁止直接清表或修改 revision。
+
+部署前数据库压缩备份已通过 `gzip -t` 完整性校验。本次没有 Schema 或 DML migration；
+回滚应用时可切回上述固定镜像，但已经激活的凭据、FastGPT Team 映射和 applied revision
+属于业务状态，不得随意回退或手工清零。
+
+## 南七定位意图超时与首联小程序去重生产修复
+
+2026-08-03 对“询问酒店位置后看到小程序”的生产记录完成了逐条核对。真实时间线是：
+
+1. `16:33:43` 新会话创建时发送普通欢迎小程序；
+2. 客户随后发送“酒店在哪”，该问题进入 IntentDetect，但被 Runtime 内独立硬编码的 12 秒
+   超时截断，没有形成定位回复；
+3. `16:39:47` 延迟联系人同步为同一联系人发送到店绑定票据
+   `arrival_bind_ticket_5`。
+
+因此，第二张卡恰好出现在位置问题之后，不代表 AI 将位置意图规划成小程序。根因是意图
+模型调用被 12 秒上限提前取消，同时南七门店当时没有导航名、地址和经纬度，定位动作即使
+进入计划也缺少可发送的 Store 事实。
+
+代码修复包括：
+
+- IntentDetect 改为读取当前模型槽 `TimeoutMS`；生产槽实际值为 `30000ms`，未配置时使用
+  60 秒默认值，不再受独立 12 秒上限截断；
+- 首条客户消息与延迟联系人同步统一调用首联资源编排，首条消息即可创建到店绑定票据；
+- 存在有效静态到店连接时，不再发送普通默认欢迎小程序；
+- 两条首联入口复用稳定 `arrival_bind_ticket_<ticketID>`，由现有消息幂等去重；
+- 没有把小程序作为定位失败 fallback，也没有修改公开 API、DTO、model、migration、
+  WebSocket 或前端页面。
+
+南七门店定位通过现有管理接口正常保存，没有直接修改业务数据库：
+
+```text
+门店：合肥南七
+导航名：丽斯未来酒店(合肥南七店)
+地址：合肥市包河区水阳江路392号职工之家12-15整层
+经度：117.263900
+纬度：31.824091
+地图服务：amap
+```
+
+地址和名称由既有南七知识库交叉确认；知识库没有坐标，坐标取自地图 POI，并与项目既有
+测试坐标相差约 1 米。发布事实：
+
+```text
+源码基线：7c8ae19d98c26446e38d1dc5387d22e9d1c7dc57（叠加本次未提交工作树变更）
+发布目录：/opt/agentdesk/releases/20260803-171002-location-intent-welcome/app
+部署前备份：/opt/agentdesk/backups/20260803-171002-location-intent-welcome
+备份 SHA-256：b329457cb5c4b40e0289ac4d56795f894721ae744bb1c706bfadf90c0f065e2d
+回滚镜像摘要：sha256:f664a3221944e40aa53c4376df9ea84e9d707cc34d5cd080f824d836dc9b7cce
+生产镜像摘要：sha256:6cafc98063c49bf04d27121991150e883c10d030af9d043918857366aae375e6
+服务二进制 SHA-256：12390cb850f4933ce55c6331d4f94efa0dae4347faa38f81ce6681e885994fa9
+应用容器启动时间：2026-08-03T09:11:34.207353601Z
+```
+
+工程验证已通过 `go test ./internal/services -count=1`、
+`go test ./internal/ai/runtime/... -count=1`、`go test ./internal/bootstrap/... -count=1`、
+`go test ./... -count=1`、`go vet ./...` 和 `git diff --check`。部署后应用容器为 healthy，
+重启数为 0，服务器本机与公网均返回 HTTP 200，启动错误计数为 0；MySQL 未重建，本次无
+Schema 或 DML migration。
+
+尚未宣称真实定位消息端到端成功。最终复验必须由真实客户再次发送“酒店在哪”，并确认新
+RunLog 不再在 12 秒超时、意图为 `provide_location`、消息类型为 `location`、Outbox 成功、
+协议调用 `/msg/send_location`，且该问题之后不再新增小程序卡。应用回滚可切回上述固定
+镜像；门店定位是稳定业务配置，可保留。回滚代码会恢复旧 12 秒截断和旧欢迎卡行为，且不
+涉及数据库恢复。
+
+## 已有联系人重复发送到店绑定卡修复
+
+2026-08-03 对同一客户在持续会话中反复收到小程序卡的问题完成生产取证。数据库记录确认，
+同一会话分别在 `16:39:47`、`17:31:36`、`18:01:36` 创建了三张到店绑定卡；最近一张的
+请求来源为 `wx_contact_welcome_*`，不是 AI 回复、知识库检索或定位意图。旧实现只要联系人
+增量再次出现且上一票据已经过期，就会为已有会话创建新票据，因此表现为大约每 30 分钟
+重复发送。
+
+本次将自动首联资源的必要条件收紧为 `ensureConversation` 真实新建会话。已有会话的联系人
+增量无论旧票据是否过期，都不再自动创建或发送 `arrival_bind_ticket_*`；首条消息真实新建
+会话、后台人工发送和真实 `ArrivalScanEvent` 扫码链路保持不变。改动没有触及 model、
+migration、DTO、公开 API、WebSocket、前端、小程序或 AI 回复引擎。
+
+发布事实：
+
+```text
+发布目录：/opt/agentdesk/releases/20260803-175828-contact-card-dedupe/app
+部署前备份：/opt/agentdesk/backups/20260803-175828-contact-card-dedupe
+回滚镜像：mlogclub/agent-desk:rollback-20260803-175828-contact-card-dedupe
+回滚镜像摘要：sha256:6cafc98063c49bf04d27121991150e883c10d030af9d043918857366aae375e6
+生产镜像摘要：sha256:3a2afab6734a4edc068be3fd5597ccf7f4a38b109e103556a60a8a9b8daa9310
+服务二进制 SHA-256：0011eafc8e70408d18a2625e848a6bf0ef6ed5c2b10d3988153b754e574e7cef
+数据库备份 SHA-256：a8802e4e65b9d34bc04f24ff8a7bcc6c832d7cc5a16134dfdd7c0875412df4fc
+应用容器启动时间：2026-08-03T10:06:19.430218577Z
+```
+
+数据库备份使用 `--no-tablespaces` 生成，并在独立恢复库完成 118 张表的恢复核对。工程验证
+通过定向首联/票据过期/真实二次扫码测试、`go test ./internal/services -count=1`、
+`go test ./internal/ai/runtime/... -count=1`、`go test ./internal/bootstrap/... -count=1`、
+定向 `go test -race`、`go test ./... -count=1`、`go vet ./...` 和 `git diff --check`。
+
+首次镜像组装误继承了临时容器的 `sleep 3600` 启动命令，健康检查判定为 unhealthy，应用
+没有启动；随后立即从固定回滚镜像重新覆盖已校验二进制，保留原始 CMD 后强制重建。最终
+容器为 healthy、重启数为 0，本机与公网均返回 HTTP 200，MySQL 容器未重建。部署后的
+首轮 5 分钟联系人补偿扫描在 `18:11:22` 执行，实例扫描时间已更新，部署后新增绑定票据数
+仍为 0。真实生产终验仍需等待下一次包含联系人增量的官方事件，确认已有会话不再新增
+`arrival_bind_ticket_*`；不得用人工写库或伪造回调代替该验收。
+
+应用启动、迁移和健康检查没有错误；运行日志中仍存在本次发布前已经存在的 FastGPT Usage
+同步 MySQL 1064 告警，原因是同步更新条件未正确转义 `cursor` 保留字。该告警与联系人首联
+资源链无关，本次没有扩大发布范围修改计费同步；不得将本次发布描述为“全部运行日志错误
+为 0”。

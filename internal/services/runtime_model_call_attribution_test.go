@@ -45,7 +45,7 @@ func TestRuntimeAuxiliaryModelCallsUseFinalSlotsAndAttribution(t *testing.T) {
 	defer server.Close()
 
 	db := setupModelProfileTestDB(t)
-	if err := db.AutoMigrate(&models.Message{}, &models.AIUsageEvent{}, &models.AIUsageGatewayCall{}); err != nil {
+	if err := db.AutoMigrate(&models.Message{}, &models.WxWorkProtocolInstance{}, &models.AIUsageEvent{}, &models.AIUsageGatewayCall{}); err != nil {
 		t.Fatalf("migrate runtime attribution tables: %v", err)
 	}
 	tenant, store, profile, credential, conversation, message := seedRuntimeModelAttributionFixture(t, db, server.URL+"/v1")
@@ -105,7 +105,7 @@ func TestRuntimeAuxiliaryModelCallsUseFinalSlotsAndAttribution(t *testing.T) {
 		if err := db.Where("stage = ?", stage).Take(&event).Error; err != nil {
 			t.Fatalf("load %s usage: %v", stage, err)
 		}
-		if event.TenantID != tenant.ID || event.StoreID != store.ID || event.ModelProfileID != profile.ID || event.ModelProfileRevision != profile.Revision {
+		if event.TenantID != tenant.ID || event.StoreID != store.ID || event.StoreStaffBindingID != credential.StoreStaffBindingID || event.ModelProfileID != profile.ID || event.ModelProfileRevision != profile.Revision {
 			t.Fatalf("%s profile attribution mismatch: %#v", stage, event)
 		}
 		if event.UsageSlot != string(usageSlot) || event.CredentialRevision != credential.CredentialRevision || event.KeyFingerprint != credential.KeyFingerprint {
@@ -131,9 +131,115 @@ func TestRuntimeAuxiliaryModelCallsUseFinalSlotsAndAttribution(t *testing.T) {
 		t.Fatalf("gateway call evidence=%d want 3: %#v", len(gatewayCalls), gatewayCalls)
 	}
 	for _, item := range gatewayCalls {
-		if item.TenantID != tenant.ID || item.StoreID != store.ID || item.ModelProfileID != profile.ID || item.CredentialRevision != credential.CredentialRevision {
+		if item.TenantID != tenant.ID || item.StoreID != store.ID || item.StoreStaffBindingID != credential.StoreStaffBindingID || item.ModelProfileID != profile.ID || item.CredentialRevision != credential.CredentialRevision {
 			t.Fatalf("gateway call attribution mismatch: %#v", item)
 		}
+	}
+}
+
+func TestModelCallResolverConversationScopeFailsClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, db *gorm.DB, conversation *models.Conversation, route *models.ConversationRouteState, instance *models.WxWorkProtocolInstance)
+	}{
+		{
+			name: "conversation store differs from route",
+			mutate: func(t *testing.T, db *gorm.DB, conversation *models.Conversation, _ *models.ConversationRouteState, _ *models.WxWorkProtocolInstance) {
+				t.Helper()
+				if err := db.Model(conversation).Update("store_id", conversation.StoreID+1000).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "conversation binding differs from route",
+			mutate: func(t *testing.T, db *gorm.DB, conversation *models.Conversation, _ *models.ConversationRouteState, _ *models.WxWorkProtocolInstance) {
+				t.Helper()
+				if err := db.Model(conversation).Update("store_staff_binding_id", conversation.StoreStaffBindingID+1000).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "instance belongs to another tenant",
+			mutate: func(t *testing.T, db *gorm.DB, _ *models.Conversation, _ *models.ConversationRouteState, instance *models.WxWorkProtocolInstance) {
+				t.Helper()
+				if err := db.Model(instance).Update("tenant_id", instance.TenantID+1000).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "instance belongs to another store",
+			mutate: func(t *testing.T, db *gorm.DB, _ *models.Conversation, _ *models.ConversationRouteState, instance *models.WxWorkProtocolInstance) {
+				t.Helper()
+				if err := db.Model(instance).Update("store_id", instance.StoreID+1000).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "instance belongs to another binding",
+			mutate: func(t *testing.T, db *gorm.DB, _ *models.Conversation, _ *models.ConversationRouteState, instance *models.WxWorkProtocolInstance) {
+				t.Helper()
+				if err := db.Model(instance).Update("store_staff_binding_id", instance.StoreStaffBindingID+1000).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "instance is disabled",
+			mutate: func(t *testing.T, db *gorm.DB, _ *models.Conversation, _ *models.ConversationRouteState, instance *models.WxWorkProtocolInstance) {
+				t.Helper()
+				if err := db.Model(instance).Update("status", enums.StatusDisabled).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "instance was replaced",
+			mutate: func(t *testing.T, db *gorm.DB, _ *models.Conversation, _ *models.ConversationRouteState, instance *models.WxWorkProtocolInstance) {
+				t.Helper()
+				if err := db.Model(instance).Update("replaced_by_instance_id", instance.ID+1000).Error; err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupModelProfileTestDB(t)
+			if err := db.AutoMigrate(&models.Message{}, &models.WxWorkProtocolInstance{}, &models.AIUsageEvent{}, &models.AIUsageGatewayCall{}); err != nil {
+				t.Fatal(err)
+			}
+			_, _, _, _, conversation, _ := seedRuntimeModelAttributionFixture(t, db, "https://gateway.invalid/v1")
+			var route models.ConversationRouteState
+			if err := db.Where("conversation_id = ?", conversation.ID).Take(&route).Error; err != nil {
+				t.Fatal(err)
+			}
+			var instance models.WxWorkProtocolInstance
+			if err := db.First(&instance, route.WxWorkInstanceID).Error; err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(t, db, conversation, &route, &instance)
+			if _, err := ModelCallResolverService.ResolveForConversation(conversation.ID, enums.ModelUsageSlotReplyLLM); err == nil {
+				t.Fatal("scope corruption must fail before resolving an upstream model call")
+			}
+		})
+	}
+}
+
+func TestModelCallUsageScopeIncludesStoreStaffBinding(t *testing.T) {
+	resolved := &ModelCallConfig{
+		TenantID: 3, StoreID: 5, StoreStaffBindingID: 7,
+		ProfileID: 11, ProfileRevision: 13, UsageCode: enums.ModelUsageSlotReplyLLM,
+		CredentialRevision: 17, KeyFingerprint: "fingerprint",
+	}
+	scope := ModelCallUsageScope(resolved, 19, 23, " request-29 ")
+	if scope.TenantID != 3 || scope.StoreID != 5 || scope.StoreStaffBindingID != 7 ||
+		scope.ConversationID != 19 || scope.MessageID != 23 || scope.RequestID != "request-29" {
+		t.Fatalf("unexpected model call scope: %#v", scope)
 	}
 }
 
@@ -196,9 +302,17 @@ func seedRuntimeModelAttributionFixture(t *testing.T, db *gorm.DB, gatewayURL st
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatal(err)
 	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		Guid: "runtime-attribution-instance", AIReplyEnabled: true, Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Create(&models.ConversationRouteState{
 		TenantID: tenant.ID, ConversationID: conversation.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
-		RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai",
+		WxWorkInstanceID: instance.ID, RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai",
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}).Error; err != nil {
 		t.Fatal(err)

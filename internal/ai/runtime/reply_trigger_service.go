@@ -11,7 +11,6 @@ import (
 	applicationruntime "agent-desk/internal/ai/application/runtime"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
-	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/pkg/utils"
 	svc "agent-desk/internal/services"
 	"github.com/mlogclub/simple/sqls"
@@ -32,38 +31,13 @@ func (s *aiReplyService) resolveReplyTimeout(aiAgent models.AIAgent) time.Durati
 	return time.Duration(aiAgent.ReplyTimeoutSeconds) * time.Second
 }
 
-func (s *aiReplyService) TriggerReplyAsync(conversation models.Conversation, message models.Message) {
-	go func() {
-		if sqls.DB() == nil {
-			slog.Warn("skip async ai reply because database is not initialized", "conversation_id", conversation.ID, "message_id", message.ID)
-			return
-		}
-		aiAgent, ok := s.resolveRuntimeAIAgent(conversation)
-		if !ok || aiAgent.Status != enums.StatusOk {
-			return
-		}
-		startedAt := time.Now()
-		timeout := s.resolveReplyTimeout(aiAgent)
-		ctx, cancel := context.WithTimeout(tracex.ContextWithRequestID(context.Background(), message.RequestID), timeout)
-		defer cancel()
-		if err := s.TriggerReply(ctx, conversation, message, aiAgent); err != nil {
-			slog.Error("failed to trigger ai reply",
-				"requestId", message.RequestID,
-				"message_id", message.ID,
-				"timeout_ms", timeout.Milliseconds(),
-				"elapsed_ms", time.Since(startedAt).Milliseconds(),
-				"error", err)
-		}
-	}()
-}
-
-func (s *aiReplyService) TriggerReplySync(ctx context.Context, conversation models.Conversation, message models.Message) error {
+func (s *aiReplyService) TriggerReplySync(ctx context.Context, conversation models.Conversation, message models.Message) (svc.AIReplyExecutionResult, error) {
 	if sqls.DB() == nil {
-		return fmt.Errorf("database is not initialized")
+		return svc.AIReplyExecutionResult{}, fmt.Errorf("database is not initialized")
 	}
 	aiAgent, ok := s.resolveRuntimeAIAgent(conversation)
 	if !ok || aiAgent.Status != enums.StatusOk {
-		return fmt.Errorf("runtime AI agent is unavailable")
+		return svc.AIReplyExecutionResult{}, fmt.Errorf("runtime AI agent is unavailable")
 	}
 	timeout := s.resolveReplyTimeout(aiAgent)
 	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > timeout {
@@ -85,7 +59,7 @@ func (s *aiReplyService) resolveRuntimeAIAgent(conversation models.Conversation)
 	return *aiAgent, true
 }
 
-func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.Conversation, message models.Message, aiAgent models.AIAgent) (retErr error) {
+func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.Conversation, message models.Message, aiAgent models.AIAgent) (result svc.AIReplyExecutionResult, retErr error) {
 	startedAt := time.Now()
 	trace := &aiReplyTraceData{Status: "started"}
 	var summary *applicationruntime.Summary
@@ -97,18 +71,29 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 		SummaryRef:   &summary,
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return result, err
 	}
 	settleStartedAt := time.Now()
 	settled, waitReason := s.waitForConversationToSettle(ctx, conversation.ID, message.ID)
 	if !settled {
 		trace.SettleMs = time.Since(settleStartedAt).Milliseconds()
 		trace.Status = waitReason
-		return nil
+		switch waitReason {
+		case "newer_customer_message":
+			return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: waitReason}, nil
+		case "waiting_media_understanding":
+			retryAt := time.Now().Add(time.Second)
+			return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusDeferred, ReasonCode: waitReason, RetryAt: &retryAt}, nil
+		default:
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
+			return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusDeferred, ReasonCode: "runtime_not_settled"}, nil
+		}
 	}
 	trace.SettleMs = time.Since(settleStartedAt).Milliseconds()
 	if s.eligibility != nil && !s.eligibility.CanReply(conversation, message, aiAgent) {
-		return nil
+		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSkipped, ReasonCode: "runtime_not_eligible"}, nil
 	}
 	defer func() {
 		s.runlog.Write(replyRunLogInput{
@@ -122,9 +107,19 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 			Summary:      summary,
 		})
 	}()
+	checkpoint, checkpointErr := svc.AIReplyJobService.ValidateRuntimeCheckpoint(ctx, conversation, message)
+	if checkpointErr != nil {
+		return result, checkpointErr
+	}
+	if checkpoint.Status != svc.AIReplyExecutionStatusCompleted || checkpoint.ReasonCode != "checkpoint_valid" {
+		return checkpoint, nil
+	}
 	if pendingInterrupt := svc.ConversationInterruptService.FindLatestPendingByConversationID(conversation.ID); pendingInterrupt != nil {
 		replyCtx.PendingInterrupt = pendingInterrupt
-		return s.resumePendingInterrupt(ctx, replyCtx)
+		if err := s.resumePendingInterrupt(ctx, replyCtx); err != nil {
+			return result, err
+		}
+		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusCompleted, ReasonCode: "interrupt_resumed"}, nil
 	}
 	replyCtx.Message = s.mergeRecentCustomerBurstMessage(conversation.ID, message)
 	return s.executeReply(ctx, replyCtx)
@@ -349,7 +344,10 @@ func (s *aiReplyService) resumePendingInterrupt(ctx context.Context, replyCtx ai
 	return s.interrupts.ResumePendingInterrupt(ctx, s, replyCtx)
 }
 
-func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyContext) error {
+func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyContext) (svc.AIReplyExecutionResult, error) {
+	if err := ctx.Err(); err != nil {
+		return svc.AIReplyExecutionResult{}, err
+	}
 	summary, err := s.executor.Run(ctx, runtimeReplyRunInput{
 		Conversation: replyCtx.Conversation,
 		Message:      replyCtx.Message,
@@ -358,19 +356,32 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 	})
 	replyCtx.setSummary(summary)
 	if err != nil {
-		return err
+		return svc.AIReplyExecutionResult{}, err
 	}
 	if summary != nil && summary.Interrupted {
-		return s.interrupts.HandleInterruptedSummary(s, replyCtx, summary)
+		if err := s.interrupts.HandleInterruptedSummary(s, replyCtx, summary); err != nil {
+			return svc.AIReplyExecutionResult{}, err
+		}
+		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusCompleted, ReasonCode: "runtime_interrupted"}, nil
 	}
 	if summary != nil && (strings.TrimSpace(summary.ReplyText) != "" || s.commit.HasStructuredVariableReply(replyCtx.Trace)) {
+		if err := ctx.Err(); err != nil {
+			return svc.AIReplyExecutionResult{}, err
+		}
+		checkpoint, checkpointErr := svc.AIReplyJobService.ValidateRuntimeCheckpoint(ctx, replyCtx.Conversation, replyCtx.Message)
+		if checkpointErr != nil {
+			return svc.AIReplyExecutionResult{}, checkpointErr
+		}
+		if checkpoint.Status != svc.AIReplyExecutionStatusCompleted || checkpoint.ReasonCode != "checkpoint_valid" {
+			return checkpoint, nil
+		}
 		if !s.canCommitReplyForMessage(replyCtx.Conversation.ID, replyCtx.Message.ID) {
 			slog.Info("skip stale ai reply because newer customer message arrived",
 				"conversation_id", replyCtx.Conversation.ID,
 				"message_id", replyCtx.Message.ID,
 				"requestId", replyCtx.Message.RequestID,
 			)
-			return nil
+			return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "newer_customer_message"}, nil
 		}
 		replyMessage, err := s.commit.CommitAIReply(replyCommitInput{
 			Conversation: replyCtx.Conversation,
@@ -381,14 +392,14 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			ClientPrefix: "ai_reply",
 		})
 		if err != nil {
-			return err
+			return svc.AIReplyExecutionResult{}, err
 		}
 		if replyMessage != nil && strings.TrimSpace(summary.ReplyText) == "" {
 			summary.ReplyText = committedReplyText(*replyMessage)
 		}
 		replyCtx.Trace.ReplySent = replyMessage != nil
 	}
-	return nil
+	return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed"}, nil
 }
 
 func committedReplyText(message models.Message) string {

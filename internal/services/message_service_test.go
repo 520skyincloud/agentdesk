@@ -10,6 +10,7 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/openidentity"
+	"agent-desk/internal/repositories"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -54,11 +55,8 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("get sqlite db: %v", err)
 	}
-	previousHook := TriggerAIReplyAsyncHook
-	TriggerAIReplyAsyncHook = nil
 	t.Cleanup(func() {
 		sqls.SetDB(nil)
-		TriggerAIReplyAsyncHook = previousHook
 		if err := sqlDB.Close(); err != nil {
 			t.Fatalf("close sqlite db: %v", err)
 		}
@@ -88,6 +86,8 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		&models.ConversationEventLog{},
 		&models.ConversationAssignment{},
 		&models.Message{},
+		&models.AIReplyJob{},
+		&models.AgentRunLog{},
 		&models.ConversationServiceSession{},
 		&models.ConversationResponseSpan{},
 		&models.DispatchDecisionLog{},
@@ -503,7 +503,7 @@ func TestMiniprogramHumanSupportUsesActiveRouteInsteadOfHandoffHistory(t *testin
 	}
 }
 
-func TestSendCustomerMessageMiniProgramKeywordsGoThroughAIReplyHook(t *testing.T) {
+func TestSendCustomerMessageMiniProgramKeywordsEnqueueAIReplyJob(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	aiAgent := createWelcomeTestAIAgent(t, db, "")
 	external := welcomeTestExternalUser("runtime-resource-user")
@@ -511,15 +511,6 @@ func TestSendCustomerMessageMiniProgramKeywordsGoThroughAIReplyHook(t *testing.T
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}
-
-	previousHook := TriggerAIReplyAsyncHook
-	var hookMessageID int64
-	TriggerAIReplyAsyncHook = func(conversation models.Conversation, message models.Message) {
-		hookMessageID = message.ID
-	}
-	t.Cleanup(func() {
-		TriggerAIReplyAsyncHook = previousHook
-	})
 
 	message, err := MessageService.SendCustomerMessageWithRequestID(
 		conversation.ID,
@@ -533,8 +524,9 @@ func TestSendCustomerMessageMiniProgramKeywordsGoThroughAIReplyHook(t *testing.T
 	if err != nil {
 		t.Fatalf("SendCustomerMessageWithRequestID() error = %v", err)
 	}
-	if hookMessageID != message.ID {
-		t.Fatalf("expected runtime AI hook for mini-program keywords, got hook message id %d want %d", hookMessageID, message.ID)
+	job := repositories.AIReplyJobRepository.GetByMessageInTenant(db, message.TenantID, message.ConversationID, message.ID)
+	if job == nil || job.TriggerKind != enums.AIReplyJobTriggerKindText || job.Status != enums.AIReplyJobStatusPending {
+		t.Fatalf("expected one pending text AI reply job, got %#v", job)
 	}
 
 	var miniProgramCount int64
@@ -578,15 +570,6 @@ func TestSendCustomerMessageStoreWecomManualBlocksAIUntilTimeout(t *testing.T) {
 		t.Fatalf("update route: %v", err)
 	}
 
-	previousHook := TriggerAIReplyAsyncHook
-	var hookMessageID int64
-	TriggerAIReplyAsyncHook = func(conversation models.Conversation, message models.Message) {
-		hookMessageID = message.ID
-	}
-	t.Cleanup(func() {
-		TriggerAIReplyAsyncHook = previousHook
-	})
-
 	message, err := MessageService.SendCustomerMessageWithRequestID(
 		conversation.ID,
 		"client-msg-store-manual-ai",
@@ -599,8 +582,15 @@ func TestSendCustomerMessageStoreWecomManualBlocksAIUntilTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendCustomerMessageWithRequestID() error = %v", err)
 	}
-	if hookMessageID != 0 {
-		t.Fatalf("expected store manual route to block ai hook until timeout, got hook message id %d for message %d", hookMessageID, message.ID)
+	if job := repositories.AIReplyJobRepository.GetByMessageInTenant(db, message.TenantID, message.ConversationID, message.ID); job == nil {
+		t.Fatal("expected manual-route customer message to retain a durable task for worker state evaluation")
+	}
+	var aiMessageCount int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ? AND sender_type = ? AND id > ?", conversation.ID, enums.IMSenderTypeAI, message.ID).Count(&aiMessageCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if aiMessageCount != 0 {
+		t.Fatalf("expected no immediate AI reply on manual route, got %d", aiMessageCount)
 	}
 }
 
@@ -639,16 +629,7 @@ func TestSendCustomerMessageStoreWecomManualRespectsDisabledAIReply(t *testing.T
 		t.Fatalf("update route: %v", err)
 	}
 
-	previousHook := TriggerAIReplyAsyncHook
-	called := false
-	TriggerAIReplyAsyncHook = func(conversation models.Conversation, message models.Message) {
-		called = true
-	}
-	t.Cleanup(func() {
-		TriggerAIReplyAsyncHook = previousHook
-	})
-
-	if _, err := MessageService.SendCustomerMessageWithRequestID(
+	message, err := MessageService.SendCustomerMessageWithRequestID(
 		conversation.ID,
 		"client-msg-store-manual-ai-disabled",
 		enums.IMMessageTypeText,
@@ -656,11 +637,19 @@ func TestSendCustomerMessageStoreWecomManualRespectsDisabledAIReply(t *testing.T
 		"",
 		external,
 		"store-manual-ai-disabled-123",
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatalf("SendCustomerMessageWithRequestID() error = %v", err)
 	}
-	if called {
-		t.Fatalf("expected disabled employee account ai reply switch to stop ai hook")
+	if job := repositories.AIReplyJobRepository.GetByMessageInTenant(db, message.TenantID, message.ConversationID, message.ID); job == nil {
+		t.Fatal("expected disabled-account customer message to retain a durable task for worker state evaluation")
+	}
+	var aiMessageCount int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ? AND sender_type = ? AND id > ?", conversation.ID, enums.IMSenderTypeAI, message.ID).Count(&aiMessageCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if aiMessageCount != 0 {
+		t.Fatalf("expected disabled employee account to produce no immediate AI reply, got %d", aiMessageCount)
 	}
 }
 
@@ -729,24 +718,19 @@ func TestConversationCreateSkipsBlankWelcomeMessage(t *testing.T) {
 	}
 }
 
-func TestConversationCreateWelcomeMessageDoesNotTriggerAIReplyHook(t *testing.T) {
+func TestConversationCreateWelcomeMessageDoesNotEnqueueAIReplyJob(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	aiAgent := createWelcomeTestAIAgent(t, db, "欢迎咨询")
-
-	previousHook := TriggerAIReplyAsyncHook
-	called := false
-	TriggerAIReplyAsyncHook = func(conversation models.Conversation, message models.Message) {
-		called = true
-	}
-	t.Cleanup(func() {
-		TriggerAIReplyAsyncHook = previousHook
-	})
 
 	if _, err := ConversationService.Create(welcomeTestExternalUser("hook-welcome-1"), 11, aiAgent.ID); err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}
-	if called {
-		t.Fatalf("expected welcome message not to trigger ai reply hook")
+	var count int64
+	if err := db.Model(&models.AIReplyJob{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected welcome message not to enqueue AI reply job, got %d", count)
 	}
 }
 
@@ -930,7 +914,7 @@ func TestNormalizeMediaMessagePreservesPreUnderstoodPayload(t *testing.T) {
 	}
 }
 
-func TestPreUnderstoodVoiceMessageTriggersAIHook(t *testing.T) {
+func TestPreUnderstoodVoiceMessageUsesDurableAIReplyJob(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	aiAgent := createWelcomeTestAIAgent(t, db, "")
 	conversation, err := ConversationService.Create(welcomeTestExternalUser("voice-ready"), 11, aiAgent.ID)
@@ -957,19 +941,19 @@ func TestPreUnderstoodVoiceMessageTriggersAIHook(t *testing.T) {
 	if err := db.Create(message).Error; err != nil {
 		t.Fatalf("create voice message: %v", err)
 	}
-	previousHook := TriggerAIReplyAsyncHook
-	var triggeredMessageID int64
-	TriggerAIReplyAsyncHook = func(conversation models.Conversation, message models.Message) {
-		triggeredMessageID = message.ID
+	job, created, err := AIReplyJobService.EnsureForMessage(message.ID)
+	if err != nil || !created || job == nil || job.TriggerKind != enums.AIReplyJobTriggerKindMedia {
+		t.Fatalf("expected durable media job, created=%v job=%#v err=%v", created, job, err)
 	}
-	t.Cleanup(func() {
-		TriggerAIReplyAsyncHook = previousHook
-	})
 	if err := MediaUnderstandingService.UnderstandInboundMessage(context.Background(), message.ID); err != nil {
 		t.Fatalf("UnderstandInboundMessage() error = %v", err)
 	}
-	if triggeredMessageID != message.ID {
-		t.Fatalf("expected pre-understood voice to trigger ai hook for message %d, got %d", message.ID, triggeredMessageID)
+	var aiMessageCount int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAI).Count(&aiMessageCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if aiMessageCount != 0 {
+		t.Fatalf("media understanding must not bypass the durable worker, got %d AI messages", aiMessageCount)
 	}
 }
 

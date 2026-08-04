@@ -39,9 +39,6 @@ type conversationRuntimeTenantFixture struct {
 
 func TestConversationRuntimeChildrenInheritTenant(t *testing.T) {
 	fixture := setupConversationRuntimeTenantFixture(t)
-	previousHook := TriggerAIReplyAsyncHook
-	TriggerAIReplyAsyncHook = nil
-	t.Cleanup(func() { TriggerAIReplyAsyncHook = previousHook })
 
 	external := openidentity.ExternalUser{ExternalSource: enums.ExternalSourceGuest, ExternalID: "runtime-tenant-a", ExternalName: "A租户访客"}
 	conversation, err := ConversationService.CreateWithoutWelcome(external, fixture.channelA.ID, fixture.aiAgentA.ID)
@@ -92,9 +89,6 @@ func TestConversationRuntimeChildrenInheritTenant(t *testing.T) {
 
 func TestConversationRuntimeRejectsCrossTenantOperations(t *testing.T) {
 	fixture := setupConversationRuntimeTenantFixture(t)
-	previousHook := TriggerAIReplyAsyncHook
-	TriggerAIReplyAsyncHook = nil
-	t.Cleanup(func() { TriggerAIReplyAsyncHook = previousHook })
 
 	externalB := openidentity.ExternalUser{ExternalSource: enums.ExternalSourceGuest, ExternalID: "runtime-tenant-b", ExternalName: "B租户访客"}
 	conversationB, err := ConversationService.CreateWithoutWelcome(externalB, fixture.channelB.ID, fixture.aiAgentB.ID)
@@ -295,7 +289,7 @@ func setupConversationRuntimeTenantFixture(t *testing.T) conversationRuntimeTena
 		&models.Customer{}, &models.CustomerIdentity{}, &models.Channel{}, &models.AIAgent{},
 		&models.AgentTeam{}, &models.AgentTeamSchedule{}, &models.AgentProfile{}, &models.AgentTeamSquad{}, &models.AgentTeamSquadMember{},
 		&models.Conversation{}, &models.ConversationParticipant{}, &models.ConversationRouteState{}, &models.ConversationReadState{},
-		&models.Message{}, &models.ConversationAssignment{}, &models.ConversationEventLog{}, &models.ConversationInterrupt{}, &models.MessageSyncLog{},
+		&models.Message{}, &models.AIReplyJob{}, &models.ConversationAssignment{}, &models.ConversationEventLog{}, &models.ConversationInterrupt{}, &models.MessageSyncLog{},
 		&models.ConversationServiceSession{}, &models.ConversationResponseSpan{}, &models.DispatchDecisionLog{},
 		&models.AgentPresenceSession{},
 	); err != nil {

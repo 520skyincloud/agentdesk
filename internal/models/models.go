@@ -67,6 +67,7 @@ var Models = []any{
 	&WxWorkKFMessageRef{},
 	&ChannelMessageOutbox{},
 	&ConversationRouteState{},
+	&AIReplyJob{},
 	&AIManualResumeTask{},
 	&ConversationSessionSummary{},
 	&ConversationServiceSession{},
@@ -699,6 +700,31 @@ type ConversationRouteState struct {
 	NeedHumanFollowUp     bool                          `gorm:"not null;default:false;index"`
 	HandoffReason         string                        `gorm:"type:varchar(500);not null;default:''"`
 	Remark                string                        `gorm:"type:text"`
+	AuditFields
+}
+
+// AIReplyJob persists one recoverable AI reply trigger for a committed
+// customer message. It stores references and controlled execution state only.
+type AIReplyJob struct {
+	ID                  int64                       `gorm:"primaryKey;autoIncrement"`
+	TenantID            int64                       `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_ai_reply_job_message,priority:1"`
+	ConversationID      int64                       `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_ai_reply_job_message,priority:2"`
+	MessageID           int64                       `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_ai_reply_job_message,priority:3"`
+	SessionNo           int                         `gorm:"type:int;not null;default:1;index"`
+	StoreID             int64                       `gorm:"type:bigint;not null;default:0;index"`
+	StoreStaffBindingID int64                       `gorm:"type:bigint;not null;default:0;index"`
+	RequestID           string                      `gorm:"type:varchar(128);not null;default:'';index"`
+	TriggerKind         enums.AIReplyJobTriggerKind `gorm:"type:varchar(20);not null;default:'text';index"`
+	Status              enums.AIReplyJobStatus      `gorm:"type:varchar(30);not null;default:'pending';index"`
+	AttemptCount        int                         `gorm:"type:int;not null;default:0"`
+	NextRetryAt         *time.Time                  `gorm:"type:datetime;index"`
+	ExpiresAt           time.Time                   `gorm:"type:datetime;not null;index"`
+	LeaseOwner          string                      `gorm:"type:varchar(128);not null;default:'';index"`
+	LeaseExpiresAt      *time.Time                  `gorm:"type:datetime;index"`
+	ResultCode          string                      `gorm:"type:varchar(80);not null;default:'';index"`
+	LastErrorClass      string                      `gorm:"type:varchar(80);not null;default:'';index"`
+	StartedAt           *time.Time                  `gorm:"type:datetime;index"`
+	CompletedAt         *time.Time                  `gorm:"type:datetime;index"`
 	AuditFields
 }
 

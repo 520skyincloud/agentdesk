@@ -77,10 +77,7 @@ func TestWxWorkProtocolReplacedInstanceArchivesAuthenticatedLateMessage(t *testi
 	beforeEventCount := countConversationHistoryTestRows(t, db, &models.ConversationEventLog{}, "conversation_id = ?", conversation.ID)
 	beforeConversationCount := countConversationHistoryTestRows(t, db, &models.Conversation{})
 	beforeAssignmentCount := countConversationHistoryTestRows(t, db, &models.ConversationAssignment{}, "conversation_id = ?", conversation.ID)
-	triggerCount := 0
-	previousHook := TriggerAIReplyAsyncHook
-	TriggerAIReplyAsyncHook = func(models.Conversation, models.Message) { triggerCount++ }
-	t.Cleanup(func() { TriggerAIReplyAsyncHook = previousHook })
+	beforeJobCount := countConversationHistoryTestRows(t, db, &models.AIReplyJob{}, "conversation_id = ?", conversation.ID)
 
 	msg := request.WxProtocolChatMsg{
 		Seq: "501", ID: "late-history-501", Sender: externalID, Receiver: replaced.EmployeeUserID,
@@ -134,8 +131,8 @@ func TestWxWorkProtocolReplacedInstanceArchivesAuthenticatedLateMessage(t *testi
 	if currentAssignment == nil || currentAssignment.Status != assignment.Status || currentAssignment.SessionNo != assignment.SessionNo || currentAssignment.ToUserID != assignment.ToUserID {
 		t.Fatalf("late callback changed current assignment: before=%+v after=%+v", assignment, currentAssignment)
 	}
-	if triggerCount != 0 {
-		t.Fatalf("late callback triggered AI %d times", triggerCount)
+	if got := countConversationHistoryTestRows(t, db, &models.AIReplyJob{}, "conversation_id = ?", conversation.ID); got != beforeJobCount {
+		t.Fatalf("late historical callback created AI reply jobs: before=%d after=%d", beforeJobCount, got)
 	}
 	currentReplaced := WxWorkProtocolInstanceService.Get(replaced.ID)
 	if currentReplaced == nil || currentReplaced.Status != enums.StatusDisabled || currentReplaced.MessageSyncSeq != "501" {

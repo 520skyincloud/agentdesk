@@ -412,11 +412,11 @@ func (r *runner) runScenario(ctx context.Context, sc scenario) (record, error) {
 			if err := r.waitPreparedMediaUnderstanding(ctx, message.ID, 2*time.Second); err != nil {
 				return rec, err
 			}
-			if t.WaitForAI {
-				r.triggerPreparedMediaAI(conversation, message.ID)
-			}
 		}
 		if t.WaitForAI {
+			if err := r.processAIReplyJob(ctx, message.ID); err != nil {
+				return rec, err
+			}
 			lastRequestID = message.RequestID
 			log, waitErr := r.waitRunLog(ctx, lastRequestID)
 			if waitErr != nil {
@@ -528,15 +528,37 @@ func (r *runner) prepareMediaPayload(t turn) (string, error) {
 	return string(payload), nil
 }
 
-func (r *runner) triggerPreparedMediaAI(conversation *models.Conversation, messageID int64) {
-	if conversation == nil || messageID <= 0 || services.TriggerAIReplyAsyncHook == nil {
-		return
+func (r *runner) processAIReplyJob(ctx context.Context, messageID int64) error {
+	if messageID <= 0 {
+		return fmt.Errorf("AI reply evaluation message is missing")
 	}
-	message := services.MessageService.Get(messageID)
-	if message == nil {
-		return
+	for {
+		job, err := services.AIReplyJobService.ProcessMessageNow(messageID)
+		if err != nil {
+			return err
+		}
+		if job == nil {
+			return fmt.Errorf("AI reply evaluation job was not created")
+		}
+		switch job.Status {
+		case enums.AIReplyJobStatusCompleted:
+			return nil
+		case enums.AIReplyJobStatusSkipped, enums.AIReplyJobStatusSuperseded,
+			enums.AIReplyJobStatusExpired, enums.AIReplyJobStatusFailed:
+			return fmt.Errorf("AI reply evaluation job ended with status %s (%s)", job.Status, job.ResultCode)
+		}
+		wait := 100 * time.Millisecond
+		if job.NextRetryAt != nil && time.Until(*job.NextRetryAt) > wait {
+			wait = time.Until(*job.NextRetryAt)
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
-	services.TriggerAIReplyAsyncHook(*conversation, *message)
 }
 
 func (r *runner) applyPreparedMediaUnderstanding(messageID int64, preparedPayload string) error {
@@ -1458,6 +1480,7 @@ func (r *runner) cleanupData() map[string]int64 {
 		deleteByConversation := []string{
 			"t_agent_run_log",
 			"t_channel_message_outbox",
+			"t_ai_reply_job",
 			"t_message_sync_log",
 			"t_conversation_interrupt",
 			"t_conversation_session_summary",
@@ -1638,7 +1661,7 @@ func (r *runner) renderMarkdown(startedAt time.Time, health map[string]string, u
 	b.WriteString(fmt.Sprintf("- startedAt: `%s`\n", startedAt.Format(time.RFC3339)))
 	b.WriteString(fmt.Sprintf("- elapsed: `%s`\n", time.Since(startedAt).Round(time.Millisecond)))
 	b.WriteString(fmt.Sprintf("- wxWorkInstanceId: `%d`, storeId: `%d`, knowledgeBaseId: `%d`\n", r.instance.ID, r.instance.StoreID, r.instance.KnowledgeBaseID))
-	b.WriteString("- entry: `MessageService.SendCustomerMessageWithRequestID -> AIReplyService -> Runtime`, ChannelID=0 so no WeCom outbound dispatch\n")
+	b.WriteString("- entry: `MessageService.SendCustomerMessageWithRequestID -> AIReplyJobService -> AIReplyService -> Runtime`, ChannelID=0 so no WeCom outbound dispatch\n")
 	if runErr != nil {
 		b.WriteString(fmt.Sprintf("- runError: `%s`\n", runErr.Error()))
 	}

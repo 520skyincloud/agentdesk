@@ -370,3 +370,69 @@ pnpm --dir web build
 - 回滚：部署前可回滚本提交；已经完成真实接入后，回滚代码不会删除 KnowledgeBase 或远端 Dataset。需要解除绑定时必须走现有受权限保护的知识库删除/停用流程，禁止手工删表或改 Store 外键。
 - 工程验证：`go test ./internal/services/... ./internal/handlers/dashboard/...`、`go test ./internal/bootstrap/...`、`go test ./...` 和 `git diff --check` 全部通过。
 - 生产验收（2026-08-01）：运行提交 `10ba7db`，release 为 `/opt/agentdesk/releases/20260801-181002-nanqi-fingerprint/app`，镜像摘要为 `sha256:7b3064f2498d3abc498c8e9d205e18b15f637c1a2d6b8fcecbd761539b8a2ea2`。合肥南七店接入成功，远端返回 1 个集合、20089 条内容；KnowledgeBase、Store 外键、`adopt_dataset` 任务和既有 ConversationRouteState 全部一致。验收问题命中 12 条并包含昭潭路入口资料；门店凭据和 AI runtime 继续保持未配置，未伪造 ready 状态。容器健康、重启数为 0，公网页面和认证选项接口均为 HTTP 200，部署后日志未发现错误或敏感配置字段。
+
+### 2026-08-03 ASR 延期期间的模型凭据启用规则
+
+- 目标：当前统一 NewAPI 网关没有任何 ASR 模型或渠道时，允许显式停用 ASR，继续对其余八个必需槽执行真实请求验证并激活门店 Binding 凭据。
+- 模型契约：九槽结构和稳定 UsageCode 保持不变；ASR 是唯一可停用槽，其余八槽仍必须启用、配置模型并通过真实验证。以后恢复 ASR 时必须创建新 revision、启用 ASR 并重新验证，不修改既有 active revision。
+- 运行行为：ASR 停用时语音转写解析继续 fail closed；不得以聊天模型、空响应或伪造结果替代 ASR。文本、视觉、文档、Embedding、Rerank、FastGPT 和计费归因不受影响。
+- 页面：平台模型方案编辑器只为 ASR 暴露启用开关；测试文案改为“真实启用槽测试”。凭据录入、密码复核、主管审批、加密、审计和旧 active revision 保护不变。
+- 数据与接口：不新增 model、migration、DTO、enum、路由或 WebSocket 字段，只使用既有 `ModelProfileSlot.Enabled`。
+- 并行影响：`origin/codex/ai-billing@4db7993` 和 `origin/codex/customer-audit@c706815` 均不存在当前统一模型方案文件，不需要 rebase 或跨分支契约提交。
+- 回滚：回滚应用后，包含停用 ASR 的方案将无法再通过旧版发布校验；已激活凭据和其他八槽数据不得手工改库，需先恢复 ASR 或发布兼容 revision。
+
+### 2026-08-03 已有 FastGPT 数据集采用时补齐门店 Team 映射
+
+- 目标：修复已有 Dataset 已通过受控采用、但本地缺少 `FastGPTStoreTenant`，导致门店凭据八槽测试通过后仍在 FastGPT 同步阶段以 `store_tenant_missing` 失败的问题。
+- 远端顺序：仍先验证 Dataset 门店归属、名称、集合索引、模型快照和真实检索命中；全部通过后才调用统一 Integration API 的 `tenant/ensure` 解析该 Store 的 Team，失败不写任何本地采用状态。
+- 本地事务：Store Team 映射与 KnowledgeBase、Store 唯一引用、ConversationRouteState 和幂等 `adopt_dataset` 任务在同一事务提交。新映射只保存非敏感 Team ID、名称和状态，`readiness_status=unconfigured`。
+- 激活边界：采用不写 Target/Applied Profile、Binding、Credential revision、密钥指纹或 `ready`。重复采用只更新 Team 身份字段，保留现有目标 revision、已应用 revision、指纹和 readiness，避免已激活门店被降级。
+- 测试：覆盖首次采用创建唯一非 ready Team 映射、重复采用不重复且不覆盖已应用状态，以及任一远端验证失败时不产生 Team 映射。
+- 并行影响：`origin/codex/ai-billing` 在 FastGPT 数据集服务和测试上存在历史差异，`origin/codex/customer-audit` 已删除这些历史文件；本次只扩展统一分支现有实现，禁止整文件覆盖或回灌旧模型。
+- 回滚：代码回滚不会删除已建立的 Team 或 Dataset。若需要解除本地映射，必须通过后续受权限保护的业务动作实施，禁止手工删表或清零 applied revision。
+- 工程验证：FastGPT 定向测试、`go test ./... -count=1`、相关 service 竞态测试、`go vet ./...` 和 `git diff --check` 全部通过。
+- 生产发布：release 为 `/opt/agentdesk/releases/20260803-154831-fastgpt-team-fix/app`，镜像摘要为 `sha256:f664a3221944e40aa53c4376df9ea84e9d707cc34d5cd080f824d836dc9b7cce`，应用于 `2026-08-03T07:53:18.694212386Z` 启动；容器健康、重启数为 0，本机和公网 HTTPS 均为 HTTP 200。
+- 生产业务验收：通过受权限保护的 adopt API 重新采用合肥南七店数据集，返回 1 个集合、20089 条内容，页面先显示 Team `active`、readiness `unconfigured`；随后从现有“门店模型指派”对“合肥南七 / 门店员工1”重新提交凭据，八个启用槽真实测试及 FastGPT 同步均成功，模型方案 r1、凭据 r2 和 Team readiness 最终一致为 ready。
+- 模型事实：回复、意图、摘要和客户标签使用 `deepseek-v4-pro`；视觉与文档解析使用 `qwen3.5-flash`；Embedding 使用 `text-embedding-v4`；Rerank 使用 `qwen3-vl-rerank`；ASR 刷新后仍为未配置且停用，系统没有 TTS 槽。
+- 检索验收：后台以“停车场在哪里？”真实检索命中 12 条，首批结果包含昭潭路停车入口、免费停车和地下车库充电桩等南七门店资料；该操作不向客户发消息。
+- 生产安全：切换前备份位于 `/opt/agentdesk/backups/20260803-154831-fastgpt-team-fix`，数据库压缩备份通过完整性校验；日志的启动/运行错误计数和明文 Key 模式命中均为 0。失败的首次候选 revision 保留在不可修改审计中，本次按顺序激活 r2，未改写历史。
+
+### 2026-08-03 南七定位意图与首联资源收敛
+
+- 目标：修复 IntentDetect 被 Runtime 固定 12 秒超时提前取消的问题，并收敛新会话普通欢迎小程序与延迟到店绑定票据重复出现的行为；位置咨询必须走定位动作，不允许用小程序兜底。
+- 根因证据：生产消息记录显示 `16:33:43` 是普通欢迎小程序，`16:39:47` 是延迟联系人同步发送的 `arrival_bind_ticket_5`；“酒店在哪”位于两者之间，其 IntentDetect 超时后没有回复。两张卡属于首联资源，不是 AI 位置回复。
+- Runtime：意图模型调用使用槽 `TimeoutMS`，生产为 30000ms；槽未配置时默认 60 秒。上游 Context 取消继续生效，不新增无限等待或模型 fallback。
+- 首联资源：新增统一 `sendNewContactResources` 编排；首条客户消息与延迟联系人同步均可创建票据，并复用 `arrival_bind_ticket_<ticketID>` 幂等键。有效静态到店连接存在时，普通欢迎小程序被到店票据替代。
+- 定位事实：合肥南七 Store 已通过现有管理接口保存导航名、详细地址、`117.263900,31.824091` 和 `amap`；没有直接写数据库。知识库确认名称与地址，地图 POI 补充坐标。
+- 文件：`internal/ai/runtime/executor/intent_model_detector.go`、`intent_pipeline_test.go`、`internal/services/wxwork_protocol_default_resource_service.go`、`wxwork_protocol_contact_automation_service.go`、`wxwork_protocol_service.go`、`arrival_static_plugin_test.go` 及三份权威文档。
+- 契约与数据：无 model、AutoMigrate、DML migration、DTO、enum、公开 API、WebSocket 或前端变化；Store 定位字段属于现有业务配置。没有新增身份、知识库或消息 fallback。
+- 测试：service、AI runtime、bootstrap、全量 Go 测试、`go vet ./...` 和 `git diff --check` 全部通过；覆盖 30000ms 槽超时、60 秒默认值、静态到店连接抑制普通欢迎小程序，以及两入口稳定票据幂等键。
+- 并行分支：本次文件未从 `origin/codex/ai-billing` 整体覆盖；继续以统一分支现有 Runtime 和 Tenant/Store 适配为基线。无共享 DTO 或 migration 合并顺序变化。
+- 生产发布：release 为 `/opt/agentdesk/releases/20260803-171002-location-intent-welcome/app`，镜像摘要为 `sha256:6cafc98063c49bf04d27121991150e883c10d030af9d043918857366aae375e6`，容器于 `2026-08-03T09:11:34.207353601Z` 启动；healthy、重启数 0，本机与公网 HTTP 200，MySQL 未重建。
+- 待验收：真实客户需要重新发送“酒店在哪”，确认 `provide_location -> location -> Outbox -> /msg/send_location` 全链成功且不新增小程序卡。在该证据出现前，只能称为代码、配置和部署完成。
+- 回滚：可切回部署前固定镜像；Store 定位配置可保留。代码回滚会恢复固定 12 秒超时和旧欢迎卡行为，不需要回滚 Schema 或恢复数据库。
+
+### 2026-08-03 已有联系人自动绑定卡重发收敛
+
+- 根因：联系人增量同步把所有非删除记录交给首联资源编排；已有会话虽然抑制了普通欢迎语，但仍无条件调用绑定票据发送。旧票据 30 分钟过期后，新票据 ID 绕过基于 `arrival_bind_ticket_<ticketID>` 的消息幂等，导致同一客户再次收到卡片。
+- 线上证据：重复卡为 `arrival_bind_ticket_6`，来源 `wx_contact_welcome`；上一张票据已过期。同期没有 AgentRunLog、没有 `ArrivalScanEvent`，会话仍为原 Session，因此与 AI、12 小时会话重开、24 小时知识进化和真实再次扫码均无关。
+- 修复：`sendWelcome` 使用 `ensureConversation` 的真实 `created` 结果；只有 `created=true` 才进入统一首联资源编排。已有映射、并发下复用既有 Conversation 或存量会话均直接跳过自动欢迎和绑定卡。
+- 保留链路：首条客户消息真实新建会话仍发送首次资源；后台受权限保护的人工发卡不变；已绑定小程序身份真实再次扫码仍通过 `ArrivalScanEvent`、`arrival_scan_<eventID>` 和既有频控投递。
+- 数据与契约：无 model、AutoMigrate、DML migration、DTO、enum、公开 API、WebSocket、前端、小程序或 AI 引擎变化。
+- 测试：覆盖首次资源只发一次、已有会话不重复、旧票据过期后联系人变更不创建新票据、真实再次扫码继续发送；services、AI runtime、bootstrap、全量 Go 测试、定向 race、`go vet ./...` 和 `git diff --check` 均通过。
+- 并行分支：`origin/codex/customer-audit` 无同文件变化；`origin/codex/ai-billing` 对协议消息入口有历史差异，但当前统一分支已吸收其范围适配，本次不覆盖其 AI 语义。无共享 migration 或 DTO 合并顺序变化。
+- 回滚：应用回滚会恢复联系人变更在票据过期后自动重发的缺陷；不需要数据库恢复，不得删除既有票据、扫码事件或审计历史。
+
+### 2026-08-03 AI 回复引擎迁移审计与持久任务收敛
+
+- 目标：逐文件、逐调用链核对 `origin/codex/ai-billing@4db7993`，确认成熟 Runtime 主体已迁移，并修复瞬时触发、媒体双入口、模型范围和 Binding 用量归因缺口。
+- 审计结论：来源 `internal/ai` 共 168 个文件，80 个逐字节一致、49 个做 Tenant/Store/Binding/统一模型/FastGPT 适配、39 个为明确退役的 AIConfig、本地 RAG/Qdrant 和旧 skills；没有发现应恢复但遗漏的成熟 Runtime 模块。完整证据见 `docs/development/ai-reply-engine-migration-audit-20260803.md`。
+- 数据：新增内部 `AIReplyJob` 表与 enum，唯一键为 Tenant + Conversation + Message；通过 AutoMigrate 注册，不新增 DML migration，不注册 generator。
+- 运行：客户 Message 与任务原子提交；每秒最多处理 4 个，90 秒租约、30 秒续租，失败退避 15 秒/1 分钟/3 分钟，最多 4 次；15 分钟仍无人回复时进入现有人工池。
+- 幂等：删除裸异步 Hook 和媒体第二入口；新消息、Session、人工状态、AI 开关和范围在模型前及 Commit 前重新验证；已有回复/RunLog 收敛任务，Outbox 失败不重跑模型。
+- 模型与计费：Conversation、Route、当前实例的 Tenant/Store/Binding 必须一致；Reply/Intent Usage 补齐 Binding。未增加模型调用，未改变 token 或费用计算公式。
+- 结构化语义：Intent JSON、resourceAction 和 Commit 协议不变；知识问题不产生小程序，定位只提交 location，欢迎/绑定票据/再次扫码继续走独立资源链。
+- 共享契约：无公开 DTO、HTTP API、WebSocket 或前端变化；新增内部 model/enum 属于共享 Schema，部署前必须先 AutoMigrate 再启动 worker。
+- 并行影响：`ai-billing` 作为行为来源不得整分支合并；`customer-audit` 若修改 Message/Conversation/Outbox，必须保留任务原子提交和稳定 RequestID。建议先合并本任务的 Schema/Repository，再合并 Runtime/Message 集成。
+- 回滚：部署前可整体回滚；部署后回滚应用不会自动删除任务表。旧版本不会消费新任务，回滚前必须停入站、排空或明确保留任务，再切换版本，禁止手工伪造完成状态。
+- 本轮边界：只在本地实现和测试，不提交、不推送、不部署；真实 NewAPI/FastGPT/企微验收必须在后续发布窗口单独执行。
