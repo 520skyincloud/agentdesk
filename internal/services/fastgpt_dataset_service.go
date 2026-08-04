@@ -137,6 +137,17 @@ func (s *fastGPTDatasetService) AdoptManagedDataset(
 	if searchResult == nil || len(searchResult.Hits) == 0 {
 		return nil, errorsx.InvalidParam("FastGPT 数据集尚未产生可检索结果")
 	}
+	storeTenant, err := connector.EnsureStoreTenant(ctx, firstNonBlank(store.Name, "Agent Desk 门店"))
+	if err != nil {
+		return nil, publicFastGPTError(err)
+	}
+	if storeTenant == nil || strings.TrimSpace(storeTenant.TeamID) == "" ||
+		strings.TrimSpace(storeTenant.ExternalStoreID) != strconv.FormatInt(store.ID, 10) {
+		return nil, errorsx.InvalidParam("FastGPT 门店 Team 映射校验失败")
+	}
+	teamID := strings.TrimSpace(storeTenant.TeamID)
+	teamName := firstNonBlank(storeTenant.TeamName, store.Name)
+	teamStatus := firstNonBlank(storeTenant.Status, "active")
 
 	now := time.Now()
 	var knowledgeBase *models.KnowledgeBase
@@ -147,6 +158,42 @@ func (s *fastGPTDatasetService) AdoptManagedDataset(
 		}
 		if lockedStore == nil || lockedStore.Status != enums.StatusOk {
 			return errorsx.InvalidParam("门店不存在、已停用或归属已变化")
+		}
+		teamBinding, err := repositories.FastGPTStoreTenantRepository.GetForUpdateByStoreIDInTenant(tx.Tx, store.ID, store.TenantID)
+		if err != nil {
+			return err
+		}
+		if teamBinding == nil {
+			teamBinding = &models.FastGPTStoreTenant{
+				TenantID: store.TenantID, StoreID: store.ID,
+				TenantTeamID: teamID, TenantTeamName: teamName, Status: teamStatus,
+				ReadinessStatus: "unconfigured",
+				AuditFields: models.AuditFields{
+					CreatedAt: now, CreateUserID: operator.UserID, CreateUserName: operator.Username,
+					UpdatedAt: now, UpdateUserID: operator.UserID, UpdateUserName: operator.Username,
+				},
+			}
+			created, err := repositories.FastGPTStoreTenantRepository.CreateIfAbsent(tx.Tx, teamBinding)
+			if err != nil {
+				return err
+			}
+			if !created {
+				teamBinding, err = repositories.FastGPTStoreTenantRepository.GetForUpdateByStoreIDInTenant(tx.Tx, store.ID, store.TenantID)
+				if err != nil {
+					return err
+				}
+				if teamBinding == nil {
+					return errors.New("FastGPT Store Team mapping changed during adoption")
+				}
+			}
+		}
+		if teamBinding.ID > 0 {
+			if err := repositories.FastGPTStoreTenantRepository.UpdatesInTenant(tx.Tx, teamBinding.ID, store.TenantID, map[string]any{
+				"tenant_team_id": teamID, "tenant_team_name": teamName, "status": teamStatus,
+				"updated_at": now, "update_user_id": operator.UserID, "update_user_name": operator.Username,
+			}); err != nil {
+				return err
+			}
 		}
 		if lockedStore.KnowledgeBaseID > 0 {
 			current := repositories.KnowledgeBaseRepository.GetInTenant(tx.Tx, lockedStore.KnowledgeBaseID, store.TenantID)

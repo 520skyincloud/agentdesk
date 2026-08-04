@@ -121,8 +121,23 @@ func TestFastGPTAdoptManagedDatasetBindsExistingStoreKnowledge(t *testing.T) {
 		t.Fatalf("Dataset adoption must not fabricate local credential readiness: %#v", credential)
 	}
 	storeTenant := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(fixture.db, fixture.store.ID, fixture.tenant.ID)
-	if storeTenant != nil && (storeTenant.ReadinessStatus == "ready" || storeTenant.AppliedProfileRevision > 0 || storeTenant.AppliedCredentialRevision > 0) {
-		t.Fatalf("Dataset adoption must not fabricate FastGPT runtime readiness: %#v", storeTenant)
+	if storeTenant == nil || storeTenant.TenantTeamID != fmt.Sprintf("team-%d", fixture.store.ID) ||
+		storeTenant.TenantTeamName != fixture.store.Name || storeTenant.Status != "active" || storeTenant.ReadinessStatus != "unconfigured" ||
+		storeTenant.TargetProfileID != 0 || storeTenant.TargetProfileRevision != 0 || storeTenant.AppliedProfileID != 0 ||
+		storeTenant.AppliedProfileRevision != 0 || storeTenant.TargetStoreStaffBindingID != 0 ||
+		storeTenant.AppliedStoreStaffBindingID != 0 || storeTenant.TargetCredentialRevision != 0 ||
+		storeTenant.AppliedCredentialRevision != 0 || storeTenant.AppliedKeyFingerprint != "" {
+		t.Fatalf("Dataset adoption did not persist an unconfigured FastGPT Team mapping: %#v", storeTenant)
+	}
+	preservedFingerprint := strings.Repeat("f", 64)
+	if err := repositories.FastGPTStoreTenantRepository.UpdatesInTenant(fixture.db, storeTenant.ID, fixture.tenant.ID, map[string]any{
+		"target_profile_id": 41, "target_profile_revision": 7,
+		"applied_profile_id": 41, "applied_profile_revision": 7,
+		"target_store_staff_binding_id": fixture.binding.ID, "applied_store_staff_binding_id": fixture.binding.ID,
+		"target_credential_revision": 3, "applied_credential_revision": 3,
+		"applied_key_fingerprint": preservedFingerprint, "readiness_status": "ready",
+	}); err != nil {
+		t.Fatalf("seed applied FastGPT state: %v", err)
 	}
 
 	lateRoute := &models.ConversationRouteState{
@@ -151,6 +166,21 @@ func TestFastGPTAdoptManagedDatasetBindsExistingStoreKnowledge(t *testing.T) {
 	}
 	if knowledgeBaseCount != 1 || jobCount != 1 {
 		t.Fatalf("idempotent adoption duplicated records: knowledgeBases=%d jobs=%d", knowledgeBaseCount, jobCount)
+	}
+	var storeTenantCount int64
+	if err := fixture.db.Model(&models.FastGPTStoreTenant{}).
+		Where("tenant_id = ? AND store_id = ?", fixture.tenant.ID, fixture.store.ID).
+		Count(&storeTenantCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	repeatedStoreTenant := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(fixture.db, fixture.store.ID, fixture.tenant.ID)
+	if storeTenantCount != 1 || repeatedStoreTenant == nil || repeatedStoreTenant.ID != storeTenant.ID ||
+		repeatedStoreTenant.TargetProfileID != 41 || repeatedStoreTenant.TargetProfileRevision != 7 ||
+		repeatedStoreTenant.AppliedProfileID != 41 || repeatedStoreTenant.AppliedProfileRevision != 7 ||
+		repeatedStoreTenant.TargetStoreStaffBindingID != fixture.binding.ID || repeatedStoreTenant.AppliedStoreStaffBindingID != fixture.binding.ID ||
+		repeatedStoreTenant.TargetCredentialRevision != 3 || repeatedStoreTenant.AppliedCredentialRevision != 3 ||
+		repeatedStoreTenant.AppliedKeyFingerprint != preservedFingerprint || repeatedStoreTenant.ReadinessStatus != "ready" {
+		t.Fatalf("idempotent adoption overwrote applied FastGPT state: count=%d mapping=%#v", storeTenantCount, repeatedStoreTenant)
 	}
 	lateRoute = repositories.ConversationRouteStateRepository.GetInTenant(fixture.db, lateRoute.ID, fixture.tenant.ID)
 	if lateRoute == nil || lateRoute.KnowledgeBaseID != knowledgeBase.ID {
@@ -202,15 +232,19 @@ func TestFastGPTAdoptManagedDatasetRejectsUnverifiedRemoteState(t *testing.T) {
 			}
 			var knowledgeBaseCount int64
 			var jobCount int64
+			var storeTenantCount int64
 			if err := fixture.db.Model(&models.KnowledgeBase{}).Count(&knowledgeBaseCount).Error; err != nil {
 				t.Fatal(err)
 			}
 			if err := fixture.db.Model(&models.FastGPTDatasetJob{}).Count(&jobCount).Error; err != nil {
 				t.Fatal(err)
 			}
+			if err := fixture.db.Model(&models.FastGPTStoreTenant{}).Count(&storeTenantCount).Error; err != nil {
+				t.Fatal(err)
+			}
 			updatedStore := repositories.StoreRepository.GetInTenant(fixture.db, fixture.store.ID, fixture.tenant.ID)
-			if knowledgeBaseCount != 0 || jobCount != 0 || updatedStore == nil || updatedStore.KnowledgeBaseID != 0 {
-				t.Fatalf("failed adoption changed local state: knowledgeBases=%d jobs=%d store=%#v", knowledgeBaseCount, jobCount, updatedStore)
+			if knowledgeBaseCount != 0 || jobCount != 0 || storeTenantCount != 0 || updatedStore == nil || updatedStore.KnowledgeBaseID != 0 {
+				t.Fatalf("failed adoption changed local state: knowledgeBases=%d jobs=%d StoreTeams=%d store=%#v", knowledgeBaseCount, jobCount, storeTenantCount, updatedStore)
 			}
 		})
 	}
@@ -239,8 +273,25 @@ func configureFastGPTAdoptionServer(t *testing.T, storeID int64, datasetID strin
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if payload["externalStoreId"] != fmt.Sprint(storeID) || payload["datasetId"] != datasetID {
+		if payload["externalStoreId"] != fmt.Sprint(storeID) {
 			t.Errorf("unexpected FastGPT Store scope: %#v", payload)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if r.URL.Path == "/api/integration/agent-desk/tenant/ensure" {
+			if payload["teamName"] != "凭据测试门店" || payload["datasetId"] != nil {
+				t.Errorf("unexpected FastGPT Team ensure payload: %#v", payload)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": http.StatusOK, "data": map[string]any{
+				"externalStoreId": fmt.Sprint(storeID), "teamId": fmt.Sprintf("team-%d", storeID),
+				"teamName": "凭据测试门店", "status": "active",
+			}})
+			return
+		}
+		if payload["datasetId"] != datasetID {
+			t.Errorf("unexpected FastGPT Dataset scope: %#v", payload)
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
