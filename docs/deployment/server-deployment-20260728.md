@@ -967,3 +967,40 @@ migration、DTO、公开 API、WebSocket、前端、小程序或 AI 回复引擎
 同步 MySQL 1064 告警，原因是同步更新条件未正确转义 `cursor` 保留字。该告警与联系人首联
 资源链无关，本次没有扩大发布范围修改计费同步；不得将本次发布描述为“全部运行日志错误
 为 0”。
+
+## 登录邮箱 SMTP 465 TLS 修复
+
+2026-08-04 修复登录页发送邮箱验证码约 20 秒后失败的问题。生产数据库中的失败记录为
+`初始化邮件服务器连接失败: EOF`；容器虽然已配置 163 SMTP 主机和账号，但 Compose 没有
+透传邮件端口与 TLS 模式，运行时继续使用挂载配置中的 `587 + starttls`。163 邮箱当前配置
+要求 `465 + tls`，因此服务在 SMTP 欢迎阶段读取到 EOF，尚未进入账号验证或邮件提交。
+
+本次新增 `AGENT_DESK_EMAIL_PORT` 与 `AGENT_DESK_EMAIL_TLS_MODE` 环境变量支持：端口仅接受
+`1-65535`，TLS 模式仅接受 `tls`、`starttls` 或 `plain`；Compose、示例环境、生产配置校验
+和部署文档同步更新。没有修改登录 API、用户模型、数据库结构、Migration、前端页面、AI
+回复引擎或企微员工号协议。
+
+发布事实：
+
+```text
+Git 提交：5c61997730b478253bd03ea00c0951af2bc5d7e6
+发布包 SHA-256：f2e872d2687bd531475708ac625e4415a004c3835bafc1f93c1050936424300d
+发布目录：/opt/agentdesk/releases/20260804-161200-email-smtp-tls/app
+部署前备份：/opt/agentdesk/backups/20260804-161200-email-smtp-tls
+回滚镜像：mlogclub/agent-desk:rollback-20260804-161200-email-smtp-tls
+回滚镜像摘要：sha256:3a2afab6734a4edc068be3fd5597ccf7f4a38b109e103556a60a8a9b8daa9310
+生产镜像摘要：sha256:cf8cc0be0cbc9eef0dce330c94642310f59ab870738ef82746f8e9e74e10e730
+服务二进制 SHA-256：f77956a89637273f5ac73a08eb7b5c3c50c7a453d10fa1ed4b4178f8ee274437
+应用容器启动时间：2026-08-04T08:16:39.6259967Z
+```
+
+工程验证通过前端生产构建、`go test ./... -count=1`、`go vet ./...` 和
+`git diff --check`。部署时只强制重建 `agent-desk`，MySQL 容器未重建；本次没有 Schema 或
+DML migration，因此没有执行数据库回退型备份。生产环境文件与旧镜像均已建立独立回滚点。
+
+部署后容器内实际值为 `AGENT_DESK_EMAIL_PORT=465`、
+`AGENT_DESK_EMAIL_TLS_MODE=tls`，SMTP TLS 1.3 握手成功，本机与公网登录/认证接口均为
+HTTP 200，容器 healthy、重启数 0、启动及运行错误计数 0。使用登录页现有已验证门店邮箱
+执行一次真实发送后，页面进入“重新发送”状态，数据库中新验证码记录保持未消费且无发送
+错误；未读取、记录或输出验证码。163 邮箱仅作为 SMTP 发件账号，不能直接替代用户表中的
+已验证登录邮箱。
