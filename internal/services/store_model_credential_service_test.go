@@ -975,6 +975,42 @@ func TestNewAPIStoreCredentialValidatorExercisesAllNineSlots(t *testing.T) {
 	}
 }
 
+func TestNewAPIStoreCredentialValidatorSkipsDisabledOptionalASRSlot(t *testing.T) {
+	var audioCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/audio/transcriptions" {
+			audioCalls++
+			http.Error(w, "ASR must not be called", http.StatusInternalServerError)
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"OK"}}]}`))
+		case "/v1/embeddings":
+			_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1]}]}`))
+		case "/v1/rerank":
+			_, _ = w.Write([]byte(`{"results":[{"index":0,"score":1}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	template, slots := completeStoreCredentialProfile("optional-asr", 1, enums.ModelProfileStatusCandidate, server.URL+"/v1")
+	for i := range slots {
+		if slots[i].UsageCode == enums.ModelUsageSlotASR {
+			slots[i].Enabled = false
+			slots[i].ModelName = ""
+		}
+	}
+	if err := (&newAPIStoreCredentialValidator{}).Validate(context.Background(), template, slots, "sk-enabled-slots"); err != nil {
+		t.Fatal(err)
+	}
+	if audioCalls != 0 {
+		t.Fatalf("disabled ASR calls=%d", audioCalls)
+	}
+}
+
 func TestCredentialRuntimeTypesNeverSerializeSecretMaterial(t *testing.T) {
 	secret := "sk-runtime-secret"
 	fingerprint := securex.Fingerprint(secret)

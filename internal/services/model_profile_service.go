@@ -32,6 +32,7 @@ type ModelUsageSlotSpec struct {
 	DisplayName       string
 	ExpectedModelType enums.AIModelType
 	DefaultAPIMode    string
+	Optional          bool
 }
 
 type ModelProfileWithSlots struct {
@@ -108,7 +109,7 @@ func RequiredModelUsageSlotSpecs() []ModelUsageSlotSpec {
 		{UsageCode: enums.ModelUsageSlotMemorySummary, DisplayName: "会话摘要", ExpectedModelType: enums.AIModelTypeLLM, DefaultAPIMode: "chat_completions"},
 		{UsageCode: enums.ModelUsageSlotCustomerTag, DisplayName: "客户标签", ExpectedModelType: enums.AIModelTypeLLM, DefaultAPIMode: "chat_completions"},
 		{UsageCode: enums.ModelUsageSlotVision, DisplayName: "视觉理解", ExpectedModelType: enums.AIModelTypeVision, DefaultAPIMode: "chat_completions"},
-		{UsageCode: enums.ModelUsageSlotASR, DisplayName: "语音识别", ExpectedModelType: enums.AIModelTypeASR, DefaultAPIMode: "audio_transcriptions"},
+		{UsageCode: enums.ModelUsageSlotASR, DisplayName: "语音识别", ExpectedModelType: enums.AIModelTypeASR, DefaultAPIMode: "audio_transcriptions", Optional: true},
 		{UsageCode: enums.ModelUsageSlotEmbedding, DisplayName: "向量检索", ExpectedModelType: enums.AIModelTypeEmbedding, DefaultAPIMode: "embeddings"},
 		{UsageCode: enums.ModelUsageSlotRerank, DisplayName: "结果重排", ExpectedModelType: enums.AIModelTypeRerank, DefaultAPIMode: "rerank"},
 		{UsageCode: enums.ModelUsageSlotDocumentParser, DisplayName: "文档解析", ExpectedModelType: enums.AIModelTypeLLM, DefaultAPIMode: "chat_completions"},
@@ -385,7 +386,7 @@ func (s *modelProfileService) Publish(req request.ModelProfileRevisionActionRequ
 				current.Revision,
 				digest,
 			) == nil {
-			return errorsx.InvalidParam("当前配置尚未通过受控门店的真实九槽测试")
+			return errorsx.InvalidParam("当前配置尚未通过受控门店的真实启用槽测试")
 		}
 		if err := repositories.ModelProfileTemplateRepository.Updates(ctx.Tx, current.ID, map[string]any{
 			"status": enums.ModelProfileStatusCandidate, "published_at": now,
@@ -424,7 +425,10 @@ func ValidateModelProfileForPublication(template *models.ModelProfileTemplate, s
 			continue
 		}
 		if !slot.Enabled {
-			issues = append(issues, ModelProfileValidationIssue{UsageCode: slot.UsageCode, Message: spec.DisplayName + "槽不能停用"})
+			if !spec.Optional {
+				issues = append(issues, ModelProfileValidationIssue{UsageCode: slot.UsageCode, Message: spec.DisplayName + "槽不能停用"})
+			}
+			continue
 		}
 		if strings.TrimSpace(slot.ModelName) == "" {
 			issues = append(issues, ModelProfileValidationIssue{UsageCode: slot.UsageCode, Message: spec.DisplayName + "模型名不能为空"})

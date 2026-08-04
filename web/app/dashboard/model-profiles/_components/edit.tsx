@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog"
 import { Field, FieldError, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import type {
   ModelProfileSlotPayload,
@@ -209,6 +210,22 @@ export function EditDialog({
                       <Badge variant="secondary">{field.modelType}</Badge>
                       <Badge variant="outline">NewAPI</Badge>
                     </div>
+                    {usageCode === "asr" ? (
+                      <Controller
+                        control={form.control}
+                        name={`slots.${index}.enabled`}
+                        render={({ field: enabledField }) => (
+                          <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                            <Switch
+                              checked={enabledField.value}
+                              onCheckedChange={enabledField.onChange}
+                              aria-label="启用语音识别模型槽"
+                            />
+                            启用语音识别
+                          </label>
+                        )}
+                      />
+                    ) : null}
                   </div>
                   <Field>
                     <FieldLabel htmlFor={`slot-${index}-model`}>模型名</FieldLabel>

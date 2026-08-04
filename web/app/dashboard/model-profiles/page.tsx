@@ -214,15 +214,15 @@ export default function DashboardModelProfilesPage() {
       )
       setValidation(result)
       if (result.status === "passed") {
-        toast.success("真实九槽测试通过")
+        toast.success("真实启用槽测试通过")
       } else if (result.issues.length > 0) {
         toast.error(`结构校验发现 ${result.issues.length} 项问题`)
       } else {
-        toast.error(result.testRun?.errorMessage || "真实九槽测试未通过")
+        toast.error(result.testRun?.errorMessage || "真实启用槽测试未通过")
       }
       await load(selected.id)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "真实九槽测试失败")
+      toast.error(error instanceof Error ? error.message : "真实启用槽测试失败")
     } finally {
       setTesting(false)
     }
@@ -369,7 +369,7 @@ export default function DashboardModelProfilesPage() {
                       onClick={() => void runValidation()}
                     >
                       <TestTube2Icon className={testing ? "animate-pulse" : ""} />
-                      {testing ? "测试中" : "真实九槽测试"}
+                      {testing ? "测试中" : "真实启用槽测试"}
                     </Button>
                     {selected.status === "draft" ? (
                       <Button
@@ -489,7 +489,7 @@ export default function DashboardModelProfilesPage() {
                     ) : (
                       <CircleAlertIcon className="size-4 text-destructive" />
                     )}
-                    <span>{validation.status === "passed" ? "真实九槽测试通过" : "测试未通过"}</span>
+                    <span>{validation.status === "passed" ? "真实启用槽测试通过" : "测试未通过"}</span>
                   </div>
                   {validation.issues.length ? (
                     <div className="divide-y border-y">
@@ -539,8 +539,8 @@ export default function DashboardModelProfilesPage() {
           </DialogHeader>
           <div className="border-y py-3 text-sm">
             {publishNeedsTest
-              ? "当前配置已通过受控门店真实九槽测试。提交后进入候选状态，门店继续使用原生效版本，直至凭据和就绪校验完成。"
-              : "当前没有 active 凭据测试门店。本次仅创建首次启动候选；任何门店激活前仍会强制执行九槽测试并写入不可变证据。"}
+              ? "当前配置已通过受控门店真实启用槽测试。提交后进入候选状态，门店继续使用原生效版本，直至凭据和就绪校验完成。"
+              : "当前没有 active 凭据测试门店。本次仅创建首次启动候选；任何门店激活前仍会强制测试全部启用槽并写入不可变证据。"}
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setPublishTarget(null)}>取消</Button>

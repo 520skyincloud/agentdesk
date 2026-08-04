@@ -41,13 +41,13 @@ type ModelProfileSlot struct {
 	SchemaVersion    string               `gorm:"type:varchar(80);not null;default:''"`
 	PromptTemplate   string               `gorm:"type:text"`
 	JSONSchema       string               `gorm:"type:text"`
-	Enabled          bool                 `gorm:"not null;default:true;index"`
+	Enabled          bool                 `gorm:"not null;index"`
 	SortNo           int                  `gorm:"type:int;not null;default:0;index"`
 	AuditFields
 }
 
 // ModelProfileTestRun is append-only evidence that one exact Profile
-// configuration was exercised against all nine slots with a Store credential.
+// configuration was exercised against every enabled slot with a Store credential.
 // It contains no credential material or fingerprint.
 type ModelProfileTestRun struct {
 	ID                  int64                                  `gorm:"primaryKey;autoIncrement"`

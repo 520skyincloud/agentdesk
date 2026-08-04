@@ -56,6 +56,57 @@ func TestModelProfileRequiresExactlyNineCompatibleNewAPISlots(t *testing.T) {
 	}
 }
 
+func TestModelProfileAllowsOnlyOptionalASRSlotToBeDisabled(t *testing.T) {
+	template := &models.ModelProfileTemplate{Code: "standard", Name: "Standard", GatewayBaseURL: "https://newapi.example.com/v1"}
+	slots := completeModelProfileSlotsForTest(0)
+	for i := range slots {
+		if slots[i].UsageCode == enums.ModelUsageSlotASR {
+			slots[i].Enabled = false
+			slots[i].ModelName = ""
+		}
+	}
+	if issues := ValidateModelProfileForPublication(template, slots); len(issues) != 0 {
+		t.Fatalf("disabled optional ASR issues=%#v", issues)
+	}
+
+	slots[0].Enabled = false
+	if issues := ValidateModelProfileForPublication(template, slots); !hasModelProfileIssue(issues, "槽不能停用") {
+		t.Fatalf("disabled required slot issues=%#v", issues)
+	}
+}
+
+func TestModelProfileUpdatePersistsDisabledASRSlot(t *testing.T) {
+	db := setupModelProfileTestDB(t)
+	operator := modelProfilePlatformOperator()
+	input := completeModelProfileSlotRequestsForTest()
+	created, err := ModelProfileService.Create(request.CreateModelProfileRequest{
+		Code: "asr-optional", Name: "ASR Optional", GatewayBaseURL: "https://newapi.example.com/v1", Slots: input,
+	}, operator)
+	if err != nil {
+		t.Fatalf("Create() error=%v", err)
+	}
+	for i := range input {
+		if input[i].UsageCode == string(enums.ModelUsageSlotASR) {
+			input[i].Enabled = false
+			input[i].ModelName = ""
+		}
+	}
+	if _, err := ModelProfileService.Update(request.UpdateModelProfileRequest{
+		ID: created.Template.ID, Name: created.Template.Name,
+		GatewayBaseURL: created.Template.GatewayBaseURL, Slots: input,
+	}, operator); err != nil {
+		t.Fatalf("Update() error=%v", err)
+	}
+
+	persisted := repositories.ModelProfileSlotRepository.GetByUsage(db, created.Template.ID, enums.ModelUsageSlotASR)
+	if persisted == nil {
+		t.Fatal("persisted ASR slot not found")
+	}
+	if persisted.Enabled {
+		t.Fatal("disabled ASR slot was persisted as enabled")
+	}
+}
+
 func TestModelProfileRevisionBecomesImmutableCandidateAfterConfirmedPublish(t *testing.T) {
 	setupModelProfileTestDB(t)
 	operator := modelProfilePlatformOperator()
@@ -123,7 +174,7 @@ func TestModelProfileBootstrapExceptionRequiresNoActiveCredential(t *testing.T) 
 	if _, err := ModelProfileService.Publish(
 		request.ModelProfileRevisionActionRequest{ID: created.Template.ID, ConfirmRevision: created.Template.Revision},
 		operator,
-	); err == nil || !strings.Contains(err.Error(), "真实九槽测试") {
+	); err == nil || !strings.Contains(err.Error(), "真实启用槽测试") {
 		t.Fatalf("active credential incorrectly used bootstrap exception, error=%v", err)
 	}
 }
@@ -160,7 +211,7 @@ func TestModelProfileConfigurationEditInvalidatesPreviousTestEvidence(t *testing
 	if _, err := service.Publish(
 		request.ModelProfileRevisionActionRequest{ID: draft.ID, ConfirmRevision: draft.Revision},
 		modelProfilePlatformOperator(),
-	); err == nil || !strings.Contains(err.Error(), "真实九槽测试") {
+	); err == nil || !strings.Contains(err.Error(), "真实启用槽测试") {
 		t.Fatalf("edited profile reused stale test evidence, error=%v", err)
 	}
 }
@@ -400,9 +451,17 @@ func TestModelCallResolverKnowledgeDebugRequiresExactBinding(t *testing.T) {
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatal(err)
 	}
+	instance := &models.WxWorkProtocolInstance{
+		TenantID: tenant.ID, StoreID: store.ID, StoreStaffBindingID: binding.ID,
+		Guid: "knowledge-debug-instance", AIReplyEnabled: true, Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Create(&models.ConversationRouteState{
 		TenantID: tenant.ID, ConversationID: conversation.ID, StoreID: store.ID,
-		StoreStaffBindingID: binding.ID,
+		StoreStaffBindingID: binding.ID, WxWorkInstanceID: instance.ID,
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +497,7 @@ func setupModelProfileTestDB(t *testing.T) *gorm.DB {
 	}
 	if err := db.AutoMigrate(
 		&models.Tenant{}, &models.User{}, &models.Store{}, &models.StoreStaffBinding{}, &models.ModelProfileTemplate{}, &models.ModelProfileSlot{}, &models.ModelProfileTestRun{},
-		&models.StoreModelProfileAssignment{}, &models.StoreModelCredential{}, &models.Conversation{}, &models.ConversationRouteState{},
+		&models.StoreModelProfileAssignment{}, &models.StoreModelCredential{}, &models.Conversation{}, &models.ConversationRouteState{}, &models.WxWorkProtocolInstance{},
 	); err != nil {
 		t.Fatalf("AutoMigrate() error=%v", err)
 	}

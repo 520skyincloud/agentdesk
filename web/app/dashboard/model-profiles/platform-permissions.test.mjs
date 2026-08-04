@@ -24,7 +24,7 @@ test("model profile writes require a platform account and final update permissio
 test("model profile publication uses controlled Store evidence", () => {
   assert.match(pageSource, /catalog\?\.testRequired/)
   assert.match(pageSource, /catalog\?\.testTargets/)
-  assert.match(pageSource, /真实九槽测试/)
+  assert.match(pageSource, /真实启用槽测试/)
   assert.match(pageSource, /已有 active 凭据，但测试门店未就绪/)
   assert.match(apiSource, /\/api\/dashboard\/model-profile-template\/test/)
   assert.match(

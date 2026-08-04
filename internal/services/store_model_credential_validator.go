@@ -46,6 +46,12 @@ func (v *newAPIStoreCredentialValidator) Validate(ctx context.Context, template 
 		if !ok {
 			return &storeCredentialValidationError{UsageCode: spec.UsageCode, Class: "slot_missing"}
 		}
+		if !slot.Enabled {
+			if spec.Optional {
+				continue
+			}
+			return &storeCredentialValidationError{UsageCode: spec.UsageCode, Class: "slot_disabled"}
+		}
 		attempts := slot.MaxRetryCount + 1
 		if attempts < 1 {
 			attempts = 1
