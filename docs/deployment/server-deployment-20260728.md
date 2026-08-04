@@ -1004,3 +1004,49 @@ HTTP 200，容器 healthy、重启数 0、启动及运行错误计数 0。使用
 执行一次真实发送后，页面进入“重新发送”状态，数据库中新验证码记录保持未消费且无发送
 错误；未读取、记录或输出验证码。163 邮箱仅作为 SMTP 发件账号，不能直接替代用户表中的
 已验证登录邮箱。
+
+## 门店员工会话工作台权限与 Binding 隔离生产发布
+
+2026-08-04 将门店员工账号接入现有会话工作台，并按当前有效
+`StoreStaffBinding` 收紧企微实例、会话列表、消息读取、消息发送和 WebSocket 实时事件范围。
+本次没有新增平行会话页面，也没有开放租户级账号或跨门店数据权限；管理员、主管和客服原有
+工作台语义保持不变。
+
+发布事实：
+
+```text
+Git 提交：9f1d59380dfc81b672e53b033f32ced669b1ed2c
+发布目录：/opt/agentdesk/releases/20260804-173125-store-staff-workbench/app
+部署前备份：/opt/agentdesk/backups/20260804-173125-store-staff-workbench
+数据库备份 SHA-256：d9006b2d839502c9b5880676096c7f2bf0e3f65f5676e35737861d0bf273dcc1
+回滚镜像：mlogclub/agent-desk:rollback-20260804-173125-store-staff-workbench
+回滚镜像摘要：sha256:cf8cc0be0cbc9eef0dce330c94642310f59ab870738ef82746f8e9e74e10e730
+生产镜像：mlogclub/agent-desk:release-9f1d593-store-staff-workbench
+生产镜像摘要：sha256:098bf43dbcf2ebcf376bfa18f4713198c1f41b80c52739a5b429580f32a094d6
+服务二进制 SHA-256：be9b10ad614ee1c7ceca2cb40e142f20ac85f3d970d424ba3672760509a950f1
+租户审计二进制 SHA-256：f77016ba4203e72e7fb121252bedfb1cd1ab1b3d1b83d567dc29023ce8b24373
+应用容器启动时间：2026-08-04T09:44:43.920248023Z
+```
+
+数据库压缩备份已通过 `gzip -t`，并在独立临时库完成恢复验证：119 张表，Tenant 2、Store 2、
+Binding 2、企微员工号实例 2、Conversation 2、Message 162、Migration 8；临时库随后删除。
+发布时原子切换 `current`，仅使用 `--force-recreate --no-deps agent-desk` 重建应用容器，MySQL
+容器和数据卷未重建。
+
+DML migration 74 在线执行成功且仅有一条成功记录。`store_staff` 系统角色最终各有且仅有一条
+`conversation.view` 和 `conversation.send` 权限，角色权限总记录由 427 增至 429。新容器
+为 healthy，重启数为 0；服务器本机 `/health` 与公网登录页均返回 HTTP 200，最近启动日志
+没有 panic、fatal、migration 或数据库连接错误，敏感配置名称扫描命中为 0。
+
+门店员工真实页面使用独立域名会话复验，保留管理员主域登录不退出。刷新后“门店员工1”已
+出现“会话”和“门店工作台”入口；会话页显示“我的企微账号”，仅呈现其当前 Binding 下的
+合肥南七企微账号和 2 个客户会话，没有开放租户全部账号。页面中的员工身份提示、AI/人工
+状态和消息发送边界均来自现有工作台，没有创建第二套会话或客户身份。
+
+工程验证通过 `go test ./... -count=1`、`go vet ./...`、`pnpm typecheck`、`pnpm build`，以及
+19 项前端导航和账号权限契约测试。Lint 无 error，保留 32 条本次发布前已有 warning。
+
+部署后仍可见两项发布前既有问题：FastGPT Usage 定时同步告警，以及租户审计将
+`StoreModelProfileAssignment.template_id=0` 的 readiness 中间态报告为缺少父引用；新旧镜像
+结果一致，均与本次门店员工会话权限改动无关。本次没有修改 AI 模型配置、计费同步或直接
+改写相关业务数据。
