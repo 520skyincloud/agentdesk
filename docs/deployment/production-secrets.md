@@ -220,12 +220,16 @@ NewAPI Key **不能写入 `.env`**，也不能由 Codex、脚本或 Migration �
 启用 `AGENT_DESK_EMAIL_ENABLED=true` 后必须配置：
 
 - `AGENT_DESK_EMAIL_HOST`
+- `AGENT_DESK_EMAIL_PORT`
+- `AGENT_DESK_EMAIL_TLS_MODE`
 - `AGENT_DESK_EMAIL_USERNAME`
 - `AGENT_DESK_EMAIL_PASSWORD`
 - `AGENT_DESK_EMAIL_FROM`
 - `AGENT_DESK_EMAIL_PUBLIC_URL`
 
-其中密码是秘密，其余仍应按部署配置管理。
+其中密码是秘密，其余仍应按部署配置管理。`AGENT_DESK_EMAIL_TLS_MODE` 只接受
+`tls`、`starttls` 或 `plain`：465 端口的隐式 TLS 服务应使用 `tls`，587 端口通常使用
+`starttls`。
 
 ### 6.2 OIDC
 

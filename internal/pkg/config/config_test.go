@@ -401,6 +401,8 @@ func TestLoadAppliesDeploymentEnvironment(t *testing.T) {
 		"AGENT_DESK_WXWORK_OAUTH_REDIRECT":   "https://console.example.com/wxwork",
 		"AGENT_DESK_WXWORK_ENABLED":          "true",
 		"AGENT_DESK_EMAIL_ENABLED":           "true",
+		"AGENT_DESK_EMAIL_PORT":              "465",
+		"AGENT_DESK_EMAIL_TLS_MODE":          "tls",
 		"AGENT_DESK_OIDC_ENABLED":            "true",
 	}
 	for name, value := range values {
@@ -417,7 +419,7 @@ func TestLoadAppliesDeploymentEnvironment(t *testing.T) {
 	if cfg.DB.DSN != "environment-dsn" || cfg.CustomerSession.Secret != values["AGENT_DESK_CUSTOMER_SESSION_SECRET"] {
 		t.Fatalf("deployment environment was not applied")
 	}
-	if !cfg.Email.Enabled || cfg.Email.Password != values["AGENT_DESK_EMAIL_PASSWORD"] {
+	if !cfg.Email.Enabled || cfg.Email.Password != values["AGENT_DESK_EMAIL_PASSWORD"] || cfg.Email.Port != 465 || cfg.Email.TLSMode != "tls" {
 		t.Fatalf("email environment was not applied")
 	}
 	if !cfg.OIDC.Enabled || cfg.OIDC.ClientSecret != values["AGENT_DESK_OIDC_CLIENT_SECRET"] || cfg.OIDC.StateSecret != values["AGENT_DESK_OIDC_STATE_SECRET"] {
@@ -428,6 +430,32 @@ func TestLoadAppliesDeploymentEnvironment(t *testing.T) {
 	}
 	if cfg.Storage.OSS.AccessKeyID != values["AGENT_DESK_OSS_ACCESS_KEY_ID"] || cfg.Storage.OSS.AccessKeySecret != values["AGENT_DESK_OSS_ACCESS_KEY_SECRET"] {
 		t.Fatalf("OSS environment was not applied")
+	}
+}
+
+func TestLoadRejectsInvalidEmailTransportEnvironment(t *testing.T) {
+	tests := []struct {
+		name  string
+		env   string
+		value string
+	}{
+		{name: "non numeric port", env: "AGENT_DESK_EMAIL_PORT", value: "smtp"},
+		{name: "zero port", env: "AGENT_DESK_EMAIL_PORT", value: "0"},
+		{name: "port above range", env: "AGENT_DESK_EMAIL_PORT", value: "65536"},
+		{name: "unsupported tls mode", env: "AGENT_DESK_EMAIL_TLS_MODE", value: "ssl"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.env, tt.value)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte("db:\n  dsn: test\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tt.env) {
+				t.Fatalf("Load() error=%v want %s validation failure", err, tt.env)
+			}
+		})
 	}
 }
 

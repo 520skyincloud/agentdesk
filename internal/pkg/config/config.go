@@ -468,7 +468,33 @@ func applyOptionalFeatureEnv(cfg *Config) error {
 		*item.target = enabled
 	}
 	applyNonSecretEnvironment(cfg)
+	if err := applyEmailTransportEnvironment(cfg); err != nil {
+		return err
+	}
 	return applyArrivalEnvironment(cfg)
+}
+
+func applyEmailTransportEnvironment(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_EMAIL_PORT")); value != "" {
+		port, err := strconv.Atoi(value)
+		if err != nil || port <= 0 || port > 65535 {
+			return fmt.Errorf("parse AGENT_DESK_EMAIL_PORT: expected an integer between 1 and 65535")
+		}
+		cfg.Email.Port = port
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_EMAIL_TLS_MODE")); value != "" {
+		mode := strings.ToLower(value)
+		switch mode {
+		case "tls", "starttls", "plain":
+			cfg.Email.TLSMode = mode
+		default:
+			return fmt.Errorf("parse AGENT_DESK_EMAIL_TLS_MODE: expected tls, starttls, or plain")
+		}
+	}
+	return nil
 }
 
 func applyNonSecretEnvironment(cfg *Config) {
@@ -584,10 +610,13 @@ func ValidateProduction(cfg *Config) error {
 	}
 	if cfg.Email.Enabled {
 		require(strings.TrimSpace(cfg.Email.Host) != "", "AGENT_DESK_EMAIL_HOST")
+		require(cfg.Email.Port > 0 && cfg.Email.Port <= 65535, "AGENT_DESK_EMAIL_PORT")
 		require(strings.TrimSpace(cfg.Email.Username) != "", "AGENT_DESK_EMAIL_USERNAME")
 		require(strings.TrimSpace(cfg.Email.Password) != "", "AGENT_DESK_EMAIL_PASSWORD")
 		require(strings.TrimSpace(cfg.Email.From) != "", "AGENT_DESK_EMAIL_FROM")
 		require(strings.TrimSpace(cfg.Email.PublicURL) != "", "AGENT_DESK_EMAIL_PUBLIC_URL")
+		tlsMode := strings.ToLower(strings.TrimSpace(cfg.Email.TLSMode))
+		require(tlsMode == "tls" || tlsMode == "starttls" || tlsMode == "plain", "AGENT_DESK_EMAIL_TLS_MODE")
 	}
 	if cfg.OIDC.Enabled {
 		require(strings.TrimSpace(cfg.OIDC.Issuer) != "", "AGENT_DESK_OIDC_ISSUER")

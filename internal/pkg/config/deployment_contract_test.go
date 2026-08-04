@@ -101,6 +101,25 @@ func TestDeploymentTemplatesDeclareBackgroundWorkerMode(t *testing.T) {
 	}
 }
 
+func TestDeploymentTemplatesDeclareEmailTransportOverrides(t *testing.T) {
+	root := repositoryRoot(t)
+	compose := readYAMLMap(t, filepath.Join(root, "docker-compose.yml"))
+	for _, name := range []string{"AGENT_DESK_EMAIL_PORT", "AGENT_DESK_EMAIL_TLS_MODE"} {
+		value := yamlPath(compose, "services", "agent-desk", "environment", name)
+		if value != "${"+name+":-}" {
+			t.Fatalf("compose email transport override %s=%q", name, value)
+		}
+	}
+
+	values := readEnvFile(t, filepath.Join(root, ".env.example"))
+	if values["AGENT_DESK_EMAIL_PORT"] != "587" {
+		t.Fatalf(".env.example email port=%q", values["AGENT_DESK_EMAIL_PORT"])
+	}
+	if values["AGENT_DESK_EMAIL_TLS_MODE"] != "starttls" {
+		t.Fatalf(".env.example email TLS mode=%q", values["AGENT_DESK_EMAIL_TLS_MODE"])
+	}
+}
+
 func TestReleaseImageContainsTenantIntegrityAuditBinary(t *testing.T) {
 	root := repositoryRoot(t)
 	content, err := os.ReadFile(filepath.Join(root, "Dockerfile"))
