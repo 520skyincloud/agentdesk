@@ -1050,3 +1050,47 @@ DML migration 74 在线执行成功且仅有一条成功记录。`store_staff` �
 `StoreModelProfileAssignment.template_id=0` 的 readiness 中间态报告为缺少父引用；新旧镜像
 结果一致，均与本次门店员工会话权限改动无关。本次没有修改 AI 模型配置、计费同步或直接
 改写相关业务数据。
+
+## DeepSeek Flash 切换与九槽直接编辑生产发布
+
+2026-08-05 将当前门店运行方案的回复、意图、摘要和客户标签四个语言槽从
+`deepseek-v4-pro` 切换为 `deepseek-v4-flash`。r2 先使用已有门店 Binding 凭据完成真实启用槽
+测试，再走既有发布、门店批量指派和 `activate_pending` 受保护接口完成切换；没有直接修改
+数据库或员工号凭据。合肥南七和高铁南站店最终均使用 r2，pending 为 0，模型与 FastGPT
+readiness 均为 ready；门店员工1凭据为 K2，门店员工2凭据为 K3。
+
+模型方案页面同步恢复“生效后直接编辑”：active/candidate 保存时由服务层在事务内创建或复用
+同编码 draft，已发布 revision 继续不可变；更新请求必须携带匹配的 `confirmRevision`。页面按
+编码只展示一个逻辑方案，门店常规指派也只提供最新可发布 revision，避免误选旧模型历史。
+
+发布事实：
+
+```text
+Git 提交：003b39304837067f92a20f1eee896f717ce89ff9
+发布包 SHA-256：1a08b1004c315667a0b0ac5ec35f301198e7cd86113c84a619fc0442f7d7837a
+发布目录：/opt/agentdesk/releases/20260805-144227-model-profile-edit/app
+部署前备份：/opt/agentdesk/backups/20260805-144227-model-profile-edit
+数据库备份 SHA-256：c63729a087ffcc781fa2041aabafabf139f948782abc09c779c2e80721e21437
+回滚镜像：mlogclub/agent-desk:rollback-20260805-144227-model-profile-edit
+回滚镜像摘要：sha256:098bf43dbcf2ebcf376bfa18f4713198c1f41b80c52739a5b429580f32a094d6
+生产镜像：mlogclub/agent-desk:release-003b393-model-profile-edit
+生产镜像摘要：sha256:a580db6bc61a7666cb678e44b5810e24845589d9a9a255b14bb2f442e9d1d49c
+服务二进制 SHA-256：801add9755e2d168ed8d823e9e45f68bf12f9807de91f84d7920acdcb2cc1a68
+租户审计二进制 SHA-256：5bd930d260165c13f62afc83d44dbe539c9b39b694acd9c8d46ea2d5269131ee
+应用容器启动时间：2026-08-05T06:58:12.880775693Z
+```
+
+服务器只有 3.6 GiB 内存且未配置 swap，直接执行完整 Docker 多阶段构建时 Next.js 进入持续
+内存压力。该构建在切换前主动终止，旧容器始终在线；随后使用本机已通过 `pnpm build` 的
+`web/out` 交叉编译 Linux/amd64 服务与审计二进制，并从固定回滚镜像组装包含新前端资源的
+候选镜像。候选镜像先校验二进制摘要、revision 标签和新服务契约，再原子切换 `current`，仅
+使用 `--force-recreate --no-deps agent-desk` 重建应用容器，MySQL 未重建。
+
+部署后新容器 healthy、重启数 0，本机 `/health` 和公网模型方案页均为 HTTP 200。启动后
+84 行日志中 error/fatal/panic 和敏感值模式命中均为 0；租户完整性审计覆盖 98 个模型、114
+张表和 287 个关系，结果 passed、0 violation。生产页面只显示一个 `standard` 当前生效方案，
+“编辑配置”可打开完整九槽编辑器，四个语言槽均显示 `deepseek-v4-flash`。数据库复核两家门店
+每家四个 Flash 槽、零个 Pro 槽，员工凭据均 active，方案 revision 均为 r2。
+
+含 `deepseek-v4-pro` 的 r1 作为不可变发布历史保留，当前没有门店或员工 Binding 引用，也不再
+出现在常规方案和门店指派选择中。保留历史是审计要求，不代表 Runtime 仍在使用旧模型。
