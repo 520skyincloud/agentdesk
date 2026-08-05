@@ -35,11 +35,12 @@ type CreateModelProfileRequest struct {
 }
 
 type UpdateModelProfileRequest struct {
-	ID             int64                     `json:"id"`
-	Name           string                    `json:"name"`
-	Description    string                    `json:"description"`
-	GatewayBaseURL string                    `json:"gatewayBaseUrl"`
-	Slots          []ModelProfileSlotRequest `json:"slots"`
+	ID              int64                     `json:"id"`
+	ConfirmRevision int64                     `json:"confirmRevision"`
+	Name            string                    `json:"name"`
+	Description     string                    `json:"description"`
+	GatewayBaseURL  string                    `json:"gatewayBaseUrl"`
+	Slots           []ModelProfileSlotRequest `json:"slots"`
 }
 
 type ModelProfileRevisionActionRequest struct {

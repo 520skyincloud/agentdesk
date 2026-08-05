@@ -255,24 +255,53 @@ func (s *modelProfileService) Update(req request.UpdateModelProfileRequest, oper
 		if current == nil {
 			return errorsx.InvalidParam("模型方案 revision 不存在")
 		}
-		if current.Status != enums.ModelProfileStatusDraft {
-			return errorsx.InvalidParam("只有 draft revision 可以编辑，请创建新 revision")
+		if req.ConfirmRevision <= 0 || req.ConfirmRevision != current.Revision {
+			return errorsx.InvalidParam("二次确认的 revision 与当前模型方案不一致")
 		}
-		updated = *current
+		target := current
+		switch current.Status {
+		case enums.ModelProfileStatusDraft:
+		case enums.ModelProfileStatusCandidate, enums.ModelProfileStatusActive:
+			target, err = repositories.ModelProfileTemplateRepository.FindDraftByCodeForUpdate(ctx.Tx, current.Code)
+			if err != nil {
+				return err
+			}
+			if target == nil {
+				latest, latestErr := repositories.ModelProfileTemplateRepository.GetLatestByCodeForUpdate(ctx.Tx, current.Code)
+				if latestErr != nil {
+					return latestErr
+				}
+				nextRevision := current.Revision + 1
+				if latest != nil && latest.Revision >= nextRevision {
+					nextRevision = latest.Revision + 1
+				}
+				target = &models.ModelProfileTemplate{
+					Code: current.Code, Name: current.Name, Description: current.Description,
+					Revision: nextRevision, GatewayBaseURL: current.GatewayBaseURL,
+					Status: enums.ModelProfileStatusDraft, AuditFields: modelProfileAuditFields(operator, now),
+				}
+				if err := repositories.ModelProfileTemplateRepository.Create(ctx.Tx, target); err != nil {
+					return err
+				}
+			}
+		default:
+			return errorsx.InvalidParam("当前模型方案状态不允许编辑")
+		}
+		updated = *target
 		updated.Name = name
 		updated.Description = strings.TrimSpace(req.Description)
 		updated.GatewayBaseURL = normalizeGatewayBaseURL(req.GatewayBaseURL)
-		slots = buildModelProfileSlots(req.Slots, current.ID, operator, now)
+		slots = buildModelProfileSlots(req.Slots, target.ID, operator, now)
 		if issues := validateModelProfileDraft(&updated, slots); len(issues) > 0 {
 			return errorsx.InvalidParam(issues[0].Message)
 		}
-		if err := repositories.ModelProfileTemplateRepository.Updates(ctx.Tx, current.ID, map[string]any{
+		if err := repositories.ModelProfileTemplateRepository.Updates(ctx.Tx, target.ID, map[string]any{
 			"name": updated.Name, "description": updated.Description, "gateway_base_url": updated.GatewayBaseURL,
 			"update_user_id": operator.UserID, "update_user_name": operator.Username, "updated_at": now,
 		}); err != nil {
 			return err
 		}
-		return repositories.ModelProfileSlotRepository.ReplaceByTemplateID(ctx.Tx, current.ID, slots)
+		return repositories.ModelProfileSlotRepository.ReplaceByTemplateID(ctx.Tx, target.ID, slots)
 	}); err != nil {
 		return nil, err
 	}
@@ -556,12 +585,17 @@ func (s *storeModelProfileAssignmentService) List(req request.GetStoreModelProfi
 	}
 	profiles := repositories.ModelProfileTemplateRepository.Find(sqls.DB(), sqls.NewCnd().In("status", []enums.ModelProfileStatus{
 		enums.ModelProfileStatusCandidate, enums.ModelProfileStatusActive,
-	}).Asc("name").Desc("revision"))
+	}).Asc("code").Desc("revision").Desc("id"))
 	result := &StoreModelProfileAssignmentsData{
 		TenantID: tenantID, Profiles: make([]ModelProfileWithSlots, 0, len(profiles)),
 		Stores: make([]StoreModelProfileAssignmentItem, 0, len(stores)), Templates: make(map[int64]models.ModelProfileTemplate),
 	}
+	seenProfileCodes := make(map[string]struct{}, len(profiles))
 	for i := range profiles {
+		if _, exists := seenProfileCodes[profiles[i].Code]; exists {
+			continue
+		}
+		seenProfileCodes[profiles[i].Code] = struct{}{}
 		slots := repositories.ModelProfileSlotRepository.FindByTemplateID(sqls.DB(), profiles[i].ID)
 		if len(ValidateModelProfileForPublication(&profiles[i], slots)) > 0 {
 			continue

@@ -92,7 +92,7 @@ func TestModelProfileUpdatePersistsDisabledASRSlot(t *testing.T) {
 		}
 	}
 	if _, err := ModelProfileService.Update(request.UpdateModelProfileRequest{
-		ID: created.Template.ID, Name: created.Template.Name,
+		ID: created.Template.ID, ConfirmRevision: created.Template.Revision, Name: created.Template.Name,
 		GatewayBaseURL: created.Template.GatewayBaseURL, Slots: input,
 	}, operator); err != nil {
 		t.Fatalf("Update() error=%v", err)
@@ -107,8 +107,8 @@ func TestModelProfileUpdatePersistsDisabledASRSlot(t *testing.T) {
 	}
 }
 
-func TestModelProfileRevisionBecomesImmutableCandidateAfterConfirmedPublish(t *testing.T) {
-	setupModelProfileTestDB(t)
+func TestModelProfilePublishedRevisionDirectEditCreatesDraft(t *testing.T) {
+	db := setupModelProfileTestDB(t)
 	operator := modelProfilePlatformOperator()
 	input := completeModelProfileSlotRequestsForTest()
 	created, err := ModelProfileService.Create(request.CreateModelProfileRequest{
@@ -130,17 +130,64 @@ func TestModelProfileRevisionBecomesImmutableCandidateAfterConfirmedPublish(t *t
 	if published.Template.Status != enums.ModelProfileStatusCandidate {
 		t.Fatalf("published status=%q", published.Template.Status)
 	}
-	if _, err := ModelProfileService.Update(request.UpdateModelProfileRequest{
-		ID: created.Template.ID, Name: "changed", GatewayBaseURL: created.Template.GatewayBaseURL, Slots: input,
-	}, operator); err == nil {
-		t.Fatal("candidate revision must be immutable")
-	}
-	next, err := ModelProfileService.Create(request.CreateModelProfileRequest{SourceTemplateID: created.Template.ID}, operator)
+	edited, err := ModelProfileService.Update(request.UpdateModelProfileRequest{
+		ID: created.Template.ID, ConfirmRevision: created.Template.Revision,
+		Name: "changed", GatewayBaseURL: created.Template.GatewayBaseURL, Slots: input,
+	}, operator)
 	if err != nil {
-		t.Fatalf("Create(next revision) error=%v", err)
+		t.Fatalf("Update(candidate) error=%v", err)
 	}
-	if next.Template.Code != created.Template.Code || next.Template.Revision != 2 || next.Template.Status != enums.ModelProfileStatusDraft {
-		t.Fatalf("next revision=%#v", next.Template)
+	if edited.Template.ID == created.Template.ID || edited.Template.Revision != 2 || edited.Template.Status != enums.ModelProfileStatusDraft || edited.Template.Name != "changed" {
+		t.Fatalf("edited draft=%#v", edited.Template)
+	}
+	immutable := repositories.ModelProfileTemplateRepository.Get(db, created.Template.ID)
+	if immutable == nil || immutable.Status != enums.ModelProfileStatusCandidate || immutable.Name != created.Template.Name {
+		t.Fatalf("published revision was mutated: %#v", immutable)
+	}
+}
+
+func TestModelProfileActiveDirectEditReusesExistingDraft(t *testing.T) {
+	db := setupModelProfileTestDB(t)
+	operator := modelProfilePlatformOperator()
+	active := createPersistedModelProfileForTest(t, db, "direct-edit-active", 1, enums.ModelProfileStatusActive)
+	draft := createPersistedModelProfileForTest(t, db, "direct-edit-active", 2, enums.ModelProfileStatusDraft)
+	input := completeModelProfileSlotRequestsForTest()
+	input[0].ModelName = "updated-reply-model"
+
+	edited, err := ModelProfileService.Update(request.UpdateModelProfileRequest{
+		ID: active.ID, ConfirmRevision: active.Revision, Name: "直接编辑后的待应用配置",
+		GatewayBaseURL: active.GatewayBaseURL, Slots: input,
+	}, operator)
+	if err != nil {
+		t.Fatalf("Update(active) error=%v", err)
+	}
+	if edited.Template.ID != draft.ID || edited.Template.Revision != draft.Revision || edited.Template.Status != enums.ModelProfileStatusDraft {
+		t.Fatalf("existing draft was not reused: %#v", edited.Template)
+	}
+	if slot := repositories.ModelProfileSlotRepository.GetByUsage(db, draft.ID, enums.ModelUsageSlotReplyLLM); slot == nil || slot.ModelName != "updated-reply-model" {
+		t.Fatalf("draft reply slot=%#v", slot)
+	}
+	unchanged := repositories.ModelProfileTemplateRepository.Get(db, active.ID)
+	if unchanged == nil || unchanged.Status != enums.ModelProfileStatusActive || unchanged.Name != active.Name {
+		t.Fatalf("active revision was mutated: %#v", unchanged)
+	}
+}
+
+func TestModelProfileUpdateRejectsStaleConfirmation(t *testing.T) {
+	setupModelProfileTestDB(t)
+	operator := modelProfilePlatformOperator()
+	created, err := ModelProfileService.Create(request.CreateModelProfileRequest{
+		Code: "stale-direct-edit", Name: "Stale", GatewayBaseURL: "https://newapi.example.com/v1",
+		Slots: completeModelProfileSlotRequestsForTest(),
+	}, operator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ModelProfileService.Update(request.UpdateModelProfileRequest{
+		ID: created.Template.ID, ConfirmRevision: created.Template.Revision + 1, Name: created.Template.Name,
+		GatewayBaseURL: created.Template.GatewayBaseURL, Slots: completeModelProfileSlotRequestsForTest(),
+	}, operator); err == nil {
+		t.Fatal("stale update confirmation must fail")
 	}
 }
 
@@ -340,6 +387,27 @@ func TestStoreModelProfileListIncludesAllActiveCredentialBindings(t *testing.T) 
 	if data.Stores[0].CredentialBindings[0].AccountName != "Store Staff" ||
 		data.Stores[0].CredentialBindings[1].AccountName != "Second Store Staff" {
 		t.Fatalf("credential binding labels=%#v", data.Stores[0].CredentialBindings)
+	}
+}
+
+func TestStoreModelProfileListOnlyOffersLatestPublishedRevisionPerCode(t *testing.T) {
+	db := setupModelProfileTestDB(t)
+	tenant, _ := createModelProfileTenantAndStore(t, db)
+	oldProfile := createPersistedModelProfileForTest(t, db, "latest-assignment", 1, enums.ModelProfileStatusActive)
+	latestProfile := createPersistedModelProfileForTest(t, db, "latest-assignment", 2, enums.ModelProfileStatusActive)
+
+	data, err := StoreModelProfileAssignmentService.List(
+		request.GetStoreModelProfileAssignmentsRequest{TenantID: tenant.ID},
+		modelProfilePlatformOperator(),
+	)
+	if err != nil {
+		t.Fatalf("List() error=%v", err)
+	}
+	if len(data.Profiles) != 1 || data.Profiles[0].Template.ID != latestProfile.ID {
+		t.Fatalf("assignable profiles=%#v", data.Profiles)
+	}
+	if _, exists := data.Templates[oldProfile.ID]; exists {
+		t.Fatalf("historical profile unexpectedly remained assignable: %#v", data.Templates[oldProfile.ID])
 	}
 }
 

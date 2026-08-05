@@ -2450,6 +2450,7 @@ export type CreateModelProfilePayload = {
 
 export type UpdateModelProfilePayload = {
   id: number
+  confirmRevision: number
   name: string
   description: string
   gatewayBaseUrl: string

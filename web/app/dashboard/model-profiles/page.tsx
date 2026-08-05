@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   CheckCircle2Icon,
   CircleAlertIcon,
-  CopyPlusIcon,
   Edit3Icon,
   PlusIcon,
   RefreshCwIcon,
@@ -49,11 +48,35 @@ import { formatDateTime } from "@/lib/utils"
 import { EditDialog, type ModelProfileFormValues } from "./_components/edit"
 
 const statusLabels: Record<ModelProfileTemplate["status"], string> = {
-  draft: "草稿",
-  candidate: "候选",
-  active: "生效",
+  draft: "待应用修改",
+  candidate: "待门店应用",
+  active: "当前生效",
   retired: "已退役",
   disabled: "已停用",
+}
+
+const logicalProfilePriority: Record<ModelProfileTemplate["status"], number> = {
+  draft: 5,
+  candidate: 4,
+  active: 3,
+  disabled: 2,
+  retired: 1,
+}
+
+function logicalModelProfiles(profiles: ModelProfileTemplate[]) {
+  const byCode = new Map<string, ModelProfileTemplate>()
+  for (const profile of profiles) {
+    const current = byCode.get(profile.code)
+    if (
+      !current ||
+      logicalProfilePriority[profile.status] > logicalProfilePriority[current.status] ||
+      (logicalProfilePriority[profile.status] === logicalProfilePriority[current.status] &&
+        profile.revision > current.revision)
+    ) {
+      byCode.set(profile.code, profile)
+    }
+  }
+  return Array.from(byCode.values())
 }
 
 function statusVariant(status: ModelProfileTemplate["status"]) {
@@ -95,6 +118,7 @@ export default function DashboardModelProfilesPage() {
     try {
       const next = await fetchModelProfileCatalog()
       setCatalog(next)
+      const logicalProfiles = logicalModelProfiles(next.profiles)
       setTestTargetValue((current) => {
         const values = new Set(
           next.testTargets.map(
@@ -109,9 +133,10 @@ export default function DashboardModelProfilesPage() {
       })
       setSelectedId((current) => {
         const requested = preferredId || current
-        return next.profiles.some((item) => item.id === requested)
-          ? requested
-          : (next.profiles[0]?.id ?? 0)
+        const requestedProfile = next.profiles.find((item) => item.id === requested)
+        return requestedProfile
+          ? (logicalProfiles.find((item) => item.code === requestedProfile.code)?.id ?? 0)
+          : (logicalProfiles[0]?.id ?? 0)
       })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "读取模型方案失败")
@@ -137,6 +162,10 @@ export default function DashboardModelProfilesPage() {
     () => catalog?.profiles.find((item) => item.id === selectedId) ?? null,
     [catalog, selectedId],
   )
+  const visibleProfiles = useMemo(
+    () => logicalModelProfiles(catalog?.profiles ?? []),
+    [catalog],
+  )
   const selectedTestTarget = useMemo(
     () =>
       catalog?.testTargets.find(
@@ -159,6 +188,7 @@ export default function DashboardModelProfilesPage() {
       const saved = editingProfile
         ? await updateModelProfile({
             id: editingProfile.id,
+            confirmRevision: editingProfile.revision,
             name: values.name.trim(),
             description: values.description.trim(),
             gatewayBaseUrl: values.gatewayBaseUrl.trim(),
@@ -171,29 +201,18 @@ export default function DashboardModelProfilesPage() {
             gatewayBaseUrl: values.gatewayBaseUrl.trim(),
             slots: values.slots,
           })
-      toast.success(editingProfile ? "草稿已更新" : "模型方案已创建")
+      toast.success(
+        editingProfile
+          ? editingProfile.status === "draft"
+            ? "待应用修改已更新"
+            : "修改已保存，待应用"
+          : "模型方案已创建",
+      )
       setEditorOpen(false)
       setValidation(null)
       await load(saved.id)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "保存模型方案失败")
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function createRevision() {
-    if (!selected) return
-    setSaving(true)
-    try {
-      const created = await createModelProfile({ sourceTemplateId: selected.id })
-      toast.success(`已创建版本 ${created.revision}`)
-      setValidation(null)
-      await load(created.id)
-      setEditingProfile(created)
-      setEditorOpen(true)
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "创建新版本失败")
     } finally {
       setSaving(false)
     }
@@ -233,7 +252,7 @@ export default function DashboardModelProfilesPage() {
     setSaving(true)
     try {
       const published = await publishModelProfile(publishTarget.id, publishTarget.revision)
-      toast.success(`版本 ${published.revision} 已提交为候选`)
+      toast.success("模型修改已提交应用")
       setPublishTarget(null)
       setValidation(null)
       await load(published.id)
@@ -279,11 +298,11 @@ export default function DashboardModelProfilesPage() {
       <div className="grid min-h-[620px] lg:grid-cols-[300px_minmax(0,1fr)]">
         <aside className="border-b py-4 lg:border-r lg:border-b-0 lg:pr-4">
           <div className="mb-3 flex items-center justify-between px-1">
-            <span className="text-sm font-medium">方案版本</span>
-            <Badge variant="secondary">{catalog?.profiles.length ?? 0}</Badge>
+            <span className="text-sm font-medium">模型方案</span>
+            <Badge variant="secondary">{visibleProfiles.length}</Badge>
           </div>
           <div className="max-h-[680px] divide-y overflow-y-auto border-y">
-            {catalog?.profiles.map((item) => (
+            {visibleProfiles.map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -299,13 +318,12 @@ export default function DashboardModelProfilesPage() {
                   <span className="truncate text-sm font-medium">{item.name}</span>
                   <Badge variant={statusVariant(item.status)}>{statusLabels[item.status]}</Badge>
                 </div>
-                <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <div className="mt-1 text-xs text-muted-foreground">
                   <span className="truncate font-mono">{item.code}</span>
-                  <span>r{item.revision}</span>
                 </div>
               </button>
             ))}
-            {!loading && !catalog?.profiles.length ? (
+            {!loading && !visibleProfiles.length ? (
               <div className="px-3 py-12 text-center text-sm text-muted-foreground">暂无模型方案</div>
             ) : null}
           </div>
@@ -319,7 +337,6 @@ export default function DashboardModelProfilesPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="text-lg font-semibold">{selected.name}</h2>
                     <Badge variant={statusVariant(selected.status)}>{statusLabels[selected.status]}</Badge>
-                    <Badge variant="outline">版本 {selected.revision}</Badge>
                   </div>
                   <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{selected.description || "-"}</p>
                   <div className="mt-3 grid gap-x-8 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
@@ -329,25 +346,22 @@ export default function DashboardModelProfilesPage() {
                 </div>
                 {canUpdate ? (
                   <div className="flex max-w-xl flex-wrap items-center justify-end gap-2">
-                    {selected.status === "draft" ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setEditingProfile(selected)
-                        setEditorOpen(true)
-                      }}
-                    >
-                      <Edit3Icon />
-                      编辑
-                    </Button>
-                    ) : (
-                      <Button type="button" variant="outline" size="sm" onClick={() => void createRevision()} disabled={saving}>
-                        <CopyPlusIcon />
-                        新版本
+                    {selected.status === "draft" ||
+                    selected.status === "candidate" ||
+                    selected.status === "active" ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setEditingProfile(selected)
+                          setEditorOpen(true)
+                        }}
+                      >
+                        <Edit3Icon />
+                        编辑配置
                       </Button>
-                    )}
+                    ) : null}
                     <OptionCombobox
                       value={testTargetValue}
                       options={(catalog?.testTargets ?? []).map((item) => ({
@@ -382,7 +396,7 @@ export default function DashboardModelProfilesPage() {
                         onClick={() => setPublishTarget(selected)}
                       >
                         <RocketIcon />
-                        提交候选
+                        应用修改
                       </Button>
                     ) : null}
                   </div>
@@ -532,10 +546,8 @@ export default function DashboardModelProfilesPage() {
       <Dialog open={Boolean(publishTarget)} onOpenChange={(open) => !open && setPublishTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>提交候选版本</DialogTitle>
-            <DialogDescription>
-              {publishTarget ? `${publishTarget.name} · 版本 ${publishTarget.revision}` : ""}
-            </DialogDescription>
+            <DialogTitle>应用模型修改</DialogTitle>
+            <DialogDescription>{publishTarget?.name ?? ""}</DialogDescription>
           </DialogHeader>
           <div className="border-y py-3 text-sm">
             {publishNeedsTest
@@ -545,7 +557,7 @@ export default function DashboardModelProfilesPage() {
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setPublishTarget(null)}>取消</Button>
             <Button type="button" onClick={() => void confirmPublish()} disabled={saving}>
-              {saving ? "提交中..." : `确认版本 ${publishTarget?.revision ?? ""}`}
+              {saving ? "提交中..." : "确认应用修改"}
             </Button>
           </DialogFooter>
         </DialogContent>

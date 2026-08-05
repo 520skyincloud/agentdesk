@@ -51,6 +51,42 @@ func (r *modelProfileTemplateRepository) GetLatestByCode(db *gorm.DB, code strin
 	return r.FindOne(db, sqls.NewCnd().Eq("code", code).Desc("revision").Desc("id"))
 }
 
+func (r *modelProfileTemplateRepository) GetLatestByCodeForUpdate(db *gorm.DB, code string) (*models.ModelProfileTemplate, error) {
+	if db == nil || code == "" {
+		return nil, errors.New("model profile template code is required")
+	}
+	item := &models.ModelProfileTemplate{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("code = ?", code).
+		Order("revision DESC, id DESC").
+		Take(item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func (r *modelProfileTemplateRepository) FindDraftByCodeForUpdate(db *gorm.DB, code string) (*models.ModelProfileTemplate, error) {
+	if db == nil || code == "" {
+		return nil, errors.New("model profile template code is required")
+	}
+	item := &models.ModelProfileTemplate{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("code = ? AND status = ?", code, enums.ModelProfileStatusDraft).
+		Order("revision DESC, id DESC").
+		Take(item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
 func (r *modelProfileTemplateRepository) FindActiveByCode(db *gorm.DB, code string) *models.ModelProfileTemplate {
 	return r.FindOne(db, sqls.NewCnd().Eq("code", code).Eq("status", enums.ModelProfileStatusActive).Desc("revision").Desc("id"))
 }

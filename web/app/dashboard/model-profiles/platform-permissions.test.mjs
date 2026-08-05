@@ -33,3 +33,13 @@ test("model profile publication uses controlled Store evidence", () => {
   )
   assert.doesNotMatch(apiSource, /validateModelProfile\([^)]*apiKey/)
 })
+
+test("published model profiles remain directly editable through an audited draft", () => {
+  assert.match(pageSource, /logicalModelProfiles/)
+  assert.match(pageSource, /selected\.status === "active"/)
+  assert.match(pageSource, /selected\.status === "candidate"/)
+  assert.match(pageSource, /编辑配置/)
+  assert.match(pageSource, /confirmRevision: editingProfile\.revision/)
+  assert.match(apiSource, /confirmRevision: number/)
+  assert.doesNotMatch(pageSource, /新版本/)
+})

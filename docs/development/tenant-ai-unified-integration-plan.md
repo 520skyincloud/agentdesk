@@ -436,3 +436,14 @@ pnpm --dir web build
 - 并行影响：`ai-billing` 作为行为来源不得整分支合并；`customer-audit` 若修改 Message/Conversation/Outbox，必须保留任务原子提交和稳定 RequestID。建议先合并本任务的 Schema/Repository，再合并 Runtime/Message 集成。
 - 回滚：部署前可整体回滚；部署后回滚应用不会自动删除任务表。旧版本不会消费新任务，回滚前必须停入站、排空或明确保留任务，再切换版本，禁止手工伪造完成状态。
 - 本轮边界：只在本地实现和测试，不提交、不推送、不部署；真实 NewAPI/FastGPT/企微验收必须在后续发布窗口单独执行。
+
+### 2026-08-05 九槽模型方案直接编辑
+
+- 目标：平台管理员可以从当前生效、待门店应用或待应用修改状态直接进入同一个九槽编辑器，不再要求用户手工创建“新版本”。
+- 数据语义：已发布 revision 继续保持不可变；编辑 active/candidate 时，服务层在事务内创建或复用同编码的 draft revision，保存后由既有真实启用槽测试、发布和门店切换流程生效。
+- 并发保护：更新请求新增 `confirmRevision`，服务层锁定来源 revision 和目标 draft；确认值过期、状态不可编辑或并发变化时 fail closed。
+- 页面：同编码的历史 revision 收敛为一个逻辑方案，按 draft、candidate、active 顺序展示当前操作对象；按钮统一为“编辑配置”和“应用修改”，历史 revision 仍保留在数据库与审计记录中。
+- 门店指派：同编码只提供最新的 candidate/active revision，避免管理员误将门店重新指派到仍保留的旧模型历史版本。
+- 数据与接口：无 model、AutoMigrate、DML migration、enum、路由、WebSocket 或计费变化；只向现有更新 DTO 增加 revision 二次确认字段。
+- 并行影响：修改模型 Profile repository/service、请求 DTO 和模型方案页面；不改 AI Runtime、消息链路、员工号协议或 Store Credential 密钥语义。后续发布只基于 `weibao/main`。
+- 回滚：可回滚应用；已创建的 draft revision 可以保留，不影响门店继续使用原 active revision，禁止手工覆盖 active 槽或员工号凭据。

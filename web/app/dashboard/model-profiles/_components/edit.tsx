@@ -153,7 +153,11 @@ export function EditDialog({
         <DialogHeader className="border-b px-6 py-5">
           <DialogTitle>{profile ? `编辑 ${profile.name}` : "新建模型方案"}</DialogTitle>
           <DialogDescription>
-            {profile ? `${profile.code} · 版本 ${profile.revision}` : "草稿版本 1"}
+            {profile
+              ? profile.status === "draft"
+                ? `${profile.code} · 待应用修改`
+                : `${profile.code} · 修改将在应用后生效`
+              : "新建模型方案"}
           </DialogDescription>
         </DialogHeader>
 
@@ -352,7 +356,7 @@ export function EditDialog({
             取消
           </Button>
           <Button type="submit" form="model-profile-form" disabled={saving}>
-            {saving ? "保存中..." : "保存草稿"}
+            {saving ? "保存中..." : "保存修改"}
           </Button>
         </DialogFooter>
       </DialogContent>
