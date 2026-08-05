@@ -1130,3 +1130,44 @@ HTTP 200；启动日志未发现 fatal、panic、migration/database 启动错误
 性审计覆盖 98 个模型、114 张表和 287 个关系，结果 passed、0 violation。验证通过
 `go test ./... -count=1`、`go vet ./...`、`pnpm typecheck` 和 `pnpm build`。本次没有模型、
 Migration、DTO、公开接口、WebSocket 或 AI 知识检索协议变化。
+
+## AI 回复调度降延迟与 DeepSeek 思考关闭生产发布
+
+2026-08-05 按 `origin/codex/ai-billing@4db7993` 的最新回复链路核对并修复生产运行时。
+`AIReplyJob` 到期任务改为非阻塞派发，单进程最多 4 个 worker；同一会话的新客户消息会取消旧执行，
+旧任务重新检查消息新鲜度后收敛为 `superseded`，持久任务、租约、重试、恢复和 Outbox 幂等边界保持不变。
+
+DeepSeek V4 的识别不再依赖官方 BaseURL。Runtime、辅助 LLM 和九槽凭据连通性验证经统一 NewAPI
+网关调用 `deepseek-v4-flash` 时均显式发送 `thinking.type=disabled`。本次没有修改前端、公开 API、
+DTO、数据库模型、Migration、WebSocket、计费口径或生产密钥。
+
+发布事实：
+
+```text
+Git 提交：43948c68e08a2b88800a4933afcc2b4528ac1f3a
+源码包 SHA-256：798f61a6473769d32095a8c61dc8bbe57851a8f0a10d6a42882b86054c31949b
+发布目录：/opt/agentdesk/releases/20260805-171500-ai-reply-43948c6/app
+部署前备份：/opt/agentdesk/backups/pre-43948c6-20260805T090717Z
+旧发布目录备份 SHA-256：67c21ff34802a8219a0d9298c4709e2dd17dedbc82a1fb02abc0f6420e58249c
+数据库备份 SHA-256：44723841751fa150e3a08e7fdd38d7971a90ba196bddbb030a86f053b443c9df1
+旧镜像备份 SHA-256：eac66232a3cf8c9473760f54cc9fefbd1a2a06df78b042e5de698c118a57696a
+回滚镜像：mlogclub/agent-desk:rollback-pre-43948c6
+生产镜像：mlogclub/agent-desk:43948c6
+生产镜像摘要：sha256:e36507720791ba3176a756dacdc3bd9a9060b5080b12d97adba510d7293a35ff
+服务二进制 SHA-256：66e39a17643222acdf7ceb244ab14ca0f717319d532106af4b9c7a858d876b01
+租户审计二进制 SHA-256：e1c1229caac8553ab14fef93c91f5e476f9b13e6b8a264ec75f1324fb5f32542
+应用容器启动时间：2026-08-05T09:12:08.824045237Z（北京时间 17:12:08）
+MySQL 容器启动时间：2026-08-03T07:23:35.617760019Z
+```
+
+数据库使用 `--no-tablespaces --single-transaction --quick --routines --triggers` 导出，压缩包通过
+`gzip -t` 且包含 `Dump completed on` 完成标记。发布时原子切换 `current`，仅执行
+`--force-recreate --no-deps agent-desk`；MySQL 容器 ID 和启动时间未变化，重启数为 0。
+
+新应用容器为 `healthy`、重启数 0，容器内二进制摘要与本地发布产物一致。租户完整性审计退出码为
+0；启动后日志中 panic、fatal 和 error level 均为 0。公网首页与会话页均返回 HTTP 200，实测耗时
+分别约 0.298 秒和 0.284 秒。工程验证通过 `go test ./internal/ai/... -count=1`、
+`go test ./internal/services -count=1`、指定范围 race 测试、`go test ./... -count=1` 和 `go vet ./...`。
+
+发布后尚未代替客户伪造真实入站消息。需要由用户发送一组连续测试消息后，再只按聚合用量事实确认
+成功 DeepSeek 调用的 `reasoning_tokens=0`，不得读取消息正文、Prompt、API Key 或访问令牌。
