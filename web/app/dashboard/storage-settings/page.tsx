@@ -25,7 +25,7 @@ const defaultSetting: StorageSetting = {
   ossPrivate: false,
   ossSignedUrlExpireSeconds: 600,
   wecdnBaseUrl: "",
-  publicAssetBaseUrl: "http://kefuceshi.omnireva.com",
+  publicAssetBaseUrl: "",
 }
 
 export default function StorageSettingsPage() {

@@ -1094,3 +1094,39 @@ Git 提交：003b39304837067f92a20f1eee896f717ce89ff9
 
 含 `deepseek-v4-pro` 的 r1 作为不可变发布历史保留，当前没有门店或员工 Binding 引用，也不再
 出现在常规方案和门店指派选择中。保留历史是审计要求，不代表 Runtime 仍在使用旧模型。
+
+## 知识库图片企微投递修复
+
+2026-08-05 排查确认 AI 已正确检索知识记录并创建图片消息，故障发生在企微富媒体 Outbox：
+全局 `storage.asset.publicAssetBaseUrl` 仍指向已无法解析的历史域名，并优先覆盖企微渠道自身的
+正确公网地址，导致 `/cloud/c2c_upload` 返回错误码 `-1`，最终 `/msg/send_image` 未执行。
+同一轮 AI 文本消息已成功发送，因此可以排除会话映射、员工号实例和知识检索整体故障。
+
+线上先将全局公网资产地址修正为 `https://weibao.omnireva.com`。原失败图片任务随后自动重试
+成功，Outbox 状态为 `sent`，错误清空，消息已取得协议 `file_id/aes_key` 并生成 sent 渠道消息
+映射；没有重新创建知识图片或伪造渠道成功。代码同步删除后端与存储设置页面中的历史域名
+默认值，全局值为空时继续使用企微渠道配置，并为 `get_cdn_info`、`c2c_upload` 和上传响应解析
+增加受控阶段标识。
+
+发布事实：
+
+```text
+源码基线：79704312acf7e99acfbff619a5130fd67b6e7cfa（含本次工作树修复）
+发布目录：/opt/agentdesk/releases/20260805-155011-knowledge-image-delivery/app
+部署前备份：/opt/agentdesk/backups/20260805-155011-knowledge-image-delivery
+数据库备份 SHA-256：538f837bb00c7beb6a89306c6026a0547a35e57da051bb6798aff2e635f64019
+源码包 SHA-256：f9f39a98298dddcd029c7a89bd21a6c40ca741736779cc943ff3b7850743c1de
+服务二进制 SHA-256：2ad8669be9e1275b0f25375ce5cae3526e7a799c9d3787232ddadb797668a113
+租户审计二进制 SHA-256：a62ffc57dee7a0b3257bdffc9929bde47fbd3b22a6e787f7e4e81780f3e9e57a
+回滚镜像：mlogclub/agent-desk:rollback-20260805-155011-knowledge-image-delivery
+生产镜像：mlogclub/agent-desk:release-20260805-155011-knowledge-image-delivery
+生产镜像摘要：sha256:3551a73678aac8ed45ef7904992ca5efba4b5dee74949c1e61aedcd6f29bd70b
+应用容器启动时间：2026-08-05T07:55:20.947486244Z
+```
+
+数据库备份使用 `--no-tablespaces --single-transaction`，通过 `gzip -t` 并在独立临时库恢复出
+119 张表后删除临时库。新容器 healthy、重启数 0，本机与公网健康检查、会话页面均返回
+HTTP 200；启动日志未发现 fatal、panic、migration/database 启动错误或敏感配置名。租户完整
+性审计覆盖 98 个模型、114 张表和 287 个关系，结果 passed、0 violation。验证通过
+`go test ./... -count=1`、`go vet ./...`、`pnpm typecheck` 和 `pnpm build`。本次没有模型、
+Migration、DTO、公开接口、WebSocket 或 AI 知识检索协议变化。

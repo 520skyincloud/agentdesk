@@ -2342,7 +2342,7 @@ func (s *wxWorkProtocolService) uploadAssetToWECDN(cfg *dto.WxWorkProtocolChanne
 	fileType := wxProtocolC2CFileType(messageType, asset)
 	cfgBase, err := s.getCDNInfo(cfg, instance)
 	if err != nil {
-		return media, err
+		return media, fmt.Errorf("企微富媒体上传失败（stage=get_cdn_info）: %w", err)
 	}
 	body := map[string]any{
 		"base_request": cfgBase,
@@ -2351,11 +2351,11 @@ func (s *wxWorkProtocolService) uploadAssetToWECDN(cfg *dto.WxWorkProtocolChanne
 	}
 	raw, err := s.postWECDNJSON(cfg, "/cloud/c2c_upload", body)
 	if err != nil {
-		return media, err
+		return media, fmt.Errorf("企微富媒体上传失败（stage=c2c_upload）: %w", err)
 	}
 	media, err = parseWECDNMediaResponse(raw)
 	if err != nil {
-		return media, err
+		return media, fmt.Errorf("企微富媒体上传失败（stage=parse_c2c_upload_response）: %w", err)
 	}
 	if media.FileName == "" {
 		media.FileName = asset.Filename

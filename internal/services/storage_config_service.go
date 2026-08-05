@@ -63,9 +63,6 @@ func DefaultStorageSetting() StorageSetting {
 	if setting.OSSObjectPrefix == "" {
 		setting.OSSObjectPrefix = "desk"
 	}
-	if setting.PublicAssetBaseURL == "" {
-		setting.PublicAssetBaseURL = "http://kefuceshi.omnireva.com"
-	}
 	return setting
 }
 
