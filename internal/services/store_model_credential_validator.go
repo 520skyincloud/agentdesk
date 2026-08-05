@@ -15,6 +15,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/modelconfig"
 )
 
 type storeCredentialSlotValidator interface {
@@ -118,11 +119,15 @@ func (v *newAPIStoreCredentialValidator) validateTextModel(ctx context.Context, 
 			"model": slot.ModelName, "instructions": "这是连接验证。", "input": prompt, "max_output_tokens": 16,
 		}, validateResponsesPayload)
 	}
-	return v.doJSON(ctx, baseURL, "/chat/completions", slot, apiKey, map[string]any{
+	payload := map[string]any{
 		"model":      slot.ModelName,
 		"messages":   []map[string]any{{"role": "system", "content": "这是连接验证。"}, {"role": "user", "content": prompt}},
 		"max_tokens": 16,
-	}, validateChatPayload)
+	}
+	if modelconfig.IsDeepSeekV4Model(slot.ModelName) {
+		payload["thinking"] = map[string]any{"type": "disabled"}
+	}
+	return v.doJSON(ctx, baseURL, "/chat/completions", slot, apiKey, payload, validateChatPayload)
 }
 
 func (v *newAPIStoreCredentialValidator) validateVision(ctx context.Context, baseURL string, slot models.ModelProfileSlot, apiKey string) error {

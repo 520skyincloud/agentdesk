@@ -217,7 +217,5 @@ func isDashScopeQwenThinkingModel(config modelconfig.Config) bool {
 }
 
 func isDeepSeekV4ThinkingModel(config modelconfig.Config) bool {
-	baseURL := strings.ToLower(strings.TrimSpace(config.BaseURL))
-	modelName := strings.ToLower(strings.TrimSpace(config.ModelName))
-	return strings.Contains(baseURL, "api.deepseek.com") && strings.HasPrefix(modelName, "deepseek-v4")
+	return modelconfig.IsDeepSeekV4Model(config.ModelName)
 }

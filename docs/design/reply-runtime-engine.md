@@ -101,6 +101,11 @@ IntentDetect 的单次调用超时必须读取当前意图模型槽的 `TimeoutM
 60 秒默认值。禁止在 Runtime 内再叠加短于模型槽配置的固定上限。上游 Context 取消、任务
 租约丢失和会话状态变化仍可提前取消调用。
 
+DeepSeek V4 的 Chat Completions 调用必须显式携带 `thinking.type=disabled`。该契约只按模型名
+识别，不能依赖 BaseURL 是否为 DeepSeek 官方域名，因此统一 NewAPI 网关、Runtime 主链、
+辅助 LLM 调用和九槽连通性验证必须保持一致。生产验收还需以成功用量记录中的
+`reasoning_tokens=0` 确认上游真实执行结果。
+
 ## 5. 阶段编排
 
 ```text
@@ -150,7 +155,8 @@ pending -> processing -> completed | skipped | superseded | expired | failed
                      \-> retry -> processing
 ```
 
-- `cronx` 每秒 Claim，单进程最多并发 4 个任务。
+- `cronx` 每秒 Claim，`ProcessDue` 只负责非阻塞派发，不等待整批模型调用完成；单进程最多并发 4 个任务。
+- 新客户消息提交后立即取消同一会话中更早的活动 Context；旧任务重新检查最新消息并直接收敛为 `superseded`，不得占用重试次数。
 - CAS 租约为 90 秒，每 30 秒续租；租约丢失立即取消 Context，Commit 前再次校验租约和业务范围。
 - 模型执行最多 4 次，失败退避依次为 15 秒、1 分钟、3 分钟。
 - 任务创建 15 分钟后仍是最新消息且无人回复时，不再调用模型，使用稳定请求键进入现有人工任务池。

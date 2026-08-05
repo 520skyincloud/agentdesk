@@ -787,6 +787,9 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	if err != nil {
 		return nil, err
 	}
+	if senderType == enums.IMSenderTypeCustomer {
+		AIReplyJobService.NotifyNewerMessage(conversation.ID, message.ID)
+	}
 	s.publishCommittedMessage(conversation, message)
 
 	if senderType == enums.IMSenderTypeAgent {

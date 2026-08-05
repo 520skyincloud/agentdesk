@@ -77,7 +77,7 @@ func Init() {
 	addFunc(c, "@every 1s", func() {
 		count := services.AIReplyJobService.ProcessDue(4)
 		if count > 0 {
-			slog.Info("AI reply jobs handled", "count", count)
+			slog.Info("AI reply jobs dispatched", "count", count)
 		}
 	})
 

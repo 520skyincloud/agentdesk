@@ -1,6 +1,10 @@
 package modelconfig
 
-import "agent-desk/internal/pkg/enums"
+import (
+	"strings"
+
+	"agent-desk/internal/pkg/enums"
+)
 
 // Config is the transient model-call shape used by AI runtimes. It is not a
 // database entity and must never be serialized into API responses or logs.
@@ -17,4 +21,8 @@ type Config struct {
 	TimeoutMS        int               `json:"-"`
 	MaxRetryCount    int               `json:"-"`
 	Temperature      float64           `json:"-"`
+}
+
+func IsDeepSeekV4Model(modelName string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "deepseek-v4")
 }

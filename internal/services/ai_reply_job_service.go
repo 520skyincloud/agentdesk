@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,8 +39,10 @@ var (
 )
 
 type aiReplyJobService struct {
-	running       atomic.Bool
-	humanDispatch func(state *aiReplyJobExecutionState, job *models.AIReplyJob, reason string) error
+	workerSlots      chan struct{}
+	activeMu         sync.Mutex
+	activeExecutions map[int64]map[int64]context.CancelFunc
+	humanDispatch    func(state *aiReplyJobExecutionState, job *models.AIReplyJob, reason string) error
 }
 
 type aiReplyJobLeaseContext struct {
@@ -73,7 +76,10 @@ func (e *aiReplyJobTerminalError) Error() string {
 }
 
 func newAIReplyJobService() *aiReplyJobService {
-	return &aiReplyJobService{}
+	return &aiReplyJobService{
+		workerSlots:      make(chan struct{}, aiReplyJobMaxConcurrency),
+		activeExecutions: make(map[int64]map[int64]context.CancelFunc),
+	}
 }
 
 func (s *aiReplyJobService) EnqueueForMessageDB(db *gorm.DB, conversation *models.Conversation, message *models.Message) (*models.AIReplyJob, bool, error) {
@@ -187,10 +193,6 @@ func aiReplyTriggerKind(message *models.Message) (enums.AIReplyJobTriggerKind, b
 }
 
 func (s *aiReplyJobService) ProcessDue(limit int) int {
-	if !s.running.CompareAndSwap(false, true) {
-		return 0
-	}
-	defer s.running.Store(false)
 	if limit <= 0 || limit > aiReplyJobMaxConcurrency {
 		limit = aiReplyJobMaxConcurrency
 	}
@@ -200,39 +202,91 @@ func (s *aiReplyJobService) ProcessDue(limit int) int {
 		slog.Error("find due AI reply jobs failed", "stage", "claim_scan", "error_class", "database_error")
 		return 0
 	}
-	type claimedJob struct {
-		item  models.AIReplyJob
-		owner string
-	}
-	claimed := make([]claimedJob, 0, len(candidates))
+	claimed := 0
 	for i := range candidates {
+		if !s.tryReserveWorkerSlot() {
+			break
+		}
 		owner := "ai-reply-" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		ok, claimErr := repositories.AIReplyJobRepository.TryClaim(
 			sqls.DB(), candidates[i].ID, candidates[i].TenantID, owner, now, now.Add(aiReplyJobLeaseDuration),
 		)
 		if claimErr != nil {
+			s.releaseWorkerSlot()
 			slog.Warn("claim AI reply job failed", "job_id", candidates[i].ID, "stage", "claim", "error_class", "database_error")
 			continue
 		}
-		if ok {
-			current := repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), candidates[i].ID, candidates[i].TenantID)
-			if current != nil {
-				claimed = append(claimed, claimedJob{item: *current, owner: owner})
-			}
+		if !ok {
+			s.releaseWorkerSlot()
+			continue
+		}
+		current := repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), candidates[i].ID, candidates[i].TenantID)
+		if current == nil {
+			s.releaseWorkerSlot()
+			continue
+		}
+		claimed++
+		go func(item models.AIReplyJob, leaseOwner string) {
+			defer s.releaseWorkerSlot()
+			s.processClaimed(&item, leaseOwner)
+		}(*current, owner)
+	}
+	return claimed
+}
+
+func (s *aiReplyJobService) tryReserveWorkerSlot() bool {
+	select {
+	case s.workerSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *aiReplyJobService) releaseWorkerSlot() {
+	<-s.workerSlots
+}
+
+func (s *aiReplyJobService) NotifyNewerMessage(conversationID, messageID int64) {
+	if conversationID <= 0 || messageID <= 0 {
+		return
+	}
+	s.activeMu.Lock()
+	active := s.activeExecutions[conversationID]
+	cancels := make([]context.CancelFunc, 0, len(active))
+	for activeMessageID, cancel := range active {
+		if activeMessageID < messageID && cancel != nil {
+			cancels = append(cancels, cancel)
 		}
 	}
-	done := make(chan struct{}, len(claimed))
-	for i := range claimed {
-		item := claimed[i]
-		go func() {
-			defer func() { done <- struct{}{} }()
-			s.processClaimed(&item.item, item.owner)
-		}()
+	s.activeMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
 	}
-	for range claimed {
-		<-done
+}
+
+func (s *aiReplyJobService) registerActiveExecution(job *models.AIReplyJob, cancel context.CancelFunc) func() {
+	if job == nil || job.ConversationID <= 0 || job.MessageID <= 0 || cancel == nil {
+		return func() {}
 	}
-	return len(claimed)
+	s.activeMu.Lock()
+	active := s.activeExecutions[job.ConversationID]
+	if active == nil {
+		active = make(map[int64]context.CancelFunc)
+		s.activeExecutions[job.ConversationID] = active
+	}
+	active[job.MessageID] = cancel
+	s.activeMu.Unlock()
+	return func() {
+		s.activeMu.Lock()
+		if active := s.activeExecutions[job.ConversationID]; active != nil {
+			delete(active, job.MessageID)
+			if len(active) == 0 {
+				delete(s.activeExecutions, job.ConversationID)
+			}
+		}
+		s.activeMu.Unlock()
+	}
 }
 
 func (s *aiReplyJobService) ProcessMessageNow(messageID int64) (*models.AIReplyJob, error) {
@@ -262,6 +316,8 @@ func (s *aiReplyJobService) processClaimed(job *models.AIReplyJob, owner string)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = context.WithValue(ctx, aiReplyJobLeaseContextKey{}, aiReplyJobLeaseContext{JobID: job.ID, TenantID: job.TenantID, Owner: owner})
+	unregister := s.registerActiveExecution(job, cancel)
+	defer unregister()
 	leaseLost := &atomic.Bool{}
 	done := make(chan struct{})
 	go s.renewLease(ctx, cancel, done, leaseLost, job, owner)
@@ -381,6 +437,19 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 	if errors.Is(runErr, errAIReplyJobExpired) {
 		s.markTerminal(job, owner, enums.AIReplyJobStatusExpired, "expired_human_dispatch", "", now)
 		return
+	}
+	if runErr != nil {
+		_, decision := s.inspectExecutionState(job, true)
+		if decision != nil {
+			switch decision.Status {
+			case enums.AIReplyJobStatusCompleted, enums.AIReplyJobStatusSkipped, enums.AIReplyJobStatusSuperseded:
+				s.markTerminal(job, owner, decision.Status, decision.Code, "", now)
+				return
+			case enums.AIReplyJobStatusFailed:
+				s.markTerminal(job, owner, decision.Status, decision.Code, "scope_invalid", now)
+				return
+			}
+		}
 	}
 	if runErr == nil {
 		switch result.Status {

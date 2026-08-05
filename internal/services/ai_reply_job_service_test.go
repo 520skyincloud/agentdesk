@@ -192,6 +192,124 @@ func TestAIReplyJobConcurrentClaimAndLeaseRecovery(t *testing.T) {
 	}
 }
 
+func TestAIReplyJobProcessDueDispatchesWithoutWaiting(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	setAIReplyJobTestHook(t, func(ctx context.Context, _ models.Conversation, _ models.Message) (AIReplyExecutionResult, error) {
+		close(started)
+		select {
+		case <-release:
+			return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed"}, nil
+		case <-ctx.Done():
+			return AIReplyExecutionResult{}, ctx.Err()
+		}
+	})
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+
+	if claimed := fixture.service.ProcessDue(1); claimed != 1 {
+		t.Fatalf("claimed jobs=%d want 1", claimed)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatched worker did not start")
+	}
+	current := repositories.AIReplyJobRepository.GetInTenant(fixture.db, fixture.job.ID, fixture.job.TenantID)
+	if current == nil || current.Status != enums.AIReplyJobStatusProcessing {
+		t.Fatalf("ProcessDue must return while worker is active, job=%#v", current)
+	}
+
+	close(release)
+	waitForAIReplyJobStatus(t, fixture.db, fixture.job, enums.AIReplyJobStatusCompleted)
+}
+
+func TestAIReplyJobNewerMessageCancelsActiveWorkerAndSupersedes(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
+	started := make(chan struct{})
+	setAIReplyJobTestHook(t, func(ctx context.Context, _ models.Conversation, _ models.Message) (AIReplyExecutionResult, error) {
+		close(started)
+		<-ctx.Done()
+		return AIReplyExecutionResult{}, ctx.Err()
+	})
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	if claimed := fixture.service.ProcessDue(1); claimed != 1 {
+		t.Fatalf("claimed jobs=%d want 1", claimed)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active worker did not reach runtime")
+	}
+
+	newer := createAIReplyJobTestMessage(t, fixture.db, fixture.conversation, 2, "newer-active-message", time.Now(), false)
+	fixture.service.NotifyNewerMessage(fixture.conversation.ID, newer.ID)
+	current := waitForAIReplyJobStatus(t, fixture.db, fixture.job, enums.AIReplyJobStatusSuperseded)
+	if current.ResultCode != "newer_message" || current.AttemptCount != 1 || current.NextRetryAt != nil {
+		t.Fatalf("cancelled stale job must be superseded without retry, job=%#v", current)
+	}
+}
+
+func TestAIReplyJobProcessDueNeverExceedsWorkerLimit(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "第一条消息")
+	jobs := []*models.AIReplyJob{fixture.job}
+	for ordinal := 2; ordinal <= aiReplyJobMaxConcurrency+1; ordinal++ {
+		jobs = append(jobs, createAIReplyJobSibling(t, fixture, ordinal))
+	}
+	for _, job := range jobs {
+		makeAIReplyJobDue(t, fixture.db, job.ID)
+	}
+
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	started := make(chan struct{}, len(jobs))
+	release := make(chan struct{})
+	setAIReplyJobTestHook(t, func(ctx context.Context, _ models.Conversation, _ models.Message) (AIReplyExecutionResult, error) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			maximum := maxActive.Load()
+			if current <= maximum || maxActive.CompareAndSwap(maximum, current) {
+				break
+			}
+		}
+		started <- struct{}{}
+		select {
+		case <-release:
+			return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed"}, nil
+		case <-ctx.Done():
+			return AIReplyExecutionResult{}, ctx.Err()
+		}
+	})
+
+	if claimed := fixture.service.ProcessDue(len(jobs)); claimed != aiReplyJobMaxConcurrency {
+		t.Fatalf("first dispatch claimed=%d want %d", claimed, aiReplyJobMaxConcurrency)
+	}
+	for index := 0; index < aiReplyJobMaxConcurrency; index++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("worker %d did not start", index+1)
+		}
+	}
+	if claimed := fixture.service.ProcessDue(len(jobs)); claimed != 0 {
+		t.Fatalf("dispatch with all slots occupied claimed=%d want 0", claimed)
+	}
+	if got := maxActive.Load(); got != aiReplyJobMaxConcurrency {
+		t.Fatalf("max active workers=%d want %d", got, aiReplyJobMaxConcurrency)
+	}
+
+	close(release)
+	waitForAIReplyJobTerminalCount(t, fixture.db, len(jobs)-1)
+	if claimed := fixture.service.ProcessDue(len(jobs)); claimed != 1 {
+		t.Fatalf("remaining dispatch claimed=%d want 1", claimed)
+	}
+	waitForAIReplyJobTerminalCount(t, fixture.db, len(jobs))
+	if got := maxActive.Load(); got > aiReplyJobMaxConcurrency {
+		t.Fatalf("max active workers=%d exceeds %d", got, aiReplyJobMaxConcurrency)
+	}
+}
+
 func TestAIReplyJobStructuredRuntimeResults(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -537,6 +655,85 @@ func createAIReplyJobTestMessage(t *testing.T, db *gorm.DB, conversation *models
 		t.Fatal(err)
 	}
 	return item
+}
+
+func createAIReplyJobSibling(t *testing.T, fixture *aiReplyJobTestFixture, ordinal int) *models.AIReplyJob {
+	t.Helper()
+	now := time.Now()
+	conversation := &models.Conversation{
+		TenantID: fixture.conversation.TenantID, StoreID: fixture.conversation.StoreID,
+		StoreStaffBindingID: fixture.conversation.StoreStaffBindingID, AIAgentID: fixture.conversation.AIAgentID,
+		ChannelID: fixture.conversation.ChannelID, CustomerID: fixture.conversation.CustomerID + int64(ordinal),
+		CustomerName: fmt.Sprintf("AI Job Customer %d", ordinal), Status: enums.IMConversationStatusAIServing,
+		ServiceMode: enums.IMConversationServiceModeAIFirst,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := fixture.db.Create(conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Create(&models.ConversationRouteState{
+		TenantID: conversation.TenantID, ConversationID: conversation.ID, StoreID: conversation.StoreID,
+		StoreStaffBindingID: conversation.StoreStaffBindingID, WxWorkInstanceID: fixture.instance.ID,
+		RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai", SessionNo: 1,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Create(&models.ConversationChannelSession{
+		TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: 1, StoreID: conversation.StoreID,
+		StoreStaffBindingID: conversation.StoreStaffBindingID, WxWorkInstanceID: fixture.instance.ID,
+		ChannelID: conversation.ChannelID, StartedAt: now, Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	message := createAIReplyJobTestMessage(t, fixture.db, conversation, 1,
+		fmt.Sprintf("ai-job-sibling-%d-%s", ordinal, testNameKey(t.Name())), now, false)
+	job, created, err := fixture.service.EnsureForMessage(message.ID)
+	if err != nil || !created || job == nil {
+		t.Fatalf("create sibling AI reply job: item=%#v created=%v err=%v", job, created, err)
+	}
+	return job
+}
+
+func waitForAIReplyJobStatus(t *testing.T, db *gorm.DB, job *models.AIReplyJob, want enums.AIReplyJobStatus) *models.AIReplyJob {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		current := repositories.AIReplyJobRepository.GetInTenant(db, job.ID, job.TenantID)
+		if current != nil && current.Status == want {
+			return current
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	current := repositories.AIReplyJobRepository.GetInTenant(db, job.ID, job.TenantID)
+	t.Fatalf("job %d status=%v want %s", job.ID, func() any {
+		if current == nil {
+			return nil
+		}
+		return current.Status
+	}(), want)
+	return nil
+}
+
+func waitForAIReplyJobTerminalCount(t *testing.T, db *gorm.DB, want int) {
+	t.Helper()
+	terminal := []enums.AIReplyJobStatus{
+		enums.AIReplyJobStatusCompleted, enums.AIReplyJobStatusSkipped, enums.AIReplyJobStatusSuperseded,
+		enums.AIReplyJobStatusExpired, enums.AIReplyJobStatusFailed,
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		var count int64
+		if err := db.Model(&models.AIReplyJob{}).Where("status IN ?", terminal).Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		if count == int64(want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("terminal AI reply jobs did not reach %d", want)
 }
 
 func makeAIReplyJobDue(t *testing.T, db *gorm.DB, jobID int64) {

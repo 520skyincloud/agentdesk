@@ -1011,6 +1011,35 @@ func TestNewAPIStoreCredentialValidatorSkipsDisabledOptionalASRSlot(t *testing.T
 	}
 }
 
+func TestNewAPIStoreCredentialValidatorDisablesDeepSeekThinking(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Errorf("decode request body: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"OK"}}]}`))
+	}))
+	defer server.Close()
+
+	slot := models.ModelProfileSlot{
+		UsageCode: enums.ModelUsageSlotReplyLLM, ModelType: enums.AIModelTypeLLM,
+		ModelName: "deepseek-v4-flash", APIMode: "chat_completions", TimeoutMS: 1000,
+	}
+	if err := (&newAPIStoreCredentialValidator{}).validateTextModel(
+		context.Background(), server.URL+"/v1", slot, "test-key", false,
+	); err != nil {
+		t.Fatal(err)
+	}
+	thinking, ok := captured["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "disabled" {
+		t.Fatalf("credential validation request must disable DeepSeek thinking, got %#v", captured["thinking"])
+	}
+}
+
 func TestCredentialRuntimeTypesNeverSerializeSecretMaterial(t *testing.T) {
 	secret := "sk-runtime-secret"
 	fingerprint := securex.Fingerprint(secret)
