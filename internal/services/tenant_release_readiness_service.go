@@ -309,6 +309,73 @@ func (s *tenantReleaseReadinessService) Audit(
 		"每个有效门店员工绑定必须且只能有一个当前在线企微实例，且不得存在重复或孤立实例",
 	)
 
+	resourceInstances := repositories.WxWorkProtocolInstanceRepository.FindActivatedCurrent(db, sqls.NewCnd().
+		Eq("tenant_id", tenant.ID).
+		In("store_id", storeIDs).
+		Asc("id"))
+	resourceInstancesByBinding := make(map[int64][]models.WxWorkProtocolInstance, len(resourceInstances))
+	for _, instance := range resourceInstances {
+		resourceInstancesByBinding[instance.StoreStaffBindingID] = append(
+			resourceInstancesByBinding[instance.StoreStaffBindingID],
+			instance,
+		)
+	}
+	resourceCheck := func(storeID int64, build func(*models.WxWorkProtocolInstance) error) bool {
+		accounts := accountsByStore[storeID]
+		if len(accounts) == 0 {
+			return false
+		}
+		for _, account := range accounts {
+			instances := resourceInstancesByBinding[account.StoreStaffBindingID]
+			if len(instances) != 1 || instances[0].TenantID != tenant.ID || instances[0].StoreID != storeID {
+				return false
+			}
+			if err := build(&instances[0]); err != nil {
+				return false
+			}
+		}
+		return true
+	}
+	phoneFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
+		return resourceCheck(storeID, func(instance *models.WxWorkProtocolInstance) error {
+			_, _, err := WxWorkProtocolDefaultResourceService.BuildDefaultPhoneMessage(instance)
+			return err
+		})
+	})
+	report.addStoreCheck(
+		"store.resource_phone",
+		storeIDs,
+		phoneFailures,
+		options.SampleLimit,
+		"门店每个有效员工绑定的当前企微实例都必须配置联系电话",
+	)
+	locationFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
+		return resourceCheck(storeID, func(instance *models.WxWorkProtocolInstance) error {
+			_, _, err := WxWorkProtocolDefaultResourceService.BuildDefaultLocationMessage(instance)
+			return err
+		})
+	})
+	report.addStoreCheck(
+		"store.resource_location",
+		storeIDs,
+		locationFailures,
+		options.SampleLimit,
+		"门店每个有效员工绑定的当前企微实例都必须配置有效经纬度和定位信息",
+	)
+	miniProgramFailures := failedTenantReleaseStores(storeIDs, func(storeID int64) bool {
+		return resourceCheck(storeID, func(instance *models.WxWorkProtocolInstance) error {
+			_, _, err := WxWorkProtocolDefaultResourceService.BuildDefaultMiniProgramMessage(instance)
+			return err
+		})
+	})
+	report.addStoreCheck(
+		"store.resource_mini_program",
+		storeIDs,
+		miniProgramFailures,
+		options.SampleLimit,
+		"门店每个有效员工绑定的当前企微实例都必须配置符合企微协议的小程序原始 ID 和封面载荷",
+	)
+
 	assignments := repositories.StoreModelProfileAssignmentRepository.FindByTenant(db, tenant.ID)
 	assignmentByStore := make(map[int64]models.StoreModelProfileAssignment, len(assignments))
 	for _, assignment := range assignments {

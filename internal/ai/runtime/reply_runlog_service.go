@@ -41,6 +41,22 @@ func (s *replyRunLogService) Write(input replyRunLogInput) {
 	}
 	traceData := buildAIReplyTraceData(input.Trace)
 	plannedAction, plannedToolCode, planReason := buildRunLogPlan(input.Summary)
+	finalAction := runLogFinalAction(input.Summary, input.Trace)
+	finalStatus := runLogFinalStatus(input.Summary)
+	switch {
+	case input.RunErr != nil:
+		finalAction = "failed"
+		finalStatus = "failed"
+	case input.Summary != nil && input.Summary.PolicySkipped:
+		finalAction = "policy_skipped"
+		finalStatus = "skipped"
+	case input.Trace != nil && input.Trace.ReplySent:
+		finalAction = "committed"
+		finalStatus = "completed"
+	case input.Summary != nil && input.Summary.Interrupted:
+		finalAction = "interrupted"
+		finalStatus = "interrupted"
+	}
 	logItem := &models.AgentRunLog{
 		TenantID:         input.Conversation.TenantID,
 		ConversationID:   input.Conversation.ID,
@@ -60,8 +76,8 @@ func (s *replyRunLogService) Write(input replyRunLogInput) {
 		PlanReason:       planReason,
 		InterruptType:    firstInterruptType(input.Summary),
 		ResumeSource:     runLogResumeSource(input.Trace),
-		FinalAction:      runLogFinalAction(input.Summary, input.Trace),
-		FinalStatus:      runLogFinalStatus(input.Summary),
+		FinalAction:      finalAction,
+		FinalStatus:      finalStatus,
 		ReplyText:        buildRunLogReplyText(input),
 		ErrorMessage:     errorMessage,
 		LatencyMs:        time.Since(input.StartedAt).Milliseconds(),

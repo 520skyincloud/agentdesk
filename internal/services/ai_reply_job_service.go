@@ -63,13 +63,28 @@ type aiReplyJobExecutionState struct {
 }
 
 type aiReplyJobDecision struct {
-	Status enums.AIReplyJobStatus
-	Code   string
+	Status               enums.AIReplyJobStatus
+	Code                 string
+	CommittedMessageIDs  []int64
+	PersistedInterruptID int64
 }
 
 type aiReplyJobTerminalError struct {
 	code string
 }
+
+type aiReplyJobDispatchOnlyError struct {
+	cause error
+}
+
+func (e *aiReplyJobDispatchOnlyError) Error() string { return "human_dispatch_failed" }
+func (e *aiReplyJobDispatchOnlyError) Unwrap() error { return e.cause }
+
+type aiReplyJobDispatchCompleted struct {
+	errorClass string
+}
+
+func (e *aiReplyJobDispatchCompleted) Error() string { return "human_dispatch_completed" }
 
 func (e *aiReplyJobTerminalError) Error() string {
 	return "AI reply job cannot continue"
@@ -375,6 +390,15 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 	if state == nil {
 		return AIReplyExecutionResult{}, fmt.Errorf("AI reply execution state unavailable")
 	}
+	if strings.TrimSpace(job.ResultCode) == "human_dispatch_retry" {
+		if decision := s.inspectFreshness(state); decision != nil {
+			return executionResultForDecision(*decision), nil
+		}
+		if err := s.dispatchHuman(state, job, "AI 自动回复失败，需要人工跟进"); err != nil {
+			return AIReplyExecutionResult{}, &aiReplyJobDispatchOnlyError{cause: err}
+		}
+		return AIReplyExecutionResult{}, &aiReplyJobDispatchCompleted{errorClass: controlledErrorClass(job.LastErrorClass)}
+	}
 	if time.Now().After(job.ExpiresAt) {
 		if decision := s.inspectFreshness(state); decision != nil {
 			return executionResultForDecision(*decision), nil
@@ -429,6 +453,17 @@ func (s *aiReplyJobService) prepareMedia(ctx context.Context, state *aiReplyJobE
 
 func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, result AIReplyExecutionResult, runErr error) {
 	now := time.Now()
+	var dispatchCompleted *aiReplyJobDispatchCompleted
+	if errors.As(runErr, &dispatchCompleted) {
+		s.markTerminal(job, owner, enums.AIReplyJobStatusFailed, "model_failure_human_dispatch", controlledErrorClass(dispatchCompleted.errorClass), now)
+		return
+	}
+	var dispatchOnlyErr *aiReplyJobDispatchOnlyError
+	if errors.As(runErr, &dispatchOnlyErr) {
+		_, _ = repositories.AIReplyJobRepository.MarkRetry(sqls.DB(), job.ID, job.TenantID, owner,
+			"human_dispatch_retry", controlledErrorClass(job.LastErrorClass), now.Add(time.Minute), now, false)
+		return
+	}
 	var terminalErr *aiReplyJobTerminalError
 	if errors.As(runErr, &terminalErr) {
 		s.markTerminal(job, owner, enums.AIReplyJobStatusFailed, controlledResultCode(terminalErr.code, "scope_invalid"), "scope_invalid", now)
@@ -442,7 +477,13 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 		_, decision := s.inspectExecutionState(job, true)
 		if decision != nil {
 			switch decision.Status {
-			case enums.AIReplyJobStatusCompleted, enums.AIReplyJobStatusSkipped, enums.AIReplyJobStatusSuperseded:
+			case enums.AIReplyJobStatusCompleted:
+				decisionResult := executionResultForDecision(*decision)
+				if err := s.validateCompletionEvidence(job, decisionResult); err == nil {
+					s.markTerminal(job, owner, decision.Status, decision.Code, "", now)
+					return
+				}
+			case enums.AIReplyJobStatusSkipped, enums.AIReplyJobStatusSuperseded:
 				s.markTerminal(job, owner, decision.Status, decision.Code, "", now)
 				return
 			case enums.AIReplyJobStatusFailed:
@@ -454,6 +495,10 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 	if runErr == nil {
 		switch result.Status {
 		case AIReplyExecutionStatusCompleted:
+			if err := s.validateCompletionEvidence(job, result); err != nil {
+				s.dispatchControlledFailure(job, owner, string(AIReplyExecutionErrorCommitFailed), now)
+				return
+			}
 			s.markTerminal(job, owner, enums.AIReplyJobStatusCompleted, controlledResultCode(result.ReasonCode, "runtime_completed"), "", now)
 		case AIReplyExecutionStatusSkipped:
 			s.markTerminal(job, owner, enums.AIReplyJobStatusSkipped, controlledResultCode(result.ReasonCode, "runtime_skipped"), "", now)
@@ -471,7 +516,42 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 		}
 		return
 	}
+	if code, ok := AIReplyExecutionErrorCodeOf(runErr); ok {
+		s.dispatchControlledFailure(job, owner, string(code), now)
+		return
+	}
 	s.retryOrDispatch(job, owner, classifyAIReplyJobError(runErr), now)
+}
+
+func (s *aiReplyJobService) dispatchControlledFailure(job *models.AIReplyJob, owner, errorClass string, now time.Time) {
+	current := repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), job.ID, job.TenantID)
+	if current == nil || current.Status != enums.AIReplyJobStatusProcessing || current.LeaseOwner != owner {
+		return
+	}
+	state, decision := s.inspectExecutionState(current, true)
+	if decision != nil {
+		switch decision.Status {
+		case enums.AIReplyJobStatusCompleted:
+			result := executionResultForDecision(*decision)
+			if s.validateCompletionEvidence(current, result) == nil {
+				s.markTerminal(current, owner, decision.Status, decision.Code, "", now)
+				return
+			}
+		case enums.AIReplyJobStatusSkipped, enums.AIReplyJobStatusSuperseded, enums.AIReplyJobStatusFailed:
+			s.markTerminal(current, owner, decision.Status, decision.Code, errorClass, now)
+			return
+		}
+	}
+	if state == nil {
+		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "scope_invalid", "scope_invalid", now)
+		return
+	}
+	if err := s.dispatchHuman(state, current, "AI 自动回复失败，需要人工跟进"); err != nil {
+		_, _ = repositories.AIReplyJobRepository.MarkRetry(sqls.DB(), current.ID, current.TenantID, owner,
+			"human_dispatch_retry", controlledErrorClass(errorClass), now.Add(time.Minute), now, false)
+		return
+	}
+	s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, controlledResultCode(errorClass+"_human_dispatch", "model_failure_human_dispatch"), errorClass, now)
 }
 
 func (s *aiReplyJobService) retryOrDispatch(job *models.AIReplyJob, owner, errorClass string, now time.Time) {
@@ -608,28 +688,96 @@ func (s *aiReplyJobService) inspectFreshness(state *aiReplyJobExecutionState) *a
 	if state == nil || state.Job == nil || state.Message == nil || state.Conversation == nil {
 		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: "scope_invalid"}
 	}
-	if existing := repositories.MessageRepository.FindOne(sqls.DB(), sqls.NewCnd().
+	committed := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
 		Eq("tenant_id", state.Job.TenantID).
 		Eq("conversation_id", state.Job.ConversationID).
 		Eq("sender_type", enums.IMSenderTypeAI).
 		Eq("request_id", state.Job.RequestID).
+		Eq("session_no", state.Job.SessionNo).
 		Gt("id", state.Job.MessageID).
-		Desc("id")); existing != nil {
-		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusCompleted, Code: "reply_already_committed"}
+		Asc("id"))
+	committedIDs := make([]int64, 0, len(committed))
+	for _, message := range committed {
+		if isStableRuntimeAIClientMsgID(message.ClientMsgID) && message.SendStatus != enums.IMMessageStatusFailed &&
+			message.SendStatus != enums.IMMessageStatusRecalled && message.RecalledAt == nil {
+			committedIDs = append(committedIDs, message.ID)
+		}
 	}
-	if runLog := repositories.AgentRunLogRepository.FindOne(sqls.DB(), sqls.NewCnd().
+	if len(committedIDs) > 0 {
+		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusCompleted, Code: "reply_already_committed", CommittedMessageIDs: committedIDs}
+	}
+	if interrupt := repositories.ConversationInterruptRepository.FindOne(sqls.DB(), sqls.NewCnd().
 		Eq("tenant_id", state.Job.TenantID).
 		Eq("conversation_id", state.Job.ConversationID).
-		Eq("message_id", state.Job.MessageID).
-		Eq("error_message", "").
-		Desc("id")); runLog != nil {
-		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusCompleted, Code: "runtime_already_completed"}
+		Eq("source_message_id", state.Job.MessageID).
+		Desc("id")); interrupt != nil && interrupt.ID > 0 && strings.TrimSpace(interrupt.Status) != "checkpointed" {
+		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusCompleted, Code: "interrupt_already_persisted", PersistedInterruptID: interrupt.ID}
 	}
-	latest := repositories.MessageRepository.FindLastUnrecalledByConversationIDInTenant(sqls.DB(), state.Job.ConversationID, state.Job.TenantID)
-	if latest != nil && latest.ID > state.Job.MessageID {
-		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "newer_message"}
+	newer := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", state.Job.TenantID).
+		Eq("conversation_id", state.Job.ConversationID).
+		Eq("session_no", state.Job.SessionNo).
+		Gt("id", state.Job.MessageID).
+		Where("recalled_at IS NULL AND send_status NOT IN (?, ?)", enums.IMMessageStatusFailed, enums.IMMessageStatusRecalled).
+		Asc("id"))
+	for _, message := range newer {
+		switch message.SenderType {
+		case enums.IMSenderTypeCustomer:
+			return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "newer_customer_message"}
+		case enums.IMSenderTypeAgent:
+			return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "human_agent_replied"}
+		}
 	}
 	return nil
+}
+
+func (s *aiReplyJobService) validateCompletionEvidence(job *models.AIReplyJob, result AIReplyExecutionResult) error {
+	if job == nil || job.ID <= 0 || job.TenantID <= 0 {
+		return NewAIReplyExecutionError(AIReplyExecutionErrorCommitFailed, fmt.Errorf("job scope unavailable"))
+	}
+	if len(result.CommittedMessageIDs) == 0 && result.PersistedInterruptID <= 0 {
+		return NewAIReplyExecutionError(AIReplyExecutionErrorCommitFailed, fmt.Errorf("durable completion evidence missing"))
+	}
+	seen := make(map[int64]struct{}, len(result.CommittedMessageIDs))
+	for _, messageID := range result.CommittedMessageIDs {
+		if messageID <= 0 {
+			return NewAIReplyExecutionError(AIReplyExecutionErrorCommitFailed, fmt.Errorf("invalid committed message evidence"))
+		}
+		if _, exists := seen[messageID]; exists {
+			continue
+		}
+		seen[messageID] = struct{}{}
+		message := repositories.MessageRepository.GetInTenant(sqls.DB(), messageID, job.TenantID)
+		if message == nil || message.ConversationID != job.ConversationID || message.SessionNo != job.SessionNo ||
+			message.ID <= job.MessageID || message.SenderType != enums.IMSenderTypeAI ||
+			strings.TrimSpace(message.RequestID) != strings.TrimSpace(job.RequestID) ||
+			!isStableRuntimeAIClientMsgID(message.ClientMsgID) || message.RecalledAt != nil ||
+			message.SendStatus == enums.IMMessageStatusFailed || message.SendStatus == enums.IMMessageStatusRecalled {
+			return NewAIReplyExecutionError(AIReplyExecutionErrorCommitFailed, fmt.Errorf("committed message evidence scope mismatch"))
+		}
+	}
+	if result.PersistedInterruptID > 0 {
+		interrupt := repositories.ConversationInterruptRepository.Get(sqls.DB(), result.PersistedInterruptID)
+		if interrupt == nil || interrupt.TenantID != job.TenantID || interrupt.ConversationID != job.ConversationID ||
+			interrupt.SourceMessageID != job.MessageID || strings.TrimSpace(interrupt.Status) == "" ||
+			strings.TrimSpace(interrupt.Status) == "checkpointed" {
+			return NewAIReplyExecutionError(AIReplyExecutionErrorCommitFailed, fmt.Errorf("interrupt evidence scope mismatch"))
+		}
+	}
+	return nil
+}
+
+func isStableRuntimeAIClientMsgID(clientMsgID string) bool {
+	clientMsgID = strings.TrimSpace(clientMsgID)
+	for _, prefix := range []string{
+		"ai_reply_", "ai_interrupt_", "ai_interrupt_resume_", "ai_interrupt_expired_",
+		"ai_resume_", "ai_handoff_confirm_",
+	} {
+		if strings.HasPrefix(clientMsgID, prefix) && len(clientMsgID) > len(prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *aiReplyJobService) ValidateRuntimeCheckpoint(ctx context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error) {
@@ -658,7 +806,11 @@ func (s *aiReplyJobService) ValidateRuntimeCheckpoint(ctx context.Context, conve
 func executionResultForDecision(decision aiReplyJobDecision) AIReplyExecutionResult {
 	switch decision.Status {
 	case enums.AIReplyJobStatusCompleted:
-		return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: decision.Code}
+		return AIReplyExecutionResult{
+			Status: AIReplyExecutionStatusCompleted, ReasonCode: decision.Code,
+			CommittedMessageIDs:  append([]int64(nil), decision.CommittedMessageIDs...),
+			PersistedInterruptID: decision.PersistedInterruptID,
+		}
 	case enums.AIReplyJobStatusSkipped:
 		return AIReplyExecutionResult{Status: AIReplyExecutionStatusSkipped, ReasonCode: decision.Code}
 	case enums.AIReplyJobStatusSuperseded:

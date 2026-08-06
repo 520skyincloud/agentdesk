@@ -35,4 +35,7 @@ func TestLLMSendsDeepSeekThinkingDisabledThroughNewAPI(t *testing.T) {
 	if !ok || thinking["type"] != "disabled" {
 		t.Fatalf("NewAPI request must disable DeepSeek thinking, got %#v", captured["thinking"])
 	}
+	if captured["enable_thinking"] != false {
+		t.Fatalf("NewAPI request must set DeepSeek enable_thinking=false, got %#v", captured["enable_thinking"])
+	}
 }

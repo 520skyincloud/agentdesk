@@ -374,6 +374,7 @@ func (s *channelMessageOutboxService) listPending(channelType string, tenantID i
 			string(enums.ChannelMessageOutboxStatusPending),
 			string(enums.ChannelMessageOutboxStatusFailed),
 		}).
+		Where("next_retry_at IS NULL OR next_retry_at <= ?", time.Now()).
 		Asc("id").
 		Limit(limit)
 	if tenantID > 0 {

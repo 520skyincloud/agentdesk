@@ -33,6 +33,7 @@ func toSummary(summary *executor.RunResult) *Summary {
 		Interrupted:           summary.Interrupted,
 		TraceData:             summary.TraceData,
 		ErrorMessage:          summary.ErrorMessage,
+		PolicySkipped:         summary.SkipReply,
 	}
 	if len(summary.ModelUsageCalls) > 0 {
 		ret.ModelUsageCalls = make([]ModelUsageCall, 0, len(summary.ModelUsageCalls))

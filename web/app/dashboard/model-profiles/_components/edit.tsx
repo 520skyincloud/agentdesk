@@ -92,7 +92,7 @@ function emptySlots(requiredSlots: ModelUsageSlotOption[]): ModelProfileSlotPayl
     maxContextTokens: 0,
     maxOutputTokens: 0,
     timeoutMs: 30000,
-    maxRetryCount: 0,
+    maxRetryCount: 2,
     temperature: 0,
     schemaVersion:
       item.usageCode === "customer_tag_llm" ? "customer_tag_evolution.v1" : "",

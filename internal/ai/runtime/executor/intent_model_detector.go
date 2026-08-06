@@ -114,10 +114,10 @@ func (list *runtimeIntentTaskList) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) (callbacks.IntentTraceData, callbacks.IntentPromptTraceData, bool) {
+func detectRuntimeIntentWithModelStrict(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) (callbacks.IntentTraceData, callbacks.IntentPromptTraceData, bool, error) {
 	if isMediaOnlyWithoutActionableIntent(req.UserMessage) && !hasAdjacentTextMediaQuestion(req, history) {
 		intent := callbacks.IntentTraceData{DetectedIntent: "media_gate", MatchedIntentCode: "media_gate", SubIntent: "media_only_no_question", IntentConfidence: 0.9, ShouldReply: false, Reason: "media gate: media-only message has no actionable intent"}
-		return intent, selectIntentPromptPack(intent), true
+		return intent, selectIntentPromptPack(intent), true, nil
 	}
 	configs := loadEnabledIntentConfigs(resolveRuntimeIntentScope(req))
 	if detector == nil {
@@ -125,15 +125,16 @@ func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history ada
 	}
 	intent, err := detector.DetectRuntimeIntent(ctx, req, history, configs)
 	if err != nil {
-		intent := intentDetectUnavailableIntent("IntentDetect model failed: " + err.Error())
-		return intent, selectIntentPromptPack(intent), true
+		return callbacks.IntentTraceData{}, callbacks.IntentPromptTraceData{}, false,
+			services.NewAIReplyExecutionError(services.AIReplyExecutionErrorIntentDetectFailed, err)
 	}
 	intent = normalizeModelIntentTrace(intent, req, history, configs)
 	if intent.PrimaryIntent == "" {
-		return callbacks.IntentTraceData{}, callbacks.IntentPromptTraceData{}, false
+		return callbacks.IntentTraceData{}, callbacks.IntentPromptTraceData{}, false,
+			services.NewAIReplyExecutionError(services.AIReplyExecutionErrorIntentDetectFailed, fmt.Errorf("empty normalized intent"))
 	}
 	prompt := promptForModelDetectedIntent(intent, configs)
-	return intent, prompt, true
+	return intent, prompt, true, nil
 }
 
 func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
@@ -339,6 +340,7 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	b.WriteString("但若紧邻的上一条 AI 客服消息正在追问一个业务问题的偏好、条件、范围或选项，当前短回答属于该业务的连续补充：必须继承该业务 intent/subIntent，并将 intentTasks[].text 写成包含上一轮业务主题和当前补充条件的完整检索问题。")
 	b.WriteString("例如 AI 问附近餐饮口味、客户答‘麻辣口味的’，应输出 hotel_info/surrounding_facilities 且 needsKnowledge=true，任务文本可写‘附近餐饮推荐，偏好麻辣口味’。没有紧邻业务追问时，独立短语不得从更早历史强行继承旧主题。")
 	b.WriteString("历史消息使用[历史消息][说话人][时间]格式，必须分清客户、AI客服、人工客服分别说了什么。")
+	b.WriteString("若当前消息包含按序编号的连续消息段，必须按顺序为每个仍有效的问题各生成一个 intentTasks 条目；不得只保留主问题、最后一句或把跨主题问题压成一个含糊意图。顶层字段只能汇总完整 intentTasks。")
 	mediaContext := currentAndRecentMediaText(req, history)
 	if mediaContext != "" {
 		b.WriteString("\n\n上下文中的媒体理解:\n")
@@ -654,19 +656,6 @@ func mergeStringLists(first []string, second []string) []string {
 		ret = appendIfMissing(ret, strings.TrimSpace(item))
 	}
 	return ret
-}
-
-func intentDetectUnavailableIntent(reason string) callbacks.IntentTraceData {
-	return callbacks.IntentTraceData{
-		DetectedIntent:     "intent_detect_unavailable",
-		IntentConfidence:   0.35,
-		ShouldReply:        false,
-		NeedsClarification: false,
-		NeedsKnowledge:     false,
-		NeedsResource:      false,
-		NeedsHumanRoute:    false,
-		Reason:             strings.TrimSpace(reason),
-	}
 }
 
 func enforceHumanRouteFlagByIntentCategory(intent callbacks.IntentTraceData) callbacks.IntentTraceData {

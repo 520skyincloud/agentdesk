@@ -52,8 +52,8 @@ func newManagedFastGPTGateway() (*fastgptapi.Gateway, error) {
 		timeout = 6 * time.Second
 	}
 	maxRetries := cfg.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 1
+	if maxRetries < 2 {
+		maxRetries = 2
 	}
 	return fastgptapi.NewGateway(fastgptapi.Config{
 		BaseURL: strings.TrimSpace(cfg.BaseURL), IntegrationToken: strings.TrimSpace(cfg.IntegrationToken),

@@ -31,6 +31,15 @@ type stubRuntimeIntentModelDetector struct {
 	err    error
 }
 
+func buildRuntimePipelinePlan(req RunInput, history adapter.HistoryBuildResult) runtimePipelinePlan {
+	return buildRuntimePipelinePlanWithModel(context.Background(), req, history, nil)
+}
+
+func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) runtimePipelinePlan {
+	plan, _ := buildRuntimePipelinePlanStrict(ctx, req, history, detector)
+	return plan
+}
+
 func (s stubRuntimeIntentModelDetector) DetectRuntimeIntent(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
 	return s.intent, s.err
 }
@@ -129,17 +138,35 @@ func TestRuntimePipelineMediaFollowUpKeepsModelIntentAfterIntentDetect(t *testin
 	}
 }
 
-func TestRuntimePipelineIntentDetectFailureSkipsReply(t *testing.T) {
+func TestRuntimePipelineIntentDetectFailurePropagates(t *testing.T) {
 	req := RunInput{
 		Conversation: models.Conversation{ID: 7},
 		UserMessage:  models.Message{ID: 13, ConversationID: 7, MessageType: enums.IMMessageTypeText, Content: "WiFi 密码多少"},
 	}
-	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{err: context.DeadlineExceeded})
-	if plan.Intent.ShouldReply {
-		t.Fatalf("IntentDetect failure must not fabricate an interaction reply, got %#v", plan.Intent)
+	_, err := buildRuntimePipelinePlanStrict(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{err: context.DeadlineExceeded})
+	if code, ok := services.AIReplyExecutionErrorCodeOf(err); !ok || code != services.AIReplyExecutionErrorIntentDetectFailed {
+		t.Fatalf("expected controlled intent failure, got %v", err)
 	}
-	if plan.Intent.PrimaryIntent != "" || plan.Intent.DetectedIntent != "intent_detect_unavailable" {
-		t.Fatalf("expected explicit IntentDetect failure trace, got %#v", plan.Intent)
+}
+
+func TestRuntimePipelineOrdinaryTextCannotBeSilencedByModel(t *testing.T) {
+	req := RunInput{
+		Conversation: models.Conversation{ID: 7},
+		UserMessage:  models.Message{ID: 14, ConversationID: 7, MessageType: enums.IMMessageTypeText, Content: "咖啡供应到几点"},
+	}
+	plan, err := buildRuntimePipelinePlanStrict(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{
+		PrimaryIntent:    "hotel_info",
+		SubIntent:        "store_knowledge",
+		IntentConfidence: 0.9,
+		ShouldReply:      false,
+		NeedsKnowledge:   true,
+		Reason:           "model incorrectly requested silence",
+	}})
+	if err != nil {
+		t.Fatalf("build runtime pipeline: %v", err)
+	}
+	if !plan.Intent.ShouldReply {
+		t.Fatal("ordinary customer text must not be silently completed by model ShouldReply=false")
 	}
 }
 

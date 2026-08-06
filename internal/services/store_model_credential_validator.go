@@ -125,6 +125,7 @@ func (v *newAPIStoreCredentialValidator) validateTextModel(ctx context.Context, 
 		"max_tokens": 16,
 	}
 	if modelconfig.IsDeepSeekV4Model(slot.ModelName) {
+		payload["enable_thinking"] = false
 		payload["thinking"] = map[string]any{"type": "disabled"}
 	}
 	return v.doJSON(ctx, baseURL, "/chat/completions", slot, apiKey, payload, validateChatPayload)

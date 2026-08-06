@@ -200,7 +200,7 @@ func TestAIReplyJobProcessDueDispatchesWithoutWaiting(t *testing.T) {
 		close(started)
 		select {
 		case <-release:
-			return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed"}, nil
+			return createAIReplyJobTestCompletion(fixture.db, fixture.conversation, fixture.message)
 		case <-ctx.Done():
 			return AIReplyExecutionResult{}, ctx.Err()
 		}
@@ -245,7 +245,7 @@ func TestAIReplyJobNewerMessageCancelsActiveWorkerAndSupersedes(t *testing.T) {
 	newer := createAIReplyJobTestMessage(t, fixture.db, fixture.conversation, 2, "newer-active-message", time.Now(), false)
 	fixture.service.NotifyNewerMessage(fixture.conversation.ID, newer.ID)
 	current := waitForAIReplyJobStatus(t, fixture.db, fixture.job, enums.AIReplyJobStatusSuperseded)
-	if current.ResultCode != "newer_message" || current.AttemptCount != 1 || current.NextRetryAt != nil {
+	if current.ResultCode != "newer_customer_message" || current.AttemptCount != 1 || current.NextRetryAt != nil {
 		t.Fatalf("cancelled stale job must be superseded without retry, job=%#v", current)
 	}
 }
@@ -264,7 +264,7 @@ func TestAIReplyJobProcessDueNeverExceedsWorkerLimit(t *testing.T) {
 	var maxActive atomic.Int32
 	started := make(chan struct{}, len(jobs))
 	release := make(chan struct{})
-	setAIReplyJobTestHook(t, func(ctx context.Context, _ models.Conversation, _ models.Message) (AIReplyExecutionResult, error) {
+	setAIReplyJobTestHook(t, func(ctx context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error) {
 		current := active.Add(1)
 		defer active.Add(-1)
 		for {
@@ -276,7 +276,7 @@ func TestAIReplyJobProcessDueNeverExceedsWorkerLimit(t *testing.T) {
 		started <- struct{}{}
 		select {
 		case <-release:
-			return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed"}, nil
+			return createAIReplyJobTestCompletion(fixture.db, &conversation, &message)
 		case <-ctx.Done():
 			return AIReplyExecutionResult{}, ctx.Err()
 		}
@@ -325,7 +325,10 @@ func TestAIReplyJobStructuredRuntimeResults(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
-			setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+			setAIReplyJobTestHook(t, func(_ context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error) {
+				if tt.result.Status == AIReplyExecutionStatusCompleted {
+					return createAIReplyJobTestCompletion(fixture.db, &conversation, &message)
+				}
 				return tt.result, nil
 			})
 			makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
@@ -420,7 +423,7 @@ func TestAIReplyJobNewerMessageSupersedesWithoutRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusSuperseded || current.ResultCode != "newer_message" || runtimeCalled {
+	if current == nil || current.Status != enums.AIReplyJobStatusSuperseded || current.ResultCode != "newer_customer_message" || runtimeCalled {
 		t.Fatalf("job=%#v runtimeCalled=%v", current, runtimeCalled)
 	}
 }
@@ -491,6 +494,132 @@ func TestAIReplyJobRetryScheduleAndHumanFallback(t *testing.T) {
 	}
 }
 
+func TestAIReplyJobControlledModelFailureDispatchesOnceWithoutRuntimeRetry(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
+	var runtimeCalls atomic.Int32
+	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		runtimeCalls.Add(1)
+		return AIReplyExecutionResult{}, NewAIReplyExecutionError(
+			AIReplyExecutionErrorGenerationFailed,
+			errors.New("upstream retries exhausted"),
+		)
+	})
+	var dispatchCalls atomic.Int32
+	fixture.service.humanDispatch = func(*aiReplyJobExecutionState, *models.AIReplyJob, string) error {
+		dispatchCalls.Add(1)
+		return nil
+	}
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
+		current.ResultCode != "generation_failed_human_dispatch" || current.LastErrorClass != "generation_failed" ||
+		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 1 {
+		t.Fatalf("job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	}
+}
+
+func TestAIReplyJobFailedDispatchRetriesDispatchOnly(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
+	var runtimeCalls atomic.Int32
+	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		runtimeCalls.Add(1)
+		return AIReplyExecutionResult{}, NewAIReplyExecutionError(
+			AIReplyExecutionErrorGenerationFailed,
+			errors.New("upstream retries exhausted"),
+		)
+	})
+	var dispatchCalls atomic.Int32
+	fixture.service.humanDispatch = func(*aiReplyJobExecutionState, *models.AIReplyJob, string) error {
+		if dispatchCalls.Add(1) == 1 {
+			return errors.New("dispatch unavailable")
+		}
+		return nil
+	}
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	first, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil || first.Status != enums.AIReplyJobStatusRetry || first.ResultCode != "human_dispatch_retry" ||
+		first.AttemptCount != 0 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 1 {
+		t.Fatalf("first job=%#v runtimeCalls=%d dispatchCalls=%d", first, runtimeCalls.Load(), dispatchCalls.Load())
+	}
+
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "model_failure_human_dispatch" ||
+		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 2 {
+		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	}
+}
+
+func TestAIReplyJobCompletedWithoutDurableEvidenceDispatchesHuman(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
+	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed"}, nil
+	})
+	var dispatchCalls atomic.Int32
+	fixture.service.humanDispatch = func(*aiReplyJobExecutionState, *models.AIReplyJob, string) error {
+		dispatchCalls.Add(1)
+		return nil
+	}
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
+		current.ResultCode != "commit_failed_human_dispatch" || current.LastErrorClass != "commit_failed" || dispatchCalls.Load() != 1 {
+		t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
+	}
+}
+
+func TestAIReplyJobSystemMessageDoesNotSupersedeCustomer(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
+	createAIReplyJobTestMessageWithSender(
+		t, fixture.db, fixture.conversation, 2, "newer-system-message", time.Now().Add(time.Second), false, enums.IMSenderTypeSystem,
+	)
+	var runtimeCalls atomic.Int32
+	setAIReplyJobTestHook(t, func(_ context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error) {
+		runtimeCalls.Add(1)
+		return createAIReplyJobTestCompletion(fixture.db, &conversation, &message)
+	})
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusCompleted || runtimeCalls.Load() != 1 {
+		t.Fatalf("job=%#v runtimeCalls=%d", current, runtimeCalls.Load())
+	}
+}
+
+func TestAIReplyJobAgentMessageStopsAI(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
+	createAIReplyJobTestMessageWithSender(
+		t, fixture.db, fixture.conversation, 2, "newer-agent-message", time.Now().Add(time.Second), false, enums.IMSenderTypeAgent,
+	)
+	var runtimeCalls atomic.Int32
+	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		runtimeCalls.Add(1)
+		return AIReplyExecutionResult{}, nil
+	})
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusSkipped || current.ResultCode != "human_agent_replied" || runtimeCalls.Load() != 0 {
+		t.Fatalf("job=%#v runtimeCalls=%d", current, runtimeCalls.Load())
+	}
+}
+
 func TestAIReplyJobExpiresIntoExistingHumanPool(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "还在吗")
 	var dispatchCalls atomic.Int32
@@ -521,9 +650,9 @@ func TestAIReplyJobMediaUsesSingleDurableRuntimePath(t *testing.T) {
 			t.Fatal(err)
 		}
 		var calls atomic.Int32
-		setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		setAIReplyJobTestHook(t, func(_ context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error) {
 			calls.Add(1)
-			return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed"}, nil
+			return createAIReplyJobTestCompletion(fixture.db, &conversation, &message)
 		})
 		makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
 		current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
@@ -643,11 +772,26 @@ func setupAIReplyJobFixture(t *testing.T, messageType enums.IMMessageType, conte
 }
 
 func createAIReplyJobTestMessage(t *testing.T, db *gorm.DB, conversation *models.Conversation, seq int64, clientMsgID string, createdAt time.Time, historical bool) *models.Message {
+	return createAIReplyJobTestMessageWithSender(
+		t, db, conversation, seq, clientMsgID, createdAt, historical, enums.IMSenderTypeCustomer,
+	)
+}
+
+func createAIReplyJobTestMessageWithSender(
+	t *testing.T,
+	db *gorm.DB,
+	conversation *models.Conversation,
+	seq int64,
+	clientMsgID string,
+	createdAt time.Time,
+	historical bool,
+	senderType enums.IMSenderType,
+) *models.Message {
 	t.Helper()
 	item := &models.Message{
 		TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: 1,
 		RequestID: clientMsgID + "-request", ClientMsgID: clientMsgID,
-		SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "测试消息",
+		SenderType: senderType, MessageType: enums.IMMessageTypeText, Content: "测试消息",
 		SeqNo: seq, HistoricalOnly: historical, SendStatus: enums.IMMessageStatusSent, SentAt: &createdAt,
 		AuditFields: models.AuditFields{CreatedAt: createdAt, UpdatedAt: createdAt},
 	}
@@ -748,6 +892,28 @@ func setAIReplyJobTestHook(t *testing.T, hook func(context.Context, models.Conve
 	previous := TriggerAIReplySyncHook
 	TriggerAIReplySyncHook = hook
 	t.Cleanup(func() { TriggerAIReplySyncHook = previous })
+}
+
+func createAIReplyJobTestCompletion(db *gorm.DB, conversation *models.Conversation, source *models.Message) (AIReplyExecutionResult, error) {
+	if db == nil || conversation == nil || source == nil {
+		return AIReplyExecutionResult{}, errors.New("AI reply test completion scope unavailable")
+	}
+	now := time.Now()
+	reply := &models.Message{
+		TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: source.SessionNo,
+		RequestID: source.RequestID, ClientMsgID: "ai_reply_" + source.ClientMsgID,
+		SenderType: enums.IMSenderTypeAI, SenderID: conversation.AIAgentID,
+		MessageType: enums.IMMessageTypeText, Content: "测试回复",
+		SeqNo:      repositories.MessageRepository.NextSeqNoInTenant(db, conversation.ID, conversation.TenantID),
+		SendStatus: enums.IMMessageStatusSent, SentAt: &now,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(reply).Error; err != nil {
+		return AIReplyExecutionResult{}, err
+	}
+	return AIReplyExecutionResult{
+		Status: AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed", CommittedMessageIDs: []int64{reply.ID},
+	}, nil
 }
 
 func testNameKey(value string) string {

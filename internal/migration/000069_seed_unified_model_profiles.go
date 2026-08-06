@@ -50,7 +50,7 @@ func seedDefaultUnifiedModelProfile(db *gorm.DB) error {
 			TemplateID: template.ID, UsageCode: spec.UsageCode, DisplayName: spec.DisplayName,
 			ModelType: spec.ExpectedModelType, Provider: "newapi", ModelName: "",
 			APIMode:   spec.DefaultAPIMode,
-			TimeoutMS: 30000, MaxRetryCount: 0, Enabled: true, SortNo: index + 1,
+			TimeoutMS: 30000, MaxRetryCount: 2, Enabled: true, SortNo: index + 1,
 			AuditFields: systemModelProfileAuditFields(now),
 		}
 		if spec.UsageCode == enums.ModelUsageSlotCustomerTag {

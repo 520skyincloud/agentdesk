@@ -36,7 +36,7 @@ type ModelProfileSlot struct {
 	MaxContextTokens int                  `gorm:"type:int;not null;default:0"`
 	MaxOutputTokens  int                  `gorm:"type:int;not null;default:0"`
 	TimeoutMS        int                  `gorm:"type:int;not null;default:30000"`
-	MaxRetryCount    int                  `gorm:"type:int;not null;default:0"`
+	MaxRetryCount    int                  `gorm:"type:int;not null;default:2"`
 	Temperature      float64              `gorm:"type:decimal(5,3);not null;default:0"`
 	SchemaVersion    string               `gorm:"type:varchar(80);not null;default:''"`
 	PromptTemplate   string               `gorm:"type:text"`

@@ -2,9 +2,9 @@
 
 > 状态：当前统一项目权威设计
 >
-> 更新时间：2026-08-03
+> 更新时间：2026-08-06
 >
-> 适用分支：`codex/tenant-ai-unified-integration`
+> 适用分支：`weibao/main`
 >
 > AI 行为来源：`origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`
 
@@ -101,10 +101,10 @@ IntentDetect 的单次调用超时必须读取当前意图模型槽的 `TimeoutM
 60 秒默认值。禁止在 Runtime 内再叠加短于模型槽配置的固定上限。上游 Context 取消、任务
 租约丢失和会话状态变化仍可提前取消调用。
 
-DeepSeek V4 的 Chat Completions 调用必须显式携带 `thinking.type=disabled`。该契约只按模型名
-识别，不能依赖 BaseURL 是否为 DeepSeek 官方域名，因此统一 NewAPI 网关、Runtime 主链、
-辅助 LLM 调用和九槽连通性验证必须保持一致。生产验收还需以成功用量记录中的
-`reasoning_tokens=0` 确认上游真实执行结果。
+DeepSeek V4 的 Chat Completions 调用必须同时显式携带 `thinking.type=disabled` 和
+`enable_thinking=false`。该契约只按模型名识别，不能依赖 BaseURL 是否为 DeepSeek 官方域名，
+因此统一 NewAPI 网关、Runtime 主链、辅助 LLM 调用和九槽连通性验证必须保持一致。生产验收
+还需以成功用量记录中的 `reasoning_tokens=0` 确认上游真实执行结果。
 
 ## 5. 阶段编排
 
@@ -131,7 +131,18 @@ Trigger / Batch
 - ReplyPlan：确定目标、依据、禁止事项和允许动作。
 - Generate：只自然表达计划，不能重新决定真实动作。
 - Validate：验证依据、动作账本、敏感承诺和输出结构。
-- Commit：以稳定 ClientMsgID 幂等提交。
+- Commit：同轮全部文本段和结构化动作使用稳定 ClientMsgID，在一个事务内原子提交 Message、
+  Outbox、会话计数、AI 轮次和事件；事务后再发布 WebSocket。
+
+IntentDetect、Knowledge、Generate、Validate 和 Commit 的运行错误只能向任务层返回受控分类：
+`intent_detect_failed`、`generation_failed`、`knowledge_unavailable`、`empty_output`、
+`resource_invariant_broken`、`commit_failed`。模型事件报错必须立即中止；普通客户文本没有回复
+文本、结构化动作或持久 Interrupt 时属于 `empty_output`，不能按完成或策略跳过处理。
+
+Runtime 的 `completed` 只表示返回了内部持久化证据：本轮已提交 AI Message ID 列表或已持久化
+Interrupt ID。Job 收到后还要按 Tenant、Conversation、源 Message、RequestID、Session 和稳定
+ClientMsgID 重新查询数据库；证据不匹配按 `commit_failed` 进入人工兜底。AgentRunLog 仅记录
+`committed`、`policy_skipped`、`interrupted`、`failed` 等诊断状态，空错误 RunLog 不是成功凭据。
 
 `provide_location` 是回复计划中的定位资源动作：只有 Store 已配置导航名、地址和有效经纬度
 时，才通过企微协议定位消息接口提交 `location`。新联系人欢迎小程序和到店绑定票据只属于
@@ -158,15 +169,23 @@ pending -> processing -> completed | skipped | superseded | expired | failed
 - `cronx` 每秒 Claim，`ProcessDue` 只负责非阻塞派发，不等待整批模型调用完成；单进程最多并发 4 个任务。
 - 新客户消息提交后立即取消同一会话中更早的活动 Context；旧任务重新检查最新消息并直接收敛为 `superseded`，不得占用重试次数。
 - CAS 租约为 90 秒，每 30 秒续租；租约丢失立即取消 Context，Commit 前再次校验租约和业务范围。
-- 模型执行最多 4 次，失败退避依次为 15 秒、1 分钟、3 分钟。
+- 每个模型阶段由当前九槽 `MaxRetryCount` 控制调用重试，默认 `2`，即初次调用加两次重试；
+  Intent 严格 JSON 修复属于协议修复，不计作网络重试。
+- Job 最多 4 次 Claim 只用于进程崩溃、租约、数据库等基础设施恢复，退避为 15 秒、1 分钟、
+  3 分钟。受控模型、FastGPT、空输出、资源不变量或 Commit 失败不会重新运行完整模型链；重新
+  检查新鲜度后立即用 `ai_reply_job_handoff_<jobID>` 进入现有人工任务池。
+- 人工派单失败时记录 `human_dispatch_retry`，后续 Claim 只重试派单，不再调用模型。
 - 任务创建 15 分钟后仍是最新消息且无人回复时，不再调用模型，使用稳定请求键进入现有人工任务池。
 - 最近 15 分钟补偿扫描只补非历史、未撤回、可触发且缺任务的客户消息，不扫描旧历史。
-- 新消息、Session 变化或已有回复使任务 `superseded`；关闭、撤回、AI 关闭或人工接待使任务 `skipped`；范围损坏使任务 `failed` 且不得派单。
-- 已存在稳定 AI 回复或成功 RunLog 时直接收敛，Outbox 失败只重试投递，不重跑模型。
+- 同 Session 更新客户消息使旧任务 `superseded`；更新人工消息按人工接管处理；System、欢迎语、
+  欢迎图片、小程序或绑定卡不能覆盖客户任务。Session 变化或已有回复按现有状态机收敛，关闭、
+  撤回、AI 关闭或人工接待使任务 `skipped`；范围损坏使任务 `failed` 且不得派单。
+- 已存在与源消息和 RequestID 匹配的稳定 AI Message 或持久 Interrupt 时直接收敛；Outbox 失败
+  只重试投递，不重跑模型。
 
 禁止恢复 `TriggerAIReplyAsyncHook`、媒体理解完成后的第二条异步触发路径或任何裸 goroutine
 回复入口。Runtime 对 worker 返回 `completed`、`skipped`、`superseded`、`deferred` 四种
-结构化结果；媒体等待只能返回 `deferred`。
+结构化结果；媒体等待只能返回 `deferred`，`completed` 必须携带上述持久证据。
 
 ## 6. 批次与媒体
 
@@ -180,11 +199,12 @@ pending -> processing -> completed | skipped | superseded | expired | failed
 
 媒体理解使用当前 Store 精确用途槽，不得调用平台默认模型。
 
-企微首联资源由统一编排入口发送。存在有效静态到店连接时，到店绑定票据替代普通欢迎
-小程序；首条客户消息和联系人同步发生竞争时，只有本次真实创建会话的一方可以发送
+企微首联资源由统一编排入口发送，并统一以 `System` 消息和 Conversation + 资源类型构成的
+稳定 ClientMsgID 提交。存在有效静态到店连接时，到店绑定票据替代普通欢迎小程序；首条客户
+消息和联系人同步发生竞争时，只有本次真实创建会话的一方可以发送
 `arrival_bind_ticket_<ticketID>`。已有会话的联系人变更不自动发卡，票据过期也不恢复资格；
-后台显式发卡和真实再次扫码继续走各自独立链路。欢迎资源是否发送不能改变客户消息的
-IntentDetect 与定位动作。
+后台显式发卡和真实再次扫码继续走各自独立链路。欢迎资源不能覆盖客户 AIReplyJob，也不能
+改变客户消息的 IntentDetect 与定位动作。
 
 ## 7. FastGPT 知识
 
@@ -202,7 +222,12 @@ ChunkID 或本地知识兼容字段，也不通过标题猜测身份。
 知识规则：
 
 - 多问题分别检索后合并，不能只检索整段。
+- IntentDetect 明确识别寒暄、感谢、表情等社交意图时不检索；`interaction/clarify` 且未声明
+  知识需求时允许一次条件 FastGPT 探测，达到当前阈值后补成 `hotel_info/store_knowledge`
+  任务，探测结果直接复用于正式回答，禁止重复检索。
 - 未命中时不编造，也不注入固定“已记录/同事跟进”话术。
+- FastGPT 无命中与基础设施失败必须分开：无命中可追问一个关键点；基础设施失败在网关初次
+  调用加两次重试后返回 `knowledge_unavailable` 并进入人工。
 - 低风险 FAQ 优先回答或追问关键字段，不默认转人工。
 - 真实服务动作只能由当前工具/接待路由决定，模型不能虚构已执行。
 - 检索失败时仍可基于非知识上下文继续 ReplyPlan，但必须带“不编造门店事实”约束。
@@ -233,6 +258,10 @@ AI 只输出是否需要人工、原因和客户等待文案。唯一任务入�
 明确人工、退款/赔偿/投诉升级、安全、隐私、严重订单异常和价格争议可进入人工路由。
 普通 FAQ、用品、电视、入住、小程序、定位、轻互动和普通文件咨询不能因为关键词误转。
 
+模型槽重试耗尽、FastGPT 基础设施失败、空输出、结构化资源不变量损坏或 Commit 失败也进入
+同一任务池；该兜底只负责保住客户问题，不改变客服选择、排班和容量算法。范围损坏时继续
+fail closed，不使用不可信 Store/Binding 创建人工任务。
+
 ## 10. 提交、Outbox 与 WebSocket
 
 成功回复提交顺序：
@@ -240,18 +269,21 @@ AI 只输出是否需要人工、原因和客户等待文案。唯一任务入�
 ```text
 Validate
   -> stable ClientMsgID
-  -> Message + Conversation cursor + EventLog transaction
+  -> Message batch + Outbox + Conversation cursor/counters + EventLog transaction
   -> ServiceAnalyticsCapture
   -> ObserveCommittedMessage
-  -> idempotent ChannelMessageOutbox ensure
   -> WebSocket refresh/resync
 ```
 
 - 外部客服/AI消息在 Message 事务内写入 `OutboundChannelType` 持久投递意图。
-- 提交后按 `(channel_type, message_id)` 幂等确保 Outbox。
+- 同轮多段文本和结构化动作全部提交成功后才形成可见结果；任一 Message、Outbox、计数或事件
+  写入失败时整个事务回滚。
+- 事务后仍按 `(channel_type, message_id)` 幂等补偿 Outbox。
 - 相同 ClientMsgID 重试只补建 Outbox，不重复模型、运营事实或标签演化。
 - AIReplyJob 在模型执行前和 Commit 前重新读取 Session、Route、Binding、实例、AI 开关和接待状态。
 - 后台补偿只扫描明确有持久投递意图且缺 Outbox 的新消息。
+- Outbox 待投递查询和 CAS Claim 都要求 `next_retry_at IS NULL OR next_retry_at <= now`；未到期
+  不能抢占，到期后只重试协议投递。
 - 历史空意图行和企微员工人工自回显不会被误发。
 - Outbox 或 WebSocket 失败不能重跑模型。
 
@@ -274,6 +306,8 @@ Usage、Trace、日志或 API。Trace 只保存受控结构化阶段证据和脱
 - Credential 未激活、revision 不一致或解密失败：阻止 AI。
 - FastGPT 未就绪：知识路径失败关闭，不读取本地 fallback。
 - 任一父链跨 Tenant/Store：拒绝执行。
+- IntentDetect、Generate、Knowledge、Validate、资源构建或 Commit 受控失败：重新检查会话
+  新鲜度，仍有效则立即进入现有人工任务池，不把 Job 标成 `completed`。
 - Commit 已成功但外部发送失败：只重试 Outbox，不重跑模型。
 - 需要人工且 AI 不可用：仍可进入现有人工池。
 
@@ -290,6 +324,12 @@ Usage、Trace、日志或 API。Trace 只保存受控结构化阶段证据和脱
 - need_human 只进现有任务池，规则派单不调用模型。
 - ClientMsgID 重试不重复模型、消息、任务或运营事实。
 - Message 与 AIReplyJob 原子提交，进程重启、租约回收和补偿扫描不丢回复任务。
+- 每槽 `MaxRetryCount=2` 时超时、5xx 或空模型结果恰好执行三次 provider 调用，耗尽后只创建
+  一个稳定人工任务；派单重试不重跑 Runtime。
+- Runtime `completed` 缺少有效 Message/Interrupt 证据时按 `commit_failed` 处理；空错误 RunLog
+  不得收敛任务。
+- 多段文本与文本加定位原子提交，任一写入失败不留下半段消息或孤立 Outbox。
+- System 欢迎消息不 supersede 客户任务，人工回复停止 AI，更新客户消息 supersede 旧任务。
 - 知识问题不产生门店资源动作；定位只提交 location；小程序只由明确资源任务或独立首联/扫码链触发。
 - Outbox 在 WebSocket 前形成可靠投递事实。
 - SQLite/MySQL fresh Schema 均不包含旧 AIConfig/Grant/StoreSetting/ConversationTag/
@@ -315,11 +355,15 @@ Intent JSON、动作字段、幂等键或模型归因：
 - `internal/ai/runtime/reply_trigger_service.go`
 - `internal/ai/runtime/runtime_reply_executor.go`
 - `internal/ai/runtime/reply_commit_service.go`
+- `internal/services/ai_reply_hook.go` 中的内部结果和受控错误契约
 - `internal/ai/runtime/conversation_memory_service.go`
 - `internal/ai/rag/`
 - `internal/services/model_call_resolver_service.go`
-- `internal/services/ai_reply_job_service.go`
+- `internal/services/ai_reply_job_service.go` 中的 Job 状态机、完成证据、租约和人工兜底
 - `internal/services/message_service.go` 中的入站消息与任务原子提交边界
+
+定位、小程序、电话和知识图片的资源动作字段及严格 Builder 也属于保护协议。普通业务需求不得
+把一种资源失败降级成另一种资源，或改变欢迎资源与 AI 资源动作的独立触发边界。
 
 确需变更时，必须先说明字段兼容、模型调用次数、Usage/计费、知识范围、动作提交、人工任务和
 Outbox 的影响，并运行本文第 13 节回归；外围业务优先通过适配器和向后兼容字段扩展。

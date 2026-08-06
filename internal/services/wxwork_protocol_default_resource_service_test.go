@@ -173,6 +173,11 @@ func TestBuildDefaultMiniProgramMessageStripsProtocolEchoFields(t *testing.T) {
 		DefaultMiniProgramPayload: `{
 			"title":"e秒安心住",
 			"appname":"自由家安心宿",
+			"username":"gh_7370f8f46fc0@app",
+			"file_id":"cover-file-id",
+			"aes_key":"cover-aes-key",
+			"md5":"cover-md5",
+			"size":20810,
 			"page_path":"pages/order/index",
 			"conversation_id":"S:old",
 			"protocol_msg_id":"old_msg",
@@ -194,5 +199,32 @@ func TestBuildDefaultMiniProgramMessageStripsProtocolEchoFields(t *testing.T) {
 	}
 	if !strings.Contains(payload, "hotelId=HFNQ001") {
 		t.Fatalf("expected configured hotelId in page path, got %s", payload)
+	}
+}
+
+func TestBuildDefaultLocationMessageRejectsOutOfRangeCoordinates(t *testing.T) {
+	for _, instance := range []*models.WxWorkProtocolInstance{
+		{StoreLongitude: "181", StoreLatitude: "31.8"},
+		{StoreLongitude: "117.2", StoreLatitude: "91"},
+		{StoreLongitude: "NaN", StoreLatitude: "31.8"},
+	} {
+		if _, _, err := WxWorkProtocolDefaultResourceService.BuildDefaultLocationMessage(instance); err == nil {
+			t.Fatalf("expected invalid coordinate error for %+v", instance)
+		}
+	}
+}
+
+func TestBuildDefaultMiniProgramMessageRequiresProtocolIdentityAndCover(t *testing.T) {
+	for _, payload := range []string{
+		`{"title":"缺少原始ID","thumb_url":"https://example.test/cover.png"}`,
+		`{"title":"缺少封面","username":"gh_test@app"}`,
+		`{"title":"封面地址无效","username":"gh_test@app","thumb_url":"not-a-url"}`,
+	} {
+		_, _, err := WxWorkProtocolDefaultResourceService.BuildDefaultMiniProgramMessage(&models.WxWorkProtocolInstance{
+			DefaultMiniProgramPayload: payload,
+		})
+		if err == nil {
+			t.Fatalf("expected invalid mini-program payload error for %s", payload)
+		}
 	}
 }

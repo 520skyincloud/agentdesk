@@ -1038,6 +1038,9 @@ func TestNewAPIStoreCredentialValidatorDisablesDeepSeekThinking(t *testing.T) {
 	if !ok || thinking["type"] != "disabled" {
 		t.Fatalf("credential validation request must disable DeepSeek thinking, got %#v", captured["thinking"])
 	}
+	if captured["enable_thinking"] != false {
+		t.Fatalf("credential validation request must set DeepSeek enable_thinking=false, got %#v", captured["enable_thinking"])
+	}
 }
 
 func TestCredentialRuntimeTypesNeverSerializeSecretMaterial(t *testing.T) {

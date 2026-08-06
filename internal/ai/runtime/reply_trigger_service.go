@@ -116,10 +116,7 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 	}
 	if pendingInterrupt := svc.ConversationInterruptService.FindLatestPendingByConversationID(conversation.ID); pendingInterrupt != nil {
 		replyCtx.PendingInterrupt = pendingInterrupt
-		if err := s.resumePendingInterrupt(ctx, replyCtx); err != nil {
-			return result, err
-		}
-		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusCompleted, ReasonCode: "interrupt_resumed"}, nil
+		return s.resumePendingInterrupt(ctx, replyCtx)
 	}
 	replyCtx.Message = s.mergeRecentCustomerBurstMessage(conversation.ID, message)
 	return s.executeReply(ctx, replyCtx)
@@ -340,7 +337,7 @@ func timePrefixForBurst(item models.Message, index int) string {
 	return fmt.Sprintf("%d. [%s] ", index, label)
 }
 
-func (s *aiReplyService) resumePendingInterrupt(ctx context.Context, replyCtx aiReplyContext) error {
+func (s *aiReplyService) resumePendingInterrupt(ctx context.Context, replyCtx aiReplyContext) (svc.AIReplyExecutionResult, error) {
 	return s.interrupts.ResumePendingInterrupt(ctx, s, replyCtx)
 }
 
@@ -358,11 +355,11 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 	if err != nil {
 		return svc.AIReplyExecutionResult{}, err
 	}
+	if summary != nil && summary.PolicySkipped {
+		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSkipped, ReasonCode: "policy_skipped"}, nil
+	}
 	if summary != nil && summary.Interrupted {
-		if err := s.interrupts.HandleInterruptedSummary(s, replyCtx, summary); err != nil {
-			return svc.AIReplyExecutionResult{}, err
-		}
-		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusCompleted, ReasonCode: "runtime_interrupted"}, nil
+		return s.interrupts.HandleInterruptedSummary(s, replyCtx, summary)
 	}
 	if summary != nil && (strings.TrimSpace(summary.ReplyText) != "" || s.commit.HasStructuredVariableReply(replyCtx.Trace)) {
 		if err := ctx.Err(); err != nil {
@@ -383,7 +380,7 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			)
 			return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "newer_customer_message"}, nil
 		}
-		replyMessage, err := s.commit.CommitAIReply(replyCommitInput{
+		replyMessages, err := s.commit.CommitAIReplyBatch(replyCommitInput{
 			Conversation: replyCtx.Conversation,
 			Message:      replyCtx.Message,
 			AIAgent:      replyCtx.AIAgent,
@@ -394,12 +391,39 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 		if err != nil {
 			return svc.AIReplyExecutionResult{}, err
 		}
-		if replyMessage != nil && strings.TrimSpace(summary.ReplyText) == "" {
-			summary.ReplyText = committedReplyText(*replyMessage)
+		if len(replyMessages) > 0 && strings.TrimSpace(summary.ReplyText) == "" {
+			summary.ReplyText = committedReplyText(replyMessages[len(replyMessages)-1])
 		}
-		replyCtx.Trace.ReplySent = replyMessage != nil
+		replyCtx.Trace.ReplySent = len(replyMessages) > 0
+		return completedInterruptResult("runtime_completed", replyMessages, 0), nil
 	}
-	return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed"}, nil
+	if evidence := s.findCommittedReplyEvidence(replyCtx); len(evidence) > 0 {
+		return svc.AIReplyExecutionResult{
+			Status: svc.AIReplyExecutionStatusCompleted, ReasonCode: "runtime_action_committed",
+			CommittedMessageIDs: evidence,
+		}, nil
+	}
+	return svc.AIReplyExecutionResult{}, svc.NewAIReplyExecutionError(
+		svc.AIReplyExecutionErrorEmptyOutput,
+		fmt.Errorf("runtime completed without durable output"),
+	)
+}
+
+func (s *aiReplyService) findCommittedReplyEvidence(replyCtx aiReplyContext) []int64 {
+	items := svc.MessageService.Find(sqls.NewCnd().
+		Eq("tenant_id", replyCtx.Conversation.TenantID).
+		Eq("conversation_id", replyCtx.Conversation.ID).
+		Eq("sender_type", enums.IMSenderTypeAI).
+		Eq("request_id", strings.TrimSpace(replyCtx.Message.RequestID)).
+		Gt("id", replyCtx.Message.ID).
+		Asc("id"))
+	ids := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.SessionNo == replyCtx.Message.SessionNo {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
 }
 
 func committedReplyText(message models.Message) string {
@@ -421,18 +445,21 @@ func committedReplyText(message models.Message) string {
 }
 
 func (s *aiReplyService) canCommitReplyForMessage(conversationID int64, messageID int64) bool {
-	latest, err := svc.MessageService.FindLatestByConversationID(conversationID)
-	if err != nil || latest == nil {
-		return true
-	}
-	if latest.SenderType != enums.IMSenderTypeCustomer {
-		return latest.ID <= messageID
-	}
-	if latest.ID == messageID {
-		return true
-	}
 	current := svc.MessageService.Get(messageID)
-	if current != nil && isMediaFollowUpTextMessage(*current) && isRuntimeReplyMediaMessage(latest.MessageType) {
+	if current == nil {
+		return true
+	}
+	latest := svc.MessageService.FindOne(sqls.NewCnd().
+		Eq("tenant_id", current.TenantID).
+		Eq("conversation_id", conversationID).
+		Eq("session_no", current.SessionNo).
+		Eq("sender_type", enums.IMSenderTypeCustomer).
+		Where("recalled_at IS NULL AND send_status NOT IN (?, ?)", enums.IMMessageStatusFailed, enums.IMMessageStatusRecalled).
+		Desc("id"))
+	if latest == nil || latest.ID == messageID {
+		return true
+	}
+	if isMediaFollowUpTextMessage(*current) && isRuntimeReplyMediaMessage(latest.MessageType) {
 		return false
 	}
 	return isNonActionableMediaMessage(*latest)
@@ -477,12 +504,16 @@ func isRuntimeReplyMediaMessage(messageType enums.IMMessageType) bool {
 }
 
 func (s *aiReplyService) isStillLatestCustomerMessage(conversationID int64, messageID int64) bool {
-	latest, err := svc.MessageService.FindLatestByConversationID(conversationID)
-	if err != nil || latest == nil {
+	current := svc.MessageService.Get(messageID)
+	if current == nil {
 		return true
 	}
-	if latest.SenderType == enums.IMSenderTypeCustomer {
-		return latest.ID == messageID
-	}
-	return latest.ID <= messageID
+	latest := svc.MessageService.FindOne(sqls.NewCnd().
+		Eq("tenant_id", current.TenantID).
+		Eq("conversation_id", conversationID).
+		Eq("session_no", current.SessionNo).
+		Eq("sender_type", enums.IMSenderTypeCustomer).
+		Where("recalled_at IS NULL AND send_status NOT IN (?, ?)", enums.IMMessageStatusFailed, enums.IMMessageStatusRecalled).
+		Desc("id"))
+	return latest == nil || latest.ID == messageID
 }

@@ -46,11 +46,12 @@ type KnowledgeAnswerabilityGate struct {
 }
 
 type answerabilityGateInput struct {
-	Request   RunInput
-	Summary   *RunResult
-	Collector *callbacks.RuntimeTraceCollector
-	Messages  []*schema.Message
-	Intent    callbacks.IntentTraceData
+	Request             RunInput
+	Summary             *RunResult
+	Collector           *callbacks.RuntimeTraceCollector
+	Messages            []*schema.Message
+	Intent              callbacks.IntentTraceData
+	PrefetchedKnowledge *retrievers.KnowledgeRetrieveResult
 }
 
 type answerabilityGateState struct {
@@ -387,10 +388,12 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	retriever := gate.newRetriever(req.AIAgent)
 	state.KnowledgeIDs = append([]int64(nil), configuredKnowledgeIDs...)
 	if retriever == nil {
-		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, configuredKnowledgeIDs)
-		state.prependDecisionInstruction(knowledgeActionInstruction)
-		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retriever unavailable", nil)
-		return state, nil
+		controlledErr := services.NewAIReplyExecutionError(
+			services.AIReplyExecutionErrorKnowledgeUnavailable,
+			fmt.Errorf("knowledge retriever unavailable"),
+		)
+		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retriever unavailable", controlledErr)
+		return state, controlledErr
 	}
 	knowledgeIDs := retriever.KnowledgeBaseIDs()
 	state.KnowledgeIDs = append([]int64(nil), knowledgeIDs...)
@@ -409,13 +412,16 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	retrieveOptions := retrievers.DefaultKnowledgeRetrieveOptions()
 	retrieveOptions.QueryPreview = preview(req.UserMessage.Content, 120)
-	result, err := retrieveContextForRuntimeQuestions(ctx, retriever, retrieveOptions, query, intent)
+	result := state.Input.PrefetchedKnowledge
+	var err error
+	if result == nil {
+		result, err = retrieveContextForRuntimeQuestions(ctx, retriever, retrieveOptions, query, intent)
+	}
 	if err != nil {
-		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, knowledgeIDs)
-		state.prependDecisionInstruction(knowledgeActionInstruction)
-		state.ErrorMessage = err.Error()
-		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retrieval failed", err)
-		return state, nil
+		controlledErr := services.NewAIReplyExecutionError(services.AIReplyExecutionErrorKnowledgeUnavailable, err)
+		state.ErrorMessage = controlledErr.Error()
+		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retrieval failed", controlledErr)
+		return state, controlledErr
 	}
 	state.RetrieveResult = result
 	if state.Input.Summary != nil && result != nil {

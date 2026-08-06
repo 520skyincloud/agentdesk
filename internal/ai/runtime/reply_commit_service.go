@@ -43,8 +43,23 @@ func (s *replyCommitService) HasStructuredVariableReply(trace *aiReplyTraceData)
 }
 
 func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Message, error) {
-	structuredReplies := s.buildStructuredVariableReplies(input)
-	structuredReplies = append(structuredReplies, s.buildKnowledgeResourceReplies(input)...)
+	messages, err := s.SendAIReplyBatch(input)
+	if err != nil || len(messages) == 0 {
+		return nil, err
+	}
+	return &messages[len(messages)-1], nil
+}
+
+func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.Message, error) {
+	structuredReplies, err := s.buildStructuredVariableRepliesStrict(input)
+	if err != nil {
+		return nil, err
+	}
+	knowledgeReplies, err := s.buildKnowledgeResourceRepliesStrict(input)
+	if err != nil {
+		return nil, err
+	}
+	structuredReplies = append(structuredReplies, knowledgeReplies...)
 	replyText := strings.TrimSpace(input.ReplyText)
 	isManualResume := strings.HasPrefix(strings.TrimSpace(input.Message.RequestID), "manual_resume_")
 	if isManualResume {
@@ -55,11 +70,17 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 		}
 	}
 	if replyText == "" && len(structuredReplies) == 0 {
-		return nil, nil
+		return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorEmptyOutput, nil)
 	}
 	commitStartedAt := time.Now()
-	var replyMessage *models.Message
-	commitMessages := make([]map[string]any, 0, len(structuredReplies)+1)
+	drafts := make([]svc.AIOutboundMessageDraft, 0, len(structuredReplies)+1)
+	type commitMetadata struct {
+		messageType  enums.IMMessageType
+		resourceType string
+		content      string
+		taskID       string
+	}
+	metadata := make([]commitMetadata, 0, len(structuredReplies)+1)
 	if replyText != "" {
 		textMessages := splitReplyTextForCommit(input.Trace, replyText)
 		for index, text := range textMessages {
@@ -67,8 +88,6 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 			if len(textMessages) > 1 {
 				clientMessageID = fmt.Sprintf("%s_text_%d_%d", strings.TrimSpace(input.ClientPrefix), index+1, input.Message.ID)
 			}
-			message, err := s.sendAIMessage(input, clientMessageID, enums.IMMessageTypeText, text, "")
-			traceItem := buildCommitMessageTrace(message, enums.IMMessageTypeText, "", text, err)
 			taskIndex := index
 			if isManualResume && len(textMessages) > 1 {
 				if index == 0 {
@@ -77,40 +96,45 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 					taskIndex = index - 1
 				}
 			}
-			if taskID := textCommitTaskIDFromTrace(input.Trace, taskIndex); taskID != "" {
-				traceItem["taskId"] = taskID
-			}
-			commitMessages = append(commitMessages, traceItem)
-			if err != nil {
-				s.updateCommitTrace(input, commitStartedAt, replyMessage, commitMessages, err)
-				return message, err
-			}
-			replyMessage = message
+			drafts = append(drafts, svc.AIOutboundMessageDraft{ClientMsgID: clientMessageID, MessageType: enums.IMMessageTypeText, Content: text})
+			metadata = append(metadata, commitMetadata{messageType: enums.IMMessageTypeText, content: text, taskID: textCommitTaskIDFromTrace(input.Trace, taskIndex)})
 		}
 	}
 	for index, structured := range structuredReplies {
-		message, err := s.sendAIMessage(
-			input,
-			fmt.Sprintf("%s_%s_%d_%d", strings.TrimSpace(input.ClientPrefix), strings.TrimSpace(structured.ResourceType), index+1, input.Message.ID),
-			structured.MessageType,
-			structured.Content,
-			structured.Payload,
-		)
-		commitMessages = append(commitMessages, buildCommitMessageTrace(message, structured.MessageType, structured.ResourceType, structuredRunLogReplyText(structured), err))
-		if err != nil {
-			s.updateCommitTrace(input, commitStartedAt, replyMessage, commitMessages, err)
-			return message, err
+		drafts = append(drafts, svc.AIOutboundMessageDraft{
+			ClientMsgID: fmt.Sprintf("%s_%s_%d_%d", strings.TrimSpace(input.ClientPrefix), strings.TrimSpace(structured.ResourceType), index+1, input.Message.ID),
+			MessageType: structured.MessageType, Content: structured.Content, Payload: structured.Payload,
+		})
+		metadata = append(metadata, commitMetadata{messageType: structured.MessageType, resourceType: structured.ResourceType, content: structuredRunLogReplyText(structured)})
+	}
+	messages, err := svc.MessageService.SendAIMessageBatchWithRequestID(
+		input.Conversation.ID,
+		input.AIAgent.ID,
+		drafts,
+		s.buildAIPrincipal(input.AIAgent),
+		input.Message.RequestID,
+	)
+	if err != nil {
+		controlledErr := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorCommitFailed, err)
+		s.updateCommitTrace(input, commitStartedAt, nil, nil, controlledErr)
+		return nil, controlledErr
+	}
+	if len(messages) != len(metadata) {
+		controlledErr := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorCommitFailed, fmt.Errorf("committed message count mismatch"))
+		s.updateCommitTrace(input, commitStartedAt, nil, nil, controlledErr)
+		return nil, controlledErr
+	}
+	commitMessages := make([]map[string]any, 0, len(messages))
+	for index := range messages {
+		item := buildCommitMessageTrace(&messages[index], metadata[index].messageType, metadata[index].resourceType, metadata[index].content, nil)
+		if metadata[index].taskID != "" {
+			item["taskId"] = metadata[index].taskID
 		}
-		replyMessage = message
+		commitMessages = append(commitMessages, item)
 	}
+	replyMessage := &messages[len(messages)-1]
 	s.updateCommitTrace(input, commitStartedAt, replyMessage, commitMessages, nil)
-	if !input.IncrementRound {
-		return replyMessage, nil
-	}
-	if err := s.IncrementAIReplyRounds(input.Conversation.ID, input.Conversation.AIReplyRounds+1, input.AIAgent.Name); err != nil {
-		return nil, err
-	}
-	return replyMessage, nil
+	return messages, nil
 }
 
 const manualResumeCustomerNotice = "同事暂时没能接入，接下来我先继续帮你处理。"
@@ -200,16 +224,21 @@ func (s *replyCommitService) buildStructuredVariableReply(input replyCommitInput
 }
 
 func (s *replyCommitService) buildStructuredVariableReplies(input replyCommitInput) []structuredVariableReply {
+	replies, _ := s.buildStructuredVariableRepliesStrict(input)
+	return replies
+}
+
+func (s *replyCommitService) buildStructuredVariableRepliesStrict(input replyCommitInput) ([]structuredVariableReply, error) {
 	resourceTypes := structuredVariableResourceTypesFromTrace(input.Trace)
 	if len(resourceTypes) == 0 {
-		return nil
+		return nil, nil
 	}
 	instance := s.resolveWxWorkInstance(input.Conversation.ID, input.Conversation.TenantID)
 	if instance == nil {
 		for _, resourceType := range resourceTypes {
-			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, "", 0, "missing", "当前会话未绑定企微员工号")})
+			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, "", 0, "missing", string(svc.AIReplyExecutionErrorResourceInvariantBroken))})
 		}
-		return nil
+		return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, fmt.Errorf("runtime instance unavailable"))
 	}
 	ret := make([]structuredVariableReply, 0, len(resourceTypes))
 	for _, resourceType := range resourceTypes {
@@ -217,8 +246,8 @@ func (s *replyCommitService) buildStructuredVariableReplies(input replyCommitInp
 		case "location":
 			content, payload, err := svc.WxWorkProtocolDefaultResourceService.BuildDefaultLocationMessage(instance)
 			if err != nil {
-				appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(enums.IMMessageTypeLocation), 0, "missing", err.Error())})
-				continue
+				appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(enums.IMMessageTypeLocation), 0, "missing", string(svc.AIReplyExecutionErrorResourceInvariantBroken))})
+				return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, err)
 			}
 			reply := structuredVariableReply{
 				ResourceType: resourceType,
@@ -231,8 +260,8 @@ func (s *replyCommitService) buildStructuredVariableReplies(input replyCommitInp
 		case "mini_program":
 			content, payload, err := svc.WxWorkProtocolDefaultResourceService.BuildDefaultMiniProgramMessage(instance)
 			if err != nil {
-				appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(enums.IMMessageTypeMiniProgram), 0, "missing", err.Error())})
-				continue
+				appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(enums.IMMessageTypeMiniProgram), 0, "missing", string(svc.AIReplyExecutionErrorResourceInvariantBroken))})
+				return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, err)
 			}
 			reply := structuredVariableReply{
 				ResourceType: resourceType,
@@ -245,8 +274,8 @@ func (s *replyCommitService) buildStructuredVariableReplies(input replyCommitInp
 		case "phone":
 			content, payload, err := svc.WxWorkProtocolDefaultResourceService.BuildDefaultPhoneMessage(instance)
 			if err != nil {
-				appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(enums.IMMessageTypeText), 0, "missing", err.Error())})
-				continue
+				appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(enums.IMMessageTypeText), 0, "missing", string(svc.AIReplyExecutionErrorResourceInvariantBroken))})
+				return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, err)
 			}
 			reply := structuredVariableReply{
 				ResourceType: resourceType,
@@ -256,19 +285,27 @@ func (s *replyCommitService) buildStructuredVariableReplies(input replyCommitInp
 			}
 			appendRuntimeTraceActionLedger(input.Trace, "preparedActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(reply.MessageType), 0, "prepared", "")})
 			ret = append(ret, reply)
+		default:
+			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, "", 0, "missing", string(svc.AIReplyExecutionErrorResourceInvariantBroken))})
+			return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, fmt.Errorf("unsupported resource type"))
 		}
 	}
-	return ret
+	return ret, nil
 }
 
 func (s *replyCommitService) buildKnowledgeResourceReplies(input replyCommitInput) []structuredVariableReply {
+	replies, _ := s.buildKnowledgeResourceRepliesStrict(input)
+	return replies
+}
+
+func (s *replyCommitService) buildKnowledgeResourceRepliesStrict(input replyCommitInput) ([]structuredVariableReply, error) {
 	resources := knowledgeResourceItemsFromTrace(input.Trace)
 	if len(resources) == 0 {
-		return nil
+		return nil, nil
 	}
 	if s.resolveWxWorkInstance(input.Conversation.ID, input.Conversation.TenantID) == nil {
-		appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem("knowledge_image", string(enums.IMMessageTypeImage), 0, "missing", "当前会话未绑定企微员工号")})
-		return nil
+		appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem("knowledge_image", string(enums.IMMessageTypeImage), 0, "missing", string(svc.AIReplyExecutionErrorResourceInvariantBroken))})
+		return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, fmt.Errorf("runtime instance unavailable"))
 	}
 	ret := make([]structuredVariableReply, 0, len(resources))
 	for _, resource := range resources {
@@ -277,13 +314,13 @@ func (s *replyCommitService) buildKnowledgeResourceReplies(input replyCommitInpu
 			asset = svc.AssetService.GetByAssetIDInTenant(resource.AssetID, input.Conversation.TenantID)
 		}
 		if asset == nil || asset.Status != enums.AssetStatusSuccess {
-			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem("knowledge_image", string(enums.IMMessageTypeImage), 0, "missing", "知识图片资产不存在或不可用")})
-			continue
+			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem("knowledge_image", string(enums.IMMessageTypeImage), 0, "missing", string(svc.AIReplyExecutionErrorResourceInvariantBroken))})
+			return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, fmt.Errorf("knowledge image unavailable"))
 		}
 		payload, err := svc.BuildIMMessageAssetPayload(asset)
 		if err != nil {
-			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem("knowledge_image", string(enums.IMMessageTypeImage), 0, "missing", err.Error())})
-			continue
+			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem("knowledge_image", string(enums.IMMessageTypeImage), 0, "missing", string(svc.AIReplyExecutionErrorResourceInvariantBroken))})
+			return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, err)
 		}
 		content := strings.TrimSpace(resource.Title)
 		if content == "" {
@@ -298,7 +335,7 @@ func (s *replyCommitService) buildKnowledgeResourceReplies(input replyCommitInpu
 		appendRuntimeTraceActionLedger(input.Trace, "preparedActions", []map[string]any{buildResourceActionLedgerItem(reply.ResourceType, string(reply.MessageType), 0, "prepared", "")})
 		ret = append(ret, reply)
 	}
-	return ret
+	return ret, nil
 }
 
 func (s *replyCommitService) resolveWxWorkInstance(conversationID, tenantID int64) *models.WxWorkProtocolInstance {
@@ -653,6 +690,11 @@ func commitMessagesReplyText(items []map[string]any) string {
 func (s *replyCommitService) CommitAIReply(input replyCommitInput) (*models.Message, error) {
 	input.IncrementRound = true
 	return s.SendAIReply(input)
+}
+
+func (s *replyCommitService) CommitAIReplyBatch(input replyCommitInput) ([]models.Message, error) {
+	input.IncrementRound = true
+	return s.SendAIReplyBatch(input)
 }
 
 func splitReplyTextForCommit(trace *aiReplyTraceData, replyText string) []string {

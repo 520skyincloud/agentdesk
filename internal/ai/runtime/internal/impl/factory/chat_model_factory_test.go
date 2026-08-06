@@ -27,6 +27,9 @@ func TestProviderExtraFieldsDisablesDeepSeekV4Thinking(t *testing.T) {
 		if thinking["type"] != "disabled" {
 			t.Fatalf("baseURL=%s: expected DeepSeek V4 thinking to be disabled, got %#v", baseURL, thinking)
 		}
+		if fields["enable_thinking"] != false {
+			t.Fatalf("baseURL=%s: expected DeepSeek V4 enable_thinking=false, got %#v", baseURL, fields)
+		}
 	}
 }
 
@@ -65,6 +68,9 @@ func TestChatModelFactorySendsDeepSeekThinkingDisabledThroughNewAPI(t *testing.T
 	thinking, ok := captured["thinking"].(map[string]any)
 	if !ok || thinking["type"] != "disabled" {
 		t.Fatalf("NewAPI request must disable DeepSeek thinking, got %#v", captured["thinking"])
+	}
+	if captured["enable_thinking"] != false {
+		t.Fatalf("NewAPI request must set DeepSeek enable_thinking=false, got %#v", captured["enable_thinking"])
 	}
 }
 

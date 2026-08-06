@@ -133,6 +133,7 @@ func (r *channelMessageOutboxRepository) TryMarkSending(db *gorm.DB, id, tenantI
 			string(enums.ChannelMessageOutboxStatusPending),
 			string(enums.ChannelMessageOutboxStatusFailed),
 		}).
+		Where("next_retry_at IS NULL OR next_retry_at <= ?", now).
 		Updates(map[string]any{
 			"send_status": string(enums.ChannelMessageOutboxStatusSending),
 			"updated_at":  now,

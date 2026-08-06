@@ -55,6 +55,7 @@ type Summary struct {
 	Interrupts            []InterruptContextSummary
 	TraceData             string
 	ErrorMessage          string
+	PolicySkipped         bool
 	ModelUsageCalls       []ModelUsageCall
 }
 

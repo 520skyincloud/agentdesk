@@ -203,6 +203,7 @@ func applyProviderSpecificChatParams(params *openai.ChatCompletionNewParams, con
 		extraFields["enable_thinking"] = false
 	}
 	if isDeepSeekV4ThinkingModel(config) {
+		extraFields["enable_thinking"] = false
 		extraFields["thinking"] = map[string]any{"type": "disabled"}
 	}
 	if len(extraFields) > 0 {

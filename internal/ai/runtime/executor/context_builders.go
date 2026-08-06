@@ -7,6 +7,7 @@ import (
 	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
@@ -15,6 +16,11 @@ import (
 )
 
 func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector, gate *KnowledgeAnswerabilityGate) []*schema.Message {
+	messages, _ := buildRunMessagesStrict(ctx, req, summary, collector, gate)
+	return messages
+}
+
+func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector, gate *KnowledgeAnswerabilityGate) ([]*schema.Message, error) {
 	history := adapter.BuildHistoryMessages(req.Conversation.ID, req.UserMessage.ID, req.Conversation.TenantID, 0)
 	if summary != nil {
 		summary.HistoryMessageCount = len(history.Messages)
@@ -28,7 +34,10 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		collector.Data.Input.KnowledgeBaseIDs = utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
 		collector.Data.Input.CurrentUserMessagePreview = preview(req.UserMessage.Content, 120)
 	}
-	plan := buildRuntimePipelinePlanWithModel(ctx, req, history, nil)
+	plan, err := buildRuntimePipelinePlanStrict(ctx, req, history, nil)
+	if err != nil {
+		return nil, err
+	}
 	if collector != nil {
 		collector.SetPipeline(plan.Normalize, plan.Intent, plan.PromptSelect, plan.Context, plan.ToolKnowledge, plan.ReplyPlan, plan.Generate, plan.Validate)
 		collector.SetActionLedger(buildInitialActionLedger(plan.Intent))
@@ -61,15 +70,18 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 			summary.ReplyText = ""
 			summary.SkipReply = true
 		}
-		return messages
+		return messages, nil
 	}
-	retrievedContext := appendRetrievedContext(ctx, req, plan.Intent, summary, collector, gate, &messages)
+	retrievedContext, err := appendRetrievedContextStrict(ctx, req, plan.Intent, plan.PrefetchedKnowledge, summary, collector, gate, &messages)
+	if err != nil {
+		return nil, err
+	}
 	appendReplyTagContext(req, plan.Intent, plan.ReplyPlan, retrievedContext.AnswerabilityStatus, collector, &messages)
 	if instruction := buildGenerationScopeInstruction(plan.Intent); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
 	messages = append(messages, schema.UserMessage(buildGenerationUserMessageText(req.UserMessage.Content, plan.Intent)))
-	return messages
+	return messages, nil
 }
 
 func buildAutoHandoffDisabledInstruction(req RunInput, intent callbacks.IntentTraceData) string {
@@ -405,19 +417,21 @@ type retrievedContextOutcome struct {
 	AnswerabilityStatus string
 }
 
-func appendRetrievedContext(ctx context.Context, req RunInput, intent callbacks.IntentTraceData, summary *RunResult, collector *callbacks.RuntimeTraceCollector, gate *KnowledgeAnswerabilityGate, messages *[]*schema.Message) retrievedContextOutcome {
+func appendRetrievedContextStrict(ctx context.Context, req RunInput, intent callbacks.IntentTraceData, prefetched *retrievers.KnowledgeRetrieveResult, summary *RunResult, collector *callbacks.RuntimeTraceCollector, gate *KnowledgeAnswerabilityGate, messages *[]*schema.Message) (retrievedContextOutcome, error) {
 	if messages == nil {
-		return retrievedContextOutcome{AnswerabilityStatus: answerabilityStatusUnanswerable}
+		return retrievedContextOutcome{AnswerabilityStatus: answerabilityStatusUnanswerable},
+			services.NewAIReplyExecutionError(services.AIReplyExecutionErrorKnowledgeUnavailable, nil)
 	}
 	if gate == nil {
 		gate = NewKnowledgeAnswerabilityGate()
 	}
 	state, err := gate.Evaluate(ctx, answerabilityGateInput{
-		Request:   req,
-		Summary:   summary,
-		Collector: collector,
-		Messages:  append([]*schema.Message(nil), (*messages)...),
-		Intent:    intent,
+		Request:             req,
+		Summary:             summary,
+		Collector:           collector,
+		Messages:            append([]*schema.Message(nil), (*messages)...),
+		Intent:              intent,
+		PrefetchedKnowledge: prefetched,
 	})
 	if err != nil || state == nil {
 		errorMessage := ""
@@ -433,14 +447,12 @@ func appendRetrievedContext(ctx context.Context, req RunInput, intent callbacks.
 				ErrorMessage: errorMessage,
 			})
 		}
-		return retrievedContextOutcome{
-			Decision:            buildKnowledgeUnavailableDecision(req.AIAgent, utils.SplitInt64s(req.AIAgent.KnowledgeIDs)),
-			AnswerabilityStatus: answerabilityStatusUnanswerable,
-		}
+		return retrievedContextOutcome{AnswerabilityStatus: answerabilityStatusUnanswerable},
+			services.NewAIReplyExecutionError(services.AIReplyExecutionErrorKnowledgeUnavailable, err)
 	}
 	*messages = append((*messages)[:0], state.Input.Messages...)
 	if state.SkipGate {
-		return retrievedContextOutcome{AnswerabilityStatus: state.AnswerabilityStatus}
+		return retrievedContextOutcome{AnswerabilityStatus: state.AnswerabilityStatus}, nil
 	}
-	return retrievedContextOutcome{Decision: state.Decision, AnswerabilityStatus: state.AnswerabilityStatus}
+	return retrievedContextOutcome{Decision: state.Decision, AnswerabilityStatus: state.AnswerabilityStatus}, nil
 }

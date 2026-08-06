@@ -8,7 +8,7 @@ import (
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
-	"agent-desk/internal/models"
+	svc "agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/google/uuid"
@@ -43,7 +43,16 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 
 	checkPointID := resolveCheckPointID(req.CheckPointID, summary.RunID)
 	summary.CheckPointID = checkPointID
-	messages := buildRunMessages(ctx, req, summary, collector, s.answerabilityGate)
+	messages, err := buildRunMessagesStrict(ctx, req, summary, collector, s.answerabilityGate)
+	if err != nil {
+		summary.Status = "error"
+		summary.ErrorMessage = err.Error()
+		collector.Data.Status = summary.Status
+		collector.Data.Error.Message = summary.ErrorMessage
+		collector.Data.Error.Stage = runtimeErrorStage(err, "intent_detect")
+		summary.TraceData = collector.Marshal()
+		return summary, err
+	}
 	if summary.SkipReply {
 		summary.Status = "completed"
 		summary.ModelName = req.ModelConfig.ModelName
@@ -148,32 +157,37 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	}
 	collector.Data.Interrupt.CheckPointID = checkPointID
 	generateStartedAt := time.Now()
-	consumeAgentEvents(runner.Run(ctx, messages, buildRunOptions(checkPointID)...), summary, collector, tooling.toolDefsByModelName)
-	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
-	summary.ModelName = req.ModelConfig.ModelName
-	enforceGeneratedReplyActionLedger(summary, collector)
-	collector.Data.Status = summary.Status
-	collector.Data.Output.ReplyText = summary.ReplyText
-	if strings.TrimSpace(collector.Data.Output.FinishReason) == "" {
-		collector.Data.Output.FinishReason = summary.Status
-	}
-	collector.Data.Pipeline.Generate.Status = summary.Status
-	if strings.TrimSpace(summary.ReplyText) != "" {
-		if strings.TrimSpace(collector.Data.Pipeline.Generate.Reason) == "" {
-			collector.Data.Pipeline.Generate.Reason = "model generated reply from staged prompt and layered context"
-		}
-		if collector.Data.Pipeline.Validate.Status != "failed" && strings.TrimSpace(collector.Data.Pipeline.Validate.Status) == "" {
-			collector.Data.Pipeline.Validate.Status = "passed"
-			collector.Data.Pipeline.Validate.Reason = "runtime completed"
-		}
-	} else if summary.Status == "error" {
-		collector.Data.Pipeline.Generate.Reason = summary.ErrorMessage
-		collector.Data.Pipeline.Validate.Status = "failed"
-		collector.Data.Pipeline.Validate.Reason = summary.ErrorMessage
+	if err = finishRuntimeGeneration(
+		runner.Run(ctx, messages, buildRunOptions(checkPointID)...),
+		summary,
+		collector,
+		tooling.toolDefsByModelName,
+		req.ModelConfig.ModelName,
+		generateStartedAt,
+	); err != nil {
+		summary.TraceData = collector.Marshal()
+		return summary, err
 	}
 	syncSkillSummaryFromCollector(summary, collector)
 	summary.TraceData = collector.Marshal()
 	return summary, nil
+}
+
+func runtimeErrorStage(err error, fallback string) string {
+	code, ok := svc.AIReplyExecutionErrorCodeOf(err)
+	if !ok {
+		return fallback
+	}
+	switch code {
+	case svc.AIReplyExecutionErrorIntentDetectFailed:
+		return "intent_detect"
+	case svc.AIReplyExecutionErrorKnowledgeUnavailable:
+		return "tool_knowledge"
+	case svc.AIReplyExecutionErrorEmptyOutput:
+		return "validate"
+	default:
+		return fallback
+	}
 }
 
 func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {
@@ -191,81 +205,10 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 	if len(resourceTypes) == 0 {
 		return false
 	}
-	instance := findRuntimeWxWorkInstance(req)
-	textParts := make([]string, 0, len(resourceTypes))
-	hasStructuredCommit := false
-	for _, resourceType := range resourceTypes {
-		switch resourceType {
-		case "location":
-			if canCommitStructuredLocation(instance) {
-				hasStructuredCommit = true
-			} else {
-				textParts = append(textParts, buildLocationDirectReply(instance))
-			}
-		case "mini_program":
-			if canCommitStructuredMiniProgram(instance) {
-				hasStructuredCommit = true
-			} else {
-				textParts = append(textParts, buildMiniProgramDirectReply(instance))
-			}
-		case "phone":
-			if canCommitStructuredPhone(instance) {
-				hasStructuredCommit = true
-			} else {
-				textParts = append(textParts, buildPhoneDirectReply(instance))
-			}
-		}
-	}
-	summary.ReplyText = strings.TrimSpace(strings.Join(nonEmptyStrings(textParts), "\n"))
-	return hasStructuredCommit || strings.TrimSpace(summary.ReplyText) != ""
-}
-
-func canCommitStructuredLocation(instance *models.WxWorkProtocolInstance) bool {
-	if instance == nil {
-		return false
-	}
-	return strings.TrimSpace(instance.StoreLongitude) != "" && strings.TrimSpace(instance.StoreLatitude) != ""
-}
-
-func canCommitStructuredMiniProgram(instance *models.WxWorkProtocolInstance) bool {
-	if instance == nil {
-		return false
-	}
-	return strings.TrimSpace(instance.DefaultMiniProgramPayload) != ""
-}
-
-func canCommitStructuredPhone(instance *models.WxWorkProtocolInstance) bool {
-	if instance == nil {
-		return false
-	}
-	return strings.TrimSpace(instance.StoreContactPhone) != ""
-}
-
-func recoverMissingMiniProgramToolResult(req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector) {
-	if summary == nil || collector == nil {
-		return
-	}
-	if summary.Status != "error" || !strings.Contains(summary.ErrorMessage, "tool send_miniprogram not found") {
-		return
-	}
-	intent := collector.Data.Pipeline.Intent
-	if intent.PrimaryIntent != "hotel_variable" || intent.SubIntent != "mini_program" {
-		return
-	}
-	reply := buildMiniProgramDirectReply(findRuntimeWxWorkInstance(req))
-	if strings.TrimSpace(reply) == "" {
-		return
-	}
-	summary.Status = "completed"
-	summary.ErrorMessage = ""
-	summary.ReplyText = reply
-	collector.Data.Status = summary.Status
-	collector.Data.Output.ReplyText = reply
-	collector.Data.Output.FinishReason = "recovered_missing_miniprogram_tool"
-	collector.Data.Error.Message = ""
-	collector.Data.Error.Stage = ""
-	collector.Data.Pipeline.Generate.Status = "completed"
-	collector.Data.Pipeline.Generate.Reason = "recovered missing send_miniprogram tool with current account mini program variable"
+	// The Commit service owns resource validation. Keeping this reply empty ensures a
+	// missing or malformed resource fails atomically instead of becoming fallback text.
+	summary.ReplyText = ""
+	return true
 }
 
 func (s *Service) ExecuteResume(ctx context.Context, req ResumeInput) (*RunResult, error) {
@@ -358,15 +301,83 @@ func (s *Service) ExecuteResume(ctx context.Context, req ResumeInput) (*RunResul
 		return summary, err
 	}
 	generateStartedAt := time.Now()
-	consumeAgentEvents(iter, summary, collector, tooling.toolDefsByModelName)
-	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
-	summary.ModelName = req.ModelConfig.ModelName
-	collector.Data.Status = summary.Status
-	collector.Data.Output.ReplyText = summary.ReplyText
-	collector.Data.Output.FinishReason = summary.Status
+	if err = finishRuntimeGeneration(
+		iter,
+		summary,
+		collector,
+		tooling.toolDefsByModelName,
+		req.ModelConfig.ModelName,
+		generateStartedAt,
+	); err != nil {
+		summary.TraceData = collector.Marshal()
+		return summary, err
+	}
 	syncSkillSummaryFromCollector(summary, collector)
 	summary.TraceData = collector.Marshal()
 	return summary, nil
+}
+
+func finishRuntimeGeneration(
+	events *adk.AsyncIterator[*adk.AgentEvent],
+	summary *RunResult,
+	collector *callbacks.RuntimeTraceCollector,
+	toolDefsByModelName map[string]string,
+	modelName string,
+	startedAt time.Time,
+) error {
+	if summary == nil || collector == nil {
+		return svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorGenerationFailed, fmt.Errorf("runtime generation state is required"))
+	}
+	if consumeErr := consumeAgentEvents(events, summary, collector, toolDefsByModelName); consumeErr != nil {
+		err := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorGenerationFailed, consumeErr)
+		summary.Status = "error"
+		summary.ErrorMessage = err.Error()
+		collector.Data.Status = summary.Status
+		collector.Data.Error.Message = summary.ErrorMessage
+		collector.Data.Error.Stage = "generate"
+		collector.Data.Pipeline.Generate.Status = "failed"
+		collector.Data.Pipeline.Generate.Reason = summary.ErrorMessage
+		collector.Data.Pipeline.Validate.Status = "failed"
+		collector.Data.Pipeline.Validate.Reason = summary.ErrorMessage
+		collector.Data.Pipeline.Generate.LatencyMs = time.Since(startedAt).Milliseconds()
+		return err
+	}
+	collector.Data.Pipeline.Generate.LatencyMs = time.Since(startedAt).Milliseconds()
+	summary.ModelName = modelName
+	enforceGeneratedReplyActionLedger(summary, collector)
+	if !summary.Interrupted && strings.TrimSpace(summary.ReplyText) == "" && !hasInvokedGraphTool(summary.InvokedToolCodes) {
+		err := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorEmptyOutput, fmt.Errorf("runtime produced no reply or action"))
+		summary.Status = "error"
+		summary.ErrorMessage = err.Error()
+		collector.Data.Status = summary.Status
+		collector.Data.Error.Message = summary.ErrorMessage
+		collector.Data.Error.Stage = "validate"
+		collector.Data.Pipeline.Generate.Status = "failed"
+		collector.Data.Pipeline.Generate.Reason = summary.ErrorMessage
+		collector.Data.Pipeline.Validate.Status = "failed"
+		collector.Data.Pipeline.Validate.Reason = summary.ErrorMessage
+		return err
+	}
+	collector.Data.Status = summary.Status
+	collector.Data.Output.ReplyText = summary.ReplyText
+	if strings.TrimSpace(collector.Data.Output.FinishReason) == "" {
+		collector.Data.Output.FinishReason = summary.Status
+	}
+	collector.Data.Pipeline.Generate.Status = summary.Status
+	if strings.TrimSpace(summary.ReplyText) != "" {
+		if strings.TrimSpace(collector.Data.Pipeline.Generate.Reason) == "" {
+			collector.Data.Pipeline.Generate.Reason = "model generated reply from staged prompt and layered context"
+		}
+		if collector.Data.Pipeline.Validate.Status != "failed" && strings.TrimSpace(collector.Data.Pipeline.Validate.Status) == "" {
+			collector.Data.Pipeline.Validate.Status = "passed"
+			collector.Data.Pipeline.Validate.Reason = "runtime completed"
+		}
+	} else if summary.Status == "error" {
+		collector.Data.Pipeline.Generate.Reason = summary.ErrorMessage
+		collector.Data.Pipeline.Validate.Status = "failed"
+		collector.Data.Pipeline.Validate.Reason = summary.ErrorMessage
+	}
+	return nil
 }
 
 func syncSkillSummaryFromCollector(summary *RunResult, collector *callbacks.RuntimeTraceCollector) {

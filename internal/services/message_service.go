@@ -1,21 +1,22 @@
 package services
 
 import (
-	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/constants"
-	"agent-desk/internal/pkg/dto"
-	"agent-desk/internal/pkg/enums"
-	"agent-desk/internal/pkg/errorsx"
-	"agent-desk/internal/pkg/openidentity"
-	"agent-desk/internal/pkg/tracex"
-	"agent-desk/internal/pkg/utils"
-	"agent-desk/internal/repositories"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
 	"time"
 
+	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
+	"agent-desk/internal/pkg/dto"
+	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/httpx/params"
+	"agent-desk/internal/pkg/openidentity"
+	"agent-desk/internal/pkg/tracex"
+	"agent-desk/internal/pkg/utils"
+	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/common/strs"
 	"github.com/mlogclub/simple/sqls"
@@ -37,6 +38,13 @@ type sendMessageOptions struct {
 	systemOutbound              bool
 	sessionNo                   int
 	eventContent                string
+}
+
+type AIOutboundMessageDraft struct {
+	ClientMsgID string
+	MessageType enums.IMMessageType
+	Content     string
+	Payload     string
 }
 
 func (s *messageService) Get(id int64) *models.Message {
@@ -359,6 +367,150 @@ func (s *messageService) SendAIMessageWithRequestID(conversationID int64, aiAgen
 	return s.sendMessage(conversationID, enums.IMSenderTypeAI, aiAgentID, clientMsgID, messageType, content, payload, operator, nil, requestID)
 }
 
+func (s *messageService) SendAIMessageBatchWithRequestID(conversationID, aiAgentID int64, drafts []AIOutboundMessageDraft, operator *dto.AuthPrincipal, requestID string) ([]models.Message, error) {
+	if len(drafts) == 0 {
+		return nil, errorsx.InvalidParam("AI 回复批次不能为空")
+	}
+	conversation, err := s.ValidateConversationSender(conversationID, enums.IMSenderTypeAI, operator, nil)
+	if err != nil {
+		return nil, err
+	}
+	traceID := tracex.EnsureRequestID(requestID)
+	if strings.TrimSpace(traceID) == "" {
+		return nil, fmt.Errorf("generate AI reply request id")
+	}
+
+	type normalizedDraft struct {
+		AIOutboundMessageDraft
+		summary string
+	}
+	normalized := make([]normalizedDraft, 0, len(drafts))
+	seenClientIDs := make(map[string]struct{}, len(drafts))
+	for _, draft := range drafts {
+		draft.ClientMsgID = strings.TrimSpace(draft.ClientMsgID)
+		if draft.ClientMsgID == "" {
+			return nil, errorsx.InvalidParam("AI 回复批次缺少稳定消息标识")
+		}
+		if _, exists := seenClientIDs[draft.ClientMsgID]; exists {
+			return nil, errorsx.InvalidParam("AI 回复批次消息标识重复")
+		}
+		seenClientIDs[draft.ClientMsgID] = struct{}{}
+		if strs.IsBlank(string(draft.MessageType)) {
+			draft.MessageType = enums.IMMessageTypeText
+		}
+		content, payload, summary, normalizeErr := s.normalizeMessageContent(conversation.ID, draft.MessageType, draft.Content, draft.Payload)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+		if strs.IsBlank(content) && strs.IsBlank(payload) {
+			return nil, errorsx.InvalidParam("消息内容不能为空")
+		}
+		if mediaErr := WxWorkProtocolService.ValidateOutboundMediaReady(conversation.ID, draft.MessageType, payload); mediaErr != nil {
+			return nil, mediaErr
+		}
+		draft.Content = content
+		draft.Payload = payload
+		normalized = append(normalized, normalizedDraft{AIOutboundMessageDraft: draft, summary: summary})
+	}
+
+	existingMessages := make([]models.Message, 0, len(normalized))
+	for _, draft := range normalized {
+		existing := repositories.MessageRepository.GetByClientMsgIDInTenant(sqls.DB(), conversation.ID, conversation.TenantID, draft.ClientMsgID)
+		if existing == nil {
+			continue
+		}
+		if existing.SenderType != enums.IMSenderTypeAI || existing.SenderID != aiAgentID ||
+			strings.TrimSpace(existing.RequestID) != traceID {
+			return nil, errorsx.InvalidParam("AI 回复稳定消息标识已被其他消息占用")
+		}
+		existingMessages = append(existingMessages, *existing)
+	}
+	if len(existingMessages) > 0 {
+		if len(existingMessages) != len(normalized) {
+			return nil, errorsx.InvalidParam("AI 回复批次仅部分提交，拒绝继续写入")
+		}
+		for index := range existingMessages {
+			s.ensureCommittedOutboundMessage(conversation, &existingMessages[index])
+		}
+		return existingMessages, nil
+	}
+	if err := WxWorkProtocolService.RequireConversationOutboundRoute(sqls.DB(), conversation); err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	nextSeq := repositories.MessageRepository.NextSeqNoInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
+	sessionNo := ConversationRouteService.CurrentSessionNo(conversation.ID)
+	messages := make([]models.Message, len(normalized))
+	for index, draft := range normalized {
+		messages[index] = models.Message{
+			TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: sessionNo,
+			RequestID: traceID, ClientMsgID: draft.ClientMsgID, SenderType: enums.IMSenderTypeAI,
+			SenderID: aiAgentID, MessageType: draft.MessageType, Content: draft.Content, Payload: draft.Payload,
+			SeqNo: nextSeq + int64(index), SendStatus: enums.IMMessageStatusSent, SentAt: &now,
+			AuditFields: models.AuditFields{
+				CreatedAt: now, CreateUserID: operator.UserID, CreateUserName: operator.Username,
+				UpdatedAt: now, UpdateUserID: operator.UserID, UpdateUserName: operator.Username,
+			},
+		}
+	}
+
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		for _, draft := range normalized {
+			if repositories.MessageRepository.GetByClientMsgIDInTenant(ctx.Tx, conversation.ID, conversation.TenantID, draft.ClientMsgID) != nil {
+				return errorsx.InvalidParam("AI 回复批次提交期间发生消息冲突")
+			}
+		}
+		var agentUnreadCount, customerUnreadCount int64
+		for index := range messages {
+			message := &messages[index]
+			ChannelMessageOutboxService.PrepareOutboundMessage(ctx.Tx, conversation, message)
+			if err := repositories.MessageRepository.Create(ctx.Tx, message); err != nil {
+				return err
+			}
+			if strings.TrimSpace(message.OutboundChannelType) != "" {
+				if _, err := ChannelMessageOutboxService.ensureExternalMessage(ctx.Tx, message.OutboundChannelType, conversation, message, true); err != nil {
+					return err
+				}
+			}
+			var readErr error
+			agentUnreadCount, customerUnreadCount, readErr = s.handleReadState(ctx, enums.IMSenderTypeAI, conversation, operator, message, nil)
+			if readErr != nil {
+				return readErr
+			}
+			if err := ConversationEventLogService.CreateEventWithRequestID(ctx, conversation.ID, traceID, enums.IMEventTypeMessageSend,
+				enums.IMSenderTypeAI, operator.UserID, enums.GetIMSenderTypeLabel(enums.IMSenderTypeAI)+"发送消息", ""); err != nil {
+				return err
+			}
+		}
+		last := &messages[len(messages)-1]
+		conversation.LastMessageID = last.ID
+		conversation.LastMessageAt = now
+		conversation.LastActiveAt = now
+		conversation.LastMessageSummary = limitText(normalized[len(normalized)-1].summary, 255)
+		conversation.UpdateUserID = operator.UserID
+		conversation.UpdateUserName = operator.Username
+		conversation.UpdatedAt = now
+		conversation.AgentUnreadCount = int(agentUnreadCount)
+		conversation.CustomerUnreadCount = int(customerUnreadCount)
+		conversation.AIReplyRounds++
+		return repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversation.ID, conversation.TenantID, map[string]any{
+			"last_message_id": conversation.LastMessageID, "last_message_at": conversation.LastMessageAt,
+			"last_active_at": conversation.LastActiveAt, "last_message_summary": conversation.LastMessageSummary,
+			"update_user_id": conversation.UpdateUserID, "update_user_name": conversation.UpdateUserName,
+			"updated_at": conversation.UpdatedAt, "agent_unread_count": conversation.AgentUnreadCount,
+			"customer_unread_count": conversation.CustomerUnreadCount, "ai_reply_rounds": conversation.AIReplyRounds,
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	for index := range messages {
+		s.publishCommittedMessage(conversation, &messages[index])
+	}
+	return messages, nil
+}
+
 func (s *messageService) SendAIServiceNotice(conversationID int64, aiAgentID int64, content string) (*models.Message, error) {
 	return s.SendAIServiceNoticeWithRequestID(conversationID, aiAgentID, content, "")
 }
@@ -403,9 +555,10 @@ func (s *messageService) createAIWelcomeMessage(ctx *sqls.TxContext, conversatio
 	message := &models.Message{
 		TenantID:       conversation.TenantID,
 		ConversationID: conversation.ID,
-		ClientMsgID:    strs.UUID(),
-		SenderType:     enums.IMSenderTypeAI,
-		SenderID:       aiAgent.ID,
+		RequestID:      fmt.Sprintf("conversation_welcome_%d", conversation.ID),
+		ClientMsgID:    fmt.Sprintf("conversation_welcome_%d_text", conversation.ID),
+		SenderType:     enums.IMSenderTypeSystem,
+		SenderID:       0,
 		MessageType:    enums.IMMessageTypeText,
 		Content:        content,
 		Payload:        payload,
@@ -421,9 +574,14 @@ func (s *messageService) createAIWelcomeMessage(ctx *sqls.TxContext, conversatio
 			UpdateUserName: operator.Username,
 		},
 	}
-	ChannelMessageOutboxService.PrepareOutboundMessage(ctx.Tx, conversation, message)
+	ChannelMessageOutboxService.PrepareSystemOutboundMessage(ctx.Tx, conversation, message)
 	if err := repositories.MessageRepository.Create(ctx.Tx, message); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(message.OutboundChannelType) != "" {
+		if _, err := ChannelMessageOutboxService.ensureExternalMessage(ctx.Tx, message.OutboundChannelType, conversation, message, true); err != nil {
+			return nil, err
+		}
 	}
 
 	if _, err := ConversationReadStateService.MarkAgentRead(ctx, conversation, operator, message); err != nil {
@@ -434,7 +592,7 @@ func (s *messageService) createAIWelcomeMessage(ctx *sqls.TxContext, conversatio
 	if err != nil {
 		return nil, err
 	}
-	customerUnreadCount, err := ConversationReadStateService.CountUnreadMessages(ctx, conversation.ID, s.readSeqNo(customerReadState), enums.IMSenderTypeAgent, enums.IMSenderTypeAI)
+	customerUnreadCount, err := ConversationReadStateService.CountUnreadMessages(ctx, conversation.ID, s.readSeqNo(customerReadState), enums.IMSenderTypeAgent, enums.IMSenderTypeAI, enums.IMSenderTypeSystem)
 	if err != nil {
 		return nil, err
 	}
@@ -456,9 +614,9 @@ func (s *messageService) createAIWelcomeMessage(ctx *sqls.TxContext, conversatio
 	if err := ConversationEventLogService.CreateEvent(ctx,
 		conversation.ID,
 		enums.IMEventTypeMessageSend,
-		enums.IMSenderTypeAI,
+		enums.IMSenderTypeSystem,
 		0,
-		enums.GetIMSenderTypeLabel(enums.IMSenderTypeAI)+"发送消息",
+		enums.GetIMSenderTypeLabel(enums.IMSenderTypeSystem)+"发送消息",
 		"",
 	); err != nil {
 		return nil, err

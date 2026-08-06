@@ -2,38 +2,63 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
 	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
+	"agent-desk/internal/services"
 )
 
 type runtimePipelinePlan struct {
-	Normalize     callbacks.NormalizeTraceData
-	Intent        callbacks.IntentTraceData
-	PromptSelect  callbacks.IntentPromptTraceData
-	Context       callbacks.ContextBuildTraceData
-	ReplyPlan     callbacks.ReplyPlanTraceData
-	ToolKnowledge callbacks.ToolKnowledgeTraceData
-	Generate      callbacks.GenerateTraceData
-	Validate      callbacks.ValidateTraceData
-	Prompt        string
+	Normalize           callbacks.NormalizeTraceData
+	Intent              callbacks.IntentTraceData
+	PromptSelect        callbacks.IntentPromptTraceData
+	Context             callbacks.ContextBuildTraceData
+	ReplyPlan           callbacks.ReplyPlanTraceData
+	ToolKnowledge       callbacks.ToolKnowledgeTraceData
+	Generate            callbacks.GenerateTraceData
+	Validate            callbacks.ValidateTraceData
+	Prompt              string
+	PrefetchedKnowledge *retrievers.KnowledgeRetrieveResult
 }
 
-func buildRuntimePipelinePlan(req RunInput, history adapter.HistoryBuildResult) runtimePipelinePlan {
-	return buildRuntimePipelinePlanWithModel(context.Background(), req, history, nil)
-}
-
-func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) runtimePipelinePlan {
+func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) (runtimePipelinePlan, error) {
 	currentText := strings.TrimSpace(req.UserMessage.Content)
-	intent, promptPack, configured := detectRuntimeIntentWithModel(ctx, req, history, detector)
+	intent, promptPack, configured, err := detectRuntimeIntentWithModelStrict(ctx, req, history, detector)
+	if err != nil {
+		return runtimePipelinePlan{}, err
+	}
 	if !configured {
-		intent = intentDetectUnavailableIntent("IntentDetect model unavailable; entering interaction")
+		return runtimePipelinePlan{}, services.NewAIReplyExecutionError(
+			services.AIReplyExecutionErrorIntentDetectFailed,
+			fmt.Errorf("intent model unavailable"),
+		)
+	}
+	prefetchedKnowledge, err := probeClarifyKnowledge(ctx, req, intent)
+	if err != nil {
+		return runtimePipelinePlan{}, err
+	}
+	if prefetchedKnowledge != nil && len(prefetchedKnowledge.Hits) > 0 && strings.TrimSpace(prefetchedKnowledge.ContextText) != "" {
+		intent.PrimaryIntent = "hotel_info"
+		intent.MatchedIntentCode = "hotel_info"
+		intent.DetectedIntent = "hotel_info"
+		intent.SubIntent = "store_knowledge"
+		intent.NeedsClarification = false
+		intent.NeedsKnowledge = true
+		intent.ShouldReply = true
+		intent.MatchMode = "knowledge_probe"
+		intent.Reason = appendIntentReason(intent.Reason, "clarify knowledge probe matched current store knowledge")
+		intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "store_knowledge", Text: currentText,
+			NeedsKnowledge: true, Reason: "clarify knowledge probe matched",
+		}}
 		promptPack = selectIntentPromptPack(intent)
 	}
 	contextTrace := buildContextTrace(req, history, intent)
@@ -60,8 +85,36 @@ func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, histor
 		Validate: callbacks.ValidateTraceData{
 			Rules: []string{"answer_current_question", "no_fake_commitment", "no_ocr_dump", "no_unasked_media_reply", "natural_short_reply"},
 		},
-		Prompt: prompt,
+		Prompt:              prompt,
+		PrefetchedKnowledge: prefetchedKnowledge,
+	}, nil
+}
+
+func probeClarifyKnowledge(ctx context.Context, req RunInput, intent callbacks.IntentTraceData) (*retrievers.KnowledgeRetrieveResult, error) {
+	if intent.PrimaryIntent != "interaction" || (strings.TrimSpace(intent.SubIntent) != "clarify" && !intent.NeedsClarification) {
+		return nil, nil
 	}
+	if len(utils.SplitInt64s(req.AIAgent.KnowledgeIDs)) == 0 {
+		return nil, nil
+	}
+	query := strings.TrimSpace(currentTurnDisplayText(req.UserMessage.Content))
+	if query == "" {
+		return nil, nil
+	}
+	retriever := retrievers.NewKnowledgeRetriever(req.AIAgent)
+	if len(retriever.KnowledgeBaseIDs()) == 0 {
+		return nil, nil
+	}
+	options := retrievers.DefaultKnowledgeRetrieveOptions()
+	options.QueryPreview = preview(query, 120)
+	result, err := retriever.RetrieveContextByOptions(ctx, options, query)
+	if err != nil {
+		return nil, services.NewAIReplyExecutionError(services.AIReplyExecutionErrorKnowledgeUnavailable, err)
+	}
+	if result == nil || len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
+		return nil, nil
+	}
+	return result, nil
 }
 
 func buildToolKnowledgeTrace(intent callbacks.IntentTraceData) callbacks.ToolKnowledgeTraceData {

@@ -43,7 +43,7 @@ func newRuntimeReplyExecutor() *runtimeReplyExecutor {
 func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInput) (*applicationruntime.Summary, error) {
 	resolved, err := svc.ModelCallResolverService.ResolveForConversation(input.Conversation.ID, enums.ModelUsageSlotReplyLLM)
 	if err != nil {
-		return nil, err
+		return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorGenerationFailed, err)
 	}
 	modelConfig := normalizeRuntimeReplyModelConfig(resolved.RuntimeConfig())
 	e.applyResolvedModelTrace(input.Trace, resolved, modelConfig)
@@ -56,6 +56,11 @@ func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInp
 		AIAgent:      input.AIAgent,
 		ModelConfig:  modelConfig,
 	})
+	if err != nil {
+		if _, controlled := svc.AIReplyExecutionErrorCodeOf(err); !controlled {
+			err = svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorGenerationFailed, err)
+		}
+	}
 	e.recordReplyModelUsage(input.Conversation, input.Message, modelConfig, resolved, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
 	if input.Trace != nil {
 		input.Trace.RuntimeLatencyMs = time.Since(runtimeStartedAt).Milliseconds()
@@ -70,7 +75,7 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 	}
 	resolved, err := svc.ModelCallResolverService.ResolveForConversation(input.Conversation.ID, enums.ModelUsageSlotReplyLLM)
 	if err != nil {
-		return nil, err
+		return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorGenerationFailed, err)
 	}
 	modelConfig := normalizeRuntimeReplyModelConfig(resolved.RuntimeConfig())
 	e.applyResolvedModelTrace(input.Trace, resolved, modelConfig)
@@ -89,6 +94,11 @@ func (e *runtimeReplyExecutor) ResumePendingInterrupt(ctx context.Context, input
 			strings.TrimSpace(input.PendingInterrupt.InterruptID): e.resumeMessageText(input.Message),
 		},
 	})
+	if err != nil {
+		if _, controlled := svc.AIReplyExecutionErrorCodeOf(err); !controlled {
+			err = svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorGenerationFailed, err)
+		}
+	}
 	e.recordReplyModelUsage(input.Conversation, input.Message, modelConfig, resolved, summary, usageCapture.Receipts(), err, time.Since(runtimeStartedAt).Milliseconds())
 	if input.Trace != nil {
 		input.Trace.RuntimeLatencyMs = time.Since(runtimeStartedAt).Milliseconds()

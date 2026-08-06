@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,7 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		&models.ConversationAssignment{},
 		&models.Message{},
 		&models.AIReplyJob{},
+		&models.ConversationInterrupt{},
 		&models.AgentRunLog{},
 		&models.ConversationServiceSession{},
 		&models.ConversationResponseSpan{},
@@ -138,7 +140,7 @@ func welcomeTestExternalUser(id string) openidentity.ExternalUser {
 	}
 }
 
-func TestConversationCreateCreatesAIWelcomeMessage(t *testing.T) {
+func TestConversationCreateCreatesSystemWelcomeMessage(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	aiAgent := createWelcomeTestAIAgent(t, db, "  您好，请问有什么可以帮您？  ")
 
@@ -161,11 +163,11 @@ func TestConversationCreateCreatesAIWelcomeMessage(t *testing.T) {
 	if message.ConversationID != conversation.ID {
 		t.Fatalf("expected conversation_id %d, got %d", conversation.ID, message.ConversationID)
 	}
-	if message.SenderType != enums.IMSenderTypeAI {
-		t.Fatalf("expected sender type ai, got %q", message.SenderType)
+	if message.SenderType != enums.IMSenderTypeSystem {
+		t.Fatalf("expected sender type system, got %q", message.SenderType)
 	}
-	if message.SenderID != aiAgent.ID {
-		t.Fatalf("expected sender id %d, got %d", aiAgent.ID, message.SenderID)
+	if message.SenderID != 0 {
+		t.Fatalf("expected system sender id 0, got %d", message.SenderID)
 	}
 	if message.MessageType != enums.IMMessageTypeText {
 		t.Fatalf("expected message type text, got %q", message.MessageType)
@@ -359,6 +361,96 @@ func TestRepairMissingOutboundMessagesIsIdempotent(t *testing.T) {
 	}
 	if outboxCount != 1 {
 		t.Fatalf("outbox count=%d want 1", outboxCount)
+	}
+}
+
+func TestSendAIMessageBatchRollsBackMessagesAndOutboxTogether(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	if err := db.Create(&models.Channel{
+		ID: 12, TenantID: 101, Name: "企微 CLI", ChannelType: enums.ChannelTypeWxWorkCLI,
+		ChannelID: "atomic-batch-outbound", Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("atomic-batch"), 12, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	callbackName := "test:fail-second-ai-batch-message"
+	if err := db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		message, ok := tx.Statement.Dest.(*models.Message)
+		if ok && message.ClientMsgID == "atomic-batch-2" {
+			tx.AddError(errors.New("injected second message failure"))
+		}
+	}); err != nil {
+		t.Fatalf("register create callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Create().Remove(callbackName)
+	})
+
+	_, err = MessageService.SendAIMessageBatchWithRequestID(
+		conversation.ID,
+		aiAgent.ID,
+		[]AIOutboundMessageDraft{
+			{ClientMsgID: "atomic-batch-1", MessageType: enums.IMMessageTypeText, Content: "第一段"},
+			{ClientMsgID: "atomic-batch-2", MessageType: enums.IMMessageTypeText, Content: "第二段"},
+		},
+		&dto.AuthPrincipal{UserID: 1, Username: "AI", ActiveTenantID: 101},
+		"atomic-batch-request",
+	)
+	if err == nil {
+		t.Fatal("expected injected batch commit failure")
+	}
+	var messageCount int64
+	if err := db.Model(&models.Message{}).
+		Where("conversation_id = ? AND client_msg_id IN ?", conversation.ID, []string{"atomic-batch-1", "atomic-batch-2"}).
+		Count(&messageCount).Error; err != nil {
+		t.Fatalf("count rolled back messages: %v", err)
+	}
+	var outboxCount int64
+	if err := db.Model(&models.ChannelMessageOutbox{}).
+		Where("conversation_id = ?", conversation.ID).
+		Count(&outboxCount).Error; err != nil {
+		t.Fatalf("count rolled back outbox rows: %v", err)
+	}
+	if messageCount != 0 || outboxCount != 0 {
+		t.Fatalf("partial batch persisted messages=%d outbox=%d", messageCount, outboxCount)
+	}
+}
+
+func TestChannelMessageOutboxClaimHonorsNextRetryAt(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	future := now.Add(time.Hour)
+	outbox := &models.ChannelMessageOutbox{
+		TenantID: 101, ChannelType: enums.ChannelTypeWxWorkCLI,
+		ConversationID: 9001, MessageID: 9002,
+		SendStatus: string(enums.ChannelMessageOutboxStatusFailed), NextRetryAt: &future,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(outbox).Error; err != nil {
+		t.Fatalf("create future outbox: %v", err)
+	}
+	if pending := ChannelMessageOutboxService.ListPending(enums.ChannelTypeWxWorkCLI, 10); len(pending) != 0 {
+		t.Fatalf("future outbox became pending: %#v", pending)
+	}
+	if claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID, outbox.TenantID); err != nil || claimed {
+		t.Fatalf("future outbox claim claimed=%v err=%v", claimed, err)
+	}
+	due := now.Add(-time.Second)
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("id = ?", outbox.ID).Update("next_retry_at", due).Error; err != nil {
+		t.Fatalf("make outbox due: %v", err)
+	}
+	if claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID, outbox.TenantID); err != nil || !claimed {
+		t.Fatalf("due outbox claim claimed=%v err=%v", claimed, err)
+	}
+	if claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID, outbox.TenantID); err != nil || claimed {
+		t.Fatalf("outbox claimed twice claimed=%v err=%v", claimed, err)
 	}
 }
 

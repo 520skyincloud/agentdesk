@@ -2274,23 +2274,12 @@ func (s *wxWorkProtocolService) prepareOutboundMiniProgramMediaWithPersistence(
 	if err != nil {
 		return err
 	}
-	// /msg/send_weapp has two identities: conversation_id decides who receives it,
-	// while username is the mini program original ID, for example gh_xxx@app.
-	// Using the customer username here can produce a card that renders but cannot open.
-	if isEmptyProtocolValue(body["username"]) {
-		return errorsx.InvalidParam("小程序消息缺少 username（小程序原始ID，如 gh_xxx@app）")
+	coverURL, err := validateWxWorkMiniProgramPayloadBody(body)
+	if err != nil {
+		return err
 	}
-	if !isEmptyProtocolValue(body["file_id"]) && !isEmptyProtocolValue(body["aes_key"]) && !isEmptyProtocolValue(body["md5"]) && !isEmptyProtocolValue(body["size"]) {
+	if coverURL == "" {
 		return nil
-	}
-	coverURL := firstNonBlank(
-		strings.TrimSpace(fmt.Sprint(body["thumb_url"])),
-		strings.TrimSpace(fmt.Sprint(body["image_url"])),
-		strings.TrimSpace(fmt.Sprint(body["cover_url"])),
-		strings.TrimSpace(fmt.Sprint(body["appicon"])),
-	)
-	if coverURL == "" || coverURL == "<nil>" {
-		return errorsx.InvalidParam("小程序消息缺少可上传封面 thumb_url/image_url/cover_url/appicon")
 	}
 	cfgBase, err := s.getCDNInfo(cfg, instance)
 	if err != nil {
@@ -2327,6 +2316,40 @@ func (s *wxWorkProtocolService) prepareOutboundMiniProgramMediaWithPersistence(
 	}
 	message.Payload = string(payloadBytes)
 	return nil
+}
+
+// validateWxWorkMiniProgramPayloadBody performs the protocol checks that do not
+// require a network call. An empty cover URL means the payload already contains
+// a complete uploaded cover; otherwise the caller must upload the returned URL.
+func validateWxWorkMiniProgramPayloadBody(body map[string]any) (string, error) {
+	if body == nil {
+		return "", errorsx.InvalidParam("小程序消息 payload 不能为空")
+	}
+	// /msg/send_weapp has two identities: conversation_id decides who receives it,
+	// while username is the mini program original ID, for example gh_xxx@app.
+	if isEmptyProtocolValue(body["username"]) {
+		return "", errorsx.InvalidParam("小程序消息缺少 username（小程序原始ID，如 gh_xxx@app）")
+	}
+	if !isEmptyProtocolValue(body["file_id"]) &&
+		!isEmptyProtocolValue(body["aes_key"]) &&
+		!isEmptyProtocolValue(body["md5"]) &&
+		!isEmptyProtocolValue(body["size"]) {
+		return "", nil
+	}
+	coverURL := firstNonBlank(
+		strings.TrimSpace(fmt.Sprint(body["thumb_url"])),
+		strings.TrimSpace(fmt.Sprint(body["image_url"])),
+		strings.TrimSpace(fmt.Sprint(body["cover_url"])),
+		strings.TrimSpace(fmt.Sprint(body["appicon"])),
+	)
+	if coverURL == "" || coverURL == "<nil>" {
+		return "", errorsx.InvalidParam("小程序消息缺少完整封面凭据或可上传封面 thumb_url/image_url/cover_url/appicon")
+	}
+	parsed, err := url.ParseRequestURI(coverURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || strings.TrimSpace(parsed.Host) == "" {
+		return "", errorsx.InvalidParam("小程序封面地址必须是有效的 HTTP(S) URL")
+	}
+	return coverURL, nil
 }
 
 func (s *wxWorkProtocolService) uploadAssetToWECDN(cfg *dto.WxWorkProtocolChannelConfig, instance *models.WxWorkProtocolInstance, messageType enums.IMMessageType, asset *models.Asset) (request.WxProtocolMediaPayload, error) {

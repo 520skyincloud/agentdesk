@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -37,7 +38,7 @@ func (s *wxWorkProtocolDefaultResourceService) SendNewFriendWelcome(conversation
 	var sendErrors []error
 	requestID = tracex.NormalizeRequestID(requestID)
 	if message := strings.TrimSpace(instance.WelcomeMessage); message != "" {
-		_, err := MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_welcome_text_"+strs.UUID(), enums.IMMessageTypeText, utils.RepairMojibakeText(message), "", systemOperator(), requestID)
+		_, err := MessageService.SendSystemOutboundMessage(conversation.ID, stableWelcomeClientMsgID(conversation.ID, "text"), enums.IMMessageTypeText, utils.RepairMojibakeText(message), "", requestID)
 		if err != nil {
 			slog.Warn("send wxwork welcome text failed", "conversation_id", conversation.ID, "instance_id", instance.ID, "error", err)
 			sendErrors = append(sendErrors, err)
@@ -72,7 +73,7 @@ func (s *wxWorkProtocolDefaultResourceService) shouldSendDefaultWelcomeMiniProgr
 }
 
 func (s *wxWorkProtocolDefaultResourceService) sendWelcomeImage(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, assetID string, requestID string) error {
-	asset := AssetService.GetByAssetID(assetID)
+	asset := AssetService.GetByAssetIDInTenant(assetID, conversation.TenantID)
 	if asset == nil || asset.Status != enums.AssetStatusSuccess {
 		return fmt.Errorf("欢迎语图片不存在或尚未上传完成")
 	}
@@ -83,7 +84,7 @@ func (s *wxWorkProtocolDefaultResourceService) sendWelcomeImage(conversation *mo
 	if err != nil {
 		return err
 	}
-	_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_welcome_image_"+strs.UUID(), enums.IMMessageTypeImage, asset.Filename, payload, systemOperator(), requestID)
+	_, err = MessageService.SendSystemOutboundMessage(conversation.ID, stableWelcomeClientMsgID(conversation.ID, "image"), enums.IMMessageTypeImage, asset.Filename, payload, requestID)
 	return err
 }
 
@@ -92,7 +93,7 @@ func (s *wxWorkProtocolDefaultResourceService) sendDefaultLocation(conversation 
 	if err != nil {
 		return err
 	}
-	_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_default_location_"+strs.UUID(), enums.IMMessageTypeLocation, title, payload, systemOperator(), requestID)
+	_, err = MessageService.SendSystemOutboundMessage(conversation.ID, stableWelcomeClientMsgID(conversation.ID, "location"), enums.IMMessageTypeLocation, title, payload, requestID)
 	return err
 }
 
@@ -106,11 +107,11 @@ func (s *wxWorkProtocolDefaultResourceService) BuildDefaultLocationMessage(insta
 		return "", "", fmt.Errorf("员工号未绑定门店坐标")
 	}
 	lng, err := strconv.ParseFloat(longitude, 64)
-	if err != nil || lng == 0 {
+	if err != nil || math.IsNaN(lng) || math.IsInf(lng, 0) || lng == 0 || lng < -180 || lng > 180 {
 		return "", "", fmt.Errorf("员工号门店经度无效")
 	}
 	lat, err := strconv.ParseFloat(latitude, 64)
-	if err != nil || lat == 0 {
+	if err != nil || math.IsNaN(lat) || math.IsInf(lat, 0) || lat == 0 || lat < -90 || lat > 90 {
 		return "", "", fmt.Errorf("员工号门店纬度无效")
 	}
 	title := firstNonBlank(utils.RepairMojibakeText(strings.TrimSpace(instance.StoreNavigationName)), utils.RepairMojibakeText(strings.TrimSpace(instance.StoreAddress)), "门店位置")
@@ -130,8 +131,12 @@ func (s *wxWorkProtocolDefaultResourceService) sendDefaultMiniProgram(conversati
 	if err != nil {
 		return err
 	}
-	_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "wx_default_weapp_"+strs.UUID(), enums.IMMessageTypeMiniProgram, content, payload, systemOperator(), requestID)
+	_, err = MessageService.SendSystemOutboundMessage(conversation.ID, stableWelcomeClientMsgID(conversation.ID, "mini_program"), enums.IMMessageTypeMiniProgram, content, payload, requestID)
 	return err
+}
+
+func stableWelcomeClientMsgID(conversationID int64, resourceType string) string {
+	return fmt.Sprintf("wx_welcome_%d_%s", conversationID, strings.TrimSpace(resourceType))
 }
 
 func (s *wxWorkProtocolDefaultResourceService) BuildDefaultMiniProgramMessage(instance *models.WxWorkProtocolInstance) (string, string, error) {
@@ -152,6 +157,9 @@ func (s *wxWorkProtocolDefaultResourceService) BuildDefaultMiniProgramMessage(in
 	body = repairMapStringValues(body)
 	injectMiniProgramStoreParams(body, instance)
 	deleteMiniProgramInternalStoreKeys(body)
+	if _, err := validateWxWorkMiniProgramPayloadBody(body); err != nil {
+		return "", "", err
+	}
 	payloadBytes, _ := json.Marshal(body)
 	content := firstNonBlank(strings.TrimSpace(fmt.Sprint(body["title"])), strings.TrimSpace(fmt.Sprint(body["appname"])), "小程序")
 	return content, string(payloadBytes), nil

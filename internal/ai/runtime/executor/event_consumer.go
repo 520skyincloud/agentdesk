@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"fmt"
 	"strings"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
@@ -12,9 +13,9 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *RunResult, collector *callbacks.RuntimeTraceCollector, toolDefsByModelName map[string]string) {
+func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *RunResult, collector *callbacks.RuntimeTraceCollector, toolDefsByModelName map[string]string) error {
 	if summary == nil {
-		return
+		return fmt.Errorf("runtime summary is required")
 	}
 	if collector == nil {
 		collector = callbacks.NewRuntimeTraceCollector()
@@ -34,11 +35,9 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 			summary.Interrupts = buildInterruptSummaries(event)
 		}
 		if event.Err != nil {
-			errMsg := strings.TrimSpace(event.Err.Error())
-			if errMsg != "" {
-				summary.Status = "error"
-				summary.ErrorMessage = errMsg
-			}
+			summary.Status = "error"
+			summary.ErrorMessage = "generation_failed"
+			return event.Err
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
 			continue
@@ -96,6 +95,7 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 		}
 	}
 	summary.ToolCallCount = len(summary.InvokedToolCodes)
+	return nil
 }
 
 func collectTokenUsage(message *schema.Message, summary *RunResult, collector *callbacks.RuntimeTraceCollector) {

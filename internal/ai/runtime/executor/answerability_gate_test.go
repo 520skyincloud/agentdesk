@@ -13,6 +13,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/modelconfig"
+	"agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -25,6 +26,11 @@ type fakeKnowledgeContextRetriever struct {
 	err              error
 	called           bool
 	queries          []string
+}
+
+func appendRetrievedContext(ctx context.Context, req RunInput, intent callbacks.IntentTraceData, summary *RunResult, collector *callbacks.RuntimeTraceCollector, gate *KnowledgeAnswerabilityGate, messages *[]*schema.Message) retrievedContextOutcome {
+	outcome, _ := appendRetrievedContextStrict(ctx, req, intent, nil, summary, collector, gate, messages)
+	return outcome
 }
 
 func (r *fakeKnowledgeContextRetriever) KnowledgeBaseIDs() []int64 {
@@ -787,37 +793,24 @@ func TestKnowledgePolicyEvaluateUsesRuntimeActionFallback(t *testing.T) {
 	}
 }
 
-func TestKnowledgePolicyEvaluateInjectsRetrievalErrorInstructionWithoutFallback(t *testing.T) {
+func TestKnowledgePolicyEvaluatePropagatesRetrievalFailure(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	gate := newTestKnowledgePolicyGate(&fakeKnowledgeContextRetriever{
 		knowledgeBaseIDs: []int64{1},
 		err:              errors.New("vector store unavailable"),
 	})
 
-	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+	_, err := gate.Evaluate(context.Background(), answerabilityGateInput{
 		Request:   newKnowledgePolicyRunInput("早餐几点", "1"),
 		Collector: collector,
 		Intent:    hotelInfoIntent(),
 	})
-	if err != nil {
-		t.Fatalf("Evaluate returned error: %v", err)
-	}
-
-	if len(state.Decision.Instructions) != 1 {
-		t.Fatalf("expected one retrieval-error instruction, got %d", len(state.Decision.Instructions))
-	}
-	if !strings.Contains(state.Decision.Instructions[0].Content, "知识库检索暂时不可用") {
-		t.Fatalf("unexpected retrieval-error instruction: %q", state.Decision.Instructions[0].Content)
-	}
-	if collector.Data.Answerability.Status != answerabilityStatusUnanswerable {
-		t.Fatalf("unexpected status: %q", collector.Data.Answerability.Status)
-	}
-	if collector.Data.Answerability.Reason != "knowledge retrieval failed" {
-		t.Fatalf("unexpected reason: %q", collector.Data.Answerability.Reason)
+	if code, ok := services.AIReplyExecutionErrorCodeOf(err); !ok || code != services.AIReplyExecutionErrorKnowledgeUnavailable {
+		t.Fatalf("expected controlled knowledge failure, got %v", err)
 	}
 }
 
-func TestBuildRunMessagesContinuesAgentFlowWhenRetrievalFails(t *testing.T) {
+func TestBuildRunMessagesStopsWhenRetrievalFails(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 200, MatchMode: "keyword", Keywords: "早餐", NeedsKnowledge: true, Status: enums.StatusOk})
 	summary := &RunResult{}
@@ -828,19 +821,42 @@ func TestBuildRunMessagesContinuesAgentFlowWhenRetrievalFails(t *testing.T) {
 
 	messages := make([]*schema.Message, 0)
 	req := newKnowledgePolicyRunInput("早餐几点", "1")
-	outcome := appendRetrievedContext(context.Background(), req, hotelInfoIntent(), summary, nil, gate, &messages)
-	messages = append(messages, schema.UserMessage(req.UserMessage.Content))
-	if outcome.AnswerabilityStatus != answerabilityStatusUnanswerable {
-		t.Fatalf("unexpected answerability status: %q", outcome.AnswerabilityStatus)
+	_, err := appendRetrievedContextStrict(context.Background(), req, hotelInfoIntent(), nil, summary, nil, gate, &messages)
+	if code, ok := services.AIReplyExecutionErrorCodeOf(err); !ok || code != services.AIReplyExecutionErrorKnowledgeUnavailable {
+		t.Fatalf("expected controlled knowledge failure, got %v", err)
 	}
+	if len(messages) != 0 {
+		t.Fatalf("retrieval failure must not continue generation with fallback instructions: %#v", messages)
+	}
+}
 
-	if summary.ReplyText != "" {
-		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
+func TestKnowledgePolicyReusesConditionalProbeResult(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	prefetched := &retrievers.KnowledgeRetrieveResult{
+		KnowledgeBaseIDs: []int64{1},
+		Hits: []rag.RetrieveResult{{
+			KnowledgeBaseID: 1,
+			SourceRecordID:  "prefetched-1",
+			Title:           "咖啡",
+			Content:         "大堂提供现磨咖啡。",
+			Score:           0.94,
+		}},
+		ContextText: "大堂提供现磨咖啡。",
+		AnswerMode:  enums.KnowledgeAnswerModeStrict,
 	}
-	if !messagesContainContent(messages, "知识库检索暂时不可用") {
-		t.Fatalf("expected retrieval-error instruction in messages: %#v", messages)
+	state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
+		Request:             newKnowledgePolicyRunInput("有咖啡吗", "1"),
+		Summary:             &RunResult{},
+		Intent:              hotelInfoIntent(),
+		PrefetchedKnowledge: prefetched,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
 	}
-	if !messagesContainContent(messages, "早餐几点") {
-		t.Fatalf("expected current user message to remain in messages: %#v", messages)
+	if retriever.called {
+		t.Fatal("prefetched conditional probe result must not trigger a second retrieval")
+	}
+	if state == nil || state.RetrieveResult != prefetched || state.AnswerabilityStatus != answerabilityStatusHasContext {
+		t.Fatalf("prefetched result was not reused: %#v", state)
 	}
 }

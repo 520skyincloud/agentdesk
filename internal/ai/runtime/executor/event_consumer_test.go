@@ -2,11 +2,14 @@ package executor
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/tooling"
 	"agent-desk/internal/pkg/toolx"
+	"agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
@@ -233,5 +236,36 @@ func TestConsumeAgentEventsCompletesGraphToolWithNoVisibleReply(t *testing.T) {
 	}
 	if summary.Status != "completed" {
 		t.Fatalf("unexpected summary status: %q", summary.Status)
+	}
+}
+
+func TestFinishRuntimeGenerationReturnsControlledModelError(t *testing.T) {
+	summary := &RunResult{Status: "started", InvokedToolCodes: []string{}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	events, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	gen.Send(&adk.AgentEvent{Err: errors.New("upstream unavailable")})
+	gen.Close()
+
+	err := finishRuntimeGeneration(events, summary, collector, nil, "reply-model", time.Now())
+	if code, ok := services.AIReplyExecutionErrorCodeOf(err); !ok || code != services.AIReplyExecutionErrorGenerationFailed {
+		t.Fatalf("expected controlled generation error, got %v", err)
+	}
+	if summary.Status != "error" || collector.Data.Error.Stage != "generate" {
+		t.Fatalf("expected failed generation trace, summary=%+v trace=%+v", summary, collector.Data.Error)
+	}
+}
+
+func TestFinishRuntimeGenerationRejectsEmptyOutput(t *testing.T) {
+	summary := &RunResult{Status: "started", InvokedToolCodes: []string{}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	events, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	gen.Close()
+
+	err := finishRuntimeGeneration(events, summary, collector, nil, "reply-model", time.Now())
+	if code, ok := services.AIReplyExecutionErrorCodeOf(err); !ok || code != services.AIReplyExecutionErrorEmptyOutput {
+		t.Fatalf("expected controlled empty output error, got %v", err)
+	}
+	if summary.Status != "error" || collector.Data.Error.Stage != "validate" {
+		t.Fatalf("expected failed validation trace, summary=%+v trace=%+v", summary, collector.Data.Error)
 	}
 }

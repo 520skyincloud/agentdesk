@@ -48,8 +48,8 @@ func NewManagedStoreFastGPTConnector() (*FastGPTConnector, error) {
 		timeout = 30 * time.Second
 	}
 	maxRetries := cfg.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 1
+	if maxRetries < 2 {
+		maxRetries = 2
 	}
 	gateway, err := fastgptapi.NewGateway(fastgptapi.Config{
 		BaseURL:          baseURL,

@@ -1018,7 +1018,7 @@ func defaultModelProfileSlotRequests() []request.ModelProfileSlotRequest {
 		result = append(result, request.ModelProfileSlotRequest{
 			UsageCode: string(spec.UsageCode), DisplayName: spec.DisplayName,
 			ModelType: string(spec.ExpectedModelType), Provider: modelProfileProviderNewAPI,
-			APIMode: spec.DefaultAPIMode, TimeoutMS: 30000, Enabled: true, SortNo: index + 1,
+			APIMode: spec.DefaultAPIMode, TimeoutMS: 30000, MaxRetryCount: 2, Enabled: true, SortNo: index + 1,
 		})
 	}
 	return result
