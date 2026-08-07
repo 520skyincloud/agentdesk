@@ -1171,3 +1171,47 @@ MySQL 容器启动时间：2026-08-03T07:23:35.617760019Z
 
 发布后尚未代替客户伪造真实入站消息。需要由用户发送一组连续测试消息后，再只按聚合用量事实确认
 成功 DeepSeek 调用的 `reasoning_tokens=0`，不得读取消息正文、Prompt、API Key 或访问令牌。
+
+## 门店运行资源 readiness 归属校准生产发布
+
+2026-08-07 在已经包含 AI 回复持久任务、受控错误、槽内重试、人工兜底和原子提交修复的
+`4648558` 生产基线上发布 `0d1f0eb`。本次只修正发布门禁读取运行资源的归属：电话、经纬度、
+导航名称和地址先由当前 `Store` 注入运行实例，再复用既有严格资源 Builder 校验；小程序 payload
+继续由当前有效企微实例持有。实例中的旧门店快照不再导致 `STORE_RESOURCE_LOCATION` 误报。
+
+本次没有修改 AI Runtime、意图、知识检索、结构化动作协议、模型调用、Token/计费归因、前端、
+公开 API、DTO、WebSocket、数据库模型、Schema 或 DML migration。
+
+发布事实：
+
+```text
+Git 提交：0d1f0eba57f5b799f06dfc1ab156a94cab928ca6
+部署前基线：/opt/agentdesk/releases/20260807-095945-retry-zero-4648558/app
+发布包 SHA-256：233f317ca94b2f54f3aa465e9929acacb260a81bbb0e4a0a742e274bdceb063d
+发布目录：/opt/agentdesk/releases/20260807-114552-readiness-binary-0d1f0eb/app
+部署前备份：/opt/agentdesk/backups/pre-0d1f0eb-20260807-114552
+数据库备份 SHA-256：b492f5b2b4ea22155a6f43d14bef53d0ef65b7e4fc12f6fbbf2737a5fd61fc81
+回滚镜像：mlogclub/agent-desk:rollback-pre-0d1f0eb-20260807-114552
+生产镜像：mlogclub/agent-desk:0d1f0eb
+生产镜像摘要：sha256:c9f18bd1ab95cd88cbd3e15d72cd10328ac8fba59be4ec6a5aaa899c7758d438
+服务二进制 SHA-256：a89f87793cca420ceb23006c56761e402179c065b25f4b4f8d5ee5b8dc31d36c
+租户审计二进制 SHA-256：5bc37d738e7499e6d4255962184122b50ebbba4d9363098b8072dd4e65e08748
+应用容器：09af99fccd2a57abfea569bb61f4b7bef33eaf4de7dd091a5bef3128fe37867d
+MySQL 容器：1953148a260bfe664d2185a529c9a3b5e8feabfcfee884f73519793e009bb308
+```
+
+发布包和两个 Linux/amd64 静态二进制在本地及服务器分别校验摘要。新镜像从固定回滚镜像派生，
+只覆盖 `/app/agent-desk` 与 `/app/tenant-integrity-audit`；原子切换 `current` 后仅执行
+`--force-recreate --no-deps agent-desk`，MySQL 容器未重建。数据库使用
+`--no-tablespaces --single-transaction --quick --routines --triggers` 导出，压缩包通过 `gzip -t`、
+完成标记和 SHA-256 校验。
+
+部署后应用容器为 `healthy`、重启数为 0，本机健康检查和公网首页均为 HTTP 200。租户完整性审计
+结果为 `passed`、0 violation；高铁南站店 configuration readiness 为 `15/17`，剩余项精确为
+`STORE_RESOURCE_PHONE` 和 `STORE_RESOURCE_MINI_PROGRAM`，`STORE_RESOURCE_LOCATION` 已通过。
+启动日志中 panic/fatal/error 计数为 0，API Key/Bearer 模式命中为 0。
+
+工程验证通过定向 readiness 测试、定向 race 测试、`go test ./... -count=1` 和 `go vet ./...`。
+部署脚本在候选切换失败时恢复旧 `current` 和旧应用容器；本次正式发布的回滚只需切回上述基线
+release 并以固定回滚镜像重建应用，不需要回退数据库。当前结论仅证明配置门禁正确读取 Store
+定位资源，不替代真实客户询问位置、AI 选择 location 动作和企微 `/msg/send_location` 的端到端验收。
