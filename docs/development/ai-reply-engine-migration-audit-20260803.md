@@ -156,10 +156,13 @@ MessageService 提交客户消息
 - 本地验证已通过定向测试、AI/Service 范围 race、`go test ./... -count=1`、`go vet ./...`
   和 `pnpm typecheck`。生产 Tenant Integrity Audit 覆盖 98 个注册模型、114 张必需表和
   287 个关系，结果为 0 violation。
-- 高铁南站店已生效九槽模板 r3，启用槽重试值为 2。合肥南七已通过现有服务完成 r3 九槽
-  真实测试并提交批量指派；测试时间为 2026-08-07 12:12:32，耗时 15,692 ms。其当前状态为
-  r2 生效、r3 待切换，最终激活仍必须通过超级管理员当前密码和敏感操作确认，禁止绕过服务
-  或直接修改生产表。
+- 高铁南站店和合肥南七均已生效九槽模板 r3。合肥南七先于 2026-08-07 12:12:32 完成一次
+  r3 九槽真实测试，耗时 15,692 ms；随后通过受保护的凭据激活服务完成最终切换，连接验证于
+  13:35:59 通过，FastGPT 于 13:36:02 就绪，本次启用槽测试耗时 15,237 ms。
+- 生产数据库只读复核确认两店均为 `template_id=3 / template_revision=3`，
+  `pending_template_id=0 / pending_template_revision=0`，Assignment 为 `ready/ready`；两份凭据
+  均为 `active`、模型测试 `passed`、FastGPT `ready`。r3 九槽的 `MaxRetryCount` 全部为 2，
+  ASR 仍按本轮边界停用。
 - 最近 24 小时没有新的 `AIReplyJob` 或 `AgentRunLog`，因此尚不能声称本次生产配置已经通过
   真实客户入站、FastGPT、DeepSeek、结构化动作和企微发送的完整端到端验收。
 - 高铁南站店 readiness 当前为 15/17，定位资源通过；缺少权威电话和小程序 payload。现有

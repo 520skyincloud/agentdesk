@@ -1216,7 +1216,7 @@ MySQL 容器：1953148a260bfe664d2185a529c9a3b5e8feabfcfee884f73519793e009bb308
 release 并以固定回滚镜像重建应用，不需要回退数据库。当前结论仅证明配置门禁正确读取 Store
 定位资源，不替代真实客户询问位置、AI 选择 location 动作和企微 `/msg/send_location` 的端到端验收。
 
-## AI 回复链补强验收与九槽 r3 全店切换准备
+## AI 回复链补强验收与九槽 r3 全店切换完成
 
 2026-08-07 继续按 `origin/codex/ai-billing@4db7993` 对照生产回复链。生产应用仍运行
 `mlogclub/agent-desk:0d1f0eb`，本轮未修改生产 Runtime、数据库、公开 API、DTO、WebSocket、
@@ -1233,11 +1233,22 @@ Outbox 写入失败会同时回滚两条 Message 与全部 Outbox，不留下半
 九槽测试入口验证 r3，8 个启用槽与 FastGPT 均通过，总耗时 15,692 ms，并通过现有
 `/store-model-profile/batch_assign` 服务提交 r3 指派。
 
-合肥南七当前为“r2 生效、r3 待切换”。最终切换只能从“门店模型与凭据”执行受保护的
-“验证并切换待选方案”，并提供超级管理员当前密码及敏感操作确认；不得猜测密码、绕过服务、
-读取浏览器凭据存储或直接修改生产表。激活后必须只读确认两家门店均为 template 3 / revision 3、
-pending revision 为 0、凭据 active/passed/FastGPT ready，随后复跑 Tenant Integrity Audit、容器
-健康、重启计数和启动日志检查。
+2026-08-07 13:35:43 从“门店模型与凭据”发起合肥南七受保护切换，使用当前超级管理员密码和
+敏感操作确认正常通过服务校验；没有绕过 service、读取浏览器凭据存储或直接修改生产表。
+连接验证于 13:35:59 通过，FastGPT 于 13:36:02 就绪，页面和审计均返回切换成功。审计表中的
+`r2 -> r2` 是凭据 revision，模型方案另有独立字段；最终生效方案为 template 3 / revision 3。
+
+切换后数据库只读复核结果：合肥南七和高铁南站店均为 `template_id=3`、
+`template_revision=3`、`pending_template_id=0`、`pending_template_revision=0`，Assignment 状态与
+readiness 均为 `ready`。两份凭据分别保持 credential revision 2 和 3，状态均为 `active`，
+模型测试均为 `passed`，FastGPT 均为 `ready`。r3 的九个槽 `MaxRetryCount` 均为 2；8 个启用槽
+使用既定 DeepSeek、Qwen、Embedding 和 Rerank 模型，ASR 继续停用。
+
+切换后 Tenant Integrity Audit 于 2026-08-07 13:39:40 再次通过，覆盖 98 个注册模型、114 张
+必需表和 287 个关系，0 violation。应用容器保持 `healthy`、重启数 0，镜像摘要仍为
+`sha256:c9f18bd1ab95cd88cbd3e15d72cd10328ac8fba59be4ec6a5aaa899c7758d438`；近 10 分钟
+panic/fatal/error 以及 API Key/Bearer 日志模式命中均为 0，公网 `/health` 返回 HTTP 200，耗时
+约 0.289 秒。本次是生产配置切换，不需要重新部署应用镜像。
 
 最近 24 小时没有新的 `AIReplyJob` 或 `AgentRunLog`，所以当前证据不替代真实客户消息的完整
 端到端验收。高铁南站店 readiness 仍为 15/17：定位已通过，缺少权威电话和小程序 payload；
