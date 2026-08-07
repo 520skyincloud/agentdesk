@@ -330,7 +330,11 @@ func (s *tenantReleaseReadinessService) Audit(
 			if len(instances) != 1 || instances[0].TenantID != tenant.ID || instances[0].StoreID != storeID {
 				return false
 			}
-			if err := build(&instances[0]); err != nil {
+			runtimeInstance, err := StoreService.HydrateRuntimeInstanceDB(db, &instances[0])
+			if err != nil {
+				return false
+			}
+			if err := build(runtimeInstance); err != nil {
 				return false
 			}
 		}

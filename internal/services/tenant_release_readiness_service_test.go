@@ -334,35 +334,62 @@ func TestTenantReleaseReadinessSupportsMultipleReadyStoreBindings(t *testing.T) 
 	}
 }
 
+func TestTenantReleaseReadinessUsesStoreOwnedRuntimeResources(t *testing.T) {
+	fixture := newTenantReleaseReadinessFixture(t)
+	if err := fixture.db.Model(&models.WxWorkProtocolInstance{}).
+		Where("id = ? AND tenant_id = ?", fixture.wxWork.ID, fixture.tenant.ID).
+		Updates(map[string]any{
+			"store_contact_phone":   "",
+			"store_longitude":       "181",
+			"store_latitude":        "91",
+			"store_navigation_name": "stale instance navigation",
+			"store_address":         "stale instance address",
+		}).Error; err != nil {
+		t.Fatalf("stale instance Store snapshots: %v", err)
+	}
+
+	assertTenantReleaseReadinessPassed(t, fixture.audit(t, TenantReleaseReadinessConfiguration, nil))
+}
+
 func TestTenantReleaseReadinessRequiresCompleteRuntimeResources(t *testing.T) {
 	tests := []struct {
-		name      string
-		updates   map[string]any
-		violation string
+		name            string
+		storeUpdates    map[string]any
+		instanceUpdates map[string]any
+		violation       string
 	}{
 		{
-			name:      "phone",
-			updates:   map[string]any{"store_contact_phone": ""},
-			violation: "STORE_RESOURCE_PHONE",
+			name:         "phone",
+			storeUpdates: map[string]any{"contact_phone": ""},
+			violation:    "STORE_RESOURCE_PHONE",
 		},
 		{
-			name:      "location",
-			updates:   map[string]any{"store_longitude": "181"},
-			violation: "STORE_RESOURCE_LOCATION",
+			name:         "location",
+			storeUpdates: map[string]any{"longitude": "181"},
+			violation:    "STORE_RESOURCE_LOCATION",
 		},
 		{
-			name:      "mini_program",
-			updates:   map[string]any{"default_mini_program_payload": `{"title":"missing protocol fields"}`},
-			violation: "STORE_RESOURCE_MINI_PROGRAM",
+			name:            "mini_program",
+			instanceUpdates: map[string]any{"default_mini_program_payload": `{"title":"missing protocol fields"}`},
+			violation:       "STORE_RESOURCE_MINI_PROGRAM",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newTenantReleaseReadinessFixture(t)
-			if err := fixture.db.Model(&models.WxWorkProtocolInstance{}).
-				Where("id = ? AND tenant_id = ?", fixture.wxWork.ID, fixture.tenant.ID).
-				Updates(test.updates).Error; err != nil {
-				t.Fatalf("break %s runtime resource: %v", test.name, err)
+			if test.storeUpdates != nil {
+				if err := fixture.db.Model(&models.Store{}).
+					Where("id = ? AND tenant_id = ?", fixture.store.ID, fixture.tenant.ID).
+					Updates(test.storeUpdates).Error; err != nil {
+					t.Fatalf("break %s Store resource: %v", test.name, err)
+				}
+			}
+			if test.instanceUpdates != nil {
+				if err := fixture.db.Model(&models.WxWorkProtocolInstance{}).
+					Where("id = ? AND tenant_id = ?", fixture.wxWork.ID, fixture.tenant.ID).
+					Updates(test.instanceUpdates).Error; err != nil {
+					t.Fatalf("break %s instance resource: %v", test.name, err)
+				}
 			}
 			report := fixture.audit(t, TenantReleaseReadinessConfiguration, nil)
 			if !tenantReleaseReadinessHasViolation(report, test.violation) {
@@ -659,8 +686,6 @@ func (f *tenantReleaseReadinessFixture) seedReadyStoreBinding(
 		Guid: "readiness-wxwork-guid-" + suffix, ChannelID: f.channel.ID,
 		EmployeeUserID: "168-readiness-" + suffix, EmployeeName: "Readiness " + suffix,
 		StoreID: f.store.ID, StoreStaffBindingID: binding.ID,
-		StoreContactPhone: "0551-88886666", StoreLongitude: "117.263908", StoreLatitude: "31.824097",
-		StoreNavigationName: "Readiness Store", StoreAddress: "Readiness Road 1",
 		DefaultMiniProgramPayload: tenantReleaseReadinessMiniProgramPayload,
 		NotifyURL:                 "https://readiness.example.com/api/third/wxwork-protocol/callback",
 		HealthStatus:              "online", LastHeartbeatAt: &readyAt,
@@ -857,7 +882,10 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 	}
 	store := models.Store{
 		TenantID: tenant.ID, StoreCode: "READINESS-STORE", Name: "Readiness Store",
-		Status: enums.StatusOk, AuditFields: audit,
+		Address: "Readiness Road 1", NavigationName: "Readiness Store",
+		Longitude: "117.263908", Latitude: "31.824097", MapProvider: "tencent",
+		ContactPhone: "0551-88886666",
+		Status:       enums.StatusOk, AuditFields: audit,
 	}
 	if err := db.Create(&store).Error; err != nil {
 		t.Fatalf("create readiness Store: %v", err)
@@ -882,8 +910,6 @@ func seedTenantReleaseReadinessFixture(t *testing.T, db *gorm.DB) *tenantRelease
 		Guid: "readiness-wxwork-guid", ChannelID: channel.ID,
 		EmployeeUserID: "168-readiness", EmployeeName: "Readiness WxWork",
 		StoreID: store.ID, StoreStaffBindingID: binding.ID,
-		StoreContactPhone: "0551-88886666", StoreLongitude: "117.263908", StoreLatitude: "31.824097",
-		StoreNavigationName: "Readiness Store", StoreAddress: "Readiness Road 1",
 		DefaultMiniProgramPayload: tenantReleaseReadinessMiniProgramPayload,
 		NotifyURL:                 "https://readiness.example.com/api/third/wxwork-protocol/callback",
 		HealthStatus:              "online", LastHeartbeatAt: &publishedAt,
