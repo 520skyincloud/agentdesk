@@ -1253,3 +1253,46 @@ panic/fatal/error 以及 API Key/Bearer 日志模式命中均为 0，公网 `/he
 最近 24 小时没有新的 `AIReplyJob` 或 `AgentRunLog`，所以当前证据不替代真实客户消息的完整
 端到端验收。高铁南站店 readiness 仍为 15/17：定位已通过，缺少权威电话和小程序 payload；
 现有 Store 与实例历史没有可安全复用的值，不复制合肥南七配置，也不虚构业务资源。
+
+## AI 回复紧邻上下文与资源去重生产发布
+
+2026-08-07 将 `b00cc26` 发布到生产。回复链顺序、Intent Schema、九槽调用、AIReplyJob、
+MessageService、公开 API、WebSocket、数据库结构和 Binding 计费归因均保持不变。本次只在当前
+Session 的 10 分钟紧邻窗口补充上一组已回答轮次提示，并在批量 Commit 前抑制重复知识图片、
+定位和小程序；明确重发、含糊重发澄清、待投递 Outbox 复用及 `suppressedActions` 内部审计均按
+既定低风险方案实现。
+
+发布事实：
+
+```text
+Git 提交：b00cc26f34333eabc6cc9a490e2cc26f81ea86e9
+源码包 SHA-256：39be18845dc772cb00a346b8ed390c83e73525b61d2de816788aa6b83e5c6222
+发布目录：/opt/agentdesk/releases/20260807-162135-ai-context-b00cc26/app
+部署前备份：/opt/agentdesk/backups/pre-b00cc26-20260807-162135
+数据库备份 SHA-256：605fb3cd50cf897a0fa385ac385ae4f5b9dac7d0e312800b27f94383e0dc000b
+回滚镜像：mlogclub/agent-desk:rollback-pre-b00cc26-20260807-162135
+生产镜像：mlogclub/agent-desk:b00cc26
+生产镜像摘要：sha256:13acd472728c65c5eb2920d9acba7c45602a3ab43433cc16758da9d15e8ace44
+服务二进制 SHA-256：c9f335a240c18a250eb3e33546bbe76cb8cb16b1c489b9ad7b8261998a7bbbdb
+租户审计二进制 SHA-256：10264d7e16b4f39bd502a68e9ada1f89725185c359cba5f7f6b9a85b099ce0c8
+应用容器：7348eaae8c314e0dc62eed9521091a51c7a5cb4478f5403a37222772802e4ed5
+MySQL 容器：1953148a260bfe664d2185a529c9a3b5e8feabfcfee884f73519793e009bb308
+应用启动时间：2026-08-07T08:24:43.174395153Z（北京时间 16:24:43）
+```
+
+服务器只有 3.6 GiB 内存且无 swap，本次继续在本机交叉编译 Linux/amd64 静态二进制，并从固定
+生产基线 `mlogclub/agent-desk:0d1f0eb` 组装候选镜像。源码包和两个二进制在本地、服务器上传后、
+候选镜像内及运行容器内分别复算摘要；数据库使用
+`--no-tablespaces --single-transaction --quick --routines --triggers` 导出，压缩包通过 `gzip -t`
+和完成标记检查。生产环境文件以 `0600` 权限备份，旧镜像额外保留独立回滚标签。
+
+切换通过原子更新 `current` 完成，仅执行 `--force-recreate --no-deps agent-desk`。MySQL 容器 ID、
+启动时间和重启数未变化。新应用容器为 `healthy`、重启数 0；服务器本机 `/`、`/health` 以及
+公网 `/health`、会话页均返回 HTTP 200。运行后租户完整性审计覆盖 98 个注册模型、114 张表和
+287 个关系，结果为 `passed`、0 violation；启动日志共 43 行，panic/fatal/error 与 API Key、
+Bearer 等敏感模式命中均为 0。
+
+工程验证已通过定向 Runtime 测试、Runtime 与 Services 包测试、指定范围 race、
+`go test ./... -count=1` 和 `go vet ./...`。本次无数据库迁移，回滚只需切回上一发布目录并使用
+`mlogclub/agent-desk:rollback-pre-b00cc26-20260807-162135` 重建应用容器，不需要回退数据库。
+真实客户连续追问、明确重发和 Outbox 失败复用仍需由业务测试消息完成最终端到端观察。
