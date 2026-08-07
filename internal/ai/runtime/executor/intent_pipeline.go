@@ -41,7 +41,7 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 			fmt.Errorf("intent model unavailable"),
 		)
 	}
-	prefetchedKnowledge, err := probeClarifyKnowledge(ctx, req, intent)
+	prefetchedKnowledge, err := probeClarifyKnowledge(ctx, req, history, intent)
 	if err != nil {
 		return runtimePipelinePlan{}, err
 	}
@@ -90,14 +90,14 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 	}, nil
 }
 
-func probeClarifyKnowledge(ctx context.Context, req RunInput, intent callbacks.IntentTraceData) (*retrievers.KnowledgeRetrieveResult, error) {
+func probeClarifyKnowledge(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) (*retrievers.KnowledgeRetrieveResult, error) {
 	if intent.PrimaryIntent != "interaction" || (strings.TrimSpace(intent.SubIntent) != "clarify" && !intent.NeedsClarification) {
 		return nil, nil
 	}
 	if len(utils.SplitInt64s(req.AIAgent.KnowledgeIDs)) == 0 {
 		return nil, nil
 	}
-	query := strings.TrimSpace(currentTurnDisplayText(req.UserMessage.Content))
+	query := resolveClarifyKnowledgeProbeQuery(req, history)
 	if query == "" {
 		return nil, nil
 	}

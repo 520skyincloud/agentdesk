@@ -69,6 +69,7 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 			replyText = manualResumeCustomerNotice + "\n<<NEXT_MESSAGE>>\n" + replyText
 		}
 	}
+	structuredReplies, replyText = s.applyRecentResourceDeliveryPolicy(input, structuredReplies, replyText)
 	if replyText == "" && len(structuredReplies) == 0 {
 		return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorEmptyOutput, nil)
 	}

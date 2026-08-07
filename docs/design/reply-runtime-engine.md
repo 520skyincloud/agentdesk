@@ -2,7 +2,7 @@
 
 > 状态：当前统一项目权威设计
 >
-> 更新时间：2026-08-06
+> 更新时间：2026-08-07
 >
 > 适用分支：`weibao/main`
 >
@@ -187,6 +187,16 @@ pending -> processing -> completed | skipped | superseded | expired | failed
 回复入口。Runtime 对 worker 返回 `completed`、`skipped`、`superseded`、`deferred` 四种
 结构化结果；媒体等待只能返回 `deferred`，`completed` 必须携带上述持久证据。
 
+### 5.2 紧邻回答上下文
+
+Generate 在不改变 Intent Schema 和模型调用次数的前提下，可读取当前 Session 内最近 10 分钟的
+紧邻上一组客户问题和 AI 回复批次。AI 批次按相同 RequestID 聚合文本、图片、定位和小程序；
+System/欢迎消息既不进入回答内容，也不切断承接关系。出现新的客户消息、人工客服消息、Session
+变化或超过窗口时，不启用该提示。
+
+该上下文只用于控制表达：重复事实应简短承接，增加条件时只回答新增差异，纠正答案时按本轮知识
+重新回答，新主题完全忽略旧答案。旧 FastGPT 答案不得直接复用，本轮仍执行正常知识检索。
+
 ## 6. 批次与媒体
 
 - 短 debounce 合并极短连发。
@@ -225,6 +235,9 @@ ChunkID 或本地知识兼容字段，也不通过标题猜测身份。
 - IntentDetect 明确识别寒暄、感谢、表情等社交意图时不检索；`interaction/clarify` 且未声明
   知识需求时允许一次条件 FastGPT 探测，达到当前阈值后补成 `hotel_info/store_knowledge`
   任务，探测结果直接复用于正式回答，禁止重复检索。
+- 包含明确对象的澄清问题可直接探测；“这个呢”“还有吗”“它有吗”等纯指代问题只有在紧邻
+  上下文能唯一解析一个对象时才允许探测。无法唯一解析时保留澄清，不能因任意知识命中强制
+  改成知识意图。
 - 未命中时不编造，也不注入固定“已记录/同事跟进”话术。
 - FastGPT 无命中与基础设施失败必须分开：无命中可追问一个关键点；基础设施失败在网关初次
   调用加两次重试后返回 `knowledge_unavailable` 并进入人工。
@@ -284,6 +297,15 @@ Validate
 - 后台补偿只扫描明确有持久投递意图且缺 Outbox 的新消息。
 - Outbox 待投递查询和 CAS Claim 都要求 `next_retry_at IS NULL OR next_retry_at <= now`；未到期
   不能抢占，到期后只重试协议投递。
+- 普通 AI 回复在批量 Commit 前，对同 Tenant、Conversation、Session、紧邻 AI 批次且不超过
+  10 分钟的知识图片、定位和小程序做资源指纹比较。图片使用 AssetID，定位使用门店、标准化
+  经纬度和地址，小程序使用 AppID、标准化 PagePath 和门店/业务资源身份。
+- 已成功发送的相同资源默认只保留本轮文本；原 Outbox 为 pending、sending 或 failed 时复用原
+  投递任务，pending/failed 可提前到期，不创建第二条资源消息。客户明确指出资源类型并要求
+  重发时允许新提交；只说“再发一下”且上一批存在多个资源时必须追问具体资源。
+- 资源过滤后若本轮没有文本，Commit 必须提交确定性的“仍在上面/正在重新发送”文本，继续使用
+  本轮 RequestID 和源消息稳定 ClientMsgID，不能静默完成。System 欢迎资源、首次绑定卡和真实
+  再次扫码仍使用各自频控，不参与 AI 资源去重。
 - 历史空意图行和企微员工人工自回显不会被误发。
 - Outbox 或 WebSocket 失败不能重跑模型。
 
@@ -298,6 +320,8 @@ Validate
 
 API Key、密文、nonce、完整 fingerprint、客户正文、Prompt 和完整上游响应不得进入
 Usage、Trace、日志或 API。Trace 只保存受控结构化阶段证据和脱敏错误分类。
+ActionLedger 可在内部 TraceData 的 `suppressedActions` 记录资源去重、原投递复用、显式重发和
+歧义重发澄清；该字段不进入公开 DTO 或 WebSocket。
 
 ## 12. 失败关闭
 
@@ -331,6 +355,10 @@ Usage、Trace、日志或 API。Trace 只保存受控结构化阶段证据和脱
 - 多段文本与文本加定位原子提交，任一写入失败不留下半段消息或孤立 Outbox。
 - System 欢迎消息不 supersede 客户任务，人工回复停止 AI，更新客户消息 supersede 旧任务。
 - 知识问题不产生门店资源动作；定位只提交 location；小程序只由明确资源任务或独立首联/扫码链触发。
+- 紧邻重复事实自然承接且不重复知识图片；明确重发可发送，多个资源的模糊重发只追问资源类型。
+- 相同定位、小程序和知识图片按各自指纹去重；不同 Tenant、Conversation、Session 或超过 10 分钟
+  不互相抑制，System 欢迎资源不参与比较。
+- 纯指代澄清只有对象唯一时才做条件知识探测，且 IntentDetect、FastGPT、Generate 调用次数不增加。
 - Outbox 在 WebSocket 前形成可靠投递事实。
 - SQLite/MySQL fresh Schema 均不包含旧 AIConfig/Grant/StoreSetting/ConversationTag/
   本地知识表与专属列。
@@ -339,8 +367,9 @@ Usage、Trace、日志或 API。Trace 只保存受控结构化阶段证据和脱
 
 ```bash
 go test ./internal/ai/... -count=1
-go test ./internal/services -run 'Runtime|Reply|Intent|FastGPT|HumanDispatch|Outbox' -count=1
-go test -race ./internal/ai/... ./internal/services -run 'Runtime|Reply|Intent|HumanDispatch' -count=1
+go test -tags dev ./internal/ai/runtime/... -run 'RecentAnswered|ClarifyKnowledge|DuplicateResource|ExplicitResend' -count=1
+go test ./internal/services -run 'AIReplyJob|Runtime|Reply|Intent|FastGPT|HumanDispatch|MessageBatch|Outbox' -count=1
+go test -race ./internal/ai/... ./internal/services -run 'AIReply|Runtime|Intent|HumanDispatch|Outbox' -count=1
 go test ./... -count=1
 go vet ./...
 ```

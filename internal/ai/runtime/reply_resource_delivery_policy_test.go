@@ -1,0 +1,315 @@
+package runtime
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
+
+	"github.com/glebarez/sqlite"
+	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
+)
+
+func TestDuplicateResourceKnowledgeImageKeepsTextAndSuppressesImage(t *testing.T) {
+	db := setupReplyResourcePolicyTestDB(t)
+	now := time.Now()
+	previous := createRecentAIResourceMessage(t, db, resourcePolicyFixture{
+		ID: 100, MessageType: enums.IMMessageTypeImage, Payload: `{"assetId":"coffee-image"}`,
+		RequestID: "previous-coffee", SentAt: now.Add(-time.Minute), OutboxStatus: enums.ChannelMessageOutboxStatusSent,
+	})
+	input := resourcePolicyInput(now, "有咖啡吗")
+	replies := []structuredVariableReply{{ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage, Payload: previous.Payload}}
+
+	filtered, replyText := newReplyCommitService().applyRecentResourceDeliveryPolicy(input, replies, "有的，就是刚才说的速溶咖啡，放在1313房间对面的洗衣房。")
+	if len(filtered) != 0 {
+		t.Fatalf("expected duplicate knowledge image to be suppressed, got %#v", filtered)
+	}
+	if replyText != "有的，就是刚才说的速溶咖啡，放在1313房间对面的洗衣房。" {
+		t.Fatalf("expected natural text answer to remain unchanged, got %q", replyText)
+	}
+	assertResourcePolicyTraceReason(t, input.Trace, "recent_duplicate_suppressed")
+}
+
+func TestExplicitResendAllowsDuplicateImageResource(t *testing.T) {
+	db := setupReplyResourcePolicyTestDB(t)
+	now := time.Now()
+	previous := createRecentAIResourceMessage(t, db, resourcePolicyFixture{
+		ID: 100, MessageType: enums.IMMessageTypeImage, Payload: `{"assetId":"coffee-image"}`,
+		RequestID: "previous-image", SentAt: now.Add(-time.Minute), OutboxStatus: enums.ChannelMessageOutboxStatusSent,
+	})
+	input := resourcePolicyInput(now, "图片没看到，再发一下")
+	replies := []structuredVariableReply{{ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage, Payload: previous.Payload}}
+
+	filtered, _ := newReplyCommitService().applyRecentResourceDeliveryPolicy(input, replies, "")
+	if len(filtered) != 1 {
+		t.Fatalf("expected explicit image resend to remain, got %#v", filtered)
+	}
+	assertResourcePolicyTraceReason(t, input.Trace, "explicit_resend_allowed")
+}
+
+func TestDuplicateResourcePendingDeliveryIsReusedAndRetryExpedited(t *testing.T) {
+	for _, status := range []enums.ChannelMessageOutboxStatus{
+		enums.ChannelMessageOutboxStatusPending,
+		enums.ChannelMessageOutboxStatusSending,
+		enums.ChannelMessageOutboxStatusFailed,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			db := setupReplyResourcePolicyTestDB(t)
+			now := time.Now()
+			previous := createRecentAIResourceMessage(t, db, resourcePolicyFixture{
+				ID: 100, MessageType: enums.IMMessageTypeImage, Payload: `{"assetId":"retry-image"}`,
+				RequestID: "previous-retry", SentAt: now.Add(-time.Minute), OutboxStatus: status,
+			})
+			input := resourcePolicyInput(now, "图片没看到，再发一下")
+			replies := []structuredVariableReply{{ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage, Payload: previous.Payload}}
+
+			filtered, replyText := newReplyCommitService().applyRecentResourceDeliveryPolicy(input, replies, "")
+			if len(filtered) != 0 || !strings.Contains(replyText, "正在重新发送") {
+				t.Fatalf("expected original delivery reuse with deterministic notice, replies=%#v text=%q", filtered, replyText)
+			}
+			assertResourcePolicyTraceReason(t, input.Trace, "pending_delivery_reused")
+
+			var outbox models.ChannelMessageOutbox
+			if err := db.First(&outbox, "message_id = ?", previous.ID).Error; err != nil {
+				t.Fatalf("reload outbox: %v", err)
+			}
+			if status == enums.ChannelMessageOutboxStatusPending || status == enums.ChannelMessageOutboxStatusFailed {
+				if outbox.NextRetryAt == nil || outbox.NextRetryAt.After(time.Now().Add(time.Second)) {
+					t.Fatalf("expected retry to be expedited, got %#v", outbox.NextRetryAt)
+				}
+			}
+		})
+	}
+}
+
+func TestDuplicateResourceAmbiguousResendRequiresClarification(t *testing.T) {
+	db := setupReplyResourcePolicyTestDB(t)
+	now := time.Now()
+	image := createRecentAIResourceMessage(t, db, resourcePolicyFixture{
+		ID: 100, MessageType: enums.IMMessageTypeImage, Payload: `{"assetId":"coffee-image"}`,
+		RequestID: "previous-multi", SentAt: now.Add(-time.Minute), OutboxStatus: enums.ChannelMessageOutboxStatusSent,
+	})
+	location := createRecentAIResourceMessage(t, db, resourcePolicyFixture{
+		ID: 101, MessageType: enums.IMMessageTypeLocation, Payload: `{"longitude":117.2639,"latitude":31.824091,"address":"测试路 1 号"}`,
+		RequestID: "previous-multi", SentAt: now.Add(-59 * time.Second), OutboxStatus: enums.ChannelMessageOutboxStatusSent,
+	})
+	input := resourcePolicyInput(now, "再发一下")
+	replies := []structuredVariableReply{
+		{ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage, Payload: image.Payload},
+		{ResourceType: "location", MessageType: enums.IMMessageTypeLocation, Payload: location.Payload},
+	}
+
+	filtered, replyText := newReplyCommitService().applyRecentResourceDeliveryPolicy(input, replies, "")
+	if len(filtered) != 0 {
+		t.Fatalf("ambiguous resend must not resend all resources, got %#v", filtered)
+	}
+	if !strings.Contains(replyText, "图片") || !strings.Contains(replyText, "定位") || !strings.Contains(replyText, "哪一个") {
+		t.Fatalf("expected resource clarification, got %q", replyText)
+	}
+	assertResourcePolicyTraceReason(t, input.Trace, "ambiguous_resend_requires_clarification")
+}
+
+func TestDuplicateResourceLocationAndMiniProgramUseDeterministicFallbackText(t *testing.T) {
+	tests := []struct {
+		name         string
+		messageType  enums.IMMessageType
+		resourceType string
+		payload      string
+		wantText     string
+	}{
+		{
+			name: "location", messageType: enums.IMMessageTypeLocation, resourceType: "location",
+			payload:  `{"longitude":117.2639,"latitude":31.824091,"address":"测试路 1 号"}`,
+			wantText: "刚才的定位还在上面，可以直接点开查看。",
+		},
+		{
+			name: "mini program", messageType: enums.IMMessageTypeMiniProgram, resourceType: "mini_program",
+			payload:  `{"appid":"wx-test","pagePath":"pages/checkin/index?room=1313&storeId=88"}`,
+			wantText: "刚才的小程序卡片还在上面，可以直接点开。",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupReplyResourcePolicyTestDB(t)
+			now := time.Now()
+			previous := createRecentAIResourceMessage(t, db, resourcePolicyFixture{
+				ID: 100, MessageType: tc.messageType, Payload: tc.payload,
+				RequestID: "previous-resource", SentAt: now.Add(-time.Minute), OutboxStatus: enums.ChannelMessageOutboxStatusSent,
+			})
+			input := resourcePolicyInput(now, "再看一下")
+			replies := []structuredVariableReply{{ResourceType: tc.resourceType, MessageType: tc.messageType, Payload: previous.Payload}}
+
+			filtered, replyText := newReplyCommitService().applyRecentResourceDeliveryPolicy(input, replies, "")
+			if len(filtered) != 0 || replyText != tc.wantText {
+				t.Fatalf("unexpected duplicate resource result: replies=%#v text=%q", filtered, replyText)
+			}
+		})
+	}
+}
+
+func TestDuplicateResourceIsScopedAndUsesLatestAIBatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		previous    resourcePolicyFixture
+		addLatestAI bool
+	}{
+		{name: "other tenant", previous: resourcePolicyFixture{TenantID: 2}},
+		{name: "other conversation", previous: resourcePolicyFixture{ConversationID: 99}},
+		{name: "other session", previous: resourcePolicyFixture{SessionNo: 2}},
+		{name: "historical import", previous: resourcePolicyFixture{HistoricalOnly: true}},
+		{name: "expired", previous: resourcePolicyFixture{SentAtOffset: -11 * time.Minute}},
+		{name: "latest ai batch has no resource", addLatestAI: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupReplyResourcePolicyTestDB(t)
+			now := time.Now()
+			fixture := tc.previous
+			fixture.ID = 100
+			fixture.MessageType = enums.IMMessageTypeImage
+			fixture.Payload = `{"assetId":"scoped-image"}`
+			fixture.RequestID = "previous-scoped"
+			fixture.OutboxStatus = enums.ChannelMessageOutboxStatusSent
+			if fixture.SentAt.IsZero() {
+				fixture.SentAt = now.Add(-time.Minute + fixture.SentAtOffset)
+			}
+			previous := createRecentAIResourceMessage(t, db, fixture)
+			if tc.addLatestAI {
+				createRecentAIResourceMessage(t, db, resourcePolicyFixture{
+					ID: 101, MessageType: enums.IMMessageTypeText, Content: "这是后一轮纯文本回复。",
+					RequestID: "latest-text", SentAt: now.Add(-30 * time.Second), SkipOutbox: true,
+				})
+			}
+			input := resourcePolicyInput(now, "有咖啡吗")
+			replies := []structuredVariableReply{{ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage, Payload: previous.Payload}}
+
+			filtered, replyText := newReplyCommitService().applyRecentResourceDeliveryPolicy(input, replies, "")
+			if len(filtered) != 1 || replyText != "" {
+				t.Fatalf("out-of-scope or non-adjacent resource must not be suppressed, replies=%#v text=%q", filtered, replyText)
+			}
+		})
+	}
+}
+
+type resourcePolicyFixture struct {
+	ID             int64
+	TenantID       int64
+	ConversationID int64
+	SessionNo      int
+	MessageType    enums.IMMessageType
+	Content        string
+	Payload        string
+	RequestID      string
+	SentAt         time.Time
+	SentAtOffset   time.Duration
+	HistoricalOnly bool
+	OutboxStatus   enums.ChannelMessageOutboxStatus
+	SkipOutbox     bool
+}
+
+func setupReplyResourcePolicyTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	dbName := "reply_resource_policy_" + strings.NewReplacer("/", "_").Replace(t.Name())
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{
+		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Message{}, &models.ChannelMessageOutbox{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	sqls.SetDB(db)
+	t.Cleanup(func() {
+		sqls.SetDB(nil)
+		if raw, dbErr := db.DB(); dbErr == nil {
+			_ = raw.Close()
+		}
+	})
+	return db
+}
+
+func createRecentAIResourceMessage(t *testing.T, db *gorm.DB, fixture resourcePolicyFixture) models.Message {
+	t.Helper()
+	if fixture.TenantID == 0 {
+		fixture.TenantID = 1
+	}
+	if fixture.ConversationID == 0 {
+		fixture.ConversationID = 10
+	}
+	if fixture.SessionNo == 0 {
+		fixture.SessionNo = 1
+	}
+	if fixture.SentAt.IsZero() {
+		fixture.SentAt = time.Now().Add(-time.Minute)
+	}
+	message := models.Message{
+		ID: fixture.ID, TenantID: fixture.TenantID, ConversationID: fixture.ConversationID, SessionNo: fixture.SessionNo,
+		HistoricalOnly: fixture.HistoricalOnly, RequestID: fixture.RequestID,
+		ClientMsgID: fmt.Sprintf("previous-%d-%d-%d", fixture.TenantID, fixture.ConversationID, fixture.ID),
+		SenderType:  enums.IMSenderTypeAI, SenderID: 9, MessageType: fixture.MessageType,
+		Content: fixture.Content, Payload: fixture.Payload, SeqNo: fixture.ID,
+		SendStatus: enums.IMMessageStatusSent, SentAt: &fixture.SentAt,
+		OutboundChannelType: enums.ChannelTypeWxWorkProtocol,
+		AuditFields:         models.AuditFields{CreatedAt: fixture.SentAt, UpdatedAt: fixture.SentAt},
+	}
+	if err := db.Create(&message).Error; err != nil {
+		t.Fatalf("create previous message: %v", err)
+	}
+	if fixture.SkipOutbox {
+		return message
+	}
+	nextRetryAt := time.Now().Add(time.Hour)
+	outbox := models.ChannelMessageOutbox{
+		TenantID: message.TenantID, ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ConversationID: message.ConversationID, MessageID: message.ID,
+		SendStatus: string(fixture.OutboxStatus), NextRetryAt: &nextRetryAt,
+		AuditFields: models.AuditFields{CreatedAt: fixture.SentAt, UpdatedAt: fixture.SentAt},
+	}
+	if err := db.Create(&outbox).Error; err != nil {
+		t.Fatalf("create previous outbox: %v", err)
+	}
+	return message
+}
+
+func resourcePolicyInput(now time.Time, content string) replyCommitInput {
+	return replyCommitInput{
+		Conversation: models.Conversation{ID: 10, TenantID: 1, StoreID: 88},
+		Message: models.Message{
+			ID: 200, TenantID: 1, ConversationID: 10, SessionNo: 1,
+			SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: content,
+			SendStatus: enums.IMMessageStatusSent, SentAt: &now,
+			AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+		},
+		Trace:        &aiReplyTraceData{Runtime: json.RawMessage(`{}`)},
+		ClientPrefix: "ai_reply",
+	}
+}
+
+func assertResourcePolicyTraceReason(t *testing.T, trace *aiReplyTraceData, want string) {
+	t.Helper()
+	data := struct {
+		ActionLedger struct {
+			SuppressedActions []struct {
+				Reason string `json:"reason"`
+			} `json:"suppressedActions"`
+		} `json:"actionLedger"`
+	}{}
+	if trace == nil || json.Unmarshal(trace.Runtime, &data) != nil {
+		t.Fatalf("unmarshal resource policy trace: %s", trace.Runtime)
+	}
+	for _, item := range data.ActionLedger.SuppressedActions {
+		if item.Reason == want {
+			return
+		}
+	}
+	t.Fatalf("resource policy trace missing reason %q: %s", want, trace.Runtime)
+}

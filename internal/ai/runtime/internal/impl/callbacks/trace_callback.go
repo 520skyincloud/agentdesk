@@ -246,10 +246,11 @@ type KnowledgeResourceTraceData struct {
 }
 
 type ActionLedgerTraceData struct {
-	RequestedActions []ActionLedgerItem `json:"requestedActions,omitempty"`
-	PreparedActions  []ActionLedgerItem `json:"preparedActions,omitempty"`
-	CommittedActions []ActionLedgerItem `json:"committedActions,omitempty"`
-	MissingActions   []ActionLedgerItem `json:"missingActions,omitempty"`
+	RequestedActions  []ActionLedgerItem `json:"requestedActions,omitempty"`
+	PreparedActions   []ActionLedgerItem `json:"preparedActions,omitempty"`
+	CommittedActions  []ActionLedgerItem `json:"committedActions,omitempty"`
+	MissingActions    []ActionLedgerItem `json:"missingActions,omitempty"`
+	SuppressedActions []ActionLedgerItem `json:"suppressedActions,omitempty"`
 }
 
 type ActionLedgerItem struct {

@@ -56,6 +56,9 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 	if instruction := buildCurrentTurnBoundaryInstruction(req, history, plan.Intent); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
+	if instruction := buildRecentAnsweredTurnInstruction(req, history); strings.TrimSpace(instruction) != "" {
+		messages = append(messages, schema.SystemMessage(instruction))
+	}
 	if strings.TrimSpace(plan.Prompt) != "" {
 		messages = append(messages, schema.SystemMessage(plan.Prompt))
 	}
