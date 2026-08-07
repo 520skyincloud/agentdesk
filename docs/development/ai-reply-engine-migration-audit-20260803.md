@@ -145,12 +145,27 @@ MessageService 提交客户消息
 - 首次绑定卡只发一次，旧联系人变化不重发，真实再次扫码仍可投递。
 - SQLite AIReplyJob AutoMigrate、MySQL 契约（配置 `TEST_MYSQL_DSN` 时执行）和 Tenant Integrity Audit。
 
-## 8. 尚未声称完成的验证
+## 8. 当前交付与生产验证（2026-08-07）
 
-- 本轮按交付边界只做本地实现与测试，未提交、未推送、未部署。
-- 未用真实客户消息调用生产 NewAPI、FastGPT 或企微发送接口，因此不能声称线上行为已改变。
+- 本文第 5 节所述持久任务、受控错误、槽内重试、人工兜底和原子提交已经进入
+  `weibao/main`，生产环境当前运行镜像为 `mlogclub/agent-desk:0d1f0eb`。其中
+  `4648558` 固化九槽显式重试值，`0d1f0eb` 修正 Store 自有运行资源的 readiness 归属。
+- 本次补强没有再修改生产 Runtime；新增的代码变更仅为 HTTP 级重试次数测试，以及
+  文本加定位消息的 Message/Outbox 原子回滚测试。测试确认 `MaxRetryCount=2` 时，NewAPI 5xx
+  与空输出均恰好执行首次调用加两次重试。
+- 本地验证已通过定向测试、AI/Service 范围 race、`go test ./... -count=1`、`go vet ./...`
+  和 `pnpm typecheck`。生产 Tenant Integrity Audit 覆盖 98 个注册模型、114 张必需表和
+  287 个关系，结果为 0 violation。
+- 高铁南站店已生效九槽模板 r3，启用槽重试值为 2。合肥南七已通过现有服务完成 r3 九槽
+  真实测试并提交批量指派；测试时间为 2026-08-07 12:12:32，耗时 15,692 ms。其当前状态为
+  r2 生效、r3 待切换，最终激活仍必须通过超级管理员当前密码和敏感操作确认，禁止绕过服务
+  或直接修改生产表。
+- 最近 24 小时没有新的 `AIReplyJob` 或 `AgentRunLog`，因此尚不能声称本次生产配置已经通过
+  真实客户入站、FastGPT、DeepSeek、结构化动作和企微发送的完整端到端验收。
+- 高铁南站店 readiness 当前为 15/17，定位资源通过；缺少权威电话和小程序 payload。现有
+  Store 与实例历史中没有可安全复用的值，不复制其他门店配置，也不虚构业务资源。
 - 没有 `TEST_MYSQL_DSN` 时 MySQL 实例级 Schema 测试会跳过；SQLite 和模型契约仍执行。
-- ASR 渠道可用性不属于本轮，语音槽停用时继续失败关闭。
+  ASR 渠道可用性不属于本轮，语音槽停用时继续失败关闭。
 
 ## 9. 核心保护区
 

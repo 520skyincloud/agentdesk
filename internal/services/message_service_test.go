@@ -364,7 +364,7 @@ func TestRepairMissingOutboundMessagesIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestSendAIMessageBatchRollsBackMessagesAndOutboxTogether(t *testing.T) {
+func TestSendAIMessageBatchRollsBackTextAndLocationTogether(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()
 	if err := db.Create(&models.Channel{
@@ -398,7 +398,10 @@ func TestSendAIMessageBatchRollsBackMessagesAndOutboxTogether(t *testing.T) {
 		aiAgent.ID,
 		[]AIOutboundMessageDraft{
 			{ClientMsgID: "atomic-batch-1", MessageType: enums.IMMessageTypeText, Content: "第一段"},
-			{ClientMsgID: "atomic-batch-2", MessageType: enums.IMMessageTypeText, Content: "第二段"},
+			{
+				ClientMsgID: "atomic-batch-2", MessageType: enums.IMMessageTypeLocation,
+				Content: "测试酒店定位", Payload: `{"longitude":117.2639,"latitude":31.824091,"label":"测试酒店"}`,
+			},
 		},
 		&dto.AuthPrincipal{UserID: 1, Username: "AI", ActiveTenantID: 101},
 		"atomic-batch-request",

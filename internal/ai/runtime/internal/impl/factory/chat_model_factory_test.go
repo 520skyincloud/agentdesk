@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,6 +72,60 @@ func TestChatModelFactorySendsDeepSeekThinkingDisabledThroughNewAPI(t *testing.T
 	}
 	if captured["enable_thinking"] != false {
 		t.Fatalf("NewAPI request must set DeepSeek enable_thinking=false, got %#v", captured["enable_thinking"])
+	}
+}
+
+func TestChatModelFactoryUsesExactlyInitialCallPlusTwoRetries(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{
+			name: "upstream_5xx",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":{"message":"temporarily unavailable"}}`))
+			},
+		},
+		{
+			name: "empty_output",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id": "chatcmpl-empty", "object": "chat.completion", "created": time.Now().Unix(),
+					"model": "deepseek-v4-flash",
+					"choices": []map[string]any{{
+						"index": 0, "finish_reason": "stop",
+						"message": map[string]any{"role": "assistant", "content": ""},
+					}},
+					"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1},
+				})
+			},
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				scenario.handler(w, r)
+			}))
+			defer server.Close()
+
+			chatModel, err := NewChatModelFactory().Build(context.Background(), modelconfig.Config{
+				Provider: enums.AIProviderOpenAI, BaseURL: server.URL + "/v1", APIKey: "test-key",
+				ModelName: "deepseek-v4-flash", MaxOutputTokens: 64, TimeoutMS: 1000, MaxRetryCount: 2,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := chatModel.Generate(context.Background(), []*schema.Message{schema.UserMessage("ping")}); err == nil {
+				t.Fatal("expected model call to fail after retries")
+			}
+			if got := calls.Load(); got != 3 {
+				t.Fatalf("NewAPI calls=%d want 3", got)
+			}
+		})
 	}
 }
 
