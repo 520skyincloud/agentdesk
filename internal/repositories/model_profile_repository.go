@@ -153,7 +153,33 @@ func (r *modelProfileSlotRepository) ReplaceByTemplateID(db *gorm.DB, templateID
 	if len(list) == 0 {
 		return nil
 	}
-	return db.Create(&list).Error
+	zeroRetryUsages := make([]enums.ModelUsageSlot, 0, len(list))
+	zeroRetrySet := make(map[enums.ModelUsageSlot]struct{}, len(list))
+	for i := range list {
+		if list[i].MaxRetryCount == 0 {
+			zeroRetryUsages = append(zeroRetryUsages, list[i].UsageCode)
+			zeroRetrySet[list[i].UsageCode] = struct{}{}
+		}
+	}
+	if err := db.Create(&list).Error; err != nil {
+		return err
+	}
+	if len(zeroRetryUsages) == 0 {
+		return nil
+	}
+	// GORM applies the tag default to zero-valued struct fields during Create.
+	// Restore explicit administrator zeroes in the same service transaction.
+	if err := db.Model(&models.ModelProfileSlot{}).
+		Where("template_id = ? AND usage_code IN ?", templateID, zeroRetryUsages).
+		Update("max_retry_count", 0).Error; err != nil {
+		return err
+	}
+	for i := range list {
+		if _, ok := zeroRetrySet[list[i].UsageCode]; ok {
+			list[i].MaxRetryCount = 0
+		}
+	}
+	return nil
 }
 
 func (r *modelProfileTestRunRepository) Create(db *gorm.DB, item *models.ModelProfileTestRun) error {
