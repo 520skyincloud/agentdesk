@@ -176,6 +176,9 @@ func (s *wxWorkKFOutboundService) processOutbox(outboxID, tenantID int64) error 
 
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		now := time.Now()
+		if err := AIReplyTurnService.MarkDeliveredDB(ctx.Tx, message, now); err != nil {
+			return err
+		}
 		if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, outbox.TenantID, map[string]any{
 			"send_status":      string(enums.ChannelMessageOutboxStatusSent),
 			"sent_at":          now,

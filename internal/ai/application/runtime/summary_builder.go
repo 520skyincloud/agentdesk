@@ -34,6 +34,13 @@ func toSummary(summary *executor.RunResult) *Summary {
 		TraceData:             summary.TraceData,
 		ErrorMessage:          summary.ErrorMessage,
 		PolicySkipped:         summary.SkipReply,
+		TaskLedgerEnabled:     summary.TaskLedgerEnabled,
+		TaskKeys:              append([]string(nil), summary.TaskKeys...),
+		FailedTaskKeys:        append([]string(nil), summary.FailedTaskKeys...),
+		HumanTaskKeys:         append([]string(nil), summary.HumanTaskKeys...),
+		HasRemainingTasks:     summary.HasRemainingTasks,
+		NeedsHumanDispatch:    summary.NeedsHumanDispatch,
+		CoveredByTaskID:       summary.CoveredByTaskID,
 	}
 	if len(summary.ModelUsageCalls) > 0 {
 		ret.ModelUsageCalls = make([]ModelUsageCall, 0, len(summary.ModelUsageCalls))

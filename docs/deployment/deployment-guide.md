@@ -304,6 +304,32 @@ docker compose \
 - 只有出现可证明的序号缺口时才允许执行受限补漏；
 - 不得把企业微信服务商、微信客服、个人微信或旧协议字段混入员工号运行链。
 
+### 11.1 AI 回复轮次灰度
+
+连续消息 Turn Coordinator 默认关闭。完成新镜像的 AutoMigrate 和备份恢复验证后，首批只为
+已批准的 StoreStaffBinding 开启：
+
+```text
+AI_REPLY_TURN_COORDINATOR_ENABLED=true
+AI_REPLY_TURN_COORDINATOR_BINDING_IDS=<合肥南七店当前 active 员工号的 StoreStaffBinding ID>
+```
+
+逗号分隔多个 Binding ID。空白名单表示所有 Binding，因此灰度期间禁止留空。环境变量变化后
+必须 `--force-recreate agent-desk`，只重启进程不会可靠加载新值。
+
+首批至少观察 30 分钟，并按 Tenant、Conversation、Session、Store、Binding 检查：
+
+- 入站日志 `inbound_lag_ms`，重点覆盖 1、2、3、14 秒迟到样本；
+- AIReplyTurn 的 open/running/committed/delivered/interrupted/closed/failed 数量；
+- AIReplyTurnTask 的 pending/running/ready/committed/delivered/covered/handoff/superseded 数量；
+- AIReplyJob 的 `superseded`、`covered_by_inflight_reply` 和人工兜底；
+- Outbox 的 pending/sending/failed/sent/cancelled，以及 `cancelled_stale_turn`；
+- 同问题只发一次，不同迟到问题只补答新增内容，Usage 和 Binding 计费不重复。
+
+全量启用时保留 `AI_REPLY_TURN_COORDINATOR_ENABLED=true` 并清空白名单。紧急逻辑回滚可先改为
+`false` 并强制重建容器，再切回上一不可变镜像。`AIReplyTurn`、`AIReplyTurnTask` 表和 Conversation、
+Message、AIReplyJob 的零值兼容字段不需要删除；旧镜像必须先在独立恢复库验证可忽略这些字段。
+
 ## 12. 加密备份与独立恢复
 
 升级前先停止应用写入和 worker，再备份数据库。下面示例先生成权限为 `0600` 的压缩文件；
@@ -381,6 +407,7 @@ docker run --rm \
 - 规则派单不依赖大模型选人；
 - AI 回复、FastGPT、NewAPI 九槽和账单归因按启用范围通过；
 - 企微员工号入站、出站和回调幂等通过；
+- 灰度 Binding 的 1、2、3、14 秒迟到消息回放通过，相同问题仅一条外发，不同问题不会被吞掉；
 - 企业微信服务商数据与指令回调按真实请求通过；
 - 到店联动门店连接为 active，成员映射不覆盖员工实例身份；
 - 日志无秘密、客户身份原文、panic 或 fatal；

@@ -199,20 +199,51 @@ func TestDuplicateResourceIsScopedAndUsesLatestAIBatch(t *testing.T) {
 	}
 }
 
+func TestDuplicateResourceIgnoresSupersededCustomerMessageInSameTurn(t *testing.T) {
+	db := setupReplyResourcePolicyTestDB(t)
+	now := time.Now()
+	previous := createRecentAIResourceMessage(t, db, resourcePolicyFixture{
+		ID: 100, MessageType: enums.IMMessageTypeImage, Payload: `{"assetId":"same-turn-image"}`,
+		RequestID: "previous-same-turn", SentAt: now.Add(-time.Minute), OutboxStatus: enums.ChannelMessageOutboxStatusSent,
+		AIReplyTurnID: 77, AIReplyTurnVersion: 1,
+	})
+	intermediateSentAt := now.Add(-30 * time.Second)
+	if err := db.Create(&models.Message{
+		ID: 150, TenantID: 1, ConversationID: 10, SessionNo: 1,
+		RequestID: "superseded-customer", ClientMsgID: "superseded-customer", SenderType: enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText, Content: "再问一次", SeqNo: 150, SendStatus: enums.IMMessageStatusSent,
+		SentAt: &intermediateSentAt, AIReplyTurnID: 77, AIReplyTurnVersion: 2,
+		AuditFields: models.AuditFields{CreatedAt: intermediateSentAt, UpdatedAt: intermediateSentAt},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	input := resourcePolicyInput(now, "图片还在吗")
+	input.Message.AIReplyTurnID = 77
+	input.Message.AIReplyTurnVersion = 3
+	replies := []structuredVariableReply{{ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage, Payload: previous.Payload}}
+
+	filtered, _ := newReplyCommitService().applyRecentResourceDeliveryPolicy(input, replies, "已经说明过了。")
+	if len(filtered) != 0 {
+		t.Fatalf("same-turn superseded customer message must not break resource dedupe: %#v", filtered)
+	}
+}
+
 type resourcePolicyFixture struct {
-	ID             int64
-	TenantID       int64
-	ConversationID int64
-	SessionNo      int
-	MessageType    enums.IMMessageType
-	Content        string
-	Payload        string
-	RequestID      string
-	SentAt         time.Time
-	SentAtOffset   time.Duration
-	HistoricalOnly bool
-	OutboxStatus   enums.ChannelMessageOutboxStatus
-	SkipOutbox     bool
+	ID                 int64
+	TenantID           int64
+	ConversationID     int64
+	SessionNo          int
+	MessageType        enums.IMMessageType
+	Content            string
+	Payload            string
+	RequestID          string
+	SentAt             time.Time
+	SentAtOffset       time.Duration
+	HistoricalOnly     bool
+	OutboxStatus       enums.ChannelMessageOutboxStatus
+	SkipOutbox         bool
+	AIReplyTurnID      int64
+	AIReplyTurnVersion int
 }
 
 func setupReplyResourcePolicyTestDB(t *testing.T) *gorm.DB {
@@ -259,7 +290,8 @@ func createRecentAIResourceMessage(t *testing.T, db *gorm.DB, fixture resourcePo
 		Content: fixture.Content, Payload: fixture.Payload, SeqNo: fixture.ID,
 		SendStatus: enums.IMMessageStatusSent, SentAt: &fixture.SentAt,
 		OutboundChannelType: enums.ChannelTypeWxWorkProtocol,
-		AuditFields:         models.AuditFields{CreatedAt: fixture.SentAt, UpdatedAt: fixture.SentAt},
+		AIReplyTurnID:       fixture.AIReplyTurnID, AIReplyTurnVersion: fixture.AIReplyTurnVersion,
+		AuditFields: models.AuditFields{CreatedAt: fixture.SentAt, UpdatedAt: fixture.SentAt},
 	}
 	if err := db.Create(&message).Error; err != nil {
 		t.Fatalf("create previous message: %v", err)

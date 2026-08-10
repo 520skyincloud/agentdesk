@@ -103,21 +103,24 @@ func (r *aiReplyJobRepository) MarkTerminal(
 	owner string,
 	status enums.AIReplyJobStatus,
 	resultCode, errorClass string,
+	coveredByMessageID, coveredByTaskID int64,
 	now time.Time,
 ) (bool, error) {
 	result := db.Model(&models.AIReplyJob{}).
 		Where("id = ? AND tenant_id = ? AND status = ? AND lease_owner = ?",
 			id, tenantID, enums.AIReplyJobStatusProcessing, owner).
 		Updates(map[string]any{
-			"status":           status,
-			"result_code":      resultCode,
-			"last_error_class": errorClass,
-			"next_retry_at":    nil,
-			"lease_owner":      "",
-			"lease_expires_at": nil,
-			"completed_at":     now,
-			"updated_at":       now,
-			"update_user_name": "ai_reply_worker",
+			"status":                status,
+			"result_code":           resultCode,
+			"last_error_class":      errorClass,
+			"covered_by_message_id": coveredByMessageID,
+			"covered_by_task_id":    coveredByTaskID,
+			"next_retry_at":         nil,
+			"lease_owner":           "",
+			"lease_expires_at":      nil,
+			"completed_at":          now,
+			"updated_at":            now,
+			"update_user_name":      "ai_reply_worker",
 		})
 	return result.RowsAffected == 1, result.Error
 }
@@ -147,6 +150,33 @@ func (r *aiReplyJobRepository) MarkRetry(
 			id, tenantID, enums.AIReplyJobStatusProcessing, owner).
 		Updates(updates)
 	return result.RowsAffected == 1, result.Error
+}
+
+func (r *aiReplyJobRepository) SupersedeOlderTurnVersions(db *gorm.DB, tenantID, turnID int64, version int, excludeJobID int64, now time.Time) error {
+	if db == nil || tenantID <= 0 || turnID <= 0 || version <= 0 {
+		return nil
+	}
+	query := db.Model(&models.AIReplyJob{}).
+		Where("tenant_id = ? AND turn_id = ? AND turn_version < ?", tenantID, turnID, version).
+		Where("status IN ?", []enums.AIReplyJobStatus{
+			enums.AIReplyJobStatusPending,
+			enums.AIReplyJobStatusProcessing,
+			enums.AIReplyJobStatusRetry,
+		})
+	if excludeJobID > 0 {
+		query = query.Where("id <> ?", excludeJobID)
+	}
+	return query.Updates(map[string]any{
+		"status":           enums.AIReplyJobStatusSuperseded,
+		"result_code":      "stale_turn_version",
+		"last_error_class": "",
+		"next_retry_at":    nil,
+		"lease_owner":      "",
+		"lease_expires_at": nil,
+		"completed_at":     now,
+		"updated_at":       now,
+		"update_user_name": "ai_reply_turn",
+	}).Error
 }
 
 func (r *aiReplyJobRepository) FindMessagesMissingJobs(db *gorm.DB, cutoff time.Time, limit int) ([]models.Message, error) {

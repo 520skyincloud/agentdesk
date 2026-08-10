@@ -23,12 +23,13 @@ import (
 )
 
 const (
-	aiReplyJobLifetime       = 15 * time.Minute
-	aiReplyJobInitialDelay   = 250 * time.Millisecond
-	aiReplyJobLeaseDuration  = 90 * time.Second
-	aiReplyJobRenewInterval  = 30 * time.Second
-	aiReplyJobMaxAttempts    = 4
-	aiReplyJobMaxConcurrency = 4
+	aiReplyJobLifetime          = 15 * time.Minute
+	aiReplyJobInitialDelay      = 250 * time.Millisecond
+	aiReplyJobLeaseDuration     = 90 * time.Second
+	aiReplyJobRenewInterval     = 30 * time.Second
+	aiReplyJobContinuationDelay = 25 * time.Millisecond
+	aiReplyJobMaxAttempts       = 4
+	aiReplyJobMaxConcurrency    = 4
 )
 
 var aiReplyJobRetryDelays = []time.Duration{15 * time.Second, time.Minute, 3 * time.Minute}
@@ -53,6 +54,22 @@ type aiReplyJobLeaseContext struct {
 
 type aiReplyJobLeaseContextKey struct{}
 
+func (s *aiReplyJobService) CurrentJobID(ctx context.Context, tenantID, conversationID int64) int64 {
+	if ctx == nil {
+		return 0
+	}
+	lease, ok := ctx.Value(aiReplyJobLeaseContextKey{}).(aiReplyJobLeaseContext)
+	if !ok || lease.JobID <= 0 || lease.TenantID != tenantID {
+		return 0
+	}
+	job := repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), lease.JobID, lease.TenantID)
+	if job == nil || job.ConversationID != conversationID || job.Status != enums.AIReplyJobStatusProcessing ||
+		job.LeaseOwner != lease.Owner || job.LeaseExpiresAt == nil || !job.LeaseExpiresAt.After(time.Now()) {
+		return 0
+	}
+	return job.ID
+}
+
 type aiReplyJobExecutionState struct {
 	Job          *models.AIReplyJob
 	Conversation *models.Conversation
@@ -67,6 +84,8 @@ type aiReplyJobDecision struct {
 	Code                 string
 	CommittedMessageIDs  []int64
 	PersistedInterruptID int64
+	CoveredByMessageID   int64
+	CoveredByTaskID      int64
 }
 
 type aiReplyJobTerminalError struct {
@@ -133,6 +152,7 @@ func (s *aiReplyJobService) EnqueueForMessageDB(db *gorm.DB, conversation *model
 	item := &models.AIReplyJob{
 		TenantID: conversation.TenantID, ConversationID: conversation.ID, MessageID: message.ID,
 		SessionNo: message.SessionNo, StoreID: conversation.StoreID, StoreStaffBindingID: conversation.StoreStaffBindingID,
+		TurnID: message.AIReplyTurnID, TurnVersion: message.AIReplyTurnVersion,
 		RequestID: requestID, TriggerKind: triggerKind, Status: enums.AIReplyJobStatusPending,
 		NextRetryAt: &nextRetryAt, ExpiresAt: createdAt.Add(aiReplyJobLifetime),
 		AuditFields: models.AuditFields{
@@ -269,8 +289,17 @@ func (s *aiReplyJobService) NotifyNewerMessage(conversationID, messageID int64) 
 	s.activeMu.Lock()
 	active := s.activeExecutions[conversationID]
 	cancels := make([]context.CancelFunc, 0, len(active))
+	newMessage := repositories.MessageRepository.Get(sqls.DB(), messageID)
 	for activeMessageID, cancel := range active {
-		if activeMessageID < messageID && cancel != nil {
+		if activeMessageID >= messageID || cancel == nil {
+			continue
+		}
+		activeMessage := repositories.MessageRepository.Get(sqls.DB(), activeMessageID)
+		if newMessage != nil && activeMessage != nil && newMessage.AIReplyTurnID > 0 &&
+			newMessage.AIReplyTurnID == activeMessage.AIReplyTurnID && newMessage.SessionNo == activeMessage.SessionNo {
+			continue
+		}
+		if activeMessageID < messageID {
 			cancels = append(cancels, cancel)
 		}
 	}
@@ -329,6 +358,20 @@ func (s *aiReplyJobService) processClaimed(job *models.AIReplyJob, owner string)
 	if job == nil || strings.TrimSpace(owner) == "" {
 		return
 	}
+	if job.TurnID > 0 {
+		claimed, err := s.tryClaimTurn(job, owner)
+		if err != nil {
+			_, _ = repositories.AIReplyJobRepository.MarkRetry(sqls.DB(), job.ID, job.TenantID, owner,
+				"turn_claim_failed", "database_error", time.Now().Add(time.Second), time.Now(), false)
+			return
+		}
+		if !claimed {
+			_, _ = repositories.AIReplyJobRepository.MarkRetry(sqls.DB(), job.ID, job.TenantID, owner,
+				"turn_busy", "", time.Now().Add(500*time.Millisecond), time.Now(), false)
+			return
+		}
+		defer s.releaseTurn(job, owner)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = context.WithValue(ctx, aiReplyJobLeaseContextKey{}, aiReplyJobLeaseContext{JobID: job.ID, TenantID: job.TenantID, Owner: owner})
 	unregister := s.registerActiveExecution(job, cancel)
@@ -360,6 +403,28 @@ func (s *aiReplyJobService) processClaimed(job *models.AIReplyJob, owner string)
 	s.finishClaimed(job, owner, result, runErr)
 }
 
+func (s *aiReplyJobService) tryClaimTurn(job *models.AIReplyJob, owner string) (bool, error) {
+	var claimed bool
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		var err error
+		now := time.Now()
+		claimed, err = AIReplyTurnService.TryClaimJobDB(ctx.Tx, job, owner, now, now.Add(aiReplyJobLeaseDuration))
+		return err
+	})
+	return claimed, err
+}
+
+func (s *aiReplyJobService) releaseTurn(job *models.AIReplyJob, owner string) {
+	if job == nil || job.TurnID <= 0 {
+		return
+	}
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		return AIReplyTurnService.ReleaseJobLeaseDB(ctx.Tx, job, owner, true, time.Now())
+	}); err != nil {
+		slog.Warn("release AI reply turn lease failed", "job_id", job.ID, "turn_id", job.TurnID, "stage", "turn_release", "error_class", "database_error")
+	}
+}
+
 func (s *aiReplyJobService) renewLease(ctx context.Context, cancel context.CancelFunc, done chan<- struct{}, lost *atomic.Bool, job *models.AIReplyJob, owner string) {
 	defer close(done)
 	ticker := time.NewTicker(aiReplyJobRenewInterval)
@@ -369,7 +434,7 @@ func (s *aiReplyJobService) renewLease(ctx context.Context, cancel context.Cance
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			ok, err := repositories.AIReplyJobRepository.RenewLease(sqls.DB(), job.ID, job.TenantID, owner, now, now.Add(aiReplyJobLeaseDuration))
+			ok, err := s.renewJobAndTurnLease(job, owner, now)
 			if err != nil || !ok {
 				lost.Store(true)
 				cancel()
@@ -377,6 +442,20 @@ func (s *aiReplyJobService) renewLease(ctx context.Context, cancel context.Cance
 			}
 		}
 	}
+}
+
+func (s *aiReplyJobService) renewJobAndTurnLease(job *models.AIReplyJob, owner string, now time.Time) (bool, error) {
+	var renewed bool
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		var err error
+		renewed, err = repositories.AIReplyJobRepository.RenewLease(ctx.Tx, job.ID, job.TenantID, owner, now, now.Add(aiReplyJobLeaseDuration))
+		if err != nil || !renewed || job.TurnID <= 0 {
+			return err
+		}
+		renewed, err = AIReplyTurnService.RenewJobLeaseDB(ctx.Tx, job, owner, now, now.Add(aiReplyJobLeaseDuration))
+		return err
+	})
+	return renewed, err
 }
 
 func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIReplyJob) (AIReplyExecutionResult, error) {
@@ -392,10 +471,32 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 	}
 	if strings.TrimSpace(job.ResultCode) == "human_dispatch_retry" {
 		if decision := s.inspectFreshness(state); decision != nil {
-			return executionResultForDecision(*decision), nil
+			if decision.Status != enums.AIReplyJobStatusCompleted ||
+				!AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID) {
+				return executionResultForDecision(*decision), nil
+			}
 		}
 		if err := s.dispatchHuman(state, job, "AI 自动回复失败，需要人工跟进"); err != nil {
 			return AIReplyExecutionResult{}, &aiReplyJobDispatchOnlyError{cause: err}
+		}
+		if job.TurnID > 0 && AIReplyTurnTaskService.Enabled() {
+			if err := sqls.WithTransaction(func(tx *sqls.TxContext) error {
+				return AIReplyTurnTaskService.MarkPendingHandoffsDB(tx.Tx, job.TenantID, job.TurnID, "human_handoff", time.Now())
+			}); err != nil {
+				return AIReplyExecutionResult{}, &aiReplyJobDispatchOnlyError{cause: err}
+			}
+			if AIReplyTurnTaskService.HasRunnable(job.TenantID, job.TurnID) {
+				retryAt := time.Now().Add(aiReplyJobContinuationDelay)
+				return AIReplyExecutionResult{
+					Status: AIReplyExecutionStatusDeferred, ReasonCode: "turn_tasks_remaining", RetryAt: &retryAt,
+					TaskLedgerEnabled: true, HasRemainingTasks: true,
+				}, nil
+			}
+			if decision := s.inspectFreshness(state); decision != nil && decision.Status == enums.AIReplyJobStatusCompleted {
+				result := executionResultForDecision(*decision)
+				result.TaskLedgerEnabled = true
+				return result, nil
+			}
 		}
 		return AIReplyExecutionResult{}, &aiReplyJobDispatchCompleted{errorClass: controlledErrorClass(job.LastErrorClass)}
 	}
@@ -453,6 +554,9 @@ func (s *aiReplyJobService) prepareMedia(ctx context.Context, state *aiReplyJobE
 
 func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, result AIReplyExecutionResult, runErr error) {
 	now := time.Now()
+	if s.finishTaskLedgerOutcome(job, owner, result, runErr, now) {
+		return
+	}
 	var dispatchCompleted *aiReplyJobDispatchCompleted
 	if errors.As(runErr, &dispatchCompleted) {
 		s.markTerminal(job, owner, enums.AIReplyJobStatusFailed, "model_failure_human_dispatch", controlledErrorClass(dispatchCompleted.errorClass), now)
@@ -484,7 +588,7 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 					return
 				}
 			case enums.AIReplyJobStatusSkipped, enums.AIReplyJobStatusSuperseded:
-				s.markTerminal(job, owner, decision.Status, decision.Code, "", now)
+				s.markTerminalWithCoverage(job, owner, decision.Status, decision.Code, "", decision.CoveredByMessageID, decision.CoveredByTaskID, now)
 				return
 			case enums.AIReplyJobStatusFailed:
 				s.markTerminal(job, owner, decision.Status, decision.Code, "scope_invalid", now)
@@ -503,7 +607,7 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 		case AIReplyExecutionStatusSkipped:
 			s.markTerminal(job, owner, enums.AIReplyJobStatusSkipped, controlledResultCode(result.ReasonCode, "runtime_skipped"), "", now)
 		case AIReplyExecutionStatusSuperseded:
-			s.markTerminal(job, owner, enums.AIReplyJobStatusSuperseded, controlledResultCode(result.ReasonCode, "newer_message"), "", now)
+			s.markTerminalWithCoverage(job, owner, enums.AIReplyJobStatusSuperseded, controlledResultCode(result.ReasonCode, "newer_message"), "", result.CoveredByMessageID, result.CoveredByTaskID, now)
 		case AIReplyExecutionStatusDeferred:
 			next := now.Add(time.Second)
 			if result.RetryAt != nil && result.RetryAt.After(now) {
@@ -521,6 +625,119 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 		return
 	}
 	s.retryOrDispatch(job, owner, classifyAIReplyJobError(runErr), now)
+}
+
+func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owner string, result AIReplyExecutionResult, runErr error, now time.Time) bool {
+	if job == nil || job.TurnID <= 0 || !result.TaskLedgerEnabled || !AIReplyTurnTaskService.Enabled() {
+		return false
+	}
+	if runErr == nil && result.Status == AIReplyExecutionStatusCompleted && len(result.HumanTaskKeys) > 0 {
+		if err := s.validateCompletionEvidence(job, result); err != nil {
+			return false
+		}
+		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			return AIReplyTurnTaskService.MarkTaskKeysHandoffDB(
+				ctx.Tx, job.TenantID, job.TurnID, result.HumanTaskKeys, "human_route_requested", now,
+			)
+		}); err != nil {
+			return false
+		}
+	}
+	failedTaskKeys := uniqueTaskKeys(result.FailedTaskKeys)
+	if len(failedTaskKeys) == 0 && taskFailureRequiresHuman(runErr) {
+		failedTaskKeys = uniqueTaskKeys(result.TaskKeys)
+	}
+	if len(failedTaskKeys) > 0 {
+		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			return AIReplyTurnTaskService.MarkHandoffPendingDB(
+				ctx.Tx, job.TenantID, job.TurnID, job.ID, failedTaskKeys, classifyTaskFailure(runErr), now,
+			)
+		}); err != nil {
+			return false
+		}
+	}
+
+	hasRunnable := result.HasRemainingTasks || AIReplyTurnTaskService.HasRunnable(job.TenantID, job.TurnID)
+	if hasRunnable {
+		if result.Status == AIReplyExecutionStatusCompleted {
+			if err := s.validateCompletionEvidence(job, result); err != nil {
+				return false
+			}
+		}
+		_, _ = repositories.AIReplyJobRepository.MarkRetry(
+			sqls.DB(), job.ID, job.TenantID, owner,
+			"turn_tasks_remaining", classifyTaskFailure(runErr), now.Add(aiReplyJobContinuationDelay), now, false,
+		)
+		return true
+	}
+
+	hasFailureHandoff := len(failedTaskKeys) > 0 || AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
+	if !hasFailureHandoff {
+		return false
+	}
+	current := repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), job.ID, job.TenantID)
+	if current == nil || current.Status != enums.AIReplyJobStatusProcessing || current.LeaseOwner != owner {
+		return true
+	}
+	state, decision := s.inspectExecutionState(current, false)
+	if decision != nil {
+		s.markTerminalWithCoverage(current, owner, decision.Status, decision.Code, classifyTaskFailure(runErr), decision.CoveredByMessageID, decision.CoveredByTaskID, now)
+		return true
+	}
+	if state == nil {
+		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "scope_invalid", "scope_invalid", now)
+		return true
+	}
+	if err := s.dispatchHuman(state, current, "AI 部分问题自动处理失败，需要人工跟进"); err != nil {
+		_, _ = repositories.AIReplyJobRepository.MarkRetry(
+			sqls.DB(), current.ID, current.TenantID, owner,
+			"human_dispatch_retry", classifyTaskFailure(runErr), now.Add(time.Minute), now, false,
+		)
+		return true
+	}
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		return AIReplyTurnTaskService.MarkPendingHandoffsDB(ctx.Tx, current.TenantID, current.TurnID, "human_handoff", now)
+	}); err != nil {
+		_, _ = repositories.AIReplyJobRepository.MarkRetry(
+			sqls.DB(), current.ID, current.TenantID, owner,
+			"human_dispatch_retry", "database_error", now.Add(time.Minute), now, false,
+		)
+		return true
+	}
+	if result.Status == AIReplyExecutionStatusCompleted && s.validateCompletionEvidence(current, result) == nil {
+		s.markTerminal(current, owner, enums.AIReplyJobStatusCompleted, "partial_success_human_dispatch", classifyTaskFailure(runErr), now)
+		return true
+	}
+	s.markTerminal(
+		current, owner, enums.AIReplyJobStatusFailed,
+		controlledResultCode(classifyTaskFailure(runErr)+"_human_dispatch", "task_failure_human_dispatch"),
+		classifyTaskFailure(runErr), now,
+	)
+	return true
+}
+
+func taskFailureRequiresHuman(err error) bool {
+	code, ok := AIReplyExecutionErrorCodeOf(err)
+	if !ok {
+		return false
+	}
+	switch code {
+	case AIReplyExecutionErrorGenerationFailed, AIReplyExecutionErrorKnowledgeUnavailable,
+		AIReplyExecutionErrorEmptyOutput, AIReplyExecutionErrorResourceInvariantBroken:
+		return true
+	default:
+		return false
+	}
+}
+
+func classifyTaskFailure(err error) string {
+	if code, ok := AIReplyExecutionErrorCodeOf(err); ok {
+		return controlledErrorClass(string(code))
+	}
+	if err != nil {
+		return controlledErrorClass(classifyAIReplyJobError(err))
+	}
+	return "knowledge_unavailable"
 }
 
 func (s *aiReplyJobService) dispatchControlledFailure(job *models.AIReplyJob, owner, errorClass string, now time.Time) {
@@ -589,9 +806,21 @@ func (s *aiReplyJobService) retryOrDispatch(job *models.AIReplyJob, owner, error
 }
 
 func (s *aiReplyJobService) markTerminal(job *models.AIReplyJob, owner string, status enums.AIReplyJobStatus, resultCode, errorClass string, now time.Time) {
+	s.markTerminalWithCoverage(job, owner, status, resultCode, errorClass, 0, 0, now)
+}
+
+func (s *aiReplyJobService) markTerminalWithCoverage(
+	job *models.AIReplyJob,
+	owner string,
+	status enums.AIReplyJobStatus,
+	resultCode, errorClass string,
+	coveredByMessageID, coveredByTaskID int64,
+	now time.Time,
+) {
 	_, err := repositories.AIReplyJobRepository.MarkTerminal(
 		sqls.DB(), job.ID, job.TenantID, owner, status,
-		controlledResultCode(resultCode, "unknown"), controlledErrorClass(errorClass), now,
+		controlledResultCode(resultCode, "unknown"), controlledErrorClass(errorClass),
+		coveredByMessageID, coveredByTaskID, now,
 	)
 	if err != nil {
 		slog.Warn("finish AI reply job failed", "job_id", job.ID, "stage", "finalize", "error_class", "database_error")
@@ -629,6 +858,15 @@ func (s *aiReplyJobService) inspectExecutionState(job *models.AIReplyJob, includ
 		conversation.StoreID != job.StoreID || conversation.StoreStaffBindingID != job.StoreStaffBindingID ||
 		message.SessionNo != job.SessionNo || strings.TrimSpace(message.RequestID) != strings.TrimSpace(job.RequestID) {
 		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: "scope_invalid"}
+	}
+	if job.TurnID > 0 || job.TurnVersion > 0 || message.AIReplyTurnID > 0 || message.AIReplyTurnVersion > 0 {
+		turn, turnCode := AIReplyTurnService.GetForJob(job, message)
+		if turn == nil {
+			return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: turnCode}
+		}
+		if aiReplyTurnTerminalStatus(turn.Status) || conversation.CurrentAIReplyTurnID != turn.ID {
+			return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "turn_inactive"}
+		}
 	}
 	if message.HistoricalOnly || message.SenderType != enums.IMSenderTypeCustomer {
 		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "message_not_runtime_eligible"}
@@ -703,7 +941,9 @@ func (s *aiReplyJobService) inspectFreshness(state *aiReplyJobExecutionState) *a
 			committedIDs = append(committedIDs, message.ID)
 		}
 	}
-	if len(committedIDs) > 0 {
+	taskLedgerUnfinished := state.Job.TurnID > 0 && AIReplyTurnTaskService.Enabled() &&
+		AIReplyTurnTaskService.HasRunnable(state.Job.TenantID, state.Job.TurnID)
+	if len(committedIDs) > 0 && !taskLedgerUnfinished {
 		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusCompleted, Code: "reply_already_committed", CommittedMessageIDs: committedIDs}
 	}
 	if interrupt := repositories.ConversationInterruptRepository.FindOne(sqls.DB(), sqls.NewCnd().
@@ -712,6 +952,18 @@ func (s *aiReplyJobService) inspectFreshness(state *aiReplyJobExecutionState) *a
 		Eq("source_message_id", state.Job.MessageID).
 		Desc("id")); interrupt != nil && interrupt.ID > 0 && strings.TrimSpace(interrupt.Status) != "checkpointed" {
 		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusCompleted, Code: "interrupt_already_persisted", PersistedInterruptID: interrupt.ID}
+	}
+	if state.Job.TurnID > 0 {
+		turn, turnCode := AIReplyTurnService.GetForJob(state.Job, state.Message)
+		if turn == nil {
+			return &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: turnCode}
+		}
+		if coverage := AIReplyTurnService.FindCoverage(state.Job, state.Message, turn); coverage != nil {
+			return &aiReplyJobDecision{
+				Status: enums.AIReplyJobStatusSuperseded, Code: coverage.ReasonCode,
+				CoveredByMessageID: coverage.CoveredByMessageID,
+			}
+		}
 	}
 	newer := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
 		Eq("tenant_id", state.Job.TenantID).
@@ -723,7 +975,9 @@ func (s *aiReplyJobService) inspectFreshness(state *aiReplyJobExecutionState) *a
 	for _, message := range newer {
 		switch message.SenderType {
 		case enums.IMSenderTypeCustomer:
-			return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "newer_customer_message"}
+			if state.Job.TurnID <= 0 || message.AIReplyTurnID != state.Job.TurnID || message.SessionNo != state.Job.SessionNo {
+				return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "newer_customer_message"}
+			}
 		case enums.IMSenderTypeAgent:
 			return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "human_agent_replied"}
 		}
@@ -814,7 +1068,11 @@ func executionResultForDecision(decision aiReplyJobDecision) AIReplyExecutionRes
 	case enums.AIReplyJobStatusSkipped:
 		return AIReplyExecutionResult{Status: AIReplyExecutionStatusSkipped, ReasonCode: decision.Code}
 	case enums.AIReplyJobStatusSuperseded:
-		return AIReplyExecutionResult{Status: AIReplyExecutionStatusSuperseded, ReasonCode: decision.Code}
+		return AIReplyExecutionResult{
+			Status: AIReplyExecutionStatusSuperseded, ReasonCode: decision.Code,
+			CoveredByMessageID: decision.CoveredByMessageID,
+			CoveredByTaskID:    decision.CoveredByTaskID,
+		}
 	default:
 		return AIReplyExecutionResult{Status: AIReplyExecutionStatusSkipped, ReasonCode: decision.Code}
 	}

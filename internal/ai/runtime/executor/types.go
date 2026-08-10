@@ -11,6 +11,7 @@ type RunInput struct {
 	UserMessage  models.Message
 	AIAgent      models.AIAgent
 	ModelConfig  modelconfig.Config
+	JobID        int64
 	CheckPointID string
 	ToolSet      *registry.ToolSet
 }
@@ -59,6 +60,14 @@ type RunResult struct {
 	ErrorMessage              string
 	SkipReply                 bool
 	ModelUsageCalls           []ModelUsageCall
+	TaskLedgerEnabled         bool
+	TaskKeys                  []string
+	FailedTaskKeys            []string
+	HumanTaskKeys             []string
+	HasRemainingTasks         bool
+	NeedsHumanDispatch        bool
+	SkipGeneration            bool
+	CoveredByTaskID           int64
 }
 
 // ModelUsageCall preserves one upstream model response. It is intentionally

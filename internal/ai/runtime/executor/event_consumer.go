@@ -50,7 +50,11 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 				continue
 			}
 			replyText := strings.TrimSpace(messageOutput.Message.Content)
-			replyText = normalizeGeneratedReplyParts(replyText, collector.Data.Pipeline.ReplyPlan)
+			var normalizeErr error
+			replyText, normalizeErr = normalizeGeneratedReplyPartsStrict(replyText, collector.Data.Pipeline.ReplyPlan)
+			if normalizeErr != nil {
+				return normalizeErr
+			}
 			if looksLikeBareToolCallText(replyText) {
 				continue
 			}

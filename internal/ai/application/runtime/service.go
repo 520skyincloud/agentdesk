@@ -34,6 +34,7 @@ func (s *Service) Run(ctx context.Context, req Request) (*Summary, error) {
 		UserMessage:  req.UserMessage,
 		AIAgent:      req.AIAgent,
 		ModelConfig:  req.ModelConfig,
+		JobID:        req.JobID,
 		CheckPointID: req.CheckPointID,
 		ToolSet:      req.ToolSet,
 	})

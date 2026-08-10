@@ -602,6 +602,9 @@ func (s *conversationService) linkExistingStoreConversationDB(
 		}
 	}
 	closeReason := "已由授权人员继承至同门店目标员工号会话"
+	if err := AIReplyTurnService.InterruptCurrentDB(ctx.Tx, predecessor, 0, "conversation_inherited"); err != nil {
+		return nil, err
+	}
 	if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, predecessor.ID, predecessor.TenantID, map[string]any{
 		"status":              enums.IMConversationStatusClosed,
 		"current_assignee_id": int64(0),

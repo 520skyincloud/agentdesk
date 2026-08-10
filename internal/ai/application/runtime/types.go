@@ -11,6 +11,7 @@ type Request struct {
 	UserMessage  models.Message
 	AIAgent      models.AIAgent
 	ModelConfig  modelconfig.Config
+	JobID        int64
 	CheckPointID string
 	ToolSet      *registry.ToolSet
 }
@@ -57,6 +58,13 @@ type Summary struct {
 	ErrorMessage          string
 	PolicySkipped         bool
 	ModelUsageCalls       []ModelUsageCall
+	TaskLedgerEnabled     bool
+	TaskKeys              []string
+	FailedTaskKeys        []string
+	HumanTaskKeys         []string
+	HasRemainingTasks     bool
+	NeedsHumanDispatch    bool
+	CoveredByTaskID       int64
 }
 
 type ModelUsageCall struct {

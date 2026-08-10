@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	svc "agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 )
 
@@ -157,20 +159,57 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	}
 	collector.Data.Interrupt.CheckPointID = checkPointID
 	generateStartedAt := time.Now()
-	if err = finishRuntimeGeneration(
+	err = finishRuntimeGeneration(
 		runner.Run(ctx, messages, buildRunOptions(checkPointID)...),
 		summary,
 		collector,
 		tooling.toolDefsByModelName,
 		req.ModelConfig.ModelName,
 		generateStartedAt,
-	); err != nil {
+	)
+	var protocolErr *multiReplyProtocolError
+	if errors.As(err, &protocolErr) {
+		resetRuntimeGenerationForProtocolRepair(summary, collector)
+		repairMessages := append([]*schema.Message(nil), messages...)
+		repairMessages = append(repairMessages, schema.SystemMessage(buildMultiReplyProtocolRepairInstruction(
+			collector.Data.Pipeline.ReplyPlan,
+		)))
+		err = finishRuntimeGeneration(
+			runner.Run(ctx, repairMessages, buildRunOptions(checkPointID+"-reply-parts-repair")...),
+			summary,
+			collector,
+			tooling.toolDefsByModelName,
+			req.ModelConfig.ModelName,
+			time.Now(),
+		)
+		collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
+	}
+	if err != nil {
 		summary.TraceData = collector.Marshal()
 		return summary, err
 	}
 	syncSkillSummaryFromCollector(summary, collector)
 	summary.TraceData = collector.Marshal()
 	return summary, nil
+}
+
+func resetRuntimeGenerationForProtocolRepair(summary *RunResult, collector *callbacks.RuntimeTraceCollector) {
+	if summary != nil {
+		summary.Status = "started"
+		summary.ReplyText = ""
+		summary.ErrorMessage = ""
+		summary.Interrupted = false
+		summary.Interrupts = nil
+	}
+	if collector != nil {
+		collector.Data.Status = "started"
+		collector.Data.Error.Message = ""
+		collector.Data.Error.Stage = ""
+		collector.Data.Pipeline.Generate.Status = "repairing"
+		collector.Data.Pipeline.Generate.Reason = "reply_parts_protocol_repair"
+		collector.Data.Pipeline.Validate.Status = "pending"
+		collector.Data.Pipeline.Validate.Reason = ""
+	}
 }
 
 func runtimeErrorStage(err error, fallback string) string {

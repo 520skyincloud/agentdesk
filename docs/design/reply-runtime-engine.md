@@ -30,7 +30,7 @@
 Store、行业或模型范围，而从已提交业务事实逐层恢复：
 
 ```text
-AIReplyJob -> Conversation + Message
+AIReplyJob + AIReplyTurn -> Conversation + Message
   -> Conversation.TenantID / CustomerID
   -> Message.SessionNo / RequestID
   -> Tenant-scoped ConversationRouteState
@@ -157,9 +157,9 @@ Tenant 适配只增加可信范围、唯一 Resolver、Store FastGPT 和现有�
 失败时消息事务回滚，由企微入站幂等重试；重复 `ClientMsgID` 只补齐缺失任务。历史导入、
 AI、人工、系统、撤回和失败消息不创建任务。
 
-`AIReplyJob` 只保存 Tenant、Conversation、Message、Session、Store、Binding、RequestID、
-触发类型和受控状态，不保存正文、Prompt、模型输出、密钥、完整指纹或上游错误原文。唯一键
-为 `TenantID + ConversationID + MessageID`，状态为：
+`AIReplyJob` 只保存 Tenant、Conversation、Message、Session、Store、Binding、TurnID、
+TurnVersion、RequestID、触发类型和受控状态，不保存正文、Prompt、模型输出、密钥、完整指纹
+或上游错误原文。唯一键为 `TenantID + ConversationID + MessageID`，状态为：
 
 ```text
 pending -> processing -> completed | skipped | superseded | expired | failed
@@ -187,7 +187,63 @@ pending -> processing -> completed | skipped | superseded | expired | failed
 回复入口。Runtime 对 worker 返回 `completed`、`skipped`、`superseded`、`deferred` 四种
 结构化结果；媒体等待只能返回 `deferred`，`completed` 必须携带上述持久证据。
 
-### 5.2 紧邻回答上下文
+### 5.2 持久对话轮次与迟到消息
+
+企微员工号入站必须把协议 `sendtime` 规范化后写入 `Message.SentAt`；`Message.CreatedAt` 只表示
+平台实际持久化时间。`CreatedAt - SentAt` 作为 `inbound_lag_ms` 记录，时间缺失、早于 2000 年、
+晚于平台 24 小时或形成负延迟时按平台接收时间/零延迟处理。轮次归属使用 `SentAt`，不能使用
+网络到达顺序猜测客户是否看过上一条回复。
+
+`AIReplyTurn` 是内部持久协调记录，只保存 Tenant、Conversation、Session、Store、Binding、版本、
+首末客户 Message ID、发送时间和 Commit/Delivery 证据，不保存客户正文、Prompt、模型输出或原始
+上游响应。状态为：
+
+```text
+open -> running -> committed -> delivered
+                  \-> interrupted | closed | failed
+```
+
+`AIReplyTurnTask` 是轮次内的逐题账本。每个独立问题、资源动作或人工动作使用
+`SourceMessageID + 顺序 + TaskType` 生成稳定 TaskKey，只保存范围、意图标签、确定性问题指纹、
+阶段、结果码和提交证据，不保存问题正文、知识正文或模型输出。状态为：
+
+```text
+pending -> running -> ready -> committed -> delivered
+                   \-> covered | handoff | skipped | superseded
+```
+
+同一 Turn 通过租约保证只有一个 AI Job 执行；每批最多领取 6 个未完成 Task，余量由同一持久 Job
+自动续批。正常多题链路保持一次 Intent、知识 Task 最多 4 路并行检索、一次 Generate；Generate
+必须按 taskKey 覆盖所有成功文本 Task，最多拆成三条文本消息。知识 `no_hit` 明确禁止猜测，单项
+`failed` 只将对应 Task 转人工，不能清空其他成功结果或重跑完整模型链。
+
+客户消息事务内完成 Message、Turn Version 和 AIReplyJob 的写入，并 supersede 旧版本 Job：
+
+```text
+customer Message(sendtime)
+  -> lock Conversation + current AIReplyTurn
+  -> same Session and sent before prior AI delivery (+1s precision tolerance): increment Version
+  -> sent after prior AI delivery: close old Turn and create new Turn
+  -> persist Message.TurnID/TurnVersion + Job.TurnID/TurnVersion
+```
+
+- System、欢迎语、欢迎图片、小程序、绑定卡和其他自动化消息不关闭 Turn。
+- 人工回复、人工接管、撤回、会话关闭、会话继承、Session 变化和 AI 关闭使当前 Turn 失效。
+- 模型只生成内存中的 PreparedReplyBatch；Commit 事务先 CAS 校验 Turn Version、Session、Route、
+  Store、Binding、当前实例、AI 开关和人工状态，旧版本不得创建 Message 或 Outbox。
+- 精确规范化后相同的迟到问题复用本轮既有 Message/Outbox：pending、sending 直接复用，failed
+  提前原任务重试，sent 视为已覆盖，不再调用模型。
+- 不同迟到问题从 `LastDeliveredVersion` 后开始构建输入，只回答新增问题。若最终批次与上一答案
+  完全相同，允许一次带“只回答新增问题”生成约束的受控 Runtime 重跑；相关模型和知识调用继续
+  按本轮 RequestID 正常记录 Usage，仍相同则按 `generation_failed` 转人工。
+- 文本只做 Unicode NFKC、大小写、空格和结尾标点标准化后哈希；图片、定位、小程序沿用资源
+  指纹。禁止模糊语义去重，避免吞掉真实不同问题。
+
+灰度开关默认 fail closed：`AI_REPLY_TURN_COORDINATOR_ENABLED` 未显式为 `true` 时不启用；启用后
+可用 `AI_REPLY_TURN_COORDINATOR_BINDING_IDS` 限定 StoreStaffBinding ID，空白名单表示全量启用。
+表不存在时自动回退旧链，不伪造 Turn 证据。
+
+### 5.3 紧邻回答上下文
 
 Generate 在不改变 Intent Schema 和模型调用次数的前提下，可读取当前 Session 内最近 10 分钟的
 紧邻上一组客户问题和 AI 回复批次。AI 批次按相同 RequestID 聚合文本、图片、定位和小程序；
@@ -281,8 +337,9 @@ fail closed，不使用不可信 Store/Binding 创建人工任务。
 
 ```text
 Validate
+  -> AIReplyTurn Version CAS
   -> stable ClientMsgID
-  -> Message batch + Outbox + Conversation cursor/counters + EventLog transaction
+  -> Message batch + Outbox + Conversation cursor/counters + AIReplyTurn evidence + EventLog transaction
   -> ServiceAnalyticsCapture
   -> ObserveCommittedMessage
   -> WebSocket refresh/resync
@@ -294,6 +351,9 @@ Validate
 - 事务后仍按 `(channel_type, message_id)` 幂等补偿 Outbox。
 - 相同 ClientMsgID 重试只补建 Outbox，不重复模型、运营事实或标签演化。
 - AIReplyJob 在模型执行前和 Commit 前重新读取 Session、Route、Binding、实例、AI 开关和接待状态。
+- Outbox Claim 前再次读取关联 AI Message 的 TurnID/TurnVersion；已有更新版本完成 Commit 时，尚未
+  开始发送的旧 Outbox 进入 `cancelled`，原因记录为 `cancelled_stale_turn`。更新版本尚未 Commit
+  时允许旧已提交回复继续发送，避免客户长时间无响应。
 - 后台补偿只扫描明确有持久投递意图且缺 Outbox 的新消息。
 - Outbox 待投递查询和 CAS Claim 都要求 `next_retry_at IS NULL OR next_retry_at <= now`；未到期
   不能抢占，到期后只重试协议投递。
@@ -348,6 +408,10 @@ ActionLedger 可在内部 TraceData 的 `suppressedActions` 记录资源去重�
 - need_human 只进现有任务池，规则派单不调用模型。
 - ClientMsgID 重试不重复模型、消息、任务或运营事实。
 - Message 与 AIReplyJob 原子提交，进程重启、租约回收和补偿扫描不丢回复任务。
+- 企微入站 `sendtime` 固化到 SentAt，CreatedAt 保持平台接收时间；1、2、3、14 秒迟到的相同问题
+  必须加入原 Turn，最终只发送一次回复。
+- 两个 Worker 同时处理同一 Turn 时只有最新 Version 可 Commit；旧版本 Outbox 在替代版本 Commit
+  后取消，替代版本未 Commit 前不得提前取消可用回复。
 - 每槽 `MaxRetryCount=2` 时超时、5xx 或空模型结果恰好执行三次 provider 调用，耗尽后只创建
   一个稳定人工任务；派单重试不重跑 Runtime。
 - Runtime `completed` 缺少有效 Message/Interrupt 证据时按 `commit_failed` 处理；空错误 RunLog
@@ -366,12 +430,15 @@ ActionLedger 可在内部 TraceData 的 `suppressedActions` 记录资源去重�
 验证命令：
 
 ```bash
-go test ./internal/ai/... -count=1
+go test -tags dev ./internal/ai/... -count=1
 go test -tags dev ./internal/ai/runtime/... -run 'RecentAnswered|ClarifyKnowledge|DuplicateResource|ExplicitResend' -count=1
-go test ./internal/services -run 'AIReplyJob|Runtime|Reply|Intent|FastGPT|HumanDispatch|MessageBatch|Outbox' -count=1
-go test -race ./internal/ai/... ./internal/services -run 'AIReply|Runtime|Intent|HumanDispatch|Outbox' -count=1
-go test ./... -count=1
-go vet ./...
+go test -tags dev ./internal/services -run 'AIReplyTurn|TaskLedger|AIReplyJob|Runtime|Reply|Intent|FastGPT|HumanDispatch|MessageBatch|Outbox|WxWorkProtocol' -count=1
+go test -race -tags dev ./internal/ai/... ./internal/services -run 'AIReply|Turn|Task|Runtime|Intent|HumanDispatch|Knowledge|Outbox' -count=1
+go test -tags dev ./... -count=1
+go vet -tags dev ./...
+# 生产静态资源生成后，再验证非 dev 嵌入构建：
+cd web && pnpm build:sdk && pnpm typecheck && pnpm build
+cd .. && go test ./... -count=1 && go vet ./...
 ```
 
 ## 14. 核心保护区
@@ -389,6 +456,11 @@ Intent JSON、动作字段、幂等键或模型归因：
 - `internal/ai/rag/`
 - `internal/services/model_call_resolver_service.go`
 - `internal/services/ai_reply_job_service.go` 中的 Job 状态机、完成证据、租约和人工兜底
+- `internal/services/ai_reply_turn_service.go` 中的轮次归属、版本 CAS、迟到覆盖和 Outbox 门禁
+- `internal/repositories/ai_reply_turn_repository.go`
+- `internal/services/ai_reply_turn_task_service.go` 与 `internal/ai/runtime/executor/task_ledger.go` 中的逐题任务状态机
+- `internal/repositories/ai_reply_turn_task_repository.go`
+- `internal/models/models.go` 中 `AIReplyTurn`、`AIReplyTurnTask` 及 Message/Job/Conversation 的内部关联字段
 - `internal/services/message_service.go` 中的入站消息与任务原子提交边界
 
 定位、小程序、电话和知识图片的资源动作字段及严格 Builder 也属于保护协议。普通业务需求不得

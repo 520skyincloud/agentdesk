@@ -3,15 +3,18 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
+	runtimeexecutor "agent-desk/internal/ai/runtime/executor"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
+	"agent-desk/internal/repositories"
 	svc "agent-desk/internal/services"
 	"github.com/mlogclub/simple/sqls"
 )
@@ -20,6 +23,8 @@ const aiReplyDebounceWindow = 120 * time.Millisecond
 const aiReplyMediaSettleWindow = 900 * time.Millisecond
 const aiReplyMediaContextWindow = 6 * time.Second
 const aiReplyBurstTextWindow = 8 * time.Second
+
+const duplicateAnswerRetryInstruction = "【本轮纠错重试】上一版候选回复与本轮上一已发送批次完全相同，但客户当前问题不同。只回答当前新增问题；不得复述上一问题的答案，不得用旧答案占位。若当前知识不足，明确追问一个关键点。"
 
 func (s *aiReplyService) resolveReplyTimeout(aiAgent models.AIAgent) time.Duration {
 	if aiAgent.ReplyTimeoutSeconds <= 0 {
@@ -274,16 +279,28 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 	if conversationID <= 0 || message.ID <= 0 || message.SenderType != enums.IMSenderTypeCustomer || message.SentAt == nil {
 		return message
 	}
+	lastMessageID := message.ID
+	if message.AIReplyTurnID > 0 {
+		if turn := repositories.AIReplyTurnRepository.GetInTenant(sqls.DB(), message.AIReplyTurnID, message.TenantID); turn != nil &&
+			turn.ConversationID == conversationID && turn.SessionNo == message.SessionNo && turn.LastCustomerMessageID >= message.ID {
+			lastMessageID = turn.LastCustomerMessageID
+		}
+	}
 	cnd := sqls.NewCnd().
 		Eq("conversation_id", conversationID).
 		Eq("session_no", message.SessionNo).
 		Eq("sender_type", enums.IMSenderTypeCustomer).
 		In("message_type", []string{string(enums.IMMessageTypeText), string(enums.IMMessageTypeVoice), string(enums.IMMessageTypeImage), string(enums.IMMessageTypeLocation), string(enums.IMMessageTypeMiniProgram), string(enums.IMMessageTypeAttachment)}).
-		Lte("id", message.ID).
+		Lte("id", lastMessageID).
 		Gte("sent_at", message.SentAt.Add(-aiReplyBurstTextWindow)).
 		Asc("id").
 		Limit(12)
-	if latestOutbound := s.latestOutboundMessageBefore(conversationID, message.SessionNo, message.ID); latestOutbound != nil {
+	if message.AIReplyTurnID > 0 {
+		cnd.Eq("ai_reply_turn_id", message.AIReplyTurnID)
+		if floorVersion := svc.AIReplyTurnService.InputFloorVersion(message); floorVersion > 0 {
+			cnd.Gt("ai_reply_turn_version", floorVersion)
+		}
+	} else if latestOutbound := s.latestOutboundMessageBefore(conversationID, message.SessionNo, message.ID); latestOutbound != nil {
 		cnd.Gt("id", latestOutbound.ID)
 	}
 	items := svc.MessageService.Find(cnd)
@@ -353,9 +370,15 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 	})
 	replyCtx.setSummary(summary)
 	if err != nil {
-		return svc.AIReplyExecutionResult{}, err
+		return executionResultWithTaskSummary(svc.AIReplyExecutionResult{}, summary), err
 	}
 	if summary != nil && summary.PolicySkipped {
+		if summary.TaskLedgerEnabled && summary.CoveredByTaskID > 0 {
+			return svc.AIReplyExecutionResult{
+				Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "covered_by_existing_task",
+				CoveredByTaskID: summary.CoveredByTaskID, TaskLedgerEnabled: true,
+			}, nil
+		}
 		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSkipped, ReasonCode: "policy_skipped"}, nil
 	}
 	if summary != nil && summary.Interrupted {
@@ -387,26 +410,118 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			ReplyText:    summary.ReplyText,
 			Trace:        replyCtx.Trace,
 			ClientPrefix: "ai_reply",
+			JobID:        svc.AIReplyJobService.CurrentJobID(ctx, replyCtx.Conversation.TenantID, replyCtx.Conversation.ID),
 		})
 		if err != nil {
+			var covered *svc.AIReplyTurnCoveredError
+			if errors.As(err, &covered) {
+				return svc.AIReplyExecutionResult{
+					Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: covered.ReasonCode,
+					CoveredByMessageID: covered.CoveredByMessageID,
+				}, nil
+			}
+			if errors.Is(err, svc.ErrAIReplyTurnDuplicateAnswer) {
+				return s.retryDifferentQuestionDuplicateAnswer(ctx, replyCtx)
+			}
+			if errors.Is(err, svc.ErrAIReplyTurnStale) {
+				return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "stale_turn_version"}, nil
+			}
 			return svc.AIReplyExecutionResult{}, err
 		}
 		if len(replyMessages) > 0 && strings.TrimSpace(summary.ReplyText) == "" {
 			summary.ReplyText = committedReplyText(replyMessages[len(replyMessages)-1])
 		}
 		replyCtx.Trace.ReplySent = len(replyMessages) > 0
-		return completedInterruptResult("runtime_completed", replyMessages, 0), nil
+		return executionResultWithTaskSummary(completedInterruptResult("runtime_completed", replyMessages, 0), summary), nil
 	}
 	if evidence := s.findCommittedReplyEvidence(replyCtx); len(evidence) > 0 {
-		return svc.AIReplyExecutionResult{
+		return executionResultWithTaskSummary(svc.AIReplyExecutionResult{
 			Status: svc.AIReplyExecutionStatusCompleted, ReasonCode: "runtime_action_committed",
 			CommittedMessageIDs: evidence,
-		}, nil
+		}, summary), nil
 	}
 	return svc.AIReplyExecutionResult{}, svc.NewAIReplyExecutionError(
 		svc.AIReplyExecutionErrorEmptyOutput,
 		fmt.Errorf("runtime completed without durable output"),
 	)
+}
+
+func (s *aiReplyService) retryDifferentQuestionDuplicateAnswer(ctx context.Context, replyCtx aiReplyContext) (svc.AIReplyExecutionResult, error) {
+	retryCtx := runtimeexecutor.WithGenerationGuardInstruction(ctx, duplicateAnswerRetryInstruction)
+	summary, err := s.executor.Run(retryCtx, runtimeReplyRunInput{
+		Conversation: replyCtx.Conversation,
+		Message:      replyCtx.Message,
+		AIAgent:      replyCtx.AIAgent,
+		Trace:        replyCtx.Trace,
+	})
+	replyCtx.setSummary(summary)
+	if err != nil {
+		return svc.AIReplyExecutionResult{}, err
+	}
+	if summary == nil || summary.PolicySkipped || (!summary.Interrupted && strings.TrimSpace(summary.ReplyText) == "" && !s.commit.HasStructuredVariableReply(replyCtx.Trace)) {
+		return svc.AIReplyExecutionResult{}, svc.NewAIReplyExecutionError(
+			svc.AIReplyExecutionErrorGenerationFailed,
+			fmt.Errorf("duplicate-answer retry produced no usable reply"),
+		)
+	}
+	if summary.Interrupted {
+		return s.interrupts.HandleInterruptedSummary(s, replyCtx, summary)
+	}
+	checkpoint, checkpointErr := svc.AIReplyJobService.ValidateRuntimeCheckpoint(retryCtx, replyCtx.Conversation, replyCtx.Message)
+	if checkpointErr != nil {
+		return svc.AIReplyExecutionResult{}, checkpointErr
+	}
+	if checkpoint.Status != svc.AIReplyExecutionStatusCompleted || checkpoint.ReasonCode != "checkpoint_valid" {
+		return checkpoint, nil
+	}
+	if !s.canCommitReplyForMessage(replyCtx.Conversation.ID, replyCtx.Message.ID) {
+		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "newer_customer_message"}, nil
+	}
+	replyMessages, commitErr := s.commit.CommitAIReplyBatch(replyCommitInput{
+		Conversation: replyCtx.Conversation,
+		Message:      replyCtx.Message,
+		AIAgent:      replyCtx.AIAgent,
+		ReplyText:    summary.ReplyText,
+		Trace:        replyCtx.Trace,
+		ClientPrefix: "ai_reply",
+		JobID:        svc.AIReplyJobService.CurrentJobID(retryCtx, replyCtx.Conversation.TenantID, replyCtx.Conversation.ID),
+	})
+	if commitErr != nil {
+		var covered *svc.AIReplyTurnCoveredError
+		switch {
+		case errors.As(commitErr, &covered):
+			return svc.AIReplyExecutionResult{
+				Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: covered.ReasonCode,
+				CoveredByMessageID: covered.CoveredByMessageID,
+			}, nil
+		case errors.Is(commitErr, svc.ErrAIReplyTurnStale):
+			return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "stale_turn_version"}, nil
+		case errors.Is(commitErr, svc.ErrAIReplyTurnDuplicateAnswer):
+			return svc.AIReplyExecutionResult{}, svc.NewAIReplyExecutionError(
+				svc.AIReplyExecutionErrorGenerationFailed,
+				fmt.Errorf("duplicate-answer retry repeated the previous answer"),
+			)
+		default:
+			return svc.AIReplyExecutionResult{}, commitErr
+		}
+	}
+	if len(replyMessages) > 0 && strings.TrimSpace(summary.ReplyText) == "" {
+		summary.ReplyText = committedReplyText(replyMessages[len(replyMessages)-1])
+	}
+	replyCtx.Trace.ReplySent = len(replyMessages) > 0
+	return executionResultWithTaskSummary(completedInterruptResult("runtime_completed_after_duplicate_retry", replyMessages, 0), summary), nil
+}
+
+func executionResultWithTaskSummary(result svc.AIReplyExecutionResult, summary *applicationruntime.Summary) svc.AIReplyExecutionResult {
+	if summary == nil || !summary.TaskLedgerEnabled {
+		return result
+	}
+	result.TaskLedgerEnabled = true
+	result.TaskKeys = append([]string(nil), summary.TaskKeys...)
+	result.FailedTaskKeys = append([]string(nil), summary.FailedTaskKeys...)
+	result.HumanTaskKeys = append([]string(nil), summary.HumanTaskKeys...)
+	result.HasRemainingTasks = summary.HasRemainingTasks
+	return result
 }
 
 func (s *aiReplyService) findCommittedReplyEvidence(replyCtx aiReplyContext) []int64 {
@@ -447,6 +562,10 @@ func committedReplyText(message models.Message) string {
 func (s *aiReplyService) canCommitReplyForMessage(conversationID int64, messageID int64) bool {
 	current := svc.MessageService.Get(messageID)
 	if current == nil {
+		return true
+	}
+	conversation := svc.ConversationService.Get(conversationID)
+	if current.AIReplyTurnID > 0 && conversation != nil && svc.AIReplyTurnService.EnabledFor(conversation) {
 		return true
 	}
 	latest := svc.MessageService.FindOne(sqls.NewCnd().
@@ -515,5 +634,8 @@ func (s *aiReplyService) isStillLatestCustomerMessage(conversationID int64, mess
 		Eq("sender_type", enums.IMSenderTypeCustomer).
 		Where("recalled_at IS NULL AND send_status NOT IN (?, ?)", enums.IMMessageStatusFailed, enums.IMMessageStatusRecalled).
 		Desc("id"))
-	return latest == nil || latest.ID == messageID
+	if latest == nil || latest.ID == messageID {
+		return true
+	}
+	return current.AIReplyTurnID > 0 && latest.AIReplyTurnID == current.AIReplyTurnID && latest.SessionNo == current.SessionNo
 }

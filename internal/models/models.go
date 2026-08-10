@@ -67,6 +67,8 @@ var Models = []any{
 	&WxWorkKFMessageRef{},
 	&ChannelMessageOutbox{},
 	&ConversationRouteState{},
+	&AIReplyTurn{},
+	&AIReplyTurnTask{},
 	&AIReplyJob{},
 	&AIManualResumeTask{},
 	&ConversationSessionSummary{},
@@ -506,33 +508,34 @@ type Tag struct {
 
 // Conversation 客服会话。
 type Conversation struct {
-	ID                  int64                           `gorm:"primaryKey;autoIncrement"`                                          // ID 为会话主键。
-	TenantID            int64                           `gorm:"type:bigint;not null;default:0;index"`                              // TenantID 为会话所属接入公司，从 Channel 与 Customer 共同确定。
-	StoreID             int64                           `gorm:"type:bigint;not null;default:0;index"`                              // StoreID 为会话不可跨越的稳定门店范围。
-	StoreStaffBindingID int64                           `gorm:"type:bigint;not null;default:0;index"`                              // StoreStaffBindingID 为当前承接该会话的门店员工号绑定。
-	ThreadKey           *string                         `gorm:"type:varchar(191);uniqueIndex:uk_conversation_thread_key" json:"-"` // ThreadKey 保证同一门店员工号下客户会话唯一；非门店渠道保持 NULL。
-	AIAgentID           int64                           `gorm:"type:bigint;not null;default:0;index"`                              // AIAgentID 为当前会话绑定的 AI Agent ID。
-	ChannelID           int64                           `gorm:"type:bigint;not null;default:0;index"`                              // ChannelID 为该会话来源接入渠道ID。
-	CustomerID          int64                           `gorm:"type:bigint;not null;default:0;index"`                              // CustomerID 为会话所属客户 ID。
-	CustomerName        string                          `gorm:"type:varchar(100);not null;default:'';index"`                       // CustomerName 为客户名称冗余字段，用于列表展示和搜索。
-	Status              enums.IMConversationStatus      `gorm:"type:int;not null;default:1;index"`                                 // Status 为会话状态，如待接入、处理中、已关闭。
-	ServiceMode         enums.IMConversationServiceMode `gorm:"type:int;not null;default:3;index"`                                 // ServiceMode 为服务模式，如仅AI、仅人工、AI优先人工接管。
-	Priority            int                             `gorm:"type:int;not null;default:0;index"`                                 // Priority 为会话优先级。
-	DispatchWeight      int                             `gorm:"type:int;not null;default:1"`                                       // DispatchWeight 为规则派单使用的当前人工工作量权重，1 表示普通任务。
-	CurrentAssigneeID   int64                           `gorm:"type:bigint;not null;default:0;index"`                              // CurrentAssigneeID 为当前接待客服ID。
-	CurrentTeamID       int64                           `gorm:"type:bigint;not null;default:0;index"`                              // CurrentTeamID 为当前处理客服组ID。
-	LastMessageID       int64                           `gorm:"type:bigint;not null;default:0;index"`                              // LastMessageID 为最后一条消息ID。
-	LastMessageAt       time.Time                       `gorm:"type:datetime;index"`                                               // LastMessageAt 为最后消息时间。
-	LastActiveAt        time.Time                       `gorm:"type:datetime;index"`                                               // LastActiveAt 为会话最近活跃时间。
-	LastMessageSummary  string                          `gorm:"type:varchar(255);not null;default:''"`                             // LastMessageSummary 为最后一条消息摘要。
-	CustomerUnreadCount int                             `gorm:"type:int;not null;default:0"`                                       // CustomerUnreadCount 为用户侧未读数。
-	AgentUnreadCount    int                             `gorm:"type:int;not null;default:0"`                                       // AgentUnreadCount 为客服侧未读数。
-	HandoffAt           *time.Time                      `gorm:"type:datetime;index"`                                               // HandoffAt 为最近一次转人工时间。
-	HandoffReason       string                          `gorm:"type:varchar(255);not null;default:''"`                             // HandoffReason 为最近一次转人工原因。
-	AIReplyRounds       int                             `gorm:"type:int;not null;default:0"`                                       // AIReplyRounds 为当前会话内 AI 已成功回复次数。
-	ClosedAt            *time.Time                      `gorm:"type:datetime;index"`                                               // ClosedAt 为会话关闭时间。
-	ClosedBy            int64                           `gorm:"type:bigint;not null;default:0;index"`                              // ClosedBy 为关闭人用户ID，访客关闭时写0。
-	CloseReason         string                          `gorm:"type:varchar(255);not null;default:''"`                             // CloseReason 为关闭原因。
+	ID                   int64                           `gorm:"primaryKey;autoIncrement"`                                          // ID 为会话主键。
+	TenantID             int64                           `gorm:"type:bigint;not null;default:0;index"`                              // TenantID 为会话所属接入公司，从 Channel 与 Customer 共同确定。
+	StoreID              int64                           `gorm:"type:bigint;not null;default:0;index"`                              // StoreID 为会话不可跨越的稳定门店范围。
+	StoreStaffBindingID  int64                           `gorm:"type:bigint;not null;default:0;index"`                              // StoreStaffBindingID 为当前承接该会话的门店员工号绑定。
+	ThreadKey            *string                         `gorm:"type:varchar(191);uniqueIndex:uk_conversation_thread_key" json:"-"` // ThreadKey 保证同一门店员工号下客户会话唯一；非门店渠道保持 NULL。
+	AIAgentID            int64                           `gorm:"type:bigint;not null;default:0;index"`                              // AIAgentID 为当前会话绑定的 AI Agent ID。
+	ChannelID            int64                           `gorm:"type:bigint;not null;default:0;index"`                              // ChannelID 为该会话来源接入渠道ID。
+	CustomerID           int64                           `gorm:"type:bigint;not null;default:0;index"`                              // CustomerID 为会话所属客户 ID。
+	CustomerName         string                          `gorm:"type:varchar(100);not null;default:'';index"`                       // CustomerName 为客户名称冗余字段，用于列表展示和搜索。
+	Status               enums.IMConversationStatus      `gorm:"type:int;not null;default:1;index"`                                 // Status 为会话状态，如待接入、处理中、已关闭。
+	ServiceMode          enums.IMConversationServiceMode `gorm:"type:int;not null;default:3;index"`                                 // ServiceMode 为服务模式，如仅AI、仅人工、AI优先人工接管。
+	Priority             int                             `gorm:"type:int;not null;default:0;index"`                                 // Priority 为会话优先级。
+	DispatchWeight       int                             `gorm:"type:int;not null;default:1"`                                       // DispatchWeight 为规则派单使用的当前人工工作量权重，1 表示普通任务。
+	CurrentAssigneeID    int64                           `gorm:"type:bigint;not null;default:0;index"`                              // CurrentAssigneeID 为当前接待客服ID。
+	CurrentTeamID        int64                           `gorm:"type:bigint;not null;default:0;index"`                              // CurrentTeamID 为当前处理客服组ID。
+	LastMessageID        int64                           `gorm:"type:bigint;not null;default:0;index"`                              // LastMessageID 为最后一条消息ID。
+	LastMessageAt        time.Time                       `gorm:"type:datetime;index"`                                               // LastMessageAt 为最后消息时间。
+	LastActiveAt         time.Time                       `gorm:"type:datetime;index"`                                               // LastActiveAt 为会话最近活跃时间。
+	LastMessageSummary   string                          `gorm:"type:varchar(255);not null;default:''"`                             // LastMessageSummary 为最后一条消息摘要。
+	CustomerUnreadCount  int                             `gorm:"type:int;not null;default:0"`                                       // CustomerUnreadCount 为用户侧未读数。
+	AgentUnreadCount     int                             `gorm:"type:int;not null;default:0"`                                       // AgentUnreadCount 为客服侧未读数。
+	HandoffAt            *time.Time                      `gorm:"type:datetime;index"`                                               // HandoffAt 为最近一次转人工时间。
+	HandoffReason        string                          `gorm:"type:varchar(255);not null;default:''"`                             // HandoffReason 为最近一次转人工原因。
+	AIReplyRounds        int                             `gorm:"type:int;not null;default:0"`                                       // AIReplyRounds 为当前会话内 AI 已成功回复次数。
+	CurrentAIReplyTurnID int64                           `gorm:"type:bigint;not null;default:0;index"`                              // CurrentAIReplyTurnID 为当前可接收客户消息的持久回复轮次，仅供内部协调。
+	ClosedAt             *time.Time                      `gorm:"type:datetime;index"`                                               // ClosedAt 为会话关闭时间。
+	ClosedBy             int64                           `gorm:"type:bigint;not null;default:0;index"`                              // ClosedBy 为关闭人用户ID，访客关闭时写0。
+	CloseReason          string                          `gorm:"type:varchar(255);not null;default:''"`                             // CloseReason 为关闭原因。
 	AuditFields
 }
 
@@ -703,6 +706,67 @@ type ConversationRouteState struct {
 	AuditFields
 }
 
+// AIReplyTurn coordinates consecutive customer messages as one durable reply
+// turn. It stores only scope, version and delivery evidence; customer content,
+// prompts and model output remain in their existing stores.
+type AIReplyTurn struct {
+	ID                     int64                   `gorm:"primaryKey;autoIncrement"`
+	TenantID               int64                   `gorm:"type:bigint;not null;default:0;index"`
+	ConversationID         int64                   `gorm:"type:bigint;not null;default:0;index"`
+	SessionNo              int                     `gorm:"type:int;not null;default:1;index"`
+	StoreID                int64                   `gorm:"type:bigint;not null;default:0;index"`
+	StoreStaffBindingID    int64                   `gorm:"type:bigint;not null;default:0;index"`
+	Version                int                     `gorm:"type:int;not null;default:1;index"`
+	Status                 enums.AIReplyTurnStatus `gorm:"type:varchar(30);not null;default:'open';index"`
+	TerminalReason         string                  `gorm:"type:varchar(80);not null;default:'';index"`
+	FirstCustomerMessageID int64                   `gorm:"type:bigint;not null;default:0;index"`
+	LastCustomerMessageID  int64                   `gorm:"type:bigint;not null;default:0;index"`
+	FirstCustomerSentAt    time.Time               `gorm:"type:datetime;not null;index"`
+	LastCustomerSentAt     time.Time               `gorm:"type:datetime;not null;index"`
+	LastCommittedVersion   int                     `gorm:"type:int;not null;default:0;index"`
+	LastDeliveredVersion   int                     `gorm:"type:int;not null;default:0;index"`
+	LastCommittedRequestID string                  `gorm:"type:varchar(128);not null;default:'';index"`
+	LastDeliveredRequestID string                  `gorm:"type:varchar(128);not null;default:'';index"`
+	LastDeliveredAt        *time.Time              `gorm:"type:datetime;index"`
+	ActiveJobID            int64                   `gorm:"type:bigint;not null;default:0;index"`
+	LeaseOwner             string                  `gorm:"type:varchar(128);not null;default:'';index"`
+	LeaseExpiresAt         *time.Time              `gorm:"type:datetime;index"`
+	CompletedAt            *time.Time              `gorm:"type:datetime;index"`
+	AuditFields
+}
+
+// AIReplyTurnTask persists one independently answerable item in a reply turn.
+// It deliberately stores no customer text, prompt, retrieved context or model output.
+type AIReplyTurnTask struct {
+	ID                  int64                                `gorm:"primaryKey;autoIncrement"`
+	TenantID            int64                                `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_ai_reply_turn_task,priority:1"`
+	ConversationID      int64                                `gorm:"type:bigint;not null;default:0;index"`
+	SessionNo           int                                  `gorm:"type:int;not null;default:1;index"`
+	TurnID              int64                                `gorm:"type:bigint;not null;default:0;index;uniqueIndex:uk_ai_reply_turn_task,priority:2"`
+	IntroducedVersion   int                                  `gorm:"type:int;not null;default:1;index"`
+	SourceMessageID     int64                                `gorm:"type:bigint;not null;default:0;index"`
+	TaskKey             string                               `gorm:"type:varchar(128);not null;default:'';uniqueIndex:uk_ai_reply_turn_task,priority:3"`
+	SequenceNo          int                                  `gorm:"type:int;not null;default:1;index"`
+	TaskType            enums.AIReplyTurnTaskType            `gorm:"type:varchar(24);not null;default:'text';index"`
+	Intent              string                               `gorm:"type:varchar(80);not null;default:'';index"`
+	SubIntent           string                               `gorm:"type:varchar(120);not null;default:'';index"`
+	ResourceAction      string                               `gorm:"type:varchar(80);not null;default:'';index"`
+	QuestionFingerprint string                               `gorm:"type:varchar(64);not null;default:'';index"`
+	Stage               enums.AIReplyTurnTaskStage           `gorm:"type:varchar(24);not null;default:'intent';index"`
+	Status              enums.AIReplyTurnTaskStatus          `gorm:"type:varchar(24);not null;default:'pending';index;index:idx_ai_reply_turn_task_due,priority:1"`
+	KnowledgeStatus     enums.AIReplyTurnTaskKnowledgeStatus `gorm:"type:varchar(24);not null;default:'none';index"`
+	ClaimedByJobID      int64                                `gorm:"type:bigint;not null;default:0;index"`
+	ClaimedVersion      int                                  `gorm:"type:int;not null;default:0;index"`
+	CoveredByTaskID     int64                                `gorm:"type:bigint;not null;default:0;index"`
+	AttemptCount        int                                  `gorm:"type:int;not null;default:0"`
+	KnowledgeHitCount   int                                  `gorm:"type:int;not null;default:0"`
+	ResultCode          string                               `gorm:"type:varchar(80);not null;default:'';index"`
+	CommittedMessageID  int64                                `gorm:"type:bigint;not null;default:0;index"`
+	NextRetryAt         *time.Time                           `gorm:"type:datetime;index;index:idx_ai_reply_turn_task_due,priority:2"`
+	CompletedAt         *time.Time                           `gorm:"type:datetime;index"`
+	AuditFields
+}
+
 // AIReplyJob persists one recoverable AI reply trigger for a committed
 // customer message. It stores references and controlled execution state only.
 type AIReplyJob struct {
@@ -713,6 +777,10 @@ type AIReplyJob struct {
 	SessionNo           int                         `gorm:"type:int;not null;default:1;index"`
 	StoreID             int64                       `gorm:"type:bigint;not null;default:0;index"`
 	StoreStaffBindingID int64                       `gorm:"type:bigint;not null;default:0;index"`
+	TurnID              int64                       `gorm:"type:bigint;not null;default:0;index"`
+	TurnVersion         int                         `gorm:"type:int;not null;default:0;index"`
+	CoveredByMessageID  int64                       `gorm:"type:bigint;not null;default:0;index"`
+	CoveredByTaskID     int64                       `gorm:"type:bigint;not null;default:0;index"`
 	RequestID           string                      `gorm:"type:varchar(128);not null;default:'';index"`
 	TriggerKind         enums.AIReplyJobTriggerKind `gorm:"type:varchar(20);not null;default:'text';index"`
 	Status              enums.AIReplyJobStatus      `gorm:"type:varchar(30);not null;default:'pending';index"`
@@ -839,6 +907,8 @@ type Message struct {
 	SeqNo               int64                 `gorm:"type:bigint;not null;default:0;uniqueIndex:uk_conversation_seq"`
 	SendStatus          enums.IMMessageStatus `gorm:"type:int;not null;default:2;index"`
 	OutboundChannelType string                `gorm:"type:varchar(30);not null;default:'';index"` // OutboundChannelType 持久化本条消息应投递的渠道；空值表示不应创建 Outbox。
+	AIReplyTurnID       int64                 `gorm:"type:bigint;not null;default:0;index"`
+	AIReplyTurnVersion  int                   `gorm:"type:int;not null;default:0;index"`
 	SentAt              *time.Time            `gorm:"type:datetime;index"`
 	DeliveredAt         *time.Time            `gorm:"type:datetime"`
 	ReadAt              *time.Time            `gorm:"type:datetime"`

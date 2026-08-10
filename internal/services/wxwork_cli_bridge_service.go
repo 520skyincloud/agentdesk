@@ -163,6 +163,9 @@ func (s *wxWorkCLIBridgeService) MarkOutboxSent(req request.WxWorkCLIOutboxSentR
 
 	now := time.Now()
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := AIReplyTurnService.MarkDeliveredDB(ctx.Tx, message, now); err != nil {
+			return err
+		}
 		if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, channel.TenantID, map[string]any{
 			"send_status": string(enums.ChannelMessageOutboxStatusSent),
 			"sent_at":     now,
@@ -176,30 +179,30 @@ func (s *wxWorkCLIBridgeService) MarkOutboxSent(req request.WxWorkCLIOutboxSentR
 			wxMsgID = fmt.Sprintf("wxwork_cli_out:%d", outbox.ID)
 		}
 		wxMsgID = s.normalizeWxMsgID("wxcli_out", wxMsgID)
-		if existing := repositories.WxWorkKFMessageRefRepository.FindOne(ctx.Tx, sqls.NewCnd().Eq("tenant_id", channel.TenantID).Eq("wx_msg_id", wxMsgID)); existing != nil {
-			return nil
+		if existing := repositories.WxWorkKFMessageRefRepository.FindOne(ctx.Tx, sqls.NewCnd().Eq("tenant_id", channel.TenantID).Eq("wx_msg_id", wxMsgID)); existing == nil {
+			return repositories.WxWorkKFMessageRefRepository.Create(ctx.Tx, &models.WxWorkKFMessageRef{
+				TenantID:       channel.TenantID,
+				ConversationID: conversation.ID,
+				MessageID:      message.ID,
+				WxMsgID:        wxMsgID,
+				Direction:      string(enums.WxWorkKFMessageDirectionOut),
+				Origin:         0,
+				OpenKfID:       strings.TrimSpace(mapping.OpenKfID),
+				ExternalUserID: strings.TrimSpace(mapping.ExternalUserID),
+				SendStatus:     string(enums.WxWorkKFMessageSendStatusSent),
+				RawPayload:     strings.TrimSpace(req.ExternalResult),
+				Status:         enums.StatusOk,
+				AuditFields: models.AuditFields{
+					CreatedAt:      now,
+					CreateUserID:   0,
+					CreateUserName: wxWorkCLISystemOperatorName,
+					UpdatedAt:      now,
+					UpdateUserID:   0,
+					UpdateUserName: wxWorkCLISystemOperatorName,
+				},
+			})
 		}
-		return repositories.WxWorkKFMessageRefRepository.Create(ctx.Tx, &models.WxWorkKFMessageRef{
-			TenantID:       channel.TenantID,
-			ConversationID: conversation.ID,
-			MessageID:      message.ID,
-			WxMsgID:        wxMsgID,
-			Direction:      string(enums.WxWorkKFMessageDirectionOut),
-			Origin:         0,
-			OpenKfID:       strings.TrimSpace(mapping.OpenKfID),
-			ExternalUserID: strings.TrimSpace(mapping.ExternalUserID),
-			SendStatus:     string(enums.WxWorkKFMessageSendStatusSent),
-			RawPayload:     strings.TrimSpace(req.ExternalResult),
-			Status:         enums.StatusOk,
-			AuditFields: models.AuditFields{
-				CreatedAt:      now,
-				CreateUserID:   0,
-				CreateUserName: wxWorkCLISystemOperatorName,
-				UpdatedAt:      now,
-				UpdateUserID:   0,
-				UpdateUserName: wxWorkCLISystemOperatorName,
-			},
-		})
+		return nil
 	})
 }
 

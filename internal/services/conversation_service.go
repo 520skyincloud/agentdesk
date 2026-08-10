@@ -678,6 +678,9 @@ func (s *conversationService) closeConversation(conversationID int64, senderType
 		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, conversationID, now); err != nil {
 			return err
 		}
+		if err := AIReplyTurnService.InterruptCurrentDB(ctx.Tx, conversation, 0, "conversation_closed"); err != nil {
+			return err
+		}
 		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversationID, conversation.TenantID, map[string]any{
 			"status":           enums.IMConversationStatusClosed,
 			"closed_at":        now,

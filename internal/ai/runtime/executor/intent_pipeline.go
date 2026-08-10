@@ -27,43 +27,75 @@ type runtimePipelinePlan struct {
 	Validate            callbacks.ValidateTraceData
 	Prompt              string
 	PrefetchedKnowledge *retrievers.KnowledgeRetrieveResult
+	TaskState           runtimeTaskBatchState
+	NoHitTaskKeys       []string
 }
 
 func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) (runtimePipelinePlan, error) {
 	currentText := strings.TrimSpace(req.UserMessage.Content)
-	intent, promptPack, configured, err := detectRuntimeIntentWithModelStrict(ctx, req, history, detector)
+	intent, replyPlan, taskState, restored, err := loadPersistedRuntimeTaskBatch(req)
 	if err != nil {
 		return runtimePipelinePlan{}, err
 	}
-	if !configured {
-		return runtimePipelinePlan{}, services.NewAIReplyExecutionError(
-			services.AIReplyExecutionErrorIntentDetectFailed,
-			fmt.Errorf("intent model unavailable"),
-		)
+	var prefetchedKnowledge *retrievers.KnowledgeRetrieveResult
+	promptPack := selectIntentPromptPack(intent)
+	if !restored {
+		var configured bool
+		intent, promptPack, configured, err = detectRuntimeIntentWithModelStrict(ctx, req, history, detector)
+		if err != nil {
+			return runtimePipelinePlan{}, err
+		}
+		if !configured {
+			return runtimePipelinePlan{}, services.NewAIReplyExecutionError(
+				services.AIReplyExecutionErrorIntentDetectFailed,
+				fmt.Errorf("intent model unavailable"),
+			)
+		}
+		prefetchedKnowledge, err = probeClarifyKnowledge(ctx, req, history, intent)
+		if err != nil {
+			return runtimePipelinePlan{}, err
+		}
+		if prefetchedKnowledge != nil && len(prefetchedKnowledge.Hits) > 0 && strings.TrimSpace(prefetchedKnowledge.ContextText) != "" {
+			intent.PrimaryIntent = "hotel_info"
+			intent.MatchedIntentCode = "hotel_info"
+			intent.DetectedIntent = "hotel_info"
+			intent.SubIntent = "store_knowledge"
+			intent.NeedsClarification = false
+			intent.NeedsKnowledge = true
+			intent.ShouldReply = true
+			intent.MatchMode = "knowledge_probe"
+			intent.Reason = appendIntentReason(intent.Reason, "clarify knowledge probe matched current store knowledge")
+			intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+				Intent: "hotel_info", SubIntent: "store_knowledge", Text: currentText,
+				NeedsKnowledge: true, Reason: "clarify knowledge probe matched",
+			}}
+			promptPack = selectIntentPromptPack(intent)
+		}
+		replyPlan = buildReplyPlan(intent, promptPack)
+		intent, replyPlan, taskState, err = persistAndSelectRuntimeTaskBatch(req, intent, replyPlan)
+		if err != nil {
+			return runtimePipelinePlan{}, err
+		}
 	}
-	prefetchedKnowledge, err := probeClarifyKnowledge(ctx, req, history, intent)
-	if err != nil {
-		return runtimePipelinePlan{}, err
-	}
-	if prefetchedKnowledge != nil && len(prefetchedKnowledge.Hits) > 0 && strings.TrimSpace(prefetchedKnowledge.ContextText) != "" {
-		intent.PrimaryIntent = "hotel_info"
-		intent.MatchedIntentCode = "hotel_info"
-		intent.DetectedIntent = "hotel_info"
-		intent.SubIntent = "store_knowledge"
-		intent.NeedsClarification = false
-		intent.NeedsKnowledge = true
-		intent.ShouldReply = true
-		intent.MatchMode = "knowledge_probe"
-		intent.Reason = appendIntentReason(intent.Reason, "clarify knowledge probe matched current store knowledge")
-		intent.IntentTasks = []callbacks.IntentTaskTraceData{{
-			Intent: "hotel_info", SubIntent: "store_knowledge", Text: currentText,
-			NeedsKnowledge: true, Reason: "clarify knowledge probe matched",
-		}}
+
+	noHitTaskKeys := []string(nil)
+	if taskState.Enabled {
+		runnablePlans := excludeReplyTaskKeys(replyPlan.TaskPlans, taskState.FailedTaskKeys)
+		knowledgeOutcome, retrieveErr := retrieveRuntimeTaskKnowledge(ctx, req, runnablePlans, prefetchedKnowledge, taskState)
+		if retrieveErr != nil {
+			return runtimePipelinePlan{}, retrieveErr
+		}
+		taskState.FailedTaskKeys = appendUniqueStrings(taskState.FailedTaskKeys, knowledgeOutcome.FailedTaskKeys...)
+		activePlans := knowledgeOutcome.ActiveTaskPlans
+		intent = filterIntentForReplyTaskPlans(intent, activePlans)
 		promptPack = selectIntentPromptPack(intent)
+		replyPlan = buildReplyPlan(intent, promptPack)
+		replyPlan.TaskPlans = activePlans
+		prefetchedKnowledge = knowledgeOutcome.Prefetched
+		noHitTaskKeys = knowledgeOutcome.NoHitTaskKeys
 	}
 	contextTrace := buildContextTrace(req, history, intent)
 	toolKnowledge := buildToolKnowledgeTrace(intent)
-	replyPlan := buildReplyPlan(intent, promptPack)
 	prompt := buildIntentStagePrompt(promptPack, replyPlan)
 	return runtimePipelinePlan{
 		Normalize: callbacks.NormalizeTraceData{
@@ -87,7 +119,42 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		},
 		Prompt:              prompt,
 		PrefetchedKnowledge: prefetchedKnowledge,
+		TaskState:           taskState,
+		NoHitTaskKeys:       noHitTaskKeys,
 	}, nil
+}
+
+func excludeReplyTaskKeys(plans []callbacks.ReplyTaskPlanTraceData, excludedKeys []string) []callbacks.ReplyTaskPlanTraceData {
+	excluded := make(map[string]struct{}, len(excludedKeys))
+	for _, key := range excludedKeys {
+		if key = strings.TrimSpace(key); key != "" {
+			excluded[key] = struct{}{}
+		}
+	}
+	ret := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plans))
+	for _, plan := range plans {
+		if _, found := excluded[strings.TrimSpace(plan.TaskKey)]; !found {
+			ret = append(ret, plan)
+		}
+	}
+	return ret
+}
+
+func appendUniqueStrings(items []string, values ...string) []string {
+	seen := make(map[string]struct{}, len(items)+len(values))
+	ret := make([]string, 0, len(items)+len(values))
+	for _, item := range append(append([]string(nil), items...), values...) {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		ret = append(ret, item)
+	}
+	return ret
 }
 
 func probeClarifyKnowledge(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) (*retrievers.KnowledgeRetrieveResult, error) {

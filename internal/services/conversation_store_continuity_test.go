@@ -225,7 +225,12 @@ func TestStoreConversationOutboundRequiresActiveStoreAndBinding(t *testing.T) {
 }
 
 func TestStoreConversationManualInheritance(t *testing.T) {
+	t.Setenv("AI_REPLY_TURN_COORDINATOR_ENABLED", "true")
+	t.Setenv("AI_REPLY_TURN_COORDINATOR_BINDING_IDS", "")
 	db, store, channel, sourceBinding, sourceInstance, external, conversation := setupStoreConversationContinuityFixture(t, "manual-inheritance")
+	if err := db.AutoMigrate(&models.AIReplyTurn{}); err != nil {
+		t.Fatalf("migrate AI reply turn fixture: %v", err)
+	}
 	if _, err := ConversationChannelSessionService.PrepareInbound(conversation.ID, sourceInstance, time.Now()); err != nil {
 		t.Fatalf("prepare source session: %v", err)
 	}
@@ -237,6 +242,38 @@ func TestStoreConversationManualInheritance(t *testing.T) {
 	}
 	if err := db.Create(sourceMessage).Error; err != nil {
 		t.Fatalf("create source message: %v", err)
+	}
+	turnSentAt := sourceMessage.CreatedAt
+	turn := &models.AIReplyTurn{
+		TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: 1,
+		StoreID: conversation.StoreID, StoreStaffBindingID: conversation.StoreStaffBindingID,
+		Version: 1, Status: enums.AIReplyTurnStatusRunning,
+		FirstCustomerMessageID: sourceMessage.ID, LastCustomerMessageID: sourceMessage.ID,
+		FirstCustomerSentAt: turnSentAt, LastCustomerSentAt: turnSentAt,
+		AuditFields: models.AuditFields{CreatedAt: turnSentAt, UpdatedAt: turnSentAt},
+	}
+	if err := db.Create(turn).Error; err != nil {
+		t.Fatalf("create source AI reply turn: %v", err)
+	}
+	if err := db.Model(sourceMessage).Updates(map[string]any{
+		"ai_reply_turn_id": turn.ID, "ai_reply_turn_version": 1,
+	}).Error; err != nil {
+		t.Fatalf("link source message to AI reply turn: %v", err)
+	}
+	if err := db.Model(conversation).Update("current_ai_reply_turn_id", turn.ID).Error; err != nil {
+		t.Fatalf("set current AI reply turn: %v", err)
+	}
+	conversation.CurrentAIReplyTurnID = turn.ID
+	turnJob := &models.AIReplyJob{
+		TenantID: conversation.TenantID, ConversationID: conversation.ID, MessageID: sourceMessage.ID,
+		SessionNo: 1, StoreID: conversation.StoreID, StoreStaffBindingID: conversation.StoreStaffBindingID,
+		TurnID: turn.ID, TurnVersion: 1, RequestID: "inheritance-turn-job",
+		TriggerKind: enums.AIReplyJobTriggerKindText, Status: enums.AIReplyJobStatusPending,
+		ExpiresAt:   time.Now().Add(15 * time.Minute),
+		AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}
+	if err := db.Create(turnJob).Error; err != nil {
+		t.Fatalf("create source AI reply job: %v", err)
 	}
 	sourceExternalID := strings.TrimPrefix(external.ExternalID, "wxwork_protocol:")
 	sourceMapping := &models.WxWorkKFConversation{
@@ -270,8 +307,17 @@ func TestStoreConversationManualInheritance(t *testing.T) {
 	}
 	sourceAfter := ConversationService.Get(conversation.ID)
 	if sourceAfter == nil || sourceAfter.Status != enums.IMConversationStatusClosed || sourceAfter.StoreStaffBindingID != sourceBinding.ID ||
-		sourceAfter.ThreadKey == nil || *sourceAfter.ThreadKey != sourceThreadKey || sourceAfter.ChannelID != channel.ID {
+		sourceAfter.ThreadKey == nil || *sourceAfter.ThreadKey != sourceThreadKey || sourceAfter.ChannelID != channel.ID ||
+		sourceAfter.CurrentAIReplyTurnID != 0 {
 		t.Fatalf("source conversation must remain immutable physical history: %+v", sourceAfter)
+	}
+	turnAfter := repositories.AIReplyTurnRepository.GetInTenant(db, turn.ID, turn.TenantID)
+	if turnAfter == nil || turnAfter.Status != enums.AIReplyTurnStatusInterrupted || turnAfter.Version != 2 || turnAfter.CompletedAt == nil {
+		t.Fatalf("source AI reply turn was not interrupted by inheritance: %+v", turnAfter)
+	}
+	jobAfter := repositories.AIReplyJobRepository.GetInTenant(db, turnJob.ID, turnJob.TenantID)
+	if jobAfter == nil || jobAfter.Status != enums.AIReplyJobStatusSuperseded {
+		t.Fatalf("source AI reply job was not superseded by inheritance: %+v", jobAfter)
 	}
 	var sourceMessageAfter models.Message
 	if err := db.First(&sourceMessageAfter, sourceMessage.ID).Error; err != nil || sourceMessageAfter.ConversationID != conversation.ID {

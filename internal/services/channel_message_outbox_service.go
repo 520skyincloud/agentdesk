@@ -92,7 +92,40 @@ func (s *channelMessageOutboxService) UpdatesInTenant(id, tenantID int64, column
 }
 
 func (s *channelMessageOutboxService) TryMarkSending(id, tenantID int64) (bool, error) {
-	return repositories.ChannelMessageOutboxRepository.TryMarkSending(sqls.DB(), id, tenantID, time.Now())
+	var claimed bool
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		outbox, err := repositories.ChannelMessageOutboxRepository.GetForUpdateInTenant(ctx.Tx, id, tenantID)
+		if err != nil || outbox == nil {
+			return err
+		}
+		message := repositories.MessageRepository.GetInTenant(ctx.Tx, outbox.MessageID, tenantID)
+		allowed, reason, err := AIReplyTurnService.CanDispatchOutboxDB(ctx.Tx, message)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			now := time.Now()
+			return repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, tenantID, map[string]any{
+				"send_status":   string(enums.ChannelMessageOutboxStatusCancelled),
+				"next_retry_at": nil,
+				"last_error":    controlledOutboxCancelReason(reason),
+				"updated_at":    now,
+			})
+		}
+		claimed, err = repositories.ChannelMessageOutboxRepository.TryMarkSending(ctx.Tx, id, tenantID, time.Now())
+		return err
+	})
+	return claimed, err
+}
+
+func controlledOutboxCancelReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	switch reason {
+	case "cancelled_stale_turn", "cancelled_stale_task", "cancelled_turn_inactive", "cancelled_turn_scope_invalid":
+		return reason
+	default:
+		return "cancelled_stale_turn"
+	}
 }
 
 func (s *channelMessageOutboxService) UpdateColumn(id int64, name string, value interface{}) error {

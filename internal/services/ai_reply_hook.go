@@ -69,6 +69,13 @@ type AIReplyExecutionResult struct {
 	RetryAt              *time.Time
 	CommittedMessageIDs  []int64
 	PersistedInterruptID int64
+	CoveredByMessageID   int64
+	CoveredByTaskID      int64
+	TaskLedgerEnabled    bool
+	TaskKeys             []string
+	FailedTaskKeys       []string
+	HumanTaskKeys        []string
+	HasRemainingTasks    bool
 }
 
 var TriggerAIReplySyncHook func(ctx context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error)

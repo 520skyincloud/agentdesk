@@ -415,6 +415,9 @@ func (s *conversationHumanDispatchService) recordStoreRoomHandoff(conversationID
 		}); err != nil {
 			return err
 		}
+		if err := AIReplyTurnService.InterruptCurrentDB(ctx.Tx, lockedConversation, state.SessionNo, aiReplyTurnHandoffReason("store_wecom_handoff", requestID)); err != nil {
+			return err
+		}
 		claimed = true
 		return nil
 	})
@@ -496,10 +499,20 @@ func (s *conversationHumanDispatchService) recordHandoff(conversationID int64, a
 		}); err != nil {
 			return err
 		}
+		if err := AIReplyTurnService.InterruptCurrentDB(ctx.Tx, lockedConversation, state.SessionNo, aiReplyTurnHandoffReason("hq_agentdesk_handoff", requestID)); err != nil {
+			return err
+		}
 		claimed = true
 		return nil
 	})
 	return claimed, err
+}
+
+func aiReplyTurnHandoffReason(routeReason, requestID string) string {
+	if strings.HasPrefix(strings.TrimSpace(requestID), "ai_reply_job_handoff_") {
+		return "ai_failure_" + strings.TrimSpace(routeReason)
+	}
+	return strings.TrimSpace(routeReason)
 }
 
 func (s *conversationHumanDispatchService) moveToTeamPool(conversationID, teamID int64, reason string) (*models.Conversation, error) {

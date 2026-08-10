@@ -849,6 +849,33 @@ func wxWorkProtocolMessageSentAt(msg request.WxProtocolChatMsg) time.Time {
 	return value
 }
 
+func wxWorkInboundLagMillis(message *models.Message) int64 {
+	if message == nil || message.SentAt == nil || message.SentAt.IsZero() || message.CreatedAt.IsZero() {
+		return 0
+	}
+	lag := message.CreatedAt.Sub(*message.SentAt).Milliseconds()
+	if lag < 0 {
+		return 0
+	}
+	return lag
+}
+
+func (s *wxWorkProtocolService) logInboundMessageLatency(instance *models.WxWorkProtocolInstance, message *models.Message) {
+	if instance == nil || message == nil {
+		return
+	}
+	slog.Info("wxwork inbound message persisted",
+		"tenant_id", message.TenantID,
+		"store_id", instance.StoreID,
+		"store_staff_binding_id", instance.StoreStaffBindingID,
+		"wx_work_instance_id", instance.ID,
+		"conversation_id", message.ConversationID,
+		"message_id", message.ID,
+		"session_no", message.SessionNo,
+		"inbound_lag_ms", wxWorkInboundLagMillis(message),
+	)
+}
+
 func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, rawPayload string) error {
 	if !isActivatedCurrentWxWorkProtocolInstance(instance) {
 		return errorsx.InvalidParam("企微员工号实例未完成替换验证，不能接管会话消息")
@@ -919,10 +946,11 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 		if buildErr != nil {
 			return buildErr
 		}
-		message, sendErr := MessageService.SendCustomerMessageInSession(conversation.ID, clientMsgID, messageType, content, payload, s.externalUser(instance, msg, externalID), sessionNo)
+		message, sendErr := MessageService.SendCustomerMessageInSessionAt(conversation.ID, clientMsgID, messageType, content, payload, s.externalUser(instance, msg, externalID), sessionNo, wxWorkProtocolMessageSentAt(msg))
 		if sendErr != nil {
 			return sendErr
 		}
+		s.logInboundMessageLatency(instance, message)
 		s.scheduleWxWorkContactProfileSync(instance, conversation, externalID)
 		_ = s.createMessageRef(conversation.ID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
 		_ = MessageSyncLogService.Create(conversation.ID, message.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "message received; AI paused until store knowledge is configured")
@@ -932,10 +960,11 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 	if err != nil {
 		return err
 	}
-	message, err := MessageService.SendCustomerMessageInSession(conversation.ID, clientMsgID, messageType, content, payload, s.externalUser(instance, msg, externalID), sessionNo)
+	message, err := MessageService.SendCustomerMessageInSessionAt(conversation.ID, clientMsgID, messageType, content, payload, s.externalUser(instance, msg, externalID), sessionNo, wxWorkProtocolMessageSentAt(msg))
 	if err != nil {
 		return err
 	}
+	s.logInboundMessageLatency(instance, message)
 	s.scheduleWxWorkContactProfileSync(instance, conversation, externalID)
 	if created {
 		if err := WxWorkProtocolContactAutomationService.sendNewContactResources(
@@ -1777,11 +1806,16 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 		return s.markOutboxFailed(outbox, redactArrivalBindingTicketError(dispatchMessage, err.Error()))
 	}
 	now := time.Now()
-	if err := ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, outbox.TenantID, map[string]any{
-		"send_status": string(enums.ChannelMessageOutboxStatusSent),
-		"sent_at":     now,
-		"last_error":  "",
-		"updated_at":  now,
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := AIReplyTurnService.MarkDeliveredDB(ctx.Tx, message, now); err != nil {
+			return err
+		}
+		return repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, outbox.TenantID, map[string]any{
+			"send_status": string(enums.ChannelMessageOutboxStatusSent),
+			"sent_at":     now,
+			"last_error":  "",
+			"updated_at":  now,
+		})
 	}); err != nil {
 		return err
 	}

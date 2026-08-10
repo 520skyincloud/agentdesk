@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"agent-desk/internal/ai/replyengine"
@@ -38,9 +39,27 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 	if err != nil {
 		return nil, err
 	}
+	if summary != nil && plan.TaskState.Enabled {
+		summary.TaskLedgerEnabled = true
+		summary.TaskKeys = append([]string(nil), plan.TaskState.SelectedTaskKeys...)
+		summary.FailedTaskKeys = append([]string(nil), plan.TaskState.FailedTaskKeys...)
+		summary.HumanTaskKeys = append([]string(nil), plan.TaskState.HumanTaskKeys...)
+		summary.HasRemainingTasks = plan.TaskState.HasMore
+		summary.NeedsHumanDispatch = len(plan.TaskState.FailedTaskKeys) > 0
+		summary.CoveredByTaskID = plan.TaskState.CoveredByTaskID
+	}
 	if collector != nil {
 		collector.SetPipeline(plan.Normalize, plan.Intent, plan.PromptSelect, plan.Context, plan.ToolKnowledge, plan.ReplyPlan, plan.Generate, plan.Validate)
 		collector.SetActionLedger(buildInitialActionLedger(plan.Intent))
+	}
+	if skip, taskErr := validateRuntimeTaskPlan(plan); taskErr != nil {
+		return nil, taskErr
+	} else if skip {
+		if summary != nil {
+			summary.SkipReply = true
+			summary.SkipGeneration = true
+		}
+		return nil, nil
 	}
 	messages := make([]*schema.Message, 0, len(history.Messages)+3)
 	if history.MemoryMessage != nil {
@@ -59,10 +78,16 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 	if instruction := buildRecentAnsweredTurnInstruction(req, history); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
+	if instruction := generationGuardInstruction(ctx); instruction != "" {
+		messages = append(messages, schema.SystemMessage(instruction))
+	}
 	if strings.TrimSpace(plan.Prompt) != "" {
 		messages = append(messages, schema.SystemMessage(plan.Prompt))
 	}
 	if instruction := buildMultiReplyOutputInstruction(plan.ReplyPlan); strings.TrimSpace(instruction) != "" {
+		messages = append(messages, schema.SystemMessage(instruction))
+	}
+	if instruction := buildNoHitTaskInstruction(plan.ReplyPlan, plan.NoHitTaskKeys); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
 	if instruction := buildAutoHandoffDisabledInstruction(req, plan.Intent); strings.TrimSpace(instruction) != "" {
@@ -85,6 +110,46 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 	}
 	messages = append(messages, schema.UserMessage(buildGenerationUserMessageText(req.UserMessage.Content, plan.Intent)))
 	return messages, nil
+}
+
+func validateRuntimeTaskPlan(plan runtimePipelinePlan) (bool, error) {
+	if !plan.TaskState.Enabled || len(plan.ReplyPlan.TaskPlans) > 0 {
+		return false, nil
+	}
+	if len(plan.TaskState.FailedTaskKeys) > 0 || plan.TaskState.HasMore {
+		return false, services.NewAIReplyExecutionError(
+			services.AIReplyExecutionErrorKnowledgeUnavailable,
+			fmt.Errorf("AI reply turn has no runnable task and still requires handoff or continuation"),
+		)
+	}
+	return true, nil
+}
+
+func buildNoHitTaskInstruction(plan callbacks.ReplyPlanTraceData, taskKeys []string) string {
+	if len(taskKeys) == 0 {
+		return ""
+	}
+	noHit := make(map[string]struct{}, len(taskKeys))
+	for _, taskKey := range taskKeys {
+		if taskKey = strings.TrimSpace(taskKey); taskKey != "" {
+			noHit[taskKey] = struct{}{}
+		}
+	}
+	items := make([]string, 0, len(noHit))
+	for _, task := range plan.TaskPlans {
+		if _, ok := noHit[strings.TrimSpace(task.TaskKey)]; !ok {
+			continue
+		}
+		label := strings.TrimSpace(currentTurnDisplayText(task.Text))
+		if label == "" {
+			label = runtimeTaskDisplayLabel(task.SubIntent)
+		}
+		items = append(items, fmt.Sprintf("%s（%s）", task.TaskKey, label))
+	}
+	if len(items) == 0 {
+		return ""
+	}
+	return "【逐题知识边界】以下任务已完成当前门店知识检索，但没有命中可用资料：" + strings.Join(items, "；") + "。只能说明当前资料未写明；需要补充条件时，每题最多追问一个关键点。禁止凭常识、历史酒店答案或模型猜测补写事实。"
 }
 
 func buildAutoHandoffDisabledInstruction(req RunInput, intent callbacks.IntentTraceData) string {

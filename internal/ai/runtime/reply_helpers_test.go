@@ -365,7 +365,7 @@ func TestSplitReplyTextForCommitKeepsSingleTaskReplyTogether(t *testing.T) {
 	}
 }
 
-func TestTextCommitTaskIDsFromTraceCapsAtThree(t *testing.T) {
+func TestTextCommitTaskIDsFromTraceKeepsAllTextTasks(t *testing.T) {
 	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
 		"pipeline":{"replyPlan":{"taskPlans":[
 			{"intent":"hotel_info","output":"knowledge_text_reply"},
@@ -376,8 +376,8 @@ func TestTextCommitTaskIDsFromTraceCapsAtThree(t *testing.T) {
 		]}}
 	}`)}
 	ids := textCommitTaskIDsFromTrace(trace)
-	if len(ids) != 3 || ids[0] != "task-1" || ids[2] != "task-3" {
-		t.Fatalf("expected three ordered text task ids, got %#v", ids)
+	if len(ids) != 4 || ids[0] != "task-1" || ids[1] != "task-3" || ids[3] != "task-5" {
+		t.Fatalf("expected all ordered text task ids, got %#v", ids)
 	}
 }
 

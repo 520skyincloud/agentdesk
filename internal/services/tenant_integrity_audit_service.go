@@ -116,6 +116,8 @@ func tenantIntegrityTablePolicies() map[string]tenantIntegrityTablePolicy {
 		"ArrivalAuditLog":               positive,
 		"WxWorkCustomerHandoffSetting":  positive,
 		"ConversationRouteState":        positive,
+		"AIReplyTurn":                   positive,
+		"AIReplyTurnTask":               positive,
 		"AIReplyJob":                    positive,
 		"AIManualResumeTask":            positive,
 		"ConversationSessionSummary":    positive,
@@ -285,6 +287,7 @@ func tenantIntegrityRelations() []tenantIntegrityRelation {
 		tenant("Conversation", "current_assignee_id", "User", false),
 		tenant("Conversation", "current_team_id", "AgentTeam", false),
 		tenant("Conversation", "last_message_id", "Message", false),
+		tenant("Conversation", "current_ai_reply_turn_id", "AIReplyTurn", false),
 		global("Conversation", "closed_by", "User", false),
 		tenant("Store", "knowledge_base_id", "KnowledgeBase", false),
 		tenant("StoreStaffBinding", "user_id", "User", true),
@@ -302,10 +305,23 @@ func tenantIntegrityRelations() []tenantIntegrityRelation {
 		tenant("ConversationRouteState", "store_staff_binding_id", "StoreStaffBinding", false),
 		tenant("ConversationRouteState", "knowledge_base_id", "KnowledgeBase", false),
 		tenant("ConversationRouteState", "wx_work_instance_id", "WxWorkProtocolInstance", false),
+		tenant("AIReplyTurn", "conversation_id", "Conversation", true),
+		tenant("AIReplyTurn", "store_id", "Store", true),
+		tenant("AIReplyTurn", "store_staff_binding_id", "StoreStaffBinding", true),
+		tenant("AIReplyTurn", "first_customer_message_id", "Message", true),
+		tenant("AIReplyTurn", "last_customer_message_id", "Message", true),
+		tenant("AIReplyTurnTask", "conversation_id", "Conversation", true),
+		tenant("AIReplyTurnTask", "turn_id", "AIReplyTurn", true),
+		tenant("AIReplyTurnTask", "source_message_id", "Message", true),
+		tenant("AIReplyTurnTask", "covered_by_task_id", "AIReplyTurnTask", false),
+		tenant("AIReplyTurnTask", "committed_message_id", "Message", false),
 		tenant("AIReplyJob", "conversation_id", "Conversation", true),
 		tenant("AIReplyJob", "message_id", "Message", true),
 		tenant("AIReplyJob", "store_id", "Store", true),
 		tenant("AIReplyJob", "store_staff_binding_id", "StoreStaffBinding", true),
+		tenant("AIReplyJob", "turn_id", "AIReplyTurn", false),
+		tenant("AIReplyJob", "covered_by_message_id", "Message", false),
+		tenant("AIReplyJob", "covered_by_task_id", "AIReplyTurnTask", false),
 		tenant("AIManualResumeTask", "conversation_id", "Conversation", true),
 		tenant("AIManualResumeTask", "wx_work_instance_id", "WxWorkProtocolInstance", false),
 		tenant("AIManualResumeTask", "origin_message_id", "Message", false),
@@ -322,6 +338,7 @@ func tenantIntegrityRelations() []tenantIntegrityRelation {
 		tenant("ConversationReadState", "last_read_message_id", "Message", false),
 		tenant("Message", "conversation_id", "Conversation", true),
 		tenant("Message", "quoted_message_id", "Message", false),
+		tenant("Message", "ai_reply_turn_id", "AIReplyTurn", false),
 		tenant("WxWorkKFConversation", "conversation_id", "Conversation", true),
 		tenant("WxWorkKFConversation", "channel_id", "Channel", false),
 		tenant("WxWorkKFMessageRef", "conversation_id", "Conversation", false),
@@ -679,6 +696,9 @@ func (s *tenantIntegrityAuditService) Audit(
 	if err := s.auditAgentOrganizationSemantics(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
+	if err := s.auditAIReplyTurnScopes(db, metadata, available, report, sampleLimit); err != nil {
+		return nil, err
+	}
 	if err := s.auditRoleScopes(db, metadata, available, report, sampleLimit); err != nil {
 		return nil, err
 	}
@@ -692,6 +712,84 @@ func (s *tenantIntegrityAuditService) Audit(
 		report.Status = "failed"
 	}
 	return report, nil
+}
+
+func (s *tenantIntegrityAuditService) auditAIReplyTurnScopes(
+	db *gorm.DB,
+	metadata map[string]tenantIntegrityModelMetadata,
+	available map[string]bool,
+	report *TenantIntegrityAuditReport,
+	sampleLimit int,
+) error {
+	requiredColumns := func(model string, columns ...string) bool {
+		if !available[model] {
+			return false
+		}
+		for _, column := range columns {
+			if !repositories.TenantIntegrityAuditRepository.HasColumn(db, metadata[model].Table, column) {
+				return false
+			}
+		}
+		return true
+	}
+	if !requiredColumns("AIReplyTurn", "conversation_id", "session_no", "store_id", "store_staff_binding_id") ||
+		!requiredColumns("Conversation", "store_id", "store_staff_binding_id") ||
+		!requiredColumns("StoreStaffBinding", "store_id") {
+		return nil
+	}
+	turnTable := metadata["AIReplyTurn"].Table
+	conversationTable := metadata["Conversation"].Table
+	bindingTable := metadata["StoreStaffBinding"].Table
+	if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+		Table: turnTable, Alias: "c",
+		Joins: []string{
+			"JOIN " + conversationTable + " AS conversation_scope ON conversation_scope.id = c.conversation_id",
+			"JOIN " + bindingTable + " AS binding_scope ON binding_scope.id = c.store_staff_binding_id",
+		},
+		Where:  "c.store_id <> conversation_scope.store_id OR c.store_staff_binding_id <> conversation_scope.store_staff_binding_id OR binding_scope.store_id <> c.store_id",
+		IDExpr: "c.id",
+	}, sampleLimit, "AI_REPLY_TURN_SCOPE_MISMATCH", "AIReplyTurn.scope", "AI 回复轮次与会话、门店或员工号绑定范围不一致"); err != nil {
+		return err
+	}
+	if requiredColumns("Message", "conversation_id", "session_no", "ai_reply_turn_id") {
+		if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+			Table: metadata["Message"].Table, Alias: "c",
+			Joins:  []string{"JOIN " + turnTable + " AS turn_scope ON turn_scope.id = c.ai_reply_turn_id"},
+			Where:  "c.ai_reply_turn_id > 0 AND (c.conversation_id <> turn_scope.conversation_id OR c.session_no <> turn_scope.session_no)",
+			IDExpr: "c.id",
+		}, sampleLimit, "AI_REPLY_MESSAGE_TURN_SCOPE_MISMATCH", "Message.ai_reply_turn_id", "消息与 AI 回复轮次的会话或 Session 范围不一致"); err != nil {
+			return err
+		}
+	}
+	if requiredColumns("AIReplyJob", "conversation_id", "session_no", "store_id", "store_staff_binding_id", "turn_id") {
+		if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+			Table: metadata["AIReplyJob"].Table, Alias: "c",
+			Joins:  []string{"JOIN " + turnTable + " AS turn_scope ON turn_scope.id = c.turn_id"},
+			Where:  "c.turn_id > 0 AND (c.conversation_id <> turn_scope.conversation_id OR c.session_no <> turn_scope.session_no OR c.store_id <> turn_scope.store_id OR c.store_staff_binding_id <> turn_scope.store_staff_binding_id)",
+			IDExpr: "c.id",
+		}, sampleLimit, "AI_REPLY_JOB_TURN_SCOPE_MISMATCH", "AIReplyJob.turn_id", "AI 回复任务与轮次的会话、Session、门店或员工号范围不一致"); err != nil {
+			return err
+		}
+	}
+	if requiredColumns("AIReplyTurnTask", "conversation_id", "session_no", "turn_id", "introduced_version", "source_message_id") &&
+		requiredColumns("Message", "conversation_id", "session_no", "sender_type", "ai_reply_turn_id", "ai_reply_turn_version") {
+		if err := s.runCheck(db, report, repositories.TenantIntegrityQuery{
+			Table: metadata["AIReplyTurnTask"].Table, Alias: "c",
+			Joins: []string{
+				"JOIN " + turnTable + " AS turn_scope ON turn_scope.id = c.turn_id",
+				"JOIN " + metadata["Message"].Table + " AS source_scope ON source_scope.id = c.source_message_id",
+			},
+			Where: "c.conversation_id <> turn_scope.conversation_id OR c.session_no <> turn_scope.session_no OR " +
+				"c.introduced_version <= 0 OR c.introduced_version > turn_scope.version OR " +
+				"source_scope.conversation_id <> c.conversation_id OR source_scope.session_no <> c.session_no OR " +
+				"source_scope.sender_type <> 'customer' OR source_scope.ai_reply_turn_id <> c.turn_id OR " +
+				"source_scope.ai_reply_turn_version <= 0 OR source_scope.ai_reply_turn_version > c.introduced_version",
+			IDExpr: "c.id",
+		}, sampleLimit, "AI_REPLY_TURN_TASK_SCOPE_MISMATCH", "AIReplyTurnTask.scope", "AI 回复逐题任务与轮次或来源客户消息范围不一致"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *tenantIntegrityAuditService) auditAgentOrganizationSemantics(

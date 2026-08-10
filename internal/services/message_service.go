@@ -37,6 +37,7 @@ type sendMessageOptions struct {
 	externalAgentReply          bool
 	systemOutbound              bool
 	sessionNo                   int
+	sentAt                      *time.Time
 	eventContent                string
 }
 
@@ -45,6 +46,7 @@ type AIOutboundMessageDraft struct {
 	MessageType enums.IMMessageType
 	Content     string
 	Payload     string
+	TaskKeys    []string
 }
 
 func (s *messageService) Get(id int64) *models.Message {
@@ -309,6 +311,11 @@ func (s *messageService) applyMessageRecall(message *models.Message, conversatio
 		message.UpdatedAt = now
 		message.UpdateUserID = operatorID
 		message.UpdateUserName = operatorName
+		if message.SenderType == enums.IMSenderTypeCustomer {
+			if err := AIReplyTurnService.InvalidateCustomerRecallDB(ctx.Tx, conversation, message); err != nil {
+				return err
+			}
+		}
 
 		agentReadState, customerReadState := ConversationReadStateService.getConversationReadStates(ctx.Tx, conversation.ID)
 		agentUnreadCount, err := ConversationReadStateService.CountUnreadMessages(ctx, conversation.ID, s.readSeqNo(agentReadState), enums.IMSenderTypeCustomer)
@@ -368,6 +375,10 @@ func (s *messageService) SendAIMessageWithRequestID(conversationID int64, aiAgen
 }
 
 func (s *messageService) SendAIMessageBatchWithRequestID(conversationID, aiAgentID int64, drafts []AIOutboundMessageDraft, operator *dto.AuthPrincipal, requestID string) ([]models.Message, error) {
+	return s.SendAIMessageBatchForTurnWithRequestID(conversationID, aiAgentID, drafts, operator, requestID, 0, 0, 0)
+}
+
+func (s *messageService) SendAIMessageBatchForTurnWithRequestID(conversationID, aiAgentID int64, drafts []AIOutboundMessageDraft, operator *dto.AuthPrincipal, requestID string, turnID int64, turnVersion int, jobID int64) ([]models.Message, error) {
 	if len(drafts) == 0 {
 		return nil, errorsx.InvalidParam("AI 回复批次不能为空")
 	}
@@ -423,6 +434,9 @@ func (s *messageService) SendAIMessageBatchWithRequestID(conversationID, aiAgent
 			strings.TrimSpace(existing.RequestID) != traceID {
 			return nil, errorsx.InvalidParam("AI 回复稳定消息标识已被其他消息占用")
 		}
+		if turnID > 0 && existing.AIReplyTurnID != turnID {
+			return nil, errorsx.InvalidParam("AI 回复稳定消息标识已绑定其他轮次")
+		}
 		existingMessages = append(existingMessages, *existing)
 	}
 	if len(existingMessages) > 0 {
@@ -447,6 +461,7 @@ func (s *messageService) SendAIMessageBatchWithRequestID(conversationID, aiAgent
 			TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: sessionNo,
 			RequestID: traceID, ClientMsgID: draft.ClientMsgID, SenderType: enums.IMSenderTypeAI,
 			SenderID: aiAgentID, MessageType: draft.MessageType, Content: draft.Content, Payload: draft.Payload,
+			AIReplyTurnID: turnID, AIReplyTurnVersion: turnVersion,
 			SeqNo: nextSeq + int64(index), SendStatus: enums.IMMessageStatusSent, SentAt: &now,
 			AuditFields: models.AuditFields{
 				CreatedAt: now, CreateUserID: operator.UserID, CreateUserName: operator.Username,
@@ -456,6 +471,28 @@ func (s *messageService) SendAIMessageBatchWithRequestID(conversationID, aiAgent
 	}
 
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		taskKeys := make([]string, 0)
+		for index := range normalized {
+			taskKeys = append(taskKeys, normalized[index].TaskKeys...)
+		}
+		turn, turnErr := AIReplyTurnService.ValidateCommitDB(ctx.Tx, conversation.TenantID, conversation.ID, sessionNo, turnID, turnVersion, jobID, taskKeys)
+		if turnErr != nil {
+			return turnErr
+		}
+		commitVersion := turnVersion
+		if turn != nil {
+			commitVersion = turn.Version
+			for index := range messages {
+				messages[index].AIReplyTurnVersion = commitVersion
+			}
+		}
+		preparedDrafts := make([]AIOutboundMessageDraft, len(normalized))
+		for index := range normalized {
+			preparedDrafts[index] = normalized[index].AIOutboundMessageDraft
+		}
+		if err := AIReplyTurnService.ValidatePreparedReplyDB(ctx.Tx, turn, traceID, preparedDrafts); err != nil {
+			return err
+		}
 		for _, draft := range normalized {
 			if repositories.MessageRepository.GetByClientMsgIDInTenant(ctx.Tx, conversation.ID, conversation.TenantID, draft.ClientMsgID) != nil {
 				return errorsx.InvalidParam("AI 回复批次提交期间发生消息冲突")
@@ -494,13 +531,37 @@ func (s *messageService) SendAIMessageBatchWithRequestID(conversationID, aiAgent
 		conversation.AgentUnreadCount = int(agentUnreadCount)
 		conversation.CustomerUnreadCount = int(customerUnreadCount)
 		conversation.AIReplyRounds++
-		return repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversation.ID, conversation.TenantID, map[string]any{
+		if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversation.ID, conversation.TenantID, map[string]any{
 			"last_message_id": conversation.LastMessageID, "last_message_at": conversation.LastMessageAt,
 			"last_active_at": conversation.LastActiveAt, "last_message_summary": conversation.LastMessageSummary,
 			"update_user_id": conversation.UpdateUserID, "update_user_name": conversation.UpdateUserName,
 			"updated_at": conversation.UpdatedAt, "agent_unread_count": conversation.AgentUnreadCount,
 			"customer_unread_count": conversation.CustomerUnreadCount, "ai_reply_rounds": conversation.AIReplyRounds,
-		})
+		}); err != nil {
+			return err
+		}
+		delivered := true
+		for index := range messages {
+			if strings.TrimSpace(messages[index].OutboundChannelType) != "" {
+				delivered = false
+				break
+			}
+		}
+		if turn != nil && jobID > 0 {
+			taskMessageIDs := make(map[string]int64)
+			for index := range messages {
+				for _, taskKey := range normalized[index].TaskKeys {
+					taskKey = strings.TrimSpace(taskKey)
+					if taskKey != "" {
+						taskMessageIDs[taskKey] = messages[index].ID
+					}
+				}
+			}
+			if err := AIReplyTurnTaskService.MarkCommittedMessagesDB(ctx.Tx, turn, jobID, taskMessageIDs, delivered, now); err != nil {
+				return err
+			}
+		}
+		return AIReplyTurnService.MarkCommittedDB(ctx.Tx, turn, commitVersion, traceID, delivered, now)
 	})
 	if err != nil {
 		return nil, err
@@ -639,6 +700,10 @@ func (s *messageService) SendCustomerMessage(conversationID int64, clientMsgID s
 }
 
 func (s *messageService) SendCustomerMessageInSession(conversationID int64, clientMsgID string, messageType enums.IMMessageType, content, payload string, external openidentity.ExternalUser, sessionNo int) (*models.Message, error) {
+	return s.SendCustomerMessageInSessionAt(conversationID, clientMsgID, messageType, content, payload, external, sessionNo, time.Time{})
+}
+
+func (s *messageService) SendCustomerMessageInSessionAt(conversationID int64, clientMsgID string, messageType enums.IMMessageType, content, payload string, external openidentity.ExternalUser, sessionNo int, sentAt time.Time) (*models.Message, error) {
 	if sessionNo <= 0 {
 		return nil, errorsx.InvalidParam("企微入站消息缺少有效会话段")
 	}
@@ -652,7 +717,11 @@ func (s *messageService) SendCustomerMessageInSession(conversationID int64, clie
 	if err != nil {
 		return nil, err
 	}
-	return s.sendValidatedMessageWithOptions(conversation, enums.IMSenderTypeCustomer, 0, clientMsgID, messageType, content, payload, nil, &external, "", sendMessageOptions{sessionNo: sessionNo})
+	options := sendMessageOptions{sessionNo: sessionNo}
+	if !sentAt.IsZero() {
+		options.sentAt = &sentAt
+	}
+	return s.sendValidatedMessageWithOptions(conversation, enums.IMSenderTypeCustomer, 0, clientMsgID, messageType, content, payload, nil, &external, "", options)
 }
 
 func (s *messageService) PersistHistoricalCustomerMessageInSession(
@@ -791,6 +860,14 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	if strs.IsNotBlank(clientMsgID) {
 		if existing := repositories.MessageRepository.GetByClientMsgIDInTenant(sqls.DB(), conversation.ID, conversation.TenantID, clientMsgID); existing != nil {
 			if senderType == enums.IMSenderTypeCustomer {
+				if existing.AIReplyTurnID <= 0 && AIReplyTurnService.EnabledFor(conversation) {
+					if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+						_, _, assignErr := AIReplyTurnService.AssignCustomerMessageDB(ctx.Tx, conversation, existing)
+						return assignErr
+					}); err != nil {
+						return nil, err
+					}
+				}
 				if _, _, err := AIReplyJobService.EnsureForMessage(existing.ID); err != nil {
 					return nil, err
 				}
@@ -824,6 +901,10 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 			return nil, sessionErr
 		}
 	}
+	messageSentAt := now
+	if options.sentAt != nil && !options.sentAt.IsZero() {
+		messageSentAt = *options.sentAt
+	}
 	if operator != nil {
 		auditUserID = operator.UserID
 		auditUserName = operator.Username
@@ -845,7 +926,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		Payload:        payload,
 		SeqNo:          nextSeq,
 		SendStatus:     enums.IMMessageStatusSent,
-		SentAt:         &now,
+		SentAt:         &messageSentAt,
 		AuditFields: models.AuditFields{
 			CreatedAt:      now,
 			CreateUserID:   auditUserID,
@@ -881,6 +962,9 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 			return err
 		}
 		if senderType == enums.IMSenderTypeCustomer {
+			if _, _, err := AIReplyTurnService.AssignCustomerMessageDB(ctx.Tx, conversation, message); err != nil {
+				return err
+			}
 			if _, _, err := AIReplyJobService.EnqueueForMessageDB(ctx.Tx, conversation, message); err != nil {
 				return err
 			}
@@ -938,6 +1022,11 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 			"",
 		); err != nil {
 			return err
+		}
+		if senderType == enums.IMSenderTypeAgent {
+			if err := AIReplyTurnService.InterruptCurrentDB(ctx.Tx, conversation, sessionNo, "human_agent_replied"); err != nil {
+				return err
+			}
 		}
 
 		return nil

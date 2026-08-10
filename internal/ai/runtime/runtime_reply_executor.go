@@ -55,6 +55,7 @@ func (e *runtimeReplyExecutor) Run(ctx context.Context, input runtimeReplyRunInp
 		UserMessage:  input.Message,
 		AIAgent:      input.AIAgent,
 		ModelConfig:  modelConfig,
+		JobID:        svc.AIReplyJobService.CurrentJobID(runCtx, input.Conversation.TenantID, input.Conversation.ID),
 	})
 	if err != nil {
 		if _, controlled := svc.AIReplyExecutionErrorCodeOf(err); !controlled {

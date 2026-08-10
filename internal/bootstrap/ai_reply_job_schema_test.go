@@ -61,6 +61,7 @@ func assertAIReplyJobSchema(t *testing.T, db *gorm.DB) {
 	}
 	for _, column := range []string{
 		"tenant_id", "conversation_id", "message_id", "session_no", "store_id", "store_staff_binding_id",
+		"turn_id", "turn_version", "covered_by_message_id",
 		"request_id", "trigger_kind", "status", "attempt_count", "next_retry_at", "expires_at",
 		"lease_owner", "lease_expires_at", "result_code", "last_error_class", "started_at", "completed_at",
 	} {

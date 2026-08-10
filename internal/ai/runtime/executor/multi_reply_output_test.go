@@ -14,7 +14,7 @@ func TestBuildMultiReplyOutputInstructionUsesTextTasksOnly(t *testing.T) {
 		{Intent: "hotel_info", Text: "早餐几点", Output: "knowledge_text_reply"},
 	}}
 	instruction := buildMultiReplyOutputInstruction(plan)
-	if !strings.Contains(instruction, `"taskId":"task-1"`) || !strings.Contains(instruction, "停车在哪里") || !strings.Contains(instruction, "早餐几点") {
+	if !strings.Contains(instruction, `"taskKey":"任务键"`) || !strings.Contains(instruction, "task-1：停车在哪里") || !strings.Contains(instruction, "task-3：早餐几点") {
 		t.Fatalf("unexpected instruction: %s", instruction)
 	}
 	if strings.Contains(instruction, "定位发我") {
@@ -28,21 +28,24 @@ func TestNormalizeGeneratedReplyPartsOrdersPartsByTask(t *testing.T) {
 		{Intent: "hotel_info", Text: "早餐几点", Output: "knowledge_text_reply"},
 	}}
 	raw := `{"replyParts":[{"taskId":"task-2","content":"早餐在一楼。"},{"taskId":"task-1","content":"停车从辅路入口进。"}]}`
-	got := normalizeGeneratedReplyParts(raw, plan)
+	got, err := normalizeGeneratedReplyPartsStrict(raw, plan)
+	if err != nil {
+		t.Fatalf("normalize reply parts: %v", err)
+	}
 	want := "停车从辅路入口进。\n<<NEXT_MESSAGE>>\n早餐在一楼。"
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 
-func TestNormalizeGeneratedReplyPartsFallsBackWithoutLosingReply(t *testing.T) {
+func TestNormalizeGeneratedReplyPartsRejectsUnstructuredFallback(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{Intent: "hotel_info", Text: "停车在哪里", Output: "knowledge_text_reply"},
 		{Intent: "hotel_info", Text: "早餐几点", Output: "knowledge_text_reply"},
 	}}
 	raw := "停车从辅路入口进，早餐在一楼。"
-	if got := normalizeGeneratedReplyParts(raw, plan); got != raw {
-		t.Fatalf("invalid structured output must preserve existing reply, got %q", got)
+	if got, err := normalizeGeneratedReplyPartsStrict(raw, plan); err == nil || got != "" {
+		t.Fatalf("invalid structured output must be rejected, got=%q err=%v", got, err)
 	}
 }
 

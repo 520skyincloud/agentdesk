@@ -118,7 +118,7 @@ func (s *replyCommitService) findRecentAIResourceDeliveries(input replyCommitInp
 	if currentAt.IsZero() || latestAt.IsZero() || currentAt.Before(latestAt) || currentAt.Sub(latestAt) > recentResourceDedupeWindow {
 		return nil
 	}
-	if blocker := svc.MessageService.FindOne(sqls.NewCnd().
+	blockers := svc.MessageService.Find(sqls.NewCnd().
 		Eq("tenant_id", input.Conversation.TenantID).
 		Eq("conversation_id", input.Conversation.ID).
 		Eq("session_no", input.Message.SessionNo).
@@ -127,8 +127,11 @@ func (s *replyCommitService) findRecentAIResourceDeliveries(input replyCommitInp
 		Gt("id", latest.ID).
 		Lt("id", input.Message.ID).
 		Where("recalled_at IS NULL AND send_status NOT IN (?, ?)", enums.IMMessageStatusFailed, enums.IMMessageStatusRecalled).
-		Asc("id")); blocker != nil {
-		return nil
+		Asc("id"))
+	for _, blocker := range blockers {
+		if blocker.SenderType == enums.IMSenderTypeAgent || input.Message.AIReplyTurnID <= 0 || blocker.AIReplyTurnID != input.Message.AIReplyTurnID {
+			return nil
+		}
 	}
 
 	requestID := strings.TrimSpace(latest.RequestID)

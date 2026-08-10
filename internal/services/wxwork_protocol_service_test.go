@@ -14,6 +14,7 @@ import (
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/dto/response"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/repositories"
 
 	"gorm.io/gorm"
 )
@@ -909,6 +910,10 @@ func TestWxWorkProtocolReceivesCustomerMessageWithConfiguredKnowledgeRecordsSucc
 	if syncLog.ConversationID != messageRef.ConversationID || syncLog.MessageID != messageRef.MessageID {
 		t.Fatalf("expected sync log and message reference to identify the same message, log=%+v ref=%+v", syncLog, messageRef)
 	}
+	message := repositories.MessageRepository.GetInTenant(db, messageRef.MessageID, instance.TenantID)
+	if message == nil || message.SentAt == nil || message.SentAt.Unix() != now.Unix() {
+		t.Fatalf("expected protocol sendtime to be persisted, message=%+v want=%d", message, now.Unix())
+	}
 	if syncLog.Direction != enums.MessageSyncDirectionWecomToAgentDesk ||
 		syncLog.Source != "wxwork_protocol" ||
 		syncLog.Target != "agentdesk" ||
@@ -1017,6 +1022,36 @@ func TestWxWorkProtocolReferencedRecallMarksOriginalMessageRecalled(t *testing.T
 	}
 	if syncLog.SyncStatus != enums.MessageSyncStatusSuccess || !strings.Contains(syncLog.ErrorMessage, "recall applied") {
 		t.Fatalf("unexpected recall sync log: %+v", syncLog)
+	}
+}
+
+func TestWxWorkInboundLagMillis(t *testing.T) {
+	base := time.Date(2026, time.August, 7, 12, 0, 0, 0, time.Local)
+	for _, delay := range []time.Duration{time.Second, 2 * time.Second, 3 * time.Second, 14 * time.Second} {
+		delay := delay
+		t.Run(delay.String(), func(t *testing.T) {
+			sentAt := base
+			message := &models.Message{
+				SentAt: &sentAt,
+				AuditFields: models.AuditFields{
+					CreatedAt: base.Add(delay),
+				},
+			}
+			if got := wxWorkInboundLagMillis(message); got != delay.Milliseconds() {
+				t.Fatalf("inbound lag=%dms want=%dms", got, delay.Milliseconds())
+			}
+		})
+	}
+
+	futureSentAt := base.Add(time.Second)
+	if got := wxWorkInboundLagMillis(&models.Message{
+		SentAt:      &futureSentAt,
+		AuditFields: models.AuditFields{CreatedAt: base},
+	}); got != 0 {
+		t.Fatalf("negative inbound lag=%dms want=0", got)
+	}
+	if got := wxWorkInboundLagMillis(nil); got != 0 {
+		t.Fatalf("nil message inbound lag=%dms want=0", got)
 	}
 }
 

@@ -104,8 +104,8 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	if report.RegisteredTenantModels != expectedTenantModels || report.PolicyCount != expectedTenantModels {
 		t.Fatalf("tenant model coverage = %d/%d, want %d/%d", report.RegisteredTenantModels, report.PolicyCount, expectedTenantModels, expectedTenantModels)
 	}
-	if report.RequiredTables != 114 || report.ConfiguredRelations != 287 {
-		t.Fatalf("audit schema coverage = %d tables/%d relations, want 114/287", report.RequiredTables, report.ConfiguredRelations)
+	if report.RequiredTables != 116 || report.ConfiguredRelations != 302 {
+		t.Fatalf("audit schema coverage = %d tables/%d relations, want 116/302", report.RequiredTables, report.ConfiguredRelations)
 	}
 	if report.CheckedTables != report.RequiredTables {
 		t.Fatalf("checked tables = %d, required = %d", report.CheckedTables, report.RequiredTables)
@@ -224,6 +224,104 @@ func TestTenantIntegrityAuditReportsTenantRelationAndRoleViolations(t *testing.T
 	}
 	if violation := tenantIntegrityFindViolation(report, "ORPHAN_PARENT_REFERENCE", "RolePermissionChangeLog.operator_id"); violation == nil || violation.Count != 1 {
 		t.Fatalf("permission change operator violation = %#v", violation)
+	}
+}
+
+func TestTenantIntegrityAuditReportsAIReplyTurnScopeViolations(t *testing.T) {
+	db := openTenantIntegrityTestDB(t, true)
+	fixture := createCleanTenantIntegrityFixture(t, db)
+	now := time.Now()
+	audit := tenantIntegrityTestAuditFields(now)
+
+	storeA := &models.Store{
+		TenantID: fixture.tenantA.ID, StoreCode: "turn-scope-a", Name: "Turn Scope A",
+		Status: enums.StatusOk, AuditFields: audit,
+	}
+	storeB := &models.Store{
+		TenantID: fixture.tenantA.ID, StoreCode: "turn-scope-b", Name: "Turn Scope B",
+		Status: enums.StatusOk, AuditFields: audit,
+	}
+	for _, store := range []*models.Store{storeA, storeB} {
+		if err := db.Create(store).Error; err != nil {
+			t.Fatalf("create turn scope store: %v", err)
+		}
+	}
+	activeUserID := fixture.tenantUserA.ID
+	binding := &models.StoreStaffBinding{
+		TenantID: fixture.tenantA.ID, UserID: fixture.tenantUserA.ID, ActiveUserID: &activeUserID,
+		StoreID: storeA.ID, Status: enums.StatusOk, AuditFields: audit,
+	}
+	if err := db.Create(binding).Error; err != nil {
+		t.Fatalf("create turn scope binding: %v", err)
+	}
+	conversation := &models.Conversation{
+		TenantID: fixture.tenantA.ID, StoreID: storeA.ID, StoreStaffBindingID: binding.ID,
+		Status: enums.IMConversationStatusAIServing, ServiceMode: enums.IMConversationServiceModeAIOnly,
+		LastMessageAt: now, LastActiveAt: now, AuditFields: audit,
+	}
+	if err := db.Create(conversation).Error; err != nil {
+		t.Fatalf("create turn scope conversation: %v", err)
+	}
+	message := &models.Message{
+		TenantID: fixture.tenantA.ID, ConversationID: conversation.ID, SessionNo: 1,
+		RequestID: "turn-scope-request", ClientMsgID: "turn-scope-message",
+		SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText,
+		Content: "scope audit", SeqNo: 1, SendStatus: enums.IMMessageStatusSent, SentAt: &now,
+		AuditFields: audit,
+	}
+	if err := db.Create(message).Error; err != nil {
+		t.Fatalf("create turn scope message: %v", err)
+	}
+	turn := &models.AIReplyTurn{
+		TenantID: fixture.tenantA.ID, ConversationID: conversation.ID, SessionNo: 1,
+		StoreID: storeB.ID, StoreStaffBindingID: binding.ID, Version: 1,
+		Status: enums.AIReplyTurnStatusOpen, FirstCustomerMessageID: message.ID,
+		LastCustomerMessageID: message.ID, FirstCustomerSentAt: now, LastCustomerSentAt: now,
+		AuditFields: audit,
+	}
+	if err := db.Create(turn).Error; err != nil {
+		t.Fatalf("create mismatched AI reply turn: %v", err)
+	}
+	if err := db.Model(message).Updates(map[string]any{
+		"session_no": 2, "ai_reply_turn_id": turn.ID, "ai_reply_turn_version": 1,
+	}).Error; err != nil {
+		t.Fatalf("link mismatched message turn: %v", err)
+	}
+	job := &models.AIReplyJob{
+		TenantID: fixture.tenantA.ID, ConversationID: conversation.ID, MessageID: message.ID,
+		SessionNo: 1, StoreID: storeA.ID, StoreStaffBindingID: binding.ID,
+		TurnID: turn.ID, TurnVersion: 1, RequestID: message.RequestID,
+		TriggerKind: enums.AIReplyJobTriggerKindText, Status: enums.AIReplyJobStatusPending,
+		ExpiresAt: now.Add(15 * time.Minute), AuditFields: audit,
+	}
+	if err := db.Create(job).Error; err != nil {
+		t.Fatalf("create mismatched AI reply job: %v", err)
+	}
+	task := &models.AIReplyTurnTask{
+		TenantID: fixture.tenantA.ID, ConversationID: conversation.ID, SessionNo: 2,
+		TurnID: turn.ID, IntroducedVersion: 1, SourceMessageID: message.ID,
+		TaskKey: "turn-scope-task", SequenceNo: 1, TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+		Intent: "hotel_info", Stage: enums.AIReplyTurnTaskStageKnowledge,
+		Status: enums.AIReplyTurnTaskStatusPending, KnowledgeStatus: enums.AIReplyTurnTaskKnowledgeStatusPending,
+		AuditFields: audit,
+	}
+	if err := db.Create(task).Error; err != nil {
+		t.Fatalf("create mismatched AI reply turn task: %v", err)
+	}
+
+	report, err := TenantIntegrityAuditService.Audit(db, TenantIntegrityAuditOptions{SampleLimit: 5})
+	if err != nil {
+		t.Fatalf("audit AI reply turn scope: %v", err)
+	}
+	for _, code := range []string{
+		"AI_REPLY_TURN_SCOPE_MISMATCH",
+		"AI_REPLY_MESSAGE_TURN_SCOPE_MISMATCH",
+		"AI_REPLY_JOB_TURN_SCOPE_MISMATCH",
+		"AI_REPLY_TURN_TASK_SCOPE_MISMATCH",
+	} {
+		if !tenantIntegrityReportHasCode(report, code) {
+			t.Errorf("audit report does not contain %s: %#v", code, report.Violations)
+		}
 	}
 }
 

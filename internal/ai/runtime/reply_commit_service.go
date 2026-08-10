@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ type replyCommitInput struct {
 	Trace          *aiReplyTraceData
 	ClientPrefix   string
 	IncrementRound bool
+	JobID          int64
 }
 
 type structuredVariableReply struct {
@@ -84,10 +86,18 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 	metadata := make([]commitMetadata, 0, len(structuredReplies)+1)
 	if replyText != "" {
 		textMessages := splitReplyTextForCommit(input.Trace, replyText)
+		textTaskGroups := textCommitTaskKeyGroupsFromTrace(input.Trace)
 		for index, text := range textMessages {
 			clientMessageID := fmt.Sprintf("%s_%d", strings.TrimSpace(input.ClientPrefix), input.Message.ID)
 			if len(textMessages) > 1 {
 				clientMessageID = fmt.Sprintf("%s_text_%d_%d", strings.TrimSpace(input.ClientPrefix), index+1, input.Message.ID)
+			}
+			taskKeys := []string(nil)
+			if index < len(textTaskGroups) {
+				taskKeys = append([]string(nil), textTaskGroups[index]...)
+				if len(taskKeys) > 0 {
+					clientMessageID = stableTaskClientMsgID(input.ClientPrefix, "text", taskKeys[0], input.Message.ID)
+				}
 			}
 			taskIndex := index
 			if isManualResume && len(textMessages) > 1 {
@@ -97,25 +107,38 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 					taskIndex = index - 1
 				}
 			}
-			drafts = append(drafts, svc.AIOutboundMessageDraft{ClientMsgID: clientMessageID, MessageType: enums.IMMessageTypeText, Content: text})
+			drafts = append(drafts, svc.AIOutboundMessageDraft{ClientMsgID: clientMessageID, MessageType: enums.IMMessageTypeText, Content: text, TaskKeys: taskKeys})
 			metadata = append(metadata, commitMetadata{messageType: enums.IMMessageTypeText, content: text, taskID: textCommitTaskIDFromTrace(input.Trace, taskIndex)})
 		}
 	}
 	for index, structured := range structuredReplies {
+		taskKeys := structuredCommitTaskKeysFromTrace(input.Trace, structured.ResourceType, index)
+		clientMessageID := fmt.Sprintf("%s_%s_%d_%d", strings.TrimSpace(input.ClientPrefix), strings.TrimSpace(structured.ResourceType), index+1, input.Message.ID)
+		if len(taskKeys) > 0 {
+			clientMessageID = stableTaskClientMsgID(input.ClientPrefix, structured.ResourceType, taskKeys[0], input.Message.ID)
+		}
 		drafts = append(drafts, svc.AIOutboundMessageDraft{
-			ClientMsgID: fmt.Sprintf("%s_%s_%d_%d", strings.TrimSpace(input.ClientPrefix), strings.TrimSpace(structured.ResourceType), index+1, input.Message.ID),
-			MessageType: structured.MessageType, Content: structured.Content, Payload: structured.Payload,
+			ClientMsgID: clientMessageID,
+			MessageType: structured.MessageType, Content: structured.Content, Payload: structured.Payload, TaskKeys: taskKeys,
 		})
 		metadata = append(metadata, commitMetadata{messageType: structured.MessageType, resourceType: structured.ResourceType, content: structuredRunLogReplyText(structured)})
 	}
-	messages, err := svc.MessageService.SendAIMessageBatchWithRequestID(
+	messages, err := svc.MessageService.SendAIMessageBatchForTurnWithRequestID(
 		input.Conversation.ID,
 		input.AIAgent.ID,
 		drafts,
 		s.buildAIPrincipal(input.AIAgent),
 		input.Message.RequestID,
+		input.Message.AIReplyTurnID,
+		input.Message.AIReplyTurnVersion,
+		input.JobID,
 	)
 	if err != nil {
+		var covered *svc.AIReplyTurnCoveredError
+		if errors.Is(err, svc.ErrAIReplyTurnStale) || errors.Is(err, svc.ErrAIReplyTurnDuplicateAnswer) || errors.As(err, &covered) {
+			s.updateCommitTrace(input, commitStartedAt, nil, nil, err)
+			return nil, err
+		}
 		controlledErr := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorCommitFailed, err)
 		s.updateCommitTrace(input, commitStartedAt, nil, nil, controlledErr)
 		return nil, controlledErr
@@ -783,6 +806,26 @@ func textCommitTaskIDFromTrace(trace *aiReplyTraceData, index int) string {
 	return taskIDs[index]
 }
 
+func textCommitTaskKeyGroupsFromTrace(trace *aiReplyTraceData) [][]string {
+	taskIDs := textCommitTaskIDsFromTrace(trace)
+	if len(taskIDs) == 0 {
+		return nil
+	}
+	groupCount := len(taskIDs)
+	if groupCount > 3 {
+		groupCount = 3
+	}
+	groups := make([][]string, 0, groupCount)
+	for index := 0; index < groupCount; index++ {
+		end := index + 1
+		if index == groupCount-1 {
+			end = len(taskIDs)
+		}
+		groups = append(groups, append([]string(nil), taskIDs[index:end]...))
+	}
+	return groups
+}
+
 func textCommitTaskIDsFromTrace(trace *aiReplyTraceData) []string {
 	if trace == nil || len(trace.Runtime) == 0 {
 		return nil
@@ -791,8 +834,9 @@ func textCommitTaskIDsFromTrace(trace *aiReplyTraceData) []string {
 		Pipeline struct {
 			ReplyPlan struct {
 				TaskPlans []struct {
-					Intent string `json:"intent"`
-					Output string `json:"output"`
+					TaskKey string `json:"taskKey"`
+					Intent  string `json:"intent"`
+					Output  string `json:"output"`
 				} `json:"taskPlans"`
 			} `json:"replyPlan"`
 		} `json:"pipeline"`
@@ -801,7 +845,7 @@ func textCommitTaskIDsFromTrace(trace *aiReplyTraceData) []string {
 		return nil
 	}
 	taskIDs := make([]string, 0, 3)
-	for _, task := range data.Pipeline.ReplyPlan.TaskPlans {
+	for index, task := range data.Pipeline.ReplyPlan.TaskPlans {
 		output := strings.TrimSpace(task.Output)
 		intent := strings.TrimSpace(task.Intent)
 		if output == "structured_resource_commit" || output == "human_route_confirmation_or_dispatch" || intent == "hotel_variable" {
@@ -810,11 +854,70 @@ func textCommitTaskIDsFromTrace(trace *aiReplyTraceData) []string {
 		if output == "" && intent == "" {
 			continue
 		}
-		if len(taskIDs) < 3 {
-			taskIDs = append(taskIDs, fmt.Sprintf("task-%d", len(taskIDs)+1))
+		taskKey := strings.TrimSpace(task.TaskKey)
+		if taskKey == "" {
+			taskKey = fmt.Sprintf("task-%d", index+1)
 		}
+		taskIDs = append(taskIDs, taskKey)
 	}
 	return taskIDs
+}
+
+func structuredCommitTaskKeysFromTrace(trace *aiReplyTraceData, resourceType string, occurrence int) []string {
+	resourceType = strings.TrimSpace(resourceType)
+	if trace == nil || len(trace.Runtime) == 0 || resourceType == "" || resourceType == "knowledge_image" {
+		return nil
+	}
+	data := struct {
+		Pipeline struct {
+			ReplyPlan struct {
+				TaskPlans []struct {
+					TaskKey        string `json:"taskKey"`
+					Intent         string `json:"intent"`
+					Output         string `json:"output"`
+					ResourceAction string `json:"resourceAction"`
+				} `json:"taskPlans"`
+			} `json:"replyPlan"`
+		} `json:"pipeline"`
+	}{}
+	if json.Unmarshal(trace.Runtime, &data) != nil {
+		return nil
+	}
+	matched := 0
+	for index, task := range data.Pipeline.ReplyPlan.TaskPlans {
+		if task.Output != "structured_resource_commit" && task.Intent != "hotel_variable" && strings.TrimSpace(task.ResourceAction) == "" {
+			continue
+		}
+		if structuredVariableResourceTypeFromAction(task.ResourceAction) != resourceType && strings.TrimSpace(task.ResourceAction) != resourceType {
+			continue
+		}
+		if matched != occurrence {
+			matched++
+			continue
+		}
+		taskKey := strings.TrimSpace(task.TaskKey)
+		if taskKey == "" {
+			taskKey = fmt.Sprintf("task-%d", index+1)
+		}
+		return []string{taskKey}
+	}
+	return nil
+}
+
+func stableTaskClientMsgID(prefix, kind, taskKey string, sourceMessageID int64) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "ai_reply"
+	}
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = "message"
+	}
+	taskKey = strings.TrimSpace(taskKey)
+	if len(taskKey) > 64 {
+		taskKey = taskKey[len(taskKey)-64:]
+	}
+	return fmt.Sprintf("%s_%s_%s_%d", prefix, kind, taskKey, sourceMessageID)
 }
 
 func (s *replyCommitService) IncrementAIReplyRounds(conversationID int64, nextRounds int, aiAgentName string) error {

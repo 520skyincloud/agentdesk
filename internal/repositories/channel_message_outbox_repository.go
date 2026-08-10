@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"errors"
 	"time"
 
 	"agent-desk/internal/models"
@@ -38,6 +39,21 @@ func (r *channelMessageOutboxRepository) GetInTenant(db *gorm.DB, id, tenantID i
 		return nil
 	}
 	return ret
+}
+
+func (r *channelMessageOutboxRepository) GetForUpdateInTenant(db *gorm.DB, id, tenantID int64) (*models.ChannelMessageOutbox, error) {
+	if db == nil || id <= 0 || tenantID <= 0 {
+		return nil, nil
+	}
+	ret := &models.ChannelMessageOutbox{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).First(ret, "id = ? AND tenant_id = ?", id, tenantID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (r *channelMessageOutboxRepository) Take(db *gorm.DB, where ...interface{}) *models.ChannelMessageOutbox {
