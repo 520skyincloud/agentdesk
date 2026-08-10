@@ -217,7 +217,8 @@ pending -> running -> ready -> committed -> delivered
 必须按 taskKey 覆盖所有成功文本 Task，最多拆成三条文本消息。知识 `no_hit` 明确禁止猜测，单项
 `failed` 只将对应 Task 转人工，不能清空其他成功结果或重跑完整模型链。
 
-客户消息事务内完成 Message、Turn Version 和 AIReplyJob 的写入，并 supersede 旧版本 Job：
+客户消息事务内完成 Message、Turn Version 和 AIReplyJob 的写入；同一 Turn 的 Job 由单租约串行执行，
+不能仅因 Version 增长就丢弃已领取的逐题工作：
 
 ```text
 customer Message(sendtime)
@@ -229,8 +230,10 @@ customer Message(sendtime)
 
 - System、欢迎语、欢迎图片、小程序、绑定卡和其他自动化消息不关闭 Turn。
 - 人工回复、人工接管、撤回、会话关闭、会话继承、Session 变化和 AI 关闭使当前 Turn 失效。
-- 模型只生成内存中的 PreparedReplyBatch；Commit 事务先 CAS 校验 Turn Version、Session、Route、
-  Store、Binding、当前实例、AI 开关和人工状态，旧版本不得创建 Message 或 Outbox。
+- 模型只生成内存中的 PreparedReplyBatch；Commit 事务先 CAS 校验 Turn、当前单 Job 租约、TaskKey
+  领取归属、Session、Route、Store、Binding、当前实例、AI 开关和人工状态。较早消息 Version 只能
+  提交该 Job 已领取且仍为 running 的 Task；无 Task 证据、已被覆盖或范围失效的旧批次不得创建
+  Message 或 Outbox。后续 Job 从 Task 账本只领取尚未完成的问题。
 - 精确规范化后相同的迟到问题复用本轮既有 Message/Outbox：pending、sending 直接复用，failed
   提前原任务重试，sent 视为已覆盖，不再调用模型。
 - 不同迟到问题从 `LastDeliveredVersion` 后开始构建输入，只回答新增问题。若最终批次与上一答案
@@ -337,7 +340,7 @@ fail closed，不使用不可信 Store/Binding 创建人工任务。
 
 ```text
 Validate
-  -> AIReplyTurn Version CAS
+  -> AIReplyTurn lease + Task ownership CAS
   -> stable ClientMsgID
   -> Message batch + Outbox + Conversation cursor/counters + AIReplyTurn evidence + EventLog transaction
   -> ServiceAnalyticsCapture
@@ -351,9 +354,10 @@ Validate
 - 事务后仍按 `(channel_type, message_id)` 幂等补偿 Outbox。
 - 相同 ClientMsgID 重试只补建 Outbox，不重复模型、运营事实或标签演化。
 - AIReplyJob 在模型执行前和 Commit 前重新读取 Session、Route、Binding、实例、AI 开关和接待状态。
-- Outbox Claim 前再次读取关联 AI Message 的 TurnID/TurnVersion；已有更新版本完成 Commit 时，尚未
-  开始发送的旧 Outbox 进入 `cancelled`，原因记录为 `cancelled_stale_turn`。更新版本尚未 Commit
-  时允许旧已提交回复继续发送，避免客户长时间无响应。
+- Outbox Claim 前再次读取关联 AI Message 的 TurnID/TurnVersion 和已提交 Task。带 Task 证据的消息
+  只有在 Task 仍为 committed/delivered 时才可发送；已被覆盖、人工接管或范围失效时进入
+  `cancelled`。仅对没有 Task 证据的兼容旧消息，更新版本完成 Commit 后才按
+  `cancelled_stale_turn` 取消；这样既不重复发送，也不会丢弃已经完成的独立问题答案。
 - 后台补偿只扫描明确有持久投递意图且缺 Outbox 的新消息。
 - Outbox 待投递查询和 CAS Claim 都要求 `next_retry_at IS NULL OR next_retry_at <= now`；未到期
   不能抢占，到期后只重试协议投递。
@@ -410,8 +414,9 @@ ActionLedger 可在内部 TraceData 的 `suppressedActions` 记录资源去重�
 - Message 与 AIReplyJob 原子提交，进程重启、租约回收和补偿扫描不丢回复任务。
 - 企微入站 `sendtime` 固化到 SentAt，CreatedAt 保持平台接收时间；1、2、3、14 秒迟到的相同问题
   必须加入原 Turn，最终只发送一次回复。
-- 两个 Worker 同时处理同一 Turn 时只有最新 Version 可 Commit；旧版本 Outbox 在替代版本 Commit
-  后取消，替代版本未 Commit 前不得提前取消可用回复。
+- 两个 Worker 同时竞争同一 Turn 时只有持有 Turn 租约的一个 Job 可执行。较早消息 Version 只能提交
+  自己已领取且未被覆盖的 Task；后续 Job 依据稳定 TaskKey 只处理余量。Outbox 以 Task 终态作为最终
+  发送资格，兼容旧消息才使用 Version 兜底门禁。
 - 每槽 `MaxRetryCount=2` 时超时、5xx 或空模型结果恰好执行三次 provider 调用，耗尽后只创建
   一个稳定人工任务；派单重试不重跑 Runtime。
 - Runtime `completed` 缺少有效 Message/Interrupt 证据时按 `commit_failed` 处理；空错误 RunLog

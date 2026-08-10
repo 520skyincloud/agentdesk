@@ -138,6 +138,72 @@ func TestAIReplyTaskLedgerDispatchRetryDoesNotRunModelsAgain(t *testing.T) {
 	assertPartialKnowledgeTaskStates(t, fixture)
 }
 
+func TestAIReplyTaskLedgerGenerationFailureIncludesTasksThatPassedKnowledge(t *testing.T) {
+	fixture := setupAIReplyTaskLedgerJobFixture(t, []enums.AIReplyTurnTaskType{
+		enums.AIReplyTurnTaskTypeKnowledge,
+		enums.AIReplyTurnTaskTypeKnowledge,
+	})
+	var runtimeCalls atomic.Int32
+	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		runtimeCalls.Add(1)
+		var batch []models.AIReplyTurnTask
+		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			turn, err := repositories.AIReplyTurnRepository.GetForUpdateInTenant(ctx.Tx, fixture.turn.ID, fixture.turn.TenantID)
+			if err != nil {
+				return err
+			}
+			batch, _, err = AIReplyTurnTaskService.ClaimBatchDB(ctx.Tx, turn, fixture.job.ID)
+			if err != nil {
+				return err
+			}
+			if len(batch) != 2 {
+				return fmt.Errorf("claimed %d tasks, want 2", len(batch))
+			}
+			return AIReplyTurnTaskService.MarkKnowledgeResultsDB(ctx.Tx, turn.TenantID, turn.ID, fixture.job.ID, []AIReplyTurnTaskKnowledgeUpdate{
+				{TaskKey: batch[0].TaskKey, Status: enums.AIReplyTurnTaskKnowledgeStatusFailed, ResultCode: "knowledge_unavailable"},
+				{TaskKey: batch[1].TaskKey, Status: enums.AIReplyTurnTaskKnowledgeStatusHit, HitCount: 2, ResultCode: "hit"},
+			})
+		}); err != nil {
+			return AIReplyExecutionResult{}, err
+		}
+		return AIReplyExecutionResult{
+			TaskLedgerEnabled: true,
+			TaskKeys:          []string{batch[0].TaskKey, batch[1].TaskKey},
+			FailedTaskKeys:    []string{batch[0].TaskKey},
+		}, NewAIReplyExecutionError(AIReplyExecutionErrorGenerationFailed, errors.New("generation retries exhausted"))
+	})
+	var dispatchCalls atomic.Int32
+	fixture.service.humanDispatch = func(*aiReplyJobExecutionState, *models.AIReplyJob, string) error {
+		dispatchCalls.Add(1)
+		return nil
+	}
+
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 1 {
+		t.Fatalf("job=%+v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	}
+	stored := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(fixture.db, fixture.turn.TenantID, fixture.turn.ID)
+	if len(stored) != 2 {
+		t.Fatalf("stored tasks=%d want 2", len(stored))
+	}
+	for _, task := range stored {
+		if task.Status != enums.AIReplyTurnTaskStatusHandoff {
+			t.Fatalf("task should be handed off without rerunning the model: %+v", task)
+		}
+	}
+
+	if _, err := fixture.service.ProcessMessageNow(fixture.message.ID); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeCalls.Load() != 1 || dispatchCalls.Load() != 1 {
+		t.Fatalf("terminal job reran work: runtimeCalls=%d dispatchCalls=%d", runtimeCalls.Load(), dispatchCalls.Load())
+	}
+}
+
 func TestAIReplyJobPersistsCoveredByTaskEvidence(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "有咖啡吗")
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {

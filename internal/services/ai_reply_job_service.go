@@ -644,8 +644,8 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 		}
 	}
 	failedTaskKeys := uniqueTaskKeys(result.FailedTaskKeys)
-	if len(failedTaskKeys) == 0 && taskFailureRequiresHuman(runErr) {
-		failedTaskKeys = uniqueTaskKeys(result.TaskKeys)
+	if taskFailureRequiresHuman(runErr) {
+		failedTaskKeys = uniqueTaskKeys(append(failedTaskKeys, result.TaskKeys...))
 	}
 	if len(failedTaskKeys) > 0 {
 		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {

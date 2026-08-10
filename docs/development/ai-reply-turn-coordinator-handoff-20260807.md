@@ -18,10 +18,11 @@
   剩余 Task 由同一持久 Job 自动续批。
 - 多题生成必须按 `taskKey` 覆盖本批次全部文本任务，最多提交三条文本消息；知识失败只影响对应
   Task，已成功答案不回滚。
-- Runtime Commit 前按 Turn Version 做 CAS；只有最新版本可原子提交 AI Message、Outbox、会话计数
-  和 Turn 证据。
-- Outbox Claim 前再次检查 Turn。替代版本已 Commit 时取消旧任务；替代版本未 Commit 时允许已有
-  回复继续发送，避免无回复。
+- Runtime Commit 前按 Turn 单 Job 租约和 Task 领取归属做 CAS。较早消息 Version 只能提交该 Job
+  已领取、未覆盖且仍有效的 Task；后续 Job 从账本只领取余量。Message、Outbox、会话计数和 Turn
+  证据仍在同一事务提交。
+- Outbox Claim 前再次检查 Turn 和已提交 Task。带 Task 证据的消息按 Task 终态决定发送；已覆盖、
+  人工接管或范围失效时取消。只有没有 Task 证据的兼容旧消息才用 Version 作为兜底门禁。
 - 相同迟到问题使用确定性文本哈希复用既有回复；不同问题只处理新增内容。生成仍重复旧答案时只
   重试一次 Generate，仍失败进入现有人工池。
 - System/欢迎资源不结束轮次；人工回复、人工接管、撤回、关闭、会话继承和 Session 变化结束轮次。
@@ -64,6 +65,17 @@ go test -race -tags dev ./internal/ai/... ./internal/services -run 'AIReply|Turn
 go test -tags dev ./... -count=1
 go vet -tags dev ./...
 ```
+
+## 2026-08-10 灰度前复核补丁
+
+- 复核发现同一批次同时出现“部分知识任务失败”和“Generate 失败”时，旧逻辑只把已标记的知识失败
+  Task 转人工，其余已通过知识检索但未生成成功的 Task 会被 Job 续跑，可能放大模型调用和延迟。
+- 修复后，凡本批次发生 `generation_failed`、`knowledge_unavailable`、`empty_output` 或
+  `resource_invariant_broken`，都将错误影响范围与本批全部未提交 Task 合并后一次性进入现有人工池。
+- 已经原子提交成功的 Task 保持 delivered/committed，不会被回滚或重复派单；人工派单失败仍只重试派单，
+  不重新执行模型链。
+- 回归测试 `TestAIReplyTaskLedgerGenerationFailureIncludesTasksThatPassedKnowledge` 断言模型链只运行一次、
+  人工只派单一次、所有受影响 Task 均进入 handoff，终态 Job 不会再次运行。
 
 ## 并行分支与合并
 
