@@ -174,6 +174,9 @@ func (s *wxWorkCLIBridgeService) MarkOutboxSent(req request.WxWorkCLIOutboxSentR
 		}); err != nil {
 			return err
 		}
+		if err := AIReplyTurnActionService.MarkDeliveryByOutboxDB(ctx.Tx, channel.TenantID, outbox.ID, true, "", now); err != nil {
+			return err
+		}
 		wxMsgID := strings.TrimSpace(req.ExternalMsgID)
 		if wxMsgID == "" {
 			wxMsgID = fmt.Sprintf("wxwork_cli_out:%d", outbox.ID)
@@ -222,12 +225,17 @@ func (s *wxWorkCLIBridgeService) MarkOutboxFailed(req request.WxWorkCLIOutboxFai
 	now := time.Now()
 	retryCount := outbox.RetryCount + 1
 	nextRetryAt := now.Add(time.Minute)
-	return ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, channel.TenantID, map[string]any{
-		"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
-		"retry_count":   retryCount,
-		"next_retry_at": nextRetryAt,
-		"last_error":    strings.TrimSpace(req.Error),
-		"updated_at":    now,
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, channel.TenantID, map[string]any{
+			"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
+			"retry_count":   retryCount,
+			"next_retry_at": nextRetryAt,
+			"last_error":    strings.TrimSpace(req.Error),
+			"updated_at":    now,
+		}); err != nil {
+			return err
+		}
+		return AIReplyTurnActionService.MarkDeliveryByOutboxDB(ctx.Tx, channel.TenantID, outbox.ID, false, "delivery_failed", now)
 	})
 }
 

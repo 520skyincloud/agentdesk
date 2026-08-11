@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/reply_plan.v2.json",
+  "title": "ReplyPlanV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "turnVersion",
+    "shouldGenerate",
+    "tasks",
+    "globalConstraints"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "reply_plan.v2"
+    },
+    "turnVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "shouldGenerate": {
+      "type": "boolean"
+    },
+    "tasks": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskKey",
+          "sequence",
+          "intent",
+          "subIntent",
+          "objective",
+          "outputMode",
+          "knowledge",
+          "evidenceRefs",
+          "actionRefs",
+          "constraints"
+        ],
+        "properties": {
+          "taskKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 12
+          },
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "subIntent": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "objective": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "outputMode": {
+            "enum": [
+              "text",
+              "resource_only",
+              "text_and_resource",
+              "clarification",
+              "handoff",
+              "skip"
+            ]
+          },
+          "knowledge": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["policy", "status", "reasonCode"],
+            "properties": {
+              "policy": {
+                "enum": ["required", "optional", "forbidden"]
+              },
+              "status": {
+                "enum": [
+                  "not_needed",
+                  "pending",
+                  "has_context",
+                  "no_context",
+                  "unanswerable",
+                  "unavailable"
+                ]
+              },
+              "reasonCode": {
+                "type": "string",
+                "maxLength": 80
+              }
+            }
+          },
+          "evidenceRefs": {
+            "type": "array",
+            "maxItems": 12,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[KST][1-9][0-9]*$"
+            }
+          },
+          "actionRefs": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "constraints": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "no_unsupported_facts",
+                "no_action_claim",
+                "ask_one_missing_field",
+                "do_not_repeat_resolved_answer",
+                "answer_current_correction_only",
+                "no_internal_terms",
+                "short_wechat_style",
+                "acknowledge_uncertainty"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "globalConstraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxReplyParts", "maxQuestionsPerPart", "forbiddenClaims"],
+      "properties": {
+        "maxReplyParts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "maxQuestionsPerPart": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "forbiddenClaims": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "unprepared_resource_sent",
+              "uncommitted_handoff",
+              "unexecuted_tool_result",
+              "unsupported_price",
+              "unsupported_policy",
+              "unsupported_time_promise",
+              "cross_store_fact",
+              "internal_tag_source",
+              "internal_sender_label"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

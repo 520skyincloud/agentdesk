@@ -3,17 +3,22 @@ package executor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
 	"agent-desk/internal/ai/replyengine"
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
+	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
+
+	"github.com/mlogclub/simple/sqls"
 )
 
 type runtimePipelinePlan struct {
@@ -29,6 +34,11 @@ type runtimePipelinePlan struct {
 	PrefetchedKnowledge *retrievers.KnowledgeRetrieveResult
 	TaskState           runtimeTaskBatchState
 	NoHitTaskKeys       []string
+	IntentV2            contracts.IntentTasksV2
+	ReplyPlanV2         contracts.ReplyPlanV2
+	Evidence            contracts.EvidenceBundleV1
+	ActionLedgerV2      contracts.ActionLedgerV1
+	KnowledgeByTask     map[string]AnswerabilityOutcome
 }
 
 func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) (runtimePipelinePlan, error) {
@@ -38,6 +48,8 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		return runtimePipelinePlan{}, err
 	}
 	var prefetchedKnowledge *retrievers.KnowledgeRetrieveResult
+	knowledgeByTask := make(map[string]AnswerabilityOutcome)
+	evidence := runtimeEmptyEvidenceBundle(req)
 	promptPack := selectIntentPromptPack(intent)
 	if !restored {
 		var configured bool
@@ -69,7 +81,7 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 				Intent: "hotel_info", SubIntent: "store_knowledge", Text: currentText,
 				NeedsKnowledge: true, Reason: "clarify knowledge probe matched",
 			}}
-			promptPack = selectIntentPromptPack(intent)
+			promptPack = promptForModelDetectedIntent(intent, loadEnabledIntentConfigs(resolveRuntimeIntentScope(req)))
 		}
 		replyPlan = buildReplyPlan(intent, promptPack)
 		intent, replyPlan, taskState, err = persistAndSelectRuntimeTaskBatch(req, intent, replyPlan)
@@ -79,6 +91,7 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 	}
 
 	noHitTaskKeys := []string(nil)
+	activePlans := replyPlan.TaskPlans
 	if taskState.Enabled {
 		runnablePlans := excludeReplyTaskKeys(replyPlan.TaskPlans, taskState.FailedTaskKeys)
 		knowledgeOutcome, retrieveErr := retrieveRuntimeTaskKnowledge(ctx, req, runnablePlans, prefetchedKnowledge, taskState)
@@ -86,17 +99,48 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 			return runtimePipelinePlan{}, retrieveErr
 		}
 		taskState.FailedTaskKeys = appendUniqueStrings(taskState.FailedTaskKeys, knowledgeOutcome.FailedTaskKeys...)
-		activePlans := knowledgeOutcome.ActiveTaskPlans
+		activePlans = knowledgeOutcome.ActiveTaskPlans
 		intent = filterIntentForReplyTaskPlans(intent, activePlans)
-		promptPack = selectIntentPromptPack(intent)
+		promptPack = promptForModelDetectedIntent(intent, loadEnabledIntentConfigs(resolveRuntimeIntentScope(req)))
 		replyPlan = buildReplyPlan(intent, promptPack)
 		replyPlan.TaskPlans = activePlans
 		prefetchedKnowledge = knowledgeOutcome.Prefetched
 		noHitTaskKeys = knowledgeOutcome.NoHitTaskKeys
+		knowledgeByTask = knowledgeOutcome.KnowledgeByTask
+		if knowledgeOutcome.Evidence != nil {
+			evidence = *knowledgeOutcome.Evidence
+		}
 	}
+	actionLedgerV2, err := ensureRuntimeActionLedger(req, taskState, replyPlan.TaskPlans, &evidence)
+	if err != nil {
+		return runtimePipelinePlan{}, err
+	}
+	if err := validateActionLedgerContract(actionLedgerV2); err != nil {
+		return runtimePipelinePlan{}, err
+	}
+	turnVersion := taskState.TurnVersion
+	if turnVersion <= 0 {
+		turnVersion = req.UserMessage.AIReplyTurnVersion
+	}
+	replyPlanV2, err := buildRuntimeReplyPlanV2(turnVersion, replyPlan.TaskPlans, knowledgeByTask, actionLedgerV2)
+	if err != nil {
+		return runtimePipelinePlan{}, err
+	}
+	intentV2 := intentContractFromTrace(intent)
 	contextTrace := buildContextTrace(req, history, intent)
 	toolKnowledge := buildToolKnowledgeTrace(intent)
 	prompt := buildIntentStagePrompt(promptPack, replyPlan)
+	if taskState.Enabled && taskState.TurnID > 0 {
+		if turn := repositories.AIReplyTurnRepository.GetInTenant(sqls.DB(), taskState.TurnID, req.Conversation.TenantID); turn != nil {
+			topic := ""
+			if len(activePlans) > 0 {
+				topic = strings.TrimSpace(activePlans[0].SubIntent)
+			}
+			if _, stateErr := services.ConversationDialogueStateService.CatchUpTurn(turn, req.UserMessage.ID, intent.DialogueAct, topic); stateErr != nil {
+				slog.Warn("catch up dialogue state after runtime planning failed", "conversation_id", req.Conversation.ID, "turn_id", turn.ID, "error", stateErr)
+			}
+		}
+	}
 	return runtimePipelinePlan{
 		Normalize: callbacks.NormalizeTraceData{
 			CurrentUserText:      preview(currentText, 240),
@@ -121,7 +165,57 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		PrefetchedKnowledge: prefetchedKnowledge,
 		TaskState:           taskState,
 		NoHitTaskKeys:       noHitTaskKeys,
+		IntentV2:            intentV2,
+		ReplyPlanV2:         replyPlanV2,
+		Evidence:            evidence,
+		ActionLedgerV2:      actionLedgerV2,
+		KnowledgeByTask:     knowledgeByTask,
 	}, nil
+}
+
+func intentContractFromTrace(intent callbacks.IntentTraceData) contracts.IntentTasksV2 {
+	dialogueAct := strings.TrimSpace(intent.DialogueAct)
+	if dialogueAct == "" {
+		dialogueAct = "unknown"
+	}
+	ret := contracts.IntentTasksV2{SchemaVersion: contracts.IntentTasksV2SchemaVersion, DialogueAct: dialogueAct, Tasks: []contracts.IntentTaskV2{}}
+	for index, task := range intent.IntentTasks {
+		sequence := task.Sequence
+		if sequence <= 0 {
+			sequence = index + 1
+		}
+		requestMode := strings.TrimSpace(task.RequestMode)
+		if requestMode == "" {
+			requestMode = "answer"
+		}
+		confidence := task.Confidence
+		if confidence <= 0 || confidence > 1 {
+			confidence = intent.IntentConfidence
+		}
+		if confidence <= 0 || confidence > 1 {
+			confidence = 0.65
+		}
+		text := strings.TrimSpace(task.Text)
+		if text == "" {
+			text = runtimeTaskDisplayLabel(task.SubIntent)
+		}
+		if text == "" {
+			text = task.Intent
+		}
+		ret.Tasks = append(ret.Tasks, contracts.IntentTaskV2{
+			Sequence: sequence, Intent: task.Intent, SubIntent: task.SubIntent,
+			Text: text, RequestMode: requestMode, Confidence: confidence,
+		})
+	}
+	return ret
+}
+
+func runtimeEmptyEvidenceBundle(req RunInput) contracts.EvidenceBundleV1 {
+	return contracts.EvidenceBundleV1{
+		SchemaVersion:    contracts.EvidenceBundleV1SchemaVersion,
+		ScopeFingerprint: runtimeEvidenceScopeFingerprint(req, nil),
+		RetrievalStatus:  "not_needed", Items: []contracts.EvidenceItemV1{}, Resources: []contracts.EvidenceResourceV1{},
+	}
 }
 
 func excludeReplyTaskKeys(plans []callbacks.ReplyTaskPlanTraceData, excludedKeys []string) []callbacks.ReplyTaskPlanTraceData {
@@ -423,7 +517,9 @@ func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTask
 		tasks = append(tasks, task)
 	}
 	for _, item := range intent.IntentTasks {
-		add(replyTaskPlanFromIntentTask(item))
+		plan := replyTaskPlanFromIntentTask(item)
+		plan.RelationType = intent.DialogueAct
+		add(plan)
 	}
 	if len(tasks) == 0 {
 		for _, action := range intent.ResourceActions {
@@ -442,6 +538,9 @@ func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTask
 			Output:         "structured_resource_commit",
 			ResourceAction: intent.ResourceAction,
 		})
+	}
+	if len(tasks) == 0 && !intent.ShouldReply {
+		return tasks
 	}
 	if len(tasks) == 0 {
 		output := "text_reply"
@@ -476,9 +575,11 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		output = "human_route_confirmation_or_dispatch"
 	}
 	return callbacks.ReplyTaskPlanTraceData{
+		Sequence:       task.Sequence,
 		Intent:         task.Intent,
 		SubIntent:      task.SubIntent,
 		Text:           task.Text,
+		RequestMode:    task.RequestMode,
 		Output:         output,
 		ResourceAction: task.ResourceAction,
 	}

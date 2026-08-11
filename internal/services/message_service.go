@@ -42,11 +42,21 @@ type sendMessageOptions struct {
 }
 
 type AIOutboundMessageDraft struct {
-	ClientMsgID string
-	MessageType enums.IMMessageType
-	Content     string
-	Payload     string
-	TaskKeys    []string
+	ClientMsgID            string
+	MessageType            enums.IMMessageType
+	Content                string
+	Payload                string
+	TaskKeys               []string
+	ActionKey              string
+	ActionPreparedRevision string
+}
+
+type AIReplyTurnActionSuppression struct {
+	ActionKey          string
+	TaskKey            string
+	PreparedRevision   string
+	CoveredByMessageID int64
+	ResultCode         string
 }
 
 func (s *messageService) Get(id int64) *models.Message {
@@ -379,6 +389,10 @@ func (s *messageService) SendAIMessageBatchWithRequestID(conversationID, aiAgent
 }
 
 func (s *messageService) SendAIMessageBatchForTurnWithRequestID(conversationID, aiAgentID int64, drafts []AIOutboundMessageDraft, operator *dto.AuthPrincipal, requestID string, turnID int64, turnVersion int, jobID int64) ([]models.Message, error) {
+	return s.SendAIMessageBatchForTurnWithRequestIDAndActions(conversationID, aiAgentID, drafts, operator, requestID, turnID, turnVersion, jobID, nil)
+}
+
+func (s *messageService) SendAIMessageBatchForTurnWithRequestIDAndActions(conversationID, aiAgentID int64, drafts []AIOutboundMessageDraft, operator *dto.AuthPrincipal, requestID string, turnID int64, turnVersion int, jobID int64, suppressedActions []AIReplyTurnActionSuppression) ([]models.Message, error) {
 	if len(drafts) == 0 {
 		return nil, errorsx.InvalidParam("AI 回复批次不能为空")
 	}
@@ -406,6 +420,11 @@ func (s *messageService) SendAIMessageBatchForTurnWithRequestID(conversationID, 
 			return nil, errorsx.InvalidParam("AI 回复批次消息标识重复")
 		}
 		seenClientIDs[draft.ClientMsgID] = struct{}{}
+		draft.ActionKey = strings.TrimSpace(draft.ActionKey)
+		draft.ActionPreparedRevision = strings.TrimSpace(draft.ActionPreparedRevision)
+		if (draft.ActionKey == "") != (draft.ActionPreparedRevision == "") {
+			return nil, errorsx.InvalidParam("AI 回复动作提交证据不完整")
+		}
 		if strs.IsBlank(string(draft.MessageType)) {
 			draft.MessageType = enums.IMMessageTypeText
 		}
@@ -422,6 +441,13 @@ func (s *messageService) SendAIMessageBatchForTurnWithRequestID(conversationID, 
 		draft.Content = content
 		draft.Payload = payload
 		normalized = append(normalized, normalizedDraft{AIOutboundMessageDraft: draft, summary: summary})
+	}
+	normalizedSuppressions, err := normalizeAIReplyTurnActionSuppressions(suppressedActions)
+	if err != nil {
+		return nil, err
+	}
+	if len(normalizedSuppressions) > 0 && (turnID <= 0 || turnVersion <= 0 || jobID <= 0) {
+		return nil, errorsx.InvalidParam("AI 回复动作抑制缺少有效轮次")
 	}
 
 	existingMessages := make([]models.Message, 0, len(normalized))
@@ -499,6 +525,7 @@ func (s *messageService) SendAIMessageBatchForTurnWithRequestID(conversationID, 
 			}
 		}
 		var agentUnreadCount, customerUnreadCount int64
+		actionEvidence := make([]AIReplyTurnActionCommitEvidence, 0)
 		for index := range messages {
 			message := &messages[index]
 			ChannelMessageOutboxService.PrepareOutboundMessage(ctx.Tx, conversation, message)
@@ -509,6 +536,26 @@ func (s *messageService) SendAIMessageBatchForTurnWithRequestID(conversationID, 
 				if _, err := ChannelMessageOutboxService.ensureExternalMessage(ctx.Tx, message.OutboundChannelType, conversation, message, true); err != nil {
 					return err
 				}
+			}
+			if actionKey := strings.TrimSpace(normalized[index].ActionKey); actionKey != "" {
+				outboxID := int64(0)
+				if strings.TrimSpace(message.OutboundChannelType) != "" {
+					outbox := repositories.ChannelMessageOutboxRepository.Take(
+						ctx.Tx,
+						"tenant_id = ? AND channel_type = ? AND message_id = ?",
+						conversation.TenantID,
+						message.OutboundChannelType,
+						message.ID,
+					)
+					if outbox == nil {
+						return fmt.Errorf("AI 回复动作缺少 Outbox 提交证据")
+					}
+					outboxID = outbox.ID
+				}
+				actionEvidence = append(actionEvidence, AIReplyTurnActionCommitEvidence{
+					ActionKey: actionKey, PreparedRevision: normalized[index].ActionPreparedRevision,
+					MessageID: message.ID, OutboxID: outboxID, Delivered: outboxID == 0, At: now,
+				})
 			}
 			var readErr error
 			agentUnreadCount, customerUnreadCount, readErr = s.handleReadState(ctx, enums.IMSenderTypeAI, conversation, operator, message, nil)
@@ -561,15 +608,65 @@ func (s *messageService) SendAIMessageBatchForTurnWithRequestID(conversationID, 
 				return err
 			}
 		}
+		if len(actionEvidence) > 0 {
+			if turn == nil {
+				return fmt.Errorf("AI 回复动作提交缺少有效轮次")
+			}
+			if err := AIReplyTurnActionService.CommitEvidenceDB(ctx.Tx, conversation.TenantID, turn.ID, commitVersion, actionEvidence); err != nil {
+				return err
+			}
+		}
+		if len(normalizedSuppressions) > 0 {
+			if turn == nil {
+				return fmt.Errorf("AI 回复动作抑制缺少有效轮次")
+			}
+			if err := AIReplyTurnTaskService.MarkSuppressedActionsDB(ctx.Tx, turn, jobID, normalizedSuppressions, now); err != nil {
+				return err
+			}
+			if err := AIReplyTurnActionService.SuppressDB(ctx.Tx, conversation.TenantID, turn.ID, commitVersion, normalizedSuppressions, now); err != nil {
+				return err
+			}
+		}
 		return AIReplyTurnService.MarkCommittedDB(ctx.Tx, turn, commitVersion, traceID, delivered, now)
 	})
 	if err != nil {
 		return nil, err
 	}
+	if turnID > 0 {
+		if turn := repositories.AIReplyTurnRepository.GetInTenant(sqls.DB(), turnID, conversation.TenantID); turn != nil {
+			resolvedTaskKeys := make([]string, 0)
+			for _, draft := range normalized {
+				resolvedTaskKeys = append(resolvedTaskKeys, draft.TaskKeys...)
+			}
+			if _, stateErr := ConversationDialogueStateService.CatchUpAssistantBatch(turn, messages, resolvedTaskKeys); stateErr != nil {
+				slog.Warn("catch up dialogue state after AI commit failed", "conversation_id", conversation.ID, "turn_id", turn.ID, "error", stateErr)
+			}
+		}
+	}
 	for index := range messages {
 		s.publishCommittedMessage(conversation, &messages[index])
 	}
 	return messages, nil
+}
+
+func normalizeAIReplyTurnActionSuppressions(items []AIReplyTurnActionSuppression) ([]AIReplyTurnActionSuppression, error) {
+	ret := make([]AIReplyTurnActionSuppression, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		item.ActionKey = strings.TrimSpace(item.ActionKey)
+		item.TaskKey = strings.TrimSpace(item.TaskKey)
+		item.PreparedRevision = strings.TrimSpace(item.PreparedRevision)
+		item.ResultCode = strings.TrimSpace(item.ResultCode)
+		if item.ActionKey == "" || item.TaskKey == "" || item.PreparedRevision == "" || item.CoveredByMessageID <= 0 || item.ResultCode == "" {
+			return nil, errorsx.InvalidParam("AI 回复动作抑制证据不完整")
+		}
+		if _, duplicate := seen[item.ActionKey]; duplicate {
+			return nil, errorsx.InvalidParam("AI 回复动作抑制证据重复")
+		}
+		seen[item.ActionKey] = struct{}{}
+		ret = append(ret, item)
+	}
+	return ret, nil
 }
 
 func (s *messageService) SendAIServiceNotice(conversationID int64, aiAgentID int64, content string) (*models.Message, error) {
@@ -1033,6 +1130,15 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	})
 	if err != nil {
 		return nil, err
+	}
+	if senderType == enums.IMSenderTypeCustomer {
+		if _, stateErr := ConversationDialogueStateService.CatchUpCustomerMessage(message); stateErr != nil {
+			slog.Warn("catch up dialogue state after customer message failed", "conversation_id", message.ConversationID, "message_id", message.ID, "error", stateErr)
+		}
+	} else if senderType == enums.IMSenderTypeAgent {
+		if _, stateErr := ConversationDialogueStateService.CatchUpAgentMessage(message); stateErr != nil {
+			slog.Warn("catch up dialogue state after agent message failed", "conversation_id", message.ConversationID, "message_id", message.ID, "error", stateErr)
+		}
 	}
 	if senderType == enums.IMSenderTypeCustomer {
 		AIReplyJobService.NotifyNewerMessage(conversation.ID, message.ID)

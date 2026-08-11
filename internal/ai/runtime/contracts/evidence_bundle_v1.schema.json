@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/evidence_bundle.v1.json",
+  "title": "EvidenceBundleV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "scopeFingerprint",
+    "retrievalStatus",
+    "items",
+    "resources"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "evidence_bundle.v1"
+    },
+    "scopeFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "retrievalStatus": {
+      "enum": ["not_needed", "has_context", "no_context", "unanswerable", "unavailable"]
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "sourceType",
+          "taskKeys",
+          "title",
+          "content",
+          "score",
+          "answerability",
+          "resourceRefs"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^[KST][1-9][0-9]*$"
+          },
+          "sourceType": {
+            "enum": ["fastgpt", "store_fact", "tool_result"]
+          },
+          "taskKeys": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "answerability": {
+            "enum": ["supporting", "partial", "not_supporting"]
+          },
+          "resourceRefs": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^R[1-9][0-9]*$"
+            }
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "type", "assetId", "title", "taskKeys"],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^R[1-9][0-9]*$"
+          },
+          "type": {
+            "enum": ["image", "file", "location", "mini_program", "phone"]
+          },
+          "assetId": {
+            "type": ["string", "null"],
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "taskKeys": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        }
+      }
+    }
+  }
+}

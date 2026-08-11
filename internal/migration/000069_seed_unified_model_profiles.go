@@ -37,8 +37,8 @@ func migrateUnifiedModelProfiles(db *gorm.DB) error {
 func seedDefaultUnifiedModelProfile(db *gorm.DB) error {
 	now := time.Now()
 	template := &models.ModelProfileTemplate{
-		Code: "standard", Name: "平台标准九槽", Description: "统一架构建立的 NewAPI 九槽模型方案，请配置网关和九个模型用途后发布。",
-		Revision: 1, GatewayBaseURL: "", Status: enums.ModelProfileStatusDraft,
+		Code: "standard", Name: "平台标准九槽", Description: "统一架构建立的 NewAPI 九槽模型方案，请配置九个模型用途后发布。",
+		Revision: 1, GatewayBaseURL: constants.UnifiedNewAPIGatewayBaseURL, Status: enums.ModelProfileStatusDraft,
 		AuditFields: systemModelProfileAuditFields(now),
 	}
 	if err := repositories.ModelProfileTemplateRepository.Create(db, template); err != nil {

@@ -2,6 +2,7 @@ package services
 
 import (
 	"crypto/sha256"
+	"encoding/base32"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -26,11 +27,17 @@ var AIReplyTurnTaskService = newAIReplyTurnTaskService()
 type aiReplyTurnTaskService struct{}
 
 type AIReplyTurnTaskInput struct {
+	TenantID        int64
+	TurnID          int64
 	SourceMessageID int64
 	SequenceNo      int
+	OccurrenceIndex int
 	TaskType        enums.AIReplyTurnTaskType
 	Intent          string
 	SubIntent       string
+	RequestMode     string
+	RelationType    string
+	RelatedTaskID   int64
 	ResourceAction  string
 	QuestionText    string
 }
@@ -51,6 +58,16 @@ func (s *aiReplyTurnTaskService) Enabled() bool {
 }
 
 func (s *aiReplyTurnTaskService) StableTaskKey(input AIReplyTurnTaskInput) string {
+	fingerprint := s.SemanticQuestionFingerprint(input)
+	occurrence := input.OccurrenceIndex
+	if occurrence <= 0 {
+		occurrence = 1
+	}
+	if input.TenantID > 0 && input.TurnID > 0 && fingerprint != "" {
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%d/%d/%s/%d", input.TenantID, input.TurnID, fingerprint, occurrence)))
+		encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
+		return "turn_task_" + strings.ToLower(encoded[:26])
+	}
 	taskType := strings.TrimSpace(string(input.TaskType))
 	if taskType == "" {
 		taskType = string(enums.AIReplyTurnTaskTypeText)
@@ -61,6 +78,21 @@ func (s *aiReplyTurnTaskService) StableTaskKey(input AIReplyTurnTaskInput) strin
 	}
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%s", input.SourceMessageID, sequenceNo, taskType)))
 	return "turn_task_" + hex.EncodeToString(sum[:12])
+}
+
+func (s *aiReplyTurnTaskService) SemanticQuestionFingerprint(input AIReplyTurnTaskInput) string {
+	questionFingerprint := s.QuestionFingerprint(input.QuestionText)
+	parts := []string{
+		normalizeTaskFingerprintPart(input.Intent),
+		normalizeTaskFingerprintPart(input.SubIntent),
+		questionFingerprint,
+		normalizeTaskFingerprintPart(input.RequestMode),
+	}
+	if strings.Join(parts, "") == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1f")))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *aiReplyTurnTaskService) QuestionFingerprint(text string) string {
@@ -86,6 +118,17 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 	now := time.Now()
 	ret := make([]models.AIReplyTurnTask, 0, len(inputs))
 	seen := make(map[string]struct{}, len(inputs))
+	existingTasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, turn.TenantID, turn.ID)
+	existingBySourceSequence := make(map[string]*models.AIReplyTurnTask, len(existingTasks))
+	occurrences := make(map[string]int, len(existingTasks)+len(inputs))
+	for index := range existingTasks {
+		existing := &existingTasks[index]
+		identity := aiReplyTurnTaskSourceIdentity(existing.SourceMessageID, existing.SequenceNo, existing.TaskType)
+		existingBySourceSequence[identity] = existing
+		if existing.QuestionFingerprint != "" {
+			occurrences[existing.QuestionFingerprint]++
+		}
+	}
 	for index, input := range inputs {
 		if input.SourceMessageID <= 0 {
 			return nil, errorsx.InvalidParam("AI 回复逐题任务缺少来源消息")
@@ -101,12 +144,30 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 		if input.TaskType == "" {
 			input.TaskType = enums.AIReplyTurnTaskTypeText
 		}
-		taskKey := s.StableTaskKey(input)
+		input.TenantID = turn.TenantID
+		input.TurnID = turn.ID
+		fingerprint := s.SemanticQuestionFingerprint(input)
+		identity := aiReplyTurnTaskSourceIdentity(input.SourceMessageID, input.SequenceNo, input.TaskType)
+		existingIdentity := existingBySourceSequence[identity]
+		if existingIdentity != nil {
+			fingerprint = existingIdentity.QuestionFingerprint
+		} else if input.OccurrenceIndex <= 0 {
+			occurrences[fingerprint]++
+			input.OccurrenceIndex = occurrences[fingerprint]
+		}
+		taskKey := ""
+		if existingIdentity != nil {
+			taskKey = existingIdentity.TaskKey
+		} else {
+			taskKey = s.StableTaskKey(input)
+		}
 		if _, exists := seen[taskKey]; exists {
 			continue
 		}
 		seen[taskKey] = struct{}{}
-		fingerprint := s.QuestionFingerprint(input.QuestionText)
+		if fingerprint == "" {
+			fingerprint = s.QuestionFingerprint(input.QuestionText)
+		}
 		knowledgeStatus := enums.AIReplyTurnTaskKnowledgeStatusNone
 		stage := enums.AIReplyTurnTaskStageGenerate
 		status := enums.AIReplyTurnTaskStatusPending
@@ -124,6 +185,7 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 			TaskKey: taskKey, SequenceNo: input.SequenceNo, TaskType: input.TaskType,
 			Intent: limitText(strings.TrimSpace(input.Intent), 80), SubIntent: limitText(strings.TrimSpace(input.SubIntent), 120),
 			ResourceAction: limitText(strings.TrimSpace(input.ResourceAction), 80), QuestionFingerprint: fingerprint,
+			RelationType: limitText(strings.TrimSpace(input.RelationType), 24), RelatedTaskID: input.RelatedTaskID,
 			Stage: stage, Status: status, KnowledgeStatus: knowledgeStatus,
 			AuditFields: models.AuditFields{
 				CreatedAt: now, CreateUserName: "ai_reply_task",
@@ -150,6 +212,8 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 					"sub_intent":           limitText(strings.TrimSpace(input.SubIntent), 120),
 					"resource_action":      limitText(strings.TrimSpace(input.ResourceAction), 80),
 					"question_fingerprint": fingerprint,
+					"relation_type":        limitText(strings.TrimSpace(input.RelationType), 24),
+					"related_task_id":      input.RelatedTaskID,
 					"updated_at":           now,
 					"update_user_name":     "ai_reply_task",
 				}
@@ -161,6 +225,8 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 				item.SubIntent = limitText(strings.TrimSpace(input.SubIntent), 120)
 				item.ResourceAction = limitText(strings.TrimSpace(input.ResourceAction), 80)
 				item.QuestionFingerprint = fingerprint
+				item.RelationType = limitText(strings.TrimSpace(input.RelationType), 24)
+				item.RelatedTaskID = input.RelatedTaskID
 			}
 		}
 		if created && fingerprint != "" && status != enums.AIReplyTurnTaskStatusHandoffPending {
@@ -188,6 +254,15 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 	}
 	sortAIReplyTurnTasks(ret)
 	return ret, nil
+}
+
+func aiReplyTurnTaskSourceIdentity(sourceMessageID int64, sequenceNo int, taskType enums.AIReplyTurnTaskType) string {
+	return fmt.Sprintf("%d:%d:%s", sourceMessageID, sequenceNo, strings.TrimSpace(string(taskType)))
+}
+
+func normalizeTaskFingerprintPart(value string) string {
+	value = norm.NFKC.String(strings.ToLower(strings.TrimSpace(value)))
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func (s *aiReplyTurnTaskService) findCanonicalDuplicate(db *gorm.DB, turn *models.AIReplyTurn, current *models.AIReplyTurnTask) *models.AIReplyTurnTask {
@@ -339,6 +414,42 @@ func (s *aiReplyTurnTaskService) MarkCommittedMessagesDB(
 			updates["result_code"] = "delivered"
 		}
 		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, updates); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *aiReplyTurnTaskService) MarkSuppressedActionsDB(
+	db *gorm.DB,
+	turn *models.AIReplyTurn,
+	jobID int64,
+	items []AIReplyTurnActionSuppression,
+	now time.Time,
+) error {
+	if db == nil || turn == nil || jobID <= 0 || len(items) == 0 {
+		return nil
+	}
+	for _, item := range items {
+		task, err := repositories.AIReplyTurnTaskRepository.GetForUpdateByKeyInTenant(db, turn.TenantID, turn.ID, strings.TrimSpace(item.TaskKey))
+		if err != nil {
+			return err
+		}
+		if task == nil || aiReplyTurnTaskTerminal(task.Status) || task.ClaimedByJobID != jobID || item.CoveredByMessageID <= 0 {
+			return ErrAIReplyTurnStale
+		}
+		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
+			"stage":                enums.AIReplyTurnTaskStageComplete,
+			"status":               enums.AIReplyTurnTaskStatusCovered,
+			"result_code":          controlledResultCode(item.ResultCode, "resource_action_suppressed"),
+			"committed_message_id": item.CoveredByMessageID,
+			"claimed_by_job_id":    0,
+			"claimed_version":      0,
+			"completed_at":         now,
+			"next_retry_at":        nil,
+			"updated_at":           now,
+			"update_user_name":     "ai_reply_action",
+		}); err != nil {
 			return err
 		}
 	}

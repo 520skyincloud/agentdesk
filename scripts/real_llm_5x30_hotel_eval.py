@@ -25,7 +25,7 @@ import requests
 from openpyxl import load_workbook
 
 
-DEFAULT_MODEL_BASE_URL = "https://ws-v0g7kplxi1rmkpd9.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+DEFAULT_MODEL_BASE_URL = "http://36.138.68.47:6081/v1"
 DEFAULT_MODEL_NAME = "qwen3.6-flash"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

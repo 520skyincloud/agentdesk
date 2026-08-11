@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/reply_tag_context.v1.json",
+  "title": "ReplyTagContextV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "scenes", "tags"],
+  "properties": {
+    "schemaVersion": {
+      "const": "reply_tag_context.v1"
+    },
+    "scenes": {
+      "type": "array",
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "parking_service",
+          "invoice_service",
+          "arrival_service",
+          "checkout_service",
+          "room_selection",
+          "room_assignment",
+          "stay_service",
+          "pet_service",
+          "room_service"
+        ]
+      }
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tagId", "semanticKey", "name"],
+        "properties": {
+          "tagId": {"type": "integer", "minimum": 1},
+          "semanticKey": {"type": "string", "minLength": 1},
+          "name": {"type": "string", "minLength": 1, "maxLength": 5}
+        }
+      }
+    }
+  }
+}

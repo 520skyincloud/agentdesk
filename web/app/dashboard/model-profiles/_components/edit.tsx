@@ -26,6 +26,8 @@ import type {
   ModelUsageSlotOption,
 } from "@/lib/api/admin"
 
+const DEFAULT_NEWAPI_GATEWAY_BASE_URL = "http://36.138.68.47:6081/v1"
+
 const slotSchema = z.object({
   usageCode: z.string().min(1),
   displayName: z.string().min(1),
@@ -112,7 +114,7 @@ function formValues(
       code: "",
       name: "",
       description: "",
-      gatewayBaseUrl: "",
+      gatewayBaseUrl: DEFAULT_NEWAPI_GATEWAY_BASE_URL,
       slots: emptySlots(requiredSlots),
     }
   }
@@ -185,7 +187,7 @@ export function EditDialog({
               <FieldLabel htmlFor="profile-gateway">统一 NewAPI 网关</FieldLabel>
               <Input
                 id="profile-gateway"
-                placeholder="https://gateway.example.com/v1"
+                placeholder={DEFAULT_NEWAPI_GATEWAY_BASE_URL}
                 {...form.register("gatewayBaseUrl")}
               />
               <FieldError>{form.formState.errors.gatewayBaseUrl?.message}</FieldError>

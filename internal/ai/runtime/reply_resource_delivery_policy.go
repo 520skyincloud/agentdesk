@@ -33,12 +33,17 @@ type resourceResendDirective struct {
 }
 
 func (s *replyCommitService) applyRecentResourceDeliveryPolicy(input replyCommitInput, replies []structuredVariableReply, replyText string) ([]structuredVariableReply, string) {
+	filtered, text, _ := s.applyRecentResourceDeliveryPolicyDetailed(input, replies, replyText)
+	return filtered, text
+}
+
+func (s *replyCommitService) applyRecentResourceDeliveryPolicyDetailed(input replyCommitInput, replies []structuredVariableReply, replyText string) ([]structuredVariableReply, string, []svc.AIReplyTurnActionSuppression) {
 	if len(replies) == 0 || strings.TrimSpace(input.ClientPrefix) != "ai_reply" || strings.HasPrefix(strings.TrimSpace(input.Message.RequestID), "manual_resume_") {
-		return replies, replyText
+		return replies, replyText, nil
 	}
 	previous := s.findRecentAIResourceDeliveries(input)
 	if len(previous) == 0 {
-		return replies, replyText
+		return replies, replyText, nil
 	}
 
 	directive := detectResourceResendDirective(input.Message.Content, previous)
@@ -50,6 +55,7 @@ func (s *replyCommitService) applyRecentResourceDeliveryPolicy(input replyCommit
 	}
 
 	filtered := make([]structuredVariableReply, 0, len(replies))
+	suppressions := make([]svc.AIReplyTurnActionSuppression, 0, len(replies))
 	suppressedTypes := make([]string, 0, len(replies))
 	pendingReused := false
 	for _, reply := range replies {
@@ -63,6 +69,7 @@ func (s *replyCommitService) applyRecentResourceDeliveryPolicy(input replyCommit
 		if directive.Ambiguous {
 			suppressedTypes = appendUniqueResourceType(suppressedTypes, reply.ResourceType)
 			s.recordResourceDeliveryDecision(input.Trace, reply, "suppressed", "ambiguous_resend_requires_clarification")
+			suppressions = appendPreparedActionSuppression(suppressions, reply, previousItem, "ambiguous_resend_requires_clarification")
 			continue
 		}
 
@@ -71,6 +78,7 @@ func (s *replyCommitService) applyRecentResourceDeliveryPolicy(input replyCommit
 			suppressedTypes = appendUniqueResourceType(suppressedTypes, reply.ResourceType)
 			s.expediteRecentResourceDelivery(previousItem)
 			s.recordResourceDeliveryDecision(input.Trace, reply, "reused", "pending_delivery_reused")
+			suppressions = appendPreparedActionSuppression(suppressions, reply, previousItem, "pending_delivery_reused")
 			continue
 		}
 
@@ -82,6 +90,7 @@ func (s *replyCommitService) applyRecentResourceDeliveryPolicy(input replyCommit
 
 		suppressedTypes = appendUniqueResourceType(suppressedTypes, reply.ResourceType)
 		s.recordResourceDeliveryDecision(input.Trace, reply, "suppressed", "recent_duplicate_suppressed")
+		suppressions = appendPreparedActionSuppression(suppressions, reply, previousItem, "recent_duplicate_suppressed")
 	}
 
 	switch {
@@ -92,7 +101,24 @@ func (s *replyCommitService) applyRecentResourceDeliveryPolicy(input replyCommit
 	case len(filtered) == 0 && len(suppressedTypes) > 0 && strings.TrimSpace(replyText) == "":
 		replyText = recentResourceAlreadySentNotice(suppressedTypes)
 	}
-	return filtered, strings.TrimSpace(replyText)
+	return filtered, strings.TrimSpace(replyText), suppressions
+}
+
+func appendPreparedActionSuppression(items []svc.AIReplyTurnActionSuppression, reply structuredVariableReply, previous recentAIResourceDelivery, reason string) []svc.AIReplyTurnActionSuppression {
+	actionKey := strings.TrimSpace(reply.ActionKey)
+	if actionKey == "" {
+		return items
+	}
+	for _, item := range items {
+		if item.ActionKey == actionKey {
+			return items
+		}
+	}
+	return append(items, svc.AIReplyTurnActionSuppression{
+		ActionKey: actionKey, TaskKey: strings.TrimSpace(reply.TaskKey),
+		PreparedRevision:   strings.TrimSpace(reply.PreparedRevision),
+		CoveredByMessageID: previous.Message.ID, ResultCode: strings.TrimSpace(reason),
+	})
 }
 
 func (s *replyCommitService) findRecentAIResourceDeliveries(input replyCommitInput) []recentAIResourceDelivery {

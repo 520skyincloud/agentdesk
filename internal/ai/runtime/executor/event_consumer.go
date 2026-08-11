@@ -50,16 +50,20 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 				continue
 			}
 			replyText := strings.TrimSpace(messageOutput.Message.Content)
-			var normalizeErr error
-			replyText, normalizeErr = normalizeGeneratedReplyPartsStrict(replyText, collector.Data.Pipeline.ReplyPlan)
-			if normalizeErr != nil {
-				return normalizeErr
-			}
 			if looksLikeBareToolCallText(replyText) {
 				continue
 			}
 			if replyText != "" {
-				summary.ReplyText = replyText
+				if summary.UseRuntimeV2Generate {
+					summary.RawReplyOutput = replyText
+				} else {
+					var normalizeErr error
+					replyText, normalizeErr = normalizeGeneratedReplyPartsStrict(replyText, collector.Data.Pipeline.ReplyPlan)
+					if normalizeErr != nil {
+						return normalizeErr
+					}
+					summary.ReplyText = replyText
+				}
 			}
 		case schema.Tool:
 			toolName := strings.TrimSpace(messageOutput.ToolName)
@@ -90,7 +94,7 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 			summary.Status = "error"
 		case summary.Interrupted:
 			summary.Status = "interrupted"
-		case strings.TrimSpace(summary.ReplyText) != "":
+		case strings.TrimSpace(summary.ReplyText) != "" || strings.TrimSpace(summary.RawReplyOutput) != "":
 			summary.Status = "completed"
 		case hasInvokedGraphTool(summary.InvokedToolCodes):
 			summary.Status = "completed"

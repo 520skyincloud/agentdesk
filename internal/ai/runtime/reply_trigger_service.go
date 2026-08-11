@@ -404,13 +404,17 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "newer_customer_message"}, nil
 		}
 		replyMessages, err := s.commit.CommitAIReplyBatch(replyCommitInput{
-			Conversation: replyCtx.Conversation,
-			Message:      replyCtx.Message,
-			AIAgent:      replyCtx.AIAgent,
-			ReplyText:    summary.ReplyText,
-			Trace:        replyCtx.Trace,
-			ClientPrefix: "ai_reply",
-			JobID:        svc.AIReplyJobService.CurrentJobID(ctx, replyCtx.Conversation.TenantID, replyCtx.Conversation.ID),
+			Conversation:              replyCtx.Conversation,
+			Message:                   replyCtx.Message,
+			AIAgent:                   replyCtx.AIAgent,
+			ReplyText:                 summary.ReplyText,
+			ReplyParts:                summary.ReplyParts,
+			PreparedActions:           summary.PreparedActions,
+			ActionLedgerV2:            summary.ActionLedgerV2,
+			ActionLedgerAuthoritative: summary.ActionLedgerAuthoritative,
+			Trace:                     replyCtx.Trace,
+			ClientPrefix:              "ai_reply",
+			JobID:                     svc.AIReplyJobService.CurrentJobID(ctx, replyCtx.Conversation.TenantID, replyCtx.Conversation.ID),
 		})
 		if err != nil {
 			var covered *svc.AIReplyTurnCoveredError
@@ -478,13 +482,17 @@ func (s *aiReplyService) retryDifferentQuestionDuplicateAnswer(ctx context.Conte
 		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "newer_customer_message"}, nil
 	}
 	replyMessages, commitErr := s.commit.CommitAIReplyBatch(replyCommitInput{
-		Conversation: replyCtx.Conversation,
-		Message:      replyCtx.Message,
-		AIAgent:      replyCtx.AIAgent,
-		ReplyText:    summary.ReplyText,
-		Trace:        replyCtx.Trace,
-		ClientPrefix: "ai_reply",
-		JobID:        svc.AIReplyJobService.CurrentJobID(retryCtx, replyCtx.Conversation.TenantID, replyCtx.Conversation.ID),
+		Conversation:              replyCtx.Conversation,
+		Message:                   replyCtx.Message,
+		AIAgent:                   replyCtx.AIAgent,
+		ReplyText:                 summary.ReplyText,
+		ReplyParts:                summary.ReplyParts,
+		PreparedActions:           summary.PreparedActions,
+		ActionLedgerV2:            summary.ActionLedgerV2,
+		ActionLedgerAuthoritative: summary.ActionLedgerAuthoritative,
+		Trace:                     replyCtx.Trace,
+		ClientPrefix:              "ai_reply",
+		JobID:                     svc.AIReplyJobService.CurrentJobID(retryCtx, replyCtx.Conversation.TenantID, replyCtx.Conversation.ID),
 	})
 	if commitErr != nil {
 		var covered *svc.AIReplyTurnCoveredError

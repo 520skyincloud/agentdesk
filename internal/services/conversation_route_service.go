@@ -423,7 +423,11 @@ func (s *conversationRouteService) enterHQAgentDeskPendingWithDB(db *gorm.DB, co
 	if err := ServiceAnalyticsCaptureService.RecordQueueEntryWithDB(db, conversationID, state.TenantID, now); err != nil {
 		return nil, err
 	}
-	return repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, state.TenantID), nil
+	updated := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, state.TenantID)
+	if _, err := ConversationDialogueStateService.CatchUpRouteStateDB(db, updated, now); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (s *conversationRouteService) EnterStoreWecomManual(conversationID int64, reason string, now time.Time) (*models.ConversationRouteState, error) {
@@ -456,7 +460,11 @@ func (s *conversationRouteService) enterStoreWecomManualWithDB(db *gorm.DB, conv
 	if err := ServiceAnalyticsCaptureService.RecordQueueEntryWithDB(db, conversationID, state.TenantID, now); err != nil {
 		return nil, err
 	}
-	return repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, state.TenantID), nil
+	updated := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, state.TenantID)
+	if _, err := ConversationDialogueStateService.CatchUpRouteStateDB(db, updated, now); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (s *conversationRouteService) MarkHumanFollowUpHandled(conversationID int64, now time.Time) error {
@@ -472,17 +480,31 @@ func (s *conversationRouteService) MarkHumanFollowUpHandled(conversationID int64
 }
 
 func (s *conversationRouteService) HoldManualRouteForAIResume(conversationID int64, now time.Time) error {
-	state, err := s.Ensure(conversationID)
+	current, err := s.Ensure(conversationID)
 	if err != nil {
 		return err
 	}
-	if !routeStatusBlocksAIReply(state.RouteStatus) {
-		return nil
-	}
-	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
-		"manual_expire_at": nil,
-		"updated_at":       now,
-		"update_user_name": "system",
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		state, err := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, conversationID, current.TenantID)
+		if err != nil {
+			return err
+		}
+		if state == nil {
+			return errorsx.InvalidParam("会话路由不存在")
+		}
+		if !routeStatusBlocksAIReply(state.RouteStatus) {
+			return nil
+		}
+		if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, state.ID, state.TenantID, map[string]any{
+			"manual_expire_at": nil,
+			"updated_at":       now,
+			"update_user_name": "system",
+		}); err != nil {
+			return err
+		}
+		updated := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(ctx.Tx, conversationID, state.TenantID)
+		_, err = ConversationDialogueStateService.CatchUpResumePendingDB(ctx.Tx, updated, now)
+		return err
 	})
 }
 
@@ -510,7 +532,11 @@ func (s *conversationRouteService) enterHQAgentDeskServingWithDB(db *gorm.DB, co
 	}); err != nil {
 		return nil, err
 	}
-	return repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, state.TenantID), nil
+	updated := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, state.TenantID)
+	if _, err := ConversationDialogueStateService.CatchUpRouteStateDB(db, updated, now); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (s *conversationRouteService) RestoreAI(conversationID int64, reason string, now time.Time) error {
@@ -522,37 +548,40 @@ func (s *conversationRouteService) RestoreAIWithFollowUp(conversationID int64, r
 	if err != nil {
 		return err
 	}
-	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, state.TenantID, map[string]any{
-		"route_status":             enums.ConversationRouteStatusAIServing,
-		"route_target":             "ai",
-		"manual_expire_at":         nil,
-		"pending_action":           "",
-		"pending_action_payload":   "",
-		"pending_action_expire_at": nil,
-		"need_human_follow_up":     needHumanFollowUp,
-		"handoff_reason":           reason,
-		"updated_at":               now,
-		"update_user_name":         "system",
+	return s.restoreAIWithFollowUpInTenant(conversationID, state.TenantID, reason, now, needHumanFollowUp)
+}
+
+func (s *conversationRouteService) restoreAIWithFollowUpInTenant(conversationID, tenantID int64, reason string, now time.Time, needHumanFollowUp bool) error {
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		state, err := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, conversationID, tenantID)
+		if err != nil {
+			return err
+		}
+		if state == nil {
+			return errorsx.InvalidParam("会话路由不存在")
+		}
+		if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, state.ID, tenantID, map[string]any{
+			"route_status":             enums.ConversationRouteStatusAIServing,
+			"route_target":             "ai",
+			"manual_expire_at":         nil,
+			"pending_action":           "",
+			"pending_action_payload":   "",
+			"pending_action_expire_at": nil,
+			"need_human_follow_up":     needHumanFollowUp,
+			"handoff_reason":           reason,
+			"updated_at":               now,
+			"update_user_name":         "system",
+		}); err != nil {
+			return err
+		}
+		updated := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(ctx.Tx, conversationID, tenantID)
+		_, err = ConversationDialogueStateService.CatchUpRouteStateDB(ctx.Tx, updated, now)
+		return err
 	})
 }
 
 func (s *conversationRouteService) RestoreAIWithFollowUpInTenant(conversationID, tenantID int64, reason string, now time.Time, needHumanFollowUp bool) error {
-	state := s.GetByConversationIDInTenant(conversationID, tenantID)
-	if state == nil {
-		return errorsx.InvalidParam("会话路由不存在")
-	}
-	return repositories.ConversationRouteStateRepository.UpdatesInTenant(sqls.DB(), state.ID, tenantID, map[string]any{
-		"route_status":             enums.ConversationRouteStatusAIServing,
-		"route_target":             "ai",
-		"manual_expire_at":         nil,
-		"pending_action":           "",
-		"pending_action_payload":   "",
-		"pending_action_expire_at": nil,
-		"need_human_follow_up":     needHumanFollowUp,
-		"handoff_reason":           reason,
-		"updated_at":               now,
-		"update_user_name":         "system",
-	})
+	return s.restoreAIWithFollowUpInTenant(conversationID, tenantID, reason, now, needHumanFollowUp)
 }
 
 func (s *conversationRouteService) MarkStoreSafetyTimeoutReminder(conversationID int64, expireAt time.Time, now time.Time, remark string) error {

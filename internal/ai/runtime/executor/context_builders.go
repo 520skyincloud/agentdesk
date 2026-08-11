@@ -3,12 +3,16 @@ package executor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"agent-desk/internal/ai/replyengine"
+	"agent-desk/internal/ai/runtime/contextcompiler"
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
@@ -22,6 +26,10 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 }
 
 func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector, gate *KnowledgeAnswerabilityGate) ([]*schema.Message, error) {
+	modes := resolveRuntimeFeatureModes(req)
+	if err := validateRuntimeFeatureModes(modes); err != nil {
+		return nil, err
+	}
 	history := adapter.BuildHistoryMessages(req.Conversation.ID, req.UserMessage.ID, req.Conversation.TenantID, 0)
 	if summary != nil {
 		summary.HistoryMessageCount = len(history.Messages)
@@ -34,6 +42,7 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 		collector.Data.Input.ContextMemoryMessageCount = history.MemoryItemCount
 		collector.Data.Input.KnowledgeBaseIDs = utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
 		collector.Data.Input.CurrentUserMessagePreview = preview(req.UserMessage.Content, 120)
+		collector.Data.Pipeline.ContextBuild.Mode = modes.ContextCompiler
 	}
 	plan, err := buildRuntimePipelinePlanStrict(ctx, req, history, nil)
 	if err != nil {
@@ -52,6 +61,16 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 		collector.SetPipeline(plan.Normalize, plan.Intent, plan.PromptSelect, plan.Context, plan.ToolKnowledge, plan.ReplyPlan, plan.Generate, plan.Validate)
 		collector.SetActionLedger(buildInitialActionLedger(plan.Intent))
 	}
+	if plan.PrefetchedKnowledge != nil {
+		if summary != nil {
+			summary.RetrieverCount = len(plan.PrefetchedKnowledge.Hits)
+		}
+		if collector != nil {
+			collector.SetRetrieverSummary(plan.PrefetchedKnowledge.TraceSummary)
+			collector.AddRetrieverItems(plan.PrefetchedKnowledge.TraceItems)
+			collector.SetKnowledgeResources(resolveRuntimeKnowledgeResources(req, plan.PrefetchedKnowledge))
+		}
+	}
 	if skip, taskErr := validateRuntimeTaskPlan(plan); taskErr != nil {
 		return nil, taskErr
 	} else if skip {
@@ -61,44 +80,93 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 		}
 		return nil, nil
 	}
-	messages := make([]*schema.Message, 0, len(history.Messages)+3)
-	if history.MemoryMessage != nil {
-		messages = append(messages, history.MemoryMessage)
-	}
-	messages = append(messages, history.Messages...)
-	if instruction := buildRecentMediaContextInstruction(req, history, plan.Intent); strings.TrimSpace(instruction) != "" {
-		messages = append(messages, schema.SystemMessage(instruction))
-	}
-	if instruction := buildWeatherToolInstruction(plan.Intent); strings.TrimSpace(instruction) != "" {
-		messages = append(messages, schema.SystemMessage(instruction))
-	}
-	if instruction := buildCurrentTurnBoundaryInstruction(req, history, plan.Intent); strings.TrimSpace(instruction) != "" {
-		messages = append(messages, schema.SystemMessage(instruction))
-	}
-	if instruction := buildRecentAnsweredTurnInstruction(req, history); strings.TrimSpace(instruction) != "" {
-		messages = append(messages, schema.SystemMessage(instruction))
-	}
-	if instruction := generationGuardInstruction(ctx); instruction != "" {
-		messages = append(messages, schema.SystemMessage(instruction))
-	}
-	if strings.TrimSpace(plan.Prompt) != "" {
-		messages = append(messages, schema.SystemMessage(plan.Prompt))
-	}
-	if instruction := buildMultiReplyOutputInstruction(plan.ReplyPlan); strings.TrimSpace(instruction) != "" {
-		messages = append(messages, schema.SystemMessage(instruction))
-	}
-	if instruction := buildNoHitTaskInstruction(plan.ReplyPlan, plan.NoHitTaskKeys); strings.TrimSpace(instruction) != "" {
-		messages = append(messages, schema.SystemMessage(instruction))
-	}
-	if instruction := buildAutoHandoffDisabledInstruction(req, plan.Intent); strings.TrimSpace(instruction) != "" {
-		messages = append(messages, schema.SystemMessage(instruction))
-	}
 	if !plan.Intent.ShouldReply {
 		if summary != nil {
 			summary.ReplyText = ""
 			summary.SkipReply = true
+			summary.SkipGeneration = true
 		}
-		return messages, nil
+		return nil, nil
+	}
+	preparedActions := []contracts.PreparedActionV1(nil)
+	if modes.ActionLedger == runtimeActionLedgerAuthoritative {
+		actionLedger := plan.ActionLedgerV2
+		preparedActions, actionLedger, err = prepareRuntimeActions(req, plan.TaskState, plan.ReplyPlanV2, plan.Evidence, actionLedger)
+		if err != nil {
+			return nil, err
+		}
+		plan.ActionLedgerV2 = actionLedger
+	}
+	if summary != nil {
+		summary.ReplyPlanV2 = &plan.ReplyPlanV2
+		summary.EvidenceBundle = &plan.Evidence
+		summary.ActionLedgerV2 = &plan.ActionLedgerV2
+		summary.PreparedActions = preparedActions
+		summary.UseRuntimeV2Generate = modes.ReplyContract == runtimeReplyContractV2
+		summary.UseRuntimeV2DirectGenerate = summary.UseRuntimeV2Generate && !plan.Intent.NeedsTool
+		summary.RuntimeValidatorMode = modes.Validator
+		summary.ActionLedgerAuthoritative = modes.ActionLedger == runtimeActionLedgerAuthoritative
+	}
+	if modes.ContextCompiler == runtimeContextCompilerLegacy {
+		return buildLegacyGenerateMessagesStrict(ctx, req, history, plan, summary, collector, gate)
+	}
+	if modes.ContextCompiler == runtimeContextCompilerShadow {
+		legacyMessages, legacyErr := buildLegacyGenerateMessagesStrict(ctx, req, history, plan, summary, collector, gate)
+		if legacyErr != nil {
+			return nil, legacyErr
+		}
+		if plan.ReplyPlanV2.ShouldGenerate {
+			if _, shadowErr := compileRuntimeGenerateMessages(ctx, req, history, plan, nil, collector, modes, false); shadowErr != nil {
+				slog.Warn("AI runtime context compiler shadow failed", "conversation_id", req.Conversation.ID, "error", shadowErr)
+				if collector != nil {
+					collector.Data.Pipeline.ContextBuild.ShadowStatus = "failed"
+					collector.Data.Pipeline.ContextBuild.ShadowError = "compile_failed"
+				}
+			}
+		}
+		return legacyMessages, nil
+	}
+	if !plan.ReplyPlanV2.ShouldGenerate {
+		if summary != nil {
+			summary.SkipGeneration = true
+		}
+		return nil, nil
+	}
+	messages, err := compileRuntimeGenerateMessages(ctx, req, history, plan, summary, collector, modes, true)
+	if err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+func buildLegacyGenerateMessagesStrict(
+	ctx context.Context,
+	req RunInput,
+	history adapter.HistoryBuildResult,
+	plan runtimePipelinePlan,
+	summary *RunResult,
+	collector *callbacks.RuntimeTraceCollector,
+	gate *KnowledgeAnswerabilityGate,
+) ([]*schema.Message, error) {
+	messages := make([]*schema.Message, 0, len(history.Messages)+12)
+	if history.MemoryMessage != nil {
+		messages = append(messages, history.MemoryMessage)
+	}
+	messages = append(messages, history.Messages...)
+	for _, instruction := range []string{
+		buildRecentMediaContextInstruction(req, history, plan.Intent),
+		buildWeatherToolInstruction(plan.Intent),
+		buildCurrentTurnBoundaryInstruction(req, history, plan.Intent),
+		buildRecentAnsweredTurnInstruction(req, history),
+		generationGuardInstruction(ctx),
+		plan.Prompt,
+		buildMultiReplyOutputInstruction(plan.ReplyPlan),
+		buildNoHitTaskInstruction(plan.ReplyPlan, plan.NoHitTaskKeys),
+		buildAutoHandoffDisabledInstruction(req, plan.Intent),
+	} {
+		if strings.TrimSpace(instruction) != "" {
+			messages = append(messages, schema.SystemMessage(instruction))
+		}
 	}
 	retrievedContext, err := appendRetrievedContextStrict(ctx, req, plan.Intent, plan.PrefetchedKnowledge, summary, collector, gate, &messages)
 	if err != nil {
@@ -110,6 +178,116 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 	}
 	messages = append(messages, schema.UserMessage(buildGenerationUserMessageText(req.UserMessage.Content, plan.Intent)))
 	return messages, nil
+}
+
+func compileRuntimeGenerateMessages(
+	ctx context.Context,
+	req RunInput,
+	history adapter.HistoryBuildResult,
+	plan runtimePipelinePlan,
+	summary *RunResult,
+	collector *callbacks.RuntimeTraceCollector,
+	modes runtimeFeatureModes,
+	activate bool,
+) ([]*schema.Message, error) {
+	resolved, err := services.ModelCallResolverService.ResolveForConversation(req.Conversation.ID, enums.ModelUsageSlotReplyLLM)
+	if err != nil {
+		return nil, err
+	}
+	instance, err := resolveRuntimeCompilerInstance(req, resolved)
+	if err != nil {
+		return nil, err
+	}
+	dialogueState, err := services.ConversationDialogueStateService.Load(req.Conversation.TenantID, req.Conversation.ID, runtimeSessionNo(req))
+	if err != nil {
+		return nil, err
+	}
+	currentMessages := []models.Message{req.UserMessage}
+	if _, sourceMessages, ok := runtimeTaskScope(req); ok && len(sourceMessages) > 0 {
+		currentMessages = sourceMessages
+	}
+	answerabilityStatus := plan.Evidence.RetrievalStatus
+	if answerabilityStatus == "has_context" {
+		answerabilityStatus = answerabilityStatusHasContext
+	}
+	tagMessages := make([]*schema.Message, 0, 1)
+	appendReplyTagContext(req, plan.Intent, plan.ReplyPlan, answerabilityStatus, collector, &tagMessages)
+	tagText := ""
+	if len(tagMessages) > 0 && tagMessages[len(tagMessages)-1] != nil {
+		tagText = strings.TrimSpace(tagMessages[len(tagMessages)-1].Content)
+	}
+	preparedActions := make([]contracts.ActionLedgerItemV1, 0)
+	for _, action := range plan.ActionLedgerV2.Actions {
+		if action.Status == "prepared" {
+			preparedActions = append(preparedActions, action)
+		}
+	}
+	compileInput := contextcompiler.CompileInput{
+		Stage: contextcompiler.CompileStageGenerate,
+		Scope: runtimeCompilerScope(req, resolved, instance), Model: *resolved, Instance: *instance, Agent: req.AIAgent,
+		CurrentMessages: currentMessages, RecentHistory: history.RawItems, Memory: history.Memory, DialogueState: dialogueState,
+		ReplyPlan: &plan.ReplyPlanV2, Evidence: &plan.Evidence, PreparedActions: preparedActions,
+		ReplyTagText: tagText, IntentProfileRevision: runtimeIntentProfileRevision(req),
+		GenerationInstruction:            buildCompiledGenerationInstruction(ctx, req, history, plan, modes),
+		ReplyContract:                    contextcompiler.ReplyContract(modes.ReplyContract),
+		ExpectedEvidenceScopeFingerprint: plan.Evidence.ScopeFingerprint,
+	}
+	compiled, err := contextcompiler.New(nil).Compile(ctx, compileInput)
+	if err != nil {
+		return nil, err
+	}
+	if activate && summary != nil {
+		summary.CompiledContext = &compiled
+		summary.GenerateCompileInput = &compileInput
+	}
+	if collector != nil {
+		if activate {
+			collector.Data.Pipeline.ContextBuild.ContextLimit = compiled.ContextLimit
+			collector.Data.Pipeline.ContextBuild.ReservedOutput = compiled.ReservedOutput
+			collector.Data.Pipeline.ContextBuild.SafetyMargin = compiled.SafetyMargin
+			collector.Data.Pipeline.ContextBuild.AvailableInput = compiled.AvailableInput
+			collector.Data.Pipeline.ContextBuild.EstimatedInput = compiled.EstimatedInput
+			collector.Data.Pipeline.ContextBuild.Estimator = compiled.Estimator
+			collector.Data.Pipeline.ContextBuild.Fingerprint = compiled.Fingerprint
+		} else {
+			collector.Data.Pipeline.ContextBuild.ShadowStatus = "compiled"
+			collector.Data.Pipeline.ContextBuild.ShadowEstimatedInput = compiled.EstimatedInput
+			collector.Data.Pipeline.ContextBuild.ShadowFingerprint = compiled.Fingerprint
+			collector.Data.Pipeline.ContextBuild.ShadowPrunedCount = len(compiled.PrunedItems)
+		}
+	}
+	return compiled.Messages, nil
+}
+
+func buildCompiledGenerationInstruction(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, plan runtimePipelinePlan, modes runtimeFeatureModes) string {
+	parts := []string{
+		generationGuardInstruction(ctx),
+		plan.Prompt,
+		buildWeatherToolInstruction(plan.Intent),
+		buildAutoHandoffDisabledInstruction(req, plan.Intent),
+	}
+	if modes.ReplyContract == runtimeReplyContractLegacy {
+		parts = append(parts,
+			buildRecentMediaContextInstruction(req, history, plan.Intent),
+			buildMultiReplyOutputInstruction(plan.ReplyPlan),
+			buildNoHitTaskInstruction(plan.ReplyPlan, plan.NoHitTaskKeys),
+		)
+	}
+	ret := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			ret = append(ret, part)
+		}
+	}
+	return strings.Join(ret, "\n\n")
+}
+
+func runtimeIntentProfileRevision(req RunInput) int64 {
+	profile := resolveRuntimeIntentProfile(resolveRuntimeIntentScope(req))
+	if profile == nil {
+		return 0
+	}
+	return profile.Revision
 }
 
 func validateRuntimeTaskPlan(plan runtimePipelinePlan) (bool, error) {

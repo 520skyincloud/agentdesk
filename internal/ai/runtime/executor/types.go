@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"agent-desk/internal/ai/runtime/contextcompiler"
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/registry"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/modelconfig"
@@ -32,42 +34,55 @@ type InterruptContextSummary struct {
 }
 
 type RunResult struct {
-	RunID                     string
-	Status                    string
-	ReplyText                 string
-	SelectedSkillCode         string
-	SelectedSkillName         string
-	SkillRouteReason          string
-	SkillRouteTrace           string
-	SkillAllowedToolCodes     []string
-	ModelName                 string
-	PromptTokens              int
-	CompletionTokens          int
-	TotalTokens               int
-	CachedPromptTokens        int
-	ReasoningTokens           int
-	HistoryMessageCount       int
-	ContextMemorySource       string
-	ContextMemoryMessageCount int
-	RetrieverCount            int
-	ToolCallCount             int
-	ToolCodes                 []string
-	InvokedToolCodes          []string
-	CheckPointID              string
-	Interrupted               bool
-	Interrupts                []InterruptContextSummary
-	TraceData                 string
-	ErrorMessage              string
-	SkipReply                 bool
-	ModelUsageCalls           []ModelUsageCall
-	TaskLedgerEnabled         bool
-	TaskKeys                  []string
-	FailedTaskKeys            []string
-	HumanTaskKeys             []string
-	HasRemainingTasks         bool
-	NeedsHumanDispatch        bool
-	SkipGeneration            bool
-	CoveredByTaskID           int64
+	RunID                      string
+	Status                     string
+	ReplyText                  string
+	RawReplyOutput             string
+	SelectedSkillCode          string
+	SelectedSkillName          string
+	SkillRouteReason           string
+	SkillRouteTrace            string
+	SkillAllowedToolCodes      []string
+	ModelName                  string
+	PromptTokens               int
+	CompletionTokens           int
+	TotalTokens                int
+	CachedPromptTokens         int
+	ReasoningTokens            int
+	HistoryMessageCount        int
+	ContextMemorySource        string
+	ContextMemoryMessageCount  int
+	RetrieverCount             int
+	ToolCallCount              int
+	ToolCodes                  []string
+	InvokedToolCodes           []string
+	CheckPointID               string
+	Interrupted                bool
+	Interrupts                 []InterruptContextSummary
+	TraceData                  string
+	ErrorMessage               string
+	SkipReply                  bool
+	ModelUsageCalls            []ModelUsageCall
+	TaskLedgerEnabled          bool
+	TaskKeys                   []string
+	FailedTaskKeys             []string
+	HumanTaskKeys              []string
+	HasRemainingTasks          bool
+	NeedsHumanDispatch         bool
+	SkipGeneration             bool
+	CoveredByTaskID            int64
+	ReplyParts                 []contracts.ReplyPartV2
+	ReplyPlanV2                *contracts.ReplyPlanV2
+	EvidenceBundle             *contracts.EvidenceBundleV1
+	ActionLedgerV2             *contracts.ActionLedgerV1
+	PreparedActions            []contracts.PreparedActionV1
+	ValidationResult           *contracts.ValidationResultV1
+	CompiledContext            *contextcompiler.CompiledModelContext
+	GenerateCompileInput       *contextcompiler.CompileInput
+	UseRuntimeV2Generate       bool
+	UseRuntimeV2DirectGenerate bool
+	RuntimeValidatorMode       string
+	ActionLedgerAuthoritative  bool
 }
 
 // ModelUsageCall preserves one upstream model response. It is intentionally

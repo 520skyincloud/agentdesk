@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
@@ -209,6 +210,9 @@ func (s *modelProfileService) Create(req request.CreateModelProfileRequest, oper
 	}
 	if name == "" {
 		return nil, errorsx.InvalidParam("模型方案名称不能为空")
+	}
+	if gatewayBaseURL == "" {
+		gatewayBaseURL = constants.UnifiedNewAPIGatewayBaseURL
 	}
 	template := &models.ModelProfileTemplate{
 		Code: code, Name: name, Description: description, Revision: revision,

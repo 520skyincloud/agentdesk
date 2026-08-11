@@ -358,6 +358,8 @@ func TestNewServerExposesPublicAuthOptions(t *testing.T) {
 }
 
 func TestNewServerSeparatesAPIStaticAndSPA(t *testing.T) {
+	t.Chdir(filepath.Clean("../.."))
+
 	config.SetCurrent(&config.Config{
 		Storage: config.StorageConfig{
 			Local: config.LocalStorageConfig{

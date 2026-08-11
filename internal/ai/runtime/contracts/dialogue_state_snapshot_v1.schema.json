@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/dialogue_state_snapshot.v1.json",
+  "title": "DialogueStateSnapshotV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "conversationId",
+    "sessionNo",
+    "revision",
+    "basedOnMessageId",
+    "basedOnTurnVersion",
+    "conversationMode",
+    "focus",
+    "resolvedTasks",
+    "openTasks",
+    "sessionFacts",
+    "lastAssistantMessage",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "dialogue_state_snapshot.v1"
+    },
+    "conversationId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sessionNo": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "basedOnMessageId": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "basedOnTurnVersion": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "conversationMode": {
+      "enum": [
+        "ai_serving",
+        "human_pending",
+        "human_serving",
+        "resume_pending",
+        "closed"
+      ]
+    },
+    "focus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "relationToPrior", "activeTaskKeys"],
+      "properties": {
+        "topic": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "relationToPrior": {
+          "enum": [
+            "new_topic",
+            "follow_up",
+            "repeat",
+            "correction",
+            "confirmation",
+            "cancellation",
+            "unknown"
+          ]
+        },
+        "activeTaskKeys": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "resolvedTasks": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["taskKey", "outcome", "answerMessageId", "resolvedAt"],
+        "properties": {
+          "taskKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "outcome": {
+            "enum": ["answered", "resource_sent", "handoff", "cancelled", "superseded"]
+          },
+          "answerMessageId": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resolvedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "openTasks": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["taskKey", "intent", "subIntent", "state", "missingField"],
+        "properties": {
+          "taskKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "subIntent": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "state": {
+            "enum": [
+              "awaiting_knowledge",
+              "awaiting_customer",
+              "awaiting_action",
+              "awaiting_human",
+              "ready_to_generate"
+            ]
+          },
+          "missingField": {
+            "type": ["string", "null"],
+            "maxLength": 80
+          }
+        }
+      }
+    },
+    "sessionFacts": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "value", "source", "confidence", "expiresAt"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "messageId", "taskKey"],
+            "properties": {
+              "type": {
+                "enum": ["customer_message", "agent_message", "ai_commit", "tool", "import"]
+              },
+              "messageId": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "taskKey": {
+                "type": ["string", "null"],
+                "maxLength": 128
+              }
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "expiresAt": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "lastAssistantMessage": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["messageId", "senderType", "taskKeys"],
+          "properties": {
+            "messageId": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "senderType": {
+              "enum": ["ai", "agent"]
+            },
+            "taskKeys": {
+              "type": "array",
+              "maxItems": 12,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            }
+          }
+        }
+      ]
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

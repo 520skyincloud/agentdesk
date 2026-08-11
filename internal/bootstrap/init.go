@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/oidcclient"
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/logx"
@@ -13,6 +14,10 @@ import (
 )
 
 func Init(configPath string) error {
+	if err := contracts.ValidateEmbeddedSchemas(); err != nil {
+		slog.Error("validate AI runtime contracts failed", "error", err)
+		return err
+	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		slog.Error("init config failed", "error", err)

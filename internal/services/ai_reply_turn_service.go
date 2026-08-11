@@ -678,6 +678,9 @@ func (s *aiReplyTurnService) CanDispatchOutboxDB(db *gorm.DB, message *models.Me
 	if turn == nil || turn.ConversationID != message.ConversationID || turn.SessionNo != message.SessionNo {
 		return false, "cancelled_turn_scope_invalid", nil
 	}
+	if message.AIReplyTurnVersion != turn.Version {
+		return false, "cancelled_stale_turn", nil
+	}
 	conversation := repositories.ConversationRepository.GetInTenant(db, message.ConversationID, message.TenantID)
 	if conversation == nil || conversation.StoreID != turn.StoreID || conversation.StoreStaffBindingID != turn.StoreStaffBindingID {
 		return false, "cancelled_turn_scope_invalid", nil
@@ -728,9 +731,6 @@ func (s *aiReplyTurnService) CanDispatchOutboxDB(db *gorm.DB, message *models.Me
 			return true, "", nil
 		}
 		return false, "cancelled_stale_task", nil
-	}
-	if turn.LastCommittedVersion > message.AIReplyTurnVersion {
-		return false, "cancelled_stale_turn", nil
 	}
 	return true, "", nil
 }

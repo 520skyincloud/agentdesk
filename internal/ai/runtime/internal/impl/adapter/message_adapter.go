@@ -19,6 +19,7 @@ type HistoryBuildResult struct {
 	Messages        []*schema.Message
 	RawItems        []models.Message
 	MemoryMessage   *schema.Message
+	Memory          *models.ConversationSessionSummary
 	MemorySource    string
 	MemoryItemCount int
 }
@@ -62,7 +63,7 @@ func BuildHistoryMessages(conversationID, currentMessageID, tenantID int64, limi
 		ret.RawItems = append(ret.RawItems, item)
 		ret.Messages = append(ret.Messages, msg)
 	}
-	ret.MemoryMessage, ret.MemorySource, ret.MemoryItemCount = buildConversationMemoryMessage(conversationID, tenantID, sessionNo, oldestKeptMessageID)
+	ret.MemoryMessage, ret.MemorySource, ret.MemoryItemCount, ret.Memory = buildConversationMemoryMessage(conversationID, tenantID, sessionNo, oldestKeptMessageID)
 	return ret
 }
 
@@ -90,9 +91,9 @@ func configuredHistoryLimit(conversationID, tenantID int64) int {
 	return instance.ContextMaxMessages
 }
 
-func buildConversationMemoryMessage(conversationID, tenantID int64, sessionNo int, beforeMessageID int64) (*schema.Message, string, int) {
+func buildConversationMemoryMessage(conversationID, tenantID int64, sessionNo int, beforeMessageID int64) (*schema.Message, string, int, *models.ConversationSessionSummary) {
 	if conversationID <= 0 || sessionNo <= 0 {
-		return nil, "", 0
+		return nil, "", 0, nil
 	}
 	conversation := repositories.ConversationRepository.Get(sqls.DB(), conversationID)
 	if tenantID > 0 {
@@ -100,12 +101,12 @@ func buildConversationMemoryMessage(conversationID, tenantID int64, sessionNo in
 	}
 	storeID, instanceID := resolveConversationStoreScope(conversationID, tenantID)
 	if conversation != nil && conversation.TenantID > 0 && conversation.CustomerID > 0 && storeID > 0 {
-		if message, source, count := buildStoreCustomerMemoryMessage(conversation, storeID, instanceID, sessionNo, beforeMessageID); message != nil {
-			return message, source, count
+		if message, source, count, memory := buildStoreCustomerMemoryMessage(conversation, storeID, instanceID, sessionNo, beforeMessageID); message != nil {
+			return message, source, count, memory
 		}
 	}
 	if beforeMessageID <= 0 {
-		return nil, "", 0
+		return nil, "", 0, nil
 	}
 	cnd := sqls.NewCnd().
 		Eq("conversation_id", conversationID).
@@ -127,10 +128,11 @@ func buildConversationMemoryMessage(conversationID, tenantID int64, sessionNo in
 	}
 	if summary := repositories.ConversationSessionSummaryRepository.FindOne(sqls.DB(), cnd); summary != nil {
 		if text := buildSummaryMemoryText(summary); text != "" {
-			return schema.SystemMessage(text), "conversation_session_summary", summary.MessageCount
+			memory := *summary
+			return schema.SystemMessage(text), "conversation_session_summary", summary.MessageCount, &memory
 		}
 	}
-	return nil, "", 0
+	return nil, "", 0, nil
 }
 
 func buildStoreCustomerMemoryMessage(
@@ -138,9 +140,9 @@ func buildStoreCustomerMemoryMessage(
 	storeID, instanceID int64,
 	sessionNo int,
 	beforeMessageID int64,
-) (*schema.Message, string, int) {
+) (*schema.Message, string, int, *models.ConversationSessionSummary) {
 	if conversation == nil || conversation.TenantID <= 0 || conversation.CustomerID <= 0 || storeID <= 0 {
-		return nil, "", 0
+		return nil, "", 0, nil
 	}
 	parts := make([]string, 0, 8)
 	seen := make(map[string]struct{})
@@ -189,10 +191,16 @@ func buildStoreCustomerMemoryMessage(
 		}
 	}
 	if len(parts) == 0 {
-		return nil, "", 0
+		return nil, "", 0, nil
 	}
-	content := "以下是该客户在当前门店的历史记忆，只用于承接上下文；不同门店的数据不得混用，原始消息仍以数据库为准：\n" + strings.Join(parts, "\n")
-	return schema.SystemMessage(content), "store_customer_memory", messageCount
+	body := strings.Join(parts, "\n")
+	content := "以下是该客户在当前门店的历史记忆，只用于承接上下文；不同门店的数据不得混用，原始消息仍以数据库为准：\n" + body
+	memory := &models.ConversationSessionSummary{
+		TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: sessionNo,
+		StoreID: storeID, CustomerID: conversation.CustomerID, WxWorkInstanceID: instanceID,
+		StableFacts: body, MessageCount: messageCount,
+	}
+	return schema.SystemMessage(content), "store_customer_memory", messageCount, memory
 }
 
 func appendBoundedStoreMemoryPart(parts []string, seen map[string]struct{}, value string) []string {

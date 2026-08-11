@@ -1810,12 +1810,15 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 		if err := AIReplyTurnService.MarkDeliveredDB(ctx.Tx, message, now); err != nil {
 			return err
 		}
-		return repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, outbox.TenantID, map[string]any{
+		if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, outbox.TenantID, map[string]any{
 			"send_status": string(enums.ChannelMessageOutboxStatusSent),
 			"sent_at":     now,
 			"last_error":  "",
 			"updated_at":  now,
-		})
+		}); err != nil {
+			return err
+		}
+		return AIReplyTurnActionService.MarkDeliveryByOutboxDB(ctx.Tx, outbox.TenantID, outbox.ID, true, "", now)
 	}); err != nil {
 		return err
 	}
@@ -1922,11 +1925,16 @@ func (s *wxWorkProtocolService) dispatchStoreRoomNoticeOutbox(outbox models.Chan
 		return s.markOutboxFailed(outbox, err.Error())
 	}
 	now := time.Now()
-	if err := ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, outbox.TenantID, map[string]any{
-		"send_status": string(enums.ChannelMessageOutboxStatusSent),
-		"sent_at":     now,
-		"last_error":  "",
-		"updated_at":  now,
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, outbox.TenantID, map[string]any{
+			"send_status": string(enums.ChannelMessageOutboxStatusSent),
+			"sent_at":     now,
+			"last_error":  "",
+			"updated_at":  now,
+		}); err != nil {
+			return err
+		}
+		return AIReplyTurnActionService.MarkDeliveryByOutboxDB(ctx.Tx, outbox.TenantID, outbox.ID, true, "", now)
 	}); err != nil {
 		return err
 	}
@@ -2768,12 +2776,17 @@ func (s *wxWorkProtocolService) createMessageRef(conversationID, messageID int64
 func (s *wxWorkProtocolService) markOutboxFailed(outbox models.ChannelMessageOutbox, reason string) error {
 	retryCount := outbox.RetryCount + 1
 	now := time.Now()
-	return ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, outbox.TenantID, map[string]any{
-		"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
-		"retry_count":   retryCount,
-		"next_retry_at": now.Add(time.Minute),
-		"last_error":    redactArrivalBindingTicketError(nil, reason),
-		"updated_at":    now,
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, outbox.TenantID, map[string]any{
+			"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
+			"retry_count":   retryCount,
+			"next_retry_at": now.Add(time.Minute),
+			"last_error":    redactArrivalBindingTicketError(nil, reason),
+			"updated_at":    now,
+		}); err != nil {
+			return err
+		}
+		return AIReplyTurnActionService.MarkDeliveryByOutboxDB(ctx.Tx, outbox.TenantID, outbox.ID, false, "delivery_failed", now)
 	})
 }
 

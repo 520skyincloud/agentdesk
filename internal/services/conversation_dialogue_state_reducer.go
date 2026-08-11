@@ -1,0 +1,324 @@
+package services
+
+import (
+	"sort"
+	"strings"
+	"time"
+
+	"agent-desk/internal/ai/runtime/contracts"
+	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
+)
+
+type DialogueStateEventKind string
+
+const (
+	DialogueStateEventCustomerCommitted  DialogueStateEventKind = "customer_committed"
+	DialogueStateEventIntentCompleted    DialogueStateEventKind = "intent_completed"
+	DialogueStateEventTasksChanged       DialogueStateEventKind = "tasks_changed"
+	DialogueStateEventAssistantCommitted DialogueStateEventKind = "assistant_committed"
+	DialogueStateEventRouteChanged       DialogueStateEventKind = "route_changed"
+	DialogueStateEventResumeChanged      DialogueStateEventKind = "resume_changed"
+)
+
+type DialogueStateEvent struct {
+	Kind             DialogueStateEventKind
+	MessageID        int64
+	TurnVersion      int
+	DialogueAct      string
+	Topic            string
+	ActiveTaskKeys   []string
+	Tasks            []models.AIReplyTurnTask
+	Actions          []models.AIReplyTurnAction
+	ResolvedTaskKeys []string
+	AssistantMessage *models.Message
+	ConversationMode string
+	SessionFacts     []contracts.DialogueStateSessionFact
+	Now              time.Time
+}
+
+func ReduceDialogueState(current contracts.DialogueStateSnapshotV1, event DialogueStateEvent) contracts.DialogueStateSnapshotV1 {
+	if dialogueStateEventIsStale(current, event) {
+		return current
+	}
+	if event.Now.IsZero() {
+		event.Now = time.Now().UTC()
+	}
+	if current.UpdatedAt.After(event.Now) {
+		event.Now = current.UpdatedAt
+	}
+	if event.MessageID > current.BasedOnMessageID {
+		current.BasedOnMessageID = event.MessageID
+	}
+	if event.Kind != DialogueStateEventCustomerCommitted && event.TurnVersion > current.BasedOnTurnVersion {
+		current.BasedOnTurnVersion = event.TurnVersion
+	}
+	if event.Kind == DialogueStateEventCustomerCommitted {
+		boundDialogueState(&current, event.Now)
+		current.SchemaVersion = contracts.DialogueStateSnapshotV1SchemaVersion
+		current.UpdatedAt = event.Now.UTC()
+		return current
+	}
+	if mode := normalizeDialogueConversationMode(event.ConversationMode); mode != "" {
+		current.ConversationMode = mode
+	}
+	if relation := normalizeDialogueStateRelation(event.DialogueAct); relation != "" {
+		current.Focus.RelationToPrior = relation
+	}
+	if topic := boundedDialogueText(event.Topic, 120); topic != "" {
+		current.Focus.Topic = topic
+	}
+	if len(event.ActiveTaskKeys) > 0 {
+		current.Focus.ActiveTaskKeys = uniqueBoundedStrings(event.ActiveTaskKeys, 12, 128)
+	}
+	if len(event.Tasks) > 0 {
+		applyDialogueTasks(&current, event.Tasks, event.Now)
+	}
+	if len(event.Actions) > 0 {
+		applyDialogueActions(&current, event.Actions)
+	}
+	if len(event.ResolvedTaskKeys) > 0 {
+		for _, taskKey := range event.ResolvedTaskKeys {
+			resolveDialogueTask(&current, taskKey, "answered", assistantMessageID(event.AssistantMessage), event.Now)
+		}
+	}
+	if event.AssistantMessage != nil && event.AssistantMessage.ID > 0 {
+		senderType := "ai"
+		if event.AssistantMessage.SenderType == enums.IMSenderTypeAgent {
+			senderType = "agent"
+		}
+		current.LastAssistant = &contracts.DialogueStateLastAssistant{
+			MessageID: event.AssistantMessage.ID, SenderType: senderType,
+			TaskKeys: uniqueBoundedStrings(event.ResolvedTaskKeys, 12, 128),
+		}
+	}
+	if len(event.SessionFacts) > 0 {
+		current.SessionFacts = mergeDialogueFacts(current.SessionFacts, event.SessionFacts, event.Now)
+	}
+	boundDialogueState(&current, event.Now)
+	current.SchemaVersion = contracts.DialogueStateSnapshotV1SchemaVersion
+	current.UpdatedAt = event.Now.UTC()
+	return current
+}
+
+func dialogueStateEventIsStale(current contracts.DialogueStateSnapshotV1, event DialogueStateEvent) bool {
+	if event.MessageID > 0 && current.BasedOnMessageID > 0 {
+		if event.Kind == DialogueStateEventCustomerCommitted && event.MessageID <= current.BasedOnMessageID {
+			return true
+		}
+		if event.MessageID < current.BasedOnMessageID {
+			return true
+		}
+	}
+	return event.Kind != DialogueStateEventCustomerCommitted &&
+		event.TurnVersion > 0 && current.BasedOnTurnVersion > 0 &&
+		event.TurnVersion < current.BasedOnTurnVersion
+}
+
+func applyDialogueTasks(state *contracts.DialogueStateSnapshotV1, tasks []models.AIReplyTurnTask, now time.Time) {
+	for _, task := range tasks {
+		if task.TaskKey == "" {
+			continue
+		}
+		if outcome, terminal := dialogueTaskOutcome(task.Status); terminal {
+			resolveDialogueTask(state, task.TaskKey, outcome, task.CommittedMessageID, now)
+			continue
+		}
+		open := contracts.DialogueStateOpenTask{
+			TaskKey: task.TaskKey, Intent: boundedDialogueText(task.Intent, 80), SubIntent: boundedDialogueText(task.SubIntent, 120),
+			State: dialogueOpenTaskState(task), MissingField: nil,
+		}
+		upsertDialogueOpenTask(state, open)
+	}
+}
+
+func applyDialogueActions(state *contracts.DialogueStateSnapshotV1, actions []models.AIReplyTurnAction) {
+	for _, action := range actions {
+		if action.TaskKey == "" {
+			continue
+		}
+		for i := range state.OpenTasks {
+			if state.OpenTasks[i].TaskKey != action.TaskKey {
+				continue
+			}
+			switch action.Status {
+			case "requested", "prepared", "committed", "delivery_failed":
+				state.OpenTasks[i].State = "awaiting_action"
+			case "delivered":
+				state.OpenTasks[i].State = "ready_to_generate"
+			}
+		}
+	}
+}
+
+func resolveDialogueTask(state *contracts.DialogueStateSnapshotV1, taskKey, outcome string, answerMessageID int64, now time.Time) {
+	taskKey = strings.TrimSpace(taskKey)
+	if taskKey == "" {
+		return
+	}
+	filtered := state.OpenTasks[:0]
+	for _, open := range state.OpenTasks {
+		if open.TaskKey != taskKey {
+			filtered = append(filtered, open)
+		}
+	}
+	state.OpenTasks = filtered
+	resolved := contracts.DialogueStateResolvedTask{TaskKey: taskKey, Outcome: outcome, AnswerMessageID: max(answerMessageID, 0), ResolvedAt: now.UTC()}
+	for i := range state.ResolvedTasks {
+		if state.ResolvedTasks[i].TaskKey == taskKey {
+			state.ResolvedTasks[i] = resolved
+			return
+		}
+	}
+	state.ResolvedTasks = append(state.ResolvedTasks, resolved)
+}
+
+func upsertDialogueOpenTask(state *contracts.DialogueStateSnapshotV1, task contracts.DialogueStateOpenTask) {
+	for i := range state.OpenTasks {
+		if state.OpenTasks[i].TaskKey == task.TaskKey {
+			state.OpenTasks[i] = task
+			return
+		}
+	}
+	state.OpenTasks = append(state.OpenTasks, task)
+}
+
+func dialogueTaskOutcome(status enums.AIReplyTurnTaskStatus) (string, bool) {
+	switch status {
+	case enums.AIReplyTurnTaskStatusDelivered:
+		return "answered", true
+	case enums.AIReplyTurnTaskStatusCovered:
+		return "superseded", true
+	case enums.AIReplyTurnTaskStatusHandoff, enums.AIReplyTurnTaskStatusHandoffPending:
+		return "handoff", true
+	case enums.AIReplyTurnTaskStatusSkipped:
+		return "cancelled", true
+	case enums.AIReplyTurnTaskStatusSuperseded:
+		return "superseded", true
+	case enums.AIReplyTurnTaskStatusFailed:
+		return "cancelled", true
+	default:
+		return "", false
+	}
+}
+
+func dialogueOpenTaskState(task models.AIReplyTurnTask) string {
+	switch task.Status {
+	case enums.AIReplyTurnTaskStatusHandoffPending:
+		return "awaiting_human"
+	}
+	switch task.KnowledgeStatus {
+	case enums.AIReplyTurnTaskKnowledgeStatusPending:
+		return "awaiting_knowledge"
+	case enums.AIReplyTurnTaskKnowledgeStatusNoHit:
+		return "awaiting_customer"
+	}
+	if task.TaskType == enums.AIReplyTurnTaskTypeResource || task.TaskType == enums.AIReplyTurnTaskTypeHuman {
+		return "awaiting_action"
+	}
+	return "ready_to_generate"
+}
+
+func mergeDialogueFacts(existing, incoming []contracts.DialogueStateSessionFact, now time.Time) []contracts.DialogueStateSessionFact {
+	byKey := make(map[string]contracts.DialogueStateSessionFact)
+	order := make([]string, 0, len(existing)+len(incoming))
+	appendFact := func(fact contracts.DialogueStateSessionFact) {
+		fact.Key = boundedDialogueText(fact.Key, 80)
+		fact.Value = boundedDialogueText(fact.Value, 300)
+		if fact.Key == "" || fact.Value == "" || fact.ExpiresAt != nil && fact.ExpiresAt.Before(now) {
+			return
+		}
+		if _, ok := byKey[fact.Key]; !ok {
+			order = append(order, fact.Key)
+		}
+		byKey[fact.Key] = fact
+	}
+	for _, fact := range existing {
+		appendFact(fact)
+	}
+	for _, fact := range incoming {
+		appendFact(fact)
+	}
+	ret := make([]contracts.DialogueStateSessionFact, 0, len(order))
+	for _, key := range order {
+		ret = append(ret, byKey[key])
+	}
+	if len(ret) > 24 {
+		ret = ret[len(ret)-24:]
+	}
+	return ret
+}
+
+func boundDialogueState(state *contracts.DialogueStateSnapshotV1, now time.Time) {
+	state.Focus.Topic = boundedDialogueText(state.Focus.Topic, 120)
+	state.Focus.RelationToPrior = normalizeDialogueStateRelation(state.Focus.RelationToPrior)
+	if state.Focus.RelationToPrior == "" {
+		state.Focus.RelationToPrior = "unknown"
+	}
+	state.Focus.ActiveTaskKeys = uniqueBoundedStrings(state.Focus.ActiveTaskKeys, 12, 128)
+	if len(state.OpenTasks) > 12 {
+		state.OpenTasks = state.OpenTasks[len(state.OpenTasks)-12:]
+	}
+	sort.SliceStable(state.ResolvedTasks, func(i, j int) bool {
+		return state.ResolvedTasks[i].ResolvedAt.Before(state.ResolvedTasks[j].ResolvedAt)
+	})
+	if len(state.ResolvedTasks) > 20 {
+		state.ResolvedTasks = state.ResolvedTasks[len(state.ResolvedTasks)-20:]
+	}
+	state.SessionFacts = mergeDialogueFacts(nil, state.SessionFacts, now)
+}
+
+func normalizeDialogueConversationMode(value string) string {
+	switch strings.TrimSpace(value) {
+	case "ai_serving", "human_pending", "human_serving", "resume_pending", "closed":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
+}
+
+func normalizeDialogueStateRelation(value string) string {
+	switch strings.TrimSpace(value) {
+	case "new_topic", "follow_up", "repeat", "correction", "confirmation", "cancellation", "unknown":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
+
+}
+
+func uniqueBoundedStrings(items []string, limit, runeLimit int) []string {
+	ret := make([]string, 0, min(len(items), limit))
+	seen := make(map[string]struct{})
+	for _, item := range items {
+		item = boundedDialogueText(item, runeLimit)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		ret = append(ret, item)
+		if len(ret) >= limit {
+			break
+		}
+	}
+	return ret
+}
+
+func boundedDialogueText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if limit > 0 && len(runes) > limit {
+		runes = runes[:limit]
+	}
+	return strings.TrimSpace(string(runes))
+}
+
+func assistantMessageID(message *models.Message) int64 {
+	if message == nil {
+		return 0
+	}
+	return message.ID
+}

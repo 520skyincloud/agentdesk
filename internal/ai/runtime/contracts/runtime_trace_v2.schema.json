@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/runtime_trace.v2.json",
+  "title": "RuntimeTraceV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "requestId",
+    "scope",
+    "turn",
+    "stages",
+    "context",
+    "modelCalls",
+    "final"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "runtime_trace.v2"},
+    "runId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "requestId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenantId",
+        "storeId",
+        "conversationId",
+        "sessionNo",
+        "wxWorkInstanceId",
+        "storeStaffBindingId"
+      ],
+      "properties": {
+        "tenantId": {"type": "integer", "minimum": 1},
+        "storeId": {"type": "integer", "minimum": 1},
+        "conversationId": {"type": "integer", "minimum": 1},
+        "sessionNo": {"type": "integer", "minimum": 1},
+        "wxWorkInstanceId": {"type": "integer", "minimum": 1},
+        "storeStaffBindingId": {"type": "integer", "minimum": 1}
+      }
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turnId", "turnVersion", "jobId", "leaseOwnerHash"],
+      "properties": {
+        "turnId": {"type": "integer", "minimum": 1},
+        "turnVersion": {"type": "integer", "minimum": 1},
+        "jobId": {"type": "integer", "minimum": 1},
+        "leaseOwnerHash": {"type": "string", "maxLength": 64}
+      }
+    },
+    "stages": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status", "reasonCode", "durationMs"],
+        "properties": {
+          "name": {
+            "enum": [
+              "normalize",
+              "intent_context",
+              "intent_detect",
+              "task_ledger",
+              "knowledge",
+              "answerability",
+              "action_prepare",
+              "human_route",
+              "reply_plan",
+              "tag_context",
+              "generate_context",
+              "generate",
+              "validate",
+              "commit",
+              "outbox"
+            ]
+          },
+          "status": {"enum": ["pending", "running", "passed", "skipped", "failed"]},
+          "reasonCode": {"type": "string", "maxLength": 80},
+          "durationMs": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fingerprint",
+        "contextLimit",
+        "reservedOutput",
+        "safetyMargin",
+        "availableInput",
+        "estimatedInput",
+        "estimator",
+        "categoryTokens",
+        "pruned"
+      ],
+      "properties": {
+        "fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "contextLimit": {"type": "integer", "minimum": 1},
+        "reservedOutput": {"type": "integer", "minimum": 1},
+        "safetyMargin": {"type": "integer", "minimum": 0},
+        "availableInput": {"type": "integer", "minimum": 1},
+        "estimatedInput": {"type": "integer", "minimum": 0},
+        "estimator": {"enum": ["exact", "compatible", "conservative"]},
+        "categoryTokens": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "pruned": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["category", "itemRef", "reason", "estimatedTokens"],
+            "properties": {
+              "category": {"type": "string", "maxLength": 40},
+              "itemRef": {"type": "string", "maxLength": 128},
+              "reason": {"type": "string", "maxLength": 80},
+              "estimatedTokens": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
+      }
+    },
+    "modelCalls": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stage",
+          "repairIndex",
+          "provider",
+          "model",
+          "requestId",
+          "promptTokens",
+          "completionTokens",
+          "reasoningTokens",
+          "quota",
+          "durationMs",
+          "status"
+        ],
+        "properties": {
+          "stage": {"enum": ["intent_detect", "reply_generate"]},
+          "repairIndex": {"type": "integer", "minimum": 0, "maximum": 1},
+          "provider": {"type": "string", "maxLength": 40},
+          "model": {"type": "string", "maxLength": 120},
+          "requestId": {"type": "string", "maxLength": 128},
+          "promptTokens": {"type": "integer", "minimum": 0},
+          "completionTokens": {"type": "integer", "minimum": 0},
+          "reasoningTokens": {"type": "integer", "minimum": 0},
+          "quota": {"type": "number", "minimum": 0},
+          "durationMs": {"type": "integer", "minimum": 0},
+          "status": {"enum": ["completed", "failed", "cancelled"]}
+        }
+      }
+    },
+    "final": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "action", "reasonCode", "committedMessageIds", "outboxIds"],
+      "properties": {
+        "status": {"enum": ["completed", "skipped", "failed", "superseded", "interrupted"]},
+        "action": {"enum": ["reply", "resource", "handoff", "none", "error"]},
+        "reasonCode": {"type": "string", "maxLength": 80},
+        "committedMessageIds": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 1}
+        },
+        "outboxIds": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  }
+}

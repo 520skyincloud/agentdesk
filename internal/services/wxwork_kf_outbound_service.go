@@ -189,6 +189,9 @@ func (s *wxWorkKFOutboundService) processOutbox(outboxID, tenantID int64) error 
 		}); err != nil {
 			return err
 		}
+		if err := AIReplyTurnActionService.MarkDeliveryByOutboxDB(ctx.Tx, outbox.TenantID, outbox.ID, true, "", now); err != nil {
+			return err
+		}
 		if existing := repositories.WxWorkKFMessageRefRepository.FindOne(ctx.Tx, sqls.NewCnd().Eq("tenant_id", outbox.TenantID).Eq("message_id", message.ID).Eq("direction", string(enums.WxWorkKFMessageDirectionOut))); existing == nil {
 			for i := range wxMsgIDs {
 				rawPayload := strings.TrimSpace(outbox.Payload)
@@ -377,14 +380,19 @@ func (s *wxWorkKFOutboundService) markOutboxFailed(outbox *models.ChannelMessage
 	if retryCount >= wxWorkKFOutboxMaxRetry {
 		nextRetryAt = nil
 	}
-	return ChannelMessageOutboxService.UpdatesInTenant(outbox.ID, outbox.TenantID, map[string]any{
-		"send_status":      status,
-		"retry_count":      retryCount,
-		"next_retry_at":    nextRetryAt,
-		"last_error":       strings.TrimSpace(errMsg),
-		"updated_at":       now,
-		"update_user_id":   outbox.UpdateUserID,
-		"update_user_name": outbox.UpdateUserName,
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, outbox.TenantID, map[string]any{
+			"send_status":      status,
+			"retry_count":      retryCount,
+			"next_retry_at":    nextRetryAt,
+			"last_error":       strings.TrimSpace(errMsg),
+			"updated_at":       now,
+			"update_user_id":   outbox.UpdateUserID,
+			"update_user_name": outbox.UpdateUserName,
+		}); err != nil {
+			return err
+		}
+		return AIReplyTurnActionService.MarkDeliveryByOutboxDB(ctx.Tx, outbox.TenantID, outbox.ID, false, "delivery_failed", now)
 	})
 }
 

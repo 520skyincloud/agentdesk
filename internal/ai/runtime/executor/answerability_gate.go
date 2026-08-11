@@ -34,6 +34,12 @@ const (
 	answerabilityStatusUnanswerable = "unanswerable"
 )
 
+type AnswerabilityOutcome struct {
+	Status         string
+	ReasonCode     string
+	SupportingRefs []string
+}
+
 type knowledgeContextRetriever interface {
 	KnowledgeBaseIDs() []int64
 	RetrieveContextByOptions(ctx context.Context, opts retrievers.KnowledgeRetrieveOptions, query string) (*retrievers.KnowledgeRetrieveResult, error)

@@ -62,6 +62,7 @@ var Models = []any{
 	&ConversationParticipant{},
 	&ConversationReadState{},
 	&Message{},
+	&MessageAnalysis{},
 	&WxWorkKFSyncState{},
 	&WxWorkKFConversation{},
 	&WxWorkKFMessageRef{},
@@ -69,9 +70,11 @@ var Models = []any{
 	&ConversationRouteState{},
 	&AIReplyTurn{},
 	&AIReplyTurnTask{},
+	&AIReplyTurnAction{},
 	&AIReplyJob{},
 	&AIManualResumeTask{},
 	&ConversationSessionSummary{},
+	&ConversationDialogueState{},
 	&ConversationServiceSession{},
 	&ConversationResponseSpan{},
 	&AgentPresenceSession{},
@@ -752,6 +755,8 @@ type AIReplyTurnTask struct {
 	SubIntent           string                               `gorm:"type:varchar(120);not null;default:'';index"`
 	ResourceAction      string                               `gorm:"type:varchar(80);not null;default:'';index"`
 	QuestionFingerprint string                               `gorm:"type:varchar(64);not null;default:'';index"`
+	RelationType        string                               `gorm:"type:varchar(24);not null;default:'';index"`
+	RelatedTaskID       int64                                `gorm:"type:bigint;not null;default:0;index"`
 	Stage               enums.AIReplyTurnTaskStage           `gorm:"type:varchar(24);not null;default:'intent';index"`
 	Status              enums.AIReplyTurnTaskStatus          `gorm:"type:varchar(24);not null;default:'pending';index;index:idx_ai_reply_turn_task_due,priority:1"`
 	KnowledgeStatus     enums.AIReplyTurnTaskKnowledgeStatus `gorm:"type:varchar(24);not null;default:'none';index"`

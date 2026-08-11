@@ -189,6 +189,7 @@ type IntentTraceData struct {
 	MatchedIntentCode    string                `json:"matchedIntentCode,omitempty"`
 	PrimaryIntent        string                `json:"primaryIntent,omitempty"`
 	SubIntent            string                `json:"subIntent,omitempty"`
+	DialogueAct          string                `json:"dialogueAct,omitempty"`
 	SecondaryIntents     []string              `json:"secondaryIntents,omitempty"`
 	SecondaryIntentCodes []string              `json:"secondaryIntentCodes,omitempty"`
 	IntentConfidence     float64               `json:"intentConfidence,omitempty"`
@@ -212,15 +213,19 @@ type IntentTraceData struct {
 }
 
 type IntentTaskTraceData struct {
-	Intent          string `json:"intent,omitempty"`
-	SubIntent       string `json:"subIntent,omitempty"`
-	Text            string `json:"text,omitempty"`
-	NeedsKnowledge  bool   `json:"needsKnowledge,omitempty"`
-	NeedsResource   bool   `json:"needsResource,omitempty"`
-	NeedsTool       bool   `json:"needsTool,omitempty"`
-	NeedsHumanRoute bool   `json:"needsHumanRoute,omitempty"`
-	ResourceAction  string `json:"resourceAction,omitempty"`
-	Reason          string `json:"reason,omitempty"`
+	Sequence        int     `json:"sequence,omitempty"`
+	Intent          string  `json:"intent,omitempty"`
+	SubIntent       string  `json:"subIntent,omitempty"`
+	Text            string  `json:"text,omitempty"`
+	RequestMode     string  `json:"requestMode,omitempty"`
+	Confidence      float64 `json:"confidence,omitempty"`
+	NeedsKnowledge  bool    `json:"needsKnowledge,omitempty"`
+	NeedsResource   bool    `json:"needsResource,omitempty"`
+	NeedsTool       bool    `json:"needsTool,omitempty"`
+	NeedsHumanRoute bool    `json:"needsHumanRoute,omitempty"`
+	ResourceAction  string  `json:"resourceAction,omitempty"`
+	MatchedConfigID int64   `json:"matchedConfigId,omitempty"`
+	Reason          string  `json:"reason,omitempty"`
 }
 
 type CommitMessageTraceData struct {
@@ -268,6 +273,7 @@ type IntentPromptTraceData struct {
 }
 
 type ContextBuildTraceData struct {
+	Mode                    string   `json:"mode,omitempty"`
 	CurrentTurn             string   `json:"currentTurn,omitempty"`
 	RecentRawMessageCount   int      `json:"recentRawMessageCount,omitempty"`
 	CompressedMemorySource  string   `json:"compressedMemorySource,omitempty"`
@@ -275,6 +281,18 @@ type ContextBuildTraceData struct {
 	MediaContextCount       int      `json:"mediaContextCount,omitempty"`
 	Priority                []string `json:"priority,omitempty"`
 	IntentResourcesExpected []string `json:"intentResourcesExpected,omitempty"`
+	ContextLimit            int      `json:"contextLimit,omitempty"`
+	ReservedOutput          int      `json:"reservedOutput,omitempty"`
+	SafetyMargin            int      `json:"safetyMargin,omitempty"`
+	AvailableInput          int      `json:"availableInput,omitempty"`
+	EstimatedInput          int      `json:"estimatedInput,omitempty"`
+	Estimator               string   `json:"estimator,omitempty"`
+	Fingerprint             string   `json:"fingerprint,omitempty"`
+	ShadowStatus            string   `json:"shadowStatus,omitempty"`
+	ShadowEstimatedInput    int      `json:"shadowEstimatedInput,omitempty"`
+	ShadowFingerprint       string   `json:"shadowFingerprint,omitempty"`
+	ShadowPrunedCount       int      `json:"shadowPrunedCount,omitempty"`
+	ShadowError             string   `json:"shadowError,omitempty"`
 }
 
 type ReplyPlanTraceData struct {
@@ -288,10 +306,13 @@ type ReplyPlanTraceData struct {
 
 type ReplyTaskPlanTraceData struct {
 	TaskKey        string `json:"taskKey,omitempty"`
+	Sequence       int    `json:"sequence,omitempty"`
 	AnswerGroup    string `json:"answerGroup,omitempty"`
 	Intent         string `json:"intent,omitempty"`
 	SubIntent      string `json:"subIntent,omitempty"`
 	Text           string `json:"text,omitempty"`
+	RequestMode    string `json:"requestMode,omitempty"`
+	RelationType   string `json:"relationType,omitempty"`
 	Output         string `json:"output,omitempty"`
 	ResourceAction string `json:"resourceAction,omitempty"`
 }

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/registry"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/modelconfig"
@@ -32,39 +33,43 @@ type InterruptContextSummary struct {
 }
 
 type Summary struct {
-	RunID                 string
-	Status                string
-	ReplyText             string
-	PlannedSkillCode      string
-	PlannedSkillName      string
-	PlanReason            string
-	SkillRouteTrace       string
-	SkillAllowedToolCodes []string
-	ModelName             string
-	PromptTokens          int
-	CompletionTokens      int
-	TotalTokens           int
-	CachedPromptTokens    int
-	ReasoningTokens       int
-	HistoryMessageCount   int
-	RetrieverCount        int
-	ToolCallCount         int
-	ToolCodes             []string
-	InvokedToolCodes      []string
-	CheckPointID          string
-	Interrupted           bool
-	Interrupts            []InterruptContextSummary
-	TraceData             string
-	ErrorMessage          string
-	PolicySkipped         bool
-	ModelUsageCalls       []ModelUsageCall
-	TaskLedgerEnabled     bool
-	TaskKeys              []string
-	FailedTaskKeys        []string
-	HumanTaskKeys         []string
-	HasRemainingTasks     bool
-	NeedsHumanDispatch    bool
-	CoveredByTaskID       int64
+	RunID                     string
+	Status                    string
+	ReplyText                 string
+	PlannedSkillCode          string
+	PlannedSkillName          string
+	PlanReason                string
+	SkillRouteTrace           string
+	SkillAllowedToolCodes     []string
+	ModelName                 string
+	PromptTokens              int
+	CompletionTokens          int
+	TotalTokens               int
+	CachedPromptTokens        int
+	ReasoningTokens           int
+	HistoryMessageCount       int
+	RetrieverCount            int
+	ToolCallCount             int
+	ToolCodes                 []string
+	InvokedToolCodes          []string
+	CheckPointID              string
+	Interrupted               bool
+	Interrupts                []InterruptContextSummary
+	TraceData                 string
+	ErrorMessage              string
+	PolicySkipped             bool
+	ModelUsageCalls           []ModelUsageCall
+	TaskLedgerEnabled         bool
+	TaskKeys                  []string
+	FailedTaskKeys            []string
+	HumanTaskKeys             []string
+	HasRemainingTasks         bool
+	NeedsHumanDispatch        bool
+	CoveredByTaskID           int64
+	ReplyParts                []contracts.ReplyPartV2
+	PreparedActions           []contracts.PreparedActionV1
+	ActionLedgerV2            *contracts.ActionLedgerV1
+	ActionLedgerAuthoritative bool
 }
 
 type ModelUsageCall struct {

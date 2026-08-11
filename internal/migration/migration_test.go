@@ -82,7 +82,7 @@ func TestPreflightRejectsUnknownDefinitionBeforeSchemaMutation(t *testing.T) {
 }
 
 func TestFreshOnlyMigrationBaselineContainsCurrentInitializers(t *testing.T) {
-	want := []int64{2, 15, 35, 68, 69, 70, 71, 72, 74}
+	want := []int64{2, 15, 35, 68, 69, 70, 71, 72, 74, 75}
 	if !reflect.DeepEqual(versions, want) {
 		t.Fatalf("registered migration versions=%v want=%v", versions, want)
 	}

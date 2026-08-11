@@ -1,0 +1,82 @@
+package contracts
+
+import (
+	"embed"
+	"fmt"
+	"sort"
+
+	"agent-desk/internal/pkg/strictjson"
+)
+
+const (
+	SchemaMessageAnalysisV1        = "message_analysis.v1"
+	SchemaDialogueStateSnapshotV1  = "dialogue_state_snapshot.v1"
+	SchemaIntentTasksV2            = "intent_tasks.v2"
+	SchemaReplyPlanV2              = "reply_plan.v2"
+	SchemaActionLedgerV1           = "action_ledger.v1"
+	SchemaEvidenceBundleV1         = "evidence_bundle.v1"
+	SchemaRuntimeContextSnapshotV1 = "runtime_context_snapshot.v1"
+	SchemaReplyOutputV2            = "reply_output.v2"
+	SchemaValidationResultV1       = "validation_result.v1"
+	SchemaReplyTagContextV1        = "reply_tag_context.v1"
+	SchemaRuntimeTraceV2           = "runtime_trace.v2"
+)
+
+//go:embed *.schema.json
+var schemaFiles embed.FS
+
+var schemaFilenameByName = map[string]string{
+	SchemaMessageAnalysisV1:        "message_analysis_v1.schema.json",
+	SchemaDialogueStateSnapshotV1:  "dialogue_state_snapshot_v1.schema.json",
+	SchemaIntentTasksV2:            "intent_tasks_v2.schema.json",
+	SchemaReplyPlanV2:              "reply_plan_v2.schema.json",
+	SchemaActionLedgerV1:           "action_ledger_v1.schema.json",
+	SchemaEvidenceBundleV1:         "evidence_bundle_v1.schema.json",
+	SchemaRuntimeContextSnapshotV1: "runtime_context_snapshot_v1.schema.json",
+	SchemaReplyOutputV2:            "reply_output_v2.schema.json",
+	SchemaValidationResultV1:       "validation_result_v1.schema.json",
+	SchemaReplyTagContextV1:        "reply_tag_context_v1.schema.json",
+	SchemaRuntimeTraceV2:           "runtime_trace_v2.schema.json",
+}
+
+func Schema(name string) ([]byte, error) {
+	filename, ok := schemaFilenameByName[name]
+	if !ok {
+		return nil, fmt.Errorf("unknown runtime contract schema %q", name)
+	}
+	raw, err := schemaFiles.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("read runtime contract schema %q: %w", name, err)
+	}
+	return append([]byte(nil), raw...), nil
+}
+
+func MustSchema(name string) []byte {
+	raw, err := Schema(name)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func SchemaNames() []string {
+	names := make([]string, 0, len(schemaFilenameByName))
+	for name := range schemaFilenameByName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func ValidateEmbeddedSchemas() error {
+	for _, name := range SchemaNames() {
+		raw, err := Schema(name)
+		if err != nil {
+			return err
+		}
+		if err := strictjson.ValidateSchemaDefinition(raw); err != nil {
+			return fmt.Errorf("validate runtime contract schema %q: %w", name, err)
+		}
+	}
+	return nil
+}

@@ -5,13 +5,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
 	"agent-desk/internal/ai/rag"
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
 
 	"github.com/mlogclub/simple/sqls"
@@ -25,6 +29,8 @@ type runtimeTaskKnowledgeOutcome struct {
 	FailedTaskKeys   []string
 	NoHitTaskKeys    []string
 	KnowledgeTaskIDs []string
+	KnowledgeByTask  map[string]AnswerabilityOutcome
+	Evidence         *contracts.EvidenceBundleV1
 }
 
 type runtimeTaskKnowledgeItem struct {
@@ -34,6 +40,11 @@ type runtimeTaskKnowledgeItem struct {
 	Result      *retrievers.KnowledgeRetrieveResult
 	Status      enums.AIReplyTurnTaskKnowledgeStatus
 	Err         error
+}
+
+type runtimeEvidenceIndex struct {
+	index     int
+	sourceKey string
 }
 
 type runtimeTaskKnowledgeRetriever interface {
@@ -46,7 +57,10 @@ func retrieveRuntimeTaskKnowledge(ctx context.Context, req RunInput, plans []cal
 }
 
 func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput, plans []callbacks.ReplyTaskPlanTraceData, probe *retrievers.KnowledgeRetrieveResult, taskState runtimeTaskBatchState, retriever runtimeTaskKnowledgeRetriever) (runtimeTaskKnowledgeOutcome, error) {
-	outcome := runtimeTaskKnowledgeOutcome{ActiveTaskPlans: append([]callbacks.ReplyTaskPlanTraceData(nil), plans...)}
+	outcome := runtimeTaskKnowledgeOutcome{
+		ActiveTaskPlans: append([]callbacks.ReplyTaskPlanTraceData(nil), plans...),
+		KnowledgeByTask: make(map[string]AnswerabilityOutcome),
+	}
 	knowledgePlans := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plans))
 	for _, plan := range plans {
 		if runtimeTaskTypeForPlan(plan) == enums.AIReplyTurnTaskTypeKnowledge {
@@ -139,7 +153,206 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	}
 	outcome.ActiveTaskPlans = applyRuntimeKnowledgeAnswerGroups(outcome.ActiveTaskPlans, items)
 	outcome.Prefetched = mergeRuntimeTaskKnowledge(items, retriever.KnowledgeBaseIDs())
+	outcome.Evidence, outcome.KnowledgeByTask = buildRuntimeEvidenceBundle(req, items, outcome.Prefetched)
 	return outcome, nil
+}
+
+func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, merged *retrievers.KnowledgeRetrieveResult) (*contracts.EvidenceBundleV1, map[string]AnswerabilityOutcome) {
+	byTask := make(map[string]AnswerabilityOutcome, len(items))
+	bundle := &contracts.EvidenceBundleV1{
+		SchemaVersion:    contracts.EvidenceBundleV1SchemaVersion,
+		ScopeFingerprint: runtimeEvidenceScopeFingerprint(req, items),
+		RetrievalStatus:  "not_needed", Items: []contracts.EvidenceItemV1{}, Resources: []contracts.EvidenceResourceV1{},
+	}
+	indexes := make(map[string]runtimeEvidenceIndex)
+	for _, item := range items {
+		outcome := AnswerabilityOutcome{Status: "no_context", ReasonCode: "knowledge_no_context", SupportingRefs: []string{}}
+		switch item.Status {
+		case enums.AIReplyTurnTaskKnowledgeStatusFailed:
+			outcome.Status = "unavailable"
+			outcome.ReasonCode = "knowledge_unavailable"
+		case enums.AIReplyTurnTaskKnowledgeStatusHit:
+			outcome.Status = "has_context"
+			outcome.ReasonCode = "knowledge_context_available"
+		}
+		results := []rag.RetrieveResult(nil)
+		if item.Result != nil {
+			results = item.Result.ContextResults
+			if len(results) == 0 {
+				results = item.Result.Hits
+			}
+		}
+		for _, result := range results {
+			if len(bundle.Items) >= 24 || strings.TrimSpace(result.Content) == "" {
+				break
+			}
+			key := runtimeEvidenceResultKey(result)
+			entry, exists := indexes[key]
+			if !exists {
+				ref := fmt.Sprintf("K%d", len(bundle.Items)+1)
+				bundle.Items = append(bundle.Items, contracts.EvidenceItemV1{
+					Ref: ref, SourceType: "fastgpt", TaskKeys: []string{item.TaskKey},
+					Title:   boundedEvidenceText(firstNonEmpty(result.Title, result.DocumentTitle), 200),
+					Content: boundedEvidenceText(result.Content, 4000), Score: clampEvidenceScore(float64(result.Score)),
+					Answerability: "supporting", ResourceRefs: []string{},
+				})
+				entry = runtimeEvidenceIndex{index: len(bundle.Items) - 1, sourceKey: runtimeEvidenceSourceKey(result.KnowledgeBaseID, result.SourceRecordID)}
+				indexes[key] = entry
+			} else {
+				bundle.Items[entry.index].TaskKeys = appendUniqueStrings(bundle.Items[entry.index].TaskKeys, item.TaskKey)
+			}
+			outcome.SupportingRefs = appendUniqueStrings(outcome.SupportingRefs, bundle.Items[entry.index].Ref)
+		}
+		if outcome.Status == "has_context" && len(outcome.SupportingRefs) == 0 {
+			outcome.Status = "unanswerable"
+			outcome.ReasonCode = "knowledge_context_not_supporting"
+		}
+		byTask[item.TaskKey] = outcome
+	}
+
+	if merged != nil {
+		resourceTaskKeys := runtimeEvidenceResourceTaskKeys(items)
+		for _, resource := range resolveRuntimeKnowledgeResources(req, merged) {
+			if len(bundle.Resources) >= 16 || strings.TrimSpace(resource.AssetID) == "" {
+				break
+			}
+			sourceKey := runtimeEvidenceSourceKey(resource.KnowledgeBaseID, resource.SourceRecordID)
+			taskKeys := append([]string(nil), resourceTaskKeys[sourceKey]...)
+			if len(taskKeys) == 0 {
+				continue
+			}
+			ref := fmt.Sprintf("R%d", len(bundle.Resources)+1)
+			assetID := strings.TrimSpace(resource.AssetID)
+			bundle.Resources = append(bundle.Resources, contracts.EvidenceResourceV1{
+				Ref: ref, Type: "image", AssetID: &assetID,
+				Title: boundedEvidenceText(firstNonEmpty(resource.Title, resource.Description), 200), TaskKeys: taskKeys,
+			})
+			for index := range bundle.Items {
+				if !evidenceItemMatchesSource(bundle.Items[index], indexes, sourceKey) {
+					continue
+				}
+				bundle.Items[index].ResourceRefs = appendUniqueStrings(bundle.Items[index].ResourceRefs, ref)
+			}
+		}
+	}
+
+	statusCounts := make(map[string]int)
+	for _, outcome := range byTask {
+		statusCounts[outcome.Status]++
+	}
+	switch {
+	case statusCounts["has_context"] > 0:
+		bundle.RetrievalStatus = "has_context"
+	case statusCounts["unavailable"] > 0:
+		bundle.RetrievalStatus = "unavailable"
+	case statusCounts["unanswerable"] > 0:
+		bundle.RetrievalStatus = "unanswerable"
+	case len(byTask) > 0:
+		bundle.RetrievalStatus = "no_context"
+	}
+	return bundle, byTask
+}
+
+func runtimeEvidenceScopeFingerprint(req RunInput, items []runtimeTaskKnowledgeItem) string {
+	parts := []string{fmt.Sprintf("tenant:%d", req.Conversation.TenantID), fmt.Sprintf("store:%d", req.Conversation.StoreID)}
+	knowledgeIDs := make(map[int64]struct{})
+	for _, item := range items {
+		if item.Result == nil {
+			continue
+		}
+		for _, id := range item.Result.KnowledgeBaseIDs {
+			knowledgeIDs[id] = struct{}{}
+		}
+	}
+	ids := make([]int64, 0, len(knowledgeIDs))
+	for id := range knowledgeIDs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	db := sqls.DB()
+	for _, id := range ids {
+		if db == nil {
+			parts = append(parts, fmt.Sprintf("knowledge:%d:unresolved", id))
+			continue
+		}
+		knowledge := repositories.KnowledgeBaseRepository.Get(db, id)
+		if knowledge == nil || knowledge.TenantID != req.Conversation.TenantID || knowledge.StoreID != req.Conversation.StoreID {
+			parts = append(parts, fmt.Sprintf("knowledge:%d:scope_invalid", id))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("knowledge:%d:%s:%d:%d", id, knowledge.FastGPTProfileRevision, knowledge.FastGPTAppliedProfileRevision, knowledge.UpdatedAt.UnixNano()))
+	}
+	var profile *models.ReplyIntentProfile
+	if db != nil {
+		profile = resolveRuntimeIntentProfile(resolveRuntimeIntentScope(req))
+	}
+	if profile != nil {
+		parts = append(parts, fmt.Sprintf("intent_profile:%d", profile.Revision))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "/")))
+	return hex.EncodeToString(sum[:])
+}
+
+func runtimeEvidenceResourceTaskKeys(items []runtimeTaskKnowledgeItem) map[string][]string {
+	ret := make(map[string][]string)
+	for _, item := range items {
+		if item.Result == nil {
+			continue
+		}
+		results := append([]rag.RetrieveResult(nil), item.Result.ContextResults...)
+		results = append(results, item.Result.Hits...)
+		for _, result := range results {
+			key := runtimeEvidenceSourceKey(result.KnowledgeBaseID, result.SourceRecordID)
+			if key != "" {
+				ret[key] = appendUniqueStrings(ret[key], item.TaskKey)
+			}
+		}
+	}
+	return ret
+}
+
+func evidenceItemMatchesSource(item contracts.EvidenceItemV1, indexes map[string]runtimeEvidenceIndex, sourceKey string) bool {
+	for _, entry := range indexes {
+		if entry.sourceKey == sourceKey && item.Ref == fmt.Sprintf("K%d", entry.index+1) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeEvidenceResultKey(item rag.RetrieveResult) string {
+	contentHash := sha256.Sum256([]byte(strings.TrimSpace(item.Content)))
+	return runtimeEvidenceSourceKey(item.KnowledgeBaseID, item.SourceRecordID) + "|" + hex.EncodeToString(contentHash[:8])
+}
+
+func runtimeEvidenceSourceKey(knowledgeBaseID int64, sourceRecordID string) string {
+	sourceRecordID = strings.TrimSpace(sourceRecordID)
+	if knowledgeBaseID <= 0 || sourceRecordID == "" {
+		return ""
+	}
+	return fmt.Sprintf("%d:%s", knowledgeBaseID, sourceRecordID)
+}
+
+func boundedEvidenceText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) > limit {
+		runes = runes[:limit]
+	}
+	return strings.TrimSpace(string(runes))
+}
+
+func clampEvidenceScore(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
 }
 
 func runtimeKnowledgeAnswerGroup(result *retrievers.KnowledgeRetrieveResult) string {

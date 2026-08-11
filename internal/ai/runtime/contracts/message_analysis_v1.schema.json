@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/message_analysis.v1.json",
+  "title": "MessageAnalysisV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "messageId",
+    "sourceRevision",
+    "contentFingerprint",
+    "status",
+    "analyzer",
+    "result",
+    "errorCode",
+    "analyzedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "message_analysis.v1"
+    },
+    "messageId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sourceRevision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "contentFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "status": {
+      "enum": ["pending", "ready", "failed", "stale"]
+    },
+    "analyzer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "version"],
+      "properties": {
+        "kind": {
+          "enum": ["rule", "model", "import"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        }
+      }
+    },
+    "result": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "language",
+            "dialogueAct",
+            "relationToPrior",
+            "normalizedText",
+            "entities",
+            "mentionedTagKeys",
+            "riskSignals",
+            "confidence"
+          ],
+          "properties": {
+            "language": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 16
+            },
+            "dialogueAct": {
+              "enum": [
+                "question",
+                "request",
+                "answer",
+                "confirmation",
+                "correction",
+                "cancellation",
+                "complaint",
+                "greeting",
+                "thanks",
+                "closing",
+                "other"
+              ]
+            },
+            "relationToPrior": {
+              "enum": [
+                "new_topic",
+                "follow_up",
+                "repeat",
+                "correction",
+                "confirmation",
+                "cancellation",
+                "unknown"
+              ]
+            },
+            "normalizedText": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "entities": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type", "value", "start", "end", "confidence"],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  "value": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "start": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "end": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                }
+              }
+            },
+            "mentionedTagKeys": {
+              "type": "array",
+              "maxItems": 20,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            },
+            "riskSignals": {
+              "type": "array",
+              "maxItems": 10,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "safety_emergency",
+                  "self_harm",
+                  "violence",
+                  "privacy",
+                  "payment_dispute",
+                  "legal_threat",
+                  "public_complaint",
+                  "none"
+                ]
+              }
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      ]
+    },
+    "errorCode": {
+      "type": ["string", "null"],
+      "maxLength": 80
+    },
+    "analyzedAt": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {"const": "ready"}
+        }
+      },
+      "then": {
+        "properties": {
+          "result": {"type": "object"},
+          "errorCode": {"type": "null"},
+          "analyzedAt": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {"const": "failed"}
+        }
+      },
+      "then": {
+        "properties": {
+          "result": {"type": "null"},
+          "errorCode": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  ]
+}

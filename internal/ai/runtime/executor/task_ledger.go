@@ -193,6 +193,8 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 			TaskType:        runtimeTaskTypeForPlan(plan),
 			Intent:          plan.Intent,
 			SubIntent:       plan.SubIntent,
+			RequestMode:     plan.RequestMode,
+			RelationType:    plan.RelationType,
 			ResourceAction:  plan.ResourceAction,
 			QuestionText:    plan.Text,
 		}
@@ -233,6 +235,8 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 			TaskType:        runtimeTaskTypeForPlan(duplicatePlan),
 			Intent:          duplicatePlan.Intent,
 			SubIntent:       duplicatePlan.SubIntent,
+			RequestMode:     duplicatePlan.RequestMode,
+			RelationType:    duplicatePlan.RelationType,
 			ResourceAction:  duplicatePlan.ResourceAction,
 			QuestionText:    sourceText,
 		}
@@ -351,8 +355,9 @@ func replyTaskPlanFromLedgerTask(task models.AIReplyTurnTask, messages []models.
 		output = "human_route_confirmation_or_dispatch"
 	}
 	return callbacks.ReplyTaskPlanTraceData{
-		TaskKey: task.TaskKey, Intent: task.Intent, SubIntent: task.SubIntent, Text: text,
-		Output: output, ResourceAction: task.ResourceAction,
+		TaskKey: task.TaskKey, Sequence: task.SequenceNo, Intent: task.Intent, SubIntent: task.SubIntent, Text: text,
+		RelationType: task.RelationType,
+		Output:       output, ResourceAction: task.ResourceAction,
 	}
 }
 
@@ -360,7 +365,8 @@ func intentFromReplyTaskPlans(plans []callbacks.ReplyTaskPlanTraceData, reason s
 	intent := callbacks.IntentTraceData{ShouldReply: len(plans) > 0, MatchMode: "task_ledger", Reason: reason}
 	for _, plan := range plans {
 		item := callbacks.IntentTaskTraceData{
-			Intent: plan.Intent, SubIntent: plan.SubIntent, Text: plan.Text, ResourceAction: plan.ResourceAction,
+			Sequence: plan.Sequence, Intent: plan.Intent, SubIntent: plan.SubIntent, Text: plan.Text,
+			RequestMode: plan.RequestMode, ResourceAction: plan.ResourceAction,
 		}
 		switch runtimeTaskTypeForPlan(plan) {
 		case enums.AIReplyTurnTaskTypeKnowledge:
@@ -386,6 +392,7 @@ func intentFromReplyTaskPlans(plans []callbacks.ReplyTaskPlanTraceData, reason s
 	}
 	if len(intent.ResourceActions) > 0 {
 		intent.ResourceAction = intent.ResourceActions[0]
+		intent.ResourceType = hotelVariableResourceTypeFromAction(intent.ResourceAction)
 	}
 	return intent
 }
@@ -400,6 +407,10 @@ func filterIntentForReplyTaskPlans(original callbacks.IntentTraceData, plans []c
 	filtered.HumanRoutePolicy = original.HumanRoutePolicy
 	filtered.NeedsTool = original.NeedsTool
 	filtered.NeedsClarification = original.NeedsClarification
+	filtered.DialogueAct = original.DialogueAct
+	if filtered.ResourceType == "" {
+		filtered.ResourceType = original.ResourceType
+	}
 	return filtered
 }
 

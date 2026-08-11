@@ -318,34 +318,20 @@ func TestIntentPromptPackBlocksCoworkerFakeCommitment(t *testing.T) {
 	}
 }
 
-func TestParseRuntimeIntentDetectJSONToleratesLooseListFields(t *testing.T) {
+func TestParseRuntimeIntentDetectJSONRejectsLegacyLooseFields(t *testing.T) {
+	if _, err := parseRuntimeIntentDetectJSON(`{"primaryIntent":"hotel_variable","resourceActions":"provide_location"}`); err == nil {
+		t.Fatal("expected legacy loose intent payload to be rejected")
+	}
 	parsed, err := parseRuntimeIntentDetectJSON(`{
-		"primaryIntent":"hotel_variable",
-		"subIntent":"location",
-		"confidence":0.91,
-		"needsKnowledge":true,
-		"needsTool":false,
-		"needsResource":true,
-		"needsHumanRoute":false,
-		"resourceType":"location",
-		"resourceAction":"provide_location",
-		"resourceActions":"provide_location",
-		"secondaryIntents":null,
-		"mixedSubTasks":false,
-		"intentTasks":false,
-		"reason":"用户同时索要定位并询问停车"
+		"schemaVersion":"intent_tasks.v2",
+		"dialogueAct":"new_topic",
+		"tasks":[{"sequence":1,"intent":"hotel_variable","subIntent":"location","text":"发酒店定位","requestMode":"request_action","confidence":0.91}]
 	}`)
 	if err != nil {
-		t.Fatalf("expected loose list fields to parse, got %v", err)
+		t.Fatalf("expected strict intent_tasks.v2 payload, got %v", err)
 	}
-	if parsed.PrimaryIntent != "hotel_variable" || parsed.ResourceAction != "provide_location" {
-		t.Fatalf("unexpected parsed intent: %#v", parsed)
-	}
-	if len(parsed.ResourceActions) != 1 || parsed.ResourceActions[0] != "provide_location" {
-		t.Fatalf("expected single resource action to be coerced into list, got %#v", parsed.ResourceActions)
-	}
-	if len(parsed.MixedSubTasks) != 0 || len(parsed.IntentTasks) != 0 {
-		t.Fatalf("expected false mixedSubTasks/intentTasks to become empty lists, got %#v %#v", parsed.MixedSubTasks, parsed.IntentTasks)
+	if len(parsed.Tasks) != 1 || parsed.Tasks[0].Intent != "hotel_variable" || parsed.Tasks[0].SubIntent != "location" {
+		t.Fatalf("unexpected parsed intent contract: %#v", parsed)
 	}
 }
 
@@ -360,7 +346,10 @@ func TestRuntimePipelineNoReplyForPlainMediaOnly(t *testing.T) {
 			Payload:        `{"mediaText":"图片为客人自拍，无清晰文字、报错或明确服务诉求信息。","mediaUnderstandingStatus":"understood"}`,
 		},
 	}
-	plan := buildRuntimePipelinePlan(req, adapter.HistoryBuildResult{})
+	plan, err := buildRuntimePipelinePlanStrict(context.Background(), req, adapter.HistoryBuildResult{}, nil)
+	if err != nil {
+		t.Fatalf("expected media gate plan, got error: %v", err)
+	}
 	if plan.Intent.PrimaryIntent != "" || plan.Intent.DetectedIntent != "media_gate" || plan.Intent.SubIntent != "media_only_no_question" {
 		t.Fatalf("expected context media gate, got %#v", plan.Intent)
 	}

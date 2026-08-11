@@ -104,8 +104,8 @@ func TestTenantIntegrityAuditPassesCleanTwoTenantFixture(t *testing.T) {
 	if report.RegisteredTenantModels != expectedTenantModels || report.PolicyCount != expectedTenantModels {
 		t.Fatalf("tenant model coverage = %d/%d, want %d/%d", report.RegisteredTenantModels, report.PolicyCount, expectedTenantModels, expectedTenantModels)
 	}
-	if report.RequiredTables != 116 || report.ConfiguredRelations != 302 {
-		t.Fatalf("audit schema coverage = %d tables/%d relations, want 116/302", report.RequiredTables, report.ConfiguredRelations)
+	if report.RequiredTables != 119 || report.ConfiguredRelations != 308 {
+		t.Fatalf("audit schema coverage = %d tables/%d relations, want 119/308", report.RequiredTables, report.ConfiguredRelations)
 	}
 	if report.CheckedTables != report.RequiredTables {
 		t.Fatalf("checked tables = %d, required = %d", report.CheckedTables, report.RequiredTables)

@@ -360,7 +360,7 @@ func TestAIReplyTurnLateDifferentQuestionIsNotSuppressed(t *testing.T) {
 	}
 }
 
-func TestAIReplyTurnOutboxCancelsOnlyAfterReplacementCommit(t *testing.T) {
+func TestAIReplyTurnOutboxAndActionCancelWhenTurnVersionChanges(t *testing.T) {
 	db, conversation := setupAIReplyTurnTestDB(t)
 	t0 := time.Now().Add(-10 * time.Second).Truncate(time.Second)
 	question := createAIReplyTurnCustomerMessage(t, db, conversation, "customer-1", "有咖啡吗", t0)
@@ -375,6 +375,15 @@ func TestAIReplyTurnOutboxCancelsOnlyAfterReplacementCommit(t *testing.T) {
 	if err := db.Create(outbox).Error; err != nil {
 		t.Fatal(err)
 	}
+	action := &models.AIReplyTurnAction{
+		TenantID: conversation.TenantID, TurnID: turn.ID, TaskKey: "task-coffee", ActionKey: "action-coffee-image",
+		ActionType: "send_knowledge_image", ResourceType: "knowledge_image", Status: "committed", RequestedVersion: 1,
+		PreparedRevision: "asset-v1", CommittedMessageID: reply.ID, OutboxID: outbox.ID,
+		CreatedAt: t0, UpdatedAt: t0, CreateUserName: "test", UpdateUserName: "test",
+	}
+	if err := db.Create(action).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := repositories.AIReplyTurnRepository.UpdatesInTenant(db, turn.ID, turn.TenantID, map[string]any{
 		"status": enums.AIReplyTurnStatusCommitted, "last_committed_version": 1,
 	}); err != nil {
@@ -384,13 +393,8 @@ func TestAIReplyTurnOutboxCancelsOnlyAfterReplacementCommit(t *testing.T) {
 	late := createAIReplyTurnCustomerMessage(t, db, conversation, "customer-2", "早餐几点", t0.Add(2*time.Second))
 	turn = assignAIReplyTurnMessage(t, db, conversation, late)
 	allowed, reason, err := AIReplyTurnService.CanDispatchOutbox(reply)
-	if err != nil || !allowed || reason != "" {
-		t.Fatalf("latest committed reply remains deliverable until replacement exists allowed=%v reason=%q err=%v", allowed, reason, err)
-	}
-	if err := repositories.AIReplyTurnRepository.UpdatesInTenant(db, turn.ID, turn.TenantID, map[string]any{
-		"last_committed_version": 2,
-	}); err != nil {
-		t.Fatal(err)
+	if err != nil || allowed || reason != "cancelled_stale_turn" {
+		t.Fatalf("old turn version remained deliverable allowed=%v reason=%q err=%v", allowed, reason, err)
 	}
 	claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID, outbox.TenantID)
 	if err != nil || claimed {
@@ -399,6 +403,10 @@ func TestAIReplyTurnOutboxCancelsOnlyAfterReplacementCommit(t *testing.T) {
 	updated := repositories.ChannelMessageOutboxRepository.GetInTenant(db, outbox.ID, outbox.TenantID)
 	if updated == nil || updated.SendStatus != string(enums.ChannelMessageOutboxStatusCancelled) || updated.LastError != "cancelled_stale_turn" {
 		t.Fatalf("stale outbox was not cancelled: %+v", updated)
+	}
+	updatedAction := repositories.AIReplyTurnActionRepository.GetByKeyInTenant(db, action.TenantID, action.TurnID, action.TaskKey, action.ActionKey)
+	if updatedAction == nil || updatedAction.Status != "superseded" || updatedAction.ResultCode != "cancelled_stale_turn" {
+		t.Fatalf("stale outbox action was not superseded: %+v", updatedAction)
 	}
 }
 
@@ -504,7 +512,7 @@ func setupAIReplyTurnTestDB(t *testing.T) (*gorm.DB, *models.Conversation) {
 	if err := db.AutoMigrate(
 		&models.Store{}, &models.StoreStaffBinding{}, &models.Channel{}, &models.WxWorkProtocolInstance{},
 		&models.Conversation{}, &models.ConversationRouteState{}, &models.WxWorkKFConversation{},
-		&models.Message{}, &models.AIReplyTurn{}, &models.AIReplyTurnTask{}, &models.AIReplyJob{}, &models.ChannelMessageOutbox{},
+		&models.Message{}, &models.AIReplyTurn{}, &models.AIReplyTurnTask{}, &models.AIReplyTurnAction{}, &models.AIReplyJob{}, &models.ChannelMessageOutbox{},
 	); err != nil {
 		t.Fatal(err)
 	}

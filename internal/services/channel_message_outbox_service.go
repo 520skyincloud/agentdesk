@@ -105,12 +105,16 @@ func (s *channelMessageOutboxService) TryMarkSending(id, tenantID int64) (bool, 
 		}
 		if !allowed {
 			now := time.Now()
-			return repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, tenantID, map[string]any{
+			cancelReason := controlledOutboxCancelReason(reason)
+			if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, tenantID, map[string]any{
 				"send_status":   string(enums.ChannelMessageOutboxStatusCancelled),
 				"next_retry_at": nil,
-				"last_error":    controlledOutboxCancelReason(reason),
+				"last_error":    cancelReason,
 				"updated_at":    now,
-			})
+			}); err != nil {
+				return err
+			}
+			return AIReplyTurnActionService.SupersedeByOutboxDB(ctx.Tx, tenantID, outbox.ID, cancelReason, now)
 		}
 		claimed, err = repositories.ChannelMessageOutboxRepository.TryMarkSending(ctx.Tx, id, tenantID, time.Now())
 		return err

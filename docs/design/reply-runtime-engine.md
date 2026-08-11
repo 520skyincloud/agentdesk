@@ -106,6 +106,13 @@ DeepSeek V4 的 Chat Completions 调用必须同时显式携带 `thinking.type=d
 因此统一 NewAPI 网关、Runtime 主链、辅助 LLM 调用和九槽连通性验证必须保持一致。生产验收
 还需以成功用量记录中的 `reasoning_tokens=0` 确认上游真实执行结果。
 
+当前统一模型网关为 `http://36.138.68.47:6081/v1`。OpenAI 兼容接口必须从 `/v1` 开始，
+`/chat/completions`、`/responses`、`/embeddings`、`/rerank` 和 `/audio/transcriptions` 均在该
+BaseURL 后拼接；网关根路径返回的是管理前端，不能作为模型 BaseURL。Migration `75` 会幂等
+更新所有 `ModelProfileTemplate` revision 的 `GatewayBaseURL`，新建 Profile、默认种子和真实
+模型评测脚本也使用同一地址。Credential/API Key 不随地址迁移写入源码、日志或 migration，
+且不存在旧网关回退、镜像连接或双写。
+
 ## 5. 阶段编排
 
 ```text
@@ -267,6 +274,63 @@ System/欢迎消息既不进入回答内容，也不切断承接关系。出现�
 该上下文只用于控制表达：重复事实应简短承接，增加条件时只回答新增差异，纠正答案时按本轮知识
 重新回答，新主题完全忽略旧答案。旧 FastGPT 答案不得直接复用，本轮仍执行正常知识检索。
 
+### 5.4 Runtime V2 严格契约与 ContextCompiler
+
+Runtime V2 的内部交换数据只允许使用 `internal/ai/runtime/contracts/` 中嵌入的 Draft 2020-12
+Schema。进程启动时必须编译并验证全部 Schema；任一 Schema 无法加载时启动失败，不能在运行中
+降级为宽松 JSON。当前契约为：
+
+```text
+message_analysis.v1
+dialogue_state_snapshot.v1
+intent_tasks.v2
+reply_plan.v2
+action_ledger.v1
+evidence_bundle.v1
+runtime_context_snapshot.v1
+reply_output.v2
+validation_result.v1
+reply_tag_context.v1
+runtime_trace.v2
+```
+
+所有模型 JSON 使用 `strictjson.DecodeObject`：只接受唯一 UTF-8 JSON Object，拒绝 Markdown
+代码块、前后解释、未知字段、重复键和超过预算的 payload。Intent 和 Generate 分别只允许一次
+协议修复；修复调用只能调整 JSON 结构和任务覆盖，不能新增、删除或改写业务任务。修复上下文
+必须保持相同 Context fingerprint，否则按协议失败处理。
+
+`ContextCompiler` 负责 Intent 和 Generate 的唯一模型输入构建，并按硬 Token 预算裁剪：当前任务
+和强约束优先，其次 Evidence、当前 Session 事实、紧邻完整轮次和压缩记忆。裁剪以完整消息或完整
+轮次为单位，不能截断 JSON、资源引用或把客户与回答拆开。编译结果包含 fingerprint；协议修复、
+Resume 和审计必须复用同一事实范围，不得重新扫描更晚消息或旧知识答案。
+
+V2 迁移使用五个内部模式：`ContextCompiler`、`IntentContract`、`ReplyContract`、`Validator`、
+`ActionLedger`。默认保持 legacy；只有 Tenant/Store/Binding 灰度范围命中，且环境变量组合满足依赖
+约束时才启用 V2。`reply_output.v2` 必须配合 V2 ContextCompiler；完整 Validator 必须配合 V2
+ReplyContract；authoritative ActionLedger 也必须配合 V2 ReplyContract。非法组合启动执行前直接
+失败，不能部分开启。
+
+### 5.5 MessageAnalysis、DialogueState 与确定性 Validator
+
+`MessageAnalysis` 是按 `TenantID + MessageID + SourceRevision` 保存的派生证据，包含内容
+fingerprint、分析器身份、状态和严格 `message_analysis.v1`，不保存额外客户正文副本。相同 revision
+只有完全相同证据可幂等完成；同 revision 不同 JSON、MessageID、fingerprint 或状态必须拒绝，
+避免恢复任务覆盖已完成分析。
+
+`ConversationDialogueState` 按 `TenantID + ConversationID + SessionNo` 保存严格
+`dialogue_state_snapshot.v1`。Reducer 只接受显式事件并使用 CAS revision：客户消息只推进
+`BasedOnMessageID`，不能自行推断意图、主题或任务；Intent/Task/AI 提交事件才推进 TurnVersion 和
+语义状态；旧 MessageID 或旧 TurnVersion 事件直接忽略且不增加 revision。人工消息、纯路由转人工、
+人工接待、等待 AI 恢复和恢复 AI 分别写入 `human_serving`、`human_pending`、`human_serving`、
+`resume_pending`、`ai_serving`，并与路由修改处于同一事务。Snapshot JSON 与行内 BasedOn 字段
+必须一致，Reducer 重放必须确定性。
+
+Generate 只看到当前未完成 Task、对应 Evidence、允许动作和必要相邻上下文，输出
+`reply_output.v2.parts[]`。六级本地 Validator 顺序固定为 Schema、TaskCoverage、EvidenceReference、
+ActionReference、Safety、CommitInvariant。缺 taskKey 的多题输出仅属于一次可修复协议错误；未知
+Evidence/Action、内部标识泄露、无证据的“已发送/已安排/已转人工”、TurnVersion 不一致和空分段
+直接拒绝，不增加第二个模型评分或事实核验调用。
+
 ## 6. 批次与媒体
 
 - 短 debounce 合并极短连发。
@@ -352,6 +416,7 @@ fail closed，不使用不可信 Store/Binding 创建人工任务。
 ```text
 Validate
   -> AIReplyTurn lease + Task ownership CAS
+  -> authoritative AIReplyTurnAction ledger
   -> stable ClientMsgID
   -> Message batch + Outbox + Conversation cursor/counters + AIReplyTurn evidence + EventLog transaction
   -> ServiceAnalyticsCapture
@@ -362,6 +427,13 @@ Validate
 - 外部客服/AI消息在 Message 事务内写入 `OutboundChannelType` 持久投递意图。
 - 同轮多段文本和结构化动作全部提交成功后才形成可见结果；任一 Message、Outbox、计数或事件
   写入失败时整个事务回滚。
+- `AIReplyTurnAction` 以稳定 ActionKey 保存资源或人工动作证据，状态为
+  `requested -> prepared -> committed -> delivered`，投递失败进入 `delivery_failed` 后只能由原
+  Outbox 重试；资源构建失败进入 `failed`，旧 Turn 进入 `superseded`。新 Turn version 可以把同一
+  superseded 动作重新置为 requested，但不能复用旧 payload、MessageID 或 OutboxID。
+- authoritative 模式下 Commit 只能消费 ActionLedger 中 status=`prepared` 且 PreparedRevision
+  完整的 `PreparedAction`。Trace 中的旧 `resourceActions`、知识资源或文本描述只能用于诊断，
+  绝不能反推动作或补建资源消息。
 - 事务后仍按 `(channel_type, message_id)` 幂等补偿 Outbox。
 - 相同 ClientMsgID 重试只补建 Outbox，不重复模型、运营事实或标签演化。
 - AIReplyJob 在模型执行前和 Commit 前重新读取 Session、Route、Binding、实例、AI 开关和接待状态。
@@ -410,8 +482,10 @@ ActionLedger 可在内部 TraceData 的 `suppressedActions` 记录资源去重�
 - Commit 已成功但外部发送失败：只重试 Outbox，不重跑模型。
 - 需要人工且 AI 不可用：仍可进入现有人工池。
 
-当前部署只接受空 SQLite/MySQL。运行时没有历史 AI/知识 migration、旧数据 backfill 或
-兼容 Resolver；DML runner 只负责 fresh 基础初始化。
+Schema 继续通过 AutoMigrate 同时兼容 SQLite/MySQL。Runtime V2 新表和 nullable 关联字段不需要
+历史正文 backfill；DML runner 只执行明确、幂等的数据同步。Migration `75` 是本次唯一数据更新，
+只把现有 Model Profile revision 的网关地址切到统一 NewAPI `/v1`，不修改 Credential、Assignment、
+Binding、知识库或会话数据。旧 AIConfig、本地知识和兼容 Resolver 仍不得恢复。
 
 ## 13. 关键回归
 
@@ -449,6 +523,7 @@ ActionLedger 可在内部 TraceData 的 `suppressedActions` 记录资源去重�
 
 ```bash
 go test -tags dev ./internal/ai/... -count=1
+go test ./internal/migration -run 'UnifiedModelProfile|SwitchUnifiedNewAPI' -count=1
 go test -tags dev ./internal/ai/runtime/... -run 'RecentAnswered|ClarifyKnowledge|DuplicateResource|ExplicitResend' -count=1
 go test -tags dev ./internal/services -run 'AIReplyTurn|TaskLedger|AIReplyJob|Runtime|Reply|Intent|FastGPT|HumanDispatch|MessageBatch|Outbox|WxWorkProtocol' -count=1
 go test -race -tags dev ./internal/ai/... ./internal/services -run 'AIReply|Turn|Task|Runtime|Intent|HumanDispatch|Knowledge|Outbox' -count=1
@@ -466,6 +541,8 @@ Intent JSON、动作字段、幂等键或模型归因：
 
 - `internal/pkg/replyintent/defaults.go`
 - `internal/ai/runtime/executor/`
+- `internal/ai/runtime/contracts/` 与 `internal/pkg/strictjson/`
+- `internal/ai/runtime/contextcompiler/`
 - `internal/ai/runtime/reply_trigger_service.go`
 - `internal/ai/runtime/runtime_reply_executor.go`
 - `internal/ai/runtime/reply_commit_service.go`
@@ -478,6 +555,9 @@ Intent JSON、动作字段、幂等键或模型归因：
 - `internal/repositories/ai_reply_turn_repository.go`
 - `internal/services/ai_reply_turn_task_service.go` 与 `internal/ai/runtime/executor/task_ledger.go` 中的逐题任务状态机
 - `internal/repositories/ai_reply_turn_task_repository.go`
+- `internal/services/ai_reply_turn_action_service.go` 与 `internal/repositories/ai_reply_turn_action_repository.go`
+- `internal/services/message_analysis_service.go` 与 `internal/repositories/message_analysis_repository.go`
+- `internal/services/conversation_dialogue_state_service.go`、Reducer 与对应 repository
 - `internal/models/models.go` 中 `AIReplyTurn`、`AIReplyTurnTask` 及 Message/Job/Conversation 的内部关联字段
 - `internal/services/message_service.go` 中的入站消息与任务原子提交边界
 

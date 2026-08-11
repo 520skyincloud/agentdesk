@@ -1,12 +1,16 @@
 package runtime
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
@@ -19,21 +23,30 @@ import (
 type replyCommitService struct{}
 
 type replyCommitInput struct {
-	Conversation   models.Conversation
-	Message        models.Message
-	AIAgent        models.AIAgent
-	ReplyText      string
-	Trace          *aiReplyTraceData
-	ClientPrefix   string
-	IncrementRound bool
-	JobID          int64
+	Conversation              models.Conversation
+	Message                   models.Message
+	AIAgent                   models.AIAgent
+	ReplyText                 string
+	ReplyParts                []contracts.ReplyPartV2
+	PreparedActions           []contracts.PreparedActionV1
+	ActionLedgerV2            *contracts.ActionLedgerV1
+	ActionLedgerAuthoritative bool
+	Trace                     *aiReplyTraceData
+	ClientPrefix              string
+	IncrementRound            bool
+	JobID                     int64
 }
 
 type structuredVariableReply struct {
-	ResourceType string
-	MessageType  enums.IMMessageType
-	Content      string
-	Payload      string
+	ResourceType     string
+	ResourceRef      string
+	ActionKey        string
+	TaskKey          string
+	Sequence         int
+	PreparedRevision string
+	MessageType      enums.IMMessageType
+	Content          string
+	Payload          string
 }
 
 func newReplyCommitService() *replyCommitService {
@@ -53,15 +66,23 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 }
 
 func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.Message, error) {
-	structuredReplies, err := s.buildStructuredVariableRepliesStrict(input)
-	if err != nil {
-		return nil, err
+	structuredReplies := preparedStructuredReplies(input.PreparedActions)
+	if input.ActionLedgerAuthoritative {
+		if err := validateAuthoritativePreparedActions(input, structuredReplies); err != nil {
+			return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, err)
+		}
+	} else if len(structuredReplies) == 0 {
+		var err error
+		structuredReplies, err = s.buildStructuredVariableRepliesStrict(input)
+		if err != nil {
+			return nil, err
+		}
+		knowledgeReplies, knowledgeErr := s.buildKnowledgeResourceRepliesStrict(input)
+		if knowledgeErr != nil {
+			return nil, knowledgeErr
+		}
+		structuredReplies = append(structuredReplies, knowledgeReplies...)
 	}
-	knowledgeReplies, err := s.buildKnowledgeResourceRepliesStrict(input)
-	if err != nil {
-		return nil, err
-	}
-	structuredReplies = append(structuredReplies, knowledgeReplies...)
 	replyText := strings.TrimSpace(input.ReplyText)
 	isManualResume := strings.HasPrefix(strings.TrimSpace(input.Message.RequestID), "manual_resume_")
 	if isManualResume {
@@ -71,7 +92,8 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 			replyText = manualResumeCustomerNotice + "\n<<NEXT_MESSAGE>>\n" + replyText
 		}
 	}
-	structuredReplies, replyText = s.applyRecentResourceDeliveryPolicy(input, structuredReplies, replyText)
+	var suppressedActions []svc.AIReplyTurnActionSuppression
+	structuredReplies, replyText, suppressedActions = s.applyRecentResourceDeliveryPolicyDetailed(input, structuredReplies, replyText)
 	if replyText == "" && len(structuredReplies) == 0 {
 		return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorEmptyOutput, nil)
 	}
@@ -85,8 +107,17 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 	}
 	metadata := make([]commitMetadata, 0, len(structuredReplies)+1)
 	if replyText != "" {
-		textMessages := splitReplyTextForCommit(input.Trace, replyText)
-		textTaskGroups := textCommitTaskKeyGroupsFromTrace(input.Trace)
+		textParts := normalizedCommitReplyParts(input.ReplyParts, replyText)
+		textMessages := make([]string, 0, len(textParts))
+		textTaskGroups := make([][]string, 0, len(textParts))
+		for _, part := range textParts {
+			textMessages = append(textMessages, strings.TrimSpace(part.Content))
+			textTaskGroups = append(textTaskGroups, append([]string(nil), part.TaskKeys...))
+		}
+		if len(textMessages) == 0 {
+			textMessages = splitReplyTextForCommit(input.Trace, replyText)
+			textTaskGroups = textCommitTaskKeyGroupsFromTrace(input.Trace)
+		}
 		for index, text := range textMessages {
 			clientMessageID := fmt.Sprintf("%s_%d", strings.TrimSpace(input.ClientPrefix), input.Message.ID)
 			if len(textMessages) > 1 {
@@ -96,7 +127,7 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 			if index < len(textTaskGroups) {
 				taskKeys = append([]string(nil), textTaskGroups[index]...)
 				if len(taskKeys) > 0 {
-					clientMessageID = stableTaskClientMsgID(input.ClientPrefix, "text", taskKeys[0], input.Message.ID)
+					clientMessageID = stableTurnClientMsgID(input, "text", taskKeys)
 				}
 			}
 			taskIndex := index
@@ -112,18 +143,26 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 		}
 	}
 	for index, structured := range structuredReplies {
-		taskKeys := structuredCommitTaskKeysFromTrace(input.Trace, structured.ResourceType, index)
+		taskKeys := []string(nil)
+		if strings.TrimSpace(structured.TaskKey) != "" {
+			taskKeys = []string{strings.TrimSpace(structured.TaskKey)}
+		} else {
+			taskKeys = structuredCommitTaskKeysFromTrace(input.Trace, structured.ResourceType, index)
+		}
 		clientMessageID := fmt.Sprintf("%s_%s_%d_%d", strings.TrimSpace(input.ClientPrefix), strings.TrimSpace(structured.ResourceType), index+1, input.Message.ID)
-		if len(taskKeys) > 0 {
-			clientMessageID = stableTaskClientMsgID(input.ClientPrefix, structured.ResourceType, taskKeys[0], input.Message.ID)
+		if strings.TrimSpace(structured.ActionKey) != "" {
+			clientMessageID = stableTurnClientMsgID(input, "action", []string{structured.ActionKey})
+		} else if len(taskKeys) > 0 {
+			clientMessageID = stableTurnClientMsgID(input, structured.ResourceType, taskKeys)
 		}
 		drafts = append(drafts, svc.AIOutboundMessageDraft{
 			ClientMsgID: clientMessageID,
 			MessageType: structured.MessageType, Content: structured.Content, Payload: structured.Payload, TaskKeys: taskKeys,
+			ActionKey: structured.ActionKey, ActionPreparedRevision: structured.PreparedRevision,
 		})
-		metadata = append(metadata, commitMetadata{messageType: structured.MessageType, resourceType: structured.ResourceType, content: structuredRunLogReplyText(structured)})
+		metadata = append(metadata, commitMetadata{messageType: structured.MessageType, resourceType: structured.ResourceType, content: structuredRunLogReplyText(structured), taskID: structured.TaskKey})
 	}
-	messages, err := svc.MessageService.SendAIMessageBatchForTurnWithRequestID(
+	messages, err := svc.MessageService.SendAIMessageBatchForTurnWithRequestIDAndActions(
 		input.Conversation.ID,
 		input.AIAgent.ID,
 		drafts,
@@ -132,6 +171,7 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 		input.Message.AIReplyTurnID,
 		input.Message.AIReplyTurnVersion,
 		input.JobID,
+		suppressedActions,
 	)
 	if err != nil {
 		var covered *svc.AIReplyTurnCoveredError
@@ -159,6 +199,50 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 	replyMessage := &messages[len(messages)-1]
 	s.updateCommitTrace(input, commitStartedAt, replyMessage, commitMessages, nil)
 	return messages, nil
+}
+
+func validateAuthoritativePreparedActions(input replyCommitInput, replies []structuredVariableReply) error {
+	if input.ActionLedgerV2 == nil {
+		if len(input.PreparedActions) == 0 {
+			return nil
+		}
+		return fmt.Errorf("authoritative action ledger is unavailable")
+	}
+	expected := make(map[string]contracts.ActionLedgerItemV1)
+	for _, action := range input.ActionLedgerV2.Actions {
+		if !commitOutboundActionType(action.ActionType) {
+			continue
+		}
+		if action.Status != "prepared" {
+			return fmt.Errorf("authoritative action %s is not prepared", action.ActionKey)
+		}
+		expected[strings.TrimSpace(action.ActionKey)] = action
+	}
+	seen := make(map[string]struct{}, len(input.PreparedActions))
+	for _, prepared := range input.PreparedActions {
+		actionKey := strings.TrimSpace(prepared.ActionKey)
+		ledgerAction, ok := expected[actionKey]
+		if !ok || actionKey == "" || strings.TrimSpace(prepared.TaskKey) != ledgerAction.TaskKey || strings.TrimSpace(prepared.ActionType) != ledgerAction.ActionType || strings.TrimSpace(prepared.PreparedRevision) == "" {
+			return fmt.Errorf("prepared action %s is outside the authoritative ledger", actionKey)
+		}
+		if _, duplicate := seen[actionKey]; duplicate {
+			return fmt.Errorf("prepared action %s is duplicated", actionKey)
+		}
+		seen[actionKey] = struct{}{}
+	}
+	if len(seen) != len(expected) || len(replies) != len(expected) {
+		return fmt.Errorf("authoritative prepared action set is incomplete")
+	}
+	return nil
+}
+
+func commitOutboundActionType(actionType string) bool {
+	switch strings.TrimSpace(actionType) {
+	case "send_location", "send_mini_program", "send_phone", "send_knowledge_image":
+		return true
+	default:
+		return false
+	}
 }
 
 const manualResumeCustomerNotice = "同事暂时没能接入，接下来我先继续帮你处理。"
@@ -508,6 +592,90 @@ func structuredRunLogReplyText(structured structuredVariableReply) string {
 	default:
 		return strings.TrimSpace(structured.Content)
 	}
+}
+
+func preparedStructuredReplies(actions []contracts.PreparedActionV1) []structuredVariableReply {
+	ret := make([]structuredVariableReply, 0, len(actions))
+	for _, action := range actions {
+		messageType := enums.IMMessageType(strings.TrimSpace(action.MessageType))
+		if strings.TrimSpace(action.ActionKey) == "" || strings.TrimSpace(action.TaskKey) == "" ||
+			strings.TrimSpace(action.PreparedRevision) == "" || strings.TrimSpace(action.Content) == "" ||
+			strings.TrimSpace(action.Payload) == "" || messageType == "" {
+			continue
+		}
+		resourceType := strings.TrimSpace(action.ResourceType)
+		if action.ActionType == "send_knowledge_image" {
+			resourceType = "knowledge_image"
+		}
+		ret = append(ret, structuredVariableReply{
+			ResourceType: resourceType, ResourceRef: strings.TrimSpace(action.ResourceRef),
+			ActionKey: action.ActionKey, TaskKey: action.TaskKey, Sequence: action.Sequence,
+			PreparedRevision: action.PreparedRevision, MessageType: messageType,
+			Content: strings.TrimSpace(action.Content), Payload: strings.TrimSpace(action.Payload),
+		})
+	}
+	sort.SliceStable(ret, func(i, j int) bool {
+		if ret[i].Sequence == ret[j].Sequence {
+			return ret[i].ActionKey < ret[j].ActionKey
+		}
+		return ret[i].Sequence < ret[j].Sequence
+	})
+	return ret
+}
+
+func normalizedCommitReplyParts(parts []contracts.ReplyPartV2, replyText string) []contracts.ReplyPartV2 {
+	if len(parts) == 0 {
+		return nil
+	}
+	ret := make([]contracts.ReplyPartV2, 0, len(parts))
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part.Content = strings.TrimSpace(part.Content)
+		part.TaskKeys = uniqueCommitStrings(part.TaskKeys)
+		if part.Content == "" || len(part.TaskKeys) == 0 {
+			return nil
+		}
+		texts = append(texts, part.Content)
+		ret = append(ret, part)
+	}
+	if strings.TrimSpace(strings.Join(texts, "\n<<NEXT_MESSAGE>>\n")) != strings.TrimSpace(replyText) {
+		return nil
+	}
+	return ret
+}
+
+func uniqueCommitStrings(items []string) []string {
+	ret := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		ret = append(ret, item)
+	}
+	return ret
+}
+
+func stableTurnClientMsgID(input replyCommitInput, kind string, stableKeys []string) string {
+	turnID := input.Message.AIReplyTurnID
+	turnVersion := input.Message.AIReplyTurnVersion
+	keys := uniqueCommitStrings(stableKeys)
+	sort.Strings(keys)
+	payload := fmt.Sprintf("%d/%d/%d/%d/%s/%s",
+		input.Conversation.TenantID,
+		input.Conversation.ID,
+		turnID,
+		turnVersion,
+		strings.TrimSpace(kind),
+		strings.Join(keys, ","),
+	)
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])[:48]
 }
 
 func updateRuntimeTraceOutput(trace *aiReplyTraceData, replyText string, finishReason string) {

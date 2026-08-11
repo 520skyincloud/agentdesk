@@ -2,23 +2,28 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"agent-desk/internal/ai/runtime/contextcompiler"
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/modelconfig"
-	"agent-desk/internal/pkg/replyintent"
+	"agent-desk/internal/pkg/strictjson"
 	"agent-desk/internal/pkg/toolx"
 	"agent-desk/internal/pkg/usagex"
+	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/mlogclub/simple/sqls"
 )
 
 type runtimeIntentModelDetector interface {
@@ -26,93 +31,6 @@ type runtimeIntentModelDetector interface {
 }
 
 type llmRuntimeIntentDetector struct{}
-
-type runtimeIntentDetectJSON struct {
-	PrimaryIntent      string                  `json:"primaryIntent"`
-	SubIntent          string                  `json:"subIntent"`
-	Confidence         float64                 `json:"confidence"`
-	NeedsKnowledge     bool                    `json:"needsKnowledge"`
-	NeedsTool          bool                    `json:"needsTool"`
-	NeedsResource      bool                    `json:"needsResource"`
-	NeedsHumanRoute    bool                    `json:"needsHumanRoute"`
-	NeedsClarification bool                    `json:"needsClarification"`
-	ResourceType       string                  `json:"resourceType"`
-	ResourceAction     string                  `json:"resourceAction"`
-	ResourceActions    runtimeIntentStringList `json:"resourceActions"`
-	SecondaryIntents   runtimeIntentStringList `json:"secondaryIntents"`
-	MixedSubTasks      runtimeIntentStringList `json:"mixedSubTasks"`
-	IntentTasks        runtimeIntentTaskList   `json:"intentTasks"`
-	Reason             string                  `json:"reason"`
-}
-
-type runtimeIntentTaskJSON struct {
-	Intent          string `json:"intent"`
-	SubIntent       string `json:"subIntent"`
-	Text            string `json:"text"`
-	NeedsKnowledge  bool   `json:"needsKnowledge"`
-	NeedsResource   bool   `json:"needsResource"`
-	NeedsTool       bool   `json:"needsTool"`
-	NeedsHumanRoute bool   `json:"needsHumanRoute"`
-	ResourceAction  string `json:"resourceAction"`
-	Reason          string `json:"reason"`
-}
-
-type runtimeIntentStringList []string
-
-func (list *runtimeIntentStringList) UnmarshalJSON(data []byte) error {
-	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "" || trimmed == "null" || trimmed == "false" || trimmed == "true" {
-		*list = nil
-		return nil
-	}
-	var single string
-	if err := json.Unmarshal(data, &single); err == nil {
-		if strings.TrimSpace(single) == "" {
-			*list = nil
-			return nil
-		}
-		*list = []string{strings.TrimSpace(single)}
-		return nil
-	}
-	var rawItems []any
-	if err := json.Unmarshal(data, &rawItems); err != nil {
-		return err
-	}
-	items := make([]string, 0, len(rawItems))
-	for _, item := range rawItems {
-		text, ok := item.(string)
-		if !ok {
-			continue
-		}
-		text = strings.TrimSpace(text)
-		if text != "" {
-			items = append(items, text)
-		}
-	}
-	*list = items
-	return nil
-}
-
-type runtimeIntentTaskList []runtimeIntentTaskJSON
-
-func (list *runtimeIntentTaskList) UnmarshalJSON(data []byte) error {
-	trimmed := strings.TrimSpace(string(data))
-	if trimmed == "" || trimmed == "null" || trimmed == "false" || trimmed == "true" {
-		*list = nil
-		return nil
-	}
-	var single runtimeIntentTaskJSON
-	if err := json.Unmarshal(data, &single); err == nil && strings.TrimSpace(single.Intent) != "" {
-		*list = []runtimeIntentTaskJSON{single}
-		return nil
-	}
-	var items []runtimeIntentTaskJSON
-	if err := json.Unmarshal(data, &items); err != nil {
-		return err
-	}
-	*list = items
-	return nil
-}
 
 func detectRuntimeIntentWithModelStrict(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) (callbacks.IntentTraceData, callbacks.IntentPromptTraceData, bool, error) {
 	if isMediaOnlyWithoutActionableIntent(req.UserMessage) && !hasAdjacentTextMediaQuestion(req, history) {
@@ -138,6 +56,9 @@ func detectRuntimeIntentWithModelStrict(ctx context.Context, req RunInput, histo
 }
 
 func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
+	if resolveRuntimeFeatureModes(req).IntentContract == runtimeIntentContractV1 {
+		return detectRuntimeIntentLegacy(ctx, req, history, configs)
+	}
 	resolved, err := resolveRuntimeIntentDetectModelCall(req)
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
@@ -164,54 +85,207 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if profile == nil {
 		return callbacks.IntentTraceData{}, fmt.Errorf("published tenant industry profile unavailable")
 	}
-	messages := []*schema.Message{
-		schema.SystemMessage(runtimeIntentDetectSystemPromptForProfile(profile)),
-		schema.UserMessage(buildRuntimeIntentDetectUserPrompt(req, history, configs)),
+	instance, err := resolveRuntimeCompilerInstance(req, resolved)
+	if err != nil {
+		return callbacks.IntentTraceData{}, err
+	}
+	dialogueState, err := services.ConversationDialogueStateService.Load(req.Conversation.TenantID, req.Conversation.ID, runtimeSessionNo(req))
+	if err != nil {
+		return callbacks.IntentTraceData{}, err
+	}
+	compileInput := contextcompiler.CompileInput{
+		Stage: contextcompiler.CompileStageIntent,
+		Scope: runtimeCompilerScope(req, resolved, instance),
+		Model: *resolved, Instance: *instance, Agent: req.AIAgent,
+		CurrentMessages: []models.Message{req.UserMessage}, RecentHistory: history.RawItems,
+		DialogueState:         dialogueState,
+		IntentInstruction:     runtimeIntentDetectV2Instruction(profile, configs),
+		IntentProfileRevision: profile.Revision,
+	}
+	compiled, err := contextcompiler.New(nil).Compile(intentCtx, compileInput)
+	if err != nil {
+		return callbacks.IntentTraceData{}, err
 	}
 	firstStartedAt := time.Now()
 	firstReceiptOffset := len(usageCapture.Receipts())
-	result, err := chatModel.Generate(intentCtx, messages)
+	result, err := chatModel.Generate(intentCtx, compiled.Messages)
 	if err != nil {
 		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
 		return callbacks.IntentTraceData{}, err
 	}
 	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
-	parsed, err := parseRuntimeIntentDetectJSON(result.Content)
-	if err != nil {
+	parsed, derived, err := parseRuntimeIntentTasksV2(result.Content, configs)
+	if err != nil && runtimeProtocolRepairAllowed(err) {
+		compileInput.RepairInstruction = buildRuntimeProtocolRepairInstruction(
+			contracts.SchemaIntentTasksV2,
+			err,
+			req.UserMessage.Content,
+			result.Content,
+		)
+		repairContext, compileErr := contextcompiler.New(nil).Compile(intentCtx, compileInput)
+		if compileErr != nil {
+			return callbacks.IntentTraceData{}, compileErr
+		}
+		if repairContext.Fingerprint != compiled.Fingerprint {
+			return callbacks.IntentTraceData{}, fmt.Errorf("intent repair context fingerprint changed")
+		}
 		retryStartedAt := time.Now()
 		retryReceiptOffset := len(usageCapture.Receipts())
-		retry, retryErr := chatModel.Generate(intentCtx, append(messages, schema.SystemMessage("上一版 IntentDetect 输出不是合法 JSON。请重新输出严格 JSON。intentTasks 必须是数组，且是唯一事实来源；顶层 primaryIntent/needsKnowledge/needsResource/resourceActions 只能汇总 intentTasks。不要输出 Markdown、解释、注释或多余文本。")))
+		retry, retryErr := chatModel.Generate(intentCtx, repairContext.Messages)
 		if retryErr != nil {
 			recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
 		}
 		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
-		parsed, err = parseRuntimeIntentDetectJSON(retry.Content)
+		parsed, derived, err = parseRuntimeIntentTasksV2(retry.Content, configs)
 		if err != nil {
 			return callbacks.IntentTraceData{}, err
 		}
 	}
-	return callbacks.IntentTraceData{
-		DetectedIntent:       parsed.PrimaryIntent,
-		MatchedIntentCode:    parsed.PrimaryIntent,
-		PrimaryIntent:        parsed.PrimaryIntent,
-		SubIntent:            parsed.SubIntent,
-		SecondaryIntents:     []string(parsed.SecondaryIntents),
-		SecondaryIntentCodes: []string(parsed.SecondaryIntents),
-		IntentConfidence:     parsed.Confidence,
-		ShouldReply:          true,
-		NeedsKnowledge:       parsed.NeedsKnowledge,
-		NeedsTool:            parsed.NeedsTool,
-		NeedsResource:        parsed.NeedsResource,
-		NeedsHumanRoute:      parsed.NeedsHumanRoute,
-		NeedsClarification:   parsed.NeedsClarification,
-		ResourceType:         parsed.ResourceType,
-		ResourceAction:       parsed.ResourceAction,
-		ResourceActions:      []string(parsed.ResourceActions),
-		IntentTasks:          convertRuntimeIntentTasks([]runtimeIntentTaskJSON(parsed.IntentTasks)),
-		HumanRoutePolicy:     parsed.SubIntent,
-		Reason:               strings.TrimSpace("model IntentDetect JSON: " + parsed.Reason),
-	}, nil
+	if err != nil {
+		return callbacks.IntentTraceData{}, err
+	}
+	return AdaptIntentV2ToLegacyTrace(parsed, derived), nil
+}
+
+func parseRuntimeIntentTasksV2(content string, configs []models.ReplyIntentConfig) (contracts.IntentTasksV2, []DerivedTaskCapabilities, error) {
+	parsed, err := strictjson.DecodeObject[contracts.IntentTasksV2]([]byte(content), strictjson.DecodeOptions{
+		MaxBytes: 32 * 1024,
+		Schema:   contracts.MustSchema(contracts.SchemaIntentTasksV2),
+	})
+	if err != nil {
+		return contracts.IntentTasksV2{}, nil, err
+	}
+	derived, err := DeriveRuntimeIntentCapabilities(parsed, configs)
+	if err != nil {
+		return contracts.IntentTasksV2{}, nil, &strictjson.ProtocolError{
+			Code: strictjson.ErrorJSONBusinessInvariant, Path: "$.tasks", Message: err.Error(), Err: err,
+		}
+	}
+	return parsed, derived, nil
+}
+
+func runtimeProtocolRepairAllowed(err error) bool {
+	code, ok := strictjson.CodeOf(err)
+	if !ok {
+		return false
+	}
+	switch code {
+	case strictjson.ErrorJSONRootNotObject, strictjson.ErrorJSONSyntaxInvalid,
+		strictjson.ErrorJSONDuplicateKey, strictjson.ErrorJSONUnknownField,
+		strictjson.ErrorJSONTrailingContent, strictjson.ErrorJSONSchemaInvalid:
+		return true
+	default:
+		return false
+	}
+}
+
+func buildRuntimeProtocolRepairInstruction(schemaName string, protocolErr error, currentText, firstOutput string) string {
+	code, _ := strictjson.CodeOf(protocolErr)
+	path := "$"
+	var typed *strictjson.ProtocolError
+	if errors.As(protocolErr, &typed) && strings.TrimSpace(typed.Path) != "" {
+		path = strings.TrimSpace(typed.Path)
+	}
+	return strings.Join([]string{
+		"上一版输出存在可修复的 JSON 协议错误。只修复协议，不新增、删除或改写当前客户原文中的业务任务。",
+		"schema=" + strings.TrimSpace(schemaName),
+		"errorCode=" + strings.TrimSpace(code),
+		"jsonPath=" + path,
+		"当前客户原文：" + boundedRuntimeRepairText(currentText, 4096),
+		"第一次输出：" + boundedRuntimeRepairText(firstOutput, 8*1024),
+		"重新输出唯一一个严格 JSON Object；不要输出 Markdown、解释、注释或额外文本。",
+	}, "\n")
+}
+
+func boundedRuntimeRepairText(value string, maxBytes int) string {
+	value = strings.TrimSpace(value)
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	value = value[:maxBytes]
+	for value != "" && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return strings.TrimSpace(value)
+}
+
+func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, configs []models.ReplyIntentConfig) string {
+	parts := []string{
+		"你是 IntentDetect 阶段。只判断当前客户表达与上一轮的关系，并按客户原始顺序拆分可独立处理的语义任务；不要回复客户。",
+		"模型只输出语义字段 sequence、intent、subIntent、text、requestMode、confidence。不得输出 taskKey、needsKnowledge、needsResource、needsTool、needsHumanRoute、resourceAction 或任何执行结果。",
+		"当前消息中的每个有效问题、资源请求、人工诉求或社交表达都必须覆盖；不得把跨主题问题压成一个任务，也不得从无关历史补出当前未问的任务。",
+		"历史只用于解析紧邻指代、追问、重复、纠正、确认和取消。新主题必须与旧主题分开。",
+	}
+	if profile != nil {
+		if description := strings.TrimSpace(profile.Description); description != "" {
+			parts = append(parts, "行业说明："+preview(description, 500))
+		}
+	}
+	if len(configs) > 0 {
+		var catalog strings.Builder
+		catalog.WriteString("当前已发布意图目录：\n")
+		for _, config := range normalizeIntentConfigs(configs) {
+			if config.Status != enums.StatusOk || strings.TrimSpace(config.Code) == "" {
+				continue
+			}
+			catalog.WriteString("- code=")
+			catalog.WriteString(strings.TrimSpace(config.Code))
+			catalog.WriteString(" name=")
+			catalog.WriteString(preview(config.Name, 80))
+			if description := strings.TrimSpace(config.Description); description != "" {
+				catalog.WriteString(" definition=")
+				catalog.WriteString(preview(description, 240))
+			}
+			if examples := strings.TrimSpace(config.PositiveExamples); examples != "" {
+				catalog.WriteString(" positive=")
+				catalog.WriteString(preview(examples, 240))
+			}
+			if examples := strings.TrimSpace(config.NegativeExamples); examples != "" {
+				catalog.WriteString(" negative=")
+				catalog.WriteString(preview(examples, 160))
+			}
+			catalog.WriteString("\n")
+		}
+		parts = append(parts, strings.TrimSpace(catalog.String()))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func resolveRuntimeCompilerInstance(req RunInput, resolved *services.ModelCallConfig) (*models.WxWorkProtocolInstance, error) {
+	if resolved == nil || resolved.TenantID <= 0 || resolved.StoreID <= 0 || resolved.StoreStaffBindingID <= 0 {
+		return nil, fmt.Errorf("runtime model scope is incomplete")
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), req.Conversation.ID, resolved.TenantID)
+	if route == nil || route.WxWorkInstanceID <= 0 || route.StoreID != resolved.StoreID || route.StoreStaffBindingID != resolved.StoreStaffBindingID {
+		return nil, fmt.Errorf("runtime conversation route is outside the resolved model scope")
+	}
+	instance := repositories.WxWorkProtocolInstanceRepository.GetActivatedCurrentInTenant(sqls.DB(), route.WxWorkInstanceID, resolved.TenantID)
+	if instance == nil || instance.StoreID != resolved.StoreID || instance.StoreStaffBindingID != resolved.StoreStaffBindingID {
+		return nil, fmt.Errorf("runtime protocol instance is outside the resolved model scope")
+	}
+	return instance, nil
+}
+
+func runtimeCompilerScope(req RunInput, resolved *services.ModelCallConfig, instance *models.WxWorkProtocolInstance) contextcompiler.RuntimeScope {
+	scope := contextcompiler.RuntimeScope{
+		TenantID: resolved.TenantID, StoreID: resolved.StoreID, ConversationID: req.Conversation.ID,
+		SessionNo: runtimeSessionNo(req), WxWorkInstanceID: instance.ID,
+		StoreStaffBindingID: resolved.StoreStaffBindingID, JobID: req.JobID,
+	}
+	job := repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), req.JobID, resolved.TenantID)
+	if job != nil && job.ConversationID == req.Conversation.ID {
+		scope.TurnID = job.TurnID
+		scope.TurnVersion = job.TurnVersion
+	}
+	return scope
+}
+
+func runtimeSessionNo(req RunInput) int {
+	if req.UserMessage.SessionNo > 0 {
+		return req.UserMessage.SessionNo
+	}
+	return 1
 }
 
 func runtimeIntentDetectTimeout(timeoutMS int) time.Duration {
@@ -275,28 +349,6 @@ func applyGatewayReceiptToUsageEvent(event *models.AIUsageEvent, receipt *usagex
 	}
 }
 
-func convertRuntimeIntentTasks(tasks []runtimeIntentTaskJSON) []callbacks.IntentTaskTraceData {
-	ret := make([]callbacks.IntentTaskTraceData, 0, len(tasks))
-	for _, task := range tasks {
-		intent := canonicalIntentCode(task.Intent)
-		if intent == "" {
-			continue
-		}
-		ret = append(ret, callbacks.IntentTaskTraceData{
-			Intent:          intent,
-			SubIntent:       strings.TrimSpace(task.SubIntent),
-			Text:            strings.TrimSpace(task.Text),
-			NeedsKnowledge:  task.NeedsKnowledge || intent == "hotel_info",
-			NeedsResource:   task.NeedsResource || intent == "hotel_variable",
-			NeedsTool:       task.NeedsTool,
-			NeedsHumanRoute: task.NeedsHumanRoute || intent == "human_complaint_risk",
-			ResourceAction:  strings.TrimSpace(task.ResourceAction),
-			Reason:          strings.TrimSpace(task.Reason),
-		})
-	}
-	return ret
-}
-
 func resolveRuntimeIntentDetectModelCall(req RunInput) (*services.ModelCallConfig, error) {
 	if req.Conversation.ID <= 0 {
 		return nil, fmt.Errorf("conversation is required for intent model")
@@ -305,22 +357,11 @@ func resolveRuntimeIntentDetectModelCall(req RunInput) (*services.ModelCallConfi
 }
 
 func runtimeIntentDetectSystemPrompt() string {
-	return runtimeIntentDetectSystemPromptForProfile(nil)
+	return legacyRuntimeIntentDetectSystemPromptForProfile(nil)
 }
 
 func runtimeIntentDetectSystemPromptForProfile(profile *models.ReplyIntentProfile) string {
-	if profile == nil {
-		return replyintent.DefaultHotelIntentDetectSystemPrompt()
-	}
-	prompt := strings.TrimSpace(profile.IntentDetectPrompt)
-	schemaText := strings.TrimSpace(profile.IntentJSONSchema)
-	if prompt == "" {
-		prompt = replyintent.DefaultHotelIntentDetectPrompt()
-	}
-	if schemaText == "" {
-		schemaText = replyintent.DefaultHotelIntentJSONSchema()
-	}
-	return strings.TrimSpace(prompt + "\n\n" + schemaText)
+	return legacyRuntimeIntentDetectSystemPromptForProfile(profile)
 }
 
 func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) string {
@@ -389,22 +430,11 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	return b.String()
 }
 
-func parseRuntimeIntentDetectJSON(content string) (runtimeIntentDetectJSON, error) {
-	content = strings.TrimSpace(content)
-	content = strings.TrimPrefix(content, "```json")
-	content = strings.TrimPrefix(content, "```")
-	content = strings.TrimSuffix(content, "```")
-	content = strings.TrimSpace(content)
-	start := strings.Index(content, "{")
-	end := strings.LastIndex(content, "}")
-	if start >= 0 && end >= start {
-		content = content[start : end+1]
-	}
-	var parsed runtimeIntentDetectJSON
-	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-		return parsed, err
-	}
-	return parsed, nil
+func parseRuntimeIntentDetectJSON(content string) (contracts.IntentTasksV2, error) {
+	return strictjson.DecodeObject[contracts.IntentTasksV2]([]byte(content), strictjson.DecodeOptions{
+		MaxBytes: 32 * 1024,
+		Schema:   contracts.MustSchema(contracts.SchemaIntentTasksV2),
+	})
 }
 
 func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _ adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {

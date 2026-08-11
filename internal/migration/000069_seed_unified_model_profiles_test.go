@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/enums"
 
 	"github.com/glebarez/sqlite"
@@ -15,7 +16,7 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-func TestMigrateUnifiedModelProfilesSeedsUnconfiguredNineSlotDraft(t *testing.T) {
+func TestMigrateUnifiedModelProfilesSeedsNineSlotDraftWithUnifiedGateway(t *testing.T) {
 	db := openUnifiedModelProfileMigrationDB(t)
 
 	if err := migrateUnifiedModelProfiles(db); err != nil {
@@ -25,7 +26,7 @@ func TestMigrateUnifiedModelProfilesSeedsUnconfiguredNineSlotDraft(t *testing.T)
 	if err := db.Where("code = ?", "standard").Take(&profile).Error; err != nil {
 		t.Fatalf("load profile: %v", err)
 	}
-	if profile.Status != enums.ModelProfileStatusDraft || profile.GatewayBaseURL != "" {
+	if profile.Status != enums.ModelProfileStatusDraft || profile.GatewayBaseURL != constants.UnifiedNewAPIGatewayBaseURL {
 		t.Fatalf("profile=%#v", profile)
 	}
 	var slots []models.ModelProfileSlot
@@ -93,7 +94,7 @@ func TestMigrateUnifiedModelProfilesMySQL(t *testing.T) {
 	if err = db.Model(&models.StoreModelCredential{}).Count(&credentialCount).Error; err != nil {
 		t.Fatal(err)
 	}
-	if profile.Status != enums.ModelProfileStatusDraft || slotCount != 9 || credentialCount != 0 {
+	if profile.Status != enums.ModelProfileStatusDraft || profile.GatewayBaseURL != constants.UnifiedNewAPIGatewayBaseURL || slotCount != 9 || credentialCount != 0 {
 		t.Fatalf("MySQL migration profile=%s slots=%d credentials=%d", profile.Status, slotCount, credentialCount)
 	}
 }

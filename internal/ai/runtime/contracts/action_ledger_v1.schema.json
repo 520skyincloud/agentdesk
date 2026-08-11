@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/action_ledger.v1.json",
+  "title": "ActionLedgerV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "turnVersion", "actions"],
+  "properties": {
+    "schemaVersion": {
+      "const": "action_ledger.v1"
+    },
+    "turnVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "actions": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "actionKey",
+          "taskKey",
+          "actionType",
+          "resourceType",
+          "status",
+          "committedMessageId",
+          "outboxId",
+          "resultCode"
+        ],
+        "properties": {
+          "actionKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "taskKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "actionType": {
+            "enum": [
+              "send_location",
+              "send_mini_program",
+              "send_phone",
+              "send_knowledge_image",
+              "tool_call",
+              "human_handoff"
+            ]
+          },
+          "resourceType": {
+            "type": ["string", "null"],
+            "maxLength": 40
+          },
+          "status": {
+            "enum": [
+              "requested",
+              "prepared",
+              "committed",
+              "delivered",
+              "delivery_failed",
+              "suppressed",
+              "failed",
+              "superseded"
+            ]
+          },
+          "committedMessageId": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "outboxId": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resultCode": {
+            "type": "string",
+            "maxLength": 80
+          }
+        }
+      }
+    }
+  }
+}

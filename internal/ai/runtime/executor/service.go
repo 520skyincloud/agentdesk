@@ -110,6 +110,15 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.TraceData = collector.Marshal()
 		return summary, nil
 	}
+	if summary.UseRuntimeV2DirectGenerate {
+		if err := s.executeRuntimeV2DirectGeneration(ctx, req, messages, summary, collector); err != nil {
+			summary.TraceData = collector.Marshal()
+			return summary, err
+		}
+		syncSkillSummaryFromCollector(summary, collector)
+		summary.TraceData = collector.Marshal()
+		return summary, nil
+	}
 
 	toolDefs, err := factory.NewToolFactory().BuildMCPTools(req.AIAgent)
 	if err != nil {
@@ -167,22 +176,52 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		req.ModelConfig.ModelName,
 		generateStartedAt,
 	)
-	var protocolErr *multiReplyProtocolError
-	if errors.As(err, &protocolErr) {
-		resetRuntimeGenerationForProtocolRepair(summary, collector)
-		repairMessages := append([]*schema.Message(nil), messages...)
-		repairMessages = append(repairMessages, schema.SystemMessage(buildMultiReplyProtocolRepairInstruction(
-			collector.Data.Pipeline.ReplyPlan,
-		)))
-		err = finishRuntimeGeneration(
-			runner.Run(ctx, repairMessages, buildRunOptions(checkPointID+"-reply-parts-repair")...),
-			summary,
-			collector,
-			tooling.toolDefsByModelName,
-			req.ModelConfig.ModelName,
-			time.Now(),
-		)
-		collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
+	if summary.UseRuntimeV2Generate {
+		var protocolErr *replyOutputProtocolError
+		if errors.As(err, &protocolErr) {
+			resetRuntimeGenerationForProtocolRepair(summary, collector, "reply_output_v2_protocol_repair")
+			repairMessages, compileErr := compileRuntimeReplyOutputRepairMessages(ctx, summary, protocolErr)
+			if compileErr != nil {
+				err = markRuntimeGenerationError(summary, collector, generateStartedAt, compileErr)
+			} else {
+				err = finishRuntimeGeneration(
+					runner.Run(ctx, repairMessages, buildRunOptions(checkPointID+"-reply-output-v2-repair")...),
+					summary,
+					collector,
+					tooling.toolDefsByModelName,
+					req.ModelConfig.ModelName,
+					time.Now(),
+				)
+				var repeatedProtocolErr *replyOutputProtocolError
+				if errors.As(err, &repeatedProtocolErr) {
+					err = markRuntimeGenerationError(
+						summary,
+						collector,
+						generateStartedAt,
+						fmt.Errorf("reply_output.v2 protocol repair failed: %w", err),
+					)
+				}
+			}
+			collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
+		}
+	} else {
+		var protocolErr *multiReplyProtocolError
+		if errors.As(err, &protocolErr) {
+			resetRuntimeGenerationForProtocolRepair(summary, collector, "reply_parts_protocol_repair")
+			repairMessages := append([]*schema.Message(nil), messages...)
+			repairMessages = append(repairMessages, schema.SystemMessage(buildMultiReplyProtocolRepairInstruction(
+				collector.Data.Pipeline.ReplyPlan,
+			)))
+			err = finishRuntimeGeneration(
+				runner.Run(ctx, repairMessages, buildRunOptions(checkPointID+"-reply-parts-repair")...),
+				summary,
+				collector,
+				tooling.toolDefsByModelName,
+				req.ModelConfig.ModelName,
+				time.Now(),
+			)
+			collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
+		}
 	}
 	if err != nil {
 		summary.TraceData = collector.Marshal()
@@ -193,10 +232,13 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	return summary, nil
 }
 
-func resetRuntimeGenerationForProtocolRepair(summary *RunResult, collector *callbacks.RuntimeTraceCollector) {
+func resetRuntimeGenerationForProtocolRepair(summary *RunResult, collector *callbacks.RuntimeTraceCollector, reason string) {
 	if summary != nil {
 		summary.Status = "started"
 		summary.ReplyText = ""
+		summary.RawReplyOutput = ""
+		summary.ReplyParts = nil
+		summary.ValidationResult = nil
 		summary.ErrorMessage = ""
 		summary.Interrupted = false
 		summary.Interrupts = nil
@@ -206,7 +248,7 @@ func resetRuntimeGenerationForProtocolRepair(summary *RunResult, collector *call
 		collector.Data.Error.Message = ""
 		collector.Data.Error.Stage = ""
 		collector.Data.Pipeline.Generate.Status = "repairing"
-		collector.Data.Pipeline.Generate.Reason = "reply_parts_protocol_repair"
+		collector.Data.Pipeline.Generate.Reason = strings.TrimSpace(reason)
 		collector.Data.Pipeline.Validate.Status = "pending"
 		collector.Data.Pipeline.Validate.Reason = ""
 	}
@@ -383,7 +425,17 @@ func finishRuntimeGeneration(
 	}
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(startedAt).Milliseconds()
 	summary.ModelName = modelName
-	enforceGeneratedReplyActionLedger(summary, collector)
+	if summary.UseRuntimeV2Generate {
+		if err := applyRuntimeReplyOutputV2(summary.RawReplyOutput, summary, collector); err != nil {
+			var protocolErr *replyOutputProtocolError
+			if errors.As(err, &protocolErr) {
+				return err
+			}
+			return markRuntimeGenerationError(summary, collector, startedAt, err)
+		}
+	} else {
+		enforceGeneratedReplyActionLedger(summary, collector)
+	}
 	if !summary.Interrupted && strings.TrimSpace(summary.ReplyText) == "" && !hasInvokedGraphTool(summary.InvokedToolCodes) {
 		err := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorEmptyOutput, fmt.Errorf("runtime produced no reply or action"))
 		summary.Status = "error"
