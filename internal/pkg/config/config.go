@@ -57,6 +57,7 @@ func (c EmailConfig) Address() string {
 type FastGPTConfig struct {
 	Enabled             bool   `yaml:"enabled"`
 	BaseURL             string `yaml:"baseUrl"`
+	AllowInsecureHTTP   bool   `yaml:"allowInsecureHttp"`
 	IntegrationToken    string `yaml:"-"`
 	TimeoutMS           int    `yaml:"timeoutMs"`
 	MaxRetries          int    `yaml:"maxRetries"`
@@ -605,7 +606,7 @@ func ValidateProduction(cfg *Config) error {
 	require(strings.TrimSpace(cfg.StoreCredential.MasterKeyID) != "", "AGENT_DESK_STORE_MODEL_CREDENTIAL_MASTER_KEY_ID")
 
 	if cfg.FastGPT.Enabled {
-		require(validProductionHTTPSURL(cfg.FastGPT.BaseURL), "AGENT_DESK_FASTGPT_BASE_URL")
+		require(validProductionFastGPTURL(cfg.FastGPT.BaseURL, cfg.FastGPT.AllowInsecureHTTP), "AGENT_DESK_FASTGPT_BASE_URL")
 		require(strings.TrimSpace(cfg.FastGPT.IntegrationToken) != "", "AGENT_DESK_FASTGPT_INTEGRATION_TOKEN")
 	}
 	if cfg.Email.Enabled {
@@ -697,6 +698,17 @@ func validProductionHTTPSURL(value string) bool {
 		parsed.User == nil
 }
 
+func validProductionFastGPTURL(value string, allowInsecureHTTP bool) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || strings.TrimSpace(parsed.Host) == "" || parsed.User != nil {
+		return false
+	}
+	if strings.EqualFold(parsed.Scheme, "https") {
+		return true
+	}
+	return allowInsecureHTTP && strings.EqualFold(parsed.Scheme, "http")
+}
+
 func applyFastGPTEnv(cfg *Config) error {
 	if cfg == nil {
 		return nil
@@ -710,6 +722,13 @@ func applyFastGPTEnv(cfg *Config) error {
 	}
 	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_BASE_URL")); value != "" {
 		cfg.FastGPT.BaseURL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_ALLOW_INSECURE_HTTP")); value != "" {
+		allow, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("parse AGENT_DESK_FASTGPT_ALLOW_INSECURE_HTTP: %w", err)
+		}
+		cfg.FastGPT.AllowInsecureHTTP = allow
 	}
 	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_FASTGPT_INTEGRATION_TOKEN")); value != "" {
 		cfg.FastGPT.IntegrationToken = value

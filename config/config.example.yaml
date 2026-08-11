@@ -58,6 +58,8 @@ fastGPT:
   # 集成令牌只允许通过 AGENT_DESK_FASTGPT_INTEGRATION_TOKEN 注入。
   enabled: false
   baseUrl: ""
+  # 生产默认只允许 HTTPS；仅明确批准直连 HTTP 集成端点时启用。
+  allowInsecureHttp: false
   timeoutMs: 15000
   maxRetries: 1
   # FastGPT 检索引擎的最大参考 token。默认 400，避免过量召回抬高回复模型成本。

@@ -611,6 +611,12 @@ func TestLoadRequiresHTTPSForProductionFastGPT(t *testing.T) {
 		t.Fatalf("production validation leaked the configured FastGPT URL: %v", err)
 	}
 
+	t.Setenv("AGENT_DESK_FASTGPT_ALLOW_INSECURE_HTTP", "true")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("explicitly allowed production FastGPT HTTP URL rejected: %v", err)
+	}
+	t.Setenv("AGENT_DESK_FASTGPT_ALLOW_INSECURE_HTTP", "false")
+
 	t.Setenv("AGENT_DESK_FASTGPT_BASE_URL", "https://fastgpt.example.com")
 	if _, err := Load(path); err != nil {
 		t.Fatalf("HTTPS production FastGPT URL rejected: %v", err)

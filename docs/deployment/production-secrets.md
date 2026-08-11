@@ -155,7 +155,7 @@ cs_ai_agent:<AGENT_DESK_MYSQL_PASSWORD>@tcp(mysql:3306)/cs_ai_agent?charset=utf8
 /api/integration/agent-desk/usage/list
 ```
 
-Agent Desk 会在根地址后拼接上述路径。生产必须使用 HTTPS，URL 不得内嵌账号或密码；生产配置预检会在连接数据库或启动 worker 前拒绝 HTTP。FastGPT 服务负责人还必须确认 Tenant + Store 隔离、Team/Dataset 归属和 Usage cursor 契约。
+Agent Desk 会在根地址后拼接上述路径。生产默认必须使用 HTTPS，URL 不得内嵌账号或密码；生产配置预检会在连接数据库或启动 worker 前拒绝 HTTP。仅当已明确批准直连 HTTP 集成端点时，才可同时设置 `AGENT_DESK_FASTGPT_ALLOW_INSECURE_HTTP=true`。该开关只放宽 FastGPT Base URL 校验，不会创建回退地址或双写连接。FastGPT 服务负责人还必须确认 Tenant + Store 隔离、Team/Dataset 归属和 Usage cursor 契约。
 
 ### 4.2 `AGENT_DESK_FASTGPT_INTEGRATION_TOKEN`
 
