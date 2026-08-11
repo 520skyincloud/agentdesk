@@ -2,7 +2,7 @@
 
 > 状态：当前统一项目权威设计
 >
-> 更新时间：2026-08-07
+> 更新时间：2026-08-11
 >
 > 适用分支：`weibao/main`
 >
@@ -217,8 +217,15 @@ pending -> running -> ready -> committed -> delivered
 必须按 taskKey 覆盖所有成功文本 Task，最多拆成三条文本消息。知识 `no_hit` 明确禁止猜测，单项
 `failed` 只将对应 Task 转人工，不能清空其他成功结果或重跑完整模型链。
 
-客户消息事务内完成 Message、Turn Version 和 AIReplyJob 的写入；同一 Turn 的 Job 由单租约串行执行，
-不能仅因 Version 增长就丢弃已领取的逐题工作：
+同批知识 Task 各自独立检索。两个及以上 Task 的排名第一命中同时指向相同
+`KnowledgeBaseID + SourceRecordID` 时，Runtime 生成内部 `AnswerGroup`，Generate 必须只输出一个
+`replyPart`，并在 `taskKeys[]` 中完整列出该组 TaskKey；Commit 只创建一条 AI Message，同时把该
+Message 作为组内全部 Task 的提交证据。不同首条命中保持独立回答；该规则不使用关键词或模糊语义
+判断，也不跨 Turn 复用旧知识答案。
+
+客户消息事务内完成 Message、Turn Version 和 AIReplyJob 的写入。Turn Version 是当前执行所有权：
+同一 Turn 每增加一条客户消息都递增 Version，释放旧 Job 的 Task 领取和 Turn 租约，将旧版本 Job
+标记为 `superseded`，再由最新版本 Job 从持久 Task 账本接管未完成工作：
 
 ```text
 customer Message(sendtime)
@@ -230,10 +237,14 @@ customer Message(sendtime)
 
 - System、欢迎语、欢迎图片、小程序、绑定卡和其他自动化消息不关闭 Turn。
 - 人工回复、人工接管、撤回、会话关闭、会话继承、Session 变化和 AI 关闭使当前 Turn 失效。
-- 模型只生成内存中的 PreparedReplyBatch；Commit 事务先 CAS 校验 Turn、当前单 Job 租约、TaskKey
-  领取归属、Session、Route、Store、Binding、当前实例、AI 开关和人工状态。较早消息 Version 只能
-  提交该 Job 已领取且仍为 running 的 Task；无 Task 证据、已被覆盖或范围失效的旧批次不得创建
-  Message 或 Outbox。后续 Job 从 Task 账本只领取尚未完成的问题。
+- 只有 `Job.TurnVersion == Turn.Version` 的 Job 才能 Claim、进入 Runtime 和 Commit。新版本提交后，
+  进程内旧 Worker 立即取消；即使取消信号存在竞态，Runtime Scope 和 Commit CAS 仍会拒绝旧版本。
+- 模型只生成内存中的 PreparedReplyBatch；Commit 事务先 CAS 校验精确 Turn Version、当前单 Job
+  租约、TaskKey 领取归属、Session、Route、Store、Binding、当前实例、AI 开关和人工状态。无 Task
+  证据、已被覆盖或范围失效的旧批次不得创建 Message 或 Outbox。
+- 已在新客户消息事务之前原子 Commit 的 Message 仍可按其 committed/delivered Task 证据投递，避免
+  丢失已经完成的不同问题答案；这不代表旧 Worker 可以继续运行。迟到的精确重复问题复用该
+  Message/Outbox，不创建第二条回复。
 - 精确规范化后相同的迟到问题复用本轮既有 Message/Outbox：pending、sending 直接复用，failed
   提前原任务重试，sent 视为已覆盖，不再调用模型。
 - 不同迟到问题从 `LastDeliveredVersion` 后开始构建输入，只回答新增问题。若最终批次与上一答案
@@ -414,9 +425,11 @@ ActionLedger 可在内部 TraceData 的 `suppressedActions` 记录资源去重�
 - Message 与 AIReplyJob 原子提交，进程重启、租约回收和补偿扫描不丢回复任务。
 - 企微入站 `sendtime` 固化到 SentAt，CreatedAt 保持平台接收时间；1、2、3、14 秒迟到的相同问题
   必须加入原 Turn，最终只发送一次回复。
-- 两个 Worker 同时竞争同一 Turn 时只有持有 Turn 租约的一个 Job 可执行。较早消息 Version 只能提交
-  自己已领取且未被覆盖的 Task；后续 Job 依据稳定 TaskKey 只处理余量。Outbox 以 Task 终态作为最终
-  发送资格，兼容旧消息才使用 Version 兜底门禁。
+- 两个 Worker 同时竞争同一 Turn 时只有精确匹配最新 Turn Version 且持有租约的 Job 可执行。新客户
+  消息升级 Version 后，旧 Job 必须被取消并收敛为 `stale_turn_version`；最新 Job 依据稳定 TaskKey
+  接管全部未完成任务。Outbox 以已原子提交的 Task 终态作为最终门禁，未提交旧批次不能继续发送。
+- 两个相关知识问题命中同一排名第一知识记录时只提交一条 Message，并把同一 Message ID 写入全部
+  对应 Task；命中不同知识记录的问题仍逐题回答。
 - 每槽 `MaxRetryCount=2` 时超时、5xx 或空模型结果恰好执行三次 provider 调用，耗尽后只创建
   一个稳定人工任务；派单重试不重跑 Runtime。
 - Runtime `completed` 缺少有效 Message/Interrupt 证据时按 `commit_failed` 处理；空错误 RunLog

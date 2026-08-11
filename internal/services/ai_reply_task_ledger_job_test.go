@@ -21,6 +21,93 @@ type aiReplyTaskLedgerJobFixture struct {
 	tasks []models.AIReplyTurnTask
 }
 
+func TestAIReplyTaskLedgerNewTurnVersionSupersedesActiveJob(t *testing.T) {
+	fixture := setupAIReplyTaskLedgerJobFixture(t, []enums.AIReplyTurnTaskType{enums.AIReplyTurnTaskTypeKnowledge})
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	setAIReplyJobTestHook(t, func(ctx context.Context, _ models.Conversation, _ models.Message) (AIReplyExecutionResult, error) {
+		if err := sqls.WithTransaction(func(tx *sqls.TxContext) error {
+			turn, err := repositories.AIReplyTurnRepository.GetForUpdateInTenant(tx.Tx, fixture.turn.ID, fixture.turn.TenantID)
+			if err != nil {
+				return err
+			}
+			batch, _, err := AIReplyTurnTaskService.ClaimBatchDB(tx.Tx, turn, fixture.job.ID)
+			if err != nil {
+				return err
+			}
+			if len(batch) != 1 {
+				return fmt.Errorf("claimed %d tasks, want 1", len(batch))
+			}
+			return nil
+		}); err != nil {
+			return AIReplyExecutionResult{}, err
+		}
+		close(started)
+		<-ctx.Done()
+		close(stopped)
+		return AIReplyExecutionResult{}, ctx.Err()
+	})
+
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	if claimed := fixture.service.ProcessDue(1); claimed != 1 {
+		t.Fatalf("claimed jobs=%d want 1", claimed)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active turn job did not claim its task")
+	}
+
+	newer := createAIReplyJobTestMessage(t, fixture.db, fixture.conversation, 2, "same-turn-newer-message", time.Now(), false)
+	newer.Content = "咖啡在哪"
+	if err := fixture.db.Model(&models.Message{}).Where("id = ?", newer.ID).Update("content", newer.Content).Error; err != nil {
+		t.Fatal(err)
+	}
+	var newerJob *models.AIReplyJob
+	if err := sqls.WithTransaction(func(tx *sqls.TxContext) error {
+		turn, _, err := AIReplyTurnService.AssignCustomerMessageDB(tx.Tx, fixture.conversation, newer)
+		if err != nil {
+			return err
+		}
+		if turn.Version != 2 {
+			return fmt.Errorf("turn version=%d want 2", turn.Version)
+		}
+		newerJob, _, err = fixture.service.EnqueueForMessageDB(tx.Tx, fixture.conversation, newer)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.service.NotifyNewerMessage(fixture.conversation.ID, newer.ID)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("superseded same-turn worker was not cancelled")
+	}
+	workerDeadline := time.Now().Add(2 * time.Second)
+	for len(fixture.service.workerSlots) > 0 && time.Now().Before(workerDeadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(fixture.service.workerSlots) > 0 {
+		t.Fatal("superseded same-turn worker did not finish cleanup")
+	}
+
+	oldJob := repositories.AIReplyJobRepository.GetInTenant(fixture.db, fixture.job.ID, fixture.job.TenantID)
+	if oldJob == nil || oldJob.Status != enums.AIReplyJobStatusSuperseded || oldJob.ResultCode != "stale_turn_version" {
+		t.Fatalf("old job was not superseded by the new turn version: %#v", oldJob)
+	}
+	if newerJob == nil || newerJob.TurnID != fixture.turn.ID || newerJob.TurnVersion != 2 || newerJob.Status != enums.AIReplyJobStatusPending {
+		t.Fatalf("newest message did not own the replacement job: %#v", newerJob)
+	}
+	turn := repositories.AIReplyTurnRepository.GetInTenant(fixture.db, fixture.turn.ID, fixture.turn.TenantID)
+	if turn == nil || turn.Version != 2 || turn.ActiveJobID != 0 || turn.LeaseOwner != "" || turn.LeaseExpiresAt != nil {
+		t.Fatalf("turn lease was not released for the latest version: %#v", turn)
+	}
+	tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(fixture.db, fixture.turn.TenantID, fixture.turn.ID)
+	if len(tasks) != 1 || tasks[0].Status != enums.AIReplyTurnTaskStatusPending || tasks[0].ClaimedByJobID != 0 {
+		t.Fatalf("old task claim was not released: %#v", tasks)
+	}
+}
+
 func TestAIReplyTaskLedgerContinuesPastSixTasksWithoutNewCustomerMessage(t *testing.T) {
 	fixture := setupAIReplyTaskLedgerJobFixture(t, []enums.AIReplyTurnTaskType{
 		enums.AIReplyTurnTaskTypeText,

@@ -792,41 +792,21 @@ func splitReplyTextByBlankLine(text string) []string {
 }
 
 func textCommitTaskCountFromTrace(trace *aiReplyTraceData) int {
-	return len(textCommitTaskIDsFromTrace(trace))
+	return len(textCommitTaskKeyGroupsFromTrace(trace))
 }
 
 func textCommitTaskIDFromTrace(trace *aiReplyTraceData, index int) string {
 	if index < 0 {
 		return ""
 	}
-	taskIDs := textCommitTaskIDsFromTrace(trace)
-	if index >= len(taskIDs) {
+	groups := textCommitTaskKeyGroupsFromTrace(trace)
+	if index >= len(groups) || len(groups[index]) == 0 {
 		return ""
 	}
-	return taskIDs[index]
+	return groups[index][0]
 }
 
 func textCommitTaskKeyGroupsFromTrace(trace *aiReplyTraceData) [][]string {
-	taskIDs := textCommitTaskIDsFromTrace(trace)
-	if len(taskIDs) == 0 {
-		return nil
-	}
-	groupCount := len(taskIDs)
-	if groupCount > 3 {
-		groupCount = 3
-	}
-	groups := make([][]string, 0, groupCount)
-	for index := 0; index < groupCount; index++ {
-		end := index + 1
-		if index == groupCount-1 {
-			end = len(taskIDs)
-		}
-		groups = append(groups, append([]string(nil), taskIDs[index:end]...))
-	}
-	return groups
-}
-
-func textCommitTaskIDsFromTrace(trace *aiReplyTraceData) []string {
 	if trace == nil || len(trace.Runtime) == 0 {
 		return nil
 	}
@@ -834,9 +814,10 @@ func textCommitTaskIDsFromTrace(trace *aiReplyTraceData) []string {
 		Pipeline struct {
 			ReplyPlan struct {
 				TaskPlans []struct {
-					TaskKey string `json:"taskKey"`
-					Intent  string `json:"intent"`
-					Output  string `json:"output"`
+					TaskKey     string `json:"taskKey"`
+					AnswerGroup string `json:"answerGroup"`
+					Intent      string `json:"intent"`
+					Output      string `json:"output"`
 				} `json:"taskPlans"`
 			} `json:"replyPlan"`
 		} `json:"pipeline"`
@@ -844,7 +825,8 @@ func textCommitTaskIDsFromTrace(trace *aiReplyTraceData) []string {
 	if err := json.Unmarshal(trace.Runtime, &data); err != nil {
 		return nil
 	}
-	taskIDs := make([]string, 0, 3)
+	groups := make([][]string, 0, 3)
+	groupIndexes := make(map[string]int, len(data.Pipeline.ReplyPlan.TaskPlans))
 	for index, task := range data.Pipeline.ReplyPlan.TaskPlans {
 		output := strings.TrimSpace(task.Output)
 		intent := strings.TrimSpace(task.Intent)
@@ -858,9 +840,26 @@ func textCommitTaskIDsFromTrace(trace *aiReplyTraceData) []string {
 		if taskKey == "" {
 			taskKey = fmt.Sprintf("task-%d", index+1)
 		}
-		taskIDs = append(taskIDs, taskKey)
+		groupKey := strings.TrimSpace(task.AnswerGroup)
+		if groupKey == "" {
+			groupKey = taskKey
+		}
+		if groupIndex, exists := groupIndexes[groupKey]; exists {
+			groups[groupIndex] = append(groups[groupIndex], taskKey)
+			continue
+		}
+		groupIndexes[groupKey] = len(groups)
+		groups = append(groups, []string{taskKey})
 	}
-	return taskIDs
+	if len(groups) <= 3 {
+		return groups
+	}
+	ret := append([][]string(nil), groups[:2]...)
+	merged := make([]string, 0)
+	for _, group := range groups[2:] {
+		merged = append(merged, group...)
+	}
+	return append(ret, merged)
 }
 
 func structuredCommitTaskKeysFromTrace(trace *aiReplyTraceData, resourceType string, occurrence int) []string {

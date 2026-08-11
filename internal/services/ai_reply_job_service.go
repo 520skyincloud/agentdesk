@@ -296,7 +296,8 @@ func (s *aiReplyJobService) NotifyNewerMessage(conversationID, messageID int64) 
 		}
 		activeMessage := repositories.MessageRepository.Get(sqls.DB(), activeMessageID)
 		if newMessage != nil && activeMessage != nil && newMessage.AIReplyTurnID > 0 &&
-			newMessage.AIReplyTurnID == activeMessage.AIReplyTurnID && newMessage.SessionNo == activeMessage.SessionNo {
+			newMessage.AIReplyTurnID == activeMessage.AIReplyTurnID && newMessage.SessionNo == activeMessage.SessionNo &&
+			newMessage.AIReplyTurnVersion <= activeMessage.AIReplyTurnVersion {
 			continue
 		}
 		if activeMessageID < messageID {
@@ -366,6 +367,11 @@ func (s *aiReplyJobService) processClaimed(job *models.AIReplyJob, owner string)
 			return
 		}
 		if !claimed {
+			if turn := repositories.AIReplyTurnRepository.GetInTenant(sqls.DB(), job.TurnID, job.TenantID); turn != nil &&
+				job.TurnVersion > 0 && job.TurnVersion < turn.Version {
+				s.markTerminal(job, owner, enums.AIReplyJobStatusSuperseded, "stale_turn_version", "", time.Now())
+				return
+			}
 			_, _ = repositories.AIReplyJobRepository.MarkRetry(sqls.DB(), job.ID, job.TenantID, owner,
 				"turn_busy", "", time.Now().Add(500*time.Millisecond), time.Now(), false)
 			return
@@ -867,6 +873,9 @@ func (s *aiReplyJobService) inspectExecutionState(job *models.AIReplyJob, includ
 		if aiReplyTurnTerminalStatus(turn.Status) || conversation.CurrentAIReplyTurnID != turn.ID {
 			return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "turn_inactive"}
 		}
+		if job.TurnVersion < turn.Version {
+			return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "stale_turn_version"}
+		}
 	}
 	if message.HistoricalOnly || message.SenderType != enums.IMSenderTypeCustomer {
 		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "message_not_runtime_eligible"}
@@ -977,6 +986,9 @@ func (s *aiReplyJobService) inspectFreshness(state *aiReplyJobExecutionState) *a
 		case enums.IMSenderTypeCustomer:
 			if state.Job.TurnID <= 0 || message.AIReplyTurnID != state.Job.TurnID || message.SessionNo != state.Job.SessionNo {
 				return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "newer_customer_message"}
+			}
+			if message.AIReplyTurnVersion > state.Job.TurnVersion {
+				return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "stale_turn_version"}
 			}
 		case enums.IMSenderTypeAgent:
 			return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "human_agent_replied"}

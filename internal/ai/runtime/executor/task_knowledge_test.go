@@ -107,6 +107,55 @@ func TestRetrieveRuntimeTaskKnowledgeKeepsSuccessfulTasksWhenOneFails(t *testing
 	}
 }
 
+func TestRetrieveRuntimeTaskKnowledgeGroupsTasksUsingSameTopKnowledgeRecord(t *testing.T) {
+	plans := []callbacks.ReplyTaskPlanTraceData{
+		{TaskKey: "task-coffee", Intent: "hotel_info", Text: "想喝咖啡了", Output: "knowledge_text_reply"},
+		{TaskKey: "task-coffee-location", Intent: "hotel_info", Text: "咖啡在哪", Output: "knowledge_text_reply"},
+		{TaskKey: "task-parking", Intent: "hotel_info", Text: "停车场在哪", Output: "knowledge_text_reply"},
+	}
+	coffeeHit := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "coffee-record", Content: "咖啡在洗衣房", Score: 0.9}
+	parkingHit := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "parking-record", Content: "停车入口在昭潭路", Score: 0.9}
+	retriever := &testRuntimeTaskKnowledgeRetriever{
+		results: map[string]*retrievers.KnowledgeRetrieveResult{
+			plans[0].Text: {Hits: []rag.RetrieveResult{coffeeHit}, ContextResults: []rag.RetrieveResult{coffeeHit}, ContextText: coffeeHit.Content},
+			plans[1].Text: {Hits: []rag.RetrieveResult{coffeeHit}, ContextResults: []rag.RetrieveResult{coffeeHit}, ContextText: coffeeHit.Content},
+			plans[2].Text: {Hits: []rag.RetrieveResult{parkingHit}, ContextResults: []rag.RetrieveResult{parkingHit}, ContextText: parkingHit.Content},
+		},
+		errors: map[string]error{},
+	}
+	outcome, err := retrieveRuntimeTaskKnowledgeWithRetriever(context.Background(), RunInput{}, plans, nil, runtimeTaskBatchState{}, retriever)
+	if err != nil {
+		t.Fatalf("retrieve grouped task knowledge: %v", err)
+	}
+	if len(outcome.ActiveTaskPlans) != 3 {
+		t.Fatalf("active plans=%#v", outcome.ActiveTaskPlans)
+	}
+	coffeeGroup := outcome.ActiveTaskPlans[0].AnswerGroup
+	if coffeeGroup == "" || outcome.ActiveTaskPlans[1].AnswerGroup != coffeeGroup {
+		t.Fatalf("coffee tasks did not share an answer group: %#v", outcome.ActiveTaskPlans)
+	}
+	if outcome.ActiveTaskPlans[2].AnswerGroup != "" {
+		t.Fatalf("unrelated parking task was grouped: %#v", outcome.ActiveTaskPlans)
+	}
+}
+
+func TestRuntimeKnowledgeAnswerGroupUsesTopHitBeforeContextSelection(t *testing.T) {
+	topHit := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "coffee-top", Content: "咖啡信息", Score: 0.95}
+	contextFirst := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "parking-context", Content: "停车信息", Score: 0.8}
+	result := &retrievers.KnowledgeRetrieveResult{
+		Hits:           []rag.RetrieveResult{topHit, contextFirst},
+		ContextResults: []rag.RetrieveResult{contextFirst, topHit},
+		ContextText:    contextFirst.Content + "\n" + topHit.Content,
+	}
+	want := runtimeKnowledgeAnswerGroup(&retrievers.KnowledgeRetrieveResult{
+		Hits:        []rag.RetrieveResult{topHit},
+		ContextText: topHit.Content,
+	})
+	if got := runtimeKnowledgeAnswerGroup(result); got == "" || got != want {
+		t.Fatalf("answer group must follow the ranked top hit, got=%q want=%q", got, want)
+	}
+}
+
 func testKnowledgeTaskPlans() []callbacks.ReplyTaskPlanTraceData {
 	return []callbacks.ReplyTaskPlanTraceData{
 		{TaskKey: "task-checkin", Intent: "hotel_info", SubIntent: "checkin_process", Text: "怎么办理入住", Output: "knowledge_text_reply"},

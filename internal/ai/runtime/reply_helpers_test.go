@@ -365,7 +365,7 @@ func TestSplitReplyTextForCommitKeepsSingleTaskReplyTogether(t *testing.T) {
 	}
 }
 
-func TestTextCommitTaskIDsFromTraceKeepsAllTextTasks(t *testing.T) {
+func TestTextCommitTaskGroupsFromTraceKeepsAllTextTasks(t *testing.T) {
 	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
 		"pipeline":{"replyPlan":{"taskPlans":[
 			{"intent":"hotel_info","output":"knowledge_text_reply"},
@@ -375,9 +375,24 @@ func TestTextCommitTaskIDsFromTraceKeepsAllTextTasks(t *testing.T) {
 			{"intent":"hotel_info","output":"knowledge_text_reply"}
 		]}}
 	}`)}
-	ids := textCommitTaskIDsFromTrace(trace)
-	if len(ids) != 4 || ids[0] != "task-1" || ids[1] != "task-3" || ids[3] != "task-5" {
-		t.Fatalf("expected all ordered text task ids, got %#v", ids)
+	groups := textCommitTaskKeyGroupsFromTrace(trace)
+	if len(groups) != 3 || strings.Join(groups[0], ",") != "task-1" || strings.Join(groups[1], ",") != "task-3" ||
+		strings.Join(groups[2], ",") != "task-4,task-5" {
+		t.Fatalf("expected all ordered text task groups, got %#v", groups)
+	}
+}
+
+func TestTextCommitTaskGroupsFromTraceUsesKnowledgeAnswerGroup(t *testing.T) {
+	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
+		"pipeline":{"replyPlan":{"taskPlans":[
+			{"taskKey":"coffee-1","answerGroup":"coffee","intent":"hotel_info","output":"knowledge_text_reply"},
+			{"taskKey":"coffee-2","answerGroup":"coffee","intent":"hotel_info","output":"knowledge_text_reply"},
+			{"taskKey":"parking","intent":"hotel_info","output":"knowledge_text_reply"}
+		]}}
+	}`)}
+	groups := textCommitTaskKeyGroupsFromTrace(trace)
+	if len(groups) != 2 || strings.Join(groups[0], ",") != "coffee-1,coffee-2" || strings.Join(groups[1], ",") != "parking" {
+		t.Fatalf("expected grouped commit evidence, got %#v", groups)
 	}
 }
 

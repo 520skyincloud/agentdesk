@@ -113,6 +113,7 @@ func (s *aiReplyTurnService) AssignCustomerMessageDB(db *gorm.DB, conversation *
 	}
 
 	created := false
+	activeJobID := int64(0)
 	if !attach {
 		if current != nil && current.Status != enums.AIReplyTurnStatusInterrupted && current.Status != enums.AIReplyTurnStatusClosed {
 			if err := repositories.AIReplyTurnRepository.UpdatesInTenant(db, current.ID, current.TenantID, map[string]any{
@@ -150,6 +151,7 @@ func (s *aiReplyTurnService) AssignCustomerMessageDB(db *gorm.DB, conversation *
 			return nil, false, err
 		}
 	} else {
+		activeJobID = current.ActiveJobID
 		current.Version++
 		current.LastCustomerMessageID = message.ID
 		if sentAt.After(current.LastCustomerSentAt) {
@@ -157,6 +159,11 @@ func (s *aiReplyTurnService) AssignCustomerMessageDB(db *gorm.DB, conversation *
 		}
 		current.Status = enums.AIReplyTurnStatusOpen
 		current.CompletedAt = nil
+		if activeJobID > 0 {
+			if err := AIReplyTurnTaskService.ReleaseJobClaimsDB(db, current.TenantID, current.ID, activeJobID, now); err != nil {
+				return nil, false, err
+			}
+		}
 		if err := repositories.AIReplyTurnRepository.UpdatesInTenant(db, current.ID, current.TenantID, map[string]any{
 			"version":                  current.Version,
 			"status":                   current.Status,
@@ -164,6 +171,9 @@ func (s *aiReplyTurnService) AssignCustomerMessageDB(db *gorm.DB, conversation *
 			"last_customer_message_id": current.LastCustomerMessageID,
 			"last_customer_sent_at":    current.LastCustomerSentAt,
 			"completed_at":             nil,
+			"active_job_id":            0,
+			"lease_owner":              "",
+			"lease_expires_at":         nil,
 			"updated_at":               now,
 			"update_user_name":         "ai_reply_turn",
 		}); err != nil {
@@ -181,10 +191,8 @@ func (s *aiReplyTurnService) AssignCustomerMessageDB(db *gorm.DB, conversation *
 	}); err != nil {
 		return nil, false, err
 	}
-	if created {
-		if err := repositories.AIReplyJobRepository.SupersedeOlderTurnVersions(db, conversation.TenantID, current.ID, current.Version, 0, now); err != nil {
-			return nil, false, err
-		}
+	if err := repositories.AIReplyJobRepository.SupersedeOlderTurnVersions(db, conversation.TenantID, current.ID, current.Version, 0, now); err != nil {
+		return nil, false, err
 	}
 	return current, created, nil
 }
@@ -198,7 +206,7 @@ func (s *aiReplyTurnService) TryClaimJobDB(db *gorm.DB, job *models.AIReplyJob, 
 		return false, err
 	}
 	if turn.ConversationID != job.ConversationID || turn.SessionNo != job.SessionNo || turn.StoreID != job.StoreID ||
-		turn.StoreStaffBindingID != job.StoreStaffBindingID || aiReplyTurnTerminalStatus(turn.Status) {
+		turn.StoreStaffBindingID != job.StoreStaffBindingID || turn.Version != job.TurnVersion || aiReplyTurnTerminalStatus(turn.Status) {
 		return false, nil
 	}
 	if turn.ActiveJobID > 0 && turn.ActiveJobID != job.ID && turn.LeaseExpiresAt != nil && turn.LeaseExpiresAt.After(now) {
@@ -485,7 +493,7 @@ func (s *aiReplyTurnService) ValidateCommitDB(db *gorm.DB, tenantID, conversatio
 		turn.StoreID != conversation.StoreID || turn.StoreStaffBindingID != conversation.StoreStaffBindingID {
 		return nil, errorsx.InvalidParam("AI 回复轮次提交范围不一致")
 	}
-	if version > turn.Version || (version != turn.Version && (jobID <= 0 || len(uniqueTaskKeys(taskKeys)) == 0)) ||
+	if version != turn.Version ||
 		turn.Status == enums.AIReplyTurnStatusInterrupted ||
 		turn.Status == enums.AIReplyTurnStatusClosed || turn.Status == enums.AIReplyTurnStatusFailed ||
 		conversation.CurrentAIReplyTurnID != turn.ID || !aiReplyTurnConversationAllowsAI(conversation) {

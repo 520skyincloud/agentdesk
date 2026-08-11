@@ -144,7 +144,7 @@ func runtimeTaskScope(req RunInput) (*models.AIReplyTurn, []models.Message, bool
 	}
 	turn := repositories.AIReplyTurnRepository.GetInTenant(sqls.DB(), req.UserMessage.AIReplyTurnID, req.Conversation.TenantID)
 	if turn == nil || turn.ConversationID != req.Conversation.ID || turn.SessionNo != req.UserMessage.SessionNo ||
-		req.UserMessage.AIReplyTurnVersion > turn.Version || turn.StoreID != req.Conversation.StoreID ||
+		req.UserMessage.AIReplyTurnVersion != turn.Version || turn.StoreID != req.Conversation.StoreID ||
 		turn.StoreStaffBindingID != req.Conversation.StoreStaffBindingID {
 		return nil, nil, false
 	}

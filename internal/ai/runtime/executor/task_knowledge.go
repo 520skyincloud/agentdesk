@@ -2,6 +2,9 @@ package executor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -25,11 +28,12 @@ type runtimeTaskKnowledgeOutcome struct {
 }
 
 type runtimeTaskKnowledgeItem struct {
-	TaskKey string
-	Query   string
-	Result  *retrievers.KnowledgeRetrieveResult
-	Status  enums.AIReplyTurnTaskKnowledgeStatus
-	Err     error
+	TaskKey     string
+	Query       string
+	AnswerGroup string
+	Result      *retrievers.KnowledgeRetrieveResult
+	Status      enums.AIReplyTurnTaskKnowledgeStatus
+	Err         error
 }
 
 type runtimeTaskKnowledgeRetriever interface {
@@ -90,6 +94,7 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 			items[itemIndex].Result = result
 			items[itemIndex].Err = err
 			items[itemIndex].Status = runtimeKnowledgeStatus(result, err)
+			items[itemIndex].AnswerGroup = runtimeKnowledgeAnswerGroup(result)
 		}(index)
 	}
 	wg.Wait()
@@ -132,8 +137,50 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 		}
 		outcome.ActiveTaskPlans = active
 	}
+	outcome.ActiveTaskPlans = applyRuntimeKnowledgeAnswerGroups(outcome.ActiveTaskPlans, items)
 	outcome.Prefetched = mergeRuntimeTaskKnowledge(items, retriever.KnowledgeBaseIDs())
 	return outcome, nil
+}
+
+func runtimeKnowledgeAnswerGroup(result *retrievers.KnowledgeRetrieveResult) string {
+	if result == nil {
+		return ""
+	}
+	var item rag.RetrieveResult
+	switch {
+	case len(result.Hits) > 0:
+		item = result.Hits[0]
+	case len(result.ContextResults) > 0:
+		item = result.ContextResults[0]
+	default:
+		return ""
+	}
+	sourceRecordID := strings.TrimSpace(item.SourceRecordID)
+	if item.KnowledgeBaseID <= 0 || sourceRecordID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%s", item.KnowledgeBaseID, sourceRecordID)))
+	return "knowledge_answer_" + hex.EncodeToString(sum[:8])
+}
+
+func applyRuntimeKnowledgeAnswerGroups(plans []callbacks.ReplyTaskPlanTraceData, items []runtimeTaskKnowledgeItem) []callbacks.ReplyTaskPlanTraceData {
+	groupByTaskKey := make(map[string]string, len(items))
+	groupCounts := make(map[string]int, len(items))
+	for _, item := range items {
+		if item.Status != enums.AIReplyTurnTaskKnowledgeStatusHit || strings.TrimSpace(item.AnswerGroup) == "" {
+			continue
+		}
+		groupByTaskKey[item.TaskKey] = item.AnswerGroup
+		groupCounts[item.AnswerGroup]++
+	}
+	ret := append([]callbacks.ReplyTaskPlanTraceData(nil), plans...)
+	for index := range ret {
+		group := strings.TrimSpace(groupByTaskKey[ret[index].TaskKey])
+		if group != "" && groupCounts[group] > 1 {
+			ret[index].AnswerGroup = group
+		}
+	}
+	return ret
 }
 
 func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {

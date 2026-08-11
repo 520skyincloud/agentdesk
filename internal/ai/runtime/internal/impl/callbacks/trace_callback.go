@@ -288,6 +288,7 @@ type ReplyPlanTraceData struct {
 
 type ReplyTaskPlanTraceData struct {
 	TaskKey        string `json:"taskKey,omitempty"`
+	AnswerGroup    string `json:"answerGroup,omitempty"`
 	Intent         string `json:"intent,omitempty"`
 	SubIntent      string `json:"subIntent,omitempty"`
 	Text           string `json:"text,omitempty"`
