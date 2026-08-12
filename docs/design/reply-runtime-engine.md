@@ -2,11 +2,16 @@
 
 > 状态：当前统一项目权威设计
 >
-> 更新时间：2026-08-11
+> 更新时间：2026-08-12
 >
 > 适用分支：`weibao/main`
 >
 > AI 行为来源：`origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`
+
+当前部署状态：Runtime V2 实现提交 `6a9ad46d2595cf212a90ec431e8307122852c227` 已部署到
+测试2服务器，并仅对 Binding `1`（合肥南七）启用完整 ContextCompiler、Intent、Reply、Validator
+和 authoritative ActionLedger。该灰度状态不代表其他 Binding 已启用，也不代表真实客户消息矩阵
+已经全部验收。
 
 本文只描述当前生产运行链。旧 AIConfig、独立 Agent 模型绑定、本地知识 ID、历史测试
 会话和旧 fallback 可从 Git 历史追溯，但不能作为当前接口、Schema 或行为依据。

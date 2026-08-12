@@ -1,8 +1,8 @@
 # AI Message Reply Runtime V2 开发交接
 
-> 状态：代码实现与本地验证完成，尚未部署服务器
+> 状态：代码实现、本地门禁和测试2服务器 Binding 1 灰度部署完成
 >
-> 日期：2026-08-11
+> 日期：2026-08-12
 >
 > 分支：`codex/ai-message-reply-runtime-v2`
 >
@@ -20,7 +20,10 @@
 - Resume 重入 Intent、Knowledge、Tag 或重新扫描上下文。
 - 模型 Profile 仍连接旧 NewAPI 地址。
 
-本分支只更新仓库。没有 SSH、服务器部署、生产数据库修改、生产 Profile 切换或 API Key 变更。
+实现提交 `6a9ad46d2595cf212a90ec431e8307122852c227` 已部署到测试2服务器。部署只迁移并运行
+AgentDesk 与其 MySQL；FastGPT 和 NewAPI 没有由本次发布安装或迁移，AgentDesk 继续调用已经存在的
+`http://36.138.68.47:6080` 和 `http://36.138.68.47:6081/v1`。API Key、Credential revision、
+Assignment、Binding 和模型名均未改写。
 
 ## 2. 实现结构
 
@@ -213,13 +216,48 @@ git diff --check
 
 ## 8. 部署与回滚
 
-本分支尚未部署。后续部署必须：
+### 8.1 已完成部署
 
-1. 先备份当前数据库并记录当前 Profile revision、Assignment 和 Credential revision。
-2. 先运行 Schema/迁移预检，再启动新镜像。
-3. 首批只为目标 Tenant/Store/Binding 开启 ContextCompiler/Intent/Reply/Validator/ActionLedger。
-4. 验证知识多题、资源动作、人工接管、Resume、Outbox 失败重试和 DeepSeek reasoning_tokens=0。
-5. 观察至少 30 分钟的阶段延迟、协议修复数、Validator 拒绝、Action 状态和 Outbox 取消。
+- 服务器：测试2 `36.138.68.47:2301`。
+- 服务：`agentdesk.service` 和本机 MySQL 均为 `active`，AgentDesk 监听 `127.0.0.1:8083`。
+- 发布目录：`/opt/agentdesk/releases/20260812-runtime-v2-6a9ad46`。
+- 原域名 `https://weibao.omnireva.com` 继续由旧入口 Nginx 反向代理到测试2服务器；首页、登录页、
+  `/api/auth/options` 和企微验证文件均返回 HTTP 200。
+- AutoMigrate 后共 124 张表，`t_ai_reply_turn`、`t_ai_reply_turn_task`、
+  `t_ai_reply_turn_action` 已存在，DML migration 75 成功。
+- 最终同步基线：338 条消息、3 个会话、3 个客户、12 个资源、2 个知识库、87 个 AI Reply Job。
+- 历史失效 Outbox `id=1` 已标记 `cancelled` 且清空 `next_retry_at`，不会在新 Worker 启动后误发。
+- 完整 V2 仅对 Binding `1` 启用；数据库确认该 Binding 属于 Tenant `2`、Store `1`“合肥南七”。
 
-回滚时关闭 V2 模式并恢复上一镜像。新增表和 nullable 字段不会阻止旧代码运行；若同时回滚
-NewAPI 地址，需要显式恢复上一 Profile 网关，Credential/API Key 无需改变。
+生产进程已读取以下配置：
+
+```text
+AI_REPLY_TURN_COORDINATOR_ENABLED=true
+AI_REPLY_TURN_COORDINATOR_BINDING_IDS=1
+AI_RUNTIME_CONTEXT_COMPILER=v2
+AI_RUNTIME_INTENT_CONTRACT=v2
+AI_RUNTIME_REPLY_CONTRACT=v2
+AI_RUNTIME_VALIDATOR=v2
+AI_RUNTIME_ACTION_LEDGER=authoritative
+AI_RUNTIME_V2_BINDING_IDS=1
+```
+
+切换前环境备份：
+
+```text
+/opt/agentdesk/backups/runtime-production.env.before-full-v2-20260812-043834
+```
+
+### 8.2 仍需真实消息验收
+
+代码门禁、进程环境、数据库结构、域名和依赖连通性已经验证。客户可见行为仍需在 Binding `1`
+重放知识多题、资源动作、人工接管、Resume 和 Outbox 失败重试，并观察至少 30 分钟的阶段延迟、
+协议修复数、Validator 拒绝、Action 状态和 Outbox 取消。没有真实发生的客户消息，不得仅凭环境开关
+描述为业务验收通过。
+
+### 8.3 回滚
+
+优先将上述五个 `AI_RUNTIME_*` 模式恢复为 legacy/shadow，保留 Binding 范围并重启
+`agentdesk.service`。若需要回滚二进制，再把 `/opt/agentdesk/current` 切回上一发布目录。新增表和
+nullable 字段不会阻止旧代码运行；若同时回滚 NewAPI 地址，需要显式恢复上一 Profile 网关，
+Credential/API Key 无需改变。
