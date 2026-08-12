@@ -954,6 +954,7 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		&models.WxWorkProtocolInstance{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
+		&models.ConversationDialogueState{},
 		&models.AIManualResumeTask{},
 		&models.ConversationParticipant{},
 		&models.ConversationAssignment{},
@@ -997,6 +998,68 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		}
 	}
 	return db
+}
+
+func TestConversationAIRecoveryRestoresManualRouteAtomically(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+
+	if _, err := services.ConversationHumanDispatchService.HandoffByAI(conversation.ID, aiAgent, "模型失败转人工"); err != nil {
+		t.Fatalf("HandoffByAI() error = %v", err)
+	}
+	route := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if route == nil {
+		t.Fatal("expected pending route")
+	}
+	now := time.Now()
+	assignment := &models.ConversationAssignment{
+		TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: route.SessionNo,
+		ToUserID: 88, AssignType: string(enums.IMAssignmentTypeAssign), Status: enums.IMAssignmentStatusActive, CreatedAt: now,
+	}
+	if err := db.Create(assignment).Error; err != nil {
+		t.Fatalf("create active assignment: %v", err)
+	}
+	if err := db.Create(&models.AIManualResumeTask{
+		TenantID: conversation.TenantID, TaskKey: "recovery-test", ConversationID: conversation.ID,
+		TaskStatus: "waiting", AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create manual resume task: %v", err)
+	}
+	if err := db.Model(&models.Conversation{}).Where("id = ?", conversation.ID).Updates(map[string]any{
+		"current_team_id": int64(9), "current_assignee_id": int64(88),
+	}).Error; err != nil {
+		t.Fatalf("set stale manual ownership: %v", err)
+	}
+
+	if err := services.ConversationAIRecoveryService.Restore(conversation.ID, "结构化输出修复后恢复AI", now.Add(time.Second)); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+	current := services.ConversationService.Get(conversation.ID)
+	if current == nil || current.Status != enums.IMConversationStatusAIServing || current.CurrentTeamID != 0 || current.CurrentAssigneeID != 0 || current.HandoffAt != nil || current.HandoffReason != "" {
+		t.Fatalf("conversation was not fully restored: %+v", current)
+	}
+	route = services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if route == nil || route.RouteStatus != enums.ConversationRouteStatusAIServing || route.RouteTarget != "ai" || route.NeedHumanFollowUp || route.ManualExpireAt != nil || route.PendingAction != "" {
+		t.Fatalf("route was not fully restored: %+v", route)
+	}
+	if assignment = services.ConversationAssignmentService.Get(assignment.ID); assignment == nil || assignment.Status != enums.IMAssignmentStatusInactive || assignment.FinishedAt == nil {
+		t.Fatalf("active assignment was not finished: %+v", assignment)
+	}
+	var resumeTask models.AIManualResumeTask
+	if err := db.First(&resumeTask, "task_key = ?", "recovery-test").Error; err != nil {
+		t.Fatalf("load manual resume task: %v", err)
+	}
+	if resumeTask.TaskStatus != "cancelled" || resumeTask.CompletedAt == nil {
+		t.Fatalf("manual resume task was not cancelled: %+v", resumeTask)
+	}
+	dialogueState, err := services.ConversationDialogueStateService.Load(conversation.TenantID, conversation.ID, route.SessionNo)
+	if err != nil {
+		t.Fatalf("load dialogue state: %v", err)
+	}
+	if dialogueState == nil || dialogueState.ConversationMode != "ai_serving" {
+		t.Fatalf("dialogue state was not restored: %+v", dialogueState)
+	}
 }
 
 func createHumanDispatchAIAgent(t *testing.T, db *gorm.DB, mode enums.IMConversationServiceMode, teamIDs string) models.AIAgent {

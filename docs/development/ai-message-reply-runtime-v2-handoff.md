@@ -335,3 +335,27 @@ Credential/API Key 无需改变。
   `reply_generate/model_call_failed` 用量。Intent、Generate、协议修复和人工兜底契约保持不变。
 - 无数据库迁移、公开 API、WebSocket、前端、Intent Schema、FastGPT 或 Profile 配置变化。回滚只需
   恢复上一二进制。
+
+### 8.6 2026-08-12 DeepSeek Schema 拒绝与人工路由恢复
+
+- 合肥南七 Binding `1` 的生产消息 `376`“你好”和 `378`“我想办理入住”均在 IntentDetect 失败，
+  FastGPT 和 Generate 调用次数为 0。使用同一门店 active Credential 复现得到 NewAPI HTTP 400：
+  Runtime Schema 中仅含 `const/enum` 的节点缺少显式 `type`，被 DeepSeek Responses 严格校验拒绝；
+  请求未进入模型推理，Token 为 0。
+- Intent 和 Reply 的嵌入 Schema 已补齐显式类型，并在发送 Responses 前执行等价标准化。Profile 测试
+  改为真实执行 `intent_tasks.v2` 和 `reply_output.v2`，不再用简单 `{"ok":true}` 代替 Runtime 协议。
+  Schema 400 归类为 `structured_output_schema_rejected` 且不做无意义网络重试；超时、429 和 5xx 仍按
+  初次调用加两次重试。
+- 真实 NewAPI `http://36.138.68.47:6081/v1/responses`、模型 `deepseek-v4-flash` 已分别通过普通调用、
+  Intent Runtime Schema 和 Reply Runtime Schema 三条受控验收，均返回 HTTP 200。未修改或部署
+  NewAPI/FastGPT，也未记录 Key、Prompt 或上游原始响应。
+- 旧失败按既有 `intent_detect_failed` 策略把 Conversation `3` 持久化为
+  `HQ_AGENTDESK_PENDING`。该状态会在消息入站和 Job 执行两处阻断 AI，因此修复二进制后继续发送消息
+  仍会表现为转人工，且模型、知识库、Generate 均不会运行。
+- 新增内部 `ConversationAIRecoveryService`，在一个事务中结束有效人工 Assignment、恢复 Conversation
+  为 `AI_SERVING`、清空人工所有权和转人工元数据、恢复 Route、清理 pending 字段、取消残留
+  `AIManualResumeTask`、同步 DialogueState 并记录审计事件。客户取消人工等待和普通人工超时恢复复用
+  此服务，避免 Conversation 与 Route 半恢复。
+- 新增仅服务器管理员可运行的 `cmd/conversation_ai_recovery`，不增加 HTTP API、前端入口、DTO、
+  WebSocket payload、模型调用或数据库结构。命令必须提供会话 ID 和审计原因，并使用生产配置及环境
+  密钥调用上述业务服务，禁止直接 SQL 修复会话状态。

@@ -90,10 +90,7 @@ func (s *manualSessionTimeoutService) restoreWaitingRoute(state models.Conversat
 func (s *manualSessionTimeoutService) restoreOne(state models.ConversationRouteState, now time.Time, timeoutStage string, reason string, customerNotice string, resumeWaiting bool, fromStatus enums.ConversationRouteStatus) error {
 	conversationID := state.ConversationID
 	conversation := ConversationService.Get(conversationID)
-	if err := s.restoreConversationShell(conversationID, now, timeoutStage, reason, fromStatus); err != nil {
-		return err
-	}
-	if err := ConversationRouteService.RestoreAI(conversationID, reason, now); err != nil {
+	if err := ConversationAIRecoveryService.Restore(conversationID, reason, now); err != nil {
 		return err
 	}
 	if resumeWaiting {
@@ -109,9 +106,6 @@ func (s *manualSessionTimeoutService) restoreOne(state models.ConversationRouteS
 	}
 	if fromStatus == enums.ConversationRouteStatusHQAgentDeskServing {
 		_, _ = KnowledgeCandidateService.ExtractFromResolvedConversation(conversationID, enums.KnowledgeCandidateSourceAgentDeskHQ)
-	}
-	if updated := ConversationService.Get(conversationID); updated != nil {
-		WsService.PublishConversationChanged(updated, enums.IMRealtimeEventConversationUpdated)
 	}
 	return nil
 }

@@ -211,13 +211,9 @@ func (s *conversationHandoffConfirmationService) HandleWaitingCustomerResolution
 		return false, nil
 	}
 	now := time.Now()
-	if err := ManualSessionTimeoutService.restoreConversationShell(conversation.ID, now, "customer_resolved_manual_wait", "客户明确表示问题已解决或无需人工", state.RouteStatus); err != nil {
+	if err := ConversationAIRecoveryService.Restore(conversation.ID, "客户取消本次人工接待", now); err != nil {
 		return true, err
 	}
-	if err := ConversationRouteService.RestoreAI(conversation.ID, "客户取消本次人工接待", now); err != nil {
-		return true, err
-	}
-	AIManualResumeTaskService.CancelActive(conversation.ID, "customer resolved or cancelled manual reception")
 	_, err := MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "ai_manual_wait_cancel_"+strs.UUID(), enums.IMMessageTypeText, "好，这次人工接待先取消。有新问题直接发我就行。", "", systemOperator(), message.RequestID)
 	return true, err
 }
