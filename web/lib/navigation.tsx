@@ -47,6 +47,7 @@ export type DashboardNavSectionConfig = {
   titleKey: string;
   icon: ReactNode;
   context: DashboardNavContextScope;
+  hiddenForStandaloneCustomerService?: boolean;
   items: DashboardNavItemConfig[];
 };
 
@@ -90,13 +91,36 @@ function navItemVisible(
   return permissionSet.has(item.requiredPermission);
 }
 
+const elevatedCustomerServiceRoles = new Set([
+  "cs_team_leader",
+  "tenant_admin",
+  "admin",
+  "super_admin",
+]);
+
+function isStandaloneCustomerServiceUser(
+  roles: readonly string[] | undefined,
+): boolean {
+  const roleSet = new Set(roles ?? []);
+  return (
+    roleSet.has("cs_user") &&
+    !(roles ?? []).some((role) => elevatedCustomerServiceRoles.has(role))
+  );
+}
+
 export function filterDashboardNavForSession(
   permissions: readonly string[] | undefined,
   context: DashboardNavContext,
+  roles?: readonly string[],
 ): { titleKey: string; icon: ReactNode; items: DashboardNavMenuItem[] }[] {
   const permissionSet = new Set(permissions ?? []);
+  const standaloneCustomerServiceUser = isStandaloneCustomerServiceUser(roles);
   return dashboardNavSections
-    .filter((section) => contextVisible(section.context, context))
+    .filter(
+      (section) =>
+        contextVisible(section.context, context) &&
+        !(standaloneCustomerServiceUser && section.hiddenForStandaloneCustomerService),
+    )
     .map((section) => ({
       titleKey: section.titleKey,
       icon: section.icon,
@@ -316,6 +340,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
     titleKey: "nav.serviceCapabilities",
     icon: <BrainCircuitIcon />,
     context: "tenant",
+    hiddenForStandaloneCustomerService: true,
     items: [
       {
         titleKey: "nav.channelSettings",
@@ -359,6 +384,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
     titleKey: "nav.accessManagement",
     icon: <ShieldCheckIcon />,
     context: "always",
+    hiddenForStandaloneCustomerService: true,
     items: [
       {
         titleKey: "nav.users",

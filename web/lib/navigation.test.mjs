@@ -121,6 +121,35 @@ test("tenant accounts see company work areas but no platform controls", async ()
   assert.equal(urls.includes("/dashboard/billing-query"), true)
 })
 
+test("standalone customer service users do not see service or access management sections", async () => {
+  const { filterDashboardNavForSession } = await loadNavigation()
+  const sections = filterDashboardNavForSession(
+    allPermissions,
+    { isPlatformAccount: false, hasActiveTenant: true },
+    ["cs_user"],
+  )
+  const keys = sectionKeys(sections)
+
+  assert.equal(keys.includes("nav.companyWorkspace"), true)
+  assert.equal(keys.includes("nav.customerServiceOrganization"), true)
+  assert.equal(keys.includes("nav.serviceCapabilities"), false)
+  assert.equal(keys.includes("nav.accessManagement"), false)
+})
+
+test("team leaders and administrators retain service and access management sections", async () => {
+  const { filterDashboardNavForSession } = await loadNavigation()
+  const context = { isPlatformAccount: false, hasActiveTenant: true }
+  const elevatedRoles = ["cs_team_leader", "tenant_admin", "admin", "super_admin"]
+
+  for (const elevatedRole of elevatedRoles) {
+    for (const roles of [[elevatedRole], ["cs_user", elevatedRole]]) {
+      const keys = sectionKeys(filterDashboardNavForSession(allPermissions, context, roles))
+      assert.equal(keys.includes("nav.serviceCapabilities"), true, roles.join(","))
+      assert.equal(keys.includes("nav.accessManagement"), true, roles.join(","))
+    }
+  }
+})
+
 test("platform accounts inside a company can use both company and platform navigation", async () => {
   const { filterDashboardNavForSession } = await loadNavigation()
   const sections = filterDashboardNavForSession(allPermissions, {

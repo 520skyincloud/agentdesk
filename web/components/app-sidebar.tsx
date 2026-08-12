@@ -35,8 +35,8 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
     [session?.activeTenantId, session?.isPlatformAccount]
   )
   const navSections = useMemo(
-    () => filterDashboardNavForSession(session?.permissions, navContext),
-    [navContext, session?.permissions]
+    () => filterDashboardNavForSession(session?.permissions, navContext, session?.roles),
+    [navContext, session?.permissions, session?.roles]
   )
   const secondaryNavItems = useMemo(
     () => filterDashboardSecondaryNavForSession(session?.permissions, navContext),
