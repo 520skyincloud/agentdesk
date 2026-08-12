@@ -91,6 +91,25 @@ func TestWxWorkProtocolActionRejectsInstanceOutsideAgentScope(t *testing.T) {
 	assertWxWorkProtocolTenantError(t, recorder.Body.Bytes(), "无权访问该企微员工号实例")
 }
 
+func TestWxWorkProtocolRoomInviteRequiresConversationContextForReplyOnlyUser(t *testing.T) {
+	db := setupWxWorkProtocolTenantHandlerDB(t)
+	instance := &models.WxWorkProtocolInstance{TenantID: 101, Guid: "handler-room-invite-guid", Status: enums.StatusOk}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create room invite instance: %v", err)
+	}
+	principal := &dto.AuthPrincipal{
+		UserID: 11, Username: "tenant-room-agent", ActiveTenantID: 101,
+		Roles:       []string{constants.RoleCodeTenantAdmin},
+		Permissions: []string{constants.PermissionConversationSend.Code},
+	}
+	body := `{"id":` + jsonInt64(instance.ID) + `,"roomId":"room-101","userList":["user-1"]}`
+	ctx, recorder := newAuthzHandlerTestContext(t, body, principal)
+
+	WxWorkProtocolInstancePostInvite_room_member(ctx)
+
+	assertWxWorkProtocolTenantError(t, recorder.Body.Bytes(), "必须提供会话ID")
+}
+
 func TestWxWorkProtocolListRequiresActiveTenant(t *testing.T) {
 	principal := &dto.AuthPrincipal{
 		UserID: 21, Username: "platform-channel-viewer", IsPlatformAccount: true,

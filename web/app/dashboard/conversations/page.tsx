@@ -304,13 +304,6 @@ export default function ConversationsPage() {
     }
   }, [canViewWxWorkAccounts]);
 
-  const handleInstanceUpdated = (updated: WxWorkProtocolInstance) => {
-    if (!canViewWxWorkAccounts) return;
-    setInstances((current) =>
-      current.map((item) => (item.id === updated.id ? updated : item)),
-    );
-  };
-
   useEffect(() => {
     setTenantContext(activeTenantId);
   }, [activeTenantId, setTenantContext]);
@@ -850,10 +843,6 @@ export default function ConversationsPage() {
         <div className="flex h-full min-h-0 overflow-hidden rounded-lg bg-muted/40 ring-1 ring-inset ring-border">
         <ChatPanel
           wxWorkInstance={conversationInstance}
-          aiReplyEnabled={isStoreStaff ? storeStaffWorkspace?.aiReplyEnabled : conversationInstance?.aiReplyEnabled}
-          canToggleAIReply={canUpdateWxWorkAccounts}
-          canAssignConversation={canAssignConversation}
-          onWxWorkInstanceUpdated={handleInstanceUpdated}
         />
         </div>
       </div>

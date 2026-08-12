@@ -149,6 +149,7 @@ func ConversationGetBy(ctx *gin.Context) {
 	}
 	detail := response.ConversationDetailResponse{
 		ConversationResponse: builders.BuildConversationWithLocale(item, i18nx.Locale(ctx)),
+		TakeoverState:        services.ConversationTakeoverService.ResolveState(item, operator),
 		Participants:         builders.BuildParticipantResponses(id, item.TenantID),
 		ChannelSessions:      builders.BuildConversationChannelSessions(services.ConversationChannelSessionService.ListInTenant(id, item.TenantID)),
 		HistorySegments:      builders.BuildConversationHistorySegments(historySegments),
@@ -289,6 +290,78 @@ func ConversationPostAssign(ctx *gin.Context) {
 		return
 	}
 	if err := services.ConversationService.AssignConversation(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationPostTakeover_request(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationSend)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.RequestConversationTakeoverRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if _, err := services.ConversationTakeoverService.Request(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationPostTakeover_direct(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationAssign)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.RequestConversationTakeoverRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.ConversationTakeoverService.DirectTakeover(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationPostTakeover_review(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationAssign)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.ReviewConversationTakeoverRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.ConversationTakeoverService.Review(req, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
+func ConversationPostResume_ai(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.ResumeConversationAIRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.ConversationTakeoverService.ResumeAI(req.ConversationID, operator); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return
 	}

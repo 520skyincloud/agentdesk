@@ -1195,6 +1195,7 @@ export function setWxWorkProtocolAIReplyEnabled(id: number, enabled: boolean) {
 
 export function inviteWxWorkProtocolRoomMember(payload: {
   id: number
+  conversationId?: number
   roomId: string
   userList: string[]
 }) {

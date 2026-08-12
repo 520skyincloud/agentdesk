@@ -71,7 +71,6 @@ func (s *conversationService) ListConversations(operator *dto.AuthPrincipal, fil
 	if tenantID <= 0 {
 		return nil, nil, errorsx.Forbidden("请先进入需要管理会话的接入公司")
 	}
-	storeStaffScoped := AgentTeamScopeService.Resolve(operator).StoreStaffScoped
 	cnd := sqls.NewCnd().Page(paging.Page, paging.Limit)
 
 	if strs.IsNotBlank(keyword) {
@@ -93,16 +92,12 @@ func (s *conversationService) ListConversations(operator *dto.AuthPrincipal, fil
 	case request.AgentConversationFilterMine:
 		cnd.Eq("current_assignee_id", operator.UserID).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterActive:
-		if !storeStaffScoped {
-			cnd.Eq("current_assignee_id", operator.UserID)
-		}
+		cnd = AgentTeamScopeService.ApplyAssignedOrStoreStaffFilter(cnd, operator)
 		cnd.Eq("status", enums.IMConversationStatusActive).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterPending:
 		cnd.Eq("current_assignee_id", 0).Eq("status", enums.IMConversationStatusPending).Asc("last_active_at").Desc("id")
 	case request.AgentConversationFilterClosed:
-		if !storeStaffScoped {
-			cnd.Eq("current_assignee_id", operator.UserID)
-		}
+		cnd = AgentTeamScopeService.ApplyAssignedOrStoreStaffFilter(cnd, operator)
 		cnd.Eq("status", enums.IMConversationStatusClosed).Desc("last_active_at").Desc("id")
 	case request.AgentConversationFilterMyAttention:
 		if !slices.Contains(operator.Roles, constants.RoleCodeCsUser) {
@@ -329,8 +324,11 @@ func (s *conversationService) AssignConversation(req request.AssignConversationR
 	if req.AssigneeID <= 0 {
 		return errorsx.InvalidParam("目标客服不能为空")
 	}
-	if req.AssigneeID == operator.UserID && s.canSupervisorTakeoverPendingConversation(operator) {
-		return s.takeoverPendingHumanConversation(req.ConversationID, req.Reason, operator)
+	if req.AssigneeID == operator.UserID && (AgentTeamScopeService.IsAdmin(operator) || slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader)) {
+		return ConversationTakeoverService.DirectTakeover(request.RequestConversationTakeoverRequest{
+			ConversationID: req.ConversationID,
+			Reason:         req.Reason,
+		}, operator)
 	}
 	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), req.ConversationID, tenantID)
 	if conversation == nil {
@@ -355,35 +353,14 @@ func (s *conversationService) AssignConversation(req request.AssignConversationR
 	)
 }
 
-func (s *conversationService) canSupervisorTakeoverPendingConversation(operator *dto.AuthPrincipal) bool {
-	if operator == nil {
-		return false
-	}
-	return AgentTeamScopeService.IsAdmin(operator) || slices.Contains(operator.Roles, constants.RoleCodeCsTeamLeader)
-}
-
-func (s *conversationService) takeoverPendingHumanConversation(conversationID int64, reason string, operator *dto.AuthPrincipal) error {
+func (s *conversationService) TakeoverAIServingConversation(conversationID int64, reason string, operator *dto.AuthPrincipal) error {
 	if operator == nil || operator.UserID <= 0 {
 		return errorsx.Unauthorized("未登录或登录已过期")
-	}
-	for _, permissionCode := range []string{
-		constants.PermissionConversationView.Code,
-		constants.PermissionConversationSend.Code,
-		constants.PermissionConversationAssign.Code,
-	} {
-		if !slices.Contains(operator.Permissions, permissionCode) {
-			return errorsx.Forbidden("缺少会话查看、回复或分配权限")
-		}
 	}
 	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
 	if tenantID <= 0 {
 		return errorsx.Forbidden("请先进入需要管理会话的接入公司")
 	}
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "主管接管待人工会话"
-	}
-
 	var assignedEvent events.ConversationAssignedEvent
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		conversation, err := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, conversationID, tenantID)
@@ -392,112 +369,6 @@ func (s *conversationService) takeoverPendingHumanConversation(conversationID in
 		}
 		if conversation == nil {
 			return errorsx.InvalidParam("会话不存在")
-		}
-		if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID > 0 {
-			return errorsx.InvalidParam("当前会话已被接管或不在待人工状态")
-		}
-		route, err := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, conversation.ID, conversation.TenantID)
-		if err != nil {
-			return err
-		}
-		if route == nil || route.RouteStatus != enums.ConversationRouteStatusHQAgentDeskPending || !route.NeedHumanFollowUp {
-			return errorsx.InvalidParam("只有等待总部人工处理的会话允许直接接管")
-		}
-		teamIDs := ConversationDispatchService.resolveDispatchTeamIDsDB(ctx.Tx, conversation, route)
-		if len(teamIDs) != 1 {
-			return errorsx.InvalidParam("当前会话未匹配唯一客服组，不能直接接管")
-		}
-		teams, err := AgentTeamScopeService.lockManageableTeamsDB(ctx.Tx, teamIDs, operator, "只能接管自己负责客服组的会话")
-		if err != nil {
-			return err
-		}
-		team := teams[teamIDs[0]]
-		if team == nil || team.Status != enums.StatusOk {
-			return errorsx.InvalidParam("会话所属客服组已停用")
-		}
-		user := repositories.UserRepository.Get(ctx.Tx, operator.UserID)
-		if user == nil || user.Status != enums.StatusOk || user.DeletedAt != nil {
-			return errorsx.Forbidden("当前账号已停用")
-		}
-		platformAccount := operator.IsPlatformAccount && user.TenantID == 0
-		if user.TenantID != conversation.TenantID && !platformAccount {
-			return errorsx.Forbidden("当前账号不属于该接入公司")
-		}
-
-		now := time.Now()
-		result := ctx.Tx.Model(&models.Conversation{}).
-			Where("id = ? AND tenant_id = ? AND status = ? AND current_assignee_id = ?", conversation.ID, conversation.TenantID, enums.IMConversationStatusPending, 0).
-			Updates(map[string]any{
-				"current_assignee_id": operator.UserID,
-				"current_team_id":     team.ID,
-				"status":              enums.IMConversationStatusActive,
-				"update_user_id":      operator.UserID,
-				"update_user_name":    operator.Username,
-				"updated_at":          now,
-			})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return errorsx.InvalidParam("当前会话已被其他客服接管，请刷新后重试")
-		}
-		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, conversation.ID, now); err != nil {
-			return err
-		}
-		if err := ConversationAssignmentService.CreateAssignmentWithOptions(ctx, conversation.ID, conversation.CurrentAssigneeID, operator.UserID, enums.IMAssignmentTypeAssign, reason, operator, now, ConversationAssignmentOptions{
-			DispatchMode:   enums.AgentTeamDispatchModeManual,
-			WorkloadWeight: normalizedWorkloadWeight(conversation),
-		}); err != nil {
-			return err
-		}
-		if err := ConversationEventLogService.CreateEvent(ctx, conversation.ID, enums.IMEventTypeAssign, enums.IMSenderTypeAgent, operator.UserID, "主管已接管待人工会话", s.buildEventPayload(map[string]any{
-			"fromStatus":     conversation.Status,
-			"toStatus":       enums.IMConversationStatusActive,
-			"fromAssigneeId": conversation.CurrentAssigneeID,
-			"toAssigneeId":   operator.UserID,
-			"toTeamId":       team.ID,
-			"reason":         reason,
-			"dispatchMode":   enums.AgentTeamDispatchModeManual,
-			"selfTakeover":   true,
-		})); err != nil {
-			return err
-		}
-		if _, err := ConversationRouteService.enterHQAgentDeskServingWithDB(ctx.Tx, conversation.ID, "主管接管:"+reason, now); err != nil {
-			return err
-		}
-		assignedEvent = events.ConversationAssignedEvent{
-			ConversationID: conversation.ID,
-			FromUserID:     conversation.CurrentAssigneeID,
-			ToUserID:       operator.UserID,
-			OperatorID:     operator.UserID,
-			Reason:         reason,
-			AssignType:     events.ConversationAssignTypeSelfTakeover,
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	if conversation := s.Get(conversationID); conversation != nil {
-		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationAssigned)
-	}
-	if assignedEvent.ConversationID > 0 {
-		eventbus.PublishAsync(context.Background(), assignedEvent)
-	}
-	return nil
-}
-
-func (s *conversationService) TakeoverAIServingConversation(conversationID int64, reason string, operator *dto.AuthPrincipal) error {
-	if operator == nil {
-		return errorsx.Unauthorized("未登录或登录已过期")
-	}
-	if operator.UserID <= 0 {
-		return errorsx.Unauthorized("未登录或登录已过期")
-	}
-	var assignedEvent events.ConversationAssignedEvent
-	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation, err := requireOperatorConversation(ctx.Tx, conversationID, operator)
-		if err != nil {
-			return err
 		}
 		if conversation.Status == enums.IMConversationStatusClosed {
 			return errorsx.InvalidParam("会话已关闭")
@@ -509,7 +380,10 @@ func (s *conversationService) TakeoverAIServingConversation(conversationID int64
 			return errorsx.InvalidParam("当前会话不允许直接接管")
 		}
 
-		state := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(ctx.Tx, conversationID, conversation.TenantID)
+		state, err := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, conversationID, conversation.TenantID)
+		if err != nil {
+			return err
+		}
 		if state == nil || (state.RouteStatus != enums.ConversationRouteStatusAIServing && state.RouteStatus != enums.ConversationRouteStatusAIFallback) {
 			return errorsx.InvalidParam("当前会话不处于 AI 接待状态")
 		}
@@ -550,7 +424,7 @@ func (s *conversationService) TakeoverAIServingConversation(conversationID int64
 		})); err != nil {
 			return err
 		}
-		if _, err := ConversationRouteService.EnterHQAgentDeskServing(conversationID, reason, now); err != nil {
+		if _, err := ConversationRouteService.enterHQAgentDeskServingWithDB(ctx.Tx, conversationID, reason, now); err != nil {
 			return err
 		}
 		assignedEvent = events.ConversationAssignedEvent{
@@ -575,30 +449,8 @@ func (s *conversationService) TakeoverAIServingConversation(conversationID int64
 }
 
 func (s *conversationService) EnsureAgentCanReply(conversationID int64, reason string, operator *dto.AuthPrincipal) error {
-	if operator == nil || operator.UserID <= 0 {
-		return errorsx.Unauthorized("未登录或登录已过期")
-	}
-	conversation, err := requireOperatorConversation(sqls.DB(), conversationID, operator)
-	if err != nil {
-		return err
-	}
-	if conversation.Status == enums.IMConversationStatusClosed {
-		return errorsx.InvalidParam("会话已关闭")
-	}
-	if !AgentTeamScopeService.CanViewConversation(operator, conversationID) {
-		return errorsx.Forbidden("当前客服未绑定该门店或员工号，无法处理此会话")
-	}
-	if route := ConversationRouteService.GetByConversationIDInTenant(conversationID, conversation.TenantID); route != nil && route.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
-		return nil
-	}
-	if conversation.Status == enums.IMConversationStatusActive && conversation.CurrentAssigneeID == operator.UserID {
-		return nil
-	}
-	if (conversation.Status == enums.IMConversationStatusAIServing || conversation.Status == enums.IMConversationStatusPending) && conversation.CurrentAssigneeID == 0 {
-		return s.TakeoverAIServingConversation(conversationID, reason, operator)
-	}
-	_, err = MessageService.ValidateConversationSender(conversationID, enums.IMSenderTypeAgent, operator, nil)
-	return err
+	_ = reason
+	return ConversationTakeoverService.EnsureCanReply(conversationID, operator)
 }
 
 func (s *conversationService) TransferConversation(conversationID, toUserID int64, reason string, operator *dto.AuthPrincipal) error {
@@ -618,8 +470,14 @@ func (s *conversationService) TransferConversation(conversationID, toUserID int6
 	}
 	var assignedEvent events.ConversationAssignedEvent
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation, err := requireOperatorConversation(ctx.Tx, conversationID, operator)
+		conversation, err := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, conversationID, tenantID)
 		if err != nil {
+			return err
+		}
+		if conversation == nil {
+			return errorsx.InvalidParam("会话不存在")
+		}
+		if _, err := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, conversationID, tenantID); err != nil {
 			return err
 		}
 		if !s.canTransferConversation(conversation, operator) {
@@ -659,7 +517,7 @@ func (s *conversationService) TransferConversation(conversationID, toUserID int6
 		})); err != nil {
 			return err
 		}
-		if _, err := ConversationRouteService.EnterHQAgentDeskServing(conversationID, "网页端总部客服转接:"+strings.TrimSpace(reason), now); err != nil {
+		if _, err := ConversationRouteService.enterHQAgentDeskServingWithDB(ctx.Tx, conversationID, "网页端总部客服转接:"+strings.TrimSpace(reason), now); err != nil {
 			return err
 		}
 		assignedEvent = events.ConversationAssignedEvent{
@@ -740,7 +598,18 @@ func (s *conversationService) CloseCustomerConversation(conversationID int64, ex
 func (s *conversationService) closeConversation(conversationID int64, senderType enums.IMSenderType, closeReason string, operator *dto.AuthPrincipal) error {
 	var closedAt time.Time
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		conversation, err := requireConversationParent(ctx.Tx, conversationID)
+		parent, err := requireConversationParent(ctx.Tx, conversationID)
+		if err != nil {
+			return err
+		}
+		conversation, err := repositories.ConversationRepository.GetForUpdateInTenant(ctx.Tx, conversationID, parent.TenantID)
+		if err != nil {
+			return err
+		}
+		if conversation == nil {
+			return errorsx.InvalidParam("会话不存在")
+		}
+		route, err := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(ctx.Tx, conversationID, conversation.TenantID)
 		if err != nil {
 			return err
 		}
@@ -792,7 +661,23 @@ func (s *conversationService) closeConversation(conversationID int64, senderType
 		}); err != nil {
 			return err
 		}
-		if route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(ctx.Tx, conversationID, conversation.TenantID); route != nil {
+		if route != nil {
+			if ctx.Tx.Migrator().HasTable(&models.ConversationTakeoverRequest{}) {
+				if err := repositories.ConversationTakeoverRequestRepository.CancelPendingByConversationSession(
+					ctx.Tx,
+					conversation.TenantID,
+					conversationID,
+					route.SessionNo,
+					"conversation_closed",
+					map[string]any{
+						"updated_at":       now,
+						"update_user_id":   operatorID,
+						"update_user_name": operatorName,
+					},
+				); err != nil {
+					return err
+				}
+			}
 			if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, route.ID, conversation.TenantID, map[string]any{
 				"route_status":         enums.ConversationRouteStatusClosed,
 				"route_target":         "closed",

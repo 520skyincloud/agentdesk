@@ -1,6 +1,13 @@
 "use client";
 
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  BotIcon,
+  Clock3Icon,
+  LoaderCircleIcon,
+  UserRoundCheckIcon,
+  UserRoundPlusIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { ConversationTransferDialog } from "@/components/conversation-actions/transfer-dialog";
@@ -19,19 +26,27 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { useIsLgUp } from "@/hooks/use-lg-media";
 import {
-  assignAgentConversation,
+  directTakeoverAgentConversation,
+  requestAgentConversationTakeover,
+  resumeAgentConversationAI,
+  reviewAgentConversationTakeover,
+  type AgentConversationTakeoverState,
   type AgentMessage,
   type ConversationHistorySegment,
 } from "@/lib/api/agent";
 import {
   inviteWxWorkProtocolRoomMember,
-  setWxWorkProtocolAIReplyEnabled,
   type WxWorkProtocolInstance,
 } from "@/lib/api/admin";
 import { readSession } from "@/lib/auth";
@@ -45,21 +60,14 @@ import { formatDateTime, repairMojibakeText } from "@/lib/utils";
 import { AgentMessageEditor } from "./agent-message-editor";
 
 const EMPTY_AGENT_MESSAGES: AgentMessage[] = [];
+type TakeoverDialogMode = "request" | "direct" | "review" | "resume";
 
 type ChatPanelProps = {
   wxWorkInstance?: WxWorkProtocolInstance | null;
-  aiReplyEnabled?: boolean;
-  canToggleAIReply?: boolean;
-  canAssignConversation?: boolean;
-  onWxWorkInstanceUpdated?: (instance: WxWorkProtocolInstance) => void;
 };
 
 export function ChatPanel({
   wxWorkInstance,
-  aiReplyEnabled: aiReplyEnabledOverride,
-  canToggleAIReply = true,
-  canAssignConversation = false,
-  onWxWorkInstanceUpdated,
 }: ChatPanelProps) {
   const t = useI18n();
   const conversation = useAgentConversationsStore(
@@ -85,6 +93,7 @@ export function ChatPanel({
     (state) => state.recallingMessageId,
   );
   const loadConversations = useAgentConversationsStore((state) => state.loadConversations);
+  const refreshConversation = useAgentConversationsStore((state) => state.refreshConversation);
   const loadMessages = useAgentConversationsStore((state) => state.loadMessages);
   const loadOlderMessages = useAgentConversationsStore(
     (state) => state.loadOlderMessages,
@@ -102,33 +111,25 @@ export function ChatPanel({
   const prependScrollAnchorRef = useRef<{ height: number; top: number } | null>(
     null,
   );
-  const [claiming, setClaiming] = useState(false);
-  const [savingAIReply, setSavingAIReply] = useState(false);
-  const [claimDialogOpen, setClaimDialogOpen] = useState(false);
+  const [takeoverDialogMode, setTakeoverDialogMode] = useState<TakeoverDialogMode | null>(null);
+  const [takeoverSubmitting, setTakeoverSubmitting] = useState(false);
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
   const [groupInviteDialogOpen, setGroupInviteDialogOpen] = useState(false);
   const [groupInviteUsers, setGroupInviteUsers] = useState("");
   const [invitingGroupMembers, setInvitingGroupMembers] = useState(false);
   const isLgUp = useIsLgUp();
   const isClosedConversation = conversation?.status === 4;
-  const routeStatus = conversation?.routeStatus;
-  const isStoreWecomManual = routeStatus === "STORE_WECOM_MANUAL";
-  const isPendingConversation = conversation?.status === 2 && !isStoreWecomManual;
-  const isHandoffPending = routeStatus === "HQ_AGENTDESK_PENDING";
-  const isAIServing = !routeStatus || routeStatus === "AI_SERVING" || routeStatus === "AI_FALLBACK";
   const manualAttention = conversation?.manualAttention;
   const hasManualStatus = Boolean(manualAttention && manualAttention.level !== "none");
-  const aiReplyEnabled = aiReplyEnabledOverride ?? wxWorkInstance?.aiReplyEnabled !== false;
+  const takeoverState = conversation?.takeoverState;
   const replyRouteUnavailable =
     conversation?.wxWorkReplyStatus === "waiting_target_message" ||
     conversation?.wxWorkReplyStatus === "unavailable";
   const canAgentReply =
     !isClosedConversation &&
     !replyRouteUnavailable &&
-    (isStoreWecomManual ||
-      routeStatus === "HQ_AGENTDESK_SERVING" ||
-      (isAIServing && !aiReplyEnabled));
-  const showBottomEditor = !isClosedConversation && !isPendingConversation;
+    takeoverState?.canReply === true;
+  const showBottomEditor = !isClosedConversation;
   const currentUserId = readSession()?.user?.id ?? 0;
   const protocolRoomID = getProtocolRoomID(conversation?.wxWorkExternalUserId);
   const manualStatusNotice = manualAttention?.dot
@@ -144,19 +145,25 @@ export function ChatPanel({
         : manualAttention?.level === "serving"
           ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300"
           : "border-border bg-background text-muted-foreground";
-  const editorDisabledReason = !conversation
+  const replyPermissionHint = !conversation
     ? "请选择一个会话"
     : conversation.wxWorkReplyStatus === "waiting_target_message"
-      ? "新企微账号尚未收到该客户消息，暂时无法取得真实会话标识"
+      ? "新企微账号尚未收到该客户消息，暂时无法发送。已输入内容会保留。"
       : conversation.wxWorkReplyStatus === "unavailable"
-        ? "当前企微账号或会话路由不可用，请检查员工号实例状态"
-    : manualAttention?.dot
-      ? `${manualAttention.label || "待人工"}，AI 暂停回复。`
-      : manualAttention?.level === "serving"
-        ? `${manualAttention.label || "人工处理中"}，AI 暂停回复。`
-        : isAIServing && aiReplyEnabled
-          ? "AI 回复已开启。关闭后可由网页端直接回复。"
-          : "当前会话暂不可回复";
+        ? "当前企微账号或会话路由不可用，暂时无法发送。已输入内容会保留。"
+        : takeoverState?.pendingForMe
+          ? "接管申请正在等待客服组长审批，审批通过后即可回复。"
+          : takeoverState?.pendingForAnother
+            ? takeoverState.canReview
+              ? `${takeoverState.requesterName || "客服"}正在申请接管，请先审核。`
+              : "该会话已有其他客服申请接管，请等待组长处理。"
+            : takeoverState?.canDirectTakeover
+              ? "你可以直接接管该会话，发送前会再次确认。"
+              : takeoverState?.canRequest
+                ? "主动接管需要客服组长审批，发送时会先发起申请。"
+                : takeoverState?.canReply
+                  ? ""
+                  : "当前账号暂无回复权限。";
 
   const getViewport = useCallback(
     () => messagesContainerRef.current,
@@ -347,41 +354,101 @@ export function ChatPanel({
     }
   };
 
-  const handleSend = async (html: string) => {
-    if (!conversation || sending || isClosedConversation) return;
+  const ensureReplyPermission = () => {
+    if (!conversation || isClosedConversation) {
+      return false;
+    }
+    if (replyRouteUnavailable) {
+      toast.error(replyPermissionHint || "当前会话路由不可用，暂时无法发送。");
+      return false;
+    }
+    if (takeoverState?.canReply) {
+      return true;
+    }
+    if (!takeoverState) {
+      toast.error("会话权限状态仍在加载，请稍后重试。");
+      void refreshConversation(conversation.id);
+      return false;
+    }
+    if (takeoverState.pendingForMe) {
+      toast.info("接管申请正在等待客服组长审批。");
+      return false;
+    }
+    if (takeoverState.pendingForAnother) {
+      if (takeoverState.canReview) {
+        setTakeoverDialogMode("review");
+      } else {
+        toast.info("该会话已有其他客服申请接管，请等待组长处理。");
+      }
+      return false;
+    }
+    if (takeoverState.canDirectTakeover) {
+      setTakeoverDialogMode("direct");
+      return false;
+    }
+    if (takeoverState.canRequest) {
+      setTakeoverDialogMode("request");
+      return false;
+    }
+    toast.error("当前账号暂无接管或回复权限。");
+    return false;
+  };
+
+  const handleSend = async (html: string): Promise<boolean> => {
+    if (!conversation || sending || isClosedConversation || !ensureReplyPermission()) {
+      return false;
+    }
     try {
       shouldStickToBottomRef.current = true;
-      await sendMessage(html);
+      return Boolean(await sendMessage(html));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("conversation.sendMessageFailed"));
+      return false;
     }
   };
 
-  const handleClaim = async () => {
-    if (!conversation || claiming || !canAssignConversation) return;
-    const session = readSession();
-    if (!session?.user?.id) {
-      toast.error(t("conversation.claimRequiresSignIn"));
+  const reloadConversationState = async (conversationId: number) => {
+    await refreshConversation(conversationId);
+    await loadConversations();
+  };
+
+  const handleTakeoverSubmit = async (approved = true) => {
+    if (!conversation || !takeoverDialogMode || takeoverSubmitting) {
       return;
     }
-
-    setClaiming(true);
+    setTakeoverSubmitting(true);
     try {
-      await assignAgentConversation(
-        conversation.id,
-        session.user.id,
-        isHandoffPending
-          ? t("conversation.manualHandoffClaimReason")
-          : t("conversation.claimReason"),
-      );
-
-      setClaimDialogOpen(false);
-      toast.success(t("conversation.claimSuccess"));
-      await reloadConversationData(conversation.id);
+      switch (takeoverDialogMode) {
+        case "request":
+          await requestAgentConversationTakeover(conversation.id, "申请主动接管会话");
+          toast.success("接管申请已提交，请等待客服组长审批。");
+          break;
+        case "direct":
+          await directTakeoverAgentConversation(conversation.id, "客服组长主动接管会话");
+          toast.success("会话已接管，可以继续回复。");
+          break;
+        case "review":
+          if (!takeoverState?.requestId) {
+            throw new Error("接管申请已变化，请刷新后重试。");
+          }
+          await reviewAgentConversationTakeover({
+            requestId: takeoverState.requestId,
+            approved,
+            remark: approved ? "同意主动接管" : "暂不同意主动接管",
+          });
+          toast.success(approved ? "接管申请已通过。" : "接管申请已拒绝。");
+          break;
+        case "resume":
+          await resumeAgentConversationAI(conversation.id);
+          toast.success("会话已交还 AI 接管。");
+          break;
+      }
+      setTakeoverDialogMode(null);
+      await reloadConversationState(conversation.id);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("conversation.claimFailed"));
+      toast.error(error instanceof Error ? error.message : "会话状态更新失败");
     } finally {
-      setClaiming(false);
+      setTakeoverSubmitting(false);
     }
   };
 
@@ -390,26 +457,10 @@ export function ChatPanel({
     await loadMessages(conversationId, { forceLoading: true, reset: true });
   };
 
-  const handleToggleAIReply = async (enabled: boolean) => {
-    if (!canToggleAIReply || !wxWorkInstance || savingAIReply) {
+  const handleInviteGroupMembers = async () => {
+    if (!conversation || !ensureReplyPermission()) {
       return;
     }
-    setSavingAIReply(true);
-    try {
-      await setWxWorkProtocolAIReplyEnabled(wxWorkInstance.id, enabled);
-      onWxWorkInstanceUpdated?.({ ...wxWorkInstance, aiReplyEnabled: enabled });
-      if (conversation) {
-        await reloadConversationData(conversation.id);
-      }
-      toast.success(enabled ? t("conversation.aiReplyEnabled") : t("conversation.aiReplyDisabled"));
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("conversation.aiReplyUpdateFailed"));
-    } finally {
-      setSavingAIReply(false);
-    }
-  };
-
-  const handleInviteGroupMembers = async () => {
     if (!wxWorkInstance?.id) {
       toast.error("当前会话未绑定企微员工号");
       return;
@@ -430,6 +481,7 @@ export function ChatPanel({
     try {
       await inviteWxWorkProtocolRoomMember({
         id: wxWorkInstance.id,
+        conversationId: conversation.id,
         roomId: protocolRoomID,
         userList,
       });
@@ -550,46 +602,34 @@ export function ChatPanel({
         <div className="flex h-full items-center justify-center bg-background text-sm text-muted-foreground">
           {t("conversation.closedNotice")}
         </div>
-      ) : isPendingConversation ? (
-        <div className="flex h-full items-center justify-center bg-background">
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-5 py-4">
-            {canAssignConversation ? (
-              <Button
-                onClick={() => setClaimDialogOpen(true)}
-                disabled={claiming}
-                size="sm"
-              >
-                {claiming
-                  ? t("conversation.claiming")
-                  : isHandoffPending
-                    ? t("conversation.claimHandoff")
-                    : t("conversation.claim")}
-              </Button>
-            ) : (
-              <span className="text-sm text-muted-foreground">
-                {t("conversation.claimPermissionRequired")}
-              </span>
-            )}
-          </div>
-        </div>
       ) : (
         <div className="flex h-full min-h-0 flex-col">
           <div className="min-h-0 flex-1">
             <AgentMessageEditor
-              disabled={!conversation || sending || !canAgentReply}
+              disabled={!conversation || sending}
               uploadingAsset={uploadingAsset}
-              aiReplyEnabled={aiReplyEnabled}
               canAgentReply={canAgentReply}
-              disabledReason={editorDisabledReason}
-              aiReplyToggleDisabled={!canToggleAIReply || !wxWorkInstance || savingAIReply}
-              onToggleAIReply={handleToggleAIReply}
+              replyPermissionHint={replyPermissionHint}
+              agentAction={(
+                <ConversationTakeoverAction
+                  state={takeoverState}
+                  submitting={takeoverSubmitting}
+                  onOpen={setTakeoverDialogMode}
+                />
+              )}
               onSend={handleSend}
               onUploadImage={async (file) => {
+                if (!ensureReplyPermission()) {
+                  return null;
+                }
                 shouldStickToBottomRef.current = true;
                 const uploaded = await uploadImage(file);
                 return uploaded;
               }}
               onSendImage={async (file) => {
+                if (!ensureReplyPermission()) {
+                  return;
+                }
                 shouldStickToBottomRef.current = true;
                 try {
                   await sendImage(file);
@@ -598,6 +638,9 @@ export function ChatPanel({
                 }
               }}
               onSendAttachment={async (file) => {
+                if (!ensureReplyPermission()) {
+                  return;
+                }
                 shouldStickToBottomRef.current = true;
                 try {
                   await sendAttachment(file);
@@ -605,7 +648,11 @@ export function ChatPanel({
                   toast.error(error instanceof Error ? error.message : t("conversation.sendAttachmentFailed"));
                 }
               }}
-              onOpenGroupInvite={() => setGroupInviteDialogOpen(true)}
+              onOpenGroupInvite={() => {
+                if (ensureReplyPermission()) {
+                  setGroupInviteDialogOpen(true);
+                }
+              }}
             />
           </div>
         </div>
@@ -646,49 +693,47 @@ export function ChatPanel({
         </div>
       )}
       <Dialog
-        open={claimDialogOpen && canAssignConversation}
+        open={takeoverDialogMode !== null}
         onOpenChange={(open) => {
-          if (claiming) {
+          if (takeoverSubmitting) {
             return;
           }
-          setClaimDialogOpen(open);
+          if (!open) {
+            setTakeoverDialogMode(null);
+          }
         }}
       >
         <DialogContent className="max-w-md" showCloseButton={false}>
           <DialogHeader>
-            <DialogTitle>
-              {isHandoffPending
-                ? t("conversation.claimHandoffTitle")
-                : t("conversation.claimTitle")}
-            </DialogTitle>
-            <DialogDescription>
-              {conversation
-                ? `${t("conversation.claimConfirmPrefix")}${
-                    repairMojibakeText(conversation.customerName) ||
-                    `${t("conversation.customerFallbackPrefix")}${conversation.customerId || conversation.id}`
-                  }${t("conversation.claimConfirmSuffix")}`
-                : t("conversation.claimCurrent")}
-            </DialogDescription>
+            <DialogTitle>{takeoverDialogTitle(takeoverDialogMode)}</DialogTitle>
+            <DialogDescription>{takeoverDialogDescription(takeoverDialogMode, takeoverState?.requesterName)}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button
               type="button"
               variant="outline"
-              disabled={claiming}
-              onClick={() => setClaimDialogOpen(false)}
+              disabled={takeoverSubmitting}
+              onClick={() => setTakeoverDialogMode(null)}
             >
               {t("conversation.cancel")}
             </Button>
+            {takeoverDialogMode === "review" ? (
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={takeoverSubmitting}
+                onClick={() => void handleTakeoverSubmit(false)}
+              >
+                拒绝
+              </Button>
+            ) : null}
             <Button
               type="button"
-              disabled={claiming}
-              onClick={() => void handleClaim()}
+              disabled={takeoverSubmitting}
+              onClick={() => void handleTakeoverSubmit(true)}
             >
-              {claiming
-                ? t("conversation.claiming")
-                : isHandoffPending
-                  ? t("conversation.confirmClaimHandoff")
-                  : t("conversation.confirmClaim")}
+              {takeoverSubmitting ? <LoaderCircleIcon className="animate-spin" /> : null}
+              {takeoverDialogConfirmLabel(takeoverDialogMode)}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -743,6 +788,120 @@ export function ChatPanel({
       </Dialog>
     </div>
   );
+}
+
+function ConversationTakeoverAction({
+  state,
+  submitting,
+  onOpen,
+}: {
+  state?: AgentConversationTakeoverState;
+  submitting: boolean;
+  onOpen: (mode: TakeoverDialogMode) => void;
+}) {
+  if (!state) {
+    return null;
+  }
+
+  let mode: TakeoverDialogMode | null = null;
+  let label = "";
+  let icon = <UserRoundPlusIcon className="size-4" />;
+  let disabled = submitting;
+
+  if (state.canResumeAi) {
+    mode = "resume";
+    label = "交还 AI 接管";
+    icon = <BotIcon className="size-4" />;
+  } else if (state.pendingForMe) {
+    label = "接管申请待审批";
+    icon = <Clock3Icon className="size-4" />;
+    disabled = true;
+  } else if (state.pendingForAnother && state.canReview) {
+    mode = "review";
+    label = "审核接管申请";
+    icon = <UserRoundCheckIcon className="size-4" />;
+  } else if (state.canDirectTakeover) {
+    mode = "direct";
+    label = "直接接管会话";
+    icon = <UserRoundCheckIcon className="size-4" />;
+  } else if (state.canRequest) {
+    mode = "request";
+    label = "申请接管会话";
+  }
+
+  if (!label) {
+    return null;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={(
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="size-9 rounded-md"
+            disabled={disabled}
+            onClick={() => {
+              if (mode) {
+                onOpen(mode);
+              }
+            }}
+            aria-label={label}
+          />
+        )}
+      >
+        {submitting ? <LoaderCircleIcon className="size-4 animate-spin" /> : icon}
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function takeoverDialogTitle(mode: TakeoverDialogMode | null) {
+  switch (mode) {
+    case "request":
+      return "申请接管会话";
+    case "direct":
+      return "确认直接接管";
+    case "review":
+      return "审核接管申请";
+    case "resume":
+      return "重新让 AI 接管会话";
+    default:
+      return "";
+  }
+}
+
+function takeoverDialogDescription(mode: TakeoverDialogMode | null, requesterName?: string) {
+  switch (mode) {
+    case "request":
+      return "主动接管会话需要向客服组长申请。审批通过前不能发送消息，当前草稿会保留。";
+    case "direct":
+      return "确认后该会话会立即分配给你，你可以在当前回复框继续处理。";
+    case "review":
+      return `${requesterName || "客服"}申请主动接管该会话。通过后会话将分配给申请人。`;
+    case "resume":
+      return "确认后当前人工接待结束，后续客户消息将重新由 AI 处理。";
+    default:
+      return "";
+  }
+}
+
+function takeoverDialogConfirmLabel(mode: TakeoverDialogMode | null) {
+  switch (mode) {
+    case "request":
+      return "提交申请";
+    case "direct":
+      return "确认接管";
+    case "review":
+      return "通过";
+    case "resume":
+      return "确认交还 AI";
+    default:
+      return "确认";
+  }
 }
 
 function ConversationSessionDivider({

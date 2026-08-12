@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,9 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	if err := db.Create(storeStaffBinding).Error; err != nil {
 		t.Fatalf("create store staff binding: %v", err)
 	}
+	if err := db.Create(&models.AgentProfile{TenantID: 101, UserID: storeStaffUserID, TeamID: teamB.ID, AgentCode: "MIX031", DisplayName: "混合角色客服", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("create mixed-role agent profile: %v", err)
+	}
 	otherStoreStaffUserID := int64(32)
 	otherStoreStaffBinding := &models.StoreStaffBinding{TenantID: 101, UserID: otherStoreStaffUserID, ActiveUserID: &otherStoreStaffUserID, StoreID: storeA.ID, Status: enums.StatusOk}
 	if err := db.Create(otherStoreStaffBinding).Error; err != nil {
@@ -160,8 +164,24 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	admin := &dto.AuthPrincipal{UserID: 1, ActiveTenantID: 101, Roles: []string{constants.RoleCodeAdmin}}
 	leaderA := &dto.AuthPrincipal{UserID: 11, ActiveTenantID: 101, Roles: []string{constants.RoleCodeCsTeamLeader}}
 	agentA := &dto.AuthPrincipal{UserID: 21, ActiveTenantID: 101, Roles: []string{constants.RoleCodeCsUser}}
-	storeStaffA := &dto.AuthPrincipal{UserID: storeStaffUserID, ActiveTenantID: 101, Roles: []string{constants.RoleCodeStoreStaff}}
-	otherStoreStaffA := &dto.AuthPrincipal{UserID: otherStoreStaffUserID, ActiveTenantID: 101, Roles: []string{constants.RoleCodeStoreStaff}}
+	storeStaffA := &dto.AuthPrincipal{
+		UserID:         storeStaffUserID,
+		ActiveTenantID: 101,
+		Roles:          []string{constants.RoleCodeStoreStaff},
+		Permissions:    []string{constants.PermissionConversationView.Code, constants.PermissionConversationSend.Code},
+	}
+	otherStoreStaffA := &dto.AuthPrincipal{
+		UserID:         otherStoreStaffUserID,
+		ActiveTenantID: 101,
+		Roles:          []string{constants.RoleCodeStoreStaff},
+		Permissions:    []string{constants.PermissionConversationView.Code, constants.PermissionConversationSend.Code},
+	}
+	mixedStoreStaffA := &dto.AuthPrincipal{
+		UserID:         storeStaffUserID,
+		ActiveTenantID: 101,
+		Roles:          []string{constants.RoleCodeCsUser, constants.RoleCodeStoreStaff},
+		Permissions:    []string{constants.PermissionConversationView.Code, constants.PermissionConversationSend.Code},
+	}
 	hybridLeaderA := &dto.AuthPrincipal{UserID: 11, ActiveTenantID: 101, Roles: []string{constants.RoleCodeCsTeamLeader, constants.RoleCodeStoreStaff}}
 	for name, principal := range map[string]*dto.AuthPrincipal{
 		"admin":         admin,
@@ -169,6 +189,7 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 		"hybrid leader": hybridLeaderA,
 		"agent":         agentA,
 		"store staff":   storeStaffA,
+		"mixed role":    mixedStoreStaffA,
 	} {
 		if !AgentTeamScopeService.CanViewConversation(principal, conversationA.ID) {
 			t.Fatalf("%s should see conversation A", name)
@@ -189,6 +210,12 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	if AgentTeamScopeService.CanViewConversation(storeStaffA, conversationB.ID) {
 		t.Fatal("store staff must not see conversations from another store")
 	}
+	if !AgentTeamScopeService.CanViewConversation(mixedStoreStaffA, conversationB.ID) {
+		t.Fatal("mixed-role account should keep its customer-service team scope")
+	}
+	if AgentTeamScopeService.CanViewConversation(mixedStoreStaffA, conversationAOther.ID) {
+		t.Fatal("mixed-role account must not expand store staff scope to another binding in the same store")
+	}
 	if AgentTeamScopeService.Resolve(hybridLeaderA).StoreStaffScoped {
 		t.Fatal("adding the store staff role must not narrow an existing team leader scope")
 	}
@@ -201,10 +228,29 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	if AgentTeamScopeService.CanViewWxWorkInstance(storeStaffA, instanceStoreMismatch.ID) {
 		t.Fatal("store staff must not see a protocol instance whose store does not match the binding")
 	}
+	if !AgentTeamScopeService.CanViewWxWorkInstance(mixedStoreStaffA, instanceA.ID) || !AgentTeamScopeService.CanViewWxWorkInstance(mixedStoreStaffA, instanceB.ID) {
+		t.Fatal("mixed-role account should see the union of its store binding and customer-service team instances")
+	}
+	if AgentTeamScopeService.CanViewWxWorkInstance(mixedStoreStaffA, instanceAOther.ID) || AgentTeamScopeService.CanViewWxWorkInstance(mixedStoreStaffA, instanceStoreMismatch.ID) {
+		t.Fatal("mixed-role account leaked a mismatched store staff instance")
+	}
 	storeStaffInstances := repositories.WxWorkProtocolInstanceRepository.Find(db,
 		AgentTeamScopeService.ApplyWxWorkInstanceFilter(sqls.NewCnd().Asc("id"), storeStaffA))
 	if len(storeStaffInstances) != 1 || storeStaffInstances[0].ID != instanceA.ID {
 		t.Fatalf("store staff instances = %+v, want only binding/store-matched instance %d", storeStaffInstances, instanceA.ID)
+	}
+	mixedInstances := repositories.WxWorkProtocolInstanceRepository.Find(db,
+		AgentTeamScopeService.ApplyWxWorkInstanceFilter(sqls.NewCnd().Asc("id"), mixedStoreStaffA))
+	if len(mixedInstances) != 2 || mixedInstances[0].ID != instanceA.ID || mixedInstances[1].ID != instanceB.ID {
+		t.Fatalf("mixed-role instances = %+v, want binding instance %d and team instance %d", mixedInstances, instanceA.ID, instanceB.ID)
+	}
+	mixedTopics := sliceToSet(newWsService().defaultTopics(&ClientSession{
+		TenantID:  101,
+		Principal: mixedStoreStaffA,
+		Role:      realtimeRoleAdmin,
+	}))
+	if _, ok := mixedTopics[newWsService().storeStaffBindingTopic(storeStaffBinding.ID)]; !ok {
+		t.Fatalf("mixed-role realtime topics do not include store binding %d: %+v", storeStaffBinding.ID, mixedTopics)
 	}
 	if err := db.Model(&models.ConversationRouteState{}).
 		Where("conversation_id = ? AND tenant_id = ?", conversationA.ID, int64(101)).
@@ -217,14 +263,8 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 		t.Fatalf("release binding A conversation from HQ assignment: %v", err)
 	}
 	conversationA.CurrentAssigneeID = 0
-	if !MessageService.canSendStoreManualAgentMessage(conversationA, storeStaffA) {
-		t.Fatal("store staff should reply to the store manual conversation owned by its binding")
-	}
-	if MessageService.canSendStoreManualAgentMessage(conversationA, otherStoreStaffA) {
-		t.Fatal("store staff must not reply to another binding's conversation in the same store")
-	}
-	if _, err := MessageService.ValidateConversationSender(conversationA.ID, enums.IMSenderTypeAgent, storeStaffA, nil); err != nil {
-		t.Fatalf("validate own binding store manual reply: %v", err)
+	if _, err := MessageService.ValidateConversationSender(conversationA.ID, enums.IMSenderTypeAgent, storeStaffA, nil); err == nil || !strings.Contains(err.Error(), "接管审批") {
+		t.Fatalf("store staff web reply must require approved takeover, got %v", err)
 	}
 	if _, err := MessageService.ValidateConversationSender(conversationA.ID, enums.IMSenderTypeAgent, otherStoreStaffA, nil); err == nil {
 		t.Fatal("another store staff binding unexpectedly passed sender validation")
@@ -249,6 +289,20 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	}
 	if len(storeStaffList) != 1 || storeStaffList[0].ID != conversationA.ID {
 		t.Fatalf("store staff conversations = %+v, want only binding conversation %d", storeStaffList, conversationA.ID)
+	}
+	mixedList, _, err := ConversationService.ListConversations(mixedStoreStaffA, request.AgentConversationFilterAllOpen, "", 0, &sqls.Paging{Page: 1, Limit: 20})
+	if err != nil {
+		t.Fatalf("list mixed-role conversations: %v", err)
+	}
+	if len(mixedList) != 2 || !containsConversationID(mixedList, conversationA.ID) || !containsConversationID(mixedList, conversationB.ID) {
+		t.Fatalf("mixed-role conversations = %+v, want store conversation %d and team conversation %d", mixedList, conversationA.ID, conversationB.ID)
+	}
+	mixedActive, _, err := ConversationService.ListConversations(mixedStoreStaffA, request.AgentConversationFilterActive, "", 0, &sqls.Paging{Page: 1, Limit: 20})
+	if err != nil {
+		t.Fatalf("list mixed-role active conversations: %v", err)
+	}
+	if len(mixedActive) != 1 || mixedActive[0].ID != conversationA.ID {
+		t.Fatalf("mixed-role active conversations = %+v, want own store binding conversation %d", mixedActive, conversationA.ID)
 	}
 	forgedInstanceList, _, err := ConversationService.ListConversations(storeStaffA, request.AgentConversationFilterAllOpen, "", instanceAOther.ID, &sqls.Paging{Page: 1, Limit: 20})
 	if err != nil {
@@ -275,6 +329,15 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	if pendingByTeam[teamA.ID] != 1 || pendingByTeam[teamB.ID] != 1 {
 		t.Fatalf("pending reply counts = %v, want team A=1 and team B=1", pendingByTeam)
 	}
+}
+
+func containsConversationID(items []models.Conversation, conversationID int64) bool {
+	for i := range items {
+		if items[i].ID == conversationID {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAgentTeamScopeCanManageTeam(t *testing.T) {

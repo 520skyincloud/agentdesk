@@ -25,6 +25,21 @@ type AssignConversationRequest struct {
 	Reason         string `json:"reason"`
 }
 
+type RequestConversationTakeoverRequest struct {
+	ConversationID int64  `json:"conversationId"`
+	Reason         string `json:"reason"`
+}
+
+type ReviewConversationTakeoverRequest struct {
+	RequestID int64  `json:"requestId"`
+	Approved  bool   `json:"approved"`
+	Remark    string `json:"remark"`
+}
+
+type ResumeConversationAIRequest struct {
+	ConversationID int64 `json:"conversationId"`
+}
+
 type TransferConversationRequest struct {
 	ConversationID int64  `json:"conversationId"`
 	ToUserID       int64  `json:"toUserId"`
