@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"agent-desk/internal/ai/runtime/contextcompiler"
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
+	"agent-desk/internal/pkg/modelconfig"
 	svc "agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/adk"
@@ -67,6 +69,13 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		collector.Data.Pipeline.Validate.Reason = "intent policy selected no reply"
 		summary.TraceData = collector.Marshal()
 		return summary, nil
+	}
+	if summary.UseRuntimeV2Generate {
+		structuredConfig, configErr := withRuntimeReplyStructuredOutput(req.ModelConfig)
+		if configErr != nil {
+			return markRuntimePreparationError(summary, collector, configErr)
+		}
+		req.ModelConfig = structuredConfig
 	}
 	if handled, err := executeIntentHumanRoute(ctx, req, summary, collector); handled || err != nil {
 		if err != nil {
@@ -232,6 +241,35 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	syncSkillSummaryFromCollector(summary, collector)
 	summary.TraceData = collector.Marshal()
 	return summary, nil
+}
+
+func markRuntimePreparationError(summary *RunResult, collector *callbacks.RuntimeTraceCollector, err error) (*RunResult, error) {
+	if summary == nil {
+		return nil, err
+	}
+	summary.Status = "error"
+	summary.ErrorMessage = err.Error()
+	if collector != nil {
+		collector.Data.Status = summary.Status
+		collector.Data.Error.Message = summary.ErrorMessage
+		collector.Data.Error.Stage = "prepare"
+		summary.TraceData = collector.Marshal()
+	}
+	return summary, err
+}
+
+func withRuntimeIntentStructuredOutput(config modelconfig.Config) (modelconfig.Config, error) {
+	return config.WithJSONSchema(
+		contracts.SchemaIntentTasksV2,
+		contracts.MustSchema(contracts.SchemaIntentTasksV2),
+	)
+}
+
+func withRuntimeReplyStructuredOutput(config modelconfig.Config) (modelconfig.Config, error) {
+	return config.WithJSONSchema(
+		contracts.SchemaReplyOutputV2,
+		contracts.MustSchema(contracts.SchemaReplyOutputV2),
+	)
 }
 
 func resetRuntimeGenerationForProtocolRepair(summary *RunResult, collector *callbacks.RuntimeTraceCollector, reason string) {

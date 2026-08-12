@@ -133,7 +133,10 @@ func TestChatModelFactoryRetriesAfterPerAttemptTimeout(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		<-r.Context().Done()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(250 * time.Millisecond):
+		}
 	}))
 	defer server.Close()
 

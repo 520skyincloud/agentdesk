@@ -24,11 +24,47 @@ type responsesChatModel struct {
 }
 
 type responsesRequest struct {
-	Model           string         `json:"model"`
-	Instructions    string         `json:"instructions,omitempty"`
-	Input           string         `json:"input"`
-	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
+	Model           string              `json:"model"`
+	Instructions    string              `json:"instructions,omitempty"`
+	Input           any                 `json:"input"`
+	MaxOutputTokens int                 `json:"max_output_tokens,omitempty"`
+	Text            *responsesText      `json:"text,omitempty"`
+	Reasoning       *responsesReasoning `json:"reasoning,omitempty"`
+	Tools           []responsesTool     `json:"tools,omitempty"`
+	ToolChoice      string              `json:"tool_choice,omitempty"`
+	Metadata        map[string]any      `json:"metadata,omitempty"`
+}
+
+type responsesText struct {
+	Format responsesTextFormat `json:"format"`
+}
+
+type responsesTextFormat struct {
+	Type   string          `json:"type"`
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict"`
+	Schema json.RawMessage `json:"schema"`
+}
+
+type responsesReasoning struct {
+	Effort string `json:"effort"`
+}
+
+type responsesTool struct {
+	Type        string          `json:"type"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+type responsesInputItem struct {
+	Type      string `json:"type"`
+	Role      string `json:"role,omitempty"`
+	Content   string `json:"content,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Output    string `json:"output,omitempty"`
 }
 
 type responsesResponse struct {
@@ -42,9 +78,13 @@ type responsesResponse struct {
 		Code    string `json:"code"`
 	} `json:"error"`
 	Output []struct {
-		Type    string `json:"type"`
-		Role    string `json:"role"`
-		Content []struct {
+		Type      string `json:"type"`
+		Role      string `json:"role"`
+		ID        string `json:"id"`
+		CallID    string `json:"call_id"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+		Content   []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
@@ -75,13 +115,37 @@ func newResponsesChatModel(aiConfig modelconfig.Config) *responsesChatModel {
 
 func (m *responsesChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	instructions, prompt := responsesPromptFromMessages(input)
+	requestInput := any(prompt)
+	if responsesMessagesNeedStructuredInput(input) {
+		requestInput = responsesInputFromMessages(input)
+	}
 	body := responsesRequest{
 		Model:        strings.TrimSpace(m.config.ModelName),
 		Instructions: instructions,
-		Input:        prompt,
+		Input:        requestInput,
 		Metadata: map[string]any{
 			"agentdesk_api_mode": "responses",
 		},
+	}
+	if structured := m.config.StructuredOutput; structured != nil {
+		if strings.TrimSpace(structured.Name) == "" || !json.Valid(structured.JSONSchema) {
+			return nil, fmt.Errorf("responses structured output contract is invalid")
+		}
+		body.Text = &responsesText{Format: responsesTextFormat{
+			Type: "json_schema", Name: structured.Name, Strict: structured.Strict,
+			Schema: append(json.RawMessage(nil), structured.JSONSchema...),
+		}}
+	}
+	if modelconfig.IsDeepSeekV4Model(m.config.ModelName) {
+		body.Reasoning = &responsesReasoning{Effort: "none"}
+	}
+	if len(m.tools) > 0 {
+		responseTools, err := buildResponsesTools(m.tools)
+		if err != nil {
+			return nil, err
+		}
+		body.Tools = responseTools
+		body.ToolChoice = "auto"
 	}
 	if m.config.MaxOutputTokens > 0 {
 		body.MaxOutputTokens = m.config.MaxOutputTokens
@@ -122,7 +186,7 @@ func (m *responsesChatModel) Generate(ctx context.Context, input []*schema.Messa
 	if content == "" {
 		content = strings.TrimSpace(extractResponsesOutputText(parsed))
 	}
-	return &schema.Message{
+	message := &schema.Message{
 		Role:    schema.Assistant,
 		Content: content,
 		ResponseMeta: &schema.ResponseMeta{
@@ -137,7 +201,9 @@ func (m *responsesChatModel) Generate(ctx context.Context, input []*schema.Messa
 				},
 			},
 		},
-	}, nil
+	}
+	message.ToolCalls = extractResponsesToolCalls(parsed)
+	return message, nil
 }
 
 func (m *responsesChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
@@ -176,6 +242,95 @@ func responsesPromptFromMessages(messages []*schema.Message) (string, string) {
 		}
 	}
 	return strings.Join(instructions, "\n\n"), strings.Join(parts, "\n")
+}
+
+func responsesMessagesNeedStructuredInput(messages []*schema.Message) bool {
+	for _, message := range messages {
+		if message != nil && (message.Role == schema.Tool || len(message.ToolCalls) > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func responsesInputFromMessages(messages []*schema.Message) []responsesInputItem {
+	items := make([]responsesInputItem, 0, len(messages))
+	for _, message := range messages {
+		if message == nil || message.Role == schema.System {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" && len(message.UserInputMultiContent) > 0 {
+			content = textFromInputParts(message.UserInputMultiContent)
+		}
+		switch message.Role {
+		case schema.Tool:
+			if callID := strings.TrimSpace(message.ToolCallID); callID != "" {
+				items = append(items, responsesInputItem{Type: "function_call_output", CallID: callID, Output: content})
+			}
+		case schema.Assistant:
+			if content != "" {
+				items = append(items, responsesInputItem{Type: "message", Role: "assistant", Content: content})
+			}
+			for _, toolCall := range message.ToolCalls {
+				callID := strings.TrimSpace(toolCall.ID)
+				if callID == "" {
+					continue
+				}
+				items = append(items, responsesInputItem{
+					Type: "function_call", CallID: callID,
+					Name: strings.TrimSpace(toolCall.Function.Name), Arguments: strings.TrimSpace(toolCall.Function.Arguments),
+				})
+			}
+		default:
+			if content != "" {
+				items = append(items, responsesInputItem{Type: "message", Role: "user", Content: content})
+			}
+		}
+	}
+	return items
+}
+
+func buildResponsesTools(infos []*schema.ToolInfo) ([]responsesTool, error) {
+	tools := make([]responsesTool, 0, len(infos))
+	for _, info := range infos {
+		if info == nil || strings.TrimSpace(info.Name) == "" {
+			continue
+		}
+		parameters := json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
+		if info.ParamsOneOf != nil {
+			definition, err := info.ParamsOneOf.ToJSONSchema()
+			if err != nil {
+				return nil, fmt.Errorf("build responses tool %q schema: %w", info.Name, err)
+			}
+			if definition != nil {
+				raw, err := json.Marshal(definition)
+				if err != nil {
+					return nil, fmt.Errorf("marshal responses tool %q schema: %w", info.Name, err)
+				}
+				parameters = raw
+			}
+		}
+		tools = append(tools, responsesTool{
+			Type: "function", Name: strings.TrimSpace(info.Name),
+			Description: strings.TrimSpace(info.Desc), Parameters: parameters,
+		})
+	}
+	return tools, nil
+}
+
+func extractResponsesToolCalls(resp responsesResponse) []schema.ToolCall {
+	toolCalls := make([]schema.ToolCall, 0)
+	for _, output := range resp.Output {
+		if output.Type != "function_call" || strings.TrimSpace(output.CallID) == "" || strings.TrimSpace(output.Name) == "" {
+			continue
+		}
+		toolCalls = append(toolCalls, schema.ToolCall{
+			ID: output.CallID, Type: "function",
+			Function: schema.FunctionCall{Name: output.Name, Arguments: output.Arguments},
+		})
+	}
+	return toolCalls
 }
 
 func textFromInputParts(parts []schema.MessageInputPart) string {

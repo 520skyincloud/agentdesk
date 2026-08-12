@@ -232,6 +232,26 @@ git diff --check
 
 ## 8. 部署与回滚
 
+### 8.0 2026-08-12 DeepSeek Responses 严格结构化输出
+
+- 基线：`weibao/main@3ab3809`，独立 worktree 分支 `codex/deepseek-responses-schema`。
+- Runtime V2 Intent 调用按请求附加 `intent_tasks.v2` JSON Schema，Generate 调用按请求附加
+  `reply_output.v2` JSON Schema；两者均使用 Responses `text.format.type=json_schema` 和
+  `strict=true`。该配置为内存态且 `json:"-"`，不进入 DTO、日志或持久化配置。
+- DeepSeek Responses 只允许精确模型名 `deepseek-v4-flash`，请求使用
+  `reasoning.effort=none`。`deepseek-v4-pro` 和带非标准后缀的模型名不能发布为 Responses Profile。
+- Responses 适配器完整支持函数工具：请求发送 `tools` 与 `tool_choice=auto`，响应
+  `function_call` 转换为 Eino ToolCall，工具结果以相同 `call_id` 的 `function_call_output` 回传。
+  普通文本 Responses 调用不携带 Runtime Schema，Interrupt Resume 也不被误套全新回复协议。
+- Profile 九槽测试对 Intent/Reply 使用最小真实 Schema，并要求解析到 `{"ok":true}`；普通槽继续
+  只验证自身协议。测试通过后才能发布不可变新 revision 并由 Assignment/Activation 切换。
+- 已使用服务器现有 active 门店 Credential 在内存中完成真实受控验证，未输出或落盘 Key：
+  NewAPI `http://36.138.68.47:6081/v1/responses`、模型 `deepseek-v4-flash`、`strict=true` 返回 HTTP 200，
+  输出通过最小 Schema，Usage 中 `reasoning_tokens=0`。该验证只证明网关/模型协议可用，不替代
+  Profile 九槽发布测试和真实客户消息验收。
+- 本次不增加数据库表、migration、公开 API、DTO、WebSocket 字段、Token 统计或 Binding 计费口径。
+  回滚顺序为切回上一 Profile revision，再切回上一二进制发布目录；Credential 不需要改变。
+
 ### 8.1 已完成部署
 
 - 服务器：测试2 `36.138.68.47:2301`。

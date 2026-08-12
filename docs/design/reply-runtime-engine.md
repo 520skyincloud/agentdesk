@@ -114,6 +114,20 @@ DeepSeek V4 的 Chat Completions 调用必须同时显式携带 `thinking.type=d
 因此统一 NewAPI 网关、Runtime 主链、辅助 LLM 调用和九槽连通性验证必须保持一致。生产验收
 还需以成功用量记录中的 `reasoning_tokens=0` 确认上游真实执行结果。
 
+Runtime V2 的 IntentDetect 与 Generate 使用 NewAPI Responses API 的原生结构化输出，不再只靠
+Prompt 要求模型返回 JSON：Intent 调用附加 `text.format=json_schema`、`name=intent_tasks_v2`、
+`strict=true` 和嵌入的 `intent_tasks.v2` Schema；Generate 调用对应使用 `reply_output_v2` 和
+`reply_output.v2` Schema。结构化输出属于单次调用配置，不能写回九槽或全局套在 `reply_llm` 上，
+否则人工摘要、普通文本测试和其他复用槽会被错误约束。模型响应仍必须经过本地 `strictjson`、
+TaskCoverage、EvidenceReference、ActionReference、Safety 和 CommitInvariant 校验；上游 Schema
+不是替代本地验证的成功凭据。
+
+DeepSeek Responses 当前只允许精确模型名 `deepseek-v4-flash`。请求显式携带
+`reasoning.effort=none`；九槽真实测试必须验证模型确实返回符合最小 Schema 的 `{"ok":true}`，
+不能只以 HTTP 200 或非空 `output` 判定通过。Responses 工具调用同时必须完整传递 `tools`、
+`tool_choice=auto`、模型返回的 `function_call.call_id` 以及后续 `function_call_output.call_id`，确保
+天气、工单和其他现有工具链在最终严格 JSON 输出前仍可正常执行。
+
 当前统一模型网关为 `http://36.138.68.47:6081/v1`。OpenAI 兼容接口必须从 `/v1` 开始，
 `/chat/completions`、`/responses`、`/embeddings`、`/rerank` 和 `/audio/transcriptions` 均在该
 BaseURL 后拼接；网关根路径返回的是管理前端，不能作为模型 BaseURL。Migration `75` 会幂等
@@ -322,6 +336,11 @@ V2 迁移使用五个内部模式：`ContextCompiler`、`IntentContract`、`Repl
 约束时才启用 V2。`reply_output.v2` 必须配合 V2 ContextCompiler；完整 Validator 必须配合 V2
 ReplyContract；authoritative ActionLedger 也必须配合 V2 ReplyContract。非法组合启动执行前直接
 失败，不能部分开启。
+
+当 Runtime V2 命中灰度范围时，`intent_detect_llm` 和 `reply_llm` 对应 Profile 槽必须发布为
+`apiMode=responses`、`modelName=deepseek-v4-flash`。同一 Profile 的其他槽继续按各自用途选择
+Chat Completions 或 Responses；发布新 revision 前必须使用当前门店 active Credential 逐个真实
+测试全部启用槽，再通过 Assignment/Activation 原子切换，禁止直接覆盖 active revision。
 
 ### 5.5 MessageAnalysis、DialogueState 与确定性 Validator
 

@@ -18,6 +18,7 @@ import (
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
+	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -488,6 +489,14 @@ func ValidateModelProfileForPublication(template *models.ModelProfileTemplate, s
 			issues = append(issues, ModelProfileValidationIssue{UsageCode: slot.UsageCode, Message: spec.DisplayName + " API 模式不能为空"})
 		} else if !modelProfileAPIModeCompatible(spec, slot.APIMode) {
 			issues = append(issues, ModelProfileValidationIssue{UsageCode: slot.UsageCode, Message: spec.DisplayName + " API 模式与模型用途不匹配"})
+		}
+		if strings.EqualFold(strings.TrimSpace(slot.APIMode), "responses") &&
+			modelconfig.IsDeepSeekV4Model(slot.ModelName) &&
+			!modelconfig.IsDeepSeekV4FlashModel(slot.ModelName) {
+			issues = append(issues, ModelProfileValidationIssue{
+				UsageCode: slot.UsageCode,
+				Message:   spec.DisplayName + "使用 DeepSeek Responses 时必须选择 deepseek-v4-flash",
+			})
 		}
 		if slot.TimeoutMS <= 0 {
 			issues = append(issues, ModelProfileValidationIssue{UsageCode: slot.UsageCode, Message: spec.DisplayName + "超时时间必须大于 0"})

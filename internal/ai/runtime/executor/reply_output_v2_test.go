@@ -1,10 +1,47 @@
 package executor
 
 import (
+	"encoding/json"
 	"testing"
 
 	"agent-desk/internal/ai/runtime/contracts"
+	"agent-desk/internal/pkg/modelconfig"
 )
+
+func TestRuntimeStructuredOutputContractsAreInvocationScoped(t *testing.T) {
+	base := modelconfig.Config{ModelName: "deepseek-v4-flash", APIMode: "responses"}
+	intentConfig, err := withRuntimeIntentStructuredOutput(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replyConfig, err := withRuntimeReplyStructuredOutput(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.StructuredOutput != nil {
+		t.Fatal("base model slot must remain unconstrained for plain-text callers")
+	}
+	assertRuntimeStructuredOutput(t, intentConfig, "intent_tasks_v2", contracts.SchemaIntentTasksV2)
+	assertRuntimeStructuredOutput(t, replyConfig, "reply_output_v2", contracts.SchemaReplyOutputV2)
+}
+
+func assertRuntimeStructuredOutput(t *testing.T, config modelconfig.Config, name, schemaName string) {
+	t.Helper()
+	if config.StructuredOutput == nil || config.StructuredOutput.Name != name || !config.StructuredOutput.Strict {
+		t.Fatalf("unexpected structured output contract: %#v", config.StructuredOutput)
+	}
+	var got any
+	var want any
+	if err := json.Unmarshal(config.StructuredOutput.JSONSchema, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(contracts.MustSchema(schemaName), &want); err != nil {
+		t.Fatal(err)
+	}
+	if string(config.StructuredOutput.JSONSchema) != string(contracts.MustSchema(schemaName)) {
+		t.Fatalf("structured output schema mismatch: got=%#v want=%#v", got, want)
+	}
+}
 
 func TestParseRuntimeReplyOutputV2RequiresStrictJSONOnly(t *testing.T) {
 	valid := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"酒店提供免费停车。","evidenceRefs":["K1"],"actionRefs":[]}]}`

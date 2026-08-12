@@ -56,6 +56,37 @@ func TestModelProfileRequiresExactlyNineCompatibleNewAPISlots(t *testing.T) {
 	}
 }
 
+func TestModelProfileDeepSeekResponsesRequiresV4Flash(t *testing.T) {
+	template := &models.ModelProfileTemplate{Code: "standard", Name: "Standard", GatewayBaseURL: "https://newapi.example.com/v1"}
+	slots := completeModelProfileSlotsForTest(0)
+	for i := range slots {
+		if slots[i].UsageCode != enums.ModelUsageSlotIntentDetectLLM && slots[i].UsageCode != enums.ModelUsageSlotReplyLLM {
+			continue
+		}
+		slots[i].APIMode = "responses"
+		slots[i].ModelName = "deepseek-v4-pro"
+	}
+	if issues := ValidateModelProfileForPublication(template, slots); !hasModelProfileIssue(issues, "必须选择 deepseek-v4-flash") {
+		t.Fatalf("expected DeepSeek Responses model compatibility issue, got %#v", issues)
+	}
+	for i := range slots {
+		if slots[i].UsageCode == enums.ModelUsageSlotIntentDetectLLM || slots[i].UsageCode == enums.ModelUsageSlotReplyLLM {
+			slots[i].ModelName = "deepseek-v4-flash-preview"
+		}
+	}
+	if issues := ValidateModelProfileForPublication(template, slots); !hasModelProfileIssue(issues, "必须选择 deepseek-v4-flash") {
+		t.Fatalf("expected noncanonical DeepSeek V4 Flash name to be rejected, got %#v", issues)
+	}
+	for i := range slots {
+		if slots[i].UsageCode == enums.ModelUsageSlotIntentDetectLLM || slots[i].UsageCode == enums.ModelUsageSlotReplyLLM {
+			slots[i].ModelName = "deepseek-v4-flash"
+		}
+	}
+	if issues := ValidateModelProfileForPublication(template, slots); len(issues) != 0 {
+		t.Fatalf("deepseek-v4-flash responses issues=%#v", issues)
+	}
+}
+
 func TestModelProfileAllowsOnlyOptionalASRSlotToBeDisabled(t *testing.T) {
 	template := &models.ModelProfileTemplate{Code: "standard", Name: "Standard", GatewayBaseURL: "https://newapi.example.com/v1"}
 	slots := completeModelProfileSlotsForTest(0)

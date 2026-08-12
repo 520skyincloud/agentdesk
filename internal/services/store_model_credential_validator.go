@@ -115,9 +115,27 @@ func (v *newAPIStoreCredentialValidator) validateTextModel(ctx context.Context, 
 		prompt = "从文本中提取酒店名称：合成验收酒店。只回复酒店名称。"
 	}
 	if strings.EqualFold(slot.APIMode, "responses") {
-		return v.doJSON(ctx, baseURL, "/responses", slot, apiKey, map[string]any{
+		payload := map[string]any{
 			"model": slot.ModelName, "instructions": "这是连接验证。", "input": prompt, "max_output_tokens": 16,
-		}, validateResponsesPayload)
+		}
+		validator := validateResponsesPayload
+		if slot.UsageCode == enums.ModelUsageSlotIntentDetectLLM || slot.UsageCode == enums.ModelUsageSlotReplyLLM {
+			payload["instructions"] = "输出符合指定 JSON Schema 的结果。"
+			payload["input"] = "返回 ok=true。"
+			payload["max_output_tokens"] = 64
+			payload["text"] = map[string]any{"format": map[string]any{
+				"type": "json_schema", "name": "agentdesk_connection_test", "strict": true,
+				"schema": map[string]any{
+					"type": "object", "additionalProperties": false, "required": []string{"ok"},
+					"properties": map[string]any{"ok": map[string]any{"type": "boolean", "const": true}},
+				},
+			}}
+			validator = validateStructuredResponsesPayload
+		}
+		if modelconfig.IsDeepSeekV4Model(slot.ModelName) {
+			payload["reasoning"] = map[string]any{"effort": "none"}
+		}
+		return v.doJSON(ctx, baseURL, "/responses", slot, apiKey, payload, validator)
 	}
 	payload := map[string]any{
 		"model":      slot.ModelName,
@@ -275,11 +293,41 @@ func validateChatPayload(raw []byte) bool {
 }
 
 func validateResponsesPayload(raw []byte) bool {
+	return strings.TrimSpace(responsesOutputText(raw)) != ""
+}
+
+func validateStructuredResponsesPayload(raw []byte) bool {
 	var payload struct {
-		OutputText string            `json:"output_text"`
-		Output     []json.RawMessage `json:"output"`
+		OK bool `json:"ok"`
 	}
-	return json.Unmarshal(raw, &payload) == nil && (strings.TrimSpace(payload.OutputText) != "" || len(payload.Output) > 0)
+	text := strings.TrimSpace(responsesOutputText(raw))
+	return text != "" && json.Unmarshal([]byte(text), &payload) == nil && payload.OK
+}
+
+func responsesOutputText(raw []byte) string {
+	var payload struct {
+		OutputText string `json:"output_text"`
+		Output     []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	if text := strings.TrimSpace(payload.OutputText); text != "" {
+		return text
+	}
+	parts := make([]string, 0)
+	for _, output := range payload.Output {
+		for _, content := range output.Content {
+			if text := strings.TrimSpace(content.Text); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func modelGatewayEndpoint(baseURL, path string) string {

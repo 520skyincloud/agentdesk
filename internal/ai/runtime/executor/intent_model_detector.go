@@ -63,7 +63,10 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
 	}
-	intentConfig := resolved.RuntimeConfig()
+	intentConfig, err := withRuntimeIntentStructuredOutput(resolved.RuntimeConfig())
+	if err != nil {
+		return callbacks.IntentTraceData{}, err
+	}
 	if strings.TrimSpace(intentConfig.ModelName) == "" || strings.TrimSpace(string(intentConfig.Provider)) == "" {
 		return callbacks.IntentTraceData{}, fmt.Errorf("intent model unavailable")
 	}

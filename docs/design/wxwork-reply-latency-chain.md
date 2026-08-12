@@ -57,7 +57,9 @@
    同门店客户长期记忆。
 4. Runtime 依次执行 IntentDetect、条件 FastGPT 知识探测/检索、ReplyPlan、Generate、Validate。
 5. 每个模型阶段读取当前九槽 `MaxRetryCount`；默认 `2`，所以超时、5xx 或空模型结果最多是
-   初次调用加两次重试。DeepSeek V4 请求同时关闭 `thinking` 和 `enable_thinking`。
+   初次调用加两次重试。DeepSeek V4 Chat Completions 同时关闭 `thinking` 和 `enable_thinking`；
+   Runtime V2 的 DeepSeek Responses 调用使用 `reasoning.effort=none`，Intent/Generate 分别附带
+   原生 `intent_tasks.v2` / `reply_output.v2` JSON Schema。
 6. FastGPT 明确区分无命中和基础设施失败；`interaction/clarify` 条件探测命中后直接复用结果，
    不再做第二次正式检索。
 7. `replyCommitService.CommitAIReplyBatch` 将同轮多段文本和定位/小程序等结构化动作一次原子写入
@@ -91,6 +93,9 @@ AI 运行日志 `AgentRunLog.TraceData` 会记录：
   `attempt_count` 不是模型调用次数。
 - `ChannelMessageOutbox.next_retry_at / send_status`：消息已提交后等待协议发送或重试的耗时。
 - Usage/Gateway Call：按槽统计真实 provider 调用次数；默认模型失败应看到恰好 3 次调用。
+- Responses 结构化输出：检查请求阶段是否使用 `intent_tasks_v2` 或 `reply_output_v2`，以及成功
+  Usage 的 `reasoning_tokens` 是否为 `0`。Schema 失败后的协议修复是一次额外逻辑调用，不是网络
+  重试；普通成功链路不会因为启用原生 Schema 增加模型调用次数。
 
 排查顺序：
 
@@ -121,3 +126,5 @@ AI 运行日志 `AgentRunLog.TraceData` 会记录：
 - 不能让 Outbox 重试重跑 Runtime。
 - 不能让 System 欢迎资源 supersede 客户任务；人工回复和更新客户消息必须按状态机停止旧任务。
 - 调整超时或重试只能通过九槽 revision 发布并应用，必须保持 Usage 和 Binding 计费归因。
+- 不能把 Responses Schema 全局写入 `reply_llm` 槽；必须由 Intent/Generate 调用点按协议附加，
+  并保持工具调用 `call_id` 与 `function_call_output` 的关联。
