@@ -81,6 +81,7 @@ type RunResult struct {
 	GenerateCompileInput       *contextcompiler.CompileInput
 	UseRuntimeV2Generate       bool
 	UseRuntimeV2DirectGenerate bool
+	ReplyModelAttempted        bool
 	RuntimeValidatorMode       string
 	ActionLedgerAuthoritative  bool
 }

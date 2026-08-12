@@ -35,6 +35,7 @@ func toSummary(summary *executor.RunResult) *Summary {
 		TraceData:                 summary.TraceData,
 		ErrorMessage:              summary.ErrorMessage,
 		PolicySkipped:             summary.SkipReply,
+		ReplyModelAttempted:       summary.ReplyModelAttempted,
 		TaskLedgerEnabled:         summary.TaskLedgerEnabled,
 		TaskKeys:                  append([]string(nil), summary.TaskKeys...),
 		FailedTaskKeys:            append([]string(nil), summary.FailedTaskKeys...),

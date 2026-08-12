@@ -1772,6 +1772,26 @@ func TestRuntimeIntentDetectTimeoutUsesModelSlotConfiguration(t *testing.T) {
 	}
 }
 
+func TestRuntimeIntentModelInvocationTimeoutCoversConfiguredRetries(t *testing.T) {
+	got := runtimeIntentModelInvocationTimeout(30000, 2)
+	want := 91*time.Second + 300*time.Millisecond
+	if got != want {
+		t.Fatalf("logical intent invocation timeout=%s want=%s", got, want)
+	}
+	if got <= 3*runtimeIntentDetectTimeout(30000) {
+		t.Fatalf("logical timeout=%s must also cover retry backoff", got)
+	}
+}
+
+func TestRuntimeIntentModelInvocationTimeoutClampsRetryCount(t *testing.T) {
+	if got, want := runtimeIntentModelInvocationTimeout(1000, -1), 2*time.Second; got != want {
+		t.Fatalf("negative retries timeout=%s want=%s", got, want)
+	}
+	if got, want := runtimeIntentModelInvocationTimeout(1000, 99), 17*time.Second+500*time.Millisecond; got != want {
+		t.Fatalf("clamped retries timeout=%s want=%s", got, want)
+	}
+}
+
 func validIntentDetectGoldenJSON() string {
 	return `{"primaryIntent":"hotel_info","subIntent":"network_wifi","confidence":0.95,"needsKnowledge":true,"needsTool":false,"needsResource":false,"needsHumanRoute":false,"needsClarification":false,"resourceAction":"","resourceActions":[],"secondaryIntents":[],"intentTasks":[{"intent":"hotel_info","subIntent":"network_wifi","text":"WiFi 密码多少","needsKnowledge":true,"needsResource":false,"needsTool":false,"needsHumanRoute":false,"resourceAction":"","reason":"询问网络信息"}],"reason":"酒店网络信息咨询"}`
 }

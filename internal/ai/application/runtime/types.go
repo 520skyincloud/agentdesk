@@ -58,6 +58,7 @@ type Summary struct {
 	TraceData                 string
 	ErrorMessage              string
 	PolicySkipped             bool
+	ReplyModelAttempted       bool
 	ModelUsageCalls           []ModelUsageCall
 	TaskLedgerEnabled         bool
 	TaskKeys                  []string

@@ -283,3 +283,19 @@ Credential/API Key 无需改变。
   `NRestarts=0`，本机 `/api/auth/options` 返回成功。
 - 回滚只需将 `/opt/agentdesk/current` 切回
   `/opt/agentdesk/releases/20260812-role-navigation-491e5b6` 并重启服务；无数据库、API、前端或配置变更。
+
+### 8.5 2026-08-12 上下文预算与模型重试热修
+
+- 生产消息 `367`“我想喝咖啡”已完成 Intent 和 FastGPT 检索：4 条命中、2 条进入 Context、检索
+  1034ms。实际失败发生在 Generate Prompt 编译，错误为
+  `context_mandatory_overflow: stable policy=1074 cap=1063`；模型 Generate 请求并未发出。
+- 根因是 ContextCompiler 把 stable policy 的 15% 分类配额误当独立硬上限。修复后分类比例只用于
+  可选上下文裁剪；稳定规则和基础 Runtime Snapshot 只受完整 `AvailableInput` 硬预算约束。
+- 同时，生产消息 `368`“酒店有拖鞋吗”在 Intent 阶段约 30 秒超时。九槽配置为
+  `TimeoutMS=30000`、`MaxRetryCount=2`，但旧代码用同一个 30 秒 Context 包住整组重试，导致首次
+  超时后剩余两次调用直接取消。修复后单次超时仍为 30 秒，一次逻辑调用的 Context 覆盖初次调用、
+  两次重试和退避，同时继续受 180 秒整链总时限约束。
+- 编译错误现在记录为 `context_build`；未真正调用 Reply 模型时不再创建伪造的
+  `reply_generate/model_call_failed` 用量。Intent、Generate、协议修复和人工兜底契约保持不变。
+- 无数据库迁移、公开 API、WebSocket、前端、Intent Schema、FastGPT 或 Profile 配置变化。回滚只需
+  恢复上一二进制。

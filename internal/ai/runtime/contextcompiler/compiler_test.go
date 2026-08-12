@@ -51,6 +51,33 @@ func TestCompilerGenerateHasHardBudgetAndFixedOrder(t *testing.T) {
 	}
 }
 
+func TestCompilerGenerateAllowsMandatoryPolicyBeyondSoftCategoryShare(t *testing.T) {
+	input := compilerFixtureInput(CompileStageGenerate)
+	input.StablePolicy = strings.Repeat("规则", 600)
+
+	result, err := New(nil).Compile(t.Context(), input)
+	if err != nil {
+		t.Fatalf("mandatory policy that fits the total budget must compile: %v", err)
+	}
+	softShare := min(1200, result.AvailableInput*15/100)
+	if result.CategoryTokens["stable_policy"] <= softShare {
+		t.Fatalf("fixture did not cross soft share: stable=%d share=%d", result.CategoryTokens["stable_policy"], softShare)
+	}
+	if result.EstimatedInput > result.AvailableInput {
+		t.Fatalf("estimated=%d available=%d", result.EstimatedInput, result.AvailableInput)
+	}
+}
+
+func TestCompilerGenerateStillRejectsMandatoryPromptBeyondTotalBudget(t *testing.T) {
+	input := compilerFixtureInput(CompileStageGenerate)
+	input.StablePolicy = strings.Repeat("规则", 5000)
+
+	_, err := New(nil).Compile(t.Context(), input)
+	if !errors.Is(err, ErrMandatoryContextOverflow) {
+		t.Fatalf("error=%v want mandatory overflow", err)
+	}
+}
+
 func TestCompilerIntentKeepsAtMostFourCompleteTurns(t *testing.T) {
 	input := compilerFixtureInput(CompileStageIntent)
 	input.RecentHistory = buildCompilerHistory(7)

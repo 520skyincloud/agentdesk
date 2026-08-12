@@ -129,6 +129,31 @@ func TestChatModelFactoryUsesExactlyInitialCallPlusTwoRetries(t *testing.T) {
 	}
 }
 
+func TestChatModelFactoryRetriesAfterPerAttemptTimeout(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	chatModel, err := NewChatModelFactory().Build(context.Background(), modelconfig.Config{
+		Provider: enums.AIProviderOpenAI, BaseURL: server.URL + "/v1", APIKey: "test-key",
+		ModelName: "gpt-timeout", MaxOutputTokens: 64, TimeoutMS: 30, MaxRetryCount: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if _, err := chatModel.Generate(callCtx, []*schema.Message{schema.UserMessage("ping")}); err == nil {
+		t.Fatal("expected model call to fail after timed out retries")
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("NewAPI timeout calls=%d want 3", got)
+	}
+}
+
 func TestProviderExtraFieldsKeepsQwenThinkingDisabled(t *testing.T) {
 	fields := providerExtraFields(modelconfig.Config{
 		BaseURL:   "https://dashscope.aliyuncs.com/compatible-mode/v1",

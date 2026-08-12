@@ -67,9 +67,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if strings.TrimSpace(intentConfig.ModelName) == "" || strings.TrimSpace(string(intentConfig.Provider)) == "" {
 		return callbacks.IntentTraceData{}, fmt.Errorf("intent model unavailable")
 	}
-	intentCtx, cancel := context.WithTimeout(ctx, runtimeIntentDetectTimeout(intentConfig.TimeoutMS))
-	defer cancel()
-	intentCtx, usageCapture := usagex.WithCapture(intentCtx)
+	intentCtx, usageCapture := usagex.WithCapture(ctx)
 	intentCtx = usagex.WithScope(intentCtx, services.ModelCallUsageScope(
 		resolved,
 		req.Conversation.ID,
@@ -108,7 +106,9 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	}
 	firstStartedAt := time.Now()
 	firstReceiptOffset := len(usageCapture.Receipts())
-	result, err := chatModel.Generate(intentCtx, compiled.Messages)
+	firstCallCtx, firstCallCancel := context.WithTimeout(intentCtx, runtimeIntentModelInvocationTimeout(intentConfig.TimeoutMS, intentConfig.MaxRetryCount))
+	result, err := chatModel.Generate(firstCallCtx, compiled.Messages)
+	firstCallCancel()
 	if err != nil {
 		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
 		return callbacks.IntentTraceData{}, err
@@ -131,7 +131,9 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		}
 		retryStartedAt := time.Now()
 		retryReceiptOffset := len(usageCapture.Receipts())
-		retry, retryErr := chatModel.Generate(intentCtx, repairContext.Messages)
+		repairCallCtx, repairCallCancel := context.WithTimeout(intentCtx, runtimeIntentModelInvocationTimeout(intentConfig.TimeoutMS, intentConfig.MaxRetryCount))
+		retry, retryErr := chatModel.Generate(repairCallCtx, repairContext.Messages)
+		repairCallCancel()
 		if retryErr != nil {
 			recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
@@ -293,6 +295,19 @@ func runtimeIntentDetectTimeout(timeoutMS int) time.Duration {
 		return time.Duration(timeoutMS) * time.Millisecond
 	}
 	return 60 * time.Second
+}
+
+func runtimeIntentModelInvocationTimeout(timeoutMS, maxRetryCount int) time.Duration {
+	perAttempt := runtimeIntentDetectTimeout(timeoutMS)
+	if maxRetryCount < 0 {
+		maxRetryCount = 0
+	}
+	if maxRetryCount > 10 {
+		maxRetryCount = 10
+	}
+	attempts := maxRetryCount + 1
+	backoff := time.Duration(maxRetryCount*(maxRetryCount+1)/2) * 100 * time.Millisecond
+	return time.Duration(attempts)*perAttempt + backoff + time.Second
 }
 
 func recordIntentModelUsage(req RunInput, modelConfig modelconfig.Config, resolved *services.ModelCallConfig, message *schema.Message, receipt *usagex.Receipt, attempt int, latencyMS int64, callErr error) {

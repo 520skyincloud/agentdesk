@@ -50,6 +50,7 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 	}
 	startedAt := time.Now()
 	generate := func(input []*schema.Message) error {
+		summary.ReplyModelAttempted = true
 		response, generateErr := chatModel.Generate(ctx, input)
 		if generateErr != nil {
 			return generateErr

@@ -141,16 +141,13 @@ func (c *Compiler) compileGenerate(input CompileInput, budget Budget, estimator 
 	if err != nil {
 		return compiledStageResult{}, err
 	}
-	stableCap := min(1200, budget.AvailableInput*15/100)
-	stateCap := min(1600, budget.AvailableInput*20/100)
 	stableTokens := estimator.CountMessages(input.Model.ModelName, []*schema.Message{policyMessage})
 	stateTokens := estimator.CountMessages(input.Model.ModelName, []*schema.Message{stateMessage})
-	if stableTokens > stableCap {
-		return compiledStageResult{}, fmt.Errorf("%w: stable policy=%d cap=%d", ErrMandatoryContextOverflow, stableTokens, stableCap)
-	}
-	if stateTokens > stateCap {
-		return compiledStageResult{}, fmt.Errorf("%w: runtime state=%d cap=%d", ErrMandatoryContextOverflow, stateTokens, stateCap)
-	}
+	// Category percentages guide optional-context pruning. Stable policy and the
+	// base runtime snapshot are mandatory, so only the complete input budget may
+	// reject them. A mandatory category crossing its soft share must not turn an
+	// otherwise valid customer question into a human handoff.
+	stateCap := max(min(1600, budget.AvailableInput*20/100), stateTokens)
 	if mandatory := estimator.CountMessages(input.Model.ModelName, assembleGenerateMessages(policyMessage, stateMessage, nil, nil, nil, repairMessage, currentMessage)); mandatory > budget.AvailableInput {
 		return compiledStageResult{}, fmt.Errorf("%w: generate mandatory=%d available=%d", ErrMandatoryContextOverflow, mandatory, budget.AvailableInput)
 	}

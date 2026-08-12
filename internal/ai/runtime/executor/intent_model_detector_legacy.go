@@ -109,9 +109,7 @@ func detectRuntimeIntentLegacy(ctx context.Context, req RunInput, history adapte
 	if strings.TrimSpace(intentConfig.ModelName) == "" || strings.TrimSpace(string(intentConfig.Provider)) == "" {
 		return callbacks.IntentTraceData{}, fmt.Errorf("intent model unavailable")
 	}
-	intentCtx, cancel := context.WithTimeout(ctx, runtimeIntentDetectTimeout(intentConfig.TimeoutMS))
-	defer cancel()
-	intentCtx, usageCapture := usagex.WithCapture(intentCtx)
+	intentCtx, usageCapture := usagex.WithCapture(ctx)
 	intentCtx = usagex.WithScope(intentCtx, services.ModelCallUsageScope(resolved, req.Conversation.ID, req.UserMessage.ID, req.UserMessage.RequestID))
 	chatModel, err := factory.NewChatModelFactory().Build(intentCtx, intentConfig)
 	if err != nil {
@@ -127,7 +125,9 @@ func detectRuntimeIntentLegacy(ctx context.Context, req RunInput, history adapte
 	}
 	startedAt := time.Now()
 	offset := len(usageCapture.Receipts())
-	result, err := chatModel.Generate(intentCtx, messages)
+	firstCallCtx, firstCallCancel := context.WithTimeout(intentCtx, runtimeIntentModelInvocationTimeout(intentConfig.TimeoutMS, intentConfig.MaxRetryCount))
+	result, err := chatModel.Generate(firstCallCtx, messages)
+	firstCallCancel()
 	if err != nil {
 		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, offset), 1, time.Since(startedAt).Milliseconds(), err)
 		return callbacks.IntentTraceData{}, err
@@ -137,9 +137,11 @@ func detectRuntimeIntentLegacy(ctx context.Context, req RunInput, history adapte
 	if err != nil {
 		startedAt = time.Now()
 		offset = len(usageCapture.Receipts())
-		retry, retryErr := chatModel.Generate(intentCtx, append(messages, schema.SystemMessage(
+		repairCallCtx, repairCallCancel := context.WithTimeout(intentCtx, runtimeIntentModelInvocationTimeout(intentConfig.TimeoutMS, intentConfig.MaxRetryCount))
+		retry, retryErr := chatModel.Generate(repairCallCtx, append(messages, schema.SystemMessage(
 			"上一版 IntentDetect 输出不是合法 JSON。请重新输出严格 JSON；不要输出 Markdown、解释、注释或多余文本。",
 		)))
+		repairCallCancel()
 		if retryErr != nil {
 			recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, offset), 2, time.Since(startedAt).Milliseconds(), retryErr)
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)

@@ -104,8 +104,10 @@ IntentDetect 正常只调用一次模型；首轮严格 JSON 解析失败时最�
 次数和消息顺序由 `TestRuntimeIntentDetectGoldenCallCountAndMessageOrder` 固定。
 
 IntentDetect 的单次调用超时必须读取当前意图模型槽的 `TimeoutMS`；槽未配置超时时使用
-60 秒默认值。禁止在 Runtime 内再叠加短于模型槽配置的固定上限。上游 Context 取消、任务
-租约丢失和会话状态变化仍可提前取消调用。
+60 秒默认值。一次逻辑模型调用的 Context 必须覆盖 `MaxRetryCount + 1` 次单次超时和退避时间，
+不能把单次 `TimeoutMS` 同时当作整组重试的总时限，否则第一次超时会取消剩余重试。整条回复仍受
+AI Agent 总回复时限、任务租约和会话新鲜度约束；上游 Context 取消、任务租约丢失和会话状态
+变化仍可提前取消调用。
 
 DeepSeek V4 的 Chat Completions 调用必须同时显式携带 `thinking.type=disabled` 和
 `enable_thinking=false`。该契约只按模型名识别，不能依赖 BaseURL 是否为 DeepSeek 官方域名，
@@ -309,6 +311,11 @@ runtime_trace.v2
 和强约束优先，其次 Evidence、当前 Session 事实、紧邻完整轮次和压缩记忆。裁剪以完整消息或完整
 轮次为单位，不能截断 JSON、资源引用或把客户与回答拆开。编译结果包含 fingerprint；协议修复、
 Resume 和审计必须复用同一事实范围，不得重新扫描更晚消息或旧知识答案。
+
+稳定规则和基础 Runtime Snapshot 属于强制上下文。各分类百分比只用于可选历史、记忆和 Evidence 的
+裁剪目标，不能单独作为强制上下文的失败门槛；只有完整强制输入超过真实 `AvailableInput` 时才返回
+`context_mandatory_overflow`。编译失败必须记录为 `context_build`，且未发起 Generate 时不得伪造
+`reply_generate` 用量事件。
 
 V2 迁移使用五个内部模式：`ContextCompiler`、`IntentContract`、`ReplyContract`、`Validator`、
 `ActionLedger`。默认保持 legacy；只有 Tenant/Store/Binding 灰度范围命中，且环境变量组合满足依赖

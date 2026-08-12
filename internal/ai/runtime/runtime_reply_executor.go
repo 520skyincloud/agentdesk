@@ -124,6 +124,9 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 	if runID == "" {
 		runID = "no-run-id"
 	}
+	if summary != nil && !summary.ReplyModelAttempted {
+		return
+	}
 	if summary == nil {
 		if runErr != nil {
 			event := models.AIUsageEvent{

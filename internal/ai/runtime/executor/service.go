@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-desk/internal/ai/runtime/contextcompiler"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
 	svc "agent-desk/internal/services"
@@ -168,6 +169,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	}
 	collector.Data.Interrupt.CheckPointID = checkPointID
 	generateStartedAt := time.Now()
+	summary.ReplyModelAttempted = true
 	err = finishRuntimeGeneration(
 		runner.Run(ctx, messages, buildRunOptions(checkPointID)...),
 		summary,
@@ -255,6 +257,12 @@ func resetRuntimeGenerationForProtocolRepair(summary *RunResult, collector *call
 }
 
 func runtimeErrorStage(err error, fallback string) string {
+	if errors.Is(err, contextcompiler.ErrMandatoryContextOverflow) ||
+		errors.Is(err, contextcompiler.ErrRequiredEvidenceOverflow) ||
+		errors.Is(err, contextcompiler.ErrInvalidContextLimit) ||
+		errors.Is(err, contextcompiler.ErrRuntimeScopeMismatch) {
+		return "context_build"
+	}
 	code, ok := svc.AIReplyExecutionErrorCodeOf(err)
 	if !ok {
 		return fallback
@@ -382,6 +390,7 @@ func (s *Service) ExecuteResume(ctx context.Context, req ResumeInput) (*RunResul
 		return summary, err
 	}
 	generateStartedAt := time.Now()
+	summary.ReplyModelAttempted = true
 	if err = finishRuntimeGeneration(
 		iter,
 		summary,
