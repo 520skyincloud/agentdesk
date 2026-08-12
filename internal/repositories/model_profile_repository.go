@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"errors"
+	"time"
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
@@ -263,6 +264,17 @@ func (r *storeModelProfileAssignmentRepository) GetByStore(db *gorm.DB, tenantID
 	return item
 }
 
+func (r *storeModelProfileAssignmentRepository) Get(db *gorm.DB, id int64) *models.StoreModelProfileAssignment {
+	if db == nil || id <= 0 {
+		return nil
+	}
+	item := &models.StoreModelProfileAssignment{}
+	if err := db.First(item, "id = ?", id).Error; err != nil {
+		return nil
+	}
+	return item
+}
+
 func (r *storeModelProfileAssignmentRepository) GetForUpdateByStore(db *gorm.DB, tenantID, storeID int64) (*models.StoreModelProfileAssignment, error) {
 	if db == nil || tenantID <= 0 || storeID <= 0 {
 		return nil, errors.New("store model profile assignment scope is required")
@@ -283,6 +295,38 @@ func (r *storeModelProfileAssignmentRepository) FindByTenant(db *gorm.DB, tenant
 		return list
 	}
 	sqls.NewCnd().Eq("tenant_id", tenantID).Asc("store_id").Find(db, &list)
+	return list
+}
+
+func (r *storeModelProfileAssignmentRepository) FindByTemplateIDs(db *gorm.DB, templateIDs []int64) (list []models.StoreModelProfileAssignment) {
+	if db == nil || len(templateIDs) == 0 {
+		return list
+	}
+	db.Where("template_id IN ?", templateIDs).Order("tenant_id ASC, store_id ASC, id ASC").Find(&list)
+	return list
+}
+
+func (r *storeModelProfileAssignmentRepository) FindAutomaticPending(
+	db *gorm.DB,
+	pendingName, runningName string,
+	retryBefore, staleBefore time.Time,
+	limit int,
+) (list []models.StoreModelProfileAssignment) {
+	if db == nil || pendingName == "" || runningName == "" {
+		return list
+	}
+	query := db.Where(
+		"pending_template_id > 0 AND pending_template_revision > 0 AND status = ? AND ((pending_requested_by_name = ? AND (last_error_class = '' OR updated_at <= ?)) OR (pending_requested_by_name = ? AND updated_at <= ?))",
+		enums.StoreModelAssignmentStatusReady,
+		pendingName,
+		retryBefore,
+		runningName,
+		staleBefore,
+	).Order("updated_at ASC, id ASC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	query.Find(&list)
 	return list
 }
 

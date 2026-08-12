@@ -214,6 +214,22 @@ git diff --check
 
 补充检查已通过：`go mod tidy -diff` 无输出，所有改动 Go 文件均通过 `gofmt -l` 检查。
 
+### 7.1 2026-08-12 模型方案 revision 自动跟随
+
+- `StoreModelProfileAssignment` 仍是门店级唯一模型方案绑定；同一门店的所有有效员工绑定继续复用各自
+  active NewAPI 凭据，不新增员工级模型选择或重复配置入口。
+- 平台发布同一个 Profile code 的新 revision 后，系统自动把仍使用该 code 旧 revision 的 ready 门店
+  标记为待升级。门店已人工选择其他 pending 方案时视为显式覆盖，不被自动改写。
+- 自动协调器复用现有 `ActivatePendingProfile` 核心流程：逐个有效员工凭据执行九槽真实验证，必要时同步
+  FastGPT，再通过 CAS 原子切换 Assignment。任一阶段失败时旧 active revision 继续服务，记录失败并按
+  固定间隔重试。
+- 发布请求只持久化待升级状态；外部验证和 FastGPT 同步在后台执行，因此不会增加客户消息回复链路延迟。
+- 服务启动后的周期协调会补齐已经发布但尚未应用的同 code revision，因此部署前已创建的候选方案也能
+  自动收敛。
+- 本次没有数据库迁移、公开 API、前端 DTO、WebSocket payload、计费口径或员工号协议变化。
+- 按用户要求，本次只执行 `go build ./cmd/server` 和 `git diff --check`，未运行测试套件；部署后由用户先做
+  真实模型与会话验收。
+
 ## 8. 部署与回滚
 
 ### 8.1 已完成部署

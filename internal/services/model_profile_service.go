@@ -389,6 +389,7 @@ func (s *modelProfileService) Publish(req request.ModelProfileRevisionActionRequ
 	now := time.Now()
 	var item models.ModelProfileTemplate
 	var slots []models.ModelProfileSlot
+	var rollouts []models.StoreModelProfileAssignment
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		current, err := repositories.ModelProfileTemplateRepository.GetForUpdate(ctx.Tx, req.ID)
 		if err != nil {
@@ -428,6 +429,10 @@ func (s *modelProfileService) Publish(req request.ModelProfileRevisionActionRequ
 		}); err != nil {
 			return err
 		}
+		rollouts, err = ModelProfileRolloutService.ScheduleFollowersDB(ctx.Tx, current, now)
+		if err != nil {
+			return err
+		}
 		item = *current
 		return nil
 	}); err != nil {
@@ -441,6 +446,19 @@ func (s *modelProfileService) Publish(req request.ModelProfileRevisionActionRequ
 	WsService.PublishStoreModelProfileChanged(
 		0, 0, item.ID, item.Revision, string(item.Status), item.UpdatedAt,
 	)
+	for i := range rollouts {
+		WsService.PublishStoreModelProfileChanged(
+			rollouts[i].TenantID,
+			rollouts[i].StoreID,
+			item.ID,
+			item.Revision,
+			"pending",
+			now,
+		)
+	}
+	if len(rollouts) > 0 {
+		go ModelProfileRolloutService.ProcessDue(len(rollouts))
+	}
 	return &ModelProfileWithSlots{Template: item, Slots: slots}, nil
 }
 

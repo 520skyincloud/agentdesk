@@ -408,6 +408,16 @@ func (s *storeModelCredentialService) ActivatePendingProfile(
 		s.recordFailedSensitiveAction(tenantID, req.StoreID, ownerBindingID, operator, meta, enums.CredentialAuditActionSwitchProfile, 0, "password_verification_failed")
 		return nil, err
 	}
+	return s.activatePendingProfile(ctx, req, operator, meta, tenantID, ownerBindingID)
+}
+
+func (s *storeModelCredentialService) activatePendingProfile(
+	ctx context.Context,
+	req request.ActivatePendingStoreModelProfileRequest,
+	operator *dto.AuthPrincipal,
+	meta StoreCredentialRequestMeta,
+	tenantID, ownerBindingID int64,
+) (*StoreModelCredentialData, error) {
 	assignment := repositories.StoreModelProfileAssignmentRepository.GetByStore(sqls.DB(), tenantID, req.StoreID)
 	if assignment == nil ||
 		assignment.Status != enums.StoreModelAssignmentStatusReady ||
@@ -600,6 +610,52 @@ func (s *storeModelCredentialService) ActivatePendingProfile(
 		s.publishConfigurationState(tenantID, req.StoreID, credentials[i].Binding.ID, now)
 	}
 	return s.getData(tenantID, req.StoreID, ownerBindingID, false)
+}
+
+func (s *storeModelCredentialService) ActivatePendingProfileAutomatically(ctx context.Context, assignment models.StoreModelProfileAssignment) error {
+	if assignment.ID <= 0 || assignment.TenantID <= 0 || assignment.StoreID <= 0 ||
+		assignment.PendingTemplateID <= 0 || assignment.PendingTemplateRevision <= 0 {
+		return errors.New("automatic profile assignment is invalid")
+	}
+	ownerBindingID := int64(0)
+	if state := repositories.FastGPTStoreTenantRepository.GetByStoreIDInTenant(sqls.DB(), assignment.StoreID, assignment.TenantID); state != nil {
+		ownerBindingID = firstPositiveInt64(state.AppliedStoreStaffBindingID, state.TargetStoreStaffBindingID)
+	}
+	if ownerBindingID > 0 {
+		if _, err := s.requireStoreStaffCredentialScopeDB(sqls.DB(), assignment.TenantID, assignment.StoreID, ownerBindingID, true); err != nil {
+			ownerBindingID = 0
+		}
+	}
+	if ownerBindingID <= 0 {
+		for _, credential := range repositories.StoreModelCredentialRepository.FindByStore(sqls.DB(), assignment.TenantID, assignment.StoreID) {
+			if credential.Status != enums.StoreCredentialStatusActive || credential.CredentialRevision <= 0 {
+				continue
+			}
+			if _, err := s.requireStoreStaffCredentialScopeDB(sqls.DB(), assignment.TenantID, assignment.StoreID, credential.StoreStaffBindingID, true); err == nil {
+				ownerBindingID = credential.StoreStaffBindingID
+				break
+			}
+		}
+	}
+	if ownerBindingID <= 0 {
+		return errors.New("automatic profile rollout has no active store staff credential")
+	}
+	operator := operatorOrSystem(nil)
+	_, err := s.activatePendingProfile(
+		ctx,
+		request.ActivatePendingStoreModelProfileRequest{
+			TenantID:            assignment.TenantID,
+			StoreID:             assignment.StoreID,
+			StoreStaffBindingID: ownerBindingID,
+			TemplateID:          assignment.PendingTemplateID,
+			ConfirmRevision:     assignment.PendingTemplateRevision,
+		},
+		operator,
+		StoreCredentialRequestMeta{RequestID: fmt.Sprintf("automatic_profile_rollout_%d_%d", assignment.ID, assignment.PendingTemplateRevision)},
+		assignment.TenantID,
+		ownerBindingID,
+	)
+	return err
 }
 
 func (s *storeModelCredentialService) loadProfileActivationCredentials(tenantID, storeID, ownerBindingID int64) ([]storeProfileActivationCredential, error) {

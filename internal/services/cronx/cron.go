@@ -106,6 +106,13 @@ func Init() {
 		}
 	})
 
+	addFunc(c, "@every 30s", func() {
+		count := services.ModelProfileRolloutService.ProcessDue(5)
+		if count > 0 {
+			slog.Info("automatic model profile rollouts handled", "count", count)
+		}
+	})
+
 	addFunc(c, "@every 1m", func() {
 		managedFastGPTCount := services.FastGPTUsageSyncService.ProcessDue(50)
 		if managedFastGPTCount > 0 {
