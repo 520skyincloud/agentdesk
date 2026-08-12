@@ -564,7 +564,6 @@ func (s *agentPresenceService) Touch(operator *dto.AuthPrincipal, source string,
 	if profile == nil {
 		return nil
 	}
-	becameAvailable := false
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		lockedProfile, err := repositories.AgentProfileRepository.GetForUpdateInTenant(ctx.Tx, profile.ID, operator.ActiveTenantID)
 		if err != nil || lockedProfile == nil || lockedProfile.UserID != operator.UserID {
@@ -610,12 +609,8 @@ func (s *agentPresenceService) Touch(operator *dto.AuthPrincipal, source string,
 		}); err != nil {
 			return err
 		}
-		becameAvailable = true
 		return nil
 	})
-	if err == nil && becameAvailable {
-		ConversationDispatchService.ScheduleTeamDispatch(operator.ActiveTenantID, profile.TeamID)
-	}
 	return err
 }
 
@@ -681,14 +676,6 @@ func (s *agentPresenceService) SetStatus(operator *dto.AuthPrincipal, status enu
 	if err != nil {
 		return nil, err
 	}
-	switch status {
-	case enums.AgentPresenceStatusOnline, enums.AgentPresenceStatusIdle:
-		ConversationDispatchService.ScheduleTeamDispatch(operator.ActiveTenantID, profile.TeamID)
-	case enums.AgentPresenceStatusBreak:
-		if _, recoveryErr := ConversationDispatchService.RecoverAssignmentsForAgent(operator.ActiveTenantID, operator.UserID, 0); recoveryErr != nil {
-			slog.Warn("recover assignments after agent entered break failed", "error", recoveryErr, "tenantId", operator.ActiveTenantID, "userId", operator.UserID)
-		}
-	}
 	return created, nil
 }
 
@@ -720,9 +707,6 @@ func (s *agentPresenceService) End(tenantID, userID int64, at time.Time) error {
 	})
 	if err != nil {
 		return err
-	}
-	if _, recoveryErr := ConversationDispatchService.RecoverAssignmentsForAgent(tenantID, userID, 0); recoveryErr != nil {
-		slog.Warn("recover assignments after agent went offline failed", "error", recoveryErr, "tenantId", tenantID, "userId", userID)
 	}
 	return nil
 }

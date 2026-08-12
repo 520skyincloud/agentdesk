@@ -49,9 +49,6 @@ const (
 	dispatchAvailabilityPermissionMissing  = "permission_missing"
 	dispatchAvailabilityNoActiveSchedule   = "no_active_schedule"
 	dispatchAvailabilityOutOfShift         = "out_of_shift"
-	dispatchAvailabilityOffline            = "offline"
-	dispatchAvailabilityBreak              = "break"
-	dispatchAvailabilityBusy               = "busy"
 	dispatchAvailabilityAtCapacity         = "at_capacity"
 
 	dispatchWorkbenchCurrentScanLimit = 5000
@@ -313,7 +310,7 @@ func (s *conversationDispatchWorkbenchService) AutoAssign(req request.Conversati
 		if latest := ConversationService.Get(conversation.ID); latest != nil && latest.CurrentAssigneeID > 0 {
 			return nil
 		}
-		return errorsx.InvalidParam("当前班次内没有同时满足在线、权限、服务范围和容量约束的客服，任务已保留在待派发池")
+		return errorsx.InvalidParam("当前班次内没有同时满足权限、服务范围和容量约束的客服，任务已保留在待派发池")
 	}
 	return nil
 }
@@ -1052,7 +1049,7 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoads(profiles []models
 		_, permitted := permittedUserSet[profile.UserID]
 		load.manuallyAssignable = load.manuallyAssignable && profile.Status == enums.StatusOk && userEnabled && permitted
 		onShift := scheduled && profileMatchesActiveScheduleSnapshot(&profile, selection, membersBySquad, teamBySquad)
-		load.available, load.availabilityCode, load.availabilityReason = dispatchProfileAvailability(profile, load.activeCount, userEnabled, permitted, scheduled, onShift, presence, now)
+		load.available, load.availabilityCode, load.availabilityReason = dispatchProfileAvailability(profile, load.activeCount, userEnabled, permitted, scheduled, onShift)
 		ret = append(ret, load)
 	}
 	return ret, nil
@@ -1087,7 +1084,7 @@ func (s *conversationDispatchWorkbenchService) buildAgentLoadResponse(load dispa
 	}
 }
 
-func dispatchProfileAvailability(profile models.AgentProfile, activeCount int, userEnabled, permitted, scheduled, onShift bool, presence dispatchPresenceSnapshot, now time.Time) (bool, string, string) {
+func dispatchProfileAvailability(profile models.AgentProfile, activeCount int, userEnabled, permitted, scheduled, onShift bool) (bool, string, string) {
 	switch {
 	case profile.Status != enums.StatusOk:
 		return false, dispatchAvailabilityProfileDisabled, "客服档案已停用"
@@ -1103,18 +1100,10 @@ func dispatchProfileAvailability(profile models.AgentProfile, activeCount int, u
 		return false, dispatchAvailabilityNoActiveSchedule, "客服组当前无有效班次"
 	case !onShift:
 		return false, dispatchAvailabilityOutOfShift, "不在当前值班小组或已被排除"
-	case presence.LastSeenAt.IsZero() || now.Sub(presence.LastSeenAt) > dispatchPresenceFreshness:
-		return false, dispatchAvailabilityOffline, "当前未在线"
-	case presence.Status == enums.AgentPresenceStatusBreak:
-		return false, dispatchAvailabilityBreak, "当前处于休息状态"
-	case presence.Status == enums.AgentPresenceStatusBusy:
-		return false, dispatchAvailabilityBusy, "当前处于忙碌状态"
-	case !isDispatchPresenceEligible(presence, now):
-		return false, dispatchAvailabilityOffline, "当前未在线"
 	case activeCount >= profile.MaxConcurrentCount:
 		return false, dispatchAvailabilityAtCapacity, "已达到最大并发接待数"
 	default:
-		return true, dispatchAvailabilityAvailable, "可自动接单"
+		return true, dispatchAvailabilityAvailable, "当前排班内可自动接单"
 	}
 }
 
@@ -1342,10 +1331,6 @@ func (s *conversationDispatchWorkbenchService) validateAssignmentTargetDB(db *go
 	matchedWindow, matched := matchingActiveScheduleDB(db, profile, selection)
 	if !scheduled || !matched || matchedWindow.SquadID != squadID {
 		return nil, errorsx.InvalidParam("目标客服已不在当前值班范围")
-	}
-	presence := ConversationDispatchService.loadDispatchPresenceMapDB(db, conversation.TenantID, []int64{profile.UserID}, now)[profile.UserID]
-	if !isDispatchPresenceEligible(presence, now) {
-		return nil, errorsx.InvalidParam("目标客服当前不可自动接单")
 	}
 	activeCounts, err := ConversationDispatchService.findActiveConversationCountMapDB(db, []int64{profile.UserID}, conversation.TenantID)
 	if err != nil {

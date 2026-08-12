@@ -251,25 +251,25 @@ func (s *agentTeamScopeService) ApplyConversationFilter(cnd *sqls.Cnd, operator 
 	}
 	if scope.StoreStaffScoped {
 		if len(scope.StoreStaffBindingIDs) == 0 {
-			return cnd.Eq("id", -1)
+			return cnd.Eq("current_assignee_id", operator.UserID)
 		}
-		return cnd.
-			In("store_staff_binding_id", scope.StoreStaffBindingIDs).
-			Where(`EXISTS (
+		return cnd.Where(`(current_assignee_id = ? OR (
+			store_staff_binding_id IN (?) AND EXISTS (
 				SELECT 1 FROM t_conversation_route_state AS scoped_route
 				WHERE scoped_route.tenant_id = ?
 					AND scoped_route.conversation_id = t_conversation.id
 					AND scoped_route.store_id = t_conversation.store_id
 					AND scoped_route.store_staff_binding_id = t_conversation.store_staff_binding_id
-			)`, tenantID)
+			)
+		))`, operator.UserID, scope.StoreStaffBindingIDs, tenantID)
 	}
 	if len(scope.WxWorkInstanceIDs) > 0 {
-		return cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE tenant_id = ? AND wx_work_instance_id IN (?))", tenantID, scope.WxWorkInstanceIDs)
+		return cnd.Where("(current_assignee_id = ? OR id IN (SELECT conversation_id FROM t_conversation_route_state WHERE tenant_id = ? AND wx_work_instance_id IN (?)))", operator.UserID, tenantID, scope.WxWorkInstanceIDs)
 	}
 	if len(scope.StoreIDs) > 0 {
-		return cnd.Where("id IN (SELECT conversation_id FROM t_conversation_route_state WHERE tenant_id = ? AND store_id IN (?))", tenantID, scope.StoreIDs)
+		return cnd.Where("(current_assignee_id = ? OR id IN (SELECT conversation_id FROM t_conversation_route_state WHERE tenant_id = ? AND store_id IN (?)))", operator.UserID, tenantID, scope.StoreIDs)
 	}
-	return cnd.Eq("id", -1)
+	return cnd.Eq("current_assignee_id", operator.UserID)
 }
 
 func (s *agentTeamScopeService) CanViewConversation(operator *dto.AuthPrincipal, conversationID int64) bool {
@@ -285,6 +285,9 @@ func (s *agentTeamScopeService) CanViewConversation(operator *dto.AuthPrincipal,
 		return false
 	}
 	if s.IsAdmin(operator) {
+		return true
+	}
+	if conversation.CurrentAssigneeID == operator.UserID {
 		return true
 	}
 	scope := s.Resolve(operator)

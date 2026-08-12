@@ -128,6 +128,7 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	conversationB := &models.Conversation{TenantID: 101, ChannelID: channel.ID, CustomerName: "客户B", Status: enums.IMConversationStatusActive, CurrentAssigneeID: 22, LastActiveAt: now, LastMessageAt: now}
 	conversationAOther := &models.Conversation{TenantID: 101, StoreID: storeA.ID, StoreStaffBindingID: otherStoreStaffBinding.ID, ChannelID: channel.ID, CustomerName: "客户A-其他员工号", Status: enums.IMConversationStatusActive, LastActiveAt: now, LastMessageAt: now}
 	closedConversationA := &models.Conversation{TenantID: 101, StoreID: storeA.ID, StoreStaffBindingID: storeStaffBinding.ID, ChannelID: channel.ID, CustomerName: "客户A-历史", Status: enums.IMConversationStatusClosed, CurrentAssigneeID: 999, LastActiveAt: now.Add(-2 * time.Hour), LastMessageAt: now.Add(-2 * time.Hour)}
+	crossTenantAssigned := &models.Conversation{TenantID: 202, ChannelID: channel.ID, CustomerName: "其他租户同指派人", Status: enums.IMConversationStatusActive, CurrentAssigneeID: storeStaffUserID, LastActiveAt: now, LastMessageAt: now}
 	if err := db.Create(conversationA).Error; err != nil {
 		t.Fatalf("create conversation A: %v", err)
 	}
@@ -139,6 +140,9 @@ func TestAgentTeamScopeConversationVisibility(t *testing.T) {
 	}
 	if err := db.Create(closedConversationA).Error; err != nil {
 		t.Fatalf("create closed conversation for binding A: %v", err)
+	}
+	if err := db.Create(crossTenantAssigned).Error; err != nil {
+		t.Fatalf("create cross-tenant assigned conversation: %v", err)
 	}
 	if err := db.Create(&models.ConversationRouteState{TenantID: 101, ConversationID: conversationA.ID, StoreID: storeA.ID, StoreStaffBindingID: storeStaffBinding.ID, WxWorkInstanceID: instanceA.ID, NeedHumanFollowUp: true}).Error; err != nil {
 		t.Fatalf("create route A: %v", err)

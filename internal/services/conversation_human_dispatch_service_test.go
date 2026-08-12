@@ -171,7 +171,7 @@ func TestConversationHandoffConfirmationSameRequestSendsOnePrompt(t *testing.T) 
 	}
 }
 
-func TestConversationHumanDispatchPendingTaskIsAssignedWhenAgentReturns(t *testing.T) {
+func TestConversationHumanDispatchAssignsScheduledAgentEvenOnBreak(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	createHumanDispatchTeam(t, db, 1, "综合客服组")
@@ -195,35 +195,14 @@ func TestConversationHumanDispatchPendingTaskIsAssignedWhenAgentReturns(t *testi
 	}
 	dispatched, err := services.ConversationDispatchService.DispatchConversation(conversation.ID)
 	if err != nil {
-		t.Fatalf("initial dispatch error = %v", err)
+		t.Fatalf("dispatch scheduled agent error = %v", err)
 	}
-	if dispatched != nil {
-		t.Fatalf("agent on break must not receive task, got %+v", dispatched)
+	if dispatched == nil {
+		t.Fatal("scheduled agent on break must still receive the task")
 	}
 	current := services.ConversationService.Get(conversation.ID)
-	if current == nil || current.Status != enums.IMConversationStatusPending || current.CurrentAssigneeID != 0 {
-		t.Fatalf("task must remain visible in pending pool, got %+v", current)
-	}
-	oldHandoffAt := time.Now().Add(-2 * time.Hour)
-	if err := db.Model(&models.Conversation{}).Where("tenant_id = ? AND id = ?", 101, conversation.ID).Update("handoff_at", oldHandoffAt).Error; err != nil {
-		t.Fatalf("age pending task: %v", err)
-	}
-	if err := db.Model(&models.AgentPresenceSession{}).
-		Where("tenant_id = ? AND user_id = ? AND ended_at IS NULL", 101, 101).
-		Updates(map[string]any{"status": enums.AgentPresenceStatusIdle, "last_seen_at": time.Now()}).Error; err != nil {
-		t.Fatalf("return agent to service: %v", err)
-	}
-
-	count, err := services.ConversationDispatchService.DispatchPendingConversations(100)
-	if err != nil {
-		t.Fatalf("compensation dispatch error = %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("expected one recovered pending task, got %d", count)
-	}
-	current = services.ConversationService.Get(conversation.ID)
 	if current == nil || current.Status != enums.IMConversationStatusActive || current.CurrentAssigneeID != 101 || current.CurrentTeamID != 1 {
-		t.Fatalf("expected deterministic rule assignment after agent returned, got %+v", current)
+		t.Fatalf("expected deterministic rule assignment while agent is on break, got %+v", current)
 	}
 	assignment := repositories.ConversationAssignmentRepository.FindOne(db, sqls.NewCnd().
 		Eq("tenant_id", 101).

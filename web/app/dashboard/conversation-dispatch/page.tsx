@@ -13,6 +13,7 @@ import {
   TimerIcon,
   UserRoundCheckIcon,
 } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { toast } from "sonner"
 
@@ -50,6 +51,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { useI18n } from "@/i18n/provider"
 import {
+  assignConversation,
   assignConversationDispatch,
   autoAssignConversationDispatch,
   createAdminWebSocketUrl,
@@ -113,18 +115,22 @@ function agentLabel(agent: ConversationDispatchAgentLoad) {
 }
 
 type ActionDialogState = {
-  type: "assign" | "transfer" | "release"
+  type: "takeover" | "assign" | "transfer" | "release"
   task: ConversationDispatchTask
 } | null
 
 export default function ConversationDispatchPage() {
   const t = useI18n()
+  const router = useRouter()
   const { session } = useAuth()
   const permissions = useMemo(
     () => new Set(session?.permissions ?? []),
     [session?.permissions],
   )
   const canAssign = permissions.has("conversation.assign")
+  const canTakeover = canAssign && ["super_admin", "admin", "tenant_admin", "cs_team_leader"].some(
+    (role) => session?.roles.includes(role),
+  )
   const canTransfer = permissions.has("conversation.transfer")
   const canRecycle = permissions.has("conversation.recycle")
   const canManageActions = canAssign || canTransfer || canRecycle
@@ -350,7 +356,7 @@ export default function ConversationDispatchPage() {
     }
   }
 
-  function openActionDialog(type: "assign" | "transfer" | "release", task: ConversationDispatchTask) {
+  function openActionDialog(type: "takeover" | "assign" | "transfer" | "release", task: ConversationDispatchTask) {
     if (!canUseAction(type)) {
       return
     }
@@ -368,7 +374,18 @@ export default function ConversationDispatchPage() {
     const conversationId = dialog.task.conversationId
     setActionLoadingId(conversationId)
     try {
-      if (dialog.type === "assign") {
+      if (dialog.type === "takeover") {
+        const assigneeId = session?.user.id ?? 0
+        if (!assigneeId) {
+          toast.error(t("conversationDispatch.takeoverRequiresSignIn"))
+          return
+        }
+        await assignConversation(conversationId, assigneeId, dialogReason)
+        toast.success(t("conversationDispatch.takeoverSuccess"))
+        setDialog(null)
+        router.push(`/dashboard/conversations?conversationId=${conversationId}`)
+        return
+      } else if (dialog.type === "assign") {
         const assigneeId = Number(dialogAssignee)
         if (!assigneeId) {
           toast.error(t("conversationDispatch.selectAgentRequired"))
@@ -397,7 +414,8 @@ export default function ConversationDispatchPage() {
     }
   }
 
-  function canUseAction(type: "assign" | "transfer" | "release") {
+  function canUseAction(type: "takeover" | "assign" | "transfer" | "release") {
+    if (type === "takeover") return canTakeover
     if (type === "assign") return canAssign
     if (type === "transfer") return canTransfer
     return canRecycle
@@ -570,6 +588,17 @@ export default function ConversationDispatchPage() {
                         <ButtonGroup>
                           {canAssign ? (
                             <>
+                              {canTakeover ? (
+                                <Button
+                                  size="icon"
+                                  variant="outline"
+                                  title={t("conversationDispatch.takeover")}
+                                  disabled={!task.manageable || !isPendingDispatchTask(task) || actionLoadingId === task.conversationId}
+                                  onClick={() => openActionDialog("takeover", task)}
+                                >
+                                  <UserRoundCheckIcon className="size-4" />
+                                </Button>
+                              ) : null}
                               <Button
                                 size="icon"
                                 variant="outline"
@@ -682,12 +711,14 @@ export default function ConversationDispatchPage() {
             <DialogTitle>
               {dialog?.type === "assign"
                 ? t("conversationDispatch.assign")
+                : dialog?.type === "takeover"
+                  ? t("conversationDispatch.takeover")
                 : dialog?.type === "transfer"
                   ? t("conversationDispatch.transfer")
                   : t("conversationDispatch.release")}
             </DialogTitle>
           </DialogHeader>
-          {dialog?.type !== "release" ? (
+          {dialog?.type !== "release" && dialog?.type !== "takeover" ? (
             <OptionCombobox
               value={dialogAssignee}
               options={agentOptions}
@@ -700,7 +731,11 @@ export default function ConversationDispatchPage() {
           <Textarea
             value={dialogReason}
             onChange={(event) => setDialogReason(event.target.value)}
-            placeholder={t("conversationDispatch.reasonPlaceholder")}
+            placeholder={t(
+              dialog?.type === "takeover"
+                ? "conversationDispatch.takeoverReasonPlaceholder"
+                : "conversationDispatch.reasonPlaceholder",
+            )}
             aria-required="true"
           />
           <DialogFooter>

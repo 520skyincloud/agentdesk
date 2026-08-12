@@ -446,17 +446,6 @@ func (s *conversationDispatchService) detectRuleAssignmentRecoveryCauseDB(db *go
 	if len(permittedUserIDs) != 1 || permittedUserIDs[0] != assignment.ToUserID {
 		return ruleAssignmentRecoveryCause{code: "reply_permission_lost", message: "原客服已无会话回复权限", hard: true}, nil
 	}
-	presence := s.loadDispatchPresenceMapDB(db, conversation.TenantID, []int64{assignment.ToUserID}, now)[assignment.ToUserID]
-	if presence.Status == enums.AgentPresenceStatusBusy && !presence.LastSeenAt.IsZero() && now.Sub(presence.LastSeenAt) <= dispatchPresenceFreshness {
-		return ruleAssignmentRecoveryCause{}, nil
-	}
-	if !isDispatchPresenceEligible(presence, now) {
-		message := "原客服已离线"
-		if presence.Status == enums.AgentPresenceStatusBreak {
-			message = "原客服已进入休息状态"
-		}
-		return ruleAssignmentRecoveryCause{code: "agent_unavailable", message: message, hard: true}, nil
-	}
 	activeSchedules := s.findActiveScheduleDetailsDB(db, []int64{team.ID}, conversation.TenantID, now)
 	selection, scheduled := activeSchedules[team.ID]
 	if !scheduled || !profileMatchesActiveScheduleDB(db, profile, selection) {

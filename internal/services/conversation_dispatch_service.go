@@ -153,7 +153,7 @@ func (s *conversationDispatchService) ScheduleDispatch(conversationID int64) {
 	})
 }
 
-// ScheduleTeamDispatch coalesces bursty conversation, presence and capacity events
+// ScheduleTeamDispatch coalesces bursty conversation, schedule and capacity events
 // into one queue drain for the affected team.
 func (s *conversationDispatchService) ScheduleTeamDispatch(tenantID, teamID int64) {
 	if tenantID <= 0 || teamID <= 0 || !s.realtimeSchedulingEnabled.Load() {
@@ -721,18 +721,11 @@ func (s *conversationDispatchService) pickDispatchCandidates(teamIDs []int64, te
 		enabledUserIDs = append(enabledUserIDs, profile.UserID)
 	}
 	presenceByUserID := s.loadDispatchPresenceMapDB(sqls.DB(), tenantID, enabledUserIDs, now)
-	onlineProfiles := make([]models.AgentProfile, 0, len(enabledProfiles))
 	for _, profile := range enabledProfiles {
 		if isDispatchPresenceEligible(presenceByUserID[profile.UserID], now) {
-			onlineProfiles = append(onlineProfiles, profile)
+			report.OnlineProfiles++
 		}
 	}
-	report.OnlineProfiles = len(onlineProfiles)
-	if len(onlineProfiles) == 0 {
-		report.Reason = "no_online_agent"
-		return nil, report, nil
-	}
-	enabledProfiles = onlineProfiles
 
 	loads, err := s.buildDispatchLoadMap(enabledProfiles, activeScheduleDetails, tenantID)
 	if err != nil {
@@ -1156,10 +1149,6 @@ func (s *conversationDispatchService) validateDispatchDecisionCandidateDB(db *go
 		return nil, activeScheduleSelection{}, err
 	}
 	if len(permittedUserIDs) != 1 || permittedUserIDs[0] != profile.UserID {
-		return nil, activeScheduleSelection{}, errConversationDispatchConflict
-	}
-	presence := s.loadDispatchPresenceMapDB(db, conversation.TenantID, []int64{profile.UserID}, now)[profile.UserID]
-	if !isDispatchPresenceEligible(presence, now) {
 		return nil, activeScheduleSelection{}, errConversationDispatchConflict
 	}
 	team, err := repositories.AgentTeamRepository.GetForUpdateInTenant(db, profile.TeamID, conversation.TenantID)

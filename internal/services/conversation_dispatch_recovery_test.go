@@ -16,15 +16,15 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestRuleAssignmentRecoveryTransfersUnavailableUnrepliedAssignment(t *testing.T) {
+func TestRuleAssignmentRecoveryTransfersOutOfShiftUnrepliedAssignment(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)
 	createDispatchSquadSchedule(t, db, 0)
 	conversation, assignment := createActiveRuleRecoveryFixture(t, db, 101, time.Now().Add(-time.Minute))
-	if err := db.Model(&models.AgentPresenceSession{}).
-		Where("tenant_id = ? AND user_id = ? AND ended_at IS NULL", 101, 101).
-		Updates(map[string]any{"status": enums.AgentPresenceStatusBreak, "last_seen_at": time.Now()}).Error; err != nil {
-		t.Fatalf("put assigned agent on break: %v", err)
+	if err := db.Model(&models.AgentTeamSchedule{}).
+		Where("tenant_id = ? AND team_id = ?", 101, 1).
+		Update("excluded_agent_profile_ids", "1").Error; err != nil {
+		t.Fatalf("exclude assigned agent from shift: %v", err)
 	}
 
 	service := newConversationDispatchService()
@@ -43,7 +43,7 @@ func TestRuleAssignmentRecoveryTransfersUnavailableUnrepliedAssignment(t *testin
 	}
 }
 
-func TestAgentBreakImmediatelyRecoversRuleAssignment(t *testing.T) {
+func TestAgentBreakDoesNotRecoverRuleAssignment(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)
 	createDispatchSquadSchedule(t, db, 0)
@@ -54,8 +54,11 @@ func TestAgentBreakImmediatelyRecoversRuleAssignment(t *testing.T) {
 		t.Fatalf("set assigned agent break status: %v", err)
 	}
 	current := ConversationService.Get(conversation.ID)
-	if current == nil || current.Status != enums.IMConversationStatusActive || current.CurrentAssigneeID != 102 {
-		t.Fatalf("break status should immediately transfer unreplied rule assignment, current=%+v", current)
+	if current == nil || current.Status != enums.IMConversationStatusActive || current.CurrentAssigneeID != 101 {
+		t.Fatalf("presence status must not transfer scheduled assignment, current=%+v", current)
+	}
+	if recovered, err := newConversationDispatchService().RecoverStaleAssignments(10); err != nil || recovered != 0 {
+		t.Fatalf("periodic recovery must ignore presence status, recovered=%d err=%v", recovered, err)
 	}
 }
 
@@ -109,7 +112,7 @@ func TestRuleAssignmentRecoveryTransfersFirstResponseSLABreach(t *testing.T) {
 	}
 }
 
-func TestRuleAssignmentRecoveryTransfersOverdueFollowUpWhenAgentUnavailable(t *testing.T) {
+func TestRuleAssignmentRecoveryTransfersOverdueFollowUpWhenAccountDisabled(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)
 	createDispatchSquadSchedule(t, db, 0)
@@ -120,7 +123,9 @@ func TestRuleAssignmentRecoveryTransfersOverdueFollowUpWhenAgentUnavailable(t *t
 	conversation, assignment := createActiveRuleRecoveryFixture(t, db, 101, now.Add(-10*time.Minute))
 	createRecoveryAgentReply(t, db, assignment, now.Add(-2*time.Minute))
 	createRecoveryCustomerMessage(t, db, assignment, now.Add(-time.Minute), 2)
-	setRecoveryPresenceStatus(t, db, []int64{101}, enums.AgentPresenceStatusBreak, now)
+	if err := db.Model(&models.User{}).Where("tenant_id = ? AND id = ?", 101, 101).Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable assigned agent account: %v", err)
+	}
 
 	service := newConversationDispatchService()
 	recovered, err := service.RecoverStaleAssignments(10)
@@ -144,7 +149,6 @@ func TestRuleAssignmentRecoveryKeepsFollowUpBeforeResponseSLA(t *testing.T) {
 	conversation, assignment := createActiveRuleRecoveryFixture(t, db, 101, now.Add(-10*time.Minute))
 	createRecoveryAgentReply(t, db, assignment, now.Add(-time.Minute))
 	createRecoveryCustomerMessage(t, db, assignment, now.Add(-30*time.Second), 2)
-	setRecoveryPresenceStatus(t, db, []int64{101}, enums.AgentPresenceStatusBreak, now)
 
 	service := newConversationDispatchService()
 	if recovered, err := service.RecoverStaleAssignments(10); err != nil || recovered != 0 {
@@ -233,7 +237,7 @@ func TestRuleAssignmentRecoveryTransfersOverdueFollowUpAfterShift(t *testing.T) 
 	}
 }
 
-func TestRuleAssignmentRecoveryReleasesOverdueFollowUpWithoutAlternative(t *testing.T) {
+func TestRuleAssignmentRecoveryReleasesOverdueFollowUpWithoutEligibleAlternative(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)
 	createDispatchSquadSchedule(t, db, 0)
@@ -244,7 +248,12 @@ func TestRuleAssignmentRecoveryReleasesOverdueFollowUpWithoutAlternative(t *test
 	conversation, assignment := createActiveRuleRecoveryFixture(t, db, 101, now.Add(-10*time.Minute))
 	createRecoveryAgentReply(t, db, assignment, now.Add(-2*time.Minute))
 	createRecoveryCustomerMessage(t, db, assignment, now.Add(-time.Minute), 2)
-	setRecoveryPresenceStatus(t, db, []int64{101, 102}, enums.AgentPresenceStatusBreak, now)
+	if err := db.Model(&models.User{}).Where("tenant_id = ? AND id = ?", 101, 101).Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable assigned agent account: %v", err)
+	}
+	if err := db.Model(&models.AgentProfile{}).Where("tenant_id = ? AND user_id = ?", 101, 102).Update("auto_assign_enabled", false).Error; err != nil {
+		t.Fatalf("disable alternate automatic assignment: %v", err)
+	}
 
 	service := newConversationDispatchService()
 	recovered, err := service.RecoverStaleAssignments(10)
@@ -268,7 +277,11 @@ func TestRuleAssignmentRecoveryRechecksFollowUpReplyInsideTransaction(t *testing
 	conversation, assignment := createActiveRuleRecoveryFixture(t, db, 101, now.Add(-10*time.Minute))
 	createRecoveryAgentReply(t, db, assignment, now.Add(-2*time.Minute))
 	customerMessage := createRecoveryCustomerMessage(t, db, assignment, now.Add(-time.Minute), 2)
-	setRecoveryPresenceStatus(t, db, []int64{101}, enums.AgentPresenceStatusBreak, now)
+	if err := db.Model(&models.AgentTeamSchedule{}).
+		Where("tenant_id = ? AND team_id = ?", 101, 1).
+		Update("excluded_agent_profile_ids", "1").Error; err != nil {
+		t.Fatalf("exclude assigned agent from shift: %v", err)
+	}
 
 	service := newConversationDispatchService()
 	candidates, _, err := service.pickDispatchCandidates([]int64{1}, 101, nil, now)
@@ -293,10 +306,10 @@ func TestRuleAssignmentRecoveryRechecksReplyInsideTransaction(t *testing.T) {
 	createDispatchSquadTeamAndAgents(t, db)
 	createDispatchSquadSchedule(t, db, 0)
 	conversation, assignment := createActiveRuleRecoveryFixture(t, db, 101, time.Now().Add(-time.Minute))
-	if err := db.Model(&models.AgentPresenceSession{}).
-		Where("tenant_id = ? AND user_id = ? AND ended_at IS NULL", 101, 101).
-		Updates(map[string]any{"status": enums.AgentPresenceStatusBreak, "last_seen_at": time.Now()}).Error; err != nil {
-		t.Fatalf("put assigned agent on break: %v", err)
+	if err := db.Model(&models.AgentTeamSchedule{}).
+		Where("tenant_id = ? AND team_id = ?", 101, 1).
+		Update("excluded_agent_profile_ids", "1").Error; err != nil {
+		t.Fatalf("exclude assigned agent from shift: %v", err)
 	}
 	service := newConversationDispatchService()
 	candidates, _, err := service.pickDispatchCandidates([]int64{1}, 101, nil, time.Now())
@@ -312,15 +325,15 @@ func TestRuleAssignmentRecoveryRechecksReplyInsideTransaction(t *testing.T) {
 	assertRecoveryConversationAssignee(t, conversation.ID, 101)
 }
 
-func TestRuleAssignmentRecoveryReleasesUnavailableAssignmentWithoutAlternative(t *testing.T) {
+func TestRuleAssignmentRecoveryReleasesDisabledAssignmentWithoutAlternative(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)
 	createDispatchSquadSchedule(t, db, 0)
 	conversation, _ := createActiveRuleRecoveryFixture(t, db, 101, time.Now().Add(-time.Minute))
-	if err := db.Model(&models.AgentPresenceSession{}).
-		Where("tenant_id = ? AND ended_at IS NULL", 101).
-		Updates(map[string]any{"status": enums.AgentPresenceStatusBreak, "last_seen_at": time.Now()}).Error; err != nil {
-		t.Fatalf("put all agents on break: %v", err)
+	if err := db.Model(&models.User{}).
+		Where("tenant_id = ? AND id IN ?", 101, []int64{101, 102}).
+		Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable all scheduled agent accounts: %v", err)
 	}
 
 	service := newConversationDispatchService()
@@ -350,10 +363,8 @@ func TestRuleAssignmentRecoveryStopsAfterThreeSuccessfulAttempts(t *testing.T) {
 			t.Fatalf("create recovery history: %v", err)
 		}
 	}
-	if err := db.Model(&models.AgentPresenceSession{}).
-		Where("tenant_id = ? AND user_id = ? AND ended_at IS NULL", 101, 101).
-		Updates(map[string]any{"status": enums.AgentPresenceStatusBreak, "last_seen_at": now}).Error; err != nil {
-		t.Fatalf("put assigned agent on break: %v", err)
+	if err := db.Model(&models.User{}).Where("tenant_id = ? AND id = ?", 101, 101).Update("status", enums.StatusDisabled).Error; err != nil {
+		t.Fatalf("disable assigned agent account: %v", err)
 	}
 
 	service := newConversationDispatchService()
@@ -403,12 +414,6 @@ func TestRuleAssignmentRecoveryDetectsEligibilityLoss(t *testing.T) {
 		want string
 		edit func(*testing.T, *gorm.DB, *models.ConversationAssignment)
 	}{
-		{name: "offline", want: "agent_unavailable", edit: func(t *testing.T, db *gorm.DB, _ *models.ConversationAssignment) {
-			t.Helper()
-			if err := db.Model(&models.AgentPresenceSession{}).Where("tenant_id = ? AND user_id = ?", 101, 101).Update("last_seen_at", time.Now().Add(-10*time.Minute)).Error; err != nil {
-				t.Fatalf("stale presence: %v", err)
-			}
-		}},
 		{name: "disabled_account", want: "agent_account_unavailable", edit: func(t *testing.T, db *gorm.DB, _ *models.ConversationAssignment) {
 			t.Helper()
 			if err := db.Model(&models.User{}).Where("id = ?", 101).Update("status", enums.StatusDisabled).Error; err != nil {
@@ -451,6 +456,35 @@ func TestRuleAssignmentRecoveryDetectsEligibilityLoss(t *testing.T) {
 			cause, err := newConversationDispatchService().detectRuleAssignmentRecoveryCause(assignment, conversation, time.Now())
 			if err != nil || cause.code != tt.want || !cause.hard {
 				t.Fatalf("cause=%+v want=%s err=%v", cause, tt.want, err)
+			}
+		})
+	}
+}
+
+func TestRuleAssignmentRecoveryIgnoresPresenceLoss(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     enums.AgentPresenceStatus
+		lastSeenAt time.Time
+	}{
+		{name: "offline", status: enums.AgentPresenceStatusIdle, lastSeenAt: time.Now().Add(-10 * time.Minute)},
+		{name: "break", status: enums.AgentPresenceStatusBreak, lastSeenAt: time.Now()},
+		{name: "busy", status: enums.AgentPresenceStatusBusy, lastSeenAt: time.Now()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupConversationDispatchSquadTestDB(t)
+			createDispatchSquadTeamAndAgents(t, db)
+			createDispatchSquadSchedule(t, db, 0)
+			conversation, assignment := createActiveRuleRecoveryFixture(t, db, 101, time.Now())
+			if err := db.Model(&models.AgentPresenceSession{}).
+				Where("tenant_id = ? AND user_id = ? AND ended_at IS NULL", 101, 101).
+				Updates(map[string]any{"status": tt.status, "last_seen_at": tt.lastSeenAt}).Error; err != nil {
+				t.Fatalf("update presence: %v", err)
+			}
+			cause, err := newConversationDispatchService().detectRuleAssignmentRecoveryCause(assignment, conversation, time.Now())
+			if err != nil || cause.code != "" || cause.hard {
+				t.Fatalf("presence must not create recovery cause, cause=%+v err=%v", cause, err)
 			}
 		})
 	}

@@ -666,7 +666,7 @@ func TestDispatchRechecksCapacityInsideTransaction(t *testing.T) {
 	}
 }
 
-func TestDispatchCandidatesRequireFreshAvailablePresence(t *testing.T) {
+func TestDispatchCandidatesUseScheduleRegardlessOfPresence(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)
 	createDispatchSquadSchedule(t, db, 0)
@@ -683,10 +683,10 @@ func TestDispatchCandidatesRequireFreshAvailablePresence(t *testing.T) {
 	}
 	candidates, report, err := ConversationDispatchService.pickDispatchCandidates([]int64{1}, 101, nil, now)
 	if err != nil {
-		t.Fatalf("pick unavailable presence candidates: %v", err)
+		t.Fatalf("pick scheduled candidates: %v", err)
 	}
-	if len(candidates) != 0 || report.OnlineProfiles != 0 || report.Reason != "no_online_agent" {
-		t.Fatalf("stale and break agents must be excluded, candidates=%+v report=%+v", candidates, report)
+	if len(candidates) != 2 || report.OnlineProfiles != 0 || report.CandidateCount != 2 || report.Reason != "ok" {
+		t.Fatalf("presence must remain diagnostic only, candidates=%+v report=%+v", candidates, report)
 	}
 	if err := db.Model(&models.AgentPresenceSession{}).
 		Where("tenant_id = ? AND user_id = ? AND ended_at IS NULL", 101, 101).
@@ -694,12 +694,12 @@ func TestDispatchCandidatesRequireFreshAvailablePresence(t *testing.T) {
 		t.Fatalf("restore agent 101 presence: %v", err)
 	}
 	candidates, report, err = ConversationDispatchService.pickDispatchCandidates([]int64{1}, 101, nil, now)
-	if err != nil || len(candidates) != 1 || candidates[0].profile.UserID != 101 || report.OnlineProfiles != 1 {
-		t.Fatalf("fresh online agent should be eligible, candidates=%+v report=%+v err=%v", candidates, report, err)
+	if err != nil || len(candidates) != 2 || report.OnlineProfiles != 1 || report.CandidateCount != 2 {
+		t.Fatalf("online count must not change scheduled eligibility, candidates=%+v report=%+v err=%v", candidates, report, err)
 	}
 }
 
-func TestDispatchWorkbenchAvailabilityUsesRuleEligibility(t *testing.T) {
+func TestDispatchWorkbenchAvailabilityUsesScheduleNotPresence(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)
 	createDispatchSquadSchedule(t, db, 0)
@@ -726,15 +726,15 @@ func TestDispatchWorkbenchAvailabilityUsesRuleEligibility(t *testing.T) {
 	for _, load := range loads {
 		loadByUserID[load.UserID] = load
 	}
-	if loadByUserID[101].Available || loadByUserID[101].AvailabilityCode != dispatchAvailabilityBreak {
-		t.Fatalf("break agent availability=%+v", loadByUserID[101])
+	if !loadByUserID[101].Available || loadByUserID[101].AvailabilityCode != dispatchAvailabilityAvailable || loadByUserID[101].PresenceStatus != enums.AgentPresenceStatusBreak {
+		t.Fatalf("break status must remain visible without blocking assignment, availability=%+v", loadByUserID[101])
 	}
 	if loadByUserID[102].Available || loadByUserID[102].AvailabilityCode != dispatchAvailabilityOutOfShift {
 		t.Fatalf("excluded agent availability=%+v", loadByUserID[102])
 	}
 }
 
-func TestDispatchRechecksPresenceInsideTransaction(t *testing.T) {
+func TestDispatchCommitIgnoresPresenceChanges(t *testing.T) {
 	db := setupConversationDispatchSquadTestDB(t)
 	createDispatchSquadTeamAndAgents(t, db)
 	createDispatchSquadSchedule(t, db, 0)
@@ -758,11 +758,12 @@ func TestDispatchRechecksPresenceInsideTransaction(t *testing.T) {
 		workloadWeight:        1,
 		expectedLastMessageID: pending.LastMessageID,
 	}
-	if _, err := ConversationDispatchService.tryAssignWithDecision(pending.ID, decision); !errors.Is(err, errConversationDispatchConflict) {
-		t.Fatalf("expected changed presence conflict, got %v", err)
+	assigned, err := ConversationDispatchService.tryAssignWithDecision(pending.ID, decision)
+	if err != nil || assigned == nil || assigned.CurrentAssigneeID != selected.profile.UserID {
+		t.Fatalf("presence change must not invalidate scheduled assignment, assigned=%+v err=%v", assigned, err)
 	}
-	if got := ConversationService.Get(pending.ID); got == nil || got.Status != enums.IMConversationStatusPending || got.CurrentAssigneeID != 0 {
-		t.Fatalf("presence conflict must leave conversation pending, got %+v", got)
+	if got := ConversationService.Get(pending.ID); got == nil || got.Status != enums.IMConversationStatusActive || got.CurrentAssigneeID != selected.profile.UserID {
+		t.Fatalf("scheduled assignment was not committed, got %+v", got)
 	}
 }
 

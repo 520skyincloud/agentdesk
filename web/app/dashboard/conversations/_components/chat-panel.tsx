@@ -50,6 +50,7 @@ type ChatPanelProps = {
   wxWorkInstance?: WxWorkProtocolInstance | null;
   aiReplyEnabled?: boolean;
   canToggleAIReply?: boolean;
+  canAssignConversation?: boolean;
   onWxWorkInstanceUpdated?: (instance: WxWorkProtocolInstance) => void;
 };
 
@@ -57,6 +58,7 @@ export function ChatPanel({
   wxWorkInstance,
   aiReplyEnabled: aiReplyEnabledOverride,
   canToggleAIReply = true,
+  canAssignConversation = false,
   onWxWorkInstanceUpdated,
 }: ChatPanelProps) {
   const t = useI18n();
@@ -356,7 +358,7 @@ export function ChatPanel({
   };
 
   const handleClaim = async () => {
-    if (!conversation || claiming) return;
+    if (!conversation || claiming || !canAssignConversation) return;
     const session = readSession();
     if (!session?.user?.id) {
       toast.error(t("conversation.claimRequiresSignIn"));
@@ -551,17 +553,23 @@ export function ChatPanel({
       ) : isPendingConversation ? (
         <div className="flex h-full items-center justify-center bg-background">
           <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-5 py-4">
-            <Button
-              onClick={() => setClaimDialogOpen(true)}
-              disabled={claiming}
-              size="sm"
-            >
-              {claiming
-                ? t("conversation.claiming")
-                : isHandoffPending
-                  ? t("conversation.claimHandoff")
-                  : t("conversation.claim")}
-            </Button>
+            {canAssignConversation ? (
+              <Button
+                onClick={() => setClaimDialogOpen(true)}
+                disabled={claiming}
+                size="sm"
+              >
+                {claiming
+                  ? t("conversation.claiming")
+                  : isHandoffPending
+                    ? t("conversation.claimHandoff")
+                    : t("conversation.claim")}
+              </Button>
+            ) : (
+              <span className="text-sm text-muted-foreground">
+                {t("conversation.claimPermissionRequired")}
+              </span>
+            )}
           </div>
         </div>
       ) : (
@@ -638,7 +646,7 @@ export function ChatPanel({
         </div>
       )}
       <Dialog
-        open={claimDialogOpen}
+        open={claimDialogOpen && canAssignConversation}
         onOpenChange={(open) => {
           if (claiming) {
             return;

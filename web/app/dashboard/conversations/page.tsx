@@ -151,6 +151,7 @@ export default function ConversationsPage() {
   const canDeleteWxWorkAccounts = canViewWxWorkAccounts && permissions.has("channel.delete");
   const canManageWxWorkAccounts = canUpdateWxWorkAccounts || canDeleteWxWorkAccounts;
   const canTransferConversation = permissions.has("conversation.transfer");
+  const canAssignConversation = permissions.has("conversation.assign");
   const canInheritConversation = permissions.has("conversation.inherit");
   const canCloseConversation = permissions.has("conversation.close");
   const canSendArrivalBindingCard = permissions.has("conversation.send");
@@ -851,6 +852,7 @@ export default function ConversationsPage() {
           wxWorkInstance={conversationInstance}
           aiReplyEnabled={isStoreStaff ? storeStaffWorkspace?.aiReplyEnabled : conversationInstance?.aiReplyEnabled}
           canToggleAIReply={canUpdateWxWorkAccounts}
+          canAssignConversation={canAssignConversation}
           onWxWorkInstanceUpdated={handleInstanceUpdated}
         />
         </div>
