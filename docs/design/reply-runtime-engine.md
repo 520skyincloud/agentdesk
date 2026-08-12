@@ -8,10 +8,11 @@
 >
 > AI 行为来源：`origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`
 
-当前部署状态：Runtime V2 实现提交 `6a9ad46d2595cf212a90ec431e8307122852c227` 已部署到
-测试2服务器，并仅对 Binding `1`（合肥南七）启用完整 ContextCompiler、Intent、Reply、Validator
-和 authoritative ActionLedger。该灰度状态不代表其他 Binding 已启用，也不代表真实客户消息矩阵
-已经全部验收。
+当前部署状态：Runtime V2 核心实现提交 `6a9ad46d2595cf212a90ec431e8307122852c227` 已集成到两个远端
+`main`，测试2服务器的 `/opt/agentdesk/current` 指向与仓库 HEAD 对齐的不可变发布目录。完整
+ContextCompiler、Intent、Reply、Validator 和 authoritative ActionLedger 仅对 Binding `1`
+（合肥南七）启用。FastGPT 与 NewAPI 是外部依赖，不属于测试2服务器的本次迁移范围。该灰度状态
+不代表其他 Binding 已启用，也不代表真实客户消息矩阵已经全部验收。
 
 本文只描述当前生产运行链。旧 AIConfig、独立 Agent 模型绑定、本地知识 ID、历史测试
 会话和旧 fallback 可从 Git 历史追溯，但不能作为当前接口、Schema 或行为依据。

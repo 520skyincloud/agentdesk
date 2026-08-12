@@ -20,10 +20,10 @@
 - Resume 重入 Intent、Knowledge、Tag 或重新扫描上下文。
 - 模型 Profile 仍连接旧 NewAPI 地址。
 
-实现提交 `6a9ad46d2595cf212a90ec431e8307122852c227` 已部署到测试2服务器。部署只迁移并运行
-AgentDesk 与其 MySQL；FastGPT 和 NewAPI 没有由本次发布安装或迁移，AgentDesk 继续调用已经存在的
-`http://36.138.68.47:6080` 和 `http://36.138.68.47:6081/v1`。API Key、Credential revision、
-Assignment、Binding 和模型名均未改写。
+核心实现提交 `6a9ad46d2595cf212a90ec431e8307122852c227` 已集成到两个远端 `main`，并通过不可变发布目录
+部署到测试2服务器。部署只迁移并运行 AgentDesk 与其 MySQL；FastGPT 和 NewAPI 没有由本次发布
+安装或迁移，AgentDesk 继续调用已经存在的 `http://36.138.68.47:6080` 和
+`http://36.138.68.47:6081/v1`。API Key、Credential revision、Assignment、Binding 和模型名均未改写。
 
 ## 2. 实现结构
 
@@ -220,7 +220,9 @@ git diff --check
 
 - 服务器：测试2 `36.138.68.47:2301`。
 - 服务：`agentdesk.service` 和本机 MySQL 均为 `active`，AgentDesk 监听 `127.0.0.1:8083`。
-- 发布目录：`/opt/agentdesk/releases/20260812-runtime-v2-6a9ad46`。
+- 当前发布由 `/opt/agentdesk/current` 指向
+  `/opt/agentdesk/releases/20260812-runtime-v2-<git-short-sha>`；目录内 `REVISION` 必须等于两个远端
+  `main` 的完整提交号，上一不可变发布目录继续保留作回滚。
 - 原域名 `https://weibao.omnireva.com` 继续由旧入口 Nginx 反向代理到测试2服务器；首页、登录页、
   `/api/auth/options` 和企微验证文件均返回 HTTP 200。
 - AutoMigrate 后共 124 张表，`t_ai_reply_turn`、`t_ai_reply_turn_task`、
@@ -228,6 +230,10 @@ git diff --check
 - 最终同步基线：338 条消息、3 个会话、3 个客户、12 个资源、2 个知识库、87 个 AI Reply Job。
 - 历史失效 Outbox `id=1` 已标记 `cancelled` 且清空 `next_retry_at`，不会在新 Worker 启动后误发。
 - 完整 V2 仅对 Binding `1` 启用；数据库确认该 Binding 属于 Tenant `2`、Store `1`“合肥南七”。
+- 合肥南七 FastGPT 真实检索通过：“咖啡”命中 8 条，Provider 902ms；“停车场”命中 12 条，
+  Provider 3670ms。
+- 当前模型方案 `3@revision 3` 的九槽 NewAPI 真实测试通过，Provider 8747ms，无失败槽、无验证问题。
+- 上述测试均通过微宝本机受控 API 发起，不发送企微客户消息，也没有部署或修改 FastGPT/NewAPI。
 
 生产进程已读取以下配置：
 
@@ -250,7 +256,7 @@ AI_RUNTIME_V2_BINDING_IDS=1
 
 ### 8.2 仍需真实消息验收
 
-代码门禁、进程环境、数据库结构、域名和依赖连通性已经验证。客户可见行为仍需在 Binding `1`
+代码门禁、进程环境、数据库结构、域名和外部依赖真实调用已经验证。客户可见行为仍需在 Binding `1`
 重放知识多题、资源动作、人工接管、Resume 和 Outbox 失败重试，并观察至少 30 分钟的阶段延迟、
 协议修复数、Validator 拒绝、Action 状态和 Outbox 取消。没有真实发生的客户消息，不得仅凭环境开关
 描述为业务验收通过。
